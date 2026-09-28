@@ -444,6 +444,12 @@ NC-3 的判别方式是**硬链接见证**：先用 `writeConfig` 写一次，`l
    （按判据 6「保存后在下一个会话/下一轮生效」，这需要真机。）
 4. **`ctx.workspaceRegistry.list()` 的投影实时性**：工作区在挂载后才创建时，
    在下次路由请求刷新缓存前不贡献覆盖（CONTRACT.md §7.3）。真机多工作区场景未验证。
+
+   > **Revision 5 校正（本行原文保留，措辞已过时）**：刷新现在发生在**每个被处理请求的开头**
+   > （不再是「某个路由恰好需要工作区层时」），所以「挂载后新建的工作区」在**下一次请求**
+   > 就会被读到。原表述里仍然成立的两点是：**注册表尚未列出的工作区不可见**，以及
+   > **绝不请求中途重读、绝不在装配路径上重读**。工作区投影本身的真机实时性仍属未验证。
+   > 见 §65、§68 与 CONTRACT §5.5 / §7.3。
 5. **快照 = 无 scope 全局装配 vs 某个 agent-scoped 真实回合的段数差异**（§11.8）——
    差异的存在是设计使然，但**具体差多少**未在真机测过。
 6. **`rendered` 与真实回合 prompt 的逐字节相等性**：仅在「文本里不含未知 `{{变量}}`」时成立
@@ -1521,3 +1527,148 @@ evidence: suite=npm-pack passed=13 failed=0 exit=0 commit=ec5e958
 - 没有改 `applyOverrides` / `mergeLayers` / 冻结探针 / 快照语义（阶段一行为逐字节保留）；
 - 没有把 `PUT`/`DELETE` 响应体加字段（见 §60.2），也没有改 405 `allow` 语义；
 - 没有为「恢复默认单段」新增宿主路由（复用既有单条 DELETE，见 §60.4）。
+
+## 65. 两层刷新语义对齐：用户层也按请求重读（Revision 5）
+
+### 65.1 改动前的真实姿态
+
+| 层 | 何时写入内存 | 外部改文件能否被感知 |
+| --- | --- | --- |
+| 用户层 `$DSH_HOME/prompt-setting/overrides.json` | **只在挂载时**读一次；此后仅由本插件保存路径（`cacheWritten`）更新 | **不能**，要等插件重载 |
+| 工作区层 `<root>/.dsh-prompt-setting/overrides.json` | 挂载时 + 每次「需要工作区层的路由」开头 | 能（下一次请求） |
+
+真机现象：清理测试数据时直接改用户层文件，运行中的插件完全无反应（旧覆盖继续生效）。
+这正是本次要修的不一致：同一份语义、同一种文件，两层却不同命。
+
+### 65.2 改法（`index.js`，唯一新增的 IO 点仍是路由）
+
+- 新增 `refreshUser()`：按 `readConfig()` 的既有映射重读用户层；**永不抛**。
+- 新增 `refreshLayers()`：`refreshUser()` + `refreshWorkspaces()`，**并列**调用。
+- 派发器（prefix handler）的 `try` 第一句就是 `refreshLayers();` —— 在路径/方法判定之后、
+  任何 handler 之前，因此「请求要么不落地 IO（栅栏/404/405），要么先刷新再谈成败」。
+- `workspaceContext()` 里原有的 `refreshWorkspaces()` 删除：它唯一的作用就是「顺带刷新」，
+  现在由派发器统一做，避免每请求重复读同一批文件（`loadWorkspace(root)` 仍保留，
+  用于「注册表列了但缓存还没见过」的那个 root）。
+- `cacheWritten()` 给用户层补 `present: true`（写完文件一定存在）。
+- 挂载处 `readConfig` + 手工拼 state 改为直接 `refreshUser()`，两条路径共用同一段判断。
+
+### 65.3 「文件消失」为什么单独报错（与「从来没有」区分）
+
+`readConfig()` 的既有语义是：**ENOENT = 空且启用**（新装的 profile 本来就该是这样），
+只有「读不了 / 不是合法 JSON / schema 不符」才是 `enabled:false + reason`。
+`state.user.present` 记录「本 mount 读到过这个文件」，于是：
+
+- **从来没写过**（present=false，ENOENT）→ 空、`enabled:true`、`reason:null`（既有语义不变，
+  既有用例 `overrides GET: both layers plus the merged list` 逐字钉住这条）；
+- **读到过、现在没了**（present=true，ENOENT）→ `enabled:false`，
+  reason `missing-file: <path> was removed after it had been read`。
+
+两种情形对**装配**的效果完全一致（该层不贡献任何覆盖，旧覆盖不会靠缓存续命），差别只在
+面板上「文件没了」不再被伪装成「这层没有覆盖」。工作区层不做这条区分（本次未改它，
+避免扩大范围；它的缺文件仍按既有语义报空+启用）。
+
+### 65.4 装配路径零 IO：结构 + 行为双证
+
+- **结构**：`resolvedFor()` / `assembleHandler()` 的源码切片里不含
+  `readConfig(` / `loadWorkspace(` / `refreshUser(` / `refreshWorkspaces(` / `refreshLayers(` /
+  `readFileSync(`；`index.js` 里唯一碰 `node:fs` 的仍是 `core/store.js`。
+- **行为**：挂载后改盘上文件，**不经任何路由**直接 `ctx.systemPrompt.assemble({scope})`，
+  装配结果仍是旧内容；一次（哪怕失败的）请求之后才变成新内容。这条断言同时也是
+  「缓存脱节最多存活一个请求」的证据。
+
+### 65.5 失败请求与缓存脱节（主管追加要求）
+
+四条写路径（PUT / DELETE / DELETE?reset / import）的**失败分支**都不得改动可观察状态：
+
+- 运行期：11 种可触发的失败输入（`invalid-json`、`unknown-layer`、`missing-text`、
+  `workspace-unresolved`、`override-not-found`、非法 schema、`413 body-too-large` …）逐个打，
+  每次都断言「缓存直读的装配仍是文件内容」且 `GET /snapshot` 的
+  `layers.user = {enabled:true, reason:null}` 且 effective 里仍是文件的文本；
+- 409 `layer-not-writable`（工作区层文件损坏）单列一例：只禁用那一层，用户层照旧；
+- 结构：四条写路径在 `cacheWritten(` 之前的源码片段里**完全不出现 `state.`**，
+  且都先 `writeConfig(…)`/`writeConfigsAtomically(…)`。这一条覆盖了两个「构造不出来」的分支
+  （`import-staging-failed` / `import-verify-failed`：`core/store.js` 是「先 staging 再读回校验」，
+  合法计划生成不出读回失败的暂存文件）。**没有**为它们硬造文件系统故障（如 chmod 只读目录），
+  以免在特权用户下变成假红。
+
+## 66. 本轮自测证据（工作树内执行）
+
+`packages/dsh-prompt-setting/` 下：`node --test test/*.test.mjs`
+
+- 全量：`evidence: suite=all passed=285 failed=0 exit=0 ms=4493 diff=3f/+421/-18 commit=ea8ab2d`
+- 宿主路由+刷新套件：`evidence: suite=route+refresh passed=48 failed=0 exit=0 ms=286 diff=3f/+421/-18 commit=ea8ab2d`
+- 集成套件（真包真 Cordis）**pass 非 skip**：见全量中的 `integration` 组，未出现 skip
+  （`ℹ skipped 0`）。
+- 基线对照：改动前同一条命令 `tests 276 pass 276 fail 0`（§62bis 记录的那一轮），
+  本轮为 `285 = 276 + 9`。
+
+## 67. 本轮新增测试（276 → 285）与负向对照
+
+新增用例全部落在 `test/route.test.mjs` 的 `// #region external refresh (Revision 5)`：
+
+| 用例 | 钉住的行为 |
+| --- | --- |
+| `refresh: an external edit of the user layer reaches the very next request` | 外部改文件 → 一次 `GET /snapshot` 即反映（判据 1） |
+| `refresh: the assembly path opens no file, so an external edit waits for a request` | 装配路径零 IO；失败请求也算「一次请求」（判据 4 + 追加要求 2） |
+| `refresh: a failed write never leaves the cache at odds with the file` | 11 种失败输入，逐个断言缓存==文件（追加要求 1） |
+| `refresh: a write rejected because the target layer is unusable leaves the other layer alone` | 409 只禁用坏的那层 |
+| `refresh: every write path caches only after its own file write returned` | 四条写路径结构上先写后缓存 |
+| `refresh: deleting the user layer file disables it with a reason, and restoring it recovers` | 删除 → `missing-file` + 不崩；恢复 → 立即生效（判据 2） |
+| `refresh: a file that never existed is an empty enabled layer, not a vanished one` | 「从来没有」与「没了」必须不同（既有语义不回归） |
+| `refresh: a user file corrupted after mount disables it, and a repaired one recovers` | 非法 JSON / schema 不符 → 不崩 + 既有 error 语义（判据 3） |
+| `refresh: the route handler re-reads both layers before its first branch` | 结构：刷新先于每个 handler 分支 |
+
+负向对照（每条：改坏一处 → 跑 `test/route.test.mjs` → 从 `/tmp` 备份还原 → 复跑确认回绿）：
+
+| # | 改坏的内容 | 结果 | 变红的用例 |
+| --- | --- | --- | --- |
+| NC-1 | 删掉派发器里的 `refreshLayers();`（请求路径不再重读） | `route` fail 5 / pass 43 | `an external edit … reaches the very next request`、`the assembly path opens no file…`、`deleting the user layer file …`、`a user file corrupted after mount …`、`the route handler re-reads both layers…` |
+| NC-2 | `refreshUser()` 读到坏文件时 `throw`（而不是把该层标为不可用） | `route` fail 2 / pass 46 | `layers: a corrupt user file disables that layer…`（既有）、`a user file corrupted after mount …`（新增） |
+| NC-3 | 去掉「读到过又消失」规则（`state.user.present` 恒为 false） | `route` fail 1 / pass 47 | `deleting the user layer file disables it with a reason…` |
+
+三条都是「单独改坏 ⇒ 对应用例变红」，且三次还原后全量均为 `tests 285 pass 285 fail 0`。
+
+## 68. 这条断言覆盖的真机现象，以及它**能/不能**证明什么
+
+### 68.1 被覆盖的现象（能证明的部分）
+
+真机时间线（文件 mtime 全程未变、内容含一条 `ui-e2e-ok` append）：
+
+- `21:42:27` 的回合：该覆盖**生效**；
+- 该窗口内负责人执行过一次**被拒绝的导入**（非法文件）；
+- `21:52:54` 的回合：该覆盖**不再生效**，而文件未动。
+
+本轮新增的断言能证明的是**「缓存与文件脱节」这一类解释里，属于写路径的那一半不成立**：
+
+1. 四条写路径（含 `handleImport` 的每一个早退/异常分支）在写成功之前都不碰可观察状态；
+   被拒绝的导入既不改文件、也不改缓存（运行期 11 例 + 结构性断言）；
+2. 即便真的出现过脱节（例如外部改文件而缓存落后），**每个被处理请求开头都会重读两层**，
+   所以脱节最多存活一个请求，且该请求失败也照样重读；
+3. 装配路径零 IO：脱节不会被「装配时顺手重读」掩盖，也不会在装配中途变化。
+
+### 68.2 不能证明的部分（边界，明确写下）
+
+- **没有复现 `21:42 → 21:52` 那段现象，也不声称找到了它的确切根因。** 本轮的证据只能排除
+  「写路径把缓存改坏」与「外部改文件长期不被感知」两类解释。
+- 逐条读过四条写路径 + `core/store.js` 的 `writeConfigsAtomically` 后，**能构造出来的脱节方向
+  是「旧覆盖继续生效」（stale cache），不是「覆盖停止生效」**。上面那次观测的方向恰好相反。
+  因此若真因属于后者，它不在本轮覆盖的范围内 —— 可能的方向（均**未验证**、仅列作后续排查线索）
+  包括：`frozen` / `complete` 判定、`?session=` 对应的 scope 或工作区解析变化、
+  工作区层同名覆盖（工作区层优先）在某一回路合下胜出、以及那次回合的 preset 组合与 `21:42` 不同。
+- 前提是「文件确实未变」这一点来自人的观测（mtime/哈希一致），本轮**未**取得该文件的独立证据
+  （没有文件快照、没有那一轮的真实 prompt 原文），所以时间线本身按外部输入对待。
+- 真机复跑（页面刷新后改文件即生效、改坏即 disabled、改回即恢复）**未做**：本轮全部为离线断言，
+  真机验收点仍由主管在集成检查点执行。
+
+## 69. 本轮明确**没有**做的事
+
+- 没有改 `client.js` 与 `test/client.test.mjs`（并行 attempt g-006 正在改，避免冲突）；
+- 没有改 `core/**` 任何内核语义（`applyOverrides` / `mergeLayers` / 校验 / 迁移 / 历史 / diff 全未动）；
+- 没有引入文件监听（inotify/`fs.watch`）、定时器或轮询；刷新只发生在请求路径上；
+- 没有新增依赖或构建步骤（`package.json` 未动）；
+- 没有改 `PUT` / `DELETE` / `import` 的响应体与状态码（Revision 5 只改「何时重读」与
+  一层「文件消失」的 `enabled`/`reason` 取值，字段集合与既有形状不变）；
+- 没有为了负向对照之外的原因临时改坏源码；三次改坏均从 `/tmp` 备份还原并复跑全量确认；
+- 没有写任何真实 `~/.dsh/prompt-setting/`（所有测试仍用 `DSH_HOME` 指向临时目录）；
+- 没有自行 `git worktree add` / `branch` / `checkout` / `merge`，只在专属 worktree 内提交；
+- 没有安装/启用插件、没有重启 `dsh web`、没有改 DSH 安装包或 profile。
