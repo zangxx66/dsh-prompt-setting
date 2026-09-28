@@ -201,12 +201,27 @@ document.querySelector('[data-plugin="dsh-prompt-setting"]').dataset.buildMatch 
 核心模块清单逐条 `diff` **完全相同**，清单里第一个 `plugins/??…client.js&rev=…` 资源同样 200 / JS /
 33,930 B（原文见 `NOTES.md` §91 二）。
 
+### 超出范围时的**实际**终端输出（2026-09-29 主管本机实测，DSH `0.1.7-rc.2`）
+
+`…` 是抓取时的省略，其余逐字：
+
+```text
+dsh: skipping profile bundle "dsh-prompt-setting": Error: Plugin dsh-prompt-setting@0.1.0 is incompatible with dsh 0.1.7-rc.2: peerDependencies {"@deepseek-ai/dsh":">=9.0.0"}. Running it may cause crashes and data loss. … To accept this risk explicitly, grant the exact-version exemption …
+dsh web: http://127.0.0.1:3087/?token=…
+```
+
+⇒ DSH **仍然正常启动**，只是本插件被整条跳过。原因（源码）：`@deepseek-ai/dsh-app-boot` 在**读 profile 的
+`dsh.profile.bundles` 时**就对每个 bundle 跑 `evaluatePluginCompatibility()`，不通过就跳过并写 stderr
+（`dsh-app-boot/lib/index.js:919-953`、`:322`、`:516`）；这一步发生在 `mountRootInclude()`（真正开始 import 插件）
+**之前**，所以**我们的导入期「超范围」警告在 0.1.7-rc.2 上被抢占、观测不到**。安装期（`dsh plugin add` /
+plugin manager）用的是同一套检查，会直接拒绝安装并给出 `dsh plugin allow-version` 的豁免指引。
+
 ### 本插件自己会说什么
 
 | 时机 | 终端输出 | 说明 |
 | --- | --- | --- |
 | 导入期 · DSH 在已测试范围内 | **什么都不打印** | 范围内静默是设计：不给每次 boot 加噪音 |
-| 导入期 · 超出 `peerDependencies` 范围 | 一条 `[dsh-prompt-setting] 本插件 <版本> 检测到 DSH <版本>，超出已测试范围 …` | 只警告、**绝不抛**，boot 继续 |
+| 导入期 · 超出 `peerDependencies` 范围 | **在这台平台上轮不到我们**：平台先跳过整个 bundle 并点名（逐字见下），本包根本不会被 import。若你看到的是我们那条 `[dsh-prompt-setting] 本插件 <版本> … 超出已测试范围 …`，说明平台的这道闸门没生效（更老的/改过的宿主） | 两条都是「只警告、绝不抛、boot 继续」；我们保留自己的分支作为**兜底/防御纵深**，但它**不是** 0.1.7-rc.2 上的实际观察 |
 | 导入期 · 探测不到 DSH 版本 | 一条 `… 无法探测已安装的 DSH 版本（期望范围 …）：探测结果：<原因>。…` | 同上；范围内的判定逻辑与消息在 `core/compat.js`，可离线单测 |
 | `apply` 失败（服务方法改名/缺失、方法抛错、返回形状不符…） | 一条 `… 挂载失败，本插件已停用，DSH 其余功能不受影响。检测到的 DSH：… 首因：… 已撤销 N 项已注册 effect，不会留下半挂载。…` | 先撤销本次已注册的 effect（**不留半挂载**）再打印；**同时**写终端（`stderr`）与 `ctx.logger.error`；**不把异常抛回 loader** |
 | 客户端半加载失败（`require('react')` 失败、指纹逻辑异常…） | 一条 `… 客户端半加载失败：设置页将以降级提示卡呈现…` | `console.error` 一条，**不抛回 loader**；能用 React 就注册降级卡片，连 React 都没有就什么都不注册；渲染期失败仍走既有 `renderFailureCard` |

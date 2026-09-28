@@ -146,6 +146,14 @@ function reportFailureForms() {
   say('④ apply 期抛错——DSH 仍启动：');
   say('     <id> (<name>): Error: <message>');
   say('     …完整堆栈（含 #<id> 与 #include 帧），**没有任何指引**');
+  say('⑤ 平台自己的 bundle 兼容性闸门（**比本插件更早**，主管 2026-09-29 实测）——DSH 仍启动：');
+  say('     dsh: skipping profile bundle "<name>": Error: Plugin <name>@<ver> is incompatible with dsh <ver>:');
+  say('     peerDependencies {"@deepseek-ai/dsh":"<range>"}. Running it may cause crashes and data loss. …');
+  say('     dsh web: http://127.0.0.1:<port>/?token=…');
+  say('   判定：profile 的 dsh.profile.bundles 里这一条被整条跳过、终端点名 ⇒ 本包**没有被 import**，');
+  say('         连我们的导入期自检都不会跑（所以「超范围」时看到的是它，不是我们的那条）。');
+  say('         安装期（dsh plugin add / plugin manager）用同一套检查，会拒绝并给出 `dsh plugin allow-version` 豁免指引。');
+  say('');
   say('   判定：本插件 0.1.x 起 apply 全程自带 try/catch，失败会先撤销已注册的 effect，');
   say('         再打印一条 [dsh-prompt-setting] …挂载失败… 的可读信息，不再出现本插件的裸堆栈。');
 }
@@ -199,7 +207,10 @@ function reportOwnMessages(compat, plugin) {
     pluginVersion: plugin.version,
     expectedRange: plugin.range ?? '（manifest 未声明）',
   };
-  say('导入期 · 超范围（一条）：');
+  say('导入期 · 超范围（一条）—— ⚠️ 在 DSH 0.1.7-rc.2 上**轮不到它**：');
+  say('  平台会先跳过整个 bundle 并点名（逐字签名：`dsh: skipping profile bundle "<name>": Error: Plugin');
+  say('  <name>@<ver> is incompatible with dsh <ver>: peerDependencies …`），本包根本不会被 import；');
+  say('  看到下面这条，才说明平台的闸门没生效（更老的/改过的宿主）。保留它是兜底/防御纵深：');
   say(`  ${compat.compatibilityMessage({ ...base, version: '0.2.0', reason: null })}`);
   say('');
   say('导入期 · 探测失败（一条）：');

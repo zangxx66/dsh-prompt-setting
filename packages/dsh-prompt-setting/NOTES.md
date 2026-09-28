@@ -2618,6 +2618,43 @@ patch 至少组合到了本插件这一行）。所以「范围内静默 / 超�
 > 更正：本 attempt 的 brief 早先写「import 失败时终端只有一坨堆栈」**不准确**——平台有汇总行 +
 > `<id> (<name>): failed to import`。上面的表是修正后的版本。
 
+**形态④ 的真机可复现触发（主管 2026-09-29 实测；本文档承诺的文案被逐字命中）**：临时 profile 里**先**装一个
+抢占 `/prompt-setting` 前缀的插件、**再**装本包（`webServer.register()` 对重复前缀直接抛），启动 12 秒抓终端：
+
+```text
+[dsh-prompt-setting] 插件 0.1.0 挂载失败，本插件已停用，DSH 其余功能不受影响。检测到的 DSH：0.1.7-rc.2。首因：webserver: duplicate prefix route "/prompt-setting"。已撤销 0 项已注册 effect，不会留下半挂载。排查与救援见 README「兼容性与救援」。
+dsh web: http://127.0.0.1:3086/?token=…
+```
+
+- 「已撤销 0 项」是对的：路由是**第一个**注册项、它自己就抛了，此时没有已注册的 effect 需要回滚；而监听器
+  因为在路由**之后**注册，所以**从未挂上**（这正是第五节把路由放在前面的理由之一）。**DSH 照常启动**。
+- 同一批实测的第三项（范围内正常加载）终端里**没有任何 `[dsh-prompt-setting]` 行** ⇒ 静默分支也真机通过。
+
+### 二之补、平台自己还有一道**更早**的闸门：bundle 兼容性（第五条签名，改写了「超范围」分支的表述）
+
+同一批实测还抓到一条本 attempt 早先没记录的签名：**平台在 boot 期读 profile 的 `dsh.profile.bundles` 时，
+就对每个 bundle 跑一次 peer 兼容性检查；不通过就整条跳过并点名**：
+
+```text
+dsh: skipping profile bundle "dsh-prompt-setting": Error: Plugin dsh-prompt-setting@0.1.0 is incompatible with dsh 0.1.7-rc.2: peerDependencies {"@deepseek-ai/dsh":">=9.0.0"}. Running it may cause crashes and data loss. … To accept this risk explicitly, grant the exact-version exemption …
+dsh web: http://127.0.0.1:3087/?token=…
+```
+
+（`…` 是抓取时的省略。）DSH 仍然正常启动，只是本插件被整条跳过。源码位置：`@deepseek-ai/dsh-app-boot/lib/index.js`
+`loadProfileDirectory()` `:919-953`（`evaluatePluginCompatibility()` 不通过 ⇒ `throw` ⇒ 收进 `skippedBundles`，
+该 bundle 的 patch 层**根本不加载**）、消息模板 `pluginCompatibilityWarning()` `:322`、
+输出 `reportSkippedBundles()` `:516`（`process.stderr.write`）。
+
+**两条必须写下来的结论**：
+
+1. **我们的导入期「超范围」警告在 DSH 0.1.7-rc.2 上被抢占、不可观测**：该检查发生在
+   `mountRootInclude()`（`:4082`，真正开始 import 插件的地方）**之前**，本包**根本不会被 import**，
+   于是 `BOOT_COMPAT` 那次探测连同它的警告一起不会发生。⇒ 文档、自检脚本与本节表述一律以**平台签名**为准；
+   我们那条只作为「未来平台若撤掉此检查」的**兜底/防御纵深**保留（判定逻辑、`apply` 防护、stderr 通道一律不动）。
+2. **安装期也有同一套检查**：`dsh plugin add` / plugin manager 在**安装时**就拒绝不兼容版本，并给出
+   `dsh plugin allow-version`（或 plugin manager）的 exact-version 豁免指引 —— 也就是说「DSH 升到插件不支持的
+   版本」这件事，平台在**装之前**和**启之前**各拦一次，比插件内自救更早。
+
 ### 三、主管实测：坏插件对 web UI 的**功能级**影响（同一套功能探针，三个临时实例对照）
 
 | 实例 | shell | UI 挂载点 | boot 清单条目 | 唯一核心客户端模块 | 首个 bundle |
@@ -2659,7 +2696,7 @@ patch 至少组合到了本插件这一行）。所以「范围内静默 / 超�
 | 文件 | 落点 |
 | --- | --- |
 | `core/compat.js`（新增） | 纯函数：semver 解析/比较（含 §11 预发布规则）、范围判定（不支持的语法 ⇒ `null`「无法判断」）、三分支文案、`apply` 失败文案；best-effort 探测 `detectDshVersion`（多锚点、绝不抛） |
-| `index.js` 顶层 | `reportBootCompatibility()` + `BOOT_COMPAT`：导入期自检，**范围内静默**，超范围/探测失败各一条 `console.warn`；探测与 logger 都各自 guarded，外层再包一层 ⇒ **绝不抛**。`DSH_PEER_RANGE` 从自己的 `package.json` 读（读不到回退到常量，测试断言两者相等） |
+| `index.js` 顶层 | `reportBootCompatibility()` + `BOOT_COMPAT`：导入期自检，**范围内静默**，超范围/探测失败各一条 `console.warn`（**超范围那条在 0.1.7-rc.2 上被平台闸门抢占、观测不到，见二之补**）；探测与 logger 都各自 guarded，外层再包一层 ⇒ **绝不抛**。`DSH_PEER_RANGE` 从自己的 `package.json` 读（读不到回退到常量，测试断言两者相等） |
 | `index.js` `apply` | `apply(ctx, config)` 只做一件事：`try { mount(...) } catch { reportMountFailure(...) }`。`mount` 是原来的正文；两处注册改为 `registerEffect(ctx, cleanups, factory, label)`（登记 disposer + 校验返回值），路由注册用 `disposerOf()` 校验服务返回的是不是 disposer。失败信息**同时**写终端与 `ctx.logger.error`（理由见六） |
 | `index.js` 注册顺序 | **路由先、waterfall 监听器后**（原来相反）。理由两条：最可能的真实失败是 `webServer.register()` 拒绝重复前缀（二次安装/未来宿主占用该前缀），先注册路由 ⇒ 该失败发生在**什么都没挂**时；同时让「路由已 live、下一步失败」成为可被测试钉死的半挂载场景。两者都在 `mount` 返回前**同步**挂好，任何请求与装配都观察不到顺序（既有断言只看数量与 `listeners[0]`，已复跑 328 条全绿） |
 | `client.js` | 指纹区之后加一道 guard：`try { return buildPlugin(require) } catch { return degradedPlugin(require, error) }`；原正文整体移入 `buildPlugin`（**刻意不缩进**：6k 行重排等于 6k 行 diff、零行为变化，且指纹区正是这段文本）；`degradedPlugin` 打印一条 `console.error`，能拿到 React 就注册降级卡片（保留 `data-plugin`/`data-render-state` 标记），连 React 都没有就返回 `{inject: [], apply(){}}`（什么都不注册）。渲染期仍走既有 `renderFailureCard` |
@@ -2785,8 +2822,10 @@ evidence: fingerprint 3aadadf=42061a2a/260711 -> now=0c098c88/265425
 
 ### 十三、未验证项 / 交给主管（诚实清单）
 
-- **临时 profile 真机实测不由本 attempt 执行**（需要特权，且禁改 profile）：二、三节的两张表是主管已跑的实测；
-  本 attempt 只提供「预期终端输出原文」供逐字比对（见交付说明）。
+- **真机临时 profile 实测由主管执行**（本 attempt 无特权、且禁改 profile）：三节的功能级对照与二之补的平台签名
+  都是主管实测；二节形态④ 的触发方式（抢前缀插件）已真机验证可用，且终端输出与本文档承诺的文案**逐字一致**。
+  **仍未被真机观测到的**：我们自己的「导入期 · 超范围」与「导入期 · 探测失败」两条警告（前者被平台抢占，后者需要
+  构造一个解析不到 DSH 的真机环境）——它们的证据是单测 + `test/boot.test.mjs` 的三分支断言，不是真机截图。
 - **运行中 `dsh web` 进程的 `argv[1]` 究竟是不是 `…/@deepseek-ai/dsh/lib/bin.js` 未直接验证**
   （本机 `ps` 被沙箱拒绝）。锚点 4 是按 pnpm 布局与 `dsh` 启动 shim 的源码推出的，并已用「把该路径当
   `argv[1]`」的方式验证过解析成功；真机 boot 下若锚点 4 失效，会退到锚点 5（全局 store 扫描），
