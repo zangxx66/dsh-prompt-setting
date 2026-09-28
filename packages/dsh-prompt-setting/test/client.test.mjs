@@ -134,15 +134,24 @@ function loadClient(primitives) {
   vm.createContext(sandbox);
   vm.runInContext(clientSource, sandbox, { filename: 'client.js' });
   assert.ok(descriptor, 'client.js must register a lazy factory');
+  const atoms = {
+    Button: () => null,
+    Input: () => null,
+    Tag: () => null,
+    SegmentedTabs: () => null,
+  };
   const primitivesModule =
     primitives === 'ok'
-      ? {
-          Button: () => null,
-          Input: () => null,
-          Tag: () => null,
-          SegmentedTabs: () => null,
-        }
-      : null;
+      ? atoms
+      : // 'icons' = the same module plus the sidebar's own icon components.
+        primitives === 'icons'
+        ? {
+            ...atoms,
+            IconFolderOpenRegular: () => null,
+            IconFolderCloseRegular: () => null,
+            IconTriangleRightFillRegular: () => null,
+          }
+        : null;
   const module = descriptor.factory((name) => {
     if (name === 'react') return runtime.React;
     if (name === '@deepseek-ai/dsh-client-ui-primitives') {
@@ -598,9 +607,16 @@ function fillText(template, params) {
   return String(template).replace(/\{(\w+)\}/g, (match, key) => (params[key] === undefined ? match : String(params[key])));
 }
 
-/** Every rendered session option row. */
+/**
+ * Every rendered session row: the flat (degraded) list marks rows
+ * `session-option`, the workspace tree marks them `session-row`.
+ */
 function sessionOptions(tree) {
-  return collect(tree, (node) => node.props && node.props['data-role'] === 'session-option');
+  return collect(
+    tree,
+    (node) =>
+      node.props && (node.props['data-role'] === 'session-option' || node.props['data-role'] === 'session-row'),
+  );
 }
 
 // #endregion
@@ -760,10 +776,10 @@ test('client: the session selector defaults to the current view session', async 
   const options = sessionOptions(tree);
   assert.equal(options.length, 2, 'both sessions are rendered at this size');
   assert.ok(
-    options.some((option) => option.props['data-session-id'] === 's1' && String(option.props.children).includes('First')),
+    options.some((option) => option.props['data-session-id'] === 's1' && strings(option).some((text) => text.includes('First'))),
   );
   assert.ok(
-    options.some((option) => option.props['data-session-id'] === 's2' && String(option.props.children).includes('Second')),
+    options.some((option) => option.props['data-session-id'] === 's2' && strings(option).some((text) => text.includes('Second'))),
     'the session row renders its title and path',
   );
   assert.ok(hasText(oneBy(tree, 'data-role', 'session-current'), 'Second'), 'the selection is named');
@@ -1062,9 +1078,24 @@ function scopeRowIds(tree) {
   return sessionOptions(tree).map((node) => node.props['data-session-id']);
 }
 
-/** One group's toggle button. */
-function scopeToggle(tree, key) {
+/** One group's interactive header row (the whole row toggles). */
+function scopeHeader(tree, key) {
+  return oneBy(tree, 'data-scope-group', key);
+}
+
+/** One group's folder-glyph column (a second pointer target for the same toggle). */
+function scopeIcon(tree, key) {
   return oneBy(tree, 'data-scope-toggle', key);
+}
+
+/** Click a non-button node the way a pointer would. */
+function clickNode(node, event = {}) {
+  node.props.onClick(event);
+}
+
+/** Fire one keyboard event at a node. */
+function pressKey(node, key) {
+  node.props.onKeyDown({ key, preventDefault() {} });
 }
 
 test('client: the scope picker groups sessions by workspace, like the sidebar', async () => {
@@ -1088,10 +1119,11 @@ test('client: the scope picker groups sessions by workspace, like the sidebar', 
   assert.ok(hasText(tree, '/work/alpha'), 'the workspace path is a subtitle');
   // Default expansion: the workspace holding the current view session, others shut.
   assert.deepEqual(
-    scopeGroupNodes(tree).map((node) => node.props['data-scope-expanded']),
+    scopeGroupNodes(tree).map((node) => node.props['data-expanded']),
     ['true', 'false', 'false'],
   );
   assert.equal(scopeGroupNodes(tree)[0].props['data-scope-contains-current'], 'true');
+  assert.equal(scopeGroupNodes(tree)[0].props['aria-expanded'], true, 'aria-expanded mirrors data-expanded');
   // Recency order (`updatedAt` desc), with the pinned row fronted — the
   // sidebar's own `sectionMembers` partition — and the archived row hidden.
   assert.deepEqual(scopeRowIds(tree), ['a2', 'a1', 'a3']);
@@ -1133,7 +1165,7 @@ test('client: the scope tree keeps the ancestor workspace of every search match'
   typeInto(tree, 'session-search', 'Beta one');
   tree = await page.flush();
   assert.deepEqual(scopeGroupKeys(tree), ['w-beta']);
-  assert.equal(scopeGroupNodes(tree)[0].props['data-scope-expanded'], 'true', 'the match is visible');
+  assert.equal(scopeGroupNodes(tree)[0].props['data-expanded'], 'true', 'the match is visible');
   assert.deepEqual(scopeRowIds(tree), ['b1']);
   assert.equal(oneBy(tree, 'data-session-shown', '1').props['data-session-matched'], '1');
 
@@ -1174,12 +1206,10 @@ test('client: a workspace group folds, unfolds, and pages its rows in', async ()
   let tree = await page.flush();
   assert.deepEqual(scopeRowIds(tree).filter((id) => id === 'b1'), [], 'w-beta starts folded');
 
-  clickButton(tree, { 'data-action': 'scope-toggle', 'data-scope-toggle': 'w-beta' });
+  // The glyph column toggles too, and stops the bubble so one click is one flip.
+  clickNode(scopeIcon(tree, 'w-beta'), { stopPropagation() {} });
   tree = await page.flush();
-  assert.equal(
-    scopeGroupNodes(tree).find((node) => node.props['data-scope-group'] === 'w-beta').props['data-scope-expanded'],
-    'true',
-  );
+  assert.equal(scopeHeader(tree, 'w-beta').props['data-expanded'], 'true');
   assert.ok(scopeRowIds(tree).includes('b1'), 'the folded group now shows its session');
   // The initial page is a page, not the whole group: a 25-session workspace
   // renders 10 rows plus an explicit "show more".
@@ -1200,7 +1230,7 @@ test('client: a workspace group folds, unfolds, and pages its rows in', async ()
   assert.equal(scopeRowIds(bigTree).length, SCOPE_GROUP_PAGE * 2, 'one click adds exactly one page');
   assert.equal(oneBy(bigTree, 'data-scope-more', 'w-1').props['data-scope-more'], 'w-1');
 
-  clickButton(tree, { 'data-action': 'scope-toggle', 'data-scope-toggle': 'w-beta' });
+  clickNode(scopeHeader(tree, 'w-beta'));
   tree = await page.flush();
   assert.ok(!scopeRowIds(tree).includes('b1'), 'folding it again drops the row');
 });
@@ -1289,6 +1319,207 @@ test('client: a missing useWorkspaces degrades to the flat searchable list', asy
   assert.deepEqual(scopeRowIds(tree), ['a1', 'a3', 'a2', 'b1', 'b2', 'loose']);
   assert.equal(oneBy(tree, 'data-session-shown', '6').props['data-session-total'], '6');
   assert.equal(oneBy(tree, 'data-session-shown', '6').props['data-session-matched'], '6');
+});
+
+test('client: every workspace node advertises and toggles its expansion state', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  let tree = await page.flush();
+
+  // Every group header is a control whose state is visible in attributes *and*
+  // in the glyph — the sidebar's affordance, not a line of static text.
+  const headers = collect(tree, (node) => node.props && node.props['data-role'] === 'group-toggle');
+  assert.equal(headers.length, 3, 'one toggle per rendered group');
+  for (const header of headers) {
+    const open = header.props['data-expanded'] === 'true';
+    assert.equal(typeof header.props.onClick, 'function', 'the whole row is clickable');
+    assert.equal(typeof header.props.onKeyDown, 'function', 'the row is keyboard operable');
+    assert.equal(header.props.tabIndex, 0, 'the row is in the tab order');
+    assert.equal(header.props['aria-expanded'], open, 'aria-expanded mirrors data-expanded');
+    assert.equal(header.props.style.cursor, 'pointer');
+    assert.ok(header.props['aria-label'], 'the row announces what it does');
+
+    const key = header.props['data-scope-group'];
+    const icon = scopeIcon(tree, key);
+    assert.equal(icon.props['data-role'], 'scope-folder-icon', 'the glyph column is a pointer target');
+    assert.equal(typeof icon.props.onClick, 'function');
+    assert.equal(icon.props['data-icon-state'], open ? 'open' : 'closed');
+    assert.ok(['inline', 'primitives'].includes(icon.props['data-icon-source']));
+    const glyph = collect(icon, (node) => node.props && node.props['data-role'] === 'scope-folder-glyph');
+    assert.equal(glyph.length, 1, 'a folder glyph is actually drawn');
+    const caret = collect(header, (node) => node.props && node.props['data-role'] === 'scope-caret');
+    assert.equal(caret.length, 1, 'one caret per header');
+    assert.equal(caret[0].props['data-caret-open'], String(open), 'the caret reflects the same state');
+  }
+
+  // Hover and keyboard focus are visible and machine-checkable.
+  scopeHeader(tree, 'w-beta').props.onMouseEnter();
+  tree = await page.flush();
+  assert.equal(scopeHeader(tree, 'w-beta').props['data-hover'], 'true');
+  assert.notEqual(scopeHeader(tree, 'w-beta').props.style.background, 'transparent', 'hover changes the fill');
+  scopeHeader(tree, 'w-beta').props.onFocus({ target: { matches: () => true } });
+  tree = await page.flush();
+  assert.equal(scopeHeader(tree, 'w-beta').props['data-focus'], 'true');
+  assert.match(String(scopeHeader(tree, 'w-beta').props.style.outline), /focus-ring/, 'the shell ring is reused');
+  scopeHeader(tree, 'w-beta').props.onMouseLeave();
+  scopeHeader(tree, 'w-beta').props.onBlur();
+  tree = await page.flush();
+  assert.equal(scopeHeader(tree, 'w-beta').props['data-hover'], 'false');
+  assert.equal(scopeHeader(tree, 'w-beta').props['data-focus'], 'false');
+  assert.equal(scopeHeader(tree, 'w-beta').props.style.background, 'transparent');
+
+  // Keyboard parity: Enter and Space flip exactly what a click flips.
+  const rowsBefore = scopeRowIds(tree).length;
+  pressKey(scopeHeader(tree, 'w-beta'), 'Enter');
+  tree = await page.flush();
+  assert.equal(scopeHeader(tree, 'w-beta').props['data-expanded'], 'true', 'Enter expands');
+  assert.ok(scopeRowIds(tree).length > rowsBefore, 'and the group now shows rows');
+  pressKey(scopeHeader(tree, 'w-beta'), ' ');
+  tree = await page.flush();
+  assert.equal(scopeHeader(tree, 'w-beta').props['data-expanded'], 'false', 'Space collapses');
+  pressKey(scopeHeader(tree, 'w-beta'), 'Tab');
+  tree = await page.flush();
+  assert.equal(scopeHeader(tree, 'w-beta').props['data-expanded'], 'false', 'other keys are ignored');
+
+  // Row click and glyph click are two targets of one toggle, never two toggles.
+  clickNode(scopeHeader(tree, 'w-beta'));
+  tree = await page.flush();
+  assert.equal(scopeHeader(tree, 'w-beta').props['data-expanded'], 'true');
+  assert.ok(scopeRowIds(tree).length <= SCOPE_RENDER_CAP, 'still inside the render cap');
+  clickNode(scopeIcon(tree, 'w-beta'), { stopPropagation() {} });
+  tree = await page.flush();
+  assert.equal(scopeHeader(tree, 'w-beta').props['data-expanded'], 'false', 'the glyph column toggles too');
+  assert.equal(scopeRowIds(tree).length, rowsBefore, 'exactly one flip per click');
+});
+
+test('client: the folder glyph is the sidebar artwork in both renderer branches', async () => {
+  // Fallback: no primitives module at all ⇒ the same geometry is inlined.
+  const inline = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  const inlineTree = await inline.flush();
+  const inlineIcon = scopeIcon(inlineTree, 'w-alpha');
+  assert.equal(inlineIcon.props['data-icon-source'], 'inline');
+  const inlineGlyph = collect(inlineIcon, (node) => node.props && node.props['data-role'] === 'scope-folder-glyph')[0];
+  assert.equal(inlineGlyph.type, 'svg', 'drawn with createElement, no dependency');
+  assert.equal(inlineGlyph.props.viewBox, '0 0 16 16');
+  const inlinePaths = collect(inlineGlyph, (node) => node.type === 'path');
+  // The open-folder artwork copied from the primitives package (NOTES §54).
+  assert.equal(inlinePaths.length, 3, 'the open glyph keeps all three paths');
+  assert.ok(String(inlinePaths[0].props.d).startsWith('M2.55912 7.93683'), 'geometry is copied, not invented');
+  assert.equal(inlinePaths[0].props.fill, 'currentColor');
+  assert.equal(inlinePaths[0].props.opacity, '0.16', 'the shell keeps the shaded side');
+
+  // Primitives: when the module really exposes the icons, they are reused.
+  const prim = makePage({
+    primitives: 'icons',
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  const primTree = await prim.flush();
+  assert.equal(rendererOf(primTree), 'primitives');
+  assert.equal(scopeIcon(primTree, 'w-alpha').props['data-icon-source'], 'primitives');
+});
+
+test('client: the selected session and the pinned scope carry an explicit selected mark', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  let tree = await page.flush();
+
+  // The scope defaults to the retained session a3: its row is marked by a bar
+  // and a tick, not by text alone.
+  const selectedRows = collect(
+    tree,
+    (node) => node.props && node.props['data-role'] === 'session-row' && node.props['data-selected'] === 'true',
+  );
+  assert.equal(selectedRows.length, 1, 'exactly one session row is selected');
+  assert.equal(selectedRows[0].props['data-session-id'], 'a3');
+  assert.equal(selectedRows[0].props['aria-selected'], true);
+  assert.match(String(selectedRows[0].props.style.boxShadow), /inset 3px 0 0 0/, 'a colour bar marks the row');
+  assert.equal(
+    collect(selectedRows[0], (node) => node.props && node.props['data-role'] === 'session-selected-mark').length,
+    1,
+    'and a tick',
+  );
+
+  // Session rows are hoverable too.
+  sessionOptions(tree).find((row) => row.props['data-session-id'] === 'a1').props.onMouseEnter();
+  tree = await page.flush();
+  assert.equal(
+    sessionOptions(tree).find((row) => row.props['data-session-id'] === 'a1').props['data-hover'],
+    'true',
+  );
+  assert.notEqual(
+    sessionOptions(tree).find((row) => row.props['data-session-id'] === 'a1').props.style.background,
+    'transparent',
+  );
+
+  // Both pinned entries are real controls with a selected state.
+  const pinned = collect(tree, (node) => node.props && node.props['data-role'] === 'pinned-option');
+  assert.equal(pinned.length, 2, 'global + current view session');
+  for (const entry of pinned) {
+    assert.equal(entry.type, 'button');
+    assert.equal(typeof entry.props.onClick, 'function');
+    assert.equal(entry.props['data-selected'], entry.props['data-pinned-active']);
+  }
+  const currentPin = pinned.find((entry) => entry.props['data-pinned'] === 'current');
+  assert.equal(currentPin.props['data-selected'], 'true');
+  assert.equal(
+    collect(currentPin, (node) => node.props && node.props['data-role'] === 'pinned-selected-mark').length,
+    1,
+    'the active pinned entry is ticked',
+  );
+  const globalPin = pinned.find((entry) => entry.props['data-pinned'] === 'global');
+  assert.equal(globalPin.props['data-selected'], 'false');
+  globalPin.props.onMouseEnter();
+  tree = await page.flush();
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-role'] === 'pinned-option').find(
+      (entry) => entry.props['data-pinned'] === 'global',
+    ).props['data-hover'],
+    'true',
+  );
+
+  // Choosing the global scope moves the mark off every session row.
+  clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-session'), 'global');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-role'] === 'session-row' && node.props['data-selected'] === 'true')
+      .length,
+    0,
+    'no session row claims the selection while the global scope is active',
+  );
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-role'] === 'pinned-option').find(
+      (entry) => entry.props['data-pinned'] === 'global',
+    ).props['data-selected'],
+    'true',
+  );
+
+  // The flat (degraded) list keeps the same guarantees.
+  const flat = makePage({ useSessions: sessionsHook(SESSIONS_STATE), responses: defaultResponses() });
+  const flatTree = await flat.flush();
+  const flatSelected = collect(
+    flatTree,
+    (node) => node.props && node.props['data-role'] === 'session-option' && node.props['data-selected'] === 'true',
+  );
+  assert.equal(flatSelected.length, 1);
+  assert.equal(flatSelected[0].props['data-session-id'], 's2');
+  assert.equal(
+    collect(flatSelected[0], (node) => node.props && node.props['data-role'] === 'session-selected-mark').length,
+    1,
+  );
+  assert.equal(typeof sessionOptions(flatTree)[0].props.onMouseEnter, 'function', 'flat rows hover as well');
 });
 
 // #endregion

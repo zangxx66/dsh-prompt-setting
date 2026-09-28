@@ -1224,7 +1224,7 @@ evidence: suite=all    passed=164 failed=0 exit=0 ms=2194 diff=3f/+1309/-81 comm
 
 四条都是「单独改坏 ⇒ 对应用例变红 ⇒ `cp` 还原 ⇒ 全量 164 项重新全绿」，无跨用例连锁。
 
-## 53. 未验证项（本轮，诚实清单）
+## 53. 未验证项（第三轮，诚实清单）
 
 1. **真机目视**：树形分组的实际观感（缩进/箭头/路径副标题/运行中圆点）、展开折叠手感、
    以及与左侧边栏「并排看是否真的一致」，都需负责人真机确认。离线探针只能证明结构与标记。
@@ -1235,3 +1235,95 @@ evidence: suite=all    passed=164 failed=0 exit=0 ms=2194 diff=3f/+1309/-81 comm
 4. `default-workspace` 的本地化名字：`dsh-client-ui-workspace` 字典里查不到 `workspace.defaultName` 条目，
    本轮按语义自备「默认工作区 / Default workspace」。若真机上侧边栏显示的是别的文案，则此项不一致（低风险，
    仅影响默认工作区这一个节点的标签）。
+
+# 阶段一 C · 第四轮复核修复（g-004 att-002 返工）：工作区节点的可发现性
+
+反馈（负责人）：
+
+> 「从视觉上看很难知道哪里是可交互的地方，左侧工作区部分每个工作区名称之前都有一个文件夹的图标，
+> 那一列都是可交互的（折叠/展开）。」
+
+这不是美化问题：树形控件的价值全在「展开状态可见 + 交互目标明确」两件事上。上一轮的分组头看起来像
+静态文本，于是「默认只展开当前组」反而变成困惑。本轮按侧边栏的做法补齐 affordance，**结构/排序/
+有界/降级全部不变**（167 项全绿：客户端 55 + 其余 112）。只改 `client.js` + `test/client.test.mjs` + 本节。
+
+## 54. 图标来源与取舍（先读源码，可复用则复用）
+
+| 事实 | 证据（DSH 0.1.7-rc.2 安装包内） |
+| --- | --- |
+| 侧边栏工作区行用的是 primitives 的图标组件：展开 `IconFolderOpenRegular`、折叠 `IconFolderCloseRegular`；折叠指示用 `IconTriangleRightFillRegular`（`arrowOpen` 时旋转 90°） | `dsh-client-ui-workspace/lib/client.js:1290-1304`（`Rows` 的 projectRow 渲染）、`:1058`（`Rows.module.css`：`.arrowOpen{transform:rotate(90deg)}`） |
+| 这些图标**确实在 primitives 的公开导出里** | `dsh-client-ui-primitives/lib/index.js:12181`（export 列表含 `IconFolderOpenRegular` / `IconFolderCloseRegular` / `IconTriangleRightFillRegular`） |
+| 展开态是**填充**几何（3 条 path，首条 `opacity:0.16`），折叠态是**描边**几何（2 条 path，`stroke:currentColor`，`strokeWidth:1`），画布 `0 0 16 16`，默认尺寸 16 | 同文件 `IconFolderOpenArtwork`、`FolderCloseArtwork`、`IconTriangleRightFillArtwork` |
+
+**取舍**：两条渲染分支都要能用（g-002 起就遵守的硬规则），所以
+
+- `ICON_SOURCE = 'primitives'`：primitives 模块真的导出了这三个图标组件 ⇒ **直接复用**它们（与侧边栏同一个组件、同一份几何）；
+- 否则 `ICON_SOURCE = 'inline'`：把**同一份路径数据逐字节内联**成 `React.createElement('svg', …)`
+  （`FOLDER_OPEN_PATHS` / `FOLDER_CLOSE_PATHS` / `CARET_PATH`，来源即上表两处 artwork）。两条分支视觉一致，
+  **没有新增依赖、没有 require 包内部路径、没有装 npm 图标包**。
+- 诚实说明：primitives 的图标组件只解构 `{size, className, strokeWidth}`，**不会把未知 props 透传到 `<svg>`**，
+  所以 `data-role="scope-folder-glyph"` 这个「确实画了图标」的机器标记只在 inline 分支出现；两条分支都稳定的
+  标记是外层 span 的 `data-role="scope-folder-icon"` + `data-icon-state` + `data-icon-source`。
+
+## 55. 可交互线索清单（对齐侧边栏，且都能机器核验）
+
+| 元素 | 线索 | 标记/样式 |
+| --- | --- | --- |
+| 工作区分组头（整行） | 整行可点：`cursor:pointer`、hover 换填色、焦点环、`tabIndex=0`、Enter/Space 切换、`aria-expanded` | `data-role="group-toggle"` `data-scope-group` `data-expanded` `data-hover` `data-focus` `aria-expanded` `aria-label`；hover 用侧边栏同款 `--dsw-alias-interactive-bg-hover` |
+| 文件夹图标列 | **与整行同一个 toggle 的第二个指针目标**（点击时 `stopPropagation`，保证「一次点击=一次翻转」），图标形态=展开态（开/合） | `data-role="scope-folder-icon"` `data-icon-state="open\|closed"` `data-icon-source="primitives\|inline"` `data-scope-toggle` |
+| 展开指示（caret） | 与图标一起给出「可折叠」的形状线索；展开时旋转 90° | `data-role="scope-caret"` `data-caret-open` |
+| 会话行 | hover 填色、焦点环、命中态；**选中态不只靠文字**：左侧色条（`inset 3px 0 0 0`）+ ✓ 标记 | `data-role="session-row"` `data-selected` `data-hover` `data-focus` `aria-selected`；`data-role="session-selected-mark"` |
+| 置顶「全局」/「当前视图会话」 | 描边药丸 + hover 填色 + 选中态（实心 + ✓） | `data-role="pinned-option"` `data-selected` `data-hover` `data-focus`；`data-role="pinned-selected-mark"` |
+| 焦点环 | 直接用全产品统一的那一个，不自造：`outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary))`，`outline-offset:-2px` | `data-focus="true"` + `style.outline` |
+| 平铺（降级）列表 | 与树形同样给 hover/选中态（同一套 `scopeRowStyle`），`data-role` 仍是 `session-option` | `data-selected` `data-hover` `data-focus` |
+
+**标记改名（相对 §49）**：分组头原来的 `data-scope-expanded` 统一为复核要求的 **`data-expanded`**（值不变，
+`aria-expanded` 必须与它一致，并有断言守着）；`data-scope-group`（key）、`data-scope-toggle`（图标列）、
+`data-scope-more`、`data-scope-parent` 全部保留。旧的内层 `<button data-action="scope-toggle">` 已移除：
+整行就是那个控件（避免「嵌套可点元素」）。会话行在树里是 `data-role="session-row"`，平铺列表仍是
+`data-role="session-option"`（既有 47 项断言依赖它）。
+
+**hover/焦点为什么用 state 而不是 CSS**：本插件零构建、不注入样式表，`:hover`/`:focus-visible` 无法内联表达；
+因此 hover/焦点走 `onMouseEnter/onMouseLeave/onFocus/onBlur` + 页面级单槽 state（同一时刻只有一个 hover/焦点），
+并把状态镜像成 `data-hover`/`data-focus` —— 这样「有没有视觉反馈」也变成可自动断言的事实。
+焦点环只在 `:focus-visible` 成立时画（`event.target.matches(':focus-visible')`，拿不到或抛错时按「画」处理，失败方向安全）。
+
+## 56. 本轮新增测试（52 → 55）与证据
+
+| 测试 | 断言 |
+| --- | --- |
+| `the scope picker groups sessions by workspace, like the sidebar`（改写） | 增加：`aria-expanded` 与 `data-expanded` 一致 |
+| `every workspace node advertises and toggles its expansion state`（新） | 每个分组头都有 `data-role="group-toggle"`、`tabIndex=0`、onClick+onKeyDown、`aria-label`、`cursor:pointer`、`aria-expanded === data-expanded`；图标列是第二个指针目标且 `data-icon-state` 与展开态一致、caret 同态；hover 换填色、焦点环是产品同款、移出/失焦复位；**Enter / Space 各翻转一次**、其它键不动；点整行翻转、点图标列翻转，且**一次点击只翻转一次**（行数复原）；全程行数 ≤ 上界 |
+| `the folder glyph is the sidebar artwork in both renderer branches`（新） | inline 分支：`<svg viewBox="0 0 16 16">` + 3 条 path、`d` 以 `M2.55912 7.93683` 开头（= primitives 原文）、`fill:currentColor`、`opacity:0.16`；primitives 分支（`primitives:'icons'` 桩）：`data-icon-source="primitives"` 且 `data-renderer="primitives"` |
+| `the selected session and the pinned scope carry an explicit selected mark`（新） | 默认作用域会话行唯一 `data-selected="true"` + `aria-selected` + 左侧色条 + ✓ 标记；会话行 hover 生效；置顶两项都是 button、有 onClick、`data-selected === data-pinned-active`、活动项有 ✓；切「全局」后没有任何会话行声称选中、置顶项接管选中态；平铺降级列表同样有选中标记与 hover |
+
+```
+evidence: suite=client passed=55 failed=0 exit=0 ms=2263 diff=2f/+657/-75 commit=PENDING
+evidence: suite=all    passed=167 failed=0 exit=0 ms=2419 diff=2f/+657/-75 commit=PENDING
+```
+
+规模实测复跑（行数上界不受交互改动影响）：200/1ws 默认10·搜索10·2.1ms；200/4ws 10·40·2.4ms；
+500/1ws 10·10·2.6ms；500/5ws 10·50·2.8ms；2000/1ws 10·10·4.5ms；2000/20ws 10·**100（触顶）**·2.9ms。
+
+## 57. 负向对照（本轮，逐条单独改坏 ⇒ 对应用例变红 ⇒ 还原 ⇒ 全量重跑）
+
+| # | 改坏点 | 变红 |
+| --- | --- | --- |
+| NC14 | 去掉分组头的 `data-role="group-toggle"` | `every workspace node advertises and toggles its expansion state`（找不到任何 toggle 标记） |
+| NC15 | 去掉分组头的 `aria-expanded` | 同上（`aria-expanded` 与 `data-expanded` 不再一致） |
+| NC16 | 去掉会话行选中态的两个视觉标记（`inset` 色条 + ✓ `session-selected-mark`） | `the selected session and the pinned scope carry an explicit selected mark`（选中只剩文字） |
+
+三条都满足「单独改坏 ⇒ 对应用例变红 ⇒ 还原后全量 167 项重新全绿」。
+（过程留痕：还原时曾误把「已被改坏的文件」当作备份覆盖一次，导致 2 项失败；按备份重放 `aria-expanded` 一行后
+`node --check` + 全量 167 项复绿，最终提交内容是完整版，`git diff` 已复核。）
+
+## 58. 本轮仍未验证项（增量，诚实清单）
+
+1. **真机 hover / 焦点环观感**：离线 vm 只能证明「状态与样式对象确实随交互变化」，无法证明真实浏览器里
+   填色深浅、焦点环粗细、caret 旋转手感。需要真机目视（鼠标悬停整行、Tab 走到分组头、Enter/Space 切换）。
+2. **图标与侧边栏是否视觉一致**：primitives 分支与侧边栏用的是同一组件，理论上完全一致；但**本 profile 是否
+   真能 require 到 primitives**（`ICON_SOURCE` 到底走哪条分支）仍是真机才知道的事，页面上看 `data-icon-source`
+   即可判定。inline 分支是逐字节复制几何，但**没有**真机并排比对过（颜色/线宽继承自 `currentColor` 与 `strokeWidth:1`）。
+3. `:focus-visible` 的真实行为：`matches(':focus-visible')` 在无 DOM 环境下走「总是画焦点环」的兜底，
+   真实浏览器里鼠标点击是否**不**出现焦点环，未验。
+4. 其余同 §53（真机规模、`useWorkspaces` 是否到达 props、`default-workspace` 文案）。

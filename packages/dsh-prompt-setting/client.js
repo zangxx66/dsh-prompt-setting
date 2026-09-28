@@ -56,6 +56,18 @@ window.__ModuleLoader__.load({
     const primitivesUsable = primitives !== null && typeof primitives.Button === 'function';
     /** Which renderer this module instance actually uses: 'primitives' | 'fallback'. */
     const RENDERER = primitivesUsable ? 'primitives' : 'fallback';
+    /**
+     * Which folder/caret artwork the tree actually renders. The primitives
+     * module is used when it really exposes the sidebar's icon components;
+     * otherwise the identical inlined geometry is drawn (NOTES §54).
+     */
+    const ICON_SOURCE =
+      primitivesUsable &&
+      typeof primitives.IconFolderOpenRegular === 'function' &&
+      typeof primitives.IconFolderCloseRegular === 'function' &&
+      typeof primitives.IconTriangleRightFillRegular === 'function'
+        ? 'primitives'
+        : 'inline';
     // #endregion
 
     /** Locale namespace owned by this plugin (zh/en dictionaries are inlined). */
@@ -306,6 +318,8 @@ window.__ModuleLoader__.load({
       scopeArchivedHidden: '另有 {n} 个已归档会话未显示（与侧边栏默认一致），可用搜索或直接输入 id 查看。',
       scopeSearchHint:
         '按工作区分组，与左侧「工作区」一致；搜索会保留匹配项所属的工作区分组，匹配工作区名时其下会话一并显示。',
+      scopeToggleAria: '工作区「{name}」：展开或收起',
+      scopeSelected: '当前选中',
     };
 
     const en = {
@@ -464,6 +478,8 @@ window.__ModuleLoader__.load({
         '{n} archived sessions are hidden (matching the sidebar default); use search, or type an id to view one.',
       scopeSearchHint:
         'Grouped by workspace, exactly like the left sidebar; a search keeps the owning workspace group of every match, and a workspace-name match keeps all of its sessions.',
+      scopeToggleAria: 'Workspace "{name}": expand or collapse',
+      scopeSelected: 'Currently selected',
     };
 
     // One loop keeps zh/en key sets identical by construction, including every
@@ -500,8 +516,45 @@ window.__ModuleLoader__.load({
       markFill: 'var(--dsw-alias-state-warning-fill, rgba(255, 200, 0, 0.35))',
       diffAddFill: 'var(--dsw-alias-state-success-fill, rgba(0, 200, 100, 0.16))',
       diffDelFill: 'var(--dsw-alias-state-error-fill, rgba(220, 60, 60, 0.16))',
+      /** The sidebar's own row-hover fill (`Rows.module.css` uses this token). */
+      hoverFill: 'var(--dsw-alias-interactive-bg-hover, rgba(127, 127, 127, 0.12))',
+      /**
+       * The shell-wide focus ring: every product surface draws
+       * `outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color,
+       * var(--dsw-alias-state-business-primary))` with `outline-offset: -2px`
+       * (e.g. `dsh-client-ui-sidebar/lib/client.js`), so the page reuses it
+       * instead of inventing a ring.
+       */
+      focusRing: 'var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary))',
       mono: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
     };
+
+    /**
+     * Folder and caret geometry copied **verbatim** from
+     * `@deepseek-ai/dsh-client-ui-primitives` (0.1.7-rc.2):
+     * `lib/index.js` `IconFolderOpenArtwork` (fill-only, three paths),
+     * `FolderCloseArtwork` (stroke, two paths) and
+     * `IconTriangleRightFillArtwork` (the sidebar's collapsed caret).
+     *
+     * The primitives branch renders those very components; the fallback
+     * branch has no module to require, so it re-draws the identical
+     * geometry with `React.createElement('svg', …)` — same artwork, no
+     * new dependency, and the sidebar's workspace affordance stays
+     * recognisable in both branches (NOTES §54).
+     */
+    const FOLDER_OPEN_PATHS = [
+      { d: 'M2.55912 7.93683C2.67584 7.49906 3.0723 7.19446 3.52536 7.19446H13.6491C14.3061 7.19446 14.7846 7.81725 14.6153 8.45209L13.4411 12.856C13.3244 13.2938 12.9279 13.5984 12.4748 13.5984H2.35113C1.69411 13.5984 1.21562 12.9756 1.38489 12.3407L2.55912 7.93683Z', fill: 'currentColor', opacity: '0.16' },
+      { d: 'M13.6491 6.69446C14.6346 6.69453 15.3522 7.62895 15.0983 8.58118L13.9245 12.9845C13.7494 13.6412 13.1539 14.0988 12.4743 14.0988H2.35126C1.36574 14.0988 0.648153 13.1643 0.902044 12.212L2.07587 7.80774C2.25102 7.15128 2.84567 6.69455 3.52509 6.69446H13.6491ZM3.52509 7.69446C3.29865 7.69455 3.10004 7.84674 3.04169 8.06555L1.86786 12.4698C1.78345 12.7872 2.02285 13.0988 2.35126 13.0988H12.4743C12.7007 13.0988 12.8992 12.9463 12.9577 12.7277L14.1325 8.32336C14.2171 8.00598 13.9776 7.69453 13.6491 7.69446H3.52509Z', fill: 'currentColor' },
+      { d: 'M4.7666 1.90137C5.13227 1.90144 5.48571 2.03525 5.75977 2.27734L7.27246 3.61328C7.36379 3.69382 7.48174 3.73828 7.60352 3.73828H12.3994C13.2276 3.73841 13.8993 4.41005 13.8994 5.23828V6.7168C13.8183 6.70327 13.735 6.69436 13.6494 6.69434H12.8994V5.23828C12.8993 4.96233 12.6754 4.73841 12.3994 4.73828H7.60352C7.23781 4.73828 6.88446 4.60438 6.61035 4.3623L5.09766 3.02637C5.00636 2.94576 4.88838 2.90144 4.7666 2.90137H2.0498C1.77366 2.90137 1.5498 3.12523 1.5498 3.40137V9.78223L0.902344 12.2119C0.648452 13.1642 1.36604 14.0986 2.35156 14.0986H2.0498C1.2214 14.0986 0.549838 13.427 0.549805 12.5986V3.40137C0.549805 2.57294 1.22138 1.90137 2.0498 1.90137H4.7666Z', fill: 'currentColor' },
+    ];
+    /** Closed-folder artwork: strokes, so the weight stays 1px like the sidebar. */
+    const FOLDER_CLOSE_PATHS = [
+      'M1.50439 3.11059C1.50439 2.55831 1.95211 2.1106 2.50439 2.1106H5.43389C5.67773 2.1106 5.91318 2.19969 6.09593 2.36113L7.71649 3.79265C7.89924 3.95409 8.1347 4.04319 8.3785 4.04319H13.4958C14.0481 4.04319 14.4958 4.4909 14.4958 5.04319V12.8894C14.4958 13.4417 14.0481 13.8894 13.4958 13.8894H2.50439C1.95211 13.8894 1.50439 13.4417 1.50439 12.8894V4.04319V3.11059Z',
+      'M3.63501 7.66614H12.3647',
+    ];
+    /** Right-pointing caret; rotated 90° in place when the group is open. */
+    const CARET_PATH = 'M5.5 4.5C5.5 4.40714 5.52586 4.31612 5.57467 4.23713C5.62349 4.15815 5.69334 4.09431 5.77639 4.05279C5.85945 4.01126 5.95242 3.99368 6.0449 4.00202C6.13738 4.01036 6.22572 4.04429 6.3 4.1L10.967 7.6C11.0291 7.64657 11.0795 7.70697 11.1142 7.77639C11.1489 7.84582 11.167 7.92238 11.167 8C11.167 8.07762 11.1489 8.15418 11.1142 8.22361C11.0795 8.29303 11.0291 8.35343 10.967 8.4L6.3 11.9C6.22572 11.9557 6.13738 11.9896 6.0449 11.998C5.95242 12.0063 5.85945 11.9887 5.77639 11.9472C5.69334 11.9057 5.62349 11.8419 5.57467 11.7629C5.52586 11.6839 5.5 11.5929 5.5 11.5V4.5Z';
+
 
     // #region fallback atoms (pure React.createElement + theme tokens)
     /**
@@ -1943,48 +1996,208 @@ window.__ModuleLoader__.load({
      * @returns the section element.
      */
     /**
+     * Does this event originate from a keyboard interaction?
+     *
+     * `:focus-visible` is the browser's own answer; when the event carries no
+     * element to ask (or `matches` throws, as in a non-DOM environment) the ring
+     * is shown — a visible ring is the safe direction to fail in.
+     * @param event - a focus/blur event.
+     * @returns whether the focus ring should be drawn.
+     */
+    function focusVisibleOf(event) {
+      const target = event && event.target;
+      if (target && typeof target.matches === 'function') {
+        try {
+          return target.matches(':focus-visible');
+        } catch {
+          return true;
+        }
+      }
+      return true;
+    }
+
+    /**
+     * The workspace folder glyph, open or closed, at the size the sidebar uses.
+     * Primitives components when the module really exposes them, the identical
+     * inlined geometry otherwise (NOTES §54).
+     * @param open - whether the group is expanded.
+     * @param size - rendered square size in px.
+     * @returns the icon element.
+     */
+    function scopeFolderGlyph(open, size) {
+      if (ICON_SOURCE === 'primitives') {
+        const Icon = open ? primitives.IconFolderOpenRegular : primitives.IconFolderCloseRegular;
+        return h(Icon, { size, 'data-role': 'scope-folder-glyph' });
+      }
+      if (open) {
+        return h(
+          'svg',
+          {
+            width: size,
+            height: size,
+            viewBox: '0 0 16 16',
+            fill: 'none',
+            xmlns: 'http://www.w3.org/2000/svg',
+            'aria-hidden': 'true',
+            'data-role': 'scope-folder-glyph',
+          },
+          FOLDER_OPEN_PATHS.map((path, index) =>
+            h('path', {
+              key: `p${index}`,
+              d: path.d,
+              fill: path.fill,
+              opacity: path.opacity,
+            }),
+          ),
+        );
+      }
+      return h(
+        'svg',
+        {
+          width: size,
+          height: size,
+          viewBox: '0 0 16 16',
+          fill: 'none',
+          xmlns: 'http://www.w3.org/2000/svg',
+          'aria-hidden': 'true',
+          strokeWidth: 1,
+          'data-role': 'scope-folder-glyph',
+        },
+        FOLDER_CLOSE_PATHS.map((d, index) => h('path', { key: `p${index}`, d, stroke: 'currentColor' })),
+      );
+    }
+
+    /**
+     * The expansion caret: the sidebar's own right-pointing triangle, rotated
+     * in place while the group is open. Rotation is inline so the state is
+     * visible without any stylesheet.
+     * @param open - whether the group is expanded.
+     * @param size - rendered square size in px.
+     * @returns the caret element.
+     */
+    function scopeCaretGlyph(open, size) {
+      const style = {
+        display: 'inline-flex',
+        transform: open ? 'rotate(90deg)' : 'none',
+        transition: 'transform 0.15s',
+        color: token.labelTertiary,
+      };
+      if (ICON_SOURCE === 'primitives') {
+        return h('span', { style }, h(primitives.IconTriangleRightFillRegular, { size }));
+      }
+      return h(
+        'span',
+        { style },
+        h(
+          'svg',
+          {
+            width: size,
+            height: size,
+            viewBox: '0 0 16 16',
+            fill: 'none',
+            xmlns: 'http://www.w3.org/2000/svg',
+            'aria-hidden': 'true',
+            'data-role': 'scope-caret-glyph',
+          },
+          h('path', { d: CARET_PATH, fill: 'currentColor' }),
+        ),
+      );
+    }
+
+    /**
+     * Shared interaction styling for one clickable row: pointer cursor, hover
+     * fill, and the product's focus ring. The two states are mirrored into
+     * `data-hover` / `data-focus` so they are machine-checkable without CSS.
+     * @param hover - whether the pointer is over the row.
+     * @param focus - whether the row holds keyboard focus.
+     * @returns the style object.
+     */
+    function scopeRowStyle(hover, focus) {
+      return {
+        cursor: 'pointer',
+        userSelect: 'none',
+        background: hover ? token.hoverFill : 'transparent',
+        outline: focus ? token.focusRing : 'none',
+        outlineOffset: focus ? '-2px' : undefined,
+        borderRadius: 6,
+      };
+    }
+
+    /**
      * One pinned picker entry: always visible, never filtered, one click away.
+     * It carries an explicit selected state (`data-selected` + a tick) rather
+     * than relying on the label alone.
+     * @param t - the bound translator.
      * @param key - 'global' | 'current' (the `data-pinned` marker).
      * @param label - localized label.
      * @param active - whether this entry is the current scope.
      * @param disabled - whether the entry cannot be used right now.
+     * @param hovered - whether the pointer is over this entry.
+     * @param focused - whether this entry holds keyboard focus.
      * @param onClick - selection callback.
+     * @param setHover - hover state callback (`false` when leaving).
+     * @param setFocus - focus state callback.
      * @returns the button element.
      */
-    function pinnedSessionButton(key, label, active, disabled, onClick) {
+    function pinnedSessionButton(t, key, label, active, disabled, hovered, focused, onClick, setHover, setFocus) {
       return h(
         'button',
         {
           type: 'button',
           'data-action': 'session-pinned',
+          'data-role': 'pinned-option',
           'data-pinned': key,
           'data-pinned-active': String(active),
+          'data-selected': String(active),
+          'data-hover': String(hovered),
+          'data-focus': String(focused),
           disabled,
           onClick,
+          onMouseEnter: () => setHover(true),
+          onMouseLeave: () => setHover(false),
+          onFocus: (event) => setFocus(focusVisibleOf(event)),
+          onBlur: () => setFocus(false),
           style: {
             font: 'inherit',
             fontSize: 12,
             lineHeight: '18px',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 4,
             padding: '3px 10px',
             borderRadius: 999,
-            cursor: disabled ? 'default' : 'pointer',
             opacity: disabled ? 0.5 : 1,
+            cursor: disabled ? 'default' : 'pointer',
             color: active ? token.buttonLabel : token.labelPrimary,
-            background: active ? token.buttonFill : 'transparent',
+            background: active ? token.buttonFill : hovered && !disabled ? token.hoverFill : 'transparent',
             border: `1px solid ${active ? 'transparent' : token.borderL2}`,
+            outline: focused ? token.focusRing : 'none',
+            outlineOffset: focused ? '-2px' : undefined,
           },
         },
-        label,
+        active
+          ? h('span', { key: 'mark', 'data-role': 'pinned-selected-mark', 'aria-hidden': 'true' }, '✓')
+          : null,
+        h('span', { key: 'label' }, label),
       );
     }
 
     /**
-     * One workspace group of the「查看范围」tree: the header row (chevron,
-     * label, path subtitle, session count) plus its windowed session rows.
+     * One workspace group of the「查看范围」tree: the interactive header row
+     * (folder icon, expansion caret, label, path subtitle, session count) plus
+     * its windowed session rows.
      *
-     * `data-scope-group` / `data-scope-toggle` / `data-scope-more` / `data-scope-parent`
-     * are distinct attribute names on purpose: each selector a test or a script
-     * uses matches exactly one node per group.
+     * Affordance is the point of this row (review feedback: the group header
+     * looked like static text). It carries, like the left sidebar's project row:
+     * a folder glyph whose state *is* the expansion state, a caret that rotates,
+     * `cursor: pointer` on the whole row, a hover fill, the shell's focus ring,
+     * `aria-expanded` in sync with `data-expanded`, and Enter/Space keyboard
+     * toggling. Both the glyph column and the rest of the row trigger the same
+     * toggle; the glyph stops propagation so one click is one toggle.
+     *
+     * `data-scope-group` / `data-scope-toggle` / `data-scope-more` /
+     * `data-scope-parent` are distinct attribute names on purpose: each selector
+     * a test or a script uses matches exactly one node per group.
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
@@ -1993,40 +2206,72 @@ window.__ModuleLoader__.load({
      * @returns the group element.
      */
     function scopeGroupElement(t, m, a, group, activeId) {
+      const hovered = m.scopeHover === `g:${group.key}`;
+      const focused = m.scopeFocus === `g:${group.key}`;
+      const label = group.label;
       const nodes = [
         h(
           'div',
           {
             key: 'head',
+            role: 'treeitem',
+            tabIndex: 0,
+            'data-role': 'group-toggle',
             'data-scope-group': group.key,
-            'data-scope-expanded': String(group.expanded),
+            'data-expanded': String(group.expanded),
             'data-scope-contains-current': String(group.containsCurrent),
-            style: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, paddingTop: 2 },
+            'data-hover': String(hovered),
+            'data-focus': String(focused),
+            'aria-expanded': group.expanded,
+            'aria-label': fmt(t('scopeToggleAria'), { name: label }),
+            onClick: () => a.toggleScope(group.key, !group.expanded),
+            onKeyDown: (event) => a.onScopeHeaderKeyDown(event, group.key, !group.expanded),
+            onMouseEnter: () => a.setScopeHover(`g:${group.key}`),
+            onMouseLeave: () => a.setScopeHover(''),
+            onFocus: (event) => {
+              if (focusVisibleOf(event)) a.setScopeFocus(`g:${group.key}`);
+            },
+            onBlur: () => a.setScopeFocus(''),
+            style: {
+              ...scopeRowStyle(hovered, focused),
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+              minWidth: 0,
+              padding: '3px 6px',
+              color: group.containsCurrent ? token.stateBusiness : token.labelPrimary,
+              border: `1px solid ${group.containsCurrent ? token.borderL2 : 'transparent'}`,
+            },
           },
           h(
-            'button',
+            'span',
             {
-              key: 'toggle',
-              type: 'button',
-              role: 'treeitem',
-              'aria-expanded': group.expanded,
-              'data-action': 'scope-toggle',
+              key: 'icon',
+              'data-role': 'scope-folder-icon',
+              'data-icon-state': group.expanded ? 'open' : 'closed',
+              'data-icon-source': ICON_SOURCE,
               'data-scope-toggle': group.key,
-              onClick: () => a.toggleScope(group.key, !group.expanded),
-              style: {
-                font: 'inherit',
-                fontSize: 11,
-                lineHeight: '16px',
-                width: 16,
-                padding: 0,
-                flex: 'none',
-                cursor: 'pointer',
-                color: token.labelTertiary,
-                background: 'transparent',
-                border: 'none',
+              'aria-hidden': 'true',
+              onClick: (event) => {
+                // The glyph column is part of the target, not a second control:
+                // stop the bubble so one click cannot toggle twice.
+                if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+                a.toggleScope(group.key, !group.expanded);
               },
+              style: { display: 'inline-flex', flex: 'none', alignItems: 'center' },
             },
-            group.expanded ? '▾' : '▸',
+            scopeFolderGlyph(group.expanded, 16),
+          ),
+          h(
+            'span',
+            {
+              key: 'caret',
+              'data-role': 'scope-caret',
+              'data-caret-open': String(group.expanded),
+              'aria-hidden': 'true',
+              style: { display: 'inline-flex', flex: 'none', alignItems: 'center' },
+            },
+            scopeCaretGlyph(group.expanded, 12),
           ),
           h(
             'span',
@@ -2042,10 +2287,9 @@ window.__ModuleLoader__.load({
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
-                color: group.containsCurrent ? token.stateBusiness : token.labelPrimary,
               },
             },
-            group.label,
+            label,
           ),
           group.path
             ? h(
@@ -2067,6 +2311,9 @@ window.__ModuleLoader__.load({
       ];
 
       for (const row of group.sessions) {
+        const selected = row.id === m.sessionArg;
+        const rowHovered = m.scopeHover === `s:${row.id}`;
+        const rowFocused = m.scopeFocus === `s:${row.id}`;
         nodes.push(
           h(
             'button',
@@ -2074,14 +2321,24 @@ window.__ModuleLoader__.load({
               key: `s:${row.id}`,
               type: 'button',
               role: 'treeitem',
-              'data-role': 'session-option',
+              'data-role': 'session-row',
               'data-session-id': row.id,
               'data-scope-parent': group.key,
+              'data-selected': String(selected),
               'data-session-running': String(row.running === true),
               'data-session-active': String(row.id === activeId && activeId !== ''),
-              'aria-selected': row.id === m.sessionArg,
+              'data-hover': String(rowHovered),
+              'data-focus': String(rowFocused),
+              'aria-selected': selected,
               onClick: () => a.pickSession(row.id),
+              onMouseEnter: () => a.setScopeHover(`s:${row.id}`),
+              onMouseLeave: () => a.setScopeHover(''),
+              onFocus: (event) => {
+                if (focusVisibleOf(event)) a.setScopeFocus(`s:${row.id}`);
+              },
+              onBlur: () => a.setScopeFocus(''),
               style: {
+                ...scopeRowStyle(rowHovered, rowFocused),
                 font: 'inherit',
                 fontSize: 12,
                 lineHeight: '18px',
@@ -2089,14 +2346,32 @@ window.__ModuleLoader__.load({
                 display: 'flex',
                 alignItems: 'center',
                 gap: 6,
-                padding: '3px 8px 3px 22px',
-                borderRadius: 6,
-                cursor: 'pointer',
+                padding: '3px 8px 3px 20px',
                 color: token.labelPrimary,
-                background: row.id === activeId && activeId !== '' ? token.diffAddFill : 'transparent',
-                border: `1px solid ${row.id === m.sessionArg ? token.borderL2 : 'transparent'}`,
+                background: selected
+                  ? token.diffAddFill
+                  : row.id === activeId && activeId !== ''
+                    ? token.diffAddFill
+                    : rowHovered
+                      ? token.hoverFill
+                      : 'transparent',
+                // The selected row is marked by a bar, not by text alone.
+                boxShadow: selected ? `inset 3px 0 0 0 ${token.stateBusiness}` : undefined,
+                border: `1px solid ${selected ? token.borderL2 : 'transparent'}`,
               },
             },
+            selected
+              ? h(
+                  'span',
+                  {
+                    key: 'mark',
+                    'data-role': 'session-selected-mark',
+                    title: t('scopeSelected'),
+                    style: { flex: 'none', color: token.stateBusiness, fontSize: 11 },
+                  },
+                  '✓',
+                )
+              : null,
             h(
               'span',
               { key: 'title', style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
@@ -2138,6 +2413,8 @@ window.__ModuleLoader__.load({
       }
 
       if (group.more) {
+        const moreHovered = m.scopeHover === `m:${group.key}`;
+        const moreFocused = m.scopeFocus === `m:${group.key}`;
         nodes.push(
           h(
             'button',
@@ -2146,17 +2423,25 @@ window.__ModuleLoader__.load({
               type: 'button',
               'data-action': 'scope-more',
               'data-scope-more': group.key,
+              'data-hover': String(moreHovered),
+              'data-focus': String(moreFocused),
               onClick: () => a.showMoreScope(group.key),
+              onMouseEnter: () => a.setScopeHover(`m:${group.key}`),
+              onMouseLeave: () => a.setScopeHover(''),
+              onFocus: (event) => {
+                if (focusVisibleOf(event)) a.setScopeFocus(`m:${group.key}`);
+              },
+              onBlur: () => a.setScopeFocus(''),
               style: {
                 font: 'inherit',
                 fontSize: 12,
                 lineHeight: '18px',
                 textAlign: 'left',
-                padding: '2px 8px 2px 22px',
-                cursor: 'pointer',
+                padding: '2px 8px 2px 20px',
                 color: token.stateBusiness,
                 background: 'transparent',
                 border: 'none',
+                ...scopeRowStyle(moreHovered, moreFocused),
               },
             },
             fmt(t('scopeMore'), { n: group.matched - group.sessions.length }),
@@ -2166,7 +2451,7 @@ window.__ModuleLoader__.load({
         nodes.push(
           h(
             'p',
-            { key: 'cut', 'data-scope-cut': group.key, style: { margin: '2px 0 2px 22px', ...metaStyle } },
+            { key: 'cut', 'data-scope-cut': group.key, style: { margin: '2px 0 2px 20px', ...metaStyle } },
             fmt(t('scopeCut'), { n: group.hidden }),
           ),
         );
@@ -2306,17 +2591,34 @@ window.__ModuleLoader__.load({
 
       const children = [
         h('h3', { key: 'heading', style: headingStyle }, t('sessionHeading')),
-        // Pinned entries: always present, never filtered away.
+        // Pinned entries: always present, never filtered away, and — like the
+        // group rows — visibly clickable and visibly selected.
         h(
           'div',
           { key: 'pinned', 'data-region': 'session-pinned', style: { marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' } },
-          pinnedSessionButton('global', t('sessionGlobal'), !scoped, false, a.useGlobal),
           pinnedSessionButton(
+            t,
+            'global',
+            t('sessionGlobal'),
+            !scoped,
+            false,
+            m.scopeHover === 'p:global',
+            m.scopeFocus === 'p:global',
+            a.useGlobal,
+            (on) => a.setScopeHover(on ? 'p:global' : ''),
+            (on) => a.setScopeFocus(on ? 'p:global' : ''),
+          ),
+          pinnedSessionButton(
+            t,
             'current',
             `${t('sessionCurrent')}${currentLabel ? `：${currentLabel}` : ''}`,
             scoped && m.sessionArg === currentId,
             currentId.length === 0,
+            m.scopeHover === 'p:current',
+            m.scopeFocus === 'p:current',
             a.useCurrent,
+            (on) => a.setScopeHover(on ? 'p:current' : ''),
+            (on) => a.setScopeFocus(on ? 'p:current' : ''),
           ),
         ),
         h(
@@ -2361,8 +2663,11 @@ window.__ModuleLoader__.load({
               'data-region': 'session-list',
               style: { marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 },
             },
-            m.sessionVisible.map((row, index) =>
-              h(
+            m.sessionVisible.map((row, index) => {
+              const selected = row.id === m.sessionArg;
+              const hovered = m.scopeHover === `s:${row.id}`;
+              const focused = m.scopeFocus === `s:${row.id}`;
+              return h(
                 'button',
                 {
                   key: row.id,
@@ -2370,25 +2675,54 @@ window.__ModuleLoader__.load({
                   role: 'option',
                   'data-role': 'session-option',
                   'data-session-id': row.id,
+                  'data-selected': String(selected),
                   'data-session-active': String(index === m.sessionActive),
-                  'aria-selected': row.id === m.sessionArg,
+                  'data-hover': String(hovered),
+                  'data-focus': String(focused),
+                  'aria-selected': selected,
                   onClick: () => a.pickSession(row.id),
+                  onMouseEnter: () => a.setScopeHover(`s:${row.id}`),
+                  onMouseLeave: () => a.setScopeHover(''),
+                  onFocus: (event) => {
+                    if (focusVisibleOf(event)) a.setScopeFocus(`s:${row.id}`);
+                  },
+                  onBlur: () => a.setScopeFocus(''),
                   style: {
+                    ...scopeRowStyle(hovered, focused),
                     font: 'inherit',
                     fontSize: 12,
                     lineHeight: '18px',
                     textAlign: 'left',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
                     padding: '4px 8px',
-                    borderRadius: 6,
-                    cursor: 'pointer',
                     color: token.labelPrimary,
-                    background: index === m.sessionActive ? token.diffAddFill : 'transparent',
-                    border: `1px solid ${row.id === m.sessionArg ? token.borderL2 : 'transparent'}`,
+                    background:
+                      selected || index === m.sessionActive
+                        ? token.diffAddFill
+                        : hovered
+                          ? token.hoverFill
+                          : 'transparent',
+                    boxShadow: selected ? `inset 3px 0 0 0 ${token.stateBusiness}` : undefined,
+                    border: `1px solid ${selected ? token.borderL2 : 'transparent'}`,
                   },
                 },
-                sessionRowLabel(row),
-              ),
-            ),
+                selected
+                  ? h(
+                      'span',
+                      {
+                        key: 'mark',
+                        'data-role': 'session-selected-mark',
+                        title: t('scopeSelected'),
+                        style: { flex: 'none', color: token.stateBusiness, fontSize: 11 },
+                      },
+                      '✓',
+                    )
+                  : null,
+                h('span', { key: 'label', style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, sessionRowLabel(row)),
+              );
+            }),
           ),
         );
       }
@@ -3257,6 +3591,11 @@ window.__ModuleLoader__.load({
       const [sessionActive, setSessionActive] = React.useState(-1);
       const [scopeExpanded, setScopeExpanded] = React.useState({});
       const [scopeLimits, setScopeLimits] = React.useState({});
+      // Only one row can be hovered or focused at a time, so one slot each is
+      // enough — and it keeps the interaction state out of a per-row component
+      // (which would nest hooks under this page's render).
+      const [scopeHover, setScopeHover] = React.useState('');
+      const [scopeFocus, setScopeFocus] = React.useState('');
       const [view, setView] = React.useState('sections');
       const [search, setSearch] = React.useState('');
       const [filters, setFilters] = React.useState({ layer: 'all', overridable: 'all', origin: 'all' });
@@ -3351,6 +3690,16 @@ window.__ModuleLoader__.load({
         // state is passed in, so the toggle is exact even when a search forced
         // a group open.
         toggleScope: (key, open) => setScopeExpanded((current) => ({ ...current, [key]: open })),
+        // Keyboard parity for the pointer toggle: Enter and Space both flip the
+        // workspace node, exactly like the sidebar's own tree rows.
+        onScopeHeaderKeyDown: (event, key, open) => {
+          const pressed = event && event.key ? String(event.key) : '';
+          if (pressed !== 'Enter' && pressed !== ' ' && pressed !== 'Spacebar') return;
+          if (typeof event.preventDefault === 'function') event.preventDefault();
+          setScopeExpanded((current) => ({ ...current, [key]: open }));
+        },
+        setScopeHover,
+        setScopeFocus,
         showMoreScope: (key) =>
           setScopeLimits((current) => {
             const value = Number.isInteger(current[key]) ? current[key] : SCOPE_GROUP_PAGE;
@@ -3531,6 +3880,8 @@ window.__ModuleLoader__.load({
         wsSeat,
         scopeMode,
         scope,
+        scopeHover,
+        scopeFocus,
         session,
         sessionArg,
         sessionQuery,
