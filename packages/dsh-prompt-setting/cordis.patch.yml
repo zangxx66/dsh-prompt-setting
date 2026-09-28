@@ -1,0 +1,18 @@
+# dsh-prompt-setting 的 bundle 层：以裸包名插入 profile 树。
+#
+# 一条 insert 同时承载两个半边（与 dsh-meme / dsh-graph 同构）：
+#   host   半边：`/prompt-setting` 只读探针路由（本包 index.js，行 id `prompt-setting`）；
+#   client 半边：设置页独立一栏（本包 client.js，由 package.json 的
+#                `dsh.client` + `exports["./client"]` 编入 __DSH_BOOT__，
+#                bundle URL 为 /plugins/dsh-prompt-setting/client.js）。
+#
+# 为什么只有一行：`dsh.client` 是**包级**声明，不是行级声明。client-modules 按
+# package.json 解析 dsh.client，所以同一个包不需要（也不能有）第二条宿主行——
+# 第二条同名行会让 index.js 的 apply 跑两次、`/prompt-setting` 前缀重复注册。
+# 需要两行的是「宿主包 + 客户端包」分离的形态（如 dsh-host-open-in-app +
+# dsh-client-ui-open-in-app），本包是单包双半边，故为一行。详见 NOTES.md §2。
+#
+# name 必须是实际包名：cordis 按 name import 包，写错会直接起不来。
+- insert:
+    - id: prompt-setting
+      name: dsh-prompt-setting
