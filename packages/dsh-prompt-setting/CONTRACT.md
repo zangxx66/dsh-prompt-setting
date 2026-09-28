@@ -67,6 +67,35 @@ file that cannot be read), `413` (a body over the import cap) and `500` (a stage
 file that failed its own re-validation); a rejected import always leaves the
 existing configuration byte-identical (§11.5).
 
+**Revision 5 (refresh semantics — both layers, on the request path).** Revisions
+1–4 refreshed the workspace layers only where a route happened to ask for one,
+and read the user layer once at mount and thereafter only from this plugin's own
+save paths. An external edit to `$DSH_HOME/prompt-setting/overrides.json` — a
+hand edit, a config-sync tool, another process — was therefore invisible to a
+running mount until it was reloaded. Revision 5 removes that asymmetry:
+
+- one `refreshLayers()` re-reads the user layer **and** every known workspace
+  layer as the first statement of every handled route request, before anything
+  in that request can fail (§5.5). An external edit is visible to the very next
+  request, with no remount and no file watcher;
+- a request that then fails (any `4xx`/`5xx` a write path can produce, the
+  rejected import included) still refreshed first, so a failed write can never
+  desync memory from disk for longer than the request that failed;
+- the assembly path is unchanged and still performs **no IO at all**: the
+  waterfall listener reads the in-memory cache those refreshes maintain, so a
+  change on disk is never observed *during* an assembly.
+
+No response body and no status code changes: every shape frozen in revisions 1–4
+keeps its exact bytes. Two layer-status refinements ride along, both expressed
+inside the existing `enabled` / `reason` fields (§5.6):
+
+- a user-layer file that this mount has read and that has since disappeared is
+  reported `enabled: false` with `missing-file: … was removed after it had been
+  read`, rather than degrading into "this layer holds no overrides";
+- a file that has **never** existed is unchanged — an empty, `enabled: true`
+  layer — which is the honest state of a profile that was never configured, and
+  is what revisions 1–4 always reported.
+
 ---
 
 ## 1. Routes and methods
@@ -437,12 +466,29 @@ another listener.
 the listener, so a save affects the **next** assembly (next turn / next
 session). A turn already assembling is unaffected.
 
-### 5.5 No IO on the assembly path
+### 5.5 Refresh semantics and no IO on the assembly path
 
-Layers are read when the plugin mounts and refreshed at the start of every route
-request. The waterfall listener only reads in-memory state. A workspace created
-after mount is therefore picked up by the next route request; until then its
-layer contributes nothing (it is not silently guessed).
+Layers are read when the plugin mounts and then re-read — **both of them**, as
+peers — by `refreshLayers()`, the first statement of every handled route request
+and therefore before anything in that request can fail (Revision 5):
+
+- an external edit (a hand edit, a config-sync tool, another process) is visible
+  to the very next request, with no remount and no file watcher;
+- a request that fails refreshed first too, so a failed write or a rejected
+  import leaves the cache no further behind the files than that single request.
+  Every write path reaches the cache only after its own file write returned, so
+  a failure cannot reach it at all;
+- the waterfall listener performs **no IO whatsoever**: it reads the in-memory
+  cache these refreshes maintain and nothing else. A change on disk is never
+  observed *during* an assembly — it is observed by the next request, and a real
+  turn picks it up from there.
+
+A workspace created after mount is picked up by the next handled request; until
+that request its layer contributes nothing (it is not silently guessed). The same
+now holds for a workspace or user file edited outside this plugin.
+
+Requests that never reach a handler — a fence rejection, an unknown path, a wrong
+method — perform no IO and answer exactly as they did before.
 
 ### 5.6 Failure isolation
 
@@ -450,6 +496,14 @@ A layer that cannot be read or validated is reported as `enabled: false` with a
 `reason` and contributes nothing. An error inside the override application fails
 **open** (the assembly is returned unchanged) so a broken override can never
 break a user's turn.
+
+An absent file is not a failure. A file that has never existed is an empty,
+`enabled: true` layer (and this is what a fresh install reports). The one absence
+reported as a failure is a **user-layer file this mount read and that has since
+been removed**: `enabled: false` with a `missing-file: …` reason, so "the file is
+gone" can never be read as "this layer holds no overrides" (§5.5). Either way the
+layer contributes nothing, so an override can never stay alive on a file that is
+no longer there.
 
 ### 5.7 Per-turn workspace selection
 
@@ -520,8 +574,12 @@ real Cordis context. The snapshot republishes the same text in `experiments`.
    must present that as unknown-for-this-session rather than as "not frozen".
    Probing a session whose Agent has not been created yet is not possible through
    this API.
-3. **A workspace created after mount contributes nothing until a route request
-   refreshes the cache** (§5.5).
+3. **A workspace the Host has not published yet contributes nothing.** The
+   plugin re-reads `workspaceRegistry.list()` — and every layer file — at the
+   start of every handled request (§5.5), so a workspace created after mount
+   becomes visible at the next request: never mid-request, and never through a
+   watcher. A workspace the registry has not listed yet is invisible until it
+   does; the plugin never guesses a path.
 4. **A scope whose registered sections change between the two probes** could
    make `base` reflect the first probe while `effective` reflects the second.
    Both probes are `assemble()` calls microseconds apart; the frozen verdict
@@ -562,6 +620,18 @@ Stage 2 (Revision 4) adds these:
 14. **The client's import file picker uses `File.text()`**. A browser without it
     gets the paste-the-JSON path (and the panel says so) rather than a second
     reading implementation.
+
+Stage 3 (Revision 5) adds one:
+
+15. **The refresh bounds a desync to one request; it does not explain an
+    observation already made.** A measured session showed an override in effect
+    at one turn and absent at a later one with its file byte-identical, after a
+    rejected import. Revision 5 makes a *stale cache* (an override that keeps
+    applying to a file that no longer says so) impossible beyond one request,
+    and its tests pin that no write path — the rejected import included — can
+    leave the cache disagreeing with the files. It does **not** claim to explain
+    an override that *stops* applying while its file is intact: the desync that
+    can be constructed and pinned here is the opposite direction.
 
 ## 8. `GET /prompt-setting/history` (Revision 4)
 

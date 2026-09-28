@@ -21,6 +21,7 @@ import { apply, inject } from '../index.js';
 const PING_PATH = '/prompt-setting/ping';
 const SNAPSHOT_PATH = '/prompt-setting/snapshot';
 const OVERRIDES_PATH = '/prompt-setting/overrides';
+const IMPORT_PATH = '/prompt-setting/import';
 
 /** The sections a fresh fake Host registers, in registration order. */
 const DEFAULT_SECTIONS = [
@@ -919,3 +920,258 @@ test('F2: variables a provider did resolve render normally and are not reported'
   assert.equal(payload.renderedResolved, true);
   assert.deepEqual(payload.unresolvedVariables, []);
 });
+
+// #region external refresh (Revision 5)
+
+/**
+ * Both layers are re-read at the start of every handled route request
+ * (CONTRACT §5.5): an external edit — a hand edit, a config-sync tool, another
+ * process — is visible to the next request with no remount, while the assembly
+ * path stays IO-free and reads only the cache those refreshes maintain.
+ *
+ * The failure-path half of this region exists because a real session showed an
+ * override in effect at one turn and gone at a later one with the file
+ * untouched. Nothing here claims to explain that observation (NOTES.md §13.7);
+ * what it pins is that no request — successful or rejected — can leave the
+ * in-memory cache disagreeing with the files for longer than that request.
+ */
+const ALPHA = 'project:alpha';
+/** The import body cap from `index.js`; one byte over it is the 413 case. */
+const IMPORT_CAP = 4 * 1024 * 1024;
+
+/** Write the user layer's file the way an external writer would. */
+function writeUserConfig(overrides) {
+  writeRaw(userPath(), `${JSON.stringify({ version: 1, overrides }, null, 2)}\n`);
+}
+
+/** One override that replaces `project:alpha`. */
+function alphaOverride(text) {
+  return { name: ALPHA, action: 'replace', text };
+}
+
+/** The effective `project:alpha` entry of a snapshot payload. */
+function effectiveAlpha(payload) {
+  return payload.effective.sections.find((section) => section.name === ALPHA);
+}
+
+/**
+ * Read what one assembly renders for `project:alpha` with no route involved.
+ * The waterfall listener reads the in-memory cache and nothing else, so this is
+ * the cache observed directly: no refresh runs on this path.
+ */
+async function assembleDirectly(ctx) {
+  const assembly = await ctx.systemPrompt.assemble({ scope: {} });
+  return assembly.sections.find((section) => section.name === ALPHA).text;
+}
+
+test('refresh: an external edit of the user layer reaches the very next request', async () => {
+  const { route } = mount();
+  assert.deepEqual(json(await call(route, { url: OVERRIDES_PATH })).user.overrides, []);
+
+  // An external writer adds one override: no PUT, no remount, no watcher.
+  writeUserConfig([alphaOverride('EXTERNAL EDIT')]);
+  const snapshot = json(await call(route, { url: SNAPSHOT_PATH }));
+  assert.deepEqual(
+    [snapshot.layers.user.enabled, snapshot.layers.user.reason, effectiveAlpha(snapshot).text, effectiveAlpha(snapshot).applied],
+    [true, null, 'EXTERNAL EDIT', true],
+  );
+  assert.deepEqual(json(await call(route, { url: OVERRIDES_PATH })).user.overrides, [alphaOverride('EXTERNAL EDIT')]);
+
+  // A second edit is seen too: the layer is re-read, not read once.
+  writeUserConfig([alphaOverride('SECOND EDIT')]);
+  assert.equal(effectiveAlpha(json(await call(route, { url: SNAPSHOT_PATH }))).text, 'SECOND EDIT');
+});
+
+test('refresh: the assembly path opens no file, so an external edit waits for a request', async () => {
+  writeUserConfig([alphaOverride('FROM FILE')]);
+  const { ctx, route } = mount();
+  assert.equal(await assembleDirectly(ctx), 'FROM FILE');
+
+  // The file changes on disk. Memory does not, because nothing on the assembly
+  // path opens it — that is the invariant §5.5 states.
+  writeUserConfig([alphaOverride('NEWER ON DISK')]);
+  assert.equal(await assembleDirectly(ctx), 'FROM FILE', 'the listener must read the cache, never the file');
+
+  // One handled request refreshes the cache. It does not have to succeed:
+  // the refresh happens before the request can fail, which is what bounds a
+  // desync to the request that failed.
+  const refused = await call(route, { method: 'PUT', url: OVERRIDES_PATH, body: '{ not json' });
+  assert.equal(refused.statusCode, 400);
+  assert.equal(await assembleDirectly(ctx), 'NEWER ON DISK');
+  assert.equal(effectiveAlpha(json(await call(route, { url: SNAPSHOT_PATH }))).text, 'NEWER ON DISK');
+});
+
+test('refresh: a failed write never leaves the cache at odds with the file', async () => {
+  writeUserConfig([alphaOverride('FROM FILE')]);
+  const { ctx, route } = mount();
+  assert.equal(await assembleDirectly(ctx), 'FROM FILE');
+
+  const exportDocument = JSON.stringify({
+    schema: 'dsh-prompt-setting/export',
+    version: 1,
+    layers: { user: { layer: 'user', overrides: [{ name: 'a', action: 'nope', text: 'X' }] } },
+  });
+  const failures = [
+    ['PUT', OVERRIDES_PATH, '{ not json', 400, 'invalid-json'],
+    ['PUT', OVERRIDES_PATH, JSON.stringify({ layer: 'nope', section: { name: 'a', action: 'hide' } }), 400, 'unknown-layer'],
+    ['PUT', OVERRIDES_PATH, JSON.stringify({ layer: 'user', section: { name: 'a', action: 'replace' } }), 400, 'missing-text'],
+    ['PUT', OVERRIDES_PATH, JSON.stringify({ layer: 'workspace', section: { name: 'a', action: 'hide' } }), 400, 'workspace-unresolved'],
+    ['DELETE', `${OVERRIDES_PATH}?layer=user&name=absent`, undefined, 404, 'override-not-found'],
+    ['DELETE', `${OVERRIDES_PATH}?layer=nope&name=a`, undefined, 400, 'unknown-layer'],
+    ['DELETE', `${OVERRIDES_PATH}?layer=nope&reset=true`, undefined, 400, 'unknown-layer'],
+    ['POST', IMPORT_PATH, '{ not json', 400, 'invalid-json'],
+    ['POST', IMPORT_PATH, JSON.stringify({ layers: { user: { overrides: [] } } }), 400, 'unknown-export-schema'],
+    ['POST', IMPORT_PATH, exportDocument, 400, 'unknown-action'],
+    ['POST', IMPORT_PATH, 'x'.repeat(IMPORT_CAP + 1), 413, 'body-too-large'],
+  ];
+
+  for (const [method, url, body, status, code] of failures) {
+    const res = await call(route, { method, url, body });
+    assert.equal(res.statusCode, status, `${method} ${url} must be rejected`);
+    assert.equal(json(res).code, code, `${method} ${url} must carry ${code}`);
+    // The rejected request changed nothing observable: the cache still holds
+    // exactly what the file says, so a real turn still gets the override.
+    assert.equal(await assembleDirectly(ctx), 'FROM FILE', `${method} ${url} desynced the cache`);
+    const snapshot = json(await call(route, { url: SNAPSHOT_PATH }));
+    assert.deepEqual(
+      [snapshot.layers.user.enabled, snapshot.layers.user.reason, effectiveAlpha(snapshot).text],
+      [true, null, 'FROM FILE'],
+      `${method} ${url} left the snapshot stale or disabled`,
+    );
+  }
+});
+
+test('refresh: a write rejected because the target layer is unusable leaves the other layer alone', async () => {
+  const workspace = workspaceWith('ws-bad', 's-bad');
+  mkdirSync(join(workspace.path, '.dsh-prompt-setting'), { recursive: true });
+  writeFileSync(join(workspace.path, '.dsh-prompt-setting', 'overrides.json'), 'nope', 'utf8');
+  writeUserConfig([alphaOverride('FROM FILE')]);
+  const { route } = mount({ workspaces: [workspace] });
+
+  const refused = await call(route, {
+    method: 'PUT',
+    url: `${OVERRIDES_PATH}?session=s-bad`,
+    body: JSON.stringify({ layer: 'workspace', session: 's-bad', section: { name: 'a', action: 'hide' } }),
+  });
+  assert.equal(refused.statusCode, 409);
+  assert.equal(json(refused).code, 'layer-not-writable');
+
+  const snapshot = json(await call(route, { url: `${SNAPSHOT_PATH}?session=s-bad` }));
+  assert.deepEqual([snapshot.layers.user.enabled, snapshot.layers.user.reason], [true, null]);
+  assert.equal(effectiveAlpha(snapshot).text, 'FROM FILE', 'the user layer still contributes');
+  assert.equal(snapshot.layers.workspace.enabled, false);
+  assert.match(snapshot.layers.workspace.reason, /invalid-json/);
+});
+
+test('refresh: every write path caches only after its own file write returned', () => {
+  // The runtime matrix above reaches every failure a caller can trigger. The
+  // two remaining import failures — `import-staging-failed` and
+  // `import-verify-failed` — need an artificial filesystem fault (`core/store.js`
+  // validates the staged file by reading it back, so a staged file that fails
+  // to validate cannot be produced by a well-formed plan). They are covered
+  // here instead, by the structure that makes them safe: in all four write
+  // paths nothing before the successful write names the observable state at
+  // all, so no early exit or throw can reach the cache.
+  const source = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+  const writePaths = [
+    ['handleWriteOverride', 'async function handleWriteOverride(req, url, res) {'],
+    ['handleDeleteOverride', 'function handleDeleteOverride(url, res) {'],
+    ['handleResetLayer', 'function handleResetLayer(layer, sessionId, res) {'],
+    ['handleImport', 'async function handleImport(req, url, res) {'],
+  ];
+  for (const [name, signature] of writePaths) {
+    const start = source.indexOf(signature);
+    assert.equal(start > 0, true, `${name} is still declared`);
+    const commitAt = source.indexOf('cacheWritten(', start);
+    assert.equal(commitAt > start, true, `${name} still caches what it wrote`);
+    const before = source.slice(start, commitAt);
+    assert.equal(before.includes('state.'), false, `${name} must not touch the cache before its write returns`);
+    assert.match(before, /writeConfig(sAtomically)?\(/, `${name} writes the file before caching it`);
+  }
+});
+
+test('refresh: deleting the user layer file disables it with a reason, and restoring it recovers', async () => {
+  writeUserConfig([alphaOverride('WILL VANISH')]);
+  const { route } = mount();
+  const before = json(await call(route, { url: SNAPSHOT_PATH }));
+  assert.deepEqual([before.layers.user.enabled, effectiveAlpha(before).text], [true, 'WILL VANISH']);
+
+  rmSync(userPath(), { force: true });
+  const after = json(await call(route, { url: SNAPSHOT_PATH }));
+  assert.equal(after.mounted, true, 'the engine still runs');
+  assert.equal(after.layers.user.enabled, false);
+  assert.equal(after.layers.user.path, userPath(), 'the layer still reports where it looked');
+  assert.match(after.layers.user.reason, /missing-file/);
+  assert.match(after.layers.user.reason, /was removed after it had been read/);
+  assert.equal(effectiveAlpha(after).text, 'ALPHA BODY', 'a vanished file keeps no override alive');
+  assert.equal(after.base.sections.length, DEFAULT_SECTIONS.length);
+  assert.equal(json(await call(route, { url: OVERRIDES_PATH })).user.enabled, false);
+
+  // Re-creating it by hand recovers on the next request, with no remount.
+  writeUserConfig([alphaOverride('RESTORED')]);
+  const restored = json(await call(route, { url: SNAPSHOT_PATH }));
+  assert.deepEqual([restored.layers.user.enabled, effectiveAlpha(restored).text], [true, 'RESTORED']);
+});
+
+test('refresh: a file that never existed is an empty enabled layer, not a vanished one', async () => {
+  // The distinction matters and is deliberate: a profile that has never been
+  // configured (and a fresh install) reports an empty, enabled layer — exactly
+  // what the mount path has always done — while a file this mount has read and
+  // that then disappeared is reported disabled with `missing-file`.
+  const { route } = mount();
+  const snapshot = json(await call(route, { url: SNAPSHOT_PATH }));
+  assert.deepEqual(snapshot.layers.user, { enabled: true, path: userPath(), reason: null });
+  assert.deepEqual(json(await call(route, { url: OVERRIDES_PATH })).user, {
+    layer: 'user',
+    enabled: true,
+    path: userPath(),
+    reason: null,
+    overrides: [],
+  });
+});
+
+test('refresh: a user file corrupted after mount disables it, and a repaired one recovers', async () => {
+  const { route } = mount();
+  writeRaw(userPath(), '{ this is not json');
+  const broken = json(await call(route, { url: SNAPSHOT_PATH }));
+  assert.equal(broken.mounted, true);
+  assert.equal(broken.layers.user.enabled, false);
+  assert.match(broken.layers.user.reason, /invalid-json/);
+  assert.equal(broken.base.sections.length, DEFAULT_SECTIONS.length, 'the assembly is untouched');
+  assert.equal(json(await call(route, { url: OVERRIDES_PATH })).user.enabled, false);
+
+  // Well-formed JSON that fails the schema is the same story, with the
+  // validator's own code.
+  writeUserConfig([{ name: ALPHA, action: 'nope', text: 'X' }]);
+  const invalid = json(await call(route, { url: SNAPSHOT_PATH }));
+  assert.deepEqual([invalid.layers.user.enabled, /unknown-action/.test(invalid.layers.user.reason)], [false, true]);
+  assert.equal(effectiveAlpha(invalid).text, 'ALPHA BODY');
+
+  writeUserConfig([alphaOverride('REPAIRED')]);
+  const fixed = json(await call(route, { url: SNAPSHOT_PATH }));
+  assert.deepEqual([fixed.layers.user.enabled, effectiveAlpha(fixed).text], [true, 'REPAIRED']);
+});
+
+test('refresh: the route handler re-reads both layers before its first branch', () => {
+  // A structural assertion for the invariant the behavioural tests above
+  // exercise: the IO sits in `refreshLayers()`, at the top of the handler, and
+  // the waterfall listener's own source contains no read at all.
+  const source = readFileSync(new URL('../index.js', import.meta.url), 'utf8');
+
+  const assemblyStart = source.indexOf('function resolvedFor(');
+  const assemblyEnd = source.indexOf('async function probe(', assemblyStart);
+  assert.equal(assemblyStart > 0 && assemblyEnd > assemblyStart, true, 'the listener block is still contiguous');
+  const assemblyPath = source.slice(assemblyStart, assemblyEnd);
+  for (const forbidden of ['readConfig(', 'loadWorkspace(', 'refreshUser(', 'refreshWorkspaces(', 'refreshLayers(', 'readFileSync(']) {
+    assert.equal(assemblyPath.includes(forbidden), false, `the assembly path must not contain ${forbidden}`);
+  }
+
+  const handler = source.slice(source.indexOf('handler: async (req, res) => {'));
+  const refreshedAt = handler.indexOf('refreshLayers();');
+  assert.equal(refreshedAt > 0, true, 'the handler refreshes the layers');
+  for (const branch of ['if (url.pathname === PING_PATH)', 'if (url.pathname === SNAPSHOT_PATH)', 'if (req.method === \'GET\')']) {
+    assert.equal(refreshedAt < handler.indexOf(branch), true, `the refresh precedes ${branch}`);
+  }
+});
+
+// #endregion
