@@ -156,6 +156,11 @@ document.querySelector('[data-plugin="dsh-prompt-setting"]').dataset.buildMatch 
 2. 改动涉及 **`index.js` / `core/**`** ⇒ **必须重启 `dsh web`**（再开新标签）；
 3. 配置类字段（`cordis.patch.yml` / `package.json` 的 config）改动本就热生效。
 
+> ⚠️ **重启的代价（负责人 2026-09-28 纠正，先前的说法不准确）**：停止/重启 `dsh web` 会
+> **终止所有等待确认的会话**——**重开标签页不会把那个会话找回来**。所以第 2 条不是「随手重启」：
+> 重启前先落盘交接（本仓库 `graph_handoff` → `.dsh-graph/HANDOFF.md`，新会话 `graph_claim_supervisor` 接手），
+> 宿主半改动尽量**攒批**。能在 `client.js` 一侧解决的问题，不要动宿主半。
+
 **换包本身**（改名、换依赖 spec（`link:` ↔ tarball）、换安装目标）同样必须重启，`plugin_manager` 的
 返回值会明说 `application: "restart-required"`。
 
