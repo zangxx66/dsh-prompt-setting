@@ -986,7 +986,9 @@ evidence: suite=all passed=153 failed=0 exit=0 ms=1632 diff=2f/+410/-35 commit=1
 ```
 
 `diff` 是本轮修复提交 `1b642d9` 自身的 `git diff --cached --shortstat`（`client.js` +
-`test/client.test.mjs`，相对上一提交 `626327c`）；`node --check client.js` exit 0；
+`test/client.test.mjs`，相对上一提交 `626327c`）；（代码提交 `56e7c67`；本节的最终文字在其后的独立文档提交里。）
+
+`node --check client.js` exit 0；
 `npm pack --dry-run` 仍 `total files: 10`（无 `test/`）。
 
 **负向对照（逐条单独改坏 ⇒ 重跑 client 套件 ⇒ 按备份还原）**：
@@ -1113,3 +1115,123 @@ exit 0；`npm pack --dry-run` 仍 `total files: 10`（无 `test/`）。
    消息内容检索，不满足）。
 2. **真机目视**：置顶项/搜索/计数/键盘/无匹配回退的实际观感与焦点环，需负责人真机确认。
 3. 其余未验证项同 §36 / §41（primitives 分支真实交互、带 session 的 `renderedResolved` 解析率等）。
+
+# 阶段一 C · 第三轮复核返工（g-004 att-002）：会话选择器改为工作区树
+
+负责人 verdict 未通过，反馈是**信息架构**问题，不是控件微调：
+
+> 「『查看范围』的展示可以使用树形结构，和左侧边栏的『工作区』一致。」
+
+上一轮（`6474215`）把原生下拉升级成「可搜索 + 有界渲染」，控件本身没问题；这一轮把「查看范围」按
+**工作区**分组，层级与侧边栏同构，并保留上一轮的全部成果（置顶全局/当前、搜索、有界、降级）。
+本轮只改 `client.js` + `test/client.test.mjs` + 本节。
+
+## 48. `useWorkspaces` 实测形状（读源码，非推断；附文件:行）
+
+| 事实 | 证据（DSH 0.1.7-rc.2 安装包内） |
+| --- | --- |
+| 工作区 hook 名为 `useWorkspaces`，由 `ctx.slots.provideRoot({hooks:{workspaces}})` 贡献 | `dsh-client-ui-workspace/lib/client.js:4137`；renderer 把它合成为 props（`dsh-client-ui-renderer/lib/client.js:703-711`） |
+| 快照形状 `{items, archivedSessionIds, pinnedSessionIds, state, phase, error}` | `dsh-api-workspace-controller/lib/types/client/model.d.ts`（`WorkspaceSnapshot`） |
+| 工作区实体 `{workspaceId, path, title, sessionIds, createdAt, updatedAt}` | `dsh-api-workspace-controller/lib/types/types.d.ts:19-33`（`WorkspaceView`） |
+| **分组顺序** = `items` 的 Host 顺序；**无归属会话**追加在最后，key `""` | `dsh-client-ui-workspace/lib/client.js:418-437`（`groupByWorkspace`） |
+| **组内会话排序** = `updatedAt` 降序、id 升序 tie-break | 同文件 `:278-298`（`orderByRecency`） |
+| 排序之上：当前 blank 会话置顶，然后 **pinned 行前置** | 同文件 `:338-343`（`pinCurrentBlank`）、`:373-386`（`sectionMembers`：placeholders → pinned → rest） |
+| **可见性** = 排除 `origin==='subagent'`、排除非当前 blank、默认排除 archived | 同文件 `:358-372`（`sessionVisible`，`archivedFilter` 默认 `'default'`） |
+| 工作区节点标签 = `title`；`title === 'default-workspace'` 用本地化默认名；再退回路径 basename | 同文件 `:1053-1055`（`workspaceDisplayTitle`）、`:267-272`（`workspaceLabel`） |
+| 无归属桶标签 = 侧边栏 `group.ungrouped` =「未分组」/「Ungrouped」 | 同文件 `:1269`；zh `:3866`、en `:3980` |
+| 「当前视图会话」= `retainedBy.mainView > 0` | 同文件 `mainSessionId`（`dsh-client-ui-layout/lib/client.js:59-62` 同款写法） |
+
+与派发前的侦察一致（`useWorkspaces` 键名、`sessionIds` 归属都对）；侦察里未覆盖的两点由本轮补齐：
+**无归属桶**的存在与位置（最后）、**组内 pinned 前置**规则。
+
+## 49. 树形「查看范围」：交互与机器可读标记
+
+| 元素 | 行为 | 标记 |
+| --- | --- | --- |
+| 模式 | 两个 root hook 都在 ⇒ 树；只有 `useSessions` ⇒ 平铺；`useSessions` 也没有 ⇒ 手输 id | 根节点 `data-scope-mode="tree" \| "flat" \| "manual"` |
+| 置顶「全局」/「当前视图会话」 | 与上一轮完全一致（不参与过滤、无当前会话时 disabled） | `data-pinned="global"\|"current"` |
+| 工作区分组节点 | 名称（`title` → 默认工作区名 → 路径 basename）+ 路径副标题（`title` 提示）+ 会话数 | `data-scope-group="<workspaceId or ''>"` `data-scope-expanded` `data-scope-contains-current` `data-role="scope-group-label"` `data-role="scope-group-count"` |
+| 展开/折叠 | 点箭头切换；**默认只展开「当前视图会话」所在工作区**，其余折叠；无当前会话时全部折叠 | `data-action="scope-toggle"` `data-scope-toggle="<key>"`（`aria-expanded`） |
+| 会话行 | 可读标题 + 运行中圆点 + 路径；点击即选中并回填搜索框 | `data-role="session-option"` `data-session-id` `data-scope-parent` `data-session-running` |
+| 渲染上界 | 每个展开的工作区**最多 10 行**（`SCOPE_GROUP_PAGE`），「显示更多」每次 +10、单组封顶 50（`SCOPE_GROUP_MAX`）；**全局同时最多 100 行**（`SCOPE_TOTAL_MAX`）；分组行最多 40 个（`SCOPE_GROUP_LIMIT`，含当前会话所在组时 ≤41） | `data-action="scope-more"` `data-scope-more` / `data-scope-cut` / `data-warning="scope-truncated"` / `data-warning="scope-groups-truncated"` |
+| 计数行 | 「显示 X / Y 条匹配（共 Z 个会话）」，与上一轮同一组标记 | `data-session-shown` / `data-session-matched` / `data-session-total` |
+| 归档会话 | 按侧边栏默认隐藏，并在页面上说明数量（不静默丢） | `data-warning="scope-archived-hidden"` |
+| 降级 | `useWorkspaces` 缺失或抛错 ⇒ 平铺可搜索列表，并明示限制 | `data-scope-mode="flat"` + `data-warning="scope-degraded"` |
+
+### 搜索语义（明确定义，写进 UI 提示 `data-role="scope-search-hint"`）
+
+1. 会话级匹配：`displayTitle` / `title` / `cwd` / id 的大小写不敏感子串（沿用上一轮的 `haystack`）。
+2. **保留祖先**：只要组内有 ≥1 条匹配，该工作区分组节点就保留（承载匹配行），组内非匹配会话被过滤掉；
+   完全没有匹配的分组被移除。
+3. 匹配**工作区名或路径** ⇒ 该工作区下**全部**会话视为匹配（一并可见）。
+4. 搜索期间命中的分组**强制展开**（否则「保留祖先」看不见匹配）；此时折叠按钮的显式收起不生效，
+   清空搜索后恢复用户自己的展开状态。这是刻意的语义选择：搜索的第一职责是把命中显示出来。
+5. 无归属会话（不属于任何工作区）自成一组（标签「未分组」），始终排在最后，搜索时同样按上述规则保留/移除。
+
+### 为什么不复用 `dsh-client-ui-workspace` 的 `deriveGroups`
+
+它是该包的**内部函数**（`lib/client.js` 顶部 IIFE 内，未导出到包 entry），外部 bundle 拿不到；
+本轮按其**逐条语义**在 `client.js` 内重写（recency → blank → pinned 分区），并额外加了窗口化。
+没有新增依赖、没有改宿主半、没有 require 该包的内部路径。
+
+## 50. 有界渲染与规模实测（离线 vm 探针，非同真机）
+
+`deriveScope` 是纯函数：先按侧边栏规则算出每个分组的完整顺序，再**只把窗口内的行交给渲染**。
+实测（真实 `client.js` 挂在 `node:vm`，桩 fetch，合成目录）：
+
+| 会话规模 | 工作区数 | 默认（只展开当前组）渲染行数 | 搜索命中全部时渲染行数 | 一次击键（编码+过滤+重渲染） |
+| --- | --- | --- | --- | --- |
+| 200 | 1 | 10 | 10 | 2.3ms |
+| 200 | 4 | 10 | 40 | 1.6ms |
+| 500 | 1 | 10 | 10 | 2.9ms |
+| 500 | 5 | 10 | 50 | 2.3ms |
+| 2000 | 1 | 10 | 10 | 6.0ms |
+| 2000 | 20 | 10 | **100（触顶，未渲染的 1900 行有说明文案）** | 3.5ms |
+
+结论：**任何情况下渲染行数都有硬上界**（单组 ≤50、全局 ≤100），与目录规模无关；「全部命中」这种
+最坏搜索在 2000 会话时渲染 100 行而不是 2000 行，页面上出现 `data-warning="scope-truncated"` 与
+`data-scope-cut` 说明剩下的行去哪了。（击键含测试探针的整树展开开销。）
+
+## 51. 本轮新增测试（47 → 52）与证据
+
+| 测试 | 断言 |
+| --- | --- |
+| `the scope picker groups sessions by workspace, like the sidebar` | 分组顺序 = Host 顺序 + 未归属最后；标签 title→basename→未分组；路径副标题；默认只展开当前组；组内 pinned 前置 + recency；归档隐藏且有说明；运行中标记唯一；计数行；键盘高亮 |
+| `the scope tree keeps the ancestor workspace of every search match` | 命中第二个（折叠）工作区的会话 ⇒ 只剩 `w-beta` 且强制展开；命中工作区名/路径 ⇒ 其下会话全留；命中未归属会话 ⇒ 未归属组保留；0 命中 ⇒「按该 id 查看」仍可用并真的发出 `?session=` |
+| `a workspace group folds, unfolds, and pages its rows in` | 折叠态 0 行 → 点击展开出现该行 → 再点收起；25 会话组初始 10 行 + 「显示更多（还有 15 条）」→ 一次点击恰好 +10 行 |
+| `the scope tree never renders the whole catalog (200 / 500 / 2000 sessions)` | 6 种规模×形状：默认 10 行；搜索全部命中时严格等于 `min(100, 组数×10)` 且 `< total`；分组行 ≤41；击键 <500ms；并打印上表 |
+| `a missing useWorkspaces degrades to the flat searchable list` | 无 hook ⇒ `flat` + 降级文案 + 平铺 20 行封顶；hook 抛错 ⇒ 同样降级且不白屏；`items: []` **不算降级**（全部落入未分组，6 个会话一个不丢） |
+
+```
+evidence: suite=client passed=52 failed=0 exit=0 ms=2101 diff=3f/+1309/-81 commit=56e7c67
+evidence: suite=all    passed=164 failed=0 exit=0 ms=2194 diff=3f/+1309/-81 commit=56e7c67
+```
+
+（代码提交 `56e7c67`；本节文字在其后的独立文档提交中定稿。）
+
+`node --check client.js` exit 0；`npm_config_cache=/tmp/npm-cache-probe npm pack --dry-run` 仍
+`total files: 10`（`index.js` / `core/*` / `client.js` / `cordis.patch.yml` / `CONTRACT.md` /
+`README.md` / `NOTES.md` / `package.json`，**不含 `test/`**）。
+
+## 52. 负向对照（逐条单独改坏 ⇒ 重跑 client 套件 ⇒ 备份还原 ⇒ 全量重跑确认）
+
+| # | 改坏点 | 变红 |
+| --- | --- | --- |
+| NC10 | 去掉渲染上界（`matchedIds.slice(0, limit)` → `matchedIds`，预算 `Math.min(…, budget)` → 全量） | `the scope tree never renders the whole catalog`（`200 !== 10`：撤掉上界后默认就铺开整组） |
+| NC11 | 去掉搜索时的祖先保留（删掉「无匹配分组 drop」那一行） | `the scope tree keeps the ancestor workspace of every search match` |
+| NC12 | 去掉置顶「全局」项 | 3 项：`the pinned entries are never filtered away`、`switching to the global option drops ?session=`、`the scope picker groups sessions by workspace` |
+| NC13 | 去掉平铺降级（`useWorkspaces` 缺失也走 tree） | `a missing useWorkspaces degrades to the flat searchable list` |
+
+四条都是「单独改坏 ⇒ 对应用例变红 ⇒ `cp` 还原 ⇒ 全量 164 项重新全绿」，无跨用例连锁。
+
+## 53. 未验证项（本轮，诚实清单）
+
+1. **真机目视**：树形分组的实际观感（缩进/箭头/路径副标题/运行中圆点）、展开折叠手感、
+   以及与左侧边栏「并排看是否真的一致」，都需负责人真机确认。离线探针只能证明结构与标记。
+2. **真实会话规模**：同 §47，探针用合成目录；真机 2000+ 会话下的浏览器击键延迟无数据。
+3. **真机 profile 是否启用 `dsh-client-ui-workspace`**：本轮未在真机确认 `useWorkspaces` 是否真的到达
+   props（类型合并恒在、运行时可缺）。若真机未启用，页面会显示平铺降级并明示 —— 这也是被验收的行为之一，
+   但「真机到底走哪条分支」需目视确认（`data-scope-mode`）。
+4. `default-workspace` 的本地化名字：`dsh-client-ui-workspace` 字典里查不到 `workspace.defaultName` 条目，
+   本轮按语义自备「默认工作区 / Default workspace」。若真机上侧边栏显示的是别的文案，则此项不一致（低风险，
+   仅影响默认工作区这一个节点的标签）。
