@@ -69,6 +69,8 @@ npm pack --dry-run                                # 确认产物干净（无 tes
 | `test/overrides.test.mjs` | 纯函数内核：校验/合并/变换/frozen 推导/投影/渲染 |
 | `test/store.test.mjs` | 路径解析、读时校验、**原子写**（硬链接见证旧文件未被就地改写） |
 | `test/route.test.mjs` | 全套宿主面：栅栏、405/404、两层、frozen、全部 4xx（用复刻真语义的假 Host） |
+| `test/host.test.mjs` | 阶段一 A 的既有套件：清单契约、ping、信任栅栏、405/404（**行为未变，断言仍在**） |
+| `test/client.test.mjs` | 阶段一 A 的客户端套件（`node:vm` 沙箱，本阶段未改 `client.js`） |
 | `test/integration.test.mjs` | **E1–E4 对照实验 + 插件端到端**：真 `@deepseek-ai/dsh-system-prompt` + 真 `@deepseek-ai/cordis` + 真 Cordis 上下文 |
 
 集成测试从 DSH 全局安装根解析真包（`DSH_INSTALL_ROOT` / `DSH_PROFILE_DIR` / pnpm 全局 store）。
