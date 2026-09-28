@@ -140,6 +140,10 @@ test('manifest: bundle, client and publish contract', () => {
     'CONTRACT.md',
     'README.md',
     'NOTES.md',
+    // g-013: the compatibility self-check ships with the package — a script the
+    // user only has after install is a script that is missing exactly when it is
+    // needed (NOTES.md §91).
+    'scripts',
   ]);
   // The `files` allowlist is what keeps `npm pack` free of .dsh-graph,
   // node_modules and .worktrees entries.

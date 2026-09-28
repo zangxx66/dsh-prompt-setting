@@ -34,8 +34,16 @@
  * @module dsh-prompt-setting
  */
 
+import { readFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import {
+  compatibilityVerdict,
+  detectDshVersion,
+  firstCauseLine,
+  mountFailureMessage,
+} from './core/compat.js';
 import { EXPERIMENTS } from './core/experiments.js';
 import { buildDiff } from './core/diff.js';
 import {
@@ -165,6 +173,111 @@ const UNSCOPED_KEY = 'unscoped';
 export const inject = ['webServer', 'connection', 'systemPrompt'];
 
 /**
+ * This module's directory: the module-relative anchor of the version probe
+ * (the anchor that works when DSH is an ancestor or a real, non-optional
+ * dependency).
+ */
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
+/** This package's own manifest — the single source of the tested range. */
+const OWN_MANIFEST_URL = new URL('./package.json', import.meta.url);
+/**
+ * The range used when this package's manifest cannot be read. It exists so the
+ * boot check can never fail on IO; `test/boot.test.mjs` asserts it is *equal* to
+ * `peerDependencies['@deepseek-ai/dsh']` in `package.json`, so the two cannot
+ * drift apart silently.
+ */
+const DSH_PEER_RANGE_FALLBACK = '>=0.1.7-rc.2 <0.1.8-0';
+
+/**
+ * The DSH range this plugin was tested against, read from its own manifest at
+ * import time. Never throws: an unreadable manifest falls back to
+ * {@link DSH_PEER_RANGE_FALLBACK}.
+ */
+export const DSH_PEER_RANGE = readDshPeerRange();
+
+/**
+ * @returns the peer range, or the pinned fallback.
+ */
+function readDshPeerRange() {
+  try {
+    const manifest = JSON.parse(readFileSync(OWN_MANIFEST_URL, 'utf8'));
+    const range = manifest?.peerDependencies?.['@deepseek-ai/dsh'];
+    if (typeof range === 'string' && range.trim().length > 0) return range.trim();
+  } catch {
+    // Fall through: a probe must never be the reason a boot fails.
+  }
+  return DSH_PEER_RANGE_FALLBACK;
+}
+
+/**
+ * Run the import-time compatibility self-check and print **at most one** line.
+ *
+ * Silent while the installed DSH is inside the tested range — a plugin that
+ * talks on every boot is worse than a silent one; one readable line when the
+ * version is outside it or could not be detected. It needs **no injected
+ * service and no `ctx`**, which is exactly why it runs here: the one failure the
+ * plugin can never catch from the inside is a missing `inject` service (then
+ * `apply` is never called at all — NOTES.md §91 boundary ①).
+ *
+ * Never throws: the probe and the logger are both guarded, and every
+ * collaborator is injectable so all three branches are asserted offline.
+ * @param options.detect - detection function (tests); defaults to
+ *   {@link detectDshVersion} anchored at this module.
+ * @param options.log - sink for the one warning (tests); defaults to
+ *   `console.warn`.
+ * @param options.expectedRange - range override (tests).
+ * @returns the verdict `{level, version, message, reason}` with `level` one of
+ *   `ok` | `out-of-range` | `undetected`.
+ */
+export function reportBootCompatibility(options = {}) {
+  const detect = options.detect ?? (() => detectDshVersion({ moduleDir: MODULE_DIR }));
+  const log = options.log ?? ((message) => {
+    if (typeof console !== 'undefined' && typeof console.warn === 'function') console.warn(message);
+  });
+  let detection;
+  try {
+    detection = detect() ?? {};
+  } catch (error) {
+    detection = { version: null, reason: `probe threw: ${firstCauseLine(error)}` };
+  }
+  const verdict = compatibilityVerdict({
+    pluginName: PLUGIN_NAME,
+    pluginVersion: PLUGIN_VERSION,
+    expectedRange: options.expectedRange ?? DSH_PEER_RANGE,
+    detection,
+  });
+  if (verdict.message !== null) {
+    try {
+      log(verdict.message);
+    } catch {
+      // A logger that throws is not a reason to take the harness down with us.
+    }
+  }
+  return verdict;
+}
+
+/**
+ * The import-time self-check, run once per process — the deliverable of g-013
+ * that has to work even when nothing else about this plugin runs. Guarded
+ * twice on purpose: `reportBootCompatibility` swallows probe/logger failures,
+ * and this wrapper swallows anything else (including a bug in the checker).
+ */
+export const BOOT_COMPAT = bootSelfCheck();
+
+/**
+ * @returns the verdict, or a silent `undetected` verdict when the check itself
+ *   broke.
+ */
+function bootSelfCheck() {
+  try {
+    return reportBootCompatibility();
+  } catch (error) {
+    return { level: 'undetected', version: null, reason: firstCauseLine(error), message: null };
+  }
+}
+
+
+/**
  * Write one JSON response. `no-store`: every answer here is a live fact.
  * @param res - the Node response.
  * @param status - HTTP status code.
@@ -281,6 +394,154 @@ async function readJsonBody(req, cap = MAX_BODY_BYTES) {
  *   default rather than failing the mount.
  */
 export function apply(ctx, config) {
+  /**
+   * Disposers of everything this mount registered, in registration order. Kept
+   * by this guard rather than inferred from the host: whatever a future DSH
+   * does with a failed fiber (Cordis unloads it asynchronously; the Loader
+   * swallows the rejection outright), *this* function decides, synchronously,
+   * that a mount either registers everything or registers nothing.
+   */
+  const cleanups = [];
+  try {
+    mount(ctx, config, cleanups);
+  } catch (error) {
+    reportMountFailure(ctx, error, cleanups);
+  }
+}
+
+/**
+ * Register one effect and remember how to undo it, so a later step failing can
+ * always roll the earlier ones back.
+ * @param ctx - the Host plugin context.
+ * @param cleanups - this mount's disposer list.
+ * @param factory - the effect factory, exactly as `ctx.effect` takes it.
+ * @param label - the effect label.
+ * @returns the effect's own disposer.
+ * @throws when the host does not hand back a disposer: an effect we cannot undo
+ *   must fail the mount rather than stay half-mounted.
+ */
+function registerEffect(ctx, cleanups, factory, label) {
+  const disposer = ctx.effect(factory, label);
+  if (typeof disposer !== 'function') {
+    throw new TypeError(`ctx.effect(${JSON.stringify(label)}) returned ${describeValue(disposer)} instead of a disposer`);
+  }
+  cleanups.push(disposer);
+  return disposer;
+}
+
+/**
+ * Guard a host service's return value: a disposer, or a thrown error.
+ *
+ * `webServer.register()` returns the function that removes the route, and the
+ * whole "no half-mount" promise rests on that function existing. A breaking
+ * change that returns anything else (or nothing) is reported through the
+ * ordinary failure path instead of silently leaving a route nothing can remove.
+ * @param value - the service's return value.
+ * @returns the disposer.
+ * @throws {TypeError} when the value is not a function.
+ */
+function disposerOf(value) {
+  if (typeof value !== 'function') {
+    throw new TypeError(`a host service returned ${describeValue(value)} instead of a disposer`);
+  }
+  return value;
+}
+
+/**
+ * Name a value for a one-line diagnostic.
+ * @param value - any value.
+ * @returns e.g. `null`, `undefined`, `object`.
+ */
+function describeValue(value) {
+  return value === null ? 'null' : typeof value;
+}
+
+/**
+ * Report a failed mount: roll every registered effect back, then print exactly
+ * one readable line.
+ *
+ * Rollback runs in reverse registration order — the last thing mounted is the
+ * thing most likely to depend on the ones before it — and one failing disposer
+ * never strands the rest. Never throws: a report that throws would *be* the
+ * failure it reports.
+ * @param ctx - the Host plugin context.
+ * @param error - the thrown value.
+ * @param cleanups - this mount's disposer list (emptied here).
+ */
+function reportMountFailure(ctx, error, cleanups) {
+  let disposed = 0;
+  let disposeFailures = 0;
+  for (let index = cleanups.length - 1; index >= 0; index -= 1) {
+    try {
+      cleanups[index]();
+      disposed += 1;
+    } catch {
+      disposeFailures += 1;
+    }
+  }
+  cleanups.length = 0;
+  logToHost(ctx, mountFailureMessage({
+    pluginName: PLUGIN_NAME,
+    pluginVersion: PLUGIN_VERSION,
+    dshVersion: BOOT_COMPAT.version,
+    cause: firstCauseLine(error),
+    disposed,
+    disposeFailures,
+  }));
+}
+
+/**
+ * Report one line on **both** channels that matter.
+ *
+ * 1. **The terminal (stderr)** — the channel the whole g-013 requirement is
+ *    about, and one `ctx.logger` alone does **not** reach: the only exporter
+ *    registered for `ctx.logger` in this profile is app-boot's, and it merely
+ *    pushes `warn`/`error` into `startupLogs`
+ *    (`dsh-app-boot/lib/index.js:4053-4060`), which is attached to a
+ *    `StartupError` only when startup *fails* (`:4092`); cordis' own default
+ *    exporter only buffers in memory (`cordis/lib/index.js:598-604`). That is
+ *    why the platform's own activation warnings go straight to
+ *    `process.stderr` (`dsh-app-boot/lib/index.js:3956-3963`, `:4008`) — and
+ *    why a boot-visible message of ours has to do the same, or it is invisible.
+ * 2. **`ctx.logger.error`** — the host's own log record (UI ring buffer,
+ *    startup diagnostics), so a logger-aware host still sees a log line.
+ *
+ * The duplication this can produce on a host that *does* register a console
+ * exporter is accepted deliberately: printing the line twice is a far smaller
+ * failure than printing it nowhere (NOTES.md §91).
+ * @param ctx - the Host plugin context (may be absent).
+ * @param message - the single readable line.
+ * @returns true when the host logger also took the line.
+ */
+function logToHost(ctx, message) {
+  let logged = false;
+  try {
+    const logger = ctx === null || ctx === undefined ? undefined : ctx.logger;
+    if (logger !== null && typeof logger === 'object' && typeof logger.error === 'function') {
+      logger.error(message);
+      logged = true;
+    }
+  } catch {
+    // A logger that throws must not swallow the report; the terminal write
+    // below is the one that always has to happen.
+  }
+  try {
+    console.error(message);
+  } catch {
+    // Nothing left to report to; inventing a throw here would break the boot
+    // this whole path exists to protect.
+  }
+  return logged;
+}
+
+/**
+ * Mount everything. Separated from {@link apply} so the guard has one call to
+ * wrap and one list of disposers to unwind.
+ * @param ctx - the Host plugin context.
+ * @param config - the loose plugin config.
+ * @param cleanups - this mount's disposer list.
+ */
+function mount(ctx, config, cleanups) {
   // Per-mount state. Deliberately not module-level: two mounts (or two test
   // cases) must never observe each other's reports, watermark or config cache.
   const report = { renderer: null, reportedAt: null };
@@ -1370,14 +1631,22 @@ export function apply(ctx, config) {
   refreshUser();
   refreshWorkspaces();
 
-  ctx.effect(
-    () => ctx.on('system-prompt/assemble', assembleHandler),
-    'prompt-setting: system-prompt/assemble override',
-  );
-
-  ctx.effect(
+  // The two effects are registered route-first, listener-second.
+  //
+  // Both are mounted synchronously before `mount` returns, so neither a request
+  // nor an assembly can observe the order. It matters only when a step fails:
+  // the most likely real failure is `webServer.register()` refusing a duplicate
+  // prefix (`duplicate prefix route "/prompt-setting"` — a second install, or a
+  // future host claiming the prefix), and registering the route first makes that
+  // failure happen before anything else is mounted. It also makes "the route is
+  // already live when the next step fails" the half-mount case
+  // `test/boot.test.mjs` pins, i.e. the recoverable half is the externally
+  // reachable one.
+  registerEffect(
+    ctx,
+    cleanups,
     () =>
-      ctx.webServer.register({
+      disposerOf(ctx.webServer.register({
         kind: 'prefix',
         path: ROUTE_PREFIX,
         handler: async (req, res) => {
@@ -1461,8 +1730,15 @@ export function apply(ctx, config) {
             });
           }
         },
-      }),
+      })),
     `prompt-setting: ${ROUTE_PREFIX} routes (${ACTIONS.join('/')} overrides)`,
+  );
+
+  registerEffect(
+    ctx,
+    cleanups,
+    () => ctx.on('system-prompt/assemble', assembleHandler),
+    'prompt-setting: system-prompt/assemble override',
   );
 }
 

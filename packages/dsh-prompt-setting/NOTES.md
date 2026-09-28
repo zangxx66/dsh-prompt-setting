@@ -2584,3 +2584,214 @@ evidence: fingerprint aed9bc8=7c48a4b1/250294 -> now=42061a2a/260711
 | 词典 | 既有用例 `client: injects the locale namespace thunk and declares zh/en dictionaries`（`:1002`，键集相等断言在 `:1013`） | 绿；**两轮都未新增 / 未改动任何 i18n 键**（toggle 与滚动都不产生文案） |
 | 构建戳 | 独立复算 `@build-fingerprint` 区间 | 改前 `7c48a4b1` / `250294`（= §89 的预测值）⇒ 首轮 `ab715bbd` / `257592` ⇒ 本轮 `42061a2a` / `260711` |
 | 仓库根 `README.md` | 检查 | 仅路线图里的「就地编辑」（`:18` / `:66`），**本就是此行行为的描述，无需改** |
+
+## 91. boot 韧性：导入期自检 / `apply` 防护 / 客户端半硬化（g-013，2026-09-29，基线 `v0.1.0-test@3aadadf`）
+
+**缺口（负责人要求）**：「预防 DSH 以后可能出现的破坏性更新：如果插件在 boot 阶段加载失败，
+**要在终端打印信息**，并且**不能影响 DSH 的正常启动**。」
+
+### 一、结论先行：哪一种失败我们能在插件内处理，哪一种不能
+
+先读源码（`@deepseek-ai/cordis-plugin-loader@0.1.7-rc.2/lib/index.js` + `@deepseek-ai/cordis@0.1.7-rc.2/lib/index.js`），
+再用真包实测一次（下面二、三节）。结论四条，**每条都决定了一处实现边界**：
+
+| # | 失败形态 | 源码事实 | 插件内能否处理 |
+| --- | --- | --- | --- |
+| ① | **import 期抛错**（`index.js` 顶层/语法/依赖解析） | `Entry._init()`：`try { exports = await this.parent.tree.import(name) } catch (error) { this.ctx.logger.error(error); return; }` ⇒ boot 继续 | **不能**：模块顶层已经炸了，我们自己的代码一行都没跑。平台至少会打 `failed to import`（见二节） |
+| ② | **`cordis.patch.yml` 不合法**（未知 verb / schema 变动） | 失败发生在 loader 把 patch 组合进 profile 树时，**早于**任何 `import(name)` | **不能**：连「本插件被 import」都没发生。**实测终端完全没有输出**（最糟） |
+| ③ | **`inject` 的服务消失** | Cordis `Fiber._refresh()`：`inject` 的每个服务都要有实现，否则 `epoch = INACTIVE`；`_reload()` 根本不执行 `runtime.callback`（= 我们的 `apply`）。loader 只打 `expected service <name> to be implemented`（`isolate()` 路径），Cordis 侧打 `pending (waiting for service: …)`（见二节实测） | **不能**：我们的 `apply` **根本没被调用**。这条只能靠「导入期自检」+ 文档 |
+| ④ | **`apply` 期抛错**（服务方法改名/缺失、方法抛错、返回形状不符…） | `Entry.init()`：`this.fiber?.await().then(notify, notify)` ⇒ apply 的失败被**吞掉**，boot 继续；终端只有原始堆栈 | **能**：这是唯一一处我们 100% 掌控的失败面 ⇒ g-013 的 `apply` 全程 try/catch + 清理 + 单条可读信息 |
+
+**为什么「导入期自检」是唯一能覆盖 ①②③ 的插件内手段**：它在 `module` 顶层执行、**不依赖任何注入服务**
+（因此不依赖 ③ 的 `inject` 是否齐备）、也不依赖 patch 组合成功（②如果失败我们虽然不执行，但一旦执行就说明
+patch 至少组合到了本插件这一行）。所以「范围内静默 / 超范围一条 / 探测失败一条」写进了 `index.js` 的顶层。
+
+### 二、主管实测：四种失败形态 × 终端原文（逐字，本机 DSH `0.1.7-rc.2`，临时 profile）
+
+| # | 失败形态 | DSH 是否正常启动 | 终端原文（逐字） |
+| --- | --- | --- | --- |
+| ① | import 期抛错 | ✅ 仍启动（照常打印 web URL） | `dsh: warning: 1 entry did not activate`<br>`g013-badjs (dsh-g013-badjs): failed to import` |
+| ② | patch 里未知 verb（`insertt:`） | ✅ 仍启动 | **完全没有输出**（插件静默不激活）← **最糟，平台不报** |
+| ③ | `inject` 的服务不存在 | ✅ 仍启动 | `…g013-badservice (dsh-g013-badservice): pending (waiting for service: definitelyNotAServiceInAnyDSH)` |
+| ④ | `apply` 期抛错 | ✅ 仍启动 | `…g013-applythrow (dsh-g013-applythrow): Error: G013-APPLY-MARKER: …` + 完整堆栈（含 `#g013-applythrow` / `#include`），**没有任何指引** |
+
+> 更正：本 attempt 的 brief 早先写「import 失败时终端只有一坨堆栈」**不准确**——平台有汇总行 +
+> `<id> (<name>): failed to import`。上面的表是修正后的版本。
+
+### 三、主管实测：坏插件对 web UI 的**功能级**影响（同一套功能探针，三个临时实例对照）
+
+| 实例 | shell | UI 挂载点 | boot 清单条目 | 唯一核心客户端模块 | 首个 bundle |
+| --- | --- | --- | --- | --- | --- |
+| 干净基线 | HTTP 200 / 34,240 B | 有 | **67** | **64** | 200 / JS / 33,930 B |
+| 注入服务不存在 | HTTP 200 / **34,240 B** | 有 | **67** | **64** | 200 / JS / 33,930 B |
+| apply 期抛错 | HTTP 200 / **34,240 B** | 有 | **67** | **64** | 200 / JS / 33,930 B |
+
+- 核心模块清单**逐条 `diff` 完全相同**（`"id":"@deepseek-ai/…"` 排序后无差异）；
+- 探针方法：`curl -L -c/-b cookiejar "…/?token=…"` 取 shell（200、`<!doctype html>`、含 `id="root"` 挂载点、
+  `__DSH_BOOT__` 清单 67 条目）+ 取清单里第一个 `plugins/??…client.js&rev=…` 资源（200、`text/javascript`、33,930 B）；
+- 结论：**插件未激活对 web UI 零影响**（干净 vs 坏的差别只是少一个条目，而那个条目本来就不是核心 UI 模块）
+  ⇒ README「兼容性与救援」据此写「挂掉不会影响 DSH 启动与界面」，**同时必须写**：
+  终端只有那两行/堆栈，用户不看终端就只会觉得「插件没生效」。
+- 清理：三个临时 profile 与 `/tmp` 样本已删；当前 profile 两文件哈希与 3080 pid 未变。
+
+### 四、本 attempt 自己跑的源码级实测（补二节的「能不能捕获」）
+
+用真 `@deepseek-ai/cordis` 起一个 `new Context()`，跑两个探针：
+
+```
+(A) try { ctx.effect(() => { throw new Error('BOOM-A') }) } catch { … }
+    ⇒ caught = BOOM-A           // 工厂抛错**会**传播到 ctx.effect 的调用方
+(B) ctx.plugin({ apply(c) { c.effect(()=>()=>log('first-disposed')); c.effect(()=>{throw …}) } })
+    ⇒ ctx.plugin() rejects，且 first-disposed 被调用   // 不 catch 时 Cordis 也会 unload 掉该 fiber
+```
+
+⇒ 两个推论（都写进了实现与测试）：
+
+1. `ctx.effect(factory)` 的工厂抛错**能**被我们自己的 try/catch 看见 —— 这是 `apply` 防护能成立的前提
+   （`registerEffect` 因此可以「注册成功才记账」）。
+2. 即便我们不 catch，Cordis 也会在 fiber 失败后 dispose 掉已注册 effect（`_reload` 捕获 → `epoch=INACTIVE`
+   → `_unload()` → `_disposables.clear()`）。**所以我们的显式清理不是为了「否则一定半挂载」，而是为了**：
+   回滚**同步、确定、可断言**，不依赖 Cordis 的异步 unload，也不依赖 loader `fiber.await().then(notify, notify)`
+   对失败的处理；并且能让「失败」变成**一条**我们自己的信息，而不是平台堆栈。
+
+### 五、实现（六个落点）
+
+| 文件 | 落点 |
+| --- | --- |
+| `core/compat.js`（新增） | 纯函数：semver 解析/比较（含 §11 预发布规则）、范围判定（不支持的语法 ⇒ `null`「无法判断」）、三分支文案、`apply` 失败文案；best-effort 探测 `detectDshVersion`（多锚点、绝不抛） |
+| `index.js` 顶层 | `reportBootCompatibility()` + `BOOT_COMPAT`：导入期自检，**范围内静默**，超范围/探测失败各一条 `console.warn`；探测与 logger 都各自 guarded，外层再包一层 ⇒ **绝不抛**。`DSH_PEER_RANGE` 从自己的 `package.json` 读（读不到回退到常量，测试断言两者相等） |
+| `index.js` `apply` | `apply(ctx, config)` 只做一件事：`try { mount(...) } catch { reportMountFailure(...) }`。`mount` 是原来的正文；两处注册改为 `registerEffect(ctx, cleanups, factory, label)`（登记 disposer + 校验返回值），路由注册用 `disposerOf()` 校验服务返回的是不是 disposer。失败信息**同时**写终端与 `ctx.logger.error`（理由见六） |
+| `index.js` 注册顺序 | **路由先、waterfall 监听器后**（原来相反）。理由两条：最可能的真实失败是 `webServer.register()` 拒绝重复前缀（二次安装/未来宿主占用该前缀），先注册路由 ⇒ 该失败发生在**什么都没挂**时；同时让「路由已 live、下一步失败」成为可被测试钉死的半挂载场景。两者都在 `mount` 返回前**同步**挂好，任何请求与装配都观察不到顺序（既有断言只看数量与 `listeners[0]`，已复跑 328 条全绿） |
+| `client.js` | 指纹区之后加一道 guard：`try { return buildPlugin(require) } catch { return degradedPlugin(require, error) }`；原正文整体移入 `buildPlugin`（**刻意不缩进**：6k 行重排等于 6k 行 diff、零行为变化，且指纹区正是这段文本）；`degradedPlugin` 打印一条 `console.error`，能拿到 React 就注册降级卡片（保留 `data-plugin`/`data-render-state` 标记），连 React 都没有就返回 `{inject: [], apply(){}}`（什么都不注册）。渲染期仍走既有 `renderFailureCard` |
+| `scripts/check-compat.mjs`（新增，随包发布） | 只读自检：本插件版本 / peer 范围 / 已装 DSH 版本与来源 / 结论 / **四种 boot 失败形态的终端签名（逐字）** / 救援步骤 / 本插件自己的消息模板（**由 `core/compat.js` 的真实构造函数产出，不是手抄副本**）。零依赖、不联网、永不抛、**退出码恒 0** |
+
+### 六、终端渠道：为什么失败信息**同时**写 `stderr` 与 `ctx.logger.error`（本节结论改过一次实现）
+
+brief 的原话是「用 `ctx.logger.error`；`ctx.logger` 不可用时退回 `console.error`」。**读源码后发现前半句
+在本 profile 里到不了终端**，而「在终端打印信息」正是 g-013 的全部要求，所以实现改成**两个渠道都写**：
+
+| 依据（源码） | 结论 |
+| --- | --- |
+| `@deepseek-ai/dsh-app-boot/lib/index.js:4053-4060`：`diagnostics.logger.exporter({ levels: { default: 2 }, export: ({type,…}) => { if (type === "warn" \|\| type === "error") startupLogs.push(…) } })` | 整个 profile 里**唯一**注册给 `ctx.logger` 的 exporter 只是把 warn/error **收进数组**，不写终端 |
+| 同文件 `:4092`：`cause.startup = { configurationPath, messages: startupLogs }`（只在 `catch (cause)` 里，且仅 `StartupError`） | `startupLogs` 只在**启动失败**时才被挂到错误上；**启动成功时它被丢弃** ⇒ 我们的 `logger.error` 在正常 boot 下**什么都不会打印** |
+| `@deepseek-ai/cordis/lib/index.js:598-604`：默认 exporter 只 `self.buffer.push(message)` | cordis 自带出口是内存环形缓冲（给 UI 看），不是终端 |
+| `@deepseek-ai/dsh-app-boot/lib/index.js:3956-3963`、`:4008`：`warn = (line) => void process.stderr.write(line)`，`activationDiagnostic` 拼 `\`${binName}: warning: N entry did not activate\n<id> (<name>): …\`` | **平台自己的告警是直接写 `process.stderr` 的** —— 我们照做才是同一个终端渠道 |
+
+⇒ `logToHost(ctx, message)` 现在：**先**调 `ctx.logger.error(message)`（可行时；让宿主的日志记录/启动诊断也能看到），
+**再无条件** `console.error(message)`（= `process.stderr`，与平台告警同渠道）。测试
+`boot: the line always reaches the terminal, even when the host logger is missing or broken` 对
+`logger = ok / missing / throwing` 三种形态都断言**终端恰好一条**，且 `ok` 时两个渠道内容相同。
+
+**代价（诚实记录）**：若某个宿主**自己**注册了写终端的 logger exporter，这条信息会**出现两次**。
+选择接受：重复一次远好于「信息消失」。本机 web profile 没有这样的 exporter（证据见上表第一、二行）。
+
+### 七、三条边界（+ 一条我们修不了的残余，全部写进 README）
+
+① `inject` 的服务消失 ⇒ 我们的 `apply` **根本不执行**（一、③）⇒ 只能靠导入期自检与文档；
+② `cordis.patch.yml` 不合法 ⇒ 失败在 **profile 组合层**、早于本插件任何代码，且**平台不报**（一、②）
+   ⇒ 插件无法自救，只能靠 `scripts/check-compat.mjs` + `dsh --dump-config`；
+③ 终端消息**只在终端**（`dsh web` 前台输出）：没有 UI 提示、没有远程上报（非目标）⇒ 不看终端 = 没有信号。
+④（残余）若某版 `webServer.register()` **返回非 disposer**，路由已进它自己的表而我们**没有句柄可撤**：
+   `disposerOf()` 会把这个形态变成可见的失败（一条信息）并保证**不再往上叠挂**监听器，
+   但那一项本身撤不掉。测试 `boot: a service that returns the wrong shape …` 明确断言 `live.size === 1`（不掩饰）。
+
+### 八、`inject` 保持不变：结论与代价分析（brief 要求「先给结论，不要直接改」）
+
+**结论：不改。** `inject = ['webServer', 'connection', 'systemPrompt']` 原样保留（新增测试钉死）。
+
+- 把 `systemPrompt` 从 `inject` 里拿掉的**收益**：服务消失时我们至少能跑 `apply`，于是可以打印一条自己的信息。
+- **代价（更大）**：插件会在没有覆盖引擎的 profile 里「成功挂载」——路由照常提供服务、UI 照常展示页面，
+  但**每一段覆盖都静默失效**（`assemble` 不存在，覆盖永远不生效）。这是把「启动期一次可见的失败」换成
+  「运行期持续的、看起来正常的错误结果」，对「默认 System Prompt 管理」这个核心承诺是降级而非兜底。
+- 而且 ③ 的失败**平台已经报了**（终端有 `pending (waiting for service: …)`，见二节），信息并没有丢；
+  真正没信号的只有 ②，而 ② 与 `inject` 无关。
+- ⇒ 选「保留硬依赖 + 把可读信息补在导入期与 apply 期」，代价是 ③ 只能靠文档与自检脚本（写进七、①）。
+
+### 九、版本探测（`detectDshVersion`）的设计与已知限制
+
+锚点按「越能描述**本次 boot** 越优先」排序：
+
+1. `DSH_INSTALL_ROOT`（显式覆盖；与 `test/integration.test.mjs` 同一个 knob）；
+2. `DSH_PROFILE_DIR`（宿主自己声明的 profile 目录）；
+3. **本模块所在目录**（DSH 是祖先依赖或非 optional 依赖时命中）；
+4. **运行中的 CLI 入口 `process.argv[1]`**：pnpm 全局布局里 `dsh` 的 bin 就在安装树内部
+   （`…/global/v11/<hash>/node_modules/@deepseek-ai/dsh/lib/bin.js`），`createRequire` 从它出发能解析到
+   **本次进程正在用的**那个 `@deepseek-ai/dsh`。**本机实测：该锚点解析到 `0.1.7-rc.2`**；
+5. pnpm 全局 store 扫描（`$PNPM_HOME/global`、`$DSH_HOME/profiles`、`~/.local/share/pnpm/global`），
+   镜像 `test/integration.test.mjs` 的候选目录策略 —— 最后手段，只能说明「机器上有什么」。
+
+已知限制（都写进代码注释，不藏）：
+
+- **brief 建议的 `createRequire(import.meta.url).resolve('@deepseek-ai/dsh/package.json')` 在本机真实布局下必然失败**
+  （本包以 `link:` 装进 profile，profile 的 `node_modules/@deepseek-ai` 里只有 `cosmokit`/`schemastery`；
+  插件目录的祖先链条上没有 `node_modules`）。若照抄 brief 那一句，**每次 boot 都会打印「无法探测」**，
+  正是 brief 自己禁止的噪音 ⇒ 实现为多锚点，实测命中第 4/5 条。
+- **多版本并存时以「最高优先级锚点」为准**，不做「多个候选取最悲观」：同一台机器上存在旧 DSH 的 store 副本时，
+  只有优先级更高的锚点失败才可能选到它（已记录的取舍；判错的代价只是**一条措辞**，不会失败）。
+- **范围语法只实现比较器列表**（`>=x <y`，含 `||`）：`^`/`~`/`x`/连字符区间一律返回 `null`「无法判断」，
+  并被当作 undetected 处理（**绝不猜**）。本包实际只用 `>=0.1.7-rc.2 <0.1.8-0`。
+- 探测**读文件系统**（一次 `readFileSync`，失败路径才有 readdir）：不联网、不写任何东西。
+
+### 十、`apply` 失败后**不 rethrow**：取舍
+
+- **选不 rethrow**（`apply` 捕获后正常返回）：终端只有我们**一条**可读信息 —— 形态④ 的裸堆栈不会再出现
+  （已实测形态④ 只有堆栈、没有指引，这正是 g-013 要治的东西）。
+- **代价**：本插件的 fiber 保持 active 但零 effect，`plugin_manager` 里仍显示「已启用」。
+  这是**有意**的取舍：`apply` 的返回值对 loader 而言就是「挂上了」，而把它标成失败除了多一坨平台堆栈
+  并不会让任何东西更好用；「本插件已停用」这句话写进那一条信息里，README 也写了怎么确认。
+
+### 十一、测试与负向对照
+
+新增 `test/boot.test.mjs`（**21 条**）：导入期三分支（范围内静默 / 超范围一条 / 探测失败一条 / 探测抛错、
+logger 抛错都收容）、范围与 semver §11 边界（`rc.1 < rc.2 < 0.1.7`、`rc.10 > rc.2`、`alpha < alpha.1`、
+不支持的语法 ⇒ `null`）、探测多锚点（真安装 / 坏 JSON / 无 version / 什么都没有 / 垃圾锚点）、
+`apply` 四种破坏（方法缺失 / 抛错 / 返回非 disposer / `ctx.effect` 缺失）下**不抛 + 一条信息 + 零残留**、
+**半挂载回滚**（先注册的路由 disposer 被调用且 `live` 路由表清空）、失败的 disposer 被收容且在信息里承认、
+**boot 连续性**（同管线下一个插件照常挂载）、客户端 factory 抛错不抛回 loader（`react` 缺失 + 正文抛错两种，
+后者断言降级卡的 `data-plugin`/`data-render-state` 与原因文本）、正常路径零变化（`inject` 与渲染期兜底仍在）、
+自检脚本的签名/退出码/只读性。
+
+负向对照 4 条（逐条「改坏 ⇒ 跑 `test/boot.test.mjs` ⇒ 从 `/tmp/g013-nc` 还原 ⇒ `shasum -a 256` 逐字节核回」）：
+
+| # | 改坏 | 结果 | 还原后 |
+| --- | --- | --- | --- |
+| NC1 | 去掉 `apply` 的 try/catch（直接 `mount(...)`） | **8 红 / 13 绿**（4 种破坏形态 + logger 兜底 + 半挂载 + 失败 disposer + boot 连续性） | 21 绿 |
+| NC2 | 去掉 effect 清理循环（`cleanups.length = 0` 前不 dispose） | **2 红**（半挂载回滚、失败 disposer 收容） | 21 绿 |
+| NC3 | 让超范围分支 `message = null`（静默） | **2 红**（三分支文案、真安装探测→判决） | 21 绿 |
+| NC4 | 去掉客户端 factory guard（`return buildPlugin(require)`） | **3 红**（react 缺失、正文抛错降级卡、坏宿主） | 21 绿 |
+
+`shasum -a 256` 逐字节核回：`index.js 6da70b548e987aa8eeb87268d58604c40e828d7e56741ff294797554b12b7249`、
+`client.js 419ac8d1b374f5cbef6f0f8ad89f17fb8d7363c6e76f5f22d9c4e263f72059fc`（还原前后 `shasum -a 256` 逐字节一致；
+四条对照在**最终代码**上重跑过一遍，红/绿计数见上表）。
+
+### 十二、自测证据（worktree `.worktrees/g-013-att-01`，基线 `3aadadf`）
+
+```
+evidence: suite=node --test(packages/dsh-prompt-setting) passed=349 failed=0 exit=0 skipped=0
+evidence: suite=node --test(test/boot.test.mjs) passed=21 failed=0 exit=0
+evidence: pack=files 16 / test-hits 0
+evidence: fingerprint 3aadadf=42061a2a/260711 -> now=0c098c88/265425
+```
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test`（包目录） | **349 / 349 pass / 0 fail / 0 skipped**（基线 328 ⇒ **+21 条**） |
+| 语法 | `node --check`（`index.js`、`client.js`、`core/*.js`、`scripts/*.mjs`） | 全通过 |
+| 打包 | `npm pack --dry-run --cache /tmp/g013-npm-cache` | **16 个文件**、`test/` **命中 0**。相对基线 14 → 16：**+`core/compat.js`、+`scripts/check-compat.mjs`**（brief/补充说「14 → 15」是按「只加脚本」估的；`core/compat.js` 是纯函数内核，按本仓分层原则必须单独成文件，所以是 **16** —— 数字更正，`test/` 仍 0 命中） |
+| 构建戳 | 独立复算 `@build-fingerprint` 区间 | `42061a2a` / `260711`（= §90 的收尾值）⇒ `0c098c88` / `265425` |
+| 既有 328 条 | 全量复跑 | **零删改削弱**；唯一改动的既有测试是 `test/host.test.mjs` 的 `files` 白名单断言（**+1 行 `'scripts'`**，并补注释说明），以及 `test/client.test.mjs` 的打包断言本来就只查 `test` 不在册（未改） |
+| **终端渠道** | 子进程里用「`webServer.register` 不存在」的 ctx 桩跑 `apply`（`/tmp/g013-stderr-proof.mjs`） | **exit 0**、**stdout 无输出**、**stderr 恰好一行**（原文见交付说明），且 `ctx.logger.error` 同时拿到同一行（`LOGGER_LINES=1`）——「终端看得见」是实测的，不是推断的 |
+| 兼容自检脚本 | `node scripts/check-compat.mjs` | 退出 0；本机输出 `兼容（在已测试范围内）`（探测到 `0.1.7-rc.2`，来源为全局安装内的 `@deepseek-ai/dsh/package.json`） |
+
+### 十三、未验证项 / 交给主管（诚实清单）
+
+- **临时 profile 真机实测不由本 attempt 执行**（需要特权，且禁改 profile）：二、三节的两张表是主管已跑的实测；
+  本 attempt 只提供「预期终端输出原文」供逐字比对（见交付说明）。
+- **运行中 `dsh web` 进程的 `argv[1]` 究竟是不是 `…/@deepseek-ai/dsh/lib/bin.js` 未直接验证**
+  （本机 `ps` 被沙箱拒绝）。锚点 4 是按 pnpm 布局与 `dsh` 启动 shim 的源码推出的，并已用「把该路径当
+  `argv[1]`」的方式验证过解析成功；真机 boot 下若锚点 4 失效，会退到锚点 5（全局 store 扫描），
+  本机实测锚点 5 也能命中 `0.1.7-rc.2` ⇒ **范围内仍然静默**。
+- **`core/compat.js` 的范围语法只覆盖比较器列表**（九节），`^`/`~` 等未实现（返回「无法判断」）。
+- **降级卡片的文案刻意不做 i18n**（`client.js` 顶部词典与 locale 绑定都在刚失败的正文里）；
+  `test/client.test.mjs` 的 en 横扫走的是**正常**模块，因此不受影响 —— 这是有意选择，不是漏掉。
+- **「返回非 disposer」的残余**（六、④）无法彻底消除，只能可见化 + 不再叠加。
