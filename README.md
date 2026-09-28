@@ -24,6 +24,9 @@ DSH 每轮会话都会注入由 `@deepseek-ai/dsh-system-prompt` 装配的基座
 - **改得动**：注册官方 `system-prompt/assemble` waterfall hook，按段名替换 / 屏蔽 / 追加，**不改核心、不改安装包**；
 - **作用域两层**：用户级默认 + 工作区级覆盖（后者优先）；
 - **生效边界**：保存后从下一个会话 / 下一轮生效，不改写正在进行中的回合；
+- **跟随语言**：客户端文案**全部**走 DSH 的 locale 命名空间词典（zh/en 两套内联，键位必须相等），
+  DSH 语言切到 English 时本页即英文，无需刷新或重启；自动化以「en 渲染横扫」保证零 CJK、无裸 key 回落，
+  覆盖范围与不覆盖的部分见 [`packages/dsh-prompt-setting/NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) §89；
 - **持久化**：只写插件自己的数据目录，升级 DSH 不丢配置。
 
 ## 仓库结构

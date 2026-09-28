@@ -385,6 +385,10 @@ window.__ModuleLoader__.load({
       fWorkspace: '工作区级',
       fYes: '可覆盖',
       fNo: '不可覆盖',
+      // The editor's "label: value" row cannot echo its own label; these two
+      // are the values of that row only, never of the sections-list Tag.
+      fYesShort: '是',
+      fNoShort: '否',
       originRegistered: '注册段',
       originAppended: '本插件 append',
       originDownstream: '其它插件加入',
@@ -473,6 +477,7 @@ window.__ModuleLoader__.load({
       ovMergedNote: '合并顺序：工作区级覆盖同名用户级条目，并保留其位置。',
       ovUser: '用户级',
       ovWorkspace: '工作区级',
+      ovWorkspaceDisabled: '工作区级（未启用）',
       ovEffective: '已生效',
       ovIneffective: '未生效',
       ovUnknown: '效果未知',
@@ -673,6 +678,8 @@ window.__ModuleLoader__.load({
       fWorkspace: 'Workspace',
       fYes: 'Overridable',
       fNo: 'Not overridable',
+      fYesShort: 'Yes',
+      fNoShort: 'No',
       originRegistered: 'Registered',
       originAppended: 'Our append',
       originDownstream: 'Added by another plugin',
@@ -764,6 +771,7 @@ window.__ModuleLoader__.load({
       ovMergedNote: 'Merge order: a workspace override wins over the same-name user entry and keeps its position.',
       ovUser: 'user layer',
       ovWorkspace: 'workspace layer',
+      ovWorkspaceDisabled: 'workspace layer (disabled)',
       ovEffective: 'Applied',
       ovIneffective: 'Not applied',
       ovUnknown: 'Effect unknown',
@@ -3375,7 +3383,7 @@ window.__ModuleLoader__.load({
           pinnedSessionButton(
             t,
             'current',
-            `${t('sessionCurrent')}${currentLabel ? `：${currentLabel}` : ''}`,
+            currentLabel ? fmt(t('sessionCurrentLabel'), { label: currentLabel }) : t('sessionCurrent'),
             scoped && m.sessionArg === currentId,
             currentId.length === 0,
             m.scopeHover === 'p:current',
@@ -3854,7 +3862,7 @@ window.__ModuleLoader__.load({
                 h('span', { style: metaStyle }, t('editOriginLabel')),
                 h('span', { 'data-role': 'origin' }, t(originKey(origin))),
                 h('span', { style: metaStyle }, t('editOverridableLabel')),
-                h('span', { 'data-role': 'overridable' }, overridable ? t('fYes') : t('fNo')),
+                h('span', { 'data-role': 'overridable' }, overridable ? t('fYesShort') : t('fNoShort')),
               )
             : null,
           h(
@@ -3930,7 +3938,7 @@ window.__ModuleLoader__.load({
                 { value: 'user', label: t('ovUser'), id: 'ps-layer-user', panelId: 'ps-editor-panel' },
                 {
                   value: 'workspace',
-                  label: workspaceUsable ? t('ovWorkspace') : `${t('ovWorkspace')}（${t('stDisabled')}）`,
+                  label: workspaceUsable ? t('ovWorkspace') : t('ovWorkspaceDisabled'),
                   id: 'ps-layer-workspace',
                   panelId: 'ps-editor-panel',
                 },

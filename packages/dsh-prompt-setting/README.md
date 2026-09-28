@@ -197,6 +197,24 @@ document.querySelector('[data-plugin="dsh-prompt-setting"]').dataset.buildMatch 
 真机屏幕阅读器（VoiceOver）**未测**（本机验证手段只有渲染树断言），细节与取舍见
 [`NOTES.md`](./NOTES.md) §87。
 
+## 文案与语言（i18n）
+
+客户端半的**全部**文案走 `ctx.locale` 的命名空间词典（`settings.promptSetting`，zh/en 两套内联在
+`client.js` 顶部），所以 DSH 语言切到 English 时本页即英文，不需要刷新或重启（client 半由 HMR 热替换）。
+`client.js` 里**不允许**出现硬编码的界面文案：一切可读文本都从 `t(key)` 取，两套词典键位必须相等。
+
+自动化保障（`test/client.test.mjs`）：
+
+| 用例 | 断言 |
+| --- | --- |
+| `client: injects the locale namespace thunk and declares zh/en dictionaries` | zh/en **键位集合完全相等** |
+| `client: every documented rejection code has distinct zh/en copy` | 每个错误码都有**互不相同**的中英文案 |
+| `client: the english render sweep shows no CJK and no bare key, in any branch` | 用 **en** 词典渲染 **34 个场景**（全部视图与关键状态，10980 条渲染字符串，含 `placeholder`/`title`/`aria-label`），断言**零 CJK**、**无裸 key 回落**、en 词典非空且值不等于 key |
+| `client: the english sweep really walked every required branch marker` | **59 个 `data-*` 分支标记**必达（含 19 个 `data-warning`、构建戳三态、冻结三态、错误码横幅），少一个就红 |
+
+覆盖范围、负向对照与**刻意不覆盖**的部分（原生控件文案、DSH 自带 UI 文案、宿主返回的 `message`/`reason`
+原文、真机 SR 与热替换时序）见 [`NOTES.md`](./NOTES.md) §89。
+
 ## 阶段边界
 
 阶段一 B 交付宿主侧全部能力：`GET /prompt-setting/snapshot`、
