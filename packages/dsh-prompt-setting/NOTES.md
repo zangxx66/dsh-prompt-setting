@@ -1005,3 +1005,111 @@ evidence: suite=all passed=153 failed=0 exit=0 ms=1632 diff=2f/+410/-35 commit=1
   「`base` 与 `effective` 都看不到、但瀑布里确实存在」的段名（本插件拿不到的场景），
   客户端会漏判成「可以 append」，此时宿主仍会正确跳过（不会写坏数据，只是回到旧行为）。
   这一残余风险已在契约已知限制范围内，未新增宿主探测。
+
+---
+
+# 阶段一 C · 第二轮复核修复（g-004 第三轮）
+
+负责人 verdict 未通过：会话下拉随使用规模退化。本轮提交 `6474215`（代码）+ 紧随其后的文档提交。
+
+## 42. 反馈与原理
+
+> 「查看范围使用下拉会有一个问题，随着用户的深度使用，下拉列表会越来越长。」
+
+会话数是**随时间单调增长**的用户数据（每个会话都在侧边栏里），而原生 `<select>` 一次铺开全部
+选项：几十条开始难用，上百条实际不可用，并把 DOM 撑大。凡是「与用户历史规模成正比的控件」
+都必须**可搜索 + 有界渲染**，否则功能随使用退化。这一条成立，已按反馈返工。
+
+## 43. 搜索路径：为什么不用 `ctx.sessions.search`
+
+先做了只读侦察（证据为 DSH 安装包内的 d.ts 原文）：
+
+| 候选 | 事实 | 结论 |
+| --- | --- | --- |
+| `ISessions.search(query, signal)`（`dsh-api-session-controller/lib/types/client/contract/sessions.d.ts:104-112`） | 原文：**"Search the Host's visible message-content index. Results stay request-local; the list snapshot remains the metadata authority."** 返回 `{items: SessionSearchResultItem[], hasMore}`，规模由 `searchResultLimit` 约束 | **不是元数据检索**：它搜的是消息**内容**，不会按标题/路径/id 命中；且需要 `ctx.sessions` 服务注入 + 每次击键一次 Host 往返（`AbortSignal` 取消） |
+| `ISessions.list`（同文件 `:45`） | `ObservableSnapshot<SessionListState>`，`ids` 为 Host 顺序、行含 `displayTitle/title/cwd/running/retainedBy`；`service.d.ts:52` 明确它是 "the metadata authority" | **采用**：props 的 `useSessions` 就是这个快照的选择器形态 |
+| 会话侧的 root hook 贡献 | `dsh-client-ui-session` 只 `provideRoot({hooks:{sessions,sessionStatus}, keyedHooks:{sessionRetainInfo}})`，**没有** search hook | 没有第二条 props 通道 |
+
+因此：**本地过滤 `list` 快照 + 有界渲染**（正是主管允许的兜底路径）。这样也不需要新增
+`inject`（注入一个本 profile 可能不存在的服务会让整个设置页有加载失败风险），
+与「`useSessions` 缺失即降级」的既有防御一致。
+
+## 44. 新交互
+
+| 元素 | 行为 | 机器可读标记 |
+| --- | --- | --- |
+| 「全局」置顶项 | 永远可见、不参与过滤；选中即无参快照 | `data-action="session-pinned"` `data-pinned="global"` `data-pinned-active` |
+| 「当前视图会话」置顶项 | 同上；取 `retainedBy.mainView > 0`，标签带当前值；无当前会话时 disabled | `data-pinned="current"` |
+| 当前选择 | 一行可读文案（`当前：<标题>`） | `data-role="session-current"` |
+| 搜索框 | 即时过滤 `displayTitle` / `title` / `cwd` / id（大小写不敏感子串，见 §45）；选中后**回填**该会话可读标题；静止时 placeholder 显示当前值 | `data-role="session-search"` |
+| 计数行 | 「显示 X / Y 条匹配（共 Z 个会话）」 | `data-session-shown` / `data-session-matched` / `data-session-total` |
+| 结果列表 | **最多 20 行**，Host 顺序不重排；高亮键盘选中行 | `data-role="session-option"` `data-session-id` `data-session-active` |
+| 无匹配 | 提示 + 「按该 id 查看：<输入>」入口（保留手输能力） | `data-warning="session-no-match"` `data-action="session-use-input"` |
+| 键盘 | ↑↓ 移动、Enter 选中（无匹配时 Enter 直接用输入值）、Esc 清空；输入框与行都是原生控件 ⇒ Tab/Enter 与焦点环天然可用 | — |
+
+保留项（未受影响）：`useSessions` 缺失或抛错 ⇒ 手输 id + 明示限制；**不**从 URL 取 session；
+`frozenScope` 三态呈现；保存前覆盖可行性校验。
+
+## 45. 有界渲染与规模实测（离线 vm 探针，非同真机）
+
+`SESSION_MATCH_LIMIT = 20`：匹配集合整体算出，**渲染永远只取前 20**。用真实 `client.js` 在
+`node:vm` 里挂载（桩 fetch + 合成会话目录，目录只构造一次）实测：
+
+| 会话数 | 渲染出的会话行 | 计数行 shown/matched/total | 首次挂载 | 一次击键（过滤+重渲染） | 其中 selector 编码 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 1 | 1 / 1 / 1 | 4.3ms | 0.3ms | 0.0ms |
+| 20 | 20 | 20 / 20 / 20 | 2.4ms | 0.2ms | 0.0ms |
+| 200 | **20** | 20 / 200 / 200 | 5.6ms | 0.3ms | 0.1ms |
+| 500 | **20** | 20 / 500 / 500 | 6.6ms | 1.2ms | 0.5ms |
+| 2000 | **20** | 20 / 2000 / 2000 | 11.1ms | 2.1ms | 1.6ms |
+| 5000 | **20** | 20 / 5000 / 5000 | 22.3ms | 6.0ms | 5.1ms |
+
+（首次挂载含两次桩网络往返与 vm 加载；击键含测试探针的整树展开开销。）
+
+两处为此做的实现选择：
+
+1. **紧凑编码**而非 JSON：`ctx.sessions` 的 selector 每次渲染都会重跑，5000 行时
+   JSON 555KB / 1.8ms 对比紧凑分隔符 274KB / 1.5ms（实测），且 `displayTitle` 等字段先经
+   「无分隔符则原样返回」的快速路径，不再每行 `split/join`（那一版 5000 行击键要 15.9ms）。
+   分隔符是控制字符，解码按位置进行；显示字段命中分隔符时才做替换，id 由 Host 生成、原样携带。
+2. **解码缓存**（按 payload 字符串精确命中）并在解码时预生成小写 `haystack`，
+   于是「一次击键」= 每行一次 `indexOf`，而不是每行 4 次 `toLowerCase`。
+
+## 46. 新增测试（41 → 47）与证据
+
+| 测试 | 断言 |
+| --- | --- |
+| `the session picker renders a bounded list at every catalog size` | 0 / 1 / 200 三种规模：渲染行数 = 0/1/20，**不等于 200**；计数行三段数字与文案正确；0 会话时置顶仍在、当前项 disabled |
+| `the session search matches title, path and id, case-insensitively` | `ALPHA`（displayTitle，大写）⇒ s1；`/work/beta`（cwd）⇒ s2；`S3`（id）⇒ s3；每次都只剩 1 行 |
+| `a query that matches nothing becomes a manual session id` | 0 匹配 ⇒ 出现「按该 id 查看」、明示文案；点击后 `?session=pasted-id-42` 真的发出 |
+| `the pinned entries are never filtered away` | 无匹配时「全局」「当前视图会话」仍在；点全局 ⇒ 选中 global 且清空搜索、列表恢复 |
+| `picking a row refills the search box with the readable title` | 点 s1 ⇒ 输入框回填 `Alpha One`，当前行同步 |
+| `the session list is keyboard reachable` | ↑↓ 移动唯一高亮、Enter 选中、Esc 清空 |
+| （改写）`the session selector defaults to the current view session` | 默认仍选当前视图会话，`?session=s2`；另断言搜索框/计数/置顶标记 |
+
+```
+evidence: suite=client passed=47 failed=0 exit=0 ms=2000 diff=2f/+576/-126 commit=6474215
+evidence: suite=all passed=159 failed=0 exit=0 ms=2292 diff=2f/+576/-126 commit=6474215
+```
+
+`diff` 为本轮提交自身的 `git diff --cached --shortstat`（相对 `24b4e09`）；`node --check client.js`
+exit 0；`npm pack --dry-run` 仍 `total files: 10`（无 `test/`）。
+
+**负向对照（逐条单独改坏 ⇒ 重跑 client 套件 ⇒ 按备份还原）**：
+
+| # | 改坏点 | 变红 |
+| --- | --- | --- |
+| NC8 | 去掉渲染上界（`sessionMatches.slice()`） | `the session picker renders a bounded list at every catalog size`（200 条会全渲染） |
+| NC9 | 去掉置顶「全局」项 | 4 项：规模上界、置顶不被过滤、默认会话、切换全局 |
+
+## 47. 本轮仍未验证项（会话规模相关，如实说明）
+
+1. **真实 profile 的会话规模未测**：离线探针用的是合成目录；负责人真机上到底有多少会话、
+   500+ 时浏览器（真实 React 调度 + 真实 DOM 提交）的击键延迟，**没有**真机数据。
+   已知成本构成：DOM 行数被硬限在 20（与规模无关）；与规模相关的只剩
+   「props hook 的 selector 重跑 + 一次 O(n) 过滤」，实测 5000 行约 6ms（其中 selector 5.1ms）。
+   若真机出现 5000+ 会话且击键手感差，可考虑的后续手段（本轮未做）：把 selector 的编码改为
+   只在目录版本变化时重建（需要 hook 侧配合），或改用服务侧元数据接口（当前服务只有
+   消息内容检索，不满足）。
+2. **真机目视**：置顶项/搜索/计数/键盘/无匹配回退的实际观感与焦点环，需负责人真机确认。
+3. 其余未验证项同 §36 / §41（primitives 分支真实交互、带 session 的 `renderedResolved` 解析率等）。
