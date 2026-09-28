@@ -1946,6 +1946,278 @@ test('client: the selected session and the pinned scope carry an explicit select
   assert.equal(typeof sessionOptions(flatTree)[0].props.onMouseEnter, 'function', 'flat rows hover as well');
 });
 
+// #region g-009 · the「查看范围」tree is a real ARIA tree (tree > treeitem + group > treeitem)
+
+/** Element children of a rendered node (nulls React skips are dropped). */
+function elementChildren(node) {
+  const kids = node && node.props ? node.props.children : null;
+  const list = Array.isArray(kids) ? kids : kids === null || kids === undefined ? [] : [kids];
+  // Built here, not with `.filter`, so the result is this realm's array: the
+  // rendered tree lives in the vm context and its arrays are not assert-equal.
+  const out = [];
+  for (const child of list) {
+    if (child !== null && typeof child === 'object' && child.type !== undefined) out.push(child);
+  }
+  return out;
+}
+
+/**
+ * Walk a rendered ARIA tree and return one record per `treeitem`, with the
+ * chain of *container* roles above it (`'group'`, a bare host tag, or
+ * `'treeitem'` when items are nested in items). The chain is what makes the
+ * nesting machine-checkable: a level-1 item must sit directly under the `tree`,
+ * a level-2 item under `tree > group`, and a bare `div` wrapper in between
+ * shows up in the chain instead of hiding.
+ */
+function ariaTreeItems(root) {
+  const items = [];
+  const visit = (node, chain) => {
+    for (const child of elementChildren(node)) {
+      const role = child.props.role;
+      if (role === 'treeitem') items.push({ node: child, chain });
+      visit(child, chain.concat([role === 'group' || role === 'treeitem' ? role : String(child.type)]));
+    }
+  };
+  visit(root, []);
+  return items;
+}
+
+/**
+ * Assert the whole ARIA shape of one rendered scope tree: named container,
+ * only `treeitem`/`group` as direct children, no anonymous group, every
+ * workspace node level 1 with `aria-expanded`, every session level 2 with
+ * `aria-selected`, and each one nested exactly as its level claims.
+ * @returns the tree's direct children, for the caller's own assertions.
+ */
+function assertAriaTreeShape(root) {
+  assert.equal(root.props.role, 'tree', 'the container is a tree');
+  assert.ok(String(root.props['aria-label'] || '').length > 0, 'the tree has an accessible name');
+  const top = elementChildren(root);
+  assert.ok(top.length > 0, 'the tree is not empty');
+  for (const child of top) {
+    assert.ok(
+      child.props.role === 'treeitem' || child.props.role === 'group',
+      `a tree holds only treeitem/group, found <${child.type} role=${child.props.role}>`,
+    );
+  }
+  for (let i = 0; i < top.length; i += 1) {
+    if (top[i].props.role !== 'group') continue;
+    assert.ok(String(top[i].props['aria-label'] || '').length > 0, 'no anonymous group');
+    assert.equal(top[i - 1].props.role, 'treeitem', 'a group follows the workspace node it belongs to');
+    assert.notEqual(top[i - 1].props['data-scope-group'], undefined, 'and that node is the workspace header');
+  }
+  const items = ariaTreeItems(root);
+  assert.ok(items.length > 0, 'the tree has items');
+  // The role set, read off the page's own markers: a node a test or a script
+  // can select is a treeitem, and nothing else may be one.
+  const headers = collect(root, (node) => node.props && node.props['data-scope-group'] !== undefined);
+  const rows = collect(root, (node) => node.props && node.props['data-role'] === 'session-row');
+  for (const header of headers) {
+    assert.equal(header.props.role, 'treeitem', 'every workspace node is a treeitem');
+    assert.equal(header.props['aria-level'], 1, 'a workspace node is level 1');
+    assert.equal(typeof header.props['aria-expanded'], 'boolean', 'and states whether it is open');
+  }
+  for (const row of rows) {
+    assert.equal(row.props.role, 'treeitem', 'every session row is a treeitem');
+    assert.equal(row.props['aria-level'], 2, 'a session inside a workspace is level 2');
+    assert.equal(typeof row.props['aria-selected'], 'boolean', 'and carries the selection state');
+  }
+  assert.equal(items.length, headers.length + rows.length, 'and there is no other treeitem');
+  for (const { node, chain } of items) {
+    if (node.props['data-scope-group'] !== undefined) {
+      assert.deepEqual(chain, [], 'a workspace node is a direct child of the tree');
+    } else {
+      assert.notEqual(node.props['data-session-id'], undefined, 'every other treeitem is a session row');
+      assert.deepEqual(chain, ['group'], 'a session sits in its workspace group, nothing between');
+    }
+  }
+  return top;
+}
+
+/** The `role="tree"` container of the scope picker (exactly one). */
+function scopeTreeRoot(tree) {
+  return oneBy(tree, 'data-region', 'session-tree');
+}
+
+test('client: the「查看范围」tree is a standard ARIA tree (tree > treeitem + group > treeitem)', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  const tree = await page.flush();
+  const root = scopeTreeRoot(tree);
+
+  const top = assertAriaTreeShape(root);
+  // The default state: only the workspace holding the current session is open,
+  // and an open workspace is exactly the one followed by its group.
+  assert.deepEqual(
+    top.map((child) => [child.props.role, child.props['data-scope-group'] ?? child.props['aria-label']]),
+    [
+      ['treeitem', 'w-alpha'],
+      ['group', 'Alpha repo'],
+      ['treeitem', 'w-beta'],
+      ['treeitem', ''],
+    ],
+  );
+  assert.deepEqual(
+    top.filter((child) => child.props.role === 'treeitem').map((child) => child.props['aria-expanded']),
+    [true, false, false],
+    'a workspace is open iff its group is rendered',
+  );
+
+  // The session rows of the one open group: level 2, recency order, and the
+  // retained session is the single selected item.
+  const rows = ariaTreeItems(root).filter((item) => item.node.props['data-session-id'] !== undefined);
+  assert.deepEqual(rows.map((item) => item.node.props['data-session-id']), ['a2', 'a1', 'a3']);
+  assert.ok(rows.every((item) => item.node.props['aria-level'] === 2));
+  assert.deepEqual(
+    rows.filter((item) => item.node.props['aria-selected'] === true).map((item) => item.node.props['data-session-id']),
+    ['a3'],
+  );
+
+  // Zero-visual-change guard for the header/first-row distance: the tree's own
+  // gap is untouched, and the group cancels it (2px − 1px = the old 1px gap of
+  // the wrapper this replaces).
+  assert.equal(root.props.style.gap, 2);
+  const group = top.find((child) => child.props.role === 'group');
+  assert.equal(group.props.style.gap, 1, 'rows keep the 1px spacing they had inside the wrapper');
+  assert.equal(group.props.style.marginTop, -1, 'and the group cancels the tree gap it now sits in');
+});
+
+test('client: opening and shutting a workspace adds and removes its group, never an empty one', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  let tree = await page.flush();
+  assert.equal(
+    ariaTreeItems(scopeTreeRoot(tree)).filter((item) => item.node.props['data-scope-parent'] === 'w-beta').length,
+    0,
+    'a shut workspace renders no rows at all',
+  );
+
+  pressKey(scopeHeader(tree, 'w-beta'), 'Enter');
+  tree = await page.flush();
+  const opened = assertAriaTreeShape(scopeTreeRoot(tree));
+  assert.deepEqual(opened.map((child) => child.props.role), ['treeitem', 'group', 'treeitem', 'group', 'treeitem']);
+  const beta = opened[2];
+  assert.equal(beta.props['data-scope-group'], 'w-beta');
+  assert.equal(beta.props['aria-expanded'], true);
+  assert.equal(opened[3].props['aria-label'], 'beta-dir', 'the new group is named after its workspace');
+  const betaRows = ariaTreeItems(opened[3]);
+  assert.ok(betaRows.length > 0);
+  assert.ok(betaRows.every((item) => item.node.props['aria-level'] === 2));
+  assert.ok(betaRows.every((item) => item.node.props['data-scope-parent'] === 'w-beta'));
+
+  pressKey(scopeHeader(tree, 'w-beta'), ' ');
+  tree = await page.flush();
+  const shut = assertAriaTreeShape(scopeTreeRoot(tree));
+  assert.deepEqual(
+    shut.filter((child) => child.props.role === 'group').map((child) => child.props['aria-label']),
+    ['Alpha repo'],
+    'the shut workspace leaves no group behind',
+  );
+  assert.equal(
+    ariaTreeItems(scopeTreeRoot(tree)).filter((item) => item.node.props['data-scope-parent'] === 'w-beta').length,
+    0,
+  );
+});
+
+test('client: a search keeps the tree shape, including the ungrouped bucket', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  let tree = await page.flush();
+
+  typeInto(tree, 'session-search', 'Beta');
+  tree = await page.flush();
+  const filtered = assertAriaTreeShape(scopeTreeRoot(tree));
+  assert.deepEqual(filtered.map((child) => child.props.role), ['treeitem', 'group']);
+  assert.equal(filtered[1].props['aria-label'], 'beta-dir');
+  const visibleRows = sessionOptions(tree).map((row) => row.props['data-session-id']);
+  assert.deepEqual(
+    ariaTreeItems(scopeTreeRoot(tree))
+      .filter((item) => item.node.props['data-session-id'] !== undefined)
+      .map((item) => item.node.props['data-session-id']),
+    visibleRows,
+    'the traversal and the marker-reading helper agree on every rendered row',
+  );
+
+  typeInto(tree, 'session-search', 'Loose');
+  tree = await page.flush();
+  const loose = assertAriaTreeShape(scopeTreeRoot(tree));
+  assert.equal(loose[0].props['data-scope-group'], '', 'the ungrouped bucket is a workspace node too');
+  assert.equal(loose[1].props['aria-label'], page.zh.scopeUngrouped, 'and its group is named, not anonymous');
+  assert.deepEqual(
+    ariaTreeItems(loose[1]).map((item) => item.node.props['data-session-id']),
+    ['loose'],
+  );
+});
+
+test('client: with no workspaces every session stays level 2 inside the named bucket', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture({ items: [], archivedSessionIds: [], pinnedSessionIds: [] })),
+    responses: defaultResponses(),
+  });
+  const tree = await page.flush();
+  const root = scopeTreeRoot(tree);
+  const top = assertAriaTreeShape(root);
+  assert.deepEqual(top.map((child) => child.props.role), ['treeitem', 'group']);
+  assert.equal(top[0].props['data-scope-group'], '');
+  assert.equal(top[0].props['aria-expanded'], true);
+  assert.equal(top[1].props['aria-label'], page.zh.scopeUngrouped);
+  const rows = ariaTreeItems(root).filter((item) => item.node.props['data-session-id'] !== undefined);
+  assert.equal(rows.length, 6, 'every visible session is a treeitem');
+  assert.ok(rows.every((item) => item.node.props['aria-level'] === 2 && item.chain.join('/') === 'group'));
+});
+
+test('client: the「显示更多」action is a child of its group, never a tree child', async () => {
+  const { sessions, workspaces } = manyWorkspaceSessions(1, 20);
+  const page = makePage({
+    useSessions: sessionsHook(sessions),
+    useWorkspaces: workspacesHook(workspaces),
+    responses: defaultResponses(),
+  });
+  const tree = await page.flush();
+  const root = scopeTreeRoot(tree);
+  const top = assertAriaTreeShape(root);
+  assert.deepEqual(top.map((child) => child.props.role), ['treeitem', 'group']);
+  const more = findOne(top[1], (node) => node.props && node.props['data-action'] === 'scope-more', 'the more button');
+  assert.equal(more.props.role, undefined, 'an action row is not a tree node');
+  assert.equal(
+    elementChildren(root).filter((child) => child.props['data-action'] === 'scope-more').length,
+    0,
+    'and it is not a direct child of the tree either',
+  );
+  const rows = ariaTreeItems(top[1]);
+  assert.equal(rows.length, SCOPE_GROUP_PAGE, 'the page of rows is level 2, the action is not a treeitem');
+});
+
+test('client: the flat fallback declares a listbox instead of faking a tree', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(manySessions(200)),
+    responses: defaultResponses(),
+  });
+  const tree = await page.flush();
+  assert.equal(collect(tree, (node) => node.props && node.props.role === 'tree').length, 0);
+  assert.equal(collect(tree, (node) => node.props && node.props.role === 'treeitem').length, 0);
+  assert.equal(collect(tree, (node) => node.props && node.props.role === 'group').length, 0);
+  const list = oneBy(tree, 'data-region', 'session-list');
+  assert.equal(list.props.role, 'listbox');
+  assert.equal(list.props['aria-label'], page.zh.sessionHeading, 'the fallback list is named too');
+  const options = elementChildren(list);
+  assert.ok(options.length > 0);
+  for (const option of options) {
+    assert.equal(option.props.role, 'option');
+    assert.equal(option.props['aria-level'], undefined, 'a flat list has no levels, and claims none');
+  }
+});
+
 // #endregion
 
 // #region frozenScope: the three states, and editing under uncertainty
