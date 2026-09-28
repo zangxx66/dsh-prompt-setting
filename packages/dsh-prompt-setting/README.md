@@ -24,9 +24,11 @@ REST 契约见同目录 [`CONTRACT.md`](./CONTRACT.md)（已冻结，客户端�
 | `core/diff.js` | **纯函数**：段级快照比较 + 行级 diff（精确 LCS，超预算退化为有界比较并明示） |
 | `core/transfer.js` | **纯函数**：导出文档构造、导入文档的 schema/版本/字段校验、冲突策略与变更计划 |
 | `core/store.js` | **唯一碰文件系统**的模块：两层路径解析 + 原子写（临时文件 + `rename`）+ 读时校验 + `history.jsonl` 追加与裁剪 + 多文件原子替换（导入） |
+| `core/compat.js` | **boot 兼容性**：semver 解析/比较/范围判定（纯函数）+ DSH 版本探测（best-effort、多锚点、绝不抛）+ 三分支文案（范围内静默 / 超范围 / 探测失败）与 `apply` 失败文案 |
 | `core/experiments.js` | E1–E5 的**实测结论**（由集成测试产出，快照与 CONTRACT.md 共用同一份文案） |
 | `client.js` | 客户端半：「设置」里的独立一栏：状态条 / 会话选择器 / 分段视图（含 `origin` 标注与筛选）/ 全文视图（搜索高亮 + `base`↔`effective` 对比）/ 编辑面板（**行内就地展开**：`data-editor-row` 标归属行，行不可见时回退槽位并标 `data-editor-fallback`；保存前可行性校验）/ 覆盖管理 / 历史列表与版本对比（官方 `DiffBlock` + 自绘降级）/ 恢复默认（单段与整层，均二次确认）/ 导出下载与导入（先干跑预览再二次确认） |
 | `cordis.patch.yml` | bundle 层：一条 `insert` 行同时承载两个半边 |
+| `scripts/check-compat.mjs` | **只读兼容性自检**（`node scripts/check-compat.mjs`）：本插件版本 / 已装 DSH 版本 / peer 范围结论 / 四种 boot 失败形态的终端签名 / 救援步骤。零依赖、不联网、永不抛、退出码恒 0 |
 | `package.json` | 包契约：`dsh.bundle.patch` + `dsh.client.platform: "web"` + `exports["./client"]` |
 | `CONTRACT.md` | 冻结的 REST 契约：每个字段、每个 4xx、动作枚举、字段上限 |
 
@@ -74,16 +76,17 @@ plugin_manager(action: "install_bundle", target: "<仓库绝对路径>/packages/
 
 ```bash
 cd packages/dsh-prompt-setting
-node --check index.js && node --check client.js && for f in core/*.js; do node --check "$f"; done
-node --test                                       # 305 项断言，0 skipped
-npm pack --dry-run                                # 确认产物干净（无 test/、无 .dsh-graph）
+node --check index.js && node --check client.js && for f in core/*.js scripts/*.mjs; do node --check "$f"; done
+node --test                                       # 349 项断言，0 skipped
+node scripts/check-compat.mjs                     # 只读兼容性自检（不联网、永不抛）
+npm pack --dry-run                                # 确认产物干净（16 个文件、无 test/、无 .dsh-graph）
 ```
 
 > `node --test`（在本目录下自动发现 `test/`）是本包的规范命令。Node 24 会拒绝把目录当位置参数
 > 传进去（`node --test test/` ⇒ `MODULE_NOT_FOUND`），这不是本包的问题；等价写法是
 > `node --test test/*.test.mjs`。
 
-`node --test` 的十一个套件：
+`node --test` 的十二个套件：
 
 | 套件 | 覆盖 |
 | --- | --- |
@@ -98,6 +101,7 @@ npm pack --dry-run                                # 确认产物干净（无 tes
 | `test/host.test.mjs` | 阶段一 A 的既有套件：清单契约、ping、信任栅栏、405/404（**行为未变，断言仍在**） |
 | `test/client.test.mjs` | 客户端半：vm 沙箱 + 递归展开函数组件的迷你渲染器 + fetch 路由桩（含 `useSessions` 缺失降级、`frozenScope` 三态、保存前可行性校验、历史/对比/恢复默认/导出导入面板与 `DiffBlock` 分支、**构建戳三态与自证指纹的独立复算**） |
 | `test/integration.test.mjs` | **E1–E4 对照实验 + 插件端到端**：真 `@deepseek-ai/dsh-system-prompt` + 真 `@deepseek-ai/cordis` + 真 Cordis 上下文 |
+| `test/boot.test.mjs` | **boot 韧性（g-013）**：导入期自检三分支（范围内静默 / 超范围一条 / 探测失败一条，且都不抛）、版本探测的多锚点与失败原因、`apply` 在「服务方法缺失 / 抛错 / 返回形状不符 / `ctx.effect` 缺失」下不抛且只打印一条、**半挂载回滚**（先注册的路由被 dispose、`live` 路由表为空）、失败的 disposer 被收容、**boot 连续性**（同管线下一个插件照常挂载）、客户端 factory 抛错不抛回 loader 且降级卡保留标记、自检脚本的终端签名与「无 DSH 也退出 0」 |
 
 集成测试从 DSH 全局安装根解析真包（`DSH_INSTALL_ROOT` / `DSH_PROFILE_DIR` / pnpm 全局 store）。
 解析不到时该套件 `skip` 并打印原因，所以没有 DSH 的机器上 `node --test` 仍全绿；
@@ -185,6 +189,94 @@ document.querySelector('[data-plugin="dsh-prompt-setting"]').dataset.buildMatch 
 读磁盘；而页面跑的是 **DSH 在最近一次 `rebuilt` 时捕获的 bundle**，换新触发基于 **mtime/ctime/size**
 的元数据，rev 没变就不读文件、不发通知。所以「写入后、`rebuilt` 前」判 `false` 是正确的（页面确实
 不是当前文件），但此时刷新也可能拿到同一份旧 artifact。详见 CONTRACT §14.5。
+
+## 兼容性与救援（g-013）
+
+**一句话**：本插件挂掉**不会**影响 DSH 启动与界面，但**终端是唯一的信号渠道** —— 不看启动终端，
+你只会觉得「插件没生效」。
+
+「不影响启动与界面」不是推断，而是主管在本机 DSH `0.1.7-rc.2` 上用功能探针实测的对照结论：
+干净 profile / `inject` 服务不存在 / `apply` 期抛错三个临时实例，web UI 都是
+**HTTP 200、34,240 B、含 `id="root"` 挂载点、67 条 `__DSH_BOOT__` 清单条目、64 个核心客户端模块**，
+核心模块清单逐条 `diff` **完全相同**，清单里第一个 `plugins/??…client.js&rev=…` 资源同样 200 / JS /
+33,930 B（原文见 `NOTES.md` §91 二）。
+
+### 超出范围时的**实际**终端输出（2026-09-29 主管本机实测，DSH `0.1.7-rc.2`）
+
+`…` 是抓取时的省略，其余逐字：
+
+```text
+dsh: skipping profile bundle "dsh-prompt-setting": Error: Plugin dsh-prompt-setting@0.1.0 is incompatible with dsh 0.1.7-rc.2: peerDependencies {"@deepseek-ai/dsh":">=9.0.0"}. Running it may cause crashes and data loss. … To accept this risk explicitly, grant the exact-version exemption …
+dsh web: http://127.0.0.1:3087/?token=…
+```
+
+⇒ DSH **仍然正常启动**，只是本插件被整条跳过。原因（源码）：`@deepseek-ai/dsh-app-boot` 在**读 profile 的
+`dsh.profile.bundles` 时**就对每个 bundle 跑 `evaluatePluginCompatibility()`，不通过就跳过并写 stderr
+（`dsh-app-boot/lib/index.js:919-953`、`:322`、`:516`）；这一步发生在 `mountRootInclude()`（真正开始 import 插件）
+**之前**，所以**我们的导入期「超范围」警告在 0.1.7-rc.2 上被抢占、观测不到**。安装期（`dsh plugin add` /
+plugin manager）用的是同一套检查，会直接拒绝安装并给出 `dsh plugin allow-version` 的豁免指引。
+
+### 本插件自己会说什么
+
+| 时机 | 终端输出 | 说明 |
+| --- | --- | --- |
+| 导入期 · DSH 在已测试范围内 | **什么都不打印** | 范围内静默是设计：不给每次 boot 加噪音 |
+| 导入期 · 超出 `peerDependencies` 范围 | **在这台平台上轮不到我们**：平台先跳过整个 bundle 并点名（逐字见下），本包根本不会被 import。若你看到的是我们那条 `[dsh-prompt-setting] 本插件 <版本> … 超出已测试范围 …`，说明平台的这道闸门没生效（更老的/改过的宿主） | 两条都是「只警告、绝不抛、boot 继续」；我们保留自己的分支作为**兜底/防御纵深**，但它**不是** 0.1.7-rc.2 上的实际观察 |
+| 导入期 · 探测不到 DSH 版本 | 一条 `… 无法探测已安装的 DSH 版本（期望范围 …）：探测结果：<原因>。…` | 同上；范围内的判定逻辑与消息在 `core/compat.js`，可离线单测 |
+| `apply` 失败（服务方法改名/缺失、方法抛错、返回形状不符…） | 一条 `… 挂载失败，本插件已停用，DSH 其余功能不受影响。检测到的 DSH：… 首因：… 已撤销 N 项已注册 effect，不会留下半挂载。…` | 先撤销本次已注册的 effect（**不留半挂载**）再打印；**同时**写终端（`stderr`）与 `ctx.logger.error`；**不把异常抛回 loader** |
+| 客户端半加载失败（`require('react')` 失败、指纹逻辑异常…） | 一条 `… 客户端半加载失败：设置页将以降级提示卡呈现…` | `console.error` 一条，**不抛回 loader**；能用 React 就注册降级卡片，连 React 都没有就什么都不注册；渲染期失败仍走既有 `renderFailureCard` |
+
+终端消息在哪看：**`dsh web` 的前台输出**（启动时打印的那一行 web URL 也在同一处）。
+设置页里看不到 boot 期消息，所以排查 boot 问题必须看启动终端。
+
+> **为什么失败信息「同时」写终端和 logger（源码级依据，写进 `NOTES.md` §91 六）**：本 profile 里
+> `ctx.logger` **没有终端出口** —— 唯一注册给它的 exporter（`@deepseek-ai/dsh-app-boot` 的）只是把
+> `warn`/`error` 塞进 `startupLogs`，而 `startupLogs` 只在**启动失败**时才被挂到 `StartupError` 上；
+> cordis 自带的 exporter 只写内存环形缓冲。平台自己的告警因此是**直接 `process.stderr.write`** 的。
+> 所以只走 `ctx.logger` = 终端里**什么都看不到** ⇒ 我们两个渠道都写（宁可极端情况下重复一次，
+> 也不能让信息消失）。
+
+### 三条边界（插件内做不到的事，别指望它）
+
+① **`inject` 的服务消失** ⇒ 我们的 `apply` **根本不会执行**（Cordis 等服务齐了才调用它）；终端只有
+   `<id> (<name>): pending (waiting for service: <service>)`。这一种**插件内无法捕获**（代码没跑），
+   只能靠导入期自检 + 本文档。
+② **`cordis.patch.yml` 因 schema 变动而不合法**（例如写错 verb）⇒ 失败发生在 **profile 组合层**、
+   早于本插件任何代码，而且**终端完全没有输出**（插件静默不激活，平台不报 —— 最糟的一种）。
+   插件**无法自救**，只能靠下面的自检脚本 + `dsh --dump-config`。
+③ **信号只在终端里**：没有 UI 提示、没有远程上报（非目标）。不看终端 = 没有信号。
+
+### 插件没出现、但终端也没有任何报错时怎么办
+
+先跑本包自带的**只读自检**（随包发布：`files` 含 `scripts`；零依赖、不联网、**永不抛**、退出码恒 0）：
+
+```bash
+node scripts/check-compat.mjs        # 等价：npm run check-compat
+```
+
+它会打印：本插件版本、`peerDependencies` 声明的 DSH 范围、探测到的 DSH 版本**与来源**、范围内 / 超范围 /
+探测失败的结论、**四种 boot 失败形态的终端签名**（逐字，用于比对）、以及下面的救援步骤。探测不到 DSH 时
+可用 `DSH_INSTALL_ROOT=<DSH 安装根> node scripts/check-compat.mjs` 再跑一次。
+
+然后**只读**看组合结果（不启动、不改任何东西）：
+
+```bash
+dsh --profile web --dump-config          # 组合后的 profile 树：本插件条目在不在、patch 有没有生效
+dsh --profile web --dump-default-config  # 不含用户层与 --patch 的结果，用来对比
+dsh --profile web --dump-config-schema   # 条目/补丁的 JSON Schema（写 --patch 前先对字段）
+```
+
+### 救援步骤（按侵入性从小到大）
+
+1. **摘掉本包即可恢复**（需重启 `dsh web`）：编辑 `$DSH_HOME/profiles/web/package.json`，从
+   `dsh.profile.bundles` 里去掉 `dsh-prompt-setting`；或 `dsh plugin --profile web remove dsh-prompt-setting`。
+2. **用 `--patch` 临时覆盖**（不改 profile 文件，可重复、叠加在 profile 层之后）：
+   `dsh web --patch ./off.yml`，在 `off.yml` 里按 Loader 方言覆盖/禁用本插件对应的条目。
+3. **换一个干净 profile 先把 DSH 起起来**：`dsh rescue --from-default-profile web`。
+4. 修好后：宿主半（`index.js` / `core/**`）必须重启 `dsh web`；客户端半（`client.js`）由 HMR 热替换。
+
+> 三种「DSH 更新后本插件坏了」的处置都指向同一个动作：**先把本包摘掉让 DSH 可用，再等本包跟进**。
+> 本插件不做自动降级重试、不做远程上报（非目标）。
 
 ## 可访问性：查看范围是一棵标准 ARIA 树
 

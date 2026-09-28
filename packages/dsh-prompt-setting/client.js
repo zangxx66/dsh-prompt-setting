@@ -120,6 +120,34 @@ window.__ModuleLoader__.load({
     const SELF_BUILD = fingerprintOf(promptSettingFactory.toString());
     // #endregion
 
+    // #region factory guard (g-013)
+    // The loader calls `descriptor.factory(require)` while it boots the page: a
+    // throw here reaches DSH's module loader, not a boundary this plugin can
+    // apologize from. So the whole body is built behind one guard — the two
+    // failure modes seen in the field are `require('react')` missing and the
+    // self-fingerprint above (an engine that refuses `Function#toString`).
+    // `buildPlugin` is hoisted, so the guard can call a body that is declared
+    // below it.
+    try {
+      return buildPlugin(require);
+    } catch (error) {
+      return degradedPlugin(require, error);
+    }
+    // #endregion
+
+    /**
+     * The plugin body — everything this half does once it can be built.
+     *
+     * The body is deliberately **not** shifted one indent level deeper: it is
+     * ~6k lines of hand-written code whose structure is asserted by
+     * `test/build.test.mjs` (the fingerprint region covers exactly this text),
+     * and a re-indent would be a 6k-line diff for zero behaviour change. The
+     * declaration sits outside the build-stamp region's helpers only in
+     * position, not in scope; the guard above is its only caller.
+     * @param require - the loader's require.
+     * @returns the plugin descriptor.
+     */
+    function buildPlugin(require) {
     const React = require('react');
     const h = React.createElement;
 
@@ -6093,6 +6121,91 @@ window.__ModuleLoader__.load({
         );
       },
     };
+    }
+
+    /**
+     * The last resort when {@link buildPlugin} throws: say so once, then publish
+     * whatever can still be published.
+     *
+     * Nothing here may throw — that is the whole point — so every step is
+     * guarded and the return value is always a valid descriptor. When `react`
+     * itself is what failed there is nothing to render a card *with*, so nothing
+     * is registered at all: an empty plugin leaves the settings panel without a
+     * Prompt section, and the console line is the only trace (that is the honest
+     * degradation, not a blank panel).
+     *
+     * The card's text is intentionally not localized: the dictionaries and the
+     * locale binding are part of the body that just failed to build, and a
+     * diagnostic line is worth more than a translation here (NOTES.md §91).
+     * @param require - the loader's require.
+     * @param error - the thrown value.
+     * @returns a plugin descriptor: degraded, never broken.
+     */
+    function degradedPlugin(require, error) {
+      const cause = error && error.message ? String(error.message).split('\n')[0] : String(error);
+      const line =
+        '[dsh-prompt-setting] 客户端半加载失败：设置页将以降级提示卡呈现，DSH 其余功能不受影响。'
+        + `首因：${cause}。排查见 README「兼容性与救援」。`;
+      try {
+        if (typeof console !== 'undefined' && typeof console.error === 'function') console.error(line);
+      } catch {
+        // No usable console: the failure goes unrecorded, but the page boots.
+      }
+
+      let React = null;
+      try {
+        React = require('react');
+      } catch {
+        React = null;
+      }
+      if (React === null || typeof React !== 'object' || typeof React.createElement !== 'function') {
+        // No React: registering anything would throw while the host renders it,
+        // which would be worse than registering nothing at all.
+        return { inject: [], apply() {} };
+      }
+      const h = React.createElement;
+
+      /**
+       * The degraded settings section: same machine markers as the real page, so
+       * a browser-side check can still see that this plugin is the one that
+       * failed.
+       * @returns the failure card element.
+       */
+      function PromptSettingFailureSection() {
+        return h(
+          'div',
+          {
+            'data-plugin': 'dsh-prompt-setting',
+            'data-renderer': 'none',
+            'data-render-state': 'error',
+            'data-build': 'unknown',
+            style: { display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 860 },
+          },
+          h('h2', { style: { margin: 0, fontSize: 18, fontWeight: 600, lineHeight: '26px' } },
+            'Prompt settings — load failure'),
+          h('p', { style: { margin: 0, fontSize: 13, wordBreak: 'break-word' } }, line),
+        );
+      }
+
+      return {
+        inject: ['slots'],
+        apply(ctx) {
+          // Registering the card is best effort: it must not throw back into the
+          // loader either.
+          try {
+            ctx.slots.inject('settings.section', () => ctx.slots.register({
+              name: 'settings.section',
+              id: 'prompt-setting',
+              order: 30,
+              label: () => 'Prompt settings',
+              inject: () => ({}),
+            }, PromptSettingFailureSection));
+          } catch {
+            // A host that will not take the card still boots.
+          }
+        },
+      };
+    }
     /* @build-fingerprint:end */
   },
 });
