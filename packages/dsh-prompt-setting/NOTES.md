@@ -1865,9 +1865,32 @@ append。**它不能说明的**：导出结果不等于 `21:52:54` 那一轮装�
 
 ## 79. 构建戳：问题、最小设计与落点（Revision 6）
 
-**问题**（根因已在上一轮定位，本轮把它变成机器可判）：旧标签页会一直跑它被加载时的 `client.js`，
-宿主却已经在发新字节。两边都「正常工作」，所以「改动没生效」与「页面是旧的」在页面上长得一模一样；
+**问题**（本轮把它变成机器可判）：页面有可能在跑**不是磁盘当前字节**的 `client.js`，而它自己不知情。
+两边都「正常工作」，所以「改动没生效」与「页面不是当前字节」在页面上长得一模一样；
 本机 `Cmd+Shift+R` 又被 DSH 接管，最自然的人工判别路径也没了。
+
+**先纠正一个被真机推翻的前提（这次返工的原因）**：本节早先写的「已经打开的标签页会一直跑它被加载时
+的 `client.js`」是**错的**（至少不是 DSH 0.1.7-rc.2 的常态）。DSH 自带客户端插件 HMR，静态复核
+（读安装包源码，`$P` = pnpm 全局安装根下的 `@deepseek-ai/<包>` 目录）如下：
+
+| 事实 | 源码位置（可自行复核） |
+| --- | --- |
+| 客户端订阅 SSE `/plugins/events`，收到 `{type:"rebuilt", id, rev}` 就 `ctx.modules.entries.reload(id, rev)` | `$P/dsh-client-hmr/lib/client.js`（`EVENTS_ROUTE = "/plugins/events"`；`entries.reload(frame.id, frame.rev)`） |
+| `replace()` = `modules.prefetch(id)` → `tearDownEntryFiber(entry)` → `import(id)` → `entry.refresh()` ⇒ **页面无需重载文档即可换新插件代码** | `$P/dsh-client-modules/lib/client.js` |
+| 宿主侧：`rebuilt(id)` 取 `rev = artifactRevision(baseline) = framedHash("plugin-artifact", [String(mtimeMs), String(ctimeMs), String(size)])`；**rev 未变就直接 return（不读文件、不发通知）**，变了才 `readFileSync` 重读 bundle 并 notify | `$P/dsh-client-modules/lib/index.js` |
+
+真机实测（主管，2026-09-28 23:48–23:51；改的是集成工作树里被 `web` profile 链接的那份
+`packages/dsh-prompt-setting/client.js`）：在 factory 区域**内**改 1 处（注释加 ` [stale-demo]`，
+摘要 `63cf17c0` → `77134de7`）后，页面在**无任何操作**下 `data-build` 由 `63cf17c0` 变成 `77134de7`，
+而 `performance.timeOrigin` 恒为 `23:36:50` ⇒ 文档未重载、HMR 确实生效。该改动随后已还原
+（本轮复核：主工作树 `client.js` 摘要回到 `63cf17c0`、`grep -c stale-demo` = 0、`git status` 干净）。
+
+**因此构建戳的定位收窄为**：正常路径下 HMR 会把新字节毫秒级送进页面；页面落后于磁盘只发生在
+**HMR 没做成**（事件流断/被阻断/该页 boot 时通道不健康）或**写入与 `rebuilt` 之间**的窗口里。
+三态含义随之更准确：`true` = 正常；`false` = 页面确实不是当前字节（先刷新，仍为 `false` 说明 DSH
+没重建/事件流不健康）；`unknown` = 无法比较。`ctime` 也在 rev 里且用户态改不掉 ⇒ 只要文件被写就会
+触发换新 ⇒ **HMR 健康时「页面版本已过期」几乎无法靠改文件稳定复现**（两次真机尝试都撞上 `true`
+即是此因）。
 
 **最小设计**：不引入构建步骤、不注入哈希、不加依赖。`client.js` 的 factory 正文由一对注释标记界定，
 宿主读自己发布的 `client.js` 并对该区域做 32 位 FNV-1a（8 位 hex），在 ping 里以 `clientBuild` 返回；
@@ -1903,22 +1926,34 @@ append。**它不能说明的**：导出结果不等于 `21:52:54` 那一轮装�
 避免让「未知」看起来像「没问题」。页面的自身指纹在三种状态下都照样报出（`data-build`）——
 页面永远知道自己在跑什么，只有「比较」可能未知。
 
-`false` 的措辞是「页面版本已过期」，但契约里明说了它严格只意味着**两边字节不同**、不意味着哪边更新：
-宿主侧改动需要重启，进程发的是它加载的那份，所以实践中旧的就是标签页。这句限定写在 CONTRACT §14.3，
-没有把它升级成「一定是你旧」。
+`false` 的措辞是「页面版本已过期」，但契约里明说了它严格只意味着**两边字节不同**；而这句限定现在
+更弱了：HMR 正常时页面几乎不会落后（§79），所以 `false` 要么命中「写入与 `rebuilt` 之间」的窗口，
+要么说明这次 HMR 通道没生效。处置按 CONTRACT §14.3：**先刷新页面**；刷新后仍是 `false`，说明 DSH 侧
+没有重建/事件流不健康 —— 这不是本插件能修的，也**不得**声称「刷新必然拿到新字节」（那属于 DSH 的
+缓存/监视语义，见 §81.6 与 CONTRACT §14.5）。
 
 ## 81. 未验证项与「已接受的限制」（诚实清单，交给主管在集成检查点裁决）
 
-1. **「DSH 服务的 `client.js` 字节与磁盘文件一致」未在真机验证。** 本轮的等价性证据全部来自
-   `node:vm`：`vm.runInContext(文件文本)` 之后 `factory.toString()` 的区域与文件区域逐位相同
-   （`test/client.test.mjs` 第一条构建戳用例 + `test/build.test.mjs` 的区域用例）。
-   但**浏览器侧模块传输是否原样**没有被检查过（本 attempt 没有也不需要读 DSH 客户端传输实现）。
+1. **「DSH 服务的 `client.js` 区域字节与磁盘一致」尚未在真机抓取 payload 逐字节比对。**
+   本轮的等价性证据全部来自 `node:vm`：`vm.runInContext(文件文本)` 之后 `factory.toString()` 的区域
+   与文件区域逐位相同（`test/client.test.mjs` 第一条构建戳用例 + `test/build.test.mjs` 的区域用例）。
+   追加的**静态复核**（读 `$P/dsh-client-modules/lib/index.js`，第 254/330 行附近）显示传输链上确实
+   有改写，但都在区域之外：每个资源 `prepareSource` 剥掉**文件末尾**的 `//# sourceURL=` /
+   `//# sourceMappingURL=` 尾巴、必要时补一个换行，`buildComboScript` 用 `;\n` 把多个 bundle
+   拼接起来（可执行载荷见 `comboScript`）。⇒ 区域内的文本原样通过，自证摘要仍应相等。
+   仍未做的是：真机抓一次浏览器实际收到的 payload，与磁盘区域逐字节对照。
    - 归一化只覆盖**去首个 BOM** 与 **`\r\n?` → `\n`**（这是最可能的改写，且有用例钉住）；
    - 若服务端在**区域内部**做了换行/BOM 之外的改写（压缩、去注释、任何重写），两侧摘要会不等 ⇒
      显示「过期」。方向上这是**可见**的失败（重写永远不会被报成「一致」），但它对本侧不可探测，
      所以列在这里而不是声称已测。
-2. **真机三态未验**：没有安装/重启，也没有在真实浏览器里看过「一致 / 过期 / 未知」三种观感，
-   更没有真机复现「旧标签 ⇒ 过期 ⇒ 新标签 ⇒ 一致」。三态与标记全部由 `node:vm` + fetch 桩离线断言。
+2. **真机三态：`true` 已观测，`false` 不可稳定复现，`unknown` 仍只有离线证据。**
+   - `true`：主管真机（2026-09-28 23:48–23:51）在集成副本上看到 `data-build-match === 'true'`，
+     `data-build = 63cf17c0`（改动前）；
+   - `false`：HMR 健康时**无法靠改文件稳定造出**——改文件会让 rev 变、DSH 随即 rebuilt 并热替换，
+     页面自动追上（§79 的真机实测就是这条路）。所以它目前**只有离线证据**：`node:vm` + fetch 桩
+     的三条用例（同 hash / 区域内改 1 字符后的异 hash / 无 `clientBuild` 与 ping 失败）；真机上要
+     稳定复现，得先让 HMR 通道失效（阻断 `/plugins/events` 或让该页 boot 时通道不健康）；
+   - `unknown`：仍仅离线覆盖（旧宿主形态、`clientBuild: null`、ping 失败三种桩）。
 3. **`data-build` 是否对所有客户端投影生效未验**：只有 `renderSection` 的根容器与 `renderFailureCard`
    带 `data-build`；页面在「渲染彻底失败」之外的降级路径都属于前者，但真机未逐路径核对。
 4. **`clientBuild.mtime` 的实际用途未验**：目前只作为「宿主确实在读这个文件」的旁证暴露出来，
@@ -1942,6 +1977,20 @@ append。**它不能说明的**：导出结果不等于 `21:52:54` 那一轮装�
      而改它们属于罕见且**显眼**的改动（会改掉注册顺序/装卸行为，`node --test` 的注册断言也会红）。
      日常改动（组件、文案、路由消费、样式）全部落在 factory 体内，因此这条边界在实践中
      不会吞掉「需要开新标签」的那类编辑。
+6. **语义差异（必须明写，不能暗示「刷新必然拿到新字节」）**：我们的 `clientBuild` 是**内容指纹**，
+   每次 ping 现场读磁盘；而页面跑的是 **DSH 在最近一次 `rebuilt` 时捕获的 artifact**，其换新触发
+   基于**元数据**（`mtimeMs`/`ctimeMs`/`size` 的 framed hash，rev 未变则不读文件、不发通知，§79）。
+   于是「写入之后、`rebuilt` 之前」两者可以合法地不一致 ⇒ 此时判「过期」是**正确的**（页面确实不是
+   当前文件）；但**刷新页面也可能拿到同一份旧 artifact**（DSH 未重建/监视未触发）⇒ 本插件不得声称
+   「刷新必然生效」，这条属于 DSH 的缓存与监视语义。契约侧写在 CONTRACT §14.5，README 的三态表
+   也按此改写处置列。
+7. **未结案（不得再断言的原因）**：负责人更早那次「编辑面板交互长时间停留在 g-006 之前」的现象，
+   本轮**撤回**原先的解释（「因为旧标签页不会更新」——该前提已被 §79 的真机 HMR 实测推翻）。
+   目前它只是一个**未结案现象**，新假设空间（都未验证）：①该页 boot 时 `/plugins/events` 通道不健康
+   （事件流被阻断/SSE 断线未重连）；②该次改动确实没有触发 rev 变化（例如写入发生在 DSH 监视
+   覆盖之外，或安装副本与页面加载的那份不是同一个文件）；③页面加载的是另一份 artifact
+   （combo/缓存命中了旧 rev）。**不**再把「旧标签页」当作已证结论；构建戳提供了区分它们的第一个
+   观测点（先看 `data-build-match`，再看 `performance.timeOrigin` 是否变化）。
 
 ## 82. 自测证据（工作树 `.worktrees/g-008-att-02`，基线 `v0.1.0-test@512fe4c`）
 
@@ -1994,7 +2043,8 @@ clientBuildInfo(missing) = null threw = null
 - 没有改 `main` 分支，改动全部在 `.worktrees/g-008-att-02`；
 - 没有删改削弱既有 290 项断言：只做「契约变更导致的字段断言更新」1 处（ping 的 key 列表）并追加 15 项；
 - 没有调用 `cordis_inspect_query`（契约信息来自本包源码与 `CONTRACT.md`）；
-- 没有在真机浏览器验证三态与字节一致性（见 §81）。
+- **本 attempt 自己**没有在真机浏览器验证三态与传输字节（见 §81）；真机上 `true` 那一次观测是
+  主管在集成副本上做的（§81.2 / §79），本条不据为己有。
 
 ## 85. 与 brief / goal.md 的差异及理由（都写在这里，不藏）
 
@@ -2015,3 +2065,27 @@ clientBuildInfo(missing) = null threw = null
    甚至删掉它，从而证明「两次 ping 之间改文件 ⇒ 摘要变」「文件不可读 ⇒ `clientBuild:null` 且 200」。
    这是本轮唯一「比 brief 多要一点」的测试，理由是「不缓存」是本目标的核心断言，用 store 单测间接
    证明不如用路由端到端证明。
+
+## 86. 第三次返工：真机推翻「旧标签页」前提（只改文档）
+
+复核在真机验证过程中推翻了我们写进文档的一个**一般陈述**，本轮只改 `CONTRACT.md` / `NOTES.md` /
+`README.md`（`client.js`、`core/**`、`test/**` 一字未动，摘要仍是 `63cf17c0` / `248093`）。
+
+- **被推翻的**：「已经打开的标签页会一直跑它 boot 时的那份 `client.js`」。
+  DSH 0.1.7-rc.2 自带客户端插件 HMR（`/plugins/events` SSE → `entries.reload(id, rev)` →
+  `replace()` = prefetch → tearDown → import → refresh），文件一被写、rev 一变就会热替换，
+  **无需重载文档**；主管真机实测（§79）已记录 `data-build` 在无操作下从 `63cf17c0` 变成 `77134de7`
+  而 `performance.timeOrigin` 不变。
+- **改成的表述**：页面落后于磁盘只发生在 **HMR 没做成**（事件流断/被阻断/该页 boot 时通道不健康）
+  或 **写入与 `rebuilt` 之间**的窗口；构建戳三态的处置随之改写（`true` = 正常；`false` = 先刷新，
+  仍为 `false` ⇒ DSH 侧未重建/事件流不健康；`unknown` = 无法比较）。落在 CONTRACT §14.1/§14.3、
+  README「代码改动怎么生效」与三态表、NOTES §79/§80。
+- **新增的语义差异**：`clientBuild` 是**内容指纹**（每请求读磁盘），页面跑的是 **DSH 在最近一次
+  `rebuilt` 捕获的 artifact**（触发基于 `mtime/ctime/size` 的元数据，rev 未变则不读不发通知）。
+  「写入后、`rebuilt` 前」两者可以合法不一致 ⇒ 判「过期」正确；但**刷新也可能拿到同一份旧 artifact**
+  ⇒ 不得声称「刷新必然拿到新字节」。落在 CONTRACT §14.5、NOTES §81.6、README 三态表下的说明。
+- **顺带收回一条旧解释**：负责人早先那次「交互长时间停留在 g-006 之前」的现象，不再断言
+  「因为旧标签页不会更新」（前提已推翻），改为**未结案**并列假设空间（§81.7）。
+- **顺带补一条静态复核**：传输链上的改写（`prepareSource` 剥 `sourceURL`/`sourceMappingURL` 尾巴、
+  必要时补换行；`buildComboScript` 以 `;\n` 拼接）全部落在标记区域**之外** ⇒ 区域内文本原样通过；
+  真机 payload 逐字节比对仍未做（§81.1）。

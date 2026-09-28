@@ -1040,13 +1040,23 @@ plan is on screen, and the click opens the confirmation card rather than writing
 
 ### 14.1 The problem this answers
 
-A settings tab keeps running the `client.js` it was loaded with. When the file on
-disk changes, the host serves the **new** bytes to any tab opened from then on,
-while the already-open tab goes on running the old code — both are "working", and
-they are not the same program. Until Revision 6 nothing on the page said which
-one it was, so「the fix is not visible」and「the tab is old」looked identical. (On
-this machine `Cmd+Shift+R` is taken over by DSH, which removed the easy manual
-check as well.)
+A settings tab runs the `client.js` it was handed when its module was loaded. In
+DSH 0.1.7-rc.2 that is **not** normally the end of the story: the client half
+carries an HMR path for plugins (`@deepseek-ai/dsh-client-hmr` subscribes to the
+SSE channel `/plugins/events` and, on a `rebuilt` frame for this plugin id, calls
+`ctx.modules.entries.reload(id, rev)`; `@deepseek-ai/dsh-client-modules`'
+`replace()` then prefetches, tears the entry fiber down, re-`import`s and refreshes
+it). A rebuild therefore usually reaches an open tab within milliseconds, **without
+reloading the document**.
+
+What is left, and what this stamp is for, is the case where that did not happen:
+the page is running bytes that are not what the file says, because the HMR path did
+not do its job for this tab (the event stream is broken, blocked, or was unhealthy
+when the tab booted) or because the write has happened and the `rebuilt` event has
+not arrived yet. In exactly those cases "the fix is not visible" and "the page is
+not the current bytes" look identical on screen, and until Revision 6 nothing on
+the page said which bytes it was running. (On this machine `Cmd+Shift+R` is taken
+over by DSH, which removed the easy manual check as well.)
 
 ### 14.2 `clientBuild` in the ping
 
@@ -1122,9 +1132,21 @@ digest is reported even then (the page always knows what it is running, even whe
 it cannot compare).
 
 The comparison cannot say which side is *newer*; `false` means "these are
-different bytes". In practice the newer bundle is the one on disk — a host-side
-change requires a `dsh web` restart, and the running process serves what it
-loaded — so the tab is the stale one, which is what the copy says.
+different bytes", and it is a statement about **this page against the file on
+disk**, nothing more. What to do about it follows from §14.1 rather than from the
+digest alone:
+
+- `"true"` — normal. The tab is running the bytes the host is publishing;
+- `"false"` — the tab really is not on those bytes. First action: reload the page.
+  Because `clientBuild` is re-read from disk and DSH's reload trigger is not
+  (§14.5), a `false` that survives a reload means the DSH side did not rebuild/notify
+  — a broken or blocked `/plugins/events` stream, an unhealthy watch, or the window
+  before `rebuilt` — and that is not something this plugin can fix;
+- `"unknown"` — not comparable. Nothing is claimed, and nothing should be concluded.
+
+The page's copy says「页面版本已过期」for `false` because that is the ordinary case
+(a tab that missed the reload), but the honest reading is「本页不是当前字节」, and
+the reader is told to reload rather than told a story about why.
 
 ### 14.4 The region, the normalization, and what this cannot claim
 
@@ -1148,16 +1170,20 @@ both halves can compute: the browser has no `Buffer`, and `readFileSync(path,
 pinned by its official test vectors in `test/build.test.mjs`, so a change to the
 prime, the offset or the order cannot pass by agreeing with itself.
 
-**Unverified assumption, stated rather than hidden:** the browser must receive
-`client.js` byte-for-byte as it exists on disk, apart from the BOM/CRLF
-normalization above. That is true for a file served as a static module — but this
-DSH version's client-module transport has not been inspected here, and a
-transform **inside** the region (minification, comment stripping, any rewriting)
-would make the two digests differ, i.e. it would show as「过期」. The failure
-direction is at least the visible one — a rewrite can never be reported as「一致」
-— but it is not detectable from this side, so it is listed in NOTES.md §81 as an
-unverified item rather than claimed as tested. Newline/BOM rewriting, the
-plausible case, *is* covered by the normalization and by its test.
+**The transport assumption, checked as far as static reading goes (see NOTES.md
+§81.1):** the browser must run the same region text that is on disk. The bundle the
+client actually evaluates is not the raw file — `@deepseek-ai/dsh-client-modules`
+concatenates the enabled plugins' bundles and, per resource, strips a trailing
+`//# sourceURL=` / `//# sourceMappingURL=` trailer and appends a newline if the file
+does not end in one (`prepareSource`), then separates resources with `;\n`
+(`buildComboScript`). Every one of those edits is applied **outside** the marker
+region — at the very end of the file or between files — so the region survives
+verbatim and the self-digest still matches. What has *not* been observed is the
+payload a real browser receives, byte for byte, so this stays an item in NOTES.md
+§81.1 rather than a verified claim here. Should any transform ever touch the region
+(minification, comment stripping, rewriting), the two digests would differ and the
+page would show「过期」: the visibly wrong direction — a rewrite can never be
+reported as「一致」 — but wrong all the same.
 
 **Accepted limitation, also stated rather than hidden:** the region is the factory
 *body* only. `begin` has to be the body's first statement and `end` its last, so
@@ -1170,3 +1196,34 @@ does not exist: the page's only access to its own bytes is `factory.toString()`,
 markers moved outside the function would simply not be seen by the self-check. The
 boundary is acceptable because what lives outside is comments and binding lines —
 the registration surface — whose edits are both rare and loud. See NOTES.md §81.5.
+
+### 14.5 What this stamp is not: content fingerprint vs. DSH's served artifact
+
+The two digests being compared do **not** come from the same mechanism, and the
+difference matters in one window:
+
+- `clientBuild` is a **content fingerprint**: the host re-reads the file on every
+  probe, so it always describes the bytes on disk *right now* (§14.2);
+- what the page is running is whatever DSH last handed it. On the host side
+  `@deepseek-ai/dsh-client-modules` captures the bundle when it publishes a
+  generation — `rebuilt(id)` computes
+  `artifactRevision(baseline) = framedHash("plugin-artifact", [String(mtimeMs), String(ctimeMs), String(size)])`
+  and **returns without reading or notifying when the rev is unchanged**; only a
+  changed rev makes it re-read the file and notify the SSE channel, after which the
+  client reloads that entry (§14.1). The trigger is therefore **metadata**
+  (mtime/ctime/size), and the bytes the page gets are the ones captured at that
+  moment.
+
+Consequences, stated rather than discovered later:
+
+- between a write and the `rebuilt` that follows it, the two can legitimately
+  disagree. Reporting `false` there is **correct**, not a false alarm: the page
+  really is not running the current file.
+- a `false` does **not** promise that reloading the page will fix it. If DSH has
+  not rebuilt (watch unhealthy, event stream blocked, a rev it considers unchanged),
+  a reload can be served the same older artifact. "Refresh and it will be new" is
+  not something this stamp — or this plugin — can claim; that is DSH's cache and
+  watch semantics, and the honest instruction is §14.3's: reload first, and treat a
+  surviving `false` as a DSH-side condition to investigate.
+- conversely, `true` says nothing about HMR health: it only says that at the moment
+  of the probe the running bytes and the file agreed.
