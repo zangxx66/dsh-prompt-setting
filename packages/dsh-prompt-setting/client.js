@@ -2063,6 +2063,60 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Which control the open panel hands the caret to. The append entry is the
+     * only place a new name is typed, so that is where the user starts; both
+     * entries that edit a name the row already decided start in the text.
+     * @param editor - the editor state.
+     * @returns 'name' | 'text' — a `data-role` value inside the panel.
+     */
+    function editorFocusRole(editor) {
+      return editorEntry(editor) === 'append-new' ? 'name' : 'text';
+    }
+
+    /**
+     * Where the open editor belongs on the page.
+     *
+     * An entry opened *from a row* belongs to that row: the form is rendered
+     * inside it, right below the row's own content, so opening a row far down a
+     * long list never sends the user back to a panel above the list. There are
+     * two row-scoped entries — {@link editorRoute} decides which one a row
+     * opens — and neither is placed anywhere but in its row or in the slot.
+     *
+     * The row can still be taken away while the panel is open, in exactly three
+     * ways, and every one of them lands here: a filter hides it, a view switch
+     * stops listing it, or the assembly itself moves under the panel and the
+     * next snapshot no longer returns that section. None of them may hide the
+     * form, so the editor falls back to the page-level slot and says why. The
+     * fallback is a *placement* decision only — the editor state is untouched,
+     * so nothing typed is lost, and the row coming back puts the form back
+     * inside it. (The section list has no search box and no paging, so those
+     * three are the whole of it.)
+     *
+     * `append-new` is the one entry with no row to belong to: it is the
+     * page-level entry by construction and always renders in the slot.
+     *
+     * @param m - the page model.
+     * @returns `{inline, row, fallback}` — `row` is the owning section name for
+     *   a row-scoped entry (whether or not that row is rendered), and `fallback`
+     *   is `'row-hidden'` when the owning row is not on screen.
+     */
+    function editorPlacement(m) {
+      if (m.editor === null || m.editor === undefined) {
+        return { inline: false, row: null, fallback: null };
+      }
+      if (editorEntry(m.editor) === 'append-new') {
+        return { inline: false, row: null, fallback: null };
+      }
+      const name = typeof m.editor.name === 'string' ? m.editor.name : '';
+      const sections = Array.isArray(m.effectiveSections) ? m.effectiveSections : [];
+      const section = m.view === 'sections' ? sections.find((entry) => entry.name === name) : undefined;
+      if (section !== undefined && m.passesFilters(section)) {
+        return { inline: true, row: name, fallback: null };
+      }
+      return { inline: false, row: name, fallback: 'row-hidden' };
+    }
+
+    /**
      * The live verdict of the entry the user is standing in: rendered while
      * typing, and the reason neither entry can reach the pre-save check.
      *
@@ -3602,9 +3656,11 @@ window.__ModuleLoader__.load({
      * @param m - the page model.
      * @param a - the page actions.
      * @param section - the `effective.sections` entry.
+     * @param inlineEditor - the editor element to nest inside this row, or null
+     *   when the open editor belongs to another row (or to the page slot).
      * @returns the row element.
      */
-    function sectionRow(t, m, a, section) {
+    function sectionRow(t, m, a, section, inlineEditor) {
       const origin = originOf(section);
       const layer = sectionLayer(section);
       const overridable = section.overridable === true;
@@ -3737,6 +3793,11 @@ window.__ModuleLoader__.load({
               text,
             )
           : null,
+        // The editor that belongs to THIS row is nested here, right below the
+        // row's own content: opening a row far down a long list must not send
+        // the user back to a panel above the list. Rows of a row that owns no
+        // open editor stay exactly as they were.
+        inlineEditor === null || inlineEditor === undefined ? null : inlineEditor,
       );
     }
 
@@ -3756,12 +3817,20 @@ window.__ModuleLoader__.load({
      *      two entries cannot produce: a broken entry contract, or a world that
      *      moved under an open panel.
      *
+     * Where the panel is *drawn* is not decided here: {@link editorPlacement}
+     * answers that, and the caller either nests this element inside the owning
+     * row or puts it in the page-level slot. The placement therefore travels on
+     * this element as markers, so a probe reads it without walking the tree.
+     *
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
+     * @param placement - the {@link editorPlacement} verdict for `m`.
+     * @param rootRef - ref callback for the panel root; the caret is placed
+     *   inside it once React has attached a node.
      * @returns the panel element, or null when nothing is selected.
      */
-    function renderEditor(t, m, a) {
+    function renderEditor(t, m, a, placement, rootRef) {
       const editor = m.editor;
       if (editor === null) return null;
       const entry = editorEntry(editor);
@@ -3784,6 +3853,14 @@ window.__ModuleLoader__.load({
       }
       const headingKey =
         entry === 'append-new' ? 'appendHeading' : entry === 'edit-override' ? 'editOverrideHeading' : 'editHeading';
+      // Ownership and placement are separate facts. `data-editor-row` names the
+      // row the form belongs to — it is set for every row-scoped entry, so it
+      // still names the owner while the fallback is active — and
+      // `data-editor-fallback` appears only when that row is not on screen.
+      // `data-editor-focus` records which control the caret was placed in.
+      const placementProps = { 'data-editor-focus': editorFocusRole(editor) };
+      if (placement.row !== null) placementProps['data-editor-row'] = placement.row;
+      if (placement.fallback !== null) placementProps['data-editor-fallback'] = placement.fallback;
       return h(
         'section',
         {
@@ -3793,6 +3870,8 @@ window.__ModuleLoader__.load({
           'data-editor-entry': entry,
           'data-editor-name-locked': String(nameLocked),
           'data-editor-actions': allowed.join(','),
+          ...placementProps,
+          ref: rootRef,
           style: cardStyle,
         },
         h(
@@ -3997,9 +4076,12 @@ window.__ModuleLoader__.load({
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
+     * @param inlineEditor - `{row, element}` for the open row-scoped editor, or
+     *   null when the editor is not drawn inside this list. The element is
+     *   handed to the one row it belongs to, and to no other.
      * @returns the view element.
      */
-    function renderSectionsView(t, m, a) {
+    function renderSectionsView(t, m, a, inlineEditor) {
       const sections = m.effectiveSections;
       const shown = sections.filter((section) => m.passesFilters(section));
       return h(
@@ -4035,7 +4117,21 @@ window.__ModuleLoader__.load({
               h('p', { style: { margin: '4px 0 0', ...metaStyle } }, t('emptyBody')),
             )
           : null,
-        shown.map((section) => h('div', { key: section.name }, sectionRow(t, m, a, section))),
+        shown.map((section) =>
+          h(
+            'div',
+            { key: section.name },
+            sectionRow(
+              t,
+              m,
+              a,
+              section,
+              inlineEditor !== null && inlineEditor !== undefined && inlineEditor.row === section.name
+                ? inlineEditor.element
+                : null,
+            ),
+          ),
+        ),
       );
     }
 
@@ -4962,9 +5058,11 @@ window.__ModuleLoader__.load({
      * @param t - the bound translator for this namespace.
      * @param m - the page model.
      * @param a - the page actions.
+     * @param rootRef - ref callback for the editor panel root, handed down so
+     *   the caret can be placed once the panel is on screen.
      * @returns the page element.
      */
-    function renderSection(t, m, a) {
+    function renderSection(t, m, a, rootRef) {
       const children = [];
       children.push(
         h('h2', { key: 'title', style: { margin: 0, fontSize: 18, fontWeight: 600, lineHeight: '26px' } }, t('title')),
@@ -4990,8 +5088,15 @@ window.__ModuleLoader__.load({
           ),
         ),
       );
-      const editorPanel = renderEditor(t, m, a);
-      if (editorPanel !== null) children.push(h('div', { key: 'editor-slot', style: { display: 'contents' } }, editorPanel));
+      const placement = editorPlacement(m);
+      const editorPanel = renderEditor(t, m, a, placement, rootRef);
+      // A row-scoped panel is drawn by the row that owns it and only falls back
+      // to this slot when that row is not on screen; `append-new` has no row and
+      // is always drawn here.
+      if (editorPanel !== null && !placement.inline) {
+        children.push(h('div', { key: 'editor-slot', style: { display: 'contents' } }, editorPanel));
+      }
+      const inlineEditor = editorPanel !== null && placement.inline ? { row: placement.row, element: editorPanel } : null;
       if (m.snap.phase === 'error') children.push(h('div', { key: 'snap-error' }, errorBanner(t, m.snap.error, t('loadFailed'))));
       if (m.ovs.phase === 'error') children.push(h('div', { key: 'ovs-error' }, errorBanner(t, m.ovs.error, t('loadFailed'))));
       if (m.notice) {
@@ -5019,7 +5124,7 @@ window.__ModuleLoader__.load({
           m.snap.phase === 'loading' && !m.snap.data ? h('p', { key: 'loading', style: metaStyle }, t('loading')) : null,
           m.snap.data
             ? m.view === 'sections'
-              ? renderSectionsView(t, m, a)
+              ? renderSectionsView(t, m, a, inlineEditor)
               : m.view === 'full'
                 ? renderFullView(t, m, a)
                 : renderOverridesView(t, m, a)
@@ -5257,6 +5362,37 @@ window.__ModuleLoader__.load({
           cancelled = true;
         };
       }, [view, historyLayer, sessionArg, reload]);
+
+      // The caret follows the entry: a fresh name is typed in the append entry,
+      // an existing section is edited in the text. The node is reached through
+      // the panel *root* ref, so this works whatever atoms the renderer
+      // resolved to — the root is a host element in either branch.
+      //
+      // It is armed exactly once per open session. A re-render is not an open
+      // (typing, or switching the layer, must not pull the caret back out of
+      // the control the user moved to), so the session key is latched only when
+      // a node was really focused. Closing clears it, which re-arms the same row.
+      const editorFocus = React.useRef({ key: null, root: null });
+      React.useEffect(() => {
+        if (editor === null) {
+          editorFocus.current.key = null;
+          return;
+        }
+        const key = `${editorEntry(editor)}|${String(editor.name)}|${String(editor.nameLocked)}`;
+        if (editorFocus.current.key === key) return;
+        const node = editorFocus.current.root;
+        const target =
+          node !== null && node !== undefined && typeof node.querySelector === 'function'
+            ? node.querySelector(`[data-role="${editorFocusRole(editor)}"]`)
+            : null;
+        if (target === null || target === undefined || typeof target.focus !== 'function') return;
+        editorFocus.current.key = key;
+        target.focus();
+      }, [editor]);
+      /** Hand the panel root to {@link editorFocus} once React commits it. */
+      const editorRootRef = (node) => {
+        editorFocus.current.root = node;
+      };
 
       const snapshot = snap.data;
       const fz = frozenState(snapshot, sessionArg !== null);
@@ -5803,7 +5939,7 @@ window.__ModuleLoader__.load({
       };
 
       try {
-        return renderSection(t, model, actions);
+        return renderSection(t, model, actions, editorRootRef);
       } catch (error) {
         return renderFailureCard(t, error);
       }
