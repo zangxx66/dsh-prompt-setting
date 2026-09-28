@@ -994,6 +994,144 @@ test('client: requests stay on the plugin prefix and report the renderer', async
   assert.deepEqual(urlsFor(page, PATHS.overrides), [PATHS.overrides]);
 });
 
+// #region build stamp —「这一页跑的是哪个 bundle」(Revision 6)
+
+/**
+ * Independent recomputation of the build digest, straight from CONTRACT.md §14:
+ * one ordered marker pair, BOM/CRLF normalized away, FNV-1a 32 over UTF-16 code
+ * units. Written here rather than imported, so it can disagree with the page.
+ * @param text - the bundle (or live factory) text.
+ * @returns `{hash, size}` or `null`.
+ */
+function independentBuildFingerprint(text) {
+  let value = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  value = value.replace(/\r\n?/g, '\n');
+  const begin = '/* @build-fingerprint:begin */';
+  const end = '/* @build-fingerprint:end */';
+  const from = value.indexOf(begin);
+  const to = value.indexOf(end);
+  if (from === -1 || to === -1 || from >= to) return null;
+  const region = value.slice(from + begin.length, to);
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < region.length; index += 1) {
+    hash = Math.imul(hash ^ region.charCodeAt(index), 0x01000193) >>> 0;
+  }
+  return { hash: hash.toString(16).padStart(8, '0'), size: region.length };
+}
+
+/** The ping body a host serving `clientBuild` answers with. */
+function pingResponse(clientBuild) {
+  return {
+    payload: {
+      ok: true,
+      plugin: 'dsh-prompt-setting',
+      version: '0.1.0',
+      time: '2024-01-01T00:00:00.000Z',
+      clientRenderer: 'fallback',
+      clientReportedAt: null,
+      clientBuild,
+    },
+  };
+}
+
+/** A `clientBuild` object as the host sends it. */
+function buildFixture(hash, size = 240949) {
+  return { hash, size, mtime: '2024-01-01T00:00:00.000Z' };
+}
+
+/** Every stale-build warning on screen. */
+function staleWarnings(tree) {
+  return collect(tree, (node) => node.props && node.props['data-warning'] === 'client-build-stale');
+}
+
+test('client: the running page self-fingerprints exactly as an independent read of the file does', async () => {
+  const page = makePage({ responses: defaultResponses({ [PATHS.ping]: pingResponse(null) }) });
+  const tree = await page.flush();
+
+  // Three sources, one digest: the page's own `factory.toString()` digest, an
+  // independent recomputation of that *same live function*, and an independent
+  // recomputation of the file on disk this vm was handed.
+  const live = independentBuildFingerprint(page.loaded.descriptor.factory.toString());
+  const onDisk = independentBuildFingerprint(clientSource);
+  assert.notEqual(live, null, 'the running factory carries a usable marker region');
+  assert.equal(markerOf(tree, 'data-build'), live.hash, 'the page reports the digest it computed itself');
+  assert.equal(live.hash, onDisk.hash, 'the live function and the published file agree bit for bit');
+  assert.equal(live.size, onDisk.size);
+  assert.equal(page.loaded.module.SELF_BUILD, undefined, 'nothing new is exported from the module surface');
+});
+
+test('client: an equal host digest is the only way to read "matches"', async () => {
+  const oracle = independentBuildFingerprint(clientSource);
+  const page = makePage({
+    responses: defaultResponses({ [PATHS.ping]: pingResponse(buildFixture(oracle.hash, oracle.size)) }),
+  });
+  const tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-build'), oracle.hash);
+  assert.equal(markerOf(tree, 'data-build-server'), oracle.hash);
+  assert.equal(markerOf(tree, 'data-build-match'), 'true');
+  assert.equal(staleWarnings(tree).length, 0);
+  assert.ok(hasText(tree, page.zh.stBuildSame), 'the zh copy states the match');
+});
+
+test('client: one character changed inside the region is the only source of a stale verdict', async () => {
+  const oracle = independentBuildFingerprint(clientSource);
+  // A *real* one-character edit inside the region: the smallest possible
+  // "different build". If the digest ignored content, this hash would equal the
+  // oracle's and the stale verdict below could never fire.
+  const at = clientSource.indexOf('/* @build-fingerprint:begin */') + 40;
+  const editedSource = `${clientSource.slice(0, at)}${clientSource[at] === 'x' ? 'y' : 'x'}${clientSource.slice(at + 1)}`;
+  const edited = independentBuildFingerprint(editedSource);
+  assert.notEqual(edited.hash, oracle.hash, 'one character inside the region must move the digest');
+  assert.equal(edited.size, oracle.size, 'the edit is length-preserving');
+
+  const page = makePage({
+    responses: defaultResponses({ [PATHS.ping]: pingResponse(buildFixture(edited.hash, edited.size)) }),
+  });
+  const tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-build'), oracle.hash, 'the page still reports its own digest');
+  assert.equal(markerOf(tree, 'data-build-server'), edited.hash);
+  assert.equal(markerOf(tree, 'data-build-match'), 'false');
+  const warning = staleWarnings(tree);
+  assert.equal(warning.length, 1, 'exactly one stale warning');
+  assert.ok(hasText(tree, page.zh.stBuildStaleHint), 'the stale warning explains what to do');
+  assert.ok(hasText(tree, page.zh.stBuildStale), 'the tag itself says stale');
+});
+
+test('client: no clientBuild, or a failed ping, is "unknown" and never "stale"', async () => {
+  // (a) an older host that answers the ping without the field at all;
+  const older = makePage({
+    responses: defaultResponses({
+      [PATHS.ping]: { payload: { ok: true, plugin: 'dsh-prompt-setting', version: '0.0.1' } },
+    }),
+  });
+  const olderTree = await older.flush();
+  assert.equal(markerOf(olderTree, 'data-build-match'), 'unknown');
+  assert.equal(markerOf(olderTree, 'data-build-server'), 'unknown');
+  assert.equal(staleWarnings(olderTree).length, 0, 'a missing answer must never be read as stale');
+  assert.ok(hasText(olderTree, older.zh.stBuildUnknownHint));
+
+  // (b) an explicitly unreadable bundle on the host side (`clientBuild: null`);
+  const unreadable = makePage({ responses: defaultResponses({ [PATHS.ping]: pingResponse(null) }) });
+  const unreadableTree = await unreadable.flush();
+  assert.equal(markerOf(unreadableTree, 'data-build-match'), 'unknown');
+  assert.equal(staleWarnings(unreadableTree).length, 0);
+
+  // (c) a ping that never arrived.
+  const failed = makePage({
+    responses: defaultResponses({ [PATHS.ping]: new Error('Failed to fetch') }),
+  });
+  const failedTree = await failed.flush();
+  assert.equal(markerOf(failedTree, 'data-build-match'), 'unknown');
+  assert.equal(staleWarnings(failedTree).length, 0);
+  assert.ok(hasText(failedTree, failed.zh.stBuildPingFailedHint), 'the failed probe is named as such');
+  // The page's own identity survives every one of these: only the comparison is
+  // unknown, not the digest of what is running.
+  assert.equal(markerOf(olderTree, 'data-build'), independentBuildFingerprint(clientSource).hash);
+  assert.equal(markerOf(failedTree, 'data-build'), independentBuildFingerprint(clientSource).hash);
+});
+
+// #endregion
+
 test('client: a 4xx renders the mapped copy plus the raw code, never a blank', async () => {
   for (const [code, status] of [
     ['unexpected-order', 400],

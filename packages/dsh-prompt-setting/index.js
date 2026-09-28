@@ -14,6 +14,11 @@
  *   same point, so an external edit — a hand edit, a config-sync tool, another
  *   process — reaches the next request whichever layer it touched, and a
  *   request that fails still leaves the cache no further behind than that.
+ *   It also reads this package's own `client.js` for the ping's `clientBuild`
+ *   stamp — that read is the one deliberate exception to "held in memory", and
+ *   it is re-done per request on purpose (CONTRACT.md §14).
+ * - `core/build.js` is pure text (no IO): the marker region and the digest the
+ *   browser half re-computes for itself.
  * - this file is the adapter: one waterfall listener and four REST routes.
  *
  * The listener reads memory only. It records the pre-waterfall sections (the
@@ -28,6 +33,8 @@
  *
  * @module dsh-prompt-setting
  */
+
+import { fileURLToPath } from 'node:url';
 
 import { EXPERIMENTS } from './core/experiments.js';
 import { buildDiff } from './core/diff.js';
@@ -63,6 +70,7 @@ import {
 } from './core/overrides.js';
 import {
   appendHistoryRecord,
+  clientBuildInfo,
   historyPath,
   readConfig,
   readHistoryFile,
@@ -91,6 +99,13 @@ const PLUGIN_VERSION = '0.1.0';
 const ROUTE_PREFIX = '/prompt-setting';
 /** Stage 1A's route: a read-only liveness probe (behaviour frozen). */
 const PING_PATH = `${ROUTE_PREFIX}/ping`;
+/**
+ * The bundle this Host publishes, resolved from this module's own URL — never
+ * from `cwd` and never from client input. Resolved once (it is a property of
+ * this installed package, not of a request); the **bytes** are re-read on every
+ * ping, which is what makes the reported stamp current.
+ */
+const CLIENT_BUNDLE_PATH = fileURLToPath(new URL('./client.js', import.meta.url));
 /** Stage 1B: the assembly snapshot. */
 const SNAPSHOT_PATH = `${ROUTE_PREFIX}/snapshot`;
 /** Stage 1B: read/write/delete the two override layers. */
@@ -1389,7 +1404,10 @@ export function apply(ctx, config) {
             if (url.pathname === PING_PATH) {
               // Same request that probes also reports: the browser half appends
               // `?renderer=<primitives|fallback>`, so the page it renders settles
-              // the primitives question on sight (NOTES.md §7/§9.2).
+              // the primitives question on sight (NOTES.md §7/§9.2). Since
+              // Revision 6 it also answers "which bytes of `client.js` am I
+              // serving": read and hashed **right here**, on every request, so
+              // the answer cannot outlive the file (CONTRACT.md §14).
               recordClientRenderer(report, url);
               sendJson(res, 200, {
                 ok: true,
@@ -1398,6 +1416,7 @@ export function apply(ctx, config) {
                 time: new Date().toISOString(),
                 clientRenderer: report.renderer,
                 clientReportedAt: report.reportedAt,
+                clientBuild: clientBuildInfo(CLIENT_BUNDLE_PATH),
               });
               return;
             }

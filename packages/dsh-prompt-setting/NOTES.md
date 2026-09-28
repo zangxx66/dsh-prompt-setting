@@ -1862,3 +1862,137 @@ append。**它不能说明的**：导出结果不等于 `21:52:54` 那一轮装�
   它只是改为在「两条入口都产不出的状态」下渲染；
 - 没有删减既有断言来换绿：276 项基线全部保留，其中 6 项与本次交互直接相关的用例被
   **改写**为新交互下的等价（且更严）断言（§75.11 与 §72.1 各说明一处）。
+
+## 79. 构建戳：问题、最小设计与落点（Revision 6）
+
+**问题**（根因已在上一轮定位，本轮把它变成机器可判）：旧标签页会一直跑它被加载时的 `client.js`，
+宿主却已经在发新字节。两边都「正常工作」，所以「改动没生效」与「页面是旧的」在页面上长得一模一样；
+本机 `Cmd+Shift+R` 又被 DSH 接管，最自然的人工判别路径也没了。
+
+**最小设计**：不引入构建步骤、不注入哈希、不加依赖。`client.js` 的 factory 正文由一对注释标记界定，
+宿主读自己发布的 `client.js` 并对该区域做 32 位 FNV-1a（8 位 hex），在 ping 里以 `clientBuild` 返回；
+页面则对**正在运行的**函数源码（`promptSettingFactory.toString()`）做同一算法的指纹，两边一比即知：
+
+| 落点 | 内容 |
+| --- | --- |
+| `core/build.js`（新增，纯文本无 IO） | `FINGERPRINT_BEGIN/END`、`normalizeBuildText`（去首个 BOM、`\r\n?` → `\n`）、`fingerprintRegion`（标记须唯一且有序，否则 `null`）、`fnv1a32`、`fingerprintOf` → `{hash, size}` |
+| `core/store.js`（仍是唯一碰 FS 的模块） | `clientBuildInfo(path)`：`readFileSync` + `statSync` → `{hash, size, mtime(ISO)}`；任何异常、或标记区域不可用 ⇒ `null`，**不抛**、不造指纹 |
+| `index.js` | `CLIENT_BUNDLE_PATH = fileURLToPath(new URL('./client.js', import.meta.url))`；ping 响应加 `clientBuild: clientBuildInfo(CLIENT_BUNDLE_PATH)`，**每次请求现场读**（无缓存） |
+| `client.js` | factory 由方法简写改为具名函数表达式 `factory: function promptSettingFactory(require) {`；`begin` 紧跟 `{`、`end` 紧贴闭合大括号前（区域覆盖整段正文）；体内内联一份等价纯实现 + `SELF_BUILD`；ping 由 fire-and-forget 改为消费响应 → `setBoot({self, server, pingFailed})`；状态条新增一行构建戳 + 三态；根容器挂 `data-build` / `data-build-server` / `data-build-match`；不等时渲染 `data-warning="client-build-stale"` 段落 |
+| `CONTRACT.md` | Revision 6 + 新增 §14（字段、算法、归一化、三态、能/不能声称什么） |
+| `README.md` | 新增「构建戳怎么读」小节（三态表 + 三条 `data-*` + 控制台一条命令） |
+| `test/build.test.mjs`（新增） | 纯函数：FNV-1a 官方向量、归一化、四种坏标记 ⇒ `null`、区域内改 1 字符 ⇒ 摘要变、真实文件区域覆盖整段 factory 正文 |
+
+**两个必须解释的实现细节**：
+
+1. **标记字面量在 `client.js` 里被拆成两段拼接**（`'/* @build-' + 'fingerprint:begin */'`）。
+   原因不是风格：区域要求两个标记各**恰好出现一次**，而内联实现若照抄字面量就会在文件里制造
+   第二处标记 ⇒ `fingerprintRegion` 判为有歧义 ⇒ 所有人永久「未知」。拆分拼接让标记文本在文件里
+   仍然只出现一次（`test/build.test.mjs` 断言 count === 1）。
+2. **`size` 是归一化区域的 UTF-16 code unit 数，不是字节数**。这是两侧唯一能算出同一数值的长度：
+   浏览器没有 `Buffer`，而 `readFileSync(path,'utf8')` + `charCodeAt` 能逐位复现宿主侧。
+   `client.js` 含中文，字节数与 code unit 数并不相等 —— 如果把 `size` 定义成字节数，两侧就必须
+   各自实现一份 UTF-8 编码器（客户端还得手写），这才是真正的脆弱点。契约里已写明这一点。
+
+## 80. 三态与「绝不误报过期」
+
+判定只有一句：**两侧都给出真实 hash 且相等 ⇒ `true`；都给出且不等 ⇒ `false`；其余一律 `unknown`。**
+旧宿主（ping 无 `clientBuild`）、宿主文件读不到（`clientBuild: null`）、标记被改坏、ping 失败/网络错误
+全部落到 `unknown`，并且**永远不会**渲染 `data-warning="client-build-stale"`。
+`unknown` 也有自己的解释段落（`data-warning="client-build-unknown"`，ping 失败时点名是 ping 失败），
+避免让「未知」看起来像「没问题」。页面的自身指纹在三种状态下都照样报出（`data-build`）——
+页面永远知道自己在跑什么，只有「比较」可能未知。
+
+`false` 的措辞是「页面版本已过期」，但契约里明说了它严格只意味着**两边字节不同**、不意味着哪边更新：
+宿主侧改动需要重启，进程发的是它加载的那份，所以实践中旧的就是标签页。这句限定写在 CONTRACT §14.3，
+没有把它升级成「一定是你旧」。
+
+## 81. 未验证项（诚实清单，交给主管在集成检查点裁决）
+
+1. **「DSH 服务的 `client.js` 字节与磁盘文件一致」未在真机验证。** 本轮的等价性证据全部来自
+   `node:vm`：`vm.runInContext(文件文本)` 之后 `factory.toString()` 的区域与文件区域逐位相同
+   （`test/client.test.mjs` 第一条构建戳用例 + `test/build.test.mjs` 的区域用例）。
+   但**浏览器侧模块传输是否原样**没有被检查过（本 attempt 没有也不需要读 DSH 客户端传输实现）。
+   - 归一化只覆盖**去首个 BOM** 与 **`\r\n?` → `\n`**（这是最可能的改写，且有用例钉住）；
+   - 若服务端在**区域内部**做了换行/BOM 之外的改写（压缩、去注释、任何重写），两侧摘要会不等 ⇒
+     显示「过期」。方向上这是**可见**的失败（重写永远不会被报成「一致」），但它对本侧不可探测，
+     所以列在这里而不是声称已测。
+2. **真机三态未验**：没有安装/重启，也没有在真实浏览器里看过「一致 / 过期 / 未知」三种观感，
+   更没有真机复现「旧标签 ⇒ 过期 ⇒ 新标签 ⇒ 一致」。三态与标记全部由 `node:vm` + fetch 桩离线断言。
+3. **`data-build` 是否对所有客户端投影生效未验**：只有 `renderSection` 的根容器与 `renderFailureCard`
+   带 `data-build`；页面在「渲染彻底失败」之外的降级路径都属于前者，但真机未逐路径核对。
+4. **`clientBuild.mtime` 的实际用途未验**：目前只作为「宿主确实在读这个文件」的旁证暴露出来，
+   UI 没有呈现它，也没有基于它做任何判断。
+
+## 82. 自测证据（工作树 `.worktrees/g-008-att-02`，基线 `v0.1.0-test@512fe4c`）
+
+```
+$ node --test
+ℹ tests 305   ℹ pass 305   ℹ fail 0   （基线 290 ⇒ 新增 15 项：build 8、store 2、route 1、client 4）
+$ node --check index.js && node --check client.js && for f in core/*.js; do node --check "$f"; done
+（全部 exit 0，无输出）
+$ npm pack --dry-run            # npm_config_cache=/tmp/npm-cache-g008
+npm notice total files: 14      # 既有 13 + core/build.js；test/ 命中数 0
+$ node -e "…fingerprintOf(readFileSync('client.js','utf8'))"
+{"hash":"63cf17c0","size":248093}   # 区域 = 整段 factory 正文
+$ node -e "clientBuildInfo('/tmp/g008-att-02-does-not-exist/client.js')"
+clientBuildInfo(missing) = null threw = null
+```
+
+`node --test test/` 在本机（Node **v24.13.1**）不是等价命令：它把 `test/` 当模块解析并抛
+`MODULE_NOT_FOUND`（`node --test test` 同样）。规范命令是在包目录下跑 `node --test`（自动发现 `test/`），
+`node --test test/*.test.mjs` 亦可。这是运行器行为，与本包无关，已在 README 注明。
+
+独立复算（**不复用被测实现**）出现在三处：`test/build.test.mjs` 用官方向量 + 自己写的
+`split` 计数与 `indexOf` 切片；`test/route.test.mjs` 的 `independentBuildFingerprint` 从契约文本重写；
+`test/client.test.mjs` 同一函数独立重写，并断言
+「vm 内运行实例的自身指纹 === 独立复算的真实文件区域指纹」（`data-build` 与之相等，`size` 也相等）。
+
+## 83. 负向对照（逐条单独改坏 ⇒ 跑套件 ⇒ 从 `/tmp/g008-att-02-bak` 还原 ⇒ `shasum -a 256 -c` 确认逐字节回滚）
+
+| # | 改坏方式 | 结果 | 还原 |
+| --- | --- | --- | --- |
+| ① | 删掉 `client.js` 的 `/* @build-fingerprint:end */` 行 | **8 红**：build 2（区域覆盖、区域内改字符）+ client 4（自证指纹与三态全部）+ route 2（ping 的现场复算与「不可读 ⇒ null」） | ✅ hash 回到 `a0555365…`，`node --test` 复绿 |
+| ② | 区域**内**改 1 字符（`begin` 后第 40 字节，把注释里的 `e` 改成 `y`） | 摘要 `63cf17c0` → `3acb61a7`（`size` 不变 248093）——**指纹确实随内容变**；但该改动下全套件仍 305 绿，原因见下 | ✅ 同 hash 回滚，摘要回到 `63cf17c0` |
+| ②′ | 让 `fingerprintOf` 不再跟踪内容（返回常量 hash） | **6 红**：build 3（区域切片即摘要、空区域、区域内改字符）+ route 2（ping 的独立复算与「改文件即变」）+ store 1 | ✅ `core/build.js` hash 回 `2b1b1992…` |
+| ③ | 让 `clientBuildInfo` 在读失败时**编造**摘要（去掉 `null` 降级） | **2 红**：store 的「不可读 ⇒ null」+ route 的「删掉 bundle ⇒ `clientBuild:null` 且 200」 | ✅ `core/store.js` hash 回 `c78b8b68…`，复绿 |
+
+**② 为什么单独一条不会变红（必须写明，不能含糊）**：本套件的所有期望值都是**从文件现场复算**的
+（没有把真实摘要硬编码进测试），因此「把文件区域改 1 字符」会让被测侧与预言侧**同时**移动 ⇒ 全绿。
+这是有意的设计：硬编码真实摘要会让任何一次合法的 `client.js` 改动都炸掉测试，从而很快被人删掉，
+那种「会变红」是假的。②因此拆成两半取证：`63cf17c0 → 3acb61a7` 证明**指纹对内容敏感**；
+②′（让算法不再跟踪内容）证明**这条敏感性是被断言钉住的**（6 处变红）。
+②′ 的日志里 `client.test.mjs` 保持绿是预期：页面用的是 `client.js` 内联的那份实现，
+与 `core/build.js` 是**两份独立实现**，宿主侧算法坏掉由 route/store 抓，客户端侧坏掉由 client 抓。
+
+## 84. 本 attempt 明确**没有**做的事
+
+- 没有构建步骤/哈希注入/打包器，没有新增依赖（`package.json` 只被读取，未被修改）；
+- 没有改覆盖引擎、没有改既有 REST 语义：唯一契约变更是 ping 新增 `clientBuild`（含一处既有断言
+  的字段列表更新，见 §85）；
+- 没有安装/卸载插件、没有重启 `dsh web`、没有改 profile、**没有触碰 `~/.dsh/prompt-setting/*`**、
+  没有读写真实用户数据（所有测试走临时目录与内存桩）；
+- 没有改 `main` 分支，改动全部在 `.worktrees/g-008-att-02`；
+- 没有删改削弱既有 290 项断言：只做「契约变更导致的字段断言更新」1 处（ping 的 key 列表）并追加 15 项；
+- 没有调用 `cordis_inspect_query`（契约信息来自本包源码与 `CONTRACT.md`）；
+- 没有在真机浏览器验证三态与字节一致性（见 §81）。
+
+## 85. 与 brief / goal.md 的差异及理由（都写在这里，不藏）
+
+1. **`clientBuild` 在「文件可读但标记区域不可用」时也是 `null`**（brief 只写了「读失败为 null」）。
+   理由：此时没有任何可信摘要；如果说「文件读到了但 hash 是 null」，要么多一个形状、要么就得造一个
+   指纹，而造指纹会被读成「过期」。`null` = 未知 = 三态的第三态，是唯一诚实的答案（CONTRACT §14.2）。
+2. **ping 与 snapshot/overrides 的并发关系未变**：brief 要求「ping 改为消费响应」，没有要求改成串行。
+   实现里 `sendPing()` 与 `load()` 仍是并发发起（URL 与请求集合都不变，既有「三条路由」断言不动），
+   只是 ping 现在被 `await` 并写进 `setBoot`。
+3. **`data-build` 额外挂在失败卡片上**：brief 只说根容器要挂三件套。失败卡片没有模型、也拿不到宿主，
+   但它同样应该能回答「我是哪个 bundle」——这正是页面坏掉时最想问的问题，所以那里只挂 `data-build`。
+4. **`size` 的定义写死为 UTF-16 code unit 数**（brief 只写 `size`）。理由见 §79.2；这属于把 brief 的
+   模糊处说清楚，而不是改需求。
+5. **`size` 没进 UI**：状态条只呈现两个 hash 与三态结论；`size`/`mtime` 留在 ping 响应里供机器读取
+   （UI 上加长度只会增加噪声）。
+6. **新增了一条「ping 现场读、不缓存」的端到端用例**（brief 只要求 route 用例「独立复算」）。
+   做法是把整包复制到临时目录再 `import` 其 `index.js`，于是可以真的改那个副本的 `client.js`、
+   甚至删掉它，从而证明「两次 ping 之间改文件 ⇒ 摘要变」「文件不可读 ⇒ `clientBuild:null` 且 200」。
+   这是本轮唯一「比 brief 多要一点」的测试，理由是「不缓存」是本目标的核心断言，用 store 单测间接
+   证明不如用路由端到端证明。

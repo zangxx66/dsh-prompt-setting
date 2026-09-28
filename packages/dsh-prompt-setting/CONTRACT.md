@@ -96,13 +96,33 @@ inside the existing `enabled` / `reason` fields (§5.6):
   layer — which is the honest state of a profile that was never configured, and
   is what revisions 1–4 always reported.
 
+**Revision 6 (client build stamp).** Additive, with exactly one new field: `GET
+/prompt-setting/ping` now answers `clientBuild`, and the browser half renders the
+comparison. The question this settles is「the tab I am looking at — which
+`client.js` is it running?」, which until now could only be guessed at (a stale
+tab keeps running the bundle it was loaded with; the host keeps serving the new
+bytes, so both are "working" and they disagree).
+
+- `clientBuild` — `{hash, size, mtime}`, computed **on every request** by reading
+  the `client.js` this process publishes, or `null` when that file cannot be read
+  or its marker region is unusable (§14.2);
+- the page fingerprints **itself**, from the running factory's own source, and
+  publishes `data-build` / `data-build-server` / `data-build-match`
+  (`true` \| `false` \| `unknown`), rendering
+  `data-warning="client-build-stale"` only when both digests really answered and
+  really differ (§14.3).
+
+Everything else is untouched: no other route, field, status code or response byte
+changes, and the `E1–E5` probe, the snapshot, both override layers and every
+stage-2 route keep their exact shapes.
+
 ---
 
 ## 1. Routes and methods
 
 | Path | Methods | Purpose |
 | --- | --- | --- |
-| `/prompt-setting/ping` | `GET` | Stage 1A liveness probe. Behaviour unchanged. |
+| `/prompt-setting/ping` | `GET` | Stage 1A liveness probe. Behaviour unchanged, plus `clientBuild` since Revision 6 (§14.2). |
 | `/prompt-setting/snapshot` | `GET` | Base + effective section views, frozen verdict, layering. |
 | `/prompt-setting/overrides` | `GET` | Both layers and the merged list. |
 | `/prompt-setting/overrides` | `PUT` | Upsert one override into one layer. |
@@ -1013,3 +1033,118 @@ No request is sent before `confirm-yes`.
 
 An import always previews first: `import-apply` is disabled until a `dryRun`
 plan is on screen, and the click opens the confirmation card rather than writing.
+
+---
+
+## 14. Client build stamp (Revision 6)
+
+### 14.1 The problem this answers
+
+A settings tab keeps running the `client.js` it was loaded with. When the file on
+disk changes, the host serves the **new** bytes to any tab opened from then on,
+while the already-open tab goes on running the old code — both are "working", and
+they are not the same program. Until Revision 6 nothing on the page said which
+one it was, so「the fix is not visible」and「the tab is old」looked identical. (On
+this machine `Cmd+Shift+R` is taken over by DSH, which removed the easy manual
+check as well.)
+
+### 14.2 `clientBuild` in the ping
+
+`GET /prompt-setting/ping` answers the stage 1A shape plus one field:
+
+```json
+{
+  "ok": true,
+  "plugin": "dsh-prompt-setting",
+  "version": "0.1.0",
+  "time": "2026-09-28T12:00:00.000Z",
+  "clientRenderer": "fallback",
+  "clientReportedAt": "2026-09-28T12:00:00.000Z",
+  "clientBuild": { "hash": "7065b7d2", "size": 240949, "mtime": "2026-09-28T11:58:31.000Z" }
+}
+```
+
+- `hash` — 8 lowercase hex digits: **FNV-1a 32** of the marker region (§14.4);
+- `size` — the length of that region in **UTF-16 code units** (not bytes: see
+  §14.4 for why the browser and the host can only agree on this length);
+- `mtime` — the file's modification time as an ISO 8601 string;
+- `clientBuild` is **`null`**, with the rest of the response unchanged and the
+  status still `200`, when the bundle cannot be read, or when it is readable but
+  its marker region is unusable (markers removed, duplicated or reversed). A
+  fabricated digest here would be read as「过期」, so「unknown」is the answer.
+
+**How it is computed is part of the contract: on every request,** by reading the
+file this process publishes (`fileURLToPath(new URL('./client.js', import.meta.url))`
+of the installed package), never from a cache, a constant or a build-time value.
+A cached stamp would keep claiming「一致」after the file changed — i.e. it would
+lie exactly when it matters. The read is one `readFileSync` per probe and the
+probe is never on the assembly path, so this costs nothing per turn.
+
+Reading a file per request is the deliberate exception to §5.5's "read once, hold
+in memory": the override layers are configuration, where a stale cache is a bug;
+the stamp is a claim about *the bytes on disk right now*, where a cache would be
+the bug.
+
+### 14.3 The three states, and why the third exists
+
+The page fingerprints itself — the running factory's own source, via
+`factory.toString()` — and compares it with the field above. It publishes the
+result on the root container:
+
+| `data-build-match` | When | What the page renders |
+| --- | --- | --- |
+| `"true"` | both digests answered and are equal | tag「与宿主一致」 |
+| `"false"` | both digests answered and differ | tag「页面版本已过期」 + `data-warning="client-build-stale"` |
+| `"unknown"` | anything else | tag「构建戳未知」 + `data-warning="client-build-unknown"` |
+
+- `data-build` — the page's **own** digest (or the string `unknown` when it could
+  not compute one);
+- `data-build-server` — the host's digest as reported (or `unknown`);
+- `data-build-match` — the verdict above.
+
+`"unknown"` covers: an older host that does not send `clientBuild`; a host whose
+bundle is unreadable (`clientBuild: null`); a `client.js` whose markers were
+edited away; a failed or unreachable ping. **None of those may ever be rendered as
+「过期」**: the whole point is to stop chasing a bundle that is fine. The
+asymmetry is deliberate —「一致」 and「过期」 each require a real digest on both
+sides, so the only unsupported verdicts degrade to「未知」, and the page's own
+digest is reported even then (the page always knows what it is running, even when
+it cannot compare).
+
+The comparison cannot say which side is *newer*; `false` means "these are
+different bytes". In practice the newer bundle is the one on disk — a host-side
+change requires a `dsh web` restart, and the running process serves what it
+loaded — so the tab is the stale one, which is what the copy says.
+
+### 14.4 The region, the normalization, and what this cannot claim
+
+`client.js` carries exactly one pair of marker comments, inside the factory body:
+`/* @build-fingerprint:begin */` and `/* @build-fingerprint:end */`. The region is
+the text **between** them and it must cover the factory's entire body — anything
+outside it could change without moving the digest, which would be a silently
+false「一致」. Both flags are test-asserted against the real file
+(`test/build.test.mjs`), as is the requirement that each marker occurs exactly
+once: two markers would make the region ambiguous, and an ambiguous region is
+refused (`null` ⇒「未知」) rather than resolved arbitrarily.
+
+Before hashing, both sides apply the same normalization: drop one leading BOM,
+and fold `\r\n`/`\r` to `\n`. Without it, any hop that rewrites line endings
+between disk and browser would fabricate a mismatch out of a non-difference.
+
+The digest is FNV-1a 32 over **UTF-16 code units** of the normalized region, not
+over UTF-8 bytes, and `size` is that code-unit count. That is the only length
+both halves can compute: the browser has no `Buffer`, and `readFileSync(path,
+'utf8')` plus `charCodeAt` reproduces the server side exactly. The algorithm is
+pinned by its official test vectors in `test/build.test.mjs`, so a change to the
+prime, the offset or the order cannot pass by agreeing with itself.
+
+**Unverified assumption, stated rather than hidden:** the browser must receive
+`client.js` byte-for-byte as it exists on disk, apart from the BOM/CRLF
+normalization above. That is true for a file served as a static module — but this
+DSH version's client-module transport has not been inspected here, and a
+transform **inside** the region (minification, comment stripping, any rewriting)
+would make the two digests differ, i.e. it would show as「过期」. The failure
+direction is at least the visible one — a rewrite can never be reported as「一致」
+— but it is not detectable from this side, so it is listed in NOTES.md §81 as an
+unverified item rather than claimed as tested. Newline/BOM rewriting, the
+plausible case, *is* covered by the normalization and by its test.

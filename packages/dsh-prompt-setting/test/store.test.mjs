@@ -15,6 +15,7 @@ import test from 'node:test';
 
 import { emptyConfig } from '../core/overrides.js';
 import {
+  clientBuildInfo,
   readConfig,
   removeOverride,
   resolveDshHome,
@@ -188,3 +189,57 @@ test('removeOverride: drops one name and reports whether anything was there', ()
   assert.equal(missing.removed, false);
   assert.equal(missing.config, config);
 });
+
+// #region clientBuildInfo — the build stamp's one filesystem read (Revision 6)
+
+/** Markers as they appear in `client.js`; written literally so a rename is caught. */
+const BUILD_BEGIN = '/* @build-fingerprint:begin */';
+const BUILD_END = '/* @build-fingerprint:end */';
+
+test('clientBuildInfo: hashes a readable bundle and is not cached between reads', () => {
+  const dir = scratch();
+  try {
+    const path = join(dir, 'client.js');
+    writeFileSync(path, `${BUILD_BEGIN}\nBODY\n${BUILD_END}\n`, 'utf8');
+    const info = clientBuildInfo(path);
+    // FNV-1a 32 of the region text "\nBODY\n" — pinned as a regression oracle,
+    // not recomputed with the code under test.
+    assert.equal(info.hash, 'af0ab245');
+    assert.equal(info.size, 6);
+    assert.equal(info.mtime, statSync(path).mtime.toISOString());
+
+    // The whole point of reading per request: the next call must see the new
+    // bytes, never an answer cached from the previous one.
+    writeFileSync(path, `${BUILD_BEGIN}\nBODY!\n${BUILD_END}\n`, 'utf8');
+    const after = clientBuildInfo(path);
+    assert.equal(after.hash, '5b32638a', 'a changed region must change the reported digest');
+    assert.equal(after.size, 7);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('clientBuildInfo: unreadable file or unusable region is null, and never throws', () => {
+  const dir = scratch();
+  try {
+    assert.equal(clientBuildInfo(join(dir, 'missing.js')), null, 'a missing bundle is unknown');
+    assert.equal(clientBuildInfo(join(dir, 'deep', 'missing.js')), null, 'a missing directory is unknown too');
+    const directory = join(dir, 'a-directory');
+    mkdirSync(directory);
+    // Reading a directory fails on every supported platform (and where it does
+    // not, the text carries no markers) — both paths must end in `null`.
+    assert.equal(clientBuildInfo(directory), null);
+
+    const path = join(dir, 'client.js');
+    writeFileSync(path, 'no markers here', 'utf8');
+    assert.equal(clientBuildInfo(path), null, 'markers edited away ⇒ unknown, never a fabricated digest');
+    writeFileSync(path, `${BUILD_BEGIN}${BUILD_BEGIN}BODY${BUILD_END}`, 'utf8');
+    assert.equal(clientBuildInfo(path), null, 'duplicated markers ⇒ unknown');
+    writeFileSync(path, `${BUILD_END}BODY${BUILD_BEGIN}`, 'utf8');
+    assert.equal(clientBuildInfo(path), null, 'reversed markers ⇒ unknown');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// #endregion

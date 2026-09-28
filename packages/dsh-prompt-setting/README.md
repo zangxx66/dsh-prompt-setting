@@ -58,6 +58,8 @@ plugin_manager(action: "install_bundle", target: "<仓库绝对路径>/packages/
 3. 探针可验证宿主半是否挂上：**页面上「原始响应」区显示 `GET /prompt-setting/ping` 的返回 JSON**，
    其中 `clientRenderer` 即浏览器实际走的渲染分支（`primitives` / `fallback` / `null`）——
    这是判定「外部 bundle 能否 require `dsh-client-ui-primitives`」的机器可读结论；
+   `clientBuild` 是宿主**现场**对自己发布的 `client.js` 算出的构建戳（`{hash, size, mtime}`，
+   读不到文件时为 `null`），用法见下节「构建戳怎么读」；
    也可在页面控制台跑 `await (await fetch('/prompt-setting/ping')).json()`。
    **裸 `curl` 会被拒绝（401）**：`requestRejection` 第二段是浏览器 cookie 认证，缺少它即 401，
    这是预期行为，不是路由没挂上（细节见 [NOTES.md](./NOTES.md) §4）。
@@ -67,11 +69,15 @@ plugin_manager(action: "install_bundle", target: "<仓库绝对路径>/packages/
 ```bash
 cd packages/dsh-prompt-setting
 node --check index.js && node --check client.js && for f in core/*.js; do node --check "$f"; done
-node --test                                       # 276 项断言，0 skipped
+node --test                                       # 305 项断言，0 skipped
 npm pack --dry-run                                # 确认产物干净（无 test/、无 .dsh-graph）
 ```
 
-`node --test` 的十个套件：
+> `node --test`（在本目录下自动发现 `test/`）是本包的规范命令。Node 24 会拒绝把目录当位置参数
+> 传进去（`node --test test/` ⇒ `MODULE_NOT_FOUND`），这不是本包的问题；等价写法是
+> `node --test test/*.test.mjs`。
+
+`node --test` 的十一个套件：
 
 | 套件 | 覆盖 |
 | --- | --- |
@@ -79,11 +85,12 @@ npm pack --dry-run                                # 确认产物干净（无 tes
 | `test/history.test.mjs` | 历史内核与持久化：记录校验、jsonl 容错解析、裁剪上界、分页/过滤、可配置 N、追加写不重写、导入的多文件原子替换 |
 | `test/diff.test.mjs` | diff 内核：空文本、CRLF、超长单行、有界退化与预算、段级状态、焦点段选择 |
 | `test/transfer.test.mjs` | 导出文档形状、导入校验的每一条拒绝码、merge/replace 冲突策略、dryRun 计数 |
-| `test/store.test.mjs` | 路径解析、读时校验、**原子写**（硬链接见证旧文件未被就地改写） |
-| `test/route.test.mjs` | 全套宿主面：栅栏、405/404、两层、frozen、全部 4xx、D1/D2 回归（用复刻真语义含 scope 父链的假 Host） |
+| `test/build.test.mjs` | **构建戳纯函数**：FNV-1a 32 官方向量、归一化（BOM/CRLF）、标记缺失/错序/重复 ⇒ null、区域内改 1 字符 ⇒ 摘要变、真实 `client.js` 的区域覆盖整个 factory 正文 |
+| `test/store.test.mjs` | 路径解析、读时校验、**原子写**（硬链接见证旧文件未被就地改写）、`clientBuildInfo` 的每次重读与不可读 ⇒ null |
+| `test/route.test.mjs` | 全套宿主面：栅栏、405/404、两层、frozen、全部 4xx、D1/D2 回归（用复刻真语义含 scope 父链的假 Host）、**ping 的 `clientBuild` 与「改文件即变」的独立复算** |
 | `test/stage2.test.mjs` | 阶段二路由：历史追加与裁剪、整层重置、diff 选择器、导出/导入、**导入失败的哈希原子性断言** |
 | `test/host.test.mjs` | 阶段一 A 的既有套件：清单契约、ping、信任栅栏、405/404（**行为未变，断言仍在**） |
-| `test/client.test.mjs` | 客户端半：vm 沙箱 + 递归展开函数组件的迷你渲染器 + fetch 路由桩（含 `useSessions` 缺失降级、`frozenScope` 三态、保存前可行性校验、历史/对比/恢复默认/导出导入面板与 `DiffBlock` 分支） |
+| `test/client.test.mjs` | 客户端半：vm 沙箱 + 递归展开函数组件的迷你渲染器 + fetch 路由桩（含 `useSessions` 缺失降级、`frozenScope` 三态、保存前可行性校验、历史/对比/恢复默认/导出导入面板与 `DiffBlock` 分支、**构建戳三态与自证指纹的独立复算**） |
 | `test/integration.test.mjs` | **E1–E4 对照实验 + 插件端到端**：真 `@deepseek-ai/dsh-system-prompt` + 真 `@deepseek-ai/cordis` + 真 Cordis 上下文 |
 
 集成测试从 DSH 全局安装根解析真包（`DSH_INSTALL_ROOT` / `DSH_PROFILE_DIR` / pnpm 全局 store）。
@@ -106,7 +113,38 @@ npm pack --dry-run                                # 确认产物干净（无 tes
 - **客户端半（`client.js`）**：**需要一次真正的页面重新加载（新标签页最稳）**，不需要重启进程。
   - **注意**：客户端 bundle 只在页面 boot 时加载进 `__ModuleLoader__`，**同一个页面实例不会换新版本**——已经打开的标签页即使在服务端已更新，仍会一直跑旧 bundle（本机真实踩过：宿主侧交付的 bundle 已含新代码、安装副本里也能 `grep` 到新标记，但旧标签页显示的仍是旧交互）。
   - 本机 **`Cmd+Shift+R` 被 DSH 快捷键接管**，所以「硬刷新」不一定可用；**做法：新开一个标签页**（`Cmd+T` → `http://127.0.0.1:3080`）访问，这是最可靠的判别方式。
-  - 判别「我跑的是哪个 bundle」：若怀疑页面陈旧，先看服务端文件的时间戳/内容（`stat` 安装副本的 `client.js`、`grep` 新标记），再开新标签对比——**不要**把「旧标签显示旧交互」误判成代码没生效。
+  - 判别「我跑的是哪个 bundle」：**先看状态条上的「构建戳」**（见下节）——`与宿主一致` /
+    `页面版本已过期` / `构建戳未知` 三态就是为这一问准备的；也可以 `grep` 安装副本里有没有新标记。
+
+### 构建戳怎么读（Revision 6）
+
+页面「状态」卡的第三行就是构建戳，它为「我这一页是新版还是旧版」给出一个可读、也可机器核验的答案：
+
+| 显示 | `data-build-match` | 含义 | 该做什么 |
+| --- | --- | --- | --- |
+| 与宿主一致 | `true` | 本页运行的 `client.js` 与宿主正在发布的字节**逐字节相同**（同一区域同一算法同一摘要） | 不用动 |
+| 页面版本已过期 | `false` | 两边都给出了真实摘要且**不相同** ⇒ 这个标签页在跑旧 bundle | **开一个新标签页**（`Cmd+T` → `http://127.0.0.1:3080`）；改客户端**不需要**重启 `dsh web` |
+| 构建戳未知 | `unknown` | 旧宿主没有 `clientBuild`、宿主读不到文件、标记被改坏、或 ping 失败 | 不能下结论：**这一态永远不会被当作「过期」**，请按本机常规办法核对（新标签 / 重启） |
+
+三个数字都能直接读，都在页面根容器上（`node --test` 断言的也是它们）：
+
+- `data-build`：**本页**自身的摘要（宿主无关，页面自己算自己的源码）；
+- `data-build-server`：**宿主**在 `GET /prompt-setting/ping` 的 `clientBuild` 里报的摘要；
+- `data-build-match`：`true` / `false` / `unknown`，即上表第一列。
+
+控制台一条命令即可拿到结论（不需要看 UI）：
+
+```js
+await (await fetch('/prompt-setting/ping')).json()   // → clientBuild: {hash, size, mtime}
+document.querySelector('[data-plugin="dsh-prompt-setting"]').dataset.buildMatch   // "true" | "false" | "unknown"
+```
+
+摘要的区域由 `client.js` 里一对注释标记界定（`/* @build-fingerprint:begin */` …
+`/* @build-fingerprint:end */`），覆盖 factory 的**整段正文**；两侧在哈希前统一去掉 BOM、把
+`\r\n?` 折成 `\n`，所以「换行归一化」不会造成假的「过期」。算法是 32 位 FNV-1a（8 位 hex），
+客户端不能 import 宿主代码，因此 `client.js` 内联了一份等价实现，测试断言两者对**真实文件**
+逐位相等。契约细节见 [`CONTRACT.md`](./CONTRACT.md) §14，未验证项见
+[`NOTES.md`](./NOTES.md) §81。
 - **宿主半（`index.js` / `core/**`）**：**需要重启 `dsh web`**，代码不会自动重载。实测依据（三点一致）：
   1. 阶段二（g-005）的宿主能力是在**重启之后**才在真机可用的（`history.jsonl` 首次在重启后的保存中出现）；
   2. 阶段一 B 的 `/snapshot` 路由在本机「看起来无需重启」曾被我误读为热重载，复查 pid 时间线发现**中间确实发生过一次重启**（19:25 仍为旧 pid、19:27 变新 pid、19:29 才验证成功）；
