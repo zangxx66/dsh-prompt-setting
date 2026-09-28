@@ -1050,7 +1050,11 @@ check as well.)
 
 ### 14.2 `clientBuild` in the ping
 
-`GET /prompt-setting/ping` answers the stage 1A shape plus one field:
+`GET /prompt-setting/ping` answers the stage 1A shape plus one field. The body
+below is a **shape example**: `hash`, `size` and `mtime` all move with the
+bundle's bytes and the file's timestamp, so the numbers in it are placeholders —
+not this machine's (and not any machine's) current values. Comparing them with a
+live probe would read a normal rebuild as a defect.
 
 ```json
 {
@@ -1063,6 +1067,12 @@ check as well.)
   "clientBuild": { "hash": "7065b7d2", "size": 240949, "mtime": "2026-09-28T11:58:31.000Z" }
 }
 ```
+
+The real values come from the probe itself (or `clientBuildInfo(path)`) against the
+file in question. As a reference point, this package at the commit that introduced
+§14 recomputed offline to `hash: "63cf17c0"`, `size: 248093`
+([`NOTES.md`](./NOTES.md) §82); any later edit of `client.js` is expected to move
+both.
 
 - `hash` — 8 lowercase hex digits: **FNV-1a 32** of the marker region (§14.4);
 - `size` — the length of that region in **UTF-16 code units** (not bytes: see
@@ -1148,3 +1158,15 @@ direction is at least the visible one — a rewrite can never be reported as「�
 — but it is not detectable from this side, so it is listed in NOTES.md §81 as an
 unverified item rather than claimed as tested. Newline/BOM rewriting, the
 plausible case, *is* covered by the normalization and by its test.
+
+**Accepted limitation, also stated rather than hidden:** the region is the factory
+*body* only. `begin` has to be the body's first statement and `end` its last, so
+everything that wraps the function — the file header comment, the
+`window.__ModuleLoader__.load({` call, the `id:` line, the `factory:` line and the
+closing `};` / `},` / `});` — sits **outside** it. Editing only those lines
+therefore does not move the digest, and a tab running the older bytes would report
+`data-build-match: "true"` (a false「一致」; never a false「过期」). The alternative
+does not exist: the page's only access to its own bytes is `factory.toString()`, so
+markers moved outside the function would simply not be seen by the self-check. The
+boundary is acceptable because what lives outside is comments and binding lines —
+the registration surface — whose edits are both rare and loud. See NOTES.md §81.5.
