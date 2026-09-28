@@ -244,9 +244,6 @@ test('detectFrozen: a missing probe section means the pipeline replaced the scop
   const verdict = detectFrozen({
     registered,
     probe: [{ name: 'complete:c', text: 'C' }],
-    downstream: registered,
-    after: [{ name: 'complete:c', text: 'C' }],
-    resolved: emptyConfig(),
   });
   assert.equal(verdict.frozen, true);
   assert.equal(verdict.frozenSection, 'complete:c');
@@ -258,9 +255,6 @@ test('detectFrozen: a scope whose only section is complete is still caught, with
   const verdict = detectFrozen({
     registered,
     probe: [{ name: 'complete:c', text: 'ORIGINAL' }],
-    downstream: registered,
-    after: [{ name: 'complete:c', text: 'ORIGINAL' }],
-    resolved: emptyConfig(),
   });
   assert.equal(verdict.frozen, true);
   assert.equal(verdict.frozenSection, 'complete:c');
@@ -269,57 +263,60 @@ test('detectFrozen: a scope whose only section is complete is still caught, with
 
 test('detectFrozen: the probe controls its own section list, so a discarded probe is not about us', () => {
   const registered = sections(['complete:c', 'C'], ['other', 'O']);
-  const resolved = mergeLayers(validateConfig({ overrides: [{ name: 'complete:c', action: 'replace', text: 'REWRITTEN' }] }), null);
   const verdict = detectFrozen({
     registered,
     probe: [{ name: 'complete:c', text: 'C' }],
-    downstream: registered,
-    after: [{ name: 'complete:c', text: 'C' }],
-    resolved,
   });
   assert.equal(verdict.frozen, true);
   // The decisive signal names the scope, not our override.
   assert.match(verdict.frozenReason, /single complete section/);
 });
 
-test('detectFrozen: a surviving probe whose list size still changed is frozen for another reason', () => {
+test('detectFrozen: the F1 regression — a surviving probe plus ANOTHER plugin section is NOT a freeze', () => {
+  // Live shape: 10 registered sections; this plugin appends its probe; a third
+  // party (dsh-expression) appends a companion section in its own listener. The
+  // result is 12 sections, not 11 — an earlier "the list changed size" rule
+  // called that a freeze and marked every section non-overridable.
   const registered = sections(['a', 'A'], ['b', 'B']);
   const verdict = detectFrozen({
     registered,
-    probe: sections(['a', 'A'], ['b', 'B'], ['__dsh-prompt-setting-probe__', 'p'], ['extra', 'E']),
-    downstream: registered,
-    after: registered,
-    resolved: emptyConfig(),
+    probe: sections(['a', 'A'], ['b', 'B'], [PROBE_SECTION_NAME, 'probe'], ['companion', 'C']),
+  });
+  assert.deepEqual(verdict, { frozen: false, frozenSection: null, frozenReason: null });
+});
+
+test('detectFrozen: a surviving probe alongside sections REMOVED by another plugin is also not a freeze', () => {
+  const registered = sections(['a', 'A'], ['b', 'B'], ['c', 'C']);
+  const verdict = detectFrozen({
+    registered,
+    probe: sections(['a', 'A'], [PROBE_SECTION_NAME, 'probe']),
+  });
+  assert.deepEqual(verdict, { frozen: false, frozenSection: null, frozenReason: null });
+});
+
+test('detectFrozen: a probe removed without a single-section collapse does not claim complete', () => {
+  const registered = sections(['a', 'A'], ['b', 'B']);
+  const verdict = detectFrozen({
+    registered,
+    probe: sections(['a', 'A'], ['b', 'B']),
   });
   assert.equal(verdict.frozen, true);
   assert.equal(verdict.frozenSection, null);
-  assert.match(verdict.frozenReason, /differs from the registered sections/);
+  assert.match(verdict.frozenReason, /probe section was removed/);
+  assert.doesNotMatch(verdict.frozenReason, /complete/);
 });
 
 test('detectFrozen: hiding every section but one is our own doing, not a freeze', () => {
   const registered = sections(['a', 'A'], ['b', 'B']);
   const withProbe = sections(['a', 'A'], ['b', 'B'], [PROBE_SECTION_NAME, 'p']);
-  const resolved = mergeLayers(validateConfig({ overrides: [{ name: 'a', action: 'hide' }] }), null);
-  const verdict = detectFrozen({
-    registered,
-    probe: withProbe,
-    downstream: registered,
-    after: [{ name: 'b', text: 'B' }],
-    resolved,
-  });
+  const verdict = detectFrozen({ registered, probe: withProbe });
   assert.deepEqual(verdict, { frozen: false, frozenSection: null, frozenReason: null });
 });
 
 test('detectFrozen: an untouched assembly whose probe survived is not frozen', () => {
   const registered = sections(['a', 'A'], ['b', 'B']);
   assert.deepEqual(
-    detectFrozen({
-      registered,
-      probe: sections(['a', 'A'], ['b', 'B'], [PROBE_SECTION_NAME, 'p']),
-      downstream: registered,
-      after: registered,
-      resolved: emptyConfig(),
-    }),
+    detectFrozen({ registered, probe: sections(['a', 'A'], ['b', 'B'], [PROBE_SECTION_NAME, 'p']) }),
     { frozen: false, frozenSection: null, frozenReason: null },
   );
 });
@@ -328,21 +325,9 @@ test('detectFrozen: a probe section that cannot be appended falls back to compar
   // Pathological: a registered section already owns the probe name, so the
   // probe append is skipped and cannot be used as a marker.
   const registered = sections([PROBE_SECTION_NAME, 'SQUATTER'], ['a', 'A']);
-  const collided = detectFrozen({
-    registered,
-    probe: registered,
-    downstream: registered,
-    after: registered,
-    resolved: emptyConfig(),
-  });
+  const collided = detectFrozen({ registered, probe: registered });
   assert.deepEqual(collided, { frozen: false, frozenSection: null, frozenReason: null });
-  const collapsed = detectFrozen({
-    registered,
-    probe: [{ name: 'a', text: 'A' }],
-    downstream: registered,
-    after: [{ name: 'a', text: 'A' }],
-    resolved: emptyConfig(),
-  });
+  const collapsed = detectFrozen({ registered, probe: [{ name: 'a', text: 'A' }] });
   assert.equal(collapsed.frozen, true);
   assert.equal(collapsed.frozenSection, 'a');
 });
@@ -397,16 +382,56 @@ test('buildEffective: mirrors the rendered result and reports what each override
     frozen: false,
     frozenReason: null,
   });
-  assert.deepEqual(effective.map((entry) => [entry.name, entry.index, entry.text, entry.action, entry.overrideLayer, entry.applied]), [
-    ['a', 0, 'A2', 'replace', 'user', true],
-    ['new', 1, 'N', 'append', 'user', true],
-    ['c', 2, 'C', null, null, false],
-    // Not rendered any more: index null, and the suppressed text is shown.
-    ['b', null, 'B', 'hide', 'user', true],
-  ]);
+  assert.deepEqual(
+    effective.map((entry) => [entry.name, entry.index, entry.text, entry.origin, entry.action, entry.overrideLayer, entry.applied]),
+    [
+      ['a', 0, 'A2', 'registered', 'replace', 'user', true],
+      ['new', 1, 'N', 'appended', 'append', 'user', true],
+      ['c', 2, 'C', 'registered', null, null, false],
+      // Not rendered any more: index null, and the suppressed text is shown.
+      ['b', null, 'B', 'registered', 'hide', 'user', true],
+    ],
+  );
   assert.equal(effective[2].overridable, true);
   assert.equal(effective[2].reason, null);
   assert.equal(effective[0].reason, null);
+});
+
+test('buildEffective: F1 — a section another plugin added after the waterfall is marked, not blamed on us', () => {
+  const base = buildBase(sections(['a', 'A']), new Map());
+  const effective = buildEffective({
+    base,
+    after: sections(['a', 'A'], ['companion', 'C']),
+    resolved: emptyConfig(),
+    report: { applied: [], skipped: [] },
+    frozen: false,
+    frozenReason: null,
+  });
+  const added = effective.find((entry) => entry.name === 'companion');
+  assert.deepEqual(
+    [added.origin, added.action, added.overrideLayer, added.applied, added.overridable, added.reason],
+    ['downstream-added', null, null, false, true, null],
+  );
+  // And an untouched registered section stays editable when nothing is frozen.
+  const plain = effective.find((entry) => entry.name === 'a');
+  assert.deepEqual([plain.origin, plain.overridable, plain.reason], ['registered', true, null]);
+});
+
+test('buildEffective: an override whose registered target was removed downstream says so', () => {
+  const base = buildBase(sections(['a', 'A'], ['b', 'B']), new Map());
+  const resolved = mergeLayers(validateConfig({ overrides: [{ name: 'b', action: 'replace', text: 'B2' }] }), null);
+  const attempt = applyOverrides(sections(['a', 'A']), resolved);
+  const effective = buildEffective({
+    base,
+    after: sections(['a', 'A']),
+    resolved,
+    report: attempt.report,
+    frozen: false,
+    frozenReason: null,
+  });
+  const b = effective.find((entry) => entry.name === 'b');
+  assert.deepEqual([b.index, b.origin, b.applied, b.overridable], [null, 'registered', false, false]);
+  assert.match(b.reason, /removed from the assembled result/);
 });
 
 test('buildEffective: a frozen scope marks every section non-overridable with the frozen reason', () => {
@@ -451,16 +476,54 @@ test('buildEffective: skipped overrides explain themselves instead of silently v
   assert.match(ghost.reason, /is registered/);
 });
 
-test('renderSections: joins non-empty sections with a blank line and interpolates known variables', () => {
-  assert.equal(renderSections(sections(['a', 'A'], ['b', 'B']), {}), 'A\n\nB');
-  assert.equal(renderSections(sections(['a', 'A'], ['b', ''], ['c', 'C']), {}), 'A\n\nC');
-  assert.equal(renderSections(sections(['a', 'Hello {{name}}']), { name: 'world' }), 'Hello world');
-  assert.equal(renderSections(sections(['a', '{{a}}{{b}}']), { a: '1', b: '2' }), '12');
-  // Unknown and malformed references stay literal: the snapshot must never throw.
-  assert.equal(renderSections(sections(['a', 'Hello {{nope}}']), {}), 'Hello {{nope}}');
-  assert.equal(renderSections(sections(['a', 'a {{Upper}} b']), {}), 'a {{Upper}} b');
-  assert.equal(renderSections(sections(['a', '{{unclosed']), {}), '{{unclosed');
-  assert.equal(renderSections(sections(['a', 'lit {{name}}', { interpolate: false }]), { name: 'x' }), 'lit {{name}}');
-  assert.equal(renderSections(sections(['a', 'A'], ['b', '{{a}}']), { a: 'expanded' }), 'A\n\nexpanded');
-  assert.equal(renderSections(undefined, undefined), '');
+test('renderSections: joins non-empty sections with a blank line and interpolates usable variables', () => {
+  const text = (sections_, variables) => renderSections(sections_, variables);
+  assert.deepEqual(text(sections(['a', 'A'], ['b', 'B']), {}), { text: 'A\n\nB', resolved: true, unresolved: [] });
+  assert.equal(text(sections(['a', 'A'], ['b', ''], ['c', 'C']), {}).text, 'A\n\nC');
+  assert.equal(text(sections(['a', 'Hello {{name}}']), { name: 'world' }).text, 'Hello world');
+  assert.equal(text(sections(['a', '{{a}}{{b}}']), { a: '1', b: '2' }).text, '12');
+  assert.equal(text(sections(['a', 'A'], ['b', '{{a}}']), { a: 'expanded' }).text, 'A\n\nexpanded');
+  assert.deepEqual(text(undefined, undefined), { text: '', resolved: true, unresolved: [] });
+  // `interpolate: false` sections keep their braces by design, so they are NOT
+  // unresolved references.
+  assert.deepEqual(
+    text(sections(['a', 'lit {{name}}', { interpolate: false }]), { name: 'x' }),
+    { text: 'lit {{name}}', resolved: true, unresolved: [] },
+  );
+});
+
+test('F2: an undefined or missing variable is never rendered as a bare "undefined"', () => {
+  // The live bug: the probe context had no agent, agent-scoped providers
+  // returned undefined, and the "full prompt" showed `powered by the undefined
+  // model` — a prompt that never existed.
+  const undefinedValue = renderSections(sections(['a', 'powered by the {{model}} model']), { model: undefined });
+  assert.equal(undefinedValue.text, 'powered by the {{model}} model');
+  assert.equal(undefinedValue.text.includes('undefined'), false);
+  assert.deepEqual(undefinedValue.unresolved, ['model']);
+  assert.equal(undefinedValue.resolved, false);
+
+  const nullValue = renderSections(sections(['a', 'cwd {{cwd}}']), { cwd: null });
+  assert.equal(nullValue.text, 'cwd {{cwd}}');
+  assert.deepEqual(nullValue.unresolved, ['cwd']);
+
+  // Absent and malformed references are unresolved too; the snapshot never throws.
+  assert.deepEqual(renderSections(sections(['a', 'Hello {{nope}}']), {}).unresolved, ['nope']);
+  assert.deepEqual(renderSections(sections(['a', 'a {{Upper}} b']), {}).unresolved, ['Upper']);
+  assert.equal(renderSections(sections(['a', 'a {{Upper}} b']), {}).text, 'a {{Upper}} b');
+  // A lone `{{` is prose, exactly as the shipped renderer treats it.
+  assert.deepEqual(renderSections(sections(['a', '{{unclosed']), {}), { text: '{{unclosed', resolved: true, unresolved: [] });
+
+  // Several references, deduplicated and sorted; resolved ones are not listed.
+  const mixed = renderSections(sections(['a', '{{b}} {{a}} {{b}} {{ok}}']), { a: undefined, b: undefined, ok: 'yes' });
+  assert.equal(mixed.text, '{{b}} {{a}} {{b}} yes');
+  assert.deepEqual(mixed, { text: '{{b}} {{a}} {{b}} yes', resolved: false, unresolved: ['a', 'b'] });
+
+  // A usable value renders normally and reports nothing unresolved.
+  assert.deepEqual(
+    renderSections(sections(['a', 'powered by the {{model}} model']), { model: 'deepseek-flash' }),
+    { text: 'powered by the deepseek-flash model', resolved: true, unresolved: [] },
+  );
+  // `false` and `0` are usable values, not "missing".
+  assert.equal(renderSections(sections(['a', '{{n}}']), { n: 0 }).text, '0');
+  assert.equal(renderSections(sections(['a', '{{n}}']), { n: false }).text, 'false');
 });

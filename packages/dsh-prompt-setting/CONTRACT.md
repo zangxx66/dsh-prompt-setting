@@ -31,6 +31,22 @@ built on revision 1:
   identity**, so a concurrent assembly by any other caller (including a real turn
   for the same session) can never receive the probe's synthetic section (§2.6).
 
+**Revision 3 (live-machine fixes).** Two defects the real machine exposed:
+
+- **`frozen` is now decided solely by whether this plugin's probe section
+  survived** (§2.4). The previous rule also treated "the result is not
+  `registered.length + 1` sections" as a freeze, which misfired on the entirely
+  normal case of another plugin appending a section — it reported
+  `frozen: true` and marked **every** section non-overridable, i.e. a read-only
+  panel. Nothing about `frozen` or `overridable` is derived from a section count
+  any more;
+- **`rendered` never renders a missing variable value as a bare `undefined`,
+  and `renderedResolved` / `unresolvedVariables` report it instead** (§2.3).
+
+Also new: `effective[].origin` marks a section another listener added after the
+waterfall, so the browser can label it instead of reading it as our override or
+as an anomaly (§2.2).
+
 ---
 
 ## 1. Routes and methods
@@ -103,20 +119,63 @@ section or override that produced **no** rendered section.
 | `name` | string | Section name. |
 | `index` | integer \| null | Position in the rendered array. `null` means the section is not in the rendered prompt at all. |
 | `text` | string | The text in the result. For an `index: null` entry it is the suppressed original text where one exists (a successful `hide`), otherwise `""`. |
+| `origin` | `"registered"` \| `"appended"` \| `"downstream-added"` \| `"unmatched-override"` | Where the entry came from — see below. |
 | `applied` | boolean | Whether the override for this name achieved what it asked for. `false` for a section with no override. |
-| `overridable` | boolean | Whether this plugin can change the section at all. `false` for every section of a frozen scope, and `false` where a change was observed to be reverted. |
+| `overridable` | boolean | Whether this plugin can change the section at all. `false` for every section of a frozen scope, and `false` where a change was observed to be reverted. When nothing is frozen, a section with no override is `true`. |
 | `reason` | string \| null | Human-readable explanation whenever `applied` is `false` or `overridable` is `false`; `null` when there is nothing to explain. |
 | `overrideLayer` | `"user"` \| `"workspace"` \| null | Which layer supplied the override, `null` when none did. |
 | `action` | `"replace"` \| `"hide"` \| `"append"` \| null | The requested action, `null` when no override targets this name. |
 
-### 2.3 `rendered`
+**`origin` — why `base` and `effective` can differ by name.** `base` is the
+pre-waterfall registered sections; `effective` is the final result. Another
+plugin may add or remove sections in its own `system-prompt/assemble` listener
+(a live profile had a plugin append a companion section), so the two name sets
+legitimately differ. `origin` is how the browser tells those apart instead of
+reading them as an override or a fault:
 
-`effective`'s rendered text: each section interpolated and dropped when empty,
-the rest joined with a blank line. **Documented difference from the shipped
-`renderPrompt`**: an unknown or malformed `{{reference}}` is left literal
-instead of throwing, because the snapshot is a read-only view that must never
-fail on provider text. Provenance text containing `{{…}}` therefore renders
-literally here while a real turn would throw. See §4.4.
+| Value | Meaning | UI treatment |
+| --- | --- | --- |
+| `registered` | The name was in `base`. | A normal, editable row. |
+| `appended` | This plugin's own `append` override introduced it. | An override row (`action: "append"`). |
+| `downstream-added` | Neither of the above: it entered the result after the waterfall, contributed by another listener. | **"Added by another plugin"** — not an override, not an anomaly. It is still overridable: this plugin applies its overrides on top of the downstream result, so a `replace`/`hide` targeting it works. |
+| `unmatched-override` | An override whose target exists neither in `base` nor in the result. | An override that had nothing to act on; `reason` says so. |
+
+### 2.3 `rendered`, `renderedResolved`, `unresolvedVariables`
+
+`rendered` is `effective`'s text: each section interpolated and dropped when
+empty, the rest joined with a blank line.
+
+**Documented difference from the shipped `renderPrompt`**: an unresolved
+`{{reference}}` is left literal instead of throwing, because the snapshot is a
+read-only view that must never fail on provider text, and this module cannot
+import the shipped renderer (it is not resolvable from a linked plugin package).
+
+A reference is **unresolved** when the variable is absent, or present with an
+`undefined`/`null` value. That really happens: the shipped renderer documents
+that a provider may return `undefined`, and a probe without an agent leaves
+agent-scoped providers valueless. Two rules follow, and they are what the UI
+must rely on:
+
+- `rendered` **never contains a bare `undefined`** produced from a missing value;
+- the reference stays literal as `{{name}}` and its inner text is listed in
+  `unresolvedVariables` (sorted, deduplicated), with
+  `renderedResolved: unresolvedVariables.length === 0`.
+
+`unresolvedVariables` also carries malformed-but-complete groups such as
+`{{Upper}}`, since the shipped renderer treats those as errors too. A lone `{{`
+with no closing group is prose, exactly as the shipped renderer treats it, and
+is not listed.
+
+**A session-scope probe resolves agent-scoped variables; the global one cannot.**
+Measured: a provider that returns a value only when `context.agent` is present
+resolves under `?session=<active>` (the probe passes `{agent, scope: agent}`) and
+returns `undefined` without a session. So:
+
+- `frozenScope: "session"` ⇒ `renderedResolved` should be `true` for ordinary
+  compositions;
+- `frozenScope: "global"` ⇒ agent-scoped values are absent, `renderedResolved`
+  may be `false`, and the UI should label the full-text view as partial rather
+  than show placeholders as if they were the real prompt.
 
 ### 2.4 `frozen` and `frozenScope`
 
@@ -144,17 +203,31 @@ describes the unscoped assembly because the session's scope could not be probed
 (a complete section registered there would not be visible). The UI should treat
 that as "unknown for this session", not as "not frozen".
 
-The verdict never claims more than it observed:
+The verdict never claims more than it observed, and it is decided by **one
+thing only — whether this plugin's own probe section survived the waterfall**:
 
 1. The snapshot runs a **frozen probe**: an `assemble()` **under the target
-   scope** with the single synthetic append `__dsh-prompt-setting-probe__`. If
-   that section is absent from the result — or the list changed size without it
-   — the pipeline replaced the scope's `sections` after the waterfall. A
-   `complete: true` section does exactly this, and it is the only mechanism
-   observed to do so.
-2. If the probe survived, the snapshot also compares the sections this plugin
-   handed downstream with the sections that came back, and reports a discarded
-   override.
+   scope** with the single synthetic append `__dsh-prompt-setting-probe__`.
+   - **it survived** ⇒ `frozen: false`. Nothing replaced the scope's `sections`.
+     **Other plugins adding or removing sections in their own
+     `system-prompt/assemble` listeners is normal and is NOT a freeze** — a live
+     profile had a plugin append a companion section, and an earlier rule that
+     compared the result's length against `registered.length + 1` called that a
+     freeze on every scope, marking every section non-overridable. No section
+     count and no whole-list comparison feeds this verdict any more.
+   - **it is gone and the result is exactly one section** ⇒ `frozen: true`,
+     `frozenSection` names that section: the scope collapsed to its single
+     `complete` section.
+   - **it is gone and the result is anything else** ⇒ `frozen: true` with the
+     wording "this plugin's appended probe section was removed after the
+     waterfall". It deliberately does **not** claim a `complete` section did it.
+2. The only other input is the degenerate case where a registered section
+   already owns the probe name, so no marker is available; there the two
+   observations are compared directly.
+
+A consequence worth stating: a section another listener *added* is not frozen
+and is still `overridable: true`, because this plugin applies its overrides on
+top of the downstream result.
 
 `frozenSection` names the single section the scope collapsed to when that is
 what happened (the complete one), otherwise `null`. `frozenReason` is always a
@@ -177,9 +250,15 @@ unreachable endpoint rather than `mounted: false` (E5).
 
 ### 2.6 Cost and probe correlation
 
-The snapshot runs **two** `assemble()` calls (frozen probe + the session's real
-config), both under the target scope. Both are discarded apart from their
-section lists. This is an on-demand settings route, not a per-turn path.
+The snapshot runs **two** `assemble()` calls, both under the target scope:
+
+1. the **frozen probe** (config = the single synthetic append) — the sole input
+   to the `frozen` verdict;
+2. the **override probe** (config = this session's merged layers) — the input to
+   `base`/`effective`/`rendered`.
+
+Both results are discarded apart from their section lists. This is an on-demand
+settings route, not a per-turn path.
 
 Each probe's config is handed to the waterfall listener only for the exact
 `AssembleContext` object this plugin passed to `assemble()`, matched by
@@ -384,8 +463,10 @@ real Cordis context. The snapshot republishes the same text in `experiments`.
 
 ## 7. Known limitations (stated, not hidden)
 
-1. **`rendered` interpolates differently from a real turn** for unknown
-   `{{references}}` (§2.3). Deliberate: the snapshot must not throw.
+1. **`rendered` interpolates differently from a real turn** for unresolved
+   `{{references}}` (§2.3). Deliberate: the snapshot must not throw, and it must
+   never show a value that does not exist. `renderedResolved` /
+   `unresolvedVariables` are how the UI stays honest about it.
 2. **A session with no active Agent gets a `frozenScope: "global"` verdict, not
    a session one** (§2.4). The response says so in `frozenScopeReason`; the UI
    must present that as unknown-for-this-session rather than as "not frozen".
@@ -394,12 +475,16 @@ real Cordis context. The snapshot republishes the same text in `experiments`.
 3. **A workspace created after mount contributes nothing until a route request
    refreshes the cache** (§5.5).
 4. **A scope whose registered sections change between the two probes** could
-   make the frozen verdict reflect the first probe while `base`/`effective`
-   reflect the second. Both probes are `assemble()` calls microseconds apart and
-   no shipped package registers dynamic *sections*.
-5. **`complete` is `"unknown"`** when neither probe can prove it. It is never
+   make `base` reflect the first probe while `effective` reflects the second.
+   Both probes are `assemble()` calls microseconds apart; the frozen verdict
+   itself depends only on the first probe, so this cannot corrupt it.
+5. **`complete` is `"unknown"`** when no probe can prove it. It is never
    guessed.
 6. **The probed context is not byte-identical to a real turn's**: this plugin
    passes `{agent, scope: agent}` (no `signal`), so a section or variable
    provider that branches on `context.signal` would see a difference. No shipped
    provider reads it.
+7. **`unresolvedVariables` cannot distinguish "no such variable" from "the
+   provider returned `undefined`"** — the assembly only carries the value. Both
+   are reported the same way, and both mean the same thing to a reader: the
+   value had no context here.

@@ -30,6 +30,19 @@ export const MAX_NAME_LENGTH = 200;
 export const MAX_TEXT_BYTES = 200 * 1024;
 /** The persisted config schema version. A different version disables the layer. */
 export const CONFIG_VERSION = 1;
+/**
+ * Where an `effective` entry came from. The pre-waterfall registered sections
+ * and the final result legitimately differ, because another plugin may add or
+ * remove sections in its own `system-prompt/assemble` listener; this is how the
+ * browser tells those apart instead of reading them as an override or a fault.
+ * - `registered` — the name was in the pre-waterfall sections;
+ * - `appended` — this plugin's own `append` override introduced it;
+ * - `downstream-added` — neither of the above: it entered the result after the
+ *   waterfall, contributed by another listener;
+ * - `unmatched-override` — an override whose target exists neither in the
+ *   registered sections nor in the result.
+ */
+export const ORIGINS = Object.freeze(['registered', 'appended', 'downstream-added', 'unmatched-override']);
 
 /** Rejected in section names: C0/C1 controls, DEL, and the Unicode line separators. */
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
@@ -306,8 +319,11 @@ function skipOf(override, code, message) {
  * array was replaced after the waterfall.
  */
 export const PROBE_SECTION_NAME = '__dsh-prompt-setting-probe__';
-/** The probe section's text; never rendered, only observed. */
+/**
+ * The probe section's text; never rendered, only observed. */
 const PROBE_SECTION_TEXT = 'dsh-prompt-setting assemble probe';
+/** Shared verdict for a scope nothing froze. */
+const NO_FREEZE = Object.freeze({ frozen: false, frozenSection: null, frozenReason: null });
 
 /**
  * The config used by the frozen probe: one append of {@link PROBE_SECTION_NAME}.
@@ -321,68 +337,54 @@ export function probeConfig() {
 }
 
 /**
- * Decide whether the assembled scope is frozen, from two real `assemble()`
- * probes. Nothing is guessed: every input is an observation.
+ * Decide whether the assembled scope is frozen, from the frozen probe alone.
  *
- * Three signals, in order:
- * 1. the *frozen probe* — its appended section is missing from the result, so
- *    the pipeline replaced the scope's `sections` (a `complete: true` section
- *    does exactly that). This is the decisive signal, and it works for every
- *    scope shape including one whose only section is the complete one;
- * 2. the frozen probe survived but the section list still changed size — the
- *    pipeline rewrote the list for another reason;
- * 3. the *override* probe discarded our change. Kept because it names the
- *    specific failure ("your override was discarded") rather than the scope's.
- * @param probes - the observed sections of both probes.
+ * THE signal is whether this plugin's own appended probe section survived the
+ * waterfall:
+ *
+ * - it survived ⇒ no complete section replaced the scope's `sections`, so
+ *   `frozen: false`. **Other plugins adding or removing sections in their own
+ *   `system-prompt/assemble` listeners is normal and is NOT a freeze** — a real
+ *   machine had a plugin append a companion section, which made an earlier
+ *   "the list changed size" heuristic report a freeze on every scope and marked
+ *   every section non-overridable;
+ * - it is gone and the result is exactly one section ⇒ the scope collapsed to
+ *   its single `complete` section;
+ * - it is gone and the result is anything else ⇒ our append was removed after
+ *   the waterfall. Reported as frozen with that wording, and deliberately
+ *   WITHOUT claiming a `complete` section caused it.
+ *
+ * Nothing compares section counts or the whole list against the registered
+ * sections except in the degenerate case where the probe name is already taken
+ * and no marker is available.
+ * @param probes - `{registered, probe}`: the pre-waterfall sections and the
+ *   frozen probe's assembled result.
  * @returns `{frozen, frozenSection, frozenReason}`.
  */
-export function detectFrozen({ registered, probe, downstream, after, resolved }) {
+export function detectFrozen({ registered, probe }) {
+  const survived = (Array.isArray(probe) ? probe : []).some((section) => section?.name === PROBE_SECTION_NAME);
   const probeAttempt = applyOverrides(registered, probeConfig());
   if (probeAttempt.changed) {
-    const survived = probe.some((section) => section?.name === PROBE_SECTION_NAME);
-    if (!survived) {
-      const collapsed = probe.length === 1;
-      return {
-        frozen: true,
-        frozenSection: collapsed ? probe[0].name : null,
-        frozenReason: collapsed
-          ? `the assembly was replaced by a single complete section ${JSON.stringify(probe[0].name)}`
-          : 'the probe section was removed: the assembled sections were replaced after the waterfall',
-      };
-    }
-    if (probe.length !== registered.length + 1) {
-      return {
-        frozen: true,
-        frozenSection: null,
-        frozenReason: 'the assembled section list differs from the registered sections for a probe-only append',
-      };
-    }
-  } else if (!sameSections(registered, probe)) {
+    if (survived) return NO_FREEZE;
+    const collapsed = probe.length === 1;
+    return {
+      frozen: true,
+      frozenSection: collapsed ? probe[0].name : null,
+      frozenReason: collapsed
+        ? `the assembly was replaced by a single complete section ${JSON.stringify(probe[0].name)}`
+        : 'this plugin\'s appended probe section was removed after the waterfall, so the assembled sections are not the ones this plugin returned',
+    };
+  }
+  // Degenerate: a registered section already owns the probe name, so the marker
+  // cannot be used. Fall back to comparing the two observations.
+  if (!sameSections(registered, probe)) {
     return {
       frozen: true,
       frozenSection: probe.length === 1 ? probe[0].name : null,
       frozenReason: 'the assembled sections differ from the registered sections even with no override applied',
     };
   }
-
-  const attempt = applyOverrides(downstream, resolved);
-  if (attempt.changed && !sameSections(attempt.sections, after)) {
-    const collapsed = after.length === 1 && downstream.length > 1;
-    let reason;
-    if (sameSections(downstream, after)) {
-      reason = 'the override was discarded: the assembled sections are the pre-override sections';
-    } else if (collapsed) {
-      reason = `the assembly was replaced by a single complete section ${JSON.stringify(after[0].name)}`;
-    } else {
-      reason = 'the override was discarded by the assembly pipeline';
-    }
-    return {
-      frozen: true,
-      frozenSection: after.length === 1 ? after[0].name : null,
-      frozenReason: reason,
-    };
-  }
-  return { frozen: false, frozenSection: null, frozenReason: null };
+  return NO_FREEZE;
 }
 
 /**
@@ -438,6 +440,10 @@ export function buildBase(registered, flags) {
  * name that was never registered, a section the pipeline dropped, or an
  * `append` that was discarded); its `text` is the suppressed original where one
  * exists, otherwise `""`.
+ *
+ * `origin` says where the entry came from, which is what lets the browser tell
+ * a section this plugin can edit from one another plugin contributed during the
+ * waterfall — see {@link ORIGINS}.
  * @param view - the projection inputs.
  * @returns the `effective` array.
  */
@@ -447,6 +453,11 @@ export function buildEffective({ base, after, resolved, report, frozen, frozenRe
   const byName = new Map(overrides.map((override) => [override.name, override]));
   const baseByName = new Map((Array.isArray(base) ? base : []).map((entry) => [entry.name, entry]));
   const skippedByName = new Map((report?.skipped ?? []).map((entry) => [entry.name, entry]));
+  /** Where a name in the result came from. */
+  const originOf = (name) => {
+    if (baseByName.has(name)) return 'registered';
+    return byName.get(name)?.action === 'append' ? 'appended' : 'downstream-added';
+  };
   const seen = new Set();
   const out = [];
 
@@ -458,6 +469,7 @@ export function buildEffective({ base, after, resolved, report, frozen, frozenRe
         name: section.name,
         index,
         text: section.text,
+        origin: originOf(section.name),
         applied: false,
         overridable: !frozen,
         reason: frozen ? frozenReason : null,
@@ -470,6 +482,7 @@ export function buildEffective({ base, after, resolved, report, frozen, frozenRe
       name: section.name,
       index,
       text: section.text,
+      origin: originOf(section.name),
       applied: false,
       overridable: true,
       reason: null,
@@ -502,14 +515,16 @@ export function buildEffective({ base, after, resolved, report, frozen, frozenRe
   });
 
   // A registered section that the assembled result dropped without an override
-  // asking for it (a frozen scope collapses to its complete section) is still
-  // reported, so the loss is visible rather than an unexplained absence.
+  // asking for it (a frozen scope collapses to its complete section, or another
+  // listener removed it) is still reported, so the loss is visible rather than
+  // an unexplained absence.
   for (const entry of Array.isArray(base) ? base : []) {
     if (seen.has(entry.name) || byName.has(entry.name)) continue;
     out.push({
       name: entry.name,
       index: null,
       text: entry.text,
+      origin: 'registered',
       applied: false,
       overridable: false,
       reason: frozen ? frozenReason : 'the section is not present in the assembled result',
@@ -525,16 +540,21 @@ export function buildEffective({ base, after, resolved, report, frozen, frozenRe
     let reason = null;
     let overridable = !frozen;
     let applied = false;
-    if (skipped !== undefined) {
+    if (override.action === 'hide' && skipped === undefined) {
+      // The hide took effect: the section is gone from the result, which is
+      // exactly what was asked for.
+      applied = true;
+    } else if (baseEntry !== undefined) {
+      // It WAS registered but is absent from the result: report the loss, not
+      // the (inaccurate) "no such section is registered".
+      overridable = false;
+      reason = 'the section was removed from the assembled result';
+    } else if (skipped !== undefined) {
       reason = skipped.message;
       overridable = false;
-    } else if (override.action === 'hide') {
-      applied = true;
     } else if (override.action === 'replace') {
       overridable = false;
-      reason = baseEntry === undefined
-        ? `no section named ${JSON.stringify(override.name)} is registered`
-        : 'the section was removed from the assembled result';
+      reason = `no section named ${JSON.stringify(override.name)} is registered`;
     } else {
       overridable = false;
       reason = 'the appended section is not present in the assembled result';
@@ -543,6 +563,7 @@ export function buildEffective({ base, after, resolved, report, frozen, frozenRe
       name: override.name,
       index: null,
       text: override.action === 'hide' ? (baseEntry?.text ?? '') : '',
+      origin: baseEntry !== undefined ? 'registered' : 'unmatched-override',
       applied,
       overridable,
       reason,
@@ -558,44 +579,66 @@ export function buildEffective({ base, after, resolved, report, frozen, frozenRe
  * Render a section list the way the Host renders the prompt: interpolate each
  * section, drop empty ones, join the rest with a blank line.
  *
- * Deliberate difference from the shipped `renderPrompt`: an unknown or
- * malformed `{{reference}}` is left LITERAL here instead of throwing. The
- * snapshot is a read-only view and must never fail because of provider text,
- * and this module may not import the shipped renderer (it is not resolvable
- * from a linked plugin package). Provenance text containing `{{…}}` therefore
- * renders literally in the snapshot but throws in a real turn — see
- * CONTRACT.md §4.4.
+ * Deliberate difference from the shipped `renderPrompt`: an unresolved
+ * `{{reference}}` is left LITERAL here instead of throwing. The snapshot is a
+ * read-only view and must never fail because of provider text, and this module
+ * may not import the shipped renderer (it is not resolvable from a linked
+ * plugin package).
+ *
+ * A reference is unresolved when the variable is absent, or present with an
+ * `undefined`/`null` value — which really happens: the shipped renderer
+ * documents that a provider may return `undefined`, and a probe context without
+ * an agent leaves agent-scoped providers valueless. Rendering `String(undefined)`
+ * would put a bare `undefined` into the "full prompt" the UI shows, i.e. a
+ * prompt that never existed. Instead the reference stays literal and its name is
+ * reported, so the browser can say the value had no context.
  * @param sections - the sections to render.
  * @param variables - the assembly's resolved variable values.
- * @returns the rendered prompt.
+ * @returns `{text, resolved, unresolved}` where `unresolved` is the sorted,
+ *   deduplicated inner text of every reference left literal.
  */
 export function renderSections(sections, variables) {
   const list = Array.isArray(sections) ? sections : [];
   const values = variables !== null && typeof variables === 'object' ? variables : {};
-  return list
-    .map((section) => (section?.interpolate === false ? String(section.text) : interpolate(String(section?.text ?? ''), values)))
-    .filter((text) => text.length > 0)
+  const unresolved = new Set();
+  const text = list
+    .map((section) => (section?.interpolate === false
+      ? String(section.text)
+      : interpolate(String(section?.text ?? ''), values, unresolved)))
+    .filter((part) => part.length > 0)
     .join('\n\n');
+  return { text, resolved: unresolved.size === 0, unresolved: [...unresolved].sort() };
 }
 
 /**
- * Substitute every well-formed `{{name}}` whose value is known.
+ * Substitute every well-formed `{{name}}` whose value is usable, and record
+ * every reference left literal.
  * @param text - the raw section text.
  * @param variables - the resolved variable values.
- * @returns the text with known references substituted and unknown ones literal.
+ * @param unresolved - collector for the names left literal.
+ * @returns the text with usable references substituted and the rest literal.
  */
-function interpolate(text, variables) {
+function interpolate(text, variables, unresolved) {
   let result = '';
   let cursor = 0;
   for (let open = text.indexOf('{{'); open >= 0; open = text.indexOf('{{', cursor)) {
     const group = VARIABLE_GROUP.exec(text.slice(open));
-    const name = group === null ? null : group[0].slice(2, -2);
-    if (name === null || !VARIABLE_NAME.test(name) || !Object.hasOwn(variables, name)) {
+    if (group === null) {
+      // A lone `{{` with no closing group is prose, exactly as the shipped
+      // renderer treats it — not an unresolved reference.
       result += text.slice(cursor, open + 2);
       cursor = open + 2;
       continue;
     }
-    result += text.slice(cursor, open) + String(variables[name]);
+    const name = group[0].slice(2, -2);
+    const value = VARIABLE_NAME.test(name) && Object.hasOwn(variables, name) ? variables[name] : undefined;
+    if (value === undefined || value === null) {
+      unresolved.add(name);
+      result += text.slice(cursor, open + group[0].length);
+      cursor = open + group[0].length;
+      continue;
+    }
+    result += text.slice(cursor, open) + String(value);
     cursor = open + group[0].length;
   }
   return result + text.slice(cursor);
