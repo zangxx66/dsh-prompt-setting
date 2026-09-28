@@ -1445,7 +1445,7 @@ CRLF：`\r\n` 与 `\r` 都当行分隔，`crlfNormalized: true` 明说「这个�
 | 行级渲染 | 官方分支 `data-diff-block="primitives"`；自绘分支 `data-diff-block="fallback"` + `data-diff-ops`/`data-diff-ops-shown` + 每行 `data-diff-op`/`data-diff-op-text`/`data-diff-op-before-line`/`data-diff-op-after-line` |
 | 整层重置 | `data-region="layer-reset"`、`data-reset-layer`、`data-reset-count`、`data-action="reset-layer"` |
 | 单段恢复默认 | `data-action="reset-section"` + `data-section-name` + `data-reset-layers` |
-| 导出/导入 | `data-region="transfer"`、`data-transfer-phase`、`data-import-mode`、`data-export-name`、`data-role="export-text"`、`data-role="import-text"`、`data-role="import-file"`、`data-import-plan` + `data-import-added/-replaced/-unchanged/-removed/-kept/-changes/-applied`、`data-import-change="<name>"` + `data-import-status` + `data-import-layer`、`data-import-skipped`、`data-import-unchanged="true"` |
+| 导出/导入 | `data-region="transfer"`、`data-transfer-phase`、`data-import-mode`、`data-export-name`、`data-role="export-text"`、`data-role="import-text"`、`data-role="import-file"`、`data-import-plan` + `data-import-added/-replaced/-unchanged-count/-removed/-kept/-changes/-applied`、`data-import-change="<name>"` + `data-import-status` + `data-import-layer`、`data-import-skipped`、`data-import-unchanged="true"` |
 | 二次确认 | `data-region="confirm"` + `data-confirm-kind="reset-section|reset-layer|import"` + `data-action="confirm-yes|confirm-no"` |
 
 primitives 复用：新增 `DiffBlock`（`data-diff-renderer="diffblock"` 是机器可判定的分支标记），
@@ -1463,6 +1463,11 @@ evidence: suite=all passed=276 failed=0 exit=0 ms=3761 diff=14f/+6388/-30 commit
 evidence: suite=node-check passed=8 failed=0 exit=0 commit=ec5e958
 evidence: suite=npm-pack passed=13 failed=0 exit=0 commit=ec5e958
 ```
+
+上表在**代码提交 `ec5e958`** 上测得；紧随其后的 `9b828cf`（把导入计划里的
+`data-import-unchanged` 计数改名为 `-unchanged-count`，与失败导入的
+`data-import-unchanged="true"` 标志分开）之后**重跑全量仍为 276 passed / 0 failed / 0 skipped**，
+断言数不变（该修订提交的 sha 见交付总结，它本身会因 amend 而变化，故此处不钉）。
 
 `diff=14f/+6388/-30` 是代码提交 `ec5e958` 相对权威基线 `27a6759`（集成分支
 `v0.1.0-test`）的 `git diff --shortstat`；`npm-pack` 的 `passed=13` 是 `npm pack --dry-run`

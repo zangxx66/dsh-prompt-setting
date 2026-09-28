@@ -927,9 +927,10 @@ requires `name` (§4.3).
   `data-role="import-text"`, `data-role="import-file"`,
   `data-action="import-preview"`, `data-action="import-apply"`, and a
   `data-import-plan="true"` block carrying `data-import-added` / `-replaced` /
-  `-unchanged` / `-removed` / `-kept` / `-changes` / `-applied` plus one
+  `-unchanged-count` / `-removed` / `-kept` / `-changes` / `-applied` plus one
   `data-import-change="<name>"` row with `data-import-status` and
-  `data-import-layer`. A failed import renders `data-import-unchanged="true"`
+  `data-import-layer`. A failed import renders the standalone flag
+  `data-import-unchanged="true"`
   together with the mapped error copy.
 
 ### 13.2 Second confirmation is required

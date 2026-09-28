@@ -2685,6 +2685,8 @@ test('client: an import preview dry-runs, renders the plan and writes nothing', 
   assert.equal(plan.props['data-import-replaced'], '1');
   assert.equal(plan.props['data-import-removed'], '0');
   assert.equal(plan.props['data-import-kept'], '1');
+  assert.equal(plan.props['data-import-unchanged-count'], '0', 'the plan count is not the "nothing changed" flag');
+  assert.equal(plan.props['data-import-unchanged'], undefined);
   assert.equal(plan.props['data-import-applied'], 'false', 'a preview is not an application');
   assert.equal(oneBy(plan, 'data-import-change', 'project:alpha').props['data-import-status'], 'replaced');
   assert.equal(oneBy(plan, 'data-import-change', 'panel:added').props['data-import-status'], 'added');

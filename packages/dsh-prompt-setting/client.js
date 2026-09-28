@@ -4280,7 +4280,9 @@ window.__ModuleLoader__.load({
               'data-import-plan': 'true',
               'data-import-added': String(totals.added === undefined ? 0 : totals.added),
               'data-import-replaced': String(totals.replaced === undefined ? 0 : totals.replaced),
-              'data-import-unchanged': String(totals.unchanged === undefined ? 0 : totals.unchanged),
+              // `-count` keeps this apart from the standalone
+              // `data-import-unchanged="true"` flag on a failed import.
+              'data-import-unchanged-count': String(totals.unchanged === undefined ? 0 : totals.unchanged),
               'data-import-removed': String(totals.removed === undefined ? 0 : totals.removed),
               'data-import-kept': String(totals.kept === undefined ? 0 : totals.kept),
               'data-import-changes': String(changes.length),
