@@ -393,6 +393,7 @@ function makePage(options = {}) {
     ...mounted.registrations[0].options.inject(),
   };
   if (options.useSessions !== undefined) props.useSessions = options.useSessions;
+  if (options.useWorkspaces !== undefined) props.useWorkspaces = options.useWorkspaces;
   const component = mounted.registrations[0].component;
   const draw = () => expandTree(loaded.runtime.render(component, props).tree);
   const flush = async () => {
@@ -937,6 +938,357 @@ test('client: the session list is keyboard reachable', async () => {
   tree = await page.flush();
   assert.equal(oneBy(tree, 'data-role', 'session-search').props.value, '', 'Esc clears the search');
   assert.equal(sessionOptions(tree).length, 3, 'and the list is back');
+});
+
+// #endregion
+
+// #region the workspace tree (grouping, search ancestors, hard render bounds)
+
+/**
+ * Mirror of `SCOPE_TOTAL_MAX` in `client.js`: the hard ceiling on session rows
+ * the tree may render at any one time.
+ */
+const SCOPE_RENDER_CAP = 100;
+/** Mirror of `SCOPE_GROUP_PAGE`: the initial page of one expanded group. */
+const SCOPE_GROUP_PAGE = 10;
+
+/** A `useWorkspaces` stub shaped like the renderer's selector hook. */
+function workspacesHook(state) {
+  return (selector) => selector(state);
+}
+
+/**
+ * `WorkspaceSnapshot` in Host order: two workspaces (one with a title, one
+ * without so the node must fall back to its path basename), one archived
+ * session, one pinned session.
+ */
+function workspacesFixture(over = {}) {
+  return {
+    items: [
+      {
+        workspaceId: 'w-alpha',
+        title: 'Alpha repo',
+        path: '/work/alpha',
+        sessionIds: ['a1', 'a2', 'a3'],
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      },
+      {
+        workspaceId: 'w-beta',
+        title: '',
+        path: '/work/beta-dir',
+        sessionIds: ['b1', 'b2'],
+        createdAt: '2024-01-02T00:00:00.000Z',
+        updatedAt: '2024-01-02T00:00:00.000Z',
+      },
+    ],
+    archivedSessionIds: ['b2'],
+    pinnedSessionIds: ['a2'],
+    state: 'idle',
+    phase: 'ready',
+    error: null,
+    ...over,
+  };
+}
+
+/**
+ * Session catalog: `a3` is the retained main-view session, `a2` is pinned and
+ * `b2` archived, `loose` belongs to no workspace. `updatedAt` breaks the
+ * recency ties so the expected order is exact.
+ */
+const WORKSPACE_SESSIONS = {
+  ids: ['a1', 'a2', 'a3', 'b1', 'b2', 'loose'],
+  byId: {
+    a1: { id: 'a1', displayTitle: 'Alpha one', title: 'Alpha one', cwd: '/work/alpha', running: false, updatedAt: 300, retainedBy: { mainView: 0 } },
+    a2: { id: 'a2', displayTitle: 'Alpha two', title: 'Alpha two', cwd: '/work/alpha', running: true, updatedAt: 100, retainedBy: { mainView: 0 } },
+    a3: { id: 'a3', displayTitle: 'Alpha three', title: 'Alpha three', cwd: '/work/alpha', running: false, updatedAt: 200, retainedBy: { mainView: 1 } },
+    b1: { id: 'b1', displayTitle: 'Beta one', title: 'Beta one', cwd: '/work/beta-dir', running: false, updatedAt: 50, retainedBy: { mainView: 0 } },
+    b2: { id: 'b2', displayTitle: 'Beta archived', title: 'Beta archived', cwd: '/work/beta-dir', running: false, updatedAt: 10, retainedBy: { mainView: 0 } },
+    loose: { id: 'loose', displayTitle: 'Loose session', title: 'Loose session', cwd: '/tmp', running: false, updatedAt: 5, retainedBy: { mainView: 0 } },
+  },
+  phase: 'ready',
+};
+
+/** A synthetic catalog of `workspaceCount × perWorkspace` sessions, current = first. */
+function manyWorkspaceSessions(workspaceCount, perWorkspace) {
+  const ids = [];
+  const byId = {};
+  const items = [];
+  let n = 0;
+  for (let w = 1; w <= workspaceCount; w += 1) {
+    const sessionIds = [];
+    for (let i = 0; i < perWorkspace; i += 1) {
+      n += 1;
+      const id = `sess-${n}`;
+      ids.push(id);
+      sessionIds.push(id);
+      byId[id] = {
+        id,
+        title: `Session ${n}`,
+        displayTitle: `Session ${n}`,
+        cwd: `/w/${w}`,
+        running: n % 2 === 0,
+        updatedAt: n,
+        retainedBy: { mainView: n === 1 ? 1 : 0 },
+      };
+    }
+    items.push({
+      workspaceId: `w-${w}`,
+      title: `Workspace ${w}`,
+      path: `/w/${w}`,
+      sessionIds,
+      createdAt: '2024-01-01T00:00:00.000Z',
+      updatedAt: '2024-01-01T00:00:00.000Z',
+    });
+  }
+  return {
+    sessions: { ids, byId, phase: 'ready' },
+    workspaces: { items, archivedSessionIds: [], pinnedSessionIds: [], state: 'idle', phase: 'ready', error: null },
+  };
+}
+
+/** Every rendered workspace group header, in render order. */
+function scopeGroupNodes(tree) {
+  return collect(tree, (node) => node.props && node.props['data-scope-group'] !== undefined);
+}
+
+/** The group keys, in render order. */
+function scopeGroupKeys(tree) {
+  return scopeGroupNodes(tree).map((node) => node.props['data-scope-group']);
+}
+
+/** The rendered session-row ids, in render order. */
+function scopeRowIds(tree) {
+  return sessionOptions(tree).map((node) => node.props['data-session-id']);
+}
+
+/** One group's toggle button. */
+function scopeToggle(tree, key) {
+  return oneBy(tree, 'data-scope-toggle', key);
+}
+
+test('client: the scope picker groups sessions by workspace, like the sidebar', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  let tree = await page.flush();
+
+  assert.equal(markerOf(tree, 'data-scope-mode'), 'tree');
+  // Group order is the Host order of `items`, with the ungrouped bucket last.
+  assert.deepEqual(scopeGroupKeys(tree), ['w-alpha', 'w-beta', '']);
+  // A workspace node is named by its title, and by the path basename when the
+  // title is blank — the sidebar's own precedence.
+  const labels = collect(tree, (node) => node.props && node.props['data-role'] === 'scope-group-label');
+  assert.deepEqual(
+    labels.map((node) => node.props.children),
+    ['Alpha repo', 'beta-dir', page.zh.scopeUngrouped],
+  );
+  assert.ok(hasText(tree, '/work/alpha'), 'the workspace path is a subtitle');
+  // Default expansion: the workspace holding the current view session, others shut.
+  assert.deepEqual(
+    scopeGroupNodes(tree).map((node) => node.props['data-scope-expanded']),
+    ['true', 'false', 'false'],
+  );
+  assert.equal(scopeGroupNodes(tree)[0].props['data-scope-contains-current'], 'true');
+  // Recency order (`updatedAt` desc), with the pinned row fronted — the
+  // sidebar's own `sectionMembers` partition — and the archived row hidden.
+  assert.deepEqual(scopeRowIds(tree), ['a2', 'a1', 'a3']);
+  assert.ok(
+    sessionOptions(tree).every((node) => node.props['data-scope-parent'] === 'w-alpha'),
+    'collapsed groups render no child rows',
+  );
+  const running = collect(tree, (node) => node.props && node.props['data-role'] === 'session-running');
+  assert.equal(running.length, 1, 'the running marker shows on the running session only');
+  assert.equal(sessionOptions(tree)[0].props['data-session-running'], 'true');
+  assert.equal(oneBy(tree, 'data-pinned', 'global').props['data-pinned-active'], 'false');
+  assert.equal(oneBy(tree, 'data-pinned', 'current').props['data-pinned-active'], 'true');
+  // 3 + 1 + 1 listed; the archived b2 is announced instead of silently lost.
+  const counts = oneBy(tree, 'data-session-shown', '3');
+  assert.equal(counts.props['data-session-matched'], '5');
+  assert.equal(counts.props['data-session-total'], '5');
+  assert.ok(oneBy(tree, 'data-warning', 'scope-archived-hidden'), 'hidden archived rows are stated');
+  assert.ok(hasText(tree, fillText(page.zh.scopeSessions, { n: 3 })), 'the group count is shown');
+  assert.equal(oneBy(tree, 'data-scope-rendered', '3').props['data-scope-groups'], '3');
+
+  // The keyboard walks the rendered rows across groups, as in the flat list.
+  oneBy(tree, 'data-role', 'session-search').props.onKeyDown({ key: 'ArrowDown', preventDefault() {} });
+  tree = await page.flush();
+  const active = collect(tree, (node) => node.props && node.props['data-session-active'] === 'true');
+  assert.equal(active.length, 1, 'exactly one row is highlighted');
+  assert.equal(active[0].props['data-session-id'], 'a2', 'the first rendered row is highlighted');
+});
+
+test('client: the scope tree keeps the ancestor workspace of every search match', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  let tree = await page.flush();
+
+  // A title match inside the *second*, collapsed workspace: its ancestor group
+  // must survive (carrying the row) while the unrelated group disappears.
+  typeInto(tree, 'session-search', 'Beta one');
+  tree = await page.flush();
+  assert.deepEqual(scopeGroupKeys(tree), ['w-beta']);
+  assert.equal(scopeGroupNodes(tree)[0].props['data-scope-expanded'], 'true', 'the match is visible');
+  assert.deepEqual(scopeRowIds(tree), ['b1']);
+  assert.equal(oneBy(tree, 'data-session-shown', '1').props['data-session-matched'], '1');
+
+  // Matching the workspace *name* keeps every session of that workspace.
+  typeInto(tree, 'session-search', 'Alpha repo');
+  tree = await page.flush();
+  assert.deepEqual(scopeGroupKeys(tree), ['w-alpha']);
+  assert.deepEqual(scopeRowIds(tree), ['a2', 'a1', 'a3']);
+
+  // Matching the workspace path does the same.
+  typeInto(tree, 'session-search', 'beta-dir');
+  tree = await page.flush();
+  assert.deepEqual(scopeGroupKeys(tree), ['w-beta']);
+
+  // A query matching only the ungrouped session keeps the ungrouped bucket.
+  typeInto(tree, 'session-search', 'Loose');
+  tree = await page.flush();
+  assert.deepEqual(scopeGroupKeys(tree), ['']);
+  assert.deepEqual(scopeRowIds(tree), ['loose']);
+
+  // No match at all ⇒ the typed id stays a way out.
+  typeInto(tree, 'session-search', 'nothing-here-42');
+  tree = await page.flush();
+  assert.deepEqual(scopeGroupKeys(tree), []);
+  assert.ok(oneBy(tree, 'data-warning', 'session-no-match'));
+  clickButton(tree, { 'data-action': 'session-use-input' });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-session'), 'nothing-here-42');
+  assert.ok(urlsFor(page, PATHS.snapshot).includes(`${PATHS.snapshot}?session=nothing-here-42`));
+});
+
+test('client: a workspace group folds, unfolds, and pages its rows in', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  let tree = await page.flush();
+  assert.deepEqual(scopeRowIds(tree).filter((id) => id === 'b1'), [], 'w-beta starts folded');
+
+  clickButton(tree, { 'data-action': 'scope-toggle', 'data-scope-toggle': 'w-beta' });
+  tree = await page.flush();
+  assert.equal(
+    scopeGroupNodes(tree).find((node) => node.props['data-scope-group'] === 'w-beta').props['data-scope-expanded'],
+    'true',
+  );
+  assert.ok(scopeRowIds(tree).includes('b1'), 'the folded group now shows its session');
+  // The initial page is a page, not the whole group: a 25-session workspace
+  // renders 10 rows plus an explicit "show more".
+  const big = makePage({
+    useSessions: sessionsHook(manyWorkspaceSessions(1, 25).sessions),
+    useWorkspaces: workspacesHook(manyWorkspaceSessions(1, 25).workspaces),
+    responses: defaultResponses(),
+  });
+  let bigTree = await big.flush();
+  assert.equal(scopeRowIds(bigTree).length, SCOPE_GROUP_PAGE, 'one page, not the whole group');
+  const more = oneBy(bigTree, 'data-scope-more', 'w-1');
+  assert.ok(
+    hasText(more, fillText(big.zh.scopeMore, { n: 25 - SCOPE_GROUP_PAGE })),
+    'the remaining count is stated',
+  );
+  more.props.onClick();
+  bigTree = await big.flush();
+  assert.equal(scopeRowIds(bigTree).length, SCOPE_GROUP_PAGE * 2, 'one click adds exactly one page');
+  assert.equal(oneBy(bigTree, 'data-scope-more', 'w-1').props['data-scope-more'], 'w-1');
+
+  clickButton(tree, { 'data-action': 'scope-toggle', 'data-scope-toggle': 'w-beta' });
+  tree = await page.flush();
+  assert.ok(!scopeRowIds(tree).includes('b1'), 'folding it again drops the row');
+});
+
+test('client: the scope tree never renders the whole catalog (200 / 500 / 2000 sessions)', async () => {
+  const rows = [];
+  for (const [workspaceCount, perWorkspace] of [
+    [1, 200],
+    [4, 50],
+    [1, 500],
+    [5, 100],
+    [1, 2000],
+    [20, 100],
+  ]) {
+    const total = workspaceCount * perWorkspace;
+    const state = manyWorkspaceSessions(workspaceCount, perWorkspace);
+    const page = makePage({
+      useSessions: sessionsHook(state.sessions),
+      useWorkspaces: workspacesHook(state.workspaces),
+      responses: defaultResponses(),
+    });
+    let tree = await page.flush();
+    // Default: only the group holding the current session is open.
+    const defaultRows = scopeRowIds(tree).length;
+    assert.equal(defaultRows, SCOPE_GROUP_PAGE, `${total} sessions: one page by default`);
+    assert.ok(defaultRows < total, `${total} sessions are not spread open`);
+
+    // A query matching every session opens every group: the global cap is what
+    // keeps the DOM bounded, not the fold state.
+    const started = process.hrtime.bigint();
+    typeInto(tree, 'session-search', 'Session');
+    tree = page.draw();
+    const keystrokeMs = Number(process.hrtime.bigint() - started) / 1e6;
+    const searchRows = scopeRowIds(tree).length;
+    const expected = Math.min(SCOPE_RENDER_CAP, workspaceCount * SCOPE_GROUP_PAGE);
+    assert.equal(searchRows, expected, `${total} sessions across ${workspaceCount} workspaces: ${expected} rows`);
+    assert.ok(searchRows <= SCOPE_RENDER_CAP, 'the render cap holds');
+    assert.ok(searchRows < total, `${total} sessions are never fully rendered`);
+    assert.equal(oneBy(tree, 'data-session-shown', String(searchRows)).props['data-session-total'], String(total));
+    assert.ok(scopeGroupNodes(tree).length <= 41, 'the group headers are bounded too');
+    assert.ok(keystrokeMs < 500, `one keystroke stays cheap (${keystrokeMs.toFixed(1)}ms)`);
+    rows.push(
+      `${total} sessions / ${workspaceCount} workspace(s): default ${defaultRows} rows, search ${searchRows} rows, keystroke ${keystrokeMs.toFixed(1)}ms`,
+    );
+  }
+  // The measurement is part of the evidence, not decoration.
+  for (const line of rows) console.log(`    scope scale: ${line}`);
+});
+
+test('client: a missing useWorkspaces degrades to the flat searchable list', async () => {
+  const flat = makePage({
+    useSessions: sessionsHook(manySessions(200)),
+    responses: defaultResponses(),
+  });
+  let tree = await flat.flush();
+  assert.equal(markerOf(tree, 'data-scope-mode'), 'flat');
+  assert.ok(oneBy(tree, 'data-warning', 'scope-degraded'), 'the degradation is announced');
+  assert.ok(strings(tree).includes(flat.zh.scopeDegraded), 'and stated in words');
+  assert.equal(scopeRowIds(tree).length, 20, 'the flat list stays bounded');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'session-tree').length, 0);
+
+  // A workspace hook that throws degrades the same way, without blanking.
+  const thrown = makePage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    useWorkspaces: () => {
+      throw new Error('useWorkspaces is not usable here');
+    },
+    responses: defaultResponses(),
+  });
+  tree = await thrown.flush();
+  assert.equal(markerOf(tree, 'data-render-state'), 'ok');
+  assert.equal(markerOf(tree, 'data-scope-mode'), 'flat');
+  assert.ok(oneBy(tree, 'data-warning', 'scope-degraded'));
+
+  // An empty workspace list is *not* a degradation: everything falls into the
+  // ungrouped bucket, so no session disappears.
+  const empty = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture({ items: [], archivedSessionIds: [], pinnedSessionIds: [] })),
+    responses: defaultResponses(),
+  });
+  tree = await empty.flush();
+  assert.equal(markerOf(tree, 'data-scope-mode'), 'tree');
+  assert.deepEqual(scopeGroupKeys(tree), ['']);
+  // Recency order across the single bucket, with the pinned row fronted.
+  assert.deepEqual(scopeRowIds(tree), ['a1', 'a3', 'a2', 'b1', 'b2', 'loose']);
+  assert.equal(oneBy(tree, 'data-session-shown', '6').props['data-session-total'], '6');
+  assert.equal(oneBy(tree, 'data-session-shown', '6').props['data-session-matched'], '6');
 });
 
 // #endregion

@@ -10,7 +10,10 @@
  *   - status bar: `mounted`, the three-state `frozenScope` verdict, both
  *     layers' `enabled`/`path`/`reason`, `generatedAt`, a refresh button;
  *   - session selector sourced from the **props** `useSessions` root hook,
- *     with a manual-id degradation when the hook is absent;
+ *     grouped as a workspace tree from the **props** `useWorkspaces` root
+ *     hook (same grouping/ordering/visibility rules as the left sidebar),
+ *     with a flat searchable list when `useWorkspaces` is absent and a
+ *     manual-id degradation when `useSessions` is absent;
  *   - section view: `name`/`index`/layer/`overridable`/`origin` + filters;
  *   - full-text view: `rendered` with search highlight and count, the
  *     `base` ↔ `effective` comparison, and the `renderedResolved: false`
@@ -73,11 +76,25 @@ window.__ModuleLoader__.load({
     /** Upper bound on rendered lines put into the DOM (a long prompt is real). */
     const MAX_VIEW_LINES = 3000;
     /**
-     * Upper bound on session rows rendered at once. The session catalog grows
-     * with use (every session ever opened is a row), so the picker may never
-     * render the whole list: it renders at most this many matches.
+     * Upper bound on session rows rendered at once in the flat (degraded)
+     * list. The session catalog grows with use (every session ever opened is a
+     * row), so the picker may never render the whole list.
      */
     const SESSION_MATCH_LIMIT = 20;
+    /**
+     * Bounds of the workspace tree. The tree renders a *window* over the
+     * catalog in every case: at most {@link SCOPE_GROUP_PAGE} session rows per
+     * expanded workspace group, raised by {@link SCOPE_GROUP_STEP} per
+     * 「显示更多」 click up to {@link SCOPE_GROUP_MAX}, and never more than
+     * {@link SCOPE_TOTAL_MAX} session rows or {@link SCOPE_GROUP_LIMIT} group
+     * headers overall (the group holding the current session may add exactly
+     * one header when it falls outside that slice).
+     */
+    const SCOPE_GROUP_PAGE = 10;
+    const SCOPE_GROUP_STEP = 10;
+    const SCOPE_GROUP_MAX = 50;
+    const SCOPE_TOTAL_MAX = 100;
+    const SCOPE_GROUP_LIMIT = 40;
 
     // #region error-code dictionary (CONTRACT.md §4.4, every code gets copy)
     /**
@@ -274,6 +291,21 @@ window.__ModuleLoader__.load({
       primitivesFailure: 'primitives 不可用原因',
       renderErrorTitle: 'Prompt 管理：渲染失败',
       renderErrorLabel: '错误',
+      scopeDefaultWorkspace: '默认工作区',
+      scopeUntitledWorkspace: '（未命名工作区）',
+      scopeUngrouped: '未分组',
+      scopeRunning: '运行中',
+      scopeSessions: '{n} 个会话',
+      scopeMore: '显示更多（还有 {n} 条）',
+      scopeCut: '还有 {n} 条已到渲染上限，请用搜索缩小范围。',
+      scopeTruncated:
+        '已达渲染上限（同一时刻最多渲染 {n} 条会话）：请用搜索缩小范围，或先收起其它工作区。',
+      scopeGroupsTruncated: '工作区分组过多，仅显示部分分组：请用搜索缩小范围。',
+      scopeDegraded:
+        '当前 profile 未提供 useWorkspaces（工作区服务不可用），已降级为平铺会话列表：无法按工作区分组。',
+      scopeArchivedHidden: '另有 {n} 个已归档会话未显示（与侧边栏默认一致），可用搜索或直接输入 id 查看。',
+      scopeSearchHint:
+        '按工作区分组，与左侧「工作区」一致；搜索会保留匹配项所属的工作区分组，匹配工作区名时其下会话一并显示。',
     };
 
     const en = {
@@ -416,6 +448,22 @@ window.__ModuleLoader__.load({
       primitivesFailure: 'Why primitives is unavailable',
       renderErrorTitle: 'Prompt settings — render failure',
       renderErrorLabel: 'Error',
+      scopeDefaultWorkspace: 'Default workspace',
+      scopeUntitledWorkspace: '(untitled workspace)',
+      scopeUngrouped: 'Ungrouped',
+      scopeRunning: 'Running',
+      scopeSessions: '{n} sessions',
+      scopeMore: 'Show more ({n} remaining)',
+      scopeCut: '{n} more rows exceed the render cap; narrow the range with search.',
+      scopeTruncated:
+        'Render cap reached (at most {n} session rows at a time): narrow the range with search, or fold other workspaces first.',
+      scopeGroupsTruncated: 'Too many workspace groups; only part of them is shown: narrow the range with search.',
+      scopeDegraded:
+        'This profile provides no useWorkspaces (workspace service unavailable); the picker degraded to a flat session list and cannot group by workspace.',
+      scopeArchivedHidden:
+        '{n} archived sessions are hidden (matching the sidebar default); use search, or type an id to view one.',
+      scopeSearchHint:
+        'Grouped by workspace, exactly like the left sidebar; a search keeps the owning workspace group of every match, and a workspace-name match keeps all of its sessions.',
     };
 
     // One loop keeps zh/en key sets identical by construction, including every
@@ -443,6 +491,8 @@ window.__ModuleLoader__.load({
       stateError: 'var(--dsw-alias-state-error-primary)',
       stateWarn: 'var(--dsw-alias-state-warning-primary, var(--dsw-alias-state-error-primary))',
       stateSuccess: 'var(--dsw-alias-state-success-primary)',
+      /** Same token the sidebar tints the active workspace folder with. */
+      stateBusiness: 'var(--dsw-alias-state-business-primary, var(--dsw-alias-label-primary))',
       surface: 'var(--dsw-alias-settings-card-fill, var(--dsw-alias-bg-layer-1, transparent))',
       surfaceStroke: 'var(--dsw-alias-settings-card-stroke, var(--dsw-alias-border-l2, transparent))',
       buttonFill: 'var(--dsw-alias-button-primary-fill, var(--dsw-alias-brand-primary, transparent))',
@@ -710,9 +760,13 @@ window.__ModuleLoader__.load({
      */
     const SESSION_ROW_SEP = '\u001e';
     const SESSION_FIELD_SEP = '\u001f';
+    /** Record separator for the multi-section workspace payload. */
+    const SCOPE_RECORD_SEP = '\u001c';
+    /** List separator inside one workspace payload field (`sessionIds`). */
+    const SCOPE_ID_SEP = '\u001d';
 
-    /** Both separators, for the fast "does this field need flattening" test. */
-    const SESSION_SEPARATOR_PATTERN = /[\u001e\u001f]/;
+    /** Every separator, for the fast "does this field need flattening" test. */
+    const SESSION_SEPARATOR_PATTERN = /[\u001c\u001d\u001e\u001f]/;
 
     /**
      * Flatten one display field so it cannot contain an encoding separator. The
@@ -722,7 +776,7 @@ window.__ModuleLoader__.load({
     function flattenSessionField(value) {
       const text = typeof value === 'string' ? value : '';
       if (!SESSION_SEPARATOR_PATTERN.test(text)) return text;
-      return text.replace(/[\u001e\u001f]/g, ' ');
+      return text.replace(/[\u001c\u001d\u001e\u001f]/g, ' ');
     }
 
     /**
@@ -762,6 +816,13 @@ window.__ModuleLoader__.load({
           flattenSessionField(row.title),
           flattenSessionField(row.cwd),
           row.running === true ? '1' : '0',
+          // The three fields the workspace tree orders and filters by, copied
+          // from the sidebar's own projection (`deriveGroups`): recency order
+          // needs `updatedAt`, blank rows are the provisional New Session, and
+          // subagent-origin sessions are never listed.
+          Number.isFinite(row.updatedAt) ? String(row.updatedAt) : '',
+          row.blank === true ? '1' : '0',
+          typeof row.origin === 'string' ? flattenSessionField(row.origin) : '',
         ].join(SESSION_FIELD_SEP);
       });
       return [current, ...records].join(SESSION_ROW_SEP);
@@ -797,12 +858,16 @@ window.__ModuleLoader__.load({
         .slice(1)
         .map((record) => {
           const fields = record.split(SESSION_FIELD_SEP);
+          const updatedAt = Number(fields[5]);
           const row = {
             id: fields[0] || '',
             displayTitle: fields[1] || '',
             title: fields[2] || '',
             cwd: fields[3] || '',
             running: fields[4] === '1',
+            updatedAt: Number.isFinite(updatedAt) ? updatedAt : 0,
+            blank: fields[6] === '1',
+            origin: fields[7] || '',
           };
           row.haystack = [row.id, row.displayTitle, row.title, row.cwd].join(' ').toLowerCase();
           return row;
@@ -887,6 +952,380 @@ window.__ModuleLoader__.load({
           message: error && error.message ? String(error.message) : String(error),
         };
       }
+    }
+
+    /**
+     * The single selector handed to the props `useWorkspaces` root hook.
+     *
+     * Shape confirmed by reading the installed 0.1.7-rc.2 package (NOTES §48):
+     * `dsh-client-ui-workspace/lib/client.js:4137` contributes
+     * `ctx.slots.provideRoot({hooks:{workspaces: workspaces.list}})`, which the
+     * renderer synthesises into `useWorkspaces` for every root-scope slot
+     * (`dsh-client-ui-renderer/lib/client.js:703-711`) — so, exactly like
+     * `useSessions`, no inject and no require are needed. `WorkspaceSnapshot` is
+     * `{items, archivedSessionIds, pinnedSessionIds, state, phase, error}`
+     * (`dsh-api-workspace-controller/lib/types/client/model.d.ts`), and each
+     * `WorkspaceView` is `{workspaceId, path, title, sessionIds, createdAt,
+     * updatedAt}` (`.../lib/types/types.d.ts:19-33`).
+     *
+     * The payload is one compact string (the hook's equality check then sees a
+     * stable value) laid out as four records:
+     * `items \u001c pinned \u001c archived \u001c phase \u001c state`, where an item is
+     * `workspaceId \u001f title \u001f path \u001f sessionIds(\u001d)`.
+     * @param state - `WorkspaceSnapshot` (or anything shaped like it).
+     * @returns the encoded string.
+     */
+    function workspacesProbeSelector(state) {
+      const items = state && Array.isArray(state.items) ? state.items : [];
+      const records = items.map((item) => {
+        const workspace = item || {};
+        const members = Array.isArray(workspace.sessionIds) ? workspace.sessionIds : [];
+        return [
+          flattenSessionField(workspace.workspaceId),
+          flattenSessionField(workspace.title),
+          flattenSessionField(workspace.path),
+          members.map((id) => flattenSessionField(id)).join(SCOPE_ID_SEP),
+        ].join(SESSION_FIELD_SEP);
+      });
+      const ids = (value) =>
+        (Array.isArray(value) ? value : []).map((id) => flattenSessionField(id)).join(SCOPE_ID_SEP);
+      return [
+        records.join(SESSION_ROW_SEP),
+        ids(state && state.pinnedSessionIds),
+        ids(state && state.archivedSessionIds),
+        state && typeof state.phase === 'string' ? state.phase : '',
+        state && typeof state.state === 'string' ? state.state : '',
+      ].join(SCOPE_RECORD_SEP);
+    }
+
+    /**
+     * One-entry decode cache for {@link workspacesProbeSelector}, keyed by the
+     * exact payload (a changed workspace list misses).
+     */
+    let workspaceDecodeKey = null;
+    let workspaceDecodeValue = {
+      items: [],
+      pinned: [],
+      archived: [],
+      phase: '',
+      state: '',
+    };
+
+    /**
+     * Decode {@link workspacesProbeSelector}'s output. A payload with too few
+     * records is unconformant and yields no workspaces rather than a fabricated
+     * grouping.
+     * @param encoded - the selector value.
+     * @returns `{items: [{workspaceId, title, path, sessionIds}], pinned, archived, phase, state}`.
+     */
+    function decodeWorkspaces(encoded) {
+      const empty = { items: [], pinned: [], archived: [], phase: '', state: '' };
+      if (typeof encoded !== 'string' || encoded.length === 0) return empty;
+      if (encoded === workspaceDecodeKey) return workspaceDecodeValue;
+      const parts = encoded.split(SCOPE_RECORD_SEP);
+      if (parts.length < 5) return empty;
+      const splitIds = (value) => (value === '' ? [] : value.split(SCOPE_ID_SEP));
+      const items = (parts[0] === '' ? [] : parts[0].split(SESSION_ROW_SEP))
+        .map((record) => {
+          const fields = record.split(SESSION_FIELD_SEP);
+          return {
+            workspaceId: fields[0] || '',
+            title: fields[1] || '',
+            path: fields[2] || '',
+            sessionIds: splitIds(fields[3] || ''),
+          };
+        })
+        .filter((workspace) => workspace.workspaceId.length > 0 || workspace.sessionIds.length > 0);
+      workspaceDecodeKey = encoded;
+      workspaceDecodeValue = {
+        items,
+        pinned: splitIds(parts[1] || ''),
+        archived: splitIds(parts[2] || ''),
+        phase: parts[3] || '',
+        state: parts[4] || '',
+      };
+      return workspaceDecodeValue;
+    }
+
+    /**
+     * Read the workspace seat off `props.useWorkspaces` without ever throwing.
+     *
+     * When the contribution is absent (`typeof !== 'function'`) or a call
+     * throws, the picker degrades to the flat searchable list and says so on
+     * the page — it never guesses a grouping.
+     * @param useWorkspaces - the hook from props, or anything else.
+     * @returns `{mode, items, pinned, archived, phase, state, degraded, reason}`.
+     */
+    function readWorkspaceSeat(useWorkspaces) {
+      const base = { items: [], pinned: [], archived: [], phase: '', state: '' };
+      if (typeof useWorkspaces !== 'function') {
+        return { ...base, mode: 'degraded', degraded: true, reason: 'no-hook' };
+      }
+      try {
+        const decoded = decodeWorkspaces(useWorkspaces(workspacesProbeSelector));
+        return { ...decoded, mode: 'workspaces', degraded: false, reason: decoded.items.length === 0 ? 'empty' : null };
+      } catch (error) {
+        return {
+          ...base,
+          mode: 'degraded',
+          degraded: true,
+          reason: 'hook-threw',
+          message: error && error.message ? String(error.message) : String(error),
+        };
+      }
+    }
+
+    /** Directory basename (both separators accepted), or '' when there is none. */
+    function basenameOf(path) {
+      const text = typeof path === 'string' ? path : '';
+      const trimmed = text.replace(/[/\\]+$/, '');
+      const separator = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
+      return trimmed.slice(separator + 1);
+    }
+
+    /**
+     * Workspace node label: the workspace title, the localized name of the
+     * product's default workspace, else the basename of its path — the same
+     * precedence the sidebar uses (`workspaceDisplayTitle` +
+     * `workspaceLabel`, `dsh-client-ui-workspace/lib/client.js:267-272`,
+     * `:1053-1055`).
+     * @param workspace - a decoded workspace item.
+     * @param labels - `{defaultName, untitled}` already localized.
+     * @returns the label text.
+     */
+    function workspaceLabelOf(workspace, labels) {
+      const title = typeof workspace.title === 'string' ? workspace.title : '';
+      if (title === 'default-workspace') return labels.defaultName;
+      if (title.length > 0) return title;
+      const base = basenameOf(workspace.path);
+      return base.length > 0 ? base : workspace.path || labels.untitled;
+    }
+
+    /**
+     * Project session ids by recency, newest first, id ascending as the
+     * deterministic tie-break — copied verbatim from the sidebar's
+     * `orderByRecency` (`dsh-client-ui-workspace/lib/client.js:278-298`).
+     * @param ids - candidate ids.
+     * @param byId - session rows by id.
+     * @returns the ordered ids (unknown ids dropped).
+     */
+    function orderByRecency(ids, byId) {
+      return ids
+        .flatMap((id) => {
+          const row = byId[id];
+          if (row === undefined) return [];
+          const rank = Number.isFinite(row.updatedAt) ? row.updatedAt : 0;
+          return [{ id, rank }];
+        })
+        .sort((a, b) => {
+          if (a.rank !== b.rank) return b.rank - a.rank;
+          return a.id < b.id ? -1 : 1;
+        })
+        .map((member) => member.id);
+    }
+
+    /**
+     * Order one group's members the way the sidebar does: recency order, the
+     * selected provisional New Session first (`pinCurrentBlank`, :338-343),
+     * then pinned rows ahead of the rest (`sectionMembers`, :373-386).
+     * @param ids - the group's visible member ids.
+     * @param byId - session rows by id.
+     * @param pinned - the registry-global pin set.
+     * @param currentId - the retained main-view session, if any.
+     * @returns the ordered ids.
+     */
+    function scopeMemberOrder(ids, byId, pinned, currentId) {
+      const recency = orderByRecency(ids, byId);
+      const current = byId[currentId];
+      const ordered =
+        current !== undefined && current.blank === true && ids.indexOf(currentId) >= 0
+          ? [currentId, ...recency.filter((id) => id !== currentId)]
+          : recency;
+      const placeholders = [];
+      const leading = [];
+      const rest = [];
+      for (const id of ordered) {
+        const row = byId[id];
+        if (row.blank === true) placeholders.push(id);
+        else if (pinned.has(id)) leading.push(id);
+        else rest.push(id);
+      }
+      return [...placeholders, ...leading, ...rest];
+    }
+
+    /** Clamp one group's requested page size into its legal band. */
+    function scopeGroupLimit(value) {
+      if (!Number.isInteger(value)) return SCOPE_GROUP_PAGE;
+      return Math.min(SCOPE_GROUP_MAX, Math.max(SCOPE_GROUP_PAGE, value));
+    }
+
+    /**
+     * Derive the「查看范围」tree from the two root-hook seats.
+     *
+     * Grouping, ordering and visibility are copied from the product's own
+     * workspace browser (`dsh-client-ui-workspace/lib/client.js`), so the picker
+     * reads like the left sidebar:
+     *   - groups follow the Host order of `WorkspaceSnapshot.items`, and the
+     *     ungrouped bucket is appended last (`groupByWorkspace`, :418-437) —
+     *     a session that belongs to no workspace is never dropped;
+     *   - a session is listed unless it is subagent-origin, a non-selected
+     *     blank row, or archived (`sessionVisible`, :358-372: the sidebar's
+     *     default archived filter);
+     *   - members are ordered by recency, then the selected blank row, then
+     *     pinned rows (`orderByRecency` + `pinCurrentBlank` + `sectionMembers`).
+     *
+     * The tree is a **window** over the catalog, never a copy of it: at most
+     * {@link SCOPE_GROUP_PAGE} session rows per expanded group, raised by
+     * {@link SCOPE_GROUP_STEP} per 「显示更多」 up to {@link SCOPE_GROUP_MAX},
+     * and at most {@link SCOPE_TOTAL_MAX} session rows plus
+     * {@link SCOPE_GROUP_LIMIT} group headers overall. Groups without visible
+     * members are dropped; the group holding the current session may add one
+     * header beyond the limit so the default view always contains it.
+     *
+     * Search semantics: a non-empty query keeps only matching sessions **and
+     * the workspace node that carries them** (every group with ≥1 match stays,
+     * with its non-matching children dropped, and is forced open so the matches
+     * are actually visible). A query that matches a workspace label or path
+     * keeps every session of that workspace.
+     * @param input - `{rows, currentId, workspaces, pinned, archived, query, expanded, limits, labels}`.
+     * @returns the windowed tree plus its counters.
+     */
+    function deriveScope(input) {
+      const rows = Array.isArray(input.rows) ? input.rows : [];
+      const workspaces = Array.isArray(input.workspaces) ? input.workspaces : [];
+      const currentId = typeof input.currentId === 'string' ? input.currentId : '';
+      const needle = typeof input.query === 'string' ? input.query.trim().toLowerCase() : '';
+      const labels = input.labels && typeof input.labels === 'object' ? input.labels : {};
+      const limits = input.limits && typeof input.limits === 'object' ? input.limits : {};
+      const expanded = input.expanded && typeof input.expanded === 'object' ? input.expanded : {};
+      const archived = new Set(Array.isArray(input.archived) ? input.archived : []);
+      const pinned = new Set(Array.isArray(input.pinned) ? input.pinned : []);
+
+      const byId = Object.create(null);
+      for (const row of rows) byId[row.id] = row;
+
+      const isVisible = (row) => {
+        if (row.origin === 'subagent') return false;
+        if (row.blank === true && row.id !== currentId) return false;
+        if (archived.has(row.id)) return false;
+        return true;
+      };
+
+      const accounted = new Set();
+      for (const workspace of workspaces) {
+        for (const id of workspace.sessionIds) accounted.add(id);
+      }
+      let currentGroupKey;
+      if (currentId !== '') {
+        const owner = workspaces.find((workspace) => workspace.sessionIds.indexOf(currentId) >= 0);
+        currentGroupKey = owner ? owner.workspaceId : '';
+      }
+
+      const sections = workspaces.map((workspace) => ({
+        key: workspace.workspaceId,
+        workspaceId: workspace.workspaceId,
+        path: workspace.path,
+        label: workspaceLabelOf(workspace, labels),
+        memberIds: workspace.sessionIds,
+      }));
+      const ungrouped = rows.map((row) => row.id).filter((id) => !accounted.has(id));
+      if (ungrouped.length > 0) {
+        sections.push({
+          key: '',
+          workspaceId: undefined,
+          path: '',
+          label: labels.ungrouped,
+          memberIds: ungrouped,
+        });
+      }
+
+      let total = 0;
+      let matched = 0;
+      let budget = SCOPE_TOTAL_MAX;
+      let groupRows = 0;
+      let archivedHidden = 0;
+      let groupsSuppressed = 0;
+      let truncated = false;
+      const groups = [];
+      const visible = [];
+
+      for (const section of sections) {
+        const known = [];
+        for (const id of section.memberIds) {
+          const row = byId[id];
+          if (row === undefined) continue;
+          if (!isVisible(row)) {
+            archivedHidden += 1;
+            continue;
+          }
+          known.push(id);
+        }
+        if (known.length === 0) continue;
+        const ordered = scopeMemberOrder(known, byId, pinned, currentId);
+        const labelText = `${section.label} ${section.path || ''}`.toLowerCase();
+        const labelMatch = needle.length > 0 && labelText.indexOf(needle) >= 0;
+        const matchedIds =
+          needle.length === 0 || labelMatch
+            ? ordered
+            : ordered.filter((id) => sessionMatchesQuery(byId[id], needle));
+        total += ordered.length;
+        matched += matchedIds.length;
+        // A search drops every group that carries no match: only the ancestors
+        // of the matches survive.
+        if (needle.length > 0 && matchedIds.length === 0) continue;
+
+        const containsCurrent = currentGroupKey !== undefined && section.key === currentGroupKey;
+        const explicit = expanded[section.key];
+        const open =
+          needle.length > 0
+            ? matchedIds.length > 0
+            : typeof explicit === 'boolean'
+              ? explicit
+              : containsCurrent;
+        if (groupRows >= SCOPE_GROUP_LIMIT && !containsCurrent) {
+          groupsSuppressed += 1;
+          continue;
+        }
+        groupRows += 1;
+
+        const limit = scopeGroupLimit(limits[section.key]);
+        const windowIds = open ? matchedIds.slice(0, limit) : [];
+        const room = Math.max(0, Math.min(windowIds.length, budget));
+        const renderedIds = windowIds.slice(0, room);
+        budget -= room;
+        const hidden = open ? matchedIds.length - room : 0;
+        if (open && room < windowIds.length) truncated = true;
+        const sessions = renderedIds.map((id) => byId[id]);
+        groups.push({
+          key: section.key,
+          workspaceId: section.workspaceId,
+          path: section.path,
+          label: section.label,
+          total: ordered.length,
+          matched: matchedIds.length,
+          expanded: open,
+          containsCurrent,
+          hidden,
+          limit,
+          more: hidden > 0 && matchedIds.length > limit,
+          sessions,
+        });
+        for (const row of sessions) visible.push(row);
+      }
+
+      return {
+        groups,
+        rows: visible,
+        total,
+        matched,
+        shown: SCOPE_TOTAL_MAX - budget,
+        archivedHidden,
+        groupsShown: groupRows,
+        groupsTotal: sections.length,
+        groupsSuppressed,
+        truncated,
+        currentGroupKey,
+      };
     }
 
     /** Effective layer of a section entry: 'default' | 'user' | 'workspace'. */
@@ -1540,15 +1979,277 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * One workspace group of the「查看范围」tree: the header row (chevron,
+     * label, path subtitle, session count) plus its windowed session rows.
+     *
+     * `data-scope-group` / `data-scope-toggle` / `data-scope-more` / `data-scope-parent`
+     * are distinct attribute names on purpose: each selector a test or a script
+     * uses matches exactly one node per group.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @param group - one derived group.
+     * @param activeId - the keyboard-highlighted session id ('' when none).
+     * @returns the group element.
+     */
+    function scopeGroupElement(t, m, a, group, activeId) {
+      const nodes = [
+        h(
+          'div',
+          {
+            key: 'head',
+            'data-scope-group': group.key,
+            'data-scope-expanded': String(group.expanded),
+            'data-scope-contains-current': String(group.containsCurrent),
+            style: { display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, paddingTop: 2 },
+          },
+          h(
+            'button',
+            {
+              key: 'toggle',
+              type: 'button',
+              role: 'treeitem',
+              'aria-expanded': group.expanded,
+              'data-action': 'scope-toggle',
+              'data-scope-toggle': group.key,
+              onClick: () => a.toggleScope(group.key, !group.expanded),
+              style: {
+                font: 'inherit',
+                fontSize: 11,
+                lineHeight: '16px',
+                width: 16,
+                padding: 0,
+                flex: 'none',
+                cursor: 'pointer',
+                color: token.labelTertiary,
+                background: 'transparent',
+                border: 'none',
+              },
+            },
+            group.expanded ? '▾' : '▸',
+          ),
+          h(
+            'span',
+            {
+              key: 'label',
+              'data-role': 'scope-group-label',
+              title: group.path || undefined,
+              style: {
+                fontSize: 13,
+                fontWeight: 600,
+                flex: 'none',
+                maxWidth: '40%',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                color: group.containsCurrent ? token.stateBusiness : token.labelPrimary,
+              },
+            },
+            group.label,
+          ),
+          group.path
+            ? h(
+                'span',
+                {
+                  key: 'path',
+                  title: group.path,
+                  style: { ...metaStyle, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+                },
+                group.path,
+              )
+            : null,
+          h(
+            'span',
+            { key: 'count', 'data-role': 'scope-group-count', style: { ...metaStyle, flex: 'none' } },
+            fmt(t('scopeSessions'), { n: group.total }),
+          ),
+        ),
+      ];
+
+      for (const row of group.sessions) {
+        nodes.push(
+          h(
+            'button',
+            {
+              key: `s:${row.id}`,
+              type: 'button',
+              role: 'treeitem',
+              'data-role': 'session-option',
+              'data-session-id': row.id,
+              'data-scope-parent': group.key,
+              'data-session-running': String(row.running === true),
+              'data-session-active': String(row.id === activeId && activeId !== ''),
+              'aria-selected': row.id === m.sessionArg,
+              onClick: () => a.pickSession(row.id),
+              style: {
+                font: 'inherit',
+                fontSize: 12,
+                lineHeight: '18px',
+                textAlign: 'left',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '3px 8px 3px 22px',
+                borderRadius: 6,
+                cursor: 'pointer',
+                color: token.labelPrimary,
+                background: row.id === activeId && activeId !== '' ? token.diffAddFill : 'transparent',
+                border: `1px solid ${row.id === m.sessionArg ? token.borderL2 : 'transparent'}`,
+              },
+            },
+            h(
+              'span',
+              { key: 'title', style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } },
+              row.displayTitle || row.title || row.id,
+            ),
+            row.running === true
+              ? h(
+                  'span',
+                  {
+                    key: 'run',
+                    'data-role': 'session-running',
+                    title: t('scopeRunning'),
+                    style: { flex: 'none', fontSize: 10, color: token.stateSuccess },
+                  },
+                  '●',
+                )
+              : null,
+            row.cwd
+              ? h(
+                  'span',
+                  {
+                    key: 'cwd',
+                    title: row.cwd,
+                    style: {
+                      ...metaStyle,
+                      flex: 'none',
+                      maxWidth: '45%',
+                      marginLeft: 'auto',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    },
+                  },
+                  row.cwd,
+                )
+              : null,
+          ),
+        );
+      }
+
+      if (group.more) {
+        nodes.push(
+          h(
+            'button',
+            {
+              key: 'more',
+              type: 'button',
+              'data-action': 'scope-more',
+              'data-scope-more': group.key,
+              onClick: () => a.showMoreScope(group.key),
+              style: {
+                font: 'inherit',
+                fontSize: 12,
+                lineHeight: '18px',
+                textAlign: 'left',
+                padding: '2px 8px 2px 22px',
+                cursor: 'pointer',
+                color: token.stateBusiness,
+                background: 'transparent',
+                border: 'none',
+              },
+            },
+            fmt(t('scopeMore'), { n: group.matched - group.sessions.length }),
+          ),
+        );
+      } else if (group.expanded && group.hidden > 0) {
+        nodes.push(
+          h(
+            'p',
+            { key: 'cut', 'data-scope-cut': group.key, style: { margin: '2px 0 2px 22px', ...metaStyle } },
+            fmt(t('scopeCut'), { n: group.hidden }),
+          ),
+        );
+      }
+
+      return h('div', { key: `g:${group.key}`, style: { display: 'flex', flexDirection: 'column', gap: 1 } }, nodes);
+    }
+
+    /**
+     * The tree branch of the「查看范围」picker: group nodes in sidebar order,
+     * each with its windowed session rows, plus the honest notices (hidden
+     * archived rows, suppressed groups, the global render cap) that explain why
+     * a session is not on screen.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the tree block element.
+     */
+    function scopeTreeElement(t, m, a) {
+      const scope = m.scope;
+      const active = m.sessionActive >= 0 ? m.sessionVisible[m.sessionActive] : undefined;
+      const activeId = active ? active.id : '';
+      const parts = [
+        h(
+          'div',
+          {
+            key: 'tree',
+            role: 'tree',
+            'data-region': 'session-tree',
+            'data-scope-groups': String(scope.groups.length),
+            'data-scope-rendered': String(scope.shown),
+            style: { marginTop: 6, display: 'flex', flexDirection: 'column', gap: 2 },
+          },
+          scope.groups.map((group) => scopeGroupElement(t, m, a, group, activeId)),
+        ),
+        h(
+          'p',
+          { key: 'hint', 'data-role': 'scope-search-hint', style: { margin: '6px 0 0', ...metaStyle } },
+          t('scopeSearchHint'),
+        ),
+      ];
+      if (scope.archivedHidden > 0) {
+        parts.push(
+          h(
+            'p',
+            { key: 'archived', 'data-warning': 'scope-archived-hidden', style: { margin: '4px 0 0', ...metaStyle } },
+            fmt(t('scopeArchivedHidden'), { n: scope.archivedHidden }),
+          ),
+        );
+      }
+      if (scope.groupsSuppressed > 0) {
+        parts.push(
+          h(
+            'p',
+            { key: 'groups-cut', 'data-warning': 'scope-groups-truncated', style: { margin: '4px 0 0', ...metaStyle } },
+            t('scopeGroupsTruncated'),
+          ),
+        );
+      }
+      if (scope.truncated) {
+        parts.push(
+          h(
+            'p',
+            { key: 'cut', 'data-warning': 'scope-truncated', style: { margin: '4px 0 0', ...metaStyle } },
+            fmt(t('scopeTruncated'), { n: SCOPE_TOTAL_MAX }),
+          ),
+        );
+      }
+      return h('div', { key: 'scope', style: { display: 'flex', flexDirection: 'column' } }, parts);
+    }
+
+    /**
      * The session selector: pinned entries, a live search box, and a strictly
-     * bounded result list.
+     * bounded result area — a workspace tree when the root `useWorkspaces` hook
+     * is present, the flat searchable list when it is not.
      *
      * Requirement this shape comes from: the session catalog grows monotonically
      * with use, so a control that spreads every row open becomes unusable at
      * scale (and inflates the DOM). Therefore: the two pinned entries every
-     * scope needs are always rendered, at most {@link SESSION_MATCH_LIMIT}
-     * matches are rendered, and a query that matches nothing falls back to
-     * "view this id" instead of forcing a long list.
+     * scope needs are always rendered, the tree renders at most
+     * {@link SCOPE_TOTAL_MAX} session rows (see {@link deriveScope}), the flat
+     * list at most {@link SESSION_MATCH_LIMIT}, and a query that matches nothing
+     * falls back to "view this id" instead of forcing a long list.
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
@@ -1596,20 +2297,19 @@ window.__ModuleLoader__.load({
       const rows = seat.rows;
       const currentId = seat.currentId;
       const currentLabel = sessionLabelOf(rows, currentId);
-      const total = rows.length;
-      const matched = m.sessionMatches.length;
-      const shown = m.sessionVisible.length;
+      const isTree = m.scopeMode === 'tree' && m.scope !== null;
+      const total = isTree ? m.scope.total : rows.length;
+      const matched = isTree ? m.scope.matched : m.sessionMatches.length;
+      const shown = isTree ? m.scope.shown : m.sessionVisible.length;
       const scoped = m.sessionArg !== null;
       const selectedLabel = scoped ? sessionLabelOf(rows, m.sessionArg) || m.sessionArg : t('sessionGlobal');
 
-      return h(
-        'section',
-        { 'data-region': 'session', style: cardStyle },
-        h('h3', { style: headingStyle }, t('sessionHeading')),
+      const children = [
+        h('h3', { key: 'heading', style: headingStyle }, t('sessionHeading')),
         // Pinned entries: always present, never filtered away.
         h(
           'div',
-          { 'data-region': 'session-pinned', style: { marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' } },
+          { key: 'pinned', 'data-region': 'session-pinned', style: { marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' } },
           pinnedSessionButton('global', t('sessionGlobal'), !scoped, false, a.useGlobal),
           pinnedSessionButton(
             'current',
@@ -1621,12 +2321,12 @@ window.__ModuleLoader__.load({
         ),
         h(
           'div',
-          { 'data-role': 'session-current', style: { marginTop: 8, ...metaStyle, wordBreak: 'break-word' } },
+          { key: 'current', 'data-role': 'session-current', style: { marginTop: 8, ...metaStyle, wordBreak: 'break-word' } },
           fmt(t('sessionCurrentLabel'), { label: selectedLabel }),
         ),
         h(
           'label',
-          { style: { marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4, maxWidth: 420 } },
+          { key: 'search', style: { marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4, maxWidth: 420 } },
           h('span', { style: metaStyle }, t('sessionSearch')),
           h(UI.Input, {
             'data-role': 'session-search',
@@ -1639,6 +2339,7 @@ window.__ModuleLoader__.load({
         h(
           'div',
           {
+            key: 'counts',
             'data-session-shown': String(shown),
             'data-session-matched': String(matched),
             'data-session-total': String(total),
@@ -1646,82 +2347,110 @@ window.__ModuleLoader__.load({
           },
           fmt(t('sessionMatches'), { shown, matched, total }),
         ),
-        h(
-          'div',
-          {
-            role: 'listbox',
-            'data-region': 'session-list',
-            style: { marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 },
-          },
-          m.sessionVisible.map((row, index) =>
-            h(
-              'button',
-              {
-                key: row.id,
-                type: 'button',
-                role: 'option',
-                'data-role': 'session-option',
-                'data-session-id': row.id,
-                'data-session-active': String(index === m.sessionActive),
-                'aria-selected': row.id === m.sessionArg,
-                onClick: () => a.pickSession(row.id),
-                style: {
-                  font: 'inherit',
-                  fontSize: 12,
-                  lineHeight: '18px',
-                  textAlign: 'left',
-                  padding: '4px 8px',
-                  borderRadius: 6,
-                  cursor: 'pointer',
-                  color: token.labelPrimary,
-                  background: index === m.sessionActive ? token.diffAddFill : 'transparent',
-                  border: `1px solid ${row.id === m.sessionArg ? token.borderL2 : 'transparent'}`,
-                },
-              },
-              sessionRowLabel(row),
-            ),
-          ),
-        ),
-        // No match ⇒ the typed text is a session id, not a dead end.
-        matched === 0 && m.sessionQuery.trim().length > 0
-          ? h(
-              'div',
-              {
-                'data-warning': 'session-no-match',
-                style: { marginTop: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
-              },
-              h('span', { style: metaStyle }, t('sessionNoMatch')),
+      ];
+
+      if (isTree) {
+        children.push(scopeTreeElement(t, m, a));
+      } else {
+        children.push(
+          h(
+            'div',
+            {
+              key: 'list',
+              role: 'listbox',
+              'data-region': 'session-list',
+              style: { marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 },
+            },
+            m.sessionVisible.map((row, index) =>
               h(
                 'button',
                 {
+                  key: row.id,
                   type: 'button',
-                  'data-action': 'session-use-input',
-                  'data-session-id': m.sessionQuery.trim(),
-                  onClick: a.useTypedId,
+                  role: 'option',
+                  'data-role': 'session-option',
+                  'data-session-id': row.id,
+                  'data-session-active': String(index === m.sessionActive),
+                  'aria-selected': row.id === m.sessionArg,
+                  onClick: () => a.pickSession(row.id),
                   style: {
                     font: 'inherit',
                     fontSize: 12,
                     lineHeight: '18px',
-                    padding: '3px 10px',
-                    borderRadius: 999,
+                    textAlign: 'left',
+                    padding: '4px 8px',
+                    borderRadius: 6,
                     cursor: 'pointer',
                     color: token.labelPrimary,
-                    background: 'transparent',
-                    border: `1px solid ${token.borderL2}`,
+                    background: index === m.sessionActive ? token.diffAddFill : 'transparent',
+                    border: `1px solid ${row.id === m.sessionArg ? token.borderL2 : 'transparent'}`,
                   },
                 },
-                fmt(t('sessionUseInput'), { id: m.sessionQuery.trim() }),
+                sessionRowLabel(row),
               ),
-            )
-          : null,
-        total === 0 ? h('p', { style: { margin: '6px 0 0', ...metaStyle } }, t('sessionEmpty')) : null,
-        h('p', { style: { margin: '6px 0 0', ...metaStyle } }, t('sessionKeyboardHint')),
+            ),
+          ),
+        );
+      }
+
+      // No match ⇒ the typed text is a session id, not a dead end.
+      if (matched === 0 && m.sessionQuery.trim().length > 0) {
+        children.push(
+          h(
+            'div',
+            {
+              key: 'no-match',
+              'data-warning': 'session-no-match',
+              style: { marginTop: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
+            },
+            h('span', { style: metaStyle }, t('sessionNoMatch')),
+            h(
+              'button',
+              {
+                type: 'button',
+                'data-action': 'session-use-input',
+                'data-session-id': m.sessionQuery.trim(),
+                onClick: a.useTypedId,
+                style: {
+                  font: 'inherit',
+                  fontSize: 12,
+                  lineHeight: '18px',
+                  padding: '3px 10px',
+                  borderRadius: 999,
+                  cursor: 'pointer',
+                  color: token.labelPrimary,
+                  background: 'transparent',
+                  border: `1px solid ${token.borderL2}`,
+                },
+              },
+              fmt(t('sessionUseInput'), { id: m.sessionQuery.trim() }),
+            ),
+          ),
+        );
+      }
+      if (total === 0) {
+        children.push(h('p', { key: 'empty', style: { margin: '6px 0 0', ...metaStyle } }, t('sessionEmpty')));
+      }
+      if (!isTree) {
+        // The flat list is a degradation, not a silent difference: say it.
+        children.push(
+          h(
+            'p',
+            { key: 'degraded', 'data-warning': 'scope-degraded', style: { margin: '6px 0 0', ...metaStyle } },
+            t('scopeDegraded'),
+          ),
+        );
+      }
+      children.push(
+        h('p', { key: 'keys', style: { margin: '6px 0 0', ...metaStyle } }, t('sessionKeyboardHint')),
         h(
           'p',
-          { 'data-session-note': scoped ? 'session' : 'global', style: { margin: '6px 0 0', ...metaStyle } },
+          { key: 'note', 'data-session-note': scoped ? 'session' : 'global', style: { margin: '6px 0 0', ...metaStyle } },
           scoped ? t('sessionSelectedNote') : t('sessionGlobalNote'),
         ),
       );
+
+      return h('section', { 'data-region': 'session', style: cardStyle }, children);
     }
 
     /**
@@ -2470,6 +3199,7 @@ window.__ModuleLoader__.load({
           'data-render-state': 'ok',
           'data-phase': m.phase,
           'data-session-mode': m.seat.mode,
+          'data-scope-mode': m.scopeMode,
           'data-session': m.sessionArg === null ? 'global' : m.sessionArg,
           'data-frozen-scope': m.fz.scope,
           'data-frozen-state': m.fz.kind,
@@ -2516,11 +3246,17 @@ window.__ModuleLoader__.load({
       // `typeof` branch is stable for the life of a mount, and a hook that
       // throws degrades to the manual picker instead of blanking the panel.
       const seat = readSessionSeat(props.useSessions);
+      // The workspace seat, from the *other* root hook
+      // (`dsh-client-ui-workspace` provides `useWorkspaces`). Absent or
+      // throwing ⇒ the flat list, announced on the page.
+      const wsSeat = readWorkspaceSeat(props.useWorkspaces);
 
       const [selection, setSelection] = React.useState(null);
       const [manualId, setManualId] = React.useState('');
       const [sessionQuery, setSessionQuery] = React.useState('');
       const [sessionActive, setSessionActive] = React.useState(-1);
+      const [scopeExpanded, setScopeExpanded] = React.useState({});
+      const [scopeLimits, setScopeLimits] = React.useState({});
       const [view, setView] = React.useState('sections');
       const [search, setSearch] = React.useState('');
       const [filters, setFilters] = React.useState({ layer: 'all', overridable: 'all', origin: 'all' });
@@ -2535,9 +3271,32 @@ window.__ModuleLoader__.load({
 
       const session = selection === null ? seat.currentId || GLOBAL_SESSION : selection;
       const sessionArg = session === GLOBAL_SESSION ? null : session;
-      // Every match is computed; only a bounded slice is ever rendered.
-      const sessionMatches = filterSessions(seat.rows, sessionQuery);
-      const sessionVisible = sessionMatches.slice(0, SESSION_MATCH_LIMIT);
+      // Tree when both root hooks answered, flat when only the session hook did,
+      // manual when even that is missing. `scope` is null in the two degraded
+      // modes, where the flat list keeps its own (bounded) projection.
+      const scopeMode = seat.mode === 'manual' ? 'manual' : wsSeat.mode === 'workspaces' ? 'tree' : 'flat';
+      const scope =
+        scopeMode === 'tree'
+          ? deriveScope({
+              rows: seat.rows,
+              currentId: seat.currentId,
+              workspaces: wsSeat.items,
+              pinned: wsSeat.pinned,
+              archived: wsSeat.archived,
+              query: sessionQuery,
+              expanded: scopeExpanded,
+              limits: scopeLimits,
+              labels: {
+                defaultName: t('scopeDefaultWorkspace'),
+                untitled: t('scopeUntitledWorkspace'),
+                ungrouped: t('scopeUngrouped'),
+              },
+            })
+          : null;
+      // Every match is computed; only a bounded window is ever rendered.
+      const sessionMatches = scope === null ? filterSessions(seat.rows, sessionQuery) : [];
+      const sessionVisible =
+        scope === null ? sessionMatches.slice(0, SESSION_MATCH_LIMIT) : scope.rows;
 
       React.useEffect(() => {
         let cancelled = false;
@@ -2587,6 +3346,16 @@ window.__ModuleLoader__.load({
           setSessionQuery(event && event.target ? String(event.target.value) : '');
           setSessionActive(-1);
         },
+        // Expansion is local view state, keyed by the sidebar's own group key
+        // (the workspace id, or '' for the ungrouped bucket). The effective
+        // state is passed in, so the toggle is exact even when a search forced
+        // a group open.
+        toggleScope: (key, open) => setScopeExpanded((current) => ({ ...current, [key]: open })),
+        showMoreScope: (key) =>
+          setScopeLimits((current) => {
+            const value = Number.isInteger(current[key]) ? current[key] : SCOPE_GROUP_PAGE;
+            return { ...current, [key]: Math.min(SCOPE_GROUP_MAX, value + SCOPE_GROUP_STEP) };
+          }),
         pickSession: (id) => {
           setSelection(id);
           // The box reflects the selection: it refills with the readable title.
@@ -2759,6 +3528,9 @@ window.__ModuleLoader__.load({
 
       const model = {
         seat,
+        wsSeat,
+        scopeMode,
+        scope,
         session,
         sessionArg,
         sessionQuery,
