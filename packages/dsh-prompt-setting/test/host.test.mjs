@@ -1,14 +1,19 @@
 /**
- * Host-half assertions for stage 1A: the manifest contract, the read-only
- * probe route, the trust fence, and the failure modes the acceptance criteria
- * name explicitly (wrong method, missing browser trust marker).
+ * Host-half assertions for stage 1A, kept green by stage 1B: the manifest
+ * contract, the read-only probe route, the trust fence, and the failure modes
+ * the acceptance criteria name explicitly (wrong method, missing browser trust
+ * marker).
+ *
+ * Stage 1B adds behaviour; it must not change any of this. The stage 1B
+ * surfaces are asserted in `route.test.mjs` and `integration.test.mjs`.
  *
  * Run: `node --test test/`
  */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import test from 'node:test';
+import test, { afterEach, beforeEach } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { apply, inject } from '../index.js';
@@ -19,6 +24,23 @@ const clientSource = readFileSync(join(here, '..', 'client.js'), 'utf8');
 const patchSource = readFileSync(join(here, '..', 'cordis.patch.yml'), 'utf8');
 
 const PING_PATH = '/prompt-setting/ping';
+
+let home;
+let previousHome;
+
+// Every mount reads the user layer, so point `$DSH_HOME` at a throwaway
+// directory: a test run must never read or write the real `~/.dsh`.
+beforeEach(() => {
+  home = mkdtempSync(join(tmpdir(), 'dsh-prompt-setting-host-'));
+  previousHome = process.env.DSH_HOME;
+  process.env.DSH_HOME = home;
+});
+
+afterEach(() => {
+  rmSync(home, { recursive: true, force: true });
+  if (previousHome === undefined) delete process.env.DSH_HOME;
+  else process.env.DSH_HOME = previousHome;
+});
 
 /** Minimal Node response double: records status, headers and body. */
 function makeResponse() {
@@ -50,6 +72,8 @@ function makeRequest({ method = 'GET', url = PING_PATH, headers = {} } = {}) {
  */
 function mount(options = {}) {
   const routes = [];
+  const listeners = [];
+  const disposers = [];
   let disposed = 0;
   const ctx = {
     connection:
@@ -64,12 +88,32 @@ function mount(options = {}) {
         };
       },
     },
+    // Stage 1B's hard dependency and waterfall target; this suite only needs
+    // the ping route, so a non-answering stub is enough.
+    systemPrompt: {
+      async assemble() {
+        return { sections: [], contexts: [], tools: [], variables: {} };
+      },
+    },
+    get() {
+      return undefined;
+    },
+    on(name, callback) {
+      listeners.push({ name, callback });
+      return () => {
+        const at = listeners.findIndex((listener) => listener.callback === callback);
+        if (at >= 0) listeners.splice(at, 1);
+        disposed += 1;
+      };
+    },
     effect(factory) {
-      return factory();
+      const disposer = factory();
+      disposers.push(disposer);
+      return disposer;
     },
   };
   apply(ctx);
-  return { ctx, routes, route: routes[0], disposedCount: () => disposed };
+  return { ctx, routes, route: routes[0], listeners, disposers, disposedCount: () => disposed };
 }
 
 async function call(route, { method = 'GET', url = PING_PATH, rejection } = {}) {
@@ -90,14 +134,18 @@ test('manifest: bundle, client and publish contract', () => {
   assert.deepEqual(packageJson.dependencies, {}, 'zero runtime dependencies');
   assert.deepEqual(packageJson.files, [
     'index.js',
+    'core',
     'client.js',
     'cordis.patch.yml',
+    'CONTRACT.md',
     'README.md',
     'NOTES.md',
   ]);
   // The `files` allowlist is what keeps `npm pack` free of .dsh-graph,
   // node_modules and .worktrees entries.
   assert.equal(packageJson.files.includes('test'), false);
+  assert.equal(packageJson.files.includes('.dsh-graph'), false);
+  assert.equal(packageJson.files.includes('node_modules'), false);
 });
 
 test('manifest: version constant stays in lockstep with package.json', async () => {
@@ -115,8 +163,8 @@ test('bundle patch: one insert row named after the package', () => {
   assert.equal(rowCount, 1);
 });
 
-test('host: injects exactly webServer and connection', () => {
-  assert.deepEqual(inject, ['webServer', 'connection']);
+test('host: injects webServer, connection and the hard systemPrompt dependency', () => {
+  assert.deepEqual(inject, ['webServer', 'connection', 'systemPrompt']);
 });
 
 test('host: one prefix route owns the /prompt-setting prefix', () => {
@@ -124,6 +172,19 @@ test('host: one prefix route owns the /prompt-setting prefix', () => {
   assert.equal(routes.length, 1);
   assert.equal(route.kind, 'prefix');
   assert.equal(route.path, '/prompt-setting');
+});
+
+test('host: mounting registers exactly one assemble listener and one route, both disposable', () => {
+  const { listeners, routes, disposers, disposedCount } = mount();
+  assert.deepEqual(listeners.map((listener) => listener.name), ['system-prompt/assemble']);
+  assert.equal(routes.length, 1);
+  // One effect for the listener, one for the routes: unloading the plugin
+  // removes the override engine with it.
+  assert.equal(disposers.length, 2);
+  assert.equal(disposedCount(), 0);
+  for (const disposer of disposers) disposer();
+  assert.equal(disposedCount(), 2);
+  assert.equal(listeners.length, 0);
 });
 
 test('host: GET /prompt-setting/ping answers 200 JSON', async () => {
