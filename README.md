@@ -9,14 +9,14 @@ DSH 每轮会话都会注入由 `@deepseek-ai/dsh-system-prompt` 装配的基座
 去全局安装包（pnpm 全局 `node_modules`）里硬改文件：升级即丢失、污染全局安装、无法回溯与对比，
 也没有任何可视化手段看清「最终拼出来的 system prompt 到底长什么样」。
 
-## 能力（规划中）
+## 能力与阶段
 
-| 阶段 | 能力 |
-| --- | --- |
-| 阶段一 A | 插件骨架与本地 profile 挂载（host + client 两半、设置页入口） |
-| 阶段一 B | 宿主：装配分段快照 + `system-prompt/assemble` 覆盖引擎 + 两层持久化 |
-| 阶段一 C | 客户端：分段浏览、全文检索、就地编辑（含不可覆盖段标注） |
-| 阶段二 | 版本历史 + diff、恢复默认、导出 / 导入 |
+| 阶段 | 能力 | 状态 |
+| --- | --- | --- |
+| 阶段一 A | 插件骨架与本地 profile 挂载（host + client 两半、设置页入口） | ✅ 已交付 |
+| 阶段一 B | 宿主：装配分段快照 + `system-prompt/assemble` 覆盖引擎 + 两层持久化 | ✅ 已交付 |
+| 阶段一 C | 客户端：分段浏览、全文检索、就地编辑（含不可覆盖段标注）、覆盖管理 | ✅ 已交付 |
+| 阶段二 | 版本历史 + diff、恢复默认、导出 / 导入 | 规划中 |
 
 ## 设计要点
 
@@ -40,8 +40,26 @@ packages/dsh-prompt-setting/   # 插件包本体（可独立 npm 发布）
 
 1. `packages/dsh-prompt-setting/` 内保持 `package.json` 的 `dsh.bundle.patch` 指向 `cordis.patch.yml`；
 2. 由 DSH 的 plugin manager 以**绝对路径**安装该目录（不要手工编辑 profile 配置文件）；
-3. **改动插件包 JS 实体后必须重启 `dsh web` 进程**才会加载新代码（patch/config 改动可热生效）。
+3. 代码改动的生效方式与排障顺序、以及插件包的详细说明，见
+   [`packages/dsh-prompt-setting/README.md`](./packages/dsh-prompt-setting/README.md)。
+
+## 测试与验证
+
+```bash
+cd packages/dsh-prompt-setting
+node --test                    # 六个套件；集成套件用真 DSH 包跑对照实验，须为 pass（非 skip）
+npm pack --dry-run             # 确认发布产物干净（无 test/、无 .dsh-graph）
+```
+
+其中 `test/integration.test.mjs` 会直接解析本机 DSH 安装根里的真
+`@deepseek-ai/dsh-system-prompt` 与真 Cordis，在真上下文里验证装配语义（waterfall 顺序、
+`complete` 冻结、scope 遮蔽）——**这些结论不是猜的，是实测的**，结论同时写进
+[`CONTRACT.md`](./packages/dsh-prompt-setting/CONTRACT.md) 与快照的 `experiments` 字段。
 
 ## 状态
 
-阶段一 A 正在开发。进度以 `.dsh-graph` 看板为准。
+- **阶段一（A/B/C）已交付**：插件骨架与本地挂载、宿主侧装配快照 + `system-prompt/assemble`
+  覆盖引擎 + 用户级/工作区级两层持久化、客户端设置页 Prompt 管理器（分段浏览、全文检索、
+  就地编辑、覆盖管理）。REST 契约已冻结于 `CONTRACT.md`（Revision 3）。
+- **阶段二（规划中）**：版本历史 + diff、恢复默认、导出 / 导入。
+- 进度与验收证据以 `.dsh-graph` 看板为准。
