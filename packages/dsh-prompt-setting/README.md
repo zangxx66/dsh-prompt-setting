@@ -58,7 +58,7 @@ plugin_manager(action: "install_bundle", target: "<仓库绝对路径>/packages/
 ```bash
 cd packages/dsh-prompt-setting
 node --check index.js && node --check core/overrides.js && node --check core/store.js
-node --test                                       # 113 项断言，0 skipped
+node --test                                       # 125 项断言，0 skipped
 npm pack --dry-run                                # 确认产物干净（无 test/、无 .dsh-graph）
 ```
 
@@ -109,6 +109,15 @@ npm pack --dry-run                                # 确认产物干净（无 tes
 所以同一个 mount 对某个会话可以报 `frozen:true`、对全局视图报 `frozen:false` —— 这是设计，
 不是不一致。**UI 在 `frozenScope:"global"` 且 `frozenScopeReason` 非 null 时必须按
 「本会话未知」呈现，不能当作「未冻结」。**
+
+`frozen` **只**由「本插件追加的探针段是否幸存」决定，**不做任何段数比较** ——
+别的插件在自己的 `system-prompt/assemble` 监听器里增删段是正常现象（真机上
+`dsh-expression` 就追加了一段），不得被读成冻结。此类段在 `effective[].origin` 里标为
+`downstream-added`，UI 应呈现为「其它插件在后处理阶段加入的段」，且它**仍然可覆盖**。
+
+`rendered` 对缺值变量**保留字面量 `{{name}}`**，绝不输出裸 `undefined`；
+`renderedResolved` 与 `unresolvedVariables` 如实报告哪些变量缺少上下文。
+带 `?session=` 时探针 context 含 `agent`，agent 侧变量可解析；无 session 时不能。
 
 阶段一 C 才动 `client.js`：分段编辑界面、frozen 时的禁用与原因提示都在那时接上。
 本阶段**没有**改动 `client.js`。

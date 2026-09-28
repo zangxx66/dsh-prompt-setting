@@ -583,9 +583,6 @@ export function apply(ctx) {
     const frozenInfo = detectFrozen({
       registered: frozenProbe.registered,
       probe: frozenProbe.after,
-      downstream: overrideProbe.downstream,
-      after: overrideProbe.after,
-      resolved,
     });
     const flags = completeFlags(
       frozenProbe.registered,
@@ -603,6 +600,7 @@ export function apply(ctx) {
       frozen: frozenInfo.frozen,
       frozenReason: frozenInfo.frozenReason,
     });
+    const rendered = renderSections(overrideProbe.after, overrideProbe.variables);
 
     sendJson(res, 200, {
       ok: true,
@@ -615,7 +613,9 @@ export function apply(ctx) {
       frozenScopeReason: target.frozenScopeReason,
       base: { sections: base },
       effective: { sections: effective },
-      rendered: renderSections(overrideProbe.after, overrideProbe.variables),
+      rendered: rendered.text,
+      renderedResolved: rendered.resolved,
+      unresolvedVariables: rendered.unresolved,
       layers: {
         user: { enabled: state.user.error === null, path: state.user.path, reason: state.user.error === null ? null : `${state.user.error.code}: ${state.user.error.message}` },
         workspace: {

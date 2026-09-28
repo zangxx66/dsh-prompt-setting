@@ -573,3 +573,100 @@ test('integration D2: a concurrent unscoped assembly during a snapshot is never 
   assert.equal(snapshot.payload.frozen, false);
   assert.equal(service !== null, true);
 });
+
+test('integration F1: a real third-party assemble listener that appends a section does not freeze the scope', suite, async () => {
+  // Reproduces the live machine exactly: dsh-expression appends a companion
+  // section in its own listener. The scope has no complete section, so the
+  // snapshot must report frozen:false and leave every section editable.
+  const mounted = await mountRealPlugin([{ name: 'test:global', order: 100, text: 'GLOBAL' }], {
+    beforePlugin: async (ctx) => {
+      // Registered BEFORE this plugin, i.e. outermost: it transforms the result
+      // this plugin returns, which is the harshest ordering.
+      // It calls next() like any well-behaved listener — one that does not
+      // would veto this plugin entirely (measured in E2).
+      ctx.on('system-prompt/assemble', async (assembly, context, next) => {
+        const downstream = await next();
+        return { ...downstream, sections: [...downstream.sections, { name: 'dsh-expression:companion', text: 'COMPANION' }] };
+      });
+    },
+  });
+  const snapshot = await mounted.call({ url: '/prompt-setting/snapshot' });
+
+  assert.equal(snapshot.status, 200);
+  assert.equal(snapshot.payload.mounted, true);
+  assert.equal(snapshot.payload.frozen, false);
+  assert.equal(snapshot.payload.frozenSection, null);
+  assert.equal(snapshot.payload.frozenReason, null);
+  assert.equal(snapshot.payload.renderedResolved, true);
+
+  const registered = snapshot.payload.effective.sections.filter((section) => section.origin === 'registered');
+  assert.equal(registered.length, snapshot.payload.base.sections.length);
+  assert.equal(registered.every((section) => section.overridable === true), true);
+  assert.equal(registered.every((section) => section.reason === null), true);
+
+  const companion = snapshot.payload.effective.sections.find((section) => section.name === 'dsh-expression:companion');
+  assert.deepEqual([companion.origin, companion.overridable, companion.overrideLayer], ['downstream-added', true, null]);
+  assert.equal(snapshot.payload.base.sections.some((section) => section.name === 'dsh-expression:companion'), false);
+  assert.match(snapshot.payload.rendered, /COMPANION/);
+
+  // A real complete section must STILL be caught — the fix must not have made
+  // the detector blind.
+  const frozenMount = await mountRealPlugin([
+    { name: 'test:global', order: 100, text: 'GLOBAL' },
+    { name: 'preset:locked', order: 500, text: 'LOCKED', complete: true },
+  ], {
+    beforePlugin: async (ctx) => {
+      // It calls next() like any well-behaved listener — one that does not
+      // would veto this plugin entirely (measured in E2).
+      ctx.on('system-prompt/assemble', async (assembly, context, next) => {
+        const downstream = await next();
+        return { ...downstream, sections: [...downstream.sections, { name: 'dsh-expression:companion', text: 'COMPANION' }] };
+      });
+    },
+  });
+  const frozenSnapshot = await frozenMount.call({ url: '/prompt-setting/snapshot' });
+  assert.equal(frozenSnapshot.payload.frozen, true);
+  assert.equal(frozenSnapshot.payload.frozenSection, 'preset:locked');
+  assert.match(frozenSnapshot.payload.frozenReason, /single complete section "preset:locked"/);
+  assert.equal(frozenSnapshot.payload.effective.sections.every((section) => section.overridable === false), true);
+});
+
+test('integration F2: a session-scope probe resolves agent-dependent variables; the global probe cannot', suite, async () => {
+  // Answers the review question empirically: the probe context for a session
+  // carries `{agent, scope: agent}`, so an agent-scoped variable provider IS
+  // evaluated; the global probe has no agent and cannot resolve it.
+  const agent = { id: 'var-session' };
+  const { call } = await mountRealPlugin([], {
+    agents: [agent],
+    beforePlugin: async (ctx) => {
+      await ctx.plugin({
+        name: 'agent-variables',
+        inject: ['systemPrompt'],
+        apply(c) {
+          c.systemPrompt.variable('model', (context) => (context?.agent === undefined ? undefined : 'deepseek-flash'));
+          c.systemPrompt.section({ name: 'agent:identity', order: 100, text: 'powered by the {{model}} model' });
+        },
+      });
+    },
+  });
+
+  // ANSWER to the review question: YES. A session-scope probe passes
+  // `{agent, scope: agent}`, so an agent-scoped variable provider IS evaluated
+  // and the value is resolved. (`harness:identity` is the service's own section,
+  // which is why the rendered text is not only our section.)
+  const session = await call({ url: '/prompt-setting/snapshot?session=var-session' });
+  assert.equal(session.payload.frozenScope, 'session');
+  assert.equal(session.payload.renderedResolved, true);
+  assert.deepEqual(session.payload.unresolvedVariables, []);
+  assert.match(session.payload.rendered, /powered by the deepseek-flash model$/);
+  assert.equal(session.payload.rendered.includes('{{model}}'), false);
+
+  // Without a session there is no agent, the provider returns undefined, and the
+  // value must be reported rather than rendered as a bare `undefined`.
+  const global = await call({ url: '/prompt-setting/snapshot' });
+  assert.equal(global.payload.frozenScope, 'global');
+  assert.equal(global.payload.renderedResolved, false);
+  assert.deepEqual(global.payload.unresolvedVariables, ['model']);
+  assert.equal(global.payload.rendered.includes('undefined'), false);
+  assert.match(global.payload.rendered, /powered by the \{\{model\}\} model$/);
+});

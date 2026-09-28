@@ -606,3 +606,150 @@ NC-6 只有 1 项变红是**预期且关键**的：它说明「按 scope 匹配�
    `rendered` 与真实回合逐字节相等、客户端 UI）同 §15，未变。
 4. **新增**：探针 context 不含 `signal`（CONTRACT §7.6）。若某 section/variable provider
    依赖 `context.signal`，快照与真实回合会不同；现有 shipped 包无一读取它。
+
+---
+
+# NOTES 阶段一 B · 真机验收后修订（第四个提交轮）
+
+宿主重启、新代码已加载后，真机 `/prompt-setting/snapshot` 的实测响应暴露两个缺陷。
+两处均已修复，测试从 113 项增至 125 项且全绿（集成套件 `pass 12 / skipped 0`）。
+
+## 23. 真机原始观测（节选，长文本已删）
+
+```
+mounted: true, frozenScope: "global", frozenScopeReason: null
+frozen: true
+frozenReason: "the assembled section list differs from the registered sections for a probe-only append"
+base.sections:      10 段（harness:identity … deployment:persona-suffix）
+effective.sections: 11 段 = 上面 10 段 + dsh-expression:companion（index 10）
+每个 effective 段： applied:false, overridable:false, reason:<同上>
+rendered: "...powered by the undefined model. ... working directory is undefined."
+layers: user{enabled:true} / workspace{enabled:false, reason:"no ?session= ..."}
+```
+
+两个事实：**全局作用域没有任何 complete 段**（我们全量扫描过 shipped 包，本机也没有），
+却报 `frozen:true` 且把每一段标成不可覆盖；`rendered` 里出现了裸 `undefined`。
+
+## 24. F1【blocker】段数比较把「别的插件加段」误判成冻结
+
+**根因**：`detectFrozen` 除「探针段是否幸存」外，还有一条
+`probe.length !== registered.length + 1 ⇒ frozen` 的分支。这条分支的隐含假设是
+「waterfall 期间段数只会因我们那次 append 而变化」，但**别的插件会在自己的
+`system-prompt/assemble` 监听器里增删段**。真机上 `dsh-expression` 追加了
+`dsh-expression:companion`：`registered=10`，探针那次结果 = 10 + 探针段 + companion = 12 ≠ 11
+⇒ 误判「sections 被整体替换」⇒ `frozen:true` ⇒ `buildEffective` 把**每一段**标成
+`overridable:false` ⇒ g-004 的 UI 会禁用全部编辑，用户拿到一个什么都改不了的面板。
+
+**修复**（`core/overrides.js` `detectFrozen`）——判据换成「**我们自己的改动是否幸存**」：
+
+| 观察 | 结论 |
+| --- | --- |
+| 探针段**存在** | `frozen:false`。别人增删段与我们无关，**不再做任何段数比较** |
+| 探针段**消失**且结果恰好 1 段 | `frozen:true` + `frozenSection` = 那一段（scope 被唯一的 complete 段整体替换） |
+| 探针段**消失**且结果不是 1 段 | `frozen:true`，reason 写「我们的追加在后处理阶段被移除」，**不谎称是 complete** |
+| 探针段名被真实段占用（病态） | 探针不可用，回退到两次观测互比 |
+
+同时**删掉**了原第三条信号（「我们的覆盖被丢弃」作为 frozen 依据）。它同样是
+false-positive 源：若第三方监听器注册在我们**之前**，它会变换我们返回的结果，
+于是 `attempt.sections` 与 `after` 天然不同 —— 在「用户确实配了覆盖」时又会误报冻结。
+现在 `frozen` **只由探针段幸存与否决定**；「某个覆盖没生效」这件事由
+`effective[].applied` + `reason` 逐段如实报告，不需要也不应该升级成整段冻结。
+
+**`overridable` 不再被启发式污染**：`frozen:false` 时，未被覆盖的段一律
+`overridable:true`（真机 `dsh-expression:companion` 这段也是 `true` —— 我们的覆盖施加在
+下游结果之上，确实能 replace/hide 它）。
+
+**新增 `effective[].origin`**（`core/overrides.js` `buildEffective`），让 UI 能把
+「别的插件在后处理加的段」如实呈现，而不是当成我们的覆盖或异常：
+
+| 值 | 含义 |
+| --- | --- |
+| `registered` | 该名字在 waterfall 前的注册段里 |
+| `appended` | 本插件自己的 `append` 覆盖引入的 |
+| `downstream-added` | 两者都不是：它在 waterfall 之后进入结果，由别的监听器贡献（真机的 `dsh-expression:companion` 即此类） |
+| `unmatched-override` | 覆盖的目标既不在注册段里、也不在结果里 |
+
+顺带修掉一处同源的不如实：某覆盖的目标**原本注册过**、但在结果里被下游删掉时，
+原来会显示跳过信息「no section named X is registered」（不准确），现在显示
+「the section was removed from the assembled result」。
+
+## 25. F2【major】`rendered` 把缺值变量渲染成裸 `undefined`
+
+**根因**：`interpolate` 判「变量可用」只查了 `Object.hasOwn(variables, name)`。
+而 `assembly.variables` **可以**带着 `undefined` 值 —— shipped 渲染器自己的文档就写了
+「provider 可返回 `undefined`，但渲染引用它的段会失败」，而全局探针的 context 没有 agent，
+agent 侧的 provider 因此返回 `undefined`。于是 `String(undefined)` 把 `undefined` 写进了
+「全文」，等于给用户看一段**从未存在过的提示词**（g-004 的全文视图判据建立在这个字段上）。
+
+**修复**（`core/overrides.js` `renderSections` / `interpolate`）：
+
+- 值缺失（键不存在，或值为 `undefined`/`null`）时**保留字面量 `{{name}}`**，绝不输出裸 `undefined`；
+- 返回结构从 `string` 改为 `{text, resolved, unresolved}`，快照据此新增
+  `renderedResolved: boolean` 与 `unresolvedVariables: string[]`（排序去重）；
+- 完整但畸形的组（如 `{{Upper}}`）也算未解析（shipped 渲染器对它会抛错）；
+  孤立的 `{{`（无闭合组）按 prose 处理、不算未解析 —— 与 shipped 渲染器的判断一致；
+- `false` / `0` 是**可用值**，不当作缺失（`{{n}}` + `{n:0}` → `"0"`）。
+
+**实测回答了复核提出的问题**：会话作用域探针（`?session=<活跃会话>`）**能**解析
+agent 侧变量 —— 因为我们传的正是 `{agent, scope: agent}`，provider 拿得到 `context.agent`。
+`integration F2` 用「只在 `context.agent` 存在时才返回值的 provider」验证：带 session 时
+`renderedResolved:true` 且渲染出真实值；不带 session 时 `renderedResolved:false` +
+`unresolvedVariables:["model"]`，输出里没有任何 `undefined`。
+
+## 26. 修复后的自测证据（工作树内执行）
+
+`diff=6f/+545/-170` 是本轮代码/契约/测试改动相对提交 `ae7c359` 的
+`git diff --cached --shortstat`（`CONTRACT.md` / `core/overrides.js` / `index.js` /
+`test/{overrides,route,integration}.test.mjs`）；`NOTES.md` 本身记录在紧随其后的文档提交里。
+`commit=1f9c9e2` 即该提交。
+
+```
+evidence: suite=overrides passed=32 failed=0 skipped=0 exit=0 ms=178 diff=6f/+545/-170 commit=1f9c9e2
+evidence: suite=store passed=10 failed=0 skipped=0 exit=0 ms=115 diff=6f/+545/-170 commit=1f9c9e2
+evidence: suite=route passed=39 failed=0 skipped=0 exit=0 ms=210 diff=6f/+545/-170 commit=1f9c9e2
+evidence: suite=host passed=19 failed=0 skipped=0 exit=0 ms=130 diff=6f/+545/-170 commit=1f9c9e2
+evidence: suite=client passed=13 failed=0 skipped=0 exit=0 ms=172 diff=0f/+0/-0 commit=1f9c9e2
+evidence: suite=integration passed=12 failed=0 skipped=0 exit=0 ms=240 diff=6f/+545/-170 commit=1f9c9e2
+evidence: suite=all passed=125 failed=0 skipped=0 exit=0 ms=392 diff=6f/+545/-170 commit=1f9c9e2
+```
+
+## 27. 本轮新增的回归测试与负向对照
+
+| 测试 | 断言 |
+| --- | --- |
+| `detectFrozen: the F1 regression — a surviving probe plus ANOTHER plugin section is NOT a freeze` | 内核层：探针幸存 + 第三方段 ⇒ `frozen:false` |
+| `detectFrozen: a surviving probe alongside sections REMOVED by another plugin is also not a freeze` | 别人删段也不冻结 |
+| `detectFrozen: a probe removed without a single-section collapse does not claim complete` | 探针消失但结果非单段 ⇒ reason 不提 complete |
+| `buildEffective: F1 — a section another plugin added after the waterfall is marked, not blamed on us` | `origin:"downstream-added"`、`overridable:true`、`reason:null` |
+| `buildEffective: an override whose registered target was removed downstream says so` | 目标被下游删掉时给「removed from the assembled result」 |
+| `F1: a third-party listener that appends a section is NOT read as a freeze` | 路由层：注册在我们**之后**的第三方监听器 ⇒ `frozen:false`、5 段全部 `overridable:true`、companion `origin:"downstream-added"` |
+| `F1: a third-party listener that also removes a section is still not a freeze` | 路由层：第三方删段 |
+| `F1: the real complete collapse is still reported after the survival-only rule` | **确保修复没把真冻结一起放过** |
+| `integration F1: a real third-party assemble listener that appends a section does not freeze the scope` | 真包 + 真 Cordis：第三方注册在我们**之前**（最严苛顺序）⇒ 不冻结、未覆盖段全 `overridable:true`；同文件再挂一个**真 complete 段**的场景 ⇒ 仍 `frozen:true` 且 `frozenSection` 正确 |
+| `F2: unresolved variables are reported instead of rendered as "undefined"` | 路由层：`{{model}}`/`{{cwd}}` 为 `undefined` ⇒ 输出无 `undefined`、`renderedResolved:false`、`unresolvedVariables:["cwd","model"]` |
+| `F2: variables a provider did resolve render normally and are not reported` | 正常值 ⇒ `renderedResolved:true`、空数组 |
+| `F2: an undefined or missing variable is never rendered as a bare "undefined"` | 内核层：`undefined`/`null`/缺失/畸形，以及 `0`/`false` 是可用值 |
+| `integration F2: a session-scope probe resolves agent-dependent variables; the global probe cannot` | 真包：带 session 解析成功，无 session 报未解析 |
+
+**负向对照（逐条单独改坏 → 跑全量 125 项 → 立即还原，`diff` 确认逐字节回滚）**：
+
+| # | 改坏点 | 结果 | 变红用例 |
+| --- | --- | --- | --- |
+| NC-F1 | `detectFrozen` 主信号换回段数比较（`survived && probe.length === registered.length + 1`） | `fail 5` | `detectFrozen: the F1 regression — …`、`detectFrozen: a surviving probe alongside sections REMOVED …`、`F1: a third-party listener that appends a section …`、`F1: a third-party listener that also removes a section …`、`integration F1: a real third-party assemble listener …` |
+| NC-F2 | `interpolate` 改回「只要键存在就用它的值」（`value === undefined && !Object.hasOwn(...)`） | `fail 3` | `F2: an undefined or missing variable is never rendered as a bare "undefined"`、`F2: unresolved variables are reported instead of rendered as "undefined"`、`integration F2: a session-scope probe resolves agent-dependent variables …` |
+
+NC-F1 的 5 项变红里，两项在**内核层**、两项在**路由层**、一项在**真包集成层** ——
+也就是说复核报出的真机现象在离线测试里**可复现、可回归**，不需要再靠真机才能发现。
+
+## 28. 本轮仍未验证项（更新）
+
+1. **真机复跑**：本轮修复的判据是「真机上 liangshen/普通会话的 `?session=` 快照」
+   与「无 session 快照」应分别为 `frozen:true` / `frozen:false`，且 `dsh-expression:companion`
+   落在 `origin:"downstream-added"`、`overridable:true`。已用真包真 Cordis 复现同一形状，
+   但**没有**再跑一次真机（需重启 + 带 cookie 请求，属集成检查点）。
+2. **真机 `unresolvedVariables` 的实际内容**：真机是否除 `model`/`cwd` 之外还有别的未解析变量、
+   以及 `?session=` 时是否**全部**解析成功 —— 需真机带 session 请求一次即可读出。
+3. 其余未验证项同 §15 / §22（E5 禁用后行为、真实回合里工作区覆盖生效、渲染与真实回合的
+   逐字节相等、客户端 UI）。
+4. **新增**：`unresolvedVariables` 无法区分「变量根本不存在」与「provider 返回了 `undefined`」
+   （装配结果里只有一个值）。两者对读者的含义相同，故合并报告；已在 CONTRACT §7.7 写明。

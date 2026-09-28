@@ -298,7 +298,8 @@ test('snapshot: reports the base and effective sections in the real assembly ord
   assert.equal(Number.isNaN(Date.parse(payload.generatedAt)), false);
   assert.deepEqual(Object.keys(payload).sort(), [
     'base', 'effective', 'experiments', 'frozen', 'frozenReason', 'frozenScope', 'frozenScopeReason',
-    'frozenSection', 'generatedAt', 'layers', 'mounted', 'ok', 'rendered',
+    'frozenSection', 'generatedAt', 'layers', 'mounted', 'ok', 'rendered', 'renderedResolved',
+    'unresolvedVariables',
   ]);
   // No ?session=: the verdict describes the unscoped assembly, and it says so.
   assert.equal(payload.frozenScope, 'global');
@@ -831,4 +832,90 @@ test('snapshot: experiments carries the measured E1-E5 conclusions, not placehol
   }
   assert.match(payload.experiments.E3, /complete:true/);
   assert.match(payload.experiments.E4, /scoped/);
+});
+
+test('F1: a third-party listener that appends a section is NOT read as a freeze', async () => {
+  // Reproduces the live machine: registered=5, our probe appends one, and
+  // another plugin appends a companion in its own listener. The old rule
+  // ("the result is not registered.length + 1") called that a freeze and marked
+  // every section non-overridable, so the whole panel became read-only.
+  const { ctx, route, listeners } = mount();
+  const original = listeners[0];
+  // Register the third party AFTER this plugin, so it runs inside our next().
+  ctx.on('system-prompt/assemble', (assembly) => ({
+    ...assembly,
+    sections: [...assembly.sections, { name: 'dsh-expression:companion', text: 'COMPANION' }],
+  }));
+
+  const payload = json(await call(route, { url: SNAPSHOT_PATH }));
+  assert.equal(original !== undefined, true);
+  assert.equal(payload.mounted, true);
+  assert.equal(payload.frozen, false, 'another plugin adding a section is normal');
+  assert.equal(payload.frozenSection, null);
+  assert.equal(payload.frozenReason, null);
+
+  // Every untouched registered section must stay editable.
+  const registered = payload.effective.sections.filter((section) => section.origin === 'registered');
+  assert.equal(registered.length, DEFAULT_SECTIONS.length);
+  assert.equal(registered.every((section) => section.overridable === true), true);
+  assert.equal(registered.every((section) => section.reason === null), true);
+
+  // And the third-party section is distinguishable, at its real position.
+  const companion = payload.effective.sections.find((section) => section.name === 'dsh-expression:companion');
+  assert.deepEqual(
+    [companion.index, companion.origin, companion.action, companion.applied, companion.overridable, companion.reason],
+    [DEFAULT_SECTIONS.length, 'downstream-added', null, false, true, null],
+  );
+  assert.equal(payload.base.sections.some((section) => section.name === 'dsh-expression:companion'), false);
+  assert.equal(payload.base.sections.length, DEFAULT_SECTIONS.length);
+  assert.match(payload.rendered, /COMPANION$/);
+});
+
+test('F1: a third-party listener that also removes a section is still not a freeze', async () => {
+  const { ctx, route } = mount();
+  ctx.on('system-prompt/assemble', (assembly) => ({
+    ...assembly,
+    sections: assembly.sections.filter((section) => section.name !== 'project:beta'),
+  }));
+  const payload = json(await call(route, { url: SNAPSHOT_PATH }));
+  assert.equal(payload.frozen, false);
+  const removed = payload.effective.sections.find((section) => section.name === 'project:beta');
+  assert.deepEqual([removed.index, removed.origin, removed.overridable], [null, 'registered', false]);
+  assert.match(removed.reason, /not present in the assembled result/);
+});
+
+test('F1: the real complete collapse is still reported after the survival-only rule', async () => {
+  const sections = [...DEFAULT_SECTIONS, { name: 'preset:locked', order: 500, text: 'LOCKED', complete: true }];
+  const { route } = mount({ sections });
+  const payload = json(await call(route, { url: SNAPSHOT_PATH }));
+  assert.equal(payload.frozen, true);
+  assert.equal(payload.frozenSection, 'preset:locked');
+  assert.match(payload.frozenReason, /single complete section "preset:locked"/);
+  assert.equal(payload.effective.sections.every((section) => section.overridable === false), true);
+});
+
+test('F2: unresolved variables are reported instead of rendered as "undefined"', async () => {
+  const { route } = mount({
+    sections: [
+      { name: 'agent:identity', order: 100, text: 'You are a coding agent powered by the {{model}} model.' },
+      { name: 'env:cwd', order: 200, text: 'Your working directory is {{cwd}}.' },
+    ],
+    variables: { model: undefined, cwd: undefined },
+  });
+  const payload = json(await call(route, { url: SNAPSHOT_PATH }));
+  assert.equal(payload.rendered.includes('undefined'), false);
+  assert.equal(payload.rendered, 'You are a coding agent powered by the {{model}} model.\n\nYour working directory is {{cwd}}.');
+  assert.equal(payload.renderedResolved, false);
+  assert.deepEqual(payload.unresolvedVariables, ['cwd', 'model']);
+});
+
+test('F2: variables a provider did resolve render normally and are not reported', async () => {
+  const { route } = mount({
+    sections: [{ name: 'agent:identity', order: 100, text: 'powered by the {{model}} model in {{cwd}}' }],
+    variables: { model: 'deepseek-flash', cwd: '/repo' },
+  });
+  const payload = json(await call(route, { url: SNAPSHOT_PATH }));
+  assert.equal(payload.rendered, 'powered by the deepseek-flash model in /repo');
+  assert.equal(payload.renderedResolved, true);
+  assert.deepEqual(payload.unresolvedVariables, []);
 });
