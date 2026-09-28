@@ -1,0 +1,14 @@
+# dsh-graph 看板与事件流数据（由内层独立仓库管理，禁止纳入父仓库）
+.dsh-graph/
+
+# 子代理隔离工作树
+.worktrees/
+
+# 依赖与构建产物
+node_modules/
+dist/
+*.tgz
+
+# 杂项
+.DS_Store
+*.log
