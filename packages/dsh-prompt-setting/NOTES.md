@@ -1326,4 +1326,8 @@ evidence: suite=all    passed=167 failed=0 exit=0 ms=2419 diff=2f/+657/-75 commi
    即可判定。inline 分支是逐字节复制几何，但**没有**真机并排比对过（颜色/线宽继承自 `currentColor` 与 `strokeWidth:1`）。
 3. `:focus-visible` 的真实行为：`matches(':focus-visible')` 在无 DOM 环境下走「总是画焦点环」的兜底，
    真实浏览器里鼠标点击是否**不**出现焦点环，未验。
-4. 其余同 §53（真机规模、`useWorkspaces` 是否到达 props、`default-workspace` 文案）。
+4. **ARIA 树的嵌套结构**：容器是 `role="tree"`、分组头与会话行都是 `role="treeitem"`，但分组行被包在一层
+   无 role 的 `div` 里（WAI-ARIA 的规范写法是 `treeitem > group > treeitem`）。本轮没有为此重构 DOM 树
+   （风险大于收益，且复核要求的是 `aria-expanded` 与展开态一致，已满足并有断言）；若后续要做完整的
+   「树」无障碍语义，应把分组容器移进分组头 `treeitem` 内部。
+5. 其余同 §53（真机规模、`useWorkspaces` 是否到达 props、`default-workspace` 文案）。
