@@ -58,7 +58,7 @@ plugin_manager(action: "install_bundle", target: "<仓库绝对路径>/packages/
 ```bash
 cd packages/dsh-prompt-setting
 node --check index.js && node --check core/overrides.js && node --check core/store.js
-node --test                                       # 103 项断言，0 skipped
+node --test                                       # 113 项断言，0 skipped
 npm pack --dry-run                                # 确认产物干净（无 test/、无 .dsh-graph）
 ```
 
@@ -68,7 +68,7 @@ npm pack --dry-run                                # 确认产物干净（无 tes
 | --- | --- |
 | `test/overrides.test.mjs` | 纯函数内核：校验/合并/变换/frozen 推导/投影/渲染 |
 | `test/store.test.mjs` | 路径解析、读时校验、**原子写**（硬链接见证旧文件未被就地改写） |
-| `test/route.test.mjs` | 全套宿主面：栅栏、405/404、两层、frozen、全部 4xx（用复刻真语义的假 Host） |
+| `test/route.test.mjs` | 全套宿主面：栅栏、405/404、两层、frozen、全部 4xx、D1/D2 回归（用复刻真语义含 scope 父链的假 Host） |
 | `test/host.test.mjs` | 阶段一 A 的既有套件：清单契约、ping、信任栅栏、405/404（**行为未变，断言仍在**） |
 | `test/client.test.mjs` | 阶段一 A 的客户端套件（`node:vm` 沙箱，本阶段未改 `client.js`） |
 | `test/integration.test.mjs` | **E1–E4 对照实验 + 插件端到端**：真 `@deepseek-ai/dsh-system-prompt` + 真 `@deepseek-ai/cordis` + 真 Cordis 上下文 |
@@ -102,6 +102,13 @@ npm pack --dry-run                                # 确认产物干净（无 tes
 `GET|PUT|DELETE /prompt-setting/overrides`、覆盖引擎与两层持久化（见
 [`CONTRACT.md`](./CONTRACT.md)）。`GET /prompt-setting/ping`、信任栅栏与未知子路径 404
 的行为与阶段一 A **逐字节保持不变**。
+
+快照的 `frozen` 判定**按目标作用域探测**：带 `?session=` 时用该会话自己的 Agent scope
+（与真实回合 `assembleContextFor` 同形），不带时用本插件私有的探针 scope；响应里的
+`frozenScope` / `frozenScopeReason` 明说该判定描述哪个作用域。`complete` 是按 scope 生效的，
+所以同一个 mount 对某个会话可以报 `frozen:true`、对全局视图报 `frozen:false` —— 这是设计，
+不是不一致。**UI 在 `frozenScope:"global"` 且 `frozenScopeReason` 非 null 时必须按
+「本会话未知」呈现，不能当作「未冻结」。**
 
 阶段一 C 才动 `client.js`：分段编辑界面、frozen 时的禁用与原因提示都在那时接上。
 本阶段**没有**改动 `client.js`。
