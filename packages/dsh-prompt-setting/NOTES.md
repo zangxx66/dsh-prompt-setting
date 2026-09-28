@@ -753,3 +753,158 @@ NC-F1 的 5 项变红里，两项在**内核层**、两项在**路由层**、一
    逐字节相等、客户端 UI）。
 4. **新增**：`unresolvedVariables` 无法区分「变量根本不存在」与「provider 返回了 `undefined`」
    （装配结果里只有一个值）。两者对读者的含义相同，故合并报告；已在 CONTRACT §7.7 写明。
+
+---
+
+# 阶段一 C：客户端设置页（g-004）
+
+目标 `g-004`，attempt `att-001`，基线 `1d7d937`（集成分支 `v0.1.0-test`），
+任务类型 **rewrite**。本节只记录本阶段**新增**的决策与证据；§1–§28 仍是 g-002/g-003
+的历史记录，未改动一字。
+
+## 29. 本轮交付面：只动 `client.js`（+ 本节）
+
+| 文件 | 变化 |
+| --- | --- |
+| `client.js` | **整篇重写**：阶段一 A 的占位页 → Prompt 管理器（状态条 / 会话选择器 / 分段视图 / 全文视图 / 编辑面板 / 覆盖管理） |
+| `test/client.test.mjs` | 测试基座升级：`node:vm` 里新增「递归展开函数组件」的迷你渲染器 + fetch 路由桩，34 个用例 |
+| `NOTES.md` | 本节 |
+
+宿主半（`index.js`、`core/**`）、`CONTRACT.md`、`package.json`、`cordis.patch.yml`
+**一字未动**（`git diff --stat` 可验）。契约缺口未发现，故没有 `blocked`。
+
+## 30. 契约字段消费清单（Revision 3，逐条对应）
+
+| 字段 | 页面消费方式 |
+| --- | --- |
+| `mounted` | 状态条 tag（已挂载 / 未挂载 / 未知），未挂载时给警示条 |
+| `frozen` / `frozenSection` / `frozenReason` | `frozenScope:"session"` 或「全局视图」时按事实呈现；警示条带 `frozenReason` 原文 |
+| `frozenScope` / `frozenScopeReason` | **三态**呈现，见 §31 |
+| `base.sections[]` | 全文视图的 `base ↔ effective` 对比左值 |
+| `effective.sections[]` | 分段视图的每一行；`index` / `applied` / `overridable` / `reason` / `overrideLayer` / `action` / `origin` 全部可见 |
+| `origin` 四值 | 各自一个 tag + 文案：`registered` 注册段、`appended` 本插件 append、`downstream-added` **其它插件加入**（附「不是覆盖也不是异常」的说明，且仍 `overridable`）、`unmatched-override` 无匹配覆盖 |
+| `rendered` | 全文视图等宽文本框（复制按钮），默认视图直接用服务端 `rendered`，不自行拼接 |
+| `renderedResolved` / `unresolvedVariables` | `false` 时顶部警示卡：标题 + 「未解析：<列表>」+ 说明「不要据此判断真实 prompt」，`data-unresolved-variables` 供机器读 |
+| `layers.user` / `layers.workspace` | 状态条逐层一行：`enabled` / `path` / `reason`；工作区层 disabled 时编辑面板也据此禁用「保存到工作区级」 |
+| `experiments` | 不呈现（只读诊断，非页面判据） |
+| 4xx `code` | 20 条 code 全有 zh/en 文案（见 §33），页面同时给出**文案 + 原始 code + 宿主 message** |
+
+## 31. `frozenScope` 三态：为什么必须区分，以及怎么落地
+
+`frozenState(snapshot, sessionSelected)` 是唯一判定点，返回
+`{kind, scope, certain, frozen}`：
+
+| 响应 | kind | 文案 | 编辑 |
+| --- | --- | --- | --- |
+| `frozenScope:"session"` + `frozen:false` | `unfrozen` | 「本会话未冻结」 | 允许 |
+| `frozenScope:"session"` + `frozen:true` | `frozen` | 「本会话已冻结」+ reason | **禁用** |
+| `frozenScope:"global"` **且选了会话** | `unknown` | 「**本会话冻结状态未知**」+ `frozenScopeReason` | **允许但强警示**（编辑器内 `data-warning="edit-uncertain"`） |
+| `frozenScope:"global"` 且未选会话 | `unfrozen`/`frozen` | 「全局装配未冻结 / 已冻结」 | 依全局事实 |
+
+两处刻意的选择：
+
+1. **unknown ≠ 未冻结**：unknown 分支绝不渲染「本会话未冻结」文案；全局 `frozen:true`
+   时另起一行写「全局装配已冻结」（作用域写明是全局），不与本会话结论混为一谈。
+2. **unknown 时不禁用编辑、但必须警示**：契约明确「本会话自己作用域内的 complete 段不可见」，
+   我们无法知道编辑是否生效；静默禁用会掩盖「换会话就能改」的事实，静默放行正是 §2.4 要防的
+   失败模式。故取「警示 + 允许」，且有测试锁死这个区别（NC1 见 §35）。
+
+## 32. 会话选择器：从 props 取 root 级 hook，缺失即降级
+
+- `typeof props.useSessions === 'function'` ⇒ `mode:"sessions"`：
+  一次 `useSessions(selector)`，selector 返回**一个字符串**（`currentId` + 每会话
+  `id/title/cwd/running`，分隔符为控制字符），因此 hook 的相等性检查看到的是稳定值，
+  且对「快照未就绪」（`state` 为 `undefined`）不会抛。
+  默认选中项照抄产品写法：`retainedBy.mainView > 0` 的那个会话；下拉另含「全局」项。
+- `typeof !== 'function'`（或 hook 调用抛错）⇒ `mode:"manual"`：手输 session id + 「应用」+
+  「全局」，并在页面上明写 `sessionLimit` 文案（**明示该限制**），`data-session-mode="manual"`。
+- **不从 URL 取会话 id**：shell 无会话路由（g-004 侦察卡片已证），代码里没有
+  `location` / `URLSearchParams` / `history` 的任何引用。
+- 选中会话 ⇒ `/prompt-setting/snapshot?session=` 与覆盖读写都带该 session；「全局」⇒ 无参。
+
+`useSessions` 是本次唯一「我们无法完全控制的 hook 调用」：`typeof` 分支在同一次挂载内稳定，
+调用点包在 try/catch 里，抛错即降级为 manual 并在页面上报原因（不让异常穿透渲染）。
+页面树另外整体包在原有 `try/catch → renderFailureCard` 里，`data-render-state="error"` 仍是
+最后一道「不白屏」防线。
+
+## 33. 4xx → 可读文案：单一来源表
+
+`ERROR_TEXT` 是唯一来源（`code → [zh, en]`），字典在注册时用同一个循环生成
+`error.<code>` 键，因此**不可能出现某个 code 只有 zh 没有 en**，也不可能出现「只显示原始 code」。
+覆盖 20 条：契约 §4.4 的 18 条 + `not-found`、`duplicate-name`。
+未知 code 也不会裸奔：退回通用文案 + `errCode` 标签 + 宿主 message。
+
+## 34. 可选实现取舍（与 directive 清单的差异，均有理由）
+
+| directive 提到 | 落地 | 理由 |
+| --- | --- | --- |
+| `SegmentedTabs` | primitives 分支用官方件；fallback 分支自绘 | fallback 分支必须能在**无 primitives**时工作，且真机判据靠 `data-*`；自绘件把 `data-tab-key/-value` 留在真实 DOM 上，测试与真机都能读 |
+| `CodeBlock` | 未用，改用自绘等宽 `pre` | 全文视图需要**搜索命中高亮**（往文本里插 `mark` 片段），`CodeBlock` 逐字渲染源码、无法注入 span；引它只会多一层 shiki 依赖而拿不到判据 |
+| `Modal` | 未用，编辑面板内联在页面中 | 减少 portal/焦点管理面；真机截图同样可见「编辑态」 |
+| `SearchBlock` | 未用 | 它是「工具搜索结果卡片」形状，与「在最终文本里检索」不是一回事 |
+| primitives 复用 | `Button` / `Input` / `Tag`（+ `SegmentedTabs`）+ `writeClipboard` | 沿用 g-002 的双分支探针与 `data-renderer` 标记，两条分支都保留 |
+
+其余实现细节：文本域/原生下拉无对应 primitive，直接手绘（`--dsw-alias-*` token，深浅色可读）；
+`append` 的 `order` 只在 action=`append` 时出现在请求体里（`replace`/`hide` 不带，见 §31 测试）；
+全文视图超过 3000 行会截断并明写「仅显示前 N 行」（搜索计数按**显示出来的**文本算，避免
+「有 N 处命中却一个高亮都看不到」）。
+
+## 35. 自测证据（工作树内执行）
+
+```
+evidence: suite=client passed=34 failed=0 exit=0 ms=1072 diff=2f/+2926/-341 commit=626327c
+evidence: suite=all passed=146 failed=0 exit=0 ms=1314 diff=2f/+2926/-341 commit=626327c
+```
+
+`ms` 取 `node --test` 自报的 `duration_ms`（含 vm 加载与 34 个用例）；`diff` 是代码提交
+`626327c` 相对基线 `1d7d937` 的 `git diff --cached --shortstat`（`client.js` +
+`test/client.test.mjs`）；本节 `NOTES.md` 记录在紧随其后的文档提交里。
+
+| suite | 命令 | 结果 |
+| --- | --- | --- |
+| client | `node --test test/client.test.mjs` | 34 passed / 0 failed |
+| all | `node --test` | 146 passed / 0 failed |
+| syntax | `node --check client.js` | exit 0 |
+| pack | `npm_config_cache=/tmp/npm-cache-probe npm pack --dry-run` | `total files: 10`，无 `test/` |
+
+覆盖的断言族（34 项）：注册契约与 zh/en 键集一致；20 条错误码双语文案非空且互不相同；
+两条渲染分支；请求全在 `/prompt-setting/*` 前缀内（无越界请求）；4xx 文案映射（抽样 5 条，
+含 409/413/503）；宿主不可达；空装配；会话选择器默认当前视图会话 + URL 带 session；
+切「全局」后去掉 session；`useSessions` 缺失降级并明示 + 手输 id 生效；
+`useSessions` 抛错不致白屏；`frozenScope` 三态（含 unknown ≠ 未冻结）；不可覆盖段禁用 + reason；
+`origin` 四值标注（downstream-added 不当作覆盖/异常）；分段视图三种筛选；全文搜索高亮与计数；
+按来源筛全文（重组预览并标注）；`renderedResolved:false` 警示与变量列表；base↔effective 差异标记；
+`replace` 不带 order + 「下一轮生效」；`append` 带目标下标 + 非法下标本地拒绝（不发给宿主）；
+工作区层无 session 时本地拒绝；保存后从变化过的快照重读；覆盖列表与单条撤销；
+locale seat 四种退化形状仍渲染；`t` 抛错时渲染失败卡（不白屏）；`npm pack` 清单。
+
+**负向对照**（逐条单独改坏 → 重跑 client 套件 → 立刻按备份还原；下表为最终源码上的复跑结果）：
+
+| # | 改坏点 | 变红用例 |
+| --- | --- | --- |
+| NC1 | 删掉 `frozenState` 的「global + 选了会话 ⇒ unknown」分支 | `frozenScope "global" with a session is "unknown", never "not frozen"` |
+| NC2 | `renderedResolved:false` 的警示卡恒不渲染 | `renderedResolved false marks the text as partial and lists the variables` |
+| NC3 | `errorText` 直接返回原始 code（不做文案映射） | 4xx 映射用例 + 工作区层本地拒绝用例 |
+| NC4 | `savedNotice` 文案去掉「下一轮生效」 | `replace saves without an order and promises the next turn` |
+
+## 36. 本轮未验证项（诚实清单，交给主管在集成检查点裁决）
+
+1. **真机目视**：设置页是否出现新 UI、`data-renderer` 实际是哪个分支、语言切换是否即时生效、
+   编辑态截图，以及「保存覆盖 → 新回合装配已改变」的端到端证据 —— 均属集成检查点（需重启
+   `dsh web` 或带 cookie 请求），本轮**没有**做，也未安装进 profile。
+2. **primitives 分支的交互**：离线测试的点击链路跑在 fallback 分支（primitives 用桩件），
+   官方 `SegmentedTabs` 的真实键盘/布局行为未在浏览器里核过。
+3. **`useSessions` 的真实形状**：本 profile 是否启用了 `dsh-client-ui-session`（决定真机是
+   sessions 还是 manual 分支）需真机确认；selector 的相等/重渲染语义仍是照抄产品用法。
+4. **`renderedResolved` 在带 session 时的真实解析率**（CONTRACT §2.3 的预期未在真机复核）。
+5. **截断阈值 3000 行**：真机 rendered 长度未测；纯属防御性上限，不影响判据。
+
+## 37. 本轮明确**没有**做的事
+
+- 没有安装进 profile、没有调用 `plugin_manager`、没有重启 `dsh web`；
+- 没有改宿主半（`index.js` / `core/**`）与 `CONTRACT.md`；
+- 没有改 DSH 安装包、没有手工编辑 `~/.dsh/profiles/web/**`；
+- **没有写 `.dsh-graph/**`**，也没有写 `~/.dsh/prompt-setting/overrides.json`
+  （测试全程用内存 fetch 桩，唯一的「写」是断言请求体，落盘路径从未被触碰）；
+- 没有新增运行时依赖或构建步骤（`dependencies` 仍为空，仍是零构建手写 CJS）；
+- 没有做阶段二能力（历史 diff、恢复默认、导出导入）。
