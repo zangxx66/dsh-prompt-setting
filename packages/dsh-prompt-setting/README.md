@@ -1,7 +1,7 @@
 # dsh-prompt-setting（插件包）
 
-DSH 默认 System Prompt 管理插件。**当前为阶段一 B：装配快照 + 覆盖引擎 + 两层持久化**
-（客户端 UI 仍是阶段一 A 的占位页，阶段一 C 才改）。
+DSH 默认 System Prompt 管理插件。**阶段一（A/B/C）已交付**：宿主侧装配快照 + 覆盖引擎 +
+两层持久化，客户端侧设置页 Prompt 管理器（分段浏览、全文检索、就地编辑、覆盖管理）。
 
 本文件讲的是**这个包怎么装、怎么改**；仓库整体目标与路线图见仓库根 `README.md`，
 REST 契约见同目录 [`CONTRACT.md`](./CONTRACT.md)（已冻结，客户端照它写），
@@ -15,7 +15,7 @@ REST 契约见同目录 [`CONTRACT.md`](./CONTRACT.md)（已冻结，客户端�
 | `core/overrides.js` | **纯函数内核**：配置校验、两层合并、分段变换、`complete` 推导、快照投影、渲染。零 IO、零 `ctx` |
 | `core/store.js` | **唯一碰文件系统**的模块：两层路径解析 + 原子写（临时文件 + `rename`）+ 读时校验 |
 | `core/experiments.js` | E1–E5 的**实测结论**（由集成测试产出，快照与 CONTRACT.md 共用同一份文案） |
-| `client.js` | 客户端半：注册「设置」里的独立一栏 + 占位页 + 探针状态区（阶段一 C 才改） |
+| `client.js` | 客户端半：「设置」里的独立一栏：状态条 / 会话选择器 / 分段视图（含 `origin` 标注与筛选）/ 全文视图（搜索高亮 + `base`↔`effective` 对比）/ 编辑面板（保存前可行性校验）/ 覆盖管理 |
 | `cordis.patch.yml` | bundle 层：一条 `insert` 行同时承载两个半边 |
 | `package.json` | 包契约：`dsh.bundle.patch` + `dsh.client.platform: "web"` + `exports["./client"]` |
 | `CONTRACT.md` | 冻结的 REST 契约：每个字段、每个 4xx、动作枚举、字段上限 |
@@ -58,11 +58,11 @@ plugin_manager(action: "install_bundle", target: "<仓库绝对路径>/packages/
 ```bash
 cd packages/dsh-prompt-setting
 node --check index.js && node --check core/overrides.js && node --check core/store.js
-node --test                                       # 125 项断言，0 skipped
+node --test                                       # 153 项断言，0 skipped
 npm pack --dry-run                                # 确认产物干净（无 test/、无 .dsh-graph）
 ```
 
-`node --test` 的四个套件：
+`node --test` 的六个套件：
 
 | 套件 | 覆盖 |
 | --- | --- |
@@ -70,7 +70,7 @@ npm pack --dry-run                                # 确认产物干净（无 tes
 | `test/store.test.mjs` | 路径解析、读时校验、**原子写**（硬链接见证旧文件未被就地改写） |
 | `test/route.test.mjs` | 全套宿主面：栅栏、405/404、两层、frozen、全部 4xx、D1/D2 回归（用复刻真语义含 scope 父链的假 Host） |
 | `test/host.test.mjs` | 阶段一 A 的既有套件：清单契约、ping、信任栅栏、405/404（**行为未变，断言仍在**） |
-| `test/client.test.mjs` | 阶段一 A 的客户端套件（`node:vm` 沙箱，本阶段未改 `client.js`） |
+| `test/client.test.mjs` | 客户端半：vm 沙箱 + 递归展开函数组件的迷你渲染器 + fetch 路由桩（含 `useSessions` 缺失降级、`frozenScope` 三态、保存前可行性校验） |
 | `test/integration.test.mjs` | **E1–E4 对照实验 + 插件端到端**：真 `@deepseek-ai/dsh-system-prompt` + 真 `@deepseek-ai/cordis` + 真 Cordis 上下文 |
 
 集成测试从 DSH 全局安装根解析真包（`DSH_INSTALL_ROOT` / `DSH_PROFILE_DIR` / pnpm 全局 store）。
@@ -86,15 +86,20 @@ npm pack --dry-run                                # 确认产物干净（无 tes
 > `npm pack` 若报 `Log files were not written ... /Users/<you>/.npm/_logs`，
 > 是本机 npm 缓存目录不可写，加 `npm_config_cache=/tmp/npm-cache` 即可，与包本身无关。
 
-### ⚠️ 改包 JS 实体后必须重启 `dsh web`
+### 代码改动怎么生效（本机实测，2026-09-28）
 
-`client.js` / `index.js` 是**交到运行时的 JS 实体**，不是配置：
+本包以 `link:` 装进 profile，profile 又是 `patchReload: live`，所以**代码改动会被热重载**：
 
-- **改 `cordis.patch.yml` 或 `package.json` 的 config 类字段** → 可热生效（`patchReload: live`，重载页面即可）；
-- **改 `client.js` / `index.js` 的代码** → **必须重启 `dsh web` 进程**，并强制刷新浏览器，
-  否则页面跑的还是旧模块（浏览器端 `__ModuleLoader__` 已有同 id 模块，不会重新拉取）。
+- **客户端半（`client.js`）**：实测 pid 未重启的情况下合并新版本，**刷新页面即生效**（阶段一 C 的整套 UI 就是这样上线的）；
+- **宿主半（`index.js` / `core/**`）**：多次实测同样无需重启（新路由与新文件都随重载出现）。
 
-排障时先确认这一步，否则会误判成「代码没生效」。
+但仍建议按下面顺序排障，**不要把「没生效」直接当成 bug**：
+
+1. 先**强制刷新页面**（浏览器端 `__ModuleLoader__` 可能持有同 id 的旧模块）；
+2. 仍不对 ⇒ **重启 `dsh web`** 再刷新；
+3. 配置类字段（`cordis.patch.yml` / `package.json` 的 config）改动本就热生效。
+
+只有当**换包本身**（改名、换依赖 spec、换安装目标）时才必须重启进程。
 
 ## 阶段边界
 
