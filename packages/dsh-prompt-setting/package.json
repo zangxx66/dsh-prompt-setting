@@ -12,8 +12,10 @@
   },
   "files": [
     "index.js",
+    "core",
     "client.js",
     "cordis.patch.yml",
+    "CONTRACT.md",
     "README.md",
     "NOTES.md"
   ],

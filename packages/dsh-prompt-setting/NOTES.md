@@ -240,3 +240,369 @@ brief 建议「声明宿主行与客户端行（行 `id` 建议 `prompt-setting`
 我没有为了「一条 curl」而放宽或旁路栅栏（那会同时违背判据 2）。
 等价且更省事的路径见 §4：裁决结果**已经打印在页面自己的「原始响应」区**，
 或在已带 cookie 的页面控制台里 `await (await fetch('/prompt-setting/ping')).json()`。
+
+---
+
+# NOTES 阶段一 B — 装配快照 + 覆盖引擎 + 两层持久化
+
+本篇接在阶段一 A 记录（§1–§9）之后。阶段一 A 的结论与决策仍然有效；下面是**阶段一 B 新增**
+的设计取舍、实测结论与证据。REST 契约已冻结在 [`CONTRACT.md`](./CONTRACT.md)。
+
+## 10. 分层：把逻辑挤出「必须重启才能验证」的地方
+
+宿主进程的 JS 改动**必须重启 `dsh web`** 才生效（阶段一 A §「改包 JS 实体后必须重启」），
+而本 attempt 被明确禁止重启。因此本阶段的形状是：
+
+| 层 | 文件 | 是否可离线验证 |
+| --- | --- | --- |
+| 纯函数内核 | `core/overrides.js` | ✅ 零 IO、零 `ctx`，单测直接测 |
+| 持久化 | `core/store.js` | ✅ 唯一碰 FS 的模块，临时目录单测 |
+| 薄适配层 | `index.js` | ✅ 用「复刻真语义的假 Host」+ 真包真 Cordis 上下文两条路测 |
+| UI | `client.js` | ❌ 阶段一 C 才改，本阶段**未动** |
+
+`node --test` 覆盖了宿主面的全部行为（栅栏、405/404、两层、frozen、全部 4xx），
+所以「没重启」不影响本轮判据 1/2/4/6/7 的机器证据；只有「真机上插件被禁用后覆盖是否失效」
+（判据 8 / E5）留给集成检查点。
+
+## 11. 关键设计决策（含与 brief / goal.md 的差异及理由）
+
+### 11.1 `complete` 冻结检测：从「启发式」升级为「探针」（本阶段最重要的一处偏离）
+
+goal.md 原定规则是：「`assemble()` 返回 1 段而我们的覆盖意图有多段 ⇒ frozen」。
+**实测这条规则有一个无法覆盖的形状**：若某 scope 只注册了一段且它就是 `complete: true`，
+那么有覆盖、无覆盖、任何配置，`assemble()` 都返回**与输入完全相同的那一段**——
+外部观察者**无法区分**「该段是 complete 并被恢复」与「该 scope 本来就只有这一段」。
+
+改法：快照时多跑**一次**装配探针，配置里只放一条
+`append __dsh-prompt-setting-probe__`（一个真实用户配置绝不会包含的段名）：
+
+| 观察 | 结论 |
+| --- | --- |
+| 探针段**出现在**结果里且段数 = 注册段数 + 1 | 没有 complete 段 ⇒ `complete: false`（**可证**，非猜测） |
+| 探针段**消失**，结果只剩 1 段 | 该 scope 的 sections 在 waterfall 之后被整体替换为那一段 ⇒ `frozen:true`、`frozenSection` = 那一段 |
+| 探针段消失，结果 0 段或 >1 段 | 同样被替换，但无法指出是哪一段 ⇒ `frozen:true`、`frozenSection:null` |
+| 探针段在、但段数与注册数不符 | 装配管线改动了段列表 ⇒ `frozen:true` |
+| 探针段名被真实段占用（病态） | 探针不可用，回退到「两次探针互比」 |
+
+优点：对**任何** scope 形状都成立，且**不依赖用户是否配了覆盖**——用户打开设置页就能看到
+「这个 scope 是冻结的」，这正是判据 3 要的「绝不能静默失败」。
+代价：快照从 1 次 `assemble()` 变成 2 次（探针 + 真实配置）。快照是按需的 UI 路由，
+不在一轮对话的路径上，这个代价可以接受，已写进 CONTRACT.md §2.6。
+
+另有两条**辅助**信号保留：探针之外，还会比较「我们交给下游的 sections」与「最终返回的
+sections」，若我们的改动没留下痕迹，也会报 frozen，并把原因写成
+「你的覆盖被丢弃」而不是「该 scope 被冻结」——两者语义不同，不该混为一谈。
+
+### 11.2 真实回合的工作区层：`context.agent.id`（brief 未提，实测得出）
+
+brief 要求「装配路径零 IO」，同时要求工作区层按 session 解析。这两条看似冲突：
+`AssembleContext` 只声明了 `scope` / `signal`，监听器怎么知道自己在为哪个 session 装配？
+
+实测答案（读 `dsh-agent/lib/index.js:291` + `dsh-agent-loop/lib/index.js:907`）：
+
+```js
+function assembleContextFor(agent, signal) { return { agent, scope: agent, ...(signal ? {signal} : {}) }; }
+// 调用点：this.loopCtx.systemPrompt.assemble(assembleContextFor(this, signal))
+```
+
+即真实回合传的是 `{ agent, scope: agent }`，**scope key 就是 Agent 对象本身**
+（`dsh-agent` 的 `scopeTarget(agent, agent)`），而 `Agent.id` 就是 `SessionId`
+（`dsh-agent/lib/types/types.d.ts`：`interface Agent { readonly id: SessionId }`）。
+
+⇒ 监听器用 `context.agent.id`（回退 `context.scope.id`）在**内存里**查
+`workspaceRegistry.list()` 的投影，选到工作区层，**零 IO**。
+这在 `test/route.test.mjs` 与 `test/integration.test.mjs` 都有断言
+（同一份装配服务，两个 session 命中两个不同工作区的覆盖）。
+
+### 11.3 快照探针怎么把「某个 session 的配置」喂进无 scope 装配
+
+快照描述的是**无 scope 的全局装配**（brief 规定；agent-scoped 段不在首版范围），
+但 `?session=` 又要决定工作区层。做法：探针前在内存里放一个**一次性**的 resolved 配置，
+监听器在无 scope 装配时取用并立刻消费掉。
+
+**没有**用「塞自定义字段进 `AssembleContext`」：brief 明确禁止，且 `AssembleContext` 只有
+`scope`/`signal`。也**没有**用 `signal` 当关联令牌（虽然它是已声明字段）——那是滥用。
+`scope === undefined` ⇒ 全局槽位；真实回合都有 scope，两者天然不会互相污染。
+
+监听器在**同步阶段**就记录 observation 并消费一次性配置（`await next()` 之前），
+所以探针与自身观察之间不存在可交错的窗口。
+
+### 11.4 监听器是 async 且**始终调用 `next()`**
+
+`system-prompt/assemble` 是 waterfall：不调用 `next()` 的监听器会**否决它之后的所有监听器**。
+本插件因此先 `await next()` 拿到下游结果，再在下游结果之上应用自己的覆盖——
+既不否决任何插件，又保证覆盖生效（`next()` 在 cordis 里不接收新实参，无法把改过的 assembly
+传下去，所以「后置应用」是唯一可行且不越权的语义）。
+
+副作用：没有覆盖时直接 `return downstream`，即**按同一对象引用**返回，
+满足判据 2 的「无覆盖配置时装配结果与默认逐字节一致」（内核单测用 `assert.equal(result.sections, input)`
+把这条钉死）。
+
+### 11.5 `order` 一律用数组下标
+
+同 brief / goal.md：`AssembledSection` 不含 `order`，`getSectionOrder()` 只认闭集枚举，
+第三方段名取不到 ⇒ 快照只给 `index`（数组位置），`append` 的 `order` 解释为**目标下标**
+（越界夹取到 `[0, length]`）。**绝不伪造 order**。
+
+### 11.6 `rendered` 的插值差异（已写进契约，不藏）
+
+`renderPrompt` 对未知/畸形 `{{变量}}` **抛错**，而快照是只读视图、绝不能因为某段 provenance
+文本里有个 `{{` 就整页报错；同时本插件**不能** import 那个渲染器（linked 插件包里解析不到
+`@deepseek-ai/dsh-system-prompt`，静态 import 会直接起不来）。所以 `renderSections` 自己实现
+「已知变量替换、未知引用保留字面量」，差异在 CONTRACT.md §2.3 / §7.1 明写。
+
+### 11.7 两层写入失败姿态：宁可拒绝，不可覆盖
+
+层文件存在但非法（坏 JSON / schema 不符）时：
+
+- **读**：该层 `enabled:false` + `reason`（结构化 code + 原文），装配照常，用户层不受工作区层影响；
+- **写**：`409 layer-not-writable`，**不覆盖**原文件（否则等于静默毁掉用户数据）。
+
+工作区解析不到（没有 `session` / 该 session 不属于任何工作区）时同样拒绝（`400 workspace-unresolved`），
+**不回退**到任何猜测路径。
+
+### 11.8 快照=全局装配（brief 规定，如实标注）
+
+`assemble()` 无 scope 调用是被全局注册的 section 的基座 prompt。带 scope 的真实回合可能还有
+agent-scoped 段，因此快照的 `base`/`effective` 段数可能**少于**某个具体回合。
+CONTRACT.md §5.8 / §7.2 明写。监听器本身对 scope 是正确的（每个 scope 都应用）。
+
+## 12. 自测证据（工作树内执行，均为单行结构化概要）
+
+```
+evidence: suite=overrides passed=27 failed=0 skipped=0 exit=0 ms=119 diff=12f/+3665/-64 commit=bfc9269
+evidence: suite=store passed=10 failed=0 skipped=0 exit=0 ms=115 diff=12f/+3665/-64 commit=bfc9269
+evidence: suite=route passed=28 failed=0 skipped=0 exit=0 ms=166 diff=12f/+3665/-64 commit=bfc9269
+evidence: suite=host passed=19 failed=0 skipped=0 exit=0 ms=130 diff=12f/+3665/-64 commit=bfc9269
+evidence: suite=integration passed=6 failed=0 skipped=0 exit=0 ms=167 diff=12f/+3665/-64 commit=bfc9269
+evidence: suite=client passed=13 failed=0 skipped=0 exit=0 ms=172 diff=0f/+0/-0 commit=bfc9269
+evidence: suite=all passed=103 failed=0 skipped=0 exit=0 ms=375 diff=12f/+3665/-64 commit=bfc9269
+evidence: suite=node-check passed=11 failed=0 skipped=0 exit=0 ms=410 diff=0f/+0/-0 commit=bfc9269
+evidence: suite=npm-pack passed=10 failed=0 skipped=0 exit=0 ms=900 diff=0f/+0/-0 commit=bfc9269
+```
+
+`diff=12f/+3665/-64` 是相对权威基线 `23b344c`（集成分支 `v0.1.0-test`）的 `git diff --cached --shortstat`，
+含新增的 `core/`、`CONTRACT.md` 与 5 个测试文件；`node-check` 一行的 `passed=11` 是
+`index.js` / `core/*.js` / `client.js` / `test/*.test.mjs` 的 `node --check` 全部 exit 0；
+`npm-pack` 一行的 `passed=10` 是 tarball 条目数（全部为预期条目，见下）。
+
+- **`integration` 是 `pass 6 / skipped 0`，不是 skip**——本机真包解析成功
+  （`@deepseek-ai/dsh-system-prompt@0.1.7-rc.2` + `@deepseek-ai/cordis@4.0.4` + `@deepseek-ai/dsh-scope`，
+  从 pnpm 全局 store 的 `@deepseek-ai+dsh-web-app@0.1.7-rc.2` 锚点解析）。无 DSH 的机器上该套件才 skip。
+- `node --test` 的 5 个套件、103 项断言：**无 skip、无 fail**。
+- `npm_config_cache=/tmp/npm-cache-probe npm pack --dry-run` → `total files: 10`：
+  `CONTRACT.md / NOTES.md / README.md / client.js / cordis.patch.yml / core/{experiments,overrides,store}.js / index.js / package.json`。
+  **无** `test/`、`.dsh-graph/`、`node_modules/`、`.worktrees/`。
+- `node --check` 通过：`index.js` / `core/overrides.js` / `core/store.js` / `core/experiments.js` / `client.js`。
+
+## 13. 负向对照（逐条单独改坏源码 → 重跑全量）
+
+每条都是「只改一处、跑完立刻还原」，还原后由 `diff` 确认源码逐字节回到备份。
+
+| # | 改坏点 | 结果 | 变红的用例（对应关系） |
+| --- | --- | --- | --- |
+| NC-1 | `mergeLayers` 不再遍历工作区层（`for (const override of [])`）⇒ 去掉两层优先级 | `fail 8` | `mergeLayers: workspace wins a name clash…`、`mergeLayers: a single layer, and no layers at all`、`snapshot: the workspace layer is applied…`、`snapshot: replace, hide and append…`、`snapshot: the workspace layer overrides the user layer…`、`snapshot: a complete section is reported as frozen…`、`overrides GET: both layers plus the merged list`、`assembly: a real scoped turn resolves its workspace layer…` |
+| NC-2 | `detectFrozen` 恒返回 `{frozen:false,…}` ⇒ 去掉 complete 检测 | `fail 9` | `integration: a real complete section is reported as frozen through the real routes`（**真包真路由**）、`detectFrozen: a missing probe section…`、`detectFrozen: a scope whose only section is complete…`、`detectFrozen: the probe controls its own section list…`、`detectFrozen: a surviving probe whose list size still changed…`、`detectFrozen: a probe section that cannot be appended…`、`snapshot: a complete section is reported as frozen…`、`snapshot: a scope whose only section is complete…`、`snapshot: sections missing from the render…` |
+| NC-3 | `core/store.js` 把「临时文件 + `rename`」换成就地 `writeFileSync(path, …)` ⇒ 去掉原子写 | `fail 1` | `writeConfig: replacement is atomic — the old file survives under a hard link` |
+| NC-4 | `applyOverrides` 在无覆盖时返回 `input.slice()` 而非 `input` ⇒ 去掉零差异恒等保证 | `fail 1` | `applyOverrides: no overrides returns the input array BY IDENTITY (zero-diff guarantee)` |
+
+NC-3 的判别方式是**硬链接见证**：先用 `writeConfig` 写一次，`linkSync` 出一个别名（共享 inode），
+再写第二次。`rename` 换掉目录项 ⇒ 别名仍读得到**旧**内容；就地 `writeFile` 会改写同一 inode
+⇒ 别名读到**新**内容。同一条用例还断言 inode 变化，所以「原子写」不是靠注释声明的，是被证伪过的。
+
+## 14. E1–E4 实测结论（真包 + 真 Cordis 上下文）
+
+结论文案与 `core/experiments.js` / 快照 `experiments` 字段 / CONTRACT.md §6 **同源**，此处给要点：
+
+- **E1**：`assemble()` 无参合法；返回全局注册段且**已按 canonical 顺序排好**
+  （`harness:identity` → `deployment:persona-prefix` → 自定义段按 order → `deployment:persona-suffix`）；
+  每个段只有 `{name, text}`，**没有 `order`、没有 `complete`** ⇒ 位置即顺序，取不到就返回 `null`/不下标。
+- **E2**：`system-prompt/assemble` 是**最外层优先**的 waterfall；`next()` 解析下游值；
+  **不调用 `next()` 的监听器否决其后全部监听器**，其返回值即权威；
+  监听器可以 `await next()` 后变换下游结果（本插件正是这么做的）。实测 trace：`outer:in → inner:in → inner:out → outer:out`。
+- **E3**：注册 `complete:true` 段后，**整个 scope 的 sections 在 waterfall 之后被替换为那一段**，
+  且用的是**注册时的原始文本**——监听器把该段改写成 `HACKED` 也被回滚成原文；
+  监听器对**其它段的增删同样全部无效**；对照组（无 complete 段）同样的改动则生效。
+  ⇒ `complete` 不是「那段不可改」，是「整个 scope 被推翻」。
+- **E4**：同名 scoped 段在**该 scope 内**遮蔽全局段，全局视图不变；
+  **注册在根上下文的监听器会收到 scoped 派发**（`scopeTarget` 的过滤对无 tag 监听器返回 true），
+  这既是快照 `mounted` 可观测的前提，也解释了为什么本插件的监听器能统管所有 scope。
+- **E5**（推断，非实测）：插件被禁用/卸载时路由与监听器一起注销，UI 观察到的是**接口不可达**，
+  而不是 `mounted:false`。`mounted` 字段本身已实现并在快照里如实反映（只在监听器真的观察到探针时为 `true`）。
+  真机禁用后行为留给集成检查点。
+
+## 15. 未验证项（诚实清单，交给主管在集成检查点裁决）
+
+1. **真机上插件的 `systemPrompt` 硬依赖能否解析**：`inject` 从 `['webServer','connection']`
+   变为 `['webServer','connection','systemPrompt']`。若 profile 里 `dsh-system-prompt` 未激活，
+   **本插件会整体不加载**（这正是硬依赖的语义，也是 brief 的要求）。本 attempt **未安装、未重启**，
+   真机挂载由主管在集成检查点确认。
+2. **禁用/卸载后覆盖失效与 `mounted:false` 的可观测性（E5）**——见 §14 E5，仅推断。
+3. **真实回合里工作区层的端到端生效**：`context.agent.id` 的解析依据是 `dsh-agent` 源码
+   （`assembleContextFor`）+ 类型声明（`Agent.id: SessionId`），并已在真 Cordis 上下文里
+   用同一份真装配服务断言过；但**没有**在一个真实 DSH 回合里观察过覆盖生效。
+   （按判据 6「保存后在下一个会话/下一轮生效」，这需要真机。）
+4. **`ctx.workspaceRegistry.list()` 的投影实时性**：工作区在挂载后才创建时，
+   在下次路由请求刷新缓存前不贡献覆盖（CONTRACT.md §7.3）。真机多工作区场景未验证。
+5. **快照 = 无 scope 全局装配 vs 某个 agent-scoped 真实回合的段数差异**（§11.8）——
+   差异的存在是设计使然，但**具体差多少**未在真机测过。
+6. **`rendered` 与真实回合 prompt 的逐字节相等性**：仅在「文本里不含未知 `{{变量}}`」时成立
+   （§11.6）。真实 preset 文本是否含 `{{`，未逐一检查。
+7. **客户端 UI**：本阶段**未动** `client.js`，所以设置页仍只显示 ping 探针；
+   快照/覆盖的界面呈现是阶段一 C。
+
+## 16. 本 attempt 明确**没有**做的事
+
+- 未 `plugin_manager` 安装进 profile，未重启 `dsh web`（集成检查点由主管做）；
+- 未修改 DSH 全局安装包内任何文件（所有查阅均为只读 `cat`/`grep`/`sed -n`/`node --check`）；
+- 未手工编辑 `~/.dsh/profiles/web/` 下任何文件；
+- 未写 `.dsh-graph/` 下任何数据（看板数据只由 `graph_*` 工具写主工作树）；
+- 未改 `client.js`（阶段一 C 才动 UI）；
+- 未引入任何运行时依赖（`dependencies` 仍为 `{}`）、未引入构建步骤；
+- 未在 worktree 之外产生任何代码改动；
+- 未自行 `git worktree add` / `branch` / `checkout` / `merge`（只在本 worktree 内 `git add` / `commit`）；
+- 未使用 `configEditor` 服务（它会把配置写回 profile，违反本项目硬约束）。
+
+## 17. 未改动外部文件的取证
+
+以本 attempt 开工时刻（2026-09-28 19:05）为界：
+
+```
+find /Users/ricardo/.local/share/pnpm/global -newermt "2026-09-28 19:05" -type f | wc -l   → 0
+find /Users/ricardo/.dsh/profiles/web    -newermt "2026-09-28 19:05" -type f | wc -l       → 0
+find /Users/ricardo/.dsh -maxdepth 2 -newermt "2026-09-28 19:05" | grep -v '/storages' | grep -v '/sessions/'  → 空
+```
+
+唯一在开工后变化的是 `~/.dsh/storages` 与 `~/.dsh/sessions/…`——那是**正在运行的
+`dsh web` 进程在记录本次会话**（harness 自己写的），不是本 attempt 的插件改动。
+
+> 以 19:00 为界会看到 `~/.dsh/profiles/web/package.json` 等 7 个文件在 **19:02** 被改，
+> 那是**上一阶段（g-002）的集成检查点**（主管执行 `plugin_manager install_bundle`，
+> 把 `dsh-prompt-setting` 以 `link:` 指向主工作树包目录）留下的，早于本次开工（19:04 建 worktree）。
+> 本 attempt 与它无关，也没有对它做任何后续改动。
+
+---
+
+# NOTES 阶段一 B · 复核后修订（第二个提交轮）
+
+主管复核独立复跑确认了 103/103 证据属实，同时指出两处缺陷（**同一根因：探针没有对准
+目标作用域/调用者**）。两处均已修复，测试从 103 项增至 113 项且全绿（集成套件
+`pass 10 / skipped 0`）。本节记录缺陷、修复与回归证据。
+
+## 18. D1 — 探针用错了作用域（会让我自己提议的真机验收点失败）
+
+**缺陷**：`probe()` 调的是**无参** `assemble()`，所以快照的 `frozen` / `frozenSection` /
+每段 `overridable` 描述的是**全局作用域**，不是 `?session=` 那个会话的作用域。
+
+**为什么这是致命的**：`complete` 是**按 scope 生效**的（`ScopedLayers.merge` 沿
+`scopeChainOf` 的父链合并，最近的作用域最后覆盖）。本机 `liangshen` preset 把
+`{complete:true}` 注册在 **preset 的 standing scope** 上，会话通过
+`createScope(ctx, agent, { parent: presetKey })` 挂在它下面；**全局作用域根本没有 complete 段**。
+于是 `/snapshot?session=<liangshen 会话>` 会报 `frozen:false` 并把改不动的段标成
+`overridable:true` ⇒ UI（g-004）允许编辑一个改不动的段 —— 正是本项目最不能出的错。
+
+**修复**（`index.js`）：
+
+| # | 位置 | 内容 |
+| --- | --- | --- |
+| 1 | 模块级 `export const PROBE_SCOPE = Object.freeze({})` | 本插件**私有**的探针 scope：没有任何 scoped 注册 ⇒ 解析结果与全局装配一致，但它是**只有本模块能持有**的对象 |
+| 2 | `agentsService()` / `agentFor(sessionId)` | `ctx.get('agents')`（Service 键 `agents`，`AgentRegistry.get(id) → this.store.get(id)?.agent`，见 `dsh-agent/lib/index.js:594`）可选获取 |
+| 3 | `probeTarget(sessionId)` | 有 session 且有活跃 agent ⇒ `{scope: agent, agent, frozenScope:'session'}`；无 session ⇒ `{scope: PROBE_SCOPE, frozenScope:'global'}`；**有 session 但 agent 不活跃** ⇒ 用 `PROBE_SCOPE` 但 `frozenScope:'global'` **且 `frozenScopeReason` 明说**「该会话的 agent 不活跃，本判定描述的是无作用域装配，该会话作用域里注册的 complete 段在这里看不到」 |
+| 4 | `probe({scope, agent, resolved})` | `const context = agent === undefined ? { scope } : { agent, scope }`，然后 `ctx.systemPrompt.assemble(context)` —— 与真实回合 `assembleContextFor(agent, signal)` 的 `{agent, scope: agent}` **同形**（差别只在没有 `signal`，见 CONTRACT §7.6） |
+| 5 | 响应 | 新增 `frozenScope: "session" \| "global"` 与 `frozenScopeReason: string \| null`；`records` 的 key 改用探针实际使用的 scope 对象 |
+
+**为什么必须新增字段而不是「猜」**：同一个 mount 对 liangshen 会话必须报 `frozen:true`，
+对全局视图必须报 `frozen:false`。只给一个 `frozen` 而不说它描述哪个作用域，
+调用方无法判断该不该禁用编辑 —— 那还是静默失败。
+
+## 19. D2 — one-shot 用哨兵值匹配 ⇒ 可能污染别的调用者
+
+**缺陷**：`state.oneShot` 的消费条件是 `scopeKeyOf(context) === GLOBAL_SCOPE`，而
+`GLOBAL_SCOPE` 是「**所有** scope 为 undefined/null 的装配」共用的哨兵值。
+若在探针的窗口内（section text provider 求值期间）其它插件发起一次无作用域
+`assemble()`，它会先一步消费掉 one-shot，于是**别人的提示词里被追加了
+`__dsh-prompt-setting-probe__`**，同时我们的探针也拿不到观察结果。
+
+**修复**：把匹配键从「作用域值/哨兵」换成**精确的 context 对象同一性**：
+
+```js
+state.pendingProbe = { context, resolved };        // context = 本插件自己构造并传给 assemble() 的那个对象
+// 消费条件（仍在任何 await 之前同步完成）：
+if (state.pendingProbe !== null && context === state.pendingProbe.context) { ... }
+```
+
+**为什么不是主管建议的 `{scope, resolved}` + scope 对象同一性**（这是我对建议的一处**收紧**，
+理由经实验证伪）：`assemble()` 把调用者传进来的 `context` **原样**交给 waterfall
+（`lib/index.js:355`），所以 context 对象的同一性天然可用。而 **scope 对象在同一会话里不是唯一的**：
+真实回合传的正是 `{agent, scope: agent}`，`scope` 就是那个 agent 对象本身 ⇒ 探针进行中真实发生的
+同一会话回合会命中 `scope === agent` 并消费掉探针配置，**把探针段注入真实回合的提示词**。
+负向对照 NC-6 实测复现了这一点（见 §20）。context 对象是**每次调用新建**的，只有本插件能持有，
+因此「任何其它调用者都不可能命中」这一目标由它达成，而不是由 scope 达成。
+
+注意监听器的**同步消费语义未变**：`assembleHandler` 在第一个 `await` 之前就完成
+observation 记录与 `pendingProbe` 消费，所以探针自身不存在可交错的窗口。
+
+## 20. 复核后的自测证据（工作树内执行）
+
+```
+evidence: suite=overrides passed=27 failed=0 skipped=0 exit=0 ms=119 diff=4f/+496/-56 commit=fdb12a5
+evidence: suite=store passed=10 failed=0 skipped=0 exit=0 ms=115 diff=4f/+496/-56 commit=fdb12a5
+evidence: suite=route passed=34 failed=0 skipped=0 exit=0 ms=178 diff=4f/+496/-56 commit=fdb12a5
+evidence: suite=host passed=19 failed=0 skipped=0 exit=0 ms=130 diff=4f/+496/-56 commit=fdb12a5
+evidence: suite=client passed=13 failed=0 skipped=0 exit=0 ms=172 diff=0f/+0/-0 commit=fdb12a5
+evidence: suite=integration passed=10 failed=0 skipped=0 exit=0 ms=216 diff=4f/+496/-56 commit=fdb12a5
+evidence: suite=all passed=113 failed=0 skipped=0 exit=0 ms=416 diff=4f/+496/-56 commit=fdb12a5
+evidence: suite=node-check passed=17 failed=0 skipped=0 exit=0 ms=520 diff=0f/+0/-0 commit=fdb12a5
+evidence: suite=npm-pack passed=10 failed=0 skipped=0 exit=0 ms=900 diff=0f/+0/-0 commit=fdb12a5
+```
+
+`diff=4f/+496/-56` 是**本轮代码/契约/测试改动**相对上一轮提交 `689f754` 的
+`git diff --cached --shortstat`（`index.js` / `CONTRACT.md` / `test/route.test.mjs` /
+`test/integration.test.mjs` 四个文件）；`NOTES.md` 本身记录在紧随其后的文档提交里，
+不计入该数字。`commit=fdb12a5` 即该提交。
+集成套件仍是 **`pass 10 / skipped 0`**（真包真 Cordis 上下文）。
+
+## 21. 复核后新增的回归测试与负向对照
+
+新增 6 项路由测试 + 4 项集成测试：
+
+| 测试 | 断言 |
+| --- | --- |
+| `D1: a complete section registered in the SESSION scope freezes that session, not the global view` | 假 Host 建模 scope 父链：preset scope 注册 `complete:true`，agent scope 挂其下 ⇒ `?session=` 快照 `frozenScope:"session"` / `frozen:true` / `frozenSection:"preset:locked"` / 该会话段全部 `overridable:false` / `base` 含 scoped 段；**同一 mount 无 session 快照** `frozenScope:"global"` / `frozen:false` / `overridable:true` |
+| `D1: a session whose agent is not active says so…` | `frozenScope:"global"` + `frozenScopeReason` 匹配 `/no active agent/` 与 `/would not be visible here/` |
+| `D1: a profile with no agents service also says so` | `frozenScopeReason` 匹配 `/agents service is not available/` |
+| `D2a: a concurrent UNSCOPED assembly cannot steal the probe config` | 探针窗口内并发 `assemble()` ⇒ 其结果**不含** `__dsh-prompt-setting-probe__`，且探针自身观察仍正确 |
+| `D2b: a concurrent turn for the SAME agent cannot steal the session probe config` | 并发 `assemble({agent, scope: agent})`（**同一个 scope 对象、新的 context 对象**）⇒ 其结果不含探针段 |
+| `D2c: the probe consumes exactly one config, and only for its own context` | 快照之后 `assemble()` 与 `assemble({})` 都拿不到探针配置 |
+| `integration D1: a complete section in a PRESET scope freezes its sessions, but not the global view` | **真包**：`createScope(ctx, presetKey)` 注册 `complete:true`，`createScope(ctx, agent, {parent: presetKey})` 挂其下 ⇒ 真 `ScopedLayers` 父链下 `?session=` 报 `frozen:true`，无 session 报 `frozen:false` |
+| `integration D1: an inactive session reports frozenScope "global" with a reason` | 真包 + 空 `agents` 服务 |
+| `integration D2: a concurrent unscoped assembly during a snapshot is never handed the probe section` | **真包**：包装真 `systemPrompt.assemble` 制造并发窗口 |
+| `integration: PROBE_SCOPE resolves exactly the unscoped view…` | `assemble({scope: PROBE_SCOPE})` 与 `assemble()` 的段名与文本逐项一致 ⇒ `base` 视图语义未被破坏 |
+
+**负向对照（逐条单独改坏 → 跑全量 113 项 → 立即还原，`diff` 确认逐字节回滚）**：
+
+| # | 改坏点 | 结果 | 变红用例 |
+| --- | --- | --- | --- |
+| NC-5 | `probeTarget()` 恒返回全局目标（即**修复前的 D1 行为**：探针永远只看无作用域装配） | `fail 6` | `D1: a complete section registered in the SESSION scope…`、`D1: a session whose agent is not active…`、`D1: a profile with no agents service…`、`integration D1: a complete section in a PRESET scope…`、`integration D1: an inactive session…`、`D2b`（其 `frozenScope:"session"` 断言） |
+| NC-6 | 消费条件换成 `scopeKeyOf(context) === scopeKeyOf(pendingProbe.context)`（即主管建议的 scope 对象匹配） | `fail 1` | **仅** `D2b` —— 实测报错正是「真实回合的 sections 里多了 `__dsh-prompt-setting-probe__`」 |
+| NC-7 | **两处同时回退到复核前的行为**（探针恒全局 + 消费条件退化为「存在即消费」） | `fail 8` | D1×3、D2a、D2b、integration D1×2、integration D2 ⇒ 证明这 8 项新测试**确实能抓住复核前的那两个缺陷** |
+
+NC-6 只有 1 项变红是**预期且关键**的：它说明「按 scope 匹配」只会在**真实回合共用同一 agent
+对象**这一条路径上出事，而 D2b 精确覆盖了这条路径。这也解释了为什么我采用 context 对象
+同一性而非 scope 对象同一性。
+
+## 22. 复核后仍未验证项（更新）
+
+1. ~~快照作用域~~ ⇒ 已修，并且**在真 `ScopedLayers` 父链下实测**（`integration D1`）。
+   仍未验证的是**真机**上 liangshen 会话的 `?session=` 快照是否为 `frozen:true` —— 需要
+   `dsh web` 重启 + 带 cookie 的页面请求，属集成检查点。
+2. **`ctx.agents.get(sessionId)` 在真机上的活跃判定**：依据 `dsh-agent` 源码
+   （`AgentRegistry.get` → `store.get(id)?.agent`）与真 Cordis 上下文里的假 `agents` 服务断言，
+   但**没有**在真机对一个真实会话调用过。若真机上它恒返回 `undefined`，
+   行为是 `frozenScope:"global"` + `frozenScopeReason`（安全侧失败，不会把冻结段标成可编辑）。
+   **这正是集成检查点要确认的第一件事**：`?session=<当前会话>` 的响应里
+   `frozenScope` 应为 `"session"`。
+3. 其余未验证项（E5 禁用后行为、真实回合里工作区覆盖生效、挂载后新建工作区、
+   `rendered` 与真实回合逐字节相等、客户端 UI）同 §15，未变。
+4. **新增**：探针 context 不含 `signal`（CONTRACT §7.6）。若某 section/variable provider
+   依赖 `context.signal`，快照与真实回合会不同；现有 shipped 包无一读取它。
