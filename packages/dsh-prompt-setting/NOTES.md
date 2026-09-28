@@ -2413,3 +2413,98 @@ evidence: pack=files 14 / test-hits 0
 | 词典 | 独立复算（非套件内） | zh 262→265、en 262→265，**既有键 0 改动 / 0 删除**，键集完全相等 |
 | 新增键 | — | `fYesShort`(是/Yes)、`fNoShort`(否/No)、`ovWorkspaceDisabled`(工作区级（未启用）/workspace layer (disabled)) |
 | 构建戳 | 独立复算 `@build-fingerprint` 区间 | 改前 `7e5115f5` / `249937`（= 负责人截图值）⇒ 改后 `7c48a4b1` / `250294` |
+
+## 90. 编辑已有段改为**行内就地展开**（g-012，2026-09-29，基线 `v0.1.0-test@aed9bc8`）
+
+**缺口（负责人真机报的 UX 问题）**：`renderSection` 把 `editor-slot` 插在视图页签之后、主面板之前
+（原 `client.js:4993-4994`），于是点段列表**下面**某一行的「编辑」后，表单渲染在**视口之上**——
+列表越长越糟，用户必须手动滚回顶部才看得到自己刚点开的表单。
+
+**一、改动点（函数级；只动 `client.js` / `test/client.test.mjs` / 本文 / 包 `README.md`）**
+
+| 函数 | 改动 |
+| --- | --- |
+| `editorPlacement(m)`（新增，在 `editorEntry` 旁） | 唯一的「表单该画在哪」判定：`append-new` ⇒ 页面槽位；行内作用域 entry ⇒ 该行在屏（`view === 'sections'` 且过 `passesFilters`）则 `{inline:true,row}`，否则 `{inline:false,row,fallback:'row-hidden'}` |
+| `editorFocusRole(editor)`（新增） | 焦点落点：`append-new` ⇒ `'name'`，其余 ⇒ `'text'` |
+| `renderEditor(t,m,a,placement,rootRef)` | 新增 2 个参数；根节点在既有 6 个标记之外新增 `data-editor-row` / `data-editor-fallback` / `data-editor-focus`，并把 `ref` 挂到根 `<section>` |
+| `sectionRow(t,m,a,section,inlineEditor)` | 多一个「本行的表单」子节点，**渲染在该行容器内、行内容之后** |
+| `renderSectionsView(t,m,a,inlineEditor)` | `{row,element}` 只交给 `row === section.name` 的那一行，其他行拿到 `null` |
+| `renderSection(t,m,a,rootRef)` | 调 `editorPlacement`；`inline` 时**不再**往 `editor-slot` 推，否则沿用原槽位 |
+| 组件（`promptSettingFactory` 内） | 新增 `React.useRef` + 一个焦点 `useEffect` + `editorRootRef`；`renderFailureCard` 兜底路径不变 |
+| 测试桩 | hooks double 补 `useRef(initial)`（**纯新增**：既有 hook 顺序与索引不变，313 条老用例零改动） |
+
+**二、与 brief / goal.md 的三处差异（都按代码事实办，不按 brief 字面办）**
+
+1. **`edit-override` 不是覆盖视图的入口——brief 的事实错误。** brief 与验收项 2/4 假定
+   「覆盖视图的『编辑本覆盖』= `data-editor-entry="edit-override"`（约 `client.js:4926`）」。
+   实际：`:4926` 是覆盖条目的 `data-action="reset-section"`（「恢复默认」）；全仓**只有**一个编辑入口——
+   `sectionRow` 的 `data-action="edit"`（原 `:3693-3701`），开哪个 entry 由 `editorRoute`（`:2035`）决定：
+   段名在装配里 ⇒ `edit`，只是我们自己的覆盖 ⇒ `edit-override`。两者**都是段列表里的行**，而覆盖视图
+   （`data-region="overrides"`）只有 `undo` / `reset-section`，**从来没有**任何编辑入口。
+   ⇒ 取舍（主管已复核并采纳，原判据 4 作废）：**所有行内作用域 entry（`edit` 与 `edit-override`）都在
+   其所属行内展开**，`append-new` 留在页面槽位；另加断言「覆盖视图内不含编辑器」。
+2. **段列表没有搜索框、没有分页。** `renderSectionsView` 是 `sections.filter(passesFilters)` 之后**全量渲染**；
+   `m.search` 只服务全文视图。能隐藏一行的**只有**三个触发源：① `renderFilters` 的三个筛选；
+   ② 视图页签切走；③ **快照重载后该段不再返回**（装配本身变了）。降级路径按这三个触发源实现与断言。
+3. **降级回退是「位置」决策，完全不碰 `editor` 状态。** 已输入内容不丢是**同一个 state**的直接结果，
+   不是额外保存逻辑；行回来后表单自动回到行内。
+
+**三、新增用例（313 → 321，+8 条；既有 313 条零删改削弱）**
+
+| # | 用例 | 钉住什么 |
+| --- | --- | --- |
+| ① | `editing a section draws the form inside that section row` | `data-editor-row` 指向该行，**且** `owningRows()`（祖先链）证明表单真的在 `data-section-row` 内部；`data-region=editor` 全树**仍唯一**；既有 6 个标记逐一不变；表单在行内容**之后**；其他行没有它 |
+| ② | `the append entry owns no row and keeps the page-level slot` | `append-new` 无 `data-editor-row`/`data-editor-fallback`；不在任何行内、也不在 `data-region=sections` 内；仍在列表**之前** |
+| ③ | `an own-override row opens its form at its own entry` | `edit-override` 也在其所属行内；切到覆盖视图后覆盖视图内**不含**编辑器，表单带 `row-hidden` |
+| ④ | `a filtered-away row sends the form to the slot without losing the text` | 触发源 ①：`origin` 筛选藏掉该行 ⇒ 槽位 + `row-hidden` + 归属名仍在 + **文本逐字未丢**；清筛选后**回到行内** |
+| ⑤ | `a view switch keeps an open row form reachable` | 触发源 ②：切到全文视图 ⇒ 同一回退 + 文本未丢 |
+| ⑥ | `a row that a reload removes sends the form to the slot too` | 触发源 ③：**刷新后快照不再返回该段** ⇒ 同一回退 + 文本未丢（与 ④⑤ **同码路、不同触发源**，单独用例钉住，不再只靠横扫） |
+| ⑦ | `opening an edit form puts the caret in the text, once per session` | 焦点：`data-editor-focus=text`；桩 `ref` 接上「已提交节点」后**恰好**聚焦一次；**再渲染（打字 / 切 layer）不抢回焦点**；关闭后重开同一行**重新武装** |
+| ⑧ | `the append entry puts the caret in the name field` | `data-editor-focus=name`，且桩 `ref` 只对 `[data-role="name"]` 调 `focus()` |
+
+**四、en 横扫同步加强**：3 个既有 editor 场景各补 `data-editor-row=harness:identity` /
+`data-editor-focus=text|name` / `data-editor-fallback=row-hidden`；必达清单 `EN_REQUIRED_MARKERS`
+由 **59 → 63** 项（§89 记的是当时的 59）。新增标记在 en 下同样零 CJK、零裸 key；**未新增任何 `t()` 键**。
+
+**五、负向对照（改坏 ⇒ 红 ⇒ 从 `/tmp/g012-neg` 还原 ⇒ `shasum -a 256` 确认逐字节回滚）**
+
+| # | 改坏 | 结果 |
+| --- | --- | --- |
+| N1 | `editorPlacement` 对行内作用域 entry 永远返回 `inline:false`（= 退回旧的「顶部单面板」） | **5 条红**：① ③ ④ ⑤ ⑥ |
+| N2 | `renderSection` 的槽位条件加上 `placement.fallback === null`（= 去掉降级路径：行不可见时**根本不再渲染表单**） | **7 条红**：③ ④ ⑤ ⑥ + 既有 `the pre-save check still fires when the world moves under an open panel` + 两条 en 横扫（含 `data-editor-fallback` 必达项）。**既有用例也会红** ⇒ 降级路径是**既有行为的承重件**，不是新加的装饰 |
+
+N1、N2 都做了两遍：第一遍在实现定稿前跑，第二遍**在最终交付内容上重跑**，红集**逐条相同**（5 / 7），
+两次还原后 `shasum -a 256` 都逐字节回到备份值。
+最终交付内容：`client.js` = `989fbddd546f4a63732247983acac3e9b53537fa00819df42e023fce5d73e323`、
+`test/client.test.mjs` = `465a4a78fb93c07addb2ce833207e6550d1c746c5c3e2ee83265bac0b136f698`
+（前者比第一遍的 `1f63f10c…` 多了 `editorPlacement` 上一处**纯注释**措辞修订，无行为差异，改后全量仍 321 绿）。
+
+**六、未验证 / 未做（诚实清单）**
+
+- **真机（真实浏览器 + 长列表）的落点与手感未验**：列表很长时点下面的行，表单确实在行内展开，
+  但「展开后该行是否仍完整在视口内、是否需要把表单顶部滚进视口」**没有真机数据**——本轮只有渲染树级断言。
+- **跨浏览器 / 深列表下的滚动锚定（scroll anchoring）与布局抖动未验**：本包不使用 sticky；行内展开会让
+  该行变高，是否引起浏览器滚动锚定跳位、下方行位移的手感，**未在不同浏览器上验证**。
+- **primitives 分支下 `data-role="name"` 是否被官方 `Input` 透传到 DOM 未验**（`UI.Input` 在 primitives 分支
+  委托给 `primitives.Input`；文本区不受影响，`UI.Textarea` 两个分支都是自绘 `FxTextarea`）。
+  兜底是**优雅降级**：查不到节点就不聚焦，不报错、不改变任何行为。真机若见「新增一段」不落焦，即此因。
+- **未做**：自动滚动 / 吸顶面板（负责人已选定行内展开）；覆盖引擎与 REST 契约零改动；零新依赖。
+- **未验**：真机屏幕阅读器对「行内展开」的朗读顺序（表单现在是行的子节点，读序会变，需 SR 实测）。
+
+**七、自测证据（worktree `.worktrees/g-012-att-01`，基线 `v0.1.0-test@aed9bc8`）**
+
+```
+evidence: suite=node --test(packages/dsh-prompt-setting) passed=321 failed=0 exit=0
+evidence: suite=node --test(test/client.test.mjs) passed=102 failed=0 exit=0
+evidence: pack=files 14 / test-hits 0
+evidence: fingerprint aed9bc8=7c48a4b1/250294 -> now=ab715bbd/257592
+```
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test`（包目录） | **321 / 321 pass / 0 fail**（基线 313 ⇒ **+8 条新用例**） |
+| 客户端套件 | `node --test test/client.test.mjs` | 102 / 102 pass（基线 94） |
+| 打包 | `npm pack --dry-run --cache /tmp/g012-npm-cache` | **14 个文件**，`test/` **命中 0**，package size `227.4 kB`，tarball shasum `5fa6fe298347a9b3c7eeaa446888ef23e605ab52`（自指提示：把该值写进本行会再改一次 shasum；**文件数 14 与 `test/` 命中 0 不受影响**，与 §89 同一处置） |
+| 词典 | 既有用例 `client: injects the locale namespace thunk and declares zh/en dictionaries`（`:1002`，键集相等断言在 `:1013`） | 绿；**本轮未新增 / 未改动任何 i18n 键** |
+| 构建戳 | 独立复算 `@build-fingerprint` 区间 | 改前 `7c48a4b1` / `250294`（= §89 的预测值）⇒ 改后 `ab715bbd` / `257592` |
+| 仓库根 `README.md` | 检查 | 仅路线图里的「就地编辑」（`:18` / `:66`），**本就是此行行为的描述，无需改** |

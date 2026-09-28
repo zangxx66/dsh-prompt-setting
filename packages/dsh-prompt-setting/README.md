@@ -3,6 +3,9 @@
 DSH 默认 System Prompt 管理插件。**阶段一（A/B/C）与阶段二已交付**：宿主侧装配快照 +
 覆盖引擎 + 两层持久化 + 版本历史 + diff + 导出/导入，客户端侧设置页 Prompt 管理器
 （分段浏览、全文检索、就地编辑、覆盖管理、历史与版本对比、恢复默认、导出下载与导入预览）。
+编辑是**行内就地展开**：点某段行的「编辑」，表单就在**那一行内部**渲染；「新增一段」没有目标行，
+固定留在列表上方槽位；编辑中该行被筛选藏掉、被切走视图或重载后不再返回时，表单**回退到该槽位**
+并带 `data-editor-fallback="row-hidden"`，已输入内容不丢（详见 `NOTES.md` §90）。
 
 本文件讲的是**这个包怎么装、怎么改**；仓库整体目标与路线图见仓库根 `README.md`，
 REST 契约见同目录 [`CONTRACT.md`](./CONTRACT.md)（已冻结，客户端照它写），
@@ -19,7 +22,7 @@ REST 契约见同目录 [`CONTRACT.md`](./CONTRACT.md)（已冻结，客户端�
 | `core/transfer.js` | **纯函数**：导出文档构造、导入文档的 schema/版本/字段校验、冲突策略与变更计划 |
 | `core/store.js` | **唯一碰文件系统**的模块：两层路径解析 + 原子写（临时文件 + `rename`）+ 读时校验 + `history.jsonl` 追加与裁剪 + 多文件原子替换（导入） |
 | `core/experiments.js` | E1–E5 的**实测结论**（由集成测试产出，快照与 CONTRACT.md 共用同一份文案） |
-| `client.js` | 客户端半：「设置」里的独立一栏：状态条 / 会话选择器 / 分段视图（含 `origin` 标注与筛选）/ 全文视图（搜索高亮 + `base`↔`effective` 对比）/ 编辑面板（保存前可行性校验）/ 覆盖管理 / 历史列表与版本对比（官方 `DiffBlock` + 自绘降级）/ 恢复默认（单段与整层，均二次确认）/ 导出下载与导入（先干跑预览再二次确认） |
+| `client.js` | 客户端半：「设置」里的独立一栏：状态条 / 会话选择器 / 分段视图（含 `origin` 标注与筛选）/ 全文视图（搜索高亮 + `base`↔`effective` 对比）/ 编辑面板（**行内就地展开**：`data-editor-row` 标归属行，行不可见时回退槽位并标 `data-editor-fallback`；保存前可行性校验）/ 覆盖管理 / 历史列表与版本对比（官方 `DiffBlock` + 自绘降级）/ 恢复默认（单段与整层，均二次确认）/ 导出下载与导入（先干跑预览再二次确认） |
 | `cordis.patch.yml` | bundle 层：一条 `insert` 行同时承载两个半边 |
 | `package.json` | 包契约：`dsh.bundle.patch` + `dsh.client.platform: "web"` + `exports["./client"]` |
 | `CONTRACT.md` | 冻结的 REST 契约：每个字段、每个 4xx、动作枚举、字段上限 |
