@@ -1687,3 +1687,178 @@ append。**它不能说明的**：导出结果不等于 `21:52:54` 那一轮装�
 - 没有写任何真实 `~/.dsh/prompt-setting/`（所有测试仍用 `DSH_HOME` 指向临时目录）；
 - 没有自行 `git worktree add` / `branch` / `checkout` / `merge`，只在专属 worktree 内提交；
 - 没有安装/启用插件、没有重启 `dsh web`、没有改 DSH 安装包或 profile。
+---
+
+# 阶段一 C · 第五轮（g-006）：编辑面板交互重构 —— 把耦合参数拆成两条入口
+
+## 70. 问题与根因（负责人真机反馈）
+
+编辑面板把**段名（可编辑输入）**与**动作（replace / hide / append 分段控件）**做成两个互相独立的控件，
+但二者语义上强耦合：`append` 必须配**未注册**段名，`replace` / `hide` 必须配**已注册**段名。
+用户只能靠摸索凑合法组合，可行性只能在**保存前**（也就是已经点下去之后）才被拦住。
+第四轮的修复（§38/§39）把「不会生效的保存」拦住了，但它拦在**事后**：交互层仍然允许拼出非法组合。
+
+## 71. 修法：三层，由外向内收窄
+
+| 层 | 作用 | 位置 |
+| --- | --- | --- |
+| 入口层（结构） | 入口决定「能选什么」，非法组合**不可产生** | `editorRoute` / `editorActions` / `openEditor` / `openAppend` / `setAction` / `setName` |
+| 即时层（live） | 边输入边说明为什么保存被禁用 | `entryFeedback` + `data-warning="entry-feedback"` |
+| 兜底层（defensive） | 既有保存前可行性校验**原样保留**，仍是写入前最后一关 | `overrideFeasibility` + `save()` 内重复检查 |
+
+- **入口 1「编辑已有段」**：点分段行的「编辑」→ `mode='edit'`、`nameLocked=true`、
+  `editorActions('edit') === ['replace','hide']`；动作只有这两个 tab，`replace` 为默认
+  （若该段已存的是 `hide`，则沿用 `hide`，见 §72.2）。
+- **入口 2「新增一段」**：分段列表头部的独立按钮 `data-action="append-new"` → `mode='append'`、
+  `nameLocked=false`、动作恒为 `append`，界面上**没有动作控件**（`data-role="action-fixed"` 是事实陈述，
+  不是可点的控件），并明示「必须是当前未被注册的段名」。
+- **即时反馈**：新增入口里输入已注册段名 ⇒ 立刻出现 `data-warning="entry-feedback"`
+  （`data-feedback-code="name-already-present"`）并**禁用保存**；不需要先点保存。
+  空名同理（`missing-name`），否则「刚打开面板」这个正常中间态会被兜底卡片吓一跳。
+- **兜底**：`overrideFeasibility` 一字未改，仍在 `save()` 里把关；它的**卡片**只在
+  「两条入口都产不出的状态」下渲染：①入口契约被破坏（动作不在该入口集合内）；
+  ②面板开着时世界变了（段名离开了 incoming 装配）。
+
+## 72. 与 brief / goal.md 的差异及理由（都写在这里，不藏）
+
+### 67.1 第三种呈现：`edit-override`（分段行自己路由，不是第三个用户入口）
+
+行上的「编辑」按钮由**行**决定打开哪个呈现（`data-entry` 标记）：
+
+- 段名**在** incoming 装配里（`registered` / `downstream-added`）⇒ 入口 1（replace / hide，段名只读）；
+- 段名**不在** incoming 里（`appended` = 本插件自己的 append，或 `unmatched-override` = 无目标的覆盖）
+  ⇒ 以**同名 append 重存**，此时名字与动作都由该覆盖本身决定，用户无从选错。
+
+理由：`incomingNames` 故意**不**把本插件自己的 append 算进来（§39，upsert 语义）。
+所以 `extra:appended` 这类行如果走入口 1，`replace`/`hide` 一定被 `section-not-present` 拦住——
+那会让**正常路径**撞上兜底卡片，既违反 brief 要求 4，也等于删掉「改自己 append 段的文本」这个既有能力。
+把它路由到能重存它的入口，是唯一既不产生非法组合、也不丢能力的做法。
+副作用是把旧用例「an empty name set does not crash the validation」（对 `ghost:section` 先 replace 被拦、
+再切 append）改写成新交互下的等价断言，覆盖未削弱（见 §75）。
+
+### 67.2 入口 1 的默认动作：`replace`，但不静默改写已存的 `hide`
+
+`openEditor` 的默认是 `replace`；只有当该段**当前存的覆盖动作本身就在 `{replace, hide}` 里**时才沿用
+（即已存 `hide` 的段打开时选中 `hide`）。brief 的「默认 replace」在**无覆盖的普通段**上逐字成立
+（§75 有断言），而沿用已存 `hide` 避免了「点开 → 保存」把隐藏段悄悄变成替换——那是新增的静默改写，
+比不满足字面默认更糟。
+
+### 67.3 `save()` 里多一条契约外动作守卫
+
+入口已经决定动作，所以 `editor.action` 不在 `ACTIONS` 内只可能是契约外状态：
+此时按 `unknown-action` 拒绝写入，而不是按 replace 语义去猜（既有 `error.unknown-action` 文案，未新增 i18n）。
+`ACTIONS` 因此仍是活常量，不再是被重构挤掉的死代码。
+
+## 73. 机器可读标记（新增，全部可断言）
+
+| 标记 | 位置 | 含义 |
+| --- | --- | --- |
+| `data-editor-entry` | 编辑面板 | `edit` / `append-new` / `edit-override` |
+| `data-editor-mode` | 编辑面板 | `edit` / `append` |
+| `data-editor-name-locked` | 编辑面板 + 名字输入 | 段名是否只读 |
+| `data-editor-actions` | 编辑面板 | 该入口实际可选动作，逗号分隔（`replace,hide` / `append`） |
+| `data-editor-meta` / `data-editor-origin` / `data-editor-overridable` | 编辑面板（入口 1） | 来源层与是否可覆盖 |
+| `data-role="name"` 的 `readOnly` / `data-name-locked` | 名字输入 | 只读与否 |
+| `data-role="name-hint"` / `data-role="entry-hint"` / `data-role="action-hint"` | 编辑面板 | 规则说明（未注册段名 / 重存本覆盖 / 动作固定） |
+| `data-role="action-fixed"` + `data-fixed-action` | 编辑面板 | 固定动作的事实陈述（无动作控件） |
+| `data-warning="entry-feedback"` + `data-feedback-code` | 编辑面板 | **即时**反馈（`name-already-present` / `missing-name`） |
+| `data-entry` | 分段行的编辑按钮 | 该行会打开哪个入口 |
+| `data-action="append-new"` | 分段列表头部 | 入口 2 的可达点 |
+
+既有标记全部保留：`data-region="editor"`、`data-editor-name`、`data-warning="override-blocked"` +
+`data-block-code`、`data-warning="edit-disabled"` / `edit-uncertain` / `workspace-layer-disabled`、
+`data-editor-error`、`data-role="text"` / `order`、`data-sections-total` / `data-sections-shown`、
+`data-action="save"` / `cancel`、`data-tab-key="action"` / `"editor-layer"`。
+
+### 68.1 i18n 增删（zh/en 键集合始终相同，既有 parity 用例把关）
+
+- **新增 15 键**：`editNameLocked` / `editNameLockedHint` / `editOriginLabel` / `editOverridableLabel` /
+  `appendEntry` / `appendHeading` / `appendUntitled` / `appendName` / `appendNameHint` /
+  `appendActionFixed` / `appendActionHint` / `editOverrideHeading` / `editOverrideHint` /
+  `feedbackNameRequired` / `feedbackNameTaken`。
+- **删除 1 键**：`editName`（「段名（覆盖目标）」）。它原来的唯一消费者是那个「可编辑段名 + 独立动作」
+  的旧面板；拆成两条入口后名字标签由 `editNameLocked` / `appendName` 取代，留着就是死键。
+  全仓（含 `test/`、`NOTES.md`、`CONTRACT.md`）无引用，删除不涉及契约。
+
+## 74. 自测证据（工作树内执行）
+
+单行结构化概要：
+
+- `evidence: suite=node --test (packages/dsh-prompt-setting) passed=281 failed=0 exit=0 ms=4475 diff=client.js+317/-34,test/client.test.mjs+280/-59,NOTES.md+176/-0`
+- `evidence: suite=node --check client.js exit=0`
+- `evidence: suite=npm_config_cache=/tmp/npm-cache-probe npm pack --dry-run total files=13 (无测试目录/无新增文件)`
+
+断言命令与结论：
+
+- `node --test`（在 `packages/dsh-prompt-setting/`，Node v24.13.1）⇒ `tests 281 / pass 281 / fail 0`，
+  基线 276 项全部保留且全绿（client 套件 77 → 82）。
+- `node --check client.js` ⇒ 退出码 0。
+- `npm_config_cache=/tmp/npm-cache-probe npm pack --dry-run` ⇒ 13 个文件，与改动前清单一致，
+  未把 `test/` 或任何新文件带进包。
+
+## 75. 本轮新增/改写的测试（client 77 → 82）
+
+新增或改写（`test/client.test.mjs`）：
+
+1. `the edit entry locks the name and offers only replace/hide` — 入口 1：`data-editor-actions='replace,hide'`、
+   tab 集合恰为 `['replace','hide']`、无 `data-role="order"`、名字输入 `readOnly` 且**改写不了**、
+   来源/可覆盖标记、无兜底卡片、无即时反馈。
+2. `the add entry is a separate, reachable entry whose action is fixed to append` — 入口 2 可达性、
+   `data-editor-actions='append'`、`data-role="action-fixed"`、**零个动作 tab**、未注册段名提示、
+   名字输入可编辑。
+3. `the edit entry defaults to replace and mirrors an existing hide` — 默认 `replace` 有断言；
+   已存 `hide` 的段打开即 `hide` 且不渲染文本域。
+4. `neither entry reaches the pre-save check on a normal path` — **正常路径不触发兜底**：
+   replace / hide / append 三条合法路径各写成功一次，全程 `override-blocked` 卡片数为 0。
+5. `a registered name in the add entry is reported immediately, and the write is blocked` —
+   **重名即时反馈** + 保存禁用 + **程序化点击仍 0 写入且给出原因**（兜底在异常态生效）；
+   改名后反馈消失、保存恢复可用。
+6. `a name another plugin added is fed back immediately as well` — downstream-added 名同理。
+7. `an empty name in the add entry is refused locally as missing-name` — 空名即时提示 + 兜底原因。
+8. `the pre-save check still fires when the world moves under an open panel` — 面板开着时快照里段消失 ⇒
+   兜底卡片 `section-not-present` + 阻止写入 + 给出原因（**这是兜底卡片唯一可达的正常/异常路径**）。
+9. `an own-override row is edited through the entry that can re-save it` — `ghost:section` 行
+   `data-entry="edit-override"`、动作固定 append、名字只读，保存体 `action: 'append'`。
+10. `an appended section is re-editable as the append it is` — `extra:appended` 行同样路由到 append 重存，
+    文本域带出已存文本（能力未丢）。
+11. `the add entry carries a target index, and a bad index is refused locally` — 改写自旧的
+    `append carries a target index…`：现在走入口 2；非法 `order` 本地拒绝、合法 `order` 随 PUT 发出。
+
+## 76. 负向对照（逐条单独改坏 ⇒ 跑 client 套件 ⇒ 从 `/tmp` 还原 ⇒ 全量复绿）
+
+每条都是「改一处 → 只跑 `test/client.test.mjs` → `cp /tmp/g006-client-final.js client.js` 还原 →
+`shasum -a 256 client.js` 与改坏前逐字节一致
+（`57e52feaa78e217266457f7c896e45da6987fa659f88ac89813c9c531e07e3df`）→ `node --check` 通过 →
+再跑全量确认 281 全绿」。
+
+| # | 改坏的内容 | 结果 | 变红的用例 |
+| --- | --- | --- | --- |
+| NC-1 | `EDIT_ACTIONS` 加回 `'append'`（编辑入口又能选 append ⇒ 非法组合复活） | client fail 1 / pass 81 | `the edit entry locks the name and offers only replace/hide` |
+| NC-2 | `entryFeedback` 去掉 `name-already-present` 分支（重名不再即时反馈） | client fail 2 / pass 80 | `a registered name in the add entry is reported immediately…`、`a name another plugin added is fed back immediately…` |
+| NC-3 | `openEditor` 把 `nameLocked` 置 `false`（编辑入口段名可改） | client fail 3 / pass 79 | `the edit entry locks the name…`、`an own-override row is edited through the entry that can re-save it`、`an appended section is re-editable as the append it is` |
+| NC-4 | 同时删掉 `save()` 的可行性守卫与兜底卡片渲染（兜底消失） | client fail 4 / pass 78 | `…reported immediately…`、`…fed back immediately as well`、`…empty name…missing-name`、`the pre-save check still fires when the world moves under an open panel` |
+
+## 77. 未验证项（诚实清单，交给主管在集成检查点裁决）
+
+1. **真机两条路径**：本轮证据全部是离线 vm 单测（含真包/真 Cordis 的宿主半套件未受影响）。
+   设置页上「选中已有段 → 编辑 → 段名不可改 → 保存 → 下一轮生效」与
+   「新增一段 → 输入已注册段名得即时反馈 → 换新名 → 保存 → 下一轮装配出现该段」
+   两条真机路径**未走**，以及 `frozenScope: "global"` + 已选会话下的只读观感。
+2. **只读输入的真实观感**：`readOnly` 的 `<input>` 在 primitives 分支由官方 `Input` 渲染，
+   离线用例里 `primitives.Input` 是空实现（只验标记与 props 传递），真机上的灰化/焦点行为未验。
+3. **`aria-readonly` 的读屏行为**：只做了属性写入断言，没有辅助技术实测。
+4. **`edit-override` 的措辞**：该呈现的文案（`editOverrideHint`）是新增的，
+   没有经过真机中文阅读体验复核。
+
+## 78. 本 attempt 明确**没有**做的事
+
+- 没有改宿主半（`index.js`、`core/**`），没有改 `CONTRACT.md`，没有改 `package.json`；
+  范围严格是 `client.js` + `test/client.test.mjs` + 本节；
+- 没有新增运行时依赖或构建步骤，`npm pack --dry-run` 清单不变（13 个文件）；
+- 没有安装/启用插件、没有跑 `plugin_manager`、没有重启 `dsh web`、没有改 DSH 安装包、
+  没有手改 `~/.dsh/profiles/**`、没有写 `.dsh-graph/**`、**没有写真实 `~/.dsh/prompt-setting/`**
+  （测试全部走内存桩）；
+- 没有改 `overrideFeasibility` 的语义（仍是写入前唯一的可行性判定），也没有删掉兜底卡片：
+  它只是改为在「两条入口都产不出的状态」下渲染；
+- 没有删减既有断言来换绿：276 项基线全部保留，其中 6 项与本次交互直接相关的用例被
+  **改写**为新交互下的等价（且更严）断言（§75.11 与 §72.1 各说明一处）。

@@ -430,6 +430,34 @@ function saveButton(tree) {
   return findOne(tree, (node) => node.type === 'button' && node.props['data-action'] === 'save', 'save button');
 }
 
+/** The single edit panel. */
+function editorPanel(tree) {
+  return oneBy(tree, 'data-region', 'editor');
+}
+
+/** The panel's (possibly read-only) section name field. */
+function nameField(tree) {
+  return oneBy(tree, 'data-role', 'name');
+}
+
+/** The live entry feedback line of the edit panel. */
+function entryFeedbackRow(tree) {
+  return oneBy(tree, 'data-warning', 'entry-feedback');
+}
+
+/** Every blocked-override (fallback) card on screen. */
+function blockedCards(tree) {
+  return collect(tree, (node) => node.props && node.props['data-warning'] === 'override-blocked');
+}
+
+/** The action values the edit panel actually offers (its tab set). */
+function actionTabs(tree) {
+  return collect(
+    tree,
+    (node) => node.type === 'button' && node.props['data-tab-key'] === 'action',
+  ).map((node) => node.props['data-tab-value']);
+}
+
 /** Every write the page attempted (PUT / DELETE), whatever the outcome. */
 function writeCalls(page) {
   return page.router.calls.filter((call) => call.init && (call.init.method === 'PUT' || call.init.method === 'DELETE'));
@@ -2008,18 +2036,39 @@ test('client: replace saves without an order and promises the next turn', async 
   assert.ok(hasText(tree, page.zh.nextTurn), 'the next-turn promise is stated');
 });
 
-test('client: append carries a target index, and a bad index is refused locally', async () => {
+test('client: the add entry is a separate, reachable entry whose action is fixed to append', async () => {
   const page = makePage({ responses: defaultResponses() });
   let tree = await page.flush();
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
+  // Reachable from the section list, next to the shown/total count…
+  clickButton(tree, { 'data-action': 'append-new' });
   tree = await page.flush();
-  // Appending onto a registered name is refused (see the block tests below), so
-  // the new section is created under a name nothing has registered yet.
+
+  const panel = editorPanel(tree);
+  assert.equal(panel.props['data-editor-mode'], 'append');
+  assert.equal(panel.props['data-editor-entry'], 'append-new');
+  assert.equal(panel.props['data-editor-actions'], 'append', 'exactly one action is offered');
+  assert.equal(panel.props['data-editor-name-locked'], 'false', 'the name is a fresh input here');
+  // The action is a stated fact, not a control: there is nothing to pick.
+  assert.equal(oneBy(tree, 'data-role', 'action-fixed').props['data-fixed-action'], 'append');
+  assert.deepEqual(actionTabs(tree), [], 'the add entry shows no action tabs');
+  // …with the "must be unregistered" rule spelled out before anything is typed.
+  assert.ok(hasText(oneBy(tree, 'data-role', 'name-hint'), page.zh.appendNameHint), 'the name rule is stated');
+  assert.ok(hasText(oneBy(tree, 'data-role', 'action-hint'), page.zh.appendActionHint));
+  const name = nameField(tree);
+  assert.notEqual(name.props.readOnly, true, 'the name is editable in the add entry');
+  assert.equal(name.props.value, '');
+  assert.ok(oneBy(tree, 'data-role', 'order'), 'append exposes the target index');
+});
+
+test('client: the add entry carries a target index, and a bad index is refused locally', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'append-new' });
+  tree = await page.flush();
+  // A name nothing has registered yet: the entry's own premise.
   typeInto(tree, 'name', 'panel:added');
   tree = await page.flush();
-  clickTab(tree, 'action', 'append');
-  tree = await page.flush();
-  assert.ok(oneBy(tree, 'data-role', 'order'), 'append exposes the target index');
+  assert.equal(saveButton(tree).props.disabled, false, 'a new name saves');
 
   typeInto(tree, 'order', '-3');
   tree = await page.flush();
@@ -2040,75 +2089,231 @@ test('client: append carries a target index, and a bad index is refused locally'
   await page.flush();
   const put = page.router.calls.find((call) => call.init && call.init.method === 'PUT');
   const body = JSON.parse(put.init.body);
-  assert.equal(body.section.name, 'panel:added', 'the new name is what gets appended');
+  assert.equal(body.section.name, 'panel:added', 'the typed name is what gets appended');
   assert.equal(body.section.action, 'append');
   assert.equal(body.section.order, 2, 'append order is a target index');
   assert.equal(body.section.text, 'appended by the panel');
 });
 
-// #region pre-save validation: never let a save that cannot take effect look successful
+// #region the two entries: the illegal (name, action) pair cannot be produced
 
-test('client: append onto an already-registered name is blocked before any write', async () => {
+test('client: the edit entry locks the name and offers only replace/hide', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  // The row decides which entry it opens: this name is in the assembly.
+  assert.equal(editButtonOf(tree, 'harness:identity').props['data-entry'], 'edit');
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
+  tree = await page.flush();
+
+  const panel = editorPanel(tree);
+  assert.equal(panel.props['data-editor-name'], 'harness:identity');
+  assert.equal(panel.props['data-editor-mode'], 'edit');
+  assert.equal(panel.props['data-editor-entry'], 'edit');
+  assert.equal(panel.props['data-editor-name-locked'], 'true');
+  assert.equal(panel.props['data-editor-actions'], 'replace,hide', 'append is not on offer');
+  assert.deepEqual(actionTabs(tree), ['replace', 'hide'], 'and the control offers exactly those');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-role'] === 'order').length,
+    0,
+    'no target index in an entry that cannot append',
+  );
+
+  // The name is shown, not edited.
+  const name = nameField(tree);
+  assert.equal(name.props.readOnly, true, 'the name is not a text field');
+  assert.equal(name.props['data-name-locked'], 'true');
+  assert.equal(name.props.value, 'harness:identity');
+  typeInto(tree, 'name', 'never:registered');
+  tree = await page.flush();
+  assert.equal(nameField(tree).props.value, 'harness:identity', 'the locked name cannot be typed over');
+
+  // Origin layer and overridability travel with the locked name.
+  const meta = oneBy(tree, 'data-editor-meta', 'true');
+  assert.equal(meta.props['data-editor-origin'], 'registered');
+  assert.equal(meta.props['data-editor-overridable'], 'true');
+  assert.ok(hasText(oneBy(tree, 'data-role', 'origin'), page.zh.originRegistered));
+  assert.ok(hasText(oneBy(tree, 'data-role', 'overridable'), page.zh.fYes));
+
+  // A state the entry can produce is not a state the fallback has to catch.
+  assert.equal(blockedCards(tree).length, 0, 'no fallback card on a legal state');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-warning'] === 'entry-feedback').length, 0);
+});
+
+test('client: the edit entry defaults to replace and mirrors an existing hide', async () => {
   const page = makePage({ responses: defaultResponses() });
   let tree = await page.flush();
   clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
   tree = await page.flush();
+  // No override on this section yet: replace is the default the entry opens on.
+  const selected = collect(
+    tree,
+    (node) => node.type === 'button' && node.props['data-tab-key'] === 'action' && node.props['aria-selected'] === true,
+  );
+  assert.equal(selected.length, 1, 'exactly one action is selected');
+  assert.equal(selected[0].props['data-tab-value'], 'replace');
+
+  // A section whose stored override is `hide` opens on `hide` — replace is the
+  // default the entry offers, not a silent rewrite of what is already stored.
+  const payload = snapshotFixture();
+  payload.effective.sections[1].action = 'hide';
+  payload.effective.sections[1].text = '';
+  const other = makePage({ responses: defaultResponses({ [PATHS.snapshot]: { payload } }) });
+  let hiding = await other.flush();
+  clickButton(hiding, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  hiding = await other.flush();
+  const hidingTab = collect(
+    hiding,
+    (node) => node.type === 'button' && node.props['data-tab-key'] === 'action' && node.props['aria-selected'] === true,
+  );
+  assert.equal(hidingTab.length, 1);
+  assert.equal(hidingTab[0].props['data-tab-value'], 'hide');
+  assert.equal(
+    collect(hiding, (node) => node.props && node.props['data-role'] === 'text').length,
+    0,
+    'hide carries no text field',
+  );
+});
+
+test('client: neither entry reaches the pre-save check on a normal path', async () => {
+  // Entry 1: replace an incoming section.
+  const one = makePage({ responses: defaultResponses() });
+  let tree = await one.flush();
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
+  tree = await one.flush();
+  assert.equal(blockedCards(tree).length, 0, 'opening the edit entry blocks nothing');
+  assert.equal(saveButton(tree).props.disabled, false);
+  typeInto(tree, 'text', 'identity rewritten');
+  tree = await one.flush();
+  clickButton(tree, { 'data-action': 'save' });
+  tree = await one.flush();
+  assert.equal(one.router.calls.filter((call) => call.init && call.init.method === 'PUT').length, 1, 'the write went through');
+  assert.equal(blockedCards(tree).length, 0, 'the check was never armed');
+
+  // Entry 1 again: hide the same section.
+  const two = makePage({ responses: defaultResponses() });
+  let hidden = await two.flush();
+  clickButton(hidden, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  hidden = await two.flush();
+  clickTab(hidden, 'action', 'hide');
+  hidden = await two.flush();
+  assert.equal(saveButton(hidden).props.disabled, false);
+  clickButton(hidden, { 'data-action': 'save' });
+  hidden = await two.flush();
+  assert.equal(two.router.calls.filter((call) => call.init && call.init.method === 'PUT').length, 1);
+
+  // Entry 2: add a brand-new section.
+  const three = makePage({ responses: defaultResponses() });
+  let added = await three.flush();
+  clickButton(added, { 'data-action': 'append-new' });
+  added = await three.flush();
+  typeInto(added, 'name', 'panel:fresh');
+  typeInto(added, 'text', 'fresh text');
+  added = await three.flush();
+  assert.equal(blockedCards(added).length, 0, 'a new name blocks nothing');
+  assert.equal(saveButton(added).props.disabled, false);
+  clickButton(added, { 'data-action': 'save' });
+  added = await three.flush();
+  assert.equal(three.router.calls.filter((call) => call.init && call.init.method === 'PUT').length, 1);
+});
+
+// #region live feedback and the pre-save fallback behind it
+
+test('client: a registered name in the add entry is reported immediately, and the write is blocked', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'append-new' });
+  tree = await page.flush();
   // `project:beta` exists in `base` only (another listener removed it downstream).
   typeInto(tree, 'name', 'project:beta');
   tree = await page.flush();
-  clickTab(tree, 'action', 'append');
+
+  const feedback = entryFeedbackRow(tree);
+  assert.equal(feedback.props['data-feedback-code'], 'name-already-present');
+  assert.ok(hasText(feedback, page.zh.feedbackNameTaken), 'the reason and the way out are stated straight away');
+  assert.equal(saveButton(tree).props.disabled, true, 'saving is disabled while typing, not after an attempt');
+  assert.equal(blockedCards(tree).length, 0, 'live feedback is not the fallback card');
+
+  // Even a programmatic click on the disabled control writes nothing, and the
+  // fallback behind the live feedback still states why.
+  saveButton(tree).props.onClick();
   tree = await page.flush();
-
-  const save = saveButton(tree);
-  assert.equal(save.props.disabled, true, 'the save button is disabled up front');
-  const block = oneBy(tree, 'data-warning', 'override-blocked');
-  assert.equal(block.props['data-block-code'], 'name-already-present');
-  assert.ok(hasText(block, page.zh.blockAppendExisting), 'the reason and the way out are stated');
-  assert.ok(hasText(block, 'name-already-present'), 'and the host code is named');
-
-  // Even a programmatic click on the disabled control writes nothing.
-  save.props.onClick();
   assert.equal(writeCalls(page).length, 0, 'zero write requests');
+  const notice = oneBy(tree, 'data-notice', 'error');
+  assert.ok(hasText(notice, page.zh.blockAppendExisting), 'the pre-save check answered');
+
+  // Changing the name clears it: the feedback tracks the input, not the entry.
+  typeInto(tree, 'name', 'panel:brand-new');
   tree = await page.flush();
-  assert.equal(writeCalls(page).length, 0, 'still zero write requests after the click');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-warning'] === 'entry-feedback').length,
+    0,
+    'the warning is gone',
+  );
+  assert.equal(saveButton(tree).props.disabled, false);
 });
 
-test('client: append onto a name another plugin added is blocked as well', async () => {
+test('client: a name another plugin added is fed back immediately as well', async () => {
   const page = makePage({ responses: defaultResponses() });
   let tree = await page.flush();
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'companion:extra' });
-  tree = await page.flush();
-  clickTab(tree, 'action', 'append');
+  clickButton(tree, { 'data-action': 'append-new' });
   tree = await page.flush();
   // `companion:extra` is absent from `base` and only present because another
   // plugin added it downstream — the two-sections-one-name rule still applies.
-  assert.equal(oneBy(tree, 'data-warning', 'override-blocked').props['data-block-code'], 'name-already-present');
+  typeInto(tree, 'name', 'companion:extra');
+  tree = await page.flush();
+  assert.equal(entryFeedbackRow(tree).props['data-feedback-code'], 'name-already-present');
   saveButton(tree).props.onClick();
   tree = await page.flush();
   assert.equal(writeCalls(page).length, 0, 'zero write requests');
 });
 
-test('client: replace or hide for an unregistered name is blocked before any write', async () => {
-  for (const action of ['replace', 'hide']) {
-    const page = makePage({ responses: defaultResponses() });
-    let tree = await page.flush();
-    clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
-    tree = await page.flush();
-    typeInto(tree, 'name', 'never:registered');
-    tree = await page.flush();
-    clickTab(tree, 'action', action);
-    tree = await page.flush();
-    const block = oneBy(tree, 'data-warning', 'override-blocked');
-    assert.equal(block.props['data-block-code'], 'section-not-present', `${action} is blocked`);
-    assert.ok(strings(block).includes(page.zh.blockNotPresent));
-    assert.equal(saveButton(tree).props.disabled, true);
-    saveButton(tree).props.onClick();
-    tree = await page.flush();
-    assert.equal(writeCalls(page).length, 0, `${action} writes nothing`);
-  }
+test('client: an empty name in the add entry is refused locally as missing-name', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'append-new' });
+  tree = await page.flush();
+  assert.equal(entryFeedbackRow(tree).props['data-feedback-code'], 'missing-name', 'an empty box is stated, not saved');
+  assert.equal(saveButton(tree).props.disabled, true);
+  typeInto(tree, 'name', '   ');
+  tree = await page.flush();
+  assert.equal(entryFeedbackRow(tree).props['data-feedback-code'], 'missing-name', 'blank is still empty');
+  saveButton(tree).props.onClick();
+  tree = await page.flush();
+  assert.equal(writeCalls(page).length, 0, 'zero write requests');
+  assert.ok(hasText(oneBy(tree, 'data-notice', 'error'), page.zh.blockMissingName), 'the fallback states the reason');
 });
 
-test('client: an empty name set does not crash the validation', async () => {
+test('client: the pre-save check still fires when the world moves under an open panel', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
+  tree = await page.flush();
+  assert.equal(blockedCards(tree).length, 0, 'legal when it was opened');
+
+  // The assembly changes underneath: the section the panel is holding is gone,
+  // so replace would be skipped as section-not-present. Neither entry can reach
+  // this on its own — it is exactly what the retained check is for.
+  const next = snapshotFixture();
+  next.effective.sections = next.effective.sections.filter((section) => section.name !== 'harness:identity');
+  next.base.sections = next.base.sections.filter((section) => section.name !== 'harness:identity');
+  page.router.set(PATHS.snapshot, { payload: next });
+  clickButton(tree, { 'data-action': 'refresh' });
+  tree = await page.flush();
+
+  const block = oneBy(tree, 'data-warning', 'override-blocked');
+  assert.equal(block.props['data-block-code'], 'section-not-present');
+  assert.ok(strings(block).includes(page.zh.blockNotPresent), 'the reason and the way out are stated');
+  assert.equal(saveButton(tree).props.disabled, true);
+  saveButton(tree).props.onClick();
+  tree = await page.flush();
+  assert.equal(writeCalls(page).length, 0, 'the write is blocked');
+  assert.ok(hasText(oneBy(tree, 'data-notice', 'error'), page.zh.blockNotPresent), 'and the reason is repeated');
+});
+
+test('client: an own-override row is edited through the entry that can re-save it', async () => {
+  // `ghost:section` is absent from the incoming assembly, so replace/hide could
+  // never take effect there; the row therefore opens the append entry with the
+  // name fixed, which is the only legal re-save for it.
   const payload = snapshotFixture({
     base: { sections: [] },
     effective: {
@@ -2130,29 +2335,45 @@ test('client: an empty name set does not crash the validation', async () => {
   });
   const page = makePage({ responses: defaultResponses({ [PATHS.snapshot]: { payload } }) });
   let tree = await page.flush();
+  assert.equal(editButtonOf(tree, 'ghost:section').props['data-entry'], 'edit-override');
   clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'ghost:section' });
   tree = await page.flush();
-  // Nothing is in the incoming assembly, so replace/hide is provably useless…
-  assert.equal(oneBy(tree, 'data-warning', 'override-blocked').props['data-block-code'], 'section-not-present');
-  // …while the same name may still be appended as a new section.
-  clickTab(tree, 'action', 'append');
+
+  const panel = editorPanel(tree);
+  assert.equal(panel.props['data-editor-entry'], 'edit-override');
+  assert.equal(panel.props['data-editor-actions'], 'append');
+  assert.equal(panel.props['data-editor-name-locked'], 'true');
+  assert.equal(nameField(tree).props.value, 'ghost:section');
+  assert.ok(hasText(oneBy(tree, 'data-role', 'entry-hint'), page.zh.editOverrideHint));
+  assert.equal(oneBy(tree, 'data-role', 'action-fixed').props['data-fixed-action'], 'append');
+  assert.deepEqual(actionTabs(tree), [], 'there is no action to pick');
+  assert.equal(blockedCards(tree).length, 0);
+
+  typeInto(tree, 'text', 'now it is a real section');
   tree = await page.flush();
-  assert.equal(saveButton(tree).props.disabled, false, 'append of a new name stays possible');
-  assert.equal(collect(tree, (node) => node.props && node.props['data-warning'] === 'override-blocked').length, 0);
+  clickButton(tree, { 'data-action': 'save' });
+  tree = await page.flush();
+  const put = page.router.calls.find((call) => call.init && call.init.method === 'PUT');
+  assert.ok(put, 'the re-save was sent');
+  const body = JSON.parse(put.init.body);
+  assert.equal(body.section.name, 'ghost:section');
+  assert.equal(body.section.action, 'append', 're-saving an own override is an append upsert');
 });
 
-test('client: an empty name is refused locally as missing-name', async () => {
+test('client: an appended section is re-editable as the append it is', async () => {
   const page = makePage({ responses: defaultResponses() });
   let tree = await page.flush();
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
+  // `extra:appended` is our own append, so it is deliberately not an "incoming"
+  // name: replace/hide would be skipped for it.
+  assert.equal(editButtonOf(tree, 'extra:appended').props['data-entry'], 'edit-override');
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'extra:appended' });
   tree = await page.flush();
-  typeInto(tree, 'name', '   ');
-  tree = await page.flush();
-  assert.equal(oneBy(tree, 'data-warning', 'override-blocked').props['data-block-code'], 'missing-name');
-  saveButton(tree).props.onClick();
-  tree = await page.flush();
-  assert.equal(writeCalls(page).length, 0, 'zero write requests');
+  assert.equal(editorPanel(tree).props['data-editor-entry'], 'edit-override');
+  assert.equal(editorPanel(tree).props['data-editor-actions'], 'append');
+  assert.equal(oneBy(tree, 'data-role', 'text').props.value, 'appended text', 'the stored text is the starting point');
 });
+
+// #endregion
 
 test('client: the sections view proves why an override did not take effect', async () => {
   const payload = snapshotFixture();
