@@ -492,21 +492,39 @@ function owningRows(tree, node) {
 /**
  * The committed DOM node a panel `ref` receives. Real React attaches it before
  * the effects run; the hooks double does not, so a test attaches it by hand and
- * flushes. Every selector resolves to a spy that records its own focus.
+ * flushes. Every selector resolves to a spy that records its own focus, and
+ * `scrollIntoView` records the options it was handed. `scrollable: false` drops
+ * that method entirely — a node without it must be survivable.
  */
-function fakePanelRoot() {
+function fakePanelRoot({ scrollable = true } = {}) {
   const queried = [];
   const focused = [];
-  return {
-    queried,
-    focused,
-    node: {
-      querySelector(selector) {
-        queried.push(selector);
-        return { focus: () => focused.push(selector) };
-      },
+  const scrolled = [];
+  const node = {
+    querySelector(selector) {
+      queried.push(selector);
+      return { focus: () => focused.push(selector) };
     },
   };
+  if (scrollable) node.scrollIntoView = (options) => scrolled.push(options);
+  return { queried, focused, scrolled, node };
+}
+
+/** Every section row's 「编辑」 switch, as `[section name, aria-expanded]` pairs. */
+function editSwitches(tree) {
+  return collect(
+    tree,
+    (node) => node.type === 'button' && node.props['data-action'] === 'edit',
+  ).map((node) => [node.props['data-section-name'], node.props['aria-expanded']]);
+}
+
+/**
+ * The scroll options a stub root recorded, copied into host-realm objects: the
+ * literals were built inside the vm, so they are not prototype-equal to a host
+ * literal under `deepStrictEqual`.
+ */
+function scrollOptions(root) {
+  return root.scrolled.map((options) => ({ ...options }));
 }
 
 /** The panel's (possibly read-only) section name field. */
@@ -3102,6 +3120,214 @@ test('client: the append entry puts the caret in the name field', async () => {
   tree = await page.flush();
   assert.deepEqual(root.queried, ['[data-role="name"]']);
   assert.deepEqual(root.focused, ['[data-role="name"]'], 'the first thing to type is the name');
+});
+
+test('client: the row switch closes the form it opened', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  assert.equal(editButtonOf(tree, 'project:alpha').props['aria-expanded'], 'false');
+
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+  assert.equal(editButtonOf(tree, 'project:alpha').props['aria-expanded'], 'true');
+  typeInto(tree, 'text', 'half-typed, then folded');
+  tree = await page.flush();
+
+  // The same button, pressed again: the form folds. No 「取消」 hunt needed.
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-region'] === 'editor').length,
+    0,
+    'the form is gone',
+  );
+  assert.equal(editButtonOf(tree, 'project:alpha').props['aria-expanded'], 'false');
+  assert.equal(editButtonOf(tree, 'project:alpha').props.disabled, false, 'and the row is editable again');
+  // Folding is not deleting: the row is still there, with its stored text.
+  assert.ok(oneBy(tree, 'data-section-row', 'project:alpha'));
+  assert.equal(collect(tree, (node) => node.props && node.props['data-role'] === 'text').length, 0);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-role'] === 'name').length, 0);
+});
+
+test('client: only the row that holds the open form reports itself expanded', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  // Five rows, five switches, all reporting the truth before anything opens.
+  assert.deepEqual(editSwitches(tree), [
+    ['harness:identity', 'false'],
+    ['project:alpha', 'false'],
+    ['extra:appended', 'false'],
+    ['companion:extra', 'false'],
+    ['ghost:section', 'false'],
+  ]);
+
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+  assert.deepEqual(editSwitches(tree), [
+    ['harness:identity', 'false'],
+    ['project:alpha', 'true'],
+    ['extra:appended', 'false'],
+    ['companion:extra', 'false'],
+    ['ghost:section', 'false'],
+  ]);
+
+  // The active state is paint only: every layout-affecting property of the
+  // pressed switch is byte-identical to an unpressed one, so opening a row
+  // moves nothing and no other row changes.
+  const pressed = editButtonOf(tree, 'project:alpha');
+  const resting = editButtonOf(tree, 'harness:identity');
+  for (const key of ['font', 'fontSize', 'padding', 'borderRadius', 'border']) {
+    assert.equal(pressed.props.style[key], resting.props.style[key], `${key} is unchanged by the active state`);
+  }
+  assert.equal(resting.props.style.background, 'transparent');
+  assert.notEqual(pressed.props.style.background, resting.props.style.background, 'the pressed switch is marked');
+});
+
+test('client: opening another row folds the first and moves the one form', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+  typeInto(tree, 'text', 'alpha edit, left behind');
+  tree = await page.flush();
+  assert.deepEqual(owningRows(tree, editorPanel(tree)), ['project:alpha']);
+
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
+  tree = await page.flush();
+
+  // Still one form, now in the other row, holding THAT row's stored text.
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-region'] === 'editor').length,
+    1,
+    'one form at a time',
+  );
+  const panel = editorPanel(tree);
+  assert.equal(panel.props['data-editor-row'], 'harness:identity');
+  assert.equal(panel.props['data-editor-name'], 'harness:identity');
+  assert.deepEqual(owningRows(tree, panel), ['harness:identity']);
+  assert.equal(oneBy(tree, 'data-role', 'text').props.value, 'identity base', 'the new row starts from its own text');
+  assert.deepEqual(editSwitches(tree), [
+    ['harness:identity', 'true'],
+    ['project:alpha', 'false'],
+    ['extra:appended', 'false'],
+    ['companion:extra', 'false'],
+    ['ghost:section', 'false'],
+  ]);
+  const first = oneBy(tree, 'data-section-row', 'project:alpha');
+  assert.equal(collect(first, (node) => node.props && node.props['data-region'] === 'editor').length, 0);
+});
+
+test('client: expanding a row pulls the form in with the smallest scroll', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+
+  const root = fakePanelRoot();
+  assert.deepEqual(root.scrolled, []);
+  editorPanel(tree).props.ref(root.node);
+  tree = await page.flush();
+  assert.deepEqual(scrollOptions(root), [{ block: 'nearest' }], 'the form is pulled in, minimally');
+  assert.notEqual(root.scrolled[0].block, 'start', 'never by yanking the page to the top of the form');
+
+  // Neither half repeats while the row is being typed in.
+  typeInto(tree, 'text', 'typing must not scroll');
+  tree = await page.flush();
+  clickTab(tree, 'editor-layer', 'workspace');
+  tree = await page.flush();
+  assert.deepEqual(scrollOptions(root), [{ block: 'nearest' }], 'a later render does not scroll again');
+  assert.deepEqual(root.focused, ['[data-role="text"]'], 'nor takes the caret back');
+
+  // A node committed by a later render is equally not a new open.
+  const later = fakePanelRoot();
+  editorPanel(tree).props.ref(later.node);
+  tree = await page.flush();
+  assert.deepEqual(scrollOptions(later), [], 'the session already took its scroll');
+  assert.deepEqual(later.focused, []);
+});
+
+test('client: a node with no scrollIntoView is survivable', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+
+  // The node the page is handed may have no scrolling API at all; the panel
+  // must still open, still take the caret, and not throw.
+  const bare = fakePanelRoot({ scrollable: false });
+  assert.equal(bare.node.scrollIntoView, undefined);
+  editorPanel(tree).props.ref(bare.node);
+  tree = await page.flush();
+  assert.equal(editorPanel(tree).props['data-editor-row'], 'project:alpha');
+  assert.deepEqual(bare.focused, ['[data-role="text"]'], 'the caret still lands');
+  assert.deepEqual(bare.queried, ['[data-role="text"]']);
+});
+
+test('client: a row cannot fold the append entry it does not own', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'append-new' });
+  tree = await page.flush();
+  // Typing a name an existing row happens to carry must not make that row's
+  // switch behave as if it owned the open form.
+  typeInto(tree, 'name', 'project:alpha');
+  tree = await page.flush();
+  assert.equal(editorPanel(tree).props['data-editor-entry'], 'append-new');
+  assert.equal(oneBy(tree, 'data-role', 'name').props.value, 'project:alpha');
+
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-region'] === 'editor').length,
+    1,
+    'the append entry switched to the row, it did not fold',
+  );
+  const panel = editorPanel(tree);
+  assert.equal(panel.props['data-editor-entry'], 'edit');
+  assert.equal(panel.props['data-editor-row'], 'project:alpha');
+  assert.deepEqual(owningRows(tree, panel), ['project:alpha']);
+  assert.deepEqual(editSwitches(tree), [
+    ['harness:identity', 'false'],
+    ['project:alpha', 'true'],
+    ['extra:appended', 'false'],
+    ['companion:extra', 'false'],
+    ['ghost:section', 'false'],
+  ]);
+
+  // And now the same switch folds the form it did open.
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'editor').length, 0);
+});
+
+test('client: folding and re-opening the same row re-arms scroll and caret', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+  const first = fakePanelRoot();
+  editorPanel(tree).props.ref(first.node);
+  tree = await page.flush();
+  assert.deepEqual(scrollOptions(first), [{ block: 'nearest' }]);
+  assert.deepEqual(first.focused, ['[data-role="text"]']);
+
+  // Fold, and commit the detach React performs on unmount.
+  const closingRef = editorPanel(tree).props.ref;
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'editor').length, 0);
+  closingRef(null);
+
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+  assert.deepEqual(scrollOptions(first), [{ block: 'nearest' }], 'the folded session scrolls no more');
+  assert.deepEqual(first.focused, ['[data-role="text"]']);
+  const second = fakePanelRoot();
+  editorPanel(tree).props.ref(second.node);
+  tree = await page.flush();
+  assert.deepEqual(scrollOptions(second), [{ block: 'nearest' }], 're-opening arms the scroll again');
+  assert.deepEqual(second.focused, ['[data-role="text"]'], 'and the caret again');
+  assert.equal(editButtonOf(tree, 'project:alpha').props['aria-expanded'], 'true');
 });
 
 // #endregion

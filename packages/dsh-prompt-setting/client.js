@@ -3667,6 +3667,10 @@ window.__ModuleLoader__.load({
       const gate = editGate(section, m.fz, t);
       const text = typeof section.text === 'string' ? section.text : '';
       const expanded = m.expanded === section.name;
+      // Whether THIS row is the one holding the open form. The caller hands the
+      // panel element to its own row and to no other, so a non-null element is
+      // the ownership fact the 「编辑」 switch reports via `aria-expanded`.
+      const editorOpen = inlineEditor !== null && inlineEditor !== undefined;
       const cause = ineffectiveCause(t, section, m.incoming);
       const showHint = origin === 'downstream-added' || origin === 'unmatched-override';
       return h(
@@ -3752,7 +3756,16 @@ window.__ModuleLoader__.load({
               // a name the assembly really has is edited as replace/hide, a row
               // that is only our own override is re-saved as an append.
               'data-entry': editorRoute(section, m.incoming),
-              disabled: gate.disabled,
+              // The button is a switch, so it reports its own state. `inlineEditor`
+              // is non-null for exactly the row that owns the open form, and a row
+              // that owns it is always rendered — so this is the ownership fact,
+              // not a copy of it. Only a row that owns the form may be pressed
+              // while its gate is shut: folding is always allowed.
+              // Written as the explicit `'true'`/`'false'` string (like the
+              // `data-*` markers, and unlike `aria-readonly` above) because this
+              // is a state a probe and a test read back verbatim.
+              'aria-expanded': String(editorOpen),
+              disabled: gate.disabled && !editorOpen,
               title: gate.reasons.join(' '),
               onClick: () => a.openEditor(section),
               style: {
@@ -3760,10 +3773,13 @@ window.__ModuleLoader__.load({
                 fontSize: 12,
                 padding: '2px 8px',
                 borderRadius: 6,
-                cursor: gate.disabled ? 'default' : 'pointer',
-                opacity: gate.disabled ? 0.5 : 1,
-                color: token.labelSecondary,
-                background: 'transparent',
+                cursor: gate.disabled && !editorOpen ? 'default' : 'pointer',
+                opacity: gate.disabled && !editorOpen ? 0.5 : 1,
+                // The active state is paint only — the border box, padding and
+                // type are byte-identical to every other row's button, so
+                // opening a row moves nothing on screen.
+                color: editorOpen ? token.labelPrimary : token.labelSecondary,
+                background: editorOpen ? token.hoverFill : 'transparent',
                 border: `1px solid ${token.borderL2}`,
               },
             },
@@ -5363,30 +5379,43 @@ window.__ModuleLoader__.load({
         };
       }, [view, historyLayer, sessionArg, reload]);
 
-      // The caret follows the entry: a fresh name is typed in the append entry,
-      // an existing section is edited in the text. The node is reached through
-      // the panel *root* ref, so this works whatever atoms the renderer
-      // resolved to — the root is a host element in either branch.
+      // Two things happen once, when a panel is opened, and never again for that
+      // open: the panel is pulled into view and the caret is placed inside it.
       //
-      // It is armed exactly once per open session. A re-render is not an open
-      // (typing, or switching the layer, must not pull the caret back out of
-      // the control the user moved to), so the session key is latched only when
-      // a node was really focused. Closing clears it, which re-arms the same row.
-      const editorFocus = React.useRef({ key: null, root: null });
+      //   - The scroll is the *smallest* one that shows the form
+      //     (`block: 'nearest'`); `'start'` would yank the whole page and lose
+      //     the row the user just clicked. A node without `scrollIntoView` is
+      //     survivable and simply does not scroll.
+      //   - The caret follows the entry: a fresh name is typed in the append
+      //     entry, an existing section is edited in the text. The control is
+      //     reached through the panel *root* ref, so this works whatever atoms
+      //     the renderer resolved to — the root is a host element in both
+      //     branches.
+      //
+      // Each half is latched by its own key, because each depends on something
+      // different (a node vs. a node that contains the control). Both latches
+      // are cleared when the panel closes, which re-arms the same row. A
+      // re-render is not an open: typing must neither re-scroll nor pull the
+      // caret back out of the control the user moved to.
+      const editorFocus = React.useRef({ focusKey: null, scrollKey: null, root: null });
       React.useEffect(() => {
         if (editor === null) {
-          editorFocus.current.key = null;
+          editorFocus.current.focusKey = null;
+          editorFocus.current.scrollKey = null;
           return;
         }
         const key = `${editorEntry(editor)}|${String(editor.name)}|${String(editor.nameLocked)}`;
-        if (editorFocus.current.key === key) return;
         const node = editorFocus.current.root;
+        if (node === null || node === undefined) return;
+        if (editorFocus.current.scrollKey !== key && typeof node.scrollIntoView === 'function') {
+          editorFocus.current.scrollKey = key;
+          node.scrollIntoView({ block: 'nearest' });
+        }
+        if (editorFocus.current.focusKey === key) return;
         const target =
-          node !== null && node !== undefined && typeof node.querySelector === 'function'
-            ? node.querySelector(`[data-role="${editorFocusRole(editor)}"]`)
-            : null;
+          typeof node.querySelector === 'function' ? node.querySelector(`[data-role="${editorFocusRole(editor)}"]`) : null;
         if (target === null || target === undefined || typeof target.focus !== 'function') return;
-        editorFocus.current.key = key;
+        editorFocus.current.focusKey = key;
         target.focus();
       }, [editor]);
       /** Hand the panel root to {@link editorFocus} once React commits it. */
@@ -5719,8 +5748,26 @@ window.__ModuleLoader__.load({
          * under its own name. `section.action` is only reflected when it is one
          * of the entry's actions, so a registered section whose old override was
          * an (ineffective) append comes up as the replace that fixes it.
+         *
+         * The button is a switch, the way DSH's own settings rows are (in
+         * `dsh-client-ui-settings-models` the row button carries
+         * `aria-expanded` and calls `onToggle`): pressing the 「编辑」 that
+         * opened a row's form closes it again, so collapsing a row does not
+         * mean hunting for 「取消」. Pressing another row's 「编辑」 switches the
+         * one open form to that row. `closeEditor` stays the explicit way out
+         * and is untouched.
+         *
+         * Closing is checked before the gate on purpose: folding never needs
+         * permission, and a form must always be closable by the button that
+         * opened it. Only a *row-scoped* session can be toggled — the 新增一段
+         * entry owns no row, so no row may close it.
          */
         openEditor: (section) => {
+          const editing = editor !== null && editorEntry(editor) !== 'append-new';
+          if (editing && section && section.name === editor.name) {
+            setEditor(null);
+            return;
+          }
           const gate = editGate(section, fz, t);
           if (gate.disabled) {
             setNotice({ tone: 'error', text: gate.reasons.join(' ') });
