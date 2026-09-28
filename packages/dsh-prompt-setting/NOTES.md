@@ -2096,3 +2096,148 @@ clientBuildInfo(missing) = null threw = null
 - **顺带补一条静态复核**：传输链上的改写（`prepareSource` 剥 `sourceURL`/`sourceMappingURL` 尾巴、
   必要时补换行；`buildComboScript` 以 `;\n` 拼接）全部落在标记区域**之外** ⇒ 区域内文本原样通过；
   真机 payload 逐字节比对仍未做（§81.1）。
+
+---
+
+# 阶段一 C · 第六轮（g-009）：把「查看范围」树做成标准 ARIA 树（只动 client.js 渲染 + 测试 + 文档）
+
+## 87. ARIA 树语义修正：`tree > treeitem + group > treeitem`
+
+### 87.1 改动前的真实姿态（自己读代码确认，不照抄 brief）
+
+- `role="tree"` 的**直接子项是每个工作区的裸 `div` 包裹层**（`scopeGroupElement` 的返回值
+  `h('div', { key: 'g:'+key, style: {gap:1} }, nodes)`），包裹层里才是 `role="treeitem"` 的折叠行
+  和会话行 ⇒ 实际形状是 `tree > div > treeitem`。标准树要求 `tree` 的直接子项只能是
+  `treeitem` / `group`，这一条**不成立**（长期记忆里那条「已知未闭合」项说的就是它）。
+- 折叠行**本来**就是 `role="treeitem"`（带 `aria-expanded`、`data-expanded`、Enter/Space、文件夹图标列、
+  hover/focus 环），会话行也**本来**就是 `role="treeitem"` + `aria-selected`：缺的不是角色，而是
+  **层级**（两者都没有 `aria-level`，也没人把「工作区」与「会话」的从属关系说清楚），以及
+  `tree` 自己没有可访问名。
+- 扁平降级分支（无 `useWorkspaces`）本来就是 `role="listbox"` + `role="option"`：角色自洽，
+  只是 `listbox` 没有可访问名。
+
+### 87.2 改成什么（`client.js`，函数级）
+
+- `scopeGroupElement` → **`scopeGroupParts`**，返回 `[header, group|null]`：
+  - **header**：`role="treeitem"`（不变）+ **新增 `aria-level: 1`**；`data-role="group-toggle"`、
+    `data-scope-group`、`data-expanded`、`data-scope-contains-current`、`data-hover`/`data-focus`、
+    `aria-expanded`、`aria-label`、`tabIndex`、样式、`onClick`/`onKeyDown`/`onFocus`/`onBlur` 与子节点
+    （文件夹图标列/caret/label/path/count）**逐字不变**；只有 `key` 从 `'head'` 变成 `h:<key>`（因为
+    它现在与 group 同级）。
+  - **group**：**新增** `role="group"` + `aria-label` = 该工作区标题（未分组桶 = `未分组`/`Ungrouped`）；
+    只有该工作区**确实有子行**时才渲染（关着的组不留一个空 group）。
+  - **会话行**：`role="treeitem"`（不变）+ **新增 `aria-level: 2`**（`aria-selected` 早就有）。
+- `scopeTreeElement`：`scope.groups.map(...)` → **`flatMap(...)`**，于是 `tree` 的直接子项正好是
+  `treeitem`（工作区）与 `group`（其会话）；`tree` 新增 `aria-label`（复用 `sessionHeading`
+  的 zh/en 文案，未新增词典键）。
+- 扁平降级：`listbox` 新增同一个 `aria-label`；**不改角色、不加 `aria-level`**（取舍见 87.5）。
+
+### 87.3 为什么 group 是 header 的兄弟，而不是 APG 里那种「group 嵌在 treeitem 内部」
+
+- 折叠目标是**整行**（`onClick`/`onKeyDown` 都在 header 上，文件夹图标列也触发同一个 toggle，
+  靠 `stopPropagation` 保证一次点击只翻一次）。若把会话行塞进 header 内部，点任一会话都会冒泡成
+  一次折叠/展开，focus 环也会罩住全部子行 ⇒ **行为与观感双变**，直接违反硬约束。
+- 「header 内层再套一层行 + 外层 treeitem 外壳」也不行：focus 环要么落到外层容器上（观感变），
+  要么 treeitem 本身不可聚焦（语义反而更差），而且 `data-scope-group` 的唯一性会被两个节点争。
+- 因此按 brief 明确写下的形状实现：**`tree` 的直接子项为 `treeitem` / `group`**，group 紧随它所属的
+  工作区节点之后。未使用 `aria-owns` 把 group 声明给前面的 treeitem：需要稳定 id（本包目前不用
+  `useId`/`aria-labelledby`，引入新 hook 依赖有风险），且不同 SR 对待 `aria-owns` 的差异较大 ——
+  这条列进未验证项（87.6），不假装已经解决。
+
+### 87.4 零观感变化的机械保证（可断言）
+
+| 结构 | header→首行 | 组间 | 组内行间 |
+| --- | --- | --- | --- |
+| 旧：`tree{gap:2} > 包裹层{gap:1}` | 1px | 2px | 1px |
+| 新：`tree{gap:2} > header`、`tree{gap:2} > group{gap:1, marginTop:-1}` | 2px + (−1px) = **1px** | 2px | 1px |
+
+`tree` 与各行的**任何既有样式值都没改**；只是新建的 group 元素带 `gap:1`（等价于被它取代的旧包裹层）
+与 `marginTop:-1`（抵消 `tree` 的 `gap:2`）。这两个值被新增测试钉住，免得以后有人改了 `tree` 的 gap
+却以为「观感没变」。另外组内行间、`显示更多`/`隐藏 N 条`提示的间距都还在同一个 `gap:1` 容器里 ⇒ 不变。
+
+### 87.5 扁平降级路径的取舍（brief 要求二选一，这里选「明确不宣称树」）
+
+**选「不宣称树」**：降级分支继续 `role="listbox"` + `role="option"`，补一个可访问名，条目**不加**
+`aria-level`。理由：降级分支没有工作区分组，只有一层被 `SESSION_MATCH_LIMIT` 截断的搜索结果；
+套 `tree` 就必须给每行编一个层级（只能是 1），而 `tree` 里的「level 1」意味着根节点、可展开，
+这里的行是搜索结果、不可展开 —— 收益为零而会误导 SR。测试把这条取舍钉死：扁平路径下
+`role=tree`/`treeitem`/`group` 计数全为 0，且 option 上不存在 `aria-level`。
+
+### 87.6 未验证项（诚实清单）
+
+1. **真机屏幕阅读器（VoiceOver）未测**：本轮全部证据来自渲染树断言 + 311 项自动化测试；
+   「SR 的播报顺序、是否会因为 group 是兄弟而非子节点而改变层级播报」**没有实测**。
+2. **`aria-owns` / DOM 内嵌 group 未采用**（见 87.3）：部分 SR 可能不把同级 group 视为前一
+   `treeitem` 的子级；实际层级靠 `aria-level` 兜底，真机未确认。
+3. **`aria-setsize`/`aria-posinset` 未加**（目标描述里本就是可选项）：列表是**窗口化**渲染
+   （每组 10 行起、`显示更多`到 50、全局 100 行上限、超出报「还有 N 条」），`aria-setsize` 会与实际
+   可导航项数不符，宁可不宣称。
+4. **像素级观感等价未截图对比**：87.4 是「按样式值推导 + 断言钉住」，不是像素 diff；
+   `marginTop:-1` 在真机上的最终像素结果未逐像素校验。
+5. 树节点上的 `aria-level` 是**我们写死的 1/2**（不是 SR 从嵌套推导出来的），这是有意为之：
+   结构的真实深度就是两层，写死才与 DOM 一致（测试同时断言了嵌套链）。
+
+### 87.7 证据（全部在 `.worktrees/g-009-att-01` 内执行）
+
+```
+$ node --check client.js && node --check test/client.test.mjs
+（exit 0，无输出）
+$ node --test                       # 包目录，自动发现 test/
+ℹ tests 311   ℹ pass 311   ℹ fail 0   （基线 305 ⇒ 新增 6 项，全部在 test/client.test.mjs 的
+                                       `#region g-009`；既有 305 项未删、未改、未削弱）
+$ npm pack --dry-run                # npm_config_cache=/tmp/g009-npm-cache（本机 ~/.npm 有 root 属主文件，
+                                    #  默认缓存会 EPERM；用临时缓存绕开，与代码无关）
+npm notice total files: 14          # 与基线一致：仍只有运行时文件，test/ 命中 0
+```
+
+新增 6 项断言（都在 `test/client.test.mjs`，遍历**渲染出来的**树，不读源码字符串）：
+
+1. `the「查看范围」tree is a standard ARIA tree`：`role="tree"` 且有名；直接子项只有
+   `treeitem`/`group`（形状 `[treeitem w-alpha, group Alpha repo, treeitem w-beta, treeitem '']`）；
+   每个 `group` 都有 `aria-label`（无名分组检测）；工作区节点 `aria-level=1` + `aria-expanded`，
+   会话行 `aria-level=2` + `aria-selected=boolean`；**嵌套链**断言（level 1 的链为空、level 2 的链
+   恰好是 `['group']`，中间插任何东西都会让链多一项 ⇒ 变红）；并对 `tree{gap:2}` /
+   `group{gap:1, marginTop:-1}` 做间距等价断言。
+2. 开合一个工作区：Enter 后出现 **新的、有名的** group（`beta-dir`）且行都是 level 2；Space 收起后
+   该 group 消失（**不留空 group**）。
+3. 搜索态形状不变：只留生存工作区的 `[treeitem, group]`；`Beta` ⇒ `beta-dir`；`Loose` ⇒ 未分组桶
+   `['treeitem'(''), group(未分组)]`；同时断言「遍历得到的行集合 === 既有 helper 读 marker 得到的行集合」。
+4. 没有任何工作区时：唯一桶仍是**有名 group**（`未分组`），6 个会话仍全是 level 2。
+5. `显示更多`动作行：不是 treeitem、也不是 `tree` 的直接子项，而是**它的 group 内**的普通按钮；
+   同组内的行数 = `SCOPE_GROUP_PAGE`(10) 且全是 level 2。
+6. 扁平降级：`tree`/`treeitem`/`group` 计数 0，`listbox` 有名，option 上没有 `aria-level`。
+
+### 87.8 负向对照（逐条「改坏 ⇒ 红 ⇒ 还原 ⇒ 绿」，`shasum -a 256 -c` 逐字节确认回滚）
+
+| # | 改坏方式（只改 `client.js`，改完立刻还原） | 结果 | 还原 |
+| --- | --- | --- | --- |
+| ① | 会话行 `role: 'treeitem'` → `role: 'option'` | **5 红**（新增 6 项里除「扁平降级」那项外全红：角色集合、层级、嵌套链、形状断言命中） | ✅ `773b8ca3…` 逐字节回滚，6/6 复绿 |
+| ② | `flatMap` → `map(h('div', …))`，在 `tree` 与 `treeitem` 之间插裸 `div` 夹层 | **5 红**（直接子项断言 + 嵌套链断言命中） | ✅ 同上 hash 回滚，复绿 |
+| ③ | 去掉 group 的 `aria-label`（造出无名分组） | **5 红**（无名分组检测命中） | ✅ 同上 hash 回滚，复绿 |
+
+- 「扁平降级」那项在 ①②③ 下**保持绿**是预期：它断言的是另一条分支（`role="listbox"`），
+  与被改坏的树渲染无关 —— 这也顺带证明新增断言**没有**用「整页快照」这种会连坐的写法。
+- 还原后 `git status --porcelain` 只有本 attempt 预期修改的文件（无残留 `client.js` 半成品、
+  无未跟踪文件、无 `.tgz`）。
+
+```
+evidence: suite=client(node --test, packages/dsh-prompt-setting) passed=311 failed=0 exit=0 ms=7885 diff=2f/+321/-8 commit=2fac4d9
+```
+
+（该 commit 只含 `client.js` + `test/client.test.mjs`，即被验证的代码与测试本身；本 NOTES 与 README 的
+文档改动在其后的提交里，不改任何被测字节。）
+
+### 87.9 本轮明确**没有**做的事
+
+- 没有改分组/排序/可见性规则，没有碰 `SCOPE_GROUP_PAGE/SCOPE_GROUP_MAX/SCOPE_TOTAL_MAX`/
+  `SESSION_MATCH_LIMIT`/`SCOPE_GROUP_LIMIT`，没有碰搜索语义与分页边界；
+- 没有改任何样式值、没有改视觉（文件夹图标列、caret、色条 + ✓、hover/focus 环）与交互行为
+  （↑↓/Enter/Space/Esc、点行、点图标列各一次 toggle）；
+- 没有改既有 `data-*` 标记，没有删改削弱既有 305 项断言（本轮**只增 6 项**）；
+- 没有动 `core/**`、`index.js`、`package.json`、`cordis.patch.yml`；`CONTRACT.md` 里本来就没有树的
+  ARIA 描述（已 grep 确认），故无需同步、也无漂移；
+- 没有改 zh/en 词典键（`aria-label` 复用既有 `sessionHeading`，既有词典 parity 用例仍绿）；
+- 没有调用 `cordis_inspect_query`；没有触碰 `~/.dsh/prompt-setting/*`、没有重启 `dsh web`、
+  没有装/卸插件、没有改 profile、没有改 `main`；
+- 没有做真机 SR 验证、没有做像素截图对比、没有加 `aria-owns`/`aria-setsize`/`aria-posinset`
+  （见 87.6）。

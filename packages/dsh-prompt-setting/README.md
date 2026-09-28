@@ -180,6 +180,23 @@ document.querySelector('[data-plugin="dsh-prompt-setting"]').dataset.buildMatch 
 的元数据，rev 没变就不读文件、不发通知。所以「写入后、`rebuilt` 前」判 `false` 是正确的（页面确实
 不是当前文件），但此时刷新也可能拿到同一份旧 artifact。详见 CONTRACT §14.5。
 
+## 可访问性：查看范围是一棵标准 ARIA 树
+
+「查看范围」的工作区树（`role="tree"`，`data-region="session-tree"`）现在有标准树语义，观感与交互不变：
+
+- `tree` 的**直接子项只有** `treeitem`（工作区节点，`aria-level="1"`，`aria-expanded`）和 `group`
+  （该工作区的会话容器，`aria-label` = 工作区标题）；**没有无名分组**，也没有裸 `div` 夹层；
+- 会话条目是 `role="treeitem"`、`aria-level="2"`、`aria-selected`（当前选中）；分页/排序/可见性、
+  ↑↓、Enter/Space、色条 + ✓、hover/focus 环、全部 `data-*` 标记一律不变；
+- 「显示更多」与到渲染上限的提示不是树节点，它们留在所属 `group` 内（提为 `tree` 的直接子项反而
+  会破坏上面的规则）；
+- **扁平降级路径（无 `useWorkspaces`）明确不宣称树**：它仍是 `role="listbox"` + `role="option"`
+  的可搜索列表，带可访问名，条目**不带** `aria-level` —— 二选一里选了「不假装有层级」，因为降级
+  分支没有工作区分组可言，硬套 `tree` 只会多出一层假层级。
+
+真机屏幕阅读器（VoiceOver）**未测**（本机验证手段只有渲染树断言），细节与取舍见
+[`NOTES.md`](./NOTES.md) §87。
+
 ## 阶段边界
 
 阶段一 B 交付宿主侧全部能力：`GET /prompt-setting/snapshot`、
