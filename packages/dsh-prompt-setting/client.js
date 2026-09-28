@@ -89,6 +89,16 @@ window.__ModuleLoader__.load({
     const LAYER_FILTERS = ['all', 'default', 'user', 'workspace'];
     const OVERRIDABLE_FILTERS = ['all', 'yes', 'no'];
     const ORIGIN_FILTERS = ['all', 'registered', 'appended', 'downstream-added', 'unmatched-override'];
+    /**
+     * The actions the 「编辑已有段」 entry may offer. `append` is deliberately
+     * absent: a name that is already in the assembly cannot be appended to, so
+     * offering it here is exactly the illegal pair this refactor removes.
+     */
+    const EDIT_ACTIONS = ['replace', 'hide'];
+    /**
+     * Every action CONTRACT §4.1 knows. The outer bound the two entries each
+     * take a slice of, and the last guard before a write.
+     */
     const ACTIONS = ['replace', 'hide', 'append'];
     /** Upper bound on rendered lines put into the DOM (a long prompt is real). */
     const MAX_VIEW_LINES = 3000;
@@ -326,7 +336,26 @@ window.__ModuleLoader__.load({
       editOrderHint:
         'append 的 order 是结果数组的目标下标，留空表示追加到末尾；replace / hide 不携带 order。',
       editOrderInvalid: 'order 必须是不小于 0 的整数，或留空。',
-      editName: '段名（覆盖目标）',
+      // ---- stage 3: two entries, so an illegal (name, action) pair cannot exist
+      editNameLocked: '段名（只读，取自分段列表）',
+      editNameLockedHint:
+        '编辑入口不改段名：replace / hide 只作用于这一个已注册的段。要新建段请用「新增一段」。',
+      editOriginLabel: '来源',
+      editOverridableLabel: '可覆盖',
+      appendEntry: '新增一段',
+      appendHeading: '新增一段',
+      appendUntitled: '（未命名新段）',
+      appendName: '段名（新段，必须未被注册）',
+      appendNameHint:
+        '必须使用当前装配中尚未注册的段名；要改已注册的段名，请回分段列表用「编辑」替换。',
+      appendActionFixed: '动作固定 append',
+      appendActionHint: '新增入口不提供动作选择：新段只能追加 append，不可能与 replace / hide 混用。',
+      editOverrideHeading: '编辑本覆盖',
+      editOverrideHint:
+        '这一行是本插件自己写入的覆盖（或没有目标的覆盖），段名与动作都由该覆盖本身决定：以同名 append 重存。',
+      feedbackNameRequired: '请先输入段名，保存已禁用。',
+      feedbackNameTaken:
+        '该段名已在当前装配中，保存已禁用：请换一个尚未注册的段名，或回分段列表用「编辑」替换该段。',
       blockTitle: '此覆盖不会生效，已阻止保存',
       blockAppendExisting:
         '该段名已在当前装配中：append 不会生效（两段不可同名，宿主会跳过并记为 name-already-present）。请改用「替换 replace」，或把段名改成一个尚未注册的新名。',
@@ -585,7 +614,27 @@ window.__ModuleLoader__.load({
       editOrderHint:
         'append’s order is a target index in the resulting array; leave it blank to append at the end. replace / hide never carry an order.',
       editOrderInvalid: 'The order must be a non-negative integer, or blank.',
-      editName: 'Section name (target)',
+      // ---- stage 3: two entries, so an illegal (name, action) pair cannot exist
+      editNameLocked: 'Section name (read-only, taken from the section list)',
+      editNameLockedHint:
+        'The edit entry never changes the name: replace / hide apply to this one registered section. Use “Add a section” to create a new one.',
+      editOriginLabel: 'Origin',
+      editOverridableLabel: 'Overridable',
+      appendEntry: 'Add a section',
+      appendHeading: 'Add a section',
+      appendUntitled: '(unnamed new section)',
+      appendName: 'Section name (new, must be unregistered)',
+      appendNameHint:
+        'Must be a name the current assembly does not have yet; to change a registered name, go back to the section list and use Edit.',
+      appendActionFixed: 'Action fixed to append',
+      appendActionHint:
+        'The add entry offers no action choice: a new section can only be appended, so it can never be mixed up with replace / hide.',
+      editOverrideHeading: 'Edit this override',
+      editOverrideHint:
+        'This row is an override this plugin wrote itself (or one with no target), so its name and action come from that override: it is re-saved as an append under the same name.',
+      feedbackNameRequired: 'Type a section name first; saving is disabled.',
+      feedbackNameTaken:
+        'That name is already in the current assembly, so saving is disabled: pick a new, unregistered name, or go back to the section list and replace that section.',
       blockTitle: 'This override would not take effect; saving is blocked',
       blockAppendExisting:
         'That name is already in the current assembly, so append would not take effect (two sections may not share a name; the Host skips it as name-already-present). Use Replace instead, or change the name to a new, unregistered one.',
@@ -1828,6 +1877,79 @@ window.__ModuleLoader__.load({
       if (feasibility.code === 'missing-name') return t('blockMissingName');
       if (feasibility.code === 'name-already-present') return t('blockAppendExisting');
       return t('blockNotPresent');
+    }
+
+    /**
+     * Which editor entry a 分段列表 row belongs to.
+     *
+     * The whole point of the refactor is that a name and an action can no
+     * longer be combined by hand, so the *row* decides which entry it opens:
+     *
+     *   - `edit` — the row is a section the incoming assembly really has, so
+     *     only `replace` / `hide` mean anything and the name is not the user's
+     *     to type (the 「编辑已有段」 entry);
+     *   - `edit-override` — the row is our OWN override artifact (`appended`,
+     *     or an override with no target). Its name is deliberately not in the
+     *     incoming assembly ({@link incomingNames} excludes our appends), so
+     *     re-saving it is necessarily an `append` upsert: the action is not the
+     *     user's to pick either.
+     *
+     * @param section - a section row entry, or null.
+     * @param incoming - the names {@link incomingNames} returned.
+     * @returns 'edit' | 'edit-override'.
+     */
+    function editorRoute(section, incoming) {
+      const name = section && typeof section.name === 'string' ? section.name : '';
+      const present = name.length > 0 && incoming instanceof Set && incoming.has(name);
+      return present ? 'edit' : 'edit-override';
+    }
+
+    /**
+     * The actions one editor mode may offer, in display order. Fixed by the
+     * entry, never chosen by the user — this is what makes an illegal pair
+     * (`append` + registered name, `replace` + unregistered name) unreachable
+     * from the interface.
+     * @param mode - 'edit' | 'append'.
+     * @returns a non-empty array of action names.
+     */
+    function editorActions(mode) {
+      return mode === 'append' ? ['append'] : EDIT_ACTIONS;
+    }
+
+    /**
+     * Which entry an editor state came from. Derived from `mode`/`nameLocked`
+     * so it cannot drift from what the panel actually enforces.
+     * @param editor - the editor state, or null.
+     * @returns 'edit' | 'append-new' | 'edit-override', or null.
+     */
+    function editorEntry(editor) {
+      if (editor === null || editor === undefined) return null;
+      if (editor.mode !== 'append') return 'edit';
+      return editor.nameLocked === true ? 'edit-override' : 'append-new';
+    }
+
+    /**
+     * The live verdict of the entry the user is standing in: rendered while
+     * typing, and the reason neither entry can reach the pre-save check.
+     *
+     * The two edit presentations hold a name the row already decided for them
+     * (or one that may only be re-saved as an append), so they have nothing to
+     * collide with; the 新增一段 entry is the one place a name is typed, and
+     * there a collision must be visible immediately — not after a save attempt.
+     *
+     * @param editor - the editor state, or null.
+     * @param incoming - the names {@link incomingNames} returned.
+     * @param t - the bound translator.
+     * @returns `{code, text}` or null when nothing stands in the way.
+     */
+    function entryFeedback(editor, incoming, t) {
+      if (editor === null || editor === undefined) return null;
+      if (editor.mode !== 'append' || editor.nameLocked === true) return null;
+      const name = typeof editor.name === 'string' ? editor.name.trim() : '';
+      if (name.length === 0) return { code: 'missing-name', text: t('feedbackNameRequired') };
+      const present = incoming instanceof Set && incoming.has(name);
+      if (present) return { code: 'name-already-present', text: t('feedbackNameTaken') };
+      return null;
     }
 
     /**
@@ -3345,6 +3467,10 @@ window.__ModuleLoader__.load({
               type: 'button',
               'data-action': 'edit',
               'data-section-name': section.name,
+              // Which entry this row opens. The row decides it, not the user:
+              // a name the assembly really has is edited as replace/hide, a row
+              // that is only our own override is re-saved as an append.
+              'data-entry': editorRoute(section, m.incoming),
               disabled: gate.disabled,
               title: gate.reasons.join(' '),
               onClick: () => a.openEditor(section),
@@ -3391,6 +3517,20 @@ window.__ModuleLoader__.load({
 
     /**
      * The edit panel for the selected section.
+     *
+     * Three layers, from the outside in:
+     *
+     *   1. the *entry* fixes what may be chosen — the name is read-only (or a
+     *      fresh input) and the action set is exactly what the entry allows, so
+     *      an illegal (name, action) pair cannot be produced at all;
+     *   2. the *live* verdict ({@link entryFeedback}) says, while typing, why a
+     *      save is disabled — a name already in the assembly never waits for a
+     *      save attempt to be reported;
+     *   3. the *fallback* ({@link overrideFeasibility} + {@link blockText}) is
+     *      still the pre-save check, rendered and enforced only for a state the
+     *      two entries cannot produce: a broken entry contract, or a world that
+     *      moved under an open panel.
+     *
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
@@ -3399,18 +3539,42 @@ window.__ModuleLoader__.load({
     function renderEditor(t, m, a) {
       const editor = m.editor;
       if (editor === null) return null;
+      const entry = editorEntry(editor);
+      const allowed = editorActions(editor.mode);
+      const nameLocked = editor.nameLocked === true;
+      const section = m.editorSection;
       const workspace = m.snap.data && m.snap.data.layers ? m.snap.data.layers.workspace : null;
       const workspaceUsable = workspace && workspace.enabled === true;
-      const gate = editGate(m.editorSection, m.fz, t);
+      const gate = editGate(section, m.fz, t);
       const feasibility = overrideFeasibility(editor.name, editor.action, m.incoming);
+      const feedback = entryFeedback(editor, m.incoming, t);
+      // The old check keeps its teeth; it is simply no longer the first thing a
+      // user meets. It only paints when no live verdict already covers it.
+      const fallback = feasibility.blocked && feedback === null;
+      const origin = section === null ? null : originOf(section);
+      const overridable = section === null ? null : section.overridable !== false;
       const warnings = [];
       if (gate.warn) {
         warnings.push(m.fz.frozen ? t('editWarnFrozenGlobal') : t('editWarnUnknown'));
       }
+      const headingKey =
+        entry === 'append-new' ? 'appendHeading' : entry === 'edit-override' ? 'editOverrideHeading' : 'editHeading';
       return h(
         'section',
-        { 'data-region': 'editor', 'data-editor-name': editor.name, style: cardStyle },
-        h('h3', { style: headingStyle }, `${t('editHeading')}: ${editor.name}`),
+        {
+          'data-region': 'editor',
+          'data-editor-name': editor.name,
+          'data-editor-mode': editor.mode,
+          'data-editor-entry': entry,
+          'data-editor-name-locked': String(nameLocked),
+          'data-editor-actions': allowed.join(','),
+          style: cardStyle,
+        },
+        h(
+          'h3',
+          { style: headingStyle },
+          `${t(headingKey)}: ${String(editor.name).length > 0 ? editor.name : t('appendUntitled')}`,
+        ),
         gate.reasons.length > 0
           ? h(
               'p',
@@ -3429,7 +3593,23 @@ window.__ModuleLoader__.load({
             text,
           ),
         ),
-        feasibility.blocked
+        // Layer 2: the reason we are inside an entry, stated the moment it
+        // becomes true. Never the blocked-override card, so a name collision is
+        // told apart from a contract violation.
+        feedback === null
+          ? null
+          : h(
+              'p',
+              {
+                'data-warning': 'entry-feedback',
+                'data-feedback-code': feedback.code,
+                style: { margin: '8px 0 0', fontSize: 12, color: token.stateWarn, wordBreak: 'break-word' },
+              },
+              feedback.text,
+            ),
+        // Layer 3: defense in depth. Unreachable through either entry for the
+        // cases they own, which is exactly why it is still here.
+        fallback
           ? h(
               'div',
               {
@@ -3445,32 +3625,71 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { style: { marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 } },
+          entry === 'edit' && section !== null
+            ? h(
+                'div',
+                {
+                  'data-editor-meta': 'true',
+                  'data-editor-origin': origin,
+                  'data-editor-overridable': String(overridable),
+                  style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
+                },
+                h('span', { style: metaStyle }, t('editOriginLabel')),
+                h('span', { 'data-role': 'origin' }, t(originKey(origin))),
+                h('span', { style: metaStyle }, t('editOverridableLabel')),
+                h('span', { 'data-role': 'overridable' }, overridable ? t('fYes') : t('fNo')),
+              )
+            : null,
           h(
             'label',
             { style: { display: 'flex', flexDirection: 'column', gap: 4, maxWidth: 420 } },
-            h('span', { style: metaStyle }, t('editName')),
+            h('span', { style: metaStyle }, nameLocked ? t('editNameLocked') : t('appendName')),
             h(UI.Input, {
               'data-role': 'name',
+              'data-name-locked': String(nameLocked),
+              'aria-readonly': nameLocked,
+              readOnly: nameLocked,
               value: editor.name,
               onChange: a.setName,
             }),
+            h(
+              'span',
+              { 'data-role': 'name-hint', style: metaStyle },
+              entry === 'append-new' ? t('appendNameHint') : nameLocked ? t('editNameLockedHint') : '',
+            ),
           ),
+          entry === 'edit-override'
+            ? h('p', { 'data-role': 'entry-hint', style: { margin: 0, ...metaStyle } }, t('editOverrideHint'))
+            : null,
           h(
             'div',
             { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
             h('span', { style: metaStyle }, t('colAction')),
-            tabs(
-              ACTIONS.map((value) => ({
-                value,
-                label: t(value === 'replace' ? 'actionReplace' : value === 'hide' ? 'actionHide' : 'actionAppend'),
-                id: `ps-action-${value}`,
-                panelId: 'ps-editor-panel',
-              })),
-              editor.action,
-              a.setAction,
-              t('editHeading'),
-              'action',
-            ),
+            allowed.length === 1
+              ? h(
+                  'span',
+                  {
+                    'data-role': 'action-fixed',
+                    'data-fixed-action': allowed[0],
+                    style: { fontSize: 12, color: token.labelPrimary },
+                  },
+                  t(allowed[0] === 'append' ? 'appendActionFixed' : allowed[0] === 'hide' ? 'actionHide' : 'actionReplace'),
+                )
+              : tabs(
+                  allowed.map((value) => ({
+                    value,
+                    label: t(value === 'replace' ? 'actionReplace' : value === 'hide' ? 'actionHide' : 'actionAppend'),
+                    id: `ps-action-${value}`,
+                    panelId: 'ps-editor-panel',
+                  })),
+                  editor.action,
+                  a.setAction,
+                  t('colAction'),
+                  'action',
+                ),
+            allowed.length === 1 && !nameLocked
+              ? h('span', { 'data-role': 'action-hint', style: metaStyle }, t('appendActionHint'))
+              : null,
           ),
           editor.action === 'hide'
             ? null
@@ -3537,7 +3756,7 @@ window.__ModuleLoader__.load({
               {
                 variant: 'primary',
                 'data-action': 'save',
-                disabled: gate.disabled || m.busy === true || feasibility.blocked,
+                disabled: gate.disabled || m.busy === true || feedback !== null || fallback,
                 onClick: a.save,
               },
               m.busy ? t('editSaving') : t('editSave'),
@@ -3564,12 +3783,24 @@ window.__ModuleLoader__.load({
         renderFilters(t, m, a),
         h(
           'div',
-          {
-            'data-sections-total': String(sections.length),
-            'data-sections-shown': String(shown.length),
-            style: { ...metaStyle },
-          },
-          fmt(t('sectionsShown'), { shown: shown.length, total: sections.length }),
+          { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+          h(
+            'span',
+            {
+              'data-sections-total': String(sections.length),
+              'data-sections-shown': String(shown.length),
+              style: { ...metaStyle },
+            },
+            fmt(t('sectionsShown'), { shown: shown.length, total: sections.length }),
+          ),
+          // The second entry: the only place a NEW name is typed, and its
+          // action is not the user's to pick. The row-scoped 「编辑」 entry next
+          // to each section is the other half.
+          h(
+            UI.Button,
+            { variant: 'outline', 'data-action': 'append-new', onClick: a.openAppend },
+            t('appendEntry'),
+          ),
         ),
         sections.length === 0
           ? h(
@@ -5058,10 +5289,24 @@ window.__ModuleLoader__.load({
         setOriginFilter: (value) => setFilters((current) => ({ ...current, origin: value })),
         setFullOrigin,
         toggleExpanded: (name) => setExpanded((current) => (current === name ? '' : name)),
-        setAction: (value) => setEditor((current) => (current === null ? current : { ...current, action: value, error: null })),
+        // The action control only ever offers the entry's own set, and this
+        // clamp is the second half of that guarantee: a programmatic call
+        // cannot smuggle `append` into the edit entry (or the reverse), which
+        // is what would resurrect the illegal pair.
+        setAction: (value) =>
+          setEditor((current) => {
+            if (current === null) return current;
+            const allowed = editorActions(current.mode);
+            if (allowed.indexOf(value) < 0) return current;
+            return { ...current, action: value, error: null };
+          }),
         setName: (event) => {
           const value = event && event.target ? String(event.target.value) : '';
-          setEditor((current) => (current === null ? current : { ...current, name: value, error: null }));
+          setEditor((current) => {
+            // A locked name is not a text field: the row already decided it.
+            if (current === null || current.nameLocked === true) return current;
+            return { ...current, name: value, error: null };
+          });
         },
         setLayer: (value) => setEditor((current) => (current === null ? current : { ...current, layer: value, error: null })),
         setOrder: (event) => {
@@ -5072,17 +5317,44 @@ window.__ModuleLoader__.load({
           const value = event && event.target ? String(event.target.value) : '';
           setEditor((current) => (current === null ? current : { ...current, text: value, error: null }));
         },
+        /**
+         * Entry 1 — 「编辑已有段」. The row decides the presentation: a name the
+         * incoming assembly has is edited as replace/hide with a read-only
+         * name; a row that is only our own override is re-saved as an append
+         * under its own name. `section.action` is only reflected when it is one
+         * of the entry's actions, so a registered section whose old override was
+         * an (ineffective) append comes up as the replace that fixes it.
+         */
         openEditor: (section) => {
           const gate = editGate(section, fz, t);
           if (gate.disabled) {
             setNotice({ tone: 'error', text: gate.reasons.join(' ') });
             return;
           }
+          const route = editorRoute(section, incoming);
+          const mode = route === 'edit' ? 'edit' : 'append';
+          const allowed = editorActions(mode);
+          const current = section && section.action;
           setEditor({
-            name: section.name,
-            action: section.action && ACTIONS.indexOf(section.action) >= 0 ? section.action : 'replace',
-            text: typeof section.text === 'string' ? section.text : '',
-            layer: section.overrideLayer === 'workspace' ? 'workspace' : 'user',
+            mode,
+            name: section && typeof section.name === 'string' ? section.name : '',
+            nameLocked: true,
+            action: current && allowed.indexOf(current) >= 0 ? current : allowed[0],
+            text: section && typeof section.text === 'string' ? section.text : '',
+            layer: section && section.overrideLayer === 'workspace' ? 'workspace' : 'user',
+            order: '',
+            error: null,
+          });
+        },
+        /** Entry 2 — 「新增一段」: a new name, and no action to pick. */
+        openAppend: () => {
+          setEditor({
+            mode: 'append',
+            name: '',
+            nameLocked: false,
+            action: 'append',
+            text: '',
+            layer: 'user',
             order: '',
             error: null,
           });
@@ -5139,8 +5411,19 @@ window.__ModuleLoader__.load({
         save: async () => {
           if (editor === null) return;
           const name = String(editor.name === null || editor.name === undefined ? '' : editor.name).trim();
-          // The same check the disabled button enforces, repeated here so a
-          // programmatic click can never turn into a silently useless write.
+          // The entries derive the action from the row the user clicked, so an
+          // action outside the contract means this state is not one either
+          // entry can produce; refuse it rather than guess at replace semantics.
+          if (ACTIONS.indexOf(editor.action) < 0) {
+            setNotice({ tone: 'error', text: errorText(t, { code: 'unknown-action' }) });
+            return;
+          }
+          // Layer 3, unchanged and still the last word before a write: the same
+          // feasibility check the disabled button mirrors, repeated here so a
+          // programmatic click — or a snapshot that changed under an open panel
+          // — can never turn into a silently useless write. Both entries keep
+          // their own names and actions legal, so a normal path never gets here;
+          // when it does fire, it states the reason and writes nothing.
           const feasibility = overrideFeasibility(name, editor.action, incoming);
           if (feasibility.blocked) {
             setNotice({ tone: 'error', text: blockText(t, feasibility) });
