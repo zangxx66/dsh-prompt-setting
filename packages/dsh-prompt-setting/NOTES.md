@@ -1331,3 +1331,193 @@ evidence: suite=all    passed=167 failed=0 exit=0 ms=2419 diff=2f/+657/-75 commi
    （风险大于收益，且复核要求的是 `aria-expanded` 与展开态一致，已满足并有断言）；若后续要做完整的
    「树」无障碍语义，应把分组容器移进分组头 `treeitem` 内部。
 5. 其余同 §53（真机规模、`useWorkspaces` 是否到达 props、`default-workspace` 文案）。
+
+# NOTES 阶段二 — 历史 / diff / 恢复默认 / 导出导入
+
+## 59. 本阶段的分层原则（沿用阶段一，且是选型的理由）
+
+阶段二新增的能力全部落在**纯函数层**，`index.js` 只做接线，`core/store.js`
+仍是唯一碰 FS 的模块：
+
+| 文件 | 职责 | 为什么放在这里 |
+| --- | --- | --- |
+| `core/history.js` | 记录构造/校验、jsonl 解析、裁剪（保留最近 N）、查询分页、指纹 | 无需重启宿主即可单测；裁剪上界是「有界」的证明点 |
+| `core/diff.js` | 行级 LCS + 有界退化、段级快照比较、焦点段选择 | 判据要求 diff 正确性（空文本/CRLF/超长行）可单测 |
+| `core/transfer.js` | 导出文档构造、导入文档校验、冲突策略与变更计划 | 导入的「写之前全部可判定」是原子性的前提 |
+| `core/store.js` | `<layer>/history.jsonl` 追加写 + 裁剪重写、多文件原子替换 | 唯一 FS 面；原子性必须贴着 `rename` 实现 |
+
+`core/*` 里唯一新增的 Node 内置依赖是 `node:crypto`（SHA-256 指纹）。它是确定性的、
+无 IO、无时钟，不破坏「纯函数内核」的性质；`at` 由调用方传入，测试可以钉死时间戳。
+
+## 60. 关键设计决策（含与 brief / goal.md 的差异及理由）
+
+### 60.1 历史记录存**全文**，快照只存摘要（`{name, action, hash, bytes}`）
+
+brief 允许「存哈希 + 长度」，前提是能支撑 diff。选全文是因为：diff 要求展示**行级**差异，
+只有哈希无法还原行；而每条记录最多两个 200 KiB 文本是既有 `MAX_TEXT_BYTES` 决定的上界，
+不是新引入的风险。为把「任意两条历史记录对比」的代价压住，每条记录额外携带一份
+**写后快照**（只有名字/动作/哈希/字节数，没有文本），段级 diff 就完全不需要读 N 个 prompt 正文。
+
+### 60.2 `PUT` / `DELETE` 的响应体**逐字节不变**（本阶段最重要的一个取舍）
+
+第一版实现给 `PUT`/`DELETE` 的成功响应加了 `history` 字段（记录 id 与写入结果）。
+跑既有 167 项测试时 `route.test.mjs:728` 的 `deepStrictEqual` 立刻变红——阶段一契约把
+这两个响应体当作冻结字节。按「既有契约只增不改」的更强读法（**连字段都不增**），
+改为：`PUT`/`DELETE` 响应体保持原样；历史写入的结果通过 `GET /history` 的 `lastError`
+暴露（`state.historyFailures`，按键为历史文件路径）。这样「日志写失败」仍然可观测，
+而冻结响应一个字节都没动。`reset=true` 是本阶段新增的能力，没有历史包袱，所以它的响应
+**带** `history` 字段。
+
+### 60.3 整层重置用 `DELETE /overrides?reset=true`，而不是新路由
+
+brief 允许两种写法。选查询参数是因为：方法表 `GET, PUT, DELETE` 完全不变 ⇒ 既有 405
+`allow` 语义与所有既有断言不变；`reset` 必须是**字面量 `true`**，`reset=1` 会落回单条删除
+语义（随后因缺 `name` 而 `400 missing-name`），这条差异有单测钉住。
+
+### 60.4 「恢复默认（单段）」不发新路由：复用既有单条 DELETE，逐层发一次
+
+判据 3 说「删除指定段的**全部层**覆盖」。宿主没有任何跨层写，硬造一个会引入第二个真相源，
+所以客户端读现有覆盖列表 → 算出哪几层持有该名字（`data-reset-layers` 直接渲染给用户看）
+→ 逐层 `DELETE`。二次确认卡片先说明「将删除以下层中的全部覆盖」。
+
+### 60.5 导入：先全部校验与解析，再一次性 stage，最后 rename
+
+实现顺序严格按 brief：解析 → schema/版本/字段校验 → 冲突策略 → 临时文件写入 → 校验通过 →
+原子替换。关键点有三处：
+
+1. **解析后立刻解析目标**（`targetFor` + `writableConfig`）。workspace 层无法解析 ⇒ 400，
+   此时**一个字节都还没写**，用户层也不会被写（有哈希断言证明）。
+2. **多文件 stage 再统一 rename**（`writeConfigsAtomically`）：先给每个目标写同目录临时文件，
+   **再把临时文件读回来重新校验**（复用 `validateConfig`），全部通过才逐个 `rename`。
+   任何一步失败 ⇒ 删除所有临时文件并抛错，真实配置文件从未以写方式打开。
+3. **失败的证明用哈希**：`test/stage2.test.mjs` 的原子性用例对 user/workspace 的
+   `overrides.json` **和** `history.jsonl` 四个文件做 SHA-256 前后比对，并额外断言目录里
+   没有残留 `.tmp`。
+
+残余风险不藏：commit 阶段是**逐文件**原子的，不是跨文件事务。两次 `rename` 之间发生
+文件系统错误会留下「前一层已替换」的状态，错误信息会写明「n of m layer(s) were already
+replaced」（CONTRACT §11.6 + §7.9）。
+
+### 60.6 「空 workspace 层无 session」跳过而不是报错
+
+导出（不带 session）会带一个 `enabled:false` 的空 workspace 层。若导入时一律要求解析
+workspace，则「导出 → 导入」在无 session 时必然 400 —— 用户无法解决。规则改为：
+**文档在该层没有任何条目**时跳过并在 `skipped` 里说明；**有条目**时才 400
+`workspace-unresolved`（绝不静默丢数据）。两种都有单测。
+
+### 60.7 行级 diff 在宿主算，客户端只渲染（两条分支同源）
+
+brief 允许「宿主返回 diff」或「客户端自算」。选宿主计算：`core/diff.js` 是可单测的纯函数，
+并且把 `ops` 与 `textBefore/textAfter` 一起返回，于是客户端的两条渲染分支用的是**同一份**
+比较结果——primitives 可用时交给官方 `DiffBlock`（它自己按 oldText/newText 渲染），
+不可用时用同一份 `ops` 自绘 `+`/`-` 行。这不是两套算法，避免「两条分支给出不同差异」这种
+最难查的 bug。
+
+`mode: "lcs"` / `"bounded"` 明确区分精确与退化：超预算（每侧 2000 行 / 100 万表格单元）
+时退化为「公共前缀 + 公共后缀 + 一整块替换」，并把 mode 写进契约与 UI（有单测断言
+`mode === 'bounded'` 且 40 行里改 1 行仍能定位到该行）。
+
+CRLF：`\r\n` 与 `\r` 都当行分隔，`crlfNormalized: true` 明说「这个差异被忽略了」，
+而不是把它藏起来（`a\r\nb` vs `a\nb` 断言行级无差异且有标记）。
+
+### 60.8 历史只在「覆盖」页开放时拉取
+
+设置页默认在「分段」页。若挂载即拉历史，阶段一的既有断言
+（`requests stay on the plugin prefix`：请求集合恰好是 ping/snapshot/overrides）会变红。
+把历史 effect 收敛为 `view === 'overrides'` 时才执行：既不改既有断言，也真的省掉一次
+管理页不看的请求（有单测断言分段页拉取历史次数为 0）。
+
+### 60.9 顺手修掉的既有 i18n 缺口（`ovUser` / `ovWorkspace` / `sessionCurrent`）
+
+写键集覆盖检查脚本（`t(...)` 里所有字符串字面量与注册字典对比）时发现阶段一有 **3 个键
+从未注册**：`t('ovUser')`、`t('ovWorkspace')`、`t('sessionCurrent')` 会渲染成字面量
+`ovUser` / `ovWorkspace` / `sessionCurrent`（出现在层选择器、保存提示、查看范围标题里）。
+本阶段一并补上 zh/en 文案。这是**既有行为缺陷**，不是新功能；修复有测试（新用例断言
+确认卡片里出现「用户级/工作区级」文案）。
+
+## 61. 客户端 UI 与机器可读标记（新增部分）
+
+| 区域 | 标记 |
+| --- | --- |
+| 历史面板 | `data-region="history"`、`data-history-layer`、`data-history-state`、`data-history-total`、`data-history-corrupt`、`data-history-unreadable`、`data-history-last-error` |
+| 历史行 | `data-history-row="<id>"`、`data-history-action`、`data-history-name`、`data-history-origin`、`data-history-selected="from|to|"`；当前生效值行为 `data-history-row="current"` + `data-history-current="true"` |
+| 对比结果 | `data-region="history-diff"`、`data-diff-state`、`data-diff-from`、`data-diff-to`、`data-diff-sections/-changed/-added/-removed/-same`、`data-hd-row="<name>"` + `data-hd-status`、`data-diff-no-lines`、`data-diff-line-name/-mode/-line-added/-line-removed`、`data-diff-renderer="diffblock|fallback"` |
+| 行级渲染 | 官方分支 `data-diff-block="primitives"`；自绘分支 `data-diff-block="fallback"` + `data-diff-ops`/`data-diff-ops-shown` + 每行 `data-diff-op`/`data-diff-op-text`/`data-diff-op-before-line`/`data-diff-op-after-line` |
+| 整层重置 | `data-region="layer-reset"`、`data-reset-layer`、`data-reset-count`、`data-action="reset-layer"` |
+| 单段恢复默认 | `data-action="reset-section"` + `data-section-name` + `data-reset-layers` |
+| 导出/导入 | `data-region="transfer"`、`data-transfer-phase`、`data-import-mode`、`data-export-name`、`data-role="export-text"`、`data-role="import-text"`、`data-role="import-file"`、`data-import-plan` + `data-import-added/-replaced/-unchanged-count/-removed/-kept/-changes/-applied`、`data-import-change="<name>"` + `data-import-status` + `data-import-layer`、`data-import-skipped`、`data-import-unchanged="true"` |
+| 二次确认 | `data-region="confirm"` + `data-confirm-kind="reset-section|reset-layer|import"` + `data-action="confirm-yes|confirm-no"` |
+
+primitives 复用：新增 `DiffBlock`（`data-diff-renderer="diffblock"` 是机器可判定的分支标记），
+`Button`/`SegmentedTabs` 沿用。**没有**为任何 UI 件引入 npm 依赖，也没有构建步骤。
+
+## 62. 自测证据（工作树内执行）
+
+```
+evidence: suite=history passed=24 failed=0 exit=0 ms=113 diff=14f/+6388/-30 commit=ec5e958
+evidence: suite=diff passed=19 failed=0 exit=0 ms=77 diff=14f/+6388/-30 commit=ec5e958
+evidence: suite=transfer passed=16 failed=0 exit=0 ms=76 diff=14f/+6388/-30 commit=ec5e958
+evidence: suite=stage2 passed=28 failed=0 exit=0 ms=140 diff=14f/+6388/-30 commit=ec5e958
+evidence: suite=client passed=77 failed=0 exit=0 ms=3533 diff=14f/+6388/-30 commit=ec5e958
+evidence: suite=all passed=276 failed=0 exit=0 ms=3761 diff=14f/+6388/-30 commit=ec5e958
+evidence: suite=node-check passed=8 failed=0 exit=0 commit=ec5e958
+evidence: suite=npm-pack passed=13 failed=0 exit=0 commit=ec5e958
+```
+
+上表在**代码提交 `ec5e958`** 上测得；紧随其后的 `9b828cf`（把导入计划里的
+`data-import-unchanged` 计数改名为 `-unchanged-count`，与失败导入的
+`data-import-unchanged="true"` 标志分开）之后**重跑全量仍为 276 passed / 0 failed / 0 skipped**，
+断言数不变（该修订提交的 sha 见交付总结，它本身会因 amend 而变化，故此处不钉）。
+
+`diff=14f/+6388/-30` 是代码提交 `ec5e958` 相对权威基线 `27a6759`（集成分支
+`v0.1.0-test`）的 `git diff --shortstat`；`npm-pack` 的 `passed=13` 是 `npm pack --dry-run`
+的 `total files: 13`（阶段一为 10，新增三个 `core/*.js`；清单里**没有** `test/`、没有
+`.dsh-graph`）；`node-check` 的 8 是 `index.js` / `client.js` / `core/*.js` 共 8 个文件的
+`node --check` 全部 exit 0。
+
+**阶段一既有的 167 项断言全部保留且全绿**（`overrides` 32 / `store` 10 / `route` 39 /
+`host` 19 / `client` 55→77 中阶段一的部分 / `integration` 12），其中
+`route.test.mjs:728` 的 `deepStrictEqual`（PUT/DELETE 响应体逐字段相等）与
+`client.test.mjs` 的「请求集合恰好是 ping/snapshot/overrides」两条断言**一字未改**——
+它们正是 §60.2 与 §60.8 两个设计取舍的守护者。`integration` 套件 **12 passed / 0 skipped**
+（真包真 Cordis，非 skip）。
+
+## 62bis. 负向对照（逐条单独改坏 ⇒ 对应用例变红 ⇒ 备份还原 ⇒ 哈希确认逐字节回滚）
+
+每条都是「改一处 → 只跑相关套件 → 从 `/tmp` 备份还原 → `shasum -a 256 -c` 确认源码
+逐字节回到改坏之前」，最后再跑一次全量 276 项确认全绿。
+
+| # | 改坏的内容 | 结果 | 变红的用例（节选） |
+| --- | --- | --- | --- |
+| NC-1 | `core/store.js`：裁剪上界改成 `Number.MAX_SAFE_INTEGER`（历史无界） | `history`+`stage2` fail 2 / pass 50 | `store: the retention bound is enforced on disk…`、`stage2: the retention bound is configurable and enforced on disk` |
+| NC-2 | `core/store.js`：去掉「临时文件读回再校验」 | fail 1 / pass 51 | `store: a staged file that fails its own re-validation aborts with BOTH targets byte-identical` |
+| NC-3 | `core/store.js`：把「先 stage 再 rename」改成就地写目标文件 | fail 6 / pass 46 | `store: an import commits every layer atomically…`、`store: a staged file that fails…`、`stage2: a real import applies both layers…` |
+| NC-4 | `core/transfer.js`：去掉导入的版本校验 | `transfer`+`stage2` fail 2 / pass 42 | `transfer: every malformed document is rejected with a stable code`、`stage2: every rejected import leaves BOTH config files and the history byte-identical` |
+| NC-5 | `core/history.js`：快照指纹恒为常量（段级 diff 失明） | fail 2 / pass 69 | `history: a snapshot entry is comparable without carrying any text`、`stage2: two history records of one section diff at section and line level` |
+| NC-6 | `client.js`：整层重置跳过二次确认直接发请求 | `client` fail 1 / pass 76 | `client: resetting a whole layer needs a confirmation and states the impact` |
+| NC-7 | `client.js`：`HAS_DIFF_BLOCK` 恒为 `false`（永不使用官方 DiffBlock） | `client` fail 1（叠加 NC-6 时为 2） | `client: the primitives branch renders the comparison with the official DiffBlock` |
+
+## 63. 未验证项（诚实清单，交给主管在集成检查点裁决）
+
+1. **真机端到端**：本轮全部证据都是离线单测（真包真 Cordis 的集成套件覆盖到 `assemble` 语义，
+   但不覆盖历史/diff/导入的真实浏览器路径）。需要真机走一遍「改 → 看历史 → diff → 恢复默认」
+   与「导出 → 导入」，并用非法文件导入后比对配置哈希。
+2. **`DiffBlock` 真机渲染**：离线用例只证明「primitives 暴露 `DiffBlock` 时确实被调用、
+   参数形状正确（diffs/labels/maxLines）」，不能证明它在真实 DOM 里的折叠/复制/换行交互与观感。
+3. **下载路径**：Blob + `<a download>` 在真浏览器里的行为（本 profile 的 GUI、文件名、下载目录）
+   未验；无 Blob 时的 `data:` URL 兜底路径也未在真机触发过。
+4. **历史文件的跨进程并发**：同一 profile 多进程同时写同一层历史文件未验（与阶段一
+   `overrides.json` 的并发姿态一致：同一进程内串行，跨进程未加锁）。
+5. **`historyLimit` 走 Cordis 配置**：单测通过 `apply(ctx, {historyLimit})` 与
+   环境变量两种通道验证；**真机 profile 是否会把 `historyLimit` 传进 `apply` 第二参数**未验
+   （未声明 Config schema，未知键不会让插件起不来；环境变量通道是已验的兜底）。
+
+## 64. 本 attempt 明确**没有**做的事
+
+- 没有安装/启用任何插件，没有跑 `plugin_manager`，没有重启 `dsh web`，没有改 DSH 安装包；
+- 没有手改 `~/.dsh/profiles/**`，没有写 `.dsh-graph/**`，**没有写真实的
+  `~/.dsh/prompt-setting/`**（所有测试都用 `DSH_HOME` 指向临时目录）；
+- 没有新增运行时依赖或构建步骤（`package.json` 的 `dependencies` 仍为空，`files` 清单不变）；
+- 没有改 `applyOverrides` / `mergeLayers` / 冻结探针 / 快照语义（阶段一行为逐字节保留）；
+- 没有把 `PUT`/`DELETE` 响应体加字段（见 §60.2），也没有改 405 `allow` 语义；
+- 没有为「恢复默认单段」新增宿主路由（复用既有单条 DELETE，见 §60.4）。

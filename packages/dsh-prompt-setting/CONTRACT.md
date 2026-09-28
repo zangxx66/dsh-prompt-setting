@@ -47,6 +47,26 @@ Also new: `effective[].origin` marks a section another listener added after the
 waterfall, so the browser can label it instead of reading it as our override or
 as an anomaly (§2.2).
 
+**Revision 4 (stage 2 — history, diff, export/import).** Additive only: every
+path, field and status code frozen in revisions 1–3 keeps its exact meaning and
+its exact bytes. Concretely, the `PUT` and `DELETE /overrides` response bodies
+are **byte-identical** to revision 3 — the new change log is read through its own
+route, never smuggled into a frozen body. New in this revision:
+
+- `GET /prompt-setting/history` — one layer's bounded change log (§8);
+- `GET /prompt-setting/diff` — section-level and line-level comparison of two
+  versions of one layer (§9);
+- `GET /prompt-setting/export` — a schema-versioned JSON document (§10);
+- `POST /prompt-setting/import` — the same document applied **atomically**, with
+  a `dryRun` preview (§11);
+- `DELETE /prompt-setting/overrides?reset=true` — whole-layer reset, as a new
+  mode of the existing route and method (§12).
+
+The three new error statuses an import can produce are `409` (an existing layer
+file that cannot be read), `413` (a body over the import cap) and `500` (a staged
+file that failed its own re-validation); a rejected import always leaves the
+existing configuration byte-identical (§11.5).
+
 ---
 
 ## 1. Routes and methods
@@ -57,7 +77,11 @@ as an anomaly (§2.2).
 | `/prompt-setting/snapshot` | `GET` | Base + effective section views, frozen verdict, layering. |
 | `/prompt-setting/overrides` | `GET` | Both layers and the merged list. |
 | `/prompt-setting/overrides` | `PUT` | Upsert one override into one layer. |
-| `/prompt-setting/overrides` | `DELETE` | Drop one override from one layer. |
+| `/prompt-setting/overrides` | `DELETE` | Drop one override from one layer; `?reset=true` clears the whole layer (§12). |
+| `/prompt-setting/history` | `GET` | One layer's bounded change log, newest first (Revision 4, §8). |
+| `/prompt-setting/diff` | `GET` | Section + line comparison of two versions of one layer (Revision 4, §9). |
+| `/prompt-setting/export` | `GET` | One or both layers as a schema-versioned JSON document (Revision 4, §10). |
+| `/prompt-setting/import` | `POST` | Apply such a document atomically, with a `dryRun` preview (Revision 4, §11). |
 
 - An unknown path under the prefix is `404` with
   `{ "code": "not-found", "message": "no route for <path>" }` (no `ok` key —
@@ -65,7 +89,8 @@ as an anomaly (§2.2).
 - A known path with an unsupported method is `405` with an `allow` header
   listing the supported methods and an **empty** body. `/prompt-setting/ping`
   answers `allow: GET`; `/prompt-setting/overrides` answers
-  `allow: GET, PUT, DELETE`.
+  `allow: GET, PUT, DELETE`; `history`, `diff` and `export` answer `allow: GET`;
+  `import` answers `allow: POST`.
 - The fence runs **before** the method check and before any route logic.
 
 ## 2. `GET /prompt-setting/snapshot`
@@ -353,6 +378,29 @@ human-readable `message`.
 | `413` | `body-too-large` | The whole request body over 256 KiB. |
 | `503` | `assemble-failed` | `systemPrompt.assemble()` threw while building the snapshot. |
 | `503` | `trust-fence-unavailable` | No `connection` service to run the fence. |
+| `400` | `invalid-export` | The import body is not a JSON object. |
+| `400` | `unknown-export-schema` | `schema` is not `dsh-prompt-setting/export`. |
+| `400` | `missing-export-version` | The document has no integer `version`. |
+| `400` | `unsupported-export-version` | `version` is not the version this build accepts. |
+| `400` | `missing-export-layers` | `layers` is absent, not an object, or carries no known layer. |
+| `400` | `missing-export-layer` | `?layer=` names a layer the document does not carry. |
+| `400` | `invalid-export-layer` | A layer is not an object, or `overrides` is not an array. |
+| `400` | `unknown-import-mode` | `mode` is not `merge` or `replace`. |
+| `400` | `missing-diff-selector` | `diff` was called with neither `?from=` nor `?to=`. |
+| `400` | `invalid-diff-selector` | A selector is neither `current` nor a history id. |
+| `404` | `history-not-found` | `diff` named a history id that layer's log does not hold. |
+| `500` | `import-verify-failed` | A staged temp file failed its own read-back validation; nothing was replaced. |
+| `500` | `import-staging-failed` | A staged temp file could not be written; nothing was replaced. |
+| `500` | `import-commit-failed` | A rename failed during the commit; the message says how many layers were already replaced. |
+
+An import **reuses** the stage 1B field-validation codes verbatim for a bad
+entry inside the document (`invalid-override`, `missing-name`, `name-too-long`,
+`invalid-name`, `unknown-action`, `missing-text`, `unexpected-text`,
+`invalid-order`, `unexpected-order`, `duplicate-name`, `text-too-large`), with
+the exact location in `message` (`layers.user.overrides[1]: …`). `unknown-layer`,
+`workspace-unresolved` and `layer-not-writable` keep their meaning for every
+stage 2 route as well. `body-too-large` keeps its `413` status; its message
+names the cap that applied (256 KiB for `PUT`, 4 MiB for `import`).
 
 Two writes deliberately refuse rather than guess: an unreadable layer file is
 `409` and is left untouched, and a workspace that cannot be resolved is `400`
@@ -488,3 +536,410 @@ real Cordis context. The snapshot republishes the same text in `experiments`.
    provider returned `undefined`"** — the assembly only carries the value. Both
    are reported the same way, and both mean the same thing to a reader: the
    value had no context here.
+
+Stage 2 (Revision 4) adds these:
+
+8. **A history record carries full text**, so one record can hold up to two
+   200 KiB bodies. The file is bounded by `retentionLimit` records, not by
+   bytes; lowering `historyLimit` is the only way to bound it further.
+9. **The history log is per directory and outlives the config it describes.**
+   Deleting `overrides.json` by hand does not clear `history.jsonl`, and a layer
+   whose config file is invalid (`409 layer-not-writable`) can still have a
+   readable log.
+10. **An import commits per file, not across layers** (§11.6). The renames are
+    atomic individually; a filesystem failure between them can leave one layer
+    replaced. Everything before the renames is all-or-nothing.
+11. **`sections` in a diff carries no text.** Two versions are compared from
+    their `{name, action, hash, bytes}` snapshots, so a name that differs is
+    reported — with its actions and digests — but its text is only available for
+    the one section the comparison focuses on (§9.3).
+12. **`hash` is not text equality across unrelated writes**: it is a SHA-256 of
+    the UTF-8 text, so equal hashes mean equal text, but a `hide` has no hash at
+    all and therefore compares by action only.
+13. **The fallback diff renderer shows at most 400 ops** and says so. The host's
+    op list is capped at 4000 entries with `truncated: true`; neither cap loses
+    the counts, only the rendered rows.
+14. **The client's import file picker uses `File.text()`**. A browser without it
+    gets the paste-the-JSON path (and the panel says so) rather than a second
+    reading implementation.
+
+## 8. `GET /prompt-setting/history` (Revision 4)
+
+Query: `layer` (**required** — a log lives beside one layer's config file, so
+there is no meaningful default), `session` (required to resolve the `workspace`
+layer, exactly as for a write), `name` (optional filter), `limit` (optional page
+size), `before` (optional **exclusive** ISO upper bound on `at`).
+
+### 8.1 Where the log lives
+
+| Layer | Path |
+| --- | --- |
+| `user` | `$DSH_HOME/prompt-setting/history.jsonl` |
+| `workspace` | `<workspaceRoot>/.dsh-prompt-setting/history.jsonl` |
+
+One JSON object per line, appended. A client-supplied path is still not a
+parameter of any route (§4.2).
+
+### 8.2 Response
+
+```json
+{
+  "ok": true,
+  "layer": "user",
+  "session": null,
+  "path": "/home/u/.dsh/prompt-setting/history.jsonl",
+  "enabled": true,
+  "reason": null,
+  "retentionLimit": 100,
+  "pageLimit": 20,
+  "total": 3,
+  "corrupt": 0,
+  "unreadable": null,
+  "lastError": null,
+  "records": [
+    {
+      "id": "3", "seq": 3, "at": "2024-01-02T10:00:00.000Z",
+      "layer": "user", "session": null,
+      "action": "replace", "name": "project:alpha", "origin": "ui",
+      "before": { "text": "alpha base", "hash": "…", "bytes": 10 },
+      "after":  { "text": "alpha overridden", "hash": "…", "bytes": 16 },
+      "entries": null,
+      "snapshot": [ { "name": "project:alpha", "action": "replace", "hash": "…", "bytes": 16 } ],
+      "note": null
+    }
+  ]
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `id` | `String(seq)`. **The stable handle** a client passes back as `?from=` / `?to=`. It survives trimming; an array index would not. |
+| `seq` | Per-file monotonic counter, assigned at append time. |
+| `at` | ISO timestamp of the write. |
+| `action` | `replace` \| `hide` \| `append` \| `remove` \| `reset-layer`. |
+| `name` | The targeted section; `null` **only** for `reset-layer`, whose subject is the whole layer. |
+| `origin` | `ui` (the settings page) \| `import` (`POST /import`). |
+| `before` / `after` | `{text, hash, bytes}` or `null`. `hash` is the SHA-256 of the UTF-8 text, `bytes` its UTF-8 length. `null` means "no value": a `hide` has no text, the first write of a name has no `before`, a removal has no `after`. |
+| `entries` | Only on a `reset-layer` record: the removed overrides with their **full text** (`{name, action, text?, order?}`), so a reset is reconstructible from the log alone. |
+| `snapshot` | The layer's override list **after** that write, as `{name, action, hash, bytes}` — no text. This is what makes §9 possible without loading N prompt bodies. |
+| `note` | Free-form provenance (`import mode=merge status=replaced`), or `null`. |
+
+Records are returned **newest first** (`seq` descending). `total` counts every
+match before paging; `limit` is clamped to `[0, 500]` and `0` is a legal request
+for the counts alone. An unusable `limit` falls back to `50` rather than failing
+the read.
+
+### 8.3 Bounded by construction
+
+- The newest **N** records of each layer are kept. `N` is 100 by default and is
+  configurable — `apply(ctx, {historyLimit})`, or the environment variable
+  `DSH_PROMPT_SETTING_HISTORY_LIMIT` when config does not say — clamped to
+  `[10, 10000]`. An unusable value is ignored, never fatal.
+- Appending is one `appendFileSync`: the existing bytes are a prefix of the new
+  file. The file is rewritten only when it must be — when the append would pass
+  the bound, or to heal a line that could not be parsed.
+- Reading is tolerant: a corrupt line is counted in `corrupt` and skipped. An
+  unreadable file answers `unreadable` with the records it could still parse,
+  and the route still returns `200`.
+- `lastError` carries the most recent **failed append** (`{at, reason}`) for this
+  file, or `null`. This is where a history write failure becomes observable: a
+  successful write's own response body is frozen (§8.4), so the failure cannot
+  be reported there.
+
+### 8.4 A history failure never changes a write's outcome
+
+`PUT` and `DELETE /prompt-setting/overrides` keep their revision 3 response
+bodies **byte for byte** — no new field, no new key. The config file is written
+first, then the record is appended; if the append fails, the write still
+succeeds and the failure appears as `lastError` on the next `GET /history`.
+History is a log, not the source of truth (same isolation rule as §5.6).
+`DELETE …&reset=true` is new in this revision, so its body *does* report the
+history outcome (§12).
+
+## 9. `GET /prompt-setting/diff` (Revision 4)
+
+Query: `layer` (required), `session` (for `workspace`), `from` and `to` (each a
+history id or the literal `current`), `name` (optional: which section to compare
+line by line).
+
+Exactly one of `from`/`to` may be omitted, and the omitted one means `current`.
+Omitting **both** is `400 missing-diff-selector`: there is nothing to compare.
+
+### 9.1 Response
+
+```json
+{
+  "ok": true,
+  "layer": "user",
+  "session": null,
+  "historyPath": "/home/u/.dsh/prompt-setting/history.jsonl",
+  "scope": "layer",
+  "from": { "kind": "history", "label": "#1", "layer": "user", "session": null,
+            "id": "1", "seq": 1, "at": "…", "action": "replace", "name": "project:alpha" },
+  "to":   { "kind": "current", "label": "current", "layer": "user", "session": null,
+            "id": null, "seq": null, "at": null, "action": null, "name": null },
+  "sections": [
+    { "name": "project:alpha", "status": "changed",
+      "before": { "action": "replace", "hash": "…", "bytes": 10 },
+      "after":  { "action": "replace", "hash": "…", "bytes": 16 } }
+  ],
+  "sectionsCounts": { "total": 1, "changed": 1, "added": 0, "removed": 0, "same": 0 },
+  "lines": {
+    "name": "project:alpha",
+    "ops": [ { "type": "equal",  "text": "alpha", "beforeLine": 1, "afterLine": 1 },
+             { "type": "delete", "text": "base",  "beforeLine": 2, "afterLine": null },
+             { "type": "insert", "text": "overridden", "beforeLine": null, "afterLine": 2 } ],
+    "stats": { "added": 1, "removed": 1, "same": 1 },
+    "mode": "lcs",
+    "crlfNormalized": false,
+    "truncated": false,
+    "textBefore": "alpha\nbase",
+    "textAfter": "alpha\noverridden"
+  },
+  "lineReason": null,
+  "stats": { "added": 0, "removed": 0, "changed": 1, "same": 0, "lineAdded": 1, "lineRemoved": 1 }
+}
+```
+
+### 9.2 Section level
+
+`sections` compares the two versions' `snapshot` lists by name:
+
+| `status` | Meaning |
+| --- | --- |
+| `same` | Present in both with the same `action`, `hash` and `bytes`. |
+| `changed` | Present in both, but the action or the content digest differs. |
+| `added` | Only in the newer version. |
+| `removed` | Only in the older version. |
+
+A version's snapshot is the layer's override list **after** that write (`current`
+is the layer's live list). Rows keep the older version's order, then the
+newer-only names.
+
+### 9.3 Line level
+
+The comparison picks **one** section to compare text by text, in this order:
+the explicit `?name=`; then the section both versions are about (when `from` and
+`to` name the same one); then the single differing section; then the section one
+side is about; otherwise `lines` is `null` and `lineReason` says why (`more than
+one section differs; pass ?name= to compare one of them`).
+
+- `textBefore` / `textAfter` are that section's two values (`null` when a side
+  holds no text, e.g. the section did not exist) and are what a renderer such as
+  the primitives `DiffBlock` consumes. Each is bounded by the 200 KiB
+  per-override cap.
+- `ops` is the diff itself: `equal` carries both line numbers, `delete` only
+  `beforeLine`, `insert` only `afterLine`; every op carries its `text`.
+- `mode` is `"lcs"` when the exact comparison ran and `"bounded"` when the input
+  exceeded the budget (`2000` lines per side, `1 000 000` table cells). A bounded
+  result keeps the shared prefix and suffix as `equal` rows and reports the
+  differing middle as one delete block followed by one insert block — it is
+  labelled, never passed off as exact.
+- Line ending handling is explicit: `\r\n` and `\r` both split lines, so two
+  texts that differ only in line endings compare equal, and `crlfNormalized:
+  true` says the difference was ignored rather than hidden.
+- `ops` is capped at 4000 entries with `truncated: true`; `stats` still
+  describes the whole change.
+
+## 10. `GET /prompt-setting/export` (Revision 4)
+
+Query: `layer` (optional — limit the document to one layer), `session` (to
+resolve the `workspace` layer).
+
+```json
+{
+  "ok": true,
+  "schema": "dsh-prompt-setting/export",
+  "version": 1,
+  "exportedAt": "2024-01-02T10:00:00.000Z",
+  "plugin": { "name": "dsh-prompt-setting", "version": "0.1.0" },
+  "pluginVersion": "0.1.0",
+  "layers": {
+    "user":      { "layer": "user", "enabled": true,
+                   "reason": null,
+                   "overrides": [ { "name": "project:alpha", "action": "replace", "text": "…" } ] },
+    "workspace": { "layer": "workspace", "enabled": false,
+                   "reason": "no ?session= was supplied, so the workspace layer is inactive for this view",
+                   "overrides": [] }
+  }
+}
+```
+
+`ok` is this plugin's liveness flag; the rest of the body **is** the document and
+is what a client should save. No absolute path is exported: the document is
+portable. With `?layer=user` only that layer is present. An export taken without
+a session therefore carries an empty, disabled `workspace` layer, and that same
+document can be re-imported without a session (§11.3).
+
+## 11. `POST /prompt-setting/import` (Revision 4)
+
+Query: `dryRun` (exactly `true` to preview), `mode` (`merge` | `replace`),
+`layer` (optional — import only that layer), `session`. Body: one export
+document. Body cap: **4 MiB** (`413 body-too-large` beyond it).
+
+### 11.1 The order is the contract
+
+1. **parse** the body as JSON (`400 invalid-json`), and cap its size;
+2. **validate** the document: schema, version, layers, and every override field
+   through the same validator `PUT` uses (§4.4);
+3. **resolve** every target — the layer, and the workspace root for
+   `workspace` (`400 workspace-unresolved`) — and refuse to overwrite a config
+   file that cannot be read (`409 layer-not-writable`);
+4. **apply the conflict strategy** in memory and compute the plan;
+5. on `dryRun`, **return the plan and stop** — nothing has been opened for
+   writing;
+6. **stage** each target: write a uniquely named temp file in the target's
+   directory, then **read it back and validate it**;
+7. **commit**: `rename` each staged temp file over its target (atomic per file).
+
+A failure in steps 1–4 or 6 removes every temp file and throws. The real config
+files were never opened for writing before step 7, so they are **byte-identical**
+to what they were — this is asserted in `test/stage2.test.mjs` with a SHA-256 of
+each file, not merely with a 4xx status.
+
+### 11.2 Response
+
+```json
+{
+  "ok": true, "dryRun": false, "mode": "merge", "session": null,
+  "layers": {
+    "user": { "counts": { "added": 1, "replaced": 1, "unchanged": 0, "removed": 0, "kept": 1 },
+              "changes": [ { "name": "project:alpha", "status": "replaced", "action": "replace" } ],
+              "path": "…", "enabled": true }
+  },
+  "imported": ["user"],
+  "skipped": [ { "layer": "workspace", "reason": "…", "entries": 0 } ],
+  "totals": { "added": 1, "replaced": 1, "unchanged": 0, "removed": 0, "kept": 1 },
+  "unchanged": false,
+  "applied": true,
+  "written": ["/home/u/.dsh/prompt-setting/overrides.json"],
+  "history": { "user": [ { "name": "project:alpha", "status": "replaced", "ok": true, "id": "4", "seq": 4, "dropped": 0, "rewritten": false } ] }
+}
+```
+
+`counts.kept` is the number of local entries the document does not mention and
+that survive the strategy. `unchanged: true` means the plan changes nothing: no
+file is written, no history is appended, `applied: false`. `changes[].name` is
+reported with `status` `added` \| `replaced` \| `unchanged` \| `removed`; the
+body never carries prompt text.
+
+### 11.3 Which layers an import touches
+
+- Without `?layer=`, the layers the document carries.
+- A layer the document carries that **cannot be resolved** (a `workspace` layer
+  with no session/workspace) is **skipped** and reported in `skipped` when the
+  document asks for nothing in it (`entries: 0`). When the document *does* carry
+  entries for it, the import fails with `400 workspace-unresolved` **before
+  anything is staged** — a silent partial import is the failure mode this rule
+  exists to prevent.
+
+### 11.4 Conflict strategy
+
+| `mode` | Rule |
+| --- | --- |
+| `merge` (**default**) | The imported entry wins on a name clash; a local entry the document does not mention is kept, in place. |
+| `replace` | The layer becomes exactly what the document says, so a local entry the document omits is **removed** (its `status` is `removed`). |
+
+`mode` may be given as `?mode=` or as a `mode` field in the body; the query wins.
+An unknown value is `400 unknown-import-mode` rather than a silent fallback (the
+pure kernel falls back to `merge` only when called without a mode at all).
+
+### 11.5 What an import records
+
+Every changed section gets one history record with `origin: "import"`, its
+`action` (`replace`/`hide`/`append`, or `remove` for a `replace`-mode deletion),
+its `before`/`after` text and a synthetic `note` (`import mode=… status=…`). The
+snapshot on each record is the layer as it stands **after** the import. The
+`history` map in the response reports the append outcome per layer; as in §8.4, a
+history failure does not undo the import.
+
+### 11.6 Residual risk, stated
+
+The commit is atomic **per file**, not across layers. A filesystem failure
+between two `rename` calls leaves the earlier layer replaced and the later one
+untouched; the thrown `500 import-commit-failed` message says how many layers
+were already committed. No stage before the renames can leave a partial state.
+
+## 12. `DELETE /prompt-setting/overrides?reset=true` (Revision 4)
+
+Clears one whole layer. `layer` is required, `session` as for a write. The value
+must be exactly `true`: any other value (including `reset=1`) is **not** the
+reset switch and falls through to the frozen single-name semantics, which then
+requires `name` (§4.3).
+
+```json
+{
+  "ok": true, "reset": true, "layer": "user",
+  "removed": ["project:alpha", "project:beta"],
+  "count": 2,
+  "entries": [ { "name": "project:alpha", "action": "replace", "text": "…" },
+               { "name": "project:beta", "action": "hide" } ],
+  "effectiveFrom": "next-turn",
+  "history": { "ok": true, "id": "5", "seq": 5, "dropped": 0, "rewritten": false }
+}
+```
+
+- The layer's file is rewritten as an empty, valid config (`{"version":1,
+  "overrides":[]}`), so a reset is observable on disk rather than implied.
+- The removed content is written to history **first-class**: one record with
+  `action: "reset-layer"`, `name: null` and `entries` holding every removed
+  override with its full text. A reset is therefore reconstructible.
+- Resetting an already-empty layer is a success with `count: 0`, `removed: []`,
+  `history: null` and no log entry — there was no change to record.
+- `effectiveFrom: "next-turn"` is literal (§5.4): the next assembly sees the
+  cleared layer; a turn already assembling is unaffected.
+- A section-level "restore default" is **not** a route of its own: it is the
+  existing single-name `DELETE` applied to each layer that holds the name. The
+  UI performs the second confirmation (§13.2) and the host keeps one
+  single-layer write.
+
+## 13. Client-side stage 2 contract (Revision 4)
+
+### 13.1 What the panel renders
+
+- The history panel is fetched **only** while the 覆盖 view is open: a page that
+  never opens that tab issues exactly the three revision 3 requests. The panel
+  carries `data-region="history"`, `data-history-layer`, `data-history-state`,
+  `data-history-total`, `data-history-corrupt`, `data-history-unreadable`,
+  `data-history-last-error`, and one `data-history-row="<id>"` per record with
+  `data-history-action` / `data-history-name` / `data-history-origin` /
+  `data-history-selected`. The live value is a row with
+  `data-history-row="current"` and `data-history-current="true"`.
+- The comparison carries `data-region="history-diff"`, `data-diff-state`,
+  `data-diff-from`, `data-diff-to`, `data-diff-sections` (+ `-changed`/`-added`/
+  `-removed`/`-same`), one `data-hd-row="<name>"` with `data-hd-status` per
+  section, `data-diff-no-lines` when the host could not compare lines, and
+  `data-diff-line-name` / `data-diff-mode` / `data-diff-line-added` /
+  `data-diff-line-removed` / `data-diff-renderer` for the line comparison.
+- `data-diff-renderer` is `"diffblock"` when the primitives module really
+  exposes `DiffBlock` (probed, never assumed) and `"fallback"` otherwise. The
+  fallback renders the **host's own ops** — the same comparison, a second
+  renderer, not a second algorithm — with `data-region="diffblock"`,
+  `data-diff-block="fallback"`, `data-diff-ops` / `data-diff-ops-shown`, and one
+  `data-diff-op="equal|insert|delete"` row per line (capped at 400 rows, and it
+  says so).
+- The reset controls are `data-region="layer-reset"` with `data-reset-layer` /
+  `data-reset-count` and a `data-action="reset-layer"` button; a section-level
+  restore is a `data-action="reset-section"` button carrying
+  `data-section-name` and `data-reset-layers` (the layers that will be cleared).
+- The transfer panel is `data-region="transfer"` with `data-transfer-phase`,
+  `data-import-mode`, `data-action="export"`, `data-role="export-text"`,
+  `data-role="import-text"`, `data-role="import-file"`,
+  `data-action="import-preview"`, `data-action="import-apply"`, and a
+  `data-import-plan="true"` block carrying `data-import-added` / `-replaced` /
+  `-unchanged-count` / `-removed` / `-kept` / `-changes` / `-applied` plus one
+  `data-import-change="<name>"` row with `data-import-status` and
+  `data-import-layer`. A failed import renders the standalone flag
+  `data-import-unchanged="true"`
+  together with the mapped error copy.
+
+### 13.2 Second confirmation is required
+
+Every destructive stage 2 action renders a `data-region="confirm"` card first,
+carrying `data-confirm-kind` (`reset-section` \| `reset-layer` \| `import`),
+naming the affected layers or the change counts, stating that the action cannot
+be undone, and offering `data-action="confirm-yes"` / `data-action="confirm-no"`.
+No request is sent before `confirm-yes`.
+
+An import always previews first: `import-apply` is disabled until a `dryRun`
+plan is on screen, and the click opens the confirmation card rather than writing.

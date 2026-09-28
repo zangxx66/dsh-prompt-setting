@@ -27,6 +27,19 @@
  */
 
 import { EXPERIMENTS } from './core/experiments.js';
+import { buildDiff } from './core/diff.js';
+import {
+  DEFAULT_HISTORY_PAGE,
+  RESET_ACTION,
+  actionOf,
+  publicRecord,
+  queryHistory,
+  resolveHistoryLimit,
+  resolvePageLimit,
+  resetEntries,
+  snapshotOfConfig,
+  textEntry,
+} from './core/history.js';
 import {
   ACTIONS,
   LAYERS,
@@ -38,6 +51,7 @@ import {
   completeFlags,
   detectFrozen,
   emptyConfig,
+  fail,
   mergeLayers,
   probeConfig,
   renderSections,
@@ -45,13 +59,26 @@ import {
   validateOverride,
 } from './core/overrides.js';
 import {
+  appendHistoryRecord,
+  historyPath,
   readConfig,
+  readHistoryFile,
   removeOverride,
   upsertOverride,
   userConfigPath,
   workspaceConfigPath,
   writeConfig,
+  writeConfigsAtomically,
 } from './core/store.js';
+import {
+  EXPORT_LAYERS,
+  buildExport,
+  parseExport,
+  planImport,
+  publicPlan,
+  resolveMode,
+  totalCounts,
+} from './core/transfer.js';
 
 /** Package name; echoed by the probe so the browser can assert identity. */
 const PLUGIN_NAME = 'dsh-prompt-setting';
@@ -65,14 +92,32 @@ const PING_PATH = `${ROUTE_PREFIX}/ping`;
 const SNAPSHOT_PATH = `${ROUTE_PREFIX}/snapshot`;
 /** Stage 1B: read/write/delete the two override layers. */
 const OVERRIDES_PATH = `${ROUTE_PREFIX}/overrides`;
+/** Stage 2: the bounded change log of one layer. */
+const HISTORY_PATH = `${ROUTE_PREFIX}/history`;
+/** Stage 2: compare two versions of one layer. */
+const DIFF_PATH = `${ROUTE_PREFIX}/diff`;
+/** Stage 2: one layer (or both) as a portable JSON document. */
+const EXPORT_PATH = `${ROUTE_PREFIX}/export`;
+/** Stage 2: apply such a document, atomically. */
+const IMPORT_PATH = `${ROUTE_PREFIX}/import`;
 /** Method table; a known path with any other method is a 405 carrying `allow`. */
 const ROUTES = new Map([
   [PING_PATH, ['GET']],
   [SNAPSHOT_PATH, ['GET']],
   [OVERRIDES_PATH, ['GET', 'PUT', 'DELETE']],
+  [HISTORY_PATH, ['GET']],
+  [DIFF_PATH, ['GET']],
+  [EXPORT_PATH, ['GET']],
+  [IMPORT_PATH, ['POST']],
 ]);
 /** Cap on a PUT body, matching the 200 KiB per-override text cap with headroom. */
 const MAX_BODY_BYTES = 256 * 1024;
+/**
+ * Cap on an import body. An export carries every override of both layers with
+ * full text, so it is legitimately larger than a single-override PUT; the cap
+ * still exists, and exceeding it is the existing `413 body-too-large`.
+ */
+const MAX_IMPORT_BYTES = 4 * 1024 * 1024;
 /**
  * This plugin's private probe scope, used when the snapshot has no session.
  *
@@ -185,17 +230,18 @@ function recordClientRenderer(report, url) {
 /**
  * Read and parse a JSON request body, with a hard size cap.
  * @param req - the Node request.
+ * @param cap - the byte cap (defaults to the PUT cap).
  * @returns the parsed body (`{}` for an empty body).
  * @throws {OverrideError} on an over-large or unparsable body.
  */
-async function readJsonBody(req) {
+async function readJsonBody(req, cap = MAX_BODY_BYTES) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > MAX_BODY_BYTES) {
+    if (size > cap) {
       req.destroy?.();
-      throw new OverrideError('body-too-large', `the request body exceeds ${MAX_BODY_BYTES} bytes`, 413);
+      throw new OverrideError('body-too-large', `the request body exceeds ${cap} bytes`, 413);
     }
     chunks.push(chunk);
   }
@@ -209,14 +255,22 @@ async function readJsonBody(req) {
 }
 
 /**
- * Mount the probe route, the snapshot route, the override routes and the
- * assembly override listener.
+ * Mount the probe route, the snapshot route, the override routes, the stage 2
+ * history/diff/export/import routes and the assembly override listener.
  * @param ctx - the Host plugin context.
+ * @param config - the loose plugin config. Only `historyLimit` is read, and an
+ *   absent or unusable value falls back to {@link resolveHistoryLimit}'s
+ *   default rather than failing the mount.
  */
-export function apply(ctx) {
+export function apply(ctx, config) {
   // Per-mount state. Deliberately not module-level: two mounts (or two test
   // cases) must never observe each other's reports, watermark or config cache.
   const report = { renderer: null, reportedAt: null };
+  /**
+   * Retention bound for every layer history file, resolved once per mount from
+   * the plugin config then the environment (default 100, minimum 10).
+   */
+  const historyLimit = resolveHistoryLimit(config);
   const state = {
     /** User layer: read once at mount, rewritten on save. */
     user: { path: userConfigPath(), config: emptyConfig(), error: null },
@@ -224,6 +278,13 @@ export function apply(ctx) {
     workspaces: new Map(),
     /** Last assembly observation per scope key: `{seq, registered, downstream}`. */
     records: new Map(),
+    /**
+     * Last history write failure per history file, keyed by path. A history
+     * failure never changes a write's own response (the stage 1B PUT/DELETE
+     * bodies are frozen), so this is where it becomes observable, through
+     * `GET /history` as `lastError` (CONTRACT §8.4).
+     */
+    historyFailures: new Map(),
     /**
      * The config one in-flight probe must use, matched by the identity of the
      * `AssembleContext` object this plugin itself passed to `assemble()`. Only
@@ -700,6 +761,376 @@ export function apply(ctx) {
   }
 
   /**
+   * Append one record to a layer's history file.
+   *
+   * History is a log, not the source of truth: a failure here is reported to
+   * the caller and never undoes or blocks the config write that already
+   * happened. That is the same failure isolation the assembly path uses (§5.6).
+   * @param fields - the record fields; `seq` is assigned by the store.
+   * @returns `{ok: true, id, seq, dropped, rewritten}` or `{ok: false, reason}`.
+   */
+  function recordHistory(fields) {
+    const file = historyPath(fields.path ?? '');
+    try {
+      const { record, dropped, rewritten } = appendHistoryRecord(file, fields, historyLimit);
+      state.historyFailures.delete(file);
+      return { ok: true, id: String(record.seq), seq: record.seq, dropped: dropped.length, rewritten };
+    } catch (error) {
+      const reason = error instanceof OverrideError
+        ? `${error.code}: ${error.message}`
+        : `${error?.message ?? String(error)}`;
+      state.historyFailures.set(file, { at: new Date().toISOString(), reason });
+      return { ok: false, reason };
+    }
+  }
+
+  /**
+   * Read a layer's history file without throwing.
+   * @param path - the layer's config path (its directory owns the history).
+   * @returns `{path, records, corrupt, error}`.
+   */
+  function readLayerHistory(path) {
+    const file = historyPath(path);
+    const read = readHistoryFile(file);
+    return { path: file, records: read.records, corrupt: read.corrupt, error: read.error };
+  }
+
+  /**
+   * Resolve a layer for a read-only stage 2 view (history, diff, export).
+   * @param layer - `user` | `workspace`.
+   * @param sessionId - the session id, or null.
+   * @returns `{layer, session, path, config, reason}`; `path` is null when the
+   *   layer could not be resolved at all.
+   * @throws {OverrideError} for an unknown layer.
+   */
+  function layerFor(layer, sessionId) {
+    if (!LAYERS.includes(layer)) {
+      throw fail('unknown-layer', `"layer" must be one of ${LAYERS.join(', ')}`);
+    }
+    if (layer === 'user') {
+      return {
+        layer,
+        session: sessionId ?? null,
+        path: state.user.path,
+        config: state.user.config ?? emptyConfig(),
+        reason: state.user.error === null ? null : `${state.user.error.code}: ${state.user.error.message}`,
+      };
+    }
+    const workspace = workspaceContext(sessionId);
+    return {
+      layer,
+      session: sessionId ?? null,
+      path: workspace.path,
+      config: workspace.config,
+      reason: workspace.config === null ? workspace.reason : null,
+    };
+  }
+
+  /**
+   * `GET /prompt-setting/history` — one layer's change log, newest first.
+   *
+   * `layer` is required, exactly like `DELETE /overrides`: history lives beside
+   * one layer's config file, and there is no meaningful default between the
+   * two. `limit` is clamped rather than rejected; `name` and `before` narrow
+   * the page.
+   * @param url - the parsed request URL.
+   * @param res - the Node response.
+   */
+  function handleHistory(url, res) {
+    const layer = url.searchParams.get('layer');
+    const sessionId = url.searchParams.get('session');
+    const view = layerFor(layer, sessionId);
+    const history = readLayerHistory(view.path ?? userConfigPath());
+    const pageLimit = resolvePageLimit(url.searchParams.get('limit'));
+    const { records, total } = queryHistory(history.records, {
+      layer,
+      session: sessionId,
+      name: url.searchParams.get('name'),
+      before: url.searchParams.get('before'),
+      limit: pageLimit,
+    });
+    sendJson(res, 200, {
+      ok: true,
+      layer,
+      session: sessionId,
+      path: history.path,
+      enabled: view.reason === null,
+      reason: view.reason,
+      retentionLimit: historyLimit,
+      pageLimit,
+      total,
+      corrupt: history.corrupt,
+      unreadable: history.error === null ? null : `${history.error.code}: ${history.error.message}`,
+      lastError: state.historyFailures.get(history.path) ?? null,
+      records: records.map(publicRecord),
+    });
+  }
+
+  /**
+   * `GET /prompt-setting/export` — one or both layers as a portable document.
+   *
+   * `layer` (optional) limits which layers the document carries; without it the
+   * document carries `user` and `workspace`, the latter possibly disabled with
+   * a `reason` — an export never invents a path it could not resolve.
+   * @param url - the parsed request URL.
+   * @param res - the Node response.
+   */
+  function handleExport(url, res) {
+    const requested = url.searchParams.get('layer');
+    const names = requested === null || requested.length === 0 ? EXPORT_LAYERS.slice() : [requested];
+    for (const name of names) {
+      if (!LAYERS.includes(name)) throw fail('unknown-layer', `"layer" must be one of ${LAYERS.join(', ')}`);
+    }
+    const workspace = workspaceContext(url.searchParams.get('session'));
+    const document = buildExport({
+      layers: { user: userLayerView(), workspace: workspaceLayerView(workspace) },
+      pluginVersion: PLUGIN_VERSION,
+      exportedAt: new Date().toISOString(),
+      layerNames: names,
+    });
+    sendJson(res, 200, { ok: true, ...document });
+  }
+
+  /**
+   * Resolve one side of a diff.
+   * @param selector - `current` | `<seq>` | null.
+   * @param fallbackCurrent - whether `null` means `current` (one side may
+   *   default) or is an error.
+   * @param inputs - `{layer, session, path, config, history}`.
+   * @returns the diff side.
+   * @throws {OverrideError} for an unknown id.
+   */
+  function diffSide(selector, fallbackCurrent, inputs) {
+    const currentSide = () => ({
+      kind: 'current',
+      label: 'current',
+      layer: inputs.layer,
+      session: inputs.session,
+      snapshot: snapshotOfConfig(inputs.config),
+      texts: Object.fromEntries(
+        (inputs.config?.overrides ?? []).map((override) => [
+          override.name,
+          override.action === 'hide' ? null : override.text,
+        ]),
+      ),
+      id: null,
+      seq: null,
+      at: null,
+      action: null,
+      name: null,
+    });
+    const raw = selector === null || selector === undefined ? '' : String(selector).trim();
+    if (raw.length === 0) {
+      if (fallbackCurrent) return currentSide();
+      throw fail('missing-diff-selector', 'supply ?from= and/or ?to= (a history id or "current")');
+    }
+    if (raw === 'current') return currentSide();
+    if (!/^\d+$/.test(raw)) {
+      throw fail('invalid-diff-selector', `"${raw}" is neither "current" nor a history id`);
+    }
+    const record = inputs.history.records.find((entry) => entry.seq === Number(raw));
+    if (record === undefined) {
+      throw new OverrideError('history-not-found', `no history record #${raw} in the ${inputs.layer} layer`, 404);
+    }
+    return {
+      kind: 'history',
+      label: `#${record.seq}`,
+      layer: record.layer,
+      session: record.session,
+      snapshot: Array.isArray(record.snapshot) ? record.snapshot : [],
+      texts: record.name === null ? {} : { [record.name]: record.after === null ? null : record.after.text },
+      id: String(record.seq),
+      seq: record.seq,
+      at: record.at,
+      action: record.action,
+      name: record.name,
+    };
+  }
+
+  /**
+   * `GET /prompt-setting/diff` — section-level and line-level differences
+   * between two versions of one layer.
+   *
+   * `from` and `to` each take a history id or `current`; exactly one of them
+   * may be omitted (it then means `current`), and omitting both is a `400`
+   * because there is nothing to compare. `name` picks the section whose text is
+   * compared line by line when more than one differs.
+   * @param url - the parsed request URL.
+   * @param res - the Node response.
+   */
+  function handleDiff(url, res) {
+    const layer = url.searchParams.get('layer');
+    const sessionId = url.searchParams.get('session');
+    const fromRaw = url.searchParams.get('from');
+    const toRaw = url.searchParams.get('to');
+    if ((fromRaw === null || fromRaw.length === 0) && (toRaw === null || toRaw.length === 0)) {
+      throw fail('missing-diff-selector', 'supply ?from= and/or ?to= (a history id or "current")');
+    }
+    const view = layerFor(layer, sessionId);
+    const history = readLayerHistory(view.path ?? userConfigPath());
+    const inputs = { layer, session: sessionId, config: view.config, history };
+    const from = diffSide(fromRaw, toRaw !== null && toRaw.length > 0, inputs);
+    const to = diffSide(toRaw, fromRaw !== null && fromRaw.length > 0, inputs);
+    const focusName = url.searchParams.get('name');
+    const payload = buildDiff({ from, to, focusName: focusName === null || focusName.length === 0 ? null : focusName });
+    sendJson(res, 200, {
+      ok: true,
+      layer,
+      session: sessionId,
+      historyPath: history.path,
+      ...payload,
+    });
+  }
+
+  /**
+   * `POST /prompt-setting/import` — apply an export document.
+   *
+   * The order is the contract: parse → schema/version/field validation →
+   * conflict strategy → stage every layer's file and validate it → atomic
+   * rename. Nothing touches a real config file before the last step, so a
+   * rejection at any earlier point leaves the existing configuration
+   * byte-identical. `?dryRun=true` stops after the plan and returns the counts.
+   * @param req - the Node request.
+   * @param url - the parsed request URL.
+   * @param res - the Node response.
+   */
+  async function handleImport(req, url, res) {
+    const body = await readJsonBody(req, MAX_IMPORT_BYTES);
+    const mode = resolveMode(url.searchParams.get('mode') ?? body?.mode);
+    const dryRun = url.searchParams.get('dryRun') === 'true';
+    const document = parseExport(body);
+
+    const requested = url.searchParams.get('layer');
+    const names = requested === null || requested.length === 0 ? Object.keys(document.layers) : [requested];
+    for (const name of names) {
+      if (!LAYERS.includes(name)) throw fail('unknown-layer', `"layer" must be one of ${LAYERS.join(', ')}`);
+      if (!Object.hasOwn(document.layers, name)) {
+        throw fail('missing-export-layer', `the document carries no ${JSON.stringify(name)} layer`);
+      }
+    }
+
+    const sessionId = typeof body?.session === 'string' && body.session.length > 0
+      ? body.session
+      : url.searchParams.get('session');
+
+    // Resolve and validate every target before a single byte is written. A
+    // workspace that cannot be resolved throws here, with nothing staged — but
+    // only when the document actually asks for something in it: an export taken
+    // without a session carries an empty, disabled workspace layer, and
+    // refusing to re-import that would make export -> import fail for a reason
+    // the user cannot act on. Such a layer is reported as `skipped` instead.
+    const targets = {};
+    const plans = {};
+    const skipped = [];
+    for (const name of names) {
+      const imported = document.layers[name];
+      let target;
+      try {
+        target = targetFor(name, sessionId);
+      } catch (error) {
+        if (imported.length === 0 && error instanceof OverrideError) {
+          skipped.push({ layer: name, reason: error.message, entries: 0 });
+          continue;
+        }
+        throw error;
+      }
+      const current = writableConfig(target.path);
+      targets[name] = target;
+      plans[name] = planImport({ imported, current, mode });
+    }
+    const importedNames = Object.keys(plans);
+    const totals = totalCounts(plans);
+    const layers = {};
+    for (const name of importedNames) {
+      layers[name] = { ...publicPlan(plans[name]), path: targets[name].path, enabled: true };
+    }
+    const unchanged = importedNames.every((name) => plans[name].counts.added === 0
+      && plans[name].counts.replaced === 0
+      && plans[name].counts.removed === 0);
+
+    if (dryRun) {
+      sendJson(res, 200, {
+        ok: true,
+        dryRun: true,
+        mode,
+        session: sessionId ?? null,
+        schema: document.schema ?? null,
+        exportedAt: document.exportedAt,
+        layers,
+        imported: importedNames,
+        skipped,
+        totals,
+        unchanged,
+        applied: false,
+      });
+      return;
+    }
+
+    if (unchanged) {
+      sendJson(res, 200, {
+        ok: true,
+        dryRun: false,
+        mode,
+        session: sessionId ?? null,
+        layers,
+        imported: importedNames,
+        skipped,
+        totals,
+        unchanged: true,
+        applied: false,
+        written: [],
+        history: {},
+      });
+      return;
+    }
+
+    const commit = writeConfigsAtomically(importedNames.map((name) => ({
+      path: targets[name].path,
+      config: plans[name].next,
+    })));
+
+    const history = {};
+    for (const name of importedNames) {
+      cacheWritten(targets[name], plans[name].next);
+      const snapshot = snapshotOfConfig(plans[name].next);
+      const reported = [];
+      for (const change of plans[name].changes) {
+        if (change.status === 'unchanged') continue;
+        const result = recordHistory({
+          path: targets[name].path,
+          at: new Date().toISOString(),
+          layer: name,
+          session: sessionId ?? null,
+          action: change.status === 'removed' ? 'remove' : actionOf(change.before, change.after),
+          name: change.name,
+          origin: 'import',
+          before: textEntry(change.before === null || change.before === undefined ? null : change.before.text),
+          after: textEntry(change.after === null || change.after === undefined ? null : change.after.text),
+          snapshot,
+          note: `import mode=${mode} status=${change.status}`,
+        });
+        reported.push({ name: change.name, status: change.status, ...result });
+      }
+      history[name] = reported;
+    }
+
+    sendJson(res, 200, {
+      ok: true,
+      dryRun: false,
+      mode,
+      session: sessionId ?? null,
+      layers,
+      imported: importedNames,
+      skipped,
+      totals,
+      unchanged,
+      applied: true,
+      written: commit.paths,
+      history,
+    });
+  }
+
+  /**
    * `PUT /prompt-setting/overrides` — upsert one override into one layer.
    * @param req - the Node request.
    * @param url - the parsed request URL.
@@ -716,9 +1147,26 @@ export function apply(ctx) {
       ? body.session
       : url.searchParams.get('session');
     const target = targetFor(layer, sessionId);
-    const next = upsertOverride(writableConfig(target.path), override);
+    const current = writableConfig(target.path);
+    const at = current.overrides.findIndex((entry) => entry.name === override.name);
+    const before = at === -1 ? null : current.overrides[at];
+    const next = upsertOverride(current, override);
     writeConfig(target.path, next);
     cacheWritten(target, next);
+    // History is written after the config it describes, and a history failure
+    // never turns a successful save into an error (CONTRACT §8.4).
+    recordHistory({
+      path: target.path,
+      at: new Date().toISOString(),
+      layer,
+      session: sessionId ?? null,
+      action: actionOf(before, override),
+      name: override.name,
+      origin: 'ui',
+      before: textEntry(before === null ? null : before.text),
+      after: textEntry(override.action === 'hide' ? null : override.text),
+      snapshot: snapshotOfConfig(next),
+    });
     sendJson(res, 200, {
       ok: true,
       saved: { ...override, layer },
@@ -727,12 +1175,23 @@ export function apply(ctx) {
   }
 
   /**
-   * `DELETE /prompt-setting/overrides` — drop one override from one layer.
+   * `DELETE /prompt-setting/overrides` — drop one override from one layer, or
+   * clear the whole layer with `?reset=true`.
+   *
+   * The single-name semantics are unchanged from stage 1B, including the `404`
+   * for a name the layer does not hold. The layer reset is the stage 2
+   * addition: it is a different operation on the same route and method, and it
+   * carries the removed content into history so a reset stays traceable.
    * @param url - the parsed request URL.
    * @param res - the Node response.
    */
   function handleDeleteOverride(url, res) {
     const layer = url.searchParams.get('layer');
+    const sessionId = url.searchParams.get('session');
+    if (url.searchParams.get('reset') === 'true') {
+      handleResetLayer(layer, sessionId, res);
+      return;
+    }
     const name = url.searchParams.get('name');
     if (name === null || name.length === 0) {
       throw new OverrideError('missing-name', 'query parameter "name" is required');
@@ -740,15 +1199,83 @@ export function apply(ctx) {
     if (name.length > MAX_NAME_LENGTH) {
       throw new OverrideError('name-too-long', `"name" exceeds ${MAX_NAME_LENGTH} characters`);
     }
-    const target = targetFor(layer, url.searchParams.get('session'));
+    const target = targetFor(layer, sessionId);
     const current = writableConfig(target.path);
+    const at = current.overrides.findIndex((entry) => entry.name === name);
     const { config, removed } = removeOverride(current, name);
     if (!removed) {
       throw new OverrideError('override-not-found', `no ${layer} override for section ${JSON.stringify(name)}`, 404);
     }
     writeConfig(target.path, config);
     cacheWritten(target, config);
+    recordHistory({
+      path: target.path,
+      at: new Date().toISOString(),
+      layer,
+      session: sessionId ?? null,
+      action: actionOf(current.overrides[at] ?? null, null),
+      name,
+      origin: 'ui',
+      before: textEntry(current.overrides[at]?.text ?? null),
+      after: null,
+      snapshot: snapshotOfConfig(config),
+    });
     sendJson(res, 200, { ok: true, removed: true, layer, name, effectiveFrom: 'next-turn' });
+  }
+
+  /**
+   * Clear one layer and record what was removed.
+   *
+   * Resetting an already-empty layer is a success with `count: 0` and no
+   * history record: there was no change to log. The layer's file is still
+   * written empty, which makes "reset" observable on disk rather than implied.
+   * @param layer - `user` | `workspace`.
+   * @param sessionId - the session id, or null.
+   * @param res - the Node response.
+   */
+  function handleResetLayer(layer, sessionId, res) {
+    const target = targetFor(layer, sessionId);
+    const current = writableConfig(target.path);
+    const removed = current.overrides.slice();
+    if (removed.length === 0) {
+      sendJson(res, 200, {
+        ok: true,
+        reset: true,
+        layer,
+        removed: [],
+        count: 0,
+        effectiveFrom: 'next-turn',
+        history: null,
+      });
+      return;
+    }
+    const config = emptyConfig();
+    writeConfig(target.path, config);
+    cacheWritten(target, config);
+    const history = recordHistory({
+      path: target.path,
+      at: new Date().toISOString(),
+      layer,
+      session: sessionId ?? null,
+      action: RESET_ACTION,
+      name: null,
+      origin: 'ui',
+      before: null,
+      after: null,
+      entries: resetEntries(removed),
+      snapshot: [],
+      note: `reset removed ${removed.length} override(s)`,
+    });
+    sendJson(res, 200, {
+      ok: true,
+      reset: true,
+      layer,
+      removed: removed.map((entry) => entry.name),
+      count: removed.length,
+      entries: resetEntries(removed),
+      effectiveFrom: 'next-turn',
+      history,
+    });
   }
 
   // Load the layers this mount can see. The assembly handler never reads disk.
@@ -799,6 +1326,22 @@ export function apply(ctx) {
             }
             if (url.pathname === SNAPSHOT_PATH) {
               await handleSnapshot(url, res);
+              return;
+            }
+            if (url.pathname === HISTORY_PATH) {
+              handleHistory(url, res);
+              return;
+            }
+            if (url.pathname === DIFF_PATH) {
+              handleDiff(url, res);
+              return;
+            }
+            if (url.pathname === EXPORT_PATH) {
+              handleExport(url, res);
+              return;
+            }
+            if (url.pathname === IMPORT_PATH) {
+              await handleImport(req, url, res);
               return;
             }
             if (req.method === 'GET') {
