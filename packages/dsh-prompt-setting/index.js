@@ -9,8 +9,11 @@
  * - `core/overrides.js` holds ALL of the logic as pure functions (validated
  *   config, layer merge, section transform, `complete` derivation, render).
  * - `core/store.js` is the only module touching the filesystem, and it is off
- *   the assembly path: layers are read at mount and refreshed by the routes,
- *   then held in memory.
+ *   the assembly path: layers are read at mount and refreshed at the start of
+ *   every route request, then held in memory. Both layers are refreshed at the
+ *   same point, so an external edit — a hand edit, a config-sync tool, another
+ *   process — reaches the next request whichever layer it touched, and a
+ *   request that fails still leaves the cache no further behind than that.
  * - this file is the adapter: one waterfall listener and four REST routes.
  *
  * The listener reads memory only. It records the pre-waterfall sections (the
@@ -272,8 +275,14 @@ export function apply(ctx, config) {
    */
   const historyLimit = resolveHistoryLimit(config);
   const state = {
-    /** User layer: read once at mount, rewritten on save. */
-    user: { path: userConfigPath(), config: emptyConfig(), error: null },
+    /**
+     * User layer: read at mount and re-read at the start of every route
+     * request, rewritten in memory by the save paths. `present` records that
+     * the layer's file has been seen at least once, which is what lets a
+     * *disappeared* file be reported instead of silently reading as "this
+     * layer holds no overrides" (see {@link refreshUser}).
+     */
+    user: { path: userConfigPath(), config: emptyConfig(), error: null, present: false },
     /** Workspace layers by resolved root path; refreshed by the routes. */
     workspaces: new Map(),
     /** Last assembly observation per scope key: `{seq, registered, downstream}`. */
@@ -378,6 +387,46 @@ export function apply(ctx, config) {
   }
 
   /**
+   * Re-read the user layer from disk into the in-memory cache.
+   *
+   * The user layer obeys the same rule as a workspace layer — a file that is
+   * missing is an empty, enabled layer, which is the honest state of a profile
+   * that has never been configured — with one addition: once this mount has
+   * *seen* the file, its disappearance is reported as `missing-file` and the
+   * layer contributes nothing, rather than degrading into "this layer has no
+   * overrides". Either way a stale override can never survive on a file that
+   * is no longer there.
+   *
+   * Never throws: an unreadable or invalid file disables this layer with a
+   * reason (CONTRACT §5.6) and leaves every other layer alone.
+   * @returns the refreshed user layer record.
+   */
+  function refreshUser() {
+    const path = state.user.path;
+    const read = readConfig(path);
+    if (read.error !== null) {
+      // Unreadable or invalid: keep no config at all, so this layer
+      // contributes nothing to any assembly. `present` is sticky, so it stays
+      // reported if the file is then deleted as well.
+      state.user = { path, config: null, error: read.error, present: true };
+      return state.user;
+    }
+    if (read.missing === true) {
+      state.user = state.user.present
+        ? {
+          path,
+          config: null,
+          present: true,
+          error: { code: 'missing-file', message: `${path} was removed after it had been read` },
+        }
+        : { path, config: read.config, error: null, present: false };
+      return state.user;
+    }
+    state.user = { path, config: read.config, error: null, present: true };
+    return state.user;
+  }
+
+  /**
    * Re-read every known workspace layer. Called at mount and at the start of
    * every route request — never from the assembly path, which only reads the
    * cache. This is what keeps `assemble` free of IO while still noticing a
@@ -400,6 +449,26 @@ export function apply(ctx, config) {
       count += 1;
     }
     return count;
+  }
+
+  /**
+   * Re-read both layers from disk. This is the single point where a route
+   * request touches the filesystem for reading, and it is deliberately the
+   * *first* thing every handled request does — before any of it can fail.
+   *
+   * Consequences, both intended:
+   * - an external edit (hand edit, config-sync tool, another process) is
+   *   visible to the very next handled request, with no remount;
+   * - a request that then fails still leaves the cache aligned with the files,
+   *   so a failed write can never desync memory from disk for longer than the
+   *   request that failed.
+   *
+   * It is never reached from the assembly path: the waterfall listener reads
+   * this cache and nothing else (CONTRACT §5.5).
+   */
+  function refreshLayers() {
+    refreshUser();
+    refreshWorkspaces();
   }
 
   /**
@@ -585,13 +654,16 @@ export function apply(ctx, config) {
   }
 
   /**
-   * Resolve which config a session's snapshot must describe, refreshing the
-   * workspace cache on the way.
+   * Resolve which config a session's snapshot must describe.
+   *
+   * It does not refresh: {@link refreshLayers} already re-read every layer at
+   * the start of this request, so the only thing left to do here is load the
+   * one root this view is about (which is also how a root the registry lists
+   * but the cache has not seen is picked up).
    * @param sessionId - the `?session=` value, or null.
    * @returns `{sessionId, path, reason, config}`.
    */
   function workspaceContext(sessionId) {
-    refreshWorkspaces();
     if (sessionId === null || sessionId.length === 0) {
       return {
         sessionId: null,
@@ -748,13 +820,14 @@ export function apply(ctx, config) {
 
   /**
    * Store a freshly written layer back into the in-memory cache, so the very
-   * next assembly sees it without a re-read.
+   * next assembly sees it without a re-read. The file now exists by
+   * construction, which is what the user layer's `present` flag records.
    * @param target - the resolved target from {@link targetFor}.
    * @param config - the config that was written.
    */
   function cacheWritten(target, config) {
     if (target.root === null) {
-      state.user = { path: target.path, config, error: null };
+      state.user = { path: target.path, config, error: null, present: true };
       return;
     }
     state.workspaces.set(target.root, { path: target.path, config, error: null });
@@ -1279,8 +1352,7 @@ export function apply(ctx, config) {
   }
 
   // Load the layers this mount can see. The assembly handler never reads disk.
-  const mountUser = readConfig(state.user.path);
-  state.user = { path: state.user.path, config: mountUser.config ?? emptyConfig(), error: mountUser.error };
+  refreshUser();
   refreshWorkspaces();
 
   ctx.effect(
@@ -1309,6 +1381,11 @@ export function apply(ctx, config) {
             return;
           }
           try {
+            // First thing every handled request does: re-read both layers, as
+            // peers, before anything can fail. This is what makes an external
+            // edit visible without a remount, and what bounds a cache/file
+            // desync to the request that failed (CONTRACT §5.5).
+            refreshLayers();
             if (url.pathname === PING_PATH) {
               // Same request that probes also reports: the browser half appends
               // `?renderer=<primitives|fallback>`, so the page it renders settles
