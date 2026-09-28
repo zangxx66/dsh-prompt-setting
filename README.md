@@ -50,9 +50,14 @@ packages/dsh-prompt-setting/   # 插件包本体（可独立 npm 发布）
 
 ```bash
 cd packages/dsh-prompt-setting
-node --test                    # 六个套件；集成套件用真 DSH 包跑对照实验，须为 pass（非 skip）
-npm pack --dry-run             # 确认发布产物干净（无 test/、无 .dsh-graph）
+node --test                    # 十二个套件；集成套件用真 DSH 包跑对照实验，须为 pass（非 skip）
+node scripts/check-compat.mjs  # 只读兼容性自检（不联网、永不抛、退出码恒 0）
+npm pack --dry-run             # 确认发布产物干净（16 个文件、无 test/、无 .dsh-graph）
 ```
+
+`test/boot.test.mjs`（g-013）钉住 boot 韧性：导入期兼容自检三分支、`apply` 失败只打印一条且回滚已注册的
+effect（不留半挂载）、boot 连续性、客户端 factory 不把异常抛回 loader。DSH 更新后插件没出现、终端也没报错时，
+先跑 `node scripts/check-compat.mjs`，再看插件包 README 的「兼容性与救援」一节。
 
 其中 `test/integration.test.mjs` 会直接解析本机 DSH 安装根里的真
 `@deepseek-ai/dsh-system-prompt` 与真 Cordis，在真上下文里验证装配语义（waterfall 顺序、

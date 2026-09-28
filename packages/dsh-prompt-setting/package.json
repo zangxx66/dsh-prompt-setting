@@ -17,8 +17,12 @@
     "cordis.patch.yml",
     "CONTRACT.md",
     "README.md",
-    "NOTES.md"
+    "NOTES.md",
+    "scripts"
   ],
+  "scripts": {
+    "check-compat": "node scripts/check-compat.mjs"
+  },
   "keywords": [
     "dsh",
     "dsh-plugin",
