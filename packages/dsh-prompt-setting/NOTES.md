@@ -2096,3 +2096,39 @@ clientBuildInfo(missing) = null threw = null
 - **顺带补一条静态复核**：传输链上的改写（`prepareSource` 剥 `sourceURL`/`sourceMappingURL` 尾巴、
   必要时补换行；`buildComboScript` 以 `;\n` 拼接）全部落在标记区域**之外** ⇒ 区域内文本原样通过；
   真机 payload 逐字节比对仍未做（§81.1）。
+
+## 87. 独立 profile 以 tarball 安装验证（g-011，2026-09-29，主管本人执行）
+
+**为什么做**：发布前最后一块缺口。此前「可发布 npm」的安装证据只有「以 `link:` 装入本机 web
+profile」，长期记忆里如实记为「未在独立 profile 安装验证」——别人拿到 tarball 能不能装上并挂起来
+没有证据。本次用**全新 profile**（`g011`，从官方 web 模板初始化）真装一次，全程不碰当前 web
+profile 与 `~/.dsh/prompt-setting/` 用户数据。
+
+**步骤与证据**
+
+| # | 命令 / 动作 | 结果 |
+| --- | --- | --- |
+| 1 | `npm pack`（包目录） | `dsh-prompt-setting-0.1.0.tgz`，206,799 B，**14 条**，sha256 `4053664ab8b6afb8…f81eaa9` |
+| 2 | `dsh --profile g011 --from-default-profile web --dump-config` | 从官方 web 模板初始化出独立 profile |
+| 3 | `dsh plugin --profile g011 add <tarball>` | 装为 `file:` 依赖，并**自动**把 `dsh-prompt-setting` 追加进该 profile 的 `dsh.profile.bundles` |
+| 4a | `dsh --profile g011 --dump-config` | 组合树出现 `# == dsh-prompt-setting` / `- id: prompt-setting` / `name: dsh-prompt-setting` ⇒ 包 patch 生效、条目挂上 |
+| 4b | 该 profile 下 `import('dsh-prompt-setting')` | 解析到 `profiles/g011/node_modules/dsh-prompt-setting/index.js`；`apply` 为函数；`inject` 恰为 `["webServer","connection","systemPrompt"]` |
+| 4c | 装进去的 `client.js` 摘要 | `63cf17c0` / size `248093` —— 与仓库那份**逐字节同源**（tarball 里就是同一份字节） |
+| 5 | `dsh --profile g011 --port 3099 --host 127.0.0.1` 起独立 GUI | 负责人目视：**Prompt 节出现**、**构建戳「与宿主一致」**、段列表正常、无错误横幅 |
+| 6 | 清理 | 停止实例、删除临时 profile 与 tarball |
+
+**零影响证明**：当前 web profile 的 `package.json` / `cordis.patch.yml` 在验证前后哈希逐字节一致
+（`bfa8056f478b…` / `cd76ce2bd7c6…`）；3080 实例 pid 未变（**未重启**）；仓库 `git status` 干净。
+
+**坑（写给后来者）**
+
+- `dsh --profile g011 web --port 3099` 会报 `too many arguments. Expected 0 arguments but got 1: web`
+  —— profile 自身声明了要跑的应用；正确写法是 `dsh --profile <name> --port <port>`（app 参数直接
+  跟 launcher 参数）。
+- 该实例启动时**会自动打开默认浏览器**（`--no-open` 可关）。
+- 带 `?token=` 的 URL 对 `/prompt-setting/*` **仍是 401**：信任栅栏不看 URL token，只有页面自身的
+  连接能过 ⇒ 这一层**无法用 curl 免浏览器验证**，目视检查是必需品。
+- **结论：tarball 安装路径成立**（宿主半可解析、可加载、配置树挂载；客户端半在该 profile 的 GUI 可用）。
+
+**本次仍未验**：该 profile 下跑真实对话回合的装配行为（本次只验安装与挂载）；`npm publish` 到
+registry 未执行（人工 gate）。
