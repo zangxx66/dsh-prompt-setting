@@ -908,3 +908,100 @@ locale seat 四种退化形状仍渲染；`t` 抛错时渲染失败卡（不白�
   （测试全程用内存 fetch 桩，唯一的「写」是断言请求体，落盘路径从未被触碰）；
 - 没有新增运行时依赖或构建步骤（`dependencies` 仍为空，仍是零构建手写 CJS）；
 - 没有做阶段二能力（历史 diff、恢复默认、导出导入）。
+
+---
+
+# 阶段一 C · 复核修复（g-004 第二轮）
+
+真机使用暴露一个 UX 缺陷，主管把卡片放回执行 lane；本节记录缺陷、修复、证据与负向对照。
+基线仍 `1d7d937`，本轮提交 `1b642d9`（代码）+ 紧随其后的文档提交。
+
+## 38. 缺陷：UI 允许保存一条「永远不会生效」的覆盖
+
+**现象（真机原始证据）**：编辑面板里对**已注册**段名 `plan:policy` 选 `append` → 接口返回
+200，`~/.dsh/prompt-setting/overrides.json` 被正确写入，但下一回合的 system prompt 毫无变化。
+
+**根因（宿主语义，`core/overrides.js:applyOverrides`，只读核对）**：
+
+| 情况 | 宿主行为 | reason |
+| --- | --- | --- |
+| `append` 落到**已存在**（瀑布前已在）的段名 | 跳过，什么都不改 | `name-already-present`（两段不可同名） |
+| `replace` / `hide` 落到**不存在**的段名 | 跳过，什么都不改 | `section-not-present` |
+| `append` 落到新名 | 生效 | — |
+
+宿主侧 `frozen` / `overridable` / `reason` 这一整套就是为了不让「以为改了、其实没改」发生；
+而**客户端恰好在「保存」这个动作上把它放了回来**：保存看起来成功，界面既不阻止也不警示，
+事后只能靠用户自己去读某一行 `reason`。**这是客户端的责任，不是宿主的** —— 两段不可同名是
+上游约束，宿主跳过是正确行为，已按主管要求**没有**去改宿主半。
+
+## 39. 修复：保存前用当前快照判定「这条覆盖能不能生效」
+
+新增三个纯函数（`client.js`）：
+
+| 函数 | 作用 |
+| --- | --- |
+| `incomingNames(snapshot)` | 真实回合的瀑布里**已经存在**的段名集合 |
+| `overrideFeasibility(name, action, incoming)` | `⇒ {blocked, code}`：append 命中已有名 ⇒ `name-already-present`；replace/hide 命中未注册名 ⇒ `section-not-present`；空段名 ⇒ `missing-name` |
+| `blockText` / `ineffectiveCause` | 可执行的本地化指引；以及「这条覆盖为什么没生效」的可证明原因 |
+
+`incomingNames` 的取值口径（与主管指令的一处**有意差异**，必须说明）：
+
+- **计入**：`base.sections[].name`（已注册）；`effective` 中 `origin:"downstream-added"` 的段名
+  （其它插件在我们的监听器**之前**加进去的，瀑布里确实存在）；
+- **不计入**：`origin:"appended"` 的段名 —— 那是我方 `append` 覆盖自己造出来的段，
+  覆盖列表按 `name` upsert，重存同一条 append 仍然生效；若把它算作「已存在」，用户就**再也
+  改不了自己已有的 append 覆盖**（真机上就是这种条目）。主管指令写的是「base 或 effective 的
+  名字集合」，按字面实现会引入这个新回归，故按语义取「瀑布前已存在」这一更准的集合；
+  被主管点名的两种来源（只在 `base`、只在 `effective`）**都有专门的测试**覆盖。
+- **防御**：`effective` 中「有渲染结果（`index !== null`）且没有任何覆盖指向它
+  （`overrideLayer === null && action === null`）」的条目也计入，兜住 `origin` 缺失/未知的情况。
+
+界面落地（**在点击保存之前**生效，不是等接口回来才说）：
+
+1. 编辑面板新增**段名输入**（`data-role="name"`）——它同时让「append 一个全新段」第一次成为
+   可能（此前段名由所选行固定，用户根本无法新建段）；校验随输入**即时**重算。
+2. 校验不通过 ⇒ 红色卡 `data-warning="override-blocked"` + `data-block-code="<code>"`：
+   标题「此覆盖不会生效，已阻止保存」+ 可执行指引（改用 replace / 改成未注册的新名 /
+   改用 append 新建）+ 原始 code。
+3. 保存按钮 `disabled`；`save()` 内**重复同一道校验**，程序化点击也发不出请求（防御纵深，
+   测试里就是直接调 `onClick` 验证「零写入请求」）。
+4. 「覆盖管理」按 `effective` 标注每条覆盖的真实结果：`data-override-applied="true|false|unknown"`
+   + 未生效条目显示 `data-override-reason`（客户端能证明时给出**真实原因**，并把宿主
+   `reason` 作为详情行附上，因为宿主在这种场景下的 reason 是「文本被下游替换」而不是
+   「名字已存在」）+ 修正指引。
+5. 分段视图对 `applied === false` 且客户端能证明原因的条目，补一行
+   `data-section-ineffective="<code>"`（原因 + 修正指引）。
+
+## 40. 本轮新增测试（34 → 41）与证据
+
+新增 7 项：`append` 命中**只在 base 的名字** ⇒ 阻止 + 零写入；`append` 命中**只在 effective 的
+（downstream-added）名字** ⇒ 同样阻止；`replace`/`hide` 命中未注册名（两种动作各测）⇒ 阻止 +
+零写入；**空名集合（空装配形状）不崩**且 append 仍可用；空段名 ⇒ `missing-name` 阻止；
+分段视图给出可证明的真实原因；覆盖管理显示未生效 + 原因 + 修正指引。
+原有 `append` 用例改为先输入**新段名**再保存（顺带覆盖「append 新名 ⇒ 允许且请求体正确」）。
+
+```
+evidence: suite=client passed=41 failed=0 exit=0 ms=1471 diff=2f/+410/-35 commit=1b642d9
+evidence: suite=all passed=153 failed=0 exit=0 ms=1632 diff=2f/+410/-35 commit=1b642d9
+```
+
+`diff` 是本轮修复提交 `1b642d9` 自身的 `git diff --cached --shortstat`（`client.js` +
+`test/client.test.mjs`，相对上一提交 `626327c`）；`node --check client.js` exit 0；
+`npm pack --dry-run` 仍 `total files: 10`（无 `test/`）。
+
+**负向对照（逐条单独改坏 ⇒ 重跑 client 套件 ⇒ 按备份还原）**：
+
+| # | 改坏点 | 变红 |
+| --- | --- | --- |
+| NC5 | 去掉 append 校验（`overrideFeasibility` 恒不阻止） | 6 项：两处 append 阻止、replace/hide 阻止、空名集合、覆盖管理未生效展示、分段视图原因行 |
+| NC6 | 去掉 replace/hide 校验 | 2 项：replace/hide 未注册名阻止、空名集合 |
+| NC7 | 覆盖管理不再标注 / 不显示未生效原因 | 1 项：覆盖管理未生效展示 |
+
+## 41. 本轮仍未验证项（增量）
+
+- **真机复核**（主管做）：用一个已存在段名尝试 append，应被 UI 挡住；以及「撤销无效覆盖 →
+  改用 replace 重存 → 新回合装配改变」的端到端 —— 仍需重启/带 cookie，本轮未做。
+- **`incomingNames` 与真实回合瀑布的等价性**：离线用契约形状验证；真机上若存在
+  「`base` 与 `effective` 都看不到、但瀑布里确实存在」的段名（本插件拿不到的场景），
+  客户端会漏判成「可以 append」，此时宿主仍会正确跳过（不会写坏数据，只是回到旧行为）。
+  这一残余风险已在契约已知限制范围内，未新增宿主探测。

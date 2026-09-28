@@ -228,6 +228,13 @@ window.__ModuleLoader__.load({
       editOrderHint:
         'append 的 order 是结果数组的目标下标，留空表示追加到末尾；replace / hide 不携带 order。',
       editOrderInvalid: 'order 必须是不小于 0 的整数，或留空。',
+      editName: '段名（覆盖目标）',
+      blockTitle: '此覆盖不会生效，已阻止保存',
+      blockAppendExisting:
+        '该段名已在当前装配中：append 不会生效（两段不可同名，宿主会跳过并记为 name-already-present）。请改用「替换 replace」，或把段名改成一个尚未注册的新名。',
+      blockNotPresent:
+        '该段名当前不在装配中：replace / hide 会被跳过（宿主记为 section-not-present）。请改用一个已注册的段名，或改用「追加 append」新建段。',
+      blockMissingName: '段名不能为空（宿主会返回 missing-name）。',
       editSave: '保存',
       editSaving: '保存中…',
       editDisabledOverridable: '该段不可覆盖',
@@ -244,6 +251,11 @@ window.__ModuleLoader__.load({
       ovUndo: '撤销',
       ovTextPreview: '文本预览',
       ovMergedNote: '合并顺序：工作区级覆盖同名用户级条目，并保留其位置。',
+      ovEffective: '已生效',
+      ovIneffective: '未生效',
+      ovUnknown: '效果未知',
+      ovReason: '原因',
+      ovFixHint: '修正：撤销本条覆盖后用 replace 重存，或改用未注册的新段名 append。',
       errTitle: '请求失败',
       errNetwork: '无法连接宿主（网络错误）',
       errHttp: '宿主返回 HTTP {status}',
@@ -358,6 +370,13 @@ window.__ModuleLoader__.load({
       editOrderHint:
         'append’s order is a target index in the resulting array; leave it blank to append at the end. replace / hide never carry an order.',
       editOrderInvalid: 'The order must be a non-negative integer, or blank.',
+      editName: 'Section name (target)',
+      blockTitle: 'This override would not take effect; saving is blocked',
+      blockAppendExisting:
+        'That name is already in the current assembly, so append would not take effect (two sections may not share a name; the Host skips it as name-already-present). Use Replace instead, or change the name to a new, unregistered one.',
+      blockNotPresent:
+        'That name is not in the current assembly, so replace / hide would be skipped (the Host records section-not-present). Pick a registered name, or use Append to create a new section.',
+      blockMissingName: 'The section name cannot be empty (the Host answers missing-name).',
       editSave: 'Save',
       editSaving: 'Saving…',
       editDisabledOverridable: 'This section is not overridable',
@@ -375,6 +394,11 @@ window.__ModuleLoader__.load({
       ovUndo: 'Undo',
       ovTextPreview: 'Text preview',
       ovMergedNote: 'Merge order: a workspace override wins over the same-name user entry and keeps its position.',
+      ovEffective: 'Applied',
+      ovIneffective: 'Not applied',
+      ovUnknown: 'Effect unknown',
+      ovReason: 'Reason',
+      ovFixHint: 'Fix: undo this override and save it again as replace, or use append with a new, unregistered name.',
       errTitle: 'Request failed',
       errNetwork: 'Cannot reach the Host (network error)',
       errHttp: 'The Host answered HTTP {status}',
@@ -911,6 +935,98 @@ window.__ModuleLoader__.load({
       return { disabled: reasons.length > 0, reasons, warn: !fz.certain && !fz.pending };
     }
 
+    /**
+     * The section names a real turn's waterfall already has when our listener
+     * runs: the registered `base` names plus anything another listener added
+     * before us (`origin: "downstream-added"`).
+     *
+     * A name our OWN `append` introduced is deliberately *not* here: the
+     * override list is keyed by name, so re-saving that append is an upsert
+     * that still takes effect (and blocking it would make an existing append
+     * uneditable).
+     * @param snapshot - the snapshot payload, or null.
+     * @returns a Set of names.
+     */
+    function incomingNames(snapshot) {
+      const names = new Set();
+      if (!snapshot || typeof snapshot !== 'object') return names;
+      const base = snapshot.base && Array.isArray(snapshot.base.sections) ? snapshot.base.sections : [];
+      for (const section of base) {
+        if (section && typeof section.name === 'string') names.add(section.name);
+      }
+      const effective =
+        snapshot.effective && Array.isArray(snapshot.effective.sections) ? snapshot.effective.sections : [];
+      for (const section of effective) {
+        if (!section || typeof section.name !== 'string') continue;
+        if (section.origin === 'appended') continue;
+        if (section.origin === 'downstream-added') {
+          names.add(section.name);
+          continue;
+        }
+        // Defensive: a rendered section nothing overrides belongs to the
+        // incoming assembly even if its `origin` is missing or unknown.
+        if (
+          section.index !== null &&
+          section.index !== undefined &&
+          section.overrideLayer === null &&
+          section.action === null
+        ) {
+          names.add(section.name);
+        }
+      }
+      return names;
+    }
+
+    /**
+     * Whether one override would actually take effect, decided BEFORE the write
+     * by the same two rules the Host's `applyOverrides` uses (CONTRACT §4.1):
+     * `append` to a name already in the incoming assembly is skipped as
+     * `name-already-present` (two sections may not share a name), and
+     * `replace`/`hide` for a name that is not there is skipped as
+     * `section-not-present`. A save that cannot take effect must never look
+     * successful — that is the silent-invalidity mode this page exists to
+     * prevent.
+     * @param name - the requested section name.
+     * @param action - 'replace' | 'hide' | 'append'.
+     * @param incoming - the names {@link incomingNames} returned.
+     * @returns `{blocked, code}`; `code` is null when the save may proceed.
+     */
+    function overrideFeasibility(name, action, incoming) {
+      const trimmed = typeof name === 'string' ? name.trim() : '';
+      if (trimmed.length === 0) return { blocked: true, code: 'missing-name' };
+      const present = incoming instanceof Set ? incoming.has(trimmed) : false;
+      if (action === 'append') return present ? { blocked: true, code: 'name-already-present' } : { blocked: false, code: null };
+      return present ? { blocked: false, code: null } : { blocked: true, code: 'section-not-present' };
+    }
+
+    /**
+     * Localized, actionable copy for a blocked override.
+     * @param t - the bound translator.
+     * @param feasibility - the {@link overrideFeasibility} verdict.
+     * @returns the display text.
+     */
+    function blockText(t, feasibility) {
+      if (feasibility.code === 'missing-name') return t('blockMissingName');
+      if (feasibility.code === 'name-already-present') return t('blockAppendExisting');
+      return t('blockNotPresent');
+    }
+
+    /**
+     * The real cause of an override that did not take effect, when the client
+     * can prove it from the section names (the Host's own `reason` describes the
+     * observation, not always the cause).
+     * @param t - the bound translator.
+     * @param entry - an `effective.sections` entry.
+     * @param incoming - the names {@link incomingNames} returned.
+     * @returns `{code, text}` or null when there is nothing provable to add.
+     */
+    function ineffectiveCause(t, entry, incoming) {
+      if (!entry || entry.applied === true) return null;
+      const feasibility = overrideFeasibility(entry.name, entry.action, incoming);
+      if (!feasibility.blocked) return null;
+      return { code: feasibility.code, text: blockText(t, feasibility) };
+    }
+
     /** Split a text into lines without dropping a trailing empty line. */
     function splitLines(text) {
       return String(text === null || text === undefined ? '' : text).split('\n');
@@ -1441,6 +1557,7 @@ window.__ModuleLoader__.load({
       const gate = editGate(section, m.fz, t);
       const text = typeof section.text === 'string' ? section.text : '';
       const expanded = m.expanded === section.name;
+      const cause = ineffectiveCause(t, section, m.incoming);
       const showHint = origin === 'downstream-added' || origin === 'unmatched-override';
       return h(
         'div',
@@ -1482,6 +1599,16 @@ window.__ModuleLoader__.load({
         showHint
           ? h('div', { style: { fontSize: 12, color: token.labelTertiary } }, t(origin === 'downstream-added' ? 'originDownstreamHint' : 'originUnmatchedHint'))
           : null,
+        cause === null
+          ? null
+          : h(
+              'div',
+              {
+                'data-section-ineffective': cause.code,
+                style: { fontSize: 12, color: token.stateWarn, wordBreak: 'break-word' },
+              },
+              `${t('ovReason')}: ${cause.text} ${t('ovFixHint')}`,
+            ),
         h(
           'div',
           { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
@@ -1568,6 +1695,7 @@ window.__ModuleLoader__.load({
       const workspace = m.snap.data && m.snap.data.layers ? m.snap.data.layers.workspace : null;
       const workspaceUsable = workspace && workspace.enabled === true;
       const gate = editGate(m.editorSection, m.fz, t);
+      const feasibility = overrideFeasibility(editor.name, editor.action, m.incoming);
       const warnings = [];
       if (gate.warn) {
         warnings.push(m.fz.frozen ? t('editWarnFrozenGlobal') : t('editWarnUnknown'));
@@ -1594,9 +1722,32 @@ window.__ModuleLoader__.load({
             text,
           ),
         ),
+        feasibility.blocked
+          ? h(
+              'div',
+              {
+                'data-warning': 'override-blocked',
+                'data-block-code': feasibility.code,
+                style: { ...cardStyle, borderColor: token.stateError, marginTop: 8 },
+              },
+              h('strong', { style: { fontSize: 13, color: token.stateError } }, t('blockTitle')),
+              h('div', { style: { marginTop: 4, fontSize: 13, color: token.labelPrimary } }, blockText(t, feasibility)),
+              h('div', { style: { ...metaStyle, marginTop: 4 } }, `${t('errCode')}: ${feasibility.code}`),
+            )
+          : null,
         h(
           'div',
           { style: { marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 } },
+          h(
+            'label',
+            { style: { display: 'flex', flexDirection: 'column', gap: 4, maxWidth: 420 } },
+            h('span', { style: metaStyle }, t('editName')),
+            h(UI.Input, {
+              'data-role': 'name',
+              value: editor.name,
+              onChange: a.setName,
+            }),
+          ),
           h(
             'div',
             { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
@@ -1679,7 +1830,7 @@ window.__ModuleLoader__.load({
               {
                 variant: 'primary',
                 'data-action': 'save',
-                disabled: gate.disabled || m.busy === true,
+                disabled: gate.disabled || m.busy === true || feasibility.blocked,
                 onClick: a.save,
               },
               m.busy ? t('editSaving') : t('editSave'),
@@ -1911,6 +2062,11 @@ window.__ModuleLoader__.load({
     function renderOverridesView(t, m, a) {
       const ovs = m.ovs.data;
       const merged = ovs && ovs.merged && Array.isArray(ovs.merged.overrides) ? ovs.merged.overrides : [];
+      // `merged` says what is configured; `effective` says what it achieved. The
+      // difference is the whole point of this list: a saved override that never
+      // takes effect must be visible as such, with a reason and a way out.
+      const achieved = new Map();
+      for (const section of m.effectiveSections) achieved.set(section.name, section);
       return h(
         'div',
         { 'data-region': 'overrides', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
@@ -1922,53 +2078,83 @@ window.__ModuleLoader__.load({
           merged.length === 0
             ? h('div', { 'data-empty': 'overrides', style: cardStyle }, t('ovEmpty'))
             : null,
-          merged.map((entry) =>
-            h(
+          merged.map((entry) => {
+            const target = achieved.get(entry.name);
+            const state = target === undefined ? 'unknown' : target.applied === true ? 'applied' : 'ineffective';
+            const hostReason = target && target.reason ? String(target.reason) : '';
+            const cause = ineffectiveCause(t, target, m.incoming);
+            const reasonText = cause === null ? hostReason : cause.text;
+            return h(
               'div',
               {
                 key: `${entry.layer}:${entry.name}`,
                 'data-override-row': entry.name,
                 'data-override-layer': entry.layer,
                 'data-override-action': entry.action,
+                'data-override-applied': state === 'unknown' ? 'unknown' : String(state === 'applied'),
                 style: {
-                  border: `1px solid ${token.borderL1}`,
+                  border: `1px solid ${state === 'ineffective' ? token.stateError : token.borderL1}`,
                   borderRadius: 8,
                   padding: '8px 10px',
                   display: 'flex',
-                  gap: 8,
-                  alignItems: 'center',
-                  flexWrap: 'wrap',
+                  flexDirection: 'column',
+                  gap: 4,
                 },
               },
-              h('code', { style: { fontSize: 12 } }, entry.name),
-              h(UI.Tag, { tone: 'info' }, String(entry.action)),
-              h(UI.Tag, { tone: 'neutral' }, t(entry.layer === 'workspace' ? 'ovWorkspace' : 'ovUser')),
-              typeof entry.text === 'string' && entry.text.length > 0
-                ? h('span', { style: { ...metaStyle, flex: '1 1 200px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, entry.text.slice(0, 120))
-                : null,
               h(
-                'button',
-                {
-                  type: 'button',
-                  'data-action': 'undo',
-                  'data-override-name': entry.name,
-                  'data-override-layer': entry.layer === 'workspace' ? 'workspace' : 'user',
-                  onClick: () => a.removeOverride(entry),
-                  style: {
-                    font: 'inherit',
-                    fontSize: 12,
-                    padding: '2px 8px',
-                    borderRadius: 6,
-                    cursor: 'pointer',
-                    color: token.stateError,
-                    background: 'transparent',
-                    border: `1px solid ${token.borderL2}`,
+                'div',
+                { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+                h('code', { style: { fontSize: 12 } }, entry.name),
+                h(UI.Tag, { tone: 'info' }, String(entry.action)),
+                h(UI.Tag, { tone: 'neutral' }, t(entry.layer === 'workspace' ? 'ovWorkspace' : 'ovUser')),
+                h(
+                  UI.Tag,
+                  { tone: state === 'applied' ? 'success' : state === 'ineffective' ? 'danger' : 'outline' },
+                  t(state === 'applied' ? 'ovEffective' : state === 'ineffective' ? 'ovIneffective' : 'ovUnknown'),
+                ),
+                typeof entry.text === 'string' && entry.text.length > 0
+                  ? h('span', { style: { ...metaStyle, flex: '1 1 200px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, entry.text.slice(0, 120))
+                  : null,
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    'data-action': 'undo',
+                    'data-override-name': entry.name,
+                    'data-override-layer': entry.layer === 'workspace' ? 'workspace' : 'user',
+                    onClick: () => a.removeOverride(entry),
+                    style: {
+                      font: 'inherit',
+                      fontSize: 12,
+                      padding: '2px 8px',
+                      borderRadius: 6,
+                      cursor: 'pointer',
+                      color: token.stateError,
+                      background: 'transparent',
+                      border: `1px solid ${token.borderL2}`,
+                    },
                   },
-                },
-                t('ovUndo'),
+                  t('ovUndo'),
+                ),
               ),
-            ),
-          ),
+              state === 'ineffective'
+                ? h(
+                    'div',
+                    {
+                      'data-override-reason': entry.name,
+                      style: { fontSize: 12, color: token.stateError, wordBreak: 'break-word' },
+                    },
+                    `${t('ovReason')}: ${reasonText || t('ovIneffective')}`,
+                  )
+                : null,
+              state === 'ineffective' && cause !== null && hostReason.length > 0
+                ? h('div', { style: { ...metaStyle, wordBreak: 'break-word' } }, `${t('errDetail')}: ${hostReason}`)
+                : null,
+              state === 'ineffective'
+                ? h('div', { style: { ...metaStyle, wordBreak: 'break-word' } }, t('ovFixHint'))
+                : null,
+            );
+          }),
         ),
       );
     }
@@ -2167,6 +2353,7 @@ window.__ModuleLoader__.load({
           ? snapshot.effective.sections
           : [];
       const phase = snap.phase === 'ready' && effectiveSections.length === 0 ? 'empty' : snap.phase;
+      const incoming = incomingNames(snapshot);
 
       const actions = {
         refresh: () => setReload((value) => value + 1),
@@ -2182,6 +2369,10 @@ window.__ModuleLoader__.load({
         setFullOrigin,
         toggleExpanded: (name) => setExpanded((current) => (current === name ? '' : name)),
         setAction: (value) => setEditor((current) => (current === null ? current : { ...current, action: value, error: null })),
+        setName: (event) => {
+          const value = event && event.target ? String(event.target.value) : '';
+          setEditor((current) => (current === null ? current : { ...current, name: value, error: null }));
+        },
         setLayer: (value) => setEditor((current) => (current === null ? current : { ...current, layer: value, error: null })),
         setOrder: (event) => {
           const value = event && event.target ? String(event.target.value) : '';
@@ -2215,13 +2406,21 @@ window.__ModuleLoader__.load({
         },
         save: async () => {
           if (editor === null) return;
-          const current = effectiveSections.find((section) => section.name === editor.name) || null;
+          const name = String(editor.name === null || editor.name === undefined ? '' : editor.name).trim();
+          // The same check the disabled button enforces, repeated here so a
+          // programmatic click can never turn into a silently useless write.
+          const feasibility = overrideFeasibility(name, editor.action, incoming);
+          if (feasibility.blocked) {
+            setNotice({ tone: 'error', text: blockText(t, feasibility) });
+            return;
+          }
+          const current = effectiveSections.find((section) => section.name === name) || null;
           const gate = editGate(current, fz, t);
           if (gate.disabled) {
             setNotice({ tone: 'error', text: gate.reasons.join(' ') });
             return;
           }
-          const sectionOverride = { name: editor.name, action: editor.action };
+          const sectionOverride = { name, action: editor.action };
           if (editor.action !== 'hide') {
             sectionOverride.text = editor.text;
             if (editor.action === 'append' && String(editor.order).trim().length > 0) {
@@ -2300,6 +2499,7 @@ window.__ModuleLoader__.load({
         busy,
         fz,
         effectiveSections,
+        incoming,
         phase,
         passesFilters: (section) => {
           if (filters.layer !== 'all' && sectionLayer(section) !== filters.layer) return false;
