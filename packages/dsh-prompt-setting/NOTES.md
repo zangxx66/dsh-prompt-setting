@@ -1298,8 +1298,8 @@ evidence: suite=all    passed=164 failed=0 exit=0 ms=2194 diff=3f/+1309/-81 comm
 | `the selected session and the pinned scope carry an explicit selected mark`（新） | 默认作用域会话行唯一 `data-selected="true"` + `aria-selected` + 左侧色条 + ✓ 标记；会话行 hover 生效；置顶两项都是 button、有 onClick、`data-selected === data-pinned-active`、活动项有 ✓；切「全局」后没有任何会话行声称选中、置顶项接管选中态；平铺降级列表同样有选中标记与 hover |
 
 ```
-evidence: suite=client passed=55 failed=0 exit=0 ms=2263 diff=2f/+657/-75 commit=PENDING
-evidence: suite=all    passed=167 failed=0 exit=0 ms=2419 diff=2f/+657/-75 commit=PENDING
+evidence: suite=client passed=55 failed=0 exit=0 ms=2509 diff=2f/+657/-75 commit=fd80e40 (diff = client.js + test/client.test.mjs)
+evidence: suite=all    passed=167 failed=0 exit=0 ms=2419 diff=2f/+657/-75 commit=fd80e40 (diff = client.js + test/client.test.mjs)
 ```
 
 规模实测复跑（行数上界不受交互改动影响）：200/1ws 默认10·搜索10·2.1ms；200/4ws 10·40·2.4ms；
