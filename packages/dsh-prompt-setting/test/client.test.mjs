@@ -562,6 +562,46 @@ const SESSIONS_STATE = {
   phase: 'ready',
 };
 
+/** A synthetic catalog of `count` sessions (ids in Host order, last one current). */
+function manySessions(count) {
+  const ids = [];
+  const byId = {};
+  for (let i = 1; i <= count; i += 1) {
+    const id = `sess-${i}`;
+    ids.push(id);
+    byId[id] = {
+      id,
+      title: `Session ${i}`,
+      displayTitle: `Session ${i}`,
+      cwd: `/w/${i}`,
+      running: i % 2 === 0,
+      retainedBy: { mainView: i === count ? 1 : 0 },
+    };
+  }
+  return { ids, byId, phase: 'ready' };
+}
+
+/** Three rows that separate the three searchable fields. */
+const FILTER_SESSIONS = {
+  ids: ['s1', 's2', 's3'],
+  byId: {
+    s1: { id: 's1', displayTitle: 'Alpha One', title: 'Alpha One', cwd: '/work/alpha', running: false, retainedBy: { mainView: 0 } },
+    s2: { id: 's2', displayTitle: 'Beta Two', title: 'Beta Two', cwd: '/work/beta', running: true, retainedBy: { mainView: 1 } },
+    s3: { id: 's3', displayTitle: 'Gamma Three', title: 'Gamma Three', cwd: '/work/gamma', running: false, retainedBy: { mainView: 0 } },
+  },
+  phase: 'ready',
+};
+
+/** Fill one `{name}` template the way the page does. */
+function fillText(template, params) {
+  return String(template).replace(/\{(\w+)\}/g, (match, key) => (params[key] === undefined ? match : String(params[key])));
+}
+
+/** Every rendered session option row. */
+function sessionOptions(tree) {
+  return collect(tree, (node) => node.props && node.props['data-role'] === 'session-option');
+}
+
 // #endregion
 
 test('client: registers one settings.section entry with the plugin id', () => {
@@ -714,25 +754,33 @@ test('client: the session selector defaults to the current view session', async 
   assert.equal(markerOf(tree, 'data-session'), 's2');
   assert.deepEqual(urlsFor(page, PATHS.snapshot), [`${PATHS.snapshot}?session=s2`]);
   assert.deepEqual(urlsFor(page, PATHS.overrides), [`${PATHS.overrides}?session=s2`]);
-  const select = oneBy(tree, 'data-role', 'session-select');
-  assert.equal(select.props.value, 's2');
-  const options = collect(select, (node) => node.type === 'option');
-  assert.equal(options.length, 3, 'global + one option per session');
-  assert.equal(options[0].props.children, page.zh.sessionGlobal);
-  assert.ok(options.some((option) => option.props.value === 's1' && String(option.props.children).includes('First')));
+  // A searchable picker, not a spread-open native select.
+  assert.equal(oneBy(tree, 'data-role', 'session-search').props.value, '');
+  const options = sessionOptions(tree);
+  assert.equal(options.length, 2, 'both sessions are rendered at this size');
   assert.ok(
-    options.some((option) => option.props.value === 's2' && String(option.props.children).includes('Second')),
-    'the session row renders its title',
+    options.some((option) => option.props['data-session-id'] === 's1' && String(option.props.children).includes('First')),
   );
+  assert.ok(
+    options.some((option) => option.props['data-session-id'] === 's2' && String(option.props.children).includes('Second')),
+    'the session row renders its title and path',
+  );
+  assert.ok(hasText(oneBy(tree, 'data-role', 'session-current'), 'Second'), 'the selection is named');
+  assert.equal(oneBy(tree, 'data-pinned', 'global').props['data-pinned-active'], 'false');
+  assert.equal(oneBy(tree, 'data-pinned', 'current').props['data-pinned-active'], 'true');
+  const count = oneBy(tree, 'data-session-shown', '2');
+  assert.equal(count.props['data-session-matched'], '2');
+  assert.equal(count.props['data-session-total'], '2');
+  assert.ok(hasText(count, fillText(page.zh.sessionMatches, { shown: 2, matched: 2, total: 2 })));
 });
 
 test('client: switching to the global option drops ?session= and re-reads the snapshot', async () => {
   const page = makePage({ useSessions: sessionsHook(SESSIONS_STATE), responses: defaultResponses() });
   let tree = await page.flush();
-  tree = await page.flush();
-  oneBy(tree, 'data-role', 'session-select').props.onChange({ target: { value: '\u0000global' } });
+  clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
   tree = await page.flush();
   assert.equal(markerOf(tree, 'data-session'), 'global');
+  assert.equal(oneBy(tree, 'data-pinned', 'global').props['data-pinned-active'], 'true');
   const snapshotCalls = urlsFor(page, PATHS.snapshot);
   assert.ok(snapshotCalls.includes(PATHS.snapshot), 'the global view sends no session');
   assert.ok(snapshotCalls.includes(`${PATHS.snapshot}?session=s2`), 'the session view was read first');
@@ -767,6 +815,128 @@ test('client: a useSessions hook that throws degrades instead of blanking the pa
   assert.equal(markerOf(tree, 'data-render-state'), 'ok');
   assert.equal(markerOf(tree, 'data-session-mode'), 'manual');
   assert.ok(strings(tree).includes(page.zh.sessionLimit));
+});
+
+// #endregion
+
+// #region the picker must not degrade as the session catalog grows
+
+test('client: the session picker renders a bounded list at every catalog size', async () => {
+  for (const [count, expectedShown] of [
+    [0, 0],
+    [1, 1],
+    [200, 20],
+  ]) {
+    const state = count === 0 ? { ids: [], byId: {}, phase: 'ready' } : manySessions(count);
+    const page = makePage({ useSessions: sessionsHook(state), responses: defaultResponses() });
+    const tree = await page.flush();
+    const options = sessionOptions(tree);
+    assert.equal(options.length, expectedShown, `${count} sessions render ${expectedShown} rows`);
+    if (count > 20) assert.notEqual(options.length, count, 'the whole catalog is never rendered');
+    const countNode = oneBy(tree, 'data-session-shown', String(expectedShown));
+    assert.equal(countNode.props['data-session-matched'], String(count));
+    assert.equal(countNode.props['data-session-total'], String(count));
+    assert.ok(
+      hasText(countNode, fillText(page.zh.sessionMatches, { shown: expectedShown, matched: count, total: count })),
+      `the count line is right for ${count}`,
+    );
+    if (count === 0) {
+      assert.ok(hasText(tree, page.zh.sessionEmpty), 'the empty catalog is stated');
+      assert.equal(oneBy(tree, 'data-pinned', 'current').props.disabled, true, 'nothing to jump to');
+      assert.ok(oneBy(tree, 'data-pinned', 'global'), 'global stays reachable');
+    }
+  }
+});
+
+test('client: the session search matches title, path and id, case-insensitively', async () => {
+  const page = makePage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
+  let tree = await page.flush();
+  assert.equal(sessionOptions(tree).length, 3);
+
+  for (const [query, expectedId] of [
+    ['ALPHA', 's1'],
+    ['/work/beta', 's2'],
+    ['S3', 's3'],
+  ]) {
+    typeInto(tree, 'session-search', query);
+    tree = await page.flush();
+    const options = sessionOptions(tree);
+    assert.equal(options.length, 1, `${query} matches one session`);
+    assert.equal(options[0].props['data-session-id'], expectedId);
+    assert.equal(oneBy(tree, 'data-session-shown', '1').props['data-session-matched'], '1');
+  }
+});
+
+test('client: a query that matches nothing becomes a manual session id', async () => {
+  const page = makePage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
+  let tree = await page.flush();
+  typeInto(tree, 'session-search', 'pasted-id-42');
+  tree = await page.flush();
+  assert.equal(sessionOptions(tree).length, 0, 'nothing matches');
+  const entry = oneBy(tree, 'data-action', 'session-use-input');
+  assert.equal(entry.props['data-session-id'], 'pasted-id-42');
+  assert.ok(hasText(tree, page.zh.sessionNoMatch), 'the fallback is explained');
+  assert.ok(hasText(tree, fillText(page.zh.sessionUseInput, { id: 'pasted-id-42' })));
+
+  clickButton(tree, { 'data-action': 'session-use-input' });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-session'), 'pasted-id-42');
+  assert.ok(urlsFor(page, PATHS.snapshot).includes(`${PATHS.snapshot}?session=pasted-id-42`));
+});
+
+test('client: the pinned entries are never filtered away', async () => {
+  const page = makePage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
+  let tree = await page.flush();
+  typeInto(tree, 'session-search', 'zzz-nothing');
+  tree = await page.flush();
+  assert.equal(sessionOptions(tree).length, 0);
+  assert.ok(oneBy(tree, 'data-pinned', 'global'), 'global is pinned through the search');
+  assert.ok(oneBy(tree, 'data-pinned', 'current'), 'the current-view entry is pinned too');
+
+  clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-session'), 'global');
+  assert.equal(oneBy(tree, 'data-role', 'session-search').props.value, '', 'global clears the search');
+  assert.equal(sessionOptions(tree).length, 3, 'and the list is browsable again');
+
+  clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'current' });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-session'), 's2', 'the current-view entry picks the retained session');
+  assert.equal(oneBy(tree, 'data-role', 'session-search').props.value, 'Beta Two', 'and names it');
+});
+
+test('client: picking a row refills the search box with the readable title', async () => {
+  const page = makePage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
+  let tree = await page.flush();
+  const target = sessionOptions(tree).find((option) => option.props['data-session-id'] === 's1');
+  target.props.onClick();
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-session'), 's1');
+  assert.equal(oneBy(tree, 'data-role', 'session-search').props.value, 'Alpha One');
+  assert.ok(hasText(oneBy(tree, 'data-role', 'session-current'), 'Alpha One'));
+});
+
+test('client: the session list is keyboard reachable', async () => {
+  const page = makePage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
+  let tree = await page.flush();
+  const input = () => oneBy(tree, 'data-role', 'session-search');
+  input().props.onKeyDown({ key: 'ArrowDown', preventDefault() {} });
+  tree = await page.flush();
+  const active = collect(tree, (node) => node.props && node.props['data-session-active'] === 'true');
+  assert.equal(active.length, 1, 'exactly one row is highlighted');
+  assert.equal(active[0].props['data-session-id'], 's1', 'the first row is highlighted');
+  input().props.onKeyDown({ key: 'ArrowDown', preventDefault() {} });
+  tree = await page.flush();
+  const second = collect(tree, (node) => node.props && node.props['data-session-active'] === 'true');
+  assert.equal(second.length, 1);
+  assert.equal(second[0].props['data-session-id'], 's2', 'ArrowDown moves the highlight');
+  input().props.onKeyDown({ key: 'Enter', preventDefault() {} });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-session'), 's2', 'Enter selects the highlighted row');
+  input().props.onKeyDown({ key: 'Escape', preventDefault() {} });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'session-search').props.value, '', 'Esc clears the search');
+  assert.equal(sessionOptions(tree).length, 3, 'and the list is back');
 });
 
 // #endregion

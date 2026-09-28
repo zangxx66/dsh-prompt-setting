@@ -72,6 +72,12 @@ window.__ModuleLoader__.load({
     const ACTIONS = ['replace', 'hide', 'append'];
     /** Upper bound on rendered lines put into the DOM (a long prompt is real). */
     const MAX_VIEW_LINES = 3000;
+    /**
+     * Upper bound on session rows rendered at once. The session catalog grows
+     * with use (every session ever opened is a row), so the picker may never
+     * render the whole list: it renders at most this many matches.
+     */
+    const SESSION_MATCH_LIMIT = 20;
 
     // #region error-code dictionary (CONTRACT.md §4.4, every code gets copy)
     /**
@@ -139,15 +145,19 @@ window.__ModuleLoader__.load({
       loading: '加载中…',
       loadFailed: '快照加载失败',
       sessionHeading: '查看范围',
-      sessionLabel: '会话',
       sessionGlobal: '全局（不指定会话）',
-      sessionManual: '手动输入 session id',
       sessionManualPlaceholder: '粘贴 session id（Agent.id）',
       sessionApply: '应用',
       sessionLimit:
         '当前 profile 未提供 useSessions（会话服务不可用），已降级为手动输入 session id：无法列出会话下拉。',
       sessionEmpty: '会话列表为空，可手动输入 session id 或使用「全局」。',
       sessionGlobalNote: '未指定会话：快照描述全局装配，工作区层不参与。',
+      sessionSearch: '搜索会话（标题 / 路径 / session id）',
+      sessionCurrentLabel: '当前：{label}',
+      sessionMatches: '显示 {shown} / {matched} 条匹配（共 {total} 个会话）',
+      sessionUseInput: '按该 id 查看：{id}',
+      sessionNoMatch: '没有匹配的会话，可直接按输入的 id 查看。',
+      sessionKeyboardHint: '↑↓ 移动，Enter 选中，Esc 清空搜索',
       sessionSelectedNote: '已指定会话：快照在该会话自身作用域下探测。',
       stateHeading: '状态',
       stMounted: '覆盖引擎',
@@ -186,12 +196,9 @@ window.__ModuleLoader__.load({
       originUnmatched: '无匹配覆盖',
       originDownstreamHint: '该段由其它插件在后处理阶段加入，不是本插件的覆盖，也不是异常。',
       originUnmatchedHint: '该覆盖没有可作用的目标段。',
-      colName: '段名',
-      colIndex: '序号',
       colChars: '字符数 {n}',
       colReason: '原因',
       colAction: '动作',
-      colLayer: '层',
       expand: '展开全文',
       collapse: '收起',
       edit: '编辑',
@@ -249,7 +256,6 @@ window.__ModuleLoader__.load({
       ovHeading: '已生效覆盖',
       ovEmpty: '当前作用域没有任何覆盖。',
       ovUndo: '撤销',
-      ovTextPreview: '文本预览',
       ovMergedNote: '合并顺序：工作区级覆盖同名用户级条目，并保留其位置。',
       ovEffective: '已生效',
       ovIneffective: '未生效',
@@ -262,7 +268,6 @@ window.__ModuleLoader__.load({
       errUnknown: '未知错误码',
       errCode: '错误码',
       errDetail: '宿主消息',
-      retry: '重试',
       rendererLabel: '渲染分支',
       rendererPrimitives: 'primitives（官方基础件）',
       rendererFallback: 'fallback（自绘 + 主题变量）',
@@ -280,15 +285,19 @@ window.__ModuleLoader__.load({
       loading: 'Loading…',
       loadFailed: 'Snapshot request failed',
       sessionHeading: 'Scope',
-      sessionLabel: 'Session',
       sessionGlobal: 'Global (no session)',
-      sessionManual: 'Enter a session id',
       sessionManualPlaceholder: 'Paste a session id (Agent.id)',
       sessionApply: 'Apply',
       sessionLimit:
         'This profile provides no useSessions (session service unavailable); the picker degraded to a manual session id and cannot list sessions.',
       sessionEmpty: 'The session list is empty; enter a session id or use Global.',
       sessionGlobalNote: 'No session: the snapshot describes the global assembly and the workspace layer stays inactive.',
+      sessionSearch: 'Search sessions (title, path, session id)',
+      sessionCurrentLabel: 'Current: {label}',
+      sessionMatches: 'Showing {shown} / {matched} matches ({total} sessions)',
+      sessionUseInput: 'View by this id: {id}',
+      sessionNoMatch: 'No session matches; you can view the typed id directly.',
+      sessionKeyboardHint: 'Up/Down to move, Enter to select, Esc to clear the search',
       sessionSelectedNote: 'Session selected: the snapshot probes that session’s own scope.',
       stateHeading: 'Status',
       stMounted: 'Override engine',
@@ -328,12 +337,9 @@ window.__ModuleLoader__.load({
       originDownstreamHint:
         'Another plugin added this section after the waterfall. It is not our override and not an anomaly.',
       originUnmatchedHint: 'This override had no target section to act on.',
-      colName: 'Section',
-      colIndex: 'Index',
       colChars: 'Chars {n}',
       colReason: 'Reason',
       colAction: 'Action',
-      colLayer: 'Layer',
       expand: 'Expand',
       collapse: 'Collapse',
       edit: 'Edit',
@@ -392,7 +398,6 @@ window.__ModuleLoader__.load({
       ovHeading: 'Active overrides',
       ovEmpty: 'This scope has no overrides.',
       ovUndo: 'Undo',
-      ovTextPreview: 'Text preview',
       ovMergedNote: 'Merge order: a workspace override wins over the same-name user entry and keeps its position.',
       ovEffective: 'Applied',
       ovIneffective: 'Not applied',
@@ -405,7 +410,6 @@ window.__ModuleLoader__.load({
       errUnknown: 'Unknown error code',
       errCode: 'Error code',
       errDetail: 'Host message',
-      retry: 'Retry',
       rendererLabel: 'Renderer',
       rendererPrimitives: 'primitives (official atoms)',
       rendererFallback: 'fallback (hand-built + theme tokens)',
@@ -541,37 +545,6 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Hand-built native select (no primitive exists; a native control keeps the
-     * keyboard and screen-reader semantics for free).
-     * @param props - `value`, `onChange`, option children.
-     * @returns the select element.
-     */
-    function FxSelect(props) {
-      const rest = { ...props };
-      delete rest.style;
-      delete rest.children;
-      return h(
-        'select',
-        {
-          ...rest,
-          style: {
-            font: 'inherit',
-            fontSize: 13,
-            lineHeight: '20px',
-            maxWidth: 420,
-            padding: '6px 10px',
-            borderRadius: 8,
-            color: token.labelPrimary,
-            background: 'transparent',
-            border: `1px solid ${token.borderL2}`,
-            ...(props.style || {}),
-          },
-        },
-        props.children,
-      );
-    }
-
-    /**
      * Hand-built tag.
      * @param props - `tone` plus children.
      * @returns the tag element.
@@ -626,7 +599,6 @@ window.__ModuleLoader__.load({
             Input: (props) =>
               typeof primitives.Input === 'function' ? h(primitives.Input, props) : h(FxInput, props),
             Textarea: FxTextarea,
-            Select: FxSelect,
             Tag: (props) =>
               typeof primitives.Tag === 'function'
                 ? h(primitives.Tag, { tone: props.tone }, props.children)
@@ -636,7 +608,6 @@ window.__ModuleLoader__.load({
             Button: FxButton,
             Input: FxInput,
             Textarea: FxTextarea,
-            Select: FxSelect,
             Tag: FxTag,
           };
 
@@ -732,17 +703,42 @@ window.__ModuleLoader__.load({
       );
     }
 
-    /** Separators used to encode the session hook's snapshot into one string. */
-    const ROW_SEP = '\u001d';
-    const FIELD_SEP = '\u001f';
+    /**
+     * Separators for the compact session encoding. Control characters are not
+     * typeable, and the decoding is positional, so a title can never forge a
+     * field boundary (the display fields are flattened first).
+     */
+    const SESSION_ROW_SEP = '\u001e';
+    const SESSION_FIELD_SEP = '\u001f';
+
+    /** Both separators, for the fast "does this field need flattening" test. */
+    const SESSION_SEPARATOR_PATTERN = /[\u001e\u001f]/;
+
+    /**
+     * Flatten one display field so it cannot contain an encoding separator. The
+     * common path is a single regex test: a title with no control character (the
+     * normal case) is returned untouched, no allocation.
+     */
+    function flattenSessionField(value) {
+      const text = typeof value === 'string' ? value : '';
+      if (!SESSION_SEPARATOR_PATTERN.test(text)) return text;
+      return text.replace(/[\u001e\u001f]/g, ' ');
+    }
 
     /**
      * The single selector handed to the props `useSessions` root hook.
      *
-     * It returns a *string*, so the hook's equality check sees a stable value
-     * across unrelated store notifications, and it never throws on a
-     * not-yet-ready snapshot. Layout: `currentId` then one record per session,
-     * each `id / title / cwd / running`.
+     * `ctx.sessions.search` is deliberately NOT used: it searches the Host's
+     * *message-content* index (`ISessions.search(query, signal)` → bounded
+     * `SessionSearchResultItem[]`), not session metadata; it matches message
+     * text rather than title/path/id, and reaching it would need a `sessions`
+     * service injection plus an async round trip per keystroke. The `list`
+     * snapshot is documented as "the metadata authority", so the picker filters
+     * it locally and bounds what it renders.
+     *
+     * The selector returns a *string* (the hook's equality check sees a stable
+     * value; compact fields rather than JSON keep it ~2× smaller at the 5000-row
+     * extreme), and it never throws on a not-yet-ready snapshot.
      * @param state - `SessionListState` (or anything shaped like it).
      * @returns the encoded string.
      */
@@ -760,34 +756,102 @@ window.__ModuleLoader__.load({
       }
       const records = ids.map((id) => {
         const row = byId[id] || {};
-        const title = row.displayTitle || row.title || '';
-        return [id, title, row.cwd || '', row.running ? '1' : '0'].join(FIELD_SEP);
+        return [
+          String(id),
+          flattenSessionField(row.displayTitle || row.title),
+          flattenSessionField(row.title),
+          flattenSessionField(row.cwd),
+          row.running === true ? '1' : '0',
+        ].join(SESSION_FIELD_SEP);
       });
-      return [current, ...records].join(ROW_SEP);
+      return [current, ...records].join(SESSION_ROW_SEP);
     }
 
     /**
+     * One-entry decode cache. The props hook re-runs our selector on every
+     * render, so the payload string is rebuilt often; caching the decode (and
+     * the lowercased search text inside it) is what keeps a keystroke cheap in a
+     * large catalog. Keyed by the exact payload, so a changed catalog misses.
+     */
+    let sessionDecodeKey = null;
+    let sessionDecodeValue = { currentId: '', rows: [] };
+
+    /**
      * Decode {@link sessionsProbeSelector}'s output.
+     *
+     * Each row also carries a pre-lowercased `haystack` covering id, display
+     * title, title and cwd, so matching one query is one `indexOf` per row
+     * instead of four `toLowerCase` allocations.
+     *
+     * A payload with no row separator is treated as unconformant and yields an
+     * empty catalog rather than a fabricated session id.
      * @param encoded - the selector value.
-     * @returns `{currentId, rows: [{id, title, cwd, running}]}`.
+     * @returns `{currentId, rows: [{id, displayTitle, title, cwd, running, haystack}]}`.
      */
     function decodeSessions(encoded) {
       if (typeof encoded !== 'string' || encoded.length === 0) return { currentId: '', rows: [] };
-      const parts = encoded.split(ROW_SEP);
-      const currentId = parts[0] || '';
+      if (encoded === sessionDecodeKey) return sessionDecodeValue;
+      const parts = encoded.split(SESSION_ROW_SEP);
+      if (parts.length < 2) return { currentId: '', rows: [] };
       const rows = parts
         .slice(1)
         .map((record) => {
-          const fields = record.split(FIELD_SEP);
-          return {
+          const fields = record.split(SESSION_FIELD_SEP);
+          const row = {
             id: fields[0] || '',
-            title: fields[1] || '',
-            cwd: fields[2] || '',
-            running: fields[3] === '1',
+            displayTitle: fields[1] || '',
+            title: fields[2] || '',
+            cwd: fields[3] || '',
+            running: fields[4] === '1',
           };
+          row.haystack = [row.id, row.displayTitle, row.title, row.cwd].join(' ').toLowerCase();
+          return row;
         })
         .filter((row) => row.id.length > 0);
-      return { currentId, rows };
+      sessionDecodeKey = encoded;
+      sessionDecodeValue = { currentId: parts[0] || '', rows };
+      return sessionDecodeValue;
+    }
+
+    /**
+     * Case-insensitive substring match across every field a user may search by.
+     * @param row - a decoded session row.
+     * @param needle - the already-trimmed, already-lowercased query.
+     * @returns whether the row matches.
+     */
+    function sessionMatchesQuery(row, needle) {
+      if (needle.length === 0) return true;
+      const haystack =
+        typeof row.haystack === 'string'
+          ? row.haystack
+          : [row.id, row.displayTitle, row.title, row.cwd].join(' ').toLowerCase();
+      return haystack.indexOf(needle) >= 0;
+    }
+
+    /**
+     * Filter the session rows for the picker. Order is the service's (Host list
+     * order); nothing is sorted here.
+     * @param rows - the decoded rows.
+     * @param query - the raw search box content.
+     * @returns every matching row (the caller bounds what it renders).
+     */
+    function filterSessions(rows, query) {
+      const list = Array.isArray(rows) ? rows : [];
+      const needle = typeof query === 'string' ? query.trim().toLowerCase() : '';
+      if (needle.length === 0) return list.slice();
+      return list.filter((row) => sessionMatchesQuery(row, needle));
+    }
+
+    /** The readable label of one session row. */
+    function sessionRowLabel(row) {
+      return `${row.displayTitle || row.title || row.id}${row.running ? ' ●' : ''}${row.cwd ? ` — ${row.cwd}` : ''}`;
+    }
+
+    /** The readable label of a session id inside a row list (falls back to the id). */
+    function sessionLabelOf(rows, id) {
+      if (typeof id !== 'string' || id.length === 0) return '';
+      const row = (Array.isArray(rows) ? rows : []).find((candidate) => candidate.id === id);
+      return row ? row.displayTitle || row.title || row.id : id;
     }
 
     /**
@@ -1439,69 +1503,223 @@ window.__ModuleLoader__.load({
      * @param a - the page actions.
      * @returns the section element.
      */
+    /**
+     * One pinned picker entry: always visible, never filtered, one click away.
+     * @param key - 'global' | 'current' (the `data-pinned` marker).
+     * @param label - localized label.
+     * @param active - whether this entry is the current scope.
+     * @param disabled - whether the entry cannot be used right now.
+     * @param onClick - selection callback.
+     * @returns the button element.
+     */
+    function pinnedSessionButton(key, label, active, disabled, onClick) {
+      return h(
+        'button',
+        {
+          type: 'button',
+          'data-action': 'session-pinned',
+          'data-pinned': key,
+          'data-pinned-active': String(active),
+          disabled,
+          onClick,
+          style: {
+            font: 'inherit',
+            fontSize: 12,
+            lineHeight: '18px',
+            padding: '3px 10px',
+            borderRadius: 999,
+            cursor: disabled ? 'default' : 'pointer',
+            opacity: disabled ? 0.5 : 1,
+            color: active ? token.buttonLabel : token.labelPrimary,
+            background: active ? token.buttonFill : 'transparent',
+            border: `1px solid ${active ? 'transparent' : token.borderL2}`,
+          },
+        },
+        label,
+      );
+    }
+
+    /**
+     * The session selector: pinned entries, a live search box, and a strictly
+     * bounded result list.
+     *
+     * Requirement this shape comes from: the session catalog grows monotonically
+     * with use, so a control that spreads every row open becomes unusable at
+     * scale (and inflates the DOM). Therefore: the two pinned entries every
+     * scope needs are always rendered, at most {@link SESSION_MATCH_LIMIT}
+     * matches are rendered, and a query that matches nothing falls back to
+     * "view this id" instead of forcing a long list.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the section element.
+     */
     function renderSession(t, m, a) {
       const seat = m.seat;
-      const manual = seat.mode === 'manual';
-      const options = [];
-      if (!manual) {
-        options.push(h('option', { key: '__global', value: GLOBAL_SESSION }, t('sessionGlobal')));
-        for (const row of seat.rows) {
-          const label = `${row.title || row.id}${row.running ? ' ●' : ''}${row.cwd ? ` — ${row.cwd}` : ''}`;
-          options.push(h('option', { key: row.id, value: row.id }, label));
-        }
+      if (seat.mode === 'manual') {
+        return h(
+          'section',
+          { 'data-region': 'session', style: cardStyle },
+          h('h3', { style: headingStyle }, t('sessionHeading')),
+          h(
+            'div',
+            { style: { marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+            h(UI.Input, {
+              'data-role': 'session-manual',
+              placeholder: t('sessionManualPlaceholder'),
+              value: m.manualId,
+              onChange: a.setManualId,
+              style: { maxWidth: 320 },
+            }),
+            h(UI.Button, { variant: 'outline', 'data-action': 'session-apply', onClick: a.applyManual }, t('sessionApply')),
+            h(UI.Button, { variant: 'outline', 'data-action': 'session-global', onClick: a.useGlobal }, t('sessionGlobal')),
+          ),
+          h(
+            'p',
+            {
+              'data-warning': 'session-degraded',
+              style: { margin: '8px 0 0', fontSize: 12, color: token.stateWarn, wordBreak: 'break-word' },
+            },
+            t('sessionLimit'),
+          ),
+          seat.reason === 'hook-threw'
+            ? h('p', { style: { margin: '4px 0 0', ...metaStyle } }, `${t('errDetail')}: ${seat.message}`)
+            : null,
+          h(
+            'p',
+            { 'data-session-note': m.sessionArg === null ? 'global' : 'session', style: { margin: '8px 0 0', ...metaStyle } },
+            m.sessionArg === null ? t('sessionGlobalNote') : t('sessionSelectedNote'),
+          ),
+        );
       }
+
+      const rows = seat.rows;
+      const currentId = seat.currentId;
+      const currentLabel = sessionLabelOf(rows, currentId);
+      const total = rows.length;
+      const matched = m.sessionMatches.length;
+      const shown = m.sessionVisible.length;
+      const scoped = m.sessionArg !== null;
+      const selectedLabel = scoped ? sessionLabelOf(rows, m.sessionArg) || m.sessionArg : t('sessionGlobal');
+
       return h(
         'section',
         { 'data-region': 'session', style: cardStyle },
         h('h3', { style: headingStyle }, t('sessionHeading')),
-        manual
-          ? h(
-              'div',
-              { style: { marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-              h(UI.Input, {
-                'data-role': 'session-manual',
-                placeholder: t('sessionManualPlaceholder'),
-                value: m.manualId,
-                onChange: a.setManualId,
-                style: { maxWidth: 320 },
-              }),
-              h(UI.Button, { variant: 'outline', 'data-action': 'session-apply', onClick: a.applyManual }, t('sessionApply')),
-              h(UI.Button, { variant: 'outline', 'data-action': 'session-global', onClick: a.useGlobal }, t('sessionGlobal')),
-            )
-          : h(
-              'div',
-              { style: { marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-              h(
-                'label',
-                { style: { ...metaStyle, display: 'flex', gap: 6, alignItems: 'center' } },
-                t('sessionLabel'),
-                h(
-                  UI.Select,
-                  { 'data-role': 'session-select', value: m.session, onChange: a.setSession },
-                  options,
-                ),
-              ),
-            ),
-        manual
-          ? h(
-              'p',
+        // Pinned entries: always present, never filtered away.
+        h(
+          'div',
+          { 'data-region': 'session-pinned', style: { marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' } },
+          pinnedSessionButton('global', t('sessionGlobal'), !scoped, false, a.useGlobal),
+          pinnedSessionButton(
+            'current',
+            `${t('sessionCurrent')}${currentLabel ? `：${currentLabel}` : ''}`,
+            scoped && m.sessionArg === currentId,
+            currentId.length === 0,
+            a.useCurrent,
+          ),
+        ),
+        h(
+          'div',
+          { 'data-role': 'session-current', style: { marginTop: 8, ...metaStyle, wordBreak: 'break-word' } },
+          fmt(t('sessionCurrentLabel'), { label: selectedLabel }),
+        ),
+        h(
+          'label',
+          { style: { marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4, maxWidth: 420 } },
+          h('span', { style: metaStyle }, t('sessionSearch')),
+          h(UI.Input, {
+            'data-role': 'session-search',
+            value: m.sessionQuery,
+            placeholder: currentLabel ? fmt(t('sessionCurrentLabel'), { label: currentLabel }) : t('sessionSearch'),
+            onChange: a.setSessionQuery,
+            onKeyDown: a.onSessionKeyDown,
+          }),
+        ),
+        h(
+          'div',
+          {
+            'data-session-shown': String(shown),
+            'data-session-matched': String(matched),
+            'data-session-total': String(total),
+            style: { marginTop: 6, ...metaStyle },
+          },
+          fmt(t('sessionMatches'), { shown, matched, total }),
+        ),
+        h(
+          'div',
+          {
+            role: 'listbox',
+            'data-region': 'session-list',
+            style: { marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 },
+          },
+          m.sessionVisible.map((row, index) =>
+            h(
+              'button',
               {
-                'data-warning': 'session-degraded',
-                style: { margin: '8px 0 0', fontSize: 12, color: token.stateWarn, wordBreak: 'break-word' },
+                key: row.id,
+                type: 'button',
+                role: 'option',
+                'data-role': 'session-option',
+                'data-session-id': row.id,
+                'data-session-active': String(index === m.sessionActive),
+                'aria-selected': row.id === m.sessionArg,
+                onClick: () => a.pickSession(row.id),
+                style: {
+                  font: 'inherit',
+                  fontSize: 12,
+                  lineHeight: '18px',
+                  textAlign: 'left',
+                  padding: '4px 8px',
+                  borderRadius: 6,
+                  cursor: 'pointer',
+                  color: token.labelPrimary,
+                  background: index === m.sessionActive ? token.diffAddFill : 'transparent',
+                  border: `1px solid ${row.id === m.sessionArg ? token.borderL2 : 'transparent'}`,
+                },
               },
-              t('sessionLimit'),
+              sessionRowLabel(row),
+            ),
+          ),
+        ),
+        // No match ⇒ the typed text is a session id, not a dead end.
+        matched === 0 && m.sessionQuery.trim().length > 0
+          ? h(
+              'div',
+              {
+                'data-warning': 'session-no-match',
+                style: { marginTop: 6, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
+              },
+              h('span', { style: metaStyle }, t('sessionNoMatch')),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  'data-action': 'session-use-input',
+                  'data-session-id': m.sessionQuery.trim(),
+                  onClick: a.useTypedId,
+                  style: {
+                    font: 'inherit',
+                    fontSize: 12,
+                    lineHeight: '18px',
+                    padding: '3px 10px',
+                    borderRadius: 999,
+                    cursor: 'pointer',
+                    color: token.labelPrimary,
+                    background: 'transparent',
+                    border: `1px solid ${token.borderL2}`,
+                  },
+                },
+                fmt(t('sessionUseInput'), { id: m.sessionQuery.trim() }),
+              ),
             )
           : null,
-        manual && seat.reason === 'hook-threw'
-          ? h('p', { style: { margin: '4px 0 0', ...metaStyle } }, t('errDetail') + `: ${seat.message}`)
-          : null,
-        !manual && seat.reason === 'empty'
-          ? h('p', { style: { margin: '8px 0 0', ...metaStyle } }, t('sessionEmpty'))
-          : null,
+        total === 0 ? h('p', { style: { margin: '6px 0 0', ...metaStyle } }, t('sessionEmpty')) : null,
+        h('p', { style: { margin: '6px 0 0', ...metaStyle } }, t('sessionKeyboardHint')),
         h(
           'p',
-          { 'data-session-note': m.sessionArg === null ? 'global' : 'session', style: { margin: '8px 0 0', ...metaStyle } },
-          m.sessionArg === null ? t('sessionGlobalNote') : t('sessionSelectedNote'),
+          { 'data-session-note': scoped ? 'session' : 'global', style: { margin: '6px 0 0', ...metaStyle } },
+          scoped ? t('sessionSelectedNote') : t('sessionGlobalNote'),
         ),
       );
     }
@@ -2301,6 +2519,8 @@ window.__ModuleLoader__.load({
 
       const [selection, setSelection] = React.useState(null);
       const [manualId, setManualId] = React.useState('');
+      const [sessionQuery, setSessionQuery] = React.useState('');
+      const [sessionActive, setSessionActive] = React.useState(-1);
       const [view, setView] = React.useState('sections');
       const [search, setSearch] = React.useState('');
       const [filters, setFilters] = React.useState({ layer: 'all', overridable: 'all', origin: 'all' });
@@ -2315,6 +2535,9 @@ window.__ModuleLoader__.load({
 
       const session = selection === null ? seat.currentId || GLOBAL_SESSION : selection;
       const sessionArg = session === GLOBAL_SESSION ? null : session;
+      // Every match is computed; only a bounded slice is ever rendered.
+      const sessionMatches = filterSessions(seat.rows, sessionQuery);
+      const sessionVisible = sessionMatches.slice(0, SESSION_MATCH_LIMIT);
 
       React.useEffect(() => {
         let cancelled = false;
@@ -2360,9 +2583,62 @@ window.__ModuleLoader__.load({
         setView,
         setSearch: (event) => setSearch(event && event.target ? String(event.target.value) : ''),
         setManualId: (event) => setManualId(event && event.target ? String(event.target.value) : ''),
-        setSession: (event) => setSelection(event && event.target ? String(event.target.value) : GLOBAL_SESSION),
+        setSessionQuery: (event) => {
+          setSessionQuery(event && event.target ? String(event.target.value) : '');
+          setSessionActive(-1);
+        },
+        pickSession: (id) => {
+          setSelection(id);
+          // The box reflects the selection: it refills with the readable title.
+          setSessionQuery(sessionLabelOf(seat.rows, id));
+          setSessionActive(-1);
+        },
+        useCurrent: () => {
+          if (seat.currentId.length === 0) return;
+          setSelection(seat.currentId);
+          setSessionQuery(sessionLabelOf(seat.rows, seat.currentId));
+          setSessionActive(-1);
+        },
+        useTypedId: () => {
+          const id = sessionQuery.trim();
+          if (id.length === 0) return;
+          setSelection(id);
+          setSessionActive(-1);
+        },
+        onSessionKeyDown: (event) => {
+          const key = event && event.key ? String(event.key) : '';
+          if (key === 'ArrowDown' || key === 'ArrowUp') {
+            if (typeof event.preventDefault === 'function') event.preventDefault();
+            if (sessionVisible.length === 0) return;
+            setSessionActive((index) => {
+              const next = key === 'ArrowDown' ? index + 1 : index - 1;
+              return Math.max(0, Math.min(next, sessionVisible.length - 1));
+            });
+            return;
+          }
+          if (key === 'Enter') {
+            const picked = sessionVisible[sessionActive] || sessionVisible[0];
+            if (picked) {
+              setSelection(picked.id);
+              setSessionQuery(sessionLabelOf(seat.rows, picked.id));
+              setSessionActive(-1);
+              return;
+            }
+            const typed = sessionQuery.trim();
+            if (typed.length > 0) setSelection(typed);
+            return;
+          }
+          if (key === 'Escape') {
+            setSessionQuery('');
+            setSessionActive(-1);
+          }
+        },
         applyManual: () => setSelection(manualId.trim().length > 0 ? manualId.trim() : GLOBAL_SESSION),
-        useGlobal: () => setSelection(GLOBAL_SESSION),
+        useGlobal: () => {
+          setSelection(GLOBAL_SESSION);
+          setSessionQuery('');
+          setSessionActive(-1);
+        },
         setLayerFilter: (value) => setFilters((current) => ({ ...current, layer: value })),
         setOverridableFilter: (value) => setFilters((current) => ({ ...current, overridable: value })),
         setOriginFilter: (value) => setFilters((current) => ({ ...current, origin: value })),
@@ -2485,6 +2761,10 @@ window.__ModuleLoader__.load({
         seat,
         session,
         sessionArg,
+        sessionQuery,
+        sessionActive,
+        sessionMatches,
+        sessionVisible,
         manualId,
         view,
         search,
