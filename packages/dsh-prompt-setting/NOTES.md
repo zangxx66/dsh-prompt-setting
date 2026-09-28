@@ -1454,17 +1454,43 @@ primitives 复用：新增 `DiffBlock`（`data-diff-renderer="diffblock"` 是机
 ## 62. 自测证据（工作树内执行）
 
 ```
-evidence: suite=history passed=24 failed=0 exit=0 ms=83 commit=<sha7>
-evidence: suite=diff passed=19 failed=0 exit=0 ms=105 commit=<sha7>
-evidence: suite=transfer passed=16 failed=0 exit=0 ms=75 commit=<sha7>
-evidence: suite=stage2 passed=28 failed=0 exit=0 ms=130 commit=<sha7>
-evidence: suite=client passed=77 failed=0 exit=0 ms=3740 commit=<sha7>
-evidence: suite=all passed=276 failed=0 exit=0 ms=3566 commit=<sha7>
-evidence: suite=node-check passed=7 failed=0 exit=0 commit=<sha7>
-evidence: suite=npm-pack passed=1 failed=0 exit=0 commit=<sha7>
+evidence: suite=history passed=24 failed=0 exit=0 ms=113 diff=14f/+6388/-30 commit=ec5e958
+evidence: suite=diff passed=19 failed=0 exit=0 ms=77 diff=14f/+6388/-30 commit=ec5e958
+evidence: suite=transfer passed=16 failed=0 exit=0 ms=76 diff=14f/+6388/-30 commit=ec5e958
+evidence: suite=stage2 passed=28 failed=0 exit=0 ms=140 diff=14f/+6388/-30 commit=ec5e958
+evidence: suite=client passed=77 failed=0 exit=0 ms=3533 diff=14f/+6388/-30 commit=ec5e958
+evidence: suite=all passed=276 failed=0 exit=0 ms=3761 diff=14f/+6388/-30 commit=ec5e958
+evidence: suite=node-check passed=8 failed=0 exit=0 commit=ec5e958
+evidence: suite=npm-pack passed=13 failed=0 exit=0 commit=ec5e958
 ```
 
-（`commit` 与 `diff` 数值见交付总结；`ms` 取 `node --test` 自报 `duration_ms`。）
+`diff=14f/+6388/-30` 是代码提交 `ec5e958` 相对权威基线 `27a6759`（集成分支
+`v0.1.0-test`）的 `git diff --shortstat`；`npm-pack` 的 `passed=13` 是 `npm pack --dry-run`
+的 `total files: 13`（阶段一为 10，新增三个 `core/*.js`；清单里**没有** `test/`、没有
+`.dsh-graph`）；`node-check` 的 8 是 `index.js` / `client.js` / `core/*.js` 共 8 个文件的
+`node --check` 全部 exit 0。
+
+**阶段一既有的 167 项断言全部保留且全绿**（`overrides` 32 / `store` 10 / `route` 39 /
+`host` 19 / `client` 55→77 中阶段一的部分 / `integration` 12），其中
+`route.test.mjs:728` 的 `deepStrictEqual`（PUT/DELETE 响应体逐字段相等）与
+`client.test.mjs` 的「请求集合恰好是 ping/snapshot/overrides」两条断言**一字未改**——
+它们正是 §60.2 与 §60.8 两个设计取舍的守护者。`integration` 套件 **12 passed / 0 skipped**
+（真包真 Cordis，非 skip）。
+
+## 62bis. 负向对照（逐条单独改坏 ⇒ 对应用例变红 ⇒ 备份还原 ⇒ 哈希确认逐字节回滚）
+
+每条都是「改一处 → 只跑相关套件 → 从 `/tmp` 备份还原 → `shasum -a 256 -c` 确认源码
+逐字节回到改坏之前」，最后再跑一次全量 276 项确认全绿。
+
+| # | 改坏的内容 | 结果 | 变红的用例（节选） |
+| --- | --- | --- | --- |
+| NC-1 | `core/store.js`：裁剪上界改成 `Number.MAX_SAFE_INTEGER`（历史无界） | `history`+`stage2` fail 2 / pass 50 | `store: the retention bound is enforced on disk…`、`stage2: the retention bound is configurable and enforced on disk` |
+| NC-2 | `core/store.js`：去掉「临时文件读回再校验」 | fail 1 / pass 51 | `store: a staged file that fails its own re-validation aborts with BOTH targets byte-identical` |
+| NC-3 | `core/store.js`：把「先 stage 再 rename」改成就地写目标文件 | fail 6 / pass 46 | `store: an import commits every layer atomically…`、`store: a staged file that fails…`、`stage2: a real import applies both layers…` |
+| NC-4 | `core/transfer.js`：去掉导入的版本校验 | `transfer`+`stage2` fail 2 / pass 42 | `transfer: every malformed document is rejected with a stable code`、`stage2: every rejected import leaves BOTH config files and the history byte-identical` |
+| NC-5 | `core/history.js`：快照指纹恒为常量（段级 diff 失明） | fail 2 / pass 69 | `history: a snapshot entry is comparable without carrying any text`、`stage2: two history records of one section diff at section and line level` |
+| NC-6 | `client.js`：整层重置跳过二次确认直接发请求 | `client` fail 1 / pass 76 | `client: resetting a whole layer needs a confirmation and states the impact` |
+| NC-7 | `client.js`：`HAS_DIFF_BLOCK` 恒为 `false`（永不使用官方 DiffBlock） | `client` fail 1（叠加 NC-6 时为 2） | `client: the primitives branch renders the comparison with the official DiffBlock` |
 
 ## 63. 未验证项（诚实清单，交给主管在集成检查点裁决）
 
