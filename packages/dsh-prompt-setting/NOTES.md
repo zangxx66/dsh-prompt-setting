@@ -480,3 +480,129 @@ find /Users/ricardo/.dsh -maxdepth 2 -newermt "2026-09-28 19:05" | grep -v '/sto
 > 那是**上一阶段（g-002）的集成检查点**（主管执行 `plugin_manager install_bundle`，
 > 把 `dsh-prompt-setting` 以 `link:` 指向主工作树包目录）留下的，早于本次开工（19:04 建 worktree）。
 > 本 attempt 与它无关，也没有对它做任何后续改动。
+
+---
+
+# NOTES 阶段一 B · 复核后修订（第二个提交轮）
+
+主管复核独立复跑确认了 103/103 证据属实，同时指出两处缺陷（**同一根因：探针没有对准
+目标作用域/调用者**）。两处均已修复，测试从 103 项增至 113 项且全绿（集成套件
+`pass 10 / skipped 0`）。本节记录缺陷、修复与回归证据。
+
+## 18. D1 — 探针用错了作用域（会让我自己提议的真机验收点失败）
+
+**缺陷**：`probe()` 调的是**无参** `assemble()`，所以快照的 `frozen` / `frozenSection` /
+每段 `overridable` 描述的是**全局作用域**，不是 `?session=` 那个会话的作用域。
+
+**为什么这是致命的**：`complete` 是**按 scope 生效**的（`ScopedLayers.merge` 沿
+`scopeChainOf` 的父链合并，最近的作用域最后覆盖）。本机 `liangshen` preset 把
+`{complete:true}` 注册在 **preset 的 standing scope** 上，会话通过
+`createScope(ctx, agent, { parent: presetKey })` 挂在它下面；**全局作用域根本没有 complete 段**。
+于是 `/snapshot?session=<liangshen 会话>` 会报 `frozen:false` 并把改不动的段标成
+`overridable:true` ⇒ UI（g-004）允许编辑一个改不动的段 —— 正是本项目最不能出的错。
+
+**修复**（`index.js`）：
+
+| # | 位置 | 内容 |
+| --- | --- | --- |
+| 1 | 模块级 `export const PROBE_SCOPE = Object.freeze({})` | 本插件**私有**的探针 scope：没有任何 scoped 注册 ⇒ 解析结果与全局装配一致，但它是**只有本模块能持有**的对象 |
+| 2 | `agentsService()` / `agentFor(sessionId)` | `ctx.get('agents')`（Service 键 `agents`，`AgentRegistry.get(id) → this.store.get(id)?.agent`，见 `dsh-agent/lib/index.js:594`）可选获取 |
+| 3 | `probeTarget(sessionId)` | 有 session 且有活跃 agent ⇒ `{scope: agent, agent, frozenScope:'session'}`；无 session ⇒ `{scope: PROBE_SCOPE, frozenScope:'global'}`；**有 session 但 agent 不活跃** ⇒ 用 `PROBE_SCOPE` 但 `frozenScope:'global'` **且 `frozenScopeReason` 明说**「该会话的 agent 不活跃，本判定描述的是无作用域装配，该会话作用域里注册的 complete 段在这里看不到」 |
+| 4 | `probe({scope, agent, resolved})` | `const context = agent === undefined ? { scope } : { agent, scope }`，然后 `ctx.systemPrompt.assemble(context)` —— 与真实回合 `assembleContextFor(agent, signal)` 的 `{agent, scope: agent}` **同形**（差别只在没有 `signal`，见 CONTRACT §7.6） |
+| 5 | 响应 | 新增 `frozenScope: "session" \| "global"` 与 `frozenScopeReason: string \| null`；`records` 的 key 改用探针实际使用的 scope 对象 |
+
+**为什么必须新增字段而不是「猜」**：同一个 mount 对 liangshen 会话必须报 `frozen:true`，
+对全局视图必须报 `frozen:false`。只给一个 `frozen` 而不说它描述哪个作用域，
+调用方无法判断该不该禁用编辑 —— 那还是静默失败。
+
+## 19. D2 — one-shot 用哨兵值匹配 ⇒ 可能污染别的调用者
+
+**缺陷**：`state.oneShot` 的消费条件是 `scopeKeyOf(context) === GLOBAL_SCOPE`，而
+`GLOBAL_SCOPE` 是「**所有** scope 为 undefined/null 的装配」共用的哨兵值。
+若在探针的窗口内（section text provider 求值期间）其它插件发起一次无作用域
+`assemble()`，它会先一步消费掉 one-shot，于是**别人的提示词里被追加了
+`__dsh-prompt-setting-probe__`**，同时我们的探针也拿不到观察结果。
+
+**修复**：把匹配键从「作用域值/哨兵」换成**精确的 context 对象同一性**：
+
+```js
+state.pendingProbe = { context, resolved };        // context = 本插件自己构造并传给 assemble() 的那个对象
+// 消费条件（仍在任何 await 之前同步完成）：
+if (state.pendingProbe !== null && context === state.pendingProbe.context) { ... }
+```
+
+**为什么不是主管建议的 `{scope, resolved}` + scope 对象同一性**（这是我对建议的一处**收紧**，
+理由经实验证伪）：`assemble()` 把调用者传进来的 `context` **原样**交给 waterfall
+（`lib/index.js:355`），所以 context 对象的同一性天然可用。而 **scope 对象在同一会话里不是唯一的**：
+真实回合传的正是 `{agent, scope: agent}`，`scope` 就是那个 agent 对象本身 ⇒ 探针进行中真实发生的
+同一会话回合会命中 `scope === agent` 并消费掉探针配置，**把探针段注入真实回合的提示词**。
+负向对照 NC-6 实测复现了这一点（见 §20）。context 对象是**每次调用新建**的，只有本插件能持有，
+因此「任何其它调用者都不可能命中」这一目标由它达成，而不是由 scope 达成。
+
+注意监听器的**同步消费语义未变**：`assembleHandler` 在第一个 `await` 之前就完成
+observation 记录与 `pendingProbe` 消费，所以探针自身不存在可交错的窗口。
+
+## 20. 复核后的自测证据（工作树内执行）
+
+```
+evidence: suite=overrides passed=27 failed=0 skipped=0 exit=0 ms=119 diff=4f/+496/-56 commit=fdb12a5
+evidence: suite=store passed=10 failed=0 skipped=0 exit=0 ms=115 diff=4f/+496/-56 commit=fdb12a5
+evidence: suite=route passed=34 failed=0 skipped=0 exit=0 ms=178 diff=4f/+496/-56 commit=fdb12a5
+evidence: suite=host passed=19 failed=0 skipped=0 exit=0 ms=130 diff=4f/+496/-56 commit=fdb12a5
+evidence: suite=client passed=13 failed=0 skipped=0 exit=0 ms=172 diff=0f/+0/-0 commit=fdb12a5
+evidence: suite=integration passed=10 failed=0 skipped=0 exit=0 ms=216 diff=4f/+496/-56 commit=fdb12a5
+evidence: suite=all passed=113 failed=0 skipped=0 exit=0 ms=416 diff=4f/+496/-56 commit=fdb12a5
+evidence: suite=node-check passed=17 failed=0 skipped=0 exit=0 ms=520 diff=0f/+0/-0 commit=fdb12a5
+evidence: suite=npm-pack passed=10 failed=0 skipped=0 exit=0 ms=900 diff=0f/+0/-0 commit=fdb12a5
+```
+
+`diff=4f/+496/-56` 是**本轮代码/契约/测试改动**相对上一轮提交 `689f754` 的
+`git diff --cached --shortstat`（`index.js` / `CONTRACT.md` / `test/route.test.mjs` /
+`test/integration.test.mjs` 四个文件）；`NOTES.md` 本身记录在紧随其后的文档提交里，
+不计入该数字。`commit=fdb12a5` 即该提交。
+集成套件仍是 **`pass 10 / skipped 0`**（真包真 Cordis 上下文）。
+
+## 21. 复核后新增的回归测试与负向对照
+
+新增 6 项路由测试 + 4 项集成测试：
+
+| 测试 | 断言 |
+| --- | --- |
+| `D1: a complete section registered in the SESSION scope freezes that session, not the global view` | 假 Host 建模 scope 父链：preset scope 注册 `complete:true`，agent scope 挂其下 ⇒ `?session=` 快照 `frozenScope:"session"` / `frozen:true` / `frozenSection:"preset:locked"` / 该会话段全部 `overridable:false` / `base` 含 scoped 段；**同一 mount 无 session 快照** `frozenScope:"global"` / `frozen:false` / `overridable:true` |
+| `D1: a session whose agent is not active says so…` | `frozenScope:"global"` + `frozenScopeReason` 匹配 `/no active agent/` 与 `/would not be visible here/` |
+| `D1: a profile with no agents service also says so` | `frozenScopeReason` 匹配 `/agents service is not available/` |
+| `D2a: a concurrent UNSCOPED assembly cannot steal the probe config` | 探针窗口内并发 `assemble()` ⇒ 其结果**不含** `__dsh-prompt-setting-probe__`，且探针自身观察仍正确 |
+| `D2b: a concurrent turn for the SAME agent cannot steal the session probe config` | 并发 `assemble({agent, scope: agent})`（**同一个 scope 对象、新的 context 对象**）⇒ 其结果不含探针段 |
+| `D2c: the probe consumes exactly one config, and only for its own context` | 快照之后 `assemble()` 与 `assemble({})` 都拿不到探针配置 |
+| `integration D1: a complete section in a PRESET scope freezes its sessions, but not the global view` | **真包**：`createScope(ctx, presetKey)` 注册 `complete:true`，`createScope(ctx, agent, {parent: presetKey})` 挂其下 ⇒ 真 `ScopedLayers` 父链下 `?session=` 报 `frozen:true`，无 session 报 `frozen:false` |
+| `integration D1: an inactive session reports frozenScope "global" with a reason` | 真包 + 空 `agents` 服务 |
+| `integration D2: a concurrent unscoped assembly during a snapshot is never handed the probe section` | **真包**：包装真 `systemPrompt.assemble` 制造并发窗口 |
+| `integration: PROBE_SCOPE resolves exactly the unscoped view…` | `assemble({scope: PROBE_SCOPE})` 与 `assemble()` 的段名与文本逐项一致 ⇒ `base` 视图语义未被破坏 |
+
+**负向对照（逐条单独改坏 → 跑全量 113 项 → 立即还原，`diff` 确认逐字节回滚）**：
+
+| # | 改坏点 | 结果 | 变红用例 |
+| --- | --- | --- | --- |
+| NC-5 | `probeTarget()` 恒返回全局目标（即**修复前的 D1 行为**：探针永远只看无作用域装配） | `fail 6` | `D1: a complete section registered in the SESSION scope…`、`D1: a session whose agent is not active…`、`D1: a profile with no agents service…`、`integration D1: a complete section in a PRESET scope…`、`integration D1: an inactive session…`、`D2b`（其 `frozenScope:"session"` 断言） |
+| NC-6 | 消费条件换成 `scopeKeyOf(context) === scopeKeyOf(pendingProbe.context)`（即主管建议的 scope 对象匹配） | `fail 1` | **仅** `D2b` —— 实测报错正是「真实回合的 sections 里多了 `__dsh-prompt-setting-probe__`」 |
+| NC-7 | **两处同时回退到复核前的行为**（探针恒全局 + 消费条件退化为「存在即消费」） | `fail 8` | D1×3、D2a、D2b、integration D1×2、integration D2 ⇒ 证明这 8 项新测试**确实能抓住复核前的那两个缺陷** |
+
+NC-6 只有 1 项变红是**预期且关键**的：它说明「按 scope 匹配」只会在**真实回合共用同一 agent
+对象**这一条路径上出事，而 D2b 精确覆盖了这条路径。这也解释了为什么我采用 context 对象
+同一性而非 scope 对象同一性。
+
+## 22. 复核后仍未验证项（更新）
+
+1. ~~快照作用域~~ ⇒ 已修，并且**在真 `ScopedLayers` 父链下实测**（`integration D1`）。
+   仍未验证的是**真机**上 liangshen 会话的 `?session=` 快照是否为 `frozen:true` —— 需要
+   `dsh web` 重启 + 带 cookie 的页面请求，属集成检查点。
+2. **`ctx.agents.get(sessionId)` 在真机上的活跃判定**：依据 `dsh-agent` 源码
+   （`AgentRegistry.get` → `store.get(id)?.agent`）与真 Cordis 上下文里的假 `agents` 服务断言，
+   但**没有**在真机对一个真实会话调用过。若真机上它恒返回 `undefined`，
+   行为是 `frozenScope:"global"` + `frozenScopeReason`（安全侧失败，不会把冻结段标成可编辑）。
+   **这正是集成检查点要确认的第一件事**：`?session=<当前会话>` 的响应里
+   `frozenScope` 应为 `"session"`。
+3. 其余未验证项（E5 禁用后行为、真实回合里工作区覆盖生效、挂载后新建工作区、
+   `rendered` 与真实回合逐字节相等、客户端 UI）同 §15，未变。
+4. **新增**：探针 context 不含 `signal`（CONTRACT §7.6）。若某 section/variable provider
+   依赖 `context.signal`，快照与真实回合会不同；现有 shipped 包无一读取它。
