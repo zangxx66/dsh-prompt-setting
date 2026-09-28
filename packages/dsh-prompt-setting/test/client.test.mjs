@@ -317,6 +317,16 @@ function typeInto(tree, role, value) {
   node.props.onChange({ target: { value } });
 }
 
+/** The edit panel's save button (may be disabled on purpose). */
+function saveButton(tree) {
+  return findOne(tree, (node) => node.type === 'button' && node.props['data-action'] === 'save', 'save button');
+}
+
+/** Every write the page attempted (PUT / DELETE), whatever the outcome. */
+function writeCalls(page) {
+  return page.router.calls.filter((call) => call.init && (call.init.method === 'PUT' || call.init.method === 'DELETE'));
+}
+
 /** The single edit button of one section row. */
 function editButtonOf(tree, name) {
   return findOne(
@@ -992,6 +1002,10 @@ test('client: append carries a target index, and a bad index is refused locally'
   let tree = await page.flush();
   clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
   tree = await page.flush();
+  // Appending onto a registered name is refused (see the block tests below), so
+  // the new section is created under a name nothing has registered yet.
+  typeInto(tree, 'name', 'panel:added');
+  tree = await page.flush();
   clickTab(tree, 'action', 'append');
   tree = await page.flush();
   assert.ok(oneBy(tree, 'data-role', 'order'), 'append exposes the target index');
@@ -1015,10 +1029,171 @@ test('client: append carries a target index, and a bad index is refused locally'
   await page.flush();
   const put = page.router.calls.find((call) => call.init && call.init.method === 'PUT');
   const body = JSON.parse(put.init.body);
+  assert.equal(body.section.name, 'panel:added', 'the new name is what gets appended');
   assert.equal(body.section.action, 'append');
   assert.equal(body.section.order, 2, 'append order is a target index');
   assert.equal(body.section.text, 'appended by the panel');
 });
+
+// #region pre-save validation: never let a save that cannot take effect look successful
+
+test('client: append onto an already-registered name is blocked before any write', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
+  tree = await page.flush();
+  // `project:beta` exists in `base` only (another listener removed it downstream).
+  typeInto(tree, 'name', 'project:beta');
+  tree = await page.flush();
+  clickTab(tree, 'action', 'append');
+  tree = await page.flush();
+
+  const save = saveButton(tree);
+  assert.equal(save.props.disabled, true, 'the save button is disabled up front');
+  const block = oneBy(tree, 'data-warning', 'override-blocked');
+  assert.equal(block.props['data-block-code'], 'name-already-present');
+  assert.ok(hasText(block, page.zh.blockAppendExisting), 'the reason and the way out are stated');
+  assert.ok(hasText(block, 'name-already-present'), 'and the host code is named');
+
+  // Even a programmatic click on the disabled control writes nothing.
+  save.props.onClick();
+  assert.equal(writeCalls(page).length, 0, 'zero write requests');
+  tree = await page.flush();
+  assert.equal(writeCalls(page).length, 0, 'still zero write requests after the click');
+});
+
+test('client: append onto a name another plugin added is blocked as well', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'companion:extra' });
+  tree = await page.flush();
+  clickTab(tree, 'action', 'append');
+  tree = await page.flush();
+  // `companion:extra` is absent from `base` and only present because another
+  // plugin added it downstream — the two-sections-one-name rule still applies.
+  assert.equal(oneBy(tree, 'data-warning', 'override-blocked').props['data-block-code'], 'name-already-present');
+  saveButton(tree).props.onClick();
+  tree = await page.flush();
+  assert.equal(writeCalls(page).length, 0, 'zero write requests');
+});
+
+test('client: replace or hide for an unregistered name is blocked before any write', async () => {
+  for (const action of ['replace', 'hide']) {
+    const page = makePage({ responses: defaultResponses() });
+    let tree = await page.flush();
+    clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
+    tree = await page.flush();
+    typeInto(tree, 'name', 'never:registered');
+    tree = await page.flush();
+    clickTab(tree, 'action', action);
+    tree = await page.flush();
+    const block = oneBy(tree, 'data-warning', 'override-blocked');
+    assert.equal(block.props['data-block-code'], 'section-not-present', `${action} is blocked`);
+    assert.ok(strings(block).includes(page.zh.blockNotPresent));
+    assert.equal(saveButton(tree).props.disabled, true);
+    saveButton(tree).props.onClick();
+    tree = await page.flush();
+    assert.equal(writeCalls(page).length, 0, `${action} writes nothing`);
+  }
+});
+
+test('client: an empty name set does not crash the validation', async () => {
+  const payload = snapshotFixture({
+    base: { sections: [] },
+    effective: {
+      sections: [
+        {
+          name: 'ghost:section',
+          index: null,
+          text: '',
+          applied: false,
+          overridable: true,
+          reason: 'no section or override with this name',
+          overrideLayer: null,
+          action: 'replace',
+          origin: 'unmatched-override',
+        },
+      ],
+    },
+    rendered: '',
+  });
+  const page = makePage({ responses: defaultResponses({ [PATHS.snapshot]: { payload } }) });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'ghost:section' });
+  tree = await page.flush();
+  // Nothing is in the incoming assembly, so replace/hide is provably useless…
+  assert.equal(oneBy(tree, 'data-warning', 'override-blocked').props['data-block-code'], 'section-not-present');
+  // …while the same name may still be appended as a new section.
+  clickTab(tree, 'action', 'append');
+  tree = await page.flush();
+  assert.equal(saveButton(tree).props.disabled, false, 'append of a new name stays possible');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-warning'] === 'override-blocked').length, 0);
+});
+
+test('client: an empty name is refused locally as missing-name', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
+  tree = await page.flush();
+  typeInto(tree, 'name', '   ');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-warning', 'override-blocked').props['data-block-code'], 'missing-name');
+  saveButton(tree).props.onClick();
+  tree = await page.flush();
+  assert.equal(writeCalls(page).length, 0, 'zero write requests');
+});
+
+test('client: the sections view proves why an override did not take effect', async () => {
+  const payload = snapshotFixture();
+  // A registered section whose append override the Host skipped: `applied:false`
+  // with the Host's observation as the reason.
+  payload.effective.sections[0].applied = false;
+  payload.effective.sections[0].overridable = false;
+  payload.effective.sections[0].overrideLayer = 'user';
+  payload.effective.sections[0].action = 'append';
+  payload.effective.sections[0].reason = 'the appended text was replaced further down the assembly pipeline';
+  const page = makePage({ responses: defaultResponses({ [PATHS.snapshot]: { payload } }) });
+  const tree = await page.flush();
+  const line = oneBy(tree, 'data-section-ineffective', 'name-already-present');
+  assert.ok(hasText(line, page.zh.blockAppendExisting), 'the real cause is named');
+  assert.ok(strings(line).some((text) => text.includes(page.zh.ovFixHint)), 'and a fix is offered');
+  assert.ok(hasText(tree, 'the appended text was replaced further down'), 'the host reason is still visible');
+});
+
+test('client: the overrides view shows an ineffective override with cause and fix', async () => {
+  const payload = snapshotFixture();
+  payload.effective.sections[0].applied = false;
+  payload.effective.sections[0].overrideLayer = 'user';
+  payload.effective.sections[0].action = 'append';
+  payload.effective.sections[0].reason = 'the appended text was replaced further down the assembly pipeline';
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.snapshot]: { payload },
+      [PATHS.overrides]: {
+        payload: overridesFixture({
+          merged: {
+            overrides: [
+              { name: 'harness:identity', action: 'append', text: 'ui-e2e', layer: 'user' },
+              { name: 'project:alpha', action: 'replace', text: 'alpha overridden', layer: 'user' },
+            ],
+          },
+        }),
+      },
+    }),
+  });
+  let tree = await page.flush();
+  clickTab(tree, 'view', 'overrides');
+  tree = await page.flush();
+  const bad = oneBy(tree, 'data-override-row', 'harness:identity');
+  assert.equal(bad.props['data-override-applied'], 'false', 'ineffective is explicit');
+  const reason = oneBy(tree, 'data-override-reason', 'harness:identity');
+  assert.ok(hasText(reason, page.zh.blockAppendExisting), 'cause shown');
+  assert.ok(hasText(bad, 'the appended text was replaced further down'), 'host reason shown too');
+  assert.ok(hasText(bad, page.zh.ovFixHint), 'fix hint shown');
+  assert.equal(oneBy(tree, 'data-override-row', 'project:alpha').props['data-override-applied'], 'true');
+});
+
+// #endregion
 
 test('client: the workspace layer is refused locally when no session is selected', async () => {
   const page = makePage({ responses: defaultResponses() });
