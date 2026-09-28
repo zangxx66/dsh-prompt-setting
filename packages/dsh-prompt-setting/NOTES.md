@@ -986,7 +986,9 @@ evidence: suite=all passed=153 failed=0 exit=0 ms=1632 diff=2f/+410/-35 commit=1
 ```
 
 `diff` 是本轮修复提交 `1b642d9` 自身的 `git diff --cached --shortstat`（`client.js` +
-`test/client.test.mjs`，相对上一提交 `626327c`）；`node --check client.js` exit 0；
+`test/client.test.mjs`，相对上一提交 `626327c`）；（代码提交 `56e7c67`；本节的最终文字在其后的独立文档提交里。）
+
+`node --check client.js` exit 0；
 `npm pack --dry-run` 仍 `total files: 10`（无 `test/`）。
 
 **负向对照（逐条单独改坏 ⇒ 重跑 client 套件 ⇒ 按备份还原）**：
@@ -1201,12 +1203,28 @@ exit 0；`npm pack --dry-run` 仍 `total files: 10`（无 `test/`）。
 | `a missing useWorkspaces degrades to the flat searchable list` | 无 hook ⇒ `flat` + 降级文案 + 平铺 20 行封顶；hook 抛错 ⇒ 同样降级且不白屏；`items: []` **不算降级**（全部落入未分组，6 个会话一个不丢） |
 
 ```
-evidence: suite=client passed=52 failed=0 exit=0 ms=<measured> diff=3f/+<a>/-<d> commit=<sha7>
+evidence: suite=client passed=52 failed=0 exit=0 ms=2101 diff=3f/+1309/-81 commit=56e7c67
+evidence: suite=all    passed=164 failed=0 exit=0 ms=2194 diff=3f/+1309/-81 commit=56e7c67
 ```
 
-**负向对照（逐条单独改坏 ⇒ 重跑 client 套件 ⇒ `git checkout` 还原）**见 §52。
+（代码提交 `56e7c67`；本节文字在其后的独立文档提交中定稿。）
 
-## 52. 未验证项（本轮，诚实清单）
+`node --check client.js` exit 0；`npm_config_cache=/tmp/npm-cache-probe npm pack --dry-run` 仍
+`total files: 10`（`index.js` / `core/*` / `client.js` / `cordis.patch.yml` / `CONTRACT.md` /
+`README.md` / `NOTES.md` / `package.json`，**不含 `test/`**）。
+
+## 52. 负向对照（逐条单独改坏 ⇒ 重跑 client 套件 ⇒ 备份还原 ⇒ 全量重跑确认）
+
+| # | 改坏点 | 变红 |
+| --- | --- | --- |
+| NC10 | 去掉渲染上界（`matchedIds.slice(0, limit)` → `matchedIds`，预算 `Math.min(…, budget)` → 全量） | `the scope tree never renders the whole catalog`（`200 !== 10`：撤掉上界后默认就铺开整组） |
+| NC11 | 去掉搜索时的祖先保留（删掉「无匹配分组 drop」那一行） | `the scope tree keeps the ancestor workspace of every search match` |
+| NC12 | 去掉置顶「全局」项 | 3 项：`the pinned entries are never filtered away`、`switching to the global option drops ?session=`、`the scope picker groups sessions by workspace` |
+| NC13 | 去掉平铺降级（`useWorkspaces` 缺失也走 tree） | `a missing useWorkspaces degrades to the flat searchable list` |
+
+四条都是「单独改坏 ⇒ 对应用例变红 ⇒ `cp` 还原 ⇒ 全量 164 项重新全绿」，无跨用例连锁。
+
+## 53. 未验证项（本轮，诚实清单）
 
 1. **真机目视**：树形分组的实际观感（缩进/箭头/路径副标题/运行中圆点）、展开折叠手感、
    以及与左侧边栏「并排看是否真的一致」，都需负责人真机确认。离线探针只能证明结构与标记。
