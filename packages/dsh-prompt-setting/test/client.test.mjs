@@ -45,9 +45,12 @@ function makeHooksRuntime() {
       effects.push(fn);
       cursor += 1;
     },
-    useSyncExternalStore() {
+    useSyncExternalStore(subscribe, getSnapshot) {
       cursor += 1;
-      return 0;
+      // Mirror React's mount behavior: subscribe once, then read the snapshot.
+      // This is exactly the path a missing `ctx.locale.subscribe` would break.
+      subscribe(() => {});
+      return getSnapshot();
     },
     useId: () => 'test-id',
     Fragment: Symbol('Fragment'),
@@ -108,23 +111,56 @@ function loadClient(primitives) {
 }
 
 /**
- * Mount the client half against a stubbed cordis context.
- * @returns the captured registration and the dictionaries handed to locale.
+ * `ctx.locale` shapes the plugin must survive. 'full' is the intended
+ * contract; the other three are the failure modes the render-time guard
+ * exists for.
  */
-function mountClient(module) {
+const LOCALE_SHAPES = ['full', 'bare', 'throwing', 'noRevision'];
+
+/**
+ * Mount the client half against a stubbed cordis context.
+ * @param module - the descriptor `client.js` registered.
+ * @param localeShape - one of {@link LOCALE_SHAPES}.
+ * @returns the captured registration, dictionaries and live ctx.
+ */
+function mountClient(module, localeShape = 'full') {
   let registeredSlot = null;
   const registrations = [];
   const dictionaries = [];
-  const ctx = {
-    locale: {
-      register(ns, dict) {
-        dictionaries.push({ ns, dict });
-        return () => {};
-      },
+  const record = (ns, dict0) => {
+    dictionaries.push({ ns, dict: dict0 });
+    return () => {};
+  };
+  const locale = {
+    full: {
+      register: record,
       bind: (ns) => (key) => dict(dictionaries, ns, key),
       subscribe: () => () => {},
       getSnapshot: () => ({ revision: 0 }),
     },
+    // The service exists but exposes none of the methods we rely on.
+    bare: {},
+    // Every call throws — the shape a signature change would produce.
+    throwing: {
+      register: record,
+      bind: (ns) => (key) => dict(dictionaries, ns, key),
+      subscribe: () => {
+        throw new Error('locale.subscribe is not a function');
+      },
+      getSnapshot: () => {
+        throw new Error('locale.getSnapshot is not a function');
+      },
+    },
+    // Snapshot present, but without the `revision` field.
+    noRevision: {
+      register: record,
+      bind: (ns) => (key) => dict(dictionaries, ns, key),
+      subscribe: () => () => {},
+      getSnapshot: () => ({}),
+    },
+  }[localeShape];
+  const ctx = {
+    locale,
     slots: {
       inject(slot, thunk) {
         registeredSlot = slot;
@@ -140,7 +176,7 @@ function mountClient(module) {
     },
   };
   module.apply(ctx);
-  return { registeredSlot, registrations, dictionaries };
+  return { ctx, registeredSlot, registrations, dictionaries };
 }
 
 /** Resolve a key against the registered dictionaries (identity when missing). */
@@ -176,11 +212,16 @@ function strings(node, out = []) {
   return out;
 }
 
+/** Read one marker attribute the page carries for on-machine inspection. */
+function markerOf(tree, attribute) {
+  const markers = collect(tree, (node) => node.props && node.props[attribute] !== undefined);
+  assert.equal(markers.length, 1, `exactly one ${attribute} marker`);
+  return markers[0].props[attribute];
+}
+
 /** The branch marker the page carries for on-machine inspection. */
 function rendererOf(tree) {
-  const markers = collect(tree, (node) => node.props && node.props['data-renderer'] !== undefined);
-  assert.equal(markers.length, 1, 'exactly one data-renderer marker');
-  return markers[0].props['data-renderer'];
+  return markerOf(tree, 'data-renderer');
 }
 
 /** Flush microtasks until the probe effect settles. */
@@ -295,3 +336,93 @@ test('client: a rejected fetch renders the transport error instead of throwing',
 
   assert.ok(strings(second.tree).some((text) => text.includes('Failed to fetch')), 'error rendered');
 });
+
+test('client: the probe request reports the active renderer', async () => {
+  for (const [primitives, expected] of [
+    ['throw', 'fallback'],
+    ['ok', 'primitives'],
+  ]) {
+    const { module, runtime, sandbox } = loadClient(primitives);
+    const { registrations } = mountClient(module);
+    const urls = [];
+    sandbox.fetch = (url) => {
+      urls.push(String(url));
+      return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve('{}') });
+    };
+    const props = { t: (key) => key, ...registrations[0].options.inject() };
+    const first = runtime.render(registrations[0].component, props);
+    for (const effect of first.pending) effect();
+    await settle();
+
+    assert.deepEqual(urls, [`/prompt-setting/ping?renderer=${expected}`]);
+    assert.equal(rendererOf(runtime.render(registrations[0].component, props).tree), expected);
+  }
+});
+
+// #region locale-seat degradation (blocker: a render-time throw would blank the panel)
+
+test('client: the inject face never throws, whatever ctx.locale exposes', () => {
+  for (const shape of LOCALE_SHAPES) {
+    const { module } = loadClient('throw');
+    const { registrations } = mountClient(module, shape);
+    const face = registrations[0].options.inject();
+    assert.doesNotThrow(() => face.subscribeLocale(() => {}), `subscribeLocale must not throw (${shape})`);
+    const unsubscribe = face.subscribeLocale(() => {});
+    assert.equal(typeof unsubscribe, 'function', `unsubscribe must be a function (${shape})`);
+    let revision;
+    assert.doesNotThrow(() => {
+      revision = face.getLocaleRevision();
+    }, `getLocaleRevision must not throw (${shape})`);
+    assert.equal(typeof revision, 'number', `revision must be a number (${shape})`);
+  }
+});
+
+test('client: a degraded locale seat still renders the page, never a blank', () => {
+  for (const shape of LOCALE_SHAPES) {
+    const { module, runtime } = loadClient('throw');
+    const { registrations } = mountClient(module, shape);
+    const props = { t: (key) => key, ...registrations[0].options.inject() };
+    let tree = null;
+    assert.doesNotThrow(() => {
+      tree = runtime.render(registrations[0].component, props).tree;
+    }, `the component must not throw (${shape})`);
+    assert.equal(rendererOf(tree), 'fallback', `still renders the page (${shape})`);
+    assert.equal(markerOf(tree, 'data-render-state'), 'ok', `page rendered, not the failure card (${shape})`);
+  }
+});
+
+test('client: a missing locale seat entirely still renders the page', () => {
+  const { module, runtime } = loadClient('throw');
+  const { registrations } = mountClient(module, 'bare');
+  const tree = runtime.render(registrations[0].component, registrations[0].options.inject()).tree;
+  assert.equal(rendererOf(tree), 'fallback');
+});
+
+test('client: a throw while building the tree renders a failure card, not a blank', () => {
+  const { module, runtime } = loadClient('throw');
+  const { registrations } = mountClient(module);
+  const props = {
+    // A translator that explodes: the worst case for the page's own copy.
+    t: () => {
+      throw new Error('translator exploded');
+    },
+    ...registrations[0].options.inject(),
+  };
+  let tree = null;
+  assert.doesNotThrow(() => {
+    tree = runtime.render(registrations[0].component, props).tree;
+  });
+  assert.equal(rendererOf(tree), 'fallback');
+  assert.equal(markerOf(tree, 'data-render-state'), 'error');
+  assert.ok(
+    strings(tree).some((text) => text.includes('translator exploded')),
+    'the error text is shown',
+  );
+  // `t` is the broken thing here, so the card falls back to its literal copy.
+  assert.ok(
+    strings(tree).some((text) => text.includes('render failure')),
+    'literal fallback copy is used',
+  );
+});
+
+// #endregion

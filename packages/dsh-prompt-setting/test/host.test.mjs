@@ -151,6 +151,60 @@ test('host: an unknown sub-path under the prefix is a JSON 404', async () => {
   assert.equal(JSON.parse(res.body).code, 'not-found');
 });
 
+test('host: no client report yet reads as null', async () => {
+  const payload = JSON.parse((await call(mount().route)).body);
+  assert.equal(payload.clientRenderer, null);
+  assert.equal(payload.clientReportedAt, null);
+});
+
+test('host: a legal renderer report is recorded and echoed', async () => {
+  const { route } = mount();
+  const reported = JSON.parse((await call(route, { url: `${PING_PATH}?renderer=fallback` })).body);
+  assert.equal(reported.clientRenderer, 'fallback');
+  assert.equal(Number.isNaN(Date.parse(reported.clientReportedAt)), false);
+  // The report persists for later probes, which is what makes one curl enough.
+  const again = JSON.parse((await call(route)).body);
+  assert.equal(again.clientRenderer, 'fallback');
+  assert.equal(again.clientReportedAt, reported.clientReportedAt);
+});
+
+test('host: an illegal renderer report is ignored and the probe still answers 200', async () => {
+  const hostile = ['../../etc/passwd', '1', 'true', 'PRIMITIVES', 'primitives,fallback', '\u0000'];
+  for (const value of hostile) {
+    const { route } = mount();
+    const res = await call(route, { url: `${PING_PATH}?renderer=${encodeURIComponent(value)}` });
+    assert.equal(res.statusCode, 200, `value ${JSON.stringify(value)} must not change the status`);
+    const payload = JSON.parse(res.body);
+    assert.equal(payload.clientRenderer, null, `value ${JSON.stringify(value)} must be ignored`);
+    assert.equal(payload.clientReportedAt, null);
+  }
+  // An empty value is "present but not in the whitelist" — still ignored.
+  const empty = JSON.parse((await call(mount().route, { url: `${PING_PATH}?renderer=` })).body);
+  assert.equal(empty.clientRenderer, null);
+});
+
+test('host: an illegal report cannot overwrite a recorded one', async () => {
+  const { route } = mount();
+  await call(route, { url: `${PING_PATH}?renderer=primitives` });
+  const res = await call(route, { url: `${PING_PATH}?renderer=../../etc/passwd` });
+  assert.equal(res.statusCode, 200);
+  assert.equal(JSON.parse(res.body).clientRenderer, 'primitives');
+});
+
+test('host: a non-GET request never records a report', async () => {
+  const { route } = mount();
+  const res = await call(route, { method: 'POST', url: `${PING_PATH}?renderer=primitives` });
+  assert.equal(res.statusCode, 405);
+  assert.equal(JSON.parse((await call(route)).body).clientRenderer, null);
+});
+
+test('host: a rejected request never records a report', async () => {
+  const { route } = mount({ requestRejection: () => 403 });
+  const res = await call(route, { url: `${PING_PATH}?renderer=primitives` });
+  assert.equal(res.statusCode, 403);
+  assert.equal(res.body, '');
+});
+
 test('host: a refused trust marker rejects before any route logic', async () => {
   const res = await call(mount({ requestRejection: () => 403 }).route);
   assert.equal(res.statusCode, 403);

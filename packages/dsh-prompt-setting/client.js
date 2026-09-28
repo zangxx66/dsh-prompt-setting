@@ -67,6 +67,8 @@ window.__ModuleLoader__.load({
       primitivesFailure: 'primitives 不可用原因',
       placeholderSearch: '分段检索（阶段一 C 实现）',
       stageNote: '本页为阶段一 A 的占位实现；后续阶段将替换为分段浏览、检索与就地编辑。',
+      renderErrorTitle: 'Prompt 管理：渲染失败',
+      renderErrorLabel: '错误',
     };
 
     const en = {
@@ -88,6 +90,8 @@ window.__ModuleLoader__.load({
       placeholderSearch: 'Section search (stage 1C)',
       stageNote:
         'Placeholder for stage 1A; later stages replace it with section browsing, search, and in-place editing.',
+      renderErrorTitle: 'Prompt settings — render failure',
+      renderErrorLabel: 'Error',
     };
 
     /**
@@ -225,11 +229,33 @@ window.__ModuleLoader__.load({
     const zeroRevision = () => 0;
 
     /**
+     * Translate without ever throwing. Used only by the render-failure card,
+     * where `t` itself may be the thing that broke.
+     * @param t - candidate translator.
+     * @param key - dictionary key.
+     * @param literal - text used when the translator is absent or breaks.
+     * @returns the localized text, or the literal.
+     */
+    function safeT(t, key, literal) {
+      try {
+        const value = t(key);
+        return typeof value === 'string' && value.length > 0 ? value : literal;
+      } catch {
+        return literal;
+      }
+    }
+
+    /**
      * The settings section page.
+     *
+     * Hooks run before the `try`: their call order must be identical on every
+     * render, including the render that catches. The returned tree is built
+     * inside the `try` so that no failure below can escape into React's
+     * reconciler and blank the panel — a readable failure card is always
+     * preferable to a white screen.
      * @param props - owner props (`close`) merged with the `locale` seat (`t`)
      *   and this entry's inject face (`subscribeLocale`, `getLocaleRevision`).
-     * @returns the rendered page; never throws and never renders nothing, so a
-     *   failed probe can never blank the panel.
+     * @returns the rendered page; never throws.
      */
     function PromptSettingSection(props) {
       const t = typeof props.t === 'function' ? props.t : fallbackT;
@@ -237,7 +263,9 @@ window.__ModuleLoader__.load({
       const revision =
         typeof props.getLocaleRevision === 'function' ? props.getLocaleRevision : zeroRevision;
       // Re-render this page on its own when the DSH language changes, instead
-      // of relying on the shell to re-render us.
+      // of relying on the shell to re-render us. Both seats are already
+      // exception-free by construction (see `apply`), so this hook cannot be
+      // the call that throws.
       React.useSyncExternalStore(subscribe, revision, revision);
 
       const [probe, setProbe] = React.useState({ phase: 'loading', payload: null, message: '' });
@@ -248,7 +276,12 @@ window.__ModuleLoader__.load({
         setProbe({ phase: 'loading', payload: null, message: '' });
         const run = async () => {
           try {
-            const response = await fetch(PING_PATH, { headers: { accept: 'application/json' } });
+            // One request both probes and reports: the query parameter is how
+            // a single host-side curl settles which renderer this browser
+            // actually got (NOTES.md §4).
+            const response = await fetch(`${PING_PATH}?renderer=${RENDERER}`, {
+              headers: { accept: 'application/json' },
+            });
             const text = await response.text();
             let payload = null;
             try {
@@ -287,6 +320,22 @@ window.__ModuleLoader__.load({
         };
       }, [attempt]);
 
+      try {
+        return renderSection(t, probe, setAttempt);
+      } catch (error) {
+        return renderFailureCard(t, error);
+      }
+    }
+
+    /**
+     * Build the page tree. Kept separate so the hook order above stays fixed
+     * and the entire tree is produced inside one `try`.
+     * @param t - the bound translator for this namespace.
+     * @param probe - the probe state cell.
+     * @param setAttempt - the retry trigger.
+     * @returns the page element.
+     */
+    function renderSection(t, probe, setAttempt) {
       const probeTone = probe.phase === 'ok' ? 'success' : probe.phase === 'error' ? 'danger' : 'outline';
       const probeText =
         probe.phase === 'ok'
@@ -306,6 +355,7 @@ window.__ModuleLoader__.load({
         'div',
         {
           'data-plugin': 'dsh-prompt-setting',
+          'data-render-state': 'ok',
           style: {
             display: 'flex',
             flexDirection: 'column',
@@ -412,17 +462,84 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /**
+     * Last-resort card, rendered when building the page tree itself throws.
+     * It carries the same `data-plugin` / `data-renderer` markers as the real
+     * page so a broken render is still machine-visible, and it shows the error
+     * text so the settings panel is never blank.
+     * @param t - candidate translator; may itself be what broke.
+     * @param error - the thrown value.
+     * @returns the failure card element.
+     */
+    function renderFailureCard(t, error) {
+      const message = error && error.message ? String(error.message) : String(error);
+      return h(
+        'div',
+        {
+          'data-plugin': 'dsh-prompt-setting',
+          'data-renderer': RENDERER,
+          'data-render-state': 'error',
+          style: {
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+            maxWidth: 760,
+            color: token.labelPrimary,
+          },
+        },
+        h(
+          'h2',
+          { style: { margin: 0, fontSize: 18, fontWeight: 600, lineHeight: '26px' } },
+          safeT(t, 'renderErrorTitle', 'Prompt settings — render failure'),
+        ),
+        h(
+          'p',
+          { style: { margin: 0, fontSize: 13, color: token.stateError, wordBreak: 'break-word' } },
+          `${safeT(t, 'renderErrorLabel', 'Error')}: ${message}`,
+        ),
+      );
+    }
+
     return {
       inject: ['slots', 'locale'],
       apply(ctx) {
-        const t = ctx.locale.bind(NS);
+        // Every locale call is guarded. `ctx.locale.subscribe` and
+        // `getSnapshot().revision` are the one unproven part of the 0.1.7-rc.2
+        // client contract (NOTES.md §7), and a throw from either would happen
+        // *during render* — React would then unmount the whole settings
+        // subtree and the panel would go blank. Losing live language switching
+        // is an acceptable degradation; a white screen is not.
+        const locale = ctx.locale;
+        const t = typeof locale?.bind === 'function' ? locale.bind(NS) : (key) => key;
         fallbackT = t;
-        ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'prompt-setting: section dictionaries');
+        ctx.effect(
+          () =>
+            typeof locale?.register === 'function' ? locale.register(NS, { zh, en }) : undefined,
+          'prompt-setting: section dictionaries',
+        );
+
+        const canSubscribe = typeof locale?.subscribe === 'function';
+        const canReadRevision = typeof locale?.getSnapshot === 'function';
 
         // Built once so `React.useSyncExternalStore` sees stable identities.
         const face = {
-          subscribeLocale: (listener) => ctx.locale.subscribe(listener),
-          getLocaleRevision: () => ctx.locale.getSnapshot().revision,
+          subscribeLocale: (listener) => {
+            if (!canSubscribe) return noopSubscribe();
+            try {
+              const unsubscribe = locale.subscribe(listener);
+              return typeof unsubscribe === 'function' ? unsubscribe : noopSubscribe();
+            } catch {
+              return noopSubscribe();
+            }
+          },
+          getLocaleRevision: () => {
+            if (!canReadRevision) return zeroRevision();
+            try {
+              return locale.getSnapshot()?.revision ?? zeroRevision();
+            } catch {
+              return zeroRevision();
+            }
+          },
         };
 
         ctx.slots.inject('settings.section', () =>

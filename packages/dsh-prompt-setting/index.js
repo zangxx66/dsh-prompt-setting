@@ -80,14 +80,35 @@ function rejected(ctx, req, res) {
 }
 
 /**
- * Pathname of the request. A prefix route receives the full URL, so the
- * dispatcher resolves it against a throwaway origin instead of assuming a
- * stripped remainder.
+ * Resolve the request URL. A prefix route receives the full URL, including
+ * any query string, so the dispatcher resolves it against a throwaway origin
+ * instead of assuming a stripped remainder.
  * @param req - the Node request.
- * @returns the request pathname.
+ * @returns the parsed request URL.
  */
-function pathnameOf(req) {
-  return new URL(String(req.url ?? '/'), 'http://localhost').pathname;
+function requestUrl(req) {
+  return new URL(String(req.url ?? '/'), 'http://localhost');
+}
+
+/**
+ * The renderer values the browser half may report. A whitelist — not a free
+ * text field: the report is observational, and anything outside this set is
+ * ignored so the parameter can never become an arbitrary-data injection point.
+ */
+const CLIENT_RENDERERS = new Set(['primitives', 'fallback']);
+
+/**
+ * Record the renderer the browser reports, when it is one of the accepted
+ * values. Absent, repeated or unknown values leave the last report untouched,
+ * and this never influences the response status.
+ * @param report - the mutable per-mount report holder.
+ * @param url - the parsed request URL.
+ */
+function recordClientRenderer(report, url) {
+  const reported = url.searchParams.get('renderer');
+  if (reported === null || !CLIENT_RENDERERS.has(reported)) return;
+  report.renderer = reported;
+  report.reportedAt = new Date().toISOString();
 }
 
 /**
@@ -95,6 +116,11 @@ function pathnameOf(req) {
  * @param ctx - the Host plugin context.
  */
 export function apply(ctx) {
+  // The most recent client renderer report, owned by this mount and kept in
+  // memory only. Deliberately not module-level: a per-mount holder keeps two
+  // mounts (or two test cases) from observing each other's report, and nothing
+  // is ever written to disk.
+  const report = { renderer: null, reportedAt: null };
   ctx.effect(
     () =>
       ctx.webServer.register({
@@ -102,11 +128,11 @@ export function apply(ctx) {
         path: ROUTE_PREFIX,
         handler: async (req, res) => {
           if (rejected(ctx, req, res)) return;
-          const pathname = pathnameOf(req);
-          if (pathname !== PING_PATH) {
+          const url = requestUrl(req);
+          if (url.pathname !== PING_PATH) {
             sendJson(res, 404, {
               code: 'not-found',
-              message: `no route for ${pathname}`,
+              message: `no route for ${url.pathname}`,
             });
             return;
           }
@@ -114,11 +140,17 @@ export function apply(ctx) {
             sendMethodNotAllowed(res, 'GET');
             return;
           }
+          // Same request that probes also reports: the browser half appends
+          // `?renderer=<primitives|fallback>` so one curl settles the
+          // primitives question without a devtools console.
+          recordClientRenderer(report, url);
           sendJson(res, 200, {
             ok: true,
             plugin: PLUGIN_NAME,
             version: PLUGIN_VERSION,
             time: new Date().toISOString(),
+            clientRenderer: report.renderer,
+            clientReportedAt: report.reportedAt,
           });
         },
       }),

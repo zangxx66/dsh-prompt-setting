@@ -29,16 +29,19 @@ plugin_manager(action: "install_bundle", target: "<仓库绝对路径>/packages/
 
 1. 在设置里应出现独立一栏「Prompt 管理 / Prompt settings」（`id: prompt-setting`，`order: 30`）；
 2. 宿主行 id 为 `prompt-setting`，可用 `cordis_inspect_query`（host `Config.listConfigs`，`name: dsh-prompt-setting`）确认已挂载；
-3. 探针可用 `curl -i http://127.0.0.1:3080/prompt-setting/ping` 直接验证——
-   注意它会经过信任栅栏：**没有浏览器信任标记的裸 curl 会被拒绝（401/403），这是预期行为**，
-   不是路由没挂上。
+3. 探针可验证宿主半是否挂上：**页面上「原始响应」区显示 `GET /prompt-setting/ping` 的返回 JSON**，
+   其中 `clientRenderer` 即浏览器实际走的渲染分支（`primitives` / `fallback` / `null`）——
+   这是判定「外部 bundle 能否 require `dsh-client-ui-primitives`」的机器可读结论；
+   也可在页面控制台跑 `await (await fetch('/prompt-setting/ping')).json()`。
+   **裸 `curl` 会被拒绝（401）**：`requestRejection` 第二段是浏览器 cookie 认证，缺少它即 401，
+   这是预期行为，不是路由没挂上（细节见 [NOTES.md](./NOTES.md) §4）。
 
 ## 开发
 
 ```bash
 cd packages/dsh-prompt-setting
 node --check index.js && node --check client.js   # 语法
-node --test                                       # 20 项断言（宿主路由 + 客户端注册/渲染分支）
+node --test                                       # 31 项断言（宿主路由/信任栅栏/上报 + 客户端注册/渲染分支/locale 退化）
 npm pack --dry-run                                # 确认产物干净
 ```
 
