@@ -327,9 +327,13 @@ afterEach(() => {
 /**
  * Mount the real plugin on a real Cordis context with the real prompt service.
  * @param sections - global sections to register before the plugin mounts.
+ * @param sections - global sections to register before the plugin mounts.
+ * @param options.agents - Agent objects exposed through a fake `agents` service.
+ * @param options.omitAgents - mount without an `agents` service.
+ * @param options.beforePlugin - awaited after the Host stub, before this plugin.
  * @returns `{ctx, service, route, call}`.
  */
-async function mountRealPlugin(sections = []) {
+async function mountRealPlugin(sections = [], options = {}) {
   const { Context } = await import(CORDIS_URL);
   const { default: SystemPrompt } = await import(SYSTEM_PROMPT_URL);
   const plugin = await import('../index.js');
@@ -337,6 +341,7 @@ async function mountRealPlugin(sections = []) {
   const routes = [];
   const ctx = new Context();
   await ctx.plugin(SystemPrompt);
+  const agents = new Map((options.agents ?? []).map((agent) => [agent.id, agent]));
   await ctx.plugin({
     name: 'host-stub',
     apply(c) {
@@ -347,6 +352,9 @@ async function mountRealPlugin(sections = []) {
         },
       });
       c.provide('connection', { requestRejection: () => undefined });
+      if (options.omitAgents !== true) {
+        c.provide('agents', { get: (id) => agents.get(id) });
+      }
     },
   });
   if (sections.length > 0) {
@@ -358,6 +366,7 @@ async function mountRealPlugin(sections = []) {
       },
     });
   }
+  if (typeof options.beforePlugin === 'function') await options.beforePlugin(ctx);
   await ctx.plugin({ name: 'dsh-prompt-setting', inject: plugin.inject, apply: plugin.apply });
 
   const service = ctx.get('systemPrompt', false);
@@ -454,4 +463,113 @@ test('integration: a real complete section is reported as frozen through the rea
   const again = await remounted.call({ url: '/prompt-setting/snapshot' });
   assert.equal(again.payload.frozen, true);
   assert.equal(again.payload.frozenSection, 'test:complete');
+});
+
+test('integration: PROBE_SCOPE resolves exactly the unscoped view, so the base view is unchanged', suite, async () => {
+  const plugin = await import('../index.js');
+  const { service } = await mountRealPlugin(CUSTOM);
+  const unscoped = await service.assemble();
+  const privateScoped = await service.assemble({ scope: plugin.PROBE_SCOPE });
+  // A private object with no scoped registrations resolves the global sections,
+  // which is what lets the probe be scope-keyed without changing `base`.
+  assert.deepEqual(names(privateScoped), names(unscoped));
+  assert.deepEqual(
+    privateScoped.sections.map((section) => section.text),
+    unscoped.sections.map((section) => section.text),
+  );
+  // And it is genuinely private: it carries no layer of its own.
+  assert.equal(Object.keys(plugin.PROBE_SCOPE).length, 0);
+});
+
+test('integration D1: a complete section in a PRESET scope freezes its sessions, but not the global view', suite, async () => {
+  const scopeUrl = SCOPE_URL ?? resolveReal('@deepseek-ai/dsh-scope');
+  if (scopeUrl === null) return;
+  const { createScope } = await import(scopeUrl);
+
+  // The real liangshen shape: a preset registers `{complete: true}` on its own
+  // standing scope, and each session's agent scope is composed UNDER it.
+  const presetKey = {};
+  const agent = { id: 'locked-session' };
+  const { call } = await mountRealPlugin(
+    [{ name: 'test:global', order: 100, text: 'GLOBAL' }],
+    {
+      agents: [agent],
+      beforePlugin: async (ctx) => {
+        const preset = createScope(ctx, presetKey);
+        await preset.ctx.plugin({
+          name: 'preset-persona',
+          inject: ['systemPrompt'],
+          apply(c) {
+            c.systemPrompt.section({ name: 'preset:locked', order: 500, text: 'LOCKED BODY', complete: true });
+          },
+        });
+        const session = createScope(ctx, agent, { parent: presetKey });
+        await session.ctx.plugin({
+          name: 'session-sections',
+          inject: ['systemPrompt'],
+          apply(c) {
+            c.systemPrompt.section({ name: 'session:own', order: 600, text: 'SESSION BODY' });
+          },
+        });
+      },
+    },
+  );
+
+  // Under the session's own scope, the inherited complete section freezes it.
+  const session = await call({ url: '/prompt-setting/snapshot?session=locked-session' });
+  assert.equal(session.status, 200);
+  assert.equal(session.payload.frozenScope, 'session');
+  assert.equal(session.payload.frozen, true);
+  assert.equal(session.payload.frozenSection, 'preset:locked');
+  assert.match(session.payload.frozenReason, /single complete section "preset:locked"/);
+  assert.equal(session.payload.rendered, 'LOCKED BODY');
+  assert.equal(session.payload.base.sections.some((section) => section.name === 'session:own'), true);
+  assert.equal(session.payload.effective.sections.every((section) => section.overridable === false), true);
+
+  // The global view is NOT frozen: probing globally would have reported
+  // `frozen: false, overridable: true` for a scope no edit can change.
+  const global = await call({ url: '/prompt-setting/snapshot' });
+  assert.equal(global.payload.frozenScope, 'global');
+  assert.equal(global.payload.frozen, false);
+  assert.equal(global.payload.rendered.includes('LOCKED BODY'), false);
+  assert.equal(global.payload.base.sections.some((section) => section.name === 'preset:locked'), false);
+  assert.equal(global.payload.effective.sections.every((section) => section.overridable === true), true);
+});
+
+test('integration D1: an inactive session reports frozenScope "global" with a reason, never a silent guess', suite, async () => {
+  const { call } = await mountRealPlugin([{ name: 'test:global', order: 100, text: 'GLOBAL' }], { agents: [] });
+  const payload = await call({ url: '/prompt-setting/snapshot?session=not-running' });
+  assert.equal(payload.status, 200);
+  assert.equal(payload.payload.frozenScope, 'global');
+  assert.equal(payload.payload.frozen, false);
+  assert.match(payload.payload.frozenScopeReason, /no active agent/);
+});
+
+test('integration D2: a concurrent unscoped assembly during a snapshot is never handed the probe section', suite, async () => {
+  let nested = null;
+  let armed = false;
+  let service = null;
+  const mounted = await mountRealPlugin([{ name: 'test:global', order: 100, text: 'GLOBAL' }], {
+    // `assemble()` reaches the last await only after dispatching the waterfall,
+    // so wrapping the service is how this test creates the concurrency window
+    // without touching the plugin.
+    beforePlugin: async (ctx) => {
+      service = ctx.get('systemPrompt', false);
+      const original = service.assemble.bind(service);
+      service.assemble = async (...args) => {
+        if (!armed) {
+          armed = true;
+          nested = await original();
+        }
+        return original(...args);
+      };
+    },
+  });
+  const snapshot = await mounted.call({ url: '/prompt-setting/snapshot' });
+
+  assert.notEqual(nested, null, 'the concurrent assembly must actually have run');
+  assert.deepEqual(names(nested), ['harness:identity', 'deployment:persona-prefix', 'test:global', 'deployment:persona-suffix']);
+  assert.equal(snapshot.payload.mounted, true);
+  assert.equal(snapshot.payload.frozen, false);
+  assert.equal(service !== null, true);
 });

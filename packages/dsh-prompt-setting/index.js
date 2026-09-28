@@ -74,11 +74,24 @@ const ROUTES = new Map([
 /** Cap on a PUT body, matching the 200 KiB per-override text cap with headroom. */
 const MAX_BODY_BYTES = 256 * 1024;
 /**
- * Scope key of the unscoped assembly. `assemble()` with no scope is the base
- * prompt and is what the snapshot probes; real turns dispatch under their
- * agent's scope, so the two never share a slot.
+ * This plugin's private probe scope, used when the snapshot has no session.
+ *
+ * It is a plain object with no scoped registrations, so
+ * `assemble({scope: PROBE_SCOPE})` resolves exactly the global sections — but
+ * unlike an unscoped `assemble()` it is a scope key ONLY this module can hold.
+ * That uniqueness is what lets the one-shot probe config be matched by exact
+ * object identity without any other caller being able to collide with it.
+ *
+ * Exported for the equivalence assertion in `test/integration.test.mjs`; it is
+ * not part of the plugin's API and nothing else should pass it to `assemble`.
  */
-const GLOBAL_SCOPE = 'global';
+export const PROBE_SCOPE = Object.freeze({});
+/**
+ * The per-mount record key for an assembly that carries no scope at all.
+ * A module-level string is safe here (it is only a Map key), and it is never
+ * used to match a probe: probes always carry an Agent or {@link PROBE_SCOPE}.
+ */
+const UNSCOPED_KEY = 'unscoped';
 
 /**
  * Required Host services. `systemPrompt` is a hard dependency: without it the
@@ -211,9 +224,42 @@ export function apply(ctx) {
     workspaces: new Map(),
     /** Last assembly observation per scope key: `{seq, registered, downstream}`. */
     records: new Map(),
-    /** The resolved config a single unscoped probe must use, or null. */
-    oneShot: null,
+    /**
+     * The config one in-flight probe must use, matched by the identity of the
+     * `AssembleContext` object this plugin itself passed to `assemble()`. Only
+     * this module can hold that object, so no other caller can collide with it.
+     */
+    pendingProbe: null,
   };
+
+  /**
+   * The agent registry, or undefined when this profile has none.
+   * @returns the service, or undefined.
+   */
+  function agentsService() {
+    try {
+      const service = ctx.get('agents');
+      return service === undefined || service === null ? undefined : service;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * The live Agent that owns a session, which is also that session's scope key.
+   * @param sessionId - the session id to look up.
+   * @returns the Agent, or undefined when it is not active.
+   */
+  function agentFor(sessionId) {
+    const agents = agentsService();
+    if (agents === undefined || typeof agents.get !== 'function') return undefined;
+    try {
+      const agent = agents.get(sessionId);
+      return agent !== null && typeof agent === 'object' ? agent : undefined;
+    } catch {
+      return undefined;
+    }
+  }
 
   /**
    * The workspace registry, or undefined when this profile has none. Looked up
@@ -312,25 +358,33 @@ export function apply(ctx) {
   }
 
   /**
-   * The map key an assembly is filed under.
+   * The map key an assembly is filed under. An unscoped assembly has no scope
+   * key object, so it gets a sentinel that no probe can collide with (probes
+   * always carry a scope: an Agent or {@link PROBE_SCOPE}).
    * @param context - the waterfall's assembly context.
-   * @returns the scope key object, or {@link GLOBAL_SCOPE}.
+   * @returns the scope key object, or the unscoped sentinel.
    */
   function scopeKeyOf(context) {
     const scope = context?.scope;
-    return scope === undefined || scope === null ? GLOBAL_SCOPE : scope;
+    return scope === undefined || scope === null ? UNSCOPED_KEY : scope;
   }
 
   /**
    * The config one assembly must apply: user layer always, workspace layer when
    * the assembly belongs to an agent whose workspace has a cached layer.
+   *
+   * Consumes the in-flight probe config when — and only when — this is the very
+   * `AssembleContext` object {@link probe} handed to `assemble()`. Matching on
+   * the context's identity rather than on a scope value or a sentinel is what
+   * keeps a concurrent assembly by any other caller (including a real turn for
+   * the same agent) from picking up the probe's synthetic section.
    * @param context - the waterfall's assembly context.
    * @returns the merged, layer-tagged override list.
    */
   function resolvedFor(context) {
-    if (state.oneShot !== null && scopeKeyOf(context) === GLOBAL_SCOPE) {
-      const resolved = state.oneShot;
-      state.oneShot = null;
+    if (state.pendingProbe !== null && context === state.pendingProbe.context) {
+      const resolved = state.pendingProbe.resolved;
+      state.pendingProbe = null;
       return resolved;
     }
     const user = state.user.config ?? emptyConfig();
@@ -344,7 +398,7 @@ export function apply(ctx) {
   /**
    * The `system-prompt/assemble` waterfall listener.
    *
-   * Synchronous until `next()`: the observation is recorded and the one-shot
+   * Synchronous until `next()`: the observation is recorded and the in-flight
    * probe config consumed before anything can interleave, which is what makes
    * the snapshot's `base` view and frozen detection deterministic. It calls
    * `next()` so no other listener is vetoed, then applies this plugin's
@@ -379,24 +433,31 @@ export function apply(ctx) {
   }
 
   /**
-   * Run one unscoped assembly probe with a specific config and report what was
-   * observed. `assemble()` with no scope is the base prompt, so both the
-   * registered sections and the final result are available in one call.
-   * @param resolved - the config this probe must apply.
+   * Run one assembly probe under the target scope with a specific config, and
+   * report what was observed.
+   *
+   * The scope matters: `complete` is a per-scope fact. Because `Scoped`
+   * registrations are inherited through the scope's parent chain, a
+   * `complete: true` section registered by a preset's standing scope freezes
+   * every session composed under it while the unscoped assembly stays
+   * unfrozen — so probing globally would report `frozen: false` and
+   * `overridable: true` for a scope where an edit cannot take effect.
+   * @param probe - the target scope and the config this probe must apply.
    * @returns `{observed, registered, downstream, after, variables}`.
    */
-  async function probe(resolved) {
-    const before = state.records.get(GLOBAL_SCOPE)?.seq ?? 0;
-    state.oneShot = resolved;
+  async function probe({ scope, agent, resolved }) {
+    const context = agent === undefined ? { scope } : { agent, scope };
+    const before = state.records.get(scope)?.seq ?? 0;
+    state.pendingProbe = { context, resolved };
     let assembly;
     try {
-      assembly = await ctx.systemPrompt.assemble();
+      assembly = await ctx.systemPrompt.assemble(context);
     } catch (error) {
       throw new OverrideError('assemble-failed', `systemPrompt.assemble() failed: ${error?.message ?? String(error)}`, 503);
     } finally {
-      state.oneShot = null;
+      state.pendingProbe = null;
     }
-    const record = state.records.get(GLOBAL_SCOPE);
+    const record = state.records.get(scope);
     const observed = record !== undefined && record.seq > before;
     return {
       observed,
@@ -404,6 +465,31 @@ export function apply(ctx) {
       downstream: observed ? (record.downstream ?? []) : [],
       after: Array.isArray(assembly?.sections) ? assembly.sections : [],
       variables: assembly?.variables,
+    };
+  }
+
+  /**
+   * Choose the scope the snapshot must probe, and say plainly which scope the
+   * resulting verdict describes.
+   * @param sessionId - the `?session=` value, or null.
+   * @returns `{scope, agent, frozenScope, frozenScopeReason}`.
+   */
+  function probeTarget(sessionId) {
+    if (sessionId === null || sessionId.length === 0) {
+      return { scope: PROBE_SCOPE, agent: undefined, frozenScope: 'global', frozenScopeReason: null };
+    }
+    const agent = agentFor(sessionId);
+    if (agent !== undefined) {
+      return { scope: agent, agent, frozenScope: 'session', frozenScopeReason: null };
+    }
+    const available = agentsService() !== undefined;
+    return {
+      scope: PROBE_SCOPE,
+      agent: undefined,
+      frozenScope: 'global',
+      frozenScopeReason: available
+        ? `session ${JSON.stringify(sessionId)} has no active agent, so this verdict describes the unscoped assembly; a complete section registered in that session's scope would not be visible here`
+        : 'the agents service is not available in this profile, so this verdict describes the unscoped assembly',
     };
   }
 
@@ -469,24 +555,30 @@ export function apply(ctx) {
 
   /**
    * `GET /prompt-setting/snapshot` — the base and effective section views of
-   * one unscoped assembly, plus the layering and frozen verdict that produced
-   * them.
+   * one assembly, plus the layering and frozen verdict that produced them.
+   *
+   * With `?session=` the assembly is probed under that session's own Agent
+   * scope, so the verdict describes the scope a real turn would use; without
+   * it, under this plugin's private scope, which resolves the global sections.
+   * `frozenScope` always says which of the two the verdict is about.
    * @param url - the parsed request URL.
    * @param res - the Node response.
    */
   async function handleSnapshot(url, res) {
-    const workspace = workspaceContext(url.searchParams.get('session'));
+    const sessionId = url.searchParams.get('session');
+    const workspace = workspaceContext(sessionId);
     const userConfig = state.user.config ?? emptyConfig();
     const resolved = mergeLayers(userConfig, workspace.config);
+    const target = probeTarget(sessionId);
 
     // Probe 1 appends one section nothing else would contain. If it is missing
     // from the result, or the list changed size without it, the pipeline
     // replaced this scope's sections after the waterfall — the frozen signal,
     // and the only signal that also sees a scope whose single section IS the
     // complete one.
-    const frozenProbe = await probe(probeConfig());
+    const frozenProbe = await probe({ ...target, resolved: probeConfig() });
     // Probe 2 asks what this session's real overrides actually achieve.
-    const overrideProbe = await probe(resolved);
+    const overrideProbe = await probe({ ...target, resolved });
 
     const frozenInfo = detectFrozen({
       registered: frozenProbe.registered,
@@ -519,6 +611,8 @@ export function apply(ctx) {
       frozen: frozenInfo.frozen,
       frozenSection: frozenInfo.frozenSection,
       frozenReason: frozenInfo.frozenReason,
+      frozenScope: target.frozenScope,
+      frozenScopeReason: target.frozenScopeReason,
       base: { sections: base },
       effective: { sections: effective },
       rendered: renderSections(overrideProbe.after, overrideProbe.variables),

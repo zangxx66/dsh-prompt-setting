@@ -16,7 +16,20 @@ implementation detail.
   `trust-fence-unavailable`.
 - **Session id**: a session is identified by `Agent.id`, which the Host shares
   with the session log. It is passed as `?session=<id>`; it is never used to
-  build a filesystem path directly (see §4.2).
+  build a filesystem path directly (see §4.2). It also selects the **scope** the
+  snapshot is probed under (§2.4).
+
+**Revision 2 (review fix).** Two defects found in review changed the snapshot's
+semantics; both are reflected below and are breaking for anyone who had already
+built on revision 1:
+
+- the snapshot now probes the **session's own scope**, not the unscoped assembly,
+  and reports which scope the verdict describes via the new `frozenScope` /
+  `frozenScopeReason` fields (§2.4, §5.8). A preset that freezes a session with
+  `{complete: true}` is now detected for that session;
+- each probe's config is matched to its own `AssembleContext` by **object
+  identity**, so a concurrent assembly by any other caller (including a real turn
+  for the same session) can never receive the probe's synthetic section (§2.6).
 
 ---
 
@@ -41,8 +54,9 @@ implementation detail.
 
 ## 2. `GET /prompt-setting/snapshot`
 
-Query: `session` (optional). Without it the workspace layer is inactive and the
-snapshot describes the user layer alone.
+Query: `session` (optional). `session` selects **both** the workspace layer and
+the **scope** the assembly is probed under (§2.4). Without it the workspace layer
+is inactive and the verdict describes the global assembly.
 
 ```json
 {
@@ -52,6 +66,8 @@ snapshot describes the user layer alone.
   "frozen": false,
   "frozenSection": null,
   "frozenReason": null,
+  "frozenScope": "global",
+  "frozenScopeReason": null,
   "base":      { "sections": [ { "name": "harness:identity", "index": 0, "text": "…", "complete": false } ] },
   "effective": { "sections": [ { "name": "harness:identity", "index": 0, "text": "…", "applied": false,
                                  "overridable": true, "reason": null,
@@ -102,19 +118,40 @@ instead of throwing, because the snapshot is a read-only view that must never
 fail on provider text. Provenance text containing `{{…}}` therefore renders
 literally here while a real turn would throw. See §4.4.
 
-### 2.4 `frozen`
+### 2.4 `frozen` and `frozenScope`
 
 `frozen: true` means the assembled scope no longer reflects the registered
 sections. The UI **must** disable editing on such a scope and say why; a
 silently failing edit is the failure mode this field exists to prevent.
 
-Detection is observational, never inferred from configuration:
+**`complete` is a per-scope fact, so the verdict must name its scope.**
+`Scoped` registrations are inherited through the scope's parent chain, so a
+`complete: true` section registered by a preset's standing scope freezes every
+session composed under it while the unscoped assembly stays unfrozen. Probing
+globally would therefore report `frozen: false` and `overridable: true` for a
+scope where no edit can take effect — the exact silent failure this field
+exists to prevent.
 
-1. The snapshot runs a **frozen probe**: an `assemble()` with the single
-   synthetic append `__dsh-prompt-setting-probe__`. If that section is absent
-   from the result — or the list changed size without it — the pipeline
-   replaced the scope's `sections` after the waterfall. A `complete: true`
-   section does exactly this, and it is the only mechanism observed to do so.
+| `frozenScope` | The probed scope | When |
+| --- | --- | --- |
+| `"session"` | `assemble({agent, scope: agent})` — the **same context object shape** a real turn uses, with the session's live `Agent` as the scope key | `?session=` was supplied and `ctx.agents.get(sessionId)` returned an active Agent |
+| `"global"` | `assemble({scope: PROBE_SCOPE})`, this plugin's private object with no scoped registrations, which resolves exactly the global sections | `?session=` was absent, **or** it named a session with no active Agent |
+
+`frozenScopeReason` is `null` for the two intended cases and a sentence
+otherwise. A session that names no active Agent is **never** silently reported
+as global: `frozenScope` is `"global"` and `frozenScopeReason` says the verdict
+describes the unscoped assembly because the session's scope could not be probed
+(a complete section registered there would not be visible). The UI should treat
+that as "unknown for this session", not as "not frozen".
+
+The verdict never claims more than it observed:
+
+1. The snapshot runs a **frozen probe**: an `assemble()` **under the target
+   scope** with the single synthetic append `__dsh-prompt-setting-probe__`. If
+   that section is absent from the result — or the list changed size without it
+   — the pipeline replaced the scope's `sections` after the waterfall. A
+   `complete: true` section does exactly this, and it is the only mechanism
+   observed to do so.
 2. If the probe survived, the snapshot also compares the sections this plugin
    handed downstream with the sections that came back, and reports a discarded
    override.
@@ -138,11 +175,21 @@ flag makes the fact observable rather than assumed. When the plugin is disabled
 or unloaded, its routes are unregistered with it, so the UI observes an
 unreachable endpoint rather than `mounted: false` (E5).
 
-### 2.6 Cost
+### 2.6 Cost and probe correlation
 
 The snapshot runs **two** `assemble()` calls (frozen probe + the session's real
-config). Both are discarded apart from their section lists. This is an
-on-demand settings route, not a per-turn path.
+config), both under the target scope. Both are discarded apart from their
+section lists. This is an on-demand settings route, not a per-turn path.
+
+Each probe's config is handed to the waterfall listener only for the exact
+`AssembleContext` object this plugin passed to `assemble()`, matched by
+**object identity**. Matching on a scope value instead would not be safe:
+a real turn for the same session passes a different context object that carries
+the *same* `Agent` as its scope, so a scope-keyed match would let that turn
+consume the probe's synthetic append and receive
+`__dsh-prompt-setting-probe__` in its own prompt. Identity matching makes that
+impossible — no other caller can hold this plugin's context object — and the
+consumption still happens synchronously, before the listener's first `await`.
 
 ## 3. `GET /prompt-setting/overrides`
 
@@ -284,13 +331,23 @@ Real turns dispatch `assemble()` with `AssembleContext = { agent, scope: agent }
 listener reads `context.agent.id` (falling back to `context.scope.id`) to choose
 the cached workspace layer — still zero IO.
 
-### 5.8 Scope of this stage
+### 5.8 Scope of the snapshot
 
-The snapshot describes the **unscoped** assembly: `assemble()` with no argument
-is the base prompt. Agent-scoped sections are out of scope for stage 1B, so the
-snapshot's `base`/`effective` may contain fewer sections than a specific
-agent-scoped turn. The override handler itself is scope-correct: it applies to
-every scope it sees, including agent-scoped turns.
+The snapshot describes the assembly **under the requested scope**: the session's
+own `Agent` scope when `?session=` names a live agent, otherwise the global view
+via this plugin's private probe scope. `base`/`effective` therefore contain the
+scoped sections a real turn for that session would see, and `frozenScope` always
+says which of the two the verdict is about (§2.4).
+
+Two consequences worth stating:
+
+- the same mount can legitimately report `frozen: true` for one session and
+  `frozen: false` for the global view — that is the point, not an inconsistency;
+- a session that supplies no workspace row still gets a scope-correct verdict;
+  the two selectors are independent.
+
+The override handler itself is scope-correct for every scope it sees, including
+any scope this plugin never probes.
 
 ## 6. E1–E5: measured conclusions
 
@@ -329,7 +386,11 @@ real Cordis context. The snapshot republishes the same text in `experiments`.
 
 1. **`rendered` interpolates differently from a real turn** for unknown
    `{{references}}` (§2.3). Deliberate: the snapshot must not throw.
-2. **The snapshot is unscoped** (§5.8).
+2. **A session with no active Agent gets a `frozenScope: "global"` verdict, not
+   a session one** (§2.4). The response says so in `frozenScopeReason`; the UI
+   must present that as unknown-for-this-session rather than as "not frozen".
+   Probing a session whose Agent has not been created yet is not possible through
+   this API.
 3. **A workspace created after mount contributes nothing until a route request
    refreshes the cache** (§5.5).
 4. **A scope whose registered sections change between the two probes** could
@@ -338,3 +399,7 @@ real Cordis context. The snapshot republishes the same text in `experiments`.
    no shipped package registers dynamic *sections*.
 5. **`complete` is `"unknown"`** when neither probe can prove it. It is never
    guessed.
+6. **The probed context is not byte-identical to a real turn's**: this plugin
+   passes `{agent, scope: agent}` (no `signal`), so a section or variable
+   provider that branches on `context.signal` would see a difference. No shipped
+   provider reads it.

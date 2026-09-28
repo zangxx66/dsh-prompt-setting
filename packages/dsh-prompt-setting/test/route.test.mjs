@@ -79,20 +79,43 @@ function makeRequest({ method = 'GET', url = PING_PATH, headers = {}, body } = {
 
 /**
  * Mount the plugin against a fake Host.
- * @param options.sections - registered sections (defaults to {@link DEFAULT_SECTIONS}).
+ *
+ * The fake `systemPrompt` reproduces the parts of the real service that matter
+ * here: canonical ordering by `order`, scoped layers merged along a parent
+ * chain (`complete` is a per-scope fact, so the chain matters), an
+ * outermost-first waterfall, and the post-waterfall `complete` collapse.
+ * @param options.sections - registered GLOBAL sections (defaults to {@link DEFAULT_SECTIONS}).
+ * @param options.scopes - `[{key, parent?, sections}]` scoped registrations.
  * @param options.workspaces - `list()` rows for the fake workspace registry.
+ * @param options.agents - Agent objects (each with an `id`); when omitted, one
+ *   is derived for every session id the workspace rows declare.
+ * @param options.omitAgents - mount in a profile with no `agents` service.
  * @param options.omitWorkspaceRegistry - mount in a profile with no workspace service.
  * @param options.requestRejection - what the connection service returns.
  * @param options.omitConnection - mount without a connection service.
  * @param options.variables - the fake assembly's resolved variables.
+ * @param options.beforeDispatch - awaited before each waterfall dispatch: the
+ *   window in which a concurrent assembly could run.
  * @returns the captured route plus the harness handles.
  */
 function mount(options = {}) {
   const registered = (options.sections ?? DEFAULT_SECTIONS).map((section) => ({ ...section }));
+  const scopes = new Map(
+    (options.scopes ?? []).map((entry) => [entry.key, { parent: entry.parent, sections: entry.sections }]),
+  );
+  const agents = new Map(
+    (
+      options.agents ??
+      (options.workspaces ?? []).flatMap((workspace) =>
+        (workspace.sessionIds ?? []).map((id) => ({ id })),
+      )
+    ).map((agent) => [agent.id, agent]),
+  );
   const listeners = [];
   const routes = [];
   let disposed = 0;
   const registry = options.workspaces === undefined ? undefined : { list: () => options.workspaces };
+  const agentRegistry = options.omitAgents === true ? undefined : { get: (id) => agents.get(id) };
 
   const ctx = {
     connection:
@@ -108,9 +131,20 @@ function mount(options = {}) {
       },
     },
     systemPrompt: {
-      /** Reproduces the shipped assemble(): order, waterfall, complete collapse. */
+      /** Reproduces the shipped assemble(): scope merge, order, waterfall, collapse. */
       async assemble(context = {}) {
-        const sorted = [...registered].sort(
+        if (typeof options.beforeDispatch === 'function') await options.beforeDispatch(context);
+        // Scoped layers along the parent chain, nearest scope last, exactly like
+        // ScopedLayers.merge — which is what makes `complete` a per-scope fact.
+        const chain = [];
+        for (let cursor = context?.scope; cursor !== undefined && cursor !== null; cursor = scopes.get(cursor)?.parent) {
+          chain.push(cursor);
+        }
+        const merged = new Map(registered.map((section) => [section.name, section]));
+        for (const key of chain.reverse()) {
+          for (const section of scopes.get(key)?.sections ?? []) merged.set(section.name, section);
+        }
+        const sorted = [...merged.values()].sort(
           (left, right) => left.order - right.order || (left.name < right.name ? -1 : left.name > right.name ? 1 : 0),
         );
         const completeSection = sorted.find((section) => section.complete === true);
@@ -136,7 +170,9 @@ function mount(options = {}) {
       },
     },
     get(name) {
-      return name === 'workspaceRegistry' ? registry : undefined;
+      if (name === 'workspaceRegistry') return registry;
+      if (name === 'agents') return agentRegistry;
+      return undefined;
     },
     on(name, callback) {
       listeners.push(callback);
@@ -150,7 +186,7 @@ function mount(options = {}) {
     },
   };
   apply(ctx);
-  return { ctx, routes, route: routes[0], disposedCount: () => disposed, listeners };
+  return { ctx, routes, route: routes[0], disposedCount: () => disposed, listeners, agents };
 }
 
 /** Call the prefix route with a request double. */
@@ -261,9 +297,12 @@ test('snapshot: reports the base and effective sections in the real assembly ord
   assert.equal(payload.mounted, true);
   assert.equal(Number.isNaN(Date.parse(payload.generatedAt)), false);
   assert.deepEqual(Object.keys(payload).sort(), [
-    'base', 'effective', 'experiments', 'frozen', 'frozenReason', 'frozenSection',
-    'generatedAt', 'layers', 'mounted', 'ok', 'rendered',
+    'base', 'effective', 'experiments', 'frozen', 'frozenReason', 'frozenScope', 'frozenScopeReason',
+    'frozenSection', 'generatedAt', 'layers', 'mounted', 'ok', 'rendered',
   ]);
+  // No ?session=: the verdict describes the unscoped assembly, and it says so.
+  assert.equal(payload.frozenScope, 'global');
+  assert.equal(payload.frozenScopeReason, null);
 
   assert.deepEqual(payload.base.sections.map((section) => section.name), [
     'harness:identity', 'deployment:persona-prefix', 'project:alpha', 'project:beta', 'deployment:persona-suffix',
@@ -305,6 +344,130 @@ test('snapshot: an unresolvable session explains the workspace layer instead of 
   const payload = json(await call(route, { url: `${SNAPSHOT_PATH}?session=ghost` }));
   assert.equal(payload.layers.workspace.enabled, false);
   assert.match(payload.layers.workspace.reason, /no workspace owns session "ghost"/);
+});
+
+test('D1: a complete section registered in the SESSION scope freezes that session, not the global view', async () => {
+  // The real shape: a preset registers a standing scope, the session's agent
+  // scope is composed under it, and `complete` is inherited through the chain.
+  const presetScope = {};
+  const agent = { id: 'locked-session' };
+  const { route } = mount({
+    agents: [agent],
+    scopes: [
+      { key: presetScope, sections: [{ name: 'preset:locked', order: 500, text: 'LOCKED BODY', complete: true }] },
+      { key: agent, parent: presetScope, sections: [{ name: 'session:own', order: 600, text: 'SESSION BODY' }] },
+    ],
+  });
+
+  const session = json(await call(route, { url: `${SNAPSHOT_PATH}?session=locked-session` }));
+  assert.equal(session.frozenScope, 'session');
+  assert.equal(session.frozenScopeReason, null);
+  assert.equal(session.frozen, true);
+  assert.equal(session.frozenSection, 'preset:locked');
+  assert.match(session.frozenReason, /single complete section "preset:locked"/);
+  assert.equal(session.rendered, 'LOCKED BODY');
+  // The scoped sections are visible, and none claims to be overridable.
+  assert.equal(session.base.sections.some((section) => section.name === 'preset:locked'), true);
+  assert.equal(session.base.sections.some((section) => section.name === 'session:own'), true);
+  assert.equal(session.base.sections.find((section) => section.name === 'preset:locked').complete, true);
+  assert.equal(session.effective.sections.every((section) => section.overridable === false), true);
+
+  // The SAME mount, without ?session=, must NOT report the session's freeze.
+  const global = json(await call(route, { url: SNAPSHOT_PATH }));
+  assert.equal(global.frozenScope, 'global');
+  assert.equal(global.frozen, false);
+  assert.equal(global.frozenSection, null);
+  assert.equal(global.rendered.includes('LOCKED BODY'), false);
+  assert.equal(global.base.sections.some((section) => section.name === 'preset:locked'), false);
+  assert.equal(global.effective.sections.every((section) => section.overridable === true), true);
+});
+
+test('D1: a session whose agent is not active says so instead of silently reporting the global view', async () => {
+  const presetScope = {};
+  const { route } = mount({
+    agents: [],
+    scopes: [{ key: presetScope, sections: [{ name: 'preset:locked', order: 500, text: 'LOCKED', complete: true }] }],
+  });
+  const payload = json(await call(route, { url: `${SNAPSHOT_PATH}?session=gone` }));
+  assert.equal(payload.frozenScope, 'global');
+  assert.equal(payload.frozen, false);
+  assert.match(payload.frozenScopeReason, /no active agent/);
+  assert.match(payload.frozenScopeReason, /would not be visible here/);
+});
+
+test('D1: a profile with no agents service also says so', async () => {
+  const { route } = mount({ omitAgents: true });
+  const payload = json(await call(route, { url: `${SNAPSHOT_PATH}?session=s1` }));
+  assert.equal(payload.frozenScope, 'global');
+  assert.match(payload.frozenScopeReason, /agents service is not available/);
+});
+
+test('D2a: a concurrent UNSCOPED assembly cannot steal the probe config', async () => {
+  let nested = null;
+  let armed = false;
+  const harness = mount({
+    beforeDispatch: async () => {
+      // Run once, in the window between arming the probe and its dispatch.
+      if (armed) return;
+      armed = true;
+      nested = await harness.ctx.systemPrompt.assemble();
+    },
+  });
+  const payload = json(await call(harness.route, { url: SNAPSHOT_PATH }));
+
+  assert.notEqual(nested, null, 'the concurrent assembly must actually have run');
+  assert.deepEqual(nested.sections.map((section) => section.name), DEFAULT_SECTIONS.map((section) => section.name));
+  assert.equal(
+    nested.sections.some((section) => section.name.startsWith('__dsh-prompt-setting-probe__')),
+    false,
+    'the probe section must never leak into another caller assembly',
+  );
+  // And the probe's own observation is unaffected.
+  assert.equal(payload.mounted, true);
+  assert.equal(payload.frozen, false);
+  assert.equal(payload.base.sections.length, DEFAULT_SECTIONS.length);
+});
+
+test('D2b: a concurrent turn for the SAME agent cannot steal the session probe config', async () => {
+  const agent = { id: 's1' };
+  let nested = null;
+  let armed = false;
+  const harness = mount({
+    agents: [agent],
+    beforeDispatch: async (context) => {
+      // A real turn for the same session: same scope object, NEW context object.
+      if (armed || context?.scope !== agent) return;
+      armed = true;
+      nested = await harness.ctx.systemPrompt.assemble({ agent, scope: agent });
+    },
+  });
+  const payload = json(await call(harness.route, { url: `${SNAPSHOT_PATH}?session=s1` }));
+
+  assert.notEqual(nested, null, 'the concurrent turn must actually have run');
+  assert.deepEqual(nested.sections.map((section) => section.name), DEFAULT_SECTIONS.map((section) => section.name));
+  assert.equal(
+    nested.sections.some((section) => section.name.startsWith('__dsh-prompt-setting-probe__')),
+    false,
+    'a real turn sharing the scope object must not receive the probe section',
+  );
+  assert.equal(payload.frozenScope, 'session');
+  assert.equal(payload.mounted, true);
+  assert.equal(payload.frozen, false);
+  assert.equal(payload.base.sections.length, DEFAULT_SECTIONS.length);
+});
+
+test('D2c: the probe consumes exactly one config, and only for its own context', async () => {
+  const harness = mount();
+  // Two sequential probes (as one snapshot runs) must not leak into a third,
+  // unconsumed assembly.
+  json(await call(harness.route, { url: SNAPSHOT_PATH }));
+  const plain = await harness.ctx.systemPrompt.assemble();
+  assert.deepEqual(plain.sections.map((section) => section.name), DEFAULT_SECTIONS.map((section) => section.name));
+  const withEmptyContext = await harness.ctx.systemPrompt.assemble({});
+  assert.deepEqual(
+    withEmptyContext.sections.map((section) => section.name),
+    DEFAULT_SECTIONS.map((section) => section.name),
+  );
 });
 
 test('snapshot: a profile with no workspaceRegistry disables only the workspace layer', async () => {
