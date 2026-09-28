@@ -18,21 +18,54 @@
  * @module dsh-prompt-setting/core/store
  */
 
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
+import {
+  DEFAULT_HISTORY_LIMIT,
+  makeRecord,
+  parseHistory,
+  serializeHistory,
+  serializeRecord,
+  trimRecords,
+} from './history.js';
 import { OverrideError, emptyConfig, validateConfig } from './overrides.js';
 
 /** Directory (under `$DSH_HOME`) that owns the user layer. */
 const USER_DIRECTORY = 'prompt-setting';
 /** Config file name inside either layer directory. */
 const FILE_NAME = 'overrides.json';
+/** History file name inside either layer directory (one JSON record per line). */
+const HISTORY_FILE_NAME = 'history.jsonl';
 /** Directory (under a workspace root) that owns the workspace layer. */
 const WORKSPACE_DIRECTORY = '.dsh-prompt-setting';
 
 /** Distinguishes two temp files written within the same millisecond. */
 let tempCounter = 0;
+
+/**
+ * Build a uniquely named temp path next to a target file, so the `rename` that
+ * follows stays within one filesystem (and is therefore atomic).
+ * @param path - the target path.
+ * @returns the temp path.
+ */
+function tempPathFor(path) {
+  tempCounter += 1;
+  return join(dirname(path), `.${basename(path)}.${process.pid}.${tempCounter}.tmp`);
+}
+
+/**
+ * Remove a temp file, ignoring any failure: the caller's error is the signal.
+ * @param path - the temp path.
+ */
+function discardTemp(path) {
+  try {
+    rmSync(path, { force: true });
+  } catch {
+    // best effort only
+  }
+}
 
 /**
  * Resolve `$DSH_HOME`.
@@ -61,6 +94,16 @@ export function userConfigPath(env = process.env) {
  */
 export function workspaceConfigPath(workspaceRoot) {
   return join(String(workspaceRoot), WORKSPACE_DIRECTORY, FILE_NAME);
+}
+
+/**
+ * The history file that belongs to a layer, derived from its config path so a
+ * layer can never write history into another layer's directory.
+ * @param configPath - the layer's `overrides.json` path.
+ * @returns `<dir>/history.jsonl`.
+ */
+export function historyPath(configPath) {
+  return join(dirname(String(configPath)), HISTORY_FILE_NAME);
 }
 
 /**
@@ -169,3 +212,164 @@ export function removeOverride(config, name) {
   overrides.splice(at, 1);
   return { config: { version: config?.version ?? emptyConfig().version, overrides }, removed: true };
 }
+
+/**
+ * Read one layer's history file.
+ *
+ * Never throws: a missing file is empty history, and an unreadable file is
+ * reported as an error so the caller can say so instead of pretending there
+ * was no history. Corrupt lines inside a readable file are counted and skipped
+ * (`parseHistory`), because history is a log, not a config.
+ * @param path - the history path.
+ * @returns `{records, corrupt, maxSeq, missing, error}`.
+ */
+export function readHistoryFile(path) {
+  let raw;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') {
+      return { records: [], corrupt: 0, maxSeq: 0, missing: true, error: null };
+    }
+    return {
+      records: [],
+      corrupt: 0,
+      maxSeq: 0,
+      missing: false,
+      error: { code: 'unreadable-file', message: `cannot read ${path}: ${error?.message ?? String(error)}` },
+    };
+  }
+  const parsed = parseHistory(raw);
+  return { ...parsed, missing: false, error: null };
+}
+
+/**
+ * Write text to a path atomically: temp file in the same directory, then
+ * `rename`. Used for history rewrites; config writes keep using
+ * {@link writeConfig} unchanged.
+ * @param path - the target path.
+ * @param text - the exact bytes to write.
+ * @returns `{ok: true, path}`.
+ * @throws {OverrideError} when the bytes cannot be written or renamed.
+ */
+export function writeTextAtomic(path, text) {
+  const directory = dirname(path);
+  try {
+    mkdirSync(directory, { recursive: true });
+  } catch (error) {
+    throw new OverrideError('unwritable-directory', `cannot create ${directory}: ${error?.message ?? String(error)}`, 500);
+  }
+  const temp = tempPathFor(path);
+  try {
+    writeFileSync(temp, text, 'utf8');
+    renameSync(temp, path);
+  } catch (error) {
+    discardTemp(temp);
+    throw new OverrideError('write-failed', `cannot write ${path}: ${error?.message ?? String(error)}`, 500);
+  }
+  return { ok: true, path };
+}
+
+/**
+ * Append one history record to a layer's history file, keeping it bounded.
+ *
+ * The record's `seq` continues the file's high-water mark, so an id survives
+ * trimming. The common path is a single `appendFileSync` — one line written,
+ * nothing rewritten. The file is rewritten only when it must be: when the
+ * append would exceed `limit`, or when a corrupt line has to be healed out.
+ * @param path - the history path.
+ * @param fields - the record fields; `seq` is assigned here.
+ * @param limit - the retention bound.
+ * @returns `{record, dropped, rewritten}`.
+ * @throws {OverrideError} when the history file cannot be read or written.
+ */
+export function appendHistoryRecord(path, fields, limit = DEFAULT_HISTORY_LIMIT) {
+  const current = readHistoryFile(path);
+  if (current.error !== null) {
+    throw new OverrideError(
+      'history-unusable',
+      `cannot append to ${path} (${current.error.code}: ${current.error.message})`,
+      500,
+    );
+  }
+  const record = makeRecord({ ...fields, seq: current.maxSeq + 1 });
+  const trimmed = trimRecords([...current.records, record], limit);
+  const rewrite = trimmed.trimmed || current.corrupt > 0;
+  try {
+    if (rewrite) {
+      writeTextAtomic(path, serializeHistory(trimmed.kept));
+    } else {
+      mkdirSync(dirname(path), { recursive: true });
+      appendFileSync(path, serializeRecord(record), 'utf8');
+    }
+  } catch (error) {
+    if (error instanceof OverrideError) throw error;
+    throw new OverrideError('history-write-failed', `cannot write ${path}: ${error?.message ?? String(error)}`, 500);
+  }
+  return { record, dropped: trimmed.dropped, rewritten: rewrite };
+}
+
+/**
+ * Replace several config files with one all-or-nothing guarantee as strong as
+ * the filesystem allows.
+ *
+ * Phase 1 stages every layer: serialize, create the directory chain, write a
+ * temp file next to the target, then **read the temp file back and validate
+ * it**. Any failure here removes every temp file and throws — the real config
+ * files were never opened for writing, so they are byte-identical to what they
+ * were. Phase 2 renames the staged temp files into place, which is atomic per
+ * file.
+ *
+ * Residual risk, stated rather than hidden: the multi-file commit is not a
+ * transaction. A filesystem failure between two renames leaves the earlier
+ * layer replaced and the later one untouched; the thrown error says how many
+ * layers were committed so the caller can report it truthfully.
+ * @param entries - `[{path, config}]`.
+ * @returns `{ok: true, paths}`.
+ * @throws {OverrideError} when staging or committing fails.
+ */
+export function writeConfigsAtomically(entries) {
+  const list = (Array.isArray(entries) ? entries : []).map((entry) => ({
+    path: String(entry.path),
+    serialized: `${JSON.stringify(entry.config, null, 2)}\n`,
+  }));
+  const staged = [];
+  try {
+    for (const entry of list) {
+      const directory = dirname(entry.path);
+      mkdirSync(directory, { recursive: true });
+      const temp = tempPathFor(entry.path);
+      writeFileSync(temp, entry.serialized, 'utf8');
+      staged.push({ temp, path: entry.path });
+      const verify = readConfig(temp);
+      if (verify.error !== null) {
+        throw new OverrideError(
+          'import-verify-failed',
+          `the staged file for ${entry.path} did not validate (${verify.error.code}: ${verify.error.message})`,
+          500,
+        );
+      }
+    }
+  } catch (error) {
+    for (const item of staged) discardTemp(item.temp);
+    if (error instanceof OverrideError) throw error;
+    throw new OverrideError('import-staging-failed', `cannot stage the import: ${error?.message ?? String(error)}`, 500);
+  }
+
+  const committed = [];
+  try {
+    for (const item of staged) {
+      renameSync(item.temp, item.path);
+      committed.push(item.path);
+    }
+  } catch (error) {
+    for (const item of staged) discardTemp(item.temp);
+    throw new OverrideError(
+      'import-commit-failed',
+      `the staged import could not be committed: ${error?.message ?? String(error)} (${committed.length} of ${staged.length} layer(s) were already replaced)`,
+      500,
+    );
+  }
+  return { ok: true, paths: committed };
+}
+

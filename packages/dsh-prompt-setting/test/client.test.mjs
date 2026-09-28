@@ -42,6 +42,23 @@ const ERROR_CODES = [
   'trust-fence-unavailable',
   'not-found',
   'duplicate-name',
+  // Stage 2 (CONTRACT.md Revision 4).
+  'invalid-history-record',
+  'history-unusable',
+  'history-not-found',
+  'missing-diff-selector',
+  'invalid-diff-selector',
+  'invalid-export',
+  'unknown-export-schema',
+  'missing-export-version',
+  'unsupported-export-version',
+  'missing-export-layers',
+  'missing-export-layer',
+  'invalid-export-layer',
+  'unknown-import-mode',
+  'import-verify-failed',
+  'import-staging-failed',
+  'import-commit-failed',
 ];
 
 /**
@@ -134,11 +151,37 @@ function loadClient(primitives) {
   vm.createContext(sandbox);
   vm.runInContext(clientSource, sandbox, { filename: 'client.js' });
   assert.ok(descriptor, 'client.js must register a lazy factory');
+  // The primitives double keeps the atoms' *props* reachable (so a real button
+  // can be clicked and a real `DiffBlock` call inspected) while rendering
+  // nothing itself — the point is that this page's own markers survive the
+  // primitives branch, not that the atoms draw anything.
+  const diffBlockCalls = [];
   const atoms = {
-    Button: () => null,
+    Button: (props) => runtime.React.createElement('button', props),
     Input: () => null,
-    Tag: () => null,
-    SegmentedTabs: () => null,
+    Tag: (props) => runtime.React.createElement('span', props),
+    SegmentedTabs: (props) =>
+      runtime.React.createElement(
+        'div',
+        { role: 'tablist' },
+        (props.items || []).map((item) =>
+          runtime.React.createElement(
+            'button',
+            {
+              key: item.value,
+              type: 'button',
+              'data-tab-value': item.value,
+              'data-tab-key': 'primitives',
+              onClick: () => props.onChange(item.value),
+            },
+            item.label,
+          ),
+        ),
+      ),
+    DiffBlock: (props) => {
+      diffBlockCalls.push(props);
+      return null;
+    },
   };
   const primitivesModule =
     primitives === 'ok'
@@ -160,7 +203,7 @@ function loadClient(primitives) {
     }
     throw new Error(`unexpected require: ${name}`);
   });
-  return { descriptor, module, sandbox, runtime };
+  return { descriptor, module, sandbox, runtime, diffBlockCalls };
 }
 
 /**
@@ -292,6 +335,62 @@ function findOne(tree, predicate, what = 'node') {
 /** The single node carrying `attribute === value`. */
 function oneBy(tree, attribute, value) {
   return findOne(tree, (node) => node.props && node.props[attribute] === value, `${attribute}=${value}`);
+}
+
+/** The single node carrying `data-history-row` = value. */
+function historyRowOf(tree, id) {
+  return oneBy(tree, 'data-history-row', String(id));
+}
+
+/** Click a tab in either branch: the fallback uses data-tab-key, the double does not. */
+function clickAnyTab(tree, value) {
+  const node = findOne(
+    tree,
+    (candidate) => candidate.type === 'button' && candidate.props['data-tab-value'] === value,
+    `tab ${value}`,
+  );
+  node.props.onClick();
+}
+
+/** Install a fake download surface (`document` / `Blob` / `URL`) in the sandbox. */
+function installDownloader(page, { blob = true } = {}) {
+  const clicks = [];
+  const revoked = [];
+  const sandbox = page.loaded.sandbox;
+  sandbox.document = {
+    createElement(tag) {
+      const node = {
+        tag,
+        href: '',
+        download: '',
+        rel: '',
+        click() {
+          clicks.push({ href: node.href, download: node.download });
+        },
+      };
+      return node;
+    },
+    body: { appendChild() {}, removeChild() {} },
+  };
+  if (blob) {
+    sandbox.Blob = function Blob(parts, options) {
+      this.parts = parts;
+      this.type = options ? options.type : '';
+    };
+    sandbox.URL = {
+      createObjectURL: () => {
+        revoked.push('created');
+        return 'blob:test-1';
+      },
+      revokeObjectURL: (url) => revoked.push(url),
+    };
+  }
+  return { clicks, revoked };
+}
+
+/** A fake `File`-like object for the file input. */
+function fakeFile(text, name = 'export.json') {
+  return { name, text: () => Promise.resolve(text) };
 }
 
 /** Click the single button matching every attribute pair. */
@@ -535,11 +634,166 @@ function overridesFixture(over = {}) {
   };
 }
 
+/** `GET /prompt-setting/history` payload: two records for one section. */
+function historyFixture(over = {}) {
+  const digest = (text) => ({ text, hash: `h-${text.length}`, bytes: text.length });
+  return {
+    ok: true,
+    layer: 'user',
+    session: null,
+    path: '/home/u/.dsh/prompt-setting/history.jsonl',
+    enabled: true,
+    reason: null,
+    retentionLimit: 100,
+    pageLimit: 20,
+    total: 2,
+    corrupt: 0,
+    unreadable: null,
+    lastError: null,
+    records: [
+      {
+        id: '2',
+        seq: 2,
+        at: '2024-01-02T10:00:00.000Z',
+        layer: 'user',
+        session: null,
+        action: 'replace',
+        name: 'project:alpha',
+        origin: 'import',
+        before: digest('alpha base'),
+        after: digest('alpha overridden'),
+        entries: null,
+        snapshot: [{ name: 'project:alpha', action: 'replace', hash: 'h-16', bytes: 16 }],
+        note: 'import mode=merge status=replaced',
+      },
+      {
+        id: '1',
+        seq: 1,
+        at: '2024-01-01T09:00:00.000Z',
+        layer: 'user',
+        session: null,
+        action: 'replace',
+        name: 'project:alpha',
+        origin: 'ui',
+        before: null,
+        after: digest('alpha base'),
+        entries: null,
+        snapshot: [],
+        note: null,
+      },
+    ],
+    ...over,
+  };
+}
+
+/** `GET /prompt-setting/diff` payload: one changed section, exact line ops. */
+function diffFixture(over = {}) {
+  return {
+    ok: true,
+    layer: 'user',
+    session: null,
+    historyPath: '/home/u/.dsh/prompt-setting/history.jsonl',
+    scope: 'layer',
+    from: {
+      kind: 'history', label: '#1', layer: 'user', session: null,
+      id: '1', seq: 1, at: '2024-01-01T09:00:00.000Z', action: 'replace', name: 'project:alpha',
+    },
+    to: {
+      kind: 'history', label: '#2', layer: 'user', session: null,
+      id: '2', seq: 2, at: '2024-01-02T10:00:00.000Z', action: 'replace', name: 'project:alpha',
+    },
+    sections: [
+      { name: 'project:alpha', status: 'changed', before: { action: 'replace', hash: 'h1', bytes: 10 }, after: { action: 'replace', hash: 'h2', bytes: 16 } },
+      { name: 'project:beta', status: 'same', before: { action: 'hide', hash: null, bytes: null }, after: { action: 'hide', hash: null, bytes: null } },
+    ],
+    sectionsCounts: { total: 2, changed: 1, added: 0, removed: 0, same: 1 },
+    lines: {
+      name: 'project:alpha',
+      ops: [
+        { type: 'equal', text: 'alpha', beforeLine: 1, afterLine: 1 },
+        { type: 'delete', text: 'base', beforeLine: 2, afterLine: null },
+        { type: 'insert', text: 'overridden', beforeLine: null, afterLine: 2 },
+      ],
+      stats: { added: 1, removed: 1, same: 1 },
+      mode: 'lcs',
+      crlfNormalized: false,
+      truncated: false,
+      textBefore: 'alpha\nbase',
+      textAfter: 'alpha\noverridden',
+    },
+    lineReason: null,
+    stats: { added: 0, removed: 0, changed: 1, same: 1, lineAdded: 1, lineRemoved: 1 },
+    ...over,
+  };
+}
+
+/** `GET /prompt-setting/export` payload (the document plus `ok`). */
+function exportFixture(over = {}) {
+  return {
+    ok: true,
+    schema: 'dsh-prompt-setting/export',
+    version: 1,
+    exportedAt: '2024-01-02T10:00:00.000Z',
+    plugin: { name: 'dsh-prompt-setting', version: '0.1.0' },
+    pluginVersion: '0.1.0',
+    layers: {
+      user: {
+        layer: 'user',
+        enabled: true,
+        reason: null,
+        overrides: [{ name: 'project:alpha', action: 'replace', text: 'alpha overridden' }],
+      },
+      workspace: { layer: 'workspace', enabled: false, reason: 'no ?session= was supplied', overrides: [] },
+    },
+    ...over,
+  };
+}
+
+/** `POST /prompt-setting/import?dryRun=true` payload. */
+function importPlanFixture(over = {}) {
+  return {
+    ok: true,
+    dryRun: true,
+    applied: false,
+    mode: 'merge',
+    session: null,
+    schema: 'dsh-prompt-setting/export',
+    exportedAt: '2024-01-02T10:00:00.000Z',
+    layers: {
+      user: {
+        counts: { added: 1, replaced: 1, unchanged: 0, removed: 0, kept: 1 },
+        changes: [
+          { name: 'project:alpha', status: 'replaced', action: 'replace' },
+          { name: 'panel:added', status: 'added', action: 'replace' },
+        ],
+        path: '/home/u/.dsh/prompt-setting/overrides.json',
+        enabled: true,
+      },
+    },
+    imported: ['user'],
+    skipped: [{ layer: 'workspace', reason: 'layer "workspace" requires a "session" id', entries: 0 }],
+    totals: { added: 1, replaced: 1, unchanged: 0, removed: 0, kept: 1 },
+    unchanged: false,
+    ...over,
+  };
+}
+
+/** A valid export document, as the panel would hold it after an export. */
+function exportDocument(over = {}) {
+  const payload = exportFixture();
+  delete payload.ok;
+  return JSON.stringify({ ...payload, ...over }, null, 2);
+}
+
 /** Paths the page is allowed to call. */
 const PATHS = {
   ping: '/prompt-setting/ping',
   snapshot: '/prompt-setting/snapshot',
   overrides: '/prompt-setting/overrides',
+  history: '/prompt-setting/history',
+  diff: '/prompt-setting/diff',
+  export: '/prompt-setting/export',
+  import: '/prompt-setting/import',
 };
 
 /** The default three-route stub table. */
@@ -548,6 +802,10 @@ function defaultResponses(over = {}) {
     [PATHS.ping]: {},
     [PATHS.snapshot]: { payload: snapshotFixture() },
     [PATHS.overrides]: { payload: overridesFixture() },
+    [PATHS.history]: { payload: historyFixture() },
+    [PATHS.diff]: { payload: diffFixture() },
+    [PATHS.export]: { payload: exportFixture() },
+    [PATHS.import]: { payload: importPlanFixture() },
     ...over,
   };
 }
@@ -2076,6 +2334,467 @@ test('client: a throw while building the tree renders a failure card, not a blan
   assert.ok(hasText(tree, 'translator exploded'), 'the error text is shown');
   // `t` is the broken thing here, so the card falls back to its literal copy.
   assert.ok(hasText(tree, 'render failure'), 'literal fallback copy is used');
+});
+
+// #endregion
+
+// #region stage 2: history, diff, restore default, export / import
+
+/** Open the 覆盖 view, where every stage 2 panel lives. */
+async function openOverrides(page) {
+  let tree = await page.flush();
+  clickTab(tree, 'view', 'overrides');
+  tree = await page.flush();
+  return tree;
+}
+
+test('client: the history log is fetched only while the 覆盖 view is open', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  const sections = await page.flush();
+  assert.equal(urlsFor(page, PATHS.history).length, 0, 'the section view pays nothing for the log');
+  clickTab(sections, 'view', 'overrides');
+  await page.flush();
+  assert.deepEqual(urlsFor(page, PATHS.history), [`${PATHS.history}?layer=user&limit=20`]);
+});
+
+test('client: the history panel renders records, their action and their origin', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  const tree = await openOverrides(page);
+  const region = oneBy(tree, 'data-region', 'history');
+  assert.equal(region.props['data-history-layer'], 'user');
+  assert.equal(region.props['data-history-state'], 'ready');
+  assert.equal(markerOf(region, 'data-history-total'), '2');
+
+  const newest = historyRowOf(region, '2');
+  assert.equal(newest.props['data-history-action'], 'replace');
+  assert.equal(newest.props['data-history-name'], 'project:alpha');
+  assert.equal(newest.props['data-history-origin'], 'import');
+  assert.equal(historyRowOf(region, '1').props['data-history-origin'], 'ui');
+
+  // The record's own timestamp, the localized action and the current-value row.
+  assert.ok(hasText(newest, '2024-01-02 10:00:00Z'), 'the ISO timestamp is shown verbatim');
+  assert.ok(hasText(newest, page.zh['histAction.replace']), 'the action is localized, not the raw enum');
+  assert.equal(oneBy(region, 'data-history-current', 'true').props['data-history-row'], 'current');
+  assert.ok(strings(region).includes(page.zh.histCurrent));
+});
+
+test('client: an empty or unreadable history is stated, never a blank panel', async () => {
+  const empty = makePage({
+    responses: defaultResponses({ [PATHS.history]: { payload: historyFixture({ records: [], total: 0 }) } }),
+  });
+  const emptyTree = await openOverrides(empty);
+  assert.ok(oneBy(emptyTree, 'data-empty', 'history'));
+  assert.ok(strings(emptyTree).includes(empty.zh.histEmpty));
+
+  const broken = makePage({
+    responses: defaultResponses({
+      [PATHS.history]: {
+        payload: historyFixture({ records: [], total: 0, corrupt: 3, unreadable: 'unreadable-file: cannot read /x', lastError: { at: '2024-01-02T00:00:00.000Z', reason: 'history-unusable: nope' } }),
+      },
+    }),
+  });
+  const brokenTree = await openOverrides(broken);
+  assert.equal(markerOf(brokenTree, 'data-history-corrupt'), '3');
+  assert.ok(oneBy(brokenTree, 'data-history-unreadable', 'true'));
+  assert.ok(oneBy(brokenTree, 'data-history-last-error', 'true'));
+  assert.ok(hasText(brokenTree, 'unreadable-file: cannot read /x'));
+});
+
+test('client: a failing history request shows the mapped copy and keeps the page', async () => {
+  const page = makePage({
+    responses: defaultResponses({ [PATHS.history]: { status: 400, payload: { ok: false, code: 'unknown-layer', message: 'nope' } } }),
+  });
+  const tree = await openOverrides(page);
+  assert.equal(oneBy(tree, 'data-region', 'history').props['data-history-state'], 'error');
+  assert.ok(hasText(tree, page.zh['error.unknown-layer']));
+  assert.equal(markerOf(tree, 'data-render-state'), 'ok', 'the page itself still renders');
+});
+
+test('client: choosing two records requests the comparison and renders both levels', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openOverrides(page);
+
+  clickButton(historyRowOf(tree, '2'), { 'data-action': 'diff-from', 'data-history-id': '2' });
+  tree = await page.flush();
+  clickButton(historyRowOf(tree, '1'), { 'data-action': 'diff-to', 'data-history-id': '1' });
+  tree = await page.flush();
+
+  // `to` starts at `current`, so the first click already compares against the
+  // live value; the second click re-runs with the chosen record.
+  assert.deepEqual(urlsFor(page, PATHS.diff), [
+    `${PATHS.diff}?layer=user&from=2&to=current`,
+    `${PATHS.diff}?layer=user&from=2&to=1`,
+  ]);
+  const panel = oneBy(tree, 'data-region', 'history-diff');
+  assert.equal(panel.props['data-diff-state'], 'ready');
+  assert.equal(markerOf(panel, 'data-diff-from'), '2');
+  assert.equal(markerOf(panel, 'data-diff-to'), '1');
+  assert.equal(markerOf(panel, 'data-diff-sections'), '2');
+  assert.equal(markerOf(panel, 'data-diff-changed'), '1');
+  assert.equal(oneBy(panel, 'data-hd-row', 'project:alpha').props['data-hd-status'], 'changed');
+  assert.equal(oneBy(panel, 'data-hd-row', 'project:beta').props['data-hd-status'], 'same');
+  assert.equal(markerOf(panel, 'data-diff-line-name'), 'project:alpha');
+  assert.equal(markerOf(panel, 'data-diff-mode'), 'lcs');
+  assert.equal(markerOf(panel, 'data-diff-line-added'), '1');
+  assert.equal(markerOf(panel, 'data-diff-line-removed'), '1');
+  assert.equal(markerOf(panel, 'data-diff-renderer'), 'fallback', 'primitives is unavailable in this double');
+  assert.equal(oneBy(panel, 'data-region', 'diffblock').props['data-diff-block'], 'fallback');
+  // The fallback renders the host's own ops line by line, add and remove marked.
+  assert.equal(collect(panel, (node) => node.props && node.props['data-diff-op'] === 'insert').length, 1);
+  assert.equal(collect(panel, (node) => node.props && node.props['data-diff-op'] === 'delete').length, 1);
+  assert.ok(hasText(panel, '- base'));
+  assert.ok(hasText(panel, '+ overridden'));
+});
+
+test('client: the comparison can put the live value on either side', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openOverrides(page);
+  const current = oneBy(tree, 'data-history-current', 'true');
+  clickButton(current, { 'data-action': 'diff-to', 'data-history-id': 'current' });
+  tree = await page.flush();
+  assert.equal(urlsFor(page, PATHS.diff).length, 0, 'from is still unset, so nothing is sent');
+
+  clickButton(historyRowOf(tree, '1'), { 'data-action': 'diff-from', 'data-history-id': '1' });
+  tree = await page.flush();
+  assert.deepEqual(urlsFor(page, PATHS.diff), [`${PATHS.diff}?layer=user&from=1&to=current`]);
+});
+
+test('client: a comparison the host could not make is explained, not left empty', async () => {
+  const payload = diffFixture({ lines: null, lineReason: 'more than one section differs; pass ?name= to compare one of them' });
+  const page = makePage({ responses: defaultResponses({ [PATHS.diff]: { payload } }) });
+  let tree = await openOverrides(page);
+  clickButton(historyRowOf(tree, '1'), { 'data-action': 'diff-from', 'data-history-id': '1' });
+  tree = await page.flush();
+  const panel = oneBy(tree, 'data-region', 'history-diff');
+  assert.equal(markerOf(panel, 'data-diff-no-lines'), 'true');
+  assert.ok(hasText(panel, 'more than one section differs'));
+});
+
+test('client: the primitives branch renders the comparison with the official DiffBlock', async () => {
+  const page = makePage({ primitives: 'ok', responses: defaultResponses() });
+  let tree = await page.flush();
+  clickAnyTab(tree, 'overrides');
+  tree = await page.flush();
+  assert.equal(rendererOf(tree), 'primitives');
+
+  clickButton(tree, { 'data-action': 'diff-from', 'data-history-id': '1' });
+  tree = await page.flush();
+  const panel = oneBy(tree, 'data-region', 'history-diff');
+  assert.equal(markerOf(panel, 'data-diff-renderer'), 'diffblock');
+  assert.equal(oneBy(panel, 'data-region', 'diffblock').props['data-diff-block'], 'primitives');
+
+  const calls = page.loaded.diffBlockCalls;
+  assert.equal(calls.length, 1, 'DiffBlock is called exactly once per comparison');
+  // The props object comes from the vm realm, so compare its JSON form.
+  assert.deepEqual(JSON.parse(JSON.stringify(calls[0].diffs)), [
+    { path: 'project:alpha', oldText: 'alpha\nbase', newText: 'alpha\noverridden' },
+  ]);
+  assert.equal(calls[0].maxLines, 200);
+  // DiffBlock's own chrome is supplied, localized, by this page.
+  for (const key of ['copy', 'copied', 'collapse', 'collapseAria', 'codeLabel', 'wrapLabel', 'unwrapLabel']) {
+    assert.equal(typeof calls[0].labels[key], 'string', `DiffBlock label ${key}`);
+  }
+  assert.equal(typeof calls[0].labels.expand, 'function');
+  assert.equal(calls[0].labels.expand(4), page.zh.diffBlockExpand.replace('{n}', '4'));
+});
+
+test('client: switching the history layer to the workspace asks for a session first', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openOverrides(page);
+  clickTab(tree, 'history-layer', 'workspace');
+  tree = await page.flush();
+  const region = oneBy(tree, 'data-region', 'history');
+  assert.equal(region.props['data-history-layer'], 'workspace');
+  assert.equal(oneBy(region, 'data-history-note', 'no-session').props['data-history-note'], 'no-session');
+  assert.equal(urlsFor(page, PATHS.history).length, 1, 'no request without a session');
+
+  // With a session the layer is fetched, and the request carries it.
+  const sessionPage = makePage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({ [PATHS.history]: { payload: historyFixture({ layer: 'workspace', session: 's1' }) } }),
+  });
+  let sessionTree = await openOverrides(sessionPage);
+  clickTab(sessionTree, 'history-layer', 'workspace');
+  sessionTree = await sessionPage.flush();
+  assert.deepEqual(urlsFor(sessionPage, PATHS.history), [
+    `${PATHS.history}?layer=user&session=s2&limit=20`,
+    `${PATHS.history}?layer=workspace&session=s2&limit=20`,
+  ]);
+  assert.equal(markerOf(sessionTree, 'data-history-total'), '2');
+});
+
+test('client: restoring one section default asks first and then clears every layer that holds it', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openOverrides(page);
+  const button = findOne(
+    tree,
+    (node) => node.type === 'button' && node.props['data-action'] === 'reset-section' && node.props['data-section-name'] === 'project:alpha',
+    'reset-section button',
+  );
+  assert.equal(button.props['data-reset-layers'], 'user', 'the affected layers are stated on the control');
+
+  button.props.onClick();
+  tree = await page.flush();
+  const card = oneBy(tree, 'data-region', 'confirm');
+  assert.equal(card.props['data-confirm-kind'], 'reset-section');
+  assert.ok(hasText(card, 'project:alpha'));
+  assert.ok(hasText(card, page.zh.ovUser), 'the impact names the layer');
+  assert.ok(hasText(card, page.zh.resetIrreversible), 'and says it cannot be undone');
+
+  // Cancel: nothing is sent.
+  clickButton(card, { 'data-action': 'confirm-no' });
+  tree = await page.flush();
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'confirm').length, 0);
+  assert.equal(writeCalls(page).length, 0);
+
+  // Confirm: exactly one DELETE, for the one layer that holds the name.
+  findOne(tree, (node) => node.type === 'button' && node.props['data-action'] === 'reset-section' && node.props['data-section-name'] === 'project:alpha', 'reset-section button').props.onClick();
+  tree = await page.flush();
+  clickButton(oneBy(tree, 'data-region', 'confirm'), { 'data-action': 'confirm-yes' });
+  tree = await page.flush();
+  assert.deepEqual(writeCalls(page).map((call) => [call.init.method, call.url]), [
+    ['DELETE', `${PATHS.overrides}?layer=user&name=project%3Aalpha`],
+  ]);
+  assert.ok(hasText(tree, page.zh.resetDoneNotice.replace('{count}', '1')));
+});
+
+test('client: a section held by both layers clears both, one request per layer', async () => {
+  const ovs = overridesFixture({
+    workspace: {
+      layer: 'workspace',
+      enabled: true,
+      path: '/w/one/.dsh-prompt-setting/overrides.json',
+      reason: null,
+      overrides: [{ name: 'project:alpha', action: 'replace', text: 'workspace alpha' }],
+    },
+  });
+  const page = makePage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({ [PATHS.overrides]: { payload: ovs } }),
+  });
+  let tree = await openOverrides(page);
+  const button = findOne(
+    tree,
+    (node) => node.type === 'button' && node.props['data-action'] === 'reset-section' && node.props['data-section-name'] === 'project:alpha',
+    'reset-section button',
+  );
+  assert.equal(button.props['data-reset-layers'], 'user,workspace');
+  button.props.onClick();
+  tree = await page.flush();
+  assert.ok(hasText(oneBy(tree, 'data-region', 'confirm'), page.zh.ovWorkspace));
+  clickButton(oneBy(tree, 'data-region', 'confirm'), { 'data-action': 'confirm-yes' });
+  tree = await page.flush();
+  assert.deepEqual(writeCalls(page).map((call) => call.url), [
+    `${PATHS.overrides}?layer=user&session=s2&name=project%3Aalpha`,
+    `${PATHS.overrides}?layer=workspace&session=s2&name=project%3Aalpha`,
+  ]);
+});
+
+test('client: resetting a whole layer needs a confirmation and states the impact', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openOverrides(page);
+  const region = oneBy(tree, 'data-region', 'layer-reset');
+  assert.equal(region.props['data-reset-layer'], 'user');
+  assert.equal(region.props['data-reset-count'], '1');
+  assert.ok(hasText(region, page.zh.resetLayerBody.replace('{layer}', page.zh.ovUser).replace('{count}', '1')));
+
+  clickButton(region, { 'data-action': 'reset-layer', 'data-layer': 'user' });
+  tree = await page.flush();
+  const card = oneBy(tree, 'data-region', 'confirm');
+  assert.equal(card.props['data-confirm-kind'], 'reset-layer');
+  clickButton(card, { 'data-action': 'confirm-yes' });
+  tree = await page.flush();
+  assert.deepEqual(writeCalls(page).map((call) => [call.init.method, call.url]), [
+    ['DELETE', `${PATHS.overrides}?layer=user&reset=true`],
+  ]);
+  assert.ok(hasText(tree, page.zh.resetNoneNotice), 'the double answers count 0, and the page says so');
+});
+
+test('client: the layer reset is disabled when the layer holds nothing', async () => {
+  const page = makePage({
+    responses: defaultResponses({ [PATHS.overrides]: { payload: overridesFixture({ user: { layer: 'user', enabled: true, path: '/p', reason: null, overrides: [] } }) } }),
+  });
+  const tree = await openOverrides(page);
+  const button = findOne(tree, (node) => node.type === 'button' && node.props['data-action'] === 'reset-layer', 'reset-layer button');
+  assert.equal(button.props.disabled, true);
+});
+
+test('client: exporting downloads the document and keeps a copyable text', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses(),
+  });
+  const downloader = installDownloader(page);
+  let tree = await openOverrides(page);
+  clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'export' });
+  tree = await page.flush();
+
+  assert.deepEqual(urlsFor(page, PATHS.export), [`${PATHS.export}?session=s2`]);
+  assert.equal(downloader.clicks.length, 1, 'one download was triggered');
+  // Identifiable and time-ordered: the ISO timestamp with the punctuation
+  // replaced, so the name is filesystem-safe and sorts by export time.
+  assert.match(downloader.clicks[0].download, /^dsh-prompt-setting-2024-01-02T10-00-00-000\.json$/);
+  assert.equal(downloader.clicks[0].href, 'blob:test-1');
+  assert.equal(downloader.revoked.includes('blob:test-1'), true, 'the object URL is revoked');
+
+  const text = oneBy(tree, 'data-role', 'export-text').props.value;
+  const document = JSON.parse(text);
+  assert.equal(document.schema, 'dsh-prompt-setting/export');
+  assert.equal(document.version, 1);
+  assert.equal('ok' in document, false, 'the liveness flag is not part of the document');
+  assert.equal(markerOf(tree, 'data-export-name'), 'dsh-prompt-setting-2024-01-02T10-00-00-000.json');
+  assert.ok(hasText(tree, page.zh.downloadDone.replace('{name}', 'dsh-prompt-setting-2024-01-02T10-00-00-000.json')));
+});
+
+test('client: an export with no download surface still yields the JSON and says why', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openOverrides(page);
+  clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'export' });
+  tree = await page.flush();
+  // No `document` in the sandbox at all: the page must not claim a download.
+  assert.equal(oneBy(tree, 'data-region', 'transfer').props['data-transfer-phase'], 'error');
+  assert.ok(hasText(tree, page.zh.downloadFailed.replace('{reason}', 'no document')));
+  assert.equal(JSON.parse(oneBy(tree, 'data-role', 'export-text').props.value).version, 1);
+  assert.ok(oneBy(tree, 'data-error-code', 'download-failed'));
+});
+
+test('client: an import preview dry-runs, renders the plan and writes nothing', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openOverrides(page);
+  const panel = () => oneBy(tree, 'data-region', 'transfer');
+
+  // Nothing to preview yet: the button is disabled and clicking is refused.
+  const preview = findOne(tree, (node) => node.type === 'button' && node.props['data-action'] === 'import-preview', 'preview button');
+  assert.equal(preview.props.disabled, true);
+  preview.props.onClick();
+  assert.equal(urlsFor(page, PATHS.import).length, 0);
+
+  typeInto(tree, 'import-text', exportDocument());
+  tree = await page.flush();
+  clickButton(panel(), { 'data-action': 'import-preview' });
+  tree = await page.flush();
+
+  assert.deepEqual(urlsFor(page, PATHS.import), [`${PATHS.import}?dryRun=true&mode=merge`]);
+  const call = page.router.calls.find((entry) => entry.url.startsWith(PATHS.import));
+  assert.equal(call.init.method, 'POST');
+  assert.equal(JSON.parse(call.init.body).schema, 'dsh-prompt-setting/export');
+  assert.equal(panel().props['data-transfer-phase'], 'preview');
+
+  const plan = oneBy(tree, 'data-import-plan', 'true');
+  assert.equal(plan.props['data-import-added'], '1');
+  assert.equal(plan.props['data-import-replaced'], '1');
+  assert.equal(plan.props['data-import-removed'], '0');
+  assert.equal(plan.props['data-import-kept'], '1');
+  assert.equal(plan.props['data-import-applied'], 'false', 'a preview is not an application');
+  assert.equal(oneBy(plan, 'data-import-change', 'project:alpha').props['data-import-status'], 'replaced');
+  assert.equal(oneBy(plan, 'data-import-change', 'panel:added').props['data-import-status'], 'added');
+  assert.equal(oneBy(plan, 'data-import-skipped', '1').props['data-import-skipped'], '1');
+  assert.equal(writeCalls(page).length, 0, 'a dry run never writes');
+});
+
+test('client: applying an import is confirmed first and then posts without dryRun', async () => {
+  const applied = importPlanFixture({ dryRun: false, applied: true, written: ['/home/u/.dsh/prompt-setting/overrides.json'] });
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.import]: (url) => ({ payload: url.includes('dryRun=true') ? importPlanFixture() : applied }),
+    }),
+  });
+  let tree = await openOverrides(page);
+  typeInto(tree, 'import-text', exportDocument());
+  tree = await page.flush();
+  clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'import-preview' });
+  tree = await page.flush();
+
+  const apply = findOne(tree, (node) => node.type === 'button' && node.props['data-action'] === 'import-apply', 'apply button');
+  assert.notEqual(apply.props.disabled, true, 'a previewed plan enables the apply');
+  apply.props.onClick();
+  tree = await page.flush();
+  const card = oneBy(tree, 'data-region', 'confirm');
+  assert.equal(card.props['data-confirm-kind'], 'import');
+  assert.ok(hasText(card, page.zh.resetIrreversible));
+
+  clickButton(card, { 'data-action': 'confirm-yes' });
+  tree = await page.flush();
+  assert.deepEqual(urlsFor(page, PATHS.import), [
+    `${PATHS.import}?dryRun=true&mode=merge`,
+    `${PATHS.import}?mode=merge`,
+  ]);
+  assert.equal(oneBy(tree, 'data-region', 'transfer').props['data-transfer-phase'], 'applied');
+  assert.ok(hasText(tree, page.zh.importAppliedNotice.replace('{written}', '1').replace('{count}', '2')));
+});
+
+test('client: the import conflict strategy is chosen in the panel and sent with the request', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openOverrides(page);
+  assert.equal(oneBy(tree, 'data-region', 'transfer').props['data-import-mode'], 'merge');
+  clickTab(tree, 'import-mode', 'replace');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'transfer').props['data-import-mode'], 'replace');
+  typeInto(tree, 'import-text', exportDocument());
+  tree = await page.flush();
+  clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'import-preview' });
+  assert.deepEqual(urlsFor(page, PATHS.import), [`${PATHS.import}?dryRun=true&mode=replace`]);
+});
+
+test('client: a rejected import shows the reason and states that nothing changed', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.import]: { status: 400, payload: { ok: false, code: 'unknown-export-schema', message: '"schema" must be "dsh-prompt-setting/export"' } },
+    }),
+  });
+  let tree = await openOverrides(page);
+  typeInto(tree, 'import-text', exportDocument({ schema: 'nope' }));
+  tree = await page.flush();
+  clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'import-preview' });
+  tree = await page.flush();
+
+  assert.ok(hasText(tree, page.zh['error.unknown-export-schema']));
+  assert.ok(oneBy(tree, 'data-error-code', 'unknown-export-schema'));
+  assert.equal(oneBy(tree, 'data-import-unchanged', 'true').props['data-import-unchanged'], 'true');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-import-plan'] === 'true').length, 0);
+});
+
+test('client: a pasted non-JSON document is refused locally, without a request', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openOverrides(page);
+  typeInto(tree, 'import-text', '{ not json');
+  tree = await page.flush();
+  clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'import-preview' });
+  tree = await page.flush();
+  assert.equal(urlsFor(page, PATHS.import).length, 0);
+  assert.ok(oneBy(tree, 'data-error-code', 'invalid-json'));
+  assert.ok(hasText(tree, page.zh.importUnchangedWarning));
+});
+
+test('client: a chosen export file fills the import box', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  const tree = await openOverrides(page);
+  const input = oneBy(tree, 'data-role', 'import-file');
+  input.props.onChange({ target: { files: [fakeFile(exportDocument())] } });
+  await settle();
+  const next = await page.flush();
+  assert.equal(oneBy(next, 'data-role', 'import-text').props.value.includes('dsh-prompt-setting/export'), true);
+});
+
+test('client: the stage 2 panels never render a blank page when the host is unreachable', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.history]: new Error('boom'),
+      [PATHS.export]: new Error('boom'),
+      [PATHS.import]: new Error('boom'),
+    }),
+  });
+  let tree = await openOverrides(page);
+  clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'export' });
+  tree = await page.flush();
+  typeInto(tree, 'import-text', exportDocument());
+  tree = await page.flush();
+  clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'import-preview' });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-render-state'), 'ok');
+  assert.equal(oneBy(tree, 'data-region', 'history').props['data-history-state'], 'error');
+  assert.equal(oneBy(tree, 'data-region', 'transfer').props['data-transfer-phase'], 'error');
+  assert.ok(hasText(tree, page.zh.errNetwork));
 });
 
 // #endregion

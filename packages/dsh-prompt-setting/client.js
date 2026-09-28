@@ -76,6 +76,11 @@ window.__ModuleLoader__.load({
     const PING_PATH = '/prompt-setting/ping';
     const SNAPSHOT_PATH = '/prompt-setting/snapshot';
     const OVERRIDES_PATH = '/prompt-setting/overrides';
+    /** Stage 2 routes (CONTRACT.md Revision 4). */
+    const HISTORY_PATH = '/prompt-setting/history';
+    const DIFF_PATH = '/prompt-setting/diff';
+    const EXPORT_PATH = '/prompt-setting/export';
+    const IMPORT_PATH = '/prompt-setting/import';
     /** Sentinel for "no session": never a legal `Agent.id`, so it cannot collide. */
     const GLOBAL_SESSION = '\u0000global';
     const VIEWS = ['sections', 'full', 'overrides'];
@@ -87,6 +92,18 @@ window.__ModuleLoader__.load({
     const ACTIONS = ['replace', 'hide', 'append'];
     /** Upper bound on rendered lines put into the DOM (a long prompt is real). */
     const MAX_VIEW_LINES = 3000;
+    /** History rows one page asks for (the panel keeps a page, not the file). */
+    const HISTORY_PAGE = 20;
+    /** Conflict strategies the import panel offers (CONTRACT §11.4). */
+    const IMPORT_MODES = ['merge', 'replace'];
+    /** Upper bound on the JSON preview the panel keeps in the DOM. */
+    const MAX_EXPORT_PREVIEW = 20000;
+    /** Upper bound on collapsed diff lines rendered by the fallback branch. */
+    const MAX_DIFF_LINES_SHOWN = 400;
+    /** Bound handed to the primitives `DiffBlock` (its own collapse default is smaller). */
+    const DIFF_BLOCK_MAX_LINES = 200;
+    /** The two ends of a comparison; `current` is the live layer, not a record. */
+    const DIFF_CURRENT = 'current';
     /**
      * Upper bound on session rows rendered at once in the flat (degraded)
      * list. The session catalog grows with use (every session ever opened is a
@@ -162,6 +179,50 @@ window.__ModuleLoader__.load({
       ],
       'not-found': ['宿主没有这个路由。', 'The host has no such route.'],
       'duplicate-name': ['同一层出现重复段名。', 'The layer holds a duplicate section name.'],
+      // Stage 2 (CONTRACT.md Revision 4).
+      'invalid-history-record': [
+        '历史记录格式非法，该行已被跳过。',
+        'That history line is malformed and was skipped.',
+      ],
+      'history-unusable': ['历史文件不可读写。', 'The history file cannot be read or written.'],
+      'history-not-found': ['该层历史中没有这条记录。', 'That layer history holds no such record.'],
+      'missing-diff-selector': [
+        '需要 from 或 to（历史 id 或 current）。',
+        'Supply ?from= and/or ?to= (a history id or "current").',
+      ],
+      'invalid-diff-selector': [
+        'from/to 只能是 current 或历史记录 id。',
+        'A diff selector must be "current" or a history record id.',
+      ],
+      'invalid-export': ['导入内容必须是 JSON 对象。', 'An export document must be a JSON object.'],
+      'unknown-export-schema': [
+        'schema 不是本插件的导出格式。',
+        'The "schema" is not this plugin’s export format.',
+      ],
+      'missing-export-version': ['导入文件缺少 version。', 'The import document has no "version".'],
+      'unsupported-export-version': [
+        '导入文件版本不受支持。',
+        'The import document version is not supported.',
+      ],
+      'missing-export-layers': ['导入文件缺少 layers。', 'The import document has no "layers".'],
+      'missing-export-layer': ['导入文件不含所请求的层。', 'The import document carries no such layer.'],
+      'invalid-export-layer': ['导入文件的层结构非法。', 'A layer in the import document is malformed.'],
+      'unknown-import-mode': [
+        'mode 只能是 merge 或 replace。',
+        'The mode must be merge or replace.',
+      ],
+      'import-verify-failed': [
+        '导入的临时文件校验失败，现有配置未改动。',
+        'The staged import failed its own validation; nothing was changed.',
+      ],
+      'import-staging-failed': [
+        '导入无法写入临时文件，现有配置未改动。',
+        'The import could not be staged; nothing was changed.',
+      ],
+      'import-commit-failed': [
+        '导入提交失败，可能有层已被替换。',
+        'The import could not be committed; some layers may already be replaced.',
+      ],
     };
     // #endregion
 
@@ -182,6 +243,7 @@ window.__ModuleLoader__.load({
       sessionEmpty: '会话列表为空，可手动输入 session id 或使用「全局」。',
       sessionGlobalNote: '未指定会话：快照描述全局装配，工作区层不参与。',
       sessionSearch: '搜索会话（标题 / 路径 / session id）',
+      sessionCurrent: '当前',
       sessionCurrentLabel: '当前：{label}',
       sessionMatches: '显示 {shown} / {matched} 条匹配（共 {total} 个会话）',
       sessionUseInput: '按该 id 查看：{id}',
@@ -286,6 +348,8 @@ window.__ModuleLoader__.load({
       ovEmpty: '当前作用域没有任何覆盖。',
       ovUndo: '撤销',
       ovMergedNote: '合并顺序：工作区级覆盖同名用户级条目，并保留其位置。',
+      ovUser: '用户级',
+      ovWorkspace: '工作区级',
       ovEffective: '已生效',
       ovIneffective: '未生效',
       ovUnknown: '效果未知',
@@ -319,7 +383,105 @@ window.__ModuleLoader__.load({
       scopeSearchHint:
         '按工作区分组，与左侧「工作区」一致；搜索会保留匹配项所属的工作区分组，匹配工作区名时其下会话一并显示。',
       scopeToggleAria: '工作区「{name}」：展开或收起',
+      scopeToggleAria: '工作区「{name}」：展开或收起',
       scopeSelected: '当前选中',
+      // ---- stage 2: history / diff / reset / transfer ----
+      histHeading: '版本历史',
+      histNote:
+        '每次成功保存或撤销都会追加一条记录（最近 {limit} 条）。历史文件按行追加，不做整文件重写。',
+      histLayerLabel: '历史层',
+      histEmpty: '该层还没有历史记录。',
+      histNoSession: '工作区层需要一个可解析的 session id 才能读取历史。',
+      histTotal: '共 {n} 条',
+      histCorrupt: '有 {n} 行历史记录无法解析，已跳过。',
+      histUnreadable: '历史文件不可读：{reason}',
+      histLastError: '最近一次历史写入失败：{reason}',
+      histCurrent: '当前生效值',
+      histWholeLayer: '（整层）',
+      'histAction.replace': '替换 replace',
+      'histAction.hide': '隐藏 hide',
+      'histAction.append': '追加 append',
+      'histAction.remove': '删除单条',
+      'histAction.reset-layer': '整层重置',
+      diffBlockCopy: '复制',
+      diffBlockCopied: '已复制',
+      diffBlockCollapse: '收起',
+      diffBlockExpand: '展开其余 {n} 行',
+      diffBlockCollapseAria: '收起差异内容',
+      diffBlockExpandAria: '展开差异内容（还有 {n} 行）',
+      diffBlockCode: '文本差异',
+      diffBlockWrap: '自动换行',
+      diffBlockUnwrap: '不换行（横向滚动）',
+      histPickFrom: '作为基准 from',
+      histPickTo: '作为对比 to',
+      histDiffHeading: '版本对比',
+      histDiffHint: '选中任意两条历史记录（或历史 vs 当前生效值）后自动对比：先比段，再比行。',
+      histDiffFrom: 'from',
+      histDiffTo: 'to',
+      histDiffSections: '段级：共 {total} 段（差异 {changed} / 仅新增 {added} / 仅旧版 {removed} / 一致 {same}）',
+      histDiffLineStats: '行级：+{added} / -{removed}（{mode}）',
+      histDiffModeLcs: '精确 LCS',
+      histDiffModeBounded: '有界退化（前缀/后缀裁剪）',
+      histDiffTruncated: '差异过长，仅渲染前 {n} 行。',
+      histDiffCrlf: '两侧换行符不同（已按行归一化比较）。',
+      histDiffNoLines: '未做行级比较：{reason}',
+      histDiffBlock: '官方 DiffBlock 渲染',
+      histDiffFallback: '自绘渲染（primitives 不可用）',
+      histDiffUnavailable: '版本对比失败',
+      resetSection: '恢复默认',
+      resetLayersLabel: '整层重置',
+      resetLayerUser: '重置用户级层',
+      resetLayerWorkspace: '重置工作区级层',
+      resetSectionTitle: '恢复默认：{name}',
+      resetSectionBody:
+        '将删除该段在以下层中的全部覆盖：{layers}。删除后该段回到装配默认内容，且不可撤销（删除内容已记入历史）。',
+      resetSectionNoLayers: '该段没有任何层覆盖。',
+      resetLayerTitle: '重置{layer}',
+      resetLayerBody:
+        '将清空{layer}的全部 {count} 条覆盖，下一轮装配生效。此操作不可撤销，被删除的内容会记入历史。',
+      resetLayerEmpty: '{layer}当前没有任何覆盖，无需重置。',
+      resetIrreversible: '此操作不可撤销。',
+      confirmTitle: '请确认',
+      confirmYes: '确认执行',
+      confirmNo: '取消',
+      resetDoneNotice: '已恢复默认：删除 {count} 条覆盖，下一轮生效（next-turn）。',
+      resetNoneNotice: '没有需要删除的覆盖。',
+      transferHeading: '导出 / 导入',
+      transferNote:
+        '导出为带 schema 与版本号的 JSON；导入前先干跑预览变更，确认后才会写入（先写临时文件，校验通过再原子替换）。',
+      exportButton: '导出 JSON',
+      exportPreviewLabel: '导出内容（可复制）',
+      exportPreviewCut: '预览仅显示前 {n} 个字符，下载内容为完整文件。',
+      exportFailed: '导出失败：{reason}',
+      downloadDone: '已下载 {name}',
+      downloadFailed: '下载失败，请复制下方 JSON：{reason}',
+      importHeading: '导入',
+      importModeLabel: '冲突策略',
+      importModeMerge: 'merge 覆盖同名 / 保留本地额外条目',
+      importModeReplace: 'replace 以导入文件为准，删除本地额外条目',
+      importTextLabel: '粘贴导出 JSON',
+      importTextPlaceholder: '把导出的 JSON 粘贴到这里，或选择文件…',
+      importFileLabel: '选择导出文件',
+      importPreviewButton: '干跑预览变更',
+      importPreviewing: '预览中…',
+      importApplyButton: '确认导入',
+      importApplying: '导入中…',
+      importNeedText: '请先粘贴或选择导出 JSON。',
+      importBadJson: '不是合法 JSON：{reason}',
+      importPlanHeading: '变更预览（未写入）',
+      importCounts: '新增 {added} / 覆盖 {replaced} / 无变化 {unchanged} / 删除 {removed} / 保留本地 {kept}',
+      importChangeRow: '{name}：{status}',
+      importNoChanges: '导入文件与当前配置一致，确认导入不会改动任何文件。',
+      importSkipped: '已跳过的层：{list}',
+      importAppliedNotice: '导入完成：写入 {written} 个层的配置文件，共 {count} 条变更，已记入历史（origin=import）。',
+      importUnchangedNotice: '导入内容与现有配置一致，未写入任何文件。',
+      importUnchangedWarning: '现有配置未被修改（逐字节不变）。',
+      importStatusAdded: '新增',
+      importStatusReplaced: '覆盖',
+      importStatusUnchanged: '无变化',
+      importStatusRemoved: '删除',
+      importConfirmTitle: '确认导入',
+      importConfirmBody: '将按 {mode} 策略写入以下变更，任何一步失败都不会改动现有配置。',
     };
 
     const en = {
@@ -339,6 +501,7 @@ window.__ModuleLoader__.load({
       sessionEmpty: 'The session list is empty; enter a session id or use Global.',
       sessionGlobalNote: 'No session: the snapshot describes the global assembly and the workspace layer stays inactive.',
       sessionSearch: 'Search sessions (title, path, session id)',
+      sessionCurrent: 'Current',
       sessionCurrentLabel: 'Current: {label}',
       sessionMatches: 'Showing {shown} / {matched} matches ({total} sessions)',
       sessionUseInput: 'View by this id: {id}',
@@ -445,6 +608,8 @@ window.__ModuleLoader__.load({
       ovEmpty: 'This scope has no overrides.',
       ovUndo: 'Undo',
       ovMergedNote: 'Merge order: a workspace override wins over the same-name user entry and keeps its position.',
+      ovUser: 'user layer',
+      ovWorkspace: 'workspace layer',
       ovEffective: 'Applied',
       ovIneffective: 'Not applied',
       ovUnknown: 'Effect unknown',
@@ -479,7 +644,105 @@ window.__ModuleLoader__.load({
       scopeSearchHint:
         'Grouped by workspace, exactly like the left sidebar; a search keeps the owning workspace group of every match, and a workspace-name match keeps all of its sessions.',
       scopeToggleAria: 'Workspace "{name}": expand or collapse',
+      scopeToggleAria: 'Workspace "{name}": expand or collapse',
       scopeSelected: 'Currently selected',
+      // ---- stage 2: history / diff / reset / transfer ----
+      histHeading: 'Version history',
+      histNote:
+        'Every successful save or removal appends one record (the newest {limit} are kept). The history file is appended line by line, never rewritten for a single read.',
+      histLayerLabel: 'History layer',
+      histEmpty: 'This layer has no history yet.',
+      histNoSession: 'The workspace layer needs a resolvable session id to read its history.',
+      histTotal: '{n} records',
+      histCorrupt: '{n} history lines could not be parsed and were skipped.',
+      histUnreadable: 'The history file is unreadable: {reason}',
+      histLastError: 'The last history write failed: {reason}',
+      histCurrent: 'Current value',
+      histWholeLayer: '(whole layer)',
+      'histAction.replace': 'replace',
+      'histAction.hide': 'hide',
+      'histAction.append': 'append',
+      'histAction.remove': 'remove one',
+      'histAction.reset-layer': 'reset the layer',
+      diffBlockCopy: 'Copy',
+      diffBlockCopied: 'Copied',
+      diffBlockCollapse: 'Collapse',
+      diffBlockExpand: 'Show the other {n} lines',
+      diffBlockCollapseAria: 'Collapse the diff',
+      diffBlockExpandAria: 'Expand the diff ({n} more lines)',
+      diffBlockCode: 'Text diff',
+      diffBlockWrap: 'Wrap lines',
+      diffBlockUnwrap: 'Keep columns (scroll sideways)',
+      histPickFrom: 'Use as the from side',
+      histPickTo: 'Use as the to side',
+      histDiffHeading: 'Version comparison',
+      histDiffHint: 'Pick any two history records (or a record against the current value); the comparison runs automatically, by section first and then by line.',
+      histDiffFrom: 'from',
+      histDiffTo: 'to',
+      histDiffSections: 'Sections: {total} total ({changed} changed / {added} added / {removed} removed / {same} identical)',
+      histDiffLineStats: 'Lines: +{added} / -{removed} ({mode})',
+      histDiffModeLcs: 'exact LCS',
+      histDiffModeBounded: 'bounded fallback (prefix/suffix trim)',
+      histDiffTruncated: 'The difference is long; only the first {n} lines are rendered.',
+      histDiffCrlf: 'The two sides use different line endings (compared line by line).',
+      histDiffNoLines: 'No line comparison: {reason}',
+      histDiffBlock: 'rendered by the official DiffBlock',
+      histDiffFallback: 'hand-built rendering (primitives unavailable)',
+      histDiffUnavailable: 'The version comparison failed',
+      resetSection: 'Restore default',
+      resetLayersLabel: 'Reset a whole layer',
+      resetLayerUser: 'Reset the user layer',
+      resetLayerWorkspace: 'Reset the workspace layer',
+      resetSectionTitle: 'Restore default: {name}',
+      resetSectionBody:
+        'This deletes every override for that section in: {layers}. The section returns to its assembled default and the deletion cannot be undone (the removed content goes to history).',
+      resetSectionNoLayers: 'That section has no override in any layer.',
+      resetLayerTitle: 'Reset the {layer}',
+      resetLayerBody:
+        'This clears all {count} overrides of the {layer}, effective from the next assembly. It cannot be undone; the removed content goes to history.',
+      resetLayerEmpty: 'The {layer} holds no override, so there is nothing to reset.',
+      resetIrreversible: 'This cannot be undone.',
+      confirmTitle: 'Please confirm',
+      confirmYes: 'Confirm',
+      confirmNo: 'Cancel',
+      resetDoneNotice: 'Restored the default: {count} override(s) removed, effective next turn (next-turn).',
+      resetNoneNotice: 'There was nothing to remove.',
+      transferHeading: 'Export / import',
+      transferNote:
+        'Export produces JSON carrying a schema and a version; an import is previewed with a dry run first, and only a confirmed import writes — staged to a temp file, validated, then renamed atomically.',
+      exportButton: 'Export JSON',
+      exportPreviewLabel: 'Exported content (copyable)',
+      exportPreviewCut: 'The preview shows the first {n} characters; the download is the complete file.',
+      exportFailed: 'Export failed: {reason}',
+      downloadDone: 'Downloaded {name}',
+      downloadFailed: 'The download failed; copy the JSON below: {reason}',
+      importHeading: 'Import',
+      importModeLabel: 'Conflict strategy',
+      importModeMerge: 'merge: imported wins on a clash, local extras kept',
+      importModeReplace: 'replace: the document is authoritative, local extras removed',
+      importTextLabel: 'Paste the exported JSON',
+      importTextPlaceholder: 'Paste the exported JSON here, or choose a file…',
+      importFileLabel: 'Choose an export file',
+      importPreviewButton: 'Dry-run the import',
+      importPreviewing: 'Previewing…',
+      importApplyButton: 'Apply the import',
+      importApplying: 'Importing…',
+      importNeedText: 'Paste or choose an export document first.',
+      importBadJson: 'Not valid JSON: {reason}',
+      importPlanHeading: 'Preview of the change (nothing written yet)',
+      importCounts: 'added {added} / replaced {replaced} / unchanged {unchanged} / removed {removed} / local kept {kept}',
+      importChangeRow: '{name}: {status}',
+      importNoChanges: 'The document matches the current configuration, so a confirmed import changes no file.',
+      importSkipped: 'Skipped layers: {list}',
+      importAppliedNotice: 'Import complete: {written} layer file(s) written, {count} change(s), all recorded in history (origin=import).',
+      importUnchangedNotice: 'The document matches the existing configuration; no file was written.',
+      importUnchangedWarning: 'The existing configuration was not modified (byte-identical).',
+      importStatusAdded: 'added',
+      importStatusReplaced: 'replaced',
+      importStatusUnchanged: 'unchanged',
+      importStatusRemoved: 'removed',
+      importConfirmTitle: 'Confirm the import',
+      importConfirmBody: 'The changes below will be written with the {mode} strategy; a failure at any step leaves the existing configuration untouched.',
     };
 
     // One loop keeps zh/en key sets identical by construction, including every
@@ -1901,6 +2164,169 @@ window.__ModuleLoader__.load({
           : null,
       );
     }
+
+    // #region stage 2 helpers (history / diff / reset / transfer)
+
+    /**
+     * Localized label for one history action.
+     * @param t - the bound translator.
+     * @param action - `replace` | `hide` | `append` | `remove` | `reset-layer`.
+     * @returns the display string (the raw action for an unknown value).
+     */
+    function historyActionLabel(t, action) {
+      const key = `histAction.${String(action)}`;
+      const text = safeT(t, key, '');
+      return text.length > 0 ? text : String(action);
+    }
+
+    /**
+     * Localized label for one import status.
+     * @param t - the bound translator.
+     * @param status - `added` | `replaced` | `unchanged` | `removed`.
+     * @returns the display string.
+     */
+    function importStatusLabel(t, status) {
+      if (status === 'added') return t('importStatusAdded');
+      if (status === 'replaced') return t('importStatusReplaced');
+      if (status === 'removed') return t('importStatusRemoved');
+      return t('importStatusUnchanged');
+    }
+
+    /**
+     * A readable, stable timestamp. The ISO string is what history stores, so it
+     * is also what is shown: no locale-dependent reformatting that would make
+     * the same record read differently on two machines.
+     * @param at - the ISO timestamp, or null.
+     * @returns the display string.
+     */
+    function stampOf(at) {
+      if (typeof at !== 'string' || at.length === 0) return '';
+      return at.replace('T', ' ').replace(/\.\d+Z$/, 'Z');
+    }
+
+    /**
+     * The query string one stage 2 request needs for a layer.
+     * @param layer - `user` | `workspace`.
+     * @param sessionArg - the session id, or null.
+     * @returns `layer=…&session=…`.
+     */
+    function layerQuery(layer, sessionArg) {
+      const parts = [`layer=${encodeURIComponent(layer)}`];
+      if (sessionArg !== null) parts.push(`session=${encodeURIComponent(sessionArg)}`);
+      return parts.join('&');
+    }
+
+    /**
+     * Which layers hold an override for one section name.
+     * @param ovs - the `GET /overrides` payload, or null.
+     * @param name - the section name.
+     * @returns `['user'|'workspace']`, in layer order.
+     */
+    function layersHolding(ovs, name) {
+      const layers = [];
+      for (const layer of ['user', 'workspace']) {
+        const view = ovs ? ovs[layer] : null;
+        const list = view && Array.isArray(view.overrides) ? view.overrides : [];
+        if (list.some((entry) => entry && entry.name === name)) layers.push(layer);
+      }
+      return layers;
+    }
+
+    /**
+     * Localized layer name.
+     * @param t - the bound translator.
+     * @param layer - `user` | `workspace`.
+     * @returns the display string.
+     */
+    function layerLabel(t, layer) {
+      return t(layer === 'workspace' ? 'ovWorkspace' : 'ovUser');
+    }
+
+    /**
+     * Hand a JSON document to the browser as a download.
+     *
+     * Two surfaces are attempted in order, and the caller is told which one was
+     * used so the UI can tell the truth when neither worked (the settings panel
+     * must never claim a download that did not happen):
+     * 1. `Blob` + an object URL — the real download;
+     * 2. a `data:` URL on the same anchor — the fallback where `Blob` is absent.
+     * @param text - the JSON text.
+     * @param filename - the suggested file name.
+     * @returns `{ok: true, mode}` or `{ok: false, reason}`.
+     */
+    function downloadText(text, filename) {
+      const click = (href) => {
+        const anchor = document.createElement('a');
+        anchor.href = href;
+        anchor.download = filename;
+        anchor.rel = 'noopener';
+        document.body.appendChild(anchor);
+        anchor.click();
+        document.body.removeChild(anchor);
+      };
+      try {
+        if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
+          return { ok: false, reason: 'no document' };
+        }
+        if (typeof Blob === 'function' && typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
+          const url = URL.createObjectURL(new Blob([text], { type: 'application/json;charset=utf-8' }));
+          try {
+            click(url);
+          } finally {
+            if (typeof URL.revokeObjectURL === 'function') URL.revokeObjectURL(url);
+          }
+          return { ok: true, mode: 'blob' };
+        }
+        click(`data:application/json;charset=utf-8,${encodeURIComponent(text)}`);
+        return { ok: true, mode: 'data-url' };
+      } catch (error) {
+        return { ok: false, reason: error && error.message ? String(error.message) : String(error) };
+      }
+    }
+
+    /**
+     * The suggested export file name: identifiable, and ordered by time.
+     * @param at - the ISO export timestamp.
+     * @returns `dsh-prompt-setting-…json`, with the export time in the name.
+     */
+    function exportFileName(at) {
+      const stamp = String(at || '').replace(/[:.]/g, '-').replace('Z', '');
+      return `dsh-prompt-setting-${stamp.length > 0 ? stamp : 'export'}.json`;
+    }
+
+    /**
+     * Whether the primitives module really exposes the official diff renderer.
+     * Probed, never assumed — exactly like the Button/Tag probes.
+     */
+    const HAS_DIFF_BLOCK = primitivesUsable && typeof primitives.DiffBlock === 'function';
+
+    /**
+     * The localized chrome `DiffBlock` asks its owner for.
+     * @param t - the bound translator.
+     * @returns the labels object.
+     */
+    function diffBlockLabels(t) {
+      return {
+        copy: t('diffBlockCopy'),
+        copied: t('diffBlockCopied'),
+        collapse: t('diffBlockCollapse'),
+        expand: (hidden) => fmt(t('diffBlockExpand'), { n: hidden }),
+        collapseAria: t('diffBlockCollapseAria'),
+        expandAria: (hidden) => fmt(t('diffBlockExpandAria'), { n: hidden }),
+        codeLabel: t('diffBlockCode'),
+        wrapLabel: t('diffBlockWrap'),
+        unwrapLabel: t('diffBlockUnwrap'),
+      };
+    }
+
+    /** Localized label for a diff line op. */
+    function diffOpMarker(type) {
+      if (type === 'insert') return '+';
+      if (type === 'delete') return '-';
+      return ' ';
+    }
+
+    // #endregion
 
     /**
      * Render the status bar (mounted / frozen three-state / layers / timestamp).
@@ -3340,6 +3766,621 @@ window.__ModuleLoader__.load({
      * @param a - the page actions.
      * @returns the view element.
      */
+    /**
+     * Render one history row, plus the two selectors that feed the comparison.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @param record - one history record.
+     * @returns the row element.
+     */
+    function historyRow(t, m, a, record) {
+      const id = String(record.id);
+      const selected = m.diffSel.from === id ? 'from' : m.diffSel.to === id ? 'to' : '';
+      const sideStyle = {
+        font: 'inherit',
+        fontSize: 12,
+        padding: '2px 8px',
+        borderRadius: 6,
+        cursor: 'pointer',
+        background: 'transparent',
+        color: token.labelSecondary,
+        border: `1px solid ${token.borderL2}`,
+      };
+      return h(
+        'div',
+        {
+          key: id,
+          'data-history-row': id,
+          'data-history-action': record.action,
+          'data-history-name': record.name === null ? '' : String(record.name),
+          'data-history-origin': record.origin,
+          'data-history-layer': record.layer,
+          'data-history-selected': selected,
+          style: {
+            border: `1px solid ${selected === '' ? token.borderL1 : token.stateBusiness}`,
+            borderRadius: 8,
+            padding: '6px 8px',
+            display: 'flex',
+            gap: 6,
+            alignItems: 'center',
+            flexWrap: 'wrap',
+          },
+        },
+        h('code', { style: { fontSize: 12 } }, `#${id}`),
+        h(UI.Tag, { tone: 'neutral' }, historyActionLabel(t, record.action)),
+        h('code', { style: { fontSize: 12 } }, record.name === null ? t('histWholeLayer') : String(record.name)),
+        h('span', { style: metaStyle }, stampOf(record.at)),
+        record.origin === 'import' ? h(UI.Tag, { tone: 'warning' }, 'import') : null,
+        record.entries !== null && Array.isArray(record.entries)
+          ? h('span', { 'data-history-entries': String(record.entries.length), style: metaStyle }, `entries=${record.entries.length}`)
+          : null,
+        h(
+          'button',
+          {
+            type: 'button',
+            'data-action': 'diff-from',
+            'data-history-id': id,
+            disabled: selected === 'from',
+            onClick: () => a.pickDiffSide('from', id),
+            style: sideStyle,
+          },
+          t('histPickFrom'),
+        ),
+        h(
+          'button',
+          {
+            type: 'button',
+            'data-action': 'diff-to',
+            'data-history-id': id,
+            disabled: selected === 'to',
+            onClick: () => a.pickDiffSide('to', id),
+            style: sideStyle,
+          },
+          t('histPickTo'),
+        ),
+      );
+    }
+
+    /**
+     * Render the line-level diff: the primitives `DiffBlock` when it is really
+     * available, and a readable hand-built rendering of the host's own ops when
+     * it is not. Both paths show the SAME comparison — the fallback is not a
+     * second diff algorithm, it is a second renderer for the same result.
+     * @param t - the bound translator.
+     * @param lines - `diff.lines` from the host.
+     * @returns the element.
+     */
+    function renderDiffLines(t, lines) {
+      const ops = Array.isArray(lines.ops) ? lines.ops : [];
+      if (HAS_DIFF_BLOCK) {
+        return h(
+          'div',
+          { 'data-region': 'diffblock', 'data-diff-block': 'primitives' },
+          h(primitives.DiffBlock, {
+            diffs: [{
+              path: lines.name,
+              oldText: typeof lines.textBefore === 'string' ? lines.textBefore : '',
+              newText: typeof lines.textAfter === 'string' ? lines.textAfter : '',
+            }],
+            labels: diffBlockLabels(t),
+            maxLines: DIFF_BLOCK_MAX_LINES,
+          }),
+        );
+      }
+      const shown = ops.slice(0, MAX_DIFF_LINES_SHOWN);
+      const cut = shown.length < ops.length || lines.truncated === true;
+      return h(
+        'div',
+        {
+          'data-region': 'diffblock',
+          'data-diff-block': 'fallback',
+          'data-diff-ops': String(ops.length),
+          'data-diff-ops-shown': String(shown.length),
+        },
+        h(
+          'div',
+          {
+            style: {
+              font: `12px/18px ${token.mono}`,
+              maxHeight: 320,
+              overflow: 'auto',
+              border: `1px solid ${token.borderL1}`,
+              borderRadius: 8,
+              padding: '6px 8px',
+            },
+          },
+          shown.map((op, index) =>
+            h(
+              'div',
+              {
+                key: `op-${index}`,
+                'data-diff-op': op.type,
+                'data-diff-op-text': op.text,
+                'data-diff-op-before-line': op.beforeLine === null ? '' : String(op.beforeLine),
+                'data-diff-op-after-line': op.afterLine === null ? '' : String(op.afterLine),
+                style: {
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  background: op.type === 'insert' ? token.diffAddFill : op.type === 'delete' ? token.diffDelFill : 'transparent',
+                },
+              },
+              `${diffOpMarker(op.type)} ${op.text}`,
+            ),
+          ),
+        ),
+        cut ? h('div', { 'data-diff-cut': 'true', style: metaStyle }, fmt(t('histDiffTruncated'), { n: shown.length })) : null,
+      );
+    }
+
+    /**
+     * Render the version comparison result.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the panel element.
+     */
+    function renderDiffPanel(t, m, a) {
+      const label = (value) => (value === null || value === undefined
+        ? '—'
+        : value === DIFF_CURRENT ? t('histCurrent') : `#${value}`);
+      const children = [
+        h('h4', { key: 'heading', style: { margin: 0, fontSize: 13, fontWeight: 600 } }, t('histDiffHeading')),
+        h('p', { key: 'hint', style: { margin: 0, ...metaStyle } }, t('histDiffHint')),
+        h(
+          'div',
+          { key: 'selection', style: metaStyle },
+          h('span', { 'data-diff-from': m.diffSel.from === null ? '' : String(m.diffSel.from) }, `${t('histDiffFrom')}: ${label(m.diffSel.from)}`),
+          ' · ',
+          h('span', { 'data-diff-to': m.diffSel.to === null ? '' : String(m.diffSel.to) }, `${t('histDiffTo')}: ${label(m.diffSel.to)}`),
+        ),
+      ];
+      if (m.diff.phase === 'loading') children.push(h('p', { key: 'loading', style: metaStyle }, t('loading')));
+      if (m.diff.phase === 'error') children.push(h('div', { key: 'error' }, errorBanner(t, m.diff.error, t('histDiffUnavailable'))));
+      const data = m.diff.data;
+      if (data) {
+        const counts = data.sectionsCounts || {};
+        children.push(
+          h(
+            'div',
+            {
+              key: 'counts',
+              'data-diff-sections': String(counts.total === undefined ? 0 : counts.total),
+              'data-diff-changed': String(counts.changed === undefined ? 0 : counts.changed),
+              'data-diff-added': String(counts.added === undefined ? 0 : counts.added),
+              'data-diff-removed': String(counts.removed === undefined ? 0 : counts.removed),
+              'data-diff-same': String(counts.same === undefined ? 0 : counts.same),
+              style: metaStyle,
+            },
+            fmt(t('histDiffSections'), {
+              total: counts.total === undefined ? 0 : counts.total,
+              changed: counts.changed === undefined ? 0 : counts.changed,
+              added: counts.added === undefined ? 0 : counts.added,
+              removed: counts.removed === undefined ? 0 : counts.removed,
+              same: counts.same === undefined ? 0 : counts.same,
+            }),
+          ),
+        );
+        const rows = Array.isArray(data.sections) ? data.sections : [];
+        children.push(
+          h(
+            'div',
+            { key: 'rows', 'data-diff-row-total': String(rows.length), style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+            rows.map((row) =>
+              h(
+                'div',
+                {
+                  key: row.name,
+                  'data-hd-row': row.name,
+                  'data-hd-status': row.status,
+                  style: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' },
+                },
+                h('code', { style: { fontSize: 12 } }, row.name),
+                h(UI.Tag, { tone: diffTone(row.status) }, t(diffKey(row.status))),
+                h('span', { style: metaStyle }, `${row.before ? row.before.action : '—'} → ${row.after ? row.after.action : '—'}`),
+              ),
+            ),
+          ),
+        );
+        const lines = data.lines;
+        if (lines === null || lines === undefined) {
+          children.push(
+            h('p', { key: 'no-lines', 'data-diff-no-lines': 'true', style: metaStyle }, fmt(t('histDiffNoLines'), { reason: data.lineReason || '' })),
+          );
+        } else {
+          children.push(
+            h(
+              'div',
+              {
+                key: 'line-meta',
+                'data-diff-line-name': lines.name,
+                'data-diff-mode': lines.mode,
+                'data-diff-line-added': String(lines.stats.added),
+                'data-diff-line-removed': String(lines.stats.removed),
+                'data-diff-renderer': HAS_DIFF_BLOCK ? 'diffblock' : 'fallback',
+                style: metaStyle,
+              },
+              fmt(t('histDiffLineStats'), {
+                added: lines.stats.added,
+                removed: lines.stats.removed,
+                mode: lines.mode === 'lcs' ? t('histDiffModeLcs') : t('histDiffModeBounded'),
+              }),
+              h('span', { style: { marginLeft: 8 } }, HAS_DIFF_BLOCK ? t('histDiffBlock') : t('histDiffFallback')),
+            ),
+          );
+          if (lines.crlfNormalized === true) {
+            children.push(h('p', { key: 'crlf', 'data-diff-crlf': 'true', style: metaStyle }, t('histDiffCrlf')));
+          }
+          children.push(h('div', { key: 'lines' }, renderDiffLines(t, lines)));
+        }
+      }
+      return h(
+        'div',
+        {
+          'data-region': 'history-diff',
+          'data-diff-state': m.diff.phase,
+          style: { ...cardStyle, display: 'flex', flexDirection: 'column', gap: 6 },
+        },
+        children,
+      );
+    }
+
+    /**
+     * Render the history panel: layer selector, records, and the comparison.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the panel element.
+     */
+    function renderHistoryPanel(t, m, a) {
+      const data = m.hist.data;
+      const records = data && Array.isArray(data.records) ? data.records : [];
+      const layer = m.historyLayer;
+      const children = [
+        h('h3', { key: 'heading', style: headingStyle }, t('histHeading')),
+        h('p', { key: 'note', style: { margin: 0, ...metaStyle } }, fmt(t('histNote'), { limit: data && data.retentionLimit ? data.retentionLimit : '' })),
+        h(
+          'div',
+          { key: 'layer', 'data-region': 'history-layer' },
+          tabs(
+            ['user', 'workspace'].map((value) => ({
+              value,
+              label: layerLabel(t, value),
+              id: `ps-hist-${value}`,
+              panelId: 'ps-hist-panel',
+            })),
+            layer,
+            a.setHistoryLayer,
+            t('histLayerLabel'),
+            'history-layer',
+          ),
+        ),
+      ];
+      if (m.hist.phase === 'loading' && !data) children.push(h('p', { key: 'loading', style: metaStyle }, t('loading')));
+      if (m.hist.phase === 'error') children.push(h('div', { key: 'error' }, errorBanner(t, m.hist.error, t('histHeading'))));
+      if (layer === 'workspace' && m.sessionArg === null) {
+        children.push(h('p', { key: 'no-session', 'data-history-note': 'no-session', style: { ...metaStyle, color: token.stateWarn } }, t('histNoSession')));
+      }
+      if (data) {
+        children.push(
+          h(
+            'div',
+            { key: 'meta', 'data-history-total': String(data.total), 'data-history-corrupt': String(data.corrupt), style: metaStyle },
+            fmt(t('histTotal'), { n: data.total }),
+            data.corrupt > 0 ? ` · ${fmt(t('histCorrupt'), { n: data.corrupt })}` : null,
+            data.unreadable ? h('div', { 'data-history-unreadable': 'true', style: { color: token.stateError } }, fmt(t('histUnreadable'), { reason: data.unreadable })) : null,
+            data.lastError ? h('div', { 'data-history-last-error': 'true', style: { color: token.stateError } }, fmt(t('histLastError'), { reason: data.lastError.reason })) : null,
+          ),
+        );
+        children.push(
+          h(
+            'div',
+            { key: 'rows', style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+            records.length === 0 ? h('div', { 'data-empty': 'history', style: metaStyle }, t('histEmpty')) : null,
+            records.map((record) => historyRow(t, m, a, record)),
+            h(
+              'div',
+              {
+                key: 'current',
+                'data-history-row': 'current',
+                'data-history-current': 'true',
+                'data-history-selected': m.diffSel.from === DIFF_CURRENT ? 'from' : m.diffSel.to === DIFF_CURRENT ? 'to' : '',
+                style: { border: `1px dashed ${token.borderL2}`, borderRadius: 8, padding: '6px 8px', display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' },
+              },
+              h(UI.Tag, { tone: 'info' }, t('histCurrent')),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  'data-action': 'diff-from',
+                  'data-history-id': DIFF_CURRENT,
+                  onClick: () => a.pickDiffSide('from', DIFF_CURRENT),
+                  style: { font: 'inherit', fontSize: 12, padding: '2px 8px', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: token.labelSecondary, border: `1px solid ${token.borderL2}` },
+                },
+                t('histPickFrom'),
+              ),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  'data-action': 'diff-to',
+                  'data-history-id': DIFF_CURRENT,
+                  onClick: () => a.pickDiffSide('to', DIFF_CURRENT),
+                  style: { font: 'inherit', fontSize: 12, padding: '2px 8px', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: token.labelSecondary, border: `1px solid ${token.borderL2}` },
+                },
+                t('histPickTo'),
+              ),
+            ),
+          ),
+        );
+      }
+      return h(
+        'div',
+        {
+          'data-region': 'history',
+          'data-history-layer': layer,
+          'data-history-state': m.hist.phase,
+          style: { ...cardStyle, display: 'flex', flexDirection: 'column', gap: 6 },
+        },
+        children,
+        renderDiffPanel(t, m, a),
+        renderLayerReset(t, m, a),
+      );
+    }
+
+    /**
+     * Render the whole-layer reset, with its impact stated before the click.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the panel element.
+     */
+    function renderLayerReset(t, m, a) {
+      const layer = m.historyLayer;
+      const view = m.ovs.data ? m.ovs.data[layer] : null;
+      const list = view && Array.isArray(view.overrides) ? view.overrides : [];
+      return h(
+        'div',
+        {
+          'data-region': 'layer-reset',
+          'data-reset-layer': layer,
+          'data-reset-count': String(list.length),
+          style: { borderTop: `1px solid ${token.borderL1}`, paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 4 },
+        },
+        h('h4', { style: { margin: 0, fontSize: 13, fontWeight: 600 } }, t('resetLayersLabel')),
+        h('p', { style: { margin: 0, ...metaStyle } }, fmt(t('resetLayerBody'), { layer: layerLabel(t, layer), count: list.length })),
+        h(
+          UI.Button,
+          {
+            'data-action': 'reset-layer',
+            'data-layer': layer,
+            disabled: list.length === 0 || m.busy,
+            onClick: () => a.requestResetLayer(layer, list.length),
+          },
+          t(layer === 'workspace' ? 'resetLayerWorkspace' : 'resetLayerUser'),
+        ),
+      );
+    }
+
+    /**
+     * Render the export / import panel.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the panel element.
+     */
+    function renderTransferPanel(t, m, a) {
+      const transfer = m.transfer;
+      const plan = transfer.plan;
+      const children = [
+        h('h3', { key: 'heading', style: headingStyle }, t('transferHeading')),
+        h('p', { key: 'note', style: { margin: 0, ...metaStyle } }, t('transferNote')),
+        h(
+          'div',
+          { key: 'export', style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+          h(UI.Button, { variant: 'primary', 'data-action': 'export', disabled: m.busy, onClick: a.exportNow }, t('exportButton')),
+          transfer.fileName
+            ? h('span', { 'data-export-name': transfer.fileName, style: metaStyle }, transfer.fileName)
+            : null,
+        ),
+        transfer.exportText
+          ? h(
+              'details',
+              { key: 'preview' },
+              h('summary', { style: metaStyle }, t('exportPreviewLabel')),
+              h(UI.Textarea, {
+                'data-role': 'export-text',
+                readOnly: true,
+                rows: 6,
+                value: transfer.exportText.slice(0, MAX_EXPORT_PREVIEW),
+              }),
+              transfer.exportText.length > MAX_EXPORT_PREVIEW
+                ? h('div', { style: metaStyle }, fmt(t('exportPreviewCut'), { n: MAX_EXPORT_PREVIEW }))
+                : null,
+            )
+          : null,
+        h('h4', { key: 'import-heading', style: { margin: '6px 0 0', fontSize: 13, fontWeight: 600 } }, t('importHeading')),
+        h('label', { key: 'mode-label', style: metaStyle }, t('importModeLabel')),
+        h(
+          'div',
+          { key: 'mode' },
+          tabs(
+            IMPORT_MODES.map((value) => ({
+              value,
+              label: t(value === 'merge' ? 'importModeMerge' : 'importModeReplace'),
+              id: `ps-import-${value}`,
+              panelId: 'ps-import-panel',
+            })),
+            m.importMode,
+            a.setImportMode,
+            t('importModeLabel'),
+            'import-mode',
+          ),
+        ),
+        h('label', { key: 'text-label', style: metaStyle }, t('importTextLabel')),
+        h(UI.Textarea, {
+          key: 'text',
+          'data-role': 'import-text',
+          rows: 8,
+          value: m.importText,
+          placeholder: t('importTextPlaceholder'),
+          onChange: a.setImportText,
+        }),
+        h('label', { key: 'file-label', style: metaStyle }, t('importFileLabel')),
+        h('input', {
+          key: 'file',
+          type: 'file',
+          accept: '.json,application/json',
+          'data-role': 'import-file',
+          onChange: a.pickImportFile,
+        }),
+        h(
+          'div',
+          { key: 'actions', style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
+          h(
+            UI.Button,
+            {
+              variant: 'primary',
+              'data-action': 'import-preview',
+              disabled: m.busy || String(m.importText).trim().length === 0,
+              onClick: a.previewImport,
+            },
+            transfer.phase === 'previewing' ? t('importPreviewing') : t('importPreviewButton'),
+          ),
+          h(
+            UI.Button,
+            {
+              'data-action': 'import-apply',
+              disabled: m.busy || plan === null,
+              onClick: a.requestImportApply,
+            },
+            transfer.phase === 'applying' ? t('importApplying') : t('importApplyButton'),
+          ),
+        ),
+      ];
+      if (transfer.error) {
+        children.push(h('div', { key: 'error' }, errorBanner(t, transfer.error, t('importHeading'))));
+        children.push(
+          h('p', { key: 'unchanged', 'data-import-unchanged': 'true', style: { margin: 0, ...metaStyle, color: token.stateSuccess } }, t('importUnchangedWarning')),
+        );
+      }
+      if (plan !== null && plan !== undefined) {
+        const changes = [];
+        const layers = plan.layers && typeof plan.layers === 'object' ? plan.layers : {};
+        for (const [layerName, entry] of Object.entries(layers)) {
+          const list = entry && Array.isArray(entry.changes) ? entry.changes : [];
+          for (const change of list) changes.push({ ...change, layer: layerName });
+        }
+        const totals = plan.totals || {};
+        children.push(
+          h(
+            'div',
+            {
+              key: 'plan',
+              'data-import-plan': 'true',
+              'data-import-added': String(totals.added === undefined ? 0 : totals.added),
+              'data-import-replaced': String(totals.replaced === undefined ? 0 : totals.replaced),
+              'data-import-unchanged': String(totals.unchanged === undefined ? 0 : totals.unchanged),
+              'data-import-removed': String(totals.removed === undefined ? 0 : totals.removed),
+              'data-import-kept': String(totals.kept === undefined ? 0 : totals.kept),
+              'data-import-changes': String(changes.length),
+              'data-import-applied': String(plan.applied === true),
+              style: { border: `1px solid ${token.borderL1}`, borderRadius: 8, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 },
+            },
+            h('strong', { style: { fontSize: 13 } }, t('importPlanHeading')),
+            h('div', { style: metaStyle }, fmt(t('importCounts'), {
+              added: totals.added === undefined ? 0 : totals.added,
+              replaced: totals.replaced === undefined ? 0 : totals.replaced,
+              unchanged: totals.unchanged === undefined ? 0 : totals.unchanged,
+              removed: totals.removed === undefined ? 0 : totals.removed,
+              kept: totals.kept === undefined ? 0 : totals.kept,
+            })),
+            changes.length === 0 ? h('div', { style: metaStyle }, t('importNoChanges')) : null,
+            changes.map((change) =>
+              h(
+                'div',
+                {
+                  key: `${change.layer}:${change.name}`,
+                  'data-import-change': change.name,
+                  'data-import-status': change.status,
+                  'data-import-layer': change.layer,
+                  style: { fontSize: 12, color: token.labelSecondary },
+                },
+                fmt(t('importChangeRow'), { name: change.name, status: importStatusLabel(t, change.status) }),
+              ),
+            ),
+            Array.isArray(plan.skipped) && plan.skipped.length > 0
+              ? h(
+                  'div',
+                  { 'data-import-skipped': String(plan.skipped.length), style: metaStyle },
+                  fmt(t('importSkipped'), { list: plan.skipped.map((entry) => `${entry.layer} (${entry.reason})`).join('; ') }),
+                )
+              : null,
+          ),
+        );
+      }
+      return h(
+        'div',
+        {
+          'data-region': 'transfer',
+          'data-transfer-phase': transfer.phase,
+          'data-import-mode': m.importMode,
+          style: { ...cardStyle, display: 'flex', flexDirection: 'column', gap: 6 },
+        },
+        children,
+      );
+    }
+
+    /**
+     * Render the pending second confirmation. Every destructive stage 2 action
+     * goes through here: the impact and the irreversibility are stated before
+     * the click that performs it, never after.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the card element, or null when nothing is pending.
+     */
+    function renderConfirm(t, m, a) {
+      const confirm = m.confirm;
+      if (confirm === null) return null;
+      const body = [];
+      if (confirm.kind === 'reset-section') {
+        body.push(fmt(t('resetSectionTitle'), { name: confirm.name }));
+        body.push(
+          confirm.layers.length === 0
+            ? t('resetSectionNoLayers')
+            : fmt(t('resetSectionBody'), { layers: confirm.layers.map((layer) => layerLabel(t, layer)).join(', ') }),
+        );
+      } else if (confirm.kind === 'reset-layer') {
+        body.push(fmt(t('resetLayerTitle'), { layer: layerLabel(t, confirm.layer) }));
+        body.push(
+          confirm.count === 0
+            ? fmt(t('resetLayerEmpty'), { layer: layerLabel(t, confirm.layer) })
+            : fmt(t('resetLayerBody'), { layer: layerLabel(t, confirm.layer), count: confirm.count }),
+        );
+      } else {
+        body.push(t('importConfirmTitle'));
+        body.push(fmt(t('importConfirmBody'), { mode: t(m.importMode === 'replace' ? 'importModeReplace' : 'importModeMerge') }));
+      }
+      return h(
+        'div',
+        {
+          'data-region': 'confirm',
+          'data-confirm-kind': confirm.kind,
+          style: { ...cardStyle, borderColor: token.stateWarn, display: 'flex', flexDirection: 'column', gap: 6 },
+        },
+        h('strong', { style: { fontSize: 13, color: token.stateWarn } }, t('confirmTitle')),
+        body.map((line, index) => h('div', { key: `line-${index}`, style: { fontSize: 13, wordBreak: 'break-word' } }, line)),
+        h('div', { style: { ...metaStyle, color: token.stateError } }, t('resetIrreversible')),
+        h(
+          'div',
+          { style: { display: 'flex', gap: 8 } },
+          h(UI.Button, { variant: 'primary', 'data-action': 'confirm-yes', disabled: m.busy, onClick: a.confirmYes }, t('confirmYes')),
+          h(UI.Button, { 'data-action': 'confirm-no', disabled: m.busy, onClick: a.cancelConfirm }, t('confirmNo')),
+        ),
+      );
+    }
+
     function renderOverridesView(t, m, a) {
       const ovs = m.ovs.data;
       const merged = ovs && ovs.merged && Array.isArray(ovs.merged.overrides) ? ovs.merged.overrides : [];
@@ -3417,6 +4458,20 @@ window.__ModuleLoader__.load({
                   },
                   t('ovUndo'),
                 ),
+                // "Restore default" removes the override for this section from
+                // EVERY layer, which is what returning to the assembled default
+                // means; it is a different, wider operation than `undo`.
+                h(
+                  UI.Button,
+                  {
+                    'data-action': 'reset-section',
+                    'data-section-name': entry.name,
+                    'data-reset-layers': layersHolding(m.ovs.data, entry.name).join(','),
+                    disabled: m.busy,
+                    onClick: () => a.requestResetSection(entry.name),
+                  },
+                  t('resetSection'),
+                ),
               ),
               state === 'ineffective'
                 ? h(
@@ -3437,6 +4492,8 @@ window.__ModuleLoader__.load({
             );
           }),
         ),
+        renderHistoryPanel(t, m, a),
+        renderTransferPanel(t, m, a),
       );
     }
 
@@ -3497,6 +4554,8 @@ window.__ModuleLoader__.load({
           ),
         );
       }
+      const confirmCard = renderConfirm(t, m, a);
+      if (confirmCard !== null) children.push(h('div', { key: 'confirm-slot', style: { display: 'contents' } }, confirmCard));
       children.push(
         h('div', { key: 'panel', 'data-region': 'panel' },
           m.snap.phase === 'loading' && !m.snap.data ? h('p', { key: 'loading', style: metaStyle }, t('loading')) : null,
@@ -3607,6 +4666,17 @@ window.__ModuleLoader__.load({
       const [editor, setEditor] = React.useState(null);
       const [notice, setNotice] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
+      // Stage 2 state: history, the comparison, the pending confirmation and
+      // the export/import surface. All of it is view state — nothing here is
+      // derived from a real config file until a route answers.
+      const [hist, setHist] = React.useState({ phase: 'idle', data: null, error: null });
+      const [historyLayer, setHistoryLayer] = React.useState('user');
+      const [diffSel, setDiffSel] = React.useState({ from: null, to: DIFF_CURRENT });
+      const [diff, setDiff] = React.useState({ phase: 'idle', data: null, error: null });
+      const [confirm, setConfirm] = React.useState(null);
+      const [transfer, setTransfer] = React.useState({ phase: 'idle', plan: null, error: null, exportText: '', fileName: '' });
+      const [importText, setImportText] = React.useState('');
+      const [importMode, setImportMode] = React.useState('merge');
 
       const session = selection === null ? seat.currentId || GLOBAL_SESSION : selection;
       const sessionArg = session === GLOBAL_SESSION ? null : session;
@@ -3667,6 +4737,35 @@ window.__ModuleLoader__.load({
         };
       }, [sessionArg, reload]);
 
+      // History is loaded only while the 覆盖 view is open: the section and
+      // full-text views must not pay for a log they do not show, and a mount
+      // that never opens the tab must issue exactly the three stage 1C requests.
+      React.useEffect(() => {
+        if (view !== 'overrides') return undefined;
+        if (historyLayer === 'workspace' && sessionArg === null) {
+          // The host refuses this with `workspace-unresolved`; asking anyway
+          // would turn a known answer into an error banner.
+          setHist({ phase: 'idle', data: null, error: null });
+          return undefined;
+        }
+        let cancelled = false;
+        setHist((current) => ({ ...current, phase: 'loading' }));
+        const query = `${layerQuery(historyLayer, sessionArg)}&limit=${HISTORY_PAGE}`;
+        const run = async () => {
+          const result = await requestJson(`${HISTORY_PATH}?${query}`);
+          if (cancelled) return;
+          setHist(
+            result.ok
+              ? { phase: 'ready', data: result.payload, error: null }
+              : { phase: 'error', data: null, error: result.error },
+          );
+        };
+        void run();
+        return () => {
+          cancelled = true;
+        };
+      }, [view, historyLayer, sessionArg, reload]);
+
       const snapshot = snap.data;
       const fz = frozenState(snapshot, sessionArg !== null);
       const effectiveSections =
@@ -3675,6 +4774,201 @@ window.__ModuleLoader__.load({
           : [];
       const phase = snap.phase === 'ready' && effectiveSections.length === 0 ? 'empty' : snap.phase;
       const incoming = incomingNames(snapshot);
+
+      /**
+       * Ask the host for a comparison and store the result. `from`/`to` are a
+       * history id or {@link DIFF_CURRENT}; a half-made selection clears the
+       * panel rather than sending a request that cannot answer anything.
+       */
+      const runDiff = async (from, to) => {
+        if (from === null || to === null) {
+          setDiff({ phase: 'idle', data: null, error: null });
+          return;
+        }
+        setDiff({ phase: 'loading', data: null, error: null });
+        const query = `${layerQuery(historyLayer, sessionArg)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+        const result = await requestJson(`${DIFF_PATH}?${query}`);
+        setDiff(
+          result.ok
+            ? { phase: 'ready', data: result.payload, error: null }
+            : { phase: 'error', data: null, error: result.error },
+        );
+      };
+
+      /**
+       * Remove one section's override from every layer that holds it, which is
+       * what "restore the assembled default" means. One request per layer: the
+       * host has no cross-layer write, and inventing one here would be a second
+       * source of truth.
+       */
+      const resetSection = async (name, layers) => {
+        if (layers.length === 0) {
+          setNotice({ tone: 'error', text: t('resetNoneNotice') });
+          return;
+        }
+        setBusy(true);
+        let removed = 0;
+        for (const layer of layers) {
+          const query = `${layerQuery(layer, sessionArg)}&name=${encodeURIComponent(name)}`;
+          const result = await requestJson(`${OVERRIDES_PATH}?${query}`, { method: 'DELETE' });
+          if (!result.ok) {
+            setBusy(false);
+            setNotice({ tone: 'error', text: errorText(t, result.error) });
+            setReload((value) => value + 1);
+            return;
+          }
+          removed += 1;
+        }
+        setBusy(false);
+        setNotice({
+          tone: removed > 0 ? 'success' : 'error',
+          text: removed > 0 ? fmt(t('resetDoneNotice'), { count: removed }) : t('resetNoneNotice'),
+        });
+        setReload((value) => value + 1);
+      };
+
+      /** Clear one whole layer (`DELETE …&reset=true`). */
+      const resetLayer = async (layer) => {
+        setBusy(true);
+        const result = await requestJson(`${OVERRIDES_PATH}?${layerQuery(layer, sessionArg)}&reset=true`, { method: 'DELETE' });
+        setBusy(false);
+        if (!result.ok) {
+          setNotice({ tone: 'error', text: errorText(t, result.error) });
+          return;
+        }
+        const count = result.payload && typeof result.payload.count === 'number' ? result.payload.count : 0;
+        setNotice({
+          tone: 'success',
+          text: count > 0 ? fmt(t('resetDoneNotice'), { count }) : t('resetNoneNotice'),
+        });
+        setReload((value) => value + 1);
+      };
+
+      /** Fetch the export document, hold its text, and try to download it. */
+      const exportNow = async () => {
+        setBusy(true);
+        const query = sessionArg === null ? '' : `?session=${encodeURIComponent(sessionArg)}`;
+        const result = await requestJson(`${EXPORT_PATH}${query}`);
+        setBusy(false);
+        if (!result.ok) {
+          setTransfer((current) => ({ ...current, phase: 'error', error: result.error, plan: null }));
+          setNotice({ tone: 'error', text: fmt(t('exportFailed'), { reason: errorText(t, result.error) }) });
+          return;
+        }
+        // `ok` is this plugin's own liveness flag, not part of the document: a
+        // downloaded file must be importable by anything that reads the schema.
+        const document = { ...result.payload };
+        delete document.ok;
+        const text = JSON.stringify(document, null, 2);
+        const fileName = exportFileName(document.exportedAt);
+        const download = downloadText(text, fileName);
+        setTransfer({
+          phase: download.ok ? 'exported' : 'error',
+          plan: null,
+          error: download.ok ? null : { code: 'download-failed', message: download.reason },
+          exportText: text,
+          fileName,
+        });
+        setNotice({
+          tone: download.ok ? 'success' : 'error',
+          text: download.ok ? fmt(t('downloadDone'), { name: fileName }) : fmt(t('downloadFailed'), { reason: download.reason }),
+        });
+      };
+
+      /** Load an export document from a chosen file, when the file API exists. */
+      const pickImportFile = async (event) => {
+        const file = event && event.target && event.target.files ? event.target.files[0] : null;
+        if (!file) return;
+        if (typeof file.text !== 'function') {
+          setTransfer((current) => ({
+            ...current,
+            phase: 'error',
+            plan: null,
+            error: { code: 'invalid-export', message: 'this browser cannot read a chosen file; paste the JSON instead' },
+          }));
+          return;
+        }
+        setBusy(true);
+        try {
+          const text = await file.text();
+          setImportText(String(text));
+          setTransfer((current) => ({ ...current, phase: 'idle', plan: null, error: null }));
+        } catch (error) {
+          setTransfer((current) => ({
+            ...current,
+            phase: 'error',
+            plan: null,
+            error: { code: 'invalid-export', message: error && error.message ? String(error.message) : String(error) },
+          }));
+        }
+        setBusy(false);
+      };
+
+      /** Dry-run the pasted document: a preview, and provably no write. */
+      const previewImport = async () => {
+        const raw = String(importText).trim();
+        if (raw.length === 0) {
+          setNotice({ tone: 'error', text: t('importNeedText') });
+          return;
+        }
+        try {
+          JSON.parse(raw);
+        } catch (error) {
+          setTransfer((current) => ({
+            ...current,
+            phase: 'error',
+            plan: null,
+            error: { code: 'invalid-json', message: error && error.message ? String(error.message) : String(error) },
+          }));
+          return;
+        }
+        setTransfer((current) => ({ ...current, phase: 'previewing', error: null }));
+        setBusy(true);
+        const query = `dryRun=true&mode=${encodeURIComponent(importMode)}${sessionArg === null ? '' : `&session=${encodeURIComponent(sessionArg)}`}`;
+        const result = await requestJson(`${IMPORT_PATH}?${query}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: raw,
+        });
+        setBusy(false);
+        if (!result.ok) {
+          setTransfer((current) => ({ ...current, phase: 'error', error: result.error, plan: null }));
+          return;
+        }
+        setTransfer((current) => ({ ...current, phase: 'preview', plan: result.payload, error: null }));
+      };
+
+      /** Perform the confirmed import. */
+      const applyImport = async () => {
+        const raw = String(importText).trim();
+        setTransfer((current) => ({ ...current, phase: 'applying', error: null }));
+        setBusy(true);
+        const query = `mode=${encodeURIComponent(importMode)}${sessionArg === null ? '' : `&session=${encodeURIComponent(sessionArg)}`}`;
+        const result = await requestJson(`${IMPORT_PATH}?${query}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: raw,
+        });
+        setBusy(false);
+        if (!result.ok) {
+          setTransfer((current) => ({ ...current, phase: 'error', error: result.error }));
+          setNotice({ tone: 'error', text: `${errorText(t, result.error)} ${t('importUnchangedWarning')}` });
+          return;
+        }
+        const totals = result.payload && result.payload.totals ? result.payload.totals : {};
+        const count = (totals.added || 0) + (totals.replaced || 0) + (totals.removed || 0);
+        setTransfer((current) => ({ ...current, phase: 'applied', plan: result.payload, error: null }));
+        setNotice({
+          tone: 'success',
+          text: result.payload && result.payload.unchanged === true
+            ? t('importUnchangedNotice')
+            : fmt(t('importAppliedNotice'), {
+                written: result.payload && Array.isArray(result.payload.written) ? result.payload.written.length : 0,
+                count,
+              }),
+        });
+        setReload((value) => value + 1);
+      };
 
       const actions = {
         refresh: () => setReload((value) => value + 1),
@@ -3792,6 +5086,48 @@ window.__ModuleLoader__.load({
           });
         },
         closeEditor: () => setEditor(null),
+        setHistoryLayer: (value) => {
+          setHistoryLayer(value === 'workspace' ? 'workspace' : 'user');
+          setDiff({ phase: 'idle', data: null, error: null });
+        },
+        pickDiffSide: (side, id) => {
+          const next = { ...diffSel, [side]: id };
+          setDiffSel(next);
+          void runDiff(next.from, next.to);
+        },
+        requestResetSection: (name) => {
+          // Which layers hold this name is read from the override list already
+          // on screen, so the confirmation can state the exact impact.
+          setConfirm({ kind: 'reset-section', name, layers: layersHolding(ovs.data, name) });
+        },
+        requestResetLayer: (layer, count) => setConfirm({ kind: 'reset-layer', layer, count }),
+        cancelConfirm: () => setConfirm(null),
+        confirmYes: async () => {
+          const pending = confirm;
+          if (pending === null) return;
+          setConfirm(null);
+          if (pending.kind === 'reset-section') {
+            await resetSection(pending.name, pending.layers);
+            return;
+          }
+          if (pending.kind === 'reset-layer') {
+            await resetLayer(pending.layer);
+            return;
+          }
+          await applyImport();
+        },
+        exportNow,
+        setImportText: (event) => {
+          setImportText(event && event.target ? String(event.target.value) : '');
+          setTransfer((current) => ({ ...current, phase: 'idle', plan: null, error: null }));
+        },
+        setImportMode: (value) => {
+          setImportMode(value === 'replace' ? 'replace' : 'merge');
+          setTransfer((current) => ({ ...current, plan: null, error: null, phase: 'idle' }));
+        },
+        pickImportFile,
+        previewImport,
+        requestImportApply: () => setConfirm({ kind: 'import' }),
         copy: async () => {
           const text =
             fullOrigin === 'all' ? String(snapshot && snapshot.rendered ? snapshot.rendered : '') : composeSections(effectiveSections, fullOrigin);
@@ -3900,6 +5236,14 @@ window.__ModuleLoader__.load({
         editorSection: editor === null ? null : effectiveSections.find((section) => section.name === editor.name) || null,
         notice,
         busy,
+        hist,
+        historyLayer,
+        diffSel,
+        diff,
+        confirm,
+        transfer,
+        importText,
+        importMode,
         fz,
         effectiveSections,
         incoming,
