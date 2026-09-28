@@ -141,8 +141,9 @@ export function apply(ctx) {
             return;
           }
           // Same request that probes also reports: the browser half appends
-          // `?renderer=<primitives|fallback>` so one curl settles the
-          // primitives question without a devtools console.
+          // `?renderer=<primitives|fallback>`, so the page it renders settles
+          // the primitives question on sight (NOTES.md §7/§9.2). A bare curl
+          // cannot read this: the trust fence demands the browser auth cookie.
           recordClientRenderer(report, url);
           sendJson(res, 200, {
             ok: true,

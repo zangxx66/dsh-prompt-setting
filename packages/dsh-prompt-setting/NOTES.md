@@ -145,8 +145,9 @@ brief 建议「声明宿主行与客户端行（行 `id` 建议 `prompt-setting`
 ## 7. 未验证项（诚实清单，交给主管在集成检查点裁决）
 
 1. **`require('@deepseek-ai/dsh-client-ui-primitives')` 在真实浏览器里成功还是失败** —— 阶段一 A 的
-   核心待判定项。代码两条分支都已落地并离线验证；真机**一条 curl 即可裁决**（§9.2）：
-   `curl -s 'http://127.0.0.1:3080/prompt-setting/ping' | jq .clientRenderer` → `primitives` / `fallback` / `null`。
+   核心待判定项。代码两条分支都已落地并离线验证；真机**打开设置页即可裁决**——ping 响应自带
+   `clientRenderer`，而占位页把原始响应渲染在「原始响应」区，加载完看一眼即得
+   `primitives` / `fallback` / `null`（§9.2；**裸 curl 会 401，取不到这条数据**）。
    `null` 表示浏览器从未上报（页面没挂载或 fetch 未发出），本身也是有效信号。
 2. **primitives 的 CSS 是否随本插件首次 require 注入** —— 见 §4「已知风险」，可能表现为「分支为 primitives 但样式简陋」。
 3. **设置栏在真实 GUI 中的外观**（列在末尾、深浅色可读性、刷新后仍可见）—— 未跑浏览器，无法断言观感；
