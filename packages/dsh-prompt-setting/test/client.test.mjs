@@ -88,6 +88,11 @@ function makeHooksRuntime() {
       effects.push(fn);
       cursor += 1;
     },
+    useRef(initial) {
+      const index = cursor++;
+      if (!(index in cells)) cells[index] = { current: initial };
+      return cells[index];
+    },
     useSyncExternalStore(subscribe, getSnapshot) {
       cursor += 1;
       // Mirror React's mount behavior: subscribe once, then read the snapshot.
@@ -442,6 +447,84 @@ function saveButton(tree) {
 /** The single edit panel. */
 function editorPanel(tree) {
   return oneBy(tree, 'data-region', 'editor');
+}
+
+/** Does `tree` contain `target` at or below itself? */
+function containsNode(tree, target) {
+  if (tree === null || tree === undefined || typeof tree !== 'object') return false;
+  if (Array.isArray(tree)) return tree.some((child) => containsNode(child, target));
+  if (tree === target) return true;
+  return tree.props ? containsNode(tree.props.children, target) : false;
+}
+
+/** The chain of nodes from the root down to `target` (inclusive), or null. */
+function ancestorChain(tree, target) {
+  if (tree === null || tree === undefined || typeof tree !== 'object') return null;
+  if (Array.isArray(tree)) {
+    for (const child of tree) {
+      const found = ancestorChain(child, target);
+      if (found !== null) return found;
+    }
+    return null;
+  }
+  if (tree === target) return [tree];
+  if (tree.props) {
+    const below = ancestorChain(tree.props.children, target);
+    if (below !== null) return [tree, ...below];
+  }
+  return null;
+}
+
+/**
+ * The `data-section-row` names a node is nested inside, outermost first — `[]`
+ * for a node drawn in the page-level slot. This is how a test states "the form
+ * is inside that row" as a fact about the tree, instead of taking a marker's
+ * word for it.
+ */
+function owningRows(tree, node) {
+  const chain = ancestorChain(tree, node);
+  if (chain === null) return null;
+  return chain
+    .filter((entry) => entry.props && entry.props['data-section-row'] !== undefined)
+    .map((entry) => entry.props['data-section-row']);
+}
+
+/**
+ * The committed DOM node a panel `ref` receives. Real React attaches it before
+ * the effects run; the hooks double does not, so a test attaches it by hand and
+ * flushes. Every selector resolves to a spy that records its own focus, and
+ * `scrollIntoView` records the options it was handed. `scrollable: false` drops
+ * that method entirely — a node without it must be survivable.
+ */
+function fakePanelRoot({ scrollable = true } = {}) {
+  const queried = [];
+  const focused = [];
+  const scrolled = [];
+  const node = {
+    querySelector(selector) {
+      queried.push(selector);
+      return { focus: () => focused.push(selector) };
+    },
+  };
+  if (scrollable) node.scrollIntoView = (options) => scrolled.push(options);
+  return { queried, focused, scrolled, node };
+}
+
+/** Every section row's 「编辑」 switch, as `[section name, aria-expanded]` pairs. */
+function editSwitches(tree) {
+  return collect(
+    tree,
+    (node) => node.type === 'button' && node.props['data-action'] === 'edit',
+  ).map((node) => [node.props['data-section-name'], node.props['aria-expanded']]);
+}
+
+/**
+ * The scroll options a stub root recorded, copied into host-realm objects: the
+ * literals were built inside the vm, so they are not prototype-equal to a host
+ * literal under `deepStrictEqual`.
+ */
+function scrollOptions(root) {
+  return root.scrolled.map((options) => ({ ...options }));
 }
 
 /** The panel's (possibly read-only) section name field. */
@@ -2803,6 +2886,452 @@ test('client: an appended section is re-editable as the append it is', async () 
 
 // #endregion
 
+// #region the form is drawn inside the row it was opened from
+
+test('client: editing a section draws the form inside that section row', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-region'] === 'editor').length,
+    0,
+    'no form is on screen before an entry is opened',
+  );
+
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+
+  const panel = editorPanel(tree);
+  // The row marker names the owner, and the tree really nests the form in it.
+  assert.equal(panel.props['data-editor-row'], 'project:alpha');
+  assert.deepEqual(owningRows(tree, panel), ['project:alpha'], 'the form is inside its own row');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-region'] === 'editor').length,
+    1,
+    'the row form is still the only form',
+  );
+  // Every marker the panel has always carried is untouched by the move.
+  assert.equal(panel.props['data-editor-entry'], 'edit');
+  assert.equal(panel.props['data-editor-name'], 'project:alpha');
+  assert.equal(panel.props['data-editor-mode'], 'edit');
+  assert.equal(panel.props['data-editor-name-locked'], 'true');
+  assert.equal(panel.props['data-editor-actions'], 'replace,hide');
+  assert.equal(panel.props['data-editor-fallback'], undefined, 'the row is on screen, so nothing fell back');
+  // "Inside the row" also means below the row's own content, not above it.
+  const row = oneBy(tree, 'data-section-row', 'project:alpha');
+  const order = collect(row, () => true);
+  assert.ok(
+    order.indexOf(panel) > order.indexOf(editButtonOf(tree, 'project:alpha')),
+    'the form follows the row content it was opened from',
+  );
+  // Only that row got it.
+  assert.equal(collect(row, (node) => node.props && node.props['data-region'] === 'editor').length, 1);
+  const other = oneBy(tree, 'data-section-row', 'harness:identity');
+  assert.equal(collect(other, (node) => node.props && node.props['data-region'] === 'editor').length, 0);
+});
+
+test('client: the append entry owns no row and keeps the page-level slot', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'append-new' });
+  tree = await page.flush();
+
+  const panel = editorPanel(tree);
+  assert.equal(panel.props['data-editor-entry'], 'append-new');
+  assert.equal(panel.props['data-editor-row'], undefined, 'a new name belongs to no row');
+  assert.equal(panel.props['data-editor-fallback'], undefined, 'and nothing fell back');
+  assert.deepEqual(owningRows(tree, panel), [], 'the form is not inside any section row');
+  const list = oneBy(tree, 'data-region', 'sections');
+  assert.equal(containsNode(list, panel), false, 'and it is not inside the section list either');
+  const order = collect(tree, () => true);
+  assert.ok(order.indexOf(panel) < order.indexOf(list), 'the page-level slot still comes before the list');
+  // The behaviour and copy of the entry are the ones it always had.
+  assert.equal(panel.props['data-editor-actions'], 'append');
+  assert.equal(panel.props['data-editor-name-locked'], 'false');
+  assert.equal(nameField(tree).props.value, '');
+});
+
+test('client: an own-override row opens its form at its own entry', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  assert.equal(editButtonOf(tree, 'extra:appended').props['data-entry'], 'edit-override');
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'extra:appended' });
+  tree = await page.flush();
+
+  const panel = editorPanel(tree);
+  assert.equal(panel.props['data-editor-entry'], 'edit-override');
+  assert.equal(panel.props['data-editor-row'], 'extra:appended');
+  assert.deepEqual(owningRows(tree, panel), ['extra:appended'], 'the own-override form stays at its entry');
+  assert.equal(panel.props['data-editor-fallback'], undefined);
+  assert.equal(oneBy(tree, 'data-role', 'text').props.value, 'appended text');
+
+  // The overrides view is a different surface: it never carried the editor, and
+  // moving the row form must not have put one there. Leaving the sections view
+  // is also the second way a row is taken away, and it falls back like the rest.
+  clickTab(tree, 'view', 'overrides');
+  tree = await page.flush();
+  const overrides = oneBy(tree, 'data-region', 'overrides');
+  assert.equal(containsNode(overrides, editorPanel(tree)), false, 'the overrides view carries no editor');
+  assert.equal(editorPanel(tree).props['data-editor-fallback'], 'row-hidden');
+  assert.equal(editorPanel(tree).props['data-editor-row'], 'extra:appended', 'the owner is still named');
+});
+
+test('client: a filtered-away row sends the form to the slot without losing the text', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+  typeInto(tree, 'text', 'edited while the filter is on');
+  tree = await page.flush();
+  assert.deepEqual(owningRows(tree, editorPanel(tree)), ['project:alpha']);
+
+  // The origin filter drops the very row the open form belongs to.
+  clickTab(tree, 'origin', 'appended');
+  tree = await page.flush();
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-section-row'] === 'project:alpha').length,
+    0,
+    'the owning row is gone',
+  );
+  const panel = editorPanel(tree);
+  assert.equal(panel.props['data-editor-fallback'], 'row-hidden');
+  assert.equal(panel.props['data-editor-row'], 'project:alpha', 'the owner is still named');
+  assert.deepEqual(owningRows(tree, panel), [], 'and the form is out of the list');
+  assert.equal(panel.props['data-editor-entry'], 'edit', 'the entry itself did not change');
+  assert.equal(oneBy(tree, 'data-role', 'text').props.value, 'edited while the filter is on', 'nothing typed is lost');
+  assert.equal(nameField(tree).props.value, 'project:alpha');
+
+  // Clearing the filter puts the very same form back inside its row.
+  clickTab(tree, 'origin', 'all');
+  tree = await page.flush();
+  assert.deepEqual(owningRows(tree, editorPanel(tree)), ['project:alpha'], 'the row got its form back');
+  assert.equal(editorPanel(tree).props['data-editor-fallback'], undefined);
+  assert.equal(oneBy(tree, 'data-role', 'text').props.value, 'edited while the filter is on');
+});
+
+test('client: a row that a reload removes sends the form to the slot too', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+  typeInto(tree, 'text', 'typed before the reload');
+  tree = await page.flush();
+  assert.deepEqual(owningRows(tree, editorPanel(tree)), ['project:alpha']);
+
+  // The third way a row goes away, and the one no filter and no view tab is
+  // behind: the assembly itself moves. The row the form was opened on is simply
+  // not in the next snapshot, so there is nothing to nest it in any more.
+  const next = snapshotFixture();
+  next.effective.sections = next.effective.sections.filter((section) => section.name !== 'project:alpha');
+  page.router.set(PATHS.snapshot, { payload: next });
+  clickButton(tree, { 'data-action': 'refresh' });
+  tree = await page.flush();
+
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-section-row'] === 'project:alpha').length,
+    0,
+    'the row is no longer in the assembly',
+  );
+  const panel = editorPanel(tree);
+  assert.equal(panel.props['data-editor-fallback'], 'row-hidden');
+  assert.equal(panel.props['data-editor-row'], 'project:alpha', 'the owner is still named');
+  assert.deepEqual(owningRows(tree, panel), []);
+  assert.equal(panel.props['data-editor-entry'], 'edit', 'the entry itself did not change');
+  assert.equal(oneBy(tree, 'data-role', 'text').props.value, 'typed before the reload', 'nothing typed is lost');
+  assert.equal(nameField(tree).props.value, 'project:alpha');
+});
+
+test('client: a view switch keeps an open row form reachable', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
+  tree = await page.flush();
+  typeInto(tree, 'text', 'kept across the view switch');
+  tree = await page.flush();
+  assert.deepEqual(owningRows(tree, editorPanel(tree)), ['harness:identity']);
+
+  clickTab(tree, 'view', 'full');
+  tree = await page.flush();
+  const panel = editorPanel(tree);
+  assert.equal(panel.props['data-editor-fallback'], 'row-hidden');
+  assert.equal(panel.props['data-editor-row'], 'harness:identity');
+  assert.deepEqual(owningRows(tree, panel), []);
+  assert.equal(oneBy(tree, 'data-role', 'text').props.value, 'kept across the view switch');
+});
+
+test('client: opening an edit form puts the caret in the text, once per session', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+
+  let panel = editorPanel(tree);
+  assert.equal(panel.props['data-editor-focus'], 'text');
+  assert.equal(typeof panel.props.ref, 'function', 'the panel hands its root to the page');
+
+  const first = fakePanelRoot();
+  assert.deepEqual(first.focused, [], 'no node is committed yet, so nothing was focused');
+  panel.props.ref(first.node);
+  tree = await page.flush();
+  assert.deepEqual(first.queried, ['[data-role="text"]'], 'the text area is the target');
+  assert.deepEqual(first.focused, ['[data-role="text"]'], 'and the caret landed there exactly once');
+
+  // A re-render is not an open: typing, or moving to the layer tabs, must not
+  // pull the caret back out of the control the user moved to.
+  typeInto(tree, 'text', 'still mine');
+  tree = await page.flush();
+  clickTab(tree, 'editor-layer', 'workspace');
+  tree = await page.flush();
+  assert.deepEqual(first.focused, ['[data-role="text"]'], 'a later render takes no caret back');
+  const second = fakePanelRoot();
+  editorPanel(tree).props.ref(second.node);
+  tree = await page.flush();
+  assert.deepEqual(second.focused, [], 'the session already took its focus');
+
+  // Closing and re-opening the same row arms the caret again.
+  panel = editorPanel(tree);
+  const closingRef = panel.props.ref;
+  clickButton(tree, { 'data-action': 'cancel' });
+  tree = await page.flush();
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-region'] === 'editor').length,
+    0,
+    'the form is closed',
+  );
+  closingRef(null); // what React commits on unmount
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+  assert.deepEqual(first.focused, ['[data-role="text"]'], 'a closed panel holds no caret');
+  const third = fakePanelRoot();
+  editorPanel(tree).props.ref(third.node);
+  tree = await page.flush();
+  assert.deepEqual(third.focused, ['[data-role="text"]'], 're-opening the same row arms the caret again');
+});
+
+test('client: the append entry puts the caret in the name field', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'append-new' });
+  tree = await page.flush();
+
+  const panel = editorPanel(tree);
+  assert.equal(panel.props['data-editor-focus'], 'name');
+  const root = fakePanelRoot();
+  panel.props.ref(root.node);
+  tree = await page.flush();
+  assert.deepEqual(root.queried, ['[data-role="name"]']);
+  assert.deepEqual(root.focused, ['[data-role="name"]'], 'the first thing to type is the name');
+});
+
+test('client: the row switch closes the form it opened', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  assert.equal(editButtonOf(tree, 'project:alpha').props['aria-expanded'], 'false');
+
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+  assert.equal(editButtonOf(tree, 'project:alpha').props['aria-expanded'], 'true');
+  typeInto(tree, 'text', 'half-typed, then folded');
+  tree = await page.flush();
+
+  // The same button, pressed again: the form folds. No 「取消」 hunt needed.
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-region'] === 'editor').length,
+    0,
+    'the form is gone',
+  );
+  assert.equal(editButtonOf(tree, 'project:alpha').props['aria-expanded'], 'false');
+  assert.equal(editButtonOf(tree, 'project:alpha').props.disabled, false, 'and the row is editable again');
+  // Folding is not deleting: the row is still there, with its stored text.
+  assert.ok(oneBy(tree, 'data-section-row', 'project:alpha'));
+  assert.equal(collect(tree, (node) => node.props && node.props['data-role'] === 'text').length, 0);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-role'] === 'name').length, 0);
+});
+
+test('client: only the row that holds the open form reports itself expanded', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  // Five rows, five switches, all reporting the truth before anything opens.
+  assert.deepEqual(editSwitches(tree), [
+    ['harness:identity', 'false'],
+    ['project:alpha', 'false'],
+    ['extra:appended', 'false'],
+    ['companion:extra', 'false'],
+    ['ghost:section', 'false'],
+  ]);
+
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+  assert.deepEqual(editSwitches(tree), [
+    ['harness:identity', 'false'],
+    ['project:alpha', 'true'],
+    ['extra:appended', 'false'],
+    ['companion:extra', 'false'],
+    ['ghost:section', 'false'],
+  ]);
+
+  // The active state is paint only: every layout-affecting property of the
+  // pressed switch is byte-identical to an unpressed one, so opening a row
+  // moves nothing and no other row changes.
+  const pressed = editButtonOf(tree, 'project:alpha');
+  const resting = editButtonOf(tree, 'harness:identity');
+  for (const key of ['font', 'fontSize', 'padding', 'borderRadius', 'border']) {
+    assert.equal(pressed.props.style[key], resting.props.style[key], `${key} is unchanged by the active state`);
+  }
+  assert.equal(resting.props.style.background, 'transparent');
+  assert.notEqual(pressed.props.style.background, resting.props.style.background, 'the pressed switch is marked');
+});
+
+test('client: opening another row folds the first and moves the one form', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+  typeInto(tree, 'text', 'alpha edit, left behind');
+  tree = await page.flush();
+  assert.deepEqual(owningRows(tree, editorPanel(tree)), ['project:alpha']);
+
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
+  tree = await page.flush();
+
+  // Still one form, now in the other row, holding THAT row's stored text.
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-region'] === 'editor').length,
+    1,
+    'one form at a time',
+  );
+  const panel = editorPanel(tree);
+  assert.equal(panel.props['data-editor-row'], 'harness:identity');
+  assert.equal(panel.props['data-editor-name'], 'harness:identity');
+  assert.deepEqual(owningRows(tree, panel), ['harness:identity']);
+  assert.equal(oneBy(tree, 'data-role', 'text').props.value, 'identity base', 'the new row starts from its own text');
+  assert.deepEqual(editSwitches(tree), [
+    ['harness:identity', 'true'],
+    ['project:alpha', 'false'],
+    ['extra:appended', 'false'],
+    ['companion:extra', 'false'],
+    ['ghost:section', 'false'],
+  ]);
+  const first = oneBy(tree, 'data-section-row', 'project:alpha');
+  assert.equal(collect(first, (node) => node.props && node.props['data-region'] === 'editor').length, 0);
+});
+
+test('client: expanding a row pulls the form in with the smallest scroll', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+
+  const root = fakePanelRoot();
+  assert.deepEqual(root.scrolled, []);
+  editorPanel(tree).props.ref(root.node);
+  tree = await page.flush();
+  assert.deepEqual(scrollOptions(root), [{ block: 'nearest' }], 'the form is pulled in, minimally');
+  assert.notEqual(root.scrolled[0].block, 'start', 'never by yanking the page to the top of the form');
+
+  // Neither half repeats while the row is being typed in.
+  typeInto(tree, 'text', 'typing must not scroll');
+  tree = await page.flush();
+  clickTab(tree, 'editor-layer', 'workspace');
+  tree = await page.flush();
+  assert.deepEqual(scrollOptions(root), [{ block: 'nearest' }], 'a later render does not scroll again');
+  assert.deepEqual(root.focused, ['[data-role="text"]'], 'nor takes the caret back');
+
+  // A node committed by a later render is equally not a new open.
+  const later = fakePanelRoot();
+  editorPanel(tree).props.ref(later.node);
+  tree = await page.flush();
+  assert.deepEqual(scrollOptions(later), [], 'the session already took its scroll');
+  assert.deepEqual(later.focused, []);
+});
+
+test('client: a node with no scrollIntoView is survivable', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+
+  // The node the page is handed may have no scrolling API at all; the panel
+  // must still open, still take the caret, and not throw.
+  const bare = fakePanelRoot({ scrollable: false });
+  assert.equal(bare.node.scrollIntoView, undefined);
+  editorPanel(tree).props.ref(bare.node);
+  tree = await page.flush();
+  assert.equal(editorPanel(tree).props['data-editor-row'], 'project:alpha');
+  assert.deepEqual(bare.focused, ['[data-role="text"]'], 'the caret still lands');
+  assert.deepEqual(bare.queried, ['[data-role="text"]']);
+});
+
+test('client: a row cannot fold the append entry it does not own', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'append-new' });
+  tree = await page.flush();
+  // Typing a name an existing row happens to carry must not make that row's
+  // switch behave as if it owned the open form.
+  typeInto(tree, 'name', 'project:alpha');
+  tree = await page.flush();
+  assert.equal(editorPanel(tree).props['data-editor-entry'], 'append-new');
+  assert.equal(oneBy(tree, 'data-role', 'name').props.value, 'project:alpha');
+
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-region'] === 'editor').length,
+    1,
+    'the append entry switched to the row, it did not fold',
+  );
+  const panel = editorPanel(tree);
+  assert.equal(panel.props['data-editor-entry'], 'edit');
+  assert.equal(panel.props['data-editor-row'], 'project:alpha');
+  assert.deepEqual(owningRows(tree, panel), ['project:alpha']);
+  assert.deepEqual(editSwitches(tree), [
+    ['harness:identity', 'false'],
+    ['project:alpha', 'true'],
+    ['extra:appended', 'false'],
+    ['companion:extra', 'false'],
+    ['ghost:section', 'false'],
+  ]);
+
+  // And now the same switch folds the form it did open.
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'editor').length, 0);
+});
+
+test('client: folding and re-opening the same row re-arms scroll and caret', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+  const first = fakePanelRoot();
+  editorPanel(tree).props.ref(first.node);
+  tree = await page.flush();
+  assert.deepEqual(scrollOptions(first), [{ block: 'nearest' }]);
+  assert.deepEqual(first.focused, ['[data-role="text"]']);
+
+  // Fold, and commit the detach React performs on unmount.
+  const closingRef = editorPanel(tree).props.ref;
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'editor').length, 0);
+  closingRef(null);
+
+  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+  assert.deepEqual(scrollOptions(first), [{ block: 'nearest' }], 'the folded session scrolls no more');
+  assert.deepEqual(first.focused, ['[data-role="text"]']);
+  const second = fakePanelRoot();
+  editorPanel(tree).props.ref(second.node);
+  tree = await page.flush();
+  assert.deepEqual(scrollOptions(second), [{ block: 'nearest' }], 're-opening arms the scroll again');
+  assert.deepEqual(second.focused, ['[data-role="text"]'], 'and the caret again');
+  assert.equal(editButtonOf(tree, 'project:alpha').props['aria-expanded'], 'true');
+});
+
+// #endregion
+
 test('client: the sections view proves why an override did not take effect', async () => {
   const payload = snapshotFixture();
   // A registered section whose append override the Host skipped: `applied:false`
@@ -4027,6 +4556,8 @@ const EN_SWEEP_CASES = [
       ['data-editor-entry', 'edit'],
       ['data-editor-actions', 'replace,hide'],
       ['data-warning', 'workspace-layer-disabled'],
+      ['data-editor-row', 'harness:identity'],
+      ['data-editor-focus', 'text'],
     ],
     copy: ['editHeading', 'editText', 'editLayer', 'editSave', 'editNameLocked', 'editNameLockedHint', 'editDisabledWorkspaceLayer'],
     async run() {
@@ -4046,6 +4577,7 @@ const EN_SWEEP_CASES = [
       ['data-region', 'editor'],
       ['data-editor-entry', 'append-new'],
       ['data-editor-actions', 'append'],
+      ['data-editor-focus', 'name'],
     ],
     copy: ['appendHeading', 'appendName', 'appendNameHint', 'appendActionFixed', 'appendActionHint', 'appendUntitled'],
     async run() {
@@ -4064,6 +4596,9 @@ const EN_SWEEP_CASES = [
       ['data-warning', 'entry-feedback'],
       ['data-warning', 'override-blocked'],
       ['data-block-code', 'section-not-present'],
+      // The world moved: the section the open form belongs to is gone from the
+      // assembly, so the row-scoped form falls back to the slot.
+      ['data-editor-fallback', 'row-hidden'],
     ],
     copy: ['feedbackNameTaken', 'blockNotPresent', 'blockTitle', 'editOrderInvalid'],
     async run() {
@@ -4508,6 +5043,10 @@ const EN_REQUIRED_MARKERS = [
   'data-editor-entry=edit',
   'data-editor-entry=append-new',
   'data-editor-entry=edit-override',
+  'data-editor-row=harness:identity',
+  'data-editor-focus=text',
+  'data-editor-focus=name',
+  'data-editor-fallback=row-hidden',
   'data-build-match=true',
   'data-build-match=false',
   'data-build-match=unknown',

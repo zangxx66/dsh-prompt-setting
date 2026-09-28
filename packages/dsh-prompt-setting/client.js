@@ -2063,6 +2063,60 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Which control the open panel hands the caret to. The append entry is the
+     * only place a new name is typed, so that is where the user starts; both
+     * entries that edit a name the row already decided start in the text.
+     * @param editor - the editor state.
+     * @returns 'name' | 'text' — a `data-role` value inside the panel.
+     */
+    function editorFocusRole(editor) {
+      return editorEntry(editor) === 'append-new' ? 'name' : 'text';
+    }
+
+    /**
+     * Where the open editor belongs on the page.
+     *
+     * An entry opened *from a row* belongs to that row: the form is rendered
+     * inside it, right below the row's own content, so opening a row far down a
+     * long list never sends the user back to a panel above the list. There are
+     * two row-scoped entries — {@link editorRoute} decides which one a row
+     * opens — and neither is placed anywhere but in its row or in the slot.
+     *
+     * The row can still be taken away while the panel is open, in exactly three
+     * ways, and every one of them lands here: a filter hides it, a view switch
+     * stops listing it, or the assembly itself moves under the panel and the
+     * next snapshot no longer returns that section. None of them may hide the
+     * form, so the editor falls back to the page-level slot and says why. The
+     * fallback is a *placement* decision only — the editor state is untouched,
+     * so nothing typed is lost, and the row coming back puts the form back
+     * inside it. (The section list has no search box and no paging, so those
+     * three are the whole of it.)
+     *
+     * `append-new` is the one entry with no row to belong to: it is the
+     * page-level entry by construction and always renders in the slot.
+     *
+     * @param m - the page model.
+     * @returns `{inline, row, fallback}` — `row` is the owning section name for
+     *   a row-scoped entry (whether or not that row is rendered), and `fallback`
+     *   is `'row-hidden'` when the owning row is not on screen.
+     */
+    function editorPlacement(m) {
+      if (m.editor === null || m.editor === undefined) {
+        return { inline: false, row: null, fallback: null };
+      }
+      if (editorEntry(m.editor) === 'append-new') {
+        return { inline: false, row: null, fallback: null };
+      }
+      const name = typeof m.editor.name === 'string' ? m.editor.name : '';
+      const sections = Array.isArray(m.effectiveSections) ? m.effectiveSections : [];
+      const section = m.view === 'sections' ? sections.find((entry) => entry.name === name) : undefined;
+      if (section !== undefined && m.passesFilters(section)) {
+        return { inline: true, row: name, fallback: null };
+      }
+      return { inline: false, row: name, fallback: 'row-hidden' };
+    }
+
+    /**
      * The live verdict of the entry the user is standing in: rendered while
      * typing, and the reason neither entry can reach the pre-save check.
      *
@@ -3602,15 +3656,21 @@ window.__ModuleLoader__.load({
      * @param m - the page model.
      * @param a - the page actions.
      * @param section - the `effective.sections` entry.
+     * @param inlineEditor - the editor element to nest inside this row, or null
+     *   when the open editor belongs to another row (or to the page slot).
      * @returns the row element.
      */
-    function sectionRow(t, m, a, section) {
+    function sectionRow(t, m, a, section, inlineEditor) {
       const origin = originOf(section);
       const layer = sectionLayer(section);
       const overridable = section.overridable === true;
       const gate = editGate(section, m.fz, t);
       const text = typeof section.text === 'string' ? section.text : '';
       const expanded = m.expanded === section.name;
+      // Whether THIS row is the one holding the open form. The caller hands the
+      // panel element to its own row and to no other, so a non-null element is
+      // the ownership fact the 「编辑」 switch reports via `aria-expanded`.
+      const editorOpen = inlineEditor !== null && inlineEditor !== undefined;
       const cause = ineffectiveCause(t, section, m.incoming);
       const showHint = origin === 'downstream-added' || origin === 'unmatched-override';
       return h(
@@ -3696,7 +3756,16 @@ window.__ModuleLoader__.load({
               // a name the assembly really has is edited as replace/hide, a row
               // that is only our own override is re-saved as an append.
               'data-entry': editorRoute(section, m.incoming),
-              disabled: gate.disabled,
+              // The button is a switch, so it reports its own state. `inlineEditor`
+              // is non-null for exactly the row that owns the open form, and a row
+              // that owns it is always rendered — so this is the ownership fact,
+              // not a copy of it. Only a row that owns the form may be pressed
+              // while its gate is shut: folding is always allowed.
+              // Written as the explicit `'true'`/`'false'` string (like the
+              // `data-*` markers, and unlike `aria-readonly` above) because this
+              // is a state a probe and a test read back verbatim.
+              'aria-expanded': String(editorOpen),
+              disabled: gate.disabled && !editorOpen,
               title: gate.reasons.join(' '),
               onClick: () => a.openEditor(section),
               style: {
@@ -3704,10 +3773,13 @@ window.__ModuleLoader__.load({
                 fontSize: 12,
                 padding: '2px 8px',
                 borderRadius: 6,
-                cursor: gate.disabled ? 'default' : 'pointer',
-                opacity: gate.disabled ? 0.5 : 1,
-                color: token.labelSecondary,
-                background: 'transparent',
+                cursor: gate.disabled && !editorOpen ? 'default' : 'pointer',
+                opacity: gate.disabled && !editorOpen ? 0.5 : 1,
+                // The active state is paint only — the border box, padding and
+                // type are byte-identical to every other row's button, so
+                // opening a row moves nothing on screen.
+                color: editorOpen ? token.labelPrimary : token.labelSecondary,
+                background: editorOpen ? token.hoverFill : 'transparent',
                 border: `1px solid ${token.borderL2}`,
               },
             },
@@ -3737,6 +3809,11 @@ window.__ModuleLoader__.load({
               text,
             )
           : null,
+        // The editor that belongs to THIS row is nested here, right below the
+        // row's own content: opening a row far down a long list must not send
+        // the user back to a panel above the list. Rows of a row that owns no
+        // open editor stay exactly as they were.
+        inlineEditor === null || inlineEditor === undefined ? null : inlineEditor,
       );
     }
 
@@ -3756,12 +3833,20 @@ window.__ModuleLoader__.load({
      *      two entries cannot produce: a broken entry contract, or a world that
      *      moved under an open panel.
      *
+     * Where the panel is *drawn* is not decided here: {@link editorPlacement}
+     * answers that, and the caller either nests this element inside the owning
+     * row or puts it in the page-level slot. The placement therefore travels on
+     * this element as markers, so a probe reads it without walking the tree.
+     *
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
+     * @param placement - the {@link editorPlacement} verdict for `m`.
+     * @param rootRef - ref callback for the panel root; the caret is placed
+     *   inside it once React has attached a node.
      * @returns the panel element, or null when nothing is selected.
      */
-    function renderEditor(t, m, a) {
+    function renderEditor(t, m, a, placement, rootRef) {
       const editor = m.editor;
       if (editor === null) return null;
       const entry = editorEntry(editor);
@@ -3784,6 +3869,14 @@ window.__ModuleLoader__.load({
       }
       const headingKey =
         entry === 'append-new' ? 'appendHeading' : entry === 'edit-override' ? 'editOverrideHeading' : 'editHeading';
+      // Ownership and placement are separate facts. `data-editor-row` names the
+      // row the form belongs to — it is set for every row-scoped entry, so it
+      // still names the owner while the fallback is active — and
+      // `data-editor-fallback` appears only when that row is not on screen.
+      // `data-editor-focus` records which control the caret was placed in.
+      const placementProps = { 'data-editor-focus': editorFocusRole(editor) };
+      if (placement.row !== null) placementProps['data-editor-row'] = placement.row;
+      if (placement.fallback !== null) placementProps['data-editor-fallback'] = placement.fallback;
       return h(
         'section',
         {
@@ -3793,6 +3886,8 @@ window.__ModuleLoader__.load({
           'data-editor-entry': entry,
           'data-editor-name-locked': String(nameLocked),
           'data-editor-actions': allowed.join(','),
+          ...placementProps,
+          ref: rootRef,
           style: cardStyle,
         },
         h(
@@ -3997,9 +4092,12 @@ window.__ModuleLoader__.load({
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
+     * @param inlineEditor - `{row, element}` for the open row-scoped editor, or
+     *   null when the editor is not drawn inside this list. The element is
+     *   handed to the one row it belongs to, and to no other.
      * @returns the view element.
      */
-    function renderSectionsView(t, m, a) {
+    function renderSectionsView(t, m, a, inlineEditor) {
       const sections = m.effectiveSections;
       const shown = sections.filter((section) => m.passesFilters(section));
       return h(
@@ -4035,7 +4133,21 @@ window.__ModuleLoader__.load({
               h('p', { style: { margin: '4px 0 0', ...metaStyle } }, t('emptyBody')),
             )
           : null,
-        shown.map((section) => h('div', { key: section.name }, sectionRow(t, m, a, section))),
+        shown.map((section) =>
+          h(
+            'div',
+            { key: section.name },
+            sectionRow(
+              t,
+              m,
+              a,
+              section,
+              inlineEditor !== null && inlineEditor !== undefined && inlineEditor.row === section.name
+                ? inlineEditor.element
+                : null,
+            ),
+          ),
+        ),
       );
     }
 
@@ -4962,9 +5074,11 @@ window.__ModuleLoader__.load({
      * @param t - the bound translator for this namespace.
      * @param m - the page model.
      * @param a - the page actions.
+     * @param rootRef - ref callback for the editor panel root, handed down so
+     *   the caret can be placed once the panel is on screen.
      * @returns the page element.
      */
-    function renderSection(t, m, a) {
+    function renderSection(t, m, a, rootRef) {
       const children = [];
       children.push(
         h('h2', { key: 'title', style: { margin: 0, fontSize: 18, fontWeight: 600, lineHeight: '26px' } }, t('title')),
@@ -4990,8 +5104,15 @@ window.__ModuleLoader__.load({
           ),
         ),
       );
-      const editorPanel = renderEditor(t, m, a);
-      if (editorPanel !== null) children.push(h('div', { key: 'editor-slot', style: { display: 'contents' } }, editorPanel));
+      const placement = editorPlacement(m);
+      const editorPanel = renderEditor(t, m, a, placement, rootRef);
+      // A row-scoped panel is drawn by the row that owns it and only falls back
+      // to this slot when that row is not on screen; `append-new` has no row and
+      // is always drawn here.
+      if (editorPanel !== null && !placement.inline) {
+        children.push(h('div', { key: 'editor-slot', style: { display: 'contents' } }, editorPanel));
+      }
+      const inlineEditor = editorPanel !== null && placement.inline ? { row: placement.row, element: editorPanel } : null;
       if (m.snap.phase === 'error') children.push(h('div', { key: 'snap-error' }, errorBanner(t, m.snap.error, t('loadFailed'))));
       if (m.ovs.phase === 'error') children.push(h('div', { key: 'ovs-error' }, errorBanner(t, m.ovs.error, t('loadFailed'))));
       if (m.notice) {
@@ -5019,7 +5140,7 @@ window.__ModuleLoader__.load({
           m.snap.phase === 'loading' && !m.snap.data ? h('p', { key: 'loading', style: metaStyle }, t('loading')) : null,
           m.snap.data
             ? m.view === 'sections'
-              ? renderSectionsView(t, m, a)
+              ? renderSectionsView(t, m, a, inlineEditor)
               : m.view === 'full'
                 ? renderFullView(t, m, a)
                 : renderOverridesView(t, m, a)
@@ -5257,6 +5378,50 @@ window.__ModuleLoader__.load({
           cancelled = true;
         };
       }, [view, historyLayer, sessionArg, reload]);
+
+      // Two things happen once, when a panel is opened, and never again for that
+      // open: the panel is pulled into view and the caret is placed inside it.
+      //
+      //   - The scroll is the *smallest* one that shows the form
+      //     (`block: 'nearest'`); `'start'` would yank the whole page and lose
+      //     the row the user just clicked. A node without `scrollIntoView` is
+      //     survivable and simply does not scroll.
+      //   - The caret follows the entry: a fresh name is typed in the append
+      //     entry, an existing section is edited in the text. The control is
+      //     reached through the panel *root* ref, so this works whatever atoms
+      //     the renderer resolved to — the root is a host element in both
+      //     branches.
+      //
+      // Each half is latched by its own key, because each depends on something
+      // different (a node vs. a node that contains the control). Both latches
+      // are cleared when the panel closes, which re-arms the same row. A
+      // re-render is not an open: typing must neither re-scroll nor pull the
+      // caret back out of the control the user moved to.
+      const editorFocus = React.useRef({ focusKey: null, scrollKey: null, root: null });
+      React.useEffect(() => {
+        if (editor === null) {
+          editorFocus.current.focusKey = null;
+          editorFocus.current.scrollKey = null;
+          return;
+        }
+        const key = `${editorEntry(editor)}|${String(editor.name)}|${String(editor.nameLocked)}`;
+        const node = editorFocus.current.root;
+        if (node === null || node === undefined) return;
+        if (editorFocus.current.scrollKey !== key && typeof node.scrollIntoView === 'function') {
+          editorFocus.current.scrollKey = key;
+          node.scrollIntoView({ block: 'nearest' });
+        }
+        if (editorFocus.current.focusKey === key) return;
+        const target =
+          typeof node.querySelector === 'function' ? node.querySelector(`[data-role="${editorFocusRole(editor)}"]`) : null;
+        if (target === null || target === undefined || typeof target.focus !== 'function') return;
+        editorFocus.current.focusKey = key;
+        target.focus();
+      }, [editor]);
+      /** Hand the panel root to {@link editorFocus} once React commits it. */
+      const editorRootRef = (node) => {
+        editorFocus.current.root = node;
+      };
 
       const snapshot = snap.data;
       const fz = frozenState(snapshot, sessionArg !== null);
@@ -5583,8 +5748,26 @@ window.__ModuleLoader__.load({
          * under its own name. `section.action` is only reflected when it is one
          * of the entry's actions, so a registered section whose old override was
          * an (ineffective) append comes up as the replace that fixes it.
+         *
+         * The button is a switch, the way DSH's own settings rows are (in
+         * `dsh-client-ui-settings-models` the row button carries
+         * `aria-expanded` and calls `onToggle`): pressing the 「编辑」 that
+         * opened a row's form closes it again, so collapsing a row does not
+         * mean hunting for 「取消」. Pressing another row's 「编辑」 switches the
+         * one open form to that row. `closeEditor` stays the explicit way out
+         * and is untouched.
+         *
+         * Closing is checked before the gate on purpose: folding never needs
+         * permission, and a form must always be closable by the button that
+         * opened it. Only a *row-scoped* session can be toggled — the 新增一段
+         * entry owns no row, so no row may close it.
          */
         openEditor: (section) => {
+          const editing = editor !== null && editorEntry(editor) !== 'append-new';
+          if (editing && section && section.name === editor.name) {
+            setEditor(null);
+            return;
+          }
           const gate = editGate(section, fz, t);
           if (gate.disabled) {
             setNotice({ tone: 'error', text: gate.reasons.join(' ') });
@@ -5803,7 +5986,7 @@ window.__ModuleLoader__.load({
       };
 
       try {
-        return renderSection(t, model, actions);
+        return renderSection(t, model, actions, editorRootRef);
       } catch (error) {
         return renderFailureCard(t, error);
       }
