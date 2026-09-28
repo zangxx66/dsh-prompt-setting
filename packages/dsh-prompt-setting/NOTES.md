@@ -1597,8 +1597,8 @@ evidence: suite=npm-pack passed=13 failed=0 exit=0 commit=ec5e958
 
 - 全量：`evidence: suite=all passed=285 failed=0 exit=0 ms=4493 diff=3f/+421/-18 commit=ea8ab2d`
 - 宿主路由+刷新套件：`evidence: suite=route+refresh passed=48 failed=0 exit=0 ms=286 diff=3f/+421/-18 commit=ea8ab2d`
-- 集成套件（真包真 Cordis）**pass 非 skip**：见全量中的 `integration` 组，未出现 skip
-  （`ℹ skipped 0`）。
+- 集成套件（真包真 Cordis）**pass 非 skip**：`evidence: suite=integration passed=12 failed=0 exit=0 ms=243 diff=3f/+421/-18 commit=ea8ab2d`
+  （12 个用例全部 ✔，`skipped 0`；不是「整文件跳过」的假绿）。
 - 基线对照：改动前同一条命令 `tests 276 pass 276 fail 0`（§62bis 记录的那一轮），
   本轮为 `285 = 276 + 9`。
 
