@@ -11,17 +11,50 @@
  * Run: `node --test test/`
  */
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test, { afterEach, beforeEach } from 'node:test';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { apply, inject } from '../index.js';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const PACKAGE_ROOT = join(here, '..');
+/** The published bundle whose bytes the ping must fingerprint. */
+const CLIENT_PATH = join(PACKAGE_ROOT, 'client.js');
 
 const PING_PATH = '/prompt-setting/ping';
 const SNAPSHOT_PATH = '/prompt-setting/snapshot';
 const OVERRIDES_PATH = '/prompt-setting/overrides';
 const IMPORT_PATH = '/prompt-setting/import';
+
+/** Markers as documented in CONTRACT.md §14, written out independently. */
+const BUILD_BEGIN = '/* @build-fingerprint:begin */';
+const BUILD_END = '/* @build-fingerprint:end */';
+
+/**
+ * Independent recomputation of the build digest from the contract text.
+ *
+ * Deliberately **not** imported from `core/build.js`: this file is the oracle
+ * for what the host answers, so it may not share the code under test. It is a
+ * fresh FNV-1a 32 over the marker region, normalized the documented way.
+ * @param text - the bundle text.
+ * @returns `{hash, size}` or `null` when the markers are unusable.
+ */
+function independentBuildFingerprint(text) {
+  let value = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  value = value.replace(/\r\n?/g, '\n');
+  const from = value.indexOf(BUILD_BEGIN);
+  const to = value.indexOf(BUILD_END);
+  if (from === -1 || to === -1 || from >= to) return null;
+  const region = value.slice(from + BUILD_BEGIN.length, to);
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < region.length; index += 1) {
+    hash = Math.imul(hash ^ region.charCodeAt(index), 0x01000193) >>> 0;
+  }
+  return { hash: hash.toString(16).padStart(8, '0'), size: region.length };
+}
 
 /** The sections a fresh fake Host registers, in registration order. */
 const DEFAULT_SECTIONS = [
@@ -97,6 +130,9 @@ function makeRequest({ method = 'GET', url = PING_PATH, headers = {}, body } = {
  * @param options.variables - the fake assembly's resolved variables.
  * @param options.beforeDispatch - awaited before each waterfall dispatch: the
  *   window in which a concurrent assembly could run.
+ * @param options.host - the `apply` to mount; defaults to this package's. The
+ *   build-stamp liveness test mounts a *copy* of the package so it can change
+ *   the bundle on disk without touching the real `client.js`.
  * @returns the captured route plus the harness handles.
  */
 function mount(options = {}) {
@@ -186,7 +222,7 @@ function mount(options = {}) {
       return factory();
     },
   };
-  apply(ctx);
+  (options.host ?? apply)(ctx);
   return { ctx, routes, route: routes[0], disposedCount: () => disposed, listeners, agents };
 }
 
@@ -239,20 +275,89 @@ test('host: one prefix route owns the /prompt-setting prefix and both effects di
   assert.equal(harness.route.path, '/prompt-setting');
 });
 
-test('host: GET /prompt-setting/ping is unchanged, including the renderer report', async () => {
+test('host: GET /prompt-setting/ping reports the renderer and the live client build stamp', async () => {
   const { route } = mount();
   const res = await call(route);
   assert.equal(res.statusCode, 200);
   assert.equal(res.headers['content-type'], 'application/json; charset=utf-8');
   assert.equal(res.headers['cache-control'], 'no-store');
   const payload = json(res);
-  assert.deepEqual(Object.keys(payload).sort(), ['clientRenderer', 'clientReportedAt', 'ok', 'plugin', 'time', 'version']);
+  assert.deepEqual(Object.keys(payload).sort(), [
+    'clientBuild',
+    'clientRenderer',
+    'clientReportedAt',
+    'ok',
+    'plugin',
+    'time',
+    'version',
+  ]);
   assert.equal(payload.ok, true);
   assert.equal(payload.clientRenderer, null);
+
+  // The stamp is the digest of the bytes on disk *now*, so an independent
+  // recomputation of the real file must agree field for field — a constant, a
+  // stale copy or a different algorithm would all show up here.
+  const bytes = readFileSync(CLIENT_PATH, 'utf8');
+  const oracle = independentBuildFingerprint(bytes);
+  assert.notEqual(oracle, null, 'the published bundle carries a usable marker region');
+  assert.deepEqual(payload.clientBuild, {
+    hash: oracle.hash,
+    size: oracle.size,
+    mtime: statSync(CLIENT_PATH).mtime.toISOString(),
+  });
+  assert.match(payload.clientBuild.hash, /^[0-9a-f]{8}$/);
+  // Two probes answer the same thing while the file is unchanged.
+  assert.deepEqual(json(await call(route)).clientBuild, payload.clientBuild);
 
   const reported = json(await call(route, { url: `${PING_PATH}?renderer=primitives` }));
   assert.equal(reported.clientRenderer, 'primitives');
   assert.equal(json(await call(route, { url: `${PING_PATH}?renderer=../../etc/passwd` })).clientRenderer, 'primitives');
+});
+
+test('host: the build stamp is re-read on every ping, and is null when the bundle is unreadable', async () => {
+  // Mount a *copy* of the package: the only honest way to prove "no cache" is
+  // to change the bytes the host serves between two probes, and the real
+  // `client.js` must never be edited by a test.
+  const copyRoot = mkdtempSync(join(tmpdir(), 'dsh-prompt-setting-build-'));
+  try {
+    for (const file of ['index.js', 'client.js', 'package.json']) {
+      copyFileSync(join(PACKAGE_ROOT, file), join(copyRoot, file));
+    }
+    mkdirSync(join(copyRoot, 'core'));
+    for (const file of readdirSync(join(PACKAGE_ROOT, 'core'))) {
+      copyFileSync(join(PACKAGE_ROOT, 'core', file), join(copyRoot, 'core', file));
+    }
+    const copiedClient = join(copyRoot, 'client.js');
+    const copiedHost = await import(pathToFileURL(join(copyRoot, 'index.js')).href);
+    const { route } = mount({ host: copiedHost.apply });
+
+    const first = json(await call(route));
+    const bytes = readFileSync(copiedClient, 'utf8');
+    assert.deepEqual(first.clientBuild.hash, independentBuildFingerprint(bytes).hash);
+
+    // One character, same length, inside the region.
+    const at = bytes.indexOf(BUILD_BEGIN) + BUILD_BEGIN.length + 100;
+    const edited = `${bytes.slice(0, at)}${bytes[at] === 'x' ? 'y' : 'x'}${bytes.slice(at + 1)}`;
+    writeFileSync(copiedClient, edited, 'utf8');
+    const second = json(await call(route));
+    assert.equal(second.clientBuild.size, first.clientBuild.size, 'the edit is length-preserving');
+    assert.notEqual(
+      second.clientBuild.hash,
+      first.clientBuild.hash,
+      'a changed bundle must change the next ping: a cached stamp would not',
+    );
+    assert.equal(second.clientBuild.hash, independentBuildFingerprint(edited).hash);
+
+    // A bundle that cannot be read is「未知」— a 200 with `clientBuild: null`,
+    // never a 500 and never a fabricated digest (which would read as「过期」).
+    rmSync(copiedClient);
+    const missing = await call(route);
+    assert.equal(missing.statusCode, 200);
+    assert.equal(json(missing).clientBuild, null);
+    assert.equal(json(missing).ok, true);
+  } finally {
+    rmSync(copyRoot, { recursive: true, force: true });
+  }
 });
 
 test('host: method, path and fence failure modes are unchanged for every route', async () => {

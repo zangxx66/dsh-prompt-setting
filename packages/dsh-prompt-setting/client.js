@@ -33,10 +33,93 @@
  * `data-renderer`, `data-render-state`) are joined in 1C by `data-phase`,
  * `data-frozen-state`, `data-section-name`, `data-error-code` and friends, so
  * `node --test` can assert the contract consumption without a browser.
+ *
+ * Revision 6 adds one more question the page can answer about *itself*: which
+ * bytes of `client.js` is it running? The factory body sits between two marker
+ * comments and digests its own source (`promptSettingFactory.toString()`),
+ * while the host digests the file it publishes and returns it in the ping as
+ * `clientBuild`. `data-build` / `data-build-server` / `data-build-match`
+ * publish the comparison, whose third state —「未知」— is what an old host or a
+ * failed ping yields, and which is deliberately never reported as「过期」.
  */
 window.__ModuleLoader__.load({
   id: 'dsh-prompt-setting',
-  factory(require) {
+  // A *named function expression*, not the method shorthand, so the body can
+  // refer to the function itself (`promptSettingFactory.toString()`) and
+  // fingerprint the very bytes this tab is running — the only way an already
+  // open tab can say which build it is (CONTRACT.md §14). The loader still
+  // calls `descriptor.factory(require)`; nothing about that changes.
+  factory: function promptSettingFactory(require) {
+    /* @build-fingerprint:begin */
+    // #region build stamp — the fingerprint region
+    // Everything between the two marker comments above/below is the region the
+    // host hashes (core/build.js `fingerprintOf`). It must cover the whole
+    // factory body: anything outside the region could change without changing
+    // the digest, i.e. a silently false「一致」.
+    //
+    // The markers are assembled from two string pieces *on purpose*: the marker
+    // text has to occur exactly once in this file, and a literal copy here
+    // would be that second occurrence — `fingerprintRegion` refuses ambiguous
+    // markers, so the stamp would degrade to「未知」for everyone.
+    const FINGERPRINT_BEGIN = '/* @build-' + 'fingerprint:begin */';
+    const FINGERPRINT_END = '/* @build-' + 'fingerprint:end */';
+    const FNV_OFFSET_BASIS = 0x811c9dc5;
+    const FNV_PRIME = 0x01000193;
+
+    /**
+     * Inline twin of `core/build.js` — the browser cannot import host code, so
+     * the same three pure functions are repeated here. `test/build.test.mjs`
+     * and `test/client.test.mjs` assert the two copies agree bit for bit on
+     * this real file; keep them in sync by hand if either changes.
+     * @param text - any value; non-strings are stringified.
+     * @returns the normalized text (never throws).
+     */
+    function normalizeBuildText(text) {
+      let value = typeof text === 'string' ? text : text === undefined || text === null ? '' : String(text);
+      if (value.charCodeAt(0) === 0xfeff) value = value.slice(1);
+      return value.replace(/\r\n?/g, '\n');
+    }
+
+    /**
+     * The text between exactly one ordered pair of markers, else `null`.
+     * @param text - the file (or factory) text.
+     * @returns the region, or `null`.
+     */
+    function fingerprintRegion(text) {
+      const value = normalizeBuildText(text);
+      const begin = value.indexOf(FINGERPRINT_BEGIN);
+      if (begin === -1) return null;
+      const end = value.indexOf(FINGERPRINT_END);
+      if (end === -1) return null;
+      if (value.indexOf(FINGERPRINT_BEGIN, begin + FINGERPRINT_BEGIN.length) !== -1) return null;
+      if (value.indexOf(FINGERPRINT_END, end + FINGERPRINT_END.length) !== -1) return null;
+      if (begin >= end) return null;
+      return value.slice(begin + FINGERPRINT_BEGIN.length, end);
+    }
+
+    /**
+     * FNV-1a over UTF-16 code units (no `Buffer` in a browser).
+     * @param text - the region text.
+     * @returns the 8-hex-digit digest plus the region length.
+     */
+    function fingerprintOf(text) {
+      const region = fingerprintRegion(text);
+      if (region === null) return null;
+      let hash = FNV_OFFSET_BASIS;
+      for (let index = 0; index < region.length; index += 1) {
+        hash ^= region.charCodeAt(index);
+        hash = Math.imul(hash, FNV_PRIME) >>> 0;
+      }
+      return { hash: hash.toString(16).padStart(8, '0'), size: region.length };
+    }
+
+    /**
+     * Which bytes this tab is running. `null` when this engine will not hand
+     * back the source (or the markers are unusable) — rendered as「未知」.
+     */
+    const SELF_BUILD = fingerprintOf(promptSettingFactory.toString());
+    // #endregion
+
     const React = require('react');
     const h = React.createElement;
 
@@ -278,6 +361,17 @@ window.__ModuleLoader__.load({
       stFrozenGlobal: '全局装配已冻结',
       stUnfrozenGlobal: '全局装配未冻结',
       stFrozenUnknown: '本会话冻结状态未知',
+      stBuild: '构建戳',
+      stBuildSame: '与宿主一致',
+      stBuildStale: '页面版本已过期',
+      stBuildUnknown: '构建戳未知',
+      stBuildSelf: '本页',
+      stBuildServer: '宿主',
+      stBuildStaleHint:
+        '本页运行的 client.js 与宿主正在发布的字节不同：这是旧标签页在跑旧 bundle。开一个新标签（或在新标签里重新打开设置）即可，改客户端不需要重启 dsh web。',
+      stBuildUnknownHint:
+        '宿主没有报告 client.js 指纹（宿主版本旧、文件不可读、或标记缺失/重复），因此无法判断本页是否过期；这里不会当作过期。',
+      stBuildPingFailedHint: 'ping 请求失败，拿不到宿主指纹，因此无法判断本页是否过期。',
       viewSections: '分段',
       viewFull: '全文',
       viewOverrides: '覆盖',
@@ -555,6 +649,17 @@ window.__ModuleLoader__.load({
       stFrozenGlobal: 'The global assembly is frozen',
       stUnfrozenGlobal: 'The global assembly is not frozen',
       stFrozenUnknown: 'This session’s frozen state is unknown',
+      stBuild: 'Build',
+      stBuildSame: 'Matches the host',
+      stBuildStale: 'This tab is stale',
+      stBuildUnknown: 'Build unknown',
+      stBuildSelf: 'This tab',
+      stBuildServer: 'Host',
+      stBuildStaleHint:
+        'The client.js this tab is running is not the build the host is serving byte for byte: an older tab kept an older bundle. Open a new tab (or reopen Settings in one); a client change needs no dsh web restart.',
+      stBuildUnknownHint:
+        'The host reported no client.js fingerprint (older host, unreadable file, or missing/duplicated markers), so this tab cannot be judged — it is not treated as stale.',
+      stBuildPingFailedHint: 'The ping request failed, so there is no host fingerprint and this tab cannot be judged.',
       viewSections: 'Sections',
       viewFull: 'Full text',
       viewOverrides: 'Overrides',
@@ -1783,6 +1888,27 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The build stamp's verdict, as the string the page exposes verbatim in
+     * `data-build-match` (CONTRACT.md §14).
+     *
+     * Three states, and the asymmetry is the point: `'false'` requires a hash
+     * on **both** sides and a difference. Every other case — no self-digest (an
+     * engine that will not return the source), an old host without
+     * `clientBuild`, a file whose region is unusable, a failed or unreachable
+     * ping — is `'unknown'`. Rendering「过期」from a missing answer would send
+     * the reader chasing a non-existent stale bundle, which is exactly the
+     * confusion this feature exists to end.
+     * @param boot - the `{self, server, pingFailed}` state.
+     * @returns `'true'`, `'false'` or `'unknown'`.
+     */
+    function buildVerdict(boot) {
+      const self = boot && boot.self && typeof boot.self.hash === 'string' ? boot.self.hash : null;
+      const server = boot && boot.server && typeof boot.server.hash === 'string' ? boot.server.hash : null;
+      if (self === null || server === null) return 'unknown';
+      return self === server ? 'true' : 'false';
+    }
+
+    /**
      * Whether the edit controls must be disabled for a section.
      *
      * A section that cannot be overridden is always disabled. A frozen verdict
@@ -2460,6 +2586,12 @@ window.__ModuleLoader__.load({
     function renderStatus(t, m, a) {
       const snapshot = m.snap.data;
       const fz = m.fz;
+      // The build stamp's three states (CONTRACT.md §14). `verdict` is the same
+      // string the page exposes in `data-build-match`.
+      const verdict = buildVerdict(m.boot);
+      const selfHash = m.boot && m.boot.self && typeof m.boot.self.hash === 'string' ? m.boot.self.hash : null;
+      const serverHash =
+        m.boot && m.boot.server && typeof m.boot.server.hash === 'string' ? m.boot.server.hash : null;
       const mounted = snapshot ? snapshot.mounted === true : null;
       const mountedText =
         mounted === null ? t('stMountedUnknown') : mounted ? t('stMountedOn') : t('stMountedOff');
@@ -2490,6 +2622,50 @@ window.__ModuleLoader__.load({
             `${t('stGeneratedAt')}: ${snapshot && snapshot.generatedAt ? String(snapshot.generatedAt) : t('stNone')}`,
           ),
         ),
+        // The build stamp (Revision 6): this tab's own digest vs. the digest the
+        // host published. One line, three states; the machine-readable copy of
+        // the verdict lives on the root container (`data-build`,
+        // `data-build-server`, `data-build-match`), where a probe finds it
+        // without knowing this layout.
+        h(
+          'div',
+          {
+            'data-region': 'build',
+            style: { marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
+          },
+          h('span', { style: metaStyle }, `${t('stBuild')}:`),
+          h(
+            UI.Tag,
+            { tone: verdict === 'true' ? 'success' : verdict === 'false' ? 'danger' : 'outline' },
+            t(verdict === 'true' ? 'stBuildSame' : verdict === 'false' ? 'stBuildStale' : 'stBuildUnknown'),
+          ),
+          h('span', { style: metaStyle }, `${t('stBuildSelf')}: ${selfHash === null ? t('stNone') : selfHash}`),
+          h('span', { style: metaStyle }, `${t('stBuildServer')}: ${serverHash === null ? t('stNone') : serverHash}`),
+        ),
+        // Both non-green states explain themselves. Neither is ever rendered as
+        // 「过期」unless both digests really answered and really differ.
+        verdict === 'false'
+          ? h(
+              'p',
+              {
+                'data-warning': 'client-build-stale',
+                style: { margin: '8px 0 0', fontSize: 12, color: token.stateError, wordBreak: 'break-word' },
+              },
+              t('stBuildStaleHint'),
+            )
+          : null,
+        verdict === 'unknown'
+          ? h(
+              'p',
+              {
+                'data-warning': 'client-build-unknown',
+                style: { margin: '8px 0 0', fontSize: 12, color: token.labelTertiary, wordBreak: 'break-word' },
+              },
+              m.boot && m.boot.pingFailed
+                ? `${t('stBuildUnknown')} — ${t('stBuildPingFailedHint')}`
+                : t('stBuildUnknownHint'),
+            )
+          : null,
         // The unknown case is stated as unknown AND explained; it is never
         // rendered as "this session is not frozen".
         fz.kind === 'unknown' && !fz.pending
@@ -4830,6 +5006,13 @@ window.__ModuleLoader__.load({
           'data-frozen-scope': m.fz.scope,
           'data-frozen-state': m.fz.kind,
           'data-mounted': m.snap.data ? String(m.snap.data.mounted === true) : 'unknown',
+          // Build stamp, machine-readable at the root so a probe can read the
+          // verdict without knowing the status bar's layout (Revision 6):
+          // this tab's digest, the host's digest, and `true`/`false`/`unknown`.
+          'data-build': m.boot && m.boot.self && typeof m.boot.self.hash === 'string' ? m.boot.self.hash : 'unknown',
+          'data-build-server':
+            m.boot && m.boot.server && typeof m.boot.server.hash === 'string' ? m.boot.server.hash : 'unknown',
+          'data-build-match': buildVerdict(m.boot),
           style: {
             display: 'flex',
             flexDirection: 'column',
@@ -4910,6 +5093,11 @@ window.__ModuleLoader__.load({
       const [transfer, setTransfer] = React.useState({ phase: 'idle', plan: null, error: null, exportText: '', fileName: '' });
       const [importText, setImportText] = React.useState('');
       const [importMode, setImportMode] = React.useState('merge');
+      // The build stamp's transport half: what this tab runs (`self`, computed
+      // once at module scope) and what the host said it serves. Starts as
+      //「未知」and stays that way unless the host really answered a hash — a
+      // missing/failed ping must never be rendered as「过期」.
+      const [boot, setBoot] = React.useState({ self: SELF_BUILD, server: null, pingFailed: false });
 
       const session = selection === null ? seat.currentId || GLOBAL_SESSION : selection;
       const sessionArg = session === GLOBAL_SESSION ? null : session;
@@ -4945,9 +5133,31 @@ window.__ModuleLoader__.load({
         setSnap({ phase: 'loading', data: null, error: null });
         setOvs({ phase: 'loading', data: null, error: null });
         const query = sessionArg === null ? '' : `?session=${encodeURIComponent(sessionArg)}`;
-        // Stage 1A side channel: one fire-and-forget ping tells the Host which
-        // renderer branch this browser actually got (index.js `clientRenderer`).
-        void requestJson(`${PING_PATH}?renderer=${RENDERER}`);
+        // Stage 1A side channel: the same ping tells the Host which renderer
+        // branch this browser actually got (index.js `clientRenderer`). Since
+        // Revision 6 it is *consumed* rather than fired and forgotten: its
+        // `clientBuild` is the host's own digest of the bundle it serves, and
+        // comparing it with this tab's self-digest is the whole build stamp.
+        // The URL is unchanged (`?renderer=…`), so an old host keeps working:
+        // no `clientBuild` ⇒「未知」, never a false「过期」.
+        const sendPing = async () => {
+          const ping = await requestJson(`${PING_PATH}?renderer=${RENDERER}`);
+          if (cancelled) return;
+          const build = ping.ok && ping.payload ? ping.payload.clientBuild : null;
+          setBoot({
+            self: SELF_BUILD,
+            server:
+              build && typeof build === 'object' && typeof build.hash === 'string' && build.hash.length > 0
+                ? {
+                    hash: build.hash,
+                    size: typeof build.size === 'number' ? build.size : null,
+                    mtime: typeof build.mtime === 'string' ? build.mtime : null,
+                  }
+                : null,
+            pingFailed: !ping.ok,
+          });
+        };
+        void sendPing();
         const load = async () => {
           const snapshot = await requestJson(`${SNAPSHOT_PATH}${query}`);
           if (cancelled) return;
@@ -5529,6 +5739,7 @@ window.__ModuleLoader__.load({
         transfer,
         importText,
         importMode,
+        boot,
         fz,
         effectiveSections,
         incoming,
@@ -5566,6 +5777,10 @@ window.__ModuleLoader__.load({
           'data-plugin': 'dsh-prompt-setting',
           'data-renderer': RENDERER,
           'data-render-state': 'error',
+          // The failure card cannot ask the host anything (that is the point of
+          // it), but it can still say which bundle it is: the self-digest needs
+          // no transport and is exactly what a broken page is asked about.
+          'data-build': SELF_BUILD && typeof SELF_BUILD.hash === 'string' ? SELF_BUILD.hash : 'unknown',
           style: {
             display: 'flex',
             flexDirection: 'column',
@@ -5646,5 +5861,6 @@ window.__ModuleLoader__.load({
         );
       },
     };
+    /* @build-fingerprint:end */
   },
 });

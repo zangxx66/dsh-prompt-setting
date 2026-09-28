@@ -15,13 +15,19 @@
  *   `$DSH_HOME` (or `~/.dsh`) and the workspace layer from a workspace root
  *   the Host resolved from a session, never from client input.
  *
+ * It also owns {@link clientBuildInfo}: the one read the「构建戳」needs (the
+ * bytes of `client.js` this Host actually publishes). It lives here, not in a
+ * second FS module, so the "exactly one module touches the filesystem"
+ * invariant survives the feature — `core/build.js` stays pure text.
+ *
  * @module dsh-prompt-setting/core/store
  */
 
-import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
+import { fingerprintOf } from './build.js';
 import {
   DEFAULT_HISTORY_LIMIT,
   makeRecord,
@@ -104,6 +110,35 @@ export function workspaceConfigPath(workspaceRoot) {
  */
 export function historyPath(configPath) {
   return join(dirname(String(configPath)), HISTORY_FILE_NAME);
+}
+
+/**
+ * Read the published client bundle and fingerprint its marker region.
+ *
+ * Deliberately **uncached**: this is called on every `GET /prompt-setting/ping`
+ * precisely because a cached answer would be a lie the moment the file
+ * changes — and 「this file changed but my tab did not」 is the whole point of
+ * the build stamp. The read is one `readFileSync` of a ~250 kB file per ping,
+ * which is a user-initiated probe, never on the assembly path.
+ *
+ * Never throws. `null` means "unknown", and unknown is rendered as unknown: a
+ * readable file whose marker region is unusable (markers edited away, removed
+ * or duplicated) is `null` too, because a fabricated digest would show up as a
+ * false「页面版本过期」.
+ * @param clientPath - the bundle path (`index.js` resolves it from its own URL).
+ * @returns `{hash, size, mtime}` — 8 hex digits, the region's UTF-16 code-unit
+ *   length and the file's mtime as an ISO string — or `null`.
+ */
+export function clientBuildInfo(clientPath) {
+  try {
+    const raw = readFileSync(clientPath, 'utf8');
+    const stats = statSync(clientPath);
+    const fingerprint = fingerprintOf(raw);
+    if (fingerprint === null) return null;
+    return { hash: fingerprint.hash, size: fingerprint.size, mtime: stats.mtime.toISOString() };
+  } catch {
+    return null;
+  }
 }
 
 /**
