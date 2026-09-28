@@ -275,10 +275,19 @@ function mountClient(module, localeShape = 'full') {
   return { ctx, registeredSlot, registrations, dictionaries };
 }
 
-/** Resolve a key against the registered dictionaries (identity when missing). */
-function dict(dictionaries, ns, key) {
+/**
+ * Resolve a key against the registered dictionaries (identity when missing).
+ * @param dictionaries - every registered `{ns, dict}` record.
+ * @param ns - the namespace to resolve in.
+ * @param key - dictionary key.
+ * @param language - `'zh'` (default, unchanged) or `'en'`. The default keeps
+ *   every pre-existing test on the zh dictionary, bit for bit.
+ * @returns the localized text, or the key itself when the table has no entry.
+ */
+function dict(dictionaries, ns, key, language = 'zh') {
   const entry = dictionaries.find((item) => item.ns === ns);
-  return entry && entry.dict.zh && entry.dict.zh[key] !== undefined ? entry.dict.zh[key] : key;
+  const table = entry && entry.dict ? entry.dict[language] : undefined;
+  return table && table[key] !== undefined ? table[key] : key;
 }
 
 /** Depth-first collect of element nodes matching a predicate. */
@@ -516,16 +525,20 @@ function makeRouter(responses) {
 
 /**
  * Mount the page with a stubbed transport and run the first load.
- * @param options - `responses`, `useSessions`, `primitives`, `localeShape`, `t`.
- * @returns the page harness.
+ * @param options - `responses`, `useSessions`, `useWorkspaces`, `primitives`,
+ *   `localeShape`, `t`, `language` (`'zh'` default, `'en'` to bind the en
+ *   dictionary). Passing an explicit `t` still wins.
+ * @returns the page harness (`zh` is the registered zh table, `text` the table
+ *   of the language actually bound).
  */
 function makePage(options = {}) {
   const loaded = loadClient(options.primitives || 'throw');
   const mounted = mountClient(loaded.module, options.localeShape || 'full');
   const router = makeRouter(options.responses || {});
   loaded.sandbox.fetch = router.fetchStub;
+  const language = options.language === undefined ? 'zh' : options.language;
   const props = {
-    t: options.t || ((key) => dict(mounted.dictionaries, NS, key)),
+    t: options.t || ((key) => dict(mounted.dictionaries, NS, key, language)),
     ...mounted.registrations[0].options.inject(),
   };
   if (options.useSessions !== undefined) props.useSessions = options.useSessions;
@@ -538,8 +551,9 @@ function makePage(options = {}) {
     await settle();
     return draw();
   };
-  const zh = mounted.dictionaries.length > 0 ? mounted.dictionaries[0].dict.zh : {};
-  return { loaded, mounted, router, props, draw, flush, zh };
+  const tables = mounted.dictionaries.length > 0 ? mounted.dictionaries[0].dict : {};
+  const zh = tables.zh || {};
+  return { loaded, mounted, router, props, draw, flush, zh, language, text: tables[language] || {} };
 }
 
 // #region fixtures (shapes copied from CONTRACT.md; no real config involved)
@@ -1946,6 +1960,278 @@ test('client: the selected session and the pinned scope carry an explicit select
   assert.equal(typeof sessionOptions(flatTree)[0].props.onMouseEnter, 'function', 'flat rows hover as well');
 });
 
+// #region g-009 · the「查看范围」tree is a real ARIA tree (tree > treeitem + group > treeitem)
+
+/** Element children of a rendered node (nulls React skips are dropped). */
+function elementChildren(node) {
+  const kids = node && node.props ? node.props.children : null;
+  const list = Array.isArray(kids) ? kids : kids === null || kids === undefined ? [] : [kids];
+  // Built here, not with `.filter`, so the result is this realm's array: the
+  // rendered tree lives in the vm context and its arrays are not assert-equal.
+  const out = [];
+  for (const child of list) {
+    if (child !== null && typeof child === 'object' && child.type !== undefined) out.push(child);
+  }
+  return out;
+}
+
+/**
+ * Walk a rendered ARIA tree and return one record per `treeitem`, with the
+ * chain of *container* roles above it (`'group'`, a bare host tag, or
+ * `'treeitem'` when items are nested in items). The chain is what makes the
+ * nesting machine-checkable: a level-1 item must sit directly under the `tree`,
+ * a level-2 item under `tree > group`, and a bare `div` wrapper in between
+ * shows up in the chain instead of hiding.
+ */
+function ariaTreeItems(root) {
+  const items = [];
+  const visit = (node, chain) => {
+    for (const child of elementChildren(node)) {
+      const role = child.props.role;
+      if (role === 'treeitem') items.push({ node: child, chain });
+      visit(child, chain.concat([role === 'group' || role === 'treeitem' ? role : String(child.type)]));
+    }
+  };
+  visit(root, []);
+  return items;
+}
+
+/**
+ * Assert the whole ARIA shape of one rendered scope tree: named container,
+ * only `treeitem`/`group` as direct children, no anonymous group, every
+ * workspace node level 1 with `aria-expanded`, every session level 2 with
+ * `aria-selected`, and each one nested exactly as its level claims.
+ * @returns the tree's direct children, for the caller's own assertions.
+ */
+function assertAriaTreeShape(root) {
+  assert.equal(root.props.role, 'tree', 'the container is a tree');
+  assert.ok(String(root.props['aria-label'] || '').length > 0, 'the tree has an accessible name');
+  const top = elementChildren(root);
+  assert.ok(top.length > 0, 'the tree is not empty');
+  for (const child of top) {
+    assert.ok(
+      child.props.role === 'treeitem' || child.props.role === 'group',
+      `a tree holds only treeitem/group, found <${child.type} role=${child.props.role}>`,
+    );
+  }
+  for (let i = 0; i < top.length; i += 1) {
+    if (top[i].props.role !== 'group') continue;
+    assert.ok(String(top[i].props['aria-label'] || '').length > 0, 'no anonymous group');
+    assert.equal(top[i - 1].props.role, 'treeitem', 'a group follows the workspace node it belongs to');
+    assert.notEqual(top[i - 1].props['data-scope-group'], undefined, 'and that node is the workspace header');
+  }
+  const items = ariaTreeItems(root);
+  assert.ok(items.length > 0, 'the tree has items');
+  // The role set, read off the page's own markers: a node a test or a script
+  // can select is a treeitem, and nothing else may be one.
+  const headers = collect(root, (node) => node.props && node.props['data-scope-group'] !== undefined);
+  const rows = collect(root, (node) => node.props && node.props['data-role'] === 'session-row');
+  for (const header of headers) {
+    assert.equal(header.props.role, 'treeitem', 'every workspace node is a treeitem');
+    assert.equal(header.props['aria-level'], 1, 'a workspace node is level 1');
+    assert.equal(typeof header.props['aria-expanded'], 'boolean', 'and states whether it is open');
+  }
+  for (const row of rows) {
+    assert.equal(row.props.role, 'treeitem', 'every session row is a treeitem');
+    assert.equal(row.props['aria-level'], 2, 'a session inside a workspace is level 2');
+    assert.equal(typeof row.props['aria-selected'], 'boolean', 'and carries the selection state');
+  }
+  assert.equal(items.length, headers.length + rows.length, 'and there is no other treeitem');
+  for (const { node, chain } of items) {
+    if (node.props['data-scope-group'] !== undefined) {
+      assert.deepEqual(chain, [], 'a workspace node is a direct child of the tree');
+    } else {
+      assert.notEqual(node.props['data-session-id'], undefined, 'every other treeitem is a session row');
+      assert.deepEqual(chain, ['group'], 'a session sits in its workspace group, nothing between');
+    }
+  }
+  return top;
+}
+
+/** The `role="tree"` container of the scope picker (exactly one). */
+function scopeTreeRoot(tree) {
+  return oneBy(tree, 'data-region', 'session-tree');
+}
+
+test('client: the「查看范围」tree is a standard ARIA tree (tree > treeitem + group > treeitem)', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  const tree = await page.flush();
+  const root = scopeTreeRoot(tree);
+
+  const top = assertAriaTreeShape(root);
+  // The default state: only the workspace holding the current session is open,
+  // and an open workspace is exactly the one followed by its group.
+  assert.deepEqual(
+    top.map((child) => [child.props.role, child.props['data-scope-group'] ?? child.props['aria-label']]),
+    [
+      ['treeitem', 'w-alpha'],
+      ['group', 'Alpha repo'],
+      ['treeitem', 'w-beta'],
+      ['treeitem', ''],
+    ],
+  );
+  assert.deepEqual(
+    top.filter((child) => child.props.role === 'treeitem').map((child) => child.props['aria-expanded']),
+    [true, false, false],
+    'a workspace is open iff its group is rendered',
+  );
+
+  // The session rows of the one open group: level 2, recency order, and the
+  // retained session is the single selected item.
+  const rows = ariaTreeItems(root).filter((item) => item.node.props['data-session-id'] !== undefined);
+  assert.deepEqual(rows.map((item) => item.node.props['data-session-id']), ['a2', 'a1', 'a3']);
+  assert.ok(rows.every((item) => item.node.props['aria-level'] === 2));
+  assert.deepEqual(
+    rows.filter((item) => item.node.props['aria-selected'] === true).map((item) => item.node.props['data-session-id']),
+    ['a3'],
+  );
+
+  // Zero-visual-change guard for the header/first-row distance: the tree's own
+  // gap is untouched, and the group cancels it (2px − 1px = the old 1px gap of
+  // the wrapper this replaces).
+  assert.equal(root.props.style.gap, 2);
+  const group = top.find((child) => child.props.role === 'group');
+  assert.equal(group.props.style.gap, 1, 'rows keep the 1px spacing they had inside the wrapper');
+  assert.equal(group.props.style.marginTop, -1, 'and the group cancels the tree gap it now sits in');
+});
+
+test('client: opening and shutting a workspace adds and removes its group, never an empty one', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  let tree = await page.flush();
+  assert.equal(
+    ariaTreeItems(scopeTreeRoot(tree)).filter((item) => item.node.props['data-scope-parent'] === 'w-beta').length,
+    0,
+    'a shut workspace renders no rows at all',
+  );
+
+  pressKey(scopeHeader(tree, 'w-beta'), 'Enter');
+  tree = await page.flush();
+  const opened = assertAriaTreeShape(scopeTreeRoot(tree));
+  assert.deepEqual(opened.map((child) => child.props.role), ['treeitem', 'group', 'treeitem', 'group', 'treeitem']);
+  const beta = opened[2];
+  assert.equal(beta.props['data-scope-group'], 'w-beta');
+  assert.equal(beta.props['aria-expanded'], true);
+  assert.equal(opened[3].props['aria-label'], 'beta-dir', 'the new group is named after its workspace');
+  const betaRows = ariaTreeItems(opened[3]);
+  assert.ok(betaRows.length > 0);
+  assert.ok(betaRows.every((item) => item.node.props['aria-level'] === 2));
+  assert.ok(betaRows.every((item) => item.node.props['data-scope-parent'] === 'w-beta'));
+
+  pressKey(scopeHeader(tree, 'w-beta'), ' ');
+  tree = await page.flush();
+  const shut = assertAriaTreeShape(scopeTreeRoot(tree));
+  assert.deepEqual(
+    shut.filter((child) => child.props.role === 'group').map((child) => child.props['aria-label']),
+    ['Alpha repo'],
+    'the shut workspace leaves no group behind',
+  );
+  assert.equal(
+    ariaTreeItems(scopeTreeRoot(tree)).filter((item) => item.node.props['data-scope-parent'] === 'w-beta').length,
+    0,
+  );
+});
+
+test('client: a search keeps the tree shape, including the ungrouped bucket', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  let tree = await page.flush();
+
+  typeInto(tree, 'session-search', 'Beta');
+  tree = await page.flush();
+  const filtered = assertAriaTreeShape(scopeTreeRoot(tree));
+  assert.deepEqual(filtered.map((child) => child.props.role), ['treeitem', 'group']);
+  assert.equal(filtered[1].props['aria-label'], 'beta-dir');
+  const visibleRows = sessionOptions(tree).map((row) => row.props['data-session-id']);
+  assert.deepEqual(
+    ariaTreeItems(scopeTreeRoot(tree))
+      .filter((item) => item.node.props['data-session-id'] !== undefined)
+      .map((item) => item.node.props['data-session-id']),
+    visibleRows,
+    'the traversal and the marker-reading helper agree on every rendered row',
+  );
+
+  typeInto(tree, 'session-search', 'Loose');
+  tree = await page.flush();
+  const loose = assertAriaTreeShape(scopeTreeRoot(tree));
+  assert.equal(loose[0].props['data-scope-group'], '', 'the ungrouped bucket is a workspace node too');
+  assert.equal(loose[1].props['aria-label'], page.zh.scopeUngrouped, 'and its group is named, not anonymous');
+  assert.deepEqual(
+    ariaTreeItems(loose[1]).map((item) => item.node.props['data-session-id']),
+    ['loose'],
+  );
+});
+
+test('client: with no workspaces every session stays level 2 inside the named bucket', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture({ items: [], archivedSessionIds: [], pinnedSessionIds: [] })),
+    responses: defaultResponses(),
+  });
+  const tree = await page.flush();
+  const root = scopeTreeRoot(tree);
+  const top = assertAriaTreeShape(root);
+  assert.deepEqual(top.map((child) => child.props.role), ['treeitem', 'group']);
+  assert.equal(top[0].props['data-scope-group'], '');
+  assert.equal(top[0].props['aria-expanded'], true);
+  assert.equal(top[1].props['aria-label'], page.zh.scopeUngrouped);
+  const rows = ariaTreeItems(root).filter((item) => item.node.props['data-session-id'] !== undefined);
+  assert.equal(rows.length, 6, 'every visible session is a treeitem');
+  assert.ok(rows.every((item) => item.node.props['aria-level'] === 2 && item.chain.join('/') === 'group'));
+});
+
+test('client: the「显示更多」action is a child of its group, never a tree child', async () => {
+  const { sessions, workspaces } = manyWorkspaceSessions(1, 20);
+  const page = makePage({
+    useSessions: sessionsHook(sessions),
+    useWorkspaces: workspacesHook(workspaces),
+    responses: defaultResponses(),
+  });
+  const tree = await page.flush();
+  const root = scopeTreeRoot(tree);
+  const top = assertAriaTreeShape(root);
+  assert.deepEqual(top.map((child) => child.props.role), ['treeitem', 'group']);
+  const more = findOne(top[1], (node) => node.props && node.props['data-action'] === 'scope-more', 'the more button');
+  assert.equal(more.props.role, undefined, 'an action row is not a tree node');
+  assert.equal(
+    elementChildren(root).filter((child) => child.props['data-action'] === 'scope-more').length,
+    0,
+    'and it is not a direct child of the tree either',
+  );
+  const rows = ariaTreeItems(top[1]);
+  assert.equal(rows.length, SCOPE_GROUP_PAGE, 'the page of rows is level 2, the action is not a treeitem');
+});
+
+test('client: the flat fallback declares a listbox instead of faking a tree', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(manySessions(200)),
+    responses: defaultResponses(),
+  });
+  const tree = await page.flush();
+  assert.equal(collect(tree, (node) => node.props && node.props.role === 'tree').length, 0);
+  assert.equal(collect(tree, (node) => node.props && node.props.role === 'treeitem').length, 0);
+  assert.equal(collect(tree, (node) => node.props && node.props.role === 'group').length, 0);
+  const list = oneBy(tree, 'data-region', 'session-list');
+  assert.equal(list.props.role, 'listbox');
+  assert.equal(list.props['aria-label'], page.zh.sessionHeading, 'the fallback list is named too');
+  const options = elementChildren(list);
+  assert.ok(options.length > 0);
+  for (const option of options) {
+    assert.equal(option.props.role, 'option');
+    assert.equal(option.props['aria-level'], undefined, 'a flat list has no levels, and claims none');
+  }
+});
+
 // #endregion
 
 // #region frozenScope: the three states, and editing under uncertainty
@@ -2270,7 +2556,11 @@ test('client: the edit entry locks the name and offers only replace/hide', async
   assert.equal(meta.props['data-editor-origin'], 'registered');
   assert.equal(meta.props['data-editor-overridable'], 'true');
   assert.ok(hasText(oneBy(tree, 'data-role', 'origin'), page.zh.originRegistered));
-  assert.ok(hasText(oneBy(tree, 'data-role', 'overridable'), page.zh.fYes));
+  // Contract update (g-010): this row's value is now the short `fYesShort`,
+  // because the row's own label already reads `editOverridableLabel`
+  // ("可覆盖 / Overridable") — the value used to repeat it verbatim.
+  assert.ok(hasText(oneBy(tree, 'data-role', 'overridable'), page.zh.fYesShort));
+  assert.ok(!hasText(oneBy(tree, 'data-role', 'overridable'), page.zh.editOverridableLabel));
 
   // A state the entry can produce is not a state the fallback has to catch.
   assert.equal(blockedCards(tree).length, 0, 'no fallback card on a legal state');
@@ -3160,7 +3450,1177 @@ test('client: the stage 2 panels never render a blank page when the host is unre
 
 // #endregion
 
+// #region english render sweep: the en dictionary, every view and every state
+
+/**
+ * Both registered tables, read once from a throwaway mount. The zh table is
+ * kept so the sweep can iterate *its* key set: a key deleted from `en` no
+ * longer appears in `en`'s own keys, and must still be caught.
+ */
+const SWEEP_TABLES = (() => {
+  const { module } = loadClient('throw');
+  const { dictionaries } = mountClient(module);
+  return dictionaries[0].dict;
+})();
+
+/** The registered en table. */
+const EN_TABLE = SWEEP_TABLES.en;
+
+/**
+ * Every token the en copy itself uses. A rendered token that is also a
+ * dictionary key but never occurs in the en copy is a leaked key, not English.
+ */
+const EN_COPY_WORDS = (() => {
+  const words = new Set();
+  for (const value of Object.values(EN_TABLE)) {
+    for (const word of String(value).split(/[^A-Za-z0-9_-]+/)) if (word.length > 0) words.add(word);
+  }
+  return words;
+})();
+
+/** Dotted keys (`error.not-found`) can only reach the screen by leaking. */
+const EN_DOTTED_KEYS = Object.keys(EN_TABLE).filter((key) => key.indexOf('.') >= 0);
+
+/**
+ * The characters that must never reach an en render: the required
+ * `/[\u4e00-\u9fff]/` ideograph block, plus the CJK punctuation/symbol blocks
+ * (`（）「」：，。` and friends) that a hardcoded Chinese template leaves behind.
+ */
+const CJK_ON_SCREEN = /[\u4e00-\u9fff\u3000-\u303f\uff01-\uff60\uffe0-\uffe6]/;
+
+/** A page whose `t` is bound to the registered en dictionary. */
+function enPage(options = {}) {
+  return makePage({ ...options, language: 'en' });
+}
+
+/**
+ * The props that put user-visible copy on screen without being children:
+ * a hardcoded Chinese placeholder or tooltip is a leak exactly like a label.
+ */
+const TEXT_ATTRIBUTES = ['placeholder', 'title', 'aria-label', 'alt', 'value'];
+
+/** Every rendered string — children and text-bearing props — with its markers. */
+function stringsByMarker(node, markers = {}, out = []) {
+  if (typeof node === 'string') {
+    out.push({ text: node, markers, attribute: null });
+    return out;
+  }
+  if (node === null || node === undefined || typeof node !== 'object') return out;
+  if (Array.isArray(node)) {
+    for (const child of node) stringsByMarker(child, markers, out);
+    return out;
+  }
+  const props = node.props || {};
+  const own = Object.keys(props).filter((key) => key.startsWith('data-'));
+  const next =
+    own.length === 0
+      ? markers
+      : { ...markers, ...Object.fromEntries(own.map((key) => [key, props[key]])) };
+  for (const attribute of TEXT_ATTRIBUTES) {
+    if (typeof props[attribute] === 'string' && props[attribute].length > 0) {
+      out.push({ text: props[attribute], markers: next, attribute });
+    }
+  }
+  stringsByMarker(props.children, next, out);
+  return out;
+}
+
+/** `region=sections build=…`: the marker trail that owns one rendered string. */
+function markerTrail(markers) {
+  const parts = Object.keys(markers)
+    .sort()
+    .map((key) => `${key.replace(/^data-/, '')}=${String(markers[key])}`);
+  return parts.length === 0 ? '(root)' : parts.join(' ');
+}
+
+/** Every non-English thing one tree puts on screen. */
+function englishProblems(tree) {
+  const problems = [];
+  for (const { text, markers, attribute } of stringsByMarker(tree)) {
+    const place = attribute === null ? markerTrail(markers) : `${attribute} @ ${markerTrail(markers)}`;
+    const cjk = text.match(new RegExp(CJK_ON_SCREEN, 'g'));
+    if (cjk !== null) {
+      problems.push({ kind: 'cjk', chars: [...new Set(cjk)].join(''), text, at: place });
+    }
+    for (const key of EN_DOTTED_KEYS) {
+      if (text.indexOf(key) >= 0) problems.push({ kind: 'bare-key', key, text, at: place });
+    }
+    for (const word of text.split(/[^A-Za-z0-9_-]+/)) {
+      if (word.length === 0 || EN_COPY_WORDS.has(word)) continue;
+      if (Object.prototype.hasOwnProperty.call(EN_TABLE, word)) {
+        problems.push({ kind: 'bare-key', key: word, text, at: place });
+      }
+    }
+  }
+  return problems;
+}
+
+/** Every `data-*` marker one tree carries, as `attr=value`. */
+function dataMarkers(tree) {
+  const pairs = new Set();
+  for (const node of collect(tree, (candidate) => candidate.props !== undefined)) {
+    for (const [key, value] of Object.entries(node.props)) {
+      if (key.startsWith('data-')) pairs.add(`${key}=${String(value)}`);
+    }
+  }
+  return pairs;
+}
+
+/** A page plus every tree it draws, so intermediate states are swept too. */
+function recorder(page) {
+  const trees = [];
+  return {
+    page,
+    trees,
+    async take() {
+      const tree = await page.flush();
+      trees.push(tree);
+      return tree;
+    },
+    last() {
+      return trees[trees.length - 1];
+    },
+  };
+}
+
+/** The `data-*` markers the sweep saw; filled by the sweep, read by the coverage test. */
+let observedMarkers = new Set();
+
+/**
+ * One en render per interesting state. `run` returns every tree drawn on the
+ * way (all of them are swept); `marks` are `data-*` pairs that must be on the
+ * last tree; `copy` are dictionary keys whose en text must be on screen
+ * verbatim; `raw` are verbatim strings for the branch where `t` itself is the
+ * thing that broke.
+ */
+const EN_SWEEP_CASES = [
+  {
+    name: 'sections view: default list, origin filter, filtered to nothing',
+    marks: [
+      ['data-region', 'sections'],
+      ['data-region', 'panel'],
+      ['data-region', 'view-tabs'],
+      ['data-region', 'status'],
+      ['data-region', 'build'],
+      ['data-region', 'filters'],
+      ['data-sections-shown', '0'],
+      ['data-sections-total', '5'],
+    ],
+    copy: ['title', 'subtitle', 'stateHeading', 'viewSections', 'filterHeading', 'appendEntry', 'fNo'],
+    async run() {
+      const page = enPage({ responses: defaultResponses() });
+      const rec = recorder(page);
+      await rec.take();
+      clickTab(rec.last(), 'origin', 'downstream-added');
+      await rec.take();
+      clickTab(rec.last(), 'origin', 'all');
+      await rec.take();
+      clickTab(rec.last(), 'overridable', 'no');
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'sections view: an empty assembly states the empty state',
+    marks: [
+      ['data-phase', 'empty'],
+      ['data-empty', 'sections'],
+      ['data-region', 'sections'],
+    ],
+    copy: ['emptyTitle', 'emptyBody', ['sectionsShown', { shown: 0, total: 0 }]],
+    async run() {
+      const page = enPage({
+        responses: defaultResponses({
+          [PATHS.snapshot]: {
+            payload: snapshotFixture({ base: { sections: [] }, effective: { sections: [] }, rendered: '' }),
+          },
+          [PATHS.overrides]: { payload: overridesFixture({ merged: { overrides: [] } }) },
+        }),
+      });
+      const rec = recorder(page);
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'sections view: the loading state before the first answer',
+    marks: [['data-phase', 'loading'], ['data-region', 'panel']],
+    copy: ['loading', 'refresh'],
+    async run() {
+      const page = enPage({ responses: defaultResponses() });
+      return [page.draw()];
+    },
+  },
+  {
+    name: 'full-text view: the rendered text, the search and the base/effective diff',
+    marks: [
+      ['data-region', 'full'],
+      ['data-full-text', 'rendered'],
+      ['data-region', 'diff'],
+      ['data-diff-row', 'project:alpha'],
+      ['data-diff-detail', 'project:alpha'],
+    ],
+    copy: ['viewFull', 'fullHeading', 'searchPlaceholder', 'diffHeading', 'diffChanged', 'diffHint'],
+    async run() {
+      const page = enPage({ responses: defaultResponses() });
+      const rec = recorder(page);
+      await rec.take();
+      clickTab(rec.last(), 'view', 'full');
+      await rec.take();
+      typeInto(rec.last(), 'search', 'alpha');
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'full-text view: the origin filter, the line cap and the unresolved warning',
+    marks: [
+      ['data-region', 'full'],
+      ['data-full-text', 'filtered'],
+      ['data-warning', 'full-filtered'],
+    ],
+    copy: ['fullFiltered', 'fullHeading'],
+    async run() {
+      const page = enPage({ responses: defaultResponses() });
+      const rec = recorder(page);
+      await rec.take();
+      clickTab(rec.last(), 'view', 'full');
+      await rec.take();
+      clickTab(rec.last(), 'full-origin', 'downstream-added');
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'full-text view: a text over the line cap is truncated, and says so',
+    marks: [['data-region', 'full'], ['data-warning', 'truncated']],
+    copy: ['fullHeading'],
+    async run() {
+      const page = enPage({
+        responses: defaultResponses({
+          [PATHS.snapshot]: { payload: snapshotFixture({ rendered: Array(3002).fill('line').join('\n') }) },
+        }),
+      });
+      const rec = recorder(page);
+      await rec.take();
+      clickTab(rec.last(), 'view', 'full');
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'full-text view: unresolved variables are named, not silently dropped',
+    marks: [
+      ['data-region', 'full'],
+      ['data-warning', 'rendered-unresolved'],
+      ['data-full-text', 'rendered'],
+    ],
+    copy: ['unresolvedTitle', 'unresolvedNote'],
+    async run() {
+      const payload = snapshotFixture({
+        renderedResolved: false,
+        unresolvedVariables: ['Upper', 'project:alpha'],
+        rendered: 'identity base\n\n{{Upper}} {{project:alpha}}',
+      });
+      const page = enPage({ responses: defaultResponses({ [PATHS.snapshot]: { payload } }) });
+      const rec = recorder(page);
+      await rec.take();
+      clickTab(rec.last(), 'view', 'full');
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'overrides view: the override list, the history log, the transfer panel, the layer reset',
+    marks: [
+      ['data-region', 'overrides'],
+      ['data-region', 'history'],
+      ['data-region', 'transfer'],
+      ['data-region', 'layer-reset'],
+      ['data-history-row', '2'],
+    ],
+    copy: ['ovHeading', 'ovMergedNote', 'histHeading', 'transferHeading', 'exportButton', 'resetLayersLabel'],
+    async run() {
+      const page = enPage({ responses: defaultResponses() });
+      const rec = recorder(page);
+      await rec.take();
+      clickTab(rec.last(), 'view', 'overrides');
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'overrides view: no override at all, and an empty history',
+    marks: [
+      ['data-empty', 'overrides'],
+      ['data-empty', 'history'],
+      ['data-region', 'overrides'],
+    ],
+    copy: ['ovEmpty', 'histEmpty'],
+    async run() {
+      const page = enPage({
+        responses: defaultResponses({
+          [PATHS.overrides]: { payload: overridesFixture({ merged: { overrides: [] } }) },
+          [PATHS.history]: { payload: historyFixture({ records: [], total: 0 }) },
+        }),
+      });
+      const rec = recorder(page);
+      await rec.take();
+      clickTab(rec.last(), 'view', 'overrides');
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'overrides view: a corrupt, unreadable history is stated, never a blank',
+    marks: [
+      ['data-region', 'history'],
+      ['data-history-corrupt', '3'],
+      ['data-history-unreadable', 'true'],
+      ['data-history-last-error', 'true'],
+    ],
+    copy: [['histCorrupt', { n: 3 }], ['histUnreadable', { reason: 'unreadable-file: cannot read /x' }], ['histLastError', { reason: 'history-unusable: nope' }]],
+    async run() {
+      const page = enPage({
+        responses: defaultResponses({
+          [PATHS.history]: {
+            payload: historyFixture({
+              records: [],
+              total: 0,
+              corrupt: 3,
+              unreadable: 'unreadable-file: cannot read /x',
+              lastError: { at: '2024-01-02T00:00:00.000Z', reason: 'history-unusable: nope' },
+            }),
+          },
+        }),
+      });
+      const rec = recorder(page);
+      await rec.take();
+      clickTab(rec.last(), 'view', 'overrides');
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'overrides view: a history comparison renders both levels and the diff block',
+    marks: [
+      ['data-region', 'history-diff'],
+      ['data-region', 'diffblock'],
+      ['data-hd-row', 'project:alpha'],
+      ['data-diff-from', '2'],
+      ['data-diff-to', '1'],
+    ],
+    copy: ['histDiffHeading', ['histDiffSections', { total: 2, changed: 1, added: 0, removed: 0, same: 1 }]],
+    async run() {
+      const page = enPage({ responses: defaultResponses() });
+      const rec = recorder(page);
+      await rec.take();
+      clickTab(rec.last(), 'view', 'overrides');
+      await rec.take();
+      clickButton(historyRowOf(rec.last(), '2'), { 'data-action': 'diff-from', 'data-history-id': '2' });
+      await rec.take();
+      clickButton(historyRowOf(rec.last(), '1'), { 'data-action': 'diff-to', 'data-history-id': '1' });
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'overrides view: a comparison the host could not make is explained',
+    marks: [
+      ['data-region', 'history-diff'],
+      ['data-diff-no-lines', 'true'],
+    ],
+    copy: [['histDiffNoLines', { reason: 'more than one section differs; pass ?name= to compare one of them' }]],
+    async run() {
+      const payload = diffFixture({
+        lines: null,
+        lineReason: 'more than one section differs; pass ?name= to compare one of them',
+      });
+      const page = enPage({ responses: defaultResponses({ [PATHS.diff]: { payload } }) });
+      const rec = recorder(page);
+      await rec.take();
+      clickTab(rec.last(), 'view', 'overrides');
+      await rec.take();
+      clickButton(historyRowOf(rec.last(), '1'), { 'data-action': 'diff-from', 'data-history-id': '1' });
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'transfer: an import dry run renders the plan, both counts and both modes',
+    marks: [
+      ['data-region', 'transfer'],
+      ['data-import-plan', 'true'],
+      ['data-import-change', 'project:alpha'],
+      ['data-import-skipped', '1'],
+      ['data-import-mode', 'replace'],
+    ],
+    copy: ['importHeading', 'importPlanHeading', 'importModeReplace', ['importChangeRow', { name: 'project:alpha', status: 'replaced' }], ['importCounts', { added: 1, replaced: 1, unchanged: 0, removed: 0, kept: 1 }]],
+    async run() {
+      const page = enPage({ responses: defaultResponses() });
+      const rec = recorder(page);
+      await rec.take();
+      clickTab(rec.last(), 'view', 'overrides');
+      await rec.take();
+      clickTab(rec.last(), 'import-mode', 'replace');
+      await rec.take();
+      typeInto(rec.last(), 'import-text', exportDocument());
+      await rec.take();
+      clickButton(oneBy(rec.last(), 'data-region', 'transfer'), { 'data-action': 'import-preview' });
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'transfer: a rejected import names the reason and the unchanged state',
+    marks: [
+      ['data-region', 'transfer'],
+      ['data-error-code', 'unknown-export-schema'],
+      ['data-import-unchanged', 'true'],
+    ],
+    copy: ['error.unknown-export-schema', 'importUnchangedWarning'],
+    async run() {
+      const page = enPage({
+        responses: defaultResponses({
+          [PATHS.import]: {
+            status: 400,
+            payload: { ok: false, code: 'unknown-export-schema', message: '"schema" must be "dsh-prompt-setting/export"' },
+          },
+        }),
+      });
+      const rec = recorder(page);
+      await rec.take();
+      clickTab(rec.last(), 'view', 'overrides');
+      await rec.take();
+      typeInto(rec.last(), 'import-text', exportDocument({ schema: 'nope' }));
+      await rec.take();
+      clickButton(oneBy(rec.last(), 'data-region', 'transfer'), { 'data-action': 'import-preview' });
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'transfer: an import asks for confirmation before it writes',
+    marks: [
+      ['data-region', 'confirm'],
+      ['data-confirm-kind', 'import'],
+    ],
+    copy: ['importConfirmTitle', 'confirmTitle', 'confirmYes', 'confirmNo', 'resetIrreversible'],
+    async run() {
+      const page = enPage({ responses: defaultResponses() });
+      const rec = recorder(page);
+      await rec.take();
+      clickTab(rec.last(), 'view', 'overrides');
+      await rec.take();
+      typeInto(rec.last(), 'import-text', exportDocument());
+      await rec.take();
+      clickButton(oneBy(rec.last(), 'data-region', 'transfer'), { 'data-action': 'import-preview' });
+      await rec.take();
+      findOne(
+        rec.last(),
+        (node) => node.type === 'button' && node.props['data-action'] === 'import-apply',
+        'apply button',
+      ).props.onClick();
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'transfer: an applied import states what it wrote',
+    marks: [
+      ['data-region', 'transfer'],
+      ['data-transfer-phase', 'applied'],
+      ['data-notice', 'success'],
+    ],
+    copy: ['importHeading', ['importAppliedNotice', { written: 1, count: 2 }]],
+    async run() {
+      const applied = importPlanFixture({
+        dryRun: false,
+        applied: true,
+        written: ['/home/u/.dsh/prompt-setting/overrides.json'],
+      });
+      const page = enPage({
+        responses: defaultResponses({
+          [PATHS.import]: (url) => ({ payload: url.includes('dryRun=true') ? importPlanFixture() : applied }),
+        }),
+      });
+      const rec = recorder(page);
+      await rec.take();
+      clickTab(rec.last(), 'view', 'overrides');
+      await rec.take();
+      typeInto(rec.last(), 'import-text', exportDocument());
+      await rec.take();
+      clickButton(oneBy(rec.last(), 'data-region', 'transfer'), { 'data-action': 'import-preview' });
+      await rec.take();
+      findOne(
+        rec.last(),
+        (node) => node.type === 'button' && node.props['data-action'] === 'import-apply',
+        'apply button',
+      ).props.onClick();
+      await rec.take();
+      clickButton(oneBy(rec.last(), 'data-region', 'confirm'), { 'data-action': 'confirm-yes' });
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'transfer: an export writes a file and keeps a copyable document',
+    marks: [
+      ['data-region', 'transfer'],
+      ['data-export-name', 'dsh-prompt-setting-2024-01-02T10-00-00-000.json'],
+      ['data-notice', 'success'],
+    ],
+    copy: ['exportButton', ['downloadDone', { name: 'dsh-prompt-setting-2024-01-02T10-00-00-000.json' }], 'exportPreviewLabel'],
+    async run() {
+      const page = enPage({ useSessions: sessionsHook(SESSIONS_STATE), responses: defaultResponses() });
+      installDownloader(page);
+      const rec = recorder(page);
+      await rec.take();
+      clickTab(rec.last(), 'view', 'overrides');
+      await rec.take();
+      clickButton(oneBy(rec.last(), 'data-region', 'transfer'), { 'data-action': 'export' });
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'transfer: an export with no download surface states why',
+    marks: [
+      ['data-region', 'transfer'],
+      ['data-transfer-phase', 'error'],
+      ['data-error-code', 'download-failed'],
+    ],
+    copy: [['downloadFailed', { reason: 'no document' }]],
+    async run() {
+      const page = enPage({ responses: defaultResponses() });
+      const rec = recorder(page);
+      await rec.take();
+      clickTab(rec.last(), 'view', 'overrides');
+      await rec.take();
+      clickButton(oneBy(rec.last(), 'data-region', 'transfer'), { 'data-action': 'export' });
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'overrides view: a whole layer reset confirms first',
+    marks: [
+      ['data-region', 'confirm'],
+      ['data-confirm-kind', 'reset-layer'],
+    ],
+    copy: [['resetLayerTitle', { layer: 'user layer' }], 'resetIrreversible', 'confirmYes'],
+    async run() {
+      const page = enPage({ responses: defaultResponses() });
+      const rec = recorder(page);
+      await rec.take();
+      clickTab(rec.last(), 'view', 'overrides');
+      await rec.take();
+      clickButton(oneBy(rec.last(), 'data-region', 'layer-reset'), { 'data-action': 'reset-layer', 'data-layer': 'user' });
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'editor entry 1: the edit panel, its locked name and its two actions',
+    marks: [
+      ['data-region', 'editor'],
+      ['data-editor-entry', 'edit'],
+      ['data-editor-actions', 'replace,hide'],
+      ['data-warning', 'workspace-layer-disabled'],
+    ],
+    copy: ['editHeading', 'editText', 'editLayer', 'editSave', 'editNameLocked', 'editNameLockedHint', 'editDisabledWorkspaceLayer'],
+    async run() {
+      const page = enPage({ responses: defaultResponses() });
+      const rec = recorder(page);
+      await rec.take();
+      clickButton(rec.last(), { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
+      await rec.take();
+      clickTab(rec.last(), 'editor-layer', 'workspace');
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'editor entry 2: the append panel, its fixed action and its name rule',
+    marks: [
+      ['data-region', 'editor'],
+      ['data-editor-entry', 'append-new'],
+      ['data-editor-actions', 'append'],
+    ],
+    copy: ['appendHeading', 'appendName', 'appendNameHint', 'appendActionFixed', 'appendActionHint', 'appendUntitled'],
+    async run() {
+      const page = enPage({ responses: defaultResponses() });
+      const rec = recorder(page);
+      await rec.take();
+      clickButton(rec.last(), { 'data-action': 'append-new' });
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'editor: the live entry feedback and the blocked-card fallback',
+    marks: [
+      ['data-region', 'editor'],
+      ['data-warning', 'entry-feedback'],
+      ['data-warning', 'override-blocked'],
+      ['data-block-code', 'section-not-present'],
+    ],
+    copy: ['feedbackNameTaken', 'blockNotPresent', 'blockTitle', 'editOrderInvalid'],
+    async run() {
+      const taken = enPage({ responses: defaultResponses() });
+      const takenRec = recorder(taken);
+      await takenRec.take();
+      clickButton(takenRec.last(), { 'data-action': 'append-new' });
+      await takenRec.take();
+      typeInto(takenRec.last(), 'name', 'harness:identity');
+      await takenRec.take();
+
+      // The world moves under an open edit panel: the retained pre-save check paints.
+      const blocked = enPage({ responses: defaultResponses() });
+      const blockedRec = recorder(blocked);
+      await blockedRec.take();
+      clickButton(blockedRec.last(), { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
+      await blockedRec.take();
+      const next = snapshotFixture();
+      next.effective.sections = next.effective.sections.filter((section) => section.name !== 'harness:identity');
+      next.base.sections = next.base.sections.filter((section) => section.name !== 'harness:identity');
+      blocked.router.set(PATHS.snapshot, { payload: next });
+      clickButton(blockedRec.last(), { 'data-action': 'refresh' });
+      await blockedRec.take();
+
+      // A bad target index is refused locally.
+      const order = enPage({ responses: defaultResponses() });
+      const orderRec = recorder(order);
+      await orderRec.take();
+      clickButton(orderRec.last(), { 'data-action': 'append-new' });
+      await orderRec.take();
+      typeInto(orderRec.last(), 'name', 'panel:added');
+      await orderRec.take();
+      typeInto(orderRec.last(), 'order', '-3');
+      await orderRec.take();
+      clickButton(orderRec.last(), { 'data-action': 'save' });
+      await orderRec.take();
+
+      return [...takenRec.trees, ...blockedRec.trees, ...orderRec.trees];
+    },
+  },
+  {
+    name: 'editor: the own-override entry re-saves under its own fixed name',
+    marks: [
+      ['data-region', 'editor'],
+      ['data-editor-entry', 'edit-override'],
+      ['data-fixed-action', 'append'],
+    ],
+    copy: ['editOverrideHeading', 'editOverrideHint', 'appendActionFixed'],
+    async run() {
+      const payload = snapshotFixture({
+        base: { sections: [] },
+        effective: {
+          sections: [
+            {
+              name: 'ghost:section',
+              index: null,
+              text: '',
+              applied: false,
+              overridable: true,
+              reason: 'no section or override with this name',
+              overrideLayer: null,
+              action: 'replace',
+              origin: 'unmatched-override',
+            },
+          ],
+        },
+        rendered: '',
+      });
+      const page = enPage({ responses: defaultResponses({ [PATHS.snapshot]: { payload } }) });
+      const rec = recorder(page);
+      await rec.take();
+      clickButton(rec.last(), { 'data-action': 'edit', 'data-section-name': 'ghost:section' });
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'editor: the uncertain-frozen and the disabled-gate warnings',
+    marks: [
+      ['data-region', 'editor'],
+      ['data-warning', 'edit-uncertain'],
+      ['data-warning', 'edit-disabled'],
+    ],
+    copy: ['editWarnUnknown', 'editHeading', 'ovUser'],
+    async run() {
+      const uncertain = enPage({
+        useSessions: sessionsHook(SESSIONS_STATE),
+        responses: defaultResponses({
+          [PATHS.snapshot]: {
+            payload: snapshotFixture({
+              frozenScope: 'global',
+              frozenScopeReason: 'session "s2" has no active agent, so this verdict describes the unscoped assembly',
+            }),
+          },
+        }),
+      });
+      const rec = recorder(uncertain);
+      await rec.take();
+      clickButton(rec.last(), { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
+      await rec.take();
+
+      // The gate fires while the panel is open: the scope freezes underneath.
+      const frozen = enPage({
+        responses: defaultResponses({
+          [PATHS.snapshot]: {
+            payload: snapshotFixture({ frozenScope: 'session', frozen: false, frozenReason: null }),
+          },
+        }),
+      });
+      const frozenRec = recorder(frozen);
+      await frozenRec.take();
+      clickButton(frozenRec.last(), { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
+      await frozenRec.take();
+      frozen.router.set(PATHS.snapshot, {
+        payload: snapshotFixture({
+          frozenScope: 'session',
+          frozen: true,
+          frozenReason: 'the scope collapsed to its complete section',
+        }),
+      });
+      clickButton(frozenRec.last(), { 'data-action': 'refresh' });
+      await frozenRec.take();
+
+      return [...rec.trees, ...frozenRec.trees];
+    },
+  },
+  {
+    name: 'status card: the build stamp in all three verdicts',
+    marks: [
+      ['data-region', 'build'],
+      ['data-build-match', 'true'],
+      ['data-build-match', 'false'],
+      ['data-build-match', 'unknown'],
+      ['data-warning', 'client-build-stale'],
+      ['data-warning', 'client-build-unknown'],
+    ],
+    copy: ['stBuild', 'stBuildSame', 'stBuildStale', 'stBuildStaleHint', 'stBuildUnknown', 'stBuildUnknownHint', 'stBuildPingFailedHint'],
+    async run() {
+      const oracle = independentBuildFingerprint(clientSource);
+      const same = enPage({
+        responses: defaultResponses({ [PATHS.ping]: pingResponse(buildFixture(oracle.hash, oracle.size)) }),
+      });
+      const sameRec = recorder(same);
+      await sameRec.take();
+
+      const edited = `${clientSource.slice(0, clientSource.indexOf('/* @build-fingerprint:begin */') + 40)}x${clientSource.slice(
+        clientSource.indexOf('/* @build-fingerprint:begin */') + 41,
+      )}`;
+      const other = independentBuildFingerprint(edited);
+      const stale = enPage({
+        responses: defaultResponses({ [PATHS.ping]: pingResponse(buildFixture(other.hash, other.size)) }),
+      });
+      const staleRec = recorder(stale);
+      await staleRec.take();
+
+      const older = enPage({
+        responses: defaultResponses({
+          [PATHS.ping]: { payload: { ok: true, plugin: 'dsh-prompt-setting', version: '0.0.1' } },
+        }),
+      });
+      const olderRec = recorder(older);
+      await olderRec.take();
+
+      const failed = enPage({ responses: defaultResponses({ [PATHS.ping]: new Error('Failed to fetch') }) });
+      const failedRec = recorder(failed);
+      await failedRec.take();
+
+      return [...sameRec.trees, ...staleRec.trees, ...olderRec.trees, ...failedRec.trees];
+    },
+  },
+  {
+    name: 'status card: the frozen scope in all three verdicts',
+    marks: [
+      ['data-frozen-state', 'unfrozen'],
+      ['data-frozen-state', 'frozen'],
+      ['data-frozen-state', 'unknown'],
+      ['data-warning', 'frozen'],
+      ['data-warning', 'frozen-unknown'],
+    ],
+    copy: ['stUnfrozenGlobal', 'stFrozenSession', 'stFrozenUnknown', 'stReason'],
+    async run() {
+      const global = enPage({ responses: defaultResponses() });
+      const globalRec = recorder(global);
+      await globalRec.take();
+
+      const frozen = enPage({
+        useSessions: sessionsHook(SESSIONS_STATE),
+        responses: defaultResponses({
+          [PATHS.snapshot]: {
+            payload: snapshotFixture({
+              frozenScope: 'session',
+              frozen: true,
+              frozenReason: 'the scope collapsed to its complete section',
+            }),
+          },
+        }),
+      });
+      const frozenRec = recorder(frozen);
+      await frozenRec.take();
+
+      const unknown = enPage({
+        useSessions: sessionsHook(SESSIONS_STATE),
+        responses: defaultResponses({
+          [PATHS.snapshot]: {
+            payload: snapshotFixture({
+              frozenScope: 'global',
+              frozenScopeReason: 'session "s2" has no active agent, so this verdict describes the unscoped assembly',
+            }),
+          },
+        }),
+      });
+      const unknownRec = recorder(unknown);
+      await unknownRec.take();
+
+      return [...globalRec.trees, ...frozenRec.trees, ...unknownRec.trees];
+    },
+  },
+  {
+    name: 'status card: an unmounted assembly and a degraded session seat',
+    marks: [
+      ['data-warning', 'not-mounted'],
+      ['data-warning', 'session-degraded'],
+      ['data-region', 'session'],
+    ],
+    copy: ['stMountedOff', 'sessionLimit', 'sessionManualPlaceholder', 'sessionApply', 'sessionGlobal'],
+    async run() {
+      const unmounted = enPage({
+        responses: defaultResponses({ [PATHS.snapshot]: { payload: snapshotFixture({ mounted: false }) } }),
+      });
+      const unmountedRec = recorder(unmounted);
+      await unmountedRec.take();
+
+      const manual = enPage({ responses: defaultResponses() });
+      const manualRec = recorder(manual);
+      await manualRec.take();
+
+      return [...unmountedRec.trees, ...manualRec.trees];
+    },
+  },
+  {
+    name: 'error banners: every named rejection code, kept next to the host message',
+    marks: [
+      ['data-error-code', 'not-found'],
+      ['data-error-code', 'workspace-unresolved'],
+      ['data-error-code', 'assemble-failed'],
+    ],
+    copy: ['error.not-found', 'error.workspace-unresolved', 'error.assemble-failed', 'loadFailed', 'errCode', 'errDetail'],
+    async run() {
+      const trees = [];
+      for (const [code, status] of [
+        ['not-found', 404],
+        ['workspace-unresolved', 400],
+        ['assemble-failed', 503],
+      ]) {
+        const page = enPage({
+          responses: defaultResponses({
+            [PATHS.snapshot]: { status, payload: { ok: false, code, message: `server says ${code}` } },
+          }),
+        });
+        const rec = recorder(page);
+        await rec.take();
+        trees.push(...rec.trees);
+      }
+      return trees;
+    },
+  },
+  {
+    name: 'error banners: an unreachable host is the transport error, not a blank',
+    marks: [
+      ['data-render-state', 'ok'],
+      ['data-region', 'status'],
+    ],
+    copy: ['errNetwork', 'loadFailed'],
+    async run() {
+      const page = enPage({
+        responses: defaultResponses({
+          [PATHS.snapshot]: new Error('Failed to fetch'),
+          [PATHS.overrides]: new Error('Failed to fetch'),
+        }),
+      });
+      const rec = recorder(page);
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'session selector: the workspace tree, its archived note and its search hint',
+    marks: [
+      ['data-region', 'session-tree'],
+      ['data-region', 'session'],
+      ['data-warning', 'scope-archived-hidden'],
+      ['data-session-mode', 'sessions'],
+    ],
+    copy: ['sessionHeading', 'sessionSearch', 'scopeSearchHint', 'sessionKeyboardHint'],
+    async run() {
+      const page = enPage({
+        useSessions: sessionsHook(WORKSPACE_SESSIONS),
+        useWorkspaces: workspacesHook(workspacesFixture()),
+        responses: defaultResponses(),
+      });
+      const rec = recorder(page);
+      await rec.take();
+      typeInto(rec.last(), 'session-search', 'zzz-no-match');
+      await rec.take();
+      const noMatch = enPage({
+        useSessions: sessionsHook(WORKSPACE_SESSIONS),
+        useWorkspaces: workspacesHook(workspacesFixture()),
+        responses: defaultResponses(),
+      });
+      const noMatchRec = recorder(noMatch);
+      await noMatchRec.take();
+      typeInto(noMatchRec.last(), 'session-search', 'zzz-no-match');
+      await noMatchRec.take();
+      return [...rec.trees, ...noMatchRec.trees];
+    },
+  },
+  {
+    name: 'session selector: the flat fallback says it is degraded',
+    marks: [
+      ['data-region', 'session-list'],
+      ['data-warning', 'scope-degraded'],
+      ['data-session-mode', 'sessions'],
+    ],
+    copy: ['scopeDegraded', 'sessionSearch', 'sessionKeyboardHint'],
+    async run() {
+      const page = enPage({
+        useSessions: sessionsHook(FILTER_SESSIONS),
+        responses: defaultResponses(),
+      });
+      const rec = recorder(page);
+      await rec.take();
+      typeInto(rec.last(), 'session-search', 'nothing matches this');
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'session selector: a catalog over both render caps warns instead of spreading',
+    marks: [
+      ['data-warning', 'scope-truncated'],
+      ['data-warning', 'scope-groups-truncated'],
+      ['data-region', 'session-tree'],
+    ],
+    copy: [['scopeTruncated', { n: 100 }], 'scopeGroupsTruncated'],
+    async run() {
+      // Every group open at once is what exhausts the shared row budget: the
+      // default walk (one open group) can never reach the cap.
+      const wideState = manyWorkspaceSessions(20, 100);
+      const wide = enPage({
+        useSessions: sessionsHook(wideState.sessions),
+        useWorkspaces: workspacesHook(wideState.workspaces),
+        responses: defaultResponses(),
+      });
+      const wideRec = recorder(wide);
+      await wideRec.take();
+      typeInto(wideRec.last(), 'session-search', 'Session');
+      await wideRec.take();
+
+      const grouped = enPage({
+        useSessions: sessionsHook(manyWorkspaceSessions(45, 1).sessions),
+        useWorkspaces: workspacesHook(manyWorkspaceSessions(45, 1).workspaces),
+        responses: defaultResponses(),
+      });
+      const groupedRec = recorder(grouped);
+      await groupedRec.take();
+
+      return [...wideRec.trees, ...groupedRec.trees];
+    },
+  },
+  {
+    name: 'the primitives renderer draws the same copy through the official atoms',
+    marks: [
+      ['data-renderer', 'primitives'],
+      ['data-region', 'sections'],
+      ['data-region', 'full'],
+      ['data-region', 'overrides'],
+      ['data-region', 'history-diff'],
+      ['data-diff-block', 'primitives'],
+    ],
+    copy: ['title', 'viewFull', 'ovHeading', 'histDiffHeading'],
+    async run() {
+      const page = enPage({ primitives: 'ok', responses: defaultResponses() });
+      const rec = recorder(page);
+      await rec.take();
+      // The official SegmentedTabs double labels every group 'primitives', so
+      // the view tabs are picked by value alone in this branch.
+      clickAnyTab(rec.last(), 'full');
+      await rec.take();
+      clickAnyTab(rec.last(), 'overrides');
+      await rec.take();
+      clickButton(historyRowOf(rec.last(), '2'), { 'data-action': 'diff-from', 'data-history-id': '2' });
+      await rec.take();
+      clickButton(historyRowOf(rec.last(), '1'), { 'data-action': 'diff-to', 'data-history-id': '1' });
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'the render-failure card falls back to readable copy, never a blank',
+    marks: [['data-render-state', 'error'], ['data-renderer', 'fallback']],
+    raw: ['render failure', 'Error'],
+    async run() {
+      const { module, runtime } = loadClient('throw');
+      const { registrations } = mountClient(module);
+      const props = {
+        // A translator that explodes: `t` is the broken thing here.
+        t: () => {
+          throw new Error('translator exploded');
+        },
+        ...registrations[0].options.inject(),
+      };
+      return [expandTree(runtime.render(registrations[0].component, props).tree)];
+    },
+  },
+];
+
+/**
+ * The `data-*` markers the sweep must have rendered. It is the machine-checked
+ * half of "the sweep really walked these branches": a case that renders nothing
+ * can never satisfy its own `marks`, and this list fails if a case is dropped.
+ */
+const EN_REQUIRED_MARKERS = [
+  'data-region=sections',
+  'data-region=filters',
+  'data-region=full',
+  'data-region=diff',
+  'data-region=overrides',
+  'data-region=history',
+  'data-region=history-diff',
+  'data-region=transfer',
+  'data-region=layer-reset',
+  'data-region=confirm',
+  'data-region=editor',
+  'data-region=session',
+  'data-region=session-tree',
+  'data-region=session-list',
+  'data-region=build',
+  'data-region=status',
+  'data-renderer=fallback',
+  'data-renderer=primitives',
+  'data-diff-block=primitives',
+  'data-editor-entry=edit',
+  'data-editor-entry=append-new',
+  'data-editor-entry=edit-override',
+  'data-build-match=true',
+  'data-build-match=false',
+  'data-build-match=unknown',
+  'data-frozen-state=unfrozen',
+  'data-frozen-state=frozen',
+  'data-frozen-state=unknown',
+  'data-error-code=not-found',
+  'data-error-code=workspace-unresolved',
+  'data-error-code=assemble-failed',
+  'data-phase=empty',
+  'data-phase=loading',
+  'data-empty=sections',
+  'data-empty=history',
+  'data-empty=overrides',
+  'data-warning=client-build-stale',
+  'data-warning=client-build-unknown',
+  'data-warning=frozen',
+  'data-warning=frozen-unknown',
+  'data-warning=not-mounted',
+  'data-warning=rendered-unresolved',
+  'data-warning=scope-degraded',
+  'data-warning=scope-archived-hidden',
+  'data-warning=scope-truncated',
+  'data-warning=scope-groups-truncated',
+  'data-warning=session-degraded',
+  'data-warning=session-no-match',
+  'data-warning=full-filtered',
+  'data-warning=truncated',
+  'data-warning=entry-feedback',
+  'data-warning=override-blocked',
+  'data-warning=workspace-layer-disabled',
+  'data-warning=edit-uncertain',
+  'data-warning=edit-disabled',
+  'data-import-plan=true',
+  'data-diff-row=project:alpha',
+  'data-hd-row=project:alpha',
+  'data-render-state=error',
+];
+
+// #endregion
+
+test('client: the english render sweep shows no CJK and no bare key, in any branch', async () => {
+  const problems = [];
+  const observed = new Set();
+  let stringsSwept = 0;
+
+  for (const testCase of EN_SWEEP_CASES) {
+    const trees = await testCase.run();
+    assert.ok(trees.length > 0, `${testCase.name}: the case drew at least one tree`);
+
+    // Every tree the case drew counts: a case that walks several states asserts
+    // each marker somewhere in that walk, and every tree is swept for leaks.
+    const caseMarkers = new Set();
+    const caseStrings = [];
+    for (const tree of trees) {
+      stringsSwept += stringsByMarker(tree).length;
+      for (const problem of englishProblems(tree)) {
+        problems.push({ case: testCase.name, ...problem });
+      }
+      for (const marker of dataMarkers(tree)) {
+        caseMarkers.add(marker);
+        observed.add(marker);
+      }
+      for (const entry of stringsByMarker(tree)) caseStrings.push(entry.text);
+    }
+
+    for (const [attribute, value] of testCase.marks || []) {
+      if (!caseMarkers.has(`${attribute}=${value}`)) {
+        problems.push({ case: testCase.name, kind: 'missing-branch', key: `${attribute}=${value}` });
+      }
+    }
+    for (const entry of testCase.copy || []) {
+      const [key, params] = Array.isArray(entry) ? entry : [entry, null];
+      const template = EN_TABLE[key];
+      const expected = params === null ? template : fillText(template, params);
+      if (typeof template !== 'string' || expected.trim() === '') {
+        problems.push({ case: testCase.name, kind: 'unknown-copy-key', key });
+      } else if (!caseStrings.some((text) => text.includes(expected))) {
+        problems.push({ case: testCase.name, kind: 'missing-copy', key, expected });
+      }
+    }
+    for (const literal of testCase.raw || []) {
+      if (!caseStrings.some((text) => text.includes(literal))) {
+        problems.push({ case: testCase.name, kind: 'missing-literal', key: literal });
+      }
+    }
+  }
+
+  // Hand the observed markers to the coverage test even when a sweep assertion
+  // below fails, so the two assertions stay independently readable.
+  observedMarkers = observed;
+
+  // The sweep guards the table itself too: a key missing from `en` renders as
+  // its own identifier, and a key blanked to `''` renders as nothing at all —
+  // neither is CJK, so neither would be caught by the checks above.
+  const brokenTable = Object.keys(SWEEP_TABLES.zh).filter((key) => {
+    const value = EN_TABLE[key];
+    return typeof value !== 'string' || value.trim() === '' || value === key;
+  });
+  assert.deepEqual(brokenTable, [], 'every en key must carry its own non-empty copy');
+
+  // Not vacuous: the sweep really rendered a lot of localized text.
+  assert.ok(stringsSwept > 2000, `the sweep swept ${stringsSwept} rendered strings`);
+  assert.deepEqual(problems, []);
+});
+
+test('client: the english sweep really walked every required branch marker', () => {
+  const missing = EN_REQUIRED_MARKERS.filter((marker) => !observedMarkers.has(marker));
+  assert.deepEqual(missing, [], 'the sweep must render every branch it claims to cover');
+});
+
 test('client: the packaged file list still excludes the tests', () => {
   assert.ok(packageJson.files.includes('client.js'));
   assert.ok(!packageJson.files.includes('test'));
 });
+

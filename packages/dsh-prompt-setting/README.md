@@ -180,6 +180,41 @@ document.querySelector('[data-plugin="dsh-prompt-setting"]').dataset.buildMatch 
 的元数据，rev 没变就不读文件、不发通知。所以「写入后、`rebuilt` 前」判 `false` 是正确的（页面确实
 不是当前文件），但此时刷新也可能拿到同一份旧 artifact。详见 CONTRACT §14.5。
 
+## 可访问性：查看范围是一棵标准 ARIA 树
+
+「查看范围」的工作区树（`role="tree"`，`data-region="session-tree"`）现在有标准树语义，观感与交互不变：
+
+- `tree` 的**直接子项只有** `treeitem`（工作区节点，`aria-level="1"`，`aria-expanded`）和 `group`
+  （该工作区的会话容器，`aria-label` = 工作区标题）；**没有无名分组**，也没有裸 `div` 夹层；
+- 会话条目是 `role="treeitem"`、`aria-level="2"`、`aria-selected`（当前选中）；分页/排序/可见性、
+  ↑↓、Enter/Space、色条 + ✓、hover/focus 环、全部 `data-*` 标记一律不变；
+- 「显示更多」与到渲染上限的提示不是树节点，它们留在所属 `group` 内（提为 `tree` 的直接子项反而
+  会破坏上面的规则）；
+- **扁平降级路径（无 `useWorkspaces`）明确不宣称树**：它仍是 `role="listbox"` + `role="option"`
+  的可搜索列表，带可访问名，条目**不带** `aria-level` —— 二选一里选了「不假装有层级」，因为降级
+  分支没有工作区分组可言，硬套 `tree` 只会多出一层假层级。
+
+真机屏幕阅读器（VoiceOver）**未测**（本机验证手段只有渲染树断言），细节与取舍见
+[`NOTES.md`](./NOTES.md) §87。
+
+## 文案与语言（i18n）
+
+客户端半的**全部**文案走 `ctx.locale` 的命名空间词典（`settings.promptSetting`，zh/en 两套内联在
+`client.js` 顶部），所以 DSH 语言切到 English 时本页即英文，不需要刷新或重启（client 半由 HMR 热替换）。
+`client.js` 里**不允许**出现硬编码的界面文案：一切可读文本都从 `t(key)` 取，两套词典键位必须相等。
+
+自动化保障（`test/client.test.mjs`）：
+
+| 用例 | 断言 |
+| --- | --- |
+| `client: injects the locale namespace thunk and declares zh/en dictionaries` | zh/en **键位集合完全相等** |
+| `client: every documented rejection code has distinct zh/en copy` | 每个错误码都有**互不相同**的中英文案 |
+| `client: the english render sweep shows no CJK and no bare key, in any branch` | 用 **en** 词典渲染 **34 个场景**（全部视图与关键状态，10980 条渲染字符串，含 `placeholder`/`title`/`aria-label`），断言**零 CJK**、**无裸 key 回落**、en 词典非空且值不等于 key |
+| `client: the english sweep really walked every required branch marker` | **59 个 `data-*` 分支标记**必达（含 19 个 `data-warning`、构建戳三态、冻结三态、错误码横幅），少一个就红 |
+
+覆盖范围、负向对照与**刻意不覆盖**的部分（原生控件文案、DSH 自带 UI 文案、宿主返回的 `message`/`reason`
+原文、真机 SR 与热替换时序）见 [`NOTES.md`](./NOTES.md) §89。
+
 ## 阶段边界
 
 阶段一 B 交付宿主侧全部能力：`GET /prompt-setting/snapshot`、

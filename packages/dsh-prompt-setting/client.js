@@ -385,6 +385,10 @@ window.__ModuleLoader__.load({
       fWorkspace: '工作区级',
       fYes: '可覆盖',
       fNo: '不可覆盖',
+      // The editor's "label: value" row cannot echo its own label; these two
+      // are the values of that row only, never of the sections-list Tag.
+      fYesShort: '是',
+      fNoShort: '否',
       originRegistered: '注册段',
       originAppended: '本插件 append',
       originDownstream: '其它插件加入',
@@ -473,6 +477,7 @@ window.__ModuleLoader__.load({
       ovMergedNote: '合并顺序：工作区级覆盖同名用户级条目，并保留其位置。',
       ovUser: '用户级',
       ovWorkspace: '工作区级',
+      ovWorkspaceDisabled: '工作区级（未启用）',
       ovEffective: '已生效',
       ovIneffective: '未生效',
       ovUnknown: '效果未知',
@@ -673,6 +678,8 @@ window.__ModuleLoader__.load({
       fWorkspace: 'Workspace',
       fYes: 'Overridable',
       fNo: 'Not overridable',
+      fYesShort: 'Yes',
+      fNoShort: 'No',
       originRegistered: 'Registered',
       originAppended: 'Our append',
       originDownstream: 'Added by another plugin',
@@ -764,6 +771,7 @@ window.__ModuleLoader__.load({
       ovMergedNote: 'Merge order: a workspace override wins over the same-name user entry and keeps its position.',
       ovUser: 'user layer',
       ovWorkspace: 'workspace layer',
+      ovWorkspaceDisabled: 'workspace layer (disabled)',
       ovEffective: 'Applied',
       ovIneffective: 'Not applied',
       ovUnknown: 'Effect unknown',
@@ -2922,14 +2930,26 @@ window.__ModuleLoader__.load({
      * `data-scope-group` / `data-scope-toggle` / `data-scope-more` /
      * `data-scope-parent` are distinct attribute names on purpose: each selector
      * a test or a script uses matches exactly one node per group.
+     *
+     * ARIA shape (g-009): the header row is a level-1 `treeitem` and the
+     * windowed session rows are level-2 `treeitem`s inside the `group` that
+     * follows it, so the branch reads `tree > treeitem + group > treeitem` and
+     * a bare `div` never comes between the `tree` and its items. The group is a
+     * *sibling* of the header, not a DOM child of it: the whole header row is
+     * the toggle target, so nesting the rows inside it would make every session
+     * click bubble into the toggle and would draw the focus ring around the
+     * children. Its `marginTop: -1` cancels the tree's 2px gap so the header /
+     * first-row distance stays the 1px gap the old wrapper had.
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
      * @param group - one derived group.
      * @param activeId - the keyboard-highlighted session id ('' when none).
-     * @returns the group element.
+     * @returns `[header, group|null]`: the group is omitted when the workspace
+     *   renders no child row (shut, or nothing matched), so a collapsed node
+     *   never carries an empty group.
      */
-    function scopeGroupElement(t, m, a, group, activeId) {
+    function scopeGroupParts(t, m, a, group, activeId) {
       const hovered = m.scopeHover === `g:${group.key}`;
       const focused = m.scopeFocus === `g:${group.key}`;
       const label = group.label;
@@ -2937,8 +2957,9 @@ window.__ModuleLoader__.load({
         h(
           'div',
           {
-            key: 'head',
+            key: `h:${group.key}`,
             role: 'treeitem',
+            'aria-level': 1,
             tabIndex: 0,
             'data-role': 'group-toggle',
             'data-scope-group': group.key,
@@ -3034,17 +3055,21 @@ window.__ModuleLoader__.load({
         ),
       ];
 
+      // The workspace's children: level-2 treeitems, in a group of their own.
+      const rows = [];
+
       for (const row of group.sessions) {
         const selected = row.id === m.sessionArg;
         const rowHovered = m.scopeHover === `s:${row.id}`;
         const rowFocused = m.scopeFocus === `s:${row.id}`;
-        nodes.push(
+        rows.push(
           h(
             'button',
             {
               key: `s:${row.id}`,
               type: 'button',
               role: 'treeitem',
+              'aria-level': 2,
               'data-role': 'session-row',
               'data-session-id': row.id,
               'data-scope-parent': group.key,
@@ -3139,7 +3164,7 @@ window.__ModuleLoader__.load({
       if (group.more) {
         const moreHovered = m.scopeHover === `m:${group.key}`;
         const moreFocused = m.scopeFocus === `m:${group.key}`;
-        nodes.push(
+        rows.push(
           h(
             'button',
             {
@@ -3172,7 +3197,7 @@ window.__ModuleLoader__.load({
           ),
         );
       } else if (group.expanded && group.hidden > 0) {
-        nodes.push(
+        rows.push(
           h(
             'p',
             { key: 'cut', 'data-scope-cut': group.key, style: { margin: '2px 0 2px 20px', ...metaStyle } },
@@ -3181,7 +3206,24 @@ window.__ModuleLoader__.load({
         );
       }
 
-      return h('div', { key: `g:${group.key}`, style: { display: 'flex', flexDirection: 'column', gap: 1 } }, nodes);
+      // The children live in a `group` named after the workspace, so a screen
+      // reader can tell the level-2 rows apart from the next workspace's.
+      if (rows.length > 0) {
+        nodes.push(
+          h(
+            'div',
+            {
+              key: `g:${group.key}`,
+              role: 'group',
+              'aria-label': label,
+              style: { display: 'flex', flexDirection: 'column', gap: 1, marginTop: -1 },
+            },
+            rows,
+          ),
+        );
+      }
+
+      return nodes;
     }
 
     /**
@@ -3189,6 +3231,11 @@ window.__ModuleLoader__.load({
      * each with its windowed session rows, plus the honest notices (hidden
      * archived rows, suppressed groups, the global render cap) that explain why
      * a session is not on screen.
+     *
+     * The branch is a real ARIA tree (g-009): the container is `role="tree"`
+     * and its direct children are only `treeitem` (a workspace, level 1) or
+     * `group` (that workspace's sessions, level 2). The notices below the tree
+     * are siblings of the tree container, never children of it.
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
@@ -3204,12 +3251,13 @@ window.__ModuleLoader__.load({
           {
             key: 'tree',
             role: 'tree',
+            'aria-label': t('sessionHeading'),
             'data-region': 'session-tree',
             'data-scope-groups': String(scope.groups.length),
             'data-scope-rendered': String(scope.shown),
             style: { marginTop: 6, display: 'flex', flexDirection: 'column', gap: 2 },
           },
-          scope.groups.map((group) => scopeGroupElement(t, m, a, group, activeId)),
+          scope.groups.flatMap((group) => scopeGroupParts(t, m, a, group, activeId)),
         ),
         h(
           'p',
@@ -3335,7 +3383,7 @@ window.__ModuleLoader__.load({
           pinnedSessionButton(
             t,
             'current',
-            `${t('sessionCurrent')}${currentLabel ? `：${currentLabel}` : ''}`,
+            currentLabel ? fmt(t('sessionCurrentLabel'), { label: currentLabel }) : t('sessionCurrent'),
             scoped && m.sessionArg === currentId,
             currentId.length === 0,
             m.scopeHover === 'p:current',
@@ -3384,6 +3432,7 @@ window.__ModuleLoader__.load({
             {
               key: 'list',
               role: 'listbox',
+              'aria-label': t('sessionHeading'),
               'data-region': 'session-list',
               style: { marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 },
             },
@@ -3813,7 +3862,7 @@ window.__ModuleLoader__.load({
                 h('span', { style: metaStyle }, t('editOriginLabel')),
                 h('span', { 'data-role': 'origin' }, t(originKey(origin))),
                 h('span', { style: metaStyle }, t('editOverridableLabel')),
-                h('span', { 'data-role': 'overridable' }, overridable ? t('fYes') : t('fNo')),
+                h('span', { 'data-role': 'overridable' }, overridable ? t('fYesShort') : t('fNoShort')),
               )
             : null,
           h(
@@ -3889,7 +3938,7 @@ window.__ModuleLoader__.load({
                 { value: 'user', label: t('ovUser'), id: 'ps-layer-user', panelId: 'ps-editor-panel' },
                 {
                   value: 'workspace',
-                  label: workspaceUsable ? t('ovWorkspace') : `${t('ovWorkspace')}（${t('stDisabled')}）`,
+                  label: workspaceUsable ? t('ovWorkspace') : t('ovWorkspaceDisabled'),
                   id: 'ps-layer-workspace',
                   panelId: 'ps-editor-panel',
                 },

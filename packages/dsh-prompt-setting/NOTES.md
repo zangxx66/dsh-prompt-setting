@@ -2096,3 +2096,320 @@ clientBuildInfo(missing) = null threw = null
 - **顺带补一条静态复核**：传输链上的改写（`prepareSource` 剥 `sourceURL`/`sourceMappingURL` 尾巴、
   必要时补换行；`buildComboScript` 以 `;\n` 拼接）全部落在标记区域**之外** ⇒ 区域内文本原样通过；
   真机 payload 逐字节比对仍未做（§81.1）。
+
+---
+
+# 阶段一 C · 第六轮（g-009）：把「查看范围」树做成标准 ARIA 树（只动 client.js 渲染 + 测试 + 文档）
+
+## 87. ARIA 树语义修正：`tree > treeitem + group > treeitem`
+
+### 87.1 改动前的真实姿态（自己读代码确认，不照抄 brief）
+
+- `role="tree"` 的**直接子项是每个工作区的裸 `div` 包裹层**（`scopeGroupElement` 的返回值
+  `h('div', { key: 'g:'+key, style: {gap:1} }, nodes)`），包裹层里才是 `role="treeitem"` 的折叠行
+  和会话行 ⇒ 实际形状是 `tree > div > treeitem`。标准树要求 `tree` 的直接子项只能是
+  `treeitem` / `group`，这一条**不成立**（长期记忆里那条「已知未闭合」项说的就是它）。
+- 折叠行**本来**就是 `role="treeitem"`（带 `aria-expanded`、`data-expanded`、Enter/Space、文件夹图标列、
+  hover/focus 环），会话行也**本来**就是 `role="treeitem"` + `aria-selected`：缺的不是角色，而是
+  **层级**（两者都没有 `aria-level`，也没人把「工作区」与「会话」的从属关系说清楚），以及
+  `tree` 自己没有可访问名。
+- 扁平降级分支（无 `useWorkspaces`）本来就是 `role="listbox"` + `role="option"`：角色自洽，
+  只是 `listbox` 没有可访问名。
+
+### 87.2 改成什么（`client.js`，函数级）
+
+- `scopeGroupElement` → **`scopeGroupParts`**，返回 `[header, group|null]`：
+  - **header**：`role="treeitem"`（不变）+ **新增 `aria-level: 1`**；`data-role="group-toggle"`、
+    `data-scope-group`、`data-expanded`、`data-scope-contains-current`、`data-hover`/`data-focus`、
+    `aria-expanded`、`aria-label`、`tabIndex`、样式、`onClick`/`onKeyDown`/`onFocus`/`onBlur` 与子节点
+    （文件夹图标列/caret/label/path/count）**逐字不变**；只有 `key` 从 `'head'` 变成 `h:<key>`（因为
+    它现在与 group 同级）。
+  - **group**：**新增** `role="group"` + `aria-label` = 该工作区标题（未分组桶 = `未分组`/`Ungrouped`）；
+    只有该工作区**确实有子行**时才渲染（关着的组不留一个空 group）。
+  - **会话行**：`role="treeitem"`（不变）+ **新增 `aria-level: 2`**（`aria-selected` 早就有）。
+- `scopeTreeElement`：`scope.groups.map(...)` → **`flatMap(...)`**，于是 `tree` 的直接子项正好是
+  `treeitem`（工作区）与 `group`（其会话）；`tree` 新增 `aria-label`（复用 `sessionHeading`
+  的 zh/en 文案，未新增词典键）。
+- 扁平降级：`listbox` 新增同一个 `aria-label`；**不改角色、不加 `aria-level`**（取舍见 87.5）。
+
+### 87.3 为什么 group 是 header 的兄弟，而不是 APG 里那种「group 嵌在 treeitem 内部」
+
+- 折叠目标是**整行**（`onClick`/`onKeyDown` 都在 header 上，文件夹图标列也触发同一个 toggle，
+  靠 `stopPropagation` 保证一次点击只翻一次）。若把会话行塞进 header 内部，点任一会话都会冒泡成
+  一次折叠/展开，focus 环也会罩住全部子行 ⇒ **行为与观感双变**，直接违反硬约束。
+- 「header 内层再套一层行 + 外层 treeitem 外壳」也不行：focus 环要么落到外层容器上（观感变），
+  要么 treeitem 本身不可聚焦（语义反而更差），而且 `data-scope-group` 的唯一性会被两个节点争。
+- 因此按 brief 明确写下的形状实现：**`tree` 的直接子项为 `treeitem` / `group`**，group 紧随它所属的
+  工作区节点之后。未使用 `aria-owns` 把 group 声明给前面的 treeitem：需要稳定 id（本包目前不用
+  `useId`/`aria-labelledby`，引入新 hook 依赖有风险），且不同 SR 对待 `aria-owns` 的差异较大 ——
+  这条列进未验证项（87.6），不假装已经解决。
+
+### 87.4 零观感变化的机械保证（可断言）
+
+| 结构 | header→首行 | 组间 | 组内行间 |
+| --- | --- | --- | --- |
+| 旧：`tree{gap:2} > 包裹层{gap:1}` | 1px | 2px | 1px |
+| 新：`tree{gap:2} > header`、`tree{gap:2} > group{gap:1, marginTop:-1}` | 2px + (−1px) = **1px** | 2px | 1px |
+
+`tree` 与各行的**任何既有样式值都没改**；只是新建的 group 元素带 `gap:1`（等价于被它取代的旧包裹层）
+与 `marginTop:-1`（抵消 `tree` 的 `gap:2`）。这两个值被新增测试钉住，免得以后有人改了 `tree` 的 gap
+却以为「观感没变」。另外组内行间、`显示更多`/`隐藏 N 条`提示的间距都还在同一个 `gap:1` 容器里 ⇒ 不变。
+
+### 87.5 扁平降级路径的取舍（brief 要求二选一，这里选「明确不宣称树」）
+
+**选「不宣称树」**：降级分支继续 `role="listbox"` + `role="option"`，补一个可访问名，条目**不加**
+`aria-level`。理由：降级分支没有工作区分组，只有一层被 `SESSION_MATCH_LIMIT` 截断的搜索结果；
+套 `tree` 就必须给每行编一个层级（只能是 1），而 `tree` 里的「level 1」意味着根节点、可展开，
+这里的行是搜索结果、不可展开 —— 收益为零而会误导 SR。测试把这条取舍钉死：扁平路径下
+`role=tree`/`treeitem`/`group` 计数全为 0，且 option 上不存在 `aria-level`。
+
+### 87.6 未验证项（诚实清单）
+
+1. **真机屏幕阅读器（VoiceOver）未测**：本轮全部证据来自渲染树断言 + 311 项自动化测试；
+   「SR 的播报顺序、是否会因为 group 是兄弟而非子节点而改变层级播报」**没有实测**。
+2. **`aria-owns` / DOM 内嵌 group 未采用**（见 87.3）：部分 SR 可能不把同级 group 视为前一
+   `treeitem` 的子级；实际层级靠 `aria-level` 兜底，真机未确认。
+3. **`aria-setsize`/`aria-posinset` 未加**（目标描述里本就是可选项）：列表是**窗口化**渲染
+   （每组 10 行起、`显示更多`到 50、全局 100 行上限、超出报「还有 N 条」），`aria-setsize` 会与实际
+   可导航项数不符，宁可不宣称。
+4. **像素级观感等价未截图对比**：87.4 是「按样式值推导 + 断言钉住」，不是像素 diff；
+   `marginTop:-1` 在真机上的最终像素结果未逐像素校验。
+5. 树节点上的 `aria-level` 是**我们写死的 1/2**（不是 SR 从嵌套推导出来的），这是有意为之：
+   结构的真实深度就是两层，写死才与 DOM 一致（测试同时断言了嵌套链）。
+
+### 87.7 证据（全部在 `.worktrees/g-009-att-01` 内执行）
+
+```
+$ node --check client.js && node --check test/client.test.mjs
+（exit 0，无输出）
+$ node --test                       # 包目录，自动发现 test/
+ℹ tests 311   ℹ pass 311   ℹ fail 0   （基线 305 ⇒ 新增 6 项，全部在 test/client.test.mjs 的
+                                       `#region g-009`；既有 305 项未删、未改、未削弱）
+$ npm pack --dry-run                # npm_config_cache=/tmp/g009-npm-cache（本机 ~/.npm 有 root 属主文件，
+                                    #  默认缓存会 EPERM；用临时缓存绕开，与代码无关）
+npm notice total files: 14          # 与基线一致：仍只有运行时文件，test/ 命中 0
+```
+
+新增 6 项断言（都在 `test/client.test.mjs`，遍历**渲染出来的**树，不读源码字符串）：
+
+1. `the「查看范围」tree is a standard ARIA tree`：`role="tree"` 且有名；直接子项只有
+   `treeitem`/`group`（形状 `[treeitem w-alpha, group Alpha repo, treeitem w-beta, treeitem '']`）；
+   每个 `group` 都有 `aria-label`（无名分组检测）；工作区节点 `aria-level=1` + `aria-expanded`，
+   会话行 `aria-level=2` + `aria-selected=boolean`；**嵌套链**断言（level 1 的链为空、level 2 的链
+   恰好是 `['group']`，中间插任何东西都会让链多一项 ⇒ 变红）；并对 `tree{gap:2}` /
+   `group{gap:1, marginTop:-1}` 做间距等价断言。
+2. 开合一个工作区：Enter 后出现 **新的、有名的** group（`beta-dir`）且行都是 level 2；Space 收起后
+   该 group 消失（**不留空 group**）。
+3. 搜索态形状不变：只留生存工作区的 `[treeitem, group]`；`Beta` ⇒ `beta-dir`；`Loose` ⇒ 未分组桶
+   `['treeitem'(''), group(未分组)]`；同时断言「遍历得到的行集合 === 既有 helper 读 marker 得到的行集合」。
+4. 没有任何工作区时：唯一桶仍是**有名 group**（`未分组`），6 个会话仍全是 level 2。
+5. `显示更多`动作行：不是 treeitem、也不是 `tree` 的直接子项，而是**它的 group 内**的普通按钮；
+   同组内的行数 = `SCOPE_GROUP_PAGE`(10) 且全是 level 2。
+6. 扁平降级：`tree`/`treeitem`/`group` 计数 0，`listbox` 有名，option 上没有 `aria-level`。
+
+### 87.8 负向对照（逐条「改坏 ⇒ 红 ⇒ 还原 ⇒ 绿」，`shasum -a 256 -c` 逐字节确认回滚）
+
+| # | 改坏方式（只改 `client.js`，改完立刻还原） | 结果 | 还原 |
+| --- | --- | --- | --- |
+| ① | 会话行 `role: 'treeitem'` → `role: 'option'` | **5 红**（新增 6 项里除「扁平降级」那项外全红：角色集合、层级、嵌套链、形状断言命中） | ✅ `773b8ca3…` 逐字节回滚，6/6 复绿 |
+| ② | `flatMap` → `map(h('div', …))`，在 `tree` 与 `treeitem` 之间插裸 `div` 夹层 | **5 红**（直接子项断言 + 嵌套链断言命中） | ✅ 同上 hash 回滚，复绿 |
+| ③ | 去掉 group 的 `aria-label`（造出无名分组） | **5 红**（无名分组检测命中） | ✅ 同上 hash 回滚，复绿 |
+
+- 「扁平降级」那项在 ①②③ 下**保持绿**是预期：它断言的是另一条分支（`role="listbox"`），
+  与被改坏的树渲染无关 —— 这也顺带证明新增断言**没有**用「整页快照」这种会连坐的写法。
+- 还原后 `git status --porcelain` 只有本 attempt 预期修改的文件（无残留 `client.js` 半成品、
+  无未跟踪文件、无 `.tgz`）。
+
+```
+evidence: suite=client(node --test, packages/dsh-prompt-setting) passed=311 failed=0 exit=0 ms=7885 diff=2f/+321/-8 commit=2fac4d9
+```
+
+（该 commit 只含 `client.js` + `test/client.test.mjs`，即被验证的代码与测试本身；本 NOTES 与 README 的
+文档改动在其后的提交里，不改任何被测字节。）
+
+### 87.9 本轮明确**没有**做的事
+
+- 没有改分组/排序/可见性规则，没有碰 `SCOPE_GROUP_PAGE/SCOPE_GROUP_MAX/SCOPE_TOTAL_MAX`/
+  `SESSION_MATCH_LIMIT`/`SCOPE_GROUP_LIMIT`，没有碰搜索语义与分页边界；
+- 没有改任何样式值、没有改视觉（文件夹图标列、caret、色条 + ✓、hover/focus 环）与交互行为
+  （↑↓/Enter/Space/Esc、点行、点图标列各一次 toggle）；
+- 没有改既有 `data-*` 标记，没有删改削弱既有 305 项断言（本轮**只增 6 项**）；
+- 没有动 `core/**`、`index.js`、`package.json`、`cordis.patch.yml`；`CONTRACT.md` 里本来就没有树的
+  ARIA 描述（已 grep 确认），故无需同步、也无漂移；
+- 没有改 zh/en 词典键（`aria-label` 复用既有 `sessionHeading`，既有词典 parity 用例仍绿）；
+- 没有调用 `cordis_inspect_query`；没有触碰 `~/.dsh/prompt-setting/*`、没有重启 `dsh web`、
+  没有装/卸插件、没有改 profile、没有改 `main`；
+- 没有做真机 SR 验证、没有做像素截图对比、没有加 `aria-owns`/`aria-setsize`/`aria-posinset`
+  （见 87.6）。
+
+## 88. 独立 profile 以 tarball 安装验证（g-011，2026-09-29，主管本人执行）
+
+**为什么做**：发布前最后一块缺口。此前「可发布 npm」的安装证据只有「以 `link:` 装入本机 web
+profile」，长期记忆里如实记为「未在独立 profile 安装验证」——别人拿到 tarball 能不能装上并挂起来
+没有证据。本次用**全新 profile**（`g011`，从官方 web 模板初始化）真装一次，全程不碰当前 web
+profile 与 `~/.dsh/prompt-setting/` 用户数据。
+
+**步骤与证据**
+
+| # | 命令 / 动作 | 结果 |
+| --- | --- | --- |
+| 1 | `npm pack`（包目录） | `dsh-prompt-setting-0.1.0.tgz`，206,799 B，**14 条**，sha256 `4053664ab8b6afb8…f81eaa9` |
+| 2 | `dsh --profile g011 --from-default-profile web --dump-config` | 从官方 web 模板初始化出独立 profile |
+| 3 | `dsh plugin --profile g011 add <tarball>` | 装为 `file:` 依赖，并**自动**把 `dsh-prompt-setting` 追加进该 profile 的 `dsh.profile.bundles` |
+| 4a | `dsh --profile g011 --dump-config` | 组合树出现 `# == dsh-prompt-setting` / `- id: prompt-setting` / `name: dsh-prompt-setting` ⇒ 包 patch 生效、条目挂上 |
+| 4b | 该 profile 下 `import('dsh-prompt-setting')` | 解析到 `profiles/g011/node_modules/dsh-prompt-setting/index.js`；`apply` 为函数；`inject` 恰为 `["webServer","connection","systemPrompt"]` |
+| 4c | 装进去的 `client.js` 摘要 | `63cf17c0` / size `248093` —— 与仓库那份**逐字节同源**（tarball 里就是同一份字节） |
+| 5 | `dsh --profile g011 --port 3099 --host 127.0.0.1` 起独立 GUI | 负责人目视：**Prompt 节出现**、**构建戳「与宿主一致」**、段列表正常、无错误横幅 |
+| 6 | 清理 | 停止实例、删除临时 profile 与 tarball |
+
+**零影响证明**：当前 web profile 的 `package.json` / `cordis.patch.yml` 在验证前后哈希逐字节一致
+（`bfa8056f478b…` / `cd76ce2bd7c6…`）；3080 实例 pid 未变（**未重启**）；仓库 `git status` 干净。
+
+**坑（写给后来者）**
+
+- `dsh --profile g011 web --port 3099` 会报 `too many arguments. Expected 0 arguments but got 1: web`
+  —— profile 自身声明了要跑的应用；正确写法是 `dsh --profile <name> --port <port>`（app 参数直接
+  跟 launcher 参数）。
+- 该实例启动时**会自动打开默认浏览器**（`--no-open` 可关）。
+- 带 `?token=` 的 URL 对 `/prompt-setting/*` **仍是 401**：信任栅栏不看 URL token，只有页面自身的
+  连接能过 ⇒ 这一层**无法用 curl 免浏览器验证**，目视检查是必需品。
+- **结论：tarball 安装路径成立**（宿主半可解析、可加载、配置树挂载；客户端半在该 profile 的 GUI 可用）。
+
+**本次仍未验**：该 profile 下跑真实对话回合的装配行为（本次只验安装与挂载）；`npm publish` 到
+registry 未执行（人工 gate）。
+
+
+---
+
+## 89. 英文渲染横扫：测试桩按语言渲染 + en 全分支断言（g-010，2026-09-29）
+
+**缺口（为什么需要这条）**：`test/client.test.mjs:934` 已断言 zh/en **键位相等**，`:940` 已断言每个错误码
+中英文案**互不相同**；但既有用例全部把 `t` 绑在 `dict.zh`（测试桩里的 `dict()` 写死 `.zh`），
+**从来没有用 en 词典渲染过页面** ⇒ 绕开 `t()` 的硬编码中文、`t()` 回落到裸 key 字面量，
+自动化完全看不见。真机切英文是唯一曝光途径，而真机不可能穷举每一次渲染。
+
+**一、测试桩改动（既有 zh 语义逐字节不变）**
+
+| 改动 | 说明 |
+| --- | --- |
+| `dict(dictionaries, ns, key, language = 'zh')` | 多一个语言参数，**默认 `'zh'`**；`locale.bind` 的既有调用点行为不变 |
+| `makePage({ language })` | `'en'` 时把 `props.t` 绑到注册词典的 `dict.en`；不传 = 老行为 |
+| `page.text` | 新增：当前所绑语言的表（en 用例断言期望文案用）；`page.zh` 语义不变，311 条老用例零改动 |
+
+**二、两条新用例（311 → 313）**
+
+1. `client: the english render sweep shows no CJK and no bare key, in any branch`
+   —— **34 个场景**，共扫 **10980** 条渲染字符串（含 `placeholder` / `title` / `aria-label` / `alt` / `value`
+   这些**会显示文案的属性**，不只 children）。三类断言：
+   - **零 CJK**：判据原文 `/[\u4e00-\u9fff]/`，**外加** CJK 标点/全角块 `\u3000-\u303f`、`\uff01-\uff60`、
+     `\uffe0-\uffe6`（判据的严格超集）。失败信息给出 `chars`、命中文本、以及最近的 `data-*` 标记链
+     （`region=… editor-entry=… tab-value=…`），可直接定位到分支。
+   - **无裸 key**：① 含点 key（`error.not-found`）不得作为子串出现；② 标识符 token（`ovUser`、`stBuildStale`）
+     只要是词典 key、且不在 **en 文案自身的词表**里，即判泄漏。
+   - **词典自身完好**：以 **zh 的键集**遍历，en 侧必须存在、`trim()` 后非空、且值不等于 key 本身。
+     删 key / 清空 key / 值等于 key 三种改坏都会红，**即使该 key 没被任何场景的 `copy` 声明覆盖**
+     （N3/N4 就是靠这一条变红）。
+   - 每个场景另断言 `copy`：指定 key 的 en 文案必须**真的出现在屏幕上**（否则就是「什么都没渲染所以没中文」）。
+2. `client: the english sweep really walked every required branch marker`
+   —— 把 **59 个 `data-*` 标记**作为**必达清单**断言，少一个就红。覆盖范围因此是**机器检查**的，不是文字承诺：
+   `region=sections|filters|full|diff|overrides|history|history-diff|transfer|layer-reset|confirm|editor|session|session-tree|session-list|build|status`、
+   `editor-entry=edit|append-new|edit-override`、`build-match=true|false|unknown`、
+   `frozen-state=unfrozen|frozen|unknown`、`error-code=not-found|workspace-unresolved|assemble-failed`、
+   `phase=empty|loading`、`empty=sections|history|overrides`、`renderer=fallback|primitives`、
+   `diff-block=primitives`、`import-plan=true`、`diff-row` / `hd-row`、`render-state=error`，
+   以及 **19 个 `data-warning=*`**：`client-build-stale` / `client-build-unknown` / `frozen` / `frozen-unknown` /
+   `not-mounted` / `rendered-unresolved` / `scope-degraded` / `scope-archived-hidden` / `scope-truncated` /
+   `scope-groups-truncated` / `session-degraded` / `session-no-match` / `full-filtered` / `truncated` /
+   `entry-feedback` / `override-blocked` / `workspace-layer-disabled` / `edit-uncertain` / `edit-disabled`。
+
+**三、覆盖的场景（34 条）**
+
+段列表（默认 / 来源筛选 / 筛到 0 行 / 空装配 / 加载中）、全文视图（正文 / 搜索高亮 / 来源筛选 /
+超 3000 行截断 / 未解析变量告警）、`base ↔ effective` diff、覆盖视图（覆盖列表 / 无覆盖 / 历史可读 /
+历史损坏 / 历史 diff / 无法比较的 diff）、导入导出面板（干跑预览 / 冲突模式 / 被拒导入 / 二次确认 /
+应用完成 / 下载成功 / 无下载面 / 整层重置确认）、编辑面板三个入口（`edit` / `append-new` / `edit-override`）
+\+ 即时反馈（`entry-feedback`）+ 保存前拦截（`override-blocked`）+ order 非法 + 冻结不确定 + 禁用闸门、
+构建戳三态（含 ping 失败）、错误横幅（`not-found` / `workspace-unresolved` / `assemble-failed` / 网络）、
+冻结三态、未挂载、会话选择器（工作区树 / 归档提示 / 无匹配 / 扁平降级 / 两类行数上限）、
+primitives 渲染分支、渲染失败卡片。
+
+**四、横扫暴露并修掉的问题（3 处，全部属「绕开 `t()`」或「值回显标签」）**
+
+| # | 位置 | 现象（en 渲染实测文本） | 修法 |
+| --- | --- | --- | --- |
+| 1 | `client.js:3383` 会话选择器「当前」胶囊 | 硬编码**全角冒号**，en 下渲染 `Current：Second` | 复用既有模板 `sessionCurrentLabel`（`fmt(t('sessionCurrentLabel'), { label })`）；**zh 输出逐字节不变** |
+| 2 | `client.js:3941` 编辑面板「保存层」标签 | 硬编码**全角括号**，en 下渲染 `workspace layer（Disabled）` | 新增键 `ovWorkspaceDisabled`（zh `工作区级（未启用）` / en `workspace layer (disabled)`）；**zh 输出逐字节不变** |
+| 3 | `client.js:3865` 编辑面板「可覆盖」**值** | 值取自 `fYes`/`fNo`，与同行标签 `editOverridableLabel` **同词** ⇒ `Overridable  Overridable`（zh 同样 `可覆盖  可覆盖`）。**负责人真机发现** | 新增**仅供该行**的 `fYesShort`/`fNoShort`（zh `是`/`否`、en `Yes`/`No`）；`fYes`/`fNo` **不动**（段列表行 Tag 用它们是正确的） |
+
+- 新增键共 **6 个**（zh/en 各 3）：`fYesShort`、`fNoShort`、`ovWorkspaceDisabled`。
+  独立复算：zh 262→265、en 262→265，**既有键的文案 0 处改动、0 处删除**，两套键集仍完全相等（各 265 + 36 个 `error.CODE`）。
+- 唯一 **zh 可见变化**：编辑面板该行由「可覆盖」变「是」（即 #3 的修法本身，属修 bug）。
+- 既有用例 `:2559` 因该契约变更更新为断言 `zh.fYesShort`，并**追加**「该行不再等于 `editOverridableLabel`」
+  的断言（不是削弱，是更严）。
+
+**五、同类「标签: 值」配对排查（应负责人要求）**
+
+逐点数了所有「标签 + 紧邻值」行：`editOriginLabel`/`originRegistered`、`histLayerLabel`/`ovUser|ovWorkspace`、
+`stMounted`/`stMountedOn|Off`、`stBuild`/`stBuildSame|Stale|Unknown`、`stBuildSelf`/哈希、`stBuildServer`/哈希、
+`stPath`/路径、`stReason`/原因、`ovReason`/原因、`editLayer`/`ovUser|WorkspaceDisabled` ——
+**只有 `editOverridableLabel` 与它的值同词**（已修，见上表 #3）。
+另有一处**刻意保留**并记录在案：段列表筛选行的组标签 `filterOverridable`（`Overridable`）与它的三个**枚举选项**
+`fAll`/`fYes`/`fNo`（`All`/`Overridable`/`Not overridable`）有一词重合 —— 那是「枚举选项」不是「值回显标签」，
+改成 `Yes`/`No` 会同时改掉 zh 文案、且与同组另两个选项（`All`/`Default`）风格不一致，故**不动**。
+
+**六、负向对照（逐条改坏 ⇒ 红 ⇒ 从 `/tmp` 还原 ⇒ 绿；`shasum -a 256` 逐字节确认回滚）**
+
+基线 `client.js` sha256 `a24bb760946d94d20336c191fb2d7c4d66c36cde51f871233bc5e1cea45efced`，
+**5 条对照的还原后 sha256 全部等于该值**，还原后 `git status` 只含本 attempt 的两处改动（无残留改坏）。
+
+| # | 改坏内容 | 结果 | 命中的断言 |
+| --- | --- | --- | --- |
+| N1 | 状态卡标题插入硬编码中文 `` `${t('stateHeading')} 状态` `` | client 套件 92 pass / **2 fail** | `kind: cjk, chars: 状态` + 命中标记链 |
+| N2 | 删掉 en 键 `title` | 91 pass / **3 fail** | `every en key must carry its own non-empty copy` |
+| N3 | 删掉 en 键 `scopeSelected`（**任何场景的 `copy` 都没声明它**） | 91 pass / **3 fail** | 同上（证明这条网不依赖场景清单） |
+| N4 | 把 en 键 `stMountedOff` 清成 `''` | 92 pass / **2 fail** | 同上（空串渲染成「什么都没有」，只有这条网抓得到） |
+| N5 | 让一处渲染回落到裸 key：`title: t('scopeSelected')` → `title: 'scopeSelected'` | 93 pass / **1 fail** | `kind: bare-key, key: scopeSelected, text: scopeSelected` |
+
+**七、真机证据（负责人执行，英文界面）**
+
+- 负责人把 DSH 语言切到 **English** 后目视 **Scope / Status / Edit section / Filters** 四个区块：
+  文案**完整**、**无裸 key 外露**、布局正常；
+- 截图里的构建戳 `Build: Matches the host` / `This tab: 7e5115f5` / `Host: 7e5115f5` 与
+  **合并 g-009 后的真实摘要一致**（本 attempt 独立复算该状态：`hash=7e5115f5`、`size=249937`，
+  与截图逐位相同 ⇒ 负责人看的确实是本分支的客户端半）。**本 attempt 改动落在指纹区间内，
+  合并后摘要变为 `7c48a4b1` / `size=250294`**，下次真机应看到新值且仍为「与宿主一致」；
+- 左侧导航的 **`表情包` 属 dsh-meme 插件，不在本包范围**；
+- 编辑面板内出现的中文段落是**被编辑的 section 正文**（用户数据），不是 UI 文案；
+- 负责人同时发现了上表 **#3** 的「值回显标签」，本轮已修。
+
+**八、未覆盖 / 待验（诚实清单）**
+
+- **真机 English 下的 `Full text` / `Overrides`（历史 · diff · 导入导出）三块本轮未目视** ——
+  负责人本轮只看了上述四区块。这三块由本文的**离线横扫**覆盖（含 `data-region=full|diff|history|history-diff|transfer` 的必达断言），
+  **真机目视由负责人补看，本 attempt 不声称已验证**。
+- **不覆盖**（横扫刻意不管，也不该由本插件负责）：
+  1. **原生控件文案** —— `<input type="file">` 的文件选择器按钮、浏览器日期/时间控件等由浏览器本体出字，
+     不在本插件的 `t()` 管辖范围；
+  2. **DSH 自带 UI 的文案** —— 宿主与其它插件的界面；
+  3. **宿主返回的 `message` / `reason` 原文** —— 本插件按契约原样透传（便于排障），**不翻译**；
+     它们的语言由宿主决定，横扫里用的是英文 fixture，因此不会把宿主中文误判为本插件泄漏。
+- **不覆盖**：真机屏幕阅读器（SR）朗读、真机语言切换的**热替换**时序（横扫用的是桩，不能替代真机）。
+- `errTitle`（`请求失败` / `Request failed`）经排查在**所有** `errorBanner` 调用点都被显式 `title` 覆盖，
+  **当前渲染不可达**。本轮**不改**（无渲染影响、改它反而要动调用点），只在此记录；键位仍由 `:934` 维持。
+
+**九、自测证据（本 attempt；worktree `.worktrees/g-010-att-01`，基线 `v0.1.0-test@f363b55`）**
+
+```
+evidence: suite=node --test(packages/dsh-prompt-setting) passed=313 failed=0 exit=0
+evidence: suite=node --test(test/client.test.mjs) passed=94 failed=0 exit=0
+evidence: pack=files 14 / test-hits 0
+```
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test`（包目录） | **313 tests / 313 pass / 0 fail**（基线 311 ⇒ **+2 条新用例**，无删改削弱） |
+| 客户端套件 | `node --test test/client.test.mjs` | 94 / 94 pass |
+| 打包 | `npm pack --dry-run --cache /tmp/g010-npm-cache` | **14 个文件**，`test/` **命中 0**，package size `220.7 kB`，tarball shasum `1da004675dff2d5864e3cb746e4a98ab8f5a24a8`（本文件定稿后重跑） |
+| 词典 | 独立复算（非套件内） | zh 262→265、en 262→265，**既有键 0 改动 / 0 删除**，键集完全相等 |
+| 新增键 | — | `fYesShort`(是/Yes)、`fNoShort`(否/No)、`ovWorkspaceDisabled`(工作区级（未启用）/workspace layer (disabled)) |
+| 构建戳 | 独立复算 `@build-fingerprint` 区间 | 改前 `7e5115f5` / `249937`（= 负责人截图值）⇒ 改后 `7c48a4b1` / `250294` |
