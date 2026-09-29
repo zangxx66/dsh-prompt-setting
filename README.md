@@ -52,7 +52,7 @@ packages/dsh-prompt-setting/   # 插件包本体（可独立 npm 发布）
 cd packages/dsh-prompt-setting
 node --test                    # 十二个套件；集成套件用真 DSH 包跑对照实验，须为 pass（非 skip）
 node scripts/check-compat.mjs  # 只读兼容性自检（不联网、永不抛、退出码恒 0）
-npm pack --dry-run             # 确认发布产物干净（16 个文件、无 test/、无 .dsh-graph）
+npm pack --dry-run             # 确认发布产物干净（18 个文件、无 test/、无 .dsh-graph）
 ```
 
 `test/boot.test.mjs`（g-013）钉住 boot 韧性：导入期兼容自检三分支、`apply` 失败只打印一条且回滚已注册的
@@ -66,8 +66,17 @@ effect（不留半挂载）、boot 连续性、客户端 factory 不把异常抛
 
 ## 状态
 
-- **阶段一（A/B/C）已交付**：插件骨架与本地挂载、宿主侧装配快照 + `system-prompt/assemble`
-  覆盖引擎 + 用户级/工作区级两层持久化、客户端设置页 Prompt 管理器（分段浏览、全文检索、
-  就地编辑、覆盖管理）。REST 契约已冻结于 `CONTRACT.md`（Revision 3）。
-- **阶段二（规划中）**：版本历史 + diff、恢复默认、导出 / 导入。
-- 进度与验收证据以 `.dsh-graph` 看板为准。
+- **阶段一（A/B/C）与阶段二已交付**：插件骨架与本地挂载、宿主侧装配快照 + `system-prompt/assemble`
+  覆盖引擎 + 用户级/工作区级两层持久化、设置页 Prompt 管理器；版本历史 + diff、恢复默认、导出 / 导入。
+- **当前形态（g-014…g-017，契约 Revision 8）**：本插件**自己注册一段** `prompt-setting:custom-prompt`
+  （排在所有 DSH 仓库内置段之后，且在有文本时被搬到最终装配的**最后**）；用户只在这个「我的 Prompt」
+  里写自己的指令，其他段**只能看不能改**（写入面收窄到该保留名：`PUT`/单名 `DELETE`/`import` 一律
+  `403 write-locked`，旧覆盖冻结只读、只能整批清除）。设置页按功能与频率分成四个一级 tab
+  （「我的 Prompt」/「提示词总览」/「历史与备份」/「高级」），「查看范围」默认收成一行摘要。
+- 真机验收状态、残余边界与未验证项见插件包 [`README.md`](./packages/dsh-prompt-setting/README.md)、
+  [`CONTRACT.md`](./packages/dsh-prompt-setting/CONTRACT.md)、[`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md)；
+  进度与验收证据以 `.dsh-graph` 看板为准。
+
+## 许可证
+
+MIT —— 见 [`LICENSE`](./LICENSE)（`packages/dsh-prompt-setting/LICENSE` 是同一份，随 npm 包发布）。

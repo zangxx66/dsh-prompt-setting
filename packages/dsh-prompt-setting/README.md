@@ -346,10 +346,10 @@ g-015 把页面切成了四个 tab，但共用的「查看范围」块**展开�
 - **零观感回归**：沿用现有 token / 间距 / 组件；折叠态的高度预算（卡片垂直内边距 + 摘要行最小高 + 一行余量
   = **70px**）由离线用例断言 ≤ 80px，真机首屏几何由主管合并后量（见下）。
 
-**为什么「未验证」要分开写**：运行中的 `dsh web` 服务的是**主工作树**的 `client.js`（profile 是 `link:`），
-attempt worktree 里的改动对它不可见，所以**外壳内的 tab 条 y 坐标由主管在合并进 `v0.1.0-test` 后走 HMR 实测**；
-本轮只做了离线渲染树/几何断言。现状实测数字、做法、映射表与未验证项见
-[`NOTES.md`](./NOTES.md) §94，契约见 [`CONTRACT.md`](./CONTRACT.md) §13.7。
+**真机已量（2026-09-29，负责人重启后主管在真 `dsh web` 设置页外壳内自跑）**：折叠态 `[data-region="session"]`
+高 **60px**、`data-region="tabs"` 顶边 **y=316**、`tab-panel` 顶边 **y=354**（视口 900）⇒ tab 条与「我的 Prompt」
+面板首屏完整可见（改前分别是 789 / 1025）；点「更改」⇒ 533px / y=789 且会话行数 2；点一行会话 ⇒ 自动收回到
+60px。做法、映射表与残余未验证项见 [`NOTES.md`](./NOTES.md) §94，契约见 [`CONTRACT.md`](./CONTRACT.md) §13.7。
 
 ## 「我的 Prompt」为什么真的排在最后（g-017，契约 Revision 8）
 
@@ -382,9 +382,10 @@ Revision 7 用 `order: 1000000` 把保留段排在**所有 DSH 仓库内置段�
 - **位置承诺只覆盖「有文本」的情况**，且只覆盖 `systemPrompt.assemble()` 返回的那个列表
   （注册视图 `base.sections` 不变：那里保留段本来就靠 `order` 在最后）。
 
-**真机生效需要重启 `dsh web`**（宿主半改动），所以本轮**没有**重启，按未验证项记录：离线证据（真
-Cordis + 真 `@deepseek-ai/dsh-system-prompt` + 模拟 `dsh-expression` 的外层追加监听器）见
-[`NOTES.md`](./NOTES.md) §95，契约见 [`CONTRACT.md`](./CONTRACT.md) §15.10。
+**真机已验（2026-09-29，负责人重启后主管自跑）**：写入文本后最终 `effective.sections` 的**末项就是保留段**、
+`dsh-expression:companion` 退到倒数第二，且拼出的 `rendered` **真以用户文本结尾**；恢复默认后回到原顺序、
+`overrides.json` 逐字节不变。离线另有真 Cordis + 真 `@deepseek-ai/dsh-system-prompt` + 模拟
+`dsh-expression` 的外层追加监听器作证，见 [`NOTES.md`](./NOTES.md) §95、契约 [`CONTRACT.md`](./CONTRACT.md) §15.10。
 
 ## 可访问性：查看范围是一棵标准 ARIA 树
 
@@ -467,10 +468,11 @@ Cordis + 真 `@deepseek-ai/dsh-system-prompt` + 模拟 `dsh-expression` 的外�
 
 ## Revision 7 边界（宿主半 + 契约 + g-015 的客户端重排）
 
-- **注册段的真机生效未验证**：注册本身是在**真实** `@deepseek-ai/dsh-system-prompt` 服务与真实
-  Cordis context 上做的，真实 `renderPrompt` 也逐字节验证了文本与「空段零贡献」；但「重启后的
-  `dsh web` 把这一段装配进最终 prompt」需要重启宿主才能观察，本轮**没有重启**，故按未验证项记录
-  （`CONTRACT.md` §15.9、`NOTES.md` §92.6）。
+- **注册段的真机生效已验（2026-09-29，负责人重启后主管自跑）**：`GET /snapshot` 的 `base.sections` 最后一项
+  就是 `prompt-setting:custom-prompt`（空文本）；写锁真机生效（`PUT`/单名 `DELETE` 非保留名 ⇒ 403 `write-locked`、
+  保留名 + `hide` ⇒ 400 `unsupported-action`、`reset+legacy` ⇒ 400 `conflicting-query`），且**被拒绝的写入前后
+  配置文件逐字节不变**；页面保存文本后该段 `applied:true`/`action:replace`/`overrideLayer:user`、`rendered` 含之。
+  注册本身另有真服务 + 真 `renderPrompt` 的离线证据（`CONTRACT.md` §15.9、`NOTES.md` §92.6）。
 - **`order: 1000000` 不是对第三方的保证**：本插件承诺的是排在**所有 DSH 仓库内置段**之后
   （内置位置表最大 `DEPLOYMENT_PERSONA_SUFFIX = 10200`）；另一个插件仍可用更大的有限值排到本段之后。
 - **`complete: true` 的 scope 会丢掉用户文本**：整段列表被替换为该 complete 段，本插件的段不在最终
@@ -480,17 +482,18 @@ Cordis + 真 `@deepseek-ai/dsh-system-prompt` + 模拟 `dsh-expression` 的外�
   最终 prompt 不受影响，但拿 Revision 6 的数组逐项对比的消费者要预期这条差异。
 - **~~客户端半仍是 Revision 6 的编辑器~~（g-015 已解决）**：设置页现在是上文四个一级 tab，
   唯一写入口「我的 Prompt」写的就是保留名 + `replace`，因此不存在「UI 能发起、宿主必然拒绝」的写入路径。
-- **~~打开页面看不到 tab 内容~~（g-016 已解决）**：「查看范围」默认收成一行摘要 +「更改」，
-  tab 条与面板回到首屏；折叠态高度是**离线预算**（70px ≤ 80px），外壳内的真实 y 坐标由主管合并后实测
+- **~~打开页面看不到 tab 内容~~（g-016 已解决、真机已量）**：「查看范围」默认收成一行摘要 +「更改」，
+  tab 条与面板回到首屏：折叠态块高 **60px**、`tabs` 顶边 **y=316**（改前 789），展开态 533px / y=789
   （`CONTRACT.md` §13.7、`NOTES.md` §94.6）。
 - **`interpolate: false` 的代价**：用户在「我的 Prompt」里写的 `{{变量}}` **永不替换**，原样进入
   prompt。这是刻意的取舍（自由文本，不是模板语言）。
 
 ## Revision 8 边界（宿主半：把「我的 Prompt」搬到最外层之后）
 
-- **真机生效未验证（需重启 `dsh web`）**：本轮**没有**重启宿主，所以「重启后最终 prompt 最后一段就是
-  保留段」这一条**没有**在真机观察过。离线上验证的是：真 Cordis + 真 `@deepseek-ai/dsh-system-prompt` +
-  一个模拟 `dsh-expression` 的**外层追加监听器**（先于本插件注册、`next()` 返回后追加自己的段）——
+- **真机已验（2026-09-29，负责人重启后主管自跑）**：未配置 ⇒ `effective.sections` 末项仍是
+  `dsh-expression:companion`（保留段空、不搬动）；页面写入文本 ⇒ 保留段成为**末项**、`rendered` 真以该文本
+  结尾；恢复默认 ⇒ 回到原顺序。离线另有真 Cordis + 真 `@deepseek-ai/dsh-system-prompt` + 一个模拟
+  `dsh-expression` 的**外层追加监听器**（先于本插件注册、`next()` 返回后追加自己的段）作证：
   有文本时最终最后一项是保留段、无文本时追加段仍在最后，`renderPrompt` 两种情况下都与预期逐字节相等
   （`CONTRACT.md` §15.10、`NOTES.md` §95）。
 - **位置承诺的范围**：只对**有文本**的保留段有效，只对 `systemPrompt.assemble()` 返回的列表有效，
@@ -499,3 +502,7 @@ Cordis + 真 `@deepseek-ai/dsh-system-prompt` + 模拟 `dsh-expression` 的外�
   ③ 别人的段顺序（我们只搬自己的段）。
 - **未配置时零变化**：空段不搬（位置在 prompt 里不可观察，搬动会破坏 identity 与零贡献承诺），
   既有监听器、`base`/frozen 判定、覆盖应用与其「无覆盖按引用返回」全部不动。
+
+## 许可证
+
+MIT —— 见 [`LICENSE`](./LICENSE)（与仓库根 `LICENSE` 同一份，随本包发布到 npm）。
