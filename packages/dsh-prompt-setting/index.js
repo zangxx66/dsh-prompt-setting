@@ -22,14 +22,17 @@
  * - `core/custom.js` is pure policy (no IO): the reserved section this plugin
  *   registers and the write lock that narrows every write route to it
  *   (Revision 7).
- * - this file is the adapter: one registered prompt section, one waterfall
- *   listener and seven REST routes.
+ * - this file is the adapter: one registered prompt section, two waterfall
+ *   listeners and seven REST routes.
  *
- * The listener reads memory only. It records the pre-waterfall sections (the
- * `base` view and the frozen probe) before delegating with `next()`, then
- * applies this plugin's overrides on top of the downstream result — so it
- * never vetoes another listener, and the untouched assembly is returned by
- * identity when no override applies.
+ * The listeners read memory only. The override listener records the
+ * pre-waterfall sections (the `base` view and the frozen probe) before
+ * delegating with `next()`, then applies this plugin's overrides on top of the
+ * downstream result — so it never vetoes another listener, and the untouched
+ * assembly is returned by identity when no override applies. The second
+ * listener (Revision 8) is registered `{prepend: true}` so it is the outermost
+ * one, and its only act is to move the reserved section to the end when it
+ * carries text and is not already there — by reference otherwise.
  *
  * No DSH Host package is imported: the Host APIs used are the `systemPrompt`,
  * `webServer` and `connection` services read off `ctx`, plus an optional
@@ -58,6 +61,7 @@ import {
   customSection,
   exportScope,
   legacyPlan,
+  reservedSectionLast,
 } from './core/custom.js';
 import { EXPERIMENTS } from './core/experiments.js';
 import { buildDiff } from './core/diff.js';
@@ -852,6 +856,44 @@ function mount(ctx, config, cleanups) {
     }
     if (!applied.changed) return downstream;
     return { ...downstream, sections: applied.sections };
+  }
+
+  /**
+   * The `system-prompt/assemble` listener that keeps the reserved section last
+   * (g-017, `CONTRACT.md` §15.10).
+   *
+   * Registered with `{prepend: true}`, which makes it the **outermost** listener
+   * for this event. Measured, not assumed: the waterfall runs
+   * `outer:in → inner:in → inner:out → outer:out` (`CONTRACT.md` §6·E2), so the
+   * outermost listener's post-`next()` step runs **last** and therefore sees
+   * every section a listener registered earlier appended after `next()`
+   * returned. The platform itself places listeners this way
+   * (`ctx.on(..., { prepend: true })`), and `order: 1000000` cannot outrank it:
+   * that is exactly the live-machine gap this listener closes.
+   *
+   * It does **one** thing — hand the downstream result through
+   * {@link reservedSectionLast}, which returns its input **by reference**
+   * unless it really moves a section. It applies no override, reads no config
+   * and touches no other field: `assembleHandler` above owns all of that, and
+   * neither listener's registration order relative to the other is observable
+   * (`prepend` fixes this one's position; the override handler is inside it).
+   *
+   * Fail-open twice over: the transform is pure and total, and the surrounding
+   * `try` is the same belt-and-braces rule `assembleHandler` uses — an
+   * exception on the assembly path would break a user's turn.
+   * @param assembly - the pre-waterfall assembly (unused here).
+   * @param context - the assembly context (unused here).
+   * @param next - the rest of the waterfall.
+   * @returns the downstream assembly, with the reserved section last when it
+   *   carries text and is not already there.
+   */
+  async function keepReservedLastHandler(assembly, context, next) {
+    const result = await next();
+    try {
+      return reservedSectionLast(result);
+    } catch {
+      return result;
+    }
   }
 
   /**
@@ -1759,23 +1801,23 @@ function mount(ctx, config, cleanups) {
   refreshUser();
   refreshWorkspaces();
 
-  // The three effects are registered route-first, listener-second,
-  // section-last.
+  // The four effects are registered route-first, listener-second,
+  // listener-third, section-last.
   //
   // All are mounted synchronously before `mount` returns, so neither a request
   // nor an assembly can observe the order. It matters only when a step fails,
   // and the rule is *most-likely failure first, so the least has to be undone*:
   // `webServer.register()` refusing a duplicate prefix is the failure a real
   // profile actually hits (a second install, or a future host claiming the
-  // prefix), `ctx.on` being unavailable is the next, and the section
+  // prefix), `ctx.on` being unavailable is the next (twice), and the section
   // registration is the plugin's own promise — a reserved name in the global
   // layer, which fails only if this plugin is already mounted twice or the
   // platform changed. Registering in that order also keeps "the route is
   // already live when the next step fails" the half-mount case
   // `test/boot.test.mjs` pins, i.e. the recoverable half is the externally
   // reachable one. A section-registration failure therefore unwinds the route
-  // and the listener with it — no half-mounted plugin, and (g-013) one readable
-  // line instead of a boot failure.
+  // and both listeners with it — no half-mounted plugin, and (g-013) one
+  // readable line instead of a boot failure.
   registerEffect(
     ctx,
     cleanups,
@@ -1873,6 +1915,25 @@ function mount(ctx, config, cleanups) {
     cleanups,
     () => ctx.on('system-prompt/assemble', assembleHandler),
     'prompt-setting: system-prompt/assemble override',
+  );
+
+  // Revision 8's deliverable: the outermost listener that keeps the reserved
+  // section last. `prepend` is the whole mechanism — it places this listener at
+  // the front of the waterfall, so its post-`next()` step is the final one to
+  // touch the assembly, past any listener that registered before this plugin
+  // and appends its own section after `next()` returns (the live
+  // `dsh-expression:companion` case). It moves nothing else, applies no
+  // override and reads no config; `reservedSectionLast` is pure and returns its
+  // input by reference unless a section actually moves.
+  //
+  // No new failure mode: this is the same `ctx.on` effect as the listener above,
+  // on the same ledger, and a host that ignores the options object still
+  // registers it (it simply does not get the front slot).
+  registerEffect(
+    ctx,
+    cleanups,
+    () => ctx.on('system-prompt/assemble', keepReservedLastHandler, { prepend: true }),
+    'prompt-setting: keep the reserved section last',
   );
 
   // Revision 7's deliverable: this plugin's own prompt section.

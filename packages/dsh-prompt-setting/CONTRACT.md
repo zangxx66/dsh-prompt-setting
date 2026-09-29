@@ -154,6 +154,34 @@ rendered prompt until a user writes something (§15.2). And a scope with an acti
 reserved section (and therefore the user's text) does not reach the prompt at all
 in such a scope; the snapshot reports that, and the UI must say so (§15.4).
 
+**Revision 8 (the reserved section is kept last — 「我的 Prompt」真·排最后).**
+Strictly additive, and it changes no route, field, status code or response byte.
+The live machine showed that `order: 1000000` does not actually put the user's
+text last: another plugin (`dsh-expression`) registers its own
+`system-prompt/assemble` listener **before** this one, appends
+`dsh-expression:companion` after `next()` returns, and is therefore *outer* to
+this plugin — its post-`next()` step runs later. What Revision 8 adds:
+
+- a second `system-prompt/assemble` listener, registered `{prepend: true}` so it
+  is the **outermost** listener for that event. Its single job: after `await
+  next()`, if the reserved section exists, carries non-empty text and is not the
+  last entry, move it to the end; otherwise return the downstream value **by
+  reference** (§15.10);
+- the **existing** override listener is untouched: same registration, same
+  position, same `base` record, same probe consumption, same `detectFrozen`, same
+  `applyOverrides` and same identity rule (§5.3). Nothing about the snapshot
+  changes;
+- the scope of the promise is stated exactly: **when the section has text**, it is
+  the last entry of the final `assembly.sections` — past sections other listeners
+  append in the waterfall — **except** in the three residual cases §15.10 and §7
+  record (a `complete: true` scope, a listener prepended after this mount, and any
+  reordering of sections this plugin does not own).
+
+An empty reserved section is deliberately **not** moved: it renders zero bytes
+(§15.2), so its position is unobservable in the prompt, while moving it would
+break the identity rule of §5.3 and the zero-diff guarantee that rests on it. The
+whole listener therefore does nothing at all until a user writes something.
+
 ---
 
 ## 1. Routes and methods
@@ -572,6 +600,12 @@ is about the **rendered prompt**: unconfigured, it is byte-identical to the prom
 of a profile without this plugin, asserted against the shipped renderer in
 `test/integration.test.mjs`.
 
+Revision 8 adds a second listener on the same event, and it obeys this rule twice
+over: it returns the downstream value **by identity** unless it actually moves the
+reserved section, and the move itself replaces only `sections` (§15.10). So "no
+override configured" still means the same object comes back, and "nothing to move"
+means it comes back even when an override *was* applied.
+
 ### 5.4 Effect boundary
 
 `effectiveFrom: "next-turn"` is literal: config is held in memory and read by
@@ -657,7 +691,12 @@ real Cordis context. The snapshot republishes the same text in `experiments`.
   run in registration order (`outer:in → inner:in → inner:out → outer:out`),
   `next()` resolves the downstream value, a listener that never calls `next()`
   vetoes every later listener and its return value becomes authoritative, and a
-  listener may `await next()` to transform the downstream result.
+  listener may `await next()` to transform the downstream result. Registration
+  order is not the whole story: a listener registered last with
+  `{prepend: true}` is placed **first** and is therefore the outermost one (the
+  platform itself registers this way). Revision 8's keeper is exactly such a
+  listener — that is what lets it run after every other listener's post-`next()`
+  step (§15.10).
 - **E3** — a registered `complete: true` section overrides the whole scope: even
   with the section list rewritten inside a listener, the final assembly is
   exactly `[that section]` with its **original registered text** (a rewritten
@@ -772,6 +811,24 @@ Revision 7 adds these:
     be removed by the layer-wide `?legacy=true` clear (§12.2) or by hand.
     The tab order, defaults and markers are specified in §13.0; the client
     cannot enforce the freeze, only state it.
+
+Revision 8 adds these — the three residuals of the lastness promise (§15.10),
+stated here because none of them can be fixed from inside this plugin:
+
+22. **A `complete: true` scope still discards the whole section list, the keeper's
+    move included** (§15.4, §15.10 residual 1). The user's text does not reach the
+    prompt in such a scope. The snapshot reports the freeze rather than hiding it,
+    but the outcome is not prevented: a complete section outranks every listener.
+23. **A listener that registers with `{prepend: true}` *after* this mount can still
+    append a section after ours** (§15.10 residual 2). `prepend` is first-come,
+    first-served at the front of the list, so a later prepend outranks the keeper;
+    whatever such a listener appends really is last. The plugin cannot claim
+    otherwise, and does not try to re-order sections it does not own.
+24. **The keeper is not verified on a live `dsh web`** (§15.10). It is a Host-half
+    change, so observing it needs a Host restart, which Revision 8 did not do —
+    exactly the same standing limitation item 19 records for the registration
+    itself. What is verified against the real service, the real renderer and a
+    `dsh-expression`-shaped listener is in `test/integration.test.mjs`.
 
 ## 8. `GET /prompt-setting/history` (Revision 4)
 
@@ -1553,7 +1610,7 @@ Consequences, stated rather than discovered later:
 - conversely, `true` says nothing about HMR health: it only says that at the moment
   of the probe the running bytes and the file agreed.
 
-## 15. The owned prompt section and the write lock (Revision 7)
+## 15. The owned prompt section and the write lock (Revision 7; lastness added in Revision 8)
 
 ### 15.1 The reserved name and the registration
 
@@ -1579,7 +1636,9 @@ The Host half registers **one** prompt section of its own during `apply`, throug
   larger finite order — the platform documents external contributions as free to
   place themselves anywhere — and when one does, its section sorts after ours.
   That is the documented boundary of what an `order` value can promise, not a
-  violated invariant.
+  violated invariant. Revision 8 closes the **practical** half of that gap — a
+  third party that appends its section in an outer waterfall listener — without
+  changing what `order` promises; see §15.10.
 - **`text: ''`.** Empty at registration (§15.2).
 - **The user's text is never read on the assembly path.** It reaches the section
   through the existing override engine — a `replace` whose name is the reserved
@@ -1746,13 +1805,18 @@ the listener, and the failure modes are asserted offline in
   returning something that is not a disposer: **one readable line** on the
   terminal and on `ctx.logger`, every earlier effect unwound, and **no boot
   failure**. `apply` never throws outward;
-- the registration is the last of the three effects, so a failure there unwinds
-  the route and the listener with it. A mount therefore either registers all three
-  or registers none;
+- the registration is the last of the four effects (Revision 8 added the keeper),
+  so a failure there unwinds the route and both listeners with it. A mount
+  therefore either registers all four or registers none;
 - the one residual this cannot fix is the same one §7 already records for the
   route: a host that accepts the registration and hands back no remover leaves
   that half beyond any plugin's reach. It is reported rather than hidden, because a
   surviving registration would make a remount collide with the name it still owns.
+- the keeper is the same `ctx.on` effect as the override listener, on the same
+  g-013 ledger: a host where `ctx.on` is unavailable or throws fails the mount with
+  one readable line and unwinds everything, exactly as before. A host whose
+  `ctx.on` ignores the third argument still registers the listener (it just does not
+  get the front slot) — a degraded order, never a failed mount.
 
 **Not verified in this revision.** Whether a real `dsh web` process picks the
 registered section up into the final prompt can only be observed after a Host
@@ -1761,3 +1825,92 @@ against the real `@deepseek-ai/dsh-system-prompt` service in a real Cordis conte
 the real `renderPrompt` renders the section's text byte for byte and drops it when
 empty, and disposing the mount removes the registration (all in
 `test/integration.test.mjs`). See NOTES.md §93.
+
+### 15.10 Lastness: keeping the reserved section at the end (Revision 8)
+
+`order: 1000000` sorts the registered section after every section the DSH
+repository defines (§15.1). It does **not** make the user's text the last thing the
+model reads, and the live machine proved it: `dsh-expression` registers its own
+`system-prompt/assemble` listener **before** this plugin, appends
+`dsh-expression:companion` after `next()` returns, and is therefore outer to this
+plugin — its post-`next()` step runs after ours (§6·E2). Revision 8 adds one
+listener that closes that gap at the only point where it can be closed.
+
+**The listener.** Registered with `{prepend: true}`, which places it **first** in
+the waterfall and therefore makes it the outermost listener for this event: its
+post-`next()` step is the last one to touch the assembly, so it sees every section
+any listener appended after `next()` returned. It is a second effect on the same
+g-013 ledger as the route, the override listener and the section registration —
+unloaded, or unwound when a later step fails, with them (§15.9). Its whole body:
+
+1. `await next()` — it always delegates, so it never vetoes another listener;
+2. hand the result to the pure kernel `reservedSectionLast` and return what that
+   returns.
+
+**What the kernel does — four identity cases.** `reservedSectionLast` returns its
+input **by reference** when `sections` is not an array, when no entry is named
+`prompt-setting:custom-prompt`, when the reserved section **is already last**, or
+when its `text` is not a non-empty string. It is pure and total: no IO, no clock,
+no `ctx`, and no shape it can throw on. Only when the section exists, carries text
+and is not last does it return a shallow copy of the assembly with a fresh
+`sections` array holding the *same* section objects in a new order — only
+`sections` is replaced, and the section objects themselves are never copied
+(§5.3).
+
+**Why only a section with text is moved.** An empty section renders zero bytes
+(§15.2), so its position in `sections` is not observable in the prompt at all;
+moving it would buy nothing. What it would cost is real: it would give up the
+identity rule of §5.3 on every ordinary unconfigured assembly, and with it the
+zero-diff promise Revision 7 rests on. So the unconfigured install takes the
+identity path, and the whole listener is a no-op until a user writes something.
+
+**The promise, precisely.** When `prompt-setting:custom-prompt` carries non-empty
+text, the final `assembly.sections` — the value `systemPrompt.assemble()` returns —
+has that section as its **last entry**, including past sections other listeners
+append inside the waterfall. `renderPrompt` therefore ends with the user's text,
+byte for byte. The bounds of that claim:
+
+- the *registered* order (`base.sections`, the snapshot's registered view) is
+  unchanged — the section is already last there by `order`, and `base` is captured
+  before the keeper runs;
+- the section objects, their names, their text and every other assembly field are
+  untouched: this listener moves one entry of one array and nothing else;
+- the promise is about the **assembly the waterfall returns**. A `complete: true`
+  scope replaces that list afterwards (residual 1 below).
+
+**Residual boundaries (stated, not hidden).**
+
+1. **A `complete: true` scope.** The platform restores the complete section *after*
+   the waterfall and replaces the entire section list with it. The keeper's move —
+   like every other listener's edit — is discarded, and the user's text does not
+   reach the prompt. This plugin cannot outrank a complete section; the snapshot
+   reports it (`frozen: true` with `frozenReason`, the reserved override
+   `applied: false`) and the UI must say so (§15.4).
+2. **A listener prepended *after* this mount.** `prepend` puts a listener at the
+   front of the list, so a plugin that registers with `{prepend: true}` after this
+   one becomes the outermost listener instead, and its post-`next()` step runs
+   after the keeper's — any section it appends then really is last. The keeper
+   cannot defend against a listener that outranks it, and it does not try.
+3. **Sections this plugin does not own.** The keeper moves only
+   `prompt-setting:custom-prompt`. The relative order of every other section —
+   including one appended by an outer listener, and one that listener deliberately
+   placed after another — is preserved exactly: the move is a splice, not a sort.
+
+**Failure behaviour.** The kernel is pure and total, and the listener wraps it in
+the same fail-open `try` the override listener uses for `applyOverrides`: any throw
+returns the untouched downstream value instead of breaking a user's turn. There is
+no IO, no configuration read and no new service call on this path.
+
+**Not verified in this revision.** The keeper is a **Host-half** change, so a
+running `dsh web` must be restarted before the real prompt can be observed. This
+revision did **not** restart it and therefore claims nothing about the live
+process. What *is* verified, against the real `@deepseek-ai/dsh-system-prompt` and a
+real `dsh-expression`-shaped listener in a real Cordis context: the move happens
+when the section has text (final order `…, dsh-expression:companion,
+prompt-setting:custom-prompt`), does not happen when it is empty (final order `…,
+prompt-setting:custom-prompt, dsh-expression:companion`), `renderPrompt` equals the
+no-plugin prompt plus `\n\n` and the user's text, the move is discarded in a
+complete scope with the frozen verdict unchanged, a hand-edited `hide` leaves the
+keeper a pass-through, and disposing the mount removes the listener with the section
+it guards. See NOTES.md §95.
+
