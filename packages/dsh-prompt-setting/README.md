@@ -29,7 +29,8 @@ DSH 仓库内置段之后。未配置时这一段对最终 prompt **零贡献**�
 就会让之后**每一轮**装配抛错。
 完整契约见 [`CONTRACT.md`](./CONTRACT.md) §15，设计取舍与实测出处见 [`NOTES.md`](./NOTES.md) §92。
 
-本文件讲的是**这个包怎么装、怎么改**；仓库整体目标与路线图见仓库根 `README.md`，
+本文件讲的是**这个包怎么装、怎么改**；仓库整体目标与路线图见仓库根 `README_zh.md`（中文）/
+`README.md`（English），
 REST 契约见同目录 [`CONTRACT.md`](./CONTRACT.md)（已冻结，客户端照它写），
 阶段一 A 的设计取舍、探针实测方式与未验证项见 [`NOTES.md`](./NOTES.md)。
 
