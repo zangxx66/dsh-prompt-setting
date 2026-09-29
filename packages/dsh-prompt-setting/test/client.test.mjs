@@ -15,6 +15,11 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
+// The *host* copy of the reserved section name (CONTRACT.md §15.1). The client
+// hardcodes the same literal because a browser module cannot import host code;
+// the tests below compare the two, character for character, so the two copies
+// cannot drift apart silently (g-015, requirement: 两侧常量不许漂移).
+import { CUSTOM_SECTION_NAME } from '../core/custom.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageJson = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8'));
@@ -59,6 +64,10 @@ const ERROR_CODES = [
   'import-verify-failed',
   'import-staging-failed',
   'import-commit-failed',
+  // Revision 7 write face (CONTRACT.md §15.5–§15.7).
+  'write-locked',
+  'unsupported-action',
+  'conflicting-query',
 ];
 
 /**
@@ -366,6 +375,35 @@ function clickAnyTab(tree, value) {
   node.props.onClick();
 }
 
+/** The four first-level tabs, in render order, as their `data-tab-value`s. */
+function mainTabs(tree) {
+  return collect(tree, (node) => node.type === 'button' && node.props['data-tab-key'] === 'main').map(
+    (node) => node.props['data-tab-value'],
+  );
+}
+
+/** The one first-level tab list element (the container carrying `data-region`). */
+function tabList(tree) {
+  return oneBy(tree, 'data-region', 'tabs');
+}
+
+/** The single rendered tab panel: a page renders exactly one at a time. */
+function tabPanel(tree) {
+  return oneBy(tree, 'data-region', 'tab-panel');
+}
+
+/**
+ * Open one first-level tab. Selection is by value alone so this works in both
+ * renderer branches (the official `SegmentedTabs` double labels its own group
+ * `primitives`): the four values `mine` / `overview` / `history` / `advanced`
+ * occur on exactly one control each.
+ */
+async function openTab(page, value, from) {
+  const tree = from === undefined ? await page.flush() : from;
+  clickAnyTab(tree, value);
+  return page.flush();
+}
+
 /** Install a fake download surface (`document` / `Blob` / `URL`) in the sandbox. */
 function installDownloader(page, { blob = true } = {}) {
   const clicks = [];
@@ -439,77 +477,6 @@ function typeInto(tree, role, value) {
   node.props.onChange({ target: { value } });
 }
 
-/** The edit panel's save button (may be disabled on purpose). */
-function saveButton(tree) {
-  return findOne(tree, (node) => node.type === 'button' && node.props['data-action'] === 'save', 'save button');
-}
-
-/** The single edit panel. */
-function editorPanel(tree) {
-  return oneBy(tree, 'data-region', 'editor');
-}
-
-/** Does `tree` contain `target` at or below itself? */
-function containsNode(tree, target) {
-  if (tree === null || tree === undefined || typeof tree !== 'object') return false;
-  if (Array.isArray(tree)) return tree.some((child) => containsNode(child, target));
-  if (tree === target) return true;
-  return tree.props ? containsNode(tree.props.children, target) : false;
-}
-
-/** The chain of nodes from the root down to `target` (inclusive), or null. */
-function ancestorChain(tree, target) {
-  if (tree === null || tree === undefined || typeof tree !== 'object') return null;
-  if (Array.isArray(tree)) {
-    for (const child of tree) {
-      const found = ancestorChain(child, target);
-      if (found !== null) return found;
-    }
-    return null;
-  }
-  if (tree === target) return [tree];
-  if (tree.props) {
-    const below = ancestorChain(tree.props.children, target);
-    if (below !== null) return [tree, ...below];
-  }
-  return null;
-}
-
-/**
- * The `data-section-row` names a node is nested inside, outermost first — `[]`
- * for a node drawn in the page-level slot. This is how a test states "the form
- * is inside that row" as a fact about the tree, instead of taking a marker's
- * word for it.
- */
-function owningRows(tree, node) {
-  const chain = ancestorChain(tree, node);
-  if (chain === null) return null;
-  return chain
-    .filter((entry) => entry.props && entry.props['data-section-row'] !== undefined)
-    .map((entry) => entry.props['data-section-row']);
-}
-
-/**
- * The committed DOM node a panel `ref` receives. Real React attaches it before
- * the effects run; the hooks double does not, so a test attaches it by hand and
- * flushes. Every selector resolves to a spy that records its own focus, and
- * `scrollIntoView` records the options it was handed. `scrollable: false` drops
- * that method entirely — a node without it must be survivable.
- */
-function fakePanelRoot({ scrollable = true } = {}) {
-  const queried = [];
-  const focused = [];
-  const scrolled = [];
-  const node = {
-    querySelector(selector) {
-      queried.push(selector);
-      return { focus: () => focused.push(selector) };
-    },
-  };
-  if (scrollable) node.scrollIntoView = (options) => scrolled.push(options);
-  return { queried, focused, scrolled, node };
-}
-
 /** Every section row's 「编辑」 switch, as `[section name, aria-expanded]` pairs. */
 function editSwitches(tree) {
   return collect(
@@ -518,51 +485,9 @@ function editSwitches(tree) {
   ).map((node) => [node.props['data-section-name'], node.props['aria-expanded']]);
 }
 
-/**
- * The scroll options a stub root recorded, copied into host-realm objects: the
- * literals were built inside the vm, so they are not prototype-equal to a host
- * literal under `deepStrictEqual`.
- */
-function scrollOptions(root) {
-  return root.scrolled.map((options) => ({ ...options }));
-}
-
-/** The panel's (possibly read-only) section name field. */
-function nameField(tree) {
-  return oneBy(tree, 'data-role', 'name');
-}
-
-/** The live entry feedback line of the edit panel. */
-function entryFeedbackRow(tree) {
-  return oneBy(tree, 'data-warning', 'entry-feedback');
-}
-
-/** Every blocked-override (fallback) card on screen. */
-function blockedCards(tree) {
-  return collect(tree, (node) => node.props && node.props['data-warning'] === 'override-blocked');
-}
-
-/** The action values the edit panel actually offers (its tab set). */
-function actionTabs(tree) {
-  return collect(
-    tree,
-    (node) => node.type === 'button' && node.props['data-tab-key'] === 'action',
-  ).map((node) => node.props['data-tab-value']);
-}
-
 /** Every write the page attempted (PUT / DELETE), whatever the outcome. */
 function writeCalls(page) {
   return page.router.calls.filter((call) => call.init && (call.init.method === 'PUT' || call.init.method === 'DELETE'));
-}
-
-/** The single edit button of one section row. */
-function editButtonOf(tree, name) {
-  return findOne(
-    tree,
-    (node) =>
-      node.type === 'button' && node.props['data-action'] === 'edit' && node.props['data-section-name'] === name,
-    `edit button for ${name}`,
-  );
 }
 
 /** Flush microtasks until the async effects settle. */
@@ -1055,8 +980,12 @@ test('client: an unresolvable primitives module degrades to the fallback rendere
   const page = makePage({ responses: defaultResponses() });
   const tree = await page.flush();
   assert.equal(rendererOf(tree), 'fallback');
-  // The failure reason is surfaced on the page rather than swallowed.
-  assert.ok(hasText(tree, 'Cannot find module'), 'reason rendered');
+  // The failure reason is diagnostics: 「高级」 carries it (g-015 moved the
+  // renderer self-check there), so it is not lost — it is just not permanent
+  // chrome on a page whose subject is the user's prompt.
+  const advanced = await openAdvanced(page);
+  assert.ok(hasText(advanced, 'Cannot find module'), 'reason rendered');
+  assert.equal(oneBy(advanced, 'data-primitives-failure', 'true').props['data-primitives-failure'], 'true');
 });
 
 test('client: a resolvable primitives module selects the primitives renderer', async () => {
@@ -1188,10 +1117,14 @@ test('client: one character changed inside the region is the only source of a st
   assert.equal(markerOf(tree, 'data-build'), oracle.hash, 'the page still reports its own digest');
   assert.equal(markerOf(tree, 'data-build-server'), edited.hash);
   assert.equal(markerOf(tree, 'data-build-match'), 'false');
-  const warning = staleWarnings(tree);
-  assert.equal(warning.length, 1, 'exactly one stale warning');
-  assert.ok(hasText(tree, page.zh.stBuildStaleHint), 'the stale warning explains what to do');
+  // The one-line summary at the top carries the verdict...
+  assert.equal(oneBy(tree, 'data-region', 'status').props['data-status-build'], 'false');
   assert.ok(hasText(tree, page.zh.stBuildStale), 'the tag itself says stale');
+  // ...and 「高级」 carries the explanation, exactly once.
+  const advanced = await openAdvanced(page);
+  const warning = staleWarnings(advanced);
+  assert.equal(warning.length, 1, 'exactly one stale warning');
+  assert.ok(hasText(advanced, page.zh.stBuildStaleHint), 'the stale warning explains what to do');
 });
 
 test('client: no clientBuild, or a failed ping, is "unknown" and never "stale"', async () => {
@@ -1205,7 +1138,7 @@ test('client: no clientBuild, or a failed ping, is "unknown" and never "stale"',
   assert.equal(markerOf(olderTree, 'data-build-match'), 'unknown');
   assert.equal(markerOf(olderTree, 'data-build-server'), 'unknown');
   assert.equal(staleWarnings(olderTree).length, 0, 'a missing answer must never be read as stale');
-  assert.ok(hasText(olderTree, older.zh.stBuildUnknownHint));
+  assert.ok(hasText(await openAdvanced(older), older.zh.stBuildUnknownHint));
 
   // (b) an explicitly unreadable bundle on the host side (`clientBuild: null`);
   const unreadable = makePage({ responses: defaultResponses({ [PATHS.ping]: pingResponse(null) }) });
@@ -1220,7 +1153,10 @@ test('client: no clientBuild, or a failed ping, is "unknown" and never "stale"',
   const failedTree = await failed.flush();
   assert.equal(markerOf(failedTree, 'data-build-match'), 'unknown');
   assert.equal(staleWarnings(failedTree).length, 0);
-  assert.ok(hasText(failedTree, failed.zh.stBuildPingFailedHint), 'the failed probe is named as such');
+  assert.ok(
+    hasText(await openAdvanced(failed), failed.zh.stBuildPingFailedHint),
+    'the failed probe is named as such',
+  );
   // The page's own identity survives every one of these: only the comparison is
   // unknown, not the digest of what is running.
   assert.equal(markerOf(olderTree, 'data-build'), independentBuildFingerprint(clientSource).hash);
@@ -1272,7 +1208,7 @@ test('client: an empty assembly renders the empty state rather than crashing', a
       [PATHS.overrides]: { payload: overridesFixture({ merged: { overrides: [] } }) },
     }),
   });
-  const tree = await page.flush();
+  const tree = await openOverview(page);
   assert.equal(markerOf(tree, 'data-phase'), 'empty');
   assert.equal(oneBy(tree, 'data-empty', 'sections').props['data-empty'], 'sections');
   assert.equal(oneBy(tree, 'data-sections-total', '0').props['data-sections-total'], '0');
@@ -2340,12 +2276,26 @@ test('client: frozenScope "session" is presented as a fact about the session', a
     assert.equal(markerOf(tree, 'data-frozen-scope'), 'session');
     assert.equal(markerOf(tree, 'data-frozen-state'), expectedState);
     assert.ok(strings(tree).includes(page.zh[copyKey]), `${copyKey} rendered`);
-    const button = editButtonOf(tree, 'harness:identity');
+    // The top line states the verdict; 「高级」 carries the reason, and
+    // 「我的 Prompt」 states the consequence on the surface it owns (§15.4: the
+    // panel must say the text will not reach the prompt, not let the write look
+    // effective).
+    const advanced = await openAdvanced(page);
+    const frozenWarnings = collect(advanced, (node) => node.props && node.props['data-warning'] === 'frozen');
     if (frozen) {
-      assert.equal(button.props.disabled, true, 'a frozen scope disables editing');
-      assert.ok(hasText(tree, 'the scope collapsed to its complete section'), 'the reason is shown');
+      assert.equal(frozenWarnings.length, 1, 'the frozen verdict is explained in 高级');
+      assert.ok(hasText(frozenWarnings[0], 'the scope collapsed to its complete section'), 'the reason is shown');
     } else {
-      assert.notEqual(button.props.disabled, true, 'an unfrozen scope stays editable');
+      assert.equal(frozenWarnings.length, 0, 'an unfrozen scope renders no frozen warning');
+    }
+    const mine = await openTab(page, 'mine');
+    const mineWarnings = collect(mine, (node) => node.props && node.props['data-warning'] === 'mine-frozen');
+    if (frozen) {
+      assert.equal(mineWarnings.length, 1, '「我的 Prompt」 says the text will not take effect');
+      assert.ok(hasText(mineWarnings[0], page.zh.mineFrozenWarn));
+      assert.ok(hasText(mineWarnings[0], 'the scope collapsed to its complete section'), 'and gives the reason');
+    } else {
+      assert.equal(mineWarnings.length, 0, 'no warning when the scope is not frozen');
     }
   }
 });
@@ -2367,16 +2317,10 @@ test('client: frozenScope "global" with a session is "unknown", never "not froze
   assert.equal(markerOf(tree, 'data-frozen-state'), 'unknown');
   assert.ok(strings(tree).includes(page.zh.stFrozenUnknown), 'the unknown state is stated');
   assert.ok(!hasText(tree, page.zh.stUnfrozenSession), 'it is never presented as "not frozen"');
-  const warning = oneBy(tree, 'data-warning', 'frozen-unknown');
+  // The unknown verdict explains itself in 「高级」, where the full status lives.
+  const advanced = await openAdvanced(page);
+  const warning = oneBy(advanced, 'data-warning', 'frozen-unknown');
   assert.ok(hasText(warning, 'has no active agent'), 'the frozenScopeReason is shown');
-
-  // Editing is warned, not silently allowed and not silently blocked.
-  const button = editButtonOf(tree, 'harness:identity');
-  assert.notEqual(button.props.disabled, true, 'the section itself is still overridable');
-  button.props.onClick();
-  const withEditor = await page.flush();
-  assert.ok(oneBy(withEditor, 'data-warning', 'edit-uncertain'), 'the editor carries the warning');
-  assert.ok(strings(withEditor).includes(page.zh.editWarnUnknown));
 });
 
 test('client: frozenScope "global" without a session describes the global assembly', async () => {
@@ -2388,19 +2332,28 @@ test('client: frozenScope "global" without a session describes the global assemb
   assert.ok(!strings(tree).includes(page.zh.stFrozenUnknown));
 });
 
-test('client: a non-overridable section disables editing and shows its reason', async () => {
+test('client: a non-overridable section states its verdict and its reason', async () => {
   const payload = snapshotFixture();
   payload.effective.sections[0].overridable = false;
   payload.effective.sections[0].reason = 'this scope observed the change being reverted';
   const page = makePage({ responses: defaultResponses({ [PATHS.snapshot]: { payload } }) });
-  const tree = await page.flush();
+  const tree = await openOverview(page);
   const row = oneBy(tree, 'data-section-row', 'harness:identity');
   assert.equal(row.props['data-overridable'], 'false');
   assert.ok(
     hasText(oneBy(tree, 'data-section-reason', 'harness:identity'), 'observed the change being reverted'),
     'the reason original text is shown',
   );
-  assert.equal(editButtonOf(tree, 'harness:identity').props.disabled, true);
+  // The overview cannot write, so the gate is *stated* rather than enforced:
+  // the same `editGate` verdict that used to disable the edit button is now a
+  // read-only note on the row.
+  const note = oneBy(tree, 'data-warning', 'edit-disabled');
+  assert.ok(hasText(note, 'observed the change being reverted'), 'the gate repeats the reason');
+  assert.equal(
+    collect(tree, (node) => node.type === 'button' && node.props['data-action'] === 'edit').length,
+    0,
+    'and there is no edit entry to disable',
+  );
 });
 
 // #endregion
@@ -2409,7 +2362,7 @@ test('client: a non-overridable section disables editing and shows its reason', 
 
 test('client: downstream-added is labelled as another plugin, not as an override', async () => {
   const page = makePage({ responses: defaultResponses() });
-  const tree = await page.flush();
+  const tree = await openOverview(page);
   const row = oneBy(tree, 'data-section-row', 'companion:extra');
   assert.equal(row.props['data-origin'], 'downstream-added');
   assert.ok(strings(row).includes(page.zh.originDownstream), 'labelled as added by another plugin');
@@ -2422,7 +2375,7 @@ test('client: downstream-added is labelled as another plugin, not as an override
 
 test('client: the section view filters by layer, overridable and origin', async () => {
   const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
+  let tree = await openOverview(page);
   assert.equal(oneBy(tree, 'data-sections-total', '5').props['data-sections-shown'], '5');
 
   clickTab(tree, 'origin', 'downstream-added');
@@ -2446,7 +2399,7 @@ test('client: the section view filters by layer, overridable and origin', async 
 
 test('client: the full-text view highlights search hits and counts them', async () => {
   const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
+  let tree = await openOverview(page);
   clickTab(tree, 'view', 'full');
   tree = await page.flush();
   assert.equal(markerOf(tree, 'data-search-count'), '0');
@@ -2462,7 +2415,7 @@ test('client: the full-text view highlights search hits and counts them', async 
 
 test('client: the full-text view can be filtered by origin (recomposed preview)', async () => {
   const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
+  let tree = await openOverview(page);
   clickTab(tree, 'view', 'full');
   tree = await page.flush();
   assert.ok(hasText(oneBy(tree, 'data-full-text', 'rendered'), 'identity base'));
@@ -2483,7 +2436,7 @@ test('client: renderedResolved false marks the text as partial and lists the var
     rendered: 'identity base\n\n{{Upper}} {{project:alpha}}',
   });
   const page = makePage({ responses: defaultResponses({ [PATHS.snapshot]: { payload } }) });
-  let tree = await page.flush();
+  let tree = await openOverview(page);
   clickTab(tree, 'view', 'full');
   tree = await page.flush();
   const warning = oneBy(tree, 'data-warning', 'rendered-unresolved');
@@ -2496,7 +2449,7 @@ test('client: renderedResolved false marks the text as partial and lists the var
 
 test('client: the base/effective comparison marks changed, added and removed sections', async () => {
   const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
+  let tree = await openOverview(page);
   clickTab(tree, 'view', 'full');
   tree = await page.flush();
   const diff = oneBy(tree, 'data-region', 'diff');
@@ -2514,825 +2467,299 @@ test('client: the base/effective comparison marks changed, added and removed sec
 
 // #endregion
 
-// #region editing and override management
+// #region 「我的 Prompt」: the only write surface (g-015)
 
-test('client: replace saves without an order and promises the next turn', async () => {
+test('client: the page opens on 「我的 Prompt」 and every tab is reachable in a fixed order', async () => {
   const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
-  tree = await page.flush();
-  assert.equal(oneBy(tree, 'data-region', 'editor').props['data-editor-name'], 'harness:identity');
-  assert.equal(oneBy(tree, 'data-role', 'text').props.value, 'identity base');
+  const tree = await page.flush();
 
-  typeInto(tree, 'text', 'identity rewritten');
-  tree = await page.flush();
-  clickButton(tree, { 'data-action': 'save' });
-  tree = await page.flush();
-
-  const put = page.router.calls.find((call) => call.init && call.init.method === 'PUT');
-  assert.ok(put, 'a PUT was sent');
-  assert.equal(put.url, PATHS.overrides);
-  const body = JSON.parse(put.init.body);
-  assert.equal(body.layer, 'user');
-  assert.equal(body.section.name, 'harness:identity');
-  assert.equal(body.section.action, 'replace');
-  assert.equal(body.section.text, 'identity rewritten');
-  assert.ok(!('order' in body.section), 'replace must not carry an order');
-  assert.ok(!('session' in body), 'a global view must not smuggle a session');
-  assert.ok(oneBy(tree, 'data-notice', 'success'), 'the save is confirmed');
-  assert.ok(hasText(tree, page.zh.nextTurn), 'the next-turn promise is stated');
-});
-
-test('client: the add entry is a separate, reachable entry whose action is fixed to append', async () => {
-  const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
-  // Reachable from the section list, next to the shown/total count…
-  clickButton(tree, { 'data-action': 'append-new' });
-  tree = await page.flush();
-
-  const panel = editorPanel(tree);
-  assert.equal(panel.props['data-editor-mode'], 'append');
-  assert.equal(panel.props['data-editor-entry'], 'append-new');
-  assert.equal(panel.props['data-editor-actions'], 'append', 'exactly one action is offered');
-  assert.equal(panel.props['data-editor-name-locked'], 'false', 'the name is a fresh input here');
-  // The action is a stated fact, not a control: there is nothing to pick.
-  assert.equal(oneBy(tree, 'data-role', 'action-fixed').props['data-fixed-action'], 'append');
-  assert.deepEqual(actionTabs(tree), [], 'the add entry shows no action tabs');
-  // …with the "must be unregistered" rule spelled out before anything is typed.
-  assert.ok(hasText(oneBy(tree, 'data-role', 'name-hint'), page.zh.appendNameHint), 'the name rule is stated');
-  assert.ok(hasText(oneBy(tree, 'data-role', 'action-hint'), page.zh.appendActionHint));
-  const name = nameField(tree);
-  assert.notEqual(name.props.readOnly, true, 'the name is editable in the add entry');
-  assert.equal(name.props.value, '');
-  assert.ok(oneBy(tree, 'data-role', 'order'), 'append exposes the target index');
-});
-
-test('client: the add entry carries a target index, and a bad index is refused locally', async () => {
-  const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
-  clickButton(tree, { 'data-action': 'append-new' });
-  tree = await page.flush();
-  // A name nothing has registered yet: the entry's own premise.
-  typeInto(tree, 'name', 'panel:added');
-  tree = await page.flush();
-  assert.equal(saveButton(tree).props.disabled, false, 'a new name saves');
-
-  typeInto(tree, 'order', '-3');
-  tree = await page.flush();
-  clickButton(tree, { 'data-action': 'save' });
-  tree = await page.flush();
+  // The order is the product decision, so it is asserted verbatim.
+  assert.deepEqual(mainTabs(tree), ['mine', 'overview', 'history', 'advanced']);
+  assert.equal(tabList(tree).props['data-active-tab'], 'mine', 'the first tab is the default');
+  // The root carries the same verdict, so a probe finds it without walking in.
   assert.equal(
-    page.router.calls.filter((call) => call.init && call.init.method === 'PUT').length,
-    0,
-    'an invalid index never reaches the host',
+    collect(tree, (node) => node.props && node.props['data-active-tab'] === 'mine').length,
+    2,
+    'the tab list and the root both report the active tab',
   );
-  assert.ok(strings(tree).includes(page.zh.editOrderInvalid));
+  assert.equal(tabPanel(tree).props['data-tab-value'], 'mine');
+  assert.equal(oneBy(tree, 'data-region', 'mine').props['data-region'], 'mine');
 
-  typeInto(tree, 'order', '2');
-  tree = await page.flush();
-  typeInto(tree, 'text', 'appended by the panel');
-  tree = await page.flush();
-  clickButton(tree, { 'data-action': 'save' });
-  await page.flush();
-  const put = page.router.calls.find((call) => call.init && call.init.method === 'PUT');
-  const body = JSON.parse(put.init.body);
-  assert.equal(body.section.name, 'panel:added', 'the typed name is what gets appended');
-  assert.equal(body.section.action, 'append');
-  assert.equal(body.section.order, 2, 'append order is a target index');
-  assert.equal(body.section.text, 'appended by the panel');
-});
-
-// #region the two entries: the illegal (name, action) pair cannot be produced
-
-test('client: the edit entry locks the name and offers only replace/hide', async () => {
-  const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
-  // The row decides which entry it opens: this name is in the assembly.
-  assert.equal(editButtonOf(tree, 'harness:identity').props['data-entry'], 'edit');
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
-  tree = await page.flush();
-
-  const panel = editorPanel(tree);
-  assert.equal(panel.props['data-editor-name'], 'harness:identity');
-  assert.equal(panel.props['data-editor-mode'], 'edit');
-  assert.equal(panel.props['data-editor-entry'], 'edit');
-  assert.equal(panel.props['data-editor-name-locked'], 'true');
-  assert.equal(panel.props['data-editor-actions'], 'replace,hide', 'append is not on offer');
-  assert.deepEqual(actionTabs(tree), ['replace', 'hide'], 'and the control offers exactly those');
-  assert.equal(
-    collect(tree, (node) => node.props && node.props['data-role'] === 'order').length,
-    0,
-    'no target index in an entry that cannot append',
-  );
-
-  // The name is shown, not edited.
-  const name = nameField(tree);
-  assert.equal(name.props.readOnly, true, 'the name is not a text field');
-  assert.equal(name.props['data-name-locked'], 'true');
-  assert.equal(name.props.value, 'harness:identity');
-  typeInto(tree, 'name', 'never:registered');
-  tree = await page.flush();
-  assert.equal(nameField(tree).props.value, 'harness:identity', 'the locked name cannot be typed over');
-
-  // Origin layer and overridability travel with the locked name.
-  const meta = oneBy(tree, 'data-editor-meta', 'true');
-  assert.equal(meta.props['data-editor-origin'], 'registered');
-  assert.equal(meta.props['data-editor-overridable'], 'true');
-  assert.ok(hasText(oneBy(tree, 'data-role', 'origin'), page.zh.originRegistered));
-  // Contract update (g-010): this row's value is now the short `fYesShort`,
-  // because the row's own label already reads `editOverridableLabel`
-  // ("可覆盖 / Overridable") — the value used to repeat it verbatim.
-  assert.ok(hasText(oneBy(tree, 'data-role', 'overridable'), page.zh.fYesShort));
-  assert.ok(!hasText(oneBy(tree, 'data-role', 'overridable'), page.zh.editOverridableLabel));
-
-  // A state the entry can produce is not a state the fallback has to catch.
-  assert.equal(blockedCards(tree).length, 0, 'no fallback card on a legal state');
-  assert.equal(collect(tree, (node) => node.props && node.props['data-warning'] === 'entry-feedback').length, 0);
-});
-
-test('client: the edit entry defaults to replace and mirrors an existing hide', async () => {
-  const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
-  tree = await page.flush();
-  // No override on this section yet: replace is the default the entry opens on.
-  const selected = collect(
-    tree,
-    (node) => node.type === 'button' && node.props['data-tab-key'] === 'action' && node.props['aria-selected'] === true,
-  );
-  assert.equal(selected.length, 1, 'exactly one action is selected');
-  assert.equal(selected[0].props['data-tab-value'], 'replace');
-
-  // A section whose stored override is `hide` opens on `hide` — replace is the
-  // default the entry offers, not a silent rewrite of what is already stored.
-  const payload = snapshotFixture();
-  payload.effective.sections[1].action = 'hide';
-  payload.effective.sections[1].text = '';
-  const other = makePage({ responses: defaultResponses({ [PATHS.snapshot]: { payload } }) });
-  let hiding = await other.flush();
-  clickButton(hiding, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
-  hiding = await other.flush();
-  const hidingTab = collect(
-    hiding,
-    (node) => node.type === 'button' && node.props['data-tab-key'] === 'action' && node.props['aria-selected'] === true,
-  );
-  assert.equal(hidingTab.length, 1);
-  assert.equal(hidingTab[0].props['data-tab-value'], 'hide');
-  assert.equal(
-    collect(hiding, (node) => node.props && node.props['data-role'] === 'text').length,
-    0,
-    'hide carries no text field',
-  );
-});
-
-test('client: neither entry reaches the pre-save check on a normal path', async () => {
-  // Entry 1: replace an incoming section.
-  const one = makePage({ responses: defaultResponses() });
-  let tree = await one.flush();
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
-  tree = await one.flush();
-  assert.equal(blockedCards(tree).length, 0, 'opening the edit entry blocks nothing');
-  assert.equal(saveButton(tree).props.disabled, false);
-  typeInto(tree, 'text', 'identity rewritten');
-  tree = await one.flush();
-  clickButton(tree, { 'data-action': 'save' });
-  tree = await one.flush();
-  assert.equal(one.router.calls.filter((call) => call.init && call.init.method === 'PUT').length, 1, 'the write went through');
-  assert.equal(blockedCards(tree).length, 0, 'the check was never armed');
-
-  // Entry 1 again: hide the same section.
-  const two = makePage({ responses: defaultResponses() });
-  let hidden = await two.flush();
-  clickButton(hidden, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
-  hidden = await two.flush();
-  clickTab(hidden, 'action', 'hide');
-  hidden = await two.flush();
-  assert.equal(saveButton(hidden).props.disabled, false);
-  clickButton(hidden, { 'data-action': 'save' });
-  hidden = await two.flush();
-  assert.equal(two.router.calls.filter((call) => call.init && call.init.method === 'PUT').length, 1);
-
-  // Entry 2: add a brand-new section.
-  const three = makePage({ responses: defaultResponses() });
-  let added = await three.flush();
-  clickButton(added, { 'data-action': 'append-new' });
-  added = await three.flush();
-  typeInto(added, 'name', 'panel:fresh');
-  typeInto(added, 'text', 'fresh text');
-  added = await three.flush();
-  assert.equal(blockedCards(added).length, 0, 'a new name blocks nothing');
-  assert.equal(saveButton(added).props.disabled, false);
-  clickButton(added, { 'data-action': 'save' });
-  added = await three.flush();
-  assert.equal(three.router.calls.filter((call) => call.init && call.init.method === 'PUT').length, 1);
-});
-
-// #region live feedback and the pre-save fallback behind it
-
-test('client: a registered name in the add entry is reported immediately, and the write is blocked', async () => {
-  const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
-  clickButton(tree, { 'data-action': 'append-new' });
-  tree = await page.flush();
-  // `project:beta` exists in `base` only (another listener removed it downstream).
-  typeInto(tree, 'name', 'project:beta');
-  tree = await page.flush();
-
-  const feedback = entryFeedbackRow(tree);
-  assert.equal(feedback.props['data-feedback-code'], 'name-already-present');
-  assert.ok(hasText(feedback, page.zh.feedbackNameTaken), 'the reason and the way out are stated straight away');
-  assert.equal(saveButton(tree).props.disabled, true, 'saving is disabled while typing, not after an attempt');
-  assert.equal(blockedCards(tree).length, 0, 'live feedback is not the fallback card');
-
-  // Even a programmatic click on the disabled control writes nothing, and the
-  // fallback behind the live feedback still states why.
-  saveButton(tree).props.onClick();
-  tree = await page.flush();
-  assert.equal(writeCalls(page).length, 0, 'zero write requests');
-  const notice = oneBy(tree, 'data-notice', 'error');
-  assert.ok(hasText(notice, page.zh.blockAppendExisting), 'the pre-save check answered');
-
-  // Changing the name clears it: the feedback tracks the input, not the entry.
-  typeInto(tree, 'name', 'panel:brand-new');
-  tree = await page.flush();
-  assert.equal(
-    collect(tree, (node) => node.props && node.props['data-warning'] === 'entry-feedback').length,
-    0,
-    'the warning is gone',
-  );
-  assert.equal(saveButton(tree).props.disabled, false);
-});
-
-test('client: a name another plugin added is fed back immediately as well', async () => {
-  const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
-  clickButton(tree, { 'data-action': 'append-new' });
-  tree = await page.flush();
-  // `companion:extra` is absent from `base` and only present because another
-  // plugin added it downstream — the two-sections-one-name rule still applies.
-  typeInto(tree, 'name', 'companion:extra');
-  tree = await page.flush();
-  assert.equal(entryFeedbackRow(tree).props['data-feedback-code'], 'name-already-present');
-  saveButton(tree).props.onClick();
-  tree = await page.flush();
-  assert.equal(writeCalls(page).length, 0, 'zero write requests');
-});
-
-test('client: an empty name in the add entry is refused locally as missing-name', async () => {
-  const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
-  clickButton(tree, { 'data-action': 'append-new' });
-  tree = await page.flush();
-  assert.equal(entryFeedbackRow(tree).props['data-feedback-code'], 'missing-name', 'an empty box is stated, not saved');
-  assert.equal(saveButton(tree).props.disabled, true);
-  typeInto(tree, 'name', '   ');
-  tree = await page.flush();
-  assert.equal(entryFeedbackRow(tree).props['data-feedback-code'], 'missing-name', 'blank is still empty');
-  saveButton(tree).props.onClick();
-  tree = await page.flush();
-  assert.equal(writeCalls(page).length, 0, 'zero write requests');
-  assert.ok(hasText(oneBy(tree, 'data-notice', 'error'), page.zh.blockMissingName), 'the fallback states the reason');
-});
-
-test('client: the pre-save check still fires when the world moves under an open panel', async () => {
-  const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
-  tree = await page.flush();
-  assert.equal(blockedCards(tree).length, 0, 'legal when it was opened');
-
-  // The assembly changes underneath: the section the panel is holding is gone,
-  // so replace would be skipped as section-not-present. Neither entry can reach
-  // this on its own — it is exactly what the retained check is for.
-  const next = snapshotFixture();
-  next.effective.sections = next.effective.sections.filter((section) => section.name !== 'harness:identity');
-  next.base.sections = next.base.sections.filter((section) => section.name !== 'harness:identity');
-  page.router.set(PATHS.snapshot, { payload: next });
-  clickButton(tree, { 'data-action': 'refresh' });
-  tree = await page.flush();
-
-  const block = oneBy(tree, 'data-warning', 'override-blocked');
-  assert.equal(block.props['data-block-code'], 'section-not-present');
-  assert.ok(strings(block).includes(page.zh.blockNotPresent), 'the reason and the way out are stated');
-  assert.equal(saveButton(tree).props.disabled, true);
-  saveButton(tree).props.onClick();
-  tree = await page.flush();
-  assert.equal(writeCalls(page).length, 0, 'the write is blocked');
-  assert.ok(hasText(oneBy(tree, 'data-notice', 'error'), page.zh.blockNotPresent), 'and the reason is repeated');
-});
-
-test('client: an own-override row is edited through the entry that can re-save it', async () => {
-  // `ghost:section` is absent from the incoming assembly, so replace/hide could
-  // never take effect there; the row therefore opens the append entry with the
-  // name fixed, which is the only legal re-save for it.
-  const payload = snapshotFixture({
-    base: { sections: [] },
-    effective: {
-      sections: [
-        {
-          name: 'ghost:section',
-          index: null,
-          text: '',
-          applied: false,
-          overridable: true,
-          reason: 'no section or override with this name',
-          overrideLayer: null,
-          action: 'replace',
-          origin: 'unmatched-override',
-        },
-      ],
-    },
-    rendered: '',
-  });
-  const page = makePage({ responses: defaultResponses({ [PATHS.snapshot]: { payload } }) });
-  let tree = await page.flush();
-  assert.equal(editButtonOf(tree, 'ghost:section').props['data-entry'], 'edit-override');
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'ghost:section' });
-  tree = await page.flush();
-
-  const panel = editorPanel(tree);
-  assert.equal(panel.props['data-editor-entry'], 'edit-override');
-  assert.equal(panel.props['data-editor-actions'], 'append');
-  assert.equal(panel.props['data-editor-name-locked'], 'true');
-  assert.equal(nameField(tree).props.value, 'ghost:section');
-  assert.ok(hasText(oneBy(tree, 'data-role', 'entry-hint'), page.zh.editOverrideHint));
-  assert.equal(oneBy(tree, 'data-role', 'action-fixed').props['data-fixed-action'], 'append');
-  assert.deepEqual(actionTabs(tree), [], 'there is no action to pick');
-  assert.equal(blockedCards(tree).length, 0);
-
-  typeInto(tree, 'text', 'now it is a real section');
-  tree = await page.flush();
-  clickButton(tree, { 'data-action': 'save' });
-  tree = await page.flush();
-  const put = page.router.calls.find((call) => call.init && call.init.method === 'PUT');
-  assert.ok(put, 'the re-save was sent');
-  const body = JSON.parse(put.init.body);
-  assert.equal(body.section.name, 'ghost:section');
-  assert.equal(body.section.action, 'append', 're-saving an own override is an append upsert');
-});
-
-test('client: an appended section is re-editable as the append it is', async () => {
-  const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
-  // `extra:appended` is our own append, so it is deliberately not an "incoming"
-  // name: replace/hide would be skipped for it.
-  assert.equal(editButtonOf(tree, 'extra:appended').props['data-entry'], 'edit-override');
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'extra:appended' });
-  tree = await page.flush();
-  assert.equal(editorPanel(tree).props['data-editor-entry'], 'edit-override');
-  assert.equal(editorPanel(tree).props['data-editor-actions'], 'append');
-  assert.equal(oneBy(tree, 'data-role', 'text').props.value, 'appended text', 'the stored text is the starting point');
-});
-
-// #endregion
-
-// #region the form is drawn inside the row it was opened from
-
-test('client: editing a section draws the form inside that section row', async () => {
-  const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
-  assert.equal(
-    collect(tree, (node) => node.props && node.props['data-region'] === 'editor').length,
-    0,
-    'no form is on screen before an entry is opened',
-  );
-
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
-  tree = await page.flush();
-
-  const panel = editorPanel(tree);
-  // The row marker names the owner, and the tree really nests the form in it.
-  assert.equal(panel.props['data-editor-row'], 'project:alpha');
-  assert.deepEqual(owningRows(tree, panel), ['project:alpha'], 'the form is inside its own row');
-  assert.equal(
-    collect(tree, (node) => node.props && node.props['data-region'] === 'editor').length,
-    1,
-    'the row form is still the only form',
-  );
-  // Every marker the panel has always carried is untouched by the move.
-  assert.equal(panel.props['data-editor-entry'], 'edit');
-  assert.equal(panel.props['data-editor-name'], 'project:alpha');
-  assert.equal(panel.props['data-editor-mode'], 'edit');
-  assert.equal(panel.props['data-editor-name-locked'], 'true');
-  assert.equal(panel.props['data-editor-actions'], 'replace,hide');
-  assert.equal(panel.props['data-editor-fallback'], undefined, 'the row is on screen, so nothing fell back');
-  // "Inside the row" also means below the row's own content, not above it.
-  const row = oneBy(tree, 'data-section-row', 'project:alpha');
-  const order = collect(row, () => true);
-  assert.ok(
-    order.indexOf(panel) > order.indexOf(editButtonOf(tree, 'project:alpha')),
-    'the form follows the row content it was opened from',
-  );
-  // Only that row got it.
-  assert.equal(collect(row, (node) => node.props && node.props['data-region'] === 'editor').length, 1);
-  const other = oneBy(tree, 'data-section-row', 'harness:identity');
-  assert.equal(collect(other, (node) => node.props && node.props['data-region'] === 'editor').length, 0);
-});
-
-test('client: the append entry owns no row and keeps the page-level slot', async () => {
-  const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
-  clickButton(tree, { 'data-action': 'append-new' });
-  tree = await page.flush();
-
-  const panel = editorPanel(tree);
-  assert.equal(panel.props['data-editor-entry'], 'append-new');
-  assert.equal(panel.props['data-editor-row'], undefined, 'a new name belongs to no row');
-  assert.equal(panel.props['data-editor-fallback'], undefined, 'and nothing fell back');
-  assert.deepEqual(owningRows(tree, panel), [], 'the form is not inside any section row');
-  const list = oneBy(tree, 'data-region', 'sections');
-  assert.equal(containsNode(list, panel), false, 'and it is not inside the section list either');
-  const order = collect(tree, () => true);
-  assert.ok(order.indexOf(panel) < order.indexOf(list), 'the page-level slot still comes before the list');
-  // The behaviour and copy of the entry are the ones it always had.
-  assert.equal(panel.props['data-editor-actions'], 'append');
-  assert.equal(panel.props['data-editor-name-locked'], 'false');
-  assert.equal(nameField(tree).props.value, '');
-});
-
-test('client: an own-override row opens its form at its own entry', async () => {
-  const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
-  assert.equal(editButtonOf(tree, 'extra:appended').props['data-entry'], 'edit-override');
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'extra:appended' });
-  tree = await page.flush();
-
-  const panel = editorPanel(tree);
-  assert.equal(panel.props['data-editor-entry'], 'edit-override');
-  assert.equal(panel.props['data-editor-row'], 'extra:appended');
-  assert.deepEqual(owningRows(tree, panel), ['extra:appended'], 'the own-override form stays at its entry');
-  assert.equal(panel.props['data-editor-fallback'], undefined);
-  assert.equal(oneBy(tree, 'data-role', 'text').props.value, 'appended text');
-
-  // The overrides view is a different surface: it never carried the editor, and
-  // moving the row form must not have put one there. Leaving the sections view
-  // is also the second way a row is taken away, and it falls back like the rest.
-  clickTab(tree, 'view', 'overrides');
-  tree = await page.flush();
-  const overrides = oneBy(tree, 'data-region', 'overrides');
-  assert.equal(containsNode(overrides, editorPanel(tree)), false, 'the overrides view carries no editor');
-  assert.equal(editorPanel(tree).props['data-editor-fallback'], 'row-hidden');
-  assert.equal(editorPanel(tree).props['data-editor-row'], 'extra:appended', 'the owner is still named');
-});
-
-test('client: a filtered-away row sends the form to the slot without losing the text', async () => {
-  const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
-  tree = await page.flush();
-  typeInto(tree, 'text', 'edited while the filter is on');
-  tree = await page.flush();
-  assert.deepEqual(owningRows(tree, editorPanel(tree)), ['project:alpha']);
-
-  // The origin filter drops the very row the open form belongs to.
-  clickTab(tree, 'origin', 'appended');
-  tree = await page.flush();
-  assert.equal(
-    collect(tree, (node) => node.props && node.props['data-section-row'] === 'project:alpha').length,
-    0,
-    'the owning row is gone',
-  );
-  const panel = editorPanel(tree);
-  assert.equal(panel.props['data-editor-fallback'], 'row-hidden');
-  assert.equal(panel.props['data-editor-row'], 'project:alpha', 'the owner is still named');
-  assert.deepEqual(owningRows(tree, panel), [], 'and the form is out of the list');
-  assert.equal(panel.props['data-editor-entry'], 'edit', 'the entry itself did not change');
-  assert.equal(oneBy(tree, 'data-role', 'text').props.value, 'edited while the filter is on', 'nothing typed is lost');
-  assert.equal(nameField(tree).props.value, 'project:alpha');
-
-  // Clearing the filter puts the very same form back inside its row.
-  clickTab(tree, 'origin', 'all');
-  tree = await page.flush();
-  assert.deepEqual(owningRows(tree, editorPanel(tree)), ['project:alpha'], 'the row got its form back');
-  assert.equal(editorPanel(tree).props['data-editor-fallback'], undefined);
-  assert.equal(oneBy(tree, 'data-role', 'text').props.value, 'edited while the filter is on');
-});
-
-test('client: a row that a reload removes sends the form to the slot too', async () => {
-  const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
-  tree = await page.flush();
-  typeInto(tree, 'text', 'typed before the reload');
-  tree = await page.flush();
-  assert.deepEqual(owningRows(tree, editorPanel(tree)), ['project:alpha']);
-
-  // The third way a row goes away, and the one no filter and no view tab is
-  // behind: the assembly itself moves. The row the form was opened on is simply
-  // not in the next snapshot, so there is nothing to nest it in any more.
-  const next = snapshotFixture();
-  next.effective.sections = next.effective.sections.filter((section) => section.name !== 'project:alpha');
-  page.router.set(PATHS.snapshot, { payload: next });
-  clickButton(tree, { 'data-action': 'refresh' });
-  tree = await page.flush();
-
-  assert.equal(
-    collect(tree, (node) => node.props && node.props['data-section-row'] === 'project:alpha').length,
-    0,
-    'the row is no longer in the assembly',
-  );
-  const panel = editorPanel(tree);
-  assert.equal(panel.props['data-editor-fallback'], 'row-hidden');
-  assert.equal(panel.props['data-editor-row'], 'project:alpha', 'the owner is still named');
-  assert.deepEqual(owningRows(tree, panel), []);
-  assert.equal(panel.props['data-editor-entry'], 'edit', 'the entry itself did not change');
-  assert.equal(oneBy(tree, 'data-role', 'text').props.value, 'typed before the reload', 'nothing typed is lost');
-  assert.equal(nameField(tree).props.value, 'project:alpha');
-});
-
-test('client: a view switch keeps an open row form reachable', async () => {
-  const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
-  tree = await page.flush();
-  typeInto(tree, 'text', 'kept across the view switch');
-  tree = await page.flush();
-  assert.deepEqual(owningRows(tree, editorPanel(tree)), ['harness:identity']);
-
-  clickTab(tree, 'view', 'full');
-  tree = await page.flush();
-  const panel = editorPanel(tree);
-  assert.equal(panel.props['data-editor-fallback'], 'row-hidden');
-  assert.equal(panel.props['data-editor-row'], 'harness:identity');
-  assert.deepEqual(owningRows(tree, panel), []);
-  assert.equal(oneBy(tree, 'data-role', 'text').props.value, 'kept across the view switch');
-});
-
-test('client: opening an edit form puts the caret in the text, once per session', async () => {
-  const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
-  tree = await page.flush();
-
-  let panel = editorPanel(tree);
-  assert.equal(panel.props['data-editor-focus'], 'text');
-  assert.equal(typeof panel.props.ref, 'function', 'the panel hands its root to the page');
-
-  const first = fakePanelRoot();
-  assert.deepEqual(first.focused, [], 'no node is committed yet, so nothing was focused');
-  panel.props.ref(first.node);
-  tree = await page.flush();
-  assert.deepEqual(first.queried, ['[data-role="text"]'], 'the text area is the target');
-  assert.deepEqual(first.focused, ['[data-role="text"]'], 'and the caret landed there exactly once');
-
-  // A re-render is not an open: typing, or moving to the layer tabs, must not
-  // pull the caret back out of the control the user moved to.
-  typeInto(tree, 'text', 'still mine');
-  tree = await page.flush();
-  clickTab(tree, 'editor-layer', 'workspace');
-  tree = await page.flush();
-  assert.deepEqual(first.focused, ['[data-role="text"]'], 'a later render takes no caret back');
-  const second = fakePanelRoot();
-  editorPanel(tree).props.ref(second.node);
-  tree = await page.flush();
-  assert.deepEqual(second.focused, [], 'the session already took its focus');
-
-  // Closing and re-opening the same row arms the caret again.
-  panel = editorPanel(tree);
-  const closingRef = panel.props.ref;
-  clickButton(tree, { 'data-action': 'cancel' });
-  tree = await page.flush();
-  assert.equal(
-    collect(tree, (node) => node.props && node.props['data-region'] === 'editor').length,
-    0,
-    'the form is closed',
-  );
-  closingRef(null); // what React commits on unmount
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
-  tree = await page.flush();
-  assert.deepEqual(first.focused, ['[data-role="text"]'], 'a closed panel holds no caret');
-  const third = fakePanelRoot();
-  editorPanel(tree).props.ref(third.node);
-  tree = await page.flush();
-  assert.deepEqual(third.focused, ['[data-role="text"]'], 're-opening the same row arms the caret again');
-});
-
-test('client: the append entry puts the caret in the name field', async () => {
-  const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
-  clickButton(tree, { 'data-action': 'append-new' });
-  tree = await page.flush();
-
-  const panel = editorPanel(tree);
-  assert.equal(panel.props['data-editor-focus'], 'name');
-  const root = fakePanelRoot();
-  panel.props.ref(root.node);
-  tree = await page.flush();
-  assert.deepEqual(root.queried, ['[data-role="name"]']);
-  assert.deepEqual(root.focused, ['[data-role="name"]'], 'the first thing to type is the name');
-});
-
-test('client: the row switch closes the form it opened', async () => {
-  const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
-  assert.equal(editButtonOf(tree, 'project:alpha').props['aria-expanded'], 'false');
-
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
-  tree = await page.flush();
-  assert.equal(editButtonOf(tree, 'project:alpha').props['aria-expanded'], 'true');
-  typeInto(tree, 'text', 'half-typed, then folded');
-  tree = await page.flush();
-
-  // The same button, pressed again: the form folds. No 「取消」 hunt needed.
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
-  tree = await page.flush();
-  assert.equal(
-    collect(tree, (node) => node.props && node.props['data-region'] === 'editor').length,
-    0,
-    'the form is gone',
-  );
-  assert.equal(editButtonOf(tree, 'project:alpha').props['aria-expanded'], 'false');
-  assert.equal(editButtonOf(tree, 'project:alpha').props.disabled, false, 'and the row is editable again');
-  // Folding is not deleting: the row is still there, with its stored text.
-  assert.ok(oneBy(tree, 'data-section-row', 'project:alpha'));
-  assert.equal(collect(tree, (node) => node.props && node.props['data-role'] === 'text').length, 0);
-  assert.equal(collect(tree, (node) => node.props && node.props['data-role'] === 'name').length, 0);
-});
-
-test('client: only the row that holds the open form reports itself expanded', async () => {
-  const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
-  // Five rows, five switches, all reporting the truth before anything opens.
-  assert.deepEqual(editSwitches(tree), [
-    ['harness:identity', 'false'],
-    ['project:alpha', 'false'],
-    ['extra:appended', 'false'],
-    ['companion:extra', 'false'],
-    ['ghost:section', 'false'],
-  ]);
-
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
-  tree = await page.flush();
-  assert.deepEqual(editSwitches(tree), [
-    ['harness:identity', 'false'],
-    ['project:alpha', 'true'],
-    ['extra:appended', 'false'],
-    ['companion:extra', 'false'],
-    ['ghost:section', 'false'],
-  ]);
-
-  // The active state is paint only: every layout-affecting property of the
-  // pressed switch is byte-identical to an unpressed one, so opening a row
-  // moves nothing and no other row changes.
-  const pressed = editButtonOf(tree, 'project:alpha');
-  const resting = editButtonOf(tree, 'harness:identity');
-  for (const key of ['font', 'fontSize', 'padding', 'borderRadius', 'border']) {
-    assert.equal(pressed.props.style[key], resting.props.style[key], `${key} is unchanged by the active state`);
+  // The chrome above the tabs is exactly the title, the one-line status and the
+  // session selector: no panel of any tab is rendered before a tab is chosen.
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'tab-panel').length, 1);
+  for (const region of ['sections', 'full', 'history', 'transfer', 'overrides', 'status-detail']) {
+    assert.equal(
+      collect(tree, (node) => node.props && node.props['data-region'] === region).length,
+      0,
+      `${region} belongs to another tab and must not be rendered`,
+    );
   }
-  assert.equal(resting.props.style.background, 'transparent');
-  assert.notEqual(pressed.props.style.background, resting.props.style.background, 'the pressed switch is marked');
 });
 
-test('client: opening another row folds the first and moves the one form', async () => {
+test('client: switching a tab renders that tab and nothing else', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  const expectations = [
+    ['mine', 'mine'],
+    ['overview', 'sections'],
+    ['history', 'history'],
+    ['advanced', 'overrides'],
+  ];
+  for (const [value, region] of expectations) {
+    const tree = await openTab(page, value);
+    assert.equal(tabList(tree).props['data-active-tab'], value);
+    assert.equal(tabPanel(tree).props['data-tab-value'], value, 'exactly one panel, and it is this tab');
+    assert.equal(oneBy(tree, 'data-region', region).props['data-region'], region, `${value} renders ${region}`);
+    // No other tab's own top-level region is on screen.
+    for (const [otherValue, otherRegion] of expectations) {
+      if (otherValue === value) continue;
+      assert.equal(
+        collect(tree, (node) => node.props && node.props['data-region'] === otherRegion).length,
+        0,
+        `${value} must not render ${otherRegion}`,
+      );
+    }
+  }
+});
+
+test('client: 「我的 Prompt」 saves the reserved name, and only the reserved name', async () => {
   const page = makePage({ responses: defaultResponses() });
   let tree = await page.flush();
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
-  tree = await page.flush();
-  typeInto(tree, 'text', 'alpha edit, left behind');
-  tree = await page.flush();
-  assert.deepEqual(owningRows(tree, editorPanel(tree)), ['project:alpha']);
 
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
+  // The reserved section is not in the default override fixture, so the panel
+  // opens in its unconfigured state rather than showing an empty box.
+  assert.equal(markerOf(tree, 'data-mine-state'), 'unconfigured');
+  assert.ok(strings(tree).includes(page.zh.mineUnconfigured));
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, '');
+
+  typeInto(tree, 'mine-text', 'my own house rules');
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-mine-state'), 'dirty', 'an unsaved edit is stated');
+  assert.ok(strings(tree).includes(page.zh.mineDirty));
+
+  clickButton(tree, { 'data-action': 'mine-save' });
   tree = await page.flush();
 
-  // Still one form, now in the other row, holding THAT row's stored text.
+  const put = page.router.calls.filter((call) => call.init && call.init.method === 'PUT');
+  assert.equal(put.length, 1, 'exactly one write');
+  // The URL is the frozen route; the *body* is what the write face is.
+  assert.equal(put[0].url, PATHS.overrides);
+  const body = JSON.parse(put[0].init.body);
+  assert.equal(body.layer, 'user');
+  assert.equal(body.session, undefined, 'the global view sends no session');
+  // The name is compared with the HOST constant, not with a literal here: the
+  // client hardcodes it because a browser module cannot import host code, and
+  // this is the assertion that keeps the two copies from drifting.
+  assert.equal(body.section.name, CUSTOM_SECTION_NAME, 'the reserved name, verbatim');
+  assert.equal(body.section.name, 'prompt-setting:custom-prompt');
+  assert.equal(body.section.action, 'replace', 'the only action the write face accepts');
+  assert.equal(body.section.text, 'my own house rules', 'the text is sent exactly as typed');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'saved');
+  assert.ok(strings(tree).includes(fillText(page.zh.mineSaved, { layer: page.zh.ovUser })));
+});
+
+test('client: a save that the host refuses is reported, never shown as saved', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.overrides]: (url, init) =>
+        init && init.method === 'PUT'
+          ? { status: 403, payload: { ok: false, code: 'write-locked', message: 'only the reserved section may be written' } }
+          : { payload: overridesFixture() },
+    }),
+  });
+  let tree = await page.flush();
+  typeInto(tree, 'mine-text', 'nope');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-mine-state'), 'error');
+  assert.ok(strings(tree).includes(page.zh['error.write-locked']), 'the mapped copy is shown');
   assert.equal(
-    collect(tree, (node) => node.props && node.props['data-region'] === 'editor').length,
-    1,
-    'one form at a time',
+    oneBy(tree, 'data-mine-error', 'true').props['data-mine-error'],
+    'true',
+    'the failure keeps the full error card',
   );
-  const panel = editorPanel(tree);
-  assert.equal(panel.props['data-editor-row'], 'harness:identity');
-  assert.equal(panel.props['data-editor-name'], 'harness:identity');
-  assert.deepEqual(owningRows(tree, panel), ['harness:identity']);
-  assert.equal(oneBy(tree, 'data-role', 'text').props.value, 'identity base', 'the new row starts from its own text');
-  assert.deepEqual(editSwitches(tree), [
-    ['harness:identity', 'true'],
-    ['project:alpha', 'false'],
-    ['extra:appended', 'false'],
-    ['companion:extra', 'false'],
-    ['ghost:section', 'false'],
-  ]);
-  const first = oneBy(tree, 'data-section-row', 'project:alpha');
-  assert.equal(collect(first, (node) => node.props && node.props['data-region'] === 'editor').length, 0);
+  assert.ok(hasText(oneBy(tree, 'data-mine-error', 'true'), 'only the reserved section may be written'), 'the host message survives');
+  assert.equal(markerOf(oneBy(tree, 'data-mine-error', 'true'), 'data-error-code'), 'write-locked');
+  assert.ok(strings(tree).includes(page.zh.mineFailed));
 });
 
-test('client: expanding a row pulls the form in with the smallest scroll', async () => {
-  const page = makePage({ responses: defaultResponses() });
+test('client: 「恢复默认」 confirms first, then deletes by the reserved name', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.overrides]: { payload: overridesFixture({
+        merged: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text', layer: 'user' }] },
+      }) },
+    }),
+  });
   let tree = await page.flush();
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
-  tree = await page.flush();
+  // The stored value is what the panel shows, read from the merged override list.
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'stored text');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'idle');
+  assert.ok(strings(tree).includes(fillText(page.zh.mineLoaded, { layer: page.zh.ovUser })));
 
-  const root = fakePanelRoot();
-  assert.deepEqual(root.scrolled, []);
-  editorPanel(tree).props.ref(root.node);
+  clickButton(tree, { 'data-action': 'mine-reset' });
   tree = await page.flush();
-  assert.deepEqual(scrollOptions(root), [{ block: 'nearest' }], 'the form is pulled in, minimally');
-  assert.notEqual(root.scrolled[0].block, 'start', 'never by yanking the page to the top of the form');
-
-  // Neither half repeats while the row is being typed in.
-  typeInto(tree, 'text', 'typing must not scroll');
-  tree = await page.flush();
-  clickTab(tree, 'editor-layer', 'workspace');
-  tree = await page.flush();
-  assert.deepEqual(scrollOptions(root), [{ block: 'nearest' }], 'a later render does not scroll again');
-  assert.deepEqual(root.focused, ['[data-role="text"]'], 'nor takes the caret back');
-
-  // A node committed by a later render is equally not a new open.
-  const later = fakePanelRoot();
-  editorPanel(tree).props.ref(later.node);
-  tree = await page.flush();
-  assert.deepEqual(scrollOptions(later), [], 'the session already took its scroll');
-  assert.deepEqual(later.focused, []);
-});
-
-test('client: a node with no scrollIntoView is survivable', async () => {
-  const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
-  tree = await page.flush();
-
-  // The node the page is handed may have no scrolling API at all; the panel
-  // must still open, still take the caret, and not throw.
-  const bare = fakePanelRoot({ scrollable: false });
-  assert.equal(bare.node.scrollIntoView, undefined);
-  editorPanel(tree).props.ref(bare.node);
-  tree = await page.flush();
-  assert.equal(editorPanel(tree).props['data-editor-row'], 'project:alpha');
-  assert.deepEqual(bare.focused, ['[data-role="text"]'], 'the caret still lands');
-  assert.deepEqual(bare.queried, ['[data-role="text"]']);
-});
-
-test('client: a row cannot fold the append entry it does not own', async () => {
-  const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
-  clickButton(tree, { 'data-action': 'append-new' });
-  tree = await page.flush();
-  // Typing a name an existing row happens to carry must not make that row's
-  // switch behave as if it owned the open form.
-  typeInto(tree, 'name', 'project:alpha');
-  tree = await page.flush();
-  assert.equal(editorPanel(tree).props['data-editor-entry'], 'append-new');
-  assert.equal(oneBy(tree, 'data-role', 'name').props.value, 'project:alpha');
-
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
-  tree = await page.flush();
+  const confirm = oneBy(tree, 'data-region', 'confirm');
+  assert.equal(confirm.props['data-confirm-kind'], 'mine-reset', 'the destructive action confirms first');
   assert.equal(
-    collect(tree, (node) => node.props && node.props['data-region'] === 'editor').length,
-    1,
-    'the append entry switched to the row, it did not fold',
+    writeCalls(page).length,
+    0,
+    'no request is sent before confirm-yes',
   );
-  const panel = editorPanel(tree);
-  assert.equal(panel.props['data-editor-entry'], 'edit');
-  assert.equal(panel.props['data-editor-row'], 'project:alpha');
-  assert.deepEqual(owningRows(tree, panel), ['project:alpha']);
-  assert.deepEqual(editSwitches(tree), [
-    ['harness:identity', 'false'],
-    ['project:alpha', 'true'],
-    ['extra:appended', 'false'],
-    ['companion:extra', 'false'],
-    ['ghost:section', 'false'],
-  ]);
 
-  // And now the same switch folds the form it did open.
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  clickButton(confirm, { 'data-action': 'confirm-yes' });
   tree = await page.flush();
-  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'editor').length, 0);
+  const deletes = writeCalls(page).filter((call) => call.init.method === 'DELETE');
+  assert.equal(deletes.length, 1);
+  assert.equal(
+    deletes[0].url,
+    `${PATHS.overrides}?layer=user&name=${encodeURIComponent(CUSTOM_SECTION_NAME)}`,
+    'the delete names the reserved section, and nothing else',
+  );
+  assert.ok(strings(tree).includes(fillText(page.zh.deletedNotice, { layer: page.zh.ovUser })));
 });
 
-test('client: folding and re-opening the same row re-arms scroll and caret', async () => {
+test('client: 「我的 Prompt」 refuses a workspace write without a session, locally', async () => {
   const page = makePage({ responses: defaultResponses() });
   let tree = await page.flush();
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+  clickTab(tree, 'mine-layer', 'workspace');
   tree = await page.flush();
-  const first = fakePanelRoot();
-  editorPanel(tree).props.ref(first.node);
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props['data-role'], 'mine-text');
+  assert.ok(oneBy(tree, 'data-warning', 'mine-workspace-disabled'), 'the disabled workspace layer is stated');
+  clickButton(tree, { 'data-action': 'mine-save' });
   tree = await page.flush();
-  assert.deepEqual(scrollOptions(first), [{ block: 'nearest' }]);
-  assert.deepEqual(first.focused, ['[data-role="text"]']);
+  assert.equal(writeCalls(page).length, 0, 'no write without a resolvable workspace layer');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'error');
+  assert.ok(strings(tree).includes(page.zh['error.workspace-unresolved']), 'the mapped copy is shown');
+});
 
-  // Fold, and commit the detach React performs on unmount.
-  const closingRef = editorPanel(tree).props.ref;
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+test('client: a workspace save carries the session and the reserved name', async () => {
+  const page = makePage({ useSessions: sessionsHook(SESSIONS_STATE), responses: defaultResponses() });
+  let tree = await page.flush();
+  clickTab(tree, 'mine-layer', 'workspace');
   tree = await page.flush();
-  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'editor').length, 0);
-  closingRef(null);
+  typeInto(tree, 'mine-text', 'per-session text');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+  const put = page.router.calls.filter((call) => call.init && call.init.method === 'PUT');
+  assert.equal(put.length, 1);
+  const body = JSON.parse(put[0].init.body);
+  assert.equal(body.layer, 'workspace');
+  assert.equal(body.session, 's2', 'the selected session travels with the write');
+  assert.equal(body.section.name, CUSTOM_SECTION_NAME);
+  assert.equal(body.section.action, 'replace');
+  assert.equal(body.section.text, 'per-session text');
+});
 
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
+test('client: a saved 「我的 Prompt」 is re-read from the changed override list', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  typeInto(tree, 'mine-text', 'identity rewritten');
   tree = await page.flush();
-  assert.deepEqual(scrollOptions(first), [{ block: 'nearest' }], 'the folded session scrolls no more');
-  assert.deepEqual(first.focused, ['[data-role="text"]']);
-  const second = fakePanelRoot();
-  editorPanel(tree).props.ref(second.node);
+  // The host answers the next read with the stored entry: the panel must show
+  // what is configured, not what this render happened to hold.
+  page.router.set(PATHS.overrides, {
+    payload: overridesFixture({
+      merged: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'identity rewritten', layer: 'user' }] },
+    }),
+  });
+  clickButton(tree, { 'data-action': 'mine-save' });
   tree = await page.flush();
-  assert.deepEqual(scrollOptions(second), [{ block: 'nearest' }], 're-opening arms the scroll again');
-  assert.deepEqual(second.focused, ['[data-role="text"]'], 'and the caret again');
-  assert.equal(editButtonOf(tree, 'project:alpha').props['aria-expanded'], 'true');
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'identity rewritten');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'saved');
 });
 
 // #endregion
 
-test('client: the sections view proves why an override did not take effect', async () => {
+// #region 「提示词总览」 is read-only, and the legacy list says its pieces
+
+test('client: 「提示词总览」 renders no write entry at all', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  // Both inner views, both renderer branches: an editor path that only appears
+  // for one of them would still be an editor path.
+  for (const primitives of ['throw', 'ok']) {
+    const each = makePage({ primitives, responses: defaultResponses() });
+    for (const view of ['sections', 'full']) {
+      let tree = await openTab(each, 'overview');
+      if (view === 'full') {
+        clickAnyTab(tree, 'full');
+        tree = await each.flush();
+      }
+      assert.equal(
+        collect(tree, (node) => node.props && node.props['data-region'] === 'editor').length,
+        0,
+        `no editor node (${primitives}/${view})`,
+      );
+      const writeActions = collect(
+        tree,
+        (node) =>
+          node.props &&
+          ['edit', 'append-new', 'delete', 'save', 'cancel', 'undo', 'reset-section'].includes(node.props['data-action']),
+      ).map((node) => node.props['data-action']);
+      assert.deepEqual(writeActions, [], `no write action (${primitives}/${view})`);
+      // The read-only controls the tab promises are still there.
+      assert.ok(oneBy(tree, 'data-action', 'copy'), `copy is offered (${primitives}/${view})`);
+      if (view === 'sections') assert.equal(editSwitches(tree).length, 0, 'and no 「编辑」 switch either');
+    }
+  }
+});
+
+test('client: 「提示词总览」 owns no copy of the reserved section', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.snapshot]: {
+        payload: snapshotFixture({
+          effective: {
+            sections: [
+              ...snapshotFixture().effective.sections,
+              {
+                name: CUSTOM_SECTION_NAME,
+                index: 5,
+                text: 'my own house rules',
+                applied: true,
+                overridable: true,
+                reason: null,
+                overrideLayer: 'user',
+                action: 'replace',
+                origin: 'registered',
+              },
+            ],
+          },
+        }),
+      },
+    }),
+  });
+  const tree = await openOverview(page);
+  // The reserved section belongs to 「我的 Prompt」; the overview says so instead
+  // of rendering the same text twice on one page.
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-section-row'] === CUSTOM_SECTION_NAME).length,
+    0,
+    'the reserved row is not repeated',
+  );
+  assert.equal(oneBy(tree, 'data-note', 'reserved-own-tab').props['data-note'], 'reserved-own-tab');
+  assert.equal(markerOf(tree, 'data-sections-total'), '5', 'only the other sections are counted');
+});
+
+test('client: the segment list states 已覆盖 / 已隐藏 / 追加 from the applied action', async () => {
+  const payload = snapshotFixture();
+  payload.effective.sections[1].action = 'replace'; // project:alpha
+  payload.effective.sections[2].action = 'append'; // extra:appended
+  payload.effective.sections[3].action = 'hide'; // companion:extra
+  const page = makePage({ responses: defaultResponses({ [PATHS.snapshot]: { payload } }) });
+  const tree = await openOverview(page);
+  assert.ok(strings(oneBy(tree, 'data-section-row', 'project:alpha')).includes(page.zh.ovEffective));
+  assert.ok(strings(oneBy(tree, 'data-section-row', 'extra:appended')).includes(page.zh.stAppended));
+  assert.ok(strings(oneBy(tree, 'data-section-row', 'companion:extra')).includes(page.zh.stHidden));
+  // Untouched rows claim no such state.
+  assert.ok(!strings(oneBy(tree, 'data-section-row', 'harness:identity')).includes(page.zh.stHidden));
+});
+
+// #endregion
+
+test('client: 「提示词总览」 proves why an override did not take effect', async () => {
   const payload = snapshotFixture();
   // A registered section whose append override the Host skipped: `applied:false`
   // with the Host's observation as the reason.
@@ -3342,14 +2769,14 @@ test('client: the sections view proves why an override did not take effect', asy
   payload.effective.sections[0].action = 'append';
   payload.effective.sections[0].reason = 'the appended text was replaced further down the assembly pipeline';
   const page = makePage({ responses: defaultResponses({ [PATHS.snapshot]: { payload } }) });
-  const tree = await page.flush();
+  const tree = await openOverview(page);
   const line = oneBy(tree, 'data-section-ineffective', 'name-already-present');
   assert.ok(hasText(line, page.zh.blockAppendExisting), 'the real cause is named');
   assert.ok(strings(line).some((text) => text.includes(page.zh.ovFixHint)), 'and a fix is offered');
   assert.ok(hasText(tree, 'the appended text was replaced further down'), 'the host reason is still visible');
 });
 
-test('client: the overrides view shows an ineffective override with cause and fix', async () => {
+test('client: the legacy override list shows an ineffective entry with cause and fix', async () => {
   const payload = snapshotFixture();
   payload.effective.sections[0].applied = false;
   payload.effective.sections[0].overrideLayer = 'user';
@@ -3370,9 +2797,7 @@ test('client: the overrides view shows an ineffective override with cause and fi
       },
     }),
   });
-  let tree = await page.flush();
-  clickTab(tree, 'view', 'overrides');
-  tree = await page.flush();
+  const tree = await openAdvanced(page);
   const bad = oneBy(tree, 'data-override-row', 'harness:identity');
   assert.equal(bad.props['data-override-applied'], 'false', 'ineffective is explicit');
   const reason = oneBy(tree, 'data-override-reason', 'harness:identity');
@@ -3384,48 +2809,7 @@ test('client: the overrides view shows an ineffective override with cause and fi
 
 // #endregion
 
-test('client: the workspace layer is refused locally when no session is selected', async () => {
-  const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'project:alpha' });
-  tree = await page.flush();
-  assert.ok(oneBy(tree, 'data-warning', 'workspace-layer-disabled'), 'the disabled workspace layer is stated');
-  clickTab(tree, 'editor-layer', 'workspace');
-  tree = await page.flush();
-  clickButton(tree, { 'data-action': 'save' });
-  tree = await page.flush();
-  assert.equal(
-    page.router.calls.filter((call) => call.init && call.init.method === 'PUT').length,
-    0,
-    'no write without a resolvable workspace',
-  );
-  assert.ok(strings(tree).includes(page.zh['error.workspace-unresolved']), 'the mapped copy is shown');
-});
-
-test('client: a saved override is re-read from a changed snapshot', async () => {
-  const page = makePage({ responses: defaultResponses() });
-  let tree = await page.flush();
-  clickButton(tree, { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
-  tree = await page.flush();
-  typeInto(tree, 'text', 'identity rewritten');
-  tree = await page.flush();
-  // The host answers the next snapshot with the new text: the page must show it.
-  const after = snapshotFixture();
-  after.effective.sections[0].text = 'identity rewritten';
-  after.effective.sections[0].applied = true;
-  after.effective.sections[0].overrideLayer = 'user';
-  after.effective.sections[0].action = 'replace';
-  page.router.set(PATHS.snapshot, { payload: after });
-  clickButton(tree, { 'data-action': 'save' });
-  await settle();
-  tree = await page.flush();
-  clickButton(tree, { 'data-action': 'expand', 'data-section-name': 'harness:identity' });
-  tree = await page.flush();
-  const pre = oneBy(tree, 'data-section-full', 'harness:identity');
-  assert.ok(hasText(pre, 'identity rewritten'), 'the page re-read the snapshot');
-});
-
-test('client: overrides can be listed and undone, one entry at a time', async () => {
+test('client: the legacy override list is read-only, and names what it holds', async () => {
   const page = makePage({
     responses: defaultResponses({
       [PATHS.overrides]: {
@@ -3434,27 +2818,55 @@ test('client: overrides can be listed and undone, one entry at a time', async ()
             overrides: [
               { name: 'project:alpha', action: 'replace', text: 'alpha overridden', layer: 'user' },
               { name: 'extra:appended', action: 'append', text: 'appended text', layer: 'workspace' },
+              { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'mine', layer: 'user' },
             ],
           },
         }),
       },
     }),
   });
-  let tree = await page.flush();
-  clickTab(tree, 'view', 'overrides');
-  tree = await page.flush();
-  assert.equal(oneBy(tree, 'data-overrides-total', '2').props['data-overrides-total'], '2');
+  const tree = await openAdvanced(page);
+  assert.equal(oneBy(tree, 'data-overrides-total', '3').props['data-overrides-total'], '3');
   const first = oneBy(tree, 'data-override-row', 'project:alpha');
   assert.equal(first.props['data-override-layer'], 'user');
   assert.equal(first.props['data-override-action'], 'replace');
+  assert.equal(first.props['data-override-reserved'], 'false');
   assert.equal(oneBy(tree, 'data-override-row', 'extra:appended').props['data-override-layer'], 'workspace');
+  assert.equal(
+    oneBy(tree, 'data-override-row', CUSTOM_SECTION_NAME).props['data-override-reserved'],
+    'true',
+    '「我的 Prompt」 is marked as the reserved entry',
+  );
+  // Read-only by construction: the Revision 6 per-entry write controls are gone.
+  const writeActions = collect(
+    tree,
+    (node) => node.props && ['undo', 'reset-section', 'edit', 'delete'].includes(node.props['data-action']),
+  );
+  assert.deepEqual(writeActions, [], 'the legacy list offers no per-entry write');
+  assert.equal(writeCalls(page).length, 0, 'and has not written anything');
+});
 
-  clickButton(tree, { 'data-action': 'undo', 'data-override-name': 'project:alpha' });
-  tree = await page.flush();
-  const call = page.router.calls.find((entry) => entry.init && entry.init.method === 'DELETE');
-  assert.ok(call, 'a DELETE was sent');
-  assert.equal(call.url, `${PATHS.overrides}?layer=user&name=${encodeURIComponent('project:alpha')}`);
-  assert.ok(hasText(oneBy(tree, 'data-notice', 'success'), page.zh.nextTurn));
+test('client: 「高级」 carries the full status the top line compresses', async () => {
+  const oracle = independentBuildFingerprint(clientSource);
+  const page = makePage({
+    responses: defaultResponses({ [PATHS.ping]: pingResponse(buildFixture(oracle.hash, oracle.size)) }),
+  });
+  const top = await page.flush();
+  // One line: the verdicts, not the explanation.
+  assert.equal(oneBy(top, 'data-region', 'status').props['data-status-mount'], 'true');
+  assert.equal(oneBy(top, 'data-region', 'status').props['data-status-frozen'], 'unfrozen');
+  assert.equal(oneBy(top, 'data-region', 'status').props['data-status-build'], 'true');
+  assert.equal(collect(top, (node) => node.props && node.props['data-region'] === 'build').length, 0);
+
+  const tree = await openAdvanced(page);
+  const detail = oneBy(tree, 'data-region', 'status-detail');
+  assert.equal(detail.props['data-region'], 'status-detail');
+  assert.equal(oneBy(detail, 'data-region', 'build').props['data-region'], 'build');
+  assert.ok(hasText(detail, '2024-01-01T00:00:00.000Z'), 'the generation timestamp is detail');
+  assert.ok(hasText(detail, page.zh.stUserLayer), 'both layers are named');
+  // The renderer self-check lives here too (it is diagnostics, not navigation).
+  assert.ok(hasText(oneBy(tree, 'data-region', 'renderer-info'), page.zh.rendererFallback));
+  assert.ok(hasText(tree, 'Cannot find module'), 'the unavailable primitives reason is surfaced');
 });
 
 // #endregion
@@ -3518,26 +2930,34 @@ test('client: a throw while building the tree renders a failure card, not a blan
 
 // #region stage 2: history, diff, restore default, export / import
 
-/** Open the 覆盖 view, where every stage 2 panel lives. */
-async function openOverrides(page) {
-  let tree = await page.flush();
-  clickTab(tree, 'view', 'overrides');
-  tree = await page.flush();
-  return tree;
+/** Open 「历史与备份」, where the log, the comparison and the transfer panel live. */
+async function openHistory(page) {
+  return openTab(page, 'history');
 }
 
-test('client: the history log is fetched only while the 覆盖 view is open', async () => {
+/** Open 「高级」, where the legacy override list, the layer buttons and the status detail live. */
+async function openAdvanced(page) {
+  return openTab(page, 'advanced');
+}
+
+/** Open 「提示词总览」, the read-only assembly, on its segment list. */
+async function openOverview(page) {
+  return openTab(page, 'overview');
+}
+
+test('client: the history log is fetched only while 「历史与备份」 is open', async () => {
   const page = makePage({ responses: defaultResponses() });
-  const sections = await page.flush();
-  assert.equal(urlsFor(page, PATHS.history).length, 0, 'the section view pays nothing for the log');
-  clickTab(sections, 'view', 'overrides');
-  await page.flush();
+  const mine = await page.flush();
+  assert.equal(urlsFor(page, PATHS.history).length, 0, '「我的 Prompt」 pays nothing for the log');
+  const overview = await openTab(page, 'overview', mine);
+  assert.equal(urlsFor(page, PATHS.history).length, 0, 'and neither does 「提示词总览」');
+  await openTab(page, 'history', overview);
   assert.deepEqual(urlsFor(page, PATHS.history), [`${PATHS.history}?layer=user&limit=20`]);
 });
 
 test('client: the history panel renders records, their action and their origin', async () => {
   const page = makePage({ responses: defaultResponses() });
-  const tree = await openOverrides(page);
+  const tree = await openHistory(page);
   const region = oneBy(tree, 'data-region', 'history');
   assert.equal(region.props['data-history-layer'], 'user');
   assert.equal(region.props['data-history-state'], 'ready');
@@ -3560,7 +2980,7 @@ test('client: an empty or unreadable history is stated, never a blank panel', as
   const empty = makePage({
     responses: defaultResponses({ [PATHS.history]: { payload: historyFixture({ records: [], total: 0 }) } }),
   });
-  const emptyTree = await openOverrides(empty);
+  const emptyTree = await openHistory(empty);
   assert.ok(oneBy(emptyTree, 'data-empty', 'history'));
   assert.ok(strings(emptyTree).includes(empty.zh.histEmpty));
 
@@ -3571,7 +2991,7 @@ test('client: an empty or unreadable history is stated, never a blank panel', as
       },
     }),
   });
-  const brokenTree = await openOverrides(broken);
+  const brokenTree = await openHistory(broken);
   assert.equal(markerOf(brokenTree, 'data-history-corrupt'), '3');
   assert.ok(oneBy(brokenTree, 'data-history-unreadable', 'true'));
   assert.ok(oneBy(brokenTree, 'data-history-last-error', 'true'));
@@ -3582,7 +3002,7 @@ test('client: a failing history request shows the mapped copy and keeps the page
   const page = makePage({
     responses: defaultResponses({ [PATHS.history]: { status: 400, payload: { ok: false, code: 'unknown-layer', message: 'nope' } } }),
   });
-  const tree = await openOverrides(page);
+  const tree = await openHistory(page);
   assert.equal(oneBy(tree, 'data-region', 'history').props['data-history-state'], 'error');
   assert.ok(hasText(tree, page.zh['error.unknown-layer']));
   assert.equal(markerOf(tree, 'data-render-state'), 'ok', 'the page itself still renders');
@@ -3590,7 +3010,7 @@ test('client: a failing history request shows the mapped copy and keeps the page
 
 test('client: choosing two records requests the comparison and renders both levels', async () => {
   const page = makePage({ responses: defaultResponses() });
-  let tree = await openOverrides(page);
+  let tree = await openHistory(page);
 
   clickButton(historyRowOf(tree, '2'), { 'data-action': 'diff-from', 'data-history-id': '2' });
   tree = await page.flush();
@@ -3626,7 +3046,7 @@ test('client: choosing two records requests the comparison and renders both leve
 
 test('client: the comparison can put the live value on either side', async () => {
   const page = makePage({ responses: defaultResponses() });
-  let tree = await openOverrides(page);
+  let tree = await openHistory(page);
   const current = oneBy(tree, 'data-history-current', 'true');
   clickButton(current, { 'data-action': 'diff-to', 'data-history-id': 'current' });
   tree = await page.flush();
@@ -3640,7 +3060,7 @@ test('client: the comparison can put the live value on either side', async () =>
 test('client: a comparison the host could not make is explained, not left empty', async () => {
   const payload = diffFixture({ lines: null, lineReason: 'more than one section differs; pass ?name= to compare one of them' });
   const page = makePage({ responses: defaultResponses({ [PATHS.diff]: { payload } }) });
-  let tree = await openOverrides(page);
+  let tree = await openHistory(page);
   clickButton(historyRowOf(tree, '1'), { 'data-action': 'diff-from', 'data-history-id': '1' });
   tree = await page.flush();
   const panel = oneBy(tree, 'data-region', 'history-diff');
@@ -3650,9 +3070,7 @@ test('client: a comparison the host could not make is explained, not left empty'
 
 test('client: the primitives branch renders the comparison with the official DiffBlock', async () => {
   const page = makePage({ primitives: 'ok', responses: defaultResponses() });
-  let tree = await page.flush();
-  clickAnyTab(tree, 'overrides');
-  tree = await page.flush();
+  let tree = await openHistory(page);
   assert.equal(rendererOf(tree), 'primitives');
 
   clickButton(tree, { 'data-action': 'diff-from', 'data-history-id': '1' });
@@ -3678,7 +3096,7 @@ test('client: the primitives branch renders the comparison with the official Dif
 
 test('client: switching the history layer to the workspace asks for a session first', async () => {
   const page = makePage({ responses: defaultResponses() });
-  let tree = await openOverrides(page);
+  let tree = await openHistory(page);
   clickTab(tree, 'history-layer', 'workspace');
   tree = await page.flush();
   const region = oneBy(tree, 'data-region', 'history');
@@ -3691,7 +3109,7 @@ test('client: switching the history layer to the workspace asks for a session fi
     useSessions: sessionsHook(SESSIONS_STATE),
     responses: defaultResponses({ [PATHS.history]: { payload: historyFixture({ layer: 'workspace', session: 's1' }) } }),
   });
-  let sessionTree = await openOverrides(sessionPage);
+  let sessionTree = await openHistory(sessionPage);
   clickTab(sessionTree, 'history-layer', 'workspace');
   sessionTree = await sessionPage.flush();
   assert.deepEqual(urlsFor(sessionPage, PATHS.history), [
@@ -3701,98 +3119,86 @@ test('client: switching the history layer to the workspace asks for a session fi
   assert.equal(markerOf(sessionTree, 'data-history-total'), '2');
 });
 
-test('client: restoring one section default asks first and then clears every layer that holds it', async () => {
-  const page = makePage({ responses: defaultResponses() });
-  let tree = await openOverrides(page);
-  const button = findOne(
-    tree,
-    (node) => node.type === 'button' && node.props['data-action'] === 'reset-section' && node.props['data-section-name'] === 'project:alpha',
-    'reset-section button',
-  );
-  assert.equal(button.props['data-reset-layers'], 'user', 'the affected layers are stated on the control');
-
-  button.props.onClick();
-  tree = await page.flush();
-  const card = oneBy(tree, 'data-region', 'confirm');
-  assert.equal(card.props['data-confirm-kind'], 'reset-section');
-  assert.ok(hasText(card, 'project:alpha'));
-  assert.ok(hasText(card, page.zh.ovUser), 'the impact names the layer');
-  assert.ok(hasText(card, page.zh.resetIrreversible), 'and says it cannot be undone');
-
-  // Cancel: nothing is sent.
-  clickButton(card, { 'data-action': 'confirm-no' });
-  tree = await page.flush();
-  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'confirm').length, 0);
-  assert.equal(writeCalls(page).length, 0);
-
-  // Confirm: exactly one DELETE, for the one layer that holds the name.
-  findOne(tree, (node) => node.type === 'button' && node.props['data-action'] === 'reset-section' && node.props['data-section-name'] === 'project:alpha', 'reset-section button').props.onClick();
-  tree = await page.flush();
-  clickButton(oneBy(tree, 'data-region', 'confirm'), { 'data-action': 'confirm-yes' });
-  tree = await page.flush();
-  assert.deepEqual(writeCalls(page).map((call) => [call.init.method, call.url]), [
-    ['DELETE', `${PATHS.overrides}?layer=user&name=project%3Aalpha`],
-  ]);
-  assert.ok(hasText(tree, page.zh.resetDoneNotice.replace('{count}', '1')));
-});
-
-test('client: a section held by both layers clears both, one request per layer', async () => {
-  const ovs = overridesFixture({
-    workspace: {
-      layer: 'workspace',
-      enabled: true,
-      path: '/w/one/.dsh-prompt-setting/overrides.json',
-      reason: null,
-      overrides: [{ name: 'project:alpha', action: 'replace', text: 'workspace alpha' }],
-    },
-  });
+test('client: 「清除全部覆盖」 confirms first, then sends legacy=true and keeps 「我的 Prompt」', async () => {
   const page = makePage({
-    useSessions: sessionsHook(SESSIONS_STATE),
-    responses: defaultResponses({ [PATHS.overrides]: { payload: ovs } }),
+    responses: defaultResponses({
+      [PATHS.overrides]: {
+        payload: overridesFixture({
+          user: {
+            layer: 'user',
+            enabled: true,
+            path: '/p',
+            reason: null,
+            overrides: [
+              { name: 'project:alpha', action: 'replace', text: 'alpha overridden' },
+              { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'mine' },
+            ],
+          },
+        }),
+      },
+    }),
   });
-  let tree = await openOverrides(page);
-  const button = findOne(
-    tree,
-    (node) => node.type === 'button' && node.props['data-action'] === 'reset-section' && node.props['data-section-name'] === 'project:alpha',
-    'reset-section button',
-  );
-  assert.equal(button.props['data-reset-layers'], 'user,workspace');
-  button.props.onClick();
-  tree = await page.flush();
-  assert.ok(hasText(oneBy(tree, 'data-region', 'confirm'), page.zh.ovWorkspace));
-  clickButton(oneBy(tree, 'data-region', 'confirm'), { 'data-action': 'confirm-yes' });
-  tree = await page.flush();
-  assert.deepEqual(writeCalls(page).map((call) => call.url), [
-    `${PATHS.overrides}?layer=user&session=s2&name=project%3Aalpha`,
-    `${PATHS.overrides}?layer=workspace&session=s2&name=project%3Aalpha`,
+  const tree = await openAdvanced(page);
+  const region = oneBy(tree, 'data-region', 'layer-reset');
+  assert.equal(region.props['data-reset-layer'], 'user');
+  assert.equal(region.props['data-reset-count'], '2', 'the whole layer is counted');
+  assert.equal(region.props['data-reset-frozen-count'], '1', 'and the frozen half separately');
+  assert.equal(region.props['data-reset-reserved-count'], '1');
+
+  clickButton(region, { 'data-action': 'legacy-clear', 'data-layer': 'user' });
+  const withConfirm = await page.flush();
+  const card = oneBy(withConfirm, 'data-region', 'confirm');
+  assert.equal(card.props['data-confirm-kind'], 'legacy-clear');
+  assert.ok(hasText(card, page.zh.ovUser), 'the impact names the layer');
+  assert.ok(hasText(card, '1'), 'and the frozen count');
+  assert.ok(hasText(card, page.zh.resetIrreversible), 'and says it cannot be undone');
+  assert.equal(writeCalls(page).length, 0, 'nothing is sent before confirm-yes');
+
+  clickButton(card, { 'data-action': 'confirm-yes' });
+  const after = await page.flush();
+  assert.deepEqual(writeCalls(page).map((call) => [call.init.method, call.url]), [
+    ['DELETE', `${PATHS.overrides}?layer=user&legacy=true`],
   ]);
+  assert.notEqual(after, null);
 });
 
-test('client: resetting a whole layer needs a confirmation and states the impact', async () => {
+test('client: 「清除全部覆盖」 can be cancelled without writing', async () => {
   const page = makePage({ responses: defaultResponses() });
-  let tree = await openOverrides(page);
+  const tree = await openAdvanced(page);
+  clickButton(oneBy(tree, 'data-region', 'layer-reset'), { 'data-action': 'legacy-clear', 'data-layer': 'user' });
+  let next = await page.flush();
+  clickButton(oneBy(next, 'data-region', 'confirm'), { 'data-action': 'confirm-no' });
+  next = await page.flush();
+  assert.equal(collect(next, (node) => node.props && node.props['data-region'] === 'confirm').length, 0);
+  assert.equal(writeCalls(page).length, 0);
+});
+
+test('client: 「整层恢复默认」 needs a confirmation and states the impact', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  const tree = await openAdvanced(page);
   const region = oneBy(tree, 'data-region', 'layer-reset');
   assert.equal(region.props['data-reset-layer'], 'user');
   assert.equal(region.props['data-reset-count'], '1');
   assert.ok(hasText(region, page.zh.resetLayerBody.replace('{layer}', page.zh.ovUser).replace('{count}', '1')));
 
   clickButton(region, { 'data-action': 'reset-layer', 'data-layer': 'user' });
-  tree = await page.flush();
-  const card = oneBy(tree, 'data-region', 'confirm');
+  let next = await page.flush();
+  const card = oneBy(next, 'data-region', 'confirm');
   assert.equal(card.props['data-confirm-kind'], 'reset-layer');
+  assert.equal(writeCalls(page).length, 0, 'nothing is sent before confirm-yes');
   clickButton(card, { 'data-action': 'confirm-yes' });
-  tree = await page.flush();
+  next = await page.flush();
   assert.deepEqual(writeCalls(page).map((call) => [call.init.method, call.url]), [
     ['DELETE', `${PATHS.overrides}?layer=user&reset=true`],
   ]);
-  assert.ok(hasText(tree, page.zh.resetNoneNotice), 'the double answers count 0, and the page says so');
+  assert.ok(hasText(next, page.zh.resetNoneNotice), 'the double answers count 0, and the page says so');
 });
 
 test('client: the layer reset is disabled when the layer holds nothing', async () => {
   const page = makePage({
     responses: defaultResponses({ [PATHS.overrides]: { payload: overridesFixture({ user: { layer: 'user', enabled: true, path: '/p', reason: null, overrides: [] } }) } }),
   });
-  const tree = await openOverrides(page);
+  const tree = await openAdvanced(page);
   const button = findOne(tree, (node) => node.type === 'button' && node.props['data-action'] === 'reset-layer', 'reset-layer button');
   assert.equal(button.props.disabled, true);
 });
@@ -3803,7 +3209,7 @@ test('client: exporting downloads the document and keeps a copyable text', async
     responses: defaultResponses(),
   });
   const downloader = installDownloader(page);
-  let tree = await openOverrides(page);
+  let tree = await openHistory(page);
   clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'export' });
   tree = await page.flush();
 
@@ -3826,7 +3232,7 @@ test('client: exporting downloads the document and keeps a copyable text', async
 
 test('client: an export with no download surface still yields the JSON and says why', async () => {
   const page = makePage({ responses: defaultResponses() });
-  let tree = await openOverrides(page);
+  let tree = await openHistory(page);
   clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'export' });
   tree = await page.flush();
   // No `document` in the sandbox at all: the page must not claim a download.
@@ -3838,7 +3244,7 @@ test('client: an export with no download surface still yields the JSON and says 
 
 test('client: an import preview dry-runs, renders the plan and writes nothing', async () => {
   const page = makePage({ responses: defaultResponses() });
-  let tree = await openOverrides(page);
+  let tree = await openHistory(page);
   const panel = () => oneBy(tree, 'data-region', 'transfer');
 
   // Nothing to preview yet: the button is disabled and clicking is refused.
@@ -3879,7 +3285,7 @@ test('client: applying an import is confirmed first and then posts without dryRu
       [PATHS.import]: (url) => ({ payload: url.includes('dryRun=true') ? importPlanFixture() : applied }),
     }),
   });
-  let tree = await openOverrides(page);
+  let tree = await openHistory(page);
   typeInto(tree, 'import-text', exportDocument());
   tree = await page.flush();
   clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'import-preview' });
@@ -3905,7 +3311,7 @@ test('client: applying an import is confirmed first and then posts without dryRu
 
 test('client: the import conflict strategy is chosen in the panel and sent with the request', async () => {
   const page = makePage({ responses: defaultResponses() });
-  let tree = await openOverrides(page);
+  let tree = await openHistory(page);
   assert.equal(oneBy(tree, 'data-region', 'transfer').props['data-import-mode'], 'merge');
   clickTab(tree, 'import-mode', 'replace');
   tree = await page.flush();
@@ -3922,7 +3328,7 @@ test('client: a rejected import shows the reason and states that nothing changed
       [PATHS.import]: { status: 400, payload: { ok: false, code: 'unknown-export-schema', message: '"schema" must be "dsh-prompt-setting/export"' } },
     }),
   });
-  let tree = await openOverrides(page);
+  let tree = await openHistory(page);
   typeInto(tree, 'import-text', exportDocument({ schema: 'nope' }));
   tree = await page.flush();
   clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'import-preview' });
@@ -3936,7 +3342,7 @@ test('client: a rejected import shows the reason and states that nothing changed
 
 test('client: a pasted non-JSON document is refused locally, without a request', async () => {
   const page = makePage({ responses: defaultResponses() });
-  let tree = await openOverrides(page);
+  let tree = await openHistory(page);
   typeInto(tree, 'import-text', '{ not json');
   tree = await page.flush();
   clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'import-preview' });
@@ -3948,7 +3354,7 @@ test('client: a pasted non-JSON document is refused locally, without a request',
 
 test('client: a chosen export file fills the import box', async () => {
   const page = makePage({ responses: defaultResponses() });
-  const tree = await openOverrides(page);
+  const tree = await openHistory(page);
   const input = oneBy(tree, 'data-role', 'import-file');
   input.props.onChange({ target: { files: [fakeFile(exportDocument())] } });
   await settle();
@@ -3964,7 +3370,7 @@ test('client: the stage 2 panels never render a blank page when the host is unre
       [PATHS.import]: new Error('boom'),
     }),
   });
-  let tree = await openOverrides(page);
+  let tree = await openHistory(page);
   clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'export' });
   tree = await page.flush();
   typeInto(tree, 'import-text', exportDocument());
@@ -4112,6 +3518,19 @@ function recorder(page) {
   };
 }
 
+/**
+ * Re-draw one recorded page with 「高级」 open and return every tree it has
+ * drawn: the status *details* (build digests, frozen reasons, the renderer
+ * self-check) moved into that tab in g-015, so a status case has to walk there.
+ * @param rec - a {@link recorder} handle.
+ * @returns every tree the recorder has drawn, including the new one.
+ */
+async function advancedTrees(rec) {
+  clickAnyTab(rec.last(), 'advanced');
+  await rec.take();
+  return rec.trees;
+}
+
 /** The `data-*` markers the sweep saw; filled by the sweep, read by the coverage test. */
 let observedMarkers = new Set();
 
@@ -4124,21 +3543,24 @@ let observedMarkers = new Set();
  */
 const EN_SWEEP_CASES = [
   {
-    name: 'sections view: default list, origin filter, filtered to nothing',
+    name: 'overview: default list, origin filter, filtered to nothing',
     marks: [
+      ['data-region', 'overview'],
       ['data-region', 'sections'],
       ['data-region', 'panel'],
       ['data-region', 'view-tabs'],
       ['data-region', 'status'],
-      ['data-region', 'build'],
       ['data-region', 'filters'],
       ['data-sections-shown', '0'],
       ['data-sections-total', '5'],
+      ['data-active-tab', 'overview'],
     ],
-    copy: ['title', 'subtitle', 'stateHeading', 'viewSections', 'filterHeading', 'appendEntry', 'fNo'],
+    copy: ['title', 'subtitle', 'stateHeading', 'viewSections', 'filterHeading', 'fNo', 'overviewReservedNote', 'copy'],
     async run() {
       const page = enPage({ responses: defaultResponses() });
       const rec = recorder(page);
+      await rec.take();
+      clickAnyTab(rec.last(), 'overview');
       await rec.take();
       clickTab(rec.last(), 'origin', 'downstream-added');
       await rec.take();
@@ -4150,7 +3572,7 @@ const EN_SWEEP_CASES = [
     },
   },
   {
-    name: 'sections view: an empty assembly states the empty state',
+    name: 'overview: an empty assembly states the empty state',
     marks: [
       ['data-phase', 'empty'],
       ['data-empty', 'sections'],
@@ -4168,11 +3590,13 @@ const EN_SWEEP_CASES = [
       });
       const rec = recorder(page);
       await rec.take();
+      clickAnyTab(rec.last(), 'overview');
+      await rec.take();
       return rec.trees;
     },
   },
   {
-    name: 'sections view: the loading state before the first answer',
+    name: 'the loading state before the first answer',
     marks: [['data-phase', 'loading'], ['data-region', 'panel']],
     copy: ['loading', 'refresh'],
     async run() {
@@ -4181,7 +3605,7 @@ const EN_SWEEP_CASES = [
     },
   },
   {
-    name: 'full-text view: the rendered text, the search and the base/effective diff',
+    name: 'overview / full text: the rendered text, the search and the base/effective diff',
     marks: [
       ['data-region', 'full'],
       ['data-full-text', 'rendered'],
@@ -4194,6 +3618,8 @@ const EN_SWEEP_CASES = [
       const page = enPage({ responses: defaultResponses() });
       const rec = recorder(page);
       await rec.take();
+      clickAnyTab(rec.last(), 'overview');
+      await rec.take();
       clickTab(rec.last(), 'view', 'full');
       await rec.take();
       typeInto(rec.last(), 'search', 'alpha');
@@ -4202,7 +3628,7 @@ const EN_SWEEP_CASES = [
     },
   },
   {
-    name: 'full-text view: the origin filter, the line cap and the unresolved warning',
+    name: 'overview / full text: the origin filter, the line cap and the unresolved warning',
     marks: [
       ['data-region', 'full'],
       ['data-full-text', 'filtered'],
@@ -4213,6 +3639,8 @@ const EN_SWEEP_CASES = [
       const page = enPage({ responses: defaultResponses() });
       const rec = recorder(page);
       await rec.take();
+      clickAnyTab(rec.last(), 'overview');
+      await rec.take();
       clickTab(rec.last(), 'view', 'full');
       await rec.take();
       clickTab(rec.last(), 'full-origin', 'downstream-added');
@@ -4221,7 +3649,7 @@ const EN_SWEEP_CASES = [
     },
   },
   {
-    name: 'full-text view: a text over the line cap is truncated, and says so',
+    name: 'overview / full text: a text over the line cap is truncated, and says so',
     marks: [['data-region', 'full'], ['data-warning', 'truncated']],
     copy: ['fullHeading'],
     async run() {
@@ -4232,13 +3660,15 @@ const EN_SWEEP_CASES = [
       });
       const rec = recorder(page);
       await rec.take();
+      clickAnyTab(rec.last(), 'overview');
+      await rec.take();
       clickTab(rec.last(), 'view', 'full');
       await rec.take();
       return rec.trees;
     },
   },
   {
-    name: 'full-text view: unresolved variables are named, not silently dropped',
+    name: 'overview / full text: unresolved variables are named, not silently dropped',
     marks: [
       ['data-region', 'full'],
       ['data-warning', 'rendered-unresolved'],
@@ -4254,38 +3684,42 @@ const EN_SWEEP_CASES = [
       const page = enPage({ responses: defaultResponses({ [PATHS.snapshot]: { payload } }) });
       const rec = recorder(page);
       await rec.take();
+      clickAnyTab(rec.last(), 'overview');
+      await rec.take();
       clickTab(rec.last(), 'view', 'full');
       await rec.take();
       return rec.trees;
     },
   },
   {
-    name: 'overrides view: the override list, the history log, the transfer panel, the layer reset',
+    name: 'history: the log, the comparison and the transfer panel',
     marks: [
-      ['data-region', 'overrides'],
+      ['data-region', 'history-tab'],
       ['data-region', 'history'],
       ['data-region', 'transfer'],
-      ['data-region', 'layer-reset'],
       ['data-history-row', '2'],
+      ['data-active-tab', 'history'],
     ],
-    copy: ['ovHeading', 'ovMergedNote', 'histHeading', 'transferHeading', 'exportButton', 'resetLayersLabel'],
+    copy: ['histHeading', 'transferHeading', 'exportButton', 'histPickFrom'],
     async run() {
       const page = enPage({ responses: defaultResponses() });
       const rec = recorder(page);
       await rec.take();
-      clickTab(rec.last(), 'view', 'overrides');
+      clickAnyTab(rec.last(), 'history');
       await rec.take();
       return rec.trees;
     },
   },
   {
-    name: 'overrides view: no override at all, and an empty history',
+    name: 'advanced: no override at all, and an empty history',
     marks: [
       ['data-empty', 'overrides'],
-      ['data-empty', 'history'],
       ['data-region', 'overrides'],
+      ['data-region', 'layer-reset'],
+      ['data-region', 'status-detail'],
+      ['data-active-tab', 'advanced'],
     ],
-    copy: ['ovEmpty', 'histEmpty'],
+    copy: ['ovEmpty', 'ovHeading', 'ovMergedNote', 'resetLayersLabel', 'advReadOnlyNote', 'resetLegacyButton'],
     async run() {
       const page = enPage({
         responses: defaultResponses({
@@ -4295,13 +3729,13 @@ const EN_SWEEP_CASES = [
       });
       const rec = recorder(page);
       await rec.take();
-      clickTab(rec.last(), 'view', 'overrides');
+      clickAnyTab(rec.last(), 'advanced');
       await rec.take();
       return rec.trees;
     },
   },
   {
-    name: 'overrides view: a corrupt, unreadable history is stated, never a blank',
+    name: 'history: a corrupt, unreadable history is stated, never a blank',
     marks: [
       ['data-region', 'history'],
       ['data-history-corrupt', '3'],
@@ -4325,13 +3759,13 @@ const EN_SWEEP_CASES = [
       });
       const rec = recorder(page);
       await rec.take();
-      clickTab(rec.last(), 'view', 'overrides');
+      clickAnyTab(rec.last(), 'history');
       await rec.take();
       return rec.trees;
     },
   },
   {
-    name: 'overrides view: a history comparison renders both levels and the diff block',
+    name: 'history: a comparison renders both levels and the diff block',
     marks: [
       ['data-region', 'history-diff'],
       ['data-region', 'diffblock'],
@@ -4344,7 +3778,7 @@ const EN_SWEEP_CASES = [
       const page = enPage({ responses: defaultResponses() });
       const rec = recorder(page);
       await rec.take();
-      clickTab(rec.last(), 'view', 'overrides');
+      clickAnyTab(rec.last(), 'history');
       await rec.take();
       clickButton(historyRowOf(rec.last(), '2'), { 'data-action': 'diff-from', 'data-history-id': '2' });
       await rec.take();
@@ -4354,7 +3788,7 @@ const EN_SWEEP_CASES = [
     },
   },
   {
-    name: 'overrides view: a comparison the host could not make is explained',
+    name: 'history: a comparison the host could not make is explained',
     marks: [
       ['data-region', 'history-diff'],
       ['data-diff-no-lines', 'true'],
@@ -4368,7 +3802,7 @@ const EN_SWEEP_CASES = [
       const page = enPage({ responses: defaultResponses({ [PATHS.diff]: { payload } }) });
       const rec = recorder(page);
       await rec.take();
-      clickTab(rec.last(), 'view', 'overrides');
+      clickAnyTab(rec.last(), 'history');
       await rec.take();
       clickButton(historyRowOf(rec.last(), '1'), { 'data-action': 'diff-from', 'data-history-id': '1' });
       await rec.take();
@@ -4389,7 +3823,7 @@ const EN_SWEEP_CASES = [
       const page = enPage({ responses: defaultResponses() });
       const rec = recorder(page);
       await rec.take();
-      clickTab(rec.last(), 'view', 'overrides');
+      clickAnyTab(rec.last(), 'history');
       await rec.take();
       clickTab(rec.last(), 'import-mode', 'replace');
       await rec.take();
@@ -4419,7 +3853,7 @@ const EN_SWEEP_CASES = [
       });
       const rec = recorder(page);
       await rec.take();
-      clickTab(rec.last(), 'view', 'overrides');
+      clickAnyTab(rec.last(), 'history');
       await rec.take();
       typeInto(rec.last(), 'import-text', exportDocument({ schema: 'nope' }));
       await rec.take();
@@ -4439,7 +3873,7 @@ const EN_SWEEP_CASES = [
       const page = enPage({ responses: defaultResponses() });
       const rec = recorder(page);
       await rec.take();
-      clickTab(rec.last(), 'view', 'overrides');
+      clickAnyTab(rec.last(), 'history');
       await rec.take();
       typeInto(rec.last(), 'import-text', exportDocument());
       await rec.take();
@@ -4475,7 +3909,7 @@ const EN_SWEEP_CASES = [
       });
       const rec = recorder(page);
       await rec.take();
-      clickTab(rec.last(), 'view', 'overrides');
+      clickAnyTab(rec.last(), 'history');
       await rec.take();
       typeInto(rec.last(), 'import-text', exportDocument());
       await rec.take();
@@ -4505,7 +3939,7 @@ const EN_SWEEP_CASES = [
       installDownloader(page);
       const rec = recorder(page);
       await rec.take();
-      clickTab(rec.last(), 'view', 'overrides');
+      clickAnyTab(rec.last(), 'history');
       await rec.take();
       clickButton(oneBy(rec.last(), 'data-region', 'transfer'), { 'data-action': 'export' });
       await rec.take();
@@ -4524,7 +3958,7 @@ const EN_SWEEP_CASES = [
       const page = enPage({ responses: defaultResponses() });
       const rec = recorder(page);
       await rec.take();
-      clickTab(rec.last(), 'view', 'overrides');
+      clickAnyTab(rec.last(), 'history');
       await rec.take();
       clickButton(oneBy(rec.last(), 'data-region', 'transfer'), { 'data-action': 'export' });
       await rec.take();
@@ -4532,17 +3966,18 @@ const EN_SWEEP_CASES = [
     },
   },
   {
-    name: 'overrides view: a whole layer reset confirms first',
+    name: 'advanced: a whole layer reset confirms first',
     marks: [
       ['data-region', 'confirm'],
       ['data-confirm-kind', 'reset-layer'],
+      ['data-region', 'status-detail'],
     ],
-    copy: [['resetLayerTitle', { layer: 'user layer' }], 'resetIrreversible', 'confirmYes'],
+    copy: [['resetLayerTitle', { layer: 'user layer' }], 'resetIrreversible', 'confirmYes', 'resetLayersLabel'],
     async run() {
       const page = enPage({ responses: defaultResponses() });
       const rec = recorder(page);
       await rec.take();
-      clickTab(rec.last(), 'view', 'overrides');
+      clickAnyTab(rec.last(), 'advanced');
       await rec.take();
       clickButton(oneBy(rec.last(), 'data-region', 'layer-reset'), { 'data-action': 'reset-layer', 'data-layer': 'user' });
       await rec.take();
@@ -4550,179 +3985,279 @@ const EN_SWEEP_CASES = [
     },
   },
   {
-    name: 'editor entry 1: the edit panel, its locked name and its two actions',
+    name: 'mine: the unconfigured panel, then a dirty edit, then the saved state',
     marks: [
-      ['data-region', 'editor'],
-      ['data-editor-entry', 'edit'],
-      ['data-editor-actions', 'replace,hide'],
-      ['data-warning', 'workspace-layer-disabled'],
-      ['data-editor-row', 'harness:identity'],
-      ['data-editor-focus', 'text'],
+      ['data-region', 'mine'],
+      ['data-region', 'mine-layer'],
+      ['data-mine-state', 'unconfigured'],
+      ['data-mine-state', 'dirty'],
+      ['data-mine-state', 'saved'],
+      ['data-active-tab', 'mine'],
     ],
-    copy: ['editHeading', 'editText', 'editLayer', 'editSave', 'editNameLocked', 'editNameLockedHint', 'editDisabledWorkspaceLayer'],
+    copy: ['tabMine', 'mineHeading', 'mineNote', 'mineTextLabel', 'mineSave', 'mineReset', 'mineUnconfigured', 'mineDirty', ['mineSaved', { layer: 'user layer' }]],
     async run() {
       const page = enPage({ responses: defaultResponses() });
       const rec = recorder(page);
       await rec.take();
-      clickButton(rec.last(), { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
+      typeInto(rec.last(), 'mine-text', 'my own house rules');
       await rec.take();
-      clickTab(rec.last(), 'editor-layer', 'workspace');
+      clickButton(rec.last(), { 'data-action': 'mine-save' });
       await rec.take();
       return rec.trees;
     },
   },
   {
-    name: 'editor entry 2: the append panel, its fixed action and its name rule',
+    name: 'mine: a stored value, a failed write and its full error card',
     marks: [
-      ['data-region', 'editor'],
-      ['data-editor-entry', 'append-new'],
-      ['data-editor-actions', 'append'],
-      ['data-editor-focus', 'name'],
+      ['data-region', 'mine'],
+      ['data-mine-state', 'error'],
+      ['data-error-code', 'write-locked'],
+      ['data-notice', 'error'],
     ],
-    copy: ['appendHeading', 'appendName', 'appendNameHint', 'appendActionFixed', 'appendActionHint', 'appendUntitled'],
+    copy: ['mineFailed', 'error.write-locked', 'errCode', 'errDetail', ['mineLoaded', { layer: 'user layer' }]],
     async run() {
-      const page = enPage({ responses: defaultResponses() });
-      const rec = recorder(page);
-      await rec.take();
-      clickButton(rec.last(), { 'data-action': 'append-new' });
-      await rec.take();
-      return rec.trees;
-    },
-  },
-  {
-    name: 'editor: the live entry feedback and the blocked-card fallback',
-    marks: [
-      ['data-region', 'editor'],
-      ['data-warning', 'entry-feedback'],
-      ['data-warning', 'override-blocked'],
-      ['data-block-code', 'section-not-present'],
-      // The world moved: the section the open form belongs to is gone from the
-      // assembly, so the row-scoped form falls back to the slot.
-      ['data-editor-fallback', 'row-hidden'],
-    ],
-    copy: ['feedbackNameTaken', 'blockNotPresent', 'blockTitle', 'editOrderInvalid'],
-    async run() {
-      const taken = enPage({ responses: defaultResponses() });
-      const takenRec = recorder(taken);
-      await takenRec.take();
-      clickButton(takenRec.last(), { 'data-action': 'append-new' });
-      await takenRec.take();
-      typeInto(takenRec.last(), 'name', 'harness:identity');
-      await takenRec.take();
-
-      // The world moves under an open edit panel: the retained pre-save check paints.
-      const blocked = enPage({ responses: defaultResponses() });
-      const blockedRec = recorder(blocked);
-      await blockedRec.take();
-      clickButton(blockedRec.last(), { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
-      await blockedRec.take();
-      const next = snapshotFixture();
-      next.effective.sections = next.effective.sections.filter((section) => section.name !== 'harness:identity');
-      next.base.sections = next.base.sections.filter((section) => section.name !== 'harness:identity');
-      blocked.router.set(PATHS.snapshot, { payload: next });
-      clickButton(blockedRec.last(), { 'data-action': 'refresh' });
-      await blockedRec.take();
-
-      // A bad target index is refused locally.
-      const order = enPage({ responses: defaultResponses() });
-      const orderRec = recorder(order);
-      await orderRec.take();
-      clickButton(orderRec.last(), { 'data-action': 'append-new' });
-      await orderRec.take();
-      typeInto(orderRec.last(), 'name', 'panel:added');
-      await orderRec.take();
-      typeInto(orderRec.last(), 'order', '-3');
-      await orderRec.take();
-      clickButton(orderRec.last(), { 'data-action': 'save' });
-      await orderRec.take();
-
-      return [...takenRec.trees, ...blockedRec.trees, ...orderRec.trees];
-    },
-  },
-  {
-    name: 'editor: the own-override entry re-saves under its own fixed name',
-    marks: [
-      ['data-region', 'editor'],
-      ['data-editor-entry', 'edit-override'],
-      ['data-fixed-action', 'append'],
-    ],
-    copy: ['editOverrideHeading', 'editOverrideHint', 'appendActionFixed'],
-    async run() {
-      const payload = snapshotFixture({
-        base: { sections: [] },
-        effective: {
-          sections: [
-            {
-              name: 'ghost:section',
-              index: null,
-              text: '',
-              applied: false,
-              overridable: true,
-              reason: 'no section or override with this name',
-              overrideLayer: null,
-              action: 'replace',
-              origin: 'unmatched-override',
-            },
-          ],
-        },
-        rendered: '',
+      const page = enPage({
+        responses: defaultResponses({
+          [PATHS.overrides]: (url, init) =>
+            init && init.method === 'PUT'
+              ? { status: 403, payload: { ok: false, code: 'write-locked', message: 'only the reserved section may be written' } }
+              : {
+                  payload: overridesFixture({
+                    merged: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text', layer: 'user' }] },
+                  }),
+                },
+        }),
       });
-      const page = enPage({ responses: defaultResponses({ [PATHS.snapshot]: { payload } }) });
       const rec = recorder(page);
       await rec.take();
-      clickButton(rec.last(), { 'data-action': 'edit', 'data-section-name': 'ghost:section' });
+      clickButton(rec.last(), { 'data-action': 'mine-save' });
       await rec.take();
       return rec.trees;
     },
   },
   {
-    name: 'editor: the uncertain-frozen and the disabled-gate warnings',
+    name: 'mine: the workspace layer without a session is refused, and says why',
     marks: [
-      ['data-region', 'editor'],
-      ['data-warning', 'edit-uncertain'],
-      ['data-warning', 'edit-disabled'],
+      ['data-region', 'mine'],
+      ['data-warning', 'mine-workspace-disabled'],
+      ['data-mine-state', 'error'],
+      ['data-error-code', 'workspace-unresolved'],
     ],
-    copy: ['editWarnUnknown', 'editHeading', 'ovUser'],
+    copy: ['mineWorkspaceNeedsSession', 'error.workspace-unresolved', 'ovWorkspaceDisabled'],
     async run() {
-      const uncertain = enPage({
-        useSessions: sessionsHook(SESSIONS_STATE),
+      const page = enPage({ responses: defaultResponses() });
+      const rec = recorder(page);
+      await rec.take();
+      clickTab(rec.last(), 'mine-layer', 'workspace');
+      await rec.take();
+      clickButton(rec.last(), { 'data-action': 'mine-save' });
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'mine: a frozen scope states that the text will not take effect',
+    marks: [
+      ['data-region', 'mine'],
+      ['data-warning', 'mine-frozen'],
+      ['data-frozen-state', 'frozen'],
+    ],
+    copy: ['mineFrozenWarn', 'stReason', 'stFrozenSession'],
+    async run() {
+      const page = enPage({
         responses: defaultResponses({
           [PATHS.snapshot]: {
             payload: snapshotFixture({
-              frozenScope: 'global',
-              frozenScopeReason: 'session "s2" has no active agent, so this verdict describes the unscoped assembly',
+              frozenScope: 'session',
+              frozen: true,
+              frozenReason: 'the scope collapsed to its complete section',
             }),
           },
         }),
       });
-      const rec = recorder(uncertain);
+      const rec = recorder(page);
       await rec.take();
-      clickButton(rec.last(), { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
-      await rec.take();
-
-      // The gate fires while the panel is open: the scope freezes underneath.
-      const frozen = enPage({
+      return rec.trees;
+    },
+  },
+  {
+    name: 'mine: 「恢复默认」 renders its confirmation before deleting',
+    marks: [
+      ['data-region', 'confirm'],
+      ['data-confirm-kind', 'mine-reset'],
+    ],
+    copy: [['mineResetTitle', { layer: 'user layer' }], 'mineResetBody', 'resetIrreversible', 'confirmYes'],
+    async run() {
+      const page = enPage({
         responses: defaultResponses({
-          [PATHS.snapshot]: {
-            payload: snapshotFixture({ frozenScope: 'session', frozen: false, frozenReason: null }),
+          [PATHS.overrides]: {
+            payload: overridesFixture({
+              merged: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text', layer: 'user' }] },
+            }),
           },
         }),
       });
-      const frozenRec = recorder(frozen);
-      await frozenRec.take();
-      clickButton(frozenRec.last(), { 'data-action': 'edit', 'data-section-name': 'harness:identity' });
-      await frozenRec.take();
-      frozen.router.set(PATHS.snapshot, {
-        payload: snapshotFixture({
-          frozenScope: 'session',
-          frozen: true,
-          frozenReason: 'the scope collapsed to its complete section',
+      const rec = recorder(page);
+      await rec.take();
+      clickButton(rec.last(), { 'data-action': 'mine-reset' });
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'overview: the read-only list offers copy and expand, and no write entry',
+    marks: [
+      ['data-region', 'overview'],
+      ['data-region', 'sections'],
+      ['data-note', 'reserved-own-tab'],
+      ['data-active-tab', 'overview'],
+    ],
+    copy: ['copy', 'overviewReservedNote', 'expand', 'viewSections'],
+    async run() {
+      const page = enPage({ responses: defaultResponses() });
+      const rec = recorder(page);
+      await rec.take();
+      clickAnyTab(rec.last(), 'overview');
+      await rec.take();
+      clickButton(rec.last(), { 'data-action': 'expand', 'data-section-name': 'harness:identity' });
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'overview: the section status markers, and the ineffective diagnosis',
+    marks: [
+      ['data-region', 'overview'],
+      ['data-section-ineffective', 'name-already-present'],
+      ['data-warning', 'edit-disabled'],
+    ],
+    copy: ['ovEffective', 'stAppended', 'stHidden', 'ovReason', 'ovFixHint', 'blockAppendExisting', 'editDisabledOverridable'],
+    async run() {
+      const payload = snapshotFixture();
+      payload.effective.sections[0].applied = false;
+      payload.effective.sections[0].overridable = false;
+      payload.effective.sections[0].overrideLayer = 'user';
+      payload.effective.sections[0].action = 'append';
+      payload.effective.sections[0].reason = 'the appended text was replaced further down the assembly pipeline';
+      payload.effective.sections[1].action = 'replace';
+      payload.effective.sections[2].action = 'append';
+      payload.effective.sections[3].action = 'hide';
+      // A second row states the gate without a host reason, so the gate's own
+      // copy is on screen too.
+      payload.effective.sections[3].overridable = false;
+      payload.effective.sections[3].reason = null;
+      const page = enPage({ responses: defaultResponses({ [PATHS.snapshot]: { payload } }) });
+      const rec = recorder(page);
+      await rec.take();
+      clickAnyTab(rec.last(), 'overview');
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'advanced: the legacy list, both destructive buttons and the status detail',
+    marks: [
+      ['data-region', 'advanced'],
+      ['data-region', 'overrides'],
+      ['data-region', 'layer-reset'],
+      ['data-region', 'advanced-layer'],
+      ['data-region', 'status-detail'],
+      ['data-region', 'build'],
+      ['data-region', 'renderer-info'],
+      ['data-active-tab', 'advanced'],
+    ],
+    copy: ['ovHeading', 'ovMergedNote', 'advReadOnlyNote', 'advReservedTag', 'resetLayersLabel', 'resetLegacyButton', 'resetLayerUser', 'stateHeading'],
+    async run() {
+      const page = enPage({
+        responses: defaultResponses({
+          [PATHS.overrides]: {
+            payload: overridesFixture({
+              merged: {
+                overrides: [
+                  { name: 'project:alpha', action: 'replace', text: 'alpha overridden', layer: 'user' },
+                  { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text', layer: 'user' },
+                ],
+              },
+            }),
+          },
         }),
       });
-      clickButton(frozenRec.last(), { 'data-action': 'refresh' });
-      await frozenRec.take();
-
-      return [...rec.trees, ...frozenRec.trees];
+      const rec = recorder(page);
+      await rec.take();
+      clickAnyTab(rec.last(), 'advanced');
+      await rec.take();
+      clickTab(rec.last(), 'advanced-layer', 'workspace');
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'advanced: 「清除全部覆盖」 renders a confirmation that keeps 「我的 Prompt」',
+    marks: [
+      ['data-region', 'confirm'],
+      ['data-confirm-kind', 'legacy-clear'],
+    ],
+    copy: [['resetLegacyTitle', { layer: 'user layer' }], ['resetLegacyBody', { layer: 'user layer', count: 1 }], 'resetIrreversible', 'confirmYes'],
+    async run() {
+      const page = enPage({
+        responses: defaultResponses({
+          [PATHS.overrides]: {
+            payload: overridesFixture({
+              user: {
+                layer: 'user',
+                enabled: true,
+                path: '/p',
+                reason: null,
+                overrides: [
+                  { name: 'project:alpha', action: 'replace', text: 'alpha overridden' },
+                  { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text' },
+                ],
+              },
+            }),
+          },
+        }),
+      });
+      const rec = recorder(page);
+      await rec.take();
+      clickAnyTab(rec.last(), 'advanced');
+      await rec.take();
+      clickButton(oneBy(rec.last(), 'data-region', 'layer-reset'), { 'data-action': 'legacy-clear', 'data-layer': 'user' });
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'advanced: a legacy clear with nothing frozen still states that 「我的 Prompt」 is kept',
+    marks: [
+      ['data-region', 'confirm'],
+      ['data-confirm-kind', 'legacy-clear'],
+      ['data-reset-frozen-count', '0'],
+      ['data-reset-reserved-count', '1'],
+    ],
+    copy: [['resetLegacyEmpty', { layer: 'user layer' }], 'resetIrreversible'],
+    async run() {
+      const page = enPage({
+        responses: defaultResponses({
+          [PATHS.overrides]: {
+            payload: overridesFixture({
+              user: {
+                layer: 'user',
+                enabled: true,
+                path: '/p',
+                reason: null,
+                overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text' }],
+              },
+            }),
+          },
+        }),
+      });
+      const rec = recorder(page);
+      await rec.take();
+      clickAnyTab(rec.last(), 'advanced');
+      await rec.take();
+      clickButton(oneBy(rec.last(), 'data-region', 'layer-reset'), { 'data-action': 'legacy-clear', 'data-layer': 'user' });
+      await rec.take();
+      return rec.trees;
     },
   },
   {
@@ -4735,7 +4270,7 @@ const EN_SWEEP_CASES = [
       ['data-warning', 'client-build-stale'],
       ['data-warning', 'client-build-unknown'],
     ],
-    copy: ['stBuild', 'stBuildSame', 'stBuildStale', 'stBuildStaleHint', 'stBuildUnknown', 'stBuildUnknownHint', 'stBuildPingFailedHint'],
+    copy: ['stBuild', 'stBuildSame', 'stBuildStale', 'stBuildStaleHint', 'stBuildUnknown', 'stBuildUnknownHint', 'stBuildPingFailedHint', 'stateHeading', 'stBuildSelf', 'stBuildServer'],
     async run() {
       const oracle = independentBuildFingerprint(clientSource);
       const same = enPage({
@@ -4766,7 +4301,12 @@ const EN_SWEEP_CASES = [
       const failedRec = recorder(failed);
       await failedRec.take();
 
-      return [...sameRec.trees, ...staleRec.trees, ...olderRec.trees, ...failedRec.trees];
+      return [
+        ...(await advancedTrees(sameRec)),
+        ...(await advancedTrees(staleRec)),
+        ...(await advancedTrees(olderRec)),
+        ...(await advancedTrees(failedRec)),
+      ];
     },
   },
   {
@@ -4813,7 +4353,11 @@ const EN_SWEEP_CASES = [
       const unknownRec = recorder(unknown);
       await unknownRec.take();
 
-      return [...globalRec.trees, ...frozenRec.trees, ...unknownRec.trees];
+      return [
+        ...(await advancedTrees(globalRec)),
+        ...(await advancedTrees(frozenRec)),
+        ...(await advancedTrees(unknownRec)),
+      ];
     },
   },
   {
@@ -4835,7 +4379,7 @@ const EN_SWEEP_CASES = [
       const manualRec = recorder(manual);
       await manualRec.take();
 
-      return [...unmountedRec.trees, ...manualRec.trees];
+      return [...(await advancedTrees(unmountedRec)), ...manualRec.trees];
     },
   },
   {
@@ -4977,6 +4521,7 @@ const EN_SWEEP_CASES = [
       ['data-region', 'overrides'],
       ['data-region', 'history-diff'],
       ['data-diff-block', 'primitives'],
+      ['data-tab-group', 'main'],
     ],
     copy: ['title', 'viewFull', 'ovHeading', 'histDiffHeading'],
     async run() {
@@ -4984,10 +4529,14 @@ const EN_SWEEP_CASES = [
       const rec = recorder(page);
       await rec.take();
       // The official SegmentedTabs double labels every group 'primitives', so
-      // the view tabs are picked by value alone in this branch.
+      // the tabs are picked by value alone in this branch.
+      clickAnyTab(rec.last(), 'overview');
+      await rec.take();
       clickAnyTab(rec.last(), 'full');
       await rec.take();
-      clickAnyTab(rec.last(), 'overrides');
+      clickAnyTab(rec.last(), 'advanced');
+      await rec.take();
+      clickAnyTab(rec.last(), 'history');
       await rec.take();
       clickButton(historyRowOf(rec.last(), '2'), { 'data-action': 'diff-from', 'data-history-id': '2' });
       await rec.take();
@@ -5021,32 +4570,59 @@ const EN_SWEEP_CASES = [
  * can never satisfy its own `marks`, and this list fails if a case is dropped.
  */
 const EN_REQUIRED_MARKERS = [
+  // g-015: the four first-level tabs and the surfaces they own.
+  'data-region=tabs',
+  'data-region=tab-panel',
+  'data-active-tab=mine',
+  'data-active-tab=overview',
+  'data-active-tab=history',
+  'data-active-tab=advanced',
+  'data-region=mine',
+  'data-region=mine-layer',
+  'data-region=overview',
+  'data-region=advanced',
+  'data-region=advanced-layer',
+  'data-region=status',
+  'data-region=status-detail',
+  'data-region=renderer-info',
   'data-region=sections',
   'data-region=filters',
   'data-region=full',
   'data-region=diff',
   'data-region=overrides',
+  'data-region=history-tab',
   'data-region=history',
   'data-region=history-diff',
   'data-region=transfer',
   'data-region=layer-reset',
   'data-region=confirm',
-  'data-region=editor',
   'data-region=session',
   'data-region=session-tree',
   'data-region=session-list',
   'data-region=build',
-  'data-region=status',
   'data-renderer=fallback',
   'data-renderer=primitives',
   'data-diff-block=primitives',
-  'data-editor-entry=edit',
-  'data-editor-entry=append-new',
-  'data-editor-entry=edit-override',
-  'data-editor-row=harness:identity',
-  'data-editor-focus=text',
-  'data-editor-focus=name',
-  'data-editor-fallback=row-hidden',
+  // 「我的 Prompt」: every state the panel can be in, and both confirmations.
+  'data-mine-state=unconfigured',
+  'data-mine-state=dirty',
+  'data-mine-state=saved',
+  'data-mine-state=error',
+  'data-mine-error=true',
+  'data-warning=mine-frozen',
+  'data-warning=mine-workspace-disabled',
+  'data-confirm-kind=mine-reset',
+  'data-confirm-kind=legacy-clear',
+  'data-confirm-kind=reset-layer',
+  'data-note=reserved-own-tab',
+  'data-note=overrides-read-only',
+  'data-override-reserved=true',
+  'data-reset-frozen-count=1',
+  // 提示词总览 is read-only, and says what it diagnoses.
+  'data-section-ineffective=name-already-present',
+  'data-warning=edit-disabled',
+  'data-empty=sections',
+  'data-empty=overrides',
   'data-build-match=true',
   'data-build-match=false',
   'data-build-match=unknown',
@@ -5056,11 +4632,9 @@ const EN_REQUIRED_MARKERS = [
   'data-error-code=not-found',
   'data-error-code=workspace-unresolved',
   'data-error-code=assemble-failed',
+  'data-error-code=write-locked',
   'data-phase=empty',
   'data-phase=loading',
-  'data-empty=sections',
-  'data-empty=history',
-  'data-empty=overrides',
   'data-warning=client-build-stale',
   'data-warning=client-build-unknown',
   'data-warning=frozen',
@@ -5075,16 +4649,12 @@ const EN_REQUIRED_MARKERS = [
   'data-warning=session-no-match',
   'data-warning=full-filtered',
   'data-warning=truncated',
-  'data-warning=entry-feedback',
-  'data-warning=override-blocked',
-  'data-warning=workspace-layer-disabled',
-  'data-warning=edit-uncertain',
-  'data-warning=edit-disabled',
   'data-import-plan=true',
   'data-diff-row=project:alpha',
   'data-hd-row=project:alpha',
   'data-render-state=error',
 ];
+
 
 // #endregion
 

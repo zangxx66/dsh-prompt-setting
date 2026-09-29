@@ -764,11 +764,14 @@ Revision 7 adds these:
 20. **`order: 1000000` is not a guarantee against a third party** (§15.1). It
     sorts after every section the DSH repository defines; another plugin may
     still legitimately register a larger finite order and sort after this one.
-21. **The client half still offers the Revision 6 editor** (arbitrary names,
-    `hide`/`append`). This revision is the Host half plus this contract; the
-    settings-page rework is a separate goal. Until it lands, a UI write of any
-    name other than the reserved one is refused with `403 write-locked`, and the
-    panel shows the host's `message`.
+21. **Resolved in g-015: the client no longer offers the Revision 6 editor.**
+    The settings page is the four tabs of §13, and its only write surface is
+    「我的 Prompt」, which writes the reserved name with `replace` — so no UI
+    path can ask for a write the Host would refuse. What remains a *limitation*
+    of the narrowed write face is recorded in §15.8: a frozen override can only
+    be removed by the layer-wide `?legacy=true` clear (§12.2) or by hand.
+    The tab order, defaults and markers are specified in §13.0; the client
+    cannot enforce the freeze, only state it.
 
 ## 8. `GET /prompt-setting/history` (Revision 4)
 
@@ -1128,7 +1131,7 @@ reset switch and falls through to the single-name semantics, which then requires
   existing single-name `DELETE` applied to each layer that holds the name — which
   since Revision 7 means the reserved section only. For a frozen entry the escape
   hatch is a hand edit of the file (§15.8). The UI performs the second
-  confirmation (§13.2) and the host keeps one single-layer write.
+  confirmation (§13.5) and the host keeps one single-layer write.
 
 ### 12.2 `?legacy=true` — clear only the frozen overrides (Revision 7)
 
@@ -1177,59 +1180,140 @@ order, so every existing history file still reads. `reset-layer` and
 `legacy-clear` are the two *layer-wide* actions: their subject is the whole
 layer, so they are the only records that carry `name: null` and the only ones
 rejected when they name a section. `GET /history` and `GET /diff` report the new
-action verbatim; a client with no label for it should render the raw value rather
-than guess (§13.1).
+action verbatim; a client with no label for it must render the raw value rather
+than guess. The shipped client has had a label for every action in this list
+since g-015 (`histAction.legacy-clear`), and §13.3 asserts the label reaches the
+screen instead of the raw enum.
 
-## 13. Client-side stage 2 contract (Revision 4)
+## 13. Client-side contract (Revision 4; re-ordered in Revision 7, g-015)
 
-### 13.1 What the panel renders
+### 13.0 The four first-level tabs
 
-- The history panel is fetched **only** while the 覆盖 view is open: a page that
-  never opens that tab issues exactly the three revision 3 requests. The panel
-  carries `data-region="history"`, `data-history-layer`, `data-history-state`,
-  `data-history-total`, `data-history-corrupt`, `data-history-unreadable`,
-  `data-history-last-error`, and one `data-history-row="<id>"` per record with
-  `data-history-action` / `data-history-name` / `data-history-origin` /
-  `data-history-selected`. The live value is a row with
-  `data-history-row="current"` and `data-history-current="true"`.
-- The comparison carries `data-region="history-diff"`, `data-diff-state`,
-  `data-diff-from`, `data-diff-to`, `data-diff-sections` (+ `-changed`/`-added`/
-  `-removed`/`-same`), one `data-hd-row="<name>"` with `data-hd-status` per
-  section, `data-diff-no-lines` when the host could not compare lines, and
-  `data-diff-line-name` / `data-diff-mode` / `data-diff-line-added` /
-  `data-diff-line-removed` / `data-diff-renderer` for the line comparison.
-- `data-diff-renderer` is `"diffblock"` when the primitives module really
-  exposes `DiffBlock` (probed, never assumed) and `"fallback"` otherwise. The
-  fallback renders the **host's own ops** — the same comparison, a second
-  renderer, not a second algorithm — with `data-region="diffblock"`,
-  `data-diff-block="fallback"`, `data-diff-ops` / `data-diff-ops-shown`, and one
-  `data-diff-op="equal|insert|delete"` row per line (capped at 400 rows, and it
-  says so).
-- The reset controls are `data-region="layer-reset"` with `data-reset-layer` /
-  `data-reset-count` and a `data-action="reset-layer"` button; a section-level
-  restore is a `data-action="reset-section"` button carrying
-  `data-section-name` and `data-reset-layers` (the layers that will be cleared).
-- The transfer panel is `data-region="transfer"` with `data-transfer-phase`,
-  `data-import-mode`, `data-action="export"`, `data-role="export-text"`,
-  `data-role="import-text"`, `data-role="import-file"`,
-  `data-action="import-preview"`, `data-action="import-apply"`, and a
-  `data-import-plan="true"` block carrying `data-import-added` / `-replaced` /
-  `-unchanged-count` / `-removed` / `-kept` / `-changes` / `-applied` plus one
-  `data-import-change="<name>"` row with `data-import-status` and
-  `data-import-layer`. A failed import renders the standalone flag
-  `data-import-unchanged="true"`
-  together with the mapped error copy.
+Since g-015 the settings page is four first-level tabs, in a fixed order, with
+the first one open by default. Above them there are exactly three things: the
+title, one line of deciding facts, and the session selector every tab shares.
 
-### 13.2 Second confirmation is required
+| order | `data-tab-value` | tab | what it is |
+| --- | --- | --- | --- |
+| 1 (default) | `mine` | 「我的 Prompt」 | the **only** write surface |
+| 2 | `overview` | 「提示词总览」 | strictly read-only |
+| 3 | `history` | 「历史与备份」 | log, comparison, export/import |
+| 4 | `advanced` | 「高级」 | legacy list, the two layer-wide clears, full status |
 
-Every destructive stage 2 action renders a `data-region="confirm"` card first,
-carrying `data-confirm-kind` (`reset-section` \| `reset-layer` \| `import`),
-naming the affected layers or the change counts, stating that the action cannot
+Markers, on top of the Revision 3/4 ones this revision keeps:
+
+- the tab list is `data-region="tabs"` with `data-active-tab="<value>"`, and the
+  root container carries the same `data-active-tab`;
+- each tab control carries `data-tab-value="<value>"` and its group
+  (`data-tab-key="main"` in the fallback branch); the group marker
+  `data-tab-group="main"` is carried by the group's container in **both**
+  renderer branches — when the official `SegmentedTabs` is used, a
+  `display: contents` wrapper carries it, because the official control owns its
+  own DOM and cannot be asked to;
+- exactly **one** tab panel is rendered: `data-region="tab-panel"` with
+  `data-tab-value="<value>"`. Switching a tab renders that tab's panel and no
+  other tab's top-level regions.
+
+### 13.1 「我的 Prompt」 — the one write surface
+
+- The panel is `data-region="mine"`, the layer control is
+  `data-region="mine-layer"` (group `mine-layer`, values `user` / `workspace`),
+  the text box is `data-role="mine-text"`, and the two controls are
+  `data-action="mine-save"` and `data-action="mine-reset"`.
+- The value shown is the reserved section's stored text **for the selected
+  layer**, read from the `merged` list of `GET /overrides` — the list the
+  assembly applies (§3). An absent entry means "unconfigured", and the panel
+  says so in words; it never shows a blank box as if the layer held `""`.
+- Saving is exactly `PUT /prompt-setting/overrides` with
+  `section: { name: "prompt-setting:custom-prompt", action: "replace", text }`
+  (§4.1) and, when a session is selected, `session`. The text is sent verbatim.
+- 「恢复默认」 is the single-name `DELETE` (§12.1) for the reserved name and the
+  selected layer, behind a second confirmation of kind `mine-reset`.
+- `data-mine-state` is the machine-readable state: `unconfigured` | `dirty` |
+  `saving` | `saved` | `error`. A failed write renders a full
+  `data-mine-error="true"` banner (`data-error-code`, the mapped copy, the
+  host's own `message`) — a failed save is never rendered as `saved`.
+- A scope where the text cannot take effect renders
+  `data-warning="mine-frozen"` with the reason: `frozenScope: "session"` with
+  `frozen: true`, or the reserved entry arriving as `applied: false`
+  (§15.4). The write is still allowed (the text is stored and takes effect when
+  the freeze lifts); what is forbidden is letting it look effective.
+- Writing to `workspace` without a session is refused locally, with the same
+  `error.workspace-unresolved` copy the host would answer, and sends nothing.
+
+### 13.2 「提示词总览」 is read-only
+
+- The tab renders **no** `data-region="editor"` and **no** write action: the
+  strings `edit`, `append-new`, `delete`, `save`, `cancel`, `undo` and
+  `reset-section` never appear as a `data-action` in its tree, in either
+  renderer branch and in either inner view. This is structural — the row
+  builder takes no form and no caller builds one — not a runtime check.
+- The Revision 3/4 read-only markers are unchanged: `data-region="sections"`
+  with per-row `data-section-row` / `data-origin` / `data-layer` /
+  `data-overridable` / `data-applied` / `data-index`, `data-region="filters"`,
+  `data-region="full"` with `data-full-text`, `data-region="diff"` with
+  `data-diff-*`, plus `data-action="expand"` (full-text disclosure) and
+  `data-action="copy"`.
+- A row additionally carries the state the applied action produced
+  (replace/hide/append) as a tag, and the `editGate` verdict as a read-only
+  `data-warning="edit-disabled"` note rather than as a disabled control.
+- The reserved section listed in §15.1 is **not** rendered here (it belongs to
+  「我的 Prompt」); a `data-note="reserved-own-tab"` line says so. The list and
+  the counts therefore exclude it.
+- The two inner views (`data-region="view-tabs"`, group `view`, values
+  `sections` / `full`) keep their Revision 3 meaning; the Revision 6
+  `overrides` view no longer exists.
+
+### 13.3 「历史与备份」
+
+- Unchanged in content: the history panel (`data-region="history"` plus its
+  `data-history-*` markers), the comparison (`data-region="history-diff"`,
+  `data-diff-*`) and the transfer panel (`data-region="transfer"` plus its
+  `data-import-*` markers).
+- The lazy rule now keys off this **tab**, not the old 覆盖 view: a page that
+  never opens it issues exactly the three baseline requests (ping, snapshot,
+  overrides), and the history request is `…&limit=20`.
+
+### 13.4 「高级」
+
+- The legacy override list is `data-region="overrides"` with the Revision 6
+  per-row markers (`data-override-row`, `-layer`, `-action`, `-applied`,
+  `-reason`, `data-overrides-total`), plus `data-override-reserved` marking the
+  reserved entry, and it is **read-only**: it offers no `undo` and no
+  `reset-section`. A `data-note="overrides-read-only"` line states that the
+  generic per-name write no longer exists.
+- The two layer-wide clears are `data-region="layer-reset"` (with
+  `data-reset-layer`, `data-reset-count`, `data-reset-frozen-count`,
+  `data-reset-reserved-count` and its own `data-region="advanced-layer"`
+  selector): `data-action="legacy-clear"` sends `DELETE …&legacy=true` (§12.2)
+  and **keeps** the reserved override, while `data-action="reset-layer"` sends
+  `DELETE …&reset=true` (§12.1) and clears the whole layer.
+- The full status block is `data-region="status-detail"`: mounted, frozen,
+  `generatedAt`, both layers' `enabled`/`path`/`reason`, the build stamp
+  (`data-region="build"`), every frozen/build explanation, and the renderer
+  self-check (`data-region="renderer-info"`, `data-primitives-failure` when the
+  primitives module was unavailable). The one-line summary at the top carries
+  the three verdicts as `data-status-mount` / `data-status-frozen` /
+  `data-status-build` on `data-region="status"`.
+
+### 13.5 Second confirmation is required
+
+Every destructive action renders a `data-region="confirm"` card first, carrying
+`data-confirm-kind` (`mine-reset` | `legacy-clear` | `reset-layer` | `import`),
+naming the affected layer or the change counts, stating that the action cannot
 be undone, and offering `data-action="confirm-yes"` / `data-action="confirm-no"`.
-No request is sent before `confirm-yes`.
+No request is sent before `confirm-yes` — asserted for all four kinds.
 
 An import always previews first: `import-apply` is disabled until a `dryRun`
 plan is on screen, and the click opens the confirmation card rather than writing.
+
+### 13.6 The reserved name is asserted against the host constant
+
+The client hardcodes `prompt-setting:custom-prompt` (a browser module cannot
+import host code), and `test/client.test.mjs` imports `CUSTOM_SECTION_NAME`
+from `core/custom.js` and asserts that the name in the save body and in the
+delete URL equals it **character for character**. The two copies cannot drift
+apart silently.
 
 ---
 

@@ -1,14 +1,18 @@
 # dsh-prompt-setting（插件包）
 
 DSH 默认 System Prompt 管理插件。**阶段一（A/B/C）与阶段二已交付**：宿主侧装配快照 +
-覆盖引擎 + 两层持久化 + 版本历史 + diff + 导出/导入，客户端侧设置页 Prompt 管理器
-（分段浏览、全文检索、就地编辑、覆盖管理、历史与版本对比、恢复默认、导出下载与导入预览）。
-编辑是**行内就地展开**：点某段行的「编辑」，表单就在**那一行内部**渲染；「新增一段」没有目标行，
-固定留在列表上方槽位；编辑中该行被筛选藏掉、被切走视图或重载后不再返回时，表单**回退到该槽位**
-并带 `data-editor-fallback="row-hidden"`，已输入内容不丢。
-那行的「编辑」同时是**开关**（对齐 DSH「设置 → 模型」的行展开：同一个按钮开/关，`aria-expanded` 报告
-状态；本插件只允许一个表单，所以打开另一行是切换而非叠加），展开时用 `scrollIntoView({ block: 'nearest' })`
-把表单**最小滚动**带进视口（详见 `NOTES.md` §90 七、八节）。
+覆盖引擎 + 两层持久化 + 版本历史 + diff + 导出/导入；客户端侧设置页 Prompt 管理器，
+自 g-015 起是**四个一级 tab**（默认第一个）：
+
+1. **「我的 Prompt」** — 唯一写入口：层选择 + 文本框 + 保存 / 恢复默认；
+2. **「提示词总览」** — 纯只读：装配后的段列表（状态标记 + 搜索 + 筛选 + 复制）+ 全文与 base↔effective 对比；
+3. **「历史与备份」** — 历史列表 + 版本对比 + 导出下载 / 导入预览；
+4. **「高级」** — 旧覆盖只读列表 +「清除全部覆盖」(`legacy=true`) /「整层恢复默认」(`reset=true`) 两个二次确认按钮 + 状态区。
+
+Revision 6 的**行内编辑 / 新建覆盖 UI 已整块删除**（任意段名、`hide`/`append`、动作 tab、层 tab、可行性校验、
+`data-editor-row` 归属与回退槽位、`scrollIntoView` 表单入视口都不存在了）：写入面收窄到一个名字之后，
+再多的写入口只是宿主必然拒绝的路径。四个 tab 的标记、默认值与删除映射见下文
+「设置页的四个一级 tab」、[`CONTRACT.md`](./CONTRACT.md) §13、[`NOTES.md`](./NOTES.md) §93。
 
 **Revision 7（本包当前形态）：插件自己注册一段 Prompt，写入面收窄到这一段。**
 宿主半在 `apply` 期间用 `ctx.systemPrompt.section()` 注册**自己的**一段
@@ -42,7 +46,7 @@ REST 契约见同目录 [`CONTRACT.md`](./CONTRACT.md)（已冻结，客户端�
 | `core/store.js` | **唯一碰文件系统**的模块：两层路径解析 + 原子写（临时文件 + `rename`）+ 读时校验 + `history.jsonl` 追加与裁剪 + 多文件原子替换（导入） |
 | `core/compat.js` | **boot 兼容性**：semver 解析/比较/范围判定（纯函数）+ DSH 版本探测（best-effort、多锚点、绝不抛）+ 三分支文案（范围内静默 / 超范围 / 探测失败）与 `apply` 失败文案 |
 | `core/experiments.js` | E1–E5 的**实测结论**（由集成测试产出，快照与 CONTRACT.md 共用同一份文案） |
-| `client.js` | 客户端半：「设置」里的独立一栏：状态条 / 会话选择器 / 分段视图（含 `origin` 标注与筛选）/ 全文视图（搜索高亮 + `base`↔`effective` 对比）/ 编辑面板（**行内就地展开**：`data-editor-row` 标归属行，行不可见时回退槽位并标 `data-editor-fallback`；保存前可行性校验）/ 覆盖管理 / 历史列表与版本对比（官方 `DiffBlock` + 自绘降级）/ 恢复默认（单段与整层，均二次确认）/ 导出下载与导入（先干跑预览再二次确认） |
+| `client.js` | 客户端半：「设置」里的独立一栏，**四个一级 tab**（默认「我的 Prompt」）：一行状态摘要（挂载 / 冻结三态 / 构建戳）+ 共用的会话选择器 +「我的 Prompt」写面板（唯一写入口：保留名 + `replace`，含恢复默认的二次确认）/「提示词总览」只读段列表与全文视图（搜索高亮 + `base`↔`effective` 对比，无任何写入口）/「历史与备份」（历史列表 + 版本对比，官方 `DiffBlock` + 自绘降级 + 导出下载与导入预览）/「高级」（旧覆盖只读列表 + `legacy=true` 与 `reset=true` 两个二次确认按钮 + 完整状态区与渲染器自检） |
 | `cordis.patch.yml` | bundle 层：一条 `insert` 行同时承载两个半边 |
 | `scripts/check-compat.mjs` | **只读兼容性自检**（`node scripts/check-compat.mjs`）：本插件版本 / 已装 DSH 版本 / peer 范围结论 / 四种 boot 失败形态的终端签名 / 救援步骤。零依赖、不联网、永不抛、退出码恒 0 |
 | `package.json` | 包契约：`dsh.bundle.patch` + `dsh.client.platform: "web"` + `exports["./client"]` |
@@ -295,6 +299,27 @@ dsh --profile web --dump-config-schema   # 条目/补丁的 JSON Schema（写 --
 > 三种「DSH 更新后本插件坏了」的处置都指向同一个动作：**先把本包摘掉让 DSH 可用，再等本包跟进**。
 > 本插件不做自动降级重试、不做远程上报（非目标）。
 
+## 设置页的四个一级 tab（g-015）
+
+页面顶部只有三件东西：标题、**一行**关键状态摘要（挂载 / 冻结三态 / 构建戳）+ 刷新、以及所有 tab
+共用的会话选择器。其余按功能与使用频率分成四个 tab，顺序固定、默认打开第一个：
+
+| # | `data-tab-value` | tab | 内容 |
+| --- | --- | --- | --- |
+| 1 | `mine` | **我的 Prompt** | **唯一写入口**：层选择（用户级 / 工作区级，工作区级需会话）+ 文本框 + 保存 + 恢复默认。写的是契约保留段 `prompt-setting:custom-prompt` + `action=replace`，下一轮生效；该段 `interpolate:false`，写进去的 `{{变量}}` 原样交给模型 |
+| 2 | `overview` | **提示词总览** | **纯只读**：装配后的段列表（状态标记：已覆盖 / 已隐藏 / 追加 / 下游新增 / 未命中覆盖）+ 搜索 + 筛选 + 复制，以及渲染文本与 base↔effective 对比。渲染树里**不存在任何编辑/新建/删除入口** |
+| 3 | `history` | **历史与备份** | 历史列表 + 版本对比 + 导出 / 导入 + 二次确认。不开这个 tab 不发历史/差异请求 |
+| 4 | `advanced` | **高级** | 旧覆盖只读列表（名字 / 动作 / 层 / 生效状态 / 原因）+「清除全部覆盖」(`legacy=true`，保留「我的 Prompt」) 与「整层恢复默认」(`reset=true`) 两个各自二次确认的按钮 + 状态区（挂载 / 冻结 / 构建戳 / 渲染器 / 自检） |
+
+**只读总览不含保留段**：它是「我的 Prompt」的东西，tab 里有一行说明指过去，不重复展示。
+**机器可读标记**：`data-region="tabs"` + `data-active-tab="<值>"`（根容器上同样有）、每个 tab 控件的
+`data-tab-value`（分组标记 `data-tab-group="main"` 在两个渲染器分支都存在）、以及**唯一**一个
+`data-region="tab-panel"` + `data-tab-value="<值>"`。切 tab 只渲染对应面板。
+
+Revision 6 的**行内编辑/新建覆盖 UI 已整块删除**（行内表单、动作 tab、层 tab、可行性校验、编辑/新建/删除
+入口按钮），因为写入面已经是「一个名字宽」：一个提供更多写入口的 UI，就是一个提供宿主必然拒绝的写入口的
+UI。逐条删除映射见 [`NOTES.md`](./NOTES.md) §93 第三节，契约见 [`CONTRACT.md`](./CONTRACT.md) §13。
+
 ## 可访问性：查看范围是一棵标准 ARIA 树
 
 「查看范围」的工作区树（`role="tree"`，`data-region="session-tree"`）现在有标准树语义，观感与交互不变：
@@ -324,8 +349,8 @@ dsh --profile web --dump-config-schema   # 条目/补丁的 JSON Schema（写 --
 | --- | --- |
 | `client: injects the locale namespace thunk and declares zh/en dictionaries` | zh/en **键位集合完全相等** |
 | `client: every documented rejection code has distinct zh/en copy` | 每个错误码都有**互不相同**的中英文案 |
-| `client: the english render sweep shows no CJK and no bare key, in any branch` | 用 **en** 词典渲染 **34 个场景**（全部视图与关键状态，10980 条渲染字符串，含 `placeholder`/`title`/`aria-label`），断言**零 CJK**、**无裸 key 回落**、en 词典非空且值不等于 key |
-| `client: the english sweep really walked every required branch marker` | **59 个 `data-*` 分支标记**必达（含 19 个 `data-warning`、构建戳三态、冻结三态、错误码横幅），少一个就红 |
+| `client: the english render sweep shows no CJK and no bare key, in any branch` | 用 **en** 词典渲染 **39 个场景**（四个一级 tab、全部面板与关键状态，6946 条渲染字符串，含 `placeholder`/`title`/`aria-label`），断言**零 CJK**、**无裸 key 回落**、en 词典非空且值不等于 key |
+| `client: the english sweep really walked every required branch marker` | **80 个 `data-*` 分支标记**必达（含四个 tab 的 `data-active-tab`、`data-mine-state` 五态、四种 `data-confirm-kind`、19 个 `data-warning`、构建戳三态、冻结三态、错误码横幅），少一个就红 |
 
 覆盖范围、负向对照与**刻意不覆盖**的部分（原生控件文案、DSH 自带 UI 文案、宿主返回的 `message`/`reason`
 原文、真机 SR 与热替换时序）见 [`NOTES.md`](./NOTES.md) §89。
@@ -373,7 +398,7 @@ dsh --profile web --dump-config-schema   # 条目/补丁的 JSON Schema（写 --
   错误信息会写明程度）；任何发生在 rename 之前的失败都不可能留下半成品；
 - diff 的段级结果来自两条记录的**摘要快照**（无文本），只有被聚焦的那一段做行级比较。
 
-## Revision 7 边界（宿主半 + 契约；客户端 UI 是另一个目标）
+## Revision 7 边界（宿主半 + 契约 + g-015 的客户端重排）
 
 - **注册段的真机生效未验证**：注册本身是在**真实** `@deepseek-ai/dsh-system-prompt` 服务与真实
   Cordis context 上做的，真实 `renderPrompt` 也逐字节验证了文本与「空段零贡献」；但「重启后的
@@ -386,7 +411,7 @@ dsh --profile web --dump-config-schema   # 条目/补丁的 JSON Schema（写 --
   `reason: "the section was removed from the assembled result"`），UI 必须在「我的 Prompt」面板明说。
 - **空段会出现在快照视图里**：`base.sections` / `effective.sections` 恒多一条（本段、空、最后）。
   最终 prompt 不受影响，但拿 Revision 6 的数组逐项对比的消费者要预期这条差异。
-- **客户端半仍是 Revision 6 的编辑器**：本目标只做宿主半 + 契约；客户端重排是另一个目标。
-  在那之前，UI 写非保留名会收到 `403 write-locked`，面板显示宿主返回的 `message`。
+- **~~客户端半仍是 Revision 6 的编辑器~~（g-015 已解决）**：设置页现在是上文四个一级 tab，
+  唯一写入口「我的 Prompt」写的就是保留名 + `replace`，因此不存在「UI 能发起、宿主必然拒绝」的写入路径。
 - **`interpolate: false` 的代价**：用户在「我的 Prompt」里写的 `{{变量}}` **永不替换**，原样进入
   prompt。这是刻意的取舍（自由文本，不是模板语言）。
