@@ -89,8 +89,8 @@ declared entry points present, are they all inside the `files` allowlist, does e
 To avoid the grant entirely, `pnpm pack` a tarball and `add` that instead; behaviour is identical.
 
 Measured output, the full check table and the untested items are in
-[`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) §96; the package-level write-up is in
-[`packages/dsh-prompt-setting/README.md`](./packages/dsh-prompt-setting/README.md) under "Installing from GitHub".
+[`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) §96; the package-level summary — what it is, features
+and install, bilingual — is in [`packages/dsh-prompt-setting/README.md`](./packages/dsh-prompt-setting/README.md).
 
 ## 4. Things to know (the easy-to-trip-on edges)
 
@@ -155,9 +155,10 @@ Worth knowing:
 - The tests never read or write your real `~/.dsh`: the relevant suites point `$DSH_HOME` at a temp directory.
 
 When the plugin does not show up after a DSH upgrade and the terminal says nothing, run
-`node scripts/check-compat.mjs` first, then read "Compatibility and rescue" in the package README. How a
-code change takes effect, and in what order to debug it, are in
-[`packages/dsh-prompt-setting/README.md`](./packages/dsh-prompt-setting/README.md).
+`node scripts/check-compat.mjs` first — it prints the terminal signature of the four boot failure modes
+and the rescue steps. How a code change takes effect, and the maintainer commands, are in the package
+README's "For maintainers" section; the detailed measurements are in
+[`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) §91.
 
 ## 7. Design notes
 
@@ -181,7 +182,7 @@ code change takes effect, and in what order to debug it, are in
 | Document | For | Contents |
 | --- | --- | --- |
 | This file | everyone | what it is, how to install, how to use, the repository at a glance |
-| [`packages/dsh-prompt-setting/README.md`](./packages/dsh-prompt-setting/README.md) | users / developers | package contents, how a code change takes effect, compatibility and rescue, the four tabs in detail |
+| [`packages/dsh-prompt-setting/README.md`](./packages/dsh-prompt-setting/README.md) | users / developers | package summary and features (bilingual), install, maintainer notes, troubleshooting |
 | [`CONTRACT.md`](./packages/dsh-prompt-setting/CONTRACT.md) | developers | the frozen REST contract: every field, action enum, size limit and 4xx |
 | [`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) | developers | design trade-offs and measurements (including untested items and conclusions we had to retract) |
 

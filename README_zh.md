@@ -78,8 +78,8 @@ pnpm ≥10 默认**不**运行 git 依赖的构建脚本，第一次会失败并
 （入口是否齐全、是否都在 `files` 白名单里、patch 每一行能否解析）；想完全避开授权，
 就用 `pnpm pack` 打出 tarball 再 `add`，功能完全一致。
 
-真机实测输出、判据表与未验证项见 [`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) §96，
-面向插件包的完整说明见 [`packages/dsh-prompt-setting/README.md`](./packages/dsh-prompt-setting/README.md) 的「从 GitHub 安装」。
+真机实测输出、判据表与未验证项见 [`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) §96；
+面向插件包本身的简介、功能与安装（中英对照）见 [`packages/dsh-prompt-setting/README.md`](./packages/dsh-prompt-setting/README.md)。
 
 ## 四、使用须知（几条容易踩的边界）
 
@@ -135,9 +135,9 @@ npm pack --dry-run             # 确认发布产物干净（20 个文件、无 t
   因此「primitives 可用 / 不可用」「探针成功 / HTTP 错误 / 网络错误」都能离线断言。
 - 测试过程绝不会读写真实的 `~/.dsh`：相关套件会把 `$DSH_HOME` 指向临时目录。
 
-DSH 升级后插件没出现、终端也没报错时，先跑 `node scripts/check-compat.mjs`，
-再看插件包 README 的「兼容性与救援」一节。代码改动的生效方式与排障顺序，
-见 [`packages/dsh-prompt-setting/README.md`](./packages/dsh-prompt-setting/README.md)。
+DSH 升级后插件没出现、终端也没报错时，先跑 `node scripts/check-compat.mjs` —— 它会直接打印
+四种 boot 失败形态的终端签名与救援步骤。代码改动的生效方式与维护者命令见插件包 README 的
+「给维护者」一节；详尽实测记录见 [`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) §91。
 
 ## 七、设计要点
 
@@ -157,7 +157,7 @@ DSH 升级后插件没出现、终端也没报错时，先跑 `node scripts/chec
 | 文档 | 读者 | 内容 |
 | --- | --- | --- |
 | 本文件 | 所有人 | 这是什么、怎么装、怎么用、仓库全貌 |
-| [`packages/dsh-prompt-setting/README.md`](./packages/dsh-prompt-setting/README.md) | 使用者 / 开发者 | 包内容、代码改动怎么生效、兼容性与救援、四个 tab 的行为细节 |
+| [`packages/dsh-prompt-setting/README.md`](./packages/dsh-prompt-setting/README.md) | 使用者 / 开发者 | 包简介与功能（中英对照）、安装、维护者要点、出问题时怎么办 |
 | [`CONTRACT.md`](./packages/dsh-prompt-setting/CONTRACT.md) | 开发者 | 冻结的 REST 契约：字段、动作枚举、字段上限、每一个 4xx |
 | [`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) | 开发者 | 设计取舍与实测记录（含未验证项与已推翻的旧结论） |
 
