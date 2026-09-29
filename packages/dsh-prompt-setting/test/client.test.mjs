@@ -553,15 +553,49 @@ function makePage(options = {}) {
   if (options.useWorkspaces !== undefined) props.useWorkspaces = options.useWorkspaces;
   const component = mounted.registrations[0].component;
   const draw = () => expandTree(loaded.runtime.render(component, props).tree);
+  const scopeToggleOf = (tree) =>
+    collect(
+      tree,
+      (node) => node.type === 'button' && node.props && node.props['data-action'] === 'scope-toggle',
+    );
   const flush = async () => {
     const pending = loaded.runtime.render(component, props).pending;
     for (const effect of pending) effect();
     await settle();
-    return draw();
+    let tree = draw();
+    // g-016: the「查看范围」picker ships collapsed. A case that asserts its
+    // internals (search / tree / paging / pinned / keyboard) opts into
+    // `scopeOpen: true` and gets the same click a user makes —「更改」— before
+    // every read. Selection shuts the picker again, so the click is repeated
+    // per flush instead of being done once at mount; the assertions below are
+    // unchanged, only the way in is.
+    if (options.scopeOpen === true) {
+      const toggle = scopeToggleOf(tree);
+      if (toggle.length === 1 && toggle[0].props['aria-expanded'] === false) {
+        toggle[0].props.onClick();
+        tree = draw();
+      }
+    }
+    return tree;
   };
   const tables = mounted.dictionaries.length > 0 ? mounted.dictionaries[0].dict : {};
   const zh = tables.zh || {};
   return { loaded, mounted, router, props, draw, flush, zh, language, text: tables[language] || {} };
+}
+
+/**
+ * `makePage` with the「查看范围」picker already open.
+ *
+ * This is the g-016 compatibility door for the cases that existed before the
+ * picker collapsed: they assert the search box, the ARIA tree, paging, the
+ * pinned entries and the degraded paths, and they keep asserting exactly that —
+ * they just click「更改」first. `NOTES.md` §94 maps every case. New cases that
+ * assert the collapsed default use `makePage` directly.
+ * @param options - the same options as {@link makePage}.
+ * @returns the page harness.
+ */
+function makeOpenPage(options = {}) {
+  return makePage({ ...options, scopeOpen: true });
 }
 
 // #region fixtures (shapes copied from CONTRACT.md; no real config involved)
@@ -1221,7 +1255,7 @@ test('client: an empty assembly renders the empty state rather than crashing', a
 // #region session selector (props `useSessions` root hook, with a degradation)
 
 test('client: the session selector defaults to the current view session', async () => {
-  const page = makePage({ useSessions: sessionsHook(SESSIONS_STATE), responses: defaultResponses() });
+  const page = makeOpenPage({ useSessions: sessionsHook(SESSIONS_STATE), responses: defaultResponses() });
   const tree = await page.flush();
   assert.equal(markerOf(tree, 'data-session-mode'), 'sessions');
   // `retainedBy.mainView > 0` picks s2, exactly like the product's own selector.
@@ -1249,7 +1283,7 @@ test('client: the session selector defaults to the current view session', async 
 });
 
 test('client: switching to the global option drops ?session= and re-reads the snapshot', async () => {
-  const page = makePage({ useSessions: sessionsHook(SESSIONS_STATE), responses: defaultResponses() });
+  const page = makeOpenPage({ useSessions: sessionsHook(SESSIONS_STATE), responses: defaultResponses() });
   let tree = await page.flush();
   clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
   tree = await page.flush();
@@ -1261,7 +1295,7 @@ test('client: switching to the global option drops ?session= and re-reads the sn
 });
 
 test('client: a missing useSessions degrades to a manual id and says so', async () => {
-  const page = makePage({ responses: defaultResponses() });
+  const page = makeOpenPage({ responses: defaultResponses() });
   let tree = await page.flush();
   assert.equal(markerOf(tree, 'data-session-mode'), 'manual');
   assert.ok(oneBy(tree, 'data-warning', 'session-degraded'), 'the degradation is announced');
@@ -1279,7 +1313,7 @@ test('client: a missing useSessions degrades to a manual id and says so', async 
 });
 
 test('client: a useSessions hook that throws degrades instead of blanking the panel', async () => {
-  const page = makePage({
+  const page = makeOpenPage({
     useSessions: () => {
       throw new Error('useSessions is not usable here');
     },
@@ -1302,7 +1336,7 @@ test('client: the session picker renders a bounded list at every catalog size', 
     [200, 20],
   ]) {
     const state = count === 0 ? { ids: [], byId: {}, phase: 'ready' } : manySessions(count);
-    const page = makePage({ useSessions: sessionsHook(state), responses: defaultResponses() });
+    const page = makeOpenPage({ useSessions: sessionsHook(state), responses: defaultResponses() });
     const tree = await page.flush();
     const options = sessionOptions(tree);
     assert.equal(options.length, expectedShown, `${count} sessions render ${expectedShown} rows`);
@@ -1323,7 +1357,7 @@ test('client: the session picker renders a bounded list at every catalog size', 
 });
 
 test('client: the session search matches title, path and id, case-insensitively', async () => {
-  const page = makePage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
+  const page = makeOpenPage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
   let tree = await page.flush();
   assert.equal(sessionOptions(tree).length, 3);
 
@@ -1342,7 +1376,7 @@ test('client: the session search matches title, path and id, case-insensitively'
 });
 
 test('client: a query that matches nothing becomes a manual session id', async () => {
-  const page = makePage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
+  const page = makeOpenPage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
   let tree = await page.flush();
   typeInto(tree, 'session-search', 'pasted-id-42');
   tree = await page.flush();
@@ -1359,7 +1393,7 @@ test('client: a query that matches nothing becomes a manual session id', async (
 });
 
 test('client: the pinned entries are never filtered away', async () => {
-  const page = makePage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
+  const page = makeOpenPage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
   let tree = await page.flush();
   typeInto(tree, 'session-search', 'zzz-nothing');
   tree = await page.flush();
@@ -1380,7 +1414,7 @@ test('client: the pinned entries are never filtered away', async () => {
 });
 
 test('client: picking a row refills the search box with the readable title', async () => {
-  const page = makePage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
+  const page = makeOpenPage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
   let tree = await page.flush();
   const target = sessionOptions(tree).find((option) => option.props['data-session-id'] === 's1');
   target.props.onClick();
@@ -1391,7 +1425,7 @@ test('client: picking a row refills the search box with the readable title', asy
 });
 
 test('client: the session list is keyboard reachable', async () => {
-  const page = makePage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
+  const page = makeOpenPage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
   let tree = await page.flush();
   const input = () => oneBy(tree, 'data-role', 'session-search');
   input().props.onKeyDown({ key: 'ArrowDown', preventDefault() {} });
@@ -1411,6 +1445,253 @@ test('client: the session list is keyboard reachable', async () => {
   tree = await page.flush();
   assert.equal(oneBy(tree, 'data-role', 'session-search').props.value, '', 'Esc clears the search');
   assert.equal(sessionOptions(tree).length, 3, 'and the list is back');
+});
+
+// #endregion
+
+// #region g-016 · the「查看范围」picker ships collapsed (one summary +「更改」)
+
+/** The「更改」switch: one button, whose `aria-expanded` reports the picker. */
+function scopeToggle(tree) {
+  return oneBy(tree, 'data-action', 'scope-toggle');
+}
+
+/** The always-visible summary row of the「查看范围」card. */
+function scopeSummary(tree) {
+  return oneBy(tree, 'data-region', 'scope-summary');
+}
+
+/** Every host node in a rendered tree: a cheap "how much is on screen" count. */
+function renderedNodeCount(tree) {
+  return collect(tree, (node) => node.type !== undefined).length;
+}
+
+/**
+ * One text line of slack in the collapsed summary row, in px: the row's own
+ * font is 13–15px, so a 22px line covers the tallest atom it can hold without
+ * wrapping.
+ */
+const SCOPE_SUMMARY_LINE_PX = 22;
+
+/**
+ * The offline height budget of the collapsed「查看范围」card, in px: the card's
+ * own vertical padding, the summary row's declared minimum height, and one line
+ * of slack. The real geometry is measured in the settings shell by the
+ * supervisor after this is merged (NOTES §94) — this budget is what keeps
+ * criterion 4 assertable offline, and it can only stay green while the
+ * collapsed tree really is one row, because the structural half of the same
+ * test fails the moment a body node is rendered beside the summary.
+ * @param tree - a rendered page tree.
+ * @returns the budgeted height in px.
+ */
+function collapsedScopeHeight(tree) {
+  const section = oneBy(tree, 'data-region', 'session');
+  const row = scopeSummary(tree);
+  const parts = String(section.props.style.padding)
+    .split(' ')
+    .map((part) => Number.parseFloat(part));
+  const vertical = parts.length > 1 ? parts[0] * 2 : parts[0];
+  const minHeight = Number.parseFloat(String(row.props.style.minHeight));
+  return vertical + minHeight + SCOPE_SUMMARY_LINE_PX;
+}
+
+test('client: the「查看范围」picker ships collapsed, with no body on screen', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  const tree = await page.flush();
+
+  assert.equal(markerOf(tree, 'data-scope-open'), 'false', 'the default state is shut');
+  const summary = scopeSummary(tree);
+  assert.ok(hasText(summary, page.zh.sessionHeading), 'the block is still labelled');
+  assert.ok(
+    hasText(summary, fillText(page.zh.sessionCurrentLabel, { label: 'Alpha three' })),
+    'and it names the scope the snapshot is taken in',
+  );
+  assert.ok(hasText(scopeToggle(tree), page.zh.scopeEdit), 'with one「更改」switch');
+  assert.equal(scopeToggle(tree).props['aria-expanded'], false);
+
+  // Every node of the picker body is *absent*, not merely hidden.
+  for (const [attribute, value] of [
+    ['data-region', 'session-tree'],
+    ['data-region', 'session-list'],
+    ['data-region', 'session-pinned'],
+    ['data-role', 'session-search'],
+    ['data-role', 'scope-search-hint'],
+    ['data-role', 'session-current'],
+    ['data-role', 'group-toggle'],
+  ]) {
+    assert.equal(
+      collect(tree, (node) => node.props && node.props[attribute] === value).length,
+      0,
+      `${attribute}=${value} must not be rendered while collapsed`,
+    );
+  }
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-action'] === 'scope-more').length,
+    0,
+    'no「显示更多」outside the body',
+  );
+  // The four help lines the shell user had to scroll past are gone as copy too.
+  for (const key of ['scopeSearchHint', 'sessionKeyboardHint', 'sessionSelectedNote', 'sessionGlobalNote']) {
+    assert.ok(!hasText(tree, page.zh[key]), `${key} is not on screen while collapsed`);
+  }
+
+  // The degraded seat collapses the same way, and the summary carries the
+  // *reason* instead of the long limitation paragraph.
+  const manual = makePage({ responses: defaultResponses() });
+  const manualTree = await manual.flush();
+  assert.equal(markerOf(manualTree, 'data-scope-open'), 'false');
+  assert.equal(oneBy(manualTree, 'data-role', 'scope-summary-hint').props.children, manual.zh.scopeSummaryManual);
+  assert.ok(!hasText(manualTree, manual.zh.sessionLimit), 'the paragraph lives inside the picker');
+  assert.ok(
+    hasText(scopeSummary(manualTree), manual.zh.sessionGlobal),
+    'the degraded seat still names the scope it is reading (global, with no session service)',
+  );
+
+  // The flat (no useWorkspaces) seat says which degradation it is, in a word.
+  const flat = makePage({ useSessions: sessionsHook(SESSIONS_STATE), responses: defaultResponses() });
+  const flatTree = await flat.flush();
+  assert.equal(oneBy(flatTree, 'data-role', 'scope-summary-hint').props.children, flat.zh.scopeSummaryFlat);
+});
+
+test('client: 「更改」 is one switch that reports aria-expanded and brings the picker back', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  let tree = await page.flush();
+
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-scope-open'), 'true');
+  assert.equal(scopeToggle(tree).props['aria-expanded'], true);
+  assert.equal(scopeToggle(tree).props['data-expanded'], 'true', 'the attribute and the ARIA state agree');
+  assert.ok(hasText(scopeToggle(tree), page.zh.scopeCollapse), 'the same button now says how to shut it');
+  assert.ok(oneBy(tree, 'data-region', 'session-tree'), 'the existing tree is what comes back');
+  assert.ok(oneBy(tree, 'data-role', 'session-search'));
+  assert.ok(oneBy(tree, 'data-region', 'session-pinned'));
+  assert.ok(collect(tree, (node) => node.props && node.props['data-role'] === 'group-toggle').length > 0);
+  assert.ok(hasText(tree, page.zh.scopeSearchHint));
+
+  // The same button shuts it: one control, two states.
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-scope-open'), 'false');
+  assert.equal(scopeToggle(tree).props['aria-expanded'], false);
+  assert.ok(hasText(scopeToggle(tree), page.zh.scopeEdit));
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'session-tree').length, 0);
+});
+
+test('client: the summary names the scope, and the range decides the label', async () => {
+  const page = makePage({ useSessions: sessionsHook(SESSIONS_STATE), responses: defaultResponses() });
+  let tree = await page.flush();
+
+  // The current view session, in the readable-title form the page uses.
+  assert.equal(markerOf(tree, 'data-scope-open'), 'false');
+  assert.ok(hasText(scopeSummary(tree), fillText(page.zh.sessionCurrentLabel, { label: 'Second' })));
+  assert.equal(oneBy(tree, 'data-role', 'scope-summary-hint').props.children, page.zh.scopeSummaryFlat);
+
+  // 「全局」 names itself rather than naming a session.
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
+  tree = await page.flush();
+  const summary = scopeSummary(tree);
+  assert.ok(hasText(summary, page.zh.sessionGlobal), 'the global scope is named as such');
+  assert.ok(
+    !hasText(summary, fillText(page.zh.sessionCurrentLabel, { label: 'Second' })),
+    'the previous scope is no longer claimed',
+  );
+  assert.equal(markerOf(tree, 'data-session'), 'global');
+});
+
+test('client: choosing a scope shuts the picker, and the summary follows it', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  let tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-scope-open'), 'false');
+
+  // A row click: the picker closes itself, no second click anywhere.
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-scope-open'), 'true');
+  sessionOptions(tree).find((row) => row.props['data-session-id'] === 'a1').props.onClick();
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-scope-open'), 'false', 'one click on a row also closes the picker');
+  assert.equal(markerOf(tree, 'data-session'), 'a1');
+  assert.ok(hasText(scopeSummary(tree), fillText(page.zh.sessionCurrentLabel, { label: 'Alpha one' })));
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'session-tree').length, 0);
+
+  // The pinned「全局」entry does the same.
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-scope-open'), 'false');
+  assert.ok(hasText(scopeSummary(tree), page.zh.sessionGlobal));
+
+  // The keyboard path: Enter on the highlighted row selects *and* closes.
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  oneBy(tree, 'data-role', 'session-search').props.onKeyDown({ key: 'ArrowDown', preventDefault() {} });
+  tree = await page.flush();
+  oneBy(tree, 'data-role', 'session-search').props.onKeyDown({ key: 'Enter', preventDefault() {} });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-scope-open'), 'false', 'Enter selects and closes');
+  assert.equal(markerOf(tree, 'data-session'), 'a2');
+  assert.ok(hasText(scopeSummary(tree), fillText(page.zh.sessionCurrentLabel, { label: 'Alpha two' })));
+
+  // Typing an id that matches nothing is a scope choice too.
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  typeInto(tree, 'session-search', 'pasted-id-42');
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-scope-open'), 'true', 'typing does not close the picker by itself');
+  clickButton(tree, { 'data-action': 'session-use-input' });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-scope-open'), 'false');
+  assert.equal(markerOf(tree, 'data-session'), 'pasted-id-42');
+  assert.ok(hasText(scopeSummary(tree), fillText(page.zh.sessionCurrentLabel, { label: 'pasted-id-42' })));
+});
+
+test('client: the collapsed「查看范围」block is one row inside an 80px budget', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  let tree = await page.flush();
+
+  const section = oneBy(tree, 'data-region', 'session');
+  const rows = elementChildren(section);
+  assert.equal(rows.length, 1, 'collapsed: exactly one row, nothing rendered beside it');
+  assert.equal(rows[0].props['data-region'], 'scope-summary', 'and that row is the summary');
+  const row = scopeSummary(tree);
+  const atoms = elementChildren(row);
+  assert.ok(atoms.length <= 4, `heading + label + at most one hint + one switch (got ${atoms.length})`);
+  assert.equal(atoms.filter((node) => node.type === 'button').length, 1, 'exactly one control in the row');
+  assert.equal(collect(row, (node) => node.type === 'p').length, 0, 'no paragraph can add a second line');
+
+  const collapsedNodes = renderedNodeCount(tree);
+  const budget = collapsedScopeHeight(tree);
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  const expandedNodes = renderedNodeCount(tree);
+  assert.ok(elementChildren(oneBy(tree, 'data-region', 'session')).length > 1, 'expanded, the body is a sibling');
+  assert.ok(oneBy(tree, 'data-region', 'session-tree'), 'and the tree is the bulk of it');
+  // The measurement is part of the evidence, not decoration (NOTES §94).
+  console.log(
+    `    scope geometry: collapsed「查看范围」= ${budget}px budget (80px), ${collapsedNodes} nodes; expanded = ${expandedNodes} nodes`,
+  );
+  assert.ok(budget <= 80, `the collapsed block budgets ${budget}px, over the 80px ceiling`);
+  assert.ok(expandedNodes > collapsedNodes * 2, `opening the picker adds the body back (${expandedNodes} vs ${collapsedNodes})`);
 });
 
 // #endregion
@@ -1556,7 +1837,7 @@ function pressKey(node, key) {
 }
 
 test('client: the scope picker groups sessions by workspace, like the sidebar', async () => {
-  const page = makePage({
+  const page = makeOpenPage({
     useSessions: sessionsHook(WORKSPACE_SESSIONS),
     useWorkspaces: workspacesHook(workspacesFixture()),
     responses: defaultResponses(),
@@ -1610,7 +1891,7 @@ test('client: the scope picker groups sessions by workspace, like the sidebar', 
 });
 
 test('client: the scope tree keeps the ancestor workspace of every search match', async () => {
-  const page = makePage({
+  const page = makeOpenPage({
     useSessions: sessionsHook(WORKSPACE_SESSIONS),
     useWorkspaces: workspacesHook(workspacesFixture()),
     responses: defaultResponses(),
@@ -1655,7 +1936,7 @@ test('client: the scope tree keeps the ancestor workspace of every search match'
 });
 
 test('client: a workspace group folds, unfolds, and pages its rows in', async () => {
-  const page = makePage({
+  const page = makeOpenPage({
     useSessions: sessionsHook(WORKSPACE_SESSIONS),
     useWorkspaces: workspacesHook(workspacesFixture()),
     responses: defaultResponses(),
@@ -1670,7 +1951,7 @@ test('client: a workspace group folds, unfolds, and pages its rows in', async ()
   assert.ok(scopeRowIds(tree).includes('b1'), 'the folded group now shows its session');
   // The initial page is a page, not the whole group: a 25-session workspace
   // renders 10 rows plus an explicit "show more".
-  const big = makePage({
+  const big = makeOpenPage({
     useSessions: sessionsHook(manyWorkspaceSessions(1, 25).sessions),
     useWorkspaces: workspacesHook(manyWorkspaceSessions(1, 25).workspaces),
     responses: defaultResponses(),
@@ -1704,7 +1985,7 @@ test('client: the scope tree never renders the whole catalog (200 / 500 / 2000 s
   ]) {
     const total = workspaceCount * perWorkspace;
     const state = manyWorkspaceSessions(workspaceCount, perWorkspace);
-    const page = makePage({
+    const page = makeOpenPage({
       useSessions: sessionsHook(state.sessions),
       useWorkspaces: workspacesHook(state.workspaces),
       responses: defaultResponses(),
@@ -1738,7 +2019,7 @@ test('client: the scope tree never renders the whole catalog (200 / 500 / 2000 s
 });
 
 test('client: a missing useWorkspaces degrades to the flat searchable list', async () => {
-  const flat = makePage({
+  const flat = makeOpenPage({
     useSessions: sessionsHook(manySessions(200)),
     responses: defaultResponses(),
   });
@@ -1750,7 +2031,7 @@ test('client: a missing useWorkspaces degrades to the flat searchable list', asy
   assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'session-tree').length, 0);
 
   // A workspace hook that throws degrades the same way, without blanking.
-  const thrown = makePage({
+  const thrown = makeOpenPage({
     useSessions: sessionsHook(SESSIONS_STATE),
     useWorkspaces: () => {
       throw new Error('useWorkspaces is not usable here');
@@ -1764,7 +2045,7 @@ test('client: a missing useWorkspaces degrades to the flat searchable list', asy
 
   // An empty workspace list is *not* a degradation: everything falls into the
   // ungrouped bucket, so no session disappears.
-  const empty = makePage({
+  const empty = makeOpenPage({
     useSessions: sessionsHook(WORKSPACE_SESSIONS),
     useWorkspaces: workspacesHook(workspacesFixture({ items: [], archivedSessionIds: [], pinnedSessionIds: [] })),
     responses: defaultResponses(),
@@ -1779,7 +2060,7 @@ test('client: a missing useWorkspaces degrades to the flat searchable list', asy
 });
 
 test('client: every workspace node advertises and toggles its expansion state', async () => {
-  const page = makePage({
+  const page = makeOpenPage({
     useSessions: sessionsHook(WORKSPACE_SESSIONS),
     useWorkspaces: workspacesHook(workspacesFixture()),
     responses: defaultResponses(),
@@ -1854,7 +2135,7 @@ test('client: every workspace node advertises and toggles its expansion state', 
 
 test('client: the folder glyph is the sidebar artwork in both renderer branches', async () => {
   // Fallback: no primitives module at all ⇒ the same geometry is inlined.
-  const inline = makePage({
+  const inline = makeOpenPage({
     useSessions: sessionsHook(WORKSPACE_SESSIONS),
     useWorkspaces: workspacesHook(workspacesFixture()),
     responses: defaultResponses(),
@@ -1873,7 +2154,7 @@ test('client: the folder glyph is the sidebar artwork in both renderer branches'
   assert.equal(inlinePaths[0].props.opacity, '0.16', 'the shell keeps the shaded side');
 
   // Primitives: when the module really exposes the icons, they are reused.
-  const prim = makePage({
+  const prim = makeOpenPage({
     primitives: 'icons',
     useSessions: sessionsHook(WORKSPACE_SESSIONS),
     useWorkspaces: workspacesHook(workspacesFixture()),
@@ -1885,7 +2166,7 @@ test('client: the folder glyph is the sidebar artwork in both renderer branches'
 });
 
 test('client: the selected session and the pinned scope carry an explicit selected mark', async () => {
-  const page = makePage({
+  const page = makeOpenPage({
     useSessions: sessionsHook(WORKSPACE_SESSIONS),
     useWorkspaces: workspacesHook(workspacesFixture()),
     responses: defaultResponses(),
@@ -1964,7 +2245,7 @@ test('client: the selected session and the pinned scope carry an explicit select
   );
 
   // The flat (degraded) list keeps the same guarantees.
-  const flat = makePage({ useSessions: sessionsHook(SESSIONS_STATE), responses: defaultResponses() });
+  const flat = makeOpenPage({ useSessions: sessionsHook(SESSIONS_STATE), responses: defaultResponses() });
   const flatTree = await flat.flush();
   const flatSelected = collect(
     flatTree,
@@ -2073,7 +2354,7 @@ function scopeTreeRoot(tree) {
 }
 
 test('client: the「查看范围」tree is a standard ARIA tree (tree > treeitem + group > treeitem)', async () => {
-  const page = makePage({
+  const page = makeOpenPage({
     useSessions: sessionsHook(WORKSPACE_SESSIONS),
     useWorkspaces: workspacesHook(workspacesFixture()),
     responses: defaultResponses(),
@@ -2119,7 +2400,7 @@ test('client: the「查看范围」tree is a standard ARIA tree (tree > treeitem
 });
 
 test('client: opening and shutting a workspace adds and removes its group, never an empty one', async () => {
-  const page = makePage({
+  const page = makeOpenPage({
     useSessions: sessionsHook(WORKSPACE_SESSIONS),
     useWorkspaces: workspacesHook(workspacesFixture()),
     responses: defaultResponses(),
@@ -2159,7 +2440,7 @@ test('client: opening and shutting a workspace adds and removes its group, never
 });
 
 test('client: a search keeps the tree shape, including the ungrouped bucket', async () => {
-  const page = makePage({
+  const page = makeOpenPage({
     useSessions: sessionsHook(WORKSPACE_SESSIONS),
     useWorkspaces: workspacesHook(workspacesFixture()),
     responses: defaultResponses(),
@@ -2192,7 +2473,7 @@ test('client: a search keeps the tree shape, including the ungrouped bucket', as
 });
 
 test('client: with no workspaces every session stays level 2 inside the named bucket', async () => {
-  const page = makePage({
+  const page = makeOpenPage({
     useSessions: sessionsHook(WORKSPACE_SESSIONS),
     useWorkspaces: workspacesHook(workspacesFixture({ items: [], archivedSessionIds: [], pinnedSessionIds: [] })),
     responses: defaultResponses(),
@@ -2211,7 +2492,7 @@ test('client: with no workspaces every session stays level 2 inside the named bu
 
 test('client: the「显示更多」action is a child of its group, never a tree child', async () => {
   const { sessions, workspaces } = manyWorkspaceSessions(1, 20);
-  const page = makePage({
+  const page = makeOpenPage({
     useSessions: sessionsHook(sessions),
     useWorkspaces: workspacesHook(workspaces),
     responses: defaultResponses(),
@@ -2232,7 +2513,7 @@ test('client: the「显示更多」action is a child of its group, never a tree 
 });
 
 test('client: the flat fallback declares a listbox instead of faking a tree', async () => {
-  const page = makePage({
+  const page = makeOpenPage({
     useSessions: sessionsHook(manySessions(200)),
     responses: defaultResponses(),
   });
@@ -4370,12 +4651,13 @@ const EN_SWEEP_CASES = [
     copy: ['stMountedOff', 'sessionLimit', 'sessionManualPlaceholder', 'sessionApply', 'sessionGlobal'],
     async run() {
       const unmounted = enPage({
+        scopeOpen: true,
         responses: defaultResponses({ [PATHS.snapshot]: { payload: snapshotFixture({ mounted: false }) } }),
       });
       const unmountedRec = recorder(unmounted);
       await unmountedRec.take();
 
-      const manual = enPage({ responses: defaultResponses() });
+      const manual = enPage({ scopeOpen: true, responses: defaultResponses() });
       const manualRec = recorder(manual);
       await manualRec.take();
 
@@ -4429,6 +4711,22 @@ const EN_SWEEP_CASES = [
     },
   },
   {
+    name: 'scope summary: the「查看范围」block ships collapsed, with no picker body',
+    marks: [
+      ['data-region', 'scope-summary'],
+      ['data-scope-open', 'false'],
+      ['data-action', 'scope-toggle'],
+      ['data-renderer', 'fallback'],
+    ],
+    copy: ['sessionHeading', 'scopeEdit', 'scopeSummaryFlat', ['sessionCurrentLabel', { label: 'Alpha three' }]],
+    async run() {
+      const page = enPage({ useSessions: sessionsHook(WORKSPACE_SESSIONS), responses: defaultResponses() });
+      const rec = recorder(page);
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
     name: 'session selector: the workspace tree, its archived note and its search hint',
     marks: [
       ['data-region', 'session-tree'],
@@ -4439,6 +4737,7 @@ const EN_SWEEP_CASES = [
     copy: ['sessionHeading', 'sessionSearch', 'scopeSearchHint', 'sessionKeyboardHint'],
     async run() {
       const page = enPage({
+        scopeOpen: true,
         useSessions: sessionsHook(WORKSPACE_SESSIONS),
         useWorkspaces: workspacesHook(workspacesFixture()),
         responses: defaultResponses(),
@@ -4448,6 +4747,7 @@ const EN_SWEEP_CASES = [
       typeInto(rec.last(), 'session-search', 'zzz-no-match');
       await rec.take();
       const noMatch = enPage({
+        scopeOpen: true,
         useSessions: sessionsHook(WORKSPACE_SESSIONS),
         useWorkspaces: workspacesHook(workspacesFixture()),
         responses: defaultResponses(),
@@ -4469,6 +4769,7 @@ const EN_SWEEP_CASES = [
     copy: ['scopeDegraded', 'sessionSearch', 'sessionKeyboardHint'],
     async run() {
       const page = enPage({
+        scopeOpen: true,
         useSessions: sessionsHook(FILTER_SESSIONS),
         responses: defaultResponses(),
       });
@@ -4492,6 +4793,7 @@ const EN_SWEEP_CASES = [
       // default walk (one open group) can never reach the cap.
       const wideState = manyWorkspaceSessions(20, 100);
       const wide = enPage({
+        scopeOpen: true,
         useSessions: sessionsHook(wideState.sessions),
         useWorkspaces: workspacesHook(wideState.workspaces),
         responses: defaultResponses(),
@@ -4502,6 +4804,7 @@ const EN_SWEEP_CASES = [
       await wideRec.take();
 
       const grouped = enPage({
+        scopeOpen: true,
         useSessions: sessionsHook(manyWorkspaceSessions(45, 1).sessions),
         useWorkspaces: workspacesHook(manyWorkspaceSessions(45, 1).workspaces),
         responses: defaultResponses(),
@@ -4599,6 +4902,13 @@ const EN_REQUIRED_MARKERS = [
   'data-region=session',
   'data-region=session-tree',
   'data-region=session-list',
+  // g-016: the collapsed summary and both states of its「更改」switch.
+  'data-region=scope-summary',
+  'data-scope-open=false',
+  'data-scope-open=true',
+  'data-action=scope-toggle',
+  'data-role=scope-summary-label',
+  'data-role=scope-summary-hint',
   'data-region=build',
   'data-renderer=fallback',
   'data-renderer=primitives',

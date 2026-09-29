@@ -46,7 +46,7 @@ REST 契约见同目录 [`CONTRACT.md`](./CONTRACT.md)（已冻结，客户端�
 | `core/store.js` | **唯一碰文件系统**的模块：两层路径解析 + 原子写（临时文件 + `rename`）+ 读时校验 + `history.jsonl` 追加与裁剪 + 多文件原子替换（导入） |
 | `core/compat.js` | **boot 兼容性**：semver 解析/比较/范围判定（纯函数）+ DSH 版本探测（best-effort、多锚点、绝不抛）+ 三分支文案（范围内静默 / 超范围 / 探测失败）与 `apply` 失败文案 |
 | `core/experiments.js` | E1–E5 的**实测结论**（由集成测试产出，快照与 CONTRACT.md 共用同一份文案） |
-| `client.js` | 客户端半：「设置」里的独立一栏，**四个一级 tab**（默认「我的 Prompt」）：一行状态摘要（挂载 / 冻结三态 / 构建戳）+ 共用的会话选择器 +「我的 Prompt」写面板（唯一写入口：保留名 + `replace`，含恢复默认的二次确认）/「提示词总览」只读段列表与全文视图（搜索高亮 + `base`↔`effective` 对比，无任何写入口）/「历史与备份」（历史列表 + 版本对比，官方 `DiffBlock` + 自绘降级 + 导出下载与导入预览）/「高级」（旧覆盖只读列表 + `legacy=true` 与 `reset=true` 两个二次确认按钮 + 完整状态区与渲染器自检） |
+| `client.js` | 客户端半：「设置」里的独立一栏，**四个一级 tab**（默认「我的 Prompt」）：一行状态摘要（挂载 / 冻结三态 / 构建戳）+ 共用的会话选择器（默认折叠成一行摘要 +「更改」，g-016）+「我的 Prompt」写面板（唯一写入口：保留名 + `replace`，含恢复默认的二次确认）/「提示词总览」只读段列表与全文视图（搜索高亮 + `base`↔`effective` 对比，无任何写入口）/「历史与备份」（历史列表 + 版本对比，官方 `DiffBlock` + 自绘降级 + 导出下载与导入预览）/「高级」（旧覆盖只读列表 + `legacy=true` 与 `reset=true` 两个二次确认按钮 + 完整状态区与渲染器自检） |
 | `cordis.patch.yml` | bundle 层：一条 `insert` 行同时承载两个半边 |
 | `scripts/check-compat.mjs` | **只读兼容性自检**（`node scripts/check-compat.mjs`）：本插件版本 / 已装 DSH 版本 / peer 范围结论 / 四种 boot 失败形态的终端签名 / 救援步骤。零依赖、不联网、永不抛、退出码恒 0 |
 | `package.json` | 包契约：`dsh.bundle.patch` + `dsh.client.platform: "web"` + `exports["./client"]` |
@@ -302,7 +302,8 @@ dsh --profile web --dump-config-schema   # 条目/补丁的 JSON Schema（写 --
 ## 设置页的四个一级 tab（g-015）
 
 页面顶部只有三件东西：标题、**一行**关键状态摘要（挂载 / 冻结三态 / 构建戳）+ 刷新、以及所有 tab
-共用的会话选择器。其余按功能与使用频率分成四个 tab，顺序固定、默认打开第一个：
+共用的会话选择器（g-016 起它自己也默认只有**一行**摘要 + 「更改」，见下一节）。其余按功能与使用频率分成
+四个 tab，顺序固定、默认打开第一个：
 
 | # | `data-tab-value` | tab | 内容 |
 | --- | --- | --- | --- |
@@ -320,9 +321,35 @@ Revision 6 的**行内编辑/新建覆盖 UI 已整块删除**（行内表单、
 入口按钮），因为写入面已经是「一个名字宽」：一个提供更多写入口的 UI，就是一个提供宿主必然拒绝的写入口的
 UI。逐条删除映射见 [`NOTES.md`](./NOTES.md) §93 第三节，契约见 [`CONTRACT.md`](./CONTRACT.md) §13。
 
+## 「查看范围」默认收成一行（g-016）
+
+g-015 把页面切成了四个 tab，但共用的「查看范围」块**展开着**：真机（`dsh web` 设置页外壳内，1440×900）实测
+约 **500px** 高（搜索框 + 30 个会话的分组树 + 分页 + pinned + 4 行帮助文案），把 tab 条压到 **y≈789**、
+`data-region="tab-panel"` 推到 **y≈1025** —— 也就是**打开页面看不到任何 tab 内容**。所以这块现在是一个
+**折叠区**：
+
+| 状态 | 渲染什么 |
+| --- | --- |
+| 折叠（默认，`data-scope-open="false"`） | **只有一行** `data-region="scope-summary"`：标题 + 当前范围的可读名（`全局（不指定会话）` / `当前：<会话标题>`，没有会话服务时退化为原始 id）+ 一句降级提示（仅在 `useSessions`/`useWorkspaces` 缺失或抛错时）+ 一个「更改」按钮 |
+| 展开（`data-scope-open="true"`） | 原有的搜索框、分组树（或扁平降级列表）、分页、pinned、计数行、帮助文案——标记与行为**逐字不变**，折叠只决定它们**是否被渲染** |
+
+- **开关**：`data-action="scope-toggle"` 是同一个按钮开/关，`aria-expanded` / `data-expanded` 报告状态，
+  文案在「更改」/「收起」之间切换（对齐 DSH「设置 → 模型」的行展开惯例，也沿用本插件 g-012 工作区头行的做法）。
+- **选中后自动收起**：点会话行（或键盘 Enter 选中高亮行）、pinned「当前」/「全局」、「按该 id 查看」、
+  手动输入「应用」——任一选择动作都会收回到摘要，摘要文案随之更新；**不需要第二次点击**。
+  搜索、展开工作区分组、「显示更多」**不会**收起：它们是在浏览，不是在完成选择。
+- **零观感回归**：沿用现有 token / 间距 / 组件；折叠态的高度预算（卡片垂直内边距 + 摘要行最小高 + 一行余量
+  = **70px**）由离线用例断言 ≤ 80px，真机首屏几何由主管合并后量（见下）。
+
+**为什么「未验证」要分开写**：运行中的 `dsh web` 服务的是**主工作树**的 `client.js`（profile 是 `link:`），
+attempt worktree 里的改动对它不可见，所以**外壳内的 tab 条 y 坐标由主管在合并进 `v0.1.0-test` 后走 HMR 实测**；
+本轮只做了离线渲染树/几何断言。现状实测数字、做法、映射表与未验证项见
+[`NOTES.md`](./NOTES.md) §94，契约见 [`CONTRACT.md`](./CONTRACT.md) §13.7。
+
 ## 可访问性：查看范围是一棵标准 ARIA 树
 
-「查看范围」的工作区树（`role="tree"`，`data-region="session-tree"`）现在有标准树语义，观感与交互不变：
+「查看范围」的工作区树（`role="tree"`，`data-region="session-tree"`）现在有标准树语义，观感与交互不变
+（**展开态**的语义——这块默认是折叠的一行摘要，见上一节）：
 
 - `tree` 的**直接子项只有** `treeitem`（工作区节点，`aria-level="1"`，`aria-expanded`）和 `group`
   （该工作区的会话容器，`aria-label` = 工作区标题）；**没有无名分组**，也没有裸 `div` 夹层；
@@ -349,8 +376,8 @@ UI。逐条删除映射见 [`NOTES.md`](./NOTES.md) §93 第三节，契约见 [
 | --- | --- |
 | `client: injects the locale namespace thunk and declares zh/en dictionaries` | zh/en **键位集合完全相等** |
 | `client: every documented rejection code has distinct zh/en copy` | 每个错误码都有**互不相同**的中英文案 |
-| `client: the english render sweep shows no CJK and no bare key, in any branch` | 用 **en** 词典渲染 **39 个场景**（四个一级 tab、全部面板与关键状态，6946 条渲染字符串，含 `placeholder`/`title`/`aria-label`），断言**零 CJK**、**无裸 key 回落**、en 词典非空且值不等于 key |
-| `client: the english sweep really walked every required branch marker` | **80 个 `data-*` 分支标记**必达（含四个 tab 的 `data-active-tab`、`data-mine-state` 五态、四种 `data-confirm-kind`、19 个 `data-warning`、构建戳三态、冻结三态、错误码横幅），少一个就红 |
+| `client: the english render sweep shows no CJK and no bare key, in any branch` | 用 **en** 词典渲染 **40 个场景**（折叠态摘要、四个一级 tab、全部面板与关键状态，6718 条渲染字符串，含 `placeholder`/`title`/`aria-label`），断言**零 CJK**、**无裸 key 回落**、en 词典非空且值不等于 key |
+| `client: the english sweep really walked every required branch marker` | **86 个 `data-*` 分支标记**必达（含折叠态 `data-region="scope-summary"` / `data-scope-open="false"` 与展开态 `="true"`、四个 tab 的 `data-active-tab`、`data-mine-state` 五态、四种 `data-confirm-kind`、19 个 `data-warning`、构建戳三态、冻结三态、错误码横幅），少一个就红 |
 
 覆盖范围、负向对照与**刻意不覆盖**的部分（原生控件文案、DSH 自带 UI 文案、宿主返回的 `message`/`reason`
 原文、真机 SR 与热替换时序）见 [`NOTES.md`](./NOTES.md) §89。
@@ -413,5 +440,8 @@ UI。逐条删除映射见 [`NOTES.md`](./NOTES.md) §93 第三节，契约见 [
   最终 prompt 不受影响，但拿 Revision 6 的数组逐项对比的消费者要预期这条差异。
 - **~~客户端半仍是 Revision 6 的编辑器~~（g-015 已解决）**：设置页现在是上文四个一级 tab，
   唯一写入口「我的 Prompt」写的就是保留名 + `replace`，因此不存在「UI 能发起、宿主必然拒绝」的写入路径。
+- **~~打开页面看不到 tab 内容~~（g-016 已解决）**：「查看范围」默认收成一行摘要 +「更改」，
+  tab 条与面板回到首屏；折叠态高度是**离线预算**（70px ≤ 80px），外壳内的真实 y 坐标由主管合并后实测
+  （`CONTRACT.md` §13.7、`NOTES.md` §94.6）。
 - **`interpolate: false` 的代价**：用户在「我的 Prompt」里写的 `{{变量}}` **永不替换**，原样进入
   prompt。这是刻意的取舍（自由文本，不是模板语言）。

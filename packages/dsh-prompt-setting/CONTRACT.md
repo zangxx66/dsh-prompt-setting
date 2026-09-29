@@ -1185,13 +1185,15 @@ than guess. The shipped client has had a label for every action in this list
 since g-015 (`histAction.legacy-clear`), and §13.3 asserts the label reaches the
 screen instead of the raw enum.
 
-## 13. Client-side contract (Revision 4; re-ordered in Revision 7, g-015)
+## 13. Client-side contract (Revision 4; re-ordered in Revision 7, g-015; collapsed scope in g-016)
 
 ### 13.0 The four first-level tabs
 
 Since g-015 the settings page is four first-level tabs, in a fixed order, with
 the first one open by default. Above them there are exactly three things: the
-title, one line of deciding facts, and the session selector every tab shares.
+title, one line of deciding facts, and the session selector every tab shares —
+the selector itself is **one line** until「更改」is clicked (§13.7), so the tab
+bar and the tab panel are on the first screen.
 
 | order | `data-tab-value` | tab | what it is |
 | --- | --- | --- | --- |
@@ -1314,6 +1316,48 @@ import host code), and `test/client.test.mjs` imports `CUSTOM_SECTION_NAME`
 from `core/custom.js` and asserts that the name in the save body and in the
 delete URL equals it **character for character**. The two copies cannot drift
 apart silently.
+
+### 13.7 The「查看范围」picker is collapsed by default (g-016)
+
+Measured in the real settings shell at 1440×900 before this revision: the
+expanded selector was ~500px tall (search box + the grouped tree + paging +
+pinned rows + four lines of help), which pushed `data-region="tabs"` to
+`y≈789` and `data-region="tab-panel"` past the 900px fold — the page opened
+with **no tab content visible**. The selector is therefore a disclosure.
+
+**Collapsed (the default).** The card is `data-region="session"` with
+`data-scope-open="false"` and renders **exactly one row**:
+`data-region="scope-summary"`, holding the heading, the readable name of the
+current scope (`data-role="scope-summary-label"`: `sessionGlobal` for the
+global scope, `sessionCurrentLabel` for a session, filled with the session's
+readable title — or the raw id when no session service is available), an
+optional one-word degradation hint (`data-role="scope-summary-hint"`:
+`scopeSummaryManual` when `useSessions` is absent/threw, `scopeSummaryFlat`
+when `useWorkspaces` is absent/threw), and **one** switch.
+
+**The switch.** `data-action="scope-toggle"` is the same button in both
+directions: `aria-expanded` and `data-expanded` report `m.scopeOpen`, its label
+is `scopeEdit` (「更改」) when shut and `scopeCollapse` (「收起」) when open.
+This is the row-expansion convention of DSH's own settings rows and of this
+plugin's workspace header (§13 of g-012's work, `NOTES.md` §90).
+
+**Expanded.** Only then are the Revision 3/4 selector body nodes rendered:
+`data-region="session-pinned"`, the search box (`data-role="session-search"`),
+the count line (`data-session-shown` / `-matched` / `-total`), the ARIA tree
+(`data-region="session-tree"`, unchanged shape) or the flat
+`data-region="session-list"`, paging (`data-action="scope-more"`), the notices
+and the help copy. Their behaviour, markers and bounds are **unchanged**; the
+collapse only decides whether they are rendered at all. While collapsed, none
+of those nodes exists (`session-tree` / `session-pinned` / the search input are
+asserted absent, not merely hidden).
+
+**Picking a scope closes the picker.** `pickSession` (a row click or Enter on
+the highlighted row), `useCurrent` (the pinned current-view entry),
+`useTypedId` (「按该 id 查看」), `useGlobal` (the pinned global entry) and
+`applyManual` all set the disclosure back to collapsed, and the summary label
+follows the new scope in the same render. Browsing actions — typing in the
+search box, toggling a workspace group,「显示更多」 — deliberately do **not**
+close it: they do not finish the choice.
 
 ---
 

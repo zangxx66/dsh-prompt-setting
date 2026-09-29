@@ -418,6 +418,11 @@ window.__ModuleLoader__.load({
       sessionNoMatch: '没有匹配的会话，可直接按输入的 id 查看。',
       sessionKeyboardHint: '↑↓ 移动，Enter 选中，Esc 清空搜索',
       sessionSelectedNote: '已指定会话：快照在该会话自身作用域下探测。',
+      // g-016: the collapsed「查看范围」summary row.
+      scopeEdit: '更改',
+      scopeCollapse: '收起',
+      scopeSummaryManual: '会话服务不可用：手动输入 id',
+      scopeSummaryFlat: '工作区服务不可用：平铺列表',
       stateHeading: '状态',
       stMounted: '覆盖引擎',
       stMountedOn: '已挂载',
@@ -698,6 +703,11 @@ window.__ModuleLoader__.load({
       sessionNoMatch: 'No session matches; you can view the typed id directly.',
       sessionKeyboardHint: 'Up/Down to move, Enter to select, Esc to clear the search',
       sessionSelectedNote: 'Session selected: the snapshot probes that session’s own scope.',
+      // g-016: the collapsed「查看范围」summary row.
+      scopeEdit: 'Change',
+      scopeCollapse: 'Collapse',
+      scopeSummaryManual: 'Session service unavailable: type an id',
+      scopeSummaryFlat: 'Workspace service unavailable: flat list',
       stateHeading: 'Status',
       stMounted: 'Override engine',
       stMountedOn: 'Mounted',
@@ -2346,6 +2356,17 @@ window.__ModuleLoader__.load({
     const metaStyle = { fontSize: 12, color: token.labelTertiary };
     /** Shared heading style. */
     const headingStyle = { margin: 0, fontSize: 15, fontWeight: 600 };
+    /**
+     * The always-visible「查看范围」summary row (g-016). One flex line — a
+     * heading, the readable scope name, an optional short state hint and the
+     *「更改」switch — so the card's height collapses to its own padding plus
+     * this row, and the tab bar below it stays on the first screen.
+     */
+    const scopeSummaryStyle = { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minHeight: 24 };
+    /** The readable scope name in the summary row. */
+    const scopeSummaryTextStyle = { ...metaStyle, fontSize: 13, lineHeight: '20px', color: token.labelPrimary };
+    /** The summary row's degradation hint (`scopeSummaryManual` / `scopeSummaryFlat`). */
+    const scopeSummaryHintStyle = { ...metaStyle, lineHeight: '18px' };
 
     /**
      * Render one line of layer information.
@@ -3343,9 +3364,14 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The session selector: pinned entries, a live search box, and a strictly
-     * bounded result area — a workspace tree when the root `useWorkspaces` hook
-     * is present, the flat searchable list when it is not.
+     * The session selector body: pinned entries, a live search box, and a
+     * strictly bounded result area — a workspace tree when the root
+     * `useWorkspaces` hook is present, the flat searchable list when it is not.
+     *
+     * Since g-016 this is the *body* only: {@link scopeSection} wraps it in the
+     * one-line summary, and the body is rendered while that summary's「更改」
+     * switch is open. Everything inside is unchanged by the collapse — the same
+     * markers, the same interaction, the same bounds.
      *
      * Requirement this shape comes from: the session catalog grows monotonically
      * with use, so a control that spreads every row open becomes unusable at
@@ -3359,13 +3385,71 @@ window.__ModuleLoader__.load({
      * @param a - the page actions.
      * @returns the section element.
      */
+    /**
+     * The「查看范围」card and its collapse rule (g-016).
+     *
+     * The picker used to be spread open above the tab bar: measured in the real
+     * settings shell (1440×900) the block was ~500px tall, which pushed
+     * `data-region="tabs"` to y≈789 and `data-region="tab-panel"` past the 900px
+     * fold — opening the page showed no tab content at all. So the block now
+     * renders **one summary line** (the readable scope name, a state hint only
+     * when the picker is degraded, and the「更改」switch) and the body is
+     * rendered only while `m.scopeOpen` is true.
+     *
+     * `data-scope-open` on the section and `aria-expanded` / `data-expanded` on
+     * the switch report the same state, the way the「设置 → 模型」row and this
+     * plugin's own workspace header (g-012) do. `data-region="scope-summary"`
+     * is the always-present row; every body marker (`session-pinned`,
+     * `session-tree`, `session-list`, the search box, the help copy) is absent
+     * while it is shut.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @param body - the picker body, rendered only while expanded.
+     * @returns the section element.
+     */
+    function scopeSection(t, m, a, body) {
+      const scoped = m.sessionArg !== null;
+      const readable = scoped ? sessionLabelOf(m.seat.rows, m.sessionArg) || m.sessionArg : '';
+      const summaryLabel = scoped ? fmt(t('sessionCurrentLabel'), { label: readable }) : t('sessionGlobal');
+      // A hint only when the scope itself is worth a word: the two degraded
+      // seats, which change what the picker can do at all. The healthy tree
+      // case says nothing extra, so the line stays short by construction.
+      const isTree = m.seat.mode !== 'manual' && m.scopeMode === 'tree' && m.scope !== null;
+      const hintKey = m.seat.mode === 'manual' ? 'scopeSummaryManual' : isTree ? null : 'scopeSummaryFlat';
+      const parts = [
+        h('h3', { key: 'heading', style: headingStyle }, t('sessionHeading')),
+        h('span', { key: 'label', 'data-role': 'scope-summary-label', style: scopeSummaryTextStyle }, summaryLabel),
+      ];
+      if (hintKey !== null) {
+        parts.push(h('span', { key: 'hint', 'data-role': 'scope-summary-hint', style: scopeSummaryHintStyle }, t(hintKey)));
+      }
+      parts.push(
+        h(
+          UI.Button,
+          {
+            key: 'toggle',
+            variant: 'outline',
+            'data-action': 'scope-toggle',
+            'data-expanded': String(m.scopeOpen),
+            'aria-expanded': m.scopeOpen,
+            onClick: a.toggleScopeOpen,
+          },
+          m.scopeOpen ? t('scopeCollapse') : t('scopeEdit'),
+        ),
+      );
+      return h(
+        'section',
+        { 'data-region': 'session', 'data-scope-open': String(m.scopeOpen), style: cardStyle },
+        h('div', { key: 'summary', 'data-region': 'scope-summary', style: scopeSummaryStyle }, parts),
+        ...(m.scopeOpen ? body : []),
+      );
+    }
+
     function renderSession(t, m, a) {
       const seat = m.seat;
       if (seat.mode === 'manual') {
-        return h(
-          'section',
-          { 'data-region': 'session', style: cardStyle },
-          h('h3', { style: headingStyle }, t('sessionHeading')),
+        return scopeSection(t, m, a, [
           h(
             'div',
             { style: { marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
@@ -3395,7 +3479,7 @@ window.__ModuleLoader__.load({
             { 'data-session-note': m.sessionArg === null ? 'global' : 'session', style: { margin: '8px 0 0', ...metaStyle } },
             m.sessionArg === null ? t('sessionGlobalNote') : t('sessionSelectedNote'),
           ),
-        );
+        ]);
       }
 
       const rows = seat.rows;
@@ -3409,7 +3493,6 @@ window.__ModuleLoader__.load({
       const selectedLabel = scoped ? sessionLabelOf(rows, m.sessionArg) || m.sessionArg : t('sessionGlobal');
 
       const children = [
-        h('h3', { key: 'heading', style: headingStyle }, t('sessionHeading')),
         // Pinned entries: always present, never filtered away, and — like the
         // group rows — visibly clickable and visibly selected.
         h(
@@ -3604,7 +3687,7 @@ window.__ModuleLoader__.load({
         ),
       );
 
-      return h('section', { 'data-region': 'session', style: cardStyle }, children);
+      return scopeSection(t, m, a, children);
     }
 
     /**
@@ -5199,6 +5282,10 @@ window.__ModuleLoader__.load({
       const [sessionQuery, setSessionQuery] = React.useState('');
       const [sessionActive, setSessionActive] = React.useState(-1);
       const [scopeExpanded, setScopeExpanded] = React.useState({});
+      // g-016: the「查看范围」block ships collapsed. `false` keeps the tab bar
+      // and the tab panel on the first screen;「更改」opens the picker, and
+      // picking a scope closes it again (see the actions below).
+      const [scopeOpen, setScopeOpen] = React.useState(false);
       const [scopeLimits, setScopeLimits] = React.useState({});
       // Only one row can be hovered or focused at a time, so one slot each is
       // enough — and it keeps the interaction state out of a per-row component
@@ -5657,8 +5744,20 @@ window.__ModuleLoader__.load({
         setReload((value) => value + 1);
       };
 
+      /**
+       * Close the「查看范围」picker after a scope was actually chosen (g-016):
+       * picking a row, the current session, a typed id or 「全局」 is the end of
+       * that interaction, so the summary comes back without a second click. It
+       * is deliberately *not* called by the search box, the group headers or
+       * 「显示更多」 — those browse the picker, they do not finish with it.
+       */
+      const closeScope = () => setScopeOpen(false);
+
       const actions = {
         refresh: () => setReload((value) => value + 1),
+        // The「更改」switch: the same button opens and shuts the picker, and
+        // `aria-expanded` on it reports which state it is in.
+        toggleScopeOpen: () => setScopeOpen((open) => !open),
         setTab,
         setView,
         setMineLayer: (value) => {
@@ -5704,18 +5803,21 @@ window.__ModuleLoader__.load({
           // The box reflects the selection: it refills with the readable title.
           setSessionQuery(sessionLabelOf(seat.rows, id));
           setSessionActive(-1);
+          closeScope();
         },
         useCurrent: () => {
           if (seat.currentId.length === 0) return;
           setSelection(seat.currentId);
           setSessionQuery(sessionLabelOf(seat.rows, seat.currentId));
           setSessionActive(-1);
+          closeScope();
         },
         useTypedId: () => {
           const id = sessionQuery.trim();
           if (id.length === 0) return;
           setSelection(id);
           setSessionActive(-1);
+          closeScope();
         },
         onSessionKeyDown: (event) => {
           const key = event && event.key ? String(event.key) : '';
@@ -5734,10 +5836,14 @@ window.__ModuleLoader__.load({
               setSelection(picked.id);
               setSessionQuery(sessionLabelOf(seat.rows, picked.id));
               setSessionActive(-1);
+              closeScope();
               return;
             }
             const typed = sessionQuery.trim();
-            if (typed.length > 0) setSelection(typed);
+            if (typed.length > 0) {
+              setSelection(typed);
+              closeScope();
+            }
             return;
           }
           if (key === 'Escape') {
@@ -5745,11 +5851,15 @@ window.__ModuleLoader__.load({
             setSessionActive(-1);
           }
         },
-        applyManual: () => setSelection(manualId.trim().length > 0 ? manualId.trim() : GLOBAL_SESSION),
+        applyManual: () => {
+          setSelection(manualId.trim().length > 0 ? manualId.trim() : GLOBAL_SESSION);
+          closeScope();
+        },
         useGlobal: () => {
           setSelection(GLOBAL_SESSION);
           setSessionQuery('');
           setSessionActive(-1);
+          closeScope();
         },
         setLayerFilter: (value) => setFilters((current) => ({ ...current, layer: value })),
         setOverridableFilter: (value) => setFilters((current) => ({ ...current, overridable: value })),
@@ -5811,6 +5921,7 @@ window.__ModuleLoader__.load({
         wsSeat,
         scopeMode,
         scope,
+        scopeOpen,
         scopeHover,
         scopeFocus,
         session,

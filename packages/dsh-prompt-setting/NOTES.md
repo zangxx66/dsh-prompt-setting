@@ -3157,3 +3157,149 @@ checkout 会把整个改动回滚掉），并用 `shasum -a 256 -c` 确认逐字
 
 因此以下三项**仍未在 `dsh web` 外壳内验证**，留给主管：真机滚动手感、tab 切换后的焦点位置与 VoiceOver
 层级朗读、`SegmentedTabs`（primitives 分支）在真实 DSH 里的键盘行为。
+
+## 94. 「查看范围」默认收成一行摘要 +「更改」展开（g-016，2026-09-29，基线 `cc9f844`）
+
+g-015 把设置页切成四个 tab，但**共用的会话选择器仍然整块展开**，所以「页面太长」只解决了一半。
+本目标把它改成**折叠区**：默认只有一行摘要 + 一个「更改」开关，选中范围后自动收回去。
+
+### 一、问题（主管真机实测，逐条为既有事实，不是推测）
+
+| 事实 | 数字 |
+| --- | --- |
+| `data-region="session"`（搜索框 + 30 个会话的分组树 + 分页 + pinned + 4 行帮助文案） | 高约 **500px** |
+| `data-region="tabs"` 的 y 坐标 | **≈789** |
+| `data-region="tab-panel"` 的起始 y | **≈1025**（折线 900 以下） |
+| 结论 | 打开页面**看不到任何 tab 内容**，必须先滚动 |
+
+### 二、落了什么（函数级，只动 `packages/dsh-prompt-setting/{client.js,test/client.test.mjs,README.md,NOTES.md,CONTRACT.md}`）
+
+| 位置 | 内容 |
+| --- | --- |
+| `scopeSection(t, m, a, body)`（**新增**） | 「查看范围」卡片的唯一出口。永远渲染一行 `data-region="scope-summary"`：`h3` 标题 + `data-role="scope-summary-label"`（可读范围名）+ **仅在降级时**出现的 `data-role="scope-summary-hint"` + 一个 `UI.Button`（`data-action="scope-toggle"`、`variant="outline"`、`aria-expanded`/`data-expanded` = `m.scopeOpen`、文案 `scopeEdit`/`scopeCollapse`）。`data-scope-open` 落在 `data-region="session"` 上，`body` 只在 `m.scopeOpen` 时展开渲染（`...(m.scopeOpen ? body : [])`，body 项本身就是同级兄弟，不新增包裹层，既有 `elementChildren`/ARIA 结构断言不受影响） |
+| `renderSession`（**改写，行为不变**） | 手动降级分支与正常分支都改为「组装 body → 交给 `scopeSection`」；两个分支各自删掉原来自己渲染的 `h3`（标题现在在摘要行里），返回语句由 `h('section', …)` 改为 `scopeSection(t, m, a, children)`。body 内容（pinned / `session-current` / 搜索 / 计数 / 树或列表 / no-match / empty / degraded / 键盘提示 / note）**一个标记都没动** |
+| 样式（新增 3 个常量） | `scopeSummaryStyle`（`display:flex; align-items:center; gap:8; flexWrap:wrap; minHeight:24`）、`scopeSummaryTextStyle`（13px / lineHeight 20px / `token.labelPrimary`）、`scopeSummaryHintStyle`（`metaStyle` + lineHeight 18px）；沿用既有 token 与 `cardStyle` / `headingStyle` / `metaStyle`，不新增依赖、不新增颜色 |
+| 状态 | 新增 `const [scopeOpen, setScopeOpen] = React.useState(false)`；`model.scopeOpen` |
+| 动作 | 新增 `toggleScopeOpen: () => setScopeOpen((open) => !open)`；新增局部 `closeScope = () => setScopeOpen(false)`，只在**完成选择**的动作里调用：`pickSession`、`useCurrent`、`useTypedId`、`onSessionKeyDown` 的 Enter 两支（选中高亮行 / 无匹配时按输入 id）、`applyManual`、`useGlobal`。`toggleScope`（工作区分组）、`showMoreScope`、`setSessionQuery` **不调用**它 |
+| 词典 | zh/en 各新增 **4 键**：`scopeEdit`（更改 / Change）、`scopeCollapse`（收起 / Collapse）、`scopeSummaryManual`（会话服务不可用：手动输入 id / Session service unavailable: type an id）、`scopeSummaryFlat`（工作区服务不可用：平铺列表 / Workspace service unavailable: flat list）。挂载后 `Object.keys` zh = en = **298**（含运行期注入的 `error.*`）、对称差为空 |
+
+**手动降级分支也一起折叠**：理由是一致性（「查看范围」在任何座位下都先是一行），且降级态本来也没有树可藏；
+摘要行用 `scopeSummaryManual` 说明「会话服务不可用」，比把整段 `sessionLimit` 长句摊在首屏更符合「必要状态提示」。
+
+### 三、用例映射表（既有断言一条未放宽，只加了「先展开」这一步）
+
+`test/client.test.mjs` 里需要断言选择器**内部**的用例，把 `makePage(...)` 换成 `makeOpenPage(...)`
+（= `makePage({ scopeOpen: true })`）。`makeOpenPage` 只是让 harness 在**每次 `flush()` 前**先点一次
+「更改」（选择后组件会自动收起，所以是每次而不是一次）——**用例正文、断言内容、断言强度全部零改动**。
+基线 **92** 条 → 本轮 **97** 条（净 +5：新增 5 条，既有 92 条一条未删）。
+
+| # | 用例（`makeOpenPage`，共 24 条 / 29 处页面构造） |
+| --- | --- |
+| 1 | `the session selector defaults to the current view session` |
+| 2 | `switching to the global option drops ?session= and re-reads the snapshot` |
+| 3 | `a missing useSessions degrades to a manual id and says so` |
+| 4 | `a useSessions hook that throws degrades instead of blanking the panel` |
+| 5 | `the session picker renders a bounded list at every catalog size` |
+| 6 | `the session search matches title, path and id, case-insensitively` |
+| 7 | `a query that matches nothing becomes a manual session id` |
+| 8 | `the pinned entries are never filtered away` |
+| 9 | `picking a row refills the search box with the readable title` |
+| 10 | `the session list is keyboard reachable` |
+| 11 | `the scope picker groups sessions by workspace, like the sidebar` |
+| 12 | `the scope tree keeps the ancestor workspace of every search match` |
+| 13 | `a workspace group folds, unfolds, and pages its rows in` |
+| 14 | `the scope tree never renders the whole catalog (200 / 500 / 2000 sessions)` |
+| 15 | `a missing useWorkspaces degrades to the flat searchable list` |
+| 16 | `every workspace node advertises and toggles its expansion state` |
+| 17 | `the folder glyph is the sidebar artwork in both renderer branches` |
+| 18 | `the selected session and the pinned scope carry an explicit selected mark` |
+| 19 | `the「查看范围」tree is a standard ARIA tree (tree > treeitem + group > treeitem)` |
+| 20 | `opening and shutting a workspace adds and removes its group, never an empty one` |
+| 21 | `a search keeps the tree shape, including the ungrouped bucket` |
+| 22 | `with no workspaces every session stays level 2 inside the named bucket` |
+| 23 | `the「显示更多」action is a child of its group, never a tree child` |
+| 24 | `the flat fallback declares a listbox instead of faking a tree` |
+
+英文渲染横扫（`EN_SWEEP_CASES`）里**要给选择器打标记/断言其文案**的 4 个场景同样只加了 `scopeOpen: true`
+（`status card: an unmounted assembly and a degraded session seat`、`session selector: the workspace tree,
+its archived note and its search hint`、`session selector: the flat fallback says it is degraded`、
+`session selector: a catalog over both render caps warns instead of spreading`），断言逐条不变。
+
+**新增 5 条**（均为折叠态本身）：
+
+| 用例 | 断言 |
+| --- | --- |
+| `the「查看范围」picker ships collapsed, with no body on screen` | `data-scope-open="false"`；摘要含标题与 `当前：Alpha three`；`session-tree`/`session-list`/`session-pinned`/`session-search`/`scope-search-hint`/`session-current`/`group-toggle`/`scope-more` **逐个断言节点数为 0**；`scopeSearchHint`/`sessionKeyboardHint`/`sessionSelectedNote`/`sessionGlobalNote` 四行帮助文案**不在渲染字符串里**；降级座位（无 `useSessions`）与扁平座位（无 `useWorkspaces`）各给出 `scopeSummaryManual` / `scopeSummaryFlat` 提示，且长句 `sessionLimit` 不在屏上 |
+| `「更改」 is one switch that reports aria-expanded and brings the picker back` | 点「更改」→ `data-scope-open="true"`、`aria-expanded=true`、`data-expanded="true"`、按钮文案变 `scopeCollapse`、树/搜索/pinned/分组/搜索提示全部回来；再点同一个按钮 → 回到 `false` |
+| `the summary names the scope, and the range decides the label` | 扁平座位：摘要 = `当前：Second` + `scopeSummaryFlat`；切到 pinned「全局」后摘要 = `全局（不指定会话）`，旧标签**不再出现** |
+| `choosing a scope shuts the picker, and the summary follows it` | 四条选择路径各自「一次点击即收起 + 摘要更新」：点会话行（`a1`）、pinned「全局」、键盘 ArrowDown+Enter（`a2`）、无匹配时点「按该 id 查看」（`pasted-id-42`）；同时断言**输入搜索文本本身不会收起**（`data-scope-open` 仍为 `true`） |
+| `the collapsed「查看范围」block is one row inside an 80px budget` | 折叠态 `data-region="session"` 的**元素子节点恰好 1 个**且是 `data-region="scope-summary"`；摘要行元素 ≤ 4 个、其中 button 恰好 1 个、`<p>` 0 个；高度预算 ≤ 80px；展开后同一节点数 > 折叠态 2 倍且树存在（证明预算不是空断言） |
+
+`EN_REQUIRED_MARKERS` 同步新增 6 个必达分支标记：`data-region=scope-summary`、`data-scope-open=false`、
+`data-scope-open=true`、`data-action=scope-toggle`、`data-role=scope-summary-label`、
+`data-role=scope-summary-hint`；并新增 1 个 en 场景
+（`scope summary: the「查看范围」block ships collapsed, with no picker body`）确保这些标记真的被渲染过。
+
+### 四、折叠态几何断言的实际数值
+
+离线预算函数 `collapsedScopeHeight(tree)`（写在 `test/client.test.mjs`，与用例同区）：
+
+```
+卡片垂直内边距 12×2 = 24px  +  摘要行 minHeight = 24px  +  一行文本余量 = 22px  ⇒  70px
+```
+
+- **实测（`node --test` 输出）**：`scope geometry: collapsed「查看范围」= 70px budget (80px), 37 nodes; expanded = 102 nodes`
+  —— 折叠态渲染树 **37 个宿主节点**，展开态 **102 个**。
+- 结构性那一半同样可断言：折叠态 `data-region="session"` 的元素子节点恰好 **1**（摘要行），
+  展开态 **> 1**；摘要行内 button 恰好 **1**、`<p>` **0**。所以「默认改成展开」或「折叠态仍渲染 body」
+  都会立刻变红（见第五节 ①②④）。
+- **真机几何（`data-region="tabs"` 的 y 坐标 / 首屏可见性）本轮不测**：运行中的 `dsh web` 服务的是**主工作树**的
+  `client.js`（profile 是 `link:`），worktree 的改动对它不可见（§93 第六节两条原因、长期记忆 `mem-820e8abb`、
+  INDEX §一·补二）。按 brief 第 8 条，这一项**由主管在合并进 `v0.1.0-test` 后走 HMR 实测**。
+
+### 五、负向对照（四条，逐条「改坏 → 红 → 备份回写 → `shasum -a 256` 逐字节确认 → 绿」）
+
+四条都在 worktree 内做；「还原」用 `/tmp/g016-client-green.js` 副本回写（**不用 `git checkout`**，本轮改动尚未提交），
+还原后 `client.js` 哈希 `9c5dc6ba74c6…` 与改坏前逐字节一致：
+
+| # | 改坏 | 期望红 | 实测（`test/client.test.mjs`，97 项基线 0 fail） |
+| --- | --- | --- | --- |
+| ① | 默认改成展开：`useState(false)` → `useState(true)` | 5 条折叠态用例 + 2 条英文横扫 | **7 fail / 90 pass**：5 条新用例（折叠、开关、摘要、自动收起、几何）+ 英文横扫两条（缺 `data-scope-open=false`） |
+| ② | 展开态不显示摘要：摘要行改成 `m.scopeOpen ? null : h('div', …)` | 开关用例（展开后找不到 `data-action="scope-toggle"`） | **1 fail / 96 pass**：`「更改」 is one switch that reports aria-expanded and brings the picker back` |
+| ③ | 选中后不自动折叠：删掉 `pickSession` 与 Enter 分支里的两处 `closeScope()` | 自动收起用例 | **1 fail / 96 pass**：`choosing a scope shuts the picker, and the summary follows it` |
+| ④ | 折叠态仍渲染整个 body：`...(m.scopeOpen ? body : [])` → `...body` | 折叠/开关/自动收起/几何四条 | **4 fail / 93 pass**：折叠、开关、自动收起、几何四条全红 |
+
+四条都「改坏 → 红 → 副本回写 → `shasum -a 256` 逐字节一致 → 绿（97/0；全包 365/0）」。
+
+### 六、未验证项（诚实清单，交给主管在集成检查点裁决）
+
+- **外壳内的首屏几何未测**（本 attempt 的硬约束，不是遗漏）：`data-region="tabs"` 的 y 坐标、tab 面板是否
+  真的落在折线以上，必须在合并进 `v0.1.0-test` 后由主管走 HMR 量。本轮只提供**离线预算 70px ≤ 80px** 与
+  结构判据（1 行 + 1 按钮）。
+- **未做独立真浏览器桩（CDP）补充证据**：g-015 用过「本地静态服务器 + React UMD + CDP」的手法，本轮**没做**
+  —— 折叠带来的差异是**渲染树的有无**（离线断言已逐节点覆盖），而首屏几何属于外壳内的事，桩测不出结论；
+  与其造一份不能回答关键问题的证据，不如把这一项如实交给主管。
+- **观感/间距未在真机目视**：摘要行在真实 DSH 里的字号/行高与按钮高度、英文文案是否折行、`flexWrap` 在窄
+  （< 640px）设置面板里是否变成两行，均未实测。离线预算对「折成两行」留了 22px 余量（70px），
+  但**两行以上就会逼近 80px 上界**。
+- **`scopeSummaryManual` / `scopeSummaryFlat` 的中文措辞未做用户测试**：这两个 hint 是本轮新造的用户可见文案
+  （替代被折叠隐藏的长句）。
+- **VoiceOver / 键盘焦点未走查**：`aria-expanded` 是正确的 ARIA 状态，但展开后焦点是否落在选择器内、
+  收起后焦点是否回到「更改」按钮，本轮没有断言也没有真机走查。
+
+### 七、本轮实测证据
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test test/*.test.mjs`（包目录，worktree `.worktrees/g-016-att-01`） | **365 / 365 pass / 0 fail / 0 skipped**（基线 `cc9f844` = **360 / 0**；本轮 +5 条，全部在 `test/client.test.mjs`，其余 12 个测试文件一条未动） |
+| 客户端单文件 | `node --test test/client.test.mjs` | **97 / 97 pass / 0 fail**（基线 92） |
+| 语法 | `node --check client.js`、`node --check test/client.test.mjs` | 通过 |
+| 词典 | 挂载后 `Object.keys` | zh = en = **298**，`onlyZh = 0`、`onlyEn = 0`（字面各新增 4 键） |
+| 英文横扫 | `test/client.test.mjs` 内 | **40** 个场景（基线 39）、**6718** 条渲染字符串（基线 6946，下降是因为默认折叠后多数场景不再渲染选择器 body）、**86** 个必达分支标记（基线 80）；零 CJK、零裸键 |
+| 几何 | `test/client.test.mjs` 内 | 折叠态预算 **70px**（≤ 80px），**37** 宿主节点；展开态 **102** 节点 |
+| 负向对照 | 四条「改坏 → 红 → 副本回写 → `shasum -a 256` → 绿」 | 7 / 1 / 1 / 4 fail；还原后哈希逐字节一致，全量回到 365/0（详见第五节） |
+| 打包 | `npm pack --dry-run --cache /tmp/g016-npm-cache` | **17** 个文件，`test/` 命中 **0**；无新增文件、无临时文件残留 |
+| 哈希 | `shasum -a 256` | `client.js` `9c5dc6ba74c6…`、`test/client.test.mjs` `f75543e9ac41…`（负向对照断言基线） |
+| 契约 | `CONTRACT.md` | §13 标题补 g-016；§13.0 说明选择器自己也是折叠的；**新增 §13.7**（折叠/展开/开关/选中即收起的完整契约与标记表） |
+| 文档 | `README.md` | 包内容表补「默认折叠」；「四个一级 tab」章补一句交叉引用；**新增「查看范围默认收成一行（g-016）」章**；ARIA 树章标注为展开态语义；i18n 表数字 39/6946/80 → 40/6718/86；Revision 7 边界补一条「打开页面看不到 tab 内容（g-016 已解决）」 |
+
