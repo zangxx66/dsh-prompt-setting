@@ -5,22 +5,38 @@
  * no bundler, no JSX, no TypeScript, no runtime dependency beyond `react`
  * (and the optional `@deepseek-ai/dsh-client-ui-primitives` probe).
  *
- * Stage 1C scope: a real page in 「设置 / Settings」 that consumes the frozen
- * `/prompt-setting/*` REST contract (CONTRACT.md Revision 3):
- *   - status bar: `mounted`, the three-state `frozenScope` verdict, both
- *     layers' `enabled`/`path`/`reason`, `generatedAt`, a refresh button;
- *   - session selector sourced from the **props** `useSessions` root hook,
- *     grouped as a workspace tree from the **props** `useWorkspaces` root
- *     hook (same grouping/ordering/visibility rules as the left sidebar),
- *     with a flat searchable list when `useWorkspaces` is absent and a
- *     manual-id degradation when `useSessions` is absent;
- *   - section view: `name`/`index`/layer/`overridable`/`origin` + filters;
- *   - full-text view: `rendered` with search highlight and count, the
- *     `base` ↔ `effective` comparison, and the `renderedResolved: false`
- *     warning;
- *   - edit panel: `replace` / `hide` / `append` (with an optional target
- *     index) into the user or workspace layer, with the「next turn」notice;
- *   - override management: the merged override list with per-entry undo.
+ * Scope: a real page in 「设置 / Settings」 that consumes the frozen
+ * `/prompt-setting/*` REST contract. Since g-015 the page is organised as four
+ * first-level tabs, in a fixed order, with the first one open by default:
+ *   1. **「我的 Prompt」** (`mine`) — the page's ONLY write surface. It writes
+ *      the one name Revision 7 accepts, `prompt-setting:custom-prompt`, with
+ *      `action: "replace"`, and can delete it again; its layer selector uses the
+ *      page's existing `user`/`workspace` (`deriveScope`) semantics;
+ *   2. **「提示词总览」** (`overview`) — strictly read-only: the assembled
+ *      segment list with its origin/layer/applied markers, and the assembled
+ *      text with search, the origin filter and the base ↔ effective comparison.
+ *      No editor node and no `edit` / `append-new` / `delete` action exists in
+ *      its tree, by construction;
+ *   3. **「历史与备份」** (`history`) — the history log, the version comparison
+ *      and the export/import panel, loaded lazily with the tab;
+ *   4. **「高级」** (`advanced`) — the read-only legacy override list, the two
+ *      layer-wide buttons (`legacy=true` clears the frozen overrides and keeps
+ *      「我的 Prompt」; `reset=true` clears the whole layer), each behind its own
+ *      second confirmation, plus the full status block.
+ *
+ * Above the tabs there are exactly three things: the title, one line of
+ * deciding facts (mounted / frozen three-state / build stamp) and the session
+ * selector every tab shares — sourced from the **props** `useSessions` root
+ * hook, grouped as a workspace tree from the **props** `useWorkspaces` root
+ * hook (same grouping/ordering/visibility rules as the left sidebar), with a
+ * flat searchable list when `useWorkspaces` is absent and a manual-id
+ * degradation when `useSessions` is absent.
+ *
+ * The Revision 6 editor — arbitrary names, `hide`/`append`, the row-scoped
+ * inline form, its action/layer tabs, its feasibility check and its tests — is
+ * gone (CONTRACT.md §7 limitation 21 is closed by this page). That is a
+ * product decision, not a simplification: the write face is one name wide, so a
+ * UI that offers more is a UI that offers writes the Host refuses.
  *
  * Two hard rules from the earlier stages are preserved because they are what
  * keeps this page from going blank (see NOTES.md §4 and §7):
@@ -194,23 +210,38 @@ window.__ModuleLoader__.load({
     const IMPORT_PATH = '/prompt-setting/import';
     /** Sentinel for "no session": never a legal `Agent.id`, so it cannot collide. */
     const GLOBAL_SESSION = '\u0000global';
-    const VIEWS = ['sections', 'full', 'overrides'];
+    /**
+     * The reserved section name — the *only* name any write route accepts
+     * since Revision 7 (CONTRACT.md §15.1). It is the literal twin of
+     * `CUSTOM_SECTION_NAME` in `core/custom.js`: a browser module cannot import
+     * host code, so the two copies are kept in sync **by assertion** rather
+     * than by construction — `test/client.test.mjs` imports the constant from
+     * `core/custom.js` and compares it, character for character, with the name
+     * this page puts into every save and delete it sends.
+     */
+    const RESERVED_SECTION_NAME = 'prompt-setting:custom-prompt';
+    /** The one action the reserved name accepts (§4.1). */
+    const RESERVED_SECTION_ACTION = 'replace';
+    /**
+     * The four first-level tabs, in the fixed order they are presented.
+     * 「我的 Prompt」 is first and is the default: it is the only write surface
+     * left, so it is where a user who opened this page for a reason lands.
+     */
+    const MAIN_TABS = ['mine', 'overview', 'history', 'advanced'];
+    /**
+     * The two *read-only* views inside 「提示词总览」. `sections` is the
+     * assembled segment list; `full` is the assembled text. The Revision 6
+     * `overrides` view is gone from this list: its read-only half moved to
+     * 「高级」 and its history/transfer halves to 「历史与备份」.
+     */
+    const VIEWS = ['sections', 'full'];
+    /** The layers 「我的 Prompt」 may write to, in presentation order. */
+    const LAYERS = ['user', 'workspace'];
     /** CONTRACT.md §2.2 — the four `origin` values, in presentation order. */
     const ORIGINS = ['registered', 'appended', 'downstream-added', 'unmatched-override'];
     const LAYER_FILTERS = ['all', 'default', 'user', 'workspace'];
     const OVERRIDABLE_FILTERS = ['all', 'yes', 'no'];
     const ORIGIN_FILTERS = ['all', 'registered', 'appended', 'downstream-added', 'unmatched-override'];
-    /**
-     * The actions the 「编辑已有段」 entry may offer. `append` is deliberately
-     * absent: a name that is already in the assembly cannot be appended to, so
-     * offering it here is exactly the illegal pair this refactor removes.
-     */
-    const EDIT_ACTIONS = ['replace', 'hide'];
-    /**
-     * Every action CONTRACT §4.1 knows. The outer bound the two entries each
-     * take a slice of, and the last guard before a write.
-     */
-    const ACTIONS = ['replace', 'hide', 'append'];
     /** Upper bound on rendered lines put into the DOM (a long prompt is real). */
     const MAX_VIEW_LINES = 3000;
     /** History rows one page asks for (the panel keeps a page, not the file). */
@@ -300,6 +331,22 @@ window.__ModuleLoader__.load({
       ],
       'not-found': ['宿主没有这个路由。', 'The host has no such route.'],
       'duplicate-name': ['同一层出现重复段名。', 'The layer holds a duplicate section name.'],
+      // Revision 7 write face (§15.5–§15.7): the three codes the narrowed route
+      // answers with. Without copy the panel would render the raw enum as if it
+      // were a sentence, which is exactly what the "no untranslated string"
+      // rule forbids.
+      'write-locked': [
+        '该写入被拒绝：只有本插件自有的段 prompt-setting:custom-prompt 可以被写入或删除。',
+        'This write was refused: only this plugin\u2019s own section, prompt-setting:custom-prompt, may be written or deleted.',
+      ],
+      'unsupported-action': [
+        '该段只接受 action=replace。',
+        'That section accepts only action=replace.',
+      ],
+      'conflicting-query': [
+        'reset 与 legacy 不能同时使用：reset 清空整层，legacy 只清旧覆盖。',
+        'reset and legacy cannot be combined: reset clears the whole layer, legacy clears only the legacy overrides.',
+      ],
       // Stage 2 (CONTRACT.md Revision 4).
       'invalid-history-record': [
         '历史记录格式非法，该行已被跳过。',
@@ -402,7 +449,12 @@ window.__ModuleLoader__.load({
       stBuildPingFailedHint: 'ping 请求失败，拿不到宿主指纹，因此无法判断本页是否过期。',
       viewSections: '分段',
       viewFull: '全文',
-      viewOverrides: '覆盖',
+      // g-015: the four first-level tabs, in their fixed presentation order.
+      tabMine: '我的 Prompt',
+      tabOverview: '提示词总览',
+      tabHistory: '历史与备份',
+      tabAdvanced: '高级',
+      overviewReservedNote: '「我的 Prompt」那一段不在这里重复显示：它归「我的 Prompt」tab 所有，请到那里查看和编辑。',
       filterHeading: '筛选',
       filterLayer: '来源层',
       filterOverridable: '可覆盖',
@@ -415,8 +467,6 @@ window.__ModuleLoader__.load({
       fNo: '不可覆盖',
       // The editor's "label: value" row cannot echo its own label; these two
       // are the values of that row only, never of the sections-list Tag.
-      fYesShort: '是',
-      fNoShort: '否',
       originRegistered: '注册段',
       originAppended: '本插件 append',
       originDownstream: '其它插件加入',
@@ -425,11 +475,8 @@ window.__ModuleLoader__.load({
       originUnmatchedHint: '该覆盖没有可作用的目标段。',
       colChars: '字符数 {n}',
       colReason: '原因',
-      colAction: '动作',
       expand: '展开全文',
       collapse: '收起',
-      edit: '编辑',
-      cancel: '取消',
       emptyTitle: '当前装配没有任何段',
       emptyBody: '该作用域下 system prompt 装配为 0 段，这不是错误。',
       sectionsShown: '显示 {shown} / {total} 段',
@@ -452,62 +499,46 @@ window.__ModuleLoader__.load({
       diffAdded: '仅 effective',
       diffRemoved: '仅 base',
       diffHint: '逐段比较：base 是注册原文，effective 是覆盖后的结果。',
-      editHeading: '编辑段',
-      actionReplace: '替换 replace',
-      actionHide: '隐藏 hide',
-      actionAppend: '追加 append',
-      editText: '文本',
       editLayer: '保存层',
-      editOrder: '目标下标（仅 append）',
-      editOrderHint:
-        'append 的 order 是结果数组的目标下标，留空表示追加到末尾；replace / hide 不携带 order。',
-      editOrderInvalid: 'order 必须是不小于 0 的整数，或留空。',
+      // ---- g-015: 「我的 Prompt」, the only write surface (the reserved section)
+      mineHeading: '我的 Prompt',
+      mineNote:
+        '这里写下的内容会成为单独一段 Prompt，排在所有内置段之后，下一轮生效（next-turn）。该段不做变量插值：写进去的 {{...}} 会原样交给模型。',
+      mineTextLabel: '内容',
+      minePlaceholder: '在这里写下你的 Prompt…',
+      mineSave: '保存',
+      mineReset: '恢复默认',
+      mineSaving: '保存中…',
+      mineSaved: '已保存到{layer}，下一轮生效（next-turn）。',
+      mineFailed: '保存失败',
+      mineUnconfigured: '尚未配置：该层还没有「我的 Prompt」，文本为空。',
+      mineDirty: '有未保存的修改。',
+      mineLoaded: '已加载{layer}的「我的 Prompt」。',
+      mineFrozenWarn: '你的 Prompt 在该作用域不生效',
+      mineWorkspaceNeedsSession: '工作区层需要先选择一个会话；未选择时无法写入工作区层。',
+      mineResetTitle: '恢复默认：删除{layer}的「我的 Prompt」',
+      mineResetBody: '这会删除该层保存的文本、回到未配置状态；删除不可撤销。',
       // ---- stage 3: two entries, so an illegal (name, action) pair cannot exist
-      editNameLocked: '段名（只读，取自分段列表）',
-      editNameLockedHint:
-        '编辑入口不改段名：replace / hide 只作用于这一个已注册的段。要新建段请用「新增一段」。',
-      editOriginLabel: '来源',
-      editOverridableLabel: '可覆盖',
-      appendEntry: '新增一段',
-      appendHeading: '新增一段',
-      appendUntitled: '（未命名新段）',
-      appendName: '段名（新段，必须未被注册）',
-      appendNameHint:
-        '必须使用当前装配中尚未注册的段名；要改已注册的段名，请回分段列表用「编辑」替换。',
-      appendActionFixed: '动作固定 append',
-      appendActionHint: '新增入口不提供动作选择：新段只能追加 append，不可能与 replace / hide 混用。',
-      editOverrideHeading: '编辑本覆盖',
-      editOverrideHint:
-        '这一行是本插件自己写入的覆盖（或没有目标的覆盖），段名与动作都由该覆盖本身决定：以同名 append 重存。',
-      feedbackNameRequired: '请先输入段名，保存已禁用。',
-      feedbackNameTaken:
-        '该段名已在当前装配中，保存已禁用：请换一个尚未注册的段名，或回分段列表用「编辑」替换该段。',
-      blockTitle: '此覆盖不会生效，已阻止保存',
       blockAppendExisting:
         '该段名已在当前装配中：append 不会生效（两段不可同名，宿主会跳过并记为 name-already-present）。请改用「替换 replace」，或把段名改成一个尚未注册的新名。',
       blockNotPresent:
         '该段名当前不在装配中：replace / hide 会被跳过（宿主记为 section-not-present）。请改用一个已注册的段名，或改用「追加 append」新建段。',
       blockMissingName: '段名不能为空（宿主会返回 missing-name）。',
-      editSave: '保存',
-      editSaving: '保存中…',
       editDisabledOverridable: '该段不可覆盖',
       editDisabledFrozen: '当前作用域已冻结，编辑不会生效',
-      editDisabledWorkspaceLayer: '工作区层未启用，无法保存到工作区级',
-      editWarnUnknown:
-        '所选会话的冻结状态未知：快照的 frozen 结论描述的是全局装配，该会话自己作用域内的 complete 段不可见。保存仍被允许，但可能不生效。',
-      editWarnFrozenGlobal: '全局装配已冻结，所选会话的冻结状态未知；保存可能不生效。',
       savedNotice: '已保存到{layer}，下一轮生效（next-turn）。',
       deletedNotice: '已撤销{layer}的覆盖，下一轮生效（next-turn）。',
       nextTurn: '下一轮生效',
       ovHeading: '已生效覆盖',
       ovEmpty: '当前作用域没有任何覆盖。',
-      ovUndo: '撤销',
       ovMergedNote: '合并顺序：工作区级覆盖同名用户级条目，并保留其位置。',
       ovUser: '用户级',
       ovWorkspace: '工作区级',
       ovWorkspaceDisabled: '工作区级（未启用）',
       ovEffective: '已生效',
       ovIneffective: '未生效',
+      stHidden: '已隐藏',
+      stAppended: '追加',
       ovUnknown: '效果未知',
       ovReason: '原因',
       ovFixHint: '修正：撤销本条覆盖后用 replace 重存，或改用未注册的新段名 append。',
@@ -559,6 +590,7 @@ window.__ModuleLoader__.load({
       'histAction.append': '追加 append',
       'histAction.remove': '删除单条',
       'histAction.reset-layer': '整层重置',
+      'histAction.legacy-clear': '清除旧覆盖 legacy-clear',
       diffBlockCopy: '复制',
       diffBlockCopied: '已复制',
       diffBlockCollapse: '收起',
@@ -584,14 +616,16 @@ window.__ModuleLoader__.load({
       histDiffBlock: '官方 DiffBlock 渲染',
       histDiffFallback: '自绘渲染（primitives 不可用）',
       histDiffUnavailable: '版本对比失败',
-      resetSection: '恢复默认',
       resetLayersLabel: '整层重置',
       resetLayerUser: '重置用户级层',
       resetLayerWorkspace: '重置工作区级层',
-      resetSectionTitle: '恢复默认：{name}',
-      resetSectionBody:
-        '将删除该段在以下层中的全部覆盖：{layers}。删除后该段回到装配默认内容，且不可撤销（删除内容已记入历史）。',
-      resetSectionNoLayers: '该段没有任何层覆盖。',
+      resetLegacyButton: '清除全部覆盖',
+      resetLegacyTitle: '清除{layer}的全部旧覆盖',
+      resetLegacyBody:
+        '将删除{layer}的 {count} 条冻结覆盖（即「我的 Prompt」以外的全部旧覆盖），并保留「我的 Prompt」本身；删除不可撤销。',
+      resetLegacyEmpty: '{layer}没有可清除的冻结覆盖；「我的 Prompt」会保留。',
+      advReservedTag: '我的 Prompt',
+      advReadOnlyNote: '本列表只读：唯一的写入口是「我的 Prompt」，层级清理请用下面两个按钮。',
       resetLayerTitle: '重置{layer}',
       resetLayerBody:
         '将清空{layer}的全部 {count} 条覆盖，下一轮装配生效。此操作不可撤销，被删除的内容会记入历史。',
@@ -695,7 +729,11 @@ window.__ModuleLoader__.load({
       stBuildPingFailedHint: 'The ping request failed, so there is no host fingerprint and this tab cannot be judged.',
       viewSections: 'Sections',
       viewFull: 'Full text',
-      viewOverrides: 'Overrides',
+      tabMine: 'My Prompt',
+      tabOverview: 'Prompt overview',
+      tabHistory: 'History & backup',
+      tabAdvanced: 'Advanced',
+      overviewReservedNote: 'The My Prompt section is not repeated here: it belongs to the My Prompt tab, where it is read and written.',
       filterHeading: 'Filters',
       filterLayer: 'Layer',
       filterOverridable: 'Overridable',
@@ -706,8 +744,6 @@ window.__ModuleLoader__.load({
       fWorkspace: 'Workspace',
       fYes: 'Overridable',
       fNo: 'Not overridable',
-      fYesShort: 'Yes',
-      fNoShort: 'No',
       originRegistered: 'Registered',
       originAppended: 'Our append',
       originDownstream: 'Added by another plugin',
@@ -717,11 +753,8 @@ window.__ModuleLoader__.load({
       originUnmatchedHint: 'This override had no target section to act on.',
       colChars: 'Chars {n}',
       colReason: 'Reason',
-      colAction: 'Action',
       expand: 'Expand',
       collapse: 'Collapse',
-      edit: 'Edit',
-      cancel: 'Cancel',
       emptyTitle: 'The assembly has no sections',
       emptyBody: 'This scope assembled 0 sections. That is not an error.',
       sectionsShown: 'Showing {shown} / {total} sections',
@@ -744,64 +777,45 @@ window.__ModuleLoader__.load({
       diffAdded: 'effective only',
       diffRemoved: 'base only',
       diffHint: 'Compared per section: base is what was registered, effective is the result after overrides.',
-      editHeading: 'Edit section',
-      actionReplace: 'Replace',
-      actionHide: 'Hide',
-      actionAppend: 'Append',
-      editText: 'Text',
       editLayer: 'Save to layer',
-      editOrder: 'Target index (append only)',
-      editOrderHint:
-        'append’s order is a target index in the resulting array; leave it blank to append at the end. replace / hide never carry an order.',
-      editOrderInvalid: 'The order must be a non-negative integer, or blank.',
+      mineHeading: 'My Prompt',
+      mineNote:
+        'What you write here becomes one extra prompt section, placed after every built-in section, effective from the next turn (next-turn). It is not interpolated: any {{...}} you write reaches the model literally.',
+      mineTextLabel: 'Content',
+      minePlaceholder: 'Write your prompt here…',
+      mineSave: 'Save',
+      mineReset: 'Restore default',
+      mineSaving: 'Saving…',
+      mineSaved: 'Saved to {layer}; effective from the next turn (next-turn).',
+      mineFailed: 'Saving failed',
+      mineUnconfigured: 'Not configured yet: this layer has no My Prompt, so the text is empty.',
+      mineDirty: 'You have unsaved changes.',
+      mineLoaded: 'Loaded the {layer} My Prompt.',
+      mineFrozenWarn: 'Your prompt does not take effect in this scope',
+      mineWorkspaceNeedsSession: 'The workspace layer needs a session; without one it cannot be written.',
+      mineResetTitle: 'Restore default: delete the {layer} My Prompt',
+      mineResetBody: 'This deletes the text stored in that layer and returns it to unconfigured; the deletion cannot be undone.',
       // ---- stage 3: two entries, so an illegal (name, action) pair cannot exist
-      editNameLocked: 'Section name (read-only, taken from the section list)',
-      editNameLockedHint:
-        'The edit entry never changes the name: replace / hide apply to this one registered section. Use “Add a section” to create a new one.',
-      editOriginLabel: 'Origin',
-      editOverridableLabel: 'Overridable',
-      appendEntry: 'Add a section',
-      appendHeading: 'Add a section',
-      appendUntitled: '(unnamed new section)',
-      appendName: 'Section name (new, must be unregistered)',
-      appendNameHint:
-        'Must be a name the current assembly does not have yet; to change a registered name, go back to the section list and use Edit.',
-      appendActionFixed: 'Action fixed to append',
-      appendActionHint:
-        'The add entry offers no action choice: a new section can only be appended, so it can never be mixed up with replace / hide.',
-      editOverrideHeading: 'Edit this override',
-      editOverrideHint:
-        'This row is an override this plugin wrote itself (or one with no target), so its name and action come from that override: it is re-saved as an append under the same name.',
-      feedbackNameRequired: 'Type a section name first; saving is disabled.',
-      feedbackNameTaken:
-        'That name is already in the current assembly, so saving is disabled: pick a new, unregistered name, or go back to the section list and replace that section.',
-      blockTitle: 'This override would not take effect; saving is blocked',
       blockAppendExisting:
         'That name is already in the current assembly, so append would not take effect (two sections may not share a name; the Host skips it as name-already-present). Use Replace instead, or change the name to a new, unregistered one.',
       blockNotPresent:
         'That name is not in the current assembly, so replace / hide would be skipped (the Host records section-not-present). Pick a registered name, or use Append to create a new section.',
       blockMissingName: 'The section name cannot be empty (the Host answers missing-name).',
-      editSave: 'Save',
-      editSaving: 'Saving…',
       editDisabledOverridable: 'This section is not overridable',
       editDisabledFrozen: 'The current scope is frozen; an edit would not take effect',
-      editDisabledWorkspaceLayer: 'The workspace layer is disabled, so it cannot be written',
-      editWarnUnknown:
-        'The selected session’s frozen state is unknown: the snapshot’s frozen verdict describes the global assembly, and a complete section registered in that session’s scope would not be visible. Saving stays allowed, but it may not take effect.',
-      editWarnFrozenGlobal:
-        'The global assembly is frozen and the selected session’s state is unknown; saving may not take effect.',
       savedNotice: 'Saved to {layer}; effective from the next turn (next-turn).',
       deletedNotice: 'Removed the {layer} override; effective from the next turn (next-turn).',
       nextTurn: 'next-turn',
       ovHeading: 'Active overrides',
       ovEmpty: 'This scope has no overrides.',
-      ovUndo: 'Undo',
       ovMergedNote: 'Merge order: a workspace override wins over the same-name user entry and keeps its position.',
       ovUser: 'user layer',
       ovWorkspace: 'workspace layer',
       ovWorkspaceDisabled: 'workspace layer (disabled)',
       ovEffective: 'Applied',
       ovIneffective: 'Not applied',
+      stHidden: 'hidden',
+      stAppended: 'appended',
       ovUnknown: 'Effect unknown',
       ovReason: 'Reason',
       ovFixHint: 'Fix: undo this override and save it again as replace, or use append with a new, unregistered name.',
@@ -854,6 +868,7 @@ window.__ModuleLoader__.load({
       'histAction.append': 'append',
       'histAction.remove': 'remove one',
       'histAction.reset-layer': 'reset the layer',
+      'histAction.legacy-clear': 'clear legacy overrides',
       diffBlockCopy: 'Copy',
       diffBlockCopied: 'Copied',
       diffBlockCollapse: 'Collapse',
@@ -879,14 +894,16 @@ window.__ModuleLoader__.load({
       histDiffBlock: 'rendered by the official DiffBlock',
       histDiffFallback: 'hand-built rendering (primitives unavailable)',
       histDiffUnavailable: 'The version comparison failed',
-      resetSection: 'Restore default',
       resetLayersLabel: 'Reset a whole layer',
       resetLayerUser: 'Reset the user layer',
       resetLayerWorkspace: 'Reset the workspace layer',
-      resetSectionTitle: 'Restore default: {name}',
-      resetSectionBody:
-        'This deletes every override for that section in: {layers}. The section returns to its assembled default and the deletion cannot be undone (the removed content goes to history).',
-      resetSectionNoLayers: 'That section has no override in any layer.',
+      resetLegacyButton: 'Clear all overrides',
+      resetLegacyTitle: 'Clear every legacy override of the {layer}',
+      resetLegacyBody:
+        'This deletes the {count} frozen override(s) of the {layer} (everything except My Prompt) and keeps My Prompt itself; the deletion cannot be undone.',
+      resetLegacyEmpty: 'The {layer} has no frozen overrides to clear; My Prompt is kept.',
+      advReservedTag: 'My Prompt',
+      advReadOnlyNote: 'This list is read-only: My Prompt is the only write surface, and the two buttons below clear a whole layer.',
       resetLayerTitle: 'Reset the {layer}',
       resetLayerBody:
         'This clears all {count} overrides of the {layer}, effective from the next assembly. It cannot be undone; the removed content goes to history.',
@@ -1183,7 +1200,16 @@ window.__ModuleLoader__.load({
      */
     function tabs(items, value, onChange, label, group) {
       if (RENDERER === 'primitives' && typeof primitives.SegmentedTabs === 'function') {
-        return h(primitives.SegmentedTabs, { items, value, onChange, label });
+        // The official control owns its own DOM, so it cannot be asked to carry
+        // our markers. `display: contents` keeps this wrapper invisible to
+        // layout while giving a probe the *same* `data-tab-group` it reads in
+        // the fallback branch — the marker is a fact about every branch, not
+        // about the one that happens to be taken.
+        return h(
+          'div',
+          { 'data-tab-group': group, style: { display: 'contents' } },
+          h(primitives.SegmentedTabs, { items, value, onChange, label }),
+        );
       }
       return h(
         'div',
@@ -2042,133 +2068,6 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Which editor entry a 分段列表 row belongs to.
-     *
-     * The whole point of the refactor is that a name and an action can no
-     * longer be combined by hand, so the *row* decides which entry it opens:
-     *
-     *   - `edit` — the row is a section the incoming assembly really has, so
-     *     only `replace` / `hide` mean anything and the name is not the user's
-     *     to type (the 「编辑已有段」 entry);
-     *   - `edit-override` — the row is our OWN override artifact (`appended`,
-     *     or an override with no target). Its name is deliberately not in the
-     *     incoming assembly ({@link incomingNames} excludes our appends), so
-     *     re-saving it is necessarily an `append` upsert: the action is not the
-     *     user's to pick either.
-     *
-     * @param section - a section row entry, or null.
-     * @param incoming - the names {@link incomingNames} returned.
-     * @returns 'edit' | 'edit-override'.
-     */
-    function editorRoute(section, incoming) {
-      const name = section && typeof section.name === 'string' ? section.name : '';
-      const present = name.length > 0 && incoming instanceof Set && incoming.has(name);
-      return present ? 'edit' : 'edit-override';
-    }
-
-    /**
-     * The actions one editor mode may offer, in display order. Fixed by the
-     * entry, never chosen by the user — this is what makes an illegal pair
-     * (`append` + registered name, `replace` + unregistered name) unreachable
-     * from the interface.
-     * @param mode - 'edit' | 'append'.
-     * @returns a non-empty array of action names.
-     */
-    function editorActions(mode) {
-      return mode === 'append' ? ['append'] : EDIT_ACTIONS;
-    }
-
-    /**
-     * Which entry an editor state came from. Derived from `mode`/`nameLocked`
-     * so it cannot drift from what the panel actually enforces.
-     * @param editor - the editor state, or null.
-     * @returns 'edit' | 'append-new' | 'edit-override', or null.
-     */
-    function editorEntry(editor) {
-      if (editor === null || editor === undefined) return null;
-      if (editor.mode !== 'append') return 'edit';
-      return editor.nameLocked === true ? 'edit-override' : 'append-new';
-    }
-
-    /**
-     * Which control the open panel hands the caret to. The append entry is the
-     * only place a new name is typed, so that is where the user starts; both
-     * entries that edit a name the row already decided start in the text.
-     * @param editor - the editor state.
-     * @returns 'name' | 'text' — a `data-role` value inside the panel.
-     */
-    function editorFocusRole(editor) {
-      return editorEntry(editor) === 'append-new' ? 'name' : 'text';
-    }
-
-    /**
-     * Where the open editor belongs on the page.
-     *
-     * An entry opened *from a row* belongs to that row: the form is rendered
-     * inside it, right below the row's own content, so opening a row far down a
-     * long list never sends the user back to a panel above the list. There are
-     * two row-scoped entries — {@link editorRoute} decides which one a row
-     * opens — and neither is placed anywhere but in its row or in the slot.
-     *
-     * The row can still be taken away while the panel is open, in exactly three
-     * ways, and every one of them lands here: a filter hides it, a view switch
-     * stops listing it, or the assembly itself moves under the panel and the
-     * next snapshot no longer returns that section. None of them may hide the
-     * form, so the editor falls back to the page-level slot and says why. The
-     * fallback is a *placement* decision only — the editor state is untouched,
-     * so nothing typed is lost, and the row coming back puts the form back
-     * inside it. (The section list has no search box and no paging, so those
-     * three are the whole of it.)
-     *
-     * `append-new` is the one entry with no row to belong to: it is the
-     * page-level entry by construction and always renders in the slot.
-     *
-     * @param m - the page model.
-     * @returns `{inline, row, fallback}` — `row` is the owning section name for
-     *   a row-scoped entry (whether or not that row is rendered), and `fallback`
-     *   is `'row-hidden'` when the owning row is not on screen.
-     */
-    function editorPlacement(m) {
-      if (m.editor === null || m.editor === undefined) {
-        return { inline: false, row: null, fallback: null };
-      }
-      if (editorEntry(m.editor) === 'append-new') {
-        return { inline: false, row: null, fallback: null };
-      }
-      const name = typeof m.editor.name === 'string' ? m.editor.name : '';
-      const sections = Array.isArray(m.effectiveSections) ? m.effectiveSections : [];
-      const section = m.view === 'sections' ? sections.find((entry) => entry.name === name) : undefined;
-      if (section !== undefined && m.passesFilters(section)) {
-        return { inline: true, row: name, fallback: null };
-      }
-      return { inline: false, row: name, fallback: 'row-hidden' };
-    }
-
-    /**
-     * The live verdict of the entry the user is standing in: rendered while
-     * typing, and the reason neither entry can reach the pre-save check.
-     *
-     * The two edit presentations hold a name the row already decided for them
-     * (or one that may only be re-saved as an append), so they have nothing to
-     * collide with; the 新增一段 entry is the one place a name is typed, and
-     * there a collision must be visible immediately — not after a save attempt.
-     *
-     * @param editor - the editor state, or null.
-     * @param incoming - the names {@link incomingNames} returned.
-     * @param t - the bound translator.
-     * @returns `{code, text}` or null when nothing stands in the way.
-     */
-    function entryFeedback(editor, incoming, t) {
-      if (editor === null || editor === undefined) return null;
-      if (editor.mode !== 'append' || editor.nameLocked === true) return null;
-      const name = typeof editor.name === 'string' ? editor.name.trim() : '';
-      if (name.length === 0) return { code: 'missing-name', text: t('feedbackNameRequired') };
-      const present = incoming instanceof Set && incoming.has(name);
-      if (present) return { code: 'name-already-present', text: t('feedbackNameTaken') };
-      return null;
-    }
-
-    /**
      * The real cause of an override that did not take effect, when the client
      * can prove it from the section names (the Host's own `reason` describes the
      * observation, not always the cause).
@@ -2555,19 +2454,25 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Which layers hold an override for one section name.
+     * The reserved section's stored text in one layer, read from the *merged*
+     * override list — the same list the assembly applies (CONTRACT.md §3), so
+     * what 「我的 Prompt」 shows is what is configured rather than what the last
+     * render happened to hold.
+     *
+     * `null` means "the layer has no reserved override at all" (the page shows
+     * the unconfigured state); `''` means "configured, but as empty text".
      * @param ovs - the `GET /overrides` payload, or null.
-     * @param name - the section name.
-     * @returns `['user'|'workspace']`, in layer order.
+     * @param layer - `user` | `workspace`.
+     * @returns the stored text, or null when the entry is absent.
      */
-    function layersHolding(ovs, name) {
-      const layers = [];
-      for (const layer of ['user', 'workspace']) {
-        const view = ovs ? ovs[layer] : null;
-        const list = view && Array.isArray(view.overrides) ? view.overrides : [];
-        if (list.some((entry) => entry && entry.name === name)) layers.push(layer);
-      }
-      return layers;
+    function reservedTextOf(ovs, layer) {
+      const merged = ovs && ovs.merged && Array.isArray(ovs.merged.overrides) ? ovs.merged.overrides : [];
+      const entry = merged.find(
+        (candidate) =>
+          candidate && candidate.name === RESERVED_SECTION_NAME && candidate.layer === layer,
+      );
+      if (entry === undefined) return null;
+      return typeof entry.text === 'string' ? entry.text : '';
     }
 
     /**
@@ -2667,17 +2572,83 @@ window.__ModuleLoader__.load({
     // #endregion
 
     /**
-     * Render the status bar (mounted / frozen three-state / layers / timestamp).
+     * One line of the facts that decide whether a write here will do anything:
+     * mounted, the frozen three-state verdict, and the build stamp's verdict.
+     *
+     * g-015 moved every *explanation* into 「高级」 (see
+     * {@link renderStatusDetail}): the top of the page states the verdicts, and
+     * the reason behind each one is one tab away rather than three paragraphs
+     * of permanently visible text. Nothing is lost — each tag keeps its reason
+     * as a `title`, and the full paragraph is rendered in the detail block.
+     *
+     * `data-region="status"` is unchanged, and so is the build stamp's
+     * machine-readable copy on the root container (`data-build`,
+     * `data-build-server`, `data-build-match`), so a probe that read the page
+     * before this goal still reads it.
+     *
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
      * @returns the section element.
      */
-    function renderStatus(t, m, a) {
+    function renderStatusLine(t, m, a) {
       const snapshot = m.snap.data;
       const fz = m.fz;
-      // The build stamp's three states (CONTRACT.md §14). `verdict` is the same
-      // string the page exposes in `data-build-match`.
+      const verdict = buildVerdict(m.boot);
+      const mounted = snapshot ? snapshot.mounted === true : null;
+      const mountedText =
+        mounted === null ? t('stMountedUnknown') : mounted ? t('stMountedOn') : t('stMountedOff');
+      return h(
+        'section',
+        {
+          'data-region': 'status',
+          'data-status-mount': mounted === null ? 'unknown' : String(mounted),
+          'data-status-frozen': fz.kind,
+          'data-status-build': verdict,
+          style: { ...cardStyle, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+        },
+        h('span', { style: { ...metaStyle, fontWeight: 600 } }, t('stateHeading')),
+        h(
+          UI.Tag,
+          { tone: mounted === true ? 'success' : mounted === false ? 'danger' : 'outline', title: t('stMounted') },
+          `${t('stMounted')}: ${mountedText}`,
+        ),
+        h(
+          UI.Tag,
+          {
+            tone: fz.kind === 'unknown' ? 'warning' : fz.frozen ? 'danger' : 'success',
+            title: fz.reason ? String(fz.reason) : undefined,
+          },
+          t(frozenKey(fz)),
+        ),
+        h(
+          UI.Tag,
+          { tone: verdict === 'true' ? 'success' : verdict === 'false' ? 'danger' : 'outline', title: t('stBuild') },
+          `${t('stBuild')}: ${t(verdict === 'true' ? 'stBuildSame' : verdict === 'false' ? 'stBuildStale' : 'stBuildUnknown')}`,
+        ),
+        h(UI.Button, { variant: 'outline', 'data-action': 'refresh', onClick: a.refresh }, t('refresh')),
+      );
+    }
+
+    /**
+     * The full status block, rendered in 「高级」: everything the one-line
+     * summary compresses, plus the facts that were always detail — the
+     * generation timestamp, both layers' `enabled`/`path`/`reason`, both build
+     * digests, which renderer branch this page got, and why an unavailable
+     * primitives module degraded it.
+     *
+     * Both non-green build states explain themselves, and neither is ever
+     * rendered as「过期」unless both digests really answered and really differ;
+     * the frozen verdict is likewise never reported as「未冻结」when it is
+     * unknown.
+     *
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @returns the section element.
+     */
+    function renderStatusDetail(t, m) {
+      const snapshot = m.snap.data;
+      const fz = m.fz;
       const verdict = buildVerdict(m.boot);
       const selfHash = m.boot && m.boot.self && typeof m.boot.self.hash === 'string' ? m.boot.self.hash : null;
       const serverHash =
@@ -2689,21 +2660,12 @@ window.__ModuleLoader__.load({
       const layers = snapshot && snapshot.layers ? snapshot.layers : {};
       return h(
         'section',
-        { 'data-region': 'status', style: cardStyle },
-        h(
-          'div',
-          { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 } },
-          h('h3', { style: headingStyle }, t('stateHeading')),
-          h(UI.Button, { variant: 'outline', 'data-action': 'refresh', onClick: a.refresh }, t('refresh')),
-        ),
+        { 'data-region': 'status-detail', style: cardStyle },
+        h('h3', { style: headingStyle }, t('stateHeading')),
         h(
           'div',
           { style: { marginTop: 8, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-          h(
-            'span',
-            { style: metaStyle },
-            `${t('stMounted')}:`,
-          ),
+          h('span', { style: metaStyle }, `${t('stMounted')}:`),
           h(UI.Tag, { tone: mounted === true ? 'success' : mounted === false ? 'danger' : 'outline' }, mountedText),
           h(UI.Tag, { tone: fz.kind === 'unknown' ? 'warning' : fz.frozen ? 'danger' : 'success' }, frozenText),
           h(
@@ -2712,11 +2674,6 @@ window.__ModuleLoader__.load({
             `${t('stGeneratedAt')}: ${snapshot && snapshot.generatedAt ? String(snapshot.generatedAt) : t('stNone')}`,
           ),
         ),
-        // The build stamp (Revision 6): this tab's own digest vs. the digest the
-        // host published. One line, three states; the machine-readable copy of
-        // the verdict lives on the root container (`data-build`,
-        // `data-build-server`, `data-build-match`), where a probe finds it
-        // without knowing this layout.
         h(
           'div',
           {
@@ -2732,8 +2689,6 @@ window.__ModuleLoader__.load({
           h('span', { style: metaStyle }, `${t('stBuildSelf')}: ${selfHash === null ? t('stNone') : selfHash}`),
           h('span', { style: metaStyle }, `${t('stBuildServer')}: ${serverHash === null ? t('stNone') : serverHash}`),
         ),
-        // Both non-green states explain themselves. Neither is ever rendered as
-        // 「过期」unless both digests really answered and really differ.
         verdict === 'false'
           ? h(
               'p',
@@ -2756,8 +2711,6 @@ window.__ModuleLoader__.load({
                 : t('stBuildUnknownHint'),
             )
           : null,
-        // The unknown case is stated as unknown AND explained; it is never
-        // rendered as "this session is not frozen".
         fz.kind === 'unknown' && !fz.pending
           ? h(
               'p',
@@ -2798,6 +2751,18 @@ window.__ModuleLoader__.load({
           layerLine(t, t('stUserLayer'), layers.user, 'user'),
           layerLine(t, t('stWorkspaceLayer'), layers.workspace, 'workspace'),
         ),
+        h(
+          'div',
+          { 'data-region': 'renderer-info', style: { marginTop: 8, fontSize: 12, color: token.labelTertiary } },
+          `${t('rendererLabel')}: ${t(RENDERER === 'primitives' ? 'rendererPrimitives' : 'rendererFallback')}`,
+        ),
+        RENDERER === 'fallback' && primitivesFailure
+          ? h(
+              'div',
+              { 'data-primitives-failure': 'true', style: { fontSize: 12, color: token.labelTertiary, wordBreak: 'break-word' } },
+              `${t('primitivesFailure')}: ${primitivesFailure}`,
+            )
+          : null,
       );
     }
 
@@ -3679,28 +3644,40 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * One section row.
+     * One section row of the read-only overview.
+     *
+     * Since g-015 this row has **no write entry at all**: the Revision 6
+     * 「编辑」 switch, the row-scoped form it opened and the 新增一段 entry are
+     * gone (the only write surface left is 「我的 Prompt」, which writes the one
+     * name the Revision 7 contract accepts). What remains is what a reader
+     * needs: the identity of the segment, its origin/layer/overridable verdict,
+     * the action that produced the effective text, the reason an override did
+     * not take effect when the client can prove it, and a disclosure that shows
+     * the full text. `data-warning="edit-disabled"` — the gate that used to
+     * disable the edit button — is kept as a *statement* rather than a switch:
+     * the same {@link editGate} verdict, read-only.
+     *
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
      * @param section - the `effective.sections` entry.
-     * @param inlineEditor - the editor element to nest inside this row, or null
-     *   when the open editor belongs to another row (or to the page slot).
      * @returns the row element.
      */
-    function sectionRow(t, m, a, section, inlineEditor) {
+    function sectionRow(t, m, a, section) {
       const origin = originOf(section);
       const layer = sectionLayer(section);
       const overridable = section.overridable === true;
       const gate = editGate(section, m.fz, t);
       const text = typeof section.text === 'string' ? section.text : '';
       const expanded = m.expanded === section.name;
-      // Whether THIS row is the one holding the open form. The caller hands the
-      // panel element to its own row and to no other, so a non-null element is
-      // the ownership fact the 「编辑」 switch reports via `aria-expanded`.
-      const editorOpen = inlineEditor !== null && inlineEditor !== undefined;
       const cause = ineffectiveCause(t, section, m.incoming);
       const showHint = origin === 'downstream-added' || origin === 'unmatched-override';
+      // What the effective text *is*, in the vocabulary the goal asked for:
+      // 已覆盖 / 已隐藏 / 追加, or nothing when the section is untouched. It is
+      // read off `section.action` — the action the assembly really applied —
+      // so a row cannot claim a state the override engine did not produce.
+      const statusKey =
+        section.action === 'replace' ? 'ovEffective' : section.action === 'hide' ? 'stHidden' : section.action === 'append' ? 'stAppended' : null;
       return h(
         'div',
         {
@@ -3728,7 +3705,8 @@ window.__ModuleLoader__.load({
           h(UI.Tag, { tone: originTone(origin) }, t(originKey(origin))),
           h(UI.Tag, { tone: layer === 'default' ? 'neutral' : 'info' }, t(layerKey(layer))),
           h(UI.Tag, { tone: overridable ? 'success' : 'warning' }, overridable ? t('fYes') : t('fNo')),
-          section.action ? h(UI.Tag, { tone: 'info' }, String(section.action)) : null,
+          statusKey === null ? null : h(UI.Tag, { tone: 'info' }, t(statusKey)),
+          section.action ? h(UI.Tag, { tone: 'neutral' }, String(section.action)) : null,
           h('span', { style: metaStyle }, fmt(t('colChars'), { n: text.length })),
         ),
         section.reason
@@ -3751,6 +3729,18 @@ window.__ModuleLoader__.load({
               },
               `${t('ovReason')}: ${cause.text} ${t('ovFixHint')}`,
             ),
+        // The gate is reported, not enforced: this list cannot write, so the
+        // honest thing to render is why a write here *would* not take effect.
+        gate.reasons.length === 0
+          ? null
+          : h(
+              'div',
+              {
+                'data-warning': 'edit-disabled',
+                style: { fontSize: 12, color: token.stateError, wordBreak: 'break-word' },
+              },
+              gate.reasons.join(' '),
+            ),
         h(
           'div',
           { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
@@ -3760,6 +3750,7 @@ window.__ModuleLoader__.load({
               type: 'button',
               'data-action': 'expand',
               'data-section-name': section.name,
+              'aria-expanded': String(expanded),
               onClick: () => a.toggleExpanded(section.name),
               style: {
                 font: 'inherit',
@@ -3773,45 +3764,6 @@ window.__ModuleLoader__.load({
               },
             },
             expanded ? t('collapse') : t('expand'),
-          ),
-          h(
-            'button',
-            {
-              type: 'button',
-              'data-action': 'edit',
-              'data-section-name': section.name,
-              // Which entry this row opens. The row decides it, not the user:
-              // a name the assembly really has is edited as replace/hide, a row
-              // that is only our own override is re-saved as an append.
-              'data-entry': editorRoute(section, m.incoming),
-              // The button is a switch, so it reports its own state. `inlineEditor`
-              // is non-null for exactly the row that owns the open form, and a row
-              // that owns it is always rendered — so this is the ownership fact,
-              // not a copy of it. Only a row that owns the form may be pressed
-              // while its gate is shut: folding is always allowed.
-              // Written as the explicit `'true'`/`'false'` string (like the
-              // `data-*` markers, and unlike `aria-readonly` above) because this
-              // is a state a probe and a test read back verbatim.
-              'aria-expanded': String(editorOpen),
-              disabled: gate.disabled && !editorOpen,
-              title: gate.reasons.join(' '),
-              onClick: () => a.openEditor(section),
-              style: {
-                font: 'inherit',
-                fontSize: 12,
-                padding: '2px 8px',
-                borderRadius: 6,
-                cursor: gate.disabled && !editorOpen ? 'default' : 'pointer',
-                opacity: gate.disabled && !editorOpen ? 0.5 : 1,
-                // The active state is paint only — the border box, padding and
-                // type are byte-identical to every other row's button, so
-                // opening a row moves nothing on screen.
-                color: editorOpen ? token.labelPrimary : token.labelSecondary,
-                background: editorOpen ? token.hoverFill : 'transparent',
-                border: `1px solid ${token.borderL2}`,
-              },
-            },
-            t('edit'),
           ),
         ),
         expanded
@@ -3837,296 +3789,30 @@ window.__ModuleLoader__.load({
               text,
             )
           : null,
-        // The editor that belongs to THIS row is nested here, right below the
-        // row's own content: opening a row far down a long list must not send
-        // the user back to a panel above the list. Rows of a row that owns no
-        // open editor stay exactly as they were.
-        inlineEditor === null || inlineEditor === undefined ? null : inlineEditor,
       );
     }
 
     /**
-     * The edit panel for the selected section.
+     * The read-only segment list — the `sections` view of 「提示词总览」.
      *
-     * Three layers, from the outside in:
+     * Read-only by construction: there is no editor slot (the parameter is
+     * gone, so no caller could hand one in) and no 「新增一段」 entry. The two
+     * controls that remain are `copy` (the assembled text, which is what the
+     * overview tab promises) and the per-row `expand` disclosure.
      *
-     *   1. the *entry* fixes what may be chosen — the name is read-only (or a
-     *      fresh input) and the action set is exactly what the entry allows, so
-     *      an illegal (name, action) pair cannot be produced at all;
-     *   2. the *live* verdict ({@link entryFeedback}) says, while typing, why a
-     *      save is disabled — a name already in the assembly never waits for a
-     *      save attempt to be reported;
-     *   3. the *fallback* ({@link overrideFeasibility} + {@link blockText}) is
-     *      still the pre-save check, rendered and enforced only for a state the
-     *      two entries cannot produce: a broken entry contract, or a world that
-     *      moved under an open panel.
-     *
-     * Where the panel is *drawn* is not decided here: {@link editorPlacement}
-     * answers that, and the caller either nests this element inside the owning
-     * row or puts it in the page-level slot. The placement therefore travels on
-     * this element as markers, so a probe reads it without walking the tree.
+     * The reserved section itself is deliberately **not** listed here: it is
+     * what 「我的 Prompt」 owns, and showing the same text twice on one page is
+     * exactly the confusion the split exists to remove. A one-line note says so
+     * whenever the reserved section is actually in the assembly.
      *
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
-     * @param placement - the {@link editorPlacement} verdict for `m`.
-     * @param rootRef - ref callback for the panel root; the caret is placed
-     *   inside it once React has attached a node.
-     * @returns the panel element, or null when nothing is selected.
-     */
-    function renderEditor(t, m, a, placement, rootRef) {
-      const editor = m.editor;
-      if (editor === null) return null;
-      const entry = editorEntry(editor);
-      const allowed = editorActions(editor.mode);
-      const nameLocked = editor.nameLocked === true;
-      const section = m.editorSection;
-      const workspace = m.snap.data && m.snap.data.layers ? m.snap.data.layers.workspace : null;
-      const workspaceUsable = workspace && workspace.enabled === true;
-      const gate = editGate(section, m.fz, t);
-      const feasibility = overrideFeasibility(editor.name, editor.action, m.incoming);
-      const feedback = entryFeedback(editor, m.incoming, t);
-      // The old check keeps its teeth; it is simply no longer the first thing a
-      // user meets. It only paints when no live verdict already covers it.
-      const fallback = feasibility.blocked && feedback === null;
-      const origin = section === null ? null : originOf(section);
-      const overridable = section === null ? null : section.overridable !== false;
-      const warnings = [];
-      if (gate.warn) {
-        warnings.push(m.fz.frozen ? t('editWarnFrozenGlobal') : t('editWarnUnknown'));
-      }
-      const headingKey =
-        entry === 'append-new' ? 'appendHeading' : entry === 'edit-override' ? 'editOverrideHeading' : 'editHeading';
-      // Ownership and placement are separate facts. `data-editor-row` names the
-      // row the form belongs to — it is set for every row-scoped entry, so it
-      // still names the owner while the fallback is active — and
-      // `data-editor-fallback` appears only when that row is not on screen.
-      // `data-editor-focus` records which control the caret was placed in.
-      const placementProps = { 'data-editor-focus': editorFocusRole(editor) };
-      if (placement.row !== null) placementProps['data-editor-row'] = placement.row;
-      if (placement.fallback !== null) placementProps['data-editor-fallback'] = placement.fallback;
-      return h(
-        'section',
-        {
-          'data-region': 'editor',
-          'data-editor-name': editor.name,
-          'data-editor-mode': editor.mode,
-          'data-editor-entry': entry,
-          'data-editor-name-locked': String(nameLocked),
-          'data-editor-actions': allowed.join(','),
-          ...placementProps,
-          ref: rootRef,
-          style: cardStyle,
-        },
-        h(
-          'h3',
-          { style: headingStyle },
-          `${t(headingKey)}: ${String(editor.name).length > 0 ? editor.name : t('appendUntitled')}`,
-        ),
-        gate.reasons.length > 0
-          ? h(
-              'p',
-              { 'data-warning': 'edit-disabled', style: { margin: '8px 0 0', fontSize: 12, color: token.stateError } },
-              gate.reasons.join(' '),
-            )
-          : null,
-        warnings.map((text, index) =>
-          h(
-            'p',
-            {
-              key: `warn-${index}`,
-              'data-warning': 'edit-uncertain',
-              style: { margin: '8px 0 0', fontSize: 12, color: token.stateWarn, wordBreak: 'break-word' },
-            },
-            text,
-          ),
-        ),
-        // Layer 2: the reason we are inside an entry, stated the moment it
-        // becomes true. Never the blocked-override card, so a name collision is
-        // told apart from a contract violation.
-        feedback === null
-          ? null
-          : h(
-              'p',
-              {
-                'data-warning': 'entry-feedback',
-                'data-feedback-code': feedback.code,
-                style: { margin: '8px 0 0', fontSize: 12, color: token.stateWarn, wordBreak: 'break-word' },
-              },
-              feedback.text,
-            ),
-        // Layer 3: defense in depth. Unreachable through either entry for the
-        // cases they own, which is exactly why it is still here.
-        fallback
-          ? h(
-              'div',
-              {
-                'data-warning': 'override-blocked',
-                'data-block-code': feasibility.code,
-                style: { ...cardStyle, borderColor: token.stateError, marginTop: 8 },
-              },
-              h('strong', { style: { fontSize: 13, color: token.stateError } }, t('blockTitle')),
-              h('div', { style: { marginTop: 4, fontSize: 13, color: token.labelPrimary } }, blockText(t, feasibility)),
-              h('div', { style: { ...metaStyle, marginTop: 4 } }, `${t('errCode')}: ${feasibility.code}`),
-            )
-          : null,
-        h(
-          'div',
-          { style: { marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 } },
-          entry === 'edit' && section !== null
-            ? h(
-                'div',
-                {
-                  'data-editor-meta': 'true',
-                  'data-editor-origin': origin,
-                  'data-editor-overridable': String(overridable),
-                  style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
-                },
-                h('span', { style: metaStyle }, t('editOriginLabel')),
-                h('span', { 'data-role': 'origin' }, t(originKey(origin))),
-                h('span', { style: metaStyle }, t('editOverridableLabel')),
-                h('span', { 'data-role': 'overridable' }, overridable ? t('fYesShort') : t('fNoShort')),
-              )
-            : null,
-          h(
-            'label',
-            { style: { display: 'flex', flexDirection: 'column', gap: 4, maxWidth: 420 } },
-            h('span', { style: metaStyle }, nameLocked ? t('editNameLocked') : t('appendName')),
-            h(UI.Input, {
-              'data-role': 'name',
-              'data-name-locked': String(nameLocked),
-              'aria-readonly': nameLocked,
-              readOnly: nameLocked,
-              value: editor.name,
-              onChange: a.setName,
-            }),
-            h(
-              'span',
-              { 'data-role': 'name-hint', style: metaStyle },
-              entry === 'append-new' ? t('appendNameHint') : nameLocked ? t('editNameLockedHint') : '',
-            ),
-          ),
-          entry === 'edit-override'
-            ? h('p', { 'data-role': 'entry-hint', style: { margin: 0, ...metaStyle } }, t('editOverrideHint'))
-            : null,
-          h(
-            'div',
-            { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-            h('span', { style: metaStyle }, t('colAction')),
-            allowed.length === 1
-              ? h(
-                  'span',
-                  {
-                    'data-role': 'action-fixed',
-                    'data-fixed-action': allowed[0],
-                    style: { fontSize: 12, color: token.labelPrimary },
-                  },
-                  t(allowed[0] === 'append' ? 'appendActionFixed' : allowed[0] === 'hide' ? 'actionHide' : 'actionReplace'),
-                )
-              : tabs(
-                  allowed.map((value) => ({
-                    value,
-                    label: t(value === 'replace' ? 'actionReplace' : value === 'hide' ? 'actionHide' : 'actionAppend'),
-                    id: `ps-action-${value}`,
-                    panelId: 'ps-editor-panel',
-                  })),
-                  editor.action,
-                  a.setAction,
-                  t('colAction'),
-                  'action',
-                ),
-            allowed.length === 1 && !nameLocked
-              ? h('span', { 'data-role': 'action-hint', style: metaStyle }, t('appendActionHint'))
-              : null,
-          ),
-          editor.action === 'hide'
-            ? null
-            : h(
-                'label',
-                { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
-                h('span', { style: metaStyle }, t('editText')),
-                h(UI.Textarea, {
-                  'data-role': 'text',
-                  value: editor.text,
-                  onChange: a.setEditorText,
-                  rows: 10,
-                }),
-              ),
-          h(
-            'div',
-            { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-            h('span', { style: metaStyle }, t('editLayer')),
-            tabs(
-              [
-                { value: 'user', label: t('ovUser'), id: 'ps-layer-user', panelId: 'ps-editor-panel' },
-                {
-                  value: 'workspace',
-                  label: workspaceUsable ? t('ovWorkspace') : t('ovWorkspaceDisabled'),
-                  id: 'ps-layer-workspace',
-                  panelId: 'ps-editor-panel',
-                },
-              ],
-              editor.layer,
-              a.setLayer,
-              t('editLayer'),
-              'editor-layer',
-            ),
-          ),
-          workspaceUsable
-            ? null
-            : h(
-                'p',
-                { 'data-warning': 'workspace-layer-disabled', style: { margin: 0, fontSize: 12, color: token.stateWarn } },
-                `${t('editDisabledWorkspaceLayer')}${workspace && workspace.reason ? ` — ${String(workspace.reason)}` : ''}`,
-              ),
-          editor.action === 'append'
-            ? h(
-                'label',
-                { style: { display: 'flex', flexDirection: 'column', gap: 4, maxWidth: 320 } },
-                h('span', { style: metaStyle }, t('editOrder')),
-                h(UI.Input, {
-                  'data-role': 'order',
-                  value: editor.order,
-                  onChange: a.setOrder,
-                  placeholder: '0',
-                }),
-                h('span', { style: metaStyle }, t('editOrderHint')),
-              )
-            : h('span', { style: metaStyle }, t('editOrderHint')),
-          editor.error
-            ? h('p', { 'data-editor-error': 'true', style: { margin: 0, fontSize: 12, color: token.stateError } }, editor.error)
-            : null,
-          h(
-            'div',
-            { style: { display: 'flex', gap: 8, alignItems: 'center' } },
-            h(
-              UI.Button,
-              {
-                variant: 'primary',
-                'data-action': 'save',
-                disabled: gate.disabled || m.busy === true || feedback !== null || fallback,
-                onClick: a.save,
-              },
-              m.busy ? t('editSaving') : t('editSave'),
-            ),
-            h(UI.Button, { variant: 'outline', 'data-action': 'cancel', onClick: a.closeEditor }, t('cancel')),
-          ),
-        ),
-      );
-    }
-
-    /**
-     * The section list view.
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @param inlineEditor - `{row, element}` for the open row-scoped editor, or
-     *   null when the editor is not drawn inside this list. The element is
-     *   handed to the one row it belongs to, and to no other.
      * @returns the view element.
      */
-    function renderSectionsView(t, m, a, inlineEditor) {
-      const sections = m.effectiveSections;
+    function renderSectionsView(t, m, a) {
+      const all = m.effectiveSections;
+      const sections = all.filter((section) => section.name !== RESERVED_SECTION_NAME);
       const shown = sections.filter((section) => m.passesFilters(section));
       return h(
         'div',
@@ -4144,15 +3830,9 @@ window.__ModuleLoader__.load({
             },
             fmt(t('sectionsShown'), { shown: shown.length, total: sections.length }),
           ),
-          // The second entry: the only place a NEW name is typed, and its
-          // action is not the user's to pick. The row-scoped 「编辑」 entry next
-          // to each section is the other half.
-          h(
-            UI.Button,
-            { variant: 'outline', 'data-action': 'append-new', onClick: a.openAppend },
-            t('appendEntry'),
-          ),
+          h(UI.Button, { variant: 'outline', 'data-action': 'copy', onClick: a.copy }, t('copy')),
         ),
+        h('p', { 'data-note': 'reserved-own-tab', style: { margin: 0, ...metaStyle } }, t('overviewReservedNote')),
         sections.length === 0
           ? h(
               'div',
@@ -4161,21 +3841,7 @@ window.__ModuleLoader__.load({
               h('p', { style: { margin: '4px 0 0', ...metaStyle } }, t('emptyBody')),
             )
           : null,
-        shown.map((section) =>
-          h(
-            'div',
-            { key: section.name },
-            sectionRow(
-              t,
-              m,
-              a,
-              section,
-              inlineEditor !== null && inlineEditor !== undefined && inlineEditor.row === section.name
-                ? inlineEditor.element
-                : null,
-            ),
-          ),
-        ),
+        shown.map((section) => h('div', { key: section.name }, sectionRow(t, m, a, section))),
       );
     }
 
@@ -4720,40 +4386,82 @@ window.__ModuleLoader__.load({
         },
         children,
         renderDiffPanel(t, m, a),
-        renderLayerReset(t, m, a),
       );
     }
 
     /**
-     * Render the whole-layer reset, with its impact stated before the click.
+     * The two layer-wide destructive controls of 「高级」, each with its impact
+     * stated before the click.
+     *
+     * They are deliberately side by side, because the difference between them
+     * is the whole point: `reset=true` clears the layer *including* 「我的
+     * Prompt」, while `legacy=true` clears only the frozen Revision 6/7
+     * overrides and **keeps** 「我的 Prompt」 (CONTRACT.md §12.2) — the way back
+     * from a frozen read-only layer without hand-editing a file. Neither may
+     * fire without its own second confirmation.
+     *
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
      * @returns the panel element.
      */
     function renderLayerReset(t, m, a) {
-      const layer = m.historyLayer;
+      const layer = m.advancedLayer;
       const view = m.ovs.data ? m.ovs.data[layer] : null;
       const list = view && Array.isArray(view.overrides) ? view.overrides : [];
+      const frozen = list.filter((entry) => entry && entry.name !== RESERVED_SECTION_NAME).length;
+      const reserved = list.length - frozen;
       return h(
         'div',
         {
           'data-region': 'layer-reset',
           'data-reset-layer': layer,
           'data-reset-count': String(list.length),
-          style: { borderTop: `1px solid ${token.borderL1}`, paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 4 },
+          'data-reset-frozen-count': String(frozen),
+          'data-reset-reserved-count': String(reserved),
+          style: { border: `1px solid ${token.borderL1}`, borderRadius: 8, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 6 },
         },
         h('h4', { style: { margin: 0, fontSize: 13, fontWeight: 600 } }, t('resetLayersLabel')),
+        h(
+          'div',
+          { 'data-region': 'advanced-layer' },
+          tabs(
+            LAYERS.map((value) => ({
+              value,
+              label: layerLabel(t, value),
+              id: `ps-adv-${value}`,
+              panelId: 'ps-adv-panel',
+            })),
+            layer,
+            a.setAdvancedLayer,
+            t('histLayerLabel'),
+            'advanced-layer',
+          ),
+        ),
         h('p', { style: { margin: 0, ...metaStyle } }, fmt(t('resetLayerBody'), { layer: layerLabel(t, layer), count: list.length })),
         h(
-          UI.Button,
-          {
-            'data-action': 'reset-layer',
-            'data-layer': layer,
-            disabled: list.length === 0 || m.busy,
-            onClick: () => a.requestResetLayer(layer, list.length),
-          },
-          t(layer === 'workspace' ? 'resetLayerWorkspace' : 'resetLayerUser'),
+          'div',
+          { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
+          h(
+            UI.Button,
+            {
+              'data-action': 'legacy-clear',
+              'data-layer': layer,
+              disabled: m.busy,
+              onClick: () => a.requestLegacyClear(layer, frozen),
+            },
+            t('resetLegacyButton'),
+          ),
+          h(
+            UI.Button,
+            {
+              'data-action': 'reset-layer',
+              'data-layer': layer,
+              disabled: list.length === 0 || m.busy,
+              onClick: () => a.requestResetLayer(layer, list.length),
+            },
+            t(layer === 'workspace' ? 'resetLayerWorkspace' : 'resetLayerUser'),
+          ),
         ),
       );
     }
@@ -4930,9 +4638,16 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Render the pending second confirmation. Every destructive stage 2 action
-     * goes through here: the impact and the irreversibility are stated before
-     * the click that performs it, never after.
+     * Render the pending second confirmation. Every destructive action of this
+     * page goes through here: the impact and the irreversibility are stated
+     * before the click that performs it, never after.
+     *
+     * Four kinds remain, and they are exactly the four writes (or write-like
+     * actions) the page can still start: `mine-reset` (drop 「我的 Prompt」 from
+     * one layer), `legacy-clear` (`legacy=true`), `reset-layer` (`reset=true`)
+     * and `import`. The Revision 6 `reset-section` kind is gone with the
+     * generic per-name write it confirmed.
+     *
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
@@ -4942,12 +4657,15 @@ window.__ModuleLoader__.load({
       const confirm = m.confirm;
       if (confirm === null) return null;
       const body = [];
-      if (confirm.kind === 'reset-section') {
-        body.push(fmt(t('resetSectionTitle'), { name: confirm.name }));
+      if (confirm.kind === 'mine-reset') {
+        body.push(fmt(t('mineResetTitle'), { layer: layerLabel(t, confirm.layer) }));
+        body.push(t('mineResetBody'));
+      } else if (confirm.kind === 'legacy-clear') {
+        body.push(fmt(t('resetLegacyTitle'), { layer: layerLabel(t, confirm.layer) }));
         body.push(
-          confirm.layers.length === 0
-            ? t('resetSectionNoLayers')
-            : fmt(t('resetSectionBody'), { layers: confirm.layers.map((layer) => layerLabel(t, layer)).join(', ') }),
+          confirm.count === 0
+            ? fmt(t('resetLegacyEmpty'), { layer: layerLabel(t, confirm.layer) })
+            : fmt(t('resetLegacyBody'), { layer: layerLabel(t, confirm.layer), count: confirm.count }),
         );
       } else if (confirm.kind === 'reset-layer') {
         body.push(fmt(t('resetLayerTitle'), { layer: layerLabel(t, confirm.layer) }));
@@ -4979,12 +4697,33 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function renderOverridesView(t, m, a) {
+    /**
+     * The read-only legacy override list of 「高级」.
+     *
+     * This is the Revision 6 list with its two write controls removed
+     * (`data-action="undo"` and `data-action="reset-section"`): since the
+     * write face narrowed to one name (§15.1), a *generic* per-name write is
+     * not something this page may offer, and a list that cannot act is exactly
+     * what the goal asked for here. What it keeps is the diagnosis — what is
+     * configured, in which layer, whether the assembly applied it, and why not
+     * when the client can prove the cause — because that is what a user needs
+     * to decide between the two layer-wide buttons below.
+     *
+     * `data-region="overrides"` and every per-row marker (`data-override-row`,
+     * `data-override-layer`, `data-override-action`, `data-override-applied`,
+     * `data-override-reason`, `data-overrides-total`) are unchanged.
+     *
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the list element.
+     */
+    function renderOverridesList(t, m, a) {
       const ovs = m.ovs.data;
       const merged = ovs && ovs.merged && Array.isArray(ovs.merged.overrides) ? ovs.merged.overrides : [];
       // `merged` says what is configured; `effective` says what it achieved. The
       // difference is the whole point of this list: a saved override that never
-      // takes effect must be visible as such, with a reason and a way out.
+      // takes effect must be visible as such, with a reason.
       const achieved = new Map();
       for (const section of m.effectiveSections) achieved.set(section.name, section);
       return h(
@@ -5004,6 +4743,7 @@ window.__ModuleLoader__.load({
             const hostReason = target && target.reason ? String(target.reason) : '';
             const cause = ineffectiveCause(t, target, m.incoming);
             const reasonText = cause === null ? hostReason : cause.text;
+            const isReserved = entry.name === RESERVED_SECTION_NAME;
             return h(
               'div',
               {
@@ -5012,6 +4752,7 @@ window.__ModuleLoader__.load({
                 'data-override-layer': entry.layer,
                 'data-override-action': entry.action,
                 'data-override-applied': state === 'unknown' ? 'unknown' : String(state === 'applied'),
+                'data-override-reserved': String(isReserved),
                 style: {
                   border: `1px solid ${state === 'ineffective' ? token.stateError : token.borderL1}`,
                   borderRadius: 8,
@@ -5032,44 +4773,10 @@ window.__ModuleLoader__.load({
                   { tone: state === 'applied' ? 'success' : state === 'ineffective' ? 'danger' : 'outline' },
                   t(state === 'applied' ? 'ovEffective' : state === 'ineffective' ? 'ovIneffective' : 'ovUnknown'),
                 ),
+                isReserved ? h(UI.Tag, { tone: 'info' }, t('advReservedTag')) : null,
                 typeof entry.text === 'string' && entry.text.length > 0
                   ? h('span', { style: { ...metaStyle, flex: '1 1 200px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, entry.text.slice(0, 120))
                   : null,
-                h(
-                  'button',
-                  {
-                    type: 'button',
-                    'data-action': 'undo',
-                    'data-override-name': entry.name,
-                    'data-override-layer': entry.layer === 'workspace' ? 'workspace' : 'user',
-                    onClick: () => a.removeOverride(entry),
-                    style: {
-                      font: 'inherit',
-                      fontSize: 12,
-                      padding: '2px 8px',
-                      borderRadius: 6,
-                      cursor: 'pointer',
-                      color: token.stateError,
-                      background: 'transparent',
-                      border: `1px solid ${token.borderL2}`,
-                    },
-                  },
-                  t('ovUndo'),
-                ),
-                // "Restore default" removes the override for this section from
-                // EVERY layer, which is what returning to the assembled default
-                // means; it is a different, wider operation than `undo`.
-                h(
-                  UI.Button,
-                  {
-                    'data-action': 'reset-section',
-                    'data-section-name': entry.name,
-                    'data-reset-layers': layersHolding(m.ovs.data, entry.name).join(','),
-                    disabled: m.busy,
-                    onClick: () => a.requestResetSection(entry.name),
-                  },
-                  t('resetSection'),
-                ),
               ),
               state === 'ineffective'
                 ? h(
@@ -5090,38 +4797,185 @@ window.__ModuleLoader__.load({
             );
           }),
         ),
-        renderHistoryPanel(t, m, a),
-        renderTransferPanel(t, m, a),
+        // The generic per-name write is gone, so the escape hatch is stated
+        // instead of offered: 「我的 Prompt」 owns the reserved name, and the two
+        // layer-wide buttons below are the only writes this tab performs.
+        h('p', { 'data-note': 'overrides-read-only', style: { margin: 0, ...metaStyle } }, t('advReadOnlyNote')),
       );
     }
 
     /**
-     * Build the whole page tree. Kept separate so the hook order in the
-     * component above stays fixed and the entire tree is produced inside one
-     * `try`.
-     * @param t - the bound translator for this namespace.
+     * 「我的 Prompt」 — the page's only write surface.
+     *
+     * The layer selector reuses the `user` / `workspace` semantics the whole
+     * page already has (`deriveScope` / `scopeMode`): the workspace layer needs
+     * a session, and the page says so instead of letting the write fail with
+     * `workspace-unresolved`. The text box is bound to the reserved section's
+     * stored value for that layer, read from the *merged* override list — the
+     * same list the assembly applies — so what is shown is what is configured,
+     * not what the last render happened to hold.
+     *
+     * Two states are stated rather than implied. `data-mine-state` is the
+     * machine-readable one (`unconfigured` / `dirty` / `saving` / `saved` /
+     * `error`), and a frozen or discarded scope renders
+     * `data-warning="mine-frozen"` — §15.4 requires the panel to say that the
+     * text will not reach the prompt rather than let a write look effective.
+     *
+     * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
-     * @param rootRef - ref callback for the editor panel root, handed down so
-     *   the caret can be placed once the panel is on screen.
-     * @returns the page element.
+     * @returns the panel element.
      */
-    function renderSection(t, m, a, rootRef) {
-      const children = [];
-      children.push(
-        h('h2', { key: 'title', style: { margin: 0, fontSize: 18, fontWeight: 600, lineHeight: '26px' } }, t('title')),
-      );
-      children.push(h('p', { key: 'subtitle', style: { margin: 0, fontSize: 13, color: token.labelTertiary } }, t('subtitle')));
-      children.push(renderSession(t, m, a));
-      children.push(renderStatus(t, m, a));
-      children.push(
+    function renderMinePanel(t, m, a) {
+      const workspace = m.snap.data && m.snap.data.layers ? m.snap.data.layers.workspace : null;
+      const workspaceUsable = workspace && workspace.enabled === true;
+      const layer = m.mineLayer;
+      const state = m.mineState;
+      const reason = m.mineFrozenReason;
+      // Built *here*, inside the tree-building try: `t` may be the broken thing
+      // (see `renderFailureCard`), so no localized string may be produced on the
+      // component's own path.
+      const stateText =
+        state === 'saving'
+          ? t('mineSaving')
+          : state === 'saved'
+            ? fmt(t('mineSaved'), { layer: layerLabel(t, layer) })
+            : state === 'error'
+              ? t('mineFailed')
+              : state === 'unconfigured'
+                ? t('mineUnconfigured')
+                : state === 'dirty'
+                  ? t('mineDirty')
+                  : fmt(t('mineLoaded'), { layer: layerLabel(t, layer) });
+      return h(
+        'div',
+        { 'data-region': 'mine', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+        h('h3', { style: headingStyle }, t('mineHeading')),
+        h('p', { style: { margin: 0, ...metaStyle } }, t('mineNote')),
         h(
           'div',
-          { key: 'views', 'data-region': 'view-tabs' },
+          { 'data-region': 'mine-layer', style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+          h('span', { style: metaStyle }, t('editLayer')),
+          tabs(
+            LAYERS.map((value) => ({
+              value,
+              label: value === 'workspace' && !workspaceUsable ? t('ovWorkspaceDisabled') : layerLabel(t, value),
+              id: `ps-mine-${value}`,
+              panelId: 'ps-mine-panel',
+            })),
+            layer,
+            a.setMineLayer,
+            t('editLayer'),
+            'mine-layer',
+          ),
+        ),
+        workspaceUsable || layer === 'user'
+          ? null
+          : h(
+              'p',
+              {
+                'data-warning': 'mine-workspace-disabled',
+                style: { margin: 0, fontSize: 12, color: token.stateWarn, wordBreak: 'break-word' },
+              },
+              `${t('mineWorkspaceNeedsSession')}${workspace && workspace.reason ? ` — ${String(workspace.reason)}` : ''}`,
+            ),
+        reason === null
+          ? null
+          : h(
+              'p',
+              {
+                'data-warning': 'mine-frozen',
+                style: { margin: 0, fontSize: 12, color: token.stateError, wordBreak: 'break-word' },
+              },
+              `${t('mineFrozenWarn')}${reason.length > 0 ? ` — ${t('stReason')}: ${reason}` : ''}`,
+            ),
+        h(
+          'label',
+          { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+          h('span', { style: metaStyle }, t('mineTextLabel')),
+          h(UI.Textarea, {
+            'data-role': 'mine-text',
+            value: m.mineText,
+            onChange: a.setMineText,
+            rows: 10,
+            placeholder: t('minePlaceholder'),
+          }),
+        ),
+        h(
+          'p',
+          {
+            'data-mine-state': state,
+            style: {
+              margin: 0,
+              fontSize: 12,
+              color: state === 'error' ? token.stateError : state === 'saved' ? token.stateSuccess : token.labelTertiary,
+              wordBreak: 'break-word',
+            },
+          },
+          stateText,
+        ),
+        // A failed write keeps the host's own words: the mapped copy names the
+        // code, and the banner adds the code itself and the host message — the
+        // same shape every other failed request on this page has.
+        state === 'error' && m.mineError
+          ? h('div', { 'data-mine-error': 'true' }, errorBanner(t, m.mineError, t('mineFailed')))
+          : null,
+        h(
+          'div',
+          { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+          h(
+            UI.Button,
+            {
+              variant: 'primary',
+              'data-action': 'mine-save',
+              'data-mine-layer': layer,
+              disabled: m.busy,
+              onClick: a.saveMine,
+            },
+            state === 'saving' ? t('mineSaving') : t('mineSave'),
+          ),
+          h(
+            UI.Button,
+            {
+              'data-action': 'mine-reset',
+              'data-mine-layer': layer,
+              disabled: m.busy || !m.mineConfigured,
+              onClick: a.requestMineReset,
+            },
+            t('mineReset'),
+          ),
+        ),
+      );
+    }
+
+    /**
+     * 「提示词总览」 — the read-only assembly, in its two existing views.
+     *
+     * The inner `view` tabs (`data-region="view-tabs"`, group `view`) are kept
+     * from Revision 6 because both answers are still wanted and neither writes:
+     * `sections` is the segment list with its origin/layer/applied markers,
+     * `full` is the assembled text with search, highlight, the origin filter and
+     * the base ↔ effective comparison. What is gone is the editor slot and the
+     * write entries — this tab renders no `data-region="editor"` and no
+     * `edit` / `append-new` / `delete` action, by construction: the row builder
+     * no longer takes a form, and no caller builds one.
+     *
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the panel element.
+     */
+    function renderOverviewPanel(t, m, a) {
+      return h(
+        'div',
+        { 'data-region': 'overview', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+        h(
+          'div',
+          { 'data-region': 'view-tabs' },
           tabs(
             VIEWS.map((value) => ({
               value,
-              label: t(value === 'sections' ? 'viewSections' : value === 'full' ? 'viewFull' : 'viewOverrides'),
+              label: t(value === 'sections' ? 'viewSections' : 'viewFull'),
               id: `ps-view-${value}`,
               panelId: 'ps-view-panel',
             })),
@@ -5131,16 +4985,107 @@ window.__ModuleLoader__.load({
             'view',
           ),
         ),
+        m.view === 'sections' ? renderSectionsView(t, m, a) : renderFullView(t, m, a),
       );
-      const placement = editorPlacement(m);
-      const editorPanel = renderEditor(t, m, a, placement, rootRef);
-      // A row-scoped panel is drawn by the row that owns it and only falls back
-      // to this slot when that row is not on screen; `append-new` has no row and
-      // is always drawn here.
-      if (editorPanel !== null && !placement.inline) {
-        children.push(h('div', { key: 'editor-slot', style: { display: 'contents' } }, editorPanel));
-      }
-      const inlineEditor = editorPanel !== null && placement.inline ? { row: placement.row, element: editorPanel } : null;
+    }
+
+    /**
+     * 「历史与备份」 — the log, the comparison and the export/import surface.
+     *
+     * Nothing here changed in g-015 except *where it lives*: the panel and the
+     * transfer card moved out of the old 覆盖 view, and the lazy load now keys
+     * off this tab instead of that view, so a page that never opens it still
+     * issues exactly the three baseline requests.
+     *
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the panel element.
+     */
+    function renderHistoryTab(t, m, a) {
+      return h(
+        'div',
+        { 'data-region': 'history-tab', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+        renderHistoryPanel(t, m, a),
+        renderTransferPanel(t, m, a),
+      );
+    }
+
+    /**
+     * 「高级」 — everything rare, everything destructive, everything about the
+     * page itself: the read-only legacy override list, the two layer-wide
+     * buttons (`legacy=true` and `reset=true`, each confirmed), and the full
+     * status block (mount / frozen / build stamp / renderer / primitives
+     * self-check) that the one-line summary at the top compresses away.
+     *
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the panel element.
+     */
+    function renderAdvancedTab(t, m, a) {
+      return h(
+        'div',
+        { 'data-region': 'advanced', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+        renderOverridesList(t, m, a),
+        renderLayerReset(t, m, a),
+        renderStatusDetail(t, m),
+      );
+    }
+
+    /**
+     * Build the whole page tree. Kept separate so the hook order in the
+     * component above stays fixed and the entire tree is produced inside one
+     * `try`.
+     *
+     * The chrome above the tabs is deliberately three things only — the title,
+     * one line of deciding facts ({@link renderStatusLine}) and the session
+     * selector every tab shares. Everything else moved into the tab that owns
+     * it, which is what makes the page short again.
+     *
+     * @param t - the bound translator for this namespace.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the page element.
+     */
+    function renderSection(t, m, a) {
+      const children = [];
+      children.push(
+        h('h2', { key: 'title', style: { margin: 0, fontSize: 18, fontWeight: 600, lineHeight: '26px' } }, t('title')),
+      );
+      children.push(h('p', { key: 'subtitle', style: { margin: 0, fontSize: 13, color: token.labelTertiary } }, t('subtitle')));
+      children.push(renderStatusLine(t, m, a));
+      children.push(renderSession(t, m, a));
+      children.push(
+        h(
+          'div',
+          {
+            key: 'tabs',
+            'data-region': 'tabs',
+            'data-active-tab': m.tab,
+          },
+          tabs(
+            MAIN_TABS.map((value) => ({
+              value,
+              label: t(
+                value === 'mine'
+                  ? 'tabMine'
+                  : value === 'overview'
+                    ? 'tabOverview'
+                    : value === 'history'
+                      ? 'tabHistory'
+                      : 'tabAdvanced',
+              ),
+              id: `ps-tab-${value}`,
+              panelId: 'ps-tab-panel',
+            })),
+            m.tab,
+            a.setTab,
+            t('title'),
+            'main',
+          ),
+        ),
+      );
       if (m.snap.phase === 'error') children.push(h('div', { key: 'snap-error' }, errorBanner(t, m.snap.error, t('loadFailed'))));
       if (m.ovs.phase === 'error') children.push(h('div', { key: 'ovs-error' }, errorBanner(t, m.ovs.error, t('loadFailed'))));
       if (m.notice) {
@@ -5167,30 +5112,20 @@ window.__ModuleLoader__.load({
         h('div', { key: 'panel', 'data-region': 'panel' },
           m.snap.phase === 'loading' && !m.snap.data ? h('p', { key: 'loading', style: metaStyle }, t('loading')) : null,
           m.snap.data
-            ? m.view === 'sections'
-              ? renderSectionsView(t, m, a, inlineEditor)
-              : m.view === 'full'
-                ? renderFullView(t, m, a)
-                : renderOverridesView(t, m, a)
+            ? h(
+                'div',
+                { key: 'tab-panel', 'data-region': 'tab-panel', 'data-tab-value': m.tab },
+                m.tab === 'mine'
+                  ? renderMinePanel(t, m, a)
+                  : m.tab === 'overview'
+                    ? renderOverviewPanel(t, m, a)
+                    : m.tab === 'history'
+                      ? renderHistoryTab(t, m, a)
+                      : renderAdvancedTab(t, m, a),
+              )
             : null,
         ),
       );
-      children.push(
-        h(
-          'div',
-          { key: 'renderer', style: { fontSize: 12, color: token.labelTertiary } },
-          `${t('rendererLabel')}: ${t(RENDERER === 'primitives' ? 'rendererPrimitives' : 'rendererFallback')}`,
-        ),
-      );
-      if (RENDERER === 'fallback' && primitivesFailure) {
-        children.push(
-          h(
-            'div',
-            { key: 'primitives-failure', style: { fontSize: 12, color: token.labelTertiary, wordBreak: 'break-word' } },
-            `${t('primitivesFailure')}: ${primitivesFailure}`,
-          ),
-        );
-      }
       return h(
         'div',
         {
@@ -5204,6 +5139,7 @@ window.__ModuleLoader__.load({
           'data-frozen-scope': m.fz.scope,
           'data-frozen-state': m.fz.kind,
           'data-mounted': m.snap.data ? String(m.snap.data.mounted === true) : 'unknown',
+          'data-active-tab': m.tab,
           // Build stamp, machine-readable at the root so a probe can read the
           // verdict without knowing the status bar's layout (Revision 6):
           // this tab's digest, the host's digest, and `true`/`false`/`unknown`.
@@ -5269,6 +5205,10 @@ window.__ModuleLoader__.load({
       // (which would nest hooks under this page's render).
       const [scopeHover, setScopeHover] = React.useState('');
       const [scopeFocus, setScopeFocus] = React.useState('');
+      // The first-level tab. 「我的 Prompt」 is first *and default*: it is the
+      // only surface that writes, so it is where the page opens (g-015).
+      const [tab, setTab] = React.useState('mine');
+      // The read-only inner view of 「提示词总览」, unchanged from Revision 6.
       const [view, setView] = React.useState('sections');
       const [search, setSearch] = React.useState('');
       const [filters, setFilters] = React.useState({ layer: 'all', overridable: 'all', origin: 'all' });
@@ -5277,7 +5217,14 @@ window.__ModuleLoader__.load({
       const [snap, setSnap] = React.useState({ phase: 'loading', data: null, error: null });
       const [ovs, setOvs] = React.useState({ phase: 'loading', data: null, error: null });
       const [reload, setReload] = React.useState(0);
-      const [editor, setEditor] = React.useState(null);
+      // 「我的 Prompt」: the selected layer, the user's unsaved draft (keyed by
+      // layer+session so switching layers cannot carry a draft across), and the
+      // last operation's outcome. `mineDraft === null` means "show what is
+      // stored", which is what makes a fresh load, a layer switch and a
+      // post-save reload all correct without clobbering typing.
+      const [mineLayer, setMineLayer] = React.useState('user');
+      const [mineDraft, setMineDraft] = React.useState(null);
+      const [mineStatus, setMineStatus] = React.useState({ kind: 'idle', error: null });
       const [notice, setNotice] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
       // Stage 2 state: history, the comparison, the pending confirmation and
@@ -5285,6 +5232,10 @@ window.__ModuleLoader__.load({
       // derived from a real config file until a route answers.
       const [hist, setHist] = React.useState({ phase: 'idle', data: null, error: null });
       const [historyLayer, setHistoryLayer] = React.useState('user');
+      // 「高级」 picks its own layer: the two layer-wide buttons are destructive,
+      // and silently sharing 「历史与备份」's selector would make selecting a log
+      // filter change what a clear button is aimed at.
+      const [advancedLayer, setAdvancedLayer] = React.useState('user');
       const [diffSel, setDiffSel] = React.useState({ from: null, to: DIFF_CURRENT });
       const [diff, setDiff] = React.useState({ phase: 'idle', data: null, error: null });
       const [confirm, setConfirm] = React.useState(null);
@@ -5378,11 +5329,11 @@ window.__ModuleLoader__.load({
         };
       }, [sessionArg, reload]);
 
-      // History is loaded only while the 覆盖 view is open: the section and
-      // full-text views must not pay for a log they do not show, and a mount
-      // that never opens the tab must issue exactly the three stage 1C requests.
+      // History is loaded only while 「历史与备份」 is open: 「我的 Prompt」 and
+      // 「提示词总览」 must not pay for a log they never show, and a mount that
+      // never opens that tab must issue exactly the three baseline requests.
       React.useEffect(() => {
-        if (view !== 'overrides') return undefined;
+        if (tab !== 'history') return undefined;
         if (historyLayer === 'workspace' && sessionArg === null) {
           // The host refuses this with `workspace-unresolved`; asking anyway
           // would turn a known answer into an error banner.
@@ -5405,51 +5356,7 @@ window.__ModuleLoader__.load({
         return () => {
           cancelled = true;
         };
-      }, [view, historyLayer, sessionArg, reload]);
-
-      // Two things happen once, when a panel is opened, and never again for that
-      // open: the panel is pulled into view and the caret is placed inside it.
-      //
-      //   - The scroll is the *smallest* one that shows the form
-      //     (`block: 'nearest'`); `'start'` would yank the whole page and lose
-      //     the row the user just clicked. A node without `scrollIntoView` is
-      //     survivable and simply does not scroll.
-      //   - The caret follows the entry: a fresh name is typed in the append
-      //     entry, an existing section is edited in the text. The control is
-      //     reached through the panel *root* ref, so this works whatever atoms
-      //     the renderer resolved to — the root is a host element in both
-      //     branches.
-      //
-      // Each half is latched by its own key, because each depends on something
-      // different (a node vs. a node that contains the control). Both latches
-      // are cleared when the panel closes, which re-arms the same row. A
-      // re-render is not an open: typing must neither re-scroll nor pull the
-      // caret back out of the control the user moved to.
-      const editorFocus = React.useRef({ focusKey: null, scrollKey: null, root: null });
-      React.useEffect(() => {
-        if (editor === null) {
-          editorFocus.current.focusKey = null;
-          editorFocus.current.scrollKey = null;
-          return;
-        }
-        const key = `${editorEntry(editor)}|${String(editor.name)}|${String(editor.nameLocked)}`;
-        const node = editorFocus.current.root;
-        if (node === null || node === undefined) return;
-        if (editorFocus.current.scrollKey !== key && typeof node.scrollIntoView === 'function') {
-          editorFocus.current.scrollKey = key;
-          node.scrollIntoView({ block: 'nearest' });
-        }
-        if (editorFocus.current.focusKey === key) return;
-        const target =
-          typeof node.querySelector === 'function' ? node.querySelector(`[data-role="${editorFocusRole(editor)}"]`) : null;
-        if (target === null || target === undefined || typeof target.focus !== 'function') return;
-        editorFocus.current.focusKey = key;
-        target.focus();
-      }, [editor]);
-      /** Hand the panel root to {@link editorFocus} once React commits it. */
-      const editorRootRef = (node) => {
-        editorFocus.current.root = node;
-      };
+      }, [tab, historyLayer, sessionArg, reload]);
 
       const snapshot = snap.data;
       const fz = frozenState(snapshot, sessionArg !== null);
@@ -5460,6 +5367,40 @@ window.__ModuleLoader__.load({
       const phase = snap.phase === 'ready' && effectiveSections.length === 0 ? 'empty' : snap.phase;
       const incoming = incomingNames(snapshot);
 
+      // ---- 「我的 Prompt」: the reserved section's stored value and its state
+      // The draft is keyed by layer+session, so a draft typed for `user` is not
+      // shown as if it were the workspace layer's, and switching back restores
+      // it rather than losing it.
+      const mineKey = `${mineLayer}|${sessionArg === null ? '' : sessionArg}`;
+      const mineStored = reservedTextOf(ovs.data, mineLayer);
+      const mineConfigured = mineStored !== null && mineStored.length > 0;
+      const mineText =
+        mineDraft !== null && mineDraft.key === mineKey ? mineDraft.text : mineStored === null ? '' : mineStored;
+      // The reserved section's own effective entry is the most direct proof that
+      // the text reached (or did not reach) the prompt: §15.4 reports a
+      // discarded scope as `applied: false` with a reason.
+      const reservedEffective =
+        effectiveSections.find((section) => section && section.name === RESERVED_SECTION_NAME) || null;
+      const mineFrozenReason = (() => {
+        if (fz.certain && fz.frozen) return fz.reason ? String(fz.reason) : '';
+        if (reservedEffective !== null && reservedEffective.applied === false) {
+          return reservedEffective.reason ? String(reservedEffective.reason) : '';
+        }
+        if (fz.kind === 'unknown' && fz.frozen) return fz.reason ? String(fz.reason) : '';
+        return null;
+      })();
+      const mineState =
+        mineStatus.kind === 'saving'
+          ? 'saving'
+          : mineStatus.kind === 'saved'
+            ? 'saved'
+            : mineStatus.kind === 'error'
+              ? 'error'
+              : !mineConfigured && mineText.length === 0
+                ? 'unconfigured'
+                : mineStored !== mineText
+                  ? 'dirty'
+                  : 'idle';
       /**
        * Ask the host for a comparison and store the result. `from`/`to` are a
        * history id or {@link DIFF_CURRENT}; a half-made selection clears the
@@ -5478,38 +5419,6 @@ window.__ModuleLoader__.load({
             ? { phase: 'ready', data: result.payload, error: null }
             : { phase: 'error', data: null, error: result.error },
         );
-      };
-
-      /**
-       * Remove one section's override from every layer that holds it, which is
-       * what "restore the assembled default" means. One request per layer: the
-       * host has no cross-layer write, and inventing one here would be a second
-       * source of truth.
-       */
-      const resetSection = async (name, layers) => {
-        if (layers.length === 0) {
-          setNotice({ tone: 'error', text: t('resetNoneNotice') });
-          return;
-        }
-        setBusy(true);
-        let removed = 0;
-        for (const layer of layers) {
-          const query = `${layerQuery(layer, sessionArg)}&name=${encodeURIComponent(name)}`;
-          const result = await requestJson(`${OVERRIDES_PATH}?${query}`, { method: 'DELETE' });
-          if (!result.ok) {
-            setBusy(false);
-            setNotice({ tone: 'error', text: errorText(t, result.error) });
-            setReload((value) => value + 1);
-            return;
-          }
-          removed += 1;
-        }
-        setBusy(false);
-        setNotice({
-          tone: removed > 0 ? 'success' : 'error',
-          text: removed > 0 ? fmt(t('resetDoneNotice'), { count: removed }) : t('resetNoneNotice'),
-        });
-        setReload((value) => value + 1);
       };
 
       /** Clear one whole layer (`DELETE …&reset=true`). */
@@ -5655,9 +5564,115 @@ window.__ModuleLoader__.load({
         setReload((value) => value + 1);
       };
 
+      /**
+       * 「我的 Prompt」 save: `PUT /prompt-setting/overrides` with the reserved
+       * name and `replace`, which is the entire write face since Revision 7
+       * (§4.1). The text is sent exactly as typed — trimming someone's prompt
+       * would be a silent edit of the thing they are configuring — and a
+       * workspace write without a session is refused here, with the same code
+       * the Host would answer, instead of being sent to be rejected.
+       */
+      const saveMine = async () => {
+        const layer = mineLayer;
+        if (layer === 'workspace' && sessionArg === null) {
+          // The host would answer exactly this; refusing here keeps a known
+          // answer from being turned into a round trip.
+          setMineStatus({ kind: 'error', error: { code: 'workspace-unresolved' } });
+          setNotice({ tone: 'error', text: errorText(t, { code: 'workspace-unresolved' }) });
+          return;
+        }
+        setMineStatus({ kind: 'saving', error: null });
+        setBusy(true);
+        const body = {
+          layer,
+          section: { name: RESERVED_SECTION_NAME, action: RESERVED_SECTION_ACTION, text: mineText },
+        };
+        if (sessionArg !== null) body.session = sessionArg;
+        const result = await requestJson(OVERRIDES_PATH, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        setBusy(false);
+        if (!result.ok) {
+          setMineStatus({ kind: 'error', error: result.error });
+          setNotice({ tone: 'error', text: errorText(t, result.error) });
+          return;
+        }
+        // Keep the draft: it is what was just written, so the box does not
+        // flicker back to the stored value while the re-read is in flight.
+        setMineDraft({ key: mineKey, text: mineText });
+        setMineStatus({ kind: 'saved', error: null });
+        setNotice({
+          tone: 'success',
+          text: fmt(t('savedNotice'), { layer: layerLabel(t, layer) }),
+        });
+        setReload((value) => value + 1);
+      };
+
+      /**
+       * 「恢复默认」 for 「我的 Prompt」: the single-name `DELETE`, which since
+       * Revision 7 is exactly the reserved section. Confirmed first (§12.1): it
+       * destroys text the user wrote.
+       */
+      const resetMine = async () => {
+        const layer = mineLayer;
+        setMineStatus({ kind: 'saving', error: null });
+        setBusy(true);
+        const query = `${layerQuery(layer, sessionArg)}&name=${encodeURIComponent(RESERVED_SECTION_NAME)}`;
+        const result = await requestJson(`${OVERRIDES_PATH}?${query}`, { method: 'DELETE' });
+        setBusy(false);
+        if (!result.ok) {
+          setMineStatus({ kind: 'error', error: result.error });
+          setNotice({ tone: 'error', text: errorText(t, result.error) });
+          return;
+        }
+        setMineDraft(null);
+        setMineStatus({ kind: 'idle', error: null });
+        setNotice({
+          tone: 'success',
+          text: fmt(t('deletedNotice'), { layer: layerLabel(t, layer) }),
+        });
+        setReload((value) => value + 1);
+      };
+
+      /**
+       * Clear one layer's frozen (non-reserved) overrides: `legacy=true`, which
+       * keeps 「我的 Prompt」 (§12.2). The same shape as the layer reset, one
+       * flag apart, so the two share this reporting path.
+       */
+      const clearLegacy = async (layer) => {
+        setBusy(true);
+        const result = await requestJson(`${OVERRIDES_PATH}?${layerQuery(layer, sessionArg)}&legacy=true`, { method: 'DELETE' });
+        setBusy(false);
+        if (!result.ok) {
+          setNotice({ tone: 'error', text: errorText(t, result.error) });
+          return;
+        }
+        const count = result.payload && typeof result.payload.count === 'number' ? result.payload.count : 0;
+        setNotice({
+          tone: 'success',
+          text: count > 0 ? fmt(t('resetDoneNotice'), { count }) : t('resetNoneNotice'),
+        });
+        setReload((value) => value + 1);
+      };
+
       const actions = {
         refresh: () => setReload((value) => value + 1),
+        setTab,
         setView,
+        setMineLayer: (value) => {
+          setMineLayer(value === 'workspace' ? 'workspace' : 'user');
+          setMineStatus({ kind: 'idle', error: null });
+        },
+        setMineText: (event) => {
+          const value = event && event.target ? String(event.target.value) : '';
+          setMineDraft({ key: mineKey, text: value });
+          setMineStatus({ kind: 'idle', error: null });
+        },
+        saveMine,
+        requestMineReset: () => setConfirm({ kind: 'mine-reset', layer: mineLayer }),
+        setAdvancedLayer: (value) => setAdvancedLayer(value === 'workspace' ? 'workspace' : 'user'),
         setSearch: (event) => setSearch(event && event.target ? String(event.target.value) : ''),
         setManualId: (event) => setManualId(event && event.target ? String(event.target.value) : ''),
         setSessionQuery: (event) => {
@@ -5741,95 +5756,6 @@ window.__ModuleLoader__.load({
         setOriginFilter: (value) => setFilters((current) => ({ ...current, origin: value })),
         setFullOrigin,
         toggleExpanded: (name) => setExpanded((current) => (current === name ? '' : name)),
-        // The action control only ever offers the entry's own set, and this
-        // clamp is the second half of that guarantee: a programmatic call
-        // cannot smuggle `append` into the edit entry (or the reverse), which
-        // is what would resurrect the illegal pair.
-        setAction: (value) =>
-          setEditor((current) => {
-            if (current === null) return current;
-            const allowed = editorActions(current.mode);
-            if (allowed.indexOf(value) < 0) return current;
-            return { ...current, action: value, error: null };
-          }),
-        setName: (event) => {
-          const value = event && event.target ? String(event.target.value) : '';
-          setEditor((current) => {
-            // A locked name is not a text field: the row already decided it.
-            if (current === null || current.nameLocked === true) return current;
-            return { ...current, name: value, error: null };
-          });
-        },
-        setLayer: (value) => setEditor((current) => (current === null ? current : { ...current, layer: value, error: null })),
-        setOrder: (event) => {
-          const value = event && event.target ? String(event.target.value) : '';
-          setEditor((current) => (current === null ? current : { ...current, order: value, error: null }));
-        },
-        setEditorText: (event) => {
-          const value = event && event.target ? String(event.target.value) : '';
-          setEditor((current) => (current === null ? current : { ...current, text: value, error: null }));
-        },
-        /**
-         * Entry 1 — 「编辑已有段」. The row decides the presentation: a name the
-         * incoming assembly has is edited as replace/hide with a read-only
-         * name; a row that is only our own override is re-saved as an append
-         * under its own name. `section.action` is only reflected when it is one
-         * of the entry's actions, so a registered section whose old override was
-         * an (ineffective) append comes up as the replace that fixes it.
-         *
-         * The button is a switch, the way DSH's own settings rows are (in
-         * `dsh-client-ui-settings-models` the row button carries
-         * `aria-expanded` and calls `onToggle`): pressing the 「编辑」 that
-         * opened a row's form closes it again, so collapsing a row does not
-         * mean hunting for 「取消」. Pressing another row's 「编辑」 switches the
-         * one open form to that row. `closeEditor` stays the explicit way out
-         * and is untouched.
-         *
-         * Closing is checked before the gate on purpose: folding never needs
-         * permission, and a form must always be closable by the button that
-         * opened it. Only a *row-scoped* session can be toggled — the 新增一段
-         * entry owns no row, so no row may close it.
-         */
-        openEditor: (section) => {
-          const editing = editor !== null && editorEntry(editor) !== 'append-new';
-          if (editing && section && section.name === editor.name) {
-            setEditor(null);
-            return;
-          }
-          const gate = editGate(section, fz, t);
-          if (gate.disabled) {
-            setNotice({ tone: 'error', text: gate.reasons.join(' ') });
-            return;
-          }
-          const route = editorRoute(section, incoming);
-          const mode = route === 'edit' ? 'edit' : 'append';
-          const allowed = editorActions(mode);
-          const current = section && section.action;
-          setEditor({
-            mode,
-            name: section && typeof section.name === 'string' ? section.name : '',
-            nameLocked: true,
-            action: current && allowed.indexOf(current) >= 0 ? current : allowed[0],
-            text: section && typeof section.text === 'string' ? section.text : '',
-            layer: section && section.overrideLayer === 'workspace' ? 'workspace' : 'user',
-            order: '',
-            error: null,
-          });
-        },
-        /** Entry 2 — 「新增一段」: a new name, and no action to pick. */
-        openAppend: () => {
-          setEditor({
-            mode: 'append',
-            name: '',
-            nameLocked: false,
-            action: 'append',
-            text: '',
-            layer: 'user',
-            order: '',
-            error: null,
-          });
-        },
-        closeEditor: () => setEditor(null),
         setHistoryLayer: (value) => {
           setHistoryLayer(value === 'workspace' ? 'workspace' : 'user');
           setDiff({ phase: 'idle', data: null, error: null });
@@ -5839,19 +5765,19 @@ window.__ModuleLoader__.load({
           setDiffSel(next);
           void runDiff(next.from, next.to);
         },
-        requestResetSection: (name) => {
-          // Which layers hold this name is read from the override list already
-          // on screen, so the confirmation can state the exact impact.
-          setConfirm({ kind: 'reset-section', name, layers: layersHolding(ovs.data, name) });
-        },
         requestResetLayer: (layer, count) => setConfirm({ kind: 'reset-layer', layer, count }),
+        requestLegacyClear: (layer, count) => setConfirm({ kind: 'legacy-clear', layer, count }),
         cancelConfirm: () => setConfirm(null),
         confirmYes: async () => {
           const pending = confirm;
           if (pending === null) return;
           setConfirm(null);
-          if (pending.kind === 'reset-section') {
-            await resetSection(pending.name, pending.layers);
+          if (pending.kind === 'mine-reset') {
+            await resetMine();
+            return;
+          }
+          if (pending.kind === 'legacy-clear') {
+            await clearLegacy(pending.layer);
             return;
           }
           if (pending.kind === 'reset-layer') {
@@ -5878,92 +5804,6 @@ window.__ModuleLoader__.load({
           const copied = await copyText(text);
           setNotice({ tone: copied ? 'success' : 'error', text: copied ? t('copied') : t('copyFail') });
         },
-        save: async () => {
-          if (editor === null) return;
-          const name = String(editor.name === null || editor.name === undefined ? '' : editor.name).trim();
-          // The entries derive the action from the row the user clicked, so an
-          // action outside the contract means this state is not one either
-          // entry can produce; refuse it rather than guess at replace semantics.
-          if (ACTIONS.indexOf(editor.action) < 0) {
-            setNotice({ tone: 'error', text: errorText(t, { code: 'unknown-action' }) });
-            return;
-          }
-          // Layer 3, unchanged and still the last word before a write: the same
-          // feasibility check the disabled button mirrors, repeated here so a
-          // programmatic click — or a snapshot that changed under an open panel
-          // — can never turn into a silently useless write. Both entries keep
-          // their own names and actions legal, so a normal path never gets here;
-          // when it does fire, it states the reason and writes nothing.
-          const feasibility = overrideFeasibility(name, editor.action, incoming);
-          if (feasibility.blocked) {
-            setNotice({ tone: 'error', text: blockText(t, feasibility) });
-            return;
-          }
-          const current = effectiveSections.find((section) => section.name === name) || null;
-          const gate = editGate(current, fz, t);
-          if (gate.disabled) {
-            setNotice({ tone: 'error', text: gate.reasons.join(' ') });
-            return;
-          }
-          const sectionOverride = { name, action: editor.action };
-          if (editor.action !== 'hide') {
-            sectionOverride.text = editor.text;
-            if (editor.action === 'append' && String(editor.order).trim().length > 0) {
-              const order = Number(String(editor.order).trim());
-              if (!Number.isInteger(order) || order < 0) {
-                setEditor((value) => (value === null ? value : { ...value, error: t('editOrderInvalid') }));
-                return;
-              }
-              // CONTRACT §4.1: `order` is a target index in the resulting array
-              // and is legal for `append` only.
-              sectionOverride.order = order;
-            }
-          }
-          if (editor.layer === 'workspace' && sessionArg === null) {
-            setNotice({ tone: 'error', text: errorText(t, { code: 'workspace-unresolved' }) });
-            return;
-          }
-          const body = { layer: editor.layer, section: sectionOverride };
-          if (sessionArg !== null) body.session = sessionArg;
-          setBusy(true);
-          const result = await requestJson(OVERRIDES_PATH, {
-            method: 'PUT',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(body),
-          });
-          setBusy(false);
-          if (!result.ok) {
-            setNotice({ tone: 'error', text: errorText(t, result.error) });
-            return;
-          }
-          setEditor(null);
-          setNotice({
-            tone: 'success',
-            text: fmt(t('savedNotice'), { layer: t(editor.layer === 'workspace' ? 'ovWorkspace' : 'ovUser') }),
-          });
-          setReload((value) => value + 1);
-        },
-        removeOverride: async (entry) => {
-          const layer = entry.layer === 'workspace' ? 'workspace' : 'user';
-          if (layer === 'workspace' && sessionArg === null) {
-            setNotice({ tone: 'error', text: errorText(t, { code: 'workspace-unresolved' }) });
-            return;
-          }
-          let path = `${OVERRIDES_PATH}?layer=${encodeURIComponent(layer)}&name=${encodeURIComponent(entry.name)}`;
-          if (sessionArg !== null) path += `&session=${encodeURIComponent(sessionArg)}`;
-          setBusy(true);
-          const result = await requestJson(path, { method: 'DELETE' });
-          setBusy(false);
-          if (!result.ok) {
-            setNotice({ tone: 'error', text: errorText(t, result.error) });
-            return;
-          }
-          setNotice({
-            tone: 'success',
-            text: fmt(t('deletedNotice'), { layer: t(layer === 'workspace' ? 'ovWorkspace' : 'ovUser') }),
-          });
-          setReload((value) => value + 1);
-        },
       };
 
       const model = {
@@ -5980,6 +5820,14 @@ window.__ModuleLoader__.load({
         sessionMatches,
         sessionVisible,
         manualId,
+        tab,
+        mineLayer,
+        mineText,
+        mineConfigured,
+        mineState,
+        mineError: mineStatus.error,
+        mineFrozenReason,
+        advancedLayer,
         view,
         search,
         filters,
@@ -5987,8 +5835,6 @@ window.__ModuleLoader__.load({
         expanded,
         snap,
         ovs,
-        editor,
-        editorSection: editor === null ? null : effectiveSections.find((section) => section.name === editor.name) || null,
         notice,
         busy,
         hist,
@@ -6014,7 +5860,7 @@ window.__ModuleLoader__.load({
       };
 
       try {
-        return renderSection(t, model, actions, editorRootRef);
+        return renderSection(t, model, actions);
       } catch (error) {
         return renderFailureCard(t, error);
       }

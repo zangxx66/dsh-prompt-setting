@@ -31,7 +31,7 @@ import { createHash } from 'node:crypto';
 import { fail } from './overrides.js';
 
 /** The actions a history record can describe, in contract order. */
-export const HISTORY_ACTIONS = Object.freeze(['replace', 'hide', 'append', 'remove', 'reset-layer']);
+export const HISTORY_ACTIONS = Object.freeze(['replace', 'hide', 'append', 'remove', 'reset-layer', 'legacy-clear']);
 /** Who triggered the write. `ui` is the settings page, `import` is `/import`. */
 export const HISTORY_ORIGINS = Object.freeze(['ui', 'import']);
 /** Default retention: the newest N records of each layer file. */
@@ -46,6 +46,20 @@ export const DEFAULT_HISTORY_PAGE = 50;
 export const MAX_HISTORY_PAGE = 500;
 /** The record action that clears a whole layer. */
 export const RESET_ACTION = 'reset-layer';
+/**
+ * The record action that removes only the layer's frozen (non-reserved)
+ * overrides: `DELETE /prompt-setting/overrides&legacy=true` (Revision 7).
+ * Distinct from {@link RESET_ACTION} on purpose — a reader must be able to tell
+ * "the whole layer was cleared" from "the legacy half was cleared", because the
+ * two leave the layer in different states.
+ */
+export const LEGACY_CLEAR_ACTION = 'legacy-clear';
+/**
+ * The actions whose subject is the whole layer rather than one section. A
+ * record carrying one of these has `name: null`; every other action requires a
+ * name.
+ */
+export const LAYER_WIDE_ACTIONS = Object.freeze([RESET_ACTION, LEGACY_CLEAR_ACTION]);
 
 /** @returns a SHA-256 fingerprint of the text. */
 function hashText(text) {
@@ -127,12 +141,12 @@ export function validateHistoryRecord(raw) {
   if (name !== null && (typeof name !== 'string' || name.length === 0)) {
     throw fail('invalid-history-record', '"name" must be a non-empty string or null');
   }
-  if (raw.action !== RESET_ACTION && name === null) {
+  if (!LAYER_WIDE_ACTIONS.includes(raw.action) && name === null) {
     throw fail('invalid-history-record', `a "${raw.action}" record requires a "name"`);
   }
-  if (raw.action === RESET_ACTION && name !== null) {
-    // A layer reset has no single target: its subject is the whole layer.
-    throw fail('invalid-history-record', `a "${RESET_ACTION}" record must carry a null "name"`);
+  if (LAYER_WIDE_ACTIONS.includes(raw.action) && name !== null) {
+    // A layer-wide write has no single target: its subject is the whole layer.
+    throw fail('invalid-history-record', `a "${raw.action}" record must carry a null "name"`);
   }
   const session = raw.session === undefined ? null : raw.session;
   if (session !== null && typeof session !== 'string') {
@@ -363,8 +377,9 @@ export function sameOverride(left, right) {
 }
 
 /**
- * The `entries` payload of a `reset-layer` record: every removed override with
- * its full text, so a reset is reconstructible from history alone.
+ * The `entries` payload of a layer-wide record (`reset-layer`, and since
+ * Revision 7 `legacy-clear`): every removed override with its full text, so the
+ * removal is reconstructible from history alone.
  * @param overrides - the removed overrides.
  * @returns `[{name, action, text, order?}]`.
  */

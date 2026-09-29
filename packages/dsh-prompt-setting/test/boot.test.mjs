@@ -120,15 +120,20 @@ function anchorFor(directory) {
  * @param options.on - `ok` | `throws`.
  * @param options.effect - `ok` | `missing`.
  * @param options.logger - `ok` | `missing` | `throwing`.
+ * @param options.section - `ok` | `missing` | `throws` | `no-disposer` (the
+ *   `systemPrompt.section()` registration surface, Revision 7).
  * @returns the doubles plus what the mount did: `routes`, the `live` route
- *   table (what is actually serving), `listeners`, `logs` and a dispose count.
+ *   table (what is actually serving), `listeners`, `sections`, `logs` and a
+ *   dispose count.
  */
 function mountContext(options = {}) {
   const routes = [];
   const live = new Set();
   const listeners = [];
+  const sections = [];
   const logs = [];
   let disposed = 0;
+  let sectionsDisposed = 0;
   const webServer = {};
   if (options.register !== 'missing') {
     webServer.register = (route) => {
@@ -146,21 +151,42 @@ function mountContext(options = {}) {
       };
     };
   }
+  const systemPrompt = {
+    async assemble() {
+      return { sections: [], contexts: [], tools: [], variables: {} };
+    },
+  };
+  if (options.section !== 'missing') {
+    systemPrompt.section = (definition) => {
+      if (options.section === 'throws') {
+        throw new Error(`systemPrompt: prompt section "${definition.name}" is already registered`);
+      }
+      const registered = { ...definition };
+      sections.push(registered);
+      // A host that stops returning a disposer: the section is registered in
+      // the global layer and nothing can remove it.
+      if (options.section === 'no-disposer') return { remove: () => {} };
+      return () => {
+        const at = sections.indexOf(registered);
+        if (at >= 0) sections.splice(at, 1);
+        sectionsDisposed += 1;
+      };
+    };
+  }
   const ctx = {
     connection: { requestRejection: () => undefined },
     webServer,
-    systemPrompt: {
-      async assemble() {
-        return { sections: [], contexts: [], tools: [], variables: {} };
-      },
-    },
+    systemPrompt,
     get() {
       return undefined;
     },
     on(name, callback) {
       if (options.on === 'throws') throw new Error('ctx.on is not a function');
-      listeners.push({ name, callback });
+      const listener = { name, callback };
+      listeners.push(listener);
       return () => {
+        const at = listeners.indexOf(listener);
+        if (at >= 0) listeners.splice(at, 1);
         disposed += 1;
       };
     },
@@ -177,7 +203,16 @@ function mountContext(options = {}) {
     // matters.
     ctx.effect = (factory) => factory();
   }
-  return { ctx, routes, live, listeners, logs, disposedCount: () => disposed };
+  return {
+    ctx,
+    routes,
+    live,
+    listeners,
+    sections,
+    logs,
+    disposedCount: () => disposed,
+    sectionsDisposedCount: () => sectionsDisposed,
+  };
 }
 
 /**
@@ -493,6 +528,63 @@ test('boot: a missing ctx.effect is reported, not thrown', () => {
   assert.ok(harness.logs[0].includes('ctx.effect'), 'the first cause names the host API');
   assert.equal(harness.live.size, 0);
   assert.equal(harness.listeners.length, 0);
+});
+
+test('boot: the reserved section is registered with the contract values, last', () => {
+  const harness = mountContext();
+  applyCapturingTerminal(harness.ctx);
+  assert.equal(harness.logs.length, 0, 'a working host says nothing');
+  assert.deepEqual(harness.sections, [{
+    name: 'prompt-setting:custom-prompt',
+    order: 1000000,
+    text: '',
+    interpolate: false,
+  }], 'registered empty, never interpolating, past every shipped order');
+});
+
+test('boot: a host with no systemPrompt.section is one readable line and nothing half-mounted', () => {
+  // An older/newer service shape: `assemble` exists, `section` does not. The
+  // plugin cannot offer its own section, so g-013's rule applies — one line,
+  // every earlier effect unwound, no boot failure.
+  const harness = mountContext({ section: 'missing' });
+  const run = applyCapturingTerminal(harness.ctx);
+  assert.equal(run.thrown, null, 'apply must never throw outward');
+  assert.equal(harness.logs.length, 1, 'exactly one readable line');
+  assert.equal(run.lines.length, 1, 'and exactly one on the terminal too');
+  for (const expected of [PLUGIN_NAME, '挂载失败', '本插件已停用', '已撤销 2 项已注册 effect']) {
+    assert.ok(harness.logs[0].includes(expected), `the line names ${expected}: ${harness.logs[0]}`);
+  }
+  assert.ok(harness.logs[0].includes('section'), 'and the first cause names the missing method');
+  assert.equal(harness.live.size, 0, 'the route was rolled back');
+  assert.equal(harness.listeners.length, 0, 'and so was the listener');
+  assert.deepEqual(harness.sections, []);
+});
+
+test('boot: a section registration that throws is reported and rolls the mount back', () => {
+  const harness = mountContext({ section: 'throws' });
+  const run = applyCapturingTerminal(harness.ctx);
+  assert.equal(run.thrown, null);
+  assert.equal(harness.logs.length, 1);
+  assert.ok(harness.logs[0].includes('already registered'), 'the host\'s own message is the first cause');
+  assert.equal(harness.live.size, 0);
+  assert.equal(harness.listeners.length, 0);
+  assert.equal(harness.disposedCount(), 2, 'both earlier effects were undone');
+  assert.equal(harness.sectionsDisposedCount(), 0, 'and nothing of the section\'s is left to undo');
+});
+
+test('boot: a section registration with no disposer is refused, not left unremovable', () => {
+  const harness = mountContext({ section: 'no-disposer' });
+  const run = applyCapturingTerminal(harness.ctx);
+  assert.equal(run.thrown, null);
+  assert.equal(harness.logs.length, 1);
+  assert.ok(harness.logs[0].includes('instead of a disposer'), `first cause: ${harness.logs[0]}`);
+  assert.equal(harness.live.size, 0, 'the route does not outlive a step we could not undo');
+  assert.equal(harness.listeners.length, 0);
+  // The residual this cannot fix, stated instead of hidden (NOTES.md §91,
+  // boundary ②'): the host took the registration without handing back a
+  // remover, so that half is beyond any plugin's reach — and a remount would
+  // collide with the name it still owns, which is exactly why it is reported.
+  assert.equal(harness.sections.length, 1, 'the host\'s own registration has no handle to undo');
 });
 
 test('boot: the line always reaches the terminal, even when the host logger is missing or broken', () => {
