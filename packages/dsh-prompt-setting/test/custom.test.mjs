@@ -25,6 +25,7 @@ import {
   exportScope,
   isCustomSectionName,
   legacyPlan,
+  reservedSectionLast,
 } from '../core/custom.js';
 import { CONFIG_VERSION, OverrideError } from '../core/overrides.js';
 
@@ -73,6 +74,109 @@ test('custom: isCustomSectionName is an equality test, not a prefix or case test
   for (const other of ['prompt-setting:custom-prompt ', 'prompt-setting:CUSTOM-PROMPT', 'prompt-setting:', 'project:alpha', '', null, undefined, 42]) {
     assert.equal(isCustomSectionName(other), false, `${JSON.stringify(other)} is not the reserved name`);
   }
+});
+
+test('custom: reservedSectionLast moves the reserved section to the end, and only then', () => {
+  const result = {
+    sections: [
+      { name: 'harness:identity', text: 'IDENTITY' },
+      { name: CUSTOM_SECTION_NAME, text: 'MINE' },
+      { name: 'deployment:persona-suffix', text: 'SUFFIX' },
+    ],
+    variables: { model: 'x' },
+    tools: ['t'],
+  };
+  const moved = reservedSectionLast(result);
+
+  // Moved: a new object, a new array, the very same section object inside it.
+  assert.notEqual(moved, result, 'a real move returns a copy');
+  assert.notEqual(moved.sections, result.sections, 'and a fresh sections array');
+  assert.deepEqual(moved.sections.map((section) => section.name), [
+    'harness:identity',
+    'deployment:persona-suffix',
+    CUSTOM_SECTION_NAME,
+  ]);
+  assert.equal(moved.sections.at(-1), result.sections[1], 'the section object itself is not copied');
+  assert.equal(moved.sections.at(-1).text, 'MINE');
+  // Every other field rides along by reference; this transform owns `sections` only.
+  assert.equal(moved.variables, result.variables);
+  assert.equal(moved.tools, result.tools);
+  // The input is left untouched: a caller may keep using the value it passed in.
+  assert.deepEqual(result.sections.map((section) => section.name), [
+    'harness:identity',
+    CUSTOM_SECTION_NAME,
+    'deployment:persona-suffix',
+  ]);
+});
+
+test('custom: reservedSectionLast returns its input BY IDENTITY whenever nothing moves', () => {
+  // The shapes that must not produce a copy. The `===` assertions are the point:
+  // an unconfigured install's zero-diff promise (§15.2) rests on the untouched
+  // assembly coming back as the same object.
+  const noArray = [undefined, null, 42, 'nope', true, {}, { sections: null }, { sections: 'nope' }, { sections: {} }];
+  for (const input of noArray) {
+    assert.equal(reservedSectionLast(input), input, `identity for ${JSON.stringify(input) ?? String(input)}`);
+  }
+  const identityCases = [
+    { label: 'no sections at all', value: { sections: [] } },
+    { label: 'the reserved section is absent', value: { sections: [{ name: 'a', text: 'A' }] } },
+    {
+      label: 'the reserved section is already last',
+      value: { sections: [{ name: 'a', text: 'A' }, { name: CUSTOM_SECTION_NAME, text: 'MINE' }] },
+    },
+    {
+      label: 'the reserved section is alone',
+      value: { sections: [{ name: CUSTOM_SECTION_NAME, text: 'MINE' }] },
+    },
+    {
+      label: 'its text is the registered empty string',
+      value: { sections: [{ name: CUSTOM_SECTION_NAME, text: '' }, { name: 'a', text: 'A' }] },
+    },
+    {
+      label: 'its text is absent',
+      value: { sections: [{ name: CUSTOM_SECTION_NAME }, { name: 'a', text: 'A' }] },
+    },
+    {
+      label: 'its text is not a string',
+      value: { sections: [{ name: CUSTOM_SECTION_NAME, text: 42 }, { name: 'a', text: 'A' }] },
+    },
+    {
+      label: 'a section entry is null',
+      value: { sections: [null, { name: 'a', text: 'A' }] },
+    },
+    {
+      label: 'a near-miss name is not the reserved one',
+      value: { sections: [{ name: 'prompt-setting:custom-prompt ', text: 'MINE' }, { name: 'a', text: 'A' }] },
+    },
+  ];
+  for (const { label, value } of identityCases) {
+    assert.equal(reservedSectionLast(value), value, `identity when ${label}`);
+  }
+});
+
+test('custom: reservedSectionLast never throws, whatever shape it is handed', () => {
+  const hostile = [
+    { sections: [null, undefined, 0, 'x', {}, [], { name: null, text: 'y' }] },
+    { sections: [{ name: CUSTOM_SECTION_NAME, text: '' }, null, { name: 'a' }] },
+    { sections: Array.from({ length: 5 }, (_, index) => ({ name: `s:${index}`, text: `${index}` })) },
+  ];
+  for (const input of hostile) {
+    assert.doesNotThrow(() => reservedSectionLast(input), JSON.stringify(input));
+  }
+  // A duplicate reserved name cannot occur in a real layer (the service refuses
+  // a duplicate name within a layer), so this shape is pinned only to "does not
+  // throw, and the promise still holds": the first occurrence is the one moved,
+  // and the last entry is the reserved section either way.
+  const duplicated = {
+    sections: [
+      { name: CUSTOM_SECTION_NAME, text: 'ONE' },
+      { name: 'a', text: 'A' },
+      { name: CUSTOM_SECTION_NAME, text: 'TWO' },
+    ],
+  };
+  const moved = reservedSectionLast(duplicated);
+  assert.deepEqual(moved.sections.map((section) => section.text), ['A', 'TWO', 'ONE']);
+  assert.equal(moved.sections.at(-1).name, CUSTOM_SECTION_NAME);
 });
 
 test('custom: a write to any other name is 403 write-locked and names the one writable section', () => {

@@ -849,3 +849,293 @@ test('integration R7: an unknown {{reference}} in user text is never interpolate
     /malformed prompt variable/,
   );
 });
+
+// ---------------------------------------------------------------------------
+// Revision 8: the outermost listener that keeps the reserved section last.
+//
+// These run against the real service and the real renderer, because the claim
+// they measure — "the last thing in the prompt the model reads is the user's
+// text, even when a listener registered before this plugin appends its own
+// section" — is a claim about the ORDER the real waterfall hands back, and
+// about the real `renderPrompt`'s bytes. A double would prove neither.
+// ---------------------------------------------------------------------------
+
+/** The section the live `dsh-expression` listener appends. */
+const COMPANION_SECTION = { name: 'dsh-expression:companion', text: 'COMPANION' };
+
+/**
+ * Register the live machine's other plugin, faithfully: a listener that is
+ * registered **before** this plugin (so it is outer to the override listener),
+ * calls `next()` like a well-behaved listener, and appends its own section once
+ * `next()` has returned. `dsh-expression` does exactly this with
+ * `dsh-expression:companion`, which is what puts a third party's text after
+ * 「我的 Prompt」 and is why Revision 8 exists.
+ *
+ * What this listener returns is recorded, so a test can compare references and
+ * tell "the keeper moved something" from "the keeper returned this by identity".
+ * @param ctx - a real Cordis context.
+ * @param sink - an object the returned objects are recorded on.
+ * @returns the `sink`.
+ */
+function appendCompanion(ctx, sink = {}) {
+  ctx.on('system-prompt/assemble', async (assembly, context, next) => {
+    const downstream = await next();
+    sink.downstream = downstream;
+    sink.appended = { ...downstream, sections: [...downstream.sections, COMPANION_SECTION] };
+    return sink.appended;
+  });
+  return sink;
+}
+
+/**
+ * Register an observer that sits **outside** the keeper, which is the only way
+ * to hold the value the keeper returned: `prepend` puts it in front of a
+ * listener that is itself prepended, and registering after the mount is what
+ * makes that possible (the residual boundary CONTRACT §15.10 records).
+ * @param ctx - the context the plugin was mounted on.
+ * @param seen - a one-element array the observed value is written into.
+ */
+function observeOutermost(ctx, seen) {
+  ctx.on('system-prompt/assemble', async (assembly, context, next) => {
+    seen[0] = await next();
+    return seen[0];
+  }, { prepend: true });
+}
+
+test('integration R8: with nothing configured an outer appender still ends the prompt, and the keeper copies nothing', suite, async () => {
+  const { renderPrompt } = await import(SYSTEM_PROMPT_URL);
+  // The no-plugin baseline, with the SAME appender registered, so the byte
+  // comparison below is against a genuinely different mount and not against our
+  // own arithmetic.
+  const baseline = await boot(CUSTOM);
+  appendCompanion(baseline.ctx);
+  const baselinePrompt = renderPrompt(await baseline.service.assemble());
+
+  const sink = {};
+  const mounted = await mountRealPlugin(CUSTOM, {
+    beforePlugin: async (ctx) => appendCompanion(ctx, sink),
+  });
+  const seen = [];
+  observeOutermost(mounted.ctx, seen);
+
+  const assembly = await mounted.service.assemble();
+
+  // An empty section renders nothing, so its position is unobservable: the
+  // keeper must not have touched a single part of the assembly (§15.10).
+  assert.equal(assembly, sink.appended, 'the keeper returned the downstream value by identity');
+  assert.equal(seen[0], sink.appended, 'and that is the reference the outermost observer received');
+  assert.deepEqual(names(assembly), [
+    'harness:identity',
+    'deployment:persona-prefix',
+    'test:one',
+    'test:two',
+    'deployment:persona-suffix',
+    CUSTOM_SECTION_NAME,
+    'dsh-expression:companion',
+  ]);
+  assert.equal(assembly.sections.at(-1).name, 'dsh-expression:companion', 'nothing was moved');
+  // And the bytes are the no-plugin bytes, exactly.
+  assert.equal(renderPrompt(assembly), baselinePrompt, 'zero contribution, appender or not');
+  assert.match(baselinePrompt, /COMPANION$/);
+});
+
+test('integration R8: with text configured the reserved section is moved past an outer appender, byte for byte', suite, async () => {
+  const { renderPrompt } = await import(SYSTEM_PROMPT_URL);
+  const baseline = await boot(CUSTOM);
+  appendCompanion(baseline.ctx);
+  const baselinePrompt = renderPrompt(await baseline.service.assemble());
+
+  const sink = {};
+  const mounted = await mountRealPlugin(CUSTOM, {
+    beforePlugin: async (ctx) => appendCompanion(ctx, sink),
+  });
+  const seen = [];
+  observeOutermost(mounted.ctx, seen);
+
+  // Awkward text on purpose — trailing newline, tabs, CRLF, double spaces — so
+  // "the model reads this last, byte for byte" is a real claim.
+  const text = 'MY OWN PROMPT\n\tindented  line\r\n\ntrailing  \n';
+  const put = await mounted.call({
+    method: 'PUT',
+    url: '/prompt-setting/overrides',
+    body: JSON.stringify({ layer: 'user', section: { name: CUSTOM_SECTION_NAME, action: 'replace', text } }),
+  });
+  assert.equal(put.status, 200);
+
+  const assembly = await mounted.service.assemble();
+
+  // The appender DID append after the override listener's result: without the
+  // keeper this would be the last entry, which is the live-machine defect.
+  assert.equal(sink.appended.sections.at(-1).name, 'dsh-expression:companion');
+  // The keeper moved it, so the value is a copy — and the observer outside the
+  // keeper saw that copy.
+  assert.notEqual(assembly, sink.appended, 'a real move returns a copy');
+  assert.notEqual(assembly.sections, sink.appended.sections, 'and a fresh sections array');
+  assert.equal(seen[0], assembly, 'the outermost observer received exactly what the keeper returned');
+  assert.deepEqual(names(assembly), [
+    'harness:identity',
+    'deployment:persona-prefix',
+    'test:one',
+    'test:two',
+    'deployment:persona-suffix',
+    'dsh-expression:companion',
+    CUSTOM_SECTION_NAME,
+  ]);
+  const last = assembly.sections.at(-1);
+  assert.equal(last.name, CUSTOM_SECTION_NAME, 'the user text is what the prompt ends with');
+  assert.equal(last.text, text, 'byte for byte, whitespace included');
+  assert.equal(last.interpolate, false, 'and the flag survived the move');
+  assert.equal(Buffer.from(last.text, 'utf8').equals(Buffer.from(text, 'utf8')), true);
+  // Nothing else was reordered or rebuilt: every entry is the very object the
+  // appender handed over, our own section included. That is the "we reorder, we
+  // do not rebuild" claim — and the copy above is a fresh ARRAY, not fresh
+  // sections.
+  for (const name of ['harness:identity', 'test:one', 'dsh-expression:companion', CUSTOM_SECTION_NAME]) {
+    assert.equal(
+      assembly.sections.find((section) => section.name === name),
+      sink.appended.sections.find((section) => section.name === name),
+      `${name} is the same section object, only reordered`,
+    );
+  }
+  // The byte-level promise: the prompt that exists without this plugin, plus the
+  // user's text at the very end.
+  const prompt = renderPrompt(assembly);
+  assert.equal(prompt, `${baselinePrompt}\n\n${text}`);
+  assert.equal(prompt.endsWith(text), true);
+
+  // Removing the text restores the no-plugin bytes exactly, appender included:
+  // the move leaves no trace once there is nothing to move.
+  const deleted = await mounted.call({
+    method: 'DELETE',
+    url: `/prompt-setting/overrides?layer=user&name=${encodeURIComponent(CUSTOM_SECTION_NAME)}`,
+  });
+  assert.equal(deleted.status, 200);
+  const cleared = await mounted.service.assemble();
+  assert.equal(cleared.sections.at(-1).name, 'dsh-expression:companion');
+  assert.equal(renderPrompt(cleared), baselinePrompt);
+});
+
+test('integration R8: a complete scope still collapses the whole list, keeper move and appender included', suite, async () => {
+  const text = 'MINE';
+  const mounted = await mountRealPlugin([
+    ...CUSTOM,
+    { name: 'preset:locked', order: 5000, text: 'LOCKED', complete: true },
+  ], {
+    beforePlugin: async (ctx) => appendCompanion(ctx),
+  });
+  const put = await mounted.call({
+    method: 'PUT',
+    url: '/prompt-setting/overrides',
+    body: JSON.stringify({ layer: 'user', section: { name: CUSTOM_SECTION_NAME, action: 'replace', text } }),
+  });
+  assert.equal(put.status, 200);
+
+  // The platform restores the complete section AFTER the waterfall, replacing the
+  // whole list — so it discards the appender's section AND the keeper's move
+  // alike. This is the residual boundary §15.10 states; what matters is that the
+  // frozen verdict is unchanged by this revision.
+  const assembly = await mounted.service.assemble();
+  assert.deepEqual(assembly.sections, [{ name: 'preset:locked', text: 'LOCKED' }]);
+
+  const snapshot = await mounted.call({ url: '/prompt-setting/snapshot' });
+  assert.equal(snapshot.status, 200);
+  assert.equal(snapshot.payload.frozen, true);
+  assert.equal(snapshot.payload.frozenSection, 'preset:locked');
+  assert.match(snapshot.payload.frozenReason, /single complete section "preset:locked"/);
+  assert.equal(snapshot.payload.rendered, 'LOCKED');
+  assert.equal(snapshot.payload.effective.sections.every((section) => section.overridable === false), true);
+  const mine = snapshot.payload.effective.sections.find((section) => section.name === CUSTOM_SECTION_NAME);
+  assert.deepEqual([mine.applied, mine.action, mine.overrideLayer], [false, 'replace', 'user']);
+  assert.match(mine.reason, /removed from the assembled result/);
+  // The registered view is unaffected too: the keeper changed neither `base` nor
+  // the recorded downstream sections (they are captured before it runs).
+  assert.equal(snapshot.payload.base.sections.at(-1).name, CUSTOM_SECTION_NAME);
+});
+
+test('integration R8: a hand-edited hide removes the section, and the keeper does nothing and does not throw', suite, async () => {
+  const { renderPrompt } = await import(SYSTEM_PROMPT_URL);
+  // `hide` is the escape hatch's action: no route can write it any more, and a
+  // user who hand-edits it gets a scope with no reserved section at all.
+  writeUserConfigFile([{ name: CUSTOM_SECTION_NAME, action: 'hide' }]);
+  const baseline = await boot(CUSTOM);
+  appendCompanion(baseline.ctx);
+  const baselinePrompt = renderPrompt(await baseline.service.assemble());
+
+  const sink = {};
+  const mounted = await mountRealPlugin(CUSTOM, {
+    beforePlugin: async (ctx) => appendCompanion(ctx, sink),
+  });
+
+  // `await` is the assertion that it did not throw: an exception on the assembly
+  // path would reject here.
+  const assembly = await mounted.service.assemble();
+  assert.equal(names(assembly).includes(CUSTOM_SECTION_NAME), false, 'the hide took effect');
+  assert.equal(assembly, sink.appended, 'nothing to move: the downstream value comes back by identity');
+  assert.equal(assembly.sections.at(-1).name, 'dsh-expression:companion');
+  assert.equal(renderPrompt(assembly), baselinePrompt, 'and the bytes are the no-plugin bytes');
+
+  // The snapshot still reports the hide, and does not treat it as an anomaly.
+  const snapshot = await mounted.call({ url: '/prompt-setting/snapshot' });
+  assert.equal(snapshot.status, 200);
+  assert.equal(snapshot.payload.frozen, false);
+  const hidden = snapshot.payload.effective.sections.find((section) => section.name === CUSTOM_SECTION_NAME);
+  assert.deepEqual([hidden.applied, hidden.index, hidden.origin], [true, null, 'registered']);
+});
+
+test('integration R8: disposing the mount removes the keeper with the section it guards', suite, async () => {
+  const { Context } = await import(CORDIS_URL);
+  const { default: SystemPrompt } = await import(SYSTEM_PROMPT_URL);
+  const { customSection } = await import('../core/custom.js');
+  const plugin = await import('../index.js');
+
+  const ctx = new Context();
+  await ctx.plugin(SystemPrompt);
+  await ctx.plugin({
+    name: 'host-stub',
+    apply(c) {
+      c.provide('webServer', { register: () => () => {} });
+      c.provide('connection', { requestRejection: () => undefined });
+    },
+  });
+  // The other plugin, registered first: outer to the override listener, and it
+  // must end up inner to the keeper once the plugin mounts.
+  appendCompanion(ctx);
+  const service = ctx.get('systemPrompt', false);
+  // The user's text reaches the section through the layer file, read at mount.
+  writeUserConfigFile([{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' }]);
+
+  const fiber = ctx.plugin({ name: 'dsh-prompt-setting', inject: plugin.inject, apply: plugin.apply });
+  await fiber;
+
+  const mounted = await service.assemble();
+  assert.equal(mounted.sections.at(-1).name, CUSTOM_SECTION_NAME, 'mounted: the keeper moved it past the appender');
+  assert.equal(mounted.sections.at(-1).text, 'MINE');
+
+  await fiber.dispose();
+  const after = await service.assemble();
+  assert.equal(names(after).includes(CUSTOM_SECTION_NAME), false, 'the registration went with the mount');
+  assert.equal(after.sections.at(-1).name, 'dsh-expression:companion');
+
+  // The strongest half of "no residual listener": register the reserved section
+  // again BY HAND, with text. If the keeper had survived the dispose it would
+  // move it past the appender; the appender must stay last.
+  await ctx.plugin({
+    name: 'hand-registered',
+    inject: ['systemPrompt'],
+    apply(c) {
+      c.systemPrompt.section({ ...customSection(), text: 'MINE' });
+    },
+  });
+  const reregistered = await service.assemble();
+  // No `CUSTOM` fixtures on this manual mount: the shipped sections, ours, and
+  // the appender's, in that order.
+  assert.deepEqual(names(reregistered), [
+    'harness:identity',
+    'deployment:persona-prefix',
+    'deployment:persona-suffix',
+    CUSTOM_SECTION_NAME,
+    'dsh-expression:companion',
+  ]);
+  assert.equal(reregistered.sections.at(-1).name, 'dsh-expression:companion', 'nothing moved it: the keeper is gone');
+  assert.equal(reregistered.sections.at(-2).name, CUSTOM_SECTION_NAME);
+});

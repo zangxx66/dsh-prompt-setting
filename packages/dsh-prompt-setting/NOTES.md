@@ -3303,3 +3303,116 @@ its archived note and its search hint`、`session selector: the flat fallback sa
 | 契约 | `CONTRACT.md` | §13 标题补 g-016；§13.0 说明选择器自己也是折叠的；**新增 §13.7**（折叠/展开/开关/选中即收起的完整契约与标记表） |
 | 文档 | `README.md` | 包内容表补「默认折叠」；「四个一级 tab」章补一句交叉引用；**新增「查看范围默认收成一行（g-016）」章**；ARIA 树章标注为展开态语义；i18n 表数字 39/6946/80 → 40/6718/86；Revision 7 边界补一条「打开页面看不到 tab 内容（g-016 已解决）」 |
 
+
+## 95. 让「我的 Prompt」真·排最后（g-017，2026-09-29，基线 `628d0c7`）
+
+g-014 用 `order: 1000000` 让保留段排在**所有注册段**的最后，真机重启后验收却发现：最终 prompt 的
+最后一段不是用户写的话。本目标在瀑布里加**一个单一职责的 `prepend` 监听器**把它搬到末尾。
+
+### 一、真机事实与根因（重启后验收实测，不是推测）
+
+| 事实 | 值 |
+| --- | --- |
+| 我们的保留段 `prompt-setting:custom-prompt` 在 `base.sections` 的位置 | **最后一项**（`order=1000000` > 仓库内置最大 `10200`）——`order` 这条承诺是准的 |
+| 最终 `assembly.sections` 的最后一项 | **`dsh-expression:companion`**（`origin: downstream-added`，本机斗图插件） |
+| 原因 | 它的 `system-prompt/assemble` 监听器**注册在我们之前** ⇒ 对我们是**外层**；`next()` 返回后它才追加自己的段 ⇒ 它的 post-`next()` 比我们的晚执行 |
+| 契约依据 | §6·E2：瀑布**由外到内**（`outer:in → inner:in → inner:out → outer:out`），**最先注册的是最外层**，其 post-`next()` 最后执行；`{prepend: true}` 可让监听器排到最前（平台自己在用：`dsh-session-reference` 的 `ctx.on(..., { prepend: true })`；本轮读 `@deepseek-ai/cordis@4.0.4` `lib/index.js` 的 `register()` 确认：`const method = options.prepend ? "unshift" : "push"`） |
+
+**结论**：`order` 只能承诺「排在所有内置段之后」（对，但不够）；要让用户的话真咬在最后，必须占住
+**「最外层监听器」**这个位置。这两件事互相独立，缺一不可。
+
+### 二、落了什么（函数级，只动 `packages/dsh-prompt-setting/{index.js,core/custom.js,test/*.test.mjs,README.md,NOTES.md,CONTRACT.md}`）
+
+| 位置 | 内容 |
+| --- | --- |
+| `core/custom.js` → `reservedSectionLast(result)`（**新增**，纯函数） | 4 个 identity 分支：`sections` 不是数组 / 没有该名字的段 / 该段已在末尾 / `text` 不是非空字符串 ⇒ **按引用原样返回**；只有「存在 + 有文本 + 不在末尾」才返回 `{...result, sections: [...其余, 保留段]}`。**只换 `sections` 数组，段对象本身不复制**；无 IO、无 `ctx`、无时钟，任何形状都不抛 |
+| `index.js` → `keepReservedLastHandler(assembly, context, next)`（**新增**） | `const result = await next();` → `try { return reservedSectionLast(result); } catch { return result; }`。始终 `next()`（不否决）；`try` 是与 `assembleHandler` 同一个 fail-open 规则（装配路径上的异常会毁掉用户一轮） |
+| `index.js` → 第 4 个 `registerEffect`（**新增**） | `() => ctx.on('system-prompt/assemble', keepReservedLastHandler, { prepend: true })`，标签 `` `prompt-setting: keep the reserved section last` ``；注册位置在**覆盖监听器之后、段注册之前**（段注册仍最后 ⇒ 台账顺序仍是「越可能失败越先注册」）。`ctx.on` 不可用/抛错 ⇒ 与既有监听器同一失败模式（一条可读信息、整体回滚、绝不启动失败）；宿主忽略第三参数 ⇒ 不退化为失败，只是失去最前位置 |
+| `index.js` → `assembleHandler` / 段注册 / 路由 | **逐字未动**（`git diff` 只有注释与新增块）：`base` 记录、探针消费、`detectFrozen`、`applyOverrides` 与其「无覆盖按引用返回」全部原样；既有监听器**没有**改成 prepend |
+
+**为什么只搬「有文本」的段**（刻意选择，不是省事）：空段渲染零字节（§15.2），它在 `sections` 里的位置
+在 prompt 里**不可观察**；而搬动会让「无配置时按同一对象引用返回（identity）」失效，连带破坏
+「未配置 = 与没装插件逐字节相同」这条既有承诺。所以未配置时该监听器**什么都不做** —— 负向对照 ②
+（让空文本也搬）会立刻打出 identity / 零贡献类断言红（见第五节）。
+
+### 三、被否掉的做法（写清楚，免得下轮返工）
+
+| 路线 | 为什么否掉 |
+| --- | --- |
+| 把 `order` 调更大（1e9） | 无效：追加段的落地顺序由**监听器内外层**决定，不由 `order` 决定。`order` 只决定**注册序**，而 `dsh-expression` 是在 `next()` 返回后往数组里 push |
+| 把**既有**覆盖监听器也改成 `prepend` | 会让覆盖应用发生在最外层，改变 `base` 记录/探针消费「在 `next()` 之前同步完成」的时序（§5.3、§15）与 identity 保证；brief 亦明令既有监听器注册位置不动 |
+| 让空文本也搬（无条件下搬） | 破坏 identity 与零贡献（既有 g-014 断言会红）；收益为零（空段位置不可观察） |
+| 在装配路径上读配置判断「用户写了没有」 | 违反「装配路径零 IO」（§5.5）：文本是靠既有覆盖引擎进段的，监听器只读内存 |
+| 干脆不响应 `complete` 场景 | 本来就是不可抗的平台行为，如实写进契约与 README，不假装解决 |
+
+### 四、用例映射表（既有断言**一条未放宽**，只允许等价改写）
+
+基线 `628d0c7` 全包 **365 / 0 fail**；本轮 **373 / 0 fail / 0 skipped**（净 +8：`custom.test.mjs` +3、
+`integration.test.mjs` +5；`build / client / diff / history / overrides / stage2 / store / transfer` 这 8 个测试文件**逐字节未动**）。
+
+| 文件（用例） | 改动 | 强度 |
+| --- | --- | --- |
+| `test/custom.test.mjs`（新增 3 条） | `reservedSectionLast` 的搬动 / identity（`===` 引用相等）/ 任意形状不抛 | 新增 |
+| `test/integration.test.mjs`（新增 5 条 R8） | 外层追加下「有文本搬动 / 无文本不搬」、逐字节 prompt、complete 冻结不变、hand-edited `hide` 不崩、`dispose()` 后无残留 | 新增 |
+| `test/boot.test.mjs`「a host with no systemPrompt.section …」 | `'已撤销 2 项已注册 effect'` → `3` | 等价（数字随 effect 数 +1 同步；语义未变） |
+| `test/boot.test.mjs`「a section registration that throws …」 | `disposedCount()===2` → `3`，文案改「every earlier effect」 | 等价（同上） |
+| `test/host.test.mjs`「mounting registers one assemble listener …」→「… two assemble listeners (one prepended) …」 | 计数 `1→2`、`3→4`、`2→3`；标题改名 | **增强**：新增「恰有 1 个 prepend / 覆盖监听器未被移动 / 两个回调不同」三条断言 |
+| `test/route.test.mjs`「assembly: … BY IDENTITY」 | `listeners.length===1` → 结构断言（顺序 + prepend 标记）；新增「最内层监听器拿到原始 assembly，最外层返回值与它**引用相等**」 | **增强**（原用例只断言段名，实际没有断言 identity） |
+| `test/route.test.mjs` F1「a third-party listener that appends …」 | 删掉 `const original = listeners[0]; assert.equal(original !== undefined, true)`，改为 `listeners.length===2` | 等价（原断言恒真、零信息量），新断言更强 |
+| `test/route.test.mjs` / `test/host.test.mjs` 的 `on()` 桩 | 记录第三个参数，并按 `{prepend:true}` `unshift`（忠实模拟 shipped `ctx.on`） | harness 保真度提升；没有放宽任何断言 |
+
+### 五、负向对照（4 条：改坏 → 红 → 还原 → `shasum -a 256 -c` 逐字节 → 绿）
+
+四条都是「单点改坏 → 跑 `custom + integration + route + host` 四个套件（108 条）→ 从 `/tmp/g017-neg`
+副本回写 → `shasum -a 256 -c` 确认逐字节一致 → 全量复绿」。
+
+| # | 改坏 | 红的用例（4 / 4 / 4 / 3 条） | 结果 |
+| --- | --- | --- | --- |
+| ① | 去掉搬动（`findIndex` 恒 -1） | `custom: …moves the reserved section to the end…`、`custom: …never throws…`、`integration R8: with text configured…`、`integration R8: disposing the mount…` | **4 fail / 104 pass**，还原后 **108 / 0** |
+| ② | 空文本也搬（删掉 `text` 非空判断） | `custom: …BY IDENTITY whenever nothing moves`、`integration R8: with nothing configured…`、`integration R8: with text configured…`、**既有** `F1: a third-party listener that appends a section is NOT read as a freeze` | **4 fail / 104 pass**，还原后 **108 / 0**（② 打出 identity / 零贡献类断言红，且被**既有**用例抓到一个位置漂移） |
+| ③ | 去掉 `{prepend: true}` | `host: …two assemble listeners (one prepended)…`、`integration R8: with text configured…`（追加段重新跑到最后）、`integration R8: disposing…`、`assembly: …BY IDENTITY` | **4 fail / 104 pass**，还原后 **108 / 0** |
+| ④ | 保留搬动但每次都重建（identity 失效） | `custom: …BY IDENTITY whenever nothing moves`、`integration R8: hand-edited hide…`、`assembly: …BY IDENTITY` | **3 fail / 105 pass**，还原后 **108 / 0** |
+
+还原后 `core/custom.js` = `9995d7bb…`、`index.js` = `7cb9b32a…`（与改坏前的基线哈希逐字节一致）。
+
+### 六、残余边界（契约 §15.10 / §7 第 22–24 条，如实写）
+
+1. **`complete: true` 的 scope**：平台在瀑布**之后**把整段列表替换为该 complete 段（源码
+   `assemble()` 结尾 `sections: completeSection === void 0 ? transformed.sections : [completeSection]`）
+   ⇒ 我们的搬运**和**外层追加的段一起被丢弃。本插件不可抗；快照仍报 `frozen: true` + `frozenReason`，
+   保留段 `applied:false` + `reason: "the section was removed from the assembled result"`（集成用例断言逐字不变）。
+2. **挂载之后**才以 `{prepend: true}` 注册的外部监听器：`prepend` 是「抢最前」，晚来的 prepend 会排到
+   我们之前，其 post-`next()` 也就晚于我们 ⇒ 它追加的段真的在最后。我们不去重排别人的段。
+3. **我们只搬自己的段**：搬运是 splice（`[...前, ...后, 保留段]`），别人的相对顺序逐字保留；段对象、
+   别的字段、`base.sections`（注册视图）全都不动。
+
+### 七、未验证项（诚实清单，交给主管在集成检查点裁决）
+
+- **真机未验证（需重启 `dsh web`）**：本目标是**宿主半**改动，运行中的进程必须重启才可能看到效果。
+  本轮按硬性禁止**没有重启**，因此「重启后最终 prompt 最后一段 = 保留段」**没有**真机证据。请主管在下次
+  重启后把 `data-build` 与快照/渲染文本的最后一项一起看（快照 `base.sections` 的那一条**不会**变，要看
+  真实回合的渲染结果或 `assembly.sections` 的最后一项）。
+- **残余边界 ②（挂载后再 prepend 的第三方）是推演 + 间接证据**：结论来自 `@deepseek-ai/cordis@4.0.4`
+  `register()` 的 `unshift` 语义与 §6·E2 的实测语义，以及负向对照 ③（去掉 `prepend` ⇒ 追加段回到最后）
+  的对照；本轮**没有**构造一个真机第三方插件去实测它。
+- **宿主忽略 `ctx.on` 第三参数的情形未实测**：本机 cordis 4.0.4 支持；代码路径是「仍注册、只是不在最前」，
+  不是失败（§15.9 已写明）。boot 桩只覆盖 `ctx.on` 缺失/抛错两条既有失败模式。
+- **客户端未改也不需要改**：目标不涉客户端；但**页面不会告诉你「排最后」这件事**（快照视图里保留段本来
+  就靠 `order` 在最后，与瀑布之后的实际位置无关），本轮未加任何 UI 文案 —— 若主管认为需要在「我的 Prompt」
+  面板写一句位置说明，那是新目标。
+- **未做浏览器/CDP 验证**：无 UI 改动，无可视对象可测。
+
+### 八、本轮实测证据（worktree `.worktrees/g-017-att-01`，基线 `628d0c7`）
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test`（包目录） | **373 / 373 pass / 0 fail / 0 skipped / 11030ms**（基线 **365 / 0**；净 +8） |
+| 集成单文件 | `node --test test/integration.test.mjs` | **21 / 21 pass / 0 fail**（基线 16） |
+| 内核单文件 | `node --test test/custom.test.mjs` | **17 / 17 pass / 0 fail**（基线 14） |
+| 语法 | `node --check index.js`、`node --check core/custom.js` | 通过 |
+| 关键集成证据 | `integration R8` 断言（真 Cordis + 真 `@deepseek-ai/dsh-system-prompt` + 模拟 `dsh-expression` 的**外层追加**监听器） | 有文本：最终 `[…, dsh-expression:companion, prompt-setting:custom-prompt]`，`renderPrompt = 无插件 prompt + "\n\n" + 用户文本`；无文本：`[…, prompt-setting:custom-prompt, dsh-expression:companion]`，`renderPrompt` 与无插件逐字节相同；`assembly === 追加监听器返回的对象`（identity） |
+| 负向对照 | 4 条「改坏 → 红 → 副本回写 → `shasum -a 256 -c` → 绿」 | 4 / 4 / 4 / 3 fail；还原后哈希逐字节一致、四套件回到 108/0、全量 373/0（详见第五节） |
+| 打包 | `npm pack --dry-run --cache /tmp/g017-npm-cache` | **17** 个文件，`test/` 命中 **0**，无新增/残留文件 |
+| 哈希 | `shasum -a 256` | `core/custom.js` `9995d7bb…`、`index.js` `7cb9b32a…`、`test/integration.test.mjs` `c127465d…`、`test/custom.test.mjs` `3c2955a4…`（负向对照基线） |
+| 契约 | `CONTRACT.md` | 版本日志新增 **Revision 8**；§15 标题标注 lastness；§15.1 / §5.3 / §6·E2 交叉引用；§15.9 改「四个 effect」并补 keeper 的失败形态；**新增 §15.10**（机制 / 四个 identity 分支 / 只搬有文本的理由 / 精确承诺 / 三条残余边界 / 失败行为 / 未验证）；§7 新增第 **22–24** 条 |
+| 文档 | `README.md` | 分层原则改「两个 waterfall 监听器」并写明 prepend；tab 表后加一句位置交叉引用；**新增「「我的 Prompt」为什么真的排在最后（g-017，契约 Revision 8）」章**；文末**新增「Revision 8 边界」块** |

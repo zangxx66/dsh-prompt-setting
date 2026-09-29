@@ -111,8 +111,8 @@ function mount(options = {}) {
     get() {
       return undefined;
     },
-    on(name, callback) {
-      listeners.push({ name, callback });
+    on(name, callback, listenerOptions) {
+      listeners.push({ name, callback, options: listenerOptions });
       return () => {
         const at = listeners.findIndex((listener) => listener.callback === callback);
         if (at >= 0) listeners.splice(at, 1);
@@ -199,18 +199,26 @@ test('host: one prefix route owns the /prompt-setting prefix', () => {
   assert.equal(route.path, '/prompt-setting');
 });
 
-test('host: mounting registers one assemble listener, one route and one prompt section, all disposable', () => {
+test('host: mounting registers two assemble listeners (one prepended), one route and one prompt section, all disposable', () => {
   const { listeners, routes, disposers, disposedCount, sectionsDisposedCount } = mount();
-  assert.deepEqual(listeners.map((listener) => listener.name), ['system-prompt/assemble']);
+  assert.deepEqual(listeners.map((listener) => listener.name), ['system-prompt/assemble', 'system-prompt/assemble']);
+  // Revision 8's keeper is the one that asks for the front of the waterfall
+  // (`prepend`), and it is the ONLY one: the override listener keeps the plain
+  // registration position it has had since Revision 1.
+  const prepended = listeners.filter((listener) => listener.options?.prepend === true);
+  const plain = listeners.filter((listener) => listener.options?.prepend !== true);
+  assert.equal(prepended.length, 1, 'exactly one listener is prepended');
+  assert.equal(plain.length, 1, 'and the override listener was not moved');
+  assert.notEqual(prepended[0].callback, plain[0].callback, 'two distinct listeners, not one registered twice');
   assert.equal(routes.length, 1);
-  // One effect for the listener, one for the routes, one for the reserved
+  // Two effects for the two listeners, one for the routes, one for the reserved
   // prompt section (Revision 7): unloading the plugin removes the override
-  // engine, the route and the registration with it.
-  assert.equal(disposers.length, 3);
+  // engine, the keeper, the route and the registration with it.
+  assert.equal(disposers.length, 4);
   assert.equal(disposedCount(), 0);
   assert.equal(sectionsDisposedCount(), 0);
   for (const disposer of disposers) disposer();
-  assert.equal(disposedCount(), 2, 'the route and the listener');
+  assert.equal(disposedCount(), 3, 'the route and both listeners');
   assert.equal(sectionsDisposedCount(), 1, 'and the section registration went with them');
   assert.equal(listeners.length, 0);
 });

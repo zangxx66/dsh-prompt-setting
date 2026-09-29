@@ -215,7 +215,7 @@ function mount(options = {}) {
         tools: [],
         variables: options.variables ?? {},
       };
-      const queue = listeners.slice();
+      const queue = listeners.map((listener) => listener.callback);
       const inner = () => Promise.resolve(assembly);
       const next = () => {
         const callback = queue.shift() ?? inner;
@@ -246,10 +246,16 @@ function mount(options = {}) {
       if (name === 'agents') return agentRegistry;
       return undefined;
     },
-    on(name, callback) {
-      listeners.push(callback);
+    on(name, callback, listenerOptions) {
+      // Emulates the shipped `ctx.on`: registration order IS waterfall order
+      // (outermost first), except that `{prepend: true}` unshifts the listener
+      // into the front — which is how Revision 8's keeper becomes the outermost
+      // one without touching the listener registered before it.
+      const listener = { name, callback, options: listenerOptions };
+      if (listenerOptions?.prepend === true) listeners.unshift(listener);
+      else listeners.push(listener);
       return () => {
-        const at = listeners.indexOf(callback);
+        const at = listeners.indexOf(listener);
         if (at >= 0) listeners.splice(at, 1);
       };
     },
@@ -1072,10 +1078,23 @@ test('assembly: a real scoped turn resolves its workspace layer from the agent s
 
 test('assembly: with no overrides configured the assembly comes back BY IDENTITY', async () => {
   const { ctx, listeners } = mount();
-  assert.equal(listeners.length, 1, 'exactly one assemble listener is registered');
+  // Two listeners since Revision 8, in waterfall order: the `prepend`ed keeper
+  // is outermost, the override listener keeps the registration position it had.
+  assert.deepEqual(
+    listeners.map((listener) => [listener.name, listener.options?.prepend === true]),
+    [['system-prompt/assemble', true], ['system-prompt/assemble', false]],
+  );
+  // The innermost listener is handed the raw assembly the service built and
+  // gives it straight back; the value the caller receives is therefore the very
+  // same object only if neither listener copied it on the way out.
+  let innermost = null;
+  ctx.on('system-prompt/assemble', (assembly, context, next) => {
+    innermost = assembly;
+    return next();
+  });
   const plain = await ctx.systemPrompt.assemble();
-  // Re-running with a listener that returns its input proves the pass-through
-  // path, and `applyOverrides` itself is asserted by identity in the kernel tests.
+  assert.notEqual(innermost, null, 'the observer really ran');
+  assert.equal(plain, innermost, 'the untouched assembly arrives by identity, through both listeners');
   assert.deepEqual(plain.sections.map((section) => section.name), globalNames());
   assert.equal(Object.hasOwn(plain, 'order'), false);
 });
@@ -1114,7 +1133,7 @@ test('F1: a third-party listener that appends a section is NOT read as a freeze'
   // ("the result is not registered.length + 1") called that a freeze and marked
   // every section non-overridable, so the whole panel became read-only.
   const { ctx, route, listeners } = mount();
-  const original = listeners[0];
+  assert.equal(listeners.length, 2, 'the prepended keeper and the override listener are mounted');
   // Register the third party AFTER this plugin, so it runs inside our next().
   ctx.on('system-prompt/assemble', (assembly) => ({
     ...assembly,
@@ -1122,7 +1141,6 @@ test('F1: a third-party listener that appends a section is NOT read as a freeze'
   }));
 
   const payload = json(await call(route, { url: SNAPSHOT_PATH }));
-  assert.equal(original !== undefined, true);
   assert.equal(payload.mounted, true);
   assert.equal(payload.frozen, false, 'another plugin adding a section is normal');
   assert.equal(payload.frozenSection, null);

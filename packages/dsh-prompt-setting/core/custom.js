@@ -106,6 +106,60 @@ export function isCustomSectionName(name) {
 }
 
 /**
+ * Move the reserved section to the end of an assembly's section list (g-017,
+ * `CONTRACT.md` Revision 8/§15.10).
+ *
+ * Pure, total and identity-preserving, like everything else in this module: the
+ * listener in `index.js` is a two-line adapter around this function, so every
+ * branch that decides *whether* a section moves is pinned offline by
+ * `node --test` instead of by a Host restart.
+ *
+ * Why a move is needed at all: `order: 1000000` (§15.1) sorts the registered
+ * section after every section the DSH repository defines, but a
+ * `system-prompt/assemble` listener registered **before** this plugin runs its
+ * post-`next()` step **after** ours and may append its own section then — it is
+ * outer in the waterfall. The live machine does exactly that
+ * (`dsh-expression:companion`), which is what puts a third party's text after
+ *「我的 Prompt」. Nothing an `order` value can say reaches that, so the plugin
+ * moves its own section at the outermost point it can occupy.
+ *
+ * The identity rule is the important half. This function returns **the very
+ * value it was given** unless it actually moves a section: no spread, no new
+ * array, no copy on the path where nothing changes. That is what keeps an
+ * unconfigured install's zero-diff promise intact (§15.2) — a caller can
+ * compare the reference it passed in.
+ *
+ * Four shapes decide identity. All of them return the input unchanged, so none
+ * of them can throw on the assembly path:
+ * - `result` has no array `sections` (`null`, a primitive, a shape change):
+ *   return it;
+ * - no entry carries {@link CUSTOM_SECTION_NAME} — a hand-edited `hide`, a
+ *   scope whose collapse dropped it, a shape this plugin did not create: return
+ *   it;
+ * - the reserved section **is already the last entry**: return it;
+ * - the reserved section's `text` is **not a non-empty string**: return it. An
+ *   unconfigured section renders zero bytes (§15.2), so its position is
+ *   unobservable in the prompt; moving it would buy nothing and would cost the
+ *   identity above. Only a section with text is moved — see §15.10.
+ *
+ * @param result - the value the rest of the waterfall returned, any shape.
+ * @returns the same `result`, or a shallow copy of it with the reserved
+ *   section moved to the end of a fresh `sections` array.
+ */
+export function reservedSectionLast(result) {
+  const sections = result?.sections;
+  if (!Array.isArray(sections)) return result;
+  const index = sections.findIndex((section) => isCustomSectionName(section?.name));
+  if (index === -1 || index === sections.length - 1) return result;
+  const section = sections[index];
+  if (typeof section?.text !== 'string' || section.text.length === 0) return result;
+  return {
+    ...result,
+    sections: [...sections.slice(0, index), ...sections.slice(index + 1), section],
+  };
+}
+
+/**
  * Read one override list, tolerating any shape.
  * @param overrides - a config's `overrides`, or anything else.
  * @returns a fresh array (empty when the input is not an array).
