@@ -13,11 +13,13 @@
  * Run: `node --test test/`
  */
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import test, { afterEach, beforeEach } from 'node:test';
+
+import { CUSTOM_SECTION_NAME } from '../index.js';
 
 /** Directory names under `node_modules/.pnpm` that carry the Host peers we need. */
 const ANCHOR_PACKAGES = ['@deepseek-ai+dsh-web-app@', '@deepseek-ai+dsh-base@'];
@@ -325,6 +327,22 @@ afterEach(() => {
 });
 
 /**
+ * Write the user layer's config file by hand — the escape hatch for a frozen
+ * (non-reserved) override, which no route accepts since Revision 7. The next
+ * handled request re-reads it, so no remount is needed.
+ * @param overrides - the override list to write.
+ */
+function writeUserConfigFile(overrides) {
+  const directory = join(home, 'prompt-setting');
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(
+    join(directory, 'overrides.json'),
+    `${JSON.stringify({ version: 1, overrides }, null, 2)}\n`,
+    'utf8',
+  );
+}
+
+/**
  * Mount the real plugin on a real Cordis context with the real prompt service.
  * @param sections - global sections to register before the plugin mounts.
  * @param sections - global sections to register before the plugin mounts.
@@ -408,7 +426,13 @@ test('integration: the snapshot order matches the real assembly, section for sec
   assert.equal(snapshot.status, 200);
   assert.equal(snapshot.payload.mounted, true);
   assert.deepEqual(snapshot.payload.base.sections.map((section) => section.name), names(assembly));
-  assert.deepEqual(snapshot.payload.base.sections.map((section) => section.index), [0, 1, 2, 3, 4]);
+  // Revision 7 adds one section to both views: the plugin's own registration,
+  // sorted last by its order (1000000 > every shipped order).
+  assert.equal(snapshot.payload.base.sections.at(-1).name, CUSTOM_SECTION_NAME);
+  assert.deepEqual(
+    snapshot.payload.base.sections.map((section) => section.index),
+    names(assembly).map((_, index) => index),
+  );
   assert.deepEqual(
     snapshot.payload.base.sections.map((section) => section.text),
     assembly.sections.map((section) => section.text),
@@ -416,7 +440,7 @@ test('integration: the snapshot order matches the real assembly, section for sec
   assert.equal(snapshot.payload.rendered, assembly.sections.map((section) => section.text).filter((text) => text.length > 0).join('\n\n'));
   assert.equal(snapshot.payload.frozen, false);
   // `complete: false` is proven by the surviving probe section.
-  assert.deepEqual(snapshot.payload.base.sections.map((section) => section.complete), [false, false, false, false, false]);
+  assert.deepEqual(snapshot.payload.base.sections.map((section) => section.complete), names(assembly).map(() => false));
 });
 
 test('integration: a real complete section is reported as frozen through the real routes', suite, async () => {
@@ -424,15 +448,18 @@ test('integration: a real complete section is reported as frozen through the rea
     ...CUSTOM,
     { name: 'test:complete', order: 5000, text: 'LOCKED', complete: true },
   ]);
-  // Configure a real override through the real route and the real store; the
-  // complete section will discard it.
+  // The override on the complete section itself can only be a pre-Revision-7
+  // one, so it is seeded the way the escape hatch documents: a hand edit of the
+  // layer's file. The narrowed route below then writes the reserved section into
+  // the same layer, which is what proves the two coexist.
+  writeUserConfigFile([{ name: 'test:complete', action: 'replace', text: 'DISCARDED' }]);
   const put = await call({
     method: 'PUT',
     url: '/prompt-setting/overrides',
-    body: JSON.stringify({ layer: 'user', section: { name: 'test:complete', action: 'replace', text: 'DISCARDED' } }),
+    body: JSON.stringify({ layer: 'user', section: { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' } }),
   });
   assert.equal(put.status, 200);
-  assert.deepEqual(put.payload.saved, { name: 'test:complete', action: 'replace', text: 'DISCARDED', layer: 'user' });
+  assert.deepEqual(put.payload.saved, { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE', layer: 'user' });
 
   const snapshot = await call({ url: '/prompt-setting/snapshot' });
   assert.equal(snapshot.status, 200);
@@ -442,7 +469,7 @@ test('integration: a real complete section is reported as frozen through the rea
   assert.match(snapshot.payload.frozenReason, /single complete section "test:complete"/);
   assert.equal(snapshot.payload.rendered, 'LOCKED');
   assert.equal(snapshot.payload.effective.sections.every((section) => section.overridable === false), true);
-  assert.equal(snapshot.payload.base.sections.length, 6);
+  assert.equal(snapshot.payload.base.sections.length, 7, 'five fixture sections + the complete one + ours');
   assert.equal(
     snapshot.payload.base.sections.find((section) => section.name === 'test:complete').complete,
     true,
@@ -453,6 +480,12 @@ test('integration: a real complete section is reported as frozen through the rea
     'LOCKED', false, 'replace', 'user',
   ]);
   assert.match(locked.reason, /complete section/);
+  // … and so is the reserved section the freeze threw away whole: the collapse
+  // keeps one section, so the user's text never reaches the prompt. That is the
+  // documented degradation (§15.4) and it must be visible, not silent.
+  const mine = snapshot.payload.effective.sections.find((section) => section.name === CUSTOM_SECTION_NAME);
+  assert.deepEqual([mine.applied, mine.action, mine.overrideLayer], [false, 'replace', 'user']);
+  assert.match(mine.reason, /removed from the assembled result/);
   assert.equal(ctx.get('systemPrompt', false).name, 'systemPrompt');
 
   // The override file itself is durable, so a fresh mount reproduces the verdict.
@@ -568,7 +601,7 @@ test('integration D2: a concurrent unscoped assembly during a snapshot is never 
   const snapshot = await mounted.call({ url: '/prompt-setting/snapshot' });
 
   assert.notEqual(nested, null, 'the concurrent assembly must actually have run');
-  assert.deepEqual(names(nested), ['harness:identity', 'deployment:persona-prefix', 'test:global', 'deployment:persona-suffix']);
+  assert.deepEqual(names(nested), ['harness:identity', 'deployment:persona-prefix', 'test:global', 'deployment:persona-suffix', CUSTOM_SECTION_NAME]);
   assert.equal(snapshot.payload.mounted, true);
   assert.equal(snapshot.payload.frozen, false);
   assert.equal(service !== null, true);
@@ -669,4 +702,150 @@ test('integration F2: a session-scope probe resolves agent-dependent variables; 
   assert.deepEqual(global.payload.unresolvedVariables, ['model']);
   assert.equal(global.payload.rendered.includes('undefined'), false);
   assert.match(global.payload.rendered, /powered by the \{\{model\}\} model$/);
+});
+
+// ---------------------------------------------------------------------------
+// Revision 7: the plugin's own prompt section, measured against the REAL
+// shipped renderer. These are the assertions that need the actual
+// `@deepseek-ai/dsh-system-prompt` — an offline double would prove nothing
+// about byte-for-byte text and about `interpolate: false`.
+// ---------------------------------------------------------------------------
+
+test('integration R7: the plugin registers one reserved section, and disposing the mount removes it', suite, async () => {
+  const { Context } = await import(CORDIS_URL);
+  const { default: SystemPrompt } = await import(SYSTEM_PROMPT_URL);
+  const plugin = await import('../index.js');
+
+  const ctx = new Context();
+  await ctx.plugin(SystemPrompt);
+  await ctx.plugin({
+    name: 'host-stub',
+    apply(c) {
+      c.provide('webServer', { register: () => () => {} });
+      c.provide('connection', { requestRejection: () => undefined });
+    },
+  });
+  const service = ctx.get('systemPrompt', false);
+
+  const before = await service.assemble();
+  assert.equal(
+    before.sections.some((section) => section.name === CUSTOM_SECTION_NAME),
+    false,
+    'nothing is registered before the plugin mounts',
+  );
+
+  const fiber = ctx.plugin({ name: 'dsh-prompt-setting', inject: plugin.inject, apply: plugin.apply });
+  await fiber;
+
+  const mounted = await service.assemble();
+  const section = mounted.sections.find((entry) => entry.name === CUSTOM_SECTION_NAME);
+  assert.ok(section, 'the plugin registered its section');
+  assert.equal(section.text, '', 'registered empty: an unconfigured install contributes nothing');
+  assert.equal(section.interpolate, false, 'and never interpolates user text');
+  // The assembly carries no `order` (the service sorts before the waterfall), so
+  // the position IS the evidence: ours must be last, past every shipped section.
+  assert.equal(Object.hasOwn(section, 'order'), false);
+  assert.equal(mounted.sections.at(-1).name, CUSTOM_SECTION_NAME);
+
+  // Disposing the mount must leave no residual registration, or the next mount
+  // would collide with the name it already owns.
+  await fiber.dispose();
+  const after = await service.assemble();
+  assert.equal(
+    after.sections.some((entry) => entry.name === CUSTOM_SECTION_NAME),
+    false,
+    'the registration went with the mount',
+  );
+  assert.deepEqual(names(after), names(before), 'and the assembly is exactly what it was');
+});
+
+test('integration R7: with nothing configured the real rendered prompt is byte-identical to no plugin at all', suite, async () => {
+  const { renderPrompt } = await import(SYSTEM_PROMPT_URL);
+  // The baseline is a real context with the same fixture sections but WITHOUT
+  // this plugin mounted, so the comparison is against a genuinely different mount.
+  const baseline = await boot(CUSTOM);
+  const mounted = await mountRealPlugin(CUSTOM);
+
+  const baselineAssembly = await baseline.service.assemble();
+  const mountedAssembly = await mounted.service.assemble();
+  const without = baselineAssembly.sections;
+  const with_ = mountedAssembly.sections;
+  assert.equal(with_.length, without.length + 1, 'the only difference is our empty section');
+  assert.equal(names(mountedAssembly).slice(0, without.length).join(','), names(baselineAssembly).join(','));
+  assert.equal(with_.at(-1).name, CUSTOM_SECTION_NAME);
+
+  const baselinePrompt = renderPrompt(baselineAssembly);
+  const mountedPrompt = renderPrompt(mountedAssembly);
+  assert.ok(baselinePrompt.length > 0, 'the baseline is a real prompt, not an empty string');
+  assert.equal(mountedPrompt, baselinePrompt, 'the empty section contributes zero bytes');
+  assert.equal(renderPrompt({ sections: without, variables: {} }), baselinePrompt, 'and the renderer is deterministic');
+});
+
+test('integration R7: a reserved replace lands LAST, byte for byte, in the real rendered prompt', suite, async () => {
+  const { renderPrompt } = await import(SYSTEM_PROMPT_URL);
+  const { service, call } = await mountRealPlugin(CUSTOM);
+  // Deliberately awkward text: a trailing newline, tabs, double spaces and CRLF,
+  // so "byte for byte" is a real claim rather than a trimmed one.
+  const text = 'MY OWN PROMPT\n\tindented  line\r\n\ntrailing  \n';
+  const put = await call({
+    method: 'PUT',
+    url: '/prompt-setting/overrides',
+    body: JSON.stringify({ layer: 'user', section: { name: CUSTOM_SECTION_NAME, action: 'replace', text } }),
+  });
+  assert.equal(put.status, 200);
+
+  const assembly = await service.assemble();
+  const last = assembly.sections.at(-1);
+  assert.equal(last.name, CUSTOM_SECTION_NAME);
+  assert.equal(last.text, text, 'byte for byte, whitespace included');
+  assert.equal(last.interpolate, false, 'the flag survived the transform');
+  assert.equal(Buffer.from(last.text, 'utf8').equals(Buffer.from(text, 'utf8')), true);
+
+  const prompt = renderPrompt(assembly);
+  assert.equal(prompt.endsWith(`\n\n${text}`), true, 'the user text is what the model reads last');
+  assert.equal(prompt.includes('MY OWN PROMPT'), true);
+
+  // Removing it restores the unconfigured prompt exactly: the empty section
+  // cannot leave a trace behind.
+  const deleted = await call({
+    method: 'DELETE',
+    url: `/prompt-setting/overrides?layer=user&name=${encodeURIComponent(CUSTOM_SECTION_NAME)}`,
+  });
+  assert.equal(deleted.status, 200);
+  const cleared = renderPrompt(await service.assemble());
+  assert.equal(cleared.includes('MY OWN PROMPT'), false);
+  assert.equal(cleared, renderPrompt(await (await boot(CUSTOM)).service.assemble()));
+});
+
+test('integration R7: an unknown {{reference}} in user text is never interpolated and never throws', suite, async () => {
+  const { renderPrompt } = await import(SYSTEM_PROMPT_URL);
+  const { service, call } = await mountRealPlugin(CUSTOM);
+  // Three shapes: an unknown (but well-formed) name, a malformed name, and a
+  // lone `{{`. The shipped renderer throws on the first two and treats the
+  // third as prose — in a section that interpolates.
+  const text = 'keep {{not_registered}} and {{NotValid}} and {{ lone\nand a real {{}} pair';
+  const put = await call({
+    method: 'PUT',
+    url: '/prompt-setting/overrides',
+    body: JSON.stringify({ layer: 'user', section: { name: CUSTOM_SECTION_NAME, action: 'replace', text } }),
+  });
+  assert.equal(put.status, 200);
+
+  const assembly = await service.assemble();
+  let prompt = null;
+  assert.doesNotThrow(() => {
+    prompt = renderPrompt(assembly);
+  }, 'the real pre-step must not fail because of user text');
+  assert.equal(prompt.endsWith(`\n\n${text}`), true, 'the text is handed back untouched');
+
+  // The control that makes the requirement concrete: the same text in a section
+  // that DOES interpolate takes the whole render down.
+  assert.throws(
+    () => renderPrompt({ sections: [{ name: 'control', text: 'keep {{not_registered}}' }], variables: {} }),
+    /unknown prompt variable/,
+  );
+  assert.throws(
+    () => renderPrompt({ sections: [{ name: 'control', text: 'keep {{NotValid}}' }], variables: {} }),
+    /malformed prompt variable/,
+  );
 });

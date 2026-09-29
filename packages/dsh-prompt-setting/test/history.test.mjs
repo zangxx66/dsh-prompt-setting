@@ -18,6 +18,7 @@ import test, { afterEach, beforeEach } from 'node:test';
 import {
   DEFAULT_HISTORY_LIMIT,
   HISTORY_ACTIONS,
+  LAYER_WIDE_ACTIONS,
   MAX_HISTORY_LIMIT,
   MIN_HISTORY_LIMIT,
   actionOf,
@@ -117,8 +118,11 @@ test('history: a snapshot entry is comparable without carrying any text', () => 
 
 // #region record shape
 
-test('history: the action vocabulary is exactly the five documented values', () => {
-  assert.deepEqual([...HISTORY_ACTIONS], ['replace', 'hide', 'append', 'remove', 'reset-layer']);
+test('history: the action vocabulary is exactly the six documented values', () => {
+  // Revision 7 adds exactly one: `legacy-clear`, the record
+  // `DELETE /overrides&legacy=true` writes. The first five are Revision 6's set,
+  // unchanged and in the same order, so every existing history file still reads.
+  assert.deepEqual([...HISTORY_ACTIONS], ['replace', 'hide', 'append', 'remove', 'reset-layer', 'legacy-clear']);
 });
 
 test('history: makeRecord rejects a record that could not round-trip', () => {
@@ -139,11 +143,39 @@ test('history: makeRecord rejects a record that could not round-trip', () => {
   }
 });
 
-test('history: a reset-layer record is the one action that carries no name', () => {
+test('history: the layer-wide actions are exactly the ones that carry no name', () => {
   const record = makeRecord(fields({ action: 'reset-layer', name: null, entries: [] }));
   assert.equal(record.name, null);
   assert.throws(() => validateHistoryRecord({ ...record, name: 'x' }), /./);
   assert.throws(() => makeRecord(fields({ action: 'remove', name: null })), (error) => error.code === 'invalid-history-record');
+
+  // Revision 7's addition obeys the same rule, in both directions: its subject
+  // is the layer, so it must not name a section …
+  const legacy = makeRecord(fields({ action: 'legacy-clear', name: null, entries: [] }));
+  assert.equal(legacy.name, null);
+  assert.throws(
+    () => makeRecord(fields({ action: 'legacy-clear', name: 'a' })),
+    (error) => error.code === 'invalid-history-record',
+    'a layer-wide action must not name a section',
+  );
+  // … and it is exactly the two layer-wide actions, not "any action accepted
+  // with a null name".
+  assert.deepEqual([...LAYER_WIDE_ACTIONS], ['reset-layer', 'legacy-clear']);
+  for (const action of HISTORY_ACTIONS) {
+    const isLayerWide = LAYER_WIDE_ACTIONS.includes(action);
+    assert.equal(
+      (() => {
+        try {
+          makeRecord(fields({ action, name: isLayerWide ? null : 'a' }));
+          return true;
+        } catch {
+          return false;
+        }
+      })(),
+      true,
+      `${action} must be representable with ${isLayerWide ? 'no name' : 'a name'}`,
+    );
+  }
 });
 
 // #endregion

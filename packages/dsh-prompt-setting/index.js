@@ -19,7 +19,11 @@
  *   it is re-done per request on purpose (CONTRACT.md §14).
  * - `core/build.js` is pure text (no IO): the marker region and the digest the
  *   browser half re-computes for itself.
- * - this file is the adapter: one waterfall listener and four REST routes.
+ * - `core/custom.js` is pure policy (no IO): the reserved section this plugin
+ *   registers and the write lock that narrows every write route to it
+ *   (Revision 7).
+ * - this file is the adapter: one registered prompt section, one waterfall
+ *   listener and seven REST routes.
  *
  * The listener reads memory only. It records the pre-waterfall sections (the
  * `base` view and the frozen probe) before delegating with `next()`, then
@@ -44,10 +48,22 @@ import {
   firstCauseLine,
   mountFailureMessage,
 } from './core/compat.js';
+import {
+  CUSTOM_SECTION_NAME,
+  CUSTOM_SECTION_ORDER,
+  assertDeletableName,
+  assertImportableDocument,
+  assertWritableSection,
+  customOverridesOnly,
+  customSection,
+  exportScope,
+  legacyPlan,
+} from './core/custom.js';
 import { EXPERIMENTS } from './core/experiments.js';
 import { buildDiff } from './core/diff.js';
 import {
   DEFAULT_HISTORY_PAGE,
+  LEGACY_CLEAR_ACTION,
   RESET_ACTION,
   actionOf,
   publicRecord,
@@ -1221,6 +1237,12 @@ function mount(ctx, config, cleanups) {
    * `layer` (optional) limits which layers the document carries; without it the
    * document carries `user` and `workspace`, the latter possibly disabled with
    * a `reason` — an export never invents a path it could not resolve.
+   *
+   * Since Revision 7 the document carries **only** the reserved override of
+   * each layer, and the response declares that scope explicitly as
+   * `exportScope` (`{only, omitted: {<layer>, total}}`) rather than dropping
+   * frozen entries silently: a backup that is not the whole configuration has
+   * to say so (CONTRACT §10).
    * @param url - the parsed request URL.
    * @param res - the Node response.
    */
@@ -1231,13 +1253,18 @@ function mount(ctx, config, cleanups) {
       if (!LAYERS.includes(name)) throw fail('unknown-layer', `"layer" must be one of ${LAYERS.join(', ')}`);
     }
     const workspace = workspaceContext(url.searchParams.get('session'));
+    const views = { user: userLayerView(), workspace: workspaceLayerView(workspace) };
+    const scoped = {};
+    for (const name of names) {
+      scoped[name] = { ...views[name], overrides: customOverridesOnly(views[name].overrides) };
+    }
     const document = buildExport({
-      layers: { user: userLayerView(), workspace: workspaceLayerView(workspace) },
+      layers: scoped,
       pluginVersion: PLUGIN_VERSION,
       exportedAt: new Date().toISOString(),
       layerNames: names,
     });
-    sendJson(res, 200, { ok: true, ...document });
+    sendJson(res, 200, { ok: true, ...document, exportScope: exportScope(views, names) });
   }
 
   /**
@@ -1335,10 +1362,16 @@ function mount(ctx, config, cleanups) {
    * `POST /prompt-setting/import` — apply an export document.
    *
    * The order is the contract: parse → schema/version/field validation →
-   * conflict strategy → stage every layer's file and validate it → atomic
-   * rename. Nothing touches a real config file before the last step, so a
-   * rejection at any earlier point leaves the existing configuration
-   * byte-identical. `?dryRun=true` stops after the plan and returns the counts.
+   * **write-lock policy** → conflict strategy → stage every layer's file and
+   * validate it → atomic rename. Nothing touches a real config file before the
+   * last step, so a rejection at any earlier point leaves the existing
+   * configuration byte-identical. `?dryRun=true` stops after the plan and
+   * returns the counts.
+   *
+   * Since Revision 7 a document carrying any non-reserved section name is
+   * refused with `403 write-locked` (CONTRACT §15.7). That check sits before
+   * the dry-run branch on purpose: a dry run answers the question the real run
+   * would answer, and neither may touch a byte.
    * @param req - the Node request.
    * @param url - the parsed request URL.
    * @param res - the Node response.
@@ -1348,6 +1381,7 @@ function mount(ctx, config, cleanups) {
     const mode = resolveMode(url.searchParams.get('mode') ?? body?.mode);
     const dryRun = url.searchParams.get('dryRun') === 'true';
     const document = parseExport(body);
+    assertImportableDocument(document);
 
     const requested = url.searchParams.get('layer');
     const names = requested === null || requested.length === 0 ? Object.keys(document.layers) : [requested];
@@ -1481,6 +1515,13 @@ function mount(ctx, config, cleanups) {
 
   /**
    * `PUT /prompt-setting/overrides` — upsert one override into one layer.
+   *
+   * Since Revision 7 the write face is one section wide: the body's name must
+   * be the reserved {@link CUSTOM_SECTION_NAME} ({@link assertWritableSection})
+   * and its action must be `replace`. The policy is evaluated before the layer
+   * is resolved, before the current config is read and therefore before any
+   * byte is written, so a rejected write leaves the layer's file byte-identical
+   * (`test/route.test.mjs` hashes it around every rejection).
    * @param req - the Node request.
    * @param url - the parsed request URL.
    * @param res - the Node response.
@@ -1491,6 +1532,7 @@ function mount(ctx, config, cleanups) {
     if (!LAYERS.includes(layer)) {
       throw new OverrideError('unknown-layer', `"layer" must be one of ${LAYERS.join(', ')}`);
     }
+    assertWritableSection(body?.section);
     const override = validateOverride(body?.section);
     const sessionId = typeof body?.session === 'string' && body.session.length > 0
       ? body.session
@@ -1524,21 +1566,42 @@ function mount(ctx, config, cleanups) {
   }
 
   /**
-   * `DELETE /prompt-setting/overrides` — drop one override from one layer, or
-   * clear the whole layer with `?reset=true`.
+   * `DELETE /prompt-setting/overrides` — drop one override from one layer,
+   * clear the whole layer with `?reset=true`, or clear only its frozen
+   * overrides with `?legacy=true`.
    *
-   * The single-name semantics are unchanged from stage 1B, including the `404`
-   * for a name the layer does not hold. The layer reset is the stage 2
-   * addition: it is a different operation on the same route and method, and it
-   * carries the removed content into history so a reset stays traceable.
+   * Since Revision 7 the single-name form accepts only the reserved section
+   * name ({@link assertDeletableName}), and that verdict runs **before** the
+   * `404 override-not-found` lookup. `reset=true` keeps its stage 2 meaning
+   * (the whole layer, reserved entry included). `legacy=true` is the new one:
+   * it removes every non-reserved override and keeps the reserved one, which is
+   * the only way back from "frozen read-only" to a clean layer without hand
+   * editing the file. The two query flags are mutually exclusive.
    * @param url - the parsed request URL.
    * @param res - the Node response.
    */
   function handleDeleteOverride(url, res) {
     const layer = url.searchParams.get('layer');
     const sessionId = url.searchParams.get('session');
-    if (url.searchParams.get('reset') === 'true') {
+    // The shape check first, exactly as `PUT` does it: a request that names no
+    // layer this plugin has is a 400 whatever else it carries.
+    if (!LAYERS.includes(layer)) {
+      throw new OverrideError('unknown-layer', `"layer" must be one of ${LAYERS.join(', ')}`);
+    }
+    const reset = url.searchParams.get('reset') === 'true';
+    const legacy = url.searchParams.get('legacy') === 'true';
+    if (reset && legacy) {
+      throw new OverrideError(
+        'conflicting-query',
+        '"reset" clears the whole layer and "legacy" clears only its frozen overrides; supply one, not both',
+      );
+    }
+    if (reset) {
       handleResetLayer(layer, sessionId, res);
+      return;
+    }
+    if (legacy) {
+      handleLegacyClear(layer, sessionId, res);
       return;
     }
     const name = url.searchParams.get('name');
@@ -1548,6 +1611,7 @@ function mount(ctx, config, cleanups) {
     if (name.length > MAX_NAME_LENGTH) {
       throw new OverrideError('name-too-long', `"name" exceeds ${MAX_NAME_LENGTH} characters`);
     }
+    assertDeletableName(name);
     const target = targetFor(layer, sessionId);
     const current = writableConfig(target.path);
     const at = current.overrides.findIndex((entry) => entry.name === name);
@@ -1627,21 +1691,91 @@ function mount(ctx, config, cleanups) {
     });
   }
 
+  /**
+   * Remove a layer's frozen (non-reserved) overrides and keep the reserved one.
+   *
+   * The response is the reset response with `legacy` in place of `reset`, so a
+   * client that already renders one renders the other (CONTRACT §12.2).
+   *
+   * Two deliberate details:
+   * - a layer with nothing legacy in it is a success with `count: 0` and **no
+   *   file write at all** — like a reset of an empty layer, the file is left
+   *   exactly as it was, because "there was nothing to remove" must not be
+   *   recorded as a write;
+   * - the removal is logged as {@link LEGACY_CLEAR_ACTION}, not as a reset: the
+   *   layer afterwards still holds the reserved override, and a history reader
+   *   must be able to tell that apart from a full clear.
+   * @param layer - `user` | `workspace`.
+   * @param sessionId - the session id, or null.
+   * @param res - the Node response.
+   */
+  function handleLegacyClear(layer, sessionId, res) {
+    const target = targetFor(layer, sessionId);
+    const current = writableConfig(target.path);
+    const { removed, next } = legacyPlan(current.overrides);
+    if (removed.length === 0) {
+      sendJson(res, 200, {
+        ok: true,
+        legacy: true,
+        layer,
+        removed: [],
+        count: 0,
+        effectiveFrom: 'next-turn',
+        history: null,
+      });
+      return;
+    }
+    const config = next;
+    writeConfig(target.path, config);
+    cacheWritten(target, config);
+    const entries = resetEntries(removed);
+    const history = recordHistory({
+      path: target.path,
+      at: new Date().toISOString(),
+      layer,
+      session: sessionId ?? null,
+      action: LEGACY_CLEAR_ACTION,
+      name: null,
+      origin: 'ui',
+      before: null,
+      after: null,
+      entries,
+      snapshot: snapshotOfConfig(config),
+      note: `legacy clear removed ${removed.length} frozen override(s)`,
+    });
+    sendJson(res, 200, {
+      ok: true,
+      legacy: true,
+      layer,
+      removed: removed.map((entry) => entry.name),
+      count: removed.length,
+      entries,
+      effectiveFrom: 'next-turn',
+      history,
+    });
+  }
+
   // Load the layers this mount can see. The assembly handler never reads disk.
   refreshUser();
   refreshWorkspaces();
 
-  // The two effects are registered route-first, listener-second.
+  // The three effects are registered route-first, listener-second,
+  // section-last.
   //
-  // Both are mounted synchronously before `mount` returns, so neither a request
-  // nor an assembly can observe the order. It matters only when a step fails:
-  // the most likely real failure is `webServer.register()` refusing a duplicate
-  // prefix (`duplicate prefix route "/prompt-setting"` — a second install, or a
-  // future host claiming the prefix), and registering the route first makes that
-  // failure happen before anything else is mounted. It also makes "the route is
+  // All are mounted synchronously before `mount` returns, so neither a request
+  // nor an assembly can observe the order. It matters only when a step fails,
+  // and the rule is *most-likely failure first, so the least has to be undone*:
+  // `webServer.register()` refusing a duplicate prefix is the failure a real
+  // profile actually hits (a second install, or a future host claiming the
+  // prefix), `ctx.on` being unavailable is the next, and the section
+  // registration is the plugin's own promise — a reserved name in the global
+  // layer, which fails only if this plugin is already mounted twice or the
+  // platform changed. Registering in that order also keeps "the route is
   // already live when the next step fails" the half-mount case
   // `test/boot.test.mjs` pins, i.e. the recoverable half is the externally
-  // reachable one.
+  // reachable one. A section-registration failure therefore unwinds the route
+  // and the listener with it — no half-mounted plugin, and (g-013) one readable
+  // line instead of a boot failure.
   registerEffect(
     ctx,
     cleanups,
@@ -1740,7 +1874,47 @@ function mount(ctx, config, cleanups) {
     () => ctx.on('system-prompt/assemble', assembleHandler),
     'prompt-setting: system-prompt/assemble override',
   );
+
+  // Revision 7's deliverable: this plugin's own prompt section.
+  //
+  // Registered **empty**. The user's text is never read here — it reaches the
+  // section through the existing override engine (a `replace` whose name is the
+  // reserved one, applied by `assembleHandler` above), so the assembly path
+  // gains no configuration read, no IO and no new branch. Until a user writes
+  // something, the section renders to nothing and the final prompt is
+  // byte-identical to the prompt this plugin does not exist for.
+  //
+  // `interpolate: false` is a safety requirement, not a preference: the
+  // shipped renderer throws on an unknown, undefined or malformed `{{...}}`
+  // reference, and a user's text is arbitrary. With it, a stray `{{name}}`
+  // stays literal in every turn instead of breaking every turn.
+  //
+  // `order` places the section after every section the DSH repository defines
+  // (its table's maximum is 10200); another plugin may still place itself
+  // after this one, which is the documented limit of what `order` promises.
+  //
+  // The disposer is accounted for exactly like the other two: it is the
+  // `systemPrompt.section()` effect's own disposer, so unloading the plugin —
+  // or a later step of this mount failing — removes the registration instead of
+  // leaving a name in the global layer that a remount would collide with.
+  registerEffect(
+    ctx,
+    cleanups,
+    () => disposerOf(ctx.systemPrompt.section(customSection())),
+    `prompt-setting: reserved section ${CUSTOM_SECTION_NAME} (order ${CUSTOM_SECTION_ORDER}, empty)`,
+  );
 }
 
 /** Re-exported so tests and the client can assert the frozen action set. */
 export { ACTIONS, LAYERS, sameSections };
+/**
+ * Re-exported for the same reason (Revision 7): the reserved section's name,
+ * order and interpolation flag are contract, and a test may not re-type them.
+ */
+export {
+  CUSTOM_SECTION_INTERPOLATE,
+  CUSTOM_SECTION_NAME,
+  CUSTOM_SECTION_ORDER,
+  CUSTOM_SECTION_TEXT,
+  REPO_MAX_SECTION_ORDER,
+} from './core/custom.js';

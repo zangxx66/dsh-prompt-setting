@@ -11,13 +11,14 @@
  * Run: `node --test test/`
  */
 import assert from 'node:assert/strict';
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test, { afterEach, beforeEach } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { apply, inject } from '../index.js';
+import { apply, inject, CUSTOM_SECTION_NAME } from '../index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = join(here, '..');
@@ -64,6 +65,18 @@ const DEFAULT_SECTIONS = [
   { name: 'project:beta', order: 2000, text: 'BETA BODY' },
   { name: 'deployment:persona-suffix', order: 10200, text: '' },
 ];
+
+/**
+ * The section names an assembly of a mounted fake Host carries: the fixture
+ * plus the one section the plugin registers for itself (Revision 7). Its order
+ * (1000000) sorts it after every fixture entry, so it is always last.
+ * @param extra - further names to append (an `append` override, a scoped
+ *   section registered before it, …).
+ * @returns the names in canonical order.
+ */
+function globalNames(extra = []) {
+  return [...DEFAULT_SECTIONS.map((section) => section.name), ...extra, CUSTOM_SECTION_NAME];
+}
 
 let home;
 let previousHome;
@@ -150,9 +163,69 @@ function mount(options = {}) {
   );
   const listeners = [];
   const routes = [];
+  /** Every `systemPrompt.section()` this mount registered, with its disposer. */
+  const sectionRegistrations = [];
+  /** Every effect disposer this mount handed back, in registration order. */
+  const cleanups = [];
   let disposed = 0;
+  let sectionsDisposed = 0;
   const registry = options.workspaces === undefined ? undefined : { list: () => options.workspaces };
   const agentRegistry = options.omitAgents === true ? undefined : { get: (id) => agents.get(id) };
+
+  const systemPrompt = {
+    /**
+     * Reproduces the shipped `section()`: a live registration in the global
+     * layer plus its own disposer. Since Revision 7 the plugin registers one
+     * section during `apply`, and `close()` below is how a test observes that
+     * registration being undone.
+     */
+    section(definition) {
+      sectionRegistrations.push({ ...definition });
+      registered.push({ ...definition });
+      return () => {
+        const at = registered.findIndex((entry) => entry.name === definition.name);
+        if (at >= 0) registered.splice(at, 1);
+        sectionsDisposed += 1;
+      };
+    },
+    /** Reproduces the shipped assemble(): scope merge, order, waterfall, collapse. */
+    async assemble(context = {}) {
+      if (typeof options.beforeDispatch === 'function') await options.beforeDispatch(context);
+      // Scoped layers along the parent chain, nearest scope last, exactly like
+      // ScopedLayers.merge — which is what makes `complete` a per-scope fact.
+      const chain = [];
+      for (let cursor = context?.scope; cursor !== undefined && cursor !== null; cursor = scopes.get(cursor)?.parent) {
+        chain.push(cursor);
+      }
+      const merged = new Map(registered.map((section) => [section.name, section]));
+      for (const key of chain.reverse()) {
+        for (const section of scopes.get(key)?.sections ?? []) merged.set(section.name, section);
+      }
+      const sorted = [...merged.values()].sort(
+        (left, right) => left.order - right.order || (left.name < right.name ? -1 : left.name > right.name ? 1 : 0),
+      );
+      const completeSection = sorted.find((section) => section.complete === true);
+      const assembly = {
+        sections: sorted.map((section) => ({
+          name: section.name,
+          text: typeof section.text === 'function' ? section.text(context) : section.text,
+          ...(section.interpolate === undefined ? {} : { interpolate: section.interpolate }),
+        })),
+        contexts: [],
+        tools: [],
+        variables: options.variables ?? {},
+      };
+      const queue = listeners.slice();
+      const inner = () => Promise.resolve(assembly);
+      const next = () => {
+        const callback = queue.shift() ?? inner;
+        return callback(assembly, context, next);
+      };
+      const transformed = await next();
+      if (completeSection === undefined) return transformed;
+      return { ...transformed, sections: [{ name: completeSection.name, text: completeSection.text }] };
+    },
+  };
 
   const ctx = {
     connection:
@@ -167,45 +240,7 @@ function mount(options = {}) {
         };
       },
     },
-    systemPrompt: {
-      /** Reproduces the shipped assemble(): scope merge, order, waterfall, collapse. */
-      async assemble(context = {}) {
-        if (typeof options.beforeDispatch === 'function') await options.beforeDispatch(context);
-        // Scoped layers along the parent chain, nearest scope last, exactly like
-        // ScopedLayers.merge — which is what makes `complete` a per-scope fact.
-        const chain = [];
-        for (let cursor = context?.scope; cursor !== undefined && cursor !== null; cursor = scopes.get(cursor)?.parent) {
-          chain.push(cursor);
-        }
-        const merged = new Map(registered.map((section) => [section.name, section]));
-        for (const key of chain.reverse()) {
-          for (const section of scopes.get(key)?.sections ?? []) merged.set(section.name, section);
-        }
-        const sorted = [...merged.values()].sort(
-          (left, right) => left.order - right.order || (left.name < right.name ? -1 : left.name > right.name ? 1 : 0),
-        );
-        const completeSection = sorted.find((section) => section.complete === true);
-        const assembly = {
-          sections: sorted.map((section) => ({
-            name: section.name,
-            text: typeof section.text === 'function' ? section.text(context) : section.text,
-            ...(section.interpolate === undefined ? {} : { interpolate: section.interpolate }),
-          })),
-          contexts: [],
-          tools: [],
-          variables: options.variables ?? {},
-        };
-        const queue = listeners.slice();
-        const inner = () => Promise.resolve(assembly);
-        const next = () => {
-          const callback = queue.shift() ?? inner;
-          return callback(assembly, context, next);
-        };
-        const transformed = await next();
-        if (completeSection === undefined) return transformed;
-        return { ...transformed, sections: [{ name: completeSection.name, text: completeSection.text }] };
-      },
-    },
+    systemPrompt,
     get(name) {
       if (name === 'workspaceRegistry') return registry;
       if (name === 'agents') return agentRegistry;
@@ -219,11 +254,33 @@ function mount(options = {}) {
       };
     },
     effect(factory) {
-      return factory();
+      const disposer = factory();
+      cleanups.push(disposer);
+      return disposer;
     },
   };
   (options.host ?? apply)(ctx);
-  return { ctx, routes, route: routes[0], disposedCount: () => disposed, listeners, agents };
+  return {
+    ctx,
+    routes,
+    route: routes[0],
+    disposedCount: () => disposed,
+    listeners,
+    agents,
+    registered,
+    systemPrompt,
+    sectionRegistrations,
+    sectionsDisposedCount: () => sectionsDisposed,
+    /**
+     * Undo every effect this mount registered, newest first — the unmount path
+     * cordis takes when the plugin's fiber is disposed. It exists so a test can
+     * assert "nothing this mount registered outlives the unmount", which is
+     * criterion 1 of g-014 for the section registration.
+     */
+    unmount() {
+      for (const disposer of cleanups.splice(0).reverse()) disposer();
+    },
+  };
 }
 
 /** Call the prefix route with a request double. */
@@ -247,6 +304,11 @@ function userPath() {
 function writeRaw(path, text) {
   mkdirSync(join(path, '..'), { recursive: true });
   writeFileSync(path, text, 'utf8');
+}
+
+/** SHA-256 of a file, or `missing` — the byte-identity assertion's currency. */
+function sha256(path) {
+  return existsSync(path) ? createHash('sha256').update(readFileSync(path)).digest('hex') : 'missing';
 }
 
 /** Create one workspace directory with a config file and return its registry row. */
@@ -411,21 +473,22 @@ test('snapshot: reports the base and effective sections in the real assembly ord
   assert.equal(payload.frozenScope, 'global');
   assert.equal(payload.frozenScopeReason, null);
 
-  assert.deepEqual(payload.base.sections.map((section) => section.name), [
-    'harness:identity', 'deployment:persona-prefix', 'project:alpha', 'project:beta', 'deployment:persona-suffix',
-  ]);
-  assert.deepEqual(payload.base.sections.map((section) => section.index), [0, 1, 2, 3, 4]);
+  assert.deepEqual(payload.base.sections.map((section) => section.name), globalNames());
+  assert.deepEqual(payload.base.sections.map((section) => section.index), [0, 1, 2, 3, 4, 5]);
   // No override is registered, so the effective view mirrors the base and every
   // section is overridable. `complete: false` is PROVEN here: a multi-section
   // assembly means no complete section is active (one would collapse it to one).
+  // The plugin's own section is part of the view — it renders to nothing, which
+  // is exactly why the `rendered` assertion below is unchanged by Revision 7.
   assert.deepEqual(payload.effective.sections.map((section) => [section.name, section.index, section.applied, section.action]), [
     ['harness:identity', 0, false, null],
     ['deployment:persona-prefix', 1, false, null],
     ['project:alpha', 2, false, null],
     ['project:beta', 3, false, null],
     ['deployment:persona-suffix', 4, false, null],
+    [CUSTOM_SECTION_NAME, 5, false, null],
   ]);
-  assert.deepEqual(payload.base.sections.map((section) => section.complete), [false, false, false, false, false]);
+  assert.deepEqual(payload.base.sections.map((section) => section.complete), [false, false, false, false, false, false]);
   assert.equal(payload.effective.sections.every((section) => section.overridable === true), true);
   assert.equal(payload.effective.sections.every((section) => section.reason === null), true);
   assert.equal(payload.rendered, 'You are an AI agent powered by DeepSeek Harness.\n\nALPHA BODY\n\nBETA BODY');
@@ -523,7 +586,7 @@ test('D2a: a concurrent UNSCOPED assembly cannot steal the probe config', async 
   const payload = json(await call(harness.route, { url: SNAPSHOT_PATH }));
 
   assert.notEqual(nested, null, 'the concurrent assembly must actually have run');
-  assert.deepEqual(nested.sections.map((section) => section.name), DEFAULT_SECTIONS.map((section) => section.name));
+  assert.deepEqual(nested.sections.map((section) => section.name), globalNames());
   assert.equal(
     nested.sections.some((section) => section.name.startsWith('__dsh-prompt-setting-probe__')),
     false,
@@ -532,7 +595,7 @@ test('D2a: a concurrent UNSCOPED assembly cannot steal the probe config', async 
   // And the probe's own observation is unaffected.
   assert.equal(payload.mounted, true);
   assert.equal(payload.frozen, false);
-  assert.equal(payload.base.sections.length, DEFAULT_SECTIONS.length);
+  assert.equal(payload.base.sections.length, globalNames().length);
 });
 
 test('D2b: a concurrent turn for the SAME agent cannot steal the session probe config', async () => {
@@ -551,7 +614,7 @@ test('D2b: a concurrent turn for the SAME agent cannot steal the session probe c
   const payload = json(await call(harness.route, { url: `${SNAPSHOT_PATH}?session=s1` }));
 
   assert.notEqual(nested, null, 'the concurrent turn must actually have run');
-  assert.deepEqual(nested.sections.map((section) => section.name), DEFAULT_SECTIONS.map((section) => section.name));
+  assert.deepEqual(nested.sections.map((section) => section.name), globalNames());
   assert.equal(
     nested.sections.some((section) => section.name.startsWith('__dsh-prompt-setting-probe__')),
     false,
@@ -560,7 +623,7 @@ test('D2b: a concurrent turn for the SAME agent cannot steal the session probe c
   assert.equal(payload.frozenScope, 'session');
   assert.equal(payload.mounted, true);
   assert.equal(payload.frozen, false);
-  assert.equal(payload.base.sections.length, DEFAULT_SECTIONS.length);
+  assert.equal(payload.base.sections.length, globalNames().length);
 });
 
 test('D2c: the probe consumes exactly one config, and only for its own context', async () => {
@@ -569,11 +632,11 @@ test('D2c: the probe consumes exactly one config, and only for its own context',
   // unconsumed assembly.
   json(await call(harness.route, { url: SNAPSHOT_PATH }));
   const plain = await harness.ctx.systemPrompt.assemble();
-  assert.deepEqual(plain.sections.map((section) => section.name), DEFAULT_SECTIONS.map((section) => section.name));
+  assert.deepEqual(plain.sections.map((section) => section.name), globalNames());
   const withEmptyContext = await harness.ctx.systemPrompt.assemble({});
   assert.deepEqual(
     withEmptyContext.sections.map((section) => section.name),
-    DEFAULT_SECTIONS.map((section) => section.name),
+    globalNames(),
   );
 });
 
@@ -621,6 +684,9 @@ test('snapshot: replace, hide and append all show up in the effective view', asy
     ['deployment:persona-prefix', 2, false, null],
     ['project:alpha', 3, true, 'replace'],
     ['deployment:persona-suffix', 4, false, null],
+    // The plugin's own section is registered last and no override targets it,
+    // so it sits at its real index, empty and unapplied.
+    [CUSTOM_SECTION_NAME, 5, false, null],
     // The hidden section is still reported, with its original text and a null index.
     ['project:beta', null, true, 'hide'],
   ]);
@@ -634,19 +700,27 @@ test('snapshot: the workspace layer overrides the user layer for the same sectio
     version: 1,
     overrides: [{ name: 'project:alpha', action: 'replace', text: 'WS ALPHA' }],
   });
+  // The user layer's `project:alpha` entry can only be a pre-Revision-7 one, so
+  // it is seeded the way the escape hatch documents: a hand edit of the file.
+  // The write route still sees it (read-only) and a reserved-name write joins it.
+  writeUserConfig([{ name: 'project:alpha', action: 'replace', text: 'USER ALPHA' }]);
   const { route } = mount({ workspaces: [workspace] });
   const put = await call(route, {
     method: 'PUT',
     url: OVERRIDES_PATH,
-    body: JSON.stringify({ layer: 'user', section: { name: 'project:alpha', action: 'replace', text: 'USER ALPHA' } }),
+    body: JSON.stringify({ layer: 'user', section: { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' } }),
   });
   assert.equal(put.statusCode, 200);
 
   const read = json(await call(route, { url: `${OVERRIDES_PATH}?session=s1` }));
   assert.deepEqual(read.merged.overrides.map((entry) => [entry.name, entry.layer, entry.text]), [
     ['project:alpha', 'workspace', 'WS ALPHA'],
+    [CUSTOM_SECTION_NAME, 'user', 'MINE'],
   ]);
-  assert.deepEqual(read.user.overrides, [{ name: 'project:alpha', action: 'replace', text: 'USER ALPHA' }]);
+  assert.deepEqual(read.user.overrides, [
+    { name: 'project:alpha', action: 'replace', text: 'USER ALPHA' },
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' },
+  ]);
   assert.deepEqual(read.workspace.overrides, [{ name: 'project:alpha', action: 'replace', text: 'WS ALPHA' }]);
 
   const alpha = json(await call(route, { url: `${SNAPSHOT_PATH}?session=s1` }))
@@ -674,8 +748,10 @@ test('snapshot: a complete section is reported as frozen, with no silent failure
   assert.equal(payload.frozenSection, 'preset:locked');
   assert.match(payload.frozenReason, /single complete section "preset:locked"/);
   assert.equal(payload.rendered, 'LOCKED BODY');
-  // Every base section is still listed, and none claims to be overridable.
-  assert.equal(payload.base.sections.length, 6);
+  // Every registered section is still listed — the fixture's five, the complete
+  // one, and the plugin's own registration — and none claims to be overridable.
+  assert.equal(payload.base.sections.length, sections.length + 1);
+  assert.equal(payload.base.sections.at(-1).name, CUSTOM_SECTION_NAME);
   assert.equal(payload.effective.sections.every((section) => section.overridable === false), true);
   // The discarded replace is explicit, not silent.
   const locked = payload.effective.sections.find((section) => section.name === 'preset:locked');
@@ -733,39 +809,45 @@ test('overrides GET: both layers plus the merged list', async () => {
   assert.deepEqual(payload.merged.overrides.map((entry) => [entry.name, entry.layer]), [['project:beta', 'workspace']]);
 });
 
-test('overrides PUT: writes the user layer atomically and takes effect on the next assembly', async () => {
+test('overrides PUT: writes the reserved section atomically and takes effect on the next assembly', async () => {
   const { route } = mount();
   const res = await call(route, {
     method: 'PUT',
     url: OVERRIDES_PATH,
-    body: JSON.stringify({ layer: 'user', section: { name: 'project:alpha', action: 'replace', text: 'EDITED' } }),
+    body: JSON.stringify({ layer: 'user', section: { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'EDITED' } }),
   });
   assert.equal(res.statusCode, 200);
   assert.deepEqual(json(res), {
     ok: true,
-    saved: { name: 'project:alpha', action: 'replace', text: 'EDITED', layer: 'user' },
+    saved: { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'EDITED', layer: 'user' },
     effectiveFrom: 'next-turn',
   });
   // The file on disk is the durable truth.
   assert.deepEqual(JSON.parse(readFileSync(userPath(), 'utf8')), {
     version: 1,
-    overrides: [{ name: 'project:alpha', action: 'replace', text: 'EDITED' }],
+    overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'EDITED' }],
   });
-  // And the very next assembly sees it, from the in-memory cache.
+  // And the very next assembly sees it, from the in-memory cache: the section
+  // carries the text byte for byte and sits LAST in the assembly, because its
+  // registered order (1000000) is above every fixture order.
   const payload = json(await call(route, { url: SNAPSHOT_PATH }));
-  const alpha = payload.effective.sections.find((section) => section.name === 'project:alpha');
-  assert.deepEqual([alpha.text, alpha.applied, alpha.overrideLayer], ['EDITED', true, 'user']);
+  const custom = payload.effective.sections.find((section) => section.name === CUSTOM_SECTION_NAME);
+  assert.deepEqual([custom.text, custom.applied, custom.overrideLayer], ['EDITED', true, 'user']);
+  assert.equal(payload.base.sections.at(-1).name, CUSTOM_SECTION_NAME);
+  assert.equal(payload.rendered.endsWith('\n\nEDITED'), true, 'the text lands at the very end of the prompt');
 });
 
-test('overrides PUT: a second save upserts rather than duplicating', async () => {
+test('overrides PUT: a second save upserts the reserved entry and never disturbs a frozen one', async () => {
+  // A pre-Revision-7 entry is in the layer. The narrowed write face can neither
+  // update nor delete it, and must not disturb it.
+  writeUserConfig([{ name: 'project:beta', action: 'hide' }]);
   const { route } = mount();
   const put = (section) => call(route, { method: 'PUT', url: OVERRIDES_PATH, body: JSON.stringify({ layer: 'user', section }) });
-  await put({ name: 'project:alpha', action: 'replace', text: 'ONE' });
-  await put({ name: 'project:beta', action: 'hide' });
-  await put({ name: 'project:alpha', action: 'replace', text: 'TWO' });
+  assert.equal((await put({ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'ONE' })).statusCode, 200);
+  assert.equal((await put({ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'TWO' })).statusCode, 200);
   assert.deepEqual(JSON.parse(readFileSync(userPath(), 'utf8')).overrides, [
-    { name: 'project:alpha', action: 'replace', text: 'TWO' },
     { name: 'project:beta', action: 'hide' },
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'TWO' },
   ]);
 });
 
@@ -775,18 +857,20 @@ test('overrides PUT: workspace layer resolves through the Host session index, ne
   const res = await call(route, {
     method: 'PUT',
     url: OVERRIDES_PATH,
-    body: JSON.stringify({ layer: 'workspace', session: 's1', section: { name: 'project:alpha', action: 'hide' } }),
+    body: JSON.stringify({ layer: 'workspace', session: 's1', section: { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'WS MINE' } }),
   });
   assert.equal(res.statusCode, 200);
-  assert.deepEqual(json(res).saved, { name: 'project:alpha', action: 'hide', layer: 'workspace' });
+  assert.deepEqual(json(res).saved, { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'WS MINE', layer: 'workspace' });
   const written = join(workspace.path, '.dsh-prompt-setting', 'overrides.json');
-  assert.deepEqual(JSON.parse(readFileSync(written, 'utf8')).overrides, [{ name: 'project:alpha', action: 'hide' }]);
+  assert.deepEqual(JSON.parse(readFileSync(written, 'utf8')).overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'WS MINE' },
+  ]);
 
   // A client-supplied path is not a parameter at all: an unknown session fails.
   const ghost = await call(route, {
     method: 'PUT',
     url: OVERRIDES_PATH,
-    body: JSON.stringify({ layer: 'workspace', session: 'ghost', section: { name: 'a', action: 'hide' } }),
+    body: JSON.stringify({ layer: 'workspace', session: 'ghost', section: { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'x' } }),
   });
   assert.equal(ghost.statusCode, 400);
   assert.equal(json(ghost).code, 'workspace-unresolved');
@@ -795,20 +879,33 @@ test('overrides PUT: workspace layer resolves through the Host session index, ne
 test('overrides PUT: every rejection is a readable 4xx and never touches the disk', async () => {
   const { route } = mount();
   const put = (body) => call(route, { method: 'PUT', url: OVERRIDES_PATH, body });
+  const reserved = CUSTOM_SECTION_NAME;
   const cases = [
+    // Request shape: the same 400s as Revision 6, evaluated identically.
     ['{ not json', 400, 'invalid-json'],
-    [JSON.stringify({ section: { name: 'a', action: 'hide' } }), 400, 'unknown-layer'],
-    [JSON.stringify({ layer: 'global', section: { name: 'a', action: 'hide' } }), 400, 'unknown-layer'],
+    [JSON.stringify({ section: { name: reserved, action: 'replace', text: 'x' } }), 400, 'unknown-layer'],
+    [JSON.stringify({ layer: 'global', section: { name: reserved, action: 'replace', text: 'x' } }), 400, 'unknown-layer'],
     [JSON.stringify({ layer: 'user' }), 400, 'invalid-override'],
-    [JSON.stringify({ layer: 'user', section: { action: 'hide' } }), 400, 'missing-name'],
-    [JSON.stringify({ layer: 'user', section: { name: 'a'.repeat(201), action: 'hide' } }), 400, 'name-too-long'],
-    [JSON.stringify({ layer: 'user', section: { name: 'a', action: 'explode' } }), 400, 'unknown-action'],
-    [JSON.stringify({ layer: 'user', section: { name: 'a', action: 'replace' } }), 400, 'missing-text'],
-    [JSON.stringify({ layer: 'user', section: { name: 'a', action: 'hide', text: 'x' } }), 400, 'unexpected-text'],
-    [JSON.stringify({ layer: 'user', section: { name: 'a', action: 'append', text: 'x', order: -2 } }), 400, 'invalid-order'],
-    [JSON.stringify({ layer: 'workspace', section: { name: 'a', action: 'hide' } }), 400, 'workspace-unresolved'],
-    [JSON.stringify({ layer: 'user', section: { name: 'a', action: 'replace', text: 'x'.repeat(204801) } }), 413, 'text-too-large'],
+    [JSON.stringify({ layer: 'user', section: { action: 'replace', text: 'x' } }), 400, 'missing-name'],
+    [JSON.stringify({ layer: 'user', section: { name: reserved, action: 'replace' } }), 400, 'missing-text'],
+    [JSON.stringify({ layer: 'workspace', section: { name: reserved, action: 'replace', text: 'x' } }), 400, 'workspace-unresolved'],
+    [JSON.stringify({ layer: 'user', section: { name: reserved, action: 'replace', text: 'x'.repeat(204801) } }), 413, 'text-too-large'],
     ['x'.repeat(300 * 1024), 413, 'body-too-large'],
+    // Revision 7's write lock: any other name, whatever else the body says. The
+    // name check precedes every field-level rule, so a legacy name never answers
+    // a field error — it answers the wall.
+    [JSON.stringify({ layer: 'user', section: { name: 'a', action: 'replace', text: 'x' } }), 403, 'write-locked'],
+    [JSON.stringify({ layer: 'user', section: { name: 'a', action: 'hide' } }), 403, 'write-locked'],
+    [JSON.stringify({ layer: 'user', section: { name: 'a', action: 'explode' } }), 403, 'write-locked'],
+    [JSON.stringify({ layer: 'user', section: { name: 'a', action: 'replace' } }), 403, 'write-locked'],
+    [JSON.stringify({ layer: 'user', section: { name: 'a', action: 'hide', text: 'x' } }), 403, 'write-locked'],
+    [JSON.stringify({ layer: 'user', section: { name: 'a', action: 'append', text: 'x', order: -2 } }), 403, 'write-locked'],
+    [JSON.stringify({ layer: 'user', section: { name: 'a'.repeat(201), action: 'hide' } }), 403, 'write-locked'],
+    // … and the reserved name accepts exactly one action.
+    [JSON.stringify({ layer: 'user', section: { name: reserved, action: 'hide' } }), 400, 'unsupported-action'],
+    [JSON.stringify({ layer: 'user', section: { name: reserved, action: 'append', text: 'x' } }), 400, 'unsupported-action'],
+    [JSON.stringify({ layer: 'user', section: { name: reserved, action: 'explode', text: 'x' } }), 400, 'unsupported-action'],
+    [JSON.stringify({ layer: 'user', section: { name: reserved } }), 400, 'unsupported-action'],
   ];
   for (const [body, status, code] of cases) {
     const res = await put(body);
@@ -820,31 +917,102 @@ test('overrides PUT: every rejection is a readable 4xx and never touches the dis
     assert.ok(payload.message.length > 0);
   }
   assert.throws(() => readFileSync(userPath(), 'utf8'), /ENOENT/, 'no rejected write may create a file');
+  // The 403 message names the one writable section, so a caller can act on it.
+  const locked = json(await put(JSON.stringify({ layer: 'user', section: { name: 'a', action: 'replace', text: 'x' } })));
+  assert.ok(locked.message.includes(reserved), `the write-lock message names ${reserved}: ${locked.message}`);
 });
 
-test('overrides DELETE: removes one override, and reports a miss as 404', async () => {
+test('overrides DELETE: removes the reserved override, and reports a miss as 404', async () => {
   const { route } = mount();
   await call(route, {
     method: 'PUT',
     url: OVERRIDES_PATH,
-    body: JSON.stringify({ layer: 'user', section: { name: 'project:alpha', action: 'hide' } }),
+    body: JSON.stringify({ layer: 'user', section: { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' } }),
   });
-  const res = await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?layer=user&name=project%3Aalpha` });
+  const res = await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?layer=user&name=${encodeURIComponent(CUSTOM_SECTION_NAME)}` });
   assert.equal(res.statusCode, 200);
-  assert.deepEqual(json(res), { ok: true, removed: true, layer: 'user', name: 'project:alpha', effectiveFrom: 'next-turn' });
+  assert.deepEqual(json(res), { ok: true, removed: true, layer: 'user', name: CUSTOM_SECTION_NAME, effectiveFrom: 'next-turn' });
   assert.deepEqual(JSON.parse(readFileSync(userPath(), 'utf8')).overrides, []);
 
-  const again = await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?layer=user&name=project%3Aalpha` });
+  const again = await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?layer=user&name=${encodeURIComponent(CUSTOM_SECTION_NAME)}` });
   assert.equal(again.statusCode, 404);
   assert.equal(json(again).code, 'override-not-found');
+
+  // A legacy name is refused by the write lock, and that verdict is reached
+  // BEFORE the presence lookup: the entry below really does exist, so a 404
+  // would be a lie about why nothing was removed.
+  writeUserConfig([{ name: 'a', action: 'hide' }]);
+  const locked = await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?layer=user&name=a` });
+  assert.equal(locked.statusCode, 403);
+  assert.equal(json(locked).code, 'write-locked');
+  assert.deepEqual(JSON.parse(readFileSync(userPath(), 'utf8')).overrides, [{ name: 'a', action: 'hide' }], 'and it removed nothing');
+  const lockedMiss = await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?layer=user&name=never-existed` });
+  assert.equal(lockedMiss.statusCode, 403, '403 before 404, present or not');
+  assert.equal(json(lockedMiss).code, 'write-locked');
 
   const noName = await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?layer=user` });
   assert.equal(noName.statusCode, 400);
   assert.equal(json(noName).code, 'missing-name');
 
+  const tooLong = await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?layer=user&name=${'a'.repeat(201)}` });
+  assert.equal(tooLong.statusCode, 400, 'a name this route could never act on is still a shape error');
+  assert.equal(json(tooLong).code, 'name-too-long');
+
   const noLayer = await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?name=a` });
   assert.equal(noLayer.statusCode, 400);
   assert.equal(json(noLayer).code, 'unknown-layer');
+});
+
+test('overrides: the write lock is checked before anything can be written, proven by SHA-256', async () => {
+  // A layer with content, so "unchanged" is a claim about real bytes rather
+  // than about the absence of a file.
+  writeUserConfig([
+    { name: 'project:alpha', action: 'replace', text: 'KEEP ME' },
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' },
+  ]);
+  const workspace = workspaceWith('ws-lock', 's-lock', {
+    version: 1,
+    overrides: [{ name: 'project:beta', action: 'hide' }],
+  });
+  const { route } = mount({ workspaces: [workspace] });
+  const workspaceFile = join(workspace.path, '.dsh-prompt-setting', 'overrides.json');
+  const paths = [userPath(), workspaceFile];
+  const before = Object.fromEntries(paths.map((path) => [path, sha256(path)]));
+
+  const rejected = [
+    ['PUT', OVERRIDES_PATH, JSON.stringify({ layer: 'user', section: { name: 'project:alpha', action: 'replace', text: 'HIJACK' } }), 403],
+    ['PUT', OVERRIDES_PATH, JSON.stringify({ layer: 'user', section: { name: 'project:alpha', action: 'hide' } }), 403],
+    ['PUT', OVERRIDES_PATH, JSON.stringify({ layer: 'workspace', session: 's-lock', section: { name: 'project:beta', action: 'replace', text: 'HIJACK' } }), 403],
+    ['PUT', OVERRIDES_PATH, JSON.stringify({ layer: 'user', section: { name: CUSTOM_SECTION_NAME, action: 'append', text: 'x' } }), 400],
+    ['PUT', OVERRIDES_PATH, JSON.stringify({ layer: 'workspace', session: 's-lock', section: { name: CUSTOM_SECTION_NAME, action: 'hide' } }), 400],
+    ['DELETE', `${OVERRIDES_PATH}?layer=user&name=project%3Aalpha`, undefined, 403],
+    ['DELETE', `${OVERRIDES_PATH}?layer=user&name=never-existed`, undefined, 403],
+    ['DELETE', `${OVERRIDES_PATH}?layer=workspace&session=s-lock&name=project%3Abeta`, undefined, 403],
+    ['DELETE', `${OVERRIDES_PATH}?layer=user&reset=true&legacy=true`, undefined, 400],
+  ];
+  for (const [method, url, body, status] of rejected) {
+    const res = await call(route, { method, url, body });
+    assert.equal(res.statusCode, status, `${method} ${url}`);
+    assert.deepEqual(
+      Object.fromEntries(paths.map((path) => [path, sha256(path)])),
+      before,
+      `${method} ${url} must leave both layers byte-identical`,
+    );
+  }
+
+  // The reserved name still writes, and only its own entry changes.
+  const ok = await call(route, {
+    method: 'PUT',
+    url: OVERRIDES_PATH,
+    body: JSON.stringify({ layer: 'user', section: { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'NEW' } }),
+  });
+  assert.equal(ok.statusCode, 200);
+  assert.notEqual(sha256(userPath()), before[userPath()], 'a legal write does change the file');
+  assert.equal(sha256(workspaceFile), before[workspaceFile], 'and only the layer it targeted');
+  assert.deepEqual(JSON.parse(readFileSync(userPath(), 'utf8')).overrides, [
+    { name: 'project:alpha', action: 'replace', text: 'KEEP ME' },
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'NEW' },
+  ]);
 });
 
 test('layers: a corrupt user file disables that layer, is explained, and never breaks assembly', async () => {
@@ -855,12 +1023,12 @@ test('layers: a corrupt user file disables that layer, is explained, and never b
   assert.equal(payload.layers.user.enabled, false);
   assert.equal(payload.layers.user.path, userPath());
   assert.match(payload.layers.user.reason, /invalid-json/);
-  assert.deepEqual(payload.base.sections.length, 5, 'the assembly is untouched');
+  assert.deepEqual(payload.base.sections.length, globalNames().length, 'the assembly is untouched');
 
   const refused = await call(route, {
     method: 'PUT',
     url: OVERRIDES_PATH,
-    body: JSON.stringify({ layer: 'user', section: { name: 'a', action: 'hide' } }),
+    body: JSON.stringify({ layer: 'user', section: { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'x' } }),
   });
   assert.equal(refused.statusCode, 409);
   assert.equal(json(refused).code, 'layer-not-writable');
@@ -876,7 +1044,7 @@ test('layers: a corrupt workspace file disables only that workspace layer', asyn
   assert.equal(payload.layers.workspace.enabled, false);
   assert.match(payload.layers.workspace.reason, /invalid-json/);
   assert.equal(payload.layers.user.enabled, true);
-  assert.deepEqual(payload.base.sections.length, 5);
+  assert.deepEqual(payload.base.sections.length, globalNames().length);
 });
 
 test('assembly: a real scoped turn resolves its workspace layer from the agent scope, with no route involved', async () => {
@@ -899,7 +1067,7 @@ test('assembly: a real scoped turn resolves its workspace layer from the agent s
   assert.equal(second.sections.some((section) => section.name === 'project:beta'), true);
 
   const anonymous = await ctx.systemPrompt.assemble();
-  assert.deepEqual(anonymous.sections.map((section) => section.name), DEFAULT_SECTIONS.map((section) => section.name));
+  assert.deepEqual(anonymous.sections.map((section) => section.name), globalNames());
 });
 
 test('assembly: with no overrides configured the assembly comes back BY IDENTITY', async () => {
@@ -908,7 +1076,7 @@ test('assembly: with no overrides configured the assembly comes back BY IDENTITY
   const plain = await ctx.systemPrompt.assemble();
   // Re-running with a listener that returns its input proves the pass-through
   // path, and `applyOverrides` itself is asserted by identity in the kernel tests.
-  assert.deepEqual(plain.sections.map((section) => section.name), DEFAULT_SECTIONS.map((section) => section.name));
+  assert.deepEqual(plain.sections.map((section) => section.name), globalNames());
   assert.equal(Object.hasOwn(plain, 'order'), false);
 });
 
@@ -962,7 +1130,7 @@ test('F1: a third-party listener that appends a section is NOT read as a freeze'
 
   // Every untouched registered section must stay editable.
   const registered = payload.effective.sections.filter((section) => section.origin === 'registered');
-  assert.equal(registered.length, DEFAULT_SECTIONS.length);
+  assert.equal(registered.length, globalNames().length);
   assert.equal(registered.every((section) => section.overridable === true), true);
   assert.equal(registered.every((section) => section.reason === null), true);
 
@@ -970,10 +1138,10 @@ test('F1: a third-party listener that appends a section is NOT read as a freeze'
   const companion = payload.effective.sections.find((section) => section.name === 'dsh-expression:companion');
   assert.deepEqual(
     [companion.index, companion.origin, companion.action, companion.applied, companion.overridable, companion.reason],
-    [DEFAULT_SECTIONS.length, 'downstream-added', null, false, true, null],
+    [globalNames().length, 'downstream-added', null, false, true, null],
   );
   assert.equal(payload.base.sections.some((section) => section.name === 'dsh-expression:companion'), false);
-  assert.equal(payload.base.sections.length, DEFAULT_SECTIONS.length);
+  assert.equal(payload.base.sections.length, globalNames().length);
   assert.match(payload.rendered, /COMPANION$/);
 });
 
@@ -1118,10 +1286,12 @@ test('refresh: a failed write never leaves the cache at odds with the file', asy
   });
   const failures = [
     ['PUT', OVERRIDES_PATH, '{ not json', 400, 'invalid-json'],
-    ['PUT', OVERRIDES_PATH, JSON.stringify({ layer: 'nope', section: { name: 'a', action: 'hide' } }), 400, 'unknown-layer'],
-    ['PUT', OVERRIDES_PATH, JSON.stringify({ layer: 'user', section: { name: 'a', action: 'replace' } }), 400, 'missing-text'],
-    ['PUT', OVERRIDES_PATH, JSON.stringify({ layer: 'workspace', section: { name: 'a', action: 'hide' } }), 400, 'workspace-unresolved'],
-    ['DELETE', `${OVERRIDES_PATH}?layer=user&name=absent`, undefined, 404, 'override-not-found'],
+    ['PUT', OVERRIDES_PATH, JSON.stringify({ layer: 'nope', section: { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'x' } }), 400, 'unknown-layer'],
+    ['PUT', OVERRIDES_PATH, JSON.stringify({ layer: 'user', section: { name: 'project:alpha', action: 'replace', text: 'x' } }), 403, 'write-locked'],
+    ['PUT', OVERRIDES_PATH, JSON.stringify({ layer: 'user', section: { name: CUSTOM_SECTION_NAME, action: 'replace' } }), 400, 'missing-text'],
+    ['PUT', OVERRIDES_PATH, JSON.stringify({ layer: 'workspace', section: { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'x' } }), 400, 'workspace-unresolved'],
+    ['DELETE', `${OVERRIDES_PATH}?layer=user&name=absent`, undefined, 403, 'write-locked'],
+    ['DELETE', `${OVERRIDES_PATH}?layer=user&name=${encodeURIComponent(CUSTOM_SECTION_NAME)}`, undefined, 404, 'override-not-found'],
     ['DELETE', `${OVERRIDES_PATH}?layer=nope&name=a`, undefined, 400, 'unknown-layer'],
     ['DELETE', `${OVERRIDES_PATH}?layer=nope&reset=true`, undefined, 400, 'unknown-layer'],
     ['POST', IMPORT_PATH, '{ not json', 400, 'invalid-json'],
@@ -1156,7 +1326,7 @@ test('refresh: a write rejected because the target layer is unusable leaves the 
   const refused = await call(route, {
     method: 'PUT',
     url: `${OVERRIDES_PATH}?session=s-bad`,
-    body: JSON.stringify({ layer: 'workspace', session: 's-bad', section: { name: 'a', action: 'hide' } }),
+    body: JSON.stringify({ layer: 'workspace', session: 's-bad', section: { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'x' } }),
   });
   assert.equal(refused.statusCode, 409);
   assert.equal(json(refused).code, 'layer-not-writable');
@@ -1182,6 +1352,7 @@ test('refresh: every write path caches only after its own file write returned', 
     ['handleWriteOverride', 'async function handleWriteOverride(req, url, res) {'],
     ['handleDeleteOverride', 'function handleDeleteOverride(url, res) {'],
     ['handleResetLayer', 'function handleResetLayer(layer, sessionId, res) {'],
+    ['handleLegacyClear', 'function handleLegacyClear(layer, sessionId, res) {'],
     ['handleImport', 'async function handleImport(req, url, res) {'],
   ];
   for (const [name, signature] of writePaths) {
@@ -1209,7 +1380,7 @@ test('refresh: deleting the user layer file disables it with a reason, and resto
   assert.match(after.layers.user.reason, /missing-file/);
   assert.match(after.layers.user.reason, /was removed after it had been read/);
   assert.equal(effectiveAlpha(after).text, 'ALPHA BODY', 'a vanished file keeps no override alive');
-  assert.equal(after.base.sections.length, DEFAULT_SECTIONS.length);
+  assert.equal(after.base.sections.length, globalNames().length);
   assert.equal(json(await call(route, { url: OVERRIDES_PATH })).user.enabled, false);
 
   // Re-creating it by hand recovers on the next request, with no remount.
@@ -1242,7 +1413,7 @@ test('refresh: a user file corrupted after mount disables it, and a repaired one
   assert.equal(broken.mounted, true);
   assert.equal(broken.layers.user.enabled, false);
   assert.match(broken.layers.user.reason, /invalid-json/);
-  assert.equal(broken.base.sections.length, DEFAULT_SECTIONS.length, 'the assembly is untouched');
+  assert.equal(broken.base.sections.length, globalNames().length, 'the assembly is untouched');
   assert.equal(json(await call(route, { url: OVERRIDES_PATH })).user.enabled, false);
 
   // Well-formed JSON that fails the schema is the same story, with the

@@ -10,6 +10,21 @@ DSH 默认 System Prompt 管理插件。**阶段一（A/B/C）与阶段二已交
 状态；本插件只允许一个表单，所以打开另一行是切换而非叠加），展开时用 `scrollIntoView({ block: 'nearest' })`
 把表单**最小滚动**带进视口（详见 `NOTES.md` §90 七、八节）。
 
+**Revision 7（本包当前形态）：插件自己注册一段 Prompt，写入面收窄到这一段。**
+宿主半在 `apply` 期间用 `ctx.systemPrompt.section()` 注册**自己的**一段
+（保留名 `prompt-setting:custom-prompt`、`order: 1000000`、`interpolate: false`、空文本注册）；
+用户在「我的 Prompt」里写的文本，通过**既有覆盖引擎**的 `replace` 落到这一段上，排在所有
+DSH 仓库内置段之后。未配置时这一段对最终 prompt **零贡献**（空段被渲染器丢弃），
+所以「装了但没写」与「没装」渲染出的 prompt 逐字节相同。
+写入面同时收窄：`PUT`／单名 `DELETE`／`import` 只接受保留名（其他名字一律
+`403 write-locked`，拒绝时不碰文件一个字节）；`export` 只导出保留名条目并显式声明省略条数
+（`exportScope`）；新增 `DELETE ...&legacy=true` 只清旧覆盖（保留「我的 Prompt」），
+`?reset=true` 仍清整层。旧覆盖（其他名字）**行为零变化、但冻结只读**：UI 只能看与整批清除，
+改单条要手工编辑层文件（该文件仍是唯一事实来源，每次路由请求都会重读）。
+`interpolate: false` 不是风格选择：用户文本是任意文本，一旦参与插值，写一个 `{{不存在的变量}}`
+就会让之后**每一轮**装配抛错。
+完整契约见 [`CONTRACT.md`](./CONTRACT.md) §15，设计取舍与实测出处见 [`NOTES.md`](./NOTES.md) §92。
+
 本文件讲的是**这个包怎么装、怎么改**；仓库整体目标与路线图见仓库根 `README.md`，
 REST 契约见同目录 [`CONTRACT.md`](./CONTRACT.md)（已冻结，客户端照它写），
 阶段一 A 的设计取舍、探针实测方式与未验证项见 [`NOTES.md`](./NOTES.md)。
@@ -18,7 +33,8 @@ REST 契约见同目录 [`CONTRACT.md`](./CONTRACT.md)（已冻结，客户端�
 
 | 文件 | 作用 |
 | --- | --- |
-| `index.js` | 宿主半：`/prompt-setting` 前缀路由（ping / snapshot / overrides / history / diff / export / import）+ `system-prompt/assemble` 覆盖监听器 |
+| `index.js` | 宿主半：`/prompt-setting` 前缀路由（ping / snapshot / overrides / history / diff / export / import）+ `system-prompt/assemble` 覆盖监听器 + 注册保留段 `prompt-setting:custom-prompt` |
+| `core/custom.js` | **纯函数策略**（Revision 7）：保留段名/`order`/`interpolate` 常量、写入面判定（`403 write-locked` / `400 unsupported-action`）、`legacyPlan`、导出范围声明、导入文档的名字闸门。零 IO、零 `ctx` |
 | `core/overrides.js` | **纯函数内核**：配置校验、两层合并、分段变换、`complete` 推导、快照投影、渲染。零 IO、零 `ctx` |
 | `core/history.js` | **纯函数**：历史记录的构造与校验、jsonl 解析（容错）、裁剪上界、查询分页、SHA-256 指纹 |
 | `core/diff.js` | **纯函数**：段级快照比较 + 行级 diff（精确 LCS，超预算退化为有界比较并明示） |
@@ -39,10 +55,11 @@ REST 契约见同目录 [`CONTRACT.md`](./CONTRACT.md)（已冻结，客户端�
 
 宿主进程的改动**必须重启才能生效**，所以逻辑尽量放在可离线测试的模块里：
 
-- `core/overrides.js`、`core/history.js`、`core/diff.js`、`core/transfer.js` 是纯数据进、纯数据出；
+- `core/overrides.js`、`core/custom.js`、`core/history.js`、`core/diff.js`、`core/transfer.js` 是纯数据进、纯数据出；
   单测直接测它们，不碰 `ctx`（`core/history.js` 只用确定性的 `node:crypto` 算指纹）；
 - `core/store.js` 承担全部 IO，且**不在装配路径上**（挂载时读、路由请求时刷新、之后只在内存里读）；
-- `index.js` 只是薄适配层：一个 waterfall 监听器 + 路由分派。
+- `index.js` 只是薄适配层：**一个注册的 Prompt 段 + 一个 waterfall 监听器 + 路由分派**。
+  段的注册走与路由、监听器同一个 `registerEffect` 台账（卸载或后续步骤失败都会撤销，注册失败按 g-013 只留一条可读信息、绝不让 DSH 启动失败），且**排在最后**注册：越可能失败的越先注册，失败时要撤销的东西最少。
 
 导入的原子性由分层保证：**解析 → schema/版本/字段校验 → 冲突策略 → 临时文件写入 → 校验通过 →
 原子替换**，前四步全在纯函数层与内存里，所以「任何一步失败 ⇒ 现有配置文件逐字节不变」
@@ -355,3 +372,21 @@ dsh --profile web --dump-config-schema   # 条目/补丁的 JSON Schema（写 --
 - 导入的提交是**逐文件**原子的，不是跨文件事务（rename 之间的文件系统错误会留下已替换的层，
   错误信息会写明程度）；任何发生在 rename 之前的失败都不可能留下半成品；
 - diff 的段级结果来自两条记录的**摘要快照**（无文本），只有被聚焦的那一段做行级比较。
+
+## Revision 7 边界（宿主半 + 契约；客户端 UI 是另一个目标）
+
+- **注册段的真机生效未验证**：注册本身是在**真实** `@deepseek-ai/dsh-system-prompt` 服务与真实
+  Cordis context 上做的，真实 `renderPrompt` 也逐字节验证了文本与「空段零贡献」；但「重启后的
+  `dsh web` 把这一段装配进最终 prompt」需要重启宿主才能观察，本轮**没有重启**，故按未验证项记录
+  （`CONTRACT.md` §15.9、`NOTES.md` §92.6）。
+- **`order: 1000000` 不是对第三方的保证**：本插件承诺的是排在**所有 DSH 仓库内置段**之后
+  （内置位置表最大 `DEPLOYMENT_PERSONA_SUFFIX = 10200`）；另一个插件仍可用更大的有限值排到本段之后。
+- **`complete: true` 的 scope 会丢掉用户文本**：整段列表被替换为该 complete 段，本插件的段不在最终
+  prompt 里。快照如实报告（`frozen` + `frozenReason`，本段 `applied:false`、
+  `reason: "the section was removed from the assembled result"`），UI 必须在「我的 Prompt」面板明说。
+- **空段会出现在快照视图里**：`base.sections` / `effective.sections` 恒多一条（本段、空、最后）。
+  最终 prompt 不受影响，但拿 Revision 6 的数组逐项对比的消费者要预期这条差异。
+- **客户端半仍是 Revision 6 的编辑器**：本目标只做宿主半 + 契约；客户端重排是另一个目标。
+  在那之前，UI 写非保留名会收到 `403 write-locked`，面板显示宿主返回的 `message`。
+- **`interpolate: false` 的代价**：用户在「我的 Prompt」里写的 `{{变量}}` **永不替换**，原样进入
+  prompt。这是刻意的取舍（自由文本，不是模板语言）。

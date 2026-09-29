@@ -2834,3 +2834,149 @@ evidence: fingerprint 3aadadf=42061a2a/260711 -> now=0c098c88/265425
 - **降级卡片的文案刻意不做 i18n**（`client.js` 顶部词典与 locale 绑定都在刚失败的正文里）；
   `test/client.test.mjs` 的 en 横扫走的是**正常**模块，因此不受影响 —— 这是有意选择，不是漏掉。
 - **「返回非 disposer」的残余**（六、④）无法彻底消除，只能可见化 + 不再叠加。
+
+---
+
+## 92. 插件自注册一段 Prompt + 写入面收窄到该段（g-014，2026-09-29，基线 `v0.1.0-test@8533eb1`）
+
+**目标（负责人本轮产品决定）**：插件从「任意段的覆盖编辑器」收敛为「**一个我自己的 Prompt 段** +
+其他段只读」。本目标只做**宿主半 + 契约**；客户端 UI 重排是另一个目标（`CONTRACT.md` §7 限制 21）。
+
+### 一、侦察到的平台事实（逐条带出处，全部读自本机已装 0.1.7-rc.2）
+
+下称 `SP` = `…/.pnpm/@deepseek-ai+dsh-system-prompt@0.1.7-rc.2_…/node_modules/@deepseek-ai/dsh-system-prompt`。
+
+| # | 事实 | 出处（`file:line`） | 对本实现的约束 |
+| --- | --- | --- | --- |
+| ① | `section()` 就是往当前 scope 的层里 `insert` 一条命名段，并返回 **cordis effect 的 disposer**；`order` 非有限数抛 `TypeError`，同层重名抛 `Error` | `SP/lib/index.js:240-243`（`241` 有限性检查、`242` `layers.effect(...)`） | 可以在 `apply` 期间安全注册；disposer 直接交给本仓的 `registerEffect` 台账 |
+| ② | 排序 = `order` 升序，相等时按名字 **code-unit** | `SP/lib/index.js:97-99`（`comparePromptSections`） | 只要 `order` 大于所有内置值，本段必然最后 |
+| ③ | 内置位置表最大值 `DEPLOYMENT_PERSONA_SUFFIX = 10200` | `SP/lib/index.js:10-43`（`42` 行） | 取 `1000000` 严格大于它；文档写清「只保证排在 DSH 仓库内置段之后」 |
+| ④ | 平台明确说外部贡献可用**任意有限 order** | `SP/README.md:56` | 所以「另一个插件仍可能排在我们之后」是文档边界，不是 bug |
+| ⑤ | 装配后段对象**不带 `order`**（只有 `name` / `text` / 可选 `interpolate`） | `SP/lib/index.js:340-346` | 单测只能断言**顺序**，不能断言段上带 order（断言写成 `Object.hasOwn(section,'order') === false` + 位置最后） |
+| ⑥ | `interpolate: false` 的段文本原样保留、跳过插值；其余段在遇到未知变量名、`undefined` 值、畸形 `{{}}` 时**抛错** | `SP/lib/index.js:113-115`（`renderPrompt`）、`:153-177`（`interpolate`，抛出点 `160`/`166`/`169`/`172`） | 用户文本必须 `interpolate:false`，否则用户写一个 `{{foo}}` 就让**每一轮**装配失败 |
+| ⑦ | 空文本段仍在 `assembly.sections` 里（监听器可见），但 `renderPrompt` 用 `.filter(text => text.length > 0)` 丢弃 | `SP/lib/index.js:113-115` | 「未配置 ⇒ 对最终 prompt 零贡献」是可断言的；同时快照视图会多一条 |
+| ⑧ | 生效列表里有 `complete:true` 段时，**瀑布返回之后** `sections` 被整体替换为该段 | `SP/lib/index.js:335-337`（collect）、`:355-361`（替换） | 本段会被丢掉、用户文本不进 prompt ⇒ 快照如实报 `frozen`，文档必须明说 |
+| ⑨ | 真实 `renderPrompt` **是导出的**（`export { …, renderPrompt }`） | `SP/lib/index.js` 末行 | 所以「真实渲染路径」可以在集成测试里直接量，不需要自己再写一个渲染器 |
+
+结论：①–⑨ 都**没有推翻** brief 里的侦察结论；补到的两条是 ⑤（装配后不带 `order`，影响断言写法）
+与 ⑨（`renderPrompt` 可用，让「零贡献」和「逐字节保留」有了真实渲染器的证据）。
+
+### 二、落了什么（函数级）
+
+| 位置 | 改动 |
+| --- | --- |
+| `core/custom.js`（**新增**，288 行，纯函数零 IO） | `CUSTOM_SECTION_NAME='prompt-setting:custom-prompt'`、`CUSTOM_SECTION_ORDER=1000000`、`CUSTOM_SECTION_INTERPOLATE=false`、`CUSTOM_SECTION_TEXT=''`、`REPO_MAX_SECTION_ORDER=10200`；`customSection()`、`isCustomSectionName()`、`assertWritableSection()`（`403 write-locked` / `400 unsupported-action`）、`assertDeletableName()`（`403 write-locked`）、`legacyPlan()`、`customOverridesOnly()`、`exportScope()`、`assertImportableDocument()` |
+| `index.js` | ① `mount()` 末尾第三个 effect：`registerEffect(ctx, cleanups, () => disposerOf(ctx.systemPrompt.section(customSection())), label)`；② `handleWriteOverride` 在 `layer` 检查后、`validateOverride` **之前**调 `assertWritableSection`；③ `handleDeleteOverride` 显式先查 `layer`，再 `reset`/`legacy` 互斥 `400 conflicting-query`，再 `missing-name`/`name-too-long`，再 `assertDeletableName`，最后才是 404；④ 新增 `handleLegacyClear`（写 `legacy-clear` 历史记录，`count===0` 不写文件）；⑤ `handleImport` 在 `parseExport` 之后立刻 `assertImportableDocument`（dry-run 也挡）；⑥ `handleExport` 过滤成保留名条目 + 响应加 `exportScope`；⑦ 末尾 re-export 保留名常量 |
+| `core/history.js` | `HISTORY_ACTIONS` 加 `legacy-clear`；新增 `LEGACY_CLEAR_ACTION` 与 `LAYER_WIDE_ACTIONS=['reset-layer','legacy-clear']`；`validateHistoryRecord` 的「整层动作必须 `name:null`」规则从「只认 reset-layer」改为「认这两个」 |
+
+**为什么注册放在最后（第三个 effect）**：三个 effect 的注册顺序只在失败时有意义，规则是
+「**越可能失败的越先注册**，失败时要撤销的东西最少」。真实 profile 最常撞的是
+`webServer.register()` 拒绝重复前缀，其次是 `ctx.on` 不可用，本段注册只可能因为
+「本插件已经挂过两次」或平台改名而失败。这样也保住了 `test/boot.test.mjs` 早已钉住的
+「路由先注册，随后监听器失败 ⇒ 撤销 1 项」这个半挂载用例的逐字含义。
+
+**注册失败的处理**：完全走 g-013 已有的路径 —— `mount` 抛错 ⇒ `reportMountFailure` 打**一条**可读信息
+（终端 + `ctx.logger.error` 双通道）并按逆序撤销已注册的 effect，`apply` 从不向外抛，
+**绝不让 DSH 启动失败**。三个新形态（`section` 缺失 / 抛错 / 返回非 disposer）在
+`test/boot.test.mjs` 里各有一条断言，其中「返回非 disposer」的残余（宿主收下了注册却没给撤销句柄）
+按 §91 边界 ②′ 如实断言为 `sections.length === 1` 并写明理由。
+
+### 三、收窄的理由（为什么是「接口也收窄」而不是只收窄 UI）
+
+负责人选的是「接口也收窄」。理由记在这里，避免以后被当成过度设计：
+
+1. **判据必须能被外部证明。** UI 收窄只改了客户端的自觉；`PUT {name:"project:alpha"}` 仍然能改任意段，
+   「其他段只读」就只是一个说法。收窄接口后，「只读」是一条有 4xx 码、有 SHA-256 证据的**事实**。
+2. **不动旧覆盖的语义。** 收窄发生在**写入口**，不在装配路径：`applyOverrides`/`mergeLayers`/
+   `buildEffective`/`detectFrozen` 一行没改，所以 Revision 6 的集成断言（含
+   `hide`/`append`/`complete`/scope 链）逐字节保持一致，回归风险集中在新增分支上。
+3. **逃生口必须留。** 冻结不等于删掉：层文件仍是唯一事实来源、每次路由请求都重读（§5.5），
+   手工编辑它改单条旧覆盖是文档化的逃生口，`?legacy=true` 是整批清除，`?reset=true` 是整层清空。
+
+### 四、测试前后映射表（既有断言强度不降级）
+
+基线 `node --test` = **349 项 / 0 fail**；本 attempt = **377 项 / 0 fail**（净 +28）。
+新增文件 `test/custom.test.mjs`（14 项，纯策略内核）。既有用例**没有一条被删除**，被收窄能力影响
+的用例逐条等价改写如下（`-` = Revision 6 写法，`+` = Revision 7 写法）：
+
+| 文件:用例 | Revision 6（等价强度） | Revision 7 |
+| --- | --- | --- |
+| `host.test.mjs` 注册面 | 1 监听器 + 1 路由，2 个 disposer，`disposedCount()` 0→2 | +1 段注册 ⇒ 3 个 disposer，`disposedCount()` 0→2 与 `sectionsDisposedCount()` 0→1；另加一条断言注册定义逐字段等于契约 |
+| `history.test.mjs` 动作词表 | `HISTORY_ACTIONS` = 5 个值 | = 6 个值（前 5 个顺序不变），并逐值验证「该带 name / 该不带 name」 |
+| `history.test.mjs` 无 name 动作 | 「`reset-layer` 是唯一不带 name 的动作」 | 「整层动作**恰好**是 `reset-layer` + `legacy-clear`」+ 双向断言（带 name 则该拒） |
+| `route.test.mjs` 快照顺序 | 5 段名 + index `[0..4]` + complete ×5 | 6 段名 + index `[0..5]` + complete ×6；`rendered` 断言**未变** |
+| `route.test.mjs` D2a/b/c、F1 | `DEFAULT_SECTIONS.map(name)` | `globalNames()`（= fixture + 本段，恒最后） |
+| `route.test.mjs` effective 视图 | 5 行 | +1 行（本段、空、index 5、`applied:false`） |
+| `route.test.mjs` 两层覆盖优先级 | PUT 用户层 `project:alpha` | PUT **保留名** + 直接落盘一条旧覆盖（逃生口），两者同在用户层；merged 仍断 workspace 胜 |
+| `route.test.mjs` `complete` 冻结 | `base.sections.length === 6` | `=== sections.length + 1` 且 `.at(-1).name` 是本段 |
+| `route.test.mjs` PUT 原子写 | PUT `project:alpha` → 200 | PUT 保留名 → 200；+断言最终段文本、位于 `base` 最后、`rendered` 以它结尾 |
+| `route.test.mjs` PUT upsert | 3 次 PUT（含 `hide`）不重复 | 2 次 PUT 保留名不重复 + 旧覆盖**不被扰动**（文件内容逐项断言） |
+| `route.test.mjs` PUT 拒绝表 | 13 例（含 `unknown-action`/`unexpected-text`/`invalid-order`） | 20 例：形状类改用保留名（`missing-text`/`text-too-large`/`workspace-unresolved` 等仍可达）+ 6 例非保留名 `403 write-locked` + 4 例保留名非 `replace` 的 `unsupported-action`。`unknown-action`/`unexpected-text`/`invalid-order` **仍在**内核单测与 import 文档校验里覆盖 |
+| `route.test.mjs` DELETE 单名 | PUT+DELETE 任意名 → 200/404 | 保留名 200/404 + **旧覆盖在场**的 `403 write-locked`（证明「冻结」先于「404」）+ 不存在的旧名也 403 + `name-too-long` 仍在 |
+| `route.test.mjs` 损坏层写 409 | PUT 任意名 → 409 | PUT **保留名** → 409（`layer-not-writable` 仍可达）+ 段数断言 |
+| `route.test.mjs` 写入失败矩阵 | `missing-text`/`workspace-unresolved`/404 用任意名 | 改用保留名；旧名一例改断 `403 write-locked` |
+| `route.test.mjs` 结构断言 | 4 个写路径必须写完才进缓存 | +`handleLegacyClear`（第 5 个写路径同样受约束） |
+| `stage2.test.mjs` 历史机制 | PUT 任意名 ×N | PUT 保留名；「多名字日志」由 `seedHistory()` 直接落盘（旧版本本来就会留下这种文件） |
+| `stage2.test.mjs` `hide` 无 after 文本 | PUT `hide` → 记录无文本 | 用 **import 一条保留名 `hide`** 驱动（`hide` 已不可 PUT），断言不变 |
+| `stage2.test.mjs` 分段/命名过滤 | 3 次 PUT（a/b/a） | `seedHistory()` 落两条旧记录 + 1 次 PUT 保留名；过滤分别按旧名与保留名各断一次 |
+| `stage2.test.mjs` 整层重置 | 2 次 PUT + reset | 直接落盘 3 条（旧 replace/旧 hide/保留名）+ reset；`removed`/`entries` 3 条全断言；reset 记录数 3→1（PUT 不再产生历史） |
+| `stage2.test.mjs` reset 非严格 true | `reset=1&name=a` → 200 | `reset=1&name=<保留名>` → 200（同义），`legacy=1` 的同义断言放在新增用例里 |
+| `stage2.test.mjs` diff 行级 | 两条 `a` 记录 | 两条保留名记录 + 落盘一条旧覆盖（证明冻结条目不影响 diff） |
+| `stage2.test.mjs` reset 版本 diff | PUT a → reset → PUT b | PUT 保留名 → 落盘旧 `a` → reset → PUT 保留名；三段记录全部断言 |
+| `stage2.test.mjs` 导出 | 任意名条目 + 无 `exportScope` | 保留名条目 + `exportScope` 两项断言（`{only, omitted:{user,workspace,total}}`） |
+| `stage2.test.mjs` dry-run 计划 | 2 条导入（`a` replaced + `c` added，kept 1） | 保留名 1 条 added（kept 2）+ **`mode=replace` 分支**补回 `removed`/`kept` 形状（`added1/removed2/kept0`） |
+| `stage2.test.mjs` mode=replace | 本地 `a` replaced + `b` removed | 本地两条旧覆盖全 removed + 保留名 added；历史记录**全量**断言（原为 `slice(0,2)`） |
+| `stage2.test.mjs` 导入两层 | 文档带 `a`/`w` | 文档带保留名两条；本地旧覆盖落盘 ⇒ `kept:1`、`['keep', 保留名]` 位置断言不变 |
+| `stage2.test.mjs` 导入拒绝表 | 9 例 | 11 例（+ 非保留名 `403 write-locked`、+ 非导入层里的非保留名也 403），并对 `write-locked` 各加一次 `dryRun` 拒绝 + 文件哈希不变 |
+| `stage2.test.mjs` 不可读层 409 / 不可解析工作区 400 | 任意名文档 | 保留名文档（409/400 仍可达） |
+| `integration.test.mjs` 快照顺序 | 5 段/index `[0..4]`/complete ×5 | 与真实 `assemble()` 对齐（段数动态），+断言本段最后 |
+| `integration.test.mjs` `complete` 冻结 | PUT `test:complete` | 落盘旧 `test:complete` 覆盖（逃生口）+ PUT **保留名**；冻结判据逐字保留，+断言保留段被整段丢弃的原因 |
+| `integration.test.mjs` D2 并发 | 4 段名 | 5 段名（+保留名） |
+
+**净新增断言（本 revision 专有）**：注册定义（名字/order>10200/`interpolate===false`）、disposer 记账与卸载后无残留
+（真实 cordis fiber `dispose()`）、未配置时 `renderPrompt(assemble())` 与「没装插件」逐字节相同、
+保留名 `replace` 后最终段文本逐字节相等且位于 `sections` 最后、用户文本含 `{{未定义}}`/畸形 `{{` 不抛且原样保留
+（含「同样的文本在插值段里会抛」的**对照组**）、每条 403/400 前后文件 SHA-256 不变、
+`legacy=true` 三情形（有旧覆盖 / 无旧覆盖 / 与 reset 冲突）、import 带其他名 403 + 文件不变（dry-run 亦然）、
+export 只含保留名且显式声明省略、加上 `test/custom.test.mjs` 的 14 项纯策略断言。
+`git diff` 计数：**+242 条 `assert.`**、-53 条（改写），**新增 20 处 `test(...)`**、移除 6 处（改写为等价用例）。
+
+### 五、负向对照（改坏 → 红 → 还原 → 绿）
+
+三条，逐条都在 worktree 内做，「还原」用 `git checkout` + `shasum -a 256` 确认逐字节回滚：
+
+| # | 改坏 | 期望红 | 实测（`node --test`，基线 377 项 0 fail） |
+| --- | --- | --- | --- |
+| ① | `index.js` 去掉 `ctx.systemPrompt.section(...)` 那段注册 | 注册定义、disposer 记账、零贡献逐字节、`{{}}` 原样保留、快照多一行 —— 全红 | **27 fail / 350 pass**，命中 `boot: the reserved section is registered…`、`host: mounting registers … one prompt section`、`integration R7: with nothing configured … byte-identical`、`integration R7: a reserved replace lands LAST`、`integration R7: an unknown {{reference}} …`、`integration R7: the plugin registers one reserved section`、以及所有依赖段数的快照/D2/F1 用例 |
+| ② | `core/custom.js` 的 `assertWritableSection` 去掉名字闸门（放开任意名） | `403 write-locked` 与「拒绝时 SHA-256 不变」红 | **4 fail / 373 pass**：`custom: a write to any other name is 403 write-locked…`、`overrides PUT: every rejection…`、`overrides: the write lock is checked before anything can be written, proven by SHA-256`、`refresh: a failed write never leaves the cache at odds with the file` |
+| ③ | `core/custom.js` 的 `assertImportableDocument` 直接 `return`（放开 import 其他名） | import 的 `403` 与「所有文件 SHA-256 不变」红 | **3 fail / 374 pass**：`custom: an import document carrying any frozen name is 403 write-locked…`、`custom: the refusal message is bounded…`、`stage2: every rejected import leaves BOTH config files and the history byte-identical` |
+
+三条都「改坏 → 红 → `git checkout` 还原 → `shasum -a 256 -c` 逐字节确认 → 绿（377/0）」，
+还原后的哈希与改坏前一致（`index.js` `eb721389…`、`core/custom.js` `d87ce69b…`）。
+
+### 六、未验证项 / 交给主管（诚实清单）
+
+- **「注册段进入真机最终 prompt」未验证**：注册是在**真包真 context** 上做的（`test/integration.test.mjs`
+  的 R7 用例组：`ctx.plugin(SystemPrompt)` + 真 `assemble()` + 真 `renderPrompt`），
+  但「重启后的 `dsh web` 把它装配进实际发出去的 prompt」需要一个宿主重启才能观察，
+  本轮**没有重启**（brief 明令禁止）⇒ 按未验证项记录。
+- **多轮真实会话中的持久性未验证**：本轮的证据是「同一进程内多次 `assemble()` 一致」，
+  不是「跨重启/跨会话一致」。
+- **`complete:true` scope 下的最终行为只在离线双桩与真包 `assemble()` 两种路径验证**；
+  真机上哪个 scope 带 `complete` 取决于用户的 preset，不在本插件可控范围。
+- **客户端半仍是 Revision 6 的编辑器**（写任意名会收到 `403`）：契约 §7 限制 21 已写明，
+  UI 重排是另一个目标。
+- **`legacy-clear` 这个历史动作没有客户端文案**：`client.js` 的 `histAction.*` 词典里没有这一项，
+  面板会渲染原始动作字符串。这是刻意的「不猜」行为，但要等 UI 目标补文案。
+
+### 七、本轮实测证据
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test`（包目录） | **377 / 377 pass / 0 fail / 0 skipped**（基线 349 ⇒ **+28 条**；其中 `test/custom.test.mjs` 14 条是新文件） |
+| 语法 | `node --check`（`index.js`、`client.js`、`core/*.js`、`scripts/*.mjs`、`test/*.mjs`） | 全通过 |
+| 打包 | `npm pack --dry-run --cache /tmp/g014-npm-cache` | **17 个文件**（基线 16 → +`core/custom.js`）、`test/` **命中 0**、包体 284.6 kB / 展开 872.3 kB |
+| 兼容自检 | `node scripts/check-compat.mjs` | 退出 0；`兼容（在已测试范围内）`（`0.1.7-rc.2`） |
+| 负向对照 | 三条「改坏 → 红 → `git checkout` 还原 → `shasum -a 256 -c` → 绿」 | 27 / 4 / 3 fail；还原后哈希逐字节一致，全量回到 377/0 |
+| 契约 diff | `CONTRACT.md` | +470 行（Revision 7 摘要 + §4.1/§4.3/§4.4 就地修订 + §10/§11.1/§12 就地修订 + 新增 §15 共 9 个小节 + §7 新增 6 条限制） |
+| 客户端半 | 未改 `client.js`（本目标只做宿主半；`test/client.test.mjs` 109 条全绿） | 见 §六 未验证项与 `CONTRACT.md` §7 限制 21 |

@@ -75,6 +75,7 @@ function mount(options = {}) {
   const listeners = [];
   const disposers = [];
   let disposed = 0;
+  let sectionsDisposed = 0;
   const ctx = {
     connection:
       options.omitConnection === true
@@ -89,10 +90,22 @@ function mount(options = {}) {
       },
     },
     // Stage 1B's hard dependency and waterfall target; this suite only needs
-    // the ping route, so a non-answering stub is enough.
+    // the ping route, so a non-answering stub is enough. Since Revision 7 the
+    // plugin also *registers* one section during `apply`, so the stub carries
+    // the registration surface the real service has (a disposer per call).
     systemPrompt: {
+      sections: [],
       async assemble() {
         return { sections: [], contexts: [], tools: [], variables: {} };
+      },
+      section(definition) {
+        const registered = { ...definition };
+        this.sections.push(registered);
+        return () => {
+          const at = this.sections.indexOf(registered);
+          if (at >= 0) this.sections.splice(at, 1);
+          sectionsDisposed += 1;
+        };
       },
     },
     get() {
@@ -113,7 +126,15 @@ function mount(options = {}) {
     },
   };
   apply(ctx);
-  return { ctx, routes, route: routes[0], listeners, disposers, disposedCount: () => disposed };
+  return {
+    ctx,
+    routes,
+    route: routes[0],
+    listeners,
+    disposers,
+    disposedCount: () => disposed,
+    sectionsDisposedCount: () => sectionsDisposed,
+  };
 }
 
 async function call(route, { method = 'GET', url = PING_PATH, rejection } = {}) {
@@ -178,17 +199,33 @@ test('host: one prefix route owns the /prompt-setting prefix', () => {
   assert.equal(route.path, '/prompt-setting');
 });
 
-test('host: mounting registers exactly one assemble listener and one route, both disposable', () => {
-  const { listeners, routes, disposers, disposedCount } = mount();
+test('host: mounting registers one assemble listener, one route and one prompt section, all disposable', () => {
+  const { listeners, routes, disposers, disposedCount, sectionsDisposedCount } = mount();
   assert.deepEqual(listeners.map((listener) => listener.name), ['system-prompt/assemble']);
   assert.equal(routes.length, 1);
-  // One effect for the listener, one for the routes: unloading the plugin
-  // removes the override engine with it.
-  assert.equal(disposers.length, 2);
+  // One effect for the listener, one for the routes, one for the reserved
+  // prompt section (Revision 7): unloading the plugin removes the override
+  // engine, the route and the registration with it.
+  assert.equal(disposers.length, 3);
   assert.equal(disposedCount(), 0);
+  assert.equal(sectionsDisposedCount(), 0);
   for (const disposer of disposers) disposer();
-  assert.equal(disposedCount(), 2);
+  assert.equal(disposedCount(), 2, 'the route and the listener');
+  assert.equal(sectionsDisposedCount(), 1, 'and the section registration went with them');
   assert.equal(listeners.length, 0);
+});
+
+test('host: mounting registers the reserved prompt section with the contract values', () => {
+  const { ctx } = mount();
+  assert.deepEqual(ctx.systemPrompt.sections, [{
+    name: 'prompt-setting:custom-prompt',
+    order: 1000000,
+    text: '',
+    interpolate: false,
+  }]);
+  // The one placement promise that can be asserted offline: above every order
+  // the shipped package's own table defines (its maximum is 10200).
+  assert.ok(ctx.systemPrompt.sections[0].order > 10200);
 });
 
 test('host: GET /prompt-setting/ping answers 200 JSON', async () => {

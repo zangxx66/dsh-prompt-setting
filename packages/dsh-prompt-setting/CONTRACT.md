@@ -116,6 +116,44 @@ Everything else is untouched: no other route, field, status code or response byt
 changes, and the `E1–E5` probe, the snapshot, both override layers and every
 stage-2 route keep their exact shapes.
 
+**Revision 7 (one owned prompt section, and a write face narrowed to it).** The
+plugin stops being a general "override any section" editor and becomes **one
+prompt section of its own plus a read-only view of everything else**. This
+revision is **breaking for the write routes** — deliberately, and it is the only
+revision that narrows rather than adds:
+
+- the Host half registers one section of its own during `apply`, with the
+  reserved name `prompt-setting:custom-prompt`, `order: 1000000` (past every
+  placement the shipped package defines), `text: ''` and `interpolate: false`
+  (§15.1–§15.3);
+- `PUT /overrides` accepts **one name and one action**: the reserved name with
+  `action: "replace"`. Any other name is `403 write-locked`; any other action on
+  the reserved name is `400 unsupported-action`. Both verdicts are reached
+  before the layer is resolved and before anything is written, so a rejected
+  write leaves every file byte-identical (§4.1, §15.5);
+- the single-name `DELETE` accepts the reserved name only, and answers
+  `403 write-locked` **before** it would answer `404 override-not-found` (§4.3);
+- `DELETE ?legacy=true` is new: it removes the layer's frozen overrides and keeps
+  the reserved one. `?reset=true` keeps its exact Revision 4 meaning — the whole
+  layer, reserved entry included — and the two flags together are
+  `400 conflicting-query` (§12.2, §15.6);
+- `POST /import` refuses a document that carries any non-reserved section name
+  with `403 write-locked`, in a dry run as well as in a real import (§11.1);
+- `GET /export` carries only the reserved entry of each layer and declares what
+  it dropped, per layer and in total, as `exportScope` (§10);
+- an existing override of any other name keeps working **exactly** as it did in
+  Revision 6 — same assembly result, byte for byte — but no route can create,
+  update or import one any more. It is *frozen read-only*, and a hand edit of the
+  layer's file remains the escape hatch (§15.8).
+
+One consequence is stated rather than left to be discovered: the plugin's own
+section is always registered, so it is always visible in `base`/`effective` and
+counts as one more entry there — while contributing **zero bytes** to the
+rendered prompt until a user writes something (§15.2). And a scope with an active
+`complete: true` section still collapses to that one section, which means the
+reserved section (and therefore the user's text) does not reach the prompt at all
+in such a scope; the snapshot reports that, and the UI must say so (§15.4).
+
 ---
 
 ## 1. Routes and methods
@@ -125,8 +163,8 @@ stage-2 route keep their exact shapes.
 | `/prompt-setting/ping` | `GET` | Stage 1A liveness probe. Behaviour unchanged, plus `clientBuild` since Revision 6 (§14.2). |
 | `/prompt-setting/snapshot` | `GET` | Base + effective section views, frozen verdict, layering. |
 | `/prompt-setting/overrides` | `GET` | Both layers and the merged list. |
-| `/prompt-setting/overrides` | `PUT` | Upsert one override into one layer. |
-| `/prompt-setting/overrides` | `DELETE` | Drop one override from one layer; `?reset=true` clears the whole layer (§12). |
+| `/prompt-setting/overrides` | `PUT` | Upsert **the reserved section** into one layer; any other name is `403` (Revision 7, §4.1). |
+| `/prompt-setting/overrides` | `DELETE` | Drop the **reserved** override; `?reset=true` clears the whole layer (§12); `?legacy=true` clears only its frozen overrides (§12.2). |
 | `/prompt-setting/history` | `GET` | One layer's bounded change log, newest first (Revision 4, §8). |
 | `/prompt-setting/diff` | `GET` | Section + line comparison of two versions of one layer (Revision 4, §9). |
 | `/prompt-setting/export` | `GET` | One or both layers as a schema-versioned JSON document (Revision 4, §10). |
@@ -364,24 +402,49 @@ when one could be resolved.
 
 ## 4. `PUT` and `DELETE /prompt-setting/overrides`
 
-### 4.1 `PUT`
+### 4.1 `PUT` (Revision 7: the reserved section and `replace`, nothing else)
 
 Body:
 
 ```json
-{ "layer": "user" | "workspace", "session": "<id>", "section": { "name": "…", "action": "replace", "text": "…", "order": 0 } }
+{ "layer": "user" | "workspace", "session": "<id>", "section": { "name": "prompt-setting:custom-prompt", "action": "replace", "text": "…" } }
 ```
 
-- `session` may be given in the body or as `?session=`; the body wins.
-- `order` is only legal for `append` and is a **target index** in the resulting
-  section array, clamped to `[0, length]`. Absent means "at the end".
-- Upsert keyed by `name`, so saving the same name twice replaces rather than
-  duplicates.
+**The write face is one name wide.** `section.name` must be exactly
+`prompt-setting:custom-prompt` (§15.1) and `section.action` must be exactly
+`replace`. The policy is evaluated in this order, before the target layer is
+resolved and before the current config is read — i.e. before any byte could be
+written:
 
-Response `200`:
+1. `layer` must be `user` \| `workspace`, else `400 unknown-layer`;
+2. a `name` that is a non-empty string other than the reserved one is
+   **`403 write-locked`**. This is a wall, not a field error: the name is legal,
+   this route simply may not write it any more. The message names both the
+   refused name and the one writable name;
+3. the reserved name accepts **exactly** `action: "replace"`. Anything else —
+   including an absent or unknown action — is **`400 unsupported-action`**. The
+   action is therefore never validated by the field validator on this route, which
+   is what makes the narrowing two codes instead of a soup of field errors;
+4. only then are the `replace` fields validated (`400 missing-text`,
+   `413 text-too-large`) and the layer resolved (`400 workspace-unresolved`,
+   `409 layer-not-writable`).
+
+A request with no usable `name` at all (absent, empty, not a string) is **not** a
+policy question: it is a malformed override, so the policy does not fire and the
+field validator still answers `400 missing-name` / `400 invalid-override`.
+
+Other rules, unchanged from Revision 6:
+
+- `session` may be given in the body or as `?session=`; the body wins.
+- Upsert keyed by `name`, so saving the reserved section twice replaces rather
+  than duplicates, and a frozen entry in the same layer is never touched.
+- `order` is only legal for `append`, which this route no longer accepts; a body
+  carrying it is refused by rule 3 before that rule is ever consulted.
+
+Response `200` (byte-identical to Revision 6):
 
 ```json
-{ "ok": true, "saved": { "name": "…", "action": "replace", "text": "…", "layer": "user" }, "effectiveFrom": "next-turn" }
+{ "ok": true, "saved": { "name": "prompt-setting:custom-prompt", "action": "replace", "text": "…", "layer": "user" }, "effectiveFrom": "next-turn" }
 ```
 
 ### 4.2 Target paths — the client never supplies one
@@ -394,12 +457,24 @@ Response `200`:
 `process.cwd()` is never used. A client-supplied path is not a parameter of any
 route, so an attacker cannot redirect a write.
 
-### 4.3 `DELETE`
+### 4.3 `DELETE` (Revision 7: the reserved name only)
 
 Query: `layer` (required), `name` (required), `session` (required for the
 `workspace` layer).
 
-Response `200`: `{ "ok": true, "removed": true, "layer": "…", "name": "…", "effectiveFrom": "next-turn" }`.
+The order of the checks is part of the contract:
+
+1. `layer` must be `user` \| `workspace`, else `400 unknown-layer`;
+2. request shape: `400 missing-name` when `?name=` is absent or empty, and
+   `400 name-too-long` when it is over 200 characters — a name this route could
+   not act on under any policy;
+3. **`403 write-locked`** when the name is not the reserved one. This verdict is
+   reached **before** the presence lookup, so "this name is frozen" is never
+   reported as `404 override-not-found` — those are different facts, and only one
+   of them is true;
+4. `404 override-not-found` when the reserved override is not in that layer.
+
+Response `200` (unchanged): `{ "ok": true, "removed": true, "layer": "…", "name": "prompt-setting:custom-prompt", "effectiveFrom": "next-turn" }`.
 
 ### 4.4 Errors
 
@@ -420,7 +495,10 @@ human-readable `message`.
 | `400` | `unexpected-order` | `order` on a `replace`/`hide`. |
 | `400` | `unknown-layer` | `layer` is not `user` \| `workspace` (also for a missing `layer`). |
 | `400` | `workspace-unresolved` | `layer=workspace` with no session, or a session no workspace owns. |
-| `404` | `override-not-found` | `DELETE` for a name that layer does not hold. |
+| `403` | `write-locked` | **Revision 7.** `PUT`/single-name `DELETE` named a section other than the reserved one, or an import document carried one. Nothing was written (§15.5, §15.7). |
+| `400` | `unsupported-action` | **Revision 7.** The reserved name was written with an action other than `replace` — including an absent or unknown one (§4.1). |
+| `400` | `conflicting-query` | **Revision 7.** `?reset=true` and `?legacy=true` were both supplied (§12.2). |
+| `404` | `override-not-found` | `DELETE` for the reserved name that layer does not hold. |
 | `405` | — (empty body + `allow`) | Unsupported method on a known path. |
 | `409` | `layer-not-writable` | The target file exists but is not a valid config; it is never overwritten. |
 | `413` | `text-too-large` | `text` over 200 KiB (204800 UTF-8 **bytes**). |
@@ -451,6 +529,13 @@ the exact location in `message` (`layers.user.overrides[1]: …`). `unknown-laye
 stage 2 route as well. `body-too-large` keeps its `413` status; its message
 names the cap that applied (256 KiB for `PUT`, 4 MiB for `import`).
 
+Since Revision 7 the order between the document's own validation and the write
+lock is fixed: the document is schema- and field-validated **first**, so a
+malformed entry answers its field code, and only a *well-formed* entry with a
+frozen name reaches `403 write-locked` (§11.1). On `PUT` the order is the
+opposite by design — the name is the subject of that request, so the wall comes
+before every field rule except `layer` and the absence of a name (§4.1).
+
 Two writes deliberately refuse rather than guess: an unreadable layer file is
 `409` and is left untouched, and a workspace that cannot be resolved is `400`
 rather than a fallback path.
@@ -479,6 +564,13 @@ downstream assembly **by identity** — the same object the Host would have
 returned. With overrides, only the `sections` array is replaced; nothing else in
 the assembly is touched. The listener always calls `next()`, so it never vetoes
 another listener.
+
+Revision 7 adds one always-present empty section to the *registered* list
+(§15.2), which does not affect this rule: identity is decided by whether an
+override resolved, never by a section count. The stronger claim this revision adds
+is about the **rendered prompt**: unconfigured, it is byte-identical to the prompt
+of a profile without this plugin, asserted against the shipped renderer in
+`test/integration.test.mjs`.
 
 ### 5.4 Effect boundary
 
@@ -652,6 +744,31 @@ Stage 3 (Revision 5) adds one:
     leave the cache disagreeing with the files. It does **not** claim to explain
     an override that *stops* applying while its file is intact: the desync that
     can be constructed and pinned here is the opposite direction.
+
+Revision 7 adds these:
+
+16. **A frozen override is writable only by hand.** No route creates, updates or
+    imports one; `?legacy=true` removes the whole frozen half and `?reset=true`
+    removes everything. That is a policy choice with a cost, stated here rather
+    than discovered: a user who wants to change one frozen entry must edit the
+    layer's file (§15.6, §15.8).
+17. **The plugin's own section is visible in `base`/`effective` even when empty**
+    (§15.2). The rendered prompt is unaffected, but any consumer that compares
+    those arrays to a Revision 6 baseline will see one extra entry.
+18. **A `complete: true` scope discards the user's text** (§15.4). Reported as
+    `frozen` with a reason and `applied: false` on the reserved entry, but it is
+    not prevented: this plugin does not (and cannot) outrank a complete section.
+19. **The registered section's effect on a *real* `dsh web` process is not
+    verified here** — observing it needs a Host restart. Everything observable
+    offline is verified against the real service and the real renderer (§15.9).
+20. **`order: 1000000` is not a guarantee against a third party** (§15.1). It
+    sorts after every section the DSH repository defines; another plugin may
+    still legitimately register a larger finite order and sort after this one.
+21. **The client half still offers the Revision 6 editor** (arbitrary names,
+    `hide`/`append`). This revision is the Host half plus this contract; the
+    settings-page rework is a separate goal. Until it lands, a UI write of any
+    name other than the reserved one is refused with `403 write-locked`, and the
+    panel shows the host's `message`.
 
 ## 8. `GET /prompt-setting/history` (Revision 4)
 
@@ -831,7 +948,7 @@ one section differs; pass ?name= to compare one of them`).
 - `ops` is capped at 4000 entries with `truncated: true`; `stats` still
   describes the whole change.
 
-## 10. `GET /prompt-setting/export` (Revision 4)
+## 10. `GET /prompt-setting/export` (Revision 4; narrowed in Revision 7)
 
 Query: `layer` (optional — limit the document to one layer), `session` (to
 resolve the `workspace` layer).
@@ -847,11 +964,12 @@ resolve the `workspace` layer).
   "layers": {
     "user":      { "layer": "user", "enabled": true,
                    "reason": null,
-                   "overrides": [ { "name": "project:alpha", "action": "replace", "text": "…" } ] },
+                   "overrides": [ { "name": "prompt-setting:custom-prompt", "action": "replace", "text": "…" } ] },
     "workspace": { "layer": "workspace", "enabled": false,
                    "reason": "no ?session= was supplied, so the workspace layer is inactive for this view",
                    "overrides": [] }
-  }
+  },
+  "exportScope": { "only": "prompt-setting:custom-prompt", "omitted": { "user": 2, "workspace": 0, "total": 2 } }
 }
 ```
 
@@ -861,7 +979,27 @@ portable. With `?layer=user` only that layer is present. An export taken without
 a session therefore carries an empty, disabled `workspace` layer, and that same
 document can be re-imported without a session (§11.3).
 
-## 11. `POST /prompt-setting/import` (Revision 4)
+**Revision 7 — the document is the reserved section only, and it says so.**
+`layers.<layer>.overrides` holds at most the reserved override, because that is
+the only entry an import would accept again (§15.7). Frozen entries are **not
+silently dropped**: `exportScope` is a new top-level field of the response that
+declares the scope of this export.
+
+| Field | Meaning |
+| --- | --- |
+| `exportScope.only` | The one section name the document may carry: `prompt-setting:custom-prompt`. |
+| `exportScope.omitted.<layer>` | How many overrides that layer holds but this export left out, computed from the layer view this process could read. |
+| `exportScope.omitted.total` | The sum over the layers this export covers. |
+
+`omitted` is keyed by exactly the layers the response carries (so
+`?layer=user` yields `{ "user": n, "total": n }`), and a layer whose config is
+unusable contributes `0` with its own `reason` — `0` means "none readable", not a
+claim that the file is empty. The `schema`, `version`, `plugin`, `pluginVersion`
+and `layers.*.layer/enabled/reason` fields are byte-identical to Revision 6; a
+consumer that ignores `exportScope` reads exactly what it read before, minus the
+entries it could no longer import.
+
+## 11. `POST /prompt-setting/import` (Revision 4; narrowed in Revision 7)
 
 Query: `dryRun` (exactly `true` to preview), `mode` (`merge` | `replace`),
 `layer` (optional — import only that layer), `session`. Body: one export
@@ -872,18 +1010,22 @@ document. Body cap: **4 MiB** (`413 body-too-large` beyond it).
 1. **parse** the body as JSON (`400 invalid-json`), and cap its size;
 2. **validate** the document: schema, version, layers, and every override field
    through the same validator `PUT` uses (§4.4);
-3. **resolve** every target — the layer, and the workspace root for
+3. **apply the write lock** (Revision 7): the document must carry no section name
+   other than the reserved one, **in any layer**, else `403 write-locked`. This
+   step sits before the dry-run branch on purpose — a dry run answers the same
+   question the real run would answer, and neither may touch a byte (§15.7);
+4. **resolve** every target — the layer, and the workspace root for
    `workspace` (`400 workspace-unresolved`) — and refuse to overwrite a config
    file that cannot be read (`409 layer-not-writable`);
-4. **apply the conflict strategy** in memory and compute the plan;
-5. on `dryRun`, **return the plan and stop** — nothing has been opened for
+5. **apply the conflict strategy** in memory and compute the plan;
+6. on `dryRun`, **return the plan and stop** — nothing has been opened for
    writing;
-6. **stage** each target: write a uniquely named temp file in the target's
+7. **stage** each target: write a uniquely named temp file in the target's
    directory, then **read it back and validate it**;
-7. **commit**: `rename` each staged temp file over its target (atomic per file).
+8. **commit**: `rename` each staged temp file over its target (atomic per file).
 
-A failure in steps 1–4 or 6 removes every temp file and throws. The real config
-files were never opened for writing before step 7, so they are **byte-identical**
+A failure in steps 1–5 or 7 removes every temp file and throws. The real config
+files were never opened for writing before step 8, so they are **byte-identical**
 to what they were — this is asserted in `test/stage2.test.mjs` with a SHA-256 of
 each file, not merely with a 4xx status.
 
@@ -950,20 +1092,22 @@ between two `rename` calls leaves the earlier layer replaced and the later one
 untouched; the thrown `500 import-commit-failed` message says how many layers
 were already committed. No stage before the renames can leave a partial state.
 
-## 12. `DELETE /prompt-setting/overrides?reset=true` (Revision 4)
+## 12. `DELETE /prompt-setting/overrides` (Revision 4; `legacy` added in Revision 7)
+
+### 12.1 `?reset=true` — clear the whole layer
 
 Clears one whole layer. `layer` is required, `session` as for a write. The value
 must be exactly `true`: any other value (including `reset=1`) is **not** the
-reset switch and falls through to the frozen single-name semantics, which then
-requires `name` (§4.3).
+reset switch and falls through to the single-name semantics, which then requires
+`name` (§4.3).
 
 ```json
 {
   "ok": true, "reset": true, "layer": "user",
-  "removed": ["project:alpha", "project:beta"],
+  "removed": ["project:alpha", "prompt-setting:custom-prompt"],
   "count": 2,
   "entries": [ { "name": "project:alpha", "action": "replace", "text": "…" },
-               { "name": "project:beta", "action": "hide" } ],
+               { "name": "prompt-setting:custom-prompt", "action": "replace", "text": "…" } ],
   "effectiveFrom": "next-turn",
   "history": { "ok": true, "id": "5", "seq": 5, "dropped": 0, "rewritten": false }
 }
@@ -971,6 +1115,8 @@ requires `name` (§4.3).
 
 - The layer's file is rewritten as an empty, valid config (`{"version":1,
   "overrides":[]}`), so a reset is observable on disk rather than implied.
+- **Revision 7 does not change this**: a reset clears everything, the reserved
+  override included. It is the one write that still removes the reserved entry.
 - The removed content is written to history **first-class**: one record with
   `action: "reset-layer"`, `name: null` and `entries` holding every removed
   override with its full text. A reset is therefore reconstructible.
@@ -979,9 +1125,60 @@ requires `name` (§4.3).
 - `effectiveFrom: "next-turn"` is literal (§5.4): the next assembly sees the
   cleared layer; a turn already assembling is unaffected.
 - A section-level "restore default" is **not** a route of its own: it is the
-  existing single-name `DELETE` applied to each layer that holds the name. The
-  UI performs the second confirmation (§13.2) and the host keeps one
-  single-layer write.
+  existing single-name `DELETE` applied to each layer that holds the name — which
+  since Revision 7 means the reserved section only. For a frozen entry the escape
+  hatch is a hand edit of the file (§15.8). The UI performs the second
+  confirmation (§13.2) and the host keeps one single-layer write.
+
+### 12.2 `?legacy=true` — clear only the frozen overrides (Revision 7)
+
+Removes every override of the layer whose name is not the reserved one, and keeps
+the reserved override. This is the way back from "frozen read-only" to a clean
+layer without hand-editing anything.
+
+```json
+{
+  "ok": true, "legacy": true, "layer": "user",
+  "removed": ["project:alpha", "project:beta"],
+  "count": 2,
+  "entries": [ { "name": "project:alpha", "action": "replace", "text": "…" },
+               { "name": "project:beta", "action": "hide" } ],
+  "effectiveFrom": "next-turn",
+  "history": { "ok": true, "id": "6", "seq": 6, "dropped": 0, "rewritten": false }
+}
+```
+
+- The response is the reset response with `legacy` in place of `reset`: same
+  keys, same types, one flag swapped, so a client that renders one renders the
+  other.
+- `count: 0` means the layer held nothing frozen. Then **no file is written at
+  all** (`history: null`, no log entry, `entries` absent) — "there was nothing to
+  remove" must not be recorded as a write, and the file's bytes are left exactly
+  as they were.
+- The removal is logged as `action: "legacy-clear"`, `name: null`, with every
+  removed override and its full text in `entries` and the surviving layer in
+  `snapshot`. It is deliberately **not** a `reset-layer` record: the layer still
+  holds the reserved override afterwards, and a reader must be able to tell the
+  two apart.
+- `reset=true` and `legacy=true` together are **`400 conflicting-query`**, with
+  nothing read and nothing written.
+- The value must be exactly `true`: `legacy=1` is not the legacy switch and falls
+  through to the single-name semantics, exactly as `reset=1` does — which then
+  requires `name`, and answers `403 write-locked` for any name but the reserved
+  one.
+- Like every other write, it needs a resolvable layer: `400 unknown-layer` /
+  `400 workspace-unresolved`.
+
+### 12.3 The history action vocabulary (Revision 7)
+
+`HISTORY_ACTIONS` is now `replace`, `hide`, `append`, `remove`, `reset-layer`,
+`legacy-clear`. The first five are Revision 6's set, unchanged and in the same
+order, so every existing history file still reads. `reset-layer` and
+`legacy-clear` are the two *layer-wide* actions: their subject is the whole
+layer, so they are the only records that carry `name: null` and the only ones
+rejected when they name a section. `GET /history` and `GET /diff` report the new
+action verbatim; a client with no label for it should render the raw value rather
+than guess (§13.1).
 
 ## 13. Client-side stage 2 contract (Revision 4)
 
@@ -1227,3 +1424,212 @@ Consequences, stated rather than discovered later:
   surviving `false` as a DSH-side condition to investigate.
 - conversely, `true` says nothing about HMR health: it only says that at the moment
   of the probe the running bytes and the file agreed.
+
+## 15. The owned prompt section and the write lock (Revision 7)
+
+### 15.1 The reserved name and the registration
+
+The Host half registers **one** prompt section of its own during `apply`, through
+`ctx.systemPrompt.section({...})`:
+
+```js
+{ name: 'prompt-setting:custom-prompt', order: 1000000, text: '', interpolate: false }
+```
+
+- **Reserved name.** `prompt-setting:custom-prompt` is simultaneously the name of
+  the registered section and the name of the one override every write route
+  accepts (§15.5). It is namespaced on purpose: the shipped section names are the
+  unprefixed `harness:` / `deployment:` / `tool:` families (a preset may add
+  `preset:*` / `session:*`), and `systemPrompt.section()` refuses a duplicate name
+  within a layer, so a `prompt-setting:`-prefixed name cannot collide with a
+  section this repository ships.
+- **`order: 1000000`.** The shipped package's own placement table
+  (`@deepseek-ai/dsh-system-prompt`, the `SECTION_ORDERS` table at the top of
+  `lib/index.js`) defines its maximum as `DEPLOYMENT_PERSONA_SUFFIX = 10200`. The
+  promise this value buys is exactly: **this plugin's section sorts after every
+  section the DSH repository defines.** Another plugin may legitimately register a
+  larger finite order — the platform documents external contributions as free to
+  place themselves anywhere — and when one does, its section sorts after ours.
+  That is the documented boundary of what an `order` value can promise, not a
+  violated invariant.
+- **`text: ''`.** Empty at registration (§15.2).
+- **The user's text is never read on the assembly path.** It reaches the section
+  through the existing override engine — a `replace` whose name is the reserved
+  one, applied by the one `system-prompt/assemble` listener — so this revision adds
+  no configuration read, no IO and no new branch to that path.
+- **The disposer is accounted for like the other two effects.** Registration goes
+  through the same `registerEffect` guard as the route and the listener, so
+  unloading the plugin, or a later step of the same mount failing, removes the
+  registration instead of leaving a name in the global layer that a remount would
+  collide with (§15.9). The registration is the **last** of the three effects: the
+  rule is most-likely-failure-first, so the failure a real profile actually hits
+  (a duplicate route prefix) happens with the least to undo.
+
+### 15.2 Zero contribution when unconfigured
+
+An empty section survives into `assembly.sections` — a waterfall listener can see
+it — but the shipped `renderPrompt` drops it in its
+`.filter((text) => text.length > 0)` pass. So **an unconfigured install renders a
+prompt byte-identical to a profile without this plugin**, which
+`test/integration.test.mjs` asserts against the real renderer rather than against
+our own copy of it.
+
+Two consequences to plan for, both intended:
+
+- `base.sections` and `effective.sections` in the snapshot **do** gain one entry
+  (ours, empty, last). Anything comparing those arrays to a Revision 6 baseline
+  must expect it; anything comparing the **prompt** must not see a difference.
+- The section is always registered, so a `complete: true` collapse (§15.4) can
+  throw it away — see that subsection.
+
+### 15.3 Why `interpolate: false` is a requirement
+
+The shipped renderer scans every section that does not carry `interpolate: false`
+and **throws** on an unknown variable name, on a variable whose provider returned
+`undefined`, on a `{{...}}` group whose inner text is not a valid variable name,
+and on a malformed group that has a later `}}`. A provider throwing fails the
+whole pre-step — there is no per-section fallback.
+
+User text is arbitrary, so a user who typed one `{{reference}}` would otherwise
+break **every subsequent turn** of that session, not just the turn that wrote it.
+With `interpolate: false` the renderer hands the text back byte for byte: no scan,
+no substitution, no throw. `test/integration.test.mjs` asserts both halves — the
+literal round trip *and*, as a control, that the very same text in an
+interpolating section does throw.
+
+The price is stated plainly: a reference a user writes into their own prompt is
+**never** substituted, so `{{model}}` in「我的 Prompt」reaches the model as those
+literal characters. That is the intended trade — the field is free text, not a
+template language.
+
+### 15.4 `complete: true` still wins, and the snapshot says so
+
+The reserved section is an ordinary section: it is registered in the global layer,
+and a scope that has an active `complete: true` section collapses to that one
+section after the waterfall. In such a scope:
+
+- the user's text does **not** reach the prompt, because the entire section list is
+  replaced by the complete section;
+- the snapshot reports it rather than hiding it: `frozen: true` with the
+  `frozenSection` and `frozenReason` Revision 3 already defines (the verdict is
+  proven by the survival probe, not guessed), the reserved override appears in
+  `effective.sections` with `applied: false` and
+  `reason: "the section was removed from the assembled result"`, and every entry
+  is `overridable: false`.
+
+This is the same degradation §2.4 and §7 already describe for any section, applied
+to ours; the UI half must state it in the「我的 Prompt」panel rather than let a
+user write text that silently does nothing.
+
+### 15.5 The write lock, precisely
+
+The complete matrix for `PUT /prompt-setting/overrides`:
+
+| `section.name` | `section.action` | Result |
+| --- | --- | --- |
+| a non-empty string ≠ reserved | anything | `403 write-locked` |
+| reserved | `replace` | validated (`missing-text`, `text-too-large`) and written |
+| reserved | `hide` \| `append` \| unknown \| absent | `400 unsupported-action` |
+| absent / empty / not a string | anything | the field validator answers (`400 missing-name`, `400 invalid-override`) |
+
+And for the single-name `DELETE`:
+
+| `?name=` | Result |
+| --- | --- |
+| a non-empty string ≠ reserved | `403 write-locked` (before the presence lookup) |
+| reserved, the layer holds it | `200`, removed |
+| reserved, the layer does not hold it | `404 override-not-found` |
+| absent / empty | `400 missing-name` |
+| longer than 200 characters | `400 name-too-long` |
+
+**Nothing is written on any refusal.** The policy runs before the layer is
+resolved, before the current config is read and before any write call, so a
+rejected `PUT`/`DELETE` leaves the layer's file byte-identical — asserted with a
+SHA-256 of the file in `test/route.test.mjs`, not merely with a status code.
+
+One ordering note worth keeping: on `PUT` the name wall precedes *every* field
+rule except `layer` and a missing name, so `{name: "a", action: "explode"}` is
+`403`, not `400 unknown-action`. `unknown-action`, `unexpected-text` and
+`invalid-order` remain reachable exactly where they belong — in the override
+validator (`test/overrides.test.mjs`) and through `import`'s document validation
+(§11.1).
+
+### 15.6 `?legacy=true` and the frozen state
+
+See §12.2 for the shape and §12.3 for the history action. The state this operation
+exists for:
+
+- an override whose name is not the reserved one was written by Revision 6 or
+  earlier, by hand, or by a config-sync tool. It **keeps working**: the override
+  engine, `mergeLayers`, `buildEffective` and `detectFrozen` are unchanged by this
+  revision, so the assembly result for such a layer is byte-for-byte what it was.
+- no route can create, update or import one any more. It is therefore *frozen
+  read-only*: visible in `GET /overrides` and in every snapshot view, removable as
+  a whole with `?legacy=true`, removable one name at a time only by…
+- …**hand-editing the layer's file**. That is the documented escape hatch: the
+  file stays the source of truth, every route request re-reads it before doing
+  anything else (§5.5), and an external edit is visible to the very next request
+  with no remount. There is deliberately no route that reopens the write face.
+
+### 15.7 Import: names only, and never silently
+
+The import write lock is on **names**: a document carrying any entry whose `name`
+is not the reserved one is refused with `403 write-locked`, in **any** layer of
+the document (including a layer this request would not import), under `dryRun` as
+well as a real run. Nothing is written, no temp file is left, and every file's
+SHA-256 is unchanged — the same assertion the rest of the import atomicity tests
+use (§11.1).
+
+The **action** of a reserved-name entry is *not* additionally constrained: the
+document is applied as it stands. That is deliberate. The name is the security
+boundary this revision draws (an import may not create, resurrect or modify a
+frozen override); constraining actions as well would break the round trip for a
+hand-edited layer that, say, hides the reserved section — an export of it could
+not be re-imported. Such an entry is applied exactly as `planImport` always
+applied it (§11.4).
+
+Because an export now carries at most one entry per layer, the multi-entry plan
+shapes (`replaced`, `kept`, and `removed` in `merge` mode) are exercised at the
+route level through `mode=replace` plus a seeded frozen entry rather than through
+several imported names; the multi-name kernel behaviour itself is unchanged and
+pinned in `test/transfer.test.mjs`.
+
+### 15.8 What a frozen override is, and is not
+
+| | Frozen override (any other name) | Reserved override |
+| --- | --- | --- |
+| Applies to the prompt | yes, exactly as in Revision 6 | yes, via the registered section |
+| `PUT` | `403 write-locked` | `200` (with `replace` only) |
+| `DELETE` (single name) | `403 write-locked` | `200` / `404` |
+| `DELETE ?legacy=true` | removed | kept |
+| `DELETE ?reset=true` | removed | removed |
+| Exported | no — counted in `exportScope.omitted` | yes |
+| Imported | `403 write-locked` | yes |
+| Editable by hand | yes (the file is the source of truth) | yes |
+
+### 15.9 Failure behaviour of the registration
+
+Registration failure follows the g-013 resilience rule exactly like the route and
+the listener, and the failure modes are asserted offline in
+`test/boot.test.mjs`:
+
+- `ctx.systemPrompt.section` missing, or throwing (a name already registered in
+  the global layer, a non-finite order — the platform validates both), or
+  returning something that is not a disposer: **one readable line** on the
+  terminal and on `ctx.logger`, every earlier effect unwound, and **no boot
+  failure**. `apply` never throws outward;
+- the registration is the last of the three effects, so a failure there unwinds
+  the route and the listener with it. A mount therefore either registers all three
+  or registers none;
+- the one residual this cannot fix is the same one §7 already records for the
+  route: a host that accepts the registration and hands back no remover leaves
+  that half beyond any plugin's reach. It is reported rather than hidden, because a
+  surviving registration would make a remount collide with the name it still owns.
+
+**Not verified in this revision.** Whether a real `dsh web` process picks the
+registered section up into the final prompt can only be observed after a Host
+restart, which was out of scope here. What *is* verified: the registration is made
+against the real `@deepseek-ai/dsh-system-prompt` service in a real Cordis context,
+the real `renderPrompt` renders the section's text byte for byte and drops it when
+empty, and disposing the mount removes the registration (all in
+`test/integration.test.mjs`). See NOTES.md §93.

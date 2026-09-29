@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import test, { afterEach, beforeEach } from 'node:test';
 
 import { DEFAULT_HISTORY_LIMIT, MIN_HISTORY_LIMIT } from '../core/history.js';
-import { apply } from '../index.js';
+import { apply, CUSTOM_SECTION_NAME } from '../index.js';
 
 const OVERRIDES_PATH = '/prompt-setting/overrides';
 const HISTORY_PATH = '/prompt-setting/history';
@@ -96,6 +96,13 @@ function mount(options = {}) {
       async assemble() {
         return { sections: options.sections ?? [{ name: 'harness:identity', text: 'identity' }], variables: {} };
       },
+      /**
+       * The registration surface the plugin uses since Revision 7. It only has
+       * to hand back a disposer: this suite never assembles through the fake.
+       */
+      section() {
+        return () => {};
+      },
     },
     get(name) {
       if (name === 'workspaceRegistry') return options.omitWorkspaceRegistry === true ? undefined : registry;
@@ -172,13 +179,75 @@ function tempFiles(root) {
   return found;
 }
 
-/** Put one user-layer override. */
+/**
+ * Put one user-layer override.
+ *
+ * Since Revision 7 the only writable name is the reserved one, so this helper
+ * always targets it; a legacy entry is produced by {@link seedUser} instead
+ * (the documented escape hatch, which is also how every pre-Revision-7 layer
+ * looks on disk).
+ * @param route - the captured route.
+ * @param section - the override body (its `name` is overwritten).
+ * @param query - an extra query string, e.g. `?session=s1`.
+ * @returns the response double.
+ */
 function put(route, section, query = '') {
   return call(route, {
     method: 'PUT',
     url: `${OVERRIDES_PATH}${query}`,
-    body: JSON.stringify({ layer: 'user', section }),
+    body: JSON.stringify({ layer: 'user', section: { ...section, name: CUSTOM_SECTION_NAME } }),
   });
+}
+
+/**
+ * Write the user layer's config file by hand — a hand edit, a config-sync tool,
+ * or (for these tests) the way a frozen override comes to exist at all. The
+ * next handled request re-reads it; the assembly path still reads only cache.
+ * @param overrides - the override list.
+ */
+function seedUser(overrides) {
+  mkdirSync(join(home, 'prompt-setting'), { recursive: true });
+  writeFileSync(userPath(), `${JSON.stringify({ version: 1, overrides }, null, 2)}\n`, 'utf8');
+}
+
+/**
+ * Write one workspace layer's config file by hand.
+ * @param id - the workspace directory name.
+ * @param overrides - the override list.
+ */
+function seedWorkspace(id, overrides) {
+  const directory = join(home, id, '.dsh-prompt-setting');
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, 'overrides.json'), `${JSON.stringify({ version: 1, overrides }, null, 2)}\n`, 'utf8');
+}
+
+/**
+ * Append hand-written records to a layer's history file.
+ *
+ * Route writes can only ever name the reserved section now, so a log that
+ * covers several names is the log a pre-Revision-7 layer already has. Every
+ * field here is validated on read (`core/history.js`), so a mistake in this
+ * helper fails loudly rather than silently.
+ * @param path - the history file.
+ * @param entries - `[seq, name, action]` triples, oldest first.
+ */
+function seedHistory(path, entries) {
+  const lines = entries.map(([seq, name, action]) => JSON.stringify({
+    seq,
+    at: `2024-01-0${seq}T00:00:0${seq}.000Z`,
+    layer: 'user',
+    session: null,
+    action,
+    name,
+    origin: 'ui',
+    before: null,
+    after: { text: `v${seq}`, hash: 'f'.repeat(64), bytes: 2 },
+    entries: null,
+    snapshot: [{ name, action, hash: 'f'.repeat(64), bytes: 2 }],
+    note: null,
+  }));
+  mkdirSync(join(path, '..'), { recursive: true });
+  writeFileSync(path, `${lines.join('\n')}\n`, 'utf8');
 }
 
 /** Read the user layer's history records. */
@@ -235,20 +304,20 @@ test('stage2: the fence runs in front of every new route too', async () => {
 
 test('stage2: a successful PUT and DELETE each append one history record, newest first', async () => {
   const { route } = mount();
-  const first = await put(route, { name: 'project:alpha', action: 'replace', text: 'A1' });
+  const first = await put(route, { action: 'replace', text: 'A1' });
   assert.equal(first.statusCode, 200);
   assert.deepEqual(Object.keys(json(first)).sort(), ['effectiveFrom', 'ok', 'saved'], 'the PUT body is still the stage 1B shape');
 
-  await put(route, { name: 'project:alpha', action: 'replace', text: 'A2\nsecond line' });
-  const deleted = await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?layer=user&name=project%3Aalpha` });
+  await put(route, { action: 'replace', text: 'A2\nsecond line' });
+  const deleted = await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?layer=user&name=${encodeURIComponent(CUSTOM_SECTION_NAME)}` });
   assert.deepEqual(Object.keys(json(deleted)).sort(), ['effectiveFrom', 'layer', 'name', 'ok', 'removed'], 'so is the DELETE body');
 
   const page = await history(route);
   assert.equal(page.total, 3);
   assert.deepEqual(page.records.map((record) => [record.id, record.action, record.name, record.origin]), [
-    ['3', 'remove', 'project:alpha', 'ui'],
-    ['2', 'replace', 'project:alpha', 'ui'],
-    ['1', 'replace', 'project:alpha', 'ui'],
+    ['3', 'remove', CUSTOM_SECTION_NAME, 'ui'],
+    ['2', 'replace', CUSTOM_SECTION_NAME, 'ui'],
+    ['1', 'replace', CUSTOM_SECTION_NAME, 'ui'],
   ]);
   assert.equal(page.retentionLimit, DEFAULT_HISTORY_LIMIT);
   assert.equal(page.corrupt, 0);
@@ -262,7 +331,7 @@ test('stage2: a successful PUT and DELETE each append one history record, newest
   assert.equal(Number.isNaN(Date.parse(second.at)), false);
   assert.equal(second.layer, 'user');
   assert.equal(second.session, null);
-  assert.deepEqual(second.snapshot.map((entry) => entry.name), ['project:alpha'], 'the snapshot holds no text');
+  assert.deepEqual(second.snapshot.map((entry) => entry.name), [CUSTOM_SECTION_NAME], 'the snapshot holds no text');
   assert.equal(JSON.stringify(second.snapshot).includes('A2'), false);
 
   const removed = page.records[0];
@@ -272,26 +341,41 @@ test('stage2: a successful PUT and DELETE each append one history record, newest
 });
 
 test('stage2: a hide override records no text on the after side', async () => {
+  // `hide` is no longer writable through `PUT` (Revision 7 narrows the action to
+  // `replace`), but it is still representable — an import document may carry the
+  // action for the reserved name, and the log must handle a text-less write.
   const { route } = mount();
-  await put(route, { name: 'project:beta', action: 'hide' });
+  const document = {
+    schema: 'dsh-prompt-setting/export',
+    version: 1,
+    layers: { user: { layer: 'user', overrides: [{ name: CUSTOM_SECTION_NAME, action: 'hide' }] } },
+  };
+  const res = await call(route, { method: 'POST', url: IMPORT_PATH, body: JSON.stringify(document) });
+  assert.equal(res.statusCode, 200);
+  assert.equal(json(res).applied, true);
   const page = await history(route);
   assert.equal(page.records[0].action, 'hide');
+  assert.equal(page.records[0].name, CUSTOM_SECTION_NAME);
   assert.equal(page.records[0].before, null);
   assert.equal(page.records[0].after, null);
 });
 
 test('stage2: history pages and filters by name, and by an exclusive before bound', async () => {
   const { route } = mount();
-  await put(route, { name: 'a', action: 'replace', text: '1' });
-  await put(route, { name: 'b', action: 'replace', text: '2' });
-  await put(route, { name: 'a', action: 'replace', text: '3' });
+  // A log that spans several names is what a layer written by an earlier
+  // revision already has on disk; the reserved write is appended to it.
+  seedHistory(userHistoryPath(), [[1, 'a', 'replace'], [2, 'b', 'replace']]);
+  await put(route, { action: 'replace', text: '3' });
 
   const all = await history(route);
   assert.deepEqual(all.records.map((record) => record.id), ['3', '2', '1']);
 
   const named = await history(route, '&name=a');
-  assert.deepEqual(named.records.map((record) => record.id), ['3', '1']);
-  assert.equal(named.total, 2);
+  assert.deepEqual(named.records.map((record) => record.id), ['1']);
+  assert.equal(named.total, 1);
+  const mine = await history(route, `&name=${encodeURIComponent(CUSTOM_SECTION_NAME)}`);
+  assert.deepEqual(mine.records.map((record) => record.id), ['3']);
+  assert.equal(mine.total, 1);
 
   const paged = await history(route, '&limit=1');
   assert.deepEqual(paged.records.map((record) => record.id), ['3']);
@@ -313,11 +397,11 @@ test('stage2: history pages and filters by name, and by an exclusive before boun
 test('stage2: a workspace layer keeps its own separate history file', async () => {
   const workspaces = [workspaceWith('ws-one', 's1')];
   const { route } = mount({ workspaces });
-  await put(route, { name: 'w', action: 'replace', text: 'W' }, '?session=s1');
+  await put(route, { action: 'replace', text: 'W' }, '?session=s1');
   await call(route, {
     method: 'PUT',
     url: `${OVERRIDES_PATH}?session=s1`,
-    body: JSON.stringify({ layer: 'workspace', session: 's1', section: { name: 'w2', action: 'hide' } }),
+    body: JSON.stringify({ layer: 'workspace', session: 's1', section: { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'W2' } }),
   });
 
   const userPage = await history(route);
@@ -335,7 +419,7 @@ test('stage2: the retention bound is configurable and enforced on disk', async (
   const limit = MIN_HISTORY_LIMIT;
   const { route } = mount({ config: { historyLimit: limit } });
   for (let index = 0; index < limit + 2; index += 1) {
-    await put(route, { name: 'a', action: 'replace', text: `v${index}` });
+    await put(route, { action: 'replace', text: `v${index}` });
   }
   const page = await history(route);
   assert.equal(page.retentionLimit, limit);
@@ -364,8 +448,10 @@ test('stage2: an unreadable history file is reported, never fatal to the config 
 
   // The write succeeds and the file it wrote is real; only the log failed, and
   // the failure becomes observable on the next history read (CONTRACT §8.4).
-  assert.equal((await put(route, { name: 'a', action: 'hide' })).statusCode, 200);
-  assert.deepEqual(JSON.parse(readFileSync(userPath(), 'utf8')).overrides, [{ name: 'a', action: 'hide' }]);
+  assert.equal((await put(route, { action: 'replace', text: 'MINE' })).statusCode, 200);
+  assert.deepEqual(JSON.parse(readFileSync(userPath(), 'utf8')).overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' },
+  ]);
   const after = await history(route);
   assert.match(after.lastError.reason, /history-unusable/);
   assert.equal(Number.isNaN(Date.parse(after.lastError.at)), false);
@@ -377,20 +463,25 @@ test('stage2: an unreadable history file is reported, never fatal to the config 
 
 test('stage2: resetting a layer clears it, records the removed list and takes effect next turn', async () => {
   const { route } = mount();
-  await put(route, { name: 'a', action: 'replace', text: 'A' });
-  await put(route, { name: 'b', action: 'hide' });
+  // The layer holds one frozen entry and one reserved one, in file order.
+  seedUser([
+    { name: 'a', action: 'replace', text: 'A' },
+    { name: 'b', action: 'hide' },
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' },
+  ]);
 
   const res = await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?layer=user&reset=true` });
   assert.equal(res.statusCode, 200);
   const payload = json(res);
   assert.equal(payload.ok, true);
   assert.equal(payload.reset, true);
-  assert.equal(payload.count, 2);
-  assert.deepEqual(payload.removed, ['a', 'b']);
+  assert.equal(payload.count, 3);
+  assert.deepEqual(payload.removed, ['a', 'b', CUSTOM_SECTION_NAME], 'a reset still clears the whole layer, reserved entry included');
   assert.equal(payload.effectiveFrom, 'next-turn');
   assert.deepEqual(payload.entries, [
     { name: 'a', action: 'replace', text: 'A' },
     { name: 'b', action: 'hide' },
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' },
   ]);
   assert.deepEqual(JSON.parse(readFileSync(userPath(), 'utf8')), { version: 1, overrides: [] });
   assert.equal((await call(route, { url: OVERRIDES_PATH })).body.includes('"a"'), false, 'the read view agrees');
@@ -402,6 +493,7 @@ test('stage2: resetting a layer clears it, records the removed list and takes ef
   assert.deepEqual(reset.entries, [
     { name: 'a', action: 'replace', text: 'A' },
     { name: 'b', action: 'hide' },
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' },
   ]);
   assert.deepEqual(reset.snapshot, []);
   assert.equal(reset.id, payload.history.id);
@@ -411,7 +503,7 @@ test('stage2: resetting a layer clears it, records the removed list and takes ef
   assert.equal(again.count, 0);
   assert.deepEqual(again.removed, []);
   assert.equal(again.history, null);
-  assert.equal((await history(route)).total, 3, 'no second reset record for a no-op');
+  assert.equal((await history(route)).total, 1, 'no second reset record for a no-op');
 });
 
 test('stage2: a reset needs a resolvable layer, and a non-raw "true" is not a reset', async () => {
@@ -420,14 +512,127 @@ test('stage2: a reset needs a resolvable layer, and a non-raw "true" is not a re
   assert.equal(unresolved.statusCode, 400);
   assert.equal(json(unresolved).code, 'workspace-unresolved');
 
-  await put(route, { name: 'a', action: 'hide' });
-  const notReset = await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?layer=user&reset=1&name=a` });
+  await put(route, { action: 'replace', text: 'MINE' });
+  const notReset = await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?layer=user&reset=1&name=${encodeURIComponent(CUSTOM_SECTION_NAME)}` });
   assert.equal(notReset.statusCode, 200, 'reset=1 is not the reset switch; the name path runs');
   assert.equal(json(notReset).removed, true);
 
   const missingName = await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?layer=user&reset=1` });
   assert.equal(missingName.statusCode, 400);
-  assert.equal(json(missingName).code, 'missing-name', 'the frozen single-name semantics still apply');
+  assert.equal(json(missingName).code, 'missing-name', 'the single-name semantics still apply');
+});
+
+// #endregion
+
+// #region legacy clear (Revision 7)
+
+test('stage2: legacy=true clears only the frozen overrides and keeps the reserved one', async () => {
+  const { route } = mount();
+  seedUser([
+    { name: 'a', action: 'replace', text: 'A' },
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' },
+    { name: 'b', action: 'append', text: 'B', order: 1 },
+  ]);
+
+  const res = await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?layer=user&legacy=true` });
+  assert.equal(res.statusCode, 200);
+  const payload = json(res);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.legacy, true);
+  assert.equal(payload.layer, 'user');
+  assert.deepEqual(payload.removed, ['a', 'b']);
+  assert.equal(payload.count, 2);
+  assert.equal(payload.effectiveFrom, 'next-turn');
+  assert.deepEqual(payload.entries, [
+    { name: 'a', action: 'replace', text: 'A' },
+    { name: 'b', action: 'append', text: 'B', order: 1 },
+  ]);
+  // The response is the reset response with `legacy` in place of `reset`: same
+  // keys, one flag swapped.
+  assert.deepEqual(Object.keys(payload).sort(), [
+    'count', 'effectiveFrom', 'entries', 'history', 'layer', 'legacy', 'ok', 'removed',
+  ]);
+  const noop = json(await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?layer=user&legacy=true` }));
+  assert.equal(noop.count, 0, 'the reserved entry survived, so a second clear finds nothing');
+
+  // The reserved entry is untouched and still applies.
+  assert.deepEqual(JSON.parse(readFileSync(userPath(), 'utf8')).overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' },
+  ]);
+  const page = await history(route);
+  assert.equal(page.records[0].action, 'legacy-clear');
+  assert.equal(page.records[0].name, null, 'a layer-wide action names no section');
+  assert.equal(page.records[0].origin, 'ui');
+  assert.deepEqual(page.records[0].entries, [
+    { name: 'a', action: 'replace', text: 'A' },
+    { name: 'b', action: 'append', text: 'B', order: 1 },
+  ]);
+  assert.deepEqual(page.records[0].snapshot.map((entry) => entry.name), [CUSTOM_SECTION_NAME]);
+  assert.match(page.records[0].note, /legacy clear removed 2/);
+  assert.equal(page.records[0].id, payload.history.id);
+});
+
+test('stage2: legacy=true on a layer with no frozen override writes nothing at all', async () => {
+  const { route } = mount();
+  await put(route, { action: 'replace', text: 'MINE' });
+  const before = fingerprints([userPath(), userHistoryPath()]);
+
+  const payload = json(await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?layer=user&legacy=true` }));
+  assert.equal(payload.ok, true);
+  assert.equal(payload.legacy, true);
+  assert.deepEqual(payload.removed, []);
+  assert.equal(payload.count, 0);
+  assert.equal(payload.entries, undefined, 'the zero-count body mirrors the zero-count reset body');
+  assert.equal(payload.history, null);
+  assert.deepEqual(fingerprints([userPath(), userHistoryPath()]), before, 'a no-op must not rewrite the file it did not change');
+  assert.equal((await history(route)).total, 1, 'and it logs nothing');
+
+  // A layer with no file at all is the same no-op, and still creates nothing.
+  rmSync(userPath(), { force: true });
+  rmSync(userHistoryPath(), { force: true });
+  const fresh = mount();
+  const empty = json(await call(fresh.route, { method: 'DELETE', url: `${OVERRIDES_PATH}?layer=user&legacy=true` }));
+  assert.equal(empty.count, 0);
+  assert.equal(empty.history, null);
+  assert.throws(() => readFileSync(userPath(), 'utf8'), /ENOENT/, 'a clear that found nothing writes nothing');
+});
+
+test('stage2: legacy=true and reset=true are mutually exclusive, and neither flag is guessed', async () => {
+  const { route } = mount();
+  seedUser([{ name: 'a', action: 'hide' }]);
+  const before = fingerprint(userPath());
+
+  const conflict = await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?layer=user&reset=true&legacy=true` });
+  assert.equal(conflict.statusCode, 400);
+  assert.equal(json(conflict).code, 'conflicting-query');
+  assert.equal(fingerprint(userPath()), before, 'a refused clear touches nothing');
+
+  const conflictReversed = await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?layer=user&legacy=true&reset=true` });
+  assert.equal(conflictReversed.statusCode, 400);
+  assert.equal(json(conflictReversed).code, 'conflicting-query');
+
+  // A non-raw value is not the switch (the §4.3 rule `reset` already follows):
+  // `legacy=1` falls through to the single-name semantics, which needs a name.
+  const loose = await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?layer=user&legacy=1` });
+  assert.equal(loose.statusCode, 400);
+  assert.equal(json(loose).code, 'missing-name');
+  assert.equal(fingerprint(userPath()), before);
+
+  // `legacy=1` with a name is simply the single-name path — for the reserved
+  // name it removes that one entry and nothing else.
+  await put(route, { action: 'replace', text: 'MINE' });
+  const named = await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?layer=user&legacy=1&name=${encodeURIComponent(CUSTOM_SECTION_NAME)}` });
+  assert.equal(named.statusCode, 200);
+  assert.equal(json(named).removed, true);
+  assert.deepEqual(JSON.parse(readFileSync(userPath(), 'utf8')).overrides, [{ name: 'a', action: 'hide' }], 'the frozen entry is still there');
+
+  // Both flags need a resolvable layer, exactly like reset.
+  const unresolved = await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?layer=workspace&legacy=true` });
+  assert.equal(unresolved.statusCode, 400);
+  assert.equal(json(unresolved).code, 'workspace-unresolved');
+  const unknown = await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?legacy=true` });
+  assert.equal(unknown.statusCode, 400);
+  assert.equal(json(unknown).code, 'unknown-layer');
 });
 
 // #endregion
@@ -436,9 +641,13 @@ test('stage2: a reset needs a resolvable layer, and a non-raw "true" is not a re
 
 test('stage2: two history records of one section diff at section and line level', async () => {
   const { route } = mount();
-  await put(route, { name: 'a', action: 'replace', text: 'one\ntwo' });
-  await put(route, { name: 'a', action: 'replace', text: 'one\nTWO\nthree' });
-  await put(route, { name: 'b', action: 'hide' });
+  await put(route, { action: 'replace', text: 'one\ntwo' });
+  await put(route, { action: 'replace', text: 'one\nTWO\nthree' });
+  // A frozen entry in the live layer must not appear in either history version.
+  seedUser([
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'one\nTWO\nthree' },
+    { name: 'b', action: 'hide' },
+  ]);
 
   const res = await call(route, { url: `${DIFF_PATH}?layer=user&from=1&to=2` });
   assert.equal(res.statusCode, 200);
@@ -450,8 +659,8 @@ test('stage2: two history records of one section diff at section and line level'
   assert.equal(payload.from.kind, 'history');
   assert.equal(payload.from.at, (await history(route)).records.find((record) => record.id === '1').at);
   assert.deepEqual(payload.sectionsCounts, { total: 1, changed: 1, added: 0, removed: 0, same: 0 },
-    'records 1 and 2 both concern section a only');
-  assert.equal(payload.lines.name, 'a');
+    'records 1 and 2 both concern the reserved section only');
+  assert.equal(payload.lines.name, CUSTOM_SECTION_NAME);
   assert.equal(payload.lines.mode, 'lcs');
   assert.deepEqual(payload.lines.stats, { added: 2, removed: 1, same: 1 });
   assert.deepEqual(payload.lines.ops.map((op) => [op.type, op.text]), [
@@ -466,15 +675,15 @@ test('stage2: two history records of one section diff at section and line level'
 
 test('stage2: a history version can be compared with the live value', async () => {
   const { route } = mount();
-  await put(route, { name: 'a', action: 'replace', text: 'first' });
-  await put(route, { name: 'a', action: 'replace', text: 'second' });
+  await put(route, { action: 'replace', text: 'first' });
+  await put(route, { action: 'replace', text: 'second' });
 
   const payload = json(await call(route, { url: `${DIFF_PATH}?layer=user&from=1` }));
   assert.equal(payload.from.kind, 'history');
   assert.equal(payload.to.kind, 'current');
   assert.equal(payload.to.label, 'current');
   assert.equal(payload.to.at, null);
-  assert.equal(payload.lines.name, 'a');
+  assert.equal(payload.lines.name, CUSTOM_SECTION_NAME);
   assert.deepEqual(payload.lines.stats, { added: 1, removed: 1, same: 0 });
   assert.equal(payload.lines.ops.find((op) => op.type === 'delete').text, 'first');
   assert.equal(payload.lines.ops.find((op) => op.type === 'insert').text, 'second');
@@ -487,7 +696,7 @@ test('stage2: a history version can be compared with the live value', async () =
 
 test('stage2: the diff selector is strict and says which input was wrong', async () => {
   const { route } = mount();
-  await put(route, { name: 'a', action: 'replace', text: 'x' });
+  await put(route, { action: 'replace', text: 'x' });
 
   const missing = await call(route, { url: `${DIFF_PATH}?layer=user` });
   assert.equal(missing.statusCode, 400);
@@ -512,13 +721,18 @@ test('stage2: the diff selector is strict and says which input was wrong', async
 
 test('stage2: a reset record diffs against the live layer as a set of additions', async () => {
   const { route } = mount();
-  await put(route, { name: 'a', action: 'replace', text: 'A' });
+  await put(route, { action: 'replace', text: 'A' });
+  // A frozen entry the reset will also remove, seeded as a hand edit.
+  seedUser([
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'A' },
+    { name: 'a', action: 'replace', text: 'A' },
+  ]);
   await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?layer=user&reset=true` });
-  await put(route, { name: 'b', action: 'replace', text: 'B' });
+  await put(route, { action: 'replace', text: 'B' });
 
   const payload = json(await call(route, { url: `${DIFF_PATH}?layer=user&from=1` }));
   assert.equal(payload.from.action, 'replace', 'record 1 is the write that came before the reset');
-  assert.equal(payload.from.name, 'a');
+  assert.equal(payload.from.name, CUSTOM_SECTION_NAME);
   assert.equal(payload.from.label, '#1');
   const payload2 = json(await call(route, { url: `${DIFF_PATH}?layer=user&from=2` }));
   assert.equal(payload2.from.action, 'reset-layer');
@@ -526,7 +740,7 @@ test('stage2: a reset record diffs against the live layer as a set of additions'
   assert.deepEqual(payload2.sectionsCounts, { total: 1, changed: 0, added: 1, removed: 0, same: 0 });
   // The reset version holds no text, so the section that appeared after it is
   // reported as pure insertion rather than as a rewrite.
-  assert.equal(payload2.lines.name, 'b');
+  assert.equal(payload2.lines.name, CUSTOM_SECTION_NAME);
   assert.equal(payload2.lineReason, null);
   assert.equal(payload2.lines.ops.filter((op) => op.type === 'insert')[0].text, 'B');
   assert.equal(payload2.lines.ops.filter((op) => op.type === 'delete')[0].text, '');
@@ -538,7 +752,7 @@ test('stage2: a reset record diffs against the live layer as a set of additions'
 
 test('stage2: export carries the schema, both layers and no absolute path', async () => {
   const { route } = mount();
-  await put(route, { name: 'a', action: 'replace', text: 'A' });
+  await put(route, { action: 'replace', text: 'A' });
   const res = await call(route, { url: EXPORT_PATH });
   assert.equal(res.statusCode, 200);
   const payload = json(res);
@@ -549,17 +763,48 @@ test('stage2: export carries the schema, both layers and no absolute path', asyn
   assert.deepEqual(payload.plugin, { name: 'dsh-prompt-setting', version: '0.1.0' });
   assert.equal(Number.isNaN(Date.parse(payload.exportedAt)), false);
   assert.deepEqual(Object.keys(payload.layers), ['user', 'workspace']);
-  assert.deepEqual(payload.layers.user.overrides, [{ name: 'a', action: 'replace', text: 'A' }]);
+  assert.deepEqual(payload.layers.user.overrides, [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'A' }]);
   assert.equal(payload.layers.workspace.enabled, false);
   assert.match(payload.layers.workspace.reason, /no \?session=/);
   assert.equal(JSON.stringify(payload).includes(home), false, 'no absolute path is exported');
+  // Nothing was omitted, and the response still declares the scope explicitly.
+  assert.deepEqual(payload.exportScope, { only: CUSTOM_SECTION_NAME, omitted: { user: 0, workspace: 0, total: 0 } });
 
   const usersOnly = json(await call(route, { url: `${EXPORT_PATH}?layer=user` }));
   assert.deepEqual(Object.keys(usersOnly.layers), ['user']);
+  assert.deepEqual(usersOnly.exportScope.omitted, { user: 0, total: 0 }, 'the declaration covers the layers exported');
 
   const bad = await call(route, { url: `${EXPORT_PATH}?layer=nope` });
   assert.equal(bad.statusCode, 400);
   assert.equal(json(bad).code, 'unknown-layer');
+});
+
+test('stage2: export drops frozen overrides and SAYS how many it dropped', async () => {
+  const workspaces = [workspaceWith('ws-export', 's-export')];
+  const { route } = mount({ workspaces });
+  seedUser([
+    { name: 'legacy:one', action: 'replace', text: 'ONE' },
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' },
+    { name: 'legacy:two', action: 'hide' },
+  ]);
+  seedWorkspace('ws-export', [{ name: 'legacy:three', action: 'replace', text: 'THREE' }]);
+
+  const payload = json(await call(route, { url: `${EXPORT_PATH}?session=s-export` }));
+  assert.deepEqual(payload.layers.user.overrides, [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' }]);
+  assert.deepEqual(payload.layers.workspace.overrides, [], 'the workspace layer holds only a frozen entry');
+  assert.deepEqual(payload.exportScope, { only: CUSTOM_SECTION_NAME, omitted: { user: 2, workspace: 1, total: 3 } },
+    'a narrowed export is never a silent one');
+
+  // The document it produced re-imports unchanged: it carries only what the
+  // import route accepts.
+  const document = { schema: payload.schema, version: payload.version, layers: payload.layers };
+  const dry = json(await call(route, { method: 'POST', url: `${IMPORT_PATH}?dryRun=true&session=s-export`, body: JSON.stringify(document) }));
+  assert.equal(dry.unchanged, true);
+  assert.deepEqual(dry.totals, { added: 0, replaced: 0, unchanged: 1, removed: 0, kept: 3 },
+    'the three frozen entries are kept, not rewritten');
+
+  const userOnly = json(await call(route, { url: `${EXPORT_PATH}?layer=user` }));
+  assert.deepEqual(userOnly.exportScope, { only: CUSTOM_SECTION_NAME, omitted: { user: 2, total: 2 } });
 });
 
 test('stage2: an export of the workspace layer needs a resolvable session', async () => {
@@ -568,11 +813,11 @@ test('stage2: an export of the workspace layer needs a resolvable session', asyn
   await call(route, {
     method: 'PUT',
     url: `${OVERRIDES_PATH}?session=s2`,
-    body: JSON.stringify({ layer: 'workspace', session: 's2', section: { name: 'w', action: 'replace', text: 'W' } }),
+    body: JSON.stringify({ layer: 'workspace', session: 's2', section: { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'W' } }),
   });
   const payload = json(await call(route, { url: `${EXPORT_PATH}?session=s2` }));
   assert.equal(payload.layers.workspace.enabled, true);
-  assert.deepEqual(payload.layers.workspace.overrides, [{ name: 'w', action: 'replace', text: 'W' }]);
+  assert.deepEqual(payload.layers.workspace.overrides, [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'W' }]);
 });
 
 // #endregion
@@ -581,13 +826,13 @@ test('stage2: an export of the workspace layer needs a resolvable session', asyn
 
 test('stage2: a dry run reports the plan and writes nothing at all', async () => {
   const { route } = mount();
-  await put(route, { name: 'a', action: 'replace', text: 'LOCAL' });
-  await put(route, { name: 'b', action: 'hide' });
+  // Two frozen entries in the layer; the document brings one reserved entry.
+  seedUser([
+    { name: 'a', action: 'replace', text: 'LOCAL' },
+    { name: 'b', action: 'hide' },
+  ]);
   const document = json(await call(route, { url: EXPORT_PATH }));
-  document.layers.user.overrides = [
-    { name: 'a', action: 'replace', text: 'IMPORTED' },
-    { name: 'c', action: 'replace', text: 'NEW' },
-  ];
+  document.layers.user.overrides = [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'IMPORTED' }];
   const before = fingerprints([userPath(), userHistoryPath()]);
 
   const res = await call(route, { method: 'POST', url: `${IMPORT_PATH}?dryRun=true`, body: JSON.stringify(document) });
@@ -597,21 +842,32 @@ test('stage2: a dry run reports the plan and writes nothing at all', async () =>
   assert.equal(payload.dryRun, true);
   assert.equal(payload.applied, false);
   assert.equal(payload.mode, 'merge');
-  assert.deepEqual(payload.totals, { added: 1, replaced: 1, unchanged: 0, removed: 0, kept: 1 });
-  assert.deepEqual(payload.layers.user.counts, { added: 1, replaced: 1, unchanged: 0, removed: 0, kept: 1 });
+  assert.deepEqual(payload.totals, { added: 1, replaced: 0, unchanged: 0, removed: 0, kept: 2 });
+  assert.deepEqual(payload.layers.user.counts, { added: 1, replaced: 0, unchanged: 0, removed: 0, kept: 2 });
   assert.deepEqual(payload.layers.user.changes, [
-    { name: 'a', status: 'replaced', action: 'replace' },
-    { name: 'c', status: 'added', action: 'replace' },
+    { name: CUSTOM_SECTION_NAME, status: 'added', action: 'replace' },
   ]);
   assert.deepEqual(payload.imported, ['user']);
   assert.deepEqual(payload.skipped, [{ layer: 'workspace', reason: 'layer "workspace" requires a "session" id to resolve the workspace root', entries: 0 }]);
   assert.equal(payload.unchanged, false);
   assert.deepEqual(fingerprints([userPath(), userHistoryPath()]), before, 'a dry run touches nothing');
+
+  // The other half of the plan shape — `removed` and `kept` — is reachable
+  // through `mode=replace`, which is the only way this narrowed write face can
+  // still remove anything.
+  const replace = json(await call(route, { method: 'POST', url: `${IMPORT_PATH}?dryRun=true&mode=replace`, body: JSON.stringify(document) }));
+  assert.deepEqual(replace.totals, { added: 1, replaced: 0, unchanged: 0, removed: 2, kept: 0 });
+  assert.deepEqual(replace.layers.user.changes.map((change) => [change.name, change.status]), [
+    [CUSTOM_SECTION_NAME, 'added'],
+    ['a', 'removed'],
+    ['b', 'removed'],
+  ]);
+  assert.deepEqual(fingerprints([userPath(), userHistoryPath()]), before, 'and so does the replace dry run');
 });
 
 test('stage2: re-importing an unchanged export is recognised as a no-op', async () => {
   const { route } = mount();
-  await put(route, { name: 'a', action: 'replace', text: 'A' });
+  await put(route, { action: 'replace', text: 'A' });
   const document = json(await call(route, { url: `${EXPORT_PATH}?layer=user` }));
   const before = fingerprints([userPath(), userHistoryPath()]);
   const payload = json(await call(route, { method: 'POST', url: IMPORT_PATH, body: JSON.stringify(document) }));
@@ -625,18 +881,16 @@ test('stage2: re-importing an unchanged export is recognised as a no-op', async 
 test('stage2: a real import applies both layers and logs every write as origin "import"', async () => {
   const workspaces = [workspaceWith('ws-three', 's3')];
   const { route } = mount({ workspaces });
-  await call(route, {
-    method: 'PUT',
-    url: `${OVERRIDES_PATH}?session=s3`,
-    body: JSON.stringify({ layer: 'workspace', session: 's3', section: { name: 'keep', action: 'hide' } }),
-  });
+  // The workspace layer's frozen entry, as a hand edit; the import below must
+  // keep it and append its own after it.
+  seedWorkspace('ws-three', [{ name: 'keep', action: 'hide' }]);
   const document = {
     schema: 'dsh-prompt-setting/export',
     version: 1,
     exportedAt: '2024-01-01T00:00:00.000Z',
     layers: {
-      user: { layer: 'user', overrides: [{ name: 'a', action: 'replace', text: 'A' }] },
-      workspace: { layer: 'workspace', overrides: [{ name: 'w', action: 'replace', text: 'W' }] },
+      user: { layer: 'user', overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'A' }] },
+      workspace: { layer: 'workspace', overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'W' }] },
     },
   };
   const res = await call(route, {
@@ -651,10 +905,12 @@ test('stage2: a real import applies both layers and logs every write as origin "
   assert.deepEqual(payload.imported, ['user', 'workspace']);
   assert.deepEqual(payload.totals, { added: 2, replaced: 0, unchanged: 0, removed: 0, kept: 1 });
   assert.deepEqual(payload.written.sort(), [userPath(), workspacePath('ws-three')].sort());
-  assert.deepEqual(JSON.parse(readFileSync(userPath(), 'utf8')).overrides, [{ name: 'a', action: 'replace', text: 'A' }]);
+  assert.deepEqual(JSON.parse(readFileSync(userPath(), 'utf8')).overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'A' },
+  ]);
   assert.deepEqual(
     JSON.parse(readFileSync(workspacePath('ws-three'), 'utf8')).overrides.map((entry) => entry.name),
-    ['keep', 'w'],
+    ['keep', CUSTOM_SECTION_NAME],
     'merge keeps the local entry\'s position and appends the imported one',
   );
   assert.equal(payload.history.user[0].ok, true);
@@ -663,43 +919,53 @@ test('stage2: a real import applies both layers and logs every write as origin "
   const userPage = await history(route);
   assert.equal(userPage.records[0].origin, 'import');
   assert.equal(userPage.records[0].action, 'replace');
+  assert.equal(userPage.records[0].name, CUSTOM_SECTION_NAME);
   assert.equal(userPage.records[0].before, null);
   assert.equal(userPage.records[0].after.text, 'A');
   assert.match(userPage.records[0].note, /import mode=merge status=added/);
 
   const workspacePage = json(await call(route, { url: `${HISTORY_PATH}?layer=workspace&session=s3` }));
   assert.equal(workspacePage.records[0].origin, 'import');
-  assert.deepEqual(workspacePage.records[0].snapshot.map((entry) => entry.name), ['keep', 'w']);
+  assert.deepEqual(workspacePage.records[0].snapshot.map((entry) => entry.name), ['keep', CUSTOM_SECTION_NAME]);
 });
 
 test('stage2: mode=replace removes local extras and logs the removals', async () => {
   const { route } = mount();
-  await put(route, { name: 'a', action: 'replace', text: 'LOCAL' });
-  await put(route, { name: 'b', action: 'hide' });
+  seedUser([
+    { name: 'a', action: 'replace', text: 'LOCAL' },
+    { name: 'b', action: 'hide' },
+  ]);
   const document = {
     schema: 'dsh-prompt-setting/export',
     version: 1,
-    layers: { user: { layer: 'user', overrides: [{ name: 'a', action: 'replace', text: 'IMPORTED' }] } },
+    layers: { user: { layer: 'user', overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'IMPORTED' }] } },
   };
   const dry = json(await call(route, { method: 'POST', url: `${IMPORT_PATH}?dryRun=true&mode=replace`, body: JSON.stringify(document) }));
   assert.equal(dry.mode, 'replace');
-  assert.deepEqual(dry.totals, { added: 0, replaced: 1, unchanged: 0, removed: 1, kept: 0 });
-  assert.deepEqual(dry.layers.user.changes.map((change) => [change.name, change.status]), [['a', 'replaced'], ['b', 'removed']]);
+  assert.deepEqual(dry.totals, { added: 1, replaced: 0, unchanged: 0, removed: 2, kept: 0 });
+  assert.deepEqual(dry.layers.user.changes.map((change) => [change.name, change.status]), [
+    [CUSTOM_SECTION_NAME, 'added'],
+    ['a', 'removed'],
+    ['b', 'removed'],
+  ]);
 
   const applied = json(await call(route, { method: 'POST', url: `${IMPORT_PATH}?mode=replace`, body: JSON.stringify(document) }));
   assert.equal(applied.applied, true);
-  assert.deepEqual(JSON.parse(readFileSync(userPath(), 'utf8')).overrides, [{ name: 'a', action: 'replace', text: 'IMPORTED' }]);
+  assert.deepEqual(JSON.parse(readFileSync(userPath(), 'utf8')).overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'IMPORTED' },
+  ]);
   const page = await history(route);
-  assert.deepEqual(page.records.slice(0, 2).map((record) => [record.action, record.name, record.origin]), [
+  assert.deepEqual(page.records.map((record) => [record.action, record.name, record.origin]), [
     ['remove', 'b', 'import'],
-    ['replace', 'a', 'import'],
+    ['remove', 'a', 'import'],
+    ['replace', CUSTOM_SECTION_NAME, 'import'],
   ]);
   assert.equal(page.records[0].before, null, 'a hidden section has no text to record');
 });
 
 test('stage2: a body-supplied mode is honoured, and the query wins', async () => {
   const { route } = mount();
-  await put(route, { name: 'local', action: 'hide' });
+  seedUser([{ name: 'local', action: 'hide' }]);
   const document = {
     schema: 'dsh-prompt-setting/export',
     version: 1,
@@ -720,13 +986,13 @@ test('stage2: a body-supplied mode is honoured, and the query wins', async () =>
 test('stage2: the layer filter imports one layer and leaves the other alone', async () => {
   const workspaces = [workspaceWith('ws-four', 's4')];
   const { route } = mount({ workspaces });
-  await put(route, { name: 'existing', action: 'hide' });
+  seedUser([{ name: 'existing', action: 'hide' }]);
   const document = {
     schema: 'dsh-prompt-setting/export',
     version: 1,
     layers: {
-      user: { layer: 'user', overrides: [{ name: 'u', action: 'hide' }] },
-      workspace: { layer: 'workspace', overrides: [{ name: 'w', action: 'hide' }] },
+      user: { layer: 'user', overrides: [{ name: CUSTOM_SECTION_NAME, action: 'hide' }] },
+      workspace: { layer: 'workspace', overrides: [{ name: CUSTOM_SECTION_NAME, action: 'hide' }] },
     },
   };
   const payload = json(await call(route, {
@@ -761,12 +1027,12 @@ function rejectedDocuments() {
     ['no layers', JSON.stringify({ schema: 'dsh-prompt-setting/export', version: 1 }), 'missing-export-layers'],
     [
       'bad action',
-      JSON.stringify({ schema: 'dsh-prompt-setting/export', version: 1, layers: { user: { overrides: [{ name: 'a', action: 'delete', text: 'x' }] } } }),
+      JSON.stringify({ schema: 'dsh-prompt-setting/export', version: 1, layers: { user: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'delete', text: 'x' }] } } }),
       'unknown-action',
     ],
     [
       'missing text',
-      JSON.stringify({ schema: 'dsh-prompt-setting/export', version: 1, layers: { user: { overrides: [{ name: 'a', action: 'replace' }] } } }),
+      JSON.stringify({ schema: 'dsh-prompt-setting/export', version: 1, layers: { user: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace' }] } } }),
       'missing-text',
     ],
     [
@@ -777,8 +1043,8 @@ function rejectedDocuments() {
         layers: {
           user: {
             overrides: [
-              { name: 'a', action: 'replace', text: 'x' },
-              { name: 'a', action: 'replace', text: 'y' },
+              { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'x' },
+              { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'y' },
             ],
           },
         },
@@ -790,9 +1056,29 @@ function rejectedDocuments() {
       JSON.stringify({
         schema: 'dsh-prompt-setting/export',
         version: 1,
-        layers: { user: { overrides: [{ name: 'a', action: 'replace', text: 'x'.repeat(200 * 1024 + 1) }] } },
+        layers: { user: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'x'.repeat(200 * 1024 + 1) }] } },
       }),
       'text-too-large',
+    ],
+    // Revision 7's write lock. Note the order: the document is schema-validated
+    // first, so a malformed entry answers its field code above; a well-formed
+    // legacy entry reaches this wall.
+    [
+      'a frozen section name',
+      JSON.stringify({ schema: 'dsh-prompt-setting/export', version: 1, layers: { user: { overrides: [{ name: 'project:alpha', action: 'replace', text: 'x' }] } } }),
+      'write-locked',
+    ],
+    [
+      'a frozen name in a layer the request does not import',
+      JSON.stringify({
+        schema: 'dsh-prompt-setting/export',
+        version: 1,
+        layers: {
+          user: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'x' }] },
+          workspace: { overrides: [{ name: 'project:beta', action: 'hide' }] },
+        },
+      }),
+      'write-locked',
     ],
   ];
 }
@@ -800,12 +1086,8 @@ function rejectedDocuments() {
 test('stage2: every rejected import leaves BOTH config files and the history byte-identical', async () => {
   const workspaces = [workspaceWith('ws-five', 's5')];
   const { route } = mount({ workspaces });
-  await put(route, { name: 'local', action: 'replace', text: 'LOCAL TEXT' });
-  await call(route, {
-    method: 'PUT',
-    url: `${OVERRIDES_PATH}?session=s5`,
-    body: JSON.stringify({ layer: 'workspace', session: 's5', section: { name: 'w', action: 'hide' } }),
-  });
+  seedUser([{ name: 'local', action: 'replace', text: 'LOCAL TEXT' }]);
+  seedWorkspace('ws-five', [{ name: 'w', action: 'hide' }]);
   const paths = [userPath(), userHistoryPath(), workspacePath('ws-five'), workspaceHistoryPath('ws-five')];
   const before = fingerprints(paths);
 
@@ -815,6 +1097,14 @@ test('stage2: every rejected import leaves BOTH config files and the history byt
     assert.equal(json(res).code, code, `${what} must answer ${code}`);
     assert.deepEqual(fingerprints(paths), before, `${what} must not touch any file`);
     assert.deepEqual(tempFiles(home), [], `${what} must leave no temp file`);
+    if (code === 'write-locked') {
+      // The dry run must refuse the very same document: a dry run answers the
+      // question the real run would answer.
+      const dry = await call(route, { method: 'POST', url: `${IMPORT_PATH}?session=s5&dryRun=true`, body });
+      assert.equal(dry.statusCode, 403, `${what} must be refused by a dry run too`);
+      assert.equal(json(dry).code, 'write-locked');
+      assert.deepEqual(fingerprints(paths), before, `${what} must not be touched by the dry run either`);
+    }
   }
 
   // An unparsable body is refused by the JSON reader, before the document is
@@ -827,7 +1117,7 @@ test('stage2: every rejected import leaves BOTH config files and the history byt
 
 test('stage2: an over-large import body is a 413 and the existing config is untouched', async () => {
   const { route } = mount();
-  await put(route, { name: 'local', action: 'hide' });
+  seedUser([{ name: 'local', action: 'hide' }]);
   const before = fingerprints([userPath(), userHistoryPath()]);
   const oversize = JSON.stringify({
     schema: 'dsh-prompt-setting/export',
@@ -839,11 +1129,12 @@ test('stage2: an over-large import body is a 413 and the existing config is unto
   assert.equal(res.statusCode, 413);
   assert.equal(json(res).code, 'body-too-large');
   assert.deepEqual(fingerprints([userPath(), userHistoryPath()]), before);
-  // The PUT cap is unchanged, and it is smaller than the import cap.
+  // The PUT cap is unchanged, and it is smaller than the import cap. The size
+  // cap is checked while reading the body, so it wins over any write policy.
   const putTooLarge = await call(route, {
     method: 'PUT',
     url: OVERRIDES_PATH,
-    body: JSON.stringify({ layer: 'user', section: { name: 'a', action: 'replace', text: 'x' }, pad: 'y'.repeat(300 * 1024) }),
+    body: JSON.stringify({ layer: 'user', section: { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'x' }, pad: 'y'.repeat(300 * 1024) }),
   });
   assert.equal(putTooLarge.statusCode, 413);
 });
@@ -859,7 +1150,7 @@ test('stage2: a layer that cannot be read is never overwritten by an import', as
     body: JSON.stringify({
       schema: 'dsh-prompt-setting/export',
       version: 1,
-      layers: { user: { overrides: [{ name: 'a', action: 'hide' }] } },
+      layers: { user: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'x' }] } },
     }),
   });
   assert.equal(res.statusCode, 409);
@@ -869,7 +1160,7 @@ test('stage2: a layer that cannot be read is never overwritten by an import', as
 
 test('stage2: an unresolvable workspace aborts the whole import, user layer included', async () => {
   const { route } = mount();
-  await put(route, { name: 'local', action: 'hide' });
+  seedUser([{ name: 'local', action: 'hide' }]);
   const before = fingerprints([userPath(), userHistoryPath()]);
   const res = await call(route, {
     method: 'POST',
@@ -878,8 +1169,8 @@ test('stage2: an unresolvable workspace aborts the whole import, user layer incl
       schema: 'dsh-prompt-setting/export',
       version: 1,
       layers: {
-        user: { overrides: [{ name: 'u', action: 'hide' }] },
-        workspace: { overrides: [{ name: 'w', action: 'hide' }] },
+        user: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'x' }] },
+        workspace: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'y' }] },
       },
     }),
   });
