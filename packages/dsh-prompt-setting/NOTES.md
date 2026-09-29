@@ -3416,3 +3416,118 @@ g-014 用 `order: 1000000` 让保留段排在**所有注册段**的最后，真�
 | 哈希 | `shasum -a 256` | `core/custom.js` `9995d7bb…`、`index.js` `7cb9b32a…`、`test/integration.test.mjs` `c127465d…`、`test/custom.test.mjs` `3c2955a4…`（负向对照基线） |
 | 契约 | `CONTRACT.md` | 版本日志新增 **Revision 8**；§15 标题标注 lastness；§15.1 / §5.3 / §6·E2 交叉引用；§15.9 改「四个 effect」并补 keeper 的失败形态；**新增 §15.10**（机制 / 四个 identity 分支 / 只搬有文本的理由 / 精确承诺 / 三条残余边界 / 失败行为 / 未验证）；§7 新增第 **22–24** 条 |
 | 文档 | `README.md` | 分层原则改「两个 waterfall 监听器」并写明 prepend；tab 表后加一句位置交叉引用；**新增「「我的 Prompt」为什么真的排在最后（g-017，契约 Revision 8）」章**；文末**新增「Revision 8 边界」块** |
+
+## 96. 从 git 安装的 prepare 门禁（2026-09-30，基线 `4a74d92`）
+
+### 一、这一轮要做的事
+
+官方发布文档《打包与安装插件》的「从 GitHub 安装：构建脚本这道坎」一节要求：想让用户
+`dsh plugin add github:you/hello-plugin` 装得上的作者，**必须自己提供一个 `prepare` 脚本**，
+且它必须**自包含**（不能假设旁边有一份 monorepo checkout）——因为 git 安装拉到的是
+**源码而不是构建产物**，pnpm 会在安装现场运行 `prepare`；用户侧还要为该包在 profile 的
+`pnpm-workspace.yaml` 里授权构建脚本（`allowBuilds`），否则第一次 `add` 会失败。
+
+本包是**零构建**包：`index.js` / `client.js` / `core/*.js` 本身就是发布入口，没有编译产物。
+所以这一节落到本包上，问题不是「怎么编译」，而是「**装到用户机器上的那一份到底全不全**」。
+本轮把它做成一个可执行、可失败的门禁：`core/prepare.js`（纯函数，零 IO）+
+`scripts/prepare.mjs`（注入 `node:fs`，不通过则 `exit 1`）。
+
+### 二、实测：pnpm 从 git 安装时，落地的就是 `files` 白名单
+
+第一版代码的注释里写的是「git 安装既不套用 `files` 也不套用 `.gitignore`，所以本地有、
+仓库没有的文件会缺失」。**这个判断是错的**，本机实测推翻了它：
+
+```sh
+pnpm add 'github:zangxx66/dsh-prompt-setting#path:/packages/dsh-prompt-setting'
+```
+
+| 观察项 | 实测结果（pnpm 12.3.4，2026-09-30） |
+| --- | --- |
+| 解析结果 | `dsh-prompt-setting 0.1.0` —— `#path:` 指向 monorepo 子目录，解析成功 |
+| 落地内容 | `files` 白名单 8 项 **+ `package.json` + `LICENSE`**；`test/` 与 `.dsh-graph/` 均**不在** |
+| 体积 | `node_modules/dsh-prompt-setting` **968K**，与 `npm pack` 的 unpacked **958.2 kB** 同量级，远小于整个 checkout |
+| 反例（装仓库根） | 直接 `github:zangxx66/dsh-prompt-setting` 装到的是 pnpm **合成的 `0.0.0` 空包**：仓库根没有 `package.json`，装上去没有任何入口，插件当然不会出现 |
+
+结论：git 这条路**照样按 `files` 打包**。真正的风险在反方向——
+**「声明了、但没被白名单覆盖（或压根没提交）的文件」在用户机器上一定不存在**。
+门禁的判据据此调整，新增 `NOT-SHIPPED`（见第四、五节）。
+
+### 三、实测：`prepare` 在安装现场真的被执行，且被 `allowBuilds` 拦住
+
+用本地 bare clone 模拟 git 源（`git+file:///tmp/.../remote.git#path:/packages/dsh-prompt-setting`，
+commit `f602b16`）：
+
+**第一次（未授权）——安装失败**，错误码 `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`，
+并打印出**确切的包键**（官方文档说的「把 pnpm 打印的那个键复制过去」）：
+
+```
+The git-hosted package "dsh-prompt-setting@0.1.0" needs to execute build
+scripts but is not in the "allowBuilds" allowlist.
+help: Add the package to "allowBuilds" in your project's pnpm-workspace.yaml
+      allowBuilds:
+        dsh-prompt-setting@git+file:///tmp/.../remote.git#f602b16…&path:/packages/dsh-prompt-setting: true
+```
+
+**写入该键后重试——`prepare` 真的执行了**，脚本输出原样出现在 pnpm 的 `npm-install:` 流里
+（19 项 ok + `prepare：OK`），安装成功、版本 `0.1.0`。
+
+> 这一条对用户是**成本**：本包零构建，`prepare` 只做自检，却同样要吃 `allowBuilds` 授权
+> （授权 = 允许该包在安装时于本机执行代码，且不在 agent 沙箱内）。文档给出的替代路径是
+> 「分发构建产物」：装 npm 包或 `pnpm pack` 出来的 tarball 都不需要任何构建权限。
+> 取舍写在包 README 的安装一节。
+
+### 四、负向对照：残缺 checkout 被门禁挡住
+
+把 `package.json` 的 `files` 里的 `client.js` 删掉（模拟「入口忘了列进白名单」），commit 后
+从该仓库安装：
+
+```
+FAIL  NOT-SHIPPED: exports["./client"] → client.js 不在 files 白名单里：安装时这个文件会被裁掉
+prepare：失败（1 项）—— 这个 checkout 装上去会缺东西，先修好再安装
+Error: ERR_PNPM_PREPARE_PACKAGE
+```
+
+安装被拒绝（退出码 1）。**这一条正是只做「文件存在性」检查抓不到的**：文件在 checkout 里
+**明明存在**，只有「声明 vs 白名单」这条判据能发现它；否则这个 checkout 会装上去，
+然后在 `dsh` 启动时以模块解析错误的形式炸掉——正是这道坎最坏的形态。
+
+### 五、判据清单（`core/prepare.js`）
+
+| code | 级别 | 判据 |
+| --- | --- | --- |
+| `MANIFEST` / `MANIFEST-UNREADABLE` | ok / fail | `package.json` 可解析 |
+| `NO-ENTRYPOINT` / `ENTRY` / `ENTRY-MISSING` / `ENTRY-EMPTY` | fail / ok / fail | `main` 与 `exports` 至少声明一个入口；每个入口存在且非空 |
+| `NO-BUNDLE-PATCH` / `PATCH` / `PATCH-MISSING` / `PATCH-EMPTY` | warn / ok / fail / warn | `dsh.bundle.patch`（字符串或数组）存在；空 patch 只提示 |
+| `PATCH-ROW` / `PATCH-EXTERNAL` / `ROW-NO-ENTRY` / `ROW-NO-SUBPATH-EXPORT` / `ROW-ENTRY-MISSING` | ok / ok / fail | patch 每一行 `name:`：本包裸名 → `main`/`exports["."]`；本包子路径 → `exports["./x"]`；外部包只记一行 ok（不猜别人的包） |
+| `NO-FILES` / `FILES-FILE` / `FILES-DIR` / `FILES-MISSING` | warn / ok / fail | `files` 每一项存在（目录非空） |
+| `SHIPS` / `NOT-SHIPPED` | ok / fail | 每个声明入口与 bundle patch **必须被白名单覆盖**（目录、`*`、`**`、`?` 都认；`package.json` 例外，npm 永远保留） |
+| `CLIENT-NO-EXPORT` / `CLIENT-MISSING` / `CLIENT-FINGERPRINT` | fail | 声明 `dsh.client` 时 `exports["./client"]` 存在，且构建戳区间唯一有序 |
+| `NO-RUNTIME-DEPS` / `RUNTIME-DEPS` | ok / warn | 零运行时依赖是契约；有依赖只提示（pnpm 会装） |
+
+设计约束与仓库既有分层一致：`core/prepare.js` **零 IO、零 `ctx`**，读者由调用方注入，
+所以每条判据都能离线单测；`scripts/prepare.mjs` 只做三件事——注入 `node:fs`、**拒绝逃出包根的
+路径**（manifest 里写 `../x` 不算本包内容）、打印并设置退出码。与 `check-compat.mjs` 的分工：
+那个是**诊断**（退出码恒 0），这个是**门禁**（不通过就 exit 1）。
+
+### 六、未验证项（诚实清单）
+
+- **没有跑真正的 `github:` 协议安装**：本机 GitHub 凭据不可用（`git push` 由用户在终端完成），
+  所以真机证据来自 `git+file://` + 本地 bare clone。pnpm 对两者走同一条 git 解析路径，
+  但「GitHub 上那个 commit」这一步本轮**没有**经过网络验证。
+- **没有在真的 `dsh plugin --profile <name> add …` 里跑**：本轮验证到 pnpm 这一层。
+  `dsh plugin` 只是把参数转发给 profile 目录里的 pnpm，因此**预期**一致，但未实测。
+- **`prepare` 与打包的先后顺序是推断**：负向对照里「文件存在于 checkout、却因不在白名单而失败」
+  说明 `prepare` 看到的**是未经过滤的 checkout**；这是从输出推断的，不是直接观测。
+- **未跑浏览器/CDP**：本轮无 UI 改动。
+
+### 七、本轮实测证据
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test`（包目录） | **395 / 395 pass / 0 fail / 0 skipped**（基线 373；净 +22） |
+| 新套件 | `node --test test/prepare.test.mjs` | **22 / 22 pass**（含真实包自检、脚本端到端、临时残缺包负向端到端） |
+| 自检 | `node scripts/prepare.mjs` | 真实包 **19 项 ok / exit 0** |
+| git 安装（正向） | `pnpm add 'git+file://…/remote.git#path:/packages/dsh-prompt-setting'` | 首次 `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`（打印确切包键）→ 授权后 `prepare` 执行、**安装成功 0.1.0** |
+| git 安装（负向） | 同上，源换成删掉 `files: client.js` 的 commit | `FAIL NOT-SHIPPED` → **`ERR_PNPM_PREPARE_PACKAGE`、exit 1** |
+| 打包 | `npm pack --dry-run` | **20** 个文件（`core/prepare.js`、`scripts/prepare.mjs` 落在既有目录项内）、329.2 kB / unpacked 990.4 kB |
+| 语法 | `node --check core/prepare.js`、`node --check scripts/prepare.mjs` | 通过 |

@@ -60,6 +60,25 @@ DSH 每轮会话都会注入一段由 `@deepseek-ai/dsh-system-prompt` 装配出
 > 用裸 `curl` 直接请求这个路由会被拒（`401`）：它要求浏览器的 cookie 认证，这是预期行为，
 > 不代表路由没挂上。详见 [`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) §4。
 
+### 从 GitHub 直接安装（可选）
+
+不想先克隆仓库，也可以让 pnpm 直接从 git 装。本仓库是 monorepo、插件在子目录，所以**必须带 `#path:`**
+（不带会装到仓库根合成的 `0.0.0` 空包，插件不会出现）：
+
+```sh
+dsh plugin --profile demo add 'github:zangxx66/dsh-prompt-setting#path:/packages/dsh-prompt-setting'
+```
+
+pnpm ≥10 默认**不**运行 git 依赖的构建脚本，第一次会失败并打印一个**确切的包键**
+（`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`）；把它复制进该 profile 的 `pnpm-workspace.yaml` 的
+`allowBuilds` 再重跑 `add` 就好。**这项授权 = 允许该包的代码在安装时于你的机器上执行**，
+所以只对可信来源授权、并锁定 commit（`…#<sha>`）。本包零构建，`prepare` 只做发布自检
+（入口是否齐全、是否都在 `files` 白名单里、patch 每一行能否解析）；想完全避开授权，
+就用 `pnpm pack` 打出 tarball 再 `add`，功能完全一致。
+
+真机实测输出、判据表与未验证项见 [`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) §96，
+面向插件包的完整说明见 [`packages/dsh-prompt-setting/README.md`](./packages/dsh-prompt-setting/README.md) 的「从 GitHub 安装」。
+
 ## 四、使用须知（几条容易踩的边界）
 
 - **生效时机**：保存后从**下一轮 / 新会话**生效，不会改写正在进行中的回合。
@@ -77,9 +96,10 @@ packages/dsh-prompt-setting/   # 插件包本体（可独立 npm 发布）
 ├── client.js                  # 客户端半：设置页四个 tab
 ├── core/                      # 纯函数内核 + 唯一碰文件系统的 store
 ├── cordis.patch.yml           # bundle 补丁（一条 insert 挂上两个半边）
+├── scripts/                   # check-compat.mjs（只读诊断）+ prepare.mjs（从 git 安装的门禁）
 ├── CONTRACT.md                # 冻结的 REST 契约（客户端照它写）
 ├── NOTES.md                   # 设计取舍、实测记录、未验证项
-└── test/                      # 十三个测试套件
+└── test/                      # 十四个测试套件
 assets/                        # 本 README 的头图
 .dsh-graph/                    # 项目看板与事件流（内层独立仓库，不纳入本仓库）
 .worktrees/                    # 子代理隔离工作树（不纳入本仓库）
@@ -93,13 +113,14 @@ cd packages/dsh-prompt-setting
 # 语法检查
 node --check index.js && node --check client.js && for f in core/*.js scripts/*.mjs; do node --check "$f"; done
 
-node --test                    # 十三个套件；集成套件用真 DSH 包跑对照实验，须为 pass（非 skip）
+node --test                    # 十四个套件；集成套件用真 DSH 包跑对照实验，须为 pass（非 skip）
 node scripts/check-compat.mjs  # 只读兼容性自检（不联网、永不抛、退出码恒 0）
-npm pack --dry-run             # 确认发布产物干净（18 个文件、无 test/、无 .dsh-graph）
+node scripts/prepare.mjs       # prepare 门禁：从 git 安装时 pnpm 会自动跑它（不通过则 exit 1）
+npm pack --dry-run             # 确认发布产物干净（20 个文件、无 test/、无 .dsh-graph）
 ```
 
-最近一次在本机跑的结果：`node --test` **373 项断言全部通过、0 skipped**（含集成套件 21 项），
-`npm pack --dry-run` 18 个文件（2026-09-30 实测）。
+最近一次在本机跑的结果：`node --test` **395 项断言全部通过、0 skipped**（含集成套件 21 项），
+`npm pack --dry-run` 20 个文件（2026-09-30 实测）。
 
 要点：
 

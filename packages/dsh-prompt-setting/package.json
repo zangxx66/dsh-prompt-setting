@@ -21,6 +21,7 @@
     "scripts"
   ],
   "scripts": {
+    "prepare": "node scripts/prepare.mjs",
     "check-compat": "node scripts/check-compat.mjs"
   },
   "keywords": [

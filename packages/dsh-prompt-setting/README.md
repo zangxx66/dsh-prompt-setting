@@ -45,10 +45,12 @@ REST 契约见同目录 [`CONTRACT.md`](./CONTRACT.md)（已冻结，客户端�
 | `core/transfer.js` | **纯函数**：导出文档构造、导入文档的 schema/版本/字段校验、冲突策略与变更计划 |
 | `core/store.js` | **唯一碰文件系统**的模块：两层路径解析 + 原子写（临时文件 + `rename`）+ 读时校验 + `history.jsonl` 追加与裁剪 + 多文件原子替换（导入） |
 | `core/compat.js` | **boot 兼容性**：semver 解析/比较/范围判定（纯函数）+ DSH 版本探测（best-effort、多锚点、绝不抛）+ 三分支文案（范围内静默 / 超范围 / 探测失败）与 `apply` 失败文案 |
+| `core/prepare.js` | **发布就绪判据**（纯函数，零 IO）：声明入口存在且非空、bundle patch 的每一行能在本包解析、`files` 白名单条目存在、**每个入口与 patch 都被白名单覆盖**（`NOT-SHIPPED`）、构建戳区间可用。判据表与实测见 NOTES.md §96 |
 | `core/experiments.js` | E1–E5 的**实测结论**（由集成测试产出，快照与 CONTRACT.md 共用同一份文案） |
 | `client.js` | 客户端半：「设置」里的独立一栏，**四个一级 tab**（默认「我的 Prompt」）：一行状态摘要（挂载 / 冻结三态 / 构建戳）+ 共用的会话选择器（默认折叠成一行摘要 +「更改」，g-016）+「我的 Prompt」写面板（唯一写入口：保留名 + `replace`，含恢复默认的二次确认）/「提示词总览」只读段列表与全文视图（搜索高亮 + `base`↔`effective` 对比，无任何写入口）/「历史与备份」（历史列表 + 版本对比，官方 `DiffBlock` + 自绘降级 + 导出下载与导入预览）/「高级」（旧覆盖只读列表 + `legacy=true` 与 `reset=true` 两个二次确认按钮 + 完整状态区与渲染器自检） |
 | `cordis.patch.yml` | bundle 层：一条 `insert` 行同时承载两个半边 |
 | `scripts/check-compat.mjs` | **只读兼容性自检**（`node scripts/check-compat.mjs`）：本插件版本 / 已装 DSH 版本 / peer 范围结论 / 四种 boot 失败形态的终端签名 / 救援步骤。零依赖、不联网、永不抛、退出码恒 0 |
+| `scripts/prepare.mjs` | **`prepare` 门禁**（`pnpm` 从 git 安装、以及 `pnpm install` 时自动运行）：注入 `node:fs` 跑 `core/prepare.js`、拒绝逃出包根的路径、不通过则 `exit 1`。零构建包的「发布前自检」，见下文「从 GitHub 安装」 |
 | `package.json` | 包契约：`dsh.bundle.patch` + `dsh.client.platform: "web"` + `exports["./client"]` |
 | `CONTRACT.md` | 冻结的 REST 契约：每个字段、每个 4xx、动作枚举、字段上限 |
 
@@ -95,21 +97,58 @@ plugin_manager(action: "install_bundle", target: "<仓库绝对路径>/packages/
    **裸 `curl` 会被拒绝（401）**：`requestRejection` 第二段是浏览器 cookie 认证，缺少它即 401，
    这是预期行为，不是路由没挂上（细节见 [NOTES.md](./NOTES.md) §4）。
 
+### 从 GitHub 安装（`prepare` 这道坎）
+
+允许用户直接从 git 托管安装时，pnpm 会在这个包上运行 `prepare`——也就是本包的自检脚本
+（官方文档称这一节为「从 GitHub 安装：构建脚本这道坎」）。
+
+```sh
+# 本仓库是 monorepo，插件包在子目录里，必须带 #path:；
+# 不带的话会装到仓库根合成的 0.0.0 空包，插件不会出现。
+dsh plugin --profile demo add 'github:zangxx66/dsh-prompt-setting#path:/packages/dsh-prompt-setting'
+```
+
+pnpm ≥10 默认**不**运行 git 依赖的构建脚本，所以第一次 `add` 会失败并打印一个**确切的包键**
+（`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`）。把那个键原样复制进该 profile 的
+`pnpm-workspace.yaml`，再重跑 `add`：
+
+```yaml
+allowBuilds:
+  "dsh-prompt-setting@github:zangxx66/dsh-prompt-setting#<sha>&path:/packages/dsh-prompt-setting": true
+```
+
+**这项授权 = 允许该包的代码在安装时于你的机器上执行**，且不在任何 sandbox 内。
+所以只对可信来源授权，并锁定 commit（`…#<sha>`）。本机实测（pnpm 12.3.4，2026-09-30）：
+
+- 授权后 `prepare` 真的执行，输出形如 `npm-install: prepare：OK（19 项通过）`；
+- 白名单漏掉入口（例如 `files` 里没有 `client.js`）时**安装被拒**：
+  `FAIL NOT-SHIPPED` → `ERR_PNPM_PREPARE_PACKAGE`、退出码 1 —— 宁可装不上，也不要装上一个起不来的插件。
+
+**不想让用户走这道授权**：本包零构建，装 npm 包或 tarball 都不需要任何构建权限，功能完全一致——
+
+```sh
+pnpm pack     # 得到 dsh-prompt-setting-0.1.0.tgz
+dsh plugin --profile demo add ./dsh-prompt-setting-0.1.0.tgz
+```
+
+判据清单、真机输出与未验证项见 [NOTES.md](./NOTES.md) §96。
+
 ## 开发
 
 ```bash
 cd packages/dsh-prompt-setting
 node --check index.js && node --check client.js && for f in core/*.js scripts/*.mjs; do node --check "$f"; done
-node --test                                       # 349 项断言，0 skipped
+node --test                                       # 395 项断言，0 skipped
 node scripts/check-compat.mjs                     # 只读兼容性自检（不联网、永不抛）
-npm pack --dry-run                                # 确认产物干净（16 个文件、无 test/、无 .dsh-graph）
+node scripts/prepare.mjs                          # prepare 门禁（pnpm 从 git 安装 / pnpm install 时自动跑）
+npm pack --dry-run                                # 确认产物干净（20 个文件、无 test/、无 .dsh-graph）
 ```
 
 > `node --test`（在本目录下自动发现 `test/`）是本包的规范命令。Node 24 会拒绝把目录当位置参数
 > 传进去（`node --test test/` ⇒ `MODULE_NOT_FOUND`），这不是本包的问题；等价写法是
 > `node --test test/*.test.mjs`。
 
-`node --test` 的十二个套件：
+`node --test` 的十四个套件：
 
 | 套件 | 覆盖 |
 | --- | --- |
@@ -125,6 +164,8 @@ npm pack --dry-run                                # 确认产物干净（16 个�
 | `test/client.test.mjs` | 客户端半：vm 沙箱 + 递归展开函数组件的迷你渲染器 + fetch 路由桩（含 `useSessions` 缺失降级、`frozenScope` 三态、保存前可行性校验、历史/对比/恢复默认/导出导入面板与 `DiffBlock` 分支、**构建戳三态与自证指纹的独立复算**） |
 | `test/integration.test.mjs` | **E1–E4 对照实验 + 插件端到端**：真 `@deepseek-ai/dsh-system-prompt` + 真 `@deepseek-ai/cordis` + 真 Cordis 上下文 |
 | `test/boot.test.mjs` | **boot 韧性（g-013）**：导入期自检三分支（范围内静默 / 超范围一条 / 探测失败一条，且都不抛）、版本探测的多锚点与失败原因、`apply` 在「服务方法缺失 / 抛错 / 返回形状不符 / `ctx.effect` 缺失」下不抛且只打印一条、**半挂载回滚**（先注册的路由被 dispose、`live` 路由表为空）、失败的 disposer 被收容、**boot 连续性**（同管线下一个插件照常挂载）、客户端 factory 抛错不抛回 loader 且降级卡保留标记、自检脚本的终端签名与「无 DSH 也退出 0」 |
+| `test/custom.test.mjs` | Revision 7 的写策略内核：保留段名 / `order` / `interpolate` 常量、写入面判定（`403 write-locked`、`400 unsupported-action`）、`legacyPlan`、导出范围声明、导入文档的名字闸门 |
+| `test/prepare.test.mjs` | **`prepare` 门禁（NOTES.md §96）**：真实包全判据通过、脚本端到端 exit 0、每条判据的单独失败路径（入口缺失 / 空文件 / patch 缺行 / 入口不在 `files` 白名单 / 构建戳区间不可用 / 白名单目录为空）、临时残缺包的负向端到端（exit 1） |
 
 集成测试从 DSH 全局安装根解析真包（`DSH_INSTALL_ROOT` / `DSH_PROFILE_DIR` / pnpm 全局 store）。
 解析不到时该套件 `skip` 并打印原因，所以没有 DSH 的机器上 `node --test` 仍全绿；
