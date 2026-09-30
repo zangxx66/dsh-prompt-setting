@@ -51,8 +51,9 @@ Settings gains a **"Prompt settings"** pane (`id: prompt-setting`) with four top
 
 ## 3. Installation
 
-**Prerequisites**: DSH installed (`>= 0.1.7-rc.2 < 0.2.0`). Node `>= 22` is needed only to run the tests
-or to develop.
+**Prerequisites**: DSH installed (`>= 0.1.7-rc.2 < 0.2.0`: every `0.2.0` prerelease — `0.2.0-0`, `alpha`,
+`beta`, `rc.N` — is in range, `0.2.0` itself is out). Node `>= 22` is needed
+only to run the tests or to develop.
 
 1. Clone or download this repository anywhere on disk;
 2. Install the plugin directory with DSH's plugin manager, using an **absolute path** (**do not**

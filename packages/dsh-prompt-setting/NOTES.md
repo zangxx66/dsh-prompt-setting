@@ -3592,6 +3592,7 @@ fallback 漂移。本次把 `DSH_PEER_RANGE_FALLBACK` 改为导出，并真的�
 
 - **没有在 0.1.8 / 0.1.9 / 0.2.0 之前的任何版本上实测过本插件**。放宽上界是一个**宽松预期**，
   不是「已验证兼容」；本机唯一的真机证据仍然只有 DSH `0.1.7-rc.2`。
+  （**本条已被 §98 取代**：DSH `0.2.0-rc.2` 上已有「插件加载 + 路由注册 + 存储写入」的真机证据。）
 - 装上 0.1.8+ 后若出现异常，`core/compat.js` 的范围自检**不会**再提醒（它落在范围内）——
   此时用 `node scripts/check-compat.mjs` 与启动终端输出判断。
 - **没有**改 `CONTRACT.md` 的 Revision：那里的 Revision 是 **REST 契约**的版本，
@@ -3612,3 +3613,190 @@ fallback 漂移。本次把 `DSH_PEER_RANGE_FALLBACK` 改为导出，并真的�
 | 范围判定 | `node --input-type=module -e "…satisfiesRange…"` | 见第二节表格（8 个版本逐条实测） |
 | 自检 | `node scripts/prepare.mjs` | 19 项 ok |
 | 打包 | `npm pack --dry-run` | 20 个文件 |
+
+## 98. peer 范围显式纳入 `0.2.0-rc.2`（2026-09-30，基线 `a058bfb`）
+
+### 一、起因：三种 semver 口径，只有一种是「不满足」
+
+负责人要求「把 `package.json` 的版本号放宽到 `0.2.0-rc2`」。动手前先把**三个判定引擎**分开量了一遍
+（本机 `semver@7.8.5`，范围取 §97 的 `>=0.1.7-rc.2 <0.2.0`，被测版本 `0.2.0-rc.2`）：
+
+| 引擎 | 结果 | 为什么 |
+| --- | --- | --- |
+| 平台兼容闸门 `dsh-app-boot` | **满足** | `lib/index.js:300` 传的是 `{ includePrerelease: true }`，prerelease 排除规则不生效 |
+| 本插件 `core/compat.js` 的 `satisfiesRange` | **满足** | 它压根没实现 prerelease 排除规则（`0.2.0-rc.2 < 0.2.0` 即算在内） |
+| **严格** `node-semver`（npm / pnpm 安装期 peer 解析） | **不满足** | §11 规则：带 prerelease 的版本要满足某个 `||` 分支，该分支里必须有**同一个 `[major, minor, patch]` 且自带 prerelease** 的比较器 —— 旧范围里没有 |
+
+⇒ 所以这不是「修一个正在报的错」：当前装法（平台闸门 + 自带自检）**本来就放行** `0.2.0-rc.2`。
+这次改动是把「平台已经放行」的事实，写成**连严格 semver 也放行**的声明。
+
+### 二、裁定与写法
+
+负责人选定 A 案（另三个候选：字面 `<=0.2.0-rc.2`、放开整条 `<0.3.0`、以及「只记文档不改表达式」）：
+
+```
+"@deepseek-ai/dsh": ">=0.1.7-rc.2 <0.2.0 || >=0.2.0-rc.2 <0.2.0"
+```
+
+- 第二个 `||` 分支的**唯一**作用就是给严格 semver 一个「同号 prerelease 比较器」，让 `0.2.0-rc.2` 过关；
+- 上界仍是 `<0.2.0`：`0.2.0` 正式版**依旧出界**（与 §97 一致），放开 0.2.x 若要发生需要另一次裁定；
+- 三个引擎的新判定（逐条实测）：
+
+| 版本 | 严格 semver | `includePrerelease` | 本插件自带 |
+| --- | --- | --- | --- |
+| `0.1.7-rc.1` | false | false | false |
+| `0.1.7-rc.2` | true | true | true |
+| `0.1.7` | true | true | true |
+| `0.1.8-0` | **false** | true | true |
+| `0.1.99` | true | true | true |
+| `0.2.0-0` | **false** | true | true |
+| `0.2.0-rc.1` | **false** | true | true |
+| `0.2.0-rc.2` | **true** | true | true |
+| `0.2.0` | false | false | false |
+| `0.3.0` | false | false | false |
+
+**诚实边界**：第二个分支只把 `0.2.0-rc.2` 这一档（`>=0.2.0-rc.2`）拉进严格 semver；更早的 0.2.0 prerelease
+（`0.2.0-0`、`0.2.0-rc.1`）与 0.1.x 的 prerelease 在严格口径下**仍是 false**（这是 §11 规则的必然结果，
+不是漏写）。平台闸门与插件自检对它们都判 true，所以运行时照常静默。
+
+### 三、同步面
+
+| 文件 | 改动 |
+| --- | --- |
+| `package.json` | 范围改为 `>=0.1.7-rc.2 <0.2.0 || >=0.2.0-rc.2 <0.2.0` |
+| `index.js` | `DSH_PEER_RANGE_FALLBACK` 同步新值，并补注释说明第二个分支为何**看着冗余却不是** |
+| `core/compat.js` | 模块头补「`||` 分支是给严格 semver 的桥」一段；`satisfiesRange` 的示例范围与「不实现 prerelease 排除」一句 |
+| `test/boot.test.mjs` | 边界表补 `0.2.0-rc.2` 一行；新增**形状断言**（见下） |
+| `test/host.test.mjs` | manifest 范围正则改为整串精确匹配（含 `||`） |
+| `README.md`、`README_zh.md`、包内 `README.md`（中英各一处） | 前置条件标明「含 `0.2.0-rc.2`」 |
+| `CHANGELOG.md` | `Changed` 里补一条，并记下真机证据升级 |
+
+### 四、护栏：为什么会「看起来冗余」而更需要断言
+
+自带解析器把第二个分支读成第一个分支的**子集**（它没有 prerelease 排除规则），于是**任何行为测试都抓不到
+它被删掉** —— 未来有人「化简」这个范围，本套测试会全绿，而 npm/pnpm 的 peer 检查会悄悄退回不满足。
+所以 `test/boot.test.mjs` 新增的不是行为断言，而是**形状断言**：范围里必须存在一个匹配
+`^[<>]=?0\.2\.0-` 的比较器（失败文案直接点名「严格 semver 会拒绝 `0.2.0-rc.2`」）。
+
+### 五、真机证据升级（§97 之四的第一条**已过时**）
+
+§97 记的「本机唯一的真机证据仍然只有 DSH `0.1.7-rc.2`」在本轮不再成立：
+
+| 证据 | 观测 |
+| --- | --- |
+| 运行中的 DSH | **`0.2.0-rc.2`**（全局 CLI `…/node_modules/@deepseek-ai/dsh`，`check-compat` 探测来源同名） |
+| 插件已挂载 | `/prompt-setting/` → **401**（已注册前缀路由，需 token）；对照 `/prompt-setting-nope/`、`/definitely-not-a-route-xyz/` → **404** |
+| 存储活着 | `~/.dsh/prompt-setting/{overrides.json,history.jsonl}` 于当日 **21:02** 被写入 |
+| 自检 | `node scripts/check-compat.mjs` → 探测到 `0.2.0-rc.2`，结论「兼容（在已测试范围内）」 |
+
+**边界**：这是「插件在 0.2.0-rc.2 上加载、注册路由、正常落盘」的证据，**不是**全功能回归 ——
+`0.1.8`–`0.1.99`、`0.2.0-rc.0/rc.1` 以及 `0.2.0` 正式版仍未实测。
+
+### 六、本轮实测证据
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test` | **395 / 395 pass / 0 fail / 0 skipped**（11.5 s） |
+| 三口径判定 | `node --input-type=module -e "…"`（semver@7.8.5 + 自带 `satisfiesRange`） | 见第二节表格（10 个版本 × 3 口径逐条实测） |
+| 自检 | `node scripts/check-compat.mjs` | 探测 `0.2.0-rc.2`，结论「兼容（在已测试范围内）」 |
+| 门禁 | `node scripts/prepare.mjs` | 19 项 ok |
+| 打包 | `npm pack --dry-run` | **未能执行**：本机 `~/.npm` 归属 root，npm 拒绝写 `_logs`（与本次改动无关；文件清单未变） |
+
+## 99. peer 桥下界 `0.2.0-rc.2` → `0.2.0-0`（2026-09-30，基线 `a058bfb` 工作区）
+
+### 一、起因：负责人的 review 提问
+
+> 「`>=0.2.0-rc.2 <0.2.0` 条件成立，后续如果发布了 `0.2.0-alpha` 不就匹配不到了」
+
+复核结论：**提问成立**，且缺口不止 alpha 一个版本 —— `0.2.0-0`、`alpha`、`beta`、`rc.1` 全在严格口径外。
+
+### 二、机制：两层，缺一不可
+
+1. 第二分支的下界 `>=0.2.0-rc.2` 本身就**高于**它们（本机实测 semver 序：
+   `0.2.0-0 < 0.2.0-alpha < 0.2.0-beta.3 < 0.2.0-rc.1 < 0.2.0-rc.2 < 0.2.0`）；
+2. 第一分支 `>=0.1.7-rc.2 <0.2.0` 数值上**包含** `0.2.0-alpha`，却被 §11 预发布白名单规则挡掉：带 prerelease
+   的版本要过某个 `||` 分支，该分支里必须有**同 `[major, minor, patch]` 且自带 prerelease** 的比较器 ——
+   第一分支里带 prerelease 的是 `>=0.1.7-rc.2`（元组 `0.1.7`），管不到 `0.2.0` 元组。
+
+**关键反例**：`>=0.1.7-rc.2 <0.3.0-0` 在数值上完全罩住 `0.2.0-alpha`，严格 semver 依然 **false**。
+⇒ 这个洞只能靠「同元组的 prerelease 比较器」修，**放宽上界修不好**。
+
+### 三、真实发布史：`0.2.0-alpha` 不会作为「后续」出现
+
+`npm view @deepseek-ai/dsh versions`（本机实测）：0.2.0 线只有 `0.2.0-rc.1` → **`0.2.0-rc.2`（latest）**，
+**从未发布 alpha/beta**；而 0.1.2 / 0.1.5 / 0.1.6 / 0.1.7 的历史一律是 `alpha.* → rc.*`。
+
+⇒ alpha 只出现在**新 minor 的早期**，0.2.0 已走到 rc.2，回头再发 alpha 属于版本号倒退。
+**真正会撞上的未来是 `0.3.0-alpha.1`**，它在当前范围下（含本轮修订后）仍是 false，且这是**有意**的：
+0.3 线未验证（§97/§98 同口径）。
+
+### 四、影响面：这不是「正在报的错」
+
+| 口径 | `0.2.0-alpha` |
+| --- | --- |
+| 严格 `node-semver`（npm / pnpm 安装期 peer 解析） | **false（修前）→ true（修后）** |
+| 平台闸门 `dsh-app-boot@0.2.0-rc.2` `lib/index.js:300`（`includePrerelease: true`） | true |
+| 本插件自带 `satisfiesRange`（不实现 prerelease 排除） | true |
+
+- peer 是 `optional: true`；npm **11.11.0** 实测：不满足只出 `npm warn ERESOLVE overriding peer dependency`
+  （**warn，不阻塞安装**）；
+- 真实安装链路（`plugin_manager install_bundle` 绝对路径 / `pnpm add github:…#path:`）里
+  `@deepseek-ai/dsh` 不在依赖树中 → 视为未安装 → optional peer 缺失合法，连 warn 都不会出现；
+- ⇒ 修前缺口的实际后果是「**声明口径 ≠ 放行口径**」，不是装不上、也不是跑不起来。
+
+### 五、裁定与写法
+
+负责人选 **B 案**（另三案：只补文档不动表达式 / 整体放开 0.2.x / 先不动）：
+
+```
+"@deepseek-ai/dsh": ">=0.1.7-rc.2 <0.2.0 || >=0.2.0-0 <0.2.0"
+```
+
+`0.2.0-0` 是 0.2.0 的**最小**预发布（数字标识符排在任何字母标识符之前，semver §11.4）。
+上界仍是 `<0.2.0`：`0.2.0` 正式版照旧出界（与 §97/§98 一致，放开需另一次裁定）。
+
+候选实测矩阵（`semver@7.8.5`）：
+
+| 版本 | A 旧（`…rc.2…`） | **B 新（`…0-0…`）** | C `>=0.1.7-rc.2 <0.3.0-0` | D 上界 `<0.3.0-0` |
+| --- | --- | --- | --- | --- |
+| `0.2.0-0` | false | **true** | false | false |
+| `0.2.0-alpha` | false | **true** | false | false |
+| `0.2.0-beta.3` | false | **true** | false | false |
+| `0.2.0-rc.1` | false | **true** | false | false |
+| `0.2.0-rc.2` | true | **true** | false | true |
+| `0.2.0` / `0.2.1` | false | false | **true** | **true** |
+
+C 行是第二节那个反例的实测形态：数值上罩住 alpha，严格口径仍然 false。
+
+### 六、诚实边界（修后仍在）
+
+严格 semver 下**仍为 false** 的档位：0.1.x 的**预发布**（`0.1.8-0`、`0.1.9-rc.1`）、`0.2.0` 正式版及
+其之后的一切（`0.2.1`、`0.3.0-*`）。前者是白名单策略的必然形态（不是漏写），后者是有意的未验证边界；
+平台闸门与插件自检对 0.1.x 预发布判 true，运行期照常静默。
+
+### 七、同步面
+
+| 文件 | 改动 |
+| --- | --- |
+| `package.json` | 第二分支下界 `0.2.0-rc.2` → `0.2.0-0` |
+| `index.js` | `DSH_PEER_RANGE_FALLBACK` 同步；补注释「下界必须停在 `0.2.0-0`：白名单只认元组、不认排序」 |
+| `core/compat.js` | 模块头一段 + `satisfiesRange` 的示例范围同步 |
+| `test/boot.test.mjs` | 边界表补 `0.2.0-alpha` / `beta.3` / `rc.1`；**形状断言从正则 `^[<>]=?0\.2\.0-` 收紧为 `deepEqual(['>=0.2.0-0'])`** |
+| `test/host.test.mjs` | manifest 正则同步为「下界 `0.2.0-0`」形态 |
+| 四处 README（根 / 包内 × 中英） | 前置条件从「含 `0.2.0-rc.2`」改为「含 `0.2.0` 全部预发布，`0.2.0` 正式版出界」 |
+| `CHANGELOG.md` | 新增一条 `Changed`（中英） |
+
+**护栏教训**：§98 的形状断言只要求「存在一个 0.2.0 的 prerelease 比较器」，它抓得住「整条桥被删」，
+却抓不住「下界被抬到 rc.2」—— 而后者正是本轮暴露的缺口。收紧到 `deepEqual` 后，两个方向都会红。
+
+### 八、本轮实测证据
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test` | **395 / 395 pass / 0 fail / 0 skipped**（13.6 s） |
+| 四口径判定 | `semver@7.8.5`（strict 新范围 / strict 旧范围 / `includePrerelease`）+ 自带 `satisfiesRange` | 16 个版本逐条，见第五节矩阵 |
+| 自检 | `node scripts/check-compat.mjs` | 探测 `0.2.0-rc.2` → 「兼容（在已测试范围内）」，退出码 0 |
+| 门禁 | `node scripts/prepare.mjs` | 19 项 ok |
+| 运行期真机 | 未变（§98 之五：插件正跑在 DSH `0.2.0-rc.2` 上） | 本轮**只改声明口径**，未触碰任何运行期分支 |
+| 护栏反向验证 | 把下界临时改回 `0.2.0-rc.2` 再跑 `node --test` | **393 / 395，恰好 2 红**：`boot.test.mjs:316` 形状断言（文案点名「must bridge strict semver at `0.2.0-0` … not at a later one」）与 `host.test.mjs:157` manifest 正则；改回后全绿 |
+

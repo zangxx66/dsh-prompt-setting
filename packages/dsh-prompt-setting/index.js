@@ -205,8 +205,22 @@ const OWN_MANIFEST_URL = new URL('./package.json', import.meta.url);
  * boot check can never fail on IO; `test/boot.test.mjs` asserts it is *equal* to
  * `peerDependencies['@deepseek-ai/dsh']` in `package.json`, so the two cannot
  * drift apart silently.
+ *
+ * The `||` alternative looks redundant here — this plugin's own parser has no
+ * prerelease-exclusion rule, so `<0.2.0` alone already admits every `0.2.0`
+ * prerelease. It is there for **strict** `node-semver` (npm/pnpm peer
+ * resolution, *without* `includePrerelease`), which refuses a prerelease unless
+ * some comparator names that very `[major, minor, patch]` tuple with a
+ * prerelease of its own. The platform's own gate passes
+ * `includePrerelease: true`, so this bridge is invisible there.
+ *
+ * The bridge's lower bound must stay at `0.2.0-0`, the **smallest** `0.2.0`
+ * prerelease: strict semver whitelists the tuple, it does not rank it, so a
+ * higher bound such as `>=0.2.0-rc.2` puts `0.2.0-alpha`, `beta` and `rc.1`
+ * out of range. `0.2.0` itself stays out (the `<0.2.0` upper bound).
+ * See NOTES.md §98 and §99.
  */
-export const DSH_PEER_RANGE_FALLBACK = '>=0.1.7-rc.2 <0.2.0';
+export const DSH_PEER_RANGE_FALLBACK = '>=0.1.7-rc.2 <0.2.0 || >=0.2.0-0 <0.2.0';
 
 /**
  * The DSH range this plugin was tested against, read from its own manifest at

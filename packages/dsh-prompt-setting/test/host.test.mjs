@@ -151,7 +151,13 @@ test('manifest: bundle, client and publish contract', () => {
   assert.equal(packageJson.exports['./client'], './client.js');
   assert.equal(packageJson.exports['./package.json'], './package.json');
   assert.equal(packageJson.engines?.node, '>=22');
-  assert.match(packageJson.peerDependencies['@deepseek-ai/dsh'], /^>=0\.1\.7-rc\.2 <0\.2\.0$/);
+  // §98/§99: the second alternative is the strict-semver bridge for every
+  // `0.2.0` prerelease (npm/pnpm peer resolution, without `includePrerelease`);
+  // it must start at `0.2.0-0`, the smallest of them.
+  assert.match(
+    packageJson.peerDependencies['@deepseek-ai/dsh'],
+    /^>=0\.1\.7-rc\.2 <0\.2\.0 \|\| >=0\.2\.0-0 <0\.2\.0$/,
+  );
   assert.deepEqual(packageJson.dependencies, {}, 'zero runtime dependencies');
   assert.deepEqual(packageJson.files, [
     'index.js',

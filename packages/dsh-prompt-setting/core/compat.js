@@ -28,6 +28,12 @@
  * and is reported as an undetected version rather than guessed, because a
  * wrong verdict here is worse than no verdict.
  *
+ * One asymmetry is deliberate (NOTES.md §98, §99): the declared range carries an
+ * `||` alternative whose extra admits every `0.2.0` prerelease under **strict**
+ * `node-semver` (§11 prerelease exclusion, no `includePrerelease`). This parser
+ * implements no such exclusion, so it reads that alternative as a subset of the
+ * first one — same verdict, one fewer place to be wrong.
+ *
  * @module dsh-prompt-setting/core/compat
  */
 
@@ -150,9 +156,12 @@ function testComparator(version, comparator) {
  * `||` alternatives are supported (the `node-semver` convention); the
  * shorthands (`^`, `~`, `x`, hyphen ranges) are **not**, and meeting one
  * returns `null` — "cannot tell" — so no caller can mistake a guess for a
- * verdict.
+ * verdict. Unlike `node-semver`, a prerelease is **not** held back from a range
+ * whose comparators are all releases (NOTES.md §98): here `0.2.0-rc.2` already
+ * satisfies `>=0.1.7-rc.2 <0.2.0`, which is what the plugin's own manifest
+ * range relies on for every boot.
  * @param version - the version under test.
- * @param range - the range, e.g. `>=0.1.7-rc.2 <0.2.0`.
+ * @param range - the range, e.g. `>=0.1.7-rc.2 <0.2.0 || >=0.2.0-0 <0.2.0`.
  * @returns true, false, or null when the answer is not knowable.
  */
 export function satisfiesRange(version, range) {

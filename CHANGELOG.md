@@ -109,6 +109,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   The DSH peer range was widened to `>=0.1.7-rc.2 <0.2.0`: later 0.1.x versions (prereleases included) no
   longer trigger the out-of-range notice. **This is a permissive bound, not verified compatibility** — the
   only version verified on a real machine is still `0.1.7-rc.2`.
+- DSH peer 范围再修订为 `>=0.1.7-rc.2 <0.2.0 || >=0.2.0-rc.2 <0.2.0`，**显式纳入 `0.2.0-rc.2`**。
+  平台的兼容闸门用的是 `includePrerelease: true`，前半段本来就已经放行它；补第二个 `||` 分支是为了
+  **严格** `node-semver`（npm / pnpm 安装期 peer 解析，会拒绝「范围里没有同号 prerelease 比较器」的预发布版）。
+  本机实测：插件正运行在 DSH `0.2.0-rc.2` 上（`/prompt-setting/` 前缀路由已注册、存储持续写入）。
+  The DSH peer range is now `>=0.1.7-rc.2 <0.2.0 || >=0.2.0-rc.2 <0.2.0`, naming `0.2.0-rc.2` explicitly.
+  The platform's gate passes `includePrerelease: true` and already admitted it; the extra `||` branch is for
+  **strict** `node-semver` (npm / pnpm peer resolution). Measured on this machine: the plugin is running on
+  DSH `0.2.0-rc.2`.
+- DSH peer 范围再修订：第二个 `||` 分支的下界从 `0.2.0-rc.2` 降到 **`0.2.0-0`**，即
+  `>=0.1.7-rc.2 <0.2.0 || >=0.2.0-0 <0.2.0`。严格 `node-semver` 的白名单规则只看 `[0,2,0]` 元组
+  **有没有**同号 prerelease 比较器、**不看它排第几**；旧写法把下界钉在 `rc.2`，于是 `0.2.0-0`、`alpha`、
+  `beta`、`rc.1` 在安装期 peer 检查里全部落空（`0.2.0-alpha` 实测 false）。取 `0.2.0-0`（0.2.0 的最小
+  预发布）即覆盖整条 0.2.0 预发布线，`0.2.0` 正式版依旧出界。**运行期无变化**：平台闸门
+  （`includePrerelease: true`）与本插件自检本来就对它们全部放行，本轮改的是声明口径的自洽性。
+  The second `||` branch now starts at `0.2.0-0` instead of `0.2.0-rc.2`:
+  `>=0.1.7-rc.2 <0.2.0 || >=0.2.0-0 <0.2.0`. Strict `node-semver` whitelists the `[0,2,0]` tuple without
+  ranking it, so pinning the bound at `rc.2` silently excluded `0.2.0-0`, `alpha`, `beta` and `rc.1` from the
+  install-time peer check (`0.2.0-alpha` measured false). `0.2.0` itself stays out. **Nothing changes at
+  runtime**: the platform gate (`includePrerelease: true`) and the plugin's own check admitted them all along.
 
 ### Fixed 修复
 

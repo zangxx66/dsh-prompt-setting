@@ -324,15 +324,38 @@ test('boot: the tested range is the manifest range, and every verdict is silent 
 
   // The range itself: the tested rc is in, one rc below it is out, and the
   // widened upper bound admits every later 0.1.x (prereleases included, since
-  // they rank below 0.2.0) while 0.2.0 itself stays out.
+  // they rank below 0.2.0) plus every 0.2.0 prerelease, while 0.2.0 itself stays
+  // out.
   assert.equal(satisfiesRange('0.1.7-rc.2', RANGE), true);
   assert.equal(satisfiesRange('0.1.7', RANGE), true, 'the release of the tested rc is in range');
   assert.equal(satisfiesRange('0.1.7-rc.1', RANGE), false, 'below the tested prerelease');
   assert.equal(satisfiesRange('0.1.8-0', RANGE), true, 'the widened bound admits later 0.1.x prereleases');
   assert.equal(satisfiesRange('0.1.99', RANGE), true, 'and every later 0.1.x release');
-  assert.equal(satisfiesRange('0.2.0-0', RANGE), true, 'a 0.2.0 prerelease still ranks below 0.2.0');
+  assert.equal(satisfiesRange('0.2.0-0', RANGE), true, 'the smallest 0.2.0 prerelease');
+  assert.equal(satisfiesRange('0.2.0-alpha', RANGE), true, '§99: every 0.2.0 prerelease ranks below 0.2.0');
+  assert.equal(satisfiesRange('0.2.0-beta.3', RANGE), true);
+  assert.equal(satisfiesRange('0.2.0-rc.1', RANGE), true);
+  assert.equal(satisfiesRange('0.2.0-rc.2', RANGE), true, 'the version this plugin runs on today');
   assert.equal(satisfiesRange('0.2.0', RANGE), false, 'the upper bound itself is excluded');
   assert.equal(satisfiesRange('0.3.0', RANGE), false);
+
+  // §98/§99: the second `||` alternative exists for **strict** `node-semver`
+  // (npm / pnpm peer resolution, *without* `includePrerelease`), which refuses a
+  // prerelease unless some comparator in the same alternative names that exact
+  // `[major, minor, patch]` tuple with a prerelease of its own. This parser has
+  // no such rule, so the alternative looks redundant here — and *every*
+  // behavioural assertion above is green whether the bridge reads `0.2.0-0` or
+  // `0.2.0-rc.2`. Hence a shape assertion, pinned to the smallest 0.2.0
+  // prerelease: strict semver whitelists the tuple, it does not rank it, so any
+  // higher bound silently drops `0.2.0-alpha`, `0.2.0-beta` and `0.2.0-rc.1`.
+  const bridges = RANGE.split('||')
+    .flatMap((alternative) => alternative.trim().split(/\s+/))
+    .filter((comparator) => /^>=0\.2\.0-/.test(comparator));
+  assert.deepEqual(
+    bridges,
+    ['>=0.2.0-0'],
+    `"${RANGE}" must bridge strict semver at 0.2.0-0 (the smallest 0.2.0 prerelease), not at a later one`,
+  );
 
   // The semver §11 corners this range depends on.
   assert.equal(compareSemver('0.1.7-rc.2', '0.1.7'), -1, 'a prerelease ranks below its release');
