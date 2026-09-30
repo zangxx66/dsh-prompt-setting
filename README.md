@@ -51,7 +51,7 @@ Settings gains a **"Prompt settings"** pane (`id: prompt-setting`) with four top
 
 ## 3. Installation
 
-**Prerequisites**: DSH installed (`>= 0.1.7-rc.2 < 0.1.8`). Node `>= 22` is needed only to run the tests
+**Prerequisites**: DSH installed (`>= 0.1.7-rc.2 < 0.2.0`). Node `>= 22` is needed only to run the tests
 or to develop.
 
 1. Clone or download this repository anywhere on disk;

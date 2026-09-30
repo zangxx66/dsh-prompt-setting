@@ -152,7 +152,7 @@ function testComparator(version, comparator) {
  * returns `null` — "cannot tell" — so no caller can mistake a guess for a
  * verdict.
  * @param version - the version under test.
- * @param range - the range, e.g. `>=0.1.7-rc.2 <0.1.8-0`.
+ * @param range - the range, e.g. `>=0.1.7-rc.2 <0.2.0`.
  * @returns true, false, or null when the answer is not knowable.
  */
 export function satisfiesRange(version, range) {
@@ -204,11 +204,11 @@ export function compatibilityMessage(inputs) {
   if (inputs.version === null) {
     return `[${inputs.pluginName}] 本插件 ${inputs.pluginVersion} 无法探测已安装的 DSH 版本`
       + `（期望范围 ${inputs.expectedRange}）：${reason ?? ''}兼容性未经校验，DSH 启动与其余功能不受影响。`
-      + `若本插件在终端里没有激活，见 README「兼容性与救援」（或 npm run check-compat）。`;
+      + `若本插件在终端里没有激活，见 README「出问题时」（或 npm run check-compat）。`;
   }
   return `[${inputs.pluginName}] 本插件 ${inputs.pluginVersion} 检测到 DSH ${inputs.version}，`
     + `超出已测试范围 ${inputs.expectedRange}：本插件可能加载失败或行为异常，`
-    + `DSH 启动与其余功能不受影响。排查与救援见 README「兼容性与救援」（或 npm run check-compat）。`;
+    + `DSH 启动与其余功能不受影响。排查与救援见 README「出问题时」（或 npm run check-compat）。`;
 }
 
 /**
@@ -280,7 +280,7 @@ export function mountFailureMessage(inputs) {
     : `已撤销 ${inputs.disposed} 项已注册 effect`;
   return `[${inputs.pluginName}] 插件 ${inputs.pluginVersion} 挂载失败，本插件已停用，`
     + `DSH 其余功能不受影响。检测到的 DSH：${detected}。首因：${inputs.cause}。`
-    + `${rollback}，不会留下半挂载。排查与救援见 README「兼容性与救援」。`;
+    + `${rollback}，不会留下半挂载。排查与救援见 README「出问题时」。`;
 }
 
 /**

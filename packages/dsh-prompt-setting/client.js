@@ -6102,7 +6102,7 @@ window.__ModuleLoader__.load({
       const cause = error && error.message ? String(error.message).split('\n')[0] : String(error);
       const line =
         '[dsh-prompt-setting] 客户端半加载失败：设置页将以降级提示卡呈现，DSH 其余功能不受影响。'
-        + `首因：${cause}。排查见 README「兼容性与救援」。`;
+        + `首因：${cause}。排查见 README「出问题时」。`;
       try {
         if (typeof console !== 'undefined' && typeof console.error === 'function') console.error(line);
       } catch {

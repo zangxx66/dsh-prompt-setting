@@ -3531,3 +3531,84 @@ Error: ERR_PNPM_PREPARE_PACKAGE
 | git 安装（负向） | 同上，源换成删掉 `files: client.js` 的 commit | `FAIL NOT-SHIPPED` → **`ERR_PNPM_PREPARE_PACKAGE`、exit 1** |
 | 打包 | `npm pack --dry-run` | **20** 个文件（`core/prepare.js`、`scripts/prepare.mjs` 落在既有目录项内）、329.2 kB / unpacked 990.4 kB |
 | 语法 | `node --check core/prepare.js`、`node --check scripts/prepare.mjs` | 通过 |
+
+## 97. peer 范围放宽到 `>=0.1.7-rc.2 <0.2.0`（2026-09-30，基线 `fda778a`）
+
+### 一、起因：这不是「顺手改个字符串」
+
+负责人在 `package.json` 的暂存改动里把这一行改成（原值 `>=0.1.7-rc.2 <0.1.8-0`）：
+
+```
+"@deepseek-ai/dsh": ">=0.1.7-rc.2 <0.2.0 || >=0.1.7-rc2 <0.2.0-0"
+```
+
+提交前实测发现两件事：
+
+1. **它会让 3 个测试变红**：
+   | 位置（改动前） | 断言 | 实测 |
+   | --- | --- | --- |
+   | `test/boot.test.mjs:323` | `satisfiesRange('0.1.8-0', RANGE)` = false | actual **true** |
+   | `test/boot.test.mjs:427` | verdict = `out-of-range`（注入 `0.2.0-rc.1`） | actual `ok` |
+   | `test/host.test.mjs:154` | manifest 范围精确匹配旧串 | 不匹配 |
+2. **表达式冗余**：后半段 `>=0.1.7-rc2 <0.2.0-0` 是前半段 `>=0.1.7-rc.2 <0.2.0` 的**子集**
+   （`0.1.7-rc.2` 排在 `0.1.7-rc2` 之前，且 `<0.2.0-0` ⊂ `<0.2.0`），净效果等于前半段；
+   `rc2` 还少一个点。
+
+负责人裁定「做完整修订，上界放宽到 `<0.2.0`」，故规范写法取 `>=0.1.7-rc.2 <0.2.0`。
+
+### 二、新范围的实测判定（`core/compat.js` 的 `satisfiesRange`，本机逐条实测）
+
+| 版本 | 判定 | 说明 |
+| --- | --- | --- |
+| `0.1.7-rc.1` | false | 低于已测试的 rc |
+| `0.1.7-rc.2` | true | 已测试版本 |
+| `0.1.7` | true | 该 rc 的正式版 |
+| `0.1.8-0` | **true**（原为 false） | 上界放宽后，更晚的 0.1.x prerelease 也被收进来 |
+| `0.1.99` | true | 更晚的每一个 0.1.x 正式版 |
+| `0.2.0-0` | true | prerelease 排在 `0.2.0` 之前，仍在范围内 |
+| `0.2.0` | false | 上界本身被排除 |
+| `0.3.0` | false | |
+
+⇒ 语义是「**0.2.0 之前的一切都算在内（含 prerelease）**」。这也意味着"超范围"的测试样例必须从
+`0.2.0-rc.1` 换成 `0.2.0` —— 前者现在**在**范围内。
+
+### 三、同步面（一次契约修订）
+
+| 文件 | 改动 |
+| --- | --- |
+| `package.json` | 范围规范化为 `>=0.1.7-rc.2 <0.2.0` |
+| `index.js` | `DSH_PEER_RANGE_FALLBACK` 同步新值，并**改为导出**（理由见下） |
+| `test/boot.test.mjs` | 范围断言按新语义重写（8 个边界版本）+ verdict 用例改用 `0.2.0` + 新增 fallback 漂移断言 |
+| `test/host.test.mjs` | manifest 范围正则改为新串 |
+| `core/compat.js` | 一句示例注释里的范围 |
+| `README.md`、`README_zh.md`、包内 `README.md`（中英各一处） | 前置条件改新范围 |
+
+**顺带补上的护栏**：`index.js` 的注释早就写着"`test/boot.test.mjs` 断言 fallback 与 manifest 相等"，
+但实际那条断言比的是 `DSH_PEER_RANGE`（**从 manifest 现读**的值）与 manifest —— 两边恒等，抓不到
+fallback 漂移。本次把 `DSH_PEER_RANGE_FALLBACK` 改为导出，并真的断言
+`DSH_PEER_RANGE_FALLBACK === RANGE`；注释描述的行为这才成立。
+
+### 四、未验证项（重要，诚实边界）
+
+- **没有在 0.1.8 / 0.1.9 / 0.2.0 之前的任何版本上实测过本插件**。放宽上界是一个**宽松预期**，
+  不是「已验证兼容」；本机唯一的真机证据仍然只有 DSH `0.1.7-rc.2`。
+- 装上 0.1.8+ 后若出现异常，`core/compat.js` 的范围自检**不会**再提醒（它落在范围内）——
+  此时用 `node scripts/check-compat.mjs` 与启动终端输出判断。
+- **没有**改 `CONTRACT.md` 的 Revision：那里的 Revision 是 **REST 契约**的版本，
+  peer 范围不属于 REST 契约。
+
+### 五、顺带修掉的一处失效指向（上一节目标的遗留）
+
+包内 README 瘦身（§96 之后的 `f73e7c6`）删掉了「兼容性与救援」章节，但**五处运行时文案**仍在让
+用户去看那一节：`core/compat.js` 三处、`client.js` 一处、`scripts/check-compat.mjs` 一处。
+本轮统一改指 README 现在的「出问题时 / When something goes wrong」，`test/boot.test.mjs` 的
+`RESCUE_HINT` 常量同步（5 处断言自动跟随）。
+
+### 六、本轮实测证据
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test` | **395 / 395 pass / 0 fail / 0 skipped** |
+| 范围判定 | `node --input-type=module -e "…satisfiesRange…"` | 见第二节表格（8 个版本逐条实测） |
+| 自检 | `node scripts/prepare.mjs` | 19 项 ok |
+| 打包 | `npm pack --dry-run` | 20 个文件 |

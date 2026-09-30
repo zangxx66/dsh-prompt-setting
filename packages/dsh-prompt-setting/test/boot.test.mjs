@@ -36,6 +36,7 @@ import vm from 'node:vm';
 import {
   BOOT_COMPAT,
   DSH_PEER_RANGE,
+  DSH_PEER_RANGE_FALLBACK,
   apply,
   inject,
   reportBootCompatibility,
@@ -59,7 +60,7 @@ const PLUGIN_VERSION = packageJson.version;
 /** The declared range, taken from the manifest so the two cannot drift. */
 const RANGE = packageJson.peerDependencies['@deepseek-ai/dsh'];
 /** The manifest entry name of this plugin's bundle, used by the rescue copy. */
-const RESCUE_HINT = '兼容性与救援';
+const RESCUE_HINT = '出问题时';
 
 let home;
 let previousHome;
@@ -314,14 +315,24 @@ function textOf(node) {
 
 test('boot: the tested range is the manifest range, and every verdict is silent only in range', () => {
   assert.equal(DSH_PEER_RANGE, RANGE, 'the module and `package.json` cannot drift');
+  assert.equal(
+    DSH_PEER_RANGE_FALLBACK,
+    RANGE,
+    'the IO-failure fallback must equal the manifest range too, or an unreadable manifest would judge against a stale range',
+  );
   assert.equal(packageJson.peerDependenciesMeta?.['@deepseek-ai/dsh']?.optional, true, 'the peer is optional');
 
-  // The range itself: the tested rc is in, one rc below it is out.
+  // The range itself: the tested rc is in, one rc below it is out, and the
+  // widened upper bound admits every later 0.1.x (prereleases included, since
+  // they rank below 0.2.0) while 0.2.0 itself stays out.
   assert.equal(satisfiesRange('0.1.7-rc.2', RANGE), true);
   assert.equal(satisfiesRange('0.1.7', RANGE), true, 'the release of the tested rc is in range');
   assert.equal(satisfiesRange('0.1.7-rc.1', RANGE), false, 'below the tested prerelease');
-  assert.equal(satisfiesRange('0.1.8-0', RANGE), false);
-  assert.equal(satisfiesRange('0.2.0', RANGE), false);
+  assert.equal(satisfiesRange('0.1.8-0', RANGE), true, 'the widened bound admits later 0.1.x prereleases');
+  assert.equal(satisfiesRange('0.1.99', RANGE), true, 'and every later 0.1.x release');
+  assert.equal(satisfiesRange('0.2.0-0', RANGE), true, 'a 0.2.0 prerelease still ranks below 0.2.0');
+  assert.equal(satisfiesRange('0.2.0', RANGE), false, 'the upper bound itself is excluded');
+  assert.equal(satisfiesRange('0.3.0', RANGE), false);
 
   // The semver §11 corners this range depends on.
   assert.equal(compareSemver('0.1.7-rc.2', '0.1.7'), -1, 'a prerelease ranks below its release');
@@ -414,10 +425,11 @@ test('boot: the version probe reads a real install and says why when it cannot',
       'ok',
     );
 
-    // A different installed version is a verdict, not an error.
-    writeFakeInstall(root, JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.2.0-rc.1' }));
+    // A different installed version is a verdict, not an error. `0.2.0` is the
+    // first version outside the widened upper bound.
+    writeFakeInstall(root, JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.2.0' }));
     const outOfRange = detectDshVersion({ anchors: anchor });
-    assert.equal(outOfRange.version, '0.2.0-rc.1');
+    assert.equal(outOfRange.version, '0.2.0');
     const verdict = compatibilityVerdict({
       pluginName: PLUGIN_NAME,
       pluginVersion: PLUGIN_VERSION,
@@ -425,7 +437,7 @@ test('boot: the version probe reads a real install and says why when it cannot',
       detection: outOfRange,
     });
     assert.equal(verdict.level, 'out-of-range');
-    assert.ok(verdict.message.includes('0.2.0-rc.1'));
+    assert.ok(verdict.message.includes('0.2.0'));
 
     // Found but unreadable is "undetected", and the reason names the file.
     writeFakeInstall(root, '{ this is not json');

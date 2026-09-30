@@ -225,7 +225,7 @@ function reportOwnMessages(compat, plugin) {
   say('      代价是本插件的 fiber 保持 active 但零 effect（插件列表里仍显示已启用）。');
   say('');
   say('客户端半 · 加载失败（`console.error`，一条）：');
-  say(`  [${plugin.name}] 客户端半加载失败：设置页将以降级提示卡呈现，DSH 其余功能不受影响。首因：<原因>。排查见 README「兼容性与救援」。`);
+  say(`  [${plugin.name}] 客户端半加载失败：设置页将以降级提示卡呈现，DSH 其余功能不受影响。首因：<原因>。排查见 README「出问题时」。`);
 }
 
 /** 主流程：任何一步失败都只打印一行，退出码恒为 0。 */

@@ -103,6 +103,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   became in-place expansion, and the scope view collapsed to a one-line summary by default.
 - 写入面收窄到保留段「我的 Prompt」，其余段只读。
   The write surface was narrowed to the reserved "My Prompt" section; every other section is read-only.
+- DSH peer 范围放宽：上界从 `0.1.8-0` 改为 `< 0.2.0`（即 `>=0.1.7-rc.2 <0.2.0`）。更晚的 0.1.x 版本
+  （含 prerelease）不再触发「超出已测试范围」提示。**这是宽松预期，不是已验证兼容** ——
+  唯一在真机上验证过的版本仍然是 `0.1.7-rc.2`。
+  The DSH peer range was widened to `>=0.1.7-rc.2 <0.2.0`: later 0.1.x versions (prereleases included) no
+  longer trigger the out-of-range notice. **This is a permissive bound, not verified compatibility** — the
+  only version verified on a real machine is still `0.1.7-rc.2`.
 
 ### Fixed 修复
 
@@ -114,6 +120,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   Saves now check whether an override can take effect at all, ruling out silently ineffective writes.
 - 英文界面残留中文的 i18n 泄漏。
   i18n leaks where the English UI still showed Chinese.
+- 运行时文案里的失效文档指向：终端与控制台消息原让用户去看 README「兼容性与救援」，而包内 README 已把
+  该内容并成「出问题时 / When something goes wrong」一节 —— 五处文案与测试常量同步更新。
+  Stale doc pointers in runtime copy: the terminal and console messages pointed at a README section that no
+  longer exists; five messages and the test constant now name the current section.
 
 ### Security 安全
 

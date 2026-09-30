@@ -206,7 +206,7 @@ const OWN_MANIFEST_URL = new URL('./package.json', import.meta.url);
  * `peerDependencies['@deepseek-ai/dsh']` in `package.json`, so the two cannot
  * drift apart silently.
  */
-const DSH_PEER_RANGE_FALLBACK = '>=0.1.7-rc.2 <0.1.8-0';
+export const DSH_PEER_RANGE_FALLBACK = '>=0.1.7-rc.2 <0.2.0';
 
 /**
  * The DSH range this plugin was tested against, read from its own manifest at
