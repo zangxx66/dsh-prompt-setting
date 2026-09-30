@@ -143,6 +143,7 @@ node scripts/check-compat.mjs
 | --- | --- |
 | [CONTRACT.md](https://github.com/zangxx66/dsh-prompt-setting/blob/main/packages/dsh-prompt-setting/CONTRACT.md) | 冻结的 REST 契约：每个字段、动作枚举、字段上限、每一个 4xx。<br>The frozen REST contract: every field, action enum, size limit and 4xx. |
 | [NOTES.md](https://github.com/zangxx66/dsh-prompt-setting/blob/main/packages/dsh-prompt-setting/NOTES.md) | 设计取舍与真机实测记录（含未验证项、已推翻的旧结论）。<br>Design trade-offs and on-machine measurements (including untested items). |
+| [CHANGELOG.md](https://github.com/zangxx66/dsh-prompt-setting/blob/main/CHANGELOG.md) | 每个版本的用户可感知变更（中英对照）。<br>User-visible changes per release (bilingual). |
 | [README_zh.md](https://github.com/zangxx66/dsh-prompt-setting/blob/main/README_zh.md) / [README.md](https://github.com/zangxx66/dsh-prompt-setting/blob/main/README.md) | 仓库总体说明（中文 / English）。<br>The repository-level overview (Chinese / English). |
 
 ## 许可证 / License

@@ -160,6 +160,7 @@ DSH 升级后插件没出现、终端也没报错时，先跑 `node scripts/chec
 | [`packages/dsh-prompt-setting/README.md`](./packages/dsh-prompt-setting/README.md) | 使用者 / 开发者 | 包简介与功能（中英对照）、安装、维护者要点、出问题时怎么办 |
 | [`CONTRACT.md`](./packages/dsh-prompt-setting/CONTRACT.md) | 开发者 | 冻结的 REST 契约：字段、动作枚举、字段上限、每一个 4xx |
 | [`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) | 开发者 | 设计取舍与实测记录（含未验证项与已推翻的旧结论） |
+| [`CHANGELOG.md`](./CHANGELOG.md) | 使用者 / 开发者 | 每个版本的用户可感知变更（中英对照；当前 0.1.0，尚未发布） |
 
 ## 九、状态与路线图
 

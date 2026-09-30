@@ -185,6 +185,7 @@ README's "For maintainers" section; the detailed measurements are in
 | [`packages/dsh-prompt-setting/README.md`](./packages/dsh-prompt-setting/README.md) | users / developers | package summary and features (bilingual), install, maintainer notes, troubleshooting |
 | [`CONTRACT.md`](./packages/dsh-prompt-setting/CONTRACT.md) | developers | the frozen REST contract: every field, action enum, size limit and 4xx |
 | [`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) | developers | design trade-offs and measurements (including untested items and conclusions we had to retract) |
+| [`CHANGELOG.md`](./CHANGELOG.md) | users / developers | User-visible changes per release (bilingual; currently 0.1.0, unpublished) |
 
 ## 9. Status and roadmap
 
