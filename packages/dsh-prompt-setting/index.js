@@ -1250,8 +1250,11 @@ function mount(ctx, config, cleanups) {
    * The `system-prompt/assemble` listener that keeps the reserved section last
    * (g-017, `CONTRACT.md` §15.10).
    *
-   * Registered with `{prepend: true}`, which makes it the **outermost** listener
-   * for this event. Measured, not assumed: the waterfall runs
+   * Registered with `{prepend: true}`, which places it at the **front of the
+   * waterfall among the listeners registered so far** — deliberately *not* an
+   * absolute claim: cordis implements `prepend` as `unshift`, so a listener
+   * registered **later** with `{prepend: true}` runs outside this one
+   * (Revision 15, `CONTRACT.md` §16.9.4). Measured, not assumed: the waterfall runs
    * `outer:in → inner:in → inner:out → outer:out` (`CONTRACT.md` §6·E2), so the
    * outermost listener's post-`next()` step runs **last** and therefore sees
    * every section a listener registered earlier appended (or rewrote) after
@@ -2551,10 +2554,11 @@ function mount(ctx, config, cleanups) {
     'prompt-setting: system-prompt/assemble override',
   );
 
-  // Revision 8's deliverable: the outermost listener that keeps the reserved
-  // section last. `prepend` is the whole mechanism — it places this listener at
-  // the front of the waterfall, so its post-`next()` step is the final one to
-  // touch the assembly, past any listener that registered before this plugin
+  // Revision 8's deliverable: the listener that keeps the reserved section
+  // last. `prepend` is the whole mechanism — it places this listener at the
+  // front of the waterfall among the listeners registered so far, so its
+  // post-`next()` step is the last one among those, past any listener that
+  // registered before this plugin
   // and appends its own section after `next()` returns (the live
   // `dsh-expression:companion` case). It moves nothing else, applies no
   // override and reads no config; `reservedSectionLast` is pure and returns its

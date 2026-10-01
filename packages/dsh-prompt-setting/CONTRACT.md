@@ -2751,6 +2751,31 @@ position regressions — F1, a `{prepend: true}` listener registered **after** t
 mount; F2, a host that ignores listener options — where the real `renderPrompt`
 must not throw and "not expanded" is the accepted degradation.
 
+#### 16.9.4 Where the expansion runs, and the one premise a later listener must keep
+
+The expansion is **position-independent**: it runs inside this plugin's own
+`assembleHandler`, after `applyOverrides` has written the stored text into the
+reserved section, and it needs nothing from any other listener. That is the whole
+point of Revision 15 — the safety of「我的 Prompt」no longer depends on this plugin
+being the last (or the outermost) listener. Cordis implements `{prepend: true}` as
+`unshift`, so a listener registered **later** with `{prepend: true}` runs *outside*
+this one; the order is a property of registration time, not a promise this plugin
+can make.
+
+Two consequences, both accepted and both measured:
+
+- if a later listener rewrites the section's **text**, the expansion has already
+  run and the rewrite wins: that turn renders the rewritten text, and the worst
+  case is **one unexpanded turn** — never a throw;
+- if a later listener rebuilds the reserved section as a fresh object (for example
+  `{ name, text }`), it must carry the `interpolate` field over. That field is what
+  the shipped renderer branches on: `renderPrompt` interpolates unless the value is
+  exactly `false`, so **dropping the field is equivalent to turning interpolation
+  on** and re-introduces the strict path this revision removes. This plugin's three
+  rebuild sites all spread the original section (`{ ...sections[at], text }`), and
+  `test/integration.test.mjs` asserts the field survives every assembled shape it
+  constructs; a third-party rebuilder that drops it owns that outcome.
+
 ### 16.10 Assertion rewrites in Revision 15 (each one, and why)
 
 The rewrite policy for this goal: assertions written before g-026 are untouchable;

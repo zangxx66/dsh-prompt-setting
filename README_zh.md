@@ -147,7 +147,7 @@ node scripts/prepare.mjs       # prepare 门禁：从 git 安装时 pnpm 会自�
 npm pack --dry-run             # 确认发布产物干净（20 个文件、无 test/、无 .dsh-graph）
 ```
 
-最近一次在本机跑的结果：`node --test` **407 项断言全部通过、0 skipped**（含集成套件 24 项），
+最近一次在本机跑的结果：`node --test` **478 项断言全部通过、0 skipped**（含集成套件 31 项），
 `npm pack --dry-run` 20 个文件（2026-10-01 实测）。
 
 要点：

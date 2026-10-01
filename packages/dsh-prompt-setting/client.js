@@ -5749,8 +5749,8 @@ window.__ModuleLoader__.load({
       const [mineStatus, setMineStatus] = React.useState({ kind: 'idle', error: null });
       // Revision 9: the switch's own request state. Kept apart from
       // `mineStatus` because the switch is a config-level fact with its own
-      // failure mode (a refusal names the text that would throw), and folding
-      // the two would let a failed toggle look like a failed save.
+      // failure mode (a refusal names the text the write face will not accept),
+      // and folding the two would let a failed toggle look like a failed save.
       const [mineInterpolate, setMineInterpolate] = React.useState({ kind: 'idle', error: null });
       // Revision 12 (audit F2): the advisories the host returns with a write or
       // an arming. They are *not* failures — the save happened — so they live in
@@ -6145,7 +6145,7 @@ window.__ModuleLoader__.load({
        * inherits the user layer).
        *
        * A refusal is the host's own words (usually `unresolvable-variable`,
-       * naming the stored text that would throw): the panel shows the code and
+       * naming the stored text the write face will not accept): the panel shows the code and
        * the message rather than a generic failure, because the fix is in the
        * text box right below.
        */
