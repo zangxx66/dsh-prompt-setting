@@ -322,13 +322,14 @@ test('boot: the tested range is the manifest range, and every verdict is silent 
   );
   assert.equal(packageJson.peerDependenciesMeta?.['@deepseek-ai/dsh']?.optional, true, 'the peer is optional');
 
-  // The range itself: the tested rc is in, one rc below it is out, and the
-  // widened upper bound admits every later 0.1.x (prereleases included, since
-  // they rank below 0.2.0) plus every 0.2.0 prerelease, while 0.2.0 itself stays
-  // out.
-  assert.equal(satisfiesRange('0.1.7-rc.2', RANGE), true);
+  // The range itself: the tested rc is in, one rc below it is out, the first
+  // branch admits every later 0.1.x (prereleases included, since they rank below
+  // 0.2.0), and the second branch both admits every 0.2.0 prerelease and carries
+  // the range past the `0.2.0` release — up to `<0.2.1-0`, the deliberate
+  // re-evaluation boundary (NOTES.md §100).
+  assert.equal(satisfiesRange('0.1.7-rc.2', RANGE), true, 'the verified lower bound');
   assert.equal(satisfiesRange('0.1.7', RANGE), true, 'the release of the tested rc is in range');
-  assert.equal(satisfiesRange('0.1.7-rc.1', RANGE), false, 'below the tested prerelease');
+  assert.equal(satisfiesRange('0.1.7-rc.1', RANGE), false, 'below the tested prerelease (unchanged)');
   assert.equal(satisfiesRange('0.1.8-0', RANGE), true, 'the widened bound admits later 0.1.x prereleases');
   assert.equal(satisfiesRange('0.1.99', RANGE), true, 'and every later 0.1.x release');
   assert.equal(satisfiesRange('0.2.0-0', RANGE), true, 'the smallest 0.2.0 prerelease');
@@ -336,18 +337,25 @@ test('boot: the tested range is the manifest range, and every verdict is silent 
   assert.equal(satisfiesRange('0.2.0-beta.3', RANGE), true);
   assert.equal(satisfiesRange('0.2.0-rc.1', RANGE), true);
   assert.equal(satisfiesRange('0.2.0-rc.2', RANGE), true, 'the version this plugin runs on today');
-  assert.equal(satisfiesRange('0.2.0', RANGE), false, 'the upper bound itself is excluded');
+  assert.equal(
+    satisfiesRange('0.2.0', RANGE),
+    true,
+    '§100: the GA release must be in range — the platform boot gate skips the whole bundle when it is not',
+  );
+  assert.equal(satisfiesRange('0.2.0-1', RANGE), true, 'and later 0.2.0 prereleases with it');
+  assert.equal(satisfiesRange('0.2.1-0', RANGE), false, '§100: the final upper bound itself is excluded');
+  assert.equal(satisfiesRange('0.2.1', RANGE), false, 'and so is the release that follows it');
   assert.equal(satisfiesRange('0.3.0', RANGE), false);
 
   // §98/§99: the second `||` alternative exists for **strict** `node-semver`
   // (npm / pnpm peer resolution, *without* `includePrerelease`), which refuses a
   // prerelease unless some comparator in the same alternative names that exact
   // `[major, minor, patch]` tuple with a prerelease of its own. This parser has
-  // no such rule, so the alternative looks redundant here — and *every*
-  // behavioural assertion above is green whether the bridge reads `0.2.0-0` or
-  // `0.2.0-rc.2`. Hence a shape assertion, pinned to the smallest 0.2.0
-  // prerelease: strict semver whitelists the tuple, it does not rank it, so any
-  // higher bound silently drops `0.2.0-alpha`, `0.2.0-beta` and `0.2.0-rc.1`.
+  // no such rule — and *every* behavioural assertion above is green whether the
+  // bridge reads `0.2.0-0` or `0.2.0-rc.2`. Hence a shape assertion, pinned to
+  // the smallest 0.2.0 prerelease: strict semver whitelists the tuple, it does
+  // not rank it, so any higher bound silently drops `0.2.0-alpha`, `0.2.0-beta`
+  // and `0.2.0-rc.1`.
   const bridges = RANGE.split('||')
     .flatMap((alternative) => alternative.trim().split(/\s+/))
     .filter((comparator) => /^>=0\.2\.0-/.test(comparator));
@@ -355,6 +363,21 @@ test('boot: the tested range is the manifest range, and every verdict is silent 
     bridges,
     ['>=0.2.0-0'],
     `"${RANGE}" must bridge strict semver at 0.2.0-0 (the smallest 0.2.0 prerelease), not at a later one`,
+  );
+
+  // §100: the *last* comparator of the range is the one that decides the whole
+  // 0.2.x line, and it must clear the `0.2.0` release. Two `<` bounds are
+  // expected: `<0.2.0` closes the legacy first branch (which now only owns the
+  // 0.1.x line) and `<0.2.1-0` is the re-evaluation boundary. A `<0.2.0` final
+  // bound is exactly the P0 this section fixes: the platform gate would skip the
+  // entire bundle on the day `0.2.0` ships.
+  const uppers = RANGE.split('||')
+    .flatMap((alternative) => alternative.trim().split(/\s+/))
+    .filter((comparator) => comparator.startsWith('<'));
+  assert.deepEqual(
+    uppers,
+    ['<0.2.0', '<0.2.1-0'],
+    `"${RANGE}" must end at <0.2.1-0 (0.2.0 in, 0.2.1-0 and later out), not at <0.2.0`,
   );
 
   // The semver §11 corners this range depends on.
@@ -388,11 +411,20 @@ test('boot: in range prints nothing; out of range and undetected each print exac
   assert.equal(ok.message, null);
   assert.deepEqual(lines, [], 'in range must be completely silent (no boot noise)');
 
-  const out = reportBootCompatibility({ detect: () => ({ version: '0.2.0' }), log });
+  // §100, end to end: the `0.2.0` GA release takes the *silent* path too. This
+  // is the user-visible half of the fix — before it, every boot on 0.2.0 would
+  // have warned (and, worse, the platform gate would have dropped the bundle
+  // before this code ever ran).
+  const ga = reportBootCompatibility({ detect: () => ({ version: '0.2.0' }), log });
+  assert.equal(ga.level, 'ok', '0.2.0 GA is in range');
+  assert.equal(ga.message, null);
+  assert.deepEqual(lines, [], 'and it is silent as well');
+
+  const out = reportBootCompatibility({ detect: () => ({ version: '0.2.1-0' }), log });
   assert.equal(out.level, 'out-of-range');
   assert.equal(lines.length, 1, 'exactly one line');
   assert.equal(lines[0].includes('\n'), false, 'and it is one line, not a report');
-  for (const expected of [PLUGIN_NAME, PLUGIN_VERSION, '0.2.0', RANGE, 'DSH 启动与其余功能不受影响', RESCUE_HINT]) {
+  for (const expected of [PLUGIN_NAME, PLUGIN_VERSION, '0.2.1-0', RANGE, 'DSH 启动与其余功能不受影响', RESCUE_HINT]) {
     assert.ok(lines[0].includes(expected), `the warning names ${expected}`);
   }
 
@@ -422,7 +454,7 @@ test('boot: a probe that throws, and a logger that throws, still cannot break th
 
   // A logger that throws is not a reason to take the harness down with us.
   assert.doesNotThrow(() => reportBootCompatibility({
-    detect: () => ({ version: '0.2.0' }),
+    detect: () => ({ version: '0.2.1-0' }),
     log: () => {
       throw new Error('logger broken');
     },
@@ -448,11 +480,11 @@ test('boot: the version probe reads a real install and says why when it cannot',
       'ok',
     );
 
-    // A different installed version is a verdict, not an error. `0.2.0` is the
-    // first version outside the widened upper bound.
-    writeFakeInstall(root, JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.2.0' }));
+    // A different installed version is a verdict, not an error. `0.2.1-0` is the
+    // first version outside the §100 upper bound (`0.2.0` is now inside it).
+    writeFakeInstall(root, JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.2.1-0' }));
     const outOfRange = detectDshVersion({ anchors: anchor });
-    assert.equal(outOfRange.version, '0.2.0');
+    assert.equal(outOfRange.version, '0.2.1-0');
     const verdict = compatibilityVerdict({
       pluginName: PLUGIN_NAME,
       pluginVersion: PLUGIN_VERSION,
@@ -460,7 +492,7 @@ test('boot: the version probe reads a real install and says why when it cannot',
       detection: outOfRange,
     });
     assert.equal(verdict.level, 'out-of-range');
-    assert.ok(verdict.message.includes('0.2.0'));
+    assert.ok(verdict.message.includes('0.2.1-0'));
 
     // Found but unreadable is "undetected", and the reason names the file.
     writeFakeInstall(root, '{ this is not json');
@@ -811,7 +843,7 @@ test('boot: the self-check script ships, runs read-only, and prints the four ter
   }
   // Its own messages are printed from the real builders, so both branches are
   // visible for a逐字 comparison.
-  assert.ok(stdout.includes('检测到 DSH 0.2.0'), 'the out-of-range template');
+  assert.ok(stdout.includes('检测到 DSH 0.2.1-0'), 'the out-of-range template');
   assert.ok(stdout.includes('无法探测已安装的 DSH 版本'), 'the undetected template');
   assert.ok(stdout.includes('挂载失败'), 'the mount-failure template');
 });

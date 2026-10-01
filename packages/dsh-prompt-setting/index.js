@@ -206,21 +206,35 @@ const OWN_MANIFEST_URL = new URL('./package.json', import.meta.url);
  * `peerDependencies['@deepseek-ai/dsh']` in `package.json`, so the two cannot
  * drift apart silently.
  *
- * The `||` alternative looks redundant here — this plugin's own parser has no
- * prerelease-exclusion rule, so `<0.2.0` alone already admits every `0.2.0`
- * prerelease. It is there for **strict** `node-semver` (npm/pnpm peer
- * resolution, *without* `includePrerelease`), which refuses a prerelease unless
- * some comparator names that very `[major, minor, patch]` tuple with a
- * prerelease of its own. The platform's own gate passes
- * `includePrerelease: true`, so this bridge is invisible there.
+ * The `||` alternative has two jobs. Under **strict** `node-semver` (npm/pnpm
+ * peer resolution, *without* `includePrerelease`) it is what makes the 0.2.x
+ * line reachable at all: strict semver refuses a prerelease unless some
+ * comparator names that very `[major, minor, patch]` tuple with a prerelease of
+ * its own, and the first branch's only prerelease comparator is `0.1.7-rc.2`.
+ * Under *every* parser it is also the branch that carries the range past the
+ * `0.2.0` release (`<0.2.0` on its own stops one version short). This plugin's
+ * own parser implements no prerelease exclusion, so for it the second branch is
+ * numerically a superset extension of the first. The platform's own gate passes
+ * `includePrerelease: true`, so there the first branch alone already admits the
+ * 0.2.0 prereleases.
  *
- * The bridge's lower bound must stay at `0.2.0-0`, the **smallest** `0.2.0`
+ * The alternative's lower bound must stay at `0.2.0-0`, the **smallest** `0.2.0`
  * prerelease: strict semver whitelists the tuple, it does not rank it, so a
  * higher bound such as `>=0.2.0-rc.2` puts `0.2.0-alpha`, `beta` and `rc.1`
- * out of range. `0.2.0` itself stays out (the `<0.2.0` upper bound).
- * See NOTES.md §98 and §99.
+ * out of range.
+ *
+ * The **final** upper bound is `<0.2.1-0`, not `<0.2.0` (NOTES.md §100). The
+ * platform's boot gate judges each profile bundle against this range and
+ * **skips the whole bundle** when it fails (`dsh-app-boot`: `skipping profile
+ * bundle … is incompatible with dsh …`), before a single line of this package
+ * is imported — so its own self-check cannot help. A range whose highest
+ * admitted version is `0.2.0-rc.N` therefore loses the plugin on the day
+ * `0.2.0` ships. `0.2.0` and every earlier 0.2.x prerelease are in;
+ * `0.2.1-0` and everything after it are out, because a new minor is
+ * unverified until a new decision says otherwise.
+ * See NOTES.md §98, §99 and §100.
  */
-export const DSH_PEER_RANGE_FALLBACK = '>=0.1.7-rc.2 <0.2.0 || >=0.2.0-0 <0.2.0';
+export const DSH_PEER_RANGE_FALLBACK = '>=0.1.7-rc.2 <0.2.0 || >=0.2.0-0 <0.2.1-0';
 
 /**
  * The DSH range this plugin was tested against, read from its own manifest at

@@ -3817,3 +3817,129 @@ C 行是第二节那个反例的实测形态：数值上罩住 alpha，严格口
 | 运行期真机 | 未变（§98 之五：插件正跑在 DSH `0.2.0-rc.2` 上） | 本轮**只改声明口径**，未触碰任何运行期分支 |
 | 护栏反向验证 | 把下界临时改回 `0.2.0-rc.2` 再跑 `node --test` | **393 / 395，恰好 2 红**：`boot.test.mjs:316` 形状断言（文案点名「must bridge strict semver at `0.2.0-0` … not at a later one」）与 `host.test.mjs:157` manifest 正则；改回后全绿 |
 
+## 100. peer 上界 `<0.2.0` → `<0.2.1-0`：把 `0.2.0` 正式版纳入范围（2026-10-01，基线 `eb3be8e` 工作区）
+
+### 一、起因：g-019 的 GA 阻塞结论（P0）
+
+§98/§99 之后的范围是 `>=0.1.7-rc.2 <0.2.0 || >=0.2.0-0 <0.2.0` —— **两个分支都不含 `0.2.0` 正式版**。
+g-019 把后果钉死为「`0.2.0` 发布当天本插件直接不加载」，机制三处，本机 `dsh-app-boot@0.2.0-rc.2` 逐行核对：
+
+| 位置 | 代码 | 后果 |
+| --- | --- | --- |
+| `dsh-app-boot/lib/index.js:300` | `!semver.satisfies(runtimeVersion, requirement, { includePrerelease: true })` | profile boot 期逐条判定，不满足即记为 issue |
+| 同文件 `:931` | `throw new Error(pluginCompatibilityWarning(issue))` | **整个 profile bundle 被跳过**，`:516` 往 stderr 写 `skipping profile bundle …` |
+| 同文件 `:2086` | `row.disabled = true`（运行期 `deny()` 路径） | 该条在运行期被置为禁用 |
+
+关键点：跳过发生在 **import 之前**，本插件的导入期自检一行都跑不到 —— 插件内没有任何补救手段。
+这不是理论风险：本机已有一次「整套插件都没进 prompt」的观测（`dsh/session-0021b973`，2026-09-30 20:36）。
+
+### 二、范围变化（负责人逐字确认）
+
+```diff
+- "@deepseek-ai/dsh": ">=0.1.7-rc.2 <0.2.0 || >=0.2.0-0 <0.2.0"
++ "@deepseek-ai/dsh": ">=0.1.7-rc.2 <0.2.0 || >=0.2.0-0 <0.2.1-0"
+```
+
+- **修后语义**：`0.1.7-rc.2` 起的全部 0.1.x、`0.2.0` 的全部预发布**以及 `0.2.0` 正式版本身**都在范围内；
+  `0.2.1-0` 及以后（含 `0.2.1-rc.N`、`0.2.1`、`0.3.x`）一律拒绝。
+- **为什么保留 `<0.2.0` 那一支**：它继续承担 0.1.x 线，并且是**严格** `node-semver` 下 0.2.0 预发布的
+  白名单来源（§98/§99）。本轮只把**最后一道**上界从 `<0.2.0` 推到 `<0.2.1-0`，第一支逐字未动。
+- **为什么上界取 `<0.2.1-0`**：语义是「0.2.x 只要没有新的破坏性声明就继续放行，下一个 minor 必须重新评估」。
+  本机既有实践佐证：`dsh-graph@0.17.0` 的 peer 正是 `@deepseek-ai/dsh-settings: >=0.1.5-rc.2 <0.2.1-0`。
+- **仍未验证的边界**：`0.2.1-0` 及以后是**有意**出界（与 §97/§98/§99 同口径），不是漏写。
+
+### 三、双解析器验证（自带解析器 vs 平台闸门口径 `node-semver`）
+
+命令（自带解析器从 `core/compat.js` 导入；`semver` 取本机 `semver@7.8.5`，与 `dsh-app-boot` 声明的
+`semver: ^7.8.5` 同版本）：
+
+```
+node --input-type=module -e "import {satisfiesRange} from './core/compat.js'; import semver from '<semver@7.8.5>/index.js'; …"
+```
+
+| 版本 | 自带（旧） | strict（旧） | `includePrerelease`（旧） | 自带（新） | strict（新） | `includePrerelease`（新） |
+| --- | --- | --- | --- | --- | --- | --- |
+| `0.1.7-rc.1` | false | false | false | false | false | false |
+| `0.1.7-rc.2` | true | true | true | true | true | true |
+| `0.1.8-0` | true | **false** | true | true | **false** | true |
+| `0.2.0-0` | true | true | true | true | true | true |
+| `0.2.0-rc.2` | true | true | true | true | true | true |
+| **`0.2.0`** | **false** | **false** | **false** | **true** | **true** | **true** |
+| `0.2.0-1` | true | true | true | true | true | true |
+| `0.2.1-0` | false | false | false | false | false | false |
+| `0.2.1` | false | false | false | false | false | false |
+| `0.3.0-0` | false | false | false | false | false | false |
+| `0.3.0` | false | false | false | false | false | false |
+| `1.0.0` | false | false | false | false | false | false |
+
+**结论**：修后自带解析器与平台口径（`includePrerelease: true`）在**全部 11 个版本上逐条一致**；与严格
+`node-semver` 的唯一差异是 `0.1.8-0` 一行，那是 §98 已记录在案的已知形态（白名单策略，非本次引入）。
+修前 `0.2.0` 一行三个口径**全 false** —— 这就是 P0 本体：平台闸门判定与插件自检同时说「不兼容」。
+
+### 四、边界表（六项均有自动化断言，含负向）
+
+`test/boot.test.mjs`「the tested range is the manifest range…」内逐条断言：
+
+| 版本 | 判定 | 角色 |
+| --- | --- | --- |
+| `0.1.7-rc.2` | true | 已真机验证的下界 |
+| `0.2.0-0` | true | 0.2.0 最小预发布（严格口径的桥下界） |
+| `0.2.0-rc.2` | true | 本机正在运行的版本 |
+| `0.2.0` | **true（本轮由 false 改）** | GA 正式版，P0 的靶心 |
+| `0.2.1-0` | false | 新上界自身，必须出界（负向） |
+| `0.3.0` | false | 下一个 minor（负向） |
+
+**新增形状护栏**：除 §99 已有的 `deepEqual(bridges, ['>=0.2.0-0'])` 外，本轮加了一条**上界形状断言** ——
+`RANGE` 里所有 `<` 比较器必须恰为 `['<0.2.0', '<0.2.1-0']`。§99 那条守的是「桥的下界」，这条守的是
+「最后一道上界」：把上界改回 `<0.2.0`（本次要修的 P0 形态）或改成 `<0.2.2-0`（越权放行）都会立刻红。
+
+### 五、影响面：改的是声明口径，不是运行期分支
+
+| 口径 | 影响 |
+| --- | --- |
+| 平台闸门（`includePrerelease: true`） | `0.2.0` 由 **不兼容 → 兼容**：整个 bundle 不再被跳过（本次唯一实质修复） |
+| 严格 `node-semver`（npm/pnpm 安装期 peer 解析） | `0.2.0` true；peer 是 `optional: true`，本就不阻塞安装（§99 之四） |
+| 本插件自检 / `scripts/check-compat.mjs` | 在 DSH `0.2.0` 上由「超范围」告警变为**完全静默**（`ok`） |
+| 运行期装配逻辑 | **零改动**；`core/**`、`client.js` 的代码路径一行未动 |
+
+### 六、裁定与写法
+
+负责人直接给定范围字面量（本文件逐字照抄，不做变体）：
+
+```
+"@deepseek-ai/dsh": ">=0.1.7-rc.2 <0.2.0 || >=0.2.0-0 <0.2.1-0"
+```
+
+被否的写法：只改文档不动表达式（P0 原样保留）；上界改 `<0.2.0-0` 或 `<0.3.0`（前者仍不含正式版，
+后者把未验证的 0.3.x 一并放行）。
+
+### 七、同步面
+
+| 文件 | 改动 |
+| --- | --- |
+| `package.json` | peer 表达式上界 `<0.2.0` → `<0.2.1-0` |
+| `index.js` | `DSH_PEER_RANGE_FALLBACK` 同步；重写常量注释（第二支的两个职责 + 为何不能停在 `<0.2.0`） |
+| `core/compat.js` | 模块头 `One asymmetry …` 段 + `satisfiesRange` 的 `@param range` 示例同步 |
+| `test/boot.test.mjs` | 边界表：`0.2.0` false→true，补 `0.2.0-1` true 与 `0.2.1-0`/`0.2.1` false；新增上界形状断言；超范围样例 `0.2.0` → `0.2.1-0`（含 `reportBootCompatibility` 与真实探针两处） |
+| `test/host.test.mjs` | manifest 正则同步为 `… \|\| >=0.2.0-0 <0.2.1-0$` |
+| `scripts/check-compat.mjs` | 第 5 节的超范围样例版本 `0.2.0` → `0.2.1-0`，并注明「在 `0.1.7-rc.2` / `0.2.0` 上轮不到它」 |
+| 四处 README（根 / 包内 × 中英） | 前置条件改为逐字给出完整范围，并写明 `0.2.0` 正式版在范围内、`0.2.1-0` 及以后出界 |
+| `CHANGELOG.md` | 新增一条 `Changed`（中英） |
+| 徽章（根 README 中英） | `DSH->=0.1.7-rc.2` → `DSH->=0.1.7-rc.2 <0.2.1-0`（有效集合的上下界） |
+
+**历史小节保留**：§97/§98/§99 与本文件里的旧字面量是**历史记录**，按体例不改写；现行声明只在本节与
+上表列出的「现行口径」文件里。全文检索残留旧上界时须按「历史小节 / 现行声明」分类判读。
+
+### 八、本轮实测证据
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test` | **395 / 395 pass / 0 fail / 0 skipped**（约 12 s） |
+| 双解析器判定 | `semver@7.8.5`（strict + `includePrerelease`）+ 自带 `satisfiesRange` | 11 个版本 × 修前/修后，见第三节矩阵；新旧口径 100% 一致 |
+| 自检 | `node scripts/check-compat.mjs` | 探测 `0.2.0-rc.2` → 「兼容（在已测试范围内）」，退出码 0；超范围模板逐字为 `检测到 DSH 0.2.1-0 … 超出已测试范围 >=0.1.7-rc.2 <0.2.0 \|\| >=0.2.0-0 <0.2.1-0` |
+| 门禁 | `node scripts/prepare.mjs` | 19 项 ok |
+| 语法检查 | `node --check` × 28 个 js/mjs | 全部通过（本仓库**无 TypeScript**：无 `tsconfig.json`、无 `.ts`、无 `node_modules`，故 `tsc --noEmit` 不适用，以此替代） |
+| 护栏反向验证 | 把上界临时改回 `<0.2.0` 再跑 `node --test` | **392 / 395，恰好 3 红**：`boot.test.mjs` 的两条（边界表 `0.2.0` + 上界形状断言）与 `host.test.mjs` 的 manifest 正则；还原后 395/395 全绿（`package.json` 逐字节还原） |
+| 运行期真机 | 未触发重启 | 本轮只改声明口径与文档，未触碰任何运行期分支；插件仍跑在 DSH `0.2.0-rc.2` 上 |
+
+

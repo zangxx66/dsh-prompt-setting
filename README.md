@@ -11,7 +11,7 @@ install**.
 
 ![license](https://img.shields.io/badge/license-MIT-blue)
 ![version](https://img.shields.io/badge/version-0.1.0-blue)
-![dsh](https://img.shields.io/badge/DSH-%3E%3D0.1.7--rc.2-blueviolet)
+![dsh](https://img.shields.io/badge/DSH-%3E%3D0.1.7--rc.2%20%3C0.2.1--0-blueviolet)
 ![deps](https://img.shields.io/badge/dependencies-0-brightgreen)
 
 - **Zero runtime dependencies, zero build step**: one package of plain JS — nothing to fetch, nothing to compile.
@@ -51,9 +51,10 @@ Settings gains a **"Prompt settings"** pane (`id: prompt-setting`) with four top
 
 ## 3. Installation
 
-**Prerequisites**: DSH installed (`>= 0.1.7-rc.2 < 0.2.0`: every `0.2.0` prerelease — `0.2.0-0`, `alpha`,
-`beta`, `rc.N` — is in range, `0.2.0` itself is out). Node `>= 22` is needed
-only to run the tests or to develop.
+**Prerequisites**: DSH installed (`>= 0.1.7-rc.2 < 0.2.0 || >= 0.2.0-0 < 0.2.1-0`: every 0.1.x from
+`0.1.7-rc.2` on, every `0.2.0` prerelease — `0.2.0-0`, `alpha`, `beta`, `rc.N` — and the **`0.2.0` release
+itself** are in range; `0.2.1-0` and everything after it are out, because a new minor is unverified). Node
+`>= 22` is needed only to run the tests or to develop.
 
 1. Clone or download this repository anywhere on disk;
 2. Install the plugin directory with DSH's plugin manager, using an **absolute path** (**do not**

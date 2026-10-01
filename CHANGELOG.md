@@ -128,6 +128,20 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   ranking it, so pinning the bound at `rc.2` silently excluded `0.2.0-0`, `alpha`, `beta` and `rc.1` from the
   install-time peer check (`0.2.0-alpha` measured false). `0.2.0` itself stays out. **Nothing changes at
   runtime**: the platform gate (`includePrerelease: true`) and the plugin's own check admitted them all along.
+- DSH peer 范围上界从严修订：`<0.2.0` → **`<0.2.1-0`**，即
+  `>=0.1.7-rc.2 <0.2.0 || >=0.2.0-0 <0.2.1-0`。原因是 P0 级 GA 阻塞：平台在 profile boot 期逐条跑兼容性
+  闸门（`dsh-app-boot` 判定后**跳过整个 bundle** 并写 stderr，运行期另一路径把该条置为 `disabled`），
+  不满足即**根本不会 import 本包**，插件自检救不了 —— 而旧范围的两个分支都不含 `0.2.0` 正式版，
+  于是 `0.2.0` 发布当天本插件会直接消失。现在 **`0.2.0` 正式版与其全部预发布都在范围内**，
+  `0.2.1-0` 及以后一律拒绝（新的 minor 重新评估，上界写法对齐本机 `dsh-graph@0.17.0` 的既有实践）。
+  双解析器（自带 `satisfiesRange` 与 `semver@7.8.5` 的 `includePrerelease: true` 平台口径）逐版本实测一致。
+  The DSH peer range's upper bound moved from `<0.2.0` to **`<0.2.1-0`**:
+  `>=0.1.7-rc.2 <0.2.0 || >=0.2.0-0 <0.2.1-0`. This was a P0 GA blocker: the platform runs a compatibility
+  gate per profile bundle at boot and **skips the whole bundle** (stderr line; another runtime path marks the
+  row `disabled`), so an out-of-range plugin is never imported and cannot self-check — while the old range
+  admitted no `0.2.0` release at all. **The `0.2.0` release and its whole prerelease line are now in range**;
+  `0.2.1-0` and later are refused (a new minor is re-evaluated, matching this machine's `dsh-graph@0.17.0`).
+  Both parsers (our `satisfiesRange` and `semver@7.8.5` with `includePrerelease: true`) agree version by version.
 
 ### Fixed 修复
 

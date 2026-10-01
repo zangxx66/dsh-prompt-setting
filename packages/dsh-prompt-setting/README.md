@@ -63,12 +63,13 @@
 ## 安装 / Install
 
 用 DSH 的 plugin manager 以**绝对路径**安装本目录（**不要**手工编辑 profile 配置文件）：
-需要 DSH `>= 0.1.7-rc.2 < 0.2.0`：含 `0.2.0` 的全部预发布（`0.2.0-0` / `alpha` / `beta` / `rc.N`），
-`0.2.0` 正式版出界。
+需要 DSH `>= 0.1.7-rc.2 < 0.2.0 || >= 0.2.0-0 < 0.2.1-0`：`0.1.7-rc.2` 起的 0.1.x、`0.2.0` 的全部预发布
+（`0.2.0-0` / `alpha` / `beta` / `rc.N`）与 **`0.2.0` 正式版**都在范围内；`0.2.1-0` 及以后出界。
 
 > Install this directory by **absolute path** with DSH's plugin manager (**do not** hand-edit profile
-> config files). Requires DSH `>= 0.1.7-rc.2 < 0.2.0`: every `0.2.0` prerelease (`0.2.0-0`, `alpha`,
-> `beta`, `rc.N`) is in range, `0.2.0` itself is out.
+> config files). Requires DSH `>= 0.1.7-rc.2 < 0.2.0 || >= 0.2.0-0 < 0.2.1-0`: every 0.1.x from
+> `0.1.7-rc.2` on, every `0.2.0` prerelease (`0.2.0-0`, `alpha`, `beta`, `rc.N`) and the **`0.2.0` release
+> itself** are in range; `0.2.1-0` and later are out.
 
 ```
 plugin_manager(action: "install_bundle", target: "<绝对路径 absolute path>/packages/dsh-prompt-setting")

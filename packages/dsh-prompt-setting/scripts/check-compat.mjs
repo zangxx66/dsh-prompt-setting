@@ -207,11 +207,11 @@ function reportOwnMessages(compat, plugin) {
     pluginVersion: plugin.version,
     expectedRange: plugin.range ?? '（manifest 未声明）',
   };
-  say('导入期 · 超范围（一条）—— ⚠️ 在 DSH 0.1.7-rc.2 上**轮不到它**：');
+  say('导入期 · 超范围（一条）—— ⚠️ 在 DSH 0.1.7-rc.2 / 0.2.0 上**轮不到它**：');
   say('  平台会先跳过整个 bundle 并点名（逐字签名：`dsh: skipping profile bundle "<name>": Error: Plugin');
   say('  <name>@<ver> is incompatible with dsh <ver>: peerDependencies …`），本包根本不会被 import；');
   say('  看到下面这条，才说明平台的闸门没生效（更老的/改过的宿主）。保留它是兜底/防御纵深：');
-  say(`  ${compat.compatibilityMessage({ ...base, version: '0.2.0', reason: null })}`);
+  say(`  ${compat.compatibilityMessage({ ...base, version: '0.2.1-0', reason: null })}`);
   say('');
   say('导入期 · 探测失败（一条）：');
   say(`  ${compat.compatibilityMessage({ ...base, version: null, reason: '<探测失败原因>' })}`);
