@@ -3943,3 +3943,64 @@ node --input-type=module -e "import {satisfiesRange} from './core/compat.js'; im
 | 运行期真机 | 未触发重启 | 本轮只改声明口径与文档，未触碰任何运行期分支；插件仍跑在 DSH `0.2.0-rc.2` 上 |
 
 
+## 101. 冻结态的「我的 Prompt」升级为阻断级呈现（g-021，2026-10-01，基线 `448a1ed` 工作区）
+
+### 一、问题：写入成功 ≠ 生效，而面板只写了一行红字
+
+两个 agent preset 声明 `complete: true`（内置 `minimal`；本机「梁神模式」）。平台的
+`SystemPrompt.assemble` 在 waterfall **返回之后**把 `sections` 强制替换为 `[completeSection]`，
+因此这类会话里本插件写入的自定义段**必然不进最终 prompt**（平台事实，本插件无法反制，见 §15.4）。
+
+面板此前只渲染一行 `data-warning="mine-frozen"`（`client.js:4965-4974` 旧版），而保存按钮的
+`disabled` 只绑 `m.busy`、成功文案也无条件 —— 用户点击保存 → 主机照常写盘 → 界面显示
+「已保存到…，下一轮生效」，于是「保存成功」被读成「已生效」。这正是负责人报障「未生效」的必现场景之一。
+
+### 二、方案 A 的落地（brief 六条逐条对应）
+
+| brief 要求 | 落地 |
+| --- | --- |
+| 主提示含三件事 | 冻结块由一行 `<p>` 升级为 `<div>`，内含三句：① 标题+原因（`mineFrozenWarn` + `stReason: <reason>`）；② `data-mine-frozen-body` —— 文本会写入{layer}配置，但被 complete 段冻结，**不进最终 prompt、下一轮也不生效**；③ `data-mine-frozen-fix` —— **可执行**办法：换用未声明 `complete` 的 agent preset，或去掉当前 preset 的 `complete` 声明，然后重新加载会话 |
+| 成功态不得单独出现 | 冻结时状态行改用带条件前缀的 key（确定冻结 `mineSavedFrozen` / 未知 `mineSavedUnknown`）、全局成功 banner 同步（`savedNoticeFrozen` / `savedNoticeUnknown`）；未冻结时逐字回到旧 key（`mineSaved` / `savedNotice`）。**删除路径不动**（`deletedNotice` 保持原样）：brief 圈定的是「保存成功类文案」，删除是另一个动作，本轮有意不扩范围，见第五节 |
+| 零丢失 | 未触碰任何清空路径（`mineDraft` 的 layer+session 键位不变）；新增测试覆盖「输入 → 切 tab 往返 → 切层往返 → 解除冻结 → 保存」全程文本存活 |
+| 机器可读 | 新增 `data-mine-frozen="true"`（容器）、`data-mine-frozen-body="true"`、`data-mine-frozen-fix="true"`、`data-mine-frozen-certainty`（`certain` / `unknown`）、状态行 `data-mine-effect`（确定冻结 `none` / 未知 `unknown` / 否则 `next-turn`）；`data-warning="mine-frozen"` **保留** |
+| 冻结三态零放宽 | 未改 `frozenState` / `editGate` / 任何宿主侧字段；§2.4/§7.2 的既有断言（`session` frozen/unfrozen、`global`+会话 = `unknown`、`global` 无会话）一条未动。**并且**：`global` + 选中会话这一「未知」态在面板里也不再被写成「本会话已冻结」——它有独立的 `mineFrozenUnknownWarn` / `mineFrozenUnknownBody` 与 `data-mine-frozen-certainty="unknown"`，机器可读地区分「确定冻结」与「未知」 |
+| zh/en 键位对齐 | 新增 8 个 key 两语言齐全；en 无 CJK（sweep 的 `CJK_ON_SCREEN` 横扫覆盖新文案，含 `unknown` 分支） |
+
+写入能力**保留**（方案 A）：冻结挡的是「生效」，不是「配置」。保存按钮的 `disabled` 仍只绑 `m.busy`。
+
+### 三、新增/改动文案键
+
+| key | 用途 | zh | en |
+| --- | --- | --- | --- |
+| `mineFrozenWarn` | 冻结块标题（**改值**） | 该作用域已被冻结：你写下的 Prompt 不会生效 | This scope is frozen: the prompt you write will not take effect |
+| `mineFrozenBody` | 新增 · 确定冻结：写入去向 + 不生效 | 保存按钮仍然可用…不会在下一轮生效。 | Saving still works and the text is stored in the {layer} config… |
+| `mineFrozenUnknownWarn` | 新增 · 未知冻结标题 | 冻结状态未知：本会话的装配无法确认 | Frozen state unknown: the assembly for this session cannot be confirmed |
+| `mineFrozenUnknownBody` | 新增 · 未知冻结正文 | 全局装配被 complete 段冻结…如果本会话确实被冻结，它就不会生效。 | The unscoped assembly is frozen by a complete section…if this session is frozen too, it will not take effect. |
+| `mineFrozenHowTo` | 新增 · 可执行解决办法（两态共用） | 要让它生效：换用一个未声明 complete 的 agent preset… | To make it take effect: switch to an agent preset that does not declare complete… |
+| `mineSavedFrozen` | 新增 · 确定冻结的 saved 前缀 | 已保存到{layer}，但本会话冻结中，不会生效。 | Saved to {layer}, but this session is frozen, so it will not take effect. |
+| `mineSavedUnknown` | 新增 · 未知冻结的 saved 前缀 | 已保存到{layer}；本会话冻结状态未知，若已冻结则不会生效。 | Saved to {layer}; this session may be frozen, in which case it will not take effect. |
+| `savedNoticeFrozen` | 新增 · 确定冻结的全局 banner | 已保存到{layer}，但本会话冻结中，本轮不会生效。 | Saved to {layer}, but this session is frozen; it will not take effect here. |
+| `savedNoticeUnknown` | 新增 · 未知冻结的全局 banner | 已保存到{layer}；本会话冻结状态未知，若已冻结则本轮不会生效。 | Saved to {layer}; this session may be frozen, in which case it will not take effect here. |
+
+### 四、本轮实测证据（全部在包目录 `packages/dsh-prompt-setting/` 下执行，Node v24.13.1）
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test` | **399 / 399 pass / 0 fail / 0 skipped**（约 13 s；基线 395，新增 4 项） |
+| 基线对照 | `git archive 448a1ed … \| tar -x -C /tmp` 后同命令 | **395 / 395 pass**（证明新增 4 项之外零回归、零放宽） |
+| 客户端套件 | `node --test test/client.test.mjs` | 101 / 101 pass |
+| 语法检查 | `node --check client.js` | 通过（本仓库无 TypeScript：无 `tsconfig.json`、无 `.ts`，`tsc --noEmit` 不适用） |
+| 负向对照 I | 冻结块改回旧单行 `<p>` + saved 文案改回无条件 `mineSaved`/`savedNotice` → 重跑 client 套件 | **5 红**：3 项新增针对性断言（确定冻结 / 冻结保存 / 未知冻结）+ EN sweep + marker 覆盖测试 |
+| 负向对照 II | `data-mine-effect` 固定为 `'next-turn'` | **6 红**：4 项新增断言（含「文本不丢」里对冻结标记的断言）+ EN sweep + marker 覆盖测试 |
+| 负向对照 III | 把「未知」当「确定冻结」（certainty 恒 `certain`、正文/标题恒用确定态 key） | **3 红**：未知态专项测试 + EN sweep + marker 覆盖测试 —— 即「`global`+会话 被写成已冻结」一定会被抓到 |
+
+### 五、未验证项（诚实清单）
+
+- **真机目视**：本轮只做离线渲染断言，未重启/未触碰 `dsh web` 进程；真实冻结会话里的呈现由负责人在集成检查点目视收口。
+- **平台侧冻结判定**：未改 `probe` / `snapshot` / REST 契约字段，`frozenScope` / `frozen` / `frozenReason` 逐字未动（新增属性纯客户端）。
+- **`data-mine-effect` / `data-mine-frozen-certainty` 的取值面**：只在 `mine` 面板上引入（`next-turn` / `none` / `unknown` 与 `certain` / `unknown`），未复用到其它面板；若后续要当全局语义用需单独立项。
+- **删除路径的冻结文案**：`deletedNotice`（「已撤销{layer}的覆盖，下一轮生效」）在冻结态仍是**无条件**形态 —— 与保存路径的同类误导同源，但不在本 brief 圈定的「保存成功类文案」内，本轮有意不做（做了要再加 `deletedNoticeFrozen` / `deletedNoticeUnknown` 两键），留给后续目标决定。
+- **「未知」态缺省 reason**：`global` + 选中会话且快照未给 `frozenScopeReason` 时，标题只有 `mineFrozenUnknownWarn`、正文照常渲染（原因段为空），未额外补占位文案。
+
+
+

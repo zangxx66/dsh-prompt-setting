@@ -519,7 +519,22 @@ window.__ModuleLoader__.load({
       mineUnconfigured: '尚未配置：该层还没有「我的 Prompt」，文本为空。',
       mineDirty: '有未保存的修改。',
       mineLoaded: '已加载{layer}的「我的 Prompt」。',
-      mineFrozenWarn: '你的 Prompt 在该作用域不生效',
+      // ---- g-021: a frozen scope is a blocking statement, not a footnote
+      mineFrozenWarn: '该作用域已被冻结：你写下的 Prompt 不会生效',
+      mineFrozenBody:
+        '保存按钮仍然可用，文本会写入{layer}的配置；但这个作用域被 complete 段冻结，本次写入不会进入最终 Prompt，也不会在下一轮生效。',
+      // The `frozenScope: "global"` + session case is *unknown*, not frozen
+      // (CONTRACT.md §2.4/§7.2): the panel may warn, but it may not claim the
+      // session is frozen. Two of its own keys keep that distinction separate.
+      mineFrozenUnknownWarn: '冻结状态未知：本会话的装配无法确认',
+      mineFrozenUnknownBody:
+        '全局装配被 complete 段冻结，但选中的会话没有活动 agent，所以无法确认本会话是否同样冻结。文本仍会写入{layer}的配置；如果本会话确实被冻结，它就不会生效。',
+      mineFrozenHowTo:
+        '要让它生效：换用一个未声明 complete 的 agent preset（例如内置的默认 preset），或去掉当前 preset 里的 complete 声明，然后在本会话重新加载。',
+      mineSavedFrozen: '已保存到{layer}，但本会话冻结中，不会生效。',
+      mineSavedUnknown: '已保存到{layer}；本会话冻结状态未知，若已冻结则不会生效。',
+      savedNoticeFrozen: '已保存到{layer}，但本会话冻结中，本轮不会生效。',
+      savedNoticeUnknown: '已保存到{layer}；本会话冻结状态未知，若已冻结则本轮不会生效。',
       mineWorkspaceNeedsSession: '工作区层需要先选择一个会话；未选择时无法写入工作区层。',
       mineResetTitle: '恢复默认：删除{layer}的「我的 Prompt」',
       mineResetBody: '这会删除该层保存的文本、回到未配置状态；删除不可撤销。',
@@ -801,7 +816,22 @@ window.__ModuleLoader__.load({
       mineUnconfigured: 'Not configured yet: this layer has no My Prompt, so the text is empty.',
       mineDirty: 'You have unsaved changes.',
       mineLoaded: 'Loaded the {layer} My Prompt.',
-      mineFrozenWarn: 'Your prompt does not take effect in this scope',
+      // ---- g-021: a frozen scope is a blocking statement, not a footnote
+      mineFrozenWarn: 'This scope is frozen: the prompt you write will not take effect',
+      mineFrozenBody:
+        'Saving still works and the text is stored in the {layer} config, but this scope is frozen by a complete section: this write never reaches the final prompt, and it does not take effect from the next turn either.',
+      // The `frozenScope: "global"` + session case is *unknown*, not frozen
+      // (CONTRACT.md §2.4/§7.2): the panel may warn, but it may not claim the
+      // session is frozen. Two of its own keys keep that distinction separate.
+      mineFrozenUnknownWarn: 'Frozen state unknown: the assembly for this session cannot be confirmed',
+      mineFrozenUnknownBody:
+        'The unscoped assembly is frozen by a complete section, but the selected session has no active agent, so whether this session is frozen cannot be confirmed. The text is still written to the {layer} config; if this session is frozen too, it will not take effect.',
+      mineFrozenHowTo:
+        'To make it take effect: switch to an agent preset that does not declare complete (the built-in default preset, for example), or drop the complete declaration from the current preset, and then reload this session.',
+      mineSavedFrozen: 'Saved to {layer}, but this session is frozen, so it will not take effect.',
+      mineSavedUnknown: 'Saved to {layer}; this session may be frozen, in which case it will not take effect.',
+      savedNoticeFrozen: 'Saved to {layer}, but this session is frozen; it will not take effect here.',
+      savedNoticeUnknown: 'Saved to {layer}; this session may be frozen, in which case it will not take effect here.',
       mineWorkspaceNeedsSession: 'The workspace layer needs a session; without one it cannot be written.',
       mineResetTitle: 'Restore default: delete the {layer} My Prompt',
       mineResetBody: 'This deletes the text stored in that layer and returns it to unconfigured; the deletion cannot be undone.',
@@ -4915,6 +4945,13 @@ window.__ModuleLoader__.load({
       const layer = m.mineLayer;
       const state = m.mineState;
       const reason = m.mineFrozenReason;
+      // The panel's own frozen boolean. `mineFrozenReason === null` is the
+      // unfrozen case; an empty string is "frozen, no reason given".
+      const frozen = reason !== null;
+      // §2.4/§7.2: `frozenScope: "global"` + a selected session is *unknown*,
+      // not frozen. The panel warns either way, but it may only claim a frozen
+      // session when the model says the verdict is certain.
+      const uncertain = frozen && m.mineFrozenCertain !== true;
       // Built *here*, inside the tree-building try: `t` may be the broken thing
       // (see `renderFailureCard`), so no localized string may be produced on the
       // component's own path.
@@ -4922,7 +4959,9 @@ window.__ModuleLoader__.load({
         state === 'saving'
           ? t('mineSaving')
           : state === 'saved'
-            ? fmt(t('mineSaved'), { layer: layerLabel(t, layer) })
+            ? fmt(t(!frozen ? 'mineSaved' : uncertain ? 'mineSavedUnknown' : 'mineSavedFrozen'), {
+                layer: layerLabel(t, layer),
+              })
             : state === 'error'
               ? t('mineFailed')
               : state === 'unconfigured'
@@ -4965,12 +5004,41 @@ window.__ModuleLoader__.load({
         reason === null
           ? null
           : h(
-              'p',
+              // g-021 (方案 A): the write stays enabled, so the block has to be
+              // loud enough that "saved" cannot be read as "effective". The
+              // container carries three markers: the historical
+              // `data-warning="mine-frozen"`, the boolean
+              // `data-mine-frozen="true"`, and the certainty the panel is
+              // allowed to claim (`certain` vs the §2.4/§7.2 `unknown`).
+              'div',
               {
                 'data-warning': 'mine-frozen',
-                style: { margin: 0, fontSize: 12, color: token.stateError, wordBreak: 'break-word' },
+                'data-mine-frozen': 'true',
+                'data-mine-frozen-certainty': uncertain ? 'unknown' : 'certain',
+                style: { margin: 0, display: 'flex', flexDirection: 'column', gap: 4, wordBreak: 'break-word' },
               },
-              `${t('mineFrozenWarn')}${reason.length > 0 ? ` — ${t('stReason')}: ${reason}` : ''}`,
+              h(
+                'p',
+                { style: { margin: 0, fontSize: 12, color: token.stateError } },
+                `${t(uncertain ? 'mineFrozenUnknownWarn' : 'mineFrozenWarn')}${
+                  reason.length > 0 ? ` — ${t('stReason')}: ${reason}` : ''
+                }`,
+              ),
+              // Where the text went, and where it did not: stored in the layer's
+              // configuration, discarded from the assembly the verdict describes.
+              h(
+                'p',
+                { 'data-mine-frozen-body': 'true', style: { margin: 0, fontSize: 12, color: token.stateError } },
+                fmt(t(uncertain ? 'mineFrozenUnknownBody' : 'mineFrozenBody'), { layer: layerLabel(t, layer) }),
+              ),
+              // Actionable, not just descriptive: what the user can actually do.
+              // The fix is the same whether the freeze is certain or unknown —
+              // drop the `complete` declaration, or move to a preset without one.
+              h(
+                'p',
+                { 'data-mine-frozen-fix': 'true', style: { margin: 0, fontSize: 12, color: token.labelTertiary } },
+                t('mineFrozenHowTo'),
+              ),
             ),
         h(
           'label',
@@ -4988,10 +5056,22 @@ window.__ModuleLoader__.load({
           'p',
           {
             'data-mine-state': state,
+            // g-021: the machine-readable half of "saved ≠ effective". The
+            // effect is `none` for a certain freeze, `unknown` for the
+            // §2.4/§7.2 unknown case, and `next-turn` otherwise — so the pair
+            // (`saved`, `none`) is assertable offline without reading any copy.
+            'data-mine-effect': !frozen ? 'next-turn' : uncertain ? 'unknown' : 'none',
             style: {
               margin: 0,
               fontSize: 12,
-              color: state === 'error' ? token.stateError : state === 'saved' ? token.stateSuccess : token.labelTertiary,
+              color:
+                state === 'error'
+                  ? token.stateError
+                  : state === 'saved'
+                    ? frozen
+                      ? token.stateWarn
+                      : token.stateSuccess
+                    : token.labelTertiary,
               wordBreak: 'break-word',
             },
           },
@@ -5468,14 +5548,21 @@ window.__ModuleLoader__.load({
       // discarded scope as `applied: false` with a reason.
       const reservedEffective =
         effectiveSections.find((section) => section && section.name === RESERVED_SECTION_NAME) || null;
-      const mineFrozenReason = (() => {
-        if (fz.certain && fz.frozen) return fz.reason ? String(fz.reason) : '';
+      // g-021: the panel separates *certainly frozen* from *unknown*. The first
+      // two branches have direct proof (a certain frozen verdict, or the
+      // reserved section reported as `applied: false`); the third is the
+      // `frozenScope: "global"` + session case §2.4/§7.2 forbids presenting as
+      // frozen — the snapshot froze the unscoped assembly, not this session.
+      const mineFrozen = (() => {
+        if (fz.certain && fz.frozen) return { reason: fz.reason ? String(fz.reason) : '', certain: true };
         if (reservedEffective !== null && reservedEffective.applied === false) {
-          return reservedEffective.reason ? String(reservedEffective.reason) : '';
+          return { reason: reservedEffective.reason ? String(reservedEffective.reason) : '', certain: true };
         }
-        if (fz.kind === 'unknown' && fz.frozen) return fz.reason ? String(fz.reason) : '';
+        if (fz.kind === 'unknown' && fz.frozen) return { reason: fz.reason ? String(fz.reason) : '', certain: false };
         return null;
       })();
+      const mineFrozenReason = mineFrozen === null ? null : mineFrozen.reason;
+      const mineFrozenCertain = mineFrozen !== null && mineFrozen.certain;
       const mineState =
         mineStatus.kind === 'saving'
           ? 'saving'
@@ -5690,9 +5777,22 @@ window.__ModuleLoader__.load({
         // flicker back to the stored value while the re-read is in flight.
         setMineDraft({ key: mineKey, text: mineText });
         setMineStatus({ kind: 'saved', error: null });
+        // g-021: the write succeeded, so the banner stays a success banner — but
+        // in a frozen scope it may not read as bare success either. The notice is
+        // the most visible surface on the page, so it carries the same condition
+        // the panel's state line does.
         setNotice({
           tone: 'success',
-          text: fmt(t('savedNotice'), { layer: layerLabel(t, layer) }),
+          text: fmt(
+            t(
+              mineFrozenReason === null
+                ? 'savedNotice'
+                : mineFrozenCertain
+                  ? 'savedNoticeFrozen'
+                  : 'savedNoticeUnknown',
+            ),
+            { layer: layerLabel(t, layer) },
+          ),
         });
         setReload((value) => value + 1);
       };
@@ -5938,6 +6038,7 @@ window.__ModuleLoader__.load({
         mineState,
         mineError: mineStatus.error,
         mineFrozenReason,
+        mineFrozenCertain,
         advancedLayer,
         view,
         search,

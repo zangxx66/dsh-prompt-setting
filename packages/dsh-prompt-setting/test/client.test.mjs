@@ -2952,6 +2952,191 @@ test('client: a saved 「我的 Prompt」 is re-read from the changed override l
   assert.equal(markerOf(tree, 'data-mine-state'), 'saved');
 });
 
+// #region g-021: a frozen scope is a block, not a footnote (方案 A)
+
+test('client: a frozen 「我的 Prompt」 is structurally distinct, and says what to do', async () => {
+  const frozenReason = 'the scope collapsed to its complete section';
+  const frozenPage = makePage({
+    responses: defaultResponses({
+      [PATHS.snapshot]: { payload: snapshotFixture({ frozenScope: 'session', frozen: true, frozenReason }) },
+    }),
+  });
+  const frozenTree = await frozenPage.flush();
+
+  // The frozen state is machine-readable on its own: no copy has to be read to
+  // tell the two panels apart.
+  const block = oneBy(frozenTree, 'data-warning', 'mine-frozen');
+  assert.equal(block.props['data-mine-frozen'], 'true', 'the block carries its own boolean marker');
+  assert.equal(block.props['data-mine-frozen-certainty'], 'certain', 'and says how sure it is');
+  assert.equal(markerOf(frozenTree, 'data-mine-effect'), 'none', 'and the state line says the write has no effect');
+  assert.equal(
+    collect(frozenTree, (node) => node.props && node.props['data-mine-frozen'] === 'true').length,
+    1,
+    'exactly one blocking block',
+  );
+
+  // The three statements the brief requires: where the text goes, that it does
+  // not take effect here, and what the user can do about it.
+  const body = oneBy(frozenTree, 'data-mine-frozen-body', 'true');
+  assert.ok(
+    hasText(body, fillText(frozenPage.zh.mineFrozenBody, { layer: frozenPage.zh.ovUser })),
+    'the body says the text is stored in the layer config',
+  );
+  assert.ok(hasText(body, 'complete'), 'and names the complete section as the cause');
+  const fix = oneBy(frozenTree, 'data-mine-frozen-fix', 'true');
+  assert.ok(hasText(fix, frozenPage.zh.mineFrozenHowTo), 'the fix is the panel copy, not a paraphrase');
+  assert.ok(hasText(fix, 'preset'), 'and it names the actionable lever');
+  assert.ok(hasText(block, frozenReason), 'the reason still travels with the block');
+
+  // 方案 A: the write stays open. A frozen scope blocks the effect, not the
+  // configuration, so the button must not be disabled.
+  assert.equal(oneBy(frozenTree, 'data-action', 'mine-save').props.disabled, false, 'the write is not disabled');
+
+  // The unfrozen control: same panel, opposite markers, no warning at all.
+  const livePage = makePage({ responses: defaultResponses() });
+  const liveTree = await livePage.flush();
+  assert.equal(markerOf(liveTree, 'data-mine-effect'), 'next-turn');
+  assert.equal(collect(liveTree, (node) => node.props && node.props['data-warning'] === 'mine-frozen').length, 0);
+  assert.equal(collect(liveTree, (node) => node.props && node.props['data-mine-frozen'] === 'true').length, 0);
+  assert.equal(oneBy(liveTree, 'data-action', 'mine-save').props.disabled, false);
+});
+
+test('client: saving in a frozen scope never reads as bare success', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.snapshot]: {
+        payload: snapshotFixture({
+          frozenScope: 'session',
+          frozen: true,
+          frozenReason: 'the scope collapsed to its complete section',
+        }),
+      },
+    }),
+  });
+  let tree = await page.flush();
+  typeInto(tree, 'mine-text', 'frozen text');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+
+  // The write really happened — that is the whole point of 方案 A.
+  const put = page.router.calls.filter((call) => call.init && call.init.method === 'PUT');
+  assert.equal(put.length, 1, 'a frozen scope still writes to the layer config');
+  assert.equal(JSON.parse(put[0].init.body).section.text, 'frozen text');
+
+  // …and neither success surface may stand alone.
+  assert.equal(markerOf(tree, 'data-mine-state'), 'saved');
+  assert.equal(markerOf(tree, 'data-mine-effect'), 'none');
+  assert.ok(strings(tree).includes(fillText(page.zh.mineSavedFrozen, { layer: page.zh.ovUser })), 'the state line is conditional');
+  assert.ok(strings(tree).includes(fillText(page.zh.savedNoticeFrozen, { layer: page.zh.ovUser })), 'and so is the banner');
+  const bareSaved = fillText(page.zh.mineSaved, { layer: page.zh.ovUser });
+  const bareNotice = fillText(page.zh.savedNotice, { layer: page.zh.ovUser });
+  assert.ok(
+    !strings(tree).some((text) => text.includes(bareSaved) || text.includes(bareNotice)),
+    'the unconditional saved copy appears nowhere while the scope is frozen',
+  );
+});
+
+test('client: a frozen scope never eats the typed text', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.snapshot]: {
+        payload: snapshotFixture({
+          frozenScope: 'session',
+          frozen: true,
+          frozenReason: 'the scope collapsed to its complete section',
+        }),
+      },
+    }),
+  });
+  let tree = await page.flush();
+  typeInto(tree, 'mine-text', 'draft under a frozen scope');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'draft under a frozen scope');
+
+  // Away to another tab and back: the draft survives the freeze.
+  clickAnyTab(tree, 'overview');
+  tree = await page.flush();
+  clickAnyTab(tree, 'mine');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'draft under a frozen scope');
+  assert.equal(markerOf(tree, 'data-mine-effect'), 'none', 'still frozen');
+
+  // Away to the other layer and back: still the user layer's own draft.
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  clickTab(tree, 'mine-layer', 'user');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'draft under a frozen scope');
+
+  // Unfreeze: the text is still there, and now it saves under the plain copy.
+  page.router.set(PATHS.snapshot, { payload: snapshotFixture({ frozenScope: 'session', frozen: false }) });
+  clickAnyTab(tree, 'overview');
+  tree = await page.flush();
+  clickAnyTab(tree, 'mine');
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-mine-effect'), 'next-turn', 'the freeze is gone');
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'draft under a frozen scope');
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+  assert.ok(
+    strings(tree).includes(fillText(page.zh.mineSaved, { layer: page.zh.ovUser })),
+    'the unconditional copy is back once the scope is not frozen',
+  );
+  const put = page.router.calls.filter((call) => call.init && call.init.method === 'PUT');
+  assert.equal(put.length, 1);
+  assert.equal(JSON.parse(put[0].init.body).section.text, 'draft under a frozen scope');
+});
+
+test('client: the global-freeze-with-a-session case stays "unknown" in the panel too', async () => {
+  // CONTRACT.md §2.4/§7.2: a global freeze plus a selected session is *unknown*,
+  // never "not frozen" — and, just as important, never "this session is frozen".
+  // The panel keeps warning (the write may well be discarded), but it says so
+  // with its own copy and its own markers.
+  const scopeReason = 'session "s2" has no active agent, so this verdict describes the unscoped assembly';
+  const page = makePage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({
+      [PATHS.snapshot]: {
+        payload: snapshotFixture({ frozenScope: 'global', frozen: true, frozenScopeReason: scopeReason }),
+      },
+    }),
+  });
+  let tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-frozen-state'), 'unknown', 'the page verdict is still unknown');
+
+  const block = oneBy(tree, 'data-warning', 'mine-frozen');
+  assert.equal(block.props['data-mine-frozen'], 'true');
+  assert.equal(block.props['data-mine-frozen-certainty'], 'unknown', 'the panel claims no certainty it does not have');
+  assert.equal(markerOf(tree, 'data-mine-effect'), 'unknown', 'and the effect is unknown, not none');
+  const body = oneBy(tree, 'data-mine-frozen-body', 'true');
+  assert.ok(
+    hasText(body, fillText(page.zh.mineFrozenUnknownBody, { layer: page.zh.ovUser })),
+    'the unknown wording is its own copy',
+  );
+  assert.ok(
+    !hasText(body, fillText(page.zh.mineFrozenBody, { layer: page.zh.ovUser })),
+    'and never the certain-freeze wording',
+  );
+  assert.ok(hasText(block, scopeReason), 'the scope reason travels with the block');
+
+  // Saving here is still conditional, never bare success.
+  typeInto(tree, 'mine-text', 'text under an unknown freeze');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-mine-state'), 'saved');
+  assert.equal(markerOf(tree, 'data-mine-effect'), 'unknown');
+  assert.ok(strings(tree).includes(fillText(page.zh.mineSavedUnknown, { layer: page.zh.ovUser })));
+  assert.ok(strings(tree).includes(fillText(page.zh.savedNoticeUnknown, { layer: page.zh.ovUser })));
+  assert.ok(
+    !strings(tree).some((text) => text.includes(fillText(page.zh.mineSaved, { layer: page.zh.ovUser }))),
+    'the unconditional saved copy is still withheld',
+  );
+});
+
+// #endregion
+
 // #endregion
 
 // #region 「提示词总览」 is read-only, and the legacy list says its pieces
@@ -4273,6 +4458,7 @@ const EN_SWEEP_CASES = [
       ['data-mine-state', 'unconfigured'],
       ['data-mine-state', 'dirty'],
       ['data-mine-state', 'saved'],
+      ['data-mine-effect', 'next-turn'],
       ['data-active-tab', 'mine'],
     ],
     copy: ['tabMine', 'mineHeading', 'mineNote', 'mineTextLabel', 'mineSave', 'mineReset', 'mineUnconfigured', 'mineDirty', ['mineSaved', { layer: 'user layer' }]],
@@ -4341,9 +4527,14 @@ const EN_SWEEP_CASES = [
     marks: [
       ['data-region', 'mine'],
       ['data-warning', 'mine-frozen'],
+      ['data-mine-frozen', 'true'],
+      ['data-mine-frozen-certainty', 'certain'],
+      ['data-mine-frozen-body', 'true'],
+      ['data-mine-frozen-fix', 'true'],
+      ['data-mine-effect', 'none'],
       ['data-frozen-state', 'frozen'],
     ],
-    copy: ['mineFrozenWarn', 'stReason', 'stFrozenSession'],
+    copy: ['mineFrozenWarn', 'stReason', 'stFrozenSession', 'mineFrozenHowTo', ['mineFrozenBody', { layer: 'user layer' }]],
     async run() {
       const page = enPage({
         responses: defaultResponses({
@@ -4357,6 +4548,77 @@ const EN_SWEEP_CASES = [
         }),
       });
       const rec = recorder(page);
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'mine: a frozen save is stored and still refused the success wording',
+    marks: [
+      ['data-region', 'mine'],
+      ['data-warning', 'mine-frozen'],
+      ['data-mine-state', 'saved'],
+      ['data-mine-effect', 'none'],
+      ['data-notice', 'success'],
+    ],
+    copy: [['mineSavedFrozen', { layer: 'user layer' }], ['savedNoticeFrozen', { layer: 'user layer' }]],
+    async run() {
+      const page = enPage({
+        responses: defaultResponses({
+          [PATHS.snapshot]: {
+            payload: snapshotFixture({
+              frozenScope: 'session',
+              frozen: true,
+              frozenReason: 'the scope collapsed to its complete section',
+            }),
+          },
+        }),
+      });
+      const rec = recorder(page);
+      await rec.take();
+      typeInto(rec.last(), 'mine-text', 'frozen rules');
+      await rec.take();
+      clickButton(rec.last(), { 'data-action': 'mine-save' });
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'mine: a global freeze with a session stays unknown, in the panel too',
+    marks: [
+      ['data-region', 'mine'],
+      ['data-warning', 'mine-frozen'],
+      ['data-mine-frozen', 'true'],
+      ['data-mine-frozen-certainty', 'unknown'],
+      ['data-mine-effect', 'unknown'],
+      ['data-mine-state', 'saved'],
+      ['data-frozen-state', 'unknown'],
+    ],
+    copy: [
+      'mineFrozenUnknownWarn',
+      'mineFrozenHowTo',
+      ['mineFrozenUnknownBody', { layer: 'user layer' }],
+      ['mineSavedUnknown', { layer: 'user layer' }],
+      ['savedNoticeUnknown', { layer: 'user layer' }],
+    ],
+    async run() {
+      const page = enPage({
+        useSessions: sessionsHook(SESSIONS_STATE),
+        responses: defaultResponses({
+          [PATHS.snapshot]: {
+            payload: snapshotFixture({
+              frozenScope: 'global',
+              frozen: true,
+              frozenScopeReason: 'session "s2" has no active agent, so this verdict describes the unscoped assembly',
+            }),
+          },
+        }),
+      });
+      const rec = recorder(page);
+      await rec.take();
+      typeInto(rec.last(), 'mine-text', 'unknown rules');
+      await rec.take();
+      clickButton(rec.last(), { 'data-action': 'mine-save' });
       await rec.take();
       return rec.trees;
     },
@@ -4920,6 +5182,16 @@ const EN_REQUIRED_MARKERS = [
   'data-mine-state=error',
   'data-mine-error=true',
   'data-warning=mine-frozen',
+  // g-021: the frozen block's own markers, and the effect marker that keeps
+  // "saved" from being read as "effective".
+  'data-mine-frozen=true',
+  'data-mine-frozen-body=true',
+  'data-mine-frozen-fix=true',
+  'data-mine-frozen-certainty=certain',
+  'data-mine-frozen-certainty=unknown',
+  'data-mine-effect=none',
+  'data-mine-effect=unknown',
+  'data-mine-effect=next-turn',
   'data-warning=mine-workspace-disabled',
   'data-confirm-kind=mine-reset',
   'data-confirm-kind=legacy-clear',

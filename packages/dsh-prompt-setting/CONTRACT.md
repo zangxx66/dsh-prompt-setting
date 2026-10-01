@@ -182,6 +182,44 @@ An empty reserved section is deliberately **not** moved: it renders zero bytes
 break the identity rule of §5.3 and the zero-diff guarantee that rests on it. The
 whole listener therefore does nothing at all until a user writes something.
 
+**Revision 9 (a frozen scope is a block, not a footnote).** Client-half only, and
+strictly additive to this document: no route, field, status code or response byte
+changes. The panel that owns the write face (§15.4) used to state a frozen scope
+in one red line while its save button stayed enabled and its success copy stayed
+unconditional, so a stored write could be read as an effective one — the exact
+misreading §15.4 exists to prevent. What Revision 9 fixes:
+
+- the frozen block carries both `data-warning="mine-frozen"` (kept) and the
+  boolean `data-mine-frozen="true"`, states three things — the reason, where the
+  text went (the selected layer's configuration), and that it does **not** reach
+  the assembly the verdict describes — and names what the user can do about it
+  (switch to an agent preset that does not declare `complete`, or drop the
+  declaration, then reload the session);
+- the block also carries `data-mine-frozen-certainty`: `"certain"` when the
+  verdict has direct proof (a certain frozen snapshot, or the reserved section
+  reported `applied: false`), `"unknown"` for the `frozenScope: "global"` +
+  session case §2.4/§7.2 forbids presenting as frozen. Those two cases render
+  their own copy (`mineFrozenWarn`/`mineFrozenBody` vs
+  `mineFrozenUnknownWarn`/`mineFrozenUnknownBody`); the shared
+  `mineFrozenHowTo` is the actionable half in both;
+- the state line carries `data-mine-effect`: `"none"` for a certain freeze,
+  `"unknown"` for that unknown case, `"next-turn"` otherwise — so the pair
+  (`data-mine-state="saved"`, `data-mine-effect="none"`) is assertable offline
+  without reading any copy;
+- the copy shown after a successful write while the scope is frozen is the
+  conditional form (`mineSavedFrozen`, `savedNoticeFrozen`; `mineSavedUnknown`,
+  `savedNoticeUnknown` for the unknown case) and never the bare `mineSaved` /
+  `savedNotice` wording. The delete path keeps `deletedNotice` unconditioned:
+  this revision is scoped to the success wording of the write that §15.4 is about;
+- the write stays **enabled**: a frozen scope blocks the effect, not the
+  configuration, and no path clears what the user typed — the draft survives the
+  freeze, tab switches and layer switches, and saves normally once the scope is
+  not frozen.
+
+The three-state `frozenScope` semantics of §2.4 and §7.2 are untouched: a global
+freeze with a selected session still reports **unknown**, never "not frozen" —
+and the panel does not relabel that case as a frozen session either.
+
 ---
 
 ## 1. Routes and methods
@@ -1706,7 +1744,13 @@ section after the waterfall. In such a scope:
 
 This is the same degradation §2.4 and §7 already describe for any section, applied
 to ours; the UI half must state it in the「我的 Prompt」panel rather than let a
-user write text that silently does nothing.
+user write text that silently does nothing. Revision 9 pins that half down: the
+blocking block carries `data-warning="mine-frozen"` **and**
+`data-mine-frozen="true"` with its `data-mine-frozen-certainty`, the state line
+carries `data-mine-effect` (`"none"` for a certain freeze, `"unknown"` for the
+§2.4/§7.2 unknown case, `"next-turn"` otherwise), and every success wording in a
+frozen scope is the conditional form — a stored write can never read as an
+effective one, and an unknown verdict is never relabelled as a frozen session.
 
 ### 15.5 The write lock, precisely
 

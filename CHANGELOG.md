@@ -157,6 +157,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   该内容并成「出问题时 / When something goes wrong」一节 —— 五处文案与测试常量同步更新。
   Stale doc pointers in runtime copy: the terminal and console messages pointed at a README section that no
   longer exists; five messages and the test constant now name the current section.
+- 冻结态的「我的 Prompt」把「已保存」误读成「已生效」：`complete: true` 的作用域里写入必然不进 prompt，
+  面板原来只有一行红字、保存按钮照旧、成功文案照旧。现在冻结块（`data-mine-frozen="true"` + 保留的
+  `data-warning="mine-frozen"`）写明「文本存进了配置 / 该作用域被冻结，不会生效 / 换用未声明 `complete`
+  的 preset 或去掉该声明」，状态行新增 `data-mine-effect`（确定冻结 `none`、未知 `unknown`、否则
+  `next-turn`），容器新增 `data-mine-frozen-certainty`；冻结态的成功文案一律带条件前缀
+  （`mineSavedFrozen`/`mineSavedUnknown`、`savedNoticeFrozen`/`savedNoticeUnknown`）。「全局冻结 + 选中会话」
+  这一**未知**态另有独立文案，不被写成「本会话已冻结」。写入能力保留（方案 A）：冻结挡的是生效，不是配置。
+  A frozen "My Prompt" no longer lets "saved" read as "effective": in a `complete: true` scope the write can
+  never reach the prompt, yet the panel showed one red line while the save button and the success copy were
+  unchanged. The frozen block (`data-mine-frozen="true"`, keeping `data-warning="mine-frozen"`) now states
+  where the text went, that it does not take effect in this scope, and how to fix it; the state line adds
+  `data-mine-effect` (`none` when certainly frozen, `unknown` for the unknown case, `next-turn` otherwise) and
+  the block adds `data-mine-frozen-certainty`; and every frozen success wording is the conditional form. The
+  global-freeze-with-a-session case is *unknown*, and is never worded as a frozen session. The write itself
+  stays enabled: a freeze blocks the effect, not the configuration.
 
 ### Security 安全
 
