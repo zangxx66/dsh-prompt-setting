@@ -144,7 +144,7 @@ import {
 /** Package name; echoed by the probe so the browser can assert identity. */
 const PLUGIN_NAME = 'dsh-prompt-setting';
 /** Package version; `test/host.test.mjs` asserts it matches package.json. */
-const PLUGIN_VERSION = '0.1.0';
+const PLUGIN_VERSION = '0.1.1';
 /** The one prefix this plugin owns. Every route lives under it. */
 const ROUTE_PREFIX = '/prompt-setting';
 /** Stage 1A's route: a read-only liveness probe (behaviour frozen). */

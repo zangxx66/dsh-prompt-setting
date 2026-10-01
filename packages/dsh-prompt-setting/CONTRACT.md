@@ -1376,8 +1376,8 @@ resolve the `workspace` layer).
   "schema": "dsh-prompt-setting/export",
   "version": 1,
   "exportedAt": "2024-01-02T10:00:00.000Z",
-  "plugin": { "name": "dsh-prompt-setting", "version": "0.1.0" },
-  "pluginVersion": "0.1.0",
+  "plugin": { "name": "dsh-prompt-setting", "version": "0.1.1" },
+  "pluginVersion": "0.1.1",
   "layers": {
     "user":      { "layer": "user", "enabled": true,
                    "reason": null,
@@ -1819,7 +1819,7 @@ live probe would read a normal rebuild as a defect.
 {
   "ok": true,
   "plugin": "dsh-prompt-setting",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "time": "2026-09-28T12:00:00.000Z",
   "clientRenderer": "fallback",
   "clientReportedAt": "2026-09-28T12:00:00.000Z",

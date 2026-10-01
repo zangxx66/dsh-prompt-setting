@@ -10,6 +10,52 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
+## [0.1.1] - 2026-10-02
+
+**维护版本：让「我的 Prompt」里的变量真正可用 / Maintenance release: make variables in My Prompt actually work.**
+
+### Added 新增
+
+- **变量替换开关（默认关闭）**：「我的 Prompt」可按层显式开启；开启后 `{{model}}` / `{{cwd}}` / `{{provider}}`
+  被替换为该轮会话的真实值。替换由插件自己在装配阶段完成（DSH 的严格插值器不参与），**取不到值的引用保留字面量**，
+  因此写进「我的 Prompt」的任何内容都不会让会话的 prompt 组装失败。
+  **Variable substitution switch (off by default)**, opt-in per layer: `{{model}}` / `{{cwd}}` / `{{provider}}`
+  are replaced with that turn's real values. The plugin expands the text itself during assembly — the shipped
+  interpolator is never involved — and a reference without a value stays literal, so nothing written here can
+  break a session's prompt assembly.
+- **「取消」按钮**：丢弃「我的 Prompt」里未保存的草稿、回到该层已保存的文本（不写盘、无二次确认）。
+  **Cancel button**: discards the unsaved draft and restores the layer's saved text (no write, no confirmation).
+- **未解析引用分级**：快照新增 `unresolvedThrowing` / `unresolvedLiteral`，「提示词总览 → 完整渲染」据此区分
+  「真实装配会失败」与「真实 prompt 就是这串字面量」。
+  **Graded unresolved references** (`unresolvedThrowing` / `unresolvedLiteral`) in the snapshot, surfaced by the
+  overview tab.
+- **变量台账文档** `docs/prompt-variables.md`：DSH 提示词变量清单、引用与注册的双向差集、插值语义与复现命令。
+  **Variable ledger** `docs/prompt-variables.md`.
+
+### Changed 变更
+
+- 冻结态提示升级：「完整装配已冻结」时「我的 Prompt」给出阻断级说明，避免被误读为「没保存成功」。
+  The frozen-scope notice on the My Prompt panel is now blocking-level.
+- 文档补充：自定义指令能约束**输出语言**，而 reasoning 语言由模型决定。
+  Docs: custom instructions constrain the output language; the reasoning language is the model's own.
+- 「提示词总览 → 完整渲染」的未解析提示改为分级措辞（旧文案一律「请勿据此判断真实 prompt」）。
+  The unresolved notice in the overview tab is now graded instead of uniformly cautious.
+
+### Fixed 修复
+
+- `peerDependencies` 上界收紧为 `<0.2.1-0`，把 DSH 0.2.0 正式版纳入支持范围（避免 GA 当天插件被平台跳过加载）。
+  Peer upper bound tightened to include DSH 0.2.0 GA, so the bundle is not skipped on GA day.
+
+### Notes 说明
+
+- 版本号 `0.1.1` 已在 `packages/dsh-prompt-setting/package.json` 中声明；发布到 npm 与打 tag 后，本节日期即为发布日。
+  The version `0.1.1` is declared in the package manifest; once it is published and tagged, this entry's date
+  becomes the release date.
+- **默认行为与 0.1.0 一致**：开关不开启时，「我的 Prompt」的文本仍按字面量注入（`{{...}}` 原样交给模型）。
+  **Default behaviour is unchanged from 0.1.0**: with the switch closed, the text is injected literally.
+
+---
+
 ## [0.1.0] - 2026-09-30
 
 **首个版本，尚未发布到 npm / First release, not yet published to npm.**
@@ -187,9 +233,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Notes 说明
 
-- 版本号 `0.1.0` 已在 `packages/dsh-prompt-setting/package.json` 中声明；发布到 npm 与打 tag 后，
+- `0.1.0` 是该条目首次声明的版本号（清单当前版本见上方的 `0.1.1` 条目）；发布到 npm 与打 tag 后，
   本节日期即为发布日。
-  The version `0.1.0` is already declared in the package manifest; once it is published and tagged, this
-  entry's date becomes the release date.
+  `0.1.0` was the version this entry first declared (the manifest now carries `0.1.1`, see the entry above);
+  once it is published and tagged, this entry's date becomes the release date.
 - 变更颗粒度较大：本项目按目标（看板 `g-0xx`）开发，一个目标一个提交，上面的条目对应一组这样的目标。
   Changes are coarse-grained: the project is developed goal by goal (board `g-0xx`), one commit per goal.

@@ -9,7 +9,7 @@ Prompt 管理器：**看得见**每一轮会话最终装配出来的系统提示
 全程**不碰 DSH 全局安装包**。
 
 ![license](https://img.shields.io/badge/license-MIT-blue)
-![version](https://img.shields.io/badge/version-0.1.0-blue)
+![version](https://img.shields.io/badge/version-0.1.1-blue)
 ![dsh](https://img.shields.io/badge/DSH-%3E%3D0.1.7--rc.2%20%3C0.2.1--0-blueviolet)
 ![deps](https://img.shields.io/badge/dependencies-0-brightgreen)
 
@@ -144,11 +144,11 @@ node --check index.js && node --check client.js && for f in core/*.js scripts/*.
 node --test                    # 十四个套件；集成套件用真 DSH 包跑对照实验，须为 pass（非 skip）
 node scripts/check-compat.mjs  # 只读兼容性自检（不联网、永不抛、退出码恒 0）
 node scripts/prepare.mjs       # prepare 门禁：从 git 安装时 pnpm 会自动跑它（不通过则 exit 1）
-npm pack --dry-run             # 确认发布产物干净（20 个文件、无 test/、无 .dsh-graph）
+npm pack --dry-run             # 确认发布产物干净（21 个文件、无 test/、无 .dsh-graph）
 ```
 
 最近一次在本机跑的结果：`node --test` **480 项断言全部通过、0 skipped**（含集成套件 31 项），
-`npm pack --dry-run` 20 个文件（2026-10-01 实测）。
+`npm pack --dry-run` 21 个文件（2026-10-02 实测）。
 
 要点：
 
@@ -186,7 +186,7 @@ DSH 升级后插件没出现、终端也没报错时，先跑 `node scripts/chec
 | [`packages/dsh-prompt-setting/README.md`](./packages/dsh-prompt-setting/README.md) | 使用者 / 开发者 | 包简介与功能（中英对照）、安装、维护者要点、出问题时怎么办 |
 | [`CONTRACT.md`](./packages/dsh-prompt-setting/CONTRACT.md) | 开发者 | 冻结的 REST 契约：字段、动作枚举、字段上限、每一个 4xx |
 | [`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) | 开发者 | 设计取舍与实测记录（含未验证项与已推翻的旧结论） |
-| [`CHANGELOG.md`](./CHANGELOG.md) | 使用者 / 开发者 | 每个版本的用户可感知变更（中英对照；当前 0.1.0，尚未发布） |
+| [`CHANGELOG.md`](./CHANGELOG.md) | 使用者 / 开发者 | 每个版本的用户可感知变更（中英对照；当前 0.1.1，尚未发布） |
 
 ## 九、状态与路线图
 

@@ -828,8 +828,8 @@ function exportFixture(over = {}) {
     schema: 'dsh-prompt-setting/export',
     version: 1,
     exportedAt: '2024-01-02T10:00:00.000Z',
-    plugin: { name: 'dsh-prompt-setting', version: '0.1.0' },
-    pluginVersion: '0.1.0',
+    plugin: { name: 'dsh-prompt-setting', version: '0.1.1' },
+    pluginVersion: '0.1.1',
     layers: {
       user: {
         layer: 'user',
@@ -1099,7 +1099,7 @@ function pingResponse(clientBuild) {
     payload: {
       ok: true,
       plugin: 'dsh-prompt-setting',
-      version: '0.1.0',
+      version: '0.1.1',
       time: '2024-01-01T00:00:00.000Z',
       clientRenderer: 'fallback',
       clientReportedAt: null,

@@ -10,7 +10,7 @@ write your own instructions into it, and roll back a bad edit — all **without 
 install**.
 
 ![license](https://img.shields.io/badge/license-MIT-blue)
-![version](https://img.shields.io/badge/version-0.1.0-blue)
+![version](https://img.shields.io/badge/version-0.1.1-blue)
 ![dsh](https://img.shields.io/badge/DSH-%3E%3D0.1.7--rc.2%20%3C0.2.1--0-blueviolet)
 ![deps](https://img.shields.io/badge/dependencies-0-brightgreen)
 
@@ -168,11 +168,11 @@ node --check index.js && node --check client.js && for f in core/*.js scripts/*.
 node --test                    # fourteen suites; the integration suite runs against the real DSH package and must pass (not skip)
 node scripts/check-compat.mjs  # read-only compatibility self-check (no network, never throws, always exit 0)
 node scripts/prepare.mjs       # the prepare gate pnpm runs on a git install (exit 1 when it fails)
-npm pack --dry-run             # confirm the published artifact is clean (20 files, no test/, no .dsh-graph)
+npm pack --dry-run             # confirm the published artifact is clean (21 files, no test/, no .dsh-graph)
 ```
 
 Latest run on this machine: `node --test` **480 assertions, all passing, 0 skipped** (31 of them in the
-integration suite); `npm pack --dry-run` reports 20 files (measured 2026-10-01).
+integration suite); `npm pack --dry-run` reports 21 files (measured 2026-10-02).
 
 Worth knowing:
 
@@ -219,7 +219,7 @@ README's "For maintainers" section; the detailed measurements are in
 | [`packages/dsh-prompt-setting/README.md`](./packages/dsh-prompt-setting/README.md) | users / developers | package summary and features (bilingual), install, maintainer notes, troubleshooting |
 | [`CONTRACT.md`](./packages/dsh-prompt-setting/CONTRACT.md) | developers | the frozen REST contract: every field, action enum, size limit and 4xx |
 | [`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) | developers | design trade-offs and measurements (including untested items and conclusions we had to retract) |
-| [`CHANGELOG.md`](./CHANGELOG.md) | users / developers | User-visible changes per release (bilingual; currently 0.1.0, unpublished) |
+| [`CHANGELOG.md`](./CHANGELOG.md) | users / developers | User-visible changes per release (bilingual; currently 0.1.1, unpublished) |
 
 ## 9. Status and roadmap
 
