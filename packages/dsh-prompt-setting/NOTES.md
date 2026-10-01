@@ -3013,7 +3013,7 @@ export 只含保留名且显式声明省略、加上 `test/custom.test.mjs` 的 
 | `reservedTextOf(ovs, layer)` | 从 `merged.overrides`（装配真正应用的那张表）读保留段在该层的文本；`null` = 该层没这条覆盖 |
 | `renderStatusLine` | 顶端**一行**：挂载 / 冻结三态 / 构建戳三个 tag + 刷新按钮；三个 `data-status-*` 标记供探针直读，tag 的 `title` 带上原因 |
 | `renderStatusDetail` | 「高级」里的完整状态区（`data-region="status-detail"`）：挂载、生成时间、两层 `enabled/path/reason`、`data-region="build"`（两个指纹）、三条冻结/两条构建戳解释、`data-region="renderer-info"` 与降级原因（`data-primitives-failure`） |
-| `renderMinePanel` | 「我的 Prompt」：层选择（`data-region="mine-layer"`，复用 `user`/`workspace` 语义）+ 文本框（`data-role="mine-text"`）+ 保存（`data-action="mine-save"`）/ 恢复默认（`data-action="mine-reset"`）；`data-mine-state` = `unconfigured`/`dirty`/`saving`/`saved`/`error`；失败时渲染完整 `errorBanner`（`data-mine-error`，映射文案 + 原始 code + 宿主 message）；冻结或 `applied:false` 时渲染 `data-warning="mine-frozen"` |
+| `renderMinePanel` | 「我的 Prompt」：层选择（`data-region="mine-layer"`，复用 `user`/`workspace` 语义）+ 文本框（`data-role="mine-text"`）+ 保存（`data-action="mine-save"`）/ 取消（`data-action="mine-cancel"`，仅 `dirty` 可用，纯客户端复位草稿、不发请求、无二次确认）/ 恢复默认（`data-action="mine-reset"`）；`data-mine-state` = `unconfigured`/`dirty`/`saving`/`saved`/`error`；失败时渲染完整 `errorBanner`（`data-mine-error`，映射文案 + 原始 code + 宿主 message）；冻结或 `applied:false` 时渲染 `data-warning="mine-frozen"` |
 | `renderOverviewPanel` | 「提示词总览」：保留 `data-region="view-tabs"`（组 `view`，值 `sections`/`full`）——两个只读答案都还需要，且都不写 |
 | `renderHistoryTab` | 「历史与备份」：历史面板 + 差异 + 导入导出（`data-region="history-tab"`） |
 | `renderAdvancedTab` | 「高级」：只读旧覆盖列表 + 两个层级按钮 + 完整状态区 |
