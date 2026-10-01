@@ -171,8 +171,8 @@ node scripts/prepare.mjs       # the prepare gate pnpm runs on a git install (ex
 npm pack --dry-run             # confirm the published artifact is clean (20 files, no test/, no .dsh-graph)
 ```
 
-Latest run on this machine: `node --test` **395 assertions, all passing, 0 skipped** (21 of them in the
-integration suite); `npm pack --dry-run` reports 20 files (measured 2026-09-30).
+Latest run on this machine: `node --test` **399 assertions, all passing, 0 skipped** (21 of them in the
+integration suite); `npm pack --dry-run` reports 20 files (measured 2026-10-01).
 
 Worth knowing:
 
