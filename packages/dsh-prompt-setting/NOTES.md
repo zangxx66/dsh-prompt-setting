@@ -4004,3 +4004,57 @@ node --input-type=module -e "import {satisfiesRange} from './core/compat.js'; im
 
 
 
+
+---
+
+# g-026：「我的 Prompt」变量替换开关（Revision 11）
+
+## 一、做了什么
+
+给保留段 `prompt-setting:custom-prompt` 加一个**默认关闭**的变量替换开关。关闭态行为逐字节不变；开启后保留段参与 DSH 原生插值，并由写入侧保证「任何会让会话每轮抛错的文本都进不来」。
+
+| 层 | 文件 | 加了什么 |
+| --- | --- | --- |
+| 配置 | `core/overrides.js` | 导出 shipped 同款正则 `VARIABLE_NAME` / `VARIABLE_GROUP`；新增配置级字段 `interpolateCustom`（`validateInterpolateFlag` / `interpolateFlagOf` / `withInterpolate`），`validateConfig` 保留它，`mergeLayers` 按「工作区显式 > 用户显式 > 未声明」合并 |
+| 校验 | `core/interpolate.js`（新） | `classifyReferences` 逐行复刻 shipped `interpolate()`；`scanThrowingReference`（严格四条件）、`lintPromptText`（致命 vs 警告）、`assertInterpolatable`（400 `unresolvable-variable`）、`selfCheckConfig`（加载期降级）、`effectiveInterpolate`、`withSwitch`/`withoutSwitch` |
+| 宿主 | `index.js` | 持有注册定义对象并在开关变化时改它的 `interpolate`；`ensureVariables`/`refreshVariables`/`variablesForWrite`（私有 scope 探针取变量表）；`syncInterpolate`；`GET`/`PUT /prompt-setting/interpolate`；PUT/import 写入前校验；`refreshUser`/`loadWorkspace` 加载期自检；快照 `layers.interpolate` |
+| 客户端 | `client.js` | 「我的 Prompt」面板开关（状态、后果提示、锁定态、错误卡）、`INTERPOLATE_PATH`、4 个新错误码 zh/en 文案、8 组开关文案 |
+| 契约 | `CONTRACT.md` | Revision 11 段、路由表两行、§2.3 修订、§2.3a、§15.3 修订、**§16**（8 个小节） |
+| 台账 | `docs/prompt-variables.md` | §4 差异说明更正、§6 边界注记、**§8 变量替换开关**（开关语义 / 拦截表 / 软化 / 历史与加载期 / 预览一致性 / 复现） |
+| 测试 | `test/interpolate.test.mjs`（新）、`test/route.test.mjs`、`test/integration.test.mjs`、`test/client.test.mjs` | 见下 |
+
+## 二、关键设计与被否方案
+
+1. **运行时切换靠「改自己那个定义对象的字段」**，不改任何私有字段。依据是两条实测事实：`NamedEntries` 按引用保存定义对象；shipped `assemble` 每轮现读 `section.interpolate` 并拷入 assembly。测试对**真** `@deepseek-ai/dsh-system-prompt` 固化了「下一次 assemble 立刻看到新值」。
+2. **校验器不复用预览的扫描分支**。预览的「`group === null` 一律当散文」对只读预览是对的，做安全闸门则会漏掉 `{{ lone {{c}}` 与 `{{{{model}}}}`（实测两者 shipped 都抛错）。新校验器独立复刻，并用负向对照把「旧口径会漏、新实现抓住」写死。
+3. **变量表动态获取**：本插件私有 scope 的一次真实 `assemble()`（与快照同一 `probe` 机制）。名字未知 ⇒ 硬拒；名字已知但当前值 `undefined` ⇒ 只警告。后者是唯一的软化，理由写进 §16.3：值属于会话而不属于文本，硬拒会让「没有活跃会话」时无法保存。
+4. **开关写「缺字段」而不是 `false`**：关闭即删键，开→关→开后配置文件逐字节回到开启前（SHA-256 固化）。
+5. **被否**：把开关塞进 `PUT /overrides` 的 body（会破坏 stage 1B 冻结的请求体，且旧客户端保存会静默关掉开关）；把开关状态放快照顶层（会打破 Revision 10 客户端的顶层键严格断言，故放进 `layers` 容器）；探针失败时按「没有变量」放行（等于放炸弹进来，改成 503）。
+
+## 三、契约变更点（需人工确认的两处「既有断言/既有文档」改动）
+
+- `test/route.test.mjs` 的假宿主 `section()` 由「浅拷贝定义」改为「按引用保存」，以忠实模拟 `NamedEntries`。`sectionRegistrations` 仍保留注册时快照，因此既有断言不变；不这样改，一个坏掉的运行时切换也能「通过」。
+- `test/client.test.mjs` 的 `snapshotFixture` 增加 `layers.interpolate`，`ERROR_CODES` 增加 4 个新码，`PATHS`/`defaultResponses` 增加开关路由。均为追加。
+- `CONTRACT.md` §2.3 原文「no user section ever has its `interpolate` turned on」被修订（加一句限定：仅本插件自己持有的那一个段定义、且仅当用户显式开启）。这是本修订**唯一**推翻既有陈述的地方，已就地标注。
+
+## 四、本轮实测证据（包目录 `packages/dsh-prompt-setting/` 下执行）
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test` | **448 / 448 pass / 0 fail / 0 skipped**（约 15 s；基线 407，新增 41 项） |
+| 校验器纯函数 | `node --test test/interpolate.test.mjs` | 16 / 16 pass（不依赖 DSH 安装） |
+| 路由 + 开关 | `node --test test/route.test.mjs` | 69 / 69 pass |
+| 真渲染器对照 | `node --test test/integration.test.mjs` | 27 / 27 pass（真 `@deepseek-ai/dsh-system-prompt`） |
+| 客户端 UI | `node --test test/client.test.mjs` | 108 / 108 pass |
+| 语法检查 | `node --check index.js / client.js / core/interpolate.js` | 通过 |
+| **负向对照 I** | 校验器退回旧口径（畸形组当散文）→ 跑 interpolate + route + integration | **7 红**（`{{ lone {{c}}` / `{{{{model}}}}` 三类用例 + 路由拒绝 + 真渲染器对照） |
+| **负向对照 II** | `applyInterpolateFlag` 只判断不写入字段（模拟「切换没生效」）→ 跑 route + integration + client | **6 红**（默认/开启/回退/预览分级/真 assemble 现读） |
+| **负向对照 III** | 写入侧校验恒 `return`（模拟「不拦炸弹」）→ 跑 route + integration | **4 红**（PUT 拒绝、import 拒绝、开启前历史文本校验、真渲染器对照） |
+| 还原核对 | `diff` 备份 + `grep -c 'NEGATIVE CONTROL'` | 0 残留，全量回到 448 / 448 pass |
+
+## 五、未验证项（诚实清单）
+
+- **真机目视**：未重启 `dsh web`，未在运行中的 GUI 里点开关。宿主半的改动只有在进程重启后才生效；离线断言已覆盖到真 `renderPrompt` 与真 Cordis 上下文。
+- **跨版本依赖**：本方案依赖 shipped `assemble` 每轮现读 `section.interpolate`。上游若改成注册时定死，开关会静默失效——已写入 `CONTRACT.md` §16.2 并有两处测试可在升级时先红。
+- **`undefined` 值的软化**：开启态下保存「名字已注册但本次装配无值」的引用会放行；若该会话真实装配里该值仍是 `undefined`，那一轮仍会抛错。这是 §16.3 明示的取舍，未做「保存后再核实」。
+- **多工作区**：开关按层声明，「工作区未声明则继承用户层」。若用户对某个工作区显式关掉，而无会话的请求（例如设置页全局视图）会把全局定义同步成用户层的值——多会话并发下「当前生效值」是最近一次请求解析出的那一个（`CONTRACT.md` §16.7 已记）。

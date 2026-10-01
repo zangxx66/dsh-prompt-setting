@@ -68,6 +68,11 @@ const ERROR_CODES = [
   'write-locked',
   'unsupported-action',
   'conflicting-query',
+  // Revision 9 switch (CONTRACT.md §16.4).
+  'invalid-interpolate-flag',
+  'unresolvable-variable',
+  'invalid-enabled',
+  'variable-lookup-failed',
 ];
 
 /**
@@ -687,6 +692,9 @@ function snapshotFixture(over = {}) {
         path: null,
         reason: 'no ?session= was supplied, so the workspace layer is inactive for this view',
       },
+      // Revision 9: the switch, as the host reports it. The fixture default is
+      // the shipped default — OFF, with neither layer stating anything.
+      interpolate: { effective: false, user: null, workspace: null },
     },
     experiments: { E1: 'e1' },
     ...over,
@@ -878,6 +886,7 @@ const PATHS = {
   diff: '/prompt-setting/diff',
   export: '/prompt-setting/export',
   import: '/prompt-setting/import',
+  interpolate: '/prompt-setting/interpolate',
 };
 
 /** The default three-route stub table. */
@@ -890,6 +899,9 @@ function defaultResponses(over = {}) {
     [PATHS.diff]: { payload: diffFixture() },
     [PATHS.export]: { payload: exportFixture() },
     [PATHS.import]: { payload: importPlanFixture() },
+    [PATHS.interpolate]: {
+      payload: { ok: true, interpolateCustom: true, layer: 'user', saved: { enabled: true }, effectiveFrom: 'next-turn' },
+    },
     ...over,
   };
 }
@@ -5428,3 +5440,133 @@ test('client: the packaged file list still excludes the tests', () => {
   assert.ok(!packageJson.files.includes('test'));
 });
 
+
+// ---------------------------------------------------------------------------
+// Revision 9 (g-026): the variable-substitution switch on「我的 Prompt」.
+//
+// The panel half of the feature is copy-heavy by design — the switch changes
+// what a text box MEANS, and the one thing the user can no longer do (write a
+// literal `{{...}}`) has to be on screen next to the state, not in a document
+// nobody opens. The assertions below therefore check the machine-readable state
+// AND the consequence text, and they check that the state comes back from the
+// host rather than from local optimism.
+// ---------------------------------------------------------------------------
+
+/** A snapshot fixture with the switch in a given state. */
+function withSwitch(snapshot, interpolate) {
+  return { ...snapshot, layers: { ...snapshot.layers, interpolate } };
+}
+
+/** Every rendered string of one tree, as one blob. */
+function renderedStrings(tree) {
+  return stringsByMarker(tree).map((entry) => entry.text).join('\n');
+}
+
+test('g-026 client: the panel carries the switch, its state and its consequence', async () => {
+  const page = enPage({ responses: defaultResponses() });
+  const rec = recorder(page);
+  await rec.take();
+  const tree = rec.last();
+
+  const region = oneBy(tree, 'data-region', 'mine-interpolate');
+  assert.equal(region.props['data-mine-interpolate'], 'off');
+  assert.equal(oneBy(tree, 'data-mine-interpolate-state', 'off').props.children, 'OFF');
+  assert.match(
+    oneBy(tree, 'data-mine-interpolate-stated', 'inherit').props.children,
+    /inherits the user layer/,
+    'a layer that states nothing must be distinguishable from one that states OFF',
+  );
+
+  const toggle = oneBy(tree, 'data-action', 'mine-interpolate');
+  assert.equal(toggle.props['aria-pressed'], 'false');
+  assert.equal(toggle.props['data-mine-interpolate-layer'], 'user');
+  assert.equal(toggle.props.disabled, false);
+  assert.equal(toggle.props.children, 'Turn variable substitution on');
+
+  // The consequence is stated where the state is: no escape syntax, so no
+  // literal `{{...}}` any more.
+  const strings = renderedStrings(tree);
+  assert.match(strings, /no escape syntax/i);
+  assert.match(strings, /literal \{\{\.\.\.\}\}/i);
+  assert.match(strings, /the current model/);
+  assert.match(strings, /saved per selected layer/, 'and how the value is scoped');
+});
+
+test('g-026 client: when the host says ON the panel says ON and offers the way back', async () => {
+  const page = enPage({
+    responses: defaultResponses({
+      [PATHS.snapshot]: { payload: withSwitch(snapshotFixture(), { effective: true, user: true, workspace: null }) },
+    }),
+  });
+  const rec = recorder(page);
+  await rec.take();
+  const tree = rec.last();
+
+  assert.equal(oneBy(tree, 'data-region', 'mine-interpolate').props['data-mine-interpolate'], 'on');
+  assert.equal(oneBy(tree, 'data-mine-interpolate-state', 'on').props.children, 'ON');
+  const toggle = oneBy(tree, 'data-action', 'mine-interpolate');
+  assert.equal(toggle.props['aria-pressed'], 'true');
+  assert.equal(toggle.props.children, 'Turn variable substitution off');
+  assert.match(oneBy(tree, 'data-mine-interpolate-stated', 'true').props.children, /states ON explicitly/);
+});
+
+test('g-026 client: clicking the switch writes it to the selected layer and re-reads the host state', async () => {
+  const page = enPage({ responses: defaultResponses() });
+  const rec = recorder(page);
+  await rec.take();
+  const before = urlsFor(page, PATHS.snapshot).length;
+
+  clickButton(rec.last(), { 'data-action': 'mine-interpolate' });
+  await rec.take();
+
+  const calls = page.router.calls.filter((call) => call.url.startsWith(PATHS.interpolate));
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].init.method, 'PUT');
+  assert.deepEqual(JSON.parse(calls[0].init.body), { enabled: true, layer: 'user' });
+  // The state is the host's answer, so the snapshot is re-read instead of the
+  // button flipping itself optimistically.
+  assert.equal(urlsFor(page, PATHS.snapshot).length > before, true);
+  assert.equal(rec.last() !== null, true);
+});
+
+test('g-026 client: a refused switch keeps the host code and message, and the state does not move', async () => {
+  const page = enPage({
+    responses: defaultResponses({
+      [PATHS.interpolate]: {
+        status: 400,
+        ok: false,
+        payload: { ok: false, code: 'unresolvable-variable', message: 'the user layer contains 1 prompt reference(s) that would throw' },
+      },
+    }),
+  });
+  const rec = recorder(page);
+  await rec.take();
+  clickButton(rec.last(), { 'data-action': 'mine-interpolate' });
+  await rec.take();
+  const tree = rec.last();
+
+  oneBy(tree, 'data-mine-interpolate-error', 'true');
+  const strings = renderedStrings(tree);
+  assert.match(strings, /unresolvable-variable/, 'the host code is on screen');
+  assert.match(strings, /would throw/, 'and so is the host message');
+  // Nothing moved: the button still offers to turn it on.
+  assert.equal(oneBy(tree, 'data-action', 'mine-interpolate').props.children, 'Turn variable substitution on');
+});
+
+test('g-026 client: the workspace layer needs a session before its switch can be written', async () => {
+  const page = enPage({ responses: defaultResponses() });
+  const rec = recorder(page);
+  await rec.take();
+  clickTab(rec.last(), 'mine-layer', 'workspace');
+  await rec.take();
+  const tree = rec.last();
+
+  const toggle = oneBy(tree, 'data-action', 'mine-interpolate');
+  assert.equal(toggle.props['data-mine-interpolate-layer'], 'workspace');
+  assert.equal(toggle.props.disabled, true, 'no session ⇒ the workspace layer cannot be written');
+  oneBy(tree, 'data-warning', 'mine-interpolate-locked');
+  assert.match(renderedStrings(tree), /workspace layer needs a selected session/i);
+  // And a click does not even reach the transport.
+  const before = page.router.calls.filter((call) => call.url.startsWith(PATHS.interpolate)).length;
+  assert.equal(before, 0);
+});

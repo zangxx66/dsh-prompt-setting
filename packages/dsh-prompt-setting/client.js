@@ -208,6 +208,11 @@ window.__ModuleLoader__.load({
     const DIFF_PATH = '/prompt-setting/diff';
     const EXPORT_PATH = '/prompt-setting/export';
     const IMPORT_PATH = '/prompt-setting/import';
+    /**
+     * Revision 9: the「我的 Prompt」variable-substitution switch. Its own route
+     * because it is a config-level fact, not a property of one override.
+     */
+    const INTERPOLATE_PATH = '/prompt-setting/interpolate';
     /** Sentinel for "no session": never a legal `Agent.id`, so it cannot collide. */
     const GLOBAL_SESSION = '\u0000global';
     /**
@@ -391,6 +396,23 @@ window.__ModuleLoader__.load({
         '导入提交失败，可能有层已被替换。',
         'The import could not be committed; some layers may already be replaced.',
       ],
+      // Revision 9 — the interpolation switch (§16).
+      'invalid-interpolate-flag': [
+        '配置里的 interpolateCustom 必须是布尔值；该层已被停用。',
+        'The config\'s "interpolateCustom" must be a boolean; that layer was disabled.',
+      ],
+      'unresolvable-variable': [
+        '这段文本里的 {{…}} 引用会让会话每一轮的 prompt 组装直接抛错，因此被拒绝。请删掉该引用、改用已注册的变量，或先关闭变量替换。',
+        'A {{…}} reference in this text would make every assembly of the session throw, so it was refused. Delete the reference, use a registered variable, or turn variable substitution off first.',
+      ],
+      'invalid-enabled': [
+        '开关请求缺少布尔值 enabled。',
+        'The switch request needs a boolean "enabled".',
+      ],
+      'variable-lookup-failed': [
+        '无法取到当前的变量表，本次写入被拒绝（无法证明文本安全）。',
+        'The current variable table could not be obtained, so this write was refused: the text cannot be proven safe.',
+      ],
     };
     // #endregion
 
@@ -524,6 +546,23 @@ window.__ModuleLoader__.load({
       mineUnconfigured: '尚未配置：该层还没有「我的 Prompt」，文本为空。',
       mineDirty: '有未保存的修改。',
       mineLoaded: '已加载{layer}的「我的 Prompt」。',
+      // ---- Revision 9: the variable-substitution switch
+      mineInterpolateLabel: '变量替换',
+      mineInterpolateOn: '已开启',
+      mineInterpolateOff: '已关闭',
+      mineInterpolateTurnOn: '开启变量替换',
+      mineInterpolateTurnOff: '关闭变量替换',
+      mineInterpolateNote:
+        '开启后，这段文本里的 {{变量}} 由 DSH 原生替换：{{model}} → 当前模型名、{{cwd}} → 工作目录、{{provider}} → provider。关闭时它们原样交给模型。',
+      mineInterpolateWarn:
+        '注意：DSH 没有转义机制。开启后你无法再在这里写字面量 {{...}}——任何未注册、拼错或写歪的引用都会让会话每轮装配失败，所以保存时会被直接拒绝。',
+      mineInterpolateInherit: '该层未设置：跟随用户层。',
+      mineInterpolateStated: '该层显式设置为{state}。',
+      mineInterpolateSaving: '正在切换…',
+      mineInterpolateSaved: '变量替换已{state}，下一轮生效（next-turn）。',
+      mineInterpolateFailed: '切换变量替换失败',
+      mineInterpolateWorkspaceNeedsSession: '工作区层需要先选择一个会话；未选择时无法在工作区层切换。',
+      mineInterpolateLayerOnly: '开关按所选层保存；工作区层未设置时继承用户层。',
       // ---- g-021: a frozen scope is a blocking statement, not a footnote
       mineFrozenWarn: '该作用域已被冻结：你写下的 Prompt 不会生效',
       mineFrozenBody:
@@ -826,6 +865,23 @@ window.__ModuleLoader__.load({
       mineUnconfigured: 'Not configured yet: this layer has no My Prompt, so the text is empty.',
       mineDirty: 'You have unsaved changes.',
       mineLoaded: 'Loaded the {layer} My Prompt.',
+      // ---- Revision 9: the variable-substitution switch
+      mineInterpolateLabel: 'Variable substitution',
+      mineInterpolateOn: 'ON',
+      mineInterpolateOff: 'OFF',
+      mineInterpolateTurnOn: 'Turn variable substitution on',
+      mineInterpolateTurnOff: 'Turn variable substitution off',
+      mineInterpolateNote:
+        'When on, {{variables}} in this text are substituted by DSH itself: {{model}} \u2192 the current model, {{cwd}} \u2192 the working directory, {{provider}} \u2192 the provider. When off they reach the model exactly as written.',
+      mineInterpolateWarn:
+        'Note: DSH has no escape syntax. With this on you can no longer write a literal {{...}} here \u2014 any unregistered, misspelled or malformed reference breaks every turn of the session, so saving one is refused outright.',
+      mineInterpolateInherit: 'This layer states nothing: it inherits the user layer.',
+      mineInterpolateStated: 'This layer states {state} explicitly.',
+      mineInterpolateSaving: 'Switching\u2026',
+      mineInterpolateSaved: 'Variable substitution is now {state}; effective from the next turn (next-turn).',
+      mineInterpolateFailed: 'Switching variable substitution failed',
+      mineInterpolateWorkspaceNeedsSession: 'The workspace layer needs a selected session; without one the switch cannot be written there.',
+      mineInterpolateLayerOnly: 'The switch is saved per selected layer; a workspace layer that states nothing inherits the user layer.',
       // ---- g-021: a frozen scope is a blocking statement, not a footnote
       mineFrozenWarn: 'This scope is frozen: the prompt you write will not take effect',
       mineFrozenBody:
@@ -4993,6 +5049,12 @@ window.__ModuleLoader__.load({
       const layer = m.mineLayer;
       const state = m.mineState;
       const reason = m.mineFrozenReason;
+      // Revision 9: the switch's own view state, kept separate from the text
+      // box's so a failed toggle cannot read as a failed save.
+      const interpolateOn = m.mineInterpolateOn === true;
+      const interpolateStatus = m.mineInterpolateStatus ?? { kind: 'idle', error: null };
+      const interpolateLocked = m.mineInterpolateLocked === true;
+      const interpolateStated = m.mineInterpolateStated === undefined ? null : m.mineInterpolateStated;
       // The panel's own frozen boolean. `mineFrozenReason === null` is the
       // unfrozen case; an empty string is "frozen, no reason given".
       const frozen = reason !== null;
@@ -5088,6 +5150,84 @@ window.__ModuleLoader__.load({
                 t('mineFrozenHowTo'),
               ),
             ),
+        // ---- Revision 9: the variable-substitution switch. It sits above the
+        // text box because it changes what the text box MEANS: while it is on,
+        // `{{...}}` is syntax, and a literal brace can no longer be written.
+        h(
+          'div',
+          {
+            'data-region': 'mine-interpolate',
+            'data-mine-interpolate': interpolateOn ? 'on' : 'off',
+            style: {
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4,
+              border: `1px solid ${token.borderL2}`,
+              borderRadius: 6,
+              padding: '8px 10px',
+              wordBreak: 'break-word',
+            },
+          },
+          h(
+            'div',
+            { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+            h('span', { style: metaStyle }, t('mineInterpolateLabel')),
+            h(
+              UI.Button,
+              {
+                'data-action': 'mine-interpolate',
+                'data-mine-interpolate-layer': layer,
+                'aria-pressed': interpolateOn ? 'true' : 'false',
+                disabled: m.busy || interpolateLocked,
+                onClick: a.toggleMineInterpolate,
+              },
+              interpolateStatus.kind === 'saving'
+                ? t('mineInterpolateSaving')
+                : t(interpolateOn ? 'mineInterpolateTurnOff' : 'mineInterpolateTurnOn'),
+            ),
+            h(
+              'span',
+              {
+                'data-mine-interpolate-state': interpolateOn ? 'on' : 'off',
+                style: { ...metaStyle, color: interpolateOn ? token.stateWarn : token.labelTertiary },
+              },
+              t(interpolateOn ? 'mineInterpolateOn' : 'mineInterpolateOff'),
+            ),
+            h(
+              'span',
+              {
+                'data-mine-interpolate-stated': interpolateStated === null ? 'inherit' : String(interpolateStated),
+                style: metaStyle,
+              },
+              interpolateStated === null
+                ? t('mineInterpolateInherit')
+                : fmt(t('mineInterpolateStated'), {
+                    state: t(interpolateStated ? 'mineInterpolateOn' : 'mineInterpolateOff'),
+                  }),
+            ),
+          ),
+          h('p', { style: { margin: 0, ...metaStyle } }, t('mineInterpolateNote')),
+          h(
+            'p',
+            { 'data-warning': 'mine-interpolate', style: { margin: 0, fontSize: 12, color: token.stateWarn } },
+            t('mineInterpolateWarn'),
+          ),
+          h('p', { style: { margin: 0, ...metaStyle } }, t('mineInterpolateLayerOnly')),
+          interpolateLocked
+            ? h(
+                'p',
+                { 'data-warning': 'mine-interpolate-locked', style: { margin: 0, fontSize: 12, color: token.stateWarn } },
+                t('mineInterpolateWorkspaceNeedsSession'),
+              )
+            : null,
+          interpolateStatus.kind === 'error' && interpolateStatus.error
+            ? h(
+                'div',
+                { 'data-mine-interpolate-error': 'true' },
+                errorBanner(t, interpolateStatus.error, t('mineInterpolateFailed')),
+              )
+            : null,
+        ),
         h(
           'label',
           { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
@@ -5440,6 +5580,11 @@ window.__ModuleLoader__.load({
       const [mineLayer, setMineLayer] = React.useState('user');
       const [mineDraft, setMineDraft] = React.useState(null);
       const [mineStatus, setMineStatus] = React.useState({ kind: 'idle', error: null });
+      // Revision 9: the switch's own request state. Kept apart from
+      // `mineStatus` because the switch is a config-level fact with its own
+      // failure mode (a refusal names the text that would throw), and folding
+      // the two would let a failed toggle look like a failed save.
+      const [mineInterpolate, setMineInterpolate] = React.useState({ kind: 'idle', error: null });
       const [notice, setNotice] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
       // Stage 2 state: history, the comparison, the pending confirmation and
@@ -5623,6 +5768,16 @@ window.__ModuleLoader__.load({
                 : mineStored !== mineText
                   ? 'dirty'
                   : 'idle';
+      // ---- Revision 9: the variable-substitution switch, as the host reports
+      // it. `effective` is what this session's assembly will do; the per-layer
+      // value is what the layer itself states, and `null` there means "states
+      // nothing", which is *not* the same as `false` (the workspace layer then
+      // inherits the user layer, §16.1).
+      const mineInterpolateInfo =
+        snapshot && snapshot.layers && snapshot.layers.interpolate ? snapshot.layers.interpolate : null;
+      const mineInterpolateOn = mineInterpolateInfo !== null && mineInterpolateInfo.effective === true;
+      const mineInterpolateStated = mineInterpolateInfo === null ? null : mineInterpolateInfo[mineLayer];
+      const mineInterpolateLocked = mineLayer === 'workspace' && sessionArg === null;
       /**
        * Ask the host for a comparison and store the result. `from`/`to` are a
        * history id or {@link DIFF_CURRENT}; a half-made selection clears the
@@ -5787,6 +5942,53 @@ window.__ModuleLoader__.load({
       };
 
       /**
+       * Revision 9: open or close variable substitution for「我的 Prompt」.
+       *
+       * The switch is written to the **selected layer**, and the value sent is
+       * the negation of the *effective* one the host reported: the button says
+       * "turn it off" whenever this session interpolates, so a click always
+       * produces the state the label promised — even when the effective value
+       * came from the other layer (a workspace layer that states nothing
+       * inherits the user layer).
+       *
+       * A refusal is the host's own words (usually `unresolvable-variable`,
+       * naming the stored text that would throw): the panel shows the code and
+       * the message rather than a generic failure, because the fix is in the
+       * text box right below.
+       */
+      const toggleMineInterpolate = async () => {
+        const layer = mineLayer;
+        if (layer === 'workspace' && sessionArg === null) {
+          setMineInterpolate({ kind: 'error', error: { code: 'workspace-unresolved' } });
+          setNotice({ tone: 'error', text: errorText(t, { code: 'workspace-unresolved' }) });
+          return;
+        }
+        const next = !mineInterpolateOn;
+        setMineInterpolate({ kind: 'saving', error: null });
+        setBusy(true);
+        const body = { enabled: next, layer };
+        if (sessionArg !== null) body.session = sessionArg;
+        const result = await requestJson(INTERPOLATE_PATH, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        setBusy(false);
+        if (!result.ok) {
+          setMineInterpolate({ kind: 'error', error: result.error });
+          setNotice({ tone: 'error', text: errorText(t, result.error) });
+          return;
+        }
+        const applied = result.payload && result.payload.interpolateCustom === true;
+        setMineInterpolate({ kind: 'saved', error: null });
+        setNotice({
+          tone: 'success',
+          text: fmt(t('mineInterpolateSaved'), { state: t(applied ? 'mineInterpolateOn' : 'mineInterpolateOff') }),
+        });
+        setReload((value) => value + 1);
+      };
+
+      /**
        * 「我的 Prompt」 save: `PUT /prompt-setting/overrides` with the reserved
        * name and `replace`, which is the entire write face since Revision 7
        * (§4.1). The text is sent exactly as typed — trimming someone's prompt
@@ -5918,6 +6120,7 @@ window.__ModuleLoader__.load({
           setMineStatus({ kind: 'idle', error: null });
         },
         saveMine,
+        toggleMineInterpolate,
         requestMineReset: () => setConfirm({ kind: 'mine-reset', layer: mineLayer }),
         setAdvancedLayer: (value) => setAdvancedLayer(value === 'workspace' ? 'workspace' : 'user'),
         setSearch: (event) => setSearch(event && event.target ? String(event.target.value) : ''),
@@ -6085,6 +6288,10 @@ window.__ModuleLoader__.load({
         mineConfigured,
         mineState,
         mineError: mineStatus.error,
+        mineInterpolateOn,
+        mineInterpolateStated,
+        mineInterpolateLocked,
+        mineInterpolateStatus: mineInterpolate,
         mineFrozenReason,
         mineFrozenCertain,
         advancedLayer,

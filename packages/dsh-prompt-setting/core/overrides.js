@@ -46,10 +46,28 @@ export const ORIGINS = Object.freeze(['registered', 'appended', 'downstream-adde
 
 /** Rejected in section names: C0/C1 controls, DEL, and the Unicode line separators. */
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
-/** The prompt-variable grammar the Host renderer interpolates. */
-const VARIABLE_NAME = /^[a-z][a-z0-9_]*$/;
-/** Matches one complete `{{name}}` group at the scan position. */
-const VARIABLE_GROUP = /^\{\{([^{}]*)\}\}/;
+/**
+ * The prompt-variable name grammar the Host renderer enforces (`VARIABLE_NAME`
+ * in `@deepseek-ai/dsh-system-prompt/lib/index.js`). Exported so the write-side
+ * validator in `core/interpolate.js` uses the very same expression instead of a
+ * hand-typed copy (Revision 9).
+ */
+export const VARIABLE_NAME = /^[a-z][a-z0-9_]*$/;
+/**
+ * Matches one complete `{{name}}` group at the scan position. Byte-for-byte the
+ * Host's `GROUP_AT`, so "does this text throw?" is decided by the same grammar
+ * the renderer will apply.
+ */
+export const VARIABLE_GROUP = /^\{\{([^{}]*)\}\}/;
+/**
+ * The config key that carries「我的 Prompt」's interpolation switch (Revision 9).
+ *
+ * It is a **config-level** field, not an override field, and it is **absent by
+ * default**: a config written by any earlier revision reloads unchanged and the
+ * absent key reads as `false` (the switch is off). That is what keeps every
+ * pre-Revision-9 assertion and every existing `overrides.json` byte-compatible.
+ */
+export const INTERPOLATE_FLAG = 'interpolateCustom';
 const encoder = new TextEncoder();
 
 /**
@@ -150,9 +168,57 @@ export function validateOverride(raw) {
 }
 
 /**
+ * Validate the optional interpolation switch field.
+ *
+ * `undefined` and `null` both mean "this layer does not state a preference",
+ * which is distinct from the boolean `false` ("this layer states OFF"): the
+ * layers are merged on that difference, so the distinction has to survive the
+ * round trip. Anything else is a rejected config — a string `"false"` would
+ * otherwise read as truthy, which is exactly the class of bug that turns a
+ * safety switch into a bomb.
+ * @param raw - the `interpolateCustom` field, or anything else.
+ * @returns the boolean, or `undefined` when the layer states no preference.
+ * @throws {OverrideError} for a present but non-boolean value.
+ */
+export function validateInterpolateFlag(raw) {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'boolean') {
+    throw fail('invalid-interpolate-flag', `"${INTERPOLATE_FLAG}" must be a boolean when present`);
+  }
+  return raw;
+}
+
+/**
+ * Read one config's stated interpolation preference.
+ * @param config - a validated config, or anything else.
+ * @returns the boolean, or `undefined` when the config states none.
+ */
+export function interpolateFlagOf(config) {
+  const value = config?.[INTERPOLATE_FLAG];
+  return typeof value === 'boolean' ? value : undefined;
+}
+
+/**
+ * Carry one config's stated interpolation preference onto a rebuilt config.
+ *
+ * The switch lives at config level while every mutation helper
+ * ({@link upsertOverride}, `removeOverride`, `legacyPlan`) rebuilds the
+ * `{version, overrides}` pair. Without this the flag would be silently dropped
+ * by the next override save — the switch would flip itself off.
+ * @param config - the rebuilt config.
+ * @param flag - the boolean to carry, or `undefined`/`null` for none.
+ * @returns a config that keeps the flag when there is one.
+ */
+export function withInterpolate(config, flag) {
+  if (typeof flag !== 'boolean') return config;
+  return { ...config, [INTERPOLATE_FLAG]: flag };
+}
+
+/**
  * Validate a whole persisted config document.
  * @param raw - the parsed JSON value.
- * @returns the normalized `{version, overrides}`.
+ * @returns the normalized `{version, overrides}`, plus `interpolateCustom` when
+ *   the document states one.
  * @throws {OverrideError} when the document is not a valid config.
  */
 export function validateConfig(raw) {
@@ -162,7 +228,8 @@ export function validateConfig(raw) {
   if (raw.version !== undefined && raw.version !== CONFIG_VERSION) {
     throw fail('unsupported-version', `unsupported config version ${JSON.stringify(raw.version)}`);
   }
-  if (raw.overrides === undefined) return emptyConfig();
+  const flag = validateInterpolateFlag(raw[INTERPOLATE_FLAG]);
+  if (raw.overrides === undefined) return withInterpolate(emptyConfig(), flag);
   if (!Array.isArray(raw.overrides)) {
     throw fail('invalid-config', '"overrides" must be an array');
   }
@@ -175,7 +242,7 @@ export function validateConfig(raw) {
     seen.add(override.name);
     return override;
   });
-  return { version: CONFIG_VERSION, overrides };
+  return withInterpolate({ version: CONFIG_VERSION, overrides }, flag);
 }
 
 /**
@@ -184,9 +251,17 @@ export function validateConfig(raw) {
  * Precedence: a workspace override wins over a user override for the same
  * section name and keeps the user entry's position, so a layer switch never
  * reshuffles the list. Workspace-only entries are appended in file order.
+ *
+ * The interpolation switch (Revision 9) merges on the same rule, and on
+ * *statedness* rather than truthiness: a workspace layer that states a boolean
+ * wins, otherwise the user layer's stated boolean applies, otherwise the merged
+ * config states nothing at all (which reads as OFF). A workspace layer that
+ * states nothing therefore inherits the user layer instead of silently turning
+ * the switch off.
  * @param userConfig - the user layer (already validated), or null.
  * @param workspaceConfig - the workspace layer (already validated), or null.
- * @returns `{version, overrides}` where every entry carries its `layer`.
+ * @returns `{version, overrides}` where every entry carries its `layer`, plus
+ *   `interpolateCustom` when either layer states one.
  */
 export function mergeLayers(userConfig, workspaceConfig) {
   const merged = toOverrides(userConfig, 'user');
@@ -196,7 +271,8 @@ export function mergeLayers(userConfig, workspaceConfig) {
     if (at === -1) merged.push(override);
     else merged[at] = override;
   }
-  return { version: CONFIG_VERSION, overrides: merged };
+  const stated = interpolateFlagOf(workspaceConfig) ?? interpolateFlagOf(userConfig);
+  return withInterpolate({ version: CONFIG_VERSION, overrides: merged }, stated);
 }
 
 /**
@@ -670,6 +746,13 @@ function collectUnresolved(text, variables, sink) {
 /**
  * Substitute every well-formed `{{name}}` whose value is usable, and record
  * every reference left literal.
+ *
+ * Revision 9 tightened one branch: a `{{` that no group matches **and** that has
+ * a later `}}` is a malformed reference, which the shipped renderer throws on —
+ * so it is reported as throwing instead of being called prose. It is recorded
+ * with the same 16-character excerpt the Host's own message quotes. A `{{` with
+ * no later `}}` stays prose, exactly as the shipped renderer treats it, and a
+ * substituted value is never scanned again (only the input is walked).
  * @param text - the raw section text.
  * @param variables - the resolved variable values.
  * @param unresolved - collector for the names left literal.
@@ -681,8 +764,10 @@ function interpolate(text, variables, unresolved) {
   for (let open = text.indexOf('{{'); open >= 0; open = text.indexOf('{{', cursor)) {
     const group = VARIABLE_GROUP.exec(text.slice(open));
     if (group === null) {
-      // A lone `{{` with no closing group is prose, exactly as the shipped
-      // renderer treats it — not an unresolved reference.
+      // A lone `{{` with no later `}}` is prose, exactly as the shipped renderer
+      // treats it — not an unresolved reference. With a later `}}` it is
+      // malformed, and the shipped renderer throws.
+      if (text.indexOf('}}', open + 2) >= 0) unresolved.add(text.slice(open, open + 16));
       result += text.slice(cursor, open + 2);
       cursor = open + 2;
       continue;

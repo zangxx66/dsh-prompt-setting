@@ -20,6 +20,7 @@ import { createRequire } from 'node:module';
 import test, { afterEach, beforeEach } from 'node:test';
 
 import { CUSTOM_SECTION_NAME } from '../index.js';
+import { scanThrowingReference } from '../core/interpolate.js';
 
 /** Directory names under `node_modules/.pnpm` that carry the Host peers we need. */
 const ANCHOR_PACKAGES = ['@deepseek-ai+dsh-web-app@', '@deepseek-ai+dsh-base@'];
@@ -1213,4 +1214,135 @@ test('integration R8: disposing the mount removes the keeper with the section it
   ]);
   assert.equal(reregistered.sections.at(-1).name, 'dsh-expression:companion', 'nothing moved it: the keeper is gone');
   assert.equal(reregistered.sections.at(-2).name, CUSTOM_SECTION_NAME);
+});
+
+// ---------------------------------------------------------------------------
+// Revision 9 (g-026): the switch against the REAL renderer.
+//
+// These are the strongest assertions in the feature. "The validator predicts the
+// renderer" and "the snapshot's rendering is the renderer's output" are both
+// claims about `@deepseek-ai/dsh-system-prompt`'s own bytes, and a double would
+// prove neither — so they run against the installed package, and the whole point
+// of the transcription in `core/interpolate.js` is measured here.
+// ---------------------------------------------------------------------------
+
+test('integration g-026: the strict validator predicts the real renderer, including the two shapes the old reading missed', suite, async () => {
+  const { renderPrompt } = await import(SYSTEM_PROMPT_URL);
+  const variables = { model: 'M', cwd: null, n: 0 };
+  for (const text of ['{{ lone {{c}}', '{{{{model}}}}', 'keep {{nope}}', 'keep {{Upper}}', 'keep {{a{b}}']) {
+    // The validator says "this throws"...
+    assert.notEqual(scanThrowingReference(text, variables), null, text);
+    // ...and the real renderer does throw, with its own message.
+    assert.throws(
+      () => renderPrompt({ sections: [{ name: 'control', text }], variables }),
+      /prompt variable/,
+      text,
+    );
+  }
+
+  // The readings the validator and the renderer must AGREE on:
+  // a `null` value renders (as the string "null") and never throws;
+  assert.equal(scanThrowingReference('{{cwd}}', variables), null);
+  assert.equal(renderPrompt({ sections: [{ name: 'control', text: 'cwd={{cwd}}' }], variables }), 'cwd=null');
+  assert.equal(scanThrowingReference('{{n}}', variables), null);
+  assert.equal(renderPrompt({ sections: [{ name: 'control', text: 'n={{n}}' }], variables }), 'n=0');
+  // a lone `{{` is prose;
+  assert.equal(scanThrowingReference('{{unclosed', variables), null);
+  assert.equal(renderPrompt({ sections: [{ name: 'control', text: '{{unclosed' }], variables }), '{{unclosed');
+  // a substituted value is not scanned again;
+  assert.equal(scanThrowingReference('{{alias}}', { alias: '{{nope}}' }), null);
+  assert.equal(renderPrompt({ sections: [{ name: 'control', text: '{{alias}}' }], variables: { alias: '{{nope}}' } }), '{{nope}}');
+  // and a section that does not interpolate is handed back byte for byte.
+  assert.equal(
+    renderPrompt({ sections: [{ name: 'control', text: 'keep {{nope}}', interpolate: false }], variables }),
+    'keep {{nope}}',
+  );
+});
+
+test('integration g-026: the switch flips the LIVE section object, and the real assemble sees it on the next turn', suite, async () => {
+  const { renderPrompt } = await import(SYSTEM_PROMPT_URL);
+  const { ctx, service, call } = await mountRealPlugin(CUSTOM);
+  assert.equal(typeof ctx.systemPrompt.variable, 'function');
+  ctx.systemPrompt.variable('model', () => 'deepseek-flash');
+
+  const saved = await call({
+    method: 'PUT',
+    url: '/prompt-setting/overrides',
+    body: JSON.stringify({
+      layer: 'user',
+      section: { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'M={{model}}' },
+    }),
+  });
+  assert.equal(saved.status, 200);
+
+  // OFF (the default): registered with interpolate:false, so the braces reach
+  // the model exactly as written.
+  const closed = await service.assemble();
+  assert.equal(closed.sections.find((section) => section.name === CUSTOM_SECTION_NAME).interpolate, false);
+  assert.equal(renderPrompt(closed).endsWith('M={{model}}'), true);
+
+  const opened = await call({
+    method: 'PUT',
+    url: '/prompt-setting/interpolate',
+    body: JSON.stringify({ enabled: true }),
+  });
+  assert.equal(opened.status, 200);
+  assert.equal(opened.payload.effectiveFrom, 'next-turn');
+
+  // Same registration object; the very next assembly already carries the new
+  // flag, without a remount, a re-registration or a restart.
+  const open = await service.assemble();
+  assert.equal(open.sections.find((section) => section.name === CUSTOM_SECTION_NAME).interpolate, true);
+  assert.equal(renderPrompt(open).endsWith('M=deepseek-flash'), true);
+});
+
+test('integration g-026: with the switch on, the snapshot rendering IS the real renderPrompt, byte for byte', suite, async () => {
+  const { renderPrompt } = await import(SYSTEM_PROMPT_URL);
+  const { ctx, service, call } = await mountRealPlugin(CUSTOM);
+  ctx.systemPrompt.variable('model', () => 'deepseek-flash');
+  ctx.systemPrompt.variable('cwd', () => '/work/dir');
+
+  const off = await call({});
+  assert.equal(off.payload.layers.interpolate.effective, false);
+
+  assert.equal((await call({
+    method: 'PUT',
+    url: '/prompt-setting/interpolate',
+    body: JSON.stringify({ enabled: true }),
+  })).status, 200);
+
+  const text = 'I am {{model}} in {{cwd}}.';
+  assert.equal((await call({
+    method: 'PUT',
+    url: '/prompt-setting/overrides',
+    body: JSON.stringify({ layer: 'user', section: { name: CUSTOM_SECTION_NAME, action: 'replace', text } }),
+  })).status, 200);
+
+  const snapshot = await call({});
+  const real = renderPrompt(await service.assemble());
+  assert.equal(snapshot.payload.rendered, real, 'the preview and the real prompt are the same bytes');
+  assert.equal(real.includes('I am deepseek-flash in /work/dir.'), true);
+  assert.equal(snapshot.payload.layers.interpolate.effective, true);
+  assert.equal(snapshot.payload.renderedResolved, true, 'every reference resolved');
+  assert.deepEqual(snapshot.payload.unresolvedThrowing, []);
+  assert.deepEqual(snapshot.payload.unresolvedLiteral, []);
+
+  // And the refusal the write face promises is the renderer's own behaviour:
+  // the text it refuses really would take every assembly of the session down.
+  const refused = await call({
+    method: 'PUT',
+    url: '/prompt-setting/overrides',
+    body: JSON.stringify({
+      layer: 'user',
+      section: { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'boom {{ lone {{c}}' },
+    }),
+  });
+  assert.equal(refused.status, 400);
+  assert.equal(refused.payload.code, 'unresolvable-variable');
+  assert.throws(
+    () => renderPrompt({ sections: [{ name: CUSTOM_SECTION_NAME, text: 'boom {{ lone {{c}}' }], variables: {} }),
+    /prompt variable/,
+  );
+  // The refused write changed nothing: the real prompt is still the good one.
+  assert.equal(renderPrompt(await service.assemble()), real);
 });

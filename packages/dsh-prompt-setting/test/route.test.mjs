@@ -178,10 +178,19 @@ function mount(options = {}) {
      * layer plus its own disposer. Since Revision 7 the plugin registers one
      * section during `apply`, and `close()` below is how a test observes that
      * registration being undone.
+     *
+     * Revision 9 note: `registered` keeps the definition **by reference**,
+     * because the shipped `NamedEntries` does (`insert(name, section)` stores
+     * the object it was handed) and every `assemble` re-reads
+     * `section.interpolate` off it. A shallow copy here would make the fake host
+     * insensitive to the one mutation the switch performs, i.e. it would let a
+     * broken runtime toggle pass. `sectionRegistrations` still snapshots the
+     * value as registered, so "registered with interpolate:false" stays
+     * assertable after the switch has flipped.
      */
     section(definition) {
       sectionRegistrations.push({ ...definition });
-      registered.push({ ...definition });
+      registered.push(definition);
       return () => {
         const at = registered.findIndex((entry) => entry.name === definition.name);
         if (at >= 0) registered.splice(at, 1);
@@ -1506,3 +1515,401 @@ test('refresh: the route handler re-reads both layers before its first branch', 
 });
 
 // #endregion
+
+// ---------------------------------------------------------------------------
+// Revision 9 (g-026): the「我的 Prompt」variable-substitution switch.
+//
+// The switch is the only thing in this package that can turn user text into a
+// per-turn throw, so the assertions below are the safety half of the feature:
+// every refusal is checked for a 400 with the right code AND for zero bytes
+// written (a SHA-256 around the whole layer file), and the switch itself is
+// checked to flip the LIVE definition object rather than to re-register.
+// ---------------------------------------------------------------------------
+
+const INTERPOLATE_PATH = '/prompt-setting/interpolate';
+/** The variable table a healthy fake host assembles. */
+const SWITCH_VARIABLES = { model: 'deepseek-flash', cwd: '/work', provider: 'deepseek' };
+
+/** The definition the fake host is holding for the reserved section. */
+function reservedDefinition(harness) {
+  return harness.registered.find((section) => section.name === CUSTOM_SECTION_NAME);
+}
+
+/** Parse one layer file, or null when it does not exist. */
+function readLayer(path) {
+  return existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : null;
+}
+
+/** Call the switch route. */
+function setSwitch(route, body) {
+  return call(route, {
+    method: 'PUT',
+    url: INTERPOLATE_PATH,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Call the override route with the reserved section. */
+function putText(route, text, extra = {}) {
+  return call(route, {
+    method: 'PUT',
+    url: OVERRIDES_PATH,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      layer: 'user',
+      section: { name: CUSTOM_SECTION_NAME, action: 'replace', text },
+      ...extra,
+    }),
+  });
+}
+
+test('g-026 switch: OFF by default, and the reserved section still registers interpolate:false', async () => {
+  const harness = mount({ variables: SWITCH_VARIABLES });
+  assert.equal(reservedDefinition(harness).interpolate, false);
+  assert.equal(harness.sectionRegistrations.length, 1);
+  assert.equal(harness.sectionRegistrations[0].interpolate, false, 'the registration value is contract');
+
+  const payload = json(await call(harness.route, { url: SNAPSHOT_PATH }));
+  assert.deepEqual(payload.layers.interpolate, { effective: false, user: null, workspace: null });
+  // Reading reports OFF; it does not invent a config file.
+  assert.equal(existsSync(userPath()), false);
+
+  const read = await call(harness.route, { url: INTERPOLATE_PATH });
+  assert.equal(read.statusCode, 200);
+  assert.equal(json(read).interpolateCustom, false);
+  assert.deepEqual(json(read).layers, { user: null, workspace: null });
+  assert.deepEqual(json(read).variables.sort(), ['cwd', 'model', 'provider']);
+  // The route table is real: another method is a 405, not a 404.
+  assert.equal((await call(harness.route, { method: 'DELETE', url: INTERPOLATE_PATH })).statusCode, 405);
+});
+
+test('g-026 switch: enabling flips the LIVE definition, persists, and re-registers nothing', async () => {
+  const harness = mount({ variables: SWITCH_VARIABLES });
+  const res = await setSwitch(harness.route, { enabled: true });
+  assert.equal(res.statusCode, 200);
+  const payload = json(res);
+  assert.equal(payload.interpolateCustom, true);
+  assert.equal(payload.layer, 'user');
+  assert.equal(payload.effectiveFrom, 'next-turn');
+
+  // The SAME object the service holds carries the new flag — no re-registration
+  // and no second name in the global layer.
+  assert.equal(reservedDefinition(harness).interpolate, true);
+  assert.equal(harness.sectionRegistrations.length, 1);
+  assert.equal(harness.registered.filter((section) => section.name === CUSTOM_SECTION_NAME).length, 1);
+  // The registration snapshot still shows what was registered.
+  assert.equal(harness.sectionRegistrations[0].interpolate, false);
+
+  assert.equal(readLayer(userPath()).interpolateCustom, true);
+  assert.equal(json(await call(harness.route, { url: SNAPSHOT_PATH })).layers.interpolate.effective, true);
+});
+
+test('g-026 switch: it survives a remount, which is what "no restart" would otherwise cost', async () => {
+  const first = mount({ variables: SWITCH_VARIABLES });
+  assert.equal((await setSwitch(first.route, { enabled: true })).statusCode, 200);
+  assert.equal(reservedDefinition(first).interpolate, true);
+
+  const second = mount({ variables: SWITCH_VARIABLES });
+  assert.equal(reservedDefinition(second).interpolate, true, 'mount applies what the layers already state');
+  assert.equal(json(await call(second.route, { url: SNAPSHOT_PATH })).layers.interpolate.effective, true);
+});
+
+test('g-026 switch: closing restores the file byte for byte, and ON→OFF→ON leaves no residue', async () => {
+  const harness = mount({ variables: SWITCH_VARIABLES });
+  assert.equal((await putText(harness.route, 'hello {{model}}')).statusCode, 200);
+  const before = sha256(userPath());
+  assert.equal(readLayer(userPath()).interpolateCustom, undefined, 'OFF is absence, not false');
+
+  await setSwitch(harness.route, { enabled: true });
+  assert.equal(reservedDefinition(harness).interpolate, true);
+  const on = sha256(userPath());
+  assert.notEqual(on, before);
+  // Repeating ON is a no-op, and the live definition is idempotent.
+  assert.equal((await setSwitch(harness.route, { enabled: true })).statusCode, 200);
+  assert.equal(sha256(userPath()), on, 'a repeated ON rewrites the same bytes');
+  assert.equal(reservedDefinition(harness).interpolate, true);
+
+  await setSwitch(harness.route, { enabled: false });
+  assert.equal(reservedDefinition(harness).interpolate, false);
+  assert.equal(sha256(userPath()), before, 'the pre-switch bytes are back exactly');
+
+  await setSwitch(harness.route, { enabled: true });
+  await setSwitch(harness.route, { enabled: false });
+  assert.equal(sha256(userPath()), before, 'the cycle is idempotent in both directions');
+  assert.equal(reservedDefinition(harness).interpolate, false);
+  assert.equal(json(await call(harness.route, { url: SNAPSHOT_PATH })).layers.interpolate.effective, false);
+});
+
+test('g-026 switch: the request shape is validated before anything is read or written', async () => {
+  const harness = mount({ variables: SWITCH_VARIABLES });
+  const before = sha256(userPath());
+  for (const body of [{}, { enabled: 'true' }, { enabled: 1 }, { enabled: null }]) {
+    const res = await setSwitch(harness.route, body);
+    assert.equal(res.statusCode, 400, JSON.stringify(body));
+    assert.equal(json(res).code, 'invalid-enabled', JSON.stringify(body));
+  }
+  const bad = await setSwitch(harness.route, { enabled: true, layer: 'nope' });
+  assert.equal(bad.statusCode, 400);
+  assert.equal(json(bad).code, 'unknown-layer');
+  assert.equal(sha256(userPath()), before, 'no byte moved');
+});
+
+test('g-026 write face: with the switch ON a throwing reference is refused, and zero bytes move', async () => {
+  const harness = mount({ variables: SWITCH_VARIABLES });
+  await setSwitch(harness.route, { enabled: true });
+  const before = sha256(userPath());
+
+  for (const text of ['keep {{nope}}', 'keep {{Upper}}', 'keep {{ lone {{c}}', 'keep {{{{model}}}}', 'keep {{a b}}']) {
+    const res = await putText(harness.route, text);
+    assert.equal(res.statusCode, 400, text);
+    assert.equal(json(res).code, 'unresolvable-variable', text);
+    assert.match(json(res).message, /Fix:/, text);
+    assert.equal(sha256(userPath()), before, `zero bytes written for ${JSON.stringify(text)}`);
+  }
+
+  // The legal text still saves, and it is the switch being ON that gates this.
+  const ok = await putText(harness.route, 'I am {{model}} in {{cwd}} via {{provider}}');
+  assert.equal(ok.statusCode, 200);
+  assert.equal(readLayer(userPath()).overrides[0].text, 'I am {{model}} in {{cwd}} via {{provider}}');
+  assert.equal(readLayer(userPath()).interpolateCustom, true, 'saving the text does not turn the switch off');
+});
+
+test('g-026 write face: with the switch OFF every one of those texts is accepted, exactly as before', async () => {
+  const harness = mount({ variables: SWITCH_VARIABLES });
+  for (const text of ['keep {{nope}}', 'keep {{Upper}}', 'keep {{ lone {{c}}', 'keep {{{{model}}}}']) {
+    assert.equal((await putText(harness.route, text)).statusCode, 200, text);
+  }
+  assert.equal(readLayer(userPath()).overrides[0].text, 'keep {{{{model}}}}');
+});
+
+test('g-026 write face: a registered name whose value is undefined here is saved, not refused', async () => {
+  // The value belongs to the session, not to the text: a probe with no active
+  // agent leaves agent-scoped providers valueless, and refusing the save would
+  // make the switch unusable whenever no session is running (§16.3).
+  const harness = mount({ variables: { model: undefined } });
+  assert.equal((await setSwitch(harness.route, { enabled: true })).statusCode, 200);
+  const res = await putText(harness.route, 'hi {{model}}');
+  assert.equal(res.statusCode, 200);
+  assert.equal(readLayer(userPath()).overrides[0].text, 'hi {{model}}');
+});
+
+test('g-026 write face: an import carrying a throwing reference is refused, dry run included', async () => {
+  const harness = mount({ variables: SWITCH_VARIABLES });
+  await setSwitch(harness.route, { enabled: true });
+  const before = sha256(userPath());
+
+  const document = {
+    schema: 'dsh-prompt-setting/export',
+    version: 1,
+    layers: { user: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'imported {{nope}}' }] } },
+  };
+  for (const suffix of ['', '?dryRun=true']) {
+    const res = await call(harness.route, {
+      method: 'POST',
+      url: `${IMPORT_PATH}${suffix}`,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(document),
+    });
+    assert.equal(res.statusCode, 400, suffix);
+    assert.equal(json(res).code, 'unresolvable-variable', suffix);
+  }
+  assert.equal(sha256(userPath()), before, 'the refused import wrote nothing, dry run or not');
+
+  const good = {
+    ...document,
+    layers: { user: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'imported {{model}}' }] } },
+  };
+  const ok = await call(harness.route, {
+    method: 'POST',
+    url: IMPORT_PATH,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(good),
+  });
+  assert.equal(ok.statusCode, 200);
+  assert.equal(readLayer(userPath()).overrides[0].text, 'imported {{model}}');
+  assert.equal(readLayer(userPath()).interpolateCustom, true, 'the switch survives the import');
+
+  // The same document imports fine once the switch is closed — OFF is what makes
+  // arbitrary braces legal again.
+  await setSwitch(harness.route, { enabled: false });
+  const closed = await call(harness.route, {
+    method: 'POST',
+    url: IMPORT_PATH,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(document),
+  });
+  assert.equal(closed.statusCode, 200);
+  assert.equal(readLayer(userPath()).overrides[0].text, 'imported {{nope}}');
+  assert.equal(readLayer(userPath()).interpolateCustom, undefined);
+});
+
+test('g-026 history check: opening the switch validates what is ALREADY stored and refuses with a fix', async () => {
+  const harness = mount({ variables: SWITCH_VARIABLES });
+  // Legal while the switch is closed: nothing interpolates, so nothing throws.
+  assert.equal((await putText(harness.route, 'bomb {{nope}}')).statusCode, 200);
+  const before = sha256(userPath());
+
+  const res = await setSwitch(harness.route, { enabled: true });
+  assert.equal(res.statusCode, 400);
+  assert.equal(json(res).code, 'unresolvable-variable');
+  assert.match(json(res).message, /Fix:/);
+  assert.match(json(res).message, /nope/);
+  assert.equal(sha256(userPath()), before, 'the switch was not written');
+  assert.equal(reservedDefinition(harness).interpolate, false, 'and the live definition stays closed');
+});
+
+test('g-026 history check: a bomb in the WORKSPACE layer also blocks opening the user layer', async () => {
+  // The switch is inherited: a workspace layer that states nothing inherits the
+  // user layer, so opening the user layer arms every such workspace.
+  const workspace = workspaceWith('ws-bomb', 'session-a', {
+    version: 1,
+    overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'ws {{nope}}' }],
+  });
+  const harness = mount({ variables: SWITCH_VARIABLES, workspaces: [workspace] });
+  const res = await setSwitch(harness.route, { enabled: true });
+  assert.equal(res.statusCode, 400);
+  assert.match(json(res).message, /workspace layer/);
+
+  // A workspace layer that explicitly states OFF cannot throw, so it no longer
+  // blocks the user layer.
+  const off = workspaceWith('ws-off', 'session-b', {
+    version: 1,
+    interpolateCustom: false,
+    overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'ws {{nope}}' }],
+  });
+  const second = mount({ variables: SWITCH_VARIABLES, workspaces: [workspace, off] });
+  // Both are visible; the still-unstated bomb keeps the refusal honest.
+  assert.equal((await setSwitch(second.route, { enabled: true })).statusCode, 400);
+});
+
+test('g-026 load time: a layer that arms a bomb on disk is degraded with a reason, never silently accepted', async () => {
+  writeRaw(userPath(), JSON.stringify({
+    version: 1,
+    interpolateCustom: true,
+    overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'x {{nope}}' }],
+  }));
+  const harness = mount({ variables: SWITCH_VARIABLES });
+  const payload = json(await call(harness.route, { url: SNAPSHOT_PATH }));
+  assert.equal(payload.layers.user.enabled, false, 'the layer contributes nothing');
+  assert.match(payload.layers.user.reason, /^unresolvable-variable: /);
+  assert.match(payload.layers.user.reason, /Fix:/);
+  assert.match(payload.layers.user.reason, /disabled/);
+  // A layer that is degraded is not an invalid FILE: the file itself is fine and
+  // the switch it states reads OFF for this session.
+  assert.equal(payload.layers.interpolate.user, null);
+  assert.equal(payload.layers.interpolate.effective, false);
+});
+
+test('g-026 load time: the same file loads untouched while the switch is closed', async () => {
+  writeRaw(userPath(), JSON.stringify({
+    version: 1,
+    overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'x {{nope}}' }],
+  }));
+  const harness = mount({ variables: SWITCH_VARIABLES });
+  const payload = json(await call(harness.route, { url: SNAPSHOT_PATH }));
+  assert.equal(payload.layers.user.enabled, true);
+  assert.equal(payload.layers.user.reason, null);
+  assert.equal(payload.rendered.endsWith('x {{nope}}'), true, 'the braces reach the model literally');
+});
+
+test('g-026 preview: opening the switch re-grades the reserved section from literal to throwing', async () => {
+  // `model` is registered but has no value in this assembly, so the text is
+  // storable (a warned reference) and the two gradings are directly comparable.
+  const harness = mount({ variables: { model: undefined } });
+  assert.equal((await putText(harness.route, 'I am {{model}}')).statusCode, 200);
+
+  const closed = json(await call(harness.route, { url: SNAPSHOT_PATH }));
+  assert.equal(closed.rendered.endsWith('I am {{model}}'), true);
+  assert.equal(closed.renderedResolved, true);
+  assert.deepEqual(closed.unresolvedThrowing, []);
+  assert.deepEqual(closed.unresolvedLiteral, ['model'], 'closed: literal, not a fault');
+
+  await setSwitch(harness.route, { enabled: true });
+  const open = json(await call(harness.route, { url: SNAPSHOT_PATH }));
+  assert.equal(open.rendered.endsWith('I am {{model}}'), true);
+  assert.equal(open.renderedResolved, false, 'open: the real assembly would throw');
+  assert.deepEqual(open.unresolvedThrowing, ['model']);
+  assert.deepEqual(open.unresolvedLiteral, [], 'and nothing about it is literal any more');
+  assert.equal(open.layers.interpolate.effective, true);
+});
+
+test('g-026 scope: the workspace layer states its own value and wins over the user layer', async () => {
+  const workspace = workspaceWith('ws-off-2', 'session-a', {
+    version: 1,
+    interpolateCustom: false,
+    overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'ws {{nope}}' }],
+  });
+  const harness = mount({ variables: SWITCH_VARIABLES, workspaces: [workspace] });
+  assert.equal((await setSwitch(harness.route, { enabled: true })).statusCode, 200);
+
+  const scoped = json(await call(harness.route, { url: `${SNAPSHOT_PATH}?session=session-a` }));
+  assert.deepEqual(scoped.layers.interpolate, { effective: false, user: true, workspace: false });
+  assert.equal(scoped.rendered.includes('ws {{nope}}'), true, 'the workspace text stays literal');
+
+  const global = json(await call(harness.route, { url: SNAPSHOT_PATH }));
+  assert.deepEqual(global.layers.interpolate, { effective: true, user: true, workspace: null });
+});
+
+test('g-026 scope: writing into a workspace layer is gated by that layer, not by the user layer', async () => {
+  const workspace = workspaceWith('ws-write', 'session-a', {
+    version: 1,
+    interpolateCustom: false,
+    overrides: [],
+  });
+  const harness = mount({ variables: SWITCH_VARIABLES, workspaces: [workspace] });
+  const path = join(workspace.path, '.dsh-prompt-setting', 'overrides.json');
+  const body = {
+    layer: 'workspace',
+    session: 'session-a',
+    section: { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'ws {{nope}}' },
+  };
+  const put = (text) => call(harness.route, {
+    method: 'PUT',
+    url: OVERRIDES_PATH,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ...body, section: { ...body.section, text } }),
+  });
+
+  // Workspace OFF while the user layer is ON: the workspace text is not
+  // validated, because in that scope the section does not interpolate.
+  assert.equal((await setSwitch(harness.route, { enabled: true })).statusCode, 200);
+  assert.equal((await put('ws {{nope}}')).statusCode, 200);
+  assert.equal(readLayer(path).overrides[0].text, 'ws {{nope}}');
+  assert.equal(readLayer(path).interpolateCustom, false, 'writing text never writes the switch');
+
+  // ...and that stored text is exactly what blocks opening THIS layer: the same
+  // historical-text check, aimed at the workspace layer.
+  const blocked = await setSwitch(harness.route, { enabled: true, layer: 'workspace', session: 'session-a' });
+  assert.equal(blocked.statusCode, 400);
+  assert.match(json(blocked).message, /workspace layer/);
+
+  // Make the stored text safe, then open the layer for real.
+  assert.equal((await put('ws {{model}}')).statusCode, 200);
+  assert.equal((await setSwitch(harness.route, { enabled: true, layer: 'workspace', session: 'session-a' })).statusCode, 200);
+  assert.equal(readLayer(path).interpolateCustom, true);
+
+  // Now this layer's own writes are gated by this layer's own switch.
+  const before = sha256(path);
+  const refused = await put('ws2 {{also_nope}}');
+  assert.equal(refused.statusCode, 400);
+  assert.equal(json(refused).code, 'unresolvable-variable');
+  assert.equal(sha256(path), before);
+});
+
+test('g-026 switch: an unreadable variable table refuses the write instead of guessing', async () => {
+  // A profile whose assemble throws cannot answer "is this name registered?".
+  // Guessing "yes" is how a bomb gets in, so the write answers 503.
+  const harness = mount({
+    variables: SWITCH_VARIABLES,
+    beforeDispatch: () => {
+      throw new Error('assembly exploded');
+    },
+  });
+  // The probe for the switch itself fails, so even opening is refused — and it
+  // is refused as a failure of this process, not as a fault in the user's text.
+  const res = await setSwitch(harness.route, { enabled: true });
+  assert.equal(res.statusCode, 503);
+  assert.equal(json(res).code, 'variable-lookup-failed');
+  assert.equal(sha256(userPath()), 'missing');
+});

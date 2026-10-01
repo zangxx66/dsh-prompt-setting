@@ -23,7 +23,7 @@
  * @module dsh-prompt-setting/core/custom
  */
 
-import { CONFIG_VERSION, fail } from './overrides.js';
+import { CONFIG_VERSION, fail, withInterpolate } from './overrides.js';
 
 /**
  * The one section name this plugin owns, and the one override name every write
@@ -260,16 +260,19 @@ export function assertDeletableName(name) {
  * `legacy=true` is the one write that still touches legacy entries, and it only
  * ever *removes* them: the reserved override survives, the layer's own
  * `enabled`/`version` shape is untouched, and the surviving list keeps file
- * order.
+ * order. The optional `flag` carries the layer's config-level interpolation
+ * switch (Revision 9) across the rebuild; a caller that omits it gets the
+ * pre-Revision-9 shape, byte for byte.
  * @param overrides - the layer's current override list.
+ * @param flag - the layer's `interpolateCustom` value, when it states one.
  * @returns `{kept, removed, next}` where `next` is the config to write (or to
  *   discard when `removed` is empty — a no-op must not touch the file).
  */
-export function legacyPlan(overrides) {
+export function legacyPlan(overrides, flag) {
   const all = listOf(overrides);
   const removed = all.filter((entry) => !isCustomSectionName(entry?.name));
   const kept = all.filter((entry) => isCustomSectionName(entry?.name));
-  return { kept, removed, next: { version: CONFIG_VERSION, overrides: kept } };
+  return { kept, removed, next: withInterpolate({ version: CONFIG_VERSION, overrides: kept }, flag) };
 }
 
 /**

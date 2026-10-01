@@ -36,7 +36,7 @@ import {
   serializeRecord,
   trimRecords,
 } from './history.js';
-import { OverrideError, emptyConfig, validateConfig } from './overrides.js';
+import { OverrideError, emptyConfig, interpolateFlagOf, validateConfig, withInterpolate } from './overrides.js';
 
 /** Directory (under `$DSH_HOME`) that owns the user layer. */
 const USER_DIRECTORY = 'prompt-setting';
@@ -222,6 +222,9 @@ export function writeConfig(path, config) {
 
 /**
  * Insert or replace one override in a config, keyed by section name.
+ *
+ * The interpolation switch is a config-level field (Revision 9), so it is
+ * carried across the rebuild: saving a prompt must not turn the switch off.
  * @param config - the current validated config.
  * @param override - the normalized override to persist.
  * @returns a fresh config with the override upserted in place.
@@ -231,11 +234,16 @@ export function upsertOverride(config, override) {
   const at = overrides.findIndex((entry) => entry.name === override.name);
   if (at === -1) overrides.push(override);
   else overrides[at] = override;
-  return { version: config?.version ?? emptyConfig().version, overrides };
+  return withInterpolate(
+    { version: config?.version ?? emptyConfig().version, overrides },
+    interpolateFlagOf(config),
+  );
 }
 
 /**
  * Remove one override from a config, keyed by section name.
+ *
+ * Like {@link upsertOverride}, the switch survives the rebuild.
  * @param config - the current validated config.
  * @param name - the section name to drop.
  * @returns `{config, removed}`.
@@ -245,7 +253,13 @@ export function removeOverride(config, name) {
   const at = overrides.findIndex((entry) => entry.name === name);
   if (at === -1) return { config, removed: false };
   overrides.splice(at, 1);
-  return { config: { version: config?.version ?? emptyConfig().version, overrides }, removed: true };
+  return {
+    config: withInterpolate(
+      { version: config?.version ?? emptyConfig().version, overrides },
+      interpolateFlagOf(config),
+    ),
+    removed: true,
+  };
 }
 
 /**

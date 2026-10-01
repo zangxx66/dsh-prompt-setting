@@ -165,7 +165,7 @@ pnpm ≥10 默认不运行 git 依赖的构建脚本，第一次会失败并打�
 
 ```bash
 cd packages/dsh-prompt-setting
-node --test                    # 十四个套件（含真实 DSH 包的对照实验，须为 pass 而非 skip）
+node --test                    # 十五个套件（含真实 DSH 包的对照实验，须为 pass 而非 skip）
 node scripts/check-compat.mjs  # 只读兼容性自检：不联网、永不抛、退出码恒 0
 node scripts/prepare.mjs       # prepare 门禁：pnpm 从 git 安装时会自动跑它
 npm pack --dry-run             # 确认发布产物干净（20 个文件、无 test/）

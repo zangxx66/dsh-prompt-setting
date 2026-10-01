@@ -66,6 +66,16 @@ import {
 import { EXPERIMENTS } from './core/experiments.js';
 import { buildDiff } from './core/diff.js';
 import {
+  assertInterpolatable,
+  customTextOf,
+  describeInterpolateErrors,
+  effectiveInterpolate,
+  lintPromptText,
+  selfCheckConfig,
+  withSwitch,
+  withoutSwitch,
+} from './core/interpolate.js';
+import {
   DEFAULT_HISTORY_PAGE,
   LEGACY_CLEAR_ACTION,
   RESET_ACTION,
@@ -90,6 +100,7 @@ import {
   detectFrozen,
   emptyConfig,
   fail,
+  interpolateFlagOf,
   mergeLayers,
   probeConfig,
   renderSections,
@@ -146,6 +157,14 @@ const DIFF_PATH = `${ROUTE_PREFIX}/diff`;
 const EXPORT_PATH = `${ROUTE_PREFIX}/export`;
 /** Stage 2: apply such a document, atomically. */
 const IMPORT_PATH = `${ROUTE_PREFIX}/import`;
+/**
+ * Revision 9: read and write the「我的 Prompt」interpolation switch. It is its
+ * own route rather than a field on `PUT /overrides` because the switch is a
+ * **config-level** fact, not a property of any one override: the existing PUT
+ * body is a frozen stage 1B contract (`{layer, section, session}`), and adding a
+ * field to it would make an old client's save silently turn the switch off.
+ */
+const INTERPOLATE_PATH = `${ROUTE_PREFIX}/interpolate`;
 /** Method table; a known path with any other method is a 405 carrying `allow`. */
 const ROUTES = new Map([
   [PING_PATH, ['GET']],
@@ -155,6 +174,7 @@ const ROUTES = new Map([
   [DIFF_PATH, ['GET']],
   [EXPORT_PATH, ['GET']],
   [IMPORT_PATH, ['POST']],
+  [INTERPOLATE_PATH, ['GET', 'PUT']],
 ]);
 /** Cap on a PUT body, matching the 200 KiB per-override text cap with headroom. */
 const MAX_BODY_BYTES = 256 * 1024;
@@ -624,6 +644,24 @@ function mount(ctx, config, cleanups) {
      * this module can hold that object, so no other caller can collide with it.
      */
     pendingProbe: null,
+    /**
+     * The live definition object handed to `systemPrompt.section()` (Revision
+     * 9). `NamedEntries` keeps the object **by reference** and every `assemble`
+     * copies `section.interpolate` into the assembly it renders, so flipping
+     * `state.customDefinition.interpolate` here changes what the next turn
+     * renders without re-registering anything. `null` before registration and
+     * after unmount.
+     */
+    customDefinition: null,
+    /**
+     * The assembled variable table, or `null` when this mount has not obtained
+     * one. Cached because the lookup costs one full `assemble()`; refreshed on
+     * every **write** validation so a name registered later is never refused on
+     * a stale reading.
+     */
+    variables: null,
+    /** Why the last variable-table lookup failed, or `null`. */
+    variablesError: null,
   };
 
   /**
@@ -698,13 +736,40 @@ function mount(ctx, config, cleanups) {
   }
 
   /**
+   * Apply Revision 9's load-time self-check to one freshly read layer.
+   *
+   * The switch is a safety gate the user opens on purpose, so a layer that
+   * states it OPEN while carrying text the shipped renderer would throw on is a
+   * bomb that is already lit: the next assembly of any session using that layer
+   * fails, and the prompt cannot be built at all. Such a layer is **degraded
+   * with a reason**, exactly like the `missing-file` precedent
+   * ({@link refreshUser}): the layer contributes nothing and the reason says
+   * which references are at fault and how to fix them. It is never reported as
+   * an invalid file (the code is `unresolvable-variable`, not `invalid-config`)
+   * and it is never silently accepted.
+   *
+   * A layer that states nothing, or states OFF, is returned untouched by
+   * construction — the check cannot affect an install that never opened the
+   * gate.
+   * @param read - the `readConfig` result.
+   * @param owner - what the text belongs to (goes into the reason).
+   * @returns the result to cache: the same one, or a degraded copy.
+   */
+  function selfCheckLayer(read, owner) {
+    if (read.error !== null || read.config === null) return read;
+    const check = selfCheckConfig(read.config, state.variables, owner);
+    if (check.error === null) return read;
+    return { config: null, missing: read.missing, error: check.error };
+  }
+
+  /**
    * Read one workspace layer into the in-memory cache.
    * @param root - the resolved workspace root.
    * @returns the cached layer `{path, config, error}`.
    */
   function loadWorkspace(root) {
     const path = workspaceConfigPath(root);
-    const read = readConfig(path);
+    const read = selfCheckLayer(readConfig(path), `the workspace layer ${path}`);
     const layer = { path, config: read.config, error: read.error };
     state.workspaces.set(root, layer);
     return layer;
@@ -727,7 +792,7 @@ function mount(ctx, config, cleanups) {
    */
   function refreshUser() {
     const path = state.user.path;
-    const read = readConfig(path);
+    const read = selfCheckLayer(readConfig(path), `the user layer ${path}`);
     if (read.error !== null) {
       // Unreadable or invalid: keep no config at all, so this layer
       // contributes nothing to any assembly. `present` is sticky, so it stays
@@ -776,6 +841,142 @@ function mount(ctx, config, cleanups) {
   }
 
   /**
+   * Probe the live assembly once and cache its variable table (Revision 9).
+   *
+   * One full `assemble()` under this plugin's own private scope is the only
+   * honest source of "which `{{names}}` exist": the table is assembled per turn
+   * from every registration in the profile, so a hard-coded list would be wrong
+   * the moment another plugin registers a variable. Never throws — a profile
+   * where the probe fails simply has no table, and the two callers treat that
+   * differently on purpose ({@link ensureVariables} degrades, {@link
+   * variablesForWrite} refuses).
+   * @returns the table, or null when it could not be obtained.
+   */
+  async function refreshVariables() {
+    try {
+      const probed = await probe({ ...probeTarget(null), resolved: mergeLayers(emptyConfig(), null) });
+      const table = probed.variables !== null && typeof probed.variables === 'object' ? probed.variables : {};
+      state.variables = table;
+      state.variablesError = null;
+      return table;
+    } catch (error) {
+      state.variables = null;
+      state.variablesError = error?.message ?? String(error);
+      return null;
+    }
+  }
+
+  /**
+   * The cached variable table, obtained at most once per mount.
+   *
+   * The load path uses this: it must never fail a request, and a table it cannot
+   * obtain only costs the stricter half of the self-check (see
+   * {@link selfCheckConfig}).
+   * @returns the table, or null.
+   */
+  async function ensureVariables() {
+    if (state.variables !== null) return state.variables;
+    return refreshVariables();
+  }
+
+  /**
+   * The variable table a **write** validation must use.
+   *
+   * Always freshly probed: a name registered after this mount started must never
+   * be refused on a stale reading. A probe that fails is a `503`, never a silent
+   * "nothing is registered" — the refusal would then be a lie about the user's
+   * text rather than a statement about this process.
+   * @returns the table.
+   * @throws {OverrideError} `503 variable-lookup-failed`.
+   */
+  async function variablesForWrite() {
+    const table = await refreshVariables();
+    if (table === null) {
+      throw fail(
+        'variable-lookup-failed',
+        `cannot verify prompt variables, so this write is refused: ${state.variablesError ?? 'the assembly probe failed'}`,
+        503,
+      );
+    }
+    return table;
+  }
+
+  /**
+   * Push a switch value onto the live section definition.
+   *
+   * Idempotent by construction: it writes only when the value actually differs,
+   * so calling it on every request leaves no residue and no rewriting. It
+   * touches exactly one field of one object — the definition this plugin itself
+   * handed to `systemPrompt.section()` — and never a private service field.
+   * @param enabled - the requested value.
+   * @returns whether a write happened.
+   */
+  function applyInterpolateFlag(enabled) {
+    const definition = state.customDefinition;
+    if (definition === null) return false;
+    const next = enabled === true;
+    if (definition.interpolate === next) return false;
+    definition.interpolate = next;
+    return true;
+  }
+
+  /**
+   * The cached workspace layer that owns one session, or null.
+   * @param sessionId - the request's session id, or null.
+   * @returns the validated config, or null.
+   */
+  function workspaceConfigFor(sessionId) {
+    if (typeof sessionId !== 'string' || sessionId.length === 0) return null;
+    const { root } = workspaceRootFor(sessionId);
+    if (root === null) return null;
+    return state.workspaces.get(root)?.config ?? null;
+  }
+
+  /**
+   * Resolve the session's effective switch and push it onto the live section.
+   *
+   * Resolving it here rather than at registration is what makes the switch
+   * runtime-changeable: the section object is held by reference, and the shipped
+   * `assemble` copies `section.interpolate` fresh on every turn, so the value
+   * set here is what the **next** turn renders. No re-registration, no restart.
+   * @param sessionId - the request's session id, or null for the global view.
+   * @returns whether the definition changed.
+   */
+  function syncInterpolate(sessionId) {
+    if (state.customDefinition === null) return false;
+    return applyInterpolateFlag(
+      effectiveInterpolate(state.user.config ?? emptyConfig(), workspaceConfigFor(sessionId)),
+    );
+  }
+
+  /**
+   * Refuse to store an override whose text the shipped renderer would throw on
+   * (Revision 9).
+   *
+   * The decision is made from the **post-write** config of the layer being
+   * written plus the other layer as it stands, which is exactly the pair the
+   * assembly merges: text written into a layer that does not interpolate cannot
+   * throw, so it is not validated. Nothing is read from disk a second time and
+   * nothing is written here — the caller writes only after this returns.
+   * @param override - the normalized override about to be stored.
+   * @param next - the config the layer would hold after the write.
+   * @param target - the resolved write target from {@link targetFor}.
+   * @returns nothing.
+   * @throws {OverrideError} `400 unresolvable-variable`.
+   */
+  async function assertTextInterpolatable(override, next, target) {
+    if (override === null || override === undefined) return;
+    if (override.name !== CUSTOM_SECTION_NAME || override.action === 'hide') return;
+    const userFlag = target.root === null ? interpolateFlagOf(next) : interpolateFlagOf(state.user.config);
+    const workspaceFlag = target.root === null ? undefined : interpolateFlagOf(next);
+    if ((workspaceFlag ?? userFlag ?? false) !== true) return;
+    const owner = target.root === null
+      ? `the user layer (${target.path})`
+      : `the workspace layer (${target.path})`;
+    assertInterpolatable(override.text, await variablesForWrite(), owner);
+  }
+
+  /**
    * Re-read both layers from disk. This is the single point where a route
    * request touches the filesystem for reading, and it is deliberately the
    * *first* thing every handled request does — before any of it can fail.
@@ -789,6 +990,13 @@ function mount(ctx, config, cleanups) {
    *
    * It is never reached from the assembly path: the waterfall listener reads
    * this cache and nothing else (CONTRACT §5.5).
+   *
+   * It stays **synchronous and argument-free**: `test/route.test.mjs` asserts on
+   * its source shape ("the IO sits in `refreshLayers()`, at the top of the
+   * handler"), and Revision 9 does not widen that. The two Revision 9 steps that
+   * need more than a file read live next to the call instead — the variable
+   * table is awaited before it (so the self-check has one) and the switch is
+   * pushed after it (so it can name the session).
    */
   function refreshLayers() {
     refreshUser();
@@ -1122,6 +1330,17 @@ function mount(ctx, config, cleanups) {
           enabled: workspace.config !== null,
           path: workspace.path,
           reason: workspace.config === null ? workspace.reason : null,
+        },
+        // Revision 9. `effective` is what this session's assembly will do;
+        // `user`/`workspace` are the layers' own stated values (`null` when a
+        // layer states nothing, which is not the same as `false` and is what
+        // makes "the workspace inherits the user layer" visible to the browser).
+        // It lives under `layers` rather than at the top level so a Revision 8
+        // client's exact-key assertion on the snapshot body still holds.
+        interpolate: {
+          effective: effectiveInterpolate(userConfig, workspace.config),
+          user: interpolateFlagOf(state.user.config) ?? null,
+          workspace: interpolateFlagOf(workspace.config) ?? null,
         },
       },
       experiments: EXPERIMENTS,
@@ -1494,6 +1713,16 @@ function mount(ctx, config, cleanups) {
       }
       const current = writableConfig(target.path);
       targets[name] = target;
+      // Revision 9: the document's「我的 Prompt」text is validated against the
+      // live variable table before the plan is even built, so a refused import
+      // writes no layer at all — and the `?dryRun=true` branch answers exactly
+      // what the real run would answer, which is the rule this route already
+      // follows for the write lock.
+      await assertTextInterpolatable(
+        (Array.isArray(imported) ? imported : []).find((entry) => entry?.name === CUSTOM_SECTION_NAME),
+        current,
+        target,
+      );
       plans[name] = planImport({ imported, current, mode });
     }
     const importedNames = Object.keys(plans);
@@ -1589,6 +1818,122 @@ function mount(ctx, config, cleanups) {
   }
 
   /**
+   * Refuse to open the switch while a layer already on disk carries text the
+   * shipped renderer would throw on (Revision 9).
+   *
+   * The switch is inherited: a workspace layer that states nothing inherits the
+   * user layer, so opening the user layer arms **every** workspace layer that
+   * did not explicitly close it. That is why the check covers the whole visible
+   * set rather than the one layer being written — a bomb in an unrelated
+   * workspace is exactly the "historical text" risk the switch introduces, and
+   * the refusal names the file and the way out.
+   *
+   * A layer that explicitly states OFF is skipped: nothing inherits into it, so
+   * its text cannot throw.
+   * @param targetRoot - the workspace root being written, or null for the user
+   *   layer. That layer is checked as OPEN, because that is what is being asked
+   *   for.
+   * @param variables - the freshly probed variable table.
+   * @throws {OverrideError} `400 unresolvable-variable`.
+   */
+  function assertStoredTextsInterpolatable(targetRoot, variables) {
+    const names = Object.keys(variables);
+    const faults = [];
+    const check = (owner, config, open) => {
+      if (!open) return;
+      const text = customTextOf(config);
+      if (text === null) return;
+      const { errors } = lintPromptText(text, variables, { assumeUnknown: true });
+      if (errors.length > 0) faults.push(describeInterpolateErrors(errors, owner, names));
+    };
+    const userOpen = targetRoot === null ? true : interpolateFlagOf(state.user.config) === true;
+    check(`the user layer (${state.user.path})`, state.user.config, userOpen);
+    for (const [root, layer] of state.workspaces) {
+      const open = root === targetRoot ? true : (interpolateFlagOf(layer.config) ?? userOpen);
+      check(`the workspace layer (${layer.path})`, layer.config, open);
+    }
+    if (faults.length === 0) return;
+    throw fail(
+      'unresolvable-variable',
+      `variable substitution cannot be enabled: ${faults.join(' ')}`,
+      400,
+    );
+  }
+
+  /**
+   * `GET /prompt-setting/interpolate` — the switch's value, per layer and
+   * effective.
+   *
+   * `variables` is the assembled variable table's key set, or `null` when this
+   * mount could not obtain one; the browser uses it to say what is available
+   * instead of guessing. `variablesError` says why when it is null.
+   * @param url - the parsed request URL.
+   * @param res - the Node response.
+   */
+  function handleReadInterpolate(url, res) {
+    const sessionId = url.searchParams.get('session');
+    const workspace = workspaceContext(sessionId);
+    sendJson(res, 200, {
+      ok: true,
+      interpolateCustom: effectiveInterpolate(state.user.config ?? emptyConfig(), workspace.config),
+      layers: {
+        user: interpolateFlagOf(state.user.config) ?? null,
+        workspace: interpolateFlagOf(workspace.config) ?? null,
+      },
+      variables: state.variables === null ? null : Object.keys(state.variables),
+      variablesError: state.variablesError,
+    });
+  }
+
+  /**
+   * `PUT /prompt-setting/interpolate` — open or close the switch.
+   *
+   * Order is the whole safety story, and it is the same order every other write
+   * route uses: shape, then policy, then the current file, then the check that
+   * can only be done with a live assembly, and only then a byte. A refusal
+   * therefore leaves both layers byte-identical
+   * (`test/route.test.mjs` hashes them around every rejection).
+   *
+   * Opening additionally validates the text **already stored**, because turning
+   * the switch on is what turns an old `{{typo}}` into a per-turn throw; closing
+   * validates nothing, because closing can only ever make text safer.
+   * @param req - the Node request.
+   * @param url - the parsed request URL.
+   * @param res - the Node response.
+   */
+  async function handleWriteInterpolate(req, url, res) {
+    const body = await readJsonBody(req);
+    if (typeof body?.enabled !== 'boolean') {
+      throw fail('invalid-enabled', '"enabled" must be a boolean (true opens the switch, false closes it)');
+    }
+    const enabled = body.enabled;
+    const layer = body?.layer === undefined || body?.layer === null ? 'user' : body.layer;
+    if (!LAYERS.includes(layer)) {
+      throw new OverrideError('unknown-layer', `"layer" must be one of ${LAYERS.join(', ')}`);
+    }
+    const sessionId = typeof body?.session === 'string' && body.session.length > 0
+      ? body.session
+      : url.searchParams.get('session');
+    const target = targetFor(layer, sessionId);
+    const current = writableConfig(target.path);
+    if (enabled) assertStoredTextsInterpolatable(target.root, await variablesForWrite());
+    const next = enabled ? withSwitch(current, true) : withoutSwitch(current);
+    writeConfig(target.path, next);
+    cacheWritten(target, next);
+    // Effective from the NEXT turn: the definition is held by reference and the
+    // shipped assemble copies `interpolate` into the assembly it is about to
+    // render, so this write is what that render reads.
+    syncInterpolate(sessionId);
+    sendJson(res, 200, {
+      ok: true,
+      interpolateCustom: state.customDefinition !== null && state.customDefinition.interpolate === true,
+      layer,
+      saved: { enabled },
+      effectiveFrom: 'next-turn',
+    });
+  }
+
+  /**
    * `PUT /prompt-setting/overrides` — upsert one override into one layer.
    *
    * Since Revision 7 the write face is one section wide: the body's name must
@@ -1617,6 +1962,12 @@ function mount(ctx, config, cleanups) {
     const at = current.overrides.findIndex((entry) => entry.name === override.name);
     const before = at === -1 ? null : current.overrides[at];
     const next = upsertOverride(current, override);
+    // Revision 9: when this layer interpolates, the text about to be written is
+    // checked against the live variable table BEFORE any byte moves, so a
+    // refusal leaves the file byte-identical. The check is decided from the
+    // layer's own post-write switch, not from a request-wide one: text written
+    // into a layer that is closed cannot throw.
+    await assertTextInterpolatable(override, next, target);
     writeConfig(target.path, next);
     cacheWritten(target, next);
     // History is written after the config it describes, and a history failure
@@ -1787,7 +2138,7 @@ function mount(ctx, config, cleanups) {
   function handleLegacyClear(layer, sessionId, res) {
     const target = targetFor(layer, sessionId);
     const current = writableConfig(target.path);
-    const { removed, next } = legacyPlan(current.overrides);
+    const { removed, next } = legacyPlan(current.overrides, interpolateFlagOf(current));
     if (removed.length === 0) {
       sendJson(res, 200, {
         ok: true,
@@ -1878,7 +2229,15 @@ function mount(ctx, config, cleanups) {
             // peers, before anything can fail. This is what makes an external
             // edit visible without a remount, and what bounds a cache/file
             // desync to the request that failed (CONTRACT §5.5).
+            //
+            // Revision 9 wraps the same read in the two steps that need an
+            // assembly: the variable table is obtained first (so the load-time
+            // self-check has the names it must judge against, once per mount),
+            // and the effective switch is pushed onto the live section last (so
+            // it can name the session whose workspace layer it must honour).
+            await ensureVariables();
             refreshLayers();
+            syncInterpolate(url.searchParams.get('session'));
             if (url.pathname === PING_PATH) {
               // Same request that probes also reports: the browser half appends
               // `?renderer=<primitives|fallback>`, so the page it renders settles
@@ -1916,6 +2275,11 @@ function mount(ctx, config, cleanups) {
             }
             if (url.pathname === IMPORT_PATH) {
               await handleImport(req, url, res);
+              return;
+            }
+            if (url.pathname === INTERPOLATE_PATH) {
+              if (req.method === 'PUT') await handleWriteInterpolate(req, url, res);
+              else handleReadInterpolate(url, res);
               return;
             }
             if (req.method === 'GET') {
@@ -1987,16 +2351,38 @@ function mount(ctx, config, cleanups) {
   // (its table's maximum is 10200); another plugin may still place itself
   // after this one, which is the documented limit of what `order` promises.
   //
+  // Revision 9 keeps the **definition object** the service was handed, in
+  // `state.customDefinition`. `NamedEntries` stores it by reference and every
+  // `assemble` re-reads `section.interpolate` off it, so flipping that one field
+  // changes what the next turn renders — no re-registration, no restart, and no
+  // write to any private service field (CONTRACT §16.2).
+  //
   // The disposer is accounted for exactly like the other two: it is the
   // `systemPrompt.section()` effect's own disposer, so unloading the plugin —
   // or a later step of this mount failing — removes the registration instead of
-  // leaving a name in the global layer that a remount would collide with.
+  // leaving a name in the global layer that a remount would collide with. It
+  // also clears the reference, so a disposed mount can never keep steering a
+  // definition the service no longer owns.
   registerEffect(
     ctx,
     cleanups,
-    () => disposerOf(ctx.systemPrompt.section(customSection())),
-    `prompt-setting: reserved section ${CUSTOM_SECTION_NAME} (order ${CUSTOM_SECTION_ORDER}, empty)`,
+    () => {
+      const definition = customSection();
+      const dispose = disposerOf(ctx.systemPrompt.section(definition));
+      state.customDefinition = definition;
+      return () => {
+        state.customDefinition = null;
+        dispose();
+      };
+    },
+    `prompt-setting: reserved section ${CUSTOM_SECTION_NAME} (order ${CUSTOM_SECTION_ORDER}, switchable)`,
   );
+
+  // Revision 9: apply whatever the layers already state, before `mount`
+  // returns. The initial layer read above ran before the section existed, so
+  // this is the one place the two facts meet — which is what makes the switch
+  // survive a restart rather than only a route request.
+  syncInterpolate(null);
 }
 
 /** Re-exported so tests and the client can assert the frozen action set. */

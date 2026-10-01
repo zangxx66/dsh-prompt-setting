@@ -16,7 +16,7 @@
  * @module dsh-prompt-setting/core/transfer
  */
 
-import { OverrideError, fail, validateConfig, validateOverride } from './overrides.js';
+import { OverrideError, fail, interpolateFlagOf, validateConfig, validateOverride, withInterpolate } from './overrides.js';
 
 /** The `schema` marker every export carries. */
 export const EXPORT_SCHEMA = 'dsh-prompt-setting/export';
@@ -210,7 +210,7 @@ export function planImport({ imported, current, mode = 'merge' }) {
   counts.kept = next.filter((entry) => !kept.has(entry.name)).length;
 
   return {
-    next: { version: 1, overrides: next },
+    next: withInterpolate({ version: 1, overrides: next }, interpolateFlagOf(current)),
     changes: ordered,
     counts,
     removed,
