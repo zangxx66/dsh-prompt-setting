@@ -2960,6 +2960,11 @@ export 只含保留名且显式声明省略、加上 `test/custom.test.mjs` 的 
   的 R7 用例组：`ctx.plugin(SystemPrompt)` + 真 `assemble()` + 真 `renderPrompt`），
   但「重启后的 `dsh web` 把它装配进实际发出去的 prompt」需要一个宿主重启才能观察，
   本轮**没有重启**（brief 明令禁止）⇒ 按未验证项记录。
+  > **更正（2026-09-29，真机已验）**：本条已闭合。负责人重启 `dsh web` 后，主管在真外壳内实测：
+  > `GET /snapshot` 的 `base.sections` 末项即 `prompt-setting:custom-prompt`（`text:""`，`baseCount=11`）；
+  > 页面保存文本后该段 `applied:true` / `action:"replace"` / `overrideLayer:"user"`，且最终 `rendered` 含该文本；
+  > 点「恢复默认」后段回到空、`overrides.json` SHA-256 逐字节回到原值。证据见 `.dsh-graph` 的
+  > `versions/v0.1.0/goals/g-014/goal.md`「§七·补」与 g-014 评论区。
 - **多轮真实会话中的持久性未验证**：本轮的证据是「同一进程内多次 `assemble()` 一致」，
   不是「跨重启/跨会话一致」。
 - **`complete:true` scope 下的最终行为只在离线双桩与真包 `assemble()` 两种路径验证**；
@@ -3103,6 +3108,9 @@ checkout 会把整个改动回滚掉），并用 `shasum -a 256 -c` 确认逐字
   但**宿主仍是 Revision 6 的**（新路由 `?legacy=true` 需要重启 `dsh web` 才注册），因此真机只验证了
   「四个 tab 可见可切 / 默认 tab 正确 / 「我的 Prompt」能保存」（保存走的是 Revision 3 就有的 `PUT`），
   `legacy=true` 的真机返回值标「未验证（需重启）」。
+  > **更正（2026-09-29，真机已验）**：本条已闭合。宿主重启后主管实测新路由：空层 `?legacy=true` ⇒
+  > 200 `count:0` / `history:null`；`reset=true&legacy=true` 同时给 ⇒ 400 `conflicting-query`；
+  > `?reset=true` 原语义不变。证据见 `.dsh-graph` 的 `goals/g-014/goal.md`「§七·补」与 g-015 评论区。
 - **滚动手感与 VoiceOver 层级朗读未验证**：tab 切换后的焦点位置、`SegmentedTabs` 在真实 DSH 里的键盘行为
   没有在真机上逐项走查（本机只做了 CDP DOM 探针，不做朗读）。
 - **`mine-frozen` 的两种来源未在真机分别复现**：一种是 `frozenScope:"session"` + `frozen:true`，
@@ -3276,6 +3284,10 @@ its archived note and its search hint`、`session selector: the flat fallback sa
 - **外壳内的首屏几何未测**（本 attempt 的硬约束，不是遗漏）：`data-region="tabs"` 的 y 坐标、tab 面板是否
   真的落在折线以上，必须在合并进 `v0.1.0-test` 后由主管走 HMR 量。本轮只提供**离线预算 70px ≤ 80px** 与
   结构判据（1 行 + 1 按钮）。
+  > **更正（2026-09-29，真机已量）**：本条已闭合。主管把改动合并进 `v0.1.0-test` 后，在真 `dsh web` 外壳内实测：
+  > 折叠态 `[data-region="session"]` 高 **60px**、`[data-region="tabs"]` 顶边 **y=316**、`tab-panel` 顶边 **y=354**
+  > （视口 900；改前分别是 789 / 1025）；点「更改」⇒ 533px / y=789 且会话行数 2；点一行会话 ⇒ 自动收回到 60px。
+  > ⇒ 本节第四节的**离线预算 70px 是保守上界**，真机实际 **60px**。证据见 `.dsh-graph` 的 `goals/g-016/goal.md` 与 g-016 评论区。
 - **未做独立真浏览器桩（CDP）补充证据**：g-015 用过「本地静态服务器 + React UMD + CDP」的手法，本轮**没做**
   —— 折叠带来的差异是**渲染树的有无**（离线断言已逐节点覆盖），而首屏几何属于外壳内的事，桩测不出结论；
   与其造一份不能回答关键问题的证据，不如把这一项如实交给主管。
@@ -3392,6 +3404,11 @@ g-014 用 `order: 1000000` 让保留段排在**所有注册段**的最后，真�
   本轮按硬性禁止**没有重启**，因此「重启后最终 prompt 最后一段 = 保留段」**没有**真机证据。请主管在下次
   重启后把 `data-build` 与快照/渲染文本的最后一项一起看（快照 `base.sections` 的那一条**不会**变，要看
   真实回合的渲染结果或 `assembly.sections` 的最后一项）。
+  > **更正（2026-09-29，真机已验）**：本条已闭合。负责人重启后主管在真 `dsh web` 外壳内实测：**未配置**时
+  > `effective.sections` 末项仍是 `dsh-expression:companion`（保留段空 ⇒ 不搬动，按引用原样返回）；**写入文本**后
+  > 保留段变成**末项**、`dsh-expression:companion` 退到倒数第二，且拼出的 `rendered` **真以用户文本结尾**；
+  > 点「恢复默认」⇒ 顺序复原、`overrides.json` SHA-256 前后一致。证据见 `.dsh-graph` 的 `goals/g-017/goal.md`、
+  > g-017 评论区与长期记忆 `INDEX.md` §七。
 - **残余边界 ②（挂载后再 prepend 的第三方）是推演 + 间接证据**：结论来自 `@deepseek-ai/cordis@4.0.4`
   `register()` 的 `unshift` 语义与 §6·E2 的实测语义，以及负向对照 ③（去掉 `prepend` ⇒ 追加段回到最后）
   的对照；本轮**没有**构造一个真机第三方插件去实测它。
