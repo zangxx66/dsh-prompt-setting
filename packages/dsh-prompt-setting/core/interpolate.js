@@ -25,6 +25,22 @@
  *   the text: a probe with no active agent leaves agent-scoped providers
  *   valueless, and refusing the save would make the switch unusable whenever no
  *   session is running. Reported, never silently dropped (see CONTRACT §16.3).
+ * - *state*: the switch's three-valued form (Revision 12, §16.8) — `inherit`
+ *   (the key is absent), `on` (`true`), `off` (`false`). The two-valued
+ *   `boolean` form is the legacy spelling of `on`/`inherit`.
+ *
+ * Revision 12 (the independent audit's F1/F2/F4) changed three things here and
+ * nothing about the validator's strictness:
+ * - {@link anyStatesOn} supplies the cross-layer half of the F1 verdict. The
+ *   verdict itself belongs to the text, not to the write target: `index.js`
+ *   asks, per text, whether it can reach an assembly that interpolates. For the
+ *   **user** text — merged into every session that has no workspace entry of its
+ *   own — that question reduces to "does the user layer or any visible workspace
+ *   layer state ON", which is exactly this predicate (§16.4);
+ * - {@link describeWarnings} gives the previously discarded `warnings` a shape
+ *   the route can put on the wire and the browser can render (§16.3);
+ * - {@link withState} / {@link switchStateOf} add the explicit-OFF write that
+ *   {@link withoutSwitch} cannot express (§16.8).
  *
  * @module dsh-prompt-setting/core/interpolate
  */
@@ -225,19 +241,48 @@ export function describeInterpolateErrors(errors, owner, variableNames) {
 }
 
 /**
- * Refuse a text the shipped renderer would throw on.
+ * Turn the non-fatal advisory events into a bounded, wire-safe list.
+ *
+ * One entry per reference, in scan order, capped like the refusal message so a
+ * pathological text cannot turn a response into a data dump. The `message` is
+ * prose the browser may show verbatim; `name` and `kind` are for the copy the
+ * page builds itself (Revision 12, audit F2 — CONTRACT §16.3).
+ * @param warnings - the `undefined-value` events from {@link lintPromptText}.
+ * @param owner - what the text belongs to.
+ * @returns `[{name, kind, code, message}]`.
+ */
+export function describeWarnings(warnings, owner) {
+  const list = Array.isArray(warnings) ? warnings : [];
+  return list.slice(0, 3).map((event) => ({
+    name: event.name === null || event.name === undefined ? null : String(event.name),
+    kind: event.kind,
+    code: 'unresolved-at-save',
+    message: `${owner} references \`{{${String(event.name)}}}\`, which is registered but has no value in the `
+      + 'assembly this process probed. The save was accepted because the value belongs to the session, not to the '
+      + 'text — but a turn without that value will fail to assemble.',
+  }));
+}
+
+/**
+ * Refuse a text the shipped renderer would throw on, and report the rest.
  *
  * Only the fatal class is refused. An `undefined` value is a property of the
  * assembly that was probed, not of the text, so it is reported to the caller as
  * a warning and the write proceeds (CONTRACT §16.3).
+ *
+ * Revision 12 (audit F2): the warnings are **returned**, not dropped. The route
+ * puts them in the write/enable response and the browser renders them, because
+ * "accepted but this one reference has no value in the probed assembly" is a
+ * fact the user cannot discover any other way.
  * @param text - the section text about to be written.
  * @param variables - the assembled variable table.
  * @param owner - what the text belongs to (goes into the message).
+ * @returns `{warnings}` — the advisory events (never fatal, possibly empty).
  * @throws {OverrideError} `400 unresolvable-variable`.
  */
 export function assertInterpolatable(text, variables, owner) {
-  const { errors } = lintPromptText(text, variables, { assumeUnknown: true });
-  if (errors.length === 0) return;
+  const { errors, warnings } = lintPromptText(text, variables, { assumeUnknown: true });
+  if (errors.length === 0) return { warnings: describeWarnings(warnings, owner) };
   const names = variables !== null && typeof variables === 'object' ? Object.keys(variables) : [];
   throw fail(UNRESOLVABLE_VARIABLE, describeInterpolateErrors(errors, owner, names), 400);
 }
@@ -262,15 +307,22 @@ export function selfCheckConfig(config, variables, owner) {
   if (text === null) return { flag, error: null };
   const { errors } = lintPromptText(text, variables);
   if (errors.length === 0) return { flag, error: null };
+  return { flag, error: { code: UNRESOLVABLE_VARIABLE, message: describeLayerDisabled(errors, variables, owner) } };
+}
+
+/**
+ * The load-time degradation reason for one layer (Revision 12 keeps this text
+ * in one place: the per-layer self-check and the cross-layer pass that F1 adds
+ * must word the same verdict the same way).
+ * @param errors - the fatal events from {@link lintPromptText}.
+ * @param variables - the assembled variable table, or null.
+ * @param owner - what the text belongs to.
+ * @returns the `reason` string stored on the degraded layer.
+ */
+export function describeLayerDisabled(errors, variables, owner) {
   const names = variables !== null && typeof variables === 'object' ? Object.keys(variables) : [];
-  return {
-    flag,
-    error: {
-      code: UNRESOLVABLE_VARIABLE,
-      message: `${describeInterpolateErrors(errors, owner, names)} `
-        + 'The layer was disabled so the real assembly keeps working.',
-    },
-  };
+  return `${describeInterpolateErrors(errors, owner, names)} `
+    + 'The layer was disabled so the real assembly keeps working.';
 }
 
 /**
@@ -296,4 +348,66 @@ export function withoutSwitch(config) {
   const next = { ...config };
   delete next[INTERPOLATE_FLAG];
   return next;
+}
+
+/**
+ * The switch's three states, in the order the browser offers them
+ * (Revision 12, audit F4 — CONTRACT §16.8).
+ */
+export const INTERPOLATE_STATES = Object.freeze(['inherit', 'on', 'off']);
+
+/**
+ * Read one config's three-valued switch state.
+ *
+ * The three states are not decoration: with only two, a workspace layer cannot
+ * express「explicitly OFF」and therefore cannot close a switch the user layer
+ * opened — the UI would show OFF while the session really inherits ON.
+ * @param config - a validated config, or anything else.
+ * @returns `inherit` (no key), `on` (`true`) or `off` (`false`).
+ */
+export function switchStateOf(config) {
+  const flag = interpolateFlagOf(config);
+  if (flag === undefined) return 'inherit';
+  return flag === true ? 'on' : 'off';
+}
+
+/**
+ * State one of the three switch values on a rebuilt config.
+ *
+ * `inherit` **deletes** the key, which is what keeps the legacy revert exact: a
+ * layer that never declared the switch is byte-identical after on→off. `off`
+ * writes the boolean `false`, which `withSwitch` deliberately cannot express —
+ * that is the whole point of Revision 12's F4.
+ * @param config - the config to write.
+ * @param state - `inherit` | `on` | `off`.
+ * @returns the config to persist.
+ */
+export function withState(config, state) {
+  if (state === 'on') return withInterpolate(config, true);
+  if (state === 'off') return withInterpolate(config, false);
+  return withoutSwitch(config);
+}
+
+/**
+ * The F1 verdict: does **any** visible layer state the switch on?
+ *
+ * Revision 12 replaces the old per-layer question ("does the layer being
+ * written interpolate?") with this one. The old question had a pure-UI bypass:
+ * a text could be stored into a layer that was closed *at that moment* and then
+ * be armed later by a flag on another layer, and the write that armed it only
+ * checked its own layer. Since the user layer is merged into every session and a
+ * workspace layer can be armed by the user layer's flag, the honest reading of
+ * "could this text make a real assembly throw?" is the union over the layers,
+ * not the write target.
+ *
+ * Deliberately conservative: a layer that explicitly states OFF is still
+ * checked, because over-refusing is explainable and repairable while a missed
+ * unregistered reference is a session whose prompt cannot be built at all
+ * (CONTRACT §16.4).
+ * @param configs - the visible layer configs (any values).
+ * @returns whether at least one of them states `true`.
+ */
+export function anyStatesOn(configs) {
+  const list = Array.isArray(configs) ? configs : [];
+  return list.some((config) => interpolateFlagOf(config) === true);
 }

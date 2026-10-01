@@ -172,10 +172,12 @@ cd packages/dsh-prompt-setting && node --test
 
 ### 8.1 开关长什么样
 
-- 载体：任一层 `overrides.json` 顶层的布尔字段 `interpolateCustom`。**字段缺失 = 关闭**，这也是所有旧配置文件的形态；
-- 优先级：工作区层「显式声明」优先于用户层；工作区层未声明则**继承**用户层；两层都未声明 = 关闭；
-- 运行时切换：`index.js` 持有交给 `systemPrompt.section()` 的那个定义对象，开关变化时改它的 `interpolate` 字段。Host 的 `NamedEntries` 按引用保存该对象，且每轮 `assemble` 都会现读 `section.interpolate`，所以**下一个回合即生效**，不需要重启、不需要重新注册；
-- 关闭时把字段从文件里**删掉**，因此开→关→开后配置文件逐字节回到开启前。
+- 载体：任一层 `overrides.json` 顶层的布尔字段 `interpolateCustom`。它是**三态**的：字段缺失 = `inherit`（本层不声明）、`true` = 显式开、`false` = 显式关。这也是所有旧配置文件的形态（缺失）；
+- 优先级：工作区层「显式声明」优先于用户层；工作区层未声明则**继承**用户层；两层都未声明 = 关闭。因此工作区层的 `false` 可以关掉用户层打开的开关；
+- 运行时切换（Revision 12 修正）：**装配时按本次 context 现场决定**，`index.js` 的 `applyAssemblyInterpolate` 从这次 dispatch 已解析的配置取合并后的 flag，写进**本次** `sections` 里保留段的 `interpolate`。保留段仍以 `interpolate: false` 注册作为兜底；
+  - Revision 11 曾把「最后一次 HTTP 请求解析出的值」写进那个全局定义对象，那在多会话/多工作区下不成立（无 session 的 ping 会把已开的工作区层关回去），且 shipped `assemble()` 在任何 listener 之前就把 `section.interpolate` 拷进了本次装配，所以在 listener 里改全局对象对**本次**装配本来就无效；
+  - `state.customDefinition.interpolate` 现在只作「无 scope 视图」的镜像，装配路径不读它；
+- 关闭时把字段从文件里**删掉**（即回到 `inherit`），因此「从未声明过」的层开→关→开后配置文件逐字节回到开启前；想表达「显式关」要用 `PUT {"state":"off"}`。
 
 ### 8.2 打开后，写入侧会拦什么
 
@@ -191,13 +193,20 @@ cd packages/dsh-prompt-setting && node --test
 | `{{cwd}}` 且值为 `null` | 拼成字符串 `null`，**不抛** | 接受，不报警 |
 | `{{unclosed`（后面再没有 `}}`） | 散文，不视为引用 | 接受，不报警 |
 
-校验在**任何字节落盘之前**执行：`PUT /prompt-setting/overrides` 与 `POST /prompt-setting/import`（含 `?dryRun=true`）被拒时，两层文件的 SHA-256 前后一致（`test/route.test.mjs` 固化）。**开启动作本身**也会先校验已经存好的两层文本——一个旧的 `{{typo}}` 在关闭态无害，一开启就成了炸弹，所以不合规时直接拒绝开启并给出修复路径。
+判定口径（Revision 12 修正，审计 F1）：**不是「被写那一层开没开」，而是「这段文本能不能到达一个会插值的装配」**。
+
+- 用户层文本会被并进每个自身没有同名片段的会话，所以只要用户层或**任一可见工作区层**声明了 `true`，它就算被武装（略保守：某个声明 `true` 的工作区若自带该段文本，其实用不到用户层的，这里仍然拒绝——审计的「工作区开着时写用户层」正是这一类）；
+- 工作区层文本只在该工作区自己的会话里渲染，所以按 `effectiveInterpolate(用户层, 该工作区层)` 判定。**显式关掉的层**因此是唯一能证明「其字面量 `{{...}}` 到不了任何插值装配」的形态，它的写入不被拒——这正是「显式关」值得存在的原因；
+- 旧口径（只看被写层）有纯 UI 可达的绕过：关闭态写入的文本，之后被**另一层**打开时的校验漏掉，于是那层会话每轮抛错。审计的三条路由级复现（两步绕过 / 反向写用户层 / import 到用户层）已固化为回归测试。
+
+校验在**任何字节落盘之前**执行：`PUT /prompt-setting/overrides` 与 `POST /prompt-setting/import`（含 `?dryRun=true`）被拒时，两层文件的 SHA-256 前后一致（`test/route.test.mjs` 固化）。**开启动作本身**也会先校验这次变更会武装的每一层既有文本——一个旧的 `{{typo}}` 在关闭态无害，一开启就成了炸弹，所以不合规时直接拒绝开启并给出修复路径。
 
 ### 8.3 唯一的软化：`undefined` 值只警告不拒绝
 
 `provider` / `model` / `cwd` 三个变量都按 `context.agent` 求值（§2），没有 Agent 的装配（例如无会话的探针）拿到 `undefined`。此时「这个名字已注册但当前无值」是**装配的属性，不是文本的属性**：
 
 - 写入侧把它记为**警告**并放行。若硬拒，则没有活跃会话时根本无法保存——而同一段文本在真实会话里可能是完全安全的；
+- 这个警告是**下发到响应里**的（Revision 12，审计 F2）：`PUT /prompt-setting/overrides`、开启态的 `PUT /prompt-setting/interpolate`、`POST /prompt-setting/import`（含 dryRun）在非空时带 `warnings: [{name, kind, code, message}]`（≤3 条），客户端在「我的 Prompt」里就地呈现，不再算完就丢；
 - 加载期自检同样只对**致命**类别降级，不因 `undefined` 停用整层；
 - 严格的四条件判定（`undefined` 也算抛错）**仍然实现并有测试**（`core/interpolate.js` 的 `scanThrowingReference`，`test/interpolate.test.mjs` 与 `test/integration.test.mjs` 对真实 `renderPrompt` 固化），只是不用于「拒绝写入」这个决策。
 
@@ -205,13 +214,15 @@ cd packages/dsh-prompt-setting && node --test
 
 ### 8.4 历史文本与加载期
 
-- 开启前校验两层既有文本（工作区层里显式声明 `false` 的跳过，因为不会有东西继承进去）；
+- 开启前校验这次变更会武装的每一层既有文本（按 §8.2 的口径：显式 `false` 的工作区层在它自己的作用域内不会插值，因此跳过）；
 - 已经带着炸弹落到磁盘的配置（手改、同步工具、停机期间写入）在**加载期**被**降级 + 给原因**：该层 `config: null`、`error.code = unresolvable-variable`，快照上表现为 `layers.<层>.enabled = false` 并带 reason。它不是「文件非法」（不是 `invalid-config`），也**不静默放行**；
+- Revision 12（审计 F1）补上了**跨层**那一半：Layer 自身 flag 的自检看不到「未声明的层被另一层的 `true` 武装」这种形态，所以 `enforceVisibleTextsSafe` 在两层都读完后按 §8.2 的口径再查一遍（每次重新读某一层之后也查：`?session=` 视图会重读它那个工作区层）；
+- **降级是整层的**（不是只摘掉有问题那一条），这是有意的取舍：它就是 `missing-file` 范式，且插件不会改写用户的文件。Revision 12（审计 F5）保证的是**可感知**——「我的 Prompt」面板就地显示被停用层的原因与修复路径（`data-warning="mine-layer-disabled"`），而不是只躺在「高级」的状态区里；
 - 本轮还没有变量表时（mount 后的第一个请求、或探针失败的 profile），加载期只查语法类问题——一次探针失败绝不能停用用户的层。
 
 ### 8.5 预览一致性
 
-预览用的就是 `section.interpolate`，所以开关一开，保留段的引用自动从 `unresolvedLiteral` 变成 `unresolvedThrowing`，`renderedResolved` 随之变 `false`：
+预览用的就是 `section.interpolate`，而快照自己的探针也要经过装配 listener（Revision 12，§16.2），所以它读到的就是该会话真实装配会用的那个值：开关一开，保留段的引用自动从 `unresolvedLiteral` 变成 `unresolvedThrowing`，`renderedResolved` 随之变 `false`：
 
 | 开关 | 保留段 | `unresolvedThrowing` | `unresolvedLiteral` | `renderedResolved` |
 | --- | --- | --- | --- | --- |

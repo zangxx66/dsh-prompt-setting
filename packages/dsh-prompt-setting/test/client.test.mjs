@@ -73,6 +73,8 @@ const ERROR_CODES = [
   'unresolvable-variable',
   'invalid-enabled',
   'variable-lookup-failed',
+  // Revision 12 three-state spelling (CONTRACT.md §16.8).
+  'invalid-state',
 ];
 
 /**
@@ -5569,4 +5571,210 @@ test('g-026 client: the workspace layer needs a session before its switch can be
   // And a click does not even reach the transport.
   const before = page.router.calls.filter((call) => call.url.startsWith(PATHS.interpolate)).length;
   assert.equal(before, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Revision 12 (g-026 att-002): the audit's F2/F4/F5 on the panel.
+//
+// F4 — the layer needs THREE states, and the inherited-ON case has to be named:
+//      with only two, "turn it off" on a layer that states nothing is a click
+//      that changes nothing while the session keeps interpolating.
+// F2 — the advisories the host returns with an accepted write have to be on
+//      screen; a dropped warning is a user who never learns that one turn will
+//      fail to assemble.
+// F5 — a degraded layer contributes nothing, so the panel says so (and how to
+//      recover) where the text box is.
+// ---------------------------------------------------------------------------
+
+test('g-026 rev12 client: the layer state control offers inherit/on/off and selects the host one', async () => {
+  const page = enPage({
+    responses: defaultResponses({
+      [PATHS.snapshot]: { payload: withSwitch(snapshotFixture(), { effective: true, user: null, workspace: true }) },
+    }),
+  });
+  const rec = recorder(page);
+  await rec.take();
+  const tree = rec.last();
+
+  // The user layer states nothing while the effective value is ON: the state the
+  // old toggle could not distinguish from OFF.
+  const choice = (value) => oneBy(tree, 'data-mine-interpolate-set', value);
+  assert.deepEqual(
+    ['inherit', 'on', 'off'].map((value) => choice(value).props['data-mine-interpolate-set-active']),
+    ['true', 'false', 'false'],
+  );
+  oneBy(tree, 'data-warning', 'mine-interpolate-inherited');
+  assert.match(renderedStrings(tree), /inherits ON/, 'the consequence is spelled out, not implied');
+  assert.match(renderedStrings(tree), /writes false/, 'and so is what the third state does');
+
+  // Clicking "off" writes the boolean false — the state the toggle cannot express.
+  clickButton(tree, { 'data-action': 'mine-interpolate-state', 'data-mine-interpolate-set': 'off' });
+  await rec.take();
+  const calls = page.router.calls.filter((call) => call.url.startsWith(PATHS.interpolate));
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].init.method, 'PUT');
+  assert.deepEqual(JSON.parse(calls[0].init.body), { state: 'off', layer: 'user' });
+  // The toggle keeps its two-valued spelling: on→off is still an exact revert.
+  const toggle = oneBy(rec.last(), 'data-action', 'mine-interpolate');
+  assert.equal(toggle.props['aria-pressed'], 'true');
+});
+
+test('g-026 rev12 client: a layer that states OFF is shown as OFF, and the state control can set it back', async () => {
+  const page = enPage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({
+      [PATHS.snapshot]: { payload: withSwitch(snapshotFixture(), { effective: false, user: true, workspace: false }) },
+    }),
+  });
+  const rec = recorder(page);
+  await rec.take();
+  clickTab(rec.last(), 'mine-layer', 'workspace');
+  await rec.take();
+  const tree = rec.last();
+
+  const choice = (value) => oneBy(tree, 'data-mine-interpolate-set', value);
+  assert.equal(choice('off').props['data-mine-interpolate-set-active'], 'true');
+  assert.equal(choice('inherit').props['data-mine-interpolate-set-active'], 'false');
+  assert.equal(choice('inherit').props.disabled, false, 'a session is selected, so the workspace layer is writable');
+
+  clickButton(tree, { 'data-action': 'mine-interpolate-state', 'data-mine-interpolate-set': 'inherit' });
+  await rec.take();
+  const calls = page.router.calls.filter((call) => call.url.startsWith(PATHS.interpolate));
+  assert.equal(calls.length, 1);
+  assert.deepEqual(JSON.parse(calls[0].init.body), { state: 'inherit', layer: 'workspace', session: 's2' });
+});
+
+test('g-026 rev12 client: the advisories of an accepted save are rendered, not dropped', async () => {
+  const warned = {
+    ...overridesFixture(),
+    warnings: [
+      { name: 'model', kind: 'undefined-value', code: 'unresolved-at-save', message: 'registered but has no value' },
+    ],
+  };
+  const page = enPage({ responses: defaultResponses({ [PATHS.overrides]: { payload: warned } }) });
+  let tree = await page.flush();
+
+  // Nothing is claimed before a write has happened.
+  assert.equal(collect(tree, (node) => node.props && node.props['data-mine-warnings'] === 'true').length, 0);
+
+  typeInto(tree, 'mine-text', 'I am {{model}}');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+
+  oneBy(tree, 'data-warning', 'mine-warnings');
+  oneBy(tree, 'data-mine-warnings-list', 'true');
+  const shown = renderedStrings(tree);
+  assert.match(shown, /Saved, with references to note/, 'the heading says the save happened');
+  assert.match(shown, /reference model/, 'and names the reference');
+  // A successful save is still a successful save: the advisory is not an error.
+  assert.equal(markerOf(tree, 'data-mine-state'), 'saved');
+});
+
+test('g-026 rev12 client: an accepted switch write clears the advisories, and a new draft does too', async () => {
+  const warned = {
+    ok: true,
+    interpolateCustom: true,
+    layer: 'user',
+    state: 'on',
+    saved: { enabled: true, state: 'on' },
+    warnings: [{ name: 'model', kind: 'undefined-value', code: 'unresolved-at-save', message: 'no value' }],
+    effectiveFrom: 'next-turn',
+  };
+  const clean = { ...warned, warnings: [] };
+  let first = true;
+  const page = enPage({
+    responses: defaultResponses({
+      [PATHS.interpolate]: () => {
+        const payload = first ? warned : clean;
+        first = false;
+        return { payload };
+      },
+    }),
+  });
+  const rec = recorder(page);
+  await rec.take();
+
+  clickButton(rec.last(), { 'data-action': 'mine-interpolate' });
+  await rec.take();
+  const withAdvisory = rec.last();
+  oneBy(withAdvisory, 'data-warning', 'mine-warnings');
+
+  // A second write that carries none clears them rather than leaving a stale
+  // warning on screen for a state it no longer describes.
+  clickButton(rec.last(), { 'data-action': 'mine-interpolate' });
+  await rec.take();
+  assert.equal(
+    collect(rec.last(), (node) => node.props && node.props['data-mine-warnings'] === 'true').length,
+    0,
+    'no advisories ⇒ the block is gone',
+  );
+});
+
+test('g-026 rev12 client: a degraded layer is named, explained and given a way out (F5)', async () => {
+  const reason = 'unresolvable-variable: the user layer (/x/overrides.json) contains 1 prompt reference(s) that would make every assembly of the session throw (`{{nope}}`; unknown). Fix: delete the reference. The layer was disabled so the real assembly keeps working.';
+  const page = enPage({
+    responses: defaultResponses({
+      [PATHS.snapshot]: {
+        payload: snapshotFixture({
+          layers: {
+            ...snapshotFixture().layers,
+            user: { enabled: false, path: '/x/overrides.json', reason },
+            interpolate: { effective: false, user: null, workspace: null },
+          },
+        }),
+      },
+    }),
+  });
+  const tree = await page.flush();
+
+  oneBy(tree, 'data-warning', 'mine-layer-disabled');
+  oneBy(tree, 'data-mine-layer-disabled-reason', 'true');
+  oneBy(tree, 'data-mine-layer-disabled-fix', 'true');
+  const shown = renderedStrings(tree);
+  assert.match(shown, /This layer is disabled/, 'the consequence is stated where the text box is');
+  assert.match(shown, /unresolvable-variable/, 'with the host\'s own reason');
+  assert.match(shown, /never rewrites your file/, 'and a recovery path that does not invent a rewrite');
+});
+
+test('g-026 rev12 client: an unknown state refusal is surfaced with its own copy', async () => {
+  const page = enPage({
+    responses: defaultResponses({
+      [PATHS.interpolate]: {
+        status: 400,
+        ok: false,
+        payload: { ok: false, code: 'invalid-state', message: 'state must be one of inherit, on, off' },
+      },
+    }),
+  });
+  const rec = recorder(page);
+  await rec.take();
+  clickButton(rec.last(), { 'data-action': 'mine-interpolate' });
+  await rec.take();
+  const tree = rec.last();
+  oneBy(tree, 'data-mine-interpolate-error', 'true');
+  const shown = renderedStrings(tree);
+  assert.match(shown, /inherit, on or off/, 'the copy is prose, never the bare code');
+});
+
+test('g-026 rev12 client: a layer disabled for a non-reference reason gets the file-level way out', async () => {
+  const page = enPage({
+    responses: defaultResponses({
+      [PATHS.snapshot]: {
+        payload: snapshotFixture({
+          layers: {
+            ...snapshotFixture().layers,
+            user: { enabled: false, path: '/x/overrides.json', reason: 'invalid-json: Unexpected token } in JSON' },
+            interpolate: { effective: false, user: null, workspace: null },
+          },
+        }),
+      },
+    }),
+  });
+  const tree = await page.flush();
+  oneBy(tree, 'data-warning', 'mine-layer-disabled');
+  const shown = renderedStrings(tree);
+  assert.match(shown, /invalid-json/, 'the host reason is on screen');
+  assert.match(shown, /repair or remove that layer's config file/, 'and the fix matches the cause');
+  assert.equal(/unresolvable \{\{\.\.\.\}\} reference/.test(shown), false, 'not the reference fix');
 });

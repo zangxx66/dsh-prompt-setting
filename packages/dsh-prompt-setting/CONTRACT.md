@@ -283,6 +283,42 @@ Two deliberate softenings, both stated rather than hidden:
   `unresolvedThrowing`, where the earlier reading called it prose (§16.6). It is
   reported with the same 16-character excerpt the Host's own message quotes.
 
+**Revision 12 (the independent audit of Revision 11 — g-026).** Four findings,
+two of them pure-UI reachable bypasses of the switch's one invariant ("no stored
+text may make a real assembly throw"), are fixed here. Every Revision 1–11 field,
+route, status code and byte keeps its exact meaning, and the two-valued
+`PUT /interpolate` body keeps its exact spelling and effect:
+
+- **F1 — the write verdict is about the text, not about the write target.** The
+  old check asked "does the layer being written interpolate?" and let a text in
+  through a layer that was closed *at that moment*, after which flipping **another**
+  layer's switch armed it. The verdict is now `layerTextIsArmed` (§16.4): text is
+  validated whenever some assembly that renders it interpolates. The audit's
+  two-step bypass, its reverse direction (a write into the user layer while a
+  workspace is armed) and its `import`/`dryRun` twin are all refusals now;
+- **F3 — the assembly decides on its own context.** The process-wide flag the
+  request path used to write is gone from the assembly path: the decision is
+  taken per dispatch, from the config that dispatch resolved, and applied to the
+  `sections` that dispatch renders (§16.2). A session-less request (the ping is
+  one) can no longer move any session's behaviour;
+- **F2 — the advisories are on the wire.** The `undefined`-value warning the
+  validator always computed was being discarded; it now rides the write, arming
+  and import responses as an additive `warnings` array and is rendered in
+  「我的 Prompt」 (§16.3);
+- **F4 — the switch has three states.** `inherit` (the key is absent), `on`
+  (`true`) and `off` (`false`), spelled `{"state": …}` on `PUT`; the legacy
+  `{"enabled": false}` still means "back to unstated", byte for byte (§16.8).
+  Without explicit OFF a workspace layer could not close a switch the user layer
+  opened, so the panel showed OFF while the session really inherited ON;
+- **F5 — a degraded layer is perceivable.** The load-time degradation keeps the
+  `missing-file` shape (the whole layer contributes nothing), and the reason plus
+  the recovery path are now rendered where the text box is, not only in 「高级」
+  (§16.5).
+
+The audit's four route-level reproductions are frozen as regressions in
+`test/route.test.mjs` (§16.4, §16.5), and the differential fuzz against the real
+`renderPrompt` keeps its 0-miss / 0-false-positive result.
+
 ---
 
 ## 1. Routes and methods
@@ -299,7 +335,7 @@ Two deliberate softenings, both stated rather than hidden:
 | `/prompt-setting/export` | `GET` | One or both layers as a schema-versioned JSON document (Revision 4, §10). |
 | `/prompt-setting/import` | `POST` | Apply such a document atomically, with a `dryRun` preview (Revision 4, §11). |
 | `/prompt-setting/interpolate` | `GET` | The「我的 Prompt」variable-substitution switch, per layer and effective (Revision 11, §16.4). |
-| `/prompt-setting/interpolate` | `PUT` | Open or close that switch for one layer (Revision 11, §16.4). |
+| `/prompt-setting/interpolate` | `PUT` | Set that switch for one layer: `{"enabled": bool}` (Revision 11) or `{"state": "inherit"|"on"|"off"}` (Revision 12, §16.8). |
 
 - An unknown path under the prefix is `404` with
   `{ "code": "not-found", "message": "no route for <path>" }` (no `ok` key —
@@ -2097,7 +2133,7 @@ it guards. See NOTES.md §95.
 
 ---
 
-## 16. The「我的 Prompt」variable-substitution switch (Revision 11, g-026)
+## 16. The「我的 Prompt」variable-substitution switch (Revisions 11–12, g-026)
 
 ### 16.1 Where the switch lives, and what "absent" means
 
@@ -2125,33 +2161,59 @@ layer's `overrides.json`:
   `legacyPlan`, `planImport`) so that saving a prompt, clearing a layer or
   importing a document never turns the switch off by accident.
 
-### 16.2 Runtime switching: what is mutated, and why that is enough
+### 16.2 Runtime switching: the decision belongs to the assembly, not to a process-wide field
 
 The reserved section is registered with the definition object
-`customSection()` returns, and this plugin keeps that object
-(`index.js`, `state.customDefinition`). Two measured properties of the Host make
-mutating one field of it sufficient, and neither is a private-field access:
+`customSection()` returns and with `interpolate: false`, which is the fallback:
+an assembly that this plugin never gets to judge renders the text literally.
 
-1. `NamedEntries.insert(name, section)` stores the object **by reference**
-   (dsh-scope `lib/index.js`), so the service is holding the very object this
-   plugin mutates;
+The switch is applied **per assembly**, on the assembly's own context
+(`applyAssemblyInterpolate`, `index.js`). The waterfall listener already resolves
+the config this dispatch must apply — `mergeLayers(userLayer, workspaceLayerOf
+(session))` for a real turn, the probe's own config for the snapshot — and
+`mergeLayers` carries the statedness-merged flag on it. That single value is:
+
+- what `GET /snapshot` reports as `layers.interpolate.effective`, and
+- what the listener copies onto the reserved section of the `sections` array the
+  renderer will read (`{...section, interpolate: true|false}`), returning the
+  input array **by reference** when nothing has to change.
+
+Three measured properties of the Host make this the only correct place, and none
+of them is a private-field access:
+
+1. `NamedEntries.insert(name, section)` stores the definition object **by
+   reference** (dsh-scope `lib/index.js`), so the service is holding the object
+   this plugin registered;
 2. every `assemble()` copies `section.interpolate` from that object into the
-   assembly it is about to hand the waterfall
+   assembly it hands the waterfall **before any listener runs**
    (`dsh-system-prompt/lib/index.js`, the `sections.map(…)` at the top of
-   `assemble`), and `renderPrompt` reads it fresh on every render.
+   `assemble`) — so mutating the definition inside a listener can never affect
+   the assembly in flight, and mutating it from a *request* can only describe
+   whichever session made the last request;
+3. `renderPrompt` reads the field off the sections it is given, so the value the
+   listener writes is the value the renderer uses.
 
-So a write to `state.customDefinition.interpolate` is visible to the **next**
-turn, with no re-registration, no restart, and no effect on any other section.
-The write is idempotent (it happens only when the value actually differs), and
-the definition reference is cleared by the registration's own disposer, so a
-disposed mount can never keep steering a definition the service no longer owns.
+**What Revision 11 did instead, and why it was wrong.** It pushed the effective
+value of the last handled request onto the one definition object. One process has
+one such object and many sessions, so the value was whichever request came last:
+a session-less ping reset it to the user layer's value (disarming a workspace
+session that states ON), and two sessions with different flags could not both be
+right. `state.customDefinition.interpolate` is still maintained, but only as a
+**mirror of the unscoped view** (the user layer alone) — the same value a route
+without `?session=` reports — so a session-less request recomputes what is
+already there. Nothing on the assembly path reads it.
+`test/route.test.mjs` pins the consequence: a ping cannot change what a session
+assembles, and interleaved sessions keep their reported `effective` and their
+real render in step.
 
-**Cross-version dependency, stated.** This rests on the shipped `assemble`
-re-reading `section.interpolate` per turn. A future Host that froze the flag at
-registration time would silently make the switch a no-op; the fallback would then
-be to dispose and re-register the section (`test/route.test.mjs` and
-`test/integration.test.mjs` both assert the live-object behaviour against the
-installed package, so the change would be caught rather than shipped).
+**Cross-version dependency, stated.** This rests on the waterfall listener
+running for scoped assemblies too (it is the same listener that has applied
+overrides since Revision 7) and on `renderPrompt` reading the field off the
+sections. A Host that froze `interpolate` per section at registration time would
+make the switch a no-op; the fallback would then be to dispose and re-register
+the section (`test/integration.test.mjs` asserts this path against the installed
+`@deepseek-ai/dsh-system-prompt`, so the change would be caught rather than
+shipped).
 
 ### 16.3 What the validator answers, and the one place it is softer
 
@@ -2176,8 +2238,30 @@ therefore make the switch unusable whenever nothing is running, and the same tex
 would be perfectly safe in a live session. The strict verdict — the one that
 matches the renderer exactly — is still implemented (`scanThrowingReference`) and
 is what `test/interpolate.test.mjs` and `test/integration.test.mjs` pin against
-the real `renderPrompt`. Nothing is silently dropped: the warning is part of the
-validator's return value.
+the real `renderPrompt`.
+
+**Revision 12 (audit F2): the warning is on the wire.** Until Revision 12 the
+validator returned it and the routes threw it away, so the one user who needed it
+— the one whose reference is registered but valueless in the probed assembly —
+could not see it at all. Now `PUT /overrides`, `PUT /interpolate` (arming) and
+`POST /import` attach it as an additive, **conditional** field:
+
+```json
+"warnings": [
+  { "name": "model", "kind": "undefined-value", "code": "unresolved-at-save",
+    "message": "the user layer (…) references `{{model}}`, which is registered but has no value …" }
+]
+```
+
+- the field is present exactly when there is something to say (at most three
+  entries, in scan order), so a response with nothing to report is byte-identical
+  to the one earlier revisions returned;
+- it is **not** an error: the write did happen, and the panel renders it as an
+  advisory next to the switch, not inside a failure banner;
+- `test/route.test.mjs` asserts both directions (a valueless reference is saved
+  and reported; a clean text carries no field), and
+  `test/client.test.mjs` asserts it reaches the screen and is cleared by the next
+  write.
 
 The variable table is obtained from a real `assemble()` under this plugin's own
 private scope (`probe`, the same mechanism the snapshot uses), cached per mount,
@@ -2214,36 +2298,60 @@ Two guards exist because the probe is a snapshot of a live object:
 `variablesError` when this mount could not obtain one.
 
 `PUT` takes `{ enabled: boolean, layer?: "user" | "workspace", session?: string }`
-(`layer` defaults to `user`; `session` may also be `?session=`).
+(`layer` defaults to `user`; `session` may also be `?session=`), or the
+Revision 12 three-valued spelling `{ state: "inherit" | "on" | "off", … }`
+(§16.8).
 
-- `enabled` must be a boolean: **`400 invalid-enabled`** otherwise. An unknown
-  layer is `400 unknown-layer`, the same code every other route answers;
-- **opening** validates the text already stored in the user layer and in every
-  visible workspace layer that would interpolate once this change lands
-  (a layer that states `false` is skipped: nothing inherits into it). A refusal
-  is `400 unresolvable-variable` and names the file and the way out;
-- **closing** validates nothing: closing can only ever make text safer;
-- the write is `writeConfig` + the in-memory cache, then the live definition is
-  updated (§16.2). The answer is
-  `{ "ok": true, "interpolateCustom": true, "layer": "user", "saved": { "enabled": true }, "effectiveFrom": "next-turn" }`;
+- one of the two spellings must be present: a body with neither is
+  **`400 invalid-enabled`**, and a `state` outside the three is
+  **`400 invalid-state`**. An unknown layer is `400 unknown-layer`, the same code
+  every other route answers;
+- **a transition to ON** validates the text already stored in every layer whose
+  text this change would arm (§16.5's rule, below). A refusal is
+  `400 unresolvable-variable` and names the file and the way out;
+- **`off` and `inherit`** validate nothing: they can only ever make text safer;
+- the write is `writeConfig` + the in-memory cache, then the definition mirror is
+  refreshed (§16.2). The answer is
+  `{ "ok": true, "interpolateCustom": true, "layer": "user", "state": "on", "saved": { "enabled": true, "state": "on" }, "effectiveFrom": "next-turn" }`
+  plus `warnings` when there is something to report;
 - a refusal leaves **both layer files byte-identical**: the shape check, the
   target resolution, the stored-text check and the variable probe all run before
   the first `writeConfig`, and `test/route.test.mjs` hashes the files around
   every one of them.
 
-With the switch ON, the two existing write routes gain one gate, evaluated before
-any byte is written and — for the import route — **before** `planImport`, so the
-`dryRun` branch answers exactly what the real run would:
+**The F1 rule (Revision 12): what decides whether a text is validated.** Not "the
+layer being written", which was the bypass, but whether the text can reach an
+assembly that interpolates (`layerTextIsArmed`, `index.js`):
+
+- the **user** text is merged into every session that carries no workspace entry
+  of its own, so it is validated as soon as the user layer or **any** visible
+  workspace layer states ON. (Slightly conservative on purpose: a workspace that
+  states ON *and* carries its own text does not in fact use the user's, and the
+  write is refused anyway — this is the audit's "write the user layer while a
+  workspace is armed" case);
+- a **workspace** text is rendered only for that workspace's sessions, where the
+  merge decides: it is validated exactly when `effectiveInterpolate(user,
+  workspace)` is ON. An explicitly closed workspace is therefore the one
+  configuration whose literal braces provably reach no interpolating assembly,
+  and it is not refused — which is what makes §16.8's explicit OFF worth having;
+- the verdict is computed on the **post-write** view, so the change being
+  requested is what is judged.
+
+The audit text also suggests the blunt "if any layer is ON, validate every
+visible layer". That variant is **not** used: it would refuse the writes that
+make explicit OFF useful, and it would degrade an explicitly closed layer at load
+time for text that cannot throw there. Every case the audit reproduced is refused
+by the rule above — `test/route.test.mjs` freezes all of them (the two-step
+bypass, the reverse direction, `import` with and without `dryRun`) and one
+counter-case (a closed workspace keeps its literal braces):
 
 | Route | What is validated | On failure |
 | --- | --- | --- |
-| `PUT /overrides` | the text about to be stored, when the target layer's **post-write** switch is on | `400 unresolvable-variable`, zero bytes |
-| `POST /import` | the document's reserved-section text, when the target layer's switch is on | `400 unresolvable-variable`, zero bytes, dry run included |
+| `PUT /overrides` | the text about to be stored, when it is armed after the write | `400 unresolvable-variable`, zero bytes |
+| `POST /import` | the document's reserved-section text, when it is armed after the write | `400 unresolvable-variable`, zero bytes, dry run included |
+| `PUT /interpolate` | every stored text this change arms | `400 unresolvable-variable`, zero bytes |
 
-The decision is made from the layer's **own** switch (post-write for `PUT`, current
-for `import`) plus the other layer as it stands — the same pair the assembly
-merges. Text written into a layer that does not interpolate is not validated,
-because in that scope it cannot throw.
+Each of the three routes attaches `warnings` (§16.3) to a successful answer.
 
 ### 16.5 Historical text, and the load-time self-check
 
@@ -2265,18 +2373,50 @@ with the same validator, using the `missing-file` precedent exactly:
 - it is **not** reported as an invalid **file** (the code is not
   `invalid-config`), and it is **not** silently accepted. The reason says the
   layer was disabled so the real assembly keeps working, and names the fix;
-- a layer that states nothing, or states OFF, is untouched by construction: the
-  check cannot affect an install that never opened the switch;
+- a layer that states nothing, or states OFF, is untouched **unless**
+  §16.4's rule says its text is armed — Revision 12 (audit F1) added that
+  cross-layer pass (`enforceVisibleTextsSafe`), because the per-layer check reads
+  only the layer's own flag and therefore misses the exact bypass the audit ran:
+  a user layer that states ON arms an unstated workspace layer's bomb, and that
+  workspace layer's own self-check sees "this layer states nothing, nothing to
+  check". The pass runs after both layers are read, on the per-text rule, and
+  again after any later re-read of a layer (a `?session=` view re-loads its
+  workspace layer; without that second pass the read would resurrect what the
+  refresh had just degraded);
 - when this mount has no variable table (its first request, or a profile where
   the probe failed), only the grammar conditions are checked — a failed probe
   must never disable a layer. The next request, with a table in hand, checks the
   names too.
 
+**F5, stated as the trade it is (Revision 12).** The degradation disables the
+**whole layer**, not just the offending entry, so a layer whose「我的 Prompt」text
+is a bomb loses its other overrides too. That is a deliberate choice and not an
+oversight:
+
+- it is the `missing-file` paradigm, which this contract has used since stage 1B:
+  one unusable file = one layer that contributes nothing, reported with a reason;
+- the alternative — dropping only the reserved entry in memory — would leave the
+  user's file and the plugin's view of it out of step, and would still need a
+  channel to say "part of your layer is not in the prompt", which is exactly the
+  channel the reason already is;
+- what Revision 12 added is that the reason is now **perceivable where it
+  matters**: 「我的 Prompt」 renders the disabled layer, the host's own reason and
+  the recovery path next to the text box (`data-warning="mine-layer-disabled"`),
+  instead of leaving it to the status block in 「高级」. The plugin never rewrites
+  the user's file; the fix is a hand edit of the named reference, and the next
+  read picks it up.
+
+`test/route.test.mjs` freezes the cross-layer pass (a hand-armed user layer
+degrades the unstated workspace layer it arms, while a safe workspace layer is
+untouched) and `test/client.test.mjs` freezes the panel half.
+
 ### 16.6 The preview agrees with the behaviour
 
 `rendered`, `renderedResolved`, `unresolvedThrowing` and `unresolvedLiteral`
 (§2.3) are computed from the same `section.interpolate` the real renderer will
-read, so opening the switch re-grades the reserved section automatically:
+read — the snapshot's own probe goes through the listener and therefore carries
+the value that session's assembly will use (Revision 12, §16.2) — so opening the
+switch re-grades the reserved section automatically:
 
 - switch OFF (default): the reserved section is `interpolate: false`, so its
   unresolved references are graded `unresolvedLiteral` and `renderedResolved`
@@ -2300,20 +2440,57 @@ old reading's miss, so the difference cannot regress silently.
   next turn is literal again;
 - ON → OFF → ON is idempotent in both directions: a repeated ON rewrites the same
   bytes, and the definition write is a no-op when the value already matches;
-- a hand-edited file is picked up by the next request (`syncInterpolate` runs on
-  the request path, after the layers are re-read), and by mount, so a restart is
-  never required to observe the switch.
+- a hand-edited file is picked up by the next request (the layers are re-read at
+  the top of every handled request, and the assembly decision is derived from
+  that read), and by mount, so a restart is never required to observe the switch;
+- the `state.customDefinition.interpolate` mirror still returns to `false` when
+  the unscoped view is off, but it is not what makes the next turn literal: the
+  per-assembly decision is (§16.2).
 
-### 16.8 What Revision 11 does not do
+### 16.8 The three states (Revision 12, audit F4)
 
-- It does not add an escape syntax. DSH has none, so with the switch ON a literal
+The switch is not a boolean, it is a three-valued field, and the distinction is
+what the merge rule rests on:
+
+| State | On disk | Merged meaning |
+| --- | --- | --- |
+| `inherit` | the key is **absent** | this layer states nothing: the other layer's stated value applies |
+| `on` | `"interpolateCustom": true` | this layer states ON |
+| `off` | `"interpolateCustom": false` | this layer states OFF, and the other layer's ON cannot override it |
+
+`GET /interpolate` and `GET /snapshot` have always reported it that way
+(`true` / `false` / `null`).
+
+`PUT` accepts both spellings, and they are deliberately **not** the same thing:
+
+- `{"enabled": true}` → `on`; `{"enabled": false}` → `inherit`, i.e. the key is
+  **deleted**. That is the Revision 11 spelling and it keeps its exact effect, so
+  an on→off cycle on a layer that never declared the field is still a
+  byte-for-byte revert (§16.7);
+- `{"state": "on" | "off" | "inherit"}` is the three-valued spelling. `off`
+  writes the boolean, which `enabled` cannot express — and without it a workspace
+  layer could not close a switch the user layer had opened: the write would
+  delete nothing (the key was already absent), the layer would keep inheriting
+  ON, and the panel would say OFF while the session interpolated.
+
+The browser presents all three side by side (`data-action="mine-interpolate-state"`)
+and keeps the two-valued toggle as the shortcut between ON and "unstated"; when a
+layer inherits ON it says so and points at 「显式关」, because turning such a layer
+"off" with the two-valued spelling only keeps it unstated. An unknown `state` is
+`400 invalid-state` with zero bytes written.
+
+### 16.9 What Revisions 11–12 do not do
+
+- They do not add an escape syntax. DSH has none, so with the switch ON a literal
   `{{...}}` cannot be written in「我的 Prompt」 — the panel says so next to the
-  switch rather than letting the save fail mysteriously;
-- it does not make the switch per-section or per-text. It is one boolean per
+  switch rather than letting the save fail mysteriously. The one exception is a
+  layer that explicitly states OFF: its text is armed by no interpolating
+  assembly, so its braces are storable (§16.4);
+- they do not make the switch per-section or per-text. It is one field per
   layer, and it governs the one section this plugin owns;
-- it does not check other plugins' sections, and it does not turn anybody else's
+- they do not check other plugins' sections, and they do not turn anybody else's
   interpolation on or off;
-- it does not claim anything about a running `dsh web`: like every revision
-  before it, the Host half needs the process to pick the new code up, and what is
-  verified here is verified offline against the real
+- they do not claim anything about a running `dsh web`: like every revision
+  before them, the Host half needs the process to pick the new code up, and what
+  is verified here is verified offline against the real
   `@deepseek-ai/dsh-system-prompt` in a real Cordis context.

@@ -409,6 +409,10 @@ window.__ModuleLoader__.load({
         '开关请求缺少布尔值 enabled。',
         'The switch request needs a boolean "enabled".',
       ],
+      'invalid-state': [
+        '本层状态只能是 inherit、on 或 off 之一。',
+        'A layer state must be one of inherit, on or off.',
+      ],
       'variable-lookup-failed': [
         '无法取到当前的变量表，本次写入被拒绝（无法证明文本安全）。',
         'The current variable table could not be obtained, so this write was refused: the text cannot be proven safe.',
@@ -563,6 +567,25 @@ window.__ModuleLoader__.load({
       mineInterpolateFailed: '切换变量替换失败',
       mineInterpolateWorkspaceNeedsSession: '工作区层需要先选择一个会话；未选择时无法在工作区层切换。',
       mineInterpolateLayerOnly: '开关按所选层保存；工作区层未设置时继承用户层。',
+      // ---- Revision 12 (att-002): the three states, and the advisory the host
+      // used to compute and drop.
+      mineInterpolateStatesLabel: '本层状态',
+      mineInterpolateSetInherit: '继承',
+      mineInterpolateSetOn: '显式开',
+      mineInterpolateSetOff: '显式关',
+      mineInterpolateSetNote: '「继承」= 本层不声明（删掉该字段）；「显式关」= 写入 false，可覆盖上层的「开」。',
+      mineInterpolateInheritedOn: '本层未设置，因此跟随上层的「开」。要覆盖它，请选「显式关」。',
+      mineInterpolateStateSaved: '本层状态已设为「{state}」，下一轮生效（next-turn）。',
+      mineWarningsHeading: '已保存，但有以下引用需要留意：',
+      mineWarningUndefined:
+        '这些变量在本次探测中没有值，保存已通过（值属于会话，不属于文本）；但缺少该值的那一轮，会话装配会失败：{list}',
+      mineWarningList: '引用 {name}',
+      mineLayerDisabled: '本层已被停用，当前不参与任何装配。',
+      mineLayerDisabledReason: '原因：{reason}',
+      mineLayerDisabledFix:
+        '修复路径：删掉该层配置里无法解析的 {{…}} 引用（或把变量替换关掉），然后重新打开本页；插件不会改写你的文件。',
+      mineLayerDisabledFixGeneric:
+        '修复路径：修正或删除该层的配置文件（JSON 非法、字段非法、文件被删都会落到这里），然后重新打开本页；插件不会改写你的文件。',
       // ---- g-021: a frozen scope is a blocking statement, not a footnote
       mineFrozenWarn: '该作用域已被冻结：你写下的 Prompt 不会生效',
       mineFrozenBody:
@@ -882,6 +905,25 @@ window.__ModuleLoader__.load({
       mineInterpolateFailed: 'Switching variable substitution failed',
       mineInterpolateWorkspaceNeedsSession: 'The workspace layer needs a selected session; without one the switch cannot be written there.',
       mineInterpolateLayerOnly: 'The switch is saved per selected layer; a workspace layer that states nothing inherits the user layer.',
+      // ---- Revision 12 (att-002): the three states, and the advisory the host
+      // used to compute and drop.
+      mineInterpolateStatesLabel: 'This layer',
+      mineInterpolateSetInherit: 'Inherit',
+      mineInterpolateSetOn: 'On',
+      mineInterpolateSetOff: 'Off',
+      mineInterpolateSetNote: '"Inherit" states nothing (the field is removed); "Off" writes false, which is what lets a layer close over an inherited ON.',
+      mineInterpolateInheritedOn: 'This layer states nothing, so it inherits ON. Choose "Off" to override that.',
+      mineInterpolateStateSaved: 'This layer now states {state}; effective from the next turn (next-turn).',
+      mineWarningsHeading: 'Saved, with references to note:',
+      mineWarningUndefined:
+        'These variables had no value in the probe that was run, so the save was accepted (a value belongs to the session, not to the text) — but a turn without that value will fail to assemble: {list}',
+      mineWarningList: 'reference {name}',
+      mineLayerDisabled: 'This layer is disabled and contributes nothing to any assembly right now.',
+      mineLayerDisabledReason: 'Reason: {reason}',
+      mineLayerDisabledFix:
+        'Fix: delete the unresolvable {{...}} reference in that layer\'s config (or turn variable substitution off), then reopen this page. The plugin never rewrites your file.',
+      mineLayerDisabledFixGeneric:
+        'Fix: repair or remove that layer\'s config file (invalid JSON, an invalid field and a deleted file all land here), then reopen this page. The plugin never rewrites your file.',
       // ---- g-021: a frozen scope is a blocking statement, not a footnote
       mineFrozenWarn: 'This scope is frozen: the prompt you write will not take effect',
       mineFrozenBody:
@@ -2338,6 +2380,26 @@ window.__ModuleLoader__.load({
         .map((section) => (typeof section.text === 'string' ? section.text : ''))
         .filter((text) => text.length > 0)
         .join('\n\n');
+    }
+
+    /**
+     * The advisories one write/enable response carries (Revision 12, audit F2).
+     *
+     * Tolerant by construction: an older host has no `warnings` field at all, and
+     * a malformed entry must not be able to blank the panel. Only entries with a
+     * usable `name` survive, because that is what the copy names.
+     * @param payload - a route payload, or anything else.
+     * @returns `[{name, kind, message}]`, possibly empty.
+     */
+    function payloadWarnings(payload) {
+      const list = payload && Array.isArray(payload.warnings) ? payload.warnings : [];
+      return list
+        .filter((entry) => entry !== null && typeof entry === 'object' && typeof entry.name === 'string' && entry.name.length > 0)
+        .map((entry) => ({
+          name: String(entry.name),
+          kind: typeof entry.kind === 'string' ? entry.kind : 'undefined-value',
+          message: typeof entry.message === 'string' ? entry.message : '',
+        }));
     }
 
     /**
@@ -5055,6 +5117,16 @@ window.__ModuleLoader__.load({
       const interpolateStatus = m.mineInterpolateStatus ?? { kind: 'idle', error: null };
       const interpolateLocked = m.mineInterpolateLocked === true;
       const interpolateStated = m.mineInterpolateStated === undefined ? null : m.mineInterpolateStated;
+      // Revision 12 (audit F4/F2/F5): the three-state name, the advisories the
+      // host returned with the last write, and the reason this layer is out of
+      // the assembly when it is.
+      const interpolateState = m.mineInterpolateState === undefined ? 'inherit' : m.mineInterpolateState;
+      const warnings = Array.isArray(m.mineWarnings) ? m.mineWarnings : [];
+      const layerDisabled = m.mineLayerDisabled === undefined ? null : m.mineLayerDisabled;
+      // The way out depends on WHY the layer is out: an unresolvable reference is
+      // fixed in the text, everything else (invalid JSON, an invalid field, a
+      // file that vanished) is fixed in the file.
+      const disabledIsReference = layerDisabled !== null && layerDisabled.startsWith('unresolvable-variable');
       // The panel's own frozen boolean. `mineFrozenReason === null` is the
       // unfrozen case; an empty string is "frozen, no reason given".
       const frozen = reason !== null;
@@ -5110,6 +5182,33 @@ window.__ModuleLoader__.load({
                 style: { margin: 0, fontSize: 12, color: token.stateWarn, wordBreak: 'break-word' },
               },
               `${t('mineWorkspaceNeedsSession')}${workspace && workspace.reason ? ` — ${String(workspace.reason)}` : ''}`,
+            ),
+        // ---- Revision 12 (audit F5): a degraded layer contributes nothing to
+        // any assembly, so the panel says so where the text box is, with the
+        // host's own reason and the fix. The degradation itself is the
+        // `missing-file` paradigm — the whole layer is out because its stored
+        // text cannot be repaired in place without rewriting the user's file —
+        // and CONTRACT §16.5 states that trade explicitly.
+        layerDisabled === null
+          ? null
+          : h(
+              'div',
+              {
+                'data-warning': 'mine-layer-disabled',
+                'data-mine-layer-disabled': 'true',
+                style: { margin: 0, display: 'flex', flexDirection: 'column', gap: 2, wordBreak: 'break-word' },
+              },
+              h('p', { style: { margin: 0, fontSize: 12, color: token.stateError } }, t('mineLayerDisabled')),
+              h(
+                'p',
+                { 'data-mine-layer-disabled-reason': 'true', style: { margin: 0, fontSize: 12, color: token.stateError } },
+                fmt(t('mineLayerDisabledReason'), { reason: layerDisabled.length > 0 ? layerDisabled : t('stNone') }),
+              ),
+              h(
+                'p',
+                { 'data-mine-layer-disabled-fix': 'true', style: { margin: 0, fontSize: 12, color: token.labelTertiary } },
+                t(disabledIsReference ? 'mineLayerDisabledFix' : 'mineLayerDisabledFixGeneric'),
+              ),
             ),
         reason === null
           ? null
@@ -5206,12 +5305,80 @@ window.__ModuleLoader__.load({
                   }),
             ),
           ),
+          // ---- Revision 12 (audit F4): the three states, side by side. The
+          // toggle above can only express ON and "unstated"; this is the control
+          // that can also state OFF, which is what a workspace layer needs to
+          // close a switch the user layer opened.
+          h(
+            'div',
+            {
+              'data-region': 'mine-interpolate-states',
+              style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
+            },
+            h('span', { style: metaStyle }, t('mineInterpolateStatesLabel')),
+            ...[
+              ['inherit', t('mineInterpolateSetInherit')],
+              ['on', t('mineInterpolateSetOn')],
+              ['off', t('mineInterpolateSetOff')],
+            ].map(([choice, label]) =>
+              h(
+                UI.Button,
+                {
+                  'data-action': 'mine-interpolate-state',
+                  'data-mine-interpolate-set': choice,
+                  'data-mine-interpolate-set-active': String(interpolateState === choice),
+                  'aria-pressed': String(interpolateState === choice),
+                  disabled: m.busy || interpolateLocked,
+                  onClick: () => a.setMineInterpolateState(choice),
+                },
+                label,
+              ),
+            ),
+          ),
+          h('p', { style: { margin: 0, ...metaStyle } }, t('mineInterpolateSetNote')),
+          // Inheriting ON is the state a user cannot see from the toggle alone:
+          // the toggle offers "turn off", but turning off a layer that states
+          // nothing just keeps stating nothing — so the panel names the way out.
+          interpolateOn && interpolateState === 'inherit'
+            ? h(
+                'p',
+                {
+                  'data-warning': 'mine-interpolate-inherited',
+                  style: { margin: 0, fontSize: 12, color: token.stateWarn },
+                },
+                t('mineInterpolateInheritedOn'),
+              )
+            : null,
           h('p', { style: { margin: 0, ...metaStyle } }, t('mineInterpolateNote')),
           h(
             'p',
             { 'data-warning': 'mine-interpolate', style: { margin: 0, fontSize: 12, color: token.stateWarn } },
             t('mineInterpolateWarn'),
           ),
+          // ---- Revision 12 (audit F2): the advisories of the last write. A
+          // registered reference with no value in the probe is not a refusal —
+          // the save happened — but it is the difference between "the panel is
+          // quiet" and "this turn will not assemble".
+          warnings.length === 0
+            ? null
+            : h(
+                'div',
+                {
+                  'data-warning': 'mine-warnings',
+                  'data-mine-warnings': 'true',
+                  style: { margin: 0, display: 'flex', flexDirection: 'column', gap: 2, wordBreak: 'break-word' },
+                },
+                h('p', { style: { margin: 0, fontSize: 12, color: token.stateWarn } }, t('mineWarningsHeading')),
+                h(
+                  'p',
+                  { 'data-mine-warnings-list': 'true', style: { margin: 0, fontSize: 12, color: token.stateWarn } },
+                  fmt(t('mineWarningUndefined'), {
+                    list: warnings
+                      .map((entry) => fmt(t('mineWarningList'), { name: entry.name }))
+                      .join(', '),
+                  }),
+                ),
+              ),
           h('p', { style: { margin: 0, ...metaStyle } }, t('mineInterpolateLayerOnly')),
           interpolateLocked
             ? h(
@@ -5585,6 +5752,11 @@ window.__ModuleLoader__.load({
       // failure mode (a refusal names the text that would throw), and folding
       // the two would let a failed toggle look like a failed save.
       const [mineInterpolate, setMineInterpolate] = React.useState({ kind: 'idle', error: null });
+      // Revision 12 (audit F2): the advisories the host returns with a write or
+      // an arming. They are *not* failures — the save happened — so they live in
+      // their own slot and the panel renders them beside the state they qualify,
+      // instead of inside an error banner that would deny the write.
+      const [mineWarnings, setMineWarnings] = React.useState([]);
       const [notice, setNotice] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
       // Stage 2 state: history, the comparison, the pending confirmation and
@@ -5778,6 +5950,27 @@ window.__ModuleLoader__.load({
       const mineInterpolateOn = mineInterpolateInfo !== null && mineInterpolateInfo.effective === true;
       const mineInterpolateStated = mineInterpolateInfo === null ? null : mineInterpolateInfo[mineLayer];
       const mineInterpolateLocked = mineLayer === 'workspace' && sessionArg === null;
+      // Revision 12 (audit F4): the SAME fact as a name, which is what the three
+      // state controls select between: `inherit` is the absent key, `on`/`off`
+      // are the stated booleans. Deriving it here rather than in the tree keeps
+      // one source of truth for "what does this layer say".
+      const mineInterpolateState =
+        mineInterpolateStated === true ? 'on' : mineInterpolateStated === false ? 'off' : 'inherit';
+      // Revision 12 (audit F2/F5): what the host said about the layer the user is
+      // editing. A degraded layer contributes nothing to any assembly, so the
+      // panel has to say so where the text box is — the advanced tab's status
+      // block is one scroll too far for "your prompt is not in the prompt".
+      const mineLayerInfo =
+        snapshot && snapshot.layers
+          ? mineLayer === 'workspace'
+            ? snapshot.layers.workspace
+            : snapshot.layers.user
+          : null;
+      const mineLayerDisabled =
+        mineLayerInfo !== null && mineLayerInfo !== undefined && mineLayerInfo.enabled === false
+        && (mineLayer === 'user' || sessionArg !== null)
+          ? String(mineLayerInfo.reason ? mineLayerInfo.reason : '')
+          : null;
       /**
        * Ask the host for a comparison and store the result. `from`/`to` are a
        * history id or {@link DIFF_CURRENT}; a half-made selection clears the
@@ -5966,6 +6159,10 @@ window.__ModuleLoader__.load({
         const next = !mineInterpolateOn;
         setMineInterpolate({ kind: 'saving', error: null });
         setBusy(true);
+        // The two-valued spelling on purpose: this is the shortcut that goes
+        // between ON and "unstated", which is what makes on→off an exact byte
+        // revert (§16.7). The explicit OFF is a separate, deliberate choice and
+        // lives on the three-state control below.
         const body = { enabled: next, layer };
         if (sessionArg !== null) body.session = sessionArg;
         const result = await requestJson(INTERPOLATE_PATH, {
@@ -5980,10 +6177,58 @@ window.__ModuleLoader__.load({
           return;
         }
         const applied = result.payload && result.payload.interpolateCustom === true;
+        setMineWarnings(payloadWarnings(result.payload));
         setMineInterpolate({ kind: 'saved', error: null });
         setNotice({
           tone: 'success',
           text: fmt(t('mineInterpolateSaved'), { state: t(applied ? 'mineInterpolateOn' : 'mineInterpolateOff') }),
+        });
+        setReload((value) => value + 1);
+      };
+
+      /**
+       * Revision 12 (audit F4): state one of the three values for the selected
+       * layer — `inherit` (the key is removed), `on` (`true`) or `off` (the
+       * boolean `false`).
+       *
+       * This is the control that makes「显式关」reachable at all: the two-valued
+       * toggle can only return a layer to unstated, so a workspace layer could
+       * never close the switch the user layer had opened, and the panel showed
+       * OFF while the session really inherited ON.
+       * @param choice - `inherit` | `on` | `off`.
+       */
+      const setMineInterpolateState = async (choice) => {
+        const layer = mineLayer;
+        const state = choice === 'on' || choice === 'off' ? choice : 'inherit';
+        if (layer === 'workspace' && sessionArg === null) {
+          setMineInterpolate({ kind: 'error', error: { code: 'workspace-unresolved' } });
+          setNotice({ tone: 'error', text: errorText(t, { code: 'workspace-unresolved' }) });
+          return;
+        }
+        setMineInterpolate({ kind: 'saving', error: null });
+        setBusy(true);
+        const body = { state, layer };
+        if (sessionArg !== null) body.session = sessionArg;
+        const result = await requestJson(INTERPOLATE_PATH, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        setBusy(false);
+        if (!result.ok) {
+          setMineInterpolate({ kind: 'error', error: result.error });
+          setNotice({ tone: 'error', text: errorText(t, result.error) });
+          return;
+        }
+        setMineWarnings(payloadWarnings(result.payload));
+        setMineInterpolate({ kind: 'saved', error: null });
+        setNotice({
+          tone: 'success',
+          text: fmt(t('mineInterpolateStateSaved'), {
+            state: t(
+              state === 'on' ? 'mineInterpolateSetOn' : state === 'off' ? 'mineInterpolateSetOff' : 'mineInterpolateSetInherit',
+            ),
+          }),
         });
         setReload((value) => value + 1);
       };
@@ -6019,6 +6264,7 @@ window.__ModuleLoader__.load({
         });
         setBusy(false);
         if (!result.ok) {
+          setMineWarnings([]);
           setMineStatus({ kind: 'error', error: result.error });
           setNotice({ tone: 'error', text: errorText(t, result.error) });
           return;
@@ -6026,6 +6272,10 @@ window.__ModuleLoader__.load({
         // Keep the draft: it is what was just written, so the box does not
         // flicker back to the stored value while the re-read is in flight.
         setMineDraft({ key: mineKey, text: mineText });
+        // Revision 12 (audit F2): an accepted save may still carry advisories —
+        // a registered reference the probe had no value for. They are shown, not
+        // dropped, and they are not an error: the write did happen.
+        setMineWarnings(payloadWarnings(result.payload));
         setMineStatus({ kind: 'saved', error: null });
         // g-021: the write succeeded, so the banner stays a success banner — but
         // in a frozen scope it may not read as bare success either. The notice is
@@ -6112,15 +6362,18 @@ window.__ModuleLoader__.load({
         setView,
         setMineLayer: (value) => {
           setMineLayer(value === 'workspace' ? 'workspace' : 'user');
+          setMineWarnings([]);
           setMineStatus({ kind: 'idle', error: null });
         },
         setMineText: (event) => {
           const value = event && event.target ? String(event.target.value) : '';
           setMineDraft({ key: mineKey, text: value });
+          setMineWarnings([]);
           setMineStatus({ kind: 'idle', error: null });
         },
         saveMine,
         toggleMineInterpolate,
+        setMineInterpolateState,
         requestMineReset: () => setConfirm({ kind: 'mine-reset', layer: mineLayer }),
         setAdvancedLayer: (value) => setAdvancedLayer(value === 'workspace' ? 'workspace' : 'user'),
         setSearch: (event) => setSearch(event && event.target ? String(event.target.value) : ''),
@@ -6290,8 +6543,11 @@ window.__ModuleLoader__.load({
         mineError: mineStatus.error,
         mineInterpolateOn,
         mineInterpolateStated,
+        mineInterpolateState,
         mineInterpolateLocked,
         mineInterpolateStatus: mineInterpolate,
+        mineWarnings,
+        mineLayerDisabled,
         mineFrozenReason,
         mineFrozenCertain,
         advancedLayer,

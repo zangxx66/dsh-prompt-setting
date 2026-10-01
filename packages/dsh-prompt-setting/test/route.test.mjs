@@ -19,6 +19,7 @@ import test, { afterEach, beforeEach } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { apply, inject, CUSTOM_SECTION_NAME } from '../index.js';
+import { renderSections } from '../core/overrides.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = join(here, '..');
@@ -1912,4 +1913,349 @@ test('g-026 switch: an unreadable variable table refuses the write instead of gu
   assert.equal(res.statusCode, 503);
   assert.equal(json(res).code, 'variable-lookup-failed');
   assert.equal(sha256(userPath()), 'missing');
+});
+
+// ---------------------------------------------------------------------------
+// Revision 12 (g-026 att-002): the independent audit's four findings, frozen as
+// regressions.
+//
+// F1 — the write/enable/import verdict is about the TEXT, not about the write
+// target: a reference is refused whenever it can reach an assembly that
+// interpolates. The audit's two-step bypass is the first test below; the
+// reverse direction (a write into the user layer while a workspace is armed) is
+// the second and third.
+// F2 — the advisories travel on the response.
+// F3 — the assembly decides on its OWN context; no process-wide field, and a
+// session-less ping cannot move a session's behaviour.
+// F4 — three states, with explicit OFF able to close over an ON user layer and
+// the legacy close still reverting byte for byte.
+// ---------------------------------------------------------------------------
+
+/** The workspace layer's config path, from its registry row. */
+function layerPath(workspace) {
+  return join(workspace.path, '.dsh-prompt-setting', 'overrides.json');
+}
+
+/** Call the override route for one layer. */
+function putLayer(route, layer, text, session) {
+  return call(route, {
+    method: 'PUT',
+    url: OVERRIDES_PATH,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      layer,
+      section: { name: CUSTOM_SECTION_NAME, action: 'replace', text },
+      ...(session === undefined ? {} : { session }),
+    }),
+  });
+}
+
+/** One real assembly for a session, through the fake host's own `assemble`. */
+async function assembleFor(harness, sessionId) {
+  const agent = harness.agents.get(sessionId);
+  return harness.systemPrompt.assemble({ agent, scope: agent });
+}
+
+/** The reserved section of an assembly, or undefined. */
+function reservedOf(assembly) {
+  return assembly.sections.find((section) => section.name === CUSTOM_SECTION_NAME);
+}
+
+test('g-026 rev12 F1: a bomb stored while everything is closed cannot be armed by another layer', async () => {
+  const workspace = workspaceWith('ws-arm', 'session-a', { version: 1, overrides: [] });
+  const path = join(workspace.path, '.dsh-prompt-setting', 'overrides.json');
+  const harness = mount({ variables: SWITCH_VARIABLES, workspaces: [workspace] });
+
+  // Step 1 of the audit's bypass: legal while nothing interpolates — and it must
+  // stay 200, because that is the closed-state contract the switch rests on.
+  assert.equal((await putText(harness.route, 'x {{nope}}')).statusCode, 200);
+  const userHash = sha256(userPath());
+  const wsHash = sha256(path);
+
+  // Step 2: arming the WORKSPACE layer would render that user text through this
+  // workspace (this workspace carries no entry of its own, so the merge picks the
+  // user's). The old check only looked at the layer being written and let this
+  // through, after which every turn of session-a threw.
+  const res = await setSwitch(harness.route, { enabled: true, layer: 'workspace', session: 'session-a' });
+  assert.equal(res.statusCode, 400);
+  assert.equal(json(res).code, 'unresolvable-variable');
+  assert.match(json(res).message, /user layer/);
+  assert.equal(sha256(userPath()), userHash, 'zero bytes in the user layer');
+  assert.equal(sha256(path), wsHash, 'zero bytes in the workspace layer');
+  assert.equal(Object.hasOwn(readLayer(path), 'interpolateCustom'), false, 'and the switch did not move');
+
+  // The same arming write succeeds once the stored text is safe.
+  assert.equal((await putText(harness.route, 'x {{model}}')).statusCode, 200);
+  assert.equal((await setSwitch(harness.route, { enabled: true, layer: 'workspace', session: 'session-a' })).statusCode, 200);
+});
+
+test('g-026 rev12 F1: with a workspace armed, the user layer text is gated as well', async () => {
+  const workspace = workspaceWith('ws-rev', 'session-a', { version: 1, overrides: [] });
+  const harness = mount({ variables: SWITCH_VARIABLES, workspaces: [workspace] });
+  assert.equal((await setSwitch(harness.route, { enabled: true, layer: 'workspace', session: 'session-a' })).statusCode, 200);
+
+  // The reverse bypass: the user layer's own flag is off, but its text is merged
+  // into every session of this armed workspace, so this write really would arm a
+  // per-turn throw. The old per-layer check answered 200.
+  const before = sha256(userPath());
+  const res = await putText(harness.route, 'y {{also_nope}}');
+  assert.equal(res.statusCode, 400);
+  assert.equal(json(res).code, 'unresolvable-variable');
+  assert.match(json(res).message, /user layer/);
+  assert.equal(sha256(userPath()), before, 'zero bytes written');
+  assert.equal(existsSync(userPath()), false, 'and the file was never created');
+
+  // Writing the same bomb into the armed workspace is refused by the same rule.
+  const wsBefore = sha256(layerPath(workspace));
+  const ws = await putLayer(harness.route, 'workspace', 'z {{also_nope}}', 'session-a');
+  assert.equal(ws.statusCode, 400);
+  assert.equal(sha256(layerPath(workspace)), wsBefore);
+});
+
+test('g-026 rev12 F1: the same verdict covers import, dry run included', async () => {
+  const workspace = workspaceWith('ws-imp', 'session-a', { version: 1, overrides: [] });
+  const harness = mount({ variables: SWITCH_VARIABLES, workspaces: [workspace] });
+  assert.equal((await setSwitch(harness.route, { enabled: true, layer: 'workspace', session: 'session-a' })).statusCode, 200);
+  const before = sha256(userPath());
+
+  const document = {
+    schema: 'dsh-prompt-setting/export',
+    version: 1,
+    layers: { user: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'imported {{nope}}' }] } },
+  };
+  for (const suffix of ['', '?dryRun=true']) {
+    const res = await call(harness.route, {
+      method: 'POST',
+      url: `${IMPORT_PATH}${suffix}`,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(document),
+    });
+    assert.equal(res.statusCode, 400, suffix);
+    assert.equal(json(res).code, 'unresolvable-variable', suffix);
+    assert.match(json(res).message, /user layer/, suffix);
+  }
+  assert.equal(sha256(userPath()), before, 'the refused import wrote nothing, dry run or not');
+
+  // An import of safe text still lands, and does not disturb the armed layer.
+  const good = {
+    ...document,
+    layers: { user: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'imported {{model}}' }] } },
+  };
+  const ok = await call(harness.route, {
+    method: 'POST',
+    url: IMPORT_PATH,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(good),
+  });
+  assert.equal(ok.statusCode, 200);
+  assert.equal(readLayer(userPath()).overrides[0].text, 'imported {{model}}');
+});
+
+test('g-026 rev12 F1: an explicitly closed workspace is the one place literal braces stay storable', async () => {
+  // The rule is per-text participation, not "any layer armed", and this is the
+  // case that tells them apart: a workspace that states OFF renders its own text
+  // literally in every session it owns, so its braces provably cannot throw and
+  // are not refused. (It is also why F4's explicit OFF is worth having.)
+  const workspace = workspaceWith('ws-closed', 'session-a', {
+    version: 1,
+    interpolateCustom: false,
+    overrides: [],
+  });
+  const path = layerPath(workspace);
+  const harness = mount({ variables: SWITCH_VARIABLES, workspaces: [workspace] });
+  assert.equal((await setSwitch(harness.route, { enabled: true })).statusCode, 200);
+
+  assert.equal((await putLayer(harness.route, 'workspace', 'ws {{nope}}', 'session-a')).statusCode, 200);
+  assert.equal(readLayer(path).overrides[0].text, 'ws {{nope}}');
+
+  const scoped = json(await call(harness.route, { url: `${SNAPSHOT_PATH}?session=session-a` }));
+  assert.deepEqual(scoped.layers.interpolate, { effective: false, user: true, workspace: false });
+  assert.equal(scoped.rendered.includes('ws {{nope}}'), true, 'the real render for that session is literal');
+  const global = json(await call(harness.route, { url: SNAPSHOT_PATH }));
+  assert.deepEqual(global.layers.interpolate, { effective: true, user: true, workspace: null });
+
+  // ...but arming THAT layer is refused while its own text is a bomb, because
+  // after the change it is the layer's text that interpolates.
+  const blocked = await setSwitch(harness.route, { enabled: true, layer: 'workspace', session: 'session-a' });
+  assert.equal(blocked.statusCode, 400);
+  assert.match(json(blocked).message, /workspace layer/);
+});
+
+test('g-026 rev12 F1 at load: a hand-armed layer degrades the unstated layer it arms', async () => {
+  // The same bypass, this time reached by editing files rather than by the UI:
+  // the user layer states ON, the workspace layer states nothing and holds a
+  // bomb. Only the cross-layer pass can see it — the workspace layer's own
+  // self-check reads "this layer states nothing, so nothing to check".
+  writeRaw(userPath(), JSON.stringify({ version: 1, interpolateCustom: true, overrides: [] }));
+  const workspace = workspaceWith('ws-load', 'session-a', {
+    version: 1,
+    overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'ws {{nope}}' }],
+  });
+  const harness = mount({ variables: SWITCH_VARIABLES, workspaces: [workspace] });
+
+  const scoped = json(await call(harness.route, { url: `${SNAPSHOT_PATH}?session=session-a` }));
+  assert.equal(scoped.layers.workspace.enabled, false, 'the armed text is taken out of the assembly');
+  assert.match(scoped.layers.workspace.reason, /^unresolvable-variable: /);
+  assert.match(scoped.layers.workspace.reason, /workspace layer/);
+  assert.match(scoped.layers.workspace.reason, /Fix:/);
+  // The user layer itself is fine and keeps contributing: this is a degradation
+  // of the layer whose text is at fault, not of the profile.
+  const global = json(await call(harness.route, { url: SNAPSHOT_PATH }));
+  assert.deepEqual([global.layers.user.enabled, global.layers.interpolate.user], [true, true]);
+  // A workspace whose text is safe is untouched by the same pass.
+  const safe = workspaceWith('ws-safe', 'session-b', {
+    version: 1,
+    overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'ws {{model}}' }],
+  });
+  const second = mount({ variables: SWITCH_VARIABLES, workspaces: [workspace, safe] });
+  const both = json(await call(second.route, { url: `${SNAPSHOT_PATH}?session=session-b` }));
+  assert.equal(both.layers.workspace.enabled, true);
+});
+
+test('g-026 rev12 F2: a registered-but-valueless reference is saved AND reported', async () => {
+  const harness = mount({ variables: { model: undefined, cwd: '/work' } });
+  assert.equal((await setSwitch(harness.route, { enabled: true })).statusCode, 200);
+
+  const saved = await putText(harness.route, 'hi {{model}}');
+  assert.equal(saved.statusCode, 200);
+  assert.equal(json(saved).warnings.length, 1);
+  assert.equal(json(saved).warnings[0].name, 'model');
+  assert.equal(json(saved).warnings[0].kind, 'undefined-value');
+  assert.match(json(saved).warnings[0].message, /no value/);
+  assert.equal(readLayer(userPath()).overrides[0].text, 'hi {{model}}', 'the save still happened');
+
+  // A safe text reports nothing at all — the field is additive, not decorative.
+  const clean = await putText(harness.route, 'hi {{cwd}}');
+  assert.equal(clean.statusCode, 200);
+  assert.equal(Object.hasOwn(json(clean), 'warnings'), false);
+
+  // Closing warns about nothing, and re-arming re-reports what is stored: the
+  // advisory is a property of the text, so it comes back with the arming write.
+  assert.equal(Object.hasOwn(json(await setSwitch(harness.route, { enabled: false })), 'warnings'), false);
+  assert.equal((await putText(harness.route, 'hi {{model}}')).statusCode, 200);
+  const reopened = await setSwitch(harness.route, { enabled: true });
+  assert.equal(reopened.statusCode, 200);
+  assert.equal(json(reopened).warnings[0].name, 'model');
+  assert.match(json(reopened).warnings[0].message, /user layer/);
+});
+
+test('g-026 rev12 F3: the assembly decides on its own context, so a session-less ping cannot move it', async () => {
+  const workspace = workspaceWith('ws-f3', 'session-a', {
+    version: 1,
+    interpolateCustom: true,
+    overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'A={{model}}' }],
+  });
+  const harness = mount({ variables: SWITCH_VARIABLES, workspaces: [workspace] });
+
+  const first = await assembleFor(harness, 'session-a');
+  assert.equal(reservedOf(first).interpolate, true, 'the armed workspace layer decides for its own session');
+  assert.equal(
+    renderSections(first.sections, first.variables).text.includes('A=deepseek-flash'),
+    true,
+    'and the real assembly substitutes',
+  );
+
+  // The ping carries no session. Historically it recomputed the global view and
+  // wrote it onto the one live flag, which turned this session's next turn
+  // literal even though nothing about the session had changed.
+  assert.equal((await call(harness.route, { url: PING_PATH })).statusCode, 200);
+  const afterPing = await assembleFor(harness, 'session-a');
+  assert.equal(reservedOf(afterPing).interpolate, true, 'the ping cannot disarm a session that states ON');
+  assert.equal(renderSections(afterPing.sections, afterPing.variables).text.includes('A=deepseek-flash'), true);
+
+  // The unscoped assembly is a different context and stays closed: nobody armed
+  // the user layer, and the workspace override is not merged into it at all.
+  const global = await harness.systemPrompt.assemble();
+  assert.equal(reservedOf(global).interpolate, false);
+  assert.equal(renderSections(global.sections, global.variables).text.includes('A='), false);
+
+  // The mirror the routes read still answers "the unscoped view", which is what
+  // makes a session-less request a no-op on the live definition.
+  assert.equal(reservedDefinition(harness).interpolate, false);
+});
+
+test('g-026 rev12 F3: interleaved sessions keep the reported effective and the real render in step', async () => {
+  const armed = workspaceWith('ws-i-on', 'session-a', {
+    version: 1,
+    interpolateCustom: true,
+    overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'A={{model}}' }],
+  });
+  const closed = workspaceWith('ws-i-off', 'session-b', {
+    version: 1,
+    overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'B={{model}}' }],
+  });
+  const harness = mount({ variables: SWITCH_VARIABLES, workspaces: [armed, closed] });
+
+  const view = async (session) => json(await call(harness.route, { url: `${SNAPSHOT_PATH}?session=${session}` }));
+  const before = { a: await view('session-a'), b: await view('session-b') };
+  // Interleave a session-less request between the two sessions' views: this is
+  // the sequence that made a single global flag report one thing and render
+  // another.
+  await call(harness.route, { url: PING_PATH });
+  const after = { a: await view('session-a'), b: await view('session-b') };
+
+  for (const [key, session] of [['a', 'session-a'], ['b', 'session-b']]) {
+    assert.deepEqual(after[key].layers.interpolate, before[key].layers.interpolate, `${session} view is stable`);
+  }
+  assert.equal(after.a.layers.interpolate.effective, true);
+  assert.equal(after.b.layers.interpolate.effective, false);
+
+  const a = await assembleFor(harness, 'session-a');
+  const b = await assembleFor(harness, 'session-b');
+  assert.equal(reservedOf(a).interpolate, after.a.layers.interpolate.effective, 'A: reported = real');
+  assert.equal(reservedOf(b).interpolate, after.b.layers.interpolate.effective, 'B: reported = real');
+  assert.equal(renderSections(a.sections, a.variables).text.endsWith('A=deepseek-flash'), true);
+  assert.equal(renderSections(b.sections, b.variables).text.endsWith('B={{model}}'), true);
+  // The snapshot's own bytes agree with the real renderer of each session.
+  assert.equal(after.a.rendered.endsWith('A=deepseek-flash'), true);
+  assert.equal(after.b.rendered.endsWith('B={{model}}'), true);
+});
+
+test('g-026 rev12 F4: three states, and an explicit OFF closes over an ON user layer', async () => {
+  const workspace = workspaceWith('ws-three', 'session-a', { version: 1, overrides: [] });
+  const path = layerPath(workspace);
+  const harness = mount({ variables: SWITCH_VARIABLES, workspaces: [workspace] });
+  assert.equal((await setSwitch(harness.route, { enabled: true })).statusCode, 200);
+
+  // Unstated: it inherits ON. That is the state the old two-valued write could
+  // not leave, and the state the UI used to render as OFF while the session
+  // really interpolated.
+  const inherited = json(await call(harness.route, { url: `${SNAPSHOT_PATH}?session=session-a` }));
+  assert.deepEqual(inherited.layers.interpolate, { effective: true, user: true, workspace: null });
+
+  // Explicit OFF: the boolean is written, which `enabled:false` cannot express.
+  const off = await setSwitch(harness.route, { state: 'off', layer: 'workspace', session: 'session-a' });
+  assert.equal(off.statusCode, 200);
+  assert.equal(json(off).state, 'off');
+  assert.deepEqual(json(off).saved, { enabled: false, state: 'off' });
+  assert.equal(readLayer(path).interpolateCustom, false, 'the key is present and false');
+  assert.deepEqual(
+    json(await call(harness.route, { url: `${SNAPSHOT_PATH}?session=session-a` })).layers.interpolate,
+    { effective: false, user: true, workspace: false },
+  );
+  // The real assembly agrees with the report.
+  assert.equal(reservedOf(await assembleFor(harness, 'session-a')).interpolate, false);
+
+  // Back to unstated: the key is DELETED, not written as a third value.
+  assert.equal((await setSwitch(harness.route, { state: 'inherit', layer: 'workspace', session: 'session-a' })).statusCode, 200);
+  assert.equal(Object.hasOwn(readLayer(path), 'interpolateCustom'), false);
+
+  // Explicit ON, then the legacy close: byte-for-byte back to unstated.
+  assert.equal((await setSwitch(harness.route, { state: 'on', layer: 'workspace', session: 'session-a' })).statusCode, 200);
+  assert.equal(readLayer(path).interpolateCustom, true);
+  assert.equal((await setSwitch(harness.route, { enabled: false, layer: 'workspace', session: 'session-a' })).statusCode, 200);
+  assert.equal(Object.hasOwn(readLayer(path), 'interpolateCustom'), false, 'the legacy close still reverts exactly');
+
+  // Shape: anything that is not one of the three states is refused, zero bytes.
+  const hash = sha256(path);
+  for (const state of ['maybe', '', 1, true, {}]) {
+    const res = await setSwitch(harness.route, { state, layer: 'workspace', session: 'session-a' });
+    assert.equal(res.statusCode, 400, JSON.stringify(state));
+    assert.equal(json(res).code, 'invalid-state', JSON.stringify(state));
+  }
+  assert.equal(sha256(path), hash, 'no byte moved');
+  // And a body with neither spelling keeps the pre-Revision-12 answer.
+  const empty = await setSwitch(harness.route, { layer: 'workspace', session: 'session-a' });
+  assert.equal(empty.statusCode, 400);
+  assert.equal(json(empty).code, 'invalid-enabled');
 });

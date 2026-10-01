@@ -4050,7 +4050,7 @@ node --input-type=module -e "import {satisfiesRange} from './core/compat.js'; im
 | **负向对照 I** | 校验器退回旧口径（畸形组当散文）→ 跑 interpolate + route + integration | **7 红**（`{{ lone {{c}}` / `{{{{model}}}}` 三类用例 + 路由拒绝 + 真渲染器对照） |
 | **负向对照 II** | `applyInterpolateFlag` 只判断不写入字段（模拟「切换没生效」）→ 跑 route + integration + client | **6 红**（默认/开启/回退/预览分级/真 assemble 现读） |
 | **负向对照 III** | 写入侧校验恒 `return`（模拟「不拦炸弹」）→ 跑 route + integration | **4 红**（PUT 拒绝、import 拒绝、开启前历史文本校验、真渲染器对照） |
-| 还原核对 | `diff` 备份 + `grep -c 'NEGATIVE CONTROL'` | 0 残留，全量回到 448 / 448 pass |
+| 还原核对 | `diff` 备份 + 负向对照标记残留检索（见下节同一命令） | 0 残留，全量回到 448 / 448 pass |
 
 ## 五、未验证项（诚实清单）
 
@@ -4058,3 +4058,73 @@ node --input-type=module -e "import {satisfiesRange} from './core/compat.js'; im
 - **跨版本依赖**：本方案依赖 shipped `assemble` 每轮现读 `section.interpolate`。上游若改成注册时定死，开关会静默失效——已写入 `CONTRACT.md` §16.2 并有两处测试可在升级时先红。
 - **`undefined` 值的软化**：开启态下保存「名字已注册但本次装配无值」的引用会放行；若该会话真实装配里该值仍是 `undefined`，那一轮仍会抛错。这是 §16.3 明示的取舍，未做「保存后再核实」。
 - **多工作区**：开关按层声明，「工作区未声明则继承用户层」。若用户对某个工作区显式关掉，而无会话的请求（例如设置页全局视图）会把全局定义同步成用户层的值——多会话并发下「当前生效值」是最近一次请求解析出的那一个（`CONTRACT.md` §16.7 已记）。
+
+
+---
+
+# g-026 att-002：修掉独立审计的 BLOCK（Revision 12，基线 `6362aaf`）
+
+独立对抗审计判定 BLOCK：不变式「开启后不得有文本使会话装配 throw」在纯 UI 操作下可被绕过。
+本轮逐条修复 F1–F5，并把审计的复现固化为回归测试。
+
+## 一、四个必修项怎么修的
+
+- **F1（高）写入/开启/import 的判定口径**：新增 `layerTextIsArmed(root, config)`，
+  把「被写那一层开没开」换成「这段文本能不能到达一个会插值的装配」：
+  用户层文本在任何一层 ON 时即被武装；工作区层文本按 `effectiveInterpolate(user, ws)` 判定。
+  写入（`PUT /overrides`）、开启（`PUT /interpolate`）、`import`（含 `dryRun`）与
+  **加载期**（`enforceVisibleTextsSafe`，含 `loadWorkspace` 后的二次读取）共用这一条口径。
+  审计的「两步绕过」「反向写用户层」「import 到用户层」三条路由级复现全部由 200/THROW 变 400 + 零字节。
+  **被否方案**：审计文字里那句更保守的「任一层 ON ⇒ 校验所有可见层」。它会连带拒绝
+  「显式关层的字面量 `{{...}}`」——而那正是 F4 存在的意义；并且会让加载期把一层的
+  自身文本降级（在那一层作用域内它根本不会抛）。F1 的每条复现都由现有口径拦住，故不采用。
+- **F3（中）装配不再依赖全局可变字段**：删除「请求期把 effective 写进全局单值」的机制。
+  改为 `applyAssemblyInterpolate(sections, resolved)`：在**该次 dispatch 自己的** context 上
+  从 `resolvedFor(context)`（真实 turn 走 session→workspace 合并；探针走探针自己的 config）取
+  已合并的 flag，并把它写进**本次** `sections` 里保留段的 `interpolate`。
+  `state.customDefinition.interpolate` 只保留为「无 scope 视图」的镜像（无 session 请求重算同一值，
+  因而是 no-op）。测法：无 session 的 ping 之后，ON 工作区会话的真装配仍为 `interpolate: true` 且真替换；
+  未武装的全局装配仍为字面量。
+- **F2（中）warnings 上wire**：`assertInterpolatable` 现在返回 `{warnings}`，
+  `PUT /overrides`、`PUT /interpolate`（开启态）、`POST /import`（含 dryRun）在非空时下发
+  `warnings[]`（`{name, kind, code, message}`，≤3 条），客户端在「我的 Prompt」里呈现（zh/en 齐备）。
+  字段是**条件性附加**：无话可说时响应与旧版逐字节相同（既有精确 body 断言不受影响）。
+- **F4（低）三态**：磁盘上 未声明 / `true` / `false`；`PUT` 旧拼写 `{enabled:false}` 仍等于「未声明（删键）」，
+  逐字节回退契约不变；新拼写 `{state:"inherit"|"on"|"off"}` 才写 `false`。UI 三键并列，
+  并在「本层未设置但当前跟随上层 ON」时明说「要覆盖请选显式关」。
+- **F5（低）加载期降级**：**选择「用户可感知 + 契约如实写明」**（审计给的第二条路）。
+  降级仍是整层（`missing-file` 范式），但「我的 Prompt」现在就地呈现被停用层的原因与恢复路径
+  （`data-warning="mine-layer-disabled"`），`CONTRACT.md` §16.5 把「整层而非单条」写成明确取舍。
+
+## 二、口径与被否方案（写进 CONTRACT 的点）
+
+- `CONTRACT.md` 新增 §16.2（装配按 context 现场决定 + 为什么「改全局定义对象」对本次装配无效）、
+  §16.3 的 warnings 段、§16.4 的 F1 口径与三行门禁表、§16.5 的跨层加载期检查与 F5 取舍、
+  §16.8（三态表）、§16.9（不做的事，新增「显式关层的字面量可存」一条）。
+- 保留段注册值仍是 `interpolate: false`，作为「未被判定覆盖」的兜底。
+
+## 三、本轮实测证据（包目录 `packages/dsh-prompt-setting/` 下执行）
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test` | **467 / 467 pass / 0 fail / 0 skipped**（约 15 s；基线 448，新增 19 项） |
+| 校验器/三态纯函数 | `node --test test/interpolate.test.mjs` | 19 / 19 pass |
+| 路由 + 审计复现 | `node --test test/route.test.mjs` | 78 / 78 pass |
+| 真渲染器对照 | `node --test test/integration.test.mjs` | 27 / 27 pass（真 `@deepseek-ai/dsh-system-prompt`，差分 fuzz 0 漏检 0 误报） |
+| 客户端 UI | `node --test test/client.test.mjs` | 115 / 115 pass |
+| 语法检查 | `node --check index.js / client.js / core/interpolate.js` | 通过 |
+| 负向对照 I | 写入校验退回「按被写层的 flag」判定 | **2 红**（反向写用户层、import 到用户层） |
+| 负向对照 II | 装配 flag 改读全局 live 字段 | **3 红**（无 session ping、交错会话、显式关覆盖） |
+| 负向对照 III | `describeWarnings` 退回「算完就丢」 | **1 红**（F2 路由用例） |
+| 负向对照 IV | `withState('off')` 退回删键 | **2 红**（三态往返、显式关覆盖用户层 ON） |
+| 残留核对 | 备份 `diff` + 负向对照标记检索 | 0 残留，全量回到 467 / 467 pass |
+
+## 四、未验证项（诚实清单）
+
+- **真机目视**：未重启 `dsh web`，未在运行中的 GUI 里点三态控件；宿主半改动需进程重启才生效，
+  离线断言已覆盖到真 `renderPrompt` 与真 Cordis 上下文。
+- **显式关层的字面量**：按 F1 口径可存（且真渲染为字面量），但加载期若该层被其它层武装则会被降级；
+  这一取舍写入 `CONTRACT.md` §16.4/§16.5。
+- **多工作区并发**：装配已按 context 现场决定，但「同一个 workspace 层」的多次写仍按请求串行，
+  未做跨请求并发压测（离线无法复现真机并发）。
+- **`undefined` 值的软化**：仍是 warning 而非拒绝（§16.3 明示），本轮只保证它被下发与呈现。

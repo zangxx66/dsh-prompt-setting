@@ -19,15 +19,20 @@ import test from 'node:test';
 
 import { CUSTOM_SECTION_NAME } from '../index.js';
 import {
+  INTERPOLATE_STATES,
   UNRESOLVABLE_VARIABLE,
+  anyStatesOn,
   assertInterpolatable,
   customTextOf,
   describeInterpolateErrors,
+  describeWarnings,
   effectiveInterpolate,
   lintPromptText,
   scanThrowingReference,
   selfCheckConfig,
+  switchStateOf,
   walkReferences,
+  withState,
   withSwitch,
   withoutSwitch,
 } from '../core/interpolate.js';
@@ -296,4 +301,67 @@ test('g-026 customTextOf: the reserved text, or null when there is none to check
   assert.equal(customTextOf({ version: 1, overrides: [] }), null);
   assert.equal(customTextOf(null), null);
   assert.equal(customTextOf(undefined), null);
+});
+
+// ---------------------------------------------------------------------------
+// Revision 12 (g-026 att-002): the audit's F1/F2/F4 in their pure form.
+// ---------------------------------------------------------------------------
+
+test('g-026 rev12 F1: anyStatesOn is the cross-layer half of the verdict, statedness included', () => {
+  const on = { version: 1, overrides: [], [INTERPOLATE_FLAG]: true };
+  const off = { version: 1, overrides: [], [INTERPOLATE_FLAG]: false };
+  const silent = { version: 1, overrides: [] };
+  assert.equal(anyStatesOn([off, silent]), false);
+  assert.equal(anyStatesOn([off, silent, on]), true, 'one stated ON is enough');
+  assert.equal(anyStatesOn([off, false, undefined, null, 'true']), false, 'a non-boolean neither arms nor throws here');
+  assert.equal(anyStatesOn([]), false);
+  assert.equal(anyStatesOn(null), false);
+});
+
+test('g-026 rev12 F2: the advisories are described, bounded and named', () => {
+  const { warnings } = lintPromptText('{{a}} {{b}} {{c}} {{d}}', { a: undefined, b: undefined, c: undefined, d: undefined });
+  assert.equal(warnings.length, 4);
+  const described = describeWarnings(warnings, 'the user layer (/x/overrides.json)');
+  assert.equal(described.length, 3, 'a bounded window, never a dump');
+  assert.deepEqual(described.map((entry) => entry.name), ['a', 'b', 'c']);
+  assert.equal(described[0].kind, 'undefined-value');
+  assert.equal(described[0].code, 'unresolved-at-save');
+  assert.match(described[0].message, /user layer/);
+  assert.match(described[0].message, /no value/);
+  assert.deepEqual(describeWarnings([], 'x'), []);
+  assert.deepEqual(describeWarnings(undefined, 'x'), []);
+
+  // assertInterpolatable returns them instead of dropping them, and still
+  // refuses only the fatal classes.
+  assert.deepEqual(
+    assertInterpolatable('hi {{maybe}}', VARIABLES, 'the user layer').warnings.map((entry) => entry.name),
+    ['maybe'],
+  );
+  assert.deepEqual(assertInterpolatable('hi {{model}}', VARIABLES, 'the user layer').warnings, []);
+  assert.throws(
+    () => assertInterpolatable('hi {{nope}}', VARIABLES, 'the user layer'),
+    (error) => error.code === UNRESOLVABLE_VARIABLE && error.status === 400,
+  );
+});
+
+test('g-026 rev12 F4: the three states round-trip, and inherit is the absence of the key', () => {
+  assert.deepEqual([...INTERPOLATE_STATES], ['inherit', 'on', 'off']);
+  const base = { version: 1, overrides: [] };
+  assert.equal(switchStateOf(base), 'inherit');
+  assert.equal(switchStateOf(withState(base, 'on')), 'on');
+  assert.equal(switchStateOf(withState(base, 'off')), 'off');
+
+  assert.deepEqual(withState(base, 'on'), { version: 1, overrides: [], [INTERPOLATE_FLAG]: true });
+  assert.deepEqual(withState(base, 'off'), { version: 1, overrides: [], [INTERPOLATE_FLAG]: false });
+  assert.deepEqual(withState(withState(base, 'off'), 'inherit'), { version: 1, overrides: [] });
+  // The explicit OFF is the state `withSwitch` cannot express; both spellings
+  // stay available and neither changes meaning.
+  assert.equal(Object.hasOwn(withSwitch(base, false), INTERPOLATE_FLAG), false);
+  assert.equal(withState(base, 'off')[INTERPOLATE_FLAG], false);
+
+  // An explicit OFF is what lets a workspace close over an ON user layer.
+  assert.equal(effectiveInterpolate(withState(base, 'on'), withState(base, 'off')), false);
+  assert.equal(effectiveInterpolate(withState(base, 'on'), base), true, 'unstated still inherits');
+  // An unknown state falls back to "states nothing" rather than guessing.
+  assert.deepEqual(withState(withState(base, 'on'), 'nonsense'), { version: 1, overrides: [] });
 });
