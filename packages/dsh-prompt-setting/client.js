@@ -543,6 +543,8 @@ window.__ModuleLoader__.load({
       mineTextLabel: '内容',
       minePlaceholder: '在这里写下你的 Prompt…',
       mineSave: '保存',
+      // g-027: not a confirmation-bearing action — it drops an unsaved draft.
+      mineCancel: '取消',
       mineReset: '恢复默认',
       mineSaving: '保存中…',
       mineSaved: '已保存到{layer}，下一轮生效（next-turn）。',
@@ -881,6 +883,8 @@ window.__ModuleLoader__.load({
       mineTextLabel: 'Content',
       minePlaceholder: 'Write your prompt here…',
       mineSave: 'Save',
+      // g-027: not a confirmation-bearing action — it drops an unsaved draft.
+      mineCancel: 'Cancel',
       mineReset: 'Restore default',
       mineSaving: 'Saving…',
       mineSaved: 'Saved to {layer}; effective from the next turn (next-turn).',
@@ -5452,6 +5456,21 @@ window.__ModuleLoader__.load({
             },
             state === 'saving' ? t('mineSaving') : t('mineSave'),
           ),
+          // g-027: 「取消」 drops the unsaved draft and falls back to the layer's
+          // *stored* text. It is the counterpart of 「恢复默认」, which is the
+          // one that deletes stored text; so this one is offered exactly while
+          // there is something unsaved to drop, and asks nothing first — it
+          // destroys nothing that was ever stored (§13.1).
+          h(
+            UI.Button,
+            {
+              'data-action': 'mine-cancel',
+              'data-mine-layer': layer,
+              disabled: m.busy || state !== 'dirty',
+              onClick: a.cancelMine,
+            },
+            t('mineCancel'),
+          ),
           h(
             UI.Button,
             {
@@ -6298,6 +6317,21 @@ window.__ModuleLoader__.load({
       };
 
       /**
+       * g-027: 「取消」 for 「我的 Prompt」 — drop the unsaved draft so the box
+       * shows the layer's already stored text again. It is deliberately not a
+       * write: no request, no disk byte, and unlike 「恢复默认」 nothing that was
+       * ever stored is destroyed, so it asks nothing first. Resetting the draft
+       * is the whole operation: a draft belongs to one layer+session key
+       * (`mineKey`), so a draft typed for another key is left where it is, and
+       * the state falls back to whatever the stored value says (`idle`, or
+       * `unconfigured` for a layer that has none). Only reachable while the
+       * panel is `dirty`, which excludes `saving` / `saved` / `error`.
+       */
+      const cancelMine = () => {
+        setMineDraft(null);
+      };
+
+      /**
        * 「恢复默认」 for 「我的 Prompt」: the single-name `DELETE`, which since
        * Revision 7 is exactly the reserved section. Confirmed first (§12.1): it
        * destroys text the user wrote.
@@ -6372,6 +6406,7 @@ window.__ModuleLoader__.load({
           setMineStatus({ kind: 'idle', error: null });
         },
         saveMine,
+        cancelMine,
         toggleMineInterpolate,
         setMineInterpolateState,
         requestMineReset: () => setConfirm({ kind: 'mine-reset', layer: mineLayer }),

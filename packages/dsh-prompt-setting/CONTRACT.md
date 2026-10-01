@@ -1634,8 +1634,9 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
 
 - The panel is `data-region="mine"`, the layer control is
   `data-region="mine-layer"` (group `mine-layer`, values `user` / `workspace`),
-  the text box is `data-role="mine-text"`, and the two controls are
-  `data-action="mine-save"` and `data-action="mine-reset"`.
+  the text box is `data-role="mine-text"`, and the three controls are
+  `data-action="mine-save"`, `data-action="mine-cancel"` and
+  `data-action="mine-reset"`.
 - The value shown is the reserved section's stored text **for the selected
   layer**, read from the `merged` list of `GET /overrides` — the list the
   assembly applies (§3). An absent entry means "unconfigured", and the panel
@@ -1645,6 +1646,15 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   (§4.1) and, when a session is selected, `session`. The text is sent verbatim.
 - 「恢复默认」 is the single-name `DELETE` (§12.1) for the reserved name and the
   selected layer, behind a second confirmation of kind `mine-reset`.
+- 「取消」 (g-027) is the non-destructive counterpart of 「恢复默认」: it drops the
+  panel's **unsaved draft** and falls back to the selected layer's stored text
+  — one client-side state reset, no request of any kind, no disk byte, and
+  **no** second confirmation (nothing that was ever stored is destroyed). It is
+  offered exactly while the panel is `data-mine-state="dirty"` (i.e. while
+  there is a draft to drop) and is `disabled` otherwise; the stored value, the
+  layer's configuration and 「保存」 / 「恢复默认」 are untouched. Both cancel and
+  the drafts it drops are scoped to one layer+session key, so cancelling in one
+  layer never discards another layer's draft.
 - `data-mine-state` is the machine-readable state: `unconfigured` | `dirty` |
   `saving` | `saved` | `error`. A failed write renders a full
   `data-mine-error="true"` banner (`data-error-code`, the mapped copy, the

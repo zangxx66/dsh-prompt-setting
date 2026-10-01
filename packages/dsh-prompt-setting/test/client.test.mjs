@@ -4586,9 +4586,10 @@ const EN_SWEEP_CASES = [
       ['data-mine-state', 'dirty'],
       ['data-mine-state', 'saved'],
       ['data-mine-effect', 'next-turn'],
+      ['data-action', 'mine-cancel'],
       ['data-active-tab', 'mine'],
     ],
-    copy: ['tabMine', 'mineHeading', 'mineNote', 'mineTextLabel', 'mineSave', 'mineReset', 'mineUnconfigured', 'mineDirty', ['mineSaved', { layer: 'user layer' }]],
+    copy: ['tabMine', 'mineHeading', 'mineNote', 'mineTextLabel', 'mineSave', 'mineCancel', 'mineReset', 'mineUnconfigured', 'mineDirty', ['mineSaved', { layer: 'user layer' }]],
     async run() {
       const page = enPage({ responses: defaultResponses() });
       const rec = recorder(page);
@@ -5320,6 +5321,9 @@ const EN_REQUIRED_MARKERS = [
   'data-mine-effect=unknown',
   'data-mine-effect=next-turn',
   'data-warning=mine-workspace-disabled',
+  // g-027: the third control of the write surface — the one that only drops an
+  // unsaved draft — must exist for the en sweep to have seen it rendered.
+  'data-action=mine-cancel',
   'data-confirm-kind=mine-reset',
   'data-confirm-kind=legacy-clear',
   'data-confirm-kind=reset-layer',
@@ -5777,4 +5781,119 @@ test('g-026 rev12 client: a layer disabled for a non-reference reason gets the f
   assert.match(shown, /invalid-json/, 'the host reason is on screen');
   assert.match(shown, /repair or remove that layer's config file/, 'and the fix matches the cause');
   assert.equal(/unresolvable \{\{\.\.\.\}\} reference/.test(shown), false, 'not the reference fix');
+});
+
+// ---------------------------------------------------------------------------
+// g-027: 「取消」 on「我的 Prompt」 — drop the unsaved draft, keep the stored text.
+//
+// It exists to be the *safe* counterpart of 「恢复默认」: that one deletes what
+// the layer stored (a server DELETE, confirmed first), this one throws away only
+// what was typed and never left the page. So the assertions here are mostly
+// negative — no request, no confirmation, no byte moved — plus the two states
+// the panel has to be in for the button to be offered at all.
+// ---------------------------------------------------------------------------
+
+test('g-027 client: 「取消」 drops the unsaved draft, restores the stored text and writes nothing', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.overrides]: {
+        payload: overridesFixture({
+          merged: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text', layer: 'user' }] },
+        }),
+      },
+    }),
+  });
+  let tree = await page.flush();
+
+  // A clean box has nothing to cancel, and says so by being disabled — the same
+  // shape 「恢复默认」 uses for "there is nothing stored to delete".
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'stored text');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'idle');
+  const clean = oneBy(tree, 'data-action', 'mine-cancel');
+  assert.equal(clean.props.disabled, true, 'nothing unsaved ⇒ 「取消」 is greyed out');
+  assert.equal(clean.props['data-mine-layer'], 'user', 'like its two neighbours, it names the layer');
+  assert.equal(clean.props.children, page.zh.mineCancel, 'and it carries the localized label');
+  assert.ok(strings(tree).includes(fillText(page.zh.mineLoaded, { layer: page.zh.ovUser })));
+
+  typeInto(tree, 'mine-text', 'half-typed garbage');
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-mine-state'), 'dirty', 'the edit is unsaved');
+  assert.equal(oneBy(tree, 'data-action', 'mine-cancel').props.disabled, false, 'an unsaved edit can be dropped');
+
+  const writesBefore = writeCalls(page).length;
+  assert.equal(writesBefore, 0, 'nothing has been written up to here');
+  clickButton(tree, { 'data-action': 'mine-cancel' });
+  tree = await page.flush();
+
+  // The draft is gone and the layer's own stored text is back — not an empty
+  // box, and not the deleted state 「恢复默认」 would leave behind.
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'stored text', 'the stored text, verbatim');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'idle');
+  assert.equal(oneBy(tree, 'data-action', 'mine-cancel').props.disabled, true, 'nothing left to cancel');
+
+  // Cancel is neither a write nor a confirmation: it is one local state reset.
+  // (`flush` re-runs the page's effects, so reads are not the unit to count
+  // here — a write is, and there must be none.)
+  assert.equal(writeCalls(page).length, writesBefore, '「取消」 issues no write');
+  assert.equal(writeCalls(page).length, 0, 'and no PUT / DELETE in particular');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-region'] === 'confirm').length,
+    0,
+    'no second confirmation appears: nothing stored is destroyed',
+  );
+  assert.ok(strings(tree).includes(fillText(page.zh.mineLoaded, { layer: page.zh.ovUser })), 'the panel reads as loaded again');
+});
+
+test('g-027 client: 「取消」 only drops the draft of the layer it belongs to', async () => {
+  // The draft is keyed by layer+session (`mineKey`), so cancelling in one layer
+  // must not touch another layer's draft, and switching away and back must not
+  // resurrect a draft that was actually cancelled.
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.overrides]: {
+        payload: overridesFixture({
+          merged: {
+            overrides: [
+              { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'user stored', layer: 'user' },
+              { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'workspace stored', layer: 'workspace' },
+            ],
+          },
+        }),
+      },
+    }),
+  });
+  let tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'user stored');
+
+  typeInto(tree, 'mine-text', 'user draft');
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-mine-state'), 'dirty');
+
+  // The other layer shows its own stored value, and cannot cancel a draft that
+  // is not its own.
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'workspace stored');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'idle');
+  assert.equal(oneBy(tree, 'data-action', 'mine-cancel').props.disabled, true, "the user layer's draft is not this layer's to cancel");
+
+  // Back again: the draft is the user layer's own, exactly as before g-027.
+  clickTab(tree, 'mine-layer', 'user');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'user draft');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'dirty');
+
+  clickButton(tree, { 'data-action': 'mine-cancel' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'user stored');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'idle');
+
+  // Gone, not merely hidden: the round trip does not bring the draft back.
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  clickTab(tree, 'mine-layer', 'user');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'user stored');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'idle');
+  assert.equal(writeCalls(page).length, 0, 'none of this wrote anything');
 });
