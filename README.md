@@ -108,6 +108,38 @@ and install, bilingual — is in [`packages/dsh-prompt-setting/README.md`](./pac
 - **Where the data lives**: only the plugin's own data directory (one user-level and one workspace-level
   layer file, plus a `history.jsonl`).
 
+### "My Prompt" injects text — it is not a behaviour switch
+
+- **What it does is inject your text at the end of the system prompt**, after every built-in section
+  (measured on this machine: 100% present and 100% last across `standard` sessions since 2026-09-30
+  21:32). It is **not** a hard switch over model behaviour.
+- **Surface style — output language and the like — usually works.** But the effect on **reasoning /
+  internal-thinking language is not reliable; the model and the platform decide**. We measured visible
+  Chinese output next to fully-English reasoning in the same session. That is not the same as "the plugin
+  did not work".
+- **Two cases where it provably cannot take effect** (keep them apart from "the model ignored it"):
+  ① the session's agent preset declares `complete: true` (the built-in `minimal`, and this machine's
+  "梁神模式") — the platform collapses the assembly into a single section, so this plugin's text cannot
+  enter the final prompt, and the Settings page raises a blocking notice; ② the plugin is not loaded at
+  all — a broken plugin never affects DSH startup, so the terminal is the only signal; run
+  `node scripts/check-compat.mjs` first.
+
+**Prove it for this session (two paths plus a failure rule):**
+
+```bash
+# Path 1 (hardest evidence): read this session's persisted final prompt
+ls ~/.dsh/sessions                              # find your workspace dir (escaped; non-ASCII becomes ~XXXX~)
+F=~/.dsh/sessions/<workspace-dir>/<session-id>/session.v4.jsonl.zstd   # e.g. --Users-me-Documents-proj--
+zstd -dc "$F" | jq -r 'select(.type=="system/message") | .data.message.content[0].text[-200:]'
+```
+
+- **Path 2 (GUI)**: Settings → **Prompt settings** → the "My Prompt" panel for the freeze warning, and the
+  Advanced tab's status card for the freeze state and the build fingerprint (`matches host` / `page is
+  stale` / `unknown`; "stale" only means the page is old — refresh).
+- **How to read the result**: your lines at the end ⇒ injection is fine, and if the model does not comply
+  the cause is **model compliance or a frozen preset**; no such lines (or an empty text) ⇒ check that
+  session's `agentPreset` and freeze state first.
+
 ## 5. Repository layout
 
 ```

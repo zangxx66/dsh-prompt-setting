@@ -60,6 +60,67 @@
   零贡献，渲染结果逐字节相同。
   > With no text the section contributes nothing to the final prompt; the rendering is byte-for-byte identical.
 
+## 「我的 Prompt」的生效范围与边界 / What "My Prompt" does — and does not do
+
+**它做的是「注入文本」，不是「切换行为」。** 你写的文字会被放进最终 system prompt 的**末尾**，
+排在所有内置段之后（2026-09-30 21:32 之后的本机 `standard` 会话实测：注入命中率与末位率都是 100%）；
+它**不会**强制模型改变行为方式，也**不是**一个能保证结果的开关。
+
+> It **injects text**; it does not **switch behaviour**. Your text goes to the **end** of the final system
+> prompt, after every built-in section (measured on this machine: 100% present and 100% last across
+> `standard` sessions since 2026-09-30 21:32). It does not force a behaviour change, and it is not a
+> switch that guarantees an outcome.
+
+- **表层风格（输出语言这类）通常有效。** 比如让回答说中文，一般看得到效果。
+  > **Surface style (output language and the like) usually works.** Asking for Chinese answers is
+  > normally visible.
+- **深层行为（reasoning / 内部思考语言）不稳定，由模型与平台决定。** 实测里出现过可见输出为中文、
+  同一会话 reasoning 却全英文，也会随会话与模型变化。写的是中文指令，不代表模型**必然**用中文思考。
+  > **Deep behaviour (reasoning / internal-thinking language) is not reliable — the model and the
+  > platform decide.** We measured visible Chinese output next to fully-English reasoning in the same
+  > session, and it varies by session and model. A Chinese instruction does not mean the model
+  > **must** think in Chinese.
+
+### 本会话自证 / Prove it for this session
+
+**路径一（最硬）：直接读该会话落盘的最终 prompt。**
+
+```bash
+ls ~/.dsh/sessions                              # 先找到你的工作区目录（转义形式，非 ASCII 变成 ~XXXX~）
+F=~/.dsh/sessions/<工作区目录>/<会话id>/session.v4.jsonl.zstd   # 例：--Users-me-Documents-proj--
+zstd -dc "$F" | jq -r 'select(.type=="system/message") | .data.message.content[0].text[-200:]'
+```
+
+末位能看到你写的那几句 ⇒ **注入正常**（此时模型若不照做，原因在模型遵从或 agent preset 冻结，不在注入）；
+末尾找不到、或整条为空 ⇒ 先查该会话的 `agentPreset` 与「冻结状态」，见下一节。
+
+> **Path 1 (hardest evidence): read the session's persisted prompt.** If your lines appear at the end,
+> injection is fine — if the model still ignores them, the cause is model compliance or a frozen preset,
+> not the injection. If the tail does not contain them (or the text is empty), check that session's
+> `agentPreset` and freeze state first.
+
+**路径二（GUI）：** 设置 → **Prompt settings** →「我的 Prompt」面板看**冻结提示**；「高级」页的
+状态卡看**冻结状态**与**构建戳**（`与宿主一致` / `页面版本已过期` / `构建戳未知`；显示过期说明页面是旧的，刷新即可）。
+
+> **Path 2 (GUI):** Settings → **Prompt settings** → the "My Prompt" panel for the freeze warning, and the
+> Advanced tab's status card for the freeze state and the build fingerprint (`matches host` / `page is
+> stale` / `unknown`; "stale" only means the page is old — refresh).
+
+### 两种「必然不生效」，别和「模型不遵从」混为一谈 / Two cases where it provably cannot take effect
+
+1. **该会话的 agent preset 声明了 `complete: true`**（DSH 内置 `minimal`，本机的「梁神模式」也如此）：
+   平台会在 waterfall 之后把装配强制压成单段，本插件的段**必然进不了**最终 prompt —— 这是平台语义，
+   不是注入 bug。设置页遇到这种情况会给**阻断级提示**（写着「不会生效」时就是这一类）。
+   > The session's agent preset declares `complete: true` (DSH's built-in `minimal`, and this machine's
+   > "梁神模式"): after the waterfall the platform collapses the assembly into a single section, so this
+   > plugin's section **cannot** enter the final prompt. That is platform semantics, not an injection bug;
+   > the Settings page shows a blocking notice in that case.
+2. **插件整体没加载**：插件挂掉不影响 DSH 启动，**终端是唯一的信号渠道** —— 先跑
+   `node scripts/check-compat.mjs`，看它打印的 boot 失败形态与 peer 范围结论。
+   > **The plugin is not loaded at all**: a broken plugin never affects DSH startup, which makes **the
+   > terminal the only signal** — run `node scripts/check-compat.mjs` first for the boot-failure
+   > signatures and the peer-range verdict.
+
 ## 安装 / Install
 
 用 DSH 的 plugin manager 以**绝对路径**安装本目录（**不要**手工编辑 profile 配置文件）：
