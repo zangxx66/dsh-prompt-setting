@@ -163,10 +163,11 @@ text last: another plugin (`dsh-expression`) registers its own
 this plugin — its post-`next()` step runs later. What Revision 8 adds:
 
 - a second `system-prompt/assemble` listener, registered `{prepend: true}` so it
-  is the **outermost** listener for that event. Its single job: after `await
-  next()`, if the reserved section exists, carries non-empty text and is not the
-  last entry, move it to the end; otherwise return the downstream value **by
-  reference** (§15.10);
+  is outer to every listener registered **before** it (a later `{prepend: true}`
+  registration would be outer to it in turn — §6·E2, §15.10 residual 2). Its single
+  job: after `await next()`, if the reserved section exists, carries non-empty text
+  and is not the last entry, move it to the end; otherwise return the downstream
+  value **by reference** (§15.10);
 - the **existing** override listener is untouched: same registration, same
   position, same `base` record, same probe consumption, same `detectFrozen`, same
   `applyOverrides` and same identity rule (§5.3). Nothing about the snapshot
@@ -392,9 +393,11 @@ renderer will read, at the very point after which nothing can change them.*
   returned was therefore judged by text that is no longer rendered (a throwing
   final text could slip through), and a listener outer to that point could change
   the section or the table after the verdict was taken. The verdict now runs in
-  the `{prepend: true}` listener's post-`next()` step — the last point at which
-  this plugin can still change the assembly — over the **final** `sections` text
-  and the **final** `variables` table. The config one dispatch resolved is carried
+  the `{prepend: true}` listener's post-`next()` step — which Revision 14 believed
+  was the last point at which this plugin could change the assembly — over the
+  **final** `sections` text and the **final** `variables` table. (Revision 15
+  deleted the whole verdict; the admission that the position was only believed,
+  never guaranteed, is why.) The config one dispatch resolved is carried
   across the waterfall by object identity (`state.resolvedByContext`, a `WeakMap`
   keyed by the assembly context), so the probe slot is still consumed exactly
   where it must be and two concurrent dispatches cannot be confused for each
@@ -1040,11 +1043,15 @@ real Cordis context. The snapshot republishes the same text in `experiments`.
   `next()` resolves the downstream value, a listener that never calls `next()`
   vetoes every later listener and its return value becomes authoritative, and a
   listener may `await next()` to transform the downstream result. Registration
-  order is not the whole story: a listener registered last with
-  `{prepend: true}` is placed **first** and is therefore the outermost one (the
-  platform itself registers this way). Revision 8's keeper is exactly such a
-  listener — that is what lets it run after every other listener's post-`next()`
-  step (§15.10).
+  order is not the whole story: a listener with `{prepend: true}` is **unshifted**
+  to the front (the platform itself registers this way), so it is outer to every
+  listener that was already registered — and, symmetrically, a listener registered
+  **after** it with the same option becomes outer to it. `prepend` is therefore a
+  relative ordering, not a promise of being the outermost listener in the
+  waterfall. Revision 8's keeper is such a listener; it is outer to every listener
+  registered before this plugin, which is what lets it run after their
+  post-`next()` steps (§15.10). Revision 15's expansion does not depend on this
+  position at all (§16.9.4).
 - **E3** — a registered `complete: true` section overrides the whole scope: even
   with the section list rewritten inside a listener, the final assembly is
   exactly `[that section]` with its **original registered text** (a rewritten
@@ -2201,10 +2208,14 @@ model reads, and the live machine proved it: `dsh-expression` registers its own
 plugin — its post-`next()` step runs after ours (§6·E2). Revision 8 adds one
 listener that closes that gap at the only point where it can be closed.
 
-**The listener.** Registered with `{prepend: true}`, which places it **first** in
-the waterfall and therefore makes it the outermost listener for this event: its
-post-`next()` step is the last one to touch the assembly, so it sees every section
-any listener appended after `next()` returned. It is a second effect on the same
+**The listener.** Registered with `{prepend: true}`, which unshifts it in front of
+every listener registered before it, so its post-`next()` step runs after theirs
+and it sees every section they appended after `next()` returned. The claim is
+**relative to the registrations that exist at that moment**, not absolute: a
+listener registered later with `{prepend: true}` is unshifted in front of this one
+in turn (residual 2 below), and a host that drops the options object removes the
+front slot altogether. Revision 15's expansion deliberately depends on none of
+this (§16.9.4). It is a second effect on the same
 g-013 ledger as the route, the override listener and the section registration —
 unloaded, or unwound when a later step fails, with them (§15.9). Its whole body:
 
