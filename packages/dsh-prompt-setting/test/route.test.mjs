@@ -1585,8 +1585,16 @@ test('g-026 switch: OFF by default, and the reserved section still registers int
   assert.equal((await call(harness.route, { method: 'DELETE', url: INTERPOLATE_PATH })).statusCode, 405);
 });
 
-test('g-026 switch: enabling flips the LIVE definition, persists, and re-registers nothing', async () => {
-  const harness = mount({ variables: SWITCH_VARIABLES });
+test('g-026 rev15 switch: enabling never flips the LIVE definition — it drives the plugin\'s own expansion', async () => {
+  const harness = mount({ variables: SWITCH_VARIABLES, agents: [{ id: 'session-a' }] });
+  assert.equal(reservedDefinition(harness).interpolate, false);
+  assert.equal((await putText(harness.route, 'I am {{model}}')).statusCode, 200);
+
+  // OFF: the section text is handed over exactly as written.
+  const closed = await assembleFor(harness, 'session-a');
+  assert.equal(reservedOf(closed).text, 'I am {{model}}');
+  assert.equal(reservedOf(closed).interpolate, false);
+
   const res = await setSwitch(harness.route, { enabled: true });
   assert.equal(res.statusCode, 200);
   const payload = json(res);
@@ -1594,46 +1602,56 @@ test('g-026 switch: enabling flips the LIVE definition, persists, and re-registe
   assert.equal(payload.layer, 'user');
   assert.equal(payload.effectiveFrom, 'next-turn');
 
-  // The SAME object the service holds carries the new flag — no re-registration
-  // and no second name in the global layer.
-  assert.equal(reservedDefinition(harness).interpolate, true);
+  // Revision 15 (design A): the live definition object is NOT touched. The
+  // `interpolate: false` field is structural, not a switch position, so the
+  // strict renderer can never be pointed at this text — no re-registration and
+  // no second name in the global layer either.
+  assert.equal(reservedDefinition(harness).interpolate, false, 'the definition never moves');
   assert.equal(harness.sectionRegistrations.length, 1);
   assert.equal(harness.registered.filter((section) => section.name === CUSTOM_SECTION_NAME).length, 1);
-  // The registration snapshot still shows what was registered.
-  assert.equal(harness.sectionRegistrations[0].interpolate, false);
+  assert.equal(harness.sectionRegistrations[0].interpolate, false, 'and the registration value stays false');
+
+  // What the switch DOES do: the next assembly's text arrives expanded, and the
+  // section still says `interpolate: false`.
+  const open = await assembleFor(harness, 'session-a');
+  assert.equal(reservedOf(open).text, 'I am deepseek-flash');
+  assert.equal(reservedOf(open).interpolate, false, 'DSH still never interpolates this section');
 
   assert.equal(readLayer(userPath()).interpolateCustom, true);
   assert.equal(json(await call(harness.route, { url: SNAPSHOT_PATH })).layers.interpolate.effective, true);
 });
 
 test('g-026 switch: it survives a remount, which is what "no restart" would otherwise cost', async () => {
-  const first = mount({ variables: SWITCH_VARIABLES });
+  const first = mount({ variables: SWITCH_VARIABLES, agents: [{ id: 'session-a' }] });
   assert.equal((await setSwitch(first.route, { enabled: true })).statusCode, 200);
-  assert.equal(reservedDefinition(first).interpolate, true);
+  assert.equal((await putText(first.route, 'M={{model}}')).statusCode, 200);
 
-  const second = mount({ variables: SWITCH_VARIABLES });
-  assert.equal(reservedDefinition(second).interpolate, true, 'mount applies what the layers already state');
+  const second = mount({ variables: SWITCH_VARIABLES, agents: [{ id: 'session-a' }] });
+  const restored = await assembleFor(second, 'session-a');
+  assert.equal(reservedOf(restored).text, 'M=deepseek-flash', 'mount applies what the layers already state');
+  assert.equal(reservedDefinition(second).interpolate, false, 'and still flips nothing');
   assert.equal(json(await call(second.route, { url: SNAPSHOT_PATH })).layers.interpolate.effective, true);
 });
 
 test('g-026 switch: closing restores the file byte for byte, and ON→OFF→ON leaves no residue', async () => {
-  const harness = mount({ variables: SWITCH_VARIABLES });
+  const harness = mount({ variables: SWITCH_VARIABLES, agents: [{ id: 'session-a' }] });
   assert.equal((await putText(harness.route, 'hello {{model}}')).statusCode, 200);
   const before = sha256(userPath());
   assert.equal(readLayer(userPath()).interpolateCustom, undefined, 'OFF is absence, not false');
+  assert.equal(reservedOf(await assembleFor(harness, 'session-a')).text, 'hello {{model}}');
 
   await setSwitch(harness.route, { enabled: true });
-  assert.equal(reservedDefinition(harness).interpolate, true);
+  assert.equal(reservedOf(await assembleFor(harness, 'session-a')).text, 'hello deepseek-flash');
   const on = sha256(userPath());
   assert.notEqual(on, before);
-  // Repeating ON is a no-op, and the live definition is idempotent.
+  // Repeating ON is a no-op, and the expansion it drives is idempotent.
   assert.equal((await setSwitch(harness.route, { enabled: true })).statusCode, 200);
   assert.equal(sha256(userPath()), on, 'a repeated ON rewrites the same bytes');
-  assert.equal(reservedDefinition(harness).interpolate, true);
+  assert.equal(reservedDefinition(harness).interpolate, false);
 
   await setSwitch(harness.route, { enabled: false });
-  assert.equal(reservedDefinition(harness).interpolate, false);
   assert.equal(sha256(userPath()), before, 'the pre-switch bytes are back exactly');
+  assert.equal(reservedOf(await assembleFor(harness, 'session-a')).text, 'hello {{model}}', 'and the braces are literal again');
 
   await setSwitch(harness.route, { enabled: true });
   await setSwitch(harness.route, { enabled: false });
@@ -1784,7 +1802,13 @@ test('g-026 history check: a bomb in the WORKSPACE layer also blocks opening the
   assert.equal((await setSwitch(second.route, { enabled: true })).statusCode, 400);
 });
 
-test('g-026 load time: a layer that arms a bomb on disk is degraded with a reason, never silently accepted', async () => {
+test('g-026 rev15 load time: a hand-armed layer with a dead reference is NOT degraded any more', async () => {
+  // Revision 15 (design A) deletes the load-time interpolation self-check. It
+  // used to disable a layer whose stored text would throw if the section
+  // interpolated — but the section never interpolates, so the text is harmless,
+  // and disabling it would silently discard the user's prompt. What replaces the
+  // assertion is stronger: the layer is fully enabled, its text reaches the
+  // prompt, and the dead reference is graded literal exactly as g-025 grades it.
   writeRaw(userPath(), JSON.stringify({
     version: 1,
     interpolateCustom: true,
@@ -1792,14 +1816,14 @@ test('g-026 load time: a layer that arms a bomb on disk is degraded with a reaso
   }));
   const harness = mount({ variables: SWITCH_VARIABLES });
   const payload = json(await call(harness.route, { url: SNAPSHOT_PATH }));
-  assert.equal(payload.layers.user.enabled, false, 'the layer contributes nothing');
-  assert.match(payload.layers.user.reason, /^unresolvable-variable: /);
-  assert.match(payload.layers.user.reason, /Fix:/);
-  assert.match(payload.layers.user.reason, /disabled/);
-  // A layer that is degraded is not an invalid FILE: the file itself is fine and
-  // the switch it states reads OFF for this session.
-  assert.equal(payload.layers.interpolate.user, null);
-  assert.equal(payload.layers.interpolate.effective, false);
+  assert.equal(payload.layers.user.enabled, true, 'the layer contributes everything');
+  assert.equal(payload.layers.user.reason, null);
+  assert.equal(payload.layers.interpolate.user, true, 'the switch it states is read as stated');
+  assert.equal(payload.layers.interpolate.effective, true);
+  assert.equal(payload.rendered.endsWith('x {{nope}}'), true, 'the braces reach the model literally');
+  assert.equal(payload.renderedResolved, true);
+  assert.deepEqual(payload.unresolvedThrowing, []);
+  assert.deepEqual(payload.unresolvedLiteral, ['nope'], 'graded where it belongs: literal, not throwing');
 });
 
 test('g-026 load time: the same file loads untouched while the switch is closed', async () => {
@@ -1814,14 +1838,13 @@ test('g-026 load time: the same file loads untouched while the switch is closed'
   assert.equal(payload.rendered.endsWith('x {{nope}}'), true, 'the braces reach the model literally');
 });
 
-test('g-026 rev14 E1: opening the switch holds a valueless reference back — the preview is the literal, safe turn', async () => {
+test('g-026 rev15: a valueless reference stays literal whether the switch is open or closed', async () => {
   // `model` is registered but has no value in this assembly, so the text is
   // storable (a warned reference) and the two gradings are directly comparable.
-  // Revision 14 (audit E1) changed the second half: the assembly holds an
-  // `undefined` value back exactly like an unregistered name, because *that*
-  // turn would throw. The preview therefore stays literal and keeps agreeing with
-  // the real render, instead of advertising a throw the plugin now prevents.
-  const harness = mount({ variables: { model: undefined } });
+  // Revision 14 held such a turn back; Revision 15 (design A) does not have to,
+  // because the section never interpolates — the reference is simply left
+  // literal by the plugin's own lenient expansion, and the preview says so.
+  const harness = mount({ variables: { model: undefined }, agents: [{ id: 'session-a' }] });
   assert.equal((await putText(harness.route, 'I am {{model}}')).statusCode, 200);
 
   const closed = json(await call(harness.route, { url: SNAPSHOT_PATH }));
@@ -1829,16 +1852,22 @@ test('g-026 rev14 E1: opening the switch holds a valueless reference back — th
   assert.equal(closed.renderedResolved, true);
   assert.deepEqual(closed.unresolvedThrowing, []);
   assert.deepEqual(closed.unresolvedLiteral, ['model'], 'closed: literal, not a fault');
-  assert.equal(closed.layers.interpolationHold, null, 'closed: nothing is held');
+  assert.equal(Object.hasOwn(closed.layers, 'interpolationHold'), false, 'rev15: the hold field is gone');
 
   await setSwitch(harness.route, { enabled: true });
   const open = json(await call(harness.route, { url: SNAPSHOT_PATH }));
-  assert.equal(open.rendered.endsWith('I am {{model}}'), true);
-  assert.equal(open.renderedResolved, true, 'rev14: the turn is held, so the real assembly does NOT throw');
-  assert.deepEqual(open.unresolvedThrowing, []);
-  assert.deepEqual(open.unresolvedLiteral, ['model'], 'still literal, and now for a stronger reason');
+  assert.equal(open.rendered.endsWith('I am {{model}}'), true, 'a value this assembly lacks is left literal');
+  assert.equal(open.renderedResolved, true);
+  assert.deepEqual(open.unresolvedThrowing, [], 'nothing about this turn can throw');
+  assert.deepEqual(open.unresolvedLiteral, ['model']);
   assert.equal(open.layers.interpolate.effective, true);
-  assert.match(open.layers.interpolationHold.reason, /has no value in this assembly/);
+  assert.equal(Object.hasOwn(open.layers, 'interpolationHold'), false);
+
+  // The real assembly of a session agrees, and DSH is still never handed the
+  // text as an interpolating section.
+  const assembly = await assembleFor(harness, 'session-a');
+  assert.equal(reservedOf(assembly).text, 'I am {{model}}');
+  assert.equal(reservedOf(assembly).interpolate, false);
 });
 
 test('g-026 scope: the workspace layer states its own value and wins over the user layer', async () => {
@@ -2087,11 +2116,12 @@ test('g-026 rev12 F1: an explicitly closed workspace is the one place literal br
   assert.match(json(blocked).message, /workspace layer/);
 });
 
-test('g-026 rev12 F1 at load: a hand-armed layer degrades the unstated layer it arms', async () => {
-  // The same bypass, this time reached by editing files rather than by the UI:
-  // the user layer states ON, the workspace layer states nothing and holds a
-  // bomb. Only the cross-layer pass can see it — the workspace layer's own
-  // self-check reads "this layer states nothing, so nothing to check".
+test('g-026 rev15 F1 at load: a hand-armed pair of layers is left enabled, and the dead reference stays literal', async () => {
+  // The Revision 12 load-time half, re-stated for the design that removed it: the
+  // user layer states ON, the workspace layer states nothing and carries a dead
+  // reference. Revision 15 does not degrade it — nothing about the text can break
+  // an assembly — so the assertion is that both layers keep contributing and the
+  // reference is graded literal.
   writeRaw(userPath(), JSON.stringify({ version: 1, interpolateCustom: true, overrides: [] }));
   const workspace = workspaceWith('ws-load', 'session-a', {
     version: 1,
@@ -2100,15 +2130,16 @@ test('g-026 rev12 F1 at load: a hand-armed layer degrades the unstated layer it 
   const harness = mount({ variables: SWITCH_VARIABLES, workspaces: [workspace] });
 
   const scoped = json(await call(harness.route, { url: `${SNAPSHOT_PATH}?session=session-a` }));
-  assert.equal(scoped.layers.workspace.enabled, false, 'the armed text is taken out of the assembly');
-  assert.match(scoped.layers.workspace.reason, /^unresolvable-variable: /);
-  assert.match(scoped.layers.workspace.reason, /workspace layer/);
-  assert.match(scoped.layers.workspace.reason, /Fix:/);
-  // The user layer itself is fine and keeps contributing: this is a degradation
-  // of the layer whose text is at fault, not of the profile.
+  assert.equal(scoped.layers.workspace.enabled, true, 'nothing is taken out of the assembly any more');
+  assert.equal(scoped.layers.workspace.reason, null);
+  assert.equal(scoped.rendered.includes('ws {{nope}}'), true, 'the dead reference is the literal the user wrote');
+  assert.deepEqual(scoped.unresolvedThrowing, []);
+  assert.deepEqual(scoped.unresolvedLiteral, ['nope']);
+  // The user layer keeps contributing as well: this is not a degradation of the
+  // profile, and there is no other layer to degrade.
   const global = json(await call(harness.route, { url: SNAPSHOT_PATH }));
   assert.deepEqual([global.layers.user.enabled, global.layers.interpolate.user], [true, true]);
-  // A workspace whose text is safe is untouched by the same pass.
+  // A workspace whose text resolves expands it, in that workspace's own scope.
   const safe = workspaceWith('ws-safe', 'session-b', {
     version: 1,
     overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'ws {{model}}' }],
@@ -2116,6 +2147,7 @@ test('g-026 rev12 F1 at load: a hand-armed layer degrades the unstated layer it 
   const second = mount({ variables: SWITCH_VARIABLES, workspaces: [workspace, safe] });
   const both = json(await call(second.route, { url: `${SNAPSHOT_PATH}?session=session-b` }));
   assert.equal(both.layers.workspace.enabled, true);
+  assert.equal(both.rendered.includes('ws deepseek-flash'), true);
 });
 
 test('g-026 rev12 F2: a registered-but-valueless reference is saved AND reported', async () => {
@@ -2154,11 +2186,12 @@ test('g-026 rev12 F3: the assembly decides on its own context, so a session-less
   const harness = mount({ variables: SWITCH_VARIABLES, workspaces: [workspace] });
 
   const first = await assembleFor(harness, 'session-a');
-  assert.equal(reservedOf(first).interpolate, true, 'the armed workspace layer decides for its own session');
+  assert.equal(reservedOf(first).interpolate, false, 'the section is never handed to the strict interpolator');
+  assert.equal(reservedOf(first).text, 'A=deepseek-flash', 'the armed workspace layer expands for its own session');
   assert.equal(
     renderSections(first.sections, first.variables).text.includes('A=deepseek-flash'),
     true,
-    'and the real assembly substitutes',
+    'and the rendered assembly carries the value',
   );
 
   // The ping carries no session. Historically it recomputed the global view and
@@ -2166,7 +2199,7 @@ test('g-026 rev12 F3: the assembly decides on its own context, so a session-less
   // literal even though nothing about the session had changed.
   assert.equal((await call(harness.route, { url: PING_PATH })).statusCode, 200);
   const afterPing = await assembleFor(harness, 'session-a');
-  assert.equal(reservedOf(afterPing).interpolate, true, 'the ping cannot disarm a session that states ON');
+  assert.equal(reservedOf(afterPing).text, 'A=deepseek-flash', 'the ping cannot disarm a session that states ON');
   assert.equal(renderSections(afterPing.sections, afterPing.variables).text.includes('A=deepseek-flash'), true);
 
   // The unscoped assembly is a different context and stays closed: nobody armed
@@ -2208,8 +2241,10 @@ test('g-026 rev12 F3: interleaved sessions keep the reported effective and the r
 
   const a = await assembleFor(harness, 'session-a');
   const b = await assembleFor(harness, 'session-b');
-  assert.equal(reservedOf(a).interpolate, after.a.layers.interpolate.effective, 'A: reported = real');
-  assert.equal(reservedOf(b).interpolate, after.b.layers.interpolate.effective, 'B: reported = real');
+  assert.equal(reservedOf(a).interpolate, false, 'A: the section is never interpolated by DSH');
+  assert.equal(reservedOf(b).interpolate, false);
+  assert.equal(reservedOf(a).text, 'A=deepseek-flash', 'A: reported effective = expanded for real');
+  assert.equal(reservedOf(b).text, 'B={{model}}', 'B: reported effective OFF = left literal');
   assert.equal(renderSections(a.sections, a.variables).text.endsWith('A=deepseek-flash'), true);
   assert.equal(renderSections(b.sections, b.variables).text.endsWith('B={{model}}'), true);
   // The snapshot's own bytes agree with the real renderer of each session.
@@ -2320,11 +2355,13 @@ test('g-026 rev13 D1: a workspace the registry only lists mid-request cannot sli
   assert.equal(sha256(path), before, 'still zero bytes');
 });
 
-test('g-026 rev13 D2: a layer that states ON with an unregistered name is held back before any route request', async () => {
+test('g-026 rev15 D2: a layer that states ON with an unregistered name cannot fail the first turn', async () => {
   // Cross-process residue or a hand edit: the layer states ON and carries a name
-  // nothing registers. At mount there is no variable table yet, so the load-time
-  // self-check reads grammar only — and the name half used to slip through it
-  // into the first real turn, which then threw.
+  // nothing registers. The Revision 13 exploit was that the first turn after
+  // mount ran before any variable table existed, so the name half of the check
+  // slipped through and the turn threw. Under design A there is no window at
+  // all: the section is never interpolated, so the first turn is literal and
+  // safe by construction.
   writeRaw(userPath(), JSON.stringify({
     version: 1,
     interpolateCustom: true,
@@ -2333,39 +2370,27 @@ test('g-026 rev13 D2: a layer that states ON with an unregistered name is held b
   const agent = { id: 'session-a' };
   const harness = mount({ variables: SWITCH_VARIABLES, agents: [agent] });
 
-  // Not one route request has run: `state.variables` is still null.
+  // Not one route request has run: `state.variables` is still null, and that no
+  // longer matters to the assembly path.
   const first = await assembleFor(harness, 'session-a');
   const reserved = reservedOf(first);
-  assert.equal(reserved.text, 'x {{nope}}', 'the stored text is what this turn would render');
-  assert.equal(reserved.interpolate, false, 'the unverified text is held back, not interpolated');
+  assert.equal(reserved.text, 'x {{nope}}', 'the dead reference is left exactly as written');
+  assert.equal(reserved.interpolate, false, 'and the strict interpolator is never pointed at it');
 
-  // The hold was recorded and explained rather than silent — the snapshot is
-  // where the browser reads it. Revision 14 (audit E3) makes that record the
-  // CURRENT state: by the time this snapshot runs, the load-time pass has
-  // degraded the layer (next assertion), so its reserved section no longer
-  // renders at all, this scope is not holding, and the first turn's reason must
-  // not survive as a stale one.
   const scoped = json(await call(harness.route, { url: `${SNAPSHOT_PATH}?session=session-a` }));
-  assert.equal(scoped.layers.interpolationHold, null, 'no stale hold reason survives the degraded layer');
-
-  // Once a request has run, the load-time self-check has the names and degrades
-  // the layer with the existing `unresolvable-variable` reason — the belt and
-  // the braces agree.
-  assert.equal(scoped.layers.user.enabled, false);
-  assert.match(scoped.layers.user.reason, /^unresolvable-variable: /);
-  assert.match(scoped.layers.user.reason, /Fix:/);
+  assert.equal(Object.hasOwn(scoped.layers, 'interpolationHold'), false, 'rev15: no hold state exists');
+  assert.equal(scoped.layers.user.enabled, true, 'the layer is not degraded — it has nothing to be degraded for');
+  assert.equal(scoped.layers.user.reason, null);
+  assert.equal(scoped.rendered.endsWith('x {{nope}}'), true);
+  assert.deepEqual(scoped.unresolvedLiteral, ['nope']);
 });
 
-test('g-026 rev14 E1: a registered-but-valueless name IS held back — the assembly decides strictly', async () => {
-  // Revision 13 left this to §16.3's write-time trade-off (the value belongs to
-  // the session) and the turn threw. Revision 14 (audit E1) keeps the write face
-  // soft — the save is accepted with a warning, because the probe table is not
-  // the session's table — but makes the ASSEMBLY strict: this very table has no
-  // value for this very name, so this very turn would throw, so the section
-  // renders literally and says why. The reachable chain is the audit's: DSH's
-  // shipped sections carry no `{{...}}`, so for a name like `provider` the
-  // reserved section is the only thing left that can throw, and the panel tells
-  // the user to write exactly these names.
+test('g-026 rev15 E1: a registered-but-valueless name is left literal, not "held"', async () => {
+  // The write face is soft (the save is accepted with a warning, because the
+  // probe table is not the session's table), and Revision 15 makes the assembly
+  // soft in the same way: this very table has no value for this very name, so
+  // the reference is left literal by the lenient expansion. There is no throw to
+  // hold back and no hold state to report.
   writeRaw(userPath(), JSON.stringify({
     version: 1,
     interpolateCustom: true,
@@ -2375,32 +2400,30 @@ test('g-026 rev14 E1: a registered-but-valueless name IS held back — the assem
   const harness = mount({ variables: { model: undefined }, agents: [agent] });
 
   const first = await assembleFor(harness, 'session-u');
-  assert.equal(reservedOf(first).text, 'hi {{model}}', 'the stored text is what this turn would render');
-  assert.equal(reservedOf(first).interpolate, false, 'undefined is a value this assembly does not have');
+  assert.equal(reservedOf(first).text, 'hi {{model}}', 'no value in this assembly ⇒ the reference stays literal');
+  assert.equal(reservedOf(first).interpolate, false);
 
   const snap = json(await call(harness.route, { url: `${SNAPSHOT_PATH}?session=session-u` }));
-  assert.match(snap.layers.interpolationHold.reason, /has no value in this assembly/);
-  assert.equal(Number.isNaN(Date.parse(snap.layers.interpolationHold.at)), false);
+  assert.equal(Object.hasOwn(snap.layers, 'interpolationHold'), false);
   assert.equal(snap.layers.user.enabled, true, 'the write/load face still warns instead of refusing the layer');
+  assert.equal(snap.rendered.endsWith('hi {{model}}'), true);
+  assert.deepEqual(snap.unresolvedLiteral, ['model']);
+  assert.deepEqual(snap.unresolvedThrowing, []);
 });
 
-test('g-026 rev14 E2: the verdict reads the final sections and the final variable table', async () => {
-  // The audit's E2: the Revision 13 verdict was taken inside `assembleHandler`,
-  // from `customTextOf(resolved)` — the config on disk — while the renderer reads
-  // the section the *finished* waterfall produced. A listener that rewrites the
-  // reserved section after `next()` therefore used to be judged by text that is
-  // no longer rendered, in both directions.
-  //
-  // Direction 1 — a rewrite INTO a bomb must be held (the miss). The armed layer
-  // carries no text of its own, so the config says nothing to check while the
-  // finished waterfall hands the renderer a throwing reference.
-  writeRaw(userPath(), JSON.stringify({
-    version: 1,
-    interpolateCustom: true,
-    overrides: [],
-  }));
-  const missed = mount({ variables: {}, agents: [{ id: 'session-e2a' }] });
-  missed.ctx.on('system-prompt/assemble', async (assembly, context, next) => {
+test('g-026 rev15 E2/F1: a listener that rewrites the reserved section cannot arm a throw', async () => {
+  // The audit's E2 asked where the verdict is taken. Revision 15 removes the
+  // verdict entirely: the expansion reads the section list `applyOverrides`
+  // produced and the table this assembly carries, and it is lenient — so every
+  // rewrite another listener can perform costs at most "this turn was not
+  // expanded", never a failed turn.
+
+  // Direction A — an INNER listener (registered after this plugin, without
+  // `prepend`) rewrites the reserved text into a dead reference. The expansion
+  // runs after it, cannot resolve the name, and leaves it literal.
+  writeRaw(userPath(), JSON.stringify({ version: 1, interpolateCustom: true, overrides: [] }));
+  const inner = mount({ variables: {}, agents: [{ id: 'session-e2a' }] });
+  inner.ctx.on('system-prompt/assemble', async (assembly, context, next) => {
     const result = await next();
     return {
       ...result,
@@ -2409,73 +2432,76 @@ test('g-026 rev14 E2: the verdict reads the final sections and the final variabl
         : section)),
     };
   });
-  const caught = reservedOf(await assembleFor(missed, 'session-e2a'));
-  assert.equal(caught.text, 'boom {{missing}}', 'the final section text is what this turn would render');
-  assert.equal(caught.interpolate, false, 'the config carried no text; the rendered text is a bomb, so it is held');
-  const caughtSnap = json(await call(missed.route, { url: `${SNAPSHOT_PATH}?session=session-e2a` }));
-  assert.match(caughtSnap.layers.interpolationHold.reason, /missing/);
+  const caught = reservedOf(await assembleFor(inner, 'session-e2a'));
+  assert.equal(caught.text, 'boom {{missing}}', 'the final section text is what this turn renders');
+  assert.equal(caught.interpolate, false, 'and it is never handed to the strict interpolator');
+  const caughtSnap = json(await call(inner.route, { url: `${SNAPSHOT_PATH}?session=session-e2a` }));
+  assert.equal(Object.hasOwn(caughtSnap.layers, 'interpolationHold'), false);
 
-  // Direction 2 — a rewrite the final table CAN resolve must not be held. The
-  // pre-waterfall section names nothing; the finished one names a variable the
-  // finished table defines, so the real render is safe and nothing may be held
-  // back.
-  writeRaw(userPath(), JSON.stringify({
-    version: 1,
-    interpolateCustom: true,
-    overrides: [],
-  }));
-  const recovered = mount({ variables: {}, agents: [{ id: 'session-e2b' }] });
-  recovered.ctx.on('system-prompt/assemble', async (assembly, context, next) => {
+  // Direction B — an OUTER listener registered AFTER this plugin's mount: the F1
+  // shape, where `{prepend: true}` makes a late registration the outermost one.
+  // It rewrites the finished value, so the plugin's expansion is overwritten —
+  // and that is the whole point. The section still says `interpolate: false`, so
+  // the worst case is "not expanded", never a throw.
+  const outer = mount({ variables: {}, agents: [{ id: 'session-e2b' }] });
+  outer.ctx.on('system-prompt/assemble', async (assembly, context, next) => {
     const result = await next();
     return {
       ...result,
-      variables: { ...result.variables, late: 'L' },
       sections: result.sections.map((section) => (section.name === CUSTOM_SECTION_NAME
-        ? { ...section, text: 'late is {{late}}' }
+        ? { ...section, text: 'late {{nope}}' }
         : section)),
     };
-  });
-  const safe = reservedOf(await assembleFor(recovered, 'session-e2b'));
-  assert.equal(safe.text, 'late is {{late}}', 'the final text is what this turn would render');
-  assert.equal(safe.interpolate, true, 'the final table defines `late`, so this turn interpolates');
-  const safeSnap = json(await call(recovered.route, { url: `${SNAPSHOT_PATH}?session=session-e2b` }));
-  assert.equal(safeSnap.layers.interpolationHold, null, 'a resolvable turn is not a hold');
+  }, { prepend: true });
+  const overwritten = reservedOf(await assembleFor(outer, 'session-e2b'));
+  assert.equal(overwritten.text, 'late {{nope}}', 'the outer rewrite wins, as it must');
+  assert.equal(overwritten.interpolate, false, 'and it is still never interpolated by DSH');
+
+  // Direction C — an outer listener that only ADDS a value afterwards. The
+  // expansion ran a moment earlier with the table it had, so this turn is not
+  // expanded: the user sees the literal braces, and the turn is still safe.
+  writeRaw(userPath(), JSON.stringify({
+    version: 1,
+    interpolateCustom: true,
+    overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'late is {{late}}' }],
+  }));
+  const recovered = mount({ variables: {}, agents: [{ id: 'session-e2c' }] });
+  recovered.ctx.on('system-prompt/assemble', async (assembly, context, next) => {
+    const result = await next();
+    return { ...result, variables: { ...result.variables, late: 'L' } };
+  }, { prepend: true });
+  const safe = reservedOf(await assembleFor(recovered, 'session-e2c'));
+  assert.equal(safe.text, 'late is {{late}}', 'the value arrived too late: unexpanded, not broken');
+  assert.equal(safe.interpolate, false);
 });
 
-test('g-026 rev14 E3: a hold is the current state — fixing the text or closing the switch clears it', async () => {
-  // The audit's E3: the hold map was append-only, so a snapshot kept reporting a
-  // reason (and a timestamp) from a turn that no longer exists — after the text
-  // was fixed, after the section stopped rendering, after the switch was closed.
-  const harness = mount({ variables: { model: undefined }, agents: [{ id: 'session-e3' }] });
-  // Open first, then write: with the switch ON the save is still accepted (the
-  // warning half of §16.3 — the probe table is not the session's table).
+test('g-026 rev15: the switch is the only state — ON expands, OFF is literal, and nothing is remembered', async () => {
+  // The audit's E3 was about a hold map that remembered stale reasons. Revision
+  // 15 deletes the map, so the assertion becomes the stronger one: the switch is
+  // the only state that exists, ON expands, OFF is literal, and there is nothing
+  // left to go stale.
+  const harness = mount({ variables: { model: 'M' }, agents: [{ id: 'session-e3' }] });
   assert.equal((await setSwitch(harness.route, { enabled: true })).statusCode, 200);
   assert.equal((await putText(harness.route, 'I am {{model}}')).statusCode, 200);
 
-  const first = await assembleFor(harness, 'session-e3');
-  assert.equal(reservedOf(first).interpolate, false, 'the assembly holds the valueless reference');
-  const held = json(await call(harness.route, { url: `${SNAPSHOT_PATH}?session=session-e3` }));
-  assert.match(held.layers.interpolationHold.reason, /has no value in this assembly/);
-  const firstAt = held.layers.interpolationHold.at;
+  assert.equal(reservedOf(await assembleFor(harness, 'session-e3')).text, 'I am M');
+  const live = json(await call(harness.route, { url: `${SNAPSHOT_PATH}?session=session-e3` }));
+  assert.equal(live.rendered.includes('I am M'), true);
+  assert.equal(Object.hasOwn(live.layers, 'interpolationHold'), false, 'rev15 removed the hold record entirely');
 
-  // The user fixes the text: the next assembly resolves everything, so the very
-  // snapshot that renders the fixed text must not also report the old hold.
+  // Fixing the text needs no bookkeeping, because there is none.
   assert.equal((await putText(harness.route, 'I am a coding agent')).statusCode, 200);
   const fixed = json(await call(harness.route, { url: `${SNAPSHOT_PATH}?session=session-e3` }));
-  assert.equal(fixed.layers.interpolationHold, null, 'the fixed text leaves no stale reason behind');
   assert.equal(fixed.rendered.includes('I am a coding agent'), true);
+  assert.equal(Object.hasOwn(fixed.layers, 'interpolationHold'), false);
 
-  // The same rule for the switch: closing it takes the decision away from the
-  // assembly, so the hold is cleared rather than frozen at its last value.
+  // Closing the switch takes the expansion away, and the braces are literal
+  // again — the OFF promise, with no residual state anywhere.
   assert.equal((await putText(harness.route, 'I am {{model}}')).statusCode, 200);
-  await assembleFor(harness, 'session-e3');
-  const again = json(await call(harness.route, { url: `${SNAPSHOT_PATH}?session=session-e3` }));
-  assert.match(again.layers.interpolationHold.reason, /has no value in this assembly/);
-  assert.equal(Date.parse(again.layers.interpolationHold.at) >= Date.parse(firstAt), true, 'a fresh timestamp');
-
+  assert.equal(reservedOf(await assembleFor(harness, 'session-e3')).text, 'I am M');
   await setSwitch(harness.route, { enabled: false });
   const closed = json(await call(harness.route, { url: `${SNAPSHOT_PATH}?session=session-e3` }));
-  assert.equal(closed.layers.interpolationHold, null, 'a closed switch is not a hold');
-  assert.equal(closed.rendered.includes('I am {{model}}'), true, 'and the braces are literal again, as OFF promises');
+  assert.equal(closed.rendered.includes('I am {{model}}'), true, 'the braces are literal again, as OFF promises');
   assert.equal(closed.layers.interpolate.effective, false);
+  assert.equal(reservedOf(await assembleFor(harness, 'session-e3')).text, 'I am {{model}}');
 });

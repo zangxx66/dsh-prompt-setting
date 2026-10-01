@@ -247,8 +247,10 @@ alarmed the harmless case and understated the fatal one. What Revision 10 adds:
   turn actually receives is still produced by the shipped `renderPrompt` alone.
 
 **Revision 11 (the「我的 Prompt」variable-substitution switch — g-026).** The
-gate §15.3 installed becomes a switch the user can open, and opening it is only
-safe because the write face can now answer the renderer's own question. Every
+gate §15.3 installed becomes a switch the user can open. Revision 11 justified
+that by teaching the write face to answer the renderer's own question; Revision 15
+(§16.9) made the justification unnecessary — the section never interpolates, so
+opening the switch cannot expose the session to the renderer at all. Every
 Revision 1–10 field, route, status code and byte keeps its exact meaning; the
 switch is **absent by default**, so an install that never opens it behaves
 byte-for-byte as it did before.
@@ -259,17 +261,21 @@ byte-for-byte as it did before.
   `false` does not;
 - `GET`/`PUT /prompt-setting/interpolate` read and write it (§16.4), and
   `GET /snapshot` reports it under `layers.interpolate` (§2.3a);
-- with the switch ON, `PUT /overrides` and `POST /import` refuse text the shipped
-  renderer would throw on, with `400 unresolvable-variable` and **zero bytes
+- with the switch ON, `PUT /overrides` and `POST /import` refuse text whose
+  references could never expand, with `400 unresolvable-variable` and **zero bytes
   written** (§16.4). The judgement is a pure transcription of the shipped
   `interpolate()`: malformed group, illegal name, unregistered name
-  (`dsh-system-prompt/lib/index.js:157-176`);
-- opening the switch validates the text **already stored** in both layers, and a
-  layer that is already armed with a bomb on disk is **degraded with a reason**
-  on the load path (§16.5), exactly like `missing-file`;
-- the switch flips the **live section definition object** the service was handed,
-  so it takes effect on the next turn with no re-registration and no restart
-  (§16.2).
+  (`dsh-system-prompt/lib/index.js:157-176`). Since Revision 15 this is a UX
+  guard rather than a safety gate (§16.9) — the conditions it refuses are
+  unchanged, the reason it refuses them is;
+- opening the switch validates the text **already stored** in both layers
+  (§16.5). Revisions 11–14 also degraded an armed layer found on disk; Revision 15
+  removed that pass, because a layer's text can no longer break an assembly and
+  degrading it would silently discard the user's prompt;
+- Revisions 11–14 flipped the **live section definition object** the service was
+  handed. **Revision 15 does not, and never will** (§16.2): `interpolate: false` is
+  structural. The switch takes effect on the next turn by changing what the plugin
+  expands, with no re-registration and no restart.
 
 Two deliberate softenings, both stated rather than hidden:
 
@@ -292,15 +298,16 @@ route, status code and byte keeps its exact meaning, and the two-valued
 - **F1 — the write verdict is about the text, not about the write target.** The
   old check asked "does the layer being written interpolate?" and let a text in
   through a layer that was closed *at that moment*, after which flipping **another**
-  layer's switch armed it. The verdict is now `layerTextIsArmed` (§16.4): text is
-  validated whenever some assembly that renders it interpolates. The audit's
+  layer's switch armed it. The verdict is now `armedLayers` (§16.4): text is
+  validated whenever some assembly that renders it has its switch ON. The audit's
   two-step bypass, its reverse direction (a write into the user layer while a
   workspace is armed) and its `import`/`dryRun` twin are all refusals now;
 - **F3 — the assembly decides on its own context.** The process-wide flag the
   request path used to write is gone from the assembly path: the decision is
   taken per dispatch, from the config that dispatch resolved, and applied to the
   `sections` that dispatch renders (§16.2). A session-less request (the ping is
-  one) can no longer move any session's behaviour;
+  one) can no longer move any session's behaviour. Revision 15 keeps this rule
+  unchanged while deleting the field it used to write;
 - **F2 — the advisories are on the wire.** The `undefined`-value warning the
   validator always computed was being discarded; it now rides the write, arming
   and import responses as an additive `warnings` array and is rendered in
@@ -340,7 +347,8 @@ open. Both are closed here, under one standing rule:
   root into the cache before any verdict is taken, and
   `assertTargetJudged` refuses (`400 write-target-unverified`) a target that is
   still not in the judged set (§16.4);
-- **D2 — an unverifiable assembly renders literally instead of throwing.** The
+- **D2 (Revision 13; superseded by Revision 15, §16.9) — an unverifiable assembly
+  renders literally instead of throwing.** The
   load-time self-check can only check names when it holds a variable table, and
   the table arrives with the first HTTP request — so between `mount` and that
   request a hand-armed layer carrying `{{nope}}` slipped through and took the
@@ -348,10 +356,11 @@ open. Both are closed here, under one standing rule:
   from **the variable table that assembly itself carries**
   (`assembly.variables`), not from the cached one, and holds substitution back
   for that turn when the text cannot be resolved: the text renders literally, the
-  reason is recorded per scope and exposed as
-  `layers.interpolationHold` on the snapshot (§16.5). The window's **real**
-  consequence is stated in §16.5: one literal turn, never a throw and never a
-  silent acceptance.
+  reason was recorded per scope and exposed as
+  `layers.interpolationHold` on the snapshot (§16.5, now deleted). The window's
+  **real** consequence was one literal turn, never a throw and never a silent
+  acceptance — and Revision 15 closed the window by construction instead
+  (§16.9).
 
 Both reproductions are frozen as regressions — the timing one in
 `test/route.test.mjs` (a registry that lists the workspace only while the body is
@@ -365,8 +374,8 @@ kept F1/F3–F5 and the D1 half of the verdict closed, and found that the
 level deeper: *the assembly's verdict must be taken from the very objects the
 renderer will read, at the very point after which nothing can change them.*
 
-- **E1 — an `undefined` value is a throw condition, and the assembly now treats it
-  as one.** `interpolateHoldReason` used `lintPromptText().errors`, which routes
+- **E1 (Revision 14; superseded by Revision 15) — an `undefined` value is a throw
+  condition, and the assembly treated it as one.** `interpolateHoldReason` used `lintPromptText().errors`, which routes
   `undefined` to `warnings` (§16.3's write-face reading) — so `{{cwd}}` with no
   value in this very assembly was interpolated anyway and `renderPrompt` threw
   `prompt variable "{{cwd}}" has no value for this assembly`, with no hold and no
@@ -377,8 +386,8 @@ renderer will read, at the very point after which nothing can change them.*
   `provider`/`model`/`cwd`. The assembly now judges with the **strict**
   transcription (`scanThrowingReference`); the write face keeps the soft reading
   on purpose, because its table is a probe's, not the session's (§16.3);
-- **E2 — the verdict is taken from the finished assembly, at the outermost
-  point.** It ran inside `assembleHandler` and read `customTextOf(resolved)` — the
+- **E2 (Revision 14; superseded by Revision 15) — the verdict was taken from the
+  finished assembly, at the outermost point.** It ran inside `assembleHandler` and read `customTextOf(resolved)` — the
   config on disk. A listener that rewrote the reserved section after `next()`
   returned was therefore judged by text that is no longer rendered (a throwing
   final text could slip through), and a listener outer to that point could change
@@ -390,8 +399,8 @@ renderer will read, at the very point after which nothing can change them.*
   keyed by the assembly context), so the probe slot is still consumed exactly
   where it must be and two concurrent dispatches cannot be confused for each
   other;
-- **E3 — the hold record is the current state, not a log.** `state.
-  interpolationHolds` was append-only, so a snapshot kept returning a reason (and
+- **E3 (Revision 14; superseded by Revision 15) — the hold record was the current
+  state, not a log.** `state.interpolationHolds` was append-only, so a snapshot kept returning a reason (and
   a timestamp) from a turn that no longer existed — after the text was made safe,
   after the section stopped rendering, after the switch was closed. A turn that
   does not hold now **deletes** its scope's key, so `null` means "not holding
@@ -405,7 +414,30 @@ renderer will read, at the very point after which nothing can change them.*
 
 Every Revision 1–13 field, route, status code and byte keeps its meaning; the
 only wire-visible changes are the two documented above (§2.3b's `null` semantics
-and the fourth row of §16.3's table). The three reproductions are frozen in
+and the fourth row of §16.3's table).
+
+**Revision 15 (the final rework, design A — g-026; §16.9 is the authority).**
+The fourth audit falsified the position premise the Revision 14 verdict rested on
+(`{prepend: true}` is an `unshift`, so a listener registered **after** this plugin
+can still be outer to it, and a host that drops the options object removes the
+outermost slot entirely). Rather than patch the premise again, the section stopped
+being an interpolated section at all:
+
+- the reserved section stays `interpolate: false` **at every assembly** — the
+  strict renderer can never see the text, so the four throw conditions above are
+  unreachable through it. This is the design's whole value: the failure mode is
+  structurally impossible, not prevented;
+- the switch now means "the plugin expands the text itself", leniently, from the
+  variable table the assembly carries; a reference that cannot resolve stays
+  literal, and the answer never throws and never prints a bare `undefined`;
+- `interpolateHoldReason`, the hold map, `layers.interpolationHold`,
+  `resolvedByContext`, the load-time self-check and the layer degradation it drove
+  are all **deleted** (D2, E1, E2, E3 above describe machinery that no longer
+  exists, kept in this history because the audits and the regressions they
+  produced are still the evidence for why the new design is shaped this way);
+- the write face is unchanged in what it refuses — it is now a UX guard, and its
+  messages say so. §16.10 lists every assertion this rewrite changed and what
+  carries the coverage. The three reproductions are frozen in
 `test/route.test.mjs` (a valueless name held with a reason; a final-section
 rewrite held while a final-table registration is not; the record cleared by fixed
 text and by a closed switch) and against the **real** `renderPrompt` in
@@ -465,8 +497,7 @@ is inactive and the verdict describes the global assembly.
   "layers": {
     "user":      { "enabled": true,  "path": "/home/u/.dsh/prompt-setting/overrides.json", "reason": null },
     "workspace": { "enabled": false, "path": null, "reason": "no ?session= was supplied, so the workspace layer is inactive for this view" },
-    "interpolate": { "effective": false, "user": null, "workspace": null },
-    "interpolationHold": null
+    "interpolate": { "effective": false, "user": null, "workspace": null }
   },
   "experiments": { "E1": "…", "E2": "…", "E3": "…", "E4": "…", "E5": "…" }
 }
@@ -574,16 +605,15 @@ receives is still produced by the shipped `renderPrompt` alone. The grading
 exists so the UI can say what that renderer *will do* with the text it is showing
 — including that it will throw.
 
-**Revision 11 amends exactly one clause of the paragraph above.** The word "no
-user section ever has its `interpolate` turned on" now has one exception, and it
-is the one section this plugin owns: `prompt-setting:custom-prompt` has its
-`interpolate` switched at runtime **when, and only when, the user turns the
-switch on** (§16). Nothing else is touched — `index.js` mutates one field of the
-definition object it itself handed to `systemPrompt.section()`, never a private
-service field, never another plugin's section, and never a value the user did not
-ask for. With the switch OFF — the default, and the state of every install that
-never opens it — the paragraph above holds verbatim: the reserved section is
-registered `interpolate: false` and stays that way.
+**Revision 11 amended one clause of the paragraph above; Revision 15 removed the
+amendment again.** For three revisions the one section this plugin owns had its
+`interpolate` flipped at runtime when the user turned the switch on. Under
+Revision 15 (design A, §16.9) that never happens: `prompt-setting:custom-prompt`
+is registered `interpolate: false` and stays that way at every assembly, so the
+paragraph above holds **verbatim and unconditionally** — no user section's
+`interpolate` is ever turned on, by this plugin or by anything else it does. What
+the switch turns on is the plugin's own expansion of that section's text, which
+is a change to the **text**, not to the section's interpolation flag.
 
 **A session-scope probe resolves agent-scoped variables; the global one cannot.**
 Measured: a provider that returns a value only when `context.agent` is present
@@ -615,28 +645,24 @@ returns `undefined` without a session. So:
   Revision 11 may not break it. It is additive inside a container whose keys were
   never enumerated.
 
-### 2.3b `layers.interpolationHold` (Revisions 13–14)
+### 2.3b `layers.interpolationHold` — **removed in Revision 15**
+
+Revisions 13 and 14 exposed a per-scope hold here:
 
 ```json
 "interpolationHold": { "at": "2026-10-02T00:00:00.000Z", "reason": "the reserved section references `{{nope}}`, …" }
 ```
 
-`null` unless the **current** assembly state of **this** scope is holding
-variable substitution back, because the「我的 Prompt」text that turn would render
-could not be resolved against the variable table that turn carries: the section
-renders literally instead of taking the prompt down (§16.5.1). `at` is when the
-hold was taken and `reason` is the one-line explanation intended for the browser.
+It recorded why an assembly had rendered the reserved section literally instead of
+interpolating it. Revision 15 deleted the mechanism it described, and the key with
+it: the section is never interpolated, so no turn is ever "held back", and the
+reason a reference did not substitute is the plain one g-025 already grades —
+`unresolvedLiteral`. `test/route.test.mjs` and `test/integration.test.mjs` assert
+that `layers` carries **no** `interpolationHold` key at all, in both switch states
+and after a hand-armed file. The three-key shape of the sibling `interpolate`
+object (§2.3a) is unchanged.
 
-Revision 14 (audit E3) made this field a **state**, not a history: a turn that
-does not hold — the text was fixed, the reserved section is hidden, or the switch
-was closed — removes the entry, so `null` means "this scope is not holding right
-now" and never "this scope once held". A browser that shows the reason must
-therefore treat `null` as "nothing to explain", not as "no news".
-`undefined`-value references are held like every other unresolvable one
-(Revision 14, audit E1 — §16.3 explains why the write face still warns), so the
-reason can also read `has no value in this assembly`.
-
-The key is a sibling of `interpolate` rather than a field inside it, because that
+The key used to be a sibling of `interpolate` rather than a field inside it, because that
 object's three-key shape is frozen by the Revision 12 assertions.
 
 ### 2.4 `frozen` and `frozenScope`
@@ -2013,10 +2039,14 @@ own prompt is **never** substituted, so `{{model}}` in「我的 Prompt」reaches
 model as those literal characters. That is the default trade — the field is free
 text, not a template language.
 
-**Revision 11 makes the flag a choice rather than a constant.** The default is
-still `false` and the section is still registered with `false`; the user may turn
-it on for their own layer, and the write face then refuses text this renderer
-would throw on (§16). Nothing in this section changes while the switch is off.
+**Revision 11 made the flag a choice; Revision 15 made the flag permanent
+again — and moved the choice somewhere safe.** The default is still `false` and
+the section is still registered with `false`; what Revision 15 removed is the
+runtime flip, so the strict renderer can never be aimed at this text at all
+(§16.9). The user's choice now governs the plugin's own expansion of the text,
+which the write face still validates (§16). Nothing in this section changes while
+the switch is off, and nothing in it can change while the switch is on: the flag
+itself is constant.
 
 ### 15.4 `complete: true` still wins, and the snapshot says so
 
@@ -2252,7 +2282,18 @@ it guards. See NOTES.md §95.
 
 ---
 
-## 16. The「我的 Prompt」variable-substitution switch (Revisions 11–12, g-026)
+## 16. The「我的 Prompt」variable-substitution switch (Revisions 11–15, g-026)
+
+**Revision 15 (design A) re-founded this feature, and §16.9 is the authority for
+it.** The reserved section is registered `interpolate: false` and never changes,
+so DSH's strict interpolator can never see its text; the switch means "this plugin
+expands the `{{...}}` itself, leniently, during the assembly". The verdict, the
+hold map and the load-time degradation that Revisions 12–14 built around the old
+design are deleted. §16.1–§16.8 keep their numbering and describe the parts that
+survive (config semantics, the routes, the write-face validation, preview
+grading, reversibility, the three states); §16.10 lists every assertion this
+rewrite changed and what carries its coverage; §16.11 lists what the feature still
+does not do.
 
 ### 16.1 Where the switch lives, and what "absent" means
 
@@ -2280,107 +2321,88 @@ layer's `overrides.json`:
   `legacyPlan`, `planImport`) so that saving a prompt, clearing a layer or
   importing a document never turns the switch off by accident.
 
-### 16.2 Runtime switching: the decision belongs to the assembly, not to a process-wide field
+### 16.2 Runtime switching: the definition is never touched
 
-The reserved section is registered with the definition object
-`customSection()` returns and with `interpolate: false`, which is the fallback:
-an assembly that this plugin never gets to judge renders the text literally.
+The reserved section is registered with `interpolate: false` and **stays that
+way**. Revision 15 (design A) deleted the old runtime switching — the code that
+pushed `interpolate: true` onto the live definition object — together with the
+`state.customDefinition` reference it needed. The definition object the service
+holds is a constant as far as this plugin is concerned; only unloading the plugin
+disposers it.
 
-The switch is applied **per assembly**, on the assembly's own context
-(`applyAssemblyInterpolate`, `index.js`). The waterfall listener already resolves
-the config this dispatch must apply — `mergeLayers(userLayer, workspaceLayerOf
-(session))` for a real turn, the probe's own config for the snapshot — and
-`mergeLayers` carries the statedness-merged flag on it. That single value is:
+The switch is therefore applied **per assembly**, on the assembly's own context,
+and it decides **whether the plugin expands the text**, not whether DSH does:
 
-- what `GET /snapshot` reports as `layers.interpolate.effective`, and
-- what the listener copies onto the reserved section of the `sections` array the
-  renderer will read (`{...section, interpolate: true|false}`), returning the
-  input array **by reference** when nothing has to change.
+- `assembleHandler` already resolves the config this dispatch must apply —
+  `mergeLayers(userLayer, workspaceLayerOf(session))` for a real turn, the probe's
+  own config for the snapshot — and `mergeLayers` carries the statedness-merged
+  flag on it. That single value is what `GET /snapshot` reports as
+  `layers.interpolate.effective`, and what gates the expansion a few lines later
+  (§16.9);
+- no process-wide field is read on the assembly path, so two sessions with
+  different flags cannot describe each other and a session-less ping cannot move a
+  session's behaviour (Revision 12's F3, unchanged and still asserted).
 
-Three measured properties of the Host make this the only correct place, and none
-of them is a private-field access:
+This is strictly simpler than what it replaces. Revisions 11–14 needed three
+measured Host properties — that `NamedEntries` stores the definition by reference,
+that `assemble()` copies `section.interpolate` before any listener runs, and that
+`renderPrompt` reads the field off the sections it is given — to argue that
+mutating the definition at the right moment was observable, and that the right
+moment was the outermost listener's post-`next()` step. Under design A none of
+that matters: the field is never mutated, and the expansion's correctness does not
+depend on where in the waterfall it runs (§16.9.4). The F1/F2 regressions in
+`test/integration.test.mjs` measure the two ways that assumption used to be
+falsifiable — a `{prepend: true}` listener registered after the mount, and a host
+that drops the options object — and both now cost at most an unexpanded turn.
 
-1. `NamedEntries.insert(name, section)` stores the definition object **by
-   reference** (dsh-scope `lib/index.js`), so the service is holding the object
-   this plugin registered;
-2. every `assemble()` copies `section.interpolate` from that object into the
-   assembly it hands the waterfall **before any listener runs**
-   (`dsh-system-prompt/lib/index.js`, the `sections.map(…)` at the top of
-   `assemble`) — so mutating the definition inside a listener can never affect
-   the assembly in flight, and mutating it from a *request* can only describe
-   whichever session made the last request;
-3. `renderPrompt` reads the field off the sections it is given, so the value the
-   listener writes is the value the renderer uses.
-
-**What Revision 11 did instead, and why it was wrong.** It pushed the effective
-value of the last handled request onto the one definition object. One process has
-one such object and many sessions, so the value was whichever request came last:
-a session-less ping reset it to the user layer's value (disarming a workspace
-session that states ON), and two sessions with different flags could not both be
-right. `state.customDefinition.interpolate` is still maintained, but only as a
-**mirror of the unscoped view** (the user layer alone) — the same value a route
-without `?session=` reports — so a session-less request recomputes what is
-already there. Nothing on the assembly path reads it.
-`test/route.test.mjs` pins the consequence: a ping cannot change what a session
-assembles, and interleaved sessions keep their reported `effective` and their
-real render in step.
-
-**Cross-version dependency, stated.** This rests on the waterfall listener
-running for scoped assemblies too (it is the same listener that has applied
-overrides since Revision 7) and on `renderPrompt` reading the field off the
-sections. A Host that froze `interpolate` per section at registration time would
-make the switch a no-op; the fallback would then be to dispose and re-register
-the section (`test/integration.test.mjs` asserts this path against the installed
-`@deepseek-ai/dsh-system-prompt`, so the change would be caught rather than
-shipped).
-
-### 16.3 What the validator answers, and why the two faces ask different questions
+### 16.3 What the validator answers, and what it no longer decides
 
 `core/interpolate.js` transcribes the shipped `interpolate()` line by line, with
-the Host's own `VARIABLE_NAME` and `GROUP_AT` expressions:
+the Host's own `VARIABLE_NAME` and `GROUP_AT` expressions. Revision 15 (design A)
+leaves that transcription alone and changes **who is asked what**: the reserved
+section never interpolates, so the assembly no longer "holds anything back" — the
+plugin's own lenient expansion (§16.9) decides, per reference, whether it
+substitutes or stays literal.
 
-| Condition | Shipped behaviour | Write face | Assembly (§16.5.1) |
+| Condition | Shipped behaviour (strict section) | Write face | Reserved section (Revision 15: `interpolate: false`, plugin expansion) |
 | --- | --- | --- | --- |
-| a `{{` with no complete group **and a later `}}`** | throws `malformed prompt variable reference` | `400 unresolvable-variable` | held back, renders literally |
-| inner text not matching `^[a-z][a-z0-9_]*$` | throws `malformed prompt variable reference "…"` | `400 unresolvable-variable` | held back, renders literally |
-| name not registered in `assembly.variables` | throws `unknown prompt variable` | `400 unresolvable-variable` | held back, renders literally |
-| registered name whose value is `undefined` | throws `prompt variable "…" has no value` | **warning, save proceeds** | **held back, renders literally** (Revision 14) |
-| registered name whose value is `null` | renders the string `null` | accepted, not reported | interpolated |
-| a `{{` with **no** later `}}` | literal prose | accepted, not reported | interpolated (no reference) |
-| a substituted value | never re-scanned | never re-scanned | never re-scanned |
-| no variable table available while the text carries `{{` | (this process cannot know) | `503 variable-lookup-failed` | held back, renders literally |
+| a `{{` with no complete group **and a later `}}`** | throws `malformed prompt variable reference` | `400 unresolvable-variable` | stays literal; the two braces are written out and the scan continues |
+| inner text not matching `^[a-z][a-z0-9_]*$` | throws `malformed prompt variable reference "…"` | `400 unresolvable-variable` | stays literal |
+| name not registered in `assembly.variables` | throws `unknown prompt variable` | `400 unresolvable-variable` | stays literal |
+| registered name whose value is `undefined` | throws `prompt variable "…" has no value` | **warning, save proceeds** | stays literal (Revisions 13–14 held the turn back instead) |
+| registered name whose value is `null` | renders the string `null` | accepted, not reported | rendered as `null` — identical |
+| a `{{` with **no** later `}}` | literal prose | accepted, not reported | literal prose — identical |
+| a substituted value | never re-scanned | never re-scanned | never re-scanned — identical |
+| no variable table available while the text carries `{{` | would throw on the first reference | `503 variable-lookup-failed` | everything stays literal |
 
-The fourth row is the only place the two faces differ, and Revision 14 (audit E1)
-is the difference stated plainly — they are answering different questions:
+Only one row is a real asymmetry, and it is the `undefined` value:
 
-- the **write face** asks "is this text *fatal*?", because the table it holds is a
-  probe's table, not the session's. `undefined` is a property of the **assembly
-  that was probed**, not of the text: the shipped renderer documents that a
-  provider may return `undefined`, and a probe with no active agent leaves
-  agent-scoped providers valueless. Refusing the save would make the switch
-  unusable whenever nothing is running, and the same text can be perfectly safe in
-  a live session. So the save proceeds and the advisory rides the response;
-- the **assembly** asks "would *this* turn throw?", and it holds the session's own
-  table. There `undefined` is not a nuance — it is the first of the four throw
-  conditions, so this turn cannot be rendered and the answer is to render
-  literally (§16.5.1).
+- the **write face** asks "would this text ever expand for *some* session?", and
+  the table it holds is a probe's table, not the session's. `undefined` is a
+  property of the **assembly that was probed**, not of the text: the shipped
+  renderer documents that a provider may return `undefined`, and a probe with no
+  active agent leaves agent-scoped providers valueless. Refusing the save would
+  make the switch unusable whenever nothing is running, and the same text can be
+  perfectly fine in a live session. So the save proceeds and the advisory rides
+  the response;
+- the **reserved section** asks nothing at all. Its expansion resolves what this
+  turn's table can resolve and leaves the rest literal, so an `undefined` value
+  costs one unsubstituted reference — never a turn (§16.9).
 
-The asymmetry is a **safety** boundary, not an inconsistency: the soft reading can
-only ever admit a text that a *later* assembly holds back, so it costs at most one
-literal turn and never a broken prompt. Revision 13 shipped the strict reading as
-a test-only helper while the assembly used the soft one; Revision 14 points the
-assembly at the strict one.
+Two functions survive, and Revision 15 gives each a different job than it had:
 
-- strict (the assembly): `scanThrowingReference`, all four throw conditions,
-  `undefined` included, a missing table read as "every name is unknown";
-- soft (the write face): `lintPromptText`, the same walk with `undefined` routed
-  to `warnings`.
+- `scanThrowingReference` — the strict transcription, all four throw conditions,
+  `undefined` included, a missing table read as "every name is unknown". No
+  decision path calls it any more; it is the **oracle** the tests diff the
+  expansion against, so "we still know exactly what the shipped renderer would do"
+  stays measurable (§16.9.1);
+- `lintPromptText` — the same walk with `undefined` routed to `warnings`, still
+  the write face's only judge.
 
 Both are pinned against the real `renderPrompt` in `test/interpolate.test.mjs` and
-`test/integration.test.mjs`, including the 0-miss / 0-false-positive differential
-corpus, now with the `undefined` class required to be held.
+`test/integration.test.mjs`.
 
-**Revision 12 (audit F2): the warning is on the wire.** Until Revision 12 the
+**Revision 12 (audit F2): the warning is on the wire.****Revision 12 (audit F2): the warning is on the wire.** Until Revision 12 the
 validator returned it and the routes threw it away, so the one user who needed it
 — the one whose reference is registered but valueless in the probed assembly —
 could not see it at all. Now `PUT /overrides`, `PUT /interpolate` (arming) and
@@ -2414,8 +2436,9 @@ Two guards exist because the probe is a snapshot of a live object:
 
 - the condition list above is checked for **fatal** faults only, and a table that
   could not be obtained at all is read as "every name is unknown" on the write
-  path (fail closed) and as "cannot check names" on the load path (so one failed
-  probe never disables a layer);
+  path (fail closed). Revision 15 removed the load-path reading entirely: it
+  existed so that one failed probe would not disable a layer, and no layer is
+  disabled for its text any more (§16.5);
 - substituted values are not re-scanned, because only the input is walked — the
   same guarantee the shipped renderer makes, and the reason a variable whose
   value contains `{{…}}` is not a bomb.
@@ -2450,8 +2473,9 @@ Revision 12 three-valued spelling `{ state: "inherit" | "on" | "off", … }`
   text this change would arm (§16.5's rule, below). A refusal is
   `400 unresolvable-variable` and names the file and the way out;
 - **`off` and `inherit`** validate nothing: they can only ever make text safer;
-- the write is `writeConfig` + the in-memory cache, then the definition mirror is
-  refreshed (§16.2). The answer is
+- the write is `writeConfig` + the in-memory cache. Nothing else has to be
+  refreshed: the definition is never flipped, and the expansion is derived per
+  assembly from the config that assembly resolves (§16.2, §16.9). The answer is
   `{ "ok": true, "interpolateCustom": true, "layer": "user", "state": "on", "saved": { "enabled": true, "state": "on" }, "effectiveFrom": "next-turn" }`
   plus `warnings` when there is something to report;
 - a refusal leaves **both layer files byte-identical**: the shape check, the
@@ -2461,7 +2485,8 @@ Revision 12 three-valued spelling `{ state: "inherit" | "on" | "off", … }`
 
 **The F1 rule (Revision 12): what decides whether a text is validated.** Not "the
 layer being written", which was the bypass, but whether the text can reach an
-assembly that interpolates (`layerTextIsArmed`, `index.js`):
+assembly whose switch is ON (`armedLayers`, `index.js`) — i.e. an assembly whose
+turn would expand it:
 
 - the **user** text is merged into every session that carries no workspace entry
   of its own, so it is validated as soon as the user layer or **any** visible
@@ -2472,16 +2497,15 @@ assembly that interpolates (`layerTextIsArmed`, `index.js`):
 - a **workspace** text is rendered only for that workspace's sessions, where the
   merge decides: it is validated exactly when `effectiveInterpolate(user,
   workspace)` is ON. An explicitly closed workspace is therefore the one
-  configuration whose literal braces provably reach no interpolating assembly,
-  and it is not refused — which is what makes §16.8's explicit OFF worth having;
+  configuration whose literal braces provably reach no expansion, and it is not
+  refused — which is what makes §16.8's explicit OFF worth having;
 - the verdict is computed on the **post-write** view, so the change being
   requested is what is judged.
 
 The audit text also suggests the blunt "if any layer is ON, validate every
-visible layer". That variant is **not** used: it would refuse the writes that
-make explicit OFF useful, and it would degrade an explicitly closed layer at load
-time for text that cannot throw there. Every case the audit reproduced is refused
-by the rule above — `test/route.test.mjs` freezes all of them (the two-step
+visible layer". That variant is **not** used: it would refuse the writes that make
+explicit OFF useful. Every case the audit reproduced is refused by the rule
+above — `test/route.test.mjs` freezes all of them (the two-step
 bypass, the reverse direction, `import` with and without `dryRun`) and one
 counter-case (a closed workspace keeps its literal braces):
 
@@ -2526,178 +2550,89 @@ independent guards now hold, and both are fail-closed:
 for the request's cache refresh and the workspace for the `targetFor` that runs
 after `readJsonBody` — and asserts the refusal plus zero bytes.
 
-### 16.5 Historical text, and the load-time self-check
+### 16.5 Historical text: what is checked, and what is deliberately not
 
-Opening the switch is what turns an old `{{typo}}` into a per-turn throw, so the
-opening action validates what is **already stored** before it writes anything
-(§16.4). The refusal is actionable: it names the references, the layer file, the
-registered variable names, and the three ways out (delete the reference, use a
-registered name, or keep the switch off).
+Opening the switch still validates what is **already stored** before it writes
+anything (§16.4), and the refusal is still actionable: it names the references,
+the layer file, the registered variable names, and the ways out (delete the
+reference, use a registered name, or keep the switch off).
 
-A config can still reach disk armed — a hand edit, a config-sync tool, a file
-written while the plugin was down. The load path therefore re-checks each layer
-with the same validator, using the `missing-file` precedent exactly:
+What Revision 15 changed is **why**. With the section permanently
+`interpolate: false`, an old `{{typo}}` is no longer a per-turn throw, so that
+check is a courtesy which stops the user from arming text that will never
+substitute — not a safety gate. Two consequences, both deliberate:
 
-- a layer that states ON and carries text the renderer would throw on is
-  **degraded with a reason**: `config: null`, `error: { code:
-  "unresolvable-variable", message: … }`. The snapshot reports it as
-  `layers.<name>.enabled: false` with that reason, and the layer contributes
-  nothing to any assembly;
-- it is **not** reported as an invalid **file** (the code is not
-  `invalid-config`), and it is **not** silently accepted. The reason says the
-  layer was disabled so the real assembly keeps working, and names the fix;
-- a layer that states nothing, or states OFF, is untouched **unless**
-  §16.4's rule says its text is armed — Revision 12 (audit F1) added that
-  cross-layer pass (`enforceVisibleTextsSafe`), because the per-layer check reads
-  only the layer's own flag and therefore misses the exact bypass the audit ran:
-  a user layer that states ON arms an unstated workspace layer's bomb, and that
-  workspace layer's own self-check sees "this layer states nothing, nothing to
-  check". The pass runs after both layers are read, on the per-text rule, and
-  again after any later re-read of a layer (a `?session=` view re-loads its
-  workspace layer; without that second pass the read would resurrect what the
-  refresh had just degraded);
-- when this mount has no variable table (before its first request, or a profile
-  where the probe failed), the **load-time** pass checks only the grammar
-  conditions — a failed probe must never disable a layer. The name half is not
-  "deferred and hoped for": it is enforced at the next place a table exists, the
-  assembly itself (§16.5.1 below), and the load-time pass does check the names
-  again as soon as a request has obtained a table.
+- **No load-time degradation.** `selfCheckConfig`, `enforceVisibleTextsSafe` and
+  the `unresolvable-variable` degradation are deleted. A config that reaches disk
+  armed — a hand edit, a config-sync tool, a file written while the plugin was
+  down — is read as written: the layer stays `enabled`, its text reaches the
+  prompt, and its dead references render literally (graded `unresolvedLiteral`,
+  §2.3). Disabling the layer would have deleted the user's prompt in order to
+  prevent a failure that can no longer happen;
+- **No cross-layer pass and no timing window.** Revision 12's F1 pass existed to
+  catch text that *another* layer's flag armed, and Revision 13's D2 found the
+  window between `mount` and the first request, when the variable table was still
+  missing. Both problems were about *when a verdict could be taken*; with no
+  verdict to take, there is no window. The first assembly after a hand edit is as
+  safe as the thousandth, and `test/integration.test.mjs` asserts exactly that
+  (no route request has run; the real `renderPrompt` must not throw), including
+  the `undefined`-value variant (`cwd` registered with a provider that returns
+  `undefined`, `Object.hasOwn(variables, 'cwd')` asserted true so the case cannot
+  silently degrade into the unregistered one).
 
-**§16.5.1 D2 (Revision 13) + E1/E2/E3 (Revision 14): the assembly's own verdict,
-and the real cost of the window.** Revision 12's gap was a *verdict taken from
-missing data*: between `mount` and the first HTTP request `state.variables` is
-`null`, so a hand-armed layer carrying `{{nope}}` passed the self-check (grammar
-is fine), and the first real turn of that session threw — the prompt could not be
-assembled at all. The fix does not guess and does not defer:
-
-- the assembly path takes its verdict from **the data this very turn is about to
-  render with** — the finished `sections` array's reserved-section text and the
-  `variables` table the finished assembly carries (`assemblyVariablesOf`), which
-  is by construction the same pair the shipped renderer will read — one source of
-  truth, not a cached reading of it and not a config reading of it (Revision 14,
-  audit E2: the verdict runs in the **outermost** `system-prompt/assemble`
-  listener's post-`next()` step, the last point at which this plugin can still
-  change the assembly, so a listener that rewrites the section or registers a name
-  after `next()` is judged by what it produced, not by what the config said);
-- if that text cannot be resolved against it — an unregistered name, an illegal
-  name, a malformed group, **an `undefined` value**, **or a table that is not
-  available at all while the text carries `{{`** — substitution is **held back for
-  that turn** (`interpolateHoldReason`): the section renders with
-  `interpolate: false`, so the braces reach the model literally and the prompt
-  still assembles. "No table, so grammar is enough" is explicitly not a possible
-  outcome, and neither is "an `undefined` value is only a warning here";
-- the hold is not silent. The reason is recorded per scope and reported as
-  `layers.interpolationHold: { at, reason } | null` on `GET /snapshot` (a sibling
-  of `layers.interpolate`, whose three-key shape stays exact), so a literal render
-  is explainable rather than mysterious;
-- the record is the **current** state, not a log (Revision 14, audit E3): a turn
-  that does not hold — because the text is safe now, the reserved section is
-  hidden, or the switch is closed — **deletes** its scope's key, so the snapshot
-  can never report a reason and a timestamp from a turn that no longer exists.
-  `null` means "this scope is not holding right now"; there is no "it held once";
-- the **real** consequence of the window, stated exactly: for the turns between
-  `mount` and the first request that obtains a table, the reserved section of an
-  armed layer whose text cannot be resolved renders **literally** — no
-  substitution, no throw, and no silent acceptance. The very next handled request
-  re-reads the layers with a table in hand and degrades the offending layer with
-  the `unresolvable-variable` reason above, after which the hold cannot recur for
-  that text. Reaching the window requires a hand edit (or a config written by
-  another process while this one was down); a text that reached disk through the
-  routes was already verified against a live table when it was written;
-- an `undefined` value **is** held here (Revision 14, audit E1), unlike at write
-  time. The assembly holds the session's own table, so for the assembly the honest
-  question is "would this turn throw?" — and this turn would: the shipped renderer
-  raises `prompt variable "{{…}}" has no value for this assembly`. The audit's
-  reachability argument stands on its own: DSH's shipped sections carry no
-  `{{...}}` (the persona text comes from deployment config), so for a name with no
-  shipped reference — `provider`, `cwd` — the reserved section is the only thing
-  left that can throw, and the panel explicitly invites the user to write exactly
-  those names. Holding costs one literal turn and says so; not holding costs the
-  turn outright. The write face is untouched (§16.3).
-
-`test/integration.test.mjs` freezes the window against the **real** `renderPrompt`
-(no route request runs: the layer is written by hand, `mount` returns, the first
-`assemble()` must render literally, and the same text through an interpolating
-section is asserted to throw as the negative control), including the
-`undefined`-value variant (`cwd` registered with a provider that returns
-`undefined`, `Object.hasOwn(variables, 'cwd')` asserted true so the case cannot
-silently degrade into the unregistered one), and
-`test/route.test.mjs` freezes the recorded reason, the strict hold on an
-`undefined` value, the clearing of the record (fixed text / closed switch), and the
-degradation on the next request.
-
-**F5, stated as the trade it is (Revision 12).** The degradation disables the
-**whole layer**, not just the offending entry, so a layer whose「我的 Prompt」text
-is a bomb loses its other overrides too. That is a deliberate choice and not an
-oversight:
-
-- it is the `missing-file` paradigm, which this contract has used since stage 1B:
-  one unusable file = one layer that contributes nothing, reported with a reason;
-- the alternative — dropping only the reserved entry in memory — would leave the
-  user's file and the plugin's view of it out of step, and would still need a
-  channel to say "part of your layer is not in the prompt", which is exactly the
-  channel the reason already is;
-- what Revision 12 added is that the reason is now **perceivable where it
-  matters**: 「我的 Prompt」 renders the disabled layer, the host's own reason and
-  the recovery path next to the text box (`data-warning="mine-layer-disabled"`),
-  instead of leaving it to the status block in 「高级」. The plugin never rewrites
-  the user's file; the fix is a hand edit of the named reference, and the next
-  read picks it up.
-
-`test/route.test.mjs` freezes the cross-layer pass (a hand-armed user layer
-degrades the unstated workspace layer it arms, while a safe workspace layer is
-untouched) and `test/client.test.mjs` freezes the panel half.
+The F1 rule survives **only** on the write face, where it is unchanged in effect
+(§16.4): the question there is still "does this text reach an assembly whose
+switch is ON?", because that is the text a user would be misled about. F5's panel
+half — a disabled layer is named, explained and given a way out
+(`data-warning="mine-layer-disabled"`) — is untouched; it now applies to
+file-level problems (invalid JSON, an invalid field, a deleted file) and to
+`invalid-interpolate-flag`, which are the only reasons a layer can be disabled any
+more. `test/client.test.mjs` still freezes that path.
 
 ### 16.6 The preview agrees with the behaviour
 
 `rendered`, `renderedResolved`, `unresolvedThrowing` and `unresolvedLiteral`
-(§2.3) are computed from the same `section.interpolate` the real renderer will
-read — the snapshot's own probe goes through the listener and therefore carries
-the value that session's assembly will use (Revision 12, §16.2) — so opening the
-switch re-grades the reserved section automatically:
+(§2.3) are computed from the section list the snapshot's own probe produced — and
+that probe runs the real waterfall, so the reserved section it sees is the one the
+plugin has already expanded (or deliberately left alone) for that assembly. There
+is no separate "preview rule" that could drift:
 
-- switch OFF (default): the reserved section is `interpolate: false`, so its
-  unresolved references are graded `unresolvedLiteral` and `renderedResolved`
-  stays `true` — the braces in the preview are the real prompt;
-- switch ON: the same section carries whatever the verdict above gave it. If the
-  text resolves against the table **that assembly** carries it is
-  `interpolate: true`, its unresolved references are graded `unresolvedThrowing`
-  and `renderedResolved` becomes `false` — the preview says the real assembly will
-  fail, which is true. If it does not resolve, the section is held back
-  (§16.5.1, strict since Revision 14: an `undefined` value counts) and the preview
-  follows the same `interpolate: false` the real turn uses: the braces are graded
-  `unresolvedLiteral`, `renderedResolved` stays `true`, and
-  `layers.interpolationHold` carries the reason. The preview never says "this will
-  not be substituted" while the real turn substitutes, or the other way round.
+- switch OFF (default): the reserved section is `interpolate: false` and its text
+  is untouched, so its unresolved references are graded `unresolvedLiteral` and
+  `renderedResolved` stays `true` — the braces in the preview are the real prompt;
+- switch ON: the preview carries the **substituted** bytes exactly as the real
+  turn does. A reference that resolved is gone from the preview (so it cannot be
+  reported as unresolved, correctly); a reference that did not resolve is still
+  there, still `interpolate: false`, and still graded `unresolvedLiteral` — which
+  under Revision 15 is the truth for the real renderer as well, because the
+  section is never interpolated;
+- a **throwing** reserved section is therefore unreachable as a preview state —
+  not because a hold hides it, but because nothing about this section can throw.
+  `unresolvedThrowing` still describes every **other** section in the assembly,
+  which is what it was always about, and the reserved section's own dead
+  references are exactly the literals the user wrote.
 
-One consequence of Revision 14, stated so it is not mistaken for a lost feature:
-with the switch ON, a **throwing** reserved section is no longer a reachable
-preview state — every shape that would throw is held back and therefore graded
-`unresolvedLiteral`. That is the point of the hold (§16.5.1), not a grading
-regression; the `unresolvedThrowing` grading still describes every other section
-in the assembly, which is what it was always about.
-
-Revision 11 also closes one gap in that grading: a malformed group (a `{{` with a
-later `}}` that no group matches) is now reported as **throwing** rather than
-called prose, with the same 16-character excerpt the Host's own message quotes.
-It was the one condition where the preview could say "nothing will throw" while
-the renderer threw. `test/interpolate.test.mjs` asserts the correction *and* the
-old reading's miss, so the difference cannot regress silently.
+Revision 11's grading correction stands and Revision 15 does not touch it: a
+malformed group (a `{{` with a later `}}` that no group matches) is reported as
+**throwing** in a section that interpolates, rather than called prose, with the
+same 16-character excerpt the Host's own message quotes.
+`test/interpolate.test.mjs` asserts the correction *and* the old reading's miss,
+so the difference cannot regress silently.
 
 ### 16.7 Reversibility
 
 - closing the switch removes the key from the config file, restoring the
   pre-switch bytes exactly (asserted with SHA-256 over the whole file);
-- the live definition returns to `interpolate: false` on the same request, so the
-  next turn is literal again;
+- the same request makes the next assembly literal again: with the key gone the
+  effective value is OFF and `assembleHandler` performs no expansion, so the
+  `{{...}}` reach the model exactly as written. There is no definition to restore,
+  because none is ever moved (Revision 15);
 - ON → OFF → ON is idempotent in both directions: a repeated ON rewrites the same
-  bytes, and the definition write is a no-op when the value already matches;
+  bytes, and the expansion is a pure function of (text, table), so nothing
+  accumulates anywhere;
 - a hand-edited file is picked up by the next request (the layers are re-read at
-  the top of every handled request, and the assembly decision is derived from
-  that read), and by mount, so a restart is never required to observe the switch;
-- the `state.customDefinition.interpolate` mirror still returns to `false` when
-  the unscoped view is off, but it is not what makes the next turn literal: the
-  per-assembly decision is (§16.2).
+  the top of every handled request and the expansion is derived from that read)
+  and by mount, so a restart is never required to observe the switch.
 
 ### 16.8 The three states (Revision 12, audit F4)
 
@@ -2731,34 +2666,126 @@ layer inherits ON it says so and points at 「显式关」, because turning such
 "off" with the two-valued spelling only keeps it unstated. An unknown `state` is
 `400 invalid-state` with zero bytes written.
 
-### 16.9 What Revisions 11–14 do not do
+### 16.9 Revision 15 (design A): the section never interpolates, the plugin expands it
+
+Revisions 11–14 tried to earn the right to let DSH interpolate the reserved
+section, and paid for it with a verdict, a hold map and a position assumption.
+Revision 15 removes the failure mode structurally instead:
+
+1. **The reserved section is `interpolate: false` forever.** It is registered that
+   way (`core/custom.js`) and **nothing ever flips it** — not a route, not a mount
+   step, not an assembly. DSH's strict interpolator therefore never sees this
+   text, so "an unknown, valueless or malformed reference throws every turn" is
+   not prevented, it is impossible. This restores and strengthens g-014's gate;
+2. **The switch now means "this plugin expands the text itself".** With it ON,
+   `assembleHandler` substitutes `{{name}}` in the reserved section's text during
+   the assembly, using the variable table **that assembly carries**
+   (`downstream.variables ?? assembly.variables`) — never a cached probe reading
+   and never a config reading;
+3. **The expansion is lenient** (`expandPromptText`, `core/interpolate.js`). It
+   walks the text with the shipped renderer's own scan (the `{{` search,
+   `VARIABLE_GROUP` at the scan position, the "lone `{{` with no later `}}` is
+   prose" rule, and "a substituted value is never scanned again"):
+   - a **registered name with a value** becomes `String(value)` — byte-identical
+     to what the strict renderer produces for the same text;
+   - an **unregistered name**, an **`undefined` value** and a **malformed group**
+     stay **literal**. It never throws, and it never writes a bare `undefined`;
+   - every shape the shipped renderer throws on is therefore a shape this function
+     accepts, and §16.9.1 states each difference exactly;
+4. **Position does not matter.** The expansion runs right after `applyOverrides`
+   inside the ordinary `assembleHandler`. It does not rely on `{prepend: true}`
+   and it does not claim to be the outermost listener. If a listener outer to it
+   rewrites the sections afterwards, the worst outcome is **"this turn was not
+   expanded"** — the user sees the literal braces — and never a failed assembly.
+   That is the whole point of the design;
+5. **The hold mechanism is gone.** `interpolateHoldReason`, the per-scope hold
+   map, `layers.interpolationHold` and the Revision 14 `resolvedByContext`
+   hand-off were all machinery for "judge whether this turn would throw". There is
+   nothing to judge any more. A reference this assembly cannot resolve is reported
+   exactly where g-025 already reports it: `unresolvedLiteral` (§2.3), because the
+   section is `interpolate: false`;
+6. **The load-time interpolation self-check is gone too.** `selfCheckConfig`,
+   `enforceVisibleTextsSafe` and the `unresolvable-variable` degradation of a
+   layer are deleted: nothing stored in a layer can break an assembly, so
+   disabling a layer for its text would only discard the user's prompt. A
+   hand-armed file is loaded as written, and its dead references render literally;
+7. **The write face is unchanged in what it refuses** (§16.3, §16.4, §16.5): an
+   armed text whose reference could never expand is still
+   `400 unresolvable-variable`, and a registered-but-valueless name is still saved
+   with a warning. It is no longer a safety requirement — it is UX, so that a user
+   does not save text which will silently never substitute. The messages say that
+   now, instead of promising a throw that cannot happen.
+
+#### 16.9.1 The deliberate differences from the shipped renderer
+
+| Shape | Shipped `interpolate()` (strict section) | This plugin's expansion (reserved section) |
+| --- | --- | --- |
+| registered name with a value | `String(value)` | `String(value)` — **identical** |
+| registered name whose value is `null` | renders `null` | renders `null` — **identical** |
+| a substituted value containing `{{…}}` | never re-scanned | never re-scanned — **identical** |
+| a `{{` with no later `}}` | prose | prose — **identical** |
+| unregistered name | **throws** `unknown prompt variable` | stays literal |
+| illegal name (`{{Upper}}`, `{{a b}}`) | **throws** | stays literal |
+| malformed group (`{{ lone {{c}}`, `{{{{a}}}}`) | **throws** | the two braces are written out and the scan continues from there, so a well-formed group later in the same string still resolves |
+| registered name whose value is `undefined` | **throws** `has no value` | stays literal |
+| no variable table available | would throw on the first reference | everything stays literal |
+
+`test/integration.test.mjs` pins the first four rows differentially against the
+real `renderPrompt` over an enumerated corpus (every pairing of the shapes the
+shipped scanner branches on): **on the resolvable subset the plugin's bytes are
+the renderer's bytes**, and for every other shape the renderer really does throw
+while the expansion does not. `test/interpolate.test.mjs` pins the same table in
+the small, and `test/route.test.mjs` / `test/integration.test.mjs` pin the two
+position regressions — F1, a `{prepend: true}` listener registered **after** the
+mount; F2, a host that ignores listener options — where the real `renderPrompt`
+must not throw and "not expanded" is the accepted degradation.
+
+### 16.10 Assertion rewrites in Revision 15 (each one, and why)
+
+The rewrite policy for this goal: assertions written before g-026 are untouchable;
+assertions this goal added and this design disproves may be rewritten minimally,
+in the direction of **tighter or equivalent**, with the coverage carried by a
+replacement case. Every changed assertion is listed here.
+
+| Rewritten assertion (Revisions 11–14) | Why it had to change | What replaces it (tighter or equal) |
+| --- | --- | --- |
+| "enabling flips the LIVE definition to `true`" (`test/route.test.mjs`) | the definition is never flipped | the definition and the registration snapshot stay `false` through ON, **and** the next assembly's text is asserted expanded — strictly more than the old flag check |
+| "the switch survives a remount because mount flips the definition" | mount writes nothing any more | the remount is asserted to restore the **expanded render**, which is the behaviour that mattered |
+| "a layer that arms a bomb on disk is degraded" | nothing is degraded any more | the same file is asserted **enabled**, its text present, and its dead reference graded `unresolvedLiteral` with zero throwing references |
+| "a hand-armed layer degrades the unstated layer it arms" (cross-layer pass) | the pass is deleted | both layers stay enabled and the dead reference is asserted literal in the scoped preview |
+| "the assembly holds an `undefined` value back" / "`interpolationHold` carries the reason" | the hold field and the strict holding rule are gone | the same turn is asserted **literal** (`interpolate: false`, text unchanged), and `layers` is asserted to have **no** `interpolationHold` key at all |
+| "the hold verdict is exact against the renderer — 0 misses, 0 false positives" (two differential tests) | there is no hold verdict | replaced by the **expansion** differential over the same enumerated corpus: byte-identical on the resolvable subset, no-throw on the rest (stronger — it compares bytes, not verdicts) |
+| "the first turn of an armed layer with a valueless name holds instead of throwing" | replaced by the same literal-turn assertion | the first turn after mount is asserted to render literally, and `renderPrompt` is asserted not to throw |
+| "E2: the verdict reads the final sections and the final variable table" | the verdict is gone; the expansion is position-independent | three listener shapes (inner rewrite, late `prepend` rewrite, late variable) are each asserted to keep `interpolate: false` and to leave the real renderer un-thrown |
+| "E3: a hold is the current state — fixing the text or closing the switch clears it" | the hold record is deleted | ON expands / OFF is literal, and the snapshot is asserted to carry no hold key in either state |
+| the shipped-vs-plugin validator table (§16.3) | the assembly column no longer "holds back" | the table now reads "stays literal", and §16.9.1 states the intended differences explicitly |
+
+Nothing was weakened: every rewrite either adds an assertion (the render half) or
+replaces a "verdict" assertion with a "byte" assertion, and the exhaustive
+differential corpus from Revisions 13/14 is kept and re-aimed rather than dropped.
+The validator section of `test/interpolate.test.mjs`, the warning and
+degraded-layer paths of `test/client.test.mjs`, and every assertion written before
+g-026 are untouched.
+
+### 16.11 What Revisions 11–15 do not do
 
 - They do not add an escape syntax. DSH has none, so with the switch ON a literal
   `{{...}}` cannot be written in「我的 Prompt」 — the panel says so next to the
   switch rather than letting the save fail mysteriously. The one exception is a
-  layer that explicitly states OFF: its text is armed by no interpolating
-  assembly, so its braces are storable (§16.4);
-- they do not make the switch per-section or per-text. It is one field per
-  layer, and it governs the one section this plugin owns;
+  layer that explicitly states OFF: its text reaches no expansion, so its braces
+  are storable (§16.4);
+- they do not make the switch per-section or per-text. It is one field per layer,
+  and it governs the one section this plugin owns;
 - they do not check other plugins' sections, and they do not turn anybody else's
   interpolation on or off;
-- Revision 14 does **not** change the write face's `undefined`-value policy: a
-  registered name whose value is `undefined` in the probed assembly is still saved
-  with a warning and never refused (§16.3 — the probe table is not the session's
-  table). What Revision 14 changes is the **assembly** verdict, which now treats
-  that same value as the throw condition the renderer treats it as and holds the
-  turn back (§16.5.1). Neither revision changes the hard refusals: unregistered,
-  illegal and malformed references stayed `400 unresolvable-variable`;
-- Revision 14 does **not** add a "hold history". `layers.interpolationHold` is the
-  current state of one scope (§2.3b), and closing the switch, fixing the text or
-  hiding the section clears it. A UI that wants to explain a *past* literal turn
-  has to do so from the turn itself, not from this field;
-- Revision 13 does **not** add a background retry of the variable probe at
-  `mount`. The assembly-path hold is the safety net, and an extra unawaited
-  `assemble()` racing the request path's own probe would put two dispatches
-  through the one-shot `pendingProbe` slot for no additional guarantee;
+- Revision 15 does **not** change the write face's conditions: unregistered,
+  illegal and malformed references stayed `400 unresolvable-variable`, and a
+  registered-but-valueless name stayed a warning (§16.3). Only the wording now
+  says the truth — nothing throws;
+- Revision 15 does **not** claim the expansion is the last word on the assembly.
+  A later listener may overwrite it (§16.9.4); that is accepted, and the price is
+  one unexpanded turn;
 - they do not claim anything about a running `dsh web`: like every revision
   before them, the Host half needs the process to pick the new code up, and what
   is verified here is verified offline against the real
   `@deepseek-ai/dsh-system-prompt` in a real Cordis context.
-

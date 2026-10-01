@@ -402,8 +402,8 @@ window.__ModuleLoader__.load({
         'The config\'s "interpolateCustom" must be a boolean; that layer was disabled.',
       ],
       'unresolvable-variable': [
-        '这段文本里的 {{…}} 引用会让会话每一轮的 prompt 组装直接抛错，因此被拒绝。请删掉该引用、改用已注册的变量，或先关闭变量替换。',
-        'A {{…}} reference in this text would make every assembly of the session throw, so it was refused. Delete the reference, use a registered variable, or turn variable substitution off first.',
+        '这段文本里的 {{…}} 引用永远不会被替换成值（未注册、名字非法或写歪），因此保存被拒绝。请删掉该引用、改用已注册的变量，或先关闭变量替换。',
+        'A {{…}} reference in this text could never be substituted (unregistered, illegal or malformed), so the save was refused. Delete the reference, use a registered variable, or turn variable substitution off first.',
       ],
       'invalid-enabled': [
         '开关请求缺少布尔值 enabled。',
@@ -414,8 +414,8 @@ window.__ModuleLoader__.load({
         'A layer state must be one of inherit, on or off.',
       ],
       'variable-lookup-failed': [
-        '无法取到当前的变量表，本次写入被拒绝（无法证明文本安全）。',
-        'The current variable table could not be obtained, so this write was refused: the text cannot be proven safe.',
+        '无法取到当前的变量表，本次写入被拒绝（无法判断哪些变量会被展开）。',
+        'The current variable table could not be obtained, so this write was refused: there is no way to tell which references would expand.',
       ],
     };
     // #endregion
@@ -527,7 +527,7 @@ window.__ModuleLoader__.load({
       unresolvedLiteralTitle: '真实 prompt 就是这些字面量',
       unresolvedLiteralBody: '不参与替换的引用：{list}',
       unresolvedLiteralNote:
-        '这些引用所在的段已关闭变量替换（interpolate: false），宿主会把它们原样交给模型——预览里的字面量就是真实 prompt，预览即真相。',
+        '这些引用所在的段不由宿主插值（interpolate: false；「我的 Prompt」永远如此），无论本插件的变量替换是否开启、是否解析得出值，它们都会原样交给模型——预览里的字面量就是真实 prompt，预览即真相。',
       truncated: '文本过长，仅显示前 {n} 行。',
       diffHeading: 'base ↔ effective 对比',
       diffSame: '一致',
@@ -539,7 +539,7 @@ window.__ModuleLoader__.load({
       // ---- g-015: 「我的 Prompt」, the only write surface (the reserved section)
       mineHeading: '我的 Prompt',
       mineNote:
-        '这里写下的内容会成为单独一段 Prompt，排在所有内置段之后，下一轮生效（next-turn）。该段不做变量插值：写进去的 {{...}} 会原样交给模型。',
+        '这里写下的内容会成为单独一段 Prompt，排在所有内置段之后，下一轮生效（next-turn）。该段永远不由 DSH 插值；开启「变量替换」后，由本插件在装配时展开 {{...}}——未注册、拼错或当前无值的引用原样保留，不会导致组装失败。',
       mineTextLabel: '内容',
       minePlaceholder: '在这里写下你的 Prompt…',
       mineSave: '保存',
@@ -557,9 +557,9 @@ window.__ModuleLoader__.load({
       mineInterpolateTurnOn: '开启变量替换',
       mineInterpolateTurnOff: '关闭变量替换',
       mineInterpolateNote:
-        '开启后，这段文本里的 {{变量}} 由 DSH 原生替换：{{model}} → 当前模型名、{{cwd}} → 工作目录、{{provider}} → provider。关闭时它们原样交给模型。',
+        '开启后，这段文本里的 {{变量}} 由本插件在装配时展开：{{model}} → 当前模型名、{{cwd}} → 工作目录、{{provider}} → provider。未注册、拼错或当前无值的引用会原样保留（不会导致组装失败）。关闭时所有 {{...}} 都原样交给模型。',
       mineInterpolateWarn:
-        '注意：DSH 没有转义机制。开启后你无法再在这里写字面量 {{...}}——任何未注册、拼错或写歪的引用都会让会话每轮装配失败，所以保存时会被直接拒绝。',
+        '注意：DSH 没有转义机制。开启后你无法再在这里写字面量 {{...}}——未注册、拼错或写歪的引用永远拿不到值，所以保存时会被直接拒绝。它不会让会话装配失败，只会一直保持字面量。',
       mineInterpolateInherit: '该层未设置：跟随用户层。',
       mineInterpolateStated: '该层显式设置为{state}。',
       mineInterpolateSaving: '正在切换…',
@@ -578,7 +578,7 @@ window.__ModuleLoader__.load({
       mineInterpolateStateSaved: '本层状态已设为「{state}」，下一轮生效（next-turn）。',
       mineWarningsHeading: '已保存，但有以下引用需要留意：',
       mineWarningUndefined:
-        '这些变量在本次探测中没有值，保存已通过（值属于会话，不属于文本）；但缺少该值的那一轮，会话装配会失败：{list}',
+        '这些变量在本次探测中没有值，保存已通过（值属于会话，不属于文本）；缺少该值的那一轮，这些引用会保留字面量、不做替换：{list}',
       mineWarningList: '引用 {name}',
       mineLayerDisabled: '本层已被停用，当前不参与任何装配。',
       mineLayerDisabledReason: '原因：{reason}',
@@ -866,7 +866,7 @@ window.__ModuleLoader__.load({
       unresolvedLiteralTitle: 'The real prompt is exactly these literal braces',
       unresolvedLiteralBody: 'References in non-interpolated sections: {list}',
       unresolvedLiteralNote:
-        'These references sit in sections with interpolation turned off (interpolate: false), so the Host hands them to the model as written — the braces in this preview are the real prompt.',
+        'These references sit in sections the Host never interpolates (interpolate: false; My Prompt always is one), so they reach the model exactly as written whether or not this plugin\'s own expansion resolved them — the braces in this preview are the real prompt.',
       truncated: 'Long text: showing the first {n} lines only.',
       diffHeading: 'base ↔ effective',
       diffSame: 'Same',
@@ -877,7 +877,7 @@ window.__ModuleLoader__.load({
       editLayer: 'Save to layer',
       mineHeading: 'My Prompt',
       mineNote:
-        'What you write here becomes one extra prompt section, placed after every built-in section, effective from the next turn (next-turn). It is not interpolated: any {{...}} you write reaches the model literally.',
+        'What you write here becomes one extra prompt section, placed after every built-in section, effective from the next turn (next-turn). DSH never interpolates it; with variable substitution on, this plugin expands its {{...}} during assembly, and a reference that is unregistered, misspelled or currently valueless stays literal instead of failing the assembly.',
       mineTextLabel: 'Content',
       minePlaceholder: 'Write your prompt here…',
       mineSave: 'Save',
@@ -895,9 +895,9 @@ window.__ModuleLoader__.load({
       mineInterpolateTurnOn: 'Turn variable substitution on',
       mineInterpolateTurnOff: 'Turn variable substitution off',
       mineInterpolateNote:
-        'When on, {{variables}} in this text are substituted by DSH itself: {{model}} \u2192 the current model, {{cwd}} \u2192 the working directory, {{provider}} \u2192 the provider. When off they reach the model exactly as written.',
+        'When on, this plugin expands {{variables}} in this text during assembly: {{model}} \u2192 the current model, {{cwd}} \u2192 the working directory, {{provider}} \u2192 the provider. A reference that is unregistered, misspelled or currently valueless stays literal and never fails the assembly. When off, every {{...}} reaches the model exactly as written.',
       mineInterpolateWarn:
-        'Note: DSH has no escape syntax. With this on you can no longer write a literal {{...}} here \u2014 any unregistered, misspelled or malformed reference breaks every turn of the session, so saving one is refused outright.',
+        'Note: DSH has no escape syntax. With this on you can no longer write a literal {{...}} here \u2014 an unregistered, misspelled or malformed reference can never resolve, so saving one is refused outright. It would not break the session; it would simply stay literal forever.',
       mineInterpolateInherit: 'This layer states nothing: it inherits the user layer.',
       mineInterpolateStated: 'This layer states {state} explicitly.',
       mineInterpolateSaving: 'Switching\u2026',
@@ -916,7 +916,7 @@ window.__ModuleLoader__.load({
       mineInterpolateStateSaved: 'This layer now states {state}; effective from the next turn (next-turn).',
       mineWarningsHeading: 'Saved, with references to note:',
       mineWarningUndefined:
-        'These variables had no value in the probe that was run, so the save was accepted (a value belongs to the session, not to the text) — but a turn without that value will fail to assemble: {list}',
+        'These variables had no value in the probe that was run, so the save was accepted (a value belongs to the session, not to the text); in a turn that has no value for them, they stay literal instead of being substituted: {list}',
       mineWarningList: 'reference {name}',
       mineLayerDisabled: 'This layer is disabled and contributes nothing to any assembly right now.',
       mineLayerDisabledReason: 'Reason: {reason}',

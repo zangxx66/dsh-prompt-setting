@@ -20,8 +20,8 @@ import { createRequire } from 'node:module';
 import test, { afterEach, beforeEach } from 'node:test';
 
 import { CUSTOM_SECTION_NAME } from '../index.js';
-import { scanThrowingReference } from '../core/interpolate.js';
-import { interpolateHoldReason, lintPromptText } from '../core/interpolate.js';
+import { expandPromptText, scanThrowingReference } from '../core/interpolate.js';
+import { lintPromptText } from '../core/interpolate.js';
 
 /** Directory names under `node_modules/.pnpm` that carry the Host peers we need. */
 const ANCHOR_PACKAGES = ['@deepseek-ai+dsh-web-app@', '@deepseek-ai+dsh-base@'];
@@ -351,6 +351,10 @@ function writeUserConfigFile(overrides) {
  * @param options.agents - Agent objects exposed through a fake `agents` service.
  * @param options.omitAgents - mount without an `agents` service.
  * @param options.beforePlugin - awaited after the Host stub, before this plugin.
+ * @param options.ignoreListenerOptions - mount onto a host that DROPS the
+ *   options object passed to `ctx.on`, so `{prepend: true}` has no effect. This
+ *   is the F2 degradation, and it is implemented on this plugin's own scope
+ *   because patching the class would also rewire cordis's internal listeners.
  * @returns `{ctx, service, route, call}`.
  */
 async function mountRealPlugin(sections = [], options = {}) {
@@ -387,7 +391,18 @@ async function mountRealPlugin(sections = [], options = {}) {
     });
   }
   if (typeof options.beforePlugin === 'function') await options.beforePlugin(ctx);
-  await ctx.plugin({ name: 'dsh-prompt-setting', inject: plugin.inject, apply: plugin.apply });
+  const applyPlugin = options.ignoreListenerOptions === true
+    ? (scope) => {
+      const originalOn = scope.on;
+      Object.defineProperty(scope, 'on', {
+        value: (name, callback) => originalOn.call(scope, name, callback),
+        configurable: true,
+        writable: true,
+      });
+      return plugin.apply(scope);
+    }
+    : plugin.apply;
+  await ctx.plugin({ name: 'dsh-prompt-setting', inject: plugin.inject, apply: applyPlugin });
 
   const service = ctx.get('systemPrompt', false);
   assert.equal(routes.length, 1);
@@ -1260,7 +1275,7 @@ test('integration g-026: the strict validator predicts the real renderer, includ
   );
 });
 
-test('integration g-026: the switch flips the LIVE section object, and the real assemble sees it on the next turn', suite, async () => {
+test('integration g-026 rev15: the switch expands the section, and the section never interpolates', suite, async () => {
   const { renderPrompt } = await import(SYSTEM_PROMPT_URL);
   const { ctx, service, call } = await mountRealPlugin(CUSTOM);
   assert.equal(typeof ctx.systemPrompt.variable, 'function');
@@ -1290,11 +1305,18 @@ test('integration g-026: the switch flips the LIVE section object, and the real 
   assert.equal(opened.status, 200);
   assert.equal(opened.payload.effectiveFrom, 'next-turn');
 
-  // Same registration object; the very next assembly already carries the new
-  // flag, without a remount, a re-registration or a restart.
+  // Revision 15 (design A): the very next assembly carries the SUBSTITUTED text,
+  // and the section still says `interpolate: false` — the definition object is
+  // never touched, so DSH's strict interpolator is never involved. No
+  // re-registration, no remount, no restart, and no way for a reference to take
+  // the prompt down.
   const open = await service.assemble();
-  assert.equal(open.sections.find((section) => section.name === CUSTOM_SECTION_NAME).interpolate, true);
-  assert.equal(renderPrompt(open).endsWith('M=deepseek-flash'), true);
+  assert.equal(
+    open.sections.find((section) => section.name === CUSTOM_SECTION_NAME).interpolate,
+    false,
+    'the live flag is never flipped',
+  );
+  assert.equal(renderPrompt(open).endsWith('M=deepseek-flash'), true, 'expanded by the plugin, not by DSH');
 });
 
 test('integration g-026: with the switch on, the snapshot rendering IS the real renderPrompt, byte for byte', suite, async () => {
@@ -1348,13 +1370,13 @@ test('integration g-026: with the switch on, the snapshot rendering IS the real 
   assert.equal(renderPrompt(await service.assemble()), real);
 });
 
-test('integration g-026 rev13 D2: the first turn after mount renders literally instead of throwing', suite, async () => {
+test('integration g-026 rev15: a hand-armed layer with a dead reference renders literally on the very first turn', suite, async () => {
   const { renderPrompt } = await import(SYSTEM_PROMPT_URL);
-  // The residue the audit describes: a layer written by hand (or left behind by
+  // The residue the D2 audit described: a layer written by hand (or left by
   // another process) that states the switch ON and carries a name nothing
-  // registers. It is a lit bomb — the load-time self-check cannot see the name
-  // fault without a variable table, and the table only arrives with the first
-  // route request. Interpolating it takes the whole prompt down.
+  // registers. Under design A there is no window to exploit — the section is
+  // registered `interpolate: false` and the plugin's own expansion leaves the
+  // name literal — so the first turn is safe before any route request has run.
   mkdirSync(join(home, 'prompt-setting'), { recursive: true });
   writeFileSync(join(home, 'prompt-setting', 'overrides.json'), JSON.stringify({
     version: 1,
@@ -1367,169 +1389,170 @@ test('integration g-026 rev13 D2: the first turn after mount renders literally i
   // window the audit exploited.
   const assembly = await service.assemble();
   const ours = assembly.sections.find((section) => section.name === CUSTOM_SECTION_NAME);
-  const variables = assembly.variables !== null && typeof assembly.variables === 'object' ? assembly.variables : {};
-  assert.equal(ours.interpolate, false, 'the unverified text is held back for this turn');
+  assert.equal(ours.interpolate, false, 'the strict interpolator is never pointed at this section');
+  assert.equal(ours.text, 'x {{nope}}', 'the dead reference reaches the model as written');
+  assert.doesNotThrow(() => renderPrompt(assembly));
+  assert.equal(renderPrompt(assembly).endsWith('x {{nope}}'), true);
 
-  // Negative control: the same text through an interpolating section really does
-  // take the real renderer down — the hold is protecting a live bomb, not
-  // papering over a harmless string.
+  // The negative control that makes the guarantee meaningful: the same bytes in
+  // an interpolating section really do take the real renderer down.
+  const variables = assembly.variables !== null && typeof assembly.variables === 'object' ? assembly.variables : {};
   assert.throws(
     () => renderPrompt({ sections: [{ name: CUSTOM_SECTION_NAME, text: 'x {{nope}}' }], variables }),
     /prompt variable/,
   );
-  // ...and the real first turn of the session assembles and renders, with the
-  // braces reaching the model exactly as written.
-  assert.doesNotThrow(() => renderPrompt(assembly));
-  assert.equal(renderPrompt(assembly).endsWith('x {{nope}}'), true);
 
-  // The very next route request has the table: the same layer is degraded with
-  // the existing reason, so the hold is a one-turn window and never a silent
-  // acceptance.
+  // A route request changes nothing: the layer stays enabled (nothing is
+  // degraded any more) and the reference is graded literal, exactly as g-025
+  // grades it.
   const snapshot = await call({});
-  assert.equal(snapshot.payload.layers.user.enabled, false);
-  assert.match(snapshot.payload.layers.user.reason, /^unresolvable-variable: /);
-  assert.match(snapshot.payload.layers.user.reason, /Fix:/);
-  // After the degradation the session keeps working: the layer contributes
-  // nothing, and the prompt assembles as it did before the hand edit.
-  const after = await service.assemble();
-  assert.doesNotThrow(() => renderPrompt(after));
+  assert.equal(snapshot.payload.layers.user.enabled, true);
+  assert.equal(snapshot.payload.rendered.endsWith('x {{nope}}'), true);
+  assert.deepEqual(snapshot.payload.unresolvedLiteral, ['nope']);
+  assert.deepEqual(snapshot.payload.unresolvedThrowing, []);
+  assert.equal(Object.hasOwn(snapshot.payload.layers, 'interpolationHold'), false);
 });
 
-test('integration g-026 rev13: the hold verdict is exact against the real renderer — 0 misses, 0 false positives', suite, async () => {
+test('integration g-026 rev15: the plugin expansion is byte-identical to the real renderer on the resolvable subset', suite, async () => {
   const { renderPrompt } = await import(SYSTEM_PROMPT_URL);
   // The differential corpus is enumerated, not sampled, so a failure names a
   // shape rather than a seed. Every piece is a shape the shipped `interpolate()`
-  // branches on, and pairing them tests the scan cursor too (a `{{` from one
+  // branches on, and pairing them exercises the scan cursor too (a `{{` from one
   // piece closing a group opened by the other).
-  const variables = { a: 'A', b: null, maybe: undefined };
-  const PIECES = ['', 'ok ', '}}', '{{a}}', '{{b}}', '{{maybe}}', '{{nope}}', '{{Upper}}', '{{}}', '{{a b}}', '{{ lone {{c}}', '{{{{a}}}}', '{{unclosed'];
-  let held = 0;
-  let interpolated = 0;
+  const variables = { a: 'A', n: 0, f: false, e: '', cwd: null, maybe: undefined };
+  const PIECES = ['', 'ok ', '}}', '{{a}}', '{{n}}', '{{f}}', '{{e}}', '{{cwd}}', '{{maybe}}', '{{nope}}', '{{Upper}}', '{{}}', '{{a b}}', '{{ lone {{a}}', '{{{{a}}}}', '{{unclosed'];
+  let resolvable = 0;
+  let lenient = 0;
   for (const left of PIECES) {
     for (const right of PIECES) {
       const text = `${left}${right}`;
-      const { errors, warnings } = lintPromptText(text, variables);
-      const hold = interpolateHoldReason(text, variables);
-
-      // No false positives: a text the strict scan calls fully safe is never held.
-      if (errors.length === 0 && warnings.length === 0) assert.equal(hold, null, JSON.stringify(text));
-      // No misses: every text carrying a fatal reference is held.
-      if (errors.length > 0) assert.notEqual(hold, null, JSON.stringify(text));
-
-      if (hold !== null) {
-        held += 1;
-        // The held section renders literally, and the real renderer proves it
-        // cannot throw in that shape.
-        assert.doesNotThrow(
-          () => renderPrompt({ sections: [{ name: CUSTOM_SECTION_NAME, text, interpolate: false }], variables }),
+      const ours = expandPromptText(text, variables);
+      // Never a bare `undefined`, whatever the shape.
+      assert.equal(ours.includes('undefined'), false, JSON.stringify(text));
+      const strict = scanThrowingReference(text, variables);
+      if (strict === null) {
+        // The resolvable subset: the shipped renderer renders this text, and the
+        // plugin's own expansion must produce its bytes exactly.
+        assert.equal(
+          ours,
+          renderPrompt({ sections: [{ name: 'control', text }], variables }),
           JSON.stringify(text),
         );
+        resolvable += 1;
       } else {
-        interpolated += 1;
-        // Not held and fully safe ⇒ interpolating it really is safe, so the hold
-        // never costs a substitution it did not have to.
-        if (errors.length === 0 && warnings.length === 0) {
-          assert.doesNotThrow(
-            () => renderPrompt({ sections: [{ name: CUSTOM_SECTION_NAME, text }], variables }),
-            JSON.stringify(text),
-          );
-        }
+        // Everything else: the shipped renderer throws, the plugin's expansion
+        // cannot, and the section the plugin actually registers
+        // (`interpolate: false`) is handed through by the real renderer.
+        lenient += 1;
+        assert.throws(
+          () => renderPrompt({ sections: [{ name: 'control', text }], variables }),
+          /prompt variable/,
+          JSON.stringify(text),
+        );
+        assert.doesNotThrow(
+          () => renderPrompt({ sections: [{ name: 'control', text, interpolate: false }], variables }),
+          JSON.stringify(text),
+        );
       }
     }
   }
-  // A corpus that only exercised one branch would prove nothing.
-  assert.notEqual(held, 0, 'the corpus reached the hold branch');
-  assert.notEqual(interpolated, 0, 'the corpus reached the interpolating branch');
+  assert.notEqual(resolvable, 0, 'the corpus reached the resolvable branch');
+  assert.notEqual(lenient, 0, 'the corpus reached the lenient branch');
+  // The class the design exists for, stated on its own.
+  assert.equal(expandPromptText('keep {{nope}}', variables), 'keep {{nope}}');
+  assert.equal(expandPromptText('keep {{maybe}}', variables), 'keep {{maybe}}');
+  assert.equal(expandPromptText('cwd={{cwd}}', variables), 'cwd=null', 'a null value renders as the renderer renders it');
+});
 
-  // The unavailable-table half: fail closed on any `{{`, and the literal render
-  // is again what the real renderer does for a closed section.
-  for (const text of ['plain prose', 'a {{ b', '{{a}}', '{{unclosed', '{{']) {
-    const hold = interpolateHoldReason(text, null);
-    assert.equal(hold !== null, text.includes('{{'), JSON.stringify(text));
-    if (hold !== null) {
-      assert.doesNotThrow(
-        () => renderPrompt({ sections: [{ name: CUSTOM_SECTION_NAME, text, interpolate: false }], variables: {} }),
-        JSON.stringify(text),
-      );
+test('integration g-026 rev15 F1: a prepend listener registered after the mount cannot make renderPrompt throw', suite, async () => {
+  const { renderPrompt } = await import(SYSTEM_PROMPT_URL);
+  // The first audit finding, re-measured under design A. `{prepend: true}` is an
+  // `unshift` (cordis `lib/index.js`), so a listener registered AFTER this plugin
+  // is still outer to it and can still rewrite the finished assembly. Under the
+  // old design that broke the verdict/render identity; under this one the worst
+  // outcome is an unexpanded turn. The three rewrites below are the audit's own
+  // shapes.
+  for (const shape of ['rewrite-into-bomb', 'drop-the-variable', 'inject-the-variable']) {
+    const { ctx, service, call } = await mountRealPlugin(CUSTOM);
+    ctx.systemPrompt.variable('model', () => 'deepseek-flash');
+    assert.equal((await call({
+      method: 'PUT',
+      url: '/prompt-setting/interpolate',
+      body: JSON.stringify({ enabled: true }),
+    })).status, 200);
+    assert.equal((await call({
+      method: 'PUT',
+      url: '/prompt-setting/overrides',
+      body: JSON.stringify({
+        layer: 'user',
+        section: { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'M={{model}}' },
+      }),
+    })).status, 200);
+
+    ctx.on('system-prompt/assemble', async (assembly, context, next) => {
+      const result = await next();
+      if (shape === 'rewrite-into-bomb') {
+        return {
+          ...result,
+          sections: result.sections.map((section) => (section.name === CUSTOM_SECTION_NAME
+            ? { ...section, text: 'outer {{nope}}' }
+            : section)),
+        };
+      }
+      if (shape === 'drop-the-variable') return { ...result, variables: {} };
+      return {
+        ...result,
+        variables: { ...result.variables, late: 'L' },
+        sections: result.sections.map((section) => (section.name === CUSTOM_SECTION_NAME
+          ? { ...section, text: 'outer {{late}}' }
+          : section)),
+      };
+    }, { prepend: true });
+
+    const assembly = await service.assemble();
+    const ours = assembly.sections.find((section) => section.name === CUSTOM_SECTION_NAME);
+    assert.equal(ours.interpolate, false, `${shape}: the section is never interpolated`);
+    assert.doesNotThrow(() => renderPrompt(assembly), `${shape}: the real renderer must not throw`);
+    // The accepted degradations, stated rather than hidden: an outer rewrite wins
+    // (so that turn is simply not expanded), and a value that arrives after the
+    // expansion is not used.
+    if (shape === 'rewrite-into-bomb') {
+      assert.equal(renderPrompt(assembly).endsWith('outer {{nope}}'), true);
+    }
+    if (shape === 'inject-the-variable') {
+      assert.equal(renderPrompt(assembly).endsWith('outer {{late}}'), true);
     }
   }
 });
 
-test('integration g-026 rev14 E1: the strict hold verdict is exact against the real renderer — 0 misses, 0 false positives', suite, async () => {
+test('integration g-026 rev15 F2: a host that ignores listener options cannot make renderPrompt throw', suite, async () => {
   const { renderPrompt } = await import(SYSTEM_PROMPT_URL);
-  // The third audit's E1: the assembly verdict used the write face's soft reading,
-  // which files an `undefined` value under "warning" — so a reference this very
-  // assembly cannot render was interpolated anyway and `renderPrompt` threw. The
-  // corpus is the same enumerated one (every shape the shipped `interpolate()`
-  // branches on, plus the pairings that exercise its scan cursor), now with the
-  // `undefined` class required to be held and the strict transcription required
-  // to agree with it on every shape.
-  const variables = { a: 'A', b: null, maybe: undefined };
-  const PIECES = ['', 'ok ', '}}', '{{a}}', '{{b}}', '{{maybe}}', '{{nope}}', '{{Upper}}', '{{}}', '{{a b}}', '{{ lone {{c}}', '{{{{a}}}}', '{{unclosed'];
-  let held = 0;
-  let interpolating = 0;
-  for (const left of PIECES) {
-    for (const right of PIECES) {
-      const text = `${left}${right}`;
-      const hold = interpolateHoldReason(text, variables);
-      const strict = scanThrowingReference(text, variables);
+  // The second audit finding: a host that drops the options object leaves the
+  // keeper inside the waterfall instead of outside it. Revision 15 assumes
+  // nothing about position — the expansion lives in the override listener — so
+  // it still happens and nothing throws.
+  {
+    const { ctx, service, call } = await mountRealPlugin(CUSTOM, { ignoreListenerOptions: true });
+    ctx.systemPrompt.variable('model', () => 'deepseek-flash');
+    assert.equal((await call({
+      method: 'PUT',
+      url: '/prompt-setting/interpolate',
+      body: JSON.stringify({ enabled: true }),
+    })).status, 200);
+    assert.equal((await call({
+      method: 'PUT',
+      url: '/prompt-setting/overrides',
+      body: JSON.stringify({
+        layer: 'user',
+        section: { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'M={{model}}' },
+      }),
+    })).status, 200);
 
-      // One source of truth: the assembly verdict IS the strict transcription of
-      // the shipped renderer, `undefined` values included.
-      assert.equal(hold !== null, strict !== null, JSON.stringify(text));
-
-      // 0 false positives: a turn that is not held really does render, and a turn
-      // that is held renders literally without throwing. Either way the real
-      // renderer proves the verdict costs no substitution it did not have to.
-      const section = { name: CUSTOM_SECTION_NAME, text, ...(hold === null ? {} : { interpolate: false }) };
-      assert.doesNotThrow(() => renderPrompt({ sections: [section], variables }), JSON.stringify(text));
-
-      if (hold === null) interpolating += 1;
-      else held += 1;
-    }
+    const assembly = await service.assemble();
+    const ours = assembly.sections.find((section) => section.name === CUSTOM_SECTION_NAME);
+    assert.equal(ours.interpolate, false);
+    assert.equal(ours.text, 'M=deepseek-flash', 'the expansion does not depend on the prepend slot');
+    assert.doesNotThrow(() => renderPrompt(assembly));
+    assert.equal(renderPrompt(assembly).endsWith('M=deepseek-flash'), true);
   }
-  assert.notEqual(held, 0, 'the corpus reached the hold branch');
-  assert.notEqual(interpolating, 0, 'the corpus reached the interpolating branch');
-
-  // The class the audit found missing, stated on its own: a REGISTERED name whose
-  // value this assembly does not have is held — and not holding it really does
-  // take the real renderer down (the negative control).
-  assert.notEqual(interpolateHoldReason('x {{maybe}}', variables), null, 'an undefined value is a hold');
-  assert.throws(
-    () => renderPrompt({ sections: [{ name: CUSTOM_SECTION_NAME, text: 'x {{maybe}}' }], variables }),
-    /prompt variable/,
-  );
-});
-
-test('integration g-026 rev14 E1: the first turn of an armed layer with a valueless name holds instead of throwing', suite, async () => {
-  const { renderPrompt } = await import(SYSTEM_PROMPT_URL);
-  // The reachable chain, on the real packages: a layer written by hand (or left
-  // by another process) states ON and names a variable that IS registered but has
-  // no value in this assembly. Interpolating it takes the whole prompt down — and
-  // because DSH's own sections carry no `{{...}}`, this section is the only thing
-  // left that can throw for such a name.
-  mkdirSync(join(home, 'prompt-setting'), { recursive: true });
-  writeFileSync(join(home, 'prompt-setting', 'overrides.json'), JSON.stringify({
-    version: 1,
-    interpolateCustom: true,
-    overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'I am {{cwd}}' }],
-  }), 'utf8');
-
-  const { ctx, service } = await mountRealPlugin(CUSTOM);
-  ctx.systemPrompt.variable('cwd', () => undefined);
-
-  const assembly = await service.assemble();
-  const ours = assembly.sections.find((section) => section.name === CUSTOM_SECTION_NAME);
-  const variables = assembly.variables !== null && typeof assembly.variables === 'object' ? assembly.variables : {};
-  assert.equal(Object.hasOwn(variables, 'cwd'), true, 'the name IS registered — the value is what this turn lacks');
-  assert.equal(ours.interpolate, false, 'held: interpolating it would fail this assembly');
-
-  // Negative control: the same text through an interpolating section really does
-  // take the real renderer down.
-  assert.throws(
-    () => renderPrompt({ sections: [{ name: CUSTOM_SECTION_NAME, text: 'I am {{cwd}}' }], variables }),
-    /prompt variable/,
-  );
-  assert.doesNotThrow(() => renderPrompt(assembly));
-  assert.equal(renderPrompt(assembly).endsWith('I am {{cwd}}'), true, 'the braces reach the model literally');
 });

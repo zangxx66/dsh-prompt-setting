@@ -28,11 +28,19 @@
  * The listeners read memory only. The override listener records the
  * pre-waterfall sections (the `base` view and the frozen probe) before
  * delegating with `next()`, then applies this plugin's overrides on top of the
- * downstream result — so it never vetoes another listener, and the untouched
- * assembly is returned by identity when no override applies. The second
- * listener (Revision 8) is registered `{prepend: true}` so it is the outermost
- * one, and its only act is to move the reserved section to the end when it
- * carries text and is not already there — by reference otherwise.
+ * downstream result and, when this assembly's switch is ON, expands the reserved
+ * section's `{{name}}` references itself — so it never vetoes another listener,
+ * and the untouched assembly is returned by identity when no override applies.
+ * The second listener (Revision 8) is registered `{prepend: true}` so it is the
+ * outermost one, and its only act is to move the reserved section to the end
+ * when it carries text and is not already there — by reference otherwise.
+ *
+ * Revision 15 (design A) is why the expansion lives in the first listener rather
+ * than the outermost one: the reserved section is registered `interpolate: false`
+ * and stays that way, so DSH's strict interpolator never sees the text and no
+ * assembly can fail because of it. The expansion is lenient — an unresolvable
+ * reference stays literal — and position-independent: a listener outer to this
+ * one that rewrites the sections costs at most an unexpanded turn.
  *
  * No DSH Host package is imported: the Host APIs used are the `systemPrompt`,
  * `webServer` and `connection` services read off `ctx`, plus an optional
@@ -67,17 +75,14 @@ import { EXPERIMENTS } from './core/experiments.js';
 import { buildDiff } from './core/diff.js';
 import {
   INTERPOLATE_STATES,
-  UNRESOLVABLE_VARIABLE,
   anyStatesOn,
   assertInterpolatable,
   customTextOf,
   describeInterpolateErrors,
-  describeLayerDisabled,
   describeWarnings,
   effectiveInterpolate,
-  interpolateHoldReason,
+  expandPromptText,
   lintPromptText,
-  selfCheckConfig,
   switchStateOf,
   withState,
 } from './core/interpolate.js';
@@ -209,15 +214,6 @@ export const PROBE_SCOPE = Object.freeze({});
  * used to match a probe: probes always carry an Agent or {@link PROBE_SCOPE}.
  */
 const UNSCOPED_KEY = 'unscoped';
-/**
- * How many interpolation holds one mount remembers, newest last (Revision 13).
- *
- * A hold is a per-scope fact (`{at, reason}`), reported through the snapshot so
- * the browser can say why a turn rendered literally. The cap only bounds the
- * map; it is not a correctness knob, and 32 concurrent sessions is far past the
- * point where the oldest entry is still interesting.
- */
-const INTERPOLATION_HOLD_LIMIT = 32;
 
 /**
  * Required Host services. `systemPrompt` is a hard dependency: without it the
@@ -660,15 +656,6 @@ function mount(ctx, config, cleanups) {
      */
     pendingProbe: null,
     /**
-     * The live definition object handed to `systemPrompt.section()` (Revision
-     * 9). `NamedEntries` keeps the object **by reference** and every `assemble`
-     * copies `section.interpolate` into the assembly it renders, so flipping
-     * `state.customDefinition.interpolate` here changes what the next turn
-     * renders without re-registering anything. `null` before registration and
-     * after unmount.
-     */
-    customDefinition: null,
-    /**
      * The assembled variable table, or `null` when this mount has not obtained
      * one. Cached because the lookup costs one full `assemble()`; refreshed on
      * every **write** validation so a name registered later is never refused on
@@ -677,32 +664,6 @@ function mount(ctx, config, cleanups) {
     variables: null,
     /** Why the last variable-table lookup failed, or `null`. */
     variablesError: null,
-    /**
-     * The last turn that had to hold variable substitution back, per scope key
-     * (Revision 13, audit D2): `{at, reason}`. Written from the assembly path,
-     * which is the only place that knows both the text and the variable table
-     * the renderer is about to use; read back by the snapshot so the browser can
-     * explain a literal render instead of leaving it mysterious.
-     *
-     * Revision 14 (audit E3) makes the entry the **current** state rather than a
-     * last-seen one: a turn that does not hold deletes its scope's key, so the
-     * snapshot can never report a stale reason (or an old timestamp) after the
-     * text was fixed, the section was hidden, or the switch was closed.
-     */
-    interpolationHolds: new Map(),
-    /**
-     * The config one dispatch resolved, keyed by that dispatch's assembly
-     * context object (Revision 14, audit E2).
-     *
-     * The interpolation verdict now belongs to the **outermost** listener's
-     * post-`next()` step — the last point that sees every other listener's
-     * contribution — but the one-shot probe slot (`pendingProbe`) is consumed by
-     * the inner `assembleHandler` before that. The map is how the two halves see
-     * the same resolved config without re-deriving it, and a `WeakMap` keyed by
-     * the context object is what keeps two concurrent dispatches apart (the
-     * context is per-call; the scope key is not).
-     */
-    resolvedByContext: new WeakMap(),
   };
 
   /**
@@ -777,49 +738,21 @@ function mount(ctx, config, cleanups) {
   }
 
   /**
-   * Apply Revision 9's load-time self-check to one freshly read layer.
-   *
-   * The switch is a safety gate the user opens on purpose, so a layer that
-   * states it OPEN while carrying text the shipped renderer would throw on is a
-   * bomb that is already lit: the next assembly of any session using that layer
-   * fails, and the prompt cannot be built at all. Such a layer is **degraded
-   * with a reason**, exactly like the `missing-file` precedent
-   * ({@link refreshUser}): the layer contributes nothing and the reason says
-   * which references are at fault and how to fix them. It is never reported as
-   * an invalid file (the code is `unresolvable-variable`, not `invalid-config`)
-   * and it is never silently accepted.
-   *
-   * A layer that states nothing, or states OFF, is returned untouched by
-   * construction — the check cannot affect an install that never opened the
-   * gate.
-   * @param read - the `readConfig` result.
-   * @param owner - what the text belongs to (goes into the reason).
-   * @returns the result to cache: the same one, or a degraded copy.
-   */
-  function selfCheckLayer(read, owner) {
-    if (read.error !== null || read.config === null) return read;
-    const check = selfCheckConfig(read.config, state.variables, owner);
-    if (check.error === null) return read;
-    return { config: null, missing: read.missing, error: check.error };
-  }
-
-  /**
    * Read one workspace layer into the in-memory cache.
    *
-   * Revision 12: the cross-layer F1 pass runs here as well as in
-   * {@link refreshLayers}, because this function is also reached *after* the
-   * refresh — `workspaceContext` re-loads the layer for a `?session=` view, and
-   * without the second pass that read would silently resurrect a layer the
-   * refresh had just degraded. The state returned is read back out of the cache
-   * for the same reason: it is the post-pass truth.
+   * Revision 15 (design A) removed the load-time interpolation self-check that
+   * used to sit here: with the reserved section permanently `interpolate: false`
+   * and the plugin's own expansion lenient, no stored text can break an
+   * assembly, so there is nothing left to degrade a layer for. The file-level
+   * rules are unchanged — an unreadable or invalid file still disables the layer
+   * with its own reason (`readConfig`).
    * @param root - the resolved workspace root.
    * @returns the cached layer `{path, config, error}`.
    */
   function loadWorkspace(root) {
     const path = workspaceConfigPath(root);
-    const read = selfCheckLayer(readConfig(path), `the workspace layer ${path}`);
+    const read = readConfig(path);
     state.workspaces.set(root, { path, config: read.config, error: read.error });
-    enforceVisibleTextsSafe();
     return state.workspaces.get(root) ?? { path, config: read.config, error: read.error };
   }
 
@@ -840,7 +773,7 @@ function mount(ctx, config, cleanups) {
    */
   function refreshUser() {
     const path = state.user.path;
-    const read = selfCheckLayer(readConfig(path), `the user layer ${path}`);
+    const read = readConfig(path);
     if (read.error !== null) {
       // Unreadable or invalid: keep no config at all, so this layer
       // contributes nothing to any assembly. `present` is sticky, so it stays
@@ -861,61 +794,6 @@ function mount(ctx, config, cleanups) {
     }
     state.user = { path, config: read.config, error: null, present: true };
     return state.user;
-  }
-
-  /**
-   * Disable one layer in the cache with the `unresolvable-variable` reason
-   * (Revision 12, audit F1).
-   *
-   * The shape is the `missing-file` shape on purpose: `enabled: false` plus a
-   * reason, so the layer contributes nothing to any assembly and the browser has
-   * something to show. It is never `invalid-config` — the file itself is fine.
-   * @param root - the workspace root, or null for the user layer.
-   * @param owner - what the text belongs to (goes into the reason).
-   * @param errors - the fatal events from {@link lintPromptText}.
-   * @returns nothing.
-   */
-  function degradeLayer(root, owner, errors) {
-    const error = {
-      code: UNRESOLVABLE_VARIABLE,
-      message: describeLayerDisabled(errors, state.variables, owner),
-    };
-    if (root === null) {
-      state.user = { path: state.user.path, config: null, error, present: true };
-      return;
-    }
-    const layer = state.workspaces.get(root);
-    if (layer === undefined) return;
-    state.workspaces.set(root, { path: layer.path, config: null, error });
-  }
-
-  /**
-   * The cross-layer half of the load-time self-check (Revision 12, audit F1).
-   *
-   * {@link selfCheckLayer} judges one layer against its **own** flag, which is
-   * exactly the judgement the audit showed to be bypassable: a layer that states
-   * nothing is armed by another layer's `true`, so its stored text can make a
-   * real session throw while its own self-check passes. This pass runs once both
-   * layers are in the cache and asks the per-text question instead — is this
-   * layer's text armed ({@link armedLayers})? — and degrades the layer when it
-   * is and the text would throw.
-   *
-   * Deliberately the same degradation as the per-layer check: the offending
-   * layer is disabled with a reason, never "the whole file is invalid" and never
-   * silently accepted (CONTRACT §16.5). A missing variable table costs only the
-   * name half of the check, so a profile whose probe failed still gets the
-   * grammar faults.
-   * @returns nothing.
-   */
-  function enforceVisibleTextsSafe() {
-    for (const layer of armedLayers(null, null)) {
-      if (layer.config === null) continue;
-      const text = customTextOf(layer.config);
-      if (text === null) continue;
-      const { errors } = lintPromptText(text, state.variables);
-      if (errors.length === 0) continue;
-      degradeLayer(layer.root, layer.owner, errors);
-    }
   }
 
   /**
@@ -951,7 +829,7 @@ function mount(ctx, config, cleanups) {
    * from every registration in the profile, so a hard-coded list would be wrong
    * the moment another plugin registers a variable. Never throws — a profile
    * where the probe fails simply has no table, and the two callers treat that
-   * differently on purpose ({@link ensureVariables} degrades, {@link
+   * differently on purpose ({@link ensureVariables} reports nothing, {@link
    * variablesForWrite} refuses).
    * @returns the table, or null when it could not be obtained.
    */
@@ -972,9 +850,8 @@ function mount(ctx, config, cleanups) {
   /**
    * The cached variable table, obtained at most once per mount.
    *
-   * The load path uses this: it must never fail a request, and a table it cannot
-   * obtain only costs the stricter half of the self-check (see
-   * {@link selfCheckConfig}).
+   * The read face uses this: it must never fail a request, and a table it cannot
+   * obtain only costs the "which names exist" half of `GET /interpolate`.
    * @returns the table, or null.
    */
   async function ensureVariables() {
@@ -1002,38 +879,6 @@ function mount(ctx, config, cleanups) {
       );
     }
     return table;
-  }
-
-  /**
-   * Mirror the **unscoped** switch value onto the live section definition.
-   *
-   * Revision 12 (audit F3) demoted this from "the switch" to a mirror. The
-   * authoritative decision is made per assembly, on that assembly's own context,
-   * by {@link applyAssemblyInterpolate} — because a process-wide single value
-   * cannot describe two sessions at once, and because the shipped `assemble`
-   * copies `section.interpolate` into the assembly it is about to hand to the
-   * waterfall *before* any listener runs, so writing this field could never
-   * influence the assembly in flight anyway.
-   *
-   * What it writes is deliberately the **unscoped** view (the user layer alone),
-   * which is the same value a route with no `?session=` reports. Two
-   * consequences, both wanted: a session-less request cannot move the live
-   * definition at all (it recomputes the same value), and the field a consumer
-   * without a context can read stays the honest global answer instead of "the
-   * last request's session".
-   *
-   * Idempotent by construction: it writes only when the value actually differs,
-   * and it touches exactly one field of the one object this plugin handed to
-   * `systemPrompt.section()`.
-   * @returns whether a write happened.
-   */
-  function syncInterpolate() {
-    const definition = state.customDefinition;
-    if (definition === null) return false;
-    const next = effectiveInterpolate(state.user.config ?? emptyConfig(), null);
-    if (definition.interpolate === next) return false;
-    definition.interpolate = next;
-    return true;
   }
 
   /**
@@ -1066,10 +911,10 @@ function mount(ctx, config, cleanups) {
    * Is one layer's「我的 Prompt」text **armed** — does it reach an assembly whose
    * effective switch is ON? (Revision 12, audit F1.)
    *
-   * This is the F1 rule written as the question it actually is. Text is
-   * dangerous exactly when some assembly renders it *and* that assembly
-   * interpolates, so the answer comes from the merge rule rather than from the
-   * layer being written:
+   * This is the F1 rule written as the question it actually is. Text is subject
+   * to this plugin's expansion exactly when some assembly renders it *and* that
+   * assembly's switch is ON, so the answer comes from the merge rule rather than
+   * from the layer being written:
    * - the **user** text is merged into every session that carries no workspace
    *   entry of its own, so it is armed as soon as the user layer or any visible
    *   workspace states ON. Deliberately slightly conservative: a workspace that
@@ -1079,15 +924,12 @@ function mount(ctx, config, cleanups) {
    * - a **workspace** text is rendered only for that workspace's sessions, where
    *   {@link effectiveInterpolate} decides. An explicitly closed workspace (F4)
    *   is therefore the one configuration whose literal braces provably reach no
-   *   interpolating assembly, and it is not refused.
+   *   expansion, and it is not refused.
    *
-   * The conservative variant the audit text also suggests — "if any layer is ON,
-   * validate *every* visible layer" — is deliberately **not** used: it would
-   * refuse exactly the writes that make F4's explicit OFF worth having, and it
-   * would degrade an explicitly closed layer at load time for text that cannot
-   * throw there. Every case the audit actually reproduced is refused by the rule
-   * below, and the two existing assertions about an explicitly closed workspace
-   * keep their meaning (CONTRACT §16.4).
+   * Revision 15 (design A) leaves this predicate and every write it refuses
+   * exactly as they were, and changes only what the refusal *means*: an armed
+   * reference that cannot resolve will never expand, so refusing it is UX, not
+   * safety (CONTRACT §16.9).
    *
    * Judged on the **post-write** view ({@link visibleLayers}), so the change
    * being requested is what is decided, not what is on disk while it is decided.
@@ -1104,93 +946,45 @@ function mount(ctx, config, cleanups) {
   }
 
   /**
-   * Apply **this assembly's** interpolation decision to the finished assembly
-   * (Revision 12, audit F3; the hold added by Revision 13, audit D2; taken at the
-   * outermost point and made strict by Revision 14, audit E1/E2).
+   * Expand the reserved section's text for one assembly (Revision 15, design A).
    *
-   * The decision is taken from the config this dispatch already resolved for its
-   * own context (`resolvedFor`, carried across the waterfall in
-   * `state.resolvedByContext`): the merged user+workspace pair of the session
-   * being assembled, or the probe's own config when the caller is the snapshot.
-   * No global field, no per-request side channel, and no extra read —
-   * `mergeLayers` carries the statedness-merged flag on the resolved config, so
-   * this is the very value the snapshot reports as `layers.interpolate.effective`
-   * and the very value a real turn of that session must use.
+   * This replaces the Revision 13/14 hold mechanism outright. The old design
+   * asked "would this turn throw if the section interpolated?", answered it at
+   * the outermost point of the waterfall, and held substitution back when the
+   * answer was yes. The question existed only because the plugin used to flip
+   * `section.interpolate` to `true`; Revision 15 never does, so the strict
+   * renderer can no longer be reached through this section and there is nothing
+   * to hold back. In its place the plugin does the substitution itself, from
+   * {@link assemblyVariablesOf} — the table **this** assembly carries — and does
+   * it leniently ({@link expandPromptText}): a name that resolves is replaced, a
+   * name that does not stays literal.
    *
-   * **Judged on what will be rendered, at the point where nothing else can
-   * change it** (Revision 14, audit E2). Both halves of the Revision 13 rule were
-   * taken from data other than the data the renderer uses:
-   * - the text came from `customTextOf(resolved)` — the config on disk — so a
-   *   listener that rewrote the section after the waterfall had already returned
-   *   was judged by the *old* text and could slip a throwing reference through;
-   * - the verdict was taken inside `assembleHandler`, one level *below* the
-   *   outermost listener, so a listener outer to that point (`{prepend: true}`)
-   *   could still change the text or the table afterwards.
-   * This function runs in the **outermost** `system-prompt/assemble` listener's
-   * post-`next()` step, over the **final** `sections` array, with the **final**
-   * variable table, so the verdict and the render read the same two objects.
-   *
-   * The ON verdict is then checked against the variable table this assembly
-   * carries ({@link assemblyVariablesOf}); a text this assembly cannot render is
-   * held back for the turn (see {@link interpolateHoldReason}, strict since
-   * Revision 14) rather than taking the whole prompt down.
-   *
-   * The hold map is the **current** state, not a log (Revision 14, audit E3): a
-   * turn that holds records the reason, and a turn that does not — because the
-   * text is safe now, the section is hidden, or the switch is closed — deletes
-   * its scope's key, so the snapshot can never report a stale reason.
+   * **Position, and why it does not matter** (CONTRACT §16.9). The expansion
+   * runs right after `applyOverrides`, inside the ordinary `assembleHandler`, and
+   * assumes nothing about the waterfall: not `{prepend: true}`, not "this plugin
+   * is outermost". If a listener outer to this one rewrites the sections after
+   * this point, the worst outcome is that this turn is not expanded — the user
+   * sees the literal braces — and never that an assembly fails. That is the
+   * whole value of the design, and it is what the F1/F2 regressions pin down.
    *
    * The result is applied to the section object the renderer will read. Returns
-   * the input **by reference** when nothing has to change, which keeps the "no
-   * override ⇒ byte-identical assembly" guarantee exact.
-   * @param downstream - the value the rest of the waterfall returned.
-   * @param context - this assembly's context (the resolved-config key).
-   * @param preAssembly - the pre-waterfall assembly (the section-list fallback
-   *   and the variable-table fallback).
-   * @returns the assembly to render (possibly the input).
+   * the input **by reference** when nothing changed, which keeps the "no
+   * override ⇒ byte-identical assembly" guarantee exact and makes OFF a true
+   * no-op.
+   * @param sections - the section list this plugin's overrides produced.
+   * @param variables - the variable table of this assembly, or null.
+   * @returns the section list to render (possibly the input).
    */
-  function applyAssemblyInterpolate(downstream, context, preAssembly) {
-    const key = scopeKeyOf(context);
-    const registered = Array.isArray(preAssembly?.sections) ? preAssembly.sections : [];
-    const sections = Array.isArray(downstream?.sections) ? downstream.sections : registered;
+  function expandReservedSection(sections, variables) {
     const at = reservedIndex(sections);
-    if (at === -1) {
-      // Nothing to render this turn: a hidden section, or a scope that dropped
-      // it. Whatever this scope held before is no longer the truth (E3).
-      state.interpolationHolds.delete(key);
-      return downstream;
-    }
-    const want = interpolateFlagOf(takeResolvedFor(context)) === true;
-    const text = typeof sections[at]?.text === 'string' ? sections[at].text : null;
-    const hold = want ? interpolateHoldReason(text, assemblyVariablesOf(preAssembly, downstream)) : null;
-    if (hold === null) state.interpolationHolds.delete(key);
-    else recordInterpolationHold(key, hold);
-    // The shipped renderer interpolates unless the field says exactly `false`.
-    const next = hold === null && want;
-    const does = !(sections[at].interpolate === false);
-    if (does === next) return downstream;
+    if (at === -1) return sections;
+    const text = sections[at]?.text;
+    if (typeof text !== 'string' || !text.includes('{{')) return sections;
+    const expanded = expandPromptText(text, variables);
+    if (expanded === text) return sections;
     const output = sections.slice();
-    output[at] = { ...sections[at], interpolate: next };
-    return { ...downstream, sections: output };
-  }
-
-  /**
-   * The config one dispatch resolved, read by the outermost listener.
-   *
-   * The inner `assembleHandler` is the only place that may consume the one-shot
-   * probe slot, so it stores what it resolved keyed by the context object; this
-   * reads it back. The fallback (a context that is not an object, or a host that
-   * dispatched without the inner listener) re-derives it the ordinary way — it
-   * is a belt-and-braces path that the real waterfall never needs.
-   * @param context - this assembly's context.
-   * @returns the resolved config.
-   */
-  function takeResolvedFor(context) {
-    if (context !== null && typeof context === 'object') {
-      const stored = state.resolvedByContext.get(context);
-      if (stored !== undefined) return stored;
-    }
-    return resolvedFor(context);
+    output[at] = { ...sections[at], text: expanded };
+    return output;
   }
 
   /**
@@ -1198,8 +992,10 @@ function mount(ctx, config, cleanups) {
    *
    * `downstream` (what `next()` returned) wins because that is the object the
    * caller renders; the pre-waterfall `assembly` is the fallback for a host that
-   * carries the table only there. Anything that is not an object is reported as
-   * "no table", which {@link interpolateHoldReason} reads as unverified.
+   * carries the table only there. Revision 15 uses this as the data source of
+   * the plugin's own expansion — the *real* table of *this* turn, never a cached
+   * reading of it. Anything that is not an object is reported as "no table",
+   * which the lenient expansion reads as "nothing resolves".
    * @param assembly - the pre-waterfall assembly.
    * @param downstream - what the rest of the waterfall returned.
    * @returns the table, or null.
@@ -1207,27 +1003,6 @@ function mount(ctx, config, cleanups) {
   function assemblyVariablesOf(assembly, downstream) {
     const value = downstream?.variables ?? assembly?.variables;
     return value !== null && typeof value === 'object' ? value : null;
-  }
-
-  /**
-   * Remember why one assembly had to hold substitution back (Revision 13).
-   *
-   * Newest last, capped: this is a bounded view of the **current** hold state for
-   * the browser, not a log. The caller deletes the key on every turn that does
-   * not hold (Revision 14, audit E3), so a missing entry means "this scope is not
-   * holding right now" — never "it held once".
-   * @param key - the scope key of the assembly.
-   * @param reason - the one-line reason from {@link interpolateHoldReason}.
-   * @returns nothing.
-   */
-  function recordInterpolationHold(key, reason) {
-    const holds = state.interpolationHolds;
-    holds.delete(key);
-    holds.set(key, { at: new Date().toISOString(), reason });
-    while (holds.size > INTERPOLATION_HOLD_LIMIT) {
-      const oldest = holds.keys().next().value;
-      holds.delete(oldest);
-    }
   }
 
   /**
@@ -1268,7 +1043,7 @@ function mount(ctx, config, cleanups) {
    * The F1 verdict is a statement about a *set* of layers, and a target that is
    * missing from that set is not "nothing to check" — it is "this write cannot
    * be verified". Answering 200 there was the audit's fail-open: the target's
-   * text reaches an interpolating assembly while the verdict never saw it. It is
+   * text reaches an armed assembly while the verdict never saw it. It is
    * a belt-and-braces guard ({@link targetFor} now loads the target into the
    * cache, so the case should be unreachable), and it is deliberately a refusal
    * rather than a silent skip: the direction this check can be wrong in is
@@ -1292,20 +1067,21 @@ function mount(ctx, config, cleanups) {
   }
 
   /**
-   * Refuse to store an override whose text the shipped renderer would throw on
+   * Refuse to store an override carrying a reference that could never expand
    * (Revision 9), judged by the F1 rule (Revision 12).
    *
    * The old judgement asked "does the layer being written interpolate?". That is
    * the wrong question and a pure-UI bypass: `x {{nope}}` could be stored into a
    * closed layer and then armed by flipping a *different* layer on, and the write
    * that stored it never looked at the layer that would arm it. The question
-   * this asks instead is "does the text about to be stored reach an assembly
-   * that interpolates?" — {@link armedLayers} on the post-write view.
+   * this asks instead is "does the text about to be stored reach an armed
+   * assembly?" — {@link armedLayers} on the post-write view.
    *
    * Over-refusal is the deliberate direction when the two readings differ: a
-   * refused write explains itself and is repairable, while an admitted
-   * unregistered reference is a session whose prompt cannot be assembled at all
-   * (CONTRACT §16.4).
+   * refused write explains itself and is repairable. Revision 15 (design A) keeps
+   * the whole rule and demotes its meaning from safety to UX — a stored
+   * unregistered reference now stays literal instead of failing an assembly
+   * (CONTRACT §16.9).
    * @param override - the normalized override about to be stored.
    * @param next - the config the layer would hold after the write.
    * @param target - the resolved write target from {@link targetFor}.
@@ -1342,20 +1118,17 @@ function mount(ctx, config, cleanups) {
    *
    * It stays **synchronous and argument-free**: `test/route.test.mjs` asserts on
    * its source shape ("the IO sits in `refreshLayers()`, at the top of the
-   * handler"), and Revision 9 does not widen that. The two Revision 9 steps that
-   * need more than a file read live next to the call instead — the variable
-   * table is awaited before it (so the self-check has one) and the unscoped
-   * switch mirror is refreshed after it.
+   * handler"), and Revision 9 does not widen that. The one extra Revision 9 step
+   * that needs more than a file read lives next to the call instead: the
+   * variable table is awaited before it, for the read face of `GET /interpolate`.
    *
-   * Revision 12 adds the third step **inside** it — {@link
-   * enforceVisibleTextsSafe} — because it is a judgement about the freshly read
-   * set as a whole and must therefore run after both reads, before any branch of
-   * the handler can act on the cache.
+   * Revision 15 (design A) removed the third step Revision 12 had added inside
+   * it (the cross-layer interpolation self-check): nothing stored in a layer can
+   * break an assembly any more, so no layer is ever degraded for its text.
    */
   function refreshLayers() {
     refreshUser();
     refreshWorkspaces();
-    enforceVisibleTextsSafe();
   }
 
   /**
@@ -1419,17 +1192,16 @@ function mount(ctx, config, cleanups) {
    * probe config consumed before anything can interleave, which is what makes
    * the snapshot's `base` view and frozen detection deterministic. It calls
    * `next()` so no other listener is vetoed, then applies this plugin's
-   * overrides to the downstream result.
+   * overrides to the downstream result, then expands the reserved section when
+   * the switch is ON (Revision 15).
    *
-   * It also hands the config it resolved to the outermost listener through
-   * `state.resolvedByContext` (Revision 14, audit E2): the probe slot can only
-   * be consumed here, while the interpolation verdict must be taken *after* every
-   * other listener has had its say — so the two halves share one resolved config
-   * by object identity instead of re-deriving it.
+   * The switch is resolved from the same `resolved` config the overrides come
+   * from — merged per context — so two sessions cannot be described by one
+   * value; nothing here reads or writes a process-wide field.
    * @param assembly - the pre-waterfall assembly (registered sections).
    * @param context - the assembly context (`{agent?, scope?, signal?}`).
    * @param next - the rest of the waterfall.
-   * @returns the assembly with this plugin's overrides applied.
+   * @returns the assembly with this plugin's overrides applied and expanded.
    */
   async function assembleHandler(assembly, context, next) {
     const key = scopeKeyOf(context);
@@ -1437,36 +1209,46 @@ function mount(ctx, config, cleanups) {
     const record = { seq: (state.records.get(key)?.seq ?? 0) + 1, registered, downstream: null };
     state.records.set(key, record);
     const resolved = resolvedFor(context);
-    if (context !== null && typeof context === 'object') state.resolvedByContext.set(context, resolved);
 
     const downstream = await next();
     const sections = Array.isArray(downstream?.sections) ? downstream.sections : registered;
     record.downstream = sections;
+
     // Revision 12 (audit F3): this plugin's overrides are applied from `resolved`
     // — the config this very context resolved a moment ago — and never from the
     // live definition object, which the shipped `assemble` already copied into
     // the pre-waterfall sections and which is process-wide (two sessions cannot
-    // be described by one value). The switch half of the same decision is taken
-    // by `keepReservedLastHandler` below (Revision 14, audit E2), on the finished
-    // section list.
-    if (resolved.overrides.length === 0) return downstream;
-
-    let applied;
-    try {
-      applied = applyOverrides(sections, resolved);
-    } catch {
-      // Fail open. An override bug must never break a user's turn; the snapshot
-      // reports the layers it could not use, which is where this surfaces.
-      return downstream;
+    // be described by one value).
+    let base = downstream;
+    if (resolved.overrides.length > 0) {
+      try {
+        const applied = applyOverrides(sections, resolved);
+        if (applied.changed) base = { ...downstream, sections: applied.sections };
+      } catch {
+        // Fail open. An override bug must never break a user's turn; the snapshot
+        // reports the layers it could not use, which is where this surfaces.
+        base = downstream;
+      }
     }
-    if (!applied.changed) return downstream;
-    return { ...downstream, sections: applied.sections };
+
+    // Revision 15 (design A): the switch, applied on the finished section list.
+    // `interpolateFlagOf(resolved)` is this assembly's own effective state
+    // (workspace over user, on statedness), and the table is this assembly's own
+    // (`downstream.variables ?? assembly.variables`) — never a cached reading.
+    // A failure here costs at most one unexpanded turn, so it fails open.
+    if (interpolateFlagOf(resolved) !== true) return base;
+    try {
+      const current = Array.isArray(base?.sections) ? base.sections : sections;
+      const expanded = expandReservedSection(current, assemblyVariablesOf(assembly, downstream));
+      return expanded === current ? base : { ...base, sections: expanded };
+    } catch {
+      return base;
+    }
   }
 
   /**
    * The `system-prompt/assemble` listener that keeps the reserved section last
-   * (g-017, `CONTRACT.md` §15.10) **and** takes the interpolation verdict
-   * (Revision 14, audit E2).
+   * (g-017, `CONTRACT.md` §15.10).
    *
    * Registered with `{prepend: true}`, which makes it the **outermost** listener
    * for this event. Measured, not assumed: the waterfall runs
@@ -1477,35 +1259,27 @@ function mount(ctx, config, cleanups) {
    * (`ctx.on(..., { prepend: true })`), and `order: 1000000` cannot outrank it:
    * that is exactly the live-machine gap this listener closes.
    *
-   * Two steps, in this order, on the value `next()` returned:
-   * 1. {@link reservedSectionLast} — the g-017 move, identity-preserving;
-   * 2. {@link applyAssemblyInterpolate} — the switch verdict, read from the
-   *    **final** section list and the **final** variable table. Doing it here is
-   *    the whole point (Revision 14, audit E2): it is the last point at which the
-   *    plugin can still change the assembly, so the two objects it judges are the
-   *    two objects the renderer reads. Neither step applies an override, reads a
-   *    layer or writes a file.
+   * Revision 15 removed the interpolation verdict this listener used to take:
+   * the expansion now lives in {@link assembleHandler}, right where the
+   * overrides are applied, and assumes nothing about position — a `prepend`
+   * listener registered *after* this plugin can still rewrite the sections, and
+   * all that costs is "this turn was not expanded". One step remains here:
+   * {@link reservedSectionLast}, the g-017 move, identity-preserving.
    *
-   * Fail-open twice over: both transforms are pure and total, and each is wrapped
-   * in the same belt-and-braces `try` `assembleHandler` uses — an exception on the
-   * assembly path would break a user's turn.
-   * @param assembly - the pre-waterfall assembly (fallback section list/table).
-   * @param context - the assembly context (the resolved-config key).
+   * Fail-open: the transform is pure and total, and it is wrapped in the same
+   * belt-and-braces `try` `assembleHandler` uses — an exception on the assembly
+   * path would break a user's turn.
+   * @param assembly - the pre-waterfall assembly (fallback section list).
+   * @param context - the assembly context.
    * @param next - the rest of the waterfall.
-   * @returns the downstream assembly, positioned and flagged for this turn.
+   * @returns the downstream assembly with the reserved section last.
    */
   async function keepReservedLastHandler(assembly, context, next) {
     const result = await next();
-    let positioned = result;
     try {
-      positioned = reservedSectionLast(result);
+      return reservedSectionLast(result);
     } catch {
-      positioned = result;
-    }
-    try {
-      return applyAssemblyInterpolate(positioned, context, assembly);
-    } catch {
-      return positioned;
+      return result;
     }
   }
 
@@ -1719,12 +1493,6 @@ function mount(ctx, config, cleanups) {
           user: interpolateFlagOf(state.user.config) ?? null,
           workspace: interpolateFlagOf(workspace.config) ?? null,
         },
-        // Revision 13 (audit D2): the last assembly of THIS scope that had to
-        // render the reserved section literally because its text could not be
-        // verified against the table that assembly itself carried. A sibling of
-        // `interpolate` on purpose — that object's three-key shape is pinned by
-        // the Revision 12 assertions, so the new fact gets its own key.
-        interpolationHold: state.interpolationHolds.get(target.scope) ?? null,
       },
       experiments: EXPERIMENTS,
     });
@@ -2216,9 +1984,9 @@ function mount(ctx, config, cleanups) {
   }
 
   /**
-   * Refuse to arm the switch while a layer that **this change arms** already
-   * carries text the shipped renderer would throw on (Revision 9, re-judged by
-   * the F1 rule in Revision 12).
+   * Refuse to arm the switch while a layer this change arms already carries text
+   * that could never expand (Revision 9, re-judged by the F1 rule in Revision
+   * 12, kept as UX by Revision 15).
    *
    * The switch is inherited in both directions, which is why this check ranges
    * over the whole visible set instead of the layer being written: opening the
@@ -2226,11 +1994,13 @@ function mount(ctx, config, cleanups) {
    * and opening a workspace layer can arm the **user layer's** text, because the
    * user entry is what that workspace merges when it holds no entry of its own.
    * The old check only ever looked at the layer being written, so `x {{nope}}`
-   * could sit in a closed user layer until a workspace layer was switched on —
-   * after which that workspace's sessions threw on every turn.
+   * could sit in a closed user layer until a workspace layer was switched on.
+   * Since Revision 15 the consequence of missing such a reference is milder — it
+   * stays literal instead of failing the assembly — so this refusal is a courtesy
+   * that keeps a user from saving text that will never substitute.
    *
    * Each layer is judged by {@link armedLayers}: a layer whose text cannot
-   * reach an interpolating assembly after this change (an explicitly closed
+   * reach an armed assembly after this change (an explicitly closed
    * workspace, say) is skipped, and every other visible layer must pass.
    * An `undefined` value is not a fault here either; those come back as
    * advisories for the response (Revision 12, audit F2).
@@ -2323,9 +2093,11 @@ function mount(ctx, config, cleanups) {
    *   and the UI would show OFF while the session really inherits ON.
    *
    * Only a transition to ON validates the text **already stored**, because
-   * arming is what turns an old `{{typo}}` into a per-turn throw; `off` and
-   * `inherit` can only make text safer. The advisories of that check are
-   * returned rather than dropped (audit F2).
+   * arming is what makes an old `{{typo}}` reachable by the expansion — and a
+   * reference that can never expand is a trap for the user (since Revision 15
+   * this is UX, not safety: §16.9). `off` and `inherit` can only make text
+   * safer. The advisories of that check are returned rather than dropped
+   * (audit F2).
    * @param req - the Node request.
    * @param url - the parsed request URL.
    * @param res - the Node response.
@@ -2349,10 +2121,9 @@ function mount(ctx, config, cleanups) {
       : [];
     writeConfig(target.path, next);
     cacheWritten(target, next);
-    // Revision 12: this only keeps the live definition's unscoped mirror honest;
-    // what the next turn renders is decided per assembly, from the config that
-    // assembly resolves for its own context (see `applyAssemblyInterpolate`).
-    syncInterpolate();
+    // Nothing else to do here: what the next turn renders is decided per
+    // assembly, from the config that assembly resolves for its own context
+    // (Revision 15: `expandReservedSection` inside `assembleHandler`).
     sendJson(res, 200, withWarnings({
       ok: true,
       interpolateCustom: effectiveInterpolate(
@@ -2695,19 +2466,15 @@ function mount(ctx, config, cleanups) {
             // edit visible without a remount, and what bounds a cache/file
             // desync to the request that failed (CONTRACT §5.5).
             //
-            // Revision 9 wraps the same read in the two steps that need an
-            // assembly: the variable table is obtained first (so the load-time
-            // self-check has the names it must judge against, once per mount),
-            // and the unscoped switch mirror is refreshed last.
-            //
-            // Revision 12 (audit F3): the mirror names no session on purpose.
-            // The value the next turn renders is decided per assembly, from the
-            // context that assembly carries, so a request without a session —
-            // the ping is one — cannot move any session's behaviour. The
-            // cross-layer F1 pass runs inside `refreshLayers()` above.
+            // Revision 9 wrapped the same read in two extra steps; Revision 15
+            // (design A) keeps only the first — the variable table, which the
+            // read face of `GET /interpolate` reports. There is no load-time
+            // interpolation self-check to feed any more, and no live switch
+            // mirror to refresh: the reserved section is registered
+            // `interpolate: false` and never moves, and a turn's expansion is
+            // decided per assembly from the config that assembly resolves.
             await ensureVariables();
             refreshLayers();
-            syncInterpolate();
             if (url.pathname === PING_PATH) {
               // Same request that probes also reports: the browser half appends
               // `?renderer=<primitives|fallback>`, so the page it renders settles
@@ -2812,48 +2579,29 @@ function mount(ctx, config, cleanups) {
   // something, the section renders to nothing and the final prompt is
   // byte-identical to the prompt this plugin does not exist for.
   //
-  // `interpolate: false` is a safety requirement, not a preference: the
-  // shipped renderer throws on an unknown, undefined or malformed `{{...}}`
-  // reference, and a user's text is arbitrary. With it, a stray `{{name}}`
-  // stays literal in every turn instead of breaking every turn.
+  // `interpolate: false` is a safety requirement, not a preference, and
+  // Revision 15 (design A) makes it permanent: the shipped renderer throws on an
+  // unknown, undefined or malformed `{{...}}` reference, and a user's text is
+  // arbitrary. Because this field is **never** flipped at run time, DSH's strict
+  // interpolator can never reach the reserved section — the failure mode is
+  // structurally impossible, not merely prevented. The switch means something
+  // else now: with it ON, `assembleHandler` expands the text itself, leniently
+  // (CONTRACT §16.9).
   //
   // `order` places the section after every section the DSH repository defines
   // (its table's maximum is 10200); another plugin may still place itself
   // after this one, which is the documented limit of what `order` promises.
   //
-  // Revision 9 keeps the **definition object** the service was handed, in
-  // `state.customDefinition`. `NamedEntries` stores it by reference and every
-  // `assemble` re-reads `section.interpolate` off it, so flipping that one field
-  // changes what the next turn renders — no re-registration, no restart, and no
-  // write to any private service field (CONTRACT §16.2).
-  //
   // The disposer is accounted for exactly like the other two: it is the
   // `systemPrompt.section()` effect's own disposer, so unloading the plugin —
   // or a later step of this mount failing — removes the registration instead of
-  // leaving a name in the global layer that a remount would collide with. It
-  // also clears the reference, so a disposed mount can never keep steering a
-  // definition the service no longer owns.
+  // leaving a name in the global layer that a remount would collide with.
   registerEffect(
     ctx,
     cleanups,
-    () => {
-      const definition = customSection();
-      const dispose = disposerOf(ctx.systemPrompt.section(definition));
-      state.customDefinition = definition;
-      return () => {
-        state.customDefinition = null;
-        dispose();
-      };
-    },
+    () => disposerOf(ctx.systemPrompt.section(customSection())),
     `prompt-setting: reserved section ${CUSTOM_SECTION_NAME} (order ${CUSTOM_SECTION_ORDER}, switchable)`,
   );
-
-  // Revision 9: apply whatever the layers already state, before `mount`
-  // returns. The initial layer read above ran before the section existed, so
-  // this is the one place the two facts meet — which is what makes the switch
-  // survive a restart rather than only a route request. Since Revision 12 this
-  // seeds the *unscoped mirror* only; the runtime decisions are per assembly.
-  syncInterpolate();
 }
 
 /** Re-exported so tests and the client can assert the frozen action set. */

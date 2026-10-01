@@ -1,16 +1,19 @@
 /**
- * Revision 9's two safety-critical pure functions: the switch's config
- * semantics and the "would this text make the real assembly throw?" validator.
+ * Revision 9's switch semantics, the write-face validator, and — since Revision
+ * 15 — the lenient expansion the switch actually performs.
  *
- * The validator is the whole reason the switch can exist. `interpolate: false`
- * was a gate (g-014) precisely because the shipped renderer THROWS on a
- * reference it cannot resolve, and a throw on the assembly path means the
- * session has no prompt at all. Opening the gate is only safe if the write side
- * can answer that question exactly — so these assertions are written against the
- * renderer's OWN grammar, and the two shapes the earlier preview logic got wrong
- * (`{{ lone {{c}}`, `{{{{model}}}}`) are asserted in both directions: the strict
- * validator must catch them, and the old "a non-matching `{{` is prose" reading
- * must be shown to miss them.
+ * The validator answers "would this text make a *strictly interpolated* section
+ * throw?" against the shipped renderer's OWN grammar, so it is written here with
+ * the renderer's four conditions, and the two shapes the earlier preview logic
+ * got wrong (`{{ lone {{c}}`, `{{{{model}}}}`) are asserted in both directions:
+ * the strict validator must catch them, and the old "a non-matching `{{` is
+ * prose" reading must be shown to miss them.
+ *
+ * Revision 15 (design A) deletes the load-time self-check and the assembly hold,
+ * and adds {@link expandPromptText}: the switch now means "this plugin expands
+ * the reserved section itself", leniently. The expansion is pinned here; the
+ * byte-for-byte agreement with the real `renderPrompt` is pinned in
+ * `test/integration.test.mjs`.
  *
  * Run: `node --test test/`
  */
@@ -27,9 +30,9 @@ import {
   describeInterpolateErrors,
   describeWarnings,
   effectiveInterpolate,
+  expandPromptText,
   lintPromptText,
   scanThrowingReference,
-  selfCheckConfig,
   switchStateOf,
   walkReferences,
   withState,
@@ -269,32 +272,75 @@ test('g-026 switch: withSwitch writes absence for OFF, and the rebuild paths car
 });
 
 // ---------------------------------------------------------------------------
-// The load-time self-check
+// Revision 15 (design A): the expansion the switch performs itself.
+//
+// This replaces the Revision 9/12/14 "load-time self-check" block. Those
+// assertions pinned a degradation that no longer exists — with the reserved
+// section permanently `interpolate: false`, stored text cannot break an
+// assembly, so no layer is disabled for its text (CONTRACT §16.10, rewrite 1).
+// What has to be pinned now is the opposite direction: what the expansion DOES
+// to the text, and what it deliberately refuses to do.
 // ---------------------------------------------------------------------------
 
-test('g-026 selfCheck: only an OPEN layer with fatal text is degraded', () => {
-  const on = arming('keep {{nope}}');
-  const check = selfCheckConfig(on, VARIABLES, 'the user layer (/x)');
-  assert.equal(check.flag, true);
-  assert.equal(check.error.code, UNRESOLVABLE_VARIABLE);
-  assert.match(check.error.message, /user layer/);
-  assert.match(check.error.message, /disabled/, 'the reason must say what happened');
-
-  // Closed: the text cannot throw, so nothing is checked and nothing is lost.
-  assert.equal(selfCheckConfig({ ...on, [INTERPOLATE_FLAG]: false }, VARIABLES, 'x').error, null);
-  assert.equal(selfCheckConfig({ version: 1, overrides: on.overrides }, VARIABLES, 'x').error, null);
-  // Open but legal.
-  assert.equal(selfCheckConfig(arming('keep {{model}}'), VARIABLES, 'x').error, null);
-  // Open, and the only fault is a currently-undefined value: warned, not degraded.
-  assert.equal(selfCheckConfig(arming('keep {{maybe}}'), VARIABLES, 'x').error, null);
-  // A missing table costs only the name half of the check, never the layer.
-  assert.equal(selfCheckConfig(arming('keep {{model}}'), null, 'x').error, null);
-  assert.equal(selfCheckConfig(arming('keep {{ lone {{c}}'), null, 'x').error.code, UNRESOLVABLE_VARIABLE);
-  // A hidden reserved section carries no text and cannot throw.
-  assert.equal(selfCheckConfig({ ...on, overrides: [{ name: CUSTOM_SECTION_NAME, action: 'hide' }] }, VARIABLES, 'x').error, null);
+test('g-026 rev15 expand: a registered name with a value is substituted, exactly like the shipped renderer', () => {
+  assert.equal(expandPromptText('I am {{model}} in {{cwd}}', VARIABLES), 'I am deepseek-flash in /work');
+  // The value is stringified, never inspected: 0, false and '' are values.
+  assert.equal(expandPromptText('n={{n}}', { n: 0 }), 'n=0');
+  assert.equal(expandPromptText('n={{n}}', { n: false }), 'n=false');
+  assert.equal(expandPromptText('n=[{{n}}]', { n: '' }), 'n=[]');
+  // A `null` value renders as the shipped renderer renders it (it does not
+  // throw on null), so the two agree on this shape too.
+  assert.equal(expandPromptText('cwd={{cwd}}', { cwd: null }), 'cwd=null');
+  // Surrounding prose, adjacent references and repeated names all survive.
+  assert.equal(expandPromptText('{{a}}{{a}}!', { a: 'x' }), 'xx!');
+  assert.equal(expandPromptText('nothing to do', {}), 'nothing to do');
 });
 
-test('g-026 customTextOf: the reserved text, or null when there is none to check', () => {
+test('g-026 rev15 expand: an unregistered name, an `undefined` value or a malformed group stays LITERAL', () => {
+  // The lenient half. The shipped renderer throws on every one of these; the
+  // whole design rests on the expansion doing the opposite.
+  assert.equal(expandPromptText('keep {{nope}}', VARIABLES), 'keep {{nope}}');
+  assert.equal(expandPromptText('keep {{maybe}}', VARIABLES), 'keep {{maybe}}');
+  assert.equal(expandPromptText('keep {{Upper}}', VARIABLES), 'keep {{Upper}}');
+  assert.equal(expandPromptText('keep {{a b}}', VARIABLES), 'keep {{a b}}');
+  assert.equal(expandPromptText('keep {{}}', VARIABLES), 'keep {{}}');
+  // A malformed group is left alone — but "alone" means the two braces the
+  // shipped scan would have stopped at, with the cursor advancing exactly as the
+  // shipped one advances it. The text after that point is still scanned, so an
+  // independent, well-formed reference later in the same string still resolves.
+  // This is the shipped cursor, minus the throw.
+  assert.equal(expandPromptText('keep {{ lone {{c}}', { c: 'C' }), 'keep {{ lone C');
+  assert.equal(expandPromptText('keep {{{{model}}}}', VARIABLES), 'keep {{deepseek-flash}}');
+  assert.equal(expandPromptText('{{ lone {{c}}', {}), '{{ lone {{c}}');
+  // Prose is prose: a lone `{{` is not a reference at all.
+  assert.equal(expandPromptText('keep {{unclosed', VARIABLES), 'keep {{unclosed');
+  // Never a bare `undefined` (nor "null" for the undefined case).
+  const out = expandPromptText('a {{maybe}} b {{model}} c', VARIABLES);
+  assert.equal(out, 'a {{maybe}} b deepseek-flash c');
+  assert.equal(out.includes('undefined'), false);
+  // A missing table resolves nothing and is not an error.
+  assert.equal(expandPromptText('a {{model}} b', null), 'a {{model}} b');
+  assert.equal(expandPromptText('a {{model}} b', undefined), 'a {{model}} b');
+  assert.equal(expandPromptText('a {{model}} b', 'not a table'), 'a {{model}} b');
+  // Non-string input expands to nothing rather than throwing.
+  assert.equal(expandPromptText(null, VARIABLES), '');
+  assert.equal(expandPromptText(undefined, VARIABLES), '');
+});
+
+test('g-026 rev15 expand: substituted values are never scanned again, and the scan cursor follows the shipped one', () => {
+  // The value looks like a reference; it is written out and not walked.
+  assert.equal(expandPromptText('{{alias}}', { alias: '{{nope}}' }), '{{nope}}');
+  assert.equal(expandPromptText('{{a}}{{b}}', { a: '{{x}}', b: 'B' }), '{{x}}B');
+  // The `{{` search resumes AFTER the two braces it just wrote out, and a
+  // well-formed group reached from there resolves: the cursor is the shipped
+  // one, and nothing is scanned twice.
+  assert.equal(expandPromptText('{{ lone {{c}}', { c: 'C' }), '{{ lone C');
+  assert.equal(expandPromptText('{{{{a}}}}', { a: 'A' }), '{{A}}');
+  // An empty text and a text of pure prose are returned unchanged.
+  assert.equal(expandPromptText('', VARIABLES), '');
+});
+
+test('g-026 customTextOf: the reserved text, or null when there is none to expand', () => {
   assert.equal(customTextOf(arming('hello')), 'hello');
   assert.equal(customTextOf({ version: 1, overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'hello' }] }), 'hello');
   assert.equal(customTextOf({ version: 1, overrides: [{ name: CUSTOM_SECTION_NAME, action: 'hide' }] }), null);

@@ -1,47 +1,61 @@
 /**
- * The interpolation switch for the reserved section (Revision 9).
+ * The variable-substitution switch for the reserved section (Revision 15).
  *
  * g-014 registered「我的 Prompt」with `interpolate: false` as a safety gate: the
  * shipped renderer **throws** on a reference it cannot resolve, and a user's
  * text is arbitrary, so one stray `{{typo}}` would break every later assembly of
- * that session. Revision 9 lets the user open that gate deliberately — and pays
- * for it with the second half of this module: a validator that answers the one
- * question the gate exists for, *"would this text make the real assembly
- * throw?"*, with the shipped renderer's own grammar.
+ * that session.
+ *
+ * Revision 15 (the final rework, design A) stops trying to *earn* the right to
+ * interpolate and removes the failure mode structurally instead:
+ *
+ * 1. the reserved section stays `interpolate: false` **forever** — as registered
+ *    and at every assembly. DSH's strict interpolator therefore never touches
+ *    it, so "an unknown/valueless variable throws every turn" cannot happen;
+ * 2. the switch means「this plugin expands the text itself」. With it ON,
+ *    `index.js` substitutes `{{name}}` in the reserved section's text during the
+ *    assembly, from the variable table **that assembly carries**
+ *    (`downstream.variables ?? assembly.variables`);
+ * 3. the expansion is **lenient**: a registered name with a value becomes
+ *    `String(value)`; an unregistered name, an `undefined` value or a malformed
+ *    group stays **literal** — never a throw, never a bare `undefined`;
+ * 4. the expansion happens after `applyOverrides` inside `assembleHandler` and
+ *    depends on nothing about listener position. Even if a later (outer)
+ *    listener rewrites the sections afterwards, the worst case is "this turn was
+ *    not expanded" — the user sees the literal braces — and never a failed turn.
+ *
+ * The consequence recorded in CONTRACT §16.9: the write-face validator below is
+ * no longer a safety requirement. It is kept **unchanged in what it refuses**
+ * (unregistered/illegal/malformed ⇒ `400 unresolvable-variable`; registered but
+ * currently valueless ⇒ a warning) purely as UX — it stops a user from saving
+ * text that would never expand — and its messages say that, not "every turn
+ * throws".
  *
  * Pure, like `core/overrides.js`: no `fs`, no `ctx`, no clock. The Host process
- * can only be exercised by restarting `dsh web`, so the safety decision lives
- * here where `node --test` pins it down offline.
+ * can only be exercised by restarting `dsh web`, so every decision here is
+ * pinned down offline by `node --test`.
  *
  * Vocabulary
  * - *flag*: the config-level boolean `interpolateCustom`. **Absent means OFF**,
  *   and absent is the only value a config written before this revision has.
  * - *reference*: one `{{...}}` group in section text.
- * - *fatal* (`errors`): a reference the shipped renderer throws on. Writing it
- *   is refused.
+ * - *fatal* (`errors`): a reference the write face refuses. Under the shipped
+ *   grammar these are exactly the references that would make a **strictly
+ *   interpolated** section throw; here they only mark text that will never
+ *   expand.
  * - *warning*: a reference that is well-formed and registered but whose value
- *   is `undefined` in the probed assembly. The shipped renderer would throw on
- *   it **for that assembly**, but the value is a property of the session, not of
- *   the text: a probe with no active agent leaves agent-scoped providers
- *   valueless, and refusing the save would make the switch unusable whenever no
- *   session is running. Reported, never silently dropped (see CONTRACT §16.3).
+ *   is `undefined` in the probed assembly. The value is a property of the
+ *   session, not of the text: a probe with no active agent leaves agent-scoped
+ *   providers valueless, and refusing the save would make the switch unusable
+ *   whenever no session is running. Reported, never silently dropped (§16.3).
  * - *state*: the switch's three-valued form (Revision 12, §16.8) — `inherit`
  *   (the key is absent), `on` (`true`), `off` (`false`). The two-valued
  *   `boolean` form is the legacy spelling of `on`/`inherit`.
  *
- * Revision 14 (the third independent audit's E1) makes the **assembly** verdict
- * strict: {@link interpolateHoldReason} no longer asks "is this text *fatal*?"
- * (the write-face reading, where an `undefined` value is a warning) but "would
- * this assembly throw?" — the same four conditions, `undefined` included. The
- * write face keeps the softer reading on purpose: the probe table is not the
- * session's table, so refusing a save for a value the *session* owns would make
- * the switch unusable whenever nothing is running (CONTRACT §16.3).
- *
- * Revision 12 (the independent audit's F1/F2/F4) changed three things here and
- * nothing about the validator's strictness:
+ * Revision 12 (the independent audit's F1/F2/F4) still owns three shapes here:
  * - {@link anyStatesOn} supplies the cross-layer half of the F1 verdict. The
  *   verdict itself belongs to the text, not to the write target: `index.js`
- *   asks, per text, whether it can reach an assembly that interpolates. For the
+ *   asks, per text, whether it can reach an assembly whose switch is ON. For the
  *   **user** text — merged into every session that has no workspace entry of its
  *   own — that question reduces to "does the user layer or any visible workspace
  *   layer state ON", which is exactly this predicate (§16.4);
@@ -78,7 +92,7 @@ export const UNRESOLVABLE_VARIABLE = 'unresolvable-variable';
  * two unstated layers are OFF.
  * @param userConfig - the validated user layer, or null.
  * @param workspaceConfig - the validated workspace layer, or null.
- * @returns whether「我的 Prompt」participates in interpolation.
+ * @returns whether the plugin expands「我的 Prompt」itself for this assembly.
  */
 export function effectiveInterpolate(userConfig, workspaceConfig) {
   return (interpolateFlagOf(workspaceConfig) ?? interpolateFlagOf(userConfig) ?? false) === true;
@@ -88,7 +102,7 @@ export function effectiveInterpolate(userConfig, workspaceConfig) {
  * The stored「我的 Prompt」text of one layer config, or null.
  *
  * A `hide` entry carries no text and takes the section out of the prompt
- * entirely, so it cannot throw and is not validated.
+ * entirely, so there is nothing left to check or to expand.
  * @param config - a validated layer config, or anything else.
  * @returns the text, or null when the layer stores none.
  */
@@ -119,14 +133,13 @@ export function customTextOf(config) {
  * It deliberately does **not** reuse the `group === null` branch of
  * `renderSections`/`collectUnresolved` in `core/overrides.js`: that branch
  * treats every non-matching `{{` as prose, which is right for a read-only
- * preview and **wrong** as a safety gate — it classifies `{{ lone {{c}}` and
- * `{{{{model}}}}` as safe, and the shipped renderer throws on both.
+ * preview and **wrong** for a write-face gate — it classifies `{{ lone {{c}}`
+ * and `{{{{model}}}}` as safe, and the shipped renderer throws on both.
  *
- * `assumeUnknown` decides what a **missing** variable table means. The load
- * path must not degrade a layer because one probe failed, so it reads a missing
- * table as "cannot check names" and only reports grammar faults; the write path
- * must not accept a reference it cannot prove safe, so it reads the same missing
- * table as "every name is unknown" and refuses (fail closed).
+ * `assumeUnknown` decides what a **missing** variable table means. The
+ * write face must not accept a reference it cannot prove will expand, so it
+ * reads a missing table as "every name is unknown" and refuses (fail closed);
+ * with a table present, only grammar faults are reported.
  * @param text - the section text (any value; non-strings scan as empty).
  * @param variables - the assembled variable table, or null when unavailable.
  * @param assumeUnknown - treat every reference as unregistered when the table
@@ -197,9 +210,11 @@ export function lintPromptText(text, variables, options = {}) {
  * The first reference the shipped `interpolate()` would throw on, or null.
  *
  * This is the **strict** verdict: all four throw conditions count, `undefined`
- * included, and a missing table counts as "unknown". It is what a test pins the
- * transcription against — the refusal policy below deliberately softens only
- * the `undefined` case.
+ * included, and a missing table counts as "unknown". Revision 15 no longer uses
+ * it on any decision path — the reserved section never interpolates — so it now
+ * serves one purpose only: it is the oracle a test pins the transcription
+ * against, so "we still know exactly what the shipped renderer would do" stays
+ * measurable even though nothing depends on it any more.
  * @param text - the section text.
  * @param variables - the assembled variable table, or null when unavailable.
  * @returns the first faulting event, or null when the text renders.
@@ -210,6 +225,59 @@ export function scanThrowingReference(text, variables) {
     if (first === null) first = event;
   });
   return first;
+}
+
+/**
+ * Expand the reserved section's text the way the **plugin** promises to
+ * (Revision 15, design A) — the lenient half of the switch.
+ *
+ * Same scan as the shipped `interpolate()` (the `{{` search, `VARIABLE_GROUP`
+ * at the scan position, the "lone `{{` with no later `}}` is prose" rule, and
+ * "a substituted value is never scanned again" — the last one holds for free
+ * because only the INPUT is walked), and deliberately **not** a transcription
+ * of its failure behaviour:
+ *
+ * - a name that is registered **and** has a value (`undefined` excluded) is
+ *   replaced with `String(value)`, so `{{n: 0}}` renders `0` exactly as the
+ *   shipped renderer does;
+ * - an unregistered name, an `undefined` value and a malformed group are all
+ *   left **literal**. The shipped renderer throws on each of them; this function
+ *   cannot throw at all, and it never puts a bare `undefined` into the prompt.
+ *
+ * That difference is the whole point of the design (CONTRACT §16.9): the
+ * section is registered `interpolate: false` and stays that way, so the strict
+ * interpolator never sees this text, and the worst outcome of the lenient
+ * reading is "this reference was not expanded" — never a failed assembly.
+ * @param text - the reserved section's text (non-strings expand to nothing).
+ * @param variables - the variable table this assembly carries, or null.
+ * @returns the text with every resolvable reference substituted.
+ */
+export function expandPromptText(text, variables) {
+  const source = typeof text === 'string' ? text : '';
+  const table = variables !== null && typeof variables === 'object' ? variables : null;
+  let result = '';
+  let cursor = 0;
+  for (let open = source.indexOf('{{'); open >= 0; open = source.indexOf('{{', cursor)) {
+    const group = VARIABLE_GROUP.exec(source.slice(open));
+    if (group === null) {
+      // No complete group at this position: prose (the shipped renderer throws
+      // here only when a later `}}` makes it a malformed reference, and a
+      // lenient expansion simply leaves it alone).
+      result += source.slice(cursor, open + 2);
+      cursor = open + 2;
+      continue;
+    }
+    const name = group[0].slice(2, -2);
+    const value = table !== null && VARIABLE_NAME.test(name) && Object.hasOwn(table, name) ? table[name] : undefined;
+    if (value === undefined) {
+      result += source.slice(cursor, open + group[0].length);
+      cursor = open + group[0].length;
+      continue;
+    }
+    result += source.slice(cursor, open) + String(value);
+    cursor = open + group[0].length;
+  }
+  return result + source.slice(cursor);
 }
 
 /** One-line, bounded rendering of a faulting reference. */
@@ -227,10 +295,16 @@ function describeKnown(variableNames) {
 }
 
 /**
- * Build the rejection message for a text that would throw.
+ * Build the rejection message for a text the write face refuses.
  *
  * Bounded on purpose: it goes back to a browser and into a config's `reason`,
  * so it names at most a few references and always states the way out.
+ *
+ * Revision 15 (design A) rewrote the reason to say what is actually true. The
+ * old wording — "would make every assembly of the session throw" — described
+ * the shipped renderer's behaviour on an **interpolating** section, and the
+ * reserved section never interpolates. Nothing throws; the reference simply can
+ * never expand, so this is a UX refusal, not a safety one (CONTRACT §16.9).
  * @param errors - the fatal events from {@link lintPromptText}.
  * @param owner - what the text belongs to, e.g. `the user layer`.
  * @param variableNames - the assembled variable names, for the "use one of
@@ -242,7 +316,7 @@ export function describeInterpolateErrors(errors, owner, variableNames) {
   const shown = list.slice(0, 3).map(describeReference).join(', ');
   const rest = list.length - Math.min(list.length, 3);
   const reasons = [...new Set(list.map((event) => event.kind))].join('/');
-  return `${owner} contains ${list.length} prompt reference(s) that would make every assembly of the session throw `
+  return `${owner} contains ${list.length} prompt reference(s) that variable substitution would never expand `
     + `(${shown}${rest > 0 ? ` and ${rest} more` : ''}; ${reasons}). `
     + 'Fix: delete the reference, or use a registered variable '
     + `(${describeKnown(variableNames)}), or save with variable substitution OFF.`;
@@ -255,6 +329,10 @@ export function describeInterpolateErrors(errors, owner, variableNames) {
  * pathological text cannot turn a response into a data dump. The `message` is
  * prose the browser may show verbatim; `name` and `kind` are for the copy the
  * page builds itself (Revision 12, audit F2 — CONTRACT §16.3).
+ *
+ * Revision 15: the advisory no longer claims a failed assembly. A value the
+ * probed assembly lacks only means this reference is left literal for such a
+ * turn (the lenient expansion never throws), so the message says that.
  * @param warnings - the `undefined-value` events from {@link lintPromptText}.
  * @param owner - what the text belongs to.
  * @returns `[{name, kind, code, message}]`.
@@ -267,16 +345,24 @@ export function describeWarnings(warnings, owner) {
     code: 'unresolved-at-save',
     message: `${owner} references \`{{${String(event.name)}}}\`, which is registered but has no value in the `
       + 'assembly this process probed. The save was accepted because the value belongs to the session, not to the '
-      + 'text — but a turn without that value will fail to assemble.',
+      + 'text — in a turn that has no value for it, the reference stays literal instead of being substituted.',
   }));
 }
 
 /**
- * Refuse a text the shipped renderer would throw on, and report the rest.
+ * Refuse a text whose references could never expand, and report the rest.
  *
- * Only the fatal class is refused. An `undefined` value is a property of the
- * assembly that was probed, not of the text, so it is reported to the caller as
- * a warning and the write proceeds (CONTRACT §16.3).
+ * Revision 15 keeps the refusal policy **exactly as it was** (the four shipped
+ * throw conditions: malformed group, illegal name, unregistered name, and a
+ * missing/unknown table — `undefined` values stay a warning), and keeps it for
+ * one reason only: a reference that can never expand is a trap for the user, who
+ * would otherwise save text that silently stays literal. It is no longer what
+ * keeps a session alive — the reserved section does not interpolate, and the
+ * plugin's own expansion is lenient (CONTRACT §16.9).
+ *
+ * An `undefined` value is a property of the assembly that was probed, not of the
+ * text, so it is reported to the caller as a warning and the write proceeds
+ * (CONTRACT §16.3).
  *
  * Revision 12 (audit F2): the warnings are **returned**, not dropped. The route
  * puts them in the write/enable response and the browser renders them, because
@@ -293,114 +379,6 @@ export function assertInterpolatable(text, variables, owner) {
   if (errors.length === 0) return { warnings: describeWarnings(warnings, owner) };
   const names = variables !== null && typeof variables === 'object' ? Object.keys(variables) : [];
   throw fail(UNRESOLVABLE_VARIABLE, describeInterpolateErrors(errors, owner, names), 400);
-}
-
-/**
- * Self-check one layer's stored config against its own switch.
- *
- * Called on the load path, where the shipped `missing-file` precedent applies:
- * a layer that would break the assembly is **degraded with a reason**, never
- * silently accepted and never escalated into "the whole file is invalid". The
- * switch itself is a config field, so a layer that states OFF is untouched by
- * construction.
- * @param config - the validated layer config.
- * @param variables - the assembled variable table, or null when unavailable.
- * @param owner - what the text belongs to (goes into the message).
- * @returns `{flag, error}` where `error` is `{code, message}|null`.
- */
-export function selfCheckConfig(config, variables, owner) {
-  const flag = interpolateFlagOf(config);
-  if (flag !== true) return { flag, error: null };
-  const text = customTextOf(config);
-  if (text === null) return { flag, error: null };
-  const { errors } = lintPromptText(text, variables);
-  if (errors.length === 0) return { flag, error: null };
-  return { flag, error: { code: UNRESOLVABLE_VARIABLE, message: describeLayerDisabled(errors, variables, owner) } };
-}
-
-/**
- * The load-time degradation reason for one layer (Revision 12 keeps this text
- * in one place: the per-layer self-check and the cross-layer pass that F1 adds
- * must word the same verdict the same way).
- * @param errors - the fatal events from {@link lintPromptText}.
- * @param variables - the assembled variable table, or null.
- * @param owner - what the text belongs to.
- * @returns the `reason` string stored on the degraded layer.
- */
-export function describeLayerDisabled(errors, variables, owner) {
-  const names = variables !== null && typeof variables === 'object' ? Object.keys(variables) : [];
-  return `${describeInterpolateErrors(errors, owner, names)} `
-    + 'The layer was disabled so the real assembly keeps working.';
-}
-
-/**
- * Why **this assembly** must render the reserved section literally, or null.
- *
- * The load-time self-check is only as good as the variable table it holds, and
- * the table arrives one HTTP request late (`state.variables` is filled by
- * `ensureVariables()` at the top of the route handler). Between `mount` and that
- * request a layer that states ON and carries `{{nope}}` therefore passes the
- * name half of the check, and the first real turn of any session using it takes
- * the whole prompt down (audit D2). The assembly, however, always carries the
- * table it is about to render with (`assembly.variables`), so the verdict does
- * not have to be guessed: it is taken from the very data the renderer will use —
- * one source of truth, never a cached reading of it.
- *
- * Fail closed, twice over:
- * - a table that is **not available** plus any `{{` in the text is *unverified*
- *   and is held — never "no table, so grammar is enough";
- * - a table that **is** available is judged with {@link scanThrowingReference},
- *   the strict transcription of the shipped renderer: **all four** throw
- *   conditions, `undefined` included.
- *
- * Revision 14 (audit E1) is the second half of that reading. Revision 13 asked
- * the write face's question here — "is this text *fatal*?" — and `undefined` is
- * not fatal at write time (§16.3, a value the session owns rather than the text
- * does). But the assembly **holds the session's own table**, so for the assembly
- * the honest question is "would *this* turn throw?", and a registered name whose
- * value is `undefined` in this very table throws. Holding it costs one literal
- * turn; not holding it costs the turn outright — `renderPrompt` raises
- * `prompt variable "{{…}}" has no value for this assembly` and the prompt cannot
- * be assembled at all. The write face is untouched by this: a save is still
- * judged with {@link lintPromptText} and an `undefined` value is still a warning.
- * @param text - the「我的 Prompt」text this assembly would render, or null.
- * @param variables - the variable table **of this assembly**.
- * @returns the hold reason, or null when the text may interpolate.
- */
-export function interpolateHoldReason(text, variables) {
-  if (typeof text !== 'string' || text.length === 0) return null;
-  const table = variables !== null && typeof variables === 'object' ? variables : null;
-  if (table === null) {
-    if (!text.includes('{{')) return null;
-    return 'this assembly carries no variable table, so the reserved section could not be verified and variable '
-      + 'substitution was held back for this turn (the text is rendered literally)';
-  }
-  const first = scanThrowingReference(text, table);
-  if (first === null) return null;
-  return describeHold(first);
-}
-
-/**
- * One-line, bounded reason for the first reference this assembly cannot render.
- *
- * Split by kind because the fix differs: an `undefined` value is a *value* the
- * session lacks (the name is right), while an unknown/illegal/malformed
- * reference is a *text* fault. Both are "held back", and both say so — the
- * wording is what the browser shows next to the text box.
- * @param event - the first faulting event from {@link scanThrowingReference}.
- * @returns the reason string.
- */
-function describeHold(event) {
-  if (event.kind === 'malformed') {
-    return 'the reserved section contains a malformed `{{…}}` group that this assembly cannot resolve, so variable '
-      + 'substitution was held back for this turn instead of failing the prompt (the text is rendered literally)';
-  }
-  if (event.kind === 'undefined-value') {
-    return `the reserved section references \`{{${String(event.name)}}}\`, which has no value in this assembly, so `
-      + 'variable substitution was held back for this turn instead of failing the prompt (the text is rendered literally)';
-  }
-  return `the reserved section references \`{{${String(event.name)}}}\`, which this assembly cannot resolve, so `
-    + 'variable substitution was held back for this turn instead of failing the prompt (the text is rendered literally)';
 }
 
 /**
