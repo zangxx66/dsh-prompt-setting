@@ -326,6 +326,49 @@ export function describeLayerDisabled(errors, variables, owner) {
 }
 
 /**
+ * Why **this assembly** must render the reserved section literally, or null.
+ *
+ * The load-time self-check is only as good as the variable table it holds, and
+ * the table arrives one HTTP request late (`state.variables` is filled by
+ * `ensureVariables()` at the top of the route handler). Between `mount` and that
+ * request a layer that states ON and carries `{{nope}}` therefore passes the
+ * name half of the check, and the first real turn of any session using it takes
+ * the whole prompt down (audit D2). The assembly, however, always carries the
+ * table it is about to render with (`assembly.variables`), so the verdict does
+ * not have to be guessed: it is taken from the very data the renderer will use —
+ * one source of truth, never a cached reading of it.
+ *
+ * Fail closed, twice over:
+ * - a table that is **not available** plus any `{{` in the text is *unverified*
+ *   and is held — never "no table, so grammar is enough";
+ * - a table that **is** available is judged with {@link lintPromptText}, so the
+ *   name/grammar faults the shipped renderer throws on are caught exactly.
+ *
+ * `undefined` values are deliberately **not** a hold: they are the §16.3
+ * trade-off (a property of the session, not of the text), reported at save time
+ * and unchanged by this revision.
+ * @param text - the「我的 Prompt」text this assembly would render, or null.
+ * @param variables - the variable table **of this assembly**.
+ * @returns the hold reason, or null when the text may interpolate.
+ */
+export function interpolateHoldReason(text, variables) {
+  if (typeof text !== 'string' || text.length === 0) return null;
+  const table = variables !== null && typeof variables === 'object' ? variables : null;
+  if (table === null) {
+    if (!text.includes('{{')) return null;
+    return 'this assembly carries no variable table, so the reserved section could not be verified and variable '
+      + 'substitution was held back for this turn (the text is rendered literally)';
+  }
+  const { errors } = lintPromptText(text, table);
+  if (errors.length === 0) return null;
+  const shown = errors.slice(0, 3).map(describeReference).join(', ');
+  const rest = errors.length - Math.min(errors.length, 3);
+  return `the reserved section references ${shown}${rest > 0 ? ` and ${rest} more` : ''}, which this assembly `
+    + 'cannot resolve, so variable substitution was held back for this turn instead of failing the prompt '
+    + '(the text is rendered literally)';
+}
+
+/**
  * State the switch on a rebuilt config, dropping the field when it is OFF.
  *
  * "OFF" is written as the **absence** of the key, so a layer that never turned

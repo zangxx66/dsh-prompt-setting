@@ -21,6 +21,7 @@ import test, { afterEach, beforeEach } from 'node:test';
 
 import { CUSTOM_SECTION_NAME } from '../index.js';
 import { scanThrowingReference } from '../core/interpolate.js';
+import { interpolateHoldReason, lintPromptText } from '../core/interpolate.js';
 
 /** Directory names under `node_modules/.pnpm` that carry the Host peers we need. */
 const ANCHOR_PACKAGES = ['@deepseek-ai+dsh-web-app@', '@deepseek-ai+dsh-base@'];
@@ -1345,4 +1346,111 @@ test('integration g-026: with the switch on, the snapshot rendering IS the real 
   );
   // The refused write changed nothing: the real prompt is still the good one.
   assert.equal(renderPrompt(await service.assemble()), real);
+});
+
+test('integration g-026 rev13 D2: the first turn after mount renders literally instead of throwing', suite, async () => {
+  const { renderPrompt } = await import(SYSTEM_PROMPT_URL);
+  // The residue the audit describes: a layer written by hand (or left behind by
+  // another process) that states the switch ON and carries a name nothing
+  // registers. It is a lit bomb — the load-time self-check cannot see the name
+  // fault without a variable table, and the table only arrives with the first
+  // route request. Interpolating it takes the whole prompt down.
+  mkdirSync(join(home, 'prompt-setting'), { recursive: true });
+  writeFileSync(join(home, 'prompt-setting', 'overrides.json'), JSON.stringify({
+    version: 1,
+    interpolateCustom: true,
+    overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'x {{nope}}' }],
+  }), 'utf8');
+
+  const { service, call } = await mountRealPlugin(CUSTOM);
+  // NOT ONE route request has run: this is exactly the mount → first request
+  // window the audit exploited.
+  const assembly = await service.assemble();
+  const ours = assembly.sections.find((section) => section.name === CUSTOM_SECTION_NAME);
+  const variables = assembly.variables !== null && typeof assembly.variables === 'object' ? assembly.variables : {};
+  assert.equal(ours.interpolate, false, 'the unverified text is held back for this turn');
+
+  // Negative control: the same text through an interpolating section really does
+  // take the real renderer down — the hold is protecting a live bomb, not
+  // papering over a harmless string.
+  assert.throws(
+    () => renderPrompt({ sections: [{ name: CUSTOM_SECTION_NAME, text: 'x {{nope}}' }], variables }),
+    /prompt variable/,
+  );
+  // ...and the real first turn of the session assembles and renders, with the
+  // braces reaching the model exactly as written.
+  assert.doesNotThrow(() => renderPrompt(assembly));
+  assert.equal(renderPrompt(assembly).endsWith('x {{nope}}'), true);
+
+  // The very next route request has the table: the same layer is degraded with
+  // the existing reason, so the hold is a one-turn window and never a silent
+  // acceptance.
+  const snapshot = await call({});
+  assert.equal(snapshot.payload.layers.user.enabled, false);
+  assert.match(snapshot.payload.layers.user.reason, /^unresolvable-variable: /);
+  assert.match(snapshot.payload.layers.user.reason, /Fix:/);
+  // After the degradation the session keeps working: the layer contributes
+  // nothing, and the prompt assembles as it did before the hand edit.
+  const after = await service.assemble();
+  assert.doesNotThrow(() => renderPrompt(after));
+});
+
+test('integration g-026 rev13: the hold verdict is exact against the real renderer — 0 misses, 0 false positives', suite, async () => {
+  const { renderPrompt } = await import(SYSTEM_PROMPT_URL);
+  // The differential corpus is enumerated, not sampled, so a failure names a
+  // shape rather than a seed. Every piece is a shape the shipped `interpolate()`
+  // branches on, and pairing them tests the scan cursor too (a `{{` from one
+  // piece closing a group opened by the other).
+  const variables = { a: 'A', b: null, maybe: undefined };
+  const PIECES = ['', 'ok ', '}}', '{{a}}', '{{b}}', '{{maybe}}', '{{nope}}', '{{Upper}}', '{{}}', '{{a b}}', '{{ lone {{c}}', '{{{{a}}}}', '{{unclosed'];
+  let held = 0;
+  let interpolated = 0;
+  for (const left of PIECES) {
+    for (const right of PIECES) {
+      const text = `${left}${right}`;
+      const { errors, warnings } = lintPromptText(text, variables);
+      const hold = interpolateHoldReason(text, variables);
+
+      // No false positives: a text the strict scan calls fully safe is never held.
+      if (errors.length === 0 && warnings.length === 0) assert.equal(hold, null, JSON.stringify(text));
+      // No misses: every text carrying a fatal reference is held.
+      if (errors.length > 0) assert.notEqual(hold, null, JSON.stringify(text));
+
+      if (hold !== null) {
+        held += 1;
+        // The held section renders literally, and the real renderer proves it
+        // cannot throw in that shape.
+        assert.doesNotThrow(
+          () => renderPrompt({ sections: [{ name: CUSTOM_SECTION_NAME, text, interpolate: false }], variables }),
+          JSON.stringify(text),
+        );
+      } else {
+        interpolated += 1;
+        // Not held and fully safe ⇒ interpolating it really is safe, so the hold
+        // never costs a substitution it did not have to.
+        if (errors.length === 0 && warnings.length === 0) {
+          assert.doesNotThrow(
+            () => renderPrompt({ sections: [{ name: CUSTOM_SECTION_NAME, text }], variables }),
+            JSON.stringify(text),
+          );
+        }
+      }
+    }
+  }
+  // A corpus that only exercised one branch would prove nothing.
+  assert.notEqual(held, 0, 'the corpus reached the hold branch');
+  assert.notEqual(interpolated, 0, 'the corpus reached the interpolating branch');
+
+  // The unavailable-table half: fail closed on any `{{`, and the literal render
+  // is again what the real renderer does for a closed section.
+  for (const text of ['plain prose', 'a {{ b', '{{a}}', '{{unclosed', '{{']) {
+    const hold = interpolateHoldReason(text, null);
+    assert.equal(hold !== null, text.includes('{{'), JSON.stringify(text));
+    if (hold !== null) {
+      assert.doesNotThrow(
+        () => renderPrompt({ sections: [{ name: CUSTOM_SECTION_NAME, text, interpolate: false }], variables: {} }),
+        JSON.stringify(text),
+      );
+    }
+  }
 });

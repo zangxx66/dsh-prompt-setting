@@ -2259,3 +2259,109 @@ test('g-026 rev12 F4: three states, and an explicit OFF closes over an ON user l
   assert.equal(empty.statusCode, 400);
   assert.equal(json(empty).code, 'invalid-enabled');
 });
+
+// ---------------------------------------------------------------------------
+// Revision 13 (g-026): the two fail-opens the second independent audit found.
+// Both are one rule — a verdict may not be taken from data other than the data
+// the decision actually uses — so each test moves the two sources apart and
+// asserts the write (D1) or the turn (D2) fails closed instead of open.
+// ---------------------------------------------------------------------------
+
+test('g-026 rev13 D1: a workspace the registry only lists mid-request cannot slip past the F1 verdict', async () => {
+  const workspace = workspaceWith('ws-late', 'session-late', { version: 1, overrides: [] });
+  const path = layerPath(workspace);
+  // `registry.list()` reads this binding on every call, so the test can move the
+  // registry between the two moments the audit separated: the cache refresh at
+  // the top of the request (workspace not listed yet) and `targetFor` after the
+  // body was read (workspace listed). That is the disagreement — the F1 verdict
+  // ranged over `state.workspaces`, the write target over `registry.list()`.
+  let rows = [];
+  const options = { variables: SWITCH_VARIABLES };
+  Object.defineProperty(options, 'workspaces', { get: () => rows, configurable: true });
+  const harness = mount(options);
+  // Arm the USER layer while no workspace exists at all, so the user's flag is
+  // what arms the late workspace layer — and only the cross-layer rule can see it.
+  assert.equal((await setSwitch(harness.route, { enabled: true })).statusCode, 200);
+  const before = sha256(path);
+
+  const body = JSON.stringify({
+    layer: 'workspace',
+    session: 'session-late',
+    section: { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'bomb {{nope}}' },
+  });
+  const res = makeResponse();
+  await harness.route.handler({
+    method: 'PUT',
+    url: OVERRIDES_PATH,
+    headers: { 'content-type': 'application/json' },
+    destroy() {},
+    async *[Symbol.asyncIterator]() {
+      // The body appears only after `refreshLayers()` has already run for this
+      // request, i.e. after the cache was built without the workspace in it.
+      rows = [workspace];
+      yield Buffer.from(body);
+    },
+  }, res);
+
+  assert.equal(res.statusCode, 400, 'the target is judged, never skipped because the cache had not seen it');
+  assert.equal(json(res).code, 'unresolvable-variable');
+  assert.equal(sha256(path), before, 'zero bytes written');
+  assert.equal(readLayer(path).overrides.length, 0);
+
+  // The next request sees the same workspace through the normal path, and the
+  // same text is refused there too — the verdict does not depend on the timing.
+  assert.equal((await putLayer(harness.route, 'workspace', 'bomb {{nope}}', 'session-late')).statusCode, 400);
+  assert.equal(sha256(path), before, 'still zero bytes');
+});
+
+test('g-026 rev13 D2: a layer that states ON with an unregistered name is held back before any route request', async () => {
+  // Cross-process residue or a hand edit: the layer states ON and carries a name
+  // nothing registers. At mount there is no variable table yet, so the load-time
+  // self-check reads grammar only — and the name half used to slip through it
+  // into the first real turn, which then threw.
+  writeRaw(userPath(), JSON.stringify({
+    version: 1,
+    interpolateCustom: true,
+    overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'x {{nope}}' }],
+  }));
+  const agent = { id: 'session-a' };
+  const harness = mount({ variables: SWITCH_VARIABLES, agents: [agent] });
+
+  // Not one route request has run: `state.variables` is still null.
+  const first = await assembleFor(harness, 'session-a');
+  const reserved = reservedOf(first);
+  assert.equal(reserved.text, 'x {{nope}}', 'the stored text is what this turn would render');
+  assert.equal(reserved.interpolate, false, 'the unverified text is held back, not interpolated');
+
+  // The hold is recorded and explained rather than silent — the snapshot is
+  // where the browser reads it, and the table this assembly carried is what the
+  // verdict used.
+  const scoped = json(await call(harness.route, { url: `${SNAPSHOT_PATH}?session=session-a` }));
+  assert.match(scoped.layers.interpolationHold.reason, /held back/);
+  assert.match(scoped.layers.interpolationHold.reason, /nope/);
+  assert.equal(Number.isNaN(Date.parse(scoped.layers.interpolationHold.at)), false);
+
+  // Once a request has run, the load-time self-check has the names and degrades
+  // the layer with the existing `unresolvable-variable` reason — the belt and
+  // the braces agree.
+  assert.equal(scoped.layers.user.enabled, false);
+  assert.match(scoped.layers.user.reason, /^unresolvable-variable: /);
+  assert.match(scoped.layers.user.reason, /Fix:/);
+});
+
+test('g-026 rev13 D2: a registered-but-valueless name is NOT held back — §16.3 is unchanged', async () => {
+  // The hold is about text this assembly cannot *resolve*; a name that IS
+  // registered with an `undefined` value is the §16.3 trade-off (a property of
+  // the session, reported at save time), and this revision deliberately leaves
+  // it alone. A regression here would silently rewrite that contract.
+  writeRaw(userPath(), JSON.stringify({
+    version: 1,
+    interpolateCustom: true,
+    overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'hi {{model}}' }],
+  }));
+  const agent = { id: 'session-u' };
+  const harness = mount({ variables: { model: undefined }, agents: [agent] });
+
+  const first = await assembleFor(harness, 'session-u');
+  assert.equal(reservedOf(first).interpolate, true, 'undefined is not an unresolved name');
+});

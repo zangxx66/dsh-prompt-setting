@@ -208,7 +208,8 @@ cd packages/dsh-prompt-setting && node --test
 - 写入侧把它记为**警告**并放行。若硬拒，则没有活跃会话时根本无法保存——而同一段文本在真实会话里可能是完全安全的；
 - 这个警告是**下发到响应里**的（Revision 12，审计 F2）：`PUT /prompt-setting/overrides`、开启态的 `PUT /prompt-setting/interpolate`、`POST /prompt-setting/import`（含 dryRun）在非空时带 `warnings: [{name, kind, code, message}]`（≤3 条），客户端在「我的 Prompt」里就地呈现，不再算完就丢；
 - 加载期自检同样只对**致命**类别降级，不因 `undefined` 停用整层；
-- 严格的四条件判定（`undefined` 也算抛错）**仍然实现并有测试**（`core/interpolate.js` 的 `scanThrowingReference`，`test/interpolate.test.mjs` 与 `test/integration.test.mjs` 对真实 `renderPrompt` 固化），只是不用于「拒绝写入」这个决策。
+- 严格的四条件判定（`undefined` 也算抛错）**仍然实现并有测试**（`core/interpolate.js` 的 `scanThrowingReference`，`test/interpolate.test.mjs` 与 `test/integration.test.mjs` 对真实 `renderPrompt` 固化），只是不用于「拒绝写入」这个决策；
+- Revision 13 的装配期 hold 同样**不覆盖** `undefined`：hold 的对象是「文本相对这张表**无法解析**」（未注册 / 非法名 / 畸形组 / 无表），`undefined` 是会话属性，仍是「保存时警告、那一轮装配会抛」的既定取舍（`test/route.test.mjs` 有一条防回归用例盯着它）。
 
 变量名集合来自一次真实 `assemble()`（本插件私有 scope 的探针，与快照同一机制），按 mount 缓存、**每次写入校验前重新探测**。探针失败的 profile 返回 `503 variable-lookup-failed`，而不是猜一个「安全」。
 
@@ -218,7 +219,10 @@ cd packages/dsh-prompt-setting && node --test
 - 已经带着炸弹落到磁盘的配置（手改、同步工具、停机期间写入）在**加载期**被**降级 + 给原因**：该层 `config: null`、`error.code = unresolvable-variable`，快照上表现为 `layers.<层>.enabled = false` 并带 reason。它不是「文件非法」（不是 `invalid-config`），也**不静默放行**；
 - Revision 12（审计 F1）补上了**跨层**那一半：Layer 自身 flag 的自检看不到「未声明的层被另一层的 `true` 武装」这种形态，所以 `enforceVisibleTextsSafe` 在两层都读完后按 §8.2 的口径再查一遍（每次重新读某一层之后也查：`?session=` 视图会重读它那个工作区层）；
 - **降级是整层的**（不是只摘掉有问题那一条），这是有意的取舍：它就是 `missing-file` 范式，且插件不会改写用户的文件。Revision 12（审计 F5）保证的是**可感知**——「我的 Prompt」面板就地显示被停用层的原因与修复路径（`data-warning="mine-layer-disabled"`），而不是只躺在「高级」的状态区里；
-- 本轮还没有变量表时（mount 后的第一个请求、或探针失败的 profile），加载期只查语法类问题——一次探针失败绝不能停用用户的层。
+- 本轮还没有变量表时（mount 后的第一个请求、或探针失败的 profile），加载期只查语法类问题——一次探针失败绝不能停用用户的层；
+- Revision 13（审计 D2）补上了这个窗口的**真装配**兜底：加载期缺表时不许「按语法放行」。装配路径用**本次装配自己要用的那张表**（`assembly.variables`）现场判定，判不了的（未注册 / 非法名 / 畸形组 / 根本没有表且文本里有 `{{`）就**这一轮不插值**（`interpolateHoldReason`）——文本按字面量进入 prompt，既不炸会话，也不静默替换；原因按 scope 记录，快照上以 `layers.interpolationHold: {at, reason}` 暴露，供 UI 说明「这一轮为什么没替换」。下一个走完路由的请求拿到表后，该层按上面的范式被降级。
+
+**Revision 13 对 D1（判定集合与写目标同源）的修正**：判定所遍历的层集合与写目标解析过去来自两处（前者 `state.workspaces` 缓存，后者 `workspaceRegistry.list()` 动态解析），registry 在同一请求内才列出某工作区时，`some(layer.root === target.root)` 恒为 false——写入被判成「无需校验」而放行。现在 `targetFor` 解析出 root 后就地 `loadWorkspace` 纳入同一份缓存，且判定前还会再查一次：目标不在判定集合内 ⇒ **400 `write-target-unverified`**、零字节写入。两条都已固化为回归测试（D1 用可控 registry 时序，D2 用真 `renderPrompt`、mount 后不走任何路由）。
 
 ### 8.5 预览一致性
 
@@ -228,8 +232,9 @@ cd packages/dsh-prompt-setting && node --test
 | --- | --- | --- | --- | --- |
 | 关（默认） | `interpolate: false` | `[]` | 该段里的未解析引用 | `true`（字面量就是真实 prompt） |
 | 开 | `interpolate: true` | 该段里的未解析引用 | `[]` | `false`（真实装配会抛错） |
+| 开、但这一轮被 hold（Revision 13） | `interpolate: false` | `[]` | 该段里的未解析引用 | `true`（真实那一轮也是字面量） |
 
-`test/route.test.mjs` 的 `g-026 preview:` 用例对同一段文本断言了这两种分级，确保不会出现「预览说不会替换、实际替换了」的自相矛盾。
+`test/route.test.mjs` 的 `g-026 preview:` 用例对同一段文本断言了这两种分级，确保不会出现「预览说不会替换、实际替换了」的自相矛盾；hold 这一行由 `test/integration.test.mjs` 的 rev13 D2 用例对真 `renderPrompt` 固化（预览与真实渲染同为字面量）。
 
 ### 8.6 复现
 

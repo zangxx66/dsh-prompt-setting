@@ -75,6 +75,7 @@ import {
   describeLayerDisabled,
   describeWarnings,
   effectiveInterpolate,
+  interpolateHoldReason,
   lintPromptText,
   selfCheckConfig,
   switchStateOf,
@@ -208,6 +209,15 @@ export const PROBE_SCOPE = Object.freeze({});
  * used to match a probe: probes always carry an Agent or {@link PROBE_SCOPE}.
  */
 const UNSCOPED_KEY = 'unscoped';
+/**
+ * How many interpolation holds one mount remembers, newest last (Revision 13).
+ *
+ * A hold is a per-scope fact (`{at, reason}`), reported through the snapshot so
+ * the browser can say why a turn rendered literally. The cap only bounds the
+ * map; it is not a correctness knob, and 32 concurrent sessions is far past the
+ * point where the oldest entry is still interesting.
+ */
+const INTERPOLATION_HOLD_LIMIT = 32;
 
 /**
  * Required Host services. `systemPrompt` is a hard dependency: without it the
@@ -667,6 +677,14 @@ function mount(ctx, config, cleanups) {
     variables: null,
     /** Why the last variable-table lookup failed, or `null`. */
     variablesError: null,
+    /**
+     * The last turn that had to hold variable substitution back, per scope key
+     * (Revision 13, audit D2): `{at, reason}`. Written from the assembly path,
+     * which is the only place that knows both the text and the variable table
+     * the renderer is about to use; read back by the snapshot so the browser can
+     * explain a literal render instead of leaving it mysterious.
+     */
+    interpolationHolds: new Map(),
   };
 
   /**
@@ -1069,7 +1087,7 @@ function mount(ctx, config, cleanups) {
 
   /**
    * Apply **this assembly's** interpolation decision to the assembly itself
-   * (Revision 12, audit F3).
+   * (Revision 12, audit F3; the hold added by Revision 13, audit D2).
    *
    * The decision is taken from the config this dispatch already resolved for its
    * own context (`resolvedFor`): the merged user+workspace pair of the session
@@ -1079,23 +1097,83 @@ function mount(ctx, config, cleanups) {
    * this is the very value the snapshot reports as `layers.interpolate.effective`
    * and the very value a real turn of that session must use.
    *
+   * Since Revision 13 the ON verdict is also **checked against the variable table
+   * this assembly carries** ({@link assemblyVariablesOf}): a text that cannot be
+   * resolved there is held back for this turn (see {@link interpolateHoldReason}),
+   * which is the fail-closed answer to "the load-time check had no table yet".
+   *
    * The result is applied to the section object the renderer will read. Returns
    * the input array **by reference** when nothing has to change, which keeps the
    * "no override ⇒ byte-identical assembly" guarantee exact.
    * @param sections - the assembly's section list.
    * @param resolved - the config resolved for this assembly's context.
+   * @param variables - the variable table this assembly is about to render with,
+   *   or null when the host carries none.
+   * @param key - the scope key of this assembly (the hold map's key).
    * @returns the section list to render (possibly the input).
    */
-  function applyAssemblyInterpolate(sections, resolved) {
+  function applyAssemblyInterpolate(sections, resolved, variables, key) {
     const at = reservedIndex(sections);
     if (at === -1) return sections;
     const want = interpolateFlagOf(resolved) === true;
+    // Revision 13 (audit D2): the switch being ON is a statement about the user's
+    // intent, not a proof that this assembly can render the text. The verdict is
+    // taken here, from the table this very assembly carries (`variables`) and the
+    // text it is about to render — one source of truth, and fail-closed: an
+    // unverifiable or unresolvable text renders literally for this turn instead
+    // of taking the whole prompt down. Never "no table, so grammar is enough".
+    if (want) {
+      const hold = interpolateHoldReason(customTextOf(resolved), variables);
+      if (hold !== null) {
+        recordInterpolationHold(key, hold);
+        if (sections[at].interpolate === false) return sections;
+        const held = sections.slice();
+        held[at] = { ...sections[at], interpolate: false };
+        return held;
+      }
+    }
     // The shipped renderer interpolates unless the field says exactly `false`.
     const does = !(sections[at].interpolate === false);
     if (does === want) return sections;
     const output = sections.slice();
     output[at] = { ...sections[at], interpolate: want };
     return output;
+  }
+
+  /**
+   * The variable table an assembly is about to render with.
+   *
+   * `downstream` (what `next()` returned) wins because that is the object the
+   * caller renders; the pre-waterfall `assembly` is the fallback for a host that
+   * carries the table only there. Anything that is not an object is reported as
+   * "no table", which {@link interpolateHoldReason} reads as unverified.
+   * @param assembly - the pre-waterfall assembly.
+   * @param downstream - what the rest of the waterfall returned.
+   * @returns the table, or null.
+   */
+  function assemblyVariablesOf(assembly, downstream) {
+    const value = downstream?.variables ?? assembly?.variables;
+    return value !== null && typeof value === 'object' ? value : null;
+  }
+
+  /**
+   * Remember why one assembly had to hold substitution back (Revision 13).
+   *
+   * Newest last, capped: this is a bounded last-known-state map for the browser,
+   * not a log. A missing entry means "no hold seen for that scope", which is the
+   * honest answer for a scope that never held one.
+   * @param key - the scope key of the assembly.
+   * @param reason - the one-line reason from {@link interpolateHoldReason}.
+   * @returns nothing.
+   */
+  function recordInterpolationHold(key, reason) {
+    const holds = state.interpolationHolds;
+    holds.delete(key);
+    holds.set(key, { at: new Date().toISOString(), reason });
+    while (holds.size > INTERPOLATION_HOLD_LIMIT) {
+      const oldest = holds.keys().next().value;
+      holds.delete(oldest);
+    }
   }
 
   /**
@@ -1130,6 +1208,36 @@ function mount(ctx, config, cleanups) {
   }
 
   /**
+   * Refuse a write whose target is not in the set this process is judging
+   * (Revision 13, audit D1).
+   *
+   * The F1 verdict is a statement about a *set* of layers, and a target that is
+   * missing from that set is not "nothing to check" — it is "this write cannot
+   * be verified". Answering 200 there was the audit's fail-open: the target's
+   * text reaches an interpolating assembly while the verdict never saw it. It is
+   * a belt-and-braces guard ({@link targetFor} now loads the target into the
+   * cache, so the case should be unreachable), and it is deliberately a refusal
+   * rather than a silent skip: the direction this check can be wrong in is
+   * over-refusal, which is explainable and repairable.
+   * @param target - the resolved write target from {@link targetFor}.
+   * @returns nothing.
+   * @throws {OverrideError} `400 write-target-unverified`.
+   */
+  function assertTargetJudged(target) {
+    const present = visibleLayers(null, target).some((layer) => layer.root === target.root);
+    if (present) return;
+    const owner = target.root === null
+      ? `the user layer (${target.path})`
+      : `the workspace layer (${target.path})`;
+    throw fail(
+      'write-target-unverified',
+      `${owner} is not in the layer set this request judged, so the write cannot be verified and is refused. `
+        + 'Retry once this workspace is visible to the plugin.',
+      400,
+    );
+  }
+
+  /**
    * Refuse to store an override whose text the shipped renderer would throw on
    * (Revision 9), judged by the F1 rule (Revision 12).
    *
@@ -1153,6 +1261,7 @@ function mount(ctx, config, cleanups) {
   async function assertTextInterpolatable(override, next, target) {
     if (override === null || override === undefined) return [];
     if (override.name !== CUSTOM_SECTION_NAME || override.action === 'hide') return [];
+    assertTargetJudged(target);
     const armed = armedLayers(next, target).some((layer) => layer.root === target.root);
     if (!armed) return [];
     const owner = target.root === null
@@ -1278,7 +1387,7 @@ function mount(ctx, config, cleanups) {
     // definition object, which the shipped `assemble` already copied into the
     // pre-waterfall sections and which is process-wide (two sessions cannot be
     // described by one value).
-    const flagged = applyAssemblyInterpolate(sections, resolved);
+    const flagged = applyAssemblyInterpolate(sections, resolved, assemblyVariablesOf(assembly, downstream), key);
     const flagChanged = flagged !== sections;
     if (resolved.overrides.length === 0) {
       return flagChanged ? { ...downstream, sections: flagged } : downstream;
@@ -1546,6 +1655,12 @@ function mount(ctx, config, cleanups) {
           user: interpolateFlagOf(state.user.config) ?? null,
           workspace: interpolateFlagOf(workspace.config) ?? null,
         },
+        // Revision 13 (audit D2): the last assembly of THIS scope that had to
+        // render the reserved section literally because its text could not be
+        // verified against the table that assembly itself carried. A sibling of
+        // `interpolate` on purpose — that object's three-key shape is pinned by
+        // the Revision 12 assertions, so the new fact gets its own key.
+        interpolationHold: state.interpolationHolds.get(target.scope) ?? null,
       },
       experiments: EXPERIMENTS,
     });
@@ -1586,6 +1701,18 @@ function mount(ctx, config, cleanups) {
     }
     const { root, reason } = workspaceRootFor(sessionId);
     if (root === null) throw new OverrideError('workspace-unresolved', reason ?? 'cannot resolve a workspace for this session');
+    // Revision 13 (audit D1): the write target's resolution and the F1 judgement
+    // must range over the SAME set of layers. `workspaceRootFor` resolves
+    // through `workspaceRegistry.list()`, while {@link armedLayers} ranges over
+    // `state.workspaces` — and a workspace the registry only starts listing
+    // *after* this request's `refreshLayers()` would be absent from the cache,
+    // so `armedLayers(...).some((layer) => layer.root === target.root)` was
+    // false by construction and the write was let through unverified. Loading
+    // the target here closes the gap at its source: whatever root the registry
+    // resolves is in the judgement set before any verdict is taken. The reader
+    // is {@link loadWorkspace}, i.e. the same read the refresh uses, so the two
+    // sources cannot drift apart again.
+    if (!state.workspaces.has(root)) loadWorkspace(root);
     return { path: workspaceConfigPath(root), root };
   }
 
@@ -2050,6 +2177,7 @@ function mount(ctx, config, cleanups) {
    * @throws {OverrideError} `400 unresolvable-variable`.
    */
   function assertStoredTextsInterpolatable(next, target, variables) {
+    assertTargetJudged(target);
     const names = Object.keys(variables);
     const faults = [];
     const warnings = [];

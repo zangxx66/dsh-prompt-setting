@@ -4128,3 +4128,77 @@ node --input-type=module -e "import {satisfiesRange} from './core/compat.js'; im
 - **多工作区并发**：装配已按 context 现场决定，但「同一个 workspace 层」的多次写仍按请求串行，
   未做跨请求并发压测（离线无法复现真机并发）。
 - **`undefined` 值的软化**：仍是 warning 而非拒绝（§16.3 明示），本轮只保证它被下发与呈现。
+
+---
+
+# g-026 att-003：堵死第二轮审计的两条 fail-open（Revision 13，基线 `63109f8`）
+
+第二轮独立审计判定 BLOCK：F2–F5 成立，**F1 仍有两条 fail-open**——共同形态是「判定取的数据
+与实际使用的数据来源不一致」。本轮先立总纲，再修两处：
+
+> **凡判定所需的数据缺失、或与实际使用的数据来源不一致 ⇒ 一律 fail-closed**
+> （拒绝写入 / 该轮不参与插值 / 明确降级 + reason）。不允许任何形式的 fail-open。
+
+## 一、D1：判定集合与写目标来源不一致
+
+- **现状**：`armedLayers`/`visibleLayers` 只遍历 `state.workspaces`（请求开头 `refreshLayers()` 建的缓存），
+  而写目标 `targetFor` 经 `workspaceRegistry.list()` 动态解析。registry 在同一请求内才开始
+  列出某工作区时，`armedLayers(next, target).some(l => l.root === target.root)` 恒为 false ⇒
+  写入被判成「无需校验」⇒ 200 + 落字节 ⇒ `cacheWritten` 把该层塞进缓存 ⇒ 该会话真装配 THROW。
+- **修法（两道，都 fail-closed）**：
+  ① `targetFor` 解析出 root 后就地 `loadWorkspace(root)`（与 refresh 同一个读取器），
+  判定集合与写目标从此同源；
+  ② 判定前新增 `assertTargetJudged(target)`：目标仍不在判定集合内 ⇒ **400 `write-target-unverified`**、
+  零字节（宁可过度拒绝：说不清的写入正是开关要拦的东西）。
+  两个入口（`assertTextInterpolatable`、`assertStoredTextsInterpolatable`）都过了这一关。
+
+## 二、D2：加载期只查语法，名字类漏检
+
+- **现状**：加载期自检需要变量表，而 `state.variables` 只在首个 HTTP 请求时获取 ⇒
+  `mount` 到首个路由请求之间只查语法。手工编辑/跨进程遗留的
+  `{interpolateCustom:true, text:'x {{nope}}'}` 通过自检，**首轮真装配直接 THROW**。
+- **修法（等效方案，比「异步补探测」更准）**：装配路径改从**本次装配自己即将使用的变量表**
+  （`assembly.variables`）现场判定——`interpolateHoldReason(text, table)`：
+  未注册 / 非法名 / 畸形组，**或根本没有表而文本含 `{{`** ⇒ **该轮退回不插值**
+  （section 写 `interpolate: false`，文本按字面量进入 prompt），并把 reason 按 scope 记入
+  `state.interpolationHolds`，快照以 `layers.interpolationHold: {at, reason}` 下发供 UI 说明。
+  下一个走完路由的请求拿到表后，该层按既有范式降级。
+  **被否方案**：mount 后 `void` 一个异步探针补表。它能缩短窗口，但会往单槽 `pendingProbe`
+  里塞第二个并发 dispatch（路由路径本来就在探测），为「提前一个请求降级」换一个真实的并发交错风险；
+  装配期判定是精确判定（用真表），窗口内的真实后果只是**一轮字面量**，不炸会话、也不静默放行。
+- **窗口的真实后果（写进 CONTRACT §16.5.1，不是「下次请求才查名字」）**：
+  armed 且文本无法解析的层，在 mount → 首个拿到表的请求之间，保留段**字面量渲染**；
+  下一个请求即降级该层，此后该文本不会再 hold。
+- **`undefined` 值不 hold**：它是 §16.3 的既定取舍（会话属性、非文本属性），仍「保存时警告 + 那一轮会抛」；
+  加了一条防回归用例盯着它，防止后人把 hold 扩到 undefined 而悄悄改掉契约。
+
+## 三、契约与文档
+
+- `CONTRACT.md`：顶部新增 Revision 13 段（总纲 + D1/D2）；§2.3b 新增 `layers.interpolationHold` 字段；
+  §16.3 判定表加「装配期」一列与「无表」一行；§16.4 新增 D1 段与 `400 write-target-unverified`；
+  §16.5 改写「无表只查语法」那段并新增 §16.5.1（D2 与窗口真实后果）；§16.6 加 hold 的预览一致性；
+  §16.9 改名 Revisions 11–13 并补「不改 undefined 取舍」「不做 mount 异步补探」两条；
+- `docs/prompt-variables.md`：§8.4 补 D1/D2 口径，§8.3 补 hold 不覆盖 `undefined`，§8.5 预览表加 hold 一行。
+
+## 四、本轮实测证据（包目录 `packages/dsh-prompt-setting/` 下执行）
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test` | **472 / 472 pass / 0 fail / 0 skipped**（基线 467，新增 5 项） |
+| 路由 + 两条复现 | `node --test test/route.test.mjs` | 81 / 81 pass |
+| 真渲染器对照 + 差分 | `node --test test/integration.test.mjs` | 29 / 29 pass（真 `@deepseek-ai/dsh-system-prompt`） |
+| 校验器/纯函数 | `node --test test/interpolate.test.mjs` | 19 / 19 pass |
+| 客户端 UI | `node --test test/client.test.mjs` | 115 / 115 pass（未改 client） |
+| 负向对照 D1 | 还原 `targetFor` 的 `loadWorkspace`（源码 stash）后跑 rev13 用例 | **1 红** |
+| 负向对照 D2 | 还原 `applyAssemblyInterpolate` 的 hold 后跑 rev13 用例 | **2 红**（route + integration） |
+| 差分 fuzz（新增） | 13×13 组合文本 × 真 `renderPrompt` | 0 漏检 / 0 误报；两分支都被走到 |
+| 残留核对 | `grep -rc 'NEGATIVE CONTROL'` 全包 | 0 |
+
+## 五、未验证项（诚实清单）
+
+- **真机目视**：未重启 `dsh web`，未在 GUI 里观察 hold 提示；宿主半改动需重启才生效。
+- **hold 的客户端渲染**：reason 已随快照下发（`layers.interpolationHold`）并写进契约，
+  但本轮**未接 client.js**（保持 UI 零改动，避免动到既有 115 条客户端断言与 build 指纹）；
+  「上一轮为何字面量渲染」目前需从快照字段读。
+- **`undefined` 值**：仍会让那一轮装配抛错（§16.3 既定取舍），本轮明确不在 D2 的收敛范围内。
+- **多工作区并发**：D1 修的是「同一请求内来源漂移」，未做跨请求并发压测（离线无法复现真机并发）。

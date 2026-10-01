@@ -319,6 +319,45 @@ The audit's four route-level reproductions are frozen as regressions in
 `test/route.test.mjs` (§16.4, §16.5), and the differential fuzz against the real
 `renderPrompt` keeps its 0-miss / 0-false-positive result.
 
+**Revision 13 (the second independent audit of Revision 12 — g-026).** That audit
+cleared F2–F5 and kept F1 blocked: the cross-layer rule was right, but two ways of
+**taking its verdict from data other than the data the decision uses** were left
+open. Both are closed here, under one standing rule:
+
+> **Whenever the data a verdict needs is missing, or a verdict is taken from a
+> source other than the one the decision actually uses, the outcome is
+> fail-closed** — refuse the write, do not participate in interpolation, or
+> degrade explicitly with a reason. There is no fail-open case.
+
+- **D1 — the judged set and the write target now have one source.** The F1 verdict
+  ranged over `state.workspaces` (the cache built by `refreshLayers()` at the top
+  of the request) while the write target was resolved through
+  `workspaceRegistry.list()` — so a workspace the registry started listing later
+  in the same request was missing from the judged set, and
+  `armedLayers(...).some((layer) => layer.root === target.root)` was `false` by
+  construction. The write was then stored **unverified** and returned 200, and the
+  session really did throw on its next turn. `targetFor` now loads the resolved
+  root into the cache before any verdict is taken, and
+  `assertTargetJudged` refuses (`400 write-target-unverified`) a target that is
+  still not in the judged set (§16.4);
+- **D2 — an unverifiable assembly renders literally instead of throwing.** The
+  load-time self-check can only check names when it holds a variable table, and
+  the table arrives with the first HTTP request — so between `mount` and that
+  request a hand-armed layer carrying `{{nope}}` slipped through and took the
+  first real turn of the session down. The assembly path now takes its verdict
+  from **the variable table that assembly itself carries**
+  (`assembly.variables`), not from the cached one, and holds substitution back
+  for that turn when the text cannot be resolved: the text renders literally, the
+  reason is recorded per scope and exposed as
+  `layers.interpolationHold` on the snapshot (§16.5). The window's **real**
+  consequence is stated in §16.5: one literal turn, never a throw and never a
+  silent acceptance.
+
+Both reproductions are frozen as regressions — the timing one in
+`test/route.test.mjs` (a registry that lists the workspace only while the body is
+being read) and the first-turn one against the **real** `renderPrompt` in
+`test/integration.test.mjs`.
+
 ---
 
 ## 1. Routes and methods
@@ -371,7 +410,8 @@ is inactive and the verdict describes the global assembly.
   "layers": {
     "user":      { "enabled": true,  "path": "/home/u/.dsh/prompt-setting/overrides.json", "reason": null },
     "workspace": { "enabled": false, "path": null, "reason": "no ?session= was supplied, so the workspace layer is inactive for this view" },
-    "interpolate": { "effective": false, "user": null, "workspace": null }
+    "interpolate": { "effective": false, "user": null, "workspace": null },
+    "interpolationHold": null
   },
   "experiments": { "E1": "…", "E2": "…", "E3": "…", "E4": "…", "E5": "…" }
 }
@@ -519,6 +559,22 @@ returns `undefined` without a session. So:
   Revision 10 client asserts the snapshot body's exact top-level key set, and
   Revision 11 may not break it. It is additive inside a container whose keys were
   never enumerated.
+
+### 2.3b `layers.interpolationHold` (Revision 13)
+
+```json
+"interpolationHold": { "at": "2026-10-02T00:00:00.000Z", "reason": "the reserved section references `{{nope}}`, …" }
+```
+
+`null` unless the last assembly of **this** scope had to hold variable
+substitution back because the「我的 Prompt」text could not be resolved against the
+variable table that assembly carried: the section renders literally for that turn
+instead of taking the prompt down (§16.5.1). `at` is when the hold was taken and
+`reason` is the one-line explanation intended for the browser. The key is a
+sibling of `interpolate` rather than a field inside it, because that object's
+three-key shape is frozen by the Revision 12 assertions. A missing entry means
+"no hold was observed for this scope", which is the honest answer for a scope
+that never held one.
 
 ### 2.4 `frozen` and `frozenScope`
 
@@ -2220,15 +2276,16 @@ shipped).
 `core/interpolate.js` transcribes the shipped `interpolate()` line by line, with
 the Host's own `VARIABLE_NAME` and `GROUP_AT` expressions:
 
-| Condition | Shipped behaviour | Write face |
-| --- | --- | --- |
-| a `{{` with no complete group **and a later `}}`** | throws `malformed prompt variable reference` | `400 unresolvable-variable` |
-| inner text not matching `^[a-z][a-z0-9_]*$` | throws `malformed prompt variable reference "…"` | `400 unresolvable-variable` |
-| name not registered in `assembly.variables` | throws `unknown prompt variable` | `400 unresolvable-variable` |
-| registered name whose value is `undefined` | throws `prompt variable "…" has no value` | **warning, save proceeds** |
-| registered name whose value is `null` | renders the string `null` | accepted, not reported |
-| a `{{` with **no** later `}}` | literal prose | accepted, not reported |
-| a substituted value | never re-scanned | never re-scanned |
+| Condition | Shipped behaviour | Write face | Assembly (§16.5.1) |
+| --- | --- | --- | --- |
+| a `{{` with no complete group **and a later `}}`** | throws `malformed prompt variable reference` | `400 unresolvable-variable` | held back, renders literally |
+| inner text not matching `^[a-z][a-z0-9_]*$` | throws `malformed prompt variable reference "…"` | `400 unresolvable-variable` | held back, renders literally |
+| name not registered in `assembly.variables` | throws `unknown prompt variable` | `400 unresolvable-variable` | held back, renders literally |
+| registered name whose value is `undefined` | throws `prompt variable "…" has no value` | **warning, save proceeds** | **unchanged: that turn still throws** |
+| registered name whose value is `null` | renders the string `null` | accepted, not reported | interpolated |
+| a `{{` with **no** later `}}` | literal prose | accepted, not reported | interpolated (no reference) |
+| a substituted value | never re-scanned | never re-scanned | never re-scanned |
+| no variable table available while the text carries `{{` | (this process cannot know) | `503 variable-lookup-failed` | held back, renders literally |
 
 The one softening is the fourth row, and it is deliberate. `undefined` is a
 property of the **assembly that was probed**, not of the text: the shipped
@@ -2353,6 +2410,30 @@ counter-case (a closed workspace keeps its literal braces):
 
 Each of the three routes attaches `warnings` (§16.3) to a successful answer.
 
+**D1 (Revision 13): the judged set and the write target are one source.** The F1
+rule above is only as good as the set it ranges over, and Revision 12 took that
+set from the cache (`state.workspaces`) while `targetFor` resolved the target
+through `workspaceRegistry.list()`. A workspace the registry starts listing
+*after* the request's `refreshLayers()` is absent from the cache, so
+`armedLayers(next, target).some((layer) => layer.root === target.root)` could not
+be true — the write was accepted unverified, and `cacheWritten` then put the
+layer into the cache so the session really did interpolate the bomb. Two
+independent guards now hold, and both are fail-closed:
+
+- `targetFor` loads the resolved root through `loadWorkspace` — the same reader
+  the refresh uses — before any verdict is taken, so the two sources cannot
+  disagree about which layers exist;
+- `assertTargetJudged` then refuses the write with
+  **`400 write-target-unverified`** if the target is nevertheless not in the
+  judged set. It is deliberately a refusal and not a silent skip: a text whose
+  participation could not be judged is exactly the text the switch exists to
+  stop. The code is new, the status is the same `400` every other shape refusal
+  uses, and the file is left byte-identical.
+
+`test/route.test.mjs` freezes the audit's timing — `registry.list()` returns `[]`
+for the request's cache refresh and the workspace for the `targetFor` that runs
+after `readJsonBody` — and asserts the refusal plus zero bytes.
+
 ### 16.5 Historical text, and the load-time self-check
 
 Opening the switch is what turns an old `{{typo}}` into a per-turn throw, so the
@@ -2383,10 +2464,54 @@ with the same validator, using the `missing-file` precedent exactly:
   again after any later re-read of a layer (a `?session=` view re-loads its
   workspace layer; without that second pass the read would resurrect what the
   refresh had just degraded);
-- when this mount has no variable table (its first request, or a profile where
-  the probe failed), only the grammar conditions are checked — a failed probe
-  must never disable a layer. The next request, with a table in hand, checks the
-  names too.
+- when this mount has no variable table (before its first request, or a profile
+  where the probe failed), the **load-time** pass checks only the grammar
+  conditions — a failed probe must never disable a layer. The name half is not
+  "deferred and hoped for": it is enforced at the next place a table exists, the
+  assembly itself (§16.5.1 below), and the load-time pass does check the names
+  again as soon as a request has obtained a table.
+
+**§16.5.1 D2 (Revision 13): the assembly's own verdict, and the real cost of the
+window.** Revision 12's gap was a *verdict taken from missing data*: between
+`mount` and the first HTTP request `state.variables` is `null`, so a hand-armed
+layer carrying `{{nope}}` passed the self-check (grammar is fine), and the first
+real turn of that session threw — the prompt could not be assembled at all. The
+fix does not guess and does not defer:
+
+- the assembly path takes its verdict from **the variable table the assembly is
+  about to render with** (`assembly.variables`, see `assemblyVariablesOf`), which
+  is by construction the same table the shipped renderer will use — one source of
+  truth, not a cached reading of it;
+- if that text cannot be resolved against it — an unregistered name, an illegal
+  name, a malformed group, **or a table that is not available at all while the
+  text carries `{{`** — substitution is **held back for that turn**
+  (`interpolateHoldReason`): the section renders with `interpolate: false`, so
+  the braces reach the model literally and the prompt still assembles. "No table,
+  so grammar is enough" is explicitly not a possible outcome;
+- the hold is not silent. The reason is recorded per scope and reported as
+  `layers.interpolationHold: { at, reason } | null` on `GET /snapshot` (a sibling
+  of `layers.interpolate`, whose three-key shape stays exact), so a literal render
+  is explainable rather than mysterious;
+- the **real** consequence of the window, stated exactly: for the turns between
+  `mount` and the first request that obtains a table, the reserved section of an
+  armed layer whose text cannot be resolved renders **literally** — no
+  substitution, no throw, and no silent acceptance. The very next handled request
+  re-reads the layers with a table in hand and degrades the offending layer with
+  the `unresolvable-variable` reason above, after which the hold cannot recur for
+  that text. Reaching the window requires a hand edit (or a config written by
+  another process while this one was down); a text that reached disk through the
+  routes was already verified against a live table when it was written;
+- `undefined` values are **not** held. A registered name with an `undefined`
+  value is §16.3's documented trade-off — a property of the session rather than
+  of the text — and that turn still fails to assemble exactly as §16.3 says. This
+  revision changes nothing about it.
+
+`test/integration.test.mjs` freezes the window against the **real** `renderPrompt`
+(no route request runs: the layer is written by hand, `mount` returns, the first
+`assemble()` must render literally, and the same text through an interpolating
+section is asserted to throw as the negative control), and
+`test/route.test.mjs` freezes the recorded reason plus the degradation on the
+next request.
 
 **F5, stated as the trade it is (Revision 12).** The degradation disables the
 **whole layer**, not just the offending entry, so a layer whose「我的 Prompt」text
@@ -2423,7 +2548,13 @@ switch re-grades the reserved section automatically:
   stays `true` — the braces in the preview are the real prompt;
 - switch ON: the same section now carries `interpolate: true`, so the same
   references are graded `unresolvedThrowing` and `renderedResolved` becomes
-  `false` — the preview says the real assembly will fail, which is true.
+  `false` — the preview says the real assembly will fail, which is true. If the
+  text cannot be resolved against the table **that assembly** carries, the
+  section is held back instead (§16.5.1) and the preview follows the same
+  `interpolate: false` the real turn uses: the braces are graded
+  `unresolvedLiteral`, and `layers.interpolationHold` carries the reason. The
+  preview never says "this will not be substituted" while the real turn
+  substitutes, or the other way round.
 
 Revision 11 also closes one gap in that grading: a malformed group (a `{{` with a
 later `}}` that no group matches) is now reported as **throwing** rather than
@@ -2479,7 +2610,7 @@ layer inherits ON it says so and points at 「显式关」, because turning such
 "off" with the two-valued spelling only keeps it unstated. An unknown `state` is
 `400 invalid-state` with zero bytes written.
 
-### 16.9 What Revisions 11–12 do not do
+### 16.9 What Revisions 11–13 do not do
 
 - They do not add an escape syntax. DSH has none, so with the switch ON a literal
   `{{...}}` cannot be written in「我的 Prompt」 — the panel says so next to the
@@ -2490,6 +2621,16 @@ layer inherits ON it says so and points at 「显式关」, because turning such
   layer, and it governs the one section this plugin owns;
 - they do not check other plugins' sections, and they do not turn anybody else's
   interpolation on or off;
+- Revision 13 does **not** change §16.3's `undefined`-value trade-off: a
+  registered name whose value is `undefined` in a given assembly is still saved
+  with a warning and still fails that one turn's assembly. The hold is about
+  references the text cannot be **resolved** against (unregistered, illegal,
+  malformed, or unverifiable because no table is available), which is the class
+  that can be decided from the text and the table alone;
+- Revision 13 does **not** add a background retry of the variable probe at
+  `mount`. The assembly-path hold is the safety net, and an extra unawaited
+  `assemble()` racing the request path's own probe would put two dispatches
+  through the one-shot `pendingProbe` slot for no additional guarantee;
 - they do not claim anything about a running `dsh web`: like every revision
   before them, the Host half needs the process to pick the new code up, and what
   is verified here is verified offline against the real
