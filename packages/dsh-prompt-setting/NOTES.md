@@ -4202,3 +4202,81 @@ node --input-type=module -e "import {satisfiesRange} from './core/compat.js'; im
   「上一轮为何字面量渲染」目前需从快照字段读。
 - **`undefined` 值**：仍会让那一轮装配抛错（§16.3 既定取舍），本轮明确不在 D2 的收敛范围内。
 - **多工作区并发**：D1 修的是「同一请求内来源漂移」，未做跨请求并发压测（离线无法复现真机并发）。
+
+# g-026 att-004：第三轮审计 E1/E2/E3 收口（Revision 14，基线 `72472b6`）
+
+审计判 BLOCK 的是 E1：**可达**的高危缺陷——装配期的 hold 判定用写入侧软口径
+（`lintPromptText().errors`），而 `undefined` 归 warnings，于是「已注册但这一轮没值」的引用
+被放行去插值，`renderPrompt` 抛 `prompt variable "{{cwd}}" has no value for this assembly`，
+会话那一轮直接组不出来。总纲：**把「会话不炸」的最终责任收到装配期**——那里持有这一轮真实
+的变量表与真实的段文本，必须用严格口径回答「这一轮会不会 throw」，且判定数据一律取自
+**最终将要渲染的** `sections` 与 `variables`；写入侧保持宽松（探针表 ≠ 会话表，硬拒会让
+无活跃会话时无法保存）。
+
+## 一、E1：`undefined` 值必须 hold（装配期改严格口径）
+
+- `core/interpolate.js` 的 `interpolateHoldReason` 改用 `scanThrowingReference`
+  （四个抛错条件全算，`undefined` 计入；表缺失仍读作「名字全未知」）。hold 文案按类别分叉：
+  `undefined` 值说「has no value in this assembly」，未注册/非法名说「cannot resolve」，
+  畸形组单独一句——修复方向不同，UI 读到的是同一段人话。
+- `assertInterpolatable` / `selfCheckConfig` / `lintPromptText` **一字未动**：写入与加载仍是
+  「致命才 400 / 才降级，`undefined` 只给 warning」，所以无活跃会话时仍能保存，
+  加载期也不会因病值停用整层。两侧现在回答的是两个不同问题（CONTRACT §16.3 有表）。
+
+## 二、E2：判定与渲染同源（挪到最外层 + 用最终数据）
+
+- 判定从 `assembleHandler`（内层）搬到 `keepReservedLastHandler`（`{prepend:true}` 的**最外层**
+  listener）的 post-`next()`：这是本插件还能改装配的最后一个点，其后再没有 listener 能改它。
+- 判定对象改为**最终 `sections` 里保留段的文本**与**最终 `variables`**，不再用
+  `customTextOf(resolved)`（配置文本）。审计的漏放正是「配置文本安全、最终文本是炸弹」。
+- 跨 listener 传递这一轮 resolved 配置：新增 `state.resolvedByContext`（以装配 context 对象为键的
+  `WeakMap`）——探针一次性槽位（`pendingProbe`）仍只在内层消费一次，两个并发 dispatch 不会串。
+  **被否方案**：在外层再调一次 `resolvedFor(context)`（探针槽已消费，会退回普通 merge，
+  对 frozenProbe 的 probeConfig 语义不等价）。
+
+## 三、E3：hold 生命周期闭环（选「清除」路线）
+
+- `layers.interpolationHold` 从「最后一次 hold」变成**当前状态**：这一轮不 hold（文本改安全 /
+  保留段被隐藏 / 开关关闭）就 `delete` 该 scope 的键，快照再也不会返回过期 reason 与旧时间戳。
+- 选「清除」而不是「接 UI 呈现」：面板不必为不再存在的一轮解释什么，契约与断言都以「null =
+  这一轮没 hold」为准。`layers.interpolate` 三键形状未动，`interpolationHold` 仍是其兄弟键。
+
+## 四、E4（信息项）
+
+- `assertTargetJudged` 保持为防御性兜底；CONTRACT §16.4 D1 段补写「**通常不可达**」的理由
+  （`targetFor` 已把目标加载进缓存，该分支只防未来重构），不删。
+
+## 五、契约与文档
+
+- `CONTRACT.md`：新增 Revision 14 顶部段；§16.3 判定表第 4 行装配列改「held back」并重写
+  「两个面问两个问题」的说明；§2.3b 改为「当前状态」语义；§16.4 D1 补 E4 备注；
+  §16.5.1 标题改 Revisions 13–14、补 E1/E2/E3 三条与真渲染回归说明；§16.6 补「开+会抛这一格
+  在保留段不可达」的说明；§16.9 改名 Revisions 11–14 并改写 undefined 与「不做 hold 历史」两条。
+- `docs/prompt-variables.md`：§8.3 改名并改写为「写入侧的唯一软化」；§8.4 补 Revision 14 三条；
+  §8.5 预览表更新（开+可解析 / 开+hold 两行，并说明 throwing 格为何不可达）。
+
+## 六、本轮实测证据（包目录 `packages/dsh-prompt-setting/` 下执行）
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test` | **476 / 476 pass / 0 fail / 0 skipped**（基线 472，新增 4 项） |
+| 路由（含 E1/E2/E3 复现） | `node --test test/route.test.mjs` | 83 / 83 pass |
+| 真渲染器对照 + 差分 | `node --test test/integration.test.mjs` | 31 / 31 pass（真 `@deepseek-ai/dsh-system-prompt`） |
+| 差分矩阵（含 `undefined` 类别） | 13×13 组合 × 真 `renderPrompt` | 0 漏放 / 0 误伤；hold 与严格口径逐条一致 |
+| 真 host 复现 E1 | 手写 armed 层 + `variable('cwd', () => undefined)` | 该轮不抛、字面量渲染；去掉 hold 即 `prompt variable` 抛（负向对照） |
+| E2 负向对照 | 旧口径（配置文本）跑新用例 | 1 红（改写文本漏放） |
+| E3 负向对照 | 去掉 delete 分支跑新用例 | 1 红（过期 reason 残留） |
+| OFF 态回归 | `6fa99d2` 的旧测试文件（route/client/integration/overrides）跑当前代码 | **213 / 213 pass / 0 fail**（`interpolate.test.mjs` 在 6fa99d2 尚不存在） |
+| 残留核对 | 代码/测试内负向对照标记检索 | 0 |
+
+## 七、未验证项（诚实清单）
+
+- **真机目视**：未重启 `dsh web`，未在 GUI 里看 hold 提示；宿主半改动需重启才生效。
+- **hold 仍未接 client.js**：reason 随快照下发且契约写明，但面板不呈现——本轮走「清除」路线，
+  因此「此刻不 hold」与 `null` 一致；不再有「过期 reason 无处可查」的问题。
+- **比本插件更外层的 listener**：判定已是本插件能占据的最后一点；若另一个 `{prepend:true}`
+  在该点之后再改 sections/variables，本插件无法看到（也无力阻止）。已在契约里说明判定点的边界。
+- **既有断言的三处契约同步**：E1/E2/E3 推翻了 Revision 13 钉住的三条断言（保留段 undefined
+  不禁插值、预览开态 throwing、hold 快照可残留），本轮按新契约最小改写为收紧方向，
+  并新增复现用例；具体清单与理由见交回报文的「需主管裁决事项」。
+

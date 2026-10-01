@@ -201,15 +201,17 @@ cd packages/dsh-prompt-setting && node --test
 
 校验在**任何字节落盘之前**执行：`PUT /prompt-setting/overrides` 与 `POST /prompt-setting/import`（含 `?dryRun=true`）被拒时，两层文件的 SHA-256 前后一致（`test/route.test.mjs` 固化）。**开启动作本身**也会先校验这次变更会武装的每一层既有文本——一个旧的 `{{typo}}` 在关闭态无害，一开启就成了炸弹，所以不合规时直接拒绝开启并给出修复路径。
 
-### 8.3 唯一的软化：`undefined` 值只警告不拒绝
+### 8.3 写入侧唯一的软化：`undefined` 值只警告不拒绝
 
-`provider` / `model` / `cwd` 三个变量都按 `context.agent` 求值（§2），没有 Agent 的装配（例如无会话的探针）拿到 `undefined`。此时「这个名字已注册但当前无值」是**装配的属性，不是文本的属性**：
+`provider` / `model` / `cwd` 三个变量都按 `context.agent` 求值（§2），没有 Agent 的装配（例如无会话的探针）拿到 `undefined`。此时「这个名字已注册但当前无值」是**探针那次装配的属性，不是文本的属性**：
 
 - 写入侧把它记为**警告**并放行。若硬拒，则没有活跃会话时根本无法保存——而同一段文本在真实会话里可能是完全安全的；
 - 这个警告是**下发到响应里**的（Revision 12，审计 F2）：`PUT /prompt-setting/overrides`、开启态的 `PUT /prompt-setting/interpolate`、`POST /prompt-setting/import`（含 dryRun）在非空时带 `warnings: [{name, kind, code, message}]`（≤3 条），客户端在「我的 Prompt」里就地呈现，不再算完就丢；
 - 加载期自检同样只对**致命**类别降级，不因 `undefined` 停用整层；
-- 严格的四条件判定（`undefined` 也算抛错）**仍然实现并有测试**（`core/interpolate.js` 的 `scanThrowingReference`，`test/interpolate.test.mjs` 与 `test/integration.test.mjs` 对真实 `renderPrompt` 固化），只是不用于「拒绝写入」这个决策；
-- Revision 13 的装配期 hold 同样**不覆盖** `undefined`：hold 的对象是「文本相对这张表**无法解析**」（未注册 / 非法名 / 畸形组 / 无表），`undefined` 是会话属性，仍是「保存时警告、那一轮装配会抛」的既定取舍（`test/route.test.mjs` 有一条防回归用例盯着它）。
+- **Revision 14（审计 E1）之后，两侧问的是两个不同的问题，这是有意的**：
+  - **写入侧**问「这段文本是不是必然致命？」——它手里是探针的表，不是会话的表，所以 `undefined` 仍是警告，写入照常；
+  - **装配侧**问「**这一轮**会不会抛？」——它手里就是这一轮自己的表，`undefined` 正是渲染器四个抛错条件之一，所以这一轮**按字面量渲染**（hold，见 §8.4），并记下 reason。
+  两者的方向是安全的：软口径最多放进一段「之后会被装配期 hold 住」的文本，代价是一轮不替换，绝不会是「会话炸掉」。Revision 13 只把严格口径实现为测试用函数（`scanThrowingReference`），装配路径仍用软口径，这条差异正是审计打回的点。
 
 变量名集合来自一次真实 `assemble()`（本插件私有 scope 的探针，与快照同一机制），按 mount 缓存、**每次写入校验前重新探测**。探针失败的 profile 返回 `503 variable-lookup-failed`，而不是猜一个「安全」。
 
@@ -220,21 +222,27 @@ cd packages/dsh-prompt-setting && node --test
 - Revision 12（审计 F1）补上了**跨层**那一半：Layer 自身 flag 的自检看不到「未声明的层被另一层的 `true` 武装」这种形态，所以 `enforceVisibleTextsSafe` 在两层都读完后按 §8.2 的口径再查一遍（每次重新读某一层之后也查：`?session=` 视图会重读它那个工作区层）；
 - **降级是整层的**（不是只摘掉有问题那一条），这是有意的取舍：它就是 `missing-file` 范式，且插件不会改写用户的文件。Revision 12（审计 F5）保证的是**可感知**——「我的 Prompt」面板就地显示被停用层的原因与修复路径（`data-warning="mine-layer-disabled"`），而不是只躺在「高级」的状态区里；
 - 本轮还没有变量表时（mount 后的第一个请求、或探针失败的 profile），加载期只查语法类问题——一次探针失败绝不能停用用户的层；
-- Revision 13（审计 D2）补上了这个窗口的**真装配**兜底：加载期缺表时不许「按语法放行」。装配路径用**本次装配自己要用的那张表**（`assembly.variables`）现场判定，判不了的（未注册 / 非法名 / 畸形组 / 根本没有表且文本里有 `{{`）就**这一轮不插值**（`interpolateHoldReason`）——文本按字面量进入 prompt，既不炸会话，也不静默替换；原因按 scope 记录，快照上以 `layers.interpolationHold: {at, reason}` 暴露，供 UI 说明「这一轮为什么没替换」。下一个走完路由的请求拿到表后，该层按上面的范式被降级。
+- Revision 13（审计 D2）补上了这个窗口的**真装配**兜底：加载期缺表时不许「按语法放行」。装配路径用**本次装配自己要用的那张表**现场判定，判不了的（未注册 / 非法名 / 畸形组 / `undefined` 值 / 根本没有表且文本里有 `{{`）就**这一轮不插值**（`interpolateHoldReason`）——文本按字面量进入 prompt，既不炸会话，也不静默替换；原因按 scope 记录，快照上以 `layers.interpolationHold: {at, reason}` 暴露，供 UI 说明「这一轮为什么没替换」。下一个走完路由的请求拿到表后，该层按上面的范式被降级。
+- Revision 14（审计 E1/E2/E3）把这条兜底补成真正的「同源 + 闭环」：
+  - **同源（E2）**：判定挪到 `{prepend:true}` 最外层 listener 的 post-`next()` 步骤，判的对象是**最终 `sections` 里保留段的文本**与**最终 `variables`**，不再是配置里的文本（也不再读 `customTextOf(resolved)`）。跨 listener 用 `state.resolvedByContext`（以装配 context 对象为键的 `WeakMap`）传这一轮 resolved 的配置，探针槽位仍只在内层消费一次，并发装配不会串；
+  - **严格（E1）**：判定改用 `scanThrowingReference`，`undefined` 值也算会抛 ⇒ hold；
+  - **闭环（E3）**：`layers.interpolationHold` 是**当前状态**而不是历史——这一轮不 hold（文本改安全 / 段落被隐藏 / 开关关闭）就删掉该 scope 的键，快照不能残留过期 reason 与旧时间戳。
 
 **Revision 13 对 D1（判定集合与写目标同源）的修正**：判定所遍历的层集合与写目标解析过去来自两处（前者 `state.workspaces` 缓存，后者 `workspaceRegistry.list()` 动态解析），registry 在同一请求内才列出某工作区时，`some(layer.root === target.root)` 恒为 false——写入被判成「无需校验」而放行。现在 `targetFor` 解析出 root 后就地 `loadWorkspace` 纳入同一份缓存，且判定前还会再查一次：目标不在判定集合内 ⇒ **400 `write-target-unverified`**、零字节写入。两条都已固化为回归测试（D1 用可控 registry 时序，D2 用真 `renderPrompt`、mount 后不走任何路由）。
 
 ### 8.5 预览一致性
 
-预览用的就是 `section.interpolate`，而快照自己的探针也要经过装配 listener（Revision 12，§16.2），所以它读到的就是该会话真实装配会用的那个值：开关一开，保留段的引用自动从 `unresolvedLiteral` 变成 `unresolvedThrowing`，`renderedResolved` 随之变 `false`：
+预览用的就是 `section.interpolate`，而快照自己的探针也要经过装配 listener（Revision 12，§16.2），所以它读到的就是该会话真实装配会用的那个值：
 
 | 开关 | 保留段 | `unresolvedThrowing` | `unresolvedLiteral` | `renderedResolved` |
 | --- | --- | --- | --- | --- |
 | 关（默认） | `interpolate: false` | `[]` | 该段里的未解析引用 | `true`（字面量就是真实 prompt） |
-| 开 | `interpolate: true` | 该段里的未解析引用 | `[]` | `false`（真实装配会抛错） |
-| 开、但这一轮被 hold（Revision 13） | `interpolate: false` | `[]` | 该段里的未解析引用 | `true`（真实那一轮也是字面量） |
+| 开、文本可解析 | `interpolate: true` | `[]` | `[]` | `true`（引用都替换掉了） |
+| 开、但这一轮被 hold（Revision 13/14） | `interpolate: false` | `[]` | 该段里的未解析引用 | `true`（真实那一轮也是字面量） |
 
-`test/route.test.mjs` 的 `g-026 preview:` 用例对同一段文本断言了这两种分级，确保不会出现「预览说不会替换、实际替换了」的自相矛盾；hold 这一行由 `test/integration.test.mjs` 的 rev13 D2 用例对真 `renderPrompt` 固化（预览与真实渲染同为字面量）。
+Revision 14 之后，「开 + 会抛」这一格在保留段上**不可达**：凡是会让这一轮抛的形态都被 hold 成字面量了（这正是 hold 的目的，不是分级退化）——`unresolvedThrowing` 仍然如实描述装配里的其它段。
+
+`test/route.test.mjs` 的 `g-026 rev14 E1:` 用例对同一段文本断言了关/开两种分级（开态因 `undefined` 值被 hold 而保持字面量），确保不会出现「预览说不会替换、实际替换了」的自相矛盾；hold 这一行由 `test/integration.test.mjs` 的 rev14 用例对真 `renderPrompt` 固化（预览与真实渲染同为字面量），并有 0 漏放 / 0 误伤的差分矩阵。
 
 ### 8.6 复现
 

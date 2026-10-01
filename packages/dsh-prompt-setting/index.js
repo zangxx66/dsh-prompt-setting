@@ -683,8 +683,26 @@ function mount(ctx, config, cleanups) {
      * which is the only place that knows both the text and the variable table
      * the renderer is about to use; read back by the snapshot so the browser can
      * explain a literal render instead of leaving it mysterious.
+     *
+     * Revision 14 (audit E3) makes the entry the **current** state rather than a
+     * last-seen one: a turn that does not hold deletes its scope's key, so the
+     * snapshot can never report a stale reason (or an old timestamp) after the
+     * text was fixed, the section was hidden, or the switch was closed.
      */
     interpolationHolds: new Map(),
+    /**
+     * The config one dispatch resolved, keyed by that dispatch's assembly
+     * context object (Revision 14, audit E2).
+     *
+     * The interpolation verdict now belongs to the **outermost** listener's
+     * post-`next()` step — the last point that sees every other listener's
+     * contribution — but the one-shot probe slot (`pendingProbe`) is consumed by
+     * the inner `assembleHandler` before that. The map is how the two halves see
+     * the same resolved config without re-deriving it, and a `WeakMap` keyed by
+     * the context object is what keeps two concurrent dispatches apart (the
+     * context is per-call; the scope key is not).
+     */
+    resolvedByContext: new WeakMap(),
   };
 
   /**
@@ -1086,58 +1104,93 @@ function mount(ctx, config, cleanups) {
   }
 
   /**
-   * Apply **this assembly's** interpolation decision to the assembly itself
-   * (Revision 12, audit F3; the hold added by Revision 13, audit D2).
+   * Apply **this assembly's** interpolation decision to the finished assembly
+   * (Revision 12, audit F3; the hold added by Revision 13, audit D2; taken at the
+   * outermost point and made strict by Revision 14, audit E1/E2).
    *
    * The decision is taken from the config this dispatch already resolved for its
-   * own context (`resolvedFor`): the merged user+workspace pair of the session
-   * that is being assembled, or the probe's own config when the caller is the
-   * snapshot. No global field, no per-request side channel, and no extra read —
+   * own context (`resolvedFor`, carried across the waterfall in
+   * `state.resolvedByContext`): the merged user+workspace pair of the session
+   * being assembled, or the probe's own config when the caller is the snapshot.
+   * No global field, no per-request side channel, and no extra read —
    * `mergeLayers` carries the statedness-merged flag on the resolved config, so
    * this is the very value the snapshot reports as `layers.interpolate.effective`
    * and the very value a real turn of that session must use.
    *
-   * Since Revision 13 the ON verdict is also **checked against the variable table
-   * this assembly carries** ({@link assemblyVariablesOf}): a text that cannot be
-   * resolved there is held back for this turn (see {@link interpolateHoldReason}),
-   * which is the fail-closed answer to "the load-time check had no table yet".
+   * **Judged on what will be rendered, at the point where nothing else can
+   * change it** (Revision 14, audit E2). Both halves of the Revision 13 rule were
+   * taken from data other than the data the renderer uses:
+   * - the text came from `customTextOf(resolved)` — the config on disk — so a
+   *   listener that rewrote the section after the waterfall had already returned
+   *   was judged by the *old* text and could slip a throwing reference through;
+   * - the verdict was taken inside `assembleHandler`, one level *below* the
+   *   outermost listener, so a listener outer to that point (`{prepend: true}`)
+   *   could still change the text or the table afterwards.
+   * This function runs in the **outermost** `system-prompt/assemble` listener's
+   * post-`next()` step, over the **final** `sections` array, with the **final**
+   * variable table, so the verdict and the render read the same two objects.
+   *
+   * The ON verdict is then checked against the variable table this assembly
+   * carries ({@link assemblyVariablesOf}); a text this assembly cannot render is
+   * held back for the turn (see {@link interpolateHoldReason}, strict since
+   * Revision 14) rather than taking the whole prompt down.
+   *
+   * The hold map is the **current** state, not a log (Revision 14, audit E3): a
+   * turn that holds records the reason, and a turn that does not — because the
+   * text is safe now, the section is hidden, or the switch is closed — deletes
+   * its scope's key, so the snapshot can never report a stale reason.
    *
    * The result is applied to the section object the renderer will read. Returns
-   * the input array **by reference** when nothing has to change, which keeps the
-   * "no override ⇒ byte-identical assembly" guarantee exact.
-   * @param sections - the assembly's section list.
-   * @param resolved - the config resolved for this assembly's context.
-   * @param variables - the variable table this assembly is about to render with,
-   *   or null when the host carries none.
-   * @param key - the scope key of this assembly (the hold map's key).
-   * @returns the section list to render (possibly the input).
+   * the input **by reference** when nothing has to change, which keeps the "no
+   * override ⇒ byte-identical assembly" guarantee exact.
+   * @param downstream - the value the rest of the waterfall returned.
+   * @param context - this assembly's context (the resolved-config key).
+   * @param preAssembly - the pre-waterfall assembly (the section-list fallback
+   *   and the variable-table fallback).
+   * @returns the assembly to render (possibly the input).
    */
-  function applyAssemblyInterpolate(sections, resolved, variables, key) {
+  function applyAssemblyInterpolate(downstream, context, preAssembly) {
+    const key = scopeKeyOf(context);
+    const registered = Array.isArray(preAssembly?.sections) ? preAssembly.sections : [];
+    const sections = Array.isArray(downstream?.sections) ? downstream.sections : registered;
     const at = reservedIndex(sections);
-    if (at === -1) return sections;
-    const want = interpolateFlagOf(resolved) === true;
-    // Revision 13 (audit D2): the switch being ON is a statement about the user's
-    // intent, not a proof that this assembly can render the text. The verdict is
-    // taken here, from the table this very assembly carries (`variables`) and the
-    // text it is about to render — one source of truth, and fail-closed: an
-    // unverifiable or unresolvable text renders literally for this turn instead
-    // of taking the whole prompt down. Never "no table, so grammar is enough".
-    if (want) {
-      const hold = interpolateHoldReason(customTextOf(resolved), variables);
-      if (hold !== null) {
-        recordInterpolationHold(key, hold);
-        if (sections[at].interpolate === false) return sections;
-        const held = sections.slice();
-        held[at] = { ...sections[at], interpolate: false };
-        return held;
-      }
+    if (at === -1) {
+      // Nothing to render this turn: a hidden section, or a scope that dropped
+      // it. Whatever this scope held before is no longer the truth (E3).
+      state.interpolationHolds.delete(key);
+      return downstream;
     }
+    const want = interpolateFlagOf(takeResolvedFor(context)) === true;
+    const text = typeof sections[at]?.text === 'string' ? sections[at].text : null;
+    const hold = want ? interpolateHoldReason(text, assemblyVariablesOf(preAssembly, downstream)) : null;
+    if (hold === null) state.interpolationHolds.delete(key);
+    else recordInterpolationHold(key, hold);
     // The shipped renderer interpolates unless the field says exactly `false`.
+    const next = hold === null && want;
     const does = !(sections[at].interpolate === false);
-    if (does === want) return sections;
+    if (does === next) return downstream;
     const output = sections.slice();
-    output[at] = { ...sections[at], interpolate: want };
-    return output;
+    output[at] = { ...sections[at], interpolate: next };
+    return { ...downstream, sections: output };
+  }
+
+  /**
+   * The config one dispatch resolved, read by the outermost listener.
+   *
+   * The inner `assembleHandler` is the only place that may consume the one-shot
+   * probe slot, so it stores what it resolved keyed by the context object; this
+   * reads it back. The fallback (a context that is not an object, or a host that
+   * dispatched without the inner listener) re-derives it the ordinary way — it
+   * is a belt-and-braces path that the real waterfall never needs.
+   * @param context - this assembly's context.
+   * @returns the resolved config.
+   */
+  function takeResolvedFor(context) {
+    if (context !== null && typeof context === 'object') {
+      const stored = state.resolvedByContext.get(context);
+      if (stored !== undefined) return stored;
+    }
+    return resolvedFor(context);
   }
 
   /**
@@ -1159,9 +1212,10 @@ function mount(ctx, config, cleanups) {
   /**
    * Remember why one assembly had to hold substitution back (Revision 13).
    *
-   * Newest last, capped: this is a bounded last-known-state map for the browser,
-   * not a log. A missing entry means "no hold seen for that scope", which is the
-   * honest answer for a scope that never held one.
+   * Newest last, capped: this is a bounded view of the **current** hold state for
+   * the browser, not a log. The caller deletes the key on every turn that does
+   * not hold (Revision 14, audit E3), so a missing entry means "this scope is not
+   * holding right now" — never "it held once".
    * @param key - the scope key of the assembly.
    * @param reason - the one-line reason from {@link interpolateHoldReason}.
    * @returns nothing.
@@ -1366,6 +1420,12 @@ function mount(ctx, config, cleanups) {
    * the snapshot's `base` view and frozen detection deterministic. It calls
    * `next()` so no other listener is vetoed, then applies this plugin's
    * overrides to the downstream result.
+   *
+   * It also hands the config it resolved to the outermost listener through
+   * `state.resolvedByContext` (Revision 14, audit E2): the probe slot can only
+   * be consumed here, while the interpolation verdict must be taken *after* every
+   * other listener has had its say — so the two halves share one resolved config
+   * by object identity instead of re-deriving it.
    * @param assembly - the pre-waterfall assembly (registered sections).
    * @param context - the assembly context (`{agent?, scope?, signal?}`).
    * @param next - the rest of the waterfall.
@@ -1377,71 +1437,75 @@ function mount(ctx, config, cleanups) {
     const record = { seq: (state.records.get(key)?.seq ?? 0) + 1, registered, downstream: null };
     state.records.set(key, record);
     const resolved = resolvedFor(context);
+    if (context !== null && typeof context === 'object') state.resolvedByContext.set(context, resolved);
 
     const downstream = await next();
     const sections = Array.isArray(downstream?.sections) ? downstream.sections : registered;
     record.downstream = sections;
-    // Revision 12 (audit F3): this dispatch's own switch verdict, applied to the
-    // sections this dispatch will render. It is computed from `resolved` — the
-    // config this very context resolved a moment ago — and never from the live
-    // definition object, which the shipped `assemble` already copied into the
-    // pre-waterfall sections and which is process-wide (two sessions cannot be
-    // described by one value).
-    const flagged = applyAssemblyInterpolate(sections, resolved, assemblyVariablesOf(assembly, downstream), key);
-    const flagChanged = flagged !== sections;
-    if (resolved.overrides.length === 0) {
-      return flagChanged ? { ...downstream, sections: flagged } : downstream;
-    }
+    // Revision 12 (audit F3): this plugin's overrides are applied from `resolved`
+    // — the config this very context resolved a moment ago — and never from the
+    // live definition object, which the shipped `assemble` already copied into
+    // the pre-waterfall sections and which is process-wide (two sessions cannot
+    // be described by one value). The switch half of the same decision is taken
+    // by `keepReservedLastHandler` below (Revision 14, audit E2), on the finished
+    // section list.
+    if (resolved.overrides.length === 0) return downstream;
 
     let applied;
     try {
-      applied = applyOverrides(flagged, resolved);
+      applied = applyOverrides(sections, resolved);
     } catch {
       // Fail open. An override bug must never break a user's turn; the snapshot
       // reports the layers it could not use, which is where this surfaces.
-      return flagChanged ? { ...downstream, sections: flagged } : downstream;
+      return downstream;
     }
-    if (!applied.changed) {
-      return flagChanged ? { ...downstream, sections: applied.sections } : downstream;
-    }
+    if (!applied.changed) return downstream;
     return { ...downstream, sections: applied.sections };
   }
 
   /**
    * The `system-prompt/assemble` listener that keeps the reserved section last
-   * (g-017, `CONTRACT.md` §15.10).
+   * (g-017, `CONTRACT.md` §15.10) **and** takes the interpolation verdict
+   * (Revision 14, audit E2).
    *
    * Registered with `{prepend: true}`, which makes it the **outermost** listener
    * for this event. Measured, not assumed: the waterfall runs
    * `outer:in → inner:in → inner:out → outer:out` (`CONTRACT.md` §6·E2), so the
    * outermost listener's post-`next()` step runs **last** and therefore sees
-   * every section a listener registered earlier appended after `next()`
-   * returned. The platform itself places listeners this way
+   * every section a listener registered earlier appended (or rewrote) after
+   * `next()` returned. The platform itself places listeners this way
    * (`ctx.on(..., { prepend: true })`), and `order: 1000000` cannot outrank it:
    * that is exactly the live-machine gap this listener closes.
    *
-   * It does **one** thing — hand the downstream result through
-   * {@link reservedSectionLast}, which returns its input **by reference**
-   * unless it really moves a section. It applies no override, reads no config
-   * and touches no other field: `assembleHandler` above owns all of that, and
-   * neither listener's registration order relative to the other is observable
-   * (`prepend` fixes this one's position; the override handler is inside it).
+   * Two steps, in this order, on the value `next()` returned:
+   * 1. {@link reservedSectionLast} — the g-017 move, identity-preserving;
+   * 2. {@link applyAssemblyInterpolate} — the switch verdict, read from the
+   *    **final** section list and the **final** variable table. Doing it here is
+   *    the whole point (Revision 14, audit E2): it is the last point at which the
+   *    plugin can still change the assembly, so the two objects it judges are the
+   *    two objects the renderer reads. Neither step applies an override, reads a
+   *    layer or writes a file.
    *
-   * Fail-open twice over: the transform is pure and total, and the surrounding
-   * `try` is the same belt-and-braces rule `assembleHandler` uses — an
-   * exception on the assembly path would break a user's turn.
-   * @param assembly - the pre-waterfall assembly (unused here).
-   * @param context - the assembly context (unused here).
+   * Fail-open twice over: both transforms are pure and total, and each is wrapped
+   * in the same belt-and-braces `try` `assembleHandler` uses — an exception on the
+   * assembly path would break a user's turn.
+   * @param assembly - the pre-waterfall assembly (fallback section list/table).
+   * @param context - the assembly context (the resolved-config key).
    * @param next - the rest of the waterfall.
-   * @returns the downstream assembly, with the reserved section last when it
-   *   carries text and is not already there.
+   * @returns the downstream assembly, positioned and flagged for this turn.
    */
   async function keepReservedLastHandler(assembly, context, next) {
     const result = await next();
+    let positioned = result;
     try {
-      return reservedSectionLast(result);
+      positioned = reservedSectionLast(result);
     } catch {
-      return result;
+      positioned = result;
+    }
+    try {
+      return applyAssemblyInterpolate(positioned, context, assembly);
+    } catch {
+      return positioned;
     }
   }
 

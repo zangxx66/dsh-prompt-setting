@@ -29,6 +29,14 @@
  *   (the key is absent), `on` (`true`), `off` (`false`). The two-valued
  *   `boolean` form is the legacy spelling of `on`/`inherit`.
  *
+ * Revision 14 (the third independent audit's E1) makes the **assembly** verdict
+ * strict: {@link interpolateHoldReason} no longer asks "is this text *fatal*?"
+ * (the write-face reading, where an `undefined` value is a warning) but "would
+ * this assembly throw?" — the same four conditions, `undefined` included. The
+ * write face keeps the softer reading on purpose: the probe table is not the
+ * session's table, so refusing a save for a value the *session* owns would make
+ * the switch unusable whenever nothing is running (CONTRACT §16.3).
+ *
  * Revision 12 (the independent audit's F1/F2/F4) changed three things here and
  * nothing about the validator's strictness:
  * - {@link anyStatesOn} supplies the cross-layer half of the F1 verdict. The
@@ -341,12 +349,20 @@ export function describeLayerDisabled(errors, variables, owner) {
  * Fail closed, twice over:
  * - a table that is **not available** plus any `{{` in the text is *unverified*
  *   and is held — never "no table, so grammar is enough";
- * - a table that **is** available is judged with {@link lintPromptText}, so the
- *   name/grammar faults the shipped renderer throws on are caught exactly.
+ * - a table that **is** available is judged with {@link scanThrowingReference},
+ *   the strict transcription of the shipped renderer: **all four** throw
+ *   conditions, `undefined` included.
  *
- * `undefined` values are deliberately **not** a hold: they are the §16.3
- * trade-off (a property of the session, not of the text), reported at save time
- * and unchanged by this revision.
+ * Revision 14 (audit E1) is the second half of that reading. Revision 13 asked
+ * the write face's question here — "is this text *fatal*?" — and `undefined` is
+ * not fatal at write time (§16.3, a value the session owns rather than the text
+ * does). But the assembly **holds the session's own table**, so for the assembly
+ * the honest question is "would *this* turn throw?", and a registered name whose
+ * value is `undefined` in this very table throws. Holding it costs one literal
+ * turn; not holding it costs the turn outright — `renderPrompt` raises
+ * `prompt variable "{{…}}" has no value for this assembly` and the prompt cannot
+ * be assembled at all. The write face is untouched by this: a save is still
+ * judged with {@link lintPromptText} and an `undefined` value is still a warning.
  * @param text - the「我的 Prompt」text this assembly would render, or null.
  * @param variables - the variable table **of this assembly**.
  * @returns the hold reason, or null when the text may interpolate.
@@ -359,13 +375,32 @@ export function interpolateHoldReason(text, variables) {
     return 'this assembly carries no variable table, so the reserved section could not be verified and variable '
       + 'substitution was held back for this turn (the text is rendered literally)';
   }
-  const { errors } = lintPromptText(text, table);
-  if (errors.length === 0) return null;
-  const shown = errors.slice(0, 3).map(describeReference).join(', ');
-  const rest = errors.length - Math.min(errors.length, 3);
-  return `the reserved section references ${shown}${rest > 0 ? ` and ${rest} more` : ''}, which this assembly `
-    + 'cannot resolve, so variable substitution was held back for this turn instead of failing the prompt '
-    + '(the text is rendered literally)';
+  const first = scanThrowingReference(text, table);
+  if (first === null) return null;
+  return describeHold(first);
+}
+
+/**
+ * One-line, bounded reason for the first reference this assembly cannot render.
+ *
+ * Split by kind because the fix differs: an `undefined` value is a *value* the
+ * session lacks (the name is right), while an unknown/illegal/malformed
+ * reference is a *text* fault. Both are "held back", and both say so — the
+ * wording is what the browser shows next to the text box.
+ * @param event - the first faulting event from {@link scanThrowingReference}.
+ * @returns the reason string.
+ */
+function describeHold(event) {
+  if (event.kind === 'malformed') {
+    return 'the reserved section contains a malformed `{{…}}` group that this assembly cannot resolve, so variable '
+      + 'substitution was held back for this turn instead of failing the prompt (the text is rendered literally)';
+  }
+  if (event.kind === 'undefined-value') {
+    return `the reserved section references \`{{${String(event.name)}}}\`, which has no value in this assembly, so `
+      + 'variable substitution was held back for this turn instead of failing the prompt (the text is rendered literally)';
+  }
+  return `the reserved section references \`{{${String(event.name)}}}\`, which this assembly cannot resolve, so `
+    + 'variable substitution was held back for this turn instead of failing the prompt (the text is rendered literally)';
 }
 
 /**

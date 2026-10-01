@@ -1454,3 +1454,82 @@ test('integration g-026 rev13: the hold verdict is exact against the real render
     }
   }
 });
+
+test('integration g-026 rev14 E1: the strict hold verdict is exact against the real renderer — 0 misses, 0 false positives', suite, async () => {
+  const { renderPrompt } = await import(SYSTEM_PROMPT_URL);
+  // The third audit's E1: the assembly verdict used the write face's soft reading,
+  // which files an `undefined` value under "warning" — so a reference this very
+  // assembly cannot render was interpolated anyway and `renderPrompt` threw. The
+  // corpus is the same enumerated one (every shape the shipped `interpolate()`
+  // branches on, plus the pairings that exercise its scan cursor), now with the
+  // `undefined` class required to be held and the strict transcription required
+  // to agree with it on every shape.
+  const variables = { a: 'A', b: null, maybe: undefined };
+  const PIECES = ['', 'ok ', '}}', '{{a}}', '{{b}}', '{{maybe}}', '{{nope}}', '{{Upper}}', '{{}}', '{{a b}}', '{{ lone {{c}}', '{{{{a}}}}', '{{unclosed'];
+  let held = 0;
+  let interpolating = 0;
+  for (const left of PIECES) {
+    for (const right of PIECES) {
+      const text = `${left}${right}`;
+      const hold = interpolateHoldReason(text, variables);
+      const strict = scanThrowingReference(text, variables);
+
+      // One source of truth: the assembly verdict IS the strict transcription of
+      // the shipped renderer, `undefined` values included.
+      assert.equal(hold !== null, strict !== null, JSON.stringify(text));
+
+      // 0 false positives: a turn that is not held really does render, and a turn
+      // that is held renders literally without throwing. Either way the real
+      // renderer proves the verdict costs no substitution it did not have to.
+      const section = { name: CUSTOM_SECTION_NAME, text, ...(hold === null ? {} : { interpolate: false }) };
+      assert.doesNotThrow(() => renderPrompt({ sections: [section], variables }), JSON.stringify(text));
+
+      if (hold === null) interpolating += 1;
+      else held += 1;
+    }
+  }
+  assert.notEqual(held, 0, 'the corpus reached the hold branch');
+  assert.notEqual(interpolating, 0, 'the corpus reached the interpolating branch');
+
+  // The class the audit found missing, stated on its own: a REGISTERED name whose
+  // value this assembly does not have is held — and not holding it really does
+  // take the real renderer down (the negative control).
+  assert.notEqual(interpolateHoldReason('x {{maybe}}', variables), null, 'an undefined value is a hold');
+  assert.throws(
+    () => renderPrompt({ sections: [{ name: CUSTOM_SECTION_NAME, text: 'x {{maybe}}' }], variables }),
+    /prompt variable/,
+  );
+});
+
+test('integration g-026 rev14 E1: the first turn of an armed layer with a valueless name holds instead of throwing', suite, async () => {
+  const { renderPrompt } = await import(SYSTEM_PROMPT_URL);
+  // The reachable chain, on the real packages: a layer written by hand (or left
+  // by another process) states ON and names a variable that IS registered but has
+  // no value in this assembly. Interpolating it takes the whole prompt down — and
+  // because DSH's own sections carry no `{{...}}`, this section is the only thing
+  // left that can throw for such a name.
+  mkdirSync(join(home, 'prompt-setting'), { recursive: true });
+  writeFileSync(join(home, 'prompt-setting', 'overrides.json'), JSON.stringify({
+    version: 1,
+    interpolateCustom: true,
+    overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'I am {{cwd}}' }],
+  }), 'utf8');
+
+  const { ctx, service } = await mountRealPlugin(CUSTOM);
+  ctx.systemPrompt.variable('cwd', () => undefined);
+
+  const assembly = await service.assemble();
+  const ours = assembly.sections.find((section) => section.name === CUSTOM_SECTION_NAME);
+  const variables = assembly.variables !== null && typeof assembly.variables === 'object' ? assembly.variables : {};
+  assert.equal(Object.hasOwn(variables, 'cwd'), true, 'the name IS registered — the value is what this turn lacks');
+  assert.equal(ours.interpolate, false, 'held: interpolating it would fail this assembly');
+
+  // Negative control: the same text through an interpolating section really does
+  // take the real renderer down.
+  assert.throws(
+    () => renderPrompt({ sections: [{ name: CUSTOM_SECTION_NAME, text: 'I am {{cwd}}' }], variables }),
+    /prompt variable/,
+  );
+  assert.doesNotThrow(() => renderPrompt(assembly));
+  assert.equal(renderPrompt(assembly).endsWith('I am {{cwd}}'), true, 'the braces reach the model literally');
+});
