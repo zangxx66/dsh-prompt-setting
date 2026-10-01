@@ -4280,3 +4280,97 @@ node --input-type=module -e "import {satisfiesRange} from './core/compat.js'; im
   不禁插值、预览开态 throwing、hold 快照可残留），本轮按新契约最小改写为收紧方向，
   并新增复现用例；具体清单与理由见交回报文的「需主管裁决事项」。
 
+
+# g-026 att-005：终态重构（Revision 15，基线 `ad9034e`）
+
+第四轮独立审计 BLOCK 的理由不是「某个分支写错了」，而是**设计前提被证伪**：
+`{prepend:true}` 在 cordis 4.0.4 是 `unshift`，因此**后注册**的 prepend 监听器更外层，
+Revision 14 那套「抢装配链最后一个位置，用最终 sections/variables 现场判定」的
+安全模型**机制上不成立**；宿主忽略 `options` 时更是连「最外层」都拿不到。
+负责人据此拍板方案 A：**放弃「判定会不会炸」，改成结构上不可能炸**。
+
+## 一、终态设计（七条，逐条落地）
+
+1. **保留段永远 `interpolate: false`**：注册如此，装配期永不改成 `true`。
+   `syncInterpolate()`、`state.customDefinition`、以及把 `interpolate` 写进本次
+   `sections` 的 `applyAssemblyInterpolate` 全部删除。DSH 的严格插值器再也看不到这段文本。
+2. **开关 = 本插件自行展开**：`assembleHandler` 在 `applyOverrides` 之后调用
+   `expandReservedSection(sections, assemblyVariablesOf(assembly, downstream))`，
+   数据源严格是**本轮装配真实变量表**（`downstream.variables ?? assembly.variables`）。
+3. **宽松语义**（`core/interpolate.js` 新增 `expandPromptText`）：已注册且有值 ⇒
+   `String(value)`；未注册 / 值为 `undefined` / 畸形组 ⇒ 保留字面量；绝不 throw、
+   绝不输出裸 `undefined`。扫描顺序复刻 shipped（`{{` 搜索 + `GROUP_AT` + 替换值不二次扫描），
+   区别只在失败行为（shipped 抛错，这里保留）。
+4. **位置无关**：展开在 `assembleHandler` 内，不依赖 `{prepend:true}`、不假设自己最外层。
+   更外层 listener 之后改写 sections 的最坏结果是「这一轮没展开」，绝不 throw。
+5. **删除 hold 机制**：`interpolateHoldReason` / `describeHold` / `state.interpolationHolds` /
+   `INTERPOLATION_HOLD_LIMIT` / `layers.interpolationHold` / `state.resolvedByContext` /
+   `takeResolvedFor` 全部删除；缺值引用由 g-025 的 `unresolvedLiteral` 如实呈现（保留段
+   `interpolate: false` ⇒ 缺值引用天然进 literal），不新增重复字段。
+6. **删除加载期插值自检与整层降级**：`selfCheckConfig` / `describeLayerDisabled` /
+   `selfCheckLayer` / `enforceVisibleTextsSafe` / `degradeLayer` 全部删除。手改文件带着
+   「死引用」落盘时，该层保持启用、文本照常进 prompt、死引用按 literal 呈现——
+   整层降级会把用户的 Prompt 直接抹掉，而它已无法造成任何失败。
+7. **写入侧校验口径不变**（未注册/非法名/畸形 ⇒ 400 `unresolvable-variable`；
+   已注册但当前无值 ⇒ warning）：仍是 F1 的 `armedLayers` 口径，未扩大也未收紧；
+   变的只是**定位与文案**——从「防炸」改为「UX 提示」，消息不再声称每轮抛错。
+
+## 二、被否方案
+
+- **继续打补丁**（再加一层「抢位置」的机制，例如 patch `ctx.on` 或注册顺序兜底）：
+  审计已用真 Cordis 证明位置不可保证（后注册 prepend ⇒ 更外层；宿主忽略 options ⇒
+  没有 prepend），任何依赖位置的安全模型都只是把赌注换了个地方。
+- **让写入侧独自承担安全**：写侧校验挡不住手改文件、同步工具、停机期写入，
+  而且 Revision 13 的 D2 已证明 mount→首个请求之间没有表；方案 A 之后这条路不再需要。
+- **保留 hold 作为「未展开」的解释通道**：不需要。未解析引用已经由 `unresolvedLiteral`
+  如实呈现，新增字段只会造成两套真相。
+
+## 三、契约与文档
+
+- `CONTRACT.md`：**§16.9（Revision 15 终态 + §16.9.1 shipped 差异对照表）**、
+  **§16.10（断言改写台账，逐条理由与替代覆盖）**、**§16.11（不做什么）**新增；
+  §16.2 重写（定义对象永不被触碰）、§16.3 判定表重写（assembly 列改「stays literal」）、
+  §16.5 重写（删除加载期降级与跨层 pass）、§16.6/§16.7 重写（预览一致 / 可回退）、
+  §6 增补 Revision 15 段并把 D2/E1/E2/E3 标注为「已被取代」、
+  §2.3 修订「no user section ever has its interpolate turned on」的例外被撤回、
+  §2.3b 标记该字段已移除、§15.3 说明 flag 重新变成常量、§16 标题改 Revisions 11–15。
+  绝对声明「nothing else can change it / therefore the outermost」已删除。
+- `docs/prompt-variables.md`：§8 整节重写（开关语义 / 写入侧拦截表 / 展开规则表 /
+  被删机制 / 预览一致性 / 复现），§1/§4 的引用与说明同步。
+
+## 四、本轮实测证据（包目录 `packages/dsh-prompt-setting/` 下执行）
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test` | **478 / 478 pass / 0 fail / 0 skipped**（基线 476，净增 2 项） |
+| 展开 + 校验器纯函数 | `node --test test/interpolate.test.mjs` | 21 / 21 pass |
+| 路由 + 装配期展开 | `node --test test/route.test.mjs` | 83 / 83 pass |
+| 真渲染器对照 + F1/F2 | `node --test test/integration.test.mjs` | 31 / 31 pass（真 `@deepseek-ai/dsh-system-prompt`） |
+| 客户端 UI | `node --test test/client.test.mjs` | 115 / 115 pass |
+| 差分（可解析子集逐字符） | 16×16 组合文本 × 真 `renderPrompt` | 可解析子集**字节相同**；其余形态 shipped 真抛错而展开不抛；两分支都走到 |
+| F1 复现（真 Cordis，后注册 `{prepend:true}`） | 三种改写：改成死引用 / 清空变量表 / 晚到变量 | 真 `renderPrompt` **0 throw**；最坏退化为未展开（逐条断言） |
+| F2 复现（宿主忽略 options） | `mountRealPlugin(CUSTOM, {ignoreListenerOptions:true})` | 真 `renderPrompt` **0 throw**，且展开仍然发生 |
+| **负向对照 I** | 展开时同时把段置 `interpolate: true`（模拟旧设计）→ 跑 integration F1/F2 | **2 红**（`renderPrompt` 抛 `prompt variable`） |
+| **负向对照 II** | 去掉开关判断、无条件展开 → 跑 route 的 OFF 用例 | **2 红**（OFF 态字面量被替换） |
+| **负向对照 III** | 未解析引用替换成 `undefined` 而非保留字面量 → 跑差分 | **2 红**（interpolate 宽松用例 + integration 差分） |
+| OFF 态历史回归 | `6fa99d2` 的 14 个测试文件（不含 g-026 新增）跑当前源码 | **407 / 407 pass / 0 fail**（= g-026 之前的基线 407） |
+| 残留核对 | `grep -rc 'NEGATIVE CONTROL'` 全包 | 0（仅 NOTES 本条自引用） |
+
+## 五、被改写的断言（逐条理由见 `CONTRACT.md` §16.10）
+
+本目标内被新设计推翻的断言共 10 处，全部为最小改写，方向「收紧或等价」且有替代用例承接：
+ON 不再翻转定义（改为断言恒 `false` **并**断言文本已展开）、remount 不再靠翻转（改为断言
+展开结果恢复）、加载期降级（改为断言层仍启用 + 死引用归 literal）、跨层降级（同上）、
+`undefined` hold（改为断言文本仍字面量且快照**无**该字段）、两份 hold 差分（改为展开差分，
+比较字节而非判定）、首轮 hold（改为首轮字面量 + 不抛）、E2 最终数据判定（改为三种 listener
+改写下的不抛）、E3 hold 生命周期（改为「开关是唯一状态」）。
+**g-026 之前的历史断言一行未改**，OFF 态回归 407/407 即其证据。
+
+## 六、未验证项（诚实清单）
+
+- **真机目视**：未重启 `dsh web`，未在运行中的 GUI 里点开关；宿主半改动需进程重启才生效。
+- **比本插件更外层的 listener 之后改写**：本设计**接受**「这一轮没展开」（用户看到字面量）。
+  这是取舍而非缺陷，已在契约 §16.9.4 与回归用例里写明。
+- **跨版本**：本方案不再依赖 shipped `assemble` 如何拷贝 `interpolate`（那是 Revision 11–14
+  的依赖），只依赖「`interpolate: false` 的段原样交给模型」这一条 shipped 语义——
+  该语义由 integration 的真 `renderPrompt` 断言固化。
