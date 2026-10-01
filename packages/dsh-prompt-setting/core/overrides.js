@@ -592,22 +592,79 @@ export function buildEffective({ base, after, resolved, report, frozen, frozenRe
  * would put a bare `undefined` into the "full prompt" the UI shows, i.e. a
  * prompt that never existed. Instead the reference stays literal and its name is
  * reported, so the browser can say the value had no context.
+ *
+ * **The consequence of an unresolved reference depends on its section**, and the
+ * two outcomes are not comparable, so they are collected separately:
+ * - a section that interpolates (`interpolate !== false`) makes the shipped
+ *   renderer **throw** on that reference — the real assembly of that session
+ *   fails every turn, its prompt cannot be built at all;
+ * - a section that does not interpolate (`interpolate === false`, e.g. this
+ *   plugin's own reserved section) is handed to the model verbatim, so the
+ *   literal braces in the preview **are** the real prompt.
+ * Only the first kind can go into `unresolved`: that field's meaning ("this is
+ * why the real prompt is not what you see") and its value are unchanged.
  * @param sections - the sections to render.
  * @param variables - the assembly's resolved variable values.
- * @returns `{text, resolved, unresolved}` where `unresolved` is the sorted,
- *   deduplicated inner text of every reference left literal.
+ * @returns `{text, resolved, unresolved, literal}` where `unresolved` is the
+ *   sorted, deduplicated inner text of every reference left literal in a section
+ *   that interpolates (the references that make the real assembly throw), and
+ *   `literal` is the same for references in sections that do not interpolate
+ *   (those reach the model exactly as written).
  */
 export function renderSections(sections, variables) {
   const list = Array.isArray(sections) ? sections : [];
   const values = variables !== null && typeof variables === 'object' ? variables : {};
   const unresolved = new Set();
+  const literal = new Set();
   const text = list
-    .map((section) => (section?.interpolate === false
-      ? String(section.text)
-      : interpolate(String(section?.text ?? ''), values, unresolved)))
+    .map((section) => {
+      if (section?.interpolate === false) {
+        const raw = String(section.text);
+        collectUnresolved(raw, values, literal);
+        return raw;
+      }
+      return interpolate(String(section?.text ?? ''), values, unresolved);
+    })
     .filter((part) => part.length > 0)
     .join('\n\n');
-  return { text, resolved: unresolved.size === 0, unresolved: [...unresolved].sort() };
+  return { text, resolved: unresolved.size === 0, unresolved: [...unresolved].sort(), literal: [...literal].sort() };
+}
+
+/**
+ * Look up one reference name in the assembly's variables.
+ * @param name - the reference's inner text.
+ * @param variables - the resolved variable values.
+ * @returns the value, or `undefined` when the name is malformed, absent, or
+ *   carries no usable value (`undefined`/`null`).
+ */
+function lookup(name, variables) {
+  const value = VARIABLE_NAME.test(name) && Object.hasOwn(variables, name) ? variables[name] : undefined;
+  return value === undefined || value === null ? undefined : value;
+}
+
+/**
+ * Record every reference in `text` that has no usable value, without changing
+ * the text. Used for sections the Host never interpolates: their braces reach
+ * the model as written, so nothing is substituted — but a reference with no
+ * value is still worth naming, because the preview then shows a placeholder the
+ * reader may mistake for a resolved value.
+ * @param text - the raw section text.
+ * @param variables - the resolved variable values.
+ * @param sink - collector for the names with no usable value.
+ */
+function collectUnresolved(text, variables, sink) {
+  let cursor = 0;
+  for (let open = text.indexOf('{{'); open >= 0; open = text.indexOf('{{', cursor)) {
+    const group = VARIABLE_GROUP.exec(text.slice(open));
+    if (group === null) {
+      // A lone `{{` with no closing group is prose here too.
+      cursor = open + 2;
+      continue;
+    }
+    const name = group[0].slice(2, -2);
+    if (lookup(name, variables) === undefined) sink.add(name);
+    cursor = open + group[0].length;
+  }
 }
 
 /**
@@ -631,8 +688,8 @@ function interpolate(text, variables, unresolved) {
       continue;
     }
     const name = group[0].slice(2, -2);
-    const value = VARIABLE_NAME.test(name) && Object.hasOwn(variables, name) ? variables[name] : undefined;
-    if (value === undefined || value === null) {
+    const value = lookup(name, variables);
+    if (value === undefined) {
       unresolved.add(name);
       result += text.slice(cursor, open + group[0].length);
       cursor = open + group[0].length;

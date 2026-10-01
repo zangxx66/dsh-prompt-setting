@@ -2728,6 +2728,59 @@ test('client: renderedResolved false marks the text as partial and lists the var
   assert.equal(oneBy(tree, 'data-full-text', 'rendered').props['data-rendered-resolved'], 'false');
 });
 
+test('client: a throwing unresolved reference warns that the real assembly will fail', async () => {
+  const payload = snapshotFixture({
+    renderedResolved: false,
+    unresolvedVariables: ['model'],
+    unresolvedThrowing: ['model'],
+    unresolvedLiteral: ['cwd'],
+    rendered: 'powered by the {{model}} model\n\ncwd is {{cwd}}',
+  });
+  const page = makePage({ responses: defaultResponses({ [PATHS.snapshot]: { payload } }) });
+  let tree = await openOverview(page);
+  clickTab(tree, 'view', 'full');
+  tree = await page.flush();
+  const warning = oneBy(tree, 'data-warning', 'rendered-unresolved');
+  assert.equal(warning.props['data-unresolved-variables'], 'model', 'the legacy attribute still names the fault');
+  assert.equal(warning.props['data-unresolved-throwing'], 'model');
+  assert.equal(warning.props['data-unresolved-literal'], 'cwd');
+  assert.ok(strings(tree).includes(page.zh.unresolvedTitle), 'the fault is stated as a real-assembly failure');
+  assert.ok(strings(tree).includes(page.zh.unresolvedNote));
+  assert.ok(
+    hasText(tree, fillText(page.zh.unresolvedBody, { list: 'model' })),
+    'the throwing list is the one the warning renders',
+  );
+  assert.ok(
+    hasText(tree, fillText(page.zh.unresolvedLiteralInline, { list: 'cwd' })),
+    'and the literal half is still spelled out',
+  );
+  // While the fault is on screen the safe half gets no card of its own: two
+  // cards for one render would read as two separate problems.
+  assert.equal(collect(tree, (node) => node.props && node.props['data-note'] === 'rendered-literal').length, 0);
+});
+
+test('client: a literal-only unresolved reference is presented as the real prompt, not as a fault', async () => {
+  const payload = snapshotFixture({
+    renderedResolved: true,
+    unresolvedVariables: [],
+    unresolvedThrowing: [],
+    unresolvedLiteral: ['cwd'],
+    rendered: 'identity base\n\ncwd is {{cwd}}',
+  });
+  const page = makePage({ responses: defaultResponses({ [PATHS.snapshot]: { payload } }) });
+  let tree = await openOverview(page);
+  clickTab(tree, 'view', 'full');
+  tree = await page.flush();
+  // Nothing here can take the real assembly down, so nothing is a warning.
+  assert.equal(collect(tree, (node) => node.props && node.props['data-warning'] === 'rendered-unresolved').length, 0);
+  const card = oneBy(tree, 'data-note', 'rendered-literal');
+  assert.equal(card.props['data-unresolved-literal'], 'cwd');
+  assert.ok(strings(tree).includes(page.zh.unresolvedLiteralTitle), 'the card says the preview IS the real prompt');
+  assert.ok(hasText(tree, fillText(page.zh.unresolvedLiteralBody, { list: 'cwd' })));
+  assert.ok(strings(tree).includes(page.zh.unresolvedLiteralNote));
+  assert.equal(oneBy(tree, 'data-full-text', 'rendered').props['data-rendered-resolved'], 'true');
+});
+
 test('client: the base/effective comparison marks changed, added and removed sections', async () => {
   const page = makePage({ responses: defaultResponses() });
   let tree = await openOverview(page);
@@ -4146,6 +4199,66 @@ const EN_SWEEP_CASES = [
         renderedResolved: false,
         unresolvedVariables: ['Upper', 'project:alpha'],
         rendered: 'identity base\n\n{{Upper}} {{project:alpha}}',
+      });
+      const page = enPage({ responses: defaultResponses({ [PATHS.snapshot]: { payload } }) });
+      const rec = recorder(page);
+      await rec.take();
+      clickAnyTab(rec.last(), 'overview');
+      await rec.take();
+      clickTab(rec.last(), 'view', 'full');
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'overview / full text: a graded fault — throwing references fail, literal ones are still spelled out',
+    marks: [
+      ['data-region', 'full'],
+      ['data-warning', 'rendered-unresolved'],
+      ['data-note', 'rendered-literal-inline'],
+    ],
+    copy: [
+      'unresolvedTitle',
+      'unresolvedNote',
+      ['unresolvedBody', { list: 'model' }],
+      ['unresolvedLiteralInline', { list: 'cwd' }],
+    ],
+    async run() {
+      const payload = snapshotFixture({
+        renderedResolved: false,
+        unresolvedVariables: ['model'],
+        unresolvedThrowing: ['model'],
+        unresolvedLiteral: ['cwd'],
+        rendered: 'powered by the {{model}} model\n\ncwd is {{cwd}}',
+      });
+      const page = enPage({ responses: defaultResponses({ [PATHS.snapshot]: { payload } }) });
+      const rec = recorder(page);
+      await rec.take();
+      clickAnyTab(rec.last(), 'overview');
+      await rec.take();
+      clickTab(rec.last(), 'view', 'full');
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'overview / full text: a graded non-fault — a literal-only reference is the real prompt',
+    marks: [
+      ['data-region', 'full'],
+      ['data-note', 'rendered-literal'],
+    ],
+    copy: [
+      'unresolvedLiteralTitle',
+      'unresolvedLiteralNote',
+      ['unresolvedLiteralBody', { list: 'cwd' }],
+    ],
+    async run() {
+      const payload = snapshotFixture({
+        renderedResolved: true,
+        unresolvedVariables: [],
+        unresolvedThrowing: [],
+        unresolvedLiteral: ['cwd'],
+        rendered: 'identity base\n\ncwd is {{cwd}}',
       });
       const page = enPage({ responses: defaultResponses({ [PATHS.snapshot]: { payload } }) });
       const rec = recorder(page);

@@ -851,6 +851,81 @@ test('integration R7: an unknown {{reference}} in user text is never interpolate
 });
 
 // ---------------------------------------------------------------------------
+// g-025: the consequence of an unresolved reference is graded by its section,
+// measured against the REAL renderer. The legal cases must agree byte for byte;
+// the illegal ones must differ in exactly the documented way — the real
+// renderer throws, the read-only snapshot keeps the braces and says which kind
+// of section carried them.
+// ---------------------------------------------------------------------------
+
+test('integration g-025: renderSections matches the real renderPrompt byte for byte on legal input', suite, async () => {
+  const { renderPrompt } = await import(SYSTEM_PROMPT_URL);
+  const { renderSections } = await import('../core/overrides.js');
+  // Substitution, a lone `{{` treated as prose, and a section with
+  // interpolation off — the three legal shapes, in one assembly.
+  const sections = [
+    { name: 'a', text: 'powered by the {{model}} model in {{cwd}}' },
+    { name: 'b', text: 'a lone {{ is prose' },
+    { name: 'c', text: 'reserved {{model}} stays', interpolate: false },
+  ];
+  const variables = { model: 'deepseek-flash', cwd: '/repo' };
+  const ours = renderSections(sections, variables);
+  assert.equal(ours.text, renderPrompt({ sections, variables }), 'same bytes as the real renderer');
+  assert.equal(ours.resolved, true);
+  assert.deepEqual(ours.unresolved, []);
+  assert.deepEqual(ours.literal, [], 'a resolvable reference in a literal section is not unresolved');
+  // And the same holds when every section is empty: both render ''.
+  assert.equal(renderSections([{ name: 'e', text: '' }], {}).text, renderPrompt({ sections: [{ name: 'e', text: '' }], variables: {} }));
+});
+
+test('integration g-025: an unresolved reference in an interpolating section throws for real, and is graded throwing', suite, async () => {
+  const { renderPrompt } = await import(SYSTEM_PROMPT_URL);
+  const { renderSections } = await import('../core/overrides.js');
+  const variables = { model: 'deepseek-flash' };
+
+  // `undefined` value, unknown name, malformed name: all three take the real
+  // render down, and all three must be reported as throwing references.
+  const cases = [
+    { name: 'undefined-value', text: 'powered by the {{cwd}} model', vars: { ...variables, cwd: undefined }, expected: 'cwd' },
+    { name: 'unknown-name', text: 'keep {{not_registered}}', vars: { ...variables }, expected: 'not_registered' },
+    { name: 'malformed-name', text: 'keep {{Upper}}', vars: { ...variables }, expected: 'Upper' },
+  ];
+  for (const item of cases) {
+    const sections = [{ name: item.name, text: item.text }];
+    assert.throws(
+      () => renderPrompt({ sections, variables: item.vars }),
+      /prompt variable/,
+      `the real renderer must throw for ${item.name}`,
+    );
+    const ours = renderSections(sections, item.vars);
+    assert.equal(ours.text, item.text, `${item.name}: the braces stay literal`);
+    assert.equal(ours.text.includes('undefined'), false, `${item.name}: never a bare undefined`);
+    assert.deepEqual(ours.unresolved, [item.expected], `${item.name}: graded as throwing`);
+    assert.deepEqual(ours.literal, []);
+    assert.equal(ours.resolved, false);
+  }
+});
+
+test('integration g-025: the same unresolved reference in a non-interpolated section cannot throw, and is graded literal', suite, async () => {
+  const { renderPrompt } = await import(SYSTEM_PROMPT_URL);
+  const { renderSections } = await import('../core/overrides.js');
+  const sections = [{ name: 'reserved', text: 'keep {{not_registered}} and {{Upper}}', interpolate: false }];
+  const variables = { model: 'deepseek-flash' };
+  // The real renderer hands the section through untouched: no reference in it is
+  // ever looked up, so an unknown or malformed name is harmless there.
+  const real = renderPrompt({ sections, variables });
+  assert.equal(real, 'keep {{not_registered}} and {{Upper}}', 'the real prompt IS the literal text');
+  const ours = renderSections(sections, variables);
+  assert.equal(ours.text, real);
+  assert.equal(ours.resolved, true, 'nothing here can take the real assembly down');
+  assert.deepEqual(ours.unresolved, [], 'so nothing is a fault');
+  assert.deepEqual(ours.literal, ['Upper', 'not_registered'], 'but they are named as literal placeholders');
+  // The control that makes the grading meaningful: the same bytes in an
+  // interpolating section throw.
+  assert.throws(() => renderPrompt({ sections: [{ name: 'control', text: sections[0].text }], variables }), /prompt variable/);
+});
+
+// ---------------------------------------------------------------------------
 // Revision 8: the outermost listener that keeps the reserved section last.
 //
 // These run against the real service and the real renderer, because the claim

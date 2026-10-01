@@ -220,6 +220,32 @@ The three-state `frozenScope` semantics of §2.4 and §7.2 are untouched: a glob
 freeze with a selected session still reports **unknown**, never "not frozen" —
 and the panel does not relabel that case as a frozen session either.
 
+**Revision 10 (graded unresolved consequences — g-025).** Additive: two new
+snapshot fields, `unresolvedThrowing` and `unresolvedLiteral`, and new client
+copy. No existing field, route, status code or value changes: `rendered`,
+`renderedResolved` and `unresolvedVariables` keep the exact meaning and bytes
+they had in Revision 3 (§2.3).
+
+The reason is that one sentence — "an unresolved `{{reference}}` is left
+literal" — was hiding two very different outcomes. The shipped renderer
+**throws** on an unresolved reference in a section that interpolates, so that
+session's prompt cannot be assembled at all; in a section with
+`interpolate: false` it hands the braces through untouched, so the preview **is**
+the real prompt. The panel said the same cautious thing about both, which
+alarmed the harmless case and understated the fatal one. What Revision 10 adds:
+
+- `unresolvedThrowing` and `unresolvedLiteral` split the unresolved names by the
+  section that carried them (§2.3), so the browser states the consequence
+  instead of guessing it;
+- the warning card for a throwing reference now says the **real assembly will
+  fail** — the prompt cannot be built, and this text is not it — and names the
+  literal half separately when both kinds are present in one render;
+- a literal-only unresolved reference renders a **non-warning** card
+  (`data-note="rendered-literal"`) that says the preview is the real prompt;
+- the preview stays read-only throughout: nothing is written back into the
+  assembly, no user section's `interpolate` is ever flipped on, and the prompt a
+  turn actually receives is still produced by the shipped `renderPrompt` alone.
+
 ---
 
 ## 1. Routes and methods
@@ -318,7 +344,7 @@ reading them as an override or a fault:
 | `downstream-added` | Neither of the above: it entered the result after the waterfall, contributed by another listener. | **"Added by another plugin"** — not an override, not an anomaly. It is still overridable: this plugin applies its overrides on top of the downstream result, so a `replace`/`hide` targeting it works. |
 | `unmatched-override` | An override whose target exists neither in `base` nor in the result. | An override that had nothing to act on; `reason` says so. |
 
-### 2.3 `rendered`, `renderedResolved`, `unresolvedVariables`
+### 2.3 `rendered`, `renderedResolved`, `unresolvedVariables`, `unresolvedThrowing`, `unresolvedLiteral`
 
 `rendered` is `effective`'s text: each section interpolated and dropped when
 empty, the rest joined with a blank line.
@@ -344,6 +370,40 @@ must rely on:
 with no closing group is prose, exactly as the shipped renderer treats it, and
 is not listed.
 
+**The consequence of an unresolved reference depends on the section that carried
+it, and the two fields keep them apart** (Revision 10). "Left literal" describes
+what the *preview* does; what the *real* assembly does is decided by the
+section's `interpolate`:
+
+| Field | Reference sits in a section with | What the real assembly does | What the preview is worth |
+| --- | --- | --- | --- |
+| `unresolvedVariables`, `unresolvedThrowing` | `interpolate` not `false` | **Throws on every turn** — that session's prompt cannot be assembled | Not the real prompt; that session has no prompt |
+| `unresolvedLiteral` | `interpolate: false` | Hands the text through untouched — the braces **are** what the model reads | The real prompt, exactly as shown |
+
+- `unresolvedThrowing` carries the same sorted, deduplicated list as
+  `unresolvedVariables`; the second name exists so a reader (and the UI) never
+  has to infer the grading from the older field. Both are unchanged in meaning
+  from Revision 3: they name the references that make the real render fail.
+- `unresolvedLiteral` is sorted and deduplicated in the same way, and is
+  **disjoint** from them — a reference belongs to exactly one section, so it
+  appears in exactly one list. A resolvable reference in a non-interpolated
+  section appears in **neither**: its value exists, it is simply never
+  substituted, which is why the literal braces are not a fault.
+- `renderedResolved` keeps its original definition
+  (`unresolvedVariables.length === 0`), so an assembly whose only unresolved
+  references are literal still reports `renderedResolved: true` together with a
+  non-empty `unresolvedLiteral`: nothing there can fail the assembly, and the
+  preview really is the prompt. The UI **must not** present that case as a
+  warning — it is a statement of fact, not a defect.
+
+**This section is read-only, and none of it changes what the model receives.**
+`rendered` and both graded lists are computed for the browser from the probe
+assembly. Nothing is written back into the assembly, no user section ever has
+its `interpolate` turned on, and the prompt a real turn receives is still
+produced by the shipped `renderPrompt` alone. The grading exists so the UI can
+say what that renderer *will do* with the text it is showing — including that it
+will throw.
+
 **A session-scope probe resolves agent-scoped variables; the global one cannot.**
 Measured: a provider that returns a value only when `context.agent` is present
 resolves under `?session=<active>` (the probe passes `{agent, scope: agent}`) and
@@ -353,7 +413,10 @@ returns `undefined` without a session. So:
   compositions;
 - `frozenScope: "global"` ⇒ agent-scoped values are absent, `renderedResolved`
   may be `false`, and the UI should label the full-text view as partial rather
-  than show placeholders as if they were the real prompt.
+  than show placeholders as if they were the real prompt. Every shipped section
+  interpolates, so those absent values are graded into `unresolvedThrowing`: the
+  warning is then the literal truth rather than a hedge — a real turn composed
+  the same way would throw.
 
 ### 2.4 `frozen` and `frozenScope`
 
@@ -757,7 +820,9 @@ real Cordis context. The snapshot republishes the same text in `experiments`.
 1. **`rendered` interpolates differently from a real turn** for unresolved
    `{{references}}` (§2.3). Deliberate: the snapshot must not throw, and it must
    never show a value that does not exist. `renderedResolved` /
-   `unresolvedVariables` are how the UI stays honest about it.
+   `unresolvedVariables` are how the UI stays honest about it, and since
+   Revision 10 `unresolvedThrowing` / `unresolvedLiteral` say whether the real
+   assembly would throw or would read the braces as written.
 2. **A session with no active Agent gets a `frozenScope: "global"` verdict, not
    a session one** (§2.4). The response says so in `frozenScopeReason`; the UI
    must present that as unknown-for-this-session rather than as "not frozen".

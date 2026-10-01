@@ -473,7 +473,7 @@ test('snapshot: reports the base and effective sections in the real assembly ord
   assert.deepEqual(Object.keys(payload).sort(), [
     'base', 'effective', 'experiments', 'frozen', 'frozenReason', 'frozenScope', 'frozenScopeReason',
     'frozenSection', 'generatedAt', 'layers', 'mounted', 'ok', 'rendered', 'renderedResolved',
-    'unresolvedVariables',
+    'unresolvedLiteral', 'unresolvedThrowing', 'unresolvedVariables',
   ]);
   // No ?session=: the verdict describes the unscoped assembly, and it says so.
   assert.equal(payload.frozenScope, 'global');
@@ -1210,6 +1210,43 @@ test('F2: variables a provider did resolve render normally and are not reported'
   assert.equal(payload.rendered, 'powered by the deepseek-flash model in /repo');
   assert.equal(payload.renderedResolved, true);
   assert.deepEqual(payload.unresolvedVariables, []);
+  assert.deepEqual(payload.unresolvedThrowing, []);
+  assert.deepEqual(payload.unresolvedLiteral, []);
+});
+
+test('snapshot: an unresolved reference is graded by the section that carries it', async () => {
+  const { route } = mount({
+    sections: [
+      { name: 'agent:identity', order: 100, text: 'powered by the {{model}} model' },
+      { name: 'plugin:reserved', order: 900, text: 'keep {{not_registered}} literal', interpolate: false },
+    ],
+    variables: { model: undefined },
+  });
+  const payload = json(await call(route, { url: SNAPSHOT_PATH }));
+  // The interpolating section THROWS in the real assembly; the reserved one is
+  // handed to the model as written, so the two consequences are not the same.
+  assert.deepEqual(payload.unresolvedThrowing, ['model']);
+  assert.deepEqual(payload.unresolvedLiteral, ['not_registered']);
+  assert.deepEqual(payload.unresolvedVariables, ['model'], 'the legacy field keeps its old value: the throwing set');
+  assert.equal(payload.renderedResolved, false);
+  assert.equal(payload.rendered.includes('undefined'), false);
+  assert.equal(payload.rendered, 'powered by the {{model}} model\n\nkeep {{not_registered}} literal');
+});
+
+test('snapshot: a literal-only unresolved reference is graded literal and leaves resolved true', async () => {
+  const { route } = mount({
+    sections: [
+      { name: 'agent:identity', order: 100, text: 'powered by the {{model}} model' },
+      { name: 'plugin:reserved', order: 900, text: 'cwd is {{cwd}}', interpolate: false },
+    ],
+    variables: { model: 'deepseek-flash', cwd: undefined },
+  });
+  const payload = json(await call(route, { url: SNAPSHOT_PATH }));
+  assert.deepEqual(payload.unresolvedThrowing, [], 'nothing here can take the real assembly down');
+  assert.deepEqual(payload.unresolvedLiteral, ['cwd']);
+  assert.equal(payload.renderedResolved, true, 'the legacy verdict is unchanged: no throwing reference');
+  assert.deepEqual(payload.unresolvedVariables, []);
+  assert.equal(payload.rendered, 'powered by the deepseek-flash model\n\ncwd is {{cwd}}');
 });
 
 // #region external refresh (Revision 5)

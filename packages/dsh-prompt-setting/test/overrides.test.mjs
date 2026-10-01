@@ -478,17 +478,18 @@ test('buildEffective: skipped overrides explain themselves instead of silently v
 
 test('renderSections: joins non-empty sections with a blank line and interpolates usable variables', () => {
   const text = (sections_, variables) => renderSections(sections_, variables);
-  assert.deepEqual(text(sections(['a', 'A'], ['b', 'B']), {}), { text: 'A\n\nB', resolved: true, unresolved: [] });
+  assert.deepEqual(text(sections(['a', 'A'], ['b', 'B']), {}), { text: 'A\n\nB', resolved: true, unresolved: [], literal: [] });
   assert.equal(text(sections(['a', 'A'], ['b', ''], ['c', 'C']), {}).text, 'A\n\nC');
   assert.equal(text(sections(['a', 'Hello {{name}}']), { name: 'world' }).text, 'Hello world');
   assert.equal(text(sections(['a', '{{a}}{{b}}']), { a: '1', b: '2' }).text, '12');
   assert.equal(text(sections(['a', 'A'], ['b', '{{a}}']), { a: 'expanded' }).text, 'A\n\nexpanded');
-  assert.deepEqual(text(undefined, undefined), { text: '', resolved: true, unresolved: [] });
-  // `interpolate: false` sections keep their braces by design, so they are NOT
-  // unresolved references.
+  assert.deepEqual(text(undefined, undefined), { text: '', resolved: true, unresolved: [], literal: [] });
+  // `interpolate: false` sections keep their braces by design, so a resolvable
+  // reference there is NOT an unresolved reference — the value exists, it is
+  // simply never substituted.
   assert.deepEqual(
     text(sections(['a', 'lit {{name}}', { interpolate: false }]), { name: 'x' }),
-    { text: 'lit {{name}}', resolved: true, unresolved: [] },
+    { text: 'lit {{name}}', resolved: true, unresolved: [], literal: [] },
   );
 });
 
@@ -511,19 +512,63 @@ test('F2: an undefined or missing variable is never rendered as a bare "undefine
   assert.deepEqual(renderSections(sections(['a', 'a {{Upper}} b']), {}).unresolved, ['Upper']);
   assert.equal(renderSections(sections(['a', 'a {{Upper}} b']), {}).text, 'a {{Upper}} b');
   // A lone `{{` is prose, exactly as the shipped renderer treats it.
-  assert.deepEqual(renderSections(sections(['a', '{{unclosed']), {}), { text: '{{unclosed', resolved: true, unresolved: [] });
+  assert.deepEqual(
+    renderSections(sections(['a', '{{unclosed']), {}),
+    { text: '{{unclosed', resolved: true, unresolved: [], literal: [] },
+  );
 
   // Several references, deduplicated and sorted; resolved ones are not listed.
   const mixed = renderSections(sections(['a', '{{b}} {{a}} {{b}} {{ok}}']), { a: undefined, b: undefined, ok: 'yes' });
   assert.equal(mixed.text, '{{b}} {{a}} {{b}} yes');
-  assert.deepEqual(mixed, { text: '{{b}} {{a}} {{b}} yes', resolved: false, unresolved: ['a', 'b'] });
+  assert.deepEqual(mixed, { text: '{{b}} {{a}} {{b}} yes', resolved: false, unresolved: ['a', 'b'], literal: [] });
 
   // A usable value renders normally and reports nothing unresolved.
   assert.deepEqual(
     renderSections(sections(['a', 'powered by the {{model}} model']), { model: 'deepseek-flash' }),
-    { text: 'powered by the deepseek-flash model', resolved: true, unresolved: [] },
+    { text: 'powered by the deepseek-flash model', resolved: true, unresolved: [], literal: [] },
   );
   // `false` and `0` are usable values, not "missing".
   assert.equal(renderSections(sections(['a', '{{n}}']), { n: 0 }).text, '0');
   assert.equal(renderSections(sections(['a', '{{n}}']), { n: false }).text, 'false');
+});
+
+test('renderSections: an unresolved reference is graded by the section that carries it', () => {
+  // A section that interpolates: the shipped renderer throws there, so the name
+  // is reported as unresolved and the real assembly cannot be built at all.
+  const throwing = renderSections(sections(['a', 'keep {{gone}}']), {});
+  assert.deepEqual(throwing.unresolved, ['gone']);
+  assert.deepEqual(throwing.literal, [], 'a throwing reference never lands in the literal list');
+  assert.equal(throwing.resolved, false);
+  assert.equal(throwing.text, 'keep {{gone}}');
+
+  // A section the Host does not interpolate: the braces reach the model as
+  // written, so nothing can throw and the literal text IS the real prompt.
+  const literal = renderSections(sections(['reserved', 'keep {{gone}}', { interpolate: false }]), {});
+  assert.deepEqual(literal.unresolved, [], 'a non-interpolated section can never take the assembly down');
+  assert.deepEqual(literal.literal, ['gone']);
+  assert.equal(literal.resolved, true, 'and its placeholders are the real prompt, not a fault');
+  assert.equal(literal.text, 'keep {{gone}}');
+
+  // Mixed: the two lists stay disjoint, each keeping its own meaning.
+  const mixed = renderSections(
+    sections(['a', 'a {{missing}} b'], ['reserved', 'r {{gone}}', { interpolate: false }], ['c', 'c {{also_missing}}']),
+    {},
+  );
+  assert.deepEqual(mixed.unresolved, ['also_missing', 'missing']);
+  assert.deepEqual(mixed.literal, ['gone']);
+  assert.equal(mixed.text, 'a {{missing}} b\n\nr {{gone}}\n\nc {{also_missing}}');
+
+  // Every unresolved shape counts in a non-interpolated section too — absent,
+  // `undefined`, `null` and malformed — while a lone `{{` stays prose and a
+  // resolvable name is not "unresolved" just because its section is literal.
+  const shapes = renderSections(sections(['reserved', '{{a}} {{Upper}} {{ lone {{c}}', { interpolate: false }]), { c: null });
+  assert.deepEqual(shapes.literal, ['Upper', 'a', 'c']);
+  assert.deepEqual(shapes.unresolved, []);
+  assert.deepEqual(renderSections(sections(['reserved', '{{cwd}}', { interpolate: false }]), { cwd: '/w' }).literal, []);
+  // Sorted and deduplicated, exactly like `unresolved`.
+  assert.deepEqual(renderSections(sections(['r', '{{b}} {{a}} {{b}}', { interpolate: false }]), {}).literal, ['a', 'b']);
+
+  // `literal` is reporting only: a resolvable value in a non-interpolated
+  // section is still never substituted, so the bytes stay literal.
+  assert.equal(renderSections(sections(['r', 'x {{cwd}}', { interpolate: false }]), { cwd: '/w' }).text, 'x {{cwd}}');
 });

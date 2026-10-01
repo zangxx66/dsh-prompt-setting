@@ -1111,6 +1111,11 @@ function mount(ctx, config, cleanups) {
       rendered: rendered.text,
       renderedResolved: rendered.resolved,
       unresolvedVariables: rendered.unresolved,
+      // The same unresolved references, graded by what they actually do to the
+      // real assembly (see CONTRACT §2.3). `unresolvedVariables` keeps its
+      // meaning: it is the throwing set, which is what the warning is about.
+      unresolvedThrowing: rendered.unresolved,
+      unresolvedLiteral: rendered.literal,
       layers: {
         user: { enabled: state.user.error === null, path: state.user.path, reason: state.user.error === null ? null : `${state.user.error.code}: ${state.user.error.message}` },
         workspace: {

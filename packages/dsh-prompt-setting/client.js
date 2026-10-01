@@ -493,10 +493,15 @@ window.__ModuleLoader__.load({
       copyFail: '复制失败，请手动选择文本',
       fullHeading: '最终 rendered system prompt',
       fullFiltered: '已按来源筛选：此处为重组后的预览文本，不是服务端 rendered。',
-      unresolvedTitle: '部分变量缺少上下文',
-      unresolvedBody: '未解析：{list}',
+      unresolvedTitle: '真实装配会失败',
+      unresolvedBody: '会 throw 的引用：{list}',
       unresolvedNote:
-        '这些变量在当前视图下没有值，渲染文本保留了字面占位符，请勿据此判断真实 prompt。',
+        '这些引用所在的段参与变量替换，宿主每轮组装该会话的 prompt 时都会直接抛错——该会话的 prompt 组装不出来，因此这段文本不是真实 prompt。',
+      unresolvedLiteralInline: '另有 {list} 位于不参与替换的段中：真实 prompt 里它们就是原样的字面量。',
+      unresolvedLiteralTitle: '真实 prompt 就是这些字面量',
+      unresolvedLiteralBody: '不参与替换的引用：{list}',
+      unresolvedLiteralNote:
+        '这些引用所在的段已关闭变量替换（interpolate: false），宿主会把它们原样交给模型——预览里的字面量就是真实 prompt，预览即真相。',
       truncated: '文本过长，仅显示前 {n} 行。',
       diffHeading: 'base ↔ effective 对比',
       diffSame: '一致',
@@ -791,10 +796,15 @@ window.__ModuleLoader__.load({
       copyFail: 'Copy failed; select the text manually',
       fullHeading: 'Final rendered system prompt',
       fullFiltered: 'Filtered by origin: this is a recomposed preview, not the server-side rendered text.',
-      unresolvedTitle: 'Some variables have no context',
-      unresolvedBody: 'Unresolved: {list}',
+      unresolvedTitle: 'The real assembly will fail',
+      unresolvedBody: 'References that will throw: {list}',
       unresolvedNote:
-        'These variables had no value in this view, so the text keeps their literal placeholders. Do not read it as the real prompt.',
+        'These references sit in sections that DO interpolate, so the Host throws on every turn while assembling this session\'s prompt: the prompt cannot be built, and this text is not the real prompt.',
+      unresolvedLiteralInline: 'Also {list}, in sections that are not interpolated: the real prompt carries them as literal braces.',
+      unresolvedLiteralTitle: 'The real prompt is exactly these literal braces',
+      unresolvedLiteralBody: 'References in non-interpolated sections: {list}',
+      unresolvedLiteralNote:
+        'These references sit in sections with interpolation turned off (interpolate: false), so the Host hands them to the model as written — the braces in this preview are the real prompt.',
       truncated: 'Long text: showing the first {n} lines only.',
       diffHeading: 'base ↔ effective',
       diffSame: 'Same',
@@ -3972,6 +3982,18 @@ window.__ModuleLoader__.load({
       const baseSections = snapshot && snapshot.base && Array.isArray(snapshot.base.sections) ? snapshot.base.sections : [];
       const resolved = snapshot ? snapshot.renderedResolved !== false : true;
       const unresolved = snapshot && Array.isArray(snapshot.unresolvedVariables) ? snapshot.unresolvedVariables : [];
+      // The server grades an unresolved reference by what it does to the REAL
+      // assembly: one in a section that interpolates makes it throw, one in a
+      // section that does not reaches the model as literal braces. Only the
+      // throwing list is a fault, so only it is a warning. A payload that
+      // predates the grading carries neither list; then the single legacy list
+      // is read as the throwing one, which is the safe reading.
+      const graded = snapshot ? Array.isArray(snapshot.unresolvedThrowing) || Array.isArray(snapshot.unresolvedLiteral) : false;
+      const throwing = snapshot && Array.isArray(snapshot.unresolvedThrowing) ? snapshot.unresolvedThrowing : unresolved;
+      const literal = snapshot && Array.isArray(snapshot.unresolvedLiteral) ? snapshot.unresolvedLiteral : [];
+      const names = (list) => list.map((name) => String(name)).join(', ');
+      // Machine-readable attributes keep the original comma-separated shape.
+      const marks = (list) => list.map((name) => String(name)).join(',');
       const text =
         m.fullOrigin === 'all' ? String(snapshot && snapshot.rendered ? snapshot.rendered : '') : composeSections(sections, m.fullOrigin);
       const lines = splitLines(text);
@@ -3984,23 +4006,49 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { 'data-region': 'full', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
-        resolved
-          ? null
-          : h(
+        throwing.length > 0
+          ? h(
               'div',
               {
                 'data-warning': 'rendered-unresolved',
-                'data-unresolved-variables': unresolved.map((name) => String(name)).join(','),
+                'data-unresolved-variables': marks(unresolved),
+                'data-unresolved-throwing': marks(throwing),
+                'data-unresolved-literal': marks(literal),
                 style: { ...cardStyle, borderColor: token.stateWarn },
               },
               h('strong', { style: { fontSize: 13, color: token.stateWarn } }, t('unresolvedTitle')),
               h(
                 'div',
                 { style: { marginTop: 4, fontSize: 13, color: token.labelPrimary } },
-                fmt(t('unresolvedBody'), { list: unresolved.map((name) => String(name)).join(', ') }),
+                fmt(t('unresolvedBody'), { list: names(throwing) }),
               ),
               h('p', { style: { margin: '4px 0 0', ...metaStyle } }, t('unresolvedNote')),
-            ),
+              literal.length > 0
+                ? h(
+                    'p',
+                    { 'data-note': 'rendered-literal-inline', style: { margin: '4px 0 0', ...metaStyle } },
+                    fmt(t('unresolvedLiteralInline'), { list: names(literal) }),
+                  )
+                : null,
+            )
+          : graded && literal.length > 0
+            ? h(
+                'div',
+                {
+                  'data-note': 'rendered-literal',
+                  'data-unresolved-variables': marks(unresolved),
+                  'data-unresolved-literal': marks(literal),
+                  style: cardStyle,
+                },
+                h('strong', { style: { fontSize: 13, color: token.labelPrimary } }, t('unresolvedLiteralTitle')),
+                h(
+                  'div',
+                  { style: { marginTop: 4, fontSize: 13, color: token.labelPrimary } },
+                  fmt(t('unresolvedLiteralBody'), { list: names(literal) }),
+                ),
+                h('p', { style: { margin: '4px 0 0', ...metaStyle } }, t('unresolvedLiteralNote')),
+              )
+            : null,
         h(
           'div',
           { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
