@@ -3346,7 +3346,7 @@ A refusal — nothing was started, so there is no request to track:
 
 | Refusal code | Meaning |
 | --- | --- |
-| `installer-unavailable` | No `pluginManager` service in this profile, or the profile directory could not be read (so the install form cannot be checked). Nothing was installed. |
+| `installer-unavailable` | No `pluginManager` service in this profile, the profile directory could not be resolved, or the profile's `package.json` could not be read/parsed (so the install form cannot be checked). Nothing was installed, and nothing was written. |
 | `development-link` | The profile holds this package as `link:`/`file:`/a path (§18.1, A1). |
 | `no-update` | The last check confirmed no newer release, or could not decide. |
 | `invalid-request` | The body's `tag` disagrees with the check's tag, or a `requestId` is missing/empty/absurdly long. |
@@ -3363,10 +3363,28 @@ official manager deletes a settled request.
 **What is checked before anything is started**, in order: the update check's
 answer (cached, so zero outbound requests), the tag guard, whether an install is
 already running, the plugin manager's presence, the profile directory, the
-`link:`/path form, and one `HEAD` against the release asset. The `HEAD` is what
-turns "this release has no asset" from a two-minute pnpm failure into a named
-answer in seconds; a probe that cannot answer (no `fetch`, a throw, a 5xx) is
-**not** a refusal — the install proceeds and pnpm's own verdict is the answer.
+profile manifest (readable? which install form?), and one `HEAD` against the
+release asset.
+
+Two of those checks **fail closed**, because "I could not find out" is not
+evidence that installing is safe:
+
+- a profile manifest that exists but cannot be read or parsed refuses with
+  `installer-unavailable` — it is **not** treated as "this profile does not
+  declare the package" (which would skip the A1 check on a profile that was never
+  inspected). A manifest that is simply **absent** is different: that is a real,
+  readable answer, and the install proceeds (it is what restoring a real install
+  means);
+- the `HEAD` is a **shortcut, never a gate**. Only two answers refuse:
+  **`404`/`410` ⇒ `asset-missing`** (the release carries no such asset — the state
+  of every release published before this feature existed) and **`401`/`403` ⇒
+  `asset-unverified`** (it cannot be fetched anonymously). **Every other answer —
+  `500`, `429`, `405`, a redirect that never resolved, a throw, no `fetch` at
+  all — means "I could not find out" and must not block an install**: the install
+  runs and pnpm's own verdict is the answer. The probe exists to turn the
+  *expected* case into a named answer in seconds, not to become a refusal the
+  person cannot act on.
+
 The probe reuses the same injected transport as the update check, so a profile
 (or a test) that stubs one cannot accidentally reach the network through the
 other.
@@ -3390,12 +3408,12 @@ Query: `requestId` (optional).
 Only an empty or absurdly long id is a `400 invalid-request`; the bare `GET` is a
 question, not a shape mistake.
 
-The four `status` values the page branches on are `running`, `done`, `failed`
-and `cancelled`, plus `unknown`. `phase` is the finer host-side step
-(`installing`/`cancelling`/`done`/`failed`/`cancelled`) and is what the
-`data-update-apply-step` marker reports; the page branches on `status`, so the
-two names cannot silently swap roles. Every field is present on every answer,
-including the unknown-request one.
+The `status` values the page branches on are `running`, `done`, `failed` and
+`cancelled`, plus `unknown`. `phase` is the finer host-side step
+(`installing`/`cancelling`/`done`/`failed`/`cancelled`) and is reported only
+through the `data-update-apply-phase` marker (§18.7); the page branches on
+`status`, so the two names cannot silently swap roles. Every field is present on
+every answer, including the unknown-request one.
 
 ### 18.4 `POST /prompt-setting/update-apply/cancel`
 
@@ -3461,19 +3479,31 @@ poll of a running install, which is bounded by
 | --- | --- | --- |
 | `data-region="update-notice"` `data-update-available="true"` | the banner (g-030) | A confirmed newer release is known. |
 | `data-update-latest` | the banner | The version the button would install. |
-| `data-update-apply` | the banner | `idle` before anything is started, otherwise the current `status` (`running`/`done`/`failed`/`cancelled`/`unknown`). |
-| `data-action="update-apply"` | the banner **and** 「高级」 | Opens the second confirmation. Disabled while an install runs. |
+| `data-update-apply` | the banner | `idle` before anything is started, otherwise the **`status`** the page branches on (`running`/`done`/`failed`/`cancelled`/`unknown`). |
+| `data-update-apply-status` | the status row | The same `status`, on the row that renders it. |
+| `data-update-apply-phase` | the status row | The host's finer `phase` (`installing`/`cancelling`/`done`/`failed`/`cancelled`/`unknown`) — never the branch value. |
+| `data-action="update-apply"` | the banner **and** 「高级」 | Opens the second confirmation. Absent once the announced version **is** the installed one; disabled while an install runs. |
 | `data-action="update-apply-cancel"` | the status row | Cancels a running install. |
 | `data-action="update-apply-retry"` | the status row | Re-opens the confirmation after a failure. |
 | `data-region="update-apply-status"` | the banner and 「高级」 | The install's own line(s). |
-| `data-update-apply-phase` | the status row | The `status` the page branched on. |
-| `data-update-apply-step` | the status row | The host's finer `phase`. |
 | `data-update-apply-manual` | the status row | A link to the release page, for a failure with a manual route. |
 | `data-confirm-kind="update-apply"` | the confirm modal | The second confirmation, which states the version and that the restart is manual. |
 
-- The install state is rendered in **both** the banner and 「高级」: dismissing
-  the banner must not take away the only place a running install can be cancelled
-  or a failed one retried;
+`status` and `phase` are two names for two different facts and are never
+interchanged: the page **branches on `status`**, `phase` is reported only through
+`data-update-apply-phase`. `status` is also what `data-update-apply` carries, so
+the banner's marker and the status row can never disagree about what is
+happening.
+
+- The install state is rendered in **both** the banner and 「高级」: neither
+  dismissing the banner nor turning the update-check switch off may take away the
+  only place a running install can be cancelled or a failed one retried. The
+  switch only gates the button that **starts** an install, so an install that was
+  started while the switch was on stays controllable after it is turned off;
+- 「立即更新」 is hidden once the announced version **is** the installed one (that
+  is what `restart-required` means) and returns when a later release is
+  announced: a button that reinstalls what is already installed is the「我是不是
+  点了两次」confusion this banner must not create;
 - while an install is live the banner shows the install, **not**「有新版本」: two
   competing statements about one version is what makes a user press the button
   twice;

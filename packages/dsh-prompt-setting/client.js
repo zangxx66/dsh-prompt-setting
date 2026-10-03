@@ -5961,8 +5961,20 @@ window.__ModuleLoader__.load({
       const latest = typeof u.data.latest === 'string' ? u.data.latest : '';
       if (latest.length === 0) return null;
       const apply = u.apply ?? null;
-      const settled = apply !== null && apply.phase !== 'running' && apply.phase !== 'cancelling';
-      const running = apply !== null && (apply.phase === 'running' || apply.phase === 'cancelling');
+      const step = apply === null ? null : apply.status ?? apply.phase ?? null;
+      const running = apply !== null && (step === 'running' || step === 'cancelling');
+      /**
+       * The version this page has already **installed**, if any.
+       *
+       * The update button is offered only when that is not the version the banner
+       * is announcing: after a `restart-required` install the two are equal, and
+       * a button that installs what is already installed is exactly the "did I
+       * press it twice?" confusion this banner must not create. A *later* release
+       * (0.9.9 installed, 0.9.10 announced) makes them differ again and the
+       * button returns — so nothing is lost by hiding it.
+       */
+      const installedVersion =
+        apply !== null && apply.installed === true && typeof apply.version === 'string' ? apply.version : null;
       return h(
         'div',
         {
@@ -5970,10 +5982,15 @@ window.__ModuleLoader__.load({
           'data-region': 'update-notice',
           'data-update-available': 'true',
           'data-update-latest': latest,
-          'data-update-apply': apply === null ? 'idle' : String(apply.phase),
+          // The **status** the page branches on (`idle`/`running`/`done`/
+          // `failed`/`cancelled`/`unknown`) — the same value the status row
+          // carries, so the banner and the 「高级」 card can never disagree about
+          // what is happening. The host's finer step lives in
+          // `data-update-apply-phase` below (CONTRACT §18.7).
+          'data-update-apply': apply === null ? 'idle' : String(apply.status ?? apply.phase ?? 'unknown'),
           style: {
             ...cardStyle,
-            borderColor: settled && apply.phase === 'failed' ? token.stateError : token.stateWarn,
+            borderColor: step === 'failed' ? token.stateError : token.stateWarn,
             display: 'flex',
             alignItems: 'center',
             gap: 8,
@@ -6006,22 +6023,24 @@ window.__ModuleLoader__.load({
               t('updateReleaseLink'),
             )
           : null,
-        // g-032:「立即更新」. Disabled while an install runs (the cancel button
-        // beside it is the live control then) and while the page is busy with
-        // any other write, so two writes can never race.
-        apply === null || settled
-          ? h(
+        // g-032:「立即更新」. Offered while nothing is installed yet, and again
+        // when the announced version is **not** the one already installed (a
+        // later release). Disabled while an install runs (the cancel button
+        // beside it is the live control then) and while the page is busy with any
+        // other write, so two writes can never race.
+        installedVersion !== null && installedVersion === latest
+          ? null
+          : h(
               UI.Button,
               {
                 key: 'apply',
                 variant: 'primary',
                 'data-action': 'update-apply',
                 disabled: m.busy || running,
-                onClick: () => a.requestUpdateApply(latest, u.data.latestTag ?? null),
+                onClick: () => a.requestUpdateApply(latest),
               },
               t('updateApply'),
-            )
-          : null,
+            ),
         h(
           UI.Button,
           { key: 'dismiss', 'data-action': 'update-dismiss', onClick: a.dismissUpdate },
@@ -6139,8 +6158,8 @@ window.__ModuleLoader__.load({
         {
           key: 'update-apply-status',
           'data-region': 'update-apply-status',
-          'data-update-apply-phase': phase,
-          'data-update-apply-step': typeof apply.phase === 'string' ? apply.phase : null,
+          'data-update-apply-status': phase,
+          'data-update-apply-phase': typeof apply.phase === 'string' ? apply.phase : 'unknown',
           style: { display: 'flex', flexDirection: 'column', gap: 4, flex: '1 1 240px', minWidth: 0 },
         },
         ...lines.map((line, index) => h('span', { key: `line-${index}`, style: { fontSize: 13 } }, line)),
@@ -6252,8 +6271,14 @@ window.__ModuleLoader__.load({
           : null,
         // g-032: the install's state and its controls live here as well as in
         // the banner. Dismissing the banner must not lose the only place a
-        // running install can be cancelled or a failed one retried.
-        latest === null || !enabled
+        // running install can be cancelled or a failed one retried — **and
+        // neither may the update-check switch**: an install started while the
+        // switch was on can still be live after it is turned off, and hiding its
+        // row then would take away the only cancel button on the page. So a
+        // known install outranks both conditions; the switch and the
+        // "is there anything to install" line only gate the button that
+        // **starts** one.
+        (u.apply ?? null) === null && (latest === null || !enabled)
           ? null
           : h(
               'div',
@@ -6265,7 +6290,7 @@ window.__ModuleLoader__.load({
                       variant: 'primary',
                       'data-action': 'update-apply',
                       disabled: m.busy,
-                      onClick: () => a.requestUpdateApply(latest, (check === null ? null : check.latestTag) ?? null),
+                      onClick: () => a.requestUpdateApply(latest),
                     },
                     t('updateApply'),
                   )
@@ -7367,11 +7392,16 @@ window.__ModuleLoader__.load({
             if (cancelled) return;
             status = result.ok ? result.payload.status ?? null : null;
             if (status === null || status.status !== 'running') {
-              // Settled, evicted, or never real: ask the host directly, because a
-              // *running* install it knows about is still worth showing.
+              // The remembered id settled (or is gone). The host's **bare** `GET`
+              // only ever names a *running* install, so it can add a fact here —
+              // it can never replace one: a remembered `done`
+              // (`restart-required`) must survive the `null` this probe answers,
+              // or the page would drop「已安装 vX.Y.Z，请手动重启」and offer the
+              // update button again for a version that is already installed.
               const live = await requestJson(UPDATE_APPLY_PATH);
               if (cancelled) return;
-              status = live.ok ? live.payload.status ?? null : null;
+              const fresh = live.ok ? live.payload.status ?? null : null;
+              status = fresh ?? status;
             }
           } else {
             const live = await requestJson(UPDATE_APPLY_PATH);
@@ -7501,9 +7531,15 @@ window.__ModuleLoader__.load({
         await pollApply(requestId, startedAt);
       };
 
-      /** The confirmation the button opens; the install itself runs on confirm. */
-      const requestUpdateApply = (latest, latestTag) =>
-        setConfirm({ kind: 'update-apply', latest, latestTag });
+      /**
+       * The confirmation the button opens; the install itself runs on confirm.
+       *
+       * `latest` is **display only** (the modal names the version). The tag that
+       * is actually installed is re-read from the current check when the
+       * confirmation is accepted, so a stale click cannot install a version the
+       * banner no longer names — which is why no tag is passed through here.
+       */
+      const requestUpdateApply = (latest) => setConfirm({ kind: 'update-apply', latest });
 
       /** Confirm: start it, using the version the check reported. */
       const confirmUpdateApply = async () => {

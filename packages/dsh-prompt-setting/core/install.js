@@ -217,16 +217,23 @@ export function isLocalSpec(spec) {
  * whose label says "update", so it is refused and the person is told to update
  * by hand.
  *
- * The three answers are deliberately distinct, because "no plugin manager" and
- * "you are running a linked working copy" need different sentences:
+ * The answers are deliberately distinct, because "no plugin manager", "I could
+ * not read the profile" and "you are running a linked working copy" need
+ * different sentences:
  *   - `service === null` ⇒ refuse `installer-unavailable`;
+ *   - `fieldError !== null` (the profile manifest exists but could not be read
+ *     or parsed) ⇒ refuse `installer-unavailable`. **Failing closed matters
+ *     here**: an unreadable manifest is not evidence that the package is
+ *     unlinked, and treating it as "not declared" would let an install run
+ *     against a profile whose form was never established;
  *   - a local spec ⇒ refuse `development-link`;
- *   - `field === null` (the profile does not name this package) ⇒ **allowed**:
- *     installing adds a normal dependency, which is exactly what the profile
- *     being restored to a real install means.
+ *   - `field === null` **with no error** (the manifest was read and does not
+ *     name this package) ⇒ **allowed**: installing adds a normal dependency,
+ *     which is exactly what the profile being restored to a real install means.
  * @param options.service - the `pluginManager` service, or `null` when absent.
  * @param options.profileDir - the profile directory, or `null` when unknown.
  * @param options.field - the profile's own `dependencies['dsh-prompt-setting']`.
+ * @param options.fieldError - why that value could not be read, or `null`.
  * @param options.tag - the tag that would be installed, for the message.
  * @returns `{ok, code, message, manual}`.
  */
@@ -254,6 +261,19 @@ export function resolveInstallPolicy(options = {}) {
       code: REFUSAL_SERVICE_MISSING,
       message:
         'this profile\u2019s directory could not be resolved, so the current install form cannot be checked and nothing was installed; update by hand',
+      manual,
+    };
+  }
+  const fieldError = typeof options.fieldError === 'string' && options.fieldError.length > 0
+    ? options.fieldError
+    : null;
+  if (fieldError !== null) {
+    return {
+      ok: false,
+      code: REFUSAL_SERVICE_MISSING,
+      message:
+        `this profile\u2019s package.json could not be read (${fieldError}), so the current install form cannot be checked ` +
+        'and nothing was installed; update by hand',
       manual,
     };
   }

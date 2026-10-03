@@ -4979,7 +4979,8 @@ return this.configure(async () => {
 
 - 宿主端 `phase` 是更细的步骤（`installing`/`cancelling`/…），客户端分支用的 `status` 是
   `running`/`done`/`failed`/`cancelled`/`unknown`。**页面按 `status` 分支**，`phase` 只进
-  `data-update-apply-step` 标记。这条是被测试逼出来的：页面最初按 `phase` 分支，而宿主返回的
+  `data-update-apply-phase` 标记（初版曾把它塞进一个叫 `data-update-apply-step` 的标记，语义与命名
+  都不对齐；复核后统一，见 §九 必修 4）。这条是被测试逼出来的：页面最初按 `phase` 分支，而宿主返回的
   `phase` 是 `installing` ⇒ 每个「运行中」都掉进失败的 else 分支。两个名字不许互换角色，
   所以分支依据只留一个；
 - 客户端自建的失败态（网络层失败、结构化拒绝）也**补全成宿主的形状**
@@ -5040,5 +5041,73 @@ gh release upload <tag> dsh-prompt-setting-<version>.tgz
 - **页面轮询的最坏路径未在真机验证**：16 分钟预算内一直 `running` 的体验（比如等锁 2 分钟）只在
   桩里模拟过状态转换，没有真机观察；
 - **`HEAD` 预检对某些 CDN 的可能行为**：GitHub release 资产对 `HEAD` 返回 200/404 已按语义断言，
-  但真实网络下的重定向/限流未实测；预检失败（含非 2xx 的 4xx）一律拒绝安装，这是一条**偏保守**
-  的选择（宁可让用户手动更新，也不在没有确认资产存在时改动 profile）。
+  但真实网络下的重定向/限流未实测。⚠️ **本条已被复核推翻并修正**（见 §九 必修 1）：初版把预检的
+  任何 ≥400 都当拒绝，实测 `500`/`429`/`405` 会误拦可安装的更新；现在只有 `404`/`410`/`401`/`403`
+  拒绝，其余一律继续交给 pnpm。
+
+### 九、独立只读复核收口（2026-10-04，5 条必修 + 2 条顺手）
+
+复核结论 BLOCK（11 条判据中 8=BLOCK）。逐条修复，并**全部先写红用例再改产品代码**
+（每条都能复现旧行为）：
+
+1. **预检把「探针自己失败」当成拒绝（B1，已修）**：旧代码
+   `if (probe.status !== 0 && probe.ok !== true && probe.status >= 400)` 会把 `500`/`429`/`405`
+   结算成 `failed`、`error.code='unknown'`、**`installBundle` 调用 0 次**，而 `unknown` 的文案还
+   声称「the profile files were restored」——实际什么都没跑。这与 `CONTRACT.md` §18.2 自己写的
+   「a probe that cannot answer (no fetch, a throw, a 5xx) is not a refusal」**直接矛盾**，也把可安装
+   的更新挡死。现收窄为 **`404`/`410` ⇒ `asset-missing`**、**`401`/`403` ⇒ `asset-unverified`**，
+   **其余一律按「无答案」继续交给 pnpm**（含 `500`/`429`/`405`/抛错/无 `fetch`）。探针是捷径不是门禁。
+   用例：`assetStatus: 500 / 429 / 405` 与「探针抛错」四种 ⇒ 断言 `manager.calls.length === 1`、
+   最终 `phase='done'`、`application='restart-required'`、`error===null`。
+2. **A1 检测失败默认放行（B2，已修）**：`installDependencyField` 对「manifest 存在但不可读/非法
+   JSON」返回 `{value:null, error}`，而调用点只取 `value` ⇒ 被当成「profile 未声明该包」⇒ **放行**
+   ⇒ 在一个从未被检查过的 profile 上执行安装。现在 `resolveInstallPolicy` 新增 `fieldError` 入参，
+   **非空即拒绝**（`installer-unavailable`，文案含「could not be read / nothing was installed」）；
+   `ENOENT`（文件不存在）仍返回 `error:null` ⇒ 继续放行，语义是「profile 真的没声明这个包」。
+   用例：非法 JSON ⇒ `ok:false` + `installer-unavailable` + `manager.calls.length===0`；
+   删掉 manifest ⇒ `ok:true` 且装成功（两侧都在）。
+3. **客户端 resume 覆盖最终态（B3，已修）**：remembered 查询得到非 running 后再发裸 `GET`，而宿主的
+   裸 `GET` **只答 live** ⇒ 返回 `null` ⇒ 无条件覆盖掉 remembered 的 `done` ⇒ 页面丢掉「已安装
+   vX.Y.Z，请手动重启」，反而回到「立即更新」按钮。现在只在**新答案非空**时覆盖
+   （`status = fresh ?? status`）。用例：预置 sessionStorage id + `?requestId=` 答 `done` + 裸 GET 答
+   `null` ⇒ 断言出现「已安装 v0.9.9 / 手动重启 dsh web」且 `data-action=update-apply` 计数 **0**。
+4. **契约与实现不一致（note 1，已修）**：`data-update-apply` 实际取 `apply.phase`（`installing`…），
+   而 §18.7 写它等于 `status`（`running`…）⇒ 运行态两套说法。现统一为：
+   `data-update-apply` = **status**（与页面分支一致）、`data-update-apply-status` = status（状态行上）、
+   `data-update-apply-phase` = **phase**；删掉冗余的 `data-update-apply-step`。§18.3/§18.7 同步改写，
+   并写明「status 与 phase 是两个事实的两个名字，永不互换」。
+5. **运行中安装失去取消入口（note 3，已修）**：开关关闭时「高级」卡被 `latest === null || !enabled`
+   挡住，而安装仍在跑，且 banner 也不渲染 ⇒ **全页面没有任何取消入口**。现在**存在活跃安装优先于
+   开关状态**（`(u.apply ?? null) === null && (latest === null || !enabled)` 才不渲染）——开关只门禁
+   「发起安装」的按钮，不门禁「已经在跑的那个」。用例走真实路径：开关打开 → 有 running ⇒ 关掉开关
+   ⇒ 断言「高级」卡仍有 1 个取消控件、banner 归零、且不重新提供第二个安装按钮。
+6. **顺手：`latestTag` 是死参数（note 2，已删）**：`requestUpdateApply(latest, latestTag)` 的第二个参数
+   从未被读（确认时重新从 `update.data` 取 tag，这正是「过期点击不会装错版本」的机制）。签名收成单参。
+7. **顺手：两条 import 挤在一行（note 4，已拆）**：`} from './core/update.js';import {` 拆成两行。
+8. **顺手（复核未提，自查发现）**：删掉 `index.js` 里 5 个**未被使用**的 `core/install.js` 导入
+   （`REFUSAL_DEVELOPMENT_LINK`/`REFUSAL_NO_UPDATE`/`buildReleaseAssetUrl`/`describeInstalledSpec`/
+   `releasePageForTag`——它们在 `core/` 内部消费，`index.js` 只透传 code）；并把 banner 边框色的判据
+   从 `settled && apply.phase === 'failed'` 统一到 `step === 'failed'`，删掉随之失效的 `settled` 变量。
+   两处都不改行为（测试全绿且无断言调整）。
+
+**顺带收紧的一处产品行为（由必修 3 的用例逼出）**：`done`（`restart-required`）**且已装版本 === 提示
+版本**时不再渲染「立即更新」按钮——按钮装的东西和盘上已有的东西相同时，用户会怀疑自己点了两次；
+而当上游发布**更新的**版本（`installedVersion !== latest`）时按钮自动回来，所以没有丢失能力。
+契约 §18.7 已写明。
+
+**复核后的实测证据**
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test` | **569 / 569 pass / 0 fail**（复核前 564，本轮 +5：探针无答案 1、不可读 manifest 1、缺 manifest 1、remembered-done 1、开关关闭后仍可控 1） |
+| `test/install.test.mjs` | `node --test test/install.test.mjs` | **25 / 25 pass / 0 fail**（复核前 22，+3） |
+| `test/client.test.mjs` | `node --test test/client.test.mjs` | **143 / 143 pass / 0 fail**（复核前 140，+3：remembered-done 1、开关关闭后仍可控 1，另 1 条为既有用例的标记断言收紧） |
+| **改坏就红 D**（探针 5xx 当拒绝） | 把预检拒绝条件还原成 `probe.status >= 400` ⇒ 跑 `test/install.test.mjs` | 「a probe that cannot answer is not a refusal」红（`manager.calls.length` 0 ≠ 1）；`cp` 还原后 25/25 |
+| **改坏就红 E**（忽略 fieldError） | 把 `fieldError` 传参去掉 ⇒ 跑 `test/install.test.mjs` | 「an unreadable profile manifest refuses instead of installing blind」红（`ok:true` ≠ `ok:false`）；`cp` 还原后 25/25 |
+| **改坏就红 F**（resume 无条件覆盖） | 把 `status = fresh ?? status` 还原成 `status = fresh` ⇒ 跑 `test/client.test.mjs` | 「a remembered finished install keeps its verdict」红（按钮计数 1 ≠ 0）；`cp` 还原后 143/143 |
+| **改坏就红 G**（开关门禁运行态） | 把渲染条件还原成 `latest === null \|\| !enabled` ⇒ 跑 `test/client.test.mjs` | 「a live install keeps its controls after the update switch is turned off」红（取消计数 0 ≠ 1）；`cp` 还原后 143/143 |
+
+**复核后仍未验证项（增量）**：与 §107 八相同（真机端到端未跑、`0.1.1` 无资产、`cancelling` 竞态仅桩、
+轮询最坏路径未真机观察、`HEAD` 预检在真实 CDN 重定向/限流下未实测）。**新增一条**：预检对 `401/403`
+判 `asset-unverified` 的分支只有桩证据——GitHub 对不存在的 release 资产实际答 `404`，私有/受限资产
+才会 `403`，本仓库的 release 都是公开的，所以这条路径在真机上可能永远不会走到（保守分支）。

@@ -76,7 +76,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   全程**绝不 5xx**（形状错才是 400）。**发布流程新增一步 + 长期约束（必读）**：每个 release 必须上传
   `npm pack` 产物资产，命名固定 `dsh-prompt-setting-<version>.tgz`；本包**不得**新增
   `postinstall`/`install` 脚本（带它们的 tarball 会被 `ERR_PNPM_IGNORED_BUILDS` 拦）。契约见
-  `CONTRACT.md` §18，实测与依据见 `NOTES.md` §107。
+  `CONTRACT.md` §18，实测与依据见 `NOTES.md` §107。复核后三处收紧：**探针失败不再误拦更新**（只有
+  资产明确缺失 `404`/`410` 或不可匿名获取 `401`/`403` 才拒绝，`500`/`429`/`405` 等「探测不出结果」
+  一律继续安装并交给 pnpm 裁决）；**profile 清单不可读时拒绝安装**（不再当成「未声明该包」而跳过
+  `link:` 检查）；**关掉「检查更新」开关后，已在运行的安装仍可取消**（开关只门禁安装入口，不门禁
+  已经在跑的那一个）。另：已安装版本与提示版本相同时不再显示「立即更新」按钮（避免「我是不是点了
+  两次」的困惑），上游发布更新的版本时按钮自动回来。
   **"Update now": the host installs the release tarball through the official plugin manager, and you do the
   restart (g-032)**: the banner gains an **Update now** button which opens a **second confirmation** that says the
   restart is manual. On confirm the **host** calls the official `installBundle(spec, {enabled:true, requestId})`

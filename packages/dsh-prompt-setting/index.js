@@ -79,17 +79,12 @@ import {
   INSTALL_REQUEST_LIMIT,
   REFUSAL_ASSET_MISSING,
   REFUSAL_ASSET_UNVERIFIED,
-  REFUSAL_DEVELOPMENT_LINK,
   REFUSAL_INVALID_REQUEST,
-  REFUSAL_NO_UPDATE,
   REFUSAL_SERVICE_MISSING,
-  buildReleaseAssetUrl,
   classifyInstallFailure,
   createInstallTable,
   describeInstallFailure,
-  describeInstalledSpec,
   publicInstallStatus,
-  releasePageForTag,
   resolveInstallPolicy,
   resolveInstallTarget,
   summarizeDiagnostic,
@@ -160,7 +155,8 @@ import {
   UPDATE_CHECK_TIMEOUT_MS,
   UPDATE_CHECK_TTL_MS,
   createUpdateChecker,
-} from './core/update.js';import {
+} from './core/update.js';
+import {
   EXPORT_LAYERS,
   buildExport,
   parseExport,
@@ -2487,6 +2483,12 @@ function mount(ctx, config, cleanups) {
       service,
       profileDir,
       field: field === null ? null : field.value,
+      // An unreadable/unparsable profile manifest refuses rather than passing as
+      // "this profile does not declare the package": the install form was never
+      // established, and A1's whole point is not to write to a profile we could
+      // not inspect. `installDependencyField` answers `null` for a **missing**
+      // file, so "restore a real install" still works.
+      fieldError: field === null ? null : field.error,
       tag: target.tag,
     });
     if (policy.ok !== true) {
@@ -2517,26 +2519,23 @@ function mount(ctx, config, cleanups) {
     const { service, target } = context;
     try {
       const probe = await probeReleaseAsset(target.url);
-      if (probe.status === 404) {
-        const described = describeInstallFailure(REFUSAL_ASSET_MISSING, {
-          tag: target.tag,
-          version: target.version,
-        });
-        installTable.fail(requestId, {
-          code: described.code,
-          message: described.message,
-          diagnostic: `${target.url} answered HTTP 404`,
-          manual: described.manual,
-          retryable: described.retryable,
-        });
-        return;
-      }
-      if (probe.status !== 0 && probe.ok !== true && probe.status >= 400) {
-        const kind = classifyInstallFailure({ status: probe.status, probe: true });
-        const described = describeInstallFailure(kind === 'network' ? REFUSAL_ASSET_UNVERIFIED : kind, {
-          tag: target.tag,
-          version: target.version,
-        });
+      // The probe is a **shortcut, never a gate**: only "the asset is definitely
+      // not there / definitely not reachable anonymously" refuses. `404`/`410`
+      // mean the release carries no such asset — the state every release
+      // published before this feature existed is in — and `401`/`403` mean it
+      // cannot be fetched anonymously. **Every other answer is "I could not find
+      // out" and must NOT block an install**: `500`, `429`, `405`, a redirect
+      // that never resolved, a throw, no `fetch` at all. The probe exists to
+      // answer the *expected* case in seconds; a probe that cannot answer falls
+      // through to pnpm's own verdict instead of becoming a refusal the person
+      // cannot act on (CONTRACT §18.2).
+      const refusal = probe.status === 404 || probe.status === 410
+        ? REFUSAL_ASSET_MISSING
+        : probe.status === 401 || probe.status === 403
+          ? REFUSAL_ASSET_UNVERIFIED
+          : null;
+      if (refusal !== null) {
+        const described = describeInstallFailure(refusal, { tag: target.tag, version: target.version });
         installTable.fail(requestId, {
           code: described.code,
           message: described.message,

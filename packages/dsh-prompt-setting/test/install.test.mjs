@@ -110,7 +110,10 @@ function makeTransport(options = {}) {
   const fetch = async (url, init = {}) => {
     const method = String(init.method ?? 'GET');
     calls.push({ url: String(url), method });
-    if (method === 'HEAD') return { ok: options.assetStatus === 200, status: options.assetStatus ?? 200 };
+    if (method === 'HEAD') {
+      if (options.throwOnProbe === true) throw new Error('ECONNRESET');
+      return { ok: options.assetStatus === 200, status: options.assetStatus ?? 200 };
+    }
     if (options.release === 'network') throw new Error('ECONNREFUSED');
     if (options.release === 'no-release') return jsonResponse({}, 404);
     return jsonResponse(options.release ?? { tag_name: '0.2.0', html_url: null, published_at: '2026-10-01T00:00:00Z' });
@@ -317,6 +320,16 @@ test('install: A1 — a link:/path install is refused, a missing dependency is a
   assert.equal(resolveInstallPolicy({ service: {}, profileDir, field: null, tag: '0.2.0' }).ok, true);
   // A registry spec is upgradeable.
   assert.equal(resolveInstallPolicy({ service: {}, profileDir, field: '0.1.1', tag: '0.2.0' }).ok, true);
+  // A profile manifest that could not be read is **not** "this package is not
+  // declared": the install form was never established, so it fails closed.
+  const unreadable = resolveInstallPolicy({ service: {}, profileDir, field: null, fieldError: 'Unexpected token }', tag: '0.2.0' });
+  assert.equal(unreadable.ok, false);
+  assert.equal(unreadable.code, REFUSAL_SERVICE_MISSING);
+  assert.match(unreadable.message, /could not be read/);
+  assert.match(unreadable.message, /nothing was installed/);
+  // A missing manifest (`ENOENT`) is reported as "no error" and stays allowed.
+  assert.equal(resolveInstallPolicy({ service: {}, profileDir, field: null, fieldError: null, tag: '0.2.0' }).ok, true);
+
   // No service, and no profile directory, are both refusals with their own code.
   assert.equal(resolveInstallPolicy({ service: null, profileDir, field: null, tag: '0.2.0' }).code, REFUSAL_SERVICE_MISSING);
   assert.equal(resolveInstallPolicy({ service: {}, profileDir: null, field: null, tag: '0.2.0' }).code, REFUSAL_SERVICE_MISSING);
@@ -559,6 +572,39 @@ test('install route: a link: profile is refused with a manual route, and nothing
   assert.equal(transport.calls.filter((entry) => entry.method === 'HEAD').length, 0);
 });
 
+test('install route: an unreadable profile manifest refuses instead of installing blind', async () => {
+  // The manifest exists but is not JSON: `installDependencyField` reports
+  // `{value: null, error}`, and taking only `value` would read as "this profile
+  // does not declare the package" — i.e. A1 would be skipped on a profile that
+  // could not be inspected at all.
+  writeFileSync(join(profileDir, 'package.json'), '{ "dependencies": { "dsh-prompt-setting": "0.1.1" ', 'utf8');
+  const transport = makeTransport();
+  const manager = makeManager();
+  const { route } = mountHost({ manager, transport });
+
+  const refused = await startInstall(route);
+  assert.equal(refused.ok, false);
+  assert.equal(refused.code, REFUSAL_SERVICE_MISSING);
+  assert.match(refused.message, /could not be read/);
+  assert.equal(manager.calls.length, 0, 'nothing is installed when the profile cannot be inspected');
+  assert.equal(transport.calls.filter((entry) => entry.method === 'HEAD').length, 0);
+});
+
+test('install route: a profile that simply lacks the dependency is still allowed to install it', async () => {
+  // The other side of the same branch: **no** manifest at all is a real,
+  // readable answer ("this profile does not declare the package"), which is what
+  // restoring a real install means.
+  rmSync(join(profileDir, 'package.json'), { force: true });
+  const transport = makeTransport();
+  const manager = makeManager();
+  const { route } = mountHost({ manager, transport });
+  const started = await startInstall(route);
+  assert.equal(started.ok, true);
+  await settle();
+  assert.equal(manager.calls.length, 1, 'a missing manifest is not an unreadable one');
+  assert.equal((await readStatus(route, started.status.requestId)).status.phase, 'done');
+});
+
 test('install route: a release with no asset fails as asset-missing, without calling pnpm', async () => {
   // The measured state of the published 0.1.1 release: zero assets. This is the
   // expected outcome today, so it must be a named branch with a real sentence.
@@ -577,6 +623,37 @@ test('install route: a release with no asset fails as asset-missing, without cal
   assert.equal(status.status.error.retryable, true);
   assert.match(status.status.error.diagnostic, /404/);
   assert.equal(manager.calls.length, 0, 'a 404 asset never reaches pnpm, so the answer is seconds not minutes');
+});
+
+test('install route: a probe that cannot answer is not a refusal — the install goes to pnpm', async () => {
+  // The probe is a shortcut, never a gate. `500` (and `429`, and `405`, and a
+  // throw) mean "I could not find out", which must not block an install: the
+  // old behaviour refused with an unclassified failure whose sentence claimed
+  // the profile files had been restored when nothing had run at all.
+  for (const assetStatus of [500, 429, 405]) {
+    writeProfile({ 'dsh-prompt-setting': '0.1.1' });
+    const transport = makeTransport({ assetStatus });
+    const manager = makeManager();
+    const { route } = mountHost({ manager, transport });
+    const started = await startInstall(route);
+    assert.equal(started.ok, true, `${assetStatus}: the install is started`);
+    await settle();
+    assert.equal(manager.calls.length, 1, `${assetStatus}: pnpm is asked`);
+    assert.equal(manager.calls[0].spec, ASSET_URL);
+    const status = await readStatus(route, started.status.requestId);
+    assert.equal(status.status.phase, 'done', `${assetStatus}: the verdict comes from the manager`);
+    assert.equal(status.status.application, 'restart-required');
+    assert.equal(status.status.error, null, `${assetStatus}: nothing was refused`);
+  }
+  // A probe that throws (the transport itself fails) is the same "no answer".
+  writeProfile({ 'dsh-prompt-setting': '0.1.1' });
+  const throwing = makeTransport({ assetStatus: 200, throwOnProbe: true });
+  const manager = makeManager();
+  const { route } = mountHost({ manager, transport: throwing });
+  const started = await startInstall(route);
+  await settle();
+  assert.equal(manager.calls.length, 1, 'a throwing probe still installs');
+  assert.equal((await readStatus(route, started.status.requestId)).status.phase, 'done');
 });
 
 test('install route: an unverifiable asset is reported as unverified, not as missing', async () => {

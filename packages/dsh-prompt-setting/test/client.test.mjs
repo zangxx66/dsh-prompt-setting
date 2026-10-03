@@ -6741,8 +6741,12 @@ test('client: confirming starts the install — one POST, then polling, then the
   assert.equal(posts[0].url, PATHS.updateApply);
   assert.deepEqual(JSON.parse(posts[0].init.body), { tag: 'v0.9.9' }, 'the tag the check published is the tag installed');
 
-  const status = oneBy(tree, 'data-update-apply-phase', 'running');
+  const status = oneBy(tree, 'data-update-apply-status', 'running');
   assert.equal(status.props['data-region'], 'update-apply-status');
+  // The banner's marker carries the **status** the page branches on; the finer
+  // host step is a separate, correctly named marker.
+  assert.equal(updateBanner(tree)[0].props['data-update-apply'], 'running');
+  assert.equal(status.props['data-update-apply-phase'], 'installing');
   assert.equal(
     collect(tree, (node) => node.props && node.props['data-action'] === 'update-apply-cancel').length,
     1,
@@ -6766,7 +6770,7 @@ test('client: confirming starts the install — one POST, then polling, then the
   );
   await flushApply();
   tree = page.draw();
-  assert.equal(oneBy(tree, 'data-update-apply-phase', 'done').props['data-region'], 'update-apply-status');
+  assert.equal(oneBy(tree, 'data-update-apply-status', 'done').props['data-region'], 'update-apply-status');
   const done = strings(tree).join(' ');
   assert.match(done, /已安装 v0\.9\.9/);
   assert.match(done, /手动重启 dsh web/);
@@ -6806,7 +6810,7 @@ test('client: a failed install shows the host category and a retry, and never re
   await flushApply();
   tree = page.draw();
 
-  assert.equal(oneBy(tree, 'data-update-apply-phase', 'failed').props['data-region'], 'update-apply-status');
+  assert.equal(oneBy(tree, 'data-update-apply-status', 'failed').props['data-region'], 'update-apply-status');
   const text = strings(tree).join(' ');
   assert.match(text, /no .*asset/, 'the host’s own sentence is rendered');
   assert.match(text, /404/, 'the diagnostic is shown, so a 404 is never a silent failure');
@@ -6859,11 +6863,99 @@ test('client: a reloaded page resumes a running install it can no longer name', 
   // its answer — the page never "remembers" a phase of its own.
   const probes = urlsFor(page, PATHS.updateApply).filter((url) => !url.includes('requestId='));
   assert.equal(probes.length >= 1, true, 'a fresh page asks whether anything is installing');
-  assert.equal(oneBy(tree, 'data-update-apply-phase', 'running').props['data-region'], 'update-apply-status');
+  assert.equal(oneBy(tree, 'data-update-apply-status', 'running').props['data-region'], 'update-apply-status');
   assert.equal(
     collect(tree, (node) => node.props && node.props['data-action'] === 'update-apply-cancel').length,
     1,
     'the resumed install is cancellable, so a reload loses nothing',
+  );
+});
+
+test('client: a remembered finished install keeps its verdict, and never re-offers the button', async () => {
+  // The reload path: the tab remembers the request id, that id settles as
+  // `restart-required`, and the host's **bare** `GET` (which only ever names a
+  // *running* install) answers `null`. Overwriting the settled answer with that
+  // `null` would drop the one sentence the user needs and offer「立即更新」again
+  // for a version that is already installed.
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.updateCheck]: { payload: updateAvailableWithTag() },
+      [PATHS.updateApply]: (url, init) =>
+        init && init.method === 'POST'
+          ? { payload: { ok: true, status: applyStatus() } }
+          : url.includes('requestId=')
+            ? {
+                payload: {
+                  ok: true,
+                  status: applyStatus({
+                    phase: 'done',
+                    status: 'done',
+                    application: 'restart-required',
+                    restartRequired: true,
+                    installed: true,
+                    cancellable: false,
+                    finishedAt: '2024-06-01T00:02:00.000Z',
+                  }),
+                },
+              }
+            : { payload: { ok: true, status: null } },
+    }),
+  });
+  installApplyMirror(page, JSON.stringify({ requestId: 'i1-test', at: Date.now() }));
+  const tree = await page.flush();
+
+  assert.match(strings(tree).join(' '), /已安装 v0\.9\.9/, 'the installed version is still reported');
+  assert.match(strings(tree).join(' '), /手动重启 dsh web/, 'and so is the manual restart');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-action'] === 'update-apply').length,
+    0,
+    'a settled install is not offered again',
+  );
+  assert.equal(oneBy(tree, 'data-update-apply-status', 'done').props['data-region'], 'update-apply-status');
+  assert.equal(oneBy(tree, 'data-update-apply', 'done').props['data-region'], 'update-notice');
+});
+
+test('client: a live install keeps its controls after the update switch is turned off', async () => {
+  // The real path: the switch is on, an install is started, and the user then
+  // turns the switch off. `toggleUpdate` drops the check's own facts (`data`,
+  // `check`) but must keep the install — and the install row must survive the
+  // switch being off, or the page is left with a running install and **no**
+  // cancel button anywhere (the banner follows the switch and renders nothing).
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.updateCheck]: (url, init) =>
+        init && init.method === 'PUT'
+          ? { payload: updateFixture({ enabled: false }) }
+          : { payload: updateAvailableWithTag() },
+      [PATHS.updateApply]: { payload: { ok: true, status: applyStatus() } },
+    }),
+  });
+  let tree = await openTab(page, 'advanced');
+  // While the switch is on there are two live controls — the banner and the
+  // 「高级」card — and both cancel the same request.
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-action'] === 'update-apply-cancel').length,
+    2,
+    'the install is running and cancellable in both places while the switch is on',
+  );
+
+  clickButton(tree, { 'data-action': 'update-toggle' });
+  await settle();
+  tree = page.draw();
+
+  assert.equal(oneBy(tree, 'data-region', 'update-setting').props['data-update-enabled'], 'false');
+  assert.equal(updateBanner(tree).length, 0, 'the banner follows the switch (no facts to show)');
+  const card = oneBy(tree, 'data-region', 'update-apply');
+  assert.equal(card.props['data-region'], 'update-apply');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-action'] === 'update-apply-cancel').length,
+    1,
+    'the running install is still cancellable with the check switch off',
+  );
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-action'] === 'update-apply').length,
+    0,
+    'and the switch being off does not re-offer a second install',
   );
 });
 
@@ -6892,7 +6984,7 @@ test('client: a structured refusal from the host is shown as its own sentence, a
   tree = page.draw();
 
   assert.match(strings(tree).join(' '), /link:\.\.\/x/, 'the refusal’s own reason reaches the page');
-  assert.equal(oneBy(tree, 'data-update-apply-phase', 'failed').props['data-region'], 'update-apply-status');
+  assert.equal(oneBy(tree, 'data-update-apply-status', 'failed').props['data-region'], 'update-apply-status');
   const posts = page.router.calls.filter((call) => call.init && call.init.method === 'POST');
   assert.equal(posts.length, 1, 'a refusal is not retried in a loop');
 });
