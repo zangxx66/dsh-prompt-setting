@@ -289,6 +289,76 @@ function readDshPeerRange() {
 }
 
 /**
+ * This package's public repository URL, read once from its own manifest — the
+ * same single source {@link DSH_PEER_RANGE} uses. The settings page turns it
+ * into the link beside the version (Revision 17), so it is reported by the ping
+ * rather than written into the client: one manifest field, one place to edit.
+ *
+ * Never throws. An unreadable manifest, or one without a usable field, answers
+ * `null`, which the ping reports as-is and the page renders as plain text.
+ */
+const OWN_REPOSITORY_URL = readOwnRepositoryUrl();
+
+/**
+ * @returns this package's repository URL, or `null`.
+ */
+function readOwnRepositoryUrl() {
+  try {
+    return repositoryUrlOf(JSON.parse(readFileSync(OWN_MANIFEST_URL, 'utf8')));
+  } catch {
+    // Fall through: no probe may be the reason a boot fails.
+  }
+  return null;
+}
+
+/**
+ * The repository URL a manifest declares, in npm's own order of authority:
+ * `repository.url`, then a bare `repository` string, then `homepage` with its
+ * `#…` fragment dropped.
+ *
+ * `git+https://….git` is how a manifest names a *git remote*; neither the
+ * `git+` prefix nor the trailing `.git` belongs in the address a reader opens,
+ * so both are stripped from the first two sources. A `homepage` is a page
+ * already, so only its fragment is removed.
+ *
+ * Never throws and never guesses: a manifest with no usable field answers
+ * `null`, and the client then shows the version as plain text rather than a
+ * link to nowhere (CONTRACT.md §13.8).
+ * @param manifest - a parsed `package.json`, or anything else.
+ * @returns the repository URL, or `null`.
+ */
+export function repositoryUrlOf(manifest) {
+  const repository = manifest !== null && typeof manifest === 'object' ? manifest.repository : null;
+  const declared =
+    repository !== null && typeof repository === 'object'
+      ? repository.url
+      : typeof repository === 'string'
+        ? repository
+        : null;
+  const git = asGitAddress(declared);
+  if (git !== null) return git;
+  const homepage = manifest !== null && typeof manifest === 'object' ? manifest.homepage : null;
+  if (typeof homepage === 'string') {
+    const page = homepage.split('#')[0].trim();
+    if (page.length > 0) return page;
+  }
+  return null;
+}
+
+/**
+ * A `repository` value as the address a reader can open.
+ * @param value - the manifest's `repository.url`, or a bare `repository`.
+ * @returns the cleaned URL, or `null` when it is not a usable string.
+ */
+function asGitAddress(value) {
+  if (typeof value !== 'string') return null;
+  let url = value.trim();
+  if (url.startsWith('git+')) url = url.slice('git+'.length);
+  if (url.endsWith('.git')) url = url.slice(0, -'.git'.length);
+  return url.length > 0 ? url : null;
+}
+
+/**
  * Run the import-time compatibility self-check and print **at most one** line.
  *
  * Silent while the installed DSH is inside the tested range — a plugin that
@@ -2490,6 +2560,11 @@ function mount(ctx, config, cleanups) {
                 ok: true,
                 plugin: PLUGIN_NAME,
                 version: PLUGIN_VERSION,
+                // Revision 17: the page links the version to this package's own
+                // repository. Derived from this package's manifest at import
+                // time (never hardcoded on either side); `null` when the manifest
+                // declares none, which the page renders as plain text.
+                repositoryUrl: OWN_REPOSITORY_URL,
                 time: new Date().toISOString(),
                 clientRenderer: report.renderer,
                 clientReportedAt: report.reportedAt,

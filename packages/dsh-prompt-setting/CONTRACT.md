@@ -481,11 +481,33 @@ host publishes.
 
 ---
 
+**Revision 17 (the version moves beside the title, and links to the repository —
+g-029).** Additive on the wire, and a placement change on the page:
+
+- `GET /prompt-setting/ping` answers one more field, **`repositoryUrl`** —
+  derived at import time from this package's own `package.json`
+  (`repositoryUrlOf`: `repository.url` with its `git+` prefix and `.git` suffix
+  stripped, else a bare `repository` string treated the same way, else
+  `homepage` with its `#…` fragment dropped, else `null`). Never throws: an
+  unreadable or field-less manifest answers `null`;
+- the version **moves from the status line to the page title**: it renders in the
+  heading's own row as `data-role="plugin-version"`, and the status line no
+  longer renders a version node at all. The root container keeps
+  `data-plugin-version`, and both failure cards keep their `unknown` (§13.8);
+- with a `repositoryUrl` the node is an `a` element (`target="_blank"`,
+  `rel="noreferrer noopener"`) whose `href` is that URL; with `null` it is a
+  `span` marked `data-plugin-repository="unknown"` — **plain text, not a link**;
+- neither half writes a repository URL (or a version) down: the URL is the
+  ping's, the version is the ping's, and the manifest is the only place either
+  can be edited.
+
+---
+
 ## 1. Routes and methods
 
 | Path | Methods | Purpose |
 | --- | --- | --- |
-| `/prompt-setting/ping` | `GET` | Stage 1A liveness probe. Behaviour unchanged, plus `clientBuild` since Revision 6 (§14.2) and the page's own `version` read since Revision 16 (§13.8). |
+| `/prompt-setting/ping` | `GET` | Stage 1A liveness probe. Behaviour unchanged, plus `clientBuild` since Revision 6 (§14.2), the page's own `version` read since Revision 16 and `repositoryUrl` since Revision 17 (§13.8). |
 | `/prompt-setting/snapshot` | `GET` | Base + effective section views, frozen verdict, layering. |
 | `/prompt-setting/overrides` | `GET` | Both layers and the merged list. |
 | `/prompt-setting/overrides` | `PUT` | Upsert **the reserved section** into one layer; any other name is `403` (Revision 7, §4.1). |
@@ -1636,9 +1658,10 @@ screen instead of the raw enum.
 
 Since g-015 the settings page is four first-level tabs, in a fixed order, with
 the first one open by default. Above them there are exactly three things: the
-title, one line of deciding facts, and the session selector every tab shares —
-the selector itself is **one line** until「更改」is clicked (§13.7), so the tab
-bar and the tab panel are on the first screen.
+title line — which carries the plugin version beside the heading since Revision
+17 (§13.8) — one line of deciding facts, and the session selector every tab
+shares — the selector itself is **one line** until「更改」is clicked (§13.7), so
+the tab bar and the tab panel are on the first screen.
 
 | order | `data-tab-value` | tab | what it is |
 | --- | --- | --- | --- |
@@ -1849,33 +1872,47 @@ it from exactly one place: the `version` field of the ping it already sends
 (`GET /prompt-setting/ping`, §1). The client half carries **no version literal of
 its own** — asserted against the real file, by quoting the current version and
 requiring its absence — because a second copy is a second thing to keep in sync,
-which is the drift this display exists to end.
+which is the drift this display exists to end. The repository URL it links to
+comes from that **same** answer (`repositoryUrl`, Revision 17), so neither half
+writes one down either.
 
-- the **root container** carries `data-plugin-version="<version>"`: the ping's
+- **Where it renders (Revision 17):** in the page's **title row**, as a sibling
+  of the `h2` heading, marked `data-role="plugin-version"` — the page's identity,
+  not a status chip. The **status line renders no version node at all**
+  (`data-region="status"` carries the mounted/frozen/build verdicts only), so
+  the placement is unique: exactly one `data-role="plugin-version"` node on the
+  page;
+- **the text** is `v` + the version (`v0.1.1`), or `stPluginVersionUnknown`
+  (「版本未知」 / `Version unknown`) when the ping carried no usable one. The
+  node's `title` is `stPluginVersion` (「插件版本」 / `Plugin version`);
+- **the link:** with a `repositoryUrl` the node is an `a` element whose `href` is
+  exactly that URL, with `target="_blank"` and `rel="noreferrer noopener"`, and
+  `data-plugin-repository` carries the same URL. With `null` it is a `span`
+  marked `data-plugin-repository="unknown"` — **plain text, not clickable** — and
+  the version text renders just the same. An unseen URL is never guessed and an
+  empty `href` is never emitted: both would send the reader somewhere no manifest
+  names. A known URL with an unknown version is still a link;
+- **the root container** carries `data-plugin-version="<version>"`: the ping's
   `version` verbatim, or the string `unknown`. **Every** root container carries
   it, in every render state — the real page, the render-failure card
   (`data-renderer="fallback"`, `data-render-state="error"`) and the load-failure
   card (`data-renderer="none"`), the last two always `unknown` — so a probe reads
   one attribute instead of knowing which state is supposed to carry which marker;
-- the **status line** (`data-region="status"`) renders one more tag from the
-  `stPluginVersion` copy: `插件版本: v<version>` / `Plugin version: v<version>`;
-- the version comes from the **same answer** as the build stamp (`data-build`,
-  `data-build-server`, `data-build-match`, §14.3): one ping, one host boot, so
-  the two facts on screen can never describe two different hosts;
+- the version (and the URL) come from the **same answer** as the build stamp
+  (`data-build`, `data-build-server`, `data-build-match`, §14.3): one ping, one
+  host boot, so the facts on screen can never describe two different hosts;
 - **`unknown`** — the same asymmetry as the build stamp, for the same reason: a
   failed or unreachable ping, a body without `version`, a non-string value
   (`42`, `{}`, `null`), or a string that declares nothing (the empty string, or
-  only whitespace). The marker is then `unknown` and the tag renders
-  `stPluginVersionUnknown` (「版本未知」 / `Version unknown`). A version no host
-  answered with is **never** rendered: an invented number is worse than an
-  honest「未知」;
+  only whitespace). A version no host answered with is **never** rendered: an
+  invented number is worse than an honest「未知」;
 - a value that **does** carry text is published and rendered **byte for byte**:
   `'   '` is not a version, but trimming the padding off a real one is not this
   page's decision either — only the emptiness check looks at whitespace, and the
   value that is kept and rendered is the ping's own string.
 
-The cost is one attribute and one tag on a request the page already makes: no new
-route, no new field, no new request.
+The cost is one attribute, one node and one extra ping field on a request the page
+already makes: no new route and no new request.
 
 ---
 
@@ -1903,7 +1940,8 @@ over by DSH, which removed the easy manual check as well.)
 
 ### 14.2 `clientBuild` in the ping
 
-`GET /prompt-setting/ping` answers the stage 1A shape plus one field. The body
+`GET /prompt-setting/ping` answers the stage 1A shape plus the fields added since
+(`clientBuild` here; `repositoryUrl` in Revision 17, §13.8). The body
 below is a **shape example**: `hash`, `size` and `mtime` all move with the
 bundle's bytes and the file's timestamp, so the numbers in it are placeholders —
 not this machine's (and not any machine's) current values. Comparing them with a
@@ -1914,6 +1952,7 @@ live probe would read a normal rebuild as a defect.
   "ok": true,
   "plugin": "dsh-prompt-setting",
   "version": "0.1.1",
+  "repositoryUrl": "https://github.com/zangxx66/dsh-prompt-setting",
   "time": "2026-09-28T12:00:00.000Z",
   "clientRenderer": "fallback",
   "clientReportedAt": "2026-09-28T12:00:00.000Z",
@@ -1931,6 +1970,12 @@ both.
 - `size` — the length of that region in **UTF-16 code units** (not bytes: see
   §14.4 for why the browser and the host can only agree on this length);
 - `mtime` — the file's modification time as an ISO 8601 string;
+- `repositoryUrl` — **Revision 17**: this package's own repository, derived at
+  import time from its `package.json` (`repositoryUrlOf`: `repository.url`, else a
+  bare `repository` string, else `homepage` — each with its git decoration
+  `git+…​.git` or `#fragment` removed), or `null` when the manifest declares none.
+  It is answered here so the page can link the version (§13.8) without either half
+  writing a URL down;
 - `clientBuild` is **`null`**, with the rest of the response unchanged and the
   status still `200`, when the bundle cannot be read, or when it is readable but
   its marker region is unusable (markers removed, duplicated or reversed). A

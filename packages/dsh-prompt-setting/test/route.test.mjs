@@ -366,6 +366,9 @@ test('host: GET /prompt-setting/ping reports the renderer and the live client bu
     'clientReportedAt',
     'ok',
     'plugin',
+    // Revision 17: the repository URL the page links the version to, derived
+    // from this package's own manifest.
+    'repositoryUrl',
     'time',
     'version',
   ]);

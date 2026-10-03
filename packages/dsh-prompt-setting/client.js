@@ -24,9 +24,10 @@
  *      「我的 Prompt」; `reset=true` clears the whole layer), each behind its own
  *      second confirmation, plus the full status block.
  *
- * Above the tabs there are exactly three things: the title, one line of
- * deciding facts (mounted / frozen three-state / build stamp / plugin version)
- * and the session selector every tab shares — sourced from the **props**
+ * Above the tabs there are exactly three things: the title line (which carries
+ * the plugin version beside the heading, Revision 17), one line of deciding
+ * facts (mounted / frozen three-state / build stamp), and the session selector
+ * every tab shares — sourced from the **props**
  * `useSessions` root hook, grouped as a workspace tree from the **props**
  * `useWorkspaces` root hook (same grouping/ordering/visibility rules as the
  * left sidebar), with a
@@ -60,11 +61,17 @@
  * failed ping yields, and which is deliberately never reported as「过期」.
  *
  * g-029 answers the other half of the same question — *which version* is this
- * tab talking to? — without adding a second source. The version rendered in the
- * status line (as `v` + the version) and published as `data-plugin-version` is the
- * `version` field of that **same** ping, which the host fills from
+ * tab talking to? — without adding a second source. The version rendered beside
+ * the page title (as `v` + the version) and published as `data-plugin-version` is
+ * the `version` field of that **same** ping, which the host fills from
  * `PLUGIN_VERSION`. A missing, non-string or empty answer is rendered as
  * 「版本未知」/`unknown`, so the page can never show a version no host claimed.
+ *
+ * Revision 17 keeps that single source and moves the version from the status
+ * line to the page title, where it links to this package's repository: the URL
+ * comes from the same ping (`repositoryUrl`, derived by the host from its own
+ * `package.json`), and with no URL the node is plain, unclickable text. Neither
+ * half of the plugin writes a repository URL down.
  */
 window.__ModuleLoader__.load({
   id: 'dsh-prompt-setting',
@@ -2163,6 +2170,24 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The repository the version links to (Revision 17), taken from the same
+     * ping as the version itself — `repositoryUrl`, which the host derives from
+     * its own `package.json`.
+     *
+     * `null` is the answer whenever the host reported none (an older host, a
+     * failed ping, a non-string, or a blank one). The page then renders the
+     * version as plain text: an anchor element with a guessed or empty `href`
+     * would send
+     * the reader somewhere no manifest ever pointed at.
+     * @param boot - the `{self, server, version, repositoryUrl, pingFailed}` state.
+     * @returns the repository URL as reported, or `null`.
+     */
+    function pluginRepositoryOf(boot) {
+      const repository = boot && boot.repositoryUrl;
+      return typeof repository === 'string' && repository.trim().length > 0 ? repository : null;
+    }
+
+    /**
      * Whether the edit controls must be disabled for a section.
      *
      * A section that cannot be overridden is always disabled. A frozen verdict
@@ -2795,9 +2820,61 @@ window.__ModuleLoader__.load({
     // #endregion
 
     /**
+     * The plugin version, beside the page title (Revision 17 — it was a chip on
+     * the status line before, which made the page's identity look like one more
+     * health verdict).
+     *
+     * The text is `v` + the version from the ping, or「版本未知」when that same
+     * ping carried no usable one. The repository URL comes from that ping too —
+     * the host derives it from its own `package.json` — so neither half writes a
+     * URL down:
+     *   - with a URL: an `a` element (`target="_blank"`,
+     *     `rel="noreferrer noopener"`) whose `data-plugin-repository` carries the
+     *     reported URL;
+     *   - without one: the same node as a `span` marked
+     *     `data-plugin-repository="unknown"` — **not clickable**, because a
+     *     guessed or empty `href` would send the reader somewhere no manifest
+     *     names.
+     *
+     * Both forms carry `data-role="plugin-version"`, the marker a probe reads;
+     * the root container keeps its `data-plugin-version` (§13.8).
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @returns the version node.
+     */
+    function renderPluginVersion(t, m) {
+      const version = pluginVersionOf(m.boot);
+      const repository = pluginRepositoryOf(m.boot);
+      const text = version === 'unknown' ? t('stPluginVersionUnknown') : `v${version}`;
+      const shared = {
+        'data-role': 'plugin-version',
+        'data-plugin-repository': repository === null ? 'unknown' : repository,
+        title: t('stPluginVersion'),
+        style: { fontSize: 13, color: token.labelTertiary },
+      };
+      if (repository === null) {
+        return h('span', { key: 'version', ...shared }, text);
+      }
+      return h(
+        'a',
+        {
+          key: 'version',
+          ...shared,
+          href: repository,
+          target: '_blank',
+          rel: 'noreferrer noopener',
+          style: { ...shared.style, textDecoration: 'underline' },
+        },
+        text,
+      );
+    }
+
+    /**
      * One line of the facts that decide whether a write here will do anything:
-     * mounted, the frozen three-state verdict, the build stamp's verdict, and —
-     * since g-029 — the plugin version the host reported.
+     * mounted, the frozen three-state verdict, and the build stamp's verdict.
+     * (The plugin version is beside the page title instead — see
+     * {@link renderPluginVersion}; Revision 17 moved it there and this line is
+     * unchanged otherwise.)
      *
      * g-015 moved every *explanation* into 「高级」 (see
      * {@link renderStatusDetail}): the top of the page states the verdicts, and
@@ -2808,9 +2885,7 @@ window.__ModuleLoader__.load({
      * `data-region="status"` is unchanged, and so is the build stamp's
      * machine-readable copy on the root container (`data-build`,
      * `data-build-server`, `data-build-match`), so a probe that read the page
-     * before this goal still reads it. The version tag is added to the same
-     * line: it is the other half of "what is this tab actually running", and it
-     * needs no second request (§13.8).
+     * before this goal still reads it.
      *
      * @param t - the bound translator.
      * @param m - the page model.
@@ -2821,7 +2896,6 @@ window.__ModuleLoader__.load({
       const snapshot = m.snap.data;
       const fz = m.fz;
       const verdict = buildVerdict(m.boot);
-      const version = pluginVersionOf(m.boot);
       const mounted = snapshot ? snapshot.mounted === true : null;
       const mountedText =
         mounted === null ? t('stMountedUnknown') : mounted ? t('stMountedOn') : t('stMountedOff');
@@ -2852,15 +2926,6 @@ window.__ModuleLoader__.load({
           UI.Tag,
           { tone: verdict === 'true' ? 'success' : verdict === 'false' ? 'danger' : 'outline', title: t('stBuild') },
           `${t('stBuild')}: ${t(verdict === 'true' ? 'stBuildSame' : verdict === 'false' ? 'stBuildStale' : 'stBuildUnknown')}`,
-        ),
-        // g-029: the version the host reported in the ping, on the same line as
-        // the build stamp and never invented: without an answer the tag says
-        // 「版本未知」 instead of a number (the root container carries the same
-        // answer as `data-plugin-version`).
-        h(
-          UI.Tag,
-          { tone: version === 'unknown' ? 'outline' : 'success', title: t('stPluginVersion') },
-          `${t('stPluginVersion')}: ${version === 'unknown' ? t('stPluginVersionUnknown') : `v${version}`}`,
         ),
         h(UI.Button, { variant: 'outline', 'data-action': 'refresh', onClick: a.refresh }, t('refresh')),
       );
@@ -5728,7 +5793,18 @@ window.__ModuleLoader__.load({
     function renderSection(t, m, a) {
       const children = [];
       children.push(
-        h('h2', { key: 'title', style: { margin: 0, fontSize: 18, fontWeight: 600, lineHeight: '26px' } }, t('title')),
+        h(
+          'div',
+          {
+            key: 'title',
+            // Revision 17: the version sits beside the title, on the flex
+            // baseline, instead of in the status line — the page's identity, not
+            // another health chip.
+            style: { display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' },
+          },
+          h('h2', { style: { margin: 0, fontSize: 18, fontWeight: 600, lineHeight: '26px' } }, t('title')),
+          renderPluginVersion(t, m),
+        ),
       );
       children.push(h('p', { key: 'subtitle', style: { margin: 0, fontSize: 13, color: token.labelTertiary } }, t('subtitle')));
       children.push(renderStatusLine(t, m, a));
@@ -5828,8 +5904,9 @@ window.__ModuleLoader__.load({
             m.boot && m.boot.server && typeof m.boot.server.hash === 'string' ? m.boot.server.hash : 'unknown',
           'data-build-match': buildVerdict(m.boot),
           // g-029: the version the host reported in the same ping, verbatim, or
-          // `unknown` — never a version this bundle made up. Beside the build
-          // stamp because both answer "what am I looking at" from one answer.
+          // `unknown` — never a version this bundle made up. The visible node is
+          // beside the page title (Revision 17); this copy stays on the root
+          // container so a probe reads it without knowing the layout.
           'data-plugin-version': pluginVersionOf(m.boot),
           style: {
             display: 'flex',
@@ -5944,10 +6021,16 @@ window.__ModuleLoader__.load({
       // once at module scope) and what the host said it serves. Starts as
       //「未知」and stays that way unless the host really answered a hash — a
       // missing/failed ping must never be rendered as「过期」.
-      // `version` rides on the *same* ping (g-029): one request answers both
-      // questions, so the page can never show a build from one host boot and a
-      // version from another.
-      const [boot, setBoot] = React.useState({ self: SELF_BUILD, server: null, version: null, pingFailed: false });
+      // `version` and `repositoryUrl` ride on the *same* ping (g-029): one
+      // request answers both questions, so the page can never show a build from
+      // one host boot and a version (or a link) from another.
+      const [boot, setBoot] = React.useState({
+        self: SELF_BUILD,
+        server: null,
+        version: null,
+        repositoryUrl: null,
+        pingFailed: false,
+      });
 
       const session = selection === null ? seat.currentId || GLOBAL_SESSION : selection;
       const sessionArg = session === GLOBAL_SESSION ? null : session;
@@ -5995,12 +6078,14 @@ window.__ModuleLoader__.load({
           if (cancelled) return;
           const body = ping.ok && ping.payload ? ping.payload : null;
           const build = body ? body.clientBuild : null;
-          // g-029: the *same* answer also carries the plugin version, so the two
-          // facts on screen always describe one host boot. Only a string that
-          // declares something is kept; anything else (absent, `null`, a number,
-          // `''`, whitespace only) stays `null` and renders as「未知」rather than
-          // being coerced into a value the host never sent.
+          // g-029: the *same* answer also carries the plugin version and the
+          // repository it links to, so the facts on screen always describe one
+          // host boot. Only a string that declares something is kept; anything
+          // else (absent, `null`, a number, `''`, whitespace only) stays `null`
+          // and renders as「未知」(version) or as plain text (repository) rather
+          // than being coerced into a value the host never sent.
           const version = body ? body.version : null;
+          const repositoryUrl = body ? body.repositoryUrl : null;
           setBoot({
             self: SELF_BUILD,
             server:
@@ -6012,6 +6097,8 @@ window.__ModuleLoader__.load({
                   }
                 : null,
             version: typeof version === 'string' && version.trim().length > 0 ? version : null,
+            repositoryUrl:
+              typeof repositoryUrl === 'string' && repositoryUrl.trim().length > 0 ? repositoryUrl : null,
             pingFailed: !ping.ok,
           });
         };

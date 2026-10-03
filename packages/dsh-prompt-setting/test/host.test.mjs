@@ -16,7 +16,7 @@ import { dirname, join } from 'node:path';
 import test, { afterEach, beforeEach } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { apply, inject } from '../index.js';
+import { apply, inject, repositoryUrlOf } from '../index.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageJson = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8'));
@@ -267,6 +267,49 @@ test('host: an unknown sub-path under the prefix is a JSON 404', async () => {
   const res = await call(mount().route, { url: '/prompt-setting/prompt/assemble' });
   assert.equal(res.statusCode, 404);
   assert.equal(JSON.parse(res.body).code, 'not-found');
+});
+
+test('host: repositoryUrlOf derives an openable URL from a manifest, or null', () => {
+  // 1. npm's canonical git remote: neither the `git+` prefix nor the `.git`
+  //    suffix belongs in the address a reader opens.
+  assert.equal(repositoryUrlOf({ repository: { url: 'git+https://github.com/a/b.git' } }), 'https://github.com/a/b');
+  // 2. A bare `repository` string is the same declaration in npm's shorthand —
+  //    cleaned the same way, so both spellings answer one address.
+  assert.equal(repositoryUrlOf({ repository: 'https://github.com/a/b' }), 'https://github.com/a/b');
+  assert.equal(repositoryUrlOf({ repository: 'git+https://github.com/a/b.git' }), 'https://github.com/a/b');
+  // 3. `homepage` is a page already: only its `#fragment` is dropped.
+  assert.equal(repositoryUrlOf({ homepage: 'https://example.com/x#readme' }), 'https://example.com/x');
+  // 4. `repository` without a `url` has nothing to say; `homepage` answers next.
+  assert.equal(
+    repositoryUrlOf({ repository: { type: 'git' }, homepage: 'https://example.com/y#readme' }),
+    'https://example.com/y',
+    'a url-less repository object falls through to homepage',
+  );
+  assert.equal(repositoryUrlOf({ repository: { type: 'git' } }), null, 'and with nothing to fall back to: null');
+  // 5. Nothing usable at all is `null` — never a guess, never a throw.
+  for (const manifest of [
+    {},
+    null,
+    undefined,
+    'not a manifest',
+    42,
+    { repository: { url: '   ' } },
+    { repository: 7 },
+    { homepage: '   #readme' },
+    { homepage: 42 },
+  ]) {
+    assert.equal(repositoryUrlOf(manifest), null, `${JSON.stringify(manifest)} must answer null`);
+  }
+});
+
+test('host: the ping reports the repository URL its own manifest declares', async () => {
+  const payload = JSON.parse((await call(mount().route)).body);
+  // The probe and the manifest cannot drift: whatever `repositoryUrlOf` reads
+  // out of this package's own package.json is exactly what the ping answers.
+  assert.equal(payload.repositoryUrl, repositoryUrlOf(packageJson));
+  assert.match(payload.repositoryUrl, /^https?:\/\//, 'and it is an address a browser can open');
+  assert.equal(payload.repositoryUrl.includes('git+'), false, 'the git decoration is gone');
+  assert.equal(payload.repositoryUrl.endsWith('.git'), false);
 });
 
 test('host: no client report yet reads as null', async () => {

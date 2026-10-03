@@ -1107,19 +1107,30 @@ function independentBuildFingerprint(text) {
 }
 
 /**
+ * The repository URL the fixture host reports (Revision 17).
+ *
+ * Deliberately a fixture constant, not a value derived from `package.json`: what
+ * the client test must show is that the page renders **the ping's** URL. That
+ * the ping's URL is the manifest's is asserted on the host side
+ * (`test/host.test.mjs`), where the derivation lives.
+ */
+const FIXTURE_REPOSITORY_URL = 'https://github.com/zangxx66/dsh-prompt-setting';
+
+/**
  * The ping body a host serving `clientBuild` answers with.
  *
  * Since g-029 the same body also carries the version, and its default is the
  * version `index.js` really declares: a fixture that hard-coded one would go on
  * passing after the two copies drifted apart, which is the failure this whole
- * goal exists to prevent.
+ * goal exists to prevent. Revision 17 adds `repositoryUrl` to the same body.
  */
-function pingResponse(clientBuild, version = PLUGIN_VERSION) {
+function pingResponse(clientBuild, version = PLUGIN_VERSION, repositoryUrl = FIXTURE_REPOSITORY_URL) {
   return {
     payload: {
       ok: true,
       plugin: 'dsh-prompt-setting',
       version,
+      repositoryUrl,
       time: '2024-01-01T00:00:00.000Z',
       clientRenderer: 'fallback',
       clientReportedAt: null,
@@ -1259,12 +1270,46 @@ test('client: the version on the page is the ping\'s version, not a copy kept in
   });
   const tree = await page.flush();
   assert.equal(markerOf(tree, 'data-plugin-version'), sentinel, 'the machine marker repeats the answer');
-  assert.ok(hasText(tree, `v${sentinel}`), 'the status line renders v<version>');
-  assert.ok(hasText(tree, page.zh.stPluginVersion), 'and labels which fact it is');
+  assert.ok(hasText(tree, `v${sentinel}`), 'the title line renders v<version>');
   assert.equal(hasText(tree, `v${packageJson.version}`), false, 'the bundle\'s own version is not what was shown');
   // One ping, one host boot: the build stamp on the same render comes from that
   // same answer.
   assert.equal(markerOf(tree, 'data-build-server'), 'deadbeef');
+
+  // Revision 17: the node is beside the page title, and it is a link to the
+  // repository from **that same** ping.
+  const node = oneBy(tree, 'data-role', 'plugin-version');
+  assert.equal(node.type, 'a', 'with a repository URL the version is a link');
+  assert.equal(node.props.href, FIXTURE_REPOSITORY_URL, 'the href is the ping\'s URL, not a literal');
+  assert.equal(node.props.target, '_blank');
+  assert.equal(node.props.rel, 'noreferrer noopener');
+  assert.equal(node.props['data-plugin-repository'], FIXTURE_REPOSITORY_URL);
+  assert.equal(node.props.title, page.zh.stPluginVersion, 'and labels which fact it is');
+  assert.deepEqual(node.props.children, `v${sentinel}`, 'the link text is the version itself');
+  // The title row is a sibling of the heading, above every tab.
+  // Exactly one version node, and it sits in the heading's own row.
+  assert.equal(
+    collect(tree, (candidate) => candidate.props && candidate.props['data-role'] === 'plugin-version').length,
+    1,
+    'exactly one version node on the page — the placement is unique',
+  );
+  const titleRow = collect(
+    tree,
+    (candidate) =>
+      Array.isArray(candidate.props && candidate.props.children)
+      && candidate.props.children.some((child) => child && child.type === 'h2')
+      && candidate.props.children.some(
+        (child) => child && child.props && child.props['data-role'] === 'plugin-version',
+      ),
+  );
+  assert.equal(titleRow.length, 1, 'the version sits in the same row as the page title');
+  // ...and the status line no longer carries one.
+  assert.equal(
+    collect(oneBy(tree, 'data-region', 'status'), (candidate) => candidate.props && candidate.props['data-role'] === 'plugin-version')
+      .length,
+    0,
+    'the status line renders no version node any more',
+  );
 
   // A value that carries text is passed through **byte for byte**: normalizing
   // whitespace away would print a version the host did not declare.
@@ -1274,7 +1319,47 @@ test('client: the version on the page is the ping\'s version, not a copy kept in
   });
   const paddedTree = await paddedPage.flush();
   assert.equal(markerOf(paddedTree, 'data-plugin-version'), padded, 'not one byte may be trimmed away');
-  assert.ok(hasText(paddedTree, `v${padded}`), 'and the tag shows exactly that value');
+  assert.ok(hasText(paddedTree, `v${padded}`), 'and the node shows exactly that value');
+});
+
+test('client: without a repository URL the version is plain text, never a link', async () => {
+  // Every shape of "no URL": an older host (field absent), an explicit `null`, a
+  // blank string and a non-string. None of them may produce an `a` element —
+  // a guessed or empty `href` would send the reader somewhere no manifest names.
+  const versionless = [
+    ['field absent', { ok: true, plugin: 'dsh-prompt-setting', version: '1.2.3' }],
+    ['null', { ok: true, plugin: 'dsh-prompt-setting', version: '1.2.3', repositoryUrl: null }],
+    ['blank', { ok: true, plugin: 'dsh-prompt-setting', version: '1.2.3', repositoryUrl: '   ' }],
+    ['number', { ok: true, plugin: 'dsh-prompt-setting', version: '1.2.3', repositoryUrl: 7 }],
+  ];
+  for (const [name, payload] of versionless) {
+    const page = makePage({ responses: defaultResponses({ [PATHS.ping]: { payload } }) });
+    const tree = await page.flush();
+    const node = oneBy(tree, 'data-role', 'plugin-version');
+    assert.equal(node.type, 'span', `${name}: not clickable`);
+    assert.equal(node.props.href, undefined, `${name}: no href is invented`);
+    assert.equal(node.props['data-plugin-repository'], 'unknown', `${name}: the marker says so`);
+    assert.deepEqual(node.props.children, 'v1.2.3', `${name}: the version text still renders`);
+    assert.equal(markerOf(tree, 'data-plugin-version'), '1.2.3', `${name}: the root marker is unaffected`);
+  }
+
+  // A known URL with an unknown version: still a link, with the unknown copy.
+  const unknownLinked = makePage({ responses: defaultResponses({ [PATHS.ping]: pingResponse(null, null) }) });
+  const unknownTree = await unknownLinked.flush();
+  const unknownNode = oneBy(unknownTree, 'data-role', 'plugin-version');
+  assert.equal(unknownNode.type, 'a', 'an unknown version is still a link when the URL is known');
+  assert.equal(unknownNode.props.href, FIXTURE_REPOSITORY_URL);
+  assert.deepEqual(unknownNode.props.children, unknownLinked.zh.stPluginVersionUnknown);
+
+  // Neither a URL nor a version: the unknown copy, plain text, no href.
+  const bare = makePage({
+    responses: defaultResponses({ [PATHS.ping]: { payload: { ok: true, plugin: 'dsh-prompt-setting' } } }),
+  });
+  const bareTree = await bare.flush();
+  const bareNode = oneBy(bareTree, 'data-role', 'plugin-version');
+  assert.equal(bareNode.type, 'span');
+  assert.equal(bareNode.props.href, undefined);
+  assert.deepEqual(bareNode.props.children, bare.zh.stPluginVersionUnknown);
 });
 
 test('client: the shipped version cannot drift from the one the host publishes', async () => {
@@ -1289,6 +1374,9 @@ test('client: the shipped version cannot drift from the one the host publishes',
   for (const quoted of [`'${packageJson.version}'`, `"${packageJson.version}"`]) {
     assert.equal(clientSource.includes(quoted), false, `client.js must not contain ${quoted}`);
   }
+  // Revision 17 adds the same rule for the link: the URL comes from the ping, so
+  // the client half may not name a repository host of its own.
+  assert.equal(clientSource.includes('github.com'), false, 'client.js must not carry a repository URL');
   const page = makePage({ responses: defaultResponses({ [PATHS.ping]: pingResponse(null) }) });
   const tree = await page.flush();
   assert.equal(markerOf(tree, 'data-plugin-version'), PLUGIN_VERSION, 'the real chain: index.js → ping → page');
@@ -5234,6 +5322,12 @@ const EN_SWEEP_CASES = [
       // both its answered and its missing form.
       ['data-plugin-version', packageJson.version],
       ['data-plugin-version', 'unknown'],
+      // Revision 17: the version moved beside the page title and became a link
+      // when the host reports a repository. All three of its forms must be
+      // walked: the link, the plain-text fallback, and the node itself.
+      ['data-role', 'plugin-version'],
+      ['data-plugin-repository', FIXTURE_REPOSITORY_URL],
+      ['data-plugin-repository', 'unknown'],
     ],
     copy: ['stBuild', 'stBuildSame', 'stBuildStale', 'stBuildStaleHint', 'stBuildUnknown', 'stBuildUnknownHint', 'stBuildPingFailedHint', 'stateHeading', 'stBuildSelf', 'stBuildServer', 'stPluginVersion', 'stPluginVersionUnknown'],
     async run() {
@@ -5644,6 +5738,11 @@ const EN_REQUIRED_MARKERS = [
   // answered form (the version the host really sends) and the missing one.
   `data-plugin-version=${packageJson.version}`,
   'data-plugin-version=unknown',
+  // Revision 17: the version node beside the title, in its linked form (the URL
+  // the fixture host reports) and its plain-text form (no URL answered).
+  'data-role=plugin-version',
+  `data-plugin-repository=${FIXTURE_REPOSITORY_URL}`,
+  'data-plugin-repository=unknown',
   'data-frozen-state=unfrozen',
   'data-frozen-state=frozen',
   'data-frozen-state=unknown',

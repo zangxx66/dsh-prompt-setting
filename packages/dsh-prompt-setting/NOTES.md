@@ -4653,3 +4653,62 @@ undone」，现在由警示条**唯一**承担，不再出现两次三次。改�
 
 按复核意见**不加固**这条守卫（不改成正则扫描模板串/拼接）：静态扫描的边际收益低、误伤面大，还会给出
 「已经防住了」的假安全感；真正需要的是上面的行为对照。
+
+**补充（Revision 17 之后新增的两条同类守卫及其边界）**：
+- `clientSource.includes('github.com') === false` —— 禁止客户端写死仓库主机。边界同上：只抓这一个字符串，
+  别的 host（`gitlab.com`、自建域名）或拼接形式抓不到；注释里出现 `github.com` 会误报（本轮的注释改用
+  「the ping's URL」的散文表述，正是为了不触发它）；
+- `test/host.test.mjs:359` 的 `/<[A-Za-z][^>]*>/ === false`（**既有**守卫）：它的本意是「client.js 不许出现
+  JSX 风格标签」，但任何**注释里的 HTML 尖括号**（`<a>`、`v<version>`）都会命中。g-029 期间它被踩到两次
+  （att-001 与 Revision 17 各一次），两次都按「改注释、不放宽断言」处理。
+
+### 八、Revision 17 修订：落点移到设置页标题旁 + 点击跳转仓库（2026-10-03，负责人修订）
+
+**为什么改**：版本号此前是状态条上的第四枚 Tag，与「覆盖引擎 / 冻结态 / 构建戳」并列——那三枚是**健康裁决**，
+版本号是**身份**，混在一行里读起来像第四枚裁决。负责人据此把落点移到设置页标题旁，并把「装的是谁家的哪一版」
+补成可点链接。**原「Tag tone / 是否在高级重复显示」两个取舍点随之作废。**
+
+**宿主半（`index.js`，本目标首次改动宿主代码）**
+- 新增**纯函数** `repositoryUrlOf(manifest)`（导出，供离线单测）：按序取 `repository.url`（去 `git+` 前缀与
+  `.git` 后缀）⇒ 裸 `repository` 字符串（同样清洗，两种写法给同一个地址）⇒ `homepage`（去 `#…` 片段）⇒ `null`；
+- `OWN_REPOSITORY_URL` 与既有 `DSH_PEER_RANGE` 同源同风格：import 时读自己的 `package.json`、`try/catch`
+  兜底、**失败绝不抛**；ping 响应新增 `repositoryUrl`；
+- `package.json` 是唯一定义处：宿主不写字面量，客户端也不写。
+
+**客户端半（`client.js`）**
+- 版本节点移到**标题行**（`h2` 的同级、flex baseline 对齐），标记 `data-role="plugin-version"`；
+- **状态条不再渲染版本 Tag**，落点唯一（用例断言全页恰好 1 个该节点、且 `data-region="status"` 子树里 0 个）；
+- 有 `repositoryUrl` ⇒ `a` 元素（`href` = ping 的 URL、`target="_blank"`、`rel="noreferrer noopener"`，
+  `data-plugin-repository` = 同一 URL）；无 ⇒ 同位置 `span` + `data-plugin-repository="unknown"`，
+  **纯文本、不可点**（不伪造 URL、不发空 `href`）；版本 unknown 且有 URL 时**仍是链接**，文本用
+  `stPluginVersionUnknown`；
+- `repositoryUrl` 与 `version` **同一次 ping、同口径**（非空字符串、`trim()` 判空，否则 `null`）；根容器
+  `data-plugin-version` 与两张降级失败卡的 `'unknown'` **保持不变**。
+
+**被改写的既有断言（逐条，等价改写、无削弱）**
+
+| # | 位置 | 改了什么 | 为什么不算削弱 |
+| --- | --- | --- | --- |
+| 1 | `test/route.test.mjs` ping 字段全集 `deepEqual(Object.keys(payload).sort(), […])` | 列表加入 `'repositoryUrl'` | ping 按契约新增字段，字段全集断言必须跟随；**未删任何既有字段** |
+| 2 | `test/client.test.mjs`「the version on the page is…」 | `assert.ok(hasText(tree, zh.stPluginVersion))` → `assert.equal(oneBy(tree,'data-role','plugin-version').props.title, zh.stPluginVersion)` | 该文案从可见子文本变成节点的 `title` 属性；断言从「某处出现该文案」收紧为「**该节点**携带该文案」 |
+| 3 | 同用例 | 断言消息 `the status line renders v…` → `the title line renders v…` | 仅消息文字，判定不变 |
+| 4 | 同用例（padded 段） | 断言消息 `the tag shows…` → `the node shows…` | 仅消息文字，判定不变 |
+| 5 | `test/client.test.mjs` en sweep（`EN_REQUIRED_MARKERS` + build-stamp case 的 `marks`） | **新增** `data-role=plugin-version`、`data-plugin-repository=<url>`、`data-plugin-repository=unknown` | 纯新增，未删既有 marker/copy |
+
+**本轮实测证据**（包目录 `packages/dsh-prompt-setting/` 下执行）
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test` | **490 / 490 pass / 0 fail**（exit 0；Revision 17 前为 487，新增 3 条用例） |
+| 相关三文件 | `node --test test/client.test.mjs test/host.test.mjs test/route.test.mjs` | **230 / 230 pass / 0 fail**（exit 0） |
+| 宿主纯函数 | `--test-name-pattern="repositoryUrlOf derives"` | 5 类输入全过：`git+…​.git` ⇒ 去装饰；裸字符串（含 `git+…​.git` 形式）⇒ 同址；`homepage#readme` ⇒ 去片段；`repository` 缺 `url` ⇒ 落到 `homepage`／无则 `null`；全缺/`null`/`'not a manifest'`/空白 ⇒ `null` |
+| 防漂移（宿主） | `--test-name-pattern="reports the repository URL its own manifest declares"` | ping 的 `repositoryUrl` === `repositoryUrlOf(packageJson)`，且 `^https?://`、无 `git+`、无 `.git` 后缀 |
+| 落点唯一 + 链接属性（客户端） | `--test-name-pattern="not a copy kept in the bundle"` | `data-role="plugin-version"` 节点：`type='a'`、`href`=fixture URL、`target='_blank'`、`rel='noreferrer noopener'`、`data-plugin-repository`=同一 URL、`title`=「插件版本」、文本=`v9.9.9-sentinel`；全页恰 1 个；status 子树 0 个 |
+| 降级形态（客户端） | `--test-name-pattern="without a repository URL"` | 四种「没有 URL」（缺字段/`null`/空白/数字）⇒ `type='span'`、无 `href`、`data-plugin-repository='unknown'`、文本仍渲染 `v1.2.3`、根容器标记不受影响；有 URL + unknown 版本 ⇒ 仍是 `a` + 「版本未知」；两者皆缺 ⇒ `span` + 「版本未知」 |
+| 改坏就红 ①（宿主硬编码 URL） | 把 ping 的 `repositoryUrl` 改成 `'https://example.com/hardcoded'`，跑 `test/host.test.mjs` | **21 pass / 1 fail**（防漂移断言变红）；还原后 22/22 |
+| 改坏就红 ②（无 URL 仍渲染链接） | 把客户端的无 URL 分支改成仍渲染 `a`（`href=''`），跑 `test/client.test.mjs` | **124 pass / 1 fail**（降级断言变红）；还原后 125/125 |
+
+**真机验证的额外前提（如实写明）**：本轮**首次改了宿主半 `index.js`**（ping 新增 `repositoryUrl`）。客户端半走
+HMR，但宿主半必须**重启 `dsh web`** 才生效——重启会终止正在运行的会话，因此真机目视（链接可点、跳转正确、
+标题行排版）由**主管在合并后统一安排**，本轮只做离线验证；未重启前，旧宿主进程的 ping 不带该字段，页面按
+「无 URL」降级渲染纯文本版本号（这正是降级分支要覆盖的现实情形）。
