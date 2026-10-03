@@ -1944,9 +1944,17 @@ Two surfaces, both fed by `GET /prompt-setting/update-check` (§17):
 - **the banner exists only for a confirmed newer release.** No update
   (`hasUpdate:false`), no usable information (`hasUpdate:null`: no release yet, an
   unparsable tag, an absent `tag_name`) and every failure (`ok:false`) render
-  **nothing at all** — no banner, no error banner, no red text and no notice. This
-  is a background question the user did not ask, so it may only ever be silent or
-  useful;
+  **nothing at all on the main page** — no banner, no error banner, no red text and
+  no notice. This is a background question the user did not ask, so it may only
+  ever be silent or useful. Inside the「高级」card the two *undecided* kinds are
+  told apart, which is the opposite of blurring them: `hasUpdate:null` — upstream
+  answered, there was just nothing comparable — renders one neutral line
+  (`data-update-state="unknown"`, `data-update-unknown="true"`, text
+  `updateUnknown`), while a **failed** check renders no such line at all. A
+  confirmed release renders the version line instead
+  (`data-update-state="available"`), and "up to date" renders no line either, so
+  the two states are mutually exclusive and the four upstream facts cannot be
+  misread as "the plugin cannot reach the network";
 - **the switch** — in 「高级」, `data-region="update-setting"` carrying
   `data-update-enabled="true"|"false"`, with `data-action="update-toggle"`
   (`aria-pressed` mirrors the state) and, only while it is on,
@@ -1963,6 +1971,23 @@ Two surfaces, both fed by `GET /prompt-setting/update-check` (§17):
   performs no outbound request even if a request does arrive (`?force=1`
   included). Anything other than `'off'` — a missing `localStorage`, a privacy
   mode that throws, a hand-edited value — means "ask once", never "assume off";
+- **the mirror's drift is an accepted trade, and it trades in the safe
+  direction.** The mirror can disagree with the host: a hand edit of
+  `preferences.json` back to `true`, or the same install opened in another browser
+  (empty mirror, or still `'off'`), leaves「高级」showing「已关闭」while the
+  preference file says otherwise — until the user clicks the switch once, at which
+  point the write plus the fresh answer settle both sides. The page does not spend
+  a request on mount to reconcile them, because the mirror exists precisely so a
+  closed switch costs **zero** requests: **consistency of the display yields to the
+  zero-request guarantee**. Neither direction of the drift can produce an unwanted
+  outbound request, and both are asserted:
+  - mirror `'off'` while the file says `true` — the page asks nothing (a *missed*
+    check, never an extra one) and shows「已关闭」until the next click. This is the
+    one direction the display can be wrong in, and its cost is display-only;
+  - mirror `'on'`/absent while the file says `false` — the page may send the `GET`,
+    and the **host** reads `preferences.json` first and answers `enabled:false`
+    with **zero** outbound requests; the page then writes `'off'` into the mirror
+    from that answer, so the next mount is silent as well;
 - the switch renders as a **card in 「高级」**, on by default, next to the
   read-out. It is real UI rather than a documented config file because the owner
   rejected the degradation explicitly: a privacy switch nobody can find is not a
@@ -3115,14 +3140,25 @@ The decision table, which is the whole point:
 | network error, timeout, HTTP ≠ 2xx/404 | `false` | `null` | `network-error` / `timeout` / `http-error` |
 | switch off (`enabled: false`) | `true` | `false` | — |
 
-`hasUpdate: null` is rendered as **nothing** by the page (§13.9); it exists so
-"we do not know" is never confused with "you are up to date", and never with "you
-are behind".
+`hasUpdate: null` renders **nothing on the main page** (no banner, no error — §13.9);
+inside 「高级」 it gets one neutral sentence (「上游暂时没有可用的版本信息」), because it
+is a *fact about upstream* rather than a failure of the check. The distinction is
+deliberate and asserted both ways: a **failed** check (`ok:false`) renders no such
+sentence and no red line either. The two used to share one condition, which read
+the sentence on failure and hid it for the four upstream cases it was written for.
 
-Semver parsing tolerates a leading `v`/`V` and a `-prerelease`/`+build` suffix
-(the core triple is what is compared; `/releases/latest` excludes drafts and
-prereleases upstream anyway). Comparison is numeric per segment, so `0.10.0` is
-newer than `0.9.9`.
+Semver parsing tolerates a leading `v`/`V` and a `-prerelease`/`+build` suffix, and
+**compares only the core triple** — a documented simplification with a known
+direction:
+
+- `1.0.0` and `1.0.0-rc.1` compare **equal**, so `hasUpdate` is `false`. That is a
+  **missed** update (a prerelease is never reported as newer), never a false
+  positive: the rule "never claim an update that is not one" outranks "never miss
+  one", and a missed prerelease costs nothing here because `/releases/latest`
+  excludes prereleases upstream by definition and this package ships stable
+  releases. Making `1.0.0-rc.1 < 1.0.0` would mean implementing full semver
+  precedence for a case the data source cannot produce;
+- comparison is numeric per segment, so `0.10.0` is newer than `0.9.9`.
 
 ### 17.3 Cache, timeout, and what is never cached
 

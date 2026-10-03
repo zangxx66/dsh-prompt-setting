@@ -6501,4 +6501,65 @@ test('client: a refused switch write is reported, and the state stays what the h
   );
 });
 
+// g-030 review finding: `hasUpdate:null` (upstream answered, nothing comparable)
+// and `ok:false` (the check itself failed) are different wire facts and used to
+// share one wrong condition — the explanation rendered on *failure* and stayed
+// hidden for the four upstream cases it was written for. Both states are frozen
+// here, including the "no red line either way" half.
+test('client: 「高级」 explains an undecided upstream answer, and stays quiet when the check failed', async () => {
+  // ① Upstream answered — there is simply no release to compare against (404).
+  const undecided = makePage({
+    responses: defaultResponses({
+      [PATHS.updateCheck]: {
+        payload: updateFixture({ hasUpdate: null, latest: null, error: { code: 'no-release', message: 'none yet' } }),
+      },
+    }),
+  });
+  let tree = await openTab(undecided, 'advanced');
+  const unknown = oneBy(tree, 'data-update-unknown', 'true');
+  assert.equal(unknown.props['data-update-state'], 'unknown');
+  assert.match(strings(tree).join(' '), /上游暂时没有可用的版本信息/);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-notice'] === 'error').length, 0, '① still no red line');
+  assert.equal(updateBanner(tree).length, 0, '① and no main-page banner');
+
+  // ② The check failed: that is not a fact about upstream, so it gets no such
+  // sentence — and no error line either.
+  const failed = makePage({
+    responses: defaultResponses({ [PATHS.updateCheck]: new Error('offline') }),
+  });
+  tree = await openTab(failed, 'advanced');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-update-unknown'] === 'true').length,
+    0,
+    '② a failed check is not explained as「上游没有可用信息」',
+  );
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-update-state'] !== undefined).length,
+    0,
+    '② no state line at all',
+  );
+  assert.equal(collect(tree, (node) => node.props && node.props['data-notice'] === 'error').length, 0, '② no red line');
+  assert.equal(urlsFor(failed, PATHS.updateCheck).length > 0, true, '② the failed check really was attempted');
+
+  // ③ A confirmed newer release still shows its version line, not the unknown one.
+  const available = makePage({
+    responses: defaultResponses({ [PATHS.updateCheck]: { payload: updateAvailableFixture() } }),
+  });
+  tree = await openTab(available, 'advanced');
+  assert.equal(oneBy(tree, 'data-update-known', '0.9.9').props['data-update-state'], 'available');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-update-unknown'] === 'true').length,
+    0,
+    '③ the two lines are mutually exclusive',
+  );
+  // ④ "Up to date" says nothing at all in the card.
+  const current = makePage({ responses: defaultResponses({ [PATHS.updateCheck]: { payload: updateFixture() } }) });
+  tree = await openTab(current, 'advanced');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-update-state'] !== undefined).length,
+    0,
+    '④ no update means no state line',
+  );
+});
+
 // #endregion

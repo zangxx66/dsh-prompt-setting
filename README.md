@@ -61,7 +61,9 @@ package's `package.json` (`repository.url`), never hardcoded a second time. That
   same process;
 - **it speaks up only for a confirmed newer release**: a **dismissible** banner at the top of the page
   (the new version + a link to the release page). No update, no release yet, or a failed request shows
-  **nothing at all** — no prompt and no error;
+  **nothing at all** at the top of the page — no prompt and no error. "No release yet / unparsable tag" is
+  a *fact about upstream*, so it gets one neutral line inside the Advanced switch card; a **failed** check
+  does not get that line;
 - **turning it off**: Settings → Prompt settings → Advanced → turn **"Check for updates"** off. With it
   off there are **zero requests**, including on page load, and `<DSH_HOME>/prompt-setting/preferences.json`
   records `{"updateCheck": false}`. Hand-editing that file — or deleting it to return to the default

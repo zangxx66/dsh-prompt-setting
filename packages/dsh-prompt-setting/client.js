@@ -5936,10 +5936,26 @@ window.__ModuleLoader__.load({
      * @returns the settings card element.
      */
     function renderUpdateSetting(t, m, a) {
-      const u = m.update === null || m.update === undefined ? { enabled: true, phase: 'idle', data: null } : m.update;
+      const u =
+        m.update === null || m.update === undefined
+          ? { enabled: true, phase: 'idle', data: null, check: null }
+          : m.update;
       const enabled = u.enabled !== false;
       const saving = u.phase === 'saving';
-      const latest = u.data !== null && typeof u.data.latest === 'string' ? u.data.latest : null;
+      // The two answers this card can explain are **different facts** and must
+      // not be confused (review finding, g-030):
+      //   - `check.hasUpdate === null` is a *successful* check that could not
+      //     decide — no release yet, no `tag_name`, an unparsable tag. Upstream
+      //     said something; it just was not a version. That is what the
+      //     「上游暂时没有可用的版本信息」 line is for;
+      //   - a failed check (`ok:false`, `phase === 'error'`) is *not* a fact about
+      //     upstream, so it gets no such sentence — and no red line either (the
+      //     page's zero-error rule). The last successful answer, if any, stays.
+      // A newer release shows its version; "up to date" says nothing.
+      const check = u.check ?? null;
+      const latest =
+        check !== null && check.hasUpdate === true && typeof check.latest === 'string' ? check.latest : null;
+      const undecided = check !== null && check.hasUpdate === null;
       return h(
         'div',
         {
@@ -5975,10 +5991,19 @@ window.__ModuleLoader__.load({
             : null,
         ),
         h('p', { style: { margin: 0, ...metaStyle } }, t('updateSettingNote')),
-        latest === null ? null : h('p', { style: { margin: 0, ...metaStyle }, 'data-update-known': latest },
-          fmt(t('updateLatestKnown'), { latest })),
-        enabled && u.phase === 'error'
-          ? h('p', { style: { margin: 0, ...metaStyle } }, t('updateUnknown'))
+        latest === null
+          ? null
+          : h(
+              'p',
+              { style: { margin: 0, ...metaStyle }, 'data-update-state': 'available', 'data-update-known': latest },
+              fmt(t('updateLatestKnown'), { latest }),
+            ),
+        undecided
+          ? h(
+              'p',
+              { style: { margin: 0, ...metaStyle }, 'data-update-state': 'unknown', 'data-update-unknown': 'true' },
+              t('updateUnknown'),
+            )
           : null,
       );
     }
@@ -6273,8 +6298,16 @@ window.__ModuleLoader__.load({
       // g-030: the update check's own view state. `enabled` is the **Host's**
       // answer (`null` until it answered — the mirror alone is never treated as
       // the truth), `data` is the payload of a confirmed newer release or
-      // `null`, and `dismissed` is this session's "stop showing it".
-      const [update, setUpdate] = React.useState({ enabled: null, data: null, dismissed: false, phase: 'idle' });
+      // `null`, `check` is the last **successful** payload whatever it decided
+      // (so "upstream has no usable information" and "the check failed" can read
+      // differently, §17.2), and `dismissed` is this session's "stop showing it".
+      const [update, setUpdate] = React.useState({
+        enabled: null,
+        data: null,
+        check: null,
+        dismissed: false,
+        phase: 'idle',
+      });
 
       const session = selection === null ? seat.currentId || GLOBAL_SESSION : selection;
       const sessionArg = session === GLOBAL_SESSION ? null : session;
@@ -6353,16 +6386,19 @@ window.__ModuleLoader__.load({
         // a local request); when the mirror says nothing, the Host is asked once
         // and its answer — which reports `enabled` — fills the mirror.
         //
-        // Every outcome except a confirmed newer release is silent: a failure,
-        // an absent release, an unparsable tag and "you are up to date" all
-        // leave the page exactly as it was.
+        // Nothing here paints the main page: a newer release renders the banner,
+        // a failure renders nothing anywhere, and every undecided upstream
+        // answer (`hasUpdate:null`) is explained only inside 「高级」's card, by
+        // `renderUpdateSetting`.
         if (readUpdatePref() === false) {
-          setUpdate({ enabled: false, data: null, dismissed: false, phase: 'ready' });
+          setUpdate({ enabled: false, data: null, check: null, dismissed: false, phase: 'ready' });
         } else {
           const checkUpdate = async () => {
             const result = await requestJson(UPDATE_CHECK_PATH);
             if (cancelled) return;
             if (!result.ok) {
+              // A failed check is not a fact about upstream: keep the last
+              // successful `check` (if any) and say nothing new.
               setUpdate((current) => ({ ...current, phase: 'error' }));
               return;
             }
@@ -6371,6 +6407,7 @@ window.__ModuleLoader__.load({
             setUpdate({
               enabled,
               data: result.payload.hasUpdate === true && typeof result.payload.latest === 'string' ? result.payload : null,
+              check: result.payload,
               dismissed: false,
               phase: 'ready',
             });
@@ -6912,9 +6949,12 @@ window.__ModuleLoader__.load({
        * switch is on, so "check now" can never be the thing that re-enables a
        * feature the user turned off.
        *
-       * A failure is silent on the page (this is a background question, not a
-       * task the user asked for) and only the switch's own card reports that the
-       * last answer was inconclusive.
+       * A failure is silent on the main page (this is a background question, not
+       * a task the user asked for). Inside 「高级」 the card distinguishes the two
+       * cases it can be in: a **failed** check leaves the last successful answer
+       * (or nothing) on screen, while a **successful** `hasUpdate:null` gets the
+       * plain-language explanation that upstream had nothing to compare against
+       * (`renderUpdateSetting`).
        */
       const recheckUpdate = async () => {
         setUpdate((current) => ({ ...current, phase: 'checking' }));
@@ -6928,6 +6968,7 @@ window.__ModuleLoader__.load({
         setUpdate({
           enabled,
           data: result.payload.hasUpdate === true && typeof result.payload.latest === 'string' ? result.payload : null,
+          check: result.payload,
           dismissed: false,
           phase: 'ready',
         });
@@ -6961,7 +7002,9 @@ window.__ModuleLoader__.load({
         }
         const enabled = result.payload && result.payload.enabled === false ? false : true;
         writeUpdatePref(enabled);
-        setUpdate({ enabled, data: null, dismissed: false, phase: 'ready' });
+        // The switch changed, so the previous check's fact is stale: it is
+        // dropped, and turning the switch on immediately asks again below.
+        setUpdate({ enabled, data: null, check: null, dismissed: false, phase: 'ready' });
         setNotice({
           tone: 'success',
           text: fmt(t('updateToggleSaved'), { state: t(enabled ? 'updateSettingOn' : 'updateSettingOff') }),

@@ -4848,3 +4848,62 @@ ping 是多处断言过的 frozen 形状；③ 把开关写进 `overrides.json`�
   last-wins；这是「一个本机偏好」的合理语义，未加锁；
 - 客户端 `localStorage` 失效路径（隐私模式抛错 / 配额满）只做了 `try/catch` 兜底，**没有**在真实浏览器
   里验证过（vm 沙箱里以「没有 `localStorage`」和「假实现」两种形态覆盖）。
+
+### 八、复核收口（att-001 第二轮：必修 1 / 必修 2 / 文档如实化）
+
+复核结论 PASS + 1 必修 + 1 建议必修 + 1 文档如实化。三件都做，**未削弱任何既有断言**；其中「把
+`updateUnknown` 渲染条件从 `phase === 'error'` 改到 `hasUpdate === null`」是**收紧**（见下），已在
+本节记明。
+
+**必修 1｜`updateUnknown` 挂错了条件（真实缺陷，已修）**
+
+- 缺陷：文案原来只在 `enabled && phase === 'error'`（**检查失败**）时渲染，而它写的四件事
+  （404 无 release / 无 `tag_name` / tag 不可解析 / `current` 不可解析）都是 `hasUpdate:null`
+  这一**成功但无法判定**的上游事实 —— 该解释的没解释，不该解释的网络失败反而显示「上游没有可用
+  版本信息」，把「上游还没发 release」误读成「插件连不上」；
+- 修法：`update` state 新增 `check`（**最后一次成功**的 payload），`renderUpdateSetting` 按
+  `check.hasUpdate` 分三态渲染 —— `true` ⇒ 版本行（`data-update-state="available"` /
+  `data-update-known`）、`null` ⇒ 中性说明行（`data-update-state="unknown"` /
+  `data-update-unknown="true"`）、`false` ⇒ 不渲染；检查失败只置 `phase='error'`，**不覆盖 `check`、
+  也不新增任何红字**（主页面零提示零红字不变，「高级」里也没有新增错误行）；
+- 这是**收紧而非放宽**：原来那条错误条件被替换成更准确的条件，且新增断言把两态**都**钉死
+  （`client.test.mjs`：① 404 桩 ⇒ 出现 `updateUnknown`；② 网络失败桩 ⇒ **不**出现、且无任何
+  `data-update-state` 行、`data-notice="error"` 计数 0；③ 有更新 ⇒ 只有 `available` 行；④ 已最新 ⇒
+  无状态行）。既有断言一条未改、一条未删。
+
+**建议必修 2｜缓存年龄负值守卫（已修）**
+
+- 缺陷：`now` 是可注入的，时钟回拨（NTP 校正 / 手工改时间 / 测试假时钟）会让
+  `now() - cache.at` 为负，仍满足 `< ttlMs`，于是一条陈旧答案会被判「新鲜」**永久**；
+- 修法：`const age = cache === null ? null : now() - cache.at;`，命中条件收紧为
+  `age >= 0 && age < ttlMs`（`force` 语义不变）。方向选择：时钟非单调时视为**不新鲜** ——
+  多一次请求远比一条永不过期的答案便宜；
+- 新用例 `update: a clock that steps backwards does not make a cache eternal`：`now` 1000000 →
+  0 后第二次 `check()` 必须 `cached:false`、`ok:true` 且外呼数 = 2。
+
+**文档如实化 3｜两条已知取舍写进契约与记录**
+
+- **prerelease 简化**（`CONTRACT.md` §17.2）：`parseSemver` 只看核心三段 ⇒ `1.0.0` 与
+  `1.0.0-rc.1` 判**相等**（`hasUpdate:false`）。这是**漏报**而非误报；「绝不误报有更新」优先于
+  「绝不漏报」，且 `/releases/latest` 上游天然排除 prerelease、本包发的是正式版，要做全序就得为
+  数据源产生不出来的情形实现完整 semver 优先级 —— 已写明这条推理；
+- **镜像漂移**（`CONTRACT.md` §13.9 + 本节）：`localStorage` 镜像为 `off` 而宿主
+  `preferences.json` 为 `true`（外部手改 / 换浏览器）时，「高级」显示「已关闭」直到用户点一次；
+  页面不为此在挂载时多发一个请求对账 —— **零请求优先于显示一致**，且两个漂移方向都不可能造成
+  不该发的外呼（镜像 off：页面什么都不发；镜像 on/缺失而文件 false：请求由宿主短路，零外呼并把
+  `enabled:false` 回填镜像）。
+
+**本轮实测证据**（包目录 `packages/dsh-prompt-setting/` 下执行）
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test` | **534 / 534 pass / 0 fail**（exit 0；上一轮 532，本轮 +2：客户端三态用例 1、时钟回拨 1） |
+| 必修 1 两态 | `--test-name-pattern="explains an undecided upstream answer"` | ① 404 桩 ⇒ `data-update-unknown="true"` + `data-update-state="unknown"` + 文案命中；② 网络失败桩 ⇒ 无该节点、无任何 `data-update-state`、`data-notice="error"` 计数 0；③ 有更新 ⇒ `data-update-known="0.9.9"` = `available`；④ 已最新 ⇒ 无状态行 |
+| 必修 2 回拨 | `--test-name-pattern="clock that steps backwards"` | 时钟 1000000 → 0 后 `cached:false`、`ok:true`、外呼数 2 |
+| 新增宿主套件 | `node --test test/update.test.mjs` | **35 / 35 pass / 0 fail** |
+| 新增客户端套件 | `node --test test/client.test.mjs` | **133 / 133 pass / 0 fail** |
+| **改坏就红 D**（文案条件改回旧错法） | 备份后把 `undecided` 改回 `enabled && u.phase === 'error'`，跑 `test/client.test.mjs` | **132 pass / 1 fail**（新两态用例红）；`cp` 还原后 133/133 |
+| **改坏就红 E**（删年龄守卫） | 备份后把命中条件改回 `age < ttlMs`，跑 `test/update.test.mjs` | **34 pass / 1 fail**（回拨用例红）；`cp` 还原后 35/35 |
+
+**本轮未验证项（增量）**：镜像漂移的两种方向仍只在 vm 沙箱 + stub 下断言（`localStorage` 假实现 /
+无 `localStorage`），未在真实浏览器里手改 `preferences.json` 复现；真机目视仍待宿主半重启（见 §106 七）。

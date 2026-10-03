@@ -81,10 +81,13 @@
   > this package's `package.json`. Read-only: no body, no cookies, no local/session/workspace data;
   > `User-Agent: dsh-prompt-setting/<version>`; 5-second timeout.
 - **结果怎么用**：只有「确实有更新」时，页面顶部才出现一条**可关闭**的提示（新版本号 + 发布页链接）。
-  没有更新、仓库还没发 release、请求失败 —— **一律什么都不显示**，也不报错。
+  没有更新、仓库还没发 release、请求失败 —— 页面顶部**一律零提示、零报错**；其中「仓库还没发 release /
+  版本号不可解析」是**上游事实**，只在「高级」的开关卡片里用一句中性文案说明（**检查失败不显示该句**）。
   > **What it does with the answer**: only a confirmed newer release shows a **dismissible** banner
   > (the version + a link to the release page). No update, no release yet, or a failed request shows
-  > **nothing at all** — no error either.
+  > **nothing at all** at the top of the page — no error either. "No release yet / unparsable tag" is a
+  > *fact about upstream*, so it gets one neutral line inside the Advanced switch card; a **failed**
+  > check does not get that line.
 - **怎么关**：设置 →「Prompt 管理」→「高级」→ 关闭**「检查更新」**。关闭后**零请求**（包括打开
   设置页时：页面本地就知道不该问，连这个请求都不会发），并写入
   `$DSH_HOME/prompt-setting/preferences.json` 的 `{"updateCheck": false}`。想手工改也一样：

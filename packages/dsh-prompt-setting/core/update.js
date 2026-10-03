@@ -347,7 +347,13 @@ export function createUpdateChecker(options = {}) {
     if (preferences()[UPDATE_CHECK_FLAG] !== true) {
       return payload({ hasUpdate: false });
     }
-    if (force !== true && cache !== null && now() - cache.at < ttlMs) {
+    // The age guard is not decoration: `now` is injectable, and a clock that
+    // steps backwards (an NTP correction, a hand-set system time, a test's fake
+    // clock) would otherwise make `now() - cache.at` negative and read a stale
+    // answer as fresh *forever*. A non-monotonic clock is treated as "not fresh":
+    // one extra request is cheaper than an answer that never expires.
+    const age = cache === null ? null : now() - cache.at;
+    if (force !== true && cache !== null && age >= 0 && age < ttlMs) {
       return { ...cache.payload, cached: true };
     }
     const slug = parseRepositorySlug(repositoryUrl);

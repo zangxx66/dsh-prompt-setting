@@ -36,6 +36,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   (`User-Agent: dsh-prompt-setting/<version>`), with a 5-second timeout and a six-hour cache (`?force=1` bypasses
   it). New route `GET|PUT /prompt-setting/update-check` on the existing prefix route and trust fence; no automatic
   download, install or self-update, no DSH platform check, and no new dependency (Node's built-in `fetch`).
+  「无可用信息」（`hasUpdate:null`）只在「高级」以一句中性文案解释，**检查失败不显示它**（两者是不同
+  事实，不能混为一谈）；semver 只比较核心三段，`1.0.0` 与 `1.0.0-rc.1` 判相等，属**漏报而非误报**
+  （`CONTRACT.md` §17.2）。
+  **"No usable information"** (`hasUpdate:null`) is explained only inside the Advanced card, in one neutral line
+  that a **failed** check does not get — the two are different facts and must not be confused. Semver compares the
+  core triple only, so `1.0.0` vs `1.0.0-rc.1` is a *missed* update, never a false one (`CONTRACT.md` §17.2).
   Contract: `CONTRACT.md` §17 / §13.9.
 
 - **设置页显示插件版本号，并可点击跳转仓库**：版本号取自宿主 `GET /prompt-setting/ping` 的 `version`

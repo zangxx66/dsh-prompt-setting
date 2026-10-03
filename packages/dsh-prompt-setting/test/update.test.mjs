@@ -262,6 +262,20 @@ test('update: a repeat inside the TTL is served from cache, and force bypasses i
   assert.equal(transport.calls.length, 3);
 });
 
+test('update: a clock that steps backwards does not make a cache eternal', async () => {
+  let clock = 1_000_000;
+  const { checker, transport } = makeChecker({ now: () => clock });
+  assert.equal((await checker.check()).cached, false);
+  // The review's case: `now` is injectable, so a backwards step (an NTP
+  // correction, a hand-set clock, a fake clock) must not read as "fresh".
+  // Without the `age >= 0` guard this second call answers `cached: true`.
+  clock = 0;
+  const second = await checker.check();
+  assert.equal(second.cached, false, 'a negative cache age is not freshness');
+  assert.equal(second.ok, true, 'the answer is still served — just re-fetched');
+  assert.equal(transport.calls.length, 2, 'the stale-looking entry costs one request, not an eternity of them');
+});
+
 test('update: an undecidable upstream answer is cached too, so a 404 is not re-asked', async () => {
   const { checker, transport } = makeChecker({ handler: () => jsonResponse({ message: 'Not Found' }, 404) });
   const first = await checker.check();
