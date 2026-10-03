@@ -462,14 +462,17 @@ response byte changes; what is new is that the page consumes a field it used to
 ignore:
 
 - the root container publishes `data-plugin-version="<version>"` — the ping's
-  value verbatim, or the string `unknown`;
+  value verbatim, or the string `unknown`. Every root container publishes it,
+  including both failure cards (always `unknown`: neither can have reached the
+  host);
 - the status line adds the `stPluginVersion` tag (`插件版本: v<version>` /
   `Plugin version: v<version>`), beside the build stamp it shares that answer
   with (§13.8);
 - `unknown` covers a failed or unreachable ping, a body without `version`, a
-  non-string value and the empty string — rendered as「版本未知」, never as a
-  number. It is the same asymmetry §14.3 applies to the build stamp, for the same
-  reason: an invented answer is worse than an honest「未知」.
+  non-string value and a string that declares nothing (`''`, whitespace only) —
+  rendered as「版本未知」, never as a number. A value that carries text is shown
+  byte for byte. It is the same asymmetry §14.3 applies to the build stamp, for
+  the same reason: an invented answer is worse than an honest「未知」.
 
 The client half carries **no version literal of its own**, and `package.json`'s
 `version` is asserted equal to `index.js`'s `PLUGIN_VERSION` by reading both
@@ -1849,7 +1852,11 @@ requiring its absence — because a second copy is a second thing to keep in syn
 which is the drift this display exists to end.
 
 - the **root container** carries `data-plugin-version="<version>"`: the ping's
-  `version` verbatim, or the string `unknown`;
+  `version` verbatim, or the string `unknown`. **Every** root container carries
+  it, in every render state — the real page, the render-failure card
+  (`data-renderer="fallback"`, `data-render-state="error"`) and the load-failure
+  card (`data-renderer="none"`), the last two always `unknown` — so a probe reads
+  one attribute instead of knowing which state is supposed to carry which marker;
 - the **status line** (`data-region="status"`) renders one more tag from the
   `stPluginVersion` copy: `插件版本: v<version>` / `Plugin version: v<version>`;
 - the version comes from the **same answer** as the build stamp (`data-build`,
@@ -1857,10 +1864,15 @@ which is the drift this display exists to end.
   the two facts on screen can never describe two different hosts;
 - **`unknown`** — the same asymmetry as the build stamp, for the same reason: a
   failed or unreachable ping, a body without `version`, a non-string value
-  (`42`, `{}`, `null`) or the empty string. The marker is then `unknown` and the
-  tag renders `stPluginVersionUnknown` (「版本未知」 / `Version unknown`). A
-  version no host answered with is **never** rendered: an invented number is
-  worse than an honest「未知」.
+  (`42`, `{}`, `null`), or a string that declares nothing (the empty string, or
+  only whitespace). The marker is then `unknown` and the tag renders
+  `stPluginVersionUnknown` (「版本未知」 / `Version unknown`). A version no host
+  answered with is **never** rendered: an invented number is worse than an
+  honest「未知」;
+- a value that **does** carry text is published and rendered **byte for byte**:
+  `'   '` is not a version, but trimming the padding off a real one is not this
+  page's decision either — only the emptiness check looks at whitespace, and the
+  value that is kept and rendered is the ping's own string.
 
 The cost is one attribute and one tag on a request the page already makes: no new
 route, no new field, no new request.

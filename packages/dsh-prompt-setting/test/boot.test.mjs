@@ -787,6 +787,10 @@ test('boot: a throwing client body degrades to a card that keeps the machine mar
   assert.equal(tree.props['data-plugin'], PLUGIN_NAME);
   assert.equal(tree.props['data-render-state'], 'error');
   assert.equal(tree.props['data-renderer'], 'none');
+  // g-029: the load-failure card is a root container too, so it carries the
+  // version marker — `unknown`, because no ping could have been sent from a
+  // bundle that never finished loading.
+  assert.equal(tree.props['data-plugin-version'], 'unknown', 'the degraded card answers the version question');
   const text = textOf(tree);
   assert.ok(text.includes('G013-BOOT-BREAK'), 'the card shows the cause');
   assert.ok(text.includes(PLUGIN_NAME), 'the card names the plugin');

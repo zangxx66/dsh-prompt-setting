@@ -2148,14 +2148,18 @@ window.__ModuleLoader__.load({
      *
      * `'unknown'` covers every way the same ping can fail to answer: no response
      * at all, a failed request, a body without `version`, a non-string value, or
-     * an empty string. A fabricated version here would be worse than none — the
-     * reader would be told a version this build is not (CONTRACT.md §13.8).
+     * a string that declares nothing — the empty string, or only whitespace. A
+     * fabricated version here would be worse than none — the reader would be
+     * told a version this build is not (CONTRACT.md §13.8).
      * @param boot - the `{self, server, version, pingFailed}` state.
      * @returns the version as the host reported it, or `'unknown'`.
      */
     function pluginVersionOf(boot) {
       const version = boot && boot.version;
-      return typeof version === 'string' && version.length > 0 ? version : 'unknown';
+      // Whitespace is not a declaration: `'   '` renders as「未知」rather than as
+      // `v   `. A value that *does* carry text is returned byte for byte — a
+      // legal version is never trimmed into a different one.
+      return typeof version === 'string' && version.trim().length > 0 ? version : 'unknown';
     }
 
     /**
@@ -5992,10 +5996,10 @@ window.__ModuleLoader__.load({
           const body = ping.ok && ping.payload ? ping.payload : null;
           const build = body ? body.clientBuild : null;
           // g-029: the *same* answer also carries the plugin version, so the two
-          // facts on screen always describe one host boot. Only a non-empty
-          // string is kept; anything else (absent, `null`, a number, `''`) stays
-          // `null` and renders as「未知」rather than being coerced into a number
-          // the host never sent.
+          // facts on screen always describe one host boot. Only a string that
+          // declares something is kept; anything else (absent, `null`, a number,
+          // `''`, whitespace only) stays `null` and renders as「未知」rather than
+          // being coerced into a value the host never sent.
           const version = body ? body.version : null;
           setBoot({
             self: SELF_BUILD,
@@ -6007,7 +6011,7 @@ window.__ModuleLoader__.load({
                     mtime: typeof build.mtime === 'string' ? build.mtime : null,
                   }
                 : null,
-            version: typeof version === 'string' && version.length > 0 ? version : null,
+            version: typeof version === 'string' && version.trim().length > 0 ? version : null,
             pingFailed: !ping.ok,
           });
         };
@@ -6783,8 +6787,10 @@ window.__ModuleLoader__.load({
     /**
      * Last-resort card, rendered when building the page tree itself throws.
      * It carries the same `data-plugin` / `data-renderer` / `data-render-state`
-     * markers as the real page so a broken render is still machine-visible, and
-     * it shows the error text so the settings panel is never blank.
+     * markers as the real page — plus `data-build` and `data-plugin-version`,
+     * both `unknown` because nothing was asked — so a broken render is still
+     * machine-visible, and it shows the error text so the settings panel is
+     * never blank.
      * @param t - candidate translator; may itself be what broke.
      * @param error - the thrown value.
      * @returns the failure card element.
@@ -6801,6 +6807,10 @@ window.__ModuleLoader__.load({
           // it), but it can still say which bundle it is: the self-digest needs
           // no transport and is exactly what a broken page is asked about.
           'data-build': SELF_BUILD && typeof SELF_BUILD.hash === 'string' ? SELF_BUILD.hash : 'unknown',
+          // g-029: no ping can have answered here, so the version is honestly
+          // `unknown`. Every root container carries the marker — a probe must
+          // never have to know which render state *should* carry it.
+          'data-plugin-version': 'unknown',
           style: {
             display: 'flex',
             flexDirection: 'column',
@@ -6928,7 +6938,7 @@ window.__ModuleLoader__.load({
       /**
        * The degraded settings section: same machine markers as the real page, so
        * a browser-side check can still see that this plugin is the one that
-       * failed.
+       * failed — `data-build` and `data-plugin-version` included, each `unknown`.
        * @returns the failure card element.
        */
       function PromptSettingFailureSection() {
@@ -6939,6 +6949,10 @@ window.__ModuleLoader__.load({
             'data-renderer': 'none',
             'data-render-state': 'error',
             'data-build': 'unknown',
+            // g-029: the same marker the real page and the render-failure card
+            // carry, for the same reason — a probe reads one attribute, not a
+            // map of which render state carries which marker.
+            'data-plugin-version': 'unknown',
             style: { display: 'flex', flexDirection: 'column', gap: 8, maxWidth: 860 },
           },
           h('h2', { style: { margin: 0, fontSize: 18, fontWeight: 600, lineHeight: '26px' } },

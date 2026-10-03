@@ -4588,8 +4588,14 @@ undone」，现在由警示条**唯一**承担，不再出现两次三次。改�
 
 - `setBoot({ self, server, version, pingFailed })`：版本与构建戳来自**同一次 ping**（一个应答 = 一个宿主
   启动），从根上排除「版本来自 A 次、指纹来自 B 次」的错配；
-- 存储时只接受**非空字符串**，其余（字段缺失 / `null` / 数字 / 对象 / `''`）一律 `null`，渲染期由
-  `pluginVersionOf(boot)` 归一到 `'unknown'`——不做 `String()` 强转，避免把宿主没发过的值印出来；
+- 存储与渲染两处都用「**去空白后仍非空**」判定（`version.trim().length > 0`）：字段缺失 / `null` / 数字 /
+  对象 / `''` / 纯空白（`'   '`、`'\t\n'`）一律归一到 `'unknown'`，状态条不会出现 `v   `——不做 `String()`
+  强转，也不把空白当声明（att-002 复核必修 1）；
+- **合法值逐字节原样**：空白只用于「这是不是一个声明」的判定，渲染与机器标记用的都是 ping 的原字符串
+  （`' 9.9.9-padded '` 原样输出，不 trim）——去掉填充是改写宿主的表述，不是本页该做的决定；
+- **所有根容器都带该标记**：真页面、渲染失败卡（`data-render-state="error"` + `data-renderer="fallback"`）、
+  加载失败卡（`data-renderer="none"`）三处都输出 `data-plugin-version`，后两者恒为 `'unknown'`（它们根本发不出
+  ping）——探针只需读一个属性，不必知道「哪种渲染态才该有它」（att-002 复核必修 2）；
 - `client.js` 内**零版本字面量**：测试用「当前版本加引号后必须不存在于 `client.js`」钉死这一条
   （注释里出现别的版本号如 `0.1.7-rc.2` 不受影响，因为断言只查带引号的字面量）；
 - 未知态文案 `stPluginVersionUnknown`（「版本未知」/「Version unknown」），Tag tone 用 `outline`，
@@ -4609,14 +4615,18 @@ undone」，现在由警示条**唯一**承担，不再出现两次三次。改�
 
 | 项 | 命令 | 结果 |
 | --- | --- | --- |
-| 全量 | `node --test` | **486 / 486 pass / 0 fail**（exit 0；首跑 485/1 的红见下方「一次真实红」） |
-| 相关两文件 | `node --test test/host.test.mjs test/client.test.mjs` | **143 / 143 pass / 0 fail**（exit 0） |
+| 全量 | `node --test` | **487 / 487 pass / 0 fail**（exit 0；att-001 首跑的一次红见下方「一次真实红」） |
+| 相关两文件 | `node --test test/client.test.mjs test/boot.test.mjs` | **149 / 149 pass / 0 fail**（exit 0） |
 | 基线对照 | 改动前 `node --test` | **483 / 483 pass / 0 fail**（exit 0） |
-| 哨兵版本（负向对照） | `node --test --test-name-pattern="not a copy kept in the bundle"` | ping 返回仓库里不存在的 `9.9.9-sentinel`：`data-plugin-version` = 该值、状态条渲染 `v9.9.9-sentinel`，且**不出现** `v0.1.1`（若客户端硬编码就会红） |
+| 哨兵版本（负向对照） | `node --test --test-name-pattern="not a copy kept in the bundle"` | ping 返回仓库里不存在的 `9.9.9-sentinel`：`data-plugin-version` = 该值、状态条渲染 `v9.9.9-sentinel`，且**不出现** `v0.1.1`（若客户端硬编码就会红）；同一条用例另断言 `' 9.9.9-padded '` **原样**输出（合法值不 trim） |
 | 真实链路 | `--test-name-pattern="cannot drift from the one the host publishes"` | `package.json.version === index.js` 的 `PLUGIN_VERSION`（读文件比对）；`index.js` 含 `version: PLUGIN_VERSION,`；`client.js` 不含带引号的版本字面量；ping 默认版本 ⇒ 页面标记 = `PLUGIN_VERSION` |
-| unknown 三态 | `--test-name-pattern="a ping without a usable version"` | 无字段 / `null` / `42` / `''` / `{}` / ping 失败 六种输入 ⇒ `data-plugin-version="unknown"` + 「版本未知」文案 + 不出现任何 `v<版本>` |
-| 改坏就红（硬编码对照） | 备份 `client.js` 后把消费点改成 `version: '0.1.1'`，跑 `node --test test/client.test.mjs` | **119 pass / 4 fail**：3 条新增 g-029 断言 + en sweep 变红；`cp` 还原后 **123 / 123 pass / 0 fail** |
-| en sweep | `node --test test/client.test.mjs` | 必需 marker 列表新增 `data-plugin-version=<当前版本>` 与 `data-plugin-version=unknown`，构建戳单元场景同时覆盖两态 |
+| unknown 七态 | `--test-name-pattern="a ping without a usable version"` | 无字段 / `null` / `42` / `''` / **`'   '`** / **`'\t\n'`** / `{}` / ping 失败 ⇒ `data-plugin-version="unknown"` + 「版本未知」文案 + 不出现任何 `v<原值>` |
+| 空白版本（必修 1 专属用例） | `--test-name-pattern="whitespace-only version"` | `'   '` / `'\t'` / `'\n'` / `' \t\n '` 四种纯空白 ⇒ marker `unknown`、文案「版本未知」、屏幕上不出现 `v` + 空白 |
+| 降级根容器（必修 2） | `--test-name-pattern="failure card"` | 渲染抛错卡（`client.test.mjs`）与加载失败卡（`boot.test.mjs`）两个根容器都断言 `data-plugin-version === 'unknown'` |
+| 改坏就红 A（去掉 trim 归一） | 备份后把两处 `version.trim().length > 0` 改回 `version.length > 0`，跑 client | **122 pass / 2 fail**（空白用例 + unknown 七态用例变红）；`cp` 还原后 124/124 |
+| 改坏就红 B（删两处降级卡标记） | 备份后删掉两张失败卡的 `'data-plugin-version': 'unknown'`，跑 client+boot | **147 pass / 2 fail**（渲染抛错卡断言 + 加载失败卡断言各红）；`cp` 还原后 149/149 |
+| 改坏就红 C（硬编码版本） | 备份后把消费点改成 `version: '0.1.1'`，跑 client | **119 pass / 5 fail**（3 条 g-029 断言 + 空白版本用例 + en sweep）；`cp` 还原后 **124 / 124 pass / 0 fail** |
+| en sweep | `node --test test/client.test.mjs` | 必需 marker 列表含 `data-plugin-version=<当前版本>` 与 `data-plugin-version=unknown`，构建戳单元场景同时覆盖两态 |
 
 **一次真实红（留档）**：全量首跑 1 fail —— `test/host.test.mjs:359` 断言 `client.js` 不得含
 `/<[A-Za-z][^>]*>/`（无 JSX 的守卫）。我新写的注释里用了 `` `v<version>` `` 这种尖括号占位符，被这条既有
@@ -4628,3 +4638,18 @@ undone」，现在由警示条**唯一**承担，不再出现两次三次。改�
   （与既有三个 Tag 并排后的换行、`success`/`outline` 观感、窄视口下的排布）由主管合并后在集成副本上确认；
 - **超长版本串**：宿主若返回异常长的 `version`，Tag 不截断（沿用状态条既有的 `flexWrap` 换行），未实测极端长度；
 - **版本语义**：只当它是「宿主声明的版本字符串」，页面不解析 semver、不比较新旧、不做「检查更新」（属 g-030）。
+
+### 七、守卫的覆盖边界（att-002 复核要求如实写明，不为此加固断言）
+
+「`client.js` 内零版本字面量」这条断言（`test/client.test.mjs`，`clientSource.includes(`'${version}'`)`）
+**只是廉价补充，不是单一来源的真正保障**，覆盖面与误报面如下：
+
+| 面 | 事实 |
+| --- | --- |
+| **抓得到** | 单引号或双引号包裹的**当前** `package.json.version` 字面量（如 `const FALLBACK = '0.1.1';`） |
+| **抓不到** | 反引号模板串（`` `0.1.1` ``）、字符串拼接（`'0.' + '1.1'`）、`String.fromCharCode(...)`、从别处 import 常量、以及**旧版本号**字面量（与当前值不同者）——这些形式都不会被这条断言拦下 |
+| **会误报（保守）** | 注释或文档字符串里出现**带引号的当前版本**会被判红（哪怕只是举例），这正是 att-002 首轮差点踩到的方向；宁可误报也不放过 |
+| **真正的保障** | **sentinel 负向对照**：ping 返回仓库中不存在的 `9.9.9-sentinel` 时，`data-plugin-version` 与 `v{...}` 文本必须等于该值（改坏就红 C 证明：硬编码 `0.1.1` 会红）。它证明的是「渲染值来自 ping」，而不是「文件里没有字面量」——前者才是契约要求的性质 |
+
+按复核意见**不加固**这条守卫（不改成正则扫描模板串/拼接）：静态扫描的边际收益低、误伤面大，还会给出
+「已经防住了」的假安全感；真正需要的是上面的行为对照。

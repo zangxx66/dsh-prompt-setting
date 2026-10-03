@@ -1235,14 +1235,17 @@ test('client: no clientBuild, or a failed ping, is "unknown" and never "stale"',
 
 /**
  * Ping bodies that carry **no usable version**: the field is absent, or present
- * as something other than a non-empty string. Every one of them must render as
- *「未知」— the alternative is a number no host ever sent.
+ * as something that declares no version — a non-string, the empty string, or
+ * only whitespace. Every one of them must render as「未知」— the alternative is
+ * a value no host ever sent (`v   ` included).
  */
 const VERSIONLESS_PINGS = [
   ['no version field at all', { payload: { ok: true, plugin: 'dsh-prompt-setting' } }],
   ['version: null', { payload: { ok: true, plugin: 'dsh-prompt-setting', version: null } }],
   ['version: 42', { payload: { ok: true, plugin: 'dsh-prompt-setting', version: 42 } }],
   ['version: ""', { payload: { ok: true, plugin: 'dsh-prompt-setting', version: '' } }],
+  ['version: "   "', { payload: { ok: true, plugin: 'dsh-prompt-setting', version: '   ' } }],
+  ['version: "\\t\\n"', { payload: { ok: true, plugin: 'dsh-prompt-setting', version: '\t\n' } }],
   ['version: {}', { payload: { ok: true, plugin: 'dsh-prompt-setting', version: {} } }],
 ];
 
@@ -1262,6 +1265,16 @@ test('client: the version on the page is the ping\'s version, not a copy kept in
   // One ping, one host boot: the build stamp on the same render comes from that
   // same answer.
   assert.equal(markerOf(tree, 'data-build-server'), 'deadbeef');
+
+  // A value that carries text is passed through **byte for byte**: normalizing
+  // whitespace away would print a version the host did not declare.
+  const padded = ' 9.9.9-padded ';
+  const paddedPage = makePage({
+    responses: defaultResponses({ [PATHS.ping]: pingResponse(null, padded) }),
+  });
+  const paddedTree = await paddedPage.flush();
+  assert.equal(markerOf(paddedTree, 'data-plugin-version'), padded, 'not one byte may be trimmed away');
+  assert.ok(hasText(paddedTree, `v${padded}`), 'and the tag shows exactly that value');
 });
 
 test('client: the shipped version cannot drift from the one the host publishes', async () => {
@@ -1289,6 +1302,12 @@ test('client: a ping without a usable version is "unknown", and never a version'
     assert.equal(markerOf(tree, 'data-plugin-version'), 'unknown', `${name}: the marker says unknown`);
     assert.ok(hasText(tree, page.zh.stPluginVersionUnknown), `${name}: the copy says so`);
     assert.equal(hasText(tree, `v${packageJson.version}`), false, `${name}: no version was fabricated`);
+    // Whitespace is the case a `length > 0` check would have printed: the tag
+    // must not show `v   ` (or `v` plus any other non-declaration) either.
+    const raw = answer.payload && typeof answer.payload.version === 'string' ? answer.payload.version : '';
+    if (raw.length > 0) {
+      assert.equal(hasText(tree, `v${raw}`), false, `${name}: a blank value is not rendered as a version`);
+    }
   }
   // A ping that never arrived is the same state —「未知」, not an error card.
   const failed = makePage({ responses: defaultResponses({ [PATHS.ping]: new Error('Failed to fetch') }) });
@@ -1296,6 +1315,19 @@ test('client: a ping without a usable version is "unknown", and never a version'
   assert.equal(markerOf(failedTree, 'data-plugin-version'), 'unknown');
   assert.ok(hasText(failedTree, failed.zh.stPluginVersionUnknown));
   assert.equal(hasText(failedTree, `v${packageJson.version}`), false);
+});
+
+test('client: a whitespace-only version is "unknown", never a blank version', async () => {
+  // `'   '` survives a `length > 0` check, which is exactly how it would reach
+  // the screen as `v   `. Whitespace is not a declaration, so both halves of the
+  // pipeline — the stored state and the render — must refuse it.
+  for (const blank of ['   ', '\t', '\n', ' \t\n ']) {
+    const page = makePage({ responses: defaultResponses({ [PATHS.ping]: pingResponse(null, blank) }) });
+    const tree = await page.flush();
+    assert.equal(markerOf(tree, 'data-plugin-version'), 'unknown', `${JSON.stringify(blank)}: the marker`);
+    assert.ok(hasText(tree, page.zh.stPluginVersionUnknown), `${JSON.stringify(blank)}: the copy`);
+    assert.equal(hasText(tree, `v${blank}`), false, `${JSON.stringify(blank)}: no blank version on screen`);
+  }
 });
 
 // #endregion
@@ -3709,6 +3741,9 @@ test('client: a throw while building the tree renders a failure card, not a blan
   });
   assert.equal(rendererOf(tree), 'fallback');
   assert.equal(markerOf(tree, 'data-render-state'), 'error');
+  // g-029: a root container always carries the version marker, in this state
+  // too — nothing could have answered, so the honest value is `unknown`.
+  assert.equal(markerOf(tree, 'data-plugin-version'), 'unknown', 'the failure card carries the marker');
   assert.ok(hasText(tree, 'translator exploded'), 'the error text is shown');
   // `t` is the broken thing here, so the card falls back to its literal copy.
   assert.ok(hasText(tree, 'render failure'), 'literal fallback copy is used');
