@@ -485,11 +485,15 @@ host publishes.
 g-029).** Additive on the wire, and a placement change on the page:
 
 - `GET /prompt-setting/ping` answers one more field, **`repositoryUrl`** —
-  derived at import time from this package's own `package.json`
-  (`repositoryUrlOf`: `repository.url` with its `git+` prefix and `.git` suffix
-  stripped, else a bare `repository` string treated the same way, else
-  `homepage` with its `#…` fragment dropped, else `null`). Never throws: an
-  unreadable or field-less manifest answers `null`;
+  derived at import time from this package's own `package.json` by
+  `repositoryUrlOf(manifest)`, in npm's order of authority: `repository.url`
+  (trailing slashes folded first, then the `git+` prefix and a trailing `.git`
+  stripped), else a bare `repository` string treated the same way, else
+  `homepage` with its `#…` fragment dropped, else `null`. What survives must be
+  `http://` or `https://`: an SSH spelling (`git@host:path`, `ssh://…`) is **not**
+  rewritten into https — that would be guessing a different address — so it
+  answers `null` and lets `homepage` (or plain text) answer instead. Never
+  throws: an unreadable or field-less manifest answers `null`;
 - the version **moves from the status line to the page title**: it renders in the
   heading's own row as `data-role="plugin-version"`, and the status line no
   longer renders a version node at all. The root container keeps
@@ -1879,9 +1883,13 @@ writes one down either.
 - **Where it renders (Revision 17):** in the page's **title row**, as a sibling
   of the `h2` heading, marked `data-role="plugin-version"` — the page's identity,
   not a status chip. The **status line renders no version node at all**
-  (`data-region="status"` carries the mounted/frozen/build verdicts only), so
-  the placement is unique: exactly one `data-role="plugin-version"` node on the
-  page;
+  (`data-region="status"` carries the mounted/frozen/build verdicts only), so in
+  the **normal render** the placement is unique: exactly one
+  `data-role="plugin-version"` node. The two failure cards render **no** such node
+  — they have no title row — which is precisely why the machine-readable version
+  lives on the **root container** instead: `data-plugin-version` is present in
+  **every** render state, so a probe reads one attribute and never has to know
+  which state it got;
 - **the text** is `v` + the version (`v0.1.1`), or `stPluginVersionUnknown`
   (「版本未知」 / `Version unknown`) when the ping carried no usable one. The
   node's `title` is `stPluginVersion` (「插件版本」 / `Plugin version`);
@@ -1891,7 +1899,9 @@ writes one down either.
   marked `data-plugin-repository="unknown"` — **plain text, not clickable** — and
   the version text renders just the same. An unseen URL is never guessed and an
   empty `href` is never emitted: both would send the reader somewhere no manifest
-  names. A known URL with an unknown version is still a link;
+  names. A known URL with an unknown version is still a link. The host only ever
+  reports an `http(s)` address (§14.2), so the `href` is always one a browser
+  will open;
 - **the root container** carries `data-plugin-version="<version>"`: the ping's
   `version` verbatim, or the string `unknown`. **Every** root container carries
   it, in every render state — the real page, the render-failure card
@@ -1973,9 +1983,10 @@ both.
 - `repositoryUrl` — **Revision 17**: this package's own repository, derived at
   import time from its `package.json` (`repositoryUrlOf`: `repository.url`, else a
   bare `repository` string, else `homepage` — each with its git decoration
-  `git+…​.git` or `#fragment` removed), or `null` when the manifest declares none.
-  It is answered here so the page can link the version (§13.8) without either half
-  writing a URL down;
+  `git+…​.git` or `#fragment` removed, trailing slashes folded), or `null` when the
+  manifest declares none **or** declares something that is not an `http(s)`
+  address (an SSH remote is not rewritten; see §13.8). It is answered here so the
+  page can link the version without either half writing a URL down;
 - `clientBuild` is **`null`**, with the rest of the response unchanged and the
   status still `200`, when the bundle cannot be read, or when it is readable but
   its marker region is unusable (markers removed, duplicated or reversed). A

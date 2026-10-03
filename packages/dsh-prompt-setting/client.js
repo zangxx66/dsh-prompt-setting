@@ -5802,7 +5802,7 @@ window.__ModuleLoader__.load({
             // another health chip.
             style: { display: 'flex', alignItems: 'baseline', gap: 8, flexWrap: 'wrap' },
           },
-          h('h2', { style: { margin: 0, fontSize: 18, fontWeight: 600, lineHeight: '26px' } }, t('title')),
+          h('h2', { key: 'heading', style: { margin: 0, fontSize: 18, fontWeight: 600, lineHeight: '26px' } }, t('title')),
           renderPluginVersion(t, m),
         ),
       );

@@ -318,14 +318,17 @@ function readOwnRepositoryUrl() {
  *
  * `git+https://….git` is how a manifest names a *git remote*; neither the
  * `git+` prefix nor the trailing `.git` belongs in the address a reader opens,
- * so both are stripped from the first two sources. A `homepage` is a page
+ * so both are stripped from the first two sources (after any trailing slash,
+ * which is the same address written differently). A `homepage` is a page
  * already, so only its fragment is removed.
  *
- * Never throws and never guesses: a manifest with no usable field answers
- * `null`, and the client then shows the version as plain text rather than a
- * link to nowhere (CONTRACT.md §13.8).
+ * What is returned must be an `http(s)` address: an SSH spelling is **not**
+ * rewritten (guessing a different address is worse than admitting there is
+ * none), it falls through to `homepage` and then to `null`. The client then
+ * shows the version as plain text rather than a link to nowhere
+ * (CONTRACT.md §13.8).
  * @param manifest - a parsed `package.json`, or anything else.
- * @returns the repository URL, or `null`.
+ * @returns an `http(s)` repository URL, or `null`.
  */
 export function repositoryUrlOf(manifest) {
   const repository = manifest !== null && typeof manifest === 'object' ? manifest.repository : null;
@@ -340,22 +343,43 @@ export function repositoryUrlOf(manifest) {
   const homepage = manifest !== null && typeof manifest === 'object' ? manifest.homepage : null;
   if (typeof homepage === 'string') {
     const page = homepage.split('#')[0].trim();
-    if (page.length > 0) return page;
+    if (isHttpAddress(page)) return page;
   }
   return null;
 }
 
 /**
- * A `repository` value as the address a reader can open.
+ * A `repository` value as the address a reader can open, or `null`.
+ *
+ * The cleaning is deliberately narrow, because every step here rewrites what the
+ * manifest said:
+ *   - a trailing slash is folded away first (`…​.git/` is the same address as
+ *     `…​.git`), which is what lets the `.git` test below reach it at all;
+ *   - the `git+` prefix and a trailing `.git` are git decoration, not address;
+ *   - what remains must be `http://` or `https://`. An SSH spelling
+ *     (`git@github.com:a/b.git`, `ssh://…`) is **not** rewritten into https —
+ *     that would be guessing a different address — and a non-web scheme would
+ *     hand the reader a link the browser refuses to follow. Both answer `null`,
+ *     which lets the manifest's `homepage` (or plain text) answer instead.
  * @param value - the manifest's `repository.url`, or a bare `repository`.
- * @returns the cleaned URL, or `null` when it is not a usable string.
+ * @returns the cleaned http(s) URL, or `null`.
  */
 function asGitAddress(value) {
   if (typeof value !== 'string') return null;
   let url = value.trim();
+  while (url.endsWith('/')) url = url.slice(0, -1);
   if (url.startsWith('git+')) url = url.slice('git+'.length);
   if (url.endsWith('.git')) url = url.slice(0, -'.git'.length);
-  return url.length > 0 ? url : null;
+  return isHttpAddress(url) ? url : null;
+}
+
+/**
+ * Whether a string is an address a browser will actually open.
+ * @param value - the candidate URL.
+ * @returns `true` for `http://` and `https://` only.
+ */
+function isHttpAddress(value) {
+  return value.startsWith('http://') || value.startsWith('https://');
 }
 
 /**

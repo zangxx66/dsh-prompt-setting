@@ -300,6 +300,26 @@ test('host: repositoryUrlOf derives an openable URL from a manifest, or null', (
   ]) {
     assert.equal(repositoryUrlOf(manifest), null, `${JSON.stringify(manifest)} must answer null`);
   }
+  // 6. Only an `http(s)` address is one a reader can open. SSH spellings are
+  //    *not* rewritten into https — that would be guessing a different address —
+  //    and a non-web scheme is no better: both fall through like a missing field
+  //    and let `homepage` answer.
+  assert.equal(repositoryUrlOf({ repository: 'git@github.com:a/b.git' }), null, 'scp-style SSH is not a URL');
+  assert.equal(repositoryUrlOf({ repository: 'ssh://git@github.com/a/b.git' }), null, 'nor is an ssh:// remote');
+  assert.equal(repositoryUrlOf({ repository: 'ftp://example.com/x' }), null, 'nor a non-web scheme');
+  assert.equal(repositoryUrlOf({ homepage: 'git@example.com:a/b' }), null, 'homepage must be http(s) too');
+  assert.equal(repositoryUrlOf({ homepage: 'ssh://example.com/x' }), null);
+  assert.equal(
+    repositoryUrlOf({ repository: 'ssh://git@github.com/a/b.git', homepage: 'https://example.com/x#readme' }),
+    'https://example.com/x',
+    'an unusable repository falls through to homepage, exactly like a missing one',
+  );
+  // 7. A trailing slash is the same address written differently, so it is folded
+  //    away *before* the `.git` test: `…​.git/` still loses its `.git`.
+  assert.equal(repositoryUrlOf({ repository: 'https://x/y.git/' }), 'https://x/y');
+  assert.equal(repositoryUrlOf({ repository: { url: 'git+https://x/y.git/' } }), 'https://x/y');
+  assert.equal(repositoryUrlOf({ repository: 'http://x/y.git' }), 'http://x/y', 'http is accepted too');
+  assert.equal(repositoryUrlOf({ repository: 'https://x/y/' }), 'https://x/y', 'a plain trailing slash is folded');
 });
 
 test('host: the ping reports the repository URL its own manifest declares', async () => {

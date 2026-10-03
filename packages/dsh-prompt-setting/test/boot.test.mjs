@@ -796,6 +796,33 @@ test('boot: a throwing client body degrades to a card that keeps the machine mar
   assert.ok(text.includes(PLUGIN_NAME), 'the card names the plugin');
 });
 
+test('boot: the load-failure card carries data-plugin-version="unknown"', () => {
+  // Its own case, so a failure here names the marker rather than the card's
+  // other properties. The card is a root container (g-029, Revision 17): a probe
+  // that reads `data-plugin-version` gets an honest `unknown`, never `undefined`,
+  // even though this bundle never reached a host to ask.
+  const broken = clientSource.replace("const React = require('react');", "throw new Error('G013-BOOT-BREAK');");
+  assert.notEqual(broken, clientSource, 'the mutation must actually apply');
+  const page = loadClientFactory({ source: broken });
+  let registered = null;
+  page.module.apply({
+    slots: {
+      inject(_name, factory) {
+        registered = factory();
+      },
+      register(entry, component) {
+        return { entry, component };
+      },
+    },
+  });
+  const tree = registered.component();
+  assert.equal(tree.props['data-plugin-version'], 'unknown');
+  assert.equal(tree.props['data-build'], 'unknown');
+  // The degraded card has no title row, so no `data-role="plugin-version"` node
+  // exists here — the root attribute above is the machine-readable answer.
+  assert.equal(tree.props['data-role'], undefined);
+});
+
 test('boot: a client host that refuses the card is not a throw either', () => {
   const broken = clientSource.replace("const React = require('react');", "throw new Error('G013-BOOT-BREAK');");
   const page = loadClientFactory({ source: broken });

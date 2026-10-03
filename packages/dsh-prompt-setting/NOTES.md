@@ -4712,3 +4712,35 @@ undone」，现在由警示条**唯一**承担，不再出现两次三次。改�
 HMR，但宿主半必须**重启 `dsh web`** 才生效——重启会终止正在运行的会话，因此真机目视（链接可点、跳转正确、
 标题行排版）由**主管在合并后统一安排**，本轮只做离线验证；未重启前，旧宿主进程的 ping 不带该字段，页面按
 「无 URL」降级渲染纯文本版本号（这正是降级分支要覆盖的现实情形）。
+
+### 九、Revision 17 复核收口（独立复核 3 条小缺口）
+
+**A｜派生函数校验 scheme（最高优先）**
+- `asGitAddress` 现在**只接受 `http://` / `https://`** 开头的地址：SSH 形态（`git@github.com:a/b.git`、
+  `ssh://…`）与非 web scheme（`ftp://`）一律视为不可用，**回退 `homepage`（同样要求 http(s)），再不行 `null`**；
+  **不做** SSH→https 自动改写（那是猜测一个不同的地址）；`homepage` 原先只判非空，现补同样的 http(s) 校验；
+- **尾斜杠**：选择「先折叠尾斜杠、再判 `.git`」⇒ `https://x/y.git/` → `https://x/y`。理由：尾斜杠是**同一地址的
+  书写变体**（折叠不改变目标），SSH→https 是**换一个地址**（猜测）——两者性质不同，故一个做、一个不做，均有断言；
+- 契约同步：Revision 17 段、§13.8「the link」bullet（宿主只报 http(s)），§14.2 的 `repositoryUrl` bullet
+  （非 http(s) ⇒ `null`、SSH 不改写）。
+
+**B｜降级卡与契约措辞的一致性**
+- 加载失败卡的 `data-plugin-version='unknown'` **此前已有**断言（`test/boot.test.mjs` 的 "a throwing client body
+  degrades to a card that keeps the machine markers"）；本轮另加一条**独立用例**
+  `boot: the load-failure card carries data-plugin-version="unknown"`，便于按用例名单独取证，并同时断言该卡片
+  没有 `data-role`（失败卡没有标题行，本来就不该有 `data-role="plugin-version"`）；
+- 契约 §13.8 把「exactly one `data-role="plugin-version"`」**限定为正常渲染态**，并写明两张失败卡**不存在**该节点、
+  机器的版本真值由**根容器**的 `data-plugin-version` 提供（每个渲染态都有它）。
+
+**C｜标题行 React key**：标题行 `h2` 补 `key: 'heading'`（与同一 children 数组里的版本节点 `key: 'version'` 并列），
+消除 React 开发构建的 key 警告；纯工程整洁，行为与标记不变，未加断言。
+
+**本轮实测证据**（包目录 `packages/dsh-prompt-setting/` 下执行）
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test` | **491 / 491 pass / 0 fail**（exit 0；上一轮 490，新增 1 条独立用例） |
+| 相关三文件 | `node --test test/host.test.mjs test/boot.test.mjs test/client.test.mjs` | **173 / 173 pass / 0 fail**（exit 0） |
+| A 新增边界（绿） | `--test-name-pattern="repositoryUrlOf derives"` | scp 风格 / `ssh://` / `ftp://` / 非 http 的 `homepage` ⇒ `null`；SSH + `homepage` ⇒ 用 `homepage`；`https://x/y.git/` ⇒ `https://x/y`；`git+https://x/y.git/` ⇒ `https://x/y`；`http://x/y.git` ⇒ `http://x/y`；原 5 类输入与「ping === `repositoryUrlOf(packageJson)`」保持全绿 |
+| 改坏就红 A（去掉 scheme 校验） | `asGitAddress` 末尾改回 `url.length > 0 ? url : null`，跑 `test/host.test.mjs` | **21 pass / 1 fail**（新增边界用例变红）；还原后 22/22 |
+| 改坏就红 B（删加载失败卡标记） | 删掉该卡的 `'data-plugin-version': 'unknown'`，跑 `test/boot.test.mjs` | **24 pass / 2 fail**（既有断言 + 新增独立用例各红一条）；还原后 26/26 |
