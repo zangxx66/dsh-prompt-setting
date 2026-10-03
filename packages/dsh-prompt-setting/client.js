@@ -25,10 +25,11 @@
  *      second confirmation, plus the full status block.
  *
  * Above the tabs there are exactly three things: the title, one line of
- * deciding facts (mounted / frozen three-state / build stamp) and the session
- * selector every tab shares — sourced from the **props** `useSessions` root
- * hook, grouped as a workspace tree from the **props** `useWorkspaces` root
- * hook (same grouping/ordering/visibility rules as the left sidebar), with a
+ * deciding facts (mounted / frozen three-state / build stamp / plugin version)
+ * and the session selector every tab shares — sourced from the **props**
+ * `useSessions` root hook, grouped as a workspace tree from the **props**
+ * `useWorkspaces` root hook (same grouping/ordering/visibility rules as the
+ * left sidebar), with a
  * flat searchable list when `useWorkspaces` is absent and a manual-id
  * degradation when `useSessions` is absent.
  *
@@ -57,6 +58,13 @@
  * `clientBuild`. `data-build` / `data-build-server` / `data-build-match`
  * publish the comparison, whose third state —「未知」— is what an old host or a
  * failed ping yields, and which is deliberately never reported as「过期」.
+ *
+ * g-029 answers the other half of the same question — *which version* is this
+ * tab talking to? — without adding a second source. The version rendered in the
+ * status line (as `v` + the version) and published as `data-plugin-version` is the
+ * `version` field of that **same** ping, which the host fills from
+ * `PLUGIN_VERSION`. A missing, non-string or empty answer is rendered as
+ * 「版本未知」/`unknown`, so the page can never show a version no host claimed.
  */
 window.__ModuleLoader__.load({
   id: 'dsh-prompt-setting',
@@ -478,6 +486,12 @@ window.__ModuleLoader__.load({
       stBuildUnknownHint:
         '宿主没有报告 client.js 指纹（宿主版本旧、文件不可读、或标记缺失/重复），因此无法判断本页是否过期；这里不会当作过期。',
       stBuildPingFailedHint: 'ping 请求失败，拿不到宿主指纹，因此无法判断本页是否过期。',
+      // g-029: the version the host reported in the ping. The tag renders a real
+      // answer as `v` + the version; this label and the one below are the only two
+      // strings the missing case needs, and the version itself is never written
+      // in this file.
+      stPluginVersion: '插件版本',
+      stPluginVersionUnknown: '版本未知',
       viewSections: '分段',
       viewFull: '全文',
       // g-015: the four first-level tabs, in their fixed presentation order.
@@ -821,6 +835,10 @@ window.__ModuleLoader__.load({
       stBuildUnknownHint:
         'The host reported no client.js fingerprint (older host, unreadable file, or missing/duplicated markers), so this tab cannot be judged — it is not treated as stale.',
       stBuildPingFailedHint: 'The ping request failed, so there is no host fingerprint and this tab cannot be judged.',
+      // g-029: the version the host reported in the ping, or「unknown」when the
+      // same ping carried none. Never a version this bundle invented.
+      stPluginVersion: 'Plugin version',
+      stPluginVersionUnknown: 'Version unknown',
       viewSections: 'Sections',
       viewFull: 'Full text',
       tabMine: 'My Prompt',
@@ -2123,6 +2141,24 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The plugin version the page shows, taken from the ping's `version` field
+     * (g-029) — the **only** source. This file carries no version literal of its
+     * own: a second copy would be a second thing to keep in sync, which is
+     * exactly the drift the display exists to end.
+     *
+     * `'unknown'` covers every way the same ping can fail to answer: no response
+     * at all, a failed request, a body without `version`, a non-string value, or
+     * an empty string. A fabricated version here would be worse than none — the
+     * reader would be told a version this build is not (CONTRACT.md §13.8).
+     * @param boot - the `{self, server, version, pingFailed}` state.
+     * @returns the version as the host reported it, or `'unknown'`.
+     */
+    function pluginVersionOf(boot) {
+      const version = boot && boot.version;
+      return typeof version === 'string' && version.length > 0 ? version : 'unknown';
+    }
+
+    /**
      * Whether the edit controls must be disabled for a section.
      *
      * A section that cannot be overridden is always disabled. A frozen verdict
@@ -2756,7 +2792,8 @@ window.__ModuleLoader__.load({
 
     /**
      * One line of the facts that decide whether a write here will do anything:
-     * mounted, the frozen three-state verdict, and the build stamp's verdict.
+     * mounted, the frozen three-state verdict, the build stamp's verdict, and —
+     * since g-029 — the plugin version the host reported.
      *
      * g-015 moved every *explanation* into 「高级」 (see
      * {@link renderStatusDetail}): the top of the page states the verdicts, and
@@ -2767,7 +2804,9 @@ window.__ModuleLoader__.load({
      * `data-region="status"` is unchanged, and so is the build stamp's
      * machine-readable copy on the root container (`data-build`,
      * `data-build-server`, `data-build-match`), so a probe that read the page
-     * before this goal still reads it.
+     * before this goal still reads it. The version tag is added to the same
+     * line: it is the other half of "what is this tab actually running", and it
+     * needs no second request (§13.8).
      *
      * @param t - the bound translator.
      * @param m - the page model.
@@ -2778,6 +2817,7 @@ window.__ModuleLoader__.load({
       const snapshot = m.snap.data;
       const fz = m.fz;
       const verdict = buildVerdict(m.boot);
+      const version = pluginVersionOf(m.boot);
       const mounted = snapshot ? snapshot.mounted === true : null;
       const mountedText =
         mounted === null ? t('stMountedUnknown') : mounted ? t('stMountedOn') : t('stMountedOff');
@@ -2808,6 +2848,15 @@ window.__ModuleLoader__.load({
           UI.Tag,
           { tone: verdict === 'true' ? 'success' : verdict === 'false' ? 'danger' : 'outline', title: t('stBuild') },
           `${t('stBuild')}: ${t(verdict === 'true' ? 'stBuildSame' : verdict === 'false' ? 'stBuildStale' : 'stBuildUnknown')}`,
+        ),
+        // g-029: the version the host reported in the ping, on the same line as
+        // the build stamp and never invented: without an answer the tag says
+        // 「版本未知」 instead of a number (the root container carries the same
+        // answer as `data-plugin-version`).
+        h(
+          UI.Tag,
+          { tone: version === 'unknown' ? 'outline' : 'success', title: t('stPluginVersion') },
+          `${t('stPluginVersion')}: ${version === 'unknown' ? t('stPluginVersionUnknown') : `v${version}`}`,
         ),
         h(UI.Button, { variant: 'outline', 'data-action': 'refresh', onClick: a.refresh }, t('refresh')),
       );
@@ -5774,6 +5823,10 @@ window.__ModuleLoader__.load({
           'data-build-server':
             m.boot && m.boot.server && typeof m.boot.server.hash === 'string' ? m.boot.server.hash : 'unknown',
           'data-build-match': buildVerdict(m.boot),
+          // g-029: the version the host reported in the same ping, verbatim, or
+          // `unknown` — never a version this bundle made up. Beside the build
+          // stamp because both answer "what am I looking at" from one answer.
+          'data-plugin-version': pluginVersionOf(m.boot),
           style: {
             display: 'flex',
             flexDirection: 'column',
@@ -5887,7 +5940,10 @@ window.__ModuleLoader__.load({
       // once at module scope) and what the host said it serves. Starts as
       //「未知」and stays that way unless the host really answered a hash — a
       // missing/failed ping must never be rendered as「过期」.
-      const [boot, setBoot] = React.useState({ self: SELF_BUILD, server: null, pingFailed: false });
+      // `version` rides on the *same* ping (g-029): one request answers both
+      // questions, so the page can never show a build from one host boot and a
+      // version from another.
+      const [boot, setBoot] = React.useState({ self: SELF_BUILD, server: null, version: null, pingFailed: false });
 
       const session = selection === null ? seat.currentId || GLOBAL_SESSION : selection;
       const sessionArg = session === GLOBAL_SESSION ? null : session;
@@ -5933,7 +5989,14 @@ window.__ModuleLoader__.load({
         const sendPing = async () => {
           const ping = await requestJson(`${PING_PATH}?renderer=${RENDERER}`);
           if (cancelled) return;
-          const build = ping.ok && ping.payload ? ping.payload.clientBuild : null;
+          const body = ping.ok && ping.payload ? ping.payload : null;
+          const build = body ? body.clientBuild : null;
+          // g-029: the *same* answer also carries the plugin version, so the two
+          // facts on screen always describe one host boot. Only a non-empty
+          // string is kept; anything else (absent, `null`, a number, `''`) stays
+          // `null` and renders as「未知」rather than being coerced into a number
+          // the host never sent.
+          const version = body ? body.version : null;
           setBoot({
             self: SELF_BUILD,
             server:
@@ -5944,6 +6007,7 @@ window.__ModuleLoader__.load({
                     mtime: typeof build.mtime === 'string' ? build.mtime : null,
                   }
                 : null,
+            version: typeof version === 'string' && version.length > 0 ? version : null,
             pingFailed: !ping.ok,
           });
         };

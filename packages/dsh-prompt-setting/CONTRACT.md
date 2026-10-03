@@ -454,11 +454,35 @@ layer names a registered-but-valueless provider).
 
 ---
 
+**Revision 16 (the plugin version on the settings page — g-029).** Additive, and
+the **client half only**: the settings page now states which version of this
+plugin the host is running, read from the `version` field the ping has answered
+since stage 1A (filled from `PLUGIN_VERSION`). No route, field, status code or
+response byte changes; what is new is that the page consumes a field it used to
+ignore:
+
+- the root container publishes `data-plugin-version="<version>"` — the ping's
+  value verbatim, or the string `unknown`;
+- the status line adds the `stPluginVersion` tag (`插件版本: v<version>` /
+  `Plugin version: v<version>`), beside the build stamp it shares that answer
+  with (§13.8);
+- `unknown` covers a failed or unreachable ping, a body without `version`, a
+  non-string value and the empty string — rendered as「版本未知」, never as a
+  number. It is the same asymmetry §14.3 applies to the build stamp, for the same
+  reason: an invented answer is worse than an honest「未知」.
+
+The client half carries **no version literal of its own**, and `package.json`'s
+`version` is asserted equal to `index.js`'s `PLUGIN_VERSION` by reading both
+files, so the one copy the page displays can no longer drift from the one the
+host publishes.
+
+---
+
 ## 1. Routes and methods
 
 | Path | Methods | Purpose |
 | --- | --- | --- |
-| `/prompt-setting/ping` | `GET` | Stage 1A liveness probe. Behaviour unchanged, plus `clientBuild` since Revision 6 (§14.2). |
+| `/prompt-setting/ping` | `GET` | Stage 1A liveness probe. Behaviour unchanged, plus `clientBuild` since Revision 6 (§14.2) and the page's own `version` read since Revision 16 (§13.8). |
 | `/prompt-setting/snapshot` | `GET` | Base + effective section views, frozen verdict, layering. |
 | `/prompt-setting/overrides` | `GET` | Both layers and the merged list. |
 | `/prompt-setting/overrides` | `PUT` | Upsert **the reserved section** into one layer; any other name is `403` (Revision 7, §4.1). |
@@ -1814,6 +1838,32 @@ the highlighted row), `useCurrent` (the pinned current-view entry),
 follows the new scope in the same render. Browsing actions — typing in the
 search box, toggling a workspace group,「显示更多」 — deliberately do **not**
 close it: they do not finish the choice.
+
+### 13.8 The plugin version on the page (g-029)
+
+The page states **which version of this plugin the host is running**, and takes
+it from exactly one place: the `version` field of the ping it already sends
+(`GET /prompt-setting/ping`, §1). The client half carries **no version literal of
+its own** — asserted against the real file, by quoting the current version and
+requiring its absence — because a second copy is a second thing to keep in sync,
+which is the drift this display exists to end.
+
+- the **root container** carries `data-plugin-version="<version>"`: the ping's
+  `version` verbatim, or the string `unknown`;
+- the **status line** (`data-region="status"`) renders one more tag from the
+  `stPluginVersion` copy: `插件版本: v<version>` / `Plugin version: v<version>`;
+- the version comes from the **same answer** as the build stamp (`data-build`,
+  `data-build-server`, `data-build-match`, §14.3): one ping, one host boot, so
+  the two facts on screen can never describe two different hosts;
+- **`unknown`** — the same asymmetry as the build stamp, for the same reason: a
+  failed or unreachable ping, a body without `version`, a non-string value
+  (`42`, `{}`, `null`) or the empty string. The marker is then `unknown` and the
+  tag renders `stPluginVersionUnknown` (「版本未知」 / `Version unknown`). A
+  version no host answered with is **never** rendered: an invented number is
+  worse than an honest「未知」.
+
+The cost is one attribute and one tag on a request the page already makes: no new
+route, no new field, no new request.
 
 ---
 

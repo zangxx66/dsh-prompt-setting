@@ -24,6 +24,19 @@ import { CUSTOM_SECTION_NAME } from '../core/custom.js';
 const here = dirname(fileURLToPath(import.meta.url));
 const packageJson = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8'));
 const clientSource = readFileSync(join(here, '..', 'client.js'), 'utf8');
+/**
+ * The **host** half, read as text (g-029).
+ *
+ * `index.js` is an ESM module with plugin side effects, so it is not imported
+ * here: the one literal this file needs — the version the ping answers with —
+ * is parsed out of the source instead, and then compared with `package.json`.
+ * That comparison is the point: two copies a human keeps in sync are exactly
+ * the copies that drift, so the test reads both files and says so.
+ */
+const indexSource = readFileSync(join(here, '..', 'index.js'), 'utf8');
+const PLUGIN_VERSION_MATCH = indexSource.match(/^const PLUGIN_VERSION = '([^']*)';[ \t]*$/m);
+/** `index.js`'s `PLUGIN_VERSION`, or `null` when the declaration is gone. */
+const PLUGIN_VERSION = PLUGIN_VERSION_MATCH === null ? null : PLUGIN_VERSION_MATCH[1];
 const NS = 'settings.promptSetting';
 /** Every documented rejection code (CONTRACT.md §4.4) plus the route-level ones. */
 const ERROR_CODES = [
@@ -1093,13 +1106,20 @@ function independentBuildFingerprint(text) {
   return { hash: hash.toString(16).padStart(8, '0'), size: region.length };
 }
 
-/** The ping body a host serving `clientBuild` answers with. */
-function pingResponse(clientBuild) {
+/**
+ * The ping body a host serving `clientBuild` answers with.
+ *
+ * Since g-029 the same body also carries the version, and its default is the
+ * version `index.js` really declares: a fixture that hard-coded one would go on
+ * passing after the two copies drifted apart, which is the failure this whole
+ * goal exists to prevent.
+ */
+function pingResponse(clientBuild, version = PLUGIN_VERSION) {
   return {
     payload: {
       ok: true,
       plugin: 'dsh-prompt-setting',
-      version: '0.1.1',
+      version,
       time: '2024-01-01T00:00:00.000Z',
       clientRenderer: 'fallback',
       clientReportedAt: null,
@@ -1209,6 +1229,73 @@ test('client: no clientBuild, or a failed ping, is "unknown" and never "stale"',
   // unknown, not the digest of what is running.
   assert.equal(markerOf(olderTree, 'data-build'), independentBuildFingerprint(clientSource).hash);
   assert.equal(markerOf(failedTree, 'data-build'), independentBuildFingerprint(clientSource).hash);
+});
+
+// #region g-029: the plugin version the page shows
+
+/**
+ * Ping bodies that carry **no usable version**: the field is absent, or present
+ * as something other than a non-empty string. Every one of them must render as
+ *「未知」— the alternative is a number no host ever sent.
+ */
+const VERSIONLESS_PINGS = [
+  ['no version field at all', { payload: { ok: true, plugin: 'dsh-prompt-setting' } }],
+  ['version: null', { payload: { ok: true, plugin: 'dsh-prompt-setting', version: null } }],
+  ['version: 42', { payload: { ok: true, plugin: 'dsh-prompt-setting', version: 42 } }],
+  ['version: ""', { payload: { ok: true, plugin: 'dsh-prompt-setting', version: '' } }],
+  ['version: {}', { payload: { ok: true, plugin: 'dsh-prompt-setting', version: {} } }],
+];
+
+test('client: the version on the page is the ping\'s version, not a copy kept in the bundle', async () => {
+  // A version that occurs nowhere in this repository. If the page can render it,
+  // it can only have come from the answer it was handed — the negative control
+  // for "no second copy of the version string".
+  const sentinel = '9.9.9-sentinel';
+  const page = makePage({
+    responses: defaultResponses({ [PATHS.ping]: pingResponse(buildFixture('deadbeef'), sentinel) }),
+  });
+  const tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-plugin-version'), sentinel, 'the machine marker repeats the answer');
+  assert.ok(hasText(tree, `v${sentinel}`), 'the status line renders v<version>');
+  assert.ok(hasText(tree, page.zh.stPluginVersion), 'and labels which fact it is');
+  assert.equal(hasText(tree, `v${packageJson.version}`), false, 'the bundle\'s own version is not what was shown');
+  // One ping, one host boot: the build stamp on the same render comes from that
+  // same answer.
+  assert.equal(markerOf(tree, 'data-build-server'), 'deadbeef');
+});
+
+test('client: the shipped version cannot drift from the one the host publishes', async () => {
+  // Criterion 1, read from the files themselves: the two copies a human keeps
+  // in sync are compared here instead of trusted.
+  assert.ok(PLUGIN_VERSION !== null, "index.js declares PLUGIN_VERSION as a single-quoted literal");
+  assert.equal(packageJson.version, PLUGIN_VERSION, 'package.json version and PLUGIN_VERSION must not drift');
+  assert.ok(indexSource.includes('version: PLUGIN_VERSION,'), 'the ping answers PLUGIN_VERSION itself');
+  // Criterion 2's "single source": the client may not carry the version as a JS
+  // string literal, whatever that version currently is. Comments are free to
+  // name other versions (they already do), so only quoted literals are refused.
+  for (const quoted of [`'${packageJson.version}'`, `"${packageJson.version}"`]) {
+    assert.equal(clientSource.includes(quoted), false, `client.js must not contain ${quoted}`);
+  }
+  const page = makePage({ responses: defaultResponses({ [PATHS.ping]: pingResponse(null) }) });
+  const tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-plugin-version'), PLUGIN_VERSION, 'the real chain: index.js → ping → page');
+  assert.ok(hasText(tree, `v${PLUGIN_VERSION}`), 'and it is rendered with its v prefix');
+});
+
+test('client: a ping without a usable version is "unknown", and never a version', async () => {
+  for (const [name, answer] of VERSIONLESS_PINGS) {
+    const page = makePage({ responses: defaultResponses({ [PATHS.ping]: answer }) });
+    const tree = await page.flush();
+    assert.equal(markerOf(tree, 'data-plugin-version'), 'unknown', `${name}: the marker says unknown`);
+    assert.ok(hasText(tree, page.zh.stPluginVersionUnknown), `${name}: the copy says so`);
+    assert.equal(hasText(tree, `v${packageJson.version}`), false, `${name}: no version was fabricated`);
+  }
+  // A ping that never arrived is the same state —「未知」, not an error card.
+  const failed = makePage({ responses: defaultResponses({ [PATHS.ping]: new Error('Failed to fetch') }) });
+  const failedTree = await failed.flush();
+  assert.equal(markerOf(failedTree, 'data-plugin-version'), 'unknown');
+  assert.ok(hasText(failedTree, failed.zh.stPluginVersionUnknown));
+  assert.equal(hasText(failedTree, `v${packageJson.version}`), false);
 });
 
 // #endregion
@@ -5108,8 +5195,12 @@ const EN_SWEEP_CASES = [
       ['data-build-match', 'unknown'],
       ['data-warning', 'client-build-stale'],
       ['data-warning', 'client-build-unknown'],
+      // g-029: the version tag rides on the same ping, so the same walk covers
+      // both its answered and its missing form.
+      ['data-plugin-version', packageJson.version],
+      ['data-plugin-version', 'unknown'],
     ],
-    copy: ['stBuild', 'stBuildSame', 'stBuildStale', 'stBuildStaleHint', 'stBuildUnknown', 'stBuildUnknownHint', 'stBuildPingFailedHint', 'stateHeading', 'stBuildSelf', 'stBuildServer'],
+    copy: ['stBuild', 'stBuildSame', 'stBuildStale', 'stBuildStaleHint', 'stBuildUnknown', 'stBuildUnknownHint', 'stBuildPingFailedHint', 'stateHeading', 'stBuildSelf', 'stBuildServer', 'stPluginVersion', 'stPluginVersionUnknown'],
     async run() {
       const oracle = independentBuildFingerprint(clientSource);
       const same = enPage({
@@ -5514,6 +5605,10 @@ const EN_REQUIRED_MARKERS = [
   'data-build-match=true',
   'data-build-match=false',
   'data-build-match=unknown',
+  // g-029: the plugin version is shown beside the build stamp, in both the
+  // answered form (the version the host really sends) and the missing one.
+  `data-plugin-version=${packageJson.version}`,
+  'data-plugin-version=unknown',
   'data-frozen-state=unfrozen',
   'data-frozen-state=frozen',
   'data-frozen-state=unknown',

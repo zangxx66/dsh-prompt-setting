@@ -4565,3 +4565,66 @@ undone」，现在由警示条**唯一**承担，不再出现两次三次。改�
 - **未做缩放核对**：200% 缩放与窄视口（<360px）下的折行未实测；卡片 `maxWidth: 480` 与
   `maxHeight: 80vh` 内的滚动行为沿用上一轮，未变。
 - **主按钮语义色**：破坏性确认仍是品牌色 `primary` 按钮，本轮只改排版，未动颜色语义。
+
+## 105. 设置页显示插件版本号，单一来源 = 宿主 ping.version（g-029，2026-10-03，基线 `9a7f434` 工作区）
+
+### 一、要解决的问题
+
+插件版本号此前只活在需要人工同步的多处副本里（`package.json` 的 `version`、`index.js` 的
+`PLUGIN_VERSION`、CONTRACT 响应示例、两份 README 徽章、测试断言，见 g-028）；用户在设置页看不到自己装的
+是哪个版本，排障（issue #1 的「从某 commit 的 tarball 安装」）只能去翻文件。页面已有的「构建戳」
+（`data-build` / `data-build-server` / `data-build-match`）回答的是「这个 tab 跑的是哪份字节」，
+与版本号互补而不可互替。
+
+### 二、落点选择（为什么是顶部状态条 + 根容器）
+
+| 候选落点 | 结论 | 理由 |
+| --- | --- | --- |
+| **顶部状态条 `data-region="status"`** | **选中**：构建戳 Tag 右边加一个版本 Tag | 与构建戳**同一行、同一区域**：两者本来就是一问一答（哪份字节 + 哪个版本），且打开设置页第一屏即可见，不必切 tab |
+| 「高级」状态卡 `data-region="status-detail"` | 不重复渲染 | g-015 把「解释」都挪到那里，版本号不是解释；同一事实两处渲染只增加走样面（`data-region="build"` 里的两个指纹是解释，版本号不是） |
+| 根容器 `data-plugin-version` | **选中**，与 `data-build*` 并列 | 沿用构建戳既有的「根容器暴露机器可读标记」体例，探针无需知道状态条的布局 |
+
+### 三、实现要点
+
+- `setBoot({ self, server, version, pingFailed })`：版本与构建戳来自**同一次 ping**（一个应答 = 一个宿主
+  启动），从根上排除「版本来自 A 次、指纹来自 B 次」的错配；
+- 存储时只接受**非空字符串**，其余（字段缺失 / `null` / 数字 / 对象 / `''`）一律 `null`，渲染期由
+  `pluginVersionOf(boot)` 归一到 `'unknown'`——不做 `String()` 强转，避免把宿主没发过的值印出来；
+- `client.js` 内**零版本字面量**：测试用「当前版本加引号后必须不存在于 `client.js`」钉死这一条
+  （注释里出现别的版本号如 `0.1.7-rc.2` 不受影响，因为断言只查带引号的字面量）；
+- 未知态文案 `stPluginVersionUnknown`（「版本未知」/「Version unknown」），Tag tone 用 `outline`，
+  与构建戳 unknown 同口径：任何情况下都不伪造版本号；
+- **被否方案**：①在客户端 import `package.json` 取版本（浏览器模块没有该入口，且会变成第二份来源）；
+  ②宿主新增一个 `GET /version` 路由（多余的往返，`version` 自 stage 1A 就在 ping 里）；
+  ③把版本塞进 `data-build` 的值里（会破坏构建戳既有的「一个是/否 + 两个指纹」语义）。
+
+### 四、契约与记账
+
+- `CONTRACT.md`：新增 **Revision 16** 段；新增 **§13.8**（标记、取值来源 `ping.version`、`unknown` 态
+  约定、与构建戳共用同一次应答）；§1 路由表的 ping 行补一句「页面自 Revision 16 起消费该 `version`」；
+- 宿主半 `index.js` / `core/**` **零改动**（`version: PLUGIN_VERSION` 自 stage 1A 就存在，直接复用）；
+- 既有构建戳的语义、标记与三态判定一律未动（`data-build*`、`data-status-build`、`data-warning=client-build-*`）。
+
+### 五、本轮实测证据（包目录 `packages/dsh-prompt-setting/` 下执行）
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test` | **486 / 486 pass / 0 fail**（exit 0；首跑 485/1 的红见下方「一次真实红」） |
+| 相关两文件 | `node --test test/host.test.mjs test/client.test.mjs` | **143 / 143 pass / 0 fail**（exit 0） |
+| 基线对照 | 改动前 `node --test` | **483 / 483 pass / 0 fail**（exit 0） |
+| 哨兵版本（负向对照） | `node --test --test-name-pattern="not a copy kept in the bundle"` | ping 返回仓库里不存在的 `9.9.9-sentinel`：`data-plugin-version` = 该值、状态条渲染 `v9.9.9-sentinel`，且**不出现** `v0.1.1`（若客户端硬编码就会红） |
+| 真实链路 | `--test-name-pattern="cannot drift from the one the host publishes"` | `package.json.version === index.js` 的 `PLUGIN_VERSION`（读文件比对）；`index.js` 含 `version: PLUGIN_VERSION,`；`client.js` 不含带引号的版本字面量；ping 默认版本 ⇒ 页面标记 = `PLUGIN_VERSION` |
+| unknown 三态 | `--test-name-pattern="a ping without a usable version"` | 无字段 / `null` / `42` / `''` / `{}` / ping 失败 六种输入 ⇒ `data-plugin-version="unknown"` + 「版本未知」文案 + 不出现任何 `v<版本>` |
+| 改坏就红（硬编码对照） | 备份 `client.js` 后把消费点改成 `version: '0.1.1'`，跑 `node --test test/client.test.mjs` | **119 pass / 4 fail**：3 条新增 g-029 断言 + en sweep 变红；`cp` 还原后 **123 / 123 pass / 0 fail** |
+| en sweep | `node --test test/client.test.mjs` | 必需 marker 列表新增 `data-plugin-version=<当前版本>` 与 `data-plugin-version=unknown`，构建戳单元场景同时覆盖两态 |
+
+**一次真实红（留档）**：全量首跑 1 fail —— `test/host.test.mjs:359` 断言 `client.js` 不得含
+`/<[A-Za-z][^>]*>/`（无 JSX 的守卫）。我新写的注释里用了 `` `v<version>` `` 这种尖括号占位符，被这条既有
+断言抓住。修法是把它改成 `v` + 版本号的散文写法，而不是放宽断言（断言未动）。
+
+### 六、未验证项（诚实清单）
+
+- **真机目视**：HMR 监视主工作树，worktree 里的 `client.js` 改动对运行中页面不可见 ⇒ 版本 Tag 的真机视觉
+  （与既有三个 Tag 并排后的换行、`success`/`outline` 观感、窄视口下的排布）由主管合并后在集成副本上确认；
+- **超长版本串**：宿主若返回异常长的 `version`，Tag 不截断（沿用状态条既有的 `flexWrap` 换行），未实测极端长度；
+- **版本语义**：只当它是「宿主声明的版本字符串」，页面不解析 semver、不比较新旧、不做「检查更新」（属 g-030）。
