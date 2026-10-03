@@ -23,7 +23,10 @@
  *   registers and the write lock that narrows every write route to it
  *   (Revision 7).
  * - this file is the adapter: one registered prompt section, two waterfall
- *   listeners and seven REST routes.
+ *   listeners and eight REST routes. The eighth (g-030) is the upstream update
+ *   check and its on/off switch; its policy is `core/update.js` (pure, with the
+ *   transport and the clock injected) and its one byte of state lives in
+ *   `preferences.json` through `core/store.js`.
  *
  * The listeners read memory only. The override listener records the
  * pre-waterfall sections (the `base` view and the frozen probe) before
@@ -124,13 +127,21 @@ import {
   historyPath,
   readConfig,
   readHistoryFile,
+  readPreferences,
   removeOverride,
   upsertOverride,
   userConfigPath,
+  userPreferencesPath,
   workspaceConfigPath,
   writeConfig,
   writeConfigsAtomically,
+  writePreferences,
 } from './core/store.js';
+import {
+  UPDATE_CHECK_TIMEOUT_MS,
+  UPDATE_CHECK_TTL_MS,
+  createUpdateChecker,
+} from './core/update.js';
 import {
   EXPORT_LAYERS,
   buildExport,
@@ -176,6 +187,15 @@ const IMPORT_PATH = `${ROUTE_PREFIX}/import`;
  * field to it would make an old client's save silently turn the switch off.
  */
 const INTERPOLATE_PATH = `${ROUTE_PREFIX}/interpolate`;
+/**
+ * g-030: the upstream update check **and** its on/off switch.
+ *
+ * Both live on one path because they are one question asked twice: `GET` answers
+ * "is there a newer release, and is checking even on", `PUT {enabled}` records
+ * the preference. Keeping the switch on its own path would have cost the page an
+ * extra round trip on every mount for a boolean the answer already carries.
+ */
+const UPDATE_CHECK_PATH = `${ROUTE_PREFIX}/update-check`;
 /** Method table; a known path with any other method is a 405 carrying `allow`. */
 const ROUTES = new Map([
   [PING_PATH, ['GET']],
@@ -186,6 +206,7 @@ const ROUTES = new Map([
   [EXPORT_PATH, ['GET']],
   [IMPORT_PATH, ['POST']],
   [INTERPOLATE_PATH, ['GET', 'PUT']],
+  [UPDATE_CHECK_PATH, ['GET', 'PUT']],
 ]);
 /** Cap on a PUT body, matching the 200 KiB per-override text cap with headroom. */
 const MAX_BODY_BYTES = 256 * 1024;
@@ -708,6 +729,29 @@ function logToHost(ctx, message) {
 }
 
 /**
+ * The injected transport and bounds for this mount's update checker (g-030).
+ *
+ * The plugin config is loose by design (only `historyLimit` was ever read from
+ * it), and this adds one optional nested object rather than four new top-level
+ * fields: `updateCheck: {fetch, ttlMs, timeoutMs, now}`. Every piece is optional
+ * and an unusable value is ignored, which is what keeps a profile that declares
+ * nothing on the shipped defaults — and what lets `test/update.test.mjs` drive
+ * the real route with a stub transport instead of the network.
+ * @param config - the loose plugin config.
+ * @returns the options `createUpdateChecker` accepts (transport/bounds only).
+ */
+function resolveUpdateOptions(config) {
+  const declared = config !== null && typeof config === 'object' ? config.updateCheck : undefined;
+  const source = declared !== null && typeof declared === 'object' ? declared : {};
+  return {
+    ...(typeof source.fetch === 'function' ? { fetch: source.fetch } : {}),
+    ...(Number.isFinite(source.ttlMs) ? { ttlMs: source.ttlMs } : {}),
+    ...(Number.isFinite(source.timeoutMs) ? { timeoutMs: source.timeoutMs } : {}),
+    ...(typeof source.now === 'function' ? { now: source.now } : {}),
+  };
+}
+
+/**
  * Mount everything. Separated from {@link apply} so the guard has one call to
  * wrap and one list of disposers to unwind.
  * @param ctx - the Host plugin context.
@@ -723,6 +767,26 @@ function mount(ctx, config, cleanups) {
    * the plugin config then the environment (default 100, minimum 10).
    */
   const historyLimit = resolveHistoryLimit(config);
+  /**
+   * g-030: this mount's update checker — one cache, one preference file, one
+   * injected transport. Per mount, like everything else in this object: two
+   * mounts (or two test cases) must never share a cache, and a closed switch is
+   * read from disk on every `check()` so a hand edit is honoured without a
+   * restart.
+   */
+  const updatePreferencesPath = userPreferencesPath();
+  const updateChecker = createUpdateChecker({
+    // The shipped defaults are named here (and asserted in `core/update.js`'s own
+    // tests) so the two numbers a reader looks for are greppable constants, while
+    // anything the profile or a test injected still wins.
+    ttlMs: UPDATE_CHECK_TTL_MS,
+    timeoutMs: UPDATE_CHECK_TIMEOUT_MS,
+    ...resolveUpdateOptions(config),
+    repositoryUrl: OWN_REPOSITORY_URL,
+    currentVersion: PLUGIN_VERSION,
+    readPreferences: () => readPreferences(updatePreferencesPath).preferences,
+    writePreferences: (next) => writePreferences(updatePreferencesPath, next),
+  });
   const state = {
     /**
      * User layer: read at mount and re-read at the start of every route
@@ -2145,8 +2209,70 @@ function mount(ctx, config, cleanups) {
   }
 
   /**
-   * `GET /prompt-setting/interpolate` — the switch's value, per layer and
-   * effective.
+   * `GET /prompt-setting/update-check` — is upstream ahead of this install?
+   *
+   * Every outcome is a **200**: a network error, a timeout, an HTTP error and a
+   * repository with no release all answer with a payload (`ok:false` and a
+   * structured `error`, or `hasUpdate:null` for "no usable information"). An
+   * update check exists to be ignorable; it must never be able to paint the
+   * settings page red or turn a page load into a 5xx.
+   *
+   * `force=1` bypasses the six-hour cache — the manual re-check, and the hook the
+   * tests use to count real outbound requests. It does **not** bypass the switch:
+   * a closed switch answers without asking anyone, whatever the query says.
+   * @param url - the parsed request URL.
+   * @param res - the Node response.
+   */
+  async function handleUpdateCheck(url, res) {
+    sendJson(res, 200, await updateChecker.check({ force: url.searchParams.get('force') === '1' }));
+  }
+
+  /**
+   * `PUT /prompt-setting/update-check` — record the on/off switch.
+   *
+   * The switch is the one thing that makes this feature acceptable to ship: with
+   * it off, the plugin makes **no outbound request at all**, including on mount.
+   * The body is `{enabled: boolean}`; anything else is the existing 400
+   * `invalid-enabled`, which is a *shape* refusal and therefore the one case that
+   * is not a 200.
+   *
+   * A write that fails (an unwritable `$DSH_HOME`, say) is a 200 with
+   * `ok:false` and `preferences-unwritable` rather than a 5xx — the page's
+   * promise, "this feature never breaks the settings page", covers its own
+   * configuration too.
+   * @param req - the Node request.
+   * @param res - the Node response.
+   */
+  async function handleWriteUpdateCheck(req, res) {
+    const body = await readJsonBody(req);
+    if (typeof body?.enabled !== 'boolean') {
+      throw new OverrideError(
+        'invalid-enabled',
+        '"enabled" must be a boolean (true = check for updates, false = never ask)',
+      );
+    }
+    const saved = updateChecker.setEnabled(body.enabled);
+    sendJson(res, 200, {
+      ok: saved.written,
+      enabled: saved.enabled,
+      saved: { enabled: saved.enabled },
+      effectiveFrom: 'immediate',
+      ...(saved.written
+        ? { error: null }
+        : { code: saved.error.code, message: saved.error.message, error: saved.error }),
+    });
+  }
+
+  /**
+   * `GET /prompt-setting/interpolate` — the read face of the reserved section's
+   * variable-substitution switch.
+   *
+   * `interpolateCustom` is the **effective** value a session's assembly will use
+   * (user layer, else workspace layer, else the shipped default of ON);
+   * `layers.user` / `layers.workspace` are what each layer itself states, where
+   * `null` means "states nothing" — a distinction the UI needs, because OFF and
+   * unstated are different values and only the second one inherits (CONTRACT
+   * §16.1).
    *
    * `variables` is the assembled variable table's key set, or `null` when this
    * mount could not obtain one; the browser uses it to say what is available
@@ -2614,6 +2740,14 @@ function mount(ctx, config, cleanups) {
             }
             if (url.pathname === IMPORT_PATH) {
               await handleImport(req, url, res);
+              return;
+            }
+            if (url.pathname === UPDATE_CHECK_PATH) {
+              // g-030: one route, two questions (`GET` = the check, `PUT` = the
+              // switch). Both answer 200 for every outcome they can have; only a
+              // malformed PUT body is an ordinary 400.
+              if (req.method === 'PUT') await handleWriteUpdateCheck(req, res);
+              else await handleUpdateCheck(url, res);
               return;
             }
             if (url.pathname === INTERPOLATE_PATH) {

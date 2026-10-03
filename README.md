@@ -44,10 +44,30 @@ Settings gains a **"Prompt settings"** pane (`id: prompt-setting`) with four top
 | **My Prompt** | The only write surface: write your own system-level instructions (pick a layer → edit → save), plus a one-click "Restore default". This text is **placed after every built-in section**. |
 | **Prompt overview** | Read-only: the assembled section list (status marks / search / filters / copy), the full text, and a `base ↔ effective` diff — so you can see exactly what your change did. |
 | **History & backup** | History list + version diffs (line-level); export the configuration for download, and preview an import (review the change plan before anything is written). |
-| **Advanced** | A read-only list of legacy overrides, two double-confirm buttons ("clear all overrides", "reset the whole layer"), and a full status area (mount state / build fingerprint / renderer self-check). |
+| **Advanced** | A read-only list of legacy overrides, two double-confirm buttons ("clear all overrides", "reset the whole layer"), the **"Check for updates" switch** (on by default; off means this plugin makes no network request at all), and a full status area (mount state / build fingerprint / renderer self-check). |
 
 > All UI copy follows DSH's language setting: switch DSH to Chinese and this page turns Chinese, with no
 > refresh or restart.
+
+### Network access: it checks for updates once (and you can turn it off)
+
+When the settings page opens, the **host** (Node side) sends one `GET` to
+`https://api.github.com/repos/zangxx66/dsh-prompt-setting/releases/latest` — a URL derived from this
+package's `package.json` (`repository.url`), never hardcoded a second time. That is the plugin's
+**only** outbound request, and it is switchable:
+
+- **one request, nothing else**: no body, no cookies, no local/session/workspace data;
+  `User-Agent: dsh-prompt-setting/<version>`; a 5-second timeout; not repeated within six hours in the
+  same process;
+- **it speaks up only for a confirmed newer release**: a **dismissible** banner at the top of the page
+  (the new version + a link to the release page). No update, no release yet, or a failed request shows
+  **nothing at all** — no prompt and no error;
+- **turning it off**: Settings → Prompt settings → Advanced → turn **"Check for updates"** off. With it
+  off there are **zero requests**, including on page load, and `<DSH_HOME>/prompt-setting/preferences.json`
+  records `{"updateCheck": false}`. Hand-editing that file — or deleting it to return to the default
+  (on) — works the same way;
+- **what it never does**: no automatic download, no automatic install, no self-update, and no DSH
+  platform version check.
 
 ## 3. Installation
 

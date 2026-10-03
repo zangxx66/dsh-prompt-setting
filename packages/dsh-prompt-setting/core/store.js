@@ -37,6 +37,7 @@ import {
   trimRecords,
 } from './history.js';
 import { OverrideError, emptyConfig, interpolateFlagOf, validateConfig, withInterpolate } from './overrides.js';
+import { normalizePreferences } from './update.js';
 
 /** Directory (under `$DSH_HOME`) that owns the user layer. */
 const USER_DIRECTORY = 'prompt-setting';
@@ -44,6 +45,17 @@ const USER_DIRECTORY = 'prompt-setting';
 const FILE_NAME = 'overrides.json';
 /** History file name inside either layer directory (one JSON record per line). */
 const HISTORY_FILE_NAME = 'history.jsonl';
+/**
+ * Preference file name (g-030), inside the user directory next to
+ * `overrides.json`.
+ *
+ * It is a **separate file on purpose**: the update-check switch is a fact about
+ * this installation's behaviour, not an override of any prompt section, and
+ * folding it into `overrides.json` would put it in the path of the export /
+ * import / history / snapshot schemas — every one of which is a frozen
+ * contract that must not grow a field because a switch was added.
+ */
+const PREFERENCES_FILE_NAME = 'preferences.json';
 /** Directory (under a workspace root) that owns the workspace layer. */
 const WORKSPACE_DIRECTORY = '.dsh-prompt-setting';
 
@@ -91,6 +103,67 @@ export function resolveDshHome(env = process.env) {
  */
 export function userConfigPath(env = process.env) {
   return join(resolveDshHome(env), USER_DIRECTORY, FILE_NAME);
+}
+
+/**
+ * The preference document's path (g-030).
+ *
+ * One file for the whole installation, under the user directory, independent of
+ * any workspace: "may this plugin ask GitHub about updates" is a property of the
+ * machine's owner, not of one project.
+ * @param env - the environment to read.
+ * @returns `<DSH_HOME>/prompt-setting/preferences.json`.
+ */
+export function userPreferencesPath(env = process.env) {
+  return join(resolveDshHome(env), USER_DIRECTORY, PREFERENCES_FILE_NAME);
+}
+
+/**
+ * Read the preference document.
+ *
+ * Never throws and never reports "off" for a file it could not understand: a
+ * missing, unreadable or malformed file all fall back to the documented default
+ * (the check is on), and a malformed one is *reported* rather than silently
+ * rewritten — the next save is what repairs it.
+ * @param path - the preferences path.
+ * @returns `{preferences, missing, error}` where `error` is `{code, message}|null`.
+ */
+export function readPreferences(path) {
+  let raw;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { preferences: normalizePreferences(null), missing: true, error: null };
+    return {
+      preferences: normalizePreferences(null),
+      missing: false,
+      error: { code: 'unreadable-file', message: `cannot read ${path}: ${error?.message ?? String(error)}` },
+    };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    return {
+      preferences: normalizePreferences(null),
+      missing: false,
+      error: { code: 'invalid-json', message: `${path} is not valid JSON: ${error?.message ?? String(error)}` },
+    };
+  }
+  return { preferences: normalizePreferences(parsed), missing: false, error: null };
+}
+
+/**
+ * Write the preference document atomically.
+ * @param path - the preferences path.
+ * @param preferences - the preference object to persist.
+ * @returns the normalized preferences that were written.
+ * @throws {OverrideError} when the bytes cannot be written.
+ */
+export function writePreferences(path, preferences) {
+  const normalized = normalizePreferences(preferences);
+  writeTextAtomic(path, `${JSON.stringify(normalized, null, 2)}\n`);
+  return normalized;
 }
 
 /**

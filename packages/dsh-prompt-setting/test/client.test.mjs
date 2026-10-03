@@ -716,6 +716,41 @@ function snapshotFixture(over = {}) {
   };
 }
 
+/**
+ * `GET /prompt-setting/update-check` payload (g-030).
+ *
+ * The default is the quiet case: the switch is on (`enabled: true`) and upstream
+ * is not ahead (`hasUpdate: false`), which is exactly what must render **nothing**.
+ * @param over - fields to override.
+ * @returns the payload.
+ */
+function updateFixture(over = {}) {
+  return {
+    ok: true,
+    enabled: true,
+    current: '0.1.1',
+    latest: null,
+    hasUpdate: false,
+    releaseUrl: null,
+    publishedAt: null,
+    checkedAt: '2024-01-01T00:00:00.000Z',
+    cached: false,
+    error: null,
+    ...over,
+  };
+}
+
+/** The banner's payload: a confirmed newer release with its release page. */
+function updateAvailableFixture(over = {}) {
+  return updateFixture({
+    latest: '0.9.9',
+    hasUpdate: true,
+    releaseUrl: 'https://github.com/zangxx66/dsh-prompt-setting/releases/tag/v0.9.9',
+    publishedAt: '2024-06-01T00:00:00.000Z',
+    ...over,
+  });
+}
+
 /** `GET /prompt-setting/overrides` payload. */
 function overridesFixture(over = {}) {
   return {
@@ -902,9 +937,11 @@ const PATHS = {
   export: '/prompt-setting/export',
   import: '/prompt-setting/import',
   interpolate: '/prompt-setting/interpolate',
+  // g-030: the upstream update check and its on/off switch.
+  updateCheck: '/prompt-setting/update-check',
 };
 
-/** The default three-route stub table. */
+/** The default stub table (every route the page may call on mount). */
 function defaultResponses(over = {}) {
   return {
     [PATHS.ping]: {},
@@ -914,6 +951,9 @@ function defaultResponses(over = {}) {
     [PATHS.diff]: { payload: diffFixture() },
     [PATHS.export]: { payload: exportFixture() },
     [PATHS.import]: { payload: importPlanFixture() },
+    // g-030: the shipped default — switch on, upstream not ahead, so the default
+    // page renders no banner at all.
+    [PATHS.updateCheck]: { payload: updateFixture() },
     [PATHS.interpolate]: {
       payload: { ok: true, interpolateCustom: true, layer: 'user', saved: { enabled: true }, effectiveFrom: 'next-turn' },
     },
@@ -1074,7 +1114,7 @@ test('client: requests stay on the plugin prefix and report the renderer', async
   assert.ok(urls.includes(`${PATHS.ping}?renderer=fallback`), 'the stage 1A renderer report still happens');
   assert.deepEqual(
     [...new Set(urls.map((url) => url.split('?')[0]))].sort(),
-    [PATHS.overrides, PATHS.ping, PATHS.snapshot],
+    [PATHS.overrides, PATHS.ping, PATHS.snapshot, PATHS.updateCheck],
   );
   // The global default: no `?session=`, so the workspace layer stays inactive.
   assert.deepEqual(urlsFor(page, PATHS.snapshot), [PATHS.snapshot]);
@@ -6301,3 +6341,164 @@ test('g-027 client: 「取消」 only drops the draft of the layer it belongs to
   assert.equal(markerOf(tree, 'data-mine-state'), 'idle');
   assert.equal(writeCalls(page).length, 0, 'none of this wrote anything');
 });
+
+// #region g-030: the upstream update check
+
+/** The banner node, if the page rendered one. */
+function updateBanner(tree) {
+  return collect(tree, (node) => node.props && node.props['data-update-available'] !== undefined);
+}
+
+/** The `localStorage` double, installed in the sandbox before the page mounts. */
+function installUpdateMirror(page, initial) {
+  const store = new Map(initial === undefined ? [] : [['dsh-prompt-setting.updateCheck', initial]]);
+  page.loaded.sandbox.localStorage = {
+    getItem: (key) => (store.has(key) ? store.get(key) : null),
+    setItem: (key, value) => store.set(key, String(value)),
+    removeItem: (key) => store.delete(key),
+  };
+  return store;
+}
+
+test('client: no update, no information and a failed check are all equally silent', async () => {
+  const cases = [
+    ['up to date', { payload: updateFixture() }],
+    ['no release upstream', { payload: updateFixture({ hasUpdate: null, error: { code: 'no-release', message: 'none' } }) }],
+    ['a failed check', new Error('network down')],
+  ];
+  for (const [label, response] of cases) {
+    const page = makePage({ responses: defaultResponses({ [PATHS.updateCheck]: response }) });
+    const tree = await page.flush();
+    assert.equal(updateBanner(tree).length, 0, `${label}: no banner`);
+    assert.equal(
+      collect(tree, (node) => node.props && node.props['data-notice'] === 'error').length,
+      0,
+      `${label}: no error banner either`,
+    );
+  }
+});
+
+test('client: a newer release renders a dismissible banner carrying the version and the release link', async () => {
+  const page = makePage({ responses: defaultResponses({ [PATHS.updateCheck]: { payload: updateAvailableFixture() } }) });
+  let tree = await page.flush();
+  const banner = findOne(tree, (node) => node.props && node.props['data-update-available'] === 'true', 'the update banner');
+  assert.equal(banner.props['data-update-latest'], '0.9.9');
+  const link = oneBy(tree, 'data-update-release-link', 'true');
+  assert.equal(link.type, 'a');
+  assert.equal(link.props.href, 'https://github.com/zangxx66/dsh-prompt-setting/releases/tag/v0.9.9');
+  assert.equal(link.props.target, '_blank');
+  assert.equal(link.props.rel, 'noreferrer noopener');
+  // The banner says both versions, so「latest」is never mistaken for the build.
+  assert.match(strings(tree).join(' '), /0\.9\.9/);
+  assert.match(strings(tree).join(' '), /0\.1\.1/);
+
+  clickButton(tree, { 'data-action': 'update-dismiss' });
+  tree = page.draw();
+  assert.equal(updateBanner(tree).length, 0, 'dismissing removes it for this session');
+  assert.equal(writeCalls(page).length, 0, 'dismissal is view state only');
+});
+
+test('client: 「高级」 carries the update switch, on by default, with the re-check beside it', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  const tree = await openTab(page, 'advanced');
+  const card = oneBy(tree, 'data-region', 'update-setting');
+  assert.equal(card.props['data-update-enabled'], 'true');
+  const toggle = oneBy(tree, 'data-action', 'update-toggle');
+  assert.equal(toggle.props['aria-pressed'], 'true');
+  oneBy(tree, 'data-action', 'update-recheck');
+});
+
+test('client: turning the switch off writes the preference, mirrors it and stops asking', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.updateCheck]: (target, init) =>
+        init.method === 'PUT'
+          ? { payload: { ok: true, enabled: false, saved: { enabled: false }, effectiveFrom: 'immediate', error: null } }
+          : { payload: updateFixture() },
+    }),
+  });
+  const store = installUpdateMirror(page);
+  let tree = await openTab(page, 'advanced');
+  const before = urlsFor(page, PATHS.updateCheck).length;
+  clickButton(tree, { 'data-action': 'update-toggle' });
+  // Settle the write without re-running the mount effect: a real React effect
+  // runs once, so the page re-renders from the switch's own answer here.
+  await settle();
+  tree = page.draw();
+  const put = page.router.calls.filter((call) => call.url.startsWith(PATHS.updateCheck) && call.init.method === 'PUT');
+  assert.equal(put.length, 1);
+  assert.deepEqual(JSON.parse(put[0].init.body), { enabled: false });
+  assert.equal(oneBy(tree, 'data-region', 'update-setting').props['data-update-enabled'], 'false');
+  assert.equal(oneBy(tree, 'data-action', 'update-toggle').props['aria-pressed'], 'false');
+  assert.equal(urlsFor(page, PATHS.updateCheck).length, before + 1, 'closing the switch asks nothing further');
+  assert.equal(store.get('dsh-prompt-setting.updateCheck'), 'off', 'the local mirror remembers it');
+});
+
+test('client: a mirrored "off" makes the mount issue no update request at all', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  installUpdateMirror(page, 'off');
+  const tree = await page.flush();
+  assert.deepEqual(urlsFor(page, PATHS.updateCheck), [], 'zero requests while the mirror says off');
+  assert.equal(updateBanner(tree).length, 0);
+  const advanced = await openTab(page, 'advanced', tree);
+  assert.equal(oneBy(advanced, 'data-region', 'update-setting').props['data-update-enabled'], 'false');
+  assert.equal(collect(advanced, (node) => node.props && node.props['data-action'] === 'update-recheck').length, 0);
+});
+
+test('client: turning the switch back on asks once, immediately, with force=1', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.updateCheck]: (target, init) =>
+        init.method === 'PUT'
+          ? { payload: { ok: true, enabled: true, saved: { enabled: true }, effectiveFrom: 'immediate', error: null } }
+          : { payload: updateFixture() },
+    }),
+  });
+  const store = installUpdateMirror(page, 'off');
+  let tree = await openTab(page, 'advanced');
+  assert.deepEqual(urlsFor(page, PATHS.updateCheck), []);
+  clickButton(tree, { 'data-action': 'update-toggle' });
+  tree = await page.flush();
+  const urls = urlsFor(page, PATHS.updateCheck);
+  const forced = urls.filter((url) => url.endsWith('?force=1'));
+  assert.equal(forced.length, 1, 'exactly one immediate check, bypassing the host cache');
+  assert.ok(
+    urls.findIndex((url) => url.endsWith('?force=1')) >
+      urls.findIndex((url) => url.split('?')[0] === PATHS.updateCheck && !url.endsWith('?force=1')),
+    'the forced check comes after the switch was written',
+  );
+  assert.equal(oneBy(tree, 'data-region', 'update-setting').props['data-update-enabled'], 'true');
+  assert.equal(store.get('dsh-prompt-setting.updateCheck'), 'on');
+});
+
+test('client: a refused switch write is reported, and the state stays what the host said', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.updateCheck]: (target, init) =>
+        init.method === 'PUT'
+          ? {
+              status: 200,
+              payload: {
+                ok: false,
+                enabled: true,
+                saved: { enabled: true },
+                code: 'preferences-unwritable',
+                message: 'cannot write',
+                error: { code: 'preferences-unwritable', message: 'cannot write' },
+              },
+            }
+          : { payload: updateFixture() },
+    }),
+  });
+  let tree = await openTab(page, 'advanced');
+  clickButton(tree, { 'data-action': 'update-toggle' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'update-setting').props['data-update-enabled'], 'true');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-notice'] === 'error').length,
+    1,
+    'the refusal is visible, not silent',
+  );
+});
+
+// #endregion

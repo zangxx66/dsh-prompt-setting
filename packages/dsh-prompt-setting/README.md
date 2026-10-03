@@ -43,10 +43,13 @@
   > History list + line-level diffs; export the configuration for download, and preview an import —
   > the change plan is shown before anything is written.
 
-- **高级 / Advanced** —— 旧版覆盖的只读列表、「清除全部覆盖」与「整层恢复默认」两个二次确认按钮，
-  以及完整状态区（挂载情况 / 构建戳 / 渲染器自检）。
+- **高级 / Advanced** —— 旧版覆盖的只读列表、「清除全部覆盖」与「整层恢复默认」两个二次确认按钮、
+  **「检查更新」开关**（默认开启；关闭后本插件**完全不再联网**），以及完整状态区
+  （挂载情况 / 构建戳 / 渲染器自检）。
   > A read-only list of legacy overrides, two double-confirm buttons ("clear all overrides", "reset the
-  > whole layer"), and a full status area (mount state / build fingerprint / renderer self-check).
+  > whole layer"), the **"Check for updates" switch** (on by default; off means this plugin makes **no
+  > network request at all**), and a full status area (mount state / build fingerprint / renderer
+  > self-check).
 
 其它特性 / More:
 
@@ -59,6 +62,41 @@
 - **装了但没写 = 等于没装 / Installed but empty = not installed** —— 未填写时这一段对最终 prompt
   零贡献，渲染结果逐字节相同。
   > With no text the section contributes nothing to the final prompt; the rendering is byte-for-byte identical.
+
+## 联网检查更新 / Network access
+
+**这个插件会主动联网 —— 只有一个请求，且可以关掉。**
+
+> **This plugin does make network requests — exactly one, and you can turn it off.**
+
+- **什么时候**：打开设置页时（本插件的那一栏挂载后）检查一次上游有没有新版本；同一进程内 6 小时内
+  不会重复请求（「高级 → 立即重查」会强制重查一次）。
+  > **When**: once when the settings page mounts, and not again for six hours in the same process (the
+  > "Check now" button forces one).
+- **请求什么**：由**宿主**（Node 侧）发一个 `GET`
+  `https://api.github.com/repos/zangxx66/dsh-prompt-setting/releases/latest`，
+  地址从本包 `package.json` 的 `repository.url` 解析而来。**只读**：没有 body、没有 cookie、
+  不带任何本机 / 会话 / 工作区数据；`User-Agent` 是 `dsh-prompt-setting/<版本>`，5 秒超时。
+  > **What**: the **host** (Node side) sends one `GET` to that GitHub Releases API URL, derived from
+  > this package's `package.json`. Read-only: no body, no cookies, no local/session/workspace data;
+  > `User-Agent: dsh-prompt-setting/<version>`; 5-second timeout.
+- **结果怎么用**：只有「确实有更新」时，页面顶部才出现一条**可关闭**的提示（新版本号 + 发布页链接）。
+  没有更新、仓库还没发 release、请求失败 —— **一律什么都不显示**，也不报错。
+  > **What it does with the answer**: only a confirmed newer release shows a **dismissible** banner
+  > (the version + a link to the release page). No update, no release yet, or a failed request shows
+  > **nothing at all** — no error either.
+- **怎么关**：设置 →「Prompt 管理」→「高级」→ 关闭**「检查更新」**。关闭后**零请求**（包括打开
+  设置页时：页面本地就知道不该问，连这个请求都不会发），并写入
+  `$DSH_HOME/prompt-setting/preferences.json` 的 `{"updateCheck": false}`。想手工改也一样：
+  把该值改成 `false`，或删掉整个文件回到默认（开启）。
+  > **How to turn it off**: Settings → Prompt settings → Advanced → turn **"Check for updates"** off.
+  > Then **zero requests** are made (including on page load — the page knows locally not to ask, so the
+  > request is never sent), and `<DSH_HOME>/prompt-setting/preferences.json` gets
+  > `{"updateCheck": false}`. Hand-editing works the same way: set it to `false`, or delete the file to
+  > return to the default (on).
+- **它不做什么**：不自动下载、不自动安装、不做自更新，也不检查 DSH 平台版本。
+  > **What it never does**: no automatic download, no automatic install, no self-update, and no DSH
+  > platform version check.
 
 ## 「我的 Prompt」的生效范围与边界 / What "My Prompt" does — and does not do
 

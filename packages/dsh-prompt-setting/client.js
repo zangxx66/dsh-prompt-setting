@@ -72,6 +72,17 @@
  * comes from the same ping (`repositoryUrl`, derived by the host from its own
  * `package.json`), and with no URL the node is plain, unclickable text. Neither
  * half of the plugin writes a repository URL down.
+ *
+ * g-030 adds the one thing the page says without being asked: a dismissible
+ * 「有新版本」banner when — and only when — the host's update check confirmed a
+ * newer release (`GET /prompt-setting/update-check`, CONTRACT.md §17). The check
+ * is the host's request, never the page's, so the page cannot leak anything; the
+ * 「高级」tab carries the switch that decides whether even the host asks
+ * (`data-action="update-toggle"`), and a `localStorage` mirror of that switch is
+ * what lets a page with it off issue no request at all, including on mount.
+ * Every other outcome — up to date, no release yet, unparsable tag, a failure,
+ * the switch off — renders nothing: this is a background question, and the only
+ * two honest answers are silence and usefulness.
  */
 window.__ModuleLoader__.load({
   id: 'dsh-prompt-setting',
@@ -228,6 +239,23 @@ window.__ModuleLoader__.load({
      * because it is a config-level fact, not a property of one override.
      */
     const INTERPOLATE_PATH = '/prompt-setting/interpolate';
+    /**
+     * g-030: the upstream update check and its on/off switch — one route,
+     * because the `GET` that answers "is there a newer release" also reports
+     * whether checking is on at all.
+     */
+    const UPDATE_CHECK_PATH = '/prompt-setting/update-check';
+    /**
+     * The switch's local mirror (g-030).
+     *
+     * The authoritative preference lives in the Host's `preferences.json`, but a
+     * page that has seen "off" needs no round trip to know it must not ask: the
+     * mirror is what makes "关闭后零网络请求（含页面挂载时）" true of the page as
+     * well as of the Host. It is a cache — never the source of truth — so a
+     * missing `localStorage`, a quota error or a hand-edited value all degrade to
+     * "ask once, then let the Host answer".
+     */
+    const UPDATE_PREF_KEY = 'dsh-prompt-setting.updateCheck';
     /** Sentinel for "no session": never a legal `Agent.id`, so it cannot collide. */
     const GLOBAL_SESSION = '\u0000global';
     /**
@@ -499,6 +527,24 @@ window.__ModuleLoader__.load({
       // in this file.
       stPluginVersion: '插件版本',
       stPluginVersionUnknown: '版本未知',
+      // ---- g-030: the upstream update check. Three surfaces, one vocabulary:
+      // the dismissible banner, the「高级」switch that owns the preference, and
+      // the silent path (no update / no information / a failure) which renders
+      // nothing at all — so there is deliberately no "up to date" string here to
+      // put on the page by accident.
+      updateAvailable: '有新版本 {latest} 可用（当前 {current}）。',
+      updateReleaseLink: '查看发布页',
+      updateDismiss: '关闭提示',
+      updateSettingLabel: '检查更新',
+      updateSettingOn: '已开启',
+      updateSettingOff: '已关闭',
+      updateSettingNote:
+        '打开设置页时由宿主向 GitHub 查询一次最新 Release：只发一个 GET，不带任何本机或会话数据。关闭后不再联网检查（含打开本页时）。',
+      updateToggleSaved: '检查更新已{state}。',
+      updateRecheck: '立即重查',
+      updateSwitching: '保存中…',
+      updateUnknown: '上游暂时没有可用的版本信息。',
+      updateLatestKnown: '最新版本 {latest}',
       viewSections: '分段',
       viewFull: '全文',
       // g-015: the four first-level tabs, in their fixed presentation order.
@@ -846,6 +892,20 @@ window.__ModuleLoader__.load({
       // same ping carried none. Never a version this bundle invented.
       stPluginVersion: 'Plugin version',
       stPluginVersionUnknown: 'Version unknown',
+      // ---- g-030: the upstream update check (mirrors the zh block above).
+      updateAvailable: 'Version {latest} is available (you have {current}).',
+      updateReleaseLink: 'Open the release page',
+      updateDismiss: 'Dismiss',
+      updateSettingLabel: 'Check for updates',
+      updateSettingOn: 'On',
+      updateSettingOff: 'Off',
+      updateSettingNote:
+        'When the settings page opens, the host asks GitHub once for the latest release: one GET, carrying no local or session data. With this off, no update request is made at all — including on page load.',
+      updateToggleSaved: 'Update checks are now {state}.',
+      updateRecheck: 'Check now',
+      updateSwitching: 'Saving…',
+      updateUnknown: 'Upstream has no usable version information right now.',
+      updateLatestKnown: 'Latest version {latest}',
       viewSections: 'Sections',
       viewFull: 'Full text',
       tabMine: 'My Prompt',
@@ -2545,6 +2605,42 @@ window.__ModuleLoader__.load({
             network: true,
           },
         };
+      }
+    }
+
+    /**
+     * The switch's local mirror, read (g-030).
+     *
+     * Three answers, deliberately: `false` only for a real `'off'`, `true` for a
+     * real `'on'`, and `null` for "this page does not know" — which is what a
+     * missing `localStorage`, a privacy mode that throws on access, or a
+     * hand-edited value must produce. `null` means "ask the Host once", never
+     * "assume off" (that would silently disable a feature the user never
+     * disabled) and never "assume on" (that would be a promise the mirror does
+     * not hold).
+     * @returns `true`, `false`, or `null`.
+     */
+    function readUpdatePref() {
+      try {
+        if (typeof localStorage === 'undefined' || localStorage === null) return null;
+        const value = localStorage.getItem(UPDATE_PREF_KEY);
+        return value === 'off' ? false : value === 'on' ? true : null;
+      } catch {
+        return null;
+      }
+    }
+
+    /**
+     * Remember the switch locally. Best-effort by design: a browser that refuses
+     * storage loses an optimisation, not the setting — the Host already has it.
+     * @param enabled - the state to mirror.
+     */
+    function writeUpdatePref(enabled) {
+      try {
+        if (typeof localStorage === 'undefined' || localStorage === null) return;
+        localStorage.setItem(UPDATE_PREF_KEY, enabled === true ? 'on' : 'off');
+      } catch {
+        // The mirror is an optimisation; a refusal is not an error.
       }
     }
 
@@ -5754,6 +5850,140 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * g-030: the dismissible「有新版本」banner.
+     *
+     * It renders **only** for a confirmed newer release: every other outcome
+     * (no update, no release upstream, an unparsable tag, a network failure, a
+     * timeout, the switch being off) returns `null` here, which is the page's
+     * half of "无更新 / 失败 / 无 release：零提示、零报错红字". Nothing in this
+     * function can produce an error banner, and it never writes state.
+     *
+     * The link opens the release page in a new tab with `rel="noreferrer
+     * noopener"` (a `target="_blank"` without it hands the opened page a
+     * `window.opener` back into this settings page).
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the banner element, or `null`.
+     */
+    function renderUpdateNotice(t, m, a) {
+      const u = m.update;
+      if (u === null || u === undefined || u.dismissed === true || u.data === null) return null;
+      const latest = typeof u.data.latest === 'string' ? u.data.latest : '';
+      if (latest.length === 0) return null;
+      return h(
+        'div',
+        {
+          key: 'update-notice',
+          'data-region': 'update-notice',
+          'data-update-available': 'true',
+          'data-update-latest': latest,
+          style: {
+            ...cardStyle,
+            borderColor: token.stateWarn,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            flexWrap: 'wrap',
+            fontSize: 13,
+          },
+        },
+        h('span', { style: { flex: '1 1 240px', minWidth: 0 } },
+          fmt(t('updateAvailable'), {
+            latest,
+            current: typeof u.data.current === 'string' ? u.data.current : t('stPluginVersionUnknown'),
+          }),
+        ),
+        typeof u.data.releaseUrl === 'string' && u.data.releaseUrl.length > 0
+          ? h(
+              'a',
+              {
+                key: 'release',
+                href: u.data.releaseUrl,
+                target: '_blank',
+                rel: 'noreferrer noopener',
+                'data-update-release-link': 'true',
+                style: { color: token.stateBusiness },
+              },
+              t('updateReleaseLink'),
+            )
+          : null,
+        h(
+          UI.Button,
+          { key: 'dismiss', 'data-action': 'update-dismiss', onClick: a.dismissUpdate },
+          t('updateDismiss'),
+        ),
+      );
+    }
+
+    /**
+     * g-030: the「检查更新」switch, in 「高级」.
+     *
+     * The switch is the whole reason this feature is shippable: the goal is
+     * explicit that off means the plugin makes no outbound request at all,
+     * including when the page mounts, and that the control has to be real UI in
+     * 「高级」 rather than a config file a user must find. So the state shown is
+     * the **Host's** answer (`enabled` on the update-check payload), the mirror
+     * in `localStorage` only saves a round trip, and the button sends the
+     * negation — one click always produces the state the label promised.
+     *
+     * Nothing here is derived from the check's outcome; the line below it is
+     * rendered from the same payload that produced the banner, and is silent for
+     * every inconclusive answer.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the settings card element.
+     */
+    function renderUpdateSetting(t, m, a) {
+      const u = m.update === null || m.update === undefined ? { enabled: true, phase: 'idle', data: null } : m.update;
+      const enabled = u.enabled !== false;
+      const saving = u.phase === 'saving';
+      const latest = u.data !== null && typeof u.data.latest === 'string' ? u.data.latest : null;
+      return h(
+        'div',
+        {
+          key: 'update-setting',
+          'data-region': 'update-setting',
+          'data-update-enabled': enabled ? 'true' : 'false',
+          style: { ...cardStyle, display: 'flex', flexDirection: 'column', gap: 6 },
+        },
+        h(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+          h('span', { style: { fontSize: 13, fontWeight: 600 } }, t('updateSettingLabel')),
+          h(
+            UI.Button,
+            {
+              'data-action': 'update-toggle',
+              'aria-pressed': enabled ? 'true' : 'false',
+              disabled: m.busy || saving,
+              onClick: a.toggleUpdate,
+            },
+            saving ? t('updateSwitching') : t(enabled ? 'updateSettingOn' : 'updateSettingOff'),
+          ),
+          enabled
+            ? h(
+                UI.Button,
+                {
+                  'data-action': 'update-recheck',
+                  disabled: m.busy || saving,
+                  onClick: a.recheckUpdate,
+                },
+                t('updateRecheck'),
+              )
+            : null,
+        ),
+        h('p', { style: { margin: 0, ...metaStyle } }, t('updateSettingNote')),
+        latest === null ? null : h('p', { style: { margin: 0, ...metaStyle }, 'data-update-known': latest },
+          fmt(t('updateLatestKnown'), { latest })),
+        enabled && u.phase === 'error'
+          ? h('p', { style: { margin: 0, ...metaStyle } }, t('updateUnknown'))
+          : null,
+      );
+    }
+
+    /**
      * 「高级」 — everything rare, everything destructive, everything about the
      * page itself: the read-only legacy override list, the two layer-wide
      * buttons (`legacy=true` and `reset=true`, each confirmed), and the full
@@ -5771,6 +6001,10 @@ window.__ModuleLoader__.load({
         { 'data-region': 'advanced', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
         renderOverridesList(t, m, a),
         renderLayerReset(t, m, a),
+        // g-030: the switch that decides whether this plugin may talk to GitHub
+        // at all. It sits above the status block because it is an *action*, and
+        // the status block is a read-out.
+        renderUpdateSetting(t, m, a),
         renderStatusDetail(t, m),
       );
     }
@@ -5807,6 +6041,11 @@ window.__ModuleLoader__.load({
         ),
       );
       children.push(h('p', { key: 'subtitle', style: { margin: 0, fontSize: 13, color: token.labelTertiary } }, t('subtitle')));
+      // g-030: the update banner, when — and only when — the Host confirmed a
+      // newer release. It sits above the tabs so it is true of the page rather
+      // than of one tab, and the dismissal is rendered by returning `null`.
+      const updateNotice = renderUpdateNotice(t, m, a);
+      if (updateNotice !== null) children.push(updateNotice);
       children.push(renderStatusLine(t, m, a));
       children.push(renderSession(t, m, a));
       children.push(
@@ -6031,6 +6270,11 @@ window.__ModuleLoader__.load({
         repositoryUrl: null,
         pingFailed: false,
       });
+      // g-030: the update check's own view state. `enabled` is the **Host's**
+      // answer (`null` until it answered — the mirror alone is never treated as
+      // the truth), `data` is the payload of a confirmed newer release or
+      // `null`, and `dismissed` is this session's "stop showing it".
+      const [update, setUpdate] = React.useState({ enabled: null, data: null, dismissed: false, phase: 'idle' });
 
       const session = selection === null ? seat.currentId || GLOBAL_SESSION : selection;
       const sessionArg = session === GLOBAL_SESSION ? null : session;
@@ -6103,6 +6347,36 @@ window.__ModuleLoader__.load({
           });
         };
         void sendPing();
+        // g-030: one update check per mount — and **none at all** when this
+        // browser already knows the switch is off. The mirror is checked first
+        // precisely so that a closed switch costs nothing on page load (not even
+        // a local request); when the mirror says nothing, the Host is asked once
+        // and its answer — which reports `enabled` — fills the mirror.
+        //
+        // Every outcome except a confirmed newer release is silent: a failure,
+        // an absent release, an unparsable tag and "you are up to date" all
+        // leave the page exactly as it was.
+        if (readUpdatePref() === false) {
+          setUpdate({ enabled: false, data: null, dismissed: false, phase: 'ready' });
+        } else {
+          const checkUpdate = async () => {
+            const result = await requestJson(UPDATE_CHECK_PATH);
+            if (cancelled) return;
+            if (!result.ok) {
+              setUpdate((current) => ({ ...current, phase: 'error' }));
+              return;
+            }
+            const enabled = result.payload.enabled !== false;
+            writeUpdatePref(enabled);
+            setUpdate({
+              enabled,
+              data: result.payload.hasUpdate === true && typeof result.payload.latest === 'string' ? result.payload : null,
+              dismissed: false,
+              phase: 'ready',
+            });
+          };
+          void checkUpdate();
+        }
         const load = async () => {
           const snapshot = await requestJson(`${SNAPSHOT_PATH}${query}`);
           if (cancelled) return;
@@ -6632,6 +6906,69 @@ window.__ModuleLoader__.load({
        * is deliberately *not* called by the search box, the group headers or
        * 「显示更多」 — those browse the picker, they do not finish with it.
        */
+      /**
+       * g-030: run the update check again, bypassing the Host's six-hour cache
+       * (`?force=1`). The button that calls this is only rendered while the
+       * switch is on, so "check now" can never be the thing that re-enables a
+       * feature the user turned off.
+       *
+       * A failure is silent on the page (this is a background question, not a
+       * task the user asked for) and only the switch's own card reports that the
+       * last answer was inconclusive.
+       */
+      const recheckUpdate = async () => {
+        setUpdate((current) => ({ ...current, phase: 'checking' }));
+        const result = await requestJson(`${UPDATE_CHECK_PATH}?force=1`);
+        if (!result.ok) {
+          setUpdate((current) => ({ ...current, phase: 'error' }));
+          return;
+        }
+        const enabled = result.payload.enabled !== false;
+        writeUpdatePref(enabled);
+        setUpdate({
+          enabled,
+          data: result.payload.hasUpdate === true && typeof result.payload.latest === 'string' ? result.payload : null,
+          dismissed: false,
+          phase: 'ready',
+        });
+      };
+
+      /**
+       * g-030: open or close the upstream update check.
+       *
+       * The value sent is the negation of the state the Host last reported, so
+       * one click always produces the state the label promised. Turning it **on**
+       * runs one immediate check (there is nothing to show otherwise, and the
+       * user just asked for it); turning it **off** writes the preference and
+       * stops — no further request is made by this page for the rest of the
+       * session, and the next mount skips the round trip entirely through the
+       * local mirror.
+       */
+      const toggleUpdate = async () => {
+        const next = update.enabled === false;
+        setUpdate((current) => ({ ...current, phase: 'saving' }));
+        setBusy(true);
+        const result = await requestJson(UPDATE_CHECK_PATH, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ enabled: next }),
+        });
+        setBusy(false);
+        if (!result.ok) {
+          setUpdate((current) => ({ ...current, phase: 'error' }));
+          setNotice({ tone: 'error', text: errorText(t, result.error) });
+          return;
+        }
+        const enabled = result.payload && result.payload.enabled === false ? false : true;
+        writeUpdatePref(enabled);
+        setUpdate({ enabled, data: null, dismissed: false, phase: 'ready' });
+        setNotice({
+          tone: 'success',
+          text: fmt(t('updateToggleSaved'), { state: t(enabled ? 'updateSettingOn' : 'updateSettingOff') }),
+        });
+        if (enabled) await recheckUpdate();
+      };
+
       const closeScope = () => setScopeOpen(false);
 
       const actions = {
@@ -6656,6 +6993,10 @@ window.__ModuleLoader__.load({
         cancelMine,
         toggleMineInterpolate,
         setMineInterpolateState,
+        // g-030: the update banner's dismissal and the switch in 「高级」.
+        dismissUpdate: () => setUpdate((current) => ({ ...current, dismissed: true })),
+        toggleUpdate,
+        recheckUpdate,
         requestMineReset: () => setConfirm({ kind: 'mine-reset', layer: mineLayer }),
         setAdvancedLayer: (value) => setAdvancedLayer(value === 'workspace' ? 'workspace' : 'user'),
         setSearch: (event) => setSearch(event && event.target ? String(event.target.value) : ''),
@@ -6851,6 +7192,7 @@ window.__ModuleLoader__.load({
         importText,
         importMode,
         boot,
+        update,
         fz,
         effectiveSections,
         incoming,

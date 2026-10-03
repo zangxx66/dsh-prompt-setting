@@ -14,6 +14,30 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Added 新增
 
+- **上游更新检查（g-030）**：打开设置页时由**宿主**向 GitHub Releases API 发一个 `GET`（地址从本包
+  `package.json` 的 `repository.url` 解析，不硬编码第二份）；最新版本高于当前版本时，页面顶部出现
+  **可关闭**的提示条（新版本号 + 发布页链接）。**默认开启、可关闭**：设置 →「Prompt 管理」→「高级」→
+  「检查更新」；关闭后**零对外请求**（含打开设置页时），偏好写入
+  `<DSH_HOME>/prompt-setting/preferences.json`（`{"updateCheck": false}`）。判定**绝不误报**：相等或更旧
+  ⇒ 无提示；tag 解析失败或无 release（404）⇒「无可用信息」，同样静默；网络错误 / 超时 / HTTP 错误一律
+  静默且**绝不 5xx**（路由恒答 200 + 结构化 `error`）。请求只有这一个 `GET`、不带任何本机 / 会话数据
+  （`User-Agent: dsh-prompt-setting/<版本>`），5 秒超时，同一进程缓存 6 小时（`?force=1` 可绕过）。
+  新路由 `GET|PUT /prompt-setting/update-check`（沿用既有前缀路由与信任栅栏）；不自动下载、不自动安装、
+  不做自更新、不检查 DSH 平台版本，零新依赖（Node 内置 `fetch`）。契约见 `CONTRACT.md` §17 / §13.9。
+  **Upstream update check (g-030)**: when the settings page opens, the **host** sends one `GET` to the GitHub
+  Releases API (URL derived from this package's `package.json`, never hardcoded twice), and a **dismissible**
+  banner appears at the top of the page (new version + release-page link) only when a newer release is confirmed.
+  It is **on by default and switchable** (Settings → Prompt settings → Advanced → "Check for updates"); with it
+  off there are **zero outbound requests**, including on page load, and the preference lives in
+  `<DSH_HOME>/prompt-setting/preferences.json` (`{"updateCheck": false}`). The verdict can never be a false
+  positive: equal or older ⇒ no banner, an unparsable tag or no release (404) ⇒ "no usable information" and still
+  silent, and a network error / timeout / HTTP error is silent too — never a `5xx` (the route always answers 200
+  with a structured `error`). The request is a single `GET` carrying no local or session data
+  (`User-Agent: dsh-prompt-setting/<version>`), with a 5-second timeout and a six-hour cache (`?force=1` bypasses
+  it). New route `GET|PUT /prompt-setting/update-check` on the existing prefix route and trust fence; no automatic
+  download, install or self-update, no DSH platform check, and no new dependency (Node's built-in `fetch`).
+  Contract: `CONTRACT.md` §17 / §13.9.
+
 - **设置页显示插件版本号，并可点击跳转仓库**：版本号取自宿主 `GET /prompt-setting/ping` 的 `version`
   （= `index.js` 的 `PLUGIN_VERSION`，**单一来源**——客户端不携带任何版本字面量），渲染在**设置页标题旁**；
   点击在新标签打开本插件仓库（`repositoryUrl` 同样由宿主从自身 `package.json` 派生：`repository.url` /

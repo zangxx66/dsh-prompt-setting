@@ -522,6 +522,8 @@ g-029).** Additive on the wire, and a placement change on the page:
 | `/prompt-setting/import` | `POST` | Apply such a document atomically, with a `dryRun` preview (Revision 4, §11). |
 | `/prompt-setting/interpolate` | `GET` | The「我的 Prompt」variable-substitution switch, per layer and effective (Revision 11, §16.4). |
 | `/prompt-setting/interpolate` | `PUT` | Set that switch for one layer: `{"enabled": bool}` (Revision 11) or `{"state": "inherit"|"on"|"off"}` (Revision 12, §16.8). |
+| `/prompt-setting/update-check` | `GET` | The upstream release check: is a newer release published, and is checking on at all? Always `200`, failures included (g-030, §17). |
+| `/prompt-setting/update-check` | `PUT` | Record the on/off switch for that check: `{"enabled": bool}` (g-030, §17.4). |
 
 - An unknown path under the prefix is `404` with
   `{ "code": "not-found", "message": "no route for <path>" }` (no `ok` key —
@@ -530,7 +532,8 @@ g-029).** Additive on the wire, and a placement change on the page:
   listing the supported methods and an **empty** body. `/prompt-setting/ping`
   answers `allow: GET`; `/prompt-setting/overrides` answers
   `allow: GET, PUT, DELETE`; `history`, `diff` and `export` answer `allow: GET`;
-  `import` answers `allow: POST`; `interpolate` answers `allow: GET, PUT`.
+  `import` answers `allow: POST`; `interpolate` and `update-check` answer
+  `allow: GET, PUT`.
 - The fence runs **before** the method check and before any route logic.
 
 ## 2. `GET /prompt-setting/snapshot`
@@ -1762,8 +1765,9 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   `data-diff-*`) and the transfer panel (`data-region="transfer"` plus its
   `data-import-*` markers).
 - The lazy rule now keys off this **tab**, not the old 覆盖 view: a page that
-  never opens it issues exactly the three baseline requests (ping, snapshot,
-  overrides), and the history request is `…&limit=20`.
+  never opens it issues exactly the four baseline requests (ping, snapshot,
+  overrides and — g-030 — update-check, the last one only while the check is on),
+  and the history request is `…&limit=20`.
 
 ### 13.4 「高级」
 
@@ -1923,6 +1927,50 @@ writes one down either.
 
 The cost is one attribute, one node and one extra ping field on a request the page
 already makes: no new route and no new request.
+
+### 13.9 The upstream update banner and its switch (g-030)
+
+Two surfaces, both fed by `GET /prompt-setting/update-check` (§17):
+
+- **the banner** — rendered above the tab bar (`data-region="update-notice"`) with
+  `data-update-available="true"` and `data-update-latest="<version>"`, the
+  `<version>` being the host's normalized `latest` verbatim. Inside it: the
+  sentence naming both versions, the release link (`data-update-release-link`,
+  `href` = the host's `releaseUrl`, `target="_blank"`,
+  `rel="noreferrer noopener"` — the `rel` is required, not decorative: without it
+  the opened page gets a `window.opener` back into this settings page) and the
+  dismissal button `data-action="update-dismiss"`. **Dismissal is view state**:
+  it renders `null` afterwards, sends nothing, and writes nothing;
+- **the banner exists only for a confirmed newer release.** No update
+  (`hasUpdate:false`), no usable information (`hasUpdate:null`: no release yet, an
+  unparsable tag, an absent `tag_name`) and every failure (`ok:false`) render
+  **nothing at all** — no banner, no error banner, no red text and no notice. This
+  is a background question the user did not ask, so it may only ever be silent or
+  useful;
+- **the switch** — in 「高级」, `data-region="update-setting"` carrying
+  `data-update-enabled="true"|"false"`, with `data-action="update-toggle"`
+  (`aria-pressed` mirrors the state) and, only while it is on,
+  `data-action="update-recheck"`. The state it shows is the **host's**
+  `enabled`, never the page's optimism: a `GET` that failed leaves the last known
+  state alone, and a refused `PUT` is reported in the existing error notice while
+  the switch stays where the host says it is. Turning it on asks once immediately
+  (`?force=1`); turning it off sends the `PUT` and stops;
+- **zero requests while it is off** (criterion 4). The page keeps a
+  `localStorage` mirror (`dsh-prompt-setting.updateCheck` = `'on'`/`'off'`) purely
+  so a closed switch survives a reload without a round trip: on mount, a mirror
+  reading `'off'` means the page issues **no** update-check request at all, and
+  the host's own `check()` reads `preferences.json` first, so a closed switch
+  performs no outbound request even if a request does arrive (`?force=1`
+  included). Anything other than `'off'` — a missing `localStorage`, a privacy
+  mode that throws, a hand-edited value — means "ask once", never "assume off";
+- the switch renders as a **card in 「高级」**, on by default, next to the
+  read-out. It is real UI rather than a documented config file because the owner
+  rejected the degradation explicitly: a privacy switch nobody can find is not a
+  switch.
+
+`test/client.test.mjs` freezes every branch above, including the two negative
+ones that matter most: a failed check paints no error, and a mirrored `'off'`
+makes the mount request nothing.
 
 ---
 
@@ -2985,3 +3033,158 @@ g-026 are untouched.
   before them, the Host half needs the process to pick the new code up, and what
   is verified here is verified offline against the real
   `@deepseek-ai/dsh-system-prompt` in a real Cordis context.
+
+---
+
+## 17. The upstream update check (g-030)
+
+### 17.1 Why a Host route, and why GitHub
+
+This plugin is installed as a tarball or a `link:`, so nothing in npm ever tells
+a user that upstream moved on. The owner's decision (2026-10-03) is one
+`GET` against the **GitHub Releases API** — not the npm registry — because this
+package's releases are what a user actually installs from. The request is made by
+the **Host**, not the page: Node has no CORS wall, the answer can be cached, the
+request can time out, and the whole feature can be switched off server-side. The
+page only ever reads the result.
+
+Three properties are contract, not implementation:
+
+- **never a false positive.** `hasUpdate: true` is emitted only when both
+  versions parse and `latest > current`. Every undecidable case is
+  `hasUpdate: null`;
+- **a failure is a value.** The route answers `200` for every outcome it can
+  have — including a network error, a timeout and an HTTP error from GitHub.
+  Only a malformed `PUT` body is an ordinary `400` (§17.4). No update check can
+  produce a `5xx`, and none can paint the settings page red;
+- **one request, no user data.** A single `GET`, with
+  `user-agent: dsh-prompt-setting/<version>` and
+  `accept: application/vnd.github+json`. No body, no cookies, no query derived
+  from this machine, this session or this workspace.
+
+### 17.2 `GET /prompt-setting/update-check`
+
+Query: `force` (optional). The single upstream URL is built from
+`package.json`'s `repository.url` — parsed once per check by
+`parseRepositorySlug` into `{owner, repo}`; nothing is hardcoded a second time and
+no request input reaches it. The accepted manifest spellings are
+`git+https://…`, `https://…`, `git://…`, `git+ssh://git@…`, the scp-style
+`git@github.com:owner/repo.git` and the `github:owner/repo` shorthand; anything
+that is not `github.com` with exactly two path segments is refused
+(`400`-free, `ok:false`, `error.code: "no-repository"`).
+
+The body:
+
+```json
+{
+  "ok": true,
+  "enabled": true,
+  "current": "0.1.1",
+  "latest": "0.2.0",
+  "hasUpdate": true,
+  "releaseUrl": "https://github.com/zangxx66/dsh-prompt-setting/releases/tag/v0.2.0",
+  "publishedAt": "2026-10-01T00:00:00Z",
+  "checkedAt": "2026-10-03T09:00:00.000Z",
+  "cached": false,
+  "error": null
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `ok` | `true` when the check produced a decidable or explicitly undecidable answer; `false` on a failure, with `error` set. |
+| `enabled` | The switch as persisted (§17.4). Answered on both verbs so the page needs one round trip, not two. |
+| `current` | This package's `PLUGIN_VERSION` (the same constant the ping reports). |
+| `latest` | The normalized `major.minor.patch` of the reported tag, or `null` when there is nothing usable. The raw tag is never echoed as a version. |
+| `hasUpdate` | `true` only for a confirmed newer release; `false` when the current version is equal or newer; `null` when it cannot be decided. |
+| `releaseUrl` | The release's `html_url`, else `https://github.com/{owner}/{repo}/releases/tag/{tag}`, else `null`. |
+| `publishedAt` | The release's `published_at`, or `null`. |
+| `checkedAt` | When this answer was produced (ISO 8601), including a cached one — it names the check, not the read. |
+| `cached` | `true` when the answer comes from the cache rather than a fresh request. |
+| `error` | `null`, or `{code, message}` plus `status` for an HTTP error. Codes: `no-repository`, `fetch-unavailable`, `network-error`, `timeout`, `http-error`, `invalid-response`, `no-release`, `unparsable-tag`, `uncomparable-version`. |
+
+The decision table, which is the whole point:
+
+| Situation | `ok` | `hasUpdate` | `error.code` |
+| --- | --- | --- | --- |
+| `latest > current` | `true` | `true` | — |
+| equal, or `current` newer | `true` | `false` | — |
+| 404 (no release yet) | `true` | `null` | `no-release` |
+| tag is not a version (`nightly`, `1.2`, `1.2.3.4`) | `true` | `null` | `unparsable-tag` |
+| body is not a release object / has no `tag_name` | `true`/`false` | `null` | `invalid-response` |
+| network error, timeout, HTTP ≠ 2xx/404 | `false` | `null` | `network-error` / `timeout` / `http-error` |
+| switch off (`enabled: false`) | `true` | `false` | — |
+
+`hasUpdate: null` is rendered as **nothing** by the page (§13.9); it exists so
+"we do not know" is never confused with "you are up to date", and never with "you
+are behind".
+
+Semver parsing tolerates a leading `v`/`V` and a `-prerelease`/`+build` suffix
+(the core triple is what is compared; `/releases/latest` excludes drafts and
+prereleases upstream anyway). Comparison is numeric per segment, so `0.10.0` is
+newer than `0.9.9`.
+
+### 17.3 Cache, timeout, and what is never cached
+
+- **TTL 6 hours** (`UPDATE_CHECK_TTL_MS`). A repeat inside the window answers the
+  cached payload with `cached: true` and performs **no** request. The cache lives
+  on the mount, so a `dsh web` restart starts fresh;
+- **`?force=1`** skips the cache — the「立即重查」button and the tests — and
+  skips **only** the cache: a closed switch still answers without asking;
+- **decidable answers are cached, failures are not.** `hasUpdate: true|false` and
+  the determinate "nothing usable" answers (404, an unparsable tag) are cached, so
+  a repository without releases does not get re-asked on every page load. A
+  network error, a timeout and an HTTP error are never cached: the next request
+  tries again;
+- **timeout 5 s** (`UPDATE_CHECK_TIMEOUT_MS`), enforced with both an
+  `AbortController` signal and an internal race, so even a transport double that
+  ignores the signal cannot wedge a page;
+- the transport, the clock and the two bounds are injectable through the plugin
+  config (`updateCheck: {fetch, now, ttlMs, timeoutMs}`), which is how the tests
+  drive the real route offline. A profile that declares nothing gets the shipped
+  defaults.
+
+### 17.4 `PUT /prompt-setting/update-check`, and the preference file
+
+Body: `{"enabled": boolean}`. Anything else is **`400 invalid-enabled`** — the
+same code and the same shape-refusal rule as `PUT /interpolate` — and no file is
+written.
+
+The answer is always `200`:
+`{"ok": true, "enabled": false, "saved": {"enabled": false}, "effectiveFrom": "immediate", "error": null}`.
+A write that cannot be persisted (an unwritable `$DSH_HOME`) answers
+`200 {"ok": false, "enabled": <unchanged>, "error": {"code": "preferences-unwritable", …}}`
+rather than a `5xx`: this feature's promise not to break the settings page covers
+its own configuration too.
+
+The preference lives in **its own file**, `<DSH_HOME>/prompt-setting/preferences.json`:
+
+```json
+{ "updateCheck": false }
+```
+
+- **not** in `overrides.json`. The switch is a fact about this installation's
+  behaviour, not an override of any prompt section, and putting it in the layer
+  config would drag it through the export / import / history / snapshot schemas —
+  every one of which is a frozen contract that must not grow a field because a
+  switch was added;
+- **default `true`** (checking on). A missing, unreadable or malformed file all
+  answer "on", and a malformed one is reported (`error.code: "invalid-json"`)
+  rather than silently rewritten — the next save repairs it;
+- **only the boolean `false` closes the switch.** `"false"`, `0`, `null` and
+  anything else fall back to the documented default rather than being
+  truthy-coerced into a privacy decision;
+- `enabled:false` means **zero outbound requests**, including on page mount
+  (§13.9) and including `?force=1`.
+
+### 17.5 What this does not do
+
+- no automatic download, no automatic install, no self-update: the feature
+  reports, and the user follows the link;
+- no DSH platform version check — that is `scripts/check-compat.mjs` (g-013);
+- no new runtime dependency: Node's built-in `fetch`, nothing else;
+- no change to any existing route's response shape. `ping`, `snapshot`,
+  `overrides`, `history`, `diff`, `export`, `import` and `interpolate` answer
+  exactly what they answered before; the eighth route is additive;
+- no user data on the wire, and no per-session/per-workspace variation: the
+  answer is the same for every session of one install.

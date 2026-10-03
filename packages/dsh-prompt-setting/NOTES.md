@@ -4744,3 +4744,107 @@ HMR，但宿主半必须**重启 `dsh web`** 才生效——重启会终止正�
 | A 新增边界（绿） | `--test-name-pattern="repositoryUrlOf derives"` | scp 风格 / `ssh://` / `ftp://` / 非 http 的 `homepage` ⇒ `null`；SSH + `homepage` ⇒ 用 `homepage`；`https://x/y.git/` ⇒ `https://x/y`；`git+https://x/y.git/` ⇒ `https://x/y`；`http://x/y.git` ⇒ `http://x/y`；原 5 类输入与「ping === `repositoryUrlOf(packageJson)`」保持全绿 |
 | 改坏就红 A（去掉 scheme 校验） | `asGitAddress` 末尾改回 `url.length > 0 ? url : null`，跑 `test/host.test.mjs` | **21 pass / 1 fail**（新增边界用例变红）；还原后 22/22 |
 | 改坏就红 B（删加载失败卡标记） | 删掉该卡的 `'data-plugin-version': 'unknown'`，跑 `test/boot.test.mjs` | **24 pass / 2 fail**（既有断言 + 新增独立用例各红一条）；还原后 26/26 |
+
+## 106. 上游更新检查：宿主代理一个 GitHub Releases `GET` + 可关闭提示条与「高级」开关（g-030，2026-10-03，基线 `9cc0da0` 工作区）
+
+### 一、要解决的问题
+
+插件以 tarball / `link:` 安装，`npm` 侧没有任何东西会告诉用户上游动了；升级只能靠人去 GitHub 页面看。
+负责人 2026-10-03 确认数据源走 **GitHub Releases API**（不是 npm registry），因为用户实际安装的是这里的
+release。三个不可让步的性质：**绝不误报有更新**、**失败绝不干扰页面**、**只发一个请求且可关闭**。
+
+### 二、落点选择（为什么是「宿主一个路由 + 独立偏好文件 + 页面镜像」）
+
+| 候选 | 结论 | 理由 |
+| --- | --- | --- |
+| 客户端直接 `fetch` GitHub | **否** | 浏览器侧受 CORS / 无法超时 / 无法缓存 / 无法真正关闭；且会把「联网」这件事放到页面半边 |
+| **宿主 `GET /prompt-setting/update-check`** | **选中** | Node 侧 `fetch`：无 CORS、可 `AbortController`、可缓存、可被开关短路；沿用既有前缀路由与 `connection.requestRejection` 信任栅栏 |
+| 开关存进 `overrides.json`（像 `interpolateCustom` 那样） | **否** | 那会把「本机是否联网」拖进 export / import / history / snapshot 四个 frozen schema；一个开关不该让四个契约涨字段 |
+| **`<DSH_HOME>/prompt-setting/preferences.json`** | **选中** | 独立文件、独立语义；损坏 / 缺失一律回落到默认「开启」，且损坏是被**报告**而不是被静默改写 |
+| 开关只在客户端 `localStorage` | **否** | 换浏览器 / 换 profile 就丢；`localStorage` 只作**镜像**（省一次往返，且让「关闭后页面挂载零请求」真的成立），权威始终在宿主 |
+| 开关降级为「配置文件 + 文档」 | **否（负责人明确否决）** | 找不到的隐私开关不算开关，必须做进「高级」tab |
+
+### 三、实现要点
+
+- **纯策略层 `core/update.js`**：`parseRepositorySlug` / `parseSemver` / `compareSemver` /
+  `isNewerVersion` / `normalizePreferences` 都是纯函数；`createUpdateChecker` 把 **transport、时钟、
+  TTL、超时、偏好读写全部注入**（默认 `globalThis.fetch` / `Date.now` / 6h / 5s），所以单测与路由测都
+  不可能真联网；
+- **`check()` 的分支顺序就是安全顺序**：先读开关（关 ⇒ 直接返回，**零外呼**）→ 再查缓存（TTL 内
+  `cached:true`）→ `force` 只跳缓存、**不跳开关** → 才发那唯一一个 `GET`；
+- **判定表**：`latest > current` ⇒ `hasUpdate:true`；相等或更旧 ⇒ `false`；404 / tag 不解析 / 无
+  `tag_name` / `current` 自身不可解析 ⇒ **`hasUpdate:null`**（「无可用信息」），页面据此**什么都不显示**
+  ——`null` 的存在就是为了让「不知道」既不等于「已最新」也不等于「落后」；
+- **失败是值不是异常**：网络错误 / 超时 / HTTP≠2xx(404 除外) 全部 `ok:false` + 结构化 `error`，路由
+  恒答 **200**；`PUT` 写偏好失败也是 200 + `preferences-unwritable`。唯一 400 是 `PUT` 形状错
+  （`invalid-enabled`），与 `PUT /interpolate` 同口径；
+- **缓存只缓存确定性答案**：成功、404、tag 不可解析都缓存（仓库暂时没 release 不该每次开页面都去打
+  GitHub）；网络错误 / 超时 / HTTP 错误**不缓存**，下一次重试；
+- **超时是双保险**：`AbortController.signal` + 内部 `Promise.race`，即使注入的 transport 完全无视
+  signal（测试里那个永不 resolve 的 stub）也不会把页面挂住；
+- **请求形态**：`GET`，`accept: application/vnd.github+json`，`user-agent:
+  dsh-prompt-setting/<版本>`，无 body、无 cookie、无任何本机 / 会话 / 工作区派生的参数；URL 由
+  `parseRepositorySlug(repository.url)` 拼出，仓库只写一处（`package.json`）；
+- **客户端三态**：挂载时 `localStorage` 镜像读 `'off'` ⇒ **一个请求都不发**（连 `GET /update-check`
+  都不发）；否则请求一次，用宿主答案里的 `enabled` 回填镜像与开关显示；
+- **提示条**：只在 `hasUpdate === true` 且 `latest` 是非空字符串时渲染，`data-update-available="true"` /
+  `data-update-latest` / 发布页链接（`target="_blank"` + `rel="noreferrer noopener"`）/ 关闭按钮
+  `data-action="update-dismiss"`（仅本会话隐藏，不发请求、不写任何东西）；
+- **开关**：`data-region="update-setting"` + `data-update-enabled` + `data-action="update-toggle"`
+  （`aria-pressed` 同步），关闭态不渲染「立即重查」；发送值 = 宿主上次报告状态的**取反**，所以一次点击
+  必然得到标签承诺的状态；开启时立即 `?force=1` 查一次；
+- **「零提示零红字」是结构性的**：`renderUpdateNotice` 对「无更新 / `null` / 失败 / 已关闭」返回
+  `null`，它没有任何路径能产出 `data-notice="error"`；失败的检查只更新开关卡片里的一行中性文案。
+
+### 四、被否方案
+
+① 客户端直连 GitHub（见上表）；② 复用 `GET /prompt-setting/interpolate` 或往 `ping` 里塞
+`updateCheckEnabled`/`hasUpdate`：判据 8 明确要求**不改既有 ping / snapshot / overrides 的响应形状**，
+ping 是多处断言过的 frozen 形状；③ 把开关写进 `overrides.json`；④ 「配置文件 + 文档」的降级形态
+（负责人已否决）；⑤ 用 npm registry 的 `dist-tags`（负责人已确认不是这个数据源）。
+
+### 五、契约与文档
+
+- `CONTRACT.md`：§1 路由表 + `allow` 清单加 `update-check`；**新增 §17**（数据源与三条性质、字段表、
+  判定表、缓存/超时/请求形态、`PUT` 与偏好文件、不做什么）；**新增 §13.9**（提示条与开关的标记、静默
+  规则、`localStorage` 镜像与「关闭后零请求」）；§13.3 的「三条基线请求」改为四条；
+- 三份 README（根 `README.md` / 根 `README_zh.md` / 包 `README.md`）：写明**只有一个请求、不带任何
+  本机数据、5 秒超时 / 6 小时缓存、失败静默**，以及**关闭方法**（UI 路径 + `preferences.json` 手改路径）；
+- 包 `README.md`「高级」bullet 与根两份 README 的 tab 表都点出「检查更新」开关及其默认值；
+- `CHANGELOG.md` `[Unreleased] → Added` 补中英条目；`client.js` 顶部模块注释补 g-030 段；
+  `index.js` 顶部「seven REST routes」改为 eight。
+
+### 六、本轮实测证据（包目录 `packages/dsh-prompt-setting/` 下执行）
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test` | **532 / 532 pass / 0 fail**（exit 0） |
+| 基线对照 | 改动前 `node --test` | **491 / 491 pass / 0 fail**（exit 0） |
+| 新增宿主套件 | `node --test test/update.test.mjs` | **34 / 34 pass / 0 fail**（第 1 跑 33/1，红的是本测试自身 TTL 换算写错，已修） |
+| 新增客户端用例 | `node --test test/client.test.mjs` | **132 / 132 pass / 0 fail**（原 125 + 7） |
+| 语法 | `node --check index.js / client.js / core/update.js` | 三个文件均 exit 0 |
+| 判定语义 | `--test-name-pattern="comparison is numeric"`、`"the same version, and an older one"` | `v0.1.2 > 0.1.1` ⇒ true；相等 / 更旧 ⇒ false；`latest` / `1.2` / `1.2.3.4` / 非版本 current ⇒ `null`；`0.10.0 > 0.9.9` |
+| 降级四态 | `--test-name-pattern="hasUpdate:null"`、`"a network error is a structured failure"`、`"an HTTP error"`、`"times out"` | 404 ⇒ `ok:true` + `no-release`；tag 畸形 ⇒ `unparsable-tag`；网络错误 ⇒ `ok:false` + `network-error`（且**不缓存**，第二次仍外呼）；403 ⇒ `http-error` + `status:403`；25ms 注入超时 ⇒ `timeout` |
+| 缓存 / force | `--test-name-pattern="repeat inside the TTL"` | TTL 内第二次 `cached:true` 且外呼数不变；`force:1` ⇒ 再次外呼；TTL 过后再次外呼 |
+| 开关零外呼 | `--test-name-pattern="a closed switch answers without asking anyone"`、`"the switch is persisted"` | `enabled:false` 时外呼数 **0**（含 `?force=1`）；路由 `PUT {enabled:false}` 后 `GET` 仍 0；**重挂载**（等价于下次打开页面）读同一文件后仍 0 |
+| 路由形状 | `--test-name-pattern="GET answers the documented shape"`、`"never a 5xx"`、`"method table"` | 九个字段齐全；fetch 抛错 ⇒ **200** + `network-error`；`POST` ⇒ 405 `allow: GET, PUT`；信任栅栏 403 / 缺 `connection` 503 且**未触达检查** |
+| 不碰既有形状 | `--test-name-pattern="ping is untouched"` | ping 响应仍 `ok/version`，且**不含** `hasUpdate` |
+| 客户端静默 | `--test-name-pattern="equally silent"` | 已最新 / `hasUpdate:null` / 请求失败三种 ⇒ 无 `data-update-available`、无 `data-notice=error` |
+| 客户端提示条 | `--test-name-pattern="dismissible banner"` | `data-update-latest="0.9.9"`；链接 `target=_blank` + `rel=noreferrer noopener`；点关闭后节点消失且零写入 |
+| **改坏就红 A**（比较语义归零） | 备份后把 `core/update.js` 的 `hasUpdate: newer` 改成 `hasUpdate: true`，跑 `test/update.test.mjs` | **33 pass / 1 fail**（「相等或更旧」用例红）；`cp` 还原后 34/34 |
+| **改坏就红 B**（删开关短路） | 备份后删掉 `check()` 开头的 `preferences()[…] !== true ⇒ return` 分支，跑 `test/update.test.mjs` | **32 pass / 2 fail**（「关闭开关零外呼」与「`force` 不跳开关」两条红）；还原后 34/34 |
+| **改坏就红 C**（忽略本地镜像） | 备份后把 `client.js` 挂载处的 `if (readUpdatePref() === false)` 改成 `if (false)`，跑 `test/client.test.mjs` | **130 pass / 2 fail**（「镜像 off 挂载零请求」与「重新开启立即查」两条红）；`cp` 还原后 132/132 |
+
+### 七、未验证项（诚实清单）
+
+- **真机目视未做**：宿主半（`index.js` / `core/**`）需要重启 `dsh web` 才生效，客户端半虽走 HMR 但
+  当前 `dsh web` 的 HMR 监视的是主工作树 —— 本轮改动就在主工作树内，合并/重启后由主管做一次真机确认
+  （打开设置页看提示条与「高级」开关、关掉后看网络面板零请求）。本轮所有结论都来自离线断言；
+- **没有对真实 `api.github.com` 发过一次请求**：这是判据 6 的要求（全部用注入的 fetch stub），因此
+  「真实 API 的响应形状 / 限流行为 / 本仓库当前到底有没有 release」未经真机验证。404 降级路径已用
+  stub 覆盖；若仓库尚无 release，真机应表现为「页面零提示」；
+- **真实 UA 是否被 GitHub 接受**、以及 `publishedAt` 的真实格式，只按 API 文档实现并用 stub 断言；
+- **多进程 / 多 profile 下的偏好文件并发写**未验证：写是原子的单文件 `rename`，但两个进程同时改会
+  last-wins；这是「一个本机偏好」的合理语义，未加锁；
+- 客户端 `localStorage` 失效路径（隐私模式抛错 / 配额满）只做了 `try/catch` 兜底，**没有**在真实浏览器
+  里验证过（vm 沙箱里以「没有 `localStorage`」和「假实现」两种形态覆盖）。
