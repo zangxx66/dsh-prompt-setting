@@ -4374,3 +4374,194 @@ ON 不再翻转定义（改为断言恒 `false` **并**断言文本已展开）�
 - **跨版本**：本方案不再依赖 shipped `assemble` 如何拷贝 `interpolate`（那是 Revision 11–14
   的依赖），只依赖「`interpolate: false` 的段原样交给模型」这一条 shipped 语义——
   该语义由 integration 的真 `renderPrompt` 断言固化。
+
+## 102. 未配置即误报「该作用域已被冻结」：`applied: false` 不是冻结信号（issue #1，2026-10-03，基线 `800a6c7` 工作区）
+
+### 一、问题
+
+issue #1（真机 0.2.0-rc.2 desktop + 本插件 0.1.1，commit `800a6c7`）：「我的 Prompt」在**什么都没写**时
+渲染红色阻断块「该作用域已被冻结：你写下的 Prompt 不会生效」，而同页「高级 → 状态」是绿的
+「本会话未冻结」，`?session=` 快照的 `frozen` 也是 `false` —— 同一份快照，两个半边结论相反。
+
+### 二、根因：同一个字段的两个含义被当成一个
+
+- **宿主语义（§15.3）**：`applied: false` 的**正常**含义是「这一段没有任何配置覆盖」。`core/overrides.js`
+  的 `buildEffective` 对「无 override」的分支写 `applied: false` + `reason: null`，而 `reason` 的定义就是
+  「`applied` 为 false 或 `overridable` 为 false 时的人类解释，**没什么要解释的就是 `null`**」。
+  保留段 `prompt-setting:custom-prompt` **每次装配都注册**，所以「刚装好、未配置」必然命中这一分支。
+- **契约文本把同一字段升格成冻结证据**：§2.4 的 certainty 定义与 §13.1 都写着「`frozen: true`，
+  **或**保留段以 `applied: false` 到达」—— 漏了 `reason` 非 null 这个限定。客户端照着写。
+- **客户端（旧 `client.js:5940-5947`）**：`reservedEffective.applied === false` 即判「确定冻结」，
+  并把 `reason` 为 `null` 转成空串 `''`；下游用 `reason !== null` 判冻结（`client.js:5136`），
+  于是**空串也算冻结**并走确定冻结文案。三处叠加 = 未配置即红字。
+- 时序解释了「为什么第一次使用就撞上」：用户一写并生效后 `applied` 变 `true`，红字自行消失——
+  误报恰好出现在最需要信任的那一次打开。
+
+### 三、修法：冻结判定只认快照的 `frozen` / `frozenScope`
+
+删掉「保留段 `applied: false`」这第二判据，`mineFrozen` 只保留 §2.4/§7.2 的两态：
+
+```js
+if (fz.certain && fz.frozen) return { reason: …, certain: true };   // session 冻结 / 无会话的 global 冻结
+if (fz.kind === 'unknown' && fz.frozen) return { reason: …, certain: false };  // global + 选中会话
+return null;
+```
+
+**为什么不是 issue 建议的「补一个 `reason !== null`」**（该补丁单独跑也能让未配置不再报警，属必要但不充分）：
+
+1. `reason` 非 null 并不等于冻结。同一保留段的**非冻结失败**也带 reason：`replace` 没命中
+   （`the section text differs from both…`）、`hide` 没吃掉、段被流水线丢弃。把它们说成
+   「该作用域已被冻结」会把用户指向错误的解法（去换 agent preset），并把宿主英文原始原因直接显示在中文界面。
+2. `frozenScope: "global"` + 选中会话时，保留段的 reason 来自**同一份全局探针**（`frozenInfo`），
+   判据顺序里 reserved 分支又在 unknown 之前 ⇒ 会把 §2.4/§7.2 明令不得当作确定的「未知」态
+   **升格为「确定冻结」**。这不是 issue 报告的路径，但同源，本次一并修掉。
+3. 反过来看，凡是 fz 已判冻结的场景，保留段的证据与它**同源**（`buildEffective` 的 `frozen` 参数就是
+   `frozenInfo.frozen`），所以这条「第二证据」在正常情况下冗余、在不确定态下有害；只有探针完全不可观测
+   （`mounted: false`）时才非冗余，而那时它同样不可信。故整条判据删除，而不是收窄。
+
+### 四、契约同步（防止实现再次漂回）
+
+- §2.4 certainty 定义：`"certain"` 现在是「`frozenScope: "session"` + `frozen: true`，或无会话的
+  `frozenScope: "global"` + `frozen: true`」，并明写「保留段 `applied: false` **不是**冻结信号」。
+- §13.1：判据从「`frozen: true`，**或**保留段 `applied: false`」改为「快照的 `frozen`/`frozenScope`
+  **单独**决定；§15.3 已定义 `applied: false` 是「无覆盖」的正常态，非冻结失败同样带它」。
+
+### 五、新增回归（3 条，`test/client.test.mjs`）
+
+| 用例 | 锁定的行为 |
+| --- | --- |
+| `an unconfigured install renders no frozen block (issue #1)` | 真机形状（保留段 `applied: false` + `reason: null`，`frozenScope: "session"`、`frozen: false`）⇒ 零 `data-warning="mine-frozen"`、零 `data-mine-frozen`、`data-mine-effect="next-turn"`、状态「未配置」 |
+| `a non-frozen override failure is not reported as a freeze (issue #1)` | `applied: false` + 非冻结 reason ⇒ 仍不是冻结 |
+| `the reserved entry never upgrades an unknown scope to a certain freeze (issue #1)` | global 冻结 + 选中会话，保留段带同一全局 reason ⇒ `data-mine-frozen-certainty="unknown"`、`data-mine-effect="unknown"` |
+
+新增 fixture 时**不动** `snapshotFixture()` 的默认 `effective.sections`：真机上保留段确实总在，
+但把它塞进默认 fixture 会连带推翻十余条与「段数量/列表内容」相关的既有断言（实测：注入后 12 红，
+其中 7 条与冻结无关，例如段列表计数、总览的 copy sweep；用同样形状的普通段 `other:plugin` 对照注入，
+得到同类的 9 条红），那是另一笔 fixture 债，不属于本次范围。故用**就地构造的真机形状**锁定行为。
+
+### 六、客户端侧渲染矩阵（BEFORE/AFTER，同一 harness、同一场景）
+
+实验方式：`git show HEAD:packages/dsh-prompt-setting/client.js > /tmp/client_before.js`，
+测试 harness 通过 `PS_CLIENT` 环境变量选择被测客户端源码，四场景各渲染一次「我的 Prompt」面板：
+
+| 场景 | BEFORE | AFTER |
+| --- | --- | --- |
+| S1 未配置（issue 现场） | `warning=1` `certainty=certain` `effect=none`，**状态行「本会话未冻结」与阻断块「该作用域已被冻结」同屏** | `warning=0` `effect=next-turn`（与状态卡一致，无红字） |
+| S2 会话真被 complete 段冻结 | `warning=1` `certain` `none` + 正确原因 | **不变**（`warning=1` `certain` `none`，原因照旧）——无过度修复 |
+| S3 global 冻结 + 选中会话 | `warning=1` **`certainty=certain`**，文案说「该作用域已被冻结」，原因用的是全局探针那句 | `warning=1` **`certainty=unknown`**，文案「冻结状态未知：本会话的装配无法确认」，原因换成 `frozenScopeReason` |
+| S4 非冻结的应用失败 | `warning=1` `certain`，谎称被 complete 段冻结 | `warning=0` `effect=next-turn` |
+
+红绿对照（同一 3 条新断言）：修复前源码 **3/3 红**，修复后 **3/3 绿**。
+
+### 七、本轮实测证据（包目录 `packages/dsh-prompt-setting/` 下执行）
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test` | **483 / 483 pass / 0 fail / 0 skipped**（基线 480，新增 3） |
+| 客户端 UI | `node --test test/client.test.mjs` | 120 / 120 pass（基线 117，新增 3） |
+| 新断言红绿 | 修复前源码 + `--test-name-pattern="issue #1"` | **0 pass / 3 fail** |
+| 同上 | 修复后源码 | **3 pass / 0 fail** |
+| 渲染矩阵 | 四场景 × 两份源码 | 见第六节（BEFORE 四场景全为 `certain`；AFTER 与快照一致） |
+| 兼容性自检 | `node scripts/check-compat.mjs` | 退出码 0，只读诊断不受影响 |
+
+### 八、未验证项（诚实清单）
+
+- **真机目视**：未重启 `dsh web`、未在运行中的桌面版里打开面板复核；客户端半改动需重新构建/重载客户端
+  bundle 才生效，宿主半（本次未改）不受影响。
+- **`mounted: false`（探针不可观测）时的面板表现**：本条判据删除后，这种情形下面板不再给出任何冻结提示。
+  该情形本来就没有可信证据（fz 与保留段证据同源），未新增文案；如实记录为已知留白。
+- **非冻结的应用失败在「我的 Prompt」面板不再有任何提示**：这是有意的——它由「段列表 / 提示词总览」的
+  `applied` / 原因列负责（§15.3 语义），不冒充冻结。
+
+## 103. 确认弹窗从「页面流内卡片」改为视口居中模态（2026-10-03，基线 `800a6c7` 工作区 + §102 的未提交改动）
+
+### 一、问题（负责人报障）
+
+「恢复默认」的确认弹窗**位置不对**：点按钮后卡片出现在面板**上方**、离按钮很远，要往上滚才看到。
+
+### 二、根因：确认卡渲染在页面流里，且固定挂在面板之前
+
+- 触发按钮在「我的 Prompt」的按钮行（`client.js:5474-5483`），而「我的 Prompt」是全页最长的面板
+  （状态行 + 文本框 + 变量开关 + 说明 + 冻结块）；
+- 确认卡被 push 进整页 `children`（tabs 之后、`panel` 之前），样式只有 `{...cardStyle}`，
+  **没有 position** ⇒ 它是文档流内的一张卡；
+- 于是它必然出现在触发点**上方**：页面滚到按钮处再点，卡片落在视口之外，体感是「点了没反应」；
+  每次出现还会把面板整体下推（布局位移）。
+- 自 g-005 引入以来位置未变（`git log -S "'data-region': 'confirm'"` 只有 `ec5e958`）；
+  契约 §13.5 只规定「先渲染确认卡」，没规定位置——所以是设计缺口，不是回归。
+
+### 三、修法：视口居中模态（负责人选定方案）
+
+- `renderConfirm` 现在返回 `data-region="confirm-overlay"`：`position: fixed` + 四边 `0` +
+  `display: flex` 双向居中 + `z-index: 1000` + 半透明遮罩，卡片限宽 `480`、限高 `80vh`（超出内部滚动）；
+- 卡片本身仍是 `data-region="confirm"` + `data-confirm-kind` + 两个 `data-action`，既有断言与 sweep
+  的 marker 一个未动，另加 `role="dialog"` / `aria-modal="true"` / `aria-label`；
+- 挂载点去掉了 `display: contents` 包装（fixed 元素落点与 `children` 顺序无关），并留注释说明；
+- 遮罩**只是背景**：点它不关闭任何东西，出口仍是 `confirm-yes` / `confirm-no`——这样既不会误关，
+  也不会因为点遮罩而误判「已取消」；
+- 契约 §13.5 同步写明结构、定位与 a11y 约定。
+
+### 四、本轮实测证据（包目录 `packages/dsh-prompt-setting/` 下执行）
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test` | **483 / 483 pass / 0 fail** |
+| 位置实验（BEFORE = `git show HEAD:…/client.js`） | harness 渲染后点「恢复默认」 | BEFORE：顶层 `children=[title, subtitle, status, session, tabs, **confirm-slot**, panel]`，`card-position=static`、无 overlay、无 role ⇒ 流内卡片、在面板之前 |
+| 同上（AFTER = 当前源码） | 同上 | AFTER：`[title, subtitle, status, session, tabs, **confirm-overlay**, panel]`，`overlay-position=fixed`、`in-overlay=true`、`centered=center/center`、`overlay-z=1000`、`role=dialog` |
+| 位置断言 | `node --test --test-name-pattern="恢复默认"` | 断言 overlay 为 fixed / 四向居中 / 卡片在 overlay 内 / 面板子树不含 `data-region="confirm"` / `role=dialog` + `aria-modal` |
+| en sweep | `node --test test/client.test.mjs` | 新增必需 marker `data-region=confirm-overlay` 已被走通 |
+
+### 五、未验证项（诚实清单）
+
+- **真机目视**：未在桌面版重新构建 bundle 后肉眼确认；本仓库改动需重新打包安装（客户端半由 DSH HMR
+  替换，但前提是 bundle 已更新）。
+- **祖先带 `transform` 时的 `fixed` 语义**：若设置页容器带 transform/filter，`fixed` 会相对该容器而非视口。
+  实际效果仍是「贴住容器可视区、不随滚动移出」，但未在真机验证；如需要可改用 `position: absolute` + 容器
+  为定位上下文，作为后备方案。
+- **键盘可达性**：只加了 `role="dialog"` / `aria-modal`，未实现焦点陷阱与 Esc 关闭；本轮范围只到「位置」。
+
+## 104. 确认弹窗的文字排版：三层级 + 去重复（2026-10-03，承接 §103）
+
+### 一、问题（负责人报障：「弹窗的文字排版需要优化」）
+
+把四种 kind × zh/en 的弹窗结构 dump 出来，问题具体是四条：
+
+1. **标题没有层级**：`请确认` 是 `fontSize: 13` 的 `<strong>`，而正文行**没有任何显式字号与行高**，
+   靠继承；两者同尺寸，只剩颜色在区分，标题不像标题；
+2. **间距只有一个值**：卡片 `gap: 6`，标题、正文两行、警示句、按钮行全部等距——没有分组，读起来是一坨；
+3. **重复**：正文里已经写了「…；删除不可撤销。」/「此操作不可撤销，被删除的内容会记入历史。」，
+   底下又单独一行红字「此操作不可撤销。」（`resetLayerBody`、`resetLegacyBody` 同样重复）；
+4. **按钮与文案没有边界**：破坏性的「确认执行 / 取消」直接贴着警示句。
+
+### 二、修法：三层级 + 结构分组 + 文案去重
+
+| 层 | 规格 |
+| --- | --- |
+| 标题 | `14px / 600 / lineHeight 1.4`，`stateWarn` |
+| 正文组 `data-role="confirm-body"` | 组内 `gap: 4`、`marginTop: 10`；**首句**（动作本身）`13px / 500 / labelPrimary`，**说明句** `13px / labelSecondary`，两者 `lineHeight: 1.6` + `wordBreak: break-word`（zh/en 长句都在 480px 卡片里折行） |
+| 警示条 `data-role="confirm-irreversible"` | `marginTop: 12`、`paddingLeft: 10`、`borderLeft: 3px stateError`、`12px / lineHeight 1.5 / stateError` |
+| 按钮行 `data-role="confirm-actions"` | `marginTop: 16` + `paddingTop: 12` + `borderTop: 1px borderL1`，按钮顺序与 marker 全部不变 |
+| 卡片 | `padding: 16px 18px`，**去掉统一 `gap`**（分组由各层自己的 margin 决定） |
+
+**文案去重**（6 条，zh+en 各 3）：`mineResetBody` / `resetLegacyBody` / `resetLayerBody` 里与
+`resetIrreversible` 重复的「不可撤销」句删除。契约 §13.5 要求卡片「stating that the action cannot be
+undone」，现在由警示条**唯一**承担，不再出现两次三次。改文案不动键名与参数，en sweep 的 copy 断言
+（按注册表取值比对）自动跟随，无断言需要改写。
+
+### 三、本轮实测证据（包目录 `packages/dsh-prompt-setting/` 下执行）
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test` | **483 / 483 pass / 0 fail** |
+| 排版 dump（BEFORE = `git show HEAD:…/client.js`） | harness 渲染 4 kind × zh/en | BEFORE：卡片 `gap=6, padding=12px 14px`；正文两行同为 `13px`、无行高、无字重；警示句无 `borderLeft`（`fs` 继承）；按钮行无 `borderTop`；正文里出现两次「不可撤销」 |
+| 排版 dump（AFTER = 当前源码） | 同上 | AFTER：`padding=16px 18px`、无统一 `gap`；`body0 = 13px/500/1.6`、`body1 = 13px/-/1.6` 且两行颜色分层；警示条 `borderLeft=yes, fs=12, mt=12`；按钮行 `borderTop=yes, mt=16`；「不可撤销」只出现 1 次 |
+| 结构断言 | `node --test --test-name-pattern="恢复默认"` | 新增：`confirm-body` 的 `gap=4`、首句 `fontWeight=500`、`lineHeight=1.6`、两行颜色不同、警示条 `borderLeft` 含 `3px`、`fontSize=12`、按钮行 `borderTop` 以 `1px solid` 开头、`resetIrreversible` 只出现一次 |
+| en sweep | `node --test test/client.test.mjs` | 新增必需 marker `data-role=confirm-body` / `confirm-irreversible` / `confirm-actions`，四个确认场景全部走通 |
+
+### 四、未验证项（诚实清单）
+
+- **真机目视**：未重新构建客户端 bundle 后肉眼核对；规格（14/13/12、1.4/1.6/1.5）是按 480px 卡片与
+  现有 13px 正文基准推的，真机上若 shell 的字号基准不同，可能需要微调 Δ1px。
+- **未做缩放核对**：200% 缩放与窄视口（<360px）下的折行未实测；卡片 `maxWidth: 480` 与
+  `maxHeight: 80vh` 内的滚动行为沿用上一轮，未变。
+- **主按钮语义色**：破坏性确认仍是品牌色 `primary` 按钮，本轮只改排版，未动颜色语义。

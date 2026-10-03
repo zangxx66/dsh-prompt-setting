@@ -606,7 +606,7 @@ window.__ModuleLoader__.load({
       savedNoticeUnknown: '已保存到{layer}；本会话冻结状态未知，若已冻结则本轮不会生效。',
       mineWorkspaceNeedsSession: '工作区层需要先选择一个会话；未选择时无法写入工作区层。',
       mineResetTitle: '恢复默认：删除{layer}的「我的 Prompt」',
-      mineResetBody: '这会删除该层保存的文本、回到未配置状态；删除不可撤销。',
+      mineResetBody: '这会删除该层保存的文本、回到未配置状态。',
       // ---- stage 3: two entries, so an illegal (name, action) pair cannot exist
       blockAppendExisting:
         '该段名已在当前装配中：append 不会生效（两段不可同名，宿主会跳过并记为 name-already-present）。请改用「替换 replace」，或把段名改成一个尚未注册的新名。',
@@ -711,13 +711,13 @@ window.__ModuleLoader__.load({
       resetLegacyButton: '清除全部覆盖',
       resetLegacyTitle: '清除{layer}的全部旧覆盖',
       resetLegacyBody:
-        '将删除{layer}的 {count} 条冻结覆盖（即「我的 Prompt」以外的全部旧覆盖），并保留「我的 Prompt」本身；删除不可撤销。',
+        '将删除{layer}的 {count} 条冻结覆盖（即「我的 Prompt」以外的全部旧覆盖），并保留「我的 Prompt」本身。',
       resetLegacyEmpty: '{layer}没有可清除的冻结覆盖；「我的 Prompt」会保留。',
       advReservedTag: '我的 Prompt',
       advReadOnlyNote: '本列表只读：唯一的写入口是「我的 Prompt」，层级清理请用下面两个按钮。',
       resetLayerTitle: '重置{layer}',
       resetLayerBody:
-        '将清空{layer}的全部 {count} 条覆盖，下一轮装配生效。此操作不可撤销，被删除的内容会记入历史。',
+        '将清空{layer}的全部 {count} 条覆盖，下一轮装配生效；被删除的内容会记入历史。',
       resetLayerEmpty: '{layer}当前没有任何覆盖，无需重置。',
       resetIrreversible: '此操作不可撤销。',
       confirmTitle: '请确认',
@@ -946,7 +946,7 @@ window.__ModuleLoader__.load({
       savedNoticeUnknown: 'Saved to {layer}; this session may be frozen, in which case it will not take effect here.',
       mineWorkspaceNeedsSession: 'The workspace layer needs a session; without one it cannot be written.',
       mineResetTitle: 'Restore default: delete the {layer} My Prompt',
-      mineResetBody: 'This deletes the text stored in that layer and returns it to unconfigured; the deletion cannot be undone.',
+      mineResetBody: 'This deletes the text stored in that layer and returns it to unconfigured.',
       // ---- stage 3: two entries, so an illegal (name, action) pair cannot exist
       blockAppendExisting:
         'That name is already in the current assembly, so append would not take effect (two sections may not share a name; the Host skips it as name-already-present). Use Replace instead, or change the name to a new, unregistered one.',
@@ -1052,13 +1052,13 @@ window.__ModuleLoader__.load({
       resetLegacyButton: 'Clear all overrides',
       resetLegacyTitle: 'Clear every legacy override of the {layer}',
       resetLegacyBody:
-        'This deletes the {count} frozen override(s) of the {layer} (everything except My Prompt) and keeps My Prompt itself; the deletion cannot be undone.',
+        'This deletes the {count} frozen override(s) of the {layer} (everything except My Prompt) and keeps My Prompt itself.',
       resetLegacyEmpty: 'The {layer} has no frozen overrides to clear; My Prompt is kept.',
       advReservedTag: 'My Prompt',
       advReadOnlyNote: 'This list is read-only: My Prompt is the only write surface, and the two buttons below clear a whole layer.',
       resetLayerTitle: 'Reset the {layer}',
       resetLayerBody:
-        'This clears all {count} overrides of the {layer}, effective from the next assembly. It cannot be undone; the removed content goes to history.',
+        'This clears all {count} overrides of the {layer}, effective from the next assembly; the removed content goes to history.',
       resetLayerEmpty: 'The {layer} holds no override, so there is nothing to reset.',
       resetIrreversible: 'This cannot be undone.',
       confirmTitle: 'Please confirm',
@@ -4921,6 +4921,45 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The confirmation dialog's typography: four levels instead of one uniform
+     * gap — the title, the lead sentence that names the action, the sentence
+     * that explains it, and a structural "cannot be undone" strip. zh and en
+     * sentences both wrap inside the 480px card, so every level states its own
+     * `lineHeight` instead of inheriting the shell's, and the spacing between
+     * groups (not a single `gap`) is what carries the grouping.
+     */
+    const confirmTitleStyle = { fontSize: 14, fontWeight: 600, lineHeight: 1.4, color: token.stateWarn };
+    const confirmBodyStyle = { display: 'flex', flexDirection: 'column', gap: 4, marginTop: 10 };
+    const confirmLeadStyle = {
+      fontSize: 13,
+      fontWeight: 500,
+      lineHeight: 1.6,
+      color: token.labelPrimary,
+      wordBreak: 'break-word',
+    };
+    const confirmTextStyle = {
+      fontSize: 13,
+      lineHeight: 1.6,
+      color: token.labelSecondary,
+      wordBreak: 'break-word',
+    };
+    const confirmIrreversibleStyle = {
+      marginTop: 12,
+      paddingLeft: 10,
+      borderLeft: `3px solid ${token.stateError}`,
+      fontSize: 12,
+      lineHeight: 1.5,
+      color: token.stateError,
+    };
+    const confirmActionsStyle = {
+      display: 'flex',
+      gap: 8,
+      marginTop: 16,
+      paddingTop: 12,
+      borderTop: `1px solid ${token.borderL1}`,
+    };
+
+    /**
      * Render the pending second confirmation. Every destructive action of this
      * page goes through here: the impact and the irreversibility are stated
      * before the click that performs it, never after.
@@ -4931,10 +4970,18 @@ window.__ModuleLoader__.load({
      * and `import`. The Revision 6 `reset-section` kind is gone with the
      * generic per-name write it confirmed.
      *
+     * It renders as a viewport-anchored modal (`data-region="confirm-overlay"`,
+     * `position: fixed` + centered), not as an inline card in the page flow. The
+     * trigger lives anywhere on a long panel — 「恢复默认」 sits at the bottom of
+     * 「我的 Prompt」 — so an inline card appeared *above* the trigger (off-screen
+     * on a scrolled page, which reads as "nothing happened") and pushed the
+     * panel down as it appeared. The overlay is a backdrop only: it closes
+     * nothing by itself, so the only ways out are the two buttons.
+     *
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
-     * @returns the card element, or null when nothing is pending.
+     * @returns the overlay element, or null when nothing is pending.
      */
     function renderConfirm(t, m, a) {
       const confirm = m.confirm;
@@ -4964,18 +5011,58 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         {
-          'data-region': 'confirm',
-          'data-confirm-kind': confirm.kind,
-          style: { ...cardStyle, borderColor: token.stateWarn, display: 'flex', flexDirection: 'column', gap: 6 },
+          key: 'confirm-overlay',
+          'data-region': 'confirm-overlay',
+          style: {
+            position: 'fixed',
+            top: 0,
+            right: 0,
+            bottom: 0,
+            left: 0,
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 16,
+            background: 'rgba(0, 0, 0, 0.45)',
+          },
         },
-        h('strong', { style: { fontSize: 13, color: token.stateWarn } }, t('confirmTitle')),
-        body.map((line, index) => h('div', { key: `line-${index}`, style: { fontSize: 13, wordBreak: 'break-word' } }, line)),
-        h('div', { style: { ...metaStyle, color: token.stateError } }, t('resetIrreversible')),
         h(
           'div',
-          { style: { display: 'flex', gap: 8 } },
-          h(UI.Button, { variant: 'primary', 'data-action': 'confirm-yes', disabled: m.busy, onClick: a.confirmYes }, t('confirmYes')),
-          h(UI.Button, { 'data-action': 'confirm-no', disabled: m.busy, onClick: a.cancelConfirm }, t('confirmNo')),
+          {
+            'data-region': 'confirm',
+            'data-confirm-kind': confirm.kind,
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-label': t('confirmTitle'),
+            style: {
+              ...cardStyle,
+              borderColor: token.stateWarn,
+              display: 'flex',
+              flexDirection: 'column',
+              width: '100%',
+              maxWidth: 480,
+              maxHeight: '80vh',
+              overflowY: 'auto',
+              padding: '16px 18px',
+              boxShadow: '0 12px 32px rgba(0, 0, 0, 0.35)',
+            },
+          },
+          h('strong', { style: confirmTitleStyle }, t('confirmTitle')),
+          h(
+            'div',
+            { 'data-role': 'confirm-body', style: confirmBodyStyle },
+            body.map((line, index) =>
+              h('div', { key: `line-${index}`, style: index === 0 ? confirmLeadStyle : confirmTextStyle }, line),
+            ),
+          ),
+          h('div', { 'data-role': 'confirm-irreversible', style: confirmIrreversibleStyle }, t('resetIrreversible')),
+          h(
+            'div',
+            { 'data-role': 'confirm-actions', style: confirmActionsStyle },
+            h(UI.Button, { variant: 'primary', 'data-action': 'confirm-yes', disabled: m.busy, onClick: a.confirmYes }, t('confirmYes')),
+            h(UI.Button, { 'data-action': 'confirm-no', disabled: m.busy, onClick: a.cancelConfirm }, t('confirmNo')),
+          ),
         ),
       );
     }
@@ -5643,8 +5730,11 @@ window.__ModuleLoader__.load({
           ),
         );
       }
+      // The confirmation is a fixed overlay (renderConfirm), so its position in
+      // this array is irrelevant to where it lands; it is pushed before the
+      // panel purely so the panel keeps the last slot in the tree.
       const confirmCard = renderConfirm(t, m, a);
-      if (confirmCard !== null) children.push(h('div', { key: 'confirm-slot', style: { display: 'contents' } }, confirmCard));
+      if (confirmCard !== null) children.push(confirmCard);
       children.push(
         h('div', { key: 'panel', 'data-region': 'panel' },
           m.snap.phase === 'loading' && !m.snap.data ? h('p', { key: 'loading', style: metaStyle }, t('loading')) : null,
@@ -5927,21 +6017,23 @@ window.__ModuleLoader__.load({
       const mineConfigured = mineStored !== null && mineStored.length > 0;
       const mineText =
         mineDraft !== null && mineDraft.key === mineKey ? mineDraft.text : mineStored === null ? '' : mineStored;
-      // The reserved section's own effective entry is the most direct proof that
-      // the text reached (or did not reach) the prompt: §15.4 reports a
-      // discarded scope as `applied: false` with a reason.
-      const reservedEffective =
-        effectiveSections.find((section) => section && section.name === RESERVED_SECTION_NAME) || null;
-      // g-021: the panel separates *certainly frozen* from *unknown*. The first
-      // two branches have direct proof (a certain frozen verdict, or the
-      // reserved section reported as `applied: false`); the third is the
-      // `frozenScope: "global"` + session case §2.4/§7.2 forbids presenting as
-      // frozen — the snapshot froze the unscoped assembly, not this session.
+      // g-021: the panel separates *certainly frozen* from *unknown*, and the
+      // verdict is the host's alone — `frozenState` reads the snapshot's
+      // `frozen` / `frozenScope` (§2.4/§7.2), which covers both the certain
+      // cases and the `frozenScope: "global"` + session case that must never be
+      // presented as frozen (the snapshot froze the unscoped assembly, not this
+      // session).
+      //
+      // The reserved entry's own `applied: false` is deliberately NOT a second
+      // vote. `applied: false` is the *normal* state of a section with no
+      // override (§15.3 defines it that way, and `reason` is `null` when there
+      // is nothing to explain), and every non-frozen failure reports it too — a
+      // `replace` that did not stick, a `hide` that did not stick, an entry the
+      // pipeline dropped. Reading any of them as a freeze is what made a
+      // freshly installed, still-unconfigured plugin show「该作用域已被冻结」on
+      // first open, next to a status card that said the session was not frozen.
       const mineFrozen = (() => {
         if (fz.certain && fz.frozen) return { reason: fz.reason ? String(fz.reason) : '', certain: true };
-        if (reservedEffective !== null && reservedEffective.applied === false) {
-          return { reason: reservedEffective.reason ? String(reservedEffective.reason) : '', certain: true };
-        }
         if (fz.kind === 'unknown' && fz.frozen) return { reason: fz.reason ? String(fz.reason) : '', certain: false };
         return null;
       })();

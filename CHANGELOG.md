@@ -10,6 +10,53 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
+## [Unreleased]
+
+### Fixed 修复
+
+- **未配置状态误报「该作用域已被冻结」**（[issue #1](https://github.com/zangxx66/dsh-prompt-setting/issues/1)）：
+  「我的 Prompt」把保留段的 `applied: false` 直接当作冻结证据，而宿主对「这一段没有任何配置覆盖」正是报
+  `applied: false` + `reason: null`（正常态），于是刚装好、什么都还没写时就出现红色阻断块，与同页状态卡
+  「本会话未冻结」自相矛盾。冻结判定现在只认快照的 `frozen` / `frozenScope`。连带修掉两处同源误述：
+  非冻结的应用失败（`replace` / `hide` 未命中、段被流水线丢弃）不再被说成「被 complete 段冻结」，
+  `frozenScope: "global"` + 选中会话的「未知」态也不会被保留段升格为「确定冻结」。契约 §2.4 / §13.1 同步收紧。
+  **An unconfigured install no longer claims "this scope is frozen"**
+  ([issue #1](https://github.com/zangxx66/dsh-prompt-setting/issues/1)): the panel read the reserved section's
+  `applied: false` as proof of a freeze, while the host reports exactly that — with `reason: null` — for
+  "this section has no override at all". The freeze verdict now comes from the snapshot's `frozen` /
+  `frozenScope` alone; a non-frozen override failure is no longer called "frozen by a complete section", and the
+  `frozenScope: "global"` + selected-session "unknown" case can no longer be upgraded to a certain freeze by the
+  reserved entry. Contract §2.4 / §13.1 tightened to match.
+
+### Changed 变更
+
+- **确认弹窗改为视口居中模态**：破坏性操作的确认卡原先渲染在整页 `children` 里（tabs 之下、面板之上）、
+  没有定位，于是「恢复默认」的确认卡出现在触发按钮**上方**——页面滚动后落在视口之外，看起来像「点了没反应」，
+  出现时还把面板整体下推。现在确认卡渲染在 `data-region="confirm-overlay"`（`position: fixed`、四边 `0`、
+  双向居中、`z-index: 1000`）内，并带 `role="dialog"` / `aria-modal="true"`；遮罩只是背景，点它不关闭任何东西，
+  出口仍是「确认 / 取消」。契约 §13.5 同步写明。
+  **The confirmation is a viewport-anchored modal**: the destructive-action card used to sit in the page flow
+  (below the tabs, above the panel) with no positioning, so the 「恢复默认」 confirmation appeared *above* the
+  button that opened it — off-screen on a scrolled page, which reads as "nothing happened" — and pushed the panel
+  down as it appeared. It now renders inside `data-region="confirm-overlay"` (`position: fixed`, all insets `0`,
+  centred both ways, `z-index: 1000`) with `role="dialog"` / `aria-modal="true"`; the backdrop closes nothing by
+  itself, so the exits are still 确认 / 取消. Contract §13.5 updated to match.
+
+- **确认弹窗的文字排版重做，并去掉重复的「不可撤销」**：原本标题与正文同为 13px、正文没有行高，卡片里
+  标题 / 正文两行 / 警示句 / 按钮行全部只靠一个 `gap: 6` 分隔，正文里还已经写过一遍「删除不可撤销」
+  而底下又单独重复一行红字。现在分三层并结构化分组：标题 `14px/600/1.4`；`data-role="confirm-body"`
+  里首句 `13px/500/labelPrimary` 与说明句 `13px/labelSecondary` 均为 `lineHeight 1.6`（组内 `gap: 4`）；
+  `data-role="confirm-irreversible"` 是 `12px/1.5` 的左侧红色色条警示块，**唯一**声明不可撤销；
+  `data-role="confirm-actions"` 与文案之间加顶部分隔线。卡片内边距改为 `16px 18px`。
+  **Confirmation dialog typography reworked, and the repeated "cannot be undone" copy removed**: the title and
+  the body were both 13px with no stated line height, one uniform `gap: 6` separated title / two body sentences /
+  warning / buttons, and the irreversibility was stated twice. Three levels now group structurally — title
+  `14px/600/1.4`; `data-role="confirm-body"` with a 13px/500 lead and a 13px secondary explanation, both at
+  `lineHeight 1.6` (`gap: 4` inside the group); `data-role="confirm-irreversible"` as a 12px red-bordered strip
+  that states it **once**; `data-role="confirm-actions"` behind a top divider. Card padding is now `16px 18px`.
+
+---
+
 ## [0.1.1] - 2026-10-02
 
 **维护版本：让「我的 Prompt」里的变量真正可用 / Maintenance release: make variables in My Prompt actually work.**

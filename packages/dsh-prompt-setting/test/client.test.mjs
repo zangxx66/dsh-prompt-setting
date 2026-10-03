@@ -2950,10 +2950,57 @@ test('client: 「恢复默认」 confirms first, then deletes by the reserved na
   tree = await page.flush();
   const confirm = oneBy(tree, 'data-region', 'confirm');
   assert.equal(confirm.props['data-confirm-kind'], 'mine-reset', 'the destructive action confirms first');
+  // The confirmation is a viewport-anchored modal, not an inline card in the
+  // page flow. Triggered from the bottom of a long panel, an inline card landed
+  // *above* the trigger (off-screen on a scrolled page, which reads as "nothing
+  // happened") and pushed the panel down as it appeared; fixed + centered keeps
+  // it where the click happened.
+  const overlay = oneBy(tree, 'data-region', 'confirm-overlay');
+  assert.equal(overlay.props.style.position, 'fixed', 'the overlay is anchored to the viewport');
+  assert.equal(overlay.props.style.top, 0);
+  assert.equal(overlay.props.style.left, 0);
+  assert.equal(overlay.props.style.alignItems, 'center', 'and centers its card vertically');
+  assert.equal(overlay.props.style.justifyContent, 'center', 'and horizontally');
+  assert.equal(collect(overlay, (node) => node === confirm).length, 1, 'the card sits inside the overlay');
+  assert.equal(confirm.props.role, 'dialog');
+  assert.equal(confirm.props['aria-modal'], 'true');
+  assert.equal(
+    collect(oneBy(tree, 'data-region', 'panel'), (node) => node.props && node.props['data-region'] === 'confirm').length,
+    0,
+    'no confirmation is rendered inside the panel (it is out of the page flow)',
+  );
   assert.equal(
     writeCalls(page).length,
     0,
     'no request is sent before confirm-yes',
+  );
+
+  // The dialog's typography: the lead sentence and its explanation are two
+  // levels, the "cannot be undone" warning is its own structural strip, and the
+  // actions are separated from the copy — instead of one uniform 6px gap and
+  // two identically styled sentences.
+  const bodyBlock = oneBy(tree, 'data-role', 'confirm-body');
+  const bodyLines = (bodyBlock.props.children || []).filter(Boolean);
+  assert.equal(bodyLines.length, 2, 'the lead sentence and the explanation');
+  assert.equal(bodyBlock.props.style.gap, 4, 'the two sentences form one group');
+  assert.equal(bodyLines[0].props.style.fontWeight, 500, 'the lead sentence is emphasised');
+  assert.equal(bodyLines[0].props.style.lineHeight, 1.6, 'wrapped copy states its own line height');
+  assert.notEqual(
+    bodyLines[0].props.style.color,
+    bodyLines[1].props.style.color,
+    'the explanation sits at a lower level than the lead',
+  );
+  const irreversible = oneBy(tree, 'data-role', 'confirm-irreversible');
+  assert.ok(String(irreversible.props.style.borderLeft).includes('3px'), 'the warning is a structural strip');
+  assert.equal(irreversible.props.style.fontSize, 12, 'and does not compete with the copy');
+  const actions = oneBy(tree, 'data-role', 'confirm-actions');
+  assert.ok(String(actions.props.style.borderTop).startsWith('1px solid'), 'the actions are cut off from the copy');
+  // The warning is stated exactly once: the sentences no longer repeat it.
+  const irreversibleWord = page.zh.resetIrreversible.replace(/[。.]$/, '');
+  assert.equal(
+    strings(confirm).filter((text) => String(text).includes(irreversibleWord)).length,
+    1,
+    'the irreversible warning is stated once, not twice',
   );
 
   clickButton(confirm, { 'data-action': 'confirm-yes' });
@@ -3200,6 +3247,127 @@ test('client: the global-freeze-with-a-session case stays "unknown" in the panel
     !strings(tree).some((text) => text.includes(fillText(page.zh.mineSaved, { layer: page.zh.ovUser }))),
     'the unconditional saved copy is still withheld',
   );
+});
+
+// #region issue #1: the reserved entry's `applied: false` is not a freeze signal
+
+/**
+ * The reserved section as a real host reports it. `index` and `text` vary with
+ * the assembly; the fields that matter here are the two the panel used to
+ * over-read — `applied: false` with `reason: null` (§15.3: a section with no
+ * override) or with a non-frozen failure reason.
+ */
+function reservedEffectiveEntry(over = {}) {
+  return {
+    name: CUSTOM_SECTION_NAME,
+    index: 4,
+    text: '',
+    applied: false,
+    overridable: true,
+    reason: null,
+    overrideLayer: null,
+    action: null,
+    origin: 'registered',
+    ...over,
+  };
+}
+
+test('client: an unconfigured install renders no frozen block (issue #1)', async () => {
+  // The host registers the reserved section in every assembly, so a freshly
+  // installed plugin already sees it in `effective.sections` — with
+  // `applied: false` and `reason: null`, which is "no override applies", not a
+  // freeze. The status card and `?session=` both said "not frozen"; the panel
+  // used to contradict them on first open.
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.snapshot]: {
+        payload: snapshotFixture({
+          frozenScope: 'session',
+          frozen: false,
+          effective: { sections: [...snapshotFixture().effective.sections, reservedEffectiveEntry()] },
+        }),
+      },
+    }),
+  });
+  const tree = await page.flush();
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-warning'] === 'mine-frozen').length,
+    0,
+    'an unconfigured scope renders no mine-frozen block',
+  );
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-mine-frozen'] === 'true').length,
+    0,
+    'and none of the block markers',
+  );
+  assert.equal(markerOf(tree, 'data-mine-effect'), 'next-turn', 'the write still takes effect next turn');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'unconfigured', 'the panel says "unconfigured", not "frozen"');
+  assert.ok(strings(tree).includes(page.zh.mineUnconfigured));
+});
+
+test('client: a non-frozen override failure is not reported as a freeze (issue #1)', async () => {
+  // §15.4's failures that are *not* a freeze carry `applied: false` too — a
+  // `replace` that did not stick, a `hide` that did not stick, an entry the
+  // pipeline dropped. Calling any of them "this scope is frozen" would send the
+  // reader to the wrong fix (switching agent preset).
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.snapshot]: {
+        payload: snapshotFixture({
+          frozenScope: 'session',
+          frozen: false,
+          effective: {
+            sections: [
+              ...snapshotFixture().effective.sections,
+              reservedEffectiveEntry({
+                reason: 'the section text differs from both the registered text and the requested text',
+              }),
+            ],
+          },
+        }),
+      },
+    }),
+  });
+  const tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-frozen-state'), 'unfrozen', 'the host verdict is the premise of this case');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-warning'] === 'mine-frozen').length,
+    0,
+    'a non-frozen reason is not a freeze',
+  );
+  assert.equal(markerOf(tree, 'data-mine-effect'), 'next-turn');
+});
+
+test('client: the reserved entry never upgrades an unknown scope to a certain freeze (issue #1)', async () => {
+  // `frozenScope: "global"` + a selected session is *unknown* (§2.4/§7.2). The
+  // reserved entry's reason comes from the same global probe, so it must not be
+  // read as proof that *this session* is frozen.
+  const scopeReason = 'session "s2" has no active agent, so this verdict describes the unscoped assembly';
+  const globalReason =
+    "this plugin's appended probe section was removed after the waterfall, so the assembled sections are not the ones this plugin returned";
+  const page = makePage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({
+      [PATHS.snapshot]: {
+        payload: snapshotFixture({
+          frozenScope: 'global',
+          frozen: true,
+          frozenScopeReason: scopeReason,
+          frozenReason: globalReason,
+          effective: { sections: [...snapshotFixture().effective.sections, reservedEffectiveEntry({ reason: globalReason })] },
+        }),
+      },
+    }),
+  });
+  const tree = await page.flush();
+  const block = oneBy(tree, 'data-warning', 'mine-frozen');
+  assert.equal(
+    block.props['data-mine-frozen-certainty'],
+    'unknown',
+    'the panel may not claim a certainty the snapshot does not have',
+  );
+  assert.equal(markerOf(tree, 'data-mine-effect'), 'unknown');
+  assert.ok(hasText(block, scopeReason), 'the scope reason is still shown');
 });
 
 // #endregion
@@ -5289,6 +5457,13 @@ const EN_REQUIRED_MARKERS = [
   'data-region=transfer',
   'data-region=layer-reset',
   'data-region=confirm',
+  // A confirmation is a fixed, centered overlay rather than an inline card, so
+  // the trigger's place in the page flow never decides where it lands.
+  'data-region=confirm-overlay',
+  // The dialog's three typographic levels are structural, not just styling.
+  'data-role=confirm-body',
+  'data-role=confirm-irreversible',
+  'data-role=confirm-actions',
   'data-region=session',
   'data-region=session-tree',
   'data-region=session-list',

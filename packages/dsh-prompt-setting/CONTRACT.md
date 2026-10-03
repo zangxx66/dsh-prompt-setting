@@ -196,13 +196,17 @@ misreading §15.4 exists to prevent. What Revision 9 fixes:
   the assembly the verdict describes — and names what the user can do about it
   (switch to an agent preset that does not declare `complete`, or drop the
   declaration, then reload the session);
-- the block also carries `data-mine-frozen-certainty`: `"certain"` when the
-  verdict has direct proof (a certain frozen snapshot, or the reserved section
-  reported `applied: false`), `"unknown"` for the `frozenScope: "global"` +
-  session case §2.4/§7.2 forbids presenting as frozen. Those two cases render
-  their own copy (`mineFrozenWarn`/`mineFrozenBody` vs
+- the block also carries `data-mine-frozen-certainty`: `"certain"` for a certain
+  frozen snapshot (`frozenScope: "session"` with `frozen: true`, or
+  `frozenScope: "global"` with no session selected), `"unknown"` for the
+  `frozenScope: "global"` + session case §2.4/§7.2 forbids presenting as frozen.
+  Those two cases render their own copy (`mineFrozenWarn`/`mineFrozenBody` vs
   `mineFrozenUnknownWarn`/`mineFrozenUnknownBody`); the shared
-  `mineFrozenHowTo` is the actionable half in both;
+  `mineFrozenHowTo` is the actionable half in both. The verdict is the
+  snapshot's own `frozen`/`frozenScope` and nothing else — a reserved entry
+  arriving as `applied: false` is **not** a freeze signal (issue #1: a section
+  with no override is `applied: false` with `reason: null` per §15.3, so an
+  unconfigured install renders no block at all);
 - the state line carries `data-mine-effect`: `"none"` for a certain freeze,
   `"unknown"` for that unknown case, `"next-turn"` otherwise — so the pair
   (`data-mine-state="saved"`, `data-mine-effect="none"`) is assertable offline
@@ -1661,9 +1665,16 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   host's own `message`) — a failed save is never rendered as `saved`.
 - A scope where the text cannot take effect renders
   `data-warning="mine-frozen"` with the reason: `frozenScope: "session"` with
-  `frozen: true`, or the reserved entry arriving as `applied: false`
-  (§15.4). The write is still allowed (the text is stored and takes effect when
-  the freeze lifts); what is forbidden is letting it look effective.
+  `frozen: true`, or `frozenScope: "global"` with `frozen: true` while a session
+  is selected (the unknown case of §2.4/§7.2). The verdict is the snapshot's
+  `frozen`/`frozenScope` **alone** — the reserved entry arriving as
+  `applied: false` is not a freeze signal (issue #1): §15.3 defines that as the
+  normal state of a section with no override (`reason: null`), and the
+  non-frozen failures of the same section — a `replace` that did not stick, a
+  `hide` that did not stick, an entry the pipeline dropped — carry
+  `applied: false` with a reason too. The write is still allowed (the text is
+  stored and takes effect when the freeze lifts); what is forbidden is letting
+  it look effective.
 - Writing to `workspace` without a session is refused locally, with the same
   `error.workspace-unresolved` copy the host would answer, and sends nothing.
 
@@ -1729,6 +1740,27 @@ Every destructive action renders a `data-region="confirm"` card first, carrying
 naming the affected layer or the change counts, stating that the action cannot
 be undone, and offering `data-action="confirm-yes"` / `data-action="confirm-no"`.
 No request is sent before `confirm-yes` — asserted for all four kinds.
+
+The card is a **viewport-anchored modal**, not a card in the page flow: it
+renders inside `data-region="confirm-overlay"` (`position: fixed`, all four
+insets `0`, `display: flex` centering its child both ways, `z-index: 1000`), and
+carries `role="dialog"` and `aria-modal="true"` itself. The trigger can sit
+anywhere on a long panel —「恢复默认」 is at the bottom of「我的 Prompt」— and an
+inline card landed *above* the trigger, off-screen for a scrolled page and
+pushing the panel down as it appeared. The overlay is a backdrop only: it closes
+nothing by itself, so the exits are exactly `confirm-yes` and `confirm-no`, and
+the panel never carries the card.
+
+The dialog's copy is set in **three levels**, and the grouping is structural
+rather than one uniform `gap`: `data-role="confirm-body"` holds the lead
+sentence (the action itself — 13px, `fontWeight: 500`, `labelPrimary`) above the
+sentence that explains it (13px, `labelSecondary`), both at `lineHeight: 1.6`
+because zh and en sentences wrap inside the 480px card;
+`data-role="confirm-irreversible"` is the warning strip (12px,
+`lineHeight: 1.5`, `stateError`, a 3px left border) and states the
+irreversibility **once** — the sentences no longer repeat it; and
+`data-role="confirm-actions"` holds the two buttons behind a top divider. The
+card states its own padding (`16px 18px`).
 
 An import always previews first: `import-apply` is disabled until a `dryRun`
 plan is on screen, and the click opens the confirmation card rather than writing.
