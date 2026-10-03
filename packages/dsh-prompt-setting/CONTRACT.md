@@ -524,6 +524,9 @@ g-029).** Additive on the wire, and a placement change on the page:
 | `/prompt-setting/interpolate` | `PUT` | Set that switch for one layer: `{"enabled": bool}` (Revision 11) or `{"state": "inherit"|"on"|"off"}` (Revision 12, §16.8). |
 | `/prompt-setting/update-check` | `GET` | The upstream release check: is a newer release published, and is checking on at all? Always `200`, failures included (g-030, §17). |
 | `/prompt-setting/update-check` | `PUT` | Record the on/off switch for that check: `{"enabled": bool}` (g-030, §17.4). |
+| `/prompt-setting/update-apply` | `POST` | Start installing the release the last check named, through the official `pluginManager`, and answer a `requestId` immediately: §18.2. |
+| `/prompt-setting/update-apply` | `GET` | The phase of one tracked install (`?requestId=`), or — with no id — this mount's oldest **running** install: §18.3. |
+| `/prompt-setting/update-apply/cancel` | `POST` | Stop a running install: `{"requestId": string}` (§18.4). |
 
 - An unknown path under the prefix is `404` with
   `{ "code": "not-found", "message": "no route for <path>" }` (no `ok` key —
@@ -533,7 +536,8 @@ g-029).** Additive on the wire, and a placement change on the page:
   answers `allow: GET`; `/prompt-setting/overrides` answers
   `allow: GET, PUT, DELETE`; `history`, `diff` and `export` answer `allow: GET`;
   `import` answers `allow: POST`; `interpolate` and `update-check` answer
-  `allow: GET, PUT`.
+  `allow: GET, PUT`; `update-apply` answers `allow: GET, POST` and
+  `update-apply/cancel` answers `allow: POST`.
 - The fence runs **before** the method check and before any route logic.
 
 ## 2. `GET /prompt-setting/snapshot`
@@ -3106,6 +3110,7 @@ The body:
   "enabled": true,
   "current": "0.1.1",
   "latest": "0.2.0",
+  "latestTag": "v0.2.0",
   "hasUpdate": true,
   "releaseUrl": "https://github.com/zangxx66/dsh-prompt-setting/releases/tag/v0.2.0",
   "publishedAt": "2026-10-01T00:00:00Z",
@@ -3122,6 +3127,7 @@ The body:
 | `current` | This package's `PLUGIN_VERSION` (the same constant the ping reports). |
 | `latest` | The normalized `major.minor.patch` of the reported tag, or `null` when there is nothing usable. The raw tag is never echoed as a version. |
 | `hasUpdate` | `true` only for a confirmed newer release; `false` when the current version is equal or newer; `null` when it cannot be decided. |
+| `latestTag` | The tag **as published**, verbatim, for the same release as `latest` — or `null` when the answer is not about a release. `latest` is canonicalized (`v0.1.2` → `0.1.2`) and is therefore the wrong string for a release **asset** path; both travel on one payload, from one request, so「install this version」can never name a tag the check did not see (g-032, §18.2). |
 | `releaseUrl` | The release's `html_url`, else `https://github.com/{owner}/{repo}/releases/tag/{tag}`, else `null`. |
 | `publishedAt` | The release's `published_at`, or `null`. |
 | `checkedAt` | When this answer was produced (ISO 8601), including a cached one — it names the check, not the read. |
@@ -3215,8 +3221,9 @@ The preference lives in **its own file**, `<DSH_HOME>/prompt-setting/preferences
 
 ### 17.5 What this does not do
 
-- no automatic download, no automatic install, no self-update: the feature
-  reports, and the user follows the link;
+- no automatic download and no automatic install **by this check**: it reports,
+  and the user follows the link. Installing is a separate, explicitly confirmed
+  route added by g-032 (§18) — and that one never restarts anything either;
 - no DSH platform version check — that is `scripts/check-compat.mjs` (g-013);
 - no new runtime dependency: Node's built-in `fetch`, nothing else;
 - no change to any existing route's response shape. `ping`, `snapshot`,
@@ -3224,3 +3231,252 @@ The preference lives in **its own file**, `<DSH_HOME>/prompt-setting/preferences
   exactly what they answered before; the eighth route is additive;
 - no user data on the wire, and no per-session/per-workspace variation: the
   answer is the same for every session of one install.
+
+## 18. 「立即更新」— installing a release through the official plugin manager (g-032)
+
+### 18.1 What it is, and what it deliberately is not
+
+The update check (§17) tells a user that upstream moved on; it does not act.
+This revision adds the one action the owner asked for (2026-10-03): a
+「立即更新」button that has the **Host** install the release it just named, using
+the official `pluginManager` service — and then asks the user to restart
+`dsh web` themselves.
+
+The shape of the promise is the contract, and every negative is as load-bearing
+as the positive:
+
+- **the Host installs, the page only asks.** The page never runs a package
+  manager, never downloads a tarball and never writes a file;
+- **never a restart.** No route, no `inject`ed service call and no client code
+  restarts `dsh web`. `ChangeResult.application === 'restart-required'` is a
+  **success**, and its instruction —「已安装 vX.Y.Z，请手动重启 dsh web 生效」— is
+  what reaches the page;
+- **never a 5xx.** Every outcome is a `200`: a refusal
+  (`{ok:false, code, message}`), a running install, a finished one, a failed one.
+  Only a request whose **shape** is wrong is an ordinary `400`;
+- **never an unapproved build script.** `installBundle` is called without
+  `approvedBuilds`, so nothing writes the profile's `allowBuilds`. Approving a
+  build script is a decision that must be made by a person looking at the script,
+  not a side effect of pressing an update button;
+- **never a `link:` overwrite.** A profile whose `dsh-prompt-setting` dependency
+  is a local path is a development working copy; installing over it would replace
+  that link with a published package and leave no way back. That case is refused
+  with `development-link` and a manual route (owner's decision A1,
+  2026-10-04);
+- **never a second install.** While one install of this mount is live, a new
+  `POST` answers the **running** request's id (`reused: true`) instead of starting
+  a second `pnpm add` that would queue on the profile lock behind the first.
+
+### 18.2 `POST /prompt-setting/update-apply`
+
+Body (optional): `{"tag": string}`.
+
+The tag is a **guard**, not an input: when it is present it must equal the tag
+the current update check reported, and a mismatch is `400 invalid-request`. The
+install spec is always derived from the checker's own answer — the same cached
+answer the banner rendered — so「提示的版本 = 安装的版本」holds even though the
+browser is untrusted:
+
+```
+https://github.com/zangxx66/dsh-prompt-setting/releases/download/<tag>/dsh-prompt-setting-<version>.tgz
+```
+
+`<tag>` is used verbatim (it is a path segment, and `v0.1.2` and `0.1.2` are
+different asset paths); every segment is `encodeURIComponent`-ed and the result
+is parsed as a `URL`, so no request input can escape its segment. The `.tgz`
+suffix is not decoration: DSH refuses a URL that is neither a git host nor a
+tarball, and pnpm needs the extension to treat it as one.
+
+**Why a tarball.** This repository's package carries a `prepare` script, and
+pnpm's build-script approval gate is enforced on the **git** fetch path
+(`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`, measured on pnpm 12.3.4). The tarball
+path does not execute `prepare` on the consumer side, so this route needs no
+build approval at all. Two long-term constraints follow, and both are release
+process:
+
+- **every release must upload its `npm pack` asset**, named exactly
+  `dsh-prompt-setting-<version>.tgz`. Until it does, the button answers the
+  named `asset-missing` failure for that release — which is the *expected*
+  outcome for any release published before this feature existed, and is why that
+  branch must never be silent;
+- **this package must not add `postinstall`/`install` scripts.** A tarball
+  carrying one is stopped by `ERR_PNPM_IGNORED_BUILDS` (measured). `prepare` may
+  stay as it is: the tarball path does not run it.
+
+The answer:
+
+```json
+{
+  "ok": true,
+  "reused": false,
+  "status": {
+    "requestId": "i1-7f3k2a9c",
+    "phase": "installing",
+    "status": "running",
+    "known": true,
+    "application": null,
+    "version": "0.2.0",
+    "tag": "v0.2.0",
+    "startedAt": "2026-10-04T09:00:00.000Z",
+    "finishedAt": null,
+    "cancelRequested": false,
+    "cancellable": true,
+    "restartRequired": false,
+    "installed": false,
+    "error": null
+  }
+}
+```
+
+A refusal — nothing was started, so there is no request to track:
+
+```json
+{
+  "ok": false,
+  "code": "development-link",
+  "message": "this profile installs dsh-prompt-setting from a local path (link:../x), which is a development working copy: …",
+  "manual": {
+    "releaseUrl": "https://github.com/zangxx66/dsh-prompt-setting/releases/tag/0.2.0",
+    "releaseLink": "open the 0.2.0 release page",
+    "command": "dsh plugin add <tarball-or-path>",
+    "current": "link:../x"
+  }
+}
+```
+
+| Refusal code | Meaning |
+| --- | --- |
+| `installer-unavailable` | No `pluginManager` service in this profile, or the profile directory could not be read (so the install form cannot be checked). Nothing was installed. |
+| `development-link` | The profile holds this package as `link:`/`file:`/a path (§18.1, A1). |
+| `no-update` | The last check confirmed no newer release, or could not decide. |
+| `invalid-request` | The body's `tag` disagrees with the check's tag, or a `requestId` is missing/empty/absurdly long. |
+| `asset-missing` | The release asset is not there (`404`). |
+| `asset-unverified` | The asset probe could not confirm it (a 401/403), so nothing was installed. |
+
+**Why the route answers before the install settles.** One install can block for
+the profile lock (measured worst case ~2 minutes) plus pnpm's silence timeout
+(10 minutes). A settings page cannot hold a request open for that, so the route
+returns a `requestId` as soon as the install is *started*, and the page polls
+§18.3. The player is the **Host's own** request table (§18.5) because the
+official manager deletes a settled request.
+
+**What is checked before anything is started**, in order: the update check's
+answer (cached, so zero outbound requests), the tag guard, whether an install is
+already running, the plugin manager's presence, the profile directory, the
+`link:`/path form, and one `HEAD` against the release asset. The `HEAD` is what
+turns "this release has no asset" from a two-minute pnpm failure into a named
+answer in seconds; a probe that cannot answer (no `fetch`, a throw, a 5xx) is
+**not** a refusal — the install proceeds and pnpm's own verdict is the answer.
+The probe reuses the same injected transport as the update check, so a profile
+(or a test) that stubs one cannot accidentally reach the network through the
+other.
+
+### 18.3 `GET /prompt-setting/update-apply`
+
+Query: `requestId` (optional).
+
+- with a `requestId` this mount knows: the tracked request's phase, its
+  application verdict and its structured error (the shape in §18.2);
+- with a `requestId` it does not know (or one evicted from the table): `200`
+  with `{ "ok": true, "status": { …, "known": false, "status": "unknown", … } }`.
+  The official manager deletes a settled request, so "this page no longer knows"
+  is a real answer, and it is deliberately not a `404`: nothing about the server
+  went wrong, and the client has one branch to render;
+- **with no `requestId` at all**: `200` with
+  `{ "ok": true, "status": <the oldest running install> | null }`. This is the
+  fresh-page question — a browser reloaded mid-install has no id in memory — and
+  it can only ever name an install **this mount** started.
+
+Only an empty or absurdly long id is a `400 invalid-request`; the bare `GET` is a
+question, not a shape mistake.
+
+The four `status` values the page branches on are `running`, `done`, `failed`
+and `cancelled`, plus `unknown`. `phase` is the finer host-side step
+(`installing`/`cancelling`/`done`/`failed`/`cancelled`) and is what the
+`data-update-apply-step` marker reports; the page branches on `status`, so the
+two names cannot silently swap roles. Every field is present on every answer,
+including the unknown-request one.
+
+### 18.4 `POST /prompt-setting/update-apply/cancel`
+
+Body: `{"requestId": string}`.
+
+The host records the cancel intent in its table — that is what the page's next
+poll reads — and forwards it to the manager's `cancelInstall` **without
+awaiting** it: the official call resolves only after the install has settled and
+its files are restored, which can be minutes, and a cancel button may not hang
+for that.
+
+- a live request: `200` `{ "ok": true, "code": "cancelling", "status": {…} }`;
+- a settled, unknown or absent request: `200`
+  `{ "ok": false, "code": "not-running", "status": {…} }`. Nothing was stopped;
+  that is a fact about the request, not a server error.
+
+A cancel that **races a success** is not reported as a cancellation: if the
+install reached the apply step, the settled row says `done` and the page shows
+the installed version. Claiming otherwise would be a lie the next poll would
+contradict.
+
+### 18.5 The host's request table
+
+The official manager keeps `requestId → control` only while the install is live
+and deletes it when it settles (`installBundle`'s own `finally`), so the state a
+page polls must be the Host's. `core/install.js` owns that table as pure policy
+(no IO, no clock of its own beyond an injected one):
+
+- bounded at `INSTALL_REQUEST_LIMIT` (20) entries, with the settled entries
+  beyond `INSTALL_SETTLED_RETENTION` (10) newest evicted oldest-first;
+- a **live** entry is never evicted, even when that leaves the table above its
+  cap: the page must be able to keep polling something that is still changing the
+  profile;
+- an evicted entry answers `status: "unknown"`, which is distinguishable from an
+  id that was never issued (`known: false` in both cases, `status: "unknown"` in
+  both — the two are the same sentence on purpose: "this page cannot look that
+  up any more");
+- one retained diagnostic per request, clamped by `INSTALL_MESSAGE_MAX` (240
+  chars, one line): pnpm output is a log, not a payload.
+
+### 18.6 Failure classification
+
+`classifyInstallFailure` names every failure, and each name has a sentence and a
+manual route:
+
+| Code | When |
+| --- | --- |
+| `asset-missing` | A `404` (from the probe or from pnpm's `ERR_PNPM_FETCH_404`/`E404`). **The expected outcome for a release with no asset** — e.g. a release published before this feature. |
+| `build-blocked` | pnpm's build-script gate: `ERR_PNPM_IGNORED_BUILDS`, "Ignored build scripts". |
+| `network` | `ENOTFOUND`/`ECONNRESET`/`ETIMEDOUT`/`ECONNREFUSED`/`EAI_AGAIN`/`ERR_PNPM_META_FETCH_FAIL`/… or a probe that could not answer. |
+| `pnpm-missing` | The manager reported `pnpm-missing` (`ENOENT` running pnpm). |
+| `asset-unverified` | A `401`/`403` from the probe. |
+| `timeout`, `not-found`, `no-matching-version`, `integrity`, `permission`, `disk-full`, `unknown` | The remaining categories, each keeping its own name and sentence. |
+
+Nothing retries automatically. A failure is a state with a **retry button** and a
+manual link; the only automatic action anywhere in this feature is the page's own
+poll of a running install, which is bounded by
+`UPDATE_APPLY_POLL_BUDGET_MS` (16 min, the host's own worst case plus margin).
+
+### 18.7 Client surface (g-032)
+
+| Marker | Where | Meaning |
+| --- | --- | --- |
+| `data-region="update-notice"` `data-update-available="true"` | the banner (g-030) | A confirmed newer release is known. |
+| `data-update-latest` | the banner | The version the button would install. |
+| `data-update-apply` | the banner | `idle` before anything is started, otherwise the current `status` (`running`/`done`/`failed`/`cancelled`/`unknown`). |
+| `data-action="update-apply"` | the banner **and** 「高级」 | Opens the second confirmation. Disabled while an install runs. |
+| `data-action="update-apply-cancel"` | the status row | Cancels a running install. |
+| `data-action="update-apply-retry"` | the status row | Re-opens the confirmation after a failure. |
+| `data-region="update-apply-status"` | the banner and 「高级」 | The install's own line(s). |
+| `data-update-apply-phase` | the status row | The `status` the page branched on. |
+| `data-update-apply-step` | the status row | The host's finer `phase`. |
+| `data-update-apply-manual` | the status row | A link to the release page, for a failure with a manual route. |
+| `data-confirm-kind="update-apply"` | the confirm modal | The second confirmation, which states the version and that the restart is manual. |
+
+- The install state is rendered in **both** the banner and 「高级」: dismissing
+  the banner must not take away the only place a running install can be cancelled
+  or a failed one retried;
+- while an install is live the banner shows the install, **not**「有新版本」: two
+  competing statements about one version is what makes a user press the button
+  twice;
+- the page remembers the `requestId` in `sessionStorage` (per tab, 30 min) and
+  falls back to the bare `GET` (§18.3) if that is gone. The mirror is an
+  optimisation: the install state itself always comes from the Host.

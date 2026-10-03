@@ -58,6 +58,43 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   missing or unusable answer renders 「版本未知」/`Version unknown` rather than an invented version, and the
   machine-readable `data-plugin-version` stays on the root container (`unknown` on both failure cards).
 
+- **「立即更新」：宿主经官方 `pluginManager` 装 Release tarball，装完由你手动重启（g-032）**：提示条新增
+  **「立即更新」**按钮（`data-action="update-apply"`），点击走**二次确认**（`data-region="confirm"`，
+  文案写明「安装后需手动重启 `dsh web` 才生效」）。确认后由**宿主**调用官方插件管理器
+  `installBundle(spec, {enabled:true, requestId})` 安装
+  `https://github.com/zangxx66/dsh-prompt-setting/releases/download/<tag>/dsh-prompt-setting-<version>.tgz`
+  ——`<tag>`/`<version>` 取自**同一次**更新检查（复用 6 小时缓存 ⇒ 零外呼；不新增 HTTP 响应字段的语义），
+  所以「提示的版本 = 安装的版本」。**永不自动重启**：升级必然返回 `application: "restart-required"`，
+  页面显示「已安装 vX.Y.Z，请手动重启 `dsh web` 生效」。新增新路由 `POST|GET /prompt-setting/update-apply`
+  与 `POST /prompt-setting/update-apply/cancel`（发起即返回 `requestId`，客户端 1.5～5 秒轮询、最长 16 分钟、
+  可取消；宿主自建 `requestId → 状态` 表，上限 20 条 / 保留 10 条已完成，官方 settle 后不保留结果）。
+  **绝不传 `approvedBuilds`**（不写 profile 的 `allowBuilds`，避免让后续 install 执行任意包脚本）；
+  **`link:`/本地路径安装形态拒绝执行**（A1：那是开发工作树，覆盖它没有回头路），返回明确 reason 与手动更新
+  指引。失败按分类呈现：**资产缺失(404)** / 构建审批被拦 / 网络 / pnpm 缺失 / 超时 / …. 插件管理器作为
+  **可选**服务查找（`ctx.get('pluginManager')`，**不进 `inject`**），服务缺失时路由返回结构化错误，
+  既有三服务 `webServer`/`connection`/`systemPrompt` 与其它路由一字未动。失败**绝不自动重试**，
+  全程**绝不 5xx**（形状错才是 400）。**发布流程新增一步 + 长期约束（必读）**：每个 release 必须上传
+  `npm pack` 产物资产，命名固定 `dsh-prompt-setting-<version>.tgz`；本包**不得**新增
+  `postinstall`/`install` 脚本（带它们的 tarball 会被 `ERR_PNPM_IGNORED_BUILDS` 拦）。契约见
+  `CONTRACT.md` §18，实测与依据见 `NOTES.md` §107。
+  **"Update now": the host installs the release tarball through the official plugin manager, and you do the
+  restart (g-032)**: the banner gains an **Update now** button which opens a **second confirmation** that says the
+  restart is manual. On confirm the **host** calls the official `installBundle(spec, {enabled:true, requestId})`
+  with the release **asset** URL, whose `<tag>`/`<version>` come from the *same* update check (six-hour cache ⇒
+  zero outbound requests), so the version announced is the version installed. **Nothing ever restarts**: an
+  upgrade returns `application: "restart-required"` and the page says "restart `dsh web` yourself". New routes
+  `POST|GET /prompt-setting/update-apply` and `POST /prompt-setting/update-apply/cancel` (the start answers a
+  `requestId` at once; the page polls for up to 16 minutes and can cancel; the host keeps its own bounded
+  `requestId → state` table because the official manager deletes a settled request). **`approvedBuilds` is never
+  passed**, and a **`link:`/local-path install is refused** with a manual-update route instead of being
+  overwritten. Failures are classified — **asset missing (404)**, build blocked, network, pnpm missing, timeout, …
+  — and are **never retried automatically**; every outcome is a `200` (only a malformed shape is a `400`). The
+  plugin manager is looked up **optionally** (never added to `inject`), so a profile without it degrades to a
+  structured refusal while the three existing services and every other route stay untouched. **New release step
+  (mandatory)**: every release must upload its `npm pack` asset, named exactly
+  `dsh-prompt-setting-<version>.tgz`; this package must **not** add `postinstall`/`install` scripts. Contract:
+  `CONTRACT.md` §18; measurements: `NOTES.md` §107.
+
 ### Fixed 修复
 
 - **未配置状态误报「该作用域已被冻结」**（[issue #1](https://github.com/zangxx66/dsh-prompt-setting/issues/1)）：

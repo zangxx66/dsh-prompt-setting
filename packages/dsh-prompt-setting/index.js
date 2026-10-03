@@ -53,7 +53,7 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -75,6 +75,25 @@ import {
   reservedSectionLast,
 } from './core/custom.js';
 import { EXPERIMENTS } from './core/experiments.js';
+import {
+  INSTALL_REQUEST_LIMIT,
+  REFUSAL_ASSET_MISSING,
+  REFUSAL_ASSET_UNVERIFIED,
+  REFUSAL_DEVELOPMENT_LINK,
+  REFUSAL_INVALID_REQUEST,
+  REFUSAL_NO_UPDATE,
+  REFUSAL_SERVICE_MISSING,
+  buildReleaseAssetUrl,
+  classifyInstallFailure,
+  createInstallTable,
+  describeInstallFailure,
+  describeInstalledSpec,
+  publicInstallStatus,
+  releasePageForTag,
+  resolveInstallPolicy,
+  resolveInstallTarget,
+  summarizeDiagnostic,
+} from './core/install.js';
 import { buildDiff } from './core/diff.js';
 import {
   INTERPOLATE_STATES,
@@ -141,8 +160,7 @@ import {
   UPDATE_CHECK_TIMEOUT_MS,
   UPDATE_CHECK_TTL_MS,
   createUpdateChecker,
-} from './core/update.js';
-import {
+} from './core/update.js';import {
   EXPORT_LAYERS,
   buildExport,
   parseExport,
@@ -196,6 +214,27 @@ const INTERPOLATE_PATH = `${ROUTE_PREFIX}/interpolate`;
  * extra round trip on every mount for a boolean the answer already carries.
  */
 const UPDATE_CHECK_PATH = `${ROUTE_PREFIX}/update-check`;
+/**
+ * g-032: 「立即更新」— install the release the update check just named, through
+ * the official `pluginManager`, and **never** restart anything.
+ *
+ * One path, two methods, plus a cancel path:
+ *   - `POST /update-apply` starts an install and answers `{ok, requestId}`
+ *     immediately. It may not await the install: one run can block for the
+ *     profile lock (~2 min) plus pnpm's silence timeout (10 min), and a settings
+ *     page cannot hold a request open for that;
+ *   - `GET /update-apply?requestId=` reports the tracked phase, because the
+ *     official manager **deletes** a settled request — the state the page polls
+ *     has to live here (see `core/install.js`);
+ *   - `POST /update-apply/cancel` stops a running install.
+ *
+ * The install target is a release **tarball asset**, derived from the same
+ * update check the banner reads (`core/update.js`'s `check()`, so a cached
+ * answer costs zero outbound requests). `approvedBuilds` is never passed.
+ */
+const UPDATE_APPLY_PATH = `${ROUTE_PREFIX}/update-apply`;
+/** The cancel face of the same request. Its own path, so the method table stays explicit. */
+const UPDATE_APPLY_CANCEL_PATH = `${ROUTE_PREFIX}/update-apply/cancel`;
 /** Method table; a known path with any other method is a 405 carrying `allow`. */
 const ROUTES = new Map([
   [PING_PATH, ['GET']],
@@ -207,7 +246,19 @@ const ROUTES = new Map([
   [IMPORT_PATH, ['POST']],
   [INTERPOLATE_PATH, ['GET', 'PUT']],
   [UPDATE_CHECK_PATH, ['GET', 'PUT']],
+  [UPDATE_APPLY_PATH, ['GET', 'POST']],
+  [UPDATE_APPLY_CANCEL_PATH, ['POST']],
 ]);
+/**
+ * How long the host waits for the release-asset probe before installing anyway.
+ *
+ * The probe answers "is the asset really there" in one `HEAD`, which is what
+ * turns the *expected* failure of an asset-less release (0.1.1 has none) into a
+ * named `asset-missing` in seconds instead of a two-minute pnpm round trip. A
+ * probe that does not answer in time is **not** a refusal: the install is
+ * attempted and whatever pnpm says is the answer.
+ */
+const UPDATE_ASSET_PROBE_TIMEOUT_MS = 10 * 1000;
 /** Cap on a PUT body, matching the 200 KiB per-override text cap with headroom. */
 const MAX_BODY_BYTES = 256 * 1024;
 /**
@@ -478,6 +529,11 @@ function bootSelfCheck() {
  * @param payload - JSON-serializable body.
  */
 function sendJson(res, status, payload) {
+  // g-032: an install route answers its `POST` **before** its background work
+  // settles, and that work can still be running when the client disconnects. A
+  // write to an already-finished response throws, which would turn a completed
+  // answer into a 5xx; the guard makes the late write a no-op instead.
+  if (res.writableEnded === true || res.headersSent === true) return;
   res.statusCode = status;
   res.setHeader('content-type', 'application/json; charset=utf-8');
   res.setHeader('cache-control', 'no-store');
@@ -775,18 +831,37 @@ function mount(ctx, config, cleanups) {
    * restart.
    */
   const updatePreferencesPath = userPreferencesPath();
+  /** Resolved once: the checker, this mount's install probe and the tests all read the same transport. */
+  const updateOptions = resolveUpdateOptions(config);
   const updateChecker = createUpdateChecker({
     // The shipped defaults are named here (and asserted in `core/update.js`'s own
     // tests) so the two numbers a reader looks for are greppable constants, while
     // anything the profile or a test injected still wins.
     ttlMs: UPDATE_CHECK_TTL_MS,
     timeoutMs: UPDATE_CHECK_TIMEOUT_MS,
-    ...resolveUpdateOptions(config),
+    ...updateOptions,
     repositoryUrl: OWN_REPOSITORY_URL,
     currentVersion: PLUGIN_VERSION,
     readPreferences: () => readPreferences(updatePreferencesPath).preferences,
     writePreferences: (next) => writePreferences(updatePreferencesPath, next),
   });
+  /**
+   * g-032: this mount's install-request table and its probe transport.
+   *
+   * The table exists because the official manager does not retain a settled
+   * install, and it is per mount for the same reason every other piece of state
+   * here is: two mounts must never read each other's requests. The probe reuses
+   * the checker's injected transport when a profile (or a test) provided one, so
+   * a test that stubs the update check cannot accidentally reach the network
+   * through the probe.
+   */
+  const installTable = createInstallTable({ limit: INSTALL_REQUEST_LIMIT });
+  const installProbe =
+    typeof updateOptions.fetch === 'function'
+      ? updateOptions.fetch
+      : typeof globalThis.fetch === 'function'
+        ? globalThis.fetch
+        : null;
   const state = {
     /**
      * User layer: read at mount and re-read at the start of every route
@@ -2264,6 +2339,333 @@ function mount(ctx, config, cleanups) {
   }
 
   /**
+   * The official plugin manager, looked up **optionally**.
+   *
+   * It is deliberately NOT added to {@link inject}: this plugin's own routes
+   * exist without a plugin manager (every profile without the Web plugin
+   * manager still serves the settings page), and a hard dependency would make
+   * the whole plugin fail to load in such a profile. A missing service is
+   * therefore a *value* — the install route answers a structured refusal — and
+   * the three existing services are untouched.
+   * @returns the service, or `null`.
+   */
+  function installService() {
+    let service;
+    try {
+      service = ctx.get('pluginManager');
+    } catch {
+      return null;
+    }
+    if (service === null || typeof service !== 'object' || typeof service.installBundle !== 'function') return null;
+    return service;
+  }
+
+  /**
+   * The profile directory the manager installs into, or `null` when the service
+   * does not expose one.
+   *
+   * `profile` is the manager's own `profileContext`, and `dir` is where its
+   * `pnpm add` runs. Both are read defensively: this is a duck-typed dependency
+   * on a service this plugin does not import, and a profile that answers a
+   * different shape must degrade to "cannot check the install form" rather than
+   * throw inside a route.
+   * @param service - the plugin manager.
+   * @returns the absolute profile directory, or `null`.
+   */
+  function installProfileDir(service) {
+    try {
+      const dir = service?.profile?.dir;
+      return typeof dir === 'string' && dir.length > 0 ? dir : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * How this profile declares `dsh-prompt-setting`, read from the profile's own
+   * manifest. This is the A1 check's input: a `link:` here means the running
+   * copy is a development working tree, not an install.
+   * @param dir - the profile directory.
+   * @returns `{value, error}`; `value` is the dependency spec or `null`.
+   */
+  function installDependencyField(dir) {
+    try {
+      const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
+      const value = manifest?.dependencies?.[PLUGIN_NAME];
+      return { value: typeof value === 'string' ? value : null, error: null };
+    } catch (error) {
+      if (error?.code === 'ENOENT') return { value: null, error: null };
+      return { value: null, error: summarizeDiagnostic(error?.message ?? String(error)) };
+    }
+  }
+
+  /**
+   * One `HEAD` against the release asset.
+   *
+   * A HEAD is the whole cost of turning "the release has no asset" — the state
+   * every release published before this feature existed is in — into a named,
+   * immediate answer instead of a two-minute pnpm failure. A transport that
+   * cannot answer (no fetch, a throw, a 5xx) returns `unverified`, which means
+   * "install anyway and let pnpm decide": the probe is a shortcut, never a gate.
+   * @param url - the asset URL.
+   * @returns `{status, ok, error}`; `status` is `0` when no answer arrived.
+   */
+  async function probeReleaseAsset(url) {
+    if (installProbe === null) return { status: 0, ok: false, error: 'this runtime offers no fetch' };
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    let timer = null;
+    try {
+      const timeout = new Promise((_resolve, reject) => {
+        timer = setTimeout(() => {
+          controller?.abort();
+          reject(new Error(`the release asset probe did not answer within ${UPDATE_ASSET_PROBE_TIMEOUT_MS} ms`));
+        }, UPDATE_ASSET_PROBE_TIMEOUT_MS);
+      });
+      const response = await Promise.race([
+        installProbe(url, {
+          method: 'HEAD',
+          headers: { 'user-agent': `${PLUGIN_NAME}/${PLUGIN_VERSION}` },
+          ...(controller === null ? {} : { signal: controller.signal }),
+        }),
+        timeout,
+      ]);
+      const status = Number.isFinite(response?.status) ? response.status : 0;
+      return { status, ok: response?.ok === true, error: null };
+    } catch (error) {
+      return { status: 0, ok: false, error: summarizeDiagnostic(error?.message ?? String(error)) };
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * `POST /prompt-setting/update-apply` — start one install and answer at once.
+   *
+   * The answer is `{ok:true, requestId, status}` before any package manager has
+   * run: the install can block for minutes, and the page polls
+   * `GET /update-apply` for the outcome. Everything that can be decided cheaply
+   * is decided **before** the install starts, and a refusal (`no update`,
+   * `link:` profile, a missing service, an update check rate-limited to no
+   * answer) is a **200** with `{ok:false, code, message}` — never a 5xx, and
+   * never a background job.
+   *
+   * The tag/version pair is read off the checker's own payload — the same
+   * answer the banner rendered, cached for six hours — so the version the page
+   * announced and the version installed cannot drift apart. A body that names a
+   * different tag is refused rather than ignored.
+   * @param req - the Node request.
+   * @returns the response body; the caller sends it (this function never writes
+   *   to the response, so it stays a value-returning handler like the others).
+   */
+  async function handleStartInstall(req) {
+    const body = await readJsonBody(req);
+    const check = await updateChecker.check();
+    const target = resolveInstallTarget(check);
+    if (target.ok !== true) {
+      // Nothing was started, so there is no request to track: the refusal is the
+      // whole answer, and the client's error path renders it like any other.
+      return publicRefusal(target.code, target.message, { releaseUrl: target.releaseUrl });
+    }
+    const claimed = typeof body?.tag === 'string' && body.tag.trim().length > 0 ? body.tag.trim() : null;
+    if (claimed !== null && claimed !== target.tag) {
+      return publicRefusal(
+        REFUSAL_INVALID_REQUEST,
+        `this request names tag ${JSON.stringify(claimed)} but the current update check reported ${JSON.stringify(target.tag)}; check for updates again`,
+      );
+    }
+    // One install at a time: a second `pnpm add` would queue on the profile lock
+    // (measured up to ~2 minutes) behind the first. The running request's id is
+    // returned instead, which is also what the page should be polling.
+    const running = installTable.active();
+    if (running !== null) {
+      return { ok: true, reused: true, status: publicInstallStatus(running) };
+    }
+    const service = installService();
+    const profileDir = service === null ? null : installProfileDir(service);
+    const field = profileDir === null ? null : installDependencyField(profileDir);
+    const policy = resolveInstallPolicy({
+      service,
+      profileDir,
+      field: field === null ? null : field.value,
+      tag: target.tag,
+    });
+    if (policy.ok !== true) {
+      return publicRefusal(policy.code, policy.message, policy.manual);
+    }
+    const entry = installTable.begin({ tag: target.tag, version: target.version, url: target.url });
+    void runInstall(entry.requestId, { service, target });
+    return { ok: true, reused: false, status: publicInstallStatus(installTable.read(entry.requestId)) };
+  }
+
+  /**
+   * Run one install in the background and settle its row.
+   *
+   * This is the only place the plugin manager is called, and it is called with
+   * exactly four facts: the tarball spec, `{enabled: true, requestId}`.
+   * `approvedBuilds` is deliberately absent — passing it writes the profile's
+   * `allowBuilds`, which would let a **later** install run arbitrary package
+   * scripts — and the whole thing runs on its own promise so the HTTP response
+   * returned long ago stays valid.
+   *
+   * Nothing here restarts anything. `ChangeResult.application` is the verdict
+   * the page is told about, and `restart-required` is a **success** whose
+   * instruction is「请手动重启 dsh web 生效」.
+   * @param requestId - the tracked request.
+   * @param context - `{service, target}`.
+   */
+  async function runInstall(requestId, context) {
+    const { service, target } = context;
+    try {
+      const probe = await probeReleaseAsset(target.url);
+      if (probe.status === 404) {
+        const described = describeInstallFailure(REFUSAL_ASSET_MISSING, {
+          tag: target.tag,
+          version: target.version,
+        });
+        installTable.fail(requestId, {
+          code: described.code,
+          message: described.message,
+          diagnostic: `${target.url} answered HTTP 404`,
+          manual: described.manual,
+          retryable: described.retryable,
+        });
+        return;
+      }
+      if (probe.status !== 0 && probe.ok !== true && probe.status >= 400) {
+        const kind = classifyInstallFailure({ status: probe.status, probe: true });
+        const described = describeInstallFailure(kind === 'network' ? REFUSAL_ASSET_UNVERIFIED : kind, {
+          tag: target.tag,
+          version: target.version,
+        });
+        installTable.fail(requestId, {
+          code: described.code,
+          message: described.message,
+          diagnostic: `${target.url} answered HTTP ${probe.status}`,
+          manual: described.manual,
+          retryable: described.retryable,
+        });
+        return;
+      }
+      // The call itself. `enabled: true` is the conservative value for an
+      // **already-installed** bundle: the profile already selects it, so the
+      // manager's own `selectBundle(name, true)` is a no-op write, while
+      // `false` would express "leave it unselected" for a package that is
+      // currently running. `before[name]` is already populated, so the manager
+      // returns `restart-required` — it reloads nothing, which is exactly the
+      // no-auto-restart rule this feature ships under.
+      const result = await service.installBundle(target.url, { enabled: true, requestId });
+      installTable.settle(requestId, result);
+    } catch (error) {
+      // `change()` folds every ordinary failure into its result, so a throw here
+      // is a lock/transport-level surprise. It still settles the row rather than
+      // escaping: an unhandled rejection would take the host process with it.
+      installTable.fail(requestId, {
+        code: classifyInstallFailure({ message: error?.message }),
+        message: `the install could not be started: ${summarizeDiagnostic(error?.message ?? String(error)) ?? 'unknown error'}`,
+        diagnostic: summarizeDiagnostic(error?.stack ?? error?.message ?? String(error)),
+        retryable: true,
+      });
+    }
+  }
+
+  /**
+   * `GET /prompt-setting/update-apply?requestId=` — the tracked phase.
+   *
+   * Three shapes, three meanings:
+   *   - `?requestId=<id>` for an id this mount knows answers the request's
+   *     phase, application verdict and structured error;
+   *   - `?requestId=<id>` for anything else answers `200` with
+   *     `status:'unknown'` — the official manager deletes a settled request, so
+   *     a page that reloaded mid-install has to be told "this page no longer
+   *     knows", which is honest and distinguishable from a failed install;
+   *   - **no** `requestId` at all is not a shape mistake: it is a fresh page
+   *     asking "is anything installing?". The answer is this mount's oldest
+   *     live request (or `null`), which is how a reloaded tab resumes polling an
+   *     install it can no longer name.
+   *
+   * Only an empty or absurdly long id is the ordinary `400 invalid-request`.
+   * @param url - the parsed request URL.
+   * @returns the response body.
+   */
+  function handleInstallStatus(url) {
+    const requestId = url.searchParams.get('requestId');
+    if (requestId === null) {
+      // g-032: no id at all is not a shape mistake — it is a **fresh page**
+      // asking "is anything installing?". The host answers with its own oldest
+      // live request (or `null`), which is what lets a reloaded tab resume
+      // polling the install it can no longer name. It can only ever name a
+      // request this mount started.
+      const live = installTable.oldestLive();
+      return { ok: true, status: live === null ? null : publicInstallStatus(live) };
+    }
+    if (requestId.trim().length === 0) {
+      throw new OverrideError('invalid-request', 'query parameter "requestId" must not be empty');
+    }
+    if (requestId.length > 128) {
+      throw new OverrideError('invalid-request', '"requestId" is too long to be one of ours');
+    }
+    return { ok: true, status: publicInstallStatus(installTable.read(requestId.trim())) };
+  }
+
+  /**
+   * `POST /prompt-setting/update-apply/cancel` — stop a running install.
+   *
+   * The official `cancelInstall` resolves only after the install itself has
+   * settled (files restored), which can be minutes — so it is **not** awaited
+   * here. The intent is recorded in the table, which is what the page's next
+   * poll reads, and the manager is asked in the background. An id that is not
+   * live answers `{ok:false, code:'not-running'}` with a 200: nothing was
+   * cancelled, and that is a fact about the request, not a server error.
+   * @param req - the Node request.
+   * @returns the response body.
+   */
+  async function handleCancelInstall(req) {
+    const body = await readJsonBody(req);
+    const requestId = typeof body?.requestId === 'string' ? body.requestId.trim() : '';
+    if (requestId.length === 0) {
+      throw new OverrideError('invalid-request', '"requestId" must be a non-empty string');
+    }
+    const entry = installTable.read(requestId);
+    if (entry.known !== true) {
+      return { ok: false, code: 'not-running', status: publicInstallStatus(entry) };
+    }
+    if (entry.cancellable !== true) {      // Settled, or past the point of no return. Saying so is the useful answer;
+      // pretending to cancel a finished install would be a lie the next poll
+      // would contradict.
+      return { ok: false, code: 'not-running', status: publicInstallStatus(entry) };
+    }
+    installTable.markCancelling(requestId);
+    const service = installService();
+    if (service !== null && typeof service.cancelInstall === 'function') {
+      // Fire and forget: the outcome reaches the page through the poll, and this
+      // route may not block on a settle that takes minutes.
+      Promise.resolve()
+        .then(() => service.cancelInstall(requestId))
+        .catch(() => {
+          // A cancel that the manager refuses (a lock error, a teardown) leaves
+          // the install running; the poll still reports the truth.
+        });
+    }
+    return { ok: true, code: 'cancelling', status: publicInstallStatus(installTable.read(requestId)) };
+  }
+
+  /**
+   * The one refusal shape, so the client has a single `ok:false` branch to read.
+   * @param code - the stable refusal code.
+   * @param message - the readable sentence.
+   * @param manual - the manual-update hint (`{releaseUrl, releaseLink, command}`), or undefined.
+   * @returns the body.
+   */
+  function publicRefusal(code, message, manual) {
+    return {
+      ok: false,
+      code: typeof code === 'string' && code.length > 0 ? code : REFUSAL_SERVICE_MISSING,
+      message: typeof message === 'string' && message.length > 0 ? message : 'the update could not be started',
+      ...(manual === undefined || manual === null ? {} : { manual }),
+    };
+  }
+
+  /**
    * `GET /prompt-setting/interpolate` — the read face of the reserved section's
    * variable-substitution switch.
    *
@@ -2748,6 +3150,22 @@ function mount(ctx, config, cleanups) {
               // malformed PUT body is an ordinary 400.
               if (req.method === 'PUT') await handleWriteUpdateCheck(req, res);
               else await handleUpdateCheck(url, res);
+              return;
+            }
+            if (url.pathname === UPDATE_APPLY_CANCEL_PATH) {
+              // g-032: the cancel face. A settled/never-seen request is a 200
+              // `{ok:false, code:'not-running'}`, not a 404: nothing about the
+              // server went wrong, and the client has one branch to render.
+              sendJson(res, 200, await handleCancelInstall(req));
+              return;
+            }
+            if (url.pathname === UPDATE_APPLY_PATH) {
+              // g-032: `POST` starts (and answers **immediately** with the
+              // request id — an install can block for minutes), `GET` reports the
+              // phase this mount tracks. Neither ever answers 5xx: a refusal is a
+              // 200 with `{ok:false, code, message}`, and a shape mistake is the
+              // route's ordinary 400.
+              sendJson(res, 200, req.method === 'POST' ? await handleStartInstall(req) : handleInstallStatus(url));
               return;
             }
             if (url.pathname === INTERPOLATE_PATH) {

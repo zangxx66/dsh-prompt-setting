@@ -4907,3 +4907,138 @@ ping 是多处断言过的 frozen 形状；③ 把开关写进 `overrides.json`�
 
 **本轮未验证项（增量）**：镜像漂移的两种方向仍只在 vm 沙箱 + stub 下断言（`localStorage` 假实现 /
 无 `localStorage`），未在真实浏览器里手改 `preferences.json` 复现；真机目视仍待宿主半重启（见 §106 七）。
+
+## 107. 「立即更新」：宿主经官方 `pluginManager` 装 Release tarball，永不自动重启（g-032，2026-10-04，基线 `8624978` 工作区）
+
+### 一、要解决的问题
+
+g-030（§106）只做到「告知有新版本」；负责人 2026-10-03 要求加「立即更新」：**由宿主经官方插件
+管理器安装新版本，不自动重启**，装完提示用户手动重启 `dsh web` 生效。三张台账卡片
+（`shared-149506f4` 官方 API、`shared-a11bad1f` git 安装实测、`shared-cab1058d` tarball 实测）
+是设计输入，本节的结论全部建立在它们之上。
+
+### 二、被否方案
+
+- **A2/A3（`link:` 允许被覆盖 / 先卸载再装）**：A2 会把开发者的 `link:` 换成 registry 版本且没有
+  回头路；A3 在 live 下卸载正在运行的自身。两者都否，取 **A1 拒绝执行 + 手动指引**（负责人
+  2026-10-04 决定，`CONTRACT.md` §18.1）。
+- **git spec（`github:…#<tag>&path:packages/dsh-prompt-setting`）**：pnpm 12.3.4 实测 exit=0，
+  但会命中 **git 获取路径专属**的 `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` 构建审批门禁；且 pnpm 12
+  失败后不写占位值，DSH 的 `build-approval.js` 只识别 pnpm 11 写的占位 ⇒ 审批回路抛
+  `stale-approval`，**首次必失败且无法通过对话批准自愈**（卡片 `shared-a11bad1f`）。否。
+- **传 `approvedBuilds`**：写 profile 的 `allowBuilds` 会让**后续** install 执行任意包脚本。永远
+  不传（`CONTRACT.md` §18.1）。tarball 路线本来也不需要它。
+- **在路由里 `await installBundle`**：单次最长「约 2 分钟等锁 + 10 分钟静默超时」，设置页不能挂
+  一个请求这么久。改为「发起即返回 `requestId`」，状态存宿主自己的表（官方 settle 后
+  `installs.delete(requestId)`，结果不保留）。
+- **`enabled: false`（官方 GUI 新建安装的写法）**：见下节，语义不对。
+- **服务放进 `inject`**：`inject` 是硬依赖，服务缺失会让整个插件（含既有的 7 条路由）不加载。
+  判据 1 要的是「优雅降级」，所以走 `ctx.get('pluginManager')` 可选查找——**既有三服务
+  `webServer`/`connection`/`systemPrompt` 一字未动**。
+
+### 三、`installBundle` 的 `enabled` 对「已存在 bundle」的语义（判据 4，读源码确认）
+
+读 `@deepseek-ai/dsh-plugin-manager@0.2.0-rc.2` 的 `lib/index.js`（`installBundle`，
+`:1691-1813`）：
+
+```js
+return this.configure(async () => {
+  if (options?.enabled !== false) await this.selectBundle(name, true);
+  if (Object.hasOwn(before, name)) return 'restart-required';
+  if (options?.enabled !== false) result.warnings = await this.reload();
+});
+```
+
+三条事实：
+
+1. `before` 是**安装前**的 profile `dependencies`。我们升级的 bundle 必然已存在 ⇒
+   `Object.hasOwn(before, name)` 为真 ⇒ 返回 `'restart-required'`，**且不会执行 `reload()`**；
+2. 所以对「已存在 bundle」这个场景，`enabled: true|false` 对**结果**没有影响
+   （`selectBundle` 把已选中的 bundle 再选一次是 no-op，`change()` 里
+   `JSON.stringify(previous) === JSON.stringify(bundles)` 直接 return）；
+3. 传 `enabled: true` 是**保守值**：它显式表达「这个 bundle 现在就装在这个 profile 里、且要保持
+   被选中」，而 `false` 表达的是「装完先别选」（官方 GUI 新建安装的语义——它随后用
+   `setBundleEnabled(name, true)` 真正启用）。我们没有任何理由让一个正在运行的 bundle 走
+   「先不选」这条路径，所以取 `true`，并在测试里把
+   `Object.keys(options).sort() === ['enabled', 'requestId']` 钉死——既证明补丁永远不发
+   `approvedBuilds`，也证明参数集是**只有**这两个。
+
+### 四、profile 目录与 A1 检测
+
+`installBundle` 自己**不查已安装**、`inspect` 对已安装包必然拒绝（`already-installed`），所以
+「这个 profile 是 `link:` 吗」只能自己看。读的是 **manager 服务实例上的**
+`service.profile.dir`（`lib/index.js:1383` `this.profile = ctx.profileContext`）下的
+`package.json` 的 `dependencies['dsh-prompt-setting']`——**不是** DSH 的 `pluginContext` 类型字段，
+所以这里做了 duck-typing：拿不到 `dir` 就**保守拒绝**（`installer-unavailable`），而不是「检测不了
+就当它是安全的」。检测不到就放行会让 A1 在降级场景下静默失效。
+
+`core/install.js` 的 `isLocalSpec` 覆盖 `link:`/`file:`/`portal:`/`workspace:` 前缀、`/abs`、
+`./rel`、`../rel` 和 Windows 盘符；`core` 不做 IO，读文件在 `index.js`。
+
+### 五、状态形状与「谁说了算」
+
+- 宿主端 `phase` 是更细的步骤（`installing`/`cancelling`/…），客户端分支用的 `status` 是
+  `running`/`done`/`failed`/`cancelled`/`unknown`。**页面按 `status` 分支**，`phase` 只进
+  `data-update-apply-step` 标记。这条是被测试逼出来的：页面最初按 `phase` 分支，而宿主返回的
+  `phase` 是 `installing` ⇒ 每个「运行中」都掉进失败的 else 分支。两个名字不许互换角色，
+  所以分支依据只留一个；
+- 客户端自建的失败态（网络层失败、结构化拒绝）也**补全成宿主的形状**
+  （`status`/`phase`/`requestId`/`version`/`tag`/`error`），这样 `renderUpdateApplyStatus` 只有
+  一种输入形状；
+- `requestJson` 把「body 的 `ok` 不是 `true`」一律归为失败 ⇒ 结构化拒绝走的是 `!result.ok`
+  分支，`error.message` 就是宿主那句人话。**顺带修了一个会误导用户的点**：这条分支原先只渲染
+  `errorText`，于是拒绝文案会显示成 `error.development-link`（英文键回落到 key）。现在优先用
+  宿主 message，并且把 `manual` 一并透传（`error.manual`），否则重新探测失败分支的「手动更新」
+  链接会丢；
+- 沙箱里没有 `sessionStorage` 时，resume 会静默失效——所以读写都包了 `typeof` 守卫 + `try`。
+
+### 六、发布流程新增一步 + 长期约束（必读）
+
+> **每个 release 必须上传 `npm pack` 产物资产，命名固定
+> `dsh-prompt-setting-<version>.tgz`。**
+
+做法（**切勿在包目录里跑 `npm pack`**，否则会把 `test/`、`.dsh-graph/` 等一起打进去）：
+
+```bash
+git archive <commit> packages/dsh-prompt-setting | tar -x -C /tmp/pkg-export
+cd /tmp/pkg-export/packages/dsh-prompt-setting && npm pack
+gh release upload <tag> dsh-prompt-setting-<version>.tgz
+```
+
+- **本包不得新增 `postinstall`/`install` 脚本**：带它们的 tarball 会被
+  `ERR_PNPM_IGNORED_BUILDS` 拦成 exit≠0（实测）。`prepare` 维持原样——tarball 路线不执行它；
+- **当前 release `0.1.1` 的 assets=0**，所以对本机 0.1.1 按按钮必然走
+  「**资产缺失（404）**」分支。这是**预期行为**，不是缺陷：该分支有独立 code（`asset-missing`）、
+  独立文案、独立断言（`test/install.test.mjs`「a release with no asset fails as asset-missing」），
+  并且**不调用 pnpm**——预检 `HEAD` 让这个答案在秒级返回，而不是等两分钟 pnpm 失败。
+
+### 七、本轮实测证据（包目录 `packages/dsh-prompt-setting/` 下执行）
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test` | **564 / 564 pass / 0 fail**（exit 0；基线 534，本轮 +30：新增 `test/install.test.mjs` 22 条、`test/client.test.mjs` +7 条、前缀请求预期 +1 条） |
+| 新增宿主+策略套件 | `node --test test/install.test.mjs` | **22 / 22 pass / 0 fail** |
+| 客户端套件 | `node --test test/client.test.mjs` | **140 / 140 pass / 0 fail** |
+| 更新套件（回归） | `node --test test/update.test.mjs` | **35 / 35 pass / 0 fail**（`latestTag` 为新增字段，旧字段形状未变） |
+| **改坏就红 A**（A1 放行） | 备份后把 `resolveInstallPolicy` 的 `if (current.local)` 改成 `if (false && current.local)`，跑 `test/install.test.mjs` | **20 pass / 2 fail**（「A1 — a link:/path install is refused」与「a link: profile is refused with a manual route」红）；`cp` 还原后 22/22 |
+| **改坏就红 B**（失败分类归零） | 备份后让 `classifyInstallFailure` 开头直接 `return INSTALL_FAILURE_UNKNOWN`，跑 `test/install.test.mjs` | **18 pass / 4 fail**（分类总用例、manager code 保留、asset-unverified、失败结果结算四条红）；`cp` 还原后 22/22 |
+| **改坏就红 C**（补丁加 `approvedBuilds`） | 备份后往 `installBundle` 的 options 里塞 `approvedBuilds: []`，跑 `test/install.test.mjs` | **21 pass / 1 fail**（「approvedBuilds is never passed」红）；`cp` 还原后 22/22 |
+
+### 八、未验证项（诚实清单）
+
+- **真机端到端未跑**：本机 profile 是 `link:`（web 与 desktop 两个 profile 都是），按 A1 必然
+  拒绝；且**禁用装 profile 的约束**下没有在真机跑 `installBundle`。所以
+  「tarball 装完 profile 里真的变成 `0.1.2`」这条链路的最后一跳**没有真机证据**，只有
+  「spec 形态 + tarball 免审批 + 产物干净有效」的实测（卡片 `shared-cab1058d`）；
+- **`0.1.1` 无资产 ⇒ 没有一次成功的真 HTTPS 资产安装**。补资产后需要真机复跑一次，确认
+  `asset-missing` 分支消失；
+- **`link:` 检测依赖 `service.profile.dir`**：官方服务的内部字段，未在任何官方类型里承诺。它被
+  包了 duck-typing + 保守拒绝，但官方改字段名时**只会降级成「一律拒绝并提示手动更新」**，
+  不会误放行——这是刻意选的方向；
+- **`cancelling` 的竞态只用桩覆盖**：真实 `pnpm add` 被 abort 后 `change()` 返回 `cancelled`
+  这条路径没有真机跑过（桩里返回 `cancelled`/`restart-required` 两种）；
+- **页面轮询的最坏路径未在真机验证**：16 分钟预算内一直 `running` 的体验（比如等锁 2 分钟）只在
+  桩里模拟过状态转换，没有真机观察；
+- **`HEAD` 预检对某些 CDN 的可能行为**：GitHub release 资产对 `HEAD` 返回 200/404 已按语义断言，
+  但真实网络下的重定向/限流未实测；预检失败（含非 2xx 的 4xx）一律拒绝安装，这是一条**偏保守**
+  的选择（宁可让用户手动更新，也不在没有确认资产存在时改动 profile）。

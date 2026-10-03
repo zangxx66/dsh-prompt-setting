@@ -44,7 +44,7 @@ Settings gains a **"Prompt settings"** pane (`id: prompt-setting`) with four top
 | **My Prompt** | The only write surface: write your own system-level instructions (pick a layer → edit → save), plus a one-click "Restore default". This text is **placed after every built-in section**. |
 | **Prompt overview** | Read-only: the assembled section list (status marks / search / filters / copy), the full text, and a `base ↔ effective` diff — so you can see exactly what your change did. |
 | **History & backup** | History list + version diffs (line-level); export the configuration for download, and preview an import (review the change plan before anything is written). |
-| **Advanced** | A read-only list of legacy overrides, two double-confirm buttons ("clear all overrides", "reset the whole layer"), the **"Check for updates" switch** (on by default; off means this plugin makes no network request at all), and a full status area (mount state / build fingerprint / renderer self-check). |
+| **Advanced** | A read-only list of legacy overrides, two double-confirm buttons ("clear all overrides", "reset the whole layer"), the **"Check for updates" switch** (on by default; off means this plugin makes no network request at all), the **"Update now"** action (the host installs the version the banner named; you restart `dsh web` yourself), and a full status area (mount state / build fingerprint / renderer self-check). |
 
 > All UI copy follows DSH's language setting: switch DSH to Chinese and this page turns Chinese, with no
 > refresh or restart.
@@ -68,8 +68,31 @@ package's `package.json` (`repository.url`), never hardcoded a second time. That
   off there are **zero requests**, including on page load, and `<DSH_HOME>/prompt-setting/preferences.json`
   records `{"updateCheck": false}`. Hand-editing that file — or deleting it to return to the default
   (on) — works the same way;
-- **what it never does**: no automatic download, no automatic install, no self-update, and no DSH
-  platform version check.
+- **what it never does**: no automatic download, no automatic install, **no automatic restart**, and no
+  DSH platform version check.
+
+### Installing the update ("Update now")
+
+**The version gets installed; the restart is still yours.** The banner's **Update now** button opens a
+second confirmation (which says so), and on confirm the **host** installs that release's `.tgz` into the
+current profile through the official plugin manager. Afterwards the page says "vX.Y.Z is installed —
+restart `dsh web` yourself". **Nothing here restarts anything.**
+
+- **what it installs**: the release **asset**
+  `https://github.com/zangxx66/dsh-prompt-setting/releases/download/<tag>/dsh-prompt-setting-<version>.tgz`,
+  with `<tag>`/`<version>` taken from the *same* update check — so the version announced is the version
+  installed, and a cached check still costs zero outbound requests. Being an asset, it needs no pnpm
+  build-script approval;
+- **how it runs**: the click returns a `requestId` at once and the page polls it (1.5–5 s, up to 16
+  minutes) with a **cancel** button. A failure names its category (asset missing 404 / build blocked /
+  network / pnpm missing / …) with a retry — **never an automatic retry, never an automatic restart**;
+- **a `link:` install is refused**: a profile that holds this package as a `link:`/local path is a
+  development working tree, so the button refuses and points at the manual route instead of overwriting
+  that link with a published version;
+- **for releasers**: every release must upload its `npm pack` asset, named exactly
+  `dsh-prompt-setting-<version>.tgz`, and this package must **not** add `postinstall`/`install` scripts
+  (a tarball carrying one is stopped by pnpm's build gate). See `packages/dsh-prompt-setting/NOTES.md`
+  §107.
 
 ## 3. Installation
 

@@ -12,7 +12,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import test from 'node:test';
+import test, { afterEach } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 // The *host* copy of the reserved section name (CONTRACT.md §15.1). The client
@@ -168,6 +168,18 @@ function expandTree(node) {
  *   fail the way an unlisted package would.
  * @returns the registered descriptor plus the loader bookkeeping.
  */
+/**
+ * Every page this file mounted, so the timers a g-032 poll loop leaves behind
+ * are stopped when its case ends. Without this a case that stubs a **running**
+ * install would leave a live timer chain behind it, and the test process would
+ * never see the event loop drain.
+ */
+const mountedPages = [];
+
+afterEach(() => {
+  for (const page of mountedPages.splice(0)) page.dispose();
+});
+
 function loadClient(primitives) {
   let descriptor = null;
   const runtime = makeHooksRuntime();
@@ -182,6 +194,31 @@ function loadClient(primitives) {
     console,
   };
   sandbox.fetch = () => Promise.reject(new Error('fetch not stubbed'));
+  // g-032 gives the page a real timer loop (the install poll, and the「已用时」
+  // ticker). The sandbox gets the host's own timers with a **floored delay**, so
+  // a case that stubs a running install does not spend 1.5 s per poll: the
+  // page's behaviour (wait, ask again) is unchanged, only the wait is — and
+  // every handle is registered so `page.dispose()` can stop a loop a case no
+  // longer needs (a live poll would otherwise outlive the test process).
+  const pendingTimers = new Set();
+  sandbox.setTimeout = (fn, ms) => {
+    const id = setTimeout(fn, Math.min(Number.isFinite(ms) ? ms : 0, 5));
+    pendingTimers.add(id);
+    return id;
+  };
+  sandbox.clearTimeout = (id) => {
+    pendingTimers.delete(id);
+    return clearTimeout(id);
+  };
+  sandbox.setInterval = (fn, ms) => {
+    const id = setInterval(fn, Math.min(Number.isFinite(ms) ? ms : 0, 5));
+    pendingTimers.add(id);
+    return id;
+  };
+  sandbox.clearInterval = (id) => {
+    pendingTimers.delete(id);
+    return clearInterval(id);
+  };
   vm.createContext(sandbox);
   vm.runInContext(clientSource, sandbox, { filename: 'client.js' });
   assert.ok(descriptor, 'client.js must register a lazy factory');
@@ -237,7 +274,21 @@ function loadClient(primitives) {
     }
     throw new Error(`unexpected require: ${name}`);
   });
-  return { descriptor, module, sandbox, runtime, diffBlockCalls };
+  return {
+    descriptor,
+    module,
+    sandbox,
+    runtime,
+    diffBlockCalls,
+    /** Stop every timer this page's sandbox still holds. */
+    stopTimers: () => {
+      for (const id of pendingTimers) {
+        clearTimeout(id);
+        clearInterval(id);
+      }
+      pendingTimers.clear();
+    },
+  };
 }
 
 /**
@@ -600,7 +651,21 @@ function makePage(options = {}) {
   };
   const tables = mounted.dictionaries.length > 0 ? mounted.dictionaries[0].dict : {};
   const zh = tables.zh || {};
-  return { loaded, mounted, router, props, draw, flush, zh, language, text: tables[language] || {} };
+  const page = {
+    loaded,
+    mounted,
+    router,
+    props,
+    draw,
+    flush,
+    zh,
+    language,
+    text: tables[language] || {},
+    /** Stop the page's timers: a case that leaves an install "running" is done. */
+    dispose: () => loaded.stopTimers(),
+  };
+  mountedPages.push(page);
+  return page;
 }
 
 /**
@@ -939,6 +1004,9 @@ const PATHS = {
   interpolate: '/prompt-setting/interpolate',
   // g-030: the upstream update check and its on/off switch.
   updateCheck: '/prompt-setting/update-check',
+  // g-032:「立即更新」— the install route, its status read and its cancel face.
+  updateApply: '/prompt-setting/update-apply',
+  updateApplyCancel: '/prompt-setting/update-apply/cancel',
 };
 
 /** The default stub table (every route the page may call on mount). */
@@ -1112,9 +1180,13 @@ test('client: requests stay on the plugin prefix and report the renderer', async
   await page.flush();
   const urls = page.router.calls.map((call) => call.url);
   assert.ok(urls.includes(`${PATHS.ping}?renderer=fallback`), 'the stage 1A renderer report still happens');
+  // g-032 adds one baseline request: the bare `GET /update-apply` that lets a
+  // page which was reloaded mid-install resume following it. It is a **local**
+  // request to this plugin's own prefix, so it does not weaken g-030's promise
+  // that a closed switch means no request leaves the machine.
   assert.deepEqual(
     [...new Set(urls.map((url) => url.split('?')[0]))].sort(),
-    [PATHS.overrides, PATHS.ping, PATHS.snapshot, PATHS.updateCheck],
+    [PATHS.overrides, PATHS.ping, PATHS.snapshot, PATHS.updateApply, PATHS.updateCheck],
   );
   // The global default: no `?session=`, so the workspace layer stays inactive.
   assert.deepEqual(urlsFor(page, PATHS.snapshot), [PATHS.snapshot]);
@@ -6560,6 +6632,317 @@ test('client: 「高级」 explains an undecided upstream answer, and stays quie
     0,
     '④ no update means no state line',
   );
+});
+
+// #endregion
+
+// #region g-032:「立即更新」
+
+/** The `sessionStorage` double, installed in the sandbox before the page mounts. */
+function installApplyMirror(page, initial) {
+  const store = new Map(initial === undefined ? [] : [['dsh-prompt-setting.updateApply', initial]]);
+  page.loaded.sandbox.sessionStorage = {
+    getItem: (key) => (store.has(key) ? store.get(key) : null),
+    setItem: (key, value) => store.set(key, String(value)),
+    removeItem: (key) => store.delete(key),
+  };
+  return store;
+}
+
+/** A `GET /update-apply` answer for one phase. */
+function applyStatus(over = {}) {
+  return {
+    requestId: 'i1-test',
+    phase: 'installing',
+    status: 'running',
+    known: true,
+    application: null,
+    version: '0.9.9',
+    tag: '0.9.9',
+    startedAt: '2024-06-01T00:00:00.000Z',
+    finishedAt: null,
+    cancelRequested: false,
+    cancellable: true,
+    restartRequired: false,
+    installed: false,
+    error: null,
+    ...over,
+  };
+}
+
+/**
+ * The install route's answer, told apart by **method**, not by URL.
+ *
+ * `POST` is the start (it answers the request id) and a `GET` carrying a
+ * `requestId` is a poll; a bare `GET` is the fresh-page resume probe. Testing
+ * `url.includes('requestId=')` instead would mis-read the `POST` — whose path is
+ * `/update-apply` — as a poll, which silently turns every start into "unknown".
+ * @param status - what a poll answers.
+ * @returns the router response function.
+ */
+function installRoute(status) {
+  return (url, init) => {
+    if (init && init.method === 'POST') return { payload: { ok: true, status: applyStatus() } };
+    if (url.includes('requestId=')) return { payload: { ok: true, status: typeof status === 'function' ? status() : status } };
+    return { payload: { ok: true, status: null } };
+  };
+}
+
+/** The install fixture: a newer release whose check carries the tag as published. */
+function updateAvailableWithTag(over = {}) {
+  return updateAvailableFixture({ latestTag: 'v0.9.9', ...over });
+}
+
+/** Wait for the page's own poll loop to drain (the sandbox floor is 5 ms). */
+async function flushApply() {
+  for (let i = 0; i < 40; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+}
+
+test('client: the banner carries「立即更新」, disabled while a first install is requested', async () => {
+  const page = makePage({ responses: defaultResponses({ [PATHS.updateCheck]: { payload: updateAvailableWithTag() } }) });
+  let tree = await page.flush();
+  const apply = oneBy(tree, 'data-action', 'update-apply');
+  assert.equal(apply.type, 'button');
+  assert.match(strings(tree).join(' '), /立即更新/);
+  assert.notEqual(apply.props.disabled, true, 'the button is live once a newer release is known');
+
+  // Clicking opens the **existing** confirmation modal, and it writes nothing.
+  apply.props.onClick();
+  tree = page.draw();
+  const modal = oneBy(tree, 'data-region', 'confirm');
+  assert.equal(modal.props['data-confirm-kind'], 'update-apply');
+  assert.equal(writeCalls(page).length, 0, 'the confirmation writes nothing');
+  const text = strings(tree).join(' ');
+  assert.match(text, /0\.9\.9/, 'the modal names the version');
+  assert.match(text, /手动重启 dsh web/, 'the modal states that the restart is manual');
+  assert.equal(
+    urlsFor(page, PATHS.updateApply).length,
+    1,
+    'only the mount-time resume probe ran; confirming is what starts an install',
+  );
+});
+
+test('client: confirming starts the install — one POST, then polling, then the manual-restart line', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.updateCheck]: { payload: updateAvailableWithTag() },
+      [PATHS.updateApply]: installRoute(applyStatus()),
+    }),
+  });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'update-apply' });
+  tree = page.draw();
+  clickButton(tree, { 'data-action': 'confirm-yes' });
+  await flushApply();
+  tree = page.draw();
+
+  const posts = page.router.calls.filter((call) => call.init && call.init.method === 'POST');
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].url, PATHS.updateApply);
+  assert.deepEqual(JSON.parse(posts[0].init.body), { tag: 'v0.9.9' }, 'the tag the check published is the tag installed');
+
+  const status = oneBy(tree, 'data-update-apply-phase', 'running');
+  assert.equal(status.props['data-region'], 'update-apply-status');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-action'] === 'update-apply-cancel').length,
+    1,
+    'a running install offers a cancel',
+  );
+
+  // The host settles it as restart-required: a success, and the copy must say so.
+  page.router.set(
+    PATHS.updateApply,
+    installRoute(
+      applyStatus({
+        phase: 'done',
+        status: 'done',
+        application: 'restart-required',
+        restartRequired: true,
+        installed: true,
+        cancellable: false,
+        finishedAt: '2024-06-01T00:02:00.000Z',
+      }),
+    ),
+  );
+  await flushApply();
+  tree = page.draw();
+  assert.equal(oneBy(tree, 'data-update-apply-phase', 'done').props['data-region'], 'update-apply-status');
+  const done = strings(tree).join(' ');
+  assert.match(done, /已安装 v0\.9\.9/);
+  assert.match(done, /手动重启 dsh web/);
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-action'] === 'update-apply-cancel').length,
+    0,
+    'a settled install has nothing left to cancel',
+  );
+  assert.equal(writeCalls(page).length, 0, 'installing is a POST, never a PUT/DELETE of the config');
+});
+
+test('client: a failed install shows the host category and a retry, and never retries by itself', async () => {
+  const failed = applyStatus({
+    phase: 'failed',
+    status: 'failed',
+    application: 'failed',
+    cancellable: false,
+    finishedAt: '2024-06-01T00:00:10.000Z',
+    error: {
+      code: 'asset-missing',
+      message: 'the 0.9.9 release has no dsh-prompt-setting-<version>.tgz asset to install from',
+      diagnostic: 'https://github.com/.../dsh-prompt-setting-0.9.9.tgz answered HTTP 404',
+      manual: { releaseUrl: 'https://github.com/zangxx66/dsh-prompt-setting/releases/tag/0.9.9' },
+      retryable: true,
+    },
+  });
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.updateCheck]: { payload: updateAvailableWithTag() },
+      [PATHS.updateApply]: installRoute(failed),
+    }),
+  });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'update-apply' });
+  tree = page.draw();
+  clickButton(tree, { 'data-action': 'confirm-yes' });
+  await flushApply();
+  tree = page.draw();
+
+  assert.equal(oneBy(tree, 'data-update-apply-phase', 'failed').props['data-region'], 'update-apply-status');
+  const text = strings(tree).join(' ');
+  assert.match(text, /no .*asset/, 'the host’s own sentence is rendered');
+  assert.match(text, /404/, 'the diagnostic is shown, so a 404 is never a silent failure');
+  const manual = oneBy(tree, 'data-update-apply-manual', 'true');
+  assert.equal(manual.props.href, 'https://github.com/zangxx66/dsh-prompt-setting/releases/tag/0.9.9');
+
+  const before = page.router.calls.filter((call) => call.init && call.init.method === 'POST').length;
+  await flushApply();
+  const after = page.router.calls.filter((call) => call.init && call.init.method === 'POST').length;
+  assert.equal(after, before, 'nothing retries on its own');
+  assert.equal(
+    collect(page.draw(), (node) => node.props && node.props['data-action'] === 'update-apply-retry').length,
+    1,
+    'the retry is the user’s click',
+  );
+});
+
+test('client: a running install can be cancelled, and the cancel goes to the host', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.updateCheck]: { payload: updateAvailableWithTag() },
+      [PATHS.updateApply]: installRoute(applyStatus()),
+      [PATHS.updateApplyCancel]: { payload: { ok: true, code: 'cancelling', status: applyStatus({ phase: 'cancelling', cancelRequested: true }) } },
+    }),
+  });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'update-apply' });
+  tree = page.draw();
+  clickButton(tree, { 'data-action': 'confirm-yes' });
+  await flushApply();
+  tree = page.draw();
+  clickButton(tree, { 'data-action': 'update-apply-cancel' });
+  await flushApply();
+
+  const cancel = page.router.calls.find((call) => call.url === PATHS.updateApplyCancel);
+  assert.ok(cancel, 'the cancel route was called');
+  assert.equal(cancel.init.method, 'POST');
+  assert.deepEqual(JSON.parse(cancel.init.body), { requestId: 'i1-test' });
+});
+
+test('client: a reloaded page resumes a running install it can no longer name', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.updateCheck]: { payload: updateAvailableWithTag() },
+      [PATHS.updateApply]: { payload: { ok: true, status: applyStatus() } },
+    }),
+  });
+  const tree = await page.flush();
+  // The bare `GET` is the resume probe, and the running install is rendered from
+  // its answer — the page never "remembers" a phase of its own.
+  const probes = urlsFor(page, PATHS.updateApply).filter((url) => !url.includes('requestId='));
+  assert.equal(probes.length >= 1, true, 'a fresh page asks whether anything is installing');
+  assert.equal(oneBy(tree, 'data-update-apply-phase', 'running').props['data-region'], 'update-apply-status');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-action'] === 'update-apply-cancel').length,
+    1,
+    'the resumed install is cancellable, so a reload loses nothing',
+  );
+});
+
+test('client: a structured refusal from the host is shown as its own sentence, and nothing polls', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.updateCheck]: { payload: updateAvailableWithTag() },
+      [PATHS.updateApply]: (url, init) =>
+        init && init.method === 'POST'
+          ? {
+              payload: {
+                ok: false,
+                code: 'development-link',
+                message: 'this profile installs dsh-prompt-setting from a local path (link:../x)',
+                manual: { releaseUrl: 'https://github.com/zangxx66/dsh-prompt-setting/releases/tag/0.9.9' },
+              },
+            }
+          : { payload: { ok: true, status: null } },
+    }),
+  });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'update-apply' });
+  tree = page.draw();
+  clickButton(tree, { 'data-action': 'confirm-yes' });
+  await flushApply();
+  tree = page.draw();
+
+  assert.match(strings(tree).join(' '), /link:\.\.\/x/, 'the refusal’s own reason reaches the page');
+  assert.equal(oneBy(tree, 'data-update-apply-phase', 'failed').props['data-region'], 'update-apply-status');
+  const posts = page.router.calls.filter((call) => call.init && call.init.method === 'POST');
+  assert.equal(posts.length, 1, 'a refusal is not retried in a loop');
+});
+
+test('client: 「高级」 carries the same install control, so dismissing the banner loses nothing', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.updateCheck]: { payload: updateAvailableWithTag() },
+      [PATHS.updateApply]: { payload: { ok: true, status: null } },
+    }),
+  });
+  const tree = await page.flush();
+  // The「高级」card is opened by its own tab click rather than through
+  // `openTab`/`flush`: this harness re-runs every effect on a flush (its hooks
+  // runtime compares no dependencies), so a flush would legitimately re-run the
+  // update check — and that is the *check* resetting its own view state, not the
+  // dismissal being lost.
+  clickAnyTab(tree, 'advanced');
+  const advanced = page.draw();
+  assert.equal(updateBanner(advanced).length, 1, 'the banner is still there to dismiss');
+  clickButton(advanced, { 'data-action': 'update-dismiss' });
+  const dismissed = page.draw();
+  assert.equal(updateBanner(dismissed).length, 0, 'dismissing removes the banner');
+  // The install control is not in the banner, so dismissal cannot lose it.
+  const card = oneBy(dismissed, 'data-region', 'update-apply');
+  assert.equal(card.props['data-region'], 'update-apply');
+  oneBy(dismissed, 'data-action', 'update-apply');
+});
+
+test('client: the install copy exists in both dictionaries and never promises an automatic restart', async () => {
+  const page = makePage({ responses: defaultResponses({ [PATHS.updateCheck]: { payload: updateAvailableWithTag() } }) });
+  const zh = page.zh;
+  const en = page.mounted.dictionaries[0].dict.en;
+  for (const key of ['updateApply', 'updateApplyTitle', 'updateApplyBody', 'updateApplyRestartNote', 'updateApplying', 'updateApplyCancel', 'updateApplyCancelling', 'updateApplyDone', 'updateApplyApplied', 'updateApplyFailed', 'updateApplyRetry', 'updateApplyCancelled', 'updateApplyUnknown', 'updateApplyManualLink']) {
+    assert.equal(typeof zh[key], 'string', `zh.${key} exists`);
+    assert.equal(typeof en[key], 'string', `en.${key} exists`);
+  }
+  assert.match(zh.updateApplyBody, /不自动重启/);
+  assert.match(zh.updateApplyRestartNote, /手动重启/);
+  // No string anywhere in either dictionary may promise a restart the page does.
+  for (const table of [zh, en]) {
+    for (const [key, value] of Object.entries(table)) {
+      if (typeof value !== 'string') continue;
+      assert.equal(
+        /自动重启/.test(value) && !/不自动重启/.test(value),
+        false,
+        `${key} must not promise an automatic restart`,
+      );
+    }
+  }
 });
 
 // #endregion

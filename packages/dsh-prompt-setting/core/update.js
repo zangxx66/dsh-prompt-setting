@@ -275,6 +275,18 @@ export function createUpdateChecker(options = {}) {
       enabled: preferences()[UPDATE_CHECK_FLAG],
       current: currentVersion,
       latest: null,
+      /**
+       * The tag GitHub actually published, verbatim (no `v` stripped, no
+       * reformatting) — or `null` when the answer is not about a release.
+       *
+       * g-032: `latest` is a *version* and is therefore canonicalized
+       * (`v0.1.2` → `0.1.2`), which is exactly right for display and exactly
+       * wrong for a URL: the release **asset** path is keyed by the tag as
+       * published. Both now travel on the same payload, from the same request,
+       * so the "install this version" button can never name a tag the check did
+       * not see — and the existing fields keep their shapes.
+       */
+      latestTag: null,
       hasUpdate: null,
       releaseUrl: null,
       publishedAt: null,
@@ -466,6 +478,7 @@ export function createUpdateChecker(options = {}) {
     return settle(
       payload({
         latest: formatSemver(parsed),
+        latestTag: tag,
         hasUpdate: newer,
         releaseUrl: htmlUrl ?? releasePageUrl(slug, tag),
         publishedAt: typeof body.published_at === 'string' ? body.published_at : null,

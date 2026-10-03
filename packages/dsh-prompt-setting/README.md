@@ -44,11 +44,12 @@
   > the change plan is shown before anything is written.
 
 - **高级 / Advanced** —— 旧版覆盖的只读列表、「清除全部覆盖」与「整层恢复默认」两个二次确认按钮、
-  **「检查更新」开关**（默认开启；关闭后本插件**完全不再联网**），以及完整状态区
-  （挂载情况 / 构建戳 / 渲染器自检）。
+  **「检查更新」开关**（默认开启；关闭后本插件**完全不再联网**）、**「立即更新」**（把提示条里的版本
+  交给宿主安装，装完需要你**手动重启** `dsh web`），以及完整状态区（挂载情况 / 构建戳 / 渲染器自检）。
   > A read-only list of legacy overrides, two double-confirm buttons ("clear all overrides", "reset the
   > whole layer"), the **"Check for updates" switch** (on by default; off means this plugin makes **no
-  > network request at all**), and a full status area (mount state / build fingerprint / renderer
+  > network request at all**), an **"Update now"** button (the host installs the version the banner named;
+  > you restart `dsh web` yourself), and a full status area (mount state / build fingerprint / renderer
   > self-check).
 
 其它特性 / More:
@@ -80,14 +81,15 @@
   > **What**: the **host** (Node side) sends one `GET` to that GitHub Releases API URL, derived from
   > this package's `package.json`. Read-only: no body, no cookies, no local/session/workspace data;
   > `User-Agent: dsh-prompt-setting/<version>`; 5-second timeout.
-- **结果怎么用**：只有「确实有更新」时，页面顶部才出现一条**可关闭**的提示（新版本号 + 发布页链接）。
-  没有更新、仓库还没发 release、请求失败 —— 页面顶部**一律零提示、零报错**；其中「仓库还没发 release /
-  版本号不可解析」是**上游事实**，只在「高级」的开关卡片里用一句中性文案说明（**检查失败不显示该句**）。
+- **结果怎么用**：只有「确实有更新」时，页面顶部才出现一条**可关闭**的提示（新版本号 + 发布页链接 +
+  **「立即更新」**按钮）。没有更新、仓库还没发 release、请求失败 —— 页面顶部**一律零提示、零报错**；
+  其中「仓库还没发 release / 版本号不可解析」是**上游事实**，只在「高级」的开关卡片里用一句中性
+  文案说明（**检查失败不显示该句**）。
   > **What it does with the answer**: only a confirmed newer release shows a **dismissible** banner
-  > (the version + a link to the release page). No update, no release yet, or a failed request shows
-  > **nothing at all** at the top of the page — no error either. "No release yet / unparsable tag" is a
-  > *fact about upstream*, so it gets one neutral line inside the Advanced switch card; a **failed**
-  > check does not get that line.
+  > (the version, a link to the release page, and an **"Update now"** button). No update, no release
+  > yet, or a failed request shows **nothing at all** at the top of the page — no error either. "No
+  > release yet / unparsable tag" is a *fact about upstream*, so it gets one neutral line inside the
+  > Advanced switch card; a **failed** check does not get that line.
 - **怎么关**：设置 →「Prompt 管理」→「高级」→ 关闭**「检查更新」**。关闭后**零请求**（包括打开
   设置页时：页面本地就知道不该问，连这个请求都不会发），并写入
   `$DSH_HOME/prompt-setting/preferences.json` 的 `{"updateCheck": false}`。想手工改也一样：
@@ -97,9 +99,45 @@
   > request is never sent), and `<DSH_HOME>/prompt-setting/preferences.json` gets
   > `{"updateCheck": false}`. Hand-editing works the same way: set it to `false`, or delete the file to
   > return to the default (on).
-- **它不做什么**：不自动下载、不自动安装、不做自更新，也不检查 DSH 平台版本。
-  > **What it never does**: no automatic download, no automatic install, no self-update, and no DSH
-  > platform version check.
+- **它不做什么**：不自动下载、不自动安装、**不自动重启**，也不检查 DSH 平台版本。
+  > **What it never does**: no automatic download, no automatic install, **no automatic restart**, and
+  > no DSH platform version check.
+
+## 「立即更新」/ Update now
+
+**装了新版本，重启还是你自己来。** 提示条上的「立即更新」会先弹一次二次确认（写明装完要手动重启），
+确认后由**宿主**通过官方插件管理器把那个 Release 的 `.tgz` 包装进当前 profile。装完页面只会说
+「已安装 vX.Y.Z，请手动重启 `dsh web` 生效」——**这个插件不会重启任何东西**。
+
+> **The new version gets installed; the restart is still yours.** "Update now" opens a second
+> confirmation first (which says the restart is manual); on confirm the **host** installs that
+> release's `.tgz` into the current profile through the official plugin manager. Afterwards the page
+> says "vX.Y.Z is installed — restart dsh web yourself". **Nothing in this plugin restarts anything.**
+
+- **装的是什么**：`https://github.com/zangxx66/dsh-prompt-setting/releases/download/<tag>/dsh-prompt-setting-<version>.tgz`，
+  `<tag>`/`<version>` 取自**同一次**更新检查（所以「提示的版本 = 安装的版本」，且命中 6 小时缓存时
+  **零外呼**）。这是 release 资产，安装时**不需要** pnpm 的构建脚本审批。
+  > **What**: that release **asset** URL, whose `<tag>`/`<version>` come from the *same* update check
+  > (so the version announced is the version installed, and a cached check costs zero outbound
+  > requests). Installing it needs no pnpm build-script approval.
+- **怎么进行**：点击后立刻返回一个 `requestId`，页面每隔 1.5～5 秒查一次进度（最长 16 分钟），
+  期间可以**取消**；失败会给出分类原因（资产缺失 404 / 构建被拦 / 网络 / 缺 pnpm …）+ 重试按钮，
+  **绝不自动重试、绝不自动重启**。
+  > **How**: the click returns a `requestId` at once and the page polls it every 1.5–5 s (up to 16
+  > minutes), with a **cancel** button while it runs. A failure names its category (asset missing 404 /
+  > build blocked / network / pnpm missing / …) and offers retry — **never an automatic retry, never an
+  > automatic restart**.
+- **`link:` 安装会被拒绝**：如果这个 profile 里的 `dsh-prompt-setting` 是 `link:`/本地路径（也就是
+  开发工作树），按钮会**拒绝执行**并给出手动更新指引 —— 绝不会把开发链接覆盖成一个发布版本。
+  > **A `link:` install is refused**: if the profile holds this package as a `link:`/local path (a
+  > development working tree), the button refuses and points at the manual route — it never overwrites
+  > that link with a published version.
+- **发布方需要知道的一件事**：每个 release 都必须把 `npm pack` 产物作为资产上传，命名固定
+  `dsh-prompt-setting-<version>.tgz`；本包**不得**新增 `postinstall`/`install` 脚本（带它们的
+  tarball 会被 pnpm 的构建门禁拦下）。做法见 `NOTES.md` §107 第六节。
+  > **One thing a releaser must know**: every release must upload its `npm pack` asset, named exactly
+  > `dsh-prompt-setting-<version>.tgz`, and this package must **not** add `postinstall`/`install`
+  > scripts (a tarball carrying one is stopped by pnpm's build gate). See `NOTES.md` §107.
 
 ## 「我的 Prompt」的生效范围与边界 / What "My Prompt" does — and does not do
 

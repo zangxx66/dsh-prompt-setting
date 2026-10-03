@@ -256,6 +256,30 @@ window.__ModuleLoader__.load({
      * "ask once, then let the Host answer".
      */
     const UPDATE_PREF_KEY = 'dsh-prompt-setting.updateCheck';
+    /**
+     * g-032: 「立即更新」— the install route the host owns.
+     *
+     * `POST` starts an install and answers with a `requestId` **immediately**,
+     * `GET ?requestId=` reports its phase and `POST .../cancel` stops it. The
+     * page polls the `GET` because an install legitimately takes minutes (a
+     * profile lock wait plus pnpm's own silence timeout), and because the host's
+     * own record is the only one that survives a page reload.
+     */
+    const UPDATE_APPLY_PATH = '/prompt-setting/update-apply';
+    /** The cancel face of the same request. */
+    const UPDATE_APPLY_CANCEL_PATH = '/prompt-setting/update-apply/cancel';
+    /** How often the page asks for the install's phase, and the two bounds on that loop. */
+    const UPDATE_APPLY_POLL_MS = 1500;
+    const UPDATE_APPLY_POLL_MAX_MS = 5000;
+    /**
+     * The longest a poll loop may run before it stops asking and says so.
+     *
+     * The host's own worst case is bounded (a ~2 min lock wait plus a 10 min
+     * silence timeout), so a loop that outlives this is not waiting for an
+     * install any more — it is waiting for a host that went away. Stopping is
+     * what keeps a backgrounded page from polling forever.
+     */
+    const UPDATE_APPLY_POLL_BUDGET_MS = 16 * 60 * 1000;
     /** Sentinel for "no session": never a legal `Agent.id`, so it cannot collide. */
     const GLOBAL_SESSION = '\u0000global';
     /**
@@ -545,6 +569,29 @@ window.__ModuleLoader__.load({
       updateSwitching: '保存中…',
       updateUnknown: '上游暂时没有可用的版本信息。',
       updateLatestKnown: '最新版本 {latest}',
+      // g-032:「立即更新」. The whole feature rests on one promise the copy has
+      // to keep: the install is done by the host, and the **user** restarts. So
+      // every string that describes the outcome says so, and no string anywhere
+      // promises an automatic restart.
+      updateApply: '立即更新',
+      updateApplyTitle: '更新到 v{latest}',
+      updateApplyBody:
+        '宿主将通过官方插件管理器安装 v{latest} 的 Release 包（下载到本机 profile，不自动重启）。',
+      updateApplyRestartNote: '安装完成后需要你手动重启 dsh web 才会生效。',
+      updateApplying: '正在安装…',
+      updateApplyStarting: '正在启动安装…',
+      updateApplyCancel: '取消安装',
+      updateApplyCancelling: '正在取消…',
+      updateApplyElapsed: '已用时 {elapsed}',
+      updateApplyDone: '已安装 v{version}，请手动重启 dsh web 生效。',
+      updateApplyApplied: '已安装 v{version} 并已生效。',
+      updateApplyFailed: '安装失败：{reason}',
+      updateApplyRetry: '重试',
+      updateApplyCancelled: '已取消安装；profile 文件已还原。',
+      updateApplyUnknown: '这次安装的状态已不可查（可能已完成，也可能是页面刷新过）。请重启 dsh web 或用「立即重查」确认版本。',
+      updateApplyManual: '也可以手动更新：{hint}',
+      updateApplyManualLink: '打开 {tag} 的 Release 页面',
+      updateApplyReused: '已有一个安装在进行中。',
       viewSections: '分段',
       viewFull: '全文',
       // g-015: the four first-level tabs, in their fixed presentation order.
@@ -906,6 +953,29 @@ window.__ModuleLoader__.load({
       updateSwitching: 'Saving…',
       updateUnknown: 'Upstream has no usable version information right now.',
       updateLatestKnown: 'Latest version {latest}',
+      // ---- g-032:「Update now」(mirrors the zh block above). Nothing here may
+      // promise an automatic restart: the install is the host's job and the
+      // restart is the user's.
+      updateApply: 'Update now',
+      updateApplyTitle: 'Update to v{latest}',
+      updateApplyBody:
+        'The host will install the v{latest} release through the official plugin manager (into this profile; no automatic restart).',
+      updateApplyRestartNote: 'You will need to restart dsh web yourself for the new version to take effect.',
+      updateApplying: 'Installing…',
+      updateApplyStarting: 'Starting the install…',
+      updateApplyCancel: 'Cancel install',
+      updateApplyCancelling: 'Cancelling…',
+      updateApplyElapsed: 'Elapsed {elapsed}',
+      updateApplyDone: 'v{version} is installed — restart dsh web to put it to work.',
+      updateApplyApplied: 'v{version} is installed and already in effect.',
+      updateApplyFailed: 'The install failed: {reason}',
+      updateApplyRetry: 'Retry',
+      updateApplyCancelled: 'The install was cancelled; the profile files were restored.',
+      updateApplyUnknown:
+        'This install can no longer be looked up (it may have finished, or this page may have been reloaded). Restart dsh web, or use "Check now" to confirm the version.',
+      updateApplyManual: 'You can also update by hand: {hint}',
+      updateApplyManualLink: 'Open the {tag} release page',
+      updateApplyReused: 'An install is already running.',
       viewSections: 'Sections',
       viewFull: 'Full text',
       tabMine: 'My Prompt',
@@ -2592,6 +2662,10 @@ window.__ModuleLoader__.load({
                   : '',
             status: response.status,
             network: false,
+            // g-032: a refusal can carry a manual route ("update by hand"), and
+            // it must survive the transport rather than be re-derived by every
+            // caller.
+            manual: payload && typeof payload.manual === 'object' ? payload.manual : null,
           },
         };
       } catch (error) {
@@ -5218,6 +5292,13 @@ window.__ModuleLoader__.load({
             ? fmt(t('resetLayerEmpty'), { layer: layerLabel(t, confirm.layer) })
             : fmt(t('resetLayerBody'), { layer: layerLabel(t, confirm.layer), count: confirm.count }),
         );
+      } else if (confirm.kind === 'update-apply') {
+        // g-032: the「立即更新」confirmation. It states the version, who installs
+        // it and — the part a user must not discover afterwards — that the page
+        // will **not** restart anything; the last restart is theirs to do.
+        body.push(fmt(t('updateApplyTitle'), { latest: confirm.latest ?? '' }));
+        body.push(fmt(t('updateApplyBody'), { latest: confirm.latest ?? '' }));
+        body.push(t('updateApplyRestartNote'));
       } else {
         body.push(t('importConfirmTitle'));
         body.push(fmt(t('importConfirmBody'), { mode: t(m.importMode === 'replace' ? 'importModeReplace' : 'importModeMerge') }));
@@ -5850,13 +5931,21 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * g-030: the dismissible「有新版本」banner.
+     * g-030: the dismissible「有新版本」banner — and, since g-032, the place
+     * 「立即更新」 starts.
      *
      * It renders **only** for a confirmed newer release: every other outcome
      * (no update, no release upstream, an unparsable tag, a network failure, a
      * timeout, the switch being off) returns `null` here, which is the page's
      * half of "无更新 / 失败 / 无 release：零提示、零报错红字". Nothing in this
      * function can produce an error banner, and it never writes state.
+     *
+     * g-032 keeps that rule and adds one: while an install is running, done or
+     * failed, the banner shows **that** instead of「有新版本」. The alternative —
+     * leaving the version pitch up after the install already started — is what
+     * makes a user click「立即更新」twice and then wonder which one is real. The
+     * dismissal stays available in every state (the install is the host's and
+     * keeps running without this page).
      *
      * The link opens the release page in a new tab with `rel="noreferrer
      * noopener"` (a `target="_blank"` without it hands the opened page a
@@ -5871,6 +5960,9 @@ window.__ModuleLoader__.load({
       if (u === null || u === undefined || u.dismissed === true || u.data === null) return null;
       const latest = typeof u.data.latest === 'string' ? u.data.latest : '';
       if (latest.length === 0) return null;
+      const apply = u.apply ?? null;
+      const settled = apply !== null && apply.phase !== 'running' && apply.phase !== 'cancelling';
+      const running = apply !== null && (apply.phase === 'running' || apply.phase === 'cancelling');
       return h(
         'div',
         {
@@ -5878,9 +5970,10 @@ window.__ModuleLoader__.load({
           'data-region': 'update-notice',
           'data-update-available': 'true',
           'data-update-latest': latest,
+          'data-update-apply': apply === null ? 'idle' : String(apply.phase),
           style: {
             ...cardStyle,
-            borderColor: token.stateWarn,
+            borderColor: settled && apply.phase === 'failed' ? token.stateError : token.stateWarn,
             display: 'flex',
             alignItems: 'center',
             gap: 8,
@@ -5888,13 +5981,18 @@ window.__ModuleLoader__.load({
             fontSize: 13,
           },
         },
-        h('span', { style: { flex: '1 1 240px', minWidth: 0 } },
-          fmt(t('updateAvailable'), {
-            latest,
-            current: typeof u.data.current === 'string' ? u.data.current : t('stPluginVersionUnknown'),
-          }),
-        ),
-        typeof u.data.releaseUrl === 'string' && u.data.releaseUrl.length > 0
+        // The install's own line replaces the version pitch once it exists: two
+        // competing statements about the same version is the one thing this
+        // banner must never show.
+        apply === null
+          ? h('span', { style: { flex: '1 1 240px', minWidth: 0 } },
+              fmt(t('updateAvailable'), {
+                latest,
+                current: typeof u.data.current === 'string' ? u.data.current : t('stPluginVersionUnknown'),
+              }),
+            )
+          : renderUpdateApplyStatus(t, m, a),
+        apply === null && typeof u.data.releaseUrl === 'string' && u.data.releaseUrl.length > 0
           ? h(
               'a',
               {
@@ -5908,12 +6006,159 @@ window.__ModuleLoader__.load({
               t('updateReleaseLink'),
             )
           : null,
+        // g-032:「立即更新」. Disabled while an install runs (the cancel button
+        // beside it is the live control then) and while the page is busy with
+        // any other write, so two writes can never race.
+        apply === null || settled
+          ? h(
+              UI.Button,
+              {
+                key: 'apply',
+                variant: 'primary',
+                'data-action': 'update-apply',
+                disabled: m.busy || running,
+                onClick: () => a.requestUpdateApply(latest, u.data.latestTag ?? null),
+              },
+              t('updateApply'),
+            )
+          : null,
         h(
           UI.Button,
           { key: 'dismiss', 'data-action': 'update-dismiss', onClick: a.dismissUpdate },
           t('updateDismiss'),
         ),
       );
+    }
+
+    /**
+     * g-032: the install's own line, rendered in the banner **and** in「高级」.
+     *
+     * One function, two readers, because the two must never disagree about what
+     * is happening: the banner is what the user sees while they are deciding,
+     * and the 「高级」 card is where they come back when they dismissed it.
+     *
+     * The three states the goal names are exactly three branches plus the two
+     * the manager can really produce:
+     *   - `running` — a spinner-less sentence, the elapsed time, and a **cancel**
+     *     button while the install has not reached the apply step. Nothing is
+     *     disabled by the elapsed time: an install that waits two minutes for the
+     *     profile lock is normal, not stuck;
+     *   - `done` — `restart-required` is a **success** and the sentence is「已安装
+     *     vX.Y.Z，请手动重启 dsh web 生效」. `applied` is the rarer live case and
+     *     says so; neither restarts anything;
+     *   - `failed` — the host's own category, its sentence, and a retry button
+     *     when the category is retryable. Nothing retries by itself;
+     *   - `cancelled` / `unknown` — the two honest endings: the files were
+     *     restored, or this page can no longer look the request up.
+     *
+     * The manual route (`manual.releaseUrl`) is rendered whenever the host sent
+     * one: a failure whose only advice is "try again" would leave a user with no
+     * way forward when the release simply has no asset yet.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the status element, or null when there is nothing to say.
+     */
+    function renderUpdateApplyStatus(t, m, a) {
+      const u = m.update;
+      if (u === null || u === undefined || u.apply === null || u.apply === undefined) return null;
+      const apply = u.apply;
+      // The host's three client-facing states are `running` / `done` / `failed`
+      // (plus `cancelled` / `unknown`); its `phase` says *which* live step it is
+      // in (`installing` / `cancelling`) and is what the stale-closure-free
+      // `data-*` marker reports. Branching on `status` is deliberate: the two
+      // names must not silently swap, and a phase this page does not know still
+      // reads as the state it came under rather than as a failure.
+      const phase =
+        typeof apply.status === 'string'
+          ? apply.status
+          : typeof apply.phase === 'string'
+            ? apply.phase
+            : 'unknown';
+      const version = typeof apply.version === 'string' && apply.version.length > 0 ? apply.version : null;
+      const latest = version ?? apply.latest ?? '';
+      const lines = [];
+      const buttons = [];
+      if (phase === 'running' || phase === 'cancelling') {
+        const elapsed = formatElapsed(u.applyElapsed);
+        lines.push(`${t(phase === 'cancelling' ? 'updateApplyCancelling' : 'updateApplying')}${elapsed === null ? '' : ` ${fmt(t('updateApplyElapsed'), { elapsed })}`}`);
+        buttons.push(
+          h(
+            UI.Button,
+            {
+              key: 'cancel',
+              'data-action': 'update-apply-cancel',
+              disabled: phase === 'cancelling',
+              onClick: a.cancelUpdateApply,
+            },
+            t(phase === 'cancelling' ? 'updateApplyCancelling' : 'updateApplyCancel'),
+          ),
+        );
+      } else if (phase === 'done') {
+        lines.push(
+          fmt(t(apply.restartRequired === true ? 'updateApplyDone' : 'updateApplyApplied'), {
+            version: latest === '' ? t('stPluginVersionUnknown') : latest,
+          }),
+        );
+      } else if (phase === 'cancelled') {
+        lines.push(t('updateApplyCancelled'));
+      } else if (phase === 'unknown') {
+        lines.push(t('updateApplyUnknown'));
+      } else {
+        const error = apply.error ?? {};
+        const reason = typeof error.message === 'string' && error.message.length > 0 ? error.message : t('updateApplyUnknown');
+        lines.push(fmt(t('updateApplyFailed'), { reason }));
+        if (typeof error.diagnostic === 'string' && error.diagnostic.length > 0) lines.push(error.diagnostic);
+        buttons.push(
+          h(
+            UI.Button,
+            { key: 'retry', 'data-action': 'update-apply-retry', disabled: m.busy, onClick: a.retryUpdateApply },
+            t('updateApplyRetry'),
+          ),
+        );
+        const manual = error.manual;
+        if (manual !== null && typeof manual === 'object' && typeof manual.releaseUrl === 'string' && manual.releaseUrl.length > 0) {
+          buttons.push(
+            h(
+              'a',
+              {
+                key: 'manual',
+                href: manual.releaseUrl,
+                target: '_blank',
+                rel: 'noreferrer noopener',
+                'data-update-apply-manual': 'true',
+                style: { color: token.stateBusiness },
+              },
+              fmt(t('updateApplyManualLink'), { tag: apply.tag ?? '' }),
+            ),
+          );
+        }
+      }
+      return h(
+        'div',
+        {
+          key: 'update-apply-status',
+          'data-region': 'update-apply-status',
+          'data-update-apply-phase': phase,
+          'data-update-apply-step': typeof apply.phase === 'string' ? apply.phase : null,
+          style: { display: 'flex', flexDirection: 'column', gap: 4, flex: '1 1 240px', minWidth: 0 },
+        },
+        ...lines.map((line, index) => h('span', { key: `line-${index}`, style: { fontSize: 13 } }, line)),
+        buttons.length === 0 ? null : h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } }, ...buttons),
+      );
+    }
+
+    /**
+     * Format the running install's age for the page.
+     * @param ms - milliseconds since the install started, or anything else.
+     * @returns `m:ss`, or `null` when there is nothing usable to show.
+     */
+    function formatElapsed(ms) {
+      if (!Number.isFinite(ms) || ms < 0) return null;
+      const total = Math.floor(ms / 1000);
+      const minutes = Math.floor(total / 60);
+      const seconds = total % 60;
+      return `${minutes}:${String(seconds).padStart(2, '0')}`;
     }
 
     /**
@@ -6005,6 +6250,27 @@ window.__ModuleLoader__.load({
               t('updateUnknown'),
             )
           : null,
+        // g-032: the install's state and its controls live here as well as in
+        // the banner. Dismissing the banner must not lose the only place a
+        // running install can be cancelled or a failed one retried.
+        latest === null || !enabled
+          ? null
+          : h(
+              'div',
+              { 'data-region': 'update-apply', style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+              (u.apply ?? null) === null
+                ? h(
+                    UI.Button,
+                    {
+                      variant: 'primary',
+                      'data-action': 'update-apply',
+                      disabled: m.busy,
+                      onClick: () => a.requestUpdateApply(latest, (check === null ? null : check.latestTag) ?? null),
+                    },
+                    t('updateApply'),
+                  )
+                : renderUpdateApplyStatus(t, m, a),
+            ),
       );
     }
 
@@ -6307,6 +6573,18 @@ window.__ModuleLoader__.load({
         check: null,
         dismissed: false,
         phase: 'idle',
+        /**
+         * g-032: the running (or last) install, exactly as the **Host** reports
+         * it. `null` until this page starts one, and then never guessed at: the
+         * phase, the version, the application verdict and the structured error
+         * all come from `GET /update-apply`, because the official manager
+         * deletes its own record when an install settles.
+         */
+        apply: null,
+        /** Milliseconds since that install started, for the「已用时」line. */
+        applyElapsed: null,
+        /** The wall-clock start, which drives the elapsed ticker. */
+        applyStartedAt: null,
       });
 
       const session = selection === null ? seat.currentId || GLOBAL_SESSION : selection;
@@ -6391,7 +6669,10 @@ window.__ModuleLoader__.load({
         // answer (`hasUpdate:null`) is explained only inside 「高级」's card, by
         // `renderUpdateSetting`.
         if (readUpdatePref() === false) {
-          setUpdate({ enabled: false, data: null, check: null, dismissed: false, phase: 'ready' });
+          // The g-032 install state is carried over, never reset by a check:
+          // this effect also re-runs on `reload`, and losing a running install's
+          // row there would take its cancel button with it.
+          setUpdate((current) => ({ ...current, enabled: false, data: null, check: null, dismissed: false, phase: 'ready' }));
         } else {
           const checkUpdate = async () => {
             const result = await requestJson(UPDATE_CHECK_PATH);
@@ -6404,13 +6685,14 @@ window.__ModuleLoader__.load({
             }
             const enabled = result.payload.enabled !== false;
             writeUpdatePref(enabled);
-            setUpdate({
+            setUpdate((current) => ({
+              ...current,
               enabled,
               data: result.payload.hasUpdate === true && typeof result.payload.latest === 'string' ? result.payload : null,
               check: result.payload,
               dismissed: false,
               phase: 'ready',
-            });
+            }));
           };
           void checkUpdate();
         }
@@ -6965,13 +7247,14 @@ window.__ModuleLoader__.load({
         }
         const enabled = result.payload.enabled !== false;
         writeUpdatePref(enabled);
-        setUpdate({
+        setUpdate((current) => ({
+          ...current,
           enabled,
           data: result.payload.hasUpdate === true && typeof result.payload.latest === 'string' ? result.payload : null,
           check: result.payload,
           dismissed: false,
           phase: 'ready',
-        });
+        }));
       };
 
       /**
@@ -7003,13 +7286,261 @@ window.__ModuleLoader__.load({
         const enabled = result.payload && result.payload.enabled === false ? false : true;
         writeUpdatePref(enabled);
         // The switch changed, so the previous check's fact is stale: it is
-        // dropped, and turning the switch on immediately asks again below.
-        setUpdate({ enabled, data: null, check: null, dismissed: false, phase: 'ready' });
+        // dropped, and turning the switch on immediately asks again below. The
+        // g-032 install state is **kept**: a switch flip is not an install, and
+        // forgetting a running one would strand it with no cancel button.
+        setUpdate((current) => ({ ...current, enabled, data: null, check: null, dismissed: false, phase: 'ready' }));
         setNotice({
           tone: 'success',
           text: fmt(t('updateToggleSaved'), { state: t(enabled ? 'updateSettingOn' : 'updateSettingOff') }),
         });
         if (enabled) await recheckUpdate();
+      };
+
+      /**
+       * g-032:「立即更新」— the three actions the banner and 「高级」 share.
+       *
+       * The install is the **host's** work: this page starts it, polls it and can
+       * cancel it, and it never fakes a phase locally. Everything on screen comes
+       * from `GET /update-apply`, which is the only record that survives the
+       * official manager deleting a settled request.
+       */
+
+      /** Where one install's request id is remembered across a page reload. */
+      const UPDATE_APPLY_STORE_KEY = 'dsh-prompt-setting.updateApply';
+      /** How long a remembered id is still worth resuming. */
+      const UPDATE_APPLY_RESUME_MS = 30 * 60 * 1000;
+
+      /**
+       * The two helpers behind the reload-resume, defined before their readers.
+       *
+       * `sessionStorage` (not `localStorage`) on purpose: this is one tab's
+       * in-flight work, and a second tab opened later must not adopt it. Both
+       * sides are best-effort — a browser that refuses storage loses the resume,
+       * never the install, which the **host** is running either way.
+       */
+      const rememberApply = (requestId, startedAt) => {
+        try {
+          if (typeof sessionStorage === 'undefined' || sessionStorage === null) return;
+          if (requestId === null) sessionStorage.removeItem(UPDATE_APPLY_STORE_KEY);
+          else sessionStorage.setItem(UPDATE_APPLY_STORE_KEY, JSON.stringify({ requestId, at: startedAt ?? Date.now() }));
+        } catch {
+          // A browser that refuses storage only loses the reload-resume.
+        }
+      };
+
+      /** Read back the remembered install, if it is recent enough to be one. */
+      const recalledApply = () => {
+        try {
+          if (typeof sessionStorage === 'undefined' || sessionStorage === null) return null;
+          const raw = sessionStorage.getItem(UPDATE_APPLY_STORE_KEY);
+          if (typeof raw !== 'string' || raw.length === 0) return null;
+          const parsed = JSON.parse(raw);
+          const requestId = parsed !== null && typeof parsed.requestId === 'string' ? parsed.requestId : null;
+          const at = Number.isFinite(parsed?.at) ? parsed.at : 0;
+          if (requestId === null || Date.now() - at > UPDATE_APPLY_RESUME_MS) return null;
+          return { requestId, at };
+        } catch {
+          return null;
+        }
+      };
+
+      /**
+       * Resume an install that was already running when this page mounted.
+       *
+       * This is why the host tracks its own request table and answers a bare
+       * `GET`: the official manager deletes a settled request, and a page that
+       * was reloaded mid-install has no id in memory. The remembered id is tried
+       * first (it is exact), then the host's own oldest live request — the one
+       * request that can only name an install this mount started.
+       *
+       * Runs once per mount, deliberately: its own polling must not be restarted
+       * by the state it writes.
+       */
+      React.useEffect(() => {
+        let cancelled = false;
+        const resume = async () => {
+          const remembered = recalledApply();
+          let status = null;
+          if (remembered !== null) {
+            const result = await requestJson(`${UPDATE_APPLY_PATH}?requestId=${encodeURIComponent(remembered.requestId)}`);
+            if (cancelled) return;
+            status = result.ok ? result.payload.status ?? null : null;
+            if (status === null || status.status !== 'running') {
+              // Settled, evicted, or never real: ask the host directly, because a
+              // *running* install it knows about is still worth showing.
+              const live = await requestJson(UPDATE_APPLY_PATH);
+              if (cancelled) return;
+              status = live.ok ? live.payload.status ?? null : null;
+            }
+          } else {
+            const live = await requestJson(UPDATE_APPLY_PATH);
+            if (cancelled) return;
+            status = live.ok ? live.payload.status ?? null : null;
+          }
+          if (cancelled || status === null || status.status !== 'running') {
+            if (!cancelled && status !== null && status.status !== 'running') {
+              setUpdate((current) => ({ ...current, apply: status, applyElapsed: null }));
+            }
+            return;
+          }
+          const startedAt = Date.now();
+          rememberApply(status.requestId, startedAt);
+          setUpdate((current) => ({ ...current, apply: status, applyElapsed: 0, applyStartedAt: startedAt }));
+          await pollApply(status.requestId, startedAt);
+        };
+        void resume();
+        return () => {
+          cancelled = true;
+        };
+      }, []);
+
+      /** The elapsed-time ticker, so「已用时」is a fact rather than a decoration. */
+      React.useEffect(() => {
+        const startedAt = update.applyStartedAt;
+        if (!Number.isFinite(startedAt)) return undefined;
+        const timer = setInterval(() => setUpdate((current) => ({ ...current, applyElapsed: Date.now() - startedAt })), 1000);
+        return () => clearInterval(timer);
+      }, [update.applyStartedAt]);
+
+      /**
+       * Poll one install until it settles.
+       *
+       * The loop is bounded twice — the host's own worst case (a lock wait plus
+       * pnpm's silence timeout) and a hard budget — so a tab cannot poll forever
+       * after the host went away. A 「not known any more」 answer is a real ending,
+       * not a reason to keep asking: the copy says what it means.
+       *
+       * `cancelled` is a local flag rather than a React state read, because this
+       * function is captured by a promise that outlives the render that started
+       * it.
+       */
+      const pollApply = async (requestId, startedAt) => {
+        let delay = UPDATE_APPLY_POLL_MS;
+        while (Date.now() - startedAt < UPDATE_APPLY_POLL_BUDGET_MS) {
+          const result = await requestJson(`${UPDATE_APPLY_PATH}?requestId=${encodeURIComponent(requestId)}`);
+          if (!result.ok) {
+            setUpdate((current) => ({
+              ...current,
+              apply: { status: 'failed', phase: 'failed', error: result.error ?? {} },
+            }));
+            rememberApply(null);
+            return;
+          }
+          const status = result.payload.status ?? null;
+          if (status === null) {
+            setUpdate((current) => ({ ...current, apply: { status: 'unknown', phase: 'unknown' } }));
+            rememberApply(null);
+            return;
+          }
+          setUpdate((current) => ({
+            ...current,
+            apply: status,
+            applyElapsed: Date.now() - startedAt,
+          }));
+          if (status.status !== 'running') {
+            rememberApply(null);
+            return;
+          }
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          delay = Math.min(Math.round(delay * 1.4), UPDATE_APPLY_POLL_MAX_MS);
+        }
+        // The budget ran out with the host still reporting "running": stop
+        // asking, and say so rather than pretending to know.
+        setUpdate((current) => ({ ...current, apply: { status: 'unknown', phase: 'unknown' } }));
+        rememberApply(null);
+      };
+
+      /**
+       * Start one install. Never awaited by a click handler for longer than the
+       * host's own start route — that route answers with a `requestId` before the
+       * package manager runs, which is the whole reason it exists.
+       */
+      const startUpdateApply = async (latest, latestTag) => {
+        setBusy(true);
+        setNotice(null);
+        const result = await requestJson(UPDATE_APPLY_PATH, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(latestTag === null || latestTag === undefined ? {} : { tag: latestTag }),
+        });
+        setBusy(false);
+        if (!result.ok) {
+          // A structured refusal (`no update`, a `link:` profile, no plugin
+          // manager) arrives here, because this page's transport treats a body
+          // whose `ok` is not `true` as the failure it is. The **host's own
+          // sentence** is what the user needs; `errorText` falls back to it
+          // rather than to the code, so nothing renders as
+          // `error.development-link`.
+          const failure = result.error ?? {};
+          const reason = typeof failure.message === 'string' && failure.message.length > 0 ? failure.message : null;
+          setNotice({ tone: 'error', text: reason ?? errorText(t, failure) });
+          setUpdate((current) => ({
+            ...current,
+            apply: {
+              status: 'failed',
+              phase: 'failed',
+              requestId: current.apply === null ? null : current.apply.requestId,
+              version: current.apply === null ? null : current.apply.version,
+              tag: current.apply === null ? null : current.apply.tag,
+              error: { code: failure.code ?? null, message: reason, manual: failure.manual },
+            },
+          }));
+          return;
+        }
+        const status = result.payload.status ?? null;
+        const requestId = status === null ? null : status.requestId;
+        if (result.payload.reused === true) setNotice({ tone: 'info', text: t('updateApplyReused') });
+        if (requestId === null || requestId === undefined) {
+          setUpdate((current) => ({ ...current, apply: { status: 'unknown', phase: 'unknown' } }));
+          return;
+        }
+        const startedAt = Date.now();
+        rememberApply(requestId, startedAt);
+        setUpdate((current) => ({ ...current, apply: status, applyElapsed: 0, applyStartedAt: startedAt }));
+        await pollApply(requestId, startedAt);
+      };
+
+      /** The confirmation the button opens; the install itself runs on confirm. */
+      const requestUpdateApply = (latest, latestTag) =>
+        setConfirm({ kind: 'update-apply', latest, latestTag });
+
+      /** Confirm: start it, using the version the check reported. */
+      const confirmUpdateApply = async () => {
+        const data = update.data;
+        const latest = data !== null && typeof data.latest === 'string' ? data.latest : null;
+        if (latest === null) {
+          setNotice({ tone: 'error', text: t('updateApplyUnknown') });
+          return;
+        }
+        await startUpdateApply(latest, data.latestTag ?? null);
+      };
+
+      /** Cancel: ask the host, which forwards it to the plugin manager. */
+      const cancelUpdateApply = async () => {
+        const apply = update.apply ?? null;
+        const requestId = apply === null ? null : apply.requestId;
+        if (requestId === null || requestId === undefined) return;
+        setUpdate((current) => ({
+          ...current,
+          apply: current.apply === null ? null : { ...current.apply, phase: 'cancelling' },
+        }));
+        const result = await requestJson(UPDATE_APPLY_CANCEL_PATH, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ requestId }),
+        });
+        if (!result.ok || result.payload.ok !== true) {
+          // The poll is the source of truth and will report whatever really
+          // happened; a refused cancel says so on the notice line.
+          setNotice({ tone: 'error', text: errorText(t, result.error) || (result.payload && result.payload.code) || t('updateApplyUnknown') });
+        }
+      };
+
+      /** Retry a failed install: same confirm, same route, new request id. */
+      const retryUpdateApply = async () => {
+        setUpdate((current) => ({ ...current, apply: null, applyElapsed: null, applyStartedAt: null }));
+        await confirmUpdateApply();
       };
 
       const closeScope = () => setScopeOpen(false);
@@ -7040,6 +7571,10 @@ window.__ModuleLoader__.load({
         dismissUpdate: () => setUpdate((current) => ({ ...current, dismissed: true })),
         toggleUpdate,
         recheckUpdate,
+        // g-032:「立即更新」— open the confirmation, start it, cancel it, retry it.
+        requestUpdateApply,
+        cancelUpdateApply,
+        retryUpdateApply,
         requestMineReset: () => setConfirm({ kind: 'mine-reset', layer: mineLayer }),
         setAdvancedLayer: (value) => setAdvancedLayer(value === 'workspace' ? 'workspace' : 'user'),
         setSearch: (event) => setSearch(event && event.target ? String(event.target.value) : ''),
@@ -7162,6 +7697,10 @@ window.__ModuleLoader__.load({
           }
           if (pending.kind === 'reset-layer') {
             await resetLayer(pending.layer);
+            return;
+          }
+          if (pending.kind === 'update-apply') {
+            await confirmUpdateApply();
             return;
           }
           await applyImport();
