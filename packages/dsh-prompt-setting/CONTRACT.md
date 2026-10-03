@@ -3350,8 +3350,8 @@ A refusal — nothing was started, so there is no request to track:
 | `development-link` | The profile holds this package as `link:`/`file:`/a path (§18.1, A1). |
 | `no-update` | The last check confirmed no newer release, or could not decide. |
 | `invalid-request` | The body's `tag` disagrees with the check's tag, or a `requestId` is missing/empty/absurdly long. |
-| `asset-missing` | The release asset is not there (`404`). |
-| `asset-unverified` | The asset probe could not confirm it (a 401/403), so nothing was installed. |
+| `asset-missing` | The release asset is not there (`404`/`410`). |
+| `asset-unverified` | The asset probe could not confirm it (`401`/`403`), so nothing was installed. |
 
 **Why the route answers before the install settles.** One install can block for
 the profile lock (measured worst case ~2 minutes) plus pnpm's silence timeout
@@ -3479,9 +3479,9 @@ poll of a running install, which is bounded by
 | --- | --- | --- |
 | `data-region="update-notice"` `data-update-available="true"` | the banner (g-030) | A confirmed newer release is known. |
 | `data-update-latest` | the banner | The version the button would install. |
-| `data-update-apply` | the banner | `idle` before anything is started, otherwise the **`status`** the page branches on (`running`/`done`/`failed`/`cancelled`/`unknown`). |
-| `data-update-apply-status` | the status row | The same `status`, on the row that renders it. |
-| `data-update-apply-phase` | the status row | The host's finer `phase` (`installing`/`cancelling`/`done`/`failed`/`cancelled`/`unknown`) — never the branch value. |
+| `data-update-apply` | the banner | `idle` before anything is started, otherwise the **`status`** the page branches on: `running`/`done`/`failed`/`cancelled`/`unknown`. (A payload that carried no `status` falls back to its `phase`; the host always sends one, so the two enumerations agree in practice — the guard test asserts it.) |
+| `data-update-apply-status` | the status row | The same **`status`**: `running`/`done`/`failed`/`cancelled`/`unknown`. The row itself only exists once there is an install, so `idle` — which only the banner can be — never appears here. |
+| `data-update-apply-phase` | the status row | The host's finer `phase`: `installing`/`cancelling`/`done`/`failed`/`cancelled`/`unknown` — never the branch value. |
 | `data-action="update-apply"` | the banner **and** 「高级」 | Opens the second confirmation. Absent once the announced version **is** the installed one; disabled while an install runs. |
 | `data-action="update-apply-cancel"` | the status row | Cancels a running install. |
 | `data-action="update-apply-retry"` | the status row | Re-opens the confirmation after a failure. |
@@ -3493,7 +3493,10 @@ poll of a running install, which is bounded by
 interchanged: the page **branches on `status`**, `phase` is reported only through
 `data-update-apply-phase`. `status` is also what `data-update-apply` carries, so
 the banner's marker and the status row can never disagree about what is
-happening.
+happening. The three enumerations above are the **complete** set a rendered page
+can carry, and `test/client.test.mjs` asserts exactly that (including that `idle`
+appears only on the banner): a marker value the contract does not list cannot be
+produced without turning that test red.
 
 - The install state is rendered in **both** the banner and 「高级」: neither
   dismissing the banner nor turning the update-check switch off may take away the

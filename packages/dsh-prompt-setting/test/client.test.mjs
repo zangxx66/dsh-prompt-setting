@@ -7014,6 +7014,60 @@ test('client: 「高级」 carries the same install control, so dismissing the b
   oneBy(dismissed, 'data-action', 'update-apply');
 });
 
+test('client: every install marker carries a value the contract enumerates', async () => {
+  // CONTRACT §18.7 lists the **complete** set each marker can carry. This is the
+  // assertion behind that word: a marker value the contract does not list cannot
+  // be produced without turning this test red, and `idle` — the banner's
+  // not-started-yet value — must never appear on the status row (the row does not
+  // exist until there is an install to show).
+  const BANNER = new Set(['idle', 'running', 'done', 'failed', 'cancelled', 'unknown']);
+  const ROW = new Set(['running', 'done', 'failed', 'cancelled', 'unknown']);
+  const PHASE = new Set(['installing', 'cancelling', 'done', 'failed', 'cancelled', 'unknown']);
+  const phases = [
+    applyStatus(),
+    applyStatus({ phase: 'done', status: 'done', application: 'restart-required', restartRequired: true, installed: true, cancellable: false }),
+    applyStatus({ phase: 'failed', status: 'failed', application: 'failed', cancellable: false, error: { code: 'asset-missing', message: 'no asset' } }),
+    applyStatus({ phase: 'cancelling', status: 'running', cancelRequested: true }),
+    applyStatus({ phase: 'unknown', status: 'unknown', known: false, cancellable: false }),
+  ];
+  for (const status of phases) {
+    const page = makePage({
+      responses: defaultResponses({
+        [PATHS.updateCheck]: { payload: updateAvailableWithTag() },
+        [PATHS.updateApply]: (url, init) =>
+          init && init.method === 'POST'
+            ? { payload: { ok: true, status } }
+            : url.includes('requestId=')
+              ? { payload: { ok: true, status } }
+              : { payload: { ok: true, status: null } },
+      }),
+    });
+    let tree = await page.flush();
+    clickButton(tree, { 'data-action': 'update-apply' });
+    tree = page.draw();
+    clickButton(tree, { 'data-action': 'confirm-yes' });
+    await flushApply();
+    tree = page.draw();
+
+    const banner = updateBanner(tree)[0];
+    const row = oneBy(tree, 'data-region', 'update-apply-status');
+    assert.ok(BANNER.has(banner.props['data-update-apply']), `banner marker ${banner.props['data-update-apply']} is in the contract`);
+    assert.ok(ROW.has(row.props['data-update-apply-status']), `row status ${row.props['data-update-apply-status']} is in the contract`);
+    assert.ok(PHASE.has(row.props['data-update-apply-phase']), `row phase ${row.props['data-update-apply-phase']} is in the contract`);
+    assert.notEqual(row.props['data-update-apply-status'], 'idle', 'idle belongs to the banner only');
+    assert.equal(row.props['data-update-apply-status'], banner.props['data-update-apply'], 'the two markers agree');
+  }
+  // And the one state that carries `idle` really is the banner with no install.
+  const idlePage = makePage({ responses: defaultResponses({ [PATHS.updateCheck]: { payload: updateAvailableWithTag() } }) });
+  const idleTree = await idlePage.flush();
+  assert.equal(updateBanner(idleTree)[0].props['data-update-apply'], 'idle');
+  assert.equal(
+    collect(idleTree, (node) => node.props && node.props['data-region'] === 'update-apply-status').length,
+    0,
+    'no install means no status row',
+  );
+});
+
 test('client: the install copy exists in both dictionaries and never promises an automatic restart', async () => {
   const page = makePage({ responses: defaultResponses({ [PATHS.updateCheck]: { payload: updateAvailableWithTag() } }) });
   const zh = page.zh;

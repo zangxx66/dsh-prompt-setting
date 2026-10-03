@@ -668,6 +668,42 @@ test('install route: an unverifiable asset is reported as unverified, not as mis
   assert.equal(manager.calls.length, 0);
 });
 
+test('install route: 410 (gone) is the same "the asset is not there" as 404', async () => {
+  // The refusal set is `404`/`410` — both mean the release carries no such
+  // asset. `410` is not decoration: a release whose asset was deleted answers it,
+  // and treating only `404` as "definitely absent" would send that case to pnpm
+  // for a two-minute failure with a worse sentence.
+  writeProfile({ 'dsh-prompt-setting': '0.1.1' });
+  const transport = makeTransport({ assetStatus: 410 });
+  const manager = makeManager();
+  const { route } = mountHost({ manager, transport });
+  const started = await startInstall(route);
+  assert.equal(started.ok, true);
+  await settle();
+  const status = await readStatus(route, started.status.requestId);
+  assert.equal(status.status.phase, 'failed');
+  assert.equal(status.status.error.code, REFUSAL_ASSET_MISSING);
+  assert.match(status.status.error.diagnostic, /410/);
+  assert.equal(manager.calls.length, 0, 'a 410 asset never reaches pnpm either');
+});
+
+test('install route: 401 (not fetchable anonymously) is unverified, not missing', async () => {
+  // The other half of the refusal set: `401`/`403` say "you may not read this",
+  // which is a different sentence from "it is not there" — and must not be
+  // confused with "I could not find out", which would install anyway.
+  writeProfile({ 'dsh-prompt-setting': '0.1.1' });
+  const transport = makeTransport({ assetStatus: 401 });
+  const manager = makeManager();
+  const { route } = mountHost({ manager, transport });
+  const started = await startInstall(route);
+  await settle();
+  const status = await readStatus(route, started.status.requestId);
+  assert.equal(status.status.phase, 'failed');
+  assert.equal(status.status.error.code, REFUSAL_ASSET_UNVERIFIED);
+  assert.match(status.status.error.diagnostic, /401/);
+  assert.equal(manager.calls.length, 0, 'an unverifiable asset is not installed over');
+});
+
 test('install route: a failing install is settled from the manager result, never thrown', async () => {
   writeProfile({ 'dsh-prompt-setting': '0.1.1' });
   const transport = makeTransport();

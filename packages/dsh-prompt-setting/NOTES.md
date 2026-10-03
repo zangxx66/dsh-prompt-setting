@@ -5099,13 +5099,59 @@ gh release upload <tag> dsh-prompt-setting-<version>.tgz
 
 | 项 | 命令 | 结果 |
 | --- | --- | --- |
-| 全量 | `node --test` | **569 / 569 pass / 0 fail**（复核前 564，本轮 +5：探针无答案 1、不可读 manifest 1、缺 manifest 1、remembered-done 1、开关关闭后仍可控 1） |
-| `test/install.test.mjs` | `node --test test/install.test.mjs` | **25 / 25 pass / 0 fail**（复核前 22，+3） |
-| `test/client.test.mjs` | `node --test test/client.test.mjs` | **143 / 143 pass / 0 fail**（复核前 140，+3：remembered-done 1、开关关闭后仍可控 1，另 1 条为既有用例的标记断言收紧） |
+| 全量 | `node --test` | **572 / 572 pass / 0 fail**（复核前 564；必修轮 +5：探针无答案 1、不可读 manifest 1、缺 manifest 1、remembered-done 1、开关关闭后仍可控 1；note 收尾轮 +3：410 1、401 1、§18.7 枚举守卫 1） |
+| `test/install.test.mjs` | `node --test test/install.test.mjs` | **27 / 27 pass / 0 fail**（复核前 22；必修轮 +3，note 收尾轮 +2：`410 ⇒ asset-missing`、`401 ⇒ asset-unverified`） |
+| `test/client.test.mjs` | `node --test test/client.test.mjs` | **144 / 144 pass / 0 fail**（复核前 140；必修轮 +3，note 收尾轮 +1：§18.7 三处标记枚举的守卫） |
 | **改坏就红 D**（探针 5xx 当拒绝） | 把预检拒绝条件还原成 `probe.status >= 400` ⇒ 跑 `test/install.test.mjs` | 「a probe that cannot answer is not a refusal」红（`manager.calls.length` 0 ≠ 1）；`cp` 还原后 25/25 |
 | **改坏就红 E**（忽略 fieldError） | 把 `fieldError` 传参去掉 ⇒ 跑 `test/install.test.mjs` | 「an unreadable profile manifest refuses instead of installing blind」红（`ok:true` ≠ `ok:false`）；`cp` 还原后 25/25 |
 | **改坏就红 F**（resume 无条件覆盖） | 把 `status = fresh ?? status` 还原成 `status = fresh` ⇒ 跑 `test/client.test.mjs` | 「a remembered finished install keeps its verdict」红（按钮计数 1 ≠ 0）；`cp` 还原后 143/143 |
 | **改坏就红 G**（开关门禁运行态） | 把渲染条件还原成 `latest === null \|\| !enabled` ⇒ 跑 `test/client.test.mjs` | 「a live install keeps its controls after the update switch is turned off」红（取消计数 0 ≠ 1）；`cp` 还原后 143/143 |
+| **改坏就红 H**（去掉 410 拒绝） | 把预检条件改成 `probe.status === 404` ⇒ 跑 `test/install.test.mjs` | 「410 (gone) is the same "the asset is not there" as 404」红（26/1）；`cp` 还原后 27/27 |
+| **改坏就红 I**（去掉 401 拒绝） | 把预检条件改成 `probe.status === 403` ⇒ 跑 `test/install.test.mjs` | 「401 (not fetchable anonymously) is unverified, not missing」红（26/1）；`cp` 还原后 27/27 |
+| **改坏就红 J**（phase 标记输出契约外的值） | 把 `data-update-apply-phase` 改成输出 `apply.status` ⇒ 跑 `test/client.test.mjs` | 「every install marker carries a value the contract enumerates」红（0/1）；`cp` 还原后 144/144 |
+
+### 九之二、note 级收尾（复核 PASS 后，2026-10-04）
+
+复核结论 PASS（B1/B2/B3 三个 blocker 全 closed），剩 3 条 note 级收尾，同一 worktree 一次做完：
+
+1. **补两条保守分支用例（note 1）**：`404`/`403` 原有覆盖，但 `410`（资产被删的形态）与 `401`
+   （不可匿名获取）只有桩证据。新增两条独立用例（不合并进既有用例，保留各自可单独变红的能力）：
+   `assetStatus: 410 ⇒ code='asset-missing'` 且 `manager.calls.length===0`；`assetStatus: 401 ⇒
+   code='asset-unverified'` 且 `manager.calls.length===0`；两条都断言 `diagnostic` 含对应状态码。
+   对照 H/I：把 410（或 401）从拒绝条件里去掉 ⇒ 对应用例各自变红。
+2. **补齐 CONTRACT 三处枚举（note 3）**：① 拒绝码表 `asset-missing` 由 `(404)` 补成 `(404/410)`
+   （与散文 `:3379` 及实现一致），并把同表 `asset-unverified` 的 `a 401/403` 改成反引号
+   `(401/403)`；② §18.7 三行标记的枚举**逐字对齐实现**——`data-update-apply` =
+   `idle` + `running/done/failed/cancelled/unknown`（并注明「无 `status` 时回落 `phase`」这个防御性兜底，
+   宿主总会给 `status`）、`data-update-apply-status` = 同样五值（并注明该行只在有安装时渲染，
+   所以 `idle` 永远不会出现在这里）、`data-update-apply-phase` =
+   `installing/cancelling/done/failed/cancelled/unknown`。③ 为让「complete」这个词可验证，新增
+   `test/client.test.mjs`「every install marker carries a value the contract enumerates」：遍历五种
+   `status` 渲染，断言三个标记的取值都落在契约枚举内、`idle` 只属于 banner、且 banner 与状态行的
+   `status` 永远相等。对照 J：把 phase 标记改成输出 `status` ⇒ 该守卫红。
+3. **把一条已知边界写进 NOTES（note 2，不改代码）**：见下节「十、已知边界」。
+
+### 十、已知边界（复核 note 2）：`installedVersion === latest` 依赖宿主 `version` 是**规范化版本**
+
+「已装版本 === 提示版本时隐藏『立即更新』」这条收紧（§九 末尾）比较的是
+`apply.version`（来自宿主 `publicInstallStatus` 的 `version` 字段）与 `update.data.latest`
+（`core/update.js` 的 `formatSemver` 规范化结果）。宿主侧的 `version` 取自
+`resolveInstallTarget`，那里填的是 **`payload.latest`**——也就是同一个规范化版本
+（`core/install.js` 的 `resolveInstallTarget`：`version = payload.latest.trim()`，
+而 `tag` 才可能是原样的 `v0.1.2`）。
+
+**边界与触发条件**：若将来有人把 `resolveInstallTarget` 的 `version` 改成上报 **tag 原样**
+（例如图省事写成 `version: tag`，于是 `v0.1.2` 而不只是 `0.1.2`），那么
+`installedVersion === latest` 会永远为假 ⇒ 按钮**静默重新出现**（已装版本又被提供一次），
+**而现有断言不会红**：`test/client.test.mjs` 的用例用的是**同一个** fixture 值走两条路径，
+两边同时变成 `v0.9.9` 也仍然相等，所以测试照旧全绿。
+
+**改 `version` 语义时必须同步的断言**（提醒）：
+1. `test/client.test.mjs`「a remembered finished install keeps its verdict, and never re-offers the button」
+   与「every install marker carries a value the contract enumerates」——两处的 fixture 要让
+   `version`（= `latest`）与 `latestTag`（= `v0.1.2`）**故意不同**，隐藏逻辑才会被真正检验；
+2. `test/install.test.mjs` 的 tarball URL 断言（`/download/<tag>/dsh-prompt-setting-<version>.tgz`）
+   已经刻意区分了二者（`v0.2.0` 的 tag 配 `0.2.0` 的 version），改语义会先在那里红。
 
 **复核后仍未验证项（增量）**：与 §107 八相同（真机端到端未跑、`0.1.1` 无资产、`cancelling` 竞态仅桩、
 轮询最坏路径未真机观察、`HEAD` 预检在真实 CDN 重定向/限流下未实测）。**新增一条**：预检对 `401/403`
