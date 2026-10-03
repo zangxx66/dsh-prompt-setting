@@ -12,6 +12,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added 新增
+
+- **设置页显示插件版本号，并可点击跳转仓库**：版本号取自宿主 `GET /prompt-setting/ping` 的 `version`
+  （= `index.js` 的 `PLUGIN_VERSION`，**单一来源**——客户端不携带任何版本字面量），渲染在**设置页标题旁**；
+  点击在新标签打开本插件仓库（`repositoryUrl` 同样由宿主从自身 `package.json` 派生：`repository.url` /
+  裸 `repository` 字符串清洗后必须是 http(s)，否则回落 `homepage`，都不行则 `null`；客户端**不硬编码 URL**，
+  无 URL 时退化为**不可点的纯文本**）。ping 失败 / 无字段 / 非字符串 / 空串 / 纯空白一律显示
+  「版本未知」，**绝不伪造版本号**；机器可读标记 `data-plugin-version` 仍留在根容器（两张失败卡为 `unknown`）。
+  **The settings page shows the plugin version and links it to the repository**: the version comes from the host's
+  `GET /prompt-setting/ping` `version` (single source — the client carries no version literal) and renders beside
+  the page title, linking to this plugin's repository in a new tab. `repositoryUrl` is likewise derived by the host
+  from its own `package.json` (cleaned `repository.url` / bare `repository`, must be http(s), else `homepage`, else
+  `null`) and is never hardcoded in the client; without a URL the version degrades to plain, unclickable text. A
+  missing or unusable answer renders 「版本未知」/`Version unknown` rather than an invented version, and the
+  machine-readable `data-plugin-version` stays on the root container (`unknown` on both failure cards).
+
 ### Fixed 修复
 
 - **未配置状态误报「该作用域已被冻结」**（[issue #1](https://github.com/zangxx66/dsh-prompt-setting/issues/1)）：
