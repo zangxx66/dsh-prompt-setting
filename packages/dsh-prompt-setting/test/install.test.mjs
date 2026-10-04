@@ -343,7 +343,7 @@ test('install: A1 — a link:/path install is refused, a missing dependency is a
 });
 
 test('install: failures are classified into the categories the goal names', () => {
-  // The asset-less release: the expected outcome for 0.1.1.
+  // A release published without an asset: the expected outcome.
   assert.equal(classifyInstallFailure({ status: 404 }), REFUSAL_ASSET_MISSING);
   assert.equal(classifyInstallFailure({ diagnostic: 'ERR_PNPM_FETCH_404  GET https://…' }), REFUSAL_ASSET_MISSING);
   // The build-script gate, by pnpm's own code and by its wording.
@@ -748,8 +748,8 @@ test('install route: a profile that simply lacks the dependency is still allowed
 });
 
 test('install route: a release with no asset fails as asset-missing, without calling pnpm', async () => {
-  // The measured state of the published 0.1.1 release: zero assets. This is the
-  // expected outcome today, so it must be a named branch with a real sentence.
+  // A release published without an asset: the expected outcome, so it must be a
+  // named branch with a real sentence.
   writeProfile({ 'dsh-prompt-setting': '0.1.1' });
   const transport = makeTransport({ assetStatus: 404 });
   const manager = makeManager();

@@ -684,6 +684,6 @@ test('update route: an unknown path is still a 404, and ping is untouched', asyn
   assert.equal(ping.statusCode, 200);
   const body = json(ping);
   assert.equal(body.ok, true);
-  assert.equal(body.version, '0.1.1');
+  assert.equal(body.version, '0.1.2');
   assert.equal('hasUpdate' in body, false, 'the ping response shape is unchanged');
 });

@@ -10,7 +10,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
-## [Unreleased]
+## [0.1.2] - 2026-10-04
+
+**功能版本：更新检查 +「立即更新」、设置页版本号，以及一处冻结误报修复 / Feature release: the update
+check and "Update now", the settings-page version, and a false freeze report fixed.**
 
 ### Added 新增
 

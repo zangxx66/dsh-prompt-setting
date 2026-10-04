@@ -113,7 +113,7 @@ export const REFUSAL_NO_UPDATE = 'no-update';
 export const REFUSAL_STALE_TAG = 'stale-tag';
 /** The request body is not the documented shape. */
 export const REFUSAL_INVALID_REQUEST = 'invalid-request';
-/** The release asset is not there (the 0.1.1 release has zero assets). */
+/** The release asset is not there (a release published without an asset). */
 export const REFUSAL_ASSET_MISSING = 'asset-missing';
 /** The release asset could not be verified because the probe itself failed. */
 export const REFUSAL_ASSET_UNVERIFIED = 'asset-unverified';
@@ -384,9 +384,9 @@ export function isLiveApplication(application) {
  * The categories the goal asks to be told apart are kept, and two of them are
  * this feature's own:
  *   - **asset-missing** — the tarball is not on the release. This is the
- *     *expected* outcome for a release published before this feature existed
- *     (0.1.1 had zero assets), which is exactly why it must be a named branch
- *     and never a silent one;
+ *     *expected* outcome for a release published without an asset (this feature
+ *     installs from a release asset, and releases predating it carried none),
+ *     which is exactly why it must be a named branch and never a silent one;
  *   - **asset-unverified** — the asset could not be fetched anonymously.
  *
  * `unknown` survives only for the case where **neither** source said anything;

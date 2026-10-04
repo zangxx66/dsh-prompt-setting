@@ -170,7 +170,7 @@ import {
 /** Package name; echoed by the probe so the browser can assert identity. */
 const PLUGIN_NAME = 'dsh-prompt-setting';
 /** Package version; `test/host.test.mjs` asserts it matches package.json. */
-const PLUGIN_VERSION = '0.1.1';
+const PLUGIN_VERSION = '0.1.2';
 /** The one prefix this plugin owns. Every route lives under it. */
 const ROUTE_PREFIX = '/prompt-setting';
 /** Stage 1A's route: a read-only liveness probe (behaviour frozen). */
@@ -250,7 +250,7 @@ const ROUTES = new Map([
  * How long the host waits for the release-asset probe before installing anyway.
  *
  * The probe answers "is the asset really there" in one `HEAD`, which is what
- * turns the *expected* failure of an asset-less release (0.1.1 has none) into a
+ * turns the *expected* failure of a release published without an asset into a
  * named `asset-missing` in seconds instead of a two-minute pnpm round trip. A
  * probe that does not answer in time is **not** a refusal: the install is
  * attempted and whatever pnpm says is the answer.

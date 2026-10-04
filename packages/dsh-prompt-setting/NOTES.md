@@ -5222,3 +5222,56 @@ if (installed.length !== 1 || target === void 0) throw new ManagementFailure("am
 轮询最坏路径未真机观察、`HEAD` 预检在真实 CDN 重定向/限流下未实测）。**新增一条**：预检对 `401/403`
 判 `asset-unverified` 的分支只有桩证据——GitHub 对不存在的 release 资产实际答 `404`，私有/受限资产
 才会 `403`，本仓库的 release 都是公开的，所以这条路径在真机上可能永远不会走到（保守分支）。
+
+## 108. 版本号 `0.1.1` → `0.1.2`：同步点、白名单依据与两处过时表述修正（g-033，2026-10-04，基线 `8f54973`）
+
+### 一、同步的「本包当前发布版本」（12 处）
+- `package.json` 的 `version`、`index.js` 的 `PLUGIN_VERSION`；
+- `CONTRACT.md`：§10 export 示例（`plugin.version` / `pluginVersion`）、§13.8 版本节点文案（`v0.1.2`）、
+  §13.9 ping 示例的 `version`、§17 update-check 示例的 `current`；
+- 两份根 README 的徽章与 CHANGELOG 行（`currently 0.1.2` / `当前 0.1.2`）；
+- 测试硬字面量：`test/stage2.test.mjs` 的 export 断言 2 处、`test/client.test.mjs` 的 export fixture 2 处、
+  update-check fixture 的 `current` 1 处、banner 渲染断言 `/0\.1\.2/` 1 处、`test/update.test.mjs` 的
+  ping 版本断言 1 处。
+
+### 二、白名单判断依据（一律未动）
+- `CHANGELOG.md` 的 `[0.1.1]` / `[0.1.0]` 历史段、`NOTES.md` 历史叙述、`.dsh-graph/**`、
+  `docs/prompt-variables.md`：历史记录。
+- `test/update.test.mjs`：115 行 `currentVersion` 默认值、190–195 的 `compareSemver` / `isNewerVersion`、
+  217 行回显断言、231 行的 tag 列表，**全部保留**。理由：它们是「注入的被检查版本 / semver 比较数据」，
+  不是本包版本；且 231 行的 `'v0.1.1'` 依赖 115 的默认值才构成「**同版本** ⇒ 无更新」这条覆盖，
+  改 115 会连带把它降级为「更旧」（与 `0.1.0` / `v0.0.9` 已有的覆盖重复）⇒ 属削弱断言，
+  按「两可即保留」处理。
+- `test/install.test.mjs`：`writeProfile({ 'dsh-prompt-setting': '0.1.1' })`、`tag_name: '0.1.1'`、
+  `resolveInstallPolicy({ field: '0.1.1' })`、`isAlreadyInstalledOn('0.1.1', …)` 都是
+  「模拟 profile 已装 spec / 旧 release」的夹具，保留。
+
+### 三、过时表述修正（资产已补：`dsh-prompt-setting-0.1.1.tgz` = 391186 B，实测 200/404）
+- `core/install.js:116`：「the 0.1.1 release has zero assets」→「a release published without an asset」；
+- `core/install.js` `classifyInstallFailure` 的 asset-missing 段：「(0.1.1 had zero assets)」→
+  「a release published without an asset（本特性从 release 资产安装，早于它的 release 未附资产）」；
+- `index.js` `UPDATE_ASSET_PROBE_TIMEOUT_MS` 注释：「an asset-less release (0.1.1 has none)」→
+  「a release published without an asset」；
+- `test/install.test.mjs` 两处注释同样中性化（**只改叙述，未动任何 `0.1.1` 字面量、夹具与断言**）：
+  原「The asset-less release: the expected outcome for 0.1.1.」与
+  「The measured state of the published 0.1.1 release: zero assets.」；
+- 已核对为**中性、无需改**：`CONTRACT.md` §18.7 分类表（「a release with no asset — e.g. a release
+  published before this feature」）、`client.js`（「when the release simply has no asset yet」）、
+  `index.js`（「the release has no asset」）。
+
+### 四、两可保留项（附理由）
+- `core/install.js` `describeInstallFailure` 的 `asset-missing` 用户文案仍含「Releases published before
+  this feature existed carry no assets; the next release will」：这是**通用兜底文案**（不含版本字面量），
+  改它属产品文案变更、牵动 `test/install.test.mjs` 的消息断言，超出「版本号与包元数据」范围 ⇒ 保留待裁。
+- `CHANGELOG.md` `[0.1.0]` 段 Notes 的「清单当前版本见上方的 `0.1.1` 条目 / the manifest now carries
+  `0.1.1`」已随本次同步过时：白名单禁止改历史段 ⇒ 未动，待裁。
+- `NOTES.md` §107 的「`0.1.1` 无资产」叙述按「历史留档」保留（当时的实测事实，白名单点名 NOTES 历史不改）。
+
+### 五、`npm pack` 复核（`--cache` 指向工作区内，临时目录已清理）
+- 产物 `dsh-prompt-setting-0.1.2.tgz`，**488186 B**，23 个条目；
+- `test/` 命中 **0**；`core/install.js` **在包内**；`test/install.test.mjs` **不在包内**；
+- 包内 `package.json` 的 `version` 与 `index.js` 的 `PLUGIN_VERSION` 均已是 `0.1.2`。
+
+### 六、验收
+- `cd packages/dsh-prompt-setting && node --test`：**579 pass / 0 fail**（与 0.1.1 基线 579 一致，无断言削弱）；
+- 全仓 `0.1.1` 残留清单：仅白名单/夹具（见二），其余全部同步为 `0.1.2`。
