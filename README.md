@@ -101,39 +101,94 @@ restart `dsh web` yourself". **Nothing here restarts anything.**
 itself** are in range; `0.2.1-0` and everything after it are out, because a new minor is unverified). Node
 `>= 22` is needed only to run the tests or to develop.
 
-1. Clone or download this repository anywhere on disk;
-2. Install the plugin directory with DSH's plugin manager, using an **absolute path** (**do not**
-   hand-edit profile config files):
+Three ways in. All of them put **this package into one DSH profile** — the same profile files, the same
+package manager, the same log — so pick by what you have at hand. Do not hand-edit profile config files.
 
-   ```
-   plugin_manager(action: "install_bundle", target: "<absolute path to repo>/packages/dsh-prompt-setting")
-   ```
+### The GUI's own Plugins page (no terminal)
 
-3. Open the DSH Web GUI → Settings; the "Prompt settings" pane should be there;
-4. To confirm the host half is mounted: the page's "raw response" area shows the JSON returned by
-   `GET /prompt-setting/ping`, or run `await (await fetch('/prompt-setting/ping')).json()` in the page console.
+Current DSH carries a **standalone Plugins page in the Web GUI sidebar**. It is not under Settings —
+Settings → *Built-in plugins* is the read-only inventory, not an installer:
 
-> A bare `curl` against that route is rejected (`401`): it requires the browser's cookie authentication.
-> That is expected behaviour and does not mean the route is missing. See
-> [`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) §4.
+1. Sidebar → **Plugins** → **Add plugin**;
+2. type the same spec you would hand `dsh plugin add`, then **Install**:
+   - **a local path** — the absolute path of this repository's package directory:
+     `<absolute path to repo>/packages/dsh-prompt-setting` (clone or download the repository first; a
+     relative path is refused, because the host's working directory means nothing to a browser);
+   - **a git address** — `github:zangxx66/dsh-prompt-setting#path:/packages/dsh-prompt-setting` (the
+     `#path:` part is required for this monorepo);
+   - **the registry name** — `dsh-prompt-setting` (once it is published to npm);
+   - **a tarball** — `dsh-prompt-setting-<version>.tgz`, on disk or over http(s);
+3. the **Host reads the spec before anything installs** (name, version, one-liner, whether the package
+   really carries a bundle) and says so under the field instead of installing when it cannot; an accepted
+   spec then streams pnpm's output behind **Show install details**, with **Cancel install** at hand, and a
+   failed or cancelled run puts the profile files back;
+4. a finished install offers **Enable now**; the bundle's own page carries its switch, its rows and
+   **uninstall**. If pnpm blocked a dependency's install scripts, the failure screen lists the packages
+   and offers **Allow these scripts and retry**.
 
-### Installing straight from GitHub (optional)
+**A local path installs as a `link:`** — the profile and your checkout become the same files. That is a
+development working tree, and the plugin's own "Update now" button deliberately refuses to overwrite it
+with a published version (see the "Update now" note above): update such an install with `git pull`.
 
-If you would rather not clone first, pnpm can install from git directly. This repository is a monorepo
-and the plugin lives in a subdirectory, so the **`#path:` part is required** (without it you get the
-synthetic `0.0.0` empty package rooted at the repository, and the plugin never shows up):
+If your DSH build has no **Plugins** entry in the sidebar, use the `dsh` command line below.
 
-```sh
-dsh plugin --profile demo add 'github:zangxx66/dsh-prompt-setting#path:/packages/dsh-prompt-setting'
+### Hand the repository address to the agent in a session
+
+Paste the address into a session and say what to do with it — the agent installs it into the profile that
+session is running:
+
+> install `https://github.com/zangxx66/dsh-prompt-setting` into this profile
+
+In Creator mode the agent has the `plugin_manager` tool and calls it directly:
+
+```
+plugin_manager(action: "install_bundle", target: "github:zangxx66/dsh-prompt-setting#path:/packages/dsh-prompt-setting", enabled: true)
 ```
 
-pnpm ≥10 does **not** run a git dependency's build scripts by default, so the first attempt fails and
-prints an **exact package key** (`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`); copy that key into the
+- **the `#path:` part is required**: this repository is a monorepo and the plugin lives in a subdirectory.
+  Without it pnpm installs the synthetic `0.0.0` empty package rooted at the repository, and the plugin
+  never shows up;
+- **what you are approving**: an install rewrites the profile's `package.json` and bundle selection, and
+  the installed Host code then runs in-process, outside the workspace sandbox — the tool therefore
+  requires `danger-full-access`, or a per-call approval. Read the spec before approving it.
+
+### The `dsh` command line
+
+`dsh plugin --profile <name> <pnpm args…>` runs pnpm inside that profile's directory and selects the
+bundle the run added. The Web GUI's profile is `web`:
+
+```sh
+# from the registry, once published
+dsh plugin --profile web add dsh-prompt-setting
+
+# straight from GitHub — no clone first; the #path: part is required for this monorepo
+dsh plugin --profile web add 'github:zangxx66/dsh-prompt-setting#path:/packages/dsh-prompt-setting'
+
+# a local checkout (absolute path; installed as link:)
+dsh plugin --profile web add '<absolute path to repo>/packages/dsh-prompt-setting'
+
+# a tarball built from the package directory — same behaviour
+cd packages/dsh-prompt-setting && pnpm pack
+dsh plugin --profile web add '<absolute path to the .tgz>'
+```
+
+pnpm ≥10 does **not** run a git dependency's build scripts by default, so a git install fails the first
+time and prints an **exact package key** (`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`); copy that key into the
 profile's `pnpm-workspace.yaml` under `allowBuilds` and re-run `add`. **That grant means "this package's
 code may execute on your machine at install time"**, so grant it only to sources you trust and pin the
 commit (`…#<sha>`). This package is zero-build: `prepare` only runs a release self-check — are all
 declared entry points present, are they all inside the `files` allowlist, does every patch row resolve.
 To avoid the grant entirely, `pnpm pack` a tarball and `add` that instead; behaviour is identical.
+
+### Confirm it is mounted
+
+Open the DSH Web GUI → Settings: the **"Prompt settings"** pane should be there. To confirm the host
+half is mounted, the page's "raw response" area shows the JSON returned by `GET /prompt-setting/ping`,
+or run `await (await fetch('/prompt-setting/ping')).json()` in the page console.
+
+> A bare `curl` against that route is rejected (`401`): it requires the browser's cookie authentication.
+> That is expected behaviour and does not mean the route is missing. See
+> [`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) §4.
 
 Measured output, the full check table and the untested items are in
 [`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) §96; the package-level summary — what it is, features

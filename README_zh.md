@@ -85,35 +85,84 @@ DSH 每轮会话都会注入一段由 `@deepseek-ai/dsh-system-prompt` 装配出
 0.1.x、`0.2.0` 的全部预发布（`0.2.0-0` / `alpha` / `beta` / `rc.N`）以及 **`0.2.0` 正式版本身**都在范围内；
 `0.2.1-0` 及以后一律出界——新的 minor 未经评估不放行）。跑测试和开发才需要 Node `>= 22`。
 
-1. 把本仓库克隆/下载到本地任意目录；
-2. 用 DSH 的 plugin manager 以**绝对路径**安装插件目录（**不要**手工编辑 profile 配置文件）：
+三条路，装进的都是**同一个 profile 里的同一个包**——同样的 profile 文件、同样的包管理器、同样的日志，
+按手边有什么挑一条即可（**不要**手工编辑 profile 配置文件）。
 
-   ```
-   plugin_manager(action: "install_bundle", target: "<仓库绝对路径>/packages/dsh-prompt-setting")
-   ```
+### GUI 自带的插件管理页（不用终端）
 
-3. 打开 DSH Web GUI →「设置」，应能看到「Prompt 管理」这一栏；
-4. 想确认宿主半挂上了没有：页面的「原始响应」区会显示 `GET /prompt-setting/ping` 的返回 JSON，
-   也可以在页面控制台执行 `await (await fetch('/prompt-setting/ping')).json()`。
+当前 DSH 在 Web GUI 侧边栏提供了**独立的「Plugins」页**。它不在「设置」里——设置 →「内置插件」是只读清单，
+不是安装入口：
+
+1. 侧边栏 → **Plugins** → **Add plugin**；
+2. 填一个和 `dsh plugin add` 同形的 spec，点 **Install**：
+   - **本地路径**——本仓库插件目录的绝对路径：
+     `<仓库绝对路径>/packages/dsh-prompt-setting`（先克隆/下载仓库；相对路径会被拒，因为「宿主的工作目录」
+     对浏览器里输入的人没有意义）；
+   - **git 地址**——`github:zangxx66/dsh-prompt-setting#path:/packages/dsh-prompt-setting`
+     （本仓库是 monorepo，`#path:` 必带）；
+   - **npm 包名**——`dsh-prompt-setting`（发布到 npm 之后）；
+   - **tarball**——磁盘上或 http(s) 上的 `dsh-prompt-setting-<版本>.tgz`；
+3. **宿主会先读一遍 spec 再动手**（名字、版本、一句话简介、这包到底带不带 bundle 补丁），读不出来就只在输入框下
+   给一句说明、不装；通过后 pnpm 的输出折叠在 **Show install details** 里，随时可 **Cancel install**，失败或取消都会
+   把 profile 文件恢复原样；
+4. 装完可以 **Enable now**；bundle 自己的详情页上有开关、插件行和 **uninstall**。若 pnpm 拦下了依赖的安装脚本，
+   失败页会列出这些包并提供 **Allow these scripts and retry**。
+
+**本地路径装进来的是 `link:`**——profile 和你的工作树是同一份文件（开发态）。插件的「立即更新」按钮会刻意拒绝
+把这种安装覆盖成发布版本（见上文「装更新」一节）：这种安装请用 `git pull` 更新。
+
+如果你的 DSH 版本侧边栏里没有 **Plugins** 这一项，走下面的 `dsh` 命令行。
+
+### 在会话里把仓库地址交给 AI
+
+把地址贴进任意会话，说清要做什么就行——AI 会把它装进这个会话正在跑的 profile：
+
+> 把 `https://github.com/zangxx66/dsh-prompt-setting` 装进当前 profile
+
+Creator 模式下 AI 手里有 `plugin_manager` 工具，会直接调用：
+
+```
+plugin_manager(action: "install_bundle", target: "github:zangxx66/dsh-prompt-setting#path:/packages/dsh-prompt-setting", enabled: true)
+```
+
+- **`#path:` 必带**：本仓库是 monorepo，插件在子目录里。不带的话 pnpm 装到仓库根合成的 `0.0.0` 空包，插件不会出现；
+- **你在批准什么**：安装会改写 profile 的 `package.json` 与 bundle 选择，随后装进来的宿主代码在工作区沙箱之外
+  以进程内方式执行——所以这个工具要么需要 `danger-full-access`，要么每次调用单独审批。批准前先看清 spec。
+
+### `dsh` 命令行
+
+`dsh plugin --profile <名字> <pnpm 参数…>` 会在该 profile 目录里跑 pnpm，并把这次装上的 bundle 选进去。
+Web GUI 的 profile 名是 `web`：
+
+```sh
+# 从 npm 装（发布之后）
+dsh plugin --profile web add dsh-prompt-setting
+
+# 直接从 GitHub 装——不用先克隆；本仓库是 monorepo，#path: 必带
+dsh plugin --profile web add 'github:zangxx66/dsh-prompt-setting#path:/packages/dsh-prompt-setting'
+
+# 装本地工作树（绝对路径；装成 link:）
+dsh plugin --profile web add '<仓库绝对路径>/packages/dsh-prompt-setting'
+
+# 装 tarball——先在插件目录里打包，行为完全一致
+cd packages/dsh-prompt-setting && pnpm pack
+dsh plugin --profile web add '<刚打出的 .tgz 绝对路径>'
+```
+
+pnpm ≥10 默认**不**运行 git 依赖的构建脚本，所以 git 安装第一次会失败并打印一个**确切的包键**
+（`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`）；把它复制进该 profile 的 `pnpm-workspace.yaml` 的 `allowBuilds`
+再重跑 `add` 就好。**这项授权 = 允许该包的代码在安装时于你的机器上执行**，所以只对可信来源授权、并锁定
+commit（`…#<sha>`）。本包零构建，`prepare` 只做发布自检（入口是否齐全、是否都在 `files` 白名单里、patch
+每一行能否解析）；想完全避开授权，就用 `pnpm pack` 打出 tarball 再 `add`，功能完全一致。
+
+### 确认挂上了
+
+打开 DSH Web GUI →「设置」，应能看到 **「Prompt 管理」** 这一栏。想确认宿主半挂上了没有：页面的
+「原始响应」区会显示 `GET /prompt-setting/ping` 的返回 JSON，也可以在页面控制台执行
+`await (await fetch('/prompt-setting/ping')).json()`。
 
 > 用裸 `curl` 直接请求这个路由会被拒（`401`）：它要求浏览器的 cookie 认证，这是预期行为，
 > 不代表路由没挂上。详见 [`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) §4。
-
-### 从 GitHub 直接安装（可选）
-
-不想先克隆仓库，也可以让 pnpm 直接从 git 装。本仓库是 monorepo、插件在子目录，所以**必须带 `#path:`**
-（不带会装到仓库根合成的 `0.0.0` 空包，插件不会出现）：
-
-```sh
-dsh plugin --profile demo add 'github:zangxx66/dsh-prompt-setting#path:/packages/dsh-prompt-setting'
-```
-
-pnpm ≥10 默认**不**运行 git 依赖的构建脚本，第一次会失败并打印一个**确切的包键**
-（`ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED`）；把它复制进该 profile 的 `pnpm-workspace.yaml` 的
-`allowBuilds` 再重跑 `add` 就好。**这项授权 = 允许该包的代码在安装时于你的机器上执行**，
-所以只对可信来源授权、并锁定 commit（`…#<sha>`）。本包零构建，`prepare` 只做发布自检
-（入口是否齐全、是否都在 `files` 白名单里、patch 每一行能否解析）；想完全避开授权，
-就用 `pnpm pack` 打出 tarball 再 `add`，功能完全一致。
 
 真机实测输出、判据表与未验证项见 [`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) §96；
 面向插件包本身的简介、功能与安装（中英对照）见 [`packages/dsh-prompt-setting/README.md`](./packages/dsh-prompt-setting/README.md)。
