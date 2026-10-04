@@ -3303,7 +3303,25 @@ process:
   carrying one is stopped by `ERR_PNPM_IGNORED_BUILDS` (measured). `prepare` may
   stay as it is: the tarball path does not run it.
 
-The answer:
+**The one shortcut that is not an install.** Before the manager is called, the
+spec this install would use is compared **literally** with the profile's own
+`dependencies['dsh-prompt-setting']` (the same read A1 uses). If they are
+identical, the answer is a **finished success**:
+
+```json
+{ "ok": true, "reused": false, "alreadyInstalled": true, "status": { "phase": "done", "status": "done", "application": "restart-required", "restartRequired": true, "installed": true, "error": null, "…": "…" } }
+```
+
+Nothing was installed and nothing needs to be, so the page's remaining step is the
+manual restart it was going to ask for anyway. This is not politeness: `pnpm add`
+on an unchanged dependency reports no new dependency, and the official manager
+then throws `ambiguous-install` (`dsh-plugin-manager/lib/index.js:1782`,
+`installed.length !== 1`). Letting that happen turned a user's second click into
+「安装失败」 on a real desktop profile and spent a pnpm round trip to learn
+something this plugin reads from one file. A **different** spec — an older tarball
+URL, an npm version, a registry range, a `link:` — still installs normally.
+
+Otherwise, the answer:
 
 ```json
 {
@@ -3433,7 +3451,9 @@ for that.
 A cancel that **races a success** is not reported as a cancellation: if the
 install reached the apply step, the settled row says `done` and the page shows
 the installed version. Claiming otherwise would be a lie the next poll would
-contradict.
+contradict. — The `already-installed` row (§18.2) is settled the moment it is
+created, so cancelling it is `not-running` for the same reason: there is nothing
+running to stop, and the outcome it already reported stands.
 
 ### 18.5 The host's request table
 
@@ -3457,19 +3477,55 @@ page polls must be the Host's. `core/install.js` owns that table as pure policy
 ### 18.6 Failure classification
 
 `classifyInstallFailure` names every failure, and each name has a sentence and a
-manual route:
+manual route. It reads **both** places the official manager reports a reason, in
+this order:
+
+1. the probe's own answer, when it is the thing being classified
+   (`404`/`410` ⇒ `asset-missing`, `401`/`403` ⇒ `asset-unverified`);
+2. **`changeResult.error.code`** — the official `ManagementError.code`. This is
+   the most specific fact available (the manager named the case itself), so it
+   decides before any text matching, which also keeps a `stale-approval` whose
+   diagnostic mentions `prepare` from being read as `build-blocked`;
+3. **`changeResult.packageResult.kind`** — pnpm's `PluginInstallFailureKind`;
+4. the diagnostic text (an `ERR_PNPM_*` code, an errno);
+5. only then `unknown`.
+
+`operation-error` is a **wrapper**, not a reason: the manager puts a
+non-`ManagementFailure` (in practice pnpm's output) there, so it is deliberately
+never returned as a code — steps 3–4 decide. Every other code is returned
+verbatim, and every one has its own sentence:
 
 | Code | When |
 | --- | --- |
-| `asset-missing` | A `404` (from the probe or from pnpm's `ERR_PNPM_FETCH_404`/`E404`). **The expected outcome for a release with no asset** — e.g. a release published before this feature. |
+| `asset-missing` | A `404`/`410` (from the probe or from pnpm's `ERR_PNPM_FETCH_404`/`E404`). **The expected outcome for a release with no asset** — e.g. a release published before this feature. |
 | `build-blocked` | pnpm's build-script gate: `ERR_PNPM_IGNORED_BUILDS`, "Ignored build scripts". |
 | `network` | `ENOTFOUND`/`ECONNRESET`/`ETIMEDOUT`/`ECONNREFUSED`/`EAI_AGAIN`/`ERR_PNPM_META_FETCH_FAIL`/… or a probe that could not answer. |
 | `pnpm-missing` | The manager reported `pnpm-missing` (`ENOENT` running pnpm). |
 | `asset-unverified` | A `401`/`403` from the probe. |
+| `ambiguous-install` | `pnpm add` changed no dependency, so the manager found no new dependency to report: the thing being installed is already what the profile holds. Answered as a **success** before the manager is ever called (§18.2); this code remains for the case where a *different* spec still produces no change. |
+| `stale-approval` | pnpm asked for a build-script approval that is no longer valid. |
+| `incompatible-version` | The new version's peer range rejects this DSH version. |
+| `not-bundle` | The package declares no `dsh.bundle`. |
+| `not-removable`, `stop-profile`, `bundle-in-use` | The bundle cannot be removed / the profile must be stopped / the bundle is in use. |
+| `management-required` | The plugin is supplied by the DSH installation itself. |
+| `unaddressable`, `unknown-plugin` | The manager could not address or find this profile's entry. |
+| `invalid-spec` | The manager refused the install spec (this button cannot produce one). |
+| `operation-error` | Only when pnpm's `kind` and log said nothing either. |
 | `timeout`, `not-found`, `no-matching-version`, `integrity`, `permission`, `disk-full`, `unknown` | The remaining categories, each keeping its own name and sentence. |
 
-Nothing retries automatically. A failure is a state with a **retry button** and a
-manual link; the only automatic action anywhere in this feature is the page's own
+**About rollbacks.** A sentence may say the profile's files were restored **only**
+for a failure where the official manager really did run its restore
+(`timeout`, and the pnpm-run failures). The management-code sentences — including
+`ambiguous-install`, which changed nothing at all — do **not** claim a rollback:
+"nothing changed" and "everything was put back" are different facts.
+
+**`unknown` says what it is.** Its sentence is "the install failed and the host
+reported no reason for it; update by hand" — it is reachable only when **neither**
+source named a reason, and it never claims a cause or a rollback.
+
+Nothing retries automatically. A failure is a state with a manual link, and a
+**retry button only when the classified failure is `retryable`** (the host says
+so per code); the only automatic action anywhere in this feature is the page's own
 poll of a running install, which is bounded by
 `UPDATE_APPLY_POLL_BUDGET_MS` (16 min, the host's own worst case plus margin).
 

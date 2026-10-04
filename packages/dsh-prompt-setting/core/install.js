@@ -48,6 +48,44 @@ export const INSTALL_MESSAGE_MAX = 240;
 export const INSTALL_FAILURE_UNKNOWN = 'unknown';
 
 /**
+ * The profile already holds exactly the artifact this install would fetch.
+ *
+ * Not a failure and not an install: the *only* thing left to do is restart, so
+ * this is reported as a success whose application is `restart-required`.
+ */
+export const REFUSAL_ALREADY_INSTALLED = 'already-installed';
+
+/**
+ * Every code the official plugin manager can put on a failure.
+ *
+ * Taken from `@deepseek-ai/dsh-plugin-manager`'s `ManagementError.code`
+ * (`lib/types/types.d.ts`): the `ReadOnlyReason` pair plus ten more. They are
+ * enumerated here **on purpose**: the classifier used to know only pnpm's
+ * `PackageResult.kind`, so an official refusal such as `ambiguous-install` fell
+ * through to "the reason could not be classified" — an unactionable sentence for
+ * a case the host had named precisely. A real desktop run hit exactly that:
+ * `pnpm add <the already-installed spec>` changes nothing, and
+ * `installBundle` throws `ambiguous-install` at `lib/index.js:1782`
+ * (`installed.length !== 1`).
+ */
+export const MANAGEMENT_FAILURE_CODES = Object.freeze([
+  'management-required',
+  'unaddressable',
+  'unknown-plugin',
+  'invalid-spec',
+  'ambiguous-install',
+  'not-bundle',
+  'not-removable',
+  'stop-profile',
+  'bundle-in-use',
+  'stale-approval',
+  'incompatible-version',
+  'operation-error',
+]);
+/** The one management code that is a *wrapper*: its real reason is in the pnpm output. */
+export const MANAGEMENT_OPERATION_ERROR = 'operation-error';
+
+/**
  * The install phases this table can report. `installing` and `cancelling` are
  * live; the other three are settled and are the only ones the page stops
  * polling on.
@@ -292,6 +330,31 @@ export function resolveInstallPolicy(options = {}) {
 }
 
 /**
+ * Does the profile already hold **exactly** the artifact this install would fetch?
+ *
+ * The comparison is deliberately literal (after trimming surrounding
+ * whitespace): the profile's `dependencies['dsh-prompt-setting']` is either the
+ * same tarball URL, a different URL, a semver range or a `link:` — and only the
+ * identical string means "running this install would be a no-op".
+ *
+ * Why this must be answered **before** calling the manager: `pnpm add <spec>`
+ * on an unchanged dependency changes nothing, so `installBundle` cannot find the
+ * one new dependency it looks for and throws `ambiguous-install`
+ * (`@deepseek-ai/dsh-plugin-manager` `lib/index.js:1782`). Letting that happen
+ * turns a user's entirely reasonable second click into a *failure* sentence —
+ * and spends a pnpm round trip (seconds, minutes under contention) to learn
+ * something this plugin can read in one file.
+ * @param currentSpec - the profile's own dependency string, or anything else.
+ * @param targetUrl - the release asset URL this install would use.
+ * @returns true when installing would change nothing.
+ */
+export function isAlreadyInstalledOn(currentSpec, targetUrl) {
+  const spec = typeof currentSpec === 'string' ? currentSpec.trim() : '';
+  const url = typeof targetUrl === 'string' ? targetUrl.trim() : '';
+  return spec.length > 0 && url.length > 0 && spec === url;
+}
+
+/**
  * A dependency value that means "this very install", for the「已安装」line.
  * @param application - the `ChangeResult.application`.
  * @returns true when the change reached the running process without a restart.
@@ -301,49 +364,71 @@ export function isLiveApplication(application) {
 }
 
 /**
- * Classify a failed install.
+ * Classify a failed install, from **both** places the host reports reasons.
  *
- * The host's own classifier (`classifyInstallFailure`) names a `kind` for a
- * failed pnpm run; this function adds the two facts that classifier cannot know
- * about, and keeps the categories the goal asks to be told apart:
+ * Two independent sources say why an install failed, and only one of them used
+ * to be consulted:
+ *   - `changeResult.error.code` — the official `ManagementError.code`
+ *     ({@link MANAGEMENT_FAILURE_CODES}). This is the *most specific* fact
+ *     available: the manager named the case itself. It therefore decides
+ *     **before** any text matching, which also stops a `stale-approval` (a build
+ *     approval) from being read as `build-blocked` merely because its diagnostic
+ *     mentions `prepare`;
+ *   - `changeResult.packageResult.kind` — pnpm's own `PluginInstallFailureKind`
+ *     for a run that exited non-zero.
+ *
+ * `operation-error` is the one management code that is a *wrapper*: the manager
+ * puts a non-`ManagementFailure` (in practice: pnpm's output) there, so it is
+ * deliberately **not** returned as a code — the pnpm `kind`/diagnostic decides.
+ *
+ * The categories the goal asks to be told apart are kept, and two of them are
+ * this feature's own:
  *   - **asset-missing** — the tarball is not on the release. This is the
  *     *expected* outcome for a release published before this feature existed
- *     (0.1.1 has zero assets), which is exactly why it must be a named branch
+ *     (0.1.1 had zero assets), which is exactly why it must be a named branch
  *     and never a silent one;
- *   - **build-blocked** — pnpm's build-script approval gate. A tarball is
- *     exempt from it for this repository, but a *different* package's script or
- *     a future pnpm change could still land here, and the sentence differs;
- *   - everything else keeps its own name (`pnpm-missing`, `timeout`, `network`,
- *     `integrity`, `permission`, `disk-full`, `no-matching-version`,
- *     `not-found`, `unknown`).
- * @param facts - `{kind, code, diagnostic, status}` from the install attempt.
+ *   - **asset-unverified** — the asset could not be fetched anonymously.
+ *
+ * `unknown` survives only for the case where **neither** source said anything;
+ * its sentence (§{@link describeInstallFailure}) says exactly that instead of
+ * the old "could not be classified".
+ * @param facts - `{kind, management, diagnostic, message, status, probe, offline}`
+ *   from the install attempt.
  * @returns the failure code.
  */
 export function classifyInstallFailure(facts = {}) {
   const stated = typeof facts.kind === 'string' ? facts.kind : '';
+  const management = typeof facts.management === 'string' ? facts.management : '';
   const text = `${typeof facts.diagnostic === 'string' ? facts.diagnostic : ''} ${
     typeof facts.message === 'string' ? facts.message : ''
   }`;
   const status = Number.isFinite(facts.status) ? facts.status : 0;
-  // The probe's own answer is the most specific thing known about the asset.
-  if (status === 404 || /ERR_PNPM_FETCH_404|\bE404\b|404 Not Found|Not Found - GET/i.test(text)) {
-    return 'asset-missing';
-  }
-  if (stated === 'build-blocked' || /ERR_PNPM_IGNORED_BUILDS|Ignored build scripts|prepare|allowBuilds/i.test(text)) {
-    // `prepare`/`allowBuilds` are only reachable through the git route, which
-    // this feature never takes; naming it is still the honest classification.
-    return 'build-blocked';
-  }
+  // 1. The probe's own answer, when the caller is classifying a probe result.
+  if (status === 404 || status === 410) return 'asset-missing';
   if (status === 403 || status === 401) return 'asset-unverified';
-  if (status === 0 && (facts.probe === true || facts.offline === true)) return 'network';
-  if (stated === 'pnpm-missing') return 'pnpm-missing';
-  if (stated === 'timeout') return 'timeout';
-  if (stated === 'not-found' || stated === 'no-matching-version') return stated;
-  if (stated === 'network') return 'network';
-  if (stated === 'integrity' || stated === 'permission' || stated === 'disk-full') return stated;
+  // 2. The manager's own code — the most specific thing known. A wrapper is not
+  //    an answer, so `operation-error` falls through to pnpm's facts.
+  if (management !== '' && management !== MANAGEMENT_OPERATION_ERROR) {
+    if (MANAGEMENT_FAILURE_CODES.includes(management)) return management;
+  }
+  // 3. pnpm's own classification of the run it made.
+  if (stated !== '') {
+    if (stated === 'build-blocked') return 'build-blocked';
+    if (stated === 'pnpm-missing' || stated === 'timeout' || stated === 'network') return stated;
+    if (stated === 'not-found' || stated === 'no-matching-version') return stated;
+    if (stated === 'integrity' || stated === 'permission' || stated === 'disk-full') return stated;
+    if (stated === 'unknown') {
+      // pnpm said "unknown"; the log may still name it, so fall through.
+    }
+  }
+  // 4. The log itself (a tarball 404, the build-script gate, an errno).
+  if (/ERR_PNPM_FETCH_404|\bE404\b|404 Not Found|Not Found - GET/i.test(text)) return 'asset-missing';
+  if (/ERR_PNPM_IGNORED_BUILDS|Ignored build scripts|allowBuilds/i.test(text)) return 'build-blocked';
   if (/ENOTFOUND|ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|socket hang up|Could not resolve host/i.test(text)) {
     return 'network';
   }
+  if (status === 0 && (facts.probe === true || facts.offline === true)) return 'network';
+  // 5. Nothing named it. The sentence says so, without inventing a cause.
   return INSTALL_FAILURE_UNKNOWN;
 }
 
@@ -424,8 +509,87 @@ export function describeInstallFailure(kind, options = {}) {
       manual,
       retryable: true,
     },
+    // ── the official manager's own codes (`ManagementError.code`) ────────────
+    // Each one is a case the manager named, so each gets its own actionable
+    // sentence. None of them claims a rollback: whether files were restored is a
+    // separate fact, and for `ambiguous-install` — a no-op install — nothing was
+    // ever changed.
+    [REFUSAL_ALREADY_INSTALLED]: {
+      message: `the installed dependency did not change, so ${named} is already the version this profile holds. Restart dsh web to put it to work`,
+      manual,
+      retryable: false,
+    },
+    'ambiguous-install': {
+      message:
+        `the install changed nothing: ${named} is already the version this profile holds, so the package manager had no new dependency to report. ` +
+        'Restart dsh web to put the installed version to work',
+      manual,
+      retryable: false,
+    },
+    'stale-approval': {
+      message:
+        'pnpm asked for a build-script approval that is no longer valid, so nothing was installed. ' +
+        'Update by hand with dsh plugin add',
+      manual,
+      retryable: false,
+    },
+    'incompatible-version': {
+      message: `${named} does not accept this DSH version (its peer range does not match), so nothing was installed`,
+      manual,
+      retryable: false,
+    },
+    'not-bundle': {
+      message: `${named} declares no dsh.bundle, so it is not a plugin bundle this profile can install`,
+      manual,
+      retryable: false,
+    },
+    'not-removable': {
+      message: 'this bundle cannot be removed by the plugin manager, so the install was refused',
+      manual,
+      retryable: false,
+    },
+    'bundle-in-use': {
+      message: 'this bundle is in use by the running profile, so the install was refused. Restart dsh web and try again',
+      manual,
+      retryable: false,
+    },
+    'stop-profile': {
+      message: 'this bundle is used by the running profile, so dsh web has to be stopped before it can be changed',
+      manual,
+      retryable: false,
+    },
+    'management-required': {
+      message: 'this plugin is supplied by the DSH installation itself and cannot be managed from this profile; update DSH instead',
+      manual,
+      retryable: false,
+    },
+    'unaddressable': {
+      message: 'the plugin manager could not address this profile\u2019s entry for the plugin, so nothing was installed; update by hand',
+      manual,
+      retryable: false,
+    },
+    'unknown-plugin': {
+      message: 'the plugin manager found no entry for this plugin in the profile, so nothing was installed; update by hand',
+      manual,
+      retryable: false,
+    },
+    'invalid-spec': {
+      message:
+        'the plugin manager refused the install spec as invalid. That should not happen from this button (the URL is built from the update check); update by hand',
+      manual,
+      retryable: false,
+    },
+    [MANAGEMENT_OPERATION_ERROR]: {
+      // Only reached when pnpm's own `kind` and log said nothing either.
+      message: 'the package manager failed without naming a reason, so nothing was installed; update by hand',
+      manual,
+      retryable: true,
+    },
+    // ── the honest last resort ──────────────────────────────────────────────
+    // Reachable only when **neither** source reported anything. It says exactly
+    // that: no invented cause, and no claim about files being restored.
     [INSTALL_FAILURE_UNKNOWN]: {
-      message: 'the install failed and the reason could not be classified; the profile files were restored. Update by hand',
+      message: 'the install failed and the host reported no reason for it; update by hand',
       manual,
       retryable: true,
     },
@@ -652,6 +816,12 @@ export function createInstallTable(options = {}) {
       entry.phase = 'failed';
       entry.application = application ?? 'failed';
       const kind = classifyInstallFailure({
+        // Both sources the manager reports a reason in: its own code
+        // (`error.code`) and pnpm's classification of the run it made
+        // (`packageResult.kind`). Consulting only the second is what made a real
+        // desktop `ambiguous-install` render as "the reason could not be
+        // classified".
+        management: result?.error?.code,
         kind: result?.packageResult?.kind,
         message: result?.error?.diagnostic,
         diagnostic: result?.error?.diagnostic,

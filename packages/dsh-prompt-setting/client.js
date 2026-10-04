@@ -592,6 +592,7 @@ window.__ModuleLoader__.load({
       updateApplyManual: '也可以手动更新：{hint}',
       updateApplyManualLink: '打开 {tag} 的 Release 页面',
       updateApplyReused: '已有一个安装在进行中。',
+      updateApplyAlready: '该版本已安装（v{version}），请手动重启 dsh web 生效。',
       viewSections: '分段',
       viewFull: '全文',
       // g-015: the four first-level tabs, in their fixed presentation order.
@@ -976,6 +977,7 @@ window.__ModuleLoader__.load({
       updateApplyManual: 'You can also update by hand: {hint}',
       updateApplyManualLink: 'Open the {tag} release page',
       updateApplyReused: 'An install is already running.',
+      updateApplyAlready: 'v{version} is already installed — restart dsh web to put it to work.',
       viewSections: 'Sections',
       viewFull: 'Full text',
       tabMine: 'My Prompt',
@@ -6128,13 +6130,18 @@ window.__ModuleLoader__.load({
         const reason = typeof error.message === 'string' && error.message.length > 0 ? error.message : t('updateApplyUnknown');
         lines.push(fmt(t('updateApplyFailed'), { reason }));
         if (typeof error.diagnostic === 'string' && error.diagnostic.length > 0) lines.push(error.diagnostic);
-        buttons.push(
-          h(
-            UI.Button,
-            { key: 'retry', 'data-action': 'update-apply-retry', disabled: m.busy, onClick: a.retryUpdateApply },
-            t('updateApplyRetry'),
-          ),
-        );
+        // The host classifies every failure and says whether retrying can help:
+        // a `link:`-shaped refusal, an incompatible version or a no-op install
+        // gets no retry button, because pressing it again would do nothing.
+        if (error.retryable !== false) {
+          buttons.push(
+            h(
+              UI.Button,
+              { key: 'retry', 'data-action': 'update-apply-retry', disabled: m.busy, onClick: a.retryUpdateApply },
+              t('updateApplyRetry'),
+            ),
+          );
+        }
         const manual = error.manual;
         if (manual !== null && typeof manual === 'object' && typeof manual.releaseUrl === 'string' && manual.releaseUrl.length > 0) {
           buttons.push(
@@ -7521,6 +7528,18 @@ window.__ModuleLoader__.load({
         const status = result.payload.status ?? null;
         const requestId = status === null ? null : status.requestId;
         if (result.payload.reused === true) setNotice({ tone: 'info', text: t('updateApplyReused') });
+        // The profile already held exactly this artifact, so the host answered a
+        // finished `restart-required` without calling the package manager at all.
+        // There is nothing to poll and nothing to wait for: saying so and showing
+        // the install state is the whole response (a real desktop run turned this
+        // case into 「安装失败」 before, because `pnpm add` on an unchanged
+        // dependency makes the manager throw `ambiguous-install`).
+        if (result.payload.alreadyInstalled === true) {
+          setUpdate((current) => ({ ...current, apply: status, applyElapsed: null }));
+          const version = status !== null && typeof status.version === 'string' ? status.version : '';
+          setNotice({ tone: 'success', text: fmt(t('updateApplyAlready'), { version }) });
+          return;
+        }
         if (requestId === null || requestId === undefined) {
           setUpdate((current) => ({ ...current, apply: { status: 'unknown', phase: 'unknown' } }));
           return;

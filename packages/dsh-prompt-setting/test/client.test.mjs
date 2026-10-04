@@ -6959,6 +6959,54 @@ test('client: a live install keeps its controls after the update switch is turne
   );
 });
 
+test('client: 「already installed」 is a success with no poll and no second button', async () => {
+  // The real desktop case: the profile already held the exact asset, so the host
+  // answers a finished `restart-required` and never calls the package manager.
+  // The page must say「该版本已安装，请手动重启」— not a failure, and not a spinner.
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.updateCheck]: { payload: updateAvailableWithTag() },
+      [PATHS.updateApply]: (url, init) =>
+        init && init.method === 'POST'
+          ? {
+              payload: {
+                ok: true,
+                reused: false,
+                alreadyInstalled: true,
+                status: applyStatus({
+                  phase: 'done',
+                  status: 'done',
+                  application: 'restart-required',
+                  restartRequired: true,
+                  installed: true,
+                  cancellable: false,
+                  finishedAt: '2024-06-01T00:00:01.000Z',
+                }),
+              },
+            }
+          : { payload: { ok: true, status: null } },
+    }),
+  });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'update-apply' });
+  tree = page.draw();
+  clickButton(tree, { 'data-action': 'confirm-yes' });
+  await flushApply();
+  tree = page.draw();
+
+  assert.match(strings(tree).join(' '), /已安装/, 'the notice says it is already installed');
+  assert.match(strings(tree).join(' '), /手动重启 dsh web/);
+  assert.equal(oneBy(tree, 'data-update-apply-status', 'done').props['data-region'], 'update-apply-status');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-action'] === 'update-apply').length,
+    0,
+    'nothing left to install, so no button',
+  );
+  // Nothing to poll: one POST, no follow-up `?requestId=` GET.
+  const polls = page.router.calls.filter((call) => call.url.includes('requestId='));
+  assert.equal(polls.length, 0, 'a no-op install is answered, not polled');
+});
+
 test('client: a structured refusal from the host is shown as its own sentence, and nothing polls', async () => {
   const page = makePage({
     responses: defaultResponses({

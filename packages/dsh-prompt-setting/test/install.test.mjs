@@ -29,6 +29,9 @@ import {
   INSTALL_ASSET_EXTENSION,
   INSTALL_FAILURE_UNKNOWN,
   INSTALL_REQUEST_LIMIT,
+  MANAGEMENT_FAILURE_CODES,
+  MANAGEMENT_OPERATION_ERROR,
+  REFUSAL_ALREADY_INSTALLED,
   REFUSAL_ASSET_MISSING,
   REFUSAL_ASSET_UNVERIFIED,
   REFUSAL_DEVELOPMENT_LINK,
@@ -40,6 +43,7 @@ import {
   createInstallTable,
   describeInstallFailure,
   describeInstalledSpec,
+  isAlreadyInstalledOn,
   isLocalSpec,
   publicInstallStatus,
   releasePageForTag,
@@ -570,6 +574,144 @@ test('install route: a link: profile is refused with a manual route, and nothing
   assert.ok(refused.manual.releaseUrl.includes('/releases/tag/0.2.0'));
   assert.equal(manager.calls.length, 0, 'a development link is never overwritten');
   assert.equal(transport.calls.filter((entry) => entry.method === 'HEAD').length, 0);
+});
+
+test('install: the same spec is recognized as "already installed", a different one is not', () => {
+  assert.equal(isAlreadyInstalledOn(ASSET_URL, ASSET_URL), true);
+  assert.equal(isAlreadyInstalledOn(`  ${ASSET_URL}  `, ASSET_URL), true, 'surrounding whitespace is trimmed');
+  assert.equal(isAlreadyInstalledOn(ASSET_URL, `${ASSET_URL}?x=1`), false, 'the comparison is literal');
+  assert.equal(isAlreadyInstalledOn('0.1.1', ASSET_URL), false, 'a semver install is a different install');
+  assert.equal(
+    isAlreadyInstalledOn('https://github.com/zangxx66/dsh-prompt-setting/releases/download/0.1.0/dsh-prompt-setting-0.1.0.tgz', ASSET_URL),
+    false,
+    'an older tarball URL is a different install',
+  );
+  assert.equal(isAlreadyInstalledOn('link:../x', ASSET_URL), false);
+  assert.equal(isAlreadyInstalledOn(null, ASSET_URL), false, 'an unreadable/missing manifest is not "already installed"');
+  assert.equal(isAlreadyInstalledOn(ASSET_URL, null), false);
+  assert.equal(isAlreadyInstalledOn('', ''), false);
+});
+
+test('install route: a profile already holding the target asset answers success, not ambiguous-install', async () => {
+  // The real desktop defect: the profile's dependency **was** the very URL this
+  // install would fetch, so `pnpm add` changed nothing and the official manager
+  // threw `ambiguous-install` (`lib/index.js:1782`) — which used to surface as
+  // 「安装失败：… could not be classified」. It is a no-op, not a failure.
+  writeProfile({ 'dsh-prompt-setting': ASSET_URL });
+  const transport = makeTransport();
+  const manager = makeManager();
+  const { route } = mountHost({ manager, transport });
+
+  const started = await startInstall(route);
+  assert.equal(started.ok, true);
+  assert.equal(started.alreadyInstalled, true);
+  await settle();
+  assert.equal(manager.calls.length, 0, 'a no-op install never reaches the package manager');
+  assert.equal(transport.calls.filter((entry) => entry.method === 'HEAD').length, 0, 'and it is not probed either');
+
+  const status = await readStatus(route, started.status.requestId);
+  assert.equal(status.status.phase, 'done', 'a success, never a failure');
+  assert.equal(status.status.application, 'restart-required');
+  assert.equal(status.status.restartRequired, true, 'the only step left is the manual restart');
+  assert.equal(status.status.installed, true);
+  assert.equal(status.status.error, null, 'no error at all');
+});
+
+test('install route: a profile holding an older asset still installs the new one', async () => {
+  writeProfile({
+    'dsh-prompt-setting': 'https://github.com/zangxx66/dsh-prompt-setting/releases/download/0.1.0/dsh-prompt-setting-0.1.0.tgz',
+  });
+  const transport = makeTransport();
+  const manager = makeManager();
+  const { route } = mountHost({ manager, transport });
+  const started = await startInstall(route);
+  assert.equal(started.ok, true);
+  assert.equal(started.alreadyInstalled, undefined, 'a different spec is a real install');
+  await settle();
+  assert.equal(manager.calls.length, 1, 'the new version is installed');
+  assert.equal(manager.calls[0].spec, ASSET_URL);
+  assert.equal((await readStatus(route, started.status.requestId)).status.phase, 'done');
+});
+
+test('install route: an official management failure is named, never "could not be classified"', async () => {
+  // `ManagementError.code` is the most specific thing the manager reports, and
+  // it used to be ignored entirely (only pnpm's `kind` was consulted), so every
+  // official refusal rendered as an unactionable sentence that also claimed a
+  // rollback. Every code now has its own sentence.
+  for (const code of MANAGEMENT_FAILURE_CODES) {
+    writeProfile({ 'dsh-prompt-setting': '0.1.1' });
+    const transport = makeTransport();
+    const manager = makeManager({
+      result: { changed: false, application: 'failed', stage: 'install', target: ASSET_URL, error: { code } },
+    });
+    const { route } = mountHost({ manager, transport });
+    const started = await startInstall(route);
+    await settle();
+    const status = await readStatus(route, started.status.requestId);
+    assert.equal(status.status.phase, 'failed');
+    assert.equal(status.status.error.management, code, `${code} is carried through`);
+    // The **mapped** code, not just the raw one: dropping a code from the table
+    // must change what the page is told, and this is what makes that visible.
+    // `operation-error` is the wrapper and has no reason of its own.
+    assert.equal(
+      status.status.error.code,
+      code === MANAGEMENT_OPERATION_ERROR ? INSTALL_FAILURE_UNKNOWN : code,
+      `${code} maps to its own code`,
+    );
+    assert.doesNotMatch(status.status.error.message, /could not be classified/, `${code} has a real sentence`);
+    assert.ok(status.status.error.message.length > 30, `${code} says something actionable`);
+    // Only a failure that really changed the profile may talk about a rollback;
+    // every other sentence must stay silent about it.
+    if (code !== MANAGEMENT_OPERATION_ERROR) {
+      assert.doesNotMatch(status.status.error.message, /restored/i, `${code} must not claim a rollback`);
+    }
+    assert.ok(status.status.error.manual.releaseUrl.includes('/releases/tag/0.2.0'), `${code} keeps the manual route`);
+  }
+});
+
+test('install route: an operation error is unwrapped into pnpm\u2019s own reason', async () => {
+  // `operation-error` is a wrapper, not a reason: the real one is in the log.
+  writeProfile({ 'dsh-prompt-setting': '0.1.1' });
+  const transport = makeTransport();
+  const manager = makeManager({
+    result: {
+      changed: true,
+      application: 'failed',
+      stage: 'install',
+      target: ASSET_URL,
+      packageResult: { exitCode: 1, kind: 'build-blocked', output: 'ERR_PNPM_IGNORED_BUILDS  Ignored build scripts' },
+      error: { code: 'operation-error', diagnostic: 'ERR_PNPM_IGNORED_BUILDS  Ignored build scripts' },
+    },
+  });
+  const { route } = mountHost({ manager, transport });
+  const started = await startInstall(route);
+  await settle();
+  const status = await readStatus(route, started.status.requestId);
+  assert.equal(status.status.error.code, 'build-blocked', 'pnpm\u2019s reason wins over the wrapper');
+  assert.equal(status.status.error.management, 'operation-error');
+});
+
+test('install route: pnpm\u2019s reason is used when the manager only wraps it', async () => {
+  // The previous case's mirror image, for a code that is *not* the wrapper: the
+  // manager names the case, so its name wins over anything the log might hint at
+  // (a `stale-approval` diagnostic mentioning `prepare` must not read as
+  // `build-blocked`).
+  writeProfile({ 'dsh-prompt-setting': '0.1.1' });
+  const transport = makeTransport();
+  const manager = makeManager({
+    result: {
+      changed: false,
+      application: 'failed',
+      stage: 'install',
+      target: ASSET_URL,
+      error: { code: 'stale-approval', diagnostic: 'ERR_PNPM_... prepare was blocked; allowBuilds is stale' },
+    },
+  });
+  const { route } = mountHost({ manager, transport });
+  const started = await startInstall(route);
+  await settle();
+  const status = await readStatus(route, started.status.requestId);
+  assert.equal(status.status.error.code, 'stale-approval');
 });
 
 test('install route: an unreadable profile manifest refuses instead of installing blind', async () => {

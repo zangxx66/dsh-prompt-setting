@@ -84,6 +84,7 @@ import {
   classifyInstallFailure,
   createInstallTable,
   describeInstallFailure,
+  isAlreadyInstalledOn,
   publicInstallStatus,
   resolveInstallPolicy,
   resolveInstallTarget,
@@ -2493,6 +2494,27 @@ function mount(ctx, config, cleanups) {
     });
     if (policy.ok !== true) {
       return publicRefusal(policy.code, policy.message, policy.manual);
+    }
+    // g-032 (real-machine fix): the profile already holds exactly this artifact.
+    //
+    // `pnpm add <the same spec>` changes no dependency, and the official manager
+    // then cannot find the one new dependency it expects and throws
+    // `ambiguous-install` (`dsh-plugin-manager/lib/index.js:1782`). The user's
+    // second click is not a failure — everything the button promised is already
+    // true, and the only remaining step is the restart they were going to do
+    // anyway. So this is answered as a **success with nothing to install**, with
+    // no manager call at all: no two-minute pnpm round trip, and no misleading
+    // red line. A *different* spec (an older tarball URL, an npm version, a
+    // registry range) still installs normally.
+    if (isAlreadyInstalledOn(field === null ? null : field.value, target.url)) {
+      const entry = installTable.begin({ tag: target.tag, version: target.version, url: target.url });
+      installTable.settle(entry.requestId, { changed: false, application: 'restart-required' });
+      return {
+        ok: true,
+        reused: false,
+        alreadyInstalled: true,
+        status: publicInstallStatus(installTable.read(entry.requestId)),
+      };
     }
     const entry = installTable.begin({ tag: target.tag, version: target.version, url: target.url });
     void runInstall(entry.requestId, { service, target });

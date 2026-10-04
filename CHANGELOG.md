@@ -81,7 +81,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   一律继续安装并交给 pnpm 裁决）；**profile 清单不可读时拒绝安装**（不再当成「未声明该包」而跳过
   `link:` 检查）；**关掉「检查更新」开关后，已在运行的安装仍可取消**（开关只门禁安装入口，不门禁
   已经在跑的那一个）。另：已安装版本与提示版本相同时不再显示「立即更新」按钮（避免「我是不是点了
-  两次」的困惑），上游发布更新的版本时按钮自动回来。
+  两次」的困惑），上游发布更新的版本时按钮自动回来。**真机缺陷修复（2026-10-04）**：桌面版在 release
+  产物上重复点「立即更新」会被报成「安装失败」——根因是 profile 里已装的 spec 与安装目标**完全相同**时，
+  `pnpm add` 不产生任何依赖变化，官方插件管理器随即抛 `ambiguous-install`
+  （`dsh-plugin-manager/lib/index.js:1782`），而当时的分类只看 pnpm 的失败 kind、漏掉官方
+  `ManagementError.code` ⇒ 落成「could not be classified」，并且在我们**什么都没改**的情况下还声称
+  「profile files were restored」。现在三处修正：**同 spec 直接短路为成功**（不调用包管理器，返回
+  `alreadyInstalled: true` + `done`/`restart-required`，文案「该版本已安装，请手动重启 dsh web 生效」）；
+  **分类表覆盖官方全部 12 个 `ManagementError.code`**（逐条可读可操作，`operation-error` 作为包装继续
+  下钻到 pnpm 的原因）；**不再谎称回滚**（只有官方确实还原过文件的失败才提，`unknown` 的兜底也改为如实
+  说明「宿主没有给出原因」）。另：重试按钮按失败是否可重试门禁。
   **"Update now": the host installs the release tarball through the official plugin manager, and you do the
   restart (g-032)**: the banner gains an **Update now** button which opens a **second confirmation** that says the
   restart is manual. On confirm the **host** calls the official `installBundle(spec, {enabled:true, requestId})`

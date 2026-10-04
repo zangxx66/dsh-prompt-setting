@@ -5131,6 +5131,71 @@ gh release upload <tag> dsh-prompt-setting-<version>.tgz
    `status` 永远相等。对照 J：把 phase 标记改成输出 `status` ⇒ 该守卫红。
 3. **把一条已知边界写进 NOTES（note 2，不改代码）**：见下节「十、已知边界」。
 
+### 九之三、真机缺陷：重复点击「立即更新」被报成「安装失败」（2026-10-04，桌面版，负责人实测）
+
+**现象**（负责人，桌面版，release 产物安装后点「立即更新」）：
+
+> 安装失败：the install failed and the reason could not be classified; the profile files were restored. Update by hand
+
+**已核实的事实**（勿再猜）：
+- `~/.dsh/profiles/desktop/package.json` 的 `dependencies['dsh-prompt-setting']` =
+  `https://github.com/zangxx66/dsh-prompt-setting/releases/download/0.1.1/dsh-prompt-setting-0.1.1.tgz`
+  （**非 `link:`** ⇒ A1 正确地放行了）；
+- `~/.dsh/profiles/desktop/node_modules/dsh-prompt-setting/package.json` 的 `version = 0.1.1`；
+- 即：**安装目标 spec 与 profile 里已装的 spec 完全相同**。
+
+**根因（源码定位）**：`pnpm add <与已装完全相同的 spec>` 之后依赖没有任何变化 ⇒ 官方
+`dsh-plugin-manager/lib/index.js:1782` 找不到「那一个新增依赖」：
+
+```js
+if (installed.length !== 1 || target === void 0) throw new ManagementFailure("ambiguous-install");
+```
+
+而当时我们的 `classifyInstallFailure` **只看 `PackageResult.kind`**（pnpm 对失败 run 的分类），
+完全没看 `changeResult.error.code`（官方 `ManagementError.code`）⇒ `ambiguous-install` 落到
+`unknown` ⇒ 文案「the reason could not be classified」；并且 `unknown` 的模板里还写着
+「the profile files were restored」——在我们**什么都没改**的情况下，两处都不实。
+
+**三条修复**：
+
+1. **同 spec 前置短路（产品行为）**：发起安装前，用 A1 已经在读的 `installDependencyField` 取当前
+   spec，与本次目标 URL **逐字比较**（`isAlreadyInstalledOn`，比较前 trim 首尾空白）。
+   相等 ⇒ **不调用 `installBundle`**，直接在状态表里 `begin` + `settle({application:'restart-required'})`，
+   返回 `{ok:true, alreadyInstalled:true, status:{phase:'done',…,restartRequired:true}}`；客户端识别
+   `alreadyInstalled` 后**不轮询**，直接显示「该版本已安装（vX.Y.Z），请手动重启 dsh web 生效」。
+   不等（旧 tarball URL / semver / registry 范围 / `link:`）⇒ 照常安装。
+   理由：官方对「无变化」的安装**必然**抛 `ambiguous-install`，把用户预期内的第二次点击变成「失败」既
+   误导、又白花一次 pnpm 往返（秒级，锁竞争下可达分钟级）。
+2. **分类表覆盖官方全部 `ManagementError.code`（12 个）**：`management-required` / `unaddressable` /
+   `unknown-plugin` / `invalid-spec` / `ambiguous-install` / `not-bundle` / `not-removable` /
+   `stop-profile` / `bundle-in-use` / `stale-approval` / `incompatible-version` / `operation-error`
+   （前两个来自 `ReadOnlyReason`，其余十个见 `lib/types/types.d.ts:19`）。分类**顺序**也改了：
+   probe 事实 → **官方 code** → pnpm `kind` → 日志文本 → 兜底。官方 code 提到文本匹配之前，是为了
+   避免 `stale-approval` 的 diagnostic 里出现 `prepare` 就被读成 `build-blocked`。
+   `operation-error` 是**包装**而非原因（官方把非 `ManagementFailure` 的错误包进它），所以它**不**
+   作为最终 code，继续下钻到 pnpm 的 `kind`/日志。
+3. **不再谎称 restored**：只有在官方**确实执行过回滚**的失败（`timeout` 与 pnpm run 失败）才提
+   「文件已还原」；全部 management code 的文案（含什么都没改的 `ambiguous-install`）都不提。
+   `unknown` 的兜底文案也换掉了「could not be classified」，改为如实说明
+   「the install failed and the host reported no reason for it; update by hand」——它只在**两个来源
+   都没有信息**时可达。
+   顺带：客户端「重试」按钮现在按 host 给出的 `error.retryable` 门禁（不可重试的失败不给重试按钮）。
+
+**本轮实测证据**
+
+| 项 | 命令 | 结果 |
+| --- | --- | --- |
+| 全量 | `node --test` | **579 / 579 pass / 0 fail**（上一轮 572，本轮 +7：同 spec 短路 1、旧 spec 仍安装 1、12 个官方 code 的映射与文案 1、operation-error 下钻 1、非包装 code 优先 1、`isAlreadyInstalledOn` 纯策略 1、客户端 already-installed 1） |
+| `test/install.test.mjs` | `node --test test/install.test.mjs` | **33 / 33 pass / 0 fail**（27 → 33） |
+| `test/client.test.mjs` | `node --test test/client.test.mjs` | **145 / 145 pass / 0 fail**（144 → 145） |
+| **改坏就红 K**（去掉同 spec 短路） | 把 `if (isAlreadyInstalledOn(…))` 改成 `if (false && …)` ⇒ 跑 `test/install.test.mjs` | **32 / 1**，红在「a profile already holding the target asset answers success, not ambiguous-install」；`cp` 还原后 33/33 |
+| **改坏就红 L**（把 `ambiguous-install` 从分类表移除） | 在 `classifyInstallFailure` 的官方 code 分支排除 `ambiguous-install` ⇒ 跑 `test/install.test.mjs` | **32 / 1**，红在「an official management failure is named, never "could not be classified"」（断言的是**映射后**的 `error.code`，所以"只看 raw code"骗不过它）；`cp` 还原后 33/33 |
+
+**契约同步**：`CONTRACT.md` §18.2 新增「同 spec ⇒ `alreadyInstalled: true` + `done`/`restart-required`」
+整段（含 `:1782` 行号与「不同 spec 照常安装」）；§18.4 补「`already-installed` 行创建即 settle，
+所以对它的取消是 `not-running`」；§18.6 重写为「两个来源 + 五级顺序 + 12 个官方 code 全表 +
+关于回滚的措辞规则 + `unknown` 只说它自己」，并把「重试按钮」与 `retryable` 绑定。
+
 ### 十、已知边界（复核 note 2）：`installedVersion === latest` 依赖宿主 `version` 是**规范化版本**
 
 「已装版本 === 提示版本时隐藏『立即更新』」这条收紧（§九 末尾）比较的是
