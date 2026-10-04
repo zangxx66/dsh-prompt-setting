@@ -5255,16 +5255,22 @@ if (installed.length !== 1 || target === void 0) throw new ManagementFailure("am
 - `test/install.test.mjs` 两处注释同样中性化（**只改叙述，未动任何 `0.1.1` 字面量、夹具与断言**）：
   原「The asset-less release: the expected outcome for 0.1.1.」与
   「The measured state of the published 0.1.1 release: zero assets.」；
-- 已核对为**中性、无需改**：`CONTRACT.md` §18.7 分类表（「a release with no asset — e.g. a release
-  published before this feature」）、`client.js`（「when the release simply has no asset yet」）、
-  `index.js`（「the release has no asset」）。
+- 复查中一并修掉的同类注释：`index.js` 的 `probeReleaseAsset` 与 `runInstall` 原有「the state every release
+  published before this feature existed is in」从句——0.1.1 补资产后该全称判断同样不成立 ⇒ 已删去从句，
+  只留「the release carries no such asset」。
+- 已核对确为**中性、无需改**：`CONTRACT.md` §18.7 分类表（「a release with no asset — e.g. a release
+  published before this feature」）、`client.js`（「when the release simply has no asset yet」）。
 
-### 四、两可保留项（附理由）
-- `core/install.js` `describeInstallFailure` 的 `asset-missing` 用户文案仍含「Releases published before
-  this feature existed carry no assets; the next release will」：这是**通用兜底文案**（不含版本字面量），
-  改它属产品文案变更、牵动 `test/install.test.mjs` 的消息断言，超出「版本号与包元数据」范围 ⇒ 保留待裁。
+### 四、原两可项（负责人 2026-10-04 裁定后已处理）
+- `core/install.js` `describeInstallFailure` 的 `asset-missing` 用户文案原为「Releases published before
+  this feature existed carry no assets; the next release will」：负责人裁定**必修**——0.1.1 已补资产，
+  该历史解释对它、也对未来「漏传资产的 release」都不成立，会把用户引向错误成因。已改为**中性、可操作、
+  不假设历史**的中英双语表述（「check the release page for its assets, or try again later /
+  这个版本没有可下载的安装包（`dsh-prompt-setting-<version>.tgz` 未随 release 提供）；请到 release 页面
+  查看，或稍后重试」），`manual` 指引与 `retryable: true` 语义不变；`test/install.test.mjs` 相应加了
+  「含可操作与重试指引 + 含中文 + **不含**旧历史解释」的断言（把旧句退回即红，见本节末对照）。
 - `CHANGELOG.md` `[0.1.0]` 段 Notes 的「清单当前版本见上方的 `0.1.1` 条目 / the manifest now carries
-  `0.1.1`」已随本次同步过时：白名单禁止改历史段 ⇒ 未动，待裁。
+  `0.1.1`」已随本次同步过时：负责人裁定**只改指向、不动历史事实** ⇒ 已改为指向 `0.1.2` 条目。
 - `NOTES.md` §107 的「`0.1.1` 无资产」叙述按「历史留档」保留（当时的实测事实，白名单点名 NOTES 历史不改）。
 
 ### 五、`npm pack` 复核（`--cache` 指向工作区内，临时目录已清理）
@@ -5275,3 +5281,10 @@ if (installed.length !== 1 || target === void 0) throw new ManagementFailure("am
 ### 六、验收
 - `cd packages/dsh-prompt-setting && node --test`：**579 pass / 0 fail**（与 0.1.1 基线 579 一致，无断言削弱）；
 - 全仓 `0.1.1` 残留清单：仅白名单/夹具（见二），其余全部同步为 `0.1.2`。
+
+### 七、收尾对照（负责人 2026-10-04 裁决的两项）
+- **改坏就红**：把 `asset-missing` 文案退回旧句（「Releases published before this feature existed carry no
+  assets…」）后，`node --test --test-name-pattern="failures are classified into the categories"` ⇒
+  **17 tests / 1 fail**（`AssertionError: the sentence names the actionable route`）；还原新文案后全量
+  **579 pass / 0 fail**（对比基线 579，无新增/削弱）。
+- `CHANGELOG.md` `[0.1.0]` 段 Notes 的指向已由 `0.1.1` 改为 `0.1.2`（只改指向，历史事实与历史段内容未动）。

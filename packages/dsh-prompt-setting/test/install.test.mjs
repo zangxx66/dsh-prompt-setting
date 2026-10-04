@@ -371,6 +371,23 @@ test('install: failures are classified into the categories the goal names', () =
     assert.ok(described.message.length > 20, `${kind} has a readable sentence`);
     assert.ok(described.manual.releaseUrl.includes('/releases/tag/0.2.0'));
   }
+  // asset-missing is the one category whose wording used to explain *why* an
+  // asset was absent ("releases published before this feature existed"). That
+  // history is gone — the published releases carry assets — so the sentence may
+  // not blame the past or promise a future release. It must name the actionable
+  // route instead, in both languages, and stay retryable.
+  const missing = describeInstallFailure(REFUSAL_ASSET_MISSING, { tag: 'v0.2.0', version: '0.2.0' });
+  assert.equal(missing.retryable, true, 'a missing asset stays retryable');
+  assert.match(missing.message, /dsh-prompt-setting-<version>\.tgz/);
+  assert.match(missing.message, /release page/i, 'the sentence names the actionable route');
+  assert.match(missing.message, /try again later/i, 'and the retry route');
+  assert.match(missing.message, /[\u4e00-\u9fff]/, 'the sentence carries its Chinese half');
+  assert.doesNotMatch(
+    missing.message,
+    /before this feature existed|carry no assets/i,
+    'no stale history: the assets are published',
+  );
+  assert.match(missing.manual.releaseLink, /v0\.2\.0/, 'the manual route still names the tag');
   // A diagnostic is one short line, never a log.
   const long = `${'x'.repeat(500)}\nsecond line`;
   const summarized = summarizeDiagnostic(long);

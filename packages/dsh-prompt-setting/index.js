@@ -2399,8 +2399,7 @@ function mount(ctx, config, cleanups) {
   /**
    * One `HEAD` against the release asset.
    *
-   * A HEAD is the whole cost of turning "the release has no asset" — the state
-   * every release published before this feature existed is in — into a named,
+   * A HEAD is the whole cost of turning "the release has no asset" into a named,
    * immediate answer instead of a two-minute pnpm failure. A transport that
    * cannot answer (no fetch, a throw, a 5xx) returns `unverified`, which means
    * "install anyway and let pnpm decide": the probe is a shortcut, never a gate.
@@ -2543,8 +2542,7 @@ function mount(ctx, config, cleanups) {
       const probe = await probeReleaseAsset(target.url);
       // The probe is a **shortcut, never a gate**: only "the asset is definitely
       // not there / definitely not reachable anonymously" refuses. `404`/`410`
-      // mean the release carries no such asset — the state every release
-      // published before this feature existed is in — and `401`/`403` mean it
+      // mean the release carries no such asset, and `401`/`403` mean it
       // cannot be fetched anonymously. **Every other answer is "I could not find
       // out" and must NOT block an install**: `500`, `429`, `405`, a redirect
       // that never resolved, a throw, no `fetch` at all. The probe exists to

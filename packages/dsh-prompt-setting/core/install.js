@@ -452,8 +452,10 @@ export function describeInstallFailure(kind, options = {}) {
   const table = {
     'asset-missing': {
       message:
-        `the ${tag === null ? '' : `${tag} `}release has no ${INSTALL_ASSET_PREFIX}<version>${INSTALL_ASSET_EXTENSION} asset to install from. ` +
-        'Releases published before this feature existed carry no assets; the next release will',
+        `the ${tag === null ? '' : `${tag} `}release has no ${INSTALL_ASSET_PREFIX}<version>${INSTALL_ASSET_EXTENSION} asset to install from; ` +
+        'check the release page for its assets, or try again later. ' +
+        `这个版本没有可下载的安装包（${INSTALL_ASSET_PREFIX}<version>${INSTALL_ASSET_EXTENSION} 未随 release 提供）；` +
+        '请到 release 页面查看，或稍后重试',
       manual: { ...manual, releaseLink: tag === null ? manual.releaseLink : `check the ${tag} release for its assets` },
       retryable: true,
     },

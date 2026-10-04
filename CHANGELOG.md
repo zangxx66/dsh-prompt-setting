@@ -380,9 +380,9 @@ check and "Update now", the settings-page version, and a false freeze report fix
 
 ### Notes 说明
 
-- `0.1.0` 是该条目首次声明的版本号（清单当前版本见上方的 `0.1.1` 条目）；发布到 npm 与打 tag 后，
+- `0.1.0` 是该条目首次声明的版本号（清单当前版本见上方的 `0.1.2` 条目）；发布到 npm 与打 tag 后，
   本节日期即为发布日。
-  `0.1.0` was the version this entry first declared (the manifest now carries `0.1.1`, see the entry above);
+  `0.1.0` was the version this entry first declared (the manifest now carries `0.1.2`, see the entry above);
   once it is published and tagged, this entry's date becomes the release date.
 - 变更颗粒度较大：本项目按目标（看板 `g-0xx`）开发，一个目标一个提交，上面的条目对应一组这样的目标。
   Changes are coarse-grained: the project is developed goal by goal (board `g-0xx`), one commit per goal.
