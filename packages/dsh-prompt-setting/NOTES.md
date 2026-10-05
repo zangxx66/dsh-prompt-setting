@@ -5359,3 +5359,36 @@ if (installed.length !== 1 || target === void 0) throw new ManagementFailure("am
   各补一句指向；
 - `client.js` 注释引用 Revision 18（`localStampParts` / `stampOf` / 两个消费点 / `exportFileName`）；
 - `CHANGELOG.md`：新增 `[Unreleased]` 段（Changed），由 g-035 定稿为 `[0.1.3]`。
+
+## 110. 版本号 `0.1.2` → `0.1.3`：同步点与白名单依据（g-035，2026-10-05，基线 `4d10d5f` 工作区）
+
+### 一、同步的「本包当前发布版本」（15 处）
+- `package.json` 的 `version`、`index.js` 的 `PLUGIN_VERSION`；
+- `CONTRACT.md`：§10 export 示例 2 处（`plugin.version` / `pluginVersion`）、§13.8 版本节点文案（`v0.1.3`）、
+  §13.9 ping 示例的 `version`、§17 update-check 示例的 `current`；
+- 两份根 README：徽章各 1 处 + CHANGELOG 行表述各 1 处（`currently 0.1.3` / `当前 0.1.3`）；
+- 测试硬字面量：`test/stage2.test.mjs` export 断言 2 处、`test/client.test.mjs` export fixture 2 处 +
+  update-check fixture 的 `current` 1 处 + banner 渲染断言 `/0\.1\.3/` 1 处、`test/update.test.mjs` ping 断言 1 处。
+
+### 二、白名单判断依据（一律未动）
+- `CHANGELOG.md` 的 `[0.1.2]` 及更早历史段、`NOTES.md` 历史叙述、`.dsh-graph/**`、`docs/prompt-variables.md`：历史记录；
+- `core/update.js:138/283`、`core/install.js:128`、`CONTRACT.md:3174/3328`：`v0.1.2` / `0.1.2` 在这里是
+  **tag 形态与 canonicalize 的语法举例**（`v0.1.2` → `0.1.2`），不是「本包当前版本」；
+- `core/install.js:172` 的「announce `0.1.3` and install `0.1.2`」：**故意让两个版本号不同**才说明
+  「宣布的版本与安装的版本必须同源」；改成同一个数反而失去示例意义 ⇒ 保留；
+- `test/update.test.mjs:174/175/190/191`：`parseSemver` / `compareSemver` / `isNewerVersion` 的
+  **semver 比较数据**（`v0.1.2 > 0.1.1`），与「本包当前版本」无关；
+- `test/update.test.mjs:115` 的 `currentVersion` 默认值 `0.1.1`：注入的被检查版本（g-033 已裁定保留）。
+
+### 三、CHANGELOG 定稿
+`[Unreleased]` 归入 `## [0.1.3] - 2026-10-05`（中英对照），并把条目中「导出文件名本轮未改」的表述更新为
+「导出文件名同样按读者时区命名」（g-034 的第二条指令落地后，旧表述已过时）。`[0.1.2]` 及更早段一字未动。
+
+### 四、验收
+- `cd packages/dsh-prompt-setting && node --test`：**580 pass / 0 fail**（与 g-034 后基线 580 一致，无断言削弱）；
+- `npm pack` ⇒ **`dsh-prompt-setting-0.1.3.tgz`**：**23 文件**、**497130 B**、`test/` 命中 **0**、
+  `core/install.js` 在包内、`test/install.test.mjs` 不在包内；包内 `package.json.version` 与
+  `index.js` 的 `PLUGIN_VERSION` 均为 `0.1.3`，包内 `client.js` 含 Revision 18 的 `localStampParts`；
+- 全仓 `0.1.2` 残留清单：仅上述白名单（见二），无其它位置把 `0.1.2` 当作当前版本；
+- `README.md` / `README_zh.md` 的 `npm pack` 文件数与体积表述：本轮未在 README 正文写具体字节数
+  （历史值只在 NOTES 与 CHANGELOG 留档）⇒ 无需同步。

@@ -1476,8 +1476,8 @@ resolve the `workspace` layer).
   "schema": "dsh-prompt-setting/export",
   "version": 1,
   "exportedAt": "2024-01-02T10:00:00.000Z",
-  "plugin": { "name": "dsh-prompt-setting", "version": "0.1.2" },
-  "pluginVersion": "0.1.2",
+  "plugin": { "name": "dsh-prompt-setting", "version": "0.1.3" },
+  "pluginVersion": "0.1.3",
   "layers": {
     "user":      { "layer": "user", "enabled": true,
                    "reason": null,
@@ -1942,7 +1942,7 @@ writes one down either.
   lives on the **root container** instead: `data-plugin-version` is present in
   **every** render state, so a probe reads one attribute and never has to know
   which state it got;
-- **the text** is `v` + the version (`v0.1.2`), or `stPluginVersionUnknown`
+- **the text** is `v` + the version (`v0.1.3`), or `stPluginVersionUnknown`
   (「版本未知」 / `Version unknown`) when the ping carried no usable one. The
   node's `title` is `stPluginVersion` (「插件版本」 / `Plugin version`);
 - **the link:** with a `repositoryUrl` the node is an `a` element whose `href` is
@@ -2082,7 +2082,7 @@ live probe would read a normal rebuild as a defect.
 {
   "ok": true,
   "plugin": "dsh-prompt-setting",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "repositoryUrl": "https://github.com/zangxx66/dsh-prompt-setting",
   "time": "2026-09-28T12:00:00.000Z",
   "clientRenderer": "fallback",
@@ -3152,7 +3152,7 @@ The body:
 {
   "ok": true,
   "enabled": true,
-  "current": "0.1.2",
+  "current": "0.1.3",
   "latest": "0.2.0",
   "latestTag": "v0.2.0",
   "hasUpdate": true,

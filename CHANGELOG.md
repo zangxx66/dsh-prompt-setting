@@ -10,24 +10,32 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
-## [Unreleased]
+## [0.1.3] - 2026-10-05
+
+**功能版本：时间戳全面按读者时区呈现（显示与导出文件名）/ Feature release: every timestamp is rendered
+in the reader's own time zone, including the export file name.**
 
 ### Changed 变更
 
-- **时间戳按读者时区显示（Revision 18）**：宿主仍以 UTC ISO 8601 存与答，但设置页把两处给人看的时间改为在
-  **浏览器自身时区**渲染并标出时区——状态区的「快照生成时间」（`snapshot.generatedAt`）与「历史与备份」每条
-  记录的写入时间（`at`），形如 `2024-01-02 18:00:00 GMT+8`（存储值 `2024-01-02T10:00:00.000Z` 在东八区的
-  读法）。骨架固定（不做 12 小时制、不按语言重排字段），原始 UTC 串保留在节点 `title` 上，便于与宿主日志
-  核对；解析不出的值原样回显，无 `Intl` 的环境回退到 UTC 串。**线上字段、路由与落盘内容零变化**：历史的
-  排序与 `?before=` 过滤仍基于存储串。**导出文件名里的 UTC 时间戳本轮未改。**
-  **Timestamps render in the reader's time zone (Revision 18)**: the host still stores and answers UTC
-  ISO 8601, but the settings page renders the two human-facing stamps — the snapshot's `generatedAt` in the
-  status block and each history record's `at` — in the **browser's own zone**, with the zone named
-  (`2024-01-02 18:00:00 GMT+8` for a UTC+8 reader of `…T10:00:00.000Z`). The skeleton is fixed (no 12-hour
-  clock, no locale re-ordering) and the raw UTC string stays on the node's `title`, so a value a host log
-  shows is one hover away; an unparsable value is echoed and an engine without `Intl` falls back to the UTC
-  string. No wire field, route or stored byte changes: ordering and the `?before=` bound still use the
-  stored strings. The **export file name's UTC stamp is unchanged** in this round.
+- **时间戳按读者时区呈现（Revision 18）**：宿主仍以 UTC ISO 8601 存与答，但设置页把给人看的时间与**导出文件名**
+  都改为在**浏览器自身时区**呈现——状态区的「快照生成时间」（`snapshot.generatedAt`）与「历史与备份」每条记录的
+  写入时间（`at`）显示为 `2024-01-02 18:00:00 GMT+8`（存储值 `2024-01-02T10:00:00.000Z` 在东八区的读法）；
+  导出的文件名形如 `dsh-prompt-setting-2024-01-02-18-00-00.json`。显示骨架固定（不做 12 小时制、不按语言
+  重排字段），原始 UTC 串保留在节点 `title` 上便于与宿主日志核对；文件名不带时区标签（`:` 折成 `-`，Windows
+  下非法），定宽字段仍按导出时间可排序，且与文档里的 `exportedAt` 同源。解析不出的值原样回显，无 `Intl` 的
+  环境回退到 UTC 形态（文件名回退为 Revision 18 之前的拼写）。**线上字段、路由与落盘内容零变化**：导出文档里的
+  `exportedAt` 仍是 UTC，历史的排序与 `?before=` 过滤仍基于存储串。
+  **Every timestamp renders in the reader's time zone (Revision 18)**: the host still stores and answers UTC
+  ISO 8601, but the settings page renders both stamps a human reads — the snapshot's `generatedAt` and each
+  history record's `at` — and the **export file name** in the **browser's own zone**. A UTC+8 reader sees
+  `2024-01-02 18:00:00 GMT+8` for `…T10:00:00.000Z`, and the download is named
+  `dsh-prompt-setting-2024-01-02-18-00-00.json`. The skeleton is fixed (no 12-hour clock, no locale
+  re-ordering) and the raw UTC string stays on the node's `title`; the file name carries no zone label (`:`
+  folded to `-`, illegal on Windows), keeps the fixed-width fields that sort by export time, and derives from
+  the same `exportedAt` the document carries. An unparsable value is echoed, and an engine without `Intl` falls
+  back to the UTC form (the file name to its pre-Revision-18 spelling). No wire field, route or stored byte
+  changes: `exportedAt` inside the document is still UTC, and ordering and the `?before=` bound still use the
+  stored strings.
 
 ---
 
