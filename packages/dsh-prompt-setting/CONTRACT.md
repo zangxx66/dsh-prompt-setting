@@ -507,6 +507,42 @@ g-029).** Additive on the wire, and a placement change on the page:
 
 ---
 
+**Revision 18 (timestamps are rendered in the reader's time zone).** Display-only:
+**no wire field, no route and no stored byte changes.** The host keeps answering
+UTC ISO 8601 (`…Z`) everywhere it already did — `snapshot.generatedAt`, a history
+record's `at`, `exportedAt`, `checkedAt`, the install's `startedAt`/`finishedAt` —
+and the page now **renders** what it shows to a human in the browser's own zone,
+with the zone named:
+
+- `snapshot.generatedAt` (the「快照生成时间」 in `data-region="status-detail"`) and
+  a history record's `at` (`data-history-row`'s time node) both render as
+  `YYYY-MM-DD HH:mm:ss GMT±h[:mm]` — e.g. a stored `2024-01-02T10:00:00.000Z`
+  reads `2024-01-02 18:00:00 GMT+8` for a reader at UTC+8;
+- the **export file name** (§13.3) is a stamp too, and the one the user keeps on
+  disk, so it is named in the same zone: `dsh-prompt-setting-YYYY-MM-DD-HH-mm-ss.json`
+  — e.g. `dsh-prompt-setting-2024-01-02-18-00-00.json` for the same stored value.
+  It carries **no zone label** (`:` folded to `-` because it is illegal in a
+  Windows name, `+` doubtful in any name; the milliseconds are dropped), keeps the
+  fixed-width fields that make it sort in exactly the order it reads, and derives
+  from the **same** `exportedAt` the document carries — no second time source;
+- the **shape is fixed, the zone is not**: the skeleton does not follow the
+  locale (no 12-hour clock, no re-ordered fields), because what differs per
+  reader is the zone and only the zone — two people comparing notes still read
+  the same shape;
+- the **stored UTC string stays reachable** as the node's `title`, so the value a
+  host log shows is one hover away rather than lost;
+- the renderer **degrades, never throws**: a value no `Date` can parse is echoed
+  with the pre-Revision-18 `T`/millisecond fix-ups (and, for the file name, the
+  pre-Revision-18 UTC spelling), an engine without `Intl` (or without
+  `timeZoneName`) falls back to the UTC string or to no zone label, and a
+  non-string/empty `at` renders nothing — exactly the input set the old helper
+  accepted;
+- the `?before=` bound and the log's own ordering are untouched: the server still
+  filters and sorts on the stored strings (`seq` descending, `at < before`), so
+  a `TZ` change on the reader's machine can never reorder or hide a record.
+
+---
+
 ## 1. Routes and methods
 
 | Path | Methods | Purpose |
@@ -1772,6 +1808,12 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   never opens it issues exactly the four baseline requests (ping, snapshot,
   overrides and — g-030 — update-check, the last one only while the check is on),
   and the history request is `…&limit=20`.
+- **Revision 18:** a row's time node renders the record's stored `at` in the
+  **browser's own zone** (`YYYY-MM-DD HH:mm:ss GMT±h[:mm]`), keeping the raw UTC
+  string on the node's `title`; the transfer panel's export file name
+  (`data-export-name`) is named in that same zone
+  (`dsh-prompt-setting-YYYY-MM-DD-HH-mm-ss.json`). The panel's requests, markers
+  and ordering are otherwise unchanged.
 
 ### 13.4 「高级」
 
@@ -1793,7 +1835,9 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   self-check (`data-region="renderer-info"`, `data-primitives-failure` when the
   primitives module was unavailable). The one-line summary at the top carries
   the three verdicts as `data-status-mount` / `data-status-frozen` /
-  `data-status-build` on `data-region="status"`.
+  `data-status-build` on `data-region="status"`. **Revision 18:** `generatedAt`
+  renders in the browser's own zone, with the stored UTC string on the node's
+  `title` (see the Revision 18 paragraph above).
 
 ### 13.5 Second confirmation is required
 

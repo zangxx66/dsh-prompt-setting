@@ -407,6 +407,46 @@ function hasText(tree, needle) {
   return strings(tree).some((text) => text.includes(needle));
 }
 
+/**
+ * The stamp a reader in **this process's** time zone must see.
+ *
+ * Derived from the local `Date` getters and `getTimezoneOffset` — a different
+ * code path than `client.js`, which asks `Intl` — so an equality assertion
+ * tests the claim ("the page shows the reader's zone") instead of mirroring the
+ * implementation. Portable by construction: run the suite under any `TZ` and
+ * the expectation moves with it.
+ * @param iso - the stored UTC ISO value.
+ * @returns `YYYY-MM-DD HH:mm:ss GMT±h[:mm]` for the local zone.
+ */
+function localStampOf(iso) {
+  const date = new Date(iso);
+  const pad = (value) => String(value).padStart(2, '0');
+  const day = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  const clock = `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+  const offset = -date.getTimezoneOffset();
+  const sign = offset < 0 ? '-' : '+';
+  const absolute = Math.abs(offset);
+  const zone =
+    absolute % 60 === 0
+      ? `GMT${sign}${absolute / 60}`
+      : `GMT${sign}${Math.floor(absolute / 60)}:${pad(absolute % 60)}`;
+  return `${day} ${clock} ${zone}`;
+}
+
+/**
+ * The export file name that one stored stamp must produce (Revision 18).
+ *
+ * Built from {@link localStampOf} — the same independent local derivation, not
+ * the implementation — so the name and the visible stamp are asserted to agree
+ * about the same instant while both staying portable across `TZ`.
+ * @param iso - the stored UTC ISO value.
+ * @returns `dsh-prompt-setting-YYYY-MM-DD-HH-mm-ss.json` for the local zone.
+ */
+function localFileNameOf(iso) {
+  const [day, clock] = localStampOf(iso).split(' ');
+  return `dsh-prompt-setting-${day}-${clock.replace(/:/g, '-')}.json`;
+}
+
 /** Read one marker attribute the page carries for on-machine inspection. */
 function markerOf(tree, attribute) {
   const markers = collect(tree, (node) => node.props && node.props[attribute] !== undefined);
@@ -612,6 +652,10 @@ function makeRouter(responses) {
  */
 function makePage(options = {}) {
   const loaded = loadClient(options.primitives || 'throw');
+  // Revision 18: an engine with no `Intl` must still stamp a time and name a
+  // file — the fallback is part of the contract, so a case can ask for that
+  // engine instead of trusting a branch no one has run.
+  if (options.withoutIntl === true) loaded.sandbox.Intl = undefined;
   const mounted = mountClient(loaded.module, options.localeShape || 'full');
   const router = makeRouter(options.responses || {});
   loaded.sandbox.fetch = router.fetchStub;
@@ -3882,7 +3926,17 @@ test('client: 「高级」 carries the full status the top line compresses', asy
   const detail = oneBy(tree, 'data-region', 'status-detail');
   assert.equal(detail.props['data-region'], 'status-detail');
   assert.equal(oneBy(detail, 'data-region', 'build').props['data-region'], 'build');
-  assert.ok(hasText(detail, '2024-01-01T00:00:00.000Z'), 'the generation timestamp is detail');
+  // Revision 18: rendered in the reader's zone, with the zone named, and the
+  // stored UTC value one hover away rather than echoed as the visible text.
+  assert.ok(
+    hasText(detail, localStampOf('2024-01-01T00:00:00.000Z')),
+    "the generation timestamp is shown in the reader's zone",
+  );
+  assert.equal(hasText(detail, '2024-01-01T00:00:00.000Z'), false, 'the stored UTC string is not echoed');
+  assert.ok(
+    collect(detail, (node) => node.props && node.props.title === '2024-01-01T00:00:00.000Z').length === 1,
+    'and stays reachable as the node title',
+  );
   assert.ok(hasText(detail, page.zh.stUserLayer), 'both layers are named');
   // The renderer self-check lives here too (it is diagnostics, not navigation).
   assert.ok(hasText(oneBy(tree, 'data-region', 'renderer-info'), page.zh.rendererFallback));
@@ -3993,7 +4047,19 @@ test('client: the history panel renders records, their action and their origin',
   assert.equal(historyRowOf(region, '1').props['data-history-origin'], 'ui');
 
   // The record's own timestamp, the localized action and the current-value row.
-  assert.ok(hasText(newest, '2024-01-02 10:00:00Z'), 'the ISO timestamp is shown verbatim');
+  // Revision 18: the stored UTC value is rendered in the reader's zone (the
+  // fixture says 10:00Z, which is 18:00 for the suite's UTC+8 run) and the raw
+  // string stays on the node's `title`.
+  assert.ok(
+    hasText(newest, localStampOf('2024-01-02T10:00:00.000Z')),
+    "the record timestamp is shown in the reader's zone",
+  );
+  assert.equal(hasText(newest, '2024-01-02T10:00:00Z'), false, 'the stored UTC string is not echoed');
+  assert.equal(
+    collect(newest, (node) => node.props && node.props.title === '2024-01-02T10:00:00.000Z').length,
+    1,
+    'and stays reachable as the node title',
+  );
   assert.ok(hasText(newest, page.zh['histAction.replace']), 'the action is localized, not the raw enum');
   assert.equal(oneBy(region, 'data-history-current', 'true').props['data-history-row'], 'current');
   assert.ok(strings(region).includes(page.zh.histCurrent));
@@ -4238,9 +4304,13 @@ test('client: exporting downloads the document and keeps a copyable text', async
 
   assert.deepEqual(urlsFor(page, PATHS.export), [`${PATHS.export}?session=s2`]);
   assert.equal(downloader.clicks.length, 1, 'one download was triggered');
-  // Identifiable and time-ordered: the ISO timestamp with the punctuation
-  // replaced, so the name is filesystem-safe and sorts by export time.
-  assert.match(downloader.clicks[0].download, /^dsh-prompt-setting-2024-01-02T10-00-00-000\.json$/);
+  // Identifiable and time-ordered, and named in the reader's zone (Revision 18):
+  // the expectation comes from local getters, not from the implementation.
+  assert.equal(
+    downloader.clicks[0].download,
+    localFileNameOf('2024-01-02T10:00:00.000Z'),
+    "the download is named after the export time in the reader's zone",
+  );
   assert.equal(downloader.clicks[0].href, 'blob:test-1');
   assert.equal(downloader.revoked.includes('blob:test-1'), true, 'the object URL is revoked');
 
@@ -4249,8 +4319,41 @@ test('client: exporting downloads the document and keeps a copyable text', async
   assert.equal(document.schema, 'dsh-prompt-setting/export');
   assert.equal(document.version, 1);
   assert.equal('ok' in document, false, 'the liveness flag is not part of the document');
+  const expectedName = localFileNameOf('2024-01-02T10:00:00.000Z');
+  assert.equal(markerOf(tree, 'data-export-name'), expectedName);
+  assert.ok(hasText(tree, page.zh.downloadDone.replace('{name}', expectedName)));
+});
+
+test('client: without Intl the stamps and the export name fall back to UTC, never to blank', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses(),
+    withoutIntl: true,
+  });
+  const downloader = installDownloader(page);
+  let tree = await openHistory(page);
+  clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'export' });
+  tree = await page.flush();
+
+  // The file name keeps the pre-Revision-18 UTC spelling rather than degrading
+  // to `export.json`, and the download itself is unaffected.
+  assert.equal(downloader.clicks.length, 1, 'the download still happens');
+  assert.equal(
+    downloader.clicks[0].download,
+    'dsh-prompt-setting-2024-01-02T10-00-00-000.json',
+    'the name falls back to the stored UTC value',
+  );
   assert.equal(markerOf(tree, 'data-export-name'), 'dsh-prompt-setting-2024-01-02T10-00-00-000.json');
-  assert.ok(hasText(tree, page.zh.downloadDone.replace('{name}', 'dsh-prompt-setting-2024-01-02T10-00-00-000.json')));
+
+  // And the visible stamps fall back to the stored UTC string, not to blank.
+  const advanced = await openAdvanced(page);
+  const detail = oneBy(advanced, 'data-region', 'status-detail');
+  assert.ok(hasText(detail, '2024-01-01 00:00:00Z'), 'the stored UTC value is echoed');
+  assert.equal(
+    hasText(detail, '2024-01-01T00:00:00.000Z'),
+    false,
+    'with the T/millisecond fix-ups, not verbatim',
+  );
 });
 
 test('client: an export with no download surface still yields the JSON and says why', async () => {
@@ -4556,6 +4659,9 @@ async function advancedTrees(rec) {
 
 /** The `data-*` markers the sweep saw; filled by the sweep, read by the coverage test. */
 let observedMarkers = new Set();
+
+/** The export file name the transfer sweep must see: the reader's zone, one source. */
+const EN_SWEEP_EXPORT_NAME = localFileNameOf('2024-01-02T10:00:00.000Z');
 
 /**
  * One en render per interesting state. `run` returns every tree drawn on the
@@ -5013,10 +5119,10 @@ const EN_SWEEP_CASES = [
     name: 'transfer: an export writes a file and keeps a copyable document',
     marks: [
       ['data-region', 'transfer'],
-      ['data-export-name', 'dsh-prompt-setting-2024-01-02T10-00-00-000.json'],
+      ['data-export-name', EN_SWEEP_EXPORT_NAME],
       ['data-notice', 'success'],
     ],
-    copy: ['exportButton', ['downloadDone', { name: 'dsh-prompt-setting-2024-01-02T10-00-00-000.json' }], 'exportPreviewLabel'],
+    copy: ['exportButton', ['downloadDone', { name: EN_SWEEP_EXPORT_NAME }], 'exportPreviewLabel'],
     async run() {
       const page = enPage({ useSessions: sessionsHook(SESSIONS_STATE), responses: defaultResponses() });
       installDownloader(page);

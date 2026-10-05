@@ -5288,3 +5288,74 @@ if (installed.length !== 1 || target === void 0) throw new ManagementFailure("am
   **17 tests / 1 fail**（`AssertionError: the sentence names the actionable route`）；还原新文案后全量
   **579 pass / 0 fail**（对比基线 579，无新增/削弱）。
 - `CHANGELOG.md` `[0.1.0]` 段 Notes 的指向已由 `0.1.1` 改为 `0.1.2`（只改指向，历史事实与历史段内容未动）。
+
+## 109. 时间戳按读者时区渲染：「快照生成时间」、版本历史的 `at` 与导出文件名（Revision 18，2026-10-05，基线 `1ce4444` 工作区）
+
+### 一、问题（负责人 2026-10-05 提出，分两条指令）
+- 宿主存与答的一律是 **UTC ISO 8601**（`new Date().toISOString()`）：`snapshot.generatedAt`（`index.js:1695`）、
+  历史记录 `at`（`index.js` 五处写点：2856 / 2931 / 2975 / 3039 / 导入 2187）、`exportedAt`、`checkedAt`、
+  安装的 `startedAt` / `finishedAt`；
+- 客户端此前**原样回显**：`stampOf()` 只做 `T`→空格、去毫秒（保留 `Z`），`generatedAt` 连毫秒一起显示；
+- 后果：UTC+8 的读者看到的时间比本地少 8 小时，而唯一的时区线索是末尾那个 `Z`——页面把「换算」与
+  「Z 要不要紧」两件事都推给了读者。
+- **第二条指令（同日补充）**：**导出文件名**也是时间戳（`exportFileName(document.exportedAt)`），用户存到
+  磁盘的那个文件同样比本地少 8 小时 —— 页面上的时间全改了、留下的产物却仍是 UTC，正是最容易被忽略的一处。
+
+### 二、改法（只动显示，两处消费点）
+- `client.js` 新增 `localStampFormatter()`：惰性一次构建并缓存 `Intl.DateTimeFormat`，`timeZoneName` 按
+  `shortOffset` → `short` → 无标签**三级降级**，任一构造失败都不抛；另留 `rawStamp()`（旧的 T/毫秒整理）
+  作回退。`stampOf()` 改为在**浏览器自身时区**渲染 `YYYY-MM-DD HH:mm:ss GMT±h[:mm]`——例：
+  `2024-01-02T10:00:00.000Z` ⇒ 东八区 `2024-01-02 18:00:00 GMT+8`。
+- **形状固定、只有时区变**：骨架用 `formatToParts` 自行拼装，不跟随 locale（不做 12 小时制、不重排字段），
+  因为逐读者不同的是时区、也只有时区；两人对照时读到的仍是同一骨架。
+- **原始 UTC 串不丢**：两处消费点都把存储串挂到节点 `title`（`data-region="status-detail"` 的
+  「快照生成时间」、`data-history-row` 的时间节点），与宿主日志核对仍是一次悬停。
+- **降级而不抛**：解析不出的值走 `rawStamp()` 原样回显；无 `Intl`（或无 `timeZoneName`）回退到 UTC 串；
+  非字符串 / 空串渲染为空——与替换前接受的输入集一致。
+- **导出文件名（第二条指令）**：抽出 `localStampParts(at)`（`{date, time, zone}` 或 `null`）作为**唯一**解析路径，
+  `stampOf()` 与 `exportFileName()` 共用 ⇒ 同一时刻在两处的时区不可能各说各话；文件名形如
+  `dsh-prompt-setting-2026-10-05-21-30-00.json`（本地时区、定宽字段可字典序排序、`:` 折成 `-` 因 Windows 非法、
+  **不带时区标签**——文件名不是解释时钟的地方，且 `+` 在文件名里本身可疑）。
+  回退仍保留 Revision 18 之前的 UTC 拼写，使无 `Intl` 的引擎仍能命名文件而不是退化成 `export`。
+
+### 三、明确未动（本轮范围之外）
+- 任何线上字段、路由、落盘内容：宿主仍答 UTC ISO，历史文件仍是原字节；
+- `?before=` 上界与排序（`seq` 降序 / `at < before`）继续用**存储串** ⇒ 读者机器的 `TZ` 不可能重排或隐藏
+  任何一条记录；
+- 导出**文档内容**（响应里的 `exportedAt` 字段本身）仍是 UTC ISO：本地化只发生在**命名**上，导入/校验读到的
+  仍是标准形态；
+- 时间戳的另一个用处（`clientBuild.mtime`、`checkedAt`、安装 `startedAt`/`finishedAt`）页面本就不展示，
+  本轮未动。
+
+### 四、测试与实测证据（包目录 `packages/dsh-prompt-setting/` 下执行）
+- `test/client.test.mjs`：两处显示断言（「原样 ISO」）改为用本地 `Date` getter + `getTimezoneOffset`
+  **独立推导**的期望值 `localStampOf()`——与实现走 `Intl` 是两条不同代码路径，故是断言而非镜像；并各加两条
+  配套断言：原 UTC 串**不再**出现在可见文本、且仍以 `title` 形式可达（每处恰好 1 个节点）。
+- 文件名侧三处断言同样改为独立推导的 `localFileNameOf()`：下载名（原 `assert.match` 正则 → `assert.equal`）、
+  `data-export-name` 标记与 `downloadDone` 文案、英文横扫表项（提炼为共享常量 `EN_SWEEP_EXPORT_NAME`，
+  避免同一期望值抄三遍）。
+- 新增一条**降级用例**（`makePage({ withoutIntl: true })` 在 vm 沙箱里把 `Intl` 置 `undefined`）：显示串回退为
+  存储的 UTC 形态（`2024-01-01 00:00:00Z`，既非空白、也非逐字 ISO），导出文件名回退为 Revision 18 之前的
+  UTC 拼写而不是 `export.json` ⇒ 「无 `Intl` 降级」由代码审查升为**已验**。
+- 跨时区实跑（`TZ=` 注入，四条用例：两条显示 + 导出下载 + 英文横扫）：`UTC` / `America/New_York` /
+  `Asia/Kolkata` / `Pacific/Kiritimati` 四组均 **4 pass / 0 fail**（覆盖零偏移、负偏移、半小时偏移、+14）。
+- 全量：`node --test` ⇒ **580 pass / 0 fail**（基线 579 + 本轮新增的降级用例 1 条；无断言削弱、无套件跳过）。
+- **改坏就红（对照跑过，一次破坏覆盖三处）**：在 `localStampParts()` 开头早退 `return null`（= 显示与文件名
+  同时退回 UTC 回显），`node --test --test-name-pattern="carries the full status|history panel renders records|exporting downloads|english render sweep"`
+  ⇒ **0 pass / 4 fail**（`the generation timestamp…`、`the record timestamp…`、`the download is named…` 各一条
+  + 英文横扫一条）；**在 `Asia/Shanghai` 与 `UTC` 两种时区下都是 4 红** ⇒ 断言靠在「本地化 vs UTC 原样」的
+  形态差上，不依赖跑测机器恰好不在 UTC。还原后四组 TZ 复跑各 **4 pass / 0 fail**。
+
+### 五、未验证项（诚实清单）
+- **真浏览器目视未跑**：本轮拿不到 web 服务的 token URL，未起无头 Chrome + CDP；浏览器侧 `Intl` 与 Node
+  同源 ICU，渲染路径也已由 `node:vm` 套件覆盖，但「真页面里长什么样」仍是推断，不是观测。
+- 生效路径：`web` profile 的 `node_modules/dsh-prompt-setting` 是**符号链接**指向本工作区，故本改动随
+  `dsh-client-hmr` 的 stat 轮询热替换生效（刷新设置页即可）；`desktop` profile 是 `0.1.2` 的**安装副本**，
+  **不含**本次改动。
+
+### 六、契约与文档
+- `CONTRACT.md`：新增 **Revision 18** 段（三条落点：快照时间、历史行、**导出文件名**；含三级降级、`title`
+  保留、文件名不带时区标签的理由、`before` 与排序不受影响）；§13.3 历史行 + 文件名、§13.4 `status-detail`
+  各补一句指向；
+- `client.js` 注释引用 Revision 18（`localStampParts` / `stampOf` / 两个消费点 / `exportFileName`）；
+- `CHANGELOG.md`：新增 `[Unreleased]` 段（Changed），由 g-035 定稿为 `[0.1.3]`。

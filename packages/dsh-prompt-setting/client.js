@@ -2850,15 +2850,120 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * A readable, stable timestamp. The ISO string is what history stores, so it
-     * is also what is shown: no locale-dependent reformatting that would make
-     * the same record read differently on two machines.
+     * The pre-localization rendering, kept as the fallback for a value no
+     * `Date` can parse. Shape-preserving rather than invented: an unknown
+     * string is shown as it arrived, minus the `T`/millisecond noise.
+     * @param at - a non-empty string.
+     * @returns the fallback display string.
+     */
+    function rawStamp(at) {
+      return at.replace('T', ' ').replace(/\.\d+Z$/, 'Z');
+    }
+
+    let stampFormatter = null;
+    let stampFormatterResolved = false;
+
+    /**
+     * The cached formatter for the **browser's own** time zone, or null when
+     * this engine cannot build one.
+     *
+     * Built lazily and once: the zone cannot change while the tab is open, and
+     * a history list calls the stamp per row, so constructing a formatter per
+     * row would be the one cost this page does not need. An engine that rejects
+     * `shortOffset` degrades to `short` (`GMT+8` either way on the engines this
+     * page runs on) and then to no zone label at all — never to a blank cell.
+     * @returns the formatter, or null.
+     */
+    function localStampFormatter() {
+      if (stampFormatterResolved) return stampFormatter;
+      stampFormatterResolved = true;
+      if (typeof Intl === 'undefined' || typeof Intl.DateTimeFormat !== 'function') return null;
+      const skeleton = {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hourCycle: 'h23',
+      };
+      for (const timeZoneName of ['shortOffset', 'short', null]) {
+        try {
+          stampFormatter = new Intl.DateTimeFormat(
+            undefined,
+            timeZoneName === null ? skeleton : { ...skeleton, timeZoneName },
+          );
+          return stampFormatter;
+        } catch {
+          stampFormatter = null;
+        }
+      }
+      return null;
+    }
+
+    /**
+     * The reader's-zone parts of one timestamp — `{date, time, zone}` in the
+     * fixed `YYYY-MM-DD` / `HH:mm:ss` / `GMT±h[:mm]` shape — or null when the
+     * value cannot be read as a time, or when this engine cannot build a
+     * formatter.
+     *
+     * One extractor, two renderers: the visible stamp ({@link stampOf}) and the
+     * export file name ({@link exportFileName}). A second parsing path would be
+     * a second place for the zone to go wrong, and the two would then disagree
+     * about the same instant.
+     * @param at - a non-empty string.
+     * @returns the parts, or null.
+     */
+    function localStampParts(at) {
+      const value = Date.parse(at);
+      if (!Number.isFinite(value)) return null;
+      const formatter = localStampFormatter();
+      if (formatter === null) return null;
+      try {
+        const parts = formatter.formatToParts(new Date(value));
+        const part = (type) => {
+          const found = parts.find((entry) => entry.type === type);
+          return found === undefined ? '' : found.value;
+        };
+        return {
+          date: `${part('year')}-${part('month')}-${part('day')}`,
+          time: `${part('hour')}:${part('minute')}:${part('second')}`,
+          zone: part('timeZoneName'),
+        };
+      } catch {
+        return null;
+      }
+    }
+
+    /**
+     * A readable timestamp in the **reader's own time zone**.
+     *
+     * The host stores and answers UTC ISO strings, which is the right thing to
+     * store and the wrong thing to read: `2024-01-02T10:00:00.000Z` is 18:00
+     * for a reader at UTC+8, so echoing the stored string makes every reader do
+     * the arithmetic — and, because the stored form carries no zone spelling,
+     * makes them guess whether the `Z` even matters. The stamp is therefore
+     * rendered in the browser's zone with the zone named:
+     * `2024-01-02 18:00:00 GMT+8`.
+     *
+     * The *shape* stays fixed (`YYYY-MM-DD HH:mm:ss` + zone label) rather than
+     * following the locale: what differs per reader is the zone, and only the
+     * zone, so two people comparing notes still read the same skeleton. The
+     * stored UTC value stays available as the node's `title`.
+     *
+     * Never throws, like the version it replaces: an unparsable value is echoed
+     * (see {@link rawStamp}) and an engine without `Intl` prints the UTC string
+     * rather than nothing.
      * @param at - the ISO timestamp, or null.
      * @returns the display string.
      */
     function stampOf(at) {
       if (typeof at !== 'string' || at.length === 0) return '';
-      return at.replace('T', ' ').replace(/\.\d+Z$/, 'Z');
+      const local = localStampParts(at);
+      if (local === null) return rawStamp(at);
+      return local.zone.length > 0
+        ? `${local.date} ${local.time} ${local.zone}`
+        : `${local.date} ${local.time}`;
     }
 
     /**
@@ -2948,12 +3053,32 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The suggested export file name: identifiable, and ordered by time.
+     * The suggested export file name: identifiable, ordered by time, and named
+     * in the **reader's own time zone** (Revision 18).
+     *
+     * A file name is a stamp too — the one the user keeps on disk after the page
+     * is gone — so naming it in UTC would leave the exported artifact reading in
+     * the zone nobody reads while every stamp on the page reads local. The zone
+     * label is deliberately absent here: a file name is not a place to explain a
+     * clock, and `+` is a doubtful character inside one.
+     *
+     * The shape is `dsh-prompt-setting-YYYY-MM-DD-HH-mm-ss.json`. `:` is folded
+     * to `-` because it is illegal in a name on Windows and hostile elsewhere,
+     * the fixed-width fields keep the name sorting in exactly the order it
+     * reads, and dropping the milliseconds loses nothing a user picks a file by.
+     * A value this engine cannot read as a time still yields the pre-Revision-18
+     * UTC spelling, so a page without `Intl` names the file rather than calling
+     * it `export`.
      * @param at - the ISO export timestamp.
      * @returns `dsh-prompt-setting-…json`, with the export time in the name.
      */
     function exportFileName(at) {
-      const stamp = String(at || '').replace(/[:.]/g, '-').replace('Z', '');
+      const value = String(at || '');
+      const local = value.length === 0 ? null : localStampParts(value);
+      const stamp =
+        local === null
+          ? value.replace(/[:.]/g, '-').replace('Z', '')
+          : `${local.date}-${local.time.replace(/:/g, '-')}`;
       return `dsh-prompt-setting-${stamp.length > 0 ? stamp : 'export'}.json`;
     }
 
@@ -3131,6 +3256,12 @@ window.__ModuleLoader__.load({
         mounted === null ? t('stMountedUnknown') : mounted ? t('stMountedOn') : t('stMountedOff');
       const frozenText = t(frozenKey(fz));
       const layers = snapshot && snapshot.layers ? snapshot.layers : {};
+      // Revision 18: the stored UTC value is what the host answered, so it is
+      // rendered — in the reader's zone — rather than echoed; the raw string
+      // stays on the node's `title` for anyone comparing it with a host log.
+      const rawGeneratedAt =
+        snapshot && snapshot.generatedAt ? String(snapshot.generatedAt) : null;
+      const generatedAt = rawGeneratedAt === null ? '' : stampOf(rawGeneratedAt);
       return h(
         'section',
         { 'data-region': 'status-detail', style: cardStyle },
@@ -3143,8 +3274,8 @@ window.__ModuleLoader__.load({
           h(UI.Tag, { tone: fz.kind === 'unknown' ? 'warning' : fz.frozen ? 'danger' : 'success' }, frozenText),
           h(
             'span',
-            { style: metaStyle },
-            `${t('stGeneratedAt')}: ${snapshot && snapshot.generatedAt ? String(snapshot.generatedAt) : t('stNone')}`,
+            { style: metaStyle, title: rawGeneratedAt === null ? undefined : rawGeneratedAt },
+            `${t('stGeneratedAt')}: ${generatedAt.length > 0 ? generatedAt : t('stNone')}`,
           ),
         ),
         h(
@@ -4645,7 +4776,11 @@ window.__ModuleLoader__.load({
         h('code', { style: { fontSize: 12 } }, `#${id}`),
         h(UI.Tag, { tone: 'neutral' }, historyActionLabel(t, record.action)),
         h('code', { style: { fontSize: 12 } }, record.name === null ? t('histWholeLayer') : String(record.name)),
-        h('span', { style: metaStyle }, stampOf(record.at)),
+        h(
+          'span',
+          { style: metaStyle, title: typeof record.at === 'string' ? record.at : undefined },
+          stampOf(record.at),
+        ),
         record.origin === 'import' ? h(UI.Tag, { tone: 'warning' }, 'import') : null,
         record.entries !== null && Array.isArray(record.entries)
           ? h('span', { 'data-history-entries': String(record.entries.length), style: metaStyle }, `entries=${record.entries.length}`)

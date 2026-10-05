@@ -10,6 +10,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
+## [Unreleased]
+
+### Changed 变更
+
+- **时间戳按读者时区显示（Revision 18）**：宿主仍以 UTC ISO 8601 存与答，但设置页把两处给人看的时间改为在
+  **浏览器自身时区**渲染并标出时区——状态区的「快照生成时间」（`snapshot.generatedAt`）与「历史与备份」每条
+  记录的写入时间（`at`），形如 `2024-01-02 18:00:00 GMT+8`（存储值 `2024-01-02T10:00:00.000Z` 在东八区的
+  读法）。骨架固定（不做 12 小时制、不按语言重排字段），原始 UTC 串保留在节点 `title` 上，便于与宿主日志
+  核对；解析不出的值原样回显，无 `Intl` 的环境回退到 UTC 串。**线上字段、路由与落盘内容零变化**：历史的
+  排序与 `?before=` 过滤仍基于存储串。**导出文件名里的 UTC 时间戳本轮未改。**
+  **Timestamps render in the reader's time zone (Revision 18)**: the host still stores and answers UTC
+  ISO 8601, but the settings page renders the two human-facing stamps — the snapshot's `generatedAt` in the
+  status block and each history record's `at` — in the **browser's own zone**, with the zone named
+  (`2024-01-02 18:00:00 GMT+8` for a UTC+8 reader of `…T10:00:00.000Z`). The skeleton is fixed (no 12-hour
+  clock, no locale re-ordering) and the raw UTC string stays on the node's `title`, so a value a host log
+  shows is one hover away; an unparsable value is echoed and an engine without `Intl` falls back to the UTC
+  string. No wire field, route or stored byte changes: ordering and the `?before=` bound still use the
+  stored strings. The **export file name's UTC stamp is unchanged** in this round.
+
+---
+
 ## [0.1.2] - 2026-10-04
 
 **功能版本：更新检查 +「立即更新」、设置页版本号，以及一处冻结误报修复 / Feature release: the update
