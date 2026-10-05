@@ -5346,12 +5346,14 @@ if (installed.length !== 1 || target === void 0) throw new ManagementFailure("am
   + 英文横扫一条）；**在 `Asia/Shanghai` 与 `UTC` 两种时区下都是 4 红** ⇒ 断言靠在「本地化 vs UTC 原样」的
   形态差上，不依赖跑测机器恰好不在 UTC。还原后四组 TZ 复跑各 **4 pass / 0 fail**。
 
-### 五、未验证项（诚实清单）
-- **真浏览器目视未跑**：本轮拿不到 web 服务的 token URL，未起无头 Chrome + CDP；浏览器侧 `Intl` 与 Node
-  同源 ICU，渲染路径也已由 `node:vm` 套件覆盖，但「真页面里长什么样」仍是推断，不是观测。
-- 生效路径：`web` profile 的 `node_modules/dsh-prompt-setting` 是**符号链接**指向本工作区，故本改动随
-  `dsh-client-hmr` 的 stat 轮询热替换生效（刷新设置页即可）；`desktop` profile 是 `0.1.2` 的**安装副本**，
-  **不含**本次改动。
+### 五、真机验收（2026-10-05，负责人目视，web GUI @ 127.0.0.1:3080）
+- **三项全部 OK**：① 导出文件名；②「快照生成时间」；③ 版本历史各行时间。⇒ 本轮**没有**遗留的真机未验证项
+  （原先「拿不到 token URL、未起无头 Chrome/CDP」的缺口由负责人目视补齐，见下条环境事实）。
+- 宿主进程 `pid 12871`（13:51 启动、加载 0.1.2 代码）已退出，现为 `pid 35408` 启动于 `2026-10-05 15:59:41`，
+  `lsof` 确认监听 `127.0.0.1:3080` —— 该时刻**晚于** `4d10d5f` / `6bffafc` 两个提交 ⇒ 页面跑的就是本分支代码。
+- 生效路径：`web` profile 的 `node_modules/dsh-prompt-setting` 是**符号链接**指向本工作区，客户端半随
+  `dsh-client-hmr` 的 stat 轮询热替换生效（刷新设置页即可，无需重启）；`desktop` profile 是 `0.1.2` 的
+  **安装副本**，**不含**本版改动。
 
 ### 六、契约与文档
 - `CONTRACT.md`：新增 **Revision 18** 段（三条落点：快照时间、历史行、**导出文件名**；含三级降级、`title`
@@ -5392,3 +5394,6 @@ if (installed.length !== 1 || target === void 0) throw new ManagementFailure("am
 - 全仓 `0.1.2` 残留清单：仅上述白名单（见二），无其它位置把 `0.1.2` 当作当前版本；
 - `README.md` / `README_zh.md` 的 `npm pack` 文件数与体积表述：本轮未在 README 正文写具体字节数
   （历史值只在 NOTES 与 CHANGELOG 留档）⇒ 无需同步。
+- **真机已验（2026-10-05，负责人目视）**：宿主 `pid 35408` 于 `15:59:41` 重启（晚于提交 `6bffafc`）后加载
+  `PLUGIN_VERSION = '0.1.3'`，设置页标题旁版本号显示 OK ⇒「宿主半改动需重启才生效」这条既有事实本次照常兑现
+  （旧 `pid 12871` 是 13:51 启动、跑 0.1.2 代码的宿主）。
