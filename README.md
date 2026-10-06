@@ -44,7 +44,7 @@ Settings gains a **"Prompt settings"** pane (`id: prompt-setting`) with four top
 | **My Prompt** | The only write surface: write your own system-level instructions (pick a layer → edit → save), plus a one-click "Restore default". This text is **placed after every built-in section**. |
 | **Prompt overview** | Read-only: the assembled section list (status marks / search / filters / copy), the full text, and a `base ↔ effective` diff — so you can see exactly what your change did. |
 | **History & backup** | History list + version diffs (line-level); export the configuration for download, and preview an import (review the change plan before anything is written). |
-| **Advanced** | A read-only list of legacy overrides, two double-confirm buttons ("clear all overrides", "reset the whole layer"), the **"Check for updates" switch** (on by default; off means this plugin makes no network request at all), the **"Update now"** action (the host installs the version the banner named; you restart `dsh web` yourself), and a full status area (mount state / build fingerprint / renderer self-check). |
+| **Advanced** | A read-only list of legacy overrides, two double-confirm buttons ("clear all overrides", "reset the whole layer"), the **"Check for updates" switch** (on by default; off means this plugin makes no network request at all), the **"Update now"** action (the host installs the version the banner named; you restart yourself — re-run `dsh web` after a command-line start, or quit and reopen DeepSeek Harness in the desktop app), and a full status area (mount state / build fingerprint / renderer self-check). |
 
 > All UI copy follows DSH's language setting: switch DSH to Chinese and this page turns Chinese, with no
 > refresh or restart.
@@ -73,10 +73,13 @@ package's `package.json` (`repository.url`), never hardcoded a second time. That
 
 ### Installing the update ("Update now")
 
-**The version gets installed; the restart is still yours.** The banner's **Update now** button opens a
-second confirmation (which says so), and on confirm the **host** installs that release's `.tgz` into the
-current profile through the official plugin manager. Afterwards the page says "vX.Y.Z is installed —
-restart `dsh web` yourself". **Nothing here restarts anything.**
+**The version gets installed; the restart is still yours — and the page says how.** The banner's
+**Update now** button opens a second confirmation (which says so), and on confirm the **host** installs
+that release's `.tgz` into the current profile through the official plugin manager. Afterwards the page
+answers for the **launch shape** it is talking to: a command-line host says "vX.Y.Z is installed — restart
+`dsh web` yourself", the official desktop app says "quit and reopen DeepSeek Harness" (a desktop user has
+no terminal, so `dsh web` never appears there), and an undecidable shape falls back to copy both readers
+can follow. **Nothing here restarts anything.**
 
 - **what it installs**: the release **asset**
   `https://github.com/zangxx66/dsh-prompt-setting/releases/download/<tag>/dsh-prompt-setting-<version>.tgz`,

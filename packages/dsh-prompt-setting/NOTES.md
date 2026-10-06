@@ -5434,3 +5434,75 @@ if (installed.length !== 1 || target === void 0) throw new ManagementFailure("am
   `0.1.4`；`prepare` 自检 **19 项通过**；体积 **≈499 KB**（**不要记精确字节数**：`NOTES.md` 在 `files`
   白名单内，本节每修一次字，包体就跟着变——首测 498280 B（本节写入前）⇒ 本节写入后 499026 B）。
 - 全仓 `0.1.3` 残留：仅上述白名单（见二），无其它位置把 `0.1.3` 当作当前版本。
+
+## 112. 更新后的重启提示按启动形态分区（g-036，2026-10-06，基线 `67eed2f`）
+
+### 一、形态判据：官方 `profileContext.name`，且只认它
+- 新增 `core/launch-kind.js`（纯函数、无 IO、不 import DSH、不读 `process.env`），`launchKindOf(ctx)` 用
+  **可选** `ctx.get('profileContext')` 读取——**不进 `inject`**（`inject` 仍是
+  `['webServer','connection','systemPrompt']`，`test/launch-kind.test.mjs` 明确断言这一点），服务缺失/抛错
+  都只是 `'unknown'` 这个值，绝不让整包加载失败。
+- 三态口径：`name === 'desktop'` ⇒ `'desktop'`；**其它非空字符串**（`web`/`tui`/…）⇒ `'cli'`；缺失、非字符串、
+  空白串、服务不可读、getter/查找抛错 ⇒ `'unknown'`。**`'unknown'` 绝不折叠成 `'cli'`** —— 桌面端用户看到
+  「重启 dsh web」正是本目标要消灭的缺陷。
+- 不用环境标记：`ELECTRON_RUN_AS_NODE` 对任何 Electron Node 宿主都真（无区分力），`DSH_CLIENT_VERSION` 是
+  用户可 export 的变量。两者都只能把诚实的 `'unknown'` 变成猜测，所以一个都不做判据（主管卡片已把二者降为
+  佐证）。
+- 官方同款写法与无假阳依据：`@deepseek-ai/dsh-web-app/cordis.patch.yml` 用
+  `ctx.get('profileContext')?.name !== 'desktop'`；`@deepseek-ai/dsh/lib/bin.js` 的 `rejectElectronProfile()`
+  对 `profile==='desktop'` 直接报错 ⇒ 命令行宿主无法伪称桌面端。
+
+### 二、下发点：ping + `update-apply` 三类响应（不动 `core/install.js`）
+- ping（`index.js` 组装处）与 POST 发起（含 `reused` / `alreadyInstalled` / `publicRefusal` 三种出口）、
+  GET 查询（含 `status:null` 与未知 id）、POST cancel（`cancelling` 与两种 `not-running`）全部附
+  `launchKind`；`publicInstallStatus()`（`core/install.js:924` 起）**一字未动**，状态机语义与既有字段不变。
+- 字段只在响应组装处读取，请求体/查询串无法影响它（契约 §18.8 已写明）。
+
+### 三、文案分区与 `unknown` 兜底的选择理由
+- 采用**「保留基键作兜底 + 新增形态专用键」**（而非把每键改成三键并删原键）：基键仍是老宿主与不可判定形态
+  的落点，客户端映射表 `UPDATE_APPLY_COPY_KEYS` 是**显式表**，不在渲染处拼键名；缺键回落到
+  `updateApplyUnknown`，所以任何情况下都不会渲染出 `undefined`。
+- 分区键（zh/en 各 12 个）：`updateApplyRestartNote`（确认框）、`updateApplyDone`（完成态）、
+  `updateApplyAlready`（同版本已装）、`updateApplyUnknown`（状态不可查；取消失败与缺版本的兜底也用它）。
+- **兜底键不含 `dsh web`**：判据 4 把「`unknown`」与「字段缺失（老宿主）」归为同一档 ⇒ 兜底文案是**桌面端
+  用户也会读到**的那一句，写成「请手动重启 DSH」两种形态都执行得通。代价是判据 5 的「老宿主下与原行为
+  等价」只能按**渲染路径与可执行性等价**理解（同渲染点、同非空文案、无报错无空白），而**不是逐字相同**；
+  这是有意选择：老宿主背后的桌面端用户正是最不能被指向终端的读者。渲染结果等价性由
+  `test/client.test.mjs` 的「an old host without launchKind renders the shape-neutral copy」用例钉住
+  （省略字段与 ping 失败两条路径文案逐字相同）。
+- 桌面端文案承诺「退出并重新打开 DeepSeek Harness」，**不承诺 App 内有重启按钮**：正式版没有该入口
+  （`app.relaunch` 只用于崩溃恢复），macOS 关窗不退出 ⇒ 必须 Cmd+Q 完全退出再重开。cli 文案含
+  「重新运行 `dsh web`」（en：`restart dsh web`），桌面端组经测试断言**不含** `dsh web`。
+- 客户端另在根容器发布 `data-launch-kind="cli|desktop|unknown"`，真机核验读一个属性即可，不必匹配句子。
+- `CONTRACT.md:2569`（§15 里「running `dsh web` must be restarted…」）与 `README` 的开发段落属**另一个
+  语境**（宿主进程级事实，非「更新后提示」），本轮未改，仅把 README 维护者段的口径扩成「重启宿主（两种
+  形态各怎么做）」。
+
+### 四、测试口径
+- 新增 `test/launch-kind.test.mjs`：纯函数穷举（含 `Symbol`、getter 抛错、`ctx.get` 抛错、`''`/空白、大小写），
+  并断言 `inject` 不含 `profileContext`。
+- 宿主：`test/host.test.mjs` ping 断言 `launchKind` 三态；`test/route.test.mjs` 的 ping 键集合全等断言补
+  `launchKind`；`test/install.test.mjs` 新增 `mountHost({profileName})` 并在 POST/GET/cancel/already-installed
+  与「每个 profile 名字对应哪个形态」逐项断言（未知 profile ⇒ `unknown`）。
+- 客户端：新增两条渲染用例（三形态的确认框与完成态文案 + 老宿主/失败 ping 回退等价），并把既有
+  「`/手动重启 dsh web/`」断言改为形态化断言（cli fixture 断言 `/重新运行 dsh web/`、「already installed」
+  这条真桌面用例改用 `desktop` fixture 并断言 `/退出并重新打开 DeepSeek Harness/` + **`doesNotMatch(/dsh web/)`**）；
+  文案表测试新增「每个 family 三键齐备」「cli 组含 `dsh web`」「desktop 组与兜底键都不含 `dsh web`」及 en 的
+  `automatic restart` 扫描 —— 原有「不承诺自动重启」断言一条未删、未放宽。
+- `test/client.test.mjs` 的 ping fixture 需要 `payload.ok === true` 才会被 `requestJson` 视为成功；只写
+  `{ launchKind: … }` 会被当成 ping 失败 ⇒ 三态用例恒走兜底（本轮踩过，已改成
+  `{ payload: { ok: true, launchKind: … } }` 或 `pingResponse(..., launchKind)`）。
+
+### 五、负向对照与验收
+- 负向对照①：临时把 `launchKindOfName` 的返回值改为恒 `'cli'` ⇒ `test/launch-kind.test.mjs` **7 tests / 4 pass /
+ 3 fail**（三条形态判定断言转红）；还原后该套件 7/7 全绿。
+- 负向对照②：临时把客户端 `normalizeLaunchKind` 改为恒 `'unknown'` ⇒ `test/client.test.mjs` **148 tests /
+  143 pass / 5 fail**（三形态新用例与三条 cli 断言转红）；还原后 148/148 全绿。
+- 基线对照：中途未同步 `test/route.test.mjs` 的 ping 键集合全等断言时，全量为 **590 pass / 1 fail**；补上
+  `launchKind` 后 **591 pass / 0 fail**（与「改文案/加字段必须同步全等断言」的既有纪律一致）。
+- 最终：`cd packages/dsh-prompt-setting && node --test` ⇒ **591 pass / 0 fail / skipped 0 / exit 0**（基线
+  `67eed2f` 的 580 加上本轮新增 11 条：launch-kind 7 + client 2 + host 1 + install 1）。
+- 真机项（判据 10）：本机是命令行 `dsh web`（`~/.dsh/profiles/web`，宿主 PID 35408 于本轮**未重启**）⇒ 重启后
+  `GET /prompt-setting/ping` 应回 `launchKind: "cli"`、页面根容器 `data-launch-kind="cli"`、完成态文案含
+  「重新运行 dsh web」。**本轮未重启宿主，故真机目视为待验证项**（第三方插件读真 `profileContext` 的返回值
+  同样只在重启后才能看到；裸 `curl /prompt-setting/ping` 只会得到 401 信任围栏）。

@@ -200,6 +200,8 @@ function makeRequest({ method = 'GET', url = UPDATE_CHECK_PATH, body } = {}) {
  * @param options.manager - a stub manager, or `null` for "no pluginManager service".
  * @param options.transport - the stub transport.
  * @param options.rejection - what the trust fence answers.
+ * @param options.profileName - the official profile name that decides the g-036
+ *   launch shape; `undefined` means "no profileContext service".
  * @returns the captured prefix route and the stub manager's calls.
  */
 function mountHost(options = {}) {
@@ -222,6 +224,12 @@ function mountHost(options = {}) {
       },
     },
     get(name) {
+      // g-036: the launch shape comes off the official profile name; a mount
+      // that names no profile answers `unknown`, like a real Host without the
+      // service.
+      if (name === 'profileContext') {
+        return options.profileName === undefined ? undefined : { name: options.profileName };
+      }
       return name === 'pluginManager' && manager !== null ? manager.service : undefined;
     },
     on() {
@@ -622,6 +630,7 @@ test('install route: a profile already holding the target asset answers success,
   const started = await startInstall(route);
   assert.equal(started.ok, true);
   assert.equal(started.alreadyInstalled, true);
+  assert.equal(started.launchKind, 'unknown', 'g-036: the no-op answer carries the launch shape as well');
   await settle();
   assert.equal(manager.calls.length, 0, 'a no-op install never reaches the package manager');
   assert.equal(transport.calls.filter((entry) => entry.method === 'HEAD').length, 0, 'and it is not probed either');
@@ -955,6 +964,7 @@ test('install route: cancel marks the intent, forwards it, and never blocks on t
   assert.equal(body.code, 'cancelling');
   assert.equal(body.status.phase, 'cancelling');
   assert.equal(body.status.cancelRequested, true);
+  assert.equal(body.launchKind, 'unknown', 'g-036: the cancel answer carries the launch shape too');
   await settle();
   assert.deepEqual(cancellations, [started.status.requestId]);
 
@@ -968,6 +978,30 @@ test('install route: cancel marks the intent, forwards it, and never blocks on t
   assert.equal(again.ok, false);
   assert.equal(again.code, 'not-running');
   assert.equal(again.status.status, 'unknown');
+  assert.equal(again.launchKind, 'unknown', 'g-036: a refusal carries the same shape as a started install');
+});
+
+test('install route: the answered launch shape follows the official profile name', async () => {
+  // g-036 end to end on the host half: the desktop profile answers `desktop`,
+  // any other named profile is the command line, and a Host with no profile
+  // context stays `unknown` — never folded into `cli`.
+  for (const [profileName, expected] of [['desktop', 'desktop'], ['web', 'cli'], [undefined, 'unknown']]) {
+    writeProfile({ 'dsh-prompt-setting': '0.1.1' });
+    const transport = makeTransport();
+    const manager = makeManager();
+    const { route } = mountHost({ manager, transport, profileName });
+    const started = await startInstall(route);
+    assert.equal(started.launchKind, expected, `POST with profile ${String(profileName)}`);
+    const polled = json(await call(route, { url: `${UPDATE_APPLY_PATH}?requestId=${started.status.requestId}` }));
+    assert.equal(polled.launchKind, expected, `GET with profile ${String(profileName)}`);
+    const cancelled = json(await call(route, {
+      method: 'POST',
+      url: UPDATE_APPLY_CANCEL_PATH,
+      body: JSON.stringify({ requestId: started.status.requestId }),
+    }));
+    assert.equal(cancelled.launchKind, expected, `cancel with profile ${String(profileName)}`);
+    await settle();
+  }
 });
 
 test('install route: shape mistakes are 400, and no shape mistake is ever a 5xx', async () => {
@@ -979,7 +1013,9 @@ test('install route: shape mistakes are 400, and no shape mistake is ever a 5xx'
   // shape mistake: it answers 200 with `status:null` when nothing is running.
   const idle = await call(route, { url: UPDATE_APPLY_PATH });
   assert.equal(idle.statusCode, 200);
-  assert.deepEqual(json(idle), { ok: true, status: null });
+  // g-036: every `update-apply` answer carries the launch shape; a Host that
+  // names no profile reports `unknown` rather than guessing the command line.
+  assert.deepEqual(json(idle), { ok: true, status: null, launchKind: 'unknown' });
 
   const empty = await call(route, { url: `${UPDATE_APPLY_PATH}?requestId=` });
   assert.equal(empty.statusCode, 400);
@@ -1052,12 +1088,14 @@ test('install route: a fresh page can find the install it can no longer name', a
     },
   };
   const { route } = mountHost({ manager, transport });
-  assert.deepEqual(json(await call(route, { url: UPDATE_APPLY_PATH })), { ok: true, status: null });
+  assert.deepEqual(json(await call(route, { url: UPDATE_APPLY_PATH })), { ok: true, status: null, launchKind: 'unknown' });
 
   const started = await startInstall(route);
+  assert.equal(started.launchKind, 'unknown', 'the POST answer carries the launch shape too');
   // The reloaded tab has no id in memory: the bare `GET` names the live request.
   const found = json(await call(route, { url: UPDATE_APPLY_PATH }));
   assert.equal(found.ok, true);
+  assert.equal(found.launchKind, 'unknown');
   assert.equal(found.status.requestId, started.status.requestId);
   assert.equal(found.status.status, 'running');
 });

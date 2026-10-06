@@ -193,6 +193,89 @@ window.__ModuleLoader__.load({
     const React = require('react');
     const h = React.createElement;
 
+    // #region launch shape (g-036)
+    /**
+     * The three launch shapes the restart copy is partitioned into.
+     *
+     * The host judges the shape from the official profile name
+     * (`core/launch-kind.js`) and reports it as `launchKind` on the ping; this
+     * page only has to pick a key. Choosing is deliberately *not* a
+     * re-derivation: a browser cannot see the Host's profile, and a second
+     * judgement would be a second thing to keep in sync.
+     */
+    const LAUNCH_KIND_CLI = 'cli';
+    const LAUNCH_KIND_DESKTOP = 'desktop';
+    const LAUNCH_KIND_UNKNOWN = 'unknown';
+    /**
+     * Which dictionary key each g-036 copy family uses per launch shape.
+     *
+     * The bare key is the `unknown` copy — what an old host (no `launchKind`), a
+     * failed ping or an unrecognized value get — and its text names no launch
+     * form, so a terminal user and a desktop user can both follow it. The
+     * mapping is an **explicit table**, never string concatenation: every
+     * sentence this page shows comes from the registered dictionaries, and a key
+     * built at render time is exactly how one of them goes missing unnoticed.
+     */
+    const UPDATE_APPLY_COPY_KEYS = Object.freeze({
+      restartNote: Object.freeze({
+        cli: 'updateApplyRestartNoteCli',
+        desktop: 'updateApplyRestartNoteDesktop',
+        unknown: 'updateApplyRestartNote',
+      }),
+      done: Object.freeze({
+        cli: 'updateApplyDoneCli',
+        desktop: 'updateApplyDoneDesktop',
+        unknown: 'updateApplyDone',
+      }),
+      already: Object.freeze({
+        cli: 'updateApplyAlreadyCli',
+        desktop: 'updateApplyAlreadyDesktop',
+        unknown: 'updateApplyAlready',
+      }),
+      unknownState: Object.freeze({
+        cli: 'updateApplyUnknownCli',
+        desktop: 'updateApplyUnknownDesktop',
+        unknown: 'updateApplyUnknown',
+      }),
+    });
+
+    /**
+     * Fold whatever the ping answered into the three-state enum.
+     *
+     * Only the two decided values survive; `undefined` (an old host that never
+     * sent the field), `null` (a failed ping) and any other spelling become
+     * `'unknown'`, which is the copy both launch shapes can follow.
+     * @param value - `boot.launchKind`, or anything else.
+     * @returns one of the three launch kinds.
+     */
+    function normalizeLaunchKind(value) {
+      return value === LAUNCH_KIND_CLI || value === LAUNCH_KIND_DESKTOP ? value : LAUNCH_KIND_UNKNOWN;
+    }
+
+    /**
+     * The launch shape one page model is rendering for.
+     * @param model - the page model, or anything else.
+     * @returns one of the three launch kinds.
+     */
+    function modelLaunchKind(model) {
+      const boot = model === null || model === undefined ? null : model.boot;
+      return normalizeLaunchKind(boot === null || boot === undefined ? null : boot.launchKind);
+    }
+
+    /**
+     * The dictionary key for one g-036 copy family and launch shape.
+     * @param family - a key of {@link UPDATE_APPLY_COPY_KEYS}.
+     * @param launchKind - the value the host's ping carried.
+     * @returns the key to translate; never `undefined`.
+     */
+    function updateApplyCopyKey(family, launchKind) {
+      const table = UPDATE_APPLY_COPY_KEYS[family];
+      if (table === undefined) return 'updateApplyUnknown';
+      const key = table[normalizeLaunchKind(launchKind)];
+      return typeof key === 'string' ? key : 'updateApplyUnknown';
+    }
+    // #endregion
+
     // #region primitives probe
     // Never let the probe throw past this factory: a failure here must degrade
     // to the hand-built renderer, not blank the settings panel.
@@ -541,7 +624,7 @@ window.__ModuleLoader__.load({
       stBuildSelf: '本页',
       stBuildServer: '宿主',
       stBuildStaleHint:
-        '本页运行的 client.js 与宿主正在发布的字节不同：这是旧标签页在跑旧 bundle。开一个新标签（或在新标签里重新打开设置）即可，改客户端不需要重启 dsh web。',
+        '本页运行的 client.js 与宿主正在发布的字节不同：这是旧标签页在跑旧 bundle。开一个新标签（或在新标签里重新打开设置）即可，改客户端不需要重启宿主。',
       stBuildUnknownHint:
         '宿主没有报告 client.js 指纹（宿主版本旧、文件不可读、或标记缺失/重复），因此无法判断本页是否过期；这里不会当作过期。',
       stBuildPingFailedHint: 'ping 请求失败，拿不到宿主指纹，因此无法判断本页是否过期。',
@@ -573,26 +656,44 @@ window.__ModuleLoader__.load({
       // to keep: the install is done by the host, and the **user** restarts. So
       // every string that describes the outcome says so, and no string anywhere
       // promises an automatic restart.
+      //
+      // g-036: the restart instruction is partitioned by launch shape. The bare
+      // key is the `unknown` copy — what an old Host (no `launchKind`) and an
+      // undecidable profile get — and it names no launch form, so a terminal
+      // user and a desktop user can both follow it. `…Cli` addresses the command
+      // line, `…Desktop` the official desktop application, whose copy must never
+      // contain `dsh web`: that user has no terminal to run it in.
       updateApply: '立即更新',
       updateApplyTitle: '更新到 v{latest}',
       updateApplyBody:
         '宿主将通过官方插件管理器安装 v{latest} 的 Release 包（下载到本机 profile，不自动重启）。',
-      updateApplyRestartNote: '安装完成后需要你手动重启 dsh web 才会生效。',
+      updateApplyRestartNote: '安装完成后需要你手动重启 DSH 才会生效。',
+      updateApplyRestartNoteCli: '安装完成后需要你手动重新运行 dsh web 才会生效。',
+      updateApplyRestartNoteDesktop: '安装完成后需要你手动退出并重新打开 DeepSeek Harness 才会生效。',
       updateApplying: '正在安装…',
       updateApplyStarting: '正在启动安装…',
       updateApplyCancel: '取消安装',
       updateApplyCancelling: '正在取消…',
       updateApplyElapsed: '已用时 {elapsed}',
-      updateApplyDone: '已安装 v{version}，请手动重启 dsh web 生效。',
+      updateApplyDone: '已安装 v{version}，请手动重启 DSH 生效。',
+      updateApplyDoneCli: '已安装 v{version}，请手动重新运行 dsh web 生效。',
+      updateApplyDoneDesktop: '已安装 v{version}，请退出并重新打开 DeepSeek Harness 生效。',
       updateApplyApplied: '已安装 v{version} 并已生效。',
       updateApplyFailed: '安装失败：{reason}',
       updateApplyRetry: '重试',
       updateApplyCancelled: '已取消安装；profile 文件已还原。',
-      updateApplyUnknown: '这次安装的状态已不可查（可能已完成，也可能是页面刷新过）。请重启 dsh web 或用「立即重查」确认版本。',
+      updateApplyUnknown:
+        '这次安装的状态已不可查（可能已完成，也可能是页面刷新过）。请手动重启 DSH 或用「立即重查」确认版本。',
+      updateApplyUnknownCli:
+        '这次安装的状态已不可查（可能已完成，也可能是页面刷新过）。请手动重新运行 dsh web 或用「立即重查」确认版本。',
+      updateApplyUnknownDesktop:
+        '这次安装的状态已不可查（可能已完成，也可能是页面刷新过）。请退出并重新打开 DeepSeek Harness，或用「立即重查」确认版本。',
       updateApplyManual: '也可以手动更新：{hint}',
       updateApplyManualLink: '打开 {tag} 的 Release 页面',
       updateApplyReused: '已有一个安装在进行中。',
-      updateApplyAlready: '该版本已安装（v{version}），请手动重启 dsh web 生效。',
+      updateApplyAlready: '该版本已安装（v{version}），请手动重启 DSH 生效。',
+      updateApplyAlreadyCli: '该版本已安装（v{version}），请手动重新运行 dsh web 生效。',
+      updateApplyAlreadyDesktop: '该版本已安装（v{version}），请退出并重新打开 DeepSeek Harness 生效。',
       viewSections: '分段',
       viewFull: '全文',
       // g-015: the four first-level tabs, in their fixed presentation order.
@@ -932,7 +1033,7 @@ window.__ModuleLoader__.load({
       stBuildSelf: 'This tab',
       stBuildServer: 'Host',
       stBuildStaleHint:
-        'The client.js this tab is running is not the build the host is serving byte for byte: an older tab kept an older bundle. Open a new tab (or reopen Settings in one); a client change needs no dsh web restart.',
+        'The client.js this tab is running is not the build the host is serving byte for byte: an older tab kept an older bundle. Open a new tab (or reopen Settings in one); a client change needs no host restart.',
       stBuildUnknownHint:
         'The host reported no client.js fingerprint (older host, unreadable file, or missing/duplicated markers), so this tab cannot be judged — it is not treated as stale.',
       stBuildPingFailedHint: 'The ping request failed, so there is no host fingerprint and this tab cannot be judged.',
@@ -957,27 +1058,42 @@ window.__ModuleLoader__.load({
       // ---- g-032:「Update now」(mirrors the zh block above). Nothing here may
       // promise an automatic restart: the install is the host's job and the
       // restart is the user's.
+      //
+      // g-036: mirrored partition — the bare key is the shape-neutral `unknown`
+      // copy, `…Cli` the command line and `…Desktop` the official desktop
+      // application. No `…Desktop` string may contain `dsh web`.
       updateApply: 'Update now',
       updateApplyTitle: 'Update to v{latest}',
       updateApplyBody:
         'The host will install the v{latest} release through the official plugin manager (into this profile; no automatic restart).',
-      updateApplyRestartNote: 'You will need to restart dsh web yourself for the new version to take effect.',
+      updateApplyRestartNote: 'You will need to restart DSH yourself for the new version to take effect.',
+      updateApplyRestartNoteCli: 'You will need to restart dsh web yourself for the new version to take effect.',
+      updateApplyRestartNoteDesktop:
+        'You will need to quit and reopen DeepSeek Harness yourself for the new version to take effect.',
       updateApplying: 'Installing…',
       updateApplyStarting: 'Starting the install…',
       updateApplyCancel: 'Cancel install',
       updateApplyCancelling: 'Cancelling…',
       updateApplyElapsed: 'Elapsed {elapsed}',
-      updateApplyDone: 'v{version} is installed — restart dsh web to put it to work.',
+      updateApplyDone: 'v{version} is installed — restart DSH to put it to work.',
+      updateApplyDoneCli: 'v{version} is installed — restart dsh web to put it to work.',
+      updateApplyDoneDesktop: 'v{version} is installed — quit and reopen DeepSeek Harness to put it to work.',
       updateApplyApplied: 'v{version} is installed and already in effect.',
       updateApplyFailed: 'The install failed: {reason}',
       updateApplyRetry: 'Retry',
       updateApplyCancelled: 'The install was cancelled; the profile files were restored.',
       updateApplyUnknown:
+        'This install can no longer be looked up (it may have finished, or this page may have been reloaded). Restart DSH, or use "Check now" to confirm the version.',
+      updateApplyUnknownCli:
         'This install can no longer be looked up (it may have finished, or this page may have been reloaded). Restart dsh web, or use "Check now" to confirm the version.',
+      updateApplyUnknownDesktop:
+        'This install can no longer be looked up (it may have finished, or this page may have been reloaded). Quit and reopen DeepSeek Harness, or use "Check now" to confirm the version.',
       updateApplyManual: 'You can also update by hand: {hint}',
       updateApplyManualLink: 'Open the {tag} release page',
       updateApplyReused: 'An install is already running.',
-      updateApplyAlready: 'v{version} is already installed — restart dsh web to put it to work.',
+      updateApplyAlready: 'v{version} is already installed — restart DSH to put it to work.',
+      updateApplyAlreadyCli: 'v{version} is already installed — restart dsh web to put it to work.',
+      updateApplyAlreadyDesktop: 'v{version} is already installed — quit and reopen DeepSeek Harness to put it to work.',
       viewSections: 'Sections',
       viewFull: 'Full text',
       tabMine: 'My Prompt',
@@ -5433,9 +5549,11 @@ window.__ModuleLoader__.load({
         // g-032: the「立即更新」confirmation. It states the version, who installs
         // it and — the part a user must not discover afterwards — that the page
         // will **not** restart anything; the last restart is theirs to do.
+        // g-036: *how* to do it depends on how the host was started, so the
+        // sentence is selected by the launch shape the ping reported.
         body.push(fmt(t('updateApplyTitle'), { latest: confirm.latest ?? '' }));
         body.push(fmt(t('updateApplyBody'), { latest: confirm.latest ?? '' }));
-        body.push(t('updateApplyRestartNote'));
+        body.push(t(updateApplyCopyKey('restartNote', modelLaunchKind(m))));
       } else {
         body.push(t('importConfirmTitle'));
         body.push(fmt(t('importConfirmBody'), { mode: t(m.importMode === 'replace' ? 'importModeReplace' : 'importModeMerge') }));
@@ -6200,8 +6318,9 @@ window.__ModuleLoader__.load({
      *     disabled by the elapsed time: an install that waits two minutes for the
      *     profile lock is normal, not stuck;
      *   - `done` — `restart-required` is a **success** and the sentence is「已安装
-     *     vX.Y.Z，请手动重启 dsh web 生效」. `applied` is the rarer live case and
-     *     says so; neither restarts anything;
+     *     vX.Y.Z」plus the restart instruction for this launch shape (g-036:
+     *     re-run `dsh web`, or quit and reopen DeepSeek Harness). `applied` is
+     *     the rarer live case and says so; neither restarts anything;
      *   - `failed` — the host's own category, its sentence, and a retry button
      *     when the category is retryable. Nothing retries by itself;
      *   - `cancelled` / `unknown` — the two honest endings: the files were
@@ -6251,15 +6370,19 @@ window.__ModuleLoader__.load({
           ),
         );
       } else if (phase === 'done') {
+        // g-036: the restart instruction is the launch shape's copy. `applied`
+        // needs none: the new version is already running.
+        const doneKey =
+          apply.restartRequired === true ? updateApplyCopyKey('done', modelLaunchKind(m)) : 'updateApplyApplied';
         lines.push(
-          fmt(t(apply.restartRequired === true ? 'updateApplyDone' : 'updateApplyApplied'), {
+          fmt(t(doneKey), {
             version: latest === '' ? t('stPluginVersionUnknown') : latest,
           }),
         );
       } else if (phase === 'cancelled') {
         lines.push(t('updateApplyCancelled'));
       } else if (phase === 'unknown') {
-        lines.push(t('updateApplyUnknown'));
+        lines.push(t(updateApplyCopyKey('unknownState', modelLaunchKind(m))));
       } else {
         const error = apply.error ?? {};
         const reason = typeof error.message === 'string' && error.message.length > 0 ? error.message : t('updateApplyUnknown');
@@ -6605,6 +6728,11 @@ window.__ModuleLoader__.load({
           // beside the page title (Revision 17); this copy stays on the root
           // container so a probe reads it without knowing the layout.
           'data-plugin-version': pluginVersionOf(m.boot),
+          // g-036: the launch shape every restart instruction on this page was
+          // rendered for — `cli` / `desktop` / `unknown`. On the root container,
+          // so a real-machine check reads the shape off one attribute instead of
+          // matching sentences.
+          'data-launch-kind': modelLaunchKind(m),
           style: {
             display: 'flex',
             flexDirection: 'column',
@@ -6726,6 +6854,10 @@ window.__ModuleLoader__.load({
         server: null,
         version: null,
         repositoryUrl: null,
+        // g-036: which shape the host was started in, verbatim from the ping.
+        // `null` until the host answers — and `null` forever on an old host that
+        // never sends it — which selects the shape-neutral copy.
+        launchKind: null,
         pingFailed: false,
       });
       // g-030: the update check's own view state. `enabled` is the **Host's**
@@ -6808,6 +6940,11 @@ window.__ModuleLoader__.load({
           // than being coerced into a value the host never sent.
           const version = body ? body.version : null;
           const repositoryUrl = body ? body.repositoryUrl : null;
+          // g-036: the same ping also carries the host's launch shape. Only the
+          // two decided values are kept; everything else (an old host, `null`, a
+          // typo) stays `null` and renders the shape-neutral copy — an unknown
+          // shape must never be mistaken for a command line.
+          const launchKind = body ? body.launchKind : null;
           setBoot({
             self: SELF_BUILD,
             server:
@@ -6821,6 +6958,7 @@ window.__ModuleLoader__.load({
             version: typeof version === 'string' && version.trim().length > 0 ? version : null,
             repositoryUrl:
               typeof repositoryUrl === 'string' && repositoryUrl.trim().length > 0 ? repositoryUrl : null,
+            launchKind: launchKind === LAUNCH_KIND_CLI || launchKind === LAUNCH_KIND_DESKTOP ? launchKind : null,
             pingFailed: !ping.ok,
           });
         };
@@ -7672,7 +7810,7 @@ window.__ModuleLoader__.load({
         if (result.payload.alreadyInstalled === true) {
           setUpdate((current) => ({ ...current, apply: status, applyElapsed: null }));
           const version = status !== null && typeof status.version === 'string' ? status.version : '';
-          setNotice({ tone: 'success', text: fmt(t('updateApplyAlready'), { version }) });
+          setNotice({ tone: 'success', text: fmt(t(updateApplyCopyKey('already', normalizeLaunchKind(boot.launchKind))), { version }) });
           return;
         }
         if (requestId === null || requestId === undefined) {
@@ -7700,7 +7838,7 @@ window.__ModuleLoader__.load({
         const data = update.data;
         const latest = data !== null && typeof data.latest === 'string' ? data.latest : null;
         if (latest === null) {
-          setNotice({ tone: 'error', text: t('updateApplyUnknown') });
+          setNotice({ tone: 'error', text: t(updateApplyCopyKey('unknownState', normalizeLaunchKind(boot.launchKind))) });
           return;
         }
         await startUpdateApply(latest, data.latestTag ?? null);
@@ -7723,7 +7861,7 @@ window.__ModuleLoader__.load({
         if (!result.ok || result.payload.ok !== true) {
           // The poll is the source of truth and will report whatever really
           // happened; a refused cancel says so on the notice line.
-          setNotice({ tone: 'error', text: errorText(t, result.error) || (result.payload && result.payload.code) || t('updateApplyUnknown') });
+          setNotice({ tone: 'error', text: errorText(t, result.error) || (result.payload && result.payload.code) || t(updateApplyCopyKey('unknownState', normalizeLaunchKind(boot.launchKind))) });
         }
       };
 

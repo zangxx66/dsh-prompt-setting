@@ -12,21 +12,44 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [0.1.4] - 2026-10-06
 
-**发布准备版本：插件自报版本切到 `0.1.4`；本段不含用户可感知的行为变更 / Release-prep release: the
-plugin reports `0.1.4`; this entry carries no user-visible behaviour change.**
+**发布准备版本 + 一处用户可感知变更：更新后的重启提示按启动形态分区；插件自报版本切到 `0.1.4` /
+Release-prep release with one user-visible change: the post-update restart hint is partitioned by launch
+shape; the plugin reports `0.1.4`.**
 
 ### Changed 变更
 
+- **更新后的重启提示按启动形态分区（g-036）**：安装完成后那句话不再写死「重启 `dsh web`」。宿主从官方
+  `profileContext.name` 判定启动形态（`desktop` / 其它名字 = `cli` / 读不到 = `unknown`，绝不猜成
+  命令行），并在 ping 与 `update-apply` 三个响应上新增 `launchKind` 字段（老宿主没有该字段时页面按
+  `unknown` 处理）。页面据此选文案：命令行给出「已安装 vX.Y.Z，请手动重新运行 `dsh web` 生效」；官方
+  桌面端给出「请退出并重新打开 DeepSeek Harness 生效」——**该组文案不含 `dsh web`**（桌面端用户看不到
+  终端，正式版 App 内也没有重启入口，需完全退出后重开）；形态无法判定时给两种形态都读得通的中性文案。
+  安装动作本身与「**绝不自动重启**」不变，既有响应字段与状态机语义不变。中英两份文案表都已分区。
+  **The post-update restart hint is partitioned by launch shape (g-036)**: the sentence shown after an
+  install no longer hardcodes "restart `dsh web`". The host judges the shape from the official
+  `profileContext.name` (`desktop`, any other name = `cli`, unreadable = `unknown` — never guessed as
+  command line) and reports it as a new `launchKind` field on the ping and on all three `update-apply`
+  responses (an old host's missing field reads as `unknown`). The page then picks its copy: the command
+  line says "vX.Y.Z is installed — re-run `dsh web` yourself", the official desktop app says "quit and
+  reopen DeepSeek Harness" — **that group never contains `dsh web`** (a desktop user has no terminal, and
+  the shipped app has no in-app restart entry, so it must be fully quit and reopened) — and an
+  undecidable shape gets copy both readers can follow. The install action itself and the "**never an
+  automatic restart**" promise are unchanged, as are every existing response field and the state machine.
+  Both dictionaries are partitioned.
 - **版本号 `0.1.3` → `0.1.4`**：同步表示「本包当前发布版本」的每一处——本包 `package.json` 的 `version`、
   宿主的 `PLUGIN_VERSION`、`CONTRACT.md` 里的响应与示例、两份根 README 的徽章与「当前版本」表述，以及
-  测试中表示本包版本的硬字面量。**运行时行为零变化**：路由、响应形状、落盘内容与页面表现都与 `0.1.3`
-  相同；`npm publish` / `git tag` / `git push` 仍是人工 gate，不在本次变更内。
+  测试中表示本包版本的硬字面量。它本身**不引入任何行为变更**——本版唯一的行为变化是上面那条 g-036
+  （响应新增 `launchKind`、页面文案按形态分区），而该变化正是由 g-036 引入、在本段如实记录；版本号本身
+  不改变路由、落盘内容或既有响应字段。`npm publish` / `git tag` / `git push` 仍是人工 gate，不在本次
+  变更内。
   **Version `0.1.3` → `0.1.4`**: every place that states "the version this package currently publishes" was
   moved together — this package's `package.json`, the host's `PLUGIN_VERSION`, the responses and examples in
   `CONTRACT.md`, the badges and "currently" lines in both root READMEs, and the test literals that assert the
-  package version. **Runtime behaviour is unchanged**: routes, response shapes, stored content and page
-  rendering are identical to `0.1.3`. `npm publish`, `git tag` and `git push` remain manual gates and are not
-  part of this change.
+  package version. The version bump itself introduces **no behaviour change** — the release's one
+  behaviour change is the g-036 entry above (a new `launchKind` response field and shape-partitioned page
+  copy), recorded there for what it is; the version number alone alters no route, no stored content and no
+  existing response field. `npm publish`, `git tag` and `git push` remain manual gates and are not part of
+  this change.
 
 ---
 

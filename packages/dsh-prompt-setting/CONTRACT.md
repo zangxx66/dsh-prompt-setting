@@ -547,7 +547,7 @@ with the zone named:
 
 | Path | Methods | Purpose |
 | --- | --- | --- |
-| `/prompt-setting/ping` | `GET` | Stage 1A liveness probe. Behaviour unchanged, plus `clientBuild` since Revision 6 (§14.2), the page's own `version` read since Revision 16 and `repositoryUrl` since Revision 17 (§13.8). |
+| `/prompt-setting/ping` | `GET` | Stage 1A liveness probe. Behaviour unchanged, plus `clientBuild` since Revision 6 (§14.2), the page's own `version` read since Revision 16, `repositoryUrl` since Revision 17 (§13.8) and `launchKind` since g-036 (§14.2, §18.8). |
 | `/prompt-setting/snapshot` | `GET` | Base + effective section views, frozen verdict, layering. |
 | `/prompt-setting/overrides` | `GET` | Both layers and the merged list. |
 | `/prompt-setting/overrides` | `PUT` | Upsert **the reserved section** into one layer; any other name is `403` (Revision 7, §4.1). |
@@ -560,9 +560,9 @@ with the zone named:
 | `/prompt-setting/interpolate` | `PUT` | Set that switch for one layer: `{"enabled": bool}` (Revision 11) or `{"state": "inherit"|"on"|"off"}` (Revision 12, §16.8). |
 | `/prompt-setting/update-check` | `GET` | The upstream release check: is a newer release published, and is checking on at all? Always `200`, failures included (g-030, §17). |
 | `/prompt-setting/update-check` | `PUT` | Record the on/off switch for that check: `{"enabled": bool}` (g-030, §17.4). |
-| `/prompt-setting/update-apply` | `POST` | Start installing the release the last check named, through the official `pluginManager`, and answer a `requestId` immediately: §18.2. |
-| `/prompt-setting/update-apply` | `GET` | The phase of one tracked install (`?requestId=`), or — with no id — this mount's oldest **running** install: §18.3. |
-| `/prompt-setting/update-apply/cancel` | `POST` | Stop a running install: `{"requestId": string}` (§18.4). |
+| `/prompt-setting/update-apply` | `POST` | Start installing the release the last check named, through the official `pluginManager`, and answer a `requestId` immediately: §18.2. Carries `launchKind` (g-036, §18.8). |
+| `/prompt-setting/update-apply` | `GET` | The phase of one tracked install (`?requestId=`), or — with no id — this mount's oldest **running** install: §18.3. Carries `launchKind` (g-036, §18.8). |
+| `/prompt-setting/update-apply/cancel` | `POST` | Stop a running install: `{"requestId": string}` (§18.4). Carries `launchKind` (g-036, §18.8). |
 
 - An unknown path under the prefix is `404` with
   `{ "code": "not-found", "message": "no route for <path>" }` (no `ok` key —
@@ -2072,7 +2072,8 @@ over by DSH, which removed the easy manual check as well.)
 ### 14.2 `clientBuild` in the ping
 
 `GET /prompt-setting/ping` answers the stage 1A shape plus the fields added since
-(`clientBuild` here; `repositoryUrl` in Revision 17, §13.8). The body
+(`clientBuild` here; `repositoryUrl` in Revision 17, §13.8; `launchKind` in
+g-036, §18.8). The body
 below is a **shape example**: `hash`, `size` and `mtime` all move with the
 bundle's bytes and the file's timestamp, so the numbers in it are placeholders —
 not this machine's (and not any machine's) current values. Comparing them with a
@@ -2087,7 +2088,8 @@ live probe would read a normal rebuild as a defect.
   "time": "2026-09-28T12:00:00.000Z",
   "clientRenderer": "fallback",
   "clientReportedAt": "2026-09-28T12:00:00.000Z",
-  "clientBuild": { "hash": "7065b7d2", "size": 240949, "mtime": "2026-09-28T11:58:31.000Z" }
+  "clientBuild": { "hash": "7065b7d2", "size": 240949, "mtime": "2026-09-28T11:58:31.000Z" },
+  "launchKind": "cli"
 }
 ```
 
@@ -2111,7 +2113,12 @@ both.
 - `clientBuild` is **`null`**, with the rest of the response unchanged and the
   status still `200`, when the bundle cannot be read, or when it is readable but
   its marker region is unusable (markers removed, duplicated or reversed). A
-  fabricated digest here would be read as「过期」, so「unknown」is the answer.
+  fabricated digest here would be read as「过期」, so「unknown」is the answer;
+- `launchKind` — **g-036**: `"cli"`, `"desktop"` or `"unknown"`, the shape this
+  Host was started in, judged from the official `profileContext.name` (§18.8).
+  It is the field the page selects its restart copy with; `"unknown"` is also
+  what a **pre-g-036 Host's absence of the field** means to the page, so both
+  halves agree on the three states without a version check.
 
 **How it is computed is part of the contract: on every request,** by reading the
 file this process publishes (`fileURLToPath(new URL('./client.js', import.meta.url))`
@@ -3283,8 +3290,9 @@ The preference lives in **its own file**, `<DSH_HOME>/prompt-setting/preferences
 The update check (§17) tells a user that upstream moved on; it does not act.
 This revision adds the one action the owner asked for (2026-10-03): a
 「立即更新」button that has the **Host** install the release it just named, using
-the official `pluginManager` service — and then asks the user to restart
-`dsh web` themselves.
+the official `pluginManager` service — and then asks the user to restart the
+thing they actually started (g-036: `dsh web` from a terminal, or the DeepSeek
+Harness application; §18.8).
 
 The shape of the promise is the contract, and every negative is as load-bearing
 as the positive:
@@ -3293,8 +3301,10 @@ as the positive:
   manager, never downloads a tarball and never writes a file;
 - **never a restart.** No route, no `inject`ed service call and no client code
   restarts `dsh web`. `ChangeResult.application === 'restart-required'` is a
-  **success**, and its instruction —「已安装 vX.Y.Z，请手动重启 dsh web 生效」— is
-  what reaches the page;
+  **success**, and its instruction —「已安装 vX.Y.Z」followed by what *this*
+  launch shape has to do — is what reaches the page. The sentence is chosen from
+  `launchKind` (§18.8) and is never written into a route: which launch shape the
+  Host has is a fact about the Host, not about the request;
 - **never a 5xx.** Every outcome is a `200`: a refusal
   (`{ok:false, code, message}`), a running install, a finished one, a failed one.
   Only a request whose **shape** is wrong is an ordinary `400`;
@@ -3353,7 +3363,7 @@ spec this install would use is compared **literally** with the profile's own
 identical, the answer is a **finished success**:
 
 ```json
-{ "ok": true, "reused": false, "alreadyInstalled": true, "status": { "phase": "done", "status": "done", "application": "restart-required", "restartRequired": true, "installed": true, "error": null, "…": "…" } }
+{ "ok": true, "reused": false, "alreadyInstalled": true, "launchKind": "cli", "status": { "phase": "done", "status": "done", "application": "restart-required", "restartRequired": true, "installed": true, "error": null, "…": "…" } }
 ```
 
 Nothing was installed and nothing needs to be, so the page's remaining step is the
@@ -3371,6 +3381,7 @@ Otherwise, the answer:
 {
   "ok": true,
   "reused": false,
+  "launchKind": "cli",
   "status": {
     "requestId": "i1-7f3k2a9c",
     "phase": "installing",
@@ -3397,6 +3408,7 @@ A refusal — nothing was started, so there is no request to track:
   "ok": false,
   "code": "development-link",
   "message": "this profile installs dsh-prompt-setting from a local path (link:../x), which is a development working copy: …",
+  "launchKind": "cli",
   "manual": {
     "releaseUrl": "https://github.com/zangxx66/dsh-prompt-setting/releases/tag/0.2.0",
     "releaseLink": "open the 0.2.0 release page",
@@ -3405,6 +3417,12 @@ A refusal — nothing was started, so there is no request to track:
   }
 }
 ```
+
+Every `update-apply` answer — the started install, the no-op success and the
+refusal alike — carries **`launchKind`** (g-036, §18.8): the same enum the ping
+reports, read from the Host context while the response is assembled. It is
+additive, so a client that ignores it renders exactly as before, and it is a fact
+about the Host: no request body or query can set it.
 
 | Refusal code | Meaning |
 | --- | --- |
@@ -3470,6 +3488,10 @@ Query: `requestId` (optional).
 Only an empty or absurdly long id is a `400 invalid-request`; the bare `GET` is a
 question, not a shape mistake.
 
+Every one of those answers carries `launchKind` beside `ok`/`status` (g-036,
+§18.8) — including the `status: null` one, so a client never has to branch on the
+field being present.
+
 The `status` values the page branches on are `running`, `done`, `failed` and
 `cancelled`, plus `unknown`. `phase` is the finer host-side step
 (`installing`/`cancelling`/`done`/`failed`/`cancelled`) and is reported only
@@ -3487,9 +3509,10 @@ awaiting** it: the official call resolves only after the install has settled and
 its files are restored, which can be minutes, and a cancel button may not hang
 for that.
 
-- a live request: `200` `{ "ok": true, "code": "cancelling", "status": {…} }`;
+- a live request: `200` `{ "ok": true, "code": "cancelling", "launchKind": "cli", "status": {…} }`;
 - a settled, unknown or absent request: `200`
-  `{ "ok": false, "code": "not-running", "status": {…} }`. Nothing was stopped;
+  `{ "ok": false, "code": "not-running", "launchKind": "cli", "status": {…} }`.
+  Nothing was stopped;
   that is a fact about the request, not a server error.
 
 A cancel that **races a success** is not reported as a cancellation: if the
@@ -3587,7 +3610,8 @@ poll of a running install, which is bounded by
 | `data-action="update-apply-retry"` | the status row | Re-opens the confirmation after a failure. |
 | `data-region="update-apply-status"` | the banner and 「高级」 | The install's own line(s). |
 | `data-update-apply-manual` | the status row | A link to the release page, for a failure with a manual route. |
-| `data-confirm-kind="update-apply"` | the confirm modal | The second confirmation, which states the version and that the restart is manual. |
+| `data-confirm-kind="update-apply"` | the confirm modal | The second confirmation, which states the version, that the restart is the user's to do, and **how** to do it for this launch shape (g-036, §18.8). |
+| `data-launch-kind` | the root container | `cli`/`desktop`/`unknown` (g-036, §18.8): the shape every restart sentence on the page was selected for. On the root so a real-machine check reads one attribute instead of matching sentences. |
 
 `status` and `phase` are two names for two different facts and are never
 interchanged: the page **branches on `status`**, `phase` is reported only through
@@ -3613,3 +3637,65 @@ produced without turning that test red.
 - the page remembers the `requestId` in `sessionStorage` (per tab, 30 min) and
   falls back to the bare `GET` (§18.3) if that is gone. The mirror is an
   optimisation: the install state itself always comes from the Host.
+
+### 18.8 The restart copy is partitioned by launch shape (g-036)
+
+The install ends at a restart, and until g-036 the page said so with one
+hardcoded sentence —「请手动重启 dsh web 生效」— which only a user who started the
+Host from a terminal can carry out. The official desktop application
+(`/Applications/DeepSeek Harness.app`, Electron) never shows that terminal: those
+users quit and reopen the app, and the old sentence named an action they do not
+have.
+
+**Where the shape comes from.** The Host judges it from the official
+`profileContext` service's `name` (`core/launch-kind.js`: a pure function, no IO,
+no DSH import, exhaustively enumerated by `test/launch-kind.test.mjs`):
+
+| `profileContext.name` | `launchKind` |
+| --- | --- |
+| `"desktop"` | `"desktop"` |
+| any other non-blank string (`"web"`, `"tui"`, …) | `"cli"` |
+| missing, non-string, blank, an unreadable service, or a lookup that throws | `"unknown"` |
+
+- the lookup is the **optional** `ctx.get('profileContext')`, never an entry in
+  this plugin's `inject`: a profile without the service still serves every route,
+  and the fact degrades to `"unknown"` instead of failing the mount;
+- the official web-app patches read the same field
+  (`ctx.get('profileContext')?.name !== 'desktop'`), and `dsh`'s CLI refuses the
+  `desktop` profile outright — so a command-line Host cannot claim to be the
+  desktop one, and the judgement has no false positive in the direction that
+  matters;
+- the environment markers the desktop app also happens to set
+  (`ELECTRON_RUN_AS_NODE`, `DSH_CLIENT_VERSION`) are deliberately **not** used:
+  the first is true of any Electron Node Host, and the second is a variable the
+  user can set. `"unknown"` stays honest instead of being guessed;
+- `"unknown"` is **never** folded into `"cli"`. A desktop user shown the
+  command-line copy is the defect this section removes.
+
+**Where it is reported.** The ping (§14.2) and all three `update-apply` answers
+(§18.2–§18.4) carry `launchKind`, always one of the three strings. It is read while
+a response is assembled, so no request input can influence it, and it is additive:
+a pre-g-036 Host simply omits the field.
+
+**What the page does with it.** Four copy families — `updateApplyRestartNote`,
+`updateApplyDone`, `updateApplyAlready`, `updateApplyUnknown` — exist in three
+spellings in both dictionaries: the bare key (the shape-neutral fallback), `…Cli`
+and `…Desktop`. The page selects by `launchKind`, and a missing or unrecognized
+value selects the bare key:
+
+| `launchKind` | Copy | Marker |
+| --- | --- | --- |
+| `"cli"` | names re-running `dsh web` | `data-launch-kind="cli"` |
+| `"desktop"` | says to quit and reopen DeepSeek Harness, and **must not contain `dsh web`** | `data-launch-kind="desktop"` |
+| `"unknown"` (or the field absent) | names no launch form, so both readers can act | `data-launch-kind="unknown"` |
+
+The desktop copy deliberately promises no in-app restart button: the shipped
+application has none (and on macOS closing the window does not quit it), so the
+instruction is to quit the app completely and reopen it.
+
+**Backward compatibility.** An old Host answers without `launchKind`, which the
+page reads as `"unknown"` and renders with the shape-neutral copy: the same render
+points, the same non-empty sentences, no new error and no blank. What changes for
+such a Host is only that the fallback no longer asserts a command line —
+deliberate, because a desktop user behind an old Host is exactly the reader it
+must not mislead.

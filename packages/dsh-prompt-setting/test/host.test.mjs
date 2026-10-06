@@ -68,6 +68,8 @@ function makeRequest({ method = 'GET', url = PING_PATH, headers = {} } = {}) {
  * Mount the plugin against doubles.
  * @param options.requestRejection - what the connection service returns.
  * @param options.omitConnection - mount without a connection service.
+ * @param options.profileName - the official profile name that decides the g-036
+ *   launch shape; `undefined` means "no profileContext service".
  * @returns the captured route plus the ctx doubles.
  */
 function mount(options = {}) {
@@ -108,7 +110,12 @@ function mount(options = {}) {
         };
       },
     },
-    get() {
+    get(name) {
+      // g-036: the launch shape is read off the official `profileContext`; a
+      // mount that names no profile answers like a Host without the service.
+      if (name === 'profileContext') {
+        return options.profileName === undefined ? undefined : { name: options.profileName };
+      }
       return undefined;
     },
     on(name, callback, listenerOptions) {
@@ -254,6 +261,21 @@ test('host: GET /prompt-setting/ping answers 200 JSON', async () => {
   assert.equal(payload.plugin, packageJson.name);
   assert.equal(payload.version, packageJson.version);
   assert.equal(Number.isNaN(Date.parse(payload.time)), false);
+  // g-036: the ping is where the page learns which restart instruction it may
+  // show. A Host with no usable profileContext is `unknown`, never `cli`.
+  assert.equal(payload.launchKind, 'unknown');
+});
+
+test('host: the ping reports the launch shape the official profile names', async () => {
+  for (const [profileName, expected] of [['desktop', 'desktop'], ['web', 'cli'], [undefined, 'unknown']]) {
+    const payload = JSON.parse((await call(mount({ profileName }).route)).body);
+    assert.equal(payload.launchKind, expected, `profile ${String(profileName)}`);
+  }
+  // The three-state enum is the whole contract: no other spelling may appear.
+  for (const profileName of ['desktop', 'web', undefined, 'Desktop', '']) {
+    const payload = JSON.parse((await call(mount({ profileName }).route)).body);
+    assert.ok(['cli', 'desktop', 'unknown'].includes(payload.launchKind), `${String(profileName)} answers an enum value`);
+  }
 });
 
 test('host: a non-GET ping is rejected with 405 and an allow header', async () => {

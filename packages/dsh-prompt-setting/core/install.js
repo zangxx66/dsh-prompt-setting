@@ -782,8 +782,9 @@ export function createInstallTable(options = {}) {
    * The application value is the **whole** verdict: `restart-required` is the
    * only one an upgrade of an already-installed bundle can produce, and it is
    * deliberately **not** turned into a failure — the install worked, the running
-   * process simply still holds the old code, and the page's answer is「请手动重启
-   * dsh web 生效」. Nothing here restarts anything.
+   * process simply still holds the old code, and the page's answer is its restart
+   * copy for this launch shape (g-036, `core/launch-kind.js`). Nothing here
+   * restarts anything.
    * @param requestId - the id that settled.
    * @param result - the `ChangeResult` (or a thrown error, folded by the caller).
    * @returns the settled entry view, or `null` when the id is not known.

@@ -45,11 +45,13 @@
 
 - **高级 / Advanced** —— 旧版覆盖的只读列表、「清除全部覆盖」与「整层恢复默认」两个二次确认按钮、
   **「检查更新」开关**（默认开启；关闭后本插件**完全不再联网**）、**「立即更新」**（把提示条里的版本
-  交给宿主安装，装完需要你**手动重启** `dsh web`），以及完整状态区（挂载情况 / 构建戳 / 渲染器自检）。
+  交给宿主安装，装完需要你**手动重启**：命令行启动就重新运行 `dsh web`，官方桌面端就退出并重新
+  打开 DeepSeek Harness），以及完整状态区（挂载情况 / 构建戳 / 渲染器自检）。
   > A read-only list of legacy overrides, two double-confirm buttons ("clear all overrides", "reset the
   > whole layer"), the **"Check for updates" switch** (on by default; off means this plugin makes **no
   > network request at all**), an **"Update now"** button (the host installs the version the banner named;
-  > you restart `dsh web` yourself), and a full status area (mount state / build fingerprint / renderer
+  > you restart yourself — re-run `dsh web` after a command-line start, or quit and reopen DeepSeek
+  > Harness in the desktop app), and a full status area (mount state / build fingerprint / renderer
   > self-check).
 
 其它特性 / More:
@@ -105,14 +107,20 @@
 
 ## 「立即更新」/ Update now
 
-**装了新版本，重启还是你自己来。** 提示条上的「立即更新」会先弹一次二次确认（写明装完要手动重启），
-确认后由**宿主**通过官方插件管理器把那个 Release 的 `.tgz` 包装进当前 profile。装完页面只会说
-「已安装 vX.Y.Z，请手动重启 `dsh web` 生效」——**这个插件不会重启任何东西**。
+**装了新版本，重启还是你自己来 —— 而且提示会说清怎么重启。** 提示条上的「立即更新」会先弹一次
+二次确认（写明装完要手动重启），确认后由**宿主**通过官方插件管理器把那个 Release 的 `.tgz` 包装进
+当前 profile。装完页面按**启动形态**给对应的一句话：命令行启动的宿主说「已安装 vX.Y.Z，请手动重新
+运行 `dsh web` 生效」；官方桌面端说「请退出并重新打开 DeepSeek Harness 生效」（桌面端用户看不到
+终端，所以这里**不会**出现 `dsh web`）；形态无法判定时给两种形态都读得通的中性文案。
+**这个插件不会重启任何东西。**
 
-> **The new version gets installed; the restart is still yours.** "Update now" opens a second
-> confirmation first (which says the restart is manual); on confirm the **host** installs that
-> release's `.tgz` into the current profile through the official plugin manager. Afterwards the page
-> says "vX.Y.Z is installed — restart dsh web yourself". **Nothing in this plugin restarts anything.**
+> **The new version gets installed; the restart is still yours — and the page says how.** "Update now"
+> opens a second confirmation first (which says the restart is manual); on confirm the **host** installs
+> that release's `.tgz` into the current profile through the official plugin manager. Afterwards the page
+> answers for the **launch shape** it is talking to: a command-line host says "vX.Y.Z is installed —
+> restart `dsh web` yourself", the official desktop app says "quit and reopen DeepSeek Harness" (a
+> desktop user has no terminal, so `dsh web` never appears there), and an undecidable shape falls back to
+> copy both readers can follow. **Nothing in this plugin restarts anything.**
 
 - **装的是什么**：`https://github.com/zangxx66/dsh-prompt-setting/releases/download/<tag>/dsh-prompt-setting-<version>.tgz`，
   `<tag>`/`<version>` 取自**同一次**更新检查（所以「提示的版本 = 安装的版本」，且命中 6 小时缓存时
@@ -244,17 +252,19 @@ pnpm ≥10 默认不运行 git 依赖的构建脚本，第一次会失败并打�
 
 ```bash
 cd packages/dsh-prompt-setting
-node --test                    # 十五个套件（含真实 DSH 包的对照实验，须为 pass 而非 skip）
+node --test                    # 十八个套件（含真实 DSH 包的对照实验，须为 pass 而非 skip）
 node scripts/check-compat.mjs  # 只读兼容性自检：不联网、永不抛、退出码恒 0
 node scripts/prepare.mjs       # prepare 门禁：pnpm 从 git 安装时会自动跑它
 npm pack --dry-run             # 确认发布产物干净（20 个文件、无 test/）
 ```
 
 - **改动怎么生效 / How a change takes effect**：改 `client.js` 什么都不用做（DSH 自带客户端 HMR，
-  已打开的标签页会被热替换）；改 `index.js` / `core/**` **必须重启 `dsh web`**；换包（改名、换 spec、
-  换安装目标）同样必须重启。
+  已打开的标签页会被热替换）；改 `index.js` / `core/**` **必须重启宿主**（命令行启动的宿主就重新
+  运行 `dsh web`，官方桌面端就退出并重新打开 DeepSeek Harness）；换包（改名、换 spec、换安装目标）
+  同样必须重启。
   > `client.js` changes need nothing (DSH ships client HMR, open tabs are hot-swapped); `index.js` /
-  > `core/**` changes **require restarting `dsh web`**; swapping the package itself does too.
+  > `core/**` changes **require restarting the host** (re-run `dsh web` after a command-line start, or
+  > quit and reopen DeepSeek Harness in the desktop app); swapping the package itself does too.
 - **重启的代价 / The cost of a restart**：重启会**终止所有等待确认的会话**，重开标签页找不回来 ——
   宿主半改动请攒批，能在 `client.js` 一侧解决的就别动宿主半。
   > A restart **kills every session waiting for confirmation**, and reopening the tab will not bring it
@@ -263,7 +273,7 @@ npm pack --dry-run             # 确认发布产物干净（20 个文件、无 t
   `构建戳未知`；`data-build-match` 就是它（`unknown` 永远不会被当成过期）。一条命令即可核对：
   > The status card's build fingerprint has three states, and `unknown` is never treated as stale. Check it with:
   ```js
-  await (await fetch('/prompt-setting/ping')).json()   // → clientBuild: {hash, size, mtime}
+  await (await fetch('/prompt-setting/ping')).json()   // → clientBuild: {hash, size, mtime}, launchKind: "cli" | "desktop" | "unknown"
   document.querySelector('[data-plugin="dsh-prompt-setting"]').dataset.buildMatch   // "true" | "false" | "unknown"
   ```
 

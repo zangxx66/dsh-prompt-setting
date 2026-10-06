@@ -1279,8 +1279,10 @@ const FIXTURE_REPOSITORY_URL = 'https://github.com/zangxx66/dsh-prompt-setting';
  * version `index.js` really declares: a fixture that hard-coded one would go on
  * passing after the two copies drifted apart, which is the failure this whole
  * goal exists to prevent. Revision 17 adds `repositoryUrl` to the same body.
+ * @param launchKind - g-036: the launch shape the host reports; `undefined`
+ *   omits the field entirely, which is what a pre-g-036 host answers.
  */
-function pingResponse(clientBuild, version = PLUGIN_VERSION, repositoryUrl = FIXTURE_REPOSITORY_URL) {
+function pingResponse(clientBuild, version = PLUGIN_VERSION, repositoryUrl = FIXTURE_REPOSITORY_URL, launchKind = undefined) {
   return {
     payload: {
       ok: true,
@@ -1291,6 +1293,9 @@ function pingResponse(clientBuild, version = PLUGIN_VERSION, repositoryUrl = FIX
       clientRenderer: 'fallback',
       clientReportedAt: null,
       clientBuild,
+      // g-036: absent for the old-host cases, exactly as a pre-g-036 host
+      // answers. `undefined` is dropped by the JSON stub, which is the point.
+      ...(launchKind === undefined ? {} : { launchKind }),
     },
   };
 }
@@ -6805,7 +6810,14 @@ async function flushApply() {
 }
 
 test('client: the banner carries「立即更新」, disabled while a first install is requested', async () => {
-  const page = makePage({ responses: defaultResponses({ [PATHS.updateCheck]: { payload: updateAvailableWithTag() } }) });
+  // g-036: a command-line host says so on the ping, so this fixture renders the
+  // `cli` copy — the instruction that names `dsh web`.
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.ping]: { payload: { ok: true, launchKind: 'cli' } },
+      [PATHS.updateCheck]: { payload: updateAvailableWithTag() },
+    }),
+  });
   let tree = await page.flush();
   const apply = oneBy(tree, 'data-action', 'update-apply');
   assert.equal(apply.type, 'button');
@@ -6820,7 +6832,7 @@ test('client: the banner carries「立即更新」, disabled while a first insta
   assert.equal(writeCalls(page).length, 0, 'the confirmation writes nothing');
   const text = strings(tree).join(' ');
   assert.match(text, /0\.9\.9/, 'the modal names the version');
-  assert.match(text, /手动重启 dsh web/, 'the modal states that the restart is manual');
+  assert.match(text, /重新运行 dsh web/, 'the modal states the command-line restart (g-036)');
   assert.equal(
     urlsFor(page, PATHS.updateApply).length,
     1,
@@ -6831,6 +6843,8 @@ test('client: the banner carries「立即更新」, disabled while a first insta
 test('client: confirming starts the install — one POST, then polling, then the manual-restart line', async () => {
   const page = makePage({
     responses: defaultResponses({
+      // g-036: the command-line copy, so the settled sentence names `dsh web`.
+      [PATHS.ping]: { payload: { ok: true, launchKind: 'cli' } },
       [PATHS.updateCheck]: { payload: updateAvailableWithTag() },
       [PATHS.updateApply]: installRoute(applyStatus()),
     }),
@@ -6879,7 +6893,7 @@ test('client: confirming starts the install — one POST, then polling, then the
   assert.equal(oneBy(tree, 'data-update-apply-status', 'done').props['data-region'], 'update-apply-status');
   const done = strings(tree).join(' ');
   assert.match(done, /已安装 v0\.9\.9/);
-  assert.match(done, /手动重启 dsh web/);
+  assert.match(done, /重新运行 dsh web/, 'the command-line restart instruction (g-036)');
   assert.equal(
     collect(tree, (node) => node.props && node.props['data-action'] === 'update-apply-cancel').length,
     0,
@@ -6985,6 +6999,9 @@ test('client: a remembered finished install keeps its verdict, and never re-offe
   // for a version that is already installed.
   const page = makePage({
     responses: defaultResponses({
+      // g-036: an old-style command-line host, so the settled sentence is the
+      // one that names `dsh web`.
+      [PATHS.ping]: { payload: { ok: true, launchKind: 'cli' } },
       [PATHS.updateCheck]: { payload: updateAvailableWithTag() },
       [PATHS.updateApply]: (url, init) =>
         init && init.method === 'POST'
@@ -7011,7 +7028,7 @@ test('client: a remembered finished install keeps its verdict, and never re-offe
   const tree = await page.flush();
 
   assert.match(strings(tree).join(' '), /已安装 v0\.9\.9/, 'the installed version is still reported');
-  assert.match(strings(tree).join(' '), /手动重启 dsh web/, 'and so is the manual restart');
+  assert.match(strings(tree).join(' '), /重新运行 dsh web/, 'and so is the command-line restart (g-036)');
   assert.equal(
     collect(tree, (node) => node.props && node.props['data-action'] === 'update-apply').length,
     0,
@@ -7068,9 +7085,13 @@ test('client: a live install keeps its controls after the update switch is turne
 test('client: 「already installed」 is a success with no poll and no second button', async () => {
   // The real desktop case: the profile already held the exact asset, so the host
   // answers a finished `restart-required` and never calls the package manager.
-  // The page must say「该版本已安装，请手动重启」— not a failure, and not a spinner.
+  // The page must say「该版本已安装，请退出并重新打开 DeepSeek Harness」— not a
+  // failure, and not a spinner. g-036: a desktop host says so on the ping, and
+  // that copy must not tell the user to run `dsh web` in a terminal they do not
+  // have.
   const page = makePage({
     responses: defaultResponses({
+      [PATHS.ping]: { payload: { ok: true, launchKind: 'desktop' } },
       [PATHS.updateCheck]: { payload: updateAvailableWithTag() },
       [PATHS.updateApply]: (url, init) =>
         init && init.method === 'POST'
@@ -7101,7 +7122,8 @@ test('client: 「already installed」 is a success with no poll and no second bu
   tree = page.draw();
 
   assert.match(strings(tree).join(' '), /已安装/, 'the notice says it is already installed');
-  assert.match(strings(tree).join(' '), /手动重启 dsh web/);
+  assert.match(strings(tree).join(' '), /退出并重新打开 DeepSeek Harness/, 'the desktop restart instruction (g-036)');
+  assert.doesNotMatch(strings(tree).join(' '), /dsh web/, 'a desktop user has no terminal to run `dsh web` in');
   assert.equal(oneBy(tree, 'data-update-apply-status', 'done').props['data-region'], 'update-apply-status');
   assert.equal(
     collect(tree, (node) => node.props && node.props['data-action'] === 'update-apply').length,
@@ -7222,6 +7244,101 @@ test('client: every install marker carries a value the contract enumerates', asy
   );
 });
 
+/** A settled `restart-required` install: the state that carries the restart copy. */
+function settledInstallStatus() {
+  return applyStatus({
+    phase: 'done',
+    status: 'done',
+    application: 'restart-required',
+    restartRequired: true,
+    installed: true,
+    cancellable: false,
+    finishedAt: '2024-06-01T00:02:00.000Z',
+  });
+}
+
+test('client: the restart copy follows the launch shape the ping reported (g-036)', async () => {
+  // One state, three readers: the same settled `restart-required` install must
+  // read as an instruction each reader can carry out. The command line names
+  // `dsh web`; the desktop app says quit and reopen (and never mentions `dsh
+  // web`, because that user has no terminal); a shape the host could not decide
+  // — and an old host that never sent the field at all — gets copy that works in
+  // both places.
+  const cases = [
+    { launchKind: 'cli', marker: 'cli', expects: /重新运行 dsh web/, forbidden: null },
+    { launchKind: 'desktop', marker: 'desktop', expects: /退出并重新打开 DeepSeek Harness/, forbidden: /dsh web/ },
+    { launchKind: undefined, marker: 'unknown', expects: /手动重启 DSH/, forbidden: /dsh web/ },
+  ];
+  for (const expected of cases) {
+    const page = makePage({
+      responses: defaultResponses({
+        [PATHS.ping]: pingResponse(null, PLUGIN_VERSION, null, expected.launchKind),
+        [PATHS.updateCheck]: { payload: updateAvailableWithTag() },
+        [PATHS.updateApply]: installRoute(settledInstallStatus()),
+      }),
+    });
+    let tree = await page.flush();
+    assert.equal(markerOf(tree, 'data-launch-kind'), expected.marker, `the page announces the ${expected.marker} shape`);
+
+    clickButton(tree, { 'data-action': 'update-apply' });
+    tree = page.draw();
+    const modal = strings(oneBy(tree, 'data-region', 'confirm')).join(' ');
+    assert.match(modal, expected.expects, `the confirmation copy is the ${expected.marker} one`);
+    if (expected.forbidden !== null) {
+      assert.doesNotMatch(modal, expected.forbidden, `the ${expected.marker} confirmation may not name a terminal command`);
+    }
+
+    clickButton(tree, { 'data-action': 'confirm-yes' });
+    await flushApply();
+    tree = page.draw();
+    const settled = strings(oneBy(tree, 'data-region', 'update-apply-status')).join(' ');
+    assert.match(settled, expected.expects, `the settled line is the ${expected.marker} copy`);
+    if (expected.forbidden !== null) {
+      assert.doesNotMatch(settled, expected.forbidden, `the ${expected.marker} settled line may not name a terminal command`);
+    }
+  }
+});
+
+test('client: an old host without launchKind renders the shape-neutral copy, never a blank', async () => {
+  // Backward compatibility, asserted two ways: a host that answered without the
+  // field and a host whose ping never arrived must both fall back to the same
+  // neutral sentence — non-empty, and free of the strings a missing key would
+  // put on screen.
+  const copyFor = async (pingEntry) => {
+    const page = makePage({
+      responses: defaultResponses({
+        [PATHS.ping]: pingEntry,
+        [PATHS.updateCheck]: { payload: updateAvailableWithTag() },
+        [PATHS.updateApply]: installRoute(settledInstallStatus()),
+      }),
+    });
+    let tree = await page.flush();
+    clickButton(tree, { 'data-action': 'update-apply' });
+    tree = page.draw();
+    const modal = strings(oneBy(tree, 'data-region', 'confirm')).join(' ');
+    clickButton(tree, { 'data-action': 'confirm-yes' });
+    await flushApply();
+    tree = page.draw();
+    return { marker: markerOf(tree, 'data-launch-kind'), modal, page: strings(tree).join(' ') };
+  };
+  const oldHost = await copyFor(pingResponse(null, PLUGIN_VERSION, null));
+  const failedPing = await copyFor(new Error('Failed to fetch'));
+
+  for (const answer of [oldHost, failedPing]) {
+    assert.equal(answer.marker, 'unknown', 'an unanswered shape is unknown, never cli');
+    assert.match(answer.modal, /手动重启 DSH/, 'the fallback still says what to do');
+    assert.match(answer.page, /手动重启 DSH/);
+    assert.doesNotMatch(answer.modal, /dsh web/, 'the fallback is what an undecidable desktop host also sees');
+    assert.doesNotMatch(answer.modal, /undefined|\[object Object\]/, 'no copy key may render as a missing value');
+    assert.doesNotMatch(answer.page, /undefined|\[object Object\]/);
+  }
+  assert.equal(
+    oldHost.modal,
+    failedPing.modal,
+    'an omitted field and a failed ping render the same restart sentence',
+  );
+});
+
 test('client: the install copy exists in both dictionaries and never promises an automatic restart', async () => {
   const page = makePage({ responses: defaultResponses({ [PATHS.updateCheck]: { payload: updateAvailableWithTag() } }) });
   const zh = page.zh;
@@ -7232,12 +7349,40 @@ test('client: the install copy exists in both dictionaries and never promises an
   }
   assert.match(zh.updateApplyBody, /不自动重启/);
   assert.match(zh.updateApplyRestartNote, /手动重启/);
+  // g-036: every copy family that carries a restart instruction exists in all
+  // three shapes — the bare `unknown` key, `Cli` and `Desktop` — in **both**
+  // dictionaries, and each shape's text is what that reader can actually do:
+  // the CLI names `dsh web`, the desktop app never mentions it (that user has no
+  // terminal), and the shape-neutral fallback an old host gets names neither.
+  const COPY_FAMILIES = ['updateApplyRestartNote', 'updateApplyDone', 'updateApplyAlready', 'updateApplyUnknown'];
+  for (const family of COPY_FAMILIES) {
+    for (const suffix of ['', 'Cli', 'Desktop']) {
+      const key = `${family}${suffix}`;
+      assert.equal(typeof zh[key], 'string', `zh.${key} exists`);
+      assert.equal(typeof en[key], 'string', `en.${key} exists`);
+    }
+    assert.match(zh[`${family}Cli`], /重新运行 dsh web/, `zh.${family}Cli names the command-line restart`);
+    assert.match(en[`${family}Cli`], /dsh web/, `en.${family}Cli names the command-line restart`);
+    assert.match(zh[`${family}Desktop`], /退出并重新打开 DeepSeek Harness/, `zh.${family}Desktop names the desktop restart`);
+    assert.match(en[`${family}Desktop`], /quit and reopen DeepSeek Harness/i, `en.${family}Desktop names the desktop restart`);
+    assert.doesNotMatch(zh[`${family}Desktop`], /dsh web/, `zh.${family}Desktop must not name a terminal command`);
+    assert.doesNotMatch(en[`${family}Desktop`], /dsh web/, `en.${family}Desktop must not name a terminal command`);
+    // The fallback is what an old host (no `launchKind`) and an undecidable
+    // profile render, so a desktop user can see it: it may not name `dsh web`.
+    assert.doesNotMatch(zh[family], /dsh web/, `zh.${family} is the shape-neutral fallback`);
+    assert.doesNotMatch(en[family], /dsh web/, `en.${family} is the shape-neutral fallback`);
+  }
   // No string anywhere in either dictionary may promise a restart the page does.
   for (const table of [zh, en]) {
     for (const [key, value] of Object.entries(table)) {
       if (typeof value !== 'string') continue;
       assert.equal(
         /自动重启/.test(value) && !/不自动重启/.test(value),
+        false,
+        `${key} must not promise an automatic restart`,
+      );
+      assert.equal(
+        /automatic restart/.test(value) && !/no automatic restart/.test(value),
         false,
         `${key} must not promise an automatic restart`,
       );

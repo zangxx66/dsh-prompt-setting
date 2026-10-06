@@ -90,6 +90,7 @@ import {
   resolveInstallTarget,
   summarizeDiagnostic,
 } from './core/install.js';
+import { launchKindOf } from './core/launch-kind.js';
 import { buildDiff } from './core/diff.js';
 import {
   INTERPOLATE_STATES,
@@ -2474,7 +2475,7 @@ function mount(ctx, config, cleanups) {
     // returned instead, which is also what the page should be polling.
     const running = installTable.active();
     if (running !== null) {
-      return { ok: true, reused: true, status: publicInstallStatus(running) };
+      return { ok: true, reused: true, status: publicInstallStatus(running), launchKind: launchKindOf(ctx) };
     }
     const service = installService();
     const profileDir = service === null ? null : installProfileDir(service);
@@ -2513,11 +2514,17 @@ function mount(ctx, config, cleanups) {
         reused: false,
         alreadyInstalled: true,
         status: publicInstallStatus(installTable.read(entry.requestId)),
+        launchKind: launchKindOf(ctx),
       };
     }
     const entry = installTable.begin({ tag: target.tag, version: target.version, url: target.url });
     void runInstall(entry.requestId, { service, target });
-    return { ok: true, reused: false, status: publicInstallStatus(installTable.read(entry.requestId)) };
+    return {
+      ok: true,
+      reused: false,
+      status: publicInstallStatus(installTable.read(entry.requestId)),
+      launchKind: launchKindOf(ctx),
+    };
   }
 
   /**
@@ -2532,7 +2539,8 @@ function mount(ctx, config, cleanups) {
    *
    * Nothing here restarts anything. `ChangeResult.application` is the verdict
    * the page is told about, and `restart-required` is a **success** whose
-   * instruction is「请手动重启 dsh web 生效」.
+   * instruction is selected by the launch shape on the page (g-036: re-run
+   * `dsh web`, or quit and reopen DeepSeek Harness).
    * @param requestId - the tracked request.
    * @param context - `{service, target}`.
    */
@@ -2615,7 +2623,7 @@ function mount(ctx, config, cleanups) {
       // polling the install it can no longer name. It can only ever name a
       // request this mount started.
       const live = installTable.oldestLive();
-      return { ok: true, status: live === null ? null : publicInstallStatus(live) };
+      return { ok: true, status: live === null ? null : publicInstallStatus(live), launchKind: launchKindOf(ctx) };
     }
     if (requestId.trim().length === 0) {
       throw new OverrideError('invalid-request', 'query parameter "requestId" must not be empty');
@@ -2623,7 +2631,7 @@ function mount(ctx, config, cleanups) {
     if (requestId.length > 128) {
       throw new OverrideError('invalid-request', '"requestId" is too long to be one of ours');
     }
-    return { ok: true, status: publicInstallStatus(installTable.read(requestId.trim())) };
+    return { ok: true, status: publicInstallStatus(installTable.read(requestId.trim())), launchKind: launchKindOf(ctx) };
   }
 
   /**
@@ -2646,12 +2654,12 @@ function mount(ctx, config, cleanups) {
     }
     const entry = installTable.read(requestId);
     if (entry.known !== true) {
-      return { ok: false, code: 'not-running', status: publicInstallStatus(entry) };
+      return { ok: false, code: 'not-running', status: publicInstallStatus(entry), launchKind: launchKindOf(ctx) };
     }
     if (entry.cancellable !== true) {      // Settled, or past the point of no return. Saying so is the useful answer;
       // pretending to cancel a finished install would be a lie the next poll
       // would contradict.
-      return { ok: false, code: 'not-running', status: publicInstallStatus(entry) };
+      return { ok: false, code: 'not-running', status: publicInstallStatus(entry), launchKind: launchKindOf(ctx) };
     }
     installTable.markCancelling(requestId);
     const service = installService();
@@ -2665,7 +2673,12 @@ function mount(ctx, config, cleanups) {
           // the install running; the poll still reports the truth.
         });
     }
-    return { ok: true, code: 'cancelling', status: publicInstallStatus(installTable.read(requestId)) };
+    return {
+      ok: true,
+      code: 'cancelling',
+      status: publicInstallStatus(installTable.read(requestId)),
+      launchKind: launchKindOf(ctx),
+    };
   }
 
   /**
@@ -2680,6 +2693,10 @@ function mount(ctx, config, cleanups) {
       ok: false,
       code: typeof code === 'string' && code.length > 0 ? code : REFUSAL_SERVICE_MISSING,
       message: typeof message === 'string' && message.length > 0 ? message : 'the update could not be started',
+      // g-036: a refusal is still an `update-apply` answer, so it carries the
+      // same launch shape as a started install — one response shape per route,
+      // whatever the verdict.
+      launchKind: launchKindOf(ctx),
       ...(manual === undefined || manual === null ? {} : { manual }),
     };
   }
@@ -3140,6 +3157,12 @@ function mount(ctx, config, cleanups) {
                 clientRenderer: report.renderer,
                 clientReportedAt: report.reportedAt,
                 clientBuild: clientBuildInfo(CLIENT_BUNDLE_PATH),
+                // g-036: which shape this Host was started in, so the page picks
+                // a restart instruction its reader can actually carry out
+                // (`core/launch-kind.js`). An unreadable profile answers
+                // `'unknown'`, which the page renders as a copy both shapes can
+                // follow — never as the command-line one.
+                launchKind: launchKindOf(ctx),
               });
               return;
             }

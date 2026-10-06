@@ -364,6 +364,9 @@ test('host: GET /prompt-setting/ping reports the renderer and the live client bu
     'clientBuild',
     'clientRenderer',
     'clientReportedAt',
+    // g-036: the launch shape the page selects its restart copy with. This
+    // mount names no profile, so the enum's third state is the honest one.
+    'launchKind',
     'ok',
     'plugin',
     // Revision 17: the repository URL the page links the version to, derived
@@ -374,6 +377,7 @@ test('host: GET /prompt-setting/ping reports the renderer and the live client bu
   ]);
   assert.equal(payload.ok, true);
   assert.equal(payload.clientRenderer, null);
+  assert.equal(payload.launchKind, 'unknown');
 
   // The stamp is the digest of the bytes on disk *now*, so an independent
   // recomputation of the real file must agree field for field — a constant, a
