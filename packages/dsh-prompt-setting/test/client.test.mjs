@@ -837,7 +837,7 @@ function updateFixture(over = {}) {
   return {
     ok: true,
     enabled: true,
-    current: '0.1.3',
+    current: '0.1.4',
     latest: null,
     hasUpdate: false,
     releaseUrl: null,
@@ -985,8 +985,8 @@ function exportFixture(over = {}) {
     schema: 'dsh-prompt-setting/export',
     version: 1,
     exportedAt: '2024-01-02T10:00:00.000Z',
-    plugin: { name: 'dsh-prompt-setting', version: '0.1.3' },
-    pluginVersion: '0.1.3',
+    plugin: { name: 'dsh-prompt-setting', version: '0.1.4' },
+    pluginVersion: '0.1.4',
     layers: {
       user: {
         layer: 'user',
@@ -6568,7 +6568,7 @@ test('client: a newer release renders a dismissible banner carrying the version 
   assert.equal(link.props.rel, 'noreferrer noopener');
   // The banner says both versions, so「latest」is never mistaken for the build.
   assert.match(strings(tree).join(' '), /0\.9\.9/);
-  assert.match(strings(tree).join(' '), /0\.1\.3/);
+  assert.match(strings(tree).join(' '), /0\.1\.4/);
 
   clickButton(tree, { 'data-action': 'update-dismiss' });
   tree = page.draw();

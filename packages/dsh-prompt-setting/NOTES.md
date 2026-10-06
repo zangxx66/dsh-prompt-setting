@@ -5397,3 +5397,40 @@ if (installed.length !== 1 || target === void 0) throw new ManagementFailure("am
 - **真机已验（2026-10-05，负责人目视）**：宿主 `pid 35408` 于 `15:59:41` 重启（晚于提交 `6bffafc`）后加载
   `PLUGIN_VERSION = '0.1.3'`，设置页标题旁版本号显示 OK ⇒「宿主半改动需重启才生效」这条既有事实本次照常兑现
   （旧 `pid 12871` 是 13:51 启动、跑 0.1.2 代码的宿主）。
+
+## 111. 版本号 `0.1.3` → `0.1.4`：同步点与白名单依据（g-037，2026-10-06，基线 `73c3ed2` 工作区）
+
+### 一、同步的「本包当前发布版本」（18 处 / 9 文件）
+- `package.json` 的 `version`、`index.js` 的 `PLUGIN_VERSION`；
+- `CONTRACT.md` 5 处：§10 export 示例 2 处（`plugin.version` / `pluginVersion`）、§13.8 版本节点文案（`v0.1.4`）、
+  §13.9 ping 示例的 `version`、§17 update-check 示例的 `current`；
+- 两份根 README 4 处：徽章各 1 处 + CHANGELOG 行表述各 1 处（`currently 0.1.4` / `当前 0.1.4`）；
+- 测试硬字面量 7 处：`test/stage2.test.mjs` export 断言 2 处、`test/client.test.mjs` update-check fixture 的
+  `current` 1 处 + export fixture 2 处 + banner 渲染断言 `/0\.1\.4/` 1 处、`test/update.test.mjs` ping 断言 1 处。
+- **升版盲点（下次务必照做）**：banner 渲染断言在源码里是**转义正则**（`/0\.1\.3/`），普通 `grep '0.1.3'`
+  命中不到（§110 的清单记了它，但机械 grep 会漏）。本轮首次全量测试正是漏改这一处 ⇒ 579 pass / **1 fail**；
+  升版扫描必须同时跑 `grep -rnF '0\.1\.'`，或直接跑全量测试兜底。
+
+### 二、白名单判断依据（一律未动）
+- `CHANGELOG.md` 的 `[0.1.3]` 及更早历史段、`NOTES.md` 历史叙述（含 §110 的 `0.1.3` 记录）、`.dsh-graph/**`、
+  `docs/prompt-variables.md`：历史记录；
+- `core/install.js:171` 的「announce `0.1.3` and install `0.1.2`」：**故意让两个版本号不同**才说明
+  「宣布的版本与安装的版本必须同源」；改成同一个数反而失去示例意义 ⇒ 保留；
+- `core/update.js` / `core/install.js:128` / `CONTRACT.md` 的 tag 形态举例（`v0.1.2`）、`test/update.test.mjs`
+  的 semver 比较数据与 `currentVersion` 默认值 `0.1.1`：与「本包当前版本」无关（§110 已裁定）。
+
+### 三、CHANGELOG 定稿
+新增 `## [0.1.4] - 2026-10-06`（中英对照）。本段**不含用户可感知的行为变更**：本版功能改动 g-036（重启提示
+按启动形态分区）截稿时仍在 `collecting`、尚未落地，故条目只记版本号同步，并声明运行时行为与 `0.1.3` 相同。
+`[0.1.3]` 及更早段一字未动。
+
+### 四、验收
+- `cd packages/dsh-prompt-setting && node --test`：**580 pass / 0 fail / skipped 0**（与 0.1.3 基线 580 一致，
+  无断言削弱）；
+- 负向对照（天然红证据）：漏改 banner 断言时全量 **579 pass / 1 fail**（`client.test.mjs:6571` 期望
+  `/0\.1\.3/`、实际渲染 `0.1.4`）⇒ 版本断言确实钉住「当前版本」，非空转；
+- `npm pack` ⇒ **`dsh-prompt-setting-0.1.4.tgz`**：**23 文件**、`test/` 命中 **0**、`core/install.js` 在包内、
+  `test/install.test.mjs` 不在包内；包内 `package.json.version` 与 `index.js` 的 `PLUGIN_VERSION` 均为
+  `0.1.4`；`prepare` 自检 **19 项通过**；体积 **≈499 KB**（**不要记精确字节数**：`NOTES.md` 在 `files`
+  白名单内，本节每修一次字，包体就跟着变——首测 498280 B（本节写入前）⇒ 本节写入后 499026 B）。
+- 全仓 `0.1.3` 残留：仅上述白名单（见二），无其它位置把 `0.1.3` 当作当前版本。

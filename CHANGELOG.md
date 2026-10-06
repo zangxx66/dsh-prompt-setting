@@ -10,6 +10,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
+## [0.1.4] - 2026-10-06
+
+**发布准备版本：插件自报版本切到 `0.1.4`；本段不含用户可感知的行为变更 / Release-prep release: the
+plugin reports `0.1.4`; this entry carries no user-visible behaviour change.**
+
+### Changed 变更
+
+- **版本号 `0.1.3` → `0.1.4`**：同步表示「本包当前发布版本」的每一处——本包 `package.json` 的 `version`、
+  宿主的 `PLUGIN_VERSION`、`CONTRACT.md` 里的响应与示例、两份根 README 的徽章与「当前版本」表述，以及
+  测试中表示本包版本的硬字面量。**运行时行为零变化**：路由、响应形状、落盘内容与页面表现都与 `0.1.3`
+  相同；`npm publish` / `git tag` / `git push` 仍是人工 gate，不在本次变更内。
+  **Version `0.1.3` → `0.1.4`**: every place that states "the version this package currently publishes" was
+  moved together — this package's `package.json`, the host's `PLUGIN_VERSION`, the responses and examples in
+  `CONTRACT.md`, the badges and "currently" lines in both root READMEs, and the test literals that assert the
+  package version. **Runtime behaviour is unchanged**: routes, response shapes, stored content and page
+  rendering are identical to `0.1.3`. `npm publish`, `git tag` and `git push` remain manual gates and are not
+  part of this change.
+
+---
+
 ## [0.1.3] - 2026-10-05
 
 **功能版本：时间戳全面按读者时区呈现（显示与导出文件名）/ Feature release: every timestamp is rendered
