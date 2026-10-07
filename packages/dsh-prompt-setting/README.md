@@ -216,25 +216,53 @@ zstd -dc "$F" | jq -r 'select(.type=="system/message") | .data.message.content[0
 
 ## 安装 / Install
 
-用 DSH 的 plugin manager 以**绝对路径**安装本目录（**不要**手工编辑 profile 配置文件）：
-需要 DSH `>= 0.1.7-rc.2 < 0.2.0 || >= 0.2.0-0 < 0.2.1-0`：`0.1.7-rc.2` 起的 0.1.x、`0.2.0` 的全部预发布
+**首选从 npm 装**（本包已发布，npm 上的当前版本是 `0.1.5`，`latest`）。需要 DSH
+`>= 0.1.7-rc.2 < 0.2.0 || >= 0.2.0-0 < 0.2.1-0`：`0.1.7-rc.2` 起的 0.1.x、`0.2.0` 的全部预发布
 （`0.2.0-0` / `alpha` / `beta` / `rc.N`）与 **`0.2.0` 正式版**都在范围内；`0.2.1-0` 及以后出界。
 
-> Install this directory by **absolute path** with DSH's plugin manager (**do not** hand-edit profile
-> config files). Requires DSH `>= 0.1.7-rc.2 < 0.2.0 || >= 0.2.0-0 < 0.2.1-0`: every 0.1.x from
-> `0.1.7-rc.2` on, every `0.2.0` prerelease (`0.2.0-0`, `alpha`, `beta`, `rc.N`) and the **`0.2.0` release
-> itself** are in range; `0.2.1-0` and later are out.
+> **Install from npm** — the primary route (this package is published; npm `latest` is `0.1.5`). Requires
+> DSH `>= 0.1.7-rc.2 < 0.2.0 || >= 0.2.0-0 < 0.2.1-0`: every 0.1.x from `0.1.7-rc.2` on, every `0.2.0`
+> prerelease (`0.2.0-0`, `alpha`, `beta`, `rc.N`) and the **`0.2.0` release itself** are in range;
+> `0.2.1-0` and later are out.
+
+```sh
+dsh plugin --profile <profile> add dsh-prompt-setting
+```
+
+Web GUI 的 profile 名是 `web`；也可以走 GUI 的 Plugins 页（侧边栏 → Plugins → Add plugin），spec 直接填
+包名 `dsh-prompt-setting`，或在会话里让 Creator 模式的 AI 调用：
+
+> The Web GUI's profile is `web`; or use the GUI's Plugins page (sidebar → Plugins → Add plugin) and type the
+> package name `dsh-prompt-setting`, or have the agent call this in Creator mode:
+
+```
+plugin_manager(action: "install_bundle", target: "dsh-prompt-setting")
+```
+
+**不要**手工编辑 profile 配置文件。
+
+> **Do not** hand-edit profile config files.
+
+### 开发与离线安装 / Development and offline installs
+
+以下三条供**开发 / 离线 / 备用**使用：本地目录（绝对路径；装成 `link:`——插件的「立即更新」会刻意拒绝把它
+覆盖成发布版本，这种安装请用 `git pull` 更新）、GitHub（本仓库是 monorepo，**必须带 `#path:`**）、以及 tarball：
+
+> The three routes below are for **development / offline / fallback** use: a local directory (absolute path;
+> installed as `link:` — the plugin's "Update now" deliberately refuses to overwrite it with a published
+> version, so update such an install with `git pull`), GitHub (this repository is a monorepo, so the
+> **`#path:` part is required**), and a tarball:
 
 ```
 plugin_manager(action: "install_bundle", target: "<绝对路径 absolute path>/packages/dsh-prompt-setting")
 ```
 
-也可以直接从 GitHub 装（本仓库是 monorepo，**必须带 `#path:`**）：
-
-> Or install straight from GitHub — this repository is a monorepo, so the **`#path:` part is required**:
-
 ```sh
-dsh plugin --profile demo add 'github:zangxx66/dsh-prompt-setting#path:/packages/dsh-prompt-setting'
+dsh plugin --profile <profile> add 'github:zangxx66/dsh-prompt-setting#path:/packages/dsh-prompt-setting'
+
+# 离线：先在包目录里打包，再装 tarball / offline: pack first, then add the tarball
+cd packages/dsh-prompt-setting && pnpm pack
+dsh plugin --profile <profile> add '<absolute path to the .tgz>'
 ```
 
 pnpm ≥10 默认不运行 git 依赖的构建脚本，第一次会失败并打印一个**确切的包键**；把它复制进该 profile 的
@@ -261,7 +289,7 @@ cd packages/dsh-prompt-setting
 node --test                    # 十八个套件（含真实 DSH 包的对照实验，须为 pass 而非 skip）
 node scripts/check-compat.mjs  # 只读兼容性自检：不联网、永不抛、退出码恒 0
 node scripts/prepare.mjs       # prepare 门禁：pnpm 从 git 安装时会自动跑它
-npm pack --dry-run             # 确认发布产物干净（20 个文件、无 test/）
+npm pack --dry-run             # 确认发布产物干净（24 个文件、无 test/）
 ```
 
 - **改动怎么生效 / How a change takes effect**：改 `client.js` 什么都不用做（DSH 自带客户端 HMR，

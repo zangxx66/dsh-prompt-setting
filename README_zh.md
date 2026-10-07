@@ -88,7 +88,14 @@ DSH 每轮会话都会注入一段由 `@deepseek-ai/dsh-system-prompt` 装配出
 0.1.x、`0.2.0` 的全部预发布（`0.2.0-0` / `alpha` / `beta` / `rc.N`）以及 **`0.2.0` 正式版本身**都在范围内；
 `0.2.1-0` 及以后一律出界——新的 minor 未经评估不放行）。跑测试和开发才需要 Node `>= 22`。
 
-三条路，装进的都是**同一个 profile 里的同一个包**——同样的 profile 文件、同样的包管理器、同样的日志，
+**首选从 npm 装**（本包已发布，npm 上的当前版本是 `0.1.5`，`latest`）：
+
+```sh
+dsh plugin --profile <profile 名> add dsh-prompt-setting
+```
+
+Web GUI 的 profile 名是 `web`。git/GitHub、本地工作树、tarball 三条是**开发 / 离线 / 备用**路径。
+四条路装进的都是**同一个 profile 里的同一个包**——同样的 profile 文件、同样的包管理器、同样的日志，
 按手边有什么挑一条即可（**不要**手工编辑 profile 配置文件）。
 
 ### GUI 自带的插件管理页（不用终端）
@@ -98,13 +105,13 @@ DSH 每轮会话都会注入一段由 `@deepseek-ai/dsh-system-prompt` 装配出
 
 1. 侧边栏 → **Plugins** → **Add plugin**；
 2. 填一个和 `dsh plugin add` 同形的 spec，点 **Install**：
-   - **本地路径**——本仓库插件目录的绝对路径：
+   - **npm 包名**——`dsh-prompt-setting`（**首选**，直接装 registry 上的最新版）；
+   - **本地路径**——本仓库插件目录的绝对路径（**开发用**）：
      `<仓库绝对路径>/packages/dsh-prompt-setting`（先克隆/下载仓库；相对路径会被拒，因为「宿主的工作目录」
      对浏览器里输入的人没有意义）；
    - **git 地址**——`github:zangxx66/dsh-prompt-setting#path:/packages/dsh-prompt-setting`
-     （本仓库是 monorepo，`#path:` 必带）；
-   - **npm 包名**——`dsh-prompt-setting`（发布到 npm 之后）；
-   - **tarball**——磁盘上或 http(s) 上的 `dsh-prompt-setting-<版本>.tgz`；
+     （本仓库是 monorepo，`#path:` 必带；**开发/备用**）；
+   - **tarball**——磁盘上或 http(s) 上的 `dsh-prompt-setting-<版本>.tgz`（**离线/备用**）；
 3. **宿主会先读一遍 spec 再动手**（名字、版本、一句话简介、这包到底带不带 bundle 补丁），读不出来就只在输入框下
    给一句说明、不装；通过后 pnpm 的输出折叠在 **Show install details** 里，随时可 **Cancel install**，失败或取消都会
    把 profile 文件恢复原样；
@@ -138,16 +145,16 @@ plugin_manager(action: "install_bundle", target: "github:zangxx66/dsh-prompt-set
 Web GUI 的 profile 名是 `web`：
 
 ```sh
-# 从 npm 装（发布之后）
+# 从 npm 装（首选）
 dsh plugin --profile web add dsh-prompt-setting
 
-# 直接从 GitHub 装——不用先克隆；本仓库是 monorepo，#path: 必带
+# 直接从 GitHub 装——开发/备用；不用先克隆；本仓库是 monorepo，#path: 必带
 dsh plugin --profile web add 'github:zangxx66/dsh-prompt-setting#path:/packages/dsh-prompt-setting'
 
-# 装本地工作树（绝对路径；装成 link:）
+# 装本地工作树——开发用（绝对路径；装成 link:）
 dsh plugin --profile web add '<仓库绝对路径>/packages/dsh-prompt-setting'
 
-# 装 tarball——先在插件目录里打包，行为完全一致
+# 装 tarball——离线/备用；先在插件目录里打包，行为完全一致
 cd packages/dsh-prompt-setting && pnpm pack
 dsh plugin --profile web add '<刚打出的 .tgz 绝对路径>'
 ```
@@ -228,14 +235,14 @@ cd packages/dsh-prompt-setting
 # 语法检查
 node --check index.js && node --check client.js && for f in core/*.js scripts/*.mjs; do node --check "$f"; done
 
-node --test                    # 十四个套件；集成套件用真 DSH 包跑对照实验，须为 pass（非 skip）
+node --test                    # 十八个套件；集成套件用真 DSH 包跑对照实验，须为 pass（非 skip）
 node scripts/check-compat.mjs  # 只读兼容性自检（不联网、永不抛、退出码恒 0）
 node scripts/prepare.mjs       # prepare 门禁：从 git 安装时 pnpm 会自动跑它（不通过则 exit 1）
-npm pack --dry-run             # 确认发布产物干净（21 个文件、无 test/、无 .dsh-graph）
+npm pack --dry-run             # 确认发布产物干净（24 个文件、无 test/、无 .dsh-graph）
 ```
 
-最近一次在本机跑的结果：`node --test` **480 项断言全部通过、0 skipped**（含集成套件 31 项），
-`npm pack --dry-run` 21 个文件（2026-10-02 实测）。
+最近一次在本机跑的结果：`node --test` **634 项全部通过、0 skipped**（含集成套件 31 项），
+`npm pack --dry-run` 24 个文件（2026-10-08 实测）。
 
 要点：
 
@@ -273,7 +280,7 @@ DSH 升级后插件没出现、终端也没报错时，先跑 `node scripts/chec
 | [`packages/dsh-prompt-setting/README.md`](./packages/dsh-prompt-setting/README.md) | 使用者 / 开发者 | 包简介与功能（中英对照）、安装、维护者要点、出问题时怎么办 |
 | [`CONTRACT.md`](./packages/dsh-prompt-setting/CONTRACT.md) | 开发者 | 冻结的 REST 契约：字段、动作枚举、字段上限、每一个 4xx |
 | [`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) | 开发者 | 设计取舍与实测记录（含未验证项与已推翻的旧结论） |
-| [`CHANGELOG.md`](./CHANGELOG.md) | 使用者 / 开发者 | 每个版本的用户可感知变更（中英对照；当前 0.1.5，尚未发布） |
+| [`CHANGELOG.md`](./CHANGELOG.md) | 使用者 / 开发者 | 每个版本的用户可感知变更（中英对照；已发布，npm 上的当前版本为 `0.1.5`（`latest`）） |
 
 ## 九、状态与路线图
 

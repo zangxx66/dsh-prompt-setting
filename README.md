@@ -105,8 +105,16 @@ can follow. **Nothing here restarts anything.**
 itself** are in range; `0.2.1-0` and everything after it are out, because a new minor is unverified). Node
 `>= 22` is needed only to run the tests or to develop.
 
-Three ways in. All of them put **this package into one DSH profile** — the same profile files, the same
-package manager, the same log — so pick by what you have at hand. Do not hand-edit profile config files.
+**The registry is the primary way in** (this package is published; npm `latest` is `0.1.5`):
+
+```sh
+dsh plugin --profile <name> add dsh-prompt-setting
+```
+
+The Web GUI's profile is `web`. The other three routes — git/GitHub, a local checkout, a tarball — are the
+**development / offline / fallback** ones. All four routes put **this package into one DSH profile** — the
+same profile files, the same package manager, the same log — so pick by what you have at hand. Do not
+hand-edit profile config files.
 
 ### The GUI's own Plugins page (no terminal)
 
@@ -115,13 +123,14 @@ Settings → *Built-in plugins* is the read-only inventory, not an installer:
 
 1. Sidebar → **Plugins** → **Add plugin**;
 2. type the same spec you would hand `dsh plugin add`, then **Install**:
-   - **a local path** — the absolute path of this repository's package directory:
+   - **the registry name** — `dsh-prompt-setting` (**primary**; pulls the latest version from npm);
+   - **a local path** (**development**) — the absolute path of this repository's package directory:
      `<absolute path to repo>/packages/dsh-prompt-setting` (clone or download the repository first; a
      relative path is refused, because the host's working directory means nothing to a browser);
-   - **a git address** — `github:zangxx66/dsh-prompt-setting#path:/packages/dsh-prompt-setting` (the
-     `#path:` part is required for this monorepo);
-   - **the registry name** — `dsh-prompt-setting` (once it is published to npm);
-   - **a tarball** — `dsh-prompt-setting-<version>.tgz`, on disk or over http(s);
+   - **a git address** (**development / fallback**) —
+     `github:zangxx66/dsh-prompt-setting#path:/packages/dsh-prompt-setting` (the `#path:` part is required
+     for this monorepo);
+   - **a tarball** (**offline / fallback**) — `dsh-prompt-setting-<version>.tgz`, on disk or over http(s);
 3. the **Host reads the spec before anything installs** (name, version, one-liner, whether the package
    really carries a bundle) and says so under the field instead of installing when it cannot; an accepted
    spec then streams pnpm's output behind **Show install details**, with **Cancel install** at hand, and a
@@ -162,16 +171,16 @@ plugin_manager(action: "install_bundle", target: "github:zangxx66/dsh-prompt-set
 bundle the run added. The Web GUI's profile is `web`:
 
 ```sh
-# from the registry, once published
+# from the registry (primary)
 dsh plugin --profile web add dsh-prompt-setting
 
-# straight from GitHub — no clone first; the #path: part is required for this monorepo
+# straight from GitHub — development / fallback; no clone first; the #path: part is required for this monorepo
 dsh plugin --profile web add 'github:zangxx66/dsh-prompt-setting#path:/packages/dsh-prompt-setting'
 
-# a local checkout (absolute path; installed as link:)
+# a local checkout — development (absolute path; installed as link:)
 dsh plugin --profile web add '<absolute path to repo>/packages/dsh-prompt-setting'
 
-# a tarball built from the package directory — same behaviour
+# a tarball built from the package directory — offline / fallback; same behaviour
 cd packages/dsh-prompt-setting && pnpm pack
 dsh plugin --profile web add '<absolute path to the .tgz>'
 ```
@@ -255,7 +264,7 @@ packages/dsh-prompt-setting/   # the plugin package (publishable to npm on its o
 ├── scripts/                   # check-compat.mjs (read-only diagnostic) + prepare.mjs (git-install gate)
 ├── CONTRACT.md                # the frozen REST contract (the client is written against it)
 ├── NOTES.md                   # design trade-offs, measurements, untested items
-└── test/                      # fourteen test suites
+└── test/                      # eighteen test suites
 assets/                        # the hero image for this README
 .dsh-graph/                    # project board and event log (separate inner repo, not part of this one)
 .worktrees/                    # isolated worktrees for subagents (not part of this one)
@@ -269,14 +278,14 @@ cd packages/dsh-prompt-setting
 # syntax
 node --check index.js && node --check client.js && for f in core/*.js scripts/*.mjs; do node --check "$f"; done
 
-node --test                    # fourteen suites; the integration suite runs against the real DSH package and must pass (not skip)
+node --test                    # eighteen suites; the integration suite runs against the real DSH package and must pass (not skip)
 node scripts/check-compat.mjs  # read-only compatibility self-check (no network, never throws, always exit 0)
 node scripts/prepare.mjs       # the prepare gate pnpm runs on a git install (exit 1 when it fails)
-npm pack --dry-run             # confirm the published artifact is clean (21 files, no test/, no .dsh-graph)
+npm pack --dry-run             # confirm the published artifact is clean (24 files, no test/, no .dsh-graph)
 ```
 
-Latest run on this machine: `node --test` **480 assertions, all passing, 0 skipped** (31 of them in the
-integration suite); `npm pack --dry-run` reports 21 files (measured 2026-10-02).
+Latest run on this machine: `node --test` **634 tests, all passing, 0 skipped** (31 of them in the
+integration suite); `npm pack --dry-run` reports 24 files (measured 2026-10-08).
 
 Worth knowing:
 
@@ -323,7 +332,7 @@ README's "For maintainers" section; the detailed measurements are in
 | [`packages/dsh-prompt-setting/README.md`](./packages/dsh-prompt-setting/README.md) | users / developers | package summary and features (bilingual), install, maintainer notes, troubleshooting |
 | [`CONTRACT.md`](./packages/dsh-prompt-setting/CONTRACT.md) | developers | the frozen REST contract: every field, action enum, size limit and 4xx |
 | [`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) | developers | design trade-offs and measurements (including untested items and conclusions we had to retract) |
-| [`CHANGELOG.md`](./CHANGELOG.md) | users / developers | User-visible changes per release (bilingual; currently 0.1.5, unpublished) |
+| [`CHANGELOG.md`](./CHANGELOG.md) | users / developers | User-visible changes per release (bilingual; published — the current npm `latest` is 0.1.5) |
 
 ## 9. Status and roadmap
 
