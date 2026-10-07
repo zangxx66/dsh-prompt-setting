@@ -6062,3 +6062,65 @@ CSS 语义上 1–3 合起来等价于"本 tab 的高度 ≤ 视口、内容只�
 
 - 真机目视仍未做：关闭按钮在右上角的视觉位置、`history-diff-tools` 在列表区的排布、新引导行的行宽观感。
 - 宿主未重启（纯客户端）。`ResizeObserver` 分支仍无测试覆盖。
+
+## 121. 版本号 `0.1.4` → `0.1.5`：同步点与白名单依据（g-040，2026-10-08，基线 `7efde96` 工作区）
+
+### 一、同步的「本包当前发布版本」（18 处 / 8 文件）
+
+- `package.json` 的 `version`、`index.js` 的 `PLUGIN_VERSION`（2 处 / 2 文件）；
+- `CONTRACT.md` 5 处：§10 export 示例 2 处（`plugin.version` / `pluginVersion`，1582-1583）、§13.8 版本节点
+  文案（`v0.1.4` → `v0.1.5`）、§13.9 ping 示例的 `version`、§17 update-check 示例的 `current`；
+- 两份根 README 4 处：徽章各 1 处 + CHANGELOG 行表述各 1 处（`currently 0.1.4, unpublished` /
+  `当前 0.1.4，尚未发布`）；
+- 测试硬字面量 7 处 + **转义正则 1 处**（共 8 处）：`test/stage2.test.mjs` export 断言 2 处、
+  `test/client.test.mjs` update-check fixture 的 `current` 1 处 + export fixture 2 处 +
+  banner 渲染断言 `/0\.1\.4/` 1 处、`test/update.test.mjs` ping 断言 1 处。
+- 机械清单（supervisor 给的 17 处）**不含** banner 那处转义正则，见第二节——它是本轮唯一的「清单外」同步点，
+  且不改必然红，属升版必需而非顺带扩大改动面。
+
+### 二、升版盲点（§111 的教训在本轮再次成立）
+
+- 位置：`test/client.test.mjs:8041`，`assert.match(strings(tree).join(' '), /0\.1\.4/)`。源码里是**转义正则**，
+  普通 `grep -rn "0\.1\.4"`（正则 `0\.1\.4` 匹配字面 `0.1.4`）**扫不到** `0\.1\.4` 这种带反斜杠的写法。
+- **实测证据（天然负向对照）**：先按 17 处清单改完即跑全量 ⇒ **633 pass / 1 fail**，失败正是
+  `client.test.mjs:8029`「a newer release renders a dismissible banner…」，期望 `/0\.1\.4/`、实际渲染
+  `（当前 0.1.5）` ⇒ 该断言确实钉住「当前版本」，非空转；改后 **634 pass / 0 fail**。
+- **下次升版务必照做**：残留扫描同时跑 `grep -rnF '0\.1\.'`（固定串，能命中 `0\.1\.4` 形态），或直接跑全量
+  测试兜底——只跑正则 grep 会重演本轮。
+
+### 三、白名单判断依据（一律未动）
+
+- `CHANGELOG.md` 的 `[0.1.4]` 及更早历史段、`NOTES.md` 历史叙述（含 §111 的 `0.1.3`→`0.1.4` 记录）：历史记录；
+- `core/install.js` 的「announce 旧版、install 新版」示例（g-037 已确立先例，§111 第二节）：**故意让两个版本号
+  不同**才说明「宣布的版本与安装的版本必须同源」⇒ 保留。本轮实测该文件**不含** `0.1.4`（示例里的两个版本号
+  早已是别的值），故它在本次扫描里天然无命中，依据仍记录在案；
+- `test/update.test.mjs` 的 semver 比较数据与 `currentVersion` 默认值、`core/update.js` / `CONTRACT.md` 的
+  tag 形态举例（`v0.1.2`/`v0.2.0`）：与「本包当前版本」无关（§110/§111 已裁定）。
+
+### 四、CHANGELOG 定稿
+
+新增 `## [0.1.5] - 2026-10-08`（中英对照），置于 `## [0.1.4]` 段之前：`### Added 新增` 5 条
+（拆 tab、历史作用域与查看范围解耦、列表分页与整屏内滚、记录预览与一键回滚、预览/对比改视口弹窗）、
+`### Changed 变更` 1 条（版本号同步本身），`[0.1.4]` 及更早段一字未动。
+
+### 五、验收
+
+- `cd packages/dsh-prompt-setting && node --test` ⇒ **634 pass / 0 fail / skipped 0**（与升版前基线一致，
+  无断言削弱）；升版中途的 633/1 见第二节；
+- `node --check index.js` 通过；
+- 残留自查 `grep -rn "0\.1\.4" --include=... | grep -v node_modules | grep -v .worktrees | grep -v .dsh-graph
+  | grep -v CHANGELOG.md | grep -v NOTES.md` ⇒ **空**；
+- `npm pack` ⇒ **`dsh-prompt-setting-0.1.5.tgz`**：**24 文件**、`test/` 命中 **0**、包内
+  `package.json.version` = `0.1.5`、`prepare` 自检 **19 项通过**、体积 **≈568 KB**（**不要记精确字节数**：
+  `NOTES.md` 在本包 `files` 白名单内，本节每修一次字包体就跟着变）。
+  **24 vs 上版 23 的 +1 = `core/launch-kind.js`**（g-036 新增文件；§111 打包时 g-036 尚未落地，故那次的 23
+  文件不含它），与本次升版无关。
+- 环境注记：本机 `~/.npm/_cacache` 内有 root-owned 文件，`npm pack` 直跑报 `EPERM`；本轮改用
+  `npm pack --cache <可写临时目录>` 完成打包（`prepare` 自检与打包本体均正常）。这与本包无关，记录以免下次
+  误判为包缺陷。
+
+### 六、未验证项
+
+- `npm publish` / `git tag` / `git push` 未做（人工 gate）；提交由主管统一收口，本轮不 commit；
+- README 徽章的 shields.io 在线渲染未目视（离线），只核对了源文本；
+- 只改了表示「本包当前版本」的字面量，无任何产品逻辑改动 ⇒ 无行为回归面。

@@ -1,6 +1,6 @@
 {
   "name": "dsh-prompt-setting",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "DeepSeek Harness 默认 System Prompt 管理插件：在 Web GUI「设置」里浏览、检索并覆盖最终装配进每轮会话的系统提示词。",
   "license": "MIT",
   "repository": {

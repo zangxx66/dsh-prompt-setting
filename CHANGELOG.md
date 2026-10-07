@@ -10,6 +10,64 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
+## [0.1.5] - 2026-10-08
+
+**功能版本：版本历史与备份拆成两个 tab，历史作用域与「查看范围」解耦，列表分页，新增记录预览与一键
+回滚，预览 / 对比改为视口弹窗 / Feature release: history and backup are split into two tabs, the history
+scope is decoupled from the page's "view scope", the list paginates, and a record preview plus one-click
+rollback are new; preview and diff render in a viewport dialog.**
+
+### Added 新增
+
+- **「历史与备份」拆成两个 tab（g-038）**：原「历史与备份」卡片拆为**「版本历史」**与**「备份与恢复」**
+  两个 tab——导出 / 导入移入后者，前者只管浏览、预览、对比与回滚。**拆 tab 只改页面组织，路由、字段与
+  落盘内容零变化。**
+  **History and backup are now two tabs (g-038)**: the old "history and backup" card became **"Version
+  history"** and **"Backup and restore"** — export / import moved into the latter, and the former only
+  browses, previews, diffs and rolls back. The split is page organisation only: no route, field or stored
+  byte changes.
+- **历史作用域与「查看范围」解耦（g-038）**：版本历史**不再受页面上方「查看范围」影响**——用户级显示该层
+  **全部**记录；工作区级改用**独立的工作区选择器**（折叠为一行摘要，点「更改」展开，展开后带搜索与定长
+  内滚候选）。
+  **The history scope is decoupled from the page's "view scope" (g-038)**: version history no longer
+  follows the "view scope" selector at the top of the page — the user level shows **every** record of that
+  level, and the workspace level gets its **own workspace picker** (collapsed to a one-line summary, opened
+  by "Change", with a search box and a fixed-height scrolling candidate list).
+- **历史列表分页与整屏内滚（g-038）**：记录很多时不再需要一路滚到底——列表分页，并在固定高度的面板内
+  滚动。
+  **The history list paginates and scrolls inside its own panel (g-038)**: with many records there is no
+  more scrolling to the bottom of the page — the list is paged and scrolls within a fixed-height panel.
+- **记录预览与一键回滚（g-039）**：任意历史记录可以**只读预览**（**不写任何数据**），并可**一键回滚到
+  该版本**。回滚**只恢复「我的 Prompt」段**——该层里其它段一个字节都不动；回滚本身也记入历史，因此可以
+  继续再回滚。
+  **Record preview and one-click rollback (g-039)**: any history record can be **previewed read-only**
+  (**writing nothing**), and **rolled back to** in one click. A rollback **restores only the "My prompt"
+  section** — every other section of that layer is left byte-identical — and the rollback is itself recorded
+  in history, so it can be rolled back again.
+- **预览与对比改为视口弹窗（g-039）**：两者不再占用内联空间，改为视口弹窗——关闭按钮在右上角、`Esc` 可
+  关，弹窗内的时间按**用户本地时区**显示；点击记录行即建立对比，「当前生效值」行同样可点选。
+  **Preview and diff render in a viewport dialog (g-039)**: neither takes inline space any more — the close
+  button sits in the top-right corner, `Esc` closes the dialog, and the timestamps inside it render in the
+  **user's local time zone**; clicking a record row selects it for the diff, and the "currently in effect"
+  row is selectable the same way.
+
+### Changed 变更
+
+- **版本号 `0.1.4` → `0.1.5`**：同步表示「本包当前发布版本」的每一处——本包 `package.json` 的 `version`、
+  宿主的 `PLUGIN_VERSION`、`CONTRACT.md` 里的响应与示例、两份根 README 的徽章与「当前版本」表述，以及
+  测试中表示本包版本的硬字面量。版本号本身**不引入任何行为变更**：本版的行为变化全部是上面五条
+  （g-038 / g-039），版本号不改变路由、落盘内容或既有响应字段。`npm publish` / `git tag` / `git push`
+  仍是人工 gate，不在本次变更内。
+  **Version `0.1.4` → `0.1.5`**: every place that states "the version this package currently publishes" was
+  moved together — this package's `package.json`, the host's `PLUGIN_VERSION`, the responses and examples in
+  `CONTRACT.md`, the badges and "currently" lines in both root READMEs, and the test literals that assert the
+  package version. The bump itself introduces **no behaviour change**: this release's behaviour changes are
+  the five entries above (g-038 / g-039), and the version number alone alters no route, no stored content and
+  no existing response field. `npm publish`, `git tag` and `git push` remain manual gates and are not part of
+  this change.
+
+---
+
 ## [0.1.4] - 2026-10-06
 
 **发布准备版本 + 一处用户可感知变更：更新后的重启提示按启动形态分区；插件自报版本切到 `0.1.4` /
