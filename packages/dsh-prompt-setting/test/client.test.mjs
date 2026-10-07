@@ -674,6 +674,8 @@ function makePage(options = {}) {
   // (`innerHeight`, `getComputedStyle`). Merged, never replaced: the loader
   // double is still there.
   if (options.window !== undefined) Object.assign(loaded.sandbox.window, options.window);
+  // g-039 fifth round: the page-level scroll lock reads `document.body.style`.
+  if (options.document !== undefined) loaded.sandbox.document = options.document;
   // Revision 18: an engine with no `Intl` must still stamp a time and name a
   // file — the fallback is part of the contract, so a case can ask for that
   // engine instead of trusting a branch no one has run.
@@ -4862,7 +4864,7 @@ test('client: an out-of-range page from the host is clamped, never rendered as p
   assert.deepEqual(urlsFor(page, PATHS.history).slice(-1), [`${PATHS.history}?layer=user&offset=50`]);
 });
 
-test('client: the log and the detail pane share one viewport-sized row, and scroll inside themselves (g-038 → g-039)', async () => {
+test('client: the record list owns the whole panel, and the preview/comparison are viewport modals (g-039 fifth round)', async () => {
   const many = [];
   for (let index = 1; index <= 50; index += 1) many.push(recordOf(index));
   const page = makePage({
@@ -4874,30 +4876,28 @@ test('client: the log and the detail pane share one viewport-sized row, and scro
   });
   const tree = await openHistory(page);
 
-  // The two columns are always ONE row (g-039 third round): `nowrap`, and no px
-  // flex-basis that could push the second column onto a second line. This
-  // replaces the old "each box is a fixed 320px" assertion — the coverage
-  // (bounded rendering, internal scroll, page never grows) is the same, the
-  // mechanism is now the viewport instead of a number.
+  // One column: no second column, no detail box beside the list, no wrapping
+  // row — the list takes the panel's full width. This replaces the third round's
+  // "two viewport-sized columns" case; the coverage (bounded rendering, internal
+  // scroll, the page never growing) is the same, the shape is not.
   const tab = oneBy(tree, 'data-region', 'history-tab');
-  assert.equal(tab.props['data-history-columns'], 'two');
-  assert.equal(tab.props['data-history-layout'], 'viewport');
-  assert.equal(tab.props.style.flexWrap, 'nowrap', 'the columns never stack');
-  // …and the height is the constant path here: the double renders no DOM, so
-  // there is nothing to measure (g-039 fourth round). The measured path has its
-  // own case, which hands the page a fake element to measure.
-  assert.equal(tab.props['data-history-height-source'], 'fallback');
-  assert.equal(tab.props['data-history-panel-height'], 'fallback');
+  assert.equal(tab.props['data-history-layout'], 'single');
+  assert.equal(tab.props['data-history-columns'], undefined, 'the two-column marker is gone');
+  assert.equal(tab.props.style.display, 'flex');
+  assert.equal(tab.props.style.flexDirection, 'column');
+  assert.equal(tab.props.style.flexWrap, undefined, 'one column needs no wrapping rule');
   assert.equal(tab.props.style.height, `calc(100vh - ${tab.props['data-history-viewport-offset']}px)`);
-  assert.equal(tab.props.style.maxHeight, tab.props.style.height, 'and the panel is bounded by the viewport');
-  for (const region of ['history-list-column', 'history-detail']) {
-    const column = oneBy(tree, 'data-region', region);
-    assert.equal(column.props.style.minWidth, 0, `${region} may shrink`);
-    assert.equal(column.props.style.minHeight, 0, `${region} is bounded by its column`);
-    assert.equal(String(column.props.style.flex).includes('px'), false, `${region} carries no px basis`);
+  assert.equal(tab.props.style.maxHeight, tab.props.style.height, 'the panel is bounded by the viewport');
+  for (const region of ['history-list-column', 'history-detail', 'history-detail-box']) {
+    assert.equal(
+      collect(tree, (node) => node.props && node.props['data-region'] === region).length,
+      0,
+      `${region} went with the two-column layout`,
+    );
   }
+  assert.equal(noHistoryModal(tree), true, 'nothing is open on arrival');
 
-  // The record box fills its column and scrolls inside itself…
+  // The log still renders one page inside its own scrolling box…
   const box = oneBy(tree, 'data-region', 'history-list');
   assert.equal(box.props['data-history-list'], 'scroll');
   assert.equal(box.props.style.overflowY, 'auto', 'the box scrolls, the page does not');
@@ -4905,24 +4905,18 @@ test('client: the log and the detail pane share one viewport-sized row, and scro
   assert.equal(box.props.style.minHeight, 0);
   assert.equal(box.props.style.height, undefined, 'no fixed height: the viewport is the bound');
   assert.equal(box.props['data-history-box-height'], 'viewport');
-  // 5000 records on disk, one page in the DOM.
-  assert.equal(historyRowIds(tree).length, 50);
+  assert.equal(historyRowIds(tree).length, 50, '5000 records on disk, one page in the DOM');
 
-  // …and so does the detail pane's, in the same row.
-  const detail = oneBy(tree, 'data-region', 'history-detail');
-  assert.equal(detail.props['data-history-detail'], 'empty');
-  const detailBox = oneBy(tree, 'data-region', 'history-detail-box');
-  assert.equal(detailBox.props['data-history-box'], 'scroll');
-  assert.equal(detailBox.props.style.overflowY, 'auto');
-  assert.equal(detailBox.props.style.flex, '1 1 auto', 'it grows into whatever the column has left');
-  assert.equal(detailBox.props.style.minHeight, 0);
-  assert.equal(detailBox.props.style.height, undefined);
-  assert.ok(oneBy(detailBox, 'data-note', 'history-detail-pending'));
+  // …and a completed pair opens the comparison modal over it, which the list
+  // behind it does not care about.
   clickButton(historyRowOf(tree, '1'), { 'data-action': 'diff-from', 'data-history-id': '1' });
   const after = await page.flush();
-  assert.equal(oneBy(after, 'data-region', 'history-detail').props['data-history-detail'], 'diff');
-  assert.ok(oneBy(after, 'data-region', 'history-diff'), 'the comparison lives in the right column');
-  assert.equal(oneBy(after, 'data-region', 'history-list').props['data-history-list'], 'scroll');
+  assert.ok(oneBy(after, 'data-region', 'history-diff-modal'), 'the comparison lives in a modal');
+  assert.equal(
+    oneBy(after, 'data-region', 'history-list').props['data-history-list'],
+    'scroll',
+    'the list is right where it was',
+  );
 });
 
 // #region g-039: record preview and one-click rollback
@@ -4934,25 +4928,32 @@ function mutatingCalls(page) {
   );
 }
 
-test('client: previewing a record writes into the detail box, and asks the host nothing at all (g-039)', async () => {
+test('client: previewing a record opens a modal over the list, and asks the host nothing at all (g-039 fifth round)', async () => {
   const page = makePage({ responses: defaultResponses() });
   let tree = await openHistory(page);
-  const box = () => oneBy(tree, 'data-region', 'history-detail-box');
+  const modal = () => oneBy(tree, 'data-region', 'history-preview-modal');
 
   clickButton(historyRowOf(tree, '2'), { 'data-action': 'history-preview', 'data-history-id': '2' });
   tree = await page.flush();
 
-  // Positive: the panel lands inside the SAME fixed-height box the comparison
-  // uses, so the page never grows with history and the row that was clicked
-  // stays in view above it.
-  const preview = oneBy(box(), 'data-region', 'history-preview');
+  // Positive: the preview is a viewport overlay (`position: fixed`, centred,
+  // role=dialog), so the list underneath keeps the panel's full width and none of
+  // this grows the panel.
+  const overlay = oneBy(tree, 'data-region', 'history-modal-overlay');
+  assert.equal(overlay.props.style.position, 'fixed');
+  assert.equal(overlay.props['data-history-modal'], 'history-preview-modal');
+  assert.equal(modal().props.role, 'dialog');
+  assert.equal(modal().props['aria-modal'], 'true');
+  assert.equal(modal().props.style.width, 'min(1040px, 92vw)');
+  assert.equal(modal().props.style.height, 'min(82vh, 900px)');
+  assert.equal(modal().props.style.maxHeight, 'min(82vh, 900px)');
+  assert.equal(modal().props.style.overflowY, 'auto', 'a long preview scrolls inside the dialog');
+  const preview = oneBy(modal(), 'data-region', 'history-preview');
   assert.equal(preview.props['data-preview-state'], 'ready');
   assert.equal(preview.props['data-preview-id'], '2');
-  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'preview');
-  const list = oneBy(tree, 'data-region', 'history-list');
-  assert.equal(list.props['data-history-list'], 'scroll');
-  assert.equal(box().props.style.overflowY, 'auto');
-  assert.equal(box().props.style.maxHeight, list.props.style.height, 'both columns stay the same fixed height');
+  // …and the record list is still rendered, full width, behind it.
+  assert.equal(oneBy(tree, 'data-region', 'history-list').props['data-history-list'], 'scroll');
+  assert.equal(oneBy(tree, 'data-region', 'history-tab').props['data-history-layout'], 'single');
 
   // The facts that say WHICH version this is…
   for (const [field, label] of [
@@ -4988,16 +4989,25 @@ test('client: previewing a record writes into the detail box, and asks the host 
   assert.deepEqual(mutatingCalls(page), [], 'a preview writes nothing');
   assert.deepEqual(urlsFor(page, PATHS.rollback), [], 'and never touches the rollback route');
 
-  // Clicking the same record again closes it, and the pane is back to its idle
-  // note — no third state to reason about.
+  // The explicit close entry point is a button in the dialog's head…
+  const close = oneBy(modal(), 'data-action', 'history-modal-close');
+  assert.equal(close.props['aria-label'], page.zh.histModalClose);
+  clickButton(modal(), { 'data-action': 'history-modal-close' });
+  tree = await page.flush();
+  assert.equal(noHistoryModal(tree), true, 'the modal is gone');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-region'] === 'history-preview').length,
+    0,
+    'and so is everything it rendered',
+  );
+
+  // …and opening it again is one click, with no toggle to reason about.
   clickButton(historyRowOf(tree, '2'), { 'data-action': 'history-preview', 'data-history-id': '2' });
   tree = await page.flush();
-  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history-preview').length, 0);
-  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'empty');
-  assert.ok(oneBy(tree, 'data-note', 'history-detail-pending'));
+  assert.equal(oneBy(tree, 'data-region', 'history-preview').props['data-preview-state'], 'ready');
 });
 
-test('client: a paged list keeps the preview, and says so when the record is not on this page (g-039)', async () => {
+test('client: a page turn keeps the preview modal open, and a record it no longer holds says so (g-039 fifth round)', async () => {
   const page = makePage({
     useSessions: sessionsHook(SESSIONS_STATE),
     responses: defaultResponses({ [PATHS.history]: twoPageHistory }),
@@ -5008,21 +5018,18 @@ test('client: a paged list keeps the preview, and says so when the record is not
   assert.equal(oneBy(tree, 'data-region', 'history-preview').props['data-preview-state'], 'ready');
 
   // Paging does **not** reset it — the same rule the comparison selection
-  // follows (CONTRACT §13.3) — so a page that no longer holds the record has to
-  // say that rather than render an empty panel.
+  // follows (§13.3) — so a page that no longer holds the record has to say that
+  // rather than render an empty dialog.
   clickButton(oneBy(tree, 'data-region', 'history-pager'), { 'data-action': 'history-next' });
   tree = await page.flush();
   assert.equal(oneBy(tree, 'data-region', 'history-pager').props['data-history-offset'], '1');
-  const missing = oneBy(tree, 'data-region', 'history-preview');
-  assert.equal(missing.props['data-preview-state'], 'missing');
-  assert.ok(oneBy(missing, 'data-preview-missing', 'true'));
-
-  // Switching the file is a different matter: the id is meaningless there, so
-  // the preview goes with the selection.
-  clickTab(tree, 'history-layer', 'workspace');
+  const modal = oneBy(tree, 'data-region', 'history-preview-modal');
+  assert.equal(oneBy(modal, 'data-region', 'history-preview').props['data-preview-state'], 'missing');
+  assert.ok(oneBy(modal, 'data-preview-missing', 'true'));
+  // …and the way out is still the explicit close.
+  clickButton(modal, { 'data-action': 'history-modal-close' });
   tree = await page.flush();
-  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history-preview').length, 0);
-  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'empty');
+  assert.equal(noHistoryModal(tree), true);
 });
 
 test('client: a rollback asks first, states that it cannot be undone, then refreshes log and value (g-039)', async () => {
@@ -5154,7 +5161,7 @@ test('client: preview and confirmation both state that only 「我的 Prompt」 
   );
 });
 
-test('client: clicking a record row builds the comparison — from, then to, then a sliding window (g-039 third round)', async () => {
+test('client: clicking rows builds the pair and opens the comparison modal, which closing keeps (g-039 fifth round)', async () => {
   const records = [recordOf(3), recordOf(2), recordOf(1)];
   const page = makePage({
     responses: defaultResponses({
@@ -5165,64 +5172,72 @@ test('client: clicking a record row builds the comparison — from, then to, the
   });
   let tree = await openHistory(page);
   const diffCalls = () => urlsFor(page, PATHS.diff).length;
+  const closeDiff = () => {
+    clickButton(oneBy(tree, 'data-region', 'history-diff-modal'), { 'data-action': 'history-modal-close' });
+  };
 
-  // The row itself is the control. The first row fills `from` only: one side is
-  // not a comparison, so nothing is requested and the pane stays idle.
+  // The first row fills `from` only: no request, and nothing opens.
   assert.equal(typeof historyRowOf(tree, '3').props.onClick, 'function');
   clickNode(historyRowOf(tree, '3'));
   tree = await page.flush();
   assert.equal(historyRowOf(tree, '3').props['data-history-selected'], 'from');
-  assert.equal(historyRowOf(tree, '2').props['data-history-selected'], '');
-  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'empty');
   assert.equal(diffCalls(), 0, 'a half-made selection is not a request');
+  assert.equal(noHistoryModal(tree), true, 'and not a modal either');
   assert.equal(typeof historyRowOf(tree, '3').props['data-history-pick-hint'], 'string');
 
-  // The second row becomes `to`, and that is what fires the comparison.
+  // The second row completes the pair: the request fires and the modal opens by
+  // itself.
   clickNode(historyRowOf(tree, '2'));
   tree = await page.flush();
   assert.equal(historyRowOf(tree, '3').props['data-history-selected'], 'from');
   assert.equal(historyRowOf(tree, '2').props['data-history-selected'], 'to');
-  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'diff');
   assert.deepEqual(urlsFor(page, PATHS.diff).slice(-1), [`${PATHS.diff}?layer=user&from=3&to=2`]);
+  assert.ok(oneBy(tree, 'data-region', 'history-diff-modal'), 'the comparison opens on its own');
 
-  // The third slides the window: the old `to` becomes `from`.
+  // Closing it keeps the selection: the pair is the reader's, the modal is only
+  // how they were looking at it.
+  closeDiff();
+  tree = await page.flush();
+  assert.equal(noHistoryModal(tree), true);
+  assert.equal(historyRowOf(tree, '3').props['data-history-selected'], 'from', 'the pair survives the close');
+  assert.equal(historyRowOf(tree, '2').props['data-history-selected'], 'to');
+
+  // A third row slides the window and re-opens the modal on the new pair.
   clickNode(historyRowOf(tree, '1'));
   tree = await page.flush();
   assert.equal(historyRowOf(tree, '3').props['data-history-selected'], '');
   assert.equal(historyRowOf(tree, '2').props['data-history-selected'], 'from');
   assert.equal(historyRowOf(tree, '1').props['data-history-selected'], 'to');
   assert.deepEqual(urlsFor(page, PATHS.diff).slice(-1), [`${PATHS.diff}?layer=user&from=2&to=1`]);
+  assert.ok(oneBy(tree, 'data-region', 'history-diff-modal'), 'and the modal comes back with it');
 
-  // The per-row buttons stay for exact control: they pick their own side, and
-  // they do not also re-pick the row.
+  // The per-row buttons stay for exact control — and they do not also re-pick
+  // the row.
+  closeDiff();
+  tree = await page.flush();
   clickButton(historyRowOf(tree, '3'), { 'data-action': 'diff-to', 'data-history-id': '3' });
   tree = await page.flush();
   assert.equal(historyRowOf(tree, '3').props['data-history-selected'], 'to');
   assert.equal(historyRowOf(tree, '2').props['data-history-selected'], 'from');
+  assert.ok(oneBy(tree, 'data-region', 'history-diff-modal'));
 });
 
-test('client: clearing the comparison empties the pane, and the reader can start again (g-039 third round)', async () => {
+test('client: clearing the comparison closes the modal and resets the pair (g-039 fifth round)', async () => {
   const page = makePage({ responses: defaultResponses() });
   let tree = await openHistory(page);
   clickNode(historyRowOf(tree, '2'));
   tree = await page.flush();
   clickNode(historyRowOf(tree, '1'));
   tree = await page.flush();
-  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'diff');
+  const modal = () => oneBy(tree, 'data-region', 'history-diff-modal');
+  assert.equal(oneBy(modal(), 'data-action', 'diff-clear').props.disabled, false);
 
-  assert.equal(oneBy(tree, 'data-action', 'diff-clear').props.disabled, false);
-  clickButton(tree, { 'data-action': 'diff-clear' });
+  clickButton(modal(), { 'data-action': 'diff-clear' });
   tree = await page.flush();
-  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'empty');
+  assert.equal(noHistoryModal(tree), true, 'the modal goes with the comparison');
   assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history-diff').length, 0);
-  assert.ok(oneBy(tree, 'data-note', 'history-detail-pending'));
   assert.deepEqual(selectedHistoryRows(tree), [], 'no row claims a side any more');
   assert.equal(historyRowOf(tree, 'current').props['data-history-selected'], 'to', 'back to the default pair');
-  assert.equal(
-    collect(tree, (node) => node.props && node.props['data-action'] === 'diff-clear').length,
-    0,
-    'the pane is idle, so there is nothing left to clear',
-  );
 
   // …and picking again works exactly as it did the first time.
   clickNode(historyRowOf(tree, '2'));
@@ -5230,70 +5245,125 @@ test('client: clearing the comparison empties the pane, and the reader can start
   clickNode(historyRowOf(tree, '1'));
   tree = await page.flush();
   assert.equal(historyRowOf(tree, '2').props['data-history-selected'], 'from');
-  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'diff');
+  assert.ok(oneBy(tree, 'data-region', 'history-diff-modal'));
 });
 
-test('client: the detail pane shows exactly one view, and closing the preview moves on (g-039 third round)', async () => {
-  const page = makePage({ responses: defaultResponses() });
+test('client: at most one modal is open, and Esc closes it (g-039 fifth round)', async () => {
+  const listeners = {};
+  const page = makePage({
+    window: {
+      addEventListener: (type, fn) => {
+        listeners[type] = fn;
+      },
+      removeEventListener: (type) => {
+        delete listeners[type];
+      },
+    },
+    responses: defaultResponses(),
+  });
   let tree = await openHistory(page);
-  const detail = () => oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'];
+  const countOf = (region) => collect(tree, (node) => node.props && node.props['data-region'] === region).length;
 
+  // A preview.
+  clickButton(historyRowOf(tree, '2'), { 'data-action': 'history-preview', 'data-history-id': '2' });
+  tree = await page.flush();
+  assert.equal(countOf('history-preview-modal'), 1);
+  assert.equal(countOf('history-diff-modal'), 0, 'the comparison is not open at the same time');
+
+  // Esc is the keyboard half of the close entry point.
+  assert.equal(typeof listeners.keydown, 'function', 'the page listens for Esc while a modal is open');
+  listeners.keydown({ key: 'Escape' });
+  tree = await page.flush();
+  assert.equal(noHistoryModal(tree), true);
+
+  // A complete pair opens the comparison instead — still at most one modal.
   clickNode(historyRowOf(tree, '2'));
   tree = await page.flush();
   clickNode(historyRowOf(tree, '1'));
   tree = await page.flush();
-  assert.equal(detail(), 'diff');
+  assert.equal(countOf('history-diff-modal'), 1);
+  assert.equal(countOf('history-preview-modal'), 0, 'the preview modal is not behind it');
 
-  // Previewing replaces the comparison in the pane rather than stacking under it.
-  clickButton(historyRowOf(tree, '2'), { 'data-action': 'history-preview', 'data-history-id': '2' });
+  clickButton(oneBy(tree, 'data-region', 'history-diff-modal'), { 'data-action': 'history-modal-close' });
   tree = await page.flush();
-  assert.equal(detail(), 'preview');
-  assert.equal(
-    collect(tree, (node) => node.props && node.props['data-region'] === 'history-diff').length,
-    0,
-    'the comparison is not rendered behind the preview',
-  );
-
-  // Closing it returns to the comparison, which is still selected…
-  clickButton(tree, { 'data-action': 'preview-close' });
+  assert.equal(noHistoryModal(tree), true);
+  // Esc with nothing open changes nothing (and must not throw).
+  if (typeof listeners.keydown === 'function') listeners.keydown({ key: 'Escape' });
   tree = await page.flush();
-  assert.equal(detail(), 'diff');
-  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history-preview').length, 0);
-
-  // …and with nothing selected it returns to the idle note.
-  clickButton(tree, { 'data-action': 'diff-clear' });
-  tree = await page.flush();
-  clickButton(historyRowOf(tree, '1'), { 'data-action': 'history-preview', 'data-history-id': '1' });
-  tree = await page.flush();
-  assert.equal(detail(), 'preview');
-  clickButton(tree, { 'data-action': 'preview-close' });
-  tree = await page.flush();
-  assert.equal(detail(), 'empty');
-  assert.ok(oneBy(tree, 'data-note', 'history-detail-pending'), 'and the idle note is what is left');
+  assert.equal(noHistoryModal(tree), true);
+  assert.equal(markerOf(tree, 'data-render-state'), 'ok');
 });
 
-test('client: switching the layer resets the preview together with the comparison (g-039 third round)', async () => {
+test('client: switching the layer or the scope resets the modal with the selection (g-039 fifth round)', async () => {
   const page = makePage({
     useSessions: sessionsHook(SESSIONS_STATE),
     responses: defaultResponses(),
   });
   let tree = await openHistory(page);
+
+  // Preview open, then a layer switch: the modal describes a record of the old
+  // file, so it goes with everything else that pointed into it.
+  clickButton(historyRowOf(tree, '2'), { 'data-action': 'history-preview', 'data-history-id': '2' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'history-preview-modal').props.role, 'dialog');
+  clickTab(tree, 'history-layer', 'workspace');
+  tree = await page.flush();
+  assert.equal(noHistoryModal(tree), true, 'a layer switch closes the modal');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-region'] === 'history-preview').length,
+    0,
+    'and drops the record it was showing',
+  );
+  assert.deepEqual(selectedHistoryRows(tree), []);
+  assert.equal(oneBy(tree, 'data-region', 'history-pager').props['data-history-offset'], '0');
+
+  // The same rule for the scope: a different workspace is a different file.
+  clickTab(tree, 'history-layer', 'user');
+  tree = await page.flush();
   clickNode(historyRowOf(tree, '2'));
   tree = await page.flush();
   clickNode(historyRowOf(tree, '1'));
   tree = await page.flush();
+  assert.ok(oneBy(tree, 'data-region', 'history-diff-modal'), 'a comparison is open');
+  clickButton(tree, { 'data-action': 'history-scope-toggle' });
+  tree = await page.flush();
+  clickButton(tree, { 'data-role': 'history-scope-option', 'data-history-scope-option': 's1' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'history-scope').props['data-history-scope-value'], 's1');
+  assert.equal(noHistoryModal(tree), true, 'a scope switch closes the modal too');
+  assert.deepEqual(selectedHistoryRows(tree), [], 'the old selection is void in the new file');
+});
+
+test('client: an open modal locks the page behind it, and unlocks it exactly (g-039 fifth round)', async () => {
+  const body = { style: { overflow: 'visible' } };
+  const page = makePage({ document: { body }, responses: defaultResponses() });
+  let tree = await openHistory(page);
+  assert.equal(body.style.overflow, 'visible', 'nothing is locked before anything opens');
+
   clickButton(historyRowOf(tree, '2'), { 'data-action': 'history-preview', 'data-history-id': '2' });
   tree = await page.flush();
-  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'preview');
+  const modal = oneBy(tree, 'data-region', 'history-preview-modal');
+  // The overlay is fixed and the dialog is capped to the viewport, so a long
+  // preview scrolls inside the dialog and never the page behind it…
+  assert.equal(oneBy(tree, 'data-region', 'history-modal-overlay').props.style.position, 'fixed');
+  assert.equal(modal.props.style.height, 'min(82vh, 900px)');
+  assert.equal(modal.props.style.maxHeight, 'min(82vh, 900px)');
+  assert.equal(modal.props.style.overflowY, 'auto');
+  // …and the page behind it is locked outright.
+  assert.equal(body.style.overflow, 'hidden', 'the page behind the modal cannot scroll');
 
-  // A different file: the ids are meaningless there, so nothing that points into
-  // the old one survives — the preview included.
-  clickTab(tree, 'history-layer', 'workspace');
+  clickButton(modal, { 'data-action': 'history-modal-close' });
   tree = await page.flush();
-  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'empty');
-  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history-preview').length, 0);
-  assert.deepEqual(selectedHistoryRows(tree), []);
-  assert.equal(oneBy(tree, 'data-region', 'history-pager').props['data-history-offset'], '0');
+  assert.equal(noHistoryModal(tree), true);
+  assert.equal(body.style.overflow, 'visible', 'and the previous value is restored exactly');
+
+  // The comparison modal locks it the same way.
+  clickNode(historyRowOf(tree, '2'));
+  tree = await page.flush();
+  clickNode(historyRowOf(tree, '1'));
+  tree = await page.flush();
+  assert.ok(oneBy(tree, 'data-region', 'history-diff-modal'));
+  assert.equal(body.style.overflow, 'hidden');
 });
 
 // #region g-039 fourth round: the panel height is measured, not guessed
@@ -5390,10 +5460,12 @@ test('client: a measured panel renders the measured height, and says where it ca
   assert.equal(tab.props.style.height, '684px');
   assert.equal(tab.props.style.maxHeight, '684px');
   assert.equal(tab.props.style.minHeight, 320, 'the floor stays whatever the measurement says');
-  // The layout rules themselves are untouched by the measuring.
-  assert.equal(tab.props.style.flexWrap, 'nowrap');
+  // The layout itself is untouched by the measuring: one column, and the record
+  // box filling whatever height is left.
+  assert.equal(tab.props.style.flexDirection, 'column');
+  assert.equal(tab.props['data-history-layout'], 'single');
   assert.equal(oneBy(tree, 'data-region', 'history-list').props.style.flex, '1 1 auto');
-  assert.equal(oneBy(tree, 'data-region', 'history-detail-box').props.style.flex, '1 1 auto');
+  assert.equal(oneBy(tree, 'data-region', 'history-list').props.style.minHeight, 0);
 });
 
 test('client: a window resize re-measures the panel, and still nothing else moves (g-039 fourth round)', async () => {
@@ -5430,10 +5502,20 @@ test('client: a window resize re-measures the panel, and still nothing else move
   tree = await page.flush();
   const tab = oneBy(tree, 'data-region', 'history-tab');
   assert.equal(tab.props['data-history-height-source'], 'fallback');
-  assert.equal(tab.props.style.flexWrap, 'nowrap', 'the layout rule survives every measuring outcome');
+  assert.equal(tab.props['data-history-layout'], 'single', 'the layout rule survives every measuring outcome');
 });
 
 // #endregion
+
+/**
+ * Whether no history modal is open — the fifth-round shape of "the detail pane
+ * is in its idle state".
+ * @param tree - the rendered tree.
+ * @returns whether both modals are absent.
+ */
+function noHistoryModal(tree) {
+  return collect(tree, (node) => node.props && node.props['data-region'] === 'history-modal-overlay').length === 0;
+}
 
 /** Every history **record** row that currently claims a comparison selection. */
 function selectedHistoryRows(tree) {
@@ -5583,7 +5665,7 @@ test('client: switching the layer or the scope drops a comparison made in the ot
   clickButton(historyRowOf(tree, '1'), { 'data-action': 'diff-from', 'data-history-id': '1' });
   tree = await page.flush();
   assert.equal(historyRowOf(tree, '1').props['data-history-selected'], 'from');
-  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'diff');
+  assert.ok(oneBy(tree, 'data-region', 'history-diff-modal'), 'a complete pair opens the comparison modal');
   const diffsMade = urlsFor(page, PATHS.diff).length;
 
   // Switching the layer switches the file: the selection and the result describe
@@ -5598,14 +5680,12 @@ test('client: switching the layer or the scope drops a comparison made in the ot
     'to',
     'the comparison target is back to its default (「当前生效值」)',
   );
-  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'empty');
-  // The comparison is a **view** of the pane (g-039 third round): a reset
-  // removes it entirely rather than leaving a card holding a stale result or a
-  // stale selection line. That is a stronger statement than the old "the card
-  // is still there, but idle", and it is the invariant the pane now has.
+  // A new file closes the modal *and* drops the result (g-039 fifth round): the
+  // modal describes a comparison of two records of the old file, so leaving it
+  // open would be describing a file that is no longer on screen.
+  assert.equal(noHistoryModal(tree), true, 'no modal survives a new file');
   assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history-diff').length, 0);
   assert.equal(collect(tree, (node) => node.props && node.props['data-diff-sections'] !== undefined).length, 0);
-  assert.ok(oneBy(tree, 'data-note', 'history-detail-pending'), 'the detail pane is back to its idle note');
   assert.equal(urlsFor(page, PATHS.diff).length, diffsMade, 'and nothing new was requested');
 
   // The same rule for the scope: a different workspace is a different file.
@@ -5629,7 +5709,7 @@ test('client: switching the layer or the scope drops a comparison made in the ot
     'to',
     'the comparison target is back to its default',
   );
-  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'empty');
+  assert.equal(noHistoryModal(tree), true);
   assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history-diff').length, 0);
   assert.equal(collect(tree, (node) => node.props && node.props['data-diff-sections'] !== undefined).length, 0);
 });
@@ -5641,7 +5721,7 @@ test('client: paging keeps the comparison, because the file does not change (g-0
   clickButton(historyRowOf(tree, '2'), { 'data-action': 'diff-from', 'data-history-id': '2' });
   tree = await page.flush();
   assert.equal(historyRowOf(tree, '2').props['data-history-selected'], 'from');
-  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'diff');
+  assert.ok(oneBy(tree, 'data-region', 'history-diff-modal'), 'a complete pair opens the comparison modal');
   const diffsMade = urlsFor(page, PATHS.diff).length;
 
   // A page turn is **not** a new file: §13.3's reset covers a layer/scope change
@@ -5649,7 +5729,7 @@ test('client: paging keeps the comparison, because the file does not change (g-0
   clickButton(oneBy(tree, 'data-region', 'history-pager'), { 'data-action': 'history-next' });
   tree = await page.flush();
   assert.equal(oneBy(tree, 'data-region', 'history-pager').props['data-history-offset'], '1');
-  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'diff');
+  assert.ok(oneBy(tree, 'data-region', 'history-diff-modal'), 'the modal is kept across a page turn');
   assert.equal(urlsFor(page, PATHS.diff).length, diffsMade, 'the comparison is kept, not re-run');
 
   clickButton(oneBy(tree, 'data-region', 'history-pager'), { 'data-action': 'history-prev' });
@@ -6039,9 +6119,13 @@ const EN_SWEEP_CASES = [
       ['data-role', 'history-scope-empty'],
       ['data-region', 'history-list'],
       ['data-region', 'history-pager'],
-      ['data-region', 'history-detail'],
       ['data-history-row', '2'],
       ['data-active-tab', 'history'],
+      // g-039 fifth round: the preview and the comparison are modals now, and
+      // this case walks both so their English copy is swept too.
+      ['data-region', 'history-modal-overlay'],
+      ['data-region', 'history-preview-modal'],
+      ['data-region', 'history-diff-modal'],
     ],
     copy: ['histHeading', 'histScopeHint', 'histScopeNone', 'histPagePrev', 'histPickFrom', 'histScopeGlobal'],
     async run() {
@@ -6049,6 +6133,10 @@ const EN_SWEEP_CASES = [
       const rec = recorder(page);
       await rec.take();
       clickAnyTab(rec.last(), 'history');
+      await rec.take();
+      clickButton(historyRowOf(rec.last(), '2'), { 'data-action': 'history-preview', 'data-history-id': '2' });
+      await rec.take();
+      clickButton(rec.last(), { 'data-action': 'history-modal-close' });
       await rec.take();
       clickButton(historyRowOf(rec.last(), '2'), { 'data-action': 'diff-from', 'data-history-id': '2' });
       await rec.take();
@@ -7108,7 +7196,9 @@ const EN_REQUIRED_MARKERS = [
   'data-history-scope-list=scroll',
   'data-region=history-list',
   'data-region=history-pager',
-  'data-region=history-detail',
+  'data-region=history-modal-overlay',
+  'data-region=history-preview-modal',
+  'data-region=history-diff-modal',
   'data-region=history-diff',
   'data-region=backup-tab',
   'data-region=transfer',

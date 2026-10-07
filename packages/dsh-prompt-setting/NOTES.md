@@ -5930,3 +5930,79 @@ CSS 语义上 1–3 合起来等价于"本 tab 的高度 ≤ 视口、内容只�
   本轮所有断言都在沙箱里用假元素完成。
 - `ResizeObserver` 分支未被测试覆盖（沙箱无该构造器，只有 `typeof` 守卫与真实浏览器路径）；只有 `window.resize` 有断言。
 - 宿主未重启（本轮纯客户端改动）。
+
+## 119. g-039 五轮：废弃左右两栏，列表独占宽度，预览/对比改视口弹窗（Revision 25，2026-10-08，基线 `b8ddcb6` 工作区）
+
+### 一、真机反馈与根因
+
+负责人真机反馈「左右视图导致左侧信息拥挤」：两栏把记录列表压到约一半宽度，而行内要塞下编号、动作标签、段名、
+时间戳和四枚按钮——半幅宽度下每行都挤。第三轮为了「选择与结果同屏」引入两栏，方向本身没错，但代价（列表变窄）
+在真机上一眼可见；而右列同一时刻只显示预览或对比其中之一，用整块常驻宽度换它是亏的。本轮把内容搬到**视口弹窗**，
+列表回到独占宽度。
+
+### 二、布局与形态（纯客户端）
+
+- **单栏**：`renderHistoryTab` 现在是 `flexDirection: 'column'` 的单列容器（`data-history-layout="single"`），
+  唯一子节点是列表面板 `data-region="history"`。**删除**了 `data-history-columns`、
+  `data-region="history-list-column"` / `history-detail` / `history-detail-box`、`data-history-detail`、
+  空闲提示 `data-note="history-detail-pending"` 与 `data-action="preview-close"`——不留半成品结构。
+  第四轮的**面板高度测量**（`historyPanelHeight` + `data-history-height-source` / `data-history-panel-height`）
+  原样保留，只是现在给单栏列表定高；列表盒仍是 `flex: 1 1 auto; minHeight: 0; overflowY: auto`。
+- **两个视口弹窗**（沿用 g-031 的 confirm-overlay 模式，但不复用同一个 DOM）：
+  - 浮层 `data-region="history-modal-overlay"` + `data-history-modal`，`position: fixed`、居中、暗底；
+  - 对话框 `data-region="history-preview-modal"` / `"history-diff-modal"`，`role="dialog"` + `aria-modal="true"`
+    + `aria-label`，`width: min(1040px, 92vw)`、`height: maxHeight: min(82vh, 900px)`、`overflowY: auto`
+    （长内容在**弹窗内部**滚）；
+  - **关闭入口**：头部 `data-action="history-modal-close"`（`aria-label`/`title` = `histModalClose`）+ **Esc**
+    （弹窗打开期间由页面绑定 `keydown`）。两种方式都只关弹窗、**保留选择**。
+  - **互斥**：由单一状态 `historyModal`（`null | 'preview' | 'diff'`）决定，同一时刻最多一个。
+  - **页面锁**：弹窗打开时 `document.body.style.overflow = 'hidden'`，关闭时恢复为**原来的确切值**（用 ref 记住，
+    而不是写成 `''`）；effect 两个方向都跑，cleanup 也兜底（卸载时不会把页面锁住）。
+
+### 三、交互联动
+
+- 点记录行仍是主路径：第一行 = `from`（不发请求、不开弹窗），第二行 = `to` ⇒ 发 `GET /diff` **并自动弹出对比弹窗**；
+  **关闭弹窗保留这一对**；再点第三条 ⇒ 滑动窗口（原 to→from、新行→to）**并重新弹出**。
+- 行内四枚按钮保留作精确控制（`diff-from` / `diff-to` / `history-preview` / `history-rollback`），并 `stopPropagation`。
+- 「预览」按钮开预览弹窗（**零请求**，内容随列表那一页一起到达）；不再有"再点一次关闭"的 toggle，
+  关闭只走关闭按钮/Esc。
+- 「清除对比」`data-action="diff-clear"` 在对比弹窗内：恢复默认对 `{null,'current'}`、丢弃结果、**并关闭弹窗**。
+- 换文件（切 layer / 切作用域）复位 offset + `diffSel` + diff + **弹窗态**；翻页仍不复位。
+
+### 四、测试与负向对照
+
+- **按新形态改写 8 条既有用例**（覆盖一条未少）：单栏结构（不再有并排两列/右列详情盒，替换第三轮那条
+  "两栏并排"用例）、预览弹窗（含关闭按钮、零写请求）、翻页保留预览与 missing 态、点行建对并自动弹窗、
+  清除对比、弹窗互斥与 Esc、切层/切作用域复位（含弹窗态）、measured 渲染与 resize 重测的布局断言。
+  g-038 的两条复位用例里 `data-history-detail` 断言改为"无弹窗 + 无 diff 残留"。
+- **新增 1 条**：`an open modal locks the page behind it, and unlocks it exactly` —— 断言浮层 `position: fixed`、
+  对话框 `height/maxHeight = min(82vh, 900px)` 且 `overflowY: auto`、打开时 `body.style.overflow === 'hidden'`、
+  关闭后恢复为原值 `'visible'`（含对比弹窗同样上锁）。
+- **测试基建**：替身支持 `document` 注入（body 锁断言用）；`window` 注入已有（`innerHeight` /
+  `getComputedStyle` / `addEventListener`）。EN 扫描的历史用例现在先开预览弹窗、关闭、再开对比弹窗，
+  `EN_REQUIRED_MARKERS` 用 modal 三个标记替换了已删除的 `data-region=history-detail`。
+- **负向对照（真红后还原）**：① 去掉 `body.style.overflow = 'hidden'` ⇒ 页面锁用例 1 红；
+  ② 让"选满两条"不再自动开弹窗 ⇒ fifth round 5 条红。
+- 全量：`cd packages/dsh-prompt-setting && node --test` ⇒ **629 pass / 0 fail**（四轮 628 + 新增 1，
+  改写的 8 条覆盖未减）；`node --check client.js` 通过。宿主与 `core/` 一字节未动。
+
+### 五、「弹窗打开时页面不滚动」的验证依据与目视确认
+
+自动化依据（`test/client.test.mjs` 的页面锁用例）：
+1. 浮层 `data-region="history-modal-overlay"` 的 `style.position === 'fixed'`（不进入文档流，不产生页面溢出）；
+2. 对话框 `style.height === style.maxHeight === 'min(82vh, 900px)'` 且 `overflowY === 'auto'`（内容在弹窗内滚）；
+3. 打开时 `document.body.style.overflow === 'hidden'`（页面被显式锁住），关闭后**恢复为原来的确切值**。
+
+建议负责人的目视确认（3 步）：
+1. 打开「版本历史」→ 点某行的「预览」：弹窗居中浮出，**页面滚动条不应因它而变化**；鼠标放在页面（弹窗之外）
+   滚轮：页面不动；
+2. 在弹窗内部滚轮：**只有弹窗内容滚**；点右上「✕」或按 **Esc**：弹窗消失，列表选择仍在；
+3. 点两条记录（选满一对）：对比弹窗自动弹出；关掉它，两行的 `from`/`to` 高亮**仍在**；再点第三条：
+   高亮变成新的两条并再次弹窗。
+
+### 六、未验证项
+
+- 真机目视未做（弹窗宽度 `min(1040px, 92vw)` 在设置对话框里的观感、`min(82vh, 900px)` 高度是否顶到边缘、
+  Esc 在宿主对话框里的按键捕获是否被外层拦截）——三条都只能在真机确认。
+- 宿主未重启（本轮纯客户端改动）。
+- `ResizeObserver` 分支仍无测试覆盖（沙箱无该构造器）。

@@ -1917,7 +1917,7 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   `sections` / `full`) keep their Revision 3 meaning; the Revision 6
   `overrides` view no longer exists.
 
-### 13.3 「版本历史」(Revision 19: its own scope, paging and a two-column layout; scope disclosure and state resets in Revision 20; record preview and rollback in Revision 21; preview policy and the narrowed rollback in Revision 22; viewport-sized non-stacking layout, row picking and clearing in Revision 23; the panel height measured at run time in Revision 24)
+### 13.3 「版本历史」(Revision 19: its own scope, paging and a two-column layout; scope disclosure and state resets in Revision 20; record preview and rollback in Revision 21; preview policy and the narrowed rollback in Revision 22; viewport-sized layout, row picking and clearing in Revision 23; the panel height measured at run time in Revision 24; one column and viewport modals in Revision 25)
 
 - The panel is `data-region="history"` (with `data-history-layer`,
   `data-history-state`, `data-history-total`, `data-history-corrupt`,
@@ -1966,10 +1966,10 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   **scope** (one workspace → another) changes which file that is, so both paths
   reset the view together: the offset returns to `0`, `diffSel` returns to its
   default (`data-history-selected` empty on every record row, the 「当前生效值」
-  row back to `"to"`), the preview is dropped (`data-history-preview` absent) and
-  the pane returns to its idle state (`data-history-detail="empty"`, no
-  `data-region="history-diff"` — it is not rendered while idle — no
-  `data-diff-sections`, the `history-detail-pending` note rendered again).
+  row back to `"to"`), the preview record is dropped and **any open modal is
+  closed** (Revision 25): no `data-region="history-modal-overlay"`, no
+  `data-region="history-preview"`, no `data-region="history-diff"` and no
+  `data-diff-sections`.
   **Paging does not reset it**: `data-action="history-prev"` / `"history-next"`
   move inside one file, so the reader's selection and its result stay — and are
   not re-requested.
@@ -1992,20 +1992,20 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   render inside an internally scrolling box `data-region="history-list"`
   (`data-history-list="scroll"`, `data-history-box-height="viewport"`,
   `flex: 1 1 auto`, `minHeight: 0`, `overflowY: auto`), so exactly the current
-  page's records are in the DOM and the box **fills its column** instead of being
-  a fixed 320px tall. The 「当前生效值」 row stays the last row of that box.
-  `data-history-box-height` is the string `"viewport"`, not a number: the bound
-  comes from the panel (below), not from this box.
-- **Two columns, never stacked (Revision 23).** `data-region="history-tab"` is a
-  **non-wrapping** row (`flexWrap: nowrap`, `data-history-columns="two"`,
-  `data-history-layout="viewport"`): the left column
-  `data-region="history-list-column"` holds the panel above, the right column
-  `data-region="history-detail"` holds the detail box
-  `data-region="history-detail-box"`. Both columns are `flex: 1 1 0` with
-  `minWidth: 0` / `minHeight: 0` — **no px flex-basis**, because `1 1 420px` +
-  `1 1 360px` inside a ~700px settings dialog is exactly what used to push the
-  second column onto its own line, putting a record and its result one screen
-  apart. A narrower panel narrows the columns; it never stacks them.
+  page's records are in the DOM and the box **fills what the panel leaves**
+  instead of being a fixed 320px tall. The 「当前生效值」 row stays the last row of
+  that box. `data-history-box-height` is the string `"viewport"`, not a number:
+  the bound comes from the panel (below), not from this box.
+- **One column (Revision 25; the two-column layout of Revision 23 is gone).**
+  `data-region="history-tab"` is a single `column` flex container
+  (`data-history-layout="single"`) whose only child is the list panel
+  `data-region="history"`. There is **no** `data-history-columns`, no
+  `data-region="history-list-column"`, no `data-region="history-detail"` and no
+  `data-region="history-detail-box"`: the record list owns the panel's full
+  width. Revision 23's two columns put the list at about half the settings
+  dialog's width and made every row cramped to read — which is what a second
+  column beside a list of records costs — so the preview and the comparison moved
+  into viewport modals (below) instead.
 - **The panel height is measured at run time (Revision 23; measured instead of
   guessed in Revision 24).** `history-tab` carries a px `height` / `maxHeight`
   and a px `minHeight` floor for a very short window. Revision 23 computed the
@@ -2038,24 +2038,36 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
     fallback constant, and a runtime without any measured geometry (a test
     double, a server render, a zero-sized rect) renders the constant path exactly
     as Revision 23 did.
-  Below the panel, each column and each box is `flex: 1 1 auto; minHeight: 0`, so
-  the list and the detail pane share exactly the height that is left.
-  **Every** answer to a selection — the comparison (g-038), the record preview and
-  the rollback confirmation (Revision 21) — renders inside that one bounded box,
-  which is what keeps the page's own height independent of how much history
-  exists: choosing a version and reading the result never scrolls the page, and
-  never grows it. The **reset rules are untouched** by any of this: changing the
+  Below the panel, the record box is `flex: 1 1 auto; minHeight: 0`, so the list
+  takes exactly the height that is left. The page's own height is therefore
+  independent of how much history exists — and, since Revision 25, independent of
+  how long a preview or a comparison is: those render in modals (below), which are
+  capped to the viewport and scroll internally. The **reset rules are untouched** by any of this: changing the
   layer or the scope still resets the offset, the selection, the comparison and
   the preview, and paging still does not (§13.3, Revision 20/21) — the panel's
   height is not part of the file-scoped state.
-- **The detail pane shows exactly one view (Revision 23).**
-  `data-history-detail` is `"empty"` | `"preview"` | `"diff"` and the three are
-  **mutually exclusive**: previewing replaces the comparison rather than stacking
-  above it, and a comparison in flight or failed is still the `"diff"` view. The
-  idle note `data-note="history-detail-pending"` renders only in the `"empty"`
-  state, and the comparison card `data-region="history-diff"` is **not rendered at
-  all** while idle — so a reset cannot leave a stale result or a stale selection
-  line on screen.
+- **Preview and comparison are viewport modals, and at most one is open
+  (Revision 25).** One state picks at most one of them, so they are mutually
+  exclusive by construction; there is no `data-history-detail` marker and no
+  inline detail pane any more. Each is:
+  - an overlay `data-region="history-modal-overlay"` with
+    `data-history-modal` = `"history-preview-modal"` | `"history-diff-modal"`,
+    `position: fixed`, centred, on a dimmed backdrop;
+  - a dialog `data-region="history-preview-modal"` |
+    `data-region="history-diff-modal"` with `role="dialog"` +
+    `aria-modal="true"` + `aria-label`, `width: min(1040px, 92vw)`,
+    `height: maxHeight: min(82vh, 900px)` and `overflow-y: auto`, so a long
+    preview or comparison scrolls **inside the dialog**;
+  - closed by a button in its head (`data-action="history-modal-close"`, with an
+    `aria-label` / `title` of `histModalClose`) **and** by `Esc`, which the page
+    binds while one is open. Both close only the modal: the selection survives.
+  - While one is open the page behind it is locked
+    (`document.body.style.overflow = 'hidden'`, restored to its exact previous
+    value on close), so the overlay cannot scroll the page underneath it.
+  The preview dialog contains `data-region="history-preview"` (whose
+  `data-preview-state` is `"ready"` | `"missing"`), and the comparison dialog
+  contains `data-region="history-diff"` with its `data-diff-*` markers. A
+  comparison that is still `loading`, or that failed, renders in the same dialog.
 - **Picking a comparison by clicking rows (Revision 23).** A record row is itself
   a control (`data-action="history-row-pick"`, `data-history-row`, `title` /
   `data-history-pick-hint` = `histRowPickHint`, `cursor: pointer`). Clicking rows
@@ -2066,12 +2078,17 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   currently holds `from` clears the pair; clicking the one holding `to` steps back
   to `from` alone. The per-row `diff-from` / `diff-to` buttons stay for exact
   control; they stop the click from bubbling to the row, so a button never also
-  re-picks the row it sits on.
-- **Clearing the comparison (Revision 23).** The comparison view carries
-  `data-action="diff-clear"` (disabled while there is nothing to clear). It
-  restores the default pair (`from: null`, `to: "current"` — the same pair a
-  layer/scope reset installs, so "cleared" and "just opened" cannot drift apart),
-  drops the comparison, and leaves the pane in its idle state.
+  re-picks the row it sits on. **A completed pair opens the comparison modal by
+  itself** (Revision 25), and closing that modal keeps the pair, so the reader can
+  put the comparison away without losing it; a third row slides the window and
+  re-opens the modal on the new pair.
+- **Clearing the comparison (Revision 23; closes the modal in Revision 25).** The
+  comparison dialog carries `data-action="diff-clear"` (disabled while there is
+  nothing to clear). It restores the default pair (`from: null`, `to: "current"` —
+  the same pair a layer/scope reset installs, so "cleared" and "just opened"
+  cannot drift apart), drops the comparison **and closes the modal**: with no pair
+  there is nothing to show, and a dialog left open on an empty state is how a stale
+  result gets read as a current one.
 - **Record preview (Revision 21; the policy line in Revision 22).** Every record
   row carries
   `data-action="history-preview"` (with `data-history-id`), and the panel it opens
@@ -2082,8 +2099,10 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   texts `data-preview-text="before"` / `"after"` (`data-preview-bytes` = the stored
   byte count, the text itself being the node's content), and one
   `data-preview-snapshot="<name>"` per snapshot entry with its
-  `data-preview-snapshot-action`. `data-action="preview-close"` closes it,
-  and clicking the record already previewed toggles it off.
+  `data-preview-snapshot-action`. The preview lives in the modal described above
+  (Revision 25), closed by `data-action="history-modal-close"` or `Esc`; opening it
+  is always one click on the row's preview button, with no toggle to reason
+  about.
   **A preview issues no request at all.** Everything it shows already arrived with
   the page it was rendered from, so "preview writes nothing" is structural rather
   than a promise: `test/client.test.mjs` asserts that the preview path leaves the
@@ -2100,7 +2119,8 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
 - **Preview and paging (Revision 21).** Paging does **not** clear the preview, the
   same rule the comparison selection follows above. A page that does not hold the
   previewed record therefore renders `data-preview-state="missing"` with
-  `data-preview-missing="true"` instead of an empty panel. Changing the **layer**
+  `data-preview-missing="true"` inside the still-open dialog (plus the
+  `histPreviewMissingHint` line) instead of an empty one. Changing the **layer**
   or the **scope** does clear it, together with everything else that points into
   the file that just left the screen.
 - **One-click rollback (Revision 21; narrowed to the reserved section in
@@ -2180,6 +2200,43 @@ columns `1 1 0`, both boxes `1 1 auto; minHeight: 0`).
 - **Unchanged invariants.** The file-scoped reset rules are untouched: a layer or
   scope change still resets offset + selection + comparison + preview, paging
   still resets nothing, and §19's rollback is still the reserved section only.
+
+**Revision 25 (one column, and the preview/comparison as viewport modals —
+g-039 fifth round).** Client-half only: **no route, no query parameter and no
+stored byte changes**, and §19's narrowed rollback is untouched.
+
+- **Why.** The two-column row of Revision 23 put the record list at roughly half
+  the settings dialog's width. Every row carries an id, an action tag, a section
+  name, a timestamp and four buttons, so half a dialog's width made the list
+  cramped to read — the reviewer's report — and the second column was only ever
+  showing one of two things anyway.
+- **Now.** `history-tab` is a single column (`data-history-layout="single"`) whose
+  only child is the list panel; the record list owns the panel's full width. The
+  preview and the comparison moved into modals: `position: fixed`, centred,
+  `role="dialog"` + `aria-modal="true"`, `min(1040px, 92vw)` wide,
+  `min(82vh, 900px)` tall, internally scrolling, with a close button and `Esc`.
+  At most one is open at a time, by construction.
+- **Removed with the layout.** `data-history-columns`,
+  `data-region="history-list-column"`, `data-region="history-detail"`,
+  `data-region="history-detail-box"`, `data-history-detail`, the
+  `history-detail-pending` idle note and `data-action="preview-close"`. Nothing
+  half-built is left behind: the list's box, its pager, the scope disclosure and
+  the panel-height measurement are exactly as Revision 24 left them.
+- **Interaction, made explicit.** Clicking rows still builds the pair (first =
+  `from`, second = `to`, then a sliding window), and a **completed** pair opens the
+  comparison modal by itself; closing that modal keeps the pair, and a third row
+  re-opens it on the new pair. The preview button opens the preview modal. The
+  modal's close button and `Esc` are the only ways out (there is no
+  click-the-record-again toggle).
+- **Reset rules.** A layer or scope change still resets offset + selection +
+  comparison + preview — and now closes the modal too, since a modal describes a
+  record of the file that just left the screen. Paging still resets nothing. The
+  panel height is still measured at run time (Revision 24) and is not part of the
+  file-scoped state.
+- **Page scroll.** While a modal is open the page behind it is locked
+  (`document.body.style.overflow = 'hidden'`; the previous value is restored
+  exactly on close, and on unmount), so the overlay cannot scroll the page
+  underneath it.
 
 ### 13.3a 「备份与恢复」(Revision 19)
 

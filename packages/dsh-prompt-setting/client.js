@@ -975,6 +975,8 @@ window.__ModuleLoader__.load({
       histPreviewHeading: '记录预览',
       histPreviewClose: '关闭预览',
       histPreviewMissing: '这条记录不在当前这一页里：翻回它所在的页，或刷新列表。',
+      histPreviewMissingHint: '也可能是这条记录已经被历史保留上限清理掉了。',
+      histModalClose: '关闭',
       histPreviewAction: '动作',
       histPreviewAt: '时间',
       histPreviewLayer: '层',
@@ -1420,6 +1422,8 @@ window.__ModuleLoader__.load({
       histPreviewHeading: 'Record preview',
       histPreviewClose: 'Close the preview',
       histPreviewMissing: 'That record is not on this page: go back to the page that holds it, or reload the list.',
+      histPreviewMissingHint: 'It may also have been dropped by the retention limit.',
+      histModalClose: 'Close',
       histPreviewAction: 'Action',
       histPreviewAt: 'Time',
       histPreviewLayer: 'Layer',
@@ -5343,31 +5347,32 @@ window.__ModuleLoader__.load({
      * @param a - the page actions.
      * @returns the panel element, or `null` when no record is being previewed.
      */
-    function renderPreviewPanel(t, m, a) {
+    function renderPreviewModal(t, m, a) {
       const preview = m.preview;
-      if (preview.state === 'none') return null;
       const shell = (children, state) =>
-        h(
-          'div',
+        modalShell(
           {
-            'data-region': 'history-preview',
-            'data-preview-state': state,
-            'data-preview-id': preview.id === null ? '' : String(preview.id),
-            style: { ...cardStyle, display: 'flex', flexDirection: 'column', gap: 6 },
+            key: 'history-preview-modal',
+            region: 'history-preview-modal',
+            title: t('histPreviewHeading'),
+            closeLabel: t('histModalClose'),
+            onClose: a.closeHistoryModal,
           },
-          children,
+          h(
+            'div',
+            {
+              'data-region': 'history-preview',
+              'data-preview-state': state,
+              'data-preview-id': preview.id === null ? '' : String(preview.id),
+              style: { display: 'flex', flexDirection: 'column', gap: 6 },
+            },
+            children,
+          ),
         );
-      const heading = h('h4', { key: 'heading', style: { margin: 0, fontSize: 13, fontWeight: 600 } }, t('histPreviewHeading'));
-      const close = h(
-        UI.Button,
-        { key: 'close', 'data-action': 'preview-close', onClick: a.closeHistoryPreview },
-        t('histPreviewClose'),
-      );
       if (preview.state === 'missing') {
         return shell([
-          heading,
           h('p', { key: 'missing', 'data-preview-missing': 'true', style: { margin: 0, ...metaStyle } }, t('histPreviewMissing')),
-          close,
+          h('p', { key: 'missing-hint', style: { margin: 0, ...metaStyle } }, t('histPreviewMissingHint')),
         ], 'missing');
       }
       const record = preview.record;
@@ -5416,9 +5421,8 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { key: 'head', style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-            heading,
             h('code', { key: 'id', style: { fontSize: 12 } }, `#${record.id}`),
-            close,
+            h('span', { key: 'action', style: metaStyle }, historyActionLabel(t, record.action)),
           ),
           h(
             'div',
@@ -5561,7 +5565,7 @@ window.__ModuleLoader__.load({
      * @param a - the page actions.
      * @returns the panel element.
      */
-    function renderDiffPanel(t, m, a) {
+    function renderDiffModal(t, m, a) {
       const label = (value) => (value === null || value === undefined
         ? '—'
         : value === DIFF_CURRENT ? t('histCurrent') : `#${value}`);
@@ -5569,11 +5573,9 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { key: 'head', style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-          h('h4', { key: 'heading', style: { margin: 0, fontSize: 13, fontWeight: 600 } }, t('histDiffHeading')),
           // g-039 third round: an explicit way out. Picking records on rows is
           // the primary path, and a path that can only be walked forwards needs
-          // a reset: this clears the selection and the result, and the pane goes
-          // back to its idle state.
+          // a reset: this clears the selection, the result and this modal.
           h(
             UI.Button,
             {
@@ -5673,14 +5675,23 @@ window.__ModuleLoader__.load({
           children.push(h('div', { key: 'lines' }, renderDiffLines(t, lines)));
         }
       }
-      return h(
-        'div',
+      return modalShell(
         {
-          'data-region': 'history-diff',
-          'data-diff-state': m.diff.phase,
-          style: { ...cardStyle, display: 'flex', flexDirection: 'column', gap: 6 },
+          key: 'history-diff-modal',
+          region: 'history-diff-modal',
+          title: t('histDiffHeading'),
+          closeLabel: t('histModalClose'),
+          onClose: a.closeHistoryModal,
         },
-        children,
+        h(
+          'div',
+          {
+            'data-region': 'history-diff',
+            'data-diff-state': m.diff.phase,
+            style: { display: 'flex', flexDirection: 'column', gap: 6 },
+          },
+          children,
+        ),
       );
     }
 
@@ -7036,18 +7047,15 @@ window.__ModuleLoader__.load({
      * @returns the tab element.
      */
     function renderHistoryTab(t, m, a) {
-      // Three mutually exclusive views, so switching never leaves the previous
-      // one's content behind. A comparison in flight (`loading`) or a failed one
-      // is still the comparison view.
-      const detail =
-        m.preview.state !== 'none' ? 'preview' : m.diff.phase !== 'idle' || m.diff.data !== null ? 'diff' : 'empty';
       const panelHeight = m.historyPanel.height === null ? HISTORY_PANEL_HEIGHT : `${m.historyPanel.height}px`;
       return h(
         'div',
         {
           'data-region': 'history-tab',
-          'data-history-columns': 'two',
-          'data-history-layout': 'viewport',
+          // g-039 fifth round: one column. The record list owns the full width of
+          // the panel; the preview and the comparison are viewport modals below,
+          // so nothing squeezes the rows any more.
+          'data-history-layout': 'single',
           'data-history-viewport-offset': String(HISTORY_VIEWPORT_OFFSET),
           'data-history-height-source': m.historyPanel.source,
           'data-history-panel-height':
@@ -7055,81 +7063,106 @@ window.__ModuleLoader__.load({
           ref: m.historyPanelRef,
           style: {
             display: 'flex',
-            // Never stacks (g-039 third round). See this function's doc comment.
-            flexWrap: 'nowrap',
+            flexDirection: 'column',
             gap: 10,
-            alignItems: 'stretch',
             height: panelHeight,
             maxHeight: panelHeight,
             minHeight: HISTORY_PANEL_MIN_HEIGHT,
             minWidth: 0,
+            overflow: 'hidden',
+          },
+        },
+        renderHistoryPanel(t, m, a),
+        renderHistoryModals(t, m, a),
+      );
+    }
+
+    /**
+     * g-039 (fifth round): the preview and the comparison, as viewport modals.
+     *
+     * They are mutually exclusive by construction — one state
+     * (`m.historyModal`) picks at most one of them — and each is a
+     * `position: fixed` overlay with `role="dialog"` + `aria-modal="true"`, a
+     * header close button, Esc (bound by the page while one is open) and an
+     * internally scrolling body, so a long comparison never scrolls the page
+     * behind it. The record list keeps the full panel width underneath.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the modal element, or `null` when none is open.
+     */
+    function renderHistoryModals(t, m, a) {
+      if (m.historyModal === 'preview') return m.preview.state === 'none' ? null : renderPreviewModal(t, m, a);
+      if (m.historyModal === 'diff') return renderDiffModal(t, m, a);
+      return null;
+    }
+
+    /**
+     * The shared modal shell: a fixed, centred overlay with a titled, closeable,
+     * internally scrolling dialog.
+     * @param options - `{key, region, label, title, onClose, closeAction}`.
+     * @param children - the dialog's body.
+     * @returns the overlay element.
+     */
+    function modalShell(options, children) {
+      return h(
+        'div',
+        {
+          key: options.key,
+          'data-region': 'history-modal-overlay',
+          'data-history-modal': options.region,
+          style: {
+            position: 'fixed',
+            top: 0,
+            right: 0,
+            bottom: 0,
+            left: 0,
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 16,
+            background: 'rgba(0, 0, 0, 0.45)',
           },
         },
         h(
           'div',
           {
-            key: 'list-column',
-            'data-region': 'history-list-column',
+            'data-region': options.region,
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-label': options.title,
             style: {
-              flex: '1 1 0',
-              minWidth: 0,
-              minHeight: 0,
+              ...cardStyle,
               display: 'flex',
               flexDirection: 'column',
-              gap: 6,
-              overflow: 'hidden',
+              gap: 10,
+              width: 'min(1040px, 92vw)',
+              maxWidth: '92vw',
+              height: 'min(82vh, 900px)',
+              maxHeight: 'min(82vh, 900px)',
+              overflowY: 'auto',
+              padding: '16px 18px',
+              boxShadow: '0 12px 32px rgba(0, 0, 0, 0.35)',
             },
           },
-          renderHistoryPanel(t, m, a),
-        ),
-        h(
-          'div',
-          {
-            key: 'detail-column',
-            'data-region': 'history-detail',
-            'data-history-detail': detail,
-            style: {
-              flex: '1 1 0',
-              minWidth: 0,
-              minHeight: 0,
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 6,
-              overflow: 'hidden',
-            },
-          },
-          // The detail box fills the column instead of being 320px tall: the
-          // panel's height is the viewport's, and this box takes what is left.
-          // g-039 lands the preview/rollback surface inside it.
           h(
             'div',
-            {
-              key: 'detail-box',
-              'data-region': 'history-detail-box',
-              'data-history-box': 'scroll',
-              'data-history-box-height': 'viewport',
-              style: {
-                flex: '1 1 auto',
-                minHeight: 0,
-                overflowY: 'auto',
-                border: `1px solid ${token.borderL1}`,
-                borderRadius: 8,
-                padding: 6,
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 6,
+            { 'data-role': 'history-modal-head', style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+            h('strong', { key: 'title', style: { fontSize: 14, fontWeight: 600 } }, options.title),
+            h(
+              UI.Button,
+              {
+                key: 'close',
+                'data-action': 'history-modal-close',
+                'aria-label': options.closeLabel,
+                title: options.closeLabel,
+                onClick: options.onClose,
               },
-            },
-            detail === 'empty'
-              ? h(
-                  'p',
-                  { key: 'detail-pending', 'data-note': 'history-detail-pending', style: { margin: 0, ...metaStyle } },
-                  t('histDetailPending'),
-                )
-              : null,
-            detail === 'preview' ? renderPreviewPanel(t, m, a) : null,
-            detail === 'diff' ? renderDiffPanel(t, m, a) : null,
+              '✕',
+            ),
           ),
+          children,
         ),
       );
     }
@@ -7814,17 +7847,63 @@ window.__ModuleLoader__.load({
       // g-038: the offset of the history page on screen. The page **size** is the
       // host's (`pageLimit` in its response) and is never hardcoded here.
       const [historyOffset, setHistoryOffset] = React.useState(0);
-      // g-039: which record the detail pane is previewing, by its history id
-      // (`null` = nothing). Like `diffSel`, it points **into one file**, so
+      // g-039: which record a preview would show, by its history id (`null` =
+      // nothing). Like `diffSel`, it points **into one file**, so
       // `resetHistoryView` clears it; paging deliberately does not (CONTRACT
       // §13.3), and a page that does not hold it renders the `missing` state.
       const [previewId, setPreviewId] = React.useState(null);
+      // g-039 (fifth round): the record list owns the whole panel now, so the
+      // preview and the comparison live in **modals** — viewport overlays with an
+      // explicit close — instead of in a second column that squeezed the list.
+      // One state holds both, because they are mutually exclusive by
+      // construction: `null` | `'preview'` | `'diff'`.
+      const [historyModal, setHistoryModal] = React.useState(null);
+      // Esc closes whichever modal is open — the keyboard half of the explicit
+      // close entry point (the button is the other half).
+      React.useEffect(() => {
+        if (historyModal === null) return undefined;
+        if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return undefined;
+        const onKeyDown = (event) => {
+          const key = event === null || event === undefined ? '' : String(event.key === undefined ? '' : event.key);
+          if (key === 'Escape' || key === 'Esc') setHistoryModal(null);
+        };
+        window.addEventListener('keydown', onKeyDown);
+        return () => window.removeEventListener('keydown', onKeyDown);
+      }, [historyModal]);
       // g-039 (fourth round): the panel's height is **measured**, not guessed —
       // one ref on the panel, one number in state, and `null` meaning "use the
       // constant path" (`HISTORY_PANEL_HEIGHT`). The measurement is reported on
       // the panel as `data-history-height-source`, so a real page answers "which
       // path am I on" without a debugger.
       const historyPanelRef = React.useRef(null);
+      /**
+       * The `body.style.overflow` this page had before a modal locked it, so the
+       * lock is undone with the **exact** previous value rather than with `''`.
+       */
+      const pageOverflowRef = React.useRef(null);
+      // While a modal is open the page behind it must not scroll: it is a
+      // viewport overlay, and a scrolling background is what makes a modal feel
+      // broken. The effect runs for both directions (lock on open, restore on
+      // close) rather than relying on the cleanup alone, and `restore` is also
+      // returned as the cleanup so an unmount while a modal is open cannot leave
+      // the page locked.
+      React.useEffect(() => {
+        if (typeof document === 'undefined' || document === null) return undefined;
+        const body = document.body;
+        if (body === undefined || body === null || body.style === undefined) return undefined;
+        const restore = () => {
+          const previous = pageOverflowRef.current;
+          pageOverflowRef.current = null;
+          if (previous !== null) body.style.overflow = previous;
+        };
+        if (historyModal === null) {
+          restore();
+          return restore;
+        }
+        if (pageOverflowRef.current === null) pageOverflowRef.current = body.style.overflow;
+        body.style.overflow = 'hidden';
+        return restore;
+      }, [historyModal]);
       const [historyPanelPx, setHistoryPanelPx] = React.useState(null);
       // 「高级」 picks its own layer: the two layer-wide buttons are destructive,
       // and silently sharing another tab's selector would make selecting a log
@@ -8189,6 +8268,9 @@ window.__ModuleLoader__.load({
         setDiffSel({ from: null, to: DIFF_CURRENT });
         setDiff({ phase: 'idle', data: null, error: null });
         setPreviewId(null);
+        // g-039 fifth round: an open modal describes a record — possibly one the
+        // new file does not even contain — so it goes with the selection.
+        setHistoryModal(null);
       };
       const historyPrev = () =>
         setHistoryOffset(Math.max(0, histPage.offset - Math.max(1, histPage.pageSize)));
@@ -9201,11 +9283,16 @@ window.__ModuleLoader__.load({
           setHistoryScopeSearch(event && event.target ? String(event.target.value) : ''),
         historyPrev,
         historyNext,
-        // g-039: the preview is a toggle (clicking the record you are already
-        // previewing closes it), and opening it issues no request at all — the
-        // record came with the page the list was rendered from.
-        previewHistoryRecord: (id) => setPreviewId((current) => (current === String(id) ? null : String(id))),
-        closeHistoryPreview: () => setPreviewId(null),
+        // g-039 fifth round: the preview lives in a modal, and this is what opens
+        // it. It issues no request at all — the record came with the page the
+        // list was rendered from — and the way out is the close button or Esc,
+        // never a second click on the same record.
+        previewHistoryRecord: (id) => {
+          setPreviewId(String(id));
+          setHistoryModal('preview');
+        },
+        /** Close whichever modal is open. The selection is deliberately kept. */
+        closeHistoryModal: () => setHistoryModal(null),
         // The rollback button only *asks*: the write happens through the shared
         // confirmation overlay (CONTRACT §13.5), never on the click itself. How
         // many *other* sections that version overrode travels with the question,
@@ -9224,18 +9311,18 @@ window.__ModuleLoader__.load({
         pickDiffSide: (side, id) => {
           const next = { ...diffSel, [side]: id };
           setDiffSel(next);
-          // A comparison is a view of the detail pane: dropping the preview is
-          // what makes the click's result the thing the reader sees (the pane
-          // shows exactly one of idle / preview / comparison).
-          setPreviewId(null);
+          // The two sides now live side by side in a modal, so a completed pair
+          // opens it; a half-made selection just closes whatever was open.
+          setHistoryModal(next.from === null || next.to === null ? null : 'diff');
           void runDiff(next.from, next.to);
         },
         // g-039 third round: the row itself is the primary control. The first
         // row picked becomes `from`; the second becomes `to`, and that is when
-        // the comparison is requested; from the third on it is a sliding window
-        // (`to` becomes `from`, the new row becomes `to`). Clicking the record
-        // already holding one of the two slots steps back out of it, and
-        // `diff-clear` resets both.
+        // the comparison is requested **and its modal opens**; from the third on
+        // it is a sliding window (`to` becomes `from`, the new row becomes `to`,
+        // and the modal opens again on the new pair). Clicking the record already
+        // holding one of the two slots steps back out of it, and `diff-clear`
+        // resets both.
         pickHistoryRow: (id) => {
           const next =
             id === diffSel.from
@@ -9248,16 +9335,17 @@ window.__ModuleLoader__.load({
                     ? { from: diffSel.from, to: id }
                     : { from: diffSel.to, to: id };
           setDiffSel(next);
-          setPreviewId(null);
+          setHistoryModal(next.from === null || next.to === null ? null : 'diff');
           void runDiff(next.from, next.to);
         },
-        // The explicit way back to the pane's idle state: the same pair a reset
-        // installs (`current` is the default `to`), so "cleared" and "just
-        // opened" cannot drift apart, plus the request state is dropped rather
-        // than left showing a result nobody is comparing any more.
+        // The explicit way back: the same pair a reset installs (`current` is the
+        // default `to`), so "cleared" and "just opened" cannot drift apart, plus
+        // the request state and the modal are dropped rather than left showing a
+        // result nobody is comparing any more.
         clearDiff: () => {
           setDiffSel({ from: null, to: DIFF_CURRENT });
           setDiff({ phase: 'idle', data: null, error: null });
+          setHistoryModal(null);
         },
         requestResetLayer: (layer, count) => setConfirm({ kind: 'reset-layer', layer, count }),
         requestLegacyClear: (layer, count) => setConfirm({ kind: 'legacy-clear', layer, count }),
@@ -9365,6 +9453,9 @@ window.__ModuleLoader__.load({
         preview: previewInfo,
         historyPanel,
         historyPanelRef,
+        // g-039 fifth round: `null` | `'preview'` | `'diff'` — at most one modal
+        // at a time, by construction.
+        historyModal,
         confirm,
         transfer,
         importText,
