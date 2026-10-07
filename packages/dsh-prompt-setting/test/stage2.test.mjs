@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { afterEach, beforeEach } from 'node:test';
 
-import { DEFAULT_HISTORY_LIMIT, MIN_HISTORY_LIMIT } from '../core/history.js';
+import { DEFAULT_HISTORY_LIMIT, DEFAULT_HISTORY_PAGE, MIN_HISTORY_LIMIT } from '../core/history.js';
 import { apply, CUSTOM_SECTION_NAME } from '../index.js';
 
 const OVERRIDES_PATH = '/prompt-setting/overrides';
@@ -257,6 +257,35 @@ async function history(route, query = '') {
   return json(res);
 }
 
+/**
+ * Write a layer's history file whose records carry **distinct** session ids.
+ *
+ * The route can only ever write the current session's id into a record (it
+ * stamps `session` from the request), so a log that spans sessions — the log a
+ * reader who switches sessions really has on disk — is seeded directly here.
+ * @param path - the history file.
+ * @param sessions - the `session` value of each record, oldest first.
+ * @param layer - the record's layer name.
+ */
+function seedSessionHistory(path, sessions, layer = 'user') {
+  const lines = sessions.map((session, index) => JSON.stringify({
+    seq: index + 1,
+    at: `2024-01-0${index + 1}T00:00:0${index + 1}.000Z`,
+    layer,
+    session,
+    action: 'replace',
+    name: CUSTOM_SECTION_NAME,
+    origin: 'ui',
+    before: null,
+    after: { text: `v${index + 1}`, hash: 'f'.repeat(64), bytes: 2 },
+    entries: null,
+    snapshot: [],
+    note: null,
+  }));
+  mkdirSync(join(path, '..'), { recursive: true });
+  writeFileSync(path, `${lines.join('\n')}\n`, 'utf8');
+}
+
 // #region dispatch
 
 test('stage2: the new routes answer 405 with their own allow list, unchanged for the old ones', async () => {
@@ -392,6 +421,136 @@ test('stage2: history pages and filters by name, and by an exclusive before boun
   const bounded = await history(route, `&before=${encodeURIComponent(newest)}`);
   assert.deepEqual(bounded.records.map((record) => record.id), older.map((record) => record.id));
   assert.equal(bounded.total, older.length);
+});
+
+test('stage2: the user layer log is whole without ?session=, and ?session= still filters (g-038)', async () => {
+  const { route } = mount();
+  // Three writes, three sessions (one of them global) — the log a reader who
+  // switches sessions really has. Before g-038 the page always sent `?session=`,
+  // so only one column of this file was ever visible.
+  seedSessionHistory(userHistoryPath(), ['s1', 's2', null]);
+
+  const all = await history(route);
+  assert.deepEqual(all.records.map((record) => record.id), ['3', '2', '1'], 'the whole layer, newest first');
+  assert.equal(all.total, 3);
+  assert.equal(all.session, null, 'nothing was filtered');
+  assert.equal(all.scopeSession, null, 'and no scope was named');
+
+  // The explicit filter is kept, and still means what it always meant.
+  const filtered = await history(route, '&session=s1');
+  assert.deepEqual(filtered.records.map((record) => record.id), ['1']);
+  assert.equal(filtered.total, 1);
+  assert.equal(filtered.session, 's1');
+  assert.equal(filtered.scopeSession, 's1', 'an explicit session resolves and filters');
+
+  // An explicitly empty session is "no filter", never "records whose session is ''".
+  const empty = await history(route, '&session=');
+  assert.equal(empty.total, 3);
+  assert.equal(empty.session, null);
+
+  // The filter composes with paging: the page count describes the matches.
+  const paged = await history(route, '&session=s1&limit=1&offset=0');
+  assert.equal(paged.total, 1);
+  assert.equal(paged.pageCount, 1);
+  assert.equal(paged.hasMore, false);
+});
+
+test('stage2: ?offset= pages the log, clamps an unusable page and reports the page (g-038)', async () => {
+  const { route } = mount();
+  seedHistory(userHistoryPath(), [[1, 'a', 'replace'], [2, 'b', 'replace'], [3, 'a', 'replace']]);
+
+  const first = await history(route, '&limit=1&offset=0');
+  assert.deepEqual(first.records.map((record) => record.id), ['3']);
+  assert.equal(first.offset, 0);
+  assert.equal(first.pageLimit, 1);
+  assert.equal(first.total, 3);
+  assert.equal(first.pageCount, 3);
+  assert.equal(first.hasMore, true);
+
+  const second = await history(route, '&limit=1&offset=1');
+  assert.deepEqual(second.records.map((record) => record.id), ['2']);
+  assert.equal(second.offset, 1);
+  assert.equal(second.hasMore, true);
+
+  const third = await history(route, '&limit=1&offset=2');
+  assert.deepEqual(third.records.map((record) => record.id), ['1']);
+  assert.equal(third.offset, 2);
+  assert.equal(third.hasMore, false, 'the last page says so');
+
+  // An **unusable** page number is page one, never an error.
+  for (const raw of ['-5', 'abc', '', ' ']) {
+    const page = await history(route, `&limit=1&offset=${encodeURIComponent(raw)}`);
+    assert.equal(page.offset, 0, `offset=${JSON.stringify(raw)} is page one`);
+    assert.deepEqual(page.records.map((record) => record.id), ['3']);
+    assert.equal(page.pageCount, 3);
+    assert.equal(page.hasMore, true);
+  }
+
+  // A page **past the end** (or a fractional one, floored) is clamped to the
+  // last page that exists, so the reader still sees records rather than nothing.
+  for (const raw of ['3', '999', '2.7']) {
+    const page = await history(route, `&limit=1&offset=${encodeURIComponent(raw)}`);
+    assert.equal(page.offset, 2, `offset=${JSON.stringify(raw)} lands on the last page`);
+    assert.deepEqual(page.records.map((record) => record.id), ['1']);
+    assert.equal(page.pageCount, 3);
+    assert.equal(page.hasMore, false);
+  }
+
+  // `limit=0` is the documented counts-only request: no records, no pages.
+  const counts = await history(route, '&limit=0&offset=3');
+  assert.deepEqual(counts.records, []);
+  assert.equal(counts.total, 3);
+  assert.equal(counts.pageCount, 0);
+  assert.equal(counts.hasMore, false);
+  assert.equal(counts.offset, 0);
+
+  // No `limit` at all is the host's own default, and one page of it.
+  const dflt = await history(route);
+  assert.equal(dflt.pageLimit, DEFAULT_HISTORY_PAGE);
+  assert.equal(dflt.offset, 0);
+  assert.equal(dflt.pageCount, 1);
+  assert.equal(dflt.hasMore, false);
+});
+
+test('stage2: a workspace log is located by ?workspace= and is not narrowed by it (g-038)', async () => {
+  const workspaces = [workspaceWith('ws-one', 's1')];
+  const { route } = mount({ workspaces });
+  // One workspace, two sessions writing into it (plus a global write): the log
+  // belongs to the workspace, so all three records are one log.
+  seedSessionHistory(workspaceHistoryPath('ws-one'), ['s1', 's2', 's1'], 'workspace');
+
+  const located = json(await call(route, { url: `${HISTORY_PATH}?layer=workspace&workspace=s1` }));
+  assert.equal(located.path, workspaceHistoryPath('ws-one'), 'the workspace root came from the session index');
+  assert.equal(located.scopeSession, 's1');
+  assert.equal(located.session, null, '`workspace=` locates a file; it does not filter records');
+  assert.equal(located.total, 3, 'the whole workspace log');
+  assert.equal(located.records.some((record) => record.session === 's2'), true, "another session's record is shown");
+  assert.equal(located.enabled, true);
+
+  // The explicit filter still narrows the same file.
+  const filtered = json(await call(route, { url: `${HISTORY_PATH}?layer=workspace&session=s1` }));
+  assert.equal(filtered.path, workspaceHistoryPath('ws-one'));
+  assert.equal(filtered.total, 2);
+  assert.equal(filtered.session, 's1');
+
+  // And paging applies to the located file.
+  const paged = json(await call(route, { url: `${HISTORY_PATH}?layer=workspace&workspace=s1&limit=2&offset=2` }));
+  assert.equal(paged.total, 3);
+  assert.equal(paged.pageCount, 2);
+  assert.equal(paged.records.length, 1);
+  assert.equal(paged.hasMore, false);
+
+  // An unknown workspace/session is still the ordinary refusal, not a crash.
+  const unknown = await call(route, { url: `${HISTORY_PATH}?layer=workspace&workspace=nobody` });
+  assert.equal(unknown.statusCode, 200);
+  assert.equal(json(unknown).enabled, false);
+  assert.equal(json(unknown).reason.includes('nobody'), true);
+
+  // A comparison reads the very same file through the same scope (g-038).
+  const diff = json(await call(route, { url: `${DIFF_PATH}?layer=workspace&workspace=s1&from=1&to=current` }));
+  assert.equal(diff.historyPath, workspaceHistoryPath('ws-one'));
+  assert.equal(diff.scopeSession, 's1');
+  assert.equal(diff.session, null);
 });
 
 test('stage2: a workspace layer keeps its own separate history file', async () => {

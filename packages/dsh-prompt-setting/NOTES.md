@@ -5506,3 +5506,62 @@ if (installed.length !== 1 || target === void 0) throw new ManagementFailure("am
   `GET /prompt-setting/ping` 应回 `launchKind: "cli"`、页面根容器 `data-launch-kind="cli"`、完成态文案含
   「重新运行 dsh web」。**本轮未重启宿主，故真机目视为待验证项**（第三方插件读真 `profileContext` 的返回值
   同样只在重启后才能看到；裸 `curl /prompt-setting/ping` 只会得到 401 信任围栏）。
+
+## 113. 「历史与备份」拆成「版本历史」+「备份与恢复」，历史作用域与查看范围解耦，列表分页 + 定高内滚（g-038，2026-10-08，基线 `4e1bef3` 工作区）
+
+### 一、契约变更（Revision 19；`CONTRACT.md` §8 / §9 / §13.0 / §13.3 / §13.3a / §13.7）
+- **tab 5 个**：`MAIN_TABS = ['mine','overview','history','backup','advanced']`，顺序固定、默认仍 `mine`；
+  导出/导入整体迁入 `backup`（`data-region="backup-tab"` 内只有 `transfer`），`history` 内不再有任何导出/导入节点。
+- **history 的 scope 一拆为二**：`?session=` = **显式过滤**（未传/空 ⇒ 不过滤，user 层因此是「该层全部记录」）；
+  新增 `?workspace=` = **只定位不过滤**（一个能解析出工作区的 session id），响应新增 `scopeSession`。
+  `?diff=` 用同一套 `readScopeOf`（`index.js`），所以列表与对比永远读同一个文件。
+- **分页**：新增 `?offset=`（`resolvePageOffset`：缺失/空/负/非数 ⇒ `0`；越界 ⇒ 钳到最后一页起始），
+  响应新增 `offset` / `pageCount` / `hasMore`。`queryHistory` 变成 `(filter → 排序 → offset/limit 窗口)`，
+  返回 `{records,total,offset,pageCount,hasMore}`；`total` 永远是匹配数、页数是 `ceil(total/limit)`、
+  `limit=0` 是「只要计数」⇒ `pageCount=0`/`hasMore=false`。
+- 兼容性：`layer`/`name`/`before`/`limit`、`.jsonl` 格式、保留上限、坏行跳过语义、写入响应体全部未动。
+
+### 二、为什么新增 `?workspace=`（与推荐方案的一处偏差及理由）
+- 推荐方案是「`?session=` 缺省不过滤、显式时过滤」，但**工作区层必须有一个 id 才能定位 `history.jsonl`**
+  （根目录只由宿主 `workspaceRegistry` 从 session 反查，§4.2 明令「客户端从不提供路径」）。若拿 `?session=`
+  既定位又过滤，同一个工作区里**别的会话写下的记录会被隐藏**（实测：一个工作区两个会话 ⇒ 只看到一半历史）。
+- 因此新增**只用于定位**的 `?workspace=<sessionId>`：工作区维度选择器发它，列表拿到的是该工作区**全部**记录；
+  `?session=` 的过滤能力原样保留（`stage2.test.mjs` 有用例）。两个参数都是 session id，都不是路径。
+- 被否方案：① 客户端传工作区 root —— 违反 §4.2；② 让 `session` 只定位不过滤 —— 与 brief「显式 session 过滤
+  能力保留」冲突，且会让既有 `?layer=workspace&session=…` 调用语义变化；③ 选择器只给「会话」维度 ——
+  与负责人裁决的「工作区维度」不符。降级路径（profile 无 useWorkspaces）仍回落为会话列表并显式标注
+  `data-warning="history-scope-degraded"`。
+
+### 三、客户端改动
+- `renderHistoryTab` 只渲染历史面板；新增 `renderBackupTab` 承载 `renderTransferPanel`；tab 面板分派加 `backup` 分支。
+- **历史自己的作用域**：`historyScope`（`null` = 跟随当前会话）+ `historyScopeOptionsOf(wsSeat, seat)`
+  （工作区维度，值为该工作区的一个成员 session；无工作区列表时降级为会话目录）。`historyScopeArg` 只在
+  workspace 层进入请求，所以 user 层的日志不因作用域移动而重新请求。页面用 `data-role="history-scope-note"`
+  明说当前作用域（global / workspace+sid / no-session）。
+- **分页**：state 只有 `historyOffset`；`historyPagerInfo(data)` 从**响应**读 `pageLimit/offset/pageCount/hasMore`，
+  并把越界 offset 钳进真实页数（标签不会出现「第 6 / 3 页」）。首页禁用「上一页」、末页禁用「下一页」。
+  **客户端不再有页大小字面量**：首次请求不带 `limit`，之后按响应 `pageLimit` 步进（旧 `HISTORY_PAGE = 20` 已删）。
+- **定高内滚 + 左右两栏**：`HISTORY_BOX_HEIGHT = 320`；左列 `data-region="history-list"`、右列
+  `data-region="history-detail-box"` 各自 `height/maxHeight` + `overflowY: auto`，窄宽度回落为上下两段。
+  右列按裁决只**预留容器与数据骨架**（`data-history-detail` + `data-note="history-detail-pending"`），
+  既有的 `history-diff` 对比面板放进右列；**本目标不实现预览/回滚**（g-039）。
+- 文案：zh/en 各新增 12 键（含 `tabBackup`、`histScope*`、`histPager` 等），两表白名单仍逐键相等。
+
+### 四、测试口径与证据
+- 新增/改写用例：`history.test.mjs`（`resolvePageOffset` 14 断言 + `queryHistory` 分页/钳制/`limit=0`/过滤后分页）、
+  `stage2.test.mjs`（无 session ⇒ 全层 / 显式 session 仍过滤 / `?offset=` 三页 + 非法与越界钳制 + 默认 50 /
+  `?workspace=` 定位不过滤 + `?diff=` 同 scope）、`client.test.mjs`（5 tab 顺序与单面板、导出导入正负向归属、
+  作用域与查看范围解耦、分页边界与末页禁用、越界钳制、定高滚动盒、EN 扫描新增 history/backup 两条用例与必需标记）。
+- **负向对照（逐条都真的转红，随后还原）**：① 宿主把 `workspace=` 也当过滤 ⇒
+  `stage2: a workspace log is located by ?workspace=…` 1 fail；② 客户端历史请求回退到 `layerQuery(layer, sessionArg)`
+  ⇒ 客户端 2 fail（作用域定位、查看范围解耦）；③ 客户端硬编码 `pageSize = 20` ⇒ 客户端 2 fail（分页边界、越界钳制）；
+  ④ 把 `renderTransferPanel` 放回历史 tab ⇒ 客户端 2 fail（tab 切换、导出导入归属）。
+- 基线对照：改动前 `591 pass / 0 fail`（23.7s）；完成后 `601 pass / 0 fail`（新增 10 条）。
+  `node --check index.js && node --check client.js` 通过（本仓库无 tsconfig，不跑 tsc）。
+
+### 五、未验证项（诚实清单）
+- **真机目视未做**：左右两栏的实际换行宽度、320px 盒子的观感、内部滚动手感都只在测试沙箱里按 DOM/样式断言
+  （`overflowY`、`height`、`maxHeight`、只渲染当前页），没有真浏览器截图；需要复核时由负责人打开设置页确认。
+- 宿主**未重启**（纯插件代码 + 路由参数，无需重启；`dsh web` 进程仍跑旧代码，`?workspace=` 要到下次加载新版
+  `index.js` 才生效）。
+- g-039（右列预览/回滚）与 g-040 未开工：右列目前只有占位说明 + 既有对比面板。

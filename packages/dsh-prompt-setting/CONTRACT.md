@@ -518,7 +518,7 @@ with the zone named:
   a history record's `at` (`data-history-row`'s time node) both render as
   `YYYY-MM-DD HH:mm:ss GMT±h[:mm]` — e.g. a stored `2024-01-02T10:00:00.000Z`
   reads `2024-01-02 18:00:00 GMT+8` for a reader at UTC+8;
-- the **export file name** (§13.3) is a stamp too, and the one the user keeps on
+- the **export file name** (§13.3a) is a stamp too, and the one the user keeps on
   disk, so it is named in the same zone: `dsh-prompt-setting-YYYY-MM-DD-HH-mm-ss.json`
   — e.g. `dsh-prompt-setting-2024-01-02-18-00-00.json` for the same stored value.
   It carries **no zone label** (`:` folded to `-` because it is illegal in a
@@ -543,6 +543,43 @@ with the zone named:
 
 ---
 
+**Revision 19 (the version history stands alone — g-038).** Three changes, and
+one of them is a **defect fix** rather than a feature: the settings page had one
+tab that was both a read-only log and the page's way to overwrite every file, and
+the log it showed was sliced by the page-level「查看范围」.
+
+- **The tab is split in two (§13.0).** The first-level tabs are now five, in this
+  fixed order: 「我的 Prompt」 / 「提示词总览」 / **「版本历史」** / **「备份与恢复」**
+  / 「高级」. 「我的 Prompt」 is still the default. The export/import surface
+  (`data-region="transfer"`, its export scope, import file, dry-run plan and
+  second confirmation) moved **whole** into 「备份与恢复」, and 「版本历史」 renders
+  no export/import entry point of any kind.
+- **The history scope is decoupled from「查看范围」(§8, §13.3).** A history request
+  is now `layer` + `offset`, plus the scope that *locates* the file: `session`
+  filters **only when it is explicitly supplied and non-empty**, and the new
+  `workspace` parameter locates a workspace's log **without** narrowing it to the
+  writes of the one session that located it. The user layer is global: its log is
+  the layer's whole log, whatever session wrote each record. 「版本历史」 has its
+  own scope selector (workspace dimension, default = the current workspace) which
+  the page-level「查看范围」does not touch — and which does not touch it.
+- **The list is paged and bounded (§8.2, §13.3).** `GET /history` takes an
+  `offset` (clamped, never an error) and answers `offset` / `pageCount` /
+  `hasMore` beside the existing `pageLimit` and `total`; the page renders exactly
+  one page of records inside a fixed-height, internally scrolling box, with
+  「上一页」/「下一页」 disabled at the two ends. The page size is the **host's**
+  (`pageLimit`): the bundle carries no page-size literal, and the first request
+  sends no `limit` at all.
+- Every Revision 1–18 field, route, status code and byte keeps its meaning. The
+  `?session=` filter, the `?before=` bound, the `.jsonl` format, the retention
+  bound, the corrupt-line tolerance and the lazy-fetch rule all survive; what
+  changed is that a *reader* no longer has to know a session to see a layer's log,
+  and that a log is no longer able to grow the page.
+- `.jsonl` records are unchanged: a record still carries the `session` id of the
+  write that produced it (`null` for a global write). Revision 19 changes who may
+  **filter** by that field, not what is stored.
+
+---
+
 ## 1. Routes and methods
 
 | Path | Methods | Purpose |
@@ -552,8 +589,8 @@ with the zone named:
 | `/prompt-setting/overrides` | `GET` | Both layers and the merged list. |
 | `/prompt-setting/overrides` | `PUT` | Upsert **the reserved section** into one layer; any other name is `403` (Revision 7, §4.1). |
 | `/prompt-setting/overrides` | `DELETE` | Drop the **reserved** override; `?reset=true` clears the whole layer (§12); `?legacy=true` clears only its frozen overrides (§12.2). |
-| `/prompt-setting/history` | `GET` | One layer's bounded change log, newest first (Revision 4, §8). |
-| `/prompt-setting/diff` | `GET` | Section + line comparison of two versions of one layer (Revision 4, §9). |
+| `/prompt-setting/history` | `GET` | One layer's bounded change log, newest first (Revision 4, §8); paged by `offset` and scoped by `session` / `workspace` since Revision 19. |
+| `/prompt-setting/diff` | `GET` | Section + line comparison of two versions of one layer (Revision 4, §9); same scope as §8 since Revision 19. |
 | `/prompt-setting/export` | `GET` | One or both layers as a schema-versioned JSON document (Revision 4, §10). |
 | `/prompt-setting/import` | `POST` | Apply such a document atomically, with a `dryRun` preview (Revision 4, §11). |
 | `/prompt-setting/interpolate` | `GET` | The「我的 Prompt」variable-substitution switch, per layer and effective (Revision 11, §16.4). |
@@ -1261,7 +1298,8 @@ Revision 7 adds these:
     sorts after every section the DSH repository defines; another plugin may
     still legitimately register a larger finite order and sort after this one.
 21. **Resolved in g-015: the client no longer offers the Revision 6 editor.**
-    The settings page is the four tabs of §13, and its only write surface is
+    The settings page is the first-level tabs of §13 (five since Revision 19),
+    and its only write surface is
     「我的 Prompt」, which writes the reserved name with `replace` — so no UI
     path can ask for a write the Host would refuse. What remains a *limitation*
     of the narrowed write face is recorded in §15.8: a frozen override can only
@@ -1287,12 +1325,25 @@ stated here because none of them can be fixed from inside this plugin:
     itself. What is verified against the real service, the real renderer and a
     `dsh-expression`-shaped listener is in `test/integration.test.mjs`.
 
-## 8. `GET /prompt-setting/history` (Revision 4)
+## 8. `GET /prompt-setting/history` (Revision 4; scope and paging in Revision 19)
 
 Query: `layer` (**required** — a log lives beside one layer's config file, so
-there is no meaningful default), `session` (required to resolve the `workspace`
-layer, exactly as for a write), `name` (optional filter), `limit` (optional page
-size), `before` (optional **exclusive** ISO upper bound on `at`).
+there is no meaningful default), `session` (optional), `workspace` (optional,
+Revision 19), `name` (optional filter), `limit` (optional page size), `offset`
+(optional page start, Revision 19), `before` (optional **exclusive** ISO upper
+bound on `at`).
+
+`session` and `workspace` are both session ids, and the difference between them
+is the point of Revision 19:
+
+| Parameter | Meaning |
+| --- | --- |
+| `session` | **Explicit filter.** Absent or empty ⇒ the layer's **whole** log, which is what the user layer always is. Present ⇒ the log is narrowed to the records that session wrote (and, as before, it locates the workspace root for `layer=workspace`). |
+| `workspace` | **Resolution scope only.** A session id that says *which workspace* the reader is looking at: it locates that workspace's `history.jsonl` and **never** narrows the records. This is what 「版本历史」's own workspace selector sends, so choosing a workspace shows that workspace's whole log rather than the slice written by the one session that happened to resolve it. |
+
+Neither parameter is ever a path: a workspace root still comes from the Host's own
+session index (§4.2). When both are supplied, `session` resolves and filters while
+`workspace` is only consulted if `session` could not resolve a root.
 
 ### 8.1 Where the log lives
 
@@ -1311,12 +1362,16 @@ parameter of any route (§4.2).
   "ok": true,
   "layer": "user",
   "session": null,
+  "scopeSession": null,
   "path": "/home/u/.dsh/prompt-setting/history.jsonl",
   "enabled": true,
   "reason": null,
   "retentionLimit": 100,
-  "pageLimit": 20,
+  "pageLimit": 50,
+  "offset": 0,
   "total": 3,
+  "pageCount": 1,
+  "hasMore": false,
   "corrupt": 0,
   "unreadable": null,
   "lastError": null,
@@ -1348,10 +1403,24 @@ parameter of any route (§4.2).
 | `snapshot` | The layer's override list **after** that write, as `{name, action, hash, bytes}` — no text. This is what makes §9 possible without loading N prompt bodies. |
 | `note` | Free-form provenance (`import mode=merge status=replaced`), or `null`. |
 
-Records are returned **newest first** (`seq` descending). `total` counts every
-match before paging; `limit` is clamped to `[0, 500]` and `0` is a legal request
-for the counts alone. An unusable `limit` falls back to `50` rather than failing
-the read.
+Top-level fields beyond §8.2's original set:
+
+| Field | Meaning |
+| --- | --- |
+| `session` | The **filter** actually applied: the explicit `?session=` value, or `null` when none was supplied (or it was empty). A `null` here means "this layer's whole log". |
+| `scopeSession` | The session id that **located** the file (`?session=` if it was given, else `?workspace=`, else `null`). Independent of `session`: `?layer=workspace&workspace=s1` answers `scopeSession: "s1"` with `session: null`, i.e. that workspace's whole log. |
+| `offset` | The page start **actually used**, after clamping (Revision 19). |
+| `pageCount` | `ceil(total / pageLimit)`, or `0` when `pageLimit` is `0` (the counts-only request). |
+| `hasMore` | Whether a page after this one exists: `pageLimit > 0 && offset + pageLimit < total`. |
+
+Records are returned **newest first** (`seq` descending) and the page is a window
+into that ordered, filtered list: `total` counts every match before paging, and
+`offset`/`limit` select the window. `limit` is clamped to `[0, 500]` and `0` is a
+legal request for the counts alone; an unusable `limit` falls back to `50`. An
+**unusable** `offset` (absent, empty, negative, fractional, unparsable) means `0`,
+and an `offset` **past the end** is clamped to the start of the last page — so a
+stale page number renders the newest records rather than an empty window, and no
+page number is ever an error (Revision 19).
 
 ### 8.3 Bounded by construction
 
@@ -1380,11 +1449,13 @@ History is a log, not the source of truth (same isolation rule as §5.6).
 `DELETE …&reset=true` is new in this revision, so its body *does* report the
 history outcome (§12).
 
-## 9. `GET /prompt-setting/diff` (Revision 4)
+## 9. `GET /prompt-setting/diff` (Revision 4; scope in Revision 19)
 
-Query: `layer` (required), `session` (for `workspace`), `from` and `to` (each a
-history id or the literal `current`), `name` (optional: which section to compare
-line by line).
+Query: `layer` (required), `session` / `workspace` (the scope, read exactly as
+§8 reads it since Revision 19 — `workspace` locates, `session` filters, so a
+comparison always describes the same file the log beside it lists), `from` and
+`to` (each a history id or the literal `current`), `name` (optional: which
+section to compare line by line).
 
 Exactly one of `from`/`to` may be omitted, and the omitted one means `current`.
 Omitting **both** is `400 missing-diff-selector`: there is nothing to compare.
@@ -1396,6 +1467,7 @@ Omitting **both** is `400 missing-diff-selector`: there is nothing to compare.
   "ok": true,
   "layer": "user",
   "session": null,
+  "scopeSession": null,
   "historyPath": "/home/u/.dsh/prompt-setting/history.jsonl",
   "scope": "layer",
   "from": { "kind": "history", "label": "#1", "layer": "user", "session": null,
@@ -1701,10 +1773,12 @@ screen instead of the raw enum.
 
 ## 13. Client-side contract (Revision 4; re-ordered in Revision 7, g-015; collapsed scope in g-016)
 
-### 13.0 The four first-level tabs
+### 13.0 The five first-level tabs
 
-Since g-015 the settings page is four first-level tabs, in a fixed order, with
-the first one open by default. Above them there are exactly three things: the
+Since g-015 the settings page is a fixed, ordered set of first-level tabs with
+the first one open by default; Revision 19 (g-038) split the old
+「历史与备份」 into 「版本历史」 and 「备份与恢复」, so there are five. Above them
+there are exactly three things: the
 title line — which carries the plugin version beside the heading since Revision
 17 (§13.8) — one line of deciding facts, and the session selector every tab
 shares — the selector itself is **one line** until「更改」is clicked (§13.7), so
@@ -1714,8 +1788,9 @@ the tab bar and the tab panel are on the first screen.
 | --- | --- | --- | --- |
 | 1 (default) | `mine` | 「我的 Prompt」 | the **only** write surface |
 | 2 | `overview` | 「提示词总览」 | strictly read-only |
-| 3 | `history` | 「历史与备份」 | log, comparison, export/import |
-| 4 | `advanced` | 「高级」 | legacy list, the two layer-wide clears, full status |
+| 3 | `history` | 「版本历史」 | the log, its own scope and the comparison |
+| 4 | `backup` | 「备份与恢复」 | export / import, and nothing else |
+| 5 | `advanced` | 「高级」 | legacy list, the two layer-wide clears, full status |
 
 Markers, on top of the Revision 3/4 ones this revision keeps:
 
@@ -1729,7 +1804,12 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   own DOM and cannot be asked to;
 - exactly **one** tab panel is rendered: `data-region="tab-panel"` with
   `data-tab-value="<value>"`. Switching a tab renders that tab's panel and no
-  other tab's top-level regions.
+  other tab's top-level regions. In particular the export/import actions
+  (`data-action="export"` / `"import-preview"` / `"import-apply"`, the
+  `data-role="import-file"` input and the whole `data-region="transfer"` block)
+  exist **only** in the `backup` panel, and the log's own regions
+  (`data-region="history"`, `"history-list"`) exist **only** in the `history`
+  panel.
 
 ### 13.1 「我的 Prompt」 — the one write surface
 
@@ -1798,22 +1878,85 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   `sections` / `full`) keep their Revision 3 meaning; the Revision 6
   `overrides` view no longer exists.
 
-### 13.3 「历史与备份」
+### 13.3 「版本历史」(Revision 19: its own scope, paging and a two-column layout)
 
-- Unchanged in content: the history panel (`data-region="history"` plus its
-  `data-history-*` markers), the comparison (`data-region="history-diff"`,
-  `data-diff-*`) and the transfer panel (`data-region="transfer"` plus its
-  `data-import-*` markers).
-- The lazy rule now keys off this **tab**, not the old 覆盖 view: a page that
-  never opens it issues exactly the four baseline requests (ping, snapshot,
-  overrides and — g-030 — update-check, the last one only while the check is on),
-  and the history request is `…&limit=20`.
+- The panel is `data-region="history"` (with `data-history-layer`,
+  `data-history-state`, `data-history-total`, `data-history-corrupt`,
+  `data-history-unreadable`, `data-history-last-error` as before) and the
+  comparison is `data-region="history-diff"` with its `data-diff-*` markers. Both
+  keep their Revision 4–18 meaning.
+- **The log's own scope.** `data-region="history-scope"` carries
+  `data-history-scope-mode` (`workspaces` | `sessions` | `none`),
+  `data-history-scope-value` (the session id that locates the file, `''` for
+  none), `data-history-scope-options` (how many choices) and
+  `data-history-scope-applies` (`true` only for the workspace layer — the user
+  layer is global). Inside it, a segmented control (`data-tab-group="history-scope"`,
+  values = session ids, labels = workspace titles) is the reader's pick, or
+  `data-role="history-scope-empty"` says there is no scope available. A visible
+  sentence states what is on screen right now: `data-role="history-scope-note"`
+  with `data-history-note="global"` (user layer: the whole layer, no session
+  filter), `"workspace"` (the named workspace's log, with the session that
+  located it) or `"no-session"` (no scope could be resolved, so nothing is asked
+  for). When the workspace list is unavailable the scope degrades to the session
+  catalog and says so: `data-warning="history-scope-degraded"`.
+- **This scope is independent of「查看范围」(§13.7).** The history request is
+  built from it, never from the page-level session: changing the page scope
+  changes no history request, re-slices no list and re-renders no record. The
+  user layer is asked for by `layer=user` **alone** — no `session` at all.
+- **Paging.** The pager is `data-region="history-pager"` with
+  `data-history-page` (1-based), `data-history-pages` (the response's
+  `pageCount`), `data-history-page-size` (the response's `pageLimit`),
+  `data-history-offset` (the offset really used, after the host's clamping) and
+  the two controls `data-action="history-prev"` / `"history-next"` with
+  `data-role="history-page-label"` between them reading「第 x / y 页 · 共 N 条」.
+  「上一页」 is `disabled` on the first page, 「下一页」 on the last
+  (`hasMore: false`). The bundle carries **no** page-size literal: the first
+  request sends no `limit`, and every later step is `pageLimit` from the last
+  response. A response whose offset is past the end is clamped into the pages
+  that exist, so the label can never read「page 6 / 3」.
+- **Bounded rendering.** Records render inside a fixed-height, internally
+  scrolling box `data-region="history-list"` (`data-history-list="scroll"`,
+  `data-history-box-height` = the height in px; `height` and `maxHeight` are that
+  same number, `overflowY: auto`), so the page's own height does not depend on
+  how much history exists and exactly the current page's records are in the DOM.
+  The 「当前生效值」 row stays the last row of that box.
+- **Two columns (g-038 layout decision).** `data-region="history-tab"` is a
+  wrapping two-column row: the left column `data-region="history-list-column"`
+  holds the panel above; the right column `data-region="history-detail"`
+  (`data-history-detail="empty"` | `"diff"`) holds the reserved detail box
+  `data-region="history-detail-box"` (`data-history-box="scroll"`, same fixed
+  height) with `data-note="history-detail-pending"` and the existing comparison.
+  The preview/rollback surface itself is a later goal (g-039). When the two
+  columns no longer fit side by side they stack, each keeping its own
+  fixed-height scroll box.
+- **The lazy rule now keys off this tab**, and only this tab: a page that never
+  opens it issues exactly the baseline requests (ping, snapshot, overrides and —
+  g-030 — update-check, the last one only while the check is on). Opening it asks
+  for one page: `…?layer=user&offset=0` (Revision 19 — no `session`, no `limit`),
+  or `…?layer=workspace&workspace=<session>&offset=0` for the workspace layer.
 - **Revision 18:** a row's time node renders the record's stored `at` in the
   **browser's own zone** (`YYYY-MM-DD HH:mm:ss GMT±h[:mm]`), keeping the raw UTC
-  string on the node's `title`; the transfer panel's export file name
-  (`data-export-name`) is named in that same zone
-  (`dsh-prompt-setting-YYYY-MM-DD-HH-mm-ss.json`). The panel's requests, markers
-  and ordering are otherwise unchanged.
+  string on the node's `title`. The panel's markers and ordering are otherwise
+  unchanged.
+
+### 13.3a 「备份与恢复」(Revision 19)
+
+- The tab is `data-region="backup-tab"` and contains the transfer panel
+  `data-region="transfer"` **and nothing else**: the export button and its scope,
+  the export preview (`data-role="export-text"`, `data-export-name`), the import
+  text box and file input (`data-role="import-text"` / `"import-file"`), the
+  conflict-strategy control (`data-tab-group="import-mode"`), the dry-run plan
+  (`data-import-plan`, `data-import-change`, `data-import-counts`,
+  `data-import-skipped`, `data-import-unchanged`) and the `import` second
+  confirmation all keep their Revision 4–18 behaviour and markers, and all of
+  them live here.
+- Nothing of the log is rendered here: no `data-region="history"`, no
+  `data-history-row`, and opening this tab issues no history request. The reverse
+  holds too (§13.0): the log's tab shows no export/import entry point at all —
+  the two surfaces cannot be reached from one another's tab.
+- Revision 18's export file name rule is unchanged
+  (`dsh-prompt-setting-YYYY-MM-DD-HH-mm-ss.json`, the reader's zone, derived from
+  the document's own `exportedAt`).
 
 ### 13.4 「高级」
 
@@ -1920,6 +2063,12 @@ the highlighted row), `useCurrent` (the pinned current-view entry),
 follows the new scope in the same render. Browsing actions — typing in the
 search box, toggling a workspace group,「显示更多」 — deliberately do **not**
 close it: they do not finish the choice.
+
+**This picker no longer feeds the version history (Revision 19).** It scopes the
+snapshot and the override reads (`my Prompt`, `提示词总览`, `高级`); the version
+history reads its own scope (§13.3) and is not a consumer of this one. Before
+Revision 19 the same value was appended to the history request as `?session=`,
+which is exactly why the log looked like it lost records when the scope moved.
 
 ### 13.8 The plugin version on the page (g-029)
 

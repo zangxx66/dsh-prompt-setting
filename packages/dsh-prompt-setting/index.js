@@ -114,6 +114,7 @@ import {
   queryHistory,
   resolveHistoryLimit,
   resolvePageLimit,
+  resolvePageOffset,
   resetEntries,
   snapshotOfConfig,
   textEntry,
@@ -1883,38 +1884,74 @@ function mount(ctx, config, cleanups) {
   }
 
   /**
+   * Read the two scope parameters of a history-shaped read (Revision 19).
+   *
+   * `?session=` and `?workspace=` both name a session id, but they mean
+   * different things and the difference is the whole of g-038:
+   * - `session` is the **explicit filter** (plus, as it always was, the way to
+   *   resolve which workspace's log to read). It is applied only when it is
+   *   really supplied and non-empty: an absent/empty value means "this layer's
+   *   whole log", which is what stops the user layer from being sliced per
+   *   session (`?session=` was always sent by the page before Revision 19, so
+   *   the user layer only ever showed the writes of one session).
+   * - `workspace` is a **resolution-only** scope: a session id that says *which
+   *   workspace* the reader is looking at, and never narrows the records. The
+   *   version-history workspace selector uses it, so choosing a workspace can
+   *   show that workspace's whole log rather than the slice written by the one
+   *   session that happened to locate it.
+   *
+   * Neither parameter is ever a path: a workspace root still comes from the
+   * Host's own session index (§4.2).
+   * @param url - the parsed request URL.
+   * @returns `{sessionFilter, scopeSession}` — `null` for "not supplied".
+   */
+  function readScopeOf(url) {
+    const clean = (value) => (value === null || value.trim().length === 0 ? null : value);
+    const sessionFilter = clean(url.searchParams.get('session'));
+    const workspaceScope = clean(url.searchParams.get('workspace'));
+    return { sessionFilter, scopeSession: sessionFilter ?? workspaceScope };
+  }
+
+  /**
    * `GET /prompt-setting/history` — one layer's change log, newest first.
    *
    * `layer` is required, exactly like `DELETE /overrides`: history lives beside
    * one layer's config file, and there is no meaningful default between the
-   * two. `limit` is clamped rather than rejected; `name` and `before` narrow
-   * the page.
+   * two. `limit` and `offset` are clamped rather than rejected; `name` and
+   * `before` narrow the page, and `session` narrows it too — but only when it
+   * is explicitly supplied ({@link readScopeOf}).
    * @param url - the parsed request URL.
    * @param res - the Node response.
    */
   function handleHistory(url, res) {
     const layer = url.searchParams.get('layer');
-    const sessionId = url.searchParams.get('session');
-    const view = layerFor(layer, sessionId);
+    const { sessionFilter, scopeSession } = readScopeOf(url);
+    const view = layerFor(layer, scopeSession);
     const history = readLayerHistory(view.path ?? userConfigPath());
     const pageLimit = resolvePageLimit(url.searchParams.get('limit'));
-    const { records, total } = queryHistory(history.records, {
+    const pageOffset = resolvePageOffset(url.searchParams.get('offset'));
+    const { records, total, offset, pageCount, hasMore } = queryHistory(history.records, {
       layer,
-      session: sessionId,
+      session: sessionFilter,
       name: url.searchParams.get('name'),
       before: url.searchParams.get('before'),
       limit: pageLimit,
+      offset: pageOffset,
     });
     sendJson(res, 200, {
       ok: true,
       layer,
-      session: sessionId,
+      session: sessionFilter,
+      scopeSession,
       path: history.path,
       enabled: view.reason === null,
       reason: view.reason,
       retentionLimit: historyLimit,
       pageLimit,
+      offset,
       total,
+      pageCount,
+      hasMore,
       corrupt: history.corrupt,
       unreadable: history.error === null ? null : `${history.error.code}: ${history.error.message}`,
       lastError: state.historyFailures.get(history.path) ?? null,
@@ -2022,20 +2059,24 @@ function mount(ctx, config, cleanups) {
    * may be omitted (it then means `current`), and omitting both is a `400`
    * because there is nothing to compare. `name` picks the section whose text is
    * compared line by line when more than one differs.
+   *
+   * Revision 19: the scope is read exactly as `GET /history` reads it
+   * ({@link readScopeOf}), so the comparison always describes the same file the
+   * log beside it lists: `?workspace=` locates, `?session=` filters.
    * @param url - the parsed request URL.
    * @param res - the Node response.
    */
   function handleDiff(url, res) {
     const layer = url.searchParams.get('layer');
-    const sessionId = url.searchParams.get('session');
+    const { sessionFilter, scopeSession } = readScopeOf(url);
     const fromRaw = url.searchParams.get('from');
     const toRaw = url.searchParams.get('to');
     if ((fromRaw === null || fromRaw.length === 0) && (toRaw === null || toRaw.length === 0)) {
       throw fail('missing-diff-selector', 'supply ?from= and/or ?to= (a history id or "current")');
     }
-    const view = layerFor(layer, sessionId);
+    const view = layerFor(layer, scopeSession);
     const history = readLayerHistory(view.path ?? userConfigPath());
-    const inputs = { layer, session: sessionId, config: view.config, history };
+    const inputs = { layer, session: sessionFilter, config: view.config, history };
     const from = diffSide(fromRaw, toRaw !== null && toRaw.length > 0, inputs);
     const to = diffSide(toRaw, fromRaw !== null && fromRaw.length > 0, inputs);
     const focusName = url.searchParams.get('name');
@@ -2043,7 +2084,8 @@ function mount(ctx, config, cleanups) {
     sendJson(res, 200, {
       ok: true,
       layer,
-      session: sessionId,
+      session: sessionFilter,
+      scopeSession,
       historyPath: history.path,
       ...payload,
     });

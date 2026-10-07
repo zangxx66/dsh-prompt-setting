@@ -29,6 +29,7 @@ import {
   queryHistory,
   resolveHistoryLimit,
   resolvePageLimit,
+  resolvePageOffset,
   resetEntries,
   sameOverride,
   serializeHistory,
@@ -247,6 +248,26 @@ test('history: the page size is clamped rather than rejected', () => {
   assert.equal(resolvePageLimit('100000'), 500);
 });
 
+test('history: the page offset is clamped rather than rejected (g-038)', () => {
+  // An unusable page number is page one, never an error: an absent, empty,
+  // negative, fractional or unparsable value all fall back to 0, and a usable
+  // one is floored to an integer.
+  assert.equal(resolvePageOffset(null), 0);
+  assert.equal(resolvePageOffset(undefined), 0);
+  assert.equal(resolvePageOffset(''), 0);
+  assert.equal(resolvePageOffset('   '), 0);
+  assert.equal(resolvePageOffset('0'), 0);
+  assert.equal(resolvePageOffset('-1'), 0);
+  assert.equal(resolvePageOffset('-999'), 0);
+  assert.equal(resolvePageOffset('nope'), 0);
+  assert.equal(resolvePageOffset('NaN'), 0);
+  assert.equal(resolvePageOffset('Infinity'), 0);
+  assert.equal(resolvePageOffset('7'), 7);
+  assert.equal(resolvePageOffset('7.9'), 7);
+  assert.equal(resolvePageOffset(' 12 '), 12);
+  assert.equal(resolvePageOffset(3), 3);
+});
+
 // #endregion
 
 // #region query
@@ -275,6 +296,69 @@ test('history: querying is newest-first and filters by layer, session and name',
   assert.deepEqual(paged.records.map((record) => record.seq), [4, 3]);
   assert.equal(paged.total, 4, 'total counts every match, not the page');
   assert.deepEqual(queryHistory(records, { limit: 0 }).records, []);
+});
+
+test('history: paging walks the matched list by offset and reports its page (g-038)', () => {
+  // Six records, newest first: 6, 5, 4, 3, 2, 1.
+  const records = [1, 2, 3, 4, 5, 6].map((seq) => makeRecord(fields({ seq })));
+
+  const first = queryHistory(records, { limit: 2, offset: 0 });
+  assert.deepEqual(first.records.map((record) => record.seq), [6, 5]);
+  assert.equal(first.total, 6, 'total is every match, never the page');
+  assert.equal(first.offset, 0);
+  assert.equal(first.pageCount, 3);
+  assert.equal(first.hasMore, true);
+
+  const middle = queryHistory(records, { limit: 2, offset: 2 });
+  assert.deepEqual(middle.records.map((record) => record.seq), [4, 3]);
+  assert.equal(middle.offset, 2);
+  assert.equal(middle.hasMore, true);
+
+  const last = queryHistory(records, { limit: 2, offset: 4 });
+  assert.deepEqual(last.records.map((record) => record.seq), [2, 1]);
+  assert.equal(last.offset, 4);
+  assert.equal(last.pageCount, 3);
+  assert.equal(last.hasMore, false);
+
+  // A partial last page is still the last page.
+  const uneven = queryHistory(records, { limit: 4, offset: 4 });
+  assert.deepEqual(uneven.records.map((record) => record.seq), [2, 1]);
+  assert.equal(uneven.pageCount, 2);
+  assert.equal(uneven.hasMore, false);
+
+  // An offset past the end is clamped to the **start of the last page**, so the
+  // reader still sees records instead of an empty window.
+  for (const offset of [6, 7, 999]) {
+    const clamped = queryHistory(records, { limit: 2, offset });
+    assert.deepEqual(clamped.records.map((record) => record.seq), [2, 1], `offset ${offset} clamps`);
+    assert.equal(clamped.offset, 4);
+    assert.equal(clamped.hasMore, false);
+  }
+  // A negative or unusable offset is page one (the route resolves, but the pure
+  // function must not trust its caller either).
+  assert.equal(queryHistory(records, { limit: 2, offset: -4 }).offset, 0);
+
+  // `limit: 0` is the documented "counts alone" request: no page exists.
+  const counts = queryHistory(records, { limit: 0, offset: 4 });
+  assert.deepEqual(counts.records, []);
+  assert.equal(counts.total, 6);
+  assert.equal(counts.offset, 0);
+  assert.equal(counts.pageCount, 0);
+  assert.equal(counts.hasMore, false);
+
+  // No matches at all: one empty page rather than a phantom page 2.
+  const none = queryHistory(records, { layer: 'workspace' });
+  assert.deepEqual(none.records, []);
+  assert.equal(none.total, 0);
+  assert.equal(none.pageCount, 0);
+  assert.equal(none.hasMore, false);
+
+  // Paging is applied **after** filtering: the page count describes the matches.
+  const filtered = queryHistory(records, { name: 'project:alpha', limit: 2, offset: 2 });
+  assert.equal(filtered.total, 6, 'every seeded record names the same section');
+  assert.deepEqual(filtered.records.map((record) => record.seq), [4, 3]);
+  const notMatched = queryHistory(records, { name: 'nothing-named-this', limit: 2, offset: 2 });
+  assert.equal(notMatched.total, 0, 'a filter that matches nothing pages nothing');
 });
 
 test('history: the public record exposes a stable id that is its seq', () => {

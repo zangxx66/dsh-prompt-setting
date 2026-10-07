@@ -26,7 +26,7 @@
 
 ## 功能 / Features
 
-设置页里会多出一栏 **「Prompt settings」**（`id: prompt-setting`），四个一级 tab：
+设置页里会多出一栏 **「Prompt settings」**（`id: prompt-setting`），五个一级 tab：
 
 - **我的 Prompt / My Prompt** —— 唯一写入口：写下你自己的系统级指令（选层 → 编辑 → 保存），
   一键恢复默认。这段文本**排在所有内置段之后**。
@@ -38,10 +38,16 @@
   > Read-only: the assembled section list (status marks / search / filters / copy), the full text, and a
   > `base ↔ effective` diff, so you can see exactly what your change did.
 
-- **历史与备份 / History & backup** —— 历史列表 + 行级版本对比；配置导出下载、导入预览
-  （先看变更计划，确认后才落盘）。
-  > History list + line-level diffs; export the configuration for download, and preview an import —
-  > the change plan is shown before anything is written.
+- **版本历史 / Version history** —— 历史列表（定高内滚 + 翻页，默认每页 50）与行级版本对比。
+  历史有自己的**作用域选择器**（工作区维度），与上方「查看范围」互不影响：用户层历史是全局的，
+  不按会话过滤。
+  > The history list (fixed-height, internally scrolling, paged) and line-level diffs. The log has its
+  > **own** scope selector (workspace dimension), independent of the「查看范围」selector above: the user
+  > layer's log is global and is never sliced by session.
+
+- **备份与恢复 / Backup & restore** —— 配置导出下载、导入预览（先看变更计划，确认后才落盘）。
+  > Export the configuration for download, and preview an import — the change plan is shown before
+  > anything is written.
 
 - **高级 / Advanced** —— 旧版覆盖的只读列表、「清除全部覆盖」与「整层恢复默认」两个二次确认按钮、
   **「检查更新」开关**（默认开启；关闭后本插件**完全不再联网**）、**「立即更新」**（把提示条里的版本

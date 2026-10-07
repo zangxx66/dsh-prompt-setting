@@ -37,13 +37,14 @@ come with history, diffs and exportable backups.
 
 ## 2. What you get after installing
 
-Settings gains a **"Prompt settings"** pane (`id: prompt-setting`) with four top-level tabs:
+Settings gains a **"Prompt settings"** pane (`id: prompt-setting`) with five top-level tabs:
 
 | Tab | What you can do |
 | --- | --- |
 | **My Prompt** | The only write surface: write your own system-level instructions (pick a layer → edit → save), plus a one-click "Restore default". This text is **placed after every built-in section**. |
 | **Prompt overview** | Read-only: the assembled section list (status marks / search / filters / copy), the full text, and a `base ↔ effective` diff — so you can see exactly what your change did. |
-| **History & backup** | History list + version diffs (line-level); export the configuration for download, and preview an import (review the change plan before anything is written). |
+| **Version history** | The history list (fixed-height, internally scrolling, paged — 50 per page by default) and line-level version diffs. The log has its **own scope selector** (workspace dimension), independent of the "View scope" selector above: the user layer's log is global and is never sliced by session. |
+| **Backup & restore** | Export the configuration for download, and preview an import (review the change plan before anything is written). |
 | **Advanced** | A read-only list of legacy overrides, two double-confirm buttons ("clear all overrides", "reset the whole layer"), the **"Check for updates" switch** (on by default; off means this plugin makes no network request at all), the **"Update now"** action (the host installs the version the banner named; you restart yourself — re-run `dsh web` after a command-line start, or quit and reopen DeepSeek Harness in the desktop app), and a full status area (mount state / build fingerprint / renderer self-check). |
 
 > All UI copy follows DSH's language setting: switch DSH to Chinese and this page turns Chinese, with no

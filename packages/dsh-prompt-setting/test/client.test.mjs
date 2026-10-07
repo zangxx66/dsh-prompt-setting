@@ -476,6 +476,13 @@ function historyRowOf(tree, id) {
   return oneBy(tree, 'data-history-row', String(id));
 }
 
+/** Every rendered record row's id, in render order (the 「当前生效值」row is not one). */
+function historyRowIds(tree) {
+  return collect(tree, (node) => node.props && node.props['data-history-action'] !== undefined).map(
+    (node) => node.props['data-history-row'],
+  );
+}
+
 /** Click a tab in either branch: the fallback uses data-tab-key, the double does not. */
 function clickAnyTab(tree, value) {
   const node = findOne(
@@ -486,7 +493,7 @@ function clickAnyTab(tree, value) {
   node.props.onClick();
 }
 
-/** The four first-level tabs, in render order, as their `data-tab-value`s. */
+/** The five first-level tabs, in render order, as their `data-tab-value`s. */
 function mainTabs(tree) {
   return collect(tree, (node) => node.type === 'button' && node.props['data-tab-key'] === 'main').map(
     (node) => node.props['data-tab-value'],
@@ -506,8 +513,8 @@ function tabPanel(tree) {
 /**
  * Open one first-level tab. Selection is by value alone so this works in both
  * renderer branches (the official `SegmentedTabs` double labels its own group
- * `primitives`): the four values `mine` / `overview` / `history` / `advanced`
- * occur on exactly one control each.
+ * `primitives`): the five values `mine` / `overview` / `history` / `backup` /
+ * `advanced` occur on exactly one control each.
  */
 async function openTab(page, value, from) {
   const tree = from === undefined ? await page.flush() : from;
@@ -892,12 +899,18 @@ function historyFixture(over = {}) {
     ok: true,
     layer: 'user',
     session: null,
+    // g-038: the scope that located the file (a workspace's own log is located
+    // by a session id) and the paging numbers the client reads back.
+    scopeSession: null,
     path: '/home/u/.dsh/prompt-setting/history.jsonl',
     enabled: true,
     reason: null,
     retentionLimit: 100,
     pageLimit: 20,
+    offset: 0,
     total: 2,
+    pageCount: 1,
+    hasMore: false,
     corrupt: 0,
     unreadable: null,
     lastError: null,
@@ -943,6 +956,7 @@ function diffFixture(over = {}) {
     ok: true,
     layer: 'user',
     session: null,
+    scopeSession: null,
     historyPath: '/home/u/.dsh/prompt-setting/history.jsonl',
     scope: 'layer',
     from: {
@@ -3189,8 +3203,9 @@ test('client: the page opens on 「我的 Prompt」 and every tab is reachable i
   const page = makePage({ responses: defaultResponses() });
   const tree = await page.flush();
 
-  // The order is the product decision, so it is asserted verbatim.
-  assert.deepEqual(mainTabs(tree), ['mine', 'overview', 'history', 'advanced']);
+  // The order is the product decision, so it is asserted verbatim. g-038 split
+  // 「历史与备份」 into 「版本历史」 + 「备份与恢复」, in exactly this order.
+  assert.deepEqual(mainTabs(tree), ['mine', 'overview', 'history', 'backup', 'advanced']);
   assert.equal(tabList(tree).props['data-active-tab'], 'mine', 'the first tab is the default');
   // The root carries the same verdict, so a probe finds it without walking in.
   assert.equal(
@@ -3204,7 +3219,7 @@ test('client: the page opens on 「我的 Prompt」 and every tab is reachable i
   // The chrome above the tabs is exactly the title, the one-line status and the
   // session selector: no panel of any tab is rendered before a tab is chosen.
   assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'tab-panel').length, 1);
-  for (const region of ['sections', 'full', 'history', 'transfer', 'overrides', 'status-detail']) {
+  for (const region of ['sections', 'full', 'history', 'transfer', 'backup-tab', 'overrides', 'status-detail']) {
     assert.equal(
       collect(tree, (node) => node.props && node.props['data-region'] === region).length,
       0,
@@ -3219,6 +3234,7 @@ test('client: switching a tab renders that tab and nothing else', async () => {
     ['mine', 'mine'],
     ['overview', 'sections'],
     ['history', 'history'],
+    ['backup', 'transfer'],
     ['advanced', 'overrides'],
   ];
   for (const [value, region] of expectations) {
@@ -4012,9 +4028,14 @@ test('client: a throw while building the tree renders a failure card, not a blan
 
 // #region stage 2: history, diff, restore default, export / import
 
-/** Open 「历史与备份」, where the log, the comparison and the transfer panel live. */
+/** Open 「版本历史」, where the log and its comparison live (g-038: no transfer here). */
 async function openHistory(page) {
   return openTab(page, 'history');
+}
+
+/** Open 「备份与恢复」, where export and import live (g-038 split them out). */
+async function openBackup(page) {
+  return openTab(page, 'backup');
 }
 
 /** Open 「高级」, where the legacy override list, the layer buttons and the status detail live. */
@@ -4027,14 +4048,21 @@ async function openOverview(page) {
   return openTab(page, 'overview');
 }
 
-test('client: the history log is fetched only while 「历史与备份」 is open', async () => {
+test('client: the history log is fetched only while 「版本历史」 is open', async () => {
   const page = makePage({ responses: defaultResponses() });
   const mine = await page.flush();
   assert.equal(urlsFor(page, PATHS.history).length, 0, '「我的 Prompt」 pays nothing for the log');
   const overview = await openTab(page, 'overview', mine);
   assert.equal(urlsFor(page, PATHS.history).length, 0, 'and neither does 「提示词总览」');
-  await openTab(page, 'history', overview);
-  assert.deepEqual(urlsFor(page, PATHS.history), [`${PATHS.history}?layer=user&limit=20`]);
+  // g-038: the transfer tab is not the log either — the two no longer share a tab.
+  const backup = await openTab(page, 'backup', overview);
+  assert.equal(urlsFor(page, PATHS.history).length, 0, '「备份与恢复」 does not read the log');
+  assert.deepEqual(urlsFor(page, PATHS.export), [], 'and it exports nothing until asked');
+  await openTab(page, 'history', backup);
+  // g-038: no `session` (the user layer is global and is filtered by no scope)
+  // and no `limit` (the host owns the page size; this bundle never hardcodes
+  // one). The offset is explicit so page N is a request, not a client-side slice.
+  assert.deepEqual(urlsFor(page, PATHS.history), [`${PATHS.history}?layer=user&offset=0`]);
 });
 
 test('client: the history panel renders records, their action and their origin', async () => {
@@ -4188,29 +4216,115 @@ test('client: the primitives branch renders the comparison with the official Dif
   assert.equal(calls[0].labels.expand(4), page.zh.diffBlockExpand.replace('{n}', '4'));
 });
 
-test('client: switching the history layer to the workspace asks for a session first', async () => {
-  const page = makePage({ responses: defaultResponses() });
+test('client: the workspace layer is located by the history scope, never by the page scope', async () => {
+  // No hooks at all: there is no scope to resolve a workspace root from, so the
+  // panel says so instead of asking the host for something it must refuse.
+  const bare = makePage({ responses: defaultResponses() });
+  let bareTree = await openHistory(bare);
+  clickTab(bareTree, 'history-layer', 'workspace');
+  bareTree = await bare.flush();
+  const bareRegion = oneBy(bareTree, 'data-region', 'history');
+  assert.equal(bareRegion.props['data-history-layer'], 'workspace');
+  assert.equal(oneBy(bareRegion, 'data-history-note', 'no-session').props['data-history-note'], 'no-session');
+  assert.equal(oneBy(bareTree, 'data-region', 'history-scope').props['data-history-scope-mode'], 'none');
+  assert.equal(urlsFor(bare, PATHS.history).length, 1, 'no request without a resolvable scope');
+
+  // A session catalog but no workspace list: the selector degrades to sessions
+  // (announced on the page) and locates the workspace log by the current one.
+  const page = makePage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({
+      [PATHS.history]: { payload: historyFixture({ layer: 'workspace', session: 's2' }) },
+    }),
+  });
   let tree = await openHistory(page);
+  const scope = oneBy(tree, 'data-region', 'history-scope');
+  assert.equal(scope.props['data-history-scope-mode'], 'sessions');
+  assert.equal(scope.props['data-history-scope-value'], 's2', 'the default scope is the current session');
+  assert.equal(oneBy(scope, 'data-warning', 'history-scope-degraded').props['data-warning'], 'history-scope-degraded');
+  // The user layer is global: the selector does not apply to it, and the note
+  // says so.
+  assert.equal(scope.props['data-history-scope-applies'], 'false');
+  assert.equal(oneBy(scope, 'data-history-note', 'global').props['data-history-note'], 'global');
+
   clickTab(tree, 'history-layer', 'workspace');
   tree = await page.flush();
-  const region = oneBy(tree, 'data-region', 'history');
-  assert.equal(region.props['data-history-layer'], 'workspace');
-  assert.equal(oneBy(region, 'data-history-note', 'no-session').props['data-history-note'], 'no-session');
-  assert.equal(urlsFor(page, PATHS.history).length, 1, 'no request without a session');
-
-  // With a session the layer is fetched, and the request carries it.
-  const sessionPage = makePage({
-    useSessions: sessionsHook(SESSIONS_STATE),
-    responses: defaultResponses({ [PATHS.history]: { payload: historyFixture({ layer: 'workspace', session: 's1' }) } }),
-  });
-  let sessionTree = await openHistory(sessionPage);
-  clickTab(sessionTree, 'history-layer', 'workspace');
-  sessionTree = await sessionPage.flush();
-  assert.deepEqual(urlsFor(sessionPage, PATHS.history), [
-    `${PATHS.history}?layer=user&session=s2&limit=20`,
-    `${PATHS.history}?layer=workspace&session=s2&limit=20`,
+  assert.deepEqual(urlsFor(page, PATHS.history), [
+    `${PATHS.history}?layer=user&offset=0`,
+    `${PATHS.history}?layer=workspace&workspace=s2&offset=0`,
   ]);
-  assert.equal(markerOf(sessionTree, 'data-history-total'), '2');
+  // `workspace=` locates the file; `session=` would slice it to the writes of
+  // one session, which is exactly what a workspace-shaped scope must not do.
+  assert.equal(urlsFor(page, PATHS.history)[1].includes('session='), false);
+  assert.equal(oneBy(tree, 'data-region', 'history-scope').props['data-history-scope-applies'], 'true');
+  assert.equal(markerOf(tree, 'data-history-total'), '2');
+});
+
+test('client: changing 「查看范围」 never moves the version history list (g-038)', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  let tree = await openHistory(page);
+
+  const scope = oneBy(tree, 'data-region', 'history-scope');
+  assert.equal(scope.props['data-history-scope-mode'], 'workspaces');
+  // Two workspaces, each located by one of its own sessions; the default is the
+  // workspace the current session (a3) belongs to.
+  assert.equal(scope.props['data-history-scope-options'], '2');
+  assert.equal(scope.props['data-history-scope-value'], 'a1');
+  const before = urlsFor(page, PATHS.history);
+  assert.deepEqual(before, [`${PATHS.history}?layer=user&offset=0`]);
+  const rowsBefore = historyRowIds(tree);
+
+  // Move the **page** scope twice: another session, then 全局.
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  sessionOptions(tree).find((row) => row.props['data-session-id'] === 'a2').props.onClick();
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-session'), 'a2', 'the page scope really moved');
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-session'), 'global');
+  assert.equal(markerOf(tree, 'data-scope-open'), 'false', 'the picker closed on the pick');
+
+  // The test double's `useEffect` re-runs unconditionally (it has no dependency
+  // diffing), so the invariant asserted here is the request **shape**: whatever
+  // the page scope does, the log is asked for by layer and offset alone — never
+  // by a session, which is what used to re-slice it.
+  const afterScope = urlsFor(page, PATHS.history);
+  assert.ok(
+    afterScope.every((url) => url === `${PATHS.history}?layer=user&offset=0`),
+    `every log request stays global: ${JSON.stringify(afterScope)}`,
+  );
+  assert.equal(afterScope.some((url) => url.includes('session=')), false, 'the page scope never enters the log request');
+  assert.deepEqual(historyRowIds(tree), rowsBefore, 'and the rows on screen are the same rows');
+  assert.equal(
+    oneBy(tree, 'data-region', 'history-scope').props['data-history-scope-value'],
+    'a1',
+    'the version history kept its own scope through both page-scope changes',
+  );
+
+  // …while the version history's **own** selector does move it, without touching
+  // the page scope.
+  clickTab(tree, 'history-scope', 'b1');
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-session'), 'global', 'the page scope is still what the user left it as');
+  clickTab(tree, 'history-layer', 'workspace');
+  tree = await page.flush();
+  const afterLayer = urlsFor(page, PATHS.history);
+  assert.equal(
+    afterLayer[afterLayer.length - 1],
+    `${PATHS.history}?layer=workspace&workspace=b1&offset=0`,
+    'the workspace log is located by the history scope, and by nothing else',
+  );
+  assert.ok(
+    afterLayer.filter((url) => url.startsWith(`${PATHS.history}?layer=user`)).every((url) => url === `${PATHS.history}?layer=user&offset=0`),
+    'and the user-layer reads stayed global throughout',
+  );
 });
 
 test('client: 「清除全部覆盖」 confirms first, then sends legacy=true and keeps 「我的 Prompt」', async () => {
@@ -4303,7 +4417,7 @@ test('client: exporting downloads the document and keeps a copyable text', async
     responses: defaultResponses(),
   });
   const downloader = installDownloader(page);
-  let tree = await openHistory(page);
+  let tree = await openBackup(page);
   clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'export' });
   tree = await page.flush();
 
@@ -4336,7 +4450,7 @@ test('client: without Intl the stamps and the export name fall back to UTC, neve
     withoutIntl: true,
   });
   const downloader = installDownloader(page);
-  let tree = await openHistory(page);
+  let tree = await openBackup(page);
   clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'export' });
   tree = await page.flush();
 
@@ -4363,7 +4477,7 @@ test('client: without Intl the stamps and the export name fall back to UTC, neve
 
 test('client: an export with no download surface still yields the JSON and says why', async () => {
   const page = makePage({ responses: defaultResponses() });
-  let tree = await openHistory(page);
+  let tree = await openBackup(page);
   clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'export' });
   tree = await page.flush();
   // No `document` in the sandbox at all: the page must not claim a download.
@@ -4375,7 +4489,7 @@ test('client: an export with no download surface still yields the JSON and says 
 
 test('client: an import preview dry-runs, renders the plan and writes nothing', async () => {
   const page = makePage({ responses: defaultResponses() });
-  let tree = await openHistory(page);
+  let tree = await openBackup(page);
   const panel = () => oneBy(tree, 'data-region', 'transfer');
 
   // Nothing to preview yet: the button is disabled and clicking is refused.
@@ -4416,7 +4530,7 @@ test('client: applying an import is confirmed first and then posts without dryRu
       [PATHS.import]: (url) => ({ payload: url.includes('dryRun=true') ? importPlanFixture() : applied }),
     }),
   });
-  let tree = await openHistory(page);
+  let tree = await openBackup(page);
   typeInto(tree, 'import-text', exportDocument());
   tree = await page.flush();
   clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'import-preview' });
@@ -4442,7 +4556,7 @@ test('client: applying an import is confirmed first and then posts without dryRu
 
 test('client: the import conflict strategy is chosen in the panel and sent with the request', async () => {
   const page = makePage({ responses: defaultResponses() });
-  let tree = await openHistory(page);
+  let tree = await openBackup(page);
   assert.equal(oneBy(tree, 'data-region', 'transfer').props['data-import-mode'], 'merge');
   clickTab(tree, 'import-mode', 'replace');
   tree = await page.flush();
@@ -4459,7 +4573,7 @@ test('client: a rejected import shows the reason and states that nothing changed
       [PATHS.import]: { status: 400, payload: { ok: false, code: 'unknown-export-schema', message: '"schema" must be "dsh-prompt-setting/export"' } },
     }),
   });
-  let tree = await openHistory(page);
+  let tree = await openBackup(page);
   typeInto(tree, 'import-text', exportDocument({ schema: 'nope' }));
   tree = await page.flush();
   clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'import-preview' });
@@ -4473,7 +4587,7 @@ test('client: a rejected import shows the reason and states that nothing changed
 
 test('client: a pasted non-JSON document is refused locally, without a request', async () => {
   const page = makePage({ responses: defaultResponses() });
-  let tree = await openHistory(page);
+  let tree = await openBackup(page);
   typeInto(tree, 'import-text', '{ not json');
   tree = await page.flush();
   clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'import-preview' });
@@ -4485,7 +4599,7 @@ test('client: a pasted non-JSON document is refused locally, without a request',
 
 test('client: a chosen export file fills the import box', async () => {
   const page = makePage({ responses: defaultResponses() });
-  const tree = await openHistory(page);
+  const tree = await openBackup(page);
   const input = oneBy(tree, 'data-role', 'import-file');
   input.props.onChange({ target: { files: [fakeFile(exportDocument())] } });
   await settle();
@@ -4501,7 +4615,14 @@ test('client: the stage 2 panels never render a blank page when the host is unre
       [PATHS.import]: new Error('boom'),
     }),
   });
+  // g-038: the log and the transfer surface live in different tabs now, so each
+  // is visited on its own and each must carry its own failure.
   let tree = await openHistory(page);
+  assert.equal(markerOf(tree, 'data-render-state'), 'ok');
+  assert.equal(oneBy(tree, 'data-region', 'history').props['data-history-state'], 'error');
+  assert.ok(hasText(tree, page.zh.errNetwork));
+
+  tree = await openTab(page, 'backup', tree);
   clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'export' });
   tree = await page.flush();
   typeInto(tree, 'import-text', exportDocument());
@@ -4509,10 +4630,234 @@ test('client: the stage 2 panels never render a blank page when the host is unre
   clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'import-preview' });
   tree = await page.flush();
   assert.equal(markerOf(tree, 'data-render-state'), 'ok');
-  assert.equal(oneBy(tree, 'data-region', 'history').props['data-history-state'], 'error');
   assert.equal(oneBy(tree, 'data-region', 'transfer').props['data-transfer-phase'], 'error');
   assert.ok(hasText(tree, page.zh.errNetwork));
 });
+
+// #region g-038: the split tabs, the history scope and the paging list
+
+/** One history record, `seq` ascending, for the paging and scrolling cases. */
+function recordOf(seq) {
+  return {
+    id: String(seq),
+    seq,
+    at: '2024-01-02T10:00:00.000Z',
+    layer: 'user',
+    session: null,
+    action: 'replace',
+    name: 'project:alpha',
+    origin: 'ui',
+    before: null,
+    after: { text: `v${seq}`, hash: `h-${seq}`, bytes: String(seq).length + 1 },
+    entries: null,
+    snapshot: [],
+    note: null,
+  };
+}
+
+/** The `offset` one history URL asked for. */
+function offsetOf(url) {
+  const parsed = new URL(url, 'http://localhost');
+  const raw = parsed.searchParams.get('offset');
+  return raw === null ? null : Number(raw);
+}
+
+test('client: export and import live in 「备份与恢复」, and nowhere in 「版本历史」 (g-038)', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  const history = await openHistory(page);
+
+  // Negative: the log's own tab carries no export/import entry point at all —
+  // neither an action, nor an input, nor the transfer panel itself.
+  for (const [key, value] of [
+    ['data-action', 'export'],
+    ['data-action', 'import-preview'],
+    ['data-action', 'import-apply'],
+    ['data-role', 'import-file'],
+    ['data-role', 'import-text'],
+    ['data-role', 'export-text'],
+    ['data-region', 'transfer'],
+    ['data-region', 'backup-tab'],
+  ]) {
+    assert.equal(
+      collect(history, (node) => node.props && node.props[key] === value).length,
+      0,
+      `「版本历史」 must not render ${key}=${value}`,
+    );
+  }
+
+  // Positive: they are exactly where the split put them.
+  const backup = await openTab(page, 'backup', history);
+  assert.equal(tabPanel(backup).props['data-tab-value'], 'backup');
+  assert.equal(oneBy(backup, 'data-region', 'backup-tab').props['data-region'], 'backup-tab');
+  assert.equal(oneBy(backup, 'data-region', 'transfer').props['data-region'], 'transfer');
+  assert.equal(typeof oneBy(backup, 'data-action', 'export').props.onClick, 'function');
+  assert.equal(typeof oneBy(backup, 'data-action', 'import-preview').props.onClick, 'function');
+  assert.equal(typeof oneBy(backup, 'data-action', 'import-apply').props.onClick, 'function');
+  assert.equal(oneBy(backup, 'data-role', 'import-file').type, 'input');
+  assert.ok(oneBy(backup, 'data-role', 'import-text'));
+  // …and the log's surfaces are not here.
+  assert.equal(collect(backup, (node) => node.props && node.props['data-region'] === 'history').length, 0);
+  assert.equal(collect(backup, (node) => node.props && node.props['data-region'] === 'history-list').length, 0);
+  assert.equal(urlsFor(page, PATHS.history).length, 1, 'and opening it reads no log');
+});
+
+test('client: the log is paged by the host, and the page size is never hardcoded (g-038)', async () => {
+  const total = 120;
+  const pageSize = 50;
+  const pageCount = 3;
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.history]: (url) => {
+        const offset = offsetOf(url) ?? 0;
+        const records = [];
+        for (let index = 0; index < pageSize && offset + index < total; index += 1) {
+          records.push(recordOf(offset + index + 1));
+        }
+        return {
+          payload: historyFixture({
+            offset,
+            pageLimit: pageSize,
+            total,
+            pageCount,
+            hasMore: offset + pageSize < total,
+            records,
+          }),
+        };
+      },
+    }),
+  });
+  let tree = await openHistory(page);
+
+  const pager = () => oneBy(tree, 'data-region', 'history-pager');
+  // The numbers are the **response's**, not this bundle's: it never sends a
+  // `limit`, it reads `pageLimit` back and steps by it.
+  assert.deepEqual(urlsFor(page, PATHS.history), [`${PATHS.history}?layer=user&offset=0`]);
+  assert.equal(urlsFor(page, PATHS.history).some((url) => url.includes('limit=')), false);
+  assert.equal(pager().props['data-history-page'], '1');
+  assert.equal(pager().props['data-history-pages'], '3');
+  assert.equal(pager().props['data-history-page-size'], '50');
+  assert.equal(pager().props['data-history-offset'], '0');
+  assert.ok(hasText(pager(), fillText(page.zh.histPager, { page: 1, pages: 3, total: 120 })));
+  assert.equal(historyRowIds(tree).length, 50, 'exactly one page of records is rendered');
+  assert.equal(historyRowIds(tree)[0], '1');
+  assert.equal(oneBy(pager(), 'data-action', 'history-prev').props.disabled, true, 'page 1 has no previous');
+  assert.equal(oneBy(pager(), 'data-action', 'history-next').props.disabled, false);
+
+  clickButton(pager(), { 'data-action': 'history-next' });
+  tree = await page.flush();
+  assert.deepEqual(urlsFor(page, PATHS.history).slice(-1), [`${PATHS.history}?layer=user&offset=50`]);
+  assert.equal(pager().props['data-history-page'], '2');
+  assert.equal(oneBy(pager(), 'data-action', 'history-prev').props.disabled, false);
+  assert.equal(historyRowIds(tree)[0], '51', 'the second page is a different window');
+
+  clickButton(pager(), { 'data-action': 'history-next' });
+  tree = await page.flush();
+  assert.deepEqual(urlsFor(page, PATHS.history).slice(-1), [`${PATHS.history}?layer=user&offset=100`]);
+  assert.equal(pager().props['data-history-page'], '3');
+  assert.equal(oneBy(pager(), 'data-action', 'history-next').props.disabled, true, 'the last page has no next');
+  assert.equal(historyRowIds(tree).length, 20, 'the last page holds what is left');
+
+  clickButton(pager(), { 'data-action': 'history-prev' });
+  tree = await page.flush();
+  assert.deepEqual(urlsFor(page, PATHS.history).slice(-1), [`${PATHS.history}?layer=user&offset=50`]);
+
+  // Back to page 1: 「上一页」 disables itself again rather than asking for -50.
+  clickButton(pager(), { 'data-action': 'history-prev' });
+  tree = await page.flush();
+  assert.equal(pager().props['data-history-offset'], '0');
+  assert.equal(oneBy(pager(), 'data-action', 'history-prev').props.disabled, true);
+  oneBy(pager(), 'data-action', 'history-prev').props.onClick();
+  tree = await page.flush();
+  // (The double's `useEffect` re-runs unconditionally, so the assertion is that
+  // no request ever asks for a negative offset — the clamp, not the call count.)
+  assert.equal(
+    urlsFor(page, PATHS.history).every((url) => (offsetOf(url) ?? 0) >= 0),
+    true,
+    'a clamped step never asks for a negative offset',
+  );
+  assert.equal(pager().props['data-history-page'], '1');
+});
+
+test('client: an out-of-range page from the host is clamped, never rendered as page 6 of 3 (g-038)', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.history]: (url) => ({
+        payload: historyFixture({
+          offset: offsetOf(url) ?? 0,
+          pageLimit: 50,
+          total: 120,
+          pageCount: 3,
+          hasMore: (offsetOf(url) ?? 0) + 50 < 120,
+          records: [recordOf(1)],
+        }),
+      }),
+    }),
+  });
+  let tree = await openHistory(page);
+  // A host that answers with an offset past the end — the client must clamp the
+  // window into the pages that exist rather than render "page 6 / 3".
+  page.router.set(PATHS.history, {
+    payload: historyFixture({
+      offset: 250,
+      pageLimit: 50,
+      total: 120,
+      pageCount: 3,
+      hasMore: false,
+      records: [recordOf(101)],
+    }),
+  });
+  clickButton(oneBy(tree, 'data-region', 'history-pager'), { 'data-action': 'history-next' });
+  tree = await page.flush();
+  const pager = oneBy(tree, 'data-region', 'history-pager');
+  assert.equal(pager.props['data-history-page'], '3', 'clamped to the last page that exists');
+  assert.equal(pager.props['data-history-pages'], '3');
+  assert.equal(pager.props['data-history-offset'], '100', 'the window moved to the last page start');
+  assert.equal(oneBy(pager, 'data-action', 'history-next').props.disabled, true);
+  assert.equal(oneBy(pager, 'data-action', 'history-prev').props.disabled, false, 'the way back is still offered');
+  assert.equal(markerOf(tree, 'data-render-state'), 'ok', 'a bad page is clamped, never an error');
+  // Stepping back asks for the page that really precedes the clamped one.
+  clickButton(pager, { 'data-action': 'history-prev' });
+  tree = await page.flush();
+  assert.deepEqual(urlsFor(page, PATHS.history).slice(-1), [`${PATHS.history}?layer=user&offset=50`]);
+});
+
+test('client: the log renders inside a fixed-height scroll box (g-038)', async () => {
+  const many = [];
+  for (let index = 1; index <= 50; index += 1) many.push(recordOf(index));
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.history]: {
+        payload: historyFixture({ records: many, total: 5000, pageLimit: 50, offset: 0, pageCount: 100, hasMore: true }),
+      },
+    }),
+  });
+  const tree = await openHistory(page);
+  const box = oneBy(tree, 'data-region', 'history-list');
+  assert.equal(box.props['data-history-list'], 'scroll');
+  assert.equal(box.props.style.overflowY, 'auto', 'the box scrolls, the page does not');
+  assert.equal(typeof box.props.style.height, 'number');
+  assert.equal(box.props.style.maxHeight, box.props.style.height, 'the height is fixed');
+  assert.equal(box.props['data-history-box-height'], String(box.props.style.height));
+  // 5000 records on disk, one page in the DOM.
+  assert.equal(historyRowIds(tree).length, 50);
+
+  // The right column is reserved (and already carries the comparison), in its
+  // own fixed-height scroll box: neither column stretches the page.
+  const detail = oneBy(tree, 'data-region', 'history-detail');
+  assert.equal(detail.props['data-history-detail'], 'empty');
+  const detailBox = oneBy(tree, 'data-region', 'history-detail-box');
+  assert.equal(detailBox.props['data-history-box'], 'scroll');
+  assert.equal(detailBox.props.style.overflowY, 'auto');
+  assert.equal(detailBox.props.style.maxHeight, box.props.style.maxHeight, 'both columns are the same height');
+  assert.ok(oneBy(detailBox, 'data-note', 'history-detail-pending'));
+  clickButton(historyRowOf(tree, '1'), { 'data-action': 'diff-from', 'data-history-id': '1' });
+  const after = await page.flush();
+  assert.equal(oneBy(after, 'data-region', 'history-detail').props['data-history-detail'], 'diff');
+  assert.ok(oneBy(after, 'data-region', 'history-diff'), 'the comparison lives in the right column');
+  assert.equal(oneBy(after, 'data-region', 'history-list').props['data-history-list'], 'scroll');
+});
+
+// #endregion
 
 // #endregion
 
@@ -4886,20 +5231,42 @@ const EN_SWEEP_CASES = [
     },
   },
   {
-    name: 'history: the log, the comparison and the transfer panel',
+    name: 'history: the log, its own scope, the paging box and the comparison',
     marks: [
       ['data-region', 'history-tab'],
       ['data-region', 'history'],
-      ['data-region', 'transfer'],
+      ['data-region', 'history-scope'],
+      ['data-region', 'history-list'],
+      ['data-region', 'history-pager'],
+      ['data-region', 'history-detail'],
       ['data-history-row', '2'],
       ['data-active-tab', 'history'],
     ],
-    copy: ['histHeading', 'transferHeading', 'exportButton', 'histPickFrom'],
+    copy: ['histHeading', 'histScopeHint', 'histPagePrev', 'histPickFrom', 'histScopeGlobal'],
     async run() {
       const page = enPage({ responses: defaultResponses() });
       const rec = recorder(page);
       await rec.take();
       clickAnyTab(rec.last(), 'history');
+      await rec.take();
+      clickButton(historyRowOf(rec.last(), '2'), { 'data-action': 'diff-from', 'data-history-id': '2' });
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'backup: the export / import surface, on its own tab',
+    marks: [
+      ['data-region', 'backup-tab'],
+      ['data-region', 'transfer'],
+      ['data-active-tab', 'backup'],
+    ],
+    copy: ['transferHeading', 'exportButton', 'importApplyButton'],
+    async run() {
+      const page = enPage({ responses: defaultResponses() });
+      const rec = recorder(page);
+      await rec.take();
+      clickAnyTab(rec.last(), 'backup');
       await rec.take();
       return rec.trees;
     },
@@ -5017,7 +5384,7 @@ const EN_SWEEP_CASES = [
       const page = enPage({ responses: defaultResponses() });
       const rec = recorder(page);
       await rec.take();
-      clickAnyTab(rec.last(), 'history');
+      clickAnyTab(rec.last(), 'backup');
       await rec.take();
       clickTab(rec.last(), 'import-mode', 'replace');
       await rec.take();
@@ -5047,7 +5414,7 @@ const EN_SWEEP_CASES = [
       });
       const rec = recorder(page);
       await rec.take();
-      clickAnyTab(rec.last(), 'history');
+      clickAnyTab(rec.last(), 'backup');
       await rec.take();
       typeInto(rec.last(), 'import-text', exportDocument({ schema: 'nope' }));
       await rec.take();
@@ -5067,7 +5434,7 @@ const EN_SWEEP_CASES = [
       const page = enPage({ responses: defaultResponses() });
       const rec = recorder(page);
       await rec.take();
-      clickAnyTab(rec.last(), 'history');
+      clickAnyTab(rec.last(), 'backup');
       await rec.take();
       typeInto(rec.last(), 'import-text', exportDocument());
       await rec.take();
@@ -5103,7 +5470,7 @@ const EN_SWEEP_CASES = [
       });
       const rec = recorder(page);
       await rec.take();
-      clickAnyTab(rec.last(), 'history');
+      clickAnyTab(rec.last(), 'backup');
       await rec.take();
       typeInto(rec.last(), 'import-text', exportDocument());
       await rec.take();
@@ -5133,7 +5500,7 @@ const EN_SWEEP_CASES = [
       installDownloader(page);
       const rec = recorder(page);
       await rec.take();
-      clickAnyTab(rec.last(), 'history');
+      clickAnyTab(rec.last(), 'backup');
       await rec.take();
       clickButton(oneBy(rec.last(), 'data-region', 'transfer'), { 'data-action': 'export' });
       await rec.take();
@@ -5152,7 +5519,7 @@ const EN_SWEEP_CASES = [
       const page = enPage({ responses: defaultResponses() });
       const rec = recorder(page);
       await rec.take();
-      clickAnyTab(rec.last(), 'history');
+      clickAnyTab(rec.last(), 'backup');
       await rec.take();
       clickButton(oneBy(rec.last(), 'data-region', 'transfer'), { 'data-action': 'export' });
       await rec.take();
@@ -5874,12 +6241,14 @@ const EN_SWEEP_CASES = [
  * can never satisfy its own `marks`, and this list fails if a case is dropped.
  */
 const EN_REQUIRED_MARKERS = [
-  // g-015: the four first-level tabs and the surfaces they own.
+  // g-015: the first-level tabs and the surfaces they own — five since g-038
+  // split 「历史与备份」 into 「版本历史」 and 「备份与恢复」.
   'data-region=tabs',
   'data-region=tab-panel',
   'data-active-tab=mine',
   'data-active-tab=overview',
   'data-active-tab=history',
+  'data-active-tab=backup',
   'data-active-tab=advanced',
   'data-region=mine',
   'data-region=mine-layer',
@@ -5896,7 +6265,12 @@ const EN_REQUIRED_MARKERS = [
   'data-region=overrides',
   'data-region=history-tab',
   'data-region=history',
+  'data-region=history-scope',
+  'data-region=history-list',
+  'data-region=history-pager',
+  'data-region=history-detail',
   'data-region=history-diff',
+  'data-region=backup-tab',
   'data-region=transfer',
   'data-region=layer-reset',
   'data-region=confirm',

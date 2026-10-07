@@ -313,11 +313,35 @@ export function resolvePageLimit(raw) {
 }
 
 /**
+ * Resolve one history query's offset.
+ *
+ * Like {@link resolvePageLimit}, `offset` is clamped rather than rejected: an
+ * unusable page number must not turn a read into an error. The bound is applied
+ * later, by {@link queryHistory}, against the match count — a request past the
+ * end lands on the last page instead of on an empty one.
+ * @param raw - the `?offset=` value, or null.
+ * @returns a non-negative integer.
+ */
+export function resolvePageOffset(raw) {
+  if (raw === null || raw === undefined || String(raw).trim().length === 0) return 0;
+  const value = Number(String(raw).trim());
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.floor(value);
+}
+
+/**
  * Filter and page a record list, newest first.
+ *
+ * Paging is `(offset, limit)` over the **filtered, ordered** list, so `total`
+ * stays the match count and a page is a window into it. An out-of-range
+ * `offset` is clamped to the start of the last page (never an error): a stale
+ * page number must still render the newest records rather than an empty list.
  * @param records - the records, in file order.
- * @param query - `{layer?, session?, name?, limit?, before?}`; `before` is an
- *   exclusive ISO upper bound on `at`.
- * @returns `{records, total}` where `total` is the match count before paging.
+ * @param query - `{layer?, session?, name?, limit?, offset?, before?}`;
+ *   `before` is an exclusive ISO upper bound on `at`.
+ * @returns `{records, total, offset, pageCount, hasMore}` where `total` is the
+ *   match count before paging, `offset` is the offset actually used, and
+ *   `hasMore` says whether a page after this one exists.
  */
 export function queryHistory(records, query = {}) {
   const list = Array.isArray(records) ? records : [];
@@ -334,7 +358,20 @@ export function queryHistory(records, query = {}) {
     return true;
   });
   const ordered = matched.slice().sort((left, right) => right.seq - left.seq);
-  return { records: ordered.slice(0, Math.max(0, limit)), total: ordered.length };
+  const total = ordered.length;
+  // `limit: 0` is the documented "counts alone" request: no page exists, so
+  // there is no page count and nothing after this page.
+  const pageCount = limit > 0 ? Math.ceil(total / limit) : 0;
+  const lastOffset = pageCount > 0 ? (pageCount - 1) * limit : 0;
+  const requested = Number.isInteger(query.offset) && query.offset > 0 ? query.offset : 0;
+  const offset = Math.min(requested, lastOffset);
+  return {
+    records: limit > 0 ? ordered.slice(offset, offset + limit) : [],
+    total,
+    offset,
+    pageCount,
+    hasMore: limit > 0 && offset + limit < total,
+  };
 }
 
 /**

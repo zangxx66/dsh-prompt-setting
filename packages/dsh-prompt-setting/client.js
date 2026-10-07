@@ -17,9 +17,14 @@
  *      text with search, the origin filter and the base ↔ effective comparison.
  *      No editor node and no `edit` / `append-new` / `delete` action exists in
  *      its tree, by construction;
- *   3. **「历史与备份」** (`history`) — the history log, the version comparison
- *      and the export/import panel, loaded lazily with the tab;
- *   4. **「高级」** (`advanced`) — the read-only legacy override list, the two
+ *   3. **「版本历史」** (`history`) — the history log with its **own** scope
+ *      selector, its paging and its fixed-height list, plus the version
+ *      comparison. Loaded lazily with the tab, and never sliced by the page's
+ *      「查看范围」 (g-038);
+ *   4. **「备份与恢复」** (`backup`) — the export/import surface, and only that
+ *      (g-038 split it out of the old single tab: one tab may no longer be both
+ *      a read-only log and the page's way to overwrite every file);
+ *   5. **「高级」** (`advanced`) — the read-only legacy override list, the two
  *      layer-wide buttons (`legacy=true` clears the frozen overrides and keeps
  *      「我的 Prompt」; `reset=true` clears the whole layer), each behind its own
  *      second confirmation, plus the full status block.
@@ -378,16 +383,20 @@ window.__ModuleLoader__.load({
     /** The one action the reserved name accepts (§4.1). */
     const RESERVED_SECTION_ACTION = 'replace';
     /**
-     * The four first-level tabs, in the fixed order they are presented.
+     * The five first-level tabs, in the fixed order they are presented.
      * 「我的 Prompt」 is first and is the default: it is the only write surface
      * left, so it is where a user who opened this page for a reason lands.
+     * g-038 split the old 「历史与备份」 in two: 「版本历史」 is the log and its
+     * comparison, 「备份与恢复」 is export/import — one tab may no longer be
+     * both a read-only log and the page's way to overwrite every file.
      */
-    const MAIN_TABS = ['mine', 'overview', 'history', 'advanced'];
+    const MAIN_TABS = ['mine', 'overview', 'history', 'backup', 'advanced'];
     /**
      * The two *read-only* views inside 「提示词总览」. `sections` is the
      * assembled segment list; `full` is the assembled text. The Revision 6
      * `overrides` view is gone from this list: its read-only half moved to
-     * 「高级」 and its history/transfer halves to 「历史与备份」.
+     * 「高级」, and its history/transfer halves to the two tabs g-038 split them
+     * into (「版本历史」 / 「备份与恢复」).
      */
     const VIEWS = ['sections', 'full'];
     /** The layers 「我的 Prompt」 may write to, in presentation order. */
@@ -399,8 +408,14 @@ window.__ModuleLoader__.load({
     const ORIGIN_FILTERS = ['all', 'registered', 'appended', 'downstream-added', 'unmatched-override'];
     /** Upper bound on rendered lines put into the DOM (a long prompt is real). */
     const MAX_VIEW_LINES = 3000;
-    /** History rows one page asks for (the panel keeps a page, not the file). */
-    const HISTORY_PAGE = 20;
+    /**
+     * g-038: the fixed height (px) of each column's scroll box inside
+     * 「版本历史」. The list is a **window**, not a growing page: a layer with
+     * thousands of records renders one page and scrolls inside this box, so the
+     * page's own height never depends on how much history exists. The detail
+     * column reserves the same box for g-039.
+     */
+    const HISTORY_BOX_HEIGHT = 320;
     /** Conflict strategies the import panel offers (CONTRACT §11.4). */
     const IMPORT_MODES = ['merge', 'replace'];
     /** Upper bound on the JSON preview the panel keeps in the DOM. */
@@ -699,7 +714,9 @@ window.__ModuleLoader__.load({
       // g-015: the four first-level tabs, in their fixed presentation order.
       tabMine: '我的 Prompt',
       tabOverview: '提示词总览',
-      tabHistory: '历史与备份',
+      // g-038: 「历史与备份」 became two tabs, in this exact order.
+      tabHistory: '版本历史',
+      tabBackup: '备份与恢复',
       tabAdvanced: '高级',
       overviewReservedNote: '「我的 Prompt」那一段不在这里重复显示：它归「我的 Prompt」tab 所有，请到那里查看和编辑。',
       filterHeading: '筛选',
@@ -885,6 +902,18 @@ window.__ModuleLoader__.load({
       histEmpty: '该层还没有历史记录。',
       histNoSession: '工作区层需要一个可解析的 session id 才能读取历史。',
       histTotal: '共 {n} 条',
+      // ---- g-038: the version history's own scope, and its paging ----
+      histScopeLabel: '历史作用域',
+      histScopeGlobal: '用户层历史是全局的：这里展示该层全部记录，不按会话过滤。',
+      histScopeWorkspace: '当前展示「{name}」这一工作区的历史文件（由会话 {session} 定位），是该工作区的全部记录。',
+      histScopeNone: '还没有可用的工作区作用域：请先在左侧打开一个会话，或让宿主列出工作区。',
+      histScopeDegraded: '工作区服务不可用，已降级为按会话定位历史文件。',
+      histScopeHint: '作用域只属于「版本历史」，与上方「查看范围」互不影响。',
+      histPager: '第 {page} / {pages} 页 · 共 {total} 条',
+      histPagePrev: '上一页',
+      histPageNext: '下一页',
+      histPageEmpty: '暂无分页',
+      histDetailPending: '详情区（预览 / 回滚）由后续目标落地，这里先保留位置。',
       histCorrupt: '有 {n} 行历史记录无法解析，已跳过。',
       histUnreadable: '历史文件不可读：{reason}',
       histLastError: '最近一次历史写入失败：{reason}',
@@ -1098,7 +1127,8 @@ window.__ModuleLoader__.load({
       viewFull: 'Full text',
       tabMine: 'My Prompt',
       tabOverview: 'Prompt overview',
-      tabHistory: 'History & backup',
+      tabHistory: 'Version history',
+      tabBackup: 'Backup & restore',
       tabAdvanced: 'Advanced',
       overviewReservedNote: 'The My Prompt section is not repeated here: it belongs to the My Prompt tab, where it is read and written.',
       filterHeading: 'Filters',
@@ -1283,6 +1313,18 @@ window.__ModuleLoader__.load({
       histEmpty: 'This layer has no history yet.',
       histNoSession: 'The workspace layer needs a resolvable session id to read its history.',
       histTotal: '{n} records',
+      // ---- g-038: the version history's own scope, and its paging ----
+      histScopeLabel: 'History scope',
+      histScopeGlobal: 'The user layer is global: every record of the layer is listed here, filtered by no session.',
+      histScopeWorkspace: 'Showing the history file of workspace "{name}" (located by session {session}) — every record of that workspace.',
+      histScopeNone: 'No workspace scope is available yet: open a session on the left, or have the host list the workspaces.',
+      histScopeDegraded: 'The workspace service is unavailable; the scope degraded to locating the history file by session.',
+      histScopeHint: 'This scope belongs to Version history alone and is independent of the View scope above.',
+      histPager: 'Page {page} / {pages} · {total} records',
+      histPagePrev: 'Previous',
+      histPageNext: 'Next',
+      histPageEmpty: 'No pages',
+      histDetailPending: 'The detail pane (preview / rollback) arrives with a later goal; the place is reserved here.',
       histCorrupt: '{n} history lines could not be parsed and were skipped.',
       histUnreadable: 'The history file is unreadable: {reason}',
       histLastError: 'The last history write failed: {reason}',
@@ -3092,6 +3134,117 @@ window.__ModuleLoader__.load({
       const parts = [`layer=${encodeURIComponent(layer)}`];
       if (sessionArg !== null) parts.push(`session=${encodeURIComponent(sessionArg)}`);
       return parts.join('&');
+    }
+
+    /**
+     * g-038: the query one **version-history** request needs for a layer.
+     *
+     * Deliberately *not* {@link layerQuery}: the history scope is its own thing.
+     * The user layer is global — no `session` at all, because history is not
+     * something a "view scope" may slice (that was the defect this goal fixes).
+     * The workspace layer is located by `workspace=…` (a session id that
+     * resolves to the workspace), which names the
+     * workspace whose log to read **without** narrowing it to that session's own
+     * writes, so one workspace's log is read whole.
+     * @param layer - `user` | `workspace`.
+     * @param scopeSession - the session id resolving the scope, or ''.
+     * @returns `layer=…[&workspace=…]`.
+     */
+    function historyScopeQuery(layer, scopeSession) {
+      const parts = [`layer=${encodeURIComponent(layer)}`];
+      if (layer === 'workspace' && typeof scopeSession === 'string' && scopeSession.length > 0) {
+        parts.push(`workspace=${encodeURIComponent(scopeSession)}`);
+      }
+      return parts.join('&');
+    }
+
+    /**
+     * g-038: the paging numbers of one history response, as this page reads
+     * them.
+     *
+     * The **host** owns the page size (this bundle must never hardcode one), so
+     * everything here is derived from the response it just read: the offset it
+     * actually used (it clamps), the page count it computed and its `hasMore`.
+     * The derived fallbacks exist only for a host that predates those fields —
+     * they never override an answer the host gave.
+     * @param data - the `GET /history` payload, or null.
+     * @returns `{pageSize, offset, total, pageCount, pageIndex, hasMore}`.
+     */
+    function historyPagerInfo(data) {
+      const page = data === null || data === undefined || typeof data !== 'object' ? {} : data;
+      const total = Number.isInteger(page.total) && page.total > 0 ? page.total : 0;
+      const pageSize = Number.isInteger(page.pageLimit) && page.pageLimit > 0 ? page.pageLimit : 0;
+      const pageCount =
+        Number.isInteger(page.pageCount) && page.pageCount > 0
+          ? page.pageCount
+          : pageSize > 0
+            ? Math.max(1, Math.ceil(total / pageSize))
+            : 0;
+      const rawOffset = Number.isInteger(page.offset) && page.offset > 0 ? page.offset : 0;
+      // The window is clamped into the pages that exist: an offset past the end
+      // (a stale page, a host that answers before it clamps) must read as the
+      // last page rather than as "page 6 of 3" with nothing under it.
+      const pageIndex = pageSize > 0 && pageCount > 0
+        ? Math.min(Math.floor(rawOffset / pageSize), pageCount - 1)
+        : 0;
+      const offset = pageSize > 0 ? pageIndex * pageSize : rawOffset;
+      const lastPage = Math.max(1, pageCount) - 1;
+      const hasMore =
+        (typeof page.hasMore === 'boolean' ? page.hasMore : pageSize > 0 && offset + pageSize < total)
+        && pageIndex < lastPage;
+      return { pageSize, offset, total, pageCount, pageIndex, hasMore };
+    }
+
+    /**
+     * g-038: the options the version-history scope selector offers.
+     *
+     * The scope is a **workspace** dimension: one option per workspace the host
+     * lists, labelled with its title (or, for a workspace with no title, its
+     * directory name — the same fallback the 查看范围 tree uses). The option's
+     * value is a session id, because a workspace's log is located through the
+     * host's own session index and a client never supplies a path (§4.2) — one
+     * member session stands for the workspace.
+     *
+     * When the profile provides no workspace list the selector degrades to the
+     * session catalog (`mode: 'sessions'`, announced on the page), and with
+     * neither there is no scope at all (`mode: 'none'`), which the panel says in
+     * words instead of asking the host a question it must refuse.
+     * @param wsSeat - the workspace seat (`{items}`).
+     * @param seat - the session seat (`{rows}`).
+     * @returns `{mode, options}` with options `{value, label, workspaceId, sessionIds}`.
+     */
+    function historyScopeOptionsOf(wsSeat, seat) {
+      const workspaces = Array.isArray(wsSeat && wsSeat.items) ? wsSeat.items : [];
+      const fromWorkspaces = [];
+      for (const workspace of workspaces) {
+        const ids = Array.isArray(workspace && workspace.sessionIds)
+          ? workspace.sessionIds.filter((id) => typeof id === 'string' && id.length > 0)
+          : [];
+        // A workspace no session ever ran in has no locatable log: the host
+        // resolves a root from a session, so such a row could only produce a
+        // refusal.
+        if (ids.length === 0) continue;
+        const title = typeof workspace.title === 'string' ? workspace.title : '';
+        const path = typeof workspace.path === 'string' ? workspace.path : '';
+        fromWorkspaces.push({
+          value: ids[0],
+          label: title.length > 0 ? title : basenameOf(path) || workspace.workspaceId || ids[0],
+          workspaceId: typeof workspace.workspaceId === 'string' ? workspace.workspaceId : '',
+          sessionIds: ids,
+        });
+      }
+      if (fromWorkspaces.length > 0) return { mode: 'workspaces', options: fromWorkspaces };
+      const rows = Array.isArray(seat && seat.rows) ? seat.rows : [];
+      if (rows.length === 0) return { mode: 'none', options: [] };
+      return {
+        mode: 'sessions',
+        options: rows.slice(0, SESSION_MATCH_LIMIT).map((row) => ({
+          value: row.id,
+          label: sessionLabelOf(rows, row.id) || row.id,
+          workspaceId: '',
+          sessionIds: [row.id],
+        })),
+      };
     }
 
     /**
@@ -5122,6 +5275,33 @@ window.__ModuleLoader__.load({
       const data = m.hist.data;
       const records = data && Array.isArray(data.records) ? data.records : [];
       const layer = m.historyLayer;
+      const pg = m.histPage;
+      const loading = m.hist.phase === 'loading';
+      const pagerButtonStyle = {
+        font: 'inherit',
+        fontSize: 12,
+        padding: '2px 10px',
+        borderRadius: 6,
+        cursor: 'pointer',
+        background: 'transparent',
+        color: token.labelSecondary,
+        border: `1px solid ${token.borderL2}`,
+      };
+      // The scope sentence: what is on screen right now, in words. A reader must
+      // never have to infer it from a request URL (g-038).
+      const scopeNote =
+        layer === 'user'
+          ? { key: 'scope-global', attr: 'global', text: t('histScopeGlobal') }
+          : m.historyScopeValue.length === 0
+            ? { key: 'no-session', attr: 'no-session', text: t('histNoSession') }
+            : {
+                key: 'scope-workspace',
+                attr: 'workspace',
+                text: fmt(t('histScopeWorkspace'), {
+                  name: m.historyScopeName,
+                  session: m.historyScopeValue,
+                }),
+              };
       const children = [
         h('h3', { key: 'heading', style: headingStyle }, t('histHeading')),
         h('p', { key: 'note', style: { margin: 0, ...metaStyle } }, fmt(t('histNote'), { limit: data && data.retentionLimit ? data.retentionLimit : '' })),
@@ -5141,12 +5321,56 @@ window.__ModuleLoader__.load({
             'history-layer',
           ),
         ),
+        // The version history's **own** scope (g-038): independent of the
+        // page-level 「查看范围」, so changing that one can never move this list.
+        h(
+          'div',
+          {
+            key: 'scope',
+            'data-region': 'history-scope',
+            'data-history-scope-mode': m.historyScopeMode,
+            'data-history-scope-applies': layer === 'workspace' ? 'true' : 'false',
+            'data-history-scope-value': m.historyScopeValue,
+            'data-history-scope-options': String(m.historyScopeOptions.length),
+            style: { display: 'flex', flexDirection: 'column', gap: 4 },
+          },
+          h('span', { key: 'label', style: metaStyle }, t('histScopeLabel')),
+          m.historyScopeOptions.length > 0
+            ? tabs(
+                m.historyScopeOptions.map((option, index) => ({
+                  value: option.value,
+                  label: option.label,
+                  id: `ps-hscope-${index}`,
+                  panelId: 'ps-hist-panel',
+                })),
+                m.historyScopeValue,
+                a.setHistoryScope,
+                t('histScopeLabel'),
+                'history-scope',
+              )
+            : h('span', { key: 'empty', 'data-role': 'history-scope-empty', style: metaStyle }, t('histScopeNone')),
+          m.historyScopeMode === 'sessions'
+            ? h(
+                'span',
+                { key: 'degraded', 'data-warning': 'history-scope-degraded', style: { ...metaStyle, color: token.stateWarn } },
+                t('histScopeDegraded'),
+              )
+            : null,
+          h(
+            'p',
+            {
+              key: 'scope-note',
+              'data-role': 'history-scope-note',
+              'data-history-note': scopeNote.attr,
+              style: { margin: 0, ...metaStyle },
+            },
+            scopeNote.text,
+          ),
+          h('p', { key: 'scope-hint', style: { margin: 0, ...metaStyle } }, t('histScopeHint')),
+        ),
       ];
-      if (m.hist.phase === 'loading' && !data) children.push(h('p', { key: 'loading', style: metaStyle }, t('loading')));
+      if (loading && !data) children.push(h('p', { key: 'loading', style: metaStyle }, t('loading')));
       if (m.hist.phase === 'error') children.push(h('div', { key: 'error' }, errorBanner(t, m.hist.error, t('histHeading'))));
-      if (layer === 'workspace' && m.sessionArg === null) {
-        children.push(h('p', { key: 'no-session', 'data-history-note': 'no-session', style: { ...metaStyle, color: token.stateWarn } }, t('histNoSession')));
-      }
       if (data) {
         children.push(
           h(
@@ -5158,10 +5382,29 @@ window.__ModuleLoader__.load({
             data.lastError ? h('div', { 'data-history-last-error': 'true', style: { color: token.stateError } }, fmt(t('histLastError'), { reason: data.lastError.reason })) : null,
           ),
         );
+        // g-038: a fixed-height box that scrolls **inside** itself. The page's
+        // own height therefore never depends on how much history a layer has,
+        // and exactly the current page of records is ever rendered.
         children.push(
           h(
             'div',
-            { key: 'rows', style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+            {
+              key: 'rows',
+              'data-region': 'history-list',
+              'data-history-list': 'scroll',
+              'data-history-box-height': String(HISTORY_BOX_HEIGHT),
+              style: {
+                height: HISTORY_BOX_HEIGHT,
+                maxHeight: HISTORY_BOX_HEIGHT,
+                overflowY: 'auto',
+                border: `1px solid ${token.borderL1}`,
+                borderRadius: 8,
+                padding: 6,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 4,
+              },
+            },
             records.length === 0 ? h('div', { 'data-empty': 'history', style: metaStyle }, t('histEmpty')) : null,
             records.map((record) => historyRow(t, m, a, record)),
             h(
@@ -5199,6 +5442,53 @@ window.__ModuleLoader__.load({
             ),
           ),
         );
+        children.push(
+          h(
+            'div',
+            {
+              key: 'pager',
+              'data-region': 'history-pager',
+              'data-history-page': String(pg.pageIndex + 1),
+              'data-history-pages': String(pg.pageCount),
+              'data-history-page-size': String(pg.pageSize),
+              'data-history-offset': String(pg.offset),
+              style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
+            },
+            h(
+              'button',
+              {
+                key: 'prev',
+                type: 'button',
+                'data-action': 'history-prev',
+                disabled: pg.offset <= 0 || loading,
+                onClick: a.historyPrev,
+                style: pagerButtonStyle,
+              },
+              t('histPagePrev'),
+            ),
+            h(
+              'span',
+              { key: 'label', 'data-role': 'history-page-label', style: metaStyle },
+              fmt(t('histPager'), {
+                page: pg.pageIndex + 1,
+                pages: Math.max(1, pg.pageCount),
+                total: pg.total,
+              }),
+            ),
+            h(
+              'button',
+              {
+                key: 'next',
+                type: 'button',
+                'data-action': 'history-next',
+                disabled: pg.hasMore !== true || loading,
+                onClick: a.historyNext,
+                style: pagerButtonStyle,
+              },
+              t('histPageNext'),
+            ),
+          ),
+        );
       }
       return h(
         'div',
@@ -5209,7 +5499,6 @@ window.__ModuleLoader__.load({
           style: { ...cardStyle, display: 'flex', flexDirection: 'column', gap: 6 },
         },
         children,
-        renderDiffPanel(t, m, a),
       );
     }
 
@@ -6164,23 +6453,106 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 「历史与备份」 — the log, the comparison and the export/import surface.
+     * 「版本历史」 — the log and the comparison (g-038: the export/import
+     * surface moved to its own 「备份与恢复」 tab).
      *
      * Nothing here changed in g-015 except *where it lives*: the panel and the
      * transfer card moved out of the old 覆盖 view, and the lazy load now keys
      * off this tab instead of that view, so a page that never opens it still
-     * issues exactly the three baseline requests.
+     * issues exactly the three baseline requests. g-038 then split the two
+     * apart: this renderer is the log's half only.
      *
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
      * @returns the panel element.
      */
+    /**
+     * g-038: 「版本历史」 — the log and its comparison, arranged as two columns.
+     *
+     * The left column is the record list (fixed-height box, internal scroll,
+     * pager); the right column is the detail pane. The right column already
+     * carries the comparison this page has, and reserves its box for the
+     * preview/rollback surface a later goal lands (g-039) — nothing here may
+     * grow with the amount of history on disk.
+     *
+     * `flexWrap` is the narrow-width rule: when the two columns no longer fit
+     * side by side they stack, and each keeps its own fixed-height scroll box,
+     * so a narrow tab cannot push the pager off screen either.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the tab element.
+     */
     function renderHistoryTab(t, m, a) {
       return h(
         'div',
-        { 'data-region': 'history-tab', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
-        renderHistoryPanel(t, m, a),
+        {
+          'data-region': 'history-tab',
+          'data-history-columns': 'two',
+          style: { display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-start' },
+        },
+        h(
+          'div',
+          {
+            key: 'list-column',
+            'data-region': 'history-list-column',
+            style: { flex: '1 1 420px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 6 },
+          },
+          renderHistoryPanel(t, m, a),
+        ),
+        h(
+          'div',
+          {
+            key: 'detail-column',
+            'data-region': 'history-detail',
+            'data-history-detail': m.diff.data === null ? 'empty' : 'diff',
+            style: { flex: '1 1 360px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 6 },
+          },
+          // The detail column keeps the same fixed-height, internally scrolling
+          // box as the list: a long comparison must not stretch the page either
+          // (g-038). g-039 lands the preview/rollback surface inside this box.
+          h(
+            'div',
+            {
+              key: 'detail-box',
+              'data-region': 'history-detail-box',
+              'data-history-box': 'scroll',
+              'data-history-box-height': String(HISTORY_BOX_HEIGHT),
+              style: {
+                height: HISTORY_BOX_HEIGHT,
+                maxHeight: HISTORY_BOX_HEIGHT,
+                overflowY: 'auto',
+                border: `1px solid ${token.borderL1}`,
+                borderRadius: 8,
+                padding: 6,
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 6,
+              },
+            },
+            h(
+              'p',
+              { key: 'detail-pending', 'data-note': 'history-detail-pending', style: { margin: 0, ...metaStyle } },
+              t('histDetailPending'),
+            ),
+            renderDiffPanel(t, m, a),
+          ),
+        ),
+      );
+    }
+
+    /**
+     * g-038: 「备份与恢复」 — the export/import surface, and nothing else.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the tab element.
+     */
+    function renderBackupTab(t, m, a) {
+      return h(
+        'div',
+        { 'data-region': 'backup-tab', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
         renderTransferPanel(t, m, a),
       );
     }
@@ -6647,7 +7019,9 @@ window.__ModuleLoader__.load({
                     ? 'tabOverview'
                     : value === 'history'
                       ? 'tabHistory'
-                      : 'tabAdvanced',
+                      : value === 'backup'
+                        ? 'tabBackup'
+                        : 'tabAdvanced',
               ),
               id: `ps-tab-${value}`,
               panelId: 'ps-tab-panel',
@@ -6697,7 +7071,9 @@ window.__ModuleLoader__.load({
                     ? renderOverviewPanel(t, m, a)
                     : m.tab === 'history'
                       ? renderHistoryTab(t, m, a)
-                      : renderAdvancedTab(t, m, a),
+                      : m.tab === 'backup'
+                        ? renderBackupTab(t, m, a)
+                        : renderAdvancedTab(t, m, a),
               )
             : null,
         ),
@@ -6832,8 +7208,16 @@ window.__ModuleLoader__.load({
       // derived from a real config file until a route answers.
       const [hist, setHist] = React.useState({ phase: 'idle', data: null, error: null });
       const [historyLayer, setHistoryLayer] = React.useState('user');
+      // g-038: the version history's **own** scope, deliberately not the page's
+      // 「查看范围」. `null` means「跟随当前会话」(the current workspace); a string
+      // is the session id the reader picked in the history scope selector. The
+      // page-level scope may change all it likes — this list does not follow it.
+      const [historyScope, setHistoryScope] = React.useState(null);
+      // g-038: the offset of the history page on screen. The page **size** is the
+      // host's (`pageLimit` in its response) and is never hardcoded here.
+      const [historyOffset, setHistoryOffset] = React.useState(0);
       // 「高级」 picks its own layer: the two layer-wide buttons are destructive,
-      // and silently sharing 「历史与备份」's selector would make selecting a log
+      // and silently sharing another tab's selector would make selecting a log
       // filter change what a clear button is aimed at.
       const [advancedLayer, setAdvancedLayer] = React.useState('user');
       const [diffSel, setDiffSel] = React.useState({ from: null, to: DIFF_CURRENT });
@@ -6914,6 +7298,34 @@ window.__ModuleLoader__.load({
       const sessionMatches = scope === null ? filterSessions(seat.rows, sessionQuery) : [];
       const sessionVisible =
         scope === null ? sessionMatches.slice(0, SESSION_MATCH_LIMIT) : scope.rows;
+
+      // ---- g-038: the version history's own scope (never the page's) ----
+      // `historyScope` is the reader's pick or `null` for「跟随当前会话」. The
+      // effective value is a session id: for the workspace layer it is the
+      // session that **locates** the log (and only that — the host returns the
+      // workspace's whole log), and the user layer ignores it entirely.
+      const historyScopes = historyScopeOptionsOf(wsSeat, seat);
+      const historyScopeAuto = (() => {
+        const owner = historyScopes.options.find((option) => option.sessionIds.includes(seat.currentId));
+        if (owner !== undefined) return owner.value;
+        if (seat.currentId.length > 0) return seat.currentId;
+        return historyScopes.options.length > 0 ? historyScopes.options[0].value : '';
+      })();
+      const historyScopeValue =
+        historyScope !== null && historyScopes.options.some((option) => option.value === historyScope)
+          ? historyScope
+          : historyScopeAuto;
+      const historyScopeSelected = historyScopes.options.find((option) => option.value === historyScopeValue) ?? null;
+      const historyScopeName =
+        historyScopeSelected === null
+          ? historyScopeValue
+          : historyScopeSelected.workspaceId.length > 0
+            ? historyScopeSelected.label
+            : sessionLabelOf(seat.rows, historyScopeValue) || historyScopeSelected.label;
+      // The scope enters a **request** only for the workspace layer: the user
+      // layer is global, so moving the selector must not re-fetch — let alone
+      // re-slice — a log the scope cannot describe.
+      const historyScopeArg = historyLayer === 'workspace' ? historyScopeValue : '';
 
       React.useEffect(() => {
         let cancelled = false;
@@ -7023,20 +7435,27 @@ window.__ModuleLoader__.load({
         };
       }, [sessionArg, reload]);
 
-      // History is loaded only while 「历史与备份」 is open: 「我的 Prompt」 and
+      // History is loaded only while 「版本历史」 is open: 「我的 Prompt」 and
       // 「提示词总览」 must not pay for a log they never show, and a mount that
-      // never opens that tab must issue exactly the three baseline requests.
+      // never opens that tab must issue exactly the baseline requests.
+      //
+      // g-038: the request is `layer` + `offset` (+ `workspace` for the
+      // workspace layer) and **no** `session` — the page's 「查看范围」 is not a
+      // parameter of this read at all, so changing it can never re-slice or
+      // re-fetch the log. `limit` is omitted on purpose: the host owns the page
+      // size and answers it as `pageLimit`, which is what the pager then steps
+      // by. The user layer is global; the workspace layer needs a locatable
+      // workspace, so an unresolved scope shows the note instead of a request
+      // the host must refuse.
       React.useEffect(() => {
         if (tab !== 'history') return undefined;
-        if (historyLayer === 'workspace' && sessionArg === null) {
-          // The host refuses this with `workspace-unresolved`; asking anyway
-          // would turn a known answer into an error banner.
+        if (historyLayer === 'workspace' && historyScopeValue.length === 0) {
           setHist({ phase: 'idle', data: null, error: null });
           return undefined;
         }
         let cancelled = false;
         setHist((current) => ({ ...current, phase: 'loading' }));
-        const query = `${layerQuery(historyLayer, sessionArg)}&limit=${HISTORY_PAGE}`;
+        const query = `${historyScopeQuery(historyLayer, historyScopeArg)}&offset=${historyOffset}`;
         const run = async () => {
           const result = await requestJson(`${HISTORY_PATH}?${query}`);
           if (cancelled) return;
@@ -7050,9 +7469,21 @@ window.__ModuleLoader__.load({
         return () => {
           cancelled = true;
         };
-      }, [tab, historyLayer, sessionArg, reload]);
+      }, [tab, historyLayer, historyScopeArg, historyOffset, reload]);
 
       const snapshot = snap.data;
+      // g-038: the paging numbers of the last log read (the host's own page
+      // size, offset, total and page count), plus the two steps the pager may
+      // take. Both steps clamp, so a stale number can never ask for page 0 or
+      // past the end.
+      const histPage = historyPagerInfo(hist.data);
+      const historyPrev = () =>
+        setHistoryOffset(Math.max(0, histPage.offset - Math.max(1, histPage.pageSize)));
+      const historyNext = () => {
+        if (histPage.pageSize <= 0) return;
+        const lastOffset = Math.max(0, (Math.max(1, histPage.pageCount) - 1) * histPage.pageSize);
+        setHistoryOffset(Math.min(lastOffset, histPage.offset + histPage.pageSize));
+      };
       const fz = frozenState(snapshot, sessionArg !== null);
       const effectiveSections =
         snapshot && snapshot.effective && Array.isArray(snapshot.effective.sections)
@@ -7139,6 +7570,10 @@ window.__ModuleLoader__.load({
        * Ask the host for a comparison and store the result. `from`/`to` are a
        * history id or {@link DIFF_CURRENT}; a half-made selection clears the
        * panel rather than sending a request that cannot answer anything.
+       *
+       * g-038: the comparison is scoped exactly like the log beside it — the
+       * version history's own scope, never the page's 「查看范围」 — so the two
+       * can never describe different files.
        */
       const runDiff = async (from, to) => {
         if (from === null || to === null) {
@@ -7146,7 +7581,7 @@ window.__ModuleLoader__.load({
           return;
         }
         setDiff({ phase: 'loading', data: null, error: null });
-        const query = `${layerQuery(historyLayer, sessionArg)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+        const query = `${historyScopeQuery(historyLayer, historyScopeArg)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
         const result = await requestJson(`${DIFF_PATH}?${query}`);
         setDiff(
           result.ok
@@ -8001,8 +8436,20 @@ window.__ModuleLoader__.load({
         toggleExpanded: (name) => setExpanded((current) => (current === name ? '' : name)),
         setHistoryLayer: (value) => {
           setHistoryLayer(value === 'workspace' ? 'workspace' : 'user');
+          // A new layer is a new log: page 1, and no comparison carried across.
+          setHistoryOffset(0);
           setDiff({ phase: 'idle', data: null, error: null });
         },
+        // g-038: the version-history scope selector's own action. It is
+        // deliberately not `pickSession`: this one moves no snapshot and no
+        // override read, and the page's scope does not move this one.
+        setHistoryScope: (value) => {
+          setHistoryScope(typeof value === 'string' && value.length > 0 ? value : null);
+          setHistoryOffset(0);
+          setDiff({ phase: 'idle', data: null, error: null });
+        },
+        historyPrev,
+        historyNext,
         pickDiffSide: (side, id) => {
           const next = { ...diffSel, [side]: id };
           setDiffSel(next);
@@ -8095,6 +8542,13 @@ window.__ModuleLoader__.load({
         busy,
         hist,
         historyLayer,
+        // g-038: the version history's own scope and its paging.
+        historyScope,
+        historyScopeValue,
+        historyScopeName,
+        historyScopeOptions: historyScopes.options,
+        historyScopeMode: historyScopes.mode,
+        histPage,
         diffSel,
         diff,
         confirm,
