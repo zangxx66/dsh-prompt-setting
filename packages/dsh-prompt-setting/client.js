@@ -959,10 +959,14 @@ window.__ModuleLoader__.load({
       histPreviewSnapshot: '该版本的整层快照（{n} 条覆盖）',
       histPreviewSnapshotEmpty: '这条记录没有带整层快照（旧记录）。',
       histPreviewSnapshotEntry: '{name} · {action} · {bytes} 字节',
+      histPreviewPolicy: '预览与回滚只涉及「我的 Prompt」段：本层其它段不会被改动。',
       histRollback: '回滚到此处',
       histRollbackTitle: '回滚{layer}到 #{id}',
       histRollbackBody:
-        '会用 #{id} 这一版的整层内容覆盖{layer}的当前配置，并追加一条 rollback 记录（因此这次回滚本身也可以再回滚）。',
+        '会把「我的 Prompt」段恢复成 #{id} 这一版的内容，并追加一条 rollback 记录（因此这次回滚本身也可以再回滚）。',
+      // g-039 返工：回滚与写入面政策一致——只动保留段，非保留段一律不碰。
+      histRollbackScope: '本次回滚只恢复「我的 Prompt」段，本层其它段保持原样。',
+      histRollbackForeign: '该版本另有 {n} 条非「我的 Prompt」段覆盖，按写入面政策不会被恢复。',
       histRollbackDone: '已回滚到 #{id}：历史列表与当前生效值已刷新，下一轮装配生效。',
       histRollbackFailed: '回滚失败：{reason}',
       diffBlockCopy: '复制',
@@ -1380,7 +1384,8 @@ window.__ModuleLoader__.load({
       'histAction.legacy-clear': 'clear legacy overrides',
       'histAction.rollback': 'rollback',
       // g-039: the detail pane's third view — one record's preview — and the
-      // whole-layer rollback it enables.
+      // reserved-section rollback it enables (Revision 22 narrowed the write to
+      // that one section, so the copy says so).
       histPreview: 'Preview',
       histPreviewHeading: 'Record preview',
       histPreviewClose: 'Close the preview',
@@ -1397,10 +1402,14 @@ window.__ModuleLoader__.load({
       histPreviewSnapshot: 'The whole-layer snapshot of this version ({n} override(s))',
       histPreviewSnapshotEmpty: 'This record carries no whole-layer snapshot (an older record).',
       histPreviewSnapshotEntry: '{name} · {action} · {bytes} bytes',
+      histPreviewPolicy: 'Preview and rollback concern the "My Prompt" section only: no other section of this layer is touched.',
       histRollback: 'Roll back to this',
       histRollbackTitle: 'Roll the {layer} back to #{id}',
       histRollbackBody:
-        'This replaces the current {layer} configuration with the whole-layer content of #{id} and appends a rollback record, which is what makes this rollback itself a version you can roll back again.',
+        'This restores the "My Prompt" section to the content of #{id} and appends a rollback record, which is what makes this rollback itself a version you can roll back again.',
+      // g-039 rework: the rollback follows the write-face policy — one section.
+      histRollbackScope: 'This rollback restores the "My Prompt" section only; every other section of this layer is left as it is.',
+      histRollbackForeign: 'That version also overrode {n} section(s) other than "My Prompt"; the write face does not accept those names, so they are not restored.',
       histRollbackDone: 'Rolled back to #{id}: the log and the current value are refreshed, effective from the next assembly.',
       histRollbackFailed: 'The rollback failed: {reason}',
       diffBlockCopy: 'Copy',
@@ -5225,6 +5234,7 @@ window.__ModuleLoader__.load({
       const entryBytes = (entry) =>
         entry !== null && entry !== undefined && Number.isFinite(entry.bytes) ? String(entry.bytes) : '';
       const snapshot = Array.isArray(record.snapshot) ? record.snapshot : [];
+      const foreign = snapshot.filter((entry) => entry.name !== RESERVED_SECTION_NAME).length;
       const field = (key, label, value) =>
         h(
           'div',
@@ -5278,6 +5288,25 @@ window.__ModuleLoader__.load({
             field('origin', t('histPreviewOrigin'), record.origin === null || record.origin === undefined ? '' : String(record.origin)),
             field('note', t('histPreviewNote'), record.note === null || record.note === undefined ? t('histPreviewNoText') : String(record.note)),
           ),
+          // g-039 rework: say what a rollback would and would not touch, before
+          // the button that starts one. The count is read off this record's own
+          // snapshot, so the sentence is about *this* version.
+          h(
+            'p',
+            { key: 'policy', 'data-preview-policy': 'reserved-only', style: { margin: 0, ...metaStyle } },
+            t('histPreviewPolicy'),
+          ),
+          foreign > 0
+            ? h(
+                'p',
+                {
+                  key: 'foreign',
+                  'data-preview-foreign': String(foreign),
+                  style: { margin: 0, ...metaStyle, color: token.stateWarn },
+                },
+                fmt(t('histRollbackForeign'), { n: foreign }),
+              )
+            : null,
           textBox('before', t('histPreviewBefore'), record.before),
           textBox('after', t('histPreviewAfter'), record.after),
           h(
@@ -6168,12 +6197,16 @@ window.__ModuleLoader__.load({
         body.push(t(updateApplyCopyKey('restartNote', modelLaunchKind(m))));
       } else if (confirm.kind === 'rollback') {
         // g-039: the version-history tab's only write. The body names the
-        // version it will apply, and the shared `resetIrreversible` line below
-        // carries the warning — a rollback is itself logged, but the write it
-        // replaced is restored by nothing except another rollback.
+        // version it will apply, states the scope the write face allows (the
+        // reserved section and nothing else), and the shared
+        // `resetIrreversible` line below carries the warning — a rollback is
+        // itself logged, but the write it replaced is restored by nothing except
+        // another rollback.
         const layerName = layerLabel(t, confirm.layer);
         body.push(fmt(t('histRollbackTitle'), { layer: layerName, id: confirm.id }));
         body.push(fmt(t('histRollbackBody'), { layer: layerName, id: confirm.id }));
+        body.push(t('histRollbackScope'));
+        if (confirm.foreign > 0) body.push(fmt(t('histRollbackForeign'), { n: confirm.foreign }));
       } else {
         body.push(t('importConfirmTitle'));
         body.push(fmt(t('importConfirmBody'), { mode: t(m.importMode === 'replace' ? 'importModeReplace' : 'importModeMerge') }));
@@ -8884,9 +8917,20 @@ window.__ModuleLoader__.load({
         previewHistoryRecord: (id) => setPreviewId((current) => (current === String(id) ? null : String(id))),
         closeHistoryPreview: () => setPreviewId(null),
         // The rollback button only *asks*: the write happens through the shared
-        // confirmation overlay (CONTRACT §13.5), never on the click itself.
-        requestRollback: (id) =>
-          setConfirm({ kind: 'rollback', layer: historyLayer, seq: Number(id), id: String(id) }),
+        // confirmation overlay (CONTRACT §13.5), never on the click itself. How
+        // many *other* sections that version overrode travels with the question,
+        // so the confirmation can say they will not be restored.
+        requestRollback: (id) => {
+          const record = historyRecords.find((entry) => String(entry.id) === String(id)) ?? null;
+          const snapshot = record !== null && Array.isArray(record.snapshot) ? record.snapshot : [];
+          setConfirm({
+            kind: 'rollback',
+            layer: historyLayer,
+            seq: Number(id),
+            id: String(id),
+            foreign: snapshot.filter((entry) => entry.name !== RESERVED_SECTION_NAME).length,
+          });
+        },
         pickDiffSide: (side, id) => {
           const next = { ...diffSel, [side]: id };
           setDiffSel(next);

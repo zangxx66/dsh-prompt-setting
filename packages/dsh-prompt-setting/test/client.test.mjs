@@ -5066,6 +5066,52 @@ test('client: a refused rollback reports the host answer and leaves the log unto
   );
 });
 
+test('client: preview and confirmation both state that only 「我的 Prompt」 is restored (g-039 rework)', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openHistory(page);
+
+  // The fixture's `#2` snapshot names one *other* section, so the page has a
+  // version to warn about.
+  clickButton(historyRowOf(tree, '2'), { 'data-action': 'history-preview', 'data-history-id': '2' });
+  tree = await page.flush();
+  const preview = oneBy(tree, 'data-region', 'history-preview');
+  const policy = oneBy(preview, 'data-preview-policy', 'reserved-only');
+  assert.equal(policy.props['data-preview-policy'], 'reserved-only');
+  assert.ok(hasText(policy, page.zh.histPreviewPolicy), 'the preview states the scope of a rollback');
+  assert.equal(
+    oneBy(preview, 'data-preview-foreign', '1').props['data-preview-foreign'],
+    '1',
+    'a version that overrode another section is counted',
+  );
+  assert.ok(hasText(oneBy(preview, 'data-preview-foreign', '1'), fillText(page.zh.histRollbackForeign, { n: 1 })));
+
+  // The confirmation repeats both sentences: nobody confirms the write without
+  // seeing what it does and does not restore.
+  clickButton(historyRowOf(tree, '2'), { 'data-action': 'history-rollback', 'data-history-id': '2' });
+  tree = await page.flush();
+  const card = oneBy(oneBy(tree, 'data-region', 'confirm-overlay'), 'data-region', 'confirm');
+  assert.equal(card.props['data-confirm-kind'], 'rollback');
+  const body = oneBy(card, 'data-role', 'confirm-body');
+  assert.ok(hasText(body, page.zh.histRollbackScope), 'the scope is stated');
+  assert.ok(hasText(body, fillText(page.zh.histRollbackForeign, { n: 1 })), '…and what is NOT restored');
+  assert.ok(hasText(oneBy(card, 'data-role', 'confirm-irreversible'), page.zh.resetIrreversible));
+  assert.deepEqual(mutatingCalls(page), [], 'still nothing is written');
+
+  // A version that overrode nothing else states the scope and carries no
+  // warning at all.
+  clickButton(card, { 'data-action': 'confirm-no' });
+  tree = await page.flush();
+  clickButton(historyRowOf(tree, '1'), { 'data-action': 'history-preview', 'data-history-id': '1' });
+  tree = await page.flush();
+  const second = oneBy(tree, 'data-region', 'history-preview');
+  assert.ok(hasText(oneBy(second, 'data-preview-policy', 'reserved-only'), page.zh.histPreviewPolicy));
+  assert.equal(
+    collect(second, (node) => node.props && node.props['data-preview-foreign'] !== undefined).length,
+    0,
+    'no other section means no warning',
+  );
+});
+
 // #endregion
 
 /** Every history **record** row that currently claims a comparison selection. */

@@ -621,7 +621,7 @@ meaning exactly.
 | `/prompt-setting/overrides` | `DELETE` | Drop the **reserved** override; `?reset=true` clears the whole layer (§12); `?legacy=true` clears only its frozen overrides (§12.2). |
 | `/prompt-setting/history` | `GET` | One layer's bounded change log, newest first (Revision 4, §8); paged by `offset` and scoped by `session` / `workspace` since Revision 19. |
 | `/prompt-setting/diff` | `GET` | Section + line comparison of two versions of one layer (Revision 4, §9); same scope as §8 since Revision 19. |
-| `/prompt-setting/rollback` | `POST` | Move one layer back to a recorded version, appending a `rollback` record (Revision 21, §19). |
+| `/prompt-setting/rollback` | `POST` | Move the **reserved section** back to a recorded version, appending a section-level `rollback` record (Revision 21; narrowed to that one section in Revision 22, §19). |
 | `/prompt-setting/export` | `GET` | One or both layers as a schema-versioned JSON document (Revision 4, §10). |
 | `/prompt-setting/import` | `POST` | Apply such a document atomically, with a `dryRun` preview (Revision 4, §11). |
 | `/prompt-setting/interpolate` | `GET` | The「我的 Prompt」variable-substitution switch, per layer and effective (Revision 11, §16.4). |
@@ -1789,15 +1789,21 @@ layer without hand-editing anything.
 - Like every other write, it needs a resolvable layer: `400 unknown-layer` /
   `400 workspace-unresolved`.
 
-### 12.3 The history action vocabulary (Revision 7; `rollback` in Revision 21)
+### 12.3 The history action vocabulary (Revision 7; `rollback` in Revision 21, narrowed in Revision 22)
 
 `HISTORY_ACTIONS` is now `replace`, `hide`, `append`, `remove`, `reset-layer`,
 `legacy-clear`, `rollback`. The first five are Revision 6's set, unchanged and in
 the same order, so every existing history file still reads; `rollback` was
 appended in Revision 21, so an old reader's vocabulary is a prefix of the new
-one. `reset-layer`, `legacy-clear` and `rollback` are the *layer-wide* actions:
-their subject is the whole layer, so they are the only records that carry
-`name: null` and the only ones rejected when they name a section. `GET /history`
+one. `reset-layer` and `legacy-clear` are the *layer-wide* actions: their subject
+is the whole layer, so they are the only records that carry `name: null` and the
+only ones rejected when they name a section. **`rollback` is the opposite shape
+(Revision 22): it adjusts the reserved section — the only name the write face
+accepts (§4.1, §15.7) — so it is an ordinary section record, with `name` =
+`prompt-setting:custom-prompt`, `before` / `after` = that section's text and
+`entries: null`.** It is deliberately *not* in `LAYER_WIDE_ACTIONS`: a
+layer-wide rollback would be a fourth write path around the write lock (§19.1).
+`GET /history`
 and `GET /diff` report the action verbatim; a client with no label for it must
 render the raw value rather than guess. The shipped client has had a label for
 every action in this list since g-015 (`histAction.legacy-clear`, and
@@ -2000,7 +2006,8 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   the result never requires scrolling the page, and never grows it.
   `data-note="history-detail-pending"` is now the **idle** note (Revision 21): it
   renders only while nothing is previewed *and* no comparison is on screen.
-- **Record preview (Revision 21).** Every record row carries
+- **Record preview (Revision 21; the policy line in Revision 22).** Every record
+  row carries
   `data-action="history-preview"` (with `data-history-id`), and the panel it opens
   is `data-region="history-preview"` with `data-preview-state`
   (`"ready"` | `"missing"`), `data-preview-id` and `data-preview-snapshot-count`.
@@ -2015,20 +2022,33 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   the page it was rendered from, so "preview writes nothing" is structural rather
   than a promise: `test/client.test.mjs` asserts that the preview path leaves the
   router with zero non-GET calls and never touches `POST /rollback`.
+- **What a rollback would touch is stated before the click (Revision 22).** A ready
+  preview carries `data-preview-policy="reserved-only"` with the `histPreviewPolicy`
+  sentence — preview and rollback concern the reserved section only — and, when the
+  previewed version's snapshot names any *other* section,
+  `data-preview-foreign="<n>"` with the `histRollbackForeign` sentence saying those
+  `n` sections are not restored. The same two sentences are repeated in the
+  confirmation body (`histRollbackScope`, and `histRollbackForeign` when
+  `n > 0`): a user must be able to see what the write does **and** what it
+  deliberately leaves alone, before confirming it.
 - **Preview and paging (Revision 21).** Paging does **not** clear the preview, the
   same rule the comparison selection follows above. A page that does not hold the
   previewed record therefore renders `data-preview-state="missing"` with
   `data-preview-missing="true"` instead of an empty panel. Changing the **layer**
   or the **scope** does clear it, together with everything else that points into
   the file that just left the screen.
-- **One-click rollback (Revision 21).** Every record row carries
+- **One-click rollback (Revision 21; narrowed to the reserved section in
+  Revision 22).** Every record row carries
   `data-action="history-rollback"`, which **only asks**: it opens the shared
   confirmation overlay (§13.5) with `data-confirm-kind="rollback"`, naming the
-  version and carrying the standard `data-role="confirm-irreversible"` line. No
+  version, stating the scope (above) and carrying the standard
+  `data-role="confirm-irreversible"` line. No
   request is made until `data-action="confirm-yes"` is clicked. Confirming sends
   exactly one `POST /prompt-setting/rollback` (§19) whose body is
   `{layer, seq}` — the version-history scope travels in the query string, exactly
-  as it does for `GET /history` and `GET /diff`. On success the page **re-reads**
+  as it does for `GET /history` and `GET /diff`. The write restores **the reserved
+  section only**: every other entry of the layer, present or historical, is left
+  exactly as it is (§19.3). On success the page **re-reads**
   rather than patches: the offset returns to `0`, the selection, the comparison
   and the preview are reset, and the log, the current value and both layer views
   are re-fetched from the host, so the list and the「当前生效值」reflect the write
@@ -3954,56 +3974,92 @@ such a Host is only that the fallback no longer asserts a command line —
 deliberate, because a desktop user behind an old Host is exactly the reader it
 must not mislead.
 
-## 19. `POST /prompt-setting/rollback` (Revision 21, g-039)
+## 19. `POST /prompt-setting/rollback` (Revision 21; narrowed to the reserved section in Revision 22, g-039)
 
-Move one layer back to a version its own log already describes, and log that move
-as a new version.
+Move the **reserved section** back to a version the layer's own log already
+describes, and log that move as a new version.
 
-**Request.** `{ "layer": "user" | "workspace", "seq": positive integer,
-"session"?: string, "workspace"?: string }`. `seq` is a record's stable history id
-(`GET /history`'s `id` / `seq`). Scope is read exactly as §8 and §9 read it:
-`session` filters, `workspace` only **locates** the file, and `session` wins when
-both are given — the same `readScopeOf` rule, so the file that is written is the
-file that was listed. Either value may also be supplied in the query string; the
-body wins. Because a rollback writes, the layer must be **resolvable**
-(`workspace` needs a session id, §4.2).
+### 19.1 Why one section, and not the layer
 
-**Order is the contract** (the same shape §4.1 states for `PUT`): resolve the
-layer → read the layer's current config → read its log → rebuild the target
-version → validate the rebuilt config → **only then** write, and finally append
-the record. Every refusal happens before the first write, so a rejected rollback
+Since Revision 7 the write face *is* the reserved section (§4.1, §15.7):
+`PUT /prompt-setting/overrides`, the single-name `DELETE` and
+`POST /prompt-setting/import` all refuse any other name, and the write lock is
+pinned by SHA-256 in `test/route.test.mjs` and `test/stage2.test.mjs`. A
+whole-layer rollback would be a **fourth write path** around that policy: it
+would put a non-reserved override back into the assembly — one the user has no
+page control to create or remove — and change the next turn's prompt through a
+route the policy says does not exist.
+
+Revision 21 shipped that shape. Revision 22 replaced it with this one, and the
+restriction is therefore not a presentation choice but the write face applied to
+a new route. What a rollback may touch is the reserved section, full stop.
+
+### 19.2 Request
+
+`{ "layer": "user" | "workspace", "seq": positive integer, "session"?: string,
+"workspace"?: string }`. `seq` is a record's stable history id (`GET /history`'s
+`id` / `seq`). Scope is read exactly as §8 and §9 read it: `session` filters,
+`workspace` only **locates** the file, and `session` wins when both are given —
+the same `readScopeOf` rule, so the file that is written is the file that was
+listed. Either value may also be supplied in the query string; the body wins.
+Because a rollback writes, the layer must be **resolvable** (`workspace` needs a
+session id, §4.2).
+
+### 19.3 What is written
+
+The layer's **current** override list with exactly one entry adjusted:
+
+- the target version's `snapshot` **holds** the reserved section ⇒ that entry is
+  set to the text that version held;
+- the target version's `snapshot` **does not hold** it ⇒ the entry is **removed**
+  from the layer (back to "not configured");
+- **every other entry is carried through untouched, in place** — including a
+  non-reserved entry a hand-edited or pre-Revision-7 file still carries. A
+  rollback never adds, removes, reorders or edits one, whether or not the target
+  version named it. `test/stage2.test.mjs` cuts those entries out of the
+  formatted config file by name and compares their bytes before and after the
+  write.
+
+### 19.4 Where the text comes from
+
+A `snapshot` entry is `{name, action, hash, bytes}` and carries **no text**
+(§8), so it says which section a version held — that is the *only* thing it is
+used for here. The text comes from the record chain: every record carries the
+text of the one section it touched (`before` / `after`), so the records that
+mention the reserved section are walked **backwards** from the newest one and
+each write is undone, which lands that one entry exactly where the target record
+left it. A whole-layer `reset-layer` record is undone from its `entries`
+(which is where the reserved section's text is when a clear removed it); a
+`legacy-clear` record cannot have moved the reserved section at all and is
+skipped; records for any other section are skipped, because they cannot have
+moved this one.
+
+If the target version claims the section held text the chain cannot supply, the
+request is **refused** (`history-rollback-unavailable`) rather than written
+approximately. A target whose section was hidden needs no text at all.
+
+Two limits are worth stating:
+
+- a record whose `snapshot` is **absent or empty** is refused
+  (`history-snapshot-missing`). Old records predate the field, and a whole-layer
+  clear legitimately snapshots `[]`; neither says what structure the version had,
+  and "back to an empty layer" is what `DELETE …?reset=true` (§12.1) already
+  does, with a record that says so;
+- `append`'s `order` (a target index, §5.1) is not part of a snapshot and is not
+  part of any record: it survives only for a section still in the current config,
+  and is otherwise dropped. Rebuilding a position out of nothing would be a guess
+  about a value no version ever recorded.
+
+### 19.5 Order is the contract
+
+Resolve the layer → read the layer's current config (`writableConfig`; an
+unusable file is `409 layer-not-writable`) → read its log → rebuild that one
+entry → validate the rebuilt config → **only then** write, and finally append the
+record. Every refusal happens before the first write, so a rejected rollback
 leaves the layer's file byte-identical. `test/stage2.test.mjs` checks that with a
 SHA-256 of the file around every failure, not merely with a status code.
 
-**What "the target version" means.** A history `snapshot` is
-`{name, action, hash, bytes}` per override and carries **no text** (§8), so it
-fixes the *structure* of a version — which sections it had, in which order, under
-which action — and nothing else. The text is recovered from the record chain by
-`rollbackOverrides` (`core/history.js`): each record carries the text of the one
-section it touched (`before` / `after`), so the records are walked **backwards**
-from the newest one and each write is undone, which lands the layer exactly where
-the target record left it. The two facts are then reconciled against each other:
-the layer is made to look like the target `snapshot`, and a section whose text the
-replay cannot supply is a **refusal**, never a guess.
-
-Consequences worth stating:
-
-- a section the target `snapshot` omits is **removed** — that is what "restore
-  this version" means — and the rollback record keeps the list it replaced (§19,
-  "What is recorded"), so nothing is lost;
-- `append`'s `order` (a target index, §5.1) is not part of a snapshot and is not
-  part of any record: it survives only for a section that is still in the current
-  config, and is otherwise dropped. Rebuilding a position out of nothing would be
-  a guess about a value no version ever recorded;
-- a record whose `snapshot` is **absent or empty** is refused
-  (`history-snapshot-missing`). Old records predate the field, and a whole-layer
-  clear legitimately snapshots `[]`; neither describes a structure to restore, and
-  the empty layer `?reset=true` (§12.1) already has a route that says so;
-- a record that cannot be undone at all — a whole-layer record that lists no
-  `entries` — is refused (`history-replay-unavailable`) rather than partially
-  applied.
-
-**Response** (`200`):
+### 19.6 Response
 
 ```json
 {
@@ -4012,28 +4068,44 @@ Consequences worth stating:
   "layer": "user",
   "session": null,
   "seq": 7,
-  "count": 1,
+  "section": "prompt-setting:custom-prompt",
+  "restored": true,
+  "skipped": 2,
+  "count": 3,
   "overrides": [{ "name": "…", "action": "replace", "text": "…" }],
   "effectiveFrom": "next-turn",
   "history": { "ok": true, "id": "12", "seq": 12, "dropped": 0, "rewritten": false }
 }
 ```
 
-`count` and `overrides` are the layer **after** the write, so a caller can render
-the new state without a second read. `history` is the §8.4 shape: a history
-failure is reported and never undoes or blocks the config write that already
-happened. `effectiveFrom: "next-turn"` is the same promise every write makes
-(§5.4): the next assembly sees the new value, because the config cache is updated
-with the file.
+- `section` is the one section the write adjusted;
+- `restored` says whether the target version held it at all (`false` = the
+  entry was removed);
+- `skipped` counts the **other** sections the target version overrode, which are
+  deliberately not restored — this is the number a client puts in front of the
+  user before the write (see §13.3), and it is the response's own statement of
+  the policy rather than something a client has to re-derive;
+- `count` and `overrides` are the layer **after** the write, so a caller can
+  render the new state without a second read;
+- `history` is the §8.4 shape: a history failure is reported and never undoes or
+  blocks the config write that already happened;
+- `effectiveFrom: "next-turn"` is the same promise every write makes (§5.4): the
+  next assembly sees the new value, because the config cache is updated with the
+  file.
 
-**What is recorded.** A `rollback` record (§12.3) — layer-wide, so `name: null` —
-with `origin: "ui"`, `note: "rollback to #<seq>"`, `snapshot` = the layer it
-produced, and `entries` = **the override list as it was before the rollback**
-(`resetEntries`, full text). That is what makes a rollback a version like any
-other: it can be diffed, previewed and rolled back again, and rolling back to an
-*older* record correctly undoes it.
+### 19.7 What is recorded
 
-**Errors.** All are `OverrideError` shapes (`{ok: false, code, message}`, §4.4):
+A `rollback` record (§12.3) that is an ordinary **section record**: `name` = the
+reserved section, `before` / `after` = its text on either side of the write,
+`entries: null`, `snapshot` = the layer it produced, `note` = `"rollback to
+#<seq>"`, `origin: "ui"`. Nothing about it is layer-wide, so the replay above
+undoes it through exactly the same branch as any other section write — which is
+what keeps a rollback reversible: it can be diffed, previewed and rolled back
+again.
+
+### 19.8 Errors
+
+All are `OverrideError` shapes (`{ok: false, code, message}`, §4.4):
 
 | Code | Status | When |
 | --- | --- | --- |
@@ -4044,11 +4116,22 @@ other: it can be diffed, previewed and rolled back again, and rolling back to an
 | `layer-not-writable` | 409 | The layer's own file exists but is not a valid config. |
 | `history-snapshot-missing` | 409 | The record carries no (or an empty) whole-layer snapshot. |
 | `invalid-history-snapshot` | 409 | The snapshot is not an array of unique `{name, action}`, with `action` one of §4.1's. |
-| `history-replay-unavailable` | 409 | The record cannot be undone (a whole-layer record with no `entries`, a section record with no name, a `before` with no text). |
-| `history-rollback-unavailable` | 409 | The structure requires a section whose text the record chain cannot supply. |
+| `history-replay-unavailable` | 409 | A record the replay needs cannot be undone (a `reset-layer` record with no `entries`). |
+| `history-rollback-unavailable` | 409 | The target version requires text of the reserved section that the chain cannot supply. |
 
-**Why this is safe by construction.** Every one of those checks runs on data read
-*before* the write, and the only write is a single `writeConfig` of a config that
-`validateConfig` has already accepted. There is no path that writes a partially
-rebuilt layer, and no path that invents text: a version is either exactly what the
-log records or the request is refused.
+### 19.9 Why this is safe by construction
+
+Every check runs on data read *before* the write, and the only write is a single
+`writeConfig` of a config `validateConfig` has already accepted. There is no path
+that writes a partially rebuilt layer, no path that invents text, and no path
+that adds, removes or edits a non-reserved entry — a version is either exactly
+what the log records for the one section this route owns, or the request is
+refused.
+
+**Revision 22 is a narrowing, not a new feature.** A Host running Revision 21's
+implementation is the one this replaces; the response gains `section`,
+`restored` and `skipped`, and the `rollback` record changes shape from
+layer-wide to section-level. A log written by Revision 21 (a `rollback` record
+with `name: null`) no longer validates and is counted as a corrupt line by §8's
+tolerant reader, which is the documented behaviour for a record this contract
+does not describe.

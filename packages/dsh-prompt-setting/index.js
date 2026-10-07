@@ -2107,25 +2107,27 @@ function mount(ctx, config, cleanups) {
   }
 
   /**
-   * `POST /prompt-setting/rollback` — move one layer back to a recorded version
-   * (Revision 21, g-039).
+   * `POST /prompt-setting/rollback` — move the reserved section back to a
+   * recorded version (Revision 21; narrowed to that one section in Revision 22).
+   *
+   * The write face has been the reserved section alone since Revision 7
+   * ({@link assertWritableSection}, §4.1/§15.7): `PUT /overrides`, the
+   * single-name `DELETE` and `POST /import` all refuse every other name. A
+   * rollback is therefore **not** a whole-layer restore — it adjusts that one
+   * entry and leaves every other override of the layer exactly as it is,
+   * including a non-reserved entry a hand-edited or pre-Revision-7 file still
+   * carries. That restriction lives in {@link rollbackOverrides}; this handler
+   * writes what it returns and nothing else.
    *
    * The order is the contract, exactly as `PUT /overrides` states it: resolve
    * the layer → read the layer's **current** config → read its log → rebuild
-   * the target version ({@link rollbackOverrides}) → validate the rebuilt
-   * config → **only then** write. A refusal at any earlier step therefore
-   * leaves the layer's file byte-identical, which is the guarantee the failure
-   * cases are built on.
+   * that one section → validate the rebuilt config → **only then** write. A
+   * refusal at any earlier step therefore leaves the layer's file
+   * byte-identical, which is the guarantee the failure cases are built on.
    *
-   * What is written is a whole layer, not one section: `snapshot` says which
-   * sections a version had and how they were overridden, and the text of each
-   * is recovered from the record chain. A version whose structure cannot be
-   * rebuilt, or whose text cannot be recovered, is refused with a stable code
-   * rather than written approximately.
-   *
-   * The write appends a `rollback` record whose `entries` hold the override
-   * list **as it was before**, so the rollback is itself a version: it can be
-   * rolled back, diffed and listed like any other.
+   * The write appends a `rollback` record whose `name` is that section and whose
+   * `before` / `after` are its text on either side, so the rollback is itself a
+   * version: it can be rolled back, diffed and listed like any other.
    *
    * Scope: read exactly as `GET /history` and `GET /diff` read it. `session`
    * filters, `workspace` only locates ({@link readScopeOf}); either may come
@@ -2153,12 +2155,21 @@ function mount(ctx, config, cleanups) {
     const target = targetFor(layer, scopeSession);
     const current = writableConfig(target.path);
     const history = readLayerHistory(target.path);
-    const { overrides } = rollbackOverrides(history.records, current, seq);
+    const { overrides, structure, target: wanted } = rollbackOverrides(
+      history.records,
+      current,
+      seq,
+      CUSTOM_SECTION_NAME,
+    );
     // Validating the rebuilt list before the write is what keeps a malformed
     // version from reaching the disk: `validateConfig` rejects a duplicate name,
     // a bad action or an oversized text, and every one of those leaves the file
     // exactly as it was.
     const next = withInterpolate(validateConfig({ overrides }), interpolateFlagOf(current));
+    const sectionOf = (config) =>
+      (Array.isArray(config?.overrides) ? config.overrides : []).find((entry) => entry.name === CUSTOM_SECTION_NAME) ?? null;
+    const wasSection = sectionOf(current);
+    const isSection = sectionOf(next);
     writeConfig(target.path, next);
     cacheWritten(target, next);
     const written = recordHistory({
@@ -2167,11 +2178,13 @@ function mount(ctx, config, cleanups) {
       layer,
       session: scopeSession ?? null,
       action: ROLLBACK_ACTION,
-      name: null,
+      // A section record, like every other change this plugin makes: a rollback
+      // edits one entry, so the log describes one entry.
+      name: CUSTOM_SECTION_NAME,
       origin: 'ui',
-      before: null,
-      after: null,
-      entries: resetEntries(current.overrides),
+      before: textEntry(wasSection === null ? null : wasSection.text),
+      after: textEntry(isSection === null || isSection.action === 'hide' ? null : isSection.text),
+      entries: null,
       snapshot: snapshotOfConfig(next),
       note: `rollback to #${seq}`,
     });
@@ -2181,6 +2194,12 @@ function mount(ctx, config, cleanups) {
       layer,
       session: scopeSession ?? null,
       seq,
+      // Which section was adjusted, whether the target version held it at all,
+      // and how many *other* sections that version overrode — restored by
+      // nothing, because the write face does not accept them (§19).
+      section: CUSTOM_SECTION_NAME,
+      restored: wanted !== null,
+      skipped: structure.filter((entry) => entry.name !== CUSTOM_SECTION_NAME).length,
       count: next.overrides.length,
       overrides: next.overrides,
       effectiveFrom: 'next-turn',

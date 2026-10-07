@@ -5713,3 +5713,78 @@ if (installed.length !== 1 || target === void 0) throw new ManagementFailure("am
 - **`order` 的有损恢复**（见二）：仅当同名项仍在当前配置中时保留，契约 §19 已明记，未做端到端真机验证。
 - 未做并发写入（两个回滚同时到达）的真机验证；单进程内 `writeConfig` 是原子替换，但"读-改-写"之间没有锁，
   与既有 `PUT/DELETE` 的语义一致，不是本轮引入的新风险。
+
+## 116. g-039 返工：回滚收窄为「只恢复保留段」，与写入面政策一致（Revision 22，2026-10-08，基线 `7645961` 工作区）
+
+### 一、缺陷与原理
+
+主管独立实测（真实场景：旧覆盖 `project:alpha` 后来被删除，再回滚到它还存在的版本）证实：上一轮的
+**整层写回**会把**非保留段一并复活** —— `回滚到 #1 产出的 overrides = [{"name":"project:alpha",...}]`。
+而 `PUT /overrides`、单名 `DELETE`、`POST /import` 对任何非保留段名一律 `403 write-locked`
+（Revision 7 的写入面收窄，§4.1 / §15.7）。也就是说回滚成了**第 4 条写路径**：用户界面上既不能创建、
+也不能删除的旧段覆盖，会因为一次回滚重新进入装配，改变下一轮会话的提示词。负责人裁决与写入面政策严格
+一致，不做例外。
+
+### 二、收窄后的语义（本轮的实现）
+
+`rollbackOverrides(records, current, seq, sectionName)` 的返回值不再是"重建出来的整层"，而是
+**当前层原样 + 恰好一个条目被调整**：
+
+- 目标版本的 `snapshot` **含**保留段 ⇒ 该条目文本恢复为那一版的文本；
+- 目标版本的 `snapshot` **不含**保留段 ⇒ 从当前配置中**删除该条目**（回到「未配置」）；
+- **其余条目一律按引用原样透传，位置也不动** —— 包括层文件里历史遗留的非保留段，无论目标版本是否
+  提到过它。回滚永不新增、删除、重排或修改它们。
+
+文本仍来自记录链倒序回放，但**只跟踪保留段这一条**：只有 `name === sectionName` 的单段记录、以及会
+把保留段一起清掉的 `reset-layer`（用它的 `entries` 撤销）参与回放；`legacy-clear` 只删 frozen 覆盖、
+动不到保留段，直接跳过；其它段的记录一律跳过（它们不可能移动保留段）。取不到文本 ⇒
+`history-rollback-unavailable`，绝不猜。
+
+### 三、为什么采用「段级 rollback 记录」（第 4 条）而不另立方案
+
+采纳负责人给的第 4 条，且没有更优替代：把 `rollback` 记录改成**普通段记录**
+（`name` = 保留段名，`before` / `after` = 该段回滚前后的文本，`entries: null`）之后，
+**`undoSection` 走的就是普通分支**，与 `replace` 记录完全同一条路径 —— replay 的正确性来自
+"它本来就是我表里的一种写"，而不是来自任何为 rollback 新开的特例。相应地：
+
+- `LAYER_WIDE_ACTIONS` **撤回** `rollback`（恢复为 2 项：`reset-layer` / `legacy-clear`），
+  `HISTORY_ACTIONS` 仍保留新增值；
+- `validateHistoryRecord` 的既有约束因此自动给出正确结果：`rollback` 是段级，必须带非空 `name`；
+  带 `name: null` 的 rollback 记录会被判为非法行（§8 的宽容读法计为 corrupt），
+  这正是"上一轮 REVISION 21 形态的日志不再被本契约描述"的诚实处理，写进契约 §19.9。
+
+被否方案：保留 layer-wide 记录但用 `entries` 表达"只改保留段" —— 语义与字段名打架，
+且 replay 仍需为 rollback 开特例（`entries` 语义与 `reset-layer` 不同），特例正是越界的温床。
+
+### 四、客户端
+
+- 预览面板新增 `data-preview-policy="reserved-only"`（文案 `histPreviewPolicy`），并在目标版本
+  snapshot 含非保留段时给出 `data-preview-foreign="<n>"`（文案 `histRollbackForeign`，n 由**该记录
+  自己的 snapshot** 现算）；
+- 二次确认框新增 `histRollbackScope`（只恢复保留段）与同一句 `histRollbackForeign`（n>0 时）；
+- 宿主响应新增 `section` / `restored` / `skipped` 三个字段，把"政策拒绝恢复了几条"变成**响应自己的
+  陈述**，客户端不必反推。
+
+### 五、测试与负向对照
+
+- `test/history.test.mjs`：重写 4 条 rollback 单测（只调目标段、非保留段按引用透传且位置不变、
+  目标版本不含保留段则删除、段级 rollback 记录可再回滚），`LAYER_WIDE_ACTIONS` 契约快照断言
+  **改回 2 项**并新增"rollback 必须带 name"的正反两向断言。
+- `test/stage2.test.mjs`：新增 2 条并改写 2 条 —— (a) 目标版本含非保留段、当前没有 ⇒ 回滚后仍然没有
+  且保留段正确恢复；(b) 当前有遗留非保留段 ⇒ 用 `entryBlock()` 从**格式化后的文件文本里按名字切出
+  该条目块**，回滚前后**逐字节相同**（内容 + 位置都断言）；(c) 目标版本不含保留段 ⇒ 该条目被删除；
+  (d) `rollback` 记录是段级（`name` = 保留段名、`before`/`after` 正确、`entries: null`）且再回滚回到
+  回滚前的保留段状态。
+- `test/client.test.mjs`：新增 1 条，断言预览与确认框都出现"只恢复保留段"的句子，且 `foreign` 计数
+  与文案一致（对照：没有任何其它段的版本不出现该警告）。
+- **负向对照（均真红后还原）**：① 在 `rollbackOverrides` 末尾加回"复活 snapshot 里的非保留段" ⇒
+  stage2 的"never revives"与 history 单测各 1 条转红；② 把非保留段改成丢弃（不透传）⇒ 用例 (b) 的
+  逐字节/顺序断言转红。两条合起来证明"不复活"与"不碰"都不是空断言。
+- 全量：`cd packages/dsh-prompt-setting && node --test` ⇒ **621 pass / 0 fail**（上一轮 616 + 5，
+  无回归、无削弱）；`node --check index.js && node --check client.js && node --check core/history.js` 通过。
+
+### 六、未验证项
+
+- 真机目视仍未做（新增的政策说明行在 320px 盒内的排版、确认框条目变多后的高度），只有 DOM 断言。
+- 宿主未重启（本轮改的是宿主路由与核心层，真机需重启后才生效）。
+- `order` 的有损恢复（同名项仍在当前配置时保留，否则丢弃）与上一轮一致，未做端到端真机验证。

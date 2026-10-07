@@ -800,9 +800,57 @@ test('stage2: legacy=true and reset=true are mutually exclusive, and neither fla
 
 // #endregion
 
-// #region rollback (Revision 21, g-039)
+// #region rollback (Revision 21; narrowed to the reserved section in Revision 22, g-039)
 
-test('stage2: rollback restores a recorded version, appends a rollback record and can be rolled back again (g-039)', async () => {
+/** The reserved section's entry in a layer file, or `null` when it is absent. */
+function reservedEntryOf(path) {
+  const parsed = JSON.parse(readFileSync(path, 'utf8'));
+  return (Array.isArray(parsed.overrides) ? parsed.overrides : []).find((entry) => entry.name === CUSTOM_SECTION_NAME) ?? null;
+}
+
+/**
+ * The exact bytes of one override's block inside a formatted config file.
+ *
+ * `writeConfig` serializes with `JSON.stringify(config, null, 2)`, so an entry's
+ * block is reproducible: this function cuts it out by name and lets a test
+ * compare it before and after a write. That is a byte-level assertion about the
+ * *whole* entry — key order and formatting included — which is what "the
+ * rollback did not touch this section" has to mean.
+ * @param text - the file contents.
+ * @param name - the section name to cut out.
+ * @returns the block, or `null` when the section is not in the file.
+ */
+function entryBlock(text, name) {
+  const start = text.indexOf(`"name": ${JSON.stringify(name)}`);
+  if (start < 0) return null;
+  const end = text.indexOf('}', start);
+  return text.slice(start, end + 1);
+}
+
+/** One hand-written history line, the shape `core/history.js` validates. */
+function logLine({ seq, name, action, before = null, after = null, snapshot }) {
+  return JSON.stringify({
+    seq,
+    at: `2024-01-0${seq}T00:00:0${seq}.000Z`,
+    layer: 'user',
+    session: null,
+    action,
+    name,
+    origin: 'ui',
+    before,
+    after,
+    entries: null,
+    snapshot,
+    note: null,
+  });
+}
+
+/** `{name, action, hash, bytes}`, the snapshot shape. */
+function snapOf(name, action) {
+  return { name, action, hash: 'f'.repeat(64), bytes: 2 };
+}
+
+test('stage2: a rollback adjusts the reserved section only, and logs a section-level record (g-039)', async () => {
   const { route } = mount();
   await put(route, { action: 'replace', text: 'A1' });
   await put(route, { action: 'replace', text: 'A2' });
@@ -818,48 +866,144 @@ test('stage2: rollback restores a recorded version, appends a rollback record an
   assert.equal(payload.ok, true);
   assert.equal(payload.rolledBack, true);
   assert.equal(payload.seq, 1);
+  assert.equal(payload.section, CUSTOM_SECTION_NAME, 'the response names the one section it adjusted');
+  assert.equal(payload.restored, true);
+  assert.equal(payload.skipped, 0);
   assert.equal(payload.count, 1);
   assert.equal(payload.effectiveFrom, 'next-turn');
   assert.deepEqual(
     JSON.parse(readFileSync(userPath(), 'utf8')).overrides,
     [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'A1' }],
-    'the layer on disk IS the recorded version',
+    'the reserved section IS the recorded version',
   );
 
   const after = await history(route);
   assert.deepEqual(after.records.map((record) => record.seq), [3, 2, 1]);
   const rollbackRecord = after.records[0];
   assert.equal(rollbackRecord.action, 'rollback');
-  assert.equal(rollbackRecord.name, null, 'a rollback is layer-wide');
+  assert.equal(rollbackRecord.name, CUSTOM_SECTION_NAME, 'a rollback is a section record, not a layer-wide one');
   assert.equal(rollbackRecord.origin, 'ui');
   assert.equal(rollbackRecord.note, 'rollback to #1');
-  assert.deepEqual(
-    rollbackRecord.entries,
-    [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'A2' }],
-    'what the rollback replaced is recorded, which is what makes it a version',
-  );
+  assert.equal(rollbackRecord.entries, null, 'no layer-wide payload is written');
+  assert.equal(rollbackRecord.before.text, 'A2', 'the text it replaced');
+  assert.equal(rollbackRecord.after.text, 'A1', 'the text it restored');
   assert.deepEqual(
     rollbackRecord.snapshot.map((entry) => [entry.name, entry.action]),
     [[CUSTOM_SECTION_NAME, 'replace']],
   );
 
   // Rolling back again — this time to the version the rollback replaced — proves
-  // the rollback record is a version like any other: undoing it restores the
-  // list its `entries` carry.
+  // the section-level record replays like any other write.
   const again = await call(route, {
     method: 'POST',
     url: ROLLBACK_PATH,
     body: JSON.stringify({ layer: 'user', seq: 2 }),
   });
   assert.equal(again.statusCode, 200);
-  assert.deepEqual(JSON.parse(readFileSync(userPath(), 'utf8')).overrides, [
-    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'A2' },
-  ]);
+  assert.deepEqual(reservedEntryOf(userPath()), { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'A2' });
   assert.deepEqual(
     (await history(route)).records.map((record) => record.action),
     ['rollback', 'rollback', 'replace', 'replace'],
     'every rollback is logged, and the log stays a chain',
   );
+});
+
+test('stage2: a rollback never revives a non-reserved section, and drops one the version did not hold (g-039)', async () => {
+  const { route } = mount();
+  // The layer holds only the reserved section; the log remembers a version that
+  // also overrode a non-reserved one — exactly the shape a pre-Revision-7 file
+  // has, and the shape a whole-layer rebuild used to revive.
+  seedUser([{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' }]);
+  mkdirSync(join(home, 'prompt-setting'), { recursive: true });
+  writeFileSync(
+    userHistoryPath(),
+    `${[
+      logLine({
+        seq: 1,
+        name: 'project:alpha',
+        action: 'replace',
+        after: { text: 'OLD TEXT FROM 2024', hash: 'h', bytes: 18 },
+        snapshot: [snapOf('project:alpha', 'replace')],
+      }),
+      logLine({
+        seq: 2,
+        name: CUSTOM_SECTION_NAME,
+        action: 'replace',
+        after: { text: 'MINE', hash: 'h', bytes: 4 },
+        snapshot: [snapOf('project:alpha', 'replace'), snapOf(CUSTOM_SECTION_NAME, 'replace')],
+      }),
+    ].join('\n')}\n`,
+    'utf8',
+  );
+
+  // Version #2 held the reserved section AND one other: the reserved text comes
+  // back, the other section does not exist in the layer before or after.
+  const restored = await call(route, {
+    method: 'POST',
+    url: ROLLBACK_PATH,
+    body: JSON.stringify({ layer: 'user', seq: 2 }),
+  });
+  assert.equal(restored.statusCode, 200);
+  assert.equal(json(restored).restored, true);
+  assert.equal(json(restored).skipped, 1, 'the response says how many sections were not restored');
+  assert.deepEqual(
+    JSON.parse(readFileSync(userPath(), 'utf8')).overrides,
+    [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' }],
+    'the non-reserved section is not revived',
+  );
+
+  // Version #1 held only the other section: the reserved entry is dropped, and
+  // the other one is still not revived.
+  const dropped = await call(route, {
+    method: 'POST',
+    url: ROLLBACK_PATH,
+    body: JSON.stringify({ layer: 'user', seq: 1 }),
+  });
+  assert.equal(dropped.statusCode, 200);
+  assert.equal(json(dropped).restored, false);
+  assert.equal(json(dropped).skipped, 1);
+  assert.deepEqual(
+    JSON.parse(readFileSync(userPath(), 'utf8')).overrides,
+    [],
+    'a version without the reserved section leaves the layer without it',
+  );
+});
+
+test('stage2: a non-reserved entry the layer already carries is byte-identical across a rollback (g-039)', async () => {
+  const { route } = mount();
+  // A hand-edited / pre-Revision-7 layer: two entries the write face would now
+  // refuse to create, kept exactly as they are.
+  seedUser([
+    { name: 'project:alpha', action: 'replace', text: 'LEGACY TEXT' },
+    { name: 'project:beta', action: 'hide' },
+  ]);
+  await put(route, { action: 'replace', text: 'A1' });
+  await put(route, { action: 'replace', text: 'A2' });
+
+  const before = readFileSync(userPath(), 'utf8');
+  const blocks = ['project:alpha', 'project:beta'].map((name) => [name, entryBlock(before, name)]);
+  for (const [name, block] of blocks) {
+    assert.equal(typeof block === 'string' && block.length > 0, true, `${name} is in the file before the rollback`);
+  }
+
+  const res = await call(route, {
+    method: 'POST',
+    url: ROLLBACK_PATH,
+    body: JSON.stringify({ layer: 'user', seq: 1 }),
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(json(res).skipped, 2, 'both non-reserved sections are reported as not restored');
+
+  const after = readFileSync(userPath(), 'utf8');
+  for (const [name, block] of blocks) {
+    assert.equal(entryBlock(after, name), block, `${name} is byte-identical after the rollback`);
+  }
+  assert.deepEqual(
+    JSON.parse(after).overrides.map((entry) => entry.name),
+    ['project:alpha', 'project:beta', CUSTOM_SECTION_NAME],
+    'their content AND their position are untouched',
+  );
+  assert.deepEqual(reservedEntryOf(userPath()), { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'A1' });
 });
 
 test('stage2: a rollback that cannot be rebuilt answers a stable code and leaves the file byte-identical (g-039)', async () => {
@@ -898,29 +1042,22 @@ test('stage2: a rollback that cannot be rebuilt answers a stable code and leaves
   // A record that is readable but whose structure is unusable (a hand-edited
   // log): the snapshot entries are checked before anything is written.
   mkdirSync(join(home, 'prompt-setting'), { recursive: true });
-  const seedLog = (snapshot) => writeFileSync(
+  const seedLog = (snapshot, name = CUSTOM_SECTION_NAME) => writeFileSync(
     userHistoryPath(),
-    `${JSON.stringify({
+    `${logLine({
       seq: 1,
-      at: '2024-01-01T00:00:00.000Z',
-      layer: 'user',
-      session: null,
+      name,
       action: 'replace',
-      name: 'a',
-      origin: 'ui',
-      before: null,
       after: { text: 'A1', hash: 'h', bytes: 2 },
-      entries: null,
       snapshot,
-      note: null,
     })}\n`,
     'utf8',
   );
 
-  // The log and the layer disagree (the config was edited by hand, so the text
-  // the snapshot requires is simply not in the chain): refuse rather than write
-  // a config no version ever had.
-  seedLog([{ name: 'a', action: 'replace', hash: 'h', bytes: 2 }]);
+  // The version asks for text of the reserved section that the chain cannot
+  // supply (the config was edited by hand): refuse rather than guess — and the
+  // same is true whether the missing text is the reserved section's or nobody's.
+  seedLog([snapOf(CUSTOM_SECTION_NAME, 'replace')]);
   writeFileSync(userPath(), '{"version":1,"overrides":[]}\n', 'utf8');
   const unavailable = await call(route, {
     method: 'POST',
@@ -932,7 +1069,7 @@ test('stage2: a rollback that cannot be rebuilt answers a stable code and leaves
   assert.equal(JSON.parse(readFileSync(userPath(), 'utf8')).overrides.length, 0);
 
   // A snapshot whose entries are malformed is refused by the same rule.
-  seedLog([{ name: 'a', action: 'nope' }]);
+  seedLog([{ name: CUSTOM_SECTION_NAME, action: 'nope' }]);
   const seeded = fingerprint(userPath());
   const malformed = await call(route, {
     method: 'POST',
@@ -973,6 +1110,7 @@ test('stage2: a workspace rollback is located by workspace=, and the body wins o
   });
   assert.equal(res.statusCode, 200);
   assert.equal(json(res).session, 's1');
+  assert.equal(json(res).section, CUSTOM_SECTION_NAME);
   assert.deepEqual(
     JSON.parse(readFileSync(workspacePath('ws1'), 'utf8')).overrides,
     [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'W1' }],
