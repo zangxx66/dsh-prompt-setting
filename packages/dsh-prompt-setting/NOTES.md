@@ -5867,3 +5867,66 @@ CSS 语义上 1–3 合起来等价于"本 tab 的高度 ≤ 视口、内容只�
   头部实测估的，**若真机上仍出现页面滚动条，优先调大 `HISTORY_VIEWPORT_OFFSET`**（它只影响面板高度，不影响其它行为）。
 - 宿主未重启（本轮纯客户端改动，宿主路由/参数/字节未动，契约 Revision 23 明记 "client-half only"）。
 - 窄宽度（<620px）下两栏各 ~300px 的观感未验，只有"不换行"的机制断言。
+
+## 118. g-039 四轮：面板高度从「硬编码偏移」改为「运行时测量」（Revision 24，2026-10-08，基线 `8e1b707` 工作区）
+
+### 一、为什么必须改
+
+三轮把面板高度定为 `calc(100vh - 260px)`，260 是**按设置页头部实测估的**。这个面板渲染在 DSH 设置对话框内部，
+对话框自身的高度约束与内边距由壳层决定（`dsh-client-ui-settings` 包内没有高度定义，无法离线定案）。偏移估小
+几十像素 ⇒ 面板超出可视区 ⇒ 页面/对话框又开始滚，正是本轮要消灭的症状原样复发。所以不再赌常量：**边界实测**。
+
+### 二、实现
+
+- **纯函数** `historyPanelHeight({panelTop, boundaryBottom, viewportHeight, minHeight, gap})` → `{height, source}`：
+  - 边界 = 最近的可滚动祖先的 `rect.bottom`（向上找第一个 computed `overflow-y` 为 `auto`/`scroll` 的父元素，
+    经 `getComputedStyle` 读，所以样式表里写的也算），找不到则用 `window.innerHeight`；
+  - `height = Math.max(floor, Math.floor(boundary - panelTop - gap))`，floor 默认 `HISTORY_PANEL_MIN_HEIGHT`(320)，
+    gap 默认 `HISTORY_PANEL_GAP`(16)；
+  - **全域函数**：`panelTop` 缺失/`≤0`/`NaN`、边界不在面板下方、既无可观察祖先又无 `window` ⇒
+    `{height: null, source: 'fallback'}`，渲染层据此回落到 `HISTORY_PANEL_HEIGHT` 常量。
+    `panelTop <= 0` 视为"没测到"：未布局的元素报告全 0，而真实卡片一定在设置页标题之下。
+- **组件接线**：`historyPanelRef` + `historyPanelPx` state；`useLayoutEffect`（运行时没有就退回 `useEffect`，绘制晚一帧）
+  挂载时测一次、`window.resize` 再测；有 `ResizeObserver` 时同时观察父元素（对话框被拖动/改内边距而窗口没 resize 的场景）。
+  **同值不 setState**（`setHistoryPanelPx(current => current === next ? current : next)`），否则观察者会自己喂自己。
+- **诊断钩子**：根容器 `data-history-height-source`（`measured` | `fallback`）与 `data-history-panel-height`
+  （px 数字或字符串 `fallback`）；`data-history-viewport-offset` 继续报告回落常量。测试沙箱渲染无真实布局 ⇒
+  天然走 fallback，因此既有断言（`height === calc(100vh - offset)`）语义不变、只补了 source 断言。
+- **测试通道**：浏览器 bundle 没有导出，纯函数通过 factory 返回值的 `__internals.historyPanelHeight` 暴露
+  （loader 只读 `inject`/`apply`，页面从不读它）。测试替身补了 `useRef` 预设（`options.refs`）与
+  `window` 注入（`innerHeight` / `getComputedStyle` / `addEventListener`），用于 measured 与 resize 用例。
+- 布局与交互**一律不动**：`nowrap`、两列 `1 1 0`、两盒 `1 1 auto; minHeight: 0`、点行即选、`diff-clear`、
+  `preview-close` 全部保持；「换文件复位 / 翻页不复位」与本轮无关（面板高度不属于文件级状态）。
+
+### 三、测试与负向对照
+
+- 新增 3 条：① 纯函数（正常测量 / 无祖先用 viewport / 下限钳制 / gap 先减后钳 / 10 组不可用输入 ⇒ fallback）；
+  ② measured 渲染（假元素 + 可滚动祖先 ⇒ `data-history-panel-height === '684'`，`height === '684px'`，布局规则不变）；
+  ③ `window.resize` 重测（边界下移 ⇒ 484；边界移到面板上方 ⇒ fallback，布局规则仍在）。
+- 等价改写：`test/client.test.mjs` 里那条视口布局用例补上 `data-history-height-source === 'fallback'` 与
+  `data-history-panel-height === 'fallback'`（覆盖一条未少，机制断言由"固定 calc"扩展为"fallback=calc、measured=实测值"）。
+- **负向对照（真红后还原）**：① 去掉 `Math.max(floor, …)` 钳制 ⇒ 纯函数用例 1 红；② 让测量结果永远走 fallback
+  ⇒ measured + resize 两条用例红。
+- 全量：`cd packages/dsh-prompt-setting && node --test` ⇒ **628 pass / 0 fail**（三轮 625 + 3，无回归无削弱）；
+  `node --check client.js` 通过。宿主与 `core/` 未改动。
+
+### 四、真机上若仍滚，现在怎么调
+
+1. 先读钩子：打开「版本历史」，在面板根节点（`[data-region="history-tab"]`）看
+   `data-history-height-source` 与 `data-history-panel-height`。
+   - `measured` + 一个明显偏大的数字 ⇒ 可滚动祖先不是对话框那一层（可能命中了更外层），或祖先的 bottom 本身就是
+     页面底边；此时往下看第 3 步。
+   - `fallback` ⇒ 说明测量不可用（取不到祖先且 `window.innerHeight` 也不可用，或 `panelTop <= 0`），走的是常量路径。
+2. 若是 `measured` 但只差几十像素（贴在滚动条边缘），调大 `HISTORY_PANEL_GAP`（`client.js` 常量区，默认 16）
+   —— 它直接从可用高度里扣掉，是最贴切的旋钮。
+3. 若是 `fallback`，或 `measured` 的数字明显不合理，调 `HISTORY_VIEWPORT_OFFSET`（`client.js` 常量区，默认 260）：
+   它决定 `HISTORY_PANEL_HEIGHT = calc(100vh - 260px)`，只影响回落高度，不动其它行为。
+4. 下限 `HISTORY_PANEL_MIN_HEIGHT`（默认 320）只在"可用高度比它更小"时生效；真机上若出现"面板比可视区还高"，
+   先确认不是这个下限在顶——它是有意为之（宁可滚也不给两条没用的缝）。
+
+### 五、未验证项
+
+- **真机目视仍未做**：`getComputedStyle` 找到的"最近可滚动祖先"到底是不是设置对话框那一层，只能在真机上读钩子确认；
+  本轮所有断言都在沙箱里用假元素完成。
+- `ResizeObserver` 分支未被测试覆盖（沙箱无该构造器，只有 `typeof` 守卫与真实浏览器路径）；只有 `window.resize` 有断言。
+- 宿主未重启（本轮纯客户端改动）。

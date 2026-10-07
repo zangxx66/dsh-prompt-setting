@@ -1917,7 +1917,7 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   `sections` / `full`) keep their Revision 3 meaning; the Revision 6
   `overrides` view no longer exists.
 
-### 13.3 「版本历史」(Revision 19: its own scope, paging and a two-column layout; scope disclosure and state resets in Revision 20; record preview and rollback in Revision 21; preview policy and the narrowed rollback in Revision 22; viewport-sized non-stacking layout, row picking and clearing in Revision 23)
+### 13.3 「版本历史」(Revision 19: its own scope, paging and a two-column layout; scope disclosure and state resets in Revision 20; record preview and rollback in Revision 21; preview policy and the narrowed rollback in Revision 22; viewport-sized non-stacking layout, row picking and clearing in Revision 23; the panel height measured at run time in Revision 24)
 
 - The panel is `data-region="history"` (with `data-history-layer`,
   `data-history-state`, `data-history-total`, `data-history-corrupt`,
@@ -2006,19 +2006,48 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   `1 1 360px` inside a ~700px settings dialog is exactly what used to push the
   second column onto its own line, putting a record and its result one screen
   apart. A narrower panel narrows the columns; it never stacks them.
-- **The panel is viewport-sized (Revision 23).** `history-tab` carries
-  `height: maxHeight: calc(100vh - <offset>px)` (`data-history-viewport-offset` is
-  that offset in px) and a px `minHeight` floor for a very short window. The
-  offset is the room the settings page spends above this panel (title line,
-  deciding-facts line, tab bar); being a little generous costs a few unused pixels,
-  while being short is the page scrollbar this layout exists to remove. Below the
-  panel, each column and each box is `flex: 1 1 auto; minHeight: 0`, so the list
-  and the detail pane share exactly the height that is left.
+- **The panel height is measured at run time (Revision 23; measured instead of
+  guessed in Revision 24).** `history-tab` carries a px `height` / `maxHeight`
+  and a px `minHeight` floor for a very short window. Revision 23 computed the
+  height as the constant `calc(100vh - <offset>px)`, where the offset was an
+  **estimate** of the room the settings page spends above this card — a guess
+  about someone else's dialog, and a guess that is too small puts the panel past
+  the visible area (the page scrollbar this layout exists to remove, back again).
+  Revision 24 measures it instead:
+  - **boundary** = the bottom of the nearest **scrollable ancestor** (the first
+    parent whose computed `overflow-y` is `auto` or `scroll` — the thing that
+    would actually scroll, read through `getComputedStyle` so a stylesheet
+    counts), or `window.innerHeight` when there is no such ancestor;
+  - **height** = `clamp(minHeight, boundary − panelTop − gap)`, with the px floor
+    `HISTORY_PANEL_MIN_HEIGHT` (320) and a `gap` of `HISTORY_PANEL_GAP` (16);
+  - the measurement is the pure function `historyPanelHeight(inputs)` →
+    `{height, source}`, and it is **total**: a missing/zero/`NaN` `panelTop`, a
+    boundary that is not below the panel, or no usable boundary at all (no
+    observable ancestor *and* no `window`) yields
+    `{height: null, source: 'fallback'}`, and the renderer then uses the constant
+    `calc(100vh − HISTORY_VIEWPORT_OFFSET)` string. `panelTop <= 0` counts as
+    "not measured": an unlaid-out element reports all zeros.
+  - It runs in `useLayoutEffect` (so the panel is sized before the paint), once on
+    mount and again on `window.resize`; a `ResizeObserver` on the parent is added
+    when the runtime has one. The same value never calls `setState`, so a
+    measurement cannot feed itself a render loop.
+  - The decision is reported on the panel: `data-history-height-source` is
+    `"measured"` | `"fallback"` and `data-history-panel-height` is the px number
+    or the string `"fallback"` — the first thing to read on a real page when the
+    panel looks the wrong size. `data-history-viewport-offset` still reports the
+    fallback constant, and a runtime without any measured geometry (a test
+    double, a server render, a zero-sized rect) renders the constant path exactly
+    as Revision 23 did.
+  Below the panel, each column and each box is `flex: 1 1 auto; minHeight: 0`, so
+  the list and the detail pane share exactly the height that is left.
   **Every** answer to a selection — the comparison (g-038), the record preview and
   the rollback confirmation (Revision 21) — renders inside that one bounded box,
   which is what keeps the page's own height independent of how much history
   exists: choosing a version and reading the result never scrolls the page, and
-  never grows it.
+  never grows it. The **reset rules are untouched** by any of this: changing the
+  layer or the scope still resets the offset, the selection, the comparison and
+  the preview, and paging still does not (§13.3, Revision 20/21) — the panel's
+  height is not part of the file-scoped state.
 - **The detail pane shows exactly one view (Revision 23).**
   `data-history-detail` is `"empty"` | `"preview"` | `"diff"` and the three are
   **mutually exclusive**: previewing replaces the comparison rather than stacking
@@ -2124,6 +2153,33 @@ stored byte changes**, so every host behaviour above keeps its meaning exactly
   pair and the result, and the detail pane renders exactly one of idle / preview /
   comparison so a switch never leaves the previous view's content behind. Row
   picking and clearing also **drop the preview**, since the pane shows one view.
+
+**Revision 24 (the panel height is measured, not guessed — g-039 fourth round).**
+Client-half only: **no route, no query parameter and no stored byte changes**, and
+the layout and interaction rules above are unchanged (`flexWrap: nowrap`, both
+columns `1 1 0`, both boxes `1 1 auto; minHeight: 0`).
+
+- **Why.** Revision 23's `calc(100vh − 260px)` made the panel's height depend on a
+  **guessed** offset. This card renders inside the DSH settings dialog, whose own
+  padding and height rules are the shell's business: an offset a few dozen pixels
+  too small puts the panel past the visible area and the page scrolls again —
+  exactly the symptom the layout was introduced to remove.
+- **Now.** The available room is measured at run time against the nearest
+  scrollable ancestor (or the viewport), the result is clamped to a px floor, and
+  the panel renders that px height. A measurement that is unusable in any way
+  falls back to the Revision 23 constant, so an environment with no layout
+  behaves exactly as before.
+- **Diagnostics.** `data-history-height-source` and `data-history-panel-height`
+  report which path is in use and what was measured. `data-history-viewport-offset`
+  keeps reporting the fallback constant.
+- **Unit tests.** The resolver is a pure function exported through the bundle's
+  documented test handle (`__internals.historyPanelHeight` on the factory's
+  return value): clamping, the viewport boundary, `gap`, and every fallback input
+  are asserted directly, plus two rendered cases (measured and re-measured on
+  resize) that hand the page a fake element to measure.
+- **Unchanged invariants.** The file-scoped reset rules are untouched: a layer or
+  scope change still resets offset + selection + comparison + preview, paging
+  still resets nothing, and §19's rollback is still the reserved section only.
 
 ### 13.3a 「备份与恢复」(Revision 19)
 

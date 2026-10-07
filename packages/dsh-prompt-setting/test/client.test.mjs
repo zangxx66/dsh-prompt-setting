@@ -94,10 +94,16 @@ const ERROR_CODES = [
  * Minimal hooks runtime: index-addressed cells, effects collected per render.
  * @returns the React double plus render bookkeeping.
  */
-function makeHooksRuntime() {
+function makeHooksRuntime(options = {}) {
   let cells = [];
   let cursor = 0;
+  let refCursor = 0;
   let effects = [];
+  // g-039 fourth round: a `useRef` whose `.current` the case can preset. React
+  // assigns a ref's `.current` when it mounts the element; the double renders no
+  // real DOM, so a case that wants to exercise a measuring code path hands in the
+  // element it wants the ref to hold.
+  const presetRefs = Array.isArray(options.refs) ? options.refs : [];
   const React = {
     createElement(type, props, ...children) {
       return {
@@ -119,7 +125,11 @@ function makeHooksRuntime() {
     },
     useRef(initial) {
       const index = cursor++;
-      if (!(index in cells)) cells[index] = { current: initial };
+      if (!(index in cells)) {
+        const preset = presetRefs[refCursor];
+        refCursor += 1;
+        cells[index] = { current: preset === undefined ? initial : preset };
+      }
       return cells[index];
     },
     useSyncExternalStore(subscribe, getSnapshot) {
@@ -136,6 +146,7 @@ function makeHooksRuntime() {
     React,
     render(component, props) {
       cursor = 0;
+      refCursor = 0;
       effects = [];
       const tree = component(props);
       const pending = effects;
@@ -180,9 +191,9 @@ afterEach(() => {
   for (const page of mountedPages.splice(0)) page.dispose();
 });
 
-function loadClient(primitives) {
+function loadClient(primitives, options = {}) {
   let descriptor = null;
-  const runtime = makeHooksRuntime();
+  const runtime = makeHooksRuntime(options);
   const sandbox = {
     window: {
       __ModuleLoader__: {
@@ -658,7 +669,11 @@ function makeRouter(responses) {
  *   of the language actually bound).
  */
 function makePage(options = {}) {
-  const loaded = loadClient(options.primitives || 'throw');
+  const loaded = loadClient(options.primitives || 'throw', options);
+  // g-039 fourth round: extra `window` facts a measuring case needs
+  // (`innerHeight`, `getComputedStyle`). Merged, never replaced: the loader
+  // double is still there.
+  if (options.window !== undefined) Object.assign(loaded.sandbox.window, options.window);
   // Revision 18: an engine with no `Intl` must still stamp a time and name a
   // file — the fallback is part of the contract, so a case can ask for that
   // engine instead of trusting a branch no one has run.
@@ -4868,6 +4883,11 @@ test('client: the log and the detail pane share one viewport-sized row, and scro
   assert.equal(tab.props['data-history-columns'], 'two');
   assert.equal(tab.props['data-history-layout'], 'viewport');
   assert.equal(tab.props.style.flexWrap, 'nowrap', 'the columns never stack');
+  // …and the height is the constant path here: the double renders no DOM, so
+  // there is nothing to measure (g-039 fourth round). The measured path has its
+  // own case, which hands the page a fake element to measure.
+  assert.equal(tab.props['data-history-height-source'], 'fallback');
+  assert.equal(tab.props['data-history-panel-height'], 'fallback');
   assert.equal(tab.props.style.height, `calc(100vh - ${tab.props['data-history-viewport-offset']}px)`);
   assert.equal(tab.props.style.maxHeight, tab.props.style.height, 'and the panel is bounded by the viewport');
   for (const region of ['history-list-column', 'history-detail']) {
@@ -5274,6 +5294,143 @@ test('client: switching the layer resets the preview together with the compariso
   assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history-preview').length, 0);
   assert.deepEqual(selectedHistoryRows(tree), []);
   assert.equal(oneBy(tree, 'data-region', 'history-pager').props['data-history-offset'], '0');
+});
+
+// #region g-039 fourth round: the panel height is measured, not guessed
+
+/**
+ * A fake panel element whose geometry a measuring case can pin.
+ *
+ * The double renders no DOM, so a case that wants the measuring path hands the
+ * page this instead: an element with a `getBoundingClientRect` and (by default)
+ * one scrollable ancestor above it. `scroller: false` models the other shape —
+ * no scrollable ancestor, so the viewport is the boundary.
+ * @param options - `top`, `scrollerBottom`, `scroller`.
+ * @returns `{panel, ancestor}`.
+ */
+function measuredPanel({ top = 200, scrollerBottom = 900, scroller = true } = {}) {
+  // Mutable, so a case can move the world and ask for a re-measure.
+  const state = { top, scrollerBottom };
+  const ancestor = {
+    getBoundingClientRect: () => ({
+      top: 0,
+      bottom: state.scrollerBottom,
+      left: 0,
+      right: 700,
+      width: 700,
+      height: state.scrollerBottom,
+    }),
+  };
+  return {
+    ancestor,
+    state,
+    panel: {
+      parentElement: scroller ? ancestor : null,
+      getBoundingClientRect: () => ({ top: state.top, bottom: state.top + 100, left: 0, right: 700, width: 700, height: 100 }),
+    },
+  };
+}
+
+test('client: the panel height resolver measures the boundary, clamps and falls back (g-039 fourth round)', () => {
+  const resolve = loadClient('ok').module.__internals.historyPanelHeight;
+  assert.equal(typeof resolve, 'function');
+  // The resolver runs inside the sandbox realm, so a case compares its answer as
+  // plain text rather than as an object built in a different realm.
+  const shape = (value) => `${String(value.height)}/${String(value.source)}`;
+
+  // Measured: the room between the panel's top and the bottom of the thing that
+  // would scroll, minus the gap.
+  assert.equal(shape(resolve({ panelTop: 200, boundaryBottom: 900, viewportHeight: 1200, minHeight: 320, gap: 16 })), '684/measured');
+  // No scrollable ancestor is not a failure — the viewport is the boundary that
+  // always exists in a browser.
+  assert.equal(shape(resolve({ panelTop: 200, boundaryBottom: null, viewportHeight: 1200, minHeight: 320, gap: 16 })), '984/measured');
+  // The gap is real, and it is subtracted BEFORE the clamp.
+  assert.equal(shape(resolve({ panelTop: 100, boundaryBottom: 500, viewportHeight: 1200, minHeight: 320, gap: 0 })), '400/measured');
+  assert.equal(shape(resolve({ panelTop: 100, boundaryBottom: 500, viewportHeight: 1200, minHeight: 320, gap: 40 })), '360/measured');
+  // A panel pushed far down is clamped UP to the floor, never to a negative box.
+  assert.equal(shape(resolve({ panelTop: 900, boundaryBottom: 950, viewportHeight: 1200, minHeight: 320, gap: 16 })), '320/measured');
+  // An unusable floor falls back to the shipped minimum rather than to 0, and a
+  // missing gap is no gap.
+  assert.equal(shape(resolve({ panelTop: 100, boundaryBottom: 300, viewportHeight: 1200, minHeight: 0, gap: 0 })), '320/measured');
+  assert.equal(shape(resolve({ panelTop: 100, boundaryBottom: 300, viewportHeight: 1200 })), '320/measured');
+
+  // Unusable inputs ⇒ the constant path, never a nonsense number.
+  for (const inputs of [
+    {},
+    null,
+    { panelTop: 0, boundaryBottom: 900, viewportHeight: 1200 },
+    { panelTop: null, boundaryBottom: 900, viewportHeight: 1200 },
+    { panelTop: Number.NaN, boundaryBottom: 900, viewportHeight: 1200 },
+    { panelTop: 200 },
+    { panelTop: 200, boundaryBottom: 0, viewportHeight: 0 },
+    { panelTop: 200, boundaryBottom: null, viewportHeight: null },
+    // A boundary that is not below the panel is not a height either.
+    { panelTop: 500, boundaryBottom: 500, viewportHeight: 1200, minHeight: 320, gap: 16 },
+    { panelTop: 500, boundaryBottom: 100, viewportHeight: 1200, minHeight: 320, gap: 16 },
+  ]) {
+    assert.equal(shape(resolve(inputs)), 'null/fallback', JSON.stringify(inputs));
+  }
+});
+
+test('client: a measured panel renders the measured height, and says where it came from (g-039 fourth round)', async () => {
+  const { panel, ancestor } = measuredPanel({ top: 200, scrollerBottom: 900 });
+  const page = makePage({
+    refs: [panel],
+    window: {
+      innerHeight: 1200,
+      getComputedStyle: (node) => ({ overflowY: node === ancestor ? 'auto' : 'visible' }),
+    },
+    responses: defaultResponses(),
+  });
+  const tree = await openHistory(page);
+  const tab = oneBy(tree, 'data-region', 'history-tab');
+  // 900 (the scrollable ancestor's bottom) − 200 (the panel's top) − 16 (the gap).
+  assert.equal(tab.props['data-history-height-source'], 'measured');
+  assert.equal(tab.props['data-history-panel-height'], '684');
+  assert.equal(tab.props.style.height, '684px');
+  assert.equal(tab.props.style.maxHeight, '684px');
+  assert.equal(tab.props.style.minHeight, 320, 'the floor stays whatever the measurement says');
+  // The layout rules themselves are untouched by the measuring.
+  assert.equal(tab.props.style.flexWrap, 'nowrap');
+  assert.equal(oneBy(tree, 'data-region', 'history-list').props.style.flex, '1 1 auto');
+  assert.equal(oneBy(tree, 'data-region', 'history-detail-box').props.style.flex, '1 1 auto');
+});
+
+test('client: a window resize re-measures the panel, and still nothing else moves (g-039 fourth round)', async () => {
+  const { panel, ancestor, state } = measuredPanel({ top: 200, scrollerBottom: 900 });
+  const listeners = {};
+  const page = makePage({
+    refs: [panel],
+    window: {
+      innerHeight: 1200,
+      getComputedStyle: (node) => ({ overflowY: node === ancestor ? 'auto' : 'visible' }),
+      addEventListener: (type, fn) => {
+        listeners[type] = fn;
+      },
+      removeEventListener: (type) => {
+        delete listeners[type];
+      },
+    },
+    responses: defaultResponses(),
+  });
+  let tree = await openHistory(page);
+  assert.equal(oneBy(tree, 'data-region', 'history-tab').props['data-history-panel-height'], '684');
+  assert.equal(typeof listeners.resize, 'function', 'the page listens for a resize');
+
+  // The dialog gets shorter: the boundary moves, so the panel must too.
+  state.scrollerBottom = 700;
+  listeners.resize();
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'history-tab').props['data-history-panel-height'], '484');
+  assert.equal(oneBy(tree, 'data-region', 'history-tab').props['data-history-height-source'], 'measured');
+
+  // A boundary that leaves no room at all is a fallback, not a broken panel.
+  state.top = 900;
+  listeners.resize();
+  tree = await page.flush();
+  const tab = oneBy(tree, 'data-region', 'history-tab');
+  assert.equal(tab.props['data-history-height-source'], 'fallback');
+  assert.equal(tab.props.style.flexWrap, 'nowrap', 'the layout rule survives every measuring outcome');
 });
 
 // #endregion

@@ -422,22 +422,34 @@ window.__ModuleLoader__.load({
      * The boxes used to be `320px` each, and the two columns were allowed to
      * wrap, which is what made the page scroll: at the settings dialog's width
      * the columns stacked, so choosing a record and reading the result were one
-     * screen apart. The panel now takes its height from the viewport
-     * (`calc(100vh - offset)`) and the **columns never stack**, so the only
-     * thing that scrolls is a column's own content.
+     * screen apart. The panel now takes its height from the viewport and the
+     * **columns never stack**, so the only thing that scrolls is a column's own
+     * content.
      *
-     * `HISTORY_VIEWPORT_OFFSET` is the measured room the settings page spends
-     * above this panel: the title line, the deciding-facts line and the tab bar
-     * (a little under 250px in the shipped page). It is deliberately a little
-     * generous — a panel a few pixels shorter than the space it has costs
-     * nothing, while a panel a few pixels taller is exactly the page scrollbar
-     * this round removes. `HISTORY_PANEL_MIN_HEIGHT` is the floor for a very
-     * short window: below it the page scrolls rather than rendering two useless
-     * slivers.
+     * g-039 (fourth round): how much of the viewport is really available is
+     * **measured at run time** ({@link historyPanelHeight}) instead of guessed,
+     * because this card renders inside the settings dialog and the room left
+     * above it is the dialog's business, not this bundle's. The constants below
+     * are the **fallback** path, used whenever the measurement is not usable
+     * (no layout, a zero-sized rect, no `window`): a panel a few pixels shorter
+     * than the space it has costs nothing, while a panel a few pixels taller is
+     * exactly the page scrollbar this layout removes. `HISTORY_PANEL_MIN_HEIGHT`
+     * is the floor for a very short window: below it the page scrolls rather
+     * than rendering two useless slivers.
      */
     const HISTORY_VIEWPORT_OFFSET = 260;
     const HISTORY_PANEL_HEIGHT = `calc(100vh - ${HISTORY_VIEWPORT_OFFSET}px)`;
     const HISTORY_PANEL_MIN_HEIGHT = 320;
+    /** Room kept between the panel's bottom edge and its measured boundary. */
+    const HISTORY_PANEL_GAP = 16;
+    /**
+     * g-039 fourth round: `useLayoutEffect` measures **before the paint**, which
+     * is what a panel sized from its own position wants — measuring after the
+     * paint would show one frame at the fallback height. A runtime without it
+     * (an old React, a test double) falls back to `useEffect`, where the panel is
+     * simply sized one paint later.
+     */
+    const useLayoutEffect = typeof React.useLayoutEffect === 'function' ? React.useLayoutEffect : React.useEffect;
     /**
      * g-038: the fixed height (px) of the version history's **scope candidate
      * list**. The scope selector is a disclosure whose picker renders inside
@@ -3289,6 +3301,87 @@ window.__ModuleLoader__.load({
         (typeof page.hasMore === 'boolean' ? page.hasMore : pageSize > 0 && offset + pageSize < total)
         && pageIndex < lastPage;
       return { pageSize, offset, total, pageCount, pageIndex, hasMore };
+    }
+
+    /**
+     * g-039 (fourth round): how tall the「版本历史」panel may be, from what was
+     * actually measured around it.
+     *
+     * The height used to be `calc(100vh - 260px)`, where 260 was the room the
+     * settings page was *estimated* to spend above this card. That estimate is a
+     * guess about someone else's dialog: a shell that adds its own padding or
+     * header moves the real boundary, and a guess that is too small puts the
+     * panel past the visible area — the page scrollbar this layout exists to
+     * remove, back again. So the room is measured instead: the panel's own top
+     * edge and the bottom of the nearest **scrollable ancestor** (the thing that
+     * would actually scroll), or the viewport when there is no such ancestor.
+     *
+     * Pure and total by design: any input may be missing, zero or nonsense and
+     * the answer is still usable — `{height: null, source: 'fallback'}`, which
+     * the renderer turns into the constant `calc` string. The `source` is part
+     * of the contract because it is reported on the panel
+     * (`data-history-height-source`) and is the first thing to read on a real
+     * page when the panel looks the wrong size.
+     *
+     * `panelTop <= 0` is treated as "not measured": a panel at the top of the
+     * document cannot be distinguished from a rect that was never laid out
+     * (every real card sits below the settings title, and an unlaid-out element
+     * reports all zeros).
+     * @param inputs - `{panelTop, boundaryBottom, viewportHeight, minHeight, gap}`.
+     *   `panelTop` is the panel's `getBoundingClientRect().top`, `boundaryBottom`
+     *   the scrollable ancestor's `.bottom` (or `null` when there is none), and
+     *   `viewportHeight` the `window.innerHeight` fallback boundary.
+     * @returns `{height, source}`: an integer px height with `source: 'measured'`,
+     *   or `{height: null, source: 'fallback'}` for the constant path.
+     */
+    function historyPanelHeight(inputs) {
+      const input = inputs === null || inputs === undefined ? {} : inputs;
+      const usable = (value) => typeof value === 'number' && Number.isFinite(value);
+      const floor = usable(input.minHeight) && input.minHeight > 0 ? input.minHeight : HISTORY_PANEL_MIN_HEIGHT;
+      const gap = usable(input.gap) && input.gap > 0 ? input.gap : 0;
+      const panelTop = usable(input.panelTop) && input.panelTop > 0 ? input.panelTop : null;
+      if (panelTop === null) return { height: null, source: 'fallback' };
+      const boundary = usable(input.boundaryBottom) && input.boundaryBottom > 0 ? input.boundaryBottom : null;
+      const viewport = usable(input.viewportHeight) && input.viewportHeight > 0 ? input.viewportHeight : null;
+      // No scrollable ancestor is not a failure: the viewport is the boundary
+      // that always exists in a browser.
+      const bottom = boundary === null ? viewport : boundary;
+      if (bottom === null) return { height: null, source: 'fallback' };
+      const available = bottom - panelTop - gap;
+      if (!usable(available) || available <= 0) return { height: null, source: 'fallback' };
+      return { height: Math.max(floor, Math.floor(available)), source: 'measured' };
+    }
+
+    /**
+     * The nearest ancestor that would scroll this panel, or `null`.
+     *
+     * This is the boundary {@link historyPanelHeight} is measured against: the
+     * settings dialog's own scroll container when there is one, so the panel
+     * stops at the edge of what the user can actually see instead of at a
+     * guessed offset. `overflow-y: auto | scroll` is the test — the same one the
+     * browser uses — and it is read through `getComputedStyle` so a stylesheet
+     * (not just an inline style) counts.
+     * @param node - the panel element.
+     * @returns the ancestor element, or `null` when there is none.
+     */
+    function scrollBoundaryOf(node) {
+      if (node === null || node === undefined) return null;
+      const style = typeof window !== 'undefined' && typeof window.getComputedStyle === 'function'
+        ? (element) => window.getComputedStyle(element)
+        : null;
+      if (style === null) return null;
+      let current = node.parentElement === undefined ? null : node.parentElement;
+      while (current !== null && current !== undefined) {
+        let overflowY = '';
+        try {
+          overflowY = String(style(current).overflowY || '');
+        } catch {
+          overflowY = '';
+        }
+        if (overflowY === 'auto' || overflowY === 'scroll') return current;
+        current = current.parentElement === undefined ? null : current.parentElement;
+      }
+      return null;
     }
 
     /**
@@ -6928,10 +7021,15 @@ window.__ModuleLoader__.load({
      * column an equal share of whatever width there is and lets the inner boxes
      * scroll, which is the only scroll this tab is allowed to have.
      *
-     * Height: `HISTORY_PANEL_HEIGHT` (`calc(100vh − offset)`) bounds the panel to
-     * the viewport, and the boxes below take `flex: 1 1 auto; minHeight: 0` so
-     * they fill whatever is left instead of a fixed 320px. The page's own scroll
-     * bar therefore does not appear for this tab.
+     * Height (g-039 third round, measured in the fourth): the panel is bounded by
+     * what was really available — `m.historyPanel.height` when the measurement
+     * produced one — and falls back to `HISTORY_PANEL_HEIGHT`
+     * (`calc(100vh − offset)`) when it did not. The boxes below take
+     * `flex: 1 1 auto; minHeight: 0` so they fill whatever is left instead of a
+     * fixed 320px. The page's own scroll bar therefore does not appear for this
+     * tab. Which path is in use is reported on the panel itself:
+     * `data-history-height-source` (`measured` | `fallback`) and
+     * `data-history-panel-height` (the px number, or `fallback`).
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
@@ -6943,6 +7041,7 @@ window.__ModuleLoader__.load({
       // is still the comparison view.
       const detail =
         m.preview.state !== 'none' ? 'preview' : m.diff.phase !== 'idle' || m.diff.data !== null ? 'diff' : 'empty';
+      const panelHeight = m.historyPanel.height === null ? HISTORY_PANEL_HEIGHT : `${m.historyPanel.height}px`;
       return h(
         'div',
         {
@@ -6950,14 +7049,18 @@ window.__ModuleLoader__.load({
           'data-history-columns': 'two',
           'data-history-layout': 'viewport',
           'data-history-viewport-offset': String(HISTORY_VIEWPORT_OFFSET),
+          'data-history-height-source': m.historyPanel.source,
+          'data-history-panel-height':
+            m.historyPanel.height === null ? 'fallback' : String(m.historyPanel.height),
+          ref: m.historyPanelRef,
           style: {
             display: 'flex',
             // Never stacks (g-039 third round). See this function's doc comment.
             flexWrap: 'nowrap',
             gap: 10,
             alignItems: 'stretch',
-            height: HISTORY_PANEL_HEIGHT,
-            maxHeight: HISTORY_PANEL_HEIGHT,
+            height: panelHeight,
+            maxHeight: panelHeight,
             minHeight: HISTORY_PANEL_MIN_HEIGHT,
             minWidth: 0,
           },
@@ -7716,6 +7819,13 @@ window.__ModuleLoader__.load({
       // `resetHistoryView` clears it; paging deliberately does not (CONTRACT
       // §13.3), and a page that does not hold it renders the `missing` state.
       const [previewId, setPreviewId] = React.useState(null);
+      // g-039 (fourth round): the panel's height is **measured**, not guessed —
+      // one ref on the panel, one number in state, and `null` meaning "use the
+      // constant path" (`HISTORY_PANEL_HEIGHT`). The measurement is reported on
+      // the panel as `data-history-height-source`, so a real page answers "which
+      // path am I on" without a debugger.
+      const historyPanelRef = React.useRef(null);
+      const [historyPanelPx, setHistoryPanelPx] = React.useState(null);
       // 「高级」 picks its own layer: the two layer-wide buttons are destructive,
       // and silently sharing another tab's selector would make selecting a log
       // filter change what a clear button is aimed at.
@@ -7826,6 +7936,57 @@ window.__ModuleLoader__.load({
       // layer is global, so moving the selector must not re-fetch — let alone
       // re-slice — a log the scope cannot describe.
       const historyScopeArg = historyLayer === 'workspace' ? historyScopeValue : '';
+      useLayoutEffect(() => {
+        if (tab !== 'history') return undefined;
+        const measure = () => {
+          const node = historyPanelRef.current === undefined ? null : historyPanelRef.current;
+          const rect = node !== null && typeof node.getBoundingClientRect === 'function' ? node.getBoundingClientRect() : null;
+          const boundary = scrollBoundaryOf(node);
+          const boundaryRect =
+            boundary !== null && typeof boundary.getBoundingClientRect === 'function' ? boundary.getBoundingClientRect() : null;
+          const resolved = historyPanelHeight({
+            panelTop: rect === null ? null : rect.top,
+            boundaryBottom: boundaryRect === null ? null : boundaryRect.bottom,
+            viewportHeight: typeof window !== 'undefined' ? window.innerHeight : null,
+            minHeight: HISTORY_PANEL_MIN_HEIGHT,
+            gap: HISTORY_PANEL_GAP,
+          });
+          const next = resolved.source === 'measured' ? resolved.height : null;
+          // The same number must not setState: a `ResizeObserver` on the parent
+          // would otherwise feed itself a render on every measurement.
+          setHistoryPanelPx((current) => (current === next ? current : next));
+        };
+        measure();
+        const cleanups = [];
+        if (typeof window !== 'undefined') {
+          if (typeof window.addEventListener === 'function') {
+            window.addEventListener('resize', measure);
+            cleanups.push(() => window.removeEventListener('resize', measure));
+          }
+          // A dialog that resizes without a window resize (a dragged splitter, a
+          // changed padding) is what the observer is for; a runtime without it
+          // still gets the window-resize path.
+          const parent =
+            historyPanelRef.current === null || historyPanelRef.current === undefined
+              ? null
+              : historyPanelRef.current.parentElement === undefined
+                ? null
+                : historyPanelRef.current.parentElement;
+          if (parent !== null && typeof ResizeObserver === 'function') {
+            try {
+              const observer = new ResizeObserver(measure);
+              observer.observe(parent);
+              cleanups.push(() => observer.disconnect());
+            } catch {
+              // An observer that will not take this element is not a failure: the
+              // resize listener above is still in place.
+            }
+          }
+        }
+        return () => {
+          for (const cleanup of cleanups) cleanup();
+        };
+      }, [tab, historyLayer, historyScopeArg, reload]);
       // The candidate list the open picker renders: search narrows it, and it is
       // always bounded by the scrolling box rather than by a render cap, because
       // the box — not the page — is what grows.
@@ -8001,6 +8162,13 @@ window.__ModuleLoader__.load({
         id: previewId,
         record: previewRecord,
         state: previewId === null ? 'none' : previewRecord === null ? 'missing' : 'ready',
+      };
+      // g-039 fourth round: the panel's own height decision, as the data it is —
+      // a px number with source `measured`, or `null` with source `fallback`,
+      // which the renderer turns into `HISTORY_PANEL_HEIGHT`.
+      const historyPanel = {
+        height: historyPanelPx,
+        source: historyPanelPx === null ? 'fallback' : 'measured',
       };
       /**
        * Reset everything that points **into the file that was on screen**.
@@ -9195,6 +9363,8 @@ window.__ModuleLoader__.load({
         diffSel,
         diff,
         preview: previewInfo,
+        historyPanel,
+        historyPanelRef,
         confirm,
         transfer,
         importText,
@@ -9271,6 +9441,14 @@ window.__ModuleLoader__.load({
 
     return {
       inject: ['slots', 'locale'],
+      /**
+       * g-039 fourth round: a read-only handle for this bundle's own unit tests.
+       * A browser bundle has no exports, and the panel-height resolver deserves
+       * assertions of its own (clamping, the viewport boundary, the fallback
+       * path) that a rendered tree cannot express. The loader only ever reads
+       * `inject` and `apply`; nothing in the page reads this.
+       */
+      __internals: { historyPanelHeight },
       apply(ctx) {
         // Every locale call is guarded. `ctx.locale.subscribe` and
         // `getSnapshot().revision` are the one unproven part of the 0.1.7-rc.2
