@@ -1057,6 +1057,8 @@ const PATHS = {
   overrides: '/prompt-setting/overrides',
   history: '/prompt-setting/history',
   diff: '/prompt-setting/diff',
+  // g-039: the version-history tab's only write.
+  rollback: '/prompt-setting/rollback',
   export: '/prompt-setting/export',
   import: '/prompt-setting/import',
   interpolate: '/prompt-setting/interpolate',
@@ -1075,6 +1077,20 @@ function defaultResponses(over = {}) {
     [PATHS.overrides]: { payload: overridesFixture() },
     [PATHS.history]: { payload: historyFixture() },
     [PATHS.diff]: { payload: diffFixture() },
+    // g-039: the rollback response, the one write this tab can start.
+    [PATHS.rollback]: {
+      payload: {
+        ok: true,
+        rolledBack: true,
+        layer: 'user',
+        session: null,
+        seq: 1,
+        count: 1,
+        overrides: [],
+        effectiveFrom: 'next-turn',
+        history: { ok: true, id: '3', seq: 3, dropped: 0, rewritten: false },
+      },
+    },
     [PATHS.export]: { payload: exportFixture() },
     [PATHS.import]: { payload: importPlanFixture() },
     // g-030: the shipped default — switch on, upstream not ahead, so the default
@@ -4866,6 +4882,191 @@ test('client: the log renders inside a fixed-height scroll box (g-038)', async (
   assert.ok(oneBy(after, 'data-region', 'history-diff'), 'the comparison lives in the right column');
   assert.equal(oneBy(after, 'data-region', 'history-list').props['data-history-list'], 'scroll');
 });
+
+// #region g-039: record preview and one-click rollback
+
+/** Every request that is not a plain GET — i.e. every request that could write. */
+function mutatingCalls(page) {
+  return page.router.calls.filter(
+    (call) => call.init && typeof call.init.method === 'string' && call.init.method !== 'GET',
+  );
+}
+
+test('client: previewing a record writes into the detail box, and asks the host nothing at all (g-039)', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openHistory(page);
+  const box = () => oneBy(tree, 'data-region', 'history-detail-box');
+
+  clickButton(historyRowOf(tree, '2'), { 'data-action': 'history-preview', 'data-history-id': '2' });
+  tree = await page.flush();
+
+  // Positive: the panel lands inside the SAME fixed-height box the comparison
+  // uses, so the page never grows with history and the row that was clicked
+  // stays in view above it.
+  const preview = oneBy(box(), 'data-region', 'history-preview');
+  assert.equal(preview.props['data-preview-state'], 'ready');
+  assert.equal(preview.props['data-preview-id'], '2');
+  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'preview');
+  const list = oneBy(tree, 'data-region', 'history-list');
+  assert.equal(list.props['data-history-list'], 'scroll');
+  assert.equal(box().props.style.overflowY, 'auto');
+  assert.equal(box().props.style.maxHeight, list.props.style.height, 'both columns stay the same fixed height');
+
+  // The facts that say WHICH version this is…
+  for (const [field, label] of [
+    ['action', page.zh.histPreviewAction],
+    ['at', page.zh.histPreviewAt],
+    ['layer', page.zh.histPreviewLayer],
+    ['name', page.zh.histPreviewName],
+    ['origin', page.zh.histPreviewOrigin],
+    ['note', page.zh.histPreviewNote],
+  ]) {
+    assert.ok(hasText(oneBy(preview, 'data-preview-field', field), label), `${field} is labelled`);
+  }
+  assert.ok(hasText(oneBy(preview, 'data-preview-field', 'name'), 'project:alpha'));
+  assert.ok(hasText(oneBy(preview, 'data-preview-field', 'layer'), page.zh.ovUser));
+  assert.ok(hasText(oneBy(preview, 'data-preview-field', 'origin'), 'import'));
+  assert.ok(hasText(oneBy(preview, 'data-preview-field', 'note'), 'import mode=merge status=replaced'));
+  // …the content on both sides of that write…
+  assert.equal(oneBy(preview, 'data-preview-text', 'before').props['data-preview-bytes'], '10');
+  assert.ok(hasText(oneBy(preview, 'data-preview-text', 'before'), 'alpha base'));
+  assert.ok(hasText(oneBy(preview, 'data-preview-text', 'after'), 'alpha overridden'));
+  // …and the whole-layer snapshot that version carried.
+  assert.equal(oneBy(preview, 'data-preview-snapshot-count', '1').props['data-preview-snapshot-count'], '1');
+  assert.equal(oneBy(preview, 'data-preview-snapshot', 'project:alpha').props['data-preview-snapshot-action'], 'replace');
+  assert.ok(
+    hasText(
+      oneBy(preview, 'data-preview-snapshot', 'project:alpha'),
+      fillText(page.zh.histPreviewSnapshotEntry, { name: 'project:alpha', action: 'replace', bytes: 16 }),
+    ),
+  );
+
+  // The preview is a read of what is already on screen: no write of any kind,
+  // and no request to the route a rollback would use.
+  assert.deepEqual(mutatingCalls(page), [], 'a preview writes nothing');
+  assert.deepEqual(urlsFor(page, PATHS.rollback), [], 'and never touches the rollback route');
+
+  // Clicking the same record again closes it, and the pane is back to its idle
+  // note — no third state to reason about.
+  clickButton(historyRowOf(tree, '2'), { 'data-action': 'history-preview', 'data-history-id': '2' });
+  tree = await page.flush();
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history-preview').length, 0);
+  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'empty');
+  assert.ok(oneBy(tree, 'data-note', 'history-detail-pending'));
+});
+
+test('client: a paged list keeps the preview, and says so when the record is not on this page (g-039)', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({ [PATHS.history]: twoPageHistory }),
+  });
+  let tree = await openHistory(page);
+  clickButton(historyRowOf(tree, '2'), { 'data-action': 'history-preview', 'data-history-id': '2' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'history-preview').props['data-preview-state'], 'ready');
+
+  // Paging does **not** reset it — the same rule the comparison selection
+  // follows (CONTRACT §13.3) — so a page that no longer holds the record has to
+  // say that rather than render an empty panel.
+  clickButton(oneBy(tree, 'data-region', 'history-pager'), { 'data-action': 'history-next' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'history-pager').props['data-history-offset'], '1');
+  const missing = oneBy(tree, 'data-region', 'history-preview');
+  assert.equal(missing.props['data-preview-state'], 'missing');
+  assert.ok(oneBy(missing, 'data-preview-missing', 'true'));
+
+  // Switching the file is a different matter: the id is meaningless there, so
+  // the preview goes with the selection.
+  clickTab(tree, 'history-layer', 'workspace');
+  tree = await page.flush();
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history-preview').length, 0);
+  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'empty');
+});
+
+test('client: a rollback asks first, states that it cannot be undone, then refreshes log and value (g-039)', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openHistory(page);
+
+  clickButton(historyRowOf(tree, '1'), { 'data-action': 'history-rollback', 'data-history-id': '1' });
+  tree = await page.flush();
+
+  // The second confirmation (CONTRACT §13.5): the version it will apply, and the
+  // irreversible statement — and still no write at all.
+  const card = oneBy(oneBy(tree, 'data-region', 'confirm-overlay'), 'data-region', 'confirm');
+  assert.equal(card.props['data-confirm-kind'], 'rollback');
+  assert.ok(hasText(oneBy(card, 'data-role', 'confirm-body'), '#1'));
+  assert.ok(hasText(oneBy(card, 'data-role', 'confirm-irreversible'), page.zh.resetIrreversible));
+  assert.deepEqual(mutatingCalls(page), [], 'asking is not writing');
+  assert.deepEqual(urlsFor(page, PATHS.rollback), [], 'and the question costs no request');
+
+  // Cancelling writes nothing either.
+  clickButton(card, { 'data-action': 'confirm-no' });
+  tree = await page.flush();
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'confirm-overlay').length, 0);
+  assert.deepEqual(mutatingCalls(page), []);
+
+  clickButton(historyRowOf(tree, '1'), { 'data-action': 'history-rollback', 'data-history-id': '1' });
+  tree = await page.flush();
+  clickButton(oneBy(tree, 'data-region', 'confirm-overlay'), { 'data-action': 'confirm-yes' });
+  tree = await page.flush();
+
+  // Exactly one POST, to the documented route, carrying the layer's own scope
+  // and the version.
+  const posts = mutatingCalls(page);
+  assert.equal(posts.length, 1);
+  assert.equal(posts[0].url, `${PATHS.rollback}?layer=user`);
+  assert.deepEqual(JSON.parse(posts[0].init.body), { layer: 'user', seq: 1 });
+  assert.ok(hasText(tree, fillText(page.zh.histRollbackDone, { id: '1' })));
+
+  // The write invalidated the page's data, so it is re-read from the host rather
+  // than patched: the log comes back at page 1 (the file changed under the
+  // reader) and the current value is read again, both **after** the POST.
+  assert.deepEqual(urlsFor(page, PATHS.history).slice(-1), [`${PATHS.history}?layer=user&offset=0`]);
+  const posted = page.router.calls.findIndex((call) => call.init && call.init.method === 'POST');
+  const afterWrite = page.router.calls.slice(posted + 1).map((call) => call.url);
+  assert.equal(posted >= 0, true, 'the rollback really was sent');
+  assert.ok(afterWrite.some((url) => url.startsWith(PATHS.history)), 'the log is re-read after the write');
+  assert.ok(afterWrite.some((url) => url.startsWith(PATHS.snapshot)), 'the current value is re-read after the write');
+  assert.ok(afterWrite.some((url) => url.startsWith(PATHS.overrides)));
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history-preview').length, 0);
+});
+
+test('client: a refused rollback reports the host answer and leaves the log untouched (g-039)', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.rollback]: {
+        status: 409,
+        payload: {
+          ok: false,
+          code: 'history-snapshot-missing',
+          message: 'history record #1 carries no whole-layer snapshot, so it cannot be restored safely',
+        },
+      },
+    }),
+  });
+  let tree = await openHistory(page);
+  // A preview is open first: a refused write must not move the reader's view.
+  clickButton(historyRowOf(tree, '1'), { 'data-action': 'history-preview', 'data-history-id': '1' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'history-preview').props['data-preview-state'], 'ready');
+
+  clickButton(historyRowOf(tree, '1'), { 'data-action': 'history-rollback', 'data-history-id': '1' });
+  tree = await page.flush();
+  clickButton(oneBy(tree, 'data-region', 'confirm-overlay'), { 'data-action': 'confirm-yes' });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-render-state'), 'ok', 'a refusal is a notice, not a broken page');
+  assert.ok(hasText(tree, page.zh.histRollbackFailed.replace('{reason}', '')), 'the failure is reported');
+  assert.equal(oneBy(tree, 'data-notice', 'error').props['data-notice'], 'error');
+  // Nothing changed on disk, so nothing is reset: unlike the success path (which
+  // clears the view explicitly), the preview survives a refusal untouched.
+  assert.equal(
+    oneBy(tree, 'data-region', 'history-preview').props['data-preview-state'],
+    'ready',
+    'a refused rollback leaves the view exactly as it was',
+  );
+});
+
+// #endregion
 
 /** Every history **record** row that currently claims a comparison selection. */
 function selectedHistoryRows(tree) {

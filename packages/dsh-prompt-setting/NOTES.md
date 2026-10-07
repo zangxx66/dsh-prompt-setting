@@ -5615,3 +5615,101 @@ if (installed.length !== 1 || target === void 0) throw new ManagementFailure("am
 ### 四、未验证项
 - 真机目视仍未做（收起态一行高度、200px 候选盒的滚动手感、两栏换行），只有 DOM/样式断言；宿主未重启（本轮
   纯客户端改动，路由/参数未动，契约 Revision 20 明记「client-half only」）。
+
+## 115. 版本历史（二）：对比免滚动、记录预览、一键回滚到指定版本（g-039，2026-10-08，基线 `2b36456` 工作区）
+
+### 一、需求与终态
+
+三件事，一件写三处（宿主 / 核心 / 客户端）：① 选两条记录看对比**不必滚页面**；② 任一条记录**一键预览**
+要点与内容；③ 任一记录**一键回滚**到该版本，带二次确认与不可撤销声明，且回滚本身可再回滚。
+①是 g-038 两栏布局的验收核心，本轮不再重做布局，只保证新交互**不破坏**它：预览、对比、回滚确认三视图
+全部落进右列那个既有的定高内滚盒 `data-region="history-detail-box"`，页面高度因此与历史条数无关。
+`data-note="history-detail-pending"` 从「后续目标落地」改为**空闲提示**（元素与标记保留，既有断言不动）。
+
+### 二、核心设计：snapshot 给结构，记录链给文本
+
+契约 §8 的 `snapshot` 是 `{name, action, hash, bytes}` 列表，**不含文本**——它说明某个版本有哪些段、
+什么动作、什么顺序，唯独不说内容。所以"按 snapshot 写回该层"单靠 snapshot 做不到，而凭空取用当前
+配置的文本正是「静默写坏配置」的形态（当前值可能已被更晚的记录改过）。
+
+落地算法（`core/history.js` 新增纯函数 `rollbackOverrides(records, current, seq)`）：
+
+- **结构** = 目标记录自己的 `snapshot`（权威，含顺序与 action）；
+- **文本** = 倒序回放：状态从**当前**层出发，按 `seq` 降序撤销每条更晚的记录。单段记录把该 name 恢复成
+  它的 `before`（`before === null` ⇒ 该段当时不存在 ⇒ 删除）；整层记录用它的 `entries` 重建
+  （`reset-layer` / `rollback` 是「清空后重建」，`legacy-clear` 是「加回」）。隐藏（`hide`）项按定义无文本，
+  结构里 `action === 'hide'` 的项**不查回放**，直接产出 `{name, action: 'hide'}`；
+- **对账**：回放后仍取不到文本的段（日志与文件不一致，例如手改过配置）⇒ 抛
+  `history-rollback-unavailable`，**不猜文本**。多余项按 snapshot 语义删除（这正是"回到该版本"的含义），
+  被替换掉的整层列表记进新记录的 `entries`，所以删掉的东西仍可再滚回来。
+
+被否方案：① 只用 snapshot 重建、文本沿用当前值 —— 不满足"等于该历史版本"，且会静默写错；
+② 反向逐条"重放快照"（不读 `before`/`after`）—— snapshot 无文本，重放得不到内容；
+③ 用 diff 引擎反推文本 —— 间接、慢，且 diff 的语义是"比较"不是"恢复"。
+保留的限制（写进契约 §19）：`append` 的 `order` 既不在 snapshot 也不在任何记录里，只有仍存在于当前
+配置的同名项能保留它，其余情况丢弃——重建一个任何版本都没记过的位置就是猜。
+
+### 三、宿主：`POST /prompt-setting/rollback`
+
+- 入参 `{layer, session?, workspace?, seq}`；scope 与 §8/§9 **逐字同源**（`session` 过滤、`workspace` 只定位），
+  body 优先、query 兜底；`workspace` 层仍须能解析出 root（`workspace-unresolved`）。
+- **顺序即契约**：解析层 → 读当前配置（`writableConfig`，坏文件 `layer-not-writable` 409）→ 读日志 →
+  重建（`rollbackOverrides`）→ `validateConfig` 校验 → **才写** → 追加记录。任何拒绝都发生在第一次写之前，
+  所以失败路径**字节级不变**（`test/stage2.test.mjs` 每个失败路径都拿 SHA-256 卡）。
+- 新增 action `rollback`（`HISTORY_ACTIONS` 追加在末尾；`LAYER_WIDE_ACTIONS` 同步追加，故 `name: null`）。
+  记录带 `entries = resetEntries(回滚前的整层)`、`snapshot = 回滚后的层`、`note = "rollback to #N"`，
+  因此回滚可被 diff、预览、**再回滚**。
+- 错误码：`invalid-seq` / `history-not-found`(404) / `layer-not-writable`(409) / `history-snapshot-missing`(409) /
+  `invalid-history-snapshot`(409) / `history-replay-unavailable`(409) / `history-rollback-unavailable`(409)。
+  方法表 `[ROLLBACK_PATH, ['POST']]`，其余方法 405 + `allow: POST`。
+- 兼容取舍：`snapshot` **缺失或为空**一律拒绝（`history-snapshot-missing`）。旧记录本就没有该字段；
+  整层清空后的记录 snapshot 合法地为 `[]`——两种都描述不出可恢复的结构，而"回到空层"本来就有
+  `?reset=true`（§12.1）这条会自我说明的路由。这是 brief 允许的「明确结构化拒绝」分支，选了它而不是
+  用 `before`/`after` 猜结构。
+
+### 四、客户端：预览零请求、回滚只提问
+
+- 每行新增 `data-action="history-preview"` 与 `"history-rollback"`（都带 `data-history-id`）。
+- **预览不发任何请求**：面板渲染的全部内容（要点、`before`/`after` 文本、整层 snapshot、note）本来就随
+  `GET /history` 那一页一起到达，所以"预览零写请求"是**结构性**的而非承诺——测试断言预览路径后
+  router 上非 GET 调用数为 0、且从不碰 `/rollback`。标记：`data-region="history-preview"`
+  + `data-preview-state="ready"|"missing"`、`data-preview-field`（action/at/layer/name/origin/note）、
+  `data-preview-text="before"|"after"`（`data-preview-bytes` 存字节数，正文是节点文本）、
+  `data-preview-snapshot="<name>"` + `data-preview-snapshot-action`。
+- **翻页不复位预览**（与 `diffSel` 同一约定，§13.3）：当前页不含该记录时渲染显式的
+  `data-preview-state="missing"`，而不是空白面板；**切层/切作用域则复位**（`resetHistoryView` 里新增
+  `setPreviewId(null)`）——否则会重犯 g-038 二轮修掉的「蓝框还在但指错对象」。
+- **回滚按钮只提问**：走既有 `confirm-overlay`，`data-confirm-kind="rollback"`，正文点名版本，
+  不可撤销声明复用 `data-role="confirm-irreversible"`（既有的 `resetIrreversible` 文案）。未点确认前
+  零请求。确认后只发一次 `POST /rollback?layer=…[&workspace=…]`，body `{layer, seq}`。
+- **成功后重新拉取而不是原地打补丁**：`resetHistoryView()` + `setReload(+1)` ⇒ offset 回 0、选择/对比/预览
+  全部复位，历史列表、当前生效值、两个层视图都从宿主重读（下一次装配看到新值）。失败只出错误 notice，不复位。
+- 新增 zh/en 各 14 键（`histAction.rollback`、`histPreview*`、`histRollback*`），两表键位仍逐键相等。
+
+### 五、测试与负向对照
+
+- `test/history.test.mjs`：新增 4 条（倒序回放的文本恢复 / hide 无需文本且 append 保留 order /
+  整层清空的 entries 撤销 / 全部拒绝码），并更新契约快照断言。
+- `test/stage2.test.mjs`：新增 3 条（成功回滚 = 层等于该版本 + 追加 rollback 记录 + 再回滚；
+  六类失败逐个 SHA-256 卡字节不变；workspace 层经 `workspace=` 定位），405 与 fence 两个既有遍历
+  各加 rollback 条目。
+- `test/client.test.mjs`：新增 4 条（预览要点/文本/snapshot + **零写请求** + 同一详情盒内 + 两栏等高；
+  翻页保留预览与 missing 态、切层复位；回滚二次确认 + 不可撤销 + 单次 POST + POST 之后重读日志/当前值；
+  失败只出 notice 且视图原样保留）。
+- **被改写的既有断言（逐条理由）**：`history.test.mjs` 里 `HISTORY_ACTIONS` 与 `LAYER_WIDE_ACTIONS` 的
+  精确列表断言——它们是契约快照，Revision 21 追加了 `rollback`，故从 6 项更新为 7 项、从 2 项更新为 3 项，
+  并**新增** rollback 的正反两向断言（不得带 name / 必须为 null）。除此之外没有删除或放宽任何断言；
+  `data-note="history-detail-pending"` 的两处既有断言靠"保留标记、只改文案"原样通过。
+- **负向对照（均真红后还原）**：① 把"文本不可恢复即拒绝"改成跳过 ⇒ history 单测与 stage2 各 1 条转红；
+  ② 让 `history-not-found` 不拒绝而返回空层 ⇒ stage2 的 404/字节不变用例转红（证明"失败零副作用"不是空断言）。
+- 全量：`cd packages/dsh-prompt-setting && node --test` ⇒ **616 pass / 0 fail**（基线 605 + 新增 11，
+  无回归、无削弱）；`node --check index.js && node --check core/history.js && node --check client.js` 通过。
+
+### 六、未验证项
+
+- **真机目视未做**：窄屏两栏回落、预览面板在 320px 盒内的滚动手感、回滚确认弹窗的视觉层级，本轮只有
+  DOM/样式断言（`overflowY`/`maxHeight`/同盒归属）。
+- **宿主未重启**：本轮改了宿主路由与新 action，需要重启后才在真机生效；测试全部通过假 Host 驱动。
+- **`order` 的有损恢复**（见二）：仅当同名项仍在当前配置中时保留，契约 §19 已明记，未做端到端真机验证。
+- 未做并发写入（两个回滚同时到达）的真机验证；单进程内 `writeConfig` 是原子替换，但"读-改-写"之间没有锁，
+  与既有 `PUT/DELETE` 的语义一致，不是本轮引入的新风险。

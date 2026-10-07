@@ -22,6 +22,7 @@ import { apply, CUSTOM_SECTION_NAME } from '../index.js';
 const OVERRIDES_PATH = '/prompt-setting/overrides';
 const HISTORY_PATH = '/prompt-setting/history';
 const DIFF_PATH = '/prompt-setting/diff';
+const ROLLBACK_PATH = '/prompt-setting/rollback';
 const EXPORT_PATH = '/prompt-setting/export';
 const IMPORT_PATH = '/prompt-setting/import';
 
@@ -293,6 +294,8 @@ test('stage2: the new routes answer 405 with their own allow list, unchanged for
   const cases = [
     [{ method: 'POST', url: HISTORY_PATH }, 'GET'],
     [{ method: 'GET', url: DIFF_PATH }, 'GET', 200],
+    [{ method: 'GET', url: ROLLBACK_PATH }, 'POST'],
+    [{ method: 'PUT', url: ROLLBACK_PATH }, 'POST'],
     [{ method: 'POST', url: EXPORT_PATH }, 'GET'],
     [{ method: 'GET', url: IMPORT_PATH }, 'POST'],
   ];
@@ -318,6 +321,7 @@ test('stage2: the fence runs in front of every new route too', async () => {
   for (const request of [
     { url: HISTORY_PATH },
     { url: DIFF_PATH },
+    { method: 'POST', url: ROLLBACK_PATH },
     { url: EXPORT_PATH },
     { method: 'POST', url: IMPORT_PATH },
   ]) {
@@ -792,6 +796,194 @@ test('stage2: legacy=true and reset=true are mutually exclusive, and neither fla
   const unknown = await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?legacy=true` });
   assert.equal(unknown.statusCode, 400);
   assert.equal(json(unknown).code, 'unknown-layer');
+});
+
+// #endregion
+
+// #region rollback (Revision 21, g-039)
+
+test('stage2: rollback restores a recorded version, appends a rollback record and can be rolled back again (g-039)', async () => {
+  const { route } = mount();
+  await put(route, { action: 'replace', text: 'A1' });
+  await put(route, { action: 'replace', text: 'A2' });
+  assert.deepEqual((await history(route)).records.map((record) => record.seq), [2, 1], 'newest first');
+
+  const res = await call(route, {
+    method: 'POST',
+    url: ROLLBACK_PATH,
+    body: JSON.stringify({ layer: 'user', seq: 1 }),
+  });
+  assert.equal(res.statusCode, 200);
+  const payload = json(res);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.rolledBack, true);
+  assert.equal(payload.seq, 1);
+  assert.equal(payload.count, 1);
+  assert.equal(payload.effectiveFrom, 'next-turn');
+  assert.deepEqual(
+    JSON.parse(readFileSync(userPath(), 'utf8')).overrides,
+    [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'A1' }],
+    'the layer on disk IS the recorded version',
+  );
+
+  const after = await history(route);
+  assert.deepEqual(after.records.map((record) => record.seq), [3, 2, 1]);
+  const rollbackRecord = after.records[0];
+  assert.equal(rollbackRecord.action, 'rollback');
+  assert.equal(rollbackRecord.name, null, 'a rollback is layer-wide');
+  assert.equal(rollbackRecord.origin, 'ui');
+  assert.equal(rollbackRecord.note, 'rollback to #1');
+  assert.deepEqual(
+    rollbackRecord.entries,
+    [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'A2' }],
+    'what the rollback replaced is recorded, which is what makes it a version',
+  );
+  assert.deepEqual(
+    rollbackRecord.snapshot.map((entry) => [entry.name, entry.action]),
+    [[CUSTOM_SECTION_NAME, 'replace']],
+  );
+
+  // Rolling back again — this time to the version the rollback replaced — proves
+  // the rollback record is a version like any other: undoing it restores the
+  // list its `entries` carry.
+  const again = await call(route, {
+    method: 'POST',
+    url: ROLLBACK_PATH,
+    body: JSON.stringify({ layer: 'user', seq: 2 }),
+  });
+  assert.equal(again.statusCode, 200);
+  assert.deepEqual(JSON.parse(readFileSync(userPath(), 'utf8')).overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'A2' },
+  ]);
+  assert.deepEqual(
+    (await history(route)).records.map((record) => record.action),
+    ['rollback', 'rollback', 'replace', 'replace'],
+    'every rollback is logged, and the log stays a chain',
+  );
+});
+
+test('stage2: a rollback that cannot be rebuilt answers a stable code and leaves the file byte-identical (g-039)', async () => {
+  const { route } = mount();
+  await put(route, { action: 'replace', text: 'A1' });
+  const before = fingerprint(userPath());
+
+  for (const [body, status, code] of [
+    [{ layer: 'user', seq: 99 }, 404, 'history-not-found'],
+    [{ layer: 'user', seq: 0 }, 400, 'invalid-seq'],
+    [{ layer: 'user', seq: 'x' }, 400, 'invalid-seq'],
+    [{ layer: 'user' }, 400, 'invalid-seq'],
+    [{ layer: 'nope', seq: 1 }, 400, 'unknown-layer'],
+    [{ layer: 'workspace', seq: 1 }, 400, 'workspace-unresolved'],
+  ]) {
+    const res = await call(route, { method: 'POST', url: ROLLBACK_PATH, body: JSON.stringify(body) });
+    assert.equal(res.statusCode, status, JSON.stringify(body));
+    assert.equal(json(res).code, code, JSON.stringify(body));
+    assert.equal(fingerprint(userPath()), before, `a refused rollback (${code}) touches nothing`);
+  }
+
+  // An empty snapshot — the version a whole-layer clear left behind. There is no
+  // structure to rebuild, so the refusal is explicit; `?reset=true` is the
+  // documented way to reach an empty layer.
+  await call(route, { method: 'DELETE', url: `${OVERRIDES_PATH}?layer=user&reset=true` });
+  const afterReset = fingerprint(userPath());
+  const emptySnapshot = await call(route, {
+    method: 'POST',
+    url: ROLLBACK_PATH,
+    body: JSON.stringify({ layer: 'user', seq: 2 }),
+  });
+  assert.equal(emptySnapshot.statusCode, 409);
+  assert.equal(json(emptySnapshot).code, 'history-snapshot-missing');
+  assert.equal(fingerprint(userPath()), afterReset);
+
+  // A record that is readable but whose structure is unusable (a hand-edited
+  // log): the snapshot entries are checked before anything is written.
+  mkdirSync(join(home, 'prompt-setting'), { recursive: true });
+  const seedLog = (snapshot) => writeFileSync(
+    userHistoryPath(),
+    `${JSON.stringify({
+      seq: 1,
+      at: '2024-01-01T00:00:00.000Z',
+      layer: 'user',
+      session: null,
+      action: 'replace',
+      name: 'a',
+      origin: 'ui',
+      before: null,
+      after: { text: 'A1', hash: 'h', bytes: 2 },
+      entries: null,
+      snapshot,
+      note: null,
+    })}\n`,
+    'utf8',
+  );
+
+  // The log and the layer disagree (the config was edited by hand, so the text
+  // the snapshot requires is simply not in the chain): refuse rather than write
+  // a config no version ever had.
+  seedLog([{ name: 'a', action: 'replace', hash: 'h', bytes: 2 }]);
+  writeFileSync(userPath(), '{"version":1,"overrides":[]}\n', 'utf8');
+  const unavailable = await call(route, {
+    method: 'POST',
+    url: ROLLBACK_PATH,
+    body: JSON.stringify({ layer: 'user', seq: 1 }),
+  });
+  assert.equal(unavailable.statusCode, 409);
+  assert.equal(json(unavailable).code, 'history-rollback-unavailable');
+  assert.equal(JSON.parse(readFileSync(userPath(), 'utf8')).overrides.length, 0);
+
+  // A snapshot whose entries are malformed is refused by the same rule.
+  seedLog([{ name: 'a', action: 'nope' }]);
+  const seeded = fingerprint(userPath());
+  const malformed = await call(route, {
+    method: 'POST',
+    url: ROLLBACK_PATH,
+    body: JSON.stringify({ layer: 'user', seq: 1 }),
+  });
+  assert.equal(malformed.statusCode, 409);
+  assert.equal(json(malformed).code, 'invalid-history-snapshot');
+  assert.equal(fingerprint(userPath()), seeded);
+
+  // A layer whose own file is unusable is not writable at all (§4.4).
+  writeFileSync(userPath(), '{not json', 'utf8');
+  const corrupt = fingerprint(userPath());
+  const notWritable = await call(route, {
+    method: 'POST',
+    url: ROLLBACK_PATH,
+    body: JSON.stringify({ layer: 'user', seq: 1 }),
+  });
+  assert.equal(notWritable.statusCode, 409);
+  assert.equal(json(notWritable).code, 'layer-not-writable');
+  assert.equal(fingerprint(userPath()), corrupt);
+});
+
+test('stage2: a workspace rollback is located by workspace=, and the body wins over the query (g-039)', async () => {
+  const { route } = mount({ workspaces: [workspaceWith('ws1', 's1')] });
+  const write = (text) => call(route, {
+    method: 'PUT',
+    url: `${OVERRIDES_PATH}?session=s1`,
+    body: JSON.stringify({ layer: 'workspace', session: 's1', section: { name: CUSTOM_SECTION_NAME, action: 'replace', text } }),
+  });
+  assert.equal((await write('W1')).statusCode, 200);
+  assert.equal((await write('W2')).statusCode, 200);
+
+  const res = await call(route, {
+    method: 'POST',
+    url: ROLLBACK_PATH,
+    body: JSON.stringify({ layer: 'workspace', workspace: 's1', seq: 1 }),
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(json(res).session, 's1');
+  assert.deepEqual(
+    JSON.parse(readFileSync(workspacePath('ws1'), 'utf8')).overrides,
+    [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'W1' }],
+  );
+  const log = await call(route, { url: `${HISTORY_PATH}?layer=workspace&workspace=s1` });
+  assert.equal(log.statusCode, 200);
+  assert.deepEqual(
+    json(log).records.map((record) => record.seq),
+    [3, 2, 1],
+    'the workspace layer keeps its own log',
+  );
 });
 
 // #endregion

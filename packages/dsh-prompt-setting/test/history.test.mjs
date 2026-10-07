@@ -31,6 +31,7 @@ import {
   resolvePageLimit,
   resolvePageOffset,
   resetEntries,
+  rollbackOverrides,
   sameOverride,
   serializeHistory,
   serializeRecord,
@@ -119,11 +120,16 @@ test('history: a snapshot entry is comparable without carrying any text', () => 
 
 // #region record shape
 
-test('history: the action vocabulary is exactly the six documented values', () => {
+test('history: the action vocabulary is exactly the seven documented values', () => {
   // Revision 7 adds exactly one: `legacy-clear`, the record
   // `DELETE /overrides&legacy=true` writes. The first five are Revision 6's set,
   // unchanged and in the same order, so every existing history file still reads.
-  assert.deepEqual([...HISTORY_ACTIONS], ['replace', 'hide', 'append', 'remove', 'reset-layer', 'legacy-clear']);
+  // Revision 21 (g-039) appends `rollback` — also last, also additive: a log
+  // written before it still parses, and an old reader's vocabulary is a prefix.
+  assert.deepEqual(
+    [...HISTORY_ACTIONS],
+    ['replace', 'hide', 'append', 'remove', 'reset-layer', 'legacy-clear', 'rollback'],
+  );
 });
 
 test('history: makeRecord rejects a record that could not round-trip', () => {
@@ -159,9 +165,15 @@ test('history: the layer-wide actions are exactly the ones that carry no name', 
     (error) => error.code === 'invalid-history-record',
     'a layer-wide action must not name a section',
   );
-  // … and it is exactly the two layer-wide actions, not "any action accepted
+  // … and it is exactly the three layer-wide actions, not "any action accepted
   // with a null name".
-  assert.deepEqual([...LAYER_WIDE_ACTIONS], ['reset-layer', 'legacy-clear']);
+  const rollbackRecord = makeRecord(fields({ action: 'rollback', name: null, entries: [] }));
+  assert.equal(rollbackRecord.name, null);  assert.throws(
+    () => makeRecord(fields({ action: 'rollback', name: 'a' })),
+    (error) => error.code === 'invalid-history-record',
+    'a rollback is layer-wide and must not name a section',
+  );
+  assert.deepEqual([...LAYER_WIDE_ACTIONS], ['reset-layer', 'legacy-clear', 'rollback']);
   for (const action of HISTORY_ACTIONS) {
     const isLayerWide = LAYER_WIDE_ACTIONS.includes(action);
     assert.equal(
@@ -548,6 +560,185 @@ test('store: an unstaged directory aborts the import with nothing written', () =
   );
   assert.equal(fileHash(one), beforeOne);
   assert.equal(readdirSync(join(home, 'one')).some((name) => name.endsWith('.tmp')), false);
+});
+
+// #endregion
+
+// #region rollback (Revision 21, g-039)
+
+/** A validated layer config holding the given overrides. */
+function configOf(overrides) {
+  return { version: 1, overrides };
+}
+
+/** One snapshot entry, exactly the `{name, action, hash, bytes}` shape. */
+function snap(name, action, text = null) {
+  const digest = action === 'hide' ? null : digestEntry(text);
+  return { name, action, hash: digest === null ? null : digest.hash, bytes: digest === null ? null : digest.bytes };
+}
+
+/** One single-section record of a layer's log. */
+function sectionRecord({ seq, action, name, before = null, after = null, snapshot }) {
+  return makeRecord({
+    seq,
+    at: `2024-01-0${seq}T00:00:00.000Z`,
+    layer: 'user',
+    session: null,
+    action,
+    name,
+    origin: 'ui',
+    before: textEntry(before),
+    after: textEntry(after),
+    entries: null,
+    snapshot,
+  });
+}
+
+/** The `code` of the error a call throws, or `null` when it does not throw. */
+function codeOf(run) {
+  try {
+    run();
+    return null;
+  } catch (error) {
+    return error.code;
+  }
+}
+
+test('rollback: walking the log backwards rebuilds the text a snapshot cannot carry', () => {
+  // The snapshot says which sections a version had and how they were overridden,
+  // never what they said: `#3` is the rollback that landed on `#1`, which is why
+  // the text has to come from the record chain (`before` / `after`) instead.
+  const records = [
+    sectionRecord({ seq: 1, action: 'replace', name: 'a', after: 'A1', snapshot: [snap('a', 'replace', 'A1')] }),
+    sectionRecord({ seq: 2, action: 'replace', name: 'a', before: 'A1', after: 'A2', snapshot: [snap('a', 'replace', 'A2')] }),
+    makeRecord({
+      seq: 3,
+      at: '2024-01-03T00:00:00.000Z',
+      layer: 'user',
+      session: null,
+      action: 'rollback',
+      name: null,
+      origin: 'ui',
+      before: null,
+      after: null,
+      entries: [{ name: 'a', action: 'replace', text: 'A2' }],
+      snapshot: [snap('a', 'replace', 'A1')],
+      note: 'rollback to #1',
+    }),
+  ];
+  const current = configOf([{ name: 'a', action: 'replace', text: 'A1' }]);
+  // `#1`: undo the rollback (`#3`), then the A2 write (`#2`).
+  assert.deepEqual(rollbackOverrides(records, current, 1).overrides, [{ name: 'a', action: 'replace', text: 'A1' }]);
+  // `#2`: undo only the rollback, which is what makes the rollback itself a
+  // version a second rollback can be aimed at.
+  assert.deepEqual(rollbackOverrides(records, current, 2).overrides, [{ name: 'a', action: 'replace', text: 'A2' }]);
+  // `#3` is the rollback itself: the file on disk already IS that version.
+  assert.deepEqual(rollbackOverrides(records, current, 3).overrides, [{ name: 'a', action: 'replace', text: 'A1' }]);
+  assert.deepEqual(rollbackOverrides(records, current, 2).structure, [{ name: 'a', action: 'replace' }]);
+});
+
+test('rollback: a hidden section needs no text, and an appended one keeps its order', () => {
+  const records = [
+    sectionRecord({ seq: 1, action: 'replace', name: 'a', after: 'A1', snapshot: [snap('a', 'replace', 'A1')] }),
+    sectionRecord({
+      seq: 2,
+      action: 'append',
+      name: 'b',
+      after: 'B1',
+      snapshot: [snap('a', 'replace', 'A1'), snap('b', 'append', 'B1')],
+    }),
+    sectionRecord({
+      seq: 3,
+      action: 'hide',
+      name: 'a',
+      before: 'A1',
+      after: null,
+      snapshot: [snap('a', 'hide'), snap('b', 'append', 'B1')],
+    }),
+  ];
+  const current = configOf([
+    { name: 'a', action: 'hide' },
+    { name: 'b', action: 'append', text: 'B1', order: 2 },
+  ]);
+  assert.deepEqual(rollbackOverrides(records, current, 1).overrides, [{ name: 'a', action: 'replace', text: 'A1' }]);
+  assert.deepEqual(rollbackOverrides(records, current, 2).overrides, [
+    { name: 'a', action: 'replace', text: 'A1' },
+    { name: 'b', action: 'append', text: 'B1', order: 2 },
+  ]);
+  // A version whose section is hidden is rebuilt from the structure alone: a
+  // `hide` has no text by definition, so the replay is never consulted for it.
+  assert.deepEqual(rollbackOverrides(records, current, 3).overrides, [
+    { name: 'a', action: 'hide' },
+    { name: 'b', action: 'append', text: 'B1', order: 2 },
+  ]);
+});
+
+test('rollback: a whole-layer clear is undone from the entries it recorded', () => {
+  const records = [
+    sectionRecord({ seq: 1, action: 'replace', name: 'a', after: 'A1', snapshot: [snap('a', 'replace', 'A1')] }),
+    makeRecord({
+      seq: 2,
+      at: '2024-01-02T00:00:00.000Z',
+      layer: 'user',
+      session: null,
+      action: 'reset-layer',
+      name: null,
+      origin: 'ui',
+      before: null,
+      after: null,
+      entries: [{ name: 'a', action: 'replace', text: 'A1' }],
+      snapshot: [],
+      note: 'reset removed 1 override(s)',
+    }),
+  ];
+  // The current layer is empty — the reset was the last write.
+  assert.deepEqual(rollbackOverrides(records, configOf([]), 1).overrides, [{ name: 'a', action: 'replace', text: 'A1' }]);
+  // …and the reset's own version is refused rather than invented: its snapshot
+  // is empty, so there is no structure to rebuild (`?reset=true` is the way to
+  // reach an empty layer, and it says so in its own record).
+  assert.equal(codeOf(() => rollbackOverrides(records, configOf([]), 2)), 'history-snapshot-missing');
+});
+
+test('rollback: every refusal is a stable code, never a guessed config', () => {
+  const one = sectionRecord({ seq: 1, action: 'replace', name: 'a', after: 'A1', snapshot: [snap('a', 'replace', 'A1')] });
+  const current = configOf([{ name: 'a', action: 'replace', text: 'A1' }]);
+  assert.equal(codeOf(() => rollbackOverrides([one], current, 9)), 'history-not-found');
+  assert.equal(codeOf(() => rollbackOverrides([one], current, 0)), 'history-not-found');
+
+  // No snapshot at all (an old record), and an empty one (a whole-layer clear):
+  // both are refusals, because neither describes a structure to restore.
+  assert.equal(codeOf(() => rollbackOverrides([{ ...one, snapshot: undefined }], current, 1)), 'history-snapshot-missing');
+  assert.equal(codeOf(() => rollbackOverrides([{ ...one, snapshot: [] }], current, 1)), 'history-snapshot-missing');
+
+  // A malformed snapshot: a bad action, a non-object entry, a duplicate name.
+  for (const snapshot of [
+    [{ name: 'a', action: 'nope' }],
+    ['a'],
+    [{ name: 'a', action: 'replace' }, { name: 'a', action: 'replace' }],
+    [{ action: 'replace' }],
+  ]) {
+    assert.equal(
+      codeOf(() => rollbackOverrides([{ ...one, snapshot }], current, 1)),
+      'invalid-history-snapshot',
+      JSON.stringify(snapshot),
+    );
+  }
+
+  // The structure asks for a section whose text the chain cannot supply: the
+  // file was edited by hand, so the log and the layer disagree. Refusing is the
+  // only answer that cannot write a config no version ever had.
+  assert.equal(codeOf(() => rollbackOverrides([one], configOf([]), 1)), 'history-rollback-unavailable');
+
+  // A whole-layer record that lists nothing cannot be undone either.
+  const noEntries = {
+    ...one,
+    seq: 2,
+    action: 'reset-layer',
+    name: null,
+    entries: null,
+    snapshot: [snap('a', 'replace', 'A1')],
+  };
+  assert.equal(codeOf(() => rollbackOverrides([one, noEntries], current, 1)), 'history-replay-unavailable');
 });
 
 // #endregion

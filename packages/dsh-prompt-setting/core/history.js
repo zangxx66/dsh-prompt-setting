@@ -28,10 +28,18 @@
 
 import { createHash } from 'node:crypto';
 
-import { fail } from './overrides.js';
+import { ACTIONS, fail } from './overrides.js';
 
-/** The actions a history record can describe, in contract order. */
-export const HISTORY_ACTIONS = Object.freeze(['replace', 'hide', 'append', 'remove', 'reset-layer', 'legacy-clear']);
+/**
+ * The actions a history record can describe, in contract order.
+ *
+ * `rollback` (Revision 21) is the action a `POST /prompt-setting/rollback`
+ * appends: the record that describes "this layer was moved back to version
+ * #N". It is deliberately a first-class action rather than a `replace`: the
+ * write it describes has no single section as its subject, and the next
+ * rollback has to be able to treat it like any other version.
+ */
+export const HISTORY_ACTIONS = Object.freeze(['replace', 'hide', 'append', 'remove', 'reset-layer', 'legacy-clear', 'rollback']);
 /** Who triggered the write. `ui` is the settings page, `import` is `/import`. */
 export const HISTORY_ORIGINS = Object.freeze(['ui', 'import']);
 /** Default retention: the newest N records of each layer file. */
@@ -55,11 +63,19 @@ export const RESET_ACTION = 'reset-layer';
  */
 export const LEGACY_CLEAR_ACTION = 'legacy-clear';
 /**
+ * The record action a rollback appends (Revision 21). A rollback names no
+ * single section — it rewrites the whole override list — so like
+ * {@link RESET_ACTION} it is layer-wide and carries `name: null`. Its `entries`
+ * hold the override list **as it was before the rollback**, which is what makes
+ * the rollback itself reversible.
+ */
+export const ROLLBACK_ACTION = 'rollback';
+/**
  * The actions whose subject is the whole layer rather than one section. A
  * record carrying one of these has `name: null`; every other action requires a
  * name.
  */
-export const LAYER_WIDE_ACTIONS = Object.freeze([RESET_ACTION, LEGACY_CLEAR_ACTION]);
+export const LAYER_WIDE_ACTIONS = Object.freeze([RESET_ACTION, LEGACY_CLEAR_ACTION, ROLLBACK_ACTION]);
 
 /** @returns a SHA-256 fingerprint of the text. */
 function hashText(text) {
@@ -427,4 +443,205 @@ export function resetEntries(overrides) {
     ...(typeof override.text === 'string' ? { text: override.text } : {}),
     ...(override.order === undefined ? {} : { order: override.order }),
   }));
+}
+
+/**
+ * Rebuild the override list one history version held (Revision 21).
+ *
+ * The problem this solves is that a {@link snapshotOfConfig} carries
+ * `{name, action, hash, bytes}` and **no text**: it says which sections a
+ * version had and how they were overridden, never what they said. The text is
+ * recoverable anyway, because every record carries the text of the section it
+ * touched (`before` / `after`), and the records are a chain: walking them
+ * **backwards** from the newest one undoes each write, which lands the layer
+ * exactly where the target record left it.
+ *
+ * Two independent facts are therefore used, and they must agree:
+ * 1. the **structure** — the ordered `{name, action}` list — is read from the
+ *    target record's own `snapshot`, which is authoritative: the layer is made
+ *    to look like that list, and a section the snapshot omits is dropped (the
+ *    rollback record's `entries` keeps it recoverable, so the rollback itself
+ *    can be rolled back);
+ * 2. the **text** of every `replace`/`append` entry is read from the replay.
+ *
+ * When those two disagree the replay cannot name the text of a section the
+ * snapshot claims — the function refuses with a stable code instead of writing
+ * a guessed value. That is the whole safety property: a rollback is either
+ * exactly the recorded version or it is nothing at all.
+ *
+ * A record without a usable snapshot (an old record, or a `reset-layer` whose
+ * whole point is that the layer became empty) is refused: there is no
+ * structure to rebuild, and inventing one would silently write a config no
+ * version ever had. The refusal is structured, so the caller can say why.
+ *
+ * @param records - every record of one layer, in file order (oldest first).
+ * @param current - the layer's current validated config.
+ * @param seq - the `seq` of the version to restore.
+ * @returns `{overrides, structure}` — the restored override list and the
+ *   ordered `{name, action}` list it was built from.
+ * @throws {OverrideError} with a stable `code`; nothing is written.
+ */
+export function rollbackOverrides(records, current, seq) {
+  const list = Array.isArray(records) ? records : [];
+  const target = list.find((record) => record !== null && typeof record === 'object' && record.seq === seq);
+  if (target === undefined) {
+    throw fail('history-not-found', `no history record #${seq} in this layer`, 404);
+  }
+  const structure = readStructure(target);
+  const state = new Map();
+  for (const override of Array.isArray(current?.overrides) ? current.overrides : []) {
+    state.set(override.name, override);
+  }
+  const later = list
+    .filter((record) => record !== null && typeof record === 'object' && record.seq > seq)
+    .sort((left, right) => right.seq - left.seq);
+  for (const record of later) undoRecord(record, state);
+  const overrides = [];
+  const missing = [];
+  for (const entry of structure) {
+    if (entry.action === 'hide') {
+      // A hidden section carries no text by definition, so the replay is not
+      // consulted at all: the structure alone is the whole answer.
+      overrides.push({ name: entry.name, action: 'hide' });
+      continue;
+    }
+    const found = state.get(entry.name);
+    if (found === undefined || typeof found.text !== 'string') {
+      missing.push(entry.name);
+      continue;
+    }
+    overrides.push({
+      name: entry.name,
+      action: entry.action,
+      text: found.text,
+      ...(entry.action === 'append' && Number.isInteger(found.order) ? { order: found.order } : {}),
+    });
+  }
+  if (missing.length > 0) {
+    throw fail(
+      'history-rollback-unavailable',
+      `the text of ${missing.join(', ')} is not recoverable from history; roll back to a newer record or restore the file by hand`,
+      409,
+    );
+  }
+  return { overrides, structure };
+}
+
+/**
+ * Validate and copy one record's `snapshot` as an ordered `{name, action}` list.
+ *
+ * An empty or absent snapshot is a refusal rather than an empty structure: the
+ * only records that legitimately carry `[]` are whole-layer clears, and
+ * "roll back to an empty layer" is what `DELETE …?reset=true` already does —
+ * with a record that says so.
+ * @param record - the target record.
+ * @returns the structure.
+ * @throws {OverrideError} with a stable `code`.
+ */
+function readStructure(record) {
+  const snapshot = record.snapshot;
+  if (!Array.isArray(snapshot) || snapshot.length === 0) {
+    throw fail(
+      'history-snapshot-missing',
+      `history record #${record.seq} carries no whole-layer snapshot, so it cannot be restored safely`,
+      409,
+    );
+  }
+  const structure = [];
+  const seen = new Set();
+  for (const entry of snapshot) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw fail('invalid-history-snapshot', `history record #${record.seq} has a malformed snapshot entry`, 409);
+    }
+    if (typeof entry.name !== 'string' || entry.name.length === 0) {
+      throw fail('invalid-history-snapshot', `history record #${record.seq} has a snapshot entry without a name`, 409);
+    }
+    if (typeof entry.action !== 'string' || !ACTIONS.includes(entry.action)) {
+      throw fail(
+        'invalid-history-snapshot',
+        `history record #${record.seq} has a snapshot entry with a bad action (${JSON.stringify(entry.action)})`,
+        409,
+      );
+    }
+    if (seen.has(entry.name)) {
+      throw fail('invalid-history-snapshot', `history record #${record.seq} names ${entry.name} twice in its snapshot`, 409);
+    }
+    seen.add(entry.name);
+    structure.push({ name: entry.name, action: entry.action });
+  }
+  return structure;
+}
+
+/**
+ * Undo one record against the replayed state.
+ *
+ * The state is a `name → override` map that starts as the **current** layer and
+ * is walked backwards, so each undo turns "the layer after this write" into
+ * "the layer before it". Whole-layer records replace the whole map (their
+ * `entries` are the list that was removed, text included); a section record
+ * restores its own `before`, and a `before` of `null` means the section did not
+ * exist yet.
+ * @param record - the record to undo.
+ * @param state - the map, mutated in place.
+ * @throws {OverrideError} when the record cannot be undone at all.
+ */
+function undoRecord(record, state) {
+  const entries = Array.isArray(record.entries) ? record.entries : null;
+  if (record.action === RESET_ACTION || record.action === ROLLBACK_ACTION) {
+    if (entries === null) {
+      throw fail('history-replay-unavailable', `history record #${record.seq} cannot be undone: it lists no removed entries`, 409);
+    }
+    state.clear();
+    for (const entry of entries) {
+      const override = entryOverride(entry);
+      if (override !== null) state.set(override.name, override);
+    }
+    return;
+  }
+  if (record.action === LEGACY_CLEAR_ACTION) {
+    if (entries === null) {
+      throw fail('history-replay-unavailable', `history record #${record.seq} cannot be undone: it lists no removed entries`, 409);
+    }
+    for (const entry of entries) {
+      const override = entryOverride(entry);
+      if (override !== null) state.set(override.name, override);
+    }
+    return;
+  }
+  const name = record.name;
+  if (typeof name !== 'string' || name.length === 0) {
+    throw fail('history-replay-unavailable', `history record #${record.seq} cannot be undone: it names no section`, 409);
+  }
+  const before = record.before;
+  if (before === null || before === undefined) {
+    state.delete(name);
+    return;
+  }
+  if (typeof before.text !== 'string') {
+    throw fail('history-replay-unavailable', `history record #${record.seq} carries no text for ${name}`, 409);
+  }
+  state.set(name, { name, text: before.text });
+}
+
+/**
+ * One `entries` element as an override, or `null` when it is unusable.
+ *
+ * A `hide` entry has no text and is kept as such: the section really was hidden
+ * at that version, and reading the omission as "delete the entry" would lose a
+ * version the user can see in the log.
+ * @param entry - one `entries` element.
+ * @returns the override, or `null` when the element is malformed.
+ */
+function entryOverride(entry) {
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return null;
+  if (typeof entry.name !== 'string' || entry.name.length === 0) return null;
+  if (entry.action === 'hide') return { name: entry.name, action: 'hide' };
+  if (typeof entry.action !== 'string' || !ACTIONS.includes(entry.action)) return null;
+  if (typeof entry.text !== 'string') return null;
+  return {
+    name: entry.name,
+    action: entry.action,
+    text: entry.text,
+    ...(entry.action === 'append' && Number.isInteger(entry.order) ? { order: entry.order } : {}),
+  };
 }

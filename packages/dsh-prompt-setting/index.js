@@ -109,6 +109,7 @@ import {
   DEFAULT_HISTORY_PAGE,
   LEGACY_CLEAR_ACTION,
   RESET_ACTION,
+  ROLLBACK_ACTION,
   actionOf,
   publicRecord,
   queryHistory,
@@ -116,6 +117,7 @@ import {
   resolvePageLimit,
   resolvePageOffset,
   resetEntries,
+  rollbackOverrides,
   snapshotOfConfig,
   textEntry,
 } from './core/history.js';
@@ -136,7 +138,9 @@ import {
   probeConfig,
   renderSections,
   sameSections,
+  validateConfig,
   validateOverride,
+  withInterpolate,
 } from './core/overrides.js';
 import {
   appendHistoryRecord,
@@ -192,6 +196,16 @@ const OVERRIDES_PATH = `${ROUTE_PREFIX}/overrides`;
 const HISTORY_PATH = `${ROUTE_PREFIX}/history`;
 /** Stage 2: compare two versions of one layer. */
 const DIFF_PATH = `${ROUTE_PREFIX}/diff`;
+/**
+ * g-039 (Revision 21): move one layer back to a recorded version.
+ *
+ * `POST` rather than `PUT`/`DELETE` because it is neither an upsert nor a
+ * removal: it replaces a whole layer with a state the log already describes,
+ * and appends a record of its own. The body carries `{layer, session?,
+ * workspace?, seq}` — the same scope vocabulary `GET /history` and `GET /diff`
+ * read, plus the version to restore.
+ */
+const ROLLBACK_PATH = `${ROUTE_PREFIX}/rollback`;
 /** Stage 2: one layer (or both) as a portable JSON document. */
 const EXPORT_PATH = `${ROUTE_PREFIX}/export`;
 /** Stage 2: apply such a document, atomically. */
@@ -241,6 +255,7 @@ const ROUTES = new Map([
   [OVERRIDES_PATH, ['GET', 'PUT', 'DELETE']],
   [HISTORY_PATH, ['GET']],
   [DIFF_PATH, ['GET']],
+  [ROLLBACK_PATH, ['POST']],
   [EXPORT_PATH, ['GET']],
   [IMPORT_PATH, ['POST']],
   [INTERPOLATE_PATH, ['GET', 'PUT']],
@@ -2092,6 +2107,88 @@ function mount(ctx, config, cleanups) {
   }
 
   /**
+   * `POST /prompt-setting/rollback` — move one layer back to a recorded version
+   * (Revision 21, g-039).
+   *
+   * The order is the contract, exactly as `PUT /overrides` states it: resolve
+   * the layer → read the layer's **current** config → read its log → rebuild
+   * the target version ({@link rollbackOverrides}) → validate the rebuilt
+   * config → **only then** write. A refusal at any earlier step therefore
+   * leaves the layer's file byte-identical, which is the guarantee the failure
+   * cases are built on.
+   *
+   * What is written is a whole layer, not one section: `snapshot` says which
+   * sections a version had and how they were overridden, and the text of each
+   * is recovered from the record chain. A version whose structure cannot be
+   * rebuilt, or whose text cannot be recovered, is refused with a stable code
+   * rather than written approximately.
+   *
+   * The write appends a `rollback` record whose `entries` hold the override
+   * list **as it was before**, so the rollback is itself a version: it can be
+   * rolled back, diffed and listed like any other.
+   *
+   * Scope: read exactly as `GET /history` and `GET /diff` read it. `session`
+   * filters, `workspace` only locates ({@link readScopeOf}); either may come
+   * from the body or the query string, and `session` wins when both are given,
+   * because that is the value the read routes would apply.
+   * @param req - the Node request.
+   * @param url - the parsed request URL.
+   * @param res - the Node response.
+   */
+  async function handleRollback(req, url, res) {
+    const body = await readJsonBody(req);
+    const layer = body?.layer;
+    if (!LAYERS.includes(layer)) {
+      throw new OverrideError('unknown-layer', `"layer" must be one of ${LAYERS.join(', ')}`);
+    }
+    const rawSeq = body?.seq;
+    const seq = typeof rawSeq === 'string' && /^\d+$/.test(rawSeq.trim()) ? Number(rawSeq.trim()) : rawSeq;
+    if (!Number.isInteger(seq) || seq < 1) {
+      throw new OverrideError('invalid-seq', '"seq" must be a positive integer history id');
+    }
+    const clean = (value) => (typeof value === 'string' && value.trim().length > 0 ? value.trim() : null);
+    const sessionFilter = clean(body?.session) ?? clean(url.searchParams.get('session'));
+    const workspaceScope = clean(body?.workspace) ?? clean(url.searchParams.get('workspace'));
+    const scopeSession = sessionFilter ?? workspaceScope;
+    const target = targetFor(layer, scopeSession);
+    const current = writableConfig(target.path);
+    const history = readLayerHistory(target.path);
+    const { overrides } = rollbackOverrides(history.records, current, seq);
+    // Validating the rebuilt list before the write is what keeps a malformed
+    // version from reaching the disk: `validateConfig` rejects a duplicate name,
+    // a bad action or an oversized text, and every one of those leaves the file
+    // exactly as it was.
+    const next = withInterpolate(validateConfig({ overrides }), interpolateFlagOf(current));
+    writeConfig(target.path, next);
+    cacheWritten(target, next);
+    const written = recordHistory({
+      path: target.path,
+      at: new Date().toISOString(),
+      layer,
+      session: scopeSession ?? null,
+      action: ROLLBACK_ACTION,
+      name: null,
+      origin: 'ui',
+      before: null,
+      after: null,
+      entries: resetEntries(current.overrides),
+      snapshot: snapshotOfConfig(next),
+      note: `rollback to #${seq}`,
+    });
+    sendJson(res, 200, {
+      ok: true,
+      rolledBack: true,
+      layer,
+      session: scopeSession ?? null,
+      seq,
+      count: next.overrides.length,
+      overrides: next.overrides,
+      effectiveFrom: 'next-turn',
+      history: written,
+    });
+  }
+
+  /**
    * `POST /prompt-setting/import` — apply an export document.
    *
    * The order is the contract: parse → schema/version/field validation →
@@ -3218,6 +3315,10 @@ function mount(ctx, config, cleanups) {
             }
             if (url.pathname === DIFF_PATH) {
               handleDiff(url, res);
+              return;
+            }
+            if (url.pathname === ROLLBACK_PATH) {
+              await handleRollback(req, url, res);
               return;
             }
             if (url.pathname === EXPORT_PATH) {

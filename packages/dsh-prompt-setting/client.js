@@ -320,6 +320,12 @@ window.__ModuleLoader__.load({
     /** Stage 2 routes (CONTRACT.md Revision 4). */
     const HISTORY_PATH = '/prompt-setting/history';
     const DIFF_PATH = '/prompt-setting/diff';
+    /**
+     * g-039: move one layer back to a recorded version. The only **write** the
+     * version-history tab can start, and the reason the rollback button is the
+     * one control on a record row that asks for a second confirmation.
+     */
+    const ROLLBACK_PATH = '/prompt-setting/rollback';
     const EXPORT_PATH = '/prompt-setting/export';
     const IMPORT_PATH = '/prompt-setting/import';
     /**
@@ -923,7 +929,7 @@ window.__ModuleLoader__.load({
       histPagePrev: '上一页',
       histPageNext: '下一页',
       histPageEmpty: '暂无分页',
-      histDetailPending: '详情区（预览 / 回滚）由后续目标落地，这里先保留位置。',
+      histDetailPending: '在上方列表里选一条记录：可以直接预览它的要点与内容，也可以把它作为 from/to 参与对比。',
       histCorrupt: '有 {n} 行历史记录无法解析，已跳过。',
       histUnreadable: '历史文件不可读：{reason}',
       histLastError: '最近一次历史写入失败：{reason}',
@@ -935,6 +941,30 @@ window.__ModuleLoader__.load({
       'histAction.remove': '删除单条',
       'histAction.reset-layer': '整层重置',
       'histAction.legacy-clear': '清除旧覆盖 legacy-clear',
+      'histAction.rollback': '回滚 rollback',
+      // g-039：详情区的第三个视图——单条记录的预览，以及整层回滚。
+      histPreview: '预览',
+      histPreviewHeading: '记录预览',
+      histPreviewClose: '关闭预览',
+      histPreviewMissing: '这条记录不在当前这一页里：翻回它所在的页，或刷新列表。',
+      histPreviewAction: '动作',
+      histPreviewAt: '时间',
+      histPreviewLayer: '层',
+      histPreviewName: '段名',
+      histPreviewOrigin: '来源',
+      histPreviewNote: '备注',
+      histPreviewBefore: '写前 before',
+      histPreviewAfter: '写后 after',
+      histPreviewNoText: '（无文本）',
+      histPreviewSnapshot: '该版本的整层快照（{n} 条覆盖）',
+      histPreviewSnapshotEmpty: '这条记录没有带整层快照（旧记录）。',
+      histPreviewSnapshotEntry: '{name} · {action} · {bytes} 字节',
+      histRollback: '回滚到此处',
+      histRollbackTitle: '回滚{layer}到 #{id}',
+      histRollbackBody:
+        '会用 #{id} 这一版的整层内容覆盖{layer}的当前配置，并追加一条 rollback 记录（因此这次回滚本身也可以再回滚）。',
+      histRollbackDone: '已回滚到 #{id}：历史列表与当前生效值已刷新，下一轮装配生效。',
+      histRollbackFailed: '回滚失败：{reason}',
       diffBlockCopy: '复制',
       diffBlockCopied: '已复制',
       diffBlockCollapse: '收起',
@@ -1336,7 +1366,7 @@ window.__ModuleLoader__.load({
       histPagePrev: 'Previous',
       histPageNext: 'Next',
       histPageEmpty: 'No pages',
-      histDetailPending: 'The detail pane (preview / rollback) arrives with a later goal; the place is reserved here.',
+      histDetailPending: 'Pick a record in the list above: preview what it holds, or use it as the from/to side of a comparison.',
       histCorrupt: '{n} history lines could not be parsed and were skipped.',
       histUnreadable: 'The history file is unreadable: {reason}',
       histLastError: 'The last history write failed: {reason}',
@@ -1348,6 +1378,31 @@ window.__ModuleLoader__.load({
       'histAction.remove': 'remove one',
       'histAction.reset-layer': 'reset the layer',
       'histAction.legacy-clear': 'clear legacy overrides',
+      'histAction.rollback': 'rollback',
+      // g-039: the detail pane's third view — one record's preview — and the
+      // whole-layer rollback it enables.
+      histPreview: 'Preview',
+      histPreviewHeading: 'Record preview',
+      histPreviewClose: 'Close the preview',
+      histPreviewMissing: 'That record is not on this page: go back to the page that holds it, or reload the list.',
+      histPreviewAction: 'Action',
+      histPreviewAt: 'Time',
+      histPreviewLayer: 'Layer',
+      histPreviewName: 'Section',
+      histPreviewOrigin: 'Origin',
+      histPreviewNote: 'Note',
+      histPreviewBefore: 'Before',
+      histPreviewAfter: 'After',
+      histPreviewNoText: '(no text)',
+      histPreviewSnapshot: 'The whole-layer snapshot of this version ({n} override(s))',
+      histPreviewSnapshotEmpty: 'This record carries no whole-layer snapshot (an older record).',
+      histPreviewSnapshotEntry: '{name} · {action} · {bytes} bytes',
+      histRollback: 'Roll back to this',
+      histRollbackTitle: 'Roll the {layer} back to #{id}',
+      histRollbackBody:
+        'This replaces the current {layer} configuration with the whole-layer content of #{id} and appends a rollback record, which is what makes this rollback itself a version you can roll back again.',
+      histRollbackDone: 'Rolled back to #{id}: the log and the current value are refreshed, effective from the next assembly.',
+      histRollbackFailed: 'The rollback failed: {reason}',
       diffBlockCopy: 'Copy',
       diffBlockCopied: 'Copied',
       diffBlockCollapse: 'Collapse',
@@ -5090,6 +5145,170 @@ window.__ModuleLoader__.load({
           },
           t('histPickTo'),
         ),
+        // g-039: the two per-record actions that never force a scroll — both
+        // write their view into the **detail box** beside this list, which is
+        // the whole point of the two-column layout g-038 introduced.
+        h(
+          'button',
+          {
+            type: 'button',
+            'data-action': 'history-preview',
+            'data-history-id': id,
+            'data-preview-selected': m.preview.id === id ? 'true' : 'false',
+            onClick: () => a.previewHistoryRecord(id),
+            style: sideStyle,
+          },
+          t('histPreview'),
+        ),
+        h(
+          'button',
+          {
+            type: 'button',
+            'data-action': 'history-rollback',
+            'data-history-id': id,
+            onClick: () => a.requestRollback(id),
+            style: sideStyle,
+          },
+          t('histRollback'),
+        ),
+      );
+    }
+
+    /**
+     * g-039: one history record, previewed in full.
+     *
+     * Everything it shows is already in the `GET /history` payload the list
+     * beside it was rendered from — the record's `before` / `after` texts, its
+     * `snapshot`, its `note`. That is deliberate: previewing a version is a
+     * **read of what is on screen**, so it issues no request at all, and the
+     * "preview writes nothing" assertion is structural rather than a promise.
+     *
+     * The record is looked up in the current page by id. Paging does not clear
+     * the preview (the same rule the comparison selection follows, CONTRACT
+     * §13.3), so a page that does not hold the record yet renders the explicit
+     * `missing` state instead of silently showing nothing.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the panel element, or `null` when no record is being previewed.
+     */
+    function renderPreviewPanel(t, m, a) {
+      const preview = m.preview;
+      if (preview.state === 'none') return null;
+      const shell = (children, state) =>
+        h(
+          'div',
+          {
+            'data-region': 'history-preview',
+            'data-preview-state': state,
+            'data-preview-id': preview.id === null ? '' : String(preview.id),
+            style: { ...cardStyle, display: 'flex', flexDirection: 'column', gap: 6 },
+          },
+          children,
+        );
+      const heading = h('h4', { key: 'heading', style: { margin: 0, fontSize: 13, fontWeight: 600 } }, t('histPreviewHeading'));
+      const close = h(
+        UI.Button,
+        { key: 'close', 'data-action': 'history-preview-close', onClick: a.closeHistoryPreview },
+        t('histPreviewClose'),
+      );
+      if (preview.state === 'missing') {
+        return shell([
+          heading,
+          h('p', { key: 'missing', 'data-preview-missing': 'true', style: { margin: 0, ...metaStyle } }, t('histPreviewMissing')),
+          close,
+        ], 'missing');
+      }
+      const record = preview.record;
+      const entryText = (entry) =>
+        entry !== null && entry !== undefined && typeof entry.text === 'string' ? entry.text : t('histPreviewNoText');
+      const entryBytes = (entry) =>
+        entry !== null && entry !== undefined && Number.isFinite(entry.bytes) ? String(entry.bytes) : '';
+      const snapshot = Array.isArray(record.snapshot) ? record.snapshot : [];
+      const field = (key, label, value) =>
+        h(
+          'div',
+          { key, 'data-preview-field': key, style: { display: 'flex', gap: 6, alignItems: 'baseline' } },
+          h('span', { key: 'label', style: { ...metaStyle, minWidth: 48 } }, label),
+          h('span', { key: 'value', style: { wordBreak: 'break-word' } }, value),
+        );
+      const textBoxStyle = {
+        margin: 0,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        maxHeight: 200,
+        overflowY: 'auto',
+        border: `1px solid ${token.borderL1}`,
+        borderRadius: 6,
+        padding: '4px 6px',
+        fontSize: 12,
+      };
+      const textBox = (key, label, entry) =>
+        h(
+          'div',
+          { key, style: { display: 'flex', flexDirection: 'column', gap: 2 } },
+          h('span', { key: 'label', style: metaStyle }, label),
+          h(
+            'pre',
+            {
+              key: 'text',
+              'data-preview-text': key,
+              'data-preview-bytes': entryBytes(entry),
+              style: textBoxStyle,
+            },
+            entryText(entry),
+          ),
+        );
+      return shell(
+        [
+          h(
+            'div',
+            { key: 'head', style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+            heading,
+            h('code', { key: 'id', style: { fontSize: 12 } }, `#${record.id}`),
+            close,
+          ),
+          h(
+            'div',
+            { key: 'facts', style: { display: 'flex', flexDirection: 'column', gap: 2 } },
+            field('action', t('histPreviewAction'), historyActionLabel(t, record.action)),
+            field('at', t('histPreviewAt'), record.at === null || record.at === undefined ? '' : String(record.at)),
+            field('layer', t('histPreviewLayer'), layerLabel(t, record.layer)),
+            field('name', t('histPreviewName'), record.name === null ? t('histWholeLayer') : String(record.name)),
+            field('origin', t('histPreviewOrigin'), record.origin === null || record.origin === undefined ? '' : String(record.origin)),
+            field('note', t('histPreviewNote'), record.note === null || record.note === undefined ? t('histPreviewNoText') : String(record.note)),
+          ),
+          textBox('before', t('histPreviewBefore'), record.before),
+          textBox('after', t('histPreviewAfter'), record.after),
+          h(
+            'div',
+            { key: 'snapshot', 'data-preview-snapshot-count': String(snapshot.length), style: { display: 'flex', flexDirection: 'column', gap: 2 } },
+            h(
+              'span',
+              { key: 'label', style: metaStyle },
+              snapshot.length === 0
+                ? t('histPreviewSnapshotEmpty')
+                : fmt(t('histPreviewSnapshot'), { n: snapshot.length }),
+            ),
+            ...snapshot.map((entry) =>
+              h(
+                'div',
+                {
+                  key: `snap-${String(entry.name)}`,
+                  'data-preview-snapshot': String(entry.name),
+                  'data-preview-snapshot-action': String(entry.action),
+                  style: { ...metaStyle, display: 'flex', gap: 6, flexWrap: 'wrap' },
+                },
+                fmt(t('histPreviewSnapshotEntry'), {
+                  name: String(entry.name),
+                  action: String(entry.action),
+                  bytes: entry.bytes === null || entry.bytes === undefined ? '—' : String(entry.bytes),
+                }),
+              ),
+            ),
+          ),
+        ],
+        'ready',
       );
     }
 
@@ -5947,6 +6166,14 @@ window.__ModuleLoader__.load({
         body.push(fmt(t('updateApplyTitle'), { latest: confirm.latest ?? '' }));
         body.push(fmt(t('updateApplyBody'), { latest: confirm.latest ?? '' }));
         body.push(t(updateApplyCopyKey('restartNote', modelLaunchKind(m))));
+      } else if (confirm.kind === 'rollback') {
+        // g-039: the version-history tab's only write. The body names the
+        // version it will apply, and the shared `resetIrreversible` line below
+        // carries the warning — a rollback is itself logged, but the write it
+        // replaced is restored by nothing except another rollback.
+        const layerName = layerLabel(t, confirm.layer);
+        body.push(fmt(t('histRollbackTitle'), { layer: layerName, id: confirm.id }));
+        body.push(fmt(t('histRollbackBody'), { layer: layerName, id: confirm.id }));
       } else {
         body.push(t('importConfirmTitle'));
         body.push(fmt(t('importConfirmBody'), { mode: t(m.importMode === 'replace' ? 'importModeReplace' : 'importModeMerge') }));
@@ -6610,7 +6837,7 @@ window.__ModuleLoader__.load({
           {
             key: 'detail-column',
             'data-region': 'history-detail',
-            'data-history-detail': m.diff.data === null ? 'empty' : 'diff',
+            'data-history-detail': m.preview.state !== 'none' ? 'preview' : m.diff.data === null ? 'empty' : 'diff',
             style: { flex: '1 1 360px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 6 },
           },
           // The detail column keeps the same fixed-height, internally scrolling
@@ -6635,11 +6862,14 @@ window.__ModuleLoader__.load({
                 gap: 6,
               },
             },
-            h(
-              'p',
-              { key: 'detail-pending', 'data-note': 'history-detail-pending', style: { margin: 0, ...metaStyle } },
-              t('histDetailPending'),
-            ),
+            m.preview.state === 'none' && m.diff.data === null
+              ? h(
+                  'p',
+                  { key: 'detail-pending', 'data-note': 'history-detail-pending', style: { margin: 0, ...metaStyle } },
+                  t('histDetailPending'),
+                )
+              : null,
+            renderPreviewPanel(t, m, a),
             renderDiffPanel(t, m, a),
           ),
         ),
@@ -7326,6 +7556,11 @@ window.__ModuleLoader__.load({
       // g-038: the offset of the history page on screen. The page **size** is the
       // host's (`pageLimit` in its response) and is never hardcoded here.
       const [historyOffset, setHistoryOffset] = React.useState(0);
+      // g-039: which record the detail pane is previewing, by its history id
+      // (`null` = nothing). Like `diffSel`, it points **into one file**, so
+      // `resetHistoryView` clears it; paging deliberately does not (CONTRACT
+      // §13.3), and a page that does not hold it renders the `missing` state.
+      const [previewId, setPreviewId] = React.useState(null);
       // 「高级」 picks its own layer: the two layer-wide buttons are destructive,
       // and silently sharing another tab's selector would make selecting a log
       // filter change what a clear button is aimed at.
@@ -7600,6 +7835,18 @@ window.__ModuleLoader__.load({
       // take. Both steps clamp, so a stale number can never ask for page 0 or
       // past the end.
       const histPage = historyPagerInfo(hist.data);
+      // g-039: the record the detail pane previews, resolved against the page on
+      // screen. `missing` is an explicit state rather than an empty panel: a
+      // paged list legitimately stops holding a selection (paging does not reset
+      // it, §13.3), and saying so is better than rendering nothing.
+      const historyRecords = hist.data && Array.isArray(hist.data.records) ? hist.data.records : [];
+      const previewRecord =
+        previewId === null ? null : historyRecords.find((record) => String(record.id) === previewId) ?? null;
+      const previewInfo = {
+        id: previewId,
+        record: previewRecord,
+        state: previewId === null ? 'none' : previewRecord === null ? 'missing' : 'ready',
+      };
       /**
        * Reset everything that points **into the file that was on screen**.
        *
@@ -7618,6 +7865,7 @@ window.__ModuleLoader__.load({
         setHistoryOffset(0);
         setDiffSel({ from: null, to: DIFF_CURRENT });
         setDiff({ phase: 'idle', data: null, error: null });
+        setPreviewId(null);
       };
       const historyPrev = () =>
         setHistoryOffset(Math.max(0, histPage.offset - Math.max(1, histPage.pageSize)));
@@ -7730,6 +7978,38 @@ window.__ModuleLoader__.load({
             ? { phase: 'ready', data: result.payload, error: null }
             : { phase: 'error', data: null, error: result.error },
         );
+      };
+
+      /**
+       * g-039: roll the history's own layer back to one recorded version.
+       *
+       * The request carries the version-history scope (`workspace` for the
+       * workspace layer) exactly as the list and the comparison do, so the file
+       * that is written is the file that was read. It is the **only** write this
+       * tab starts, and it never fires without the second confirmation.
+       *
+       * On success the log has one more record and the layer has new content, so
+       * the view is reset and the data reloaded: the list, the comparison and
+       * the current value all come back from the host rather than being patched
+       * in place, which is what keeps the pager from describing a page that no
+       * longer exists.
+       */
+      const rollbackTo = async (pending) => {
+        setBusy(true);
+        const query = historyScopeQuery(historyLayer, historyScopeArg);
+        const result = await requestJson(`${ROLLBACK_PATH}?${query}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ layer: pending.layer ?? historyLayer, seq: pending.seq }),
+        });
+        setBusy(false);
+        if (!result.ok) {
+          setNotice({ tone: 'error', text: fmt(t('histRollbackFailed'), { reason: errorText(t, result.error) }) });
+          return;
+        }
+        setNotice({ tone: 'success', text: fmt(t('histRollbackDone'), { id: pending.id }) });
+        resetHistoryView();
+        setReload((value) => value + 1);
       };
 
       /** Clear one whole layer (`DELETE …&reset=true`). */
@@ -8598,6 +8878,15 @@ window.__ModuleLoader__.load({
           setHistoryScopeSearch(event && event.target ? String(event.target.value) : ''),
         historyPrev,
         historyNext,
+        // g-039: the preview is a toggle (clicking the record you are already
+        // previewing closes it), and opening it issues no request at all — the
+        // record came with the page the list was rendered from.
+        previewHistoryRecord: (id) => setPreviewId((current) => (current === String(id) ? null : String(id))),
+        closeHistoryPreview: () => setPreviewId(null),
+        // The rollback button only *asks*: the write happens through the shared
+        // confirmation overlay (CONTRACT §13.5), never on the click itself.
+        requestRollback: (id) =>
+          setConfirm({ kind: 'rollback', layer: historyLayer, seq: Number(id), id: String(id) }),
         pickDiffSide: (side, id) => {
           const next = { ...diffSel, [side]: id };
           setDiffSel(next);
@@ -8620,6 +8909,10 @@ window.__ModuleLoader__.load({
           }
           if (pending.kind === 'reset-layer') {
             await resetLayer(pending.layer);
+            return;
+          }
+          if (pending.kind === 'rollback') {
+            await rollbackTo(pending);
             return;
           }
           if (pending.kind === 'update-apply') {
@@ -8702,6 +8995,7 @@ window.__ModuleLoader__.load({
         histPage,
         diffSel,
         diff,
+        preview: previewInfo,
         confirm,
         transfer,
         importText,
