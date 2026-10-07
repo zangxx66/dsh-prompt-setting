@@ -18,9 +18,10 @@
  *      No editor node and no `edit` / `append-new` / `delete` action exists in
  *      its tree, by construction;
  *   3. **「版本历史」** (`history`) — the history log with its **own** scope
- *      selector, its paging and its fixed-height list, plus the version
- *      comparison. Loaded lazily with the tab, and never sliced by the page's
- *      「查看范围」 (g-038);
+ *      selector, its paging, and a viewport-sized two-column layout (record list
+ *      beside the detail pane, neither ever stacking) carrying the version
+ *      comparison, a record preview and the rollback control. Loaded lazily with
+ *      the tab, and never sliced by the page's 「查看范围」 (g-038 / g-039);
  *   4. **「备份与恢复」** (`backup`) — the export/import surface, and only that
  *      (g-038 split it out of the old single tab: one tab may no longer be both
  *      a read-only log and the page's way to overwrite every file);
@@ -415,13 +416,28 @@ window.__ModuleLoader__.load({
     /** Upper bound on rendered lines put into the DOM (a long prompt is real). */
     const MAX_VIEW_LINES = 3000;
     /**
-     * g-038: the fixed height (px) of each column's scroll box inside
-     * 「版本历史」. The list is a **window**, not a growing page: a layer with
-     * thousands of records renders one page and scrolls inside this box, so the
-     * page's own height never depends on how much history exists. The detail
-     * column reserves the same box for g-039.
+     * g-039 (third round): the「版本历史」panel is bounded by the **viewport**,
+     * not by a fixed px height per scroll box.
+     *
+     * The boxes used to be `320px` each, and the two columns were allowed to
+     * wrap, which is what made the page scroll: at the settings dialog's width
+     * the columns stacked, so choosing a record and reading the result were one
+     * screen apart. The panel now takes its height from the viewport
+     * (`calc(100vh - offset)`) and the **columns never stack**, so the only
+     * thing that scrolls is a column's own content.
+     *
+     * `HISTORY_VIEWPORT_OFFSET` is the measured room the settings page spends
+     * above this panel: the title line, the deciding-facts line and the tab bar
+     * (a little under 250px in the shipped page). It is deliberately a little
+     * generous — a panel a few pixels shorter than the space it has costs
+     * nothing, while a panel a few pixels taller is exactly the page scrollbar
+     * this round removes. `HISTORY_PANEL_MIN_HEIGHT` is the floor for a very
+     * short window: below it the page scrolls rather than rendering two useless
+     * slivers.
      */
-    const HISTORY_BOX_HEIGHT = 320;
+    const HISTORY_VIEWPORT_OFFSET = 260;
+    const HISTORY_PANEL_HEIGHT = `calc(100vh - ${HISTORY_VIEWPORT_OFFSET}px)`;
+    const HISTORY_PANEL_MIN_HEIGHT = 320;
     /**
      * g-038: the fixed height (px) of the version history's **scope candidate
      * list**. The scope selector is a disclosure whose picker renders inside
@@ -981,7 +997,9 @@ window.__ModuleLoader__.load({
       histPickFrom: '作为基准 from',
       histPickTo: '作为对比 to',
       histDiffHeading: '版本对比',
-      histDiffHint: '选中任意两条历史记录（或历史 vs 当前生效值）后自动对比：先比段，再比行。',
+      histDiffHint: '点记录行即可选择：第一行作为 from，第二行作为 to（随即自动对比），第三条起自动滑动窗口；行内两枚小按钮可精确指定。',
+      histDiffClear: '清除对比',
+      histRowPickHint: '点击此行加入对比：第一条 from、第二条 to，之后自动滑动窗口',
       histDiffFrom: 'from',
       histDiffTo: 'to',
       histDiffSections: '段级：共 {total} 段（差异 {changed} / 仅新增 {added} / 仅旧版 {removed} / 一致 {same}）',
@@ -1424,7 +1442,9 @@ window.__ModuleLoader__.load({
       histPickFrom: 'Use as the from side',
       histPickTo: 'Use as the to side',
       histDiffHeading: 'Version comparison',
-      histDiffHint: 'Pick any two history records (or a record against the current value); the comparison runs automatically, by section first and then by line.',
+      histDiffHint: 'Click a record row: the first becomes the from side, the second becomes the to side (the comparison runs at once), and from the third on the window slides. The two small buttons on a row pick a side explicitly.',
+      histDiffClear: 'Clear the comparison',
+      histRowPickHint: 'Click this row to build a comparison: first row = from, second = to, then it slides',
       histDiffFrom: 'from',
       histDiffTo: 'to',
       histDiffSections: 'Sections: {total} total ({changed} changed / {added} added / {removed} removed / {same} identical)',
@@ -5098,11 +5118,27 @@ window.__ModuleLoader__.load({
         color: token.labelSecondary,
         border: `1px solid ${token.borderL2}`,
       };
+      const pickHint = t('histRowPickHint');
+      // A button inside a clickable row must not also re-pick the row: in a real
+      // browser the click bubbles up, so the buttons swallow it. The test
+      // doubles call `onClick` directly with no event, which is why the guard
+      // tolerates a missing one.
+      const stop = (event) => {
+        if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+      };
       return h(
         'div',
         {
           key: id,
           'data-history-row': id,
+          // g-039 third round: the **row itself** is the primary control —
+          // clicking records builds the comparison (first row = from, second =
+          // to and the request fires, then a sliding window). The two small
+          // buttons below stay for exact control.
+          'data-action': 'history-row-pick',
+          'data-history-pick-hint': pickHint,
+          title: pickHint,
+          onClick: () => a.pickHistoryRow(id),
           'data-history-action': record.action,
           'data-history-name': record.name === null ? '' : String(record.name),
           'data-history-origin': record.origin,
@@ -5116,6 +5152,7 @@ window.__ModuleLoader__.load({
             gap: 6,
             alignItems: 'center',
             flexWrap: 'wrap',
+            cursor: 'pointer',
           },
         },
         h('code', { style: { fontSize: 12 } }, `#${id}`),
@@ -5137,7 +5174,10 @@ window.__ModuleLoader__.load({
             'data-action': 'diff-from',
             'data-history-id': id,
             disabled: selected === 'from',
-            onClick: () => a.pickDiffSide('from', id),
+            onClick: (event) => {
+              stop(event);
+              a.pickDiffSide('from', id);
+            },
             style: sideStyle,
           },
           t('histPickFrom'),
@@ -5149,7 +5189,10 @@ window.__ModuleLoader__.load({
             'data-action': 'diff-to',
             'data-history-id': id,
             disabled: selected === 'to',
-            onClick: () => a.pickDiffSide('to', id),
+            onClick: (event) => {
+              stop(event);
+              a.pickDiffSide('to', id);
+            },
             style: sideStyle,
           },
           t('histPickTo'),
@@ -5164,7 +5207,10 @@ window.__ModuleLoader__.load({
             'data-action': 'history-preview',
             'data-history-id': id,
             'data-preview-selected': m.preview.id === id ? 'true' : 'false',
-            onClick: () => a.previewHistoryRecord(id),
+            onClick: (event) => {
+              stop(event);
+              a.previewHistoryRecord(id);
+            },
             style: sideStyle,
           },
           t('histPreview'),
@@ -5175,7 +5221,10 @@ window.__ModuleLoader__.load({
             type: 'button',
             'data-action': 'history-rollback',
             'data-history-id': id,
-            onClick: () => a.requestRollback(id),
+            onClick: (event) => {
+              stop(event);
+              a.requestRollback(id);
+            },
             style: sideStyle,
           },
           t('histRollback'),
@@ -5218,7 +5267,7 @@ window.__ModuleLoader__.load({
       const heading = h('h4', { key: 'heading', style: { margin: 0, fontSize: 13, fontWeight: 600 } }, t('histPreviewHeading'));
       const close = h(
         UI.Button,
-        { key: 'close', 'data-action': 'history-preview-close', onClick: a.closeHistoryPreview },
+        { key: 'close', 'data-action': 'preview-close', onClick: a.closeHistoryPreview },
         t('histPreviewClose'),
       );
       if (preview.state === 'missing') {
@@ -5424,7 +5473,25 @@ window.__ModuleLoader__.load({
         ? '—'
         : value === DIFF_CURRENT ? t('histCurrent') : `#${value}`);
       const children = [
-        h('h4', { key: 'heading', style: { margin: 0, fontSize: 13, fontWeight: 600 } }, t('histDiffHeading')),
+        h(
+          'div',
+          { key: 'head', style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+          h('h4', { key: 'heading', style: { margin: 0, fontSize: 13, fontWeight: 600 } }, t('histDiffHeading')),
+          // g-039 third round: an explicit way out. Picking records on rows is
+          // the primary path, and a path that can only be walked forwards needs
+          // a reset: this clears the selection and the result, and the pane goes
+          // back to its idle state.
+          h(
+            UI.Button,
+            {
+              key: 'clear',
+              'data-action': 'diff-clear',
+              disabled: m.diffSel.from === null && m.diffSel.to === DIFF_CURRENT,
+              onClick: a.clearDiff,
+            },
+            t('histDiffClear'),
+          ),
+        ),
         h('p', { key: 'hint', style: { margin: 0, ...metaStyle } }, t('histDiffHint')),
         h(
           'div',
@@ -5734,9 +5801,10 @@ window.__ModuleLoader__.load({
             data.lastError ? h('div', { 'data-history-last-error': 'true', style: { color: token.stateError } }, fmt(t('histLastError'), { reason: data.lastError.reason })) : null,
           ),
         );
-        // g-038: a fixed-height box that scrolls **inside** itself. The page's
-        // own height therefore never depends on how much history a layer has,
-        // and exactly the current page of records is ever rendered.
+        // g-038: a box that scrolls **inside** itself, so exactly the current
+        // page of records is ever rendered. g-039 third round: it FILLS the
+        // column (`flex: 1 1 auto; minHeight: 0`) instead of being 320px tall,
+        // because the panel's height now comes from the viewport.
         children.push(
           h(
             'div',
@@ -5744,10 +5812,10 @@ window.__ModuleLoader__.load({
               key: 'rows',
               'data-region': 'history-list',
               'data-history-list': 'scroll',
-              'data-history-box-height': String(HISTORY_BOX_HEIGHT),
+              'data-history-box-height': 'viewport',
               style: {
-                height: HISTORY_BOX_HEIGHT,
-                maxHeight: HISTORY_BOX_HEIGHT,
+                flex: '1 1 auto',
+                minHeight: 0,
                 overflowY: 'auto',
                 border: `1px solid ${token.borderL1}`,
                 borderRadius: 8,
@@ -5848,7 +5916,19 @@ window.__ModuleLoader__.load({
           'data-region': 'history',
           'data-history-layer': layer,
           'data-history-state': m.hist.phase,
-          style: { ...cardStyle, display: 'flex', flexDirection: 'column', gap: 6 },
+          // g-039 third round: the card fills its column, and the record box
+          // inside it takes whatever is left (`flex: 1 1 auto; minHeight: 0`).
+          // `height: 100%` is what makes that possible: without it the card is
+          // content-sized and the box below would size to its own content again.
+          style: {
+            ...cardStyle,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 6,
+            height: '100%',
+            minHeight: 0,
+            overflow: 'hidden',
+          },
         },
         children,
       );
@@ -6833,35 +6913,69 @@ window.__ModuleLoader__.load({
      */
     /**
      * g-038: 「版本历史」 — the log and its comparison, arranged as two columns.
+     * g-039 (third round): the arrangement is now a **fixed, viewport-sized
+     * row** rather than a wrapping one.
      *
-     * The left column is the record list (fixed-height box, internal scroll,
-     * pager); the right column is the detail pane. The right column already
-     * carries the comparison this page has, and reserves its box for the
-     * preview/rollback surface a later goal lands (g-039) — nothing here may
-     * grow with the amount of history on disk.
+     * The left column is the record list (internally scrolling box, pager); the
+     * right column is the detail pane, which shows exactly one of three views —
+     * the idle note, a record preview, or the comparison. Both columns are
+     * always in the same row and always share the panel's height.
      *
-     * `flexWrap` is the narrow-width rule: when the two columns no longer fit
-     * side by side they stack, and each keeps its own fixed-height scroll box,
-     * so a narrow tab cannot push the pager off screen either.
+     * Why `nowrap` and no px basis: the previous version wrapped when the two
+     * columns no longer fit (`1 1 420px` + `1 1 360px` in a ~700px dialog), so
+     * choosing a record and reading the result were one screen apart. A narrower
+     * panel must narrow the columns — never stack them. `flex: 1 1 0` gives each
+     * column an equal share of whatever width there is and lets the inner boxes
+     * scroll, which is the only scroll this tab is allowed to have.
+     *
+     * Height: `HISTORY_PANEL_HEIGHT` (`calc(100vh − offset)`) bounds the panel to
+     * the viewport, and the boxes below take `flex: 1 1 auto; minHeight: 0` so
+     * they fill whatever is left instead of a fixed 320px. The page's own scroll
+     * bar therefore does not appear for this tab.
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
      * @returns the tab element.
      */
     function renderHistoryTab(t, m, a) {
+      // Three mutually exclusive views, so switching never leaves the previous
+      // one's content behind. A comparison in flight (`loading`) or a failed one
+      // is still the comparison view.
+      const detail =
+        m.preview.state !== 'none' ? 'preview' : m.diff.phase !== 'idle' || m.diff.data !== null ? 'diff' : 'empty';
       return h(
         'div',
         {
           'data-region': 'history-tab',
           'data-history-columns': 'two',
-          style: { display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'flex-start' },
+          'data-history-layout': 'viewport',
+          'data-history-viewport-offset': String(HISTORY_VIEWPORT_OFFSET),
+          style: {
+            display: 'flex',
+            // Never stacks (g-039 third round). See this function's doc comment.
+            flexWrap: 'nowrap',
+            gap: 10,
+            alignItems: 'stretch',
+            height: HISTORY_PANEL_HEIGHT,
+            maxHeight: HISTORY_PANEL_HEIGHT,
+            minHeight: HISTORY_PANEL_MIN_HEIGHT,
+            minWidth: 0,
+          },
         },
         h(
           'div',
           {
             key: 'list-column',
             'data-region': 'history-list-column',
-            style: { flex: '1 1 420px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 6 },
+            style: {
+              flex: '1 1 0',
+              minWidth: 0,
+              minHeight: 0,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6,
+              overflow: 'hidden',
+            },
           },
           renderHistoryPanel(t, m, a),
         ),
@@ -6870,22 +6984,30 @@ window.__ModuleLoader__.load({
           {
             key: 'detail-column',
             'data-region': 'history-detail',
-            'data-history-detail': m.preview.state !== 'none' ? 'preview' : m.diff.data === null ? 'empty' : 'diff',
-            style: { flex: '1 1 360px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 6 },
+            'data-history-detail': detail,
+            style: {
+              flex: '1 1 0',
+              minWidth: 0,
+              minHeight: 0,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 6,
+              overflow: 'hidden',
+            },
           },
-          // The detail column keeps the same fixed-height, internally scrolling
-          // box as the list: a long comparison must not stretch the page either
-          // (g-038). g-039 lands the preview/rollback surface inside this box.
+          // The detail box fills the column instead of being 320px tall: the
+          // panel's height is the viewport's, and this box takes what is left.
+          // g-039 lands the preview/rollback surface inside it.
           h(
             'div',
             {
               key: 'detail-box',
               'data-region': 'history-detail-box',
               'data-history-box': 'scroll',
-              'data-history-box-height': String(HISTORY_BOX_HEIGHT),
+              'data-history-box-height': 'viewport',
               style: {
-                height: HISTORY_BOX_HEIGHT,
-                maxHeight: HISTORY_BOX_HEIGHT,
+                flex: '1 1 auto',
+                minHeight: 0,
                 overflowY: 'auto',
                 border: `1px solid ${token.borderL1}`,
                 borderRadius: 8,
@@ -6895,15 +7017,15 @@ window.__ModuleLoader__.load({
                 gap: 6,
               },
             },
-            m.preview.state === 'none' && m.diff.data === null
+            detail === 'empty'
               ? h(
                   'p',
                   { key: 'detail-pending', 'data-note': 'history-detail-pending', style: { margin: 0, ...metaStyle } },
                   t('histDetailPending'),
                 )
               : null,
-            renderPreviewPanel(t, m, a),
-            renderDiffPanel(t, m, a),
+            detail === 'preview' ? renderPreviewPanel(t, m, a) : null,
+            detail === 'diff' ? renderDiffPanel(t, m, a) : null,
           ),
         ),
       );
@@ -8934,7 +9056,40 @@ window.__ModuleLoader__.load({
         pickDiffSide: (side, id) => {
           const next = { ...diffSel, [side]: id };
           setDiffSel(next);
+          // A comparison is a view of the detail pane: dropping the preview is
+          // what makes the click's result the thing the reader sees (the pane
+          // shows exactly one of idle / preview / comparison).
+          setPreviewId(null);
           void runDiff(next.from, next.to);
+        },
+        // g-039 third round: the row itself is the primary control. The first
+        // row picked becomes `from`; the second becomes `to`, and that is when
+        // the comparison is requested; from the third on it is a sliding window
+        // (`to` becomes `from`, the new row becomes `to`). Clicking the record
+        // already holding one of the two slots steps back out of it, and
+        // `diff-clear` resets both.
+        pickHistoryRow: (id) => {
+          const next =
+            id === diffSel.from
+              ? { from: null, to: null }
+              : id === diffSel.to
+                ? { from: diffSel.from, to: null }
+                : diffSel.from === null
+                  ? { from: id, to: null }
+                  : diffSel.to === null
+                    ? { from: diffSel.from, to: id }
+                    : { from: diffSel.to, to: id };
+          setDiffSel(next);
+          setPreviewId(null);
+          void runDiff(next.from, next.to);
+        },
+        // The explicit way back to the pane's idle state: the same pair a reset
+        // installs (`current` is the default `to`), so "cleared" and "just
+        // opened" cannot drift apart, plus the request state is dropped rather
+        // than left showing a result nobody is comparing any more.
+        clearDiff: () => {
+          setDiffSel({ from: null, to: DIFF_CURRENT });
+          setDiff({ phase: 'idle', data: null, error: null });
         },
         requestResetLayer: (layer, count) => setConfirm({ kind: 'reset-layer', layer, count }),
         requestLegacyClear: (layer, count) => setConfirm({ kind: 'legacy-clear', layer, count }),

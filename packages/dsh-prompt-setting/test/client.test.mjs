@@ -4847,7 +4847,7 @@ test('client: an out-of-range page from the host is clamped, never rendered as p
   assert.deepEqual(urlsFor(page, PATHS.history).slice(-1), [`${PATHS.history}?layer=user&offset=50`]);
 });
 
-test('client: the log renders inside a fixed-height scroll box (g-038)', async () => {
+test('client: the log and the detail pane share one viewport-sized row, and scroll inside themselves (g-038 → g-039)', async () => {
   const many = [];
   for (let index = 1; index <= 50; index += 1) many.push(recordOf(index));
   const page = makePage({
@@ -4858,23 +4858,45 @@ test('client: the log renders inside a fixed-height scroll box (g-038)', async (
     }),
   });
   const tree = await openHistory(page);
+
+  // The two columns are always ONE row (g-039 third round): `nowrap`, and no px
+  // flex-basis that could push the second column onto a second line. This
+  // replaces the old "each box is a fixed 320px" assertion — the coverage
+  // (bounded rendering, internal scroll, page never grows) is the same, the
+  // mechanism is now the viewport instead of a number.
+  const tab = oneBy(tree, 'data-region', 'history-tab');
+  assert.equal(tab.props['data-history-columns'], 'two');
+  assert.equal(tab.props['data-history-layout'], 'viewport');
+  assert.equal(tab.props.style.flexWrap, 'nowrap', 'the columns never stack');
+  assert.equal(tab.props.style.height, `calc(100vh - ${tab.props['data-history-viewport-offset']}px)`);
+  assert.equal(tab.props.style.maxHeight, tab.props.style.height, 'and the panel is bounded by the viewport');
+  for (const region of ['history-list-column', 'history-detail']) {
+    const column = oneBy(tree, 'data-region', region);
+    assert.equal(column.props.style.minWidth, 0, `${region} may shrink`);
+    assert.equal(column.props.style.minHeight, 0, `${region} is bounded by its column`);
+    assert.equal(String(column.props.style.flex).includes('px'), false, `${region} carries no px basis`);
+  }
+
+  // The record box fills its column and scrolls inside itself…
   const box = oneBy(tree, 'data-region', 'history-list');
   assert.equal(box.props['data-history-list'], 'scroll');
   assert.equal(box.props.style.overflowY, 'auto', 'the box scrolls, the page does not');
-  assert.equal(typeof box.props.style.height, 'number');
-  assert.equal(box.props.style.maxHeight, box.props.style.height, 'the height is fixed');
-  assert.equal(box.props['data-history-box-height'], String(box.props.style.height));
+  assert.equal(box.props.style.flex, '1 1 auto');
+  assert.equal(box.props.style.minHeight, 0);
+  assert.equal(box.props.style.height, undefined, 'no fixed height: the viewport is the bound');
+  assert.equal(box.props['data-history-box-height'], 'viewport');
   // 5000 records on disk, one page in the DOM.
   assert.equal(historyRowIds(tree).length, 50);
 
-  // The right column is reserved (and already carries the comparison), in its
-  // own fixed-height scroll box: neither column stretches the page.
+  // …and so does the detail pane's, in the same row.
   const detail = oneBy(tree, 'data-region', 'history-detail');
   assert.equal(detail.props['data-history-detail'], 'empty');
   const detailBox = oneBy(tree, 'data-region', 'history-detail-box');
   assert.equal(detailBox.props['data-history-box'], 'scroll');
   assert.equal(detailBox.props.style.overflowY, 'auto');
-  assert.equal(detailBox.props.style.maxHeight, box.props.style.maxHeight, 'both columns are the same height');
+  assert.equal(detailBox.props.style.flex, '1 1 auto', 'it grows into whatever the column has left');
+  assert.equal(detailBox.props.style.minHeight, 0);
+  assert.equal(detailBox.props.style.height, undefined);
   assert.ok(oneBy(detailBox, 'data-note', 'history-detail-pending'));
   clickButton(historyRowOf(tree, '1'), { 'data-action': 'diff-from', 'data-history-id': '1' });
   const after = await page.flush();
@@ -5112,6 +5134,148 @@ test('client: preview and confirmation both state that only 「我的 Prompt」 
   );
 });
 
+test('client: clicking a record row builds the comparison — from, then to, then a sliding window (g-039 third round)', async () => {
+  const records = [recordOf(3), recordOf(2), recordOf(1)];
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.history]: {
+        payload: historyFixture({ records, total: 3, pageLimit: 20, offset: 0, pageCount: 1, hasMore: false }),
+      },
+    }),
+  });
+  let tree = await openHistory(page);
+  const diffCalls = () => urlsFor(page, PATHS.diff).length;
+
+  // The row itself is the control. The first row fills `from` only: one side is
+  // not a comparison, so nothing is requested and the pane stays idle.
+  assert.equal(typeof historyRowOf(tree, '3').props.onClick, 'function');
+  clickNode(historyRowOf(tree, '3'));
+  tree = await page.flush();
+  assert.equal(historyRowOf(tree, '3').props['data-history-selected'], 'from');
+  assert.equal(historyRowOf(tree, '2').props['data-history-selected'], '');
+  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'empty');
+  assert.equal(diffCalls(), 0, 'a half-made selection is not a request');
+  assert.equal(typeof historyRowOf(tree, '3').props['data-history-pick-hint'], 'string');
+
+  // The second row becomes `to`, and that is what fires the comparison.
+  clickNode(historyRowOf(tree, '2'));
+  tree = await page.flush();
+  assert.equal(historyRowOf(tree, '3').props['data-history-selected'], 'from');
+  assert.equal(historyRowOf(tree, '2').props['data-history-selected'], 'to');
+  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'diff');
+  assert.deepEqual(urlsFor(page, PATHS.diff).slice(-1), [`${PATHS.diff}?layer=user&from=3&to=2`]);
+
+  // The third slides the window: the old `to` becomes `from`.
+  clickNode(historyRowOf(tree, '1'));
+  tree = await page.flush();
+  assert.equal(historyRowOf(tree, '3').props['data-history-selected'], '');
+  assert.equal(historyRowOf(tree, '2').props['data-history-selected'], 'from');
+  assert.equal(historyRowOf(tree, '1').props['data-history-selected'], 'to');
+  assert.deepEqual(urlsFor(page, PATHS.diff).slice(-1), [`${PATHS.diff}?layer=user&from=2&to=1`]);
+
+  // The per-row buttons stay for exact control: they pick their own side, and
+  // they do not also re-pick the row.
+  clickButton(historyRowOf(tree, '3'), { 'data-action': 'diff-to', 'data-history-id': '3' });
+  tree = await page.flush();
+  assert.equal(historyRowOf(tree, '3').props['data-history-selected'], 'to');
+  assert.equal(historyRowOf(tree, '2').props['data-history-selected'], 'from');
+});
+
+test('client: clearing the comparison empties the pane, and the reader can start again (g-039 third round)', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openHistory(page);
+  clickNode(historyRowOf(tree, '2'));
+  tree = await page.flush();
+  clickNode(historyRowOf(tree, '1'));
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'diff');
+
+  assert.equal(oneBy(tree, 'data-action', 'diff-clear').props.disabled, false);
+  clickButton(tree, { 'data-action': 'diff-clear' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'empty');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history-diff').length, 0);
+  assert.ok(oneBy(tree, 'data-note', 'history-detail-pending'));
+  assert.deepEqual(selectedHistoryRows(tree), [], 'no row claims a side any more');
+  assert.equal(historyRowOf(tree, 'current').props['data-history-selected'], 'to', 'back to the default pair');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-action'] === 'diff-clear').length,
+    0,
+    'the pane is idle, so there is nothing left to clear',
+  );
+
+  // …and picking again works exactly as it did the first time.
+  clickNode(historyRowOf(tree, '2'));
+  tree = await page.flush();
+  clickNode(historyRowOf(tree, '1'));
+  tree = await page.flush();
+  assert.equal(historyRowOf(tree, '2').props['data-history-selected'], 'from');
+  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'diff');
+});
+
+test('client: the detail pane shows exactly one view, and closing the preview moves on (g-039 third round)', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openHistory(page);
+  const detail = () => oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'];
+
+  clickNode(historyRowOf(tree, '2'));
+  tree = await page.flush();
+  clickNode(historyRowOf(tree, '1'));
+  tree = await page.flush();
+  assert.equal(detail(), 'diff');
+
+  // Previewing replaces the comparison in the pane rather than stacking under it.
+  clickButton(historyRowOf(tree, '2'), { 'data-action': 'history-preview', 'data-history-id': '2' });
+  tree = await page.flush();
+  assert.equal(detail(), 'preview');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-region'] === 'history-diff').length,
+    0,
+    'the comparison is not rendered behind the preview',
+  );
+
+  // Closing it returns to the comparison, which is still selected…
+  clickButton(tree, { 'data-action': 'preview-close' });
+  tree = await page.flush();
+  assert.equal(detail(), 'diff');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history-preview').length, 0);
+
+  // …and with nothing selected it returns to the idle note.
+  clickButton(tree, { 'data-action': 'diff-clear' });
+  tree = await page.flush();
+  clickButton(historyRowOf(tree, '1'), { 'data-action': 'history-preview', 'data-history-id': '1' });
+  tree = await page.flush();
+  assert.equal(detail(), 'preview');
+  clickButton(tree, { 'data-action': 'preview-close' });
+  tree = await page.flush();
+  assert.equal(detail(), 'empty');
+  assert.ok(oneBy(tree, 'data-note', 'history-detail-pending'), 'and the idle note is what is left');
+});
+
+test('client: switching the layer resets the preview together with the comparison (g-039 third round)', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses(),
+  });
+  let tree = await openHistory(page);
+  clickNode(historyRowOf(tree, '2'));
+  tree = await page.flush();
+  clickNode(historyRowOf(tree, '1'));
+  tree = await page.flush();
+  clickButton(historyRowOf(tree, '2'), { 'data-action': 'history-preview', 'data-history-id': '2' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'preview');
+
+  // A different file: the ids are meaningless there, so nothing that points into
+  // the old one survives — the preview included.
+  clickTab(tree, 'history-layer', 'workspace');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'empty');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history-preview').length, 0);
+  assert.deepEqual(selectedHistoryRows(tree), []);
+  assert.equal(oneBy(tree, 'data-region', 'history-pager').props['data-history-offset'], '0');
+});
+
 // #endregion
 
 /** Every history **record** row that currently claims a comparison selection. */
@@ -5278,12 +5442,13 @@ test('client: switching the layer or the scope drops a comparison made in the ot
     'the comparison target is back to its default (「当前生效值」)',
   );
   assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'empty');
-  // The comparison card is still there (it is part of the panel), but it is back
-  // to its empty state: no result, and no selection feeding it.
-  assert.equal(oneBy(tree, 'data-region', 'history-diff').props['data-diff-state'], 'idle');
+  // The comparison is a **view** of the pane (g-039 third round): a reset
+  // removes it entirely rather than leaving a card holding a stale result or a
+  // stale selection line. That is a stronger statement than the old "the card
+  // is still there, but idle", and it is the invariant the pane now has.
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history-diff').length, 0);
   assert.equal(collect(tree, (node) => node.props && node.props['data-diff-sections'] !== undefined).length, 0);
-  assert.equal(oneBy(tree, 'data-diff-from', '').props['data-diff-from'], '');
-  assert.ok(oneBy(tree, 'data-note', 'history-detail-pending'), 'the reserved detail pane is back to its placeholder');
+  assert.ok(oneBy(tree, 'data-note', 'history-detail-pending'), 'the detail pane is back to its idle note');
   assert.equal(urlsFor(page, PATHS.diff).length, diffsMade, 'and nothing new was requested');
 
   // The same rule for the scope: a different workspace is a different file.
@@ -5308,7 +5473,7 @@ test('client: switching the layer or the scope drops a comparison made in the ot
     'the comparison target is back to its default',
   );
   assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'empty');
-  assert.equal(oneBy(tree, 'data-region', 'history-diff').props['data-diff-state'], 'idle');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history-diff').length, 0);
   assert.equal(collect(tree, (node) => node.props && node.props['data-diff-sections'] !== undefined).length, 0);
 });
 

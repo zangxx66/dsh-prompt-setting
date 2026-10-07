@@ -5788,3 +5788,82 @@ if (installed.length !== 1 || target === void 0) throw new ManagementFailure("am
 - 真机目视仍未做（新增的政策说明行在 320px 盒内的排版、确认框条目变多后的高度），只有 DOM 断言。
 - 宿主未重启（本轮改的是宿主路由与核心层，真机需重启后才生效）。
 - `order` 的有损恢复（同名项仍在当前配置时保留，否则丢弃）与上一轮一致，未做端到端真机验证。
+
+## 117. g-039 三轮返工：整屏固定布局 + 点行即选 + 清除/关闭（Revision 23，2026-10-08，基线 `302db66` 工作区）
+
+### 一、真机现象与根因
+
+负责人真机看到三件事：① 记录列表与右侧详情**上下堆叠**，选一条看结果要滚页面；② 对比选择**没有取消/重置入口**；
+③ 选两条要在长列表里反复翻找。根因（已复验）：`renderHistoryTab` 用了 `flexWrap: 'wrap'`，左列 `flex: 1 1 420px`、
+右列 `flex: 1 1 360px` ⇒ 容器宽度不足约 790px 时**必然换行**，而设置对话框正好是这个宽度；再加上两个盒固定
+`320px`、头部说明 + 作用域 + 分页 + 元信息把面板撑高，页面一定要滚。上一轮我按 brief 里「窄屏回落为上下两段各自
+定高滚动」实现——那条要求本轮**作废**，改为一律不堆叠。
+
+### 二、布局：整屏固定 + 恒并排（纯客户端）
+
+- 容器：`flexWrap: 'nowrap'`，`alignItems: 'stretch'`，`height === maxHeight === calc(100vh - 260px)`，
+  `minHeight: 320`（极短窗口的保底，低于它宁可滚也不给两条没用的缝）。
+- 两列：`flex: '1 1 0'` + `minWidth: 0` + `minHeight: 0` + `overflow: 'hidden'`。**删掉了 px 级 flex-basis**
+  （420/360）——那正是触发换行的语义；现在窄面板只会让两列变窄，不会换行。
+- 两个滚动盒：`flex: '1 1 auto'` + `minHeight: 0` + `overflowY: 'auto'`，**不再有固定高度**；
+  `data-history-box-height` 从"像素数"改为字符串 `'viewport'`（表述"高度来自视口，不来自本盒"）。
+  列表卡片 `data-region="history"` 加 `height: '100%'`，否则卡片按内容撑高、盒子又变回内容高度。
+- 视口偏移取 **260px**：它是设置页在本面板之上的固定开销（标题行 + 判定事实行 + tab bar，实测略低于 250px）。
+  取"略宽裕"是有意的——面板矮几像素只损失几像素空间，而高几像素就是本轮要消掉的那根页面滚动条。常量
+  `HISTORY_VIEWPORT_OFFSET` / `HISTORY_PANEL_HEIGHT` / `HISTORY_PANEL_MIN_HEIGHT`，面板上带
+  `data-history-viewport-offset` 便于断言与排查。
+- **没有加「列表 / 详情」segmented control**：`nowrap` + `1 1 0` 已满足「任何情况下不得堆叠」，再加一个
+  "哪一栏可见"的状态维度会与「换文件复位」等不变量相乘，收益（窄屏各半仍可用）小于复杂度，故不做。
+
+### 三、交互：点行即选 + 清除 + 单视图
+
+- 每行 `data-action="history-row-pick"` + `onClick`（`title`/`data-history-pick-hint` 用 `histRowPickHint` 说明）。
+  规则：**第一行 → from**（此时只选了一半，不发请求，右列保持空态）；**第二行 → to，随即发起 `GET /diff`**；
+  **第三条起滑动窗口**（原 to 变 from、新行变 to）。点当前 from 行 ⇒ 清空一对；点当前 to 行 ⇒ 退回"只选了 from"。
+- 行内 `diff-from` / `diff-to` / `history-preview` / `history-rollback` 四枚按钮保留作精确控制，并在 handler 里
+  `stopPropagation`（真实浏览器里点击会冒泡，否则点按钮会连带重选整行；测试替身直接调 `onClick` 无事件，故守卫容忍
+  缺失 event）。
+- 新增 `data-action="diff-clear"`（对比视图头部，无可清除时 disabled）：恢复默认对 `{from: null, to: 'current'}`
+  ——**与复位安装的那一对完全相同**，避免"清除后"和"刚打开"漂移——并丢弃对比结果，右列回空态。
+- 右列三态**互斥**：`data-history-detail` = `empty` | `preview` | `diff`；预览渲染时**不再渲染** `history-diff`，
+  空闲时**不渲染** `history-diff` 卡片（旧版是"卡片常驻、只是 idle"，会留下过期选择行）。预览关闭按钮改为
+  `data-action="preview-close"`；关闭后若仍有对比选中就回到对比视图，否则回到空闲提示。点行/点清除同样会关掉预览
+  （因为面板一次只显示一个视图）。
+
+### 四、测试与负向对照
+
+- **等价改写 1 条**：`client: the log renders inside a fixed-height scroll box (g-038)` ⇒
+  `client: the log and the detail pane share one viewport-sized row, and scroll inside themselves (g-038 → g-039)`。
+  覆盖（5000 条只渲染一页、内部滚动、页面不增高）一条没少，机制断言由「height 是数字且 maxHeight 相同」换成
+  「nowrap + 无 px basis + 面板 = calc(100vh - offset) + 两盒 flex 撑满 + 无固定 height」。
+- **等价改写 2 处**：`drops a comparison made in the other file` 里"对比卡片还在、只是 idle"的断言，改为
+  「`history-diff` 完全不渲染 + 无 `data-diff-sections` + 空闲提示回来」——比旧断言更强（不再有过期内容可残留）。
+- **新增 4 条**：① 点行建对比（from → to 并请求 → 滑动窗口 → 行内按钮仍可精确指定）；② 清除对比（回空态、选择清空、
+  默认对恢复、可重新开始）；③ 三态互斥与关闭预览（预览时不渲染 diff，关闭后回对比，无对比时回空闲）；④ 切层同时
+  复位预览与对比。
+- **负向对照（真红后还原）**：① `flexWrap: 'nowrap'` 改回 `'wrap'` ⇒ 1 条红；② 行 `onClick` 置空 ⇒ 4 条红。
+- 全量：`cd packages/dsh-prompt-setting && node --test` ⇒ **625 pass / 0 fail**（上一轮 621 + 新增 4，无回归无削弱）；
+  `node --check client.js` 通过。宿主与 `core/` 本轮**未改动**，故 `index.js`/`core/history.js` 的字节不变断言
+  （stage2 的 SHA-256 用例）继续原样通过。
+
+### 五、「页面不再滚动」的验证依据与目视确认建议
+
+自动化依据（`test/client.test.mjs`，改写后的那条用例）：
+1. `history-tab` 的 `style.flexWrap === 'nowrap'` —— 两列不可能换行堆叠；
+2. `style.height === style.maxHeight === 'calc(100vh - 260px)'` —— 面板高度由视口推导，不随记录数增长；
+3. 两列 `flex` 不含 `px`、`minWidth/minHeight === 0`；两盒 `flex === '1 1 auto'`、`minHeight === 0`、
+   `style.height === undefined` —— 盒子撑满剩余高度并在内部滚动；
+4. 5000 条记录时 DOM 里仍只有一页 50 行。
+CSS 语义上 1–3 合起来等价于"本 tab 的高度 ≤ 视口、内容只在列内滚"，因此页面不会因此产生纵向滚动条。
+
+建议负责人的目视确认（3 步）：
+1. 打开设置 → 「版本历史」：**页面右侧不应出现纵向滚动条**；把鼠标放在页面空白（头部/两栏之外）滚轮，页面不动；
+2. 把鼠标放在记录列表上滚轮：**只有列表滚**；放在右侧详情上滚轮：**只有详情滚**；两栏始终左右并排；
+3. 把窗口宽度缩到约 700px（设置对话框的实测宽度）：仍是左右并排（只是两列更窄），**不出现上下堆叠**。
+
+### 六、未验证项
+
+- 真机目视未做（本轮所有布局断言都在测试沙箱里按 DOM/样式属性做）：`calc(100vh - 260px)` 的偏移 260px 是按设置页
+  头部实测估的，**若真机上仍出现页面滚动条，优先调大 `HISTORY_VIEWPORT_OFFSET`**（它只影响面板高度，不影响其它行为）。
+- 宿主未重启（本轮纯客户端改动，宿主路由/参数/字节未动，契约 Revision 23 明记 "client-half only"）。
+- 窄宽度（<620px）下两栏各 ~300px 的观感未验，只有"不换行"的机制断言。

@@ -1917,7 +1917,7 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   `sections` / `full`) keep their Revision 3 meaning; the Revision 6
   `overrides` view no longer exists.
 
-### 13.3 「版本历史」(Revision 19: its own scope, paging and a two-column layout; scope disclosure and state resets in Revision 20; record preview and rollback in Revision 21)
+### 13.3 「版本历史」(Revision 19: its own scope, paging and a two-column layout; scope disclosure and state resets in Revision 20; record preview and rollback in Revision 21; preview policy and the narrowed rollback in Revision 22; viewport-sized non-stacking layout, row picking and clearing in Revision 23)
 
 - The panel is `data-region="history"` (with `data-history-layer`,
   `data-history-state`, `data-history-total`, `data-history-corrupt`,
@@ -1959,15 +1959,17 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   scope applies, the picker collapses (`data-scope-open="false"`, the picker and
   the search box are gone) and the search text is dropped — the same
   one-click-closes-it rule as the page-level picker (§13.7).
-- **A new file voids every reference into the old one (Revision 20).**
+- **A new file voids every reference into the old one (Revision 20; the preview
+  joins it in Revision 21).**
   `diffSel` holds history ids, and an id is only meaningful inside one
   `history.jsonl`. Changing the **layer** (`user` ↔ `workspace`) or the
   **scope** (one workspace → another) changes which file that is, so both paths
   reset the view together: the offset returns to `0`, `diffSel` returns to its
   default (`data-history-selected` empty on every record row, the 「当前生效值」
-  row back to `"to"`) and the comparison returns to its empty state
-  (`data-history-detail="empty"`, `data-history-diff`'s `data-diff-state="idle"`,
-  no `data-diff-sections`, the `history-detail-pending` note rendered again).
+  row back to `"to"`), the preview is dropped (`data-history-preview` absent) and
+  the pane returns to its idle state (`data-history-detail="empty"`, no
+  `data-region="history-diff"` — it is not rendered while idle — no
+  `data-diff-sections`, the `history-detail-pending` note rendered again).
   **Paging does not reset it**: `data-action="history-prev"` / `"history-next"`
   move inside one file, so the reader's selection and its result stay — and are
   not re-requested.
@@ -1986,26 +1988,61 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   request sends no `limit`, and every later step is `pageLimit` from the last
   response. A response whose offset is past the end is clamped into the pages
   that exist, so the label can never read「page 6 / 3」.
-- **Bounded rendering.** Records render inside a fixed-height, internally
-  scrolling box `data-region="history-list"` (`data-history-list="scroll"`,
-  `data-history-box-height` = the height in px; `height` and `maxHeight` are that
-  same number, `overflowY: auto`), so the page's own height does not depend on
-  how much history exists and exactly the current page's records are in the DOM.
-  The 「当前生效值」 row stays the last row of that box.
-- **Two columns (g-038 layout decision).** `data-region="history-tab"` is a
-  wrapping two-column row: the left column `data-region="history-list-column"`
-  holds the panel above; the right column `data-region="history-detail"`
-  (`data-history-detail="empty"` | `"diff"` | `"preview"`) holds the detail box
-  `data-region="history-detail-box"` (`data-history-box="scroll"`, same fixed
-  height) with `data-note="history-detail-pending"` and the comparison. When the
-  two columns no longer fit side by side they stack, each keeping its own
-  fixed-height scroll box. **Every** answer to a selection — the comparison
-  (g-038), the record preview and the rollback confirmation (Revision 21) —
-  renders inside that one fixed-height box, which is what keeps the page's own
-  height independent of how much history exists: choosing a version and reading
-  the result never requires scrolling the page, and never grows it.
-  `data-note="history-detail-pending"` is now the **idle** note (Revision 21): it
-  renders only while nothing is previewed *and* no comparison is on screen.
+- **Bounded rendering (Revision 23: a filled box, not a fixed one).** Records
+  render inside an internally scrolling box `data-region="history-list"`
+  (`data-history-list="scroll"`, `data-history-box-height="viewport"`,
+  `flex: 1 1 auto`, `minHeight: 0`, `overflowY: auto`), so exactly the current
+  page's records are in the DOM and the box **fills its column** instead of being
+  a fixed 320px tall. The 「当前生效值」 row stays the last row of that box.
+  `data-history-box-height` is the string `"viewport"`, not a number: the bound
+  comes from the panel (below), not from this box.
+- **Two columns, never stacked (Revision 23).** `data-region="history-tab"` is a
+  **non-wrapping** row (`flexWrap: nowrap`, `data-history-columns="two"`,
+  `data-history-layout="viewport"`): the left column
+  `data-region="history-list-column"` holds the panel above, the right column
+  `data-region="history-detail"` holds the detail box
+  `data-region="history-detail-box"`. Both columns are `flex: 1 1 0` with
+  `minWidth: 0` / `minHeight: 0` — **no px flex-basis**, because `1 1 420px` +
+  `1 1 360px` inside a ~700px settings dialog is exactly what used to push the
+  second column onto its own line, putting a record and its result one screen
+  apart. A narrower panel narrows the columns; it never stacks them.
+- **The panel is viewport-sized (Revision 23).** `history-tab` carries
+  `height: maxHeight: calc(100vh - <offset>px)` (`data-history-viewport-offset` is
+  that offset in px) and a px `minHeight` floor for a very short window. The
+  offset is the room the settings page spends above this panel (title line,
+  deciding-facts line, tab bar); being a little generous costs a few unused pixels,
+  while being short is the page scrollbar this layout exists to remove. Below the
+  panel, each column and each box is `flex: 1 1 auto; minHeight: 0`, so the list
+  and the detail pane share exactly the height that is left.
+  **Every** answer to a selection — the comparison (g-038), the record preview and
+  the rollback confirmation (Revision 21) — renders inside that one bounded box,
+  which is what keeps the page's own height independent of how much history
+  exists: choosing a version and reading the result never scrolls the page, and
+  never grows it.
+- **The detail pane shows exactly one view (Revision 23).**
+  `data-history-detail` is `"empty"` | `"preview"` | `"diff"` and the three are
+  **mutually exclusive**: previewing replaces the comparison rather than stacking
+  above it, and a comparison in flight or failed is still the `"diff"` view. The
+  idle note `data-note="history-detail-pending"` renders only in the `"empty"`
+  state, and the comparison card `data-region="history-diff"` is **not rendered at
+  all** while idle — so a reset cannot leave a stale result or a stale selection
+  line on screen.
+- **Picking a comparison by clicking rows (Revision 23).** A record row is itself
+  a control (`data-action="history-row-pick"`, `data-history-row`, `title` /
+  `data-history-pick-hint` = `histRowPickHint`, `cursor: pointer`). Clicking rows
+  builds the pair in order: the first row picked becomes `from` (nothing is
+  requested — one side is not a comparison), the second becomes `to` **and that is
+  what fires `GET /diff`**, and from the third on it is a sliding window — the old
+  `to` becomes `from` and the clicked row becomes `to`. Clicking the row that
+  currently holds `from` clears the pair; clicking the one holding `to` steps back
+  to `from` alone. The per-row `diff-from` / `diff-to` buttons stay for exact
+  control; they stop the click from bubbling to the row, so a button never also
+  re-picks the row it sits on.
+- **Clearing the comparison (Revision 23).** The comparison view carries
+  `data-action="diff-clear"` (disabled while there is nothing to clear). It
+  restores the default pair (`from: null`, `to: "current"` — the same pair a
+  layer/scope reset installs, so "cleared" and "just opened" cannot drift apart),
+  drops the comparison, and leaves the pane in its idle state.
 - **Record preview (Revision 21; the policy line in Revision 22).** Every record
   row carries
   `data-action="history-preview"` (with `data-history-id`), and the panel it opens
@@ -2016,7 +2053,7 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   texts `data-preview-text="before"` / `"after"` (`data-preview-bytes` = the stored
   byte count, the text itself being the node's content), and one
   `data-preview-snapshot="<name>"` per snapshot entry with its
-  `data-preview-snapshot-action`. `data-action="history-preview-close"` closes it,
+  `data-preview-snapshot-action`. `data-action="preview-close"` closes it,
   and clicking the record already previewed toggles it off.
   **A preview issues no request at all.** Everything it shows already arrived with
   the page it was rendered from, so "preview writes nothing" is structural rather
@@ -2063,6 +2100,30 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   **browser's own zone** (`YYYY-MM-DD HH:mm:ss GMT±h[:mm]`), keeping the raw UTC
   string on the node's `title`. The panel's markers and ordering are otherwise
   unchanged.
+
+**Revision 23 (a viewport-sized, never-stacking layout; row picking; clearing —
+g-039 third round).** Client-half only: **no route, no query parameter and no
+stored byte changes**, so every host behaviour above keeps its meaning exactly
+(including §19's narrowed rollback and the §13.3 reset rules).
+
+- **What was wrong.** Revision 19's two-column row wrapped (`flexWrap: wrap`) with
+  `1 1 420px` + `1 1 360px` bases, and each box was a fixed `320px` tall. At the
+  settings dialog's width (~700px) the columns therefore **stacked**, and the
+  panel's own chrome pushed the page past the viewport: picking a record and
+  reading the result were one page-scroll apart, which is precisely the defect
+  g-039 was opened to fix. Revision 19's "stack on a narrow screen" rule is
+  withdrawn — a narrower panel narrows the columns, it never stacks them.
+- **Now.** The row is `flexWrap: nowrap`, both columns are `flex: 1 1 0` with
+  `minWidth: 0`, the panel is `calc(100vh − offset)` tall with a px floor, and both
+  scroll boxes are `flex: 1 1 auto; minHeight: 0`. The page's own vertical
+  scrollbar is therefore not something this tab can produce; the only scroll is
+  inside a column.
+- **Interaction.** Clicking a row is the primary way to build a comparison (first
+  = `from`, second = `to` and the request fires, then a sliding window), the
+  per-row buttons stay for exact control, `data-action="diff-clear"` clears the
+  pair and the result, and the detail pane renders exactly one of idle / preview /
+  comparison so a switch never leaves the previous view's content behind. Row
+  picking and clearing also **drop the preview**, since the pane shows one view.
 
 ### 13.3a 「备份与恢复」(Revision 19)
 
