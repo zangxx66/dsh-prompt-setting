@@ -4167,17 +4167,13 @@ test('client: choosing two records requests the comparison and renders both leve
   const page = makePage({ responses: defaultResponses() });
   let tree = await openHistory(page);
 
-  clickButton(historyRowOf(tree, '2'), { 'data-action': 'diff-from', 'data-history-id': '2' });
+  // g-039 sixth round: rows are picked by clicking them — the first fills
+  // `from`, the second completes the pair and that is the request.
+  clickNode(historyRowOf(tree, '2'));
   tree = await page.flush();
-  clickButton(historyRowOf(tree, '1'), { 'data-action': 'diff-to', 'data-history-id': '1' });
+  clickNode(historyRowOf(tree, '1'));
   tree = await page.flush();
-
-  // `to` starts at `current`, so the first click already compares against the
-  // live value; the second click re-runs with the chosen record.
-  assert.deepEqual(urlsFor(page, PATHS.diff), [
-    `${PATHS.diff}?layer=user&from=2&to=current`,
-    `${PATHS.diff}?layer=user&from=2&to=1`,
-  ]);
+  assert.deepEqual(urlsFor(page, PATHS.diff), [`${PATHS.diff}?layer=user&from=2&to=1`]);
   const panel = oneBy(tree, 'data-region', 'history-diff');
   assert.equal(panel.props['data-diff-state'], 'ready');
   assert.equal(markerOf(panel, 'data-diff-from'), '2');
@@ -4202,21 +4198,36 @@ test('client: choosing two records requests the comparison and renders both leve
 test('client: the comparison can put the live value on either side', async () => {
   const page = makePage({ responses: defaultResponses() });
   let tree = await openHistory(page);
-  const current = oneBy(tree, 'data-history-current', 'true');
-  clickButton(current, { 'data-action': 'diff-to', 'data-history-id': 'current' });
+  // 「当前生效值」 is picked like any row. It starts as the default `to`, so the
+  // first click clears that slot and the second fills `from`.
+  clickNode(oneBy(tree, 'data-history-current', 'true'));
   tree = await page.flush();
-  assert.equal(urlsFor(page, PATHS.diff).length, 0, 'from is still unset, so nothing is sent');
+  assert.equal(historyRowOf(tree, 'current').props['data-history-selected'], '');
+  clickNode(oneBy(tree, 'data-history-current', 'true'));
+  tree = await page.flush();
+  assert.equal(historyRowOf(tree, 'current').props['data-history-selected'], 'from');
+  assert.equal(urlsFor(page, PATHS.diff).length, 0, 'one side is still missing, so nothing is sent');
+  clickNode(historyRowOf(tree, '1'));
+  tree = await page.flush();
+  assert.deepEqual(urlsFor(page, PATHS.diff), [`${PATHS.diff}?layer=user&from=current&to=1`]);
 
-  clickButton(historyRowOf(tree, '1'), { 'data-action': 'diff-from', 'data-history-id': '1' });
+  // …and the other way round: a record first, the live value second.
+  clickButton(tree, { 'data-action': 'diff-clear' });
   tree = await page.flush();
-  assert.deepEqual(urlsFor(page, PATHS.diff), [`${PATHS.diff}?layer=user&from=1&to=current`]);
+  clickNode(historyRowOf(tree, '1'));
+  tree = await page.flush();
+  clickNode(oneBy(tree, 'data-history-current', 'true'));
+  tree = await page.flush();
+  assert.deepEqual(urlsFor(page, PATHS.diff).slice(-1), [`${PATHS.diff}?layer=user&from=1&to=current`]);
 });
 
 test('client: a comparison the host could not make is explained, not left empty', async () => {
   const payload = diffFixture({ lines: null, lineReason: 'more than one section differs; pass ?name= to compare one of them' });
   const page = makePage({ responses: defaultResponses({ [PATHS.diff]: { payload } }) });
   let tree = await openHistory(page);
-  clickButton(historyRowOf(tree, '1'), { 'data-action': 'diff-from', 'data-history-id': '1' });
+  clickNode(historyRowOf(tree, '1'));
+  tree = await page.flush();
+  clickNode(oneBy(tree, 'data-history-current', 'true'));
   tree = await page.flush();
   const panel = oneBy(tree, 'data-region', 'history-diff');
   assert.equal(markerOf(panel, 'data-diff-no-lines'), 'true');
@@ -4228,7 +4239,9 @@ test('client: the primitives branch renders the comparison with the official Dif
   let tree = await openHistory(page);
   assert.equal(rendererOf(tree), 'primitives');
 
-  clickButton(tree, { 'data-action': 'diff-from', 'data-history-id': '1' });
+  clickNode(historyRowOf(tree, '1'));
+  tree = await page.flush();
+  clickNode(oneBy(tree, 'data-history-current', 'true'));
   tree = await page.flush();
   const panel = oneBy(tree, 'data-region', 'history-diff');
   assert.equal(markerOf(panel, 'data-diff-renderer'), 'diffblock');
@@ -4874,7 +4887,7 @@ test('client: the record list owns the whole panel, and the preview/comparison a
       },
     }),
   });
-  const tree = await openHistory(page);
+  let tree = await openHistory(page);
 
   // One column: no second column, no detail box beside the list, no wrapping
   // row — the list takes the panel's full width. This replaces the third round's
@@ -4909,7 +4922,9 @@ test('client: the record list owns the whole panel, and the preview/comparison a
 
   // …and a completed pair opens the comparison modal over it, which the list
   // behind it does not care about.
-  clickButton(historyRowOf(tree, '1'), { 'data-action': 'diff-from', 'data-history-id': '1' });
+  clickNode(historyRowOf(tree, '1'));
+  tree = await page.flush();
+  clickNode(oneBy(tree, 'data-history-current', 'true'));
   const after = await page.flush();
   assert.ok(oneBy(after, 'data-region', 'history-diff-modal'), 'the comparison lives in a modal');
   assert.equal(
@@ -5211,15 +5226,17 @@ test('client: clicking rows builds the pair and opens the comparison modal, whic
   assert.deepEqual(urlsFor(page, PATHS.diff).slice(-1), [`${PATHS.diff}?layer=user&from=2&to=1`]);
   assert.ok(oneBy(tree, 'data-region', 'history-diff-modal'), 'and the modal comes back with it');
 
-  // The per-row buttons stay for exact control — and they do not also re-pick
-  // the row.
+  // g-039 sixth round: there are no per-row side buttons. Clearing (in the list's
+  // tool row) empties the pair, and picking starts over from the rows.
   closeDiff();
   tree = await page.flush();
-  clickButton(historyRowOf(tree, '3'), { 'data-action': 'diff-to', 'data-history-id': '3' });
+  clickButton(tree, { 'data-action': 'diff-clear' });
   tree = await page.flush();
-  assert.equal(historyRowOf(tree, '3').props['data-history-selected'], 'to');
-  assert.equal(historyRowOf(tree, '2').props['data-history-selected'], 'from');
-  assert.ok(oneBy(tree, 'data-region', 'history-diff-modal'));
+  assert.deepEqual(selectedHistoryRows(tree), []);
+  clickNode(historyRowOf(tree, '3'));
+  tree = await page.flush();
+  assert.equal(historyRowOf(tree, '3').props['data-history-selected'], 'from');
+  assert.equal(noHistoryModal(tree), true, 'one side is not a comparison');
 });
 
 test('client: clearing the comparison closes the modal and resets the pair (g-039 fifth round)', async () => {
@@ -5230,9 +5247,10 @@ test('client: clearing the comparison closes the modal and resets the pair (g-03
   clickNode(historyRowOf(tree, '1'));
   tree = await page.flush();
   const modal = () => oneBy(tree, 'data-region', 'history-diff-modal');
-  assert.equal(oneBy(modal(), 'data-action', 'diff-clear').props.disabled, false);
+  // g-039 sixth round: the clear control is in the LIST, never inside the dialog.
+  assert.equal(oneBy(tree, 'data-action', 'diff-clear').props.disabled, false);
 
-  clickButton(modal(), { 'data-action': 'diff-clear' });
+  clickButton(tree, { 'data-action': 'diff-clear' });
   tree = await page.flush();
   assert.equal(noHistoryModal(tree), true, 'the modal goes with the comparison');
   assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history-diff').length, 0);
@@ -5364,6 +5382,131 @@ test('client: an open modal locks the page behind it, and unlocks it exactly (g-
   tree = await page.flush();
   assert.ok(oneBy(tree, 'data-region', 'history-diff-modal'));
   assert.equal(body.style.overflow, 'hidden');
+});
+
+test('client: a modal closes from its top-right corner, and explains nothing inside (g-039 sixth round)', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openHistory(page);
+  clickButton(historyRowOf(tree, '2'), { 'data-action': 'history-preview', 'data-history-id': '2' });
+  tree = await page.flush();
+  const dialog = oneBy(tree, 'data-region', 'history-preview-modal');
+  // The dialog is the positioning context, and the button is anchored in its
+  // corner: it cannot drift with the title or the scroll position.
+  assert.equal(dialog.props.style.position, 'relative');
+  const close = oneBy(dialog, 'data-action', 'history-modal-close');
+  assert.equal(close.props.style.position, 'absolute');
+  assert.equal(close.props.style.top, 10);
+  assert.equal(close.props.style.right, 10);
+  assert.equal(close.props['aria-label'], page.zh.histModalClose);
+  // …and the how-to sentence lives in the list, never inside a dialog.
+  assert.equal(hasText(dialog, page.zh.histCompareHint), false, 'no how-to copy inside the dialog');
+  assert.equal(
+    collect(dialog, (node) => node.props && node.props['data-role'] === 'history-compare-hint').length,
+    0,
+  );
+
+  clickButton(dialog, { 'data-action': 'history-modal-close' });
+  tree = await page.flush();
+  assert.equal(noHistoryModal(tree), true, 'the corner button closes it');
+
+  // The comparison dialog is built the same way.
+  clickNode(historyRowOf(tree, '2'));
+  tree = await page.flush();
+  clickNode(historyRowOf(tree, '1'));
+  tree = await page.flush();
+  const diff = oneBy(tree, 'data-region', 'history-diff-modal');
+  assert.equal(oneBy(diff, 'data-action', 'history-modal-close').props.style.position, 'absolute');
+  assert.equal(hasText(diff, page.zh.histCompareHint), false);
+});
+
+test('client: clearing the comparison lives in the list, never in the dialog (g-039 sixth round)', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openHistory(page);
+  clickNode(historyRowOf(tree, '2'));
+  tree = await page.flush();
+  clickNode(historyRowOf(tree, '1'));
+  tree = await page.flush();
+  const dialog = oneBy(tree, 'data-region', 'history-diff-modal');
+
+  // Negative: the dialog holds no control that acts on the list's selection.
+  assert.equal(
+    collect(dialog, (node) => node.props && node.props['data-action'] === 'diff-clear').length,
+    0,
+    'the dialog carries no diff-clear',
+  );
+  // Positive: the list has its own tool row, and that control works.
+  const tools = oneBy(tree, 'data-region', 'history-diff-tools');
+  assert.equal(oneBy(tools, 'data-action', 'diff-clear').props.disabled, false);
+  clickButton(tools, { 'data-action': 'diff-clear' });
+  tree = await page.flush();
+  assert.equal(noHistoryModal(tree), true, 'clearing closes the dialog');
+  assert.deepEqual(selectedHistoryRows(tree), [], 'and empties the pair');
+  assert.equal(historyRowOf(tree, 'current').props['data-history-selected'], 'to', 'back to the default pair');
+});
+
+test('client: the preview dialog renders a timestamp the way a list row does (g-039 sixth round)', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openHistory(page);
+  const expected = localStampOf('2024-01-02T10:00:00.000Z');
+  assert.ok(hasText(historyRowOf(tree, '2'), expected), 'the row shows the reader-zone stamp');
+
+  clickButton(historyRowOf(tree, '2'), { 'data-action': 'history-preview', 'data-history-id': '2' });
+  tree = await page.flush();
+  const value = oneBy(oneBy(tree, 'data-region', 'history-preview'), 'data-preview-field', 'at');
+  assert.ok(hasText(value, expected), 'and so does the dialog, character for character');
+  assert.equal(
+    strings(value).join(' ').includes('2024-01-02T10:00:00.000Z'),
+    false,
+    'the raw UTC string is never rendered as the value',
+  );
+  // …it is still reachable as the node's `title`, exactly as on a row.
+  const titled = oneBy(value, 'title', '2024-01-02T10:00:00.000Z');
+  assert.equal(titled.props.title, '2024-01-02T10:00:00.000Z');
+});
+
+test('client: rows have no from/to buttons, and the live value is picked by clicking it (g-039 sixth round)', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openHistory(page);
+  // Negative: the per-row side buttons are gone from every row, the live-value
+  // row included.
+  for (const action of ['diff-from', 'diff-to']) {
+    assert.equal(
+      collect(tree, (node) => node.props && node.props['data-action'] === action).length,
+      0,
+      `${action} is gone`,
+    );
+  }
+  // Positive: 「当前生效值」 is a pick control like any row…
+  const current = historyRowOf(tree, 'current');
+  assert.equal(current.props['data-action'], 'history-row-pick');
+  assert.equal(current.props.style.cursor, 'pointer');
+  assert.equal(typeof current.props.onClick, 'function');
+  // …so one record plus the live value is a comparison, in two clicks.
+  clickNode(historyRowOf(tree, '1'));
+  tree = await page.flush();
+  assert.equal(historyRowOf(tree, '1').props['data-history-selected'], 'from');
+  assert.equal(noHistoryModal(tree), true, 'one side is not a comparison');
+  clickNode(historyRowOf(tree, 'current'));
+  tree = await page.flush();
+  assert.equal(historyRowOf(tree, 'current').props['data-history-selected'], 'to');
+  assert.deepEqual(urlsFor(page, PATHS.diff).slice(-1), [`${PATHS.diff}?layer=user&from=1&to=current`]);
+});
+
+test('client: the list states how to compare, right below the scope sentence (g-039 sixth round)', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  const tree = await openHistory(page);
+  const scope = oneBy(tree, 'data-region', 'history-scope');
+  const hint = oneBy(scope, 'data-role', 'history-compare-hint');
+  assert.ok(hasText(hint, page.zh.histCompareHint), 'the how-to line is there, in the reader\'s language');
+  // It is the line **right after** the scope sentence.
+  const kids = Array.isArray(scope.props.children) ? scope.props.children : [scope.props.children];
+  const order = kids
+    .filter((kid) => kid && kid.props && (kid.props['data-role'] === 'history-scope-note' || kid.props['data-role'] === 'history-compare-hint'))
+    .map((kid) => kid.props['data-role']);
+  assert.deepEqual(order, ['history-scope-note', 'history-compare-hint']);
+  // The comparison's own control sits next to the list, not in a dialog.
+  assert.ok(oneBy(oneBy(tree, 'data-region', 'history-diff-tools'), 'data-action', 'diff-clear'));
+  assert.equal(noHistoryModal(tree), true);
 });
 
 // #region g-039 fourth round: the panel height is measured, not guessed
@@ -5662,7 +5805,9 @@ test('client: switching the layer or the scope drops a comparison made in the ot
   clickButton(oneBy(tree, 'data-region', 'history-pager'), { 'data-action': 'history-next' });
   tree = await page.flush();
   assert.equal(oneBy(tree, 'data-region', 'history-pager').props['data-history-offset'], '1');
-  clickButton(historyRowOf(tree, '1'), { 'data-action': 'diff-from', 'data-history-id': '1' });
+  clickNode(historyRowOf(tree, '1'));
+  tree = await page.flush();
+  clickNode(oneBy(tree, 'data-history-current', 'true'));
   tree = await page.flush();
   assert.equal(historyRowOf(tree, '1').props['data-history-selected'], 'from');
   assert.ok(oneBy(tree, 'data-region', 'history-diff-modal'), 'a complete pair opens the comparison modal');
@@ -5693,7 +5838,9 @@ test('client: switching the layer or the scope drops a comparison made in the ot
   tree = await page.flush();
   clickButton(oneBy(tree, 'data-region', 'history-pager'), { 'data-action': 'history-next' });
   tree = await page.flush();
-  clickButton(historyRowOf(tree, '1'), { 'data-action': 'diff-from', 'data-history-id': '1' });
+  clickNode(historyRowOf(tree, '1'));
+  tree = await page.flush();
+  clickNode(oneBy(tree, 'data-history-current', 'true'));
   tree = await page.flush();
   assert.equal(historyRowOf(tree, '1').props['data-history-selected'], 'from');
   assert.equal(oneBy(tree, 'data-region', 'history-pager').props['data-history-offset'], '1');
@@ -5718,7 +5865,9 @@ test('client: paging keeps the comparison, because the file does not change (g-0
   const page = makePage({ responses: defaultResponses({ [PATHS.history]: twoPageHistory }) });
   let tree = await openHistory(page);
 
-  clickButton(historyRowOf(tree, '2'), { 'data-action': 'diff-from', 'data-history-id': '2' });
+  clickNode(historyRowOf(tree, '2'));
+  tree = await page.flush();
+  clickNode(oneBy(tree, 'data-history-current', 'true'));
   tree = await page.flush();
   assert.equal(historyRowOf(tree, '2').props['data-history-selected'], 'from');
   assert.ok(oneBy(tree, 'data-region', 'history-diff-modal'), 'a complete pair opens the comparison modal');
@@ -6126,8 +6275,13 @@ const EN_SWEEP_CASES = [
       ['data-region', 'history-modal-overlay'],
       ['data-region', 'history-preview-modal'],
       ['data-region', 'history-diff-modal'],
+      // g-039 sixth round: the how-to line and the comparison's one control live
+      // in the list, and neither is inside a dialog.
+      ['data-role', 'history-compare-hint'],
+      ['data-region', 'history-diff-tools'],
+      ['data-action', 'diff-clear'],
     ],
-    copy: ['histHeading', 'histScopeHint', 'histScopeNone', 'histPagePrev', 'histPickFrom', 'histScopeGlobal'],
+    copy: ['histHeading', 'histScopeHint', 'histCompareHint', 'histScopeNone', 'histPagePrev', 'histScopeGlobal'],
     async run() {
       const page = enPage({ responses: defaultResponses() });
       const rec = recorder(page);
@@ -6138,7 +6292,9 @@ const EN_SWEEP_CASES = [
       await rec.take();
       clickButton(rec.last(), { 'data-action': 'history-modal-close' });
       await rec.take();
-      clickButton(historyRowOf(rec.last(), '2'), { 'data-action': 'diff-from', 'data-history-id': '2' });
+      clickNode(historyRowOf(rec.last(), '2'));
+      await rec.take();
+      clickNode(oneBy(rec.last(), 'data-history-current', 'true'));
       await rec.take();
       return rec.trees;
     },
@@ -6262,9 +6418,9 @@ const EN_SWEEP_CASES = [
       await rec.take();
       clickAnyTab(rec.last(), 'history');
       await rec.take();
-      clickButton(historyRowOf(rec.last(), '2'), { 'data-action': 'diff-from', 'data-history-id': '2' });
+      clickNode(historyRowOf(rec.last(), '2'));
       await rec.take();
-      clickButton(historyRowOf(rec.last(), '1'), { 'data-action': 'diff-to', 'data-history-id': '1' });
+      clickNode(historyRowOf(rec.last(), '1'));
       await rec.take();
       return rec.trees;
     },
@@ -6286,7 +6442,9 @@ const EN_SWEEP_CASES = [
       await rec.take();
       clickAnyTab(rec.last(), 'history');
       await rec.take();
-      clickButton(historyRowOf(rec.last(), '1'), { 'data-action': 'diff-from', 'data-history-id': '1' });
+      clickNode(historyRowOf(rec.last(), '1'));
+      await rec.take();
+      clickNode(oneBy(rec.last(), 'data-history-current', 'true'));
       await rec.take();
       return rec.trees;
     },
@@ -7130,9 +7288,9 @@ const EN_SWEEP_CASES = [
       await rec.take();
       clickAnyTab(rec.last(), 'history');
       await rec.take();
-      clickButton(historyRowOf(rec.last(), '2'), { 'data-action': 'diff-from', 'data-history-id': '2' });
+      clickNode(historyRowOf(rec.last(), '2'));
       await rec.take();
-      clickButton(historyRowOf(rec.last(), '1'), { 'data-action': 'diff-to', 'data-history-id': '1' });
+      clickNode(historyRowOf(rec.last(), '1'));
       await rec.take();
       return rec.trees;
     },
@@ -7200,6 +7358,9 @@ const EN_REQUIRED_MARKERS = [
   'data-region=history-preview-modal',
   'data-region=history-diff-modal',
   'data-region=history-diff',
+  'data-region=history-diff-tools',
+  'data-action=diff-clear',
+  'data-role=history-compare-hint',
   'data-region=backup-tab',
   'data-region=transfer',
   'data-region=layer-reset',

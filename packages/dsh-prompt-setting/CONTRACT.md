@@ -1917,7 +1917,7 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   `sections` / `full`) keep their Revision 3 meaning; the Revision 6
   `overrides` view no longer exists.
 
-### 13.3 「版本历史」(Revision 19: its own scope, paging and a two-column layout; scope disclosure and state resets in Revision 20; record preview and rollback in Revision 21; preview policy and the narrowed rollback in Revision 22; viewport-sized layout, row picking and clearing in Revision 23; the panel height measured at run time in Revision 24; one column and viewport modals in Revision 25)
+### 13.3 「版本历史」(Revision 19: its own scope, paging and a two-column layout; scope disclosure and state resets in Revision 20; record preview and rollback in Revision 21; preview policy and the narrowed rollback in Revision 22; viewport-sized layout, row picking and clearing in Revision 23; the panel height measured at run time in Revision 24; one column and viewport modals in Revision 25; the modal details settled in Revision 26)
 
 - The panel is `data-region="history"` (with `data-history-layer`,
   `data-history-state`, `data-history-total`, `data-history-corrupt`,
@@ -2058,9 +2058,12 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
     `aria-modal="true"` + `aria-label`, `width: min(1040px, 92vw)`,
     `height: maxHeight: min(82vh, 900px)` and `overflow-y: auto`, so a long
     preview or comparison scrolls **inside the dialog**;
-  - closed by a button in its head (`data-action="history-modal-close"`, with an
-    `aria-label` / `title` of `histModalClose`) **and** by `Esc`, which the page
-    binds while one is open. Both close only the modal: the selection survives.
+  - closed by a button anchored in the dialog's **top-right corner**
+    (`data-action="history-modal-close"`, `position: absolute` with `top`/`right`,
+    inside a `position: relative` dialog, with an `aria-label` / `title` of
+    `histModalClose`) **and** by `Esc`, which the page binds while one is open.
+    Both close only the modal: the selection survives. The dialog itself explains
+    nothing about how to build a comparison — that sentence belongs to the list.
   - While one is open the page behind it is locked
     (`document.body.style.overflow = 'hidden'`, restored to its exact previous
     value on close), so the overlay cannot scroll the page underneath it.
@@ -2076,19 +2079,29 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   what fires `GET /diff`**, and from the third on it is a sliding window — the old
   `to` becomes `from` and the clicked row becomes `to`. Clicking the row that
   currently holds `from` clears the pair; clicking the one holding `to` steps back
-  to `from` alone. The per-row `diff-from` / `diff-to` buttons stay for exact
-  control; they stop the click from bubbling to the row, so a button never also
-  re-picks the row it sits on. **A completed pair opens the comparison modal by
-  itself** (Revision 25), and closing that modal keeps the pair, so the reader can
-  put the comparison away without losing it; a third row slides the window and
-  re-opens the modal on the new pair.
-- **Clearing the comparison (Revision 23; closes the modal in Revision 25).** The
-  comparison dialog carries `data-action="diff-clear"` (disabled while there is
-  nothing to clear). It restores the default pair (`from: null`, `to: "current"` —
-  the same pair a layer/scope reset installs, so "cleared" and "just opened"
-  cannot drift apart), drops the comparison **and closes the modal**: with no pair
-  there is nothing to show, and a dialog left open on an empty state is how a stale
-  result gets read as a current one.
+  to `from` alone. **There are no per-row `from`/`to` buttons** (Revision 26
+  removed them, and with them `pickDiffSide` and the `histPickFrom` / `histPickTo`
+  copy): the row *is* the control, and the two buttons left on a row are the ones
+  that open something. The 「当前生效值」 row is picked the same way
+  (`data-action="history-row-pick"` + `data-history-row="current"`), so it stays
+  comparable with a record without a pair of buttons of its own. **A completed
+  pair opens the comparison modal by itself** (Revision 25), and closing that modal
+  keeps the pair, so the reader can put the comparison away without losing it; a
+  third row slides the window and re-opens the modal on the new pair.
+- **Clearing the comparison (Revision 23; moved out of the dialog in
+  Revision 26).** The control is `data-action="diff-clear"` (disabled while there
+  is nothing to clear) and it lives in the **list**, in
+  `data-region="history-diff-tools"` — **never inside a dialog**: what acts on the
+  list's selection belongs to the list. It restores the default pair
+  (`from: null`, `to: "current"` — the same pair a layer/scope reset installs, so
+  "cleared" and "just opened" cannot drift apart), drops the comparison **and
+  closes the modal**: with no pair there is nothing to show, and a dialog left open
+  on an empty state is how a stale result gets read as a current one.
+- **The list says how to compare (Revision 26).** Right below the scope sentence
+  (`data-role="history-scope-note"`) sits `data-role="history-compare-hint"` with
+  the `histCompareHint` copy — the one place that explains the row-picking
+  interaction. The comparison dialog carries no such sentence (and no
+  `histDiffHint` copy exists any more).
 - **Record preview (Revision 21; the policy line in Revision 22).** Every record
   row carries
   `data-action="history-preview"` (with `data-history-id`), and the panel it opens
@@ -2099,7 +2112,11 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   texts `data-preview-text="before"` / `"after"` (`data-preview-bytes` = the stored
   byte count, the text itself being the node's content), and one
   `data-preview-snapshot="<name>"` per snapshot entry with its
-  `data-preview-snapshot-action`. The preview lives in the modal described above
+  `data-preview-snapshot-action`. The `at` **value** is Revision 18's rendering of
+  the stored timestamp — the reader's own zone, `YYYY-MM-DD HH:mm:ss GMT±h[:mm]` —
+  produced by the same `stampOf` a list row uses, with the record's raw UTC string
+  on the node's `title`; the dialog and the row can therefore never disagree about
+  what time a version was written. The preview lives in the modal described above
   (Revision 25), closed by `data-action="history-modal-close"` or `Esc`; opening it
   is always one click on the row's preview button, with no toggle to reason
   about.
@@ -2167,12 +2184,10 @@ stored byte changes**, so every host behaviour above keeps its meaning exactly
   scroll boxes are `flex: 1 1 auto; minHeight: 0`. The page's own vertical
   scrollbar is therefore not something this tab can produce; the only scroll is
   inside a column.
-- **Interaction.** Clicking a row is the primary way to build a comparison (first
-  = `from`, second = `to` and the request fires, then a sliding window), the
-  per-row buttons stay for exact control, `data-action="diff-clear"` clears the
-  pair and the result, and the detail pane renders exactly one of idle / preview /
-  comparison so a switch never leaves the previous view's content behind. Row
-  picking and clearing also **drop the preview**, since the pane shows one view.
+- **Interaction (as of Revision 23; Revision 25/26 replaced the pane with modals
+  and removed the per-row side buttons).** Clicking a row is the primary way to
+  build a comparison (first = `from`, second = `to` and the request fires, then a
+  sliding window), and `data-action="diff-clear"` clears the pair and the result.
 
 **Revision 24 (the panel height is measured, not guessed — g-039 fourth round).**
 Client-half only: **no route, no query parameter and no stored byte changes**, and
@@ -2237,6 +2252,30 @@ stored byte changes**, and §19's narrowed rollback is untouched.
   (`document.body.style.overflow = 'hidden'`; the previous value is restored
   exactly on close, and on unmount), so the overlay cannot scroll the page
   underneath it.
+
+**Revision 26 (six modal and row details settled — g-039 sixth round).**
+Client-half only: **no route, no query parameter and no stored byte changes**, and
+none of the invariants above move (single column, measured panel height, modal
+mutual exclusion, close-keeps-the-selection, the file-scoped resets, §19's narrowed
+rollback).
+
+- **The close button sits in the dialog's top-right corner.** The dialog is
+  `position: relative`; the button is `position: absolute` with `top` / `right`, so
+  it cannot drift with the title's length or the scroll position. Ids, label and
+  the `Esc` path are unchanged.
+- **Clearing moved out of the dialog**, into the list's tool row
+  (`data-region="history-diff-tools"`, `data-action="diff-clear"`, same disabled
+  rule). No dialog contains a `diff-clear` control any more.
+- **Timestamps inside a dialog are localized** by the same `stampOf` a row uses;
+  the raw UTC string is only the node's `title`.
+- **The how-to sentence moved to the list**: `data-role="history-compare-hint"`
+  (`histCompareHint`) renders right below the scope sentence, and no dialog
+  explains the interaction. `histDiffHint` is gone **with the copy key**, alongside
+  `histPickFrom` / `histPickTo`.
+- **The per-row `from`/`to` buttons are gone**, and so is the `pickDiffSide`
+  action. The 「当前生效值」 row is picked by clicking it like any record row, so it
+  remains comparable. The two buttons left on a row are `history-preview` and
+  `history-rollback`.
 
 ### 13.3a 「备份与恢复」(Revision 19)
 

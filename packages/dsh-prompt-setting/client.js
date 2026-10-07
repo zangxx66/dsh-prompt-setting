@@ -1008,10 +1008,8 @@ window.__ModuleLoader__.load({
       diffBlockCode: '文本差异',
       diffBlockWrap: '自动换行',
       diffBlockUnwrap: '不换行（横向滚动）',
-      histPickFrom: '作为基准 from',
-      histPickTo: '作为对比 to',
       histDiffHeading: '版本对比',
-      histDiffHint: '点记录行即可选择：第一行作为 from，第二行作为 to（随即自动对比），第三条起自动滑动窗口；行内两枚小按钮可精确指定。',
+      histCompareHint: '点击任意两条记录即可自动对比：第一条作为基准 from、第二条作为对比对象 to，之后自动滑动窗口；点行内「预览」查看单条内容。',
       histDiffClear: '清除对比',
       histRowPickHint: '点击此行加入对比：第一条 from、第二条 to，之后自动滑动窗口',
       histDiffFrom: 'from',
@@ -1455,10 +1453,8 @@ window.__ModuleLoader__.load({
       diffBlockCode: 'Text diff',
       diffBlockWrap: 'Wrap lines',
       diffBlockUnwrap: 'Keep columns (scroll sideways)',
-      histPickFrom: 'Use as the from side',
-      histPickTo: 'Use as the to side',
       histDiffHeading: 'Version comparison',
-      histDiffHint: 'Click a record row: the first becomes the from side, the second becomes the to side (the comparison runs at once), and from the third on the window slides. The two small buttons on a row pick a side explicitly.',
+      histCompareHint: 'Click any two records to compare them: the first becomes the from side, the second the to side, and the window slides after that. Use the Preview button on a row to read one record on its own.',
       histDiffClear: 'Clear the comparison',
       histRowPickHint: 'Click this row to build a comparison: first row = from, second = to, then it slides',
       histDiffFrom: 'from',
@@ -5264,39 +5260,9 @@ window.__ModuleLoader__.load({
         record.entries !== null && Array.isArray(record.entries)
           ? h('span', { 'data-history-entries': String(record.entries.length), style: metaStyle }, `entries=${record.entries.length}`)
           : null,
-        h(
-          'button',
-          {
-            type: 'button',
-            'data-action': 'diff-from',
-            'data-history-id': id,
-            disabled: selected === 'from',
-            onClick: (event) => {
-              stop(event);
-              a.pickDiffSide('from', id);
-            },
-            style: sideStyle,
-          },
-          t('histPickFrom'),
-        ),
-        h(
-          'button',
-          {
-            type: 'button',
-            'data-action': 'diff-to',
-            'data-history-id': id,
-            disabled: selected === 'to',
-            onClick: (event) => {
-              stop(event);
-              a.pickDiffSide('to', id);
-            },
-            style: sideStyle,
-          },
-          t('histPickTo'),
-        ),
-        // g-039: the two per-record actions that never force a scroll — both
-        // write their view into the **detail box** beside this list, which is
-        // the whole point of the two-column layout g-038 introduced.
+        // g-039 sixth round: no per-row from/to buttons. The row itself is the
+        // control (see the click handler above), so the two remaining buttons are
+        // the ones that open something.
         h(
           'button',
           {
@@ -5382,12 +5348,12 @@ window.__ModuleLoader__.load({
         entry !== null && entry !== undefined && Number.isFinite(entry.bytes) ? String(entry.bytes) : '';
       const snapshot = Array.isArray(record.snapshot) ? record.snapshot : [];
       const foreign = snapshot.filter((entry) => entry.name !== RESERVED_SECTION_NAME).length;
-      const field = (key, label, value) =>
+      const field = (key, label, value, title) =>
         h(
           'div',
           { key, 'data-preview-field': key, style: { display: 'flex', gap: 6, alignItems: 'baseline' } },
           h('span', { key: 'label', style: { ...metaStyle, minWidth: 48 } }, label),
-          h('span', { key: 'value', style: { wordBreak: 'break-word' } }, value),
+          h('span', { key: 'value', style: { wordBreak: 'break-word' }, title }, value),
         );
       const textBoxStyle = {
         margin: 0,
@@ -5428,7 +5394,15 @@ window.__ModuleLoader__.load({
             'div',
             { key: 'facts', style: { display: 'flex', flexDirection: 'column', gap: 2 } },
             field('action', t('histPreviewAction'), historyActionLabel(t, record.action)),
-            field('at', t('histPreviewAt'), record.at === null || record.at === undefined ? '' : String(record.at)),
+            // Revision 18's single rule, the same one a list row follows: the
+            // reader sees the timestamp in **their own** zone, and the record's
+            // stored UTC string stays on the node's `title`.
+            field(
+              'at',
+              t('histPreviewAt'),
+              stampOf(record.at),
+              typeof record.at === 'string' ? record.at : undefined,
+            ),
             field('layer', t('histPreviewLayer'), layerLabel(t, record.layer)),
             field('name', t('histPreviewName'), record.name === null ? t('histWholeLayer') : String(record.name)),
             field('origin', t('histPreviewOrigin'), record.origin === null || record.origin === undefined ? '' : String(record.origin)),
@@ -5569,25 +5543,12 @@ window.__ModuleLoader__.load({
       const label = (value) => (value === null || value === undefined
         ? '—'
         : value === DIFF_CURRENT ? t('histCurrent') : `#${value}`);
+      // g-039 sixth round: the dialog holds the comparison and nothing else. The
+      // "clear the comparison" control lives **outside** it (in the list's tool
+      // row), so no control that acts on the list is ever buried inside a dialog,
+      // and the how-to sentence lives there too — a dialog that is showing a
+      // result does not need to explain how to ask for one.
       const children = [
-        h(
-          'div',
-          { key: 'head', style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-          // g-039 third round: an explicit way out. Picking records on rows is
-          // the primary path, and a path that can only be walked forwards needs
-          // a reset: this clears the selection, the result and this modal.
-          h(
-            UI.Button,
-            {
-              key: 'clear',
-              'data-action': 'diff-clear',
-              disabled: m.diffSel.from === null && m.diffSel.to === DIFF_CURRENT,
-              onClick: a.clearDiff,
-            },
-            t('histDiffClear'),
-          ),
-        ),
-        h('p', { key: 'hint', style: { margin: 0, ...metaStyle } }, t('histDiffHint')),
         h(
           'div',
           { key: 'selection', style: metaStyle },
@@ -5890,6 +5851,32 @@ window.__ModuleLoader__.load({
             scopeNote.text,
           ),
           h('p', { key: 'scope-hint', style: { margin: 0, ...metaStyle } }, t('histScopeHint')),
+          // g-039 sixth round: how to compare, right below the scope sentence …
+          h(
+            'p',
+            { key: 'compare-hint', 'data-role': 'history-compare-hint', style: { margin: 0, ...metaStyle } },
+            t('histCompareHint'),
+          ),
+        ),
+        // …and the one control that acts on the comparison, **outside** every
+        // dialog: what clears the list's selection belongs to the list.
+        h(
+          'div',
+          {
+            key: 'diff-tools',
+            'data-region': 'history-diff-tools',
+            style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
+          },
+          h(
+            UI.Button,
+            {
+              key: 'clear',
+              'data-action': 'diff-clear',
+              disabled: m.diffSel.from === null && m.diffSel.to === DIFF_CURRENT,
+              onClick: a.clearDiff,
+            },
+            t('histDiffClear'),
+          ),
         ),
       ];
       if (loading && !data) children.push(h('p', { key: 'loading', style: metaStyle }, t('loading')));
@@ -5931,38 +5918,32 @@ window.__ModuleLoader__.load({
             },
             records.length === 0 ? h('div', { 'data-empty': 'history', style: metaStyle }, t('histEmpty')) : null,
             records.map((record) => historyRow(t, m, a, record)),
+            // g-039 sixth round: the 「当前生效值」 row is picked the same way a
+            // record row is — click it — so it stays comparable with a record
+            // without its own pair of buttons.
             h(
               'div',
               {
                 key: 'current',
                 'data-history-row': 'current',
                 'data-history-current': 'true',
+                'data-action': 'history-row-pick',
                 'data-history-selected': m.diffSel.from === DIFF_CURRENT ? 'from' : m.diffSel.to === DIFF_CURRENT ? 'to' : '',
-                style: { border: `1px dashed ${token.borderL2}`, borderRadius: 8, padding: '6px 8px', display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' },
+                'data-history-pick-hint': t('histRowPickHint'),
+                title: t('histRowPickHint'),
+                onClick: () => a.pickHistoryRow(DIFF_CURRENT),
+                style: {
+                  border: `1px dashed ${token.borderL2}`,
+                  borderRadius: 8,
+                  padding: '6px 8px',
+                  display: 'flex',
+                  gap: 6,
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  cursor: 'pointer',
+                },
               },
               h(UI.Tag, { tone: 'info' }, t('histCurrent')),
-              h(
-                'button',
-                {
-                  type: 'button',
-                  'data-action': 'diff-from',
-                  'data-history-id': DIFF_CURRENT,
-                  onClick: () => a.pickDiffSide('from', DIFF_CURRENT),
-                  style: { font: 'inherit', fontSize: 12, padding: '2px 8px', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: token.labelSecondary, border: `1px solid ${token.borderL2}` },
-                },
-                t('histPickFrom'),
-              ),
-              h(
-                'button',
-                {
-                  type: 'button',
-                  'data-action': 'diff-to',
-                  'data-history-id': DIFF_CURRENT,
-                  onClick: () => a.pickDiffSide('to', DIFF_CURRENT),
-                  style: { font: 'inherit', fontSize: 12, padding: '2px 8px', borderRadius: 6, cursor: 'pointer', background: 'transparent', color: token.labelSecondary, border: `1px solid ${token.borderL2}` },
-                },
-                t('histPickTo'),
-              ),
             ),
           ),
         );
@@ -7143,24 +7124,28 @@ window.__ModuleLoader__.load({
               maxHeight: 'min(82vh, 900px)',
               overflowY: 'auto',
               padding: '16px 18px',
+              // The close button is anchored to this corner, so it stays put
+              // however long the title or the dialog's scroll position is.
+              position: 'relative',
               boxShadow: '0 12px 32px rgba(0, 0, 0, 0.35)',
             },
           },
           h(
+            UI.Button,
+            {
+              key: 'close',
+              'data-action': 'history-modal-close',
+              'aria-label': options.closeLabel,
+              title: options.closeLabel,
+              onClick: options.onClose,
+              style: { position: 'absolute', top: 10, right: 10 },
+            },
+            '✕',
+          ),
+          h(
             'div',
             { 'data-role': 'history-modal-head', style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
             h('strong', { key: 'title', style: { fontSize: 14, fontWeight: 600 } }, options.title),
-            h(
-              UI.Button,
-              {
-                key: 'close',
-                'data-action': 'history-modal-close',
-                'aria-label': options.closeLabel,
-                title: options.closeLabel,
-                onClick: options.onClose,
-              },
-              '✕',
-            ),
           ),
           children,
         ),
@@ -9307,14 +9292,6 @@ window.__ModuleLoader__.load({
             id: String(id),
             foreign: snapshot.filter((entry) => entry.name !== RESERVED_SECTION_NAME).length,
           });
-        },
-        pickDiffSide: (side, id) => {
-          const next = { ...diffSel, [side]: id };
-          setDiffSel(next);
-          // The two sides now live side by side in a modal, so a completed pair
-          // opens it; a half-made selection just closes whatever was open.
-          setHistoryModal(next.from === null || next.to === null ? null : 'diff');
-          void runDiff(next.from, next.to);
         },
         // g-039 third round: the row itself is the primary control. The first
         // row picked becomes `from`; the second becomes `to`, and that is when

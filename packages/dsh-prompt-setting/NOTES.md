@@ -6006,3 +6006,59 @@ CSS 语义上 1–3 合起来等价于"本 tab 的高度 ≤ 视口、内容只�
   Esc 在宿主对话框里的按键捕获是否被外层拦截）——三条都只能在真机确认。
 - 宿主未重启（本轮纯客户端改动）。
 - `ResizeObserver` 分支仍无测试覆盖（沙箱无该构造器）。
+
+## 120. g-039 六轮：弹窗细节收口 6 条（Revision 26，2026-10-08，基线 `52904c8` 工作区）
+
+### 一、真机反馈的 6 条与处理
+
+1. **关闭按钮移到弹窗右上角**：对话框加 `position: relative`，`✕` 换成
+   `position: absolute; top: 10; right: 10`（`data-action="history-modal-close"` 与 `aria-label`/`title` 不变），
+   标题行只剩标题。按钮不再受标题长度或滚动位置影响。
+2. **「清除对比」移出弹窗**：`data-action="diff-clear"` 从 `renderDiffModal` 移到列表区的
+   `data-region="history-diff-tools"`（作用域块之后、列表之前），`disabled` 条件不变（`from===null && to===DIFF_CURRENT`）。
+   弹窗 DOM 内**不再有** `diff-clear`（负向断言）。理由：作用于"列表的选择"的控件不该藏在弹窗里，
+   而弹窗开着时用户看不到列表，也点不到它。
+3. **弹窗内时间本地化**：预览弹窗的 `at` 从"原始 UTC 串"改为 Revision 18 的唯一路径 `stampOf()`，
+   与列表行**同一函数**；原始 UTC 串仍挂在节点 `title`（与行内做法一致）。对比弹窗内目前不渲染时间
+   （只有段/行差异），故无第二处需要改。
+4. **删「对比」弹窗内的操作说明**：`histDiffHint` 整段与**文案键**一起删除（zh/en），
+   它描述的"行内两枚小按钮"本轮已不存在。
+5. **去掉行内两枚 from/to 按钮**：记录行与「当前生效值」行的 `diff-from`/`diff-to` 全部删除；
+   `pickDiffSide` action 删除；`histPickFrom`/`histPickTo` 键删除；`sideStyle` 仍被
+   `history-preview`/`history-rollback` 两枚按钮使用，保留。「当前生效值」行改为
+   `data-action="history-row-pick"` + `onClick: pickHistoryRow(DIFF_CURRENT)` + `cursor: 'pointer'`，
+   因此它仍可被选入对比（点一次是取消默认的 `to`、再点一次成为 `from`，语义与其它行完全一致）。
+6. **列表区补操作引导**：作用域说明行（`data-role="history-scope-note"`）**下一行**新增
+   `data-role="history-compare-hint"`（新键 `histCompareHint`，zh/en 对齐），说明"点两条记录自动对比、
+   第一条为 from、第二条为 to、之后滑动窗口；点行内「预览」看单条"。弹窗内**不再出现**同类说明。
+
+### 二、测试与负向对照
+
+- **既有用例等价改写 9 条**（覆盖一条未少）：依赖 `diff-from`/`diff-to` 的 4 条主用例
+  （两条记录对比、live value 在任一侧、无法行级比较的说明、primitives 分支）改为"点行"（哪一条先点决定 from/to）；
+  g-038 的两条复位用例与 g-039 的单栏、建对用例同样改写；「清除对比」用例改为在**列表区**点 `diff-clear`。
+- **新增 5 条**：① 关闭按钮在右上角（`relative`/`absolute` + `top`/`right`）且能关闭、弹窗内无操作说明；
+  ② 弹窗内**无** `diff-clear`、列表区**有**且能清空回空态；③ 预览弹窗的时间与列表行**同一文本**、
+  且不出现原始 UTC 串（后者仍可从 `title` 取到）；④ 行内不再有 from/to 按钮、点「当前生效值」行可即选；
+  ⑤ 作用域说明下一行确为对比引导，且清除控件在列表区。
+- EN 扫描：历史用例改走"点行 + 点当前生效值行"，`copy` 列表里的 `histPickFrom` 换成 `histCompareHint`，
+  `EN_REQUIRED_MARKERS` 增补 `data-region=history-diff-tools` / `data-action=diff-clear` /
+  `data-role=history-compare-hint`。
+- **负向对照（真红后还原）**：① 关闭按钮改回 `position: static` ⇒ 第 1 条红；② 预览弹窗的 `at` 改回原始
+  UTC 串 ⇒ 第 3 条红。
+- 全量：`cd packages/dsh-prompt-setting && node --test` ⇒ **634 pass / 0 fail**（五轮 629 + 新增 5，
+  改写的 9 条覆盖未减）；`node --check client.js` 通过。宿主与 `core/` 一字节未动。
+
+### 三、「弹窗时间已本地化」的断言位置（可一眼复验）
+
+`test/client.test.mjs` → `client: the preview dialog renders a timestamp the way a list row does (g-039 sixth round)`：
+- 先取 `const expected = localStampOf('2024-01-02T10:00:00.000Z')`（测试自带的本地时区渲染 helper），断言**列表行**
+  含该文本；
+- 再断言预览弹窗的 `data-preview-field="at"` 节点含**同一文本**（字符级一致）；
+- 断言该节点的全部字符串**不含** `2024-01-02T10:00:00.000Z`；
+- 断言 `title` 恰好是 `2024-01-02T10:00:00.000Z`（原始 UTC 串只作 title）。
+
+### 四、未验证项
+
+- 真机目视仍未做：关闭按钮在右上角的视觉位置、`history-diff-tools` 在列表区的排布、新引导行的行宽观感。
+- 宿主未重启（纯客户端）。`ResizeObserver` 分支仍无测试覆盖。
