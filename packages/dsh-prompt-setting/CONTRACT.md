@@ -580,6 +580,36 @@ the log it showed was sliced by the page-level「查看范围」.
 
 ---
 
+**Revision 20 (the scope becomes a disclosure, and a new file resets the view —
+g-038 rework).** Client-half only: **no route, no query parameter and no stored
+byte changes**, so `?workspace=` / `?session=` / `?offset=` keep their Revision 19
+meaning exactly.
+
+- **The version-history scope is no longer a wall of tabs.** Revision 19 rendered
+  one tab per workspace, which grows a row at a time as workspaces appear. It is
+  now a **disclosure**: one summary row (the current scope's name + 「更改」) with
+  `data-scope-open`, and a picker rendered only while open — a search box over a
+  fixed-height, internally scrolling candidate list, which collapses again the
+  moment a candidate is picked (§13.3). Same interaction and copy as the
+  page-level「查看范围」(§13.7, g-016), including the reused `scopeEdit` /
+  `scopeCollapse` labels; only the label, the search placeholder
+  (`histScopeSearch`) and the no-match line (`histScopeNoMatch`) are new. The
+  「用户级 / 工作区级」layer selector is untouched: it has exactly two values, so
+  it stays a segmented control.
+- **A layer or scope change now clears the comparison state.** `diffSel` holds
+  history ids, and an id means nothing outside the file it came from; changing
+  either the layer or the scope used to leave the old selection highlighted and
+  the old comparison on screen. Both paths now reset the offset to `0`, the
+  selection to its default and the comparison to its empty state together
+  (§13.3). **Paging deliberately does not reset it** — it moves inside one file —
+  and that difference is pinned by a test.
+- **The invariants of Revision 19 are untouched**: the history scope is still
+  independent of「查看范围」, the user layer is still asked for globally, the
+  workspace layer is still located-and-not-filtered by `?workspace=`, and
+  `?session=` still filters only when explicitly supplied and non-empty.
+
+---
+
 ## 1. Routes and methods
 
 | Path | Methods | Purpose |
@@ -1878,7 +1908,7 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   `sections` / `full`) keep their Revision 3 meaning; the Revision 6
   `overrides` view no longer exists.
 
-### 13.3 「版本历史」(Revision 19: its own scope, paging and a two-column layout)
+### 13.3 「版本历史」(Revision 19: its own scope, paging and a two-column layout; scope disclosure and state resets in Revision 20)
 
 - The panel is `data-region="history"` (with `data-history-layer`,
   `data-history-state`, `data-history-total`, `data-history-corrupt`,
@@ -1888,17 +1918,50 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
 - **The log's own scope.** `data-region="history-scope"` carries
   `data-history-scope-mode` (`workspaces` | `sessions` | `none`),
   `data-history-scope-value` (the session id that locates the file, `''` for
-  none), `data-history-scope-options` (how many choices) and
+  none), `data-history-scope-options` (how many candidates exist in total) and
   `data-history-scope-applies` (`true` only for the workspace layer — the user
-  layer is global). Inside it, a segmented control (`data-tab-group="history-scope"`,
-  values = session ids, labels = workspace titles) is the reader's pick, or
-  `data-role="history-scope-empty"` says there is no scope available. A visible
-  sentence states what is on screen right now: `data-role="history-scope-note"`
-  with `data-history-note="global"` (user layer: the whole layer, no session
-  filter), `"workspace"` (the named workspace's log, with the session that
-  located it) or `"no-session"` (no scope could be resolved, so nothing is asked
-  for). When the workspace list is unavailable the scope degrades to the session
-  catalog and says so: `data-warning="history-scope-degraded"`.
+  layer is global). A visible sentence states what is on screen right now:
+  `data-role="history-scope-note"` with `data-history-note="global"` (user layer:
+  the whole layer, no session filter), `"workspace"` (the named workspace's log,
+  with the session that located it) or `"no-session"` (no scope could be
+  resolved, so nothing is asked for). When the workspace list is unavailable the
+  scope degrades to the session catalog and says so:
+  `data-warning="history-scope-degraded"`.
+- **The scope is a collapsed disclosure (Revision 20).** It is **one summary
+  row** — `data-region="history-scope-summary"` holding
+  `data-role="history-scope-summary-label"` (the current scope's name) and one
+  switch `data-action="history-scope-toggle"` labelled with the shared
+  `scopeEdit` / `scopeCollapse` copy — so the panel's height does not depend on
+  how many workspaces exist. `data-scope-open="true" | "false"` on
+  `data-region="history-scope"` reports the disclosure, `aria-expanded` /
+  `data-expanded` repeat it on the switch, and the picker's body exists **only**
+  while it is open. There is no scope control at all when
+  `data-history-scope-options` is `0`: the summary row then holds
+  `data-role="history-scope-empty"` with the `histScopeNone` copy and renders no
+  switch.
+- **The open picker.** `data-region="history-scope-picker"` holds a search box
+  `data-role="history-scope-search"` and a **fixed-height, internally scrolling**
+  candidate list `data-history-scope-list="scroll"` (height = `maxHeight`,
+  `overflowY: auto`; `data-history-scope-shown` = how many candidates the search
+  left). Each candidate is a `button` with `data-role="history-scope-option"`,
+  `data-history-scope-option="<session id>"` and `data-selected="true" | "false"`.
+  A search that matches nothing renders `data-role="history-scope-no-match"`
+  instead of an empty box. Picking a candidate **finishes the interaction**: the
+  scope applies, the picker collapses (`data-scope-open="false"`, the picker and
+  the search box are gone) and the search text is dropped — the same
+  one-click-closes-it rule as the page-level picker (§13.7).
+- **A new file voids every reference into the old one (Revision 20).**
+  `diffSel` holds history ids, and an id is only meaningful inside one
+  `history.jsonl`. Changing the **layer** (`user` ↔ `workspace`) or the
+  **scope** (one workspace → another) changes which file that is, so both paths
+  reset the view together: the offset returns to `0`, `diffSel` returns to its
+  default (`data-history-selected` empty on every record row, the 「当前生效值」
+  row back to `"to"`) and the comparison returns to its empty state
+  (`data-history-detail="empty"`, `data-history-diff`'s `data-diff-state="idle"`,
+  no `data-diff-sections`, the `history-detail-pending` note rendered again).
+  **Paging does not reset it**: `data-action="history-prev"` / `"history-next"`
+  move inside one file, so the reader's selection and its result stay — and are
+  not re-requested.
 - **This scope is independent of「查看范围」(§13.7).** The history request is
   built from it, never from the page-level session: changing the page scope
   changes no history request, re-slices no list and re-renders no record. The

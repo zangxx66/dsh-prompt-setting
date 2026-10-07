@@ -416,6 +416,13 @@ window.__ModuleLoader__.load({
      * column reserves the same box for g-039.
      */
     const HISTORY_BOX_HEIGHT = 320;
+    /**
+     * g-038: the fixed height (px) of the version history's **scope candidate
+     * list**. The scope selector is a disclosure whose picker renders inside
+     * this box, so opening it costs one row plus a fixed list however many
+     * workspaces exist — the same reason the record list above has a box.
+     */
+    const HISTORY_SCOPE_LIST_HEIGHT = 200;
     /** Conflict strategies the import panel offers (CONTRACT §11.4). */
     const IMPORT_MODES = ['merge', 'replace'];
     /** Upper bound on the JSON preview the panel keeps in the DOM. */
@@ -909,6 +916,9 @@ window.__ModuleLoader__.load({
       histScopeNone: '还没有可用的工作区作用域：请先在左侧打开一个会话，或让宿主列出工作区。',
       histScopeDegraded: '工作区服务不可用，已降级为按会话定位历史文件。',
       histScopeHint: '作用域只属于「版本历史」，与上方「查看范围」互不影响。',
+      // g-038 二轮：作用域是「一行摘要 + 更改展开」，不把每个工作区平铺成按钮。
+      histScopeSearch: '搜索作用域（工作区 / 会话）',
+      histScopeNoMatch: '没有匹配的作用域。',
       histPager: '第 {page} / {pages} 页 · 共 {total} 条',
       histPagePrev: '上一页',
       histPageNext: '下一页',
@@ -1320,6 +1330,8 @@ window.__ModuleLoader__.load({
       histScopeNone: 'No workspace scope is available yet: open a session on the left, or have the host list the workspaces.',
       histScopeDegraded: 'The workspace service is unavailable; the scope degraded to locating the history file by session.',
       histScopeHint: 'This scope belongs to Version history alone and is independent of the View scope above.',
+      histScopeSearch: 'Search scopes (workspaces / sessions)',
+      histScopeNoMatch: 'No scope matches.',
       histPager: 'Page {page} / {pages} · {total} records',
       histPagePrev: 'Previous',
       histPageNext: 'Next',
@@ -5323,6 +5335,13 @@ window.__ModuleLoader__.load({
         ),
         // The version history's **own** scope (g-038): independent of the
         // page-level 「查看范围」, so changing that one can never move this list.
+        //
+        // g-038 second round: the scope is a **collapsed disclosure** — one
+        // summary row that never grows with the number of workspaces, and a
+        // picker (search box + fixed-height scrolling candidate list) rendered
+        // only while it is open. The page's own「查看范围」was collapsed the same
+        // way in g-016; the tab-button wall this replaces pushed the list down
+        // the screen one workspace at a time.
         h(
           'div',
           {
@@ -5332,23 +5351,108 @@ window.__ModuleLoader__.load({
             'data-history-scope-applies': layer === 'workspace' ? 'true' : 'false',
             'data-history-scope-value': m.historyScopeValue,
             'data-history-scope-options': String(m.historyScopeOptions.length),
+            'data-scope-open': String(m.historyScopeOpen),
             style: { display: 'flex', flexDirection: 'column', gap: 4 },
           },
-          h('span', { key: 'label', style: metaStyle }, t('histScopeLabel')),
-          m.historyScopeOptions.length > 0
-            ? tabs(
-                m.historyScopeOptions.map((option, index) => ({
-                  value: option.value,
-                  label: option.label,
-                  id: `ps-hscope-${index}`,
-                  panelId: 'ps-hist-panel',
-                })),
-                m.historyScopeValue,
-                a.setHistoryScope,
-                t('histScopeLabel'),
-                'history-scope',
-              )
-            : h('span', { key: 'empty', 'data-role': 'history-scope-empty', style: metaStyle }, t('histScopeNone')),
+          h(
+            'div',
+            { key: 'summary', 'data-region': 'history-scope-summary', style: scopeSummaryStyle },
+            h('span', { key: 'label', style: metaStyle }, t('histScopeLabel')),
+            m.historyScopeOptions.length === 0
+              ? h(
+                  'span',
+                  { key: 'empty', 'data-role': 'history-scope-empty', style: scopeSummaryTextStyle },
+                  t('histScopeNone'),
+                )
+              : h(
+                  'span',
+                  { key: 'value', 'data-role': 'history-scope-summary-label', style: scopeSummaryTextStyle },
+                  m.historyScopeName,
+                ),
+            m.historyScopeOptions.length > 0
+              ? h(
+                  UI.Button,
+                  {
+                    key: 'toggle',
+                    variant: 'outline',
+                    'data-action': 'history-scope-toggle',
+                    'data-expanded': String(m.historyScopeOpen),
+                    'aria-expanded': m.historyScopeOpen,
+                    onClick: a.toggleHistoryScopeOpen,
+                  },
+                  m.historyScopeOpen ? t('scopeCollapse') : t('scopeEdit'),
+                )
+              : null,
+          ),
+          ...(m.historyScopeOpen && m.historyScopeOptions.length > 0
+            ? [
+                h(
+                  'div',
+                  { key: 'picker', 'data-region': 'history-scope-picker', style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+                  h(UI.Input, {
+                    key: 'search',
+                    'data-role': 'history-scope-search',
+                    placeholder: t('histScopeSearch'),
+                    value: m.historyScopeSearch,
+                    onChange: a.setHistoryScopeSearch,
+                    style: { maxWidth: 320 },
+                  }),
+                  h(
+                    'div',
+                    {
+                      key: 'list',
+                      'data-history-scope-list': 'scroll',
+                      'data-history-scope-shown': String(m.historyScopeMatches.length),
+                      style: {
+                        height: HISTORY_SCOPE_LIST_HEIGHT,
+                        maxHeight: HISTORY_SCOPE_LIST_HEIGHT,
+                        overflowY: 'auto',
+                        border: `1px solid ${token.borderL1}`,
+                        borderRadius: 8,
+                        padding: 6,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 4,
+                      },
+                    },
+                    m.historyScopeMatches.length === 0
+                      ? h('span', { key: 'no-match', 'data-role': 'history-scope-no-match', style: metaStyle }, t('histScopeNoMatch'))
+                      : m.historyScopeMatches.map((option) =>
+                          h(
+                            'button',
+                            {
+                              key: option.value,
+                              type: 'button',
+                              'data-role': 'history-scope-option',
+                              'data-history-scope-option': option.value,
+                              'data-selected': option.value === m.historyScopeValue ? 'true' : 'false',
+                              onClick: () => a.setHistoryScope(option.value),
+                              style: {
+                                font: 'inherit',
+                                fontSize: 12,
+                                lineHeight: '18px',
+                                textAlign: 'left',
+                                padding: '4px 8px',
+                                borderRadius: 6,
+                                cursor: 'pointer',
+                                color: option.value === m.historyScopeValue ? token.buttonLabel : token.labelPrimary,
+                                background: option.value === m.historyScopeValue ? token.buttonFill : 'transparent',
+                                border: `1px solid ${option.value === m.historyScopeValue ? 'transparent' : token.borderL2}`,
+                                display: 'flex',
+                                gap: 6,
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                wordBreak: 'break-word',
+                              },
+                            },
+                            h('span', { key: 'name' }, option.label),
+                            option.value === m.historyScopeValue ? h(UI.Tag, { key: 'current', tone: 'info' }, t('scopeSelected')) : null,
+                          ),
+                        ),
+                  ),
+                ),
+              ]
+            : []),
           m.historyScopeMode === 'sessions'
             ? h(
                 'span',
@@ -7213,6 +7317,12 @@ window.__ModuleLoader__.load({
       // is the session id the reader picked in the history scope selector. The
       // page-level scope may change all it likes — this list does not follow it.
       const [historyScope, setHistoryScope] = React.useState(null);
+      // g-038 (second round): the scope selector is a disclosure — one summary
+      // row, and a picker (search box + fixed-height candidate list) rendered
+      // only while it is open. Collapsed is the default, so the panel's height
+      // never depends on how many workspaces exist.
+      const [historyScopeOpen, setHistoryScopeOpen] = React.useState(false);
+      const [historyScopeSearch, setHistoryScopeSearch] = React.useState('');
       // g-038: the offset of the history page on screen. The page **size** is the
       // host's (`pageLimit` in its response) and is never hardcoded here.
       const [historyOffset, setHistoryOffset] = React.useState(0);
@@ -7326,6 +7436,19 @@ window.__ModuleLoader__.load({
       // layer is global, so moving the selector must not re-fetch — let alone
       // re-slice — a log the scope cannot describe.
       const historyScopeArg = historyLayer === 'workspace' ? historyScopeValue : '';
+      // The candidate list the open picker renders: search narrows it, and it is
+      // always bounded by the scrolling box rather than by a render cap, because
+      // the box — not the page — is what grows.
+      const historyScopeMatches = (() => {
+        const needle = historyScopeSearch.trim().toLowerCase();
+        if (needle.length === 0) return historyScopes.options;
+        return historyScopes.options.filter(
+          (option) =>
+            option.label.toLowerCase().includes(needle)
+            || option.value.toLowerCase().includes(needle)
+            || option.workspaceId.toLowerCase().includes(needle),
+        );
+      })();
 
       React.useEffect(() => {
         let cancelled = false;
@@ -7477,6 +7600,25 @@ window.__ModuleLoader__.load({
       // take. Both steps clamp, so a stale number can never ask for page 0 or
       // past the end.
       const histPage = historyPagerInfo(hist.data);
+      /**
+       * Reset everything that points **into the file that was on screen**.
+       *
+       * g-038 fix: `diffSel` holds history ids, and an id is only meaningful
+       * inside one history file. Switching the layer (user ↔ workspace) or the
+       * workspace scope changes which file that is, so a selection made against
+       * the old file must not survive: it would highlight a row of the new file
+       * that it never referred to, and would leave the detail column describing
+       * a version that is no longer comparable. The page number resets with it
+       * (the old offset can land past the end of a shorter new file).
+       *
+       * **Paging does not call this.** `historyPrev` / `historyNext` move within
+       * one file, so the reader's selection stays — see CONTRACT §13.3.
+       */
+      const resetHistoryView = () => {
+        setHistoryOffset(0);
+        setDiffSel({ from: null, to: DIFF_CURRENT });
+        setDiff({ phase: 'idle', data: null, error: null });
+      };
       const historyPrev = () =>
         setHistoryOffset(Math.max(0, histPage.offset - Math.max(1, histPage.pageSize)));
       const historyNext = () => {
@@ -8436,18 +8578,24 @@ window.__ModuleLoader__.load({
         toggleExpanded: (name) => setExpanded((current) => (current === name ? '' : name)),
         setHistoryLayer: (value) => {
           setHistoryLayer(value === 'workspace' ? 'workspace' : 'user');
-          // A new layer is a new log: page 1, and no comparison carried across.
-          setHistoryOffset(0);
-          setDiff({ phase: 'idle', data: null, error: null });
+          resetHistoryView();
         },
         // g-038: the version-history scope selector's own action. It is
         // deliberately not `pickSession`: this one moves no snapshot and no
         // override read, and the page's scope does not move this one.
+        //
+        // Picking a scope **finishes the interaction**: the picker collapses and
+        // the search box is dropped, exactly like the page-level picker (§13.7).
         setHistoryScope: (value) => {
           setHistoryScope(typeof value === 'string' && value.length > 0 ? value : null);
-          setHistoryOffset(0);
-          setDiff({ phase: 'idle', data: null, error: null });
+          setHistoryScopeOpen(false);
+          setHistoryScopeSearch('');
+          // A different scope means a different history file: see resetHistoryView.
+          resetHistoryView();
         },
+        toggleHistoryScopeOpen: () => setHistoryScopeOpen((open) => !open),
+        setHistoryScopeSearch: (event) =>
+          setHistoryScopeSearch(event && event.target ? String(event.target.value) : ''),
         historyPrev,
         historyNext,
         pickDiffSide: (side, id) => {
@@ -8548,6 +8696,9 @@ window.__ModuleLoader__.load({
         historyScopeName,
         historyScopeOptions: historyScopes.options,
         historyScopeMode: historyScopes.mode,
+        historyScopeOpen,
+        historyScopeSearch,
+        historyScopeMatches,
         histPage,
         diffSel,
         diff,

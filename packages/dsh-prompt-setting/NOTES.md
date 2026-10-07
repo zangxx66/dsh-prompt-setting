@@ -5565,3 +5565,53 @@ if (installed.length !== 1 || target === void 0) throw new ManagementFailure("am
 - 宿主**未重启**（纯插件代码 + 路由参数，无需重启；`dsh web` 进程仍跑旧代码，`?workspace=` 要到下次加载新版
   `index.js` 才生效）。
 - g-039（右列预览/回滚）与 g-040 未开工：右列目前只有占位说明 + 既有对比面板。
+
+## 114. g-038 二轮返工：历史作用域改「一行摘要 + 更改展开」，换文件即复位对比选择（2026-10-08，基线 `d4d2052` 工作区）
+
+### 一、反馈 1：作用域不能平铺成 tab（设计改版）
+- 一轮把每个工作区渲染成一枚 tab 按钮（复用 `tabs()`），工作区一多就铺满好几行。二轮改为 **g-016 同款折叠**：
+  `data-region="history-scope"` 上带 `data-scope-open="true|false"`，展开体（`data-region="history-scope-picker"`）
+  **只在展开时渲染**，所以面板高度与工作区数量无关（收起态恒为一行摘要）。
+- 摘要行 = `data-region="history-scope-summary"` + `data-role="history-scope-summary-label"`（当前作用域名）+
+  `data-action="history-scope-toggle"` 开关；开关文案**复用** g-016 的 `scopeEdit`（更改）/ `scopeCollapse`（收起），
+  `aria-expanded` / `data-expanded` 同步。无候选（`data-history-scope-options === "0"`）时摘要行落到
+  `data-role="history-scope-empty"`（既有 `histScopeNone` 文案）且**不渲染开关**。
+- 展开区 = 搜索框 `data-role="history-scope-search"` + **定高内滚**候选列表
+  `data-history-scope-list="scroll"`（`HISTORY_SCOPE_LIST_HEIGHT = 200`，`height == maxHeight`，`overflowY:auto`；
+  `data-history-scope-shown` = 过滤后条数）。候选是 `button[data-role="history-scope-option"]
+  [data-history-scope-option=<session id>][data-selected=true|false]`；搜索无匹配渲染
+  `data-role="history-scope-no-match"`。选中即收尾：应用 → 收起（picker 与搜索框消失）→ 清空搜索词。
+- 新增 zh/en 各 2 键：`histScopeSearch`、`histScopeNoMatch`（其余全部复用既有键；两表键位仍逐键相等）。
+- 「用户级 / 工作区级」那一行**保持 tab 不变**（只有两个值）。
+- **一个既有测试的写法需要收紧**：`data-scope-open` 现在是两个节点共用的钩子（页面「查看范围」卡片 + 历史作用域），
+  所以原来用 `markerOf(tree,'data-scope-open')` 的「页面选择器收起」断言改为精确到
+  `oneBy(tree,'data-region','session')`；断言强度不变（仍是同一事实，只是不再假设「全页唯一」）。
+
+### 二、反馈 2：切层/切作用域后对比选中态残留（缺陷）
+- 根因：`diffSel` 装的是**某一份** `history.jsonl` 里的 `seq`。切层（user ↔ workspace）或切作用域 = 换文件，
+  旧引用在新文件里没有意义，界面却仍高亮、右列仍显示旧结果 —— 状态与数据不同源。
+- 修法：把复位收拢成一个 `resetHistoryView()`，`setHistoryLayer` 与 `setHistoryScope` 统一调用：
+  `setHistoryOffset(0)` + `setDiffSel({ from: null, to: DIFF_CURRENT })` + `setDiff({ idle, data: null })`
+  （右列 `data-history-detail="empty"`、`history-diff` 的 `data-diff-state="idle"`、无 `data-diff-sections`、
+  占位说明回归）。**切层时 offset 也归零**（一轮只在切层分支写了 offset，二轮把两条路径彻底统一）。
+- **翻页不复位**（负责人倾向 + 我的判断一致）：`historyPrev` / `historyNext` 在同一份文件内移动，选择与结果保留、
+  也不重发请求。这一条差异已写进契约 §13.3，并由两条用例分别钉死（复位 vs 保留）。
+
+### 三、测试与负向对照
+- 新增 4 条客户端用例：① 摘要行/展开收起/搜索过滤/搜索空态/定高内滚/选中收起；② 无候选空态（摘要落
+  `history-scope-empty`、无开关、无 picker、不发请求、workspace 层仍给 `no-session`）；③ 切层与切作用域两条
+  复位路径（无记录行带选中、current 回默认 `to`、offset 归零、右列 empty、diff 回 idle、零新请求）；④ 翻页保留
+  （`detail` 仍 `diff`、diff 请求数不变、翻回第 1 页选中仍在）。
+- EN 扫描：history 用例补 `history-scope-empty` / `histScopeNone`，并新增一条「作用域折叠：摘要 + picker + 搜索 +
+  无匹配」用例（marks 覆盖 `history-scope-summary` / `history-scope-picker` / `history-scope-search` /
+  `history-scope-option` / `history-scope-no-match` / `history-scope-list=scroll` / `data-scope-open=true`），
+  `EN_REQUIRED_MARKERS` 同步补 7 项。
+- **负向对照（均真红后还原）**：① 去掉 `resetHistoryView` 里的 `setDiffSel` ⇒ 复位用例转红；② 去掉
+  `setHistoryOffset(0)` ⇒ 复位用例 offset 断言转红；③ 忽略 `historyScopeOpen` 常驻渲染展开体 ⇒ 摘要/收起用例转红；
+  ④ 让翻页也调用 `resetHistoryView` ⇒ 翻页保留用例转红（两条路径的差异被钉死）。
+- 全量：`cd packages/dsh-prompt-setting && node --test` ⇒ **605 pass / 0 fail**（一轮 601 + 新增 4，无回归、无削弱）；
+  `node --check index.js && node --check client.js` 通过。
+
+### 四、未验证项
+- 真机目视仍未做（收起态一行高度、200px 候选盒的滚动手感、两栏换行），只有 DOM/样式断言；宿主未重启（本轮
+  纯客户端改动，路由/参数未动，契约 Revision 20 明记「client-half only」）。

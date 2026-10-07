@@ -4289,7 +4289,13 @@ test('client: changing 「查看范围」 never moves the version history list (
   clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
   tree = await page.flush();
   assert.equal(markerOf(tree, 'data-session'), 'global');
-  assert.equal(markerOf(tree, 'data-scope-open'), 'false', 'the picker closed on the pick');
+  // g-038: the history scope carries its own `data-scope-open`, so this asserts
+  // the **page-level** card's state rather than "the only such marker on screen".
+  assert.equal(
+    oneBy(tree, 'data-region', 'session').props['data-scope-open'],
+    'false',
+    'the page picker closed on the pick',
+  );
 
   // The test double's `useEffect` re-runs unconditionally (it has no dependency
   // diffing), so the invariant asserted here is the request **shape**: whatever
@@ -4309,9 +4315,13 @@ test('client: changing 「查看范围」 never moves the version history list (
   );
 
   // …while the version history's **own** selector does move it, without touching
-  // the page scope.
-  clickTab(tree, 'history-scope', 'b1');
+  // the page scope. The selector is a disclosure: 「更改」 opens it, a candidate
+  // click finishes the interaction and closes it again.
+  clickButton(tree, { 'data-action': 'history-scope-toggle' });
   tree = await page.flush();
+  clickButton(tree, { 'data-role': 'history-scope-option', 'data-history-scope-option': 'b1' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'history-scope').props['data-scope-open'], 'false', 'the pick closed it');
   assert.equal(markerOf(tree, 'data-session'), 'global', 'the page scope is still what the user left it as');
   clickTab(tree, 'history-layer', 'workspace');
   tree = await page.flush();
@@ -4857,6 +4867,227 @@ test('client: the log renders inside a fixed-height scroll box (g-038)', async (
   assert.equal(oneBy(after, 'data-region', 'history-list').props['data-history-list'], 'scroll');
 });
 
+/** Every history **record** row that currently claims a comparison selection. */
+function selectedHistoryRows(tree) {
+  return collect(
+    tree,
+    (node) =>
+      node.props
+      && node.props['data-history-action'] !== undefined
+      && typeof node.props['data-history-selected'] === 'string'
+      && node.props['data-history-selected'] !== '',
+  );
+}
+
+/**
+ * A log whose every page holds one record, newest first: page 1 is `#2`, page 2
+ * is `#1`. `offset` comes from the request, so paging really moves the window.
+ */
+function twoPageHistory(url) {
+  const offset = Number(new URL(url, 'http://localhost').searchParams.get('offset') ?? 0);
+  const pages = [recordOf(2), recordOf(1)];
+  return {
+    payload: historyFixture({
+      offset,
+      pageLimit: 1,
+      total: 2,
+      pageCount: 2,
+      hasMore: offset === 0,
+      records: [pages[offset]],
+    }),
+  };
+}
+
+test('client: the history scope is one summary line, and its picker opens on 「更改」 (g-038)', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  let tree = await openHistory(page);
+  const scope = () => oneBy(tree, 'data-region', 'history-scope');
+
+  // Shut by default: exactly one summary row and **no** candidate control, so the
+  // panel's height does not grow with the number of workspaces.
+  assert.equal(scope().props['data-scope-open'], 'false');
+  assert.equal(scope().props['data-history-scope-mode'], 'workspaces');
+  assert.equal(scope().props['data-history-scope-options'], '2', 'the count is the candidate total');
+  assert.equal(scope().props['data-history-scope-value'], 'a1');
+  assert.equal(scope().props['data-history-scope-applies'], 'false', 'the user layer is global');
+  assert.ok(hasText(oneBy(tree, 'data-region', 'history-scope-summary'), 'Alpha repo'), 'the summary names the current scope');
+  assert.ok(oneBy(tree, 'data-role', 'history-scope-summary-label'));
+  assert.equal(collect(tree, (node) => node.props && node.props['data-role'] === 'history-scope-option').length, 0);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history-scope-picker').length, 0);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-role'] === 'history-scope-search').length, 0);
+  assert.ok(oneBy(tree, 'data-region', 'history-scope-summary'), 'and one row is all there is');
+  const toggle = oneBy(tree, 'data-action', 'history-scope-toggle');
+  assert.equal(toggle.props['aria-expanded'], false);
+  assert.equal(toggle.props['data-expanded'], 'false');
+  assert.ok(hasText(toggle, page.zh.scopeEdit), 'the page-level 「更改」 copy is reused');
+
+  // 「更改」 opens it: a search box and a bounded, scrolling candidate list.
+  clickButton(tree, { 'data-action': 'history-scope-toggle' });
+  tree = await page.flush();
+  assert.equal(scope().props['data-scope-open'], 'true');
+  assert.ok(hasText(oneBy(tree, 'data-action', 'history-scope-toggle'), page.zh.scopeCollapse));
+  assert.ok(oneBy(tree, 'data-region', 'history-scope-picker'));
+  const search = oneBy(tree, 'data-role', 'history-scope-search');
+  assert.equal(search.props['data-role'], 'history-scope-search');
+  const list = oneBy(tree, 'data-history-scope-list', 'scroll');
+  assert.equal(list.props.style.overflowY, 'auto', 'the candidates scroll inside their own box');
+  assert.equal(typeof list.props.style.height, 'number');
+  assert.equal(list.props.style.maxHeight, list.props.style.height, 'the box height is fixed');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-role'] === 'history-scope-option').length, 2);
+  assert.equal(oneBy(tree, 'data-history-scope-option', 'a1').props['data-selected'], 'true');
+  assert.equal(oneBy(tree, 'data-history-scope-option', 'b1').props['data-selected'], 'false');
+  assert.ok(hasText(oneBy(tree, 'data-history-scope-option', 'b1'), 'beta-dir'), 'a title-less workspace falls back to its directory');
+
+  // The search box narrows the candidates and moves nothing else.
+  typeInto(tree, 'history-scope-search', 'beta');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-history-scope-list', 'scroll').props['data-history-scope-shown'], '1');
+  assert.ok(oneBy(tree, 'data-history-scope-option', 'b1'));
+  assert.equal(scope().props['data-history-scope-options'], '2', 'the total is not the match count');
+  assert.equal(scope().props['data-history-scope-value'], 'a1', 'searching does not move the scope');
+
+  // A search with no match says so inside the box, rather than rendering nothing.
+  typeInto(tree, 'history-scope-search', 'zzz-no-such-workspace');
+  tree = await page.flush();
+  assert.ok(oneBy(tree, 'data-role', 'history-scope-no-match'));
+  assert.equal(collect(tree, (node) => node.props && node.props['data-role'] === 'history-scope-option').length, 0);
+
+  // Picking one applies it and finishes the interaction: the picker collapses
+  // and the search is dropped, like the page-level picker (§13.7).
+  typeInto(tree, 'history-scope-search', '');
+  tree = await page.flush();
+  clickButton(tree, { 'data-role': 'history-scope-option', 'data-history-scope-option': 'b1' });
+  tree = await page.flush();
+  assert.equal(scope().props['data-scope-open'], 'false');
+  assert.equal(scope().props['data-history-scope-value'], 'b1');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history-scope-picker').length, 0);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-role'] === 'history-scope-search').length, 0, 'the search box is gone with the picker');
+  assert.ok(hasText(oneBy(tree, 'data-region', 'history-scope-summary'), 'beta-dir'), 'the summary names the new scope');
+  // The sentence that states the scope follows it too — read on the workspace
+  // layer, where it names the workspace and the session that located it.
+  clickTab(tree, 'history-layer', 'workspace');
+  tree = await page.flush();
+  assert.ok(hasText(oneBy(tree, 'data-role', 'history-scope-note'), 'beta-dir'), 'and the sentence does too');
+});
+
+test('client: a history scope with no candidate keeps the existing note and grows no picker (g-038)', async () => {
+  // No hooks at all: neither a workspace list nor a session catalog exists, which
+  // is the degraded profile this must survive.
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openHistory(page);
+  const scope = () => oneBy(tree, 'data-region', 'history-scope');
+  assert.equal(scope().props['data-history-scope-mode'], 'none');
+  assert.equal(scope().props['data-history-scope-options'], '0');
+  assert.equal(scope().props['data-scope-open'], 'false');
+  assert.equal(oneBy(scope(), 'data-role', 'history-scope-empty').props['data-role'], 'history-scope-empty');
+  assert.ok(hasText(scope(), page.zh.histScopeNone), 'the existing「no scope」copy is the whole summary');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-action'] === 'history-scope-toggle').length, 0, 'there is nothing to expand');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history-scope-picker').length, 0);
+  assert.equal(oneBy(tree, 'data-role', 'history-scope-note').props['data-history-note'], 'global');
+  assert.equal(urlsFor(page, PATHS.history).length, 1);
+
+  // The workspace layer keeps its own「needs a session」note, and still asks for
+  // nothing it knows the host would refuse.
+  clickTab(tree, 'history-layer', 'workspace');
+  tree = await page.flush();
+  assert.equal(scope().props['data-history-scope-applies'], 'true');
+  assert.equal(oneBy(scope(), 'data-history-note', 'no-session').props['data-history-note'], 'no-session');
+  assert.equal(oneBy(scope(), 'data-role', 'history-scope-empty').props['data-role'], 'history-scope-empty');
+  assert.equal(urlsFor(page, PATHS.history).length, 1, 'no request without a scope');
+});
+
+test('client: switching the layer or the scope drops a comparison made in the other file (g-038 fix)', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({ [PATHS.history]: twoPageHistory }),
+  });
+  let tree = await openHistory(page);
+
+  // A selection is made against a *page* of the user log, which is one specific
+  // file; page 2 also proves the offset is reset below.
+  clickButton(oneBy(tree, 'data-region', 'history-pager'), { 'data-action': 'history-next' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'history-pager').props['data-history-offset'], '1');
+  clickButton(historyRowOf(tree, '1'), { 'data-action': 'diff-from', 'data-history-id': '1' });
+  tree = await page.flush();
+  assert.equal(historyRowOf(tree, '1').props['data-history-selected'], 'from');
+  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'diff');
+  const diffsMade = urlsFor(page, PATHS.diff).length;
+
+  // Switching the layer switches the file: the selection and the result describe
+  // a record that the new file may not even contain, so both must go.
+  clickTab(tree, 'history-layer', 'workspace');
+  tree = await page.flush();
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history').length, 1);
+  assert.equal(oneBy(tree, 'data-region', 'history-pager').props['data-history-offset'], '0', 'the new file starts at page 1');
+  assert.deepEqual(selectedHistoryRows(tree), [], 'no record claims a selection any more');
+  assert.equal(
+    historyRowOf(tree, 'current').props['data-history-selected'],
+    'to',
+    'the comparison target is back to its default (「当前生效值」)',
+  );
+  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'empty');
+  // The comparison card is still there (it is part of the panel), but it is back
+  // to its empty state: no result, and no selection feeding it.
+  assert.equal(oneBy(tree, 'data-region', 'history-diff').props['data-diff-state'], 'idle');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-diff-sections'] !== undefined).length, 0);
+  assert.equal(oneBy(tree, 'data-diff-from', '').props['data-diff-from'], '');
+  assert.ok(oneBy(tree, 'data-note', 'history-detail-pending'), 'the reserved detail pane is back to its placeholder');
+  assert.equal(urlsFor(page, PATHS.diff).length, diffsMade, 'and nothing new was requested');
+
+  // The same rule for the scope: a different workspace is a different file.
+  clickTab(tree, 'history-layer', 'user');
+  tree = await page.flush();
+  clickButton(oneBy(tree, 'data-region', 'history-pager'), { 'data-action': 'history-next' });
+  tree = await page.flush();
+  clickButton(historyRowOf(tree, '1'), { 'data-action': 'diff-from', 'data-history-id': '1' });
+  tree = await page.flush();
+  assert.equal(historyRowOf(tree, '1').props['data-history-selected'], 'from');
+  assert.equal(oneBy(tree, 'data-region', 'history-pager').props['data-history-offset'], '1');
+  clickButton(tree, { 'data-action': 'history-scope-toggle' });
+  tree = await page.flush();
+  clickButton(tree, { 'data-role': 'history-scope-option', 'data-history-scope-option': 's1' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'history-scope').props['data-history-scope-value'], 's1');
+  assert.equal(oneBy(tree, 'data-region', 'history-pager').props['data-history-offset'], '0', 'page 1 of the new log');
+  assert.deepEqual(selectedHistoryRows(tree), [], 'the old selection is void in the new file');
+  assert.equal(
+    historyRowOf(tree, 'current').props['data-history-selected'],
+    'to',
+    'the comparison target is back to its default',
+  );
+  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'empty');
+  assert.equal(oneBy(tree, 'data-region', 'history-diff').props['data-diff-state'], 'idle');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-diff-sections'] !== undefined).length, 0);
+});
+
+test('client: paging keeps the comparison, because the file does not change (g-038 fix)', async () => {
+  const page = makePage({ responses: defaultResponses({ [PATHS.history]: twoPageHistory }) });
+  let tree = await openHistory(page);
+
+  clickButton(historyRowOf(tree, '2'), { 'data-action': 'diff-from', 'data-history-id': '2' });
+  tree = await page.flush();
+  assert.equal(historyRowOf(tree, '2').props['data-history-selected'], 'from');
+  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'diff');
+  const diffsMade = urlsFor(page, PATHS.diff).length;
+
+  // A page turn is **not** a new file: §13.3's reset covers a layer/scope change
+  // only, so the selection and its result survive — and are not re-requested.
+  clickButton(oneBy(tree, 'data-region', 'history-pager'), { 'data-action': 'history-next' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'history-pager').props['data-history-offset'], '1');
+  assert.equal(oneBy(tree, 'data-region', 'history-detail').props['data-history-detail'], 'diff');
+  assert.equal(urlsFor(page, PATHS.diff).length, diffsMade, 'the comparison is kept, not re-run');
+
+  clickButton(oneBy(tree, 'data-region', 'history-pager'), { 'data-action': 'history-prev' });
+  tree = await page.flush();
+  assert.equal(historyRowOf(tree, '2').props['data-history-selected'], 'from', 'back on page 1 the row is still selected');
+});
+
 // #endregion
 
 // #endregion
@@ -5236,13 +5467,14 @@ const EN_SWEEP_CASES = [
       ['data-region', 'history-tab'],
       ['data-region', 'history'],
       ['data-region', 'history-scope'],
+      ['data-role', 'history-scope-empty'],
       ['data-region', 'history-list'],
       ['data-region', 'history-pager'],
       ['data-region', 'history-detail'],
       ['data-history-row', '2'],
       ['data-active-tab', 'history'],
     ],
-    copy: ['histHeading', 'histScopeHint', 'histPagePrev', 'histPickFrom', 'histScopeGlobal'],
+    copy: ['histHeading', 'histScopeHint', 'histScopeNone', 'histPagePrev', 'histPickFrom', 'histScopeGlobal'],
     async run() {
       const page = enPage({ responses: defaultResponses() });
       const rec = recorder(page);
@@ -5250,6 +5482,38 @@ const EN_SWEEP_CASES = [
       clickAnyTab(rec.last(), 'history');
       await rec.take();
       clickButton(historyRowOf(rec.last(), '2'), { 'data-action': 'diff-from', 'data-history-id': '2' });
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    name: 'history: the scope disclosure — one summary row, a picker, its search and its empty result',
+    marks: [
+      ['data-region', 'history-scope'],
+      ['data-region', 'history-scope-summary'],
+      ['data-role', 'history-scope-summary-label'],
+      ['data-action', 'history-scope-toggle'],
+      ['data-region', 'history-scope-picker'],
+      ['data-role', 'history-scope-search'],
+      ['data-history-scope-list', 'scroll'],
+      ['data-role', 'history-scope-option'],
+      ['data-role', 'history-scope-no-match'],
+      ['data-scope-open', 'true'],
+    ],
+    copy: ['histScopeSearch', 'histScopeNoMatch', 'scopeEdit', 'scopeCollapse'],
+    async run() {
+      const page = enPage({
+        useSessions: sessionsHook(WORKSPACE_SESSIONS),
+        useWorkspaces: workspacesHook(workspacesFixture()),
+        responses: defaultResponses(),
+      });
+      const rec = recorder(page);
+      await rec.take();
+      clickAnyTab(rec.last(), 'history');
+      await rec.take();
+      clickButton(rec.last(), { 'data-action': 'history-scope-toggle' });
+      await rec.take();
+      typeInto(rec.last(), 'history-scope-search', 'zzz-no-such-workspace');
       await rec.take();
       return rec.trees;
     },
@@ -6266,6 +6530,13 @@ const EN_REQUIRED_MARKERS = [
   'data-region=history-tab',
   'data-region=history',
   'data-region=history-scope',
+  'data-region=history-scope-summary',
+  'data-region=history-scope-picker',
+  'data-role=history-scope-summary-label',
+  'data-role=history-scope-search',
+  'data-role=history-scope-option',
+  'data-role=history-scope-no-match',
+  'data-history-scope-list=scroll',
   'data-region=history-list',
   'data-region=history-pager',
   'data-region=history-detail',
