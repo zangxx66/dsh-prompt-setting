@@ -440,8 +440,15 @@ window.__ModuleLoader__.load({
     const HISTORY_VIEWPORT_OFFSET = 260;
     const HISTORY_PANEL_HEIGHT = `calc(100vh - ${HISTORY_VIEWPORT_OFFSET}px)`;
     const HISTORY_PANEL_MIN_HEIGHT = 320;
-    /** Room kept between the panel's bottom edge and its measured boundary. */
-    const HISTORY_PANEL_GAP = 16;
+    /**
+     * Room kept between the panel's bottom edge and its measured boundary.
+     *
+     * g-044: 8, not 16. The number is subtracted from a **measured** room (it is
+     * never an estimate of the dialog's own chrome), so halving it hands the
+     * list eight more pixels at no risk of the panel crossing its boundary —
+     * measured at 1440×900 the panel went 480 → 488 (CONTRACT §13.2, Revision 27).
+     */
+    const HISTORY_PANEL_GAP = 8;
     /**
      * g-039 fourth round: `useLayoutEffect` measures **before the paint**, which
      * is what a panel sized from its own position wants — measuring after the
@@ -937,6 +944,9 @@ window.__ModuleLoader__.load({
       scopeSelected: '当前选中',
       // ---- stage 2: history / diff / reset / transfer ----
       histHeading: '版本历史',
+      // g-044: the summary line of the folded「说明与提示」block, which carries
+      // the retention sentence and the three scope/picking sentences.
+      histNotesToggle: '说明与提示',
       histNote:
         '每次成功保存或撤销都会追加一条记录（最近 {limit} 条）。历史文件按行追加，不做整文件重写。',
       histLayerLabel: '历史层',
@@ -962,7 +972,8 @@ window.__ModuleLoader__.load({
       histUnreadable: '历史文件不可读：{reason}',
       histLastError: '最近一次历史写入失败：{reason}',
       histCurrent: '当前生效值',
-      histWholeLayer: '（整层）',
+      // g-044: `histWholeLayer`（`name === null` 的占位文本）与 `histPreviewName`
+      // 随段名展示一起删除：列表行与预览弹窗都不再显示段名，没有别处引用它们。
       'histAction.replace': '替换 replace',
       'histAction.hide': '隐藏 hide',
       'histAction.append': '追加 append',
@@ -980,7 +991,6 @@ window.__ModuleLoader__.load({
       histPreviewAction: '动作',
       histPreviewAt: '时间',
       histPreviewLayer: '层',
-      histPreviewName: '段名',
       histPreviewOrigin: '来源',
       histPreviewNote: '备注',
       histPreviewBefore: '写前 before',
@@ -988,7 +998,10 @@ window.__ModuleLoader__.load({
       histPreviewNoText: '（无文本）',
       histPreviewSnapshot: '该版本的整层快照（{n} 条覆盖）',
       histPreviewSnapshotEmpty: '这条记录没有带整层快照（旧记录）。',
-      histPreviewSnapshotEntry: '{name} · {action} · {bytes} 字节',
+      // g-044: the section name is gone from the entry line too — the writing
+      // surface is the single reserved section, so the name said nothing a
+      // reader could act on (the name itself is still on `data-preview-snapshot`).
+      histPreviewSnapshotEntry: '{action} · {bytes} 字节',
       histPreviewPolicy: '预览与回滚只涉及「我的 Prompt」段：本层其它段不会被改动。',
       histRollback: '回滚到此处',
       histRollbackTitle: '回滚{layer}到 #{id}',
@@ -1381,6 +1394,9 @@ window.__ModuleLoader__.load({
       scopeSelected: 'Currently selected',
       // ---- stage 2: history / diff / reset / transfer ----
       histHeading: 'Version history',
+      // g-044: the summary line of the folded「Notes & tips」block, which carries
+      // the retention sentence and the three scope/picking sentences.
+      histNotesToggle: 'Notes & tips',
       histNote:
         'Every successful save or removal appends one record (the newest {limit} are kept). The history file is appended line by line, never rewritten for a single read.',
       histLayerLabel: 'History layer',
@@ -1405,7 +1421,9 @@ window.__ModuleLoader__.load({
       histUnreadable: 'The history file is unreadable: {reason}',
       histLastError: 'The last history write failed: {reason}',
       histCurrent: 'Current value',
-      histWholeLayer: '(whole layer)',
+      // g-044: `histWholeLayer` (the `name === null` placeholder) and
+      // `histPreviewName` went with the section-name display: neither the row nor
+      // the preview shows a section name, and nothing else referenced them.
       'histAction.replace': 'replace',
       'histAction.hide': 'hide',
       'histAction.append': 'append',
@@ -1425,7 +1443,6 @@ window.__ModuleLoader__.load({
       histPreviewAction: 'Action',
       histPreviewAt: 'Time',
       histPreviewLayer: 'Layer',
-      histPreviewName: 'Section',
       histPreviewOrigin: 'Origin',
       histPreviewNote: 'Note',
       histPreviewBefore: 'Before',
@@ -1433,7 +1450,9 @@ window.__ModuleLoader__.load({
       histPreviewNoText: '(no text)',
       histPreviewSnapshot: 'The whole-layer snapshot of this version ({n} override(s))',
       histPreviewSnapshotEmpty: 'This record carries no whole-layer snapshot (an older record).',
-      histPreviewSnapshotEntry: '{name} · {action} · {bytes} bytes',
+      // g-044: no section name on the entry line either (see the zh table); the
+      // name stays on `data-preview-snapshot` for tests and diagnostics.
+      histPreviewSnapshotEntry: '{action} · {bytes} bytes',
       histPreviewPolicy: 'Preview and rollback concern the "My Prompt" section only: no other section of this layer is touched.',
       histRollback: 'Roll back to this',
       histRollbackTitle: 'Roll the {layer} back to #{id}',
@@ -5192,6 +5211,14 @@ window.__ModuleLoader__.load({
      */
     /**
      * Render one history row, plus the two selectors that feed the comparison.
+     *
+     * g-044: a row shows the **version**, never the section it was written to.
+     * `record.name` is a leftover of the era when a reader could add sections by
+     * hand and had to tell them apart; the write surface is now the single
+     * reserved section, so the name carries no information a reader can act on.
+     * It is still exposed as `data-history-name` (tests and diagnostics read it
+     * from there), and records are **not** filtered by it — a log holding
+     * `stage2-e2e` rows still lists them, they simply no longer say so.
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
@@ -5240,9 +5267,16 @@ window.__ModuleLoader__.load({
           style: {
             border: `1px solid ${selected === '' ? token.borderL1 : token.stateBusiness}`,
             borderRadius: 8,
-            padding: '6px 8px',
+            // g-044: a row is a **one-line** fact list. It used to carry the
+            // record's section name as a third `code` node, which at the
+            // dialog's width pushed the timestamp and the two buttons onto a
+            // second and third line: every row was 65px tall and the panel fit
+            // barely one of them. The name is still on `data-history-name` for
+            // tests and diagnostics; no user-visible text shows it (see
+            // historyRow's own note above).
+            padding: '3px 6px',
             display: 'flex',
-            gap: 6,
+            gap: 4,
             alignItems: 'center',
             flexWrap: 'wrap',
             cursor: 'pointer',
@@ -5250,7 +5284,6 @@ window.__ModuleLoader__.load({
         },
         h('code', { style: { fontSize: 12 } }, `#${id}`),
         h(UI.Tag, { tone: 'neutral' }, historyActionLabel(t, record.action)),
-        h('code', { style: { fontSize: 12 } }, record.name === null ? t('histWholeLayer') : String(record.name)),
         h(
           'span',
           { style: metaStyle, title: typeof record.at === 'string' ? record.at : undefined },
@@ -5404,7 +5437,8 @@ window.__ModuleLoader__.load({
               typeof record.at === 'string' ? record.at : undefined,
             ),
             field('layer', t('histPreviewLayer'), layerLabel(t, record.layer)),
-            field('name', t('histPreviewName'), record.name === null ? t('histWholeLayer') : String(record.name)),
+            // g-044: no section name here either — the preview keeps the same
+            // rule as the list row it was opened from (see `historyRow`).
             field('origin', t('histPreviewOrigin'), record.origin === null || record.origin === undefined ? '' : String(record.origin)),
             field('note', t('histPreviewNote'), record.note === null || record.note === undefined ? t('histPreviewNoText') : String(record.note)),
           ),
@@ -5695,8 +5729,13 @@ window.__ModuleLoader__.load({
                 }),
               };
       const children = [
+        // g-044: the heading is the only chrome that stays above the fold. The
+        // retention sentence and the three explanatory lines moved into one
+        // **collapsed** disclosure (see `notes` below): every stacked line of
+        // chrome above the list was a row of history the reader did not get, and
+        // the settings dialog's height is the host's business — so the panel's
+        // own chrome is what gets tightened (CONTRACT §13.2, Revision 27).
         h('h3', { key: 'heading', style: headingStyle }, t('histHeading')),
-        h('p', { key: 'note', style: { margin: 0, ...metaStyle } }, fmt(t('histNote'), { limit: data && data.retentionLimit ? data.retentionLimit : '' })),
         h(
           'div',
           { key: 'layer', 'data-region': 'history-layer' },
@@ -5840,58 +5879,96 @@ window.__ModuleLoader__.load({
                 t('histScopeDegraded'),
               )
             : null,
+          // g-044: the retention sentence and the three explanatory sentences are
+          // now **folded away** behind one summary line. Every one of them is a
+          // sentence *about* the list rather than a row of it, and stacked at the
+          // settings dialog's height they cost the reader three records. A native
+          // `details` disclosure keeps all of them one click away, and — because the
+          // children are still rendered — keeps every node and every `data-role`
+          // §13.2 talks about exactly where it was.
           h(
-            'p',
-            {
-              key: 'scope-note',
-              'data-role': 'history-scope-note',
-              'data-history-note': scopeNote.attr,
-              style: { margin: 0, ...metaStyle },
-            },
-            scopeNote.text,
-          ),
-          h('p', { key: 'scope-hint', style: { margin: 0, ...metaStyle } }, t('histScopeHint')),
-          // g-039 sixth round: how to compare, right below the scope sentence …
-          h(
-            'p',
-            { key: 'compare-hint', 'data-role': 'history-compare-hint', style: { margin: 0, ...metaStyle } },
-            t('histCompareHint'),
-          ),
-        ),
-        // …and the one control that acts on the comparison, **outside** every
-        // dialog: what clears the list's selection belongs to the list.
-        h(
-          'div',
-          {
-            key: 'diff-tools',
-            'data-region': 'history-diff-tools',
-            style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
-          },
-          h(
-            UI.Button,
-            {
-              key: 'clear',
-              'data-action': 'diff-clear',
-              disabled: m.diffSel.from === null && m.diffSel.to === DIFF_CURRENT,
-              onClick: a.clearDiff,
-            },
-            t('histDiffClear'),
+            'details',
+            { key: 'notes', 'data-region': 'history-notes', 'data-history-notes': 'folded' },
+            h(
+              'summary',
+              {
+                'data-role': 'history-notes-toggle',
+                style: { ...metaStyle, cursor: 'pointer', lineHeight: '18px' },
+              },
+              t('histNotesToggle'),
+            ),
+            h(
+              'div',
+              { key: 'notes-body', style: { display: 'flex', flexDirection: 'column', gap: 2, paddingTop: 2 } },
+              h(
+                'p',
+                { key: 'note', 'data-role': 'history-retention-note', style: { margin: 0, ...metaStyle } },
+                fmt(t('histNote'), { limit: data && data.retentionLimit ? data.retentionLimit : '' }),
+              ),
+              h(
+                'div',
+                { key: 'scope-lines', style: { display: 'flex', gap: 12, alignItems: 'baseline', flexWrap: 'wrap' } },
+                h(
+                  'p',
+                  {
+                    key: 'scope-note',
+                    'data-role': 'history-scope-note',
+                    'data-history-note': scopeNote.attr,
+                    style: { margin: 0, ...metaStyle },
+                  },
+                  scopeNote.text,
+                ),
+                h('p', { key: 'scope-hint', style: { margin: 0, ...metaStyle } }, t('histScopeHint')),
+                // g-039 sixth round: how to compare, right below the scope sentence …
+                h(
+                  'p',
+                  { key: 'compare-hint', 'data-role': 'history-compare-hint', style: { margin: 0, ...metaStyle } },
+                  t('histCompareHint'),
+                ),
+              ),
+            ),
           ),
         ),
       ];
-      if (loading && !data) children.push(h('p', { key: 'loading', style: metaStyle }, t('loading')));
-      if (m.hist.phase === 'error') children.push(h('div', { key: 'error' }, errorBanner(t, m.hist.error, t('histHeading'))));
-      if (data) {
-        children.push(
-          h(
+      // g-044: …and the one control that acts on the comparison, **outside**
+      // every dialog, now shares its line with the record count. Both are chrome
+      // the list pays for; the control keeps its `data-region` and its disabled
+      // rule, and the count keeps `data-history-total` / `data-history-corrupt`.
+      const diffToolsRow = h(
+        'div',
+        {
+          key: 'diff-tools',
+          'data-region': 'history-diff-tools',
+          style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
+        },
+        h(
+          UI.Button,
+          {
+            key: 'clear',
+            'data-action': 'diff-clear',
+            disabled: m.diffSel.from === null && m.diffSel.to === DIFF_CURRENT,
+            onClick: a.clearDiff,
+          },
+          t('histDiffClear'),
+        ),
+      );
+      const metaRow = data
+        ? h(
             'div',
             { key: 'meta', 'data-history-total': String(data.total), 'data-history-corrupt': String(data.corrupt), style: metaStyle },
             fmt(t('histTotal'), { n: data.total }),
             data.corrupt > 0 ? ` · ${fmt(t('histCorrupt'), { n: data.corrupt })}` : null,
             data.unreadable ? h('div', { 'data-history-unreadable': 'true', style: { color: token.stateError } }, fmt(t('histUnreadable'), { reason: data.unreadable })) : null,
             data.lastError ? h('div', { 'data-history-last-error': 'true', style: { color: token.stateError } }, fmt(t('histLastError'), { reason: data.lastError.reason })) : null,
-          ),
-        );
+          )
+        : null;
+      // g-044: `diffToolsRow` and `metaRow` are **not** pushed here. They render
+      // inside the pager row below the list instead: they are controls and facts
+      // *about* the list, and a row of their own cost the reader another record
+      // (see the pager's own note). Both keep their `data-region` / markers.
+      if (loading && !data) children.push(h('p', { key: 'loading', style: metaStyle }, t('loading')));
+      if (m.hist.phase === 'error') children.push(h('div', { key: 'error' }, errorBanner(t, m.hist.error, t('histHeading'))));
+      if (data) {
         // g-038: a box that scrolls **inside** itself, so exactly the current
         // page of records is ever rendered. g-039 third round: it FILLS the
         // column (`flex: 1 1 auto; minHeight: 0`) instead of being 320px tall,
@@ -5957,7 +6034,11 @@ window.__ModuleLoader__.load({
               'data-history-pages': String(pg.pageCount),
               'data-history-page-size': String(pg.pageSize),
               'data-history-offset': String(pg.offset),
-              style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
+              // g-044: the pager row now also carries「清除对比」and the record
+              // count. Three facts that were three stacked rows are one row now;
+              // `alignItems: baseline` keeps the small pager text on the same
+              // line as the taller button.
+              style: { display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' },
             },
             h(
               'button',
@@ -5992,6 +6073,8 @@ window.__ModuleLoader__.load({
               },
               t('histPageNext'),
             ),
+            diffToolsRow,
+            metaRow,
           ),
         );
       }
@@ -6009,7 +6092,9 @@ window.__ModuleLoader__.load({
             ...cardStyle,
             display: 'flex',
             flexDirection: 'column',
-            gap: 6,
+            // g-044: 4, not 6. The panel stacks eight blocks above the list, so
+            // the inter-block gaps were themselves a whole row of history.
+            gap: 4,
             height: '100%',
             minHeight: 0,
             overflow: 'hidden',

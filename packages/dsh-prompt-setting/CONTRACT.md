@@ -1917,7 +1917,7 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   `sections` / `full`) keep their Revision 3 meaning; the Revision 6
   `overrides` view no longer exists.
 
-### 13.3 「版本历史」(Revision 19: its own scope, paging and a two-column layout; scope disclosure and state resets in Revision 20; record preview and rollback in Revision 21; preview policy and the narrowed rollback in Revision 22; viewport-sized layout, row picking and clearing in Revision 23; the panel height measured at run time in Revision 24; one column and viewport modals in Revision 25; the modal details settled in Revision 26)
+### 13.3 「版本历史」(Revision 19: its own scope, paging and a two-column layout; scope disclosure and state resets in Revision 20; record preview and rollback in Revision 21; preview policy and the narrowed rollback in Revision 22; viewport-sized layout, row picking and clearing in Revision 23; the panel height measured at run time in Revision 24; one column and viewport modals in Revision 25; the modal details settled in Revision 26; the row's section name removed and the panel's chrome tightened in Revision 27)
 
 - The panel is `data-region="history"` (with `data-history-layer`,
   `data-history-state`, `data-history-total`, `data-history-corrupt`,
@@ -2019,7 +2019,9 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
     would actually scroll, read through `getComputedStyle` so a stylesheet
     counts), or `window.innerHeight` when there is no such ancestor;
   - **height** = `clamp(minHeight, boundary − panelTop − gap)`, with the px floor
-    `HISTORY_PANEL_MIN_HEIGHT` (320) and a `gap` of `HISTORY_PANEL_GAP` (16);
+    `HISTORY_PANEL_MIN_HEIGHT` (320) and a `gap` of `HISTORY_PANEL_GAP` (8 since
+    Revision 27; it was 16 — the gap is subtracted from a *measured* room, so
+    halving it only hands the list those pixels);
   - the measurement is the pure function `historyPanelHeight(inputs)` →
     `{height, source}`, and it is **total**: a missing/zero/`NaN` `panelTop`, a
     boundary that is not below the panel, or no usable boundary at all (no
@@ -2039,7 +2041,12 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
     double, a server render, a zero-sized rect) renders the constant path exactly
     as Revision 23 did.
   Below the panel, the record box is `flex: 1 1 auto; minHeight: 0`, so the list
-  takes exactly the height that is left. The page's own height is therefore
+  takes exactly the height that is left. **Revision 27:** how much that is also
+  depends on the panel's own chrome, which is therefore part of this contract —
+  one heading, the layer tabs, one collapsed notes disclosure and the pager row
+  (which now carries the clear control and the record count), with a `gap: 4`
+  between them; a 31px record row that never wraps at the dialog's width. The
+  page's own height is therefore
   independent of how much history exists — and, since Revision 25, independent of
   how long a preview or a comparison is: those render in modals (below), which are
   capped to the viewport and scroll internally. The **reset rules are untouched** by any of this: changing the
@@ -2101,14 +2108,18 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   (`data-role="history-scope-note"`) sits `data-role="history-compare-hint"` with
   the `histCompareHint` copy — the one place that explains the row-picking
   interaction. The comparison dialog carries no such sentence (and no
-  `histDiffHint` copy exists any more).
+  `histDiffHint` copy exists any more). **Revision 27:** both sentences, the
+  retention sentence and the scope sentence, live inside the collapsed
+  `data-role="history-notes-toggle"` disclosure — still rendered, still in this
+  order, no longer occupying the list's height by default.
 - **Record preview (Revision 21; the policy line in Revision 22).** Every record
   row carries
   `data-action="history-preview"` (with `data-history-id`), and the panel it opens
   is `data-region="history-preview"` with `data-preview-state`
   (`"ready"` | `"missing"`), `data-preview-id` and `data-preview-snapshot-count`.
   A ready panel carries `data-preview-field` for `action` / `at` / `layer` /
-  `name` / `origin` / `note` — the facts that say *which* version this is — the two
+  `origin` / `note` — the facts that say *which* version this is (Revision 27
+  dropped `name` from this list; see the Revision 27 paragraph) — the two
   texts `data-preview-text="before"` / `"after"` (`data-preview-bytes` = the stored
   byte count, the text itself being the node's content), and one
   `data-preview-snapshot="<name>"` per snapshot entry with its
@@ -2276,6 +2287,66 @@ rollback).
   action. The 「当前生效值」 row is picked by clicking it like any record row, so it
   remains comparable. The two buttons left on a row are `history-preview` and
   `history-rollback`.
+
+**Revision 27 (the row loses its section name, and the panel stops spending its
+height on chrome — g-044).** Client-half only: **no route, no query parameter and
+no stored byte changes**, and none of the invariants above move (single column,
+measured panel height, modal mutual exclusion, close-keeps-the-selection, the
+file-scoped resets, §19's narrowed rollback).
+
+- **Why.** Two defects a reader sees on a normal desktop window. First, at the
+  settings dialog's height the panel rendered **one** record. Measured on a real
+  page (1440px wide, 757px high) the cause was neither the measurement nor the
+  boundary — `data-history-height-source` said `measured`, and the number was
+  right — but what the panel spent its height on: the panel had 389px, its own
+  chrome (heading + retention sentence + layer tabs + scope block + tool row +
+  count) took 268 of them, and a record row was **65px** tall because it carried
+  the id, the action tag, **the section name**, the timestamp and two buttons, and
+  at the dialog's width those wrapped onto three lines. 268px of chrome plus one
+  65px row is the whole panel. Second, the row and the preview both displayed the
+  record's **section name** (`prompt-setting:custom-prompt`, and the
+  `stage2-e2e` / `ui-e2e-ok` names left over from the era when a reader could add
+  sections by hand). The write surface has since narrowed to the single reserved
+  section, so the name says nothing a reader can act on.
+- **The row renders no section name.** `#id`, the action tag, the timestamp,
+  `entries` when the record carries them, and the two buttons remain; the node
+  that held `record.name` — and the `histWholeLayer` placeholder a `name === null`
+  record used there — is gone, and both copy keys (`histWholeLayer`,
+  `histPreviewName`) are deleted rather than left dead. The name itself is still
+  the row's `data-history-name` (`''` for a null name), which is what tests and
+  diagnostics read. **Records are not filtered**: a log holding hand-written names
+  still lists every one of them, it just no longer says what they are.
+- **The preview follows the row.** `data-preview-field="name"` is gone, and a
+  snapshot entry renders `{action} · {bytes}` (`histPreviewSnapshotEntry` no
+  longer carries `{name}`); the entry's `data-preview-snapshot="<name>"` marker
+  stays.
+- **The panel stops spending its height on chrome.** The retention sentence, the
+  scope sentence, the "this scope belongs to this tab" sentence and the picking
+  rule now live in one **collapsed** `data-region="history-notes"` disclosure
+  behind `data-role="history-notes-toggle"` (the new `histNotesToggle` copy);
+  their nodes and `data-role`s are still rendered inside it, so nothing promised
+  about them above changes — only their default visibility does.
+  `data-region="history-diff-tools"` (`data-action="diff-clear"`) and the record
+  count (`data-history-total` / `data-history-corrupt`) moved into the **pager
+  row** (`data-region="history-pager"`) instead of a row of their own.
+- **What this is worth on a real page.** Measured with headless Chrome against
+  this bundle at a 1440px-wide viewport: chrome above the list fell 268 → 118px, a
+  row 65 → 31px, and the visible record rows in the list box went 1 → **6** at a
+  757px-high viewport, **9** at 900px and **9** at 1080px (the dialog stops
+  growing at 800px tall, so the last two agree). The panel is still measured at
+  run time (Revision 24) and grew 340 → 440 → 488px as the viewport went
+  700 → 800 → 956px; no page-level scrollbar appeared in any of those runs. The
+  fallback path was measured too (a panel whose own rect is unusable ⇒
+  `source: "fallback"`, `calc(100vh − 260px)` = 640px at a 900px viewport):
+  **13** visible rows, so a runtime without geometry never falls back to the
+  one-row panel.
+- **Unit tests.** The row case asserts the new shape directly: the legacy names
+  `stage2-e2e` / `ui-e2e-ok` are on `data-history-name` and in **no** rendered
+  text, every record is still listed, the whole-layer placeholder copy is unused,
+  and the row carries the tightened padding/gap. The preview case asserts the
+  missing field, the missing copy key and a snapshot entry that renders no name;
+  the two panel-height cases moved 684 → 692 and 484 → 492 with
+  `HISTORY_PANEL_GAP`.
 
 ### 13.3a 「备份与恢复」(Revision 19)
 
