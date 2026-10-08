@@ -1916,7 +1916,12 @@ interaction.
   pure helpers). It is still **one instance per facility**: a chunk takes each name
   off `__internals.shared` under its own name, and `test/client.test.mjs` asserts
   both that every name it asks for is really exposed and that no chunk names or
-  fetches another one — the split stays a DAG;
+  fetches another one — the split stays a DAG. That guard is mechanical but
+  **shape-level**: every `shared.<name>` reference and every destructuring form is
+  checked against the exposed keys, and no chunk may redefine an exposed name
+  locally; a full free-variable analysis would need a parser this zero-dependency
+  package does not have. The gap that leaves — a name referenced but never taken —
+  is covered at run time, where an undeclared identifier throws (`NOTES.md` §123);
 - the measured effect (see `NOTES.md` §123 for the migration record): `client.js`
   **9584 → 8575 lines / 456680 → 411979 bytes**, with `client.overview.js` 577,
   `client.transfer.js` 264 and `client.advanced.js` 502 lines now fetched on

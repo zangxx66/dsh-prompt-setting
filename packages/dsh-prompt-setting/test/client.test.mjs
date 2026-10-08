@@ -2021,11 +2021,36 @@ test('client: every chunk depends on the entry alone — a DAG, with one copy of
     // No copied data either: a second dictionary or token table would be a
     // second value that can drift away from the page it renders in.
     assert.equal(/const (zh|en|ERROR_TEXT|token) = \{/.test(code), false, `${name}: no copied copy table`);
-    const asked = [...code.matchAll(/^ {4}const ([A-Za-z0-9_$]+) = shared\.([A-Za-z0-9_$]+);$/gm)];
+    // Every reference to the shared surface is collected, in both spellings:
+    // `shared.x` (however it is bound — `const x = shared.x`, `const {x} = shared`,
+    // or used inline) and the destructuring form. Each key asked for must really
+    // be exposed, so a chunk cannot invent a facility the entry never handed it.
+    const asked = [
+      ...[...code.matchAll(/shared\.([A-Za-z0-9_$]+)/g)].map((match) => match[1]),
+      ...[...code.matchAll(/const\s*\{([^}]*)\}\s*=\s*shared\b/g)].flatMap((match) =>
+        match[1]
+          .split(',')
+          .map((part) => part.trim().split(':').pop().trim())
+          .filter((key) => key.length > 0),
+      ),
+    ];
     assert.ok(asked.length > 0, `${name}: takes its facilities from the shared surface`);
-    for (const [, local, key] of asked) {
-      assert.equal(local, key, `${name}: ${key} is taken under its own name`);
+    for (const key of asked) {
       assert.ok(key in shared, `${name}: the entry exposes ${key} on __internals.shared`);
+    }
+    // …and it may not build its own: a local `const token = …` or `function fmt(…)`
+    // under a name the entry already owns would be the second copy the whole
+    // mechanism exists to prevent, and the check above cannot see it (the local
+    // binding shadows the shared one instead of reaching for it).
+    for (const key of Object.keys(shared)) {
+      const redefined = new RegExp(`^ {4}(?:const|let|var|function)\\s+${key}\\b`, 'gm');
+      for (const hit of code.matchAll(redefined)) {
+        const line = code.slice(hit.index).split('\n')[0];
+        assert.ok(
+          line.includes(`shared.${key}`),
+          `${name}: ${key} is taken from the shared surface, never redefined — ${line.trim()}`,
+        );
+      }
     }
   }
   assert.equal(shared.h, loaded.runtime.React.createElement, 'one element factory for the whole bundle');

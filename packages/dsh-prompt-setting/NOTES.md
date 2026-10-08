@@ -6243,27 +6243,36 @@ CSS 语义上 1–3 合起来等价于"本 tab 的高度 ≤ 视口、内容只�
 
 ### 一、切分：能拆的只有三个非默认 tab
 
-对 51 个统一签名 `(t, m, a)` 的渲染函数做了闭包测算（每一个是否在首屏 `renderSection` 的同步调用链上），结论是「按 tab 拆」只有三个候选：
+对**全部**顶层渲染函数做了闭包测算：逐个判断它是否在首屏 `renderSection` 的同步调用链上。可复现口径（本 commit 实测）：
 
-| 新 chunk | 装了什么 | 行数（含 shared 解构与 lazy 样板） |
+```bash
+grep -h "^ *function [A-Za-z0-9_$]*(t, m, a)" client.js client.*.js | wc -l   # ⇒ 28
+#   主文件 13 + client.overview.js 4 + client.transfer.js 2 + client.advanced.js 4 + client.history.js 5
+```
+
+（签名带额外参数的变体，如 `renderDownloadRegion(t, m, a, u)`，不计入上表；阶段一 §122 沿用的「51 个」取自结构测绘卡对**全部顶层定义**的另一种统计口径，与本条命令不可互推 —— 本 commit 起以本条为准。）
+结论是「按 tab 拆」只有三个候选：
+
+| 新 chunk | 装了什么 | 行数（`wc -l`，含 shared 解构与 lazy 样板） |
 | --- | --- | --- |
 | `client.overview.js` | `renderOverviewPanel` / `renderSectionsView` / `renderFilters` / `sectionRow` / `renderFullView` | 577 |
 | `client.transfer.js` | `renderBackupTab` / `renderTransferPanel` / `importStatusLabel` | 264 |
 | `client.advanced.js` | `renderAdvancedTab` / `renderOverridesList` / `renderUpdateSetting` / `renderDownloadRegion` / `renderLayerReset` / `regionNoteKey` | 502 |
 
 留在主文件的骨架（首屏第一帧就会走到）：`renderSection`、`renderPluginVersion`+`renderStatusDetail`、`renderStatusLine`、
-`renderSession` 与作用域选择器一族（`scopeSection` / `scopeTreeElement` / `scopeGroupParts` / `pinnedSessionButton` / 两个 glyph / `scopeRowStyle` / `focusVisibleOf`，约 640 行）、
+`renderSession` 与作用域选择器一族（`scopeSection` / `scopeTreeElement` / `scopeGroupParts` / `pinnedSessionButton` / 两个 glyph / `scopeRowStyle` / `focusVisibleOf`；
+`awk '/^    function focusVisibleOf\(/,/^    function renderSession\(/' client.js | wc -l` ⇒ 643 行）、
 `renderUpdateNotice` + `renderUpdateApplyStatus`、`renderConfirm` / `renderRegionDialog`，以及默认 tab 的 `renderMinePanel`。
 
 ### 二、被否的方案（逐条给理由）
 
-- **「我的 Prompt」(mine，393 行) 不做 chunk。** 它是设置页的**默认 tab**：第一帧就要渲染。做成 chunk 只会在首屏代码前加一次网络往返，
+- **「我的 Prompt」(mine) 不做 chunk。** 它是设置页的**默认 tab**：第一帧就要渲染。做成 chunk 只会在首屏代码前加一次网络往返，
   并把一次失败取件变成「默认 tab 空白」。判据 2 的「打开设置页只请求主文件」正是这条。
-- **无状态层（常量 / `ERROR_TEXT` / zh+en / token / `Fx*` / 纯函数群，约 2900 行）留主文件。** 外提必须同时满足「首屏不因此多一次阻塞等待」与
+- **无状态层（常量 / `ERROR_TEXT` / zh+en 两份字典 / token / `Fx*` 原子 / 纯函数群）留主文件。** 外提必须同时满足「首屏不因此多一次阻塞等待」与
   「共享 chunk 失败可读降级」：而 factory 是**同步物化**的，主文件渲染第一帧就需要这些值，`require.async` 只能异步 ⇒ 条件①**结构上不可满足**；
   条件②更糟——共享 chunk 失败会让**整页**既无文案表也无 token，而 tab chunk 失败只影响一个 tab（风险不对称）。
-- **确认弹窗与镜像对话框（`renderConfirm` + `renderRegionDialog` + 5 个 confirm 样式常量，约 284 行）不做 chunk。** 它们确实「交互后才出现」，
-  但那是**破坏性操作**（恢复默认 / 清空覆盖 / 立即更新）的确认面：为省 284 行把「点击 → 弹窗」变成一次异步取件不值得。
+- **确认弹窗与镜像对话框（`renderConfirm` + `renderRegionDialog` + 5 个 confirm 样式常量）不做 chunk。** 它们确实「交互后才出现」，
+  但那是**破坏性操作**（恢复默认 / 清空覆盖 / 立即更新）的确认面：把「点击 → 弹窗」变成一次异步取件不值得。
 - `renderLayerReset` 同时被「高级」使用，`renderFilters` 只服务总览视图，`importStatusLabel` / `regionNoteKey` 各只有一个消费者 ⇒ 各随其 tab 走，
   于是三个新 chunk 之间**零依赖**：DAG 只有「主 → chunk」一个方向。
 
@@ -6273,8 +6282,18 @@ CSS 语义上 1–3 合起来等价于"本 tab 的高度 ≤ 视口、内容只�
 `diffSections` / `composeSections` / `editGate` / `sectionLayer` / `regionLabelKey` / `renderStatusDetail` / `renderUpdateApplyStatus` … 共 26 个名字）
 一律加进主 factory 的 `__internals.shared`（`CHUNK_FACILITIES`）后由 chunk 解构取用，**没有一份副本**。
 
-`test/client.test.mjs` 新增一条机械断言：chunk 的**代码行**里，凡 `const X = shared.X;` 都要求 `X` 真的挂在 `__internals.shared` 上，
-且不得出现 `require.async`、`require('react')` 或**任何另一个 chunk 的文件名**。三种改坏方式（漏挂键 / chunk→chunk 依赖 / 第二个 React）各自会红 —— 已做负向对照实测。
+`test/client.test.mjs` 对这个不变式做的是**双向机械校验**（独立评审意见 P3 收口后）：
+
+- **引用侧**：chunk 的**代码行**里所有 `shared.<name>` 引用（含 `const x = shared.x`、`const { x, y } = shared`、内联 `shared.x` 三种取式）都被收集，逐个断言 `name in __internals.shared`；
+- **定义侧**（反向）：`__internals.shared` 的**每一个键名**，chunk 都不得用 `const` / `let` / `var` / `function` 在本地重新声明（除非该行右侧就是 `shared.<同键>`）。这一条针对的正是「本地造一份副本」的唯一形态 —— 局部绑定会**遮蔽**共享实例，引用侧断言看不见它；
+- 另加一条：不得出现 `require.async`、`require('react')` 或**任何另一个 chunk 的文件名** ⇒ chunk→chunk 依赖与第二个 React 都不可能成立。
+
+负向对照（都实测会红、随后还原）：内联 `shared.nope` ⇒ 引用侧红；`const UI = null`（非字典形态的本地重定义）⇒ 定义侧红；`const token = {…}`、`require.async('./client.transfer.js')` 各自红。
+正向对照：把 `const UI = shared.UI` 改写成 `const { UI } = shared` 仍绿（新取式被正确采集）。
+
+**已知限制（写在文档里，不悄悄留着）**：这是**形态级**守卫，不是完整的自由变量分析（后者需要 JS 解析器，与本包「零依赖」承诺冲突）。
+它覆盖评审点名的三类逃逸取式与本地副本；「chunk 引用了某个名字却忘了取用」这类错误由**运行时**兜底 —— chunk 在 vm 里以严格语义执行，
+未声明的自由标识符直接抛 `ReferenceError`，打开该 tab 的测试随即变红。
 
 ### 四、验收
 
@@ -6283,25 +6302,37 @@ CSS 语义上 1–3 合起来等价于"本 tab 的高度 ≤ 视口、内容只�
 - 体积（实测）：`client.js` **9584 行 / 456680 B → 8575 行 / 411979 B**（净减 1009 行 / 44691 B）；
   新增 `client.overview.js` 577 行 / 25186 B、`client.transfer.js` 264 行 / 11320 B、`client.advanced.js` 502 行 / 23237 B；
   连同 g-045 的 `client.history.js`（1163 行 / 50497 B），四个 chunk 合计 2506 行 / 110240 B，整包 11081 行 / 522219 B
-  （比拆分前单文件 10747 行多 334 行：四份 chunk 的解构与 lazy 样板，换来的是三个新 tab 渲染器共 1160 行不再进首屏）；
+  （比拆分前单文件 10747 行多 334 行：四份 chunk 的 shared 解构与 lazy 样板；换来的是三个新 tab 的渲染器整块不再进首屏）；
 - `node scripts/client-chunks.mjs` ⇒ 4 项与磁盘一致；`--write` 后与仓库逐字零 diff；
 - `node scripts/prepare.mjs` ⇒ **21 项通过**（`FILES-GLOB: files: client.*.js（4 项）` 与 `CHUNK-STAMPS` 绿）；
-- `npm pack --dry-run --cache <可写目录>` ⇒ 四个 chunk 全部在包内；
+- `npm pack --dry-run --cache <可写目录>` ⇒ **29 个文件**，四个 `client.*.js` chunk 全部在包内（`README.md` 的运行提示已同步为 29）；
 - 零新依赖（`dependencies: {}`）、零构建步骤（`test/host.test.mjs` 两条门禁绿）。
 
 ### 五、为什么没到「5000-6000 行」（如实说明）
 
-阶段一给的期望是主文件降到 5000-6000 行。实测下限由**首屏同步闭包**决定，只到 8575 行：
+阶段一给的期望是主文件降到 5000-6000 行。实测下限由**首屏同步闭包**决定，只到 8575 行 —— 因为下面每一类都**不能在首屏异步**：
 
-| 不可搬的部分 | 行数（约） | 为什么 |
-| --- | --- | --- |
-| `PromptSettingSection`（状态机） | 1900 | 唯一状态持有者，本目标明令不动 |
-| 无状态层（常量 / `ERROR_TEXT` / zh+en / token / `Fx*` / 纯函数） | 2900 | 首屏与所有 chunk 的共同依赖（见二） |
-| 首屏骨架渲染（会话选择器与作用域树 + 状态行/详情 + 版本 + 更新横幅 + 两个 overlay，不含 mine） | 1830 | `renderSection` 第一帧就会走到 |
-| 「我的 Prompt」面板 | 393 | 默认 tab |
-| chunk 边界机制本身（g-045 与本轮） | 450 | 加载、清单、指纹、降级卡 |
+| 不可搬的部分 | 为什么 |
+| --- | --- |
+| `PromptSettingSection`（状态机） | 唯一状态持有者，本目标明令不动 |
+| 无状态层（常量 / `ERROR_TEXT` / zh+en 两份字典 / token / `Fx*` / 纯函数群） | 首屏与所有 chunk 的共同依赖（见二） |
+| 首屏骨架渲染（会话选择器与作用域树 + 状态行/详情 + 版本 + 更新横幅 + 两个 overlay，不含 mine） | `renderSection` 第一帧就会走到 |
+| 「我的 Prompt」面板 | 默认 tab |
+| chunk 边界机制本身（g-045 与本轮） | 加载、清单、指纹、降级卡 |
 
-⇒ 展示层里**能搬的都搬了**：可搬集合恰是三个非默认 tab 的渲染器（1160 行）。要再降只能动上面这五类，而每一类都被判据（状态机不动、首屏只请求主文件、零行为变化）或可靠性约束挡住。
+各块的规模（**本 commit 实测**，命令可直接复现；行号会随后续改动漂移，命令不会）：
+
+```bash
+wc -l -c client.js client.*.js                                     # 主文件 8575 行 / 411979 B；三个新 chunk 合计 1343 行
+git show 355ad3f:packages/dsh-prompt-setting/client.js | wc -l -c   # 迁移前主文件 9584 行 / 456680 B
+awk '/^    function PromptSettingSection\(/,/^    function renderFailureCard\(/' client.js | wc -l  # 状态机 1898
+awk '/^    function focusVisibleOf\(/,/^    function renderSession\(/' client.js | wc -l            # 作用域选择器一族 643
+awk '/^    function renderSession\(/,/^    const confirmTitleStyle/' client.js | wc -l             # 会话选择器 253
+awk '/^    \/\/ #region chunk boundary \(g-045\)/,/^    \/\/ #endregion/' client.js | wc -l        # chunk 边界机制 432
+```
+
+⇒ 展示层里**能搬的都搬了**：可搬集合恰是三个非默认 tab 的渲染器，它们已整块落在三个新 chunk 里（三个新 chunk 共 1343 行，其中每份手写的 shared 解构与 lazy 样板约占 60 行）。
+要再降只能动上面这五类，而每一类都被判据（状态机不动、首屏只请求主文件、零行为变化）或可靠性约束挡住。
 
 ### 六、未验证项
 
@@ -6309,3 +6340,17 @@ CSS 语义上 1–3 合起来等价于"本 tab 的高度 ≤ 视口、内容只�
   `loadedChunkFiles` 序列与 `data-render-state` 断言，不是浏览器网络面板；
 - 三个新 chunk 的**真机失败降级**（阻断请求）未目视，只有 harness 的 `chunkFailures` 证据；
 - 「只改 chunk 不碰 `client.js` 时浏览器不换新」仍是未实测的开发期限制（g-045 已记录，本轮未变）。
+
+### 七、收口补丁（独立评审 3 条）
+
+- **P1 · README 文件数滞后。** `README.md` 的运行提示仍写「26 个文件」（那是 g-045 的实测）。改为**29**（`npm pack --dry-run` 实测，本次新增 3 个 chunk）。
+  同时按「凡是能被 `npm pack` / `wc` 复现的都必须与实测一致」复核了本次受影响的其它数字：`CONTRACT.md` §14.2 的 `chunks` 示例（4 项）与 `client.js` 的 `CHUNK_STAMPS` **逐项一致**（文件名、hash、size，已用命令对照）；README 的「十八个套件」仍等于 `ls test/*.mjs | wc -l` ⇒ 18。
+  包体 kB 不再写进文档：文档本身计入包体，写入精确值必然滞后一步（文件数不受影响，故保留）。
+- **P2 · NOTES 的数字口径不可复现。** §123 原写「51 个统一签名 `(t, m, a)` 的渲染函数」—— 该数字取自阶段一结构测绘卡对**全部顶层定义**的统计口径，本 commit 实测严格签名为 **28**
+  （命令与逐文件分解已写进第一节），故换成可复现口径并注明「与 51 不可互推」。§五 表里引自估算的行数（1900 / 2900 / 1830 / 393 / 450）**全部删除**，
+  改为「只留理由」+ 一组**带命令的实测锚点**（`wc -l -c`、`git show 355ad3f:…`、四条 `awk` 区间计数）。
+- **P3 · DAG /「零副本」断言只认一种取式。** 原断言只匹配 `^ {4}const X = shared.X;$`，`const { X } = shared`、内联 `shared.X` 都会逃逸。按评审建议改为**双向校验**：
+  引用侧收集所有 `shared.<name>` 与解构取式，逐个断言键存在；定义侧反向断言「`__internals.shared` 的每个键名都不得被 chunk 本地重定义」（`const UI = null`、`const token = {…}` 这类副本正是唯一能藏住「第二份实例」的形态）。
+  负向对照实测：内联 `shared.nope` ⇒ 引用侧红；`const UI = null` ⇒ 定义侧红；正向对照：`const { UI } = shared` 仍绿。
+  **未做成完整的自由变量分析**（那需要 JS 解析器，与本包零依赖冲突）—— 这一限制已写进 `CONTRACT.md` §13.0 Revision 30 与本文件第二节，不悄悄留着：剩下的缺口（引用了却没取用）由运行时兜底（未声明标识符抛 `ReferenceError`，打开该 tab 的测试即红）。
+- 收口后复跑：`node --test` ⇒ **736 pass / 0 fail / skipped 0**；`node scripts/client-chunks.mjs` ⇒ 4 项一致；`node scripts/prepare.mjs` ⇒ 21 项通过；`npm pack --dry-run` ⇒ 29 个文件。

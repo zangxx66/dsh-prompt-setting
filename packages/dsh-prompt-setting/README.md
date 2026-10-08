@@ -299,7 +299,7 @@ cd packages/dsh-prompt-setting
 node --test                    # 十八个套件（含真实 DSH 包的对照实验，须为 pass 而非 skip）
 node scripts/check-compat.mjs  # 只读兼容性自检：不联网、永不抛、退出码恒 0
 node scripts/prepare.mjs       # prepare 门禁：pnpm 从 git 安装时会自动跑它
-npm pack --dry-run             # 确认发布产物干净（26 个文件、含 client.*.js chunk、无 test/）
+npm pack --dry-run             # 确认发布产物干净（29 个文件、含 4 个 client.*.js chunk、无 test/）
 ```
 
 - **改动怎么生效 / How a change takes effect**：改 `client.js` 什么都不用做（DSH 自带客户端 HMR，
