@@ -8,23 +8,35 @@
  * (`test/update.test.mjs` drives it with a stub that answers from memory).
  *
  * The problem: this plugin is installed as a tarball or a `link:`, so nothing
- * ever tells the user that upstream moved on. The answer (decided by the owner,
- * 2026-10-03) is one `GET` against the **GitHub Releases API**
- * (`/repos/{owner}/{repo}/releases/latest`), performed by the Host — Node has
- * no CORS wall, can time out, can cache and can be switched off — and read by
- * the page.
+ * ever tells the user that upstream moved on. The answer (g-030, re-founded by
+ * g-042) is a `GET` against the **npm registry** first — the package document
+ * `<registry>/dsh-prompt-setting`, read for `dist-tags.latest` — and one
+ * `GET` against the **GitHub Releases API**
+ * (`/repos/{owner}/{repo}/releases/latest`) as the fallback when npm cannot
+ * answer. Both are performed by the Host — Node has no CORS wall, can time out,
+ * can cache and can be switched off — and read by the page.
+ *
+ * Why npm is the primary path (g-042): the registry is the address this package
+ * is *published* to, it is the path `dsh plugin add dsh-prompt-setting` takes,
+ * and it is the one a mirror can be pointed at (g-043). GitHub Releases stays as
+ * the degradation path, so a profile behind a registry that does not carry the
+ * package still gets an answer.
  *
  * Three rules this module exists to enforce:
- *   - **never a false positive.** `/releases/latest` already excludes drafts and
- *     prereleases, but a tag that does not parse (or a repository with no
- *     release at all) must answer "no usable information", not "you are behind".
- *     Every undecidable case is `hasUpdate: null`;
+ *   - **never a false positive.** A registry `dist-tags.latest` or a release tag
+ *     that does not parse (or an upstream with no such version at all) must
+ *     answer "no usable information", not "you are behind". Every undecidable
+ *     case is `hasUpdate: null`;
  *   - **a failure is a value, not an exception.** A network error, a timeout, an
  *     HTTP error or an unreadable body all come back as a payload with
  *     `ok: false` and a structured `error`. Nothing here throws at a route, so
  *     no update check can turn into a 5xx on the settings page;
- *   - **one request, no user data.** A single `GET`, one identifiable
+ *   - **one identifiable request per upstream, no user data.** A single `GET`
+ *     each (the fallback is only asked when the primary could not answer), one
  *     `user-agent`, no cookies, no body, no query derived from this machine.
+ *
+ * Every answer names which upstream produced it (`source`: `npm` / `github`),
+ * which is what the page shows and what a diagnostic reads.
  *
  * @module dsh-prompt-setting/core/update
  */
@@ -37,12 +49,24 @@ export const UPDATE_CHECK_TIMEOUT_MS = 5000;
 export const UPDATE_CHECK_MAX_TIMEOUT_MS = 60 * 1000;
 /** Upper bound accepted for an injected TTL (30 days). */
 export const UPDATE_CHECK_MAX_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-/** The API root the one `GET` is built from. */
+/** The API root the GitHub fallback's one `GET` is built from. */
 export const GITHUB_API_ROOT = 'https://api.github.com/repos';
 /** Prefix of the `user-agent` the request identifies itself with. */
 export const UPDATE_CHECK_USER_AGENT = 'dsh-prompt-setting';
 /** The preference document's one key, at the top level of `preferences.json`. */
 export const UPDATE_CHECK_FLAG = 'updateCheck';
+/**
+ * The registry the npm path asks by default. Parameterized (g-042) because
+ * g-043 wires a download region / mirror into the same slot; this module only
+ * needs the base address.
+ */
+export const DEFAULT_NPM_REGISTRY = 'https://registry.npmjs.org/';
+/** This package's own name in the registry — the document the npm path reads. */
+export const NPM_PACKAGE_NAME = 'dsh-prompt-setting';
+/** `source` when the npm registry answered. */
+export const UPDATE_SOURCE_NPM = 'npm';
+/** `source` when the GitHub Releases fallback answered (or could not). */
+export const UPDATE_SOURCE_GITHUB = 'github';
 /**
  * The default preference: **on**. The owner's口径 is "打开设置页即检查，
  * 静默失败，仅在有新版本时提示"; a missing or unreadable preference file must
@@ -110,6 +134,55 @@ function slugParts(owner, repo) {
  */
 export function releasesLatestUrl(slug) {
   return `${GITHUB_API_ROOT}/${slug.owner}/${slug.repo}/releases/latest`;
+}
+
+/**
+ * Normalize an injected npm registry base address (g-042).
+ *
+ * Three answers, and the third is the one that matters:
+ *   - **absent/blank** ⇒ {@link DEFAULT_NPM_REGISTRY}. A profile that declares
+ *     nothing gets the public registry, which is what the shipped default means;
+ *   - **an `http(s)` URL** ⇒ the same URL with any query/fragment dropped and a
+ *     trailing `/` guaranteed, so a mirror that lives under a path
+ *     (`https://mirror.example/npm`) keeps it when the package name is appended;
+ *   - **anything else non-empty** (a bare hostname, a `file:`/`ftp:` URL, junk)
+ *     ⇒ `null`, which **disables the npm path** rather than silently asking
+ *     npmjs.org for a profile that pointed somewhere else. The check then goes
+ *     straight to the GitHub fallback, and says so.
+ * @param value - the configured registry, or anything else.
+ * @returns the normalized base address, or `null` when npm must not be asked.
+ */
+export function normalizeRegistry(value) {
+  if (typeof value !== 'string') return DEFAULT_NPM_REGISTRY;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return DEFAULT_NPM_REGISTRY;
+  let parsed;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
+  parsed.search = '';
+  parsed.hash = '';
+  const text = parsed.toString();
+  return text.endsWith('/') ? text : `${text}/`;
+}
+
+/**
+ * The one npm document this check asks for.
+ * @param registry - the registry base address (default {@link DEFAULT_NPM_REGISTRY}).
+ * @param name - the package name (default {@link NPM_PACKAGE_NAME}).
+ * @returns the package metadata URL, or `null` when the registry is unusable.
+ */
+export function registryPackageUrl(registry = DEFAULT_NPM_REGISTRY, name = NPM_PACKAGE_NAME) {
+  const base = normalizeRegistry(registry);
+  if (base === null) return null;
+  try {
+    return new URL(encodeURIComponent(name), base).toString();
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -236,8 +309,13 @@ class UpdateTimeout extends Error {
  * @param options.currentVersion - this package's version (already normalized by
  *   the caller from its own module constant, so the client can never compare
  *   against a version the manifest and the code disagree about).
+ * @param options.registry - the npm registry base address (default
+ *   {@link DEFAULT_NPM_REGISTRY}); an unusable value disables the npm path
+ *   ({@link normalizeRegistry}) instead of being silently replaced.
  * @param options.ttlMs - cache lifetime (default {@link UPDATE_CHECK_TTL_MS}).
- * @param options.timeoutMs - request timeout (default {@link UPDATE_CHECK_TIMEOUT_MS}).
+ * @param options.timeoutMs - request timeout (default {@link UPDATE_CHECK_TIMEOUT_MS}),
+ *   applied to **each** upstream attempt, so a check that falls back costs at
+ *   most two timeouts.
  * @param options.now - the clock, in milliseconds (defaults to `Date.now`).
  * @param options.readPreferences - `() => preferences` (defaults to the default).
  * @param options.writePreferences - `(preferences) => void` (defaults to a no-op).
@@ -247,6 +325,7 @@ export function createUpdateChecker(options = {}) {
   const fetchImpl = typeof options.fetch === 'function' ? options.fetch : globalThis.fetch;
   const repositoryUrl = typeof options.repositoryUrl === 'string' ? options.repositoryUrl : null;
   const currentVersion = typeof options.currentVersion === 'string' ? options.currentVersion : null;
+  const registry = normalizeRegistry(options.registry);
   const ttlMs = boundedNumber(options.ttlMs, UPDATE_CHECK_TTL_MS, UPDATE_CHECK_MAX_TTL_MS);
   const timeoutMs = boundedNumber(options.timeoutMs, UPDATE_CHECK_TIMEOUT_MS, UPDATE_CHECK_MAX_TIMEOUT_MS);
   const now = typeof options.now === 'function' ? options.now : () => Date.now();
@@ -276,8 +355,9 @@ export function createUpdateChecker(options = {}) {
       current: currentVersion,
       latest: null,
       /**
-       * The tag GitHub actually published, verbatim (no `v` stripped, no
-       * reformatting) — or `null` when the answer is not about a release.
+       * The tag GitHub actually published — or the npm `dist-tags.latest` — verbatim
+       * (no `v` stripped, no reformatting), or `null` when the answer is not about
+       * a published version.
        *
        * g-032: `latest` is a *version* and is therefore canonicalized
        * (`v0.1.2` → `0.1.2`), which is exactly right for display and exactly
@@ -290,6 +370,21 @@ export function createUpdateChecker(options = {}) {
       hasUpdate: null,
       releaseUrl: null,
       publishedAt: null,
+      /**
+       * g-042: which upstream produced this answer — `"npm"`, `"github"`, or
+       * `null` when no upstream was consulted at all (the switch is off, or the
+       * runtime has no `fetch`). Additive: a pre-g-042 client ignores it and
+       * renders exactly as before.
+       */
+      source: null,
+      /**
+       * g-042: the npm registry's own `dist.tarball` for `latest`, exactly as the
+       * document spelled it — the install spec when `source: "npm"` (§18.2).
+       * `null` on every answer that is not an npm one, and `null` when the
+       * document carried no usable string. The *install* route decides whether it
+       * may be handed to pnpm; this field is only what upstream said.
+       */
+      tarball: null,
       checkedAt: new Date(now()).toISOString(),
       cached: false,
       error: null,
@@ -346,12 +441,292 @@ export function createUpdateChecker(options = {}) {
   }
 
   /**
-   * Run one check.
+   * One upstream `GET`, raced against the timeout and read as JSON.
+   *
+   * Both paths ask exactly the same way — one `GET`, one identifiable
+   * `user-agent`, no body, no cookies — and both degrade the same way: a throw, a
+   * timeout, an HTTP status and an unreadable body all become a **value**
+   * (`{ok:false, code, message, status?}`) that the caller turns into a fallback
+   * or into a 200 payload. The timeout is **per attempt**, so a check that has to
+   * fall back costs at most two of them.
+   * @param url - the address to ask.
+   * @param accept - the `accept` header.
+   * @param label - how the upstream is named in a failure message.
+   * @returns `{ok:true, body, status}` or `{ok:false, code, message, status?}`.
+   */
+  async function getJson(url, accept, label) {
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    let timedOut = false;
+    let timer = null;
+    const timeout = new Promise((_resolve, reject) => {
+      timer = setTimeout(() => {
+        timedOut = true;
+        reject(new UpdateTimeout(`${label} did not answer within ${timeoutMs} ms`));
+      }, timeoutMs);
+    });
+
+    let response;
+    try {
+      response = await Promise.race([
+        fetchImpl(url, {
+          method: 'GET',
+          headers: { accept, 'user-agent': `${UPDATE_CHECK_USER_AGENT}/${currentVersion ?? 'unknown'}` },
+          ...(controller === null ? {} : { signal: controller.signal }),
+        }),
+        timeout,
+      ]);
+    } catch (error) {
+      if (controller !== null) {
+        try {
+          controller.abort();
+        } catch {
+          // an uncancellable request is still just a failed check
+        }
+      }
+      if (timedOut || error instanceof UpdateTimeout) {
+        return { ok: false, code: 'timeout', message: `the upstream check did not finish within ${timeoutMs} ms` };
+      }
+      return { ok: false, code: 'network-error', message: firstLine(error) };
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+    }
+
+    const status = typeof response?.status === 'number' ? response.status : 0;
+    if (response?.ok !== true) {
+      return {
+        ok: false,
+        code: 'http-error',
+        message: `${label} answered HTTP ${status === 0 ? '?' : status}`,
+        ...(status === 0 ? {} : { status }),
+      };
+    }
+    return { ok: true, body: await responseJson(response), status };
+  }
+
+  /**
+   * The **npm** attempt (g-042) — the primary path.
+   *
+   * One `GET` of the package document; `dist-tags.latest` is the version. Every
+   * way this can fail to produce a version — no usable registry, a network error,
+   * a timeout, a non-2xx status, a body that is not a package document, a missing
+   * or unparsable `dist-tags.latest` — is `{ok:false, failure}` and the caller
+   * falls back to GitHub. It deliberately never invents an "undecidable upstream"
+   * answer: a document the registry did not really serve is *unusable*, not a fact
+   * about this package.
+   *
+   * The one exception is a version that parses but cannot be compared against
+   * this plugin's own: that is our own broken constant rather than npm's silence,
+   * so it is reported (and cached) as the same `uncomparable-version` answer the
+   * GitHub path produces.
+   * @returns `{ok:true, cacheable, payload}` or `{ok:false, failure}`, where
+   *   `failure` is `null` when the npm path was never attempted at all.
+   */
+  async function attemptRegistry() {
+    if (registry === null) return { ok: false, failure: null };
+    const url = registryPackageUrl(registry);
+    if (url === null) {
+      // The profile pointed the npm path at something that is not an http(s)
+      // registry. Asking npmjs.org anyway would ignore what it said, so the path
+      // is skipped and the answer comes from GitHub.
+      return { ok: false, failure: null };
+    }
+    const answer = await getJson(url, 'application/json', 'the npm registry');
+    if (answer.ok !== true) {
+      return {
+        ok: false,
+        failure: {
+          code: answer.code,
+          message: answer.message,
+          ...(answer.status === undefined ? {} : { status: answer.status }),
+        },
+      };
+    }
+    const body = answer.body;
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+      return {
+        ok: false,
+        failure: { code: 'invalid-response', message: 'the npm registry answered with a body that is not a package document' },
+      };
+    }
+    const distTags = body['dist-tags'];
+    const latestTag =
+      distTags !== null && typeof distTags === 'object' && !Array.isArray(distTags) && typeof distTags.latest === 'string'
+        ? distTags.latest.trim()
+        : '';
+    if (latestTag.length === 0) {
+      return {
+        ok: false,
+        failure: { code: 'invalid-response', message: 'the npm registry document carries no dist-tags.latest' },
+      };
+    }
+    const parsed = parseSemver(latestTag);
+    if (parsed === null) {
+      return {
+        ok: false,
+        failure: { code: 'unparsable-tag', message: `the npm dist-tag ${JSON.stringify(latestTag)} is not a version` },
+      };
+    }
+    const newer = isNewerVersion(latestTag, currentVersion);
+    if (newer === null) {
+      return {
+        ok: true,
+        cacheable: true,
+        payload: payload({
+          source: UPDATE_SOURCE_NPM,
+          latest: formatSemver(parsed),
+          latestTag,
+          hasUpdate: null,
+          error: {
+            code: 'uncomparable-version',
+            message: `this package's own version ${JSON.stringify(currentVersion)} is not a version, so the comparison is undefined`,
+          },
+        }),
+      };
+    }
+    const dist = body.dist !== null && typeof body.dist === 'object' && !Array.isArray(body.dist) ? body.dist : {};
+    const tarball = typeof dist.tarball === 'string' && dist.tarball.trim().length > 0 ? dist.tarball.trim() : null;
+    const time = body.time !== null && typeof body.time === 'object' && !Array.isArray(body.time) ? body.time : {};
+    const canonical = formatSemver(parsed);
+    const publishedAt = typeof time[latestTag] === 'string'
+      ? time[latestTag]
+      : typeof time[canonical] === 'string'
+        ? time[canonical]
+        : null;
+    return {
+      ok: true,
+      cacheable: true,
+      payload: payload({
+        source: UPDATE_SOURCE_NPM,
+        latest: canonical,
+        latestTag,
+        hasUpdate: newer,
+        // The npm answer has no release page, and the page's one link is labelled
+        // for GitHub releases: `releaseUrl` stays null rather than sending that
+        // label to a URL it does not describe (g-043 owns the copy).
+        releaseUrl: null,
+        publishedAt,
+        tarball,
+      }),
+    };
+  }
+
+  /**
+   * The **GitHub Releases** attempt — the pre-existing path, kept as the
+   * fallback.
+   *
+   * Its own 404 is a fact about upstream (no release yet) and stays a decidable,
+   * cached answer; every other failure is `{ok:false, failure}` and becomes a
+   * fallback or the final payload.
+   * @returns `{ok:true, cacheable, payload}` or `{ok:false, failure}`.
+   */
+  async function attemptGithub() {
+    const slug = parseRepositorySlug(repositoryUrl);
+    if (slug === null) {
+      return {
+        ok: false,
+        failure: {
+          code: 'no-repository',
+          message: 'this package declares no usable GitHub repository URL, so there is nothing to compare against',
+        },
+      };
+    }
+    const answer = await getJson(releasesLatestUrl(slug), 'application/vnd.github+json', 'GitHub');
+    if (answer.ok !== true) {
+      if (answer.status === 404) {
+        // No release yet — the goal says the repository may well be in this state,
+        // and it is a fact about upstream, not a failure of the check.
+        return {
+          ok: true,
+          cacheable: true,
+          payload: payload({
+            source: UPDATE_SOURCE_GITHUB,
+            hasUpdate: null,
+            error: { code: 'no-release', message: 'this repository has no published release yet' },
+          }),
+        };
+      }
+      return {
+        ok: false,
+        failure: {
+          code: answer.code,
+          message: answer.message,
+          ...(answer.status === undefined ? {} : { status: answer.status }),
+        },
+      };
+    }
+    const body = answer.body;
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+      return { ok: false, failure: { code: 'invalid-response', message: 'GitHub answered with a body that is not a release object' } };
+    }
+    const tag = typeof body.tag_name === 'string' ? body.tag_name.trim() : '';
+    if (tag.length === 0) {
+      return {
+        ok: true,
+        cacheable: true,
+        payload: payload({
+          source: UPDATE_SOURCE_GITHUB,
+          hasUpdate: null,
+          error: { code: 'invalid-response', message: 'the release carries no tag_name to compare against' },
+        }),
+      };
+    }
+    const parsed = parseSemver(tag);
+    if (parsed === null) {
+      return {
+        ok: true,
+        cacheable: true,
+        payload: payload({
+          source: UPDATE_SOURCE_GITHUB,
+          hasUpdate: null,
+          error: { code: 'unparsable-tag', message: `the release tag ${JSON.stringify(tag)} is not a version` },
+        }),
+      };
+    }
+    const newer = isNewerVersion(tag, currentVersion);
+    if (newer === null) {
+      return {
+        ok: true,
+        cacheable: true,
+        payload: payload({
+          source: UPDATE_SOURCE_GITHUB,
+          latest: null,
+          hasUpdate: null,
+          error: {
+            code: 'uncomparable-version',
+            message: `this package's own version ${JSON.stringify(currentVersion)} is not a version, so the comparison is undefined`,
+          },
+        }),
+      };
+    }
+    const htmlUrl = typeof body.html_url === 'string' && body.html_url.trim().length > 0 ? body.html_url.trim() : null;
+    return {
+      ok: true,
+      cacheable: true,
+      payload: payload({
+        source: UPDATE_SOURCE_GITHUB,
+        latest: formatSemver(parsed),
+        latestTag: tag,
+        hasUpdate: newer,
+        releaseUrl: htmlUrl ?? releasePageUrl(slug, tag),
+        publishedAt: typeof body.published_at === 'string' ? body.published_at : null,
+      }),
+    };
+  }
+
+  /**
+   * Run one check: npm first, GitHub only when npm could not answer.
    *
    * Order matters and is the point of the whole module: the switch is read
-   * **first**, so a closed switch cannot even reach the transport (criterion 4);
-   * the cache is consulted second, so a repeat within the TTL costs nothing;
-   * `force` skips only the cache, never the switch.
+   * **first**, so a closed switch cannot even reach the transport; the cache is
+   * consulted second, so a repeat within the TTL costs nothing; `force` skips
+   * only the cache, never the switch. Then npm is asked, and the fallback runs
+   * for **a failure to answer** — never for an answer the user does not like: an
+   * npm registry that says "you are up to date" *is* the answer.
+   *
+   * When neither upstream answers, the payload reports the GitHub attempt (the
+   * last one) and carries the npm attempt's own reason beside it as `error.npm`;
+   * that key is absent when the npm path was never attempted at all. Failures are
+   * never cached, so the next check asks npm again.
    * @param options.force - bypass the cache (the manual re-check and the tests).
    * @returns the payload (never throws).
    */
@@ -368,123 +743,23 @@ export function createUpdateChecker(options = {}) {
     if (force !== true && cache !== null && age >= 0 && age < ttlMs) {
       return { ...cache.payload, cached: true };
     }
-    const slug = parseRepositorySlug(repositoryUrl);
-    if (slug === null) {
-      return failure(
-        'no-repository',
-        'this package declares no usable GitHub repository URL, so there is nothing to compare against',
-      );
-    }
     if (typeof fetchImpl !== 'function') {
       return failure('fetch-unavailable', 'this runtime offers no fetch, so the upstream check cannot run');
     }
 
-    const controller = typeof AbortController === 'function' ? new AbortController() : null;
-    let timedOut = false;
-    let timer = null;
-    const timeout = new Promise((_resolve, reject) => {
-      timer = setTimeout(() => {
-        timedOut = true;
-        reject(new UpdateTimeout(`GitHub did not answer within ${timeoutMs} ms`));
-      }, timeoutMs);
+    const npm = await attemptRegistry();
+    if (npm.ok === true) return settle(npm.payload, npm.cacheable);
+    const github = await attemptGithub();
+    if (github.ok === true) return settle(github.payload, github.cacheable);
+    return payload({
+      ok: false,
+      hasUpdate: null,
+      source: UPDATE_SOURCE_GITHUB,
+      error: {
+        ...github.failure,
+        ...(npm.failure === null ? {} : { npm: npm.failure }),
+      },
     });
-
-    let response;
-    try {
-      response = await Promise.race([
-        fetchImpl(releasesLatestUrl(slug), {
-          method: 'GET',
-          headers: {
-            accept: 'application/vnd.github+json',
-            'user-agent': `${UPDATE_CHECK_USER_AGENT}/${currentVersion ?? 'unknown'}`,
-          },
-          ...(controller === null ? {} : { signal: controller.signal }),
-        }),
-        timeout,
-      ]);
-    } catch (error) {
-      if (controller !== null) {
-        try {
-          controller.abort();
-        } catch {
-          // an uncancellable request is still just a failed check
-        }
-      }
-      if (timedOut || error instanceof UpdateTimeout) {
-        return failure('timeout', `the upstream check did not finish within ${timeoutMs} ms`);
-      }
-      return failure('network-error', firstLine(error));
-    } finally {
-      if (timer !== null) clearTimeout(timer);
-    }
-
-    const status = typeof response?.status === 'number' ? response.status : 0;
-    if (status === 404) {
-      // No release yet — the goal says the repository may well be in this state,
-      // and it is a fact about upstream, not a failure of the check.
-      return settle(
-        payload({
-          hasUpdate: null,
-          error: { code: 'no-release', message: 'this repository has no published release yet' },
-        }),
-        true,
-      );
-    }
-    if (response?.ok !== true) {
-      return failure('http-error', `GitHub answered HTTP ${status === 0 ? '?' : status}`, {
-        ...(status === 0 ? {} : { status }),
-      });
-    }
-
-    const body = await responseJson(response);
-    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
-      return failure('invalid-response', 'GitHub answered with a body that is not a release object');
-    }
-    const tag = typeof body.tag_name === 'string' ? body.tag_name.trim() : '';
-    if (tag.length === 0) {
-      return settle(
-        payload({
-          hasUpdate: null,
-          error: { code: 'invalid-response', message: 'the release carries no tag_name to compare against' },
-        }),
-        true,
-      );
-    }
-    const parsed = parseSemver(tag);
-    if (parsed === null) {
-      return settle(
-        payload({
-          hasUpdate: null,
-          error: { code: 'unparsable-tag', message: `the release tag ${JSON.stringify(tag)} is not a version` },
-        }),
-        true,
-      );
-    }
-    const newer = isNewerVersion(tag, currentVersion);
-    if (newer === null) {
-      return settle(
-        payload({
-          latest: null,
-          hasUpdate: null,
-          error: {
-            code: 'uncomparable-version',
-            message: `this package's own version ${JSON.stringify(currentVersion)} is not a version, so the comparison is undefined`,
-          },
-        }),
-        true,
-      );
-    }
-    const htmlUrl = typeof body.html_url === 'string' && body.html_url.trim().length > 0 ? body.html_url.trim() : null;
-    return settle(
-      payload({
-        latest: formatSemver(parsed),
-        latestTag: tag,
-        hasUpdate: newer,
-        releaseUrl: htmlUrl ?? releasePageUrl(slug, tag),
-        publishedAt: typeof body.published_at === 'string' ? body.published_at : null,
-      }),
-      true,
-    );
   }
 
   /**

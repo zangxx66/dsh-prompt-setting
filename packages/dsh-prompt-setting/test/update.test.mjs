@@ -1,14 +1,19 @@
 /**
- * Host-half assertions for g-030: the upstream update check.
+ * Host-half assertions for g-030 / g-042: the upstream update check.
  *
  * Two layers, both offline:
- *   - `core/update.js` is exercised directly — slug parsing, semver comparison,
- *     caching, `force`, and every degradation (404, a malformed tag, a network
- *     error, a timeout). The transport is a stub, so no test here can reach
- *     GitHub even if the machine is online;
+ *   - `core/update.js` is exercised directly — slug parsing, the npm registry
+ *     document, semver comparison, caching, `force`, the GitHub fallback and
+ *     every degradation (404, a malformed tag, a network error, a timeout). The
+ *     transport is a stub that tells the two upstreams apart by URL, so no test
+ *     here can reach npm or GitHub even if the machine is online;
  *   - the real route is mounted against a minimal fake Host with a stub
  *     transport injected through the plugin config, so the response shape and
  *     the on/off switch are asserted on the code that actually ships.
+ *
+ * g-042's rule under test: **npm is the primary path**, GitHub Releases is asked
+ * only when npm could not answer, and every answer names which of the two
+ * produced it (`source`).
  *
  * Run: `node --test test/`
  */
@@ -20,14 +25,19 @@ import test, { afterEach, beforeEach } from 'node:test';
 
 import { apply } from '../index.js';
 import {
+  DEFAULT_NPM_REGISTRY,
   UPDATE_CHECK_TTL_MS,
+  UPDATE_SOURCE_GITHUB,
+  UPDATE_SOURCE_NPM,
   compareSemver,
   createUpdateChecker,
   formatSemver,
   isNewerVersion,
   normalizePreferences,
+  normalizeRegistry,
   parseRepositorySlug,
   parseSemver,
+  registryPackageUrl,
   releasePageUrl,
   releasesLatestUrl,
 } from '../core/update.js';
@@ -35,6 +45,11 @@ import { readPreferences, userPreferencesPath, writePreferences } from '../core/
 
 const UPDATE_CHECK_PATH = '/prompt-setting/update-check';
 const PING_PATH = '/prompt-setting/ping';
+/** The document the npm path asks, and the release API the fallback asks. */
+const REGISTRY_URL = 'https://registry.npmjs.org/dsh-prompt-setting';
+const GITHUB_URL = 'https://api.github.com/repos/zangxx66/dsh-prompt-setting/releases/latest';
+/** The registry document's own install spec. */
+const TARBALL_URL = 'https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.0.tgz';
 
 let home;
 let previousHome;
@@ -54,21 +69,25 @@ afterEach(() => {
 });
 
 /**
- * A stub transport that answers from a table and counts its calls.
+ * A stub transport that answers **both** upstreams from a table and counts its
+ * calls.
  *
- * The recorded calls are the evidence for the two privacy-shaped criteria: one
- * `GET`, to the GitHub URL only, with an identifiable user-agent — and *zero*
- * calls once the switch is off.
+ * The recorded calls are the evidence for two things: which upstream was asked
+ * (npm first, GitHub only as the fallback) and the two privacy-shaped criteria —
+ * one `GET` per upstream, with an identifiable user-agent, and *zero* calls once
+ * the switch is off.
  * @param handler - `(url, init) => response|Promise<response>`; the default
- *   answers the canonical release body.
+ *   answers the canonical npm document for a registry URL and the canonical
+ *   release body for GitHub.
  * @returns `{fetch, calls}`.
  */
 function makeTransport(handler) {
   const calls = [];
   const fetch = async (url, init) => {
-    calls.push({ url: String(url), init: init || {} });
-    if (typeof handler === 'function') return handler(String(url), init || {});
-    return releaseResponse();
+    const target = String(url);
+    calls.push({ url: target, init: init || {} });
+    if (typeof handler === 'function') return handler(target, init || {});
+    return target.startsWith('https://registry.npmjs.org/') ? npmResponse() : releaseResponse();
   };
   return { fetch, calls };
 }
@@ -99,10 +118,21 @@ function releaseResponse(over = {}) {
   });
 }
 
+/** The canonical "a newer version is published" npm package document. */
+function npmResponse(over = {}) {
+  return jsonResponse({
+    name: 'dsh-prompt-setting',
+    'dist-tags': { latest: '0.2.0' },
+    dist: { tarball: TARBALL_URL },
+    time: { '0.2.0': '2026-09-25T00:00:00.000Z' },
+    ...over,
+  });
+}
+
 /**
  * One checker over a stub transport, with the test's own version and repo.
  * @param options - `handler`, `preferences`, `currentVersion`, `ttlMs`,
- *   `timeoutMs`, `now`, `repositoryUrl`.
+ *   `timeoutMs`, `now`, `repositoryUrl`, `registry`.
  * @returns the checker plus the transport and the preference writes.
  */
 function makeChecker(options = {}) {
@@ -113,6 +143,7 @@ function makeChecker(options = {}) {
     fetch: transport.fetch,
     repositoryUrl: options.repositoryUrl === undefined ? 'git+https://github.com/zangxx66/dsh-prompt-setting.git' : options.repositoryUrl,
     currentVersion: options.currentVersion === undefined ? '0.1.1' : options.currentVersion,
+    registry: options.registry,
     ttlMs: options.ttlMs,
     timeoutMs: options.timeoutMs,
     now: options.now,
@@ -168,6 +199,29 @@ test('update: the one request URL is derived from the parsed slug', () => {
   assert.equal(releasePageUrl({ owner: 'o', repo: 'r' }, 'v1.2.3'), 'https://github.com/o/r/releases/tag/v1.2.3');
 });
 
+// #region pure policy: the injected npm registry (g-042)
+
+test('update: the npm document URL is built from the injected registry base', () => {
+  assert.equal(DEFAULT_NPM_REGISTRY, 'https://registry.npmjs.org/');
+  assert.equal(registryPackageUrl(), REGISTRY_URL, 'the shipped default needs no argument');
+  assert.equal(registryPackageUrl(DEFAULT_NPM_REGISTRY), REGISTRY_URL);
+  // A mirror under a path keeps that path, and a missing trailing slash is added
+  // rather than silently dropped (which would ask the mirror's root instead).
+  assert.equal(registryPackageUrl('https://mirror.example/npm/'), 'https://mirror.example/npm/dsh-prompt-setting');
+  assert.equal(registryPackageUrl('https://mirror.example/npm'), 'https://mirror.example/npm/dsh-prompt-setting');
+  assert.equal(registryPackageUrl('  https://mirror.example/npm/  '), 'https://mirror.example/npm/dsh-prompt-setting');
+  assert.equal(normalizeRegistry('https://registry.npmjs.org/?a=1#b'), 'https://registry.npmjs.org/', 'query and fragment are decoration');
+  // Blank means "unstated" ⇒ the shipped default; anything else unusable means
+  // "do not ask npm", never "ask npmjs.org instead".
+  for (const value of [undefined, null, '', '   ', 42, {}]) {
+    assert.equal(normalizeRegistry(value), DEFAULT_NPM_REGISTRY, JSON.stringify(value));
+  }
+  for (const value of ['registry.example', 'ftp://mirror.example/', 'file:///tmp/registry', 'not a url']) {
+    assert.equal(normalizeRegistry(value), null, value);
+    assert.equal(registryPackageUrl(value), null, value);
+  }
+});
+
 // #region pure policy: version comparison
 
 test('update: the `v` prefix and a prerelease suffix are tolerated', () => {
@@ -206,41 +260,150 @@ test('update: only an explicit boolean false closes the switch', () => {
   }
 });
 
-// #region the checker: the happy paths and the cache
+// #region the checker: npm first, GitHub only as the fallback
 
-test('update: a newer release is reported with its version and release page', async () => {
+test('update: npm is the primary path — dist-tags.latest is the newest version', async () => {
   const { checker, transport } = makeChecker();
   const result = await checker.check();
   assert.equal(result.ok, true);
+  assert.equal(result.source, UPDATE_SOURCE_NPM);
   assert.equal(result.hasUpdate, true);
   assert.equal(result.latest, '0.2.0');
   assert.equal(result.current, '0.1.1');
-  assert.equal(result.releaseUrl, 'https://github.com/zangxx66/dsh-prompt-setting/releases/tag/v0.2.0');
-  assert.equal(result.publishedAt, '2026-10-01T00:00:00Z');
+  assert.equal(result.latestTag, '0.2.0');
+  assert.equal(result.tarball, TARBALL_URL, 'the registry document names the install spec');
+  assert.equal(result.publishedAt, '2026-09-25T00:00:00.000Z');
+  assert.equal(result.releaseUrl, null, 'the npm answer has no release page to link');
   assert.equal(result.cached, false);
   assert.equal(result.error, null);
   assert.match(result.checkedAt, /^\d{4}-\d{2}-\d{2}T/);
-  assert.equal(transport.calls.length, 1, 'exactly one outbound request');
-  assert.equal(transport.calls[0].url, 'https://api.github.com/repos/zangxx66/dsh-prompt-setting/releases/latest');
+  assert.equal(transport.calls.length, 1, 'GitHub is not asked when npm answers');
+  assert.equal(transport.calls[0].url, REGISTRY_URL);
   assert.equal(transport.calls[0].init.method, 'GET');
   assert.match(String(transport.calls[0].init.headers['user-agent']), /^dsh-prompt-setting\//);
   assert.equal(transport.calls[0].init.body, undefined, 'the request carries no body and no user data');
 });
 
-test('update: the same version, and an older one, are both "no update"', async () => {
-  for (const tag of ['v0.1.1', '0.1.0', 'v0.0.9']) {
-    const { checker } = makeChecker({ handler: () => releaseResponse({ tag_name: tag }) });
+test('update: the same version, and an older one, are both "no update" — and are not a fallback trigger', async () => {
+  for (const latest of ['0.1.1', '0.1.0', '0.0.9']) {
+    const { checker, transport } = makeChecker({
+      handler: (url) => (url === REGISTRY_URL ? npmResponse({ 'dist-tags': { latest } }) : releaseResponse()),
+    });
     const result = await checker.check();
-    assert.equal(result.hasUpdate, false, tag);
-    assert.equal(result.ok, true, tag);
+    assert.equal(result.hasUpdate, false, latest);
+    assert.equal(result.ok, true, latest);
+    assert.equal(result.source, UPDATE_SOURCE_NPM, latest);
+    assert.equal(transport.calls.length, 1, `${latest}: an answer we do not like is still an answer`);
   }
 });
 
-test('update: a release without html_url falls back to the tag page', async () => {
-  const { checker } = makeChecker({ handler: () => releaseResponse({ html_url: null }) });
+test('update: the npm request is built from the injected registry base', async () => {
+  const { checker, transport } = makeChecker({
+    registry: 'https://mirror.example/npm/',
+    handler: (url) => (url.endsWith('/dsh-prompt-setting') ? npmResponse() : releaseResponse()),
+  });
   const result = await checker.check();
+  assert.equal(result.source, UPDATE_SOURCE_NPM);
+  assert.equal(transport.calls.length, 1);
+  assert.equal(transport.calls[0].url, 'https://mirror.example/npm/dsh-prompt-setting');
+});
+
+test('update: an unusable registry disables the npm path instead of asking npmjs.org', async () => {
+  const { checker, transport } = makeChecker({ registry: 'file:///tmp/registry', handler: () => releaseResponse() });
+  const result = await checker.check();
+  assert.equal(result.ok, true);
+  assert.equal(result.source, UPDATE_SOURCE_GITHUB);
+  assert.equal(result.hasUpdate, true);
+  assert.equal(transport.calls.length, 1, 'the npm path is skipped, not redirected to the default registry');
+  assert.equal(transport.calls[0].url, GITHUB_URL);
+});
+
+test('update: a release without html_url falls back to the tag page', async () => {
+  const { checker } = makeChecker({
+    registry: 'registry.example',
+    handler: () => releaseResponse({ html_url: null }),
+  });
+  const result = await checker.check();
+  assert.equal(result.source, UPDATE_SOURCE_GITHUB);
   assert.equal(result.releaseUrl, 'https://github.com/zangxx66/dsh-prompt-setting/releases/tag/v0.2.0');
 });
+
+test('update: an npm failure falls back to GitHub Releases, marked source=github', async () => {
+  const { checker, transport } = makeChecker({
+    handler: (url) => (url === REGISTRY_URL ? jsonResponse({ message: 'unavailable' }, 503) : releaseResponse()),
+  });
+  const result = await checker.check();
+  assert.equal(result.ok, true);
+  assert.equal(result.source, UPDATE_SOURCE_GITHUB);
+  assert.equal(result.hasUpdate, true);
+  assert.equal(result.latest, '0.2.0');
+  assert.equal(result.latestTag, 'v0.2.0', 'the release tag travels verbatim for the asset URL');
+  assert.equal(result.tarball, null, 'a GitHub answer carries no registry tarball');
+  assert.equal(
+    result.releaseUrl,
+    'https://github.com/zangxx66/dsh-prompt-setting/releases/tag/v0.2.0',
+  );
+  assert.deepEqual(transport.calls.map((call) => call.url), [REGISTRY_URL, GITHUB_URL], 'npm first, GitHub second');
+});
+
+test('update: every way npm can fail to answer sends the check to the fallback', async () => {
+  const unusable = [
+    ['a 503 from the registry', () => jsonResponse({ message: 'unavailable' }, 503)],
+    ['a 404 — this registry does not carry the package', () => jsonResponse({ message: 'Not Found' }, 404)],
+    ['a network error', () => {
+      throw new Error('getaddrinfo ENOTFOUND registry.npmjs.org');
+    }],
+    ['a body that is not JSON', () => ({ ok: true, status: 200, text: async () => 'not json' })],
+    ['a body that is not a package document', () => jsonResponse(['nope'])],
+    ['a document without dist-tags', () => jsonResponse({ name: 'dsh-prompt-setting' })],
+    ['dist-tags without latest', () => jsonResponse({ 'dist-tags': { beta: '1.0.0' } })],
+    ['a dist-tag that is not a version', () => npmResponse({ 'dist-tags': { latest: 'nightly' } })],
+  ];
+  for (const [reason, npmAnswer] of unusable) {
+    const { checker, transport } = makeChecker({
+      handler: (url) => (url === REGISTRY_URL ? npmAnswer() : releaseResponse()),
+    });
+    const result = await checker.check();
+    assert.equal(result.ok, true, reason);
+    assert.equal(result.source, UPDATE_SOURCE_GITHUB, reason);
+    assert.equal(result.hasUpdate, true, reason);
+    assert.equal(result.latest, '0.2.0', reason);
+    assert.deepEqual(transport.calls.map((call) => call.url), [REGISTRY_URL, GITHUB_URL], reason);
+  }
+});
+
+test('update: both upstreams failing is one structured failure, never a throw', async () => {
+  const { checker, transport } = makeChecker({
+    handler: () => {
+      throw new Error('getaddrinfo ENOTFOUND');
+    },
+  });
+  const result = await checker.check();
+  assert.equal(result.ok, false, 'still a 200 payload, never an exception');
+  assert.equal(result.hasUpdate, null);
+  assert.equal(result.source, UPDATE_SOURCE_GITHUB, 'the last attempt produced this payload');
+  assert.equal(result.error.code, 'network-error');
+  assert.match(result.error.message, /ENOTFOUND/);
+  assert.equal(result.error.npm.code, 'network-error', 'the primary path says why it was skipped');
+  // A failure is never cached: the next check asks both paths again.
+  await checker.check();
+  assert.equal(transport.calls.length, 4);
+});
+
+test('update: a package with no usable repository URL refuses without asking anyone', async () => {
+  // The npm path is disabled by the profile's own (unusable) registry, so the
+  // GitHub precondition is the only thing left to check — and it fails before a
+  // request, exactly as it did before g-042.
+  const { checker, transport } = makeChecker({ registry: 'registry.example', repositoryUrl: 'https://gitlab.com/o/r' });
+  const result = await checker.check();
+  assert.equal(result.ok, false);
+  assert.equal(result.source, UPDATE_SOURCE_GITHUB);
+  assert.equal(result.error.code, 'no-repository');
+  assert.equal('npm' in result.error, false, 'the npm path was never attempted, so it has no reason to report');
+  assert.equal(transport.calls.length, 0);
+});
+
+// #region the checker: the cache
 
 test('update: a repeat inside the TTL is served from cache, and force bypasses it', async () => {
   let clock = 1_000_000;
@@ -262,6 +425,22 @@ test('update: a repeat inside the TTL is served from cache, and force bypasses i
   assert.equal(transport.calls.length, 3);
 });
 
+test('update: a cached fallback answer is not re-opened by the npm path', async () => {
+  let clock = 1_000_000;
+  const { checker, transport } = makeChecker({
+    now: () => clock,
+    handler: (url) => (url === REGISTRY_URL ? jsonResponse({ message: 'unavailable' }, 503) : releaseResponse()),
+  });
+  const first = await checker.check();
+  assert.equal(first.source, UPDATE_SOURCE_GITHUB);
+  assert.equal(transport.calls.length, 2, 'the fallback cost exactly two requests');
+  clock += UPDATE_CHECK_TTL_MS - 1;
+  const second = await checker.check();
+  assert.equal(second.cached, true, 'the TTL covers a GitHub-sourced answer too');
+  assert.equal(second.source, UPDATE_SOURCE_GITHUB, 'the cached answer keeps the source it was produced from');
+  assert.equal(transport.calls.length, 2, 'nothing is re-asked inside the TTL');
+});
+
 test('update: a clock that steps backwards does not make a cache eternal', async () => {
   let clock = 1_000_000;
   const { checker, transport } = makeChecker({ now: () => clock });
@@ -276,15 +455,17 @@ test('update: a clock that steps backwards does not make a cache eternal', async
   assert.equal(transport.calls.length, 2, 'the stale-looking entry costs one request, not an eternity of them');
 });
 
-test('update: an undecidable upstream answer is cached too, so a 404 is not re-asked', async () => {
+test('update: an undecidable GitHub answer is cached too, so a 404 is not re-asked', async () => {
   const { checker, transport } = makeChecker({ handler: () => jsonResponse({ message: 'Not Found' }, 404) });
   const first = await checker.check();
-  assert.equal(first.ok, true);
+  assert.equal(first.ok, true, 'no release is a fact about upstream, not a failure of the check');
   assert.equal(first.hasUpdate, null);
   assert.equal(first.error.code, 'no-release');
+  assert.equal(first.source, UPDATE_SOURCE_GITHUB);
+  assert.equal(transport.calls.length, 2, 'npm answered 404 (unusable), then GitHub answered 404 (a fact)');
   const second = await checker.check();
   assert.equal(second.cached, true);
-  assert.equal(transport.calls.length, 1);
+  assert.equal(transport.calls.length, 2);
 });
 
 // #region the checker: every degradation
@@ -297,35 +478,24 @@ test('update: a repository with no release answers hasUpdate:null, never an upda
   assert.equal(result.latest, null);
 });
 
-test('update: a malformed tag answers hasUpdate:null instead of guessing', async () => {
-  const { checker } = makeChecker({ handler: () => releaseResponse({ tag_name: 'nightly' }) });
+test('update: a GitHub tag that is not a version answers hasUpdate:null instead of guessing', async () => {
+  const { checker } = makeChecker({ registry: 'registry.example', handler: () => releaseResponse({ tag_name: 'nightly' }) });
   const result = await checker.check();
   assert.equal(result.hasUpdate, null);
   assert.equal(result.latest, null);
   assert.equal(result.error.code, 'unparsable-tag');
+  assert.equal(result.source, UPDATE_SOURCE_GITHUB);
 });
 
 test('update: a release object with no tag_name answers hasUpdate:null', async () => {
-  const { checker } = makeChecker({ handler: () => jsonResponse({ html_url: 'https://github.com/o/r/releases' }) });
+  const { checker } = makeChecker({
+    registry: 'registry.example',
+    handler: () => jsonResponse({ html_url: 'https://github.com/o/r/releases' }),
+  });
   const result = await checker.check();
   assert.equal(result.hasUpdate, null);
   assert.equal(result.error.code, 'invalid-response');
-});
-
-test('update: a network error is a structured failure, not a throw', async () => {
-  const { checker, transport } = makeChecker({
-    handler: () => {
-      throw new Error('getaddrinfo ENOTFOUND api.github.com');
-    },
-  });
-  const result = await checker.check();
-  assert.equal(result.ok, false);
-  assert.equal(result.hasUpdate, null);
-  assert.equal(result.error.code, 'network-error');
-  assert.match(result.error.message, /ENOTFOUND/);
-  // A failure is never cached: the next request tries again.
-  await checker.check();
-  assert.equal(transport.calls.length, 2);
+  assert.equal(result.source, UPDATE_SOURCE_GITHUB);
 });
 
 test('update: an HTTP error is reported with its status, and is not cached', async () => {
@@ -334,11 +504,12 @@ test('update: an HTTP error is reported with its status, and is not cached', asy
   assert.equal(result.ok, false);
   assert.equal(result.error.code, 'http-error');
   assert.equal(result.error.status, 403);
+  assert.equal(result.error.npm.status, 403);
   await checker.check();
-  assert.equal(transport.calls.length, 2);
+  assert.equal(transport.calls.length, 4, 'a failure is never cached, on either path');
 });
 
-test('update: a body that is not a release object is refused', async () => {
+test('update: a body that is neither a package document nor a release object is refused', async () => {
   const { checker } = makeChecker({ handler: () => ({ ok: true, status: 200, text: async () => 'not json' }) });
   const result = await checker.check();
   assert.equal(result.ok, false);
@@ -347,28 +518,25 @@ test('update: a body that is not a release object is refused', async () => {
 
 test('update: a text-only transport double is read as well as a real json() one', async () => {
   const { checker } = makeChecker({
-    handler: () => ({ ok: true, status: 200, text: async () => JSON.stringify({ tag_name: 'v9.9.9' }) }),
+    handler: (url) => (url === REGISTRY_URL
+      ? { ok: true, status: 200, text: async () => JSON.stringify({ 'dist-tags': { latest: '9.9.9' }, dist: { tarball: TARBALL_URL } }) }
+      : jsonResponse({ tag_name: 'v9.9.9' })),
   });
   const result = await checker.check();
+  assert.equal(result.source, UPDATE_SOURCE_NPM);
   assert.equal(result.latest, '9.9.9');
   assert.equal(result.hasUpdate, true);
 });
 
-test('update: a hanging request times out instead of wedging the page', async () => {
-  const { checker } = makeChecker({ handler: () => new Promise(() => {}), timeoutMs: 25 });
+test('update: a hanging request times out on each path instead of wedging the page', async () => {
+  const { checker, transport } = makeChecker({ handler: () => new Promise(() => {}), timeoutMs: 25 });
   const started = Date.now();
   const result = await checker.check();
   assert.equal(result.ok, false);
   assert.equal(result.error.code, 'timeout');
+  assert.equal(result.error.npm.code, 'timeout', 'the primary path timed out first, then the fallback');
+  assert.equal(transport.calls.length, 2, 'each path gets its own timeout, and neither is retried');
   assert.ok(Date.now() - started < 5000, 'the timeout is the injected one, not the shipped five seconds');
-});
-
-test('update: a package with no usable repository URL refuses before any request', async () => {
-  const { checker, transport } = makeChecker({ repositoryUrl: 'https://gitlab.com/o/r' });
-  const result = await checker.check();
-  assert.equal(result.ok, false);
-  assert.equal(result.error.code, 'no-repository');
-  assert.equal(transport.calls.length, 0);
 });
 
 test('update: a runtime without fetch refuses instead of throwing', async () => {
@@ -386,6 +554,7 @@ test('update: a runtime without fetch refuses instead of throwing', async () => 
     const result = await checker.check();
     assert.equal(result.ok, false);
     assert.equal(result.error.code, 'fetch-unavailable');
+    assert.equal(result.source, null, 'no upstream was consulted at all');
   } finally {
     globalThis.fetch = original;
   }
@@ -559,9 +728,12 @@ test('update route: GET answers the documented shape with a stub transport', asy
     'ok',
     'current',
     'latest',
+    'latestTag',
     'hasUpdate',
     'releaseUrl',
     'publishedAt',
+    'source',
+    'tarball',
     'checkedAt',
     'cached',
     'error',
@@ -570,9 +742,36 @@ test('update route: GET answers the documented shape with a stub transport', asy
   }
   assert.equal(body.ok, true);
   assert.equal(body.hasUpdate, true);
+  assert.equal(body.source, UPDATE_SOURCE_NPM, 'the npm answer names itself');
+  assert.equal(body.tarball, TARBALL_URL);
   assert.equal(body.enabled, true, 'the same answer reports the switch');
   assert.equal(body.cached, false);
   assert.equal(transport.calls.length, 1);
+});
+
+test('update route: the registry is injected through the plugin config (g-042)', async () => {
+  const transport = makeTransport((url) => (url.endsWith('/dsh-prompt-setting') ? npmResponse() : releaseResponse()));
+  const { route } = mountHost({
+    config: { updateCheck: { fetch: transport.fetch, registry: 'https://mirror.example/npm/' } },
+  });
+  const res = await call(route, { url: UPDATE_CHECK_PATH });
+  assert.equal(res.statusCode, 200);
+  assert.equal(json(res).source, UPDATE_SOURCE_NPM);
+  assert.equal(transport.calls[0].url, 'https://mirror.example/npm/dsh-prompt-setting');
+});
+
+test('update route: an npm failure falls back to GitHub, and is still a 200', async () => {
+  const transport = makeTransport((url) => (url === REGISTRY_URL
+    ? jsonResponse({ message: 'unavailable' }, 503)
+    : releaseResponse()));
+  const { route } = mountHost({ config: { updateCheck: { fetch: transport.fetch } } });
+  const res = await call(route, { url: UPDATE_CHECK_PATH });
+  assert.equal(res.statusCode, 200, 'the fallback is not an error page either');
+  const body = json(res);
+  assert.equal(body.source, UPDATE_SOURCE_GITHUB);
+  assert.equal(body.hasUpdate, true);
+  assert.equal(body.latest, '0.2.0');
+  assert.deepEqual(transport.calls.map((entry) => entry.url), [REGISTRY_URL, GITHUB_URL]);
 });
 
 test('update route: a failing check is a 200 with a structured error, never a 5xx', async () => {
@@ -585,6 +784,7 @@ test('update route: a failing check is a 200 with a structured error, never a 5x
   const body = json(res);
   assert.equal(body.ok, false);
   assert.equal(body.error.code, 'network-error');
+  assert.equal(body.error.npm.code, 'network-error');
 });
 
 test('update route: force=1 is the only way to re-ask inside the cache window', async () => {

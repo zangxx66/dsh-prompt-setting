@@ -46,6 +46,7 @@ import {
   isAlreadyInstalledOn,
   isLocalSpec,
   publicInstallStatus,
+  registryTarballSpec,
   releasePageForTag,
   resolveInstallPolicy,
   resolveInstallTarget,
@@ -56,6 +57,10 @@ const UPDATE_CHECK_PATH = '/prompt-setting/update-check';
 const UPDATE_APPLY_PATH = '/prompt-setting/update-apply';
 const UPDATE_APPLY_CANCEL_PATH = '/prompt-setting/update-apply/cancel';
 const ASSET_URL = 'https://github.com/zangxx66/dsh-prompt-setting/releases/download/0.2.0/dsh-prompt-setting-0.2.0.tgz';
+/** g-042: the npm document the check reads first, and its own install spec. */
+const REGISTRY_URL = 'https://registry.npmjs.org/dsh-prompt-setting';
+const GITHUB_RELEASE_URL = 'https://api.github.com/repos/zangxx66/dsh-prompt-setting/releases/latest';
+const TARBALL_URL = 'https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.0.tgz';
 
 let home;
 let previousHome;
@@ -99,30 +104,49 @@ function jsonResponse(body, status = 200) {
 }
 
 /**
- * One transport that answers **both** questions this feature asks: the GitHub
- * release check (a JSON body) and the release-asset probe (a status only).
+ * One transport that answers **both** questions this feature asks: the update
+ * check (the npm document for the registry URL, the release body for GitHub) and
+ * the install probe (a status only).
  *
- * The two are told apart by method — the check is a `GET`, the probe a `HEAD` —
- * which is also the assertion that the probe never replaces the check's own
- * request.
+ * The two requests are told apart by method — the checks are `GET`s, the probe a
+ * `HEAD` — which is also the assertion that the probe never replaces a check's own
+ * request. **g-042:** unless a case passes `options.npm`, the registry answers the
+ * *release-shaped* body (so npm is unusable and the check falls back to GitHub,
+ * which is what the pre-g-042 fixtures describe); passing `options.npm` — a
+ * package document — makes the check take the npm path instead.
  * @param options.release - the release body, or a status to fail with.
  * @param options.assetStatus - the HEAD status (default 200).
+ * @param options.npm - the npm package document for the registry URL.
  * @returns `{fetch, calls}`.
  */
 function makeTransport(options = {}) {
   const calls = [];
   const fetch = async (url, init = {}) => {
+    const target = String(url);
     const method = String(init.method ?? 'GET');
-    calls.push({ url: String(url), method });
+    calls.push({ url: target, method });
     if (method === 'HEAD') {
       if (options.throwOnProbe === true) throw new Error('ECONNRESET');
       return { ok: options.assetStatus === 200, status: options.assetStatus ?? 200 };
+    }
+    if (options.npm !== undefined && target.startsWith('https://registry.npmjs.org/')) {
+      return jsonResponse(options.npm);
     }
     if (options.release === 'network') throw new Error('ECONNREFUSED');
     if (options.release === 'no-release') return jsonResponse({}, 404);
     return jsonResponse(options.release ?? { tag_name: '0.2.0', html_url: null, published_at: '2026-10-01T00:00:00Z' });
   };
   return { fetch, calls };
+}
+
+/** The canonical npm package document ("0.2.0 is the latest"). */
+function npmDocument(over = {}) {
+  return {
+    name: 'dsh-prompt-setting',
+    'dist-tags': { latest: '0.2.0' },
+    dist: { tarball: TARBALL_URL },
+    ...over,
+  };
 }
 
 /**
@@ -516,6 +540,88 @@ test('install route: a missing pluginManager is a structured refusal, not a brok
   assert.equal(json(ping).ok, true);
 });
 
+test('install: the npm source installs from the registry tarball, not from a release asset', () => {
+  const target = resolveInstallTarget({
+    hasUpdate: true,
+    latest: '0.2.0',
+    latestTag: '0.2.0',
+    source: 'npm',
+    tarball: TARBALL_URL,
+    releaseUrl: null,
+  });
+  assert.equal(target.ok, true);
+  assert.equal(target.source, 'npm');
+  assert.equal(target.url, TARBALL_URL, 'the spec is the registry document\u2019s own dist.tarball');
+  assert.equal(target.version, '0.2.0');
+  assert.equal(target.tag, '0.2.0');
+  assert.equal(target.releaseUrl, null, 'an npm answer has no release page');
+
+  // A payload that carries no `source` is a pre-g-042 Host: still the release asset.
+  const legacy = resolveInstallTarget({ hasUpdate: true, latest: '0.2.0', latestTag: 'v0.2.0' });
+  assert.equal(legacy.source, 'github');
+  assert.ok(legacy.url.includes('/download/v0.2.0/dsh-prompt-setting-0.2.0.tgz'));
+
+  // And a GitHub-sourced payload (an npm fallback) keeps the asset path.
+  const fallback = resolveInstallTarget({ hasUpdate: true, latest: '0.2.0', latestTag: '0.2.0', source: 'github', tarball: TARBALL_URL });
+  assert.equal(fallback.source, 'github');
+  assert.equal(fallback.url, ASSET_URL, 'a registry tarball on a GitHub answer is ignored, not used');
+});
+
+test('install: a registry tarball that is missing or untrustworthy is refused, never handed to pnpm', () => {
+  const base = { hasUpdate: true, latest: '0.2.0', latestTag: '0.2.0', source: 'npm', releaseUrl: null };
+  // Nothing usable was named at all.
+  for (const tarball of [undefined, null, 42, '', '   ', {}]) {
+    const target = resolveInstallTarget({ ...base, tarball });
+    assert.equal(target.ok, false, JSON.stringify(tarball));
+    assert.equal(target.code, REFUSAL_ASSET_MISSING, JSON.stringify(tarball));
+  }
+  // A value that is present but is not an http(s) `.tgz` URL.
+  const untrustworthy = [
+    'ftp://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.0.tgz',
+    'file:///tmp/dsh-prompt-setting-0.2.0.tgz',
+    'javascript:alert(1)',
+    'data:application/gzip;base64,AAAA',
+    'https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.0.zip',
+    'https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.0.tar.gz',
+    'not a url',
+    'dsh-prompt-setting-0.2.0.tgz',
+  ];
+  for (const tarball of untrustworthy) {
+    const target = resolveInstallTarget({ ...base, tarball });
+    assert.equal(target.ok, false, tarball);
+    assert.equal(target.code, REFUSAL_ASSET_UNVERIFIED, tarball);
+    assert.equal(registryTarballSpec(tarball), null, tarball);
+  }
+  // The honest forms are admitted, including an http mirror and a query string.
+  for (const tarball of [
+    TARBALL_URL,
+    'http://mirror.example/npm/dsh-prompt-setting-0.2.0.tgz',
+    '  https://mirror.example/npm/x.tgz?token=abc  ',
+  ]) {
+    const target = resolveInstallTarget({ ...base, tarball });
+    assert.equal(target.ok, true, tarball);
+    assert.equal(target.url, tarball.trim(), tarball);
+  }
+  assert.equal(registryTarballSpec(null), null);
+});
+
+test('install: the npm artifact sentences name the registry, and keep the codes', () => {
+  const missing = describeInstallFailure('asset-missing', { tag: '0.2.0', version: '0.2.0', source: 'npm' });
+  assert.equal(missing.code, REFUSAL_ASSET_MISSING);
+  assert.match(missing.message, /npm registry/);
+  assert.match(missing.message, /v0\.2\.0/);
+  assert.equal(missing.retryable, true, 'the flags and the manual hint do not move with the wording');
+  const unverified = describeInstallFailure('asset-unverified', { tag: '0.2.0', version: '0.2.0', source: 'npm' });
+  assert.equal(unverified.code, REFUSAL_ASSET_UNVERIFIED);
+  assert.match(unverified.message, /npm registry/);
+  // Every other code keeps its own sentence whatever the source is.
+  assert.equal(
+    describeInstallFailure('stale-approval', { tag: '0.2.0', version: '0.2.0', source: 'npm' }).message,
+    describeInstallFailure('stale-approval', { tag: '0.2.0', version: '0.2.0' }).message,
+  );
+  assert.match(describeInstallFailure('asset-missing', { tag: '0.2.0', version: '0.2.0' }).message, /release has no/);
+});
+
 test('install route: the tarball spec is installed, and approvedBuilds is never passed', async () => {
   writeProfile({ 'dsh-prompt-setting': '0.1.1' });
   const transport = makeTransport();
@@ -543,12 +649,60 @@ test('install route: the tarball spec is installed, and approvedBuilds is never 
   assert.equal(status.status.installed, true);
   assert.equal(status.status.error, null);
 
-  // Exactly two outbound requests: the update check and the asset probe. No
-  // second check, and no pnpm-side fetch at all (there is no pnpm here).
+  // Three outbound requests, and no more: the npm attempt (which this fixture
+  // refuses to answer — it replies with the release-shaped body), the GitHub
+  // fallback that really answered, and the asset probe. No second check, and no
+  // pnpm-side fetch at all (there is no pnpm here).
   assert.deepEqual(
-    transport.calls.map((entry) => entry.method).sort(),
-    ['GET', 'HEAD'],
+    transport.calls.map((entry) => `${entry.method} ${entry.url}`),
+    [`GET ${REGISTRY_URL}`, `GET ${GITHUB_RELEASE_URL}`, `HEAD ${ASSET_URL}`],
   );
+});
+
+test('install route: an npm-sourced check installs the registry tarball', async () => {
+  writeProfile({ 'dsh-prompt-setting': '0.1.1' });
+  const transport = makeTransport({ npm: npmDocument() });
+  const manager = makeManager();
+  const { route } = mountHost({ manager, transport });
+
+  const started = await startInstall(route);
+  assert.equal(started.ok, true);
+  await settle();
+  assert.equal(manager.calls.length, 1);
+  assert.equal(manager.calls[0].spec, TARBALL_URL, 'pnpm is pointed at dist.tarball, not at a release asset');
+
+  const status = await readStatus(route, started.status.requestId);
+  assert.equal(status.status.phase, 'done');
+  assert.equal(status.status.application, 'restart-required');
+  // Exactly two outbound requests: the npm document and the probe against the
+  // very tarball it named. GitHub is never asked.
+  assert.deepEqual(
+    transport.calls.map((entry) => `${entry.method} ${entry.url}`),
+    [`GET ${REGISTRY_URL}`, `HEAD ${TARBALL_URL}`],
+  );
+});
+
+test('install route: an npm tarball that is missing or untrustworthy is refused before pnpm', async () => {
+  writeProfile({ 'dsh-prompt-setting': '0.1.1' });
+  const cases = [
+    [undefined, REFUSAL_ASSET_MISSING, 'the document names no dist.tarball'],
+    ['https://evil.test/dsh-prompt-setting-0.2.0.zip', REFUSAL_ASSET_UNVERIFIED, 'a URL pnpm must never see'],
+  ];
+  for (const [tarball, code, why] of cases) {
+    const document = tarball === undefined ? npmDocument({ dist: {} }) : npmDocument({ dist: { tarball } });
+    const transport = makeTransport({ npm: document });
+    const manager = makeManager();
+    const { route } = mountHost({ manager, transport });
+    const refused = await startInstall(route);
+    assert.equal(refused.ok, false, why);
+    assert.equal(refused.code, code, why);
+    assert.equal(manager.calls.length, 0, why);
+    assert.deepEqual(
+      transport.calls.map((entry) => entry.method),
+      ['GET'],
+      `${why}: nothing was probed, because there was no admissible spec`,
+    );
+  }
 });
 
 test('install route: tag/version come from the same check, and a mismatched tag is refused', async () => {

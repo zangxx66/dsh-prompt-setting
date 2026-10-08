@@ -802,11 +802,17 @@ function logToHost(ctx, message) {
  * The injected transport and bounds for this mount's update checker (g-030).
  *
  * The plugin config is loose by design (only `historyLimit` was ever read from
- * it), and this adds one optional nested object rather than four new top-level
- * fields: `updateCheck: {fetch, ttlMs, timeoutMs, now}`. Every piece is optional
- * and an unusable value is ignored, which is what keeps a profile that declares
- * nothing on the shipped defaults — and what lets `test/update.test.mjs` drive
- * the real route with a stub transport instead of the network.
+ * it), and this adds one optional nested object rather than five new top-level
+ * fields: `updateCheck: {fetch, registry, ttlMs, timeoutMs, now}`. Every piece is
+ * optional and an unusable value is ignored, which is what keeps a profile that
+ * declares nothing on the shipped defaults — and what lets `test/update.test.mjs`
+ * drive the real route with a stub transport instead of the network.
+ *
+ * `registry` is g-042's one new slot: the npm registry base address the update
+ * check asks first (default `https://registry.npmjs.org/`). It is a plain string
+ * passthrough; the checker normalizes it and treats an unusable value as "do not
+ * ask npm" (see `core/update.js`'s `normalizeRegistry`). g-043 wires the download
+ * region / mirror choice into exactly this key.
  * @param config - the loose plugin config.
  * @returns the options `createUpdateChecker` accepts (transport/bounds only).
  */
@@ -815,6 +821,7 @@ function resolveUpdateOptions(config) {
   const source = declared !== null && typeof declared === 'object' ? declared : {};
   return {
     ...(typeof source.fetch === 'function' ? { fetch: source.fetch } : {}),
+    ...(typeof source.registry === 'string' ? { registry: source.registry } : {}),
     ...(Number.isFinite(source.ttlMs) ? { ttlMs: source.ttlMs } : {}),
     ...(Number.isFinite(source.timeoutMs) ? { timeoutMs: source.timeoutMs } : {}),
     ...(typeof source.now === 'function' ? { now: source.now } : {}),
@@ -2665,7 +2672,7 @@ function mount(ctx, config, cleanups) {
     // red line. A *different* spec (an older tarball URL, an npm version, a
     // registry range) still installs normally.
     if (isAlreadyInstalledOn(field === null ? null : field.value, target.url)) {
-      const entry = installTable.begin({ tag: target.tag, version: target.version, url: target.url });
+      const entry = installTable.begin({ tag: target.tag, version: target.version, url: target.url, source: target.source });
       installTable.settle(entry.requestId, { changed: false, application: 'restart-required' });
       return {
         ok: true,
@@ -2675,7 +2682,7 @@ function mount(ctx, config, cleanups) {
         launchKind: launchKindOf(ctx),
       };
     }
-    const entry = installTable.begin({ tag: target.tag, version: target.version, url: target.url });
+    const entry = installTable.begin({ tag: target.tag, version: target.version, url: target.url, source: target.source });
     void runInstall(entry.requestId, { service, target });
     return {
       ok: true,
@@ -2721,7 +2728,7 @@ function mount(ctx, config, cleanups) {
           ? REFUSAL_ASSET_UNVERIFIED
           : null;
       if (refusal !== null) {
-        const described = describeInstallFailure(refusal, { tag: target.tag, version: target.version });
+        const described = describeInstallFailure(refusal, { tag: target.tag, version: target.version, source: target.source });
         installTable.fail(requestId, {
           code: described.code,
           message: described.message,

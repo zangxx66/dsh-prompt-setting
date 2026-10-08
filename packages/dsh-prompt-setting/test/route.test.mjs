@@ -30,6 +30,13 @@ const PING_PATH = '/prompt-setting/ping';
 const SNAPSHOT_PATH = '/prompt-setting/snapshot';
 const OVERRIDES_PATH = '/prompt-setting/overrides';
 const IMPORT_PATH = '/prompt-setting/import';
+const UPDATE_CHECK_PATH = '/prompt-setting/update-check';
+const UPDATE_APPLY_PATH = '/prompt-setting/update-apply';
+const UPDATE_APPLY_CANCEL_PATH = '/prompt-setting/update-apply/cancel';
+/** g-042: the npm document, the GitHub fallback, and the registry's install spec. */
+const REGISTRY_URL = 'https://registry.npmjs.org/dsh-prompt-setting';
+const GITHUB_URL = 'https://api.github.com/repos/zangxx66/dsh-prompt-setting/releases/latest';
+const TARBALL_URL = 'https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.0.tgz';
 
 /** Markers as documented in CONTRACT.md §14, written out independently. */
 const BUILD_BEGIN = '/* @build-fingerprint:begin */';
@@ -147,6 +154,9 @@ function makeRequest({ method = 'GET', url = PING_PATH, headers = {}, body } = {
  * @param options.host - the `apply` to mount; defaults to this package's. The
  *   build-stamp liveness test mounts a *copy* of the package so it can change
  *   the bundle on disk without touching the real `client.js`.
+ * @param options.config - the loose plugin config handed to `apply`. Only the
+ *   update routes read it (`updateCheck: {fetch, registry, …}`), which is how the
+ *   g-042 route cases drive the real route offline.
  * @returns the captured route plus the harness handles.
  */
 function mount(options = {}) {
@@ -275,7 +285,7 @@ function mount(options = {}) {
       return disposer;
     },
   };
-  (options.host ?? apply)(ctx);
+  (options.host ?? apply)(ctx, options.config);
   return {
     ctx,
     routes,
@@ -477,6 +487,93 @@ test('host: wrong methods on the new routes answer 405 with the full allow list'
   const overrides = await call(route, { method: 'POST', url: OVERRIDES_PATH });
   assert.equal(overrides.statusCode, 405);
   assert.equal(overrides.headers.allow, 'GET, PUT, DELETE');
+  // The two update routes (g-030/g-032) keep their own method tables — asserted
+  // here, on a host with no transport at all, so the 405 really is decided before
+  // any check could run.
+  const check = await call(route, { method: 'POST', url: UPDATE_CHECK_PATH });
+  assert.equal(check.statusCode, 405);
+  assert.equal(check.headers.allow, 'GET, PUT');
+  const apply = await call(route, { method: 'DELETE', url: UPDATE_APPLY_PATH });
+  assert.equal(apply.statusCode, 405);
+  assert.equal(apply.headers.allow, 'GET, POST');
+  const cancel = await call(route, { method: 'GET', url: UPDATE_APPLY_CANCEL_PATH });
+  assert.equal(cancel.statusCode, 405);
+  assert.equal(cancel.headers.allow, 'POST');
+});
+
+// #region the update routes take the npm path first (g-042)
+
+/**
+ * A stub transport that tells the two upstreams apart by URL and records what it
+ * was asked — the offline evidence for which path a route really took.
+ * @param handler - `(url) => body`; the default is the canonical npm document.
+ * @returns `{fetch, calls}`.
+ */
+function updateTransport(handler) {
+  const calls = [];
+  const fetch = async (url) => {
+    const target = String(url);
+    calls.push(target);
+    const body = typeof handler === 'function'
+      ? handler(target)
+      : { 'dist-tags': { latest: '0.2.0' }, dist: { tarball: TARBALL_URL } };
+    return { ok: true, status: 200, json: async () => body };
+  };
+  return { fetch, calls };
+}
+
+test('update route: the check answers from npm, and names its source', async () => {
+  const transport = updateTransport();
+  const { route } = mount({ config: { updateCheck: { fetch: transport.fetch } } });
+  const res = await call(route, { url: UPDATE_CHECK_PATH });
+  assert.equal(res.statusCode, 200);
+  const body = json(res);
+  assert.equal(body.source, 'npm');
+  assert.equal(body.hasUpdate, true, 'this package is 0.1.5 and the registry says 0.2.0');
+  assert.equal(body.latest, '0.2.0');
+  assert.equal(body.tarball, TARBALL_URL);
+  assert.deepEqual(transport.calls, [REGISTRY_URL], 'GitHub is not asked while npm answers');
+});
+
+test('update route: a registry that cannot answer falls back to GitHub, still 200', async () => {
+  const calls = [];
+  const failing = async (url) => {
+    const target = String(url);
+    calls.push(target);
+    // A *failure* on the registry is what makes the fallback run; GitHub then
+    // answers the release the check reports.
+    if (target === REGISTRY_URL) return { ok: false, status: 503, json: async () => ({ message: 'down' }) };
+    return { ok: true, status: 200, json: async () => ({ tag_name: 'v0.2.0', html_url: null }) };
+  };
+  const { route } = mount({ config: { updateCheck: { fetch: failing } } });
+  const res = await call(route, { url: UPDATE_CHECK_PATH });
+  assert.equal(res.statusCode, 200);
+  const body = json(res);
+  assert.equal(body.source, 'github');
+  assert.equal(body.hasUpdate, true);
+  assert.equal(body.latest, '0.2.0');
+  assert.equal(body.tarball, null);
+  assert.deepEqual(calls, [REGISTRY_URL, GITHUB_URL], 'npm first, GitHub second');
+});
+
+test('update route: an untrustworthy registry tarball is refused before any package manager', async () => {
+  // The refusal is decided from the check payload alone, so this mount has no
+  // `pluginManager` at all: if the route needed one it would answer
+  // `installer-unavailable`, which is exactly what this asserts it does not do.
+  const transport = updateTransport(() => ({ 'dist-tags': { latest: '0.2.0' }, dist: { tarball: 'https://evil.test/pkg.zip' } }));
+  const { route } = mount({ config: { updateCheck: { fetch: transport.fetch } } });
+  const res = await call(route, {
+    method: 'POST',
+    url: UPDATE_APPLY_PATH,
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
+  assert.equal(res.statusCode, 200);
+  const body = json(res);
+  assert.equal(body.ok, false);
+  assert.equal(body.code, 'asset-unverified');
+  assert.match(body.message, /dist\.tarball/);
+  assert.deepEqual(transport.calls, [REGISTRY_URL], 'nothing was probed and nothing was installed');
 });
 
 test('snapshot: reports the base and effective sections in the real assembly order', async () => {

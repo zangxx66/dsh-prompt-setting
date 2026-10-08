@@ -3603,44 +3603,105 @@ g-026 are untouched.
 
 ---
 
-## 17. The upstream update check (g-030)
+## 17. The upstream update check (g-030; npm first in Revision 27, g-042)
 
-### 17.1 Why a Host route, and why GitHub
+**Revision 27 (npm is the primary source, GitHub Releases the fallback — g-042).**
+The check used to ask the GitHub Releases API and nothing else. It now asks the
+**npm registry** first (`<registry>/dsh-prompt-setting`, read for
+`dist-tags.latest`) and falls back to the GitHub Releases API only when npm could
+not answer. Every answer carries a new **`source`** marker (`"npm"` / `"github"` /
+`null`) and, for an npm answer, the registry document's own **`dist.tarball`** —
+which §18.2 then installs from. The registry base address is **injectable**
+(`updateCheck.registry`, default `https://registry.npmjs.org/`); that one slot is
+what g-043's download-region choice wires into. **No route, no query parameter,
+no preference-file byte and no existing field changes meaning**: `source` and
+`tarball` are additive, so a pre-g-042 client renders exactly as it did.
 
-This plugin is installed as a tarball or a `link:`, so nothing in npm ever tells
-a user that upstream moved on. The owner's decision (2026-10-03) is one
-`GET` against the **GitHub Releases API** — not the npm registry — because this
-package's releases are what a user actually installs from. The request is made by
-the **Host**, not the page: Node has no CORS wall, the answer can be cached, the
-request can time out, and the whole feature can be switched off server-side. The
-page only ever reads the result.
+### 17.1 Why a Host route, and why npm first
 
-Three properties are contract, not implementation:
+This plugin is installed as a tarball or a `link:`, so nothing in npm's own
+tooling ever tells a user that upstream moved on. The check exists to answer that,
+and it asks the address the package is actually **published** to: the owner's
+original decision (2026-10-03) was one `GET` against the **GitHub Releases API**;
+g-042 re-founded it on the **npm registry** — the registry is where
+`dsh plugin add dsh-prompt-setting` resolves from and the one address a mirror can
+be pointed at — and kept GitHub Releases as the **degradation path**, so a profile
+behind a registry that does not carry the package still gets an answer. The request
+is made by the **Host**, not the page: Node has no CORS wall, the answer can be
+cached, the request can time out, and the whole feature can be switched off
+server-side. The page only ever reads the result.
+
+Four properties are contract, not implementation:
 
 - **never a false positive.** `hasUpdate: true` is emitted only when both
   versions parse and `latest > current`. Every undecidable case is
   `hasUpdate: null`;
 - **a failure is a value.** The route answers `200` for every outcome it can
-  have — including a network error, a timeout and an HTTP error from GitHub.
-  Only a malformed `PUT` body is an ordinary `400` (§17.4). No update check can
-  produce a `5xx`, and none can paint the settings page red;
-- **one request, no user data.** A single `GET`, with
-  `user-agent: dsh-prompt-setting/<version>` and
-  `accept: application/vnd.github+json`. No body, no cookies, no query derived
-  from this machine, this session or this workspace.
+  have — including a network error, a timeout and an HTTP error from either
+  upstream. Only a malformed `PUT` body is an ordinary `400` (§17.4). No update
+  check can produce a `5xx`, and none can paint the settings page red;
+- **npm first, GitHub only as the fallback.** The fallback runs when npm **could
+  not answer** — never because its answer was inconvenient: a registry that says
+  "you are up to date" *is* the answer (§17.2);
+- **one identifiable request per upstream, no user data, and the answer names its
+  source.** At most one `GET` per upstream, `user-agent:
+  dsh-prompt-setting/<version>`, `accept: application/json` for the registry and
+  `accept: application/vnd.github+json` for GitHub. No body, no cookies, no query
+  derived from this machine, this session or this workspace — and `source` says
+  which upstream produced the payload the page is reading.
 
 ### 17.2 `GET /prompt-setting/update-check`
 
-Query: `force` (optional). The single upstream URL is built from
-`package.json`'s `repository.url` — parsed once per check by
-`parseRepositorySlug` into `{owner, repo}`; nothing is hardcoded a second time and
-no request input reaches it. The accepted manifest spellings are
-`git+https://…`, `https://…`, `git://…`, `git+ssh://git@…`, the scp-style
-`git@github.com:owner/repo.git` and the `github:owner/repo` shorthand; anything
-that is not `github.com` with exactly two path segments is refused
-(`400`-free, `ok:false`, `error.code: "no-repository"`).
+Query: `force` (optional). The **npm** URL is `updateCheck.registry` (default
+`https://registry.npmjs.org/`) plus the package name; a registry that is not an
+`http(s)` URL disables the npm path rather than silently asking the default one.
+The **GitHub** URL is the fallback's: `package.json`'s `repository.url`, parsed
+once per check by `parseRepositorySlug` into `{owner, repo}`; nothing is hardcoded
+a second time and no request input reaches either URL. The accepted manifest
+spellings are `git+https://…`, `https://…`, `git://…`, `git+ssh://git@…`, the
+scp-style `git@github.com:owner/repo.git` and the `github:owner/repo` shorthand;
+anything that is not `github.com` with exactly two path segments is refused
+(`200`, `ok:false`, `error.code: "no-repository"`).
 
-The body:
+**Decision order, and it is the whole of g-042's change:**
+
+| # | Asked | Outcome |
+| --- | --- | --- |
+| 1 | the switch (§17.4) | off ⇒ `hasUpdate: false`, **zero requests**, `source: null` |
+| 2 | the cache (§17.3) | fresh ⇒ the cached payload with `cached: true`, `source` preserved |
+| 3 | the npm registry | a `dist-tags.latest` that parses ⇒ **that is the answer**, `source: "npm"`, GitHub is not asked |
+| 4 | the npm registry | impossible to answer (see below) ⇒ go to 5 |
+| 5 | the GitHub Releases API | a 2xx release ⇒ the answer, `source: "github"` |
+| 6 | — | neither answered ⇒ `ok:false`, `source: "github"`, `error` naming the GitHub attempt and `error.npm` naming the npm attempt |
+
+The npm attempt is **unusable** — and the check goes on to GitHub — when: there is
+no usable registry, the transport throws, the request times out, the status is not
+2xx (including `404`: this registry does not carry the package), the body is not a
+package document, `dist-tags` or `dist-tags.latest` is missing, or
+`dist-tags.latest` is not a version. Not one of those is reported as "upstream
+says nothing": they are npm's silence, and the fallback exists for exactly them.
+
+The body of an **npm** answer:
+
+```json
+{
+  "ok": true,
+  "enabled": true,
+  "current": "0.1.5",
+  "latest": "0.2.0",
+  "latestTag": "0.2.0",
+  "hasUpdate": true,
+  "releaseUrl": null,
+  "publishedAt": "2026-09-25T00:00:00.000Z",
+  "source": "npm",
+  "tarball": "https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.0.tgz",
+  "checkedAt": "2026-10-08T09:00:00.000Z",
+  "cached": false,
+  "error": null
+}
+```
+
+The body of a **GitHub** answer (the pre-Revision-27 shape, plus `source`):
 
 ```json
 {
@@ -3652,7 +3713,9 @@ The body:
   "hasUpdate": true,
   "releaseUrl": "https://github.com/zangxx66/dsh-prompt-setting/releases/tag/v0.2.0",
   "publishedAt": "2026-10-01T00:00:00Z",
-  "checkedAt": "2026-10-03T09:00:00.000Z",
+  "source": "github",
+  "tarball": null,
+  "checkedAt": "2026-10-08T09:00:00.000Z",
   "cached": false,
   "error": null
 }
@@ -3663,26 +3726,33 @@ The body:
 | `ok` | `true` when the check produced a decidable or explicitly undecidable answer; `false` on a failure, with `error` set. |
 | `enabled` | The switch as persisted (§17.4). Answered on both verbs so the page needs one round trip, not two. |
 | `current` | This package's `PLUGIN_VERSION` (the same constant the ping reports). |
-| `latest` | The normalized `major.minor.patch` of the reported tag, or `null` when there is nothing usable. The raw tag is never echoed as a version. |
-| `hasUpdate` | `true` only for a confirmed newer release; `false` when the current version is equal or newer; `null` when it cannot be decided. |
-| `latestTag` | The tag **as published**, verbatim, for the same release as `latest` — or `null` when the answer is not about a release. `latest` is canonicalized (`v0.1.2` → `0.1.2`) and is therefore the wrong string for a release **asset** path; both travel on one payload, from one request, so「install this version」can never name a tag the check did not see (g-032, §18.2). |
-| `releaseUrl` | The release's `html_url`, else `https://github.com/{owner}/{repo}/releases/tag/{tag}`, else `null`. |
-| `publishedAt` | The release's `published_at`, or `null`. |
+| `latest` | The normalized `major.minor.patch` of the reported version, or `null` when there is nothing usable. The raw string is never echoed as a version. |
+| `hasUpdate` | `true` only for a confirmed newer version; `false` when the current version is equal or newer; `null` when it cannot be decided. |
+| `latestTag` | The version **as published**, verbatim, for the same version as `latest` — the GitHub release tag, or npm's `dist-tags.latest` — or `null` when the answer is not about a published version. `latest` is canonicalized (`v0.1.2` → `0.1.2`) and is therefore the wrong string for a release **asset** path; both travel on one payload, from one request, so「install this version」can never name a tag the check did not see (g-032, §18.2). |
+| `releaseUrl` | GitHub: the release's `html_url`, else `https://github.com/{owner}/{repo}/releases/tag/{tag}`, else `null`. npm: always `null` — the page's one link is labelled for a release page, and pointing that label at a registry URL is g-043's copy to write. |
+| `publishedAt` | GitHub: the release's `published_at`. npm: the registry document's `time[<latest>]`. Either way `null` when upstream did not say. |
+| `source` | **Which upstream produced this payload**: `"npm"`, `"github"`, or `null` when no upstream was consulted at all (the switch is off, or the runtime has no `fetch`). Additive, for display and diagnostics. |
+| `tarball` | **The npm answer's install spec**: the registry document's `dist.tarball`, verbatim — or `null` on any answer that is not an npm one, and `null` when the document carried no usable string. What the field *is* is upstream's word; whether it may be handed to pnpm is decided in §18.2. |
 | `checkedAt` | When this answer was produced (ISO 8601), including a cached one — it names the check, not the read. |
 | `cached` | `true` when the answer comes from the cache rather than a fresh request. |
-| `error` | `null`, or `{code, message}` plus `status` for an HTTP error. Codes: `no-repository`, `fetch-unavailable`, `network-error`, `timeout`, `http-error`, `invalid-response`, `no-release`, `unparsable-tag`, `uncomparable-version`. |
+| `error` | `null`, or `{code, message}` plus `status` for an HTTP error. Codes: `no-repository`, `fetch-unavailable`, `network-error`, `timeout`, `http-error`, `invalid-response`, `no-release`, `unparsable-tag`, `uncomparable-version`. When **both** upstreams failed, the payload carries the GitHub attempt's code/message and the npm attempt's own reason as `error.npm` (`{code, message, status?}`, present only when the npm path really ran). |
 
 The decision table, which is the whole point:
 
-| Situation | `ok` | `hasUpdate` | `error.code` |
-| --- | --- | --- | --- |
-| `latest > current` | `true` | `true` | — |
-| equal, or `current` newer | `true` | `false` | — |
-| 404 (no release yet) | `true` | `null` | `no-release` |
-| tag is not a version (`nightly`, `1.2`, `1.2.3.4`) | `true` | `null` | `unparsable-tag` |
-| body is not a release object / has no `tag_name` | `true`/`false` | `null` | `invalid-response` |
-| network error, timeout, HTTP ≠ 2xx/404 | `false` | `null` | `network-error` / `timeout` / `http-error` |
-| switch off (`enabled: false`) | `true` | `false` | — |
+| Situation | `ok` | `hasUpdate` | `error.code` | `source` |
+| --- | --- | --- | --- | --- |
+| npm `latest > current` | `true` | `true` | — | `npm` |
+| npm equal, or `current` newer | `true` | `false` | — | `npm` |
+| npm unusable, GitHub `latest > current` | `true` | `true` | — | `github` |
+| npm unusable, GitHub equal/newer | `true` | `false` | — | `github` |
+| npm unusable, GitHub 404 (no release yet) | `true` | `null` | `no-release` | `github` |
+| npm unusable, GitHub tag is not a version (`nightly`, `1.2`, `1.2.3.4`) | `true` | `null` | `unparsable-tag` | `github` |
+| npm unusable, GitHub body is not a release object / has no `tag_name` | `true` | `null` | `invalid-response` | `github` |
+| npm version parses, this package's own does not | `true` | `null` | `uncomparable-version` | `npm` |
+| both fail to answer (network error, timeout, HTTP ≠ 2xx) | `false` | `null` | `network-error` / `timeout` / `http-error` (+ `error.npm`) | `github` |
+| npm unusable, no usable repository URL either | `false` | `null` | `no-repository` | `github` |
+| no `fetch` at all | `false` | `null` | `fetch-unavailable` | `null` |
+| switch off (`enabled: false`) | `true` | `false` | — | `null` |
 
 `hasUpdate: null` renders **nothing on the main page** (no banner, no error — §13.9);
 inside 「高级」 it gets one neutral sentence (「上游暂时没有可用的版本信息」), because it
@@ -3702,27 +3772,34 @@ direction:
   excludes prereleases upstream by definition and this package ships stable
   releases. Making `1.0.0-rc.1 < 1.0.0` would mean implementing full semver
   precedence for a case the data source cannot produce;
-- comparison is numeric per segment, so `0.10.0` is newer than `0.9.9`.
+- comparison is numeric per segment, so `0.10.0` is newer than `0.9.9`;
+- an npm `dist-tags.latest` that carries npm's own `v`-less spelling is compared
+  the same way; a `latest` that reads `beta`/`next`-style is not a version and
+  sends the check to the fallback rather than being guessed at.
 
 ### 17.3 Cache, timeout, and what is never cached
 
 - **TTL 6 hours** (`UPDATE_CHECK_TTL_MS`). A repeat inside the window answers the
-  cached payload with `cached: true` and performs **no** request. The cache lives
-  on the mount, so a `dsh web` restart starts fresh;
+  cached payload with `cached: true` and performs **no** request — including a
+  payload whose `source` is `github`, which is **not** re-opened by asking npm
+  again. The cache lives on the mount, so a `dsh web` restart starts fresh;
 - **`?force=1`** skips the cache — the「立即重查」button and the tests — and
   skips **only** the cache: a closed switch still answers without asking;
 - **decidable answers are cached, failures are not.** `hasUpdate: true|false` and
-  the determinate "nothing usable" answers (404, an unparsable tag) are cached, so
-  a repository without releases does not get re-asked on every page load. A
-  network error, a timeout and an HTTP error are never cached: the next request
-  tries again;
+  the determinate "nothing usable" answers (a GitHub 404, an unparsable tag) are
+  cached, so an upstream without releases does not get re-asked on every page
+  load. A network error, a timeout and an HTTP error are never cached: the next
+  request starts at npm again;
 - **timeout 5 s** (`UPDATE_CHECK_TIMEOUT_MS`), enforced with both an
   `AbortController` signal and an internal race, so even a transport double that
-  ignores the signal cannot wedge a page;
-- the transport, the clock and the two bounds are injectable through the plugin
-  config (`updateCheck: {fetch, now, ttlMs, timeoutMs}`), which is how the tests
-  drive the real route offline. A profile that declares nothing gets the shipped
-  defaults.
+  ignores the signal cannot wedge a page. It is **per upstream attempt**: a check
+  that has to fall back costs at most two timeouts, and a fallback is never
+  retried inside one check;
+- the transport, the clock, the two bounds **and the registry base address** are
+  injectable through the plugin config
+  (`updateCheck: {fetch, registry, now, ttlMs, timeoutMs}`), which is how the
+  tests drive the real route offline. A profile that declares nothing gets the
+  shipped defaults (`https://registry.npmjs.org/`).
 
 ### 17.4 `PUT /prompt-setting/update-check`, and the preference file
 
@@ -3763,14 +3840,19 @@ The preference lives in **its own file**, `<DSH_HOME>/prompt-setting/preferences
   and the user follows the link. Installing is a separate, explicitly confirmed
   route added by g-032 (§18) — and that one never restarts anything either;
 - no DSH platform version check — that is `scripts/check-compat.mjs` (g-013);
+- **no mirror choice and no region detection** (Revision 27). This revision makes
+  the registry base address injectable and stops there: which registry a user
+  should be pointed at, how that is stored and how it is presented are g-043's
+  download-region work, and no runtime geo-judgement is made anywhere here;
 - no new runtime dependency: Node's built-in `fetch`, nothing else;
 - no change to any existing route's response shape. `ping`, `snapshot`,
   `overrides`, `history`, `diff`, `export`, `import` and `interpolate` answer
-  exactly what they answered before; the eighth route is additive;
+  exactly what they answered before; the eighth route is additive, and the two
+  fields Revision 27 adds to it (`source`, `tarball`) are additive too;
 - no user data on the wire, and no per-session/per-workspace variation: the
   answer is the same for every session of one install.
 
-## 18. 「立即更新」— installing a release through the official plugin manager (g-032)
+## 18. 「立即更新」— installing a release through the official plugin manager (g-032; the npm install spec in Revision 27, g-042)
 
 ### 18.1 What it is, and what it deliberately is not
 
@@ -3799,6 +3881,11 @@ as the positive:
   `approvedBuilds`, so nothing writes the profile's `allowBuilds`. Approving a
   build script is a decision that must be made by a person looking at the script,
   not a side effect of pressing an update button;
+- **never an unvetted spec.** The install spec comes from the check's own answer
+  and from nowhere else; on the npm branch it must also pass an explicit
+  `http(s)`/`.tgz` gate before pnpm ever sees it, and on the GitHub branch it is
+  built from the checked tag and version (§18.2). A value that fails the gate is a
+  named refusal, not an install;
 - **never a `link:` overwrite.** A profile whose `dsh-prompt-setting` dependency
   is a local path is a development working copy; installing over it would replace
   that link with a published package and leave no way back. That case is refused
@@ -3816,17 +3903,22 @@ The tag is a **guard**, not an input: when it is present it must equal the tag
 the current update check reported, and a mismatch is `400 invalid-request`. The
 install spec is always derived from the checker's own answer — the same cached
 answer the banner rendered — so「提示的版本 = 安装的版本」holds even though the
-browser is untrusted:
+browser is untrusted. **Revision 27: which spec that is now follows the check's
+`source` (§17.2) — and neither branch is ever taken from the request:**
 
-```
-https://github.com/zangxx66/dsh-prompt-setting/releases/download/<tag>/dsh-prompt-setting-<version>.tgz
-```
+| `source` | Install spec | Rule |
+| --- | --- | --- |
+| `"npm"` | the registry document's own `dist.tarball`, verbatim | it must be a string that parses as an absolute `http(s)` URL whose path ends in `.tgz`. A document that names **nothing** is refused `asset-missing`; a value that is present but is not such a URL (`file:`, `ftp:`, `data:`, `javascript:`, a `.zip`/`.tar.gz`, a relative path) is refused `asset-unverified`. **Neither is ever handed to pnpm** |
+| `"github"`, or absent (a pre-Revision-27 Host) | the release asset | `https://github.com/zangxx66/dsh-prompt-setting/releases/download/<tag>/dsh-prompt-setting-<version>.tgz` |
 
-`<tag>` is used verbatim (it is a path segment, and `v0.1.2` and `0.1.2` are
-different asset paths); every segment is `encodeURIComponent`-ed and the result
-is parsed as a `URL`, so no request input can escape its segment. The `.tgz`
-suffix is not decoration: DSH refuses a URL that is neither a git host nor a
-tarball, and pnpm needs the extension to treat it as one.
+The `.tgz` requirement is not decoration in either branch: DSH refuses a URL that
+is neither a git host nor a tarball, and pnpm needs the extension to treat it as
+one. In the GitHub branch `<tag>` is used verbatim (it is a path segment, and
+`v0.1.2` and `0.1.2` are different asset paths) and every segment is
+`encodeURIComponent`-ed before the result is parsed as a `URL`, so no request
+input can escape its segment. In the npm branch the URL is upstream's own string:
+it is validated and then passed through unchanged, and the profile's literal
+"already installed" comparison (§18.2, below) works on that same string.
 
 **Why a tarball.** This repository's package carries a `prepare` script, and
 pnpm's build-script approval gate is enforced on the **git** fetch path
@@ -3915,10 +4007,15 @@ about the Host: no request body or query can set it.
 | --- | --- |
 | `installer-unavailable` | No `pluginManager` service in this profile, the profile directory could not be resolved, or the profile's `package.json` could not be read/parsed (so the install form cannot be checked). Nothing was installed, and nothing was written. |
 | `development-link` | The profile holds this package as `link:`/`file:`/a path (§18.1, A1). |
-| `no-update` | The last check confirmed no newer release, or could not decide. |
+| `no-update` | The last check confirmed no newer version, or could not decide. |
 | `invalid-request` | The body's `tag` disagrees with the check's tag, or a `requestId` is missing/empty/absurdly long. |
-| `asset-missing` | The release asset is not there (`404`/`410`). |
-| `asset-unverified` | The asset probe could not confirm it (`401`/`403`), so nothing was installed. |
+| `asset-missing` | The artifact the check named is not there: the release asset (`404`/`410` from the probe, or pnpm's `ERR_PNPM_FETCH_404`/`E404`), **or** an npm document that names no `dist.tarball` at all (Revision 27). |
+| `asset-unverified` | The artifact could not be confirmed: the asset probe answered `401`/`403`, **or** — Revision 27 — the npm document's `dist.tarball` is not an `http(s)` `.tgz` URL. Nothing was installed either way. |
+
+The two artifact codes keep their meanings and their sentences; Revision 27 only
+widens *which upstream artifact* they can be about, and the sentence names that
+upstream (a registry tarball reads "the npm registry's tarball for vX.Y.Z …"
+instead of "the release has no … asset").
 
 **Why the route answers before the install settles.** One install can block for
 the profile lock (measured worst case ~2 minutes) plus pnpm's silence timeout
@@ -3928,10 +4025,11 @@ returns a `requestId` as soon as the install is *started*, and the page polls
 official manager deletes a settled request.
 
 **What is checked before anything is started**, in order: the update check's
-answer (cached, so zero outbound requests), the tag guard, whether an install is
-already running, the plugin manager's presence, the profile directory, the
-profile manifest (readable? which install form?), and one `HEAD` against the
-release asset.
+answer (cached, so zero outbound requests), the install spec's own admissibility
+(Revision 27: the npm `dist.tarball` gate above), the tag guard, whether an
+install is already running, the plugin manager's presence, the profile directory,
+the profile manifest (readable? which install form?), and one `HEAD` against that
+spec.
 
 Two of those checks **fail closed**, because "I could not find out" is not
 evidence that installing is safe:
@@ -3943,8 +4041,8 @@ evidence that installing is safe:
   readable answer, and the install proceeds (it is what restoring a real install
   means);
 - the `HEAD` is a **shortcut, never a gate**. Only two answers refuse:
-  **`404`/`410` ⇒ `asset-missing`** (the release carries no such asset — the state
-  of every release published before this feature existed) and **`401`/`403` ⇒
+  **`404`/`410` ⇒ `asset-missing`** (the artifact is not there — the state of
+  every release published before this feature existed) and **`401`/`403` ⇒
   `asset-unverified`** (it cannot be fetched anonymously). **Every other answer —
   `500`, `429`, `405`, a redirect that never resolved, a throw, no `fetch` at
   all — means "I could not find out" and must not block an install**: the install
@@ -4051,7 +4149,7 @@ verbatim, and every one has its own sentence:
 
 | Code | When |
 | --- | --- |
-| `asset-missing` | A `404`/`410` (from the probe or from pnpm's `ERR_PNPM_FETCH_404`/`E404`). **The expected outcome for a release with no asset** — e.g. a release published before this feature. |
+| `asset-missing` | A `404`/`410` (from the probe or from pnpm's `ERR_PNPM_FETCH_404`/`E404`), or an npm document that names no `dist.tarball` (Revision 27). **The expected outcome for a release with no asset** — e.g. a release published before this feature. |
 | `build-blocked` | pnpm's build-script gate: `ERR_PNPM_IGNORED_BUILDS`, "Ignored build scripts". |
 | `network` | `ENOTFOUND`/`ECONNRESET`/`ETIMEDOUT`/`ECONNREFUSED`/`EAI_AGAIN`/`ERR_PNPM_META_FETCH_FAIL`/… or a probe that could not answer. |
 | `pnpm-missing` | The manager reported `pnpm-missing` (`ENOENT` running pnpm). |

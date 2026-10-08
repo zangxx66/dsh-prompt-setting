@@ -27,7 +27,7 @@
  * @module dsh-prompt-setting/core/install
  */
 
-import { parseSemver } from './update.js';
+import { UPDATE_SOURCE_NPM, parseSemver } from './update.js';
 
 /** The GitHub repository the release asset is fetched from. Fixed, never from input. */
 export const INSTALL_REPOSITORY = Object.freeze({ owner: 'zangxx66', repo: 'dsh-prompt-setting' });
@@ -154,6 +154,41 @@ export function buildReleaseAssetUrl(tag, version) {
 }
 
 /**
+ * The registry's own `dist.tarball`, admitted as an install spec **or refused**.
+ *
+ * g-042 installs from npm's `dist.tarball` instead of a release asset, so this
+ * is the one gate between a registry document and `pnpm add`. The rule is the
+ * same one the release-asset URL has always obeyed, spelled out for a value this
+ * plugin did not build:
+ *   - it must be a string, and non-blank;
+ *   - it must parse as an absolute `http(s)` URL — a `file:`, `ftp:`, `data:` or
+ *     `javascript:` value is not something pnpm may be pointed at;
+ *   - its path must end in `.tgz` (`{@link INSTALL_ASSET_EXTENSION}`): DSH
+ *     refuses a spec that is neither a git host nor a tarball, and pnpm needs the
+ *     extension to treat it as one.
+ *
+ * Anything else answers `null`, and the caller refuses with the existing
+ * `asset-missing` (nothing was named) / `asset-unverified` (it was named but
+ * cannot be trusted) code — never "install it anyway and see".
+ * @param value - the registry document's `dist.tarball`.
+ * @returns the trimmed URL, or `null` when it may not be handed to pnpm.
+ */
+export function registryTarballSpec(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return null;
+  let parsed;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
+  if (!parsed.pathname.toLowerCase().endsWith(INSTALL_ASSET_EXTENSION)) return null;
+  return trimmed;
+}
+
+/**
  * The release page for a tag — the manual fallback a refusal points at.
  * @param tag - the release tag.
  * @returns the page URL, or `null` when the tag is not usable.
@@ -175,8 +210,21 @@ export function releasePageForTag(tag) {
  * `tag` is the tag to fetch and `version` is the canonicalized version; they are
  * deliberately two values even when they happen to be equal (they are not for a
  * `v`-prefixed tag).
+ *
+ * **Where it installs from follows the check's `source` (g-042):**
+ *   - `source: "npm"` ⇒ the registry document's own `dist.tarball`, admitted only
+ *     through {@link registryTarballSpec}. A document that names no tarball is
+ *     `asset-missing`; one that names a value that is not an http(s) `.tgz` URL is
+ *     `asset-unverified`. Neither is ever passed to pnpm;
+ *   - anything else (`source: "github"`, or a payload from a pre-g-042 Host that
+ *     carries no `source` at all) ⇒ the release **asset** URL built from the tag
+ *     and version, exactly as before.
+ *
+ * The refusal codes are the existing ones, with their existing meanings; this
+ * function only decides which upstream's artifact the codes are about.
  * @param check - the payload `check()` returned.
- * @returns `{ok:true, tag, version, url, releaseUrl}` or `{ok:false, code, message, releaseUrl}`.
+ * @returns `{ok:true, source, tag, version, url, releaseUrl}` or
+ *   `{ok:false, code, message, releaseUrl}`.
  */
 export function resolveInstallTarget(check) {
   const payload = check !== null && typeof check === 'object' ? check : {};
@@ -204,8 +252,34 @@ export function resolveInstallTarget(check) {
       releaseUrl,
     };
   }
+  if (payload.source === UPDATE_SOURCE_NPM) {
+    const named = typeof payload.tarball === 'string' ? payload.tarball.trim() : '';
+    if (named.length === 0) {
+      return {
+        ok: false,
+        code: REFUSAL_ASSET_MISSING,
+        message:
+          `the npm registry names no dist.tarball for ${version}, so this version has nothing to install from; ` +
+          'check the registry entry, or update by hand',
+        releaseUrl,
+      };
+    }
+    const spec = registryTarballSpec(named);
+    if (spec === null) {
+      return {
+        ok: false,
+        code: REFUSAL_ASSET_UNVERIFIED,
+        message:
+          `the npm registry's dist.tarball for ${version} is not an http(s) URL ending in ${INSTALL_ASSET_EXTENSION}, ` +
+          'so it is not something this route will hand to pnpm; update by hand',
+        releaseUrl,
+      };
+    }
+    return { ok: true, source: UPDATE_SOURCE_NPM, tag, version, url: spec, releaseUrl };
+  }
   return {
     ok: true,
+    source: 'github',
     tag,
     version,
     url: buildReleaseAssetUrl(tag, version),
@@ -438,9 +512,16 @@ export function classifyInstallFailure(facts = {}) {
  * Every category carries a `manual` hint: this feature can fail for reasons
  * outside the plugin (no assets published, no network, no pnpm), and the person
  * is never left with only a red line.
+ *
+ * `options.source` (g-042) only changes the two **artifact** sentences
+ * (`asset-missing` / `asset-unverified`): when the install target came from the
+ * npm registry, the sentence talks about the registry's tarball instead of a
+ * GitHub release asset. Every code, `manual` hint and `retryable` flag is
+ * unchanged.
  * @param kind - the code `classifyInstallFailure` returned.
  * @param options.tag - the tag that was being installed, when known.
  * @param options.version - the version that was being installed, when known.
+ * @param options.source - `"npm"` when the target came from the registry.
  * @returns `{code, message, manual, retryable}`.
  */
 export function describeInstallFailure(kind, options = {}) {
@@ -597,7 +678,26 @@ export function describeInstallFailure(kind, options = {}) {
     },
   };
   const entry = table[kind] ?? table[INSTALL_FAILURE_UNKNOWN];
-  return { code: table[kind] === undefined ? INSTALL_FAILURE_UNKNOWN : kind, ...entry };
+  const code = table[kind] === undefined ? INSTALL_FAILURE_UNKNOWN : kind;
+  // g-042: the two artifact sentences name the upstream the spec came from. Only
+  // the wording moves — the code, the manual hint and `retryable` do not.
+  if (options.source === UPDATE_SOURCE_NPM && code === 'asset-missing') {
+    return {
+      ...entry,
+      code,
+      message:
+        `the npm registry's tarball for ${named} is not there, so nothing was installed. ` +
+        'Check the registry entry for this version, or try again later',
+    };
+  }
+  if (options.source === UPDATE_SOURCE_NPM && code === 'asset-unverified') {
+    return {
+      ...entry,
+      code,
+      message: `the npm registry's tarball for ${named} could not be verified before installing, so nothing was installed. Update by hand`,
+    };
+  }
+  return { code, ...entry };
 }
 
 /**
@@ -690,7 +790,10 @@ export function createInstallTable(options = {}) {
 
   /**
    * Open one request.
-   * @param fields - `{tag, version, url}`; the request is `installing` from here.
+   * @param fields - `{tag, version, url, source}`; the request is `installing`
+   *   from here. `source` (`"npm"` / `"github"` / anything else) is only kept so a
+   *   failure's sentence can name the right artifact (g-042); it is not part of
+   *   the public status shape.
    * @returns the stored entry (a copy, so callers cannot mutate the table).
    */
   function begin(fields = {}) {
@@ -702,6 +805,7 @@ export function createInstallTable(options = {}) {
       tag: typeof fields.tag === 'string' ? fields.tag : null,
       version: typeof fields.version === 'string' ? fields.version : null,
       url: typeof fields.url === 'string' ? fields.url : null,
+      source: typeof fields.source === 'string' ? fields.source : null,
       startedAt: new Date(now()).toISOString(),
       finishedAt: null,
       error: null,
@@ -829,7 +933,7 @@ export function createInstallTable(options = {}) {
         message: result?.error?.diagnostic,
         diagnostic: result?.error?.diagnostic,
       });
-      const described = describeInstallFailure(kind, { tag: entry.tag, version: entry.version });
+      const described = describeInstallFailure(kind, { tag: entry.tag, version: entry.version, source: entry.source });
       entry.error = {
         code: described.code,
         management: typeof result?.error?.code === 'string' ? result.error.code : null,
