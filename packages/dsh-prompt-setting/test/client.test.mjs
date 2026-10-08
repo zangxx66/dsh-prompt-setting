@@ -4131,6 +4131,56 @@ test('client: the history panel renders records, their action and their origin',
   assert.ok(strings(region).includes(page.zh.histCurrent));
 });
 
+test('client: a history row shows the version, never the section it was written to (g-044)', async () => {
+  // A log that still holds the names a reader could once type by hand, plus one
+  // whole-layer record (`name === null`) whose placeholder line goes with them.
+  const legacy = ['stage2-e2e', 'ui-e2e-ok'];
+  const records = legacy.map((name, index) => ({
+    id: String(index + 1),
+    seq: index + 1,
+    at: '2024-01-02T10:00:00.000Z',
+    layer: 'user',
+    session: null,
+    action: 'replace',
+    name,
+    origin: 'ui',
+    before: null,
+    after: { text: 'x', hash: 'h-1', bytes: 1 },
+    entries: null,
+    snapshot: [],
+    note: null,
+  }));
+  records.push({ ...records[0], id: '3', seq: 3, name: null });
+  const page = makePage({
+    responses: defaultResponses({ [PATHS.history]: { payload: historyFixture({ records, total: records.length }) } }),
+  });
+  const tree = await openHistory(page);
+
+  // 1. Nothing is filtered: every record is still a row, in the host's order…
+  assert.deepEqual(historyRowIds(tree), ['1', '2', '3']);
+  assert.equal(markerOf(oneBy(tree, 'data-region', 'history'), 'data-history-total'), '3');
+  // …and the name survives **as data**, which is where tests and diagnostics
+  // read it from.
+  assert.equal(historyRowOf(tree, '1').props['data-history-name'], 'stage2-e2e');
+  assert.equal(historyRowOf(tree, '2').props['data-history-name'], 'ui-e2e-ok');
+  assert.equal(historyRowOf(tree, '3').props['data-history-name'], '', 'a null name stays an empty datum');
+
+  // 2. No user-visible text names a section — not the legacy ones, and not the
+  //    `name === null` placeholder that used to stand in for them.
+  const text = strings(tree).join('\n');
+  for (const name of legacy) assert.equal(text.includes(name), false, `${name} is not user-visible`);
+  assert.equal(text.includes('（整层）'), false, 'nor the zh whole-layer placeholder');
+  assert.equal(text.includes('(whole layer)'), false, 'nor the en one');
+  assert.equal(page.zh.histWholeLayer, undefined, 'the placeholder copy key is gone, not left dead');
+  assert.equal(page.zh.histPreviewName, undefined, 'and so is the preview label');
+
+  // 3. The row is the one-line fact list this buys: id, action, time, buttons.
+  const row = historyRowOf(tree, '1');
+  assert.equal(row.props.style.padding, '3px 6px', 'tighter than the 6px it carried while it wrapped');
+  assert.equal(row.props.style.gap, 4);
+  assert.equal(collect(row, (node) => node.type === 'code').length, 1, 'one code node left: the id');
+});
+
 test('client: an empty or unreadable history is stated, never a blank panel', async () => {
   const empty = makePage({
     responses: defaultResponses({ [PATHS.history]: { payload: historyFixture({ records: [], total: 0 }) } }),
@@ -4970,18 +5020,30 @@ test('client: previewing a record opens a modal over the list, and asks the host
   assert.equal(oneBy(tree, 'data-region', 'history-list').props['data-history-list'], 'scroll');
   assert.equal(oneBy(tree, 'data-region', 'history-tab').props['data-history-layout'], 'single');
 
-  // The facts that say WHICH version this is…
+  // The facts that say WHICH version this is… g-044 dropped the `name` field:
+  // the section a record was written to is a leftover of the era when sections
+  // could be added by hand, the write surface is now the single reserved
+  // section, and the list row does not show it either — one rule for both.
   for (const [field, label] of [
     ['action', page.zh.histPreviewAction],
     ['at', page.zh.histPreviewAt],
     ['layer', page.zh.histPreviewLayer],
-    ['name', page.zh.histPreviewName],
     ['origin', page.zh.histPreviewOrigin],
     ['note', page.zh.histPreviewNote],
   ]) {
     assert.ok(hasText(oneBy(preview, 'data-preview-field', field), label), `${field} is labelled`);
   }
-  assert.ok(hasText(oneBy(preview, 'data-preview-field', 'name'), 'project:alpha'));
+  assert.equal(
+    collect(preview, (node) => node.props && node.props['data-preview-field'] === 'name').length,
+    0,
+    'the preview carries no section-name field',
+  );
+  assert.equal(page.zh.histPreviewName, undefined, 'and the copy key is gone, not left as a dead entry');
+  assert.equal(
+    collect(preview, (node) => node.props && node.props['data-preview-field'] === 'layer' && hasText(node, 'project:alpha')).length,
+    0,
+    'and the row\'s section name is not smuggled into another field',
+  );
   assert.ok(hasText(oneBy(preview, 'data-preview-field', 'layer'), page.zh.ovUser));
   assert.ok(hasText(oneBy(preview, 'data-preview-field', 'origin'), 'import'));
   assert.ok(hasText(oneBy(preview, 'data-preview-field', 'note'), 'import mode=merge status=replaced'));
@@ -4997,6 +5059,14 @@ test('client: previewing a record opens a modal over the list, and asks the host
       oneBy(preview, 'data-preview-snapshot', 'project:alpha'),
       fillText(page.zh.histPreviewSnapshotEntry, { name: 'project:alpha', action: 'replace', bytes: 16 }),
     ),
+  );
+  // g-044: an entry says what the snapshot holds, never which section it holds —
+  // the same rule the row and the field list follow. The name is still the
+  // node's `data-preview-snapshot`, which is what the lookup above uses.
+  assert.equal(
+    strings(oneBy(preview, 'data-preview-snapshot', 'project:alpha')).join(' ').includes('project:alpha'),
+    false,
+    'the snapshot entry renders no section name',
   );
 
   // The preview is a read of what is already on screen: no write of any kind,
@@ -5498,12 +5568,18 @@ test('client: the list states how to compare, right below the scope sentence (g-
   const scope = oneBy(tree, 'data-region', 'history-scope');
   const hint = oneBy(scope, 'data-role', 'history-compare-hint');
   assert.ok(hasText(hint, page.zh.histCompareHint), 'the how-to line is there, in the reader\'s language');
-  // It is the line **right after** the scope sentence.
-  const kids = Array.isArray(scope.props.children) ? scope.props.children : [scope.props.children];
+  // Both sentences still exist, in this order — but since g-044 they share one
+  // wrapping flex row (`key: 'scope-lines'`) instead of being two stacked
+  // siblings: three stacked lines above the list were three rows of history the
+  // reader never got to see.
+  const lines = oneBy(scope, 'key', 'scope-lines');
+  const kids = Array.isArray(lines.props.children) ? lines.props.children : [lines.props.children];
   const order = kids
     .filter((kid) => kid && kid.props && (kid.props['data-role'] === 'history-scope-note' || kid.props['data-role'] === 'history-compare-hint'))
     .map((kid) => kid.props['data-role']);
   assert.deepEqual(order, ['history-scope-note', 'history-compare-hint']);
+  assert.equal(lines.props.style.display, 'flex', 'one line, not three');
+  assert.equal(lines.props.style.flexWrap, 'wrap', 'and it wraps instead of overflowing');
   // The comparison's own control sits next to the list, not in a dialog.
   assert.ok(oneBy(oneBy(tree, 'data-region', 'history-diff-tools'), 'data-action', 'diff-clear'));
   assert.equal(noHistoryModal(tree), true);
@@ -5597,11 +5673,13 @@ test('client: a measured panel renders the measured height, and says where it ca
   });
   const tree = await openHistory(page);
   const tab = oneBy(tree, 'data-region', 'history-tab');
-  // 900 (the scrollable ancestor's bottom) − 200 (the panel's top) − 16 (the gap).
+  // 900 (the scrollable ancestor's bottom) − 200 (the panel's top) − 8 (the gap;
+  // halved from 16 in g-044 — it is subtracted from a measured room, so the
+  // panel simply gets those pixels).
   assert.equal(tab.props['data-history-height-source'], 'measured');
-  assert.equal(tab.props['data-history-panel-height'], '684');
-  assert.equal(tab.props.style.height, '684px');
-  assert.equal(tab.props.style.maxHeight, '684px');
+  assert.equal(tab.props['data-history-panel-height'], '692');
+  assert.equal(tab.props.style.height, '692px');
+  assert.equal(tab.props.style.maxHeight, '692px');
   assert.equal(tab.props.style.minHeight, 320, 'the floor stays whatever the measurement says');
   // The layout itself is untouched by the measuring: one column, and the record
   // box filling whatever height is left.
@@ -5629,14 +5707,14 @@ test('client: a window resize re-measures the panel, and still nothing else move
     responses: defaultResponses(),
   });
   let tree = await openHistory(page);
-  assert.equal(oneBy(tree, 'data-region', 'history-tab').props['data-history-panel-height'], '684');
+  assert.equal(oneBy(tree, 'data-region', 'history-tab').props['data-history-panel-height'], '692');
   assert.equal(typeof listeners.resize, 'function', 'the page listens for a resize');
 
   // The dialog gets shorter: the boundary moves, so the panel must too.
   state.scrollerBottom = 700;
   listeners.resize();
   tree = await page.flush();
-  assert.equal(oneBy(tree, 'data-region', 'history-tab').props['data-history-panel-height'], '484');
+  assert.equal(oneBy(tree, 'data-region', 'history-tab').props['data-history-panel-height'], '492');
   assert.equal(oneBy(tree, 'data-region', 'history-tab').props['data-history-height-source'], 'measured');
 
   // A boundary that leaves no room at all is a fallback, not a broken panel.
