@@ -8600,7 +8600,7 @@ window.__ModuleLoader__.load({
           // (`toggleUpdate`). While the switch is on, this one `GET` is what
           // decides the first-visit default — the page has already rendered, so
           // the detection arrives asynchronously and never blocks the first
-          // paint, and the Host caps each probe at 1.5 s.
+          // paint, and the Host caps each probe at 2.5 s (§17.9).
           void loadRegion();
         }
         const load = async () => {

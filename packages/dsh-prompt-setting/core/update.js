@@ -204,20 +204,30 @@ export function releasesLatestUrl(slug) {
  * Normalize an injected npm registry base address (g-042).
  *
  * Three answers, and the third is the one that matters:
- *   - **absent/blank** ⇒ {@link DEFAULT_NPM_REGISTRY}. A profile that declares
- *     nothing gets the public registry, which is what the shipped default means;
+ *   - **unstated** — `undefined`, or a blank string ⇒ {@link DEFAULT_NPM_REGISTRY}.
+ *     A profile that declares nothing gets the public registry, which is what the
+ *     shipped default means;
  *   - **an `http(s)` URL** ⇒ the same URL with any query/fragment dropped and a
  *     trailing `/` guaranteed, so a mirror that lives under a path
  *     (`https://mirror.example/npm`) keeps it when the package name is appended;
- *   - **anything else non-empty** (a bare hostname, a `file:`/`ftp:` URL, junk)
- *     ⇒ `null`, which **disables the npm path** rather than silently asking
- *     npmjs.org for a profile that pointed somewhere else. The check then goes
- *     straight to the GitHub fallback, and says so.
+ *   - **anything else** (an explicit `null`, a number, an object, a bare
+ *     hostname, a `file:`/`ftp:` URL, junk) ⇒ `null`, which **disables the npm
+ *     path** rather than silently asking npmjs.org for a caller that pointed
+ *     somewhere else.
+ *
+ * The `undefined` / `null` split is not pedantry — it is the difference between
+ * "nobody configured this" and "**this source is refused**", and collapsing them
+ * made an unusable custom address ask npmjs.org while the page said「自定义」
+ * (§17.2, criterion 7; the g-043 review caught exactly that). A resolver that
+ * *throws* is unstated, not refused: {@link safeCall} answers `undefined`, so a
+ * broken getter degrades to the shipped default instead of silently disabling
+ * the npm path.
  * @param value - the configured registry, or anything else.
  * @returns the normalized base address, or `null` when npm must not be asked.
  */
 export function normalizeRegistry(value) {
-  if (typeof value !== 'string') return DEFAULT_NPM_REGISTRY;
+  if (value === null) return null;
+  if (typeof value !== 'string') return value === undefined ? DEFAULT_NPM_REGISTRY : null;
   const trimmed = value.trim();
   if (trimmed.length === 0) return DEFAULT_NPM_REGISTRY;
   let parsed;
@@ -663,7 +673,25 @@ export function createUpdateChecker(options = {}) {
    */
   const registryOption = options.registry;
   const regionOption = options.region;
-  let registry = normalizeRegistry(typeof registryOption === 'function' ? safeCall(registryOption) : registryOption);
+  /**
+   * The injected registry, as the caller stated it (**before** normalization).
+   *
+   * Kept apart from the normalized base because `null` and `undefined` are two
+   * different statements and the whole point of the g-043 review fix is that they
+   * may not collapse into one:
+   *   - `undefined` (nothing was handed in, or a resolver threw) ⇒ "unstated" ⇒
+   *     the shipped default, and the GitHub fallback stays available;
+   *   - `null` ⇒ "**this source is refused**" ⇒ the npm path is disabled *and the
+   *     fallback is not taken either*, answered as the structured
+   *     `registry-invalid` with **zero outbound requests** (§17.6, criterion 7).
+   *     `resolveDownloadRegion()` answers exactly `null` for a `custom` region
+   *     whose saved address is unusable, which is how that refusal reaches here.
+   * @returns whatever the option (or its resolver) answers.
+   */
+  function statedRegistry() {
+    return typeof registryOption === 'function' ? safeCall(registryOption) : registryOption;
+  }
+  let registry = normalizeRegistry(statedRegistry());
   let region = normalizeRegionOption(typeof regionOption === 'function' ? safeCall(regionOption) : regionOption);
   const ttlMs = boundedNumber(options.ttlMs, UPDATE_CHECK_TTL_MS, UPDATE_CHECK_MAX_TTL_MS);
   const timeoutMs = boundedNumber(options.timeoutMs, UPDATE_CHECK_TIMEOUT_MS, UPDATE_CHECK_MAX_TIMEOUT_MS);
@@ -1100,9 +1128,23 @@ export function createUpdateChecker(options = {}) {
   async function check({ force = false } = {}) {
     // g-043: resolve the source **first**, so the region a check runs under is
     // the one stored when it started (see the note on `registryOption`).
-    registry = normalizeRegistry(typeof registryOption === 'function' ? safeCall(registryOption) : registryOption);
+    const stated = statedRegistry();
+    registry = normalizeRegistry(stated);
     region = normalizeRegionOption(typeof regionOption === 'function' ? safeCall(regionOption) : regionOption);
-    const registryIsTheOnlySource = region === DOWNLOAD_REGION_CN || region === DOWNLOAD_REGION_CUSTOM;
+    /**
+     * g-043 review fix: an explicitly **refused** source is not allowed to be
+     * answered by anybody else — not by npmjs.org and not by GitHub.
+     *
+     * A chosen mirror that cannot serve the package (region `cn`/`custom`) and a
+     * caller that hands in `null` are the same statement: "do not use that
+     * source". Before this fix the second one fell through `normalizeRegistry`'s
+     * "not a string ⇒ the default" branch and quietly asked npmjs.org, which is
+     * precisely the silent substitution criterion 7 forbids. A malformed *string*
+     * from a profile is deliberately **not** in this class: §17.2 keeps the
+     * Revision 27 behaviour there (npm disabled, GitHub answers) and says so.
+     */
+    const registryIsTheOnlySource =
+      region === DOWNLOAD_REGION_CN || region === DOWNLOAD_REGION_CUSTOM || stated === null;
     if (preferences()[UPDATE_CHECK_FLAG] !== true) {
       return payload({ hasUpdate: false });
     }
@@ -1127,7 +1169,7 @@ export function createUpdateChecker(options = {}) {
       // Nothing is cached either: the next press must ask the mirror again.
       const unattempted = npm.failure === null;
       const reason = unattempted
-        ? { code: 'registry-invalid', message: 'the saved mirror address is not a usable npm registry, so nothing was asked' }
+        ? { code: 'registry-invalid', message: 'the chosen source is not a usable npm registry, so nothing was asked' }
         : npm.failure;
       return payload({
         ok: false,
@@ -1138,7 +1180,9 @@ export function createUpdateChecker(options = {}) {
         error: {
           code: unattempted ? 'registry-invalid' : 'registry-unavailable',
           message: unattempted
-            ? `the ${region} mirror's saved address is unusable, so the update check did not ask any source`
+            ? region === DOWNLOAD_REGION_CUSTOM
+              ? 'the saved custom mirror address is unusable, so the update check did not ask any source'
+              : 'the npm source was refused, so the update check did not ask any source'
             : `the ${region} mirror at ${registry ?? 'the configured address'} could not answer: ${reason.message}`,
           region,
           registry,
@@ -1487,7 +1531,9 @@ export function createDownloadRegion(options = {}) {
    * is read next: while it is off the probe is **skipped** and the conservative
    * default is answered *without persisting it* (there is nothing detected to
    * write, and writing an invented answer would make the next visit look
-   * decided). Only then is the machine asked, and only its verdict is stored.
+   * decided). Only then is the machine asked, and only a verdict that **found a
+   * usable source** is stored (see the note in the body): a probe that could not
+   * find out is answered and then forgotten, so the next process tries again.
    * @returns the payload (never throws).
    */
   async function ensure() {
@@ -1498,6 +1544,32 @@ export function createDownloadRegion(options = {}) {
       return pending({ probed: false, skipped: true });
     }
     const decision = await detect();
+    /**
+     * g-043 review fix: only a probe that **found a usable source** may become a
+     * stored decision.
+     *
+     * "Neither registry served the package" (a timeout, a network error, a runtime
+     * with no `fetch`, an offline first visit) is not a verdict about the user's
+     * network — it is a failure to find out. Persisting it would do two wrong
+     * things at once: it would freeze `default` forever (a stored region short-
+     * circuits every later `ensure()`, *including* the in-process 6 h cache, so the
+     * detection would never run again), and it would let the page claim
+     * 「已自动判定（该源能取到本包）」 about a run that could not fetch anything.
+     *
+     * So the read still answers the conservative `default` — with `detected:false`
+     * and `stored:false`, exactly like a first visit that has not decided yet — and
+     * writes nothing. The in-process cache below still spares this process a probe
+     * per request, which is all it was ever for.
+     */
+    const foundUsableSource = decision.npmReachable === true || decision.cnReachable === true;
+    if (foundUsableSource !== true) {
+      return pending({
+        probed: true,
+        cached: decision.cached === true,
+        written: false,
+        undecided: true,
+      });
+    }
     const saved = persist({
       [DOWNLOAD_REGION_FLAG]: decision.region,
       [DOWNLOAD_REGION_AUTO_FLAG]: true,

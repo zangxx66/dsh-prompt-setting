@@ -2405,7 +2405,12 @@ code means rather than how it is written:
   one in-flight probe shared by concurrent asks, the detection runs inside its own
   request (never at mount), and with the update-check switch **off** it does not
   run at all — §17.4's「off means zero outbound requests」keeps holding.
-- **Unit tests.** 47 new cases across `test/update.test.mjs`,
+- **Review fixes (second round).** Two defects the independent review blocked on,
+  both fixed here and frozen by tests: ① an explicitly refused registry (`null`)
+  was substituted by npmjs.org — see §17.2/§17.6; ② a probe that found no usable
+  source was still written as `downloadRegionAuto: true`, freezing「默认」for good
+  and making the card claim an automatic decision that never happened — see §17.7.
+- **Unit tests.** 54 new cases across `test/update.test.mjs`,
   `test/client.test.mjs`, `test/install.test.mjs` and `test/route.test.mjs`: the
   three regions × the registry serving/failing, an **answered `404` that is not
   availability** (the discriminator the correction exists for), the three
@@ -3806,9 +3811,19 @@ Four properties are contract, not implementation:
 
 ### 17.2 `GET /prompt-setting/update-check`
 
-Query: `force` (optional). The **npm** URL is `updateCheck.registry` (default
-`https://registry.npmjs.org/`) plus the package name; a registry that is not an
-`http(s)` URL disables the npm path rather than silently asking the default one.
+Query: `force` (optional). The **npm** URL is `updateCheck.registry` plus the
+package name. That option has **three states**, and the first two may not be
+collapsed into one (g-043 review fix):
+
+| `updateCheck.registry` | Means | Effect |
+| --- | --- | --- |
+| absent, `undefined`, blank | "unstated" | the shipped default, `https://registry.npmjs.org/` |
+| `null` | "**this source is refused**" | the npm path is disabled **and the GitHub fallback is not taken either**: `200 {ok:false, code: "registry-invalid"}`, `source: null`, **zero outbound requests**. This is what `resolveDownloadRegion()` answers for a `custom` region whose address is unusable (§17.6) |
+| a string | the configured base | normalized; an unusable string (a bare host, `file:`, junk) disables the npm path and GitHub answers, with the npm reason beside it — Revision 27's behaviour, kept |
+
+A resolver that **throws** counts as unstated, never as a refusal: a broken
+preferences getter must degrade to the shipped default rather than silently
+disabling the npm path.
 The **GitHub** URL is the fallback's: `package.json`'s `repository.url`, parsed
 once per check by `parseRepositorySlug` into `{owner, repo}`; nothing is hardcoded
 a second time and no request input reaches either URL. The accepted manifest
@@ -3826,7 +3841,7 @@ anything that is not `github.com` with exactly two path segments is refused
 | 3 | the npm registry | a `dist-tags.latest` that parses ⇒ **that is the answer**, `source: "npm"`, GitHub is not asked |
 | 4 | the npm registry | impossible to answer (see below) ⇒ go to 5 |
 | 5 | the GitHub Releases API | a 2xx release ⇒ the answer, `source: "github"` |
-| 4b | the **region's** registry (§17.6) | when the region is `cn` or a usable `custom`, step 5 is **skipped**: a mirror that cannot answer is `ok:false` with `error.code: "registry-unavailable"` (or `registry-invalid` when the saved address is unusable), `source: "npm"`, and `error.region` / `error.registry` / `error.reason` naming what was asked. Nothing is cached |
+| 4b | the **region's** registry (§17.6), or an explicitly refused source | step 5 is **skipped** when the region is `cn`/`custom` **or** the option is an explicit `null`. A mirror that cannot answer is `ok:false` with `error.code: "registry-unavailable"`; a source that could not even be asked (an unusable saved address, a refused `null`) is `registry-invalid` with `source: null` and no request at all. Either way `error.region` / `error.registry` / `error.reason` name what was involved, and nothing is cached |
 | 6 | — | neither answered ⇒ `ok:false`, `source: "github"`, `error` naming the GitHub attempt and `error.npm` naming the npm attempt |
 
 The npm attempt is **unusable** — and the check goes on to GitHub — when: there is
@@ -4102,7 +4117,22 @@ criterion 7 forbids.
 
 `custom` with an address that cannot be used resolves to `registry: null`, which
 **disables the npm path** rather than substituting npmjs.org — the one thing a
-silent fallback may never do.
+silent fallback may never do. That `null` is a *statement*, and §17.2 makes it one:
+an explicitly refused source is answered as `200 {ok:false, code:
+"registry-invalid"}` with **zero outbound requests**, and the GitHub fallback is
+not taken either (g-043 review fix: `null` used to fall through
+`normalizeRegistry`'s "not a string ⇒ the default" branch and quietly ask
+npmjs.org, so the page said「自定义」while the request went to the public
+registry).
+
+**Where a `custom` address may come from.** Only from a person typing it into this
+settings page on this machine, and only through `PUT /prompt-setting/download-region`
+(§17.8). It is never read from a workspace file, an override, an exported document
+or any other per-project artifact, so a cloned repository cannot point this
+install's update traffic at an attacker's host. This is stated as a **boundary**,
+not as a mitigation: the address is validated for shape and availability, but the
+defence is that the set of people who can supply one is exactly the set of people
+who can use this machine (a single-user, local-only surface).
 
 ### 17.7 `GET /prompt-setting/download-region`
 
@@ -4134,6 +4164,15 @@ stored; with nothing stored this method also *decides* it (§17.9). Always `200`
   decided and is never re-decided by a later probe;
 - `probed: true` reports that this request ran the detection; a `GET` that
   skipped it while the switch is off also carries `"skipped": true`;
+- **only a verdict that found a usable source is stored** (g-043 review fix).
+  When neither registry served the package — a timeout, a network error, a runtime
+  with no `fetch`, an offline first visit — the answer is still the conservative
+  `default`, but with `detected: false`, `stored: false`, `written: false` and
+  `"undecided": true`, and **nothing is written**: the next process probes again.
+  Persisting such a run would freeze「默认」for good (a stored region short-circuits
+  every later `GET`, past even the in-process cache) and would let the page claim
+  an automatic decision it never made. The 6 h in-process cache is unaffected and
+  is what spares one process a probe per request — it is not a decision;
 - a write that fails during the first-visit detection answers the probe's own
   verdict plus `written: false` and `writeError` — the read never becomes an
   error page, and nothing is re-decided from a failed write.
@@ -4285,11 +4324,17 @@ the requirement itself was corrected:
   with **no** fallback to npmjs.org or to GitHub. That is the intended behaviour
   (the user asked for that source), and it is why the card reports a mirror's
   failure instead of quietly showing the default's answer;
+- **live run of the review fix.** With `downloadRegion: "custom"` and an unusable
+  saved address (`mirror.example`) in `preferences.json`, a real mount answered
+  `200 {ok:false, error.code:"registry-invalid", source:null, region:"custom",
+  registry:null}` with **zero outbound requests** (a counting wrapper around the
+  real `fetch` recorded none) — the refusal reaches nobody, not npmjs.org and not
+  GitHub;
 - **live runs.** `detect()` against the real network decided `default`
   (`npmReachable: true`) in **866 ms**; the same detector with npmjs made
   unreachable decided `cn` (`cnReachable: true`) in **82 ms**; a first visit on a
   fresh `$DSH_HOME` answered `200 {"region":"default","detected":true}` in
-  **565 ms** and wrote
+  **565–1170 ms** and wrote
   `{"updateCheck":true,"downloadRegion":"default","downloadRegionAuto":true}`.
 
 ### 17.10 Client surface

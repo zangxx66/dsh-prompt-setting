@@ -9282,3 +9282,57 @@ test('client: a page whose region read never answers still renders the card, at 
   );
   assert.equal(collect(tree, (node) => node.props && node.props['data-notice'] === 'error').length, 0);
 });
+
+test('client: a region the host could not decide claims nothing, and stays「默认」', async () => {
+  // g-043 review BLOCK, client half: the host now answers `detected:false`,
+  // `stored:false`, `undecided:true` when its probe found no usable source (an
+  // offline first visit). The card must render the shipped source **without** the
+  // 「已自动判定（该源能取到本包）」 line, because nothing was decided.
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.downloadRegion]: {
+        payload: regionFixture({ region: 'default', registry: 'https://registry.npmjs.org/', detected: false, stored: false, written: false, undecided: true }),
+      },
+    }),
+  });
+  const tree = await openTab(page, 'advanced');
+  const row = regionRow(tree);
+  assert.equal(row.props['data-download-region'], 'default');
+  assert.equal(row.props['data-download-region-detected'], 'false');
+  assert.equal(row.props['data-download-region-stored'], 'false');
+  assert.equal(regionSelect(tree).props.value, 'default');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-role'] === 'update-region-auto').length,
+    0,
+    'no automatic decision may be claimed',
+  );
+  assert.doesNotMatch(strings(tree).join(' '), /已自动判定/);
+});
+
+test('client: turning the switch back on still re-checks immediately, after the region load', async () => {
+  // The review's "just confirm it": the `if (enabled) await recheckUpdate()` this
+  // revision touched is still there — the region load was **added before it**, not
+  // substituted for it.
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.updateCheck]: (target, init) =>
+        init.method === 'PUT'
+          ? { payload: { ok: true, enabled: true, saved: { enabled: true }, effectiveFrom: 'immediate', error: null } }
+          : { payload: updateFixture() },
+    }),
+  });
+  installUpdateMirror(page, 'off');
+  const tree = await openTab(page, 'advanced');
+  assert.deepEqual(urlsFor(page, PATHS.updateCheck), [], 'off on mount: no check request');
+  assert.deepEqual(urlsFor(page, PATHS.downloadRegion), [], 'off on mount: no region request either');
+  clickButton(tree, { 'data-action': 'update-toggle' });
+  await page.flush();
+  const forced = urlsFor(page, PATHS.updateCheck).filter((url) => url.endsWith('?force=1'));
+  assert.equal(forced.length, 1, 'the immediate forced re-check survived');
+  assert.equal(urlsFor(page, PATHS.downloadRegion).length, 1, 'and the region was loaded too');
+  const order = page.router.calls.map((call) => call.url);
+  assert.ok(
+    order.findIndex((url) => url.startsWith(PATHS.downloadRegion)) < order.findIndex((url) => url.endsWith('?force=1')),
+    'the region load happens before the re-check, not instead of it',
+  );
+});

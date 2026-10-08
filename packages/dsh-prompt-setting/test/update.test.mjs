@@ -237,15 +237,19 @@ test('update: the npm document URL is built from the injected registry base', ()
   assert.equal(registryPackageUrl('https://mirror.example/npm'), 'https://mirror.example/npm/dsh-prompt-setting');
   assert.equal(registryPackageUrl('  https://mirror.example/npm/  '), 'https://mirror.example/npm/dsh-prompt-setting');
   assert.equal(normalizeRegistry('https://registry.npmjs.org/?a=1#b'), 'https://registry.npmjs.org/', 'query and fragment are decoration');
-  // Blank means "unstated" ⇒ the shipped default; anything else unusable means
-  // "do not ask npm", never "ask npmjs.org instead".
-  for (const value of [undefined, null, '', '   ', 42, {}]) {
+  // `undefined` (and a blank string) means "**unstated**" ⇒ the shipped default.
+  for (const value of [undefined, '', '   ']) {
     assert.equal(normalizeRegistry(value), DEFAULT_NPM_REGISTRY, JSON.stringify(value));
   }
-  for (const value of ['registry.example', 'ftp://mirror.example/', 'file:///tmp/registry', 'not a url']) {
-    assert.equal(normalizeRegistry(value), null, value);
-    assert.equal(registryPackageUrl(value), null, value);
+  // Everything else unusable means "**do not ask npm**", never "ask npmjs.org
+  // instead" — an explicit `null` included. Collapsing `null` into "unstated" is
+  // the g-043 review's BLOCK: an unusable custom address asked npmjs.org while the
+  // page said「自定义」.
+  for (const value of [null, 42, {}, true, 'registry.example', 'ftp://mirror.example/', 'file:///tmp/registry', 'not a url']) {
+    assert.equal(normalizeRegistry(value), null, JSON.stringify(value));
+    assert.equal(registryPackageUrl(value), null, JSON.stringify(value));
   }
+  assert.equal(registryPackageUrl(undefined), REGISTRY_URL, 'unstated still means the shipped default');
 });
 
 // #region pure policy: version comparison
@@ -1234,16 +1238,61 @@ test('region: a proxy user is served by npmjs, so the verdict stays「默认」(
   assert.deepEqual(transport.calls, ['https://registry.npmjs.org/dsh-prompt-setting']);
 });
 
-test('region: neither registry serving the package falls back to the conservative「默认」, silently', async () => {
+test('region: a probe that cannot find out answers「默认」and persists NOTHING', async () => {
+  // g-043 review BLOCK: a run that found no usable source used to be written as
+  // `downloadRegionAuto:true`. That did two wrong things — the page claimed
+  // 「已自动判定（该源能取到本包）」 about a run that fetched nothing, and the stored
+  // value short-circuited every later `ensure()` (past even the in-process cache),
+  // so one offline first visit froze「默认」 forever. Now it is answered and
+  // forgotten: `detected:false`, `stored:false`, no write, and the next process
+  // probes again.
+  let probes = 0;
   const manager = makeRegion({
     fetch: async () => {
+      probes += 1;
       throw new Error('getaddrinfo ENOTFOUND');
     },
   });
   const answer = await manager.region.ensure();
   assert.equal(answer.region, 'default');
-  assert.equal(answer.detected, true);
   assert.equal(answer.ok, true, 'a probe that cannot answer is never an error');
+  assert.equal(answer.detected, false, 'nothing may be claimed as automatically decided');
+  assert.equal(answer.stored, false);
+  assert.equal(answer.written, false);
+  assert.equal(answer.undecided, true);
+  assert.deepEqual(manager.writes, [], 'nothing was written');
+  assert.deepEqual(manager.current(), { updateCheck: true });
+
+  // The same mount may reuse its in-process verdict (that is what the cache is
+  // for), but it still writes nothing and still says it has not decided…
+  const again = await manager.region.ensure();
+  assert.equal(again.stored, false);
+  assert.equal(again.detected, false);
+  assert.deepEqual(manager.writes, []);
+  // …and a **fresh process** (a new manager over the same preferences) probes
+  // again instead of reading a frozen decision.
+  const before = probes;
+  const nextProcess = makeRegion({
+    fetch: async () => {
+      probes += 1;
+      throw new Error('getaddrinfo ENOTFOUND');
+    },
+    preferences: manager.current(),
+  });
+  await nextProcess.region.ensure();
+  assert.ok(probes > before, 'the next process really probes again');
+});
+
+test('region: a probe that finds a usable source still decides and persists, once', async () => {
+  const transport = docTransport({ npm: true, cn: true });
+  const manager = makeRegion({ fetch: transport.fetch });
+  const answer = await manager.region.ensure();
+  assert.equal(answer.detected, true);
+  assert.equal(answer.stored, true);
+  assert.equal(answer.written, true);
+  assert.deepEqual(manager.writes, [
+    { updateCheck: true, [DOWNLOAD_REGION_FLAG]: 'default', [DOWNLOAD_REGION_AUTO_FLAG]: true },
+  ]);
 });
 
 test('region: a probe that never answers ends at the timeout and still decides', async () => {
@@ -1372,8 +1421,8 @@ test('region: an unknown region id is a shape refusal, and a known one needs no 
 
 test('region: no test in this file can reach a third-party geo service', async () => {
   // The one hard constraint of g-043: the decision is connectivity, not location.
-  // Every URL this manager can ever ask is one of the two registries' own ping
-  // endpoints or a registry package document — asserted over the whole surface.
+  // Every URL this manager can ever ask is one of the two registries' own
+  // **package documents** — asserted over the whole surface.
   const asked = [];
   const fetch = async (url) => {
     asked.push(String(url));
@@ -1630,7 +1679,7 @@ test('region route: a custom mirror that stops answering is the same structured 
 
 test('region route: the probe bounds come from the plugin config, so a wedged probe still answers', async () => {
   // A transport that never answers: only the injected bound can end this. With
-  // the shipped 1.5 s the two probes would take 3 s, so a sub-200 ms answer is
+  // the shipped 2.5 s the two probes would take 5 s, so a sub-200 ms answer is
   // the assertion that `downloadRegion.probeTimeoutMs` really reached the
   // manager (and that the bound is a hard one).
   const { route } = mountHost({
@@ -1697,4 +1746,109 @@ test('update: the shipped six-hour TTL is the cache window, not an injected boun
   injected += 30 * 60 * 1000;
   assert.equal((await configured.check()).cached, true, 'half an hour is inside an injected one-hour TTL');
   assert.equal(second.calls.length, 1);
+});
+
+// #region g-043 review fix 1: a refused source is refused everywhere
+
+test('update: an explicitly refused registry asks nobody — not npmjs, not GitHub', async () => {
+  // The BLOCK: `null` and `undefined` both went through `normalizeRegistry`'s
+  // "not a string ⇒ the default" branch, so a caller that explicitly refused the
+  // npm source was silently answered from npmjs.org. The two statements must now
+  // differ, and the difference must be visible in the outbound traffic.
+  const cases = [
+    ['a resolver that answers null', () => null],
+    ['a plain null', null],
+  ];
+  for (const [label, registry] of cases) {
+    const calls = [];
+    const checker = createUpdateChecker({
+      fetch: async (url) => {
+        calls.push(String(url));
+        return npmResponse();
+      },
+      repositoryUrl: 'https://github.com/o/r',
+      currentVersion: '0.1.5',
+      registry,
+      readPreferences: () => ({ updateCheck: true }),
+    });
+    const result = await checker.check();
+    assert.deepEqual(calls, [], `${label}: zero outbound requests`);
+    assert.equal(result.ok, false, label);
+    assert.equal(result.error.code, 'registry-invalid', label);
+    assert.equal(result.registry, null, label);
+    assert.equal(result.source, null, 'no upstream produced this answer');
+  }
+});
+
+test('update: an unstated registry is still the shipped default (the control)', async () => {
+  // The other half of the fix: `undefined` — and a resolver that **throws** —
+  // must keep meaning "nobody configured this", i.e. npmjs.org. Treating a broken
+  // getter as a refusal would silently disable the npm path.
+  for (const [label, registry] of [
+    ['no option at all', undefined],
+    ['a resolver that answers undefined', () => undefined],
+    ['a resolver that throws', () => {
+      throw new Error('EIO: cannot read preferences');
+    }],
+  ]) {
+    const calls = [];
+    const checker = createUpdateChecker({
+      fetch: async (url) => {
+        calls.push(String(url));
+        return npmResponse();
+      },
+      repositoryUrl: 'https://github.com/o/r',
+      currentVersion: '0.1.5',
+      registry,
+      readPreferences: () => ({ updateCheck: true }),
+    });
+    const result = await checker.check();
+    assert.deepEqual(calls, [REGISTRY_URL], `${label}: npmjs is asked`);
+    assert.equal(result.ok, true, label);
+    assert.equal(result.source, UPDATE_SOURCE_NPM, label);
+    assert.equal(result.registry, DEFAULT_NPM_REGISTRY, label);
+  }
+});
+
+test('update: a malformed *string* from a profile keeps the Revision 27 fallback', async () => {
+  // Deliberately NOT in the refused class: §17.2 keeps g-042's behaviour — an
+  // unusable string disables the npm path and GitHub answers, with the npm reason
+  // reported beside it. The fix must not swallow that.
+  const calls = [];
+  const checker = createUpdateChecker({
+    fetch: async (url) => {
+      calls.push(String(url));
+      return releaseResponse();
+    },
+    repositoryUrl: 'https://github.com/o/r',
+    currentVersion: '0.1.5',
+    registry: 'file:///tmp/registry',
+    readPreferences: () => ({ updateCheck: true }),
+  });
+  const result = await checker.check();
+  assert.deepEqual(calls, ['https://api.github.com/repos/o/r/releases/latest'], 'npm is skipped, GitHub answers');
+  assert.equal(result.source, UPDATE_SOURCE_GITHUB);
+  assert.equal(result.registry, null, 'the unusable base is still reported as null');
+});
+
+test('update route: an unusable custom address is a structured error with zero outbound requests', async () => {
+  // The end-to-end shape of the BLOCK, through the real mount: the resolver
+  // `index.js` wires is `resolveDownloadRegion(...).registry`, which is `null` for
+  // a `custom` region whose saved address is unusable.
+  const transport = makeTransport();
+  writePreferences(userPreferencesPath(), {
+    updateCheck: true,
+    [DOWNLOAD_REGION_FLAG]: 'custom',
+    [DOWNLOAD_REGION_REGISTRY_FLAG]: 'mirror.example',
+  });
+  const { route } = mountHost({ config: { updateCheck: { fetch: transport.fetch } } });
+  const res = await call(route, { url: UPDATE_CHECK_PATH });
+  assert.equal(res.statusCode, 200);
+  const body = json(res);
+  assert.equal(body.ok, false);
+  assert.equal(body.error.code, 'registry-invalid');
+  assert.equal(body.region, 'custom');
+  assert.equal(body.registry, null);
+  assert.equal(body.source, null);
+  assert.deepEqual(transport.calls, [], 'nothing left the machine');
 });
