@@ -341,6 +341,18 @@ window.__ModuleLoader__.load({
      */
     const UPDATE_CHECK_PATH = '/prompt-setting/update-check';
     /**
+     * g-043:「下载区域」— which source the check and the install use.
+     *
+     * `GET` reads the choice (and, on the very first visit, lets the Host decide
+     * it by connectivity); `PUT {region, registry?}` records one, with a `custom`
+     * address validated by the Host **before** anything is written. The page never
+     * probes a registry itself: CORS would make that a lie in the browser, and the
+     * address is untrusted input (§17.8).
+     */
+    const DOWNLOAD_REGION_PATH = '/prompt-setting/download-region';
+    /** The three region ids, in dropdown order — the only values the contract accepts. */
+    const DOWNLOAD_REGIONS = ['default', 'cn', 'custom'];
+    /**
      * The switch's local mirror (g-030).
      *
      * The authoritative preference lives in the Host's `preferences.json`, but a
@@ -630,6 +642,43 @@ window.__ModuleLoader__.load({
         '无法取到当前的变量表，本次写入被拒绝（无法判断哪些变量会被展开）。',
         'The current variable table could not be obtained, so this write was refused: there is no way to tell which references would expand.',
       ],
+      // g-043「下载区域」(CONTRACT.md §17.7–§17.10). One key per way the choice can
+      // be refused, because the dialog's red line has to say *which* one happened:
+      // a shape mistake, a malformed address, an address nobody answered, an
+      // address that answered with an error, and an address that answered but is
+      // not a registry are five different things to do something about.
+      'invalid-region': [
+        '下载区域只能是 default、cn 或 custom 之一。',
+        'The download region must be one of default, cn or custom.',
+      ],
+      'registry-invalid': [
+        '镜像地址不合法：必须是 http(s) 地址、主机非空，且不能带账号密码、查询串或片段。',
+        'That mirror address is invalid: it must be an http(s) URL with a host, and no credentials, query string or fragment.',
+      ],
+      'registry-unreachable': [
+        '该镜像地址在超时时间内没有任何响应（超时或网络错误），地址未被保存。',
+        'Nothing answered at that mirror address within the timeout (a timeout or a network error); nothing was saved.',
+      ],
+      'registry-http-error': [
+        '该地址能访问，但返回了错误状态，不是可用的 npm registry。',
+        'That address answered, but with an error status, so it is not a usable npm registry.',
+      ],
+      'registry-not-npm': [
+        '该地址能访问，但返回的不是 npm 包文档（缺少 dist-tags.latest）。',
+        'That address answered, but not with an npm package document (no dist-tags.latest).',
+      ],
+      'registry-unavailable': [
+        '所选下载源当前不可用。不会自动改用默认源：请稍后重试，或换一个下载区域。',
+        'The chosen download source is unavailable. Nothing falls back to the default source: retry later, or pick another download region.',
+      ],
+      // The one code both preferences routes can answer (§17.4, §17.8): a write
+      // that could not be persisted. Without copy the red line would render the
+      // raw identifier, which is exactly what the「no untranslated string」rule
+      // forbids.
+      'preferences-unwritable': [
+        '偏好文件无法写入，本次选择没有生效。',
+        'The preference file could not be written, so nothing took effect.',
+      ],
     };
     // #endregion
 
@@ -715,6 +764,28 @@ window.__ModuleLoader__.load({
       updateSwitching: '保存中…',
       updateUnknown: '上游暂时没有可用的版本信息。',
       updateLatestKnown: '最新版本 {latest}',
+      // g-043:「下载区域」. The dropdown names the three sources, and the line
+      // under it says what each one means — a「默认」that hides "npm 优先、GitHub 兜底"
+      // would make the other two choices impossible to compare against it.
+      updateRegionLabel: '下载区域',
+      updateRegionDefault: '默认',
+      updateRegionDefaultNote: 'npm 优先；npm 不可用时回退 GitHub release 产物。',
+      updateRegionCn: '中国大陆',
+      updateRegionCnNote: '使用清华 TUNA 镜像（mirrors.tuna.tsinghua.edu.cn/npm）。',
+      updateRegionCustom: '自定义',
+      updateRegionCustomNote: '使用你填写的镜像地址（提交前会先校验）。',
+      updateRegionAuto: '已按连通性自动判定：{region}。',
+      updateRegionSaved: '下载区域已切换为{region}，检查与安装都会走新源。',
+      updateRegionSaving: '切换中…',
+      updateRegionSelectLabel: '更新来源',
+      updateRegionCustomTitle: '自定义镜像源',
+      updateRegionCustomBody:
+        '填写 npm registry 的基地址（http(s)://，可带路径）。提交后宿主会先校验格式并试取一次包文档：不可访问或不是 npm registry 都不会保存，当前生效的源保持不变。',
+      updateRegionCustomPlaceholder: 'https://registry.example.com/',
+      updateRegionCustomSubmit: '校验并保存',
+      updateRegionCustomChecking: '校验中…',
+      updateRegionCustomCancel: '取消',
+      updateRegionUnusable: '已保存的自定义镜像地址不可用：{reason}',
       // g-032:「立即更新」. The whole feature rests on one promise the copy has
       // to keep: the install is done by the host, and the **user** restarts. So
       // every string that describes the outcome says so, and no string anywhere
@@ -1171,6 +1242,26 @@ window.__ModuleLoader__.load({
       updateSwitching: 'Saving…',
       updateUnknown: 'Upstream has no usable version information right now.',
       updateLatestKnown: 'Latest version {latest}',
+      // g-043: the download region (see the zh block for the same nine keys).
+      updateRegionLabel: 'Download region',
+      updateRegionDefault: 'Default',
+      updateRegionDefaultNote: 'npm first; GitHub release artifacts only when npm cannot answer.',
+      updateRegionCn: 'Mainland China',
+      updateRegionCnNote: 'Use the Tsinghua TUNA mirror (mirrors.tuna.tsinghua.edu.cn/npm).',
+      updateRegionCustom: 'Custom',
+      updateRegionCustomNote: 'Use the mirror address you type (validated before it is saved).',
+      updateRegionAuto: 'Chosen automatically from network reachability: {region}.',
+      updateRegionSaved: 'Download region is now {region}; checks and installs use the new source.',
+      updateRegionSaving: 'Switching…',
+      updateRegionSelectLabel: 'Update source',
+      updateRegionCustomTitle: 'Custom mirror',
+      updateRegionCustomBody:
+        'Enter the base address of an npm registry (http(s)://, a path is allowed). The host validates the format and fetches the package document once: an unreachable address, or one that is not an npm registry, is never saved and the source in force stays as it is.',
+      updateRegionCustomPlaceholder: 'https://registry.example.com/',
+      updateRegionCustomSubmit: 'Validate and save',
+      updateRegionCustomChecking: 'Validating…',
+      updateRegionCustomCancel: 'Cancel',
+      updateRegionUnusable: 'The saved custom mirror address is unusable: {reason}',
       // ---- g-032:「Update now」(mirrors the zh block above). Nothing here may
       // promise an automatic restart: the install is the host's job and the
       // restart is the user's.
@@ -3003,6 +3094,34 @@ window.__ModuleLoader__.load({
       } catch {
         // The mirror is an optimisation; a refusal is not an error.
       }
+    }
+
+    /**
+     * g-043: one `GET`/`PUT /download-region` payload as this page's view state.
+     *
+     * Every field is copied defensively — an old Host that does not know this
+     * route, a hand-edited answer and a region id from the future all have to
+     * degrade to something renderable: an unknown id reads as `default`, an
+     * address that is not a string as "no address", `detected` only as the Host's
+     * own `true`. Nothing is inferred, because「自动判定」is a claim about what the
+     * Host did and this page may not make it up.
+     * @param payload - the response body, or anything else.
+     * @returns the region view state.
+     */
+    function regionStateOf(payload) {
+      const source = payload !== null && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+      return {
+        phase: 'ready',
+        region: DOWNLOAD_REGIONS.includes(source.region) ? source.region : 'default',
+        registry: typeof source.registry === 'string' && source.registry.length > 0 ? source.registry : null,
+        custom: typeof source.custom === 'string' && source.custom.length > 0 ? source.custom : null,
+        detected: source.detected === true,
+        stored: source.stored === true,
+        error:
+          source.error !== null && typeof source.error === 'object' && typeof source.error.code === 'string'
+            ? { code: source.error.code, message: typeof source.error.message === 'string' ? source.error.message : '' }
+            : null,
+      };
     }
 
     /**
@@ -7513,6 +7632,221 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * g-043: the i18n key for one region id. An unknown id (a Host from the
+     * future, a hand-edited answer) reads as「默认」rather than as a bare enum.
+     * @param id - `default` / `cn` / `custom`, or anything else.
+     * @returns the dictionary key.
+     */
+    function regionLabelKey(id) {
+      return id === 'cn' ? 'updateRegionCn' : id === 'custom' ? 'updateRegionCustom' : 'updateRegionDefault';
+    }
+
+    /** The one-line meaning of one region id (same fallback rule as the label). */
+    function regionNoteKey(id) {
+      return id === 'cn' ? 'updateRegionCnNote' : id === 'custom' ? 'updateRegionCustomNote' : 'updateRegionDefaultNote';
+    }
+
+    /**
+     * g-043:「下载区域」— the dropdown inside the「检查更新」card, plus the line
+     * that says where the current one happens to come from.
+     *
+     * Four facts drive what is on screen, and none of them is optimistic:
+     *   - the **selected** value is the Host's stored region, never the option the
+     *     user just clicked: a click sends the `PUT`, and only the answer moves the
+     *     control — so a refused write visibly leaves the old source in force;
+     *   - `detected` (the Host decided this by connectivity on the first visit)
+     *     renders as「已按连通性自动判定」, because a default a page chose for the
+     *     user must not look like one the user chose;
+     *   - a stored `custom` address the Host cannot use renders its reason beside
+     *     the control, so「自定义」is never silently wrong;
+     *   - the note under it names what the selected source means, which is what
+     *     makes the three options comparable.
+     *
+     * The control is a plain native `select` element: it is a three-way choice
+     * over fixed ids, and a native one is keyboard- and screen-reader-correct in
+     * both renderer branches without a primitives dependency (no `Select` atom is
+     * asserted to exist).
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @param u - this card's update view state.
+     * @returns the region row element.
+     */
+    function renderDownloadRegion(t, m, a, u) {
+      const region = u.region ?? null;
+      const current = region !== null && DOWNLOAD_REGIONS.includes(region.region) ? region.region : 'default';
+      const saving = region !== null && region.phase === 'saving';
+      const detected = region !== null && region.detected === true;
+      // A saved `custom` address the Host cannot use is reported once, here — it
+      // is the only place the user can see that their mirror is not in force.
+      const unusable =
+        region !== null && region.error !== null && region.error !== undefined && typeof region.error.code === 'string'
+          ? region.error
+          : null;
+      return h(
+        'div',
+        {
+          key: 'download-region',
+          'data-region': 'download-region',
+          'data-download-region': current,
+          'data-download-region-detected': detected ? 'true' : 'false',
+          'data-download-region-stored': region !== null && region.stored === true ? 'true' : 'false',
+          style: { display: 'flex', flexDirection: 'column', gap: 4 },
+        },
+        h(
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+          h('span', { style: { fontSize: 13 } }, t('updateRegionLabel')),
+          h(
+            'select',
+            {
+              'data-action': 'update-region-select',
+              'aria-label': t('updateRegionSelectLabel'),
+              value: current,
+              disabled: m.busy || saving,
+              onChange: a.setDownloadRegion,
+              style: {
+                font: 'inherit',
+                fontSize: 13,
+                lineHeight: '20px',
+                padding: '6px 10px',
+                borderRadius: 8,
+                color: token.labelPrimary,
+                background: token.surface,
+                border: `1px solid ${token.borderL2}`,
+              },
+            },
+            ...DOWNLOAD_REGIONS.map((id) => h('option', { key: id, value: id }, t(regionLabelKey(id)))),
+          ),
+          saving ? h('span', { style: { ...metaStyle }, 'data-role': 'update-region-saving' }, t('updateRegionSaving')) : null,
+        ),
+        h('p', { style: { margin: 0, ...metaStyle }, 'data-role': 'update-region-note' }, t(regionNoteKey(current))),
+        detected
+          ? h(
+              'p',
+              { style: { margin: 0, ...metaStyle }, 'data-role': 'update-region-auto', 'data-update-region-auto': 'true' },
+              fmt(t('updateRegionAuto'), { region: t(regionLabelKey(current)) }),
+            )
+          : null,
+        unusable === null
+          ? null
+          : h(
+              'p',
+              {
+                style: { margin: 0, ...metaStyle, color: token.stateError },
+                'data-role': 'update-region-unusable',
+                'data-update-region-error': unusable.code,
+              },
+              fmt(t('updateRegionUnusable'), { reason: errorText(t, unusable) }),
+            ),
+      );
+    }
+
+    /**
+     * g-043: the「自定义」dialog — the address field, its red line, and the two
+     * buttons.
+     *
+     * It is its own overlay rather than another `renderConfirm` branch because
+     * what it needs is a **form**: a text field, a validation error that stays on
+     * screen (the confirm overlay has no such slot), and a submit that must not
+     * close the dialog when the Host refuses the address. Three rules from §17.10
+     * are visible here:
+     *   - the failure is **red and in the dialog** (`data-role="region-error"`),
+     *     never a page notice the user could miss while the dialog covers it;
+     *   - the dialog stays open on a refusal, so the address can be corrected in
+     *     place, and closing it is always an explicit choice;
+     *   - it never writes anything itself: the `PUT` is the same action the
+     *     dropdown uses, so there is exactly one save path.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the overlay element, or null when the dialog is closed.
+     */
+    function renderRegionDialog(t, m, a) {
+      const dialog = m.regionDialog ?? null;
+      if (dialog === null) return null;
+      const checking = dialog.phase === 'saving';
+      return h(
+        'div',
+        {
+          key: 'region-overlay',
+          'data-region': 'region-overlay',
+          style: {
+            position: 'fixed',
+            top: 0,
+            right: 0,
+            bottom: 0,
+            left: 0,
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 16,
+            background: 'rgba(0, 0, 0, 0.45)',
+          },
+        },
+        h(
+          'div',
+          {
+            'data-region': 'region-dialog',
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-label': t('updateRegionCustomTitle'),
+            style: {
+              ...cardStyle,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+              width: '100%',
+              maxWidth: 480,
+              padding: '16px 18px',
+              boxShadow: '0 12px 32px rgba(0, 0, 0, 0.35)',
+            },
+          },
+          h('strong', { style: confirmTitleStyle }, t('updateRegionCustomTitle')),
+          h('div', { 'data-role': 'region-body', style: confirmTextStyle }, t('updateRegionCustomBody')),
+          h(UI.Input, {
+            'data-role': 'region-input',
+            value: dialog.value,
+            placeholder: t('updateRegionCustomPlaceholder'),
+            disabled: m.busy || checking,
+            onChange: a.setRegionCustomValue,
+          }),
+          dialog.error === null
+            ? null
+            : h(
+                'div',
+                {
+                  'data-role': 'region-error',
+                  'data-region-error': typeof dialog.error.code === 'string' ? dialog.error.code : 'unknown',
+                  style: { fontSize: 13, color: token.stateError },
+                },
+                errorText(t, dialog.error),
+              ),
+          h(
+            'div',
+            { 'data-role': 'region-actions', style: confirmActionsStyle },
+            h(
+              UI.Button,
+              {
+                variant: 'primary',
+                'data-action': 'region-save',
+                disabled: m.busy || checking,
+                onClick: a.submitRegionCustom,
+              },
+              checking ? t('updateRegionCustomChecking') : t('updateRegionCustomSubmit'),
+            ),
+            h(
+              UI.Button,
+              { 'data-action': 'region-cancel', disabled: m.busy || checking, onClick: a.cancelRegionCustom },
+              t('updateRegionCustomCancel'),
+            ),
+          ),
+        ),
+      );
+    }
+
+    /**
      * g-030: the「检查更新」switch, in 「高级」.
      *
      * The switch is the whole reason this feature is shippable: the goal is
@@ -7587,6 +7921,7 @@ window.__ModuleLoader__.load({
             : null,
         ),
         h('p', { style: { margin: 0, ...metaStyle } }, t('updateSettingNote')),
+        renderDownloadRegion(t, m, a, u),
         latest === null
           ? null
           : h(
@@ -7753,6 +8088,11 @@ window.__ModuleLoader__.load({
       // panel purely so the panel keeps the last slot in the tree.
       const confirmCard = renderConfirm(t, m, a);
       if (confirmCard !== null) children.push(confirmCard);
+      // g-043: the custom-mirror dialog is the second fixed overlay, and the two
+      // are mutually exclusive in practice (their triggers live in different
+      // cards). Pushed here for the same reason as the confirm card.
+      const regionCard = renderRegionDialog(t, m, a);
+      if (regionCard !== null) children.push(regionCard);
       children.push(
         h('div', { key: 'panel', 'data-region': 'panel' },
           m.snap.phase === 'loading' && !m.snap.data ? h('p', { key: 'loading', style: metaStyle }, t('loading')) : null,
@@ -7982,6 +8322,13 @@ window.__ModuleLoader__.load({
       const [diffSel, setDiffSel] = React.useState({ from: null, to: DIFF_CURRENT });
       const [diff, setDiff] = React.useState({ phase: 'idle', data: null, error: null });
       const [confirm, setConfirm] = React.useState(null);
+      /**
+       * g-043:「自定义镜像源」dialog: `null` when closed, otherwise
+       * `{value, error, phase}`. Its own state rather than a `confirm` kind
+       * because the error has to survive the dialog staying open — a confirm
+       * carries a body, not a form.
+       */
+      const [regionDialog, setRegionDialog] = React.useState(null);
       const [transfer, setTransfer] = React.useState({ phase: 'idle', plan: null, error: null, exportText: '', fileName: '' });
       const [importText, setImportText] = React.useState('');
       const [importMode, setImportMode] = React.useState('merge');
@@ -8027,6 +8374,18 @@ window.__ModuleLoader__.load({
         applyElapsed: null,
         /** The wall-clock start, which drives the elapsed ticker. */
         applyStartedAt: null,
+        /**
+         * g-043:「下载区域」, exactly as the **Host** reports it:
+         * `{phase, region, registry, custom, detected, stored, error}`, or `null`
+         * until the Host has answered. The three things that matter here are
+         * `region` (what the dropdown shows — never the option the user just
+         * clicked), `detected` (the Host chose it by connectivity, so the page
+         * says so) and `error` (a saved custom address the Host cannot use).
+         * `null` is not「默认」: it is「this page has not been told yet」, and the
+         * card renders it as the shipped default while saying nothing about
+         * where it came from.
+         */
+        region: null,
       });
 
       const session = selection === null ? seat.currentId || GLOBAL_SESSION : selection;
@@ -8235,6 +8594,14 @@ window.__ModuleLoader__.load({
             }));
           };
           void checkUpdate();
+          // g-043: the download region rides on the same mount, and on the same
+          // zero-request promise: with the mirror saying「off」nothing is asked at
+          // all, and the region is loaded when the switch is turned back on
+          // (`toggleUpdate`). While the switch is on, this one `GET` is what
+          // decides the first-visit default — the page has already rendered, so
+          // the detection arrives asynchronously and never blocks the first
+          // paint, and the Host caps each probe at 1.5 s.
+          void loadRegion();
         }
         const load = async () => {
           const snapshot = await requestJson(`${SNAPSHOT_PATH}${query}`);
@@ -8863,6 +9230,121 @@ window.__ModuleLoader__.load({
        * 「显示更多」 — those browse the picker, they do not finish with it.
        */
       /**
+       * g-043: read the stored「下载区域」— and, on the first visit ever, let the
+       * Host decide it by connectivity. One `GET`; a failure leaves the previous
+       * answer alone and says nothing (this is a read-out, not a task).
+       *
+       * The Host's answer is copied into the view state field by field, so
+       * nothing on screen is invented here: an unknown region id reads as
+       *「默认」, a non-string address as「no address」, `detected` only as the
+       * Host's own boolean.
+       */
+      const loadRegion = async () => {
+        const result = await requestJson(DOWNLOAD_REGION_PATH);
+        if (!result.ok) {
+          setUpdate((current) => ({ ...current, region: { ...(current.region ?? {}), phase: 'error' } }));
+          return;
+        }
+        setUpdate((current) => ({ ...current, region: regionStateOf(result.payload) }));
+      };
+
+      /**
+       * g-043: send one region choice and fold the Host's answer back into the
+       * card. Returns the transport result so the dialog can decide whether to
+       * close: `ok:true` means the choice is in force *now*, and anything else
+       * means nothing was written.
+       *
+       * A successful switch drops the previous check's fact (`data` / `check`):
+       * it was an answer from the **old** source, and leaving it would let the
+       * banner announce a version the new source may not even carry — the
+       * 「install this」button would then install the old source's artifact while
+       * the dropdown said otherwise. The re-check below refills it from the new
+       * source.
+       */
+      const saveRegion = async (body) => {
+        const previous = update.region !== null && update.region !== undefined && update.region.phase === 'error' ? 'error' : 'ready';
+        setUpdate((current) => ({ ...current, region: { ...(current.region ?? {}), phase: 'saving' } }));
+        setBusy(true);
+        const result = await requestJson(DOWNLOAD_REGION_PATH, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        setBusy(false);
+        if (!result.ok) {
+          // Nothing was written: the control must keep showing the source that is
+          // actually in force, and the region's phase returns to what it was.
+          setUpdate((current) => ({ ...current, region: { ...(current.region ?? {}), phase: previous } }));
+          return result;
+        }
+        setUpdate((current) => ({ ...current, region: regionStateOf(result.payload), data: null, check: null, dismissed: false }));
+        if (update.enabled !== false) await recheckUpdate();
+        return result;
+      };
+
+      /**
+       * g-043: the dropdown's own `change`. `default` / `cn` are saved straight
+       * away — there is nothing to type and nothing to validate. `custom` only
+       * **opens the dialog**: the address is not a choice the dropdown can
+       * express, and saving the word「自定义」without an address would leave the
+       * npm path unusable.
+       */
+      const setDownloadRegion = async (event) => {
+        const wanted = event && event.target ? String(event.target.value) : '';
+        if (wanted === 'custom') {
+          setRegionDialog({
+            value:
+              update.region !== null && update.region !== undefined && typeof update.region.custom === 'string'
+                ? update.region.custom
+                : '',
+            error: null,
+            phase: 'idle',
+          });
+          return;
+        }
+        if (wanted !== 'default' && wanted !== 'cn') return;
+        const result = await saveRegion({ region: wanted });
+        if (result.ok) {
+          setNotice({ tone: 'success', text: fmt(t('updateRegionSaved'), { region: t(regionLabelKey(wanted)) }) });
+          return;
+        }
+        setNotice({ tone: 'error', text: errorText(t, result.error) });
+      };
+
+      /** g-043: the dialog's field. Typing clears the red line. */
+      const setRegionCustomValue = (event) => {
+        const value = event && event.target ? String(event.target.value) : '';
+        setRegionDialog((current) => (current === null ? null : { ...current, value, error: null }));
+      };
+
+      /** g-043: close the dialog without writing anything. */
+      const cancelRegionCustom = () => setRegionDialog(null);
+
+      /**
+       * g-043: submit the typed address. The Host validates **before** it writes,
+       * so:
+       *   - `ok:true` ⇒ the dialog closes and the new source is already in force;
+       *   - `ok:false` ⇒ the dialog **stays open** with the Host's code rendered
+       *     as a red line inside it, and the saved value is untouched. The page
+       *     notice is deliberately *not* used: it renders behind the overlay.
+       * A transport failure (no answer at all) is the same red line with the
+       * page's own network copy.
+       */
+      const submitRegionCustom = async () => {
+        const dialog = regionDialog;
+        if (dialog === null) return;
+        const address = String(dialog.value ?? '').trim();
+        setRegionDialog((current) => (current === null ? null : { ...current, phase: 'saving', error: null }));
+        const result = await saveRegion({ region: 'custom', registry: address });
+        if (result.ok) {
+          setRegionDialog(null);
+          setNotice({ tone: 'success', text: fmt(t('updateRegionSaved'), { region: t(regionLabelKey('custom')) }) });
+          return;
+        }
+        setRegionDialog((current) => (current === null ? null : { ...current, phase: 'idle', error: result.error }));
+      };
+
+      /**
        * g-030: run the update check again, bypassing the Host's six-hour cache
        * (`?force=1`). The button that calls this is only rendered while the
        * switch is on, so "check now" can never be the thing that re-enables a
@@ -8931,7 +9413,14 @@ window.__ModuleLoader__.load({
           tone: 'success',
           text: fmt(t('updateToggleSaved'), { state: t(enabled ? 'updateSettingOn' : 'updateSettingOff') }),
         });
-        if (enabled) await recheckUpdate();
+        if (enabled) {
+          // g-043: a mount that ran while the switch was off asked the region
+          // nothing at all (the zero-request promise), so the first thing the
+          // switch being turned back on has to fetch is the region — which is
+          // also where the first-visit connectivity detection happens.
+          if (update.region === null || update.region === undefined) await loadRegion();
+          await recheckUpdate();
+        }
       };
 
       /**
@@ -9231,6 +9720,11 @@ window.__ModuleLoader__.load({
         dismissUpdate: () => setUpdate((current) => ({ ...current, dismissed: true })),
         toggleUpdate,
         recheckUpdate,
+        // g-043:「下载区域」 — the dropdown, and the「自定义」dialog behind it.
+        setDownloadRegion,
+        setRegionCustomValue,
+        submitRegionCustom,
+        cancelRegionCustom,
         // g-032:「立即更新」— open the confirmation, start it, cancel it, retry it.
         requestUpdateApply,
         cancelUpdateApply,
@@ -9519,6 +10013,8 @@ window.__ModuleLoader__.load({
         // at a time, by construction.
         historyModal,
         confirm,
+        // g-043: `null` when the「自定义镜像源」dialog is closed.
+        regionDialog,
         transfer,
         importText,
         importMode,

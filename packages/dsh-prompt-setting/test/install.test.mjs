@@ -25,6 +25,7 @@ import { join } from 'node:path';
 import test, { afterEach, beforeEach } from 'node:test';
 
 import { apply } from '../index.js';
+import { userPreferencesPath, writePreferences } from '../core/store.js';
 import {
   INSTALL_ASSET_EXTENSION,
   INSTALL_FAILURE_UNKNOWN,
@@ -694,6 +695,34 @@ test('install route: an npm-sourced check installs the registry tarball', async 
     transport.calls.map((entry) => `${entry.method} ${entry.url}`),
     [`GET ${REGISTRY_URL}`, `HEAD ${TARBALL_URL}`],
   );
+});
+
+test('install route: the install follows the chosen download region (g-043)', async () => {
+  // Criterion 1's second half: a region switch must reach the **install**, not
+  // just the check. With「中国大陆」stored, the only registry this mount may ask
+  // is the mirror, and the only spec it may hand pnpm is the mirror's tarball.
+  const MIRROR = 'https://mirrors.tuna.tsinghua.edu.cn/npm/';
+  const MIRROR_TARBALL = `${MIRROR}dsh-prompt-setting/-/dsh-prompt-setting-0.2.0.tgz`;
+  writeProfile({ 'dsh-prompt-setting': '0.1.1' });
+  writePreferences(userPreferencesPath(), { updateCheck: true, downloadRegion: 'cn' });
+  const calls = [];
+  const fetch = async (url, init = {}) => {
+    const target = String(url);
+    const method = String(init.method ?? 'GET');
+    calls.push(`${method} ${target}`);
+    if (method === 'HEAD') return { ok: true, status: 200 };
+    assert.ok(target.startsWith(MIRROR), `${target} must be the region the user chose`);
+    return jsonResponse(npmDocument({ versions: { '0.2.0': { version: '0.2.0', dist: { tarball: MIRROR_TARBALL } } } }));
+  };
+  const manager = makeManager();
+  const { route } = mountHost({ manager, transport: { fetch } });
+
+  const started = await startInstall(route);
+  assert.equal(started.ok, true);
+  await settle();
+  assert.equal(manager.calls.length, 1);
+  assert.equal(manager.calls[0].spec, MIRROR_TARBALL, 'pnpm is pointed at the mirror artifact');
+  assert.deepEqual(calls, [`GET ${MIRROR}dsh-prompt-setting`, `HEAD ${MIRROR_TARBALL}`]);
 });
 
 test('install route: an npm tarball that is missing or untrustworthy is refused before pnpm', async () => {

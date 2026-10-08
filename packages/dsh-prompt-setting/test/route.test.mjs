@@ -33,6 +33,8 @@ const IMPORT_PATH = '/prompt-setting/import';
 const UPDATE_CHECK_PATH = '/prompt-setting/update-check';
 const UPDATE_APPLY_PATH = '/prompt-setting/update-apply';
 const UPDATE_APPLY_CANCEL_PATH = '/prompt-setting/update-apply/cancel';
+/** g-043:「下载区域」— the update source the user picks. */
+const DOWNLOAD_REGION_PATH = '/prompt-setting/download-region';
 /** g-042: the npm document, the GitHub fallback, and the registry's install spec. */
 const REGISTRY_URL = 'https://registry.npmjs.org/dsh-prompt-setting';
 const GITHUB_URL = 'https://api.github.com/repos/zangxx66/dsh-prompt-setting/releases/latest';
@@ -499,6 +501,11 @@ test('host: wrong methods on the new routes answer 405 with the full allow list'
   const cancel = await call(route, { method: 'GET', url: UPDATE_APPLY_CANCEL_PATH });
   assert.equal(cancel.statusCode, 405);
   assert.equal(cancel.headers.allow, 'POST');
+  // g-043: the download-region route has its own table, and — like the check's —
+  // the 405 is decided before any probe could run (this mount has no transport).
+  const region = await call(route, { method: 'DELETE', url: DOWNLOAD_REGION_PATH });
+  assert.equal(region.statusCode, 405);
+  assert.equal(region.headers.allow, 'GET, PUT');
 });
 
 // #region the update routes take the npm path first (g-042)

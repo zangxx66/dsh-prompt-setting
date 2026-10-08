@@ -159,9 +159,15 @@ import {
   writePreferences,
 } from './core/store.js';
 import {
+  DOWNLOAD_REGION_DEFAULT,
+  REGION_PROBE_TIMEOUT_MS,
+  REGISTRY_CHECK_TIMEOUT_MS,
   UPDATE_CHECK_TIMEOUT_MS,
   UPDATE_CHECK_TTL_MS,
+  createDownloadRegion,
   createUpdateChecker,
+  isDownloadRegion,
+  resolveDownloadRegion,
 } from './core/update.js';
 import {
   EXPORT_LAYERS,
@@ -248,6 +254,26 @@ const UPDATE_CHECK_PATH = `${ROUTE_PREFIX}/update-check`;
 const UPDATE_APPLY_PATH = `${ROUTE_PREFIX}/update-apply`;
 /** The cancel face of the same request. Its own path, so the method table stays explicit. */
 const UPDATE_APPLY_CANCEL_PATH = `${ROUTE_PREFIX}/update-apply/cancel`;
+/**
+ * g-043: 「下载区域」— the update source the user picks, and the first-visit
+ * connectivity detection that decides it.
+ *
+ * One path, two methods, and they are two different questions about one setting:
+ *   - `GET` answers 「which region is in force, and what address does it ask」.
+ *     With nothing stored it also **decides** — probing npmjs, then the TUNA
+ *     mirror — and writes the verdict as an explicit choice, flagged
+ *     `detected:true` so the page can say it was automatic (§17.9). A read is a
+ *     read: no stored region means the probe runs, but the page never waits for
+ *     it to paint (the answer arrives on its own request);
+ *   - `PUT {region, registry?}` records the choice. A `custom` address is
+ *     **validated before anything is written** — format, then one `GET` of the
+ *     package document — and every kind of failure leaves the effective source
+ *     exactly where it was and answers `200 {ok:false, code}` for the dialog's
+ *     red line. Only the `region` enum itself is a 400 (`invalid-region`): that
+ *     is a body-shape fact, while an address is *content* under validation, one
+ *     class of which is decided by a network round trip.
+ */
+const DOWNLOAD_REGION_PATH = `${ROUTE_PREFIX}/download-region`;
 /** Method table; a known path with any other method is a 405 carrying `allow`. */
 const ROUTES = new Map([
   [PING_PATH, ['GET']],
@@ -262,6 +288,7 @@ const ROUTES = new Map([
   [UPDATE_CHECK_PATH, ['GET', 'PUT']],
   [UPDATE_APPLY_PATH, ['GET', 'POST']],
   [UPDATE_APPLY_CANCEL_PATH, ['POST']],
+  [DOWNLOAD_REGION_PATH, ['GET', 'PUT']],
 ]);
 /**
  * How long the host waits for the release-asset probe before installing anyway.
@@ -829,6 +856,33 @@ function resolveUpdateOptions(config) {
 }
 
 /**
+ * The injected transport and bounds for this mount's「下载区域」manager (g-043).
+ *
+ * The **transport is shared with the update checker** on purpose: a profile (or a
+ * test) that injects one `updateCheck.fetch` must drive every outbound request
+ * this plugin can make — the check, the install probe and now the region probe —
+ * otherwise a stubbed test profile would still reach npmjs.org from the probe.
+ * The three bounds have their own optional block (`downloadRegion:
+ * {probeTimeoutMs, checkTimeoutMs, ttlMs}`) because they are different questions
+ * from the check's cache and timeout; every one of them is optional and bounded
+ * by `core/update.js` itself.
+ * @param config - the loose plugin config.
+ * @param updateOptions - the resolved update-check options (for `fetch` / `now`).
+ * @returns the options `createDownloadRegion` accepts (transport/bounds only).
+ */
+function resolveRegionOptions(config, updateOptions) {
+  const declared = config !== null && typeof config === 'object' ? config.downloadRegion : undefined;
+  const source = declared !== null && typeof declared === 'object' ? declared : {};
+  return {
+    ...(typeof updateOptions.fetch === 'function' ? { fetch: updateOptions.fetch } : {}),
+    ...(typeof updateOptions.now === 'function' ? { now: updateOptions.now } : {}),
+    ...(Number.isFinite(source.probeTimeoutMs) ? { probeTimeoutMs: source.probeTimeoutMs } : {}),
+    ...(Number.isFinite(source.checkTimeoutMs) ? { checkTimeoutMs: source.checkTimeoutMs } : {}),
+    ...(Number.isFinite(source.ttlMs) ? { ttlMs: source.ttlMs } : {}),
+  };
+}
+
+/**
  * Mount everything. Separated from {@link apply} so the guard has one call to
  * wrap and one list of disposers to unwind.
  * @param ctx - the Host plugin context.
@@ -854,6 +908,38 @@ function mount(ctx, config, cleanups) {
   const updatePreferencesPath = userPreferencesPath();
   /** Resolved once: the checker, this mount's install probe and the tests all read the same transport. */
   const updateOptions = resolveUpdateOptions(config);
+  /**
+   * The one reader both preferences consumers use. Read **per call**, never
+   * cached: a hand edit of `preferences.json` and a write made by the sibling
+   * route both have to be visible to the next request without a remount.
+   */
+  const readPreferenceDocument = () => readPreferences(updatePreferencesPath).preferences;
+  /**
+   * g-043: this mount's「下载区域」manager — the stored choice, the first-visit
+   * detection and the custom-address validation. It shares the preference file
+   * (and therefore the atomic write path) with the switch, and the transport with
+   * the checker.
+   */
+  const downloadRegion = createDownloadRegion({
+    probeTimeoutMs: REGION_PROBE_TIMEOUT_MS,
+    checkTimeoutMs: REGISTRY_CHECK_TIMEOUT_MS,
+    ...resolveRegionOptions(config, updateOptions),
+    currentVersion: PLUGIN_VERSION,
+    readPreferences: readPreferenceDocument,
+    writePreferences: (next) => writePreferences(updatePreferencesPath, next),
+  });
+  /**
+   * g-043: where the npm path points, resolved **per check** so a region switch
+   * takes effect on the next one (the check cache is keyed by this same pair, so
+   * a switch cannot be masked by a cached answer either).
+   *
+   * Precedence (§17.6): an operator-declared `updateCheck.registry` wins and
+   * pins the base with the pre-g-043 fallback order; otherwise the stored
+   * download region decides both the address and whether the GitHub fallback may
+   * answer at all.
+   */
+  const declaredRegistry = typeof updateOptions.registry === 'string' ? updateOptions.registry : null;
+  const effectiveRegion = () => (declaredRegistry === null ? resolveDownloadRegion(readPreferenceDocument()).region : DOWNLOAD_REGION_DEFAULT);
   const updateChecker = createUpdateChecker({
     // The shipped defaults are named here (and asserted in `core/update.js`'s own
     // tests) so the two numbers a reader looks for are greppable constants, while
@@ -861,9 +947,12 @@ function mount(ctx, config, cleanups) {
     ttlMs: UPDATE_CHECK_TTL_MS,
     timeoutMs: UPDATE_CHECK_TIMEOUT_MS,
     ...updateOptions,
+    ...(declaredRegistry === null
+      ? { registry: () => resolveDownloadRegion(readPreferenceDocument()).registry, region: effectiveRegion }
+      : {}),
     repositoryUrl: OWN_REPOSITORY_URL,
     currentVersion: PLUGIN_VERSION,
-    readPreferences: () => readPreferences(updatePreferencesPath).preferences,
+    readPreferences: readPreferenceDocument,
     writePreferences: (next) => writePreferences(updatePreferencesPath, next),
   });
   /**
@@ -2502,6 +2591,68 @@ function mount(ctx, config, cleanups) {
   }
 
   /**
+   * `GET /prompt-setting/download-region` — which update source is in force?
+   *
+   * The answer is `{region, registry, custom, detected, stored, error}`. A stored
+   * choice is returned with **no request at all**; with nothing stored the first
+   * visit is decided here — npmjs reachable ⇒ `default`, npmjs unreachable while
+   * the TUNA mirror answers ⇒ `cn`, neither ⇒ `default` — and the verdict is
+   * written as an explicit choice flagged `detected:true`. While the update-check
+   * switch is off the probe is **skipped** (the switch's promise is that off
+   * means no outbound request at all, §17.4) and the conservative default is
+   * answered without persisting it.
+   *
+   * Every outcome is a 200 and nothing here throws: a probe that times out, a
+   * network error, a runtime with no `fetch` and an unwritable preference file
+   * all degrade to a readable payload.
+   * @param res - the Node response.
+   */
+  async function handleReadDownloadRegion(res) {
+    sendJson(res, 200, await downloadRegion.ensure());
+  }
+
+  /**
+   * `PUT /prompt-setting/download-region` — record the choice.
+   *
+   * The body is `{region, registry?}`. `region` must be one of the three ids;
+   * anything else is the route's ordinary 400 `invalid-region`. A `custom` region
+   * carries the address to validate, and **validation happens before the write**:
+   * a malformed address, an unreachable mirror, a non-2xx answer and a 2xx that is
+   * not a package document each answer `200 {ok:false, code, message}` — the
+   * dialog renders that as its red line and the saved value is untouched. The
+   * same 200-with-a-code shape covers an unwritable preference file: this route
+   * never answers a 5xx for a failure of its own configuration.
+   * @param req - the Node request.
+   * @param res - the Node response.
+   */
+  async function handleWriteDownloadRegion(req, res) {
+    const body = await readJsonBody(req);
+    if (body === null || typeof body !== 'object' || Array.isArray(body) || isDownloadRegion(body.region) !== true) {
+      throw new OverrideError('invalid-region', '"region" must be one of default, cn, custom');
+    }
+    const saved = await downloadRegion.set(body);
+    if (saved.shape === true) {
+      // Defensive: the shape was already checked above, so this is unreachable
+      // unless the two disagree — and then the 400 is still the right answer.
+      throw new OverrideError(saved.code, saved.message);
+    }
+    if (saved.ok !== true) {
+      sendJson(res, 200, {
+        ok: false,
+        code: saved.code,
+        message: saved.message,
+        region: saved.region ?? null,
+        registry: null,
+        effectiveFrom: 'unchanged',
+        ...(saved.reason === undefined ? {} : { reason: saved.reason }),
+        ...(saved.status === undefined ? {} : { status: saved.status }),
+      });
+      return;
+    }
+    sendJson(res, 200, saved);
+  }
+
+  /**
    * The official plugin manager, looked up **optionally**.
    *
    * It is deliberately NOT added to {@link inject}: this plugin's own routes
@@ -3361,6 +3512,15 @@ function mount(ctx, config, cleanups) {
               // malformed PUT body is an ordinary 400.
               if (req.method === 'PUT') await handleWriteUpdateCheck(req, res);
               else await handleUpdateCheck(url, res);
+              return;
+            }
+            if (url.pathname === DOWNLOAD_REGION_PATH) {
+              // g-043: one route, two questions (`GET` = which source is in force,
+              // `PUT` = choose one). A `GET` may probe on the first visit, so it
+              // answers 200 for every outcome; only a `region` that is not one of
+              // the three ids is the route's ordinary 400.
+              if (req.method === 'PUT') await handleWriteDownloadRegion(req, res);
+              else await handleReadDownloadRegion(res);
               return;
             }
             if (url.pathname === UPDATE_APPLY_CANCEL_PATH) {

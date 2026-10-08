@@ -26,10 +26,16 @@ import test, { afterEach, beforeEach } from 'node:test';
 import { apply } from '../index.js';
 import {
   DEFAULT_NPM_REGISTRY,
+  DOWNLOAD_REGIONS,
+  DOWNLOAD_REGION_AUTO_FLAG,
+  DOWNLOAD_REGION_FLAG,
+  DOWNLOAD_REGION_REGISTRY_FLAG,
+  TAU_NPM_REGISTRY,
   UPDATE_CHECK_TTL_MS,
   UPDATE_SOURCE_GITHUB,
   UPDATE_SOURCE_NPM,
   compareSemver,
+  createDownloadRegion,
   createUpdateChecker,
   formatSemver,
   isNewerVersion,
@@ -38,9 +44,13 @@ import {
   parseRepositorySlug,
   parseSemver,
   registryPackageUrl,
+  registryPingUrl,
   registryTarball,
   releasePageUrl,
   releasesLatestUrl,
+  resolveDownloadRegion,
+  statedDownloadRegion,
+  validateRegistryAddress,
 } from '../core/update.js';
 import { readPreferences, userPreferencesPath, writePreferences } from '../core/store.js';
 
@@ -974,4 +984,640 @@ test('update route: an unknown path is still a 404, and ping is untouched', asyn
   assert.equal(body.ok, true);
   assert.equal(body.version, '0.1.5');
   assert.equal('hasUpdate' in body, false, 'the ping response shape is unchanged');
+});
+
+// #region g-043: the download region — format policy
+
+/** Every address a user could reasonably type, and what the strict check says. */
+const REGISTRY_ADDRESS_CASES = [
+  // accepted, and normalized to exactly one trailing slash
+  ['https://mirrors.example.com/npm', 'https://mirrors.example.com/npm/'],
+  ['https://mirrors.example.com/npm/', 'https://mirrors.example.com/npm/'],
+  ['  https://mirrors.example.com/npm/  ', 'https://mirrors.example.com/npm/'],
+  ['http://mirrors.example.com:8080', 'http://mirrors.example.com:8080/'],
+  ['https://mirrors.example.com', 'https://mirrors.example.com/'],
+  // refused: no scheme, the wrong scheme, no host, credentials, query, fragment
+  ['mirrors.example.com/npm', null],
+  ['ftp://mirrors.example.com/', null],
+  ['file:///tmp/registry', null],
+  ['https://user:secret@mirrors.example.com/', null],
+  ['https://user@mirrors.example.com/', null],
+  ['https://mirrors.example.com/npm?token=abc', null],
+  ['https://mirrors.example.com/npm#frag', null],
+  ['http:///npm', null],
+  ['https://', null],
+  ['', null],
+  ['   ', null],
+  [null, null],
+  [42, null],
+];
+
+test('region: a typed mirror address is admitted only as an http(s) base, normalized', () => {
+  for (const [input, expected] of REGISTRY_ADDRESS_CASES) {
+    const checked = validateRegistryAddress(input);
+    if (expected === null) {
+      assert.equal(checked.ok, false, `${JSON.stringify(input)} is refused`);
+      assert.equal(checked.code, 'registry-invalid');
+      continue;
+    }
+    assert.equal(checked.ok, true, `${JSON.stringify(input)} is admitted`);
+    assert.equal(checked.registry, expected);
+  }
+});
+
+test('region: the ping endpoint is built from the registry base, and the two regions are constants', () => {
+  assert.equal(TAU_NPM_REGISTRY, 'https://mirrors.tuna.tsinghua.edu.cn/npm/');
+  assert.deepEqual(DOWNLOAD_REGIONS, ['default', 'cn', 'custom']);
+  assert.equal(registryPingUrl(DEFAULT_NPM_REGISTRY), 'https://registry.npmjs.org/-/ping');
+  assert.equal(registryPingUrl(TAU_NPM_REGISTRY), 'https://mirrors.tuna.tsinghua.edu.cn/npm/-/ping');
+  assert.equal(registryPingUrl('https://mirror.example/npm'), 'https://mirror.example/npm/-/ping');
+  assert.equal(registryPingUrl('file:///tmp/registry'), null, 'an unusable base has no ping endpoint');
+});
+
+test('region: the preference document states the region, and a document without one is unchanged', () => {
+  // The presence-preserving rule (g-043): a pre-g-043 file normalizes exactly as
+  // it did before, so the switch's own document shape does not drift.
+  assert.deepEqual(normalizePreferences({ updateCheck: false }), { updateCheck: false });
+  assert.deepEqual(normalizePreferences(null), { updateCheck: true });
+  assert.deepEqual(statedDownloadRegion({ updateCheck: true }), {});
+  // Stated keys survive, an unknown id and a junk address are dropped rather
+  // than repaired (a hand-edited file reads as "this profile did not state it").
+  assert.deepEqual(
+    normalizePreferences({ updateCheck: true, [DOWNLOAD_REGION_FLAG]: 'cn', [DOWNLOAD_REGION_AUTO_FLAG]: true }),
+    { updateCheck: true, [DOWNLOAD_REGION_FLAG]: 'cn', [DOWNLOAD_REGION_AUTO_FLAG]: true },
+  );
+  assert.deepEqual(statedDownloadRegion({ [DOWNLOAD_REGION_FLAG]: 'mars' }), {});
+  assert.deepEqual(statedDownloadRegion({ [DOWNLOAD_REGION_REGISTRY_FLAG]: '   ' }), {});
+  assert.deepEqual(statedDownloadRegion({ [DOWNLOAD_REGION_AUTO_FLAG]: 'yes' }), {});
+});
+
+test('region: the stored document resolves to the address the check will ask', () => {
+  assert.deepEqual(resolveDownloadRegion(null), {
+    region: 'default',
+    registry: DEFAULT_NPM_REGISTRY,
+    custom: null,
+    customError: null,
+    stored: false,
+    auto: false,
+  });
+  // An explicit「默认」is *stated*: it must never be re-decided by a later probe.
+  assert.equal(resolveDownloadRegion({ [DOWNLOAD_REGION_FLAG]: 'default' }).stored, true);
+  assert.equal(resolveDownloadRegion({ [DOWNLOAD_REGION_FLAG]: 'cn' }).registry, TAU_NPM_REGISTRY);
+  const custom = resolveDownloadRegion({
+    [DOWNLOAD_REGION_FLAG]: 'custom',
+    [DOWNLOAD_REGION_REGISTRY_FLAG]: 'https://mirror.example/npm',
+  });
+  assert.equal(custom.registry, 'https://mirror.example/npm/', 'the saved address is normalized, not rewritten');
+  const broken = resolveDownloadRegion({
+    [DOWNLOAD_REGION_FLAG]: 'custom',
+    [DOWNLOAD_REGION_REGISTRY_FLAG]: 'mirror.example',
+  });
+  assert.equal(broken.registry, null, 'an unusable custom address disables the npm path');
+  assert.equal(broken.customError.code, 'registry-invalid');
+});
+
+// #region g-043: the download region — detection and validation
+
+/**
+ * One region manager over a stub transport, with a preference document in memory.
+ * @param options.handler - `(url) => response`; recorded by `transport.calls`.
+ * @param options.preferences - the starting document.
+ * @param options.fetch - an explicit transport (overrides `handler`).
+ * @param options.now - the clock.
+ * @param options.probeTimeoutMs - the per-probe bound.
+ * @param options.writeThrows - make the preference write fail.
+ * @returns `{region, transport, writes, preferences}`.
+ */
+function makeRegion(options = {}) {
+  const base = Object.prototype.hasOwnProperty.call(options, 'fetch')
+    ? options.fetch
+    : makeTransport(options.handler).fetch;
+  const calls = [];
+  const fetch =
+    typeof base === 'function'
+      ? async (url, init) => {
+          calls.push(String(url));
+          return base(url, init);
+        }
+      : undefined;
+  const seen = [];
+  let preferences = options.preferences ?? { updateCheck: true };
+  const region = createDownloadRegion({
+    fetch,
+    probeTimeoutMs: options.probeTimeoutMs,
+    ttlMs: options.ttlMs,
+    now: options.now,
+    currentVersion: '0.1.5',
+    readPreferences: () => preferences,
+    writePreferences: (next) => {
+      if (options.writeThrows === true) throw new Error('EACCES: permission denied');
+      seen.push(next);
+      preferences = next;
+    },
+  });
+  return {
+    region,
+    transport: { calls },
+    writes: seen,
+    current: () => preferences,
+  };
+}
+
+/** A transport that answers the npm `/-/ping` endpoints from a table. */
+function pingTransport(reachable) {
+  const calls = [];
+  const fetch = async (url) => {
+    const target = String(url);
+    calls.push(target);
+    const registry = target.startsWith(TAU_NPM_REGISTRY) ? 'cn' : 'npm';
+    if (reachable[registry] !== true) throw new Error('ECONNREFUSED');
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+  return { fetch, calls };
+}
+
+test('region: the first visit is decided by connectivity — npmjs wins when it answers', async () => {
+  const calls = [];
+  const fetch = async (url) => {
+    calls.push(String(url));
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+  const manager = makeRegion({ fetch });
+  const answer = await manager.region.ensure();
+  assert.equal(answer.region, 'default');
+  assert.equal(answer.registry, DEFAULT_NPM_REGISTRY);
+  assert.equal(answer.detected, true, 'a probed value is marked as automatic');
+  assert.equal(answer.stored, true);
+  assert.deepEqual(calls, ['https://registry.npmjs.org/-/ping'], 'the mirror is not asked when npmjs answers');
+  assert.deepEqual(manager.writes, [{ updateCheck: true, [DOWNLOAD_REGION_FLAG]: 'default', [DOWNLOAD_REGION_AUTO_FLAG]: true }]);
+});
+
+test('region: a proxy user answers on npmjs, so the verdict stays「默认」(never the mirror)', async () => {
+  // A proxy answers with a *status*, not necessarily a 2xx — reachability is the
+  // question, and a machine that can talk to npmjs must not be sent to a mirror.
+  const transport = pingTransport({ npm: true, cn: true });
+  const manager = makeRegion({ fetch: transport.fetch });
+  const first = await manager.region.ensure();
+  assert.equal(first.region, 'default');
+  assert.deepEqual(transport.calls, ['https://registry.npmjs.org/-/ping']);
+});
+
+test('region: npmjs unreachable while the mirror answers ⇒「中国大陆」', async () => {
+  const transport = pingTransport({ npm: false, cn: true });
+  const manager = makeRegion({ fetch: transport.fetch });
+  const answer = await manager.region.ensure();
+  assert.equal(answer.region, 'cn');
+  assert.equal(answer.registry, TAU_NPM_REGISTRY);
+  assert.equal(answer.detected, true);
+  assert.deepEqual(transport.calls, [
+    'https://registry.npmjs.org/-/ping',
+    'https://mirrors.tuna.tsinghua.edu.cn/npm/-/ping',
+  ]);
+  assert.equal(manager.current()[DOWNLOAD_REGION_FLAG], 'cn', 'the verdict is written, not just reported');
+});
+
+test('region: neither registry answering falls back to the conservative「默认」, silently', async () => {
+  const manager = makeRegion({
+    fetch: async () => {
+      throw new Error('getaddrinfo ENOTFOUND');
+    },
+  });
+  const answer = await manager.region.ensure();
+  assert.equal(answer.region, 'default');
+  assert.equal(answer.detected, true);
+  assert.equal(answer.ok, true, 'a probe that cannot answer is never an error');
+});
+
+test('region: a probe that never answers ends at the timeout and still decides', async () => {
+  const calls = [];
+  const fetch = async (url) => {
+    calls.push(String(url));
+    // The timeout is the *only* thing that can end this request.
+    return new Promise(() => {});
+  };
+  const manager = makeRegion({ fetch, probeTimeoutMs: 20 });
+  const started = Date.now();
+  const answer = await manager.region.ensure();
+  assert.equal(answer.region, 'default');
+  assert.equal(calls.length, 2, 'both probes were attempted, each within its own bound');
+  assert.ok(Date.now() - started < 2000, 'the detection is bounded, never open-ended');
+});
+
+test('region: a missing fetch degrades to「默认」and never throws', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = undefined;
+  try {
+    const manager = makeRegion({ fetch: undefined });
+    // `createDownloadRegion` with no transport at all still has to answer.
+    const bare = createDownloadRegion({ readPreferences: () => ({ updateCheck: true }) });
+    const answer = await bare.ensure();
+    assert.equal(answer.region, 'default');
+    assert.equal(answer.ok, true);
+    assert.ok(manager.region !== undefined);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test('region: the verdict is cached, and concurrent asks share one probe', async () => {
+  let probes = 0;
+  const fetch = async () => {
+    probes += 1;
+    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+  };
+  const manager = makeRegion({ fetch });
+  const [first, second] = await Promise.all([manager.region.ensure(), manager.region.ensure()]);
+  assert.equal(first.region, 'default');
+  assert.equal(second.region, 'default');
+  assert.equal(probes, 1, 'two asks, one probe');
+  // …and the verdict is stored, so a later read asks nobody at all.
+  const before = probes;
+  const again = await manager.region.detect();
+  assert.equal(again.cached, true);
+  assert.equal(probes, before);
+  const stored = await manager.region.ensure();
+  assert.equal(stored.stored, true);
+  assert.equal(probes, before, 'a stored region is never re-probed');
+});
+
+test('region: nothing is probed while the update switch is off, and nothing is written', async () => {
+  const transport = pingTransport({ npm: false, cn: true });
+  const manager = makeRegion({ fetch: transport.fetch, preferences: { updateCheck: false } });
+  const answer = await manager.region.ensure();
+  assert.equal(answer.region, 'default', 'the switch off means the conservative answer');
+  assert.equal(answer.stored, false);
+  assert.equal(answer.skipped, true);
+  assert.deepEqual(transport.calls, [], 'zero outbound requests while the switch is off');
+  assert.deepEqual(manager.writes, [], 'and nothing is persisted from an answer nobody detected');
+});
+
+test('region: an unwritable preference file is a value beside the verdict', async () => {
+  const manager = makeRegion({ fetch: pingTransport({ npm: true, cn: false }).fetch, writeThrows: true });
+  const answer = await manager.region.ensure();
+  assert.equal(answer.ok, true);
+  assert.equal(answer.region, 'default');
+  assert.equal(answer.written, false);
+  assert.equal(answer.writeError.code, 'preferences-unwritable');
+});
+
+test('region: a custom address is validated against the real packument shape', async () => {
+  const calls = [];
+  const fetch = async (url) => {
+    calls.push(String(url));
+    return npmResponse();
+  };
+  const manager = makeRegion({ fetch });
+  const saved = await manager.region.set({ region: 'custom', registry: 'https://mirror.example/npm' });
+  assert.equal(saved.ok, true);
+  assert.equal(saved.region, 'custom');
+  assert.equal(saved.registry, 'https://mirror.example/npm/');
+  assert.deepEqual(calls, ['https://mirror.example/npm/dsh-prompt-setting'], 'one GET of the package document');
+  assert.equal(manager.current()[DOWNLOAD_REGION_REGISTRY_FLAG], 'https://mirror.example/npm/');
+  assert.equal(manager.current()[DOWNLOAD_REGION_AUTO_FLAG], false, 'a user choice is never marked automatic');
+});
+
+test('region: the three custom failures are told apart, and none of them writes', async () => {
+  const cases = [
+    ['a malformed address', 'mirror.example', async () => ({ ok: true, status: 200, json: async () => ({}) }), 'registry-invalid'],
+    ['nobody answered', 'https://mirror.example/', async () => { throw new Error('ECONNREFUSED'); }, 'registry-unreachable'],
+    ['a 404', 'https://mirror.example/', async () => ({ ok: false, status: 404, json: async () => ({}) }), 'registry-http-error'],
+    ['a 2xx that is not a packument', 'https://mirror.example/', async () => ({ ok: true, status: 200, json: async () => ({ hello: 'world' }) }), 'registry-not-npm'],
+    // A packument with no `dist-tags` at all is the same fact as one with no
+    // `latest`: this is not a registry this plugin can install from.
+    ['a packument without dist-tags', 'https://mirror.example/', async () => ({ ok: true, status: 200, json: async () => ({ versions: {} }) }), 'registry-not-npm'],
+  ];
+  for (const [label, address, handler, expected] of cases) {
+    const manager = makeRegion({ fetch: handler, preferences: { updateCheck: true, [DOWNLOAD_REGION_FLAG]: 'cn' } });
+    const before = manager.current();
+    const refused = await manager.region.set({ region: 'custom', registry: address });
+    assert.equal(refused.ok, false, `${label}: refused`);
+    assert.equal(refused.code, expected, `${label}: names its failure`);
+    assert.deepEqual(manager.writes, [], `${label}: nothing was written`);
+    assert.deepEqual(manager.current(), before, `${label}: the effective source is unchanged`);
+  }
+});
+
+test('region: an unknown region id is a shape refusal, and a known one needs no network', async () => {
+  const calls = [];
+  const manager = makeRegion({ fetch: async (url) => { calls.push(String(url)); return { ok: true, status: 200, json: async () => ({}) }; } });
+  const refused = await manager.region.set({ region: 'mars' });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.shape, true);
+  assert.equal(refused.code, 'invalid-region');
+  const cn = await manager.region.set({ region: 'cn' });
+  assert.equal(cn.ok, true);
+  assert.equal(cn.registry, TAU_NPM_REGISTRY);
+  assert.equal(cn.effectiveFrom, 'immediate');
+  assert.deepEqual(calls, [], 'choosing a built-in region never probes');
+  assert.equal(manager.current()[DOWNLOAD_REGION_AUTO_FLAG], false);
+});
+
+test('region: no test in this file can reach a third-party geo service', async () => {
+  // The one hard constraint of g-043: the decision is connectivity, not location.
+  // Every URL this manager can ever ask is one of the two registries' own ping
+  // endpoints or a registry package document — asserted over the whole surface.
+  const asked = [];
+  const fetch = async (url) => {
+    asked.push(String(url));
+    return { ok: true, status: 200, json: async () => ({ 'dist-tags': { latest: '0.2.0' } }) };
+  };
+  const detection = makeRegion({ fetch });
+  await detection.region.ensure();
+  const validation = makeRegion({ fetch });
+  await validation.region.set({ region: 'custom', registry: 'https://mirror.example/npm/' });
+  assert.ok(asked.length > 0);
+  for (const url of asked) {
+    const parsed = new URL(url);
+    assert.ok(
+      ['registry.npmjs.org', 'mirrors.tuna.tsinghua.edu.cn', 'mirror.example'].includes(parsed.hostname),
+      `${url} is a registry this plugin was told about, never a geolocation service`,
+    );
+    assert.ok(!/geo|ipinfo|ip-api|maxmind|location/i.test(url), `${url} is not an IP lookup`);
+  }
+});
+
+// #region g-043: the mounted route
+
+const DOWNLOAD_REGION_PATH = '/prompt-setting/download-region';
+
+/** `PUT /download-region` with a JSON body. */
+function putRegion(route, body) {
+  return call(route, {
+    method: 'PUT',
+    url: DOWNLOAD_REGION_PATH,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+test('region route: a first visit is decided by connectivity and reported as automatic', async () => {
+  const calls = [];
+  const fetch = async (url) => {
+    const target = String(url);
+    calls.push(target);
+    if (target.startsWith(TAU_NPM_REGISTRY)) return npmResponse();
+    throw new Error('ECONNREFUSED');
+  };
+  const { route } = mountHost({ config: { updateCheck: { fetch } } });
+  const res = await call(route, { url: DOWNLOAD_REGION_PATH });
+  assert.equal(res.statusCode, 200);
+  const body = json(res);
+  assert.equal(body.ok, true);
+  assert.equal(body.region, 'cn');
+  assert.equal(body.registry, TAU_NPM_REGISTRY);
+  assert.equal(body.detected, true);
+  assert.equal(body.stored, true);
+  assert.deepEqual(calls, [
+    'https://registry.npmjs.org/-/ping',
+    'https://mirrors.tuna.tsinghua.edu.cn/npm/-/ping',
+  ]);
+  assert.equal(readPreferences(userPreferencesPath()).preferences[DOWNLOAD_REGION_FLAG], 'cn');
+});
+
+test('region route: the choice is persisted, and the very next check asks the mirror', async () => {
+  const transport = makeTransport((url) => (String(url).startsWith(TAU_NPM_REGISTRY) ? npmResponse() : releaseResponse()));
+  const { route } = mountHost({ config: { updateCheck: { fetch: transport.fetch } } });
+  const put = await putRegion(route, { region: 'cn' });
+  assert.equal(put.statusCode, 200);
+  assert.equal(json(put).ok, true);
+  assert.equal(json(put).effectiveFrom, 'immediate');
+  assert.equal(JSON.parse(readFileSync(userPreferencesPath(), 'utf8'))[DOWNLOAD_REGION_FLAG], 'cn');
+
+  const check = await call(route, { url: UPDATE_CHECK_PATH });
+  assert.equal(json(check).source, UPDATE_SOURCE_NPM);
+  assert.equal(json(check).registry, TAU_NPM_REGISTRY);
+  assert.equal(transport.calls[0].url, `${TAU_NPM_REGISTRY}dsh-prompt-setting`, 'the check asks the mirror, not npmjs');
+
+  // …and a second `GET` answers from the stored choice without probing anyone.
+  const before = transport.calls.length;
+  const read = await call(route, { url: DOWNLOAD_REGION_PATH });
+  assert.equal(json(read).region, 'cn');
+  assert.equal(json(read).detected, false, 'a stored choice is not reported as automatic');
+  assert.equal(transport.calls.length, before);
+});
+
+test('region route: a region that is not one of the three is the ordinary 400', async () => {
+  const transport = makeTransport();
+  const { route } = mountHost({ config: { updateCheck: { fetch: transport.fetch } } });
+  const res = await putRegion(route, { region: 'mars' });
+  assert.equal(res.statusCode, 400);
+  assert.equal(json(res).code, 'invalid-region');
+  assert.equal(readPreferences(userPreferencesPath()).missing, true, 'nothing was written');
+});
+
+test('region route: a refused custom address is a 200 with a code, and nothing changes', async () => {
+  const transport = makeTransport((url) => (String(url).startsWith(TAU_NPM_REGISTRY) ? npmResponse() : releaseResponse()));
+  const { route } = mountHost({ config: { updateCheck: { fetch: transport.fetch } } });
+  await putRegion(route, { region: 'cn' });
+  const transportCallsBefore = transport.calls.length;
+
+  const refused = await putRegion(route, { region: 'custom', registry: 'https://mirror.example/nope?token=1' });
+  assert.equal(refused.statusCode, 200, 'the address is content under validation, not a malformed request');
+  const body = json(refused);
+  assert.equal(body.ok, false);
+  assert.equal(body.code, 'registry-invalid');
+  assert.equal(body.effectiveFrom, 'unchanged');
+  assert.equal(transport.calls.length, transportCallsBefore, 'a malformed address is never asked');
+  assert.equal(
+    readPreferences(userPreferencesPath()).preferences[DOWNLOAD_REGION_FLAG],
+    'cn',
+    'the source in force is exactly what it was',
+  );
+});
+
+test('region route: a custom mirror that is not an npm registry is refused before any write', async () => {
+  const transport = makeTransport((url) => {
+    const target = String(url);
+    if (target.endsWith('/dsh-prompt-setting') && !target.startsWith(DEFAULT_NPM_REGISTRY)) {
+      return jsonResponse({ hello: 'not a registry' });
+    }
+    return npmResponse();
+  });
+  const { route } = mountHost({ config: { updateCheck: { fetch: transport.fetch } } });
+  const refused = await putRegion(route, { region: 'custom', registry: 'https://mirror.example/npm' });
+  assert.equal(refused.statusCode, 200);
+  assert.equal(json(refused).code, 'registry-not-npm');
+  assert.equal(readPreferences(userPreferencesPath()).preferences[DOWNLOAD_REGION_REGISTRY_FLAG], undefined);
+});
+
+test('region route: a working custom mirror is saved normalized, and the check uses it', async () => {
+  const transport = makeTransport((url) => {
+    const target = String(url);
+    if (target.startsWith('https://mirror.example/npm/')) return npmResponse();
+    return releaseResponse();
+  });
+  const { route } = mountHost({ config: { updateCheck: { fetch: transport.fetch } } });
+  const saved = await putRegion(route, { region: 'custom', registry: 'https://mirror.example/npm' });
+  assert.equal(json(saved).ok, true);
+  assert.equal(json(saved).registry, 'https://mirror.example/npm/');
+  assert.equal(JSON.parse(readFileSync(userPreferencesPath(), 'utf8'))[DOWNLOAD_REGION_REGISTRY_FLAG], 'https://mirror.example/npm/');
+
+  await call(route, { url: UPDATE_CHECK_PATH });
+  assert.equal(json(await call(route, { url: UPDATE_CHECK_PATH })).tarball, TARBALL_URL);
+  assert.equal(transport.calls[0].url, 'https://mirror.example/npm/dsh-prompt-setting');
+});
+
+test('region route: an unavailable mirror is a structured error, never a silent fallback', async () => {
+  // Criterion 7, the one that matters most: with「中国大陆」selected, a registry
+  // that cannot answer must NOT be answered by GitHub (or by npmjs) behind the
+  // user's back — the whole point of choosing a region is knowing what is asked.
+  const transport = makeTransport((url) => {
+    const target = String(url);
+    if (target.startsWith(TAU_NPM_REGISTRY)) return jsonResponse({ message: 'down' }, 503);
+    return releaseResponse();
+  });
+  const { route } = mountHost({ config: { updateCheck: { fetch: transport.fetch } } });
+  await putRegion(route, { region: 'cn' });
+  const check = await call(route, { url: UPDATE_CHECK_PATH });
+  assert.equal(check.statusCode, 200);
+  const body = json(check);
+  assert.equal(body.ok, false);
+  assert.equal(body.hasUpdate, null);
+  assert.equal(body.error.code, 'registry-unavailable');
+  assert.equal(body.error.region, 'cn');
+  assert.equal(body.error.registry, TAU_NPM_REGISTRY);
+  assert.equal(body.error.reason.status, 503);
+  assert.deepEqual(
+    transport.calls.map((entry) => entry.url),
+    [`${TAU_NPM_REGISTRY}dsh-prompt-setting`],
+    'GitHub is not asked, and npmjs is not asked either',
+  );
+});
+
+test('region route: turning the switch back off leaves the region in the file', async () => {
+  // The switch's own write is merged into the document (g-043): the atomic write
+  // replaces the whole file, so a region the user chose must survive a flip.
+  const transport = makeTransport((url) => (String(url).startsWith(TAU_NPM_REGISTRY) ? npmResponse() : releaseResponse()));
+  const { route } = mountHost({ config: { updateCheck: { fetch: transport.fetch } } });
+  await putRegion(route, { region: 'cn' });
+  await call(route, {
+    method: 'PUT',
+    url: UPDATE_CHECK_PATH,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ enabled: false }),
+  });
+  const stored = JSON.parse(readFileSync(userPreferencesPath(), 'utf8'));
+  assert.equal(stored.updateCheck, false);
+  assert.equal(stored[DOWNLOAD_REGION_FLAG], 'cn', 'the switch write did not erase the region');
+});
+
+test('region route: the method table is honoured, and the fence still runs first', async () => {
+  const transport = makeTransport();
+  const { route } = mountHost({ config: { updateCheck: { fetch: transport.fetch } } });
+  const post = await call(route, { method: 'POST', url: DOWNLOAD_REGION_PATH });
+  assert.equal(post.statusCode, 405);
+  assert.equal(post.headers.allow, 'GET, PUT');
+
+  const fenced = mountHost({
+    config: { updateCheck: { fetch: transport.fetch } },
+    requestRejection: () => 403,
+  });
+  const rejected = await call(fenced.route, { url: DOWNLOAD_REGION_PATH });
+  assert.equal(rejected.statusCode, 403);
+  assert.equal(transport.calls.length, 0, 'a rejected request never reaches the probe');
+});
+
+test('region route: a custom mirror that stops answering is the same structured error', async () => {
+  // The third arm of "three options × the registry usable / unusable": a
+  // validated custom address is still not answered by GitHub when it fails.
+  const transport = makeTransport((url) => {
+    const target = String(url);
+    if (target.startsWith('https://mirror.example/npm/')) return npmResponse();
+    if (target === GITHUB_URL) return releaseResponse();
+    return jsonResponse({ message: 'down' }, 503);
+  });
+  const { route } = mountHost({ config: { updateCheck: { fetch: transport.fetch } } });
+  const saved = await putRegion(route, { region: 'custom', registry: 'https://mirror.example/npm' });
+  assert.equal(json(saved).ok, true);
+
+  // The same mount, with the saved mirror now failing: the check names the
+  // failure and asks nobody else.
+  const failing = mountHost({
+    config: {
+      updateCheck: {
+        fetch: async (url) => {
+          const target = String(url);
+          return target.startsWith('https://mirror.example/npm/')
+            ? jsonResponse({ message: 'down' }, 503)
+            : jsonResponse({ tag_name: 'v0.2.0' });
+        },
+      },
+    },
+  });
+  const check = json(await call(failing.route, { url: UPDATE_CHECK_PATH }));
+  assert.equal(check.ok, false);
+  assert.equal(check.error.code, 'registry-unavailable');
+  assert.equal(check.error.registry, 'https://mirror.example/npm/');
+  assert.equal(check.error.reason.status, 503);
+});
+
+test('region route: the probe bounds come from the plugin config, so a wedged probe still answers', async () => {
+  // A transport that never answers: only the injected bound can end this. With
+  // the shipped 1.5 s the two probes would take 3 s, so a sub-200 ms answer is
+  // the assertion that `downloadRegion.probeTimeoutMs` really reached the
+  // manager (and that the bound is a hard one).
+  const { route } = mountHost({
+    config: {
+      updateCheck: { fetch: () => new Promise(() => {}) },
+      downloadRegion: { probeTimeoutMs: 10 },
+    },
+  });
+  const started = Date.now();
+  const res = await call(route, { url: DOWNLOAD_REGION_PATH });
+  const elapsed = Date.now() - started;
+  assert.equal(res.statusCode, 200);
+  assert.equal(json(res).region, 'default');
+  assert.ok(elapsed < 500, `the bound is enforced (took ${elapsed} ms)`);
+});
+
+test('region route: mounting the plugin probes nobody', async () => {
+  // The detection is a request of its own (§17.9), never a mount-time cost: the
+  // settings page must be able to render without waiting for a registry.
+  const transport = makeTransport();
+  const { route } = mountHost({ config: { updateCheck: { fetch: transport.fetch } } });
+  const ping = await call(route, { url: PING_PATH });
+  assert.equal(ping.statusCode, 200);
+  assert.deepEqual(transport.calls, [], 'a mount and a ping ask no registry');
+});
+
+test('update: the shipped six-hour TTL is the cache window, not an injected bound', async () => {
+  // Regression guard for a real defect this revision introduced and no existing
+  // case caught: the default TTL was accidentally clamped by the *timeout* cap
+  // (60 s), so an answer that promised six hours expired after one minute. A
+  // clock is injected and one hour of wall time passes — inside the TTL, far
+  // outside any timeout bound.
+  let clock = 0;
+  const transport = makeTransport();
+  const checker = createUpdateChecker({
+    fetch: transport.fetch,
+    repositoryUrl: 'https://github.com/o/r',
+    currentVersion: '0.1.1',
+    now: () => clock,
+    readPreferences: () => ({ updateCheck: true }),
+  });
+  assert.equal((await checker.check()).cached, false);
+  clock += 60 * 60 * 1000;
+  assert.equal((await checker.check()).cached, true, 'one hour later is still inside the six-hour window');
+  assert.equal(transport.calls.length, 1);
+  clock += 6 * 60 * 60 * 1000;
+  assert.equal((await checker.check()).cached, false, 'seven hours later the cache has expired');
+  assert.equal(transport.calls.length, 2);
+
+  // An *injected* TTL longer than the timeout cap must survive too: the two
+  // bounds are different questions, and clamping one by the other silently
+  // shortened a profile's configured window.
+  let injected = 0;
+  const second = makeTransport();
+  const configured = createUpdateChecker({
+    fetch: second.fetch,
+    repositoryUrl: 'https://github.com/o/r',
+    currentVersion: '0.1.1',
+    ttlMs: 60 * 60 * 1000,
+    now: () => injected,
+    readPreferences: () => ({ updateCheck: true }),
+  });
+  assert.equal((await configured.check()).cached, false);
+  injected += 30 * 60 * 1000;
+  assert.equal((await configured.check()).cached, true, 'half an hour is inside an injected one-hour TTL');
+  assert.equal(second.calls.length, 1);
 });

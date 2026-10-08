@@ -631,6 +631,8 @@ meaning exactly.
 | `/prompt-setting/update-apply` | `POST` | Start installing the release the last check named, through the official `pluginManager`, and answer a `requestId` immediately: §18.2. Carries `launchKind` (g-036, §18.8). |
 | `/prompt-setting/update-apply` | `GET` | The phase of one tracked install (`?requestId=`), or — with no id — this mount's oldest **running** install: §18.3. Carries `launchKind` (g-036, §18.8). |
 | `/prompt-setting/update-apply/cancel` | `POST` | Stop a running install: `{"requestId": string}` (§18.4). Carries `launchKind` (g-036, §18.8). |
+| `/prompt-setting/download-region` | `GET` | Which update source is in force, and — with nothing stored — the connectivity decision that sets it (g-043, §17.7). Always `200`. |
+| `/prompt-setting/download-region` | `PUT` | Record the choice: `{"region": "default"\|"cn"\|"custom", "registry"?: string}`, a custom address validated first (g-043, §17.8). |
 
 - An unknown path under the prefix is `404` with
   `{ "code": "not-found", "message": "no route for <path>" }` (no `ok` key —
@@ -639,9 +641,9 @@ meaning exactly.
   listing the supported methods and an **empty** body. `/prompt-setting/ping`
   answers `allow: GET`; `/prompt-setting/overrides` answers
   `allow: GET, PUT, DELETE`; `history`, `diff` and `export` answer `allow: GET`;
-  `import` and `rollback` answer `allow: POST`; `interpolate` and `update-check`
-  answer `allow: GET, PUT`; `update-apply` answers `allow: GET, POST` and
-  `update-apply/cancel` answers `allow: POST`.
+  `import` and `rollback` answer `allow: POST`; `interpolate`, `update-check`
+  and `download-region` answer `allow: GET, PUT`; `update-apply` answers
+  `allow: GET, POST` and `update-apply/cancel` answers `allow: POST`.
 - The fence runs **before** the method check and before any route logic.
 
 ## 2. `GET /prompt-setting/snapshot`
@@ -2348,6 +2350,49 @@ file-scoped resets, §19's narrowed rollback).
   the two panel-height cases moved 684 → 692 and 484 → 492 with
   `HISTORY_PANEL_GAP`.
 
+**Revision 28 (「下载区域」: the update source is a choice, decided once by
+connectivity — g-043).** One new route pair, one new preference field group and
+one new card row; **no existing response field, status code or stored byte
+changes meaning**, and the version history / rollback / write surface are
+untouched (g-044's Revision 27 block above stands as written).
+
+- **What a user gets.** In the「检查更新」card (§13.4, §17.10), a「下载区域」
+  dropdown with exactly three options — 「默认」(npm first, GitHub Releases as the
+  degradation path), 「中国大陆」(the Tsinghua TUNA npm mirror) and 「自定义」(a
+  mirror address they type). Changing it persists in the same
+  `preferences.json` as the update-check switch, and takes effect on the next
+  check **and** the next install.
+- **The first-run default is connectivity, never location.** With nothing stored,
+  the Host probes `https://registry.npmjs.org/-/ping` (1.5 s) and, only if
+  nothing answers, the mirror's own `/-/ping`; the verdict is written as an
+  explicit choice flagged `downloadRegionAuto: true` and reported as
+  `detected: true`, which the page renders as「已按连通性自动判定」. **No IP
+  lookup, no third-party geolocation service, no new dependency.** A user behind
+  a proxy reaches npmjs ⇒ 「默认」, which is the proxy false-positive the probe is
+  designed to avoid.
+- **A chosen mirror is never silently replaced.** With「中国大陆」or「自定义」
+  selected, a registry that cannot answer is `200 {ok:false, code:
+  "registry-unavailable"}` (or `registry-invalid` for an unusable saved address) —
+  GitHub and npmjs.org are not asked behind the user's back, and the answer names
+  the region, the address and the underlying reason.
+- **A typed address is validated before anything is written**: `http(s)`, a host,
+  no credentials, no query string and no fragment (trailing `/` normalized), then
+  one bounded `GET` of `<registry>dsh-prompt-setting` that must answer 2xx **and**
+  carry `dist-tags.latest`. The four failures are four codes, and each one leaves
+  the dialog open with a red line and the effective source untouched.
+- **Bounded, cached, off the critical path.** 1.5 s per probe, 6 h per verdict,
+  one in-flight probe shared by concurrent asks, the detection runs inside its own
+  request (never at mount), and with the update-check switch **off** it does not
+  run at all — §17.4's「off means zero outbound requests」keeps holding.
+- **Unit tests.** 43 new cases across `test/update.test.mjs`,
+  `test/client.test.mjs`, `test/install.test.mjs` and `test/route.test.mjs`: the
+  three regions × the registry answering/failing, the three validation failures,
+  the detection branches (npmjs ⇒ 默认, npmjs silent + mirror ⇒ 中国大陆, neither
+  ⇒ 默认), the proxy case, the probe timeout and its cache, the no-write-on-refusal
+  rule, the dialog that stays open, the mount that asks nobody, the install that
+  follows the chosen mirror, and the `/-/ping` facts measured on a real machine
+  (§17.9).
+
 ### 13.3a 「备份与恢复」(Revision 19)
 
 - The tab is `data-region="backup-tab"` and contains the transfer panel
@@ -2381,6 +2426,10 @@ file-scoped resets, §19's narrowed rollback).
   selector): `data-action="legacy-clear"` sends `DELETE …&legacy=true` (§12.2)
   and **keeps** the reserved override, while `data-action="reset-layer"` sends
   `DELETE …&reset=true` (§12.1) and clears the whole layer.
+- **Revision 28:** the「检查更新」card also carries the「下载区域」row
+  (`data-region="download-region"`, `data-action="update-region-select"`) and the
+  「自定义镜像源」dialog overlay (`data-region="region-overlay"` /
+  `data-region="region-dialog"`). Both are specified in §17.10.
 - The full status block is `data-region="status-detail"`: mounted, frozen,
   `generatedAt`, both layers' `enabled`/`path`/`reason`, the build stamp
   (`data-region="build"`), every frozen/build explanation, and the renderer
@@ -3674,7 +3723,7 @@ g-026 are untouched.
 
 ---
 
-## 17. The upstream update check (g-030; npm first in Revision 27, g-042)
+## 17. The upstream update check (g-030; npm first in Revision 27, g-042; the download region in Revision 28, g-043)
 
 **Revision 27 (npm is the primary source, GitHub Releases the fallback — g-042).**
 The check used to ask the GitHub Releases API and nothing else. It now asks the
@@ -3687,6 +3736,18 @@ which §18.2 then installs from. The registry base address is **injectable**
 what g-043's download-region choice wires into. **No route, no query parameter,
 no preference-file byte and no existing field changes meaning**: `source` and
 `tarball` are additive, so a pre-g-042 client renders exactly as it did.
+
+**Revision 28 (the download region, decided once by connectivity — g-043).** The
+check's source is now the user's choice: 「默认」(npm first, GitHub as the
+fallback) / 「中国大陆」(the Tsinghua TUNA mirror) / 「自定义」(an address they
+typed, validated before it is saved). The choice lives in the same
+`preferences.json` as the switch, is resolved **per check** (§17.6), and the
+first-ever default is decided by a bounded reachability probe of the two
+registries — **never by an IP lookup** (§17.9). Two new methods
+(`GET`/`PUT /prompt-setting/download-region`, §17.7/§17.8), one new card row
+(§17.10), six new codes and **no changed byte** in any existing response field:
+`region` and `registry` are additive on the check payload, and every pre-g-043
+client renders exactly as it did.
 
 ### 17.1 Why a Host route, and why npm first
 
@@ -3743,6 +3804,7 @@ anything that is not `github.com` with exactly two path segments is refused
 | 3 | the npm registry | a `dist-tags.latest` that parses ⇒ **that is the answer**, `source: "npm"`, GitHub is not asked |
 | 4 | the npm registry | impossible to answer (see below) ⇒ go to 5 |
 | 5 | the GitHub Releases API | a 2xx release ⇒ the answer, `source: "github"` |
+| 4b | the **region's** registry (§17.6) | when the region is `cn` or a usable `custom`, step 5 is **skipped**: a mirror that cannot answer is `ok:false` with `error.code: "registry-unavailable"` (or `registry-invalid` when the saved address is unusable), `source: "npm"`, and `error.region` / `error.registry` / `error.reason` naming what was asked. Nothing is cached |
 | 6 | — | neither answered ⇒ `ok:false`, `source: "github"`, `error` naming the GitHub attempt and `error.npm` naming the npm attempt |
 
 The npm attempt is **unusable** — and the check goes on to GitHub — when: there is
@@ -3766,11 +3828,19 @@ The body of an **npm** answer:
   "publishedAt": "2026-09-25T00:00:00.000Z",
   "source": "npm",
   "tarball": "https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.0.tgz",
+  "region": "default",
+  "registry": "https://registry.npmjs.org/",
   "checkedAt": "2026-10-08T09:00:00.000Z",
   "cached": false,
   "error": null
 }
 ```
+
+`region` and `registry` (**Revision 28**, additive) name the download region this
+answer was produced under and the base address the npm path asked — `registry` is
+`null` when it could not be asked at all. They are what makes「which source
+answered」readable off the payload instead of inferred from the settings page. A
+pre-Revision-28 client ignores both and renders exactly as it did.
 
 The body of a **GitHub** answer (the pre-Revision-27 shape, plus `source`):
 
@@ -3786,6 +3856,8 @@ The body of a **GitHub** answer (the pre-Revision-27 shape, plus `source`):
   "publishedAt": "2026-10-01T00:00:00Z",
   "source": "github",
   "tarball": null,
+  "region": "default",
+  "registry": "https://registry.npmjs.org/",
   "checkedAt": "2026-10-08T09:00:00.000Z",
   "cached": false,
   "error": null
@@ -3890,7 +3962,11 @@ direction:
   injectable through the plugin config
   (`updateCheck: {fetch, registry, now, ttlMs, timeoutMs}`), which is how the
   tests drive the real route offline. A profile that declares nothing gets the
-  shipped defaults (`https://registry.npmjs.org/`).
+  shipped defaults (`https://registry.npmjs.org/`). Revision 28 shares that
+  **same transport** with the download-region probe (so a profile — or a test —
+  that stubs one `fetch` stubs every outbound request this plugin can make), and
+  adds the probe's own optional bounds
+  (`downloadRegion: {probeTimeoutMs, checkTimeoutMs, ttlMs}`).
 
 ### 17.4 `PUT /prompt-setting/update-check`, and the preference file
 
@@ -3910,6 +3986,27 @@ The preference lives in **its own file**, `<DSH_HOME>/prompt-setting/preferences
 ```json
 { "updateCheck": false }
 ```
+
+**Revision 28** adds the download region to the **same** document and the same
+atomic write path (§17.6): the keys are `downloadRegion`, `downloadRegionRegistry`
+(only meaningful for `custom`) and `downloadRegionAuto` (`true` when the value was
+decided by the connectivity probe rather than by the user):
+
+```json
+{
+  "updateCheck": true,
+  "downloadRegion": "custom",
+  "downloadRegionRegistry": "https://mirror.example/npm/",
+  "downloadRegionAuto": false
+}
+```
+
+A document that states none of the three normalizes **byte-identically** to what
+it did before this revision (the region keys are carried through only when the
+document states them), an unknown region id or a junk address is dropped rather
+than repaired, and the switch's own write is **merged** into the document — an
+atomic write replaces the whole file, so writing only `{updateCheck}` would
+silently erase the user's region.
 
 - **not** in `overrides.json`. The switch is a fact about this installation's
   behaviour, not an override of any prompt section, and putting it in the layer
@@ -3931,17 +4028,236 @@ The preference lives in **its own file**, `<DSH_HOME>/prompt-setting/preferences
   and the user follows the link. Installing is a separate, explicitly confirmed
   route added by g-032 (§18) — and that one never restarts anything either;
 - no DSH platform version check — that is `scripts/check-compat.mjs` (g-013);
-- **no mirror choice and no region detection** (Revision 27). This revision makes
-  the registry base address injectable and stops there: which registry a user
-  should be pointed at, how that is stored and how it is presented are g-043's
-  download-region work, and no runtime geo-judgement is made anywhere here;
+- ~~no mirror choice and no region detection~~ **(Revision 27; superseded by
+  §17.6–§17.9 in Revision 28).** Revision 27 made the registry base address
+  injectable and stopped there. Revision 28 wires the「下载区域」preference into
+  that slot, and the detection that decides a first-visit default is
+  **connectivity**, never location: no IP lookup, no third-party geolocation
+  service, no dependency. The historical note is kept because it records what
+  that revision deliberately did not do;
 - no new runtime dependency: Node's built-in `fetch`, nothing else;
 - no change to any existing route's response shape. `ping`, `snapshot`,
   `overrides`, `history`, `diff`, `export`, `import` and `interpolate` answer
-  exactly what they answered before; the eighth route is additive, and the two
-  fields Revision 27 adds to it (`source`, `tarball`) are additive too;
+  exactly what they answered before; the eighth route is additive, and the
+  fields Revision 27 and Revision 28 add to it (`source`, `tarball`, `region`,
+  `registry`) are additive too;
 - no user data on the wire, and no per-session/per-workspace variation: the
   answer is the same for every session of one install.
+
+### 17.6 「下载区域」: the three sources, and the order they are resolved in
+
+**Revision 28 (the download region, and the first-visit detection — g-043).** The
+owner asked for a choice of update **source**, in the「检查更新」card, with a
+sensible first-run default. This revision adds the preference, the two methods
+that read and write it, the detection that decides it once, and the strict
+validation of a typed mirror address. **The update check's own response shape and
+the install route's behaviour for the default source are unchanged**; what a
+region changes is *which registry the npm path asks*, which the check already
+carries (`registry`, §17.2) and the install already follows (§18.2).
+
+Three ids, and only three — `default` / `cn` / `custom` (`DOWNLOAD_REGIONS`):
+
+| `region` | The source it means | `registry` |
+| --- | --- | --- |
+| `default` | npm first, GitHub Releases when npm cannot answer — the shipped order (§17.1) | `https://registry.npmjs.org/` |
+| `cn` | The Tsinghua TUNA npm mirror, verbatim | `https://mirrors.tuna.tsinghua.edu.cn/npm/` (`TAU_NPM_REGISTRY`, a **constant**: the option's whole promise is that this exact address is what gets asked) |
+| `custom` | A base address the user typed and the Host validated | the stored address, normalized |
+
+**Source resolution order** (per check, per install — so a switch takes effect on
+the next one, with no remount):
+
+1. **`config.updateCheck.registry`** — an operator-declared base (Revision 27's
+   injectable slot). When a profile declares it, it **pins the npm base and the
+   fallback policy**: the pre-Revision-28 order stands (npm, then GitHub), because
+   a deployment-level declaration outranks a per-user UI choice;
+2. otherwise the **stored `downloadRegion`** — the user's, or a probe's;
+3. otherwise the **shipped default** (npmjs, with the GitHub fallback).
+
+The effective pair is also the **cache key** of the check: switching a region
+invalidates the cached answer, because a six-hour-old answer from the *previous*
+source being served while the card says「中国大陆」is exactly the confusion
+criterion 7 forbids.
+
+`custom` with an address that cannot be used resolves to `registry: null`, which
+**disables the npm path** rather than substituting npmjs.org — the one thing a
+silent fallback may never do.
+
+### 17.7 `GET /prompt-setting/download-region`
+
+Reads the choice. No request is made to any registry when a region is already
+stored; with nothing stored this method also *decides* it (§17.9). Always `200`:
+
+```json
+{
+  "ok": true,
+  "region": "default",
+  "registry": "https://registry.npmjs.org/",
+  "custom": null,
+  "detected": false,
+  "stored": true,
+  "error": null,
+  "probed": false
+}
+```
+
+- `region` / `registry` are what the check will use, resolved by §17.6;
+- `custom` is the **stored** custom address whatever it resolves to (`null` for
+  the other two regions), and `error` is `{"code": "registry-invalid"}` when a
+  stored custom address is unusable — the one case the card reports as a
+  standing condition rather than a page notice;
+- **`detected: true` means the Host decided this value by connectivity** on the
+  first visit, not the user (§17.9). It is the marker the page renders as
+  「已按连通性自动判定」, and it may never be claimed by the client;
+- `stored` is about the **document**, not the value: an explicit「默认」has been
+  decided and is never re-decided by a later probe;
+- `probed: true` reports that this request ran the detection; a `GET` that
+  skipped it while the switch is off also carries `"skipped": true`;
+- a write that fails during the first-visit detection answers the probe's own
+  verdict plus `written: false` and `writeError` — the read never becomes an
+  error page, and nothing is re-decided from a failed write.
+
+### 17.8 `PUT /prompt-setting/download-region`, and its codes
+
+Body: `{"region": "default" | "cn" | "custom", "registry": "<address, for custom>"}`.
+
+`region` is a **shape** fact, so anything else is the route's ordinary
+**`400 invalid-region`** and nothing is written. A `custom` **address** is
+*content under validation* — one class of which is decided by a network round
+trip — so every validation failure is a **`200`** with `{ok: false, code, …}`
+for the dialog's red line, exactly like an unwritable preference file:
+
+| `code` | Meaning | What it cost |
+| --- | --- | --- |
+| `registry-invalid` | The address is not `http(s)`, or has an empty host, credentials, a query string or a fragment (§17.8.1). Also when a stored custom address is unusable. | nothing was asked |
+| `registry-unreachable` | Nothing answered within the bound — a timeout or a network error (`reason.code` says which) | one `GET` |
+| `registry-http-error` | Something answered, with a non-2xx status (`status` carries it) | one `GET` |
+| `registry-not-npm` | A 2xx whose body is not a **packument** (no `dist-tags.latest`) | one `GET` |
+| `preferences-unwritable` | The choice validated but could not be persisted | the write |
+
+A successful write answers
+`{"ok": true, "region": …, "registry": …, "saved": {…}, "effectiveFrom": "immediate", "error": null}`.
+**A refusal writes nothing**: the effective source is whatever it was, which is
+also why the page's control may not move to the option that was clicked
+(§17.10).
+
+#### 17.8.1 What a custom address must look like
+
+Strict, and deliberately stricter than the lenient normalization an injected
+profile value gets (`normalizeRegistry`), because this one gates a text field:
+
+- `http(s)://` only — a bare host, `file:`, `ftp:` and junk are refused;
+- **a host, as typed** (`http:///npm` is refused: the URL parser would otherwise
+  read `npm` as the host, a different address from the one in the field);
+- **no credentials** (`https://user:pw@mirror/`) — the host would receive them on
+  every check, and this page may not become a way to make the plugin transmit a
+  password;
+- **no query string and no fragment** — refused rather than silently stripped: a
+  user who typed one meant something by it;
+- otherwise the same address with **exactly one** trailing `/`.
+
+Availability is then decided by one bounded `GET` of `<registry>dsh-prompt-setting`
+(5 s, `REGISTRY_CHECK_TIMEOUT_MS`), which must answer 2xx **and** carry
+`dist-tags.latest` as a non-empty string. The shape checked is the real packument
+shape: there is **no top-level `dist`** in a registry document (that lesson is
+Revision 27's, §17.2, and it is why the availability probe reads `dist-tags`
+rather than a flattened field).
+
+### 17.9 The first-visit default is a connectivity probe, never a location
+
+With **nothing stored** — and only then — `GET /download-region` decides, in this
+order:
+
+1. one bounded `GET` of `https://registry.npmjs.org/-/ping` (the npm-standard
+   liveness endpoint, `REGION_PROBE_TIMEOUT_MS` = 1.5 s). **Any** HTTP answer
+   counts as reachable: the question is reachability, not the health of a ping
+   endpoint. ⇒ `default`;
+2. only if npmjs did not answer, the same probe against
+   `https://mirrors.tuna.tsinghua.edu.cn/npm/-/ping` ⇒ `cn`;
+3. neither answered ⇒ `default`, the conservative fallback.
+
+Then the verdict is **written as an explicit choice** with
+`downloadRegionAuto: true`, so the next visit — and the next restart — reads a
+decision instead of re-deciding. A user's own choice is never overwritten.
+
+Four properties are part of the contract, not of the implementation:
+
+- **no IP lookup and no third-party service.** The only two addresses the
+  detection can ask are the two registries themselves; there is no dependency,
+  no geo database and no request to a location API. (A user behind a proxy
+  usually reaches npmjs, so「默认」is both the safe and the correct answer
+  there — the false-positive case a location guess would get wrong.)
+- **bounded.** Each probe is capped at 1.5 s, so the worst case is 3 s, and
+  validation is capped at 5 s. `AbortController` plus an internal race, exactly
+  as the check does (§17.3): even a transport that ignores the signal cannot
+  wedge the request.
+- **cached, and one probe at a time.** A verdict is reused for 6 h
+  (`REGION_PROBE_TTL_MS`) and concurrent asks share the single in-flight probe.
+- **never on the page's critical path.** The detection runs inside its own
+  request, never during mount, so the settings page paints first and the verdict
+  arrives asynchronously — and with the update-check switch **off** it does not
+  run at all: no stored region, switch off ⇒ no outbound request, the
+  conservative `default` answered and **not persisted** (there is nothing
+  detected to write). §17.4's「off means zero outbound requests」keeps holding.
+- **a failure is always a value.** A timeout, a network error, a runtime with no
+  `fetch` and an unwritable preference file all degrade to `default` with
+  `ok: true`. Nothing here throws at a route.
+
+**Measured on this machine (2026-10-08, g-043 real-machine check).** These are
+facts about the two upstreams, not about the implementation, and they are recorded
+because one of them is load-bearing:
+
+- `GET https://registry.npmjs.org/-/ping` ⇒ `200 {}`: 2.1 s cold (DNS + TLS), then
+  0.75–1.0 s warm. A cold probe can therefore exceed the 1.5 s cap on a slow link,
+  and the detection then reads npmjs as unreachable. The cost is bounded and
+  benign: the verdict is a **working** source (the mirror), it is decided once,
+  and the user can switch back — but it is why "reachable" is a *short* probe,
+  not a health check;
+- `GET https://mirrors.tuna.tsinghua.edu.cn/npm/-/ping` ⇒ **`404`** (nginx). The
+  CN branch works precisely because **any HTTP answer counts as reachable**;
+  requiring a 2xx would make the mirror look unreachable on the one machine class
+  the option exists for, and the spec's own endpoint would never satisfy it;
+- `GET https://mirrors.tuna.tsinghua.edu.cn/npm/dsh-prompt-setting` ⇒ **`404`**:
+  the mirror is a real npm registry mirror, and it does **not** carry this
+  package. Selecting「中国大陆」therefore answers the check with
+  `200 {ok:false, error.code: "registry-unavailable", error.reason.status: 404}` —
+  the structured error of §17.6, with **no** fallback to npmjs.org or to GitHub.
+  That is the intended behaviour (the user asked for that source, and the answer
+  says the source cannot serve this package), and it is why the card reports a
+  mirror's failure instead of quietly showing the default's answer;
+- a first visit on a fresh `$DSH_HOME` answered `200
+  {"region":"default","detected":true}` in **1.03 s**, and wrote
+  `{"updateCheck":true,"downloadRegion":"default","downloadRegionAuto":true}`.
+
+### 17.10 Client surface
+
+In the「检查更新」card (`data-region="update-setting"`, §17.2), one more row:
+`data-region="download-region"`, carrying `data-download-region="<id>"`,
+`data-download-region-detected="true|false"` and
+`data-download-region-stored="true|false"`, with the control
+`data-action="update-region-select"` — a native `select` over exactly the three
+ids (`默认` / `中国大陆` / `自定义`) and nothing else. Choosing `default` or `cn`
+sends the `PUT` immediately; choosing `custom` opens the dialog and **writes
+nothing** until it is submitted.
+
+- the value shown is the **Host's** stored region, never the option that was just
+  clicked: a refused write visibly leaves the old source in force;
+- `detected: true` renders `data-role="update-region-auto"` — the
+  「已按连通性自动判定」line — so a default the page chose never looks like one
+  the user chose;
+- a stored `custom` address the Host cannot use renders
+  `data-role="update-region-unusable"` (`data-update-region-error="<code>"`)
+  beside the control. It raises **no** page notice: it is a standing condition,
+  not the outcome of an action;
+- the「自定义」dialog is `data-region="region-dialog"` with the field
+  `data-role="region-input"`, the actions `data-action="region-save"` /
+  `data-action="region-cancel"`, and — only while a validation failed —
+  `data-role="region-error"` carrying `data-region-error="<code>"` rendered in
+  the error colour. **The dialog stays open on a refusal**, the saved value is
+  untouched, and the failure is never reported through the page notice, which
+  would render behind the overlay;
+- a successful switch **drops the previous check's fact** (the banner) and
+  re-checks once: the old answer came from the old source, and leaving it up
+  would let 「立即更新」install an artifact the new source may not carry.
 
 ## 18. 「立即更新」— installing a release through the official plugin manager (g-032; the npm install spec in Revision 27, g-042)
 
@@ -4001,6 +4317,15 @@ browser is untrusted. **Revision 27: which spec that is now follows the check's
 | --- | --- | --- |
 | `"npm"` | the check payload's `tarball` — the packument's `versions[<version>].dist.tarball` (§17.2), verbatim | it must be a string that parses as an absolute `http(s)` URL whose path ends in `.tgz`. A payload that names **nothing** is refused `asset-missing`; a value that is present but is not such a URL (`file:`, `ftp:`, `data:`, `javascript:`, a `.zip`/`.tar.gz`, a relative path) is refused `asset-unverified`. **Neither is ever handed to pnpm** |
 | `"github"`, or absent (a pre-Revision-27 Host) | the release asset | `https://github.com/zangxx66/dsh-prompt-setting/releases/download/<tag>/dsh-prompt-setting-<version>.tgz` |
+
+**Revision 28: the spec follows the download region too.** The check's payload is
+produced under the region in force (§17.6), so with 「中国大陆」or a valid
+「自定义」selected, the `tarball` above is the **mirror's** own
+`dist.tarball` — the install asks the source the user chose, and no second
+resolution happens here. A mirror that cannot answer produces the check's
+structured `registry-unavailable` and no version at all, so the install refuses
+with the existing `no-update` sentence rather than installing from somewhere the
+user did not pick: nothing is ever silently re-sourced.
 
 **Both npm refusals still carry a clickable manual route** (revision 27 review
 fix). An npm answer's `releaseUrl` is always `null` (§17.2), so a refusal that only

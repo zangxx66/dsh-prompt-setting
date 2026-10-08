@@ -88,6 +88,15 @@ const ERROR_CODES = [
   'variable-lookup-failed',
   // Revision 12 three-state spelling (CONTRACT.md §16.8).
   'invalid-state',
+  // g-043 download region (CONTRACT.md §17.3/§17.7–§17.10).
+  'invalid-region',
+  'registry-invalid',
+  'registry-unreachable',
+  'registry-http-error',
+  'registry-not-npm',
+  'registry-unavailable',
+  // Both preferences routes can answer this one (§17.4, §17.8).
+  'preferences-unwritable',
 ];
 
 /**
@@ -884,6 +893,30 @@ function updateAvailableFixture(over = {}) {
   });
 }
 
+/**
+ * `GET /prompt-setting/download-region` payload (g-043).
+ *
+ * The default is the **pre-detection** shape a g-043 host answers with when the
+ * region was already stored: the shipped source, and `detected:false` because no
+ * probe decided it. The two fields that change the copy — `detected` and a
+ * `custom` `error` — are what the cases below drive.
+ * @param over - fields to override.
+ * @returns the payload.
+ */
+function regionFixture(over = {}) {
+  return {
+    ok: true,
+    region: 'default',
+    registry: 'https://registry.npmjs.org/',
+    custom: null,
+    detected: false,
+    stored: true,
+    error: null,
+    probed: false,
+    ...over,
+  };
+}
+
 /** `GET /prompt-setting/overrides` payload. */
 function overridesFixture(over = {}) {
   return {
@@ -1081,6 +1114,8 @@ const PATHS = {
   interpolate: '/prompt-setting/interpolate',
   // g-030: the upstream update check and its on/off switch.
   updateCheck: '/prompt-setting/update-check',
+  // g-043:「下载区域」— the choice, and the first-visit detection behind it.
+  downloadRegion: '/prompt-setting/download-region',
   // g-032:「立即更新」— the install route, its status read and its cancel face.
   updateApply: '/prompt-setting/update-apply',
   updateApplyCancel: '/prompt-setting/update-apply/cancel',
@@ -1113,6 +1148,9 @@ function defaultResponses(over = {}) {
     // g-030: the shipped default — switch on, upstream not ahead, so the default
     // page renders no banner at all.
     [PATHS.updateCheck]: { payload: updateFixture() },
+    // g-043: a host that has already stored a region — so the default page makes
+    // one read and no probe, exactly like a second visit does.
+    [PATHS.downloadRegion]: { payload: regionFixture() },
     [PATHS.interpolate]: {
       payload: { ok: true, interpolateCustom: true, layer: 'user', saved: { enabled: true }, effectiveFrom: 'next-turn' },
     },
@@ -1275,9 +1313,14 @@ test('client: requests stay on the plugin prefix and report the renderer', async
   // page which was reloaded mid-install resume following it. It is a **local**
   // request to this plugin's own prefix, so it does not weaken g-030's promise
   // that a closed switch means no request leaves the machine.
+  //
+  // g-043 adds one more of exactly that kind: `GET /download-region`, the read
+  // that (on a first visit) lets the *host* decide the update source. Still one
+  // request to this plugin's own prefix, and still none at all when the mirror
+  // says the switch is off (asserted in the region section below).
   assert.deepEqual(
     [...new Set(urls.map((url) => url.split('?')[0]))].sort(),
-    [PATHS.overrides, PATHS.ping, PATHS.snapshot, PATHS.updateApply, PATHS.updateCheck],
+    [PATHS.downloadRegion, PATHS.overrides, PATHS.ping, PATHS.snapshot, PATHS.updateApply, PATHS.updateCheck],
   );
   // The global default: no `?session=`, so the workspace layer stays inactive.
   assert.deepEqual(urlsFor(page, PATHS.snapshot), [PATHS.snapshot]);
@@ -8934,3 +8977,308 @@ test('client: the install copy exists in both dictionaries and never promises an
 });
 
 // #endregion
+
+// #region g-043:「下载区域」— the dropdown, the dialog and its red line
+
+/**
+ * A `/download-region` stub that **remembers**, like the real host: a `PUT` moves
+ * the stored region and every later `GET` answers it.
+ *
+ * Without this, the mount effect's own read answers the fixture's default and
+ * overwrites whatever the user just chose — the test would then be asserting
+ * against a host that forgets, not the host under test.
+ * @param over - extra fields for the answered payload.
+ * @returns a router entry plus `stored()`.
+ */
+function regionStub(over = {}) {
+  let stored = {
+    region: 'default',
+    registry: 'https://registry.npmjs.org/',
+    custom: null,
+    detected: false,
+    stored: true,
+    ...over,
+  };
+  const handler = (target, init) => {
+    if ((init.method || 'GET') !== 'PUT') return { payload: regionFixture(stored) };
+    const body = JSON.parse(init.body);
+    stored =
+      body.region === 'custom'
+        ? { region: 'custom', registry: 'https://mirror.example/npm/', custom: 'https://mirror.example/npm/', detected: false, stored: true }
+        : {
+            region: body.region,
+            registry: body.region === 'cn' ? 'https://mirrors.tuna.tsinghua.edu.cn/npm/' : 'https://registry.npmjs.org/',
+            custom: null,
+            detected: false,
+            stored: true,
+          };
+    return { payload: regionFixture({ ...stored, saved: { region: body.region }, effectiveFrom: 'immediate' }) };
+  };
+  handler.stored = () => stored;
+  return handler;
+}
+
+/** The one region control on the page (the card lives in 「高级」). */
+function regionSelect(tree) {
+  return oneBy(tree, 'data-action', 'update-region-select');
+}
+
+/** One `option` value/child pair, as the select renders it. */
+function regionOptions(tree) {
+  const select = regionSelect(tree);
+  return (select.props.children || []).map((option) => [option.props.value, option.props.children]);
+}
+
+/** Choose one region the way a user does: fire the select's own `change`. */
+function chooseRegion(tree, value) {
+  regionSelect(tree).props.onChange({ target: { value } });
+}
+
+/** The「下载区域」card row (it lives inside `data-region="update-setting"`). */
+function regionRow(tree) {
+  return oneBy(tree, 'data-region', 'download-region');
+}
+
+test('client: 「高级」 carries the download region, with the three sources and their meanings', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  const tree = await openTab(page, 'advanced');
+  const row = regionRow(tree);
+  assert.equal(row.props['data-download-region'], 'default', 'the host answers the shipped source by default');
+  assert.equal(row.props['data-download-region-detected'], 'false');
+  assert.deepEqual(regionOptions(tree), [
+    ['default', '默认'],
+    ['cn', '中国大陆'],
+    ['custom', '自定义'],
+  ]);
+  assert.equal(regionSelect(tree).props.value, 'default');
+  // The line under the control says what the selected source *means*, so the
+  // three options are comparable rather than three words.
+  const note = oneBy(tree, 'data-role', 'update-region-note');
+  assert.match(strings(note).join(' '), /GitHub/);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-role'] === 'update-region-auto').length, 0);
+});
+
+test('client: a region the host decided by connectivity says so, and one it stored does not', async () => {
+  const detected = makePage({
+    responses: defaultResponses({
+      [PATHS.downloadRegion]: { payload: regionFixture({ region: 'cn', registry: 'https://mirrors.tuna.tsinghua.edu.cn/npm/', detected: true }) },
+    }),
+  });
+  const tree = await openTab(detected, 'advanced');
+  assert.equal(regionRow(tree).props['data-download-region'], 'cn');
+  assert.equal(regionRow(tree).props['data-download-region-detected'], 'true');
+  const auto = oneBy(tree, 'data-role', 'update-region-auto');
+  assert.match(strings(auto).join(' '), /中国大陆/);
+
+  // The same region, stored: the value is identical, the *claim* is not.
+  const stored = makePage({
+    responses: defaultResponses({
+      [PATHS.downloadRegion]: { payload: regionFixture({ region: 'cn', registry: 'https://mirrors.tuna.tsinghua.edu.cn/npm/' }) },
+    }),
+  });
+  const other = await openTab(stored, 'advanced');
+  assert.equal(regionRow(other).props['data-download-region'], 'cn');
+  assert.equal(regionRow(other).props['data-download-region-detected'], 'false');
+  assert.equal(collect(other, (node) => node.props && node.props['data-role'] === 'update-region-auto').length, 0);
+});
+
+test('client: choosing「中国大陆」writes it and shows the host\'s own answer', async () => {
+  const page = makePage({ responses: defaultResponses({ [PATHS.downloadRegion]: regionStub() }) });
+  let tree = await openTab(page, 'advanced');
+  chooseRegion(tree, 'cn');
+  tree = await page.flush();
+  const put = page.router.calls.filter((call) => call.url.startsWith(PATHS.downloadRegion) && call.init.method === 'PUT');
+  assert.equal(put.length, 1);
+  assert.deepEqual(JSON.parse(put[0].init.body), { region: 'cn' }, 'the built-in choices carry no address');
+  assert.equal(regionRow(tree).props['data-download-region'], 'cn');
+  assert.equal(regionSelect(tree).props.value, 'cn');
+  assert.match(strings(tree).join(' '), /下载区域已切换为/);
+});
+
+test('client: a refused region write keeps the source that is actually in force', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.downloadRegion]: (target, init) =>
+        init.method === 'PUT'
+          ? { status: 200, payload: { ok: false, code: 'preferences-unwritable', message: 'cannot write', region: 'cn', registry: null } }
+          : { payload: regionFixture() },
+    }),
+  });
+  let tree = await openTab(page, 'advanced');
+  chooseRegion(tree, 'cn');
+  tree = await page.flush();
+  // The control never moves to the option the user clicked: the host did not
+  // accept it, and the card may not claim otherwise.
+  assert.equal(regionSelect(tree).props.value, 'default');
+  assert.equal(regionRow(tree).props['data-download-region'], 'default');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-notice'] === 'error').length, 1);
+});
+
+test('client: 「自定义」opens the dialog and writes nothing until it is submitted', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openTab(page, 'advanced');
+  chooseRegion(tree, 'custom');
+  tree = page.draw();
+  const dialog = oneBy(tree, 'data-region', 'region-dialog');
+  assert.equal(dialog.props.role, 'dialog');
+  assert.equal(writeCalls(page).length, 0, 'opening the dialog is not a write');
+  assert.equal(oneBy(tree, 'data-role', 'region-input').props.value, '', 'nothing typed yet, nothing stored yet');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-role'] === 'region-error').length, 0);
+});
+
+test('client: a validated custom address is submitted trimmed and closes the dialog', async () => {
+  const page = makePage({ responses: defaultResponses({ [PATHS.downloadRegion]: regionStub() }) });
+  let tree = await openTab(page, 'advanced');
+  chooseRegion(tree, 'custom');
+  tree = page.draw();
+  typeInto(tree, 'region-input', '  https://mirror.example/npm  ');
+  tree = page.draw();
+  clickButton(tree, { 'data-action': 'region-save' });
+  tree = await page.flush();
+  const put = page.router.calls.filter((call) => call.url.startsWith(PATHS.downloadRegion) && call.init.method === 'PUT');
+  assert.equal(put.length, 1);
+  assert.deepEqual(JSON.parse(put[0].init.body), { region: 'custom', registry: 'https://mirror.example/npm' });
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'region-dialog').length, 0, 'the dialog closed');
+  assert.equal(regionRow(tree).props['data-download-region'], 'custom');
+  assert.equal(regionRow(tree).props['data-download-region-stored'], 'true');
+});
+
+test('client: a refused custom address stays in the dialog as a red line, and nothing is saved', async () => {
+  const codes = ['registry-invalid', 'registry-unreachable', 'registry-not-npm'];
+  for (const code of codes) {
+    const page = makePage({
+      responses: defaultResponses({
+        [PATHS.downloadRegion]: (target, init) =>
+          init.method === 'PUT'
+            ? { status: 200, payload: { ok: false, code, message: `the host refused it (${code})`, region: 'custom', registry: null, effectiveFrom: 'unchanged' } }
+            : { payload: regionFixture() },
+      }),
+    });
+    let tree = await openTab(page, 'advanced');
+    const writesBefore = writeCalls(page).length;
+    chooseRegion(tree, 'custom');
+    tree = page.draw();
+    typeInto(tree, 'region-input', 'https://mirror.example/npm');
+    tree = page.draw();
+    clickButton(tree, { 'data-action': 'region-save' });
+    tree = await page.flush();
+    // Still open, with the host's code rendered as prose in red inside it.
+    oneBy(tree, 'data-region', 'region-dialog');
+    const error = oneBy(tree, 'data-role', 'region-error');
+    assert.equal(error.props['data-region-error'], code, `${code}: the code travels`);
+    assert.ok(strings(error).join(' ').length > 0, `${code}: the red line is prose, not an enum`);
+    assert.notEqual(strings(error).join(' '), code);
+    // 「红字」, literally: the theme's error colour, not a neutral meta line.
+    assert.equal(error.props.style.color, 'var(--dsw-alias-state-error-primary)', `${code}: rendered in red`);
+    assert.equal(
+      collect(tree, (node) => node.props && node.props['data-notice'] === 'error').length,
+      0,
+      `${code}: the notice behind the overlay is not used`,
+    );
+    assert.equal(writeCalls(page).length, writesBefore + 1, `${code}: exactly one attempt, nothing else written`);
+    // …and the source in force did not move.
+    assert.equal(regionRow(tree).props['data-download-region'], 'default');
+    assert.equal(regionSelect(page.draw()).props.value, 'default');
+  }
+});
+
+test('client: cancelling the dialog writes nothing and keeps the current source', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openTab(page, 'advanced');
+  chooseRegion(tree, 'custom');
+  tree = page.draw();
+  typeInto(tree, 'region-input', 'https://mirror.example/npm');
+  clickButton(tree, { 'data-action': 'region-cancel' });
+  tree = page.draw();
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'region-dialog').length, 0);
+  assert.equal(writeCalls(page).length, 0);
+  assert.equal(regionSelect(tree).props.value, 'default');
+});
+
+test('client: a stored custom address the host cannot use is reported beside the control', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.downloadRegion]: {
+        payload: regionFixture({
+          region: 'custom',
+          registry: null,
+          custom: 'mirror.example',
+          error: { code: 'registry-invalid', message: 'unusable' },
+        }),
+      },
+    }),
+  });
+  const tree = await openTab(page, 'advanced');
+  assert.equal(regionRow(tree).props['data-download-region'], 'custom');
+  const line = oneBy(tree, 'data-role', 'update-region-unusable');
+  assert.equal(line.props['data-update-region-error'], 'registry-invalid');
+  // The card is the report: a stored-but-unusable mirror is a standing condition,
+  // not the outcome of an action, so it raises no page notice.
+  assert.equal(collect(tree, (node) => node.props && node.props['data-notice'] === 'error').length, 0);
+});
+
+test('client: the region read is skipped entirely while the update mirror says off', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  installUpdateMirror(page, 'off');
+  await page.flush();
+  assert.deepEqual(urlsFor(page, PATHS.downloadRegion), [], 'a closed switch costs no request at all');
+
+  // Turning the switch back on is what loads it — and the host is the one that
+  // decides the first-visit default.
+  let tree = await openTab(page, 'advanced');
+  clickButton(tree, { 'data-action': 'update-toggle' });
+  tree = await page.flush();
+  assert.equal(urlsFor(page, PATHS.downloadRegion).length, 1);
+  assert.equal(regionRow(tree).props['data-download-region'], 'default');
+});
+
+test('client: switching the source drops the previous check\'s fact and re-checks', async () => {
+  // The banner's version came from the **old** source. Keeping it would let the
+  // page offer to install an artifact the new source may not carry.
+  const page = makePage({
+    responses: defaultResponses({
+      // The mount's own check (the old source) found a release; the forced
+      // re-check the region switch triggers is the **new** source's answer.
+      [PATHS.updateCheck]: (target) => ({
+        payload: target.includes('force=1') ? updateFixture() : updateAvailableFixture(),
+      }),
+      [PATHS.downloadRegion]: regionStub(),
+    }),
+  });
+  let tree = await page.flush();
+  assert.equal(updateBanner(tree).length, 1, 'the banner is up before the switch');
+  tree = await openTab(page, 'advanced', tree);
+  chooseRegion(tree, 'cn');
+  // Settle the write without re-running the mount effect: a real React effect
+  // runs once, so the page re-renders from the region's own answer here.
+  await settle();
+  tree = page.draw();
+  assert.equal(updateBanner(tree).length, 0, 'the old source\'s fact is gone');
+  const forced = page.router.calls.filter((call) => call.url === `${PATHS.updateCheck}?force=1`);
+  assert.equal(forced.length, 1, 'the new source is asked once, immediately');
+});
+
+// #endregion
+
+test('client: a page whose region read never answers still renders the card, at the shipped source', async () => {
+  // §17.9: the detection is a side request, never a gate — and the read is not
+  // awaited by the render at all. Two facts are asserted from one run: the card
+  // and its control are on screen **in the same flush that asked**, and an
+  // unanswered read (a host with no such route at all, a transport failure)
+  // degrades to the shipped source without a notice and without crashing.
+  const responses = defaultResponses();
+  delete responses[PATHS.downloadRegion];
+  const page = makePage({ responses });
+  const tree = await openTab(page, 'advanced');
+  const row = regionRow(tree);
+  assert.equal(row.props['data-download-region'], 'default');
+  assert.equal(row.props['data-download-region-detected'], 'false', 'nothing may be claimed without an answer');
+  assert.equal(row.props['data-download-region-stored'], 'false', 'and no choice may be claimed either');
+  assert.equal(regionSelect(tree).props.value, 'default');
+  assert.deepEqual(
+    [...new Set(urlsFor(page, PATHS.downloadRegion))],
+    [PATHS.downloadRegion],
+    'the only region request is the read, and nothing else was tried',
+  );
+  assert.equal(collect(tree, (node) => node.props && node.props['data-notice'] === 'error').length, 0);
+});
