@@ -9336,3 +9336,87 @@ test('client: turning the switch back on still re-checks immediately, after the 
     'the region load happens before the re-check, not instead of it',
   );
 });
+
+test('client: the update copy names both sources and never claims a single GitHub path', async () => {
+  // g-043 copy review: the g-030 wording said the host "asks GitHub once", which
+  // stopped being true in Revision 27 (npm registry first, GitHub Releases only as
+  // the fallback) and again in Revision 28 (the source follows the download
+  // region). Three keys lied about it; this freezes the corrected text so the
+  // claim cannot drift back.
+  const page = makePage({ responses: defaultResponses() });
+  const zh = page.zh;
+  const en = page.mounted.dictionaries[0].dict.en;
+  // The rendered tree, not just the dictionary: the sentence a reader actually
+  // sees in「高级」's「检查更新」card is the one asserted below.
+  const rendered = strings(await openTab(page, 'advanced')).join('\n');
+  assert.ok(rendered.includes(zh.updateSettingNote), 'the card renders exactly this sentence');
+  // …and the old wording is nowhere on the page.
+  assert.equal(rendered.includes('向 GitHub 查询一次最新 Release'), false);
+  const pairs = [
+    ['updateSettingNote', zh.updateSettingNote, en.updateSettingNote],
+    ['updateApplyBody', zh.updateApplyBody, en.updateApplyBody],
+    ['updateApplyManualLink', zh.updateApplyManualLink, en.updateApplyManualLink],
+  ];
+  for (const [key, zhText, enText] of pairs) {
+    assert.equal(typeof zhText, 'string', `${key} has zh copy`);
+    assert.equal(typeof enText, 'string', `${key} has en copy`);
+  }
+
+  // ① The card's own explanation: npm first, GitHub as the fallback, and the
+  //    download region decides the source.
+  assert.match(zh.updateSettingNote, /npm/);
+  assert.match(zh.updateSettingNote, /GitHub/);
+  assert.match(zh.updateSettingNote, /下载区域/);
+  assert.equal(/向 GitHub 查询一次/.test(zh.updateSettingNote), false, 'the single-GitHub-path claim is gone');
+  assert.match(en.updateSettingNote, /npm/);
+  assert.match(en.updateSettingNote, /GitHub/);
+  assert.match(en.updateSettingNote, /download region/);
+  assert.equal(/asks GitHub once/.test(en.updateSettingNote), false, 'the single-GitHub-path claim is gone');
+  // Both halves of the switch's promise are still stated: off means no request,
+  // and turning it on costs one download-region read (§17.10) — never "zero".
+  assert.match(zh.updateSettingNote, /关闭后不再联网检查/);
+  assert.match(en.updateSettingNote, /no update request is made at all/i);
+
+  // ② The install is not described as a release package any more: with an npm
+  //    source it installs that registry's own `dist.tarball` (§18.2).
+  assert.equal(/Release 包/.test(zh.updateApplyBody), false, 'no longer "a Release package"');
+  assert.equal(/the v\{latest\} release\b/.test(en.updateApplyBody), false);
+  assert.match(zh.updateApplyBody, /npm registry/);
+  assert.match(zh.updateApplyBody, /下载区域/);
+  assert.match(en.updateApplyBody, /npm registry/);
+  assert.match(en.updateApplyBody, /download region/);
+  assert.match(zh.updateApplyBody, /不自动重启/);
+
+  // ③ The manual link may point at a release page **or** the package page
+  //    (`resolveInstallTarget` falls back to npm's own page), so it may not
+  //    promise a Release page.
+  assert.equal(/Release 页面/.test(zh.updateApplyManualLink), false);
+  assert.equal(/release page/.test(en.updateApplyManualLink), false);
+  assert.match(zh.updateApplyManualLink, /发布页或包页/);
+});
+
+test('client: every update-related key that still names GitHub is accurate, key by key', async () => {
+  // The audit of the rest of the family. Each entry states *why* the copy is
+  // right as written, so a future edit that changes the behaviour has to come
+  // back here.
+  const page = makePage({ responses: defaultResponses({ [PATHS.updateCheck]: { payload: updateAvailableFixture() } }) });
+  const zh = page.zh;
+  const en = page.mounted.dictionaries[0].dict.en;
+  // The banner's link renders only when the check reported a `releaseUrl`, which
+  // an npm answer never carries (§17.2) — so「发布页」is exactly what it opens.
+  const tree = await page.flush();
+  assert.equal(updateBanner(tree).length, 1);
+  assert.equal(/GitHub|Release|发布页/.test(zh.updateAvailable), false, 'the version line names no source');
+  assert.equal(/GitHub|Release|发布页/.test(zh.updateLatestKnown), false);
+  assert.equal(/GitHub|Release|发布页/.test(zh.updateUnknown), false, '"upstream" already covers both sources');
+  assert.equal(/GitHub|Release|发布页/.test(zh.updateToggleSaved), false);
+  assert.equal(/GitHub|Release|发布页/.test(zh.updateRecheck), false);
+  assert.equal(/GitHub|Release|发布页/.test(en.updateAvailable), false);
+  assert.equal(/GitHub|Release|发布页/.test(en.updateLatestKnown), false);
+  assert.equal(/GitHub|Release|发布页/.test(en.updateUnknown), false);
+  // The restart instructions are about *how* to restart, never about a source.
+  for (const key of ['updateApplyRestartNote', 'updateApplyDone', 'updateApplyAlready', 'updateApplyApplied', 'updateApplyFailed', 'updateApplyCancelled', 'updateApplyReused']) {
+    assert.equal(/GitHub|Release|发布页/.test(zh[key]), false, `zh.${key} names no source`);
+    assert.equal(/GitHub|Release/.test(en[key]), false, `en.${key} names no source`);
+  }
+});

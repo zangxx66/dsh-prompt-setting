@@ -758,7 +758,7 @@ window.__ModuleLoader__.load({
       updateSettingOn: '已开启',
       updateSettingOff: '已关闭',
       updateSettingNote:
-        '打开设置页时由宿主向 GitHub 查询一次最新 Release：只发一个 GET，不带任何本机或会话数据。关闭后不再联网检查（含打开本页时）。',
+        '打开设置页时由宿主检查一次最新版本：先问 npm registry，npm 不可用时才回退 GitHub Releases；只发一个 GET，不带任何本机或会话数据，且来源按「下载区域」选择（中国大陆＝npmmirror）。关闭后不再联网检查（含打开本页时）；开启时会读取一次下载区域状态。',
       updateToggleSaved: '检查更新已{state}。',
       updateRecheck: '立即重查',
       updateSwitching: '保存中…',
@@ -800,7 +800,7 @@ window.__ModuleLoader__.load({
       updateApply: '立即更新',
       updateApplyTitle: '更新到 v{latest}',
       updateApplyBody:
-        '宿主将通过官方插件管理器安装 v{latest} 的 Release 包（下载到本机 profile，不自动重启）。',
+        '宿主将通过官方插件管理器安装 v{latest}（按当前下载区域从 npm registry 或 GitHub Release 产物获取，下载到本机 profile，不自动重启）。',
       updateApplyRestartNote: '安装完成后需要你手动重启 DSH 才会生效。',
       updateApplyRestartNoteCli: '安装完成后需要你手动重新运行 dsh web 才会生效。',
       updateApplyRestartNoteDesktop: '安装完成后需要你手动退出并重新打开 DeepSeek Harness 才会生效。',
@@ -823,7 +823,7 @@ window.__ModuleLoader__.load({
       updateApplyUnknownDesktop:
         '这次安装的状态已不可查（可能已完成，也可能是页面刷新过）。请退出并重新打开 DeepSeek Harness，或用「立即重查」确认版本。',
       updateApplyManual: '也可以手动更新：{hint}',
-      updateApplyManualLink: '打开 {tag} 的 Release 页面',
+      updateApplyManualLink: '打开 {tag} 的发布页或包页',
       updateApplyReused: '已有一个安装在进行中。',
       updateApplyAlready: '该版本已安装（v{version}），请手动重启 DSH 生效。',
       updateApplyAlreadyCli: '该版本已安装（v{version}），请手动重新运行 dsh web 生效。',
@@ -1236,7 +1236,7 @@ window.__ModuleLoader__.load({
       updateSettingOn: 'On',
       updateSettingOff: 'Off',
       updateSettingNote:
-        'When the settings page opens, the host asks GitHub once for the latest release: one GET, carrying no local or session data. With this off, no update request is made at all — including on page load.',
+        'When the settings page opens, the host checks once for the latest version: it asks the npm registry first and falls back to GitHub Releases only when npm cannot answer — one GET, carrying no local or session data, from whichever source the download region selects (Mainland China = npmmirror). With this off, no update request is made at all, including on page load; turning it on also reads the download-region state once.',
       updateToggleSaved: 'Update checks are now {state}.',
       updateRecheck: 'Check now',
       updateSwitching: 'Saving…',
@@ -1272,7 +1272,7 @@ window.__ModuleLoader__.load({
       updateApply: 'Update now',
       updateApplyTitle: 'Update to v{latest}',
       updateApplyBody:
-        'The host will install the v{latest} release through the official plugin manager (into this profile; no automatic restart).',
+        'The host will install v{latest} through the official plugin manager (fetched from the npm registry or a GitHub release artifact, whichever your download region selects; into this profile, with no automatic restart).',
       updateApplyRestartNote: 'You will need to restart DSH yourself for the new version to take effect.',
       updateApplyRestartNoteCli: 'You will need to restart dsh web yourself for the new version to take effect.',
       updateApplyRestartNoteDesktop:
@@ -1296,7 +1296,7 @@ window.__ModuleLoader__.load({
       updateApplyUnknownDesktop:
         'This install can no longer be looked up (it may have finished, or this page may have been reloaded). Quit and reopen DeepSeek Harness, or use "Check now" to confirm the version.',
       updateApplyManual: 'You can also update by hand: {hint}',
-      updateApplyManualLink: 'Open the {tag} release page',
+      updateApplyManualLink: 'Open the {tag} release or package page',
       updateApplyReused: 'An install is already running.',
       updateApplyAlready: 'v{version} is already installed — restart DSH to put it to work.',
       updateApplyAlreadyCli: 'v{version} is already installed — restart dsh web to put it to work.',

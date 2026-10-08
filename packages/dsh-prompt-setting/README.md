@@ -82,15 +82,25 @@
   不会重复请求（「高级 → 立即重查」会强制重查一次）。
   > **When**: once when the settings page mounts, and not again for six hours in the same process (the
   > "Check now" button forces one).
-- **请求什么**：由**宿主**（Node 侧）发一个 `GET`
-  `https://api.github.com/repos/zangxx66/dsh-prompt-setting/releases/latest`，
-  地址从本包 `package.json` 的 `repository.url` 解析而来。**只读**：没有 body、没有 cookie、
+- **请求什么**：由**宿主**（Node 侧）发一个 `GET`。**先问 npm registry**
+  （`<registry>/dsh-prompt-setting`，读 `dist-tags.latest`，默认 registry 是
+  `https://registry.npmjs.org/`），**npm 不可用时才回退**到 GitHub Releases API
+  （`https://api.github.com/repos/zangxx66/dsh-prompt-setting/releases/latest`，
+  地址从本包 `package.json` 的 `repository.url` 解析而来）。「高级 → 下载区域」可以把源换成
+  中国大陆（`https://registry.npmmirror.com/`）或自定义镜像，切换后**检查与安装都走新源**，
+  且该源不可用时给结构化错误、不静默回退默认源。**只读**：没有 body、没有 cookie、
   不带任何本机 / 会话 / 工作区数据；`User-Agent` 是 `dsh-prompt-setting/<版本>`，5 秒超时。
-  > **What**: the **host** (Node side) sends one `GET` to that GitHub Releases API URL, derived from
-  > this package's `package.json`. Read-only: no body, no cookies, no local/session/workspace data;
-  > `User-Agent: dsh-prompt-setting/<version>`; 5-second timeout.
+  > **What**: the **host** (Node side) sends one `GET`, and it **asks the npm registry first**
+  > (`<registry>/dsh-prompt-setting`, read for `dist-tags.latest`; the default registry is
+  > `https://registry.npmjs.org/`), **falling back to the GitHub Releases API** only when npm cannot
+  > answer (that URL is derived from this package's `package.json`). 「Advanced → Download region」 can
+  > point that at Mainland China (`https://registry.npmmirror.com/`) or a custom mirror, and both the
+  > check **and** the install then use the chosen source — which, when unusable, produces a structured
+  > error instead of silently falling back. Read-only: no body, no cookies, no local/session/workspace
+  > data; `User-Agent: dsh-prompt-setting/<version>`; 5-second timeout.
 - **结果怎么用**：只有「确实有更新」时，页面顶部才出现一条**可关闭**的提示（新版本号 + 发布页链接 +
-  **「立即更新」**按钮）。没有更新、仓库还没发 release、请求失败 —— 页面顶部**一律零提示、零报错**；
+  **「立即更新」**按钮）。发布页链接只在 GitHub 回退路径上出现（npm registry 文档不提供发布页），
+  npm 源时提示条只有版本号与「立即更新」。没有更新、仓库还没发 release、请求失败 —— 页面顶部**一律零提示、零报错**；
   其中「仓库还没发 release / 版本号不可解析」是**上游事实**，只在「高级」的开关卡片里用一句中性
   文案说明（**检查失败不显示该句**）。
   > **What it does with the answer**: only a confirmed newer release shows a **dismissible** banner
