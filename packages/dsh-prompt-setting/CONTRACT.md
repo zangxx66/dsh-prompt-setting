@@ -1931,6 +1931,34 @@ interaction.
   first-screen code. `NOTES.md` §123 lists each block that stayed and the
   criterion that keeps it there.
 
+**Revision 31 (g-047: the「查看范围」search box holds the user's query, never the
+selection — client-half behaviour change).** One visible interaction fix; no
+route, no query parameter, no stored byte, no marker and no copy key changes.
+
+- **Selecting a session no longer rewrites the search box.** `pickSession` (a row
+  click), `useCurrent` (the pinned 「当前会话」 entry) and the Enter branch over a
+  highlighted row used to write the readable title into it
+  (`setSessionQuery(sessionLabelOf(...))`, self-described as *"the box reflects the
+  selection"*). All three writes are gone: the box keeps **exactly what the user
+  typed**, so the list keeps being narrowed by the user's own words. The three
+  「当前选中」 displays remain the whole answer to "which scope am I in" —
+  `data-role="scope-summary-label"`, the `data-role="session-current"` line and
+  the pinned entry's selected state (§13.7) — and none of them is weakened;
+- **the placeholder is copy again, not a status field.** It is `sessionSearch` in
+  every state; the `sessionCurrentLabel`-filled placeholder is retired along with
+  the writes above;
+- **the knock-on bug goes with them.** That value participates in
+  `filterSessions(...)` and, when no row matches, in the「按该 id 查看」branch
+  (Revision 3's `useTypedId`): a polluted box meant a **title could be read as a
+  session id**. The user's own query is now the only thing that reaches either;
+- **`useGlobal` is deliberately untouched.** The「全局」entry still clears the
+  query — "back to the global scope" means dropping the filter — and so does
+  `Esc`; only the *selection* paths lost their write;
+- **the history scope (§13.3) was checked and does not share the defect**: its
+  picker writes no label into its box (`data-role="history-scope-search"`, whose
+  placeholder is the fixed `histScopeSearch`), and `setHistoryScope` only clears
+  it while collapsing the picker. Nothing there changed.
+
 ### 13.1 「我的 Prompt」 — the one write surface
 
 - The panel is `data-region="mine"`, the layer control is
@@ -2586,7 +2614,7 @@ from `core/custom.js` and asserts that the name in the save body and in the
 delete URL equals it **character for character**. The two copies cannot drift
 apart silently.
 
-### 13.7 The「查看范围」picker is collapsed by default (g-016)
+### 13.7 The「查看范围」picker is collapsed by default (g-016; the search box holds the user's own query since Revision 31, g-047)
 
 Measured in the real settings shell at 1440×900 before this revision: the
 expanded selector was ~500px tall (search box + the grouped tree + paging +
@@ -2627,6 +2655,17 @@ the highlighted row), `useCurrent` (the pinned current-view entry),
 follows the new scope in the same render. Browsing actions — typing in the
 search box, toggling a workspace group,「显示更多」 — deliberately do **not**
 close it: they do not finish the choice.
+
+**The search box belongs to the user (Revision 31, g-047).** `data-role="session-search"`
+holds the query the user typed and nothing else: `pickSession`, `useCurrent` and
+the Enter-over-a-highlighted-row branch all move the **selection** without
+writing a label into it. Its `placeholder` is `sessionSearch` in every state (the
+`sessionCurrentLabel`-filled placeholder is retired), and its value is what
+`filterSessions(...)` reads, so the candidate list is only ever narrowed by the
+user's own words. 「当前选中」 is answered where it belongs — the summary label
+`data-role="scope-summary-label"`, the `data-role="session-current"` line and the
+pinned entry's selected state — never by overwriting the box. The「全局」entry and
+`Esc` still clear the query (Revision 31 leaves that alone).
 
 **This picker no longer feeds the version history (Revision 19).** It scopes the
 snapshot and the override reads (`my Prompt`, `提示词总览`, `高级`); the version

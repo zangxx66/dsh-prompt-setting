@@ -4764,7 +4764,10 @@ window.__ModuleLoader__.load({
           h(UI.Input, {
             'data-role': 'session-search',
             value: m.sessionQuery,
-            placeholder: currentLabel ? fmt(t('sessionCurrentLabel'), { label: currentLabel }) : t('sessionSearch'),
+            // g-047: the placeholder is copy, not a status field. 「当前选中」
+            // has its own displays (the summary, the `session-current` line and
+            // the pinned entry above), so the box never pretends to be one.
+            placeholder: t('sessionSearch'),
             onChange: a.setSessionQuery,
             onKeyDown: a.onSessionKeyDown,
           }),
@@ -8085,15 +8088,17 @@ window.__ModuleLoader__.load({
           }),
         pickSession: (id) => {
           setSelection(id);
-          // The box reflects the selection: it refills with the readable title.
-          setSessionQuery(sessionLabelOf(seat.rows, id));
+          // g-047: the box holds the user's own words. Picking a row moves the
+          // selection and nothing else — the query keeps filtering the list, and
+          // 「当前选中」 is shown by the summary, the `session-current` line and
+          // the pinned entry, not by overwriting what the user typed.
           setSessionActive(-1);
           closeScope();
         },
         useCurrent: () => {
           if (seat.currentId.length === 0) return;
           setSelection(seat.currentId);
-          setSessionQuery(sessionLabelOf(seat.rows, seat.currentId));
+          // g-047: same rule as pickSession — the search box is not a label.
           setSessionActive(-1);
           closeScope();
         },
@@ -8119,7 +8124,9 @@ window.__ModuleLoader__.load({
             const picked = sessionVisible[sessionActive] || sessionVisible[0];
             if (picked) {
               setSelection(picked.id);
-              setSessionQuery(sessionLabelOf(seat.rows, picked.id));
+              // g-047: as with a click, Enter moves the selection only — the
+              // typed query survives, so the next Enter still resolves the row
+              // it highlights instead of hunting a title as if it were an id.
               setSessionActive(-1);
               closeScope();
               return;

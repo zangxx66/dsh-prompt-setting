@@ -2488,18 +2488,66 @@ test('client: the pinned entries are never filtered away', async () => {
   clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'current' });
   tree = await page.flush();
   assert.equal(markerOf(tree, 'data-session'), 's2', 'the current-view entry picks the retained session');
-  assert.equal(oneBy(tree, 'data-role', 'session-search').props.value, 'Beta Two', 'and names it');
+  assert.equal(
+    oneBy(tree, 'data-role', 'session-search').props.value,
+    '',
+    'and the pinned entry leaves the search box as it found it',
+  );
+  assert.ok(
+    hasText(oneBy(tree, 'data-role', 'session-current'), 'Beta Two'),
+    'the current selection is named on its own line',
+  );
+  assert.equal(
+    oneBy(tree, 'data-pinned', 'current').props['data-pinned-active'],
+    'true',
+    'and the pinned current-view entry is lit',
+  );
 });
 
-test('client: picking a row refills the search box with the readable title', async () => {
+test('client: picking a row keeps the query the user typed', async () => {
   const page = makeOpenPage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
   let tree = await page.flush();
+  typeInto(tree, 'session-search', 'alpha');
+  tree = await page.flush();
   const target = sessionOptions(tree).find((option) => option.props['data-session-id'] === 's1');
+  assert.ok(target, 'alpha narrows the list to the Alpha row');
   target.props.onClick();
   tree = await page.flush();
   assert.equal(markerOf(tree, 'data-session'), 's1');
-  assert.equal(oneBy(tree, 'data-role', 'session-search').props.value, 'Alpha One');
-  assert.ok(hasText(oneBy(tree, 'data-role', 'session-current'), 'Alpha One'));
+  const box = () => oneBy(tree, 'data-role', 'session-search');
+  assert.equal(box().props.value, 'alpha', 'the pick does not rewrite what the user typed');
+  assert.equal(box().props.placeholder, page.zh.sessionSearch, 'and the box keeps its own copy, not a status');
+  assert.ok(hasText(oneBy(tree, 'data-role', 'session-current'), 'Alpha One'), 'the pick is named on its own line');
+  assert.ok(oneBy(tree, 'data-pinned', 'current'), 'and the pinned entries are still rendered');
+  assert.ok(
+    hasText(scopeSummary(tree), fillText(page.zh.sessionCurrentLabel, { label: 'Alpha One' })),
+    'and the summary names it too',
+  );
+});
+
+test('client: Enter after a pick resolves the row, never reads a title as an id', async () => {
+  const page = makeOpenPage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
+  let tree = await page.flush();
+  typeInto(tree, 'session-search', 'alpha');
+  tree = await page.flush();
+  const box = () => oneBy(tree, 'data-role', 'session-search');
+  box().props.onKeyDown({ key: 'ArrowDown', preventDefault() {} });
+  tree = await page.flush();
+  box().props.onKeyDown({ key: 'Enter', preventDefault() {} });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-session'), 's1', 'Enter picks the highlighted row');
+  assert.equal(box().props.value, 'alpha', 'and keeps the query that narrowed the list');
+  // The old code wrote the readable title into the box here, so the *next*
+  // Enter had a title sitting where a query belongs. The query must survive.
+  box().props.onKeyDown({ key: 'Enter', preventDefault() {} });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-session'), 's1', 'the second Enter stays on the row');
+  const snapshotUrls = urlsFor(page, PATHS.snapshot);
+  assert.equal(
+    snapshotUrls.some((url) => /Alpha(%20|\+| )One/.test(url)),
+    false,
+    'no readable title was ever sent as a session id',
+  );
 });
 
 test('client: the session list is keyboard reachable', async () => {
