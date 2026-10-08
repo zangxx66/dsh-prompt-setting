@@ -336,6 +336,30 @@ test('prepare: a `files` glob must match something, and it is anchored at the ro
   assert.ok(codes(nested, PREPARE_FAIL).includes('FILES-MISSING'));
 });
 
+test('prepare: a `files` pattern that names a directory is matched inside it', () => {
+  const listed = ['index.js', 'client.js', 'cordis.patch.yml'];
+  // npm anchors `core/*.js` inside `core/`, so the gate has to as well — a
+  // directory-qualified pattern that reported FAIL would block a perfectly good
+  // allowlist (`lib/client.*.js` is the official chunk spelling).
+  const inDir = inspect(
+    { './': ['index.js', 'client.js', 'cordis.patch.yml', 'core'], 'core/': ['a.js', 'b.txt'] },
+    healthyManifest({ files: [...listed, 'core/*.js'] }),
+  );
+  assert.equal(inDir.ok, true);
+  const finding = inDir.findings.find((entry) => entry.code === 'FILES-GLOB' && entry.message.includes('core/*.js'));
+  assert.ok(finding, 'the directory-qualified pattern is reported as matched');
+  assert.match(finding.message, /core\/a\.js/, 'and the matched file is named with its directory');
+  assert.equal(finding.message.includes('b.txt'), false, 'the pattern still filters the listing');
+
+  // A directory that is not there is still a failure, not a silent pass.
+  const missingDir = inspect(
+    { './': ['index.js', 'client.js', 'cordis.patch.yml'] },
+    healthyManifest({ files: [...listed, 'nope/*.js'] }),
+  );
+  assert.equal(missingDir.ok, false);
+  assert.ok(codes(missingDir, PREPARE_FAIL).includes('FILES-MISSING'));
+});
+
 test('prepare: no `files` field warns but still installs', () => {
   const result = inspect({}, healthyManifest({ files: undefined }));
   assert.equal(result.ok, true);

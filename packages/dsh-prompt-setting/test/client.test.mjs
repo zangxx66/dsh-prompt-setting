@@ -194,6 +194,12 @@ function makeHooksRuntime(options = {}) {
       };
     },
   };
+  if (options.withoutReactLazy === true) {
+    // g-045 degradation branch: a React without `lazy`/`Suspense` must leave the
+    // page rendering (the tab says so) instead of taking the panel down.
+    delete React.lazy;
+    delete React.Suspense;
+  }
   return {
     React,
     externalSubscriptions,
@@ -423,6 +429,9 @@ function loadClient(primitives, options = {}) {
     throw new Error(`unexpected require: ${name}`);
   };
   requireFn.async = requireAsync;
+  // g-045 degradation branch: a loader with no chunk path at all (`require.async`
+  // missing) must produce the readable card, not a throw.
+  if (options.withoutRequireAsync === true) delete requireFn.async;
   const module = descriptor.factory(requireFn);
   moduleTable.set(packageJson.name, module);
   return {
@@ -1829,6 +1838,17 @@ test('client: an old host without a chunk list keeps the pre-split answer', asyn
   // longer enough to call this tab「一致」.
   await openHistory(page);
   assert.equal(markerOf(page.draw(), 'data-build-match'), 'unknown');
+  // `chunks: null` is that same answer, spelled out: "I have no list to offer"
+  // (CONTRACT.md §14.3). It is **not** `[]`, which is a claim that no chunk is
+  // served and is therefore compared against the manifest like any other list.
+  const nullList = makePage({
+    responses: defaultResponses({
+      [PATHS.ping]: pingResponse({ ...buildFixture(oracle.hash, oracle.size), chunks: null }),
+    }),
+  });
+  assert.equal(markerOf(await nullList.flush(), 'data-build-match'), 'true', 'null means "no list", like an absent field');
+  await openHistory(nullList);
+  assert.equal(markerOf(nullList.draw(), 'data-build-match'), 'unknown', 'and once a chunk has run, still unknown');
 });
 
 test('client: a chunk that finishes loading notifies the root seat, so the attributes follow', async () => {
@@ -1863,6 +1883,38 @@ test('client: a chunk that finishes loading notifies the root seat, so the attri
   await openHistory(failed);
   await settle();
   assert.equal(markerOf(failed.draw(), 'data-build-loaded'), 'none', 'a failed chunk is not a loaded chunk');
+});
+
+test('client: a loader without require.async degrades that tab to a readable card', async () => {
+  // The loader contract has one relative form; an engine that does not offer it
+  // cannot fetch a chunk. That is a degradation of one tab, never a throw and
+  // never a claim that something ran.
+  const page = makePage({ withoutRequireAsync: true, responses: defaultResponses() });
+  const mine = await page.flush();
+  assert.equal(markerOf(mine, 'data-render-state'), 'ok', 'the page itself still renders');
+  const tree = await openHistory(page);
+  assert.equal(oneBy(tree, 'data-region', 'tab-panel').props['data-tab-value'], 'history');
+  const card = oneBy(tree, 'data-region', 'chunk-failure');
+  assert.equal(card.props['data-chunk'], 'client.history.js');
+  assert.equal(card.props['data-chunk-state'], 'error');
+  assert.deepEqual(page.loaded.loadedChunkFiles, [], 'with no loader there is no request to make');
+  assert.equal(markerOf(tree, 'data-build-loaded'), 'none', 'and nothing is reported as loaded');
+});
+
+test('client: a React without lazy/Suspense renders the tab as a readable card', async () => {
+  // The boundary is a probe, like the primitives one: an engine whose React
+  // predates `lazy`/`Suspense` must lose this tab's content, not the panel.
+  const page = makePage({ withoutReactLazy: true, responses: defaultResponses() });
+  const mine = await page.flush();
+  assert.equal(markerOf(mine, 'data-render-state'), 'ok', 'the page itself still renders');
+  const tree = await openHistory(page);
+  assert.equal(oneBy(tree, 'data-region', 'tab-panel').props['data-tab-value'], 'history');
+  assert.equal(oneBy(tree, 'data-region', 'chunk-failure').props['data-chunk'], 'client.history.js');
+  assert.equal(markerOf(tree, 'data-build-loaded'), 'none');
+  assert.deepEqual(page.loaded.loadedChunkFiles, [], 'without a boundary nothing is fetched at all');
+  // The other tabs are untouched by this engine's limitation.
+  const overview = await openOverview(page);
+  assert.equal(markerOf(overview, 'data-render-state'), 'ok');
 });
 
 // #endregion

@@ -288,13 +288,22 @@ export function inspectPackage({ pkg, readText, listDir, patchTexts = {} } = {})
       if (relPath.length === 0) continue;
       // g-045: an entry may be a **pattern** (`client.*.js`), which is how a
       // bundle that ships chunks keeps them all in the allowlist without naming
-      // each one — a new chunk must not need a manifest edit to ship. npm
-      // anchors these globs at the package root, and so does this check.
+      // each one — a new chunk must not need a manifest edit to ship. A pattern
+      // that names a directory (`core/*.js`, or npm's `lib/client.*.js`) is
+      // matched **inside that directory**, which is where npm anchors it; a
+      // pattern whose directory part is itself a glob (`**/*.js`) falls back to
+      // matching the whole path against the root listing, which is the best this
+      // dependency-free check can do without walking the tree.
       if (/[*?]/.test(relPath)) {
-        const root = list('.');
-        const matched = Array.isArray(root) ? root.filter((name) => globMatches(relPath, name)) : [];
+        const slash = relPath.lastIndexOf('/');
+        const dir = slash === -1 ? '.' : relPath.slice(0, slash);
+        const globDir = /[*?]/.test(dir);
+        const listing = list(globDir ? '.' : dir);
+        const pattern = globDir ? relPath : slash === -1 ? relPath : relPath.slice(slash + 1);
+        const matched = Array.isArray(listing) ? listing.filter((name) => globMatches(pattern, name)) : [];
+        const shown = slash === -1 ? matched : matched.map((name) => `${dir}/${name}`);
         if (matched.length > 0) {
-          add(PREPARE_OK, 'FILES-GLOB', `files: ${relPath}（${matched.length} 项：${matched.join(', ')}）`);
+          add(PREPARE_OK, 'FILES-GLOB', `files: ${relPath}（${matched.length} 项：${shown.join(', ')}）`);
         } else {
           add(PREPARE_FAIL, 'FILES-MISSING', `files 里的模式 ${relPath} 没有匹配到任何文件`);
         }

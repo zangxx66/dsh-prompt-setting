@@ -6179,8 +6179,8 @@ CSS 语义上 1–3 合起来等价于"本 tab 的高度 ≤ 视口、内容只�
 
 ### 五、验收
 
-- `cd packages/dsh-prompt-setting && node --test` ⇒ **728 pass / 0 fail / skipped 0**（基线 710；新增 16 条：chunk 机制/失败路径/指纹 chunk 维度/清单与发布面/订阅通知/发布门禁）；
-- 体积：`client.js` 10249 行 / 484930 B → **9505 行 / 453047 B**；`client.history.js` 1163 行 / 50497 B（约 31.9 KB 不再进首屏）；
+- `cd packages/dsh-prompt-setting && node --test` ⇒ **731 pass / 0 fail / skipped 0**（基线 710；新增 21 条：chunk 机制/按需加载/失败路径/`require` 主入口/指纹 chunk 维度/清单与发布面/订阅通知/发布门禁/目录级 glob/两条降级分支）；
+- 体积（**收口后实测**，`wc -l -c client.js client.history.js`）：`client.js` 10249 行 / 484930 B → **9584 行 / 456680 B**（净减 665 行 / 28250 B）；`client.history.js` **1163 行 / 50497 B**（约 49.3 KB 由首屏改为按需加载）；两者合计 10747 行 / 507177 B —— 总量略增，因为主文件里多了 chunk 边界机制与清单（约 350 行），换来的是「版本历史」不再进首屏；
 - `npm pack --dry-run --cache /tmp/...` ⇒ chunk 在包内（`client.history.js`），`scripts/client-chunks.mjs` 随包发布，26 个文件；
 - `node scripts/prepare.mjs` ⇒ **21 项通过**（含 `FILES-GLOB: files: client.*.js（1 项：client.history.js）` 与新增的 `CHUNK-STAMPS` 门禁）；
 - 零新依赖（`dependencies: {}`）、零构建步骤（`test/host.test.mjs` 两条门禁继续绿）。
@@ -6214,3 +6214,23 @@ CSS 语义上 1–3 合起来等价于"本 tab 的高度 ≤ 视口、内容只�
 - 真机只覆盖了 dev 宿主（临时 `DSH_HOME`）与 headless Chrome：**「只改 chunk 不碰 `client.js` 时 HMR 不换新」仍未做端到端实测**
   （由 `artifactRevision`/`chunkUrl` 的代码路径推出，§三 已标注为限制）；失败卡片只有 DOM 级核对，无视觉截图；
 - 阶段二的其余重块（总览/作用域树/传输/mine、无状态层）未迁，属另一个目标。
+
+### 八、收口补丁（独立评审 5 条）
+
+- **F1 · 文档数字回填。**（五）里原来的体积与用例数是返工前的快照。已回填为收口后实测：`client.js`
+  **9584 行 / 456680 B**、`client.history.js` **1163 行 / 50497 B**、`node --test` **731 pass**（新增 21 条）。
+  依据：量化证据一旦滞后，后来人就没法用它判断「这是哪一版字节」，而本次机制的全部价值正是自证版本。
+- **F2 · 契约与代码对齐。** §14.3 原写「`chunks` 存在但非法一律 unknown」，实现把 `chunks: null` 当「老宿主无清单」
+  （未加载 ⇒ `true`、已加载 ⇒ `unknown`）。**选择改契约而不是改实现**（保留对旧宿主的兼容意图）：`absent` 与
+  `null` 同为「无清单」；`[]` 是「我确实不 serve chunk」的**声明**，按清单逐项比对；只有既非 absent/null、
+  又不是 `{name, hash}` 字符串数组时才整份拒绝 ⇒ `unknown`。补断言锁住 `null` 与 `[]` 的区别（后者与声明了 chunk 的
+  清单必然对不上 ⇒ `unknown`）。
+- **F3 · 不可达回退不再是同步 flush。** `notifyChunkLoad` 在 `queueMicrotask` 不可用时原为同步 flush —— 那等于允许
+  「渲染期更新」，正是延后通知要避免的东西。改为 `setTimeout(flush, 0)`（同样异步、同样保证在本次渲染之后）。
+  真实引擎都有 `queueMicrotask`，这条不可达；**正因为不可达才更该写对**。
+- **F4 · 目录级 glob。** `core/prepare.js` 的 `files` 模式校验原先只按包根匹配，`core/*.js`（以及官方的
+  `lib/client.*.js` 写法）会误报 `FAIL`。改为按最后一个 `/` 拆出目录、**在该目录内**匹配（目录部分本身含通配符时
+  回退为整路径匹配），并补测试：`core/*.js` 命中 `core/a.js`、不命中 `b.txt`，目录不存在仍 `FAIL`。
+- **F5 · 两条降级分支补测。** ① `require.async` 缺失（loader 没有 chunk 通道）；② `HAS_REACT_LAZY === false`
+  （React 无 `lazy`/`Suspense`）。各一条：页面照常渲染、该 tab 渲染可读卡片、`data-build-loaded` 保持 `none`、
+  且**不发请求**（没有通道就不该发）。

@@ -2865,13 +2865,19 @@ see a chunk, so the verdict compares three things, in this order:
 3. the digest every chunk this page has **really loaded** reported of itself
    against the host's list — a difference is `"false"`.
 
-A host that sends **no** `chunks` field at all (a pre-Revision-29 host) is met
-with the old answer: equality of the entry digests is「一致」, because there is
-nothing on either side to contradict it. Once this page has loaded a chunk,
-though, an answer that says nothing about that chunk is no longer enough — the
-verdict becomes「未知」, never「一致」. A `chunks` value that is present but is not
-a list of `{name, hash}` strings is refused **whole** and reads as「未知」: a
-half-read list could hide the one chunk that changed.
+A host that sends **no** `chunks` field at all, **or sends `null` for it**, is a
+pre-Revision-29 host as far as this page is concerned — the two spellings mean the
+same thing ("I have no chunk list to offer"), because a host that predates the
+split omits the field and a host that cannot answer should not have to invent an
+empty list. It is met with the old answer: equality of the entry digests is
+「一致」, because there is nothing on either side to contradict it. Once this page
+has loaded a chunk, though, an answer that says nothing about that chunk is no
+longer enough — the verdict becomes「未知」, never「一致」. An **empty array** is
+different: it is a claim ("I serve no chunk"), so it is compared like any other
+list and an entry that declares a chunk becomes「未知」against it. A `chunks` value
+that is neither absent/`null` nor an array of `{name, hash}` strings is refused
+**whole** and reads as「未知」: a half-read list could hide the one chunk that
+changed.
 
 `"unknown"` covers: an older host that does not send `clientBuild`; a host whose
 bundle is unreadable (`clientBuild: null`); a `client.js` whose markers were

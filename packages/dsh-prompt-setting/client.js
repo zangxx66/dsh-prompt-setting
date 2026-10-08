@@ -6472,7 +6472,12 @@ window.__ModuleLoader__.load({
         }
       };
       if (typeof queueMicrotask === 'function') queueMicrotask(flush);
-      else flush();
+      // Deliberately **not** a synchronous fallback: `recordLoadedChunk` runs
+      // inside `React.lazy`'s resolve callback, i.e. while React is rendering,
+      // and flushing right here would make this an update during render — the
+      // exact thing the deferral exists to avoid. `setTimeout` keeps the "after
+      // this pass" ordering; an engine with neither cannot render this page.
+      else setTimeout(flush, 0);
     }
 
     /**
