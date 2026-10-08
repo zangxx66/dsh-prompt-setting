@@ -256,15 +256,16 @@ const UPDATE_APPLY_PATH = `${ROUTE_PREFIX}/update-apply`;
 const UPDATE_APPLY_CANCEL_PATH = `${ROUTE_PREFIX}/update-apply/cancel`;
 /**
  * g-043: 「下载区域」— the update source the user picks, and the first-visit
- * connectivity detection that decides it.
+ * availability detection that decides it.
  *
  * One path, two methods, and they are two different questions about one setting:
  *   - `GET` answers 「which region is in force, and what address does it ask」.
- *     With nothing stored it also **decides** — probing npmjs, then the TUNA
- *     mirror — and writes the verdict as an explicit choice, flagged
- *     `detected:true` so the page can say it was automatic (§17.9). A read is a
- *     read: no stored region means the probe runs, but the page never waits for
- *     it to paint (the answer arrives on its own request);
+ *     With nothing stored it also **decides** — asking npmjs whether it can
+ *     serve *this package*, then npmmirror — and writes the verdict as an
+ *     explicit choice, flagged `detected:true` so the page can say it was
+ *     automatic (§17.9). A read is a read: no stored region means the probe runs,
+ *     but the page never waits for it to paint (the answer arrives on its own
+ *     request);
  *   - `PUT {region, registry?}` records the choice. A `custom` address is
  *     **validated before anything is written** — format, then one `GET` of the
  *     package document — and every kind of failure leaves the effective source
@@ -2596,7 +2597,7 @@ function mount(ctx, config, cleanups) {
    * The answer is `{region, registry, custom, detected, stored, error}`. A stored
    * choice is returned with **no request at all**; with nothing stored the first
    * visit is decided here — npmjs reachable ⇒ `default`, npmjs unreachable while
-   * the TUNA mirror answers ⇒ `cn`, neither ⇒ `default` — and the verdict is
+   * npmmirror serves it ⇒ `cn`, neither ⇒ `default` — and the verdict is
    * written as an explicit choice flagged `detected:true`. While the update-check
    * switch is off the probe is **skipped** (the switch's promise is that off
    * means no outbound request at all, §17.4) and the conservative default is

@@ -30,7 +30,7 @@ import {
   DOWNLOAD_REGION_AUTO_FLAG,
   DOWNLOAD_REGION_FLAG,
   DOWNLOAD_REGION_REGISTRY_FLAG,
-  TAU_NPM_REGISTRY,
+  CN_NPM_REGISTRY,
   UPDATE_CHECK_TTL_MS,
   UPDATE_SOURCE_GITHUB,
   UPDATE_SOURCE_NPM,
@@ -44,7 +44,7 @@ import {
   parseRepositorySlug,
   parseSemver,
   registryPackageUrl,
-  registryPingUrl,
+  packumentLatest,
   registryTarball,
   releasePageUrl,
   releasesLatestUrl,
@@ -1025,13 +1025,34 @@ test('region: a typed mirror address is admitted only as an http(s) base, normal
   }
 });
 
-test('region: the ping endpoint is built from the registry base, and the two regions are constants', () => {
-  assert.equal(TAU_NPM_REGISTRY, 'https://mirrors.tuna.tsinghua.edu.cn/npm/');
+test('region: the mainland source is the npmmirror registry, and the three ids are fixed', () => {
+  // The owner's correction (2026-10-08): the goal first named the Tsinghua TUNA
+  // mirror, which — measured on a real machine — answers 404 for `express` too,
+  // i.e. it serves no npm registry at all and could never be a source. The
+  // constant is now the registry that actually carries this package, and it is
+  // named for the **region** so a further correction cannot leave `TAU_` behind.
+  assert.equal(CN_NPM_REGISTRY, 'https://registry.npmmirror.com/');
   assert.deepEqual(DOWNLOAD_REGIONS, ['default', 'cn', 'custom']);
-  assert.equal(registryPingUrl(DEFAULT_NPM_REGISTRY), 'https://registry.npmjs.org/-/ping');
-  assert.equal(registryPingUrl(TAU_NPM_REGISTRY), 'https://mirrors.tuna.tsinghua.edu.cn/npm/-/ping');
-  assert.equal(registryPingUrl('https://mirror.example/npm'), 'https://mirror.example/npm/-/ping');
-  assert.equal(registryPingUrl('file:///tmp/registry'), null, 'an unusable base has no ping endpoint');
+  // The probe asks for the package document — there is no `/-/ping` anywhere in
+  // this module, and the assertion that it is gone is that the exported surface
+  // no longer carries it (the import above would fail to resolve).
+  assert.equal(registryPackageUrl(CN_NPM_REGISTRY), 'https://registry.npmmirror.com/dsh-prompt-setting');
+});
+
+test('region: only a real package document counts as usable, whatever the status', () => {
+  // The predicate the probe, the custom-address validation and the check all
+  // read. A `dist-tags.latest` string is the whole shape question — there is no
+  // top-level `dist` in a real packument (g-042's lesson).
+  assert.equal(packumentLatest(npmResponse()), null, 'a response double is not a body');
+  const body = { name: 'dsh-prompt-setting', 'dist-tags': { latest: '0.1.5' }, versions: {} };
+  assert.equal(packumentLatest(body), '0.1.5');
+  assert.equal(packumentLatest({ 'dist-tags': { latest: '  ' } }), null, 'blank is not a version');
+  assert.equal(packumentLatest({ 'dist-tags': {} }), null);
+  assert.equal(packumentLatest({ versions: {} }), null);
+  assert.equal(packumentLatest({ dist: { tarball: 'https://x.test/a.tgz' } }), null, 'a flattened document is not a packument');
+  for (const junk of [null, undefined, 42, 'a string', [], true]) {
+    assert.equal(packumentLatest(junk), null, JSON.stringify(junk));
+  }
 });
 
 test('region: the preference document states the region, and a document without one is unchanged', () => {
@@ -1062,7 +1083,7 @@ test('region: the stored document resolves to the address the check will ask', (
   });
   // An explicit「默认」is *stated*: it must never be re-decided by a later probe.
   assert.equal(resolveDownloadRegion({ [DOWNLOAD_REGION_FLAG]: 'default' }).stored, true);
-  assert.equal(resolveDownloadRegion({ [DOWNLOAD_REGION_FLAG]: 'cn' }).registry, TAU_NPM_REGISTRY);
+  assert.equal(resolveDownloadRegion({ [DOWNLOAD_REGION_FLAG]: 'cn' }).registry, CN_NPM_REGISTRY);
   const custom = resolveDownloadRegion({
     [DOWNLOAD_REGION_FLAG]: 'custom',
     [DOWNLOAD_REGION_REGISTRY_FLAG]: 'https://mirror.example/npm',
@@ -1123,24 +1144,39 @@ function makeRegion(options = {}) {
   };
 }
 
-/** A transport that answers the npm `/-/ping` endpoints from a table. */
-function pingTransport(reachable) {
+/**
+ * A transport for the two **package documents** the probe reads (g-043 correction).
+ *
+ * Each registry is configured explicitly, because the three answers are different
+ * facts and the probe must tell them apart:
+ *   - `true` ⇒ the real packument (`200`, `dist-tags.latest`) — **usable**;
+ *   - `'missing'` ⇒ an answered `404` (an HTML/JSON error, as a host that serves
+ *     no registry at all returns) — reachable but **not usable**;
+ *   - `'timeout'` / `'throw'` ⇒ nobody answered.
+ * The distinction between the first two is the whole defect this revision fixes.
+ * @param served - `{npm, cn}` entries.
+ * @returns `{fetch, calls}`.
+ */
+function docTransport(served) {
   const calls = [];
   const fetch = async (url) => {
     const target = String(url);
     calls.push(target);
-    const registry = target.startsWith(TAU_NPM_REGISTRY) ? 'cn' : 'npm';
-    if (reachable[registry] !== true) throw new Error('ECONNREFUSED');
-    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    const registry = target.startsWith(CN_NPM_REGISTRY) ? 'cn' : 'npm';
+    const entry = served[registry];
+    if (entry === 'throw') throw new Error('ECONNREFUSED');
+    if (entry === 'timeout') return new Promise(() => {});
+    if (entry === true) return npmResponse();
+    return jsonResponse({ message: 'Not Found' }, 404);
   };
   return { fetch, calls };
 }
 
-test('region: the first visit is decided by connectivity — npmjs wins when it answers', async () => {
+test('region: the first visit asks npmjs for this package, and「默认」wins when it is served', async () => {
   const calls = [];
   const fetch = async (url) => {
     calls.push(String(url));
-    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    return npmResponse();
   };
   const manager = makeRegion({ fetch });
   const answer = await manager.region.ensure();
@@ -1148,35 +1184,57 @@ test('region: the first visit is decided by connectivity — npmjs wins when it 
   assert.equal(answer.registry, DEFAULT_NPM_REGISTRY);
   assert.equal(answer.detected, true, 'a probed value is marked as automatic');
   assert.equal(answer.stored, true);
-  assert.deepEqual(calls, ['https://registry.npmjs.org/-/ping'], 'the mirror is not asked when npmjs answers');
+  assert.deepEqual(calls, ['https://registry.npmjs.org/dsh-prompt-setting'], 'the mirror is not asked when npmjs serves the package');
   assert.deepEqual(manager.writes, [{ updateCheck: true, [DOWNLOAD_REGION_FLAG]: 'default', [DOWNLOAD_REGION_AUTO_FLAG]: true }]);
 });
 
-test('region: a proxy user answers on npmjs, so the verdict stays「默认」(never the mirror)', async () => {
-  // A proxy answers with a *status*, not necessarily a 2xx — reachability is the
-  // question, and a machine that can talk to npmjs must not be sent to a mirror.
-  const transport = pingTransport({ npm: true, cn: true });
+test('region: the probe asks for the package document, never a liveness endpoint', async () => {
+  // The correction is about *what is asked*, not only about how the answer is
+  // read: a `/-/ping` says nothing about whether a host can serve this package.
+  const transport = docTransport({ npm: 'missing', cn: true });
   const manager = makeRegion({ fetch: transport.fetch });
-  const first = await manager.region.ensure();
-  assert.equal(first.region, 'default');
-  assert.deepEqual(transport.calls, ['https://registry.npmjs.org/-/ping']);
+  await manager.region.ensure();
+  assert.deepEqual(transport.calls, [
+    'https://registry.npmjs.org/dsh-prompt-setting',
+    'https://registry.npmmirror.com/dsh-prompt-setting',
+  ]);
+  for (const url of transport.calls) {
+    assert.equal(url.includes('/-/ping'), false, 'no liveness endpoint is consulted');
+  }
 });
 
-test('region: npmjs unreachable while the mirror answers ⇒「中国大陆」', async () => {
-  const transport = pingTransport({ npm: false, cn: true });
+test('region: a host that answers 404 for this package is not a usable source', async () => {
+  // The ping-era defect, frozen: a host that answers *something* — a 404 for the
+  // document, an nginx error page — was read as the best available source. It is
+  // reachable and useless, and this is exactly the Tsinghua case that was
+  // measured: `/npm/express` and `/npm/dsh-prompt-setting` both 404.
+  const transport = docTransport({ npm: 'missing', cn: true });
+  const manager = makeRegion({ fetch: transport.fetch });
+  const answer = await manager.region.ensure();
+  assert.equal(answer.region, 'cn', 'an answered 404 is not availability');
+  assert.equal(answer.registry, CN_NPM_REGISTRY);
+});
+
+test('region: npmjs not serving the package while npmmirror does ⇒「中国大陆」', async () => {
+  const transport = docTransport({ npm: 'missing', cn: true });
   const manager = makeRegion({ fetch: transport.fetch });
   const answer = await manager.region.ensure();
   assert.equal(answer.region, 'cn');
-  assert.equal(answer.registry, TAU_NPM_REGISTRY);
   assert.equal(answer.detected, true);
-  assert.deepEqual(transport.calls, [
-    'https://registry.npmjs.org/-/ping',
-    'https://mirrors.tuna.tsinghua.edu.cn/npm/-/ping',
-  ]);
   assert.equal(manager.current()[DOWNLOAD_REGION_FLAG], 'cn', 'the verdict is written, not just reported');
 });
 
-test('region: neither registry answering falls back to the conservative「默认」, silently', async () => {
+test('region: a proxy user is served by npmjs, so the verdict stays「默认」(never the mirror)', async () => {
+  // A proxy makes npmjs usable, which is the false positive a location guess
+  // would get wrong — and the reason「默认」 is the conservative answer.
+  const transport = docTransport({ npm: true, cn: true });
+  const manager = makeRegion({ fetch: transport.fetch });
+  const first = await manager.region.ensure();
+  assert.equal(first.region, 'default');
+  assert.deepEqual(transport.calls, ['https://registry.npmjs.org/dsh-prompt-setting']);
+});
+
+test('region: neither registry serving the package falls back to the conservative「默认」, silently', async () => {
   const manager = makeRegion({
     fetch: async () => {
       throw new Error('getaddrinfo ENOTFOUND');
@@ -1223,7 +1281,7 @@ test('region: the verdict is cached, and concurrent asks share one probe', async
   let probes = 0;
   const fetch = async () => {
     probes += 1;
-    return { ok: true, status: 200, json: async () => ({ ok: true }) };
+    return npmResponse();
   };
   const manager = makeRegion({ fetch });
   const [first, second] = await Promise.all([manager.region.ensure(), manager.region.ensure()]);
@@ -1241,7 +1299,7 @@ test('region: the verdict is cached, and concurrent asks share one probe', async
 });
 
 test('region: nothing is probed while the update switch is off, and nothing is written', async () => {
-  const transport = pingTransport({ npm: false, cn: true });
+  const transport = docTransport({ npm: 'missing', cn: true });
   const manager = makeRegion({ fetch: transport.fetch, preferences: { updateCheck: false } });
   const answer = await manager.region.ensure();
   assert.equal(answer.region, 'default', 'the switch off means the conservative answer');
@@ -1252,7 +1310,7 @@ test('region: nothing is probed while the update switch is off, and nothing is w
 });
 
 test('region: an unwritable preference file is a value beside the verdict', async () => {
-  const manager = makeRegion({ fetch: pingTransport({ npm: true, cn: false }).fetch, writeThrows: true });
+  const manager = makeRegion({ fetch: docTransport({ npm: true, cn: 'missing' }).fetch, writeThrows: true });
   const answer = await manager.region.ensure();
   assert.equal(answer.ok, true);
   assert.equal(answer.region, 'default');
@@ -1306,7 +1364,7 @@ test('region: an unknown region id is a shape refusal, and a known one needs no 
   assert.equal(refused.code, 'invalid-region');
   const cn = await manager.region.set({ region: 'cn' });
   assert.equal(cn.ok, true);
-  assert.equal(cn.registry, TAU_NPM_REGISTRY);
+  assert.equal(cn.registry, CN_NPM_REGISTRY);
   assert.equal(cn.effectiveFrom, 'immediate');
   assert.deepEqual(calls, [], 'choosing a built-in region never probes');
   assert.equal(manager.current()[DOWNLOAD_REGION_AUTO_FLAG], false);
@@ -1329,7 +1387,7 @@ test('region: no test in this file can reach a third-party geo service', async (
   for (const url of asked) {
     const parsed = new URL(url);
     assert.ok(
-      ['registry.npmjs.org', 'mirrors.tuna.tsinghua.edu.cn', 'mirror.example'].includes(parsed.hostname),
+      ['registry.npmjs.org', 'registry.npmmirror.com', 'mirror.example'].includes(parsed.hostname),
       `${url} is a registry this plugin was told about, never a geolocation service`,
     );
     assert.ok(!/geo|ipinfo|ip-api|maxmind|location/i.test(url), `${url} is not an IP lookup`);
@@ -1350,13 +1408,16 @@ function putRegion(route, body) {
   });
 }
 
-test('region route: a first visit is decided by connectivity and reported as automatic', async () => {
+test('region route: a first visit is decided by availability and reported as automatic', async () => {
+  // npmjs does not serve this package (an answered 404, the measured shape of a
+  // host with no registry at all) while npmmirror does ⇒「中国大陆」, and the
+  // answer says it was decided rather than chosen.
   const calls = [];
   const fetch = async (url) => {
     const target = String(url);
     calls.push(target);
-    if (target.startsWith(TAU_NPM_REGISTRY)) return npmResponse();
-    throw new Error('ECONNREFUSED');
+    if (target.startsWith(CN_NPM_REGISTRY)) return npmResponse();
+    return jsonResponse({ message: 'Not Found' }, 404);
   };
   const { route } = mountHost({ config: { updateCheck: { fetch } } });
   const res = await call(route, { url: DOWNLOAD_REGION_PATH });
@@ -1364,18 +1425,34 @@ test('region route: a first visit is decided by connectivity and reported as aut
   const body = json(res);
   assert.equal(body.ok, true);
   assert.equal(body.region, 'cn');
-  assert.equal(body.registry, TAU_NPM_REGISTRY);
+  assert.equal(body.registry, CN_NPM_REGISTRY);
   assert.equal(body.detected, true);
   assert.equal(body.stored, true);
   assert.deepEqual(calls, [
-    'https://registry.npmjs.org/-/ping',
-    'https://mirrors.tuna.tsinghua.edu.cn/npm/-/ping',
+    'https://registry.npmjs.org/dsh-prompt-setting',
+    'https://registry.npmmirror.com/dsh-prompt-setting',
   ]);
   assert.equal(readPreferences(userPreferencesPath()).preferences[DOWNLOAD_REGION_FLAG], 'cn');
 });
 
+test('region route: an answered 404 from npmjs is not a reason to stay on「默认」', async () => {
+  // The same decision as above, asserted as the discriminator it is: under the
+  // ping-era rule ("any HTTP answer counts") this mount would have answered
+  //「默认」 while its own check could not fetch anything from npmjs.
+  const answered404 = mountHost({
+    config: {
+      updateCheck: {
+        fetch: async (url) => (String(url).startsWith(CN_NPM_REGISTRY) ? npmResponse() : jsonResponse({ message: 'Not Found' }, 404)),
+      },
+    },
+  });
+  const decided = json(await call(answered404.route, { url: DOWNLOAD_REGION_PATH }));
+  assert.equal(decided.region, 'cn');
+  assert.equal(decided.registry, CN_NPM_REGISTRY);
+});
+
 test('region route: the choice is persisted, and the very next check asks the mirror', async () => {
-  const transport = makeTransport((url) => (String(url).startsWith(TAU_NPM_REGISTRY) ? npmResponse() : releaseResponse()));
+  const transport = makeTransport((url) => (String(url).startsWith(CN_NPM_REGISTRY) ? npmResponse() : releaseResponse()));
   const { route } = mountHost({ config: { updateCheck: { fetch: transport.fetch } } });
   const put = await putRegion(route, { region: 'cn' });
   assert.equal(put.statusCode, 200);
@@ -1385,8 +1462,8 @@ test('region route: the choice is persisted, and the very next check asks the mi
 
   const check = await call(route, { url: UPDATE_CHECK_PATH });
   assert.equal(json(check).source, UPDATE_SOURCE_NPM);
-  assert.equal(json(check).registry, TAU_NPM_REGISTRY);
-  assert.equal(transport.calls[0].url, `${TAU_NPM_REGISTRY}dsh-prompt-setting`, 'the check asks the mirror, not npmjs');
+  assert.equal(json(check).registry, CN_NPM_REGISTRY);
+  assert.equal(transport.calls[0].url, `${CN_NPM_REGISTRY}dsh-prompt-setting`, 'the check asks the mirror, not npmjs');
 
   // …and a second `GET` answers from the stored choice without probing anyone.
   const before = transport.calls.length;
@@ -1406,7 +1483,7 @@ test('region route: a region that is not one of the three is the ordinary 400', 
 });
 
 test('region route: a refused custom address is a 200 with a code, and nothing changes', async () => {
-  const transport = makeTransport((url) => (String(url).startsWith(TAU_NPM_REGISTRY) ? npmResponse() : releaseResponse()));
+  const transport = makeTransport((url) => (String(url).startsWith(CN_NPM_REGISTRY) ? npmResponse() : releaseResponse()));
   const { route } = mountHost({ config: { updateCheck: { fetch: transport.fetch } } });
   await putRegion(route, { region: 'cn' });
   const transportCallsBefore = transport.calls.length;
@@ -1463,7 +1540,7 @@ test('region route: an unavailable mirror is a structured error, never a silent 
   // user's back — the whole point of choosing a region is knowing what is asked.
   const transport = makeTransport((url) => {
     const target = String(url);
-    if (target.startsWith(TAU_NPM_REGISTRY)) return jsonResponse({ message: 'down' }, 503);
+    if (target.startsWith(CN_NPM_REGISTRY)) return jsonResponse({ message: 'down' }, 503);
     return releaseResponse();
   });
   const { route } = mountHost({ config: { updateCheck: { fetch: transport.fetch } } });
@@ -1475,11 +1552,11 @@ test('region route: an unavailable mirror is a structured error, never a silent 
   assert.equal(body.hasUpdate, null);
   assert.equal(body.error.code, 'registry-unavailable');
   assert.equal(body.error.region, 'cn');
-  assert.equal(body.error.registry, TAU_NPM_REGISTRY);
+  assert.equal(body.error.registry, CN_NPM_REGISTRY);
   assert.equal(body.error.reason.status, 503);
   assert.deepEqual(
     transport.calls.map((entry) => entry.url),
-    [`${TAU_NPM_REGISTRY}dsh-prompt-setting`],
+    [`${CN_NPM_REGISTRY}dsh-prompt-setting`],
     'GitHub is not asked, and npmjs is not asked either',
   );
 });
@@ -1487,7 +1564,7 @@ test('region route: an unavailable mirror is a structured error, never a silent 
 test('region route: turning the switch back off leaves the region in the file', async () => {
   // The switch's own write is merged into the document (g-043): the atomic write
   // replaces the whole file, so a region the user chose must survive a flip.
-  const transport = makeTransport((url) => (String(url).startsWith(TAU_NPM_REGISTRY) ? npmResponse() : releaseResponse()));
+  const transport = makeTransport((url) => (String(url).startsWith(CN_NPM_REGISTRY) ? npmResponse() : releaseResponse()));
   const { route } = mountHost({ config: { updateCheck: { fetch: transport.fetch } } });
   await putRegion(route, { region: 'cn' });
   await call(route, {

@@ -78,42 +78,55 @@ export const UPDATE_CHECK_DEFAULT = true;
  * g-043: the「下载区域」preference key, in the **same** document as the switch.
  *
  * Three values only ({@link DOWNLOAD_REGIONS}): `default` (npmjs first, GitHub
- * Releases as the degradation path — the shipped behaviour), `cn` (the Tsinghua
- * TUNA mirror, {@link TAU_NPM_REGISTRY}) and `custom` (an address the user typed,
- * kept in {@link DOWNLOAD_REGION_REGISTRY_FLAG}).
+ * Releases as the degradation path — the shipped behaviour), `cn` (the
+ * npmmirror registry, {@link CN_NPM_REGISTRY}) and `custom` (an address the user
+ * typed, kept in {@link DOWNLOAD_REGION_REGISTRY_FLAG}).
  */
 export const DOWNLOAD_REGION_FLAG = 'downloadRegion';
 /** The custom mirror's own key. Only meaningful when the region is `custom`. */
 export const DOWNLOAD_REGION_REGISTRY_FLAG = 'downloadRegionRegistry';
 /**
- * `true` when the stored region was decided by the **connectivity probe** rather
+ * `true` when the stored region was decided by the **availability probe** rather
  * than by the user (g-043). It is what the page renders as「自动判定」, and it is
  * written once, with the probe's answer, so a second visit never re-decides.
  */
 export const DOWNLOAD_REGION_AUTO_FLAG = 'downloadRegionAuto';
 /** npmjs first, GitHub Releases when npm cannot answer. */
 export const DOWNLOAD_REGION_DEFAULT = 'default';
-/** The Tsinghua TUNA npm mirror. */
+/** The mainland-China mirror ({@link CN_NPM_REGISTRY}). */
 export const DOWNLOAD_REGION_CN = 'cn';
 /** A mirror the user typed and this plugin validated. */
 export const DOWNLOAD_REGION_CUSTOM = 'custom';
 /** The three region ids, in the order the dropdown renders them. */
 export const DOWNLOAD_REGIONS = [DOWNLOAD_REGION_DEFAULT, DOWNLOAD_REGION_CN, DOWNLOAD_REGION_CUSTOM];
 /**
- * The mainland-China mirror, verbatim from the goal. A **constant**, not a
- * profile setting: the region option's whole promise is that this exact address
- * is what gets asked, and a parameterized one could not be checked against the
- * contract.
+ * The mainland-China mirror, a **constant** (not a profile setting): the region
+ * option's whole promise is that this exact address is what gets asked, and a
+ * parameterized one could not be checked against the contract.
+ *
+ * **npmmirror, not the Tsinghua TUNA mirror the first revision of this goal
+ * named.** The owner's requirement was corrected on 2026-10-08 after a real-machine
+ * measurement (CONTRACT §17.9): `mirrors.tuna.tsinghua.edu.cn/npm/` — and
+ * `/npmjs/`, `/npm-registry/` and `/help/npm/` with it — answers **404 for every
+ * package** (`express` included), i.e. that host does not serve an npm registry
+ * mirror at all, and could never have been a usable source. `registry.npmmirror.com`
+ * serves this package (measured: `200`, `dist-tags.latest` = `0.1.5`, 64–210 ms),
+ * which is what the option needs. The constant is therefore named for the
+ * **region**, not for a host, so a future correction cannot leave a name behind
+ * that points at the wrong thing.
  */
-export const TAU_NPM_REGISTRY = 'https://mirrors.tuna.tsinghua.edu.cn/npm/';
-/** The npm registry's own liveness endpoint, appended to a registry base. */
-export const REGISTRY_PING_SUFFIX = '-/ping';
+export const CN_NPM_REGISTRY = 'https://registry.npmmirror.com/';
 /**
- * How long one probe may take. The probe runs on a settings-page request, so it
- * is bounded hard: a machine that cannot reach either registry must not hold the
- * answer open. Both probes together therefore cost at most 3 s.
+ * How long one availability probe may take.
+ *
+ * The probe reads a **package document**, not a liveness endpoint (see
+ * {@link createDownloadRegion}): a packument is heavier than a `/-/ping`, and the
+ * measured cost on this machine was ~0.9 s for npmjs and ~0.2 s for npmmirror.
+ * 2.5 s therefore still satisfies「短超时」while giving a slow link a real chance
+ * to answer — and it keeps the worst case (both probes timing out, one after the
+ * other) at 5 s, on a request the page is not waiting to paint for.
  */
-export const REGION_PROBE_TIMEOUT_MS = 1500;
+export const REGION_PROBE_TIMEOUT_MS = 2500;
 /** Upper bound accepted for an injected probe timeout. */
 export const REGION_PROBE_MAX_TIMEOUT_MS = 10 * 1000;
 /** How long a probe answer is reused before the machine is asked again. */
@@ -476,19 +489,31 @@ export function validateRegistryAddress(value) {
 }
 
 /**
- * The liveness endpoint of one registry: `<registry>-/ping`, the npm-standard
- * probe (g-043). Built from a normalized base, so a mirror under a path keeps it.
- * @param registry - the registry base address.
- * @returns the ping URL, or `null` when the base is unusable.
+ * Does this body look like a **packument this plugin could actually use**?
+ *
+ * The one shape question the whole npm path asks, and it is deliberately a single
+ * predicate so the availability probe, the custom-address validation and the check
+ * cannot drift apart: a registry is usable when its document carries a non-empty
+ * string at the top-level **`dist-tags.latest`**. There is **no top-level `dist`**
+ * in a real packument (g-042's lesson, §17.2) — the artifact lives at
+ * `versions[<version>].dist.tarball` — so this reads exactly the field the check
+ * itself reads.
+ *
+ * It says nothing about *which* version: "this registry serves this package at
+ * all" is the question the region probe asks, and a document whose `latest` is
+ * older than the installed build is still a usable **source**.
+ *
+ * The answer is the **trimmed** tag, which is exactly what the check has always
+ * put in `latestTag`, so reading it through here changes no payload.
+ * @param body - the parsed body, or anything else.
+ * @returns the `dist-tags.latest` string, or `null`.
  */
-export function registryPingUrl(registry) {
-  const base = normalizeRegistry(registry);
-  if (base === null) return null;
-  try {
-    return new URL(REGISTRY_PING_SUFFIX, base).toString();
-  } catch {
-    return null;
-  }
+export function packumentLatest(body) {
+  if (!isRecord(body)) return null;
+  const distTags = body['dist-tags'];
+  if (!isRecord(distTags)) return null;
+  const latest = typeof distTags.latest === 'string' ? distTags.latest.trim() : '';
+  return latest.length > 0 ? latest : null;
 }
 
 /**
@@ -498,7 +523,7 @@ export function registryPingUrl(registry) {
  * The read side never probes and never writes; it answers what the document
  * says, plus what the default is when it says nothing.
  *   - `default` ⇒ {@link DEFAULT_NPM_REGISTRY};
- *   - `cn` ⇒ {@link TAU_NPM_REGISTRY} — a constant, never a profile value;
+ *   - `cn` ⇒ {@link CN_NPM_REGISTRY} — a constant, never a profile value;
  *   - `custom` ⇒ the stated address, admitted only through
  *     {@link validateRegistryAddress}. An address that fails (or is missing)
  *     answers `registry: null`, which **disables** the npm path rather than
@@ -517,7 +542,7 @@ export function resolveDownloadRegion(raw) {
   // must never be re-decided, which is why this is not `region !== default`.
   const stored = isDownloadRegion(stated[DOWNLOAD_REGION_FLAG]);
   if (region === DOWNLOAD_REGION_CN) {
-    return { region, registry: TAU_NPM_REGISTRY, custom: null, customError: null, stored, auto };
+    return { region, registry: CN_NPM_REGISTRY, custom: null, customError: null, stored, auto };
   }
   if (region === DOWNLOAD_REGION_CUSTOM) {
     const custom = stated[DOWNLOAD_REGION_REGISTRY_FLAG] ?? null;
@@ -892,11 +917,10 @@ export function createUpdateChecker(options = {}) {
         failure: { code: 'invalid-response', message: 'the npm registry answered with a body that is not a package document' },
       };
     }
-    const distTags = body['dist-tags'];
-    const latestTag =
-      distTags !== null && typeof distTags === 'object' && !Array.isArray(distTags) && typeof distTags.latest === 'string'
-        ? distTags.latest.trim()
-        : '';
+    // The one shape rule, read through the one predicate (g-043 correction): the
+    // probe, the custom-address validation and this check may not each own a
+    // slightly different idea of "a usable document".
+    const latestTag = packumentLatest(body) ?? '';
     if (latestTag.length === 0) {
       return {
         ok: false,
@@ -1265,11 +1289,13 @@ async function timedJson(fetchImpl, url, options) {
  *
  * The three rules this object exists to enforce:
  *   - **the first answer is a probe, and a probe decides once.** With nothing
- *     stated, the machine is asked whether it can reach npmjs (`/-/ping`) and,
- *     only if it cannot, the TUNA mirror. The verdict is then written to
- *     `preferences.json` as an explicit choice with `downloadRegionAuto: true`,
- *     so the next visit — and the next restart — reads a decision instead of
- *     re-deciding. A user's own choice is never overwritten;
+ *     stated, the machine is asked whether it can actually fetch **this package**
+ *     from npmjs — the same `GET <registry>dsh-prompt-setting` the check itself
+ *     makes, read for `dist-tags.latest` — and, only if it cannot, the npmmirror
+ *     registry. The verdict is then written to `preferences.json` as an explicit
+ *     choice with `downloadRegionAuto: true`, so the next visit — and the next
+ *     restart — reads a decision instead of re-deciding. A user's own choice is
+ *     never overwritten;
  *   - **a probe is a bounded side question, never a page-load gate.** Detection
  *     runs inside the `GET` that asks for the region (the settings page renders
  *     first and the answer arrives asynchronously, §17.9), each probe is capped
@@ -1283,7 +1309,7 @@ async function timedJson(fetchImpl, url, options) {
  *     reported beside the值 it left in place.
  *
  * Nothing here performs an IP lookup or asks a third party anything: the two
- * addresses are the registries themselves ({@link registryPingUrl}).
+ * addresses are the registries themselves ({@link registryPackageUrl}).
  *
  * @param options.fetch - the HTTP client (defaults to the global `fetch`).
  * @param options.probeTimeoutMs - the per-probe bound.
@@ -1371,23 +1397,33 @@ export function createDownloadRegion(options = {}) {
   }
 
   /**
-   * Can this machine reach one registry? **Any** HTTP answer counts: the question
-   * is reachability, not the health of the mirror's ping endpoint, and a mirror
-   * that answers `404 /-/ping` is still a mirror this machine can talk to. Only
-   * a timeout, a connection error or a missing `fetch` means "no".
+   * Can this machine fetch **this package** from one registry?
+   *
+   * The question is availability, not reachability, and the two are genuinely
+   * different facts: a host that answers `404` for every package is perfectly
+   * *reachable* and completely **unusable** as an update source. The first
+   * revision of this goal probed `/-/ping` and treated any HTTP answer as
+   * success, which read a host that serves no registry at all as the best
+   * available source — the defect the owner's correction (2026-10-08) fixes.
+   *
+   * So the probe is the check's *own* request: `GET <registry>dsh-prompt-setting`,
+   * which must answer 2xx **and** carry a `dist-tags.latest` string
+   * ({@link packumentLatest}) within {@link REGION_PROBE_TIMEOUT_MS}. A 404, an
+   * HTML error page, a login page, a timeout and a connection error are all "no".
    * @param registry - the registry base address.
-   * @returns `true` when something answered within the bound.
+   * @returns `true` when the package document was really served.
    */
-  async function reachable(registry) {
+  async function servesPackage(registry) {
     if (typeof fetchImpl !== 'function') return false;
-    const url = registryPingUrl(registry);
+    const url = registryPackageUrl(registry);
     if (url === null) return false;
     const answer = await timedJson(fetchImpl, url, {
       timeoutMs: probeTimeoutMs,
-      accept: '*/*',
+      accept: 'application/json',
       userAgent: `${UPDATE_CHECK_USER_AGENT}/${currentVersionOf()}`,
     });
-    return answer.answered === true;
+    if (answer.ok !== true) return false;
+    return packumentLatest(answer.body) !== null;
   }
 
   /** The `user-agent` suffix, read from the injected version or `unknown`. */
@@ -1396,8 +1432,8 @@ export function createDownloadRegion(options = {}) {
   }
 
   /**
-   * Decide the region by connectivity: npmjs first, the mirror only when npmjs
-   * could not be reached, `default` when neither answered. Never throws, never
+   * Decide the region by availability: npmjs first, the mirror only when npmjs
+   * could not serve the package, `default` when neither could. Never throws, never
    * caches a failure longer than the process's own memory of it, and one verdict
    * serves every concurrent caller.
    * @returns `{region, npmReachable, cnReachable, cached}`.
@@ -1412,13 +1448,13 @@ export function createDownloadRegion(options = {}) {
       let npmReachable = false;
       let cnReachable = false;
       try {
-        npmReachable = await reachable(DEFAULT_NPM_REGISTRY);
+        npmReachable = await servesPackage(DEFAULT_NPM_REGISTRY);
       } catch {
         npmReachable = false;
       }
       if (npmReachable !== true) {
         try {
-          cnReachable = await reachable(TAU_NPM_REGISTRY);
+          cnReachable = await servesPackage(CN_NPM_REGISTRY);
         } catch {
           cnReachable = false;
         }
@@ -1535,11 +1571,8 @@ export function createDownloadRegion(options = {}) {
         message: `${checked.registry} answered HTTP ${answer.status === 0 ? '?' : answer.status} for this package`,
       };
     }
-    const latest = answer.body !== null && typeof answer.body === 'object' && !Array.isArray(answer.body)
-      ? answer.body['dist-tags']
-      : undefined;
-    const version = latest !== null && typeof latest === 'object' && !Array.isArray(latest) ? latest.latest : undefined;
-    if (typeof version !== 'string' || version.trim().length === 0) {
+    const latest = packumentLatest(answer.body);
+    if (latest === null) {
       return {
         ok: false,
         code: 'registry-not-npm',

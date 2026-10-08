@@ -631,7 +631,7 @@ meaning exactly.
 | `/prompt-setting/update-apply` | `POST` | Start installing the release the last check named, through the official `pluginManager`, and answer a `requestId` immediately: §18.2. Carries `launchKind` (g-036, §18.8). |
 | `/prompt-setting/update-apply` | `GET` | The phase of one tracked install (`?requestId=`), or — with no id — this mount's oldest **running** install: §18.3. Carries `launchKind` (g-036, §18.8). |
 | `/prompt-setting/update-apply/cancel` | `POST` | Stop a running install: `{"requestId": string}` (§18.4). Carries `launchKind` (g-036, §18.8). |
-| `/prompt-setting/download-region` | `GET` | Which update source is in force, and — with nothing stored — the connectivity decision that sets it (g-043, §17.7). Always `200`. |
+| `/prompt-setting/download-region` | `GET` | Which update source is in force, and — with nothing stored — the availability decision that sets it (g-043, §17.7). Always `200`. |
 | `/prompt-setting/download-region` | `PUT` | Record the choice: `{"region": "default"\|"cn"\|"custom", "registry"?: string}`, a custom address validated first (g-043, §17.8). |
 
 - An unknown path under the prefix is `404` with
@@ -2351,25 +2351,46 @@ file-scoped resets, §19's narrowed rollback).
   `HISTORY_PANEL_GAP`.
 
 **Revision 28 (「下载区域」: the update source is a choice, decided once by
-connectivity — g-043).** One new route pair, one new preference field group and
+availability — g-043).** One new route pair, one new preference field group and
 one new card row; **no existing response field, status code or stored byte
 changes meaning**, and the version history / rollback / write surface are
 untouched (g-044's Revision 27 block above stands as written).
 
+**Revision 28, corrected (owner ruling, 2026-10-08).** The goal's own wording was
+wrong in two places, and a real-machine measurement found both. Neither was an
+implementation defect; both were requirements, so the correction changes what the
+code means rather than how it is written:
+
+- **The mainland source is `https://registry.npmmirror.com/`, not the Tsinghua
+  TUNA mirror the requirement first named.** Measured on this machine:
+  `mirrors.tuna.tsinghua.edu.cn/npm/` answers **`404` for every package**
+  (`dsh-prompt-setting` *and* `express`), and `/npmjs/`, `/npm-registry/` and
+  `/help/npm/` are `404` as well — that host serves no npm registry at all, so the
+  address could never have been a source. `registry.npmmirror.com` serves this
+  package (measured `200`, `dist-tags.latest` = `0.1.5`, 64–210 ms). The constant
+  is therefore `CN_NPM_REGISTRY`, named for the **region** rather than for a host,
+  so a further correction cannot leave a name behind that points at the wrong
+  thing;
+- **The detection asks a different question.** It is no longer "is the host
+  reachable" (`/-/ping`, any HTTP answer counted) but "**can this source actually
+  serve this package**": `GET <registry>dsh-prompt-setting` must answer 2xx **and**
+  carry `dist-tags.latest` (§17.9). The old rule read a host that 404s everything
+  as the *best* available source; the probe now asks exactly what the check itself
+  asks, so「可用」and「不可用」are the same fact for both.
+
 - **What a user gets.** In the「检查更新」card (§13.4, §17.10), a「下载区域」
   dropdown with exactly three options — 「默认」(npm first, GitHub Releases as the
-  degradation path), 「中国大陆」(the Tsinghua TUNA npm mirror) and 「自定义」(a
-  mirror address they type). Changing it persists in the same
-  `preferences.json` as the update-check switch, and takes effect on the next
-  check **and** the next install.
-- **The first-run default is connectivity, never location.** With nothing stored,
-  the Host probes `https://registry.npmjs.org/-/ping` (1.5 s) and, only if
-  nothing answers, the mirror's own `/-/ping`; the verdict is written as an
-  explicit choice flagged `downloadRegionAuto: true` and reported as
-  `detected: true`, which the page renders as「已按连通性自动判定」. **No IP
-  lookup, no third-party geolocation service, no new dependency.** A user behind
-  a proxy reaches npmjs ⇒ 「默认」, which is the proxy false-positive the probe is
-  designed to avoid.
+  degradation path), 「中国大陆」(the npmmirror registry) and 「自定义」(a mirror
+  address they type). Changing it persists in the same `preferences.json` as the
+  update-check switch, and takes effect on the next check **and** the next
+  install.
+- **The first-run default is availability, never location.** With nothing stored,
+  the Host asks npmjs for this package (2.5 s, §17.9) and, only if it is not
+  served, asks npmmirror; the verdict is written as an explicit choice flagged
+  `downloadRegionAuto: true` and reported as `detected: true`, which the page
+  renders as「已自动判定（该源能取到本包）」. **No IP lookup, no third-party geolocation
+  service, no new dependency.** A user behind a proxy is served by npmjs ⇒
+  「默认」, which is the proxy false-positive the probe is designed to avoid.
 - **A chosen mirror is never silently replaced.** With「中国大陆」or「自定义」
   selected, a registry that cannot answer is `200 {ok:false, code:
   "registry-unavailable"}` (or `registry-invalid` for an unusable saved address) —
@@ -2380,18 +2401,19 @@ untouched (g-044's Revision 27 block above stands as written).
   one bounded `GET` of `<registry>dsh-prompt-setting` that must answer 2xx **and**
   carry `dist-tags.latest`. The four failures are four codes, and each one leaves
   the dialog open with a red line and the effective source untouched.
-- **Bounded, cached, off the critical path.** 1.5 s per probe, 6 h per verdict,
+- **Bounded, cached, off the critical path.** 2.5 s per probe, 6 h per verdict,
   one in-flight probe shared by concurrent asks, the detection runs inside its own
   request (never at mount), and with the update-check switch **off** it does not
   run at all — §17.4's「off means zero outbound requests」keeps holding.
-- **Unit tests.** 43 new cases across `test/update.test.mjs`,
+- **Unit tests.** 47 new cases across `test/update.test.mjs`,
   `test/client.test.mjs`, `test/install.test.mjs` and `test/route.test.mjs`: the
-  three regions × the registry answering/failing, the three validation failures,
-  the detection branches (npmjs ⇒ 默认, npmjs silent + mirror ⇒ 中国大陆, neither
-  ⇒ 默认), the proxy case, the probe timeout and its cache, the no-write-on-refusal
-  rule, the dialog that stays open, the mount that asks nobody, the install that
-  follows the chosen mirror, and the `/-/ping` facts measured on a real machine
-  (§17.9).
+  three regions × the registry serving/failing, an **answered `404` that is not
+  availability** (the discriminator the correction exists for), the three
+  validation failures, the detection branches (npmjs serves ⇒ 默认, npmjs 404 +
+  npmmirror serves ⇒ 中国大陆, neither ⇒ 默认), the proxy case, the probe timeout
+  and its cache, the no-write-on-refusal rule, the dialog that stays open, the
+  mount that asks nobody, the install that follows the chosen mirror, and the
+  measured facts about both upstreams (§17.9).
 
 ### 13.3a 「备份与恢复」(Revision 19)
 
@@ -3737,9 +3759,9 @@ what g-043's download-region choice wires into. **No route, no query parameter,
 no preference-file byte and no existing field changes meaning**: `source` and
 `tarball` are additive, so a pre-g-042 client renders exactly as it did.
 
-**Revision 28 (the download region, decided once by connectivity — g-043).** The
+**Revision 28 (the download region, decided once by availability — g-043).** The
 check's source is now the user's choice: 「默认」(npm first, GitHub as the
-fallback) / 「中国大陆」(the Tsinghua TUNA mirror) / 「自定义」(an address they
+fallback) / 「中国大陆」(the npmmirror registry) / 「自定义」(an address they
 typed, validated before it is saved). The choice lives in the same
 `preferences.json` as the switch, is resolved **per check** (§17.6), and the
 first-ever default is decided by a bounded reachability probe of the two
@@ -3990,7 +4012,7 @@ The preference lives in **its own file**, `<DSH_HOME>/prompt-setting/preferences
 **Revision 28** adds the download region to the **same** document and the same
 atomic write path (§17.6): the keys are `downloadRegion`, `downloadRegionRegistry`
 (only meaningful for `custom`) and `downloadRegionAuto` (`true` when the value was
-decided by the connectivity probe rather than by the user):
+decided by the availability probe rather than by the user):
 
 ```json
 {
@@ -4032,7 +4054,7 @@ silently erase the user's region.
   §17.6–§17.9 in Revision 28).** Revision 27 made the registry base address
   injectable and stopped there. Revision 28 wires the「下载区域」preference into
   that slot, and the detection that decides a first-visit default is
-  **connectivity**, never location: no IP lookup, no third-party geolocation
+  **availability**, never location: no IP lookup, no third-party geolocation
   service, no dependency. The historical note is kept because it records what
   that revision deliberately did not do;
 - no new runtime dependency: Node's built-in `fetch`, nothing else;
@@ -4060,7 +4082,7 @@ Three ids, and only three — `default` / `cn` / `custom` (`DOWNLOAD_REGIONS`):
 | `region` | The source it means | `registry` |
 | --- | --- | --- |
 | `default` | npm first, GitHub Releases when npm cannot answer — the shipped order (§17.1) | `https://registry.npmjs.org/` |
-| `cn` | The Tsinghua TUNA npm mirror, verbatim | `https://mirrors.tuna.tsinghua.edu.cn/npm/` (`TAU_NPM_REGISTRY`, a **constant**: the option's whole promise is that this exact address is what gets asked) |
+| `cn` | The npmmirror registry | `https://registry.npmmirror.com/` (`CN_NPM_REGISTRY`, a **constant**: the option's whole promise is that this exact address is what gets asked). **Corrected 2026-10-08** — the requirement first named `mirrors.tuna.tsinghua.edu.cn/npm/`, which serves no npm registry at all (§17.9) |
 | `custom` | A base address the user typed and the Host validated | the stored address, normalized |
 
 **Source resolution order** (per check, per install — so a switch takes effect on
@@ -4105,9 +4127,9 @@ stored; with nothing stored this method also *decides* it (§17.9). Always `200`
   the other two regions), and `error` is `{"code": "registry-invalid"}` when a
   stored custom address is unusable — the one case the card reports as a
   standing condition rather than a page notice;
-- **`detected: true` means the Host decided this value by connectivity** on the
+- **`detected: true` means the Host decided this value by the availability probe** on the
   first visit, not the user (§17.9). It is the marker the page renders as
-  「已按连通性自动判定」, and it may never be claimed by the client;
+  「已自动判定（该源能取到本包）」, and it may never be claimed by the client;
 - `stored` is about the **document**, not the value: an explicit「默认」has been
   decided and is never re-decided by a later probe;
 - `probed: true` reports that this request ran the detection; a `GET` that
@@ -4162,36 +4184,55 @@ shape: there is **no top-level `dist`** in a registry document (that lesson is
 Revision 27's, §17.2, and it is why the availability probe reads `dist-tags`
 rather than a flattened field).
 
-### 17.9 The first-visit default is a connectivity probe, never a location
+### 17.9 The first-visit default is an availability probe, never a location
 
 With **nothing stored** — and only then — `GET /download-region` decides, in this
 order:
 
-1. one bounded `GET` of `https://registry.npmjs.org/-/ping` (the npm-standard
-   liveness endpoint, `REGION_PROBE_TIMEOUT_MS` = 1.5 s). **Any** HTTP answer
-   counts as reachable: the question is reachability, not the health of a ping
-   endpoint. ⇒ `default`;
-2. only if npmjs did not answer, the same probe against
-   `https://mirrors.tuna.tsinghua.edu.cn/npm/-/ping` ⇒ `cn`;
-3. neither answered ⇒ `default`, the conservative fallback.
+1. one bounded `GET` of `https://registry.npmjs.org/dsh-prompt-setting`
+   (`REGION_PROBE_TIMEOUT_MS` = 2.5 s). The document must answer **2xx** *and*
+   carry a non-empty `dist-tags.latest`; a `404`, an HTML error page, a login
+   page, a timeout and a connection error are all "no". ⇒ `default`;
+2. only if npmjs did not serve the package, the same request against
+   `https://registry.npmmirror.com/dsh-prompt-setting` ⇒ `cn`;
+3. neither served it ⇒ `default`, the conservative fallback.
 
 Then the verdict is **written as an explicit choice** with
 `downloadRegionAuto: true`, so the next visit — and the next restart — reads a
 decision instead of re-deciding. A user's own choice is never overwritten.
 
-Four properties are part of the contract, not of the implementation:
+**The question is availability, not reachability, and that distinction is the
+whole of the 2026-10-08 correction.** The probe used to read
+`https://registry.npmjs.org/-/ping` and count *any* HTTP answer as success, which
+means a host that answers `404` for every package — a host with no npm registry
+behind it at all — was read as the *best* available source. The probe now issues
+the same request the check itself issues, against the same package, and applies
+the same shape rule (`dist-tags.latest`), so「这个源可用」means exactly one thing
+in both places. It also has one fewer moving part: there is no `/-/ping` path, no
+liveness constant and no second notion of "the registry is fine" anywhere in this
+module.
+
+2.5 s per probe, not 1.5 s, because a **packument is heavier than a ping**: measured
+on this machine, npmjs answers the document in ~0.9 s warm (1.5 s cold) and
+npmmirror in ~0.2 s. The cap still satisfies「短超时」, and the worst case — both
+probes timing out one after the other — is 5 s, on a request the page is not
+waiting to paint for (§17.10).
+
+Five properties are part of the contract, not of the implementation:
 
 - **no IP lookup and no third-party service.** The only two addresses the
   detection can ask are the two registries themselves; there is no dependency,
-  no geo database and no request to a location API. (A user behind a proxy
-  usually reaches npmjs, so「默认」is both the safe and the correct answer
-  there — the false-positive case a location guess would get wrong.)
-- **bounded.** Each probe is capped at 1.5 s, so the worst case is 3 s, and
-  validation is capped at 5 s. `AbortController` plus an internal race, exactly
-  as the check does (§17.3): even a transport that ignores the signal cannot
-  wedge the request.
+  no geo database and no request to a location API. (A user behind a proxy is
+  served by npmjs, so「默认」is both the safe and the correct answer there — the
+  false-positive case a location guess would get wrong.)
+- **bounded.** Each probe is capped at 2.5 s, so the worst case is 5 s, and
+  validating a typed address is capped at 5 s. `AbortController` plus an internal
+  race, exactly as the check does (§17.3): even a transport that ignores the
+  signal cannot wedge the request.
 - **cached, and one probe at a time.** A verdict is reused for 6 h
   (`REGION_PROBE_TTL_MS`) and concurrent asks share the single in-flight probe.
+  The probe deliberately does **not** touch the check's own 6 h answer cache
+  (§17.3): the two answer different questions, and a probe is not a check.
 - **never on the page's critical path.** The detection runs inside its own
   request, never during mount, so the settings page paints first and the verdict
   arrives asynchronously — and with the update-check switch **off** it does not
@@ -4202,30 +4243,53 @@ Four properties are part of the contract, not of the implementation:
   `fetch` and an unwritable preference file all degrade to `default` with
   `ok: true`. Nothing here throws at a route.
 
-**Measured on this machine (2026-10-08, g-043 real-machine check).** These are
-facts about the two upstreams, not about the implementation, and they are recorded
-because one of them is load-bearing:
+**Measured on this machine (2026-10-08), across candidate mirror hosts.** These are
+facts about the upstreams, not about the implementation, and the first two are why
+the requirement itself was corrected:
 
-- `GET https://registry.npmjs.org/-/ping` ⇒ `200 {}`: 2.1 s cold (DNS + TLS), then
-  0.75–1.0 s warm. A cold probe can therefore exceed the 1.5 s cap on a slow link,
-  and the detection then reads npmjs as unreachable. The cost is bounded and
-  benign: the verdict is a **working** source (the mirror), it is decided once,
-  and the user can switch back — but it is why "reachable" is a *short* probe,
-  not a health check;
-- `GET https://mirrors.tuna.tsinghua.edu.cn/npm/-/ping` ⇒ **`404`** (nginx). The
-  CN branch works precisely because **any HTTP answer counts as reachable**;
-  requiring a 2xx would make the mirror look unreachable on the one machine class
-  the option exists for, and the spec's own endpoint would never satisfy it;
-- `GET https://mirrors.tuna.tsinghua.edu.cn/npm/dsh-prompt-setting` ⇒ **`404`**:
-  the mirror is a real npm registry mirror, and it does **not** carry this
-  package. Selecting「中国大陆」therefore answers the check with
-  `200 {ok:false, error.code: "registry-unavailable", error.reason.status: 404}` —
-  the structured error of §17.6, with **no** fallback to npmjs.org or to GitHub.
-  That is the intended behaviour (the user asked for that source, and the answer
-  says the source cannot serve this package), and it is why the card reports a
-  mirror's failure instead of quietly showing the default's answer;
-- a first visit on a fresh `$DSH_HOME` answered `200
-  {"region":"default","detected":true}` in **1.03 s**, and wrote
+| Source | `GET <host>/dsh-prompt-setting` | Time | Serves this package |
+| --- | --- | --- | --- |
+| `registry.npmjs.org` | `200`, `dist-tags.latest` = `0.1.5` | 937 ms–1.5 s | ✅ |
+| `registry.npmmirror.com` | `200`, `dist-tags.latest` = `0.1.5` | 64–210 ms | ✅ |
+| `mirrors.tuna.tsinghua.edu.cn/npm` | **`404`** | 346 ms | ❌ — and `express` is `404` too |
+| `mirrors.ustc.edu.cn/npm` | **`404`** | — | ❌ |
+| `mirrors.cloud.tencent.com/npm` / `repo.huaweicloud.com/repository/npm` | `200` | 509 ms / 712 ms | ✅ (candidates, not chosen) |
+
+- **The Tsinghua host is not a mirror of anything npm-shaped.** `/npm/`,
+  `/npmjs/` and `/npm-registry/` all answer `404`, `/help/npm/` is `404`, and the
+  site's remaining npm-era path is `/nodejs-release/`. It is therefore not "a
+  mirror that has not picked this package up" — it is a host that serves no npm
+  registry, which is why §17.6's `cn` registry is `registry.npmmirror.com`: a
+  source has to be able to answer the check, and "reachable" alone was never
+  evidence that it could;
+- **the discriminator is the package document, and the ping-era rule failed it.**
+  `mirrors.tuna.tsinghua.edu.cn/npm/-/ping` answers `404` (nginx), i.e. a host
+  that serves nothing still *answers* — so under「any HTTP answer counts」it read
+  as the best available source and would have been chosen as「中国大陆」. That is
+  the defect this correction removes, and `test/update.test.mjs` freezes it: a
+  probe transport that answers `404` for the document must decide `cn` when the
+  mirror serves it, never `default`;
+- **「中国大陆」now works end to end.** With `PUT {region:"cn"}` stored, the live
+  check answered `200 {ok:true, source:"npm", region:"cn", latest:"0.1.5",
+  tarball:"https://registry.npmmirror.com/dsh-prompt-setting/-/dsh-prompt-setting-0.1.5.tgz"}`
+  — the npmmirror registry serves this package, so both the check and the install
+  now take the mirror's own artifact. The same address passed the custom-address
+  validation (`200 {ok:true}`), while `https://mirrors.tuna.tsinghua.edu.cn/npm`
+  was refused there with `registry-http-error` (`status: 404`) — the validation and
+  the probe apply the *same* rule, so a source that cannot serve the package
+  cannot be selected either way;
+- **what an unusable chosen source does** (the rule, not the Tsinghua case). With
+  「中国大陆」or「自定义」selected and the source unable to serve the package, the
+  check answers `200 {ok:false, error.code: "registry-unavailable"}` with the
+  region, the address and the underlying reason — the structured error of §17.6,
+  with **no** fallback to npmjs.org or to GitHub. That is the intended behaviour
+  (the user asked for that source), and it is why the card reports a mirror's
+  failure instead of quietly showing the default's answer;
+- **live runs.** `detect()` against the real network decided `default`
+  (`npmReachable: true`) in **866 ms**; the same detector with npmjs made
+  unreachable decided `cn` (`cnReachable: true`) in **82 ms**; a first visit on a
+  fresh `$DSH_HOME` answered `200 {"region":"default","detected":true}` in
+  **565 ms** and wrote
   `{"updateCheck":true,"downloadRegion":"default","downloadRegionAuto":true}`.
 
 ### 17.10 Client surface
@@ -4242,7 +4306,7 @@ nothing** until it is submitted.
 - the value shown is the **Host's** stored region, never the option that was just
   clicked: a refused write visibly leaves the old source in force;
 - `detected: true` renders `data-role="update-region-auto"` — the
-  「已按连通性自动判定」line — so a default the page chose never looks like one
+  「已自动判定（该源能取到本包）」line — so a default the page chose never looks like one
   the user chose;
 - a stored `custom` address the Host cannot use renders
   `data-role="update-region-unusable"` (`data-update-region-error="<code>"`)

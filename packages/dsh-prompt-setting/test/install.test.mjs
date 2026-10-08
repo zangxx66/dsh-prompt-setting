@@ -701,7 +701,7 @@ test('install route: the install follows the chosen download region (g-043)', as
   // Criterion 1's second half: a region switch must reach the **install**, not
   // just the check. With「中国大陆」stored, the only registry this mount may ask
   // is the mirror, and the only spec it may hand pnpm is the mirror's tarball.
-  const MIRROR = 'https://mirrors.tuna.tsinghua.edu.cn/npm/';
+  const MIRROR = 'https://registry.npmmirror.com/';
   const MIRROR_TARBALL = `${MIRROR}dsh-prompt-setting/-/dsh-prompt-setting-0.2.0.tgz`;
   writeProfile({ 'dsh-prompt-setting': '0.1.1' });
   writePreferences(userPreferencesPath(), { updateCheck: true, downloadRegion: 'cn' });

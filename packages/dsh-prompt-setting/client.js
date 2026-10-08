@@ -344,7 +344,7 @@ window.__ModuleLoader__.load({
      * g-043:「下载区域」— which source the check and the install use.
      *
      * `GET` reads the choice (and, on the very first visit, lets the Host decide
-     * it by connectivity); `PUT {region, registry?}` records one, with a `custom`
+     * it by availability); `PUT {region, registry?}` records one, with a `custom`
      * address validated by the Host **before** anything is written. The page never
      * probes a registry itself: CORS would make that a lie in the browser, and the
      * address is untrusted input (§17.8).
@@ -771,10 +771,10 @@ window.__ModuleLoader__.load({
       updateRegionDefault: '默认',
       updateRegionDefaultNote: 'npm 优先；npm 不可用时回退 GitHub release 产物。',
       updateRegionCn: '中国大陆',
-      updateRegionCnNote: '使用清华 TUNA 镜像（mirrors.tuna.tsinghua.edu.cn/npm）。',
+      updateRegionCnNote: '使用 npmmirror 镜像（registry.npmmirror.com）。',
       updateRegionCustom: '自定义',
       updateRegionCustomNote: '使用你填写的镜像地址（提交前会先校验）。',
-      updateRegionAuto: '已按连通性自动判定：{region}。',
+      updateRegionAuto: '已自动判定（该源能取到本包）：{region}。',
       updateRegionSaved: '下载区域已切换为{region}，检查与安装都会走新源。',
       updateRegionSaving: '切换中…',
       updateRegionSelectLabel: '更新来源',
@@ -1247,10 +1247,10 @@ window.__ModuleLoader__.load({
       updateRegionDefault: 'Default',
       updateRegionDefaultNote: 'npm first; GitHub release artifacts only when npm cannot answer.',
       updateRegionCn: 'Mainland China',
-      updateRegionCnNote: 'Use the Tsinghua TUNA mirror (mirrors.tuna.tsinghua.edu.cn/npm).',
+      updateRegionCnNote: 'Use the npmmirror registry (registry.npmmirror.com).',
       updateRegionCustom: 'Custom',
       updateRegionCustomNote: 'Use the mirror address you type (validated before it is saved).',
-      updateRegionAuto: 'Chosen automatically from network reachability: {region}.',
+      updateRegionAuto: 'Chosen automatically (the source serves this package): {region}.',
       updateRegionSaved: 'Download region is now {region}; checks and installs use the new source.',
       updateRegionSaving: 'Switching…',
       updateRegionSelectLabel: 'Update source',
@@ -7654,8 +7654,8 @@ window.__ModuleLoader__.load({
      *   - the **selected** value is the Host's stored region, never the option the
      *     user just clicked: a click sends the `PUT`, and only the answer moves the
      *     control — so a refused write visibly leaves the old source in force;
-     *   - `detected` (the Host decided this by connectivity on the first visit)
-     *     renders as「已按连通性自动判定」, because a default a page chose for the
+     *   - `detected` (the Host decided this by availability on the first visit)
+     *     renders as「已自动判定（该源能取到本包）」, because a default a page chose for the
      *     user must not look like one the user chose;
      *   - a stored `custom` address the Host cannot use renders its reason beside
      *     the control, so「自定义」is never silently wrong;
@@ -8379,7 +8379,7 @@ window.__ModuleLoader__.load({
          * `{phase, region, registry, custom, detected, stored, error}`, or `null`
          * until the Host has answered. The three things that matter here are
          * `region` (what the dropdown shows — never the option the user just
-         * clicked), `detected` (the Host chose it by connectivity, so the page
+         * clicked), `detected` (the Host chose it by availability, so the page
          * says so) and `error` (a saved custom address the Host cannot use).
          * `null` is not「默认」: it is「this page has not been told yet」, and the
          * card renders it as the shipped default while saying nothing about
@@ -9231,7 +9231,7 @@ window.__ModuleLoader__.load({
        */
       /**
        * g-043: read the stored「下载区域」— and, on the first visit ever, let the
-       * Host decide it by connectivity. One `GET`; a failure leaves the previous
+       * Host decide it by availability. One `GET`; a failure leaves the previous
        * answer alone and says nothing (this is a read-out, not a task).
        *
        * The Host's answer is copied into the view state field by field, so
@@ -9417,7 +9417,7 @@ window.__ModuleLoader__.load({
           // g-043: a mount that ran while the switch was off asked the region
           // nothing at all (the zero-request promise), so the first thing the
           // switch being turned back on has to fetch is the region — which is
-          // also where the first-visit connectivity detection happens.
+          // also where the first-visit availability detection happens.
           if (update.region === null || update.region === undefined) await loadRegion();
           await recheckUpdate();
         }

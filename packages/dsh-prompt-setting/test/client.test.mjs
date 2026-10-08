@@ -9007,7 +9007,7 @@ function regionStub(over = {}) {
         ? { region: 'custom', registry: 'https://mirror.example/npm/', custom: 'https://mirror.example/npm/', detected: false, stored: true }
         : {
             region: body.region,
-            registry: body.region === 'cn' ? 'https://mirrors.tuna.tsinghua.edu.cn/npm/' : 'https://registry.npmjs.org/',
+            registry: body.region === 'cn' ? 'https://registry.npmmirror.com/' : 'https://registry.npmjs.org/',
             custom: null,
             detected: false,
             stored: true,
@@ -9061,7 +9061,7 @@ test('client: 「高级」 carries the download region, with the three sources a
 test('client: a region the host decided by connectivity says so, and one it stored does not', async () => {
   const detected = makePage({
     responses: defaultResponses({
-      [PATHS.downloadRegion]: { payload: regionFixture({ region: 'cn', registry: 'https://mirrors.tuna.tsinghua.edu.cn/npm/', detected: true }) },
+      [PATHS.downloadRegion]: { payload: regionFixture({ region: 'cn', registry: 'https://registry.npmmirror.com/', detected: true }) },
     }),
   });
   const tree = await openTab(detected, 'advanced');
@@ -9073,7 +9073,7 @@ test('client: a region the host decided by connectivity says so, and one it stor
   // The same region, stored: the value is identical, the *claim* is not.
   const stored = makePage({
     responses: defaultResponses({
-      [PATHS.downloadRegion]: { payload: regionFixture({ region: 'cn', registry: 'https://mirrors.tuna.tsinghua.edu.cn/npm/' }) },
+      [PATHS.downloadRegion]: { payload: regionFixture({ region: 'cn', registry: 'https://registry.npmmirror.com/' }) },
     }),
   });
   const other = await openTab(stored, 'advanced');
