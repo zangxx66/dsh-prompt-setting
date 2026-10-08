@@ -31,6 +31,14 @@ import { UPDATE_SOURCE_NPM, parseSemver } from './update.js';
 
 /** The GitHub repository the release asset is fetched from. Fixed, never from input. */
 export const INSTALL_REPOSITORY = Object.freeze({ owner: 'zangxx66', repo: 'dsh-prompt-setting' });
+/**
+ * The package's own npm page (g-042).
+ *
+ * The last-resort `manual.releaseUrl` for an npm-sourced refusal: it is only ever
+ * reached when neither the check's `releaseUrl` nor the release page for the tag
+ * exists, and it names the package rather than nothing at all.
+ */
+export const NPM_PACKAGE_PAGE_URL = `https://www.npmjs.com/package/${INSTALL_REPOSITORY.repo}`;
 /** The asset name pattern every release of this package must carry. */
 export const INSTALL_ASSET_PREFIX = 'dsh-prompt-setting-';
 /** The only asset extension the install route accepts. `.tgz` is not decoration:
@@ -253,6 +261,13 @@ export function resolveInstallTarget(check) {
     };
   }
   if (payload.source === UPDATE_SOURCE_NPM) {
+    // g-042 review fix: an npm answer's `releaseUrl` is **always** `null` (§17.2 —
+    // the page's one link is labelled for a release page), so a refusal here would
+    // otherwise leave the person with no clickable manual route at all. The
+    // `manual.releaseUrl` a refusal carries therefore falls back to the **release
+    // page** (the same sentence and label the GitHub branch uses, so no client
+    // copy changes) and only then to the package's npm page.
+    const manualUrl = releaseUrl ?? releasePageForTag(tag) ?? NPM_PACKAGE_PAGE_URL;
     const named = typeof payload.tarball === 'string' ? payload.tarball.trim() : '';
     if (named.length === 0) {
       return {
@@ -261,7 +276,7 @@ export function resolveInstallTarget(check) {
         message:
           `the npm registry names no dist.tarball for ${version}, so this version has nothing to install from; ` +
           'check the registry entry, or update by hand',
-        releaseUrl,
+        releaseUrl: manualUrl,
       };
     }
     const spec = registryTarballSpec(named);
@@ -272,7 +287,7 @@ export function resolveInstallTarget(check) {
         message:
           `the npm registry's dist.tarball for ${version} is not an http(s) URL ending in ${INSTALL_ASSET_EXTENSION}, ` +
           'so it is not something this route will hand to pnpm; update by hand',
-        releaseUrl,
+        releaseUrl: manualUrl,
       };
     }
     return { ok: true, source: UPDATE_SOURCE_NPM, tag, version, url: spec, releaseUrl };

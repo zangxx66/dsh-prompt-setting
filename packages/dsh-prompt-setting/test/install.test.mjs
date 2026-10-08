@@ -61,6 +61,8 @@ const ASSET_URL = 'https://github.com/zangxx66/dsh-prompt-setting/releases/downl
 const REGISTRY_URL = 'https://registry.npmjs.org/dsh-prompt-setting';
 const GITHUB_RELEASE_URL = 'https://api.github.com/repos/zangxx66/dsh-prompt-setting/releases/latest';
 const TARBALL_URL = 'https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.0.tgz';
+/** The same for the version this package already is — never the install target. */
+const OLD_TARBALL_URL = 'https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.1.5.tgz';
 
 let home;
 let previousHome;
@@ -139,12 +141,20 @@ function makeTransport(options = {}) {
   return { fetch, calls };
 }
 
-/** The canonical npm package document ("0.2.0 is the latest"). */
+/**
+ * The canonical npm package document ("0.2.0 is the latest").
+ *
+ * **Real shape** (measured against `registry.npmjs.org`, 2026-10-08): a
+ * packument carries **no** top-level `dist`; the artifact is at
+ * `versions[<version>].dist.tarball`.
+ * @param over - top-level fields to override.
+ * @returns the document.
+ */
 function npmDocument(over = {}) {
   return {
     name: 'dsh-prompt-setting',
     'dist-tags': { latest: '0.2.0' },
-    dist: { tarball: TARBALL_URL },
+    versions: { '0.2.0': { version: '0.2.0', dist: { tarball: TARBALL_URL } } },
     ...over,
   };
 }
@@ -569,11 +579,14 @@ test('install: the npm source installs from the registry tarball, not from a rel
 
 test('install: a registry tarball that is missing or untrustworthy is refused, never handed to pnpm', () => {
   const base = { hasUpdate: true, latest: '0.2.0', latestTag: '0.2.0', source: 'npm', releaseUrl: null };
-  // Nothing usable was named at all.
+  const releasePage = 'https://github.com/zangxx66/dsh-prompt-setting/releases/tag/0.2.0';
+  // Nothing usable was named at all. An npm answer carries no `releaseUrl` (§17.2),
+  // so the refusal must still hand the person a clickable manual route.
   for (const tarball of [undefined, null, 42, '', '   ', {}]) {
     const target = resolveInstallTarget({ ...base, tarball });
     assert.equal(target.ok, false, JSON.stringify(tarball));
     assert.equal(target.code, REFUSAL_ASSET_MISSING, JSON.stringify(tarball));
+    assert.equal(target.releaseUrl, releasePage, JSON.stringify(tarball));
   }
   // A value that is present but is not an http(s) `.tgz` URL.
   const untrustworthy = [
@@ -590,6 +603,7 @@ test('install: a registry tarball that is missing or untrustworthy is refused, n
     const target = resolveInstallTarget({ ...base, tarball });
     assert.equal(target.ok, false, tarball);
     assert.equal(target.code, REFUSAL_ASSET_UNVERIFIED, tarball);
+    assert.equal(target.releaseUrl, releasePage, tarball);
     assert.equal(registryTarballSpec(tarball), null, tarball);
   }
   // The honest forms are admitted, including an http mirror and a query string.
@@ -689,7 +703,9 @@ test('install route: an npm tarball that is missing or untrustworthy is refused 
     ['https://evil.test/dsh-prompt-setting-0.2.0.zip', REFUSAL_ASSET_UNVERIFIED, 'a URL pnpm must never see'],
   ];
   for (const [tarball, code, why] of cases) {
-    const document = tarball === undefined ? npmDocument({ dist: {} }) : npmDocument({ dist: { tarball } });
+    const document = tarball === undefined
+      ? npmDocument({ versions: { '0.2.0': { version: '0.2.0', dist: {} } } })
+      : npmDocument({ versions: { '0.2.0': { version: '0.2.0', dist: { tarball } } } });
     const transport = makeTransport({ npm: document });
     const manager = makeManager();
     const { route } = mountHost({ manager, transport });
@@ -703,6 +719,32 @@ test('install route: an npm tarball that is missing or untrustworthy is refused 
       `${why}: nothing was probed, because there was no admissible spec`,
     );
   }
+});
+
+test('install route: a real-shaped document with no entry for that version answers asset-missing', async () => {
+  writeProfile({ 'dsh-prompt-setting': '0.1.1' });
+  // Real packument shape, but `versions` holds no entry for the dist-tag the
+  // check reported: the version is still an answer (source npm, latest 0.2.0),
+  // it simply names no artifact — and the install route refuses it with the
+  // existing code instead of inventing a URL.
+  const transport = makeTransport({
+    npm: npmDocument({ versions: { '0.1.5': { version: '0.1.5', dist: { tarball: OLD_TARBALL_URL } } } }),
+  });
+  const manager = makeManager();
+  const { route } = mountHost({ manager, transport });
+
+  const check = json(await call(route, { url: UPDATE_CHECK_PATH }));
+  assert.equal(check.source, 'npm');
+  assert.equal(check.latest, '0.2.0');
+  assert.equal(check.hasUpdate, true);
+  assert.equal(check.tarball, null, 'no versions["0.2.0"] entry, so no tarball');
+
+  const refused = await startInstall(route);
+  assert.equal(refused.ok, false);
+  assert.equal(refused.code, REFUSAL_ASSET_MISSING);
+  assert.equal(refused.manual.releaseUrl, 'https://github.com/zangxx66/dsh-prompt-setting/releases/tag/0.2.0');
+  assert.equal(manager.calls.length, 0);
+  assert.deepEqual(transport.calls.map((entry) => entry.method), ['GET'], 'nothing was probed');
 });
 
 test('install route: tag/version come from the same check, and a mismatched tag is refused', async () => {

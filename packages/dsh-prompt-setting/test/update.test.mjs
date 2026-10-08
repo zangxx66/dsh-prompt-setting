@@ -38,6 +38,7 @@ import {
   parseRepositorySlug,
   parseSemver,
   registryPackageUrl,
+  registryTarball,
   releasePageUrl,
   releasesLatestUrl,
 } from '../core/update.js';
@@ -50,6 +51,8 @@ const REGISTRY_URL = 'https://registry.npmjs.org/dsh-prompt-setting';
 const GITHUB_URL = 'https://api.github.com/repos/zangxx66/dsh-prompt-setting/releases/latest';
 /** The registry document's own install spec. */
 const TARBALL_URL = 'https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.0.tgz';
+/** The same for the version this test package already is (`currentVersion`). */
+const OLD_TARBALL_URL = 'https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.1.5.tgz';
 
 let home;
 let previousHome;
@@ -118,12 +121,25 @@ function releaseResponse(over = {}) {
   });
 }
 
-/** The canonical "a newer version is published" npm package document. */
+/**
+ * The canonical "a newer version is published" npm package document.
+ *
+ * **The shape is the real one**, measured against `registry.npmjs.org` on
+ * 2026-10-08: a packument has **no top-level `dist`** — each version's artifact
+ * lives at `versions[<version>].dist.tarball`. The first revision of g-042 read
+ * `body.dist` and answered `tarball: null` for every real check (the owner's
+ * real-machine review caught it), so this fixture must not be flattened.
+ * @param over - top-level fields to override.
+ * @returns the double.
+ */
 function npmResponse(over = {}) {
   return jsonResponse({
     name: 'dsh-prompt-setting',
     'dist-tags': { latest: '0.2.0' },
-    dist: { tarball: TARBALL_URL },
+    versions: {
+      '0.2.0': { name: 'dsh-prompt-setting', version: '0.2.0', dist: { tarball: TARBALL_URL } },
+      '0.1.5': { name: 'dsh-prompt-setting', version: '0.1.5', dist: { tarball: OLD_TARBALL_URL } },
+    },
     time: { '0.2.0': '2026-09-25T00:00:00.000Z' },
     ...over,
   });
@@ -258,6 +274,70 @@ test('update: only an explicit boolean false closes the switch', () => {
   for (const value of [null, undefined, {}, { updateCheck: 'false' }, { updateCheck: 0 }, [], 'nonsense']) {
     assert.deepEqual(normalizePreferences(value), { updateCheck: true }, JSON.stringify(value));
   }
+});
+
+// #region pure policy: where a real packument keeps the tarball
+
+test('update: the tarball comes from versions[<version>].dist — the real packument shape', () => {
+  // Measured against registry.npmjs.org (2026-10-08): the document has no
+  // top-level `dist` at all. This is the shape the checker must read.
+  const document = {
+    name: 'dsh-prompt-setting',
+    'dist-tags': { latest: '0.2.0' },
+    versions: { '0.2.0': { dist: { tarball: TARBALL_URL } } },
+    time: { '0.2.0': '2026-09-25T00:00:00.000Z' },
+  };
+  assert.equal(Object.prototype.hasOwnProperty.call(document, 'dist'), false, 'the fixture itself proves the shape');
+  assert.equal(registryTarball(document, '0.2.0', '0.2.0'), TARBALL_URL);
+  // A `v`-prefixed dist-tag is not a version key: the canonical spelling is tried.
+  assert.equal(
+    registryTarball({ versions: { '1.2.3': { dist: { tarball: 'https://r.test/x.tgz' } } } }, 'v1.2.3', '1.2.3'),
+    'https://r.test/x.tgz',
+  );
+  // A flattened, non-standard document is tolerated (courtesy, never primary).
+  assert.equal(
+    registryTarball({ dist: { tarball: 'https://flat.test/x.tgz' } }, '1.2.3', '1.2.3'),
+    'https://flat.test/x.tgz',
+  );
+  // `latestTag` wins over `canonical` when both exist.
+  assert.equal(
+    registryTarball(
+      { versions: { 'v1.2.3': { dist: { tarball: 'https://tag.test/a.tgz' } }, '1.2.3': { dist: { tarball: 'https://canon.test/b.tgz' } } } },
+      'v1.2.3',
+      '1.2.3',
+    ),
+    'https://tag.test/a.tgz',
+  );
+  // Nothing usable: no versions entry, no top-level dist, blank values, junk.
+  for (const [body, tag, canonical] of [
+    [{ 'dist-tags': { latest: '0.2.0' } }, '0.2.0', '0.2.0'],
+    [{ versions: {} }, '0.2.0', '0.2.0'],
+    [{ versions: { '0.2.0': {} } }, '0.2.0', '0.2.0'],
+    [{ versions: { '0.2.0': { dist: {} } } }, '0.2.0', '0.2.0'],
+    [{ versions: { '0.2.0': { dist: { tarball: '   ' } } } }, '0.2.0', '0.2.0'],
+    [{ versions: { '0.2.0': { dist: { tarball: 42 } } } }, '0.2.0', '0.2.0'],
+    [{ versions: { '0.2.0': { dist: { tarball: TARBALL_URL } } } }, '', ''],
+    [null, '0.2.0', '0.2.0'],
+    ['not a document', '0.2.0', '0.2.0'],
+  ]) {
+    assert.equal(registryTarball(body, tag, canonical), null, JSON.stringify(body));
+  }
+});
+
+test('update: a real-shaped document answers with its tarball, and one that names none answers null', async () => {
+  const real = await makeChecker().checker.check();
+  assert.equal(real.source, UPDATE_SOURCE_NPM);
+  assert.equal(real.tarball, TARBALL_URL, 'read from versions[latest].dist.tarball');
+
+  // The version is still the version when the document names no artifact: the
+  // check is **not** a failure, and the install route refuses it (§18.2).
+  const bare = makeChecker({ handler: (url) => (url === REGISTRY_URL ? npmResponse({ versions: { '0.2.0': {} } }) : releaseResponse()) });
+  const answer = await bare.checker.check();
+  assert.equal(answer.ok, true);
+  assert.equal(answer.source, UPDATE_SOURCE_NPM);
+  assert.equal(answer.latest, '0.2.0');
+  assert.equal(answer.hasUpdate, true);
+  assert.equal(answer.tarball, null);
 });
 
 // #region the checker: npm first, GitHub only as the fallback
@@ -519,13 +599,21 @@ test('update: a body that is neither a package document nor a release object is 
 test('update: a text-only transport double is read as well as a real json() one', async () => {
   const { checker } = makeChecker({
     handler: (url) => (url === REGISTRY_URL
-      ? { ok: true, status: 200, text: async () => JSON.stringify({ 'dist-tags': { latest: '9.9.9' }, dist: { tarball: TARBALL_URL } }) }
+      ? {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            'dist-tags': { latest: '9.9.9' },
+            versions: { '9.9.9': { dist: { tarball: 'https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-9.9.9.tgz' } } },
+          }),
+        }
       : jsonResponse({ tag_name: 'v9.9.9' })),
   });
   const result = await checker.check();
   assert.equal(result.source, UPDATE_SOURCE_NPM);
   assert.equal(result.latest, '9.9.9');
   assert.equal(result.hasUpdate, true);
+  assert.equal(result.tarball, 'https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-9.9.9.tgz');
 });
 
 test('update: a hanging request times out on each path instead of wedging the page', async () => {

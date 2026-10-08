@@ -3610,7 +3610,7 @@ The check used to ask the GitHub Releases API and nothing else. It now asks the
 **npm registry** first (`<registry>/dsh-prompt-setting`, read for
 `dist-tags.latest`) and falls back to the GitHub Releases API only when npm could
 not answer. Every answer carries a new **`source`** marker (`"npm"` / `"github"` /
-`null`) and, for an npm answer, the registry document's own **`dist.tarball`** —
+`null`) and, for an npm answer, the packument's own **`versions[<version>].dist.tarball`** —
 which §18.2 then installs from. The registry base address is **injectable**
 (`updateCheck.registry`, default `https://registry.npmjs.org/`); that one slot is
 what g-043's download-region choice wires into. **No route, no query parameter,
@@ -3732,7 +3732,27 @@ The body of a **GitHub** answer (the pre-Revision-27 shape, plus `source`):
 | `releaseUrl` | GitHub: the release's `html_url`, else `https://github.com/{owner}/{repo}/releases/tag/{tag}`, else `null`. npm: always `null` — the page's one link is labelled for a release page, and pointing that label at a registry URL is g-043's copy to write. |
 | `publishedAt` | GitHub: the release's `published_at`. npm: the registry document's `time[<latest>]`. Either way `null` when upstream did not say. |
 | `source` | **Which upstream produced this payload**: `"npm"`, `"github"`, or `null` when no upstream was consulted at all (the switch is off, or the runtime has no `fetch`). Additive, for display and diagnostics. |
-| `tarball` | **The npm answer's install spec**: the registry document's `dist.tarball`, verbatim — or `null` on any answer that is not an npm one, and `null` when the document carried no usable string. What the field *is* is upstream's word; whether it may be handed to pnpm is decided in §18.2. |
+| `tarball` | **The npm answer's install spec**: the packument's `versions[<version>].dist.tarball`, verbatim — or `null` on any answer that is not an npm one, and `null` when the document carried no usable string. What the field *is* is upstream's word; whether it may be handed to pnpm is decided in §18.2. |
+
+**Where the tarball is read from (revision 27 review fix).** A real npm packument
+has **no top-level `dist`** — full (`application/json`) and abbreviated
+(`application/vnd.npm.install-v1+json`) documents alike put every version's
+artifact at **`versions[<version>].dist.tarball`**; the top level carries `name`,
+`dist-tags`, `versions`, `time` and friends. The first revision of §17 read
+`body.dist` and answered `tarball: null` for **every real check** while passing its
+own tests — the defect the owner's real-machine review caught, and the reason the
+lookup below is stated as contract:
+
+1. `versions[dist-tags.latest]` — the dist-tag **verbatim** (`v0.2.0`);
+2. `versions[<canonical version>]` — the same version canonicalized (`0.2.0`), for a
+   dist-tag that carries a `v` the version keys do not;
+3. a top-level `dist.tarball` — a **tolerance** for a non-standard registry, never
+   the primary source.
+
+The request keeps `accept: application/json` (the full packument, whose `time`
+object is what `publishedAt` reads). Switching to the abbreviated document would
+not move the tarball path at all, but it would drop `publishedAt`; that is a
+deliberate non-change, not an oversight.
 | `checkedAt` | When this answer was produced (ISO 8601), including a cached one — it names the check, not the read. |
 | `cached` | `true` when the answer comes from the cache rather than a fresh request. |
 | `error` | `null`, or `{code, message}` plus `status` for an HTTP error. Codes: `no-repository`, `fetch-unavailable`, `network-error`, `timeout`, `http-error`, `invalid-response`, `no-release`, `unparsable-tag`, `uncomparable-version`. When **both** upstreams failed, the payload carries the GitHub attempt's code/message and the npm attempt's own reason as `error.npm` (`{code, message, status?}`, present only when the npm path really ran). |
@@ -3908,8 +3928,17 @@ browser is untrusted. **Revision 27: which spec that is now follows the check's
 
 | `source` | Install spec | Rule |
 | --- | --- | --- |
-| `"npm"` | the registry document's own `dist.tarball`, verbatim | it must be a string that parses as an absolute `http(s)` URL whose path ends in `.tgz`. A document that names **nothing** is refused `asset-missing`; a value that is present but is not such a URL (`file:`, `ftp:`, `data:`, `javascript:`, a `.zip`/`.tar.gz`, a relative path) is refused `asset-unverified`. **Neither is ever handed to pnpm** |
+| `"npm"` | the check payload's `tarball` — the packument's `versions[<version>].dist.tarball` (§17.2), verbatim | it must be a string that parses as an absolute `http(s)` URL whose path ends in `.tgz`. A payload that names **nothing** is refused `asset-missing`; a value that is present but is not such a URL (`file:`, `ftp:`, `data:`, `javascript:`, a `.zip`/`.tar.gz`, a relative path) is refused `asset-unverified`. **Neither is ever handed to pnpm** |
 | `"github"`, or absent (a pre-Revision-27 Host) | the release asset | `https://github.com/zangxx66/dsh-prompt-setting/releases/download/<tag>/dsh-prompt-setting-<version>.tgz` |
+
+**Both npm refusals still carry a clickable manual route** (revision 27 review
+fix). An npm answer's `releaseUrl` is always `null` (§17.2), so a refusal that only
+echoed it would leave the person with nothing to click. The `manual.releaseUrl` of
+these two refusals is therefore, in order: the check's own `releaseUrl` when it has
+one, else `https://github.com/{owner}/{repo}/releases/tag/{tag}`, else the
+package's npm page (`https://www.npmjs.com/package/dsh-prompt-setting`). The first
+two are exactly what a GitHub-branch refusal has always sent, so no client copy
+changes and g-043's labelling work is unaffected.
 
 The `.tgz` requirement is not decoration in either branch: DSH refuses a URL that
 is neither a git host nor a tarball, and pnpm needs the extension to treat it as

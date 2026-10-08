@@ -186,6 +186,68 @@ export function registryPackageUrl(registry = DEFAULT_NPM_REGISTRY, name = NPM_P
 }
 
 /**
+ * The install spec a **real npm packument** carries for one version (g-042).
+ *
+ * The registry's own contract puts a version's artifact under
+ * **`versions[<version>].dist.tarball`** — there is **no top-level `dist`** in a
+ * packument (full `application/json` and abbreviated
+ * `application/vnd.npm.install-v1+json` alike): the top level carries `name`,
+ * `dist-tags`, `versions`, `time` and friends. Reading `body.dist` looks
+ * plausible and is always `null` against the real registry, which is exactly the
+ * defect the owner's real-machine review caught (the first revision of this code
+ * passed its own tests and answered `asset-missing` for every real install).
+ *
+ * Lookup order, so a version the document spells differently is still found:
+ *   1. `versions[latestTag]` — `dist-tags.latest` verbatim (`v1.2.3`);
+ *   2. `versions[canonical]` — the same version canonicalized (`1.2.3`), for the
+ *      case where the dist-tag carries a `v` the version keys do not;
+ *   3. **tolerated fallback only**: a top-level `dist.tarball`, for a
+ *      non-standard registry that flattens the document. This is a courtesy, not
+ *      the contract, and never the primary source.
+ *
+ * Only a non-blank string is returned, verbatim (no trimming beyond the edges,
+ * no rewriting): whether it may be handed to pnpm is `core/install.js`'s call
+ * (`registryTarballSpec`), not this function's.
+ * @param body - the parsed packument, or anything else.
+ * @param latestTag - `dist-tags.latest` verbatim.
+ * @param canonical - the same version, canonicalized (`v1.2.3` → `1.2.3`).
+ * @returns the tarball URL, or `null` when the document names none.
+ */
+export function registryTarball(body, latestTag, canonical) {
+  const document = isRecord(body) ? body : {};
+  const versions = isRecord(document.versions) ? document.versions : {};
+  const keys = [];
+  for (const key of [latestTag, canonical]) {
+    if (typeof key === 'string' && key.trim().length > 0) keys.push(key.trim());
+  }
+  for (const key of new Set(keys)) {
+    const entry = isRecord(versions[key]) ? versions[key] : null;
+    const named = entry === null ? null : tarballOf(entry.dist);
+    if (named !== null) return named;
+  }
+  return tarballOf(document.dist);
+}
+
+/**
+ * A plain JSON object — not `null`, not an array, not a primitive.
+ * @param value - the candidate.
+ * @returns true when it is an object with named fields.
+ */
+function isRecord(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * The non-blank `tarball` string inside one `dist` object, or `null`.
+ * @param dist - the candidate `dist`.
+ * @returns the URL, or `null`.
+ */
+function tarballOf(dist) {
+  if (!isRecord(dist)) return null;
+  return typeof dist.tarball === 'string' && dist.tarball.trim().length > 0 ? dist.tarball.trim() : null;
+}
+
+/**
  * The human release page for one tag — the fallback when GitHub's own
  * `html_url` is absent but the slug and tag are known.
  * @param slug - `{owner, repo}`.
@@ -379,10 +441,12 @@ export function createUpdateChecker(options = {}) {
       source: null,
       /**
        * g-042: the npm registry's own `dist.tarball` for `latest`, exactly as the
-       * document spelled it — the install spec when `source: "npm"` (§18.2).
-       * `null` on every answer that is not an npm one, and `null` when the
-       * document carried no usable string. The *install* route decides whether it
-       * may be handed to pnpm; this field is only what upstream said.
+       * document spelled it — the install spec when `source: "npm"` (§18.2). It is
+       * read from the packument's **`versions[<version>].dist.tarball`** (there is
+       * no top-level `dist`), see {@link registryTarball}. `null` on every answer
+       * that is not an npm one, and `null` when the document carried no usable
+       * string. The *install* route decides whether it may be handed to pnpm; this
+       * field is only what upstream said.
        */
       tarball: null,
       checkedAt: new Date(now()).toISOString(),
@@ -506,13 +570,17 @@ export function createUpdateChecker(options = {}) {
   /**
    * The **npm** attempt (g-042) — the primary path.
    *
-   * One `GET` of the package document; `dist-tags.latest` is the version. Every
+   * One `GET` of the package document; `dist-tags.latest` is the version and
+   * **`versions[<version>].dist.tarball`** is the install spec
+   * ({@link registryTarball} — the real packument has no top-level `dist`). Every
    * way this can fail to produce a version — no usable registry, a network error,
    * a timeout, a non-2xx status, a body that is not a package document, a missing
    * or unparsable `dist-tags.latest` — is `{ok:false, failure}` and the caller
    * falls back to GitHub. It deliberately never invents an "undecidable upstream"
    * answer: a document the registry did not really serve is *unusable*, not a fact
-   * about this package.
+   * about this package. A document that simply names no tarball is **not** a
+   * failure of the check: the version is still the version, and §18.2 refuses the
+   * install with `asset-missing`.
    *
    * The one exception is a version that parses but cannot be compared against
    * this plugin's own: that is our own broken constant rather than npm's silence,
@@ -583,10 +651,9 @@ export function createUpdateChecker(options = {}) {
         }),
       };
     }
-    const dist = body.dist !== null && typeof body.dist === 'object' && !Array.isArray(body.dist) ? body.dist : {};
-    const tarball = typeof dist.tarball === 'string' && dist.tarball.trim().length > 0 ? dist.tarball.trim() : null;
-    const time = body.time !== null && typeof body.time === 'object' && !Array.isArray(body.time) ? body.time : {};
     const canonical = formatSemver(parsed);
+    const tarball = registryTarball(body, latestTag, canonical);
+    const time = body.time !== null && typeof body.time === 'object' && !Array.isArray(body.time) ? body.time : {};
     const publishedAt = typeof time[latestTag] === 'string'
       ? time[latestTag]
       : typeof time[canonical] === 'string'

@@ -506,6 +506,9 @@ test('host: wrong methods on the new routes answer 405 with the full allow list'
 /**
  * A stub transport that tells the two upstreams apart by URL and records what it
  * was asked — the offline evidence for which path a route really took.
+ *
+ * The default body is the **real packument shape** (measured 2026-10-08): no
+ * top-level `dist`, the artifact at `versions[<version>].dist.tarball`.
  * @param handler - `(url) => body`; the default is the canonical npm document.
  * @returns `{fetch, calls}`.
  */
@@ -516,7 +519,10 @@ function updateTransport(handler) {
     calls.push(target);
     const body = typeof handler === 'function'
       ? handler(target)
-      : { 'dist-tags': { latest: '0.2.0' }, dist: { tarball: TARBALL_URL } };
+      : {
+          'dist-tags': { latest: '0.2.0' },
+          versions: { '0.2.0': { version: '0.2.0', dist: { tarball: TARBALL_URL } } },
+        };
     return { ok: true, status: 200, json: async () => body };
   };
   return { fetch, calls };
@@ -560,7 +566,10 @@ test('update route: an untrustworthy registry tarball is refused before any pack
   // The refusal is decided from the check payload alone, so this mount has no
   // `pluginManager` at all: if the route needed one it would answer
   // `installer-unavailable`, which is exactly what this asserts it does not do.
-  const transport = updateTransport(() => ({ 'dist-tags': { latest: '0.2.0' }, dist: { tarball: 'https://evil.test/pkg.zip' } }));
+  const transport = updateTransport(() => ({
+    'dist-tags': { latest: '0.2.0' },
+    versions: { '0.2.0': { version: '0.2.0', dist: { tarball: 'https://evil.test/pkg.zip' } } },
+  }));
   const { route } = mount({ config: { updateCheck: { fetch: transport.fetch } } });
   const res = await call(route, {
     method: 'POST',
@@ -573,6 +582,10 @@ test('update route: an untrustworthy registry tarball is refused before any pack
   assert.equal(body.ok, false);
   assert.equal(body.code, 'asset-unverified');
   assert.match(body.message, /dist\.tarball/);
+  // An npm answer's `releaseUrl` is null, so the refusal itself has to carry a
+  // clickable manual route (g-042 review fix) — the release page, which is the
+  // same shape and the same label a GitHub refusal has always used.
+  assert.equal(body.manual.releaseUrl, 'https://github.com/zangxx66/dsh-prompt-setting/releases/tag/0.2.0');
   assert.deepEqual(transport.calls, [REGISTRY_URL], 'nothing was probed and nothing was installed');
 });
 
