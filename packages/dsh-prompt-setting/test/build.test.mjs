@@ -254,9 +254,15 @@ test('build: a manifest entry that stops matching the chunk moves the entry dige
   // The other half of criterion 3: the manifest lives inside the region, so a
   // chunk added, renamed or removed changes the entry's own digest even before
   // the host compares per-chunk digests.
+  // Every entry is kept and only the first one's digest is flipped: the
+  // manifest is a list now (g-046), and the case is about the entry digest
+  // moving, not about how many chunks there happen to be.
+  const declared = readDeclaredStamps(clientSource);
+  const flipped = declared[0].hash === 'deadbeef' ? 'feedface' : 'deadbeef';
   const before = fingerprintOf(clientSource);
   const mutated = writeDeclaredStamps(clientSource, [
-    { name: 'client.history.js', hash: 'deadbeef', size: 99999 },
+    { ...declared[0], hash: flipped },
+    ...declared.slice(1),
   ]);
   const after = fingerprintOf(mutated);
   assert.equal(after.size, before.size, 'the edit is length-preserving');

@@ -324,7 +324,7 @@ npm pack --dry-run             # 确认发布产物干净（26 个文件、含 c
   ```js
   await (await fetch('/prompt-setting/ping')).json()   // → clientBuild: {hash, size, mtime, chunks: [{name, hash, …}]}, launchKind: "cli" | "desktop" | "unknown"
   document.querySelector('[data-plugin="dsh-prompt-setting"]').dataset.buildMatch   // "true" | "false" | "unknown"
-  document.querySelector('[data-plugin="dsh-prompt-setting"]').dataset.buildLoaded  // "client.history.js:<hash>" | "none"
+  document.querySelector('[data-plugin="dsh-prompt-setting"]').dataset.buildLoaded  // "client.history.js:<hash>,…" | "none" —— 本页真正加载过的每个 chunk
   ```
 
 ## 出问题时 / When something goes wrong

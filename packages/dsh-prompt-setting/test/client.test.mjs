@@ -1689,8 +1689,15 @@ test('client: 「版本历史」 is fetched only when that tab is opened', async
   // markers, its rows and its panel frame are all still here.
   assert.equal(oneBy(tree, 'data-region', 'history').props['data-region'], 'history');
   assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history').length, 1);
+  // g-046: 「提示词总览」 has a chunk of its own now, so reaching it adds that
+  // file — and only that file: the history chunk a reader already paid for is
+  // never fetched a second time.
   await openOverview(page);
-  assert.deepEqual(page.loaded.loadedChunkFiles, ['client.history.js'], 'and never twice');
+  assert.deepEqual(
+    page.loaded.loadedChunkFiles,
+    ['client.history.js', 'client.overview.js'],
+    'each tab fetches its own chunk, and only once',
+  );
 });
 
 test('client: a chunk reaches the main bundle through require(), never a second React', () => {
@@ -1915,6 +1922,154 @@ test('client: a React without lazy/Suspense renders the tab as a readable card',
   // The other tabs are untouched by this engine's limitation.
   const overview = await openOverview(page);
   assert.equal(markerOf(overview, 'data-render-state'), 'ok');
+});
+
+// #endregion
+
+// #region g-046: the remaining tabs move out
+
+/**
+ * Each **non-default** tab and the chunk that carries it.
+ *
+ * 「我的 Prompt」 is deliberately absent from this table: it is the tab the
+ * settings page opens on, so its renderer stays in the entry file — a chunk
+ * there would put a round trip in front of first-screen code and turn a failed
+ * fetch into a blank default tab.
+ */
+const TAB_CHUNKS = [
+  ['overview', 'client.overview.js'],
+  ['backup', 'client.transfer.js'],
+  ['advanced', 'client.advanced.js'],
+  ['history', 'client.history.js'],
+];
+
+/** A chunk source with its comment lines removed, so only code is asserted on. */
+function chunkCode(source) {
+  return source
+    .split('\n')
+    .filter((line) => {
+      const text = line.trim();
+      return !(text.startsWith('*') || text.startsWith('/*') || text.startsWith('//'));
+    })
+    .join('\n');
+}
+
+test('client: the first screen fetches the entry alone, and each tab fetches only its own chunk (g-046)', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  const mine = await page.flush();
+  assert.equal(markerOf(mine, 'data-render-state'), 'ok');
+  assert.equal(oneBy(mine, 'data-region', 'tab-panel').props['data-tab-value'], 'mine');
+  // Criterion 2, stated at its strongest: opening the settings page is one
+  // request. The default tab is built from bytes this file already carries.
+  assert.deepEqual(page.loaded.loadedChunkFiles, [], 'the first screen is the entry file only');
+
+  const seen = [];
+  for (const [tab, file] of TAB_CHUNKS) {
+    const tree = await openTab(page, tab);
+    seen.push(file);
+    assert.deepEqual(
+      page.loaded.loadedChunkFiles.slice().sort(),
+      seen.slice().sort(),
+      `「${tab}」 fetches ${file} and nothing else`,
+    );
+    assert.equal(oneBy(tree, 'data-region', 'tab-panel').props['data-tab-value'], tab);
+    assert.equal(markerOf(tree, 'data-render-state'), 'ok');
+  }
+  // And a tab that has already been opened never fetches anything again.
+  const again = await openTab(page, 'overview');
+  assert.deepEqual(page.loaded.loadedChunkFiles.slice().sort(), seen.slice().sort(), 'each chunk is fetched once');
+  assert.equal(oneBy(again, 'data-region', 'tab-panel').props['data-tab-value'], 'overview');
+});
+
+test('client: a tab chunk that cannot be loaded degrades that tab alone (g-046)', async () => {
+  // Criterion 3 for every new boundary, not just the first one: one tab's 404
+  // is a readable card in that tab, and nothing else on the page notices.
+  for (const [tab, file] of TAB_CHUNKS) {
+    const page = makePage({ chunkFailures: [file], responses: defaultResponses() });
+    const mine = await page.flush();
+    assert.equal(markerOf(mine, 'data-render-state'), 'ok', `${file}: the page itself still renders`);
+    const tree = await openTab(page, tab);
+    const card = oneBy(tree, 'data-region', 'chunk-failure');
+    assert.equal(card.props['data-chunk'], file, `${file}: the card names the chunk`);
+    assert.equal(card.props['data-chunk-state'], 'error');
+    assert.ok(hasText(tree, `chunk unavailable: ${file}`), `${file}: and the reason is on screen`);
+    assert.equal(markerOf(tree, 'data-render-state'), 'ok', `${file}: a chunk failure is one tab's problem`);
+    // The other tabs are still reachable, and still render.
+    const other = tab === 'overview' ? 'advanced' : 'overview';
+    const next = await openTab(page, other);
+    assert.equal(markerOf(next, 'data-render-state'), 'ok', `${file}: other tabs still render`);
+    assert.equal(oneBy(next, 'data-region', 'tab-panel').props['data-tab-value'], other);
+  }
+});
+
+test('client: every chunk depends on the entry alone — a DAG, with one copy of each facility (g-046)', () => {
+  // Criterion 4, mechanically: the only edge out of a chunk is `require()` of
+  // the entry, so no chunk can name or fetch another one and no cycle can
+  // exist. Everything a chunk uses comes off `__internals.shared` under its own
+  // name — and every key it asks for must really be there, which is what keeps
+  // a facility from being copied into the chunk instead of handed over.
+  const loaded = loadClient('throw');
+  const shared = loaded.module.__internals.shared;
+  for (const name of CHUNK_FILES) {
+    const code = chunkCode(readFileSync(join(here, '..', name), 'utf8'));
+    assert.equal(code.includes('require.async'), false, `${name}: a chunk never fetches another chunk`);
+    assert.equal(code.includes("require('react')"), false, `${name}: no second React instance`);
+    for (const other of CHUNK_FILES) {
+      if (other === name) continue;
+      assert.equal(code.includes(other), false, `${name}: must not name ${other}`);
+    }
+    // No copied data either: a second dictionary or token table would be a
+    // second value that can drift away from the page it renders in.
+    assert.equal(/const (zh|en|ERROR_TEXT|token) = \{/.test(code), false, `${name}: no copied copy table`);
+    const asked = [...code.matchAll(/^ {4}const ([A-Za-z0-9_$]+) = shared\.([A-Za-z0-9_$]+);$/gm)];
+    assert.ok(asked.length > 0, `${name}: takes its facilities from the shared surface`);
+    for (const [, local, key] of asked) {
+      assert.equal(local, key, `${name}: ${key} is taken under its own name`);
+      assert.ok(key in shared, `${name}: the entry exposes ${key} on __internals.shared`);
+    }
+  }
+  assert.equal(shared.h, loaded.runtime.React.createElement, 'one element factory for the whole bundle');
+  assert.ok(shared.token && typeof shared.token === 'object', 'and one theme token table');
+});
+
+test('client: without React.lazy every chunked tab renders its card, and nothing is fetched (g-046)', async () => {
+  // The same probe g-045 asserts for 「版本历史」, now for every boundary: an
+  // engine whose React predates `lazy`/`Suspense` must lose the tab's content,
+  // never the panel — and must not make a request it cannot use.
+  const page = makePage({ withoutReactLazy: true, responses: defaultResponses() });
+  const mine = await page.flush();
+  assert.equal(markerOf(mine, 'data-render-state'), 'ok');
+  for (const [tab, file] of TAB_CHUNKS) {
+    const tree = await openTab(page, tab);
+    assert.equal(oneBy(tree, 'data-region', 'tab-panel').props['data-tab-value'], tab);
+    assert.equal(oneBy(tree, 'data-region', 'chunk-failure').props['data-chunk'], file);
+    assert.equal(markerOf(tree, 'data-render-state'), 'ok');
+  }
+  assert.deepEqual(page.loaded.loadedChunkFiles, [], 'without a boundary nothing is fetched at all');
+  assert.equal(markerOf(page.draw(), 'data-build-loaded'), 'none');
+});
+
+test('client: each tab’s chunk reports a digest an independent read of its file confirms (g-046)', async () => {
+  // Criterion 6 at the chunk level: the third verification is the only one that
+  // can catch "the bytes this page ran are not the bytes the host serves", and
+  // it has to work for every chunk, not just the first one.
+  const page = makePage({
+    responses: defaultResponses({ [PATHS.ping]: pingResponse(chunkedBuildFixture()) }),
+  });
+  await page.flush();
+  assert.equal(markerOf(page.draw(), 'data-build-loaded'), 'none', 'nothing has run yet');
+  const fixture = chunkBuildFixture();
+  const seen = [];
+  for (const [tab, file] of TAB_CHUNKS) {
+    await openTab(page, tab);
+    seen.push(file);
+    // `loadedChunkStamps()` is insertion-ordered, so the attribute is exactly
+    // the chunks opened so far, in that order.
+    const expected = seen.map((name) => `${name}:${fixture.find((entry) => entry.name === name).hash}`).join(',');
+    const tree = page.draw();
+    assert.equal(markerOf(tree, 'data-build-loaded'), expected, `${file}: the page reports its own running bytes`);
+    assert.equal(markerOf(tree, 'data-build-match'), 'true', `${file}: and the manifest agrees`);
+  }
 });
 
 // #endregion

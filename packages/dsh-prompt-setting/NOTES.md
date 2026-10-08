@@ -6234,3 +6234,78 @@ CSS 语义上 1–3 合起来等价于"本 tab 的高度 ≤ 视口、内容只�
 - **F5 · 两条降级分支补测。** ① `require.async` 缺失（loader 没有 chunk 通道）；② `HAS_REACT_LAZY === false`
   （React 无 `lazy`/`Suspense`）。各一条：页面照常渲染、该 tab 渲染可读卡片、`data-build-loaded` 保持 `none`、
   且**不发请求**（没有通道就不该发）。
+
+---
+
+## 123. g-046 阶段二：其余三个 tab 的渲染器迁成按需 chunk（2026-10-08，基线 `355ad3f` 工作区）
+
+目标 g-046 阶段二：复用 g-045 已交付并验证的 chunk 机制，把展示层里**尚未进首屏**的大块继续外提。**不引入构建步骤、不新增运行时依赖、不改状态机结构。**
+
+### 一、切分：能拆的只有三个非默认 tab
+
+对 51 个统一签名 `(t, m, a)` 的渲染函数做了闭包测算（每一个是否在首屏 `renderSection` 的同步调用链上），结论是「按 tab 拆」只有三个候选：
+
+| 新 chunk | 装了什么 | 行数（含 shared 解构与 lazy 样板） |
+| --- | --- | --- |
+| `client.overview.js` | `renderOverviewPanel` / `renderSectionsView` / `renderFilters` / `sectionRow` / `renderFullView` | 577 |
+| `client.transfer.js` | `renderBackupTab` / `renderTransferPanel` / `importStatusLabel` | 264 |
+| `client.advanced.js` | `renderAdvancedTab` / `renderOverridesList` / `renderUpdateSetting` / `renderDownloadRegion` / `renderLayerReset` / `regionNoteKey` | 502 |
+
+留在主文件的骨架（首屏第一帧就会走到）：`renderSection`、`renderPluginVersion`+`renderStatusDetail`、`renderStatusLine`、
+`renderSession` 与作用域选择器一族（`scopeSection` / `scopeTreeElement` / `scopeGroupParts` / `pinnedSessionButton` / 两个 glyph / `scopeRowStyle` / `focusVisibleOf`，约 640 行）、
+`renderUpdateNotice` + `renderUpdateApplyStatus`、`renderConfirm` / `renderRegionDialog`，以及默认 tab 的 `renderMinePanel`。
+
+### 二、被否的方案（逐条给理由）
+
+- **「我的 Prompt」(mine，393 行) 不做 chunk。** 它是设置页的**默认 tab**：第一帧就要渲染。做成 chunk 只会在首屏代码前加一次网络往返，
+  并把一次失败取件变成「默认 tab 空白」。判据 2 的「打开设置页只请求主文件」正是这条。
+- **无状态层（常量 / `ERROR_TEXT` / zh+en / token / `Fx*` / 纯函数群，约 2900 行）留主文件。** 外提必须同时满足「首屏不因此多一次阻塞等待」与
+  「共享 chunk 失败可读降级」：而 factory 是**同步物化**的，主文件渲染第一帧就需要这些值，`require.async` 只能异步 ⇒ 条件①**结构上不可满足**；
+  条件②更糟——共享 chunk 失败会让**整页**既无文案表也无 token，而 tab chunk 失败只影响一个 tab（风险不对称）。
+- **确认弹窗与镜像对话框（`renderConfirm` + `renderRegionDialog` + 5 个 confirm 样式常量，约 284 行）不做 chunk。** 它们确实「交互后才出现」，
+  但那是**破坏性操作**（恢复默认 / 清空覆盖 / 立即更新）的确认面：为省 284 行把「点击 → 弹窗」变成一次异步取件不值得。
+- `renderLayerReset` 同时被「高级」使用，`renderFilters` 只服务总览视图，`importStatusLabel` / `regionNoteKey` 各只有一个消费者 ⇒ 各随其 tab 走，
+  于是三个新 chunk 之间**零依赖**：DAG 只有「主 → chunk」一个方向。
+
+### 三、共享设施：零副本，仍是同一实例
+
+新 chunk 需要的常量与纯函数（`LAYER_FILTERS` / `ORIGIN_FILTERS` / `OVERRIDABLE_FILTERS` / `MAX_VIEW_LINES` / `splitLines` / `highlightNodes` / `chunkDiff` /
+`diffSections` / `composeSections` / `editGate` / `sectionLayer` / `regionLabelKey` / `renderStatusDetail` / `renderUpdateApplyStatus` … 共 26 个名字）
+一律加进主 factory 的 `__internals.shared`（`CHUNK_FACILITIES`）后由 chunk 解构取用，**没有一份副本**。
+
+`test/client.test.mjs` 新增一条机械断言：chunk 的**代码行**里，凡 `const X = shared.X;` 都要求 `X` 真的挂在 `__internals.shared` 上，
+且不得出现 `require.async`、`require('react')` 或**任何另一个 chunk 的文件名**。三种改坏方式（漏挂键 / chunk→chunk 依赖 / 第二个 React）各自会红 —— 已做负向对照实测。
+
+### 四、验收
+
+- `cd packages/dsh-prompt-setting && node --test` ⇒ **736 pass / 0 fail / skipped 0**（基线 731；新增 5 条：首屏零请求 + 每个 tab 只取自己的 chunk、每个新 chunk 的失败降级、
+  无 `React.lazy` 时每个 chunked tab 的降级且不发请求、每个 chunk 的第三重校验（自报摘要 vs 独立读盘）、DAG 与零副本）；
+- 体积（实测）：`client.js` **9584 行 / 456680 B → 8575 行 / 411979 B**（净减 1009 行 / 44691 B）；
+  新增 `client.overview.js` 577 行 / 25186 B、`client.transfer.js` 264 行 / 11320 B、`client.advanced.js` 502 行 / 23237 B；
+  连同 g-045 的 `client.history.js`（1163 行 / 50497 B），四个 chunk 合计 2506 行 / 110240 B，整包 11081 行 / 522219 B
+  （比拆分前单文件 10747 行多 334 行：四份 chunk 的解构与 lazy 样板，换来的是三个新 tab 渲染器共 1160 行不再进首屏）；
+- `node scripts/client-chunks.mjs` ⇒ 4 项与磁盘一致；`--write` 后与仓库逐字零 diff；
+- `node scripts/prepare.mjs` ⇒ **21 项通过**（`FILES-GLOB: files: client.*.js（4 项）` 与 `CHUNK-STAMPS` 绿）；
+- `npm pack --dry-run --cache <可写目录>` ⇒ 四个 chunk 全部在包内；
+- 零新依赖（`dependencies: {}`）、零构建步骤（`test/host.test.mjs` 两条门禁绿）。
+
+### 五、为什么没到「5000-6000 行」（如实说明）
+
+阶段一给的期望是主文件降到 5000-6000 行。实测下限由**首屏同步闭包**决定，只到 8575 行：
+
+| 不可搬的部分 | 行数（约） | 为什么 |
+| --- | --- | --- |
+| `PromptSettingSection`（状态机） | 1900 | 唯一状态持有者，本目标明令不动 |
+| 无状态层（常量 / `ERROR_TEXT` / zh+en / token / `Fx*` / 纯函数） | 2900 | 首屏与所有 chunk 的共同依赖（见二） |
+| 首屏骨架渲染（会话选择器与作用域树 + 状态行/详情 + 版本 + 更新横幅 + 两个 overlay，不含 mine） | 1830 | `renderSection` 第一帧就会走到 |
+| 「我的 Prompt」面板 | 393 | 默认 tab |
+| chunk 边界机制本身（g-045 与本轮） | 450 | 加载、清单、指纹、降级卡 |
+
+⇒ 展示层里**能搬的都搬了**：可搬集合恰是三个非默认 tab 的渲染器（1160 行）。要再降只能动上面这五类，而每一类都被判据（状态机不动、首屏只请求主文件、零行为变化）或可靠性约束挡住。
+
+### 六、未验证项
+
+- **真机端到端未跑**（g-045 曾用临时 `DSH_HOME` + headless Chrome/CDP）：本轮「首屏只请求主文件、打开某 tab 才请求该 chunk」的证据来自 harness 的
+  `loadedChunkFiles` 序列与 `data-render-state` 断言，不是浏览器网络面板；
+- 三个新 chunk 的**真机失败降级**（阻断请求）未目视，只有 harness 的 `chunkFailures` 证据；
+- 「只改 chunk 不碰 `client.js` 时浏览器不换新」仍是未实测的开发期限制（g-045 已记录，本轮未变）。

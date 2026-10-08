@@ -3304,19 +3304,6 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Localized label for one import status.
-     * @param t - the bound translator.
-     * @param status - `added` | `replaced` | `unchanged` | `removed`.
-     * @returns the display string.
-     */
-    function importStatusLabel(t, status) {
-      if (status === 'added') return t('importStatusAdded');
-      if (status === 'replaced') return t('importStatusReplaced');
-      if (status === 'removed') return t('importStatusRemoved');
-      return t('importStatusUnchanged');
-    }
-
-    /**
      * The pre-localization rendering, kept as the fallback for a value no
      * `Date` can parse. Shape-preserving rather than invented: an unknown
      * string is shown as it arrived, minus the `T`/millisecond noise.
@@ -4933,707 +4920,6 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Filter tabs for the section view.
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @returns the filter block element.
-     */
-    function renderFilters(t, m, a) {
-      const group = (key, heading, values, selected, onPick) =>
-        h(
-          'div',
-          { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-          h('span', { style: metaStyle }, heading),
-          tabs(
-            values.map((value) => ({
-              value,
-              label: t(filterLabelKey(value)),
-              id: `ps-${key}-${value}`,
-              panelId: 'ps-panel',
-            })),
-            selected,
-            onPick,
-            heading,
-            key,
-          ),
-        );
-      return h(
-        'div',
-        { 'data-region': 'filters', style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-        h('span', { style: { ...metaStyle, fontWeight: 600 } }, t('filterHeading')),
-        group('layer', t('filterLayer'), LAYER_FILTERS, m.filters.layer, a.setLayerFilter),
-        group('overridable', t('filterOverridable'), OVERRIDABLE_FILTERS, m.filters.overridable, a.setOverridableFilter),
-        group('origin', t('filterOrigin'), ORIGIN_FILTERS, m.filters.origin, a.setOriginFilter),
-      );
-    }
-
-    /**
-     * One section row of the read-only overview.
-     *
-     * Since g-015 this row has **no write entry at all**: the Revision 6
-     * 「编辑」 switch, the row-scoped form it opened and the 新增一段 entry are
-     * gone (the only write surface left is 「我的 Prompt」, which writes the one
-     * name the Revision 7 contract accepts). What remains is what a reader
-     * needs: the identity of the segment, its origin/layer/overridable verdict,
-     * the action that produced the effective text, the reason an override did
-     * not take effect when the client can prove it, and a disclosure that shows
-     * the full text. `data-warning="edit-disabled"` — the gate that used to
-     * disable the edit button — is kept as a *statement* rather than a switch:
-     * the same {@link editGate} verdict, read-only.
-     *
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @param section - the `effective.sections` entry.
-     * @returns the row element.
-     */
-    function sectionRow(t, m, a, section) {
-      const origin = originOf(section);
-      const layer = sectionLayer(section);
-      const overridable = section.overridable === true;
-      const gate = editGate(section, m.fz, t);
-      const text = typeof section.text === 'string' ? section.text : '';
-      const expanded = m.expanded === section.name;
-      const cause = ineffectiveCause(t, section, m.incoming);
-      const showHint = origin === 'downstream-added' || origin === 'unmatched-override';
-      // What the effective text *is*, in the vocabulary the goal asked for:
-      // 已覆盖 / 已隐藏 / 追加, or nothing when the section is untouched. It is
-      // read off `section.action` — the action the assembly really applied —
-      // so a row cannot claim a state the override engine did not produce.
-      const statusKey =
-        section.action === 'replace' ? 'ovEffective' : section.action === 'hide' ? 'stHidden' : section.action === 'append' ? 'stAppended' : null;
-      return h(
-        'div',
-        {
-          'data-section-row': section.name,
-          'data-section-name': section.name,
-          'data-origin': origin,
-          'data-layer': layer,
-          'data-overridable': String(overridable),
-          'data-applied': String(section.applied === true),
-          'data-index': section.index === null || section.index === undefined ? '' : String(section.index),
-          style: {
-            border: `1px solid ${token.borderL1}`,
-            borderRadius: 8,
-            padding: '8px 10px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 6,
-          },
-        },
-        h(
-          'div',
-          { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-          h('code', { style: { fontSize: 12, color: token.labelPrimary } }, section.name),
-          h('span', { style: metaStyle }, `#${section.index === null || section.index === undefined ? '—' : section.index}`),
-          h(UI.Tag, { tone: originTone(origin) }, t(originKey(origin))),
-          h(UI.Tag, { tone: layer === 'default' ? 'neutral' : 'info' }, t(layerKey(layer))),
-          h(UI.Tag, { tone: overridable ? 'success' : 'warning' }, overridable ? t('fYes') : t('fNo')),
-          statusKey === null ? null : h(UI.Tag, { tone: 'info' }, t(statusKey)),
-          section.action ? h(UI.Tag, { tone: 'neutral' }, String(section.action)) : null,
-          h('span', { style: metaStyle }, fmt(t('colChars'), { n: text.length })),
-        ),
-        section.reason
-          ? h(
-              'div',
-              { 'data-section-reason': section.name, style: { fontSize: 12, color: token.stateWarn, wordBreak: 'break-word' } },
-              `${t('colReason')}: ${String(section.reason)}`,
-            )
-          : null,
-        showHint
-          ? h('div', { style: { fontSize: 12, color: token.labelTertiary } }, t(origin === 'downstream-added' ? 'originDownstreamHint' : 'originUnmatchedHint'))
-          : null,
-        cause === null
-          ? null
-          : h(
-              'div',
-              {
-                'data-section-ineffective': cause.code,
-                style: { fontSize: 12, color: token.stateWarn, wordBreak: 'break-word' },
-              },
-              `${t('ovReason')}: ${cause.text} ${t('ovFixHint')}`,
-            ),
-        // The gate is reported, not enforced: this list cannot write, so the
-        // honest thing to render is why a write here *would* not take effect.
-        gate.reasons.length === 0
-          ? null
-          : h(
-              'div',
-              {
-                'data-warning': 'edit-disabled',
-                style: { fontSize: 12, color: token.stateError, wordBreak: 'break-word' },
-              },
-              gate.reasons.join(' '),
-            ),
-        h(
-          'div',
-          { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-          h(
-            'button',
-            {
-              type: 'button',
-              'data-action': 'expand',
-              'data-section-name': section.name,
-              'aria-expanded': String(expanded),
-              onClick: () => a.toggleExpanded(section.name),
-              style: {
-                font: 'inherit',
-                fontSize: 12,
-                padding: '2px 8px',
-                borderRadius: 6,
-                cursor: 'pointer',
-                color: token.labelSecondary,
-                background: 'transparent',
-                border: `1px solid ${token.borderL2}`,
-              },
-            },
-            expanded ? t('collapse') : t('expand'),
-          ),
-        ),
-        expanded
-          ? h(
-              'pre',
-              {
-                'data-section-full': section.name,
-                style: {
-                  margin: 0,
-                  padding: '8px 10px',
-                  borderRadius: 8,
-                  border: `1px solid ${token.borderL2}`,
-                  fontSize: 12,
-                  lineHeight: '18px',
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
-                  maxHeight: 320,
-                  overflow: 'auto',
-                  color: token.labelSecondary,
-                  fontFamily: token.mono,
-                },
-              },
-              text,
-            )
-          : null,
-      );
-    }
-
-    /**
-     * The read-only segment list — the `sections` view of 「提示词总览」.
-     *
-     * Read-only by construction: there is no editor slot (the parameter is
-     * gone, so no caller could hand one in) and no 「新增一段」 entry. The two
-     * controls that remain are `copy` (the assembled text, which is what the
-     * overview tab promises) and the per-row `expand` disclosure.
-     *
-     * The reserved section itself is deliberately **not** listed here: it is
-     * what 「我的 Prompt」 owns, and showing the same text twice on one page is
-     * exactly the confusion the split exists to remove. A one-line note says so
-     * whenever the reserved section is actually in the assembly.
-     *
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @returns the view element.
-     */
-    function renderSectionsView(t, m, a) {
-      const all = m.effectiveSections;
-      const sections = all.filter((section) => section.name !== RESERVED_SECTION_NAME);
-      const shown = sections.filter((section) => m.passesFilters(section));
-      return h(
-        'div',
-        { 'data-region': 'sections', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
-        renderFilters(t, m, a),
-        h(
-          'div',
-          { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-          h(
-            'span',
-            {
-              'data-sections-total': String(sections.length),
-              'data-sections-shown': String(shown.length),
-              style: { ...metaStyle },
-            },
-            fmt(t('sectionsShown'), { shown: shown.length, total: sections.length }),
-          ),
-          h(UI.Button, { variant: 'outline', 'data-action': 'copy', onClick: a.copy }, t('copy')),
-        ),
-        h('p', { 'data-note': 'reserved-own-tab', style: { margin: 0, ...metaStyle } }, t('overviewReservedNote')),
-        sections.length === 0
-          ? h(
-              'div',
-              { 'data-empty': 'sections', style: cardStyle },
-              h('strong', { style: { fontSize: 13 } }, t('emptyTitle')),
-              h('p', { style: { margin: '4px 0 0', ...metaStyle } }, t('emptyBody')),
-            )
-          : null,
-        shown.map((section) => h('div', { key: section.name }, sectionRow(t, m, a, section))),
-      );
-    }
-
-    /**
-     * The full-text view: `rendered`, search highlight, unresolved warning,
-     * and the `base` ↔ `effective` comparison.
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @returns the view element.
-     */
-    function renderFullView(t, m, a) {
-      const snapshot = m.snap.data;
-      const sections = m.effectiveSections;
-      const baseSections = snapshot && snapshot.base && Array.isArray(snapshot.base.sections) ? snapshot.base.sections : [];
-      const resolved = snapshot ? snapshot.renderedResolved !== false : true;
-      const unresolved = snapshot && Array.isArray(snapshot.unresolvedVariables) ? snapshot.unresolvedVariables : [];
-      // The server grades an unresolved reference by what it does to the REAL
-      // assembly: one in a section that interpolates makes it throw, one in a
-      // section that does not reaches the model as literal braces. Only the
-      // throwing list is a fault, so only it is a warning. A payload that
-      // predates the grading carries neither list; then the single legacy list
-      // is read as the throwing one, which is the safe reading.
-      const graded = snapshot ? Array.isArray(snapshot.unresolvedThrowing) || Array.isArray(snapshot.unresolvedLiteral) : false;
-      const throwing = snapshot && Array.isArray(snapshot.unresolvedThrowing) ? snapshot.unresolvedThrowing : unresolved;
-      const literal = snapshot && Array.isArray(snapshot.unresolvedLiteral) ? snapshot.unresolvedLiteral : [];
-      const names = (list) => list.map((name) => String(name)).join(', ');
-      // Machine-readable attributes keep the original comma-separated shape.
-      const marks = (list) => list.map((name) => String(name)).join(',');
-      const text =
-        m.fullOrigin === 'all' ? String(snapshot && snapshot.rendered ? snapshot.rendered : '') : composeSections(sections, m.fullOrigin);
-      const lines = splitLines(text);
-      const truncated = lines.length > MAX_VIEW_LINES;
-      const shownText = (truncated ? lines.slice(0, MAX_VIEW_LINES) : lines).join('\n');
-      const hits = countMatches(shownText, m.search);
-      const diffRows = diffSections(baseSections, sections);
-      const changed = diffRows.filter((row) => row.status !== 'same').length;
-
-      return h(
-        'div',
-        { 'data-region': 'full', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
-        throwing.length > 0
-          ? h(
-              'div',
-              {
-                'data-warning': 'rendered-unresolved',
-                'data-unresolved-variables': marks(unresolved),
-                'data-unresolved-throwing': marks(throwing),
-                'data-unresolved-literal': marks(literal),
-                style: { ...cardStyle, borderColor: token.stateWarn },
-              },
-              h('strong', { style: { fontSize: 13, color: token.stateWarn } }, t('unresolvedTitle')),
-              h(
-                'div',
-                { style: { marginTop: 4, fontSize: 13, color: token.labelPrimary } },
-                fmt(t('unresolvedBody'), { list: names(throwing) }),
-              ),
-              h('p', { style: { margin: '4px 0 0', ...metaStyle } }, t('unresolvedNote')),
-              literal.length > 0
-                ? h(
-                    'p',
-                    { 'data-note': 'rendered-literal-inline', style: { margin: '4px 0 0', ...metaStyle } },
-                    fmt(t('unresolvedLiteralInline'), { list: names(literal) }),
-                  )
-                : null,
-            )
-          : graded && literal.length > 0
-            ? h(
-                'div',
-                {
-                  'data-note': 'rendered-literal',
-                  'data-unresolved-variables': marks(unresolved),
-                  'data-unresolved-literal': marks(literal),
-                  style: cardStyle,
-                },
-                h('strong', { style: { fontSize: 13, color: token.labelPrimary } }, t('unresolvedLiteralTitle')),
-                h(
-                  'div',
-                  { style: { marginTop: 4, fontSize: 13, color: token.labelPrimary } },
-                  fmt(t('unresolvedLiteralBody'), { list: names(literal) }),
-                ),
-                h('p', { style: { margin: '4px 0 0', ...metaStyle } }, t('unresolvedLiteralNote')),
-              )
-            : null,
-        h(
-          'div',
-          { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-          h('h3', { style: headingStyle }, t('fullHeading')),
-          h(UI.Button, { variant: 'outline', 'data-action': 'copy', onClick: a.copy }, t('copy')),
-          h(UI.Input, {
-            'data-role': 'search',
-            placeholder: t('searchPlaceholder'),
-            value: m.search,
-            onChange: a.setSearch,
-            style: { maxWidth: 280 },
-          }),
-          h('span', { 'data-search-count': String(hits), style: metaStyle }, hits > 0 ? fmt(t('searchCount'), { n: hits }) : t('searchNone')),
-        ),
-        h(
-          'div',
-          { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-          h('span', { style: metaStyle }, t('filterOrigin')),
-          tabs(
-            ORIGIN_FILTERS.map((value) => ({
-              value,
-              label: t(value === 'all' ? 'fAll' : originKey(value)),
-              id: `ps-full-${value}`,
-              panelId: 'ps-full-panel',
-            })),
-            m.fullOrigin,
-            a.setFullOrigin,
-            t('filterOrigin'),
-            'full-origin',
-          ),
-        ),
-        m.fullOrigin === 'all'
-          ? null
-          : h('p', { 'data-warning': 'full-filtered', style: { margin: 0, ...metaStyle } }, t('fullFiltered')),
-        truncated
-          ? h('p', { 'data-warning': 'truncated', style: { margin: 0, ...metaStyle } }, fmt(t('truncated'), { n: MAX_VIEW_LINES }))
-          : null,
-        h(
-          'pre',
-          {
-            'data-full-text': m.fullOrigin === 'all' ? 'rendered' : 'filtered',
-            'data-rendered-resolved': String(resolved),
-            style: {
-              margin: 0,
-              padding: '10px 12px',
-              borderRadius: 8,
-              border: `1px solid ${token.borderL2}`,
-              fontSize: 12,
-              lineHeight: '18px',
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-              maxHeight: 460,
-              overflow: 'auto',
-              color: token.labelSecondary,
-              fontFamily: token.mono,
-            },
-          },
-          highlightNodes(shownText, m.search),
-        ),
-        h('h3', { style: { ...headingStyle, marginTop: 4 } }, t('diffHeading')),
-        h('p', { style: { margin: 0, ...metaStyle } }, t('diffHint')),
-        h(
-          'div',
-          {
-            'data-region': 'diff',
-            'data-diff-changed': String(changed),
-            'data-diff-total': String(diffRows.length),
-            style: { display: 'flex', flexDirection: 'column', gap: 6 },
-          },
-          diffRows.map((row) => {
-            const pair = row.base && row.effective ? chunkDiff(row.base.text, row.effective.text) : null;
-            return h(
-              'div',
-              {
-                key: row.name,
-                'data-diff-row': row.name,
-                'data-diff-status': row.status,
-                style: {
-                  border: `1px solid ${row.status === 'same' ? token.borderL1 : token.stateWarn}`,
-                  borderRadius: 8,
-                  padding: '6px 10px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 4,
-                },
-              },
-              h(
-                'div',
-                { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-                h('code', { style: { fontSize: 12 } }, row.name),
-                h(UI.Tag, { tone: diffTone(row.status) }, t(diffKey(row.status))),
-                h('span', { style: metaStyle }, fmt(t('colChars'), { n: row.effective ? String(row.effective.text || '').length : 0 })),
-              ),
-              row.status === 'changed' && pair
-                ? h(
-                    'pre',
-                    {
-                      'data-diff-detail': row.name,
-                      style: {
-                        margin: 0,
-                        padding: '6px 8px',
-                        borderRadius: 6,
-                        fontSize: 12,
-                        lineHeight: '18px',
-                        whiteSpace: 'pre-wrap',
-                        wordBreak: 'break-word',
-                        maxHeight: 220,
-                        overflow: 'auto',
-                        fontFamily: token.mono,
-                      },
-                    },
-                    pair.base.length > 0
-                      ? h(
-                          'span',
-                          { 'data-diff-line': 'base', style: { background: token.diffDelFill, display: 'block' } },
-                          pair.base.join('\n'),
-                        )
-                      : null,
-                    pair.effective.length > 0
-                      ? h(
-                          'span',
-                          { 'data-diff-line': 'effective', style: { background: token.diffAddFill, display: 'block' } },
-                          pair.effective.join('\n'),
-                        )
-                      : null,
-                  )
-                : null,
-            );
-          }),
-        ),
-      );
-    }
-
-
-    /**
-     * The two layer-wide destructive controls of 「高级」, each with its impact
-     * stated before the click.
-     *
-     * They are deliberately side by side, because the difference between them
-     * is the whole point: `reset=true` clears the layer *including* 「我的
-     * Prompt」, while `legacy=true` clears only the frozen Revision 6/7
-     * overrides and **keeps** 「我的 Prompt」 (CONTRACT.md §12.2) — the way back
-     * from a frozen read-only layer without hand-editing a file. Neither may
-     * fire without its own second confirmation.
-     *
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @returns the panel element.
-     */
-    function renderLayerReset(t, m, a) {
-      const layer = m.advancedLayer;
-      const view = m.ovs.data ? m.ovs.data[layer] : null;
-      const list = view && Array.isArray(view.overrides) ? view.overrides : [];
-      const frozen = list.filter((entry) => entry && entry.name !== RESERVED_SECTION_NAME).length;
-      const reserved = list.length - frozen;
-      return h(
-        'div',
-        {
-          'data-region': 'layer-reset',
-          'data-reset-layer': layer,
-          'data-reset-count': String(list.length),
-          'data-reset-frozen-count': String(frozen),
-          'data-reset-reserved-count': String(reserved),
-          style: { border: `1px solid ${token.borderL1}`, borderRadius: 8, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 6 },
-        },
-        h('h4', { style: { margin: 0, fontSize: 13, fontWeight: 600 } }, t('resetLayersLabel')),
-        h(
-          'div',
-          { 'data-region': 'advanced-layer' },
-          tabs(
-            LAYERS.map((value) => ({
-              value,
-              label: layerLabel(t, value),
-              id: `ps-adv-${value}`,
-              panelId: 'ps-adv-panel',
-            })),
-            layer,
-            a.setAdvancedLayer,
-            t('histLayerLabel'),
-            'advanced-layer',
-          ),
-        ),
-        h('p', { style: { margin: 0, ...metaStyle } }, fmt(t('resetLayerBody'), { layer: layerLabel(t, layer), count: list.length })),
-        h(
-          'div',
-          { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
-          h(
-            UI.Button,
-            {
-              'data-action': 'legacy-clear',
-              'data-layer': layer,
-              disabled: m.busy,
-              onClick: () => a.requestLegacyClear(layer, frozen),
-            },
-            t('resetLegacyButton'),
-          ),
-          h(
-            UI.Button,
-            {
-              'data-action': 'reset-layer',
-              'data-layer': layer,
-              disabled: list.length === 0 || m.busy,
-              onClick: () => a.requestResetLayer(layer, list.length),
-            },
-            t(layer === 'workspace' ? 'resetLayerWorkspace' : 'resetLayerUser'),
-          ),
-        ),
-      );
-    }
-
-    /**
-     * Render the export / import panel.
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @returns the panel element.
-     */
-    function renderTransferPanel(t, m, a) {
-      const transfer = m.transfer;
-      const plan = transfer.plan;
-      const children = [
-        h('h3', { key: 'heading', style: headingStyle }, t('transferHeading')),
-        h('p', { key: 'note', style: { margin: 0, ...metaStyle } }, t('transferNote')),
-        h(
-          'div',
-          { key: 'export', style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-          h(UI.Button, { variant: 'primary', 'data-action': 'export', disabled: m.busy, onClick: a.exportNow }, t('exportButton')),
-          transfer.fileName
-            ? h('span', { 'data-export-name': transfer.fileName, style: metaStyle }, transfer.fileName)
-            : null,
-        ),
-        transfer.exportText
-          ? h(
-              'details',
-              { key: 'preview' },
-              h('summary', { style: metaStyle }, t('exportPreviewLabel')),
-              h(UI.Textarea, {
-                'data-role': 'export-text',
-                readOnly: true,
-                rows: 6,
-                value: transfer.exportText.slice(0, MAX_EXPORT_PREVIEW),
-              }),
-              transfer.exportText.length > MAX_EXPORT_PREVIEW
-                ? h('div', { style: metaStyle }, fmt(t('exportPreviewCut'), { n: MAX_EXPORT_PREVIEW }))
-                : null,
-            )
-          : null,
-        h('h4', { key: 'import-heading', style: { margin: '6px 0 0', fontSize: 13, fontWeight: 600 } }, t('importHeading')),
-        h('label', { key: 'mode-label', style: metaStyle }, t('importModeLabel')),
-        h(
-          'div',
-          { key: 'mode' },
-          tabs(
-            IMPORT_MODES.map((value) => ({
-              value,
-              label: t(value === 'merge' ? 'importModeMerge' : 'importModeReplace'),
-              id: `ps-import-${value}`,
-              panelId: 'ps-import-panel',
-            })),
-            m.importMode,
-            a.setImportMode,
-            t('importModeLabel'),
-            'import-mode',
-          ),
-        ),
-        h('label', { key: 'text-label', style: metaStyle }, t('importTextLabel')),
-        h(UI.Textarea, {
-          key: 'text',
-          'data-role': 'import-text',
-          rows: 8,
-          value: m.importText,
-          placeholder: t('importTextPlaceholder'),
-          onChange: a.setImportText,
-        }),
-        h('label', { key: 'file-label', style: metaStyle }, t('importFileLabel')),
-        h('input', {
-          key: 'file',
-          type: 'file',
-          accept: '.json,application/json',
-          'data-role': 'import-file',
-          onChange: a.pickImportFile,
-        }),
-        h(
-          'div',
-          { key: 'actions', style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
-          h(
-            UI.Button,
-            {
-              variant: 'primary',
-              'data-action': 'import-preview',
-              disabled: m.busy || String(m.importText).trim().length === 0,
-              onClick: a.previewImport,
-            },
-            transfer.phase === 'previewing' ? t('importPreviewing') : t('importPreviewButton'),
-          ),
-          h(
-            UI.Button,
-            {
-              'data-action': 'import-apply',
-              disabled: m.busy || plan === null,
-              onClick: a.requestImportApply,
-            },
-            transfer.phase === 'applying' ? t('importApplying') : t('importApplyButton'),
-          ),
-        ),
-      ];
-      if (transfer.error) {
-        children.push(h('div', { key: 'error' }, errorBanner(t, transfer.error, t('importHeading'))));
-        children.push(
-          h('p', { key: 'unchanged', 'data-import-unchanged': 'true', style: { margin: 0, ...metaStyle, color: token.stateSuccess } }, t('importUnchangedWarning')),
-        );
-      }
-      if (plan !== null && plan !== undefined) {
-        const changes = [];
-        const layers = plan.layers && typeof plan.layers === 'object' ? plan.layers : {};
-        for (const [layerName, entry] of Object.entries(layers)) {
-          const list = entry && Array.isArray(entry.changes) ? entry.changes : [];
-          for (const change of list) changes.push({ ...change, layer: layerName });
-        }
-        const totals = plan.totals || {};
-        children.push(
-          h(
-            'div',
-            {
-              key: 'plan',
-              'data-import-plan': 'true',
-              'data-import-added': String(totals.added === undefined ? 0 : totals.added),
-              'data-import-replaced': String(totals.replaced === undefined ? 0 : totals.replaced),
-              // `-count` keeps this apart from the standalone
-              // `data-import-unchanged="true"` flag on a failed import.
-              'data-import-unchanged-count': String(totals.unchanged === undefined ? 0 : totals.unchanged),
-              'data-import-removed': String(totals.removed === undefined ? 0 : totals.removed),
-              'data-import-kept': String(totals.kept === undefined ? 0 : totals.kept),
-              'data-import-changes': String(changes.length),
-              'data-import-applied': String(plan.applied === true),
-              style: { border: `1px solid ${token.borderL1}`, borderRadius: 8, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 },
-            },
-            h('strong', { style: { fontSize: 13 } }, t('importPlanHeading')),
-            h('div', { style: metaStyle }, fmt(t('importCounts'), {
-              added: totals.added === undefined ? 0 : totals.added,
-              replaced: totals.replaced === undefined ? 0 : totals.replaced,
-              unchanged: totals.unchanged === undefined ? 0 : totals.unchanged,
-              removed: totals.removed === undefined ? 0 : totals.removed,
-              kept: totals.kept === undefined ? 0 : totals.kept,
-            })),
-            changes.length === 0 ? h('div', { style: metaStyle }, t('importNoChanges')) : null,
-            changes.map((change) =>
-              h(
-                'div',
-                {
-                  key: `${change.layer}:${change.name}`,
-                  'data-import-change': change.name,
-                  'data-import-status': change.status,
-                  'data-import-layer': change.layer,
-                  style: { fontSize: 12, color: token.labelSecondary },
-                },
-                fmt(t('importChangeRow'), { name: change.name, status: importStatusLabel(t, change.status) }),
-              ),
-            ),
-            Array.isArray(plan.skipped) && plan.skipped.length > 0
-              ? h(
-                  'div',
-                  { 'data-import-skipped': String(plan.skipped.length), style: metaStyle },
-                  fmt(t('importSkipped'), { list: plan.skipped.map((entry) => `${entry.layer} (${entry.reason})`).join('; ') }),
-                )
-              : null,
-          ),
-        );
-      }
-      return h(
-        'div',
-        {
-          'data-region': 'transfer',
-          'data-transfer-phase': transfer.phase,
-          'data-import-mode': m.importMode,
-          style: { ...cardStyle, display: 'flex', flexDirection: 'column', gap: 6 },
-        },
-        children,
-      );
-    }
-
-    /**
      * The confirmation dialog's typography: four levels instead of one uniform
      * gap — the title, the lead sentence that names the action, the sentence
      * that explains it, and a structural "cannot be undone" strip. zh and en
@@ -5798,113 +5084,6 @@ window.__ModuleLoader__.load({
             h(UI.Button, { 'data-action': 'confirm-no', disabled: m.busy, onClick: a.cancelConfirm }, t('confirmNo')),
           ),
         ),
-      );
-    }
-
-    /**
-     * The read-only legacy override list of 「高级」.
-     *
-     * This is the Revision 6 list with its two write controls removed
-     * (`data-action="undo"` and `data-action="reset-section"`): since the
-     * write face narrowed to one name (§15.1), a *generic* per-name write is
-     * not something this page may offer, and a list that cannot act is exactly
-     * what the goal asked for here. What it keeps is the diagnosis — what is
-     * configured, in which layer, whether the assembly applied it, and why not
-     * when the client can prove the cause — because that is what a user needs
-     * to decide between the two layer-wide buttons below.
-     *
-     * `data-region="overrides"` and every per-row marker (`data-override-row`,
-     * `data-override-layer`, `data-override-action`, `data-override-applied`,
-     * `data-override-reason`, `data-overrides-total`) are unchanged.
-     *
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @returns the list element.
-     */
-    function renderOverridesList(t, m, a) {
-      const ovs = m.ovs.data;
-      const merged = ovs && ovs.merged && Array.isArray(ovs.merged.overrides) ? ovs.merged.overrides : [];
-      // `merged` says what is configured; `effective` says what it achieved. The
-      // difference is the whole point of this list: a saved override that never
-      // takes effect must be visible as such, with a reason.
-      const achieved = new Map();
-      for (const section of m.effectiveSections) achieved.set(section.name, section);
-      return h(
-        'div',
-        { 'data-region': 'overrides', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
-        h('h3', { style: headingStyle }, t('ovHeading')),
-        h('p', { style: { margin: 0, ...metaStyle } }, t('ovMergedNote')),
-        h(
-          'div',
-          { 'data-overrides-total': String(merged.length), style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-          merged.length === 0
-            ? h('div', { 'data-empty': 'overrides', style: cardStyle }, t('ovEmpty'))
-            : null,
-          merged.map((entry) => {
-            const target = achieved.get(entry.name);
-            const state = target === undefined ? 'unknown' : target.applied === true ? 'applied' : 'ineffective';
-            const hostReason = target && target.reason ? String(target.reason) : '';
-            const cause = ineffectiveCause(t, target, m.incoming);
-            const reasonText = cause === null ? hostReason : cause.text;
-            const isReserved = entry.name === RESERVED_SECTION_NAME;
-            return h(
-              'div',
-              {
-                key: `${entry.layer}:${entry.name}`,
-                'data-override-row': entry.name,
-                'data-override-layer': entry.layer,
-                'data-override-action': entry.action,
-                'data-override-applied': state === 'unknown' ? 'unknown' : String(state === 'applied'),
-                'data-override-reserved': String(isReserved),
-                style: {
-                  border: `1px solid ${state === 'ineffective' ? token.stateError : token.borderL1}`,
-                  borderRadius: 8,
-                  padding: '8px 10px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 4,
-                },
-              },
-              h(
-                'div',
-                { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-                h('code', { style: { fontSize: 12 } }, entry.name),
-                h(UI.Tag, { tone: 'info' }, String(entry.action)),
-                h(UI.Tag, { tone: 'neutral' }, t(entry.layer === 'workspace' ? 'ovWorkspace' : 'ovUser')),
-                h(
-                  UI.Tag,
-                  { tone: state === 'applied' ? 'success' : state === 'ineffective' ? 'danger' : 'outline' },
-                  t(state === 'applied' ? 'ovEffective' : state === 'ineffective' ? 'ovIneffective' : 'ovUnknown'),
-                ),
-                isReserved ? h(UI.Tag, { tone: 'info' }, t('advReservedTag')) : null,
-                typeof entry.text === 'string' && entry.text.length > 0
-                  ? h('span', { style: { ...metaStyle, flex: '1 1 200px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, entry.text.slice(0, 120))
-                  : null,
-              ),
-              state === 'ineffective'
-                ? h(
-                    'div',
-                    {
-                      'data-override-reason': entry.name,
-                      style: { fontSize: 12, color: token.stateError, wordBreak: 'break-word' },
-                    },
-                    `${t('ovReason')}: ${reasonText || t('ovIneffective')}`,
-                  )
-                : null,
-              state === 'ineffective' && cause !== null && hostReason.length > 0
-                ? h('div', { style: { ...metaStyle, wordBreak: 'break-word' } }, `${t('errDetail')}: ${hostReason}`)
-                : null,
-              state === 'ineffective'
-                ? h('div', { style: { ...metaStyle, wordBreak: 'break-word' } }, t('ovFixHint'))
-                : null,
-            );
-          }),
-        ),
-        // The generic per-name write is gone, so the escape hatch is stated
-        // instead of offered: 「我的 Prompt」 owns the reserved name, and the two
-        // layer-wide buttons below are the only writes this tab performs.
-        h('p', { 'data-note': 'overrides-read-only', style: { margin: 0, ...metaStyle } }, t('advReadOnlyNote')),
       );
     }
 
@@ -6306,47 +5485,6 @@ window.__ModuleLoader__.load({
       );
     }
 
-    /**
-     * 「提示词总览」 — the read-only assembly, in its two existing views.
-     *
-     * The inner `view` tabs (`data-region="view-tabs"`, group `view`) are kept
-     * from Revision 6 because both answers are still wanted and neither writes:
-     * `sections` is the segment list with its origin/layer/applied markers,
-     * `full` is the assembled text with search, highlight, the origin filter and
-     * the base ↔ effective comparison. What is gone is the editor slot and the
-     * write entries — this tab renders no `data-region="editor"` and no
-     * `edit` / `append-new` / `delete` action, by construction: the row builder
-     * no longer takes a form, and no caller builds one.
-     *
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @returns the panel element.
-     */
-    function renderOverviewPanel(t, m, a) {
-      return h(
-        'div',
-        { 'data-region': 'overview', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
-        h(
-          'div',
-          { 'data-region': 'view-tabs' },
-          tabs(
-            VIEWS.map((value) => ({
-              value,
-              label: t(value === 'sections' ? 'viewSections' : 'viewFull'),
-              id: `ps-view-${value}`,
-              panelId: 'ps-view-panel',
-            })),
-            m.view,
-            a.setView,
-            t('title'),
-            'view',
-          ),
-        ),
-        m.view === 'sections' ? renderSectionsView(t, m, a) : renderFullView(t, m, a),
-      );
-    }
-
     // #region chunk boundary (g-045)
     /**
      * Every chunk of this bundle, with the digest of the bytes this file was
@@ -6365,7 +5503,10 @@ window.__ModuleLoader__.load({
      * would be exactly the silently false「一致」the stamp exists to prevent.
      */
     const CHUNK_STAMPS = Object.freeze([
+      { name: 'client.advanced.js', hash: '523d25ee', size: 21505 },
       { name: 'client.history.js', hash: '2887cc6c', size: 48609 },
+      { name: 'client.overview.js', hash: 'f66cd1b0', size: 23533 },
+      { name: 'client.transfer.js', hash: 'c8af8793', size: 9759 },
     ]);
 
     /**
@@ -6408,6 +5549,36 @@ window.__ModuleLoader__.load({
       RESERVED_SECTION_NAME,
       VIEWS,
       fingerprintOf,
+      // g-046: what the tab chunks added to that surface. Same rule as above —
+      // these are this factory's own instances (one pure-function set, one
+      // constant table), never copies: a copy is a second value that can drift
+      // away from the page the chunk renders in.
+      LAYER_FILTERS,
+      OVERRIDABLE_FILTERS,
+      ORIGIN_FILTERS,
+      MAX_VIEW_LINES,
+      IMPORT_MODES,
+      MAX_EXPORT_PREVIEW,
+      DOWNLOAD_REGIONS,
+      LAYERS,
+      sectionLayer,
+      originOf,
+      originKey,
+      originTone,
+      filterLabelKey,
+      layerKey,
+      editGate,
+      ineffectiveCause,
+      splitLines,
+      countMatches,
+      highlightNodes,
+      chunkDiff,
+      diffSections,
+      composeSections,
+      errorText,
+      regionLabelKey,
+      renderStatusDetail,
+      renderUpdateApplyStatus,
     });
 
     /** Chunks this page has really loaded, by file name: `{hash, size}`. */
@@ -6664,23 +5835,89 @@ window.__ModuleLoader__.load({
         h(HistoryTabChunk, { t, m, a }),
       );
     }
-    // #endregion
-
 
     /**
-     * g-038: 「备份与恢复」 — the export/import surface, and nothing else.
+     * 「提示词总览」 / 「备份与恢复」 / 「高级」 as lazily loaded chunks (g-046).
+     *
+     * Same shape as {@link HistoryTabChunk}: each tab's renderer lives in its
+     * own flat sibling of this file and is fetched the first time that tab is
+     * rendered, so a page that opens one tab pays nothing for the other two.
+     *
+     * The **default** tab (「我的 Prompt」) is deliberately *not* a chunk, and
+     * that is a design decision rather than an omission: it is the tab the
+     * settings page opens on, so it is built on the very first render — a chunk
+     * there would turn first-screen code into a second round trip, and a failed
+     * fetch into a blank default tab. The other three are only ever reached by a
+     * click, which is exactly the case a lazy boundary is for.
+     */
+    const OverviewTabChunk = HAS_REACT_LAZY
+      ? React.lazy(() => chunkModule('client.overview.js', (chunkExports) => chunkExports && chunkExports.OverviewTab))
+      : null;
+    const TransferTabChunk = HAS_REACT_LAZY
+      ? React.lazy(() => chunkModule('client.transfer.js', (chunkExports) => chunkExports && chunkExports.TransferTab))
+      : null;
+    const AdvancedTabChunk = HAS_REACT_LAZY
+      ? React.lazy(() => chunkModule('client.advanced.js', (chunkExports) => chunkExports && chunkExports.AdvancedTab))
+      : null;
+
+    /**
+     * Mount one tab chunk behind a `Suspense` boundary.
+     *
+     * The fallback is a sized, marked placeholder rather than the tab's own
+     * frame: an empty panel would be indistinguishable from "this tab has
+     * nothing to show", and the reader would be told something false for as
+     * long as the fetch takes. A chunk that cannot be loaded at all renders the
+     * same readable card every other chunk failure renders, so one tab's 404
+     * never takes the page (or its other tabs) down with it.
+     * @param Component - the lazy component, or `null` without `React.lazy`.
+     * @param fileName - the chunk's file name.
+     * @param region - the tab's own region name (`overview`), which names the
+     *   placeholder's marker as `${region}-chunk-loading`.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the boundary element.
+     */
+    function renderChunkTab(Component, fileName, region, t, m, a) {
+      if (Component === null) {
+        const Unsupported = chunkFailureComponent(fileName, null);
+        return h(Unsupported, { t });
+      }
+      return h(
+        React.Suspense,
+        {
+          key: region,
+          fallback: h('div', {
+            'data-region': `${region}-chunk-loading`,
+            style: { minHeight: HISTORY_PANEL_MIN_HEIGHT },
+          }),
+        },
+        h(Component, { t, m, a }),
+      );
+    }
+
+    /**
+     * The three lazy tab boundaries, one thin wrapper each.
+     *
+     * They stay here rather than in `renderSection`'s dispatch so the whole
+     * chunk surface (which file, which export, which placeholder) is readable
+     * in one place — and so the dispatch itself keeps the shape it always had.
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
      * @returns the tab element.
      */
-    function renderBackupTab(t, m, a) {
-      return h(
-        'div',
-        { 'data-region': 'backup-tab', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
-        renderTransferPanel(t, m, a),
-      );
+    function renderOverviewChunk(t, m, a) {
+      return renderChunkTab(OverviewTabChunk, 'client.overview.js', 'overview', t, m, a);
     }
+    function renderBackupChunk(t, m, a) {
+      return renderChunkTab(TransferTabChunk, 'client.transfer.js', 'backup', t, m, a);
+    }
+    function renderAdvancedChunk(t, m, a) {
+      return renderChunkTab(AdvancedTabChunk, 'client.advanced.js', 'advanced', t, m, a);
+    }
+    // #endregion
+
 
     /**
      * g-030: the dismissible「有新版本」banner — and, since g-032, the place
@@ -6952,107 +6189,6 @@ window.__ModuleLoader__.load({
       return id === 'cn' ? 'updateRegionCn' : id === 'custom' ? 'updateRegionCustom' : 'updateRegionDefault';
     }
 
-    /** The one-line meaning of one region id (same fallback rule as the label). */
-    function regionNoteKey(id) {
-      return id === 'cn' ? 'updateRegionCnNote' : id === 'custom' ? 'updateRegionCustomNote' : 'updateRegionDefaultNote';
-    }
-
-    /**
-     * g-043:「下载区域」— the dropdown inside the「检查更新」card, plus the line
-     * that says where the current one happens to come from.
-     *
-     * Four facts drive what is on screen, and none of them is optimistic:
-     *   - the **selected** value is the Host's stored region, never the option the
-     *     user just clicked: a click sends the `PUT`, and only the answer moves the
-     *     control — so a refused write visibly leaves the old source in force;
-     *   - `detected` (the Host decided this by availability on the first visit)
-     *     renders as「已自动判定（该源能取到本包）」, because a default a page chose for the
-     *     user must not look like one the user chose;
-     *   - a stored `custom` address the Host cannot use renders its reason beside
-     *     the control, so「自定义」is never silently wrong;
-     *   - the note under it names what the selected source means, which is what
-     *     makes the three options comparable.
-     *
-     * The control is a plain native `select` element: it is a three-way choice
-     * over fixed ids, and a native one is keyboard- and screen-reader-correct in
-     * both renderer branches without a primitives dependency (no `Select` atom is
-     * asserted to exist).
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @param u - this card's update view state.
-     * @returns the region row element.
-     */
-    function renderDownloadRegion(t, m, a, u) {
-      const region = u.region ?? null;
-      const current = region !== null && DOWNLOAD_REGIONS.includes(region.region) ? region.region : 'default';
-      const saving = region !== null && region.phase === 'saving';
-      const detected = region !== null && region.detected === true;
-      // A saved `custom` address the Host cannot use is reported once, here — it
-      // is the only place the user can see that their mirror is not in force.
-      const unusable =
-        region !== null && region.error !== null && region.error !== undefined && typeof region.error.code === 'string'
-          ? region.error
-          : null;
-      return h(
-        'div',
-        {
-          key: 'download-region',
-          'data-region': 'download-region',
-          'data-download-region': current,
-          'data-download-region-detected': detected ? 'true' : 'false',
-          'data-download-region-stored': region !== null && region.stored === true ? 'true' : 'false',
-          style: { display: 'flex', flexDirection: 'column', gap: 4 },
-        },
-        h(
-          'div',
-          { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
-          h('span', { style: { fontSize: 13 } }, t('updateRegionLabel')),
-          h(
-            'select',
-            {
-              'data-action': 'update-region-select',
-              'aria-label': t('updateRegionSelectLabel'),
-              value: current,
-              disabled: m.busy || saving,
-              onChange: a.setDownloadRegion,
-              style: {
-                font: 'inherit',
-                fontSize: 13,
-                lineHeight: '20px',
-                padding: '6px 10px',
-                borderRadius: 8,
-                color: token.labelPrimary,
-                background: token.surface,
-                border: `1px solid ${token.borderL2}`,
-              },
-            },
-            ...DOWNLOAD_REGIONS.map((id) => h('option', { key: id, value: id }, t(regionLabelKey(id)))),
-          ),
-          saving ? h('span', { style: { ...metaStyle }, 'data-role': 'update-region-saving' }, t('updateRegionSaving')) : null,
-        ),
-        h('p', { style: { margin: 0, ...metaStyle }, 'data-role': 'update-region-note' }, t(regionNoteKey(current))),
-        detected
-          ? h(
-              'p',
-              { style: { margin: 0, ...metaStyle }, 'data-role': 'update-region-auto', 'data-update-region-auto': 'true' },
-              fmt(t('updateRegionAuto'), { region: t(regionLabelKey(current)) }),
-            )
-          : null,
-        unusable === null
-          ? null
-          : h(
-              'p',
-              {
-                style: { margin: 0, ...metaStyle, color: token.stateError },
-                'data-role': 'update-region-unusable',
-                'data-update-region-error': unusable.code,
-              },
-              fmt(t('updateRegionUnusable'), { reason: errorText(t, unusable) }),
-            ),
-      );
-    }
-
     /**
      * g-043: the「自定义」dialog — the address field, its red line, and the two
      * buttons.
@@ -7154,152 +6290,6 @@ window.__ModuleLoader__.load({
             ),
           ),
         ),
-      );
-    }
-
-    /**
-     * g-030: the「检查更新」switch, in 「高级」.
-     *
-     * The switch is the whole reason this feature is shippable: the goal is
-     * explicit that off means the plugin makes no outbound request at all,
-     * including when the page mounts, and that the control has to be real UI in
-     * 「高级」 rather than a config file a user must find. So the state shown is
-     * the **Host's** answer (`enabled` on the update-check payload), the mirror
-     * in `localStorage` only saves a round trip, and the button sends the
-     * negation — one click always produces the state the label promised.
-     *
-     * Nothing here is derived from the check's outcome; the line below it is
-     * rendered from the same payload that produced the banner, and is silent for
-     * every inconclusive answer.
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @returns the settings card element.
-     */
-    function renderUpdateSetting(t, m, a) {
-      const u =
-        m.update === null || m.update === undefined
-          ? { enabled: true, phase: 'idle', data: null, check: null }
-          : m.update;
-      const enabled = u.enabled !== false;
-      const saving = u.phase === 'saving';
-      // The two answers this card can explain are **different facts** and must
-      // not be confused (review finding, g-030):
-      //   - `check.hasUpdate === null` is a *successful* check that could not
-      //     decide — no release yet, no `tag_name`, an unparsable tag. Upstream
-      //     said something; it just was not a version. That is what the
-      //     「上游暂时没有可用的版本信息」 line is for;
-      //   - a failed check (`ok:false`, `phase === 'error'`) is *not* a fact about
-      //     upstream, so it gets no such sentence — and no red line either (the
-      //     page's zero-error rule). The last successful answer, if any, stays.
-      // A newer release shows its version; "up to date" says nothing.
-      const check = u.check ?? null;
-      const latest =
-        check !== null && check.hasUpdate === true && typeof check.latest === 'string' ? check.latest : null;
-      const undecided = check !== null && check.hasUpdate === null;
-      return h(
-        'div',
-        {
-          key: 'update-setting',
-          'data-region': 'update-setting',
-          'data-update-enabled': enabled ? 'true' : 'false',
-          style: { ...cardStyle, display: 'flex', flexDirection: 'column', gap: 6 },
-        },
-        h(
-          'div',
-          { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
-          h('span', { style: { fontSize: 13, fontWeight: 600 } }, t('updateSettingLabel')),
-          h(
-            UI.Button,
-            {
-              'data-action': 'update-toggle',
-              'aria-pressed': enabled ? 'true' : 'false',
-              disabled: m.busy || saving,
-              onClick: a.toggleUpdate,
-            },
-            saving ? t('updateSwitching') : t(enabled ? 'updateSettingOn' : 'updateSettingOff'),
-          ),
-          enabled
-            ? h(
-                UI.Button,
-                {
-                  'data-action': 'update-recheck',
-                  disabled: m.busy || saving,
-                  onClick: a.recheckUpdate,
-                },
-                t('updateRecheck'),
-              )
-            : null,
-        ),
-        h('p', { style: { margin: 0, ...metaStyle } }, t('updateSettingNote')),
-        renderDownloadRegion(t, m, a, u),
-        latest === null
-          ? null
-          : h(
-              'p',
-              { style: { margin: 0, ...metaStyle }, 'data-update-state': 'available', 'data-update-known': latest },
-              fmt(t('updateLatestKnown'), { latest }),
-            ),
-        undecided
-          ? h(
-              'p',
-              { style: { margin: 0, ...metaStyle }, 'data-update-state': 'unknown', 'data-update-unknown': 'true' },
-              t('updateUnknown'),
-            )
-          : null,
-        // g-032: the install's state and its controls live here as well as in
-        // the banner. Dismissing the banner must not lose the only place a
-        // running install can be cancelled or a failed one retried — **and
-        // neither may the update-check switch**: an install started while the
-        // switch was on can still be live after it is turned off, and hiding its
-        // row then would take away the only cancel button on the page. So a
-        // known install outranks both conditions; the switch and the
-        // "is there anything to install" line only gate the button that
-        // **starts** one.
-        (u.apply ?? null) === null && (latest === null || !enabled)
-          ? null
-          : h(
-              'div',
-              { 'data-region': 'update-apply', style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
-              (u.apply ?? null) === null
-                ? h(
-                    UI.Button,
-                    {
-                      variant: 'primary',
-                      'data-action': 'update-apply',
-                      disabled: m.busy,
-                      onClick: () => a.requestUpdateApply(latest),
-                    },
-                    t('updateApply'),
-                  )
-                : renderUpdateApplyStatus(t, m, a),
-            ),
-      );
-    }
-
-    /**
-     * 「高级」 — everything rare, everything destructive, everything about the
-     * page itself: the read-only legacy override list, the two layer-wide
-     * buttons (`legacy=true` and `reset=true`, each confirmed), and the full
-     * status block (mount / frozen / build stamp / renderer / primitives
-     * self-check) that the one-line summary at the top compresses away.
-     *
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @returns the panel element.
-     */
-    function renderAdvancedTab(t, m, a) {
-      return h(
-        'div',
-        { 'data-region': 'advanced', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
-        renderOverridesList(t, m, a),
-        renderLayerReset(t, m, a),
-        // g-030: the switch that decides whether this plugin may talk to GitHub
-        // at all. It sits above the status block because it is an *action*, and
-        // the status block is a read-out.
-        renderUpdateSetting(t, m, a),
-        renderStatusDetail(t, m),
       );
     }
 
@@ -7414,12 +6404,12 @@ window.__ModuleLoader__.load({
                 m.tab === 'mine'
                   ? renderMinePanel(t, m, a)
                   : m.tab === 'overview'
-                    ? renderOverviewPanel(t, m, a)
+                    ? renderOverviewChunk(t, m, a)
                     : m.tab === 'history'
                       ? renderHistoryChunk(t, m, a)
                       : m.tab === 'backup'
-                        ? renderBackupTab(t, m, a)
-                        : renderAdvancedTab(t, m, a),
+                        ? renderBackupChunk(t, m, a)
+                        : renderAdvancedChunk(t, m, a),
               )
             : null,
         ),
@@ -7901,7 +6891,8 @@ window.__ModuleLoader__.load({
         // Nothing here paints the main page: a newer release renders the banner,
         // a failure renders nothing anywhere, and every undecided upstream
         // answer (`hasUpdate:null`) is explained only inside 「高级」's card, by
-        // `renderUpdateSetting`.
+        // `renderUpdateSetting` — which since g-046 lives in that tab's chunk,
+        // `client.advanced.js`.
         if (readUpdatePref() === false) {
           // The g-032 install state is carried over, never reset by a check:
           // this effect also re-runs on `reload`, and losing a running install's
@@ -8690,7 +7681,7 @@ window.__ModuleLoader__.load({
        * cases it can be in: a **failed** check leaves the last successful answer
        * (or nothing) on screen, while a **successful** `hasUpdate:null` gets the
        * plain-language explanation that upstream had nothing to compare against
-       * (`renderUpdateSetting`).
+       * (`renderUpdateSetting`, in the 「高级」 chunk `client.advanced.js`).
        */
       const recheckUpdate = async () => {
         setUpdate((current) => ({ ...current, phase: 'checking' }));

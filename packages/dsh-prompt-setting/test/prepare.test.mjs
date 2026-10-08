@@ -492,11 +492,19 @@ test('prepare: a CHUNK_STAMPS manifest that drifted from the chunks fails the ga
     for (const dir of ['core', 'scripts']) {
       cpSync(join(packageRoot, dir), join(root, dir), { recursive: true });
     }
+    // The chunk set is discovered, never listed: a hand-written list would keep
+    // passing while a chunk the bundle really ships went missing from the copy
+    // (and the gate it is meant to exercise would be measuring a package that
+    // does not exist).
+    const chunkFiles = readdirSync(packageRoot).filter((name) =>
+      /^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$/.test(name),
+    );
+    assert.ok(chunkFiles.length >= 1, 'the split bundle ships at least one chunk');
     for (const file of [
       'package.json',
       'index.js',
       'client.js',
-      'client.history.js',
+      ...chunkFiles,
       'cordis.patch.yml',
       'CONTRACT.md',
       'README.md',

@@ -1887,9 +1887,44 @@ bytes live* and *when they arrive*:
   "edited a chunk, forgot `--write`" is the mistake this mechanism invites
   (`node scripts/client-chunks.mjs --write` repairs it).
 
-The one visible cost is the loading placeholder on a cold open of 「版本历史」;
+The one visible cost is the loading placeholder on a cold open of a chunked tab;
 the one development-time caveat is §14.5's chunk-rev binding, recorded in
 `NOTES.md` as well.
+
+**Revision 30 (g-046: the remaining three tabs are chunks too — internal
+structure only).** Revision 29 built the mechanism and moved one tab out; this
+revision uses it for the rest of the tab surface. Nothing above changes again:
+the same five tabs, the same order, the same markers, the same copy, the same
+interaction.
+
+- the entry now ships **four** flat siblings — `client.history.js`
+  (「版本历史」), `client.overview.js` (「提示词总览」), `client.transfer.js`
+  (「备份与恢复」) and `client.advanced.js` (「高级」) — each mounted through
+  `React.lazy` + `React.Suspense` behind a `require.async('./client.<name>.js')`;
+- **the first screen still fetches the entry alone.** 「我的 Prompt」 is the tab the
+  settings page opens on, so its renderer stays in `client.js` **by design**: a
+  chunk there would put a round trip in front of first-screen code and turn a
+  failed fetch into a blank default tab. The other four tabs — the three above,
+  plus history — are only ever reached by a click, which is exactly the case a
+  lazy boundary is for;
+- **while a chunk is in flight** the tab renders its own sized placeholder
+  (`data-region="<tab>-chunk-loading"`), and **if it cannot be loaded** the same
+  readable card as Revision 29 (`data-region="chunk-failure"`,
+  `data-chunk="client.<name>.js"`) replaces **that tab alone**: the page and the
+  other four tabs keep rendering, and `data-render-state` stays `ok`;
+- `__internals.shared` grew by what those renderers call (constants, style tables,
+  pure helpers). It is still **one instance per facility**: a chunk takes each name
+  off `__internals.shared` under its own name, and `test/client.test.mjs` asserts
+  both that every name it asks for is really exposed and that no chunk names or
+  fetches another one — the split stays a DAG;
+- the measured effect (see `NOTES.md` §123 for the migration record): `client.js`
+  **9584 → 8575 lines / 456680 → 411979 bytes**, with `client.overview.js` 577,
+  `client.transfer.js` 264 and `client.advanced.js` 502 lines now fetched on
+  demand. The entry is still the larger file, and that is by construction rather
+  than by leaving work undone: the state machine, the two dictionaries, the token
+  table and the pure helpers are one **synchronous** body, and the default tab is
+  first-screen code. `NOTES.md` §123 lists each block that stayed and the
+  criterion that keeps it there.
 
 ### 13.1 「我的 Prompt」 — the one write surface
 
@@ -2767,7 +2802,10 @@ live probe would read a normal rebuild as a defect.
     "size": 240949,
     "mtime": "2026-09-28T11:58:31.000Z",
     "chunks": [
-      { "name": "client.history.js", "hash": "2887cc6c", "size": 48609, "mtime": "2026-09-28T11:58:31.000Z" }
+      { "name": "client.advanced.js", "hash": "523d25ee", "size": 21505, "mtime": "2026-09-28T11:58:31.000Z" },
+      { "name": "client.history.js", "hash": "2887cc6c", "size": 48609, "mtime": "2026-09-28T11:58:31.000Z" },
+      { "name": "client.overview.js", "hash": "f66cd1b0", "size": 23533, "mtime": "2026-09-28T11:58:31.000Z" },
+      { "name": "client.transfer.js", "hash": "c8af8793", "size": 9759, "mtime": "2026-09-28T11:58:31.000Z" }
     ]
   },
   "launchKind": "cli"
