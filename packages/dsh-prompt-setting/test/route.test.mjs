@@ -397,10 +397,30 @@ test('host: GET /prompt-setting/ping reports the renderer and the live client bu
   const bytes = readFileSync(CLIENT_PATH, 'utf8');
   const oracle = independentBuildFingerprint(bytes);
   assert.notEqual(oracle, null, 'the published bundle carries a usable marker region');
+  // g-045: the main digest cannot see a chunk — those bytes are not in the main
+  // factory's `toString()` — so the same answer carries the host's digest for
+  // every chunk file it really serves. Independently recomputed here, in
+  // file-name order, because a manifest the host got wrong would be read by the
+  // page as a stale bundle.
+  const chunkFiles = readdirSync(PACKAGE_ROOT)
+    .filter((name) => /^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$/.test(name))
+    .sort();
+  assert.ok(chunkFiles.includes('client.history.js'), 'the 「版本历史」 chunk is part of the published set');
   assert.deepEqual(payload.clientBuild, {
     hash: oracle.hash,
     size: oracle.size,
     mtime: statSync(CLIENT_PATH).mtime.toISOString(),
+    chunks: chunkFiles.map((name) => {
+      const path = join(PACKAGE_ROOT, name);
+      const chunkOracle = independentBuildFingerprint(readFileSync(path, 'utf8'));
+      assert.notEqual(chunkOracle, null, `${name} carries a usable marker region`);
+      return {
+        name,
+        hash: chunkOracle.hash,
+        size: chunkOracle.size,
+        mtime: statSync(path).mtime.toISOString(),
+      };
+    }),
   });
   assert.match(payload.clientBuild.hash, /^[0-9a-f]{8}$/);
   // Two probes answer the same thing while the file is unchanged.

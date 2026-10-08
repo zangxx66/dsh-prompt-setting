@@ -1852,6 +1852,40 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   (`data-region="history"`, `"history-list"`) exist **only** in the `history`
   panel.
 
+**Revision 29 (the client half ships as an entry plus chunks — internal
+structure only).** Nothing above changes: the same five tabs, the same order, the
+same markers, the same interaction, the same copy. What changes is *where the
+bytes live* and *when they arrive*:
+
+- `client.js` is the entry (the `load({id, factory})` registration, the page's
+  state machine, the fingerprint) and one or more `client.*.js` **chunks** sit
+  beside it as flat siblings; the module loader serves them on demand
+  (`require.async('./client.history.js')`), so a tab that is never opened costs
+  nothing. The first one is 「版本历史」: its renderer moved into
+  `client.history.js`, mounted through `React.lazy` + `React.Suspense`;
+- the chunk is a **DAG edge, never a cycle**: the entry asks for the chunk
+  asynchronously, and the chunk asks the entry for the page's shared facilities
+  through `require('dsh-prompt-setting')` (one `React`, one `createElement`, one
+  token table — the chunk holds no copy);
+- **while the chunk is in flight** the tab renders a sized placeholder
+  (`data-region="history-chunk-loading"`) rather than an empty panel: "no history
+  recorded" and "not loaded yet" must not look the same;
+- **if the chunk cannot be loaded** (a 404, an entry missing from the published
+  `files`, an offline host) the tab renders a readable card
+  (`data-region="chunk-failure"`, `data-chunk="client.history.js"`,
+  `data-chunk-state="error"`, carrying the file name and the reason) instead of
+  throwing: a failed chunk is one tab's problem, and the rest of the page — the
+  other four tabs included — keeps rendering. `React.lazy` would otherwise
+  re-throw during render and take the whole settings subtree down;
+- **the stamp covers the chunks** (§14.3, §14.4), because the entry's own digest
+  cannot see them;
+- `data-build-loaded` (§14.3) is the machine-readable answer to "which chunks has
+  this tab really run".
+
+The one visible cost is the loading placeholder on a cold open of 「版本历史」;
+the one development-time caveat is §14.5's chunk-rev binding, recorded in
+`NOTES.md` as well.
+
 ### 13.1 「我的 Prompt」 — the one write surface
 
 - The panel is `data-region="mine"`, the layer control is
@@ -2595,8 +2629,9 @@ writes one down either.
   card (`data-renderer="none"`), the last two always `unknown` — so a probe reads
   one attribute instead of knowing which state is supposed to carry which marker;
 - the version (and the URL) come from the **same answer** as the build stamp
-  (`data-build`, `data-build-server`, `data-build-match`, §14.3): one ping, one
-  host boot, so the facts on screen can never describe two different hosts;
+  (`data-build`, `data-build-server`, `data-build-match`, §14.3; plus
+  `data-build-loaded`, Revision 29): one ping, one host boot, so the facts on
+  screen can never describe two different hosts;
 - **`unknown`** — the same asymmetry as the build stamp, for the same reason: a
   failed or unreachable ping, a body without `version`, a non-string value
   (`42`, `{}`, `null`), or a string that declares nothing (the empty string, or
@@ -2681,7 +2716,7 @@ makes the mount request nothing.
 
 ---
 
-## 14. Client build stamp (Revision 6)
+## 14. Client build stamp (Revision 6; the bundle ships chunks in Revision 29)
 
 ### 14.1 The problem this answers
 
@@ -2722,7 +2757,14 @@ live probe would read a normal rebuild as a defect.
   "time": "2026-09-28T12:00:00.000Z",
   "clientRenderer": "fallback",
   "clientReportedAt": "2026-09-28T12:00:00.000Z",
-  "clientBuild": { "hash": "7065b7d2", "size": 240949, "mtime": "2026-09-28T11:58:31.000Z" },
+  "clientBuild": {
+    "hash": "7065b7d2",
+    "size": 240949,
+    "mtime": "2026-09-28T11:58:31.000Z",
+    "chunks": [
+      { "name": "client.history.js", "hash": "2887cc6c", "size": 48609, "mtime": "2026-09-28T11:58:31.000Z" }
+    ]
+  },
   "launchKind": "cli"
 }
 ```
@@ -2737,6 +2779,16 @@ both.
 - `size` — the length of that region in **UTF-16 code units** (not bytes: see
   §14.4 for why the browser and the host can only agree on this length);
 - `mtime` — the file's modification time as an ISO 8601 string;
+- `chunks` — **Revision 29**: the host's digests for **every chunk file this
+  bundle serves**, in file-name order, each `{name, hash, size, mtime}` carrying
+  the same three fields with the same meaning as the entry's (the chunk's own
+  marker region, its code-unit length, its mtime). The set is exactly the flat
+  siblings of `client.js` whose name matches the module loader's own `client.*.js`
+  pattern (`core/store.js` `CLIENT_CHUNK_PATTERN`). A chunk whose markers are
+  unusable is **omitted** rather than reported with a fabricated digest, and an
+  unreadable directory answers `[]` — never a guess (§14.4). `[]` is also the
+  honest answer for a host that serves no chunk, and the page reads it as
+  "nothing beyond the entry to check";
 - `repositoryUrl` — **Revision 17**: this package's own repository, derived at
   import time from its `package.json` (`repositoryUrlOf`: `repository.url`, else a
   bare `repository` string, else `homepage` — each with its git decoration
@@ -2774,18 +2826,47 @@ result on the root container:
 
 | `data-build-match` | When | What the page renders |
 | --- | --- | --- |
-| `"true"` | both digests answered and are equal | tag「与宿主一致」 |
-| `"false"` | both digests answered and differ | tag「页面版本已过期」 + `data-warning="client-build-stale"` |
-| `"unknown"` | anything else | tag「构建戳未知」 + `data-warning="client-build-unknown"` |
+| `"true"` | both digests answered and are equal, **and** the chunk half agrees | tag「与宿主一致」 |
+| `"false"` | both digests answered and differ, **or** a chunk disagrees | tag「页面版本已过期」 + `data-warning="client-build-stale"` |
+| `"unknown"` | anything else — including an incomplete chunk comparison | tag「构建戳未知」 + `data-warning="client-build-unknown"` |
 
 - `data-build` — the page's **own** digest (or the string `unknown` when it could
   not compute one);
 - `data-build-server` — the host's digest as reported (or `unknown`);
-- `data-build-match` — the verdict above.
+- `data-build-match` — the verdict above;
+- `data-build-loaded` — **Revision 29**: the chunks this page has **really
+  loaded**, as `<name>:<hash>` pairs joined with `,`, or the string `none` before
+  the first one. Each hash is what that chunk computed from its own
+  `chunkFactory.toString()` (its own marker region, §14.4), so a probe can read
+  which parts of the split bundle have actually run in this tab without asking
+  the page to render a tab.
+
+**The chunk half of the verdict (Revision 29).** The entry digest alone cannot
+see a chunk, so the verdict compares three things, in this order:
+
+1. the entry's own digest against the host's (`data-build` vs `data-build-server`)
+   — a difference is `"false"`;
+2. the **manifest** written inside the entry's region
+   (`client.js` `CHUNK_STAMPS`, so it is part of `data-build`) against the host's
+   `clientBuild.chunks` — item by item, both ways. A digest that differs is
+   `"false"`; a chunk one side knows and the other does not is `"unknown"` (the
+   comparison is incomplete, and an incomplete comparison may never be rendered
+   as「一致」);
+3. the digest every chunk this page has **really loaded** reported of itself
+   against the host's list — a difference is `"false"`.
+
+A host that sends **no** `chunks` field at all (a pre-Revision-29 host) is met
+with the old answer: equality of the entry digests is「一致」, because there is
+nothing on either side to contradict it. Once this page has loaded a chunk,
+though, an answer that says nothing about that chunk is no longer enough — the
+verdict becomes「未知」, never「一致」. A `chunks` value that is present but is not
+a list of `{name, hash}` strings is refused **whole** and reads as「未知」: a
+half-read list could hide the one chunk that changed.
 
 `"unknown"` covers: an older host that does not send `clientBuild`; a host whose
 bundle is unreadable (`clientBuild: null`); a `client.js` whose markers were
-edited away; a failed or unreachable ping. **None of those may ever be rendered as
+edited away; a failed or unreachable ping; and — since Revision 29 — a chunk list
+the two sides do not share. **None of those may ever be rendered as
 「过期」**: the whole point is to stop chasing a bundle that is fine. The
 asymmetry is deliberate —「一致」 and「过期」 each require a real digest on both
 sides, so the only unsupported verdicts degrade to「未知」, and the page's own
@@ -2811,14 +2892,18 @@ the reader is told to reload rather than told a story about why.
 
 ### 14.4 The region, the normalization, and what this cannot claim
 
-`client.js` carries exactly one pair of marker comments, inside the factory body:
-`/* @build-fingerprint:begin */` and `/* @build-fingerprint:end */`. The region is
-the text **between** them and it must cover the factory's entire body — anything
-outside it could change without moving the digest, which would be a silently
-false「一致」. Both flags are test-asserted against the real file
-(`test/build.test.mjs`), as is the requirement that each marker occurs exactly
-once: two markers would make the region ambiguous, and an ambiguous region is
-refused (`null` ⇒「未知」) rather than resolved arbitrarily.
+**Every file in the bundle carries exactly one pair of marker comments, inside
+its own factory body:** `/* @build-fingerprint:begin */` and
+`/* @build-fingerprint:end */` — `client.js` and every `client.*.js` chunk it
+loads (Revision 29). The region is the text **between** them and it must cover
+*that* factory's entire body — anything outside it could change without moving
+that digest, which would be a silently false「一致」. Both flags are test-asserted
+against the real files (`test/build.test.mjs`), as is the requirement that each
+marker occurs exactly once **in its file**: two markers would make the region
+ambiguous, and an ambiguous region is refused (`null` ⇒「未知」) rather than
+resolved arbitrarily. (The entry file assembles the marker text from two string
+pieces for exactly this reason: a literal copy of the marker inside the region
+would be that second occurrence.)
 
 Before hashing, both sides apply the same normalization: drop one leading BOM,
 and fold `\r\n`/`\r` to `\n`. Without it, any hop that rewrites line endings
@@ -2846,9 +2931,9 @@ payload a real browser receives, byte for byte, so this stays an item in NOTES.m
 page would show「过期」: the visibly wrong direction — a rewrite can never be
 reported as「一致」 — but wrong all the same.
 
-**Accepted limitation, also stated rather than hidden:** the region is the factory
-*body* only. `begin` has to be the body's first statement and `end` its last, so
-everything that wraps the function — the file header comment, the
+**Accepted limitation, also stated rather than hidden: the region is one
+function's *body*.** `begin` has to be the body's first statement and `end` its
+last, so everything that wraps the function — the file header comment, the
 `window.__ModuleLoader__.load({` call, the `id:` line, the `factory:` line and the
 closing `};` / `},` / `});` — sits **outside** it. Editing only those lines
 therefore does not move the digest, and a tab running the older bytes would report
@@ -2857,6 +2942,40 @@ does not exist: the page's only access to its own bytes is `factory.toString()`,
 markers moved outside the function would simply not be seen by the self-check. The
 boundary is acceptable because what lives outside is comments and binding lines —
 the registration surface — whose edits are both rare and loud. See NOTES.md §81.5.
+
+**Revision 29: what covers the chunks.** A chunk's bytes are not in
+`promptSettingFactory.toString()`, so "the region is the whole implementation" is
+no longer true and cannot be made true — the page still has no way to read a file
+it has not run. The coverage is therefore explicit and threefold, and each layer
+has a negative control in `test/build.test.mjs` / `test/client.test.mjs`:
+
+1. **Each source file carries its own one ordered marker pair** — the entry, and
+   every `client.*.js` chunk, with the markers inside *that* factory's body. A
+   chunk's digest is computed by the host from the file and by the page from
+   `chunkFactory.toString()`, over the same region text, exactly as for the entry.
+   The uniqueness requirement is per file: two markers in one file are refused
+   (`null` ⇒「未知」) rather than resolved arbitrarily.
+2. **The entry's region carries the manifest** `CHUNK_STAMPS` — the file names
+   and digests the entry was written against. Because the manifest is inside the
+   region, it is part of `data-build`: adding, renaming, dropping or re-declaring
+   a chunk moves the *entry's* own digest, even before any comparison. The
+   manifest is kept true by `scripts/client-chunks.mjs` (a dev-time tool, not a
+   build step: it rewrites one array in `client.js`, and the published artifacts
+   are the same files that were edited) and is asserted against the bytes by
+   `test/build.test.mjs`.
+3. **The host reports every chunk it serves** (`clientBuild.chunks`, §14.2) and
+   the page compares that list with the manifest and with the digest each
+   *loaded* chunk reported of itself (§14.3).
+
+That is what makes the hard invariant hold after the split: **every source file
+that can change the running page moves a digest the comparison looks at.** The
+entry moving is the ordinary case; a chunk changing moves the host's per-chunk
+digest, which the manifest then contradicts; a manifest edited by hand moves the
+entry's digest. There is no path in which a file changes and the page still reads
+「一致」 — the worst case is「未知」(an incomplete comparison), which is the safe
+direction. What is *not* covered is still the wrapper text of each file (the
+header comment, the `load({` call, the closing braces): the boundary above applies
+per file, unchanged.
 
 ### 14.5 What this stamp is not: content fingerprint vs. DSH's served artifact
 
@@ -2888,6 +3007,28 @@ Consequences, stated rather than discovered later:
   surviving `false` as a DSH-side condition to investigate.
 - conversely, `true` says nothing about HMR health: it only says that at the moment
   of the probe the running bytes and the file agreed.
+
+**Revision 29: a chunk's URL is bound to the *entry's* rev.** The loader builds a
+chunk URL as `/plugins/<pkg>/<file>?rev=<the entry row's rev>`
+(`@deepseek-ai/dsh-client-modules` `chunkUrl`), and that rev is DSH's artifact
+revision of **`client.js`** alone — `framedHash("plugin-artifact",
+[mtimeMs, ctimeMs, size])` over the entry file's metadata. Two consequences, both
+stated rather than discovered in the field:
+
+- **Editing a chunk without touching `client.js` does not make an open tab fetch
+  the new chunk.** The served URL is byte-identical (same path, same rev) and the
+  response is `immutable`, so nothing re-fetches it. During development: touch
+  `client.js` — or restart the Host — after a chunk-only edit. In a release this
+  cannot happen, because a changed chunk always comes with a changed entry (the
+  manifest is inside the entry's region, §14.4).
+- **`clientBuild.chunks` is still read from disk on every ping**, so the *stamp*
+  does move on a chunk-only edit even when the tab cannot: the page then reads
+  「不一致」, which is the correct verdict — the running chunk really is not the
+  served one.
+
+This is a DSH-side mechanism, not something this plugin can change; it is recorded
+here and in `NOTES.md` so the next person to edit a chunk does not spend an
+afternoon on a cache that is behaving as documented.
 
 ## 15. The owned prompt section and the write lock (Revision 7; lastness added in Revision 8)
 

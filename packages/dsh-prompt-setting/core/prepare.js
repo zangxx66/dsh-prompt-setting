@@ -68,11 +68,34 @@ export function normalizeRelPath(value) {
 }
 
 /**
+ * npm's `files` globs, as a matcher.
+ *
+ * `*` matches within one path segment, `**` across segments, `?` a single
+ * character — the same subset {@link filesCoverPath} honors, kept in one place
+ * so "is this path covered?" and "does this pattern match anything?" can never
+ * disagree. A pattern with no wildcard is an exact-path test.
+ * @param pattern - the normalized `files` entry.
+ * @param relPath - the normalized path to test.
+ * @returns true when the pattern matches the whole path.
+ */
+export function globMatches(pattern, relPath) {
+  if (typeof pattern !== 'string' || pattern.length === 0 || typeof relPath !== 'string') return false;
+  if (!/[*?]/.test(pattern)) return pattern === relPath;
+  const rx = new RegExp(
+    `^${pattern
+      .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+      .replace(/\*\*|\*|\?/g, (token) => (token === '**' ? '.*' : token === '*' ? '[^/]*' : '[^/]'))}$`,
+  );
+  return rx.test(relPath);
+}
+
+/**
  * Does a `files` allowlist cover a path?
  *
  * A path ships when it *is* a listed entry or lives **under** a listed
  * directory; npm's own globs (`*`, `**`, `?`) are honored, since a package may
- * legitimately write `core/**` instead of `core`.
+ * legitimately write `core/**` instead of `core` or `client.*.js` instead of
+ * naming every chunk.
  * @param filesField - the manifest's `files` array.
  * @param relPath - the normalized path to test.
  * @returns true when the allowlist covers it.
@@ -85,13 +108,7 @@ export function filesCoverPath(filesField, relPath) {
     while (pattern.endsWith('/')) pattern = pattern.slice(0, -1);
     if (pattern.length === 0) continue;
     if (pattern === relPath || relPath.startsWith(`${pattern}/`)) return true;
-    if (!/[*?]/.test(pattern)) continue;
-    const rx = new RegExp(
-      `^${pattern
-        .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-        .replace(/\*\*|\*|\?/g, (token) => (token === '**' ? '.*' : token === '*' ? '[^/]*' : '[^/]'))}$`,
-    );
-    if (rx.test(relPath)) return true;
+    if (globMatches(pattern, relPath)) return true;
   }
   return false;
 }
@@ -269,6 +286,20 @@ export function inspectPackage({ pkg, readText, listDir, patchTexts = {} } = {})
     for (const entry of filesField) {
       const relPath = normalizeRelPath(entry);
       if (relPath.length === 0) continue;
+      // g-045: an entry may be a **pattern** (`client.*.js`), which is how a
+      // bundle that ships chunks keeps them all in the allowlist without naming
+      // each one — a new chunk must not need a manifest edit to ship. npm
+      // anchors these globs at the package root, and so does this check.
+      if (/[*?]/.test(relPath)) {
+        const root = list('.');
+        const matched = Array.isArray(root) ? root.filter((name) => globMatches(relPath, name)) : [];
+        if (matched.length > 0) {
+          add(PREPARE_OK, 'FILES-GLOB', `files: ${relPath}（${matched.length} 项：${matched.join(', ')}）`);
+        } else {
+          add(PREPARE_FAIL, 'FILES-MISSING', `files 里的模式 ${relPath} 没有匹配到任何文件`);
+        }
+        continue;
+      }
       const text = read(relPath);
       if (text !== null) {
         add(PREPARE_OK, 'FILES-FILE', `files: ${relPath}`);

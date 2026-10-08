@@ -6124,3 +6124,70 @@ CSS 语义上 1–3 合起来等价于"本 tab 的高度 ≤ 视口、内容只�
 - `npm publish` / `git tag` / `git push` 未做（人工 gate）；提交由主管统一收口，本轮不 commit；
 - README 徽章的 shields.io 在线渲染未目视（离线），只核对了源文本；
 - 只改了表示「本包当前版本」的字面量，无任何产品逻辑改动 ⇒ 无行为回归面。
+
+---
+
+## 122. g-045 阶段一：`client.js` 拆出包内 chunk（「版本历史」按需加载），构建戳覆盖到 chunk（2026-10-08，基线 `e54d1d5` 工作区）
+
+目标 g-045 阶段一：把 10249 行的单文件客户端拆成「主入口 + 包内 chunk」，**不引入构建步骤、不新增运行时依赖**，先打通机制并迁一个重块作样板。阶段二（无状态层与其余 51 个渲染函数）不在此列。
+
+### 一、形态：DSH 原生 chunk，不是自写拼接构建
+
+调研（`card-3812ad36`）确认 DSH 客户端模块系统原生支持「单入口 + 包内 chunk」，且官方已有两个先例
+（`dsh-client-ui-sidebar-terminal` 的 `lib/client.js` + `lib/client.terminal.js`、
+`sidebar-documentpreview` 的 `client.excel.js` / `client.pdf.js`）。落地要点：
+
+- chunk 文件名必须匹配 `^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$`（**不含 `/`**），且必须**平铺**在 `client.js` 同目录；
+- 主入口用 `require.async('./client.history.js')` + `React.lazy` 按需取；
+- chunk 自己 `window.__ModuleLoader__.load({ id: 'dsh-prompt-setting', chunk: 'client.history.js', factory })`；
+- **方向必须是 DAG**：主 → chunk 走 `require.async`（异步），chunk → 主走 `require('dsh-prompt-setting')`（此时主 factory 已物化）。循环依赖在 loader 里是**致命错误**（`require cycle … cannot deliver partial exports`），不是警告。
+
+`package.json` 的 `files` 因此改为通配 `client.*.js`（对齐官方 `lib/client.*.js` 写法）：新增 chunk 不需要改 manifest。
+`core/prepare.js` 的 `files` 自检原先只认字面路径与目录，本轮补上**模式条目**分支（`FILES-GLOB`：按包根匹配，匹配不到即 FAIL）——
+否则一个正确的通配写法会被发布门禁判成「文件不存在」，把好包挡在门外。
+
+### 二、指纹：主 factory 摘要 + chunk 清单 + 每 chunk 实测摘要
+
+**问题**：`factory.toString()` 看不到 chunk 的字节，拆分后「改了 chunk 而戳不变」＝静默假「一致」。这是本次最关键的隐性破坏面。
+
+落地（三层，全部有负向对照测试）：
+
+1. **每个源文件自带一对 marker**（主文件与每个 chunk 各一对，位于各自 factory 体内）。host 对文件求 region 摘要，页面侧对
+   `chunkFactory.toString()` 求同一段 region —— 与主文件完全同构，因此单个 chunk 的摘要口径天然一致；
+2. **主文件 region 内嵌清单 `CHUNK_STAMPS`**（`{name, hash, size}`）。它在 region 内 ⇒ 属于主戳：新增/改名/删除/手工改清单都会移动**主**摘要；
+3. **host 在 ping 里报 `clientBuild.chunks`**（主机对每个 chunk 文件求的 region 摘要），页面逐项比对清单，并把**自己真正加载过的** chunk 自报摘要
+   （chunk factory 里的 `SELF_BUILD`，经 exports 回传给主入口）一并比对。
+
+三态语义保持 `data-build-match` 的 `true` / `false` / `unknown`，新增 `data-build-loaded`（已加载 chunk 的 `name:hash` 列表）：
+主摘要不一致、任一 chunk 摘要不一致 ⇒ `false`；**两边 chunk 清单对不上（覆盖不全）或列表格式非法 ⇒ `unknown`，绝不显示「一致」**；旧 host 不带 `chunks` 字段时保持拆分前的答案（不加载 chunk 时按主摘要判，已加载过 chunk 后变 `unknown`）。
+清单与磁盘的一致性由 `test/build.test.mjs` 断言兜底，`scripts/client-chunks.mjs`（`--write` 就地重写清单，无参数则校验）是唯一的修复入口 —— 它是开发期工具而非构建步骤：chunk 与主文件本身就是发布物。
+
+### 三、开发期限制（务必记住）
+
+**chunk 的 URL 用的是 owner（`client.js`）的 rev**，而该 rev 由 `client.js` 的 mtime/ctime/size 推导
+（`dsh-client-modules` 的 `artifactRevision` + `chunkUrl`）⇒ **只改 chunk、不碰 `client.js` 时，浏览器不会换新 chunk**（同一 URL + immutable 响应）。
+开发期请连带 `touch client.js` 或重启宿主；发布期不会发生（改 chunk 必然意味着清单也要改，而清单在主文件 region 内）。
+另：本机 `~/.npm/_cacache` 有 root-owned 文件，`npm pack` 需 `--cache <可写目录>`（同 §121 环境注记）。
+
+### 四、harness 与断言
+
+`test/client.test.mjs` 的 `load` stub 原先只保留最后一次注册、require stub 对未知名字直接抛错 —— 拆分后这两处不改就是**全部测试挂**。本轮改为：
+收集多次注册（按 `<id>/<chunk>` 索引）、`require.async` 从磁盘读 chunk 并在**同一 sandbox** `vm.runInContext` 后返回其 exports、
+`require('dsh-prompt-setting')` 解析到主模块 exports、`React.lazy` / `Suspense` 双实现（同步 thenable，使既有同步 `expandTree` 断言全部保持原样）；
+文本级断言（版本字面量 / `github.com` / 无 JSX）扩到全部 chunk。`test/build.test.mjs` 的 region 断言按新语义重述：
+不再宣称「region 覆盖整个 factory body / size > 100000」，改为「region 覆盖主 factory 首尾 + 清单在内」，保留「两个标记各恰好一次、有序」不变式，并新增 chunk marker、清单一致性、单字符改动的负向对照。
+
+### 五、验收
+
+- `cd packages/dsh-prompt-setting && node --test` ⇒ **724 pass / 0 fail / skipped 0**（基线 710，新增 14 条：chunk 机制/失败路径/指纹 chunk 维度/清单与发布面）；
+- 体积：`client.js` 10249 行 / 484930 B → 主文件行数与字节数见本轮 results 与 `wc -l`；`client.history.js` 承载原「版本历史」一族；
+- `npm pack --dry-run --cache /tmp/...` ⇒ chunk 在包内（`client.history.js`），`scripts/client-chunks.mjs` 随包发布；
+- `node scripts/prepare.mjs` ⇒ **20 项通过**（含 `FILES-GLOB: files: client.*.js（1 项：client.history.js）`）；
+- 零新依赖（`dependencies: {}`）、零构建步骤（`test/host.test.mjs` 两条门禁继续绿）。
+
+### 六、未验证项
+
+- **真机浏览器未跑**：本轮只证明离线 harness 与 host 侧语义；chunk 的真实 `require.async` 网络路径、`React.lazy` 在真实 React 下的
+  Suspense 时序、以及「只改 chunk 不换新」的端到端现象均由代码路径推出（§三 已如实标注为限制）；
+- 失败卡片的真实观感（`data-region="chunk-failure"` 的排版）只有树级断言，无截图核验；
+- 阶段二的其余重块（总览/作用域树/传输/mine、无状态层）未迁，属另一个目标。

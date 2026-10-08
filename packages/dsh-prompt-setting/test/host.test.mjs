@@ -172,6 +172,10 @@ test('manifest: bundle, client and publish contract', () => {
     'index.js',
     'core',
     'client.js',
+    // g-045: the bundle is the entry plus its chunks. The pattern (not a list of
+    // file names) is what lets a new chunk ship without a manifest edit — and a
+    // chunk the allowlist misses is a 404 in the browser (NOTES.md §122).
+    'client.*.js',
     'cordis.patch.yml',
     'CONTRACT.md',
     'README.md',

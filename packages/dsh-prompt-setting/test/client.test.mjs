@@ -10,7 +10,7 @@
  * Run: `node --test test/`
  */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import test, { afterEach } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -150,6 +150,33 @@ function makeHooksRuntime(options = {}) {
     },
     useId: () => 'test-id',
     Fragment: Symbol('Fragment'),
+    // g-045: the lazy chunk boundary. `load()` is called on first expansion,
+    // exactly as React calls it on first render; the loader double below
+    // resolves synchronously, so one expansion is enough to get the real panel —
+    // and a chunk that cannot be loaded hands back the page's own readable
+    // failure component, which is what the boundary must render instead of a
+    // blank tab.
+    Suspense: SUSPENSE_TYPE,
+    lazy(load) {
+      const holder = { component: null, started: false };
+      return {
+        $$typeof: LAZY_TYPE,
+        _resolveNode(props) {
+          if (!holder.started) {
+            holder.started = true;
+            try {
+              load().then((moduleObject) => {
+                holder.component =
+                  moduleObject && typeof moduleObject.default === 'function' ? moduleObject.default : null;
+              });
+            } catch {
+              holder.component = null;
+            }
+          }
+          return typeof holder.component === 'function' ? holder.component(props) : null;
+        },
+      };
+    },
   };
   return {
     React,
@@ -166,17 +193,33 @@ function makeHooksRuntime(options = {}) {
 }
 
 /**
+ * The two element types the lazy chunk boundary produces (g-045).
+ *
+ * 「版本历史」 is mounted through `React.lazy` inside `React.Suspense`, and this
+ * harness expands the tree by hand instead of scheduling a real render, so it
+ * has to recognise both. They are module-level markers rather than locals of the
+ * hooks double because {@link expandTree} — which walks the tree — needs them.
+ */
+const LAZY_TYPE = Symbol('react.lazy');
+const SUSPENSE_TYPE = Symbol('react.suspense');
+
+/**
  * Expand function components into host nodes.
  *
  * The hooks runtime above calls one component directly; the page's atoms are
  * plain functions, so rendering them here is what lets a test click the real
- * `<button>` the fallback branch produced.
+ * `<button>` the fallback branch produced. Since g-045 a tab panel may also be a
+ * **lazy chunk**: the loader double resolves `require.async` synchronously, so
+ * the boundary collapses on first expansion instead of suspending.
  * @param node - an element, an array of children, or a leaf.
  * @returns the expanded tree.
  */
 function expandTree(node) {
   if (node === null || node === undefined || typeof node !== 'object') return node;
   if (Array.isArray(node)) return node.map(expandTree);
+  if (node.type !== null && typeof node.type === 'object' && node.type.$$typeof === LAZY_TYPE) {
+    return expandTree(node.type._resolveNode(node.props));
+  }
   if (typeof node.type === 'symbol') return expandTree(node.props ? node.props.children : null);
   if (typeof node.type === 'function') return expandTree(node.type(node.props));
   return { ...node, props: { ...node.props, children: expandTree(node.props.children) } };
@@ -201,13 +244,28 @@ afterEach(() => {
 });
 
 function loadClient(primitives, options = {}) {
-  let descriptor = null;
+  /**
+   * Every registration this sandbox saw, in order (g-045: the main bundle plus
+   * one entry per chunk — a bundle may `load()` more than once, and the loader
+   * keys chunks by `<id>/<file>`).
+   */
+  const registrations = [];
+  const factoryEntries = new Map();
+  /** Module-table id → exports, the way the real loader memoizes a factory. */
+  const moduleTable = new Map();
+  /** Chunk file name → its materialized exports (each chunk registers once). */
+  const chunkModules = new Map();
+  /** Every chunk file this page asked for, in request order. */
+  const loadedChunkFiles = [];
+  /** Chunk file names a case wants to answer with a rejection (g-045). */
+  const chunkFailures = new Set(options.chunkFailures || []);
   const runtime = makeHooksRuntime(options);
   const sandbox = {
     window: {
       __ModuleLoader__: {
         load(entry) {
-          descriptor = entry;
+          registrations.push(entry);
+          factoryEntries.set(entry.chunk === undefined ? entry.id : `${entry.id}/${entry.chunk}`, entry);
         },
       },
     },
@@ -241,6 +299,7 @@ function loadClient(primitives, options = {}) {
   };
   vm.createContext(sandbox);
   vm.runInContext(clientSource, sandbox, { filename: 'client.js' });
+  const descriptor = registrations.find((entry) => entry.chunk === undefined);
   assert.ok(descriptor, 'client.js must register a lazy factory');
   // The primitives double keeps the atoms' *props* reachable (so a real button
   // can be clicked and a real `DiffBlock` call inspected) while rendering
@@ -286,20 +345,73 @@ function loadClient(primitives, options = {}) {
             IconTriangleRightFillRegular: () => null,
           }
         : null;
-  const module = descriptor.factory((name) => {
+  /**
+   * The loader's `require.async('./client.x.js')`, doubled (g-045).
+   *
+   * It does what the real one does, minus the network: reads the chunk from
+   * disk, executes it **in this same sandbox** (so it registers itself and
+   * builds its elements on the page's one `React` double) and answers with its
+   * exports. The answer is a *synchronous* thenable because this harness expands
+   * trees by hand; the page's own loading code is unchanged, and a rejection
+   * still reaches it (see `chunkFailures`).
+   * @param spec - the relative spec the page asked for (`./client.history.js`).
+   * @returns a thenable resolving to the chunk's exports.
+   */
+  const requireAsync = (spec) => {
+    const fileName = String(spec).replace(/^\.\//, '');
+    loadedChunkFiles.push(fileName);
+    if (chunkFailures.has(fileName)) {
+      const failure = new Error(`chunk unavailable: ${fileName}`);
+      return {
+        then: (onLoaded, onFailed) => (typeof onFailed === 'function' ? onFailed(failure) : undefined),
+      };
+    }
+    if (!chunkModules.has(fileName)) {
+      let source;
+      try {
+        source = readFileSync(join(here, '..', fileName), 'utf8');
+      } catch (error) {
+        return {
+          then: (onLoaded, onFailed) => (typeof onFailed === 'function' ? onFailed(error) : undefined),
+        };
+      }
+      // g-045: a case can hand in the bytes the browser would have received
+      // *differently* from the ones on disk — the one way to prove the page
+      // compares what it really ran against what the host serves.
+      if (typeof options.chunkSourceEdit === 'function') source = options.chunkSourceEdit(fileName, source);
+      vm.runInContext(source, sandbox, { filename: fileName });
+      const entry = factoryEntries.get(`${packageJson.name}/${fileName}`);
+      assert.ok(entry, `${fileName} must register itself as a chunk of ${packageJson.name}`);
+      chunkModules.set(fileName, entry.factory(requireFn));
+    }
+    const chunkExports = chunkModules.get(fileName);
+    return { then: (onLoaded) => onLoaded(chunkExports) };
+  };
+  const requireFn = (name) => {
     if (name === 'react') return runtime.React;
     if (name === '@deepseek-ai/dsh-client-ui-primitives') {
       if (primitives === 'throw') throw new Error("Cannot find module '@deepseek-ai/dsh-client-ui-primitives'");
       return primitivesModule;
     }
+    // g-045: a chunk's one way back into the main bundle. The real loader
+    // resolves the package id out of its module table, where the main factory
+    // has already been materialized — hence "no cycle, ever".
+    if (name === packageJson.name || name === `${packageJson.name}/client.js`) {
+      return moduleTable.get(packageJson.name);
+    }
     throw new Error(`unexpected require: ${name}`);
-  });
+  };
+  requireFn.async = requireAsync;
+  const module = descriptor.factory(requireFn);
+  moduleTable.set(packageJson.name, module);
   return {
     descriptor,
     module,
     sandbox,
     runtime,
     diffBlockCalls,
+    registrations,
+    loadedChunkFiles,
     /** Stop every timer this page's sandbox still holds. */
     stopTimers: () => {
       for (const id of pendingTimers) {
@@ -1492,6 +1604,213 @@ test('client: no clientBuild, or a failed ping, is "unknown" and never "stale"',
   assert.equal(markerOf(olderTree, 'data-build'), independentBuildFingerprint(clientSource).hash);
   assert.equal(markerOf(failedTree, 'data-build'), independentBuildFingerprint(clientSource).hash);
 });
+
+// #region g-045: the split bundle — chunks, and what the stamp covers now
+
+/** The chunk files this package ships, in file-name order. */
+const CHUNK_FILES = readdirSync(join(here, '..'))
+  .filter((name) => /^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$/.test(name))
+  .sort();
+
+/**
+ * The host's chunk digests, recomputed here from disk.
+ *
+ * Deliberately independent of `core/store.js`: these cases assert what the page
+ * does with the host's answer, so the answer is built by the test.
+ * @returns `[{name, hash, size, mtime}]`, in file-name order.
+ */
+function chunkBuildFixture() {
+  return CHUNK_FILES.map((name) => {
+    const oracle = independentBuildFingerprint(readFileSync(join(here, '..', name), 'utf8'));
+    return { name, hash: oracle.hash, size: oracle.size, mtime: '2024-01-01T00:00:00.000Z' };
+  });
+}
+
+/** A `clientBuild` body that carries the chunk list, as a post-g-045 host sends it. */
+function chunkedBuildFixture() {
+  const oracle = independentBuildFingerprint(clientSource);
+  return { ...buildFixture(oracle.hash, oracle.size), chunks: chunkBuildFixture() };
+}
+
+test('client: the bundle registers its entry plus one entry per chunk, flat and loader-legal', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  await openHistory(page);
+  const entries = page.loaded.registrations.filter((entry) => entry.chunk === undefined);
+  const chunks = page.loaded.registrations.filter((entry) => entry.chunk !== undefined);
+  assert.deepEqual(entries.map((entry) => entry.id), [packageJson.name], 'exactly one entry registration');
+  assert.ok(chunks.length >= 1, 'the split bundle registers at least one chunk');
+  for (const entry of chunks) {
+    assert.equal(entry.id, packageJson.name, 'a chunk names the package that owns it');
+    // The loader refuses any other spelling: `client.<something>.js`, with no
+    // directory separator, so the file must be a flat sibling of client.js.
+    assert.match(entry.chunk, /^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$/);
+    assert.ok(existsSync(join(here, '..', entry.chunk)), `${entry.chunk} is a flat sibling of client.js`);
+    assert.equal(typeof entry.factory, 'function');
+  }
+});
+
+test('client: 「版本历史」 is fetched only when that tab is opened', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  await page.flush();
+  assert.deepEqual(page.loaded.loadedChunkFiles, [], '「我的 Prompt」 pays nothing for the history chunk');
+  const tree = await openHistory(page);
+  assert.deepEqual(page.loaded.loadedChunkFiles, ['client.history.js'], 'opening the tab fetches it');
+  // …and the tree is the same one this file used to build itself: the chunk's
+  // markers, its rows and its panel frame are all still here.
+  assert.equal(oneBy(tree, 'data-region', 'history').props['data-region'], 'history');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history').length, 1);
+  await openOverview(page);
+  assert.deepEqual(page.loaded.loadedChunkFiles, ['client.history.js'], 'and never twice');
+});
+
+test('client: a chunk reaches the main bundle through require(), never a second React', () => {
+  const source = readFileSync(join(here, '..', 'client.history.js'), 'utf8');
+  // One direction only: the chunk asks the main bundle for the page's shared
+  // facilities. A `require('react')` here would be a second React instance, and
+  // a second element factory under it — the exact drift the split must avoid.
+  assert.ok(source.includes(`require('${packageJson.name}')`), 'the chunk requires the main bundle');
+  assert.equal(source.includes("require('react')"), false, 'the chunk must not build its own React');
+  // The facilities it does get are the main factory's own instance, not copies.
+  const loaded = loadClient('throw');
+  const shared = loaded.module.__internals.shared;
+  assert.equal(shared.h, loaded.runtime.React.createElement, 'one element factory for the whole bundle');
+  assert.ok(shared.token && typeof shared.token === 'object', 'and one theme token table');
+});
+
+test('client: a chunk that cannot be loaded renders a readable card, not a blank tab', async () => {
+  const page = makePage({ chunkFailures: ['client.history.js'], responses: defaultResponses() });
+  const mine = await page.flush();
+  assert.equal(markerOf(mine, 'data-render-state'), 'ok', 'the page itself still renders');
+  const tree = await openHistory(page);
+  const card = oneBy(tree, 'data-region', 'chunk-failure');
+  assert.equal(card.props['data-chunk'], 'client.history.js', 'the card names the chunk');
+  assert.equal(card.props['data-chunk-state'], 'error');
+  assert.ok(hasText(tree, 'chunk unavailable: client.history.js'), 'and the reason is on screen');
+  // The rest of the page is untouched: a chunk failure is one tab's problem.
+  assert.equal(markerOf(tree, 'data-render-state'), 'ok');
+  assert.equal(oneBy(tree, 'data-region', 'tabs').props['data-region'], 'tabs');
+  const overview = await openOverview(page);
+  assert.equal(markerOf(overview, 'data-render-state'), 'ok', 'other tabs still render');
+});
+
+test('client: chunk sources obey the same rules as the entry (no version literal, no repository URL)', () => {
+  for (const name of CHUNK_FILES) {
+    const source = readFileSync(join(here, '..', name), 'utf8');
+    for (const quoted of [`'${packageJson.version}'`, `"${packageJson.version}"`]) {
+      assert.equal(source.includes(quoted), false, `${name} must not contain ${quoted}`);
+    }
+    assert.equal(source.includes('github.com'), false, `${name} must not carry a repository URL`);
+    assert.equal(/<[A-Za-z][^>]*>/.test(source), false, `${name} must not carry JSX`);
+  }
+});
+
+test('client: the stamp covers the host’s chunk digests, and the page verifies the chunk it ran', async () => {
+  const page = makePage({
+    responses: defaultResponses({ [PATHS.ping]: pingResponse(chunkedBuildFixture()) }),
+  });
+  const mine = await page.flush();
+  assert.equal(markerOf(mine, 'data-build-match'), 'true', 'the entry digest and the manifest agree');
+  assert.equal(markerOf(mine, 'data-build-loaded'), 'none', 'no chunk has run yet');
+
+  await openHistory(page);
+  // The chunk has now really run, so the root carries what it reported — the
+  // page reads it on the next render, exactly as React re-renders a boundary.
+  const history = page.draw();
+  assert.equal(markerOf(history, 'data-build-match'), 'true');
+  const declared = chunkBuildFixture().find((entry) => entry.name === 'client.history.js');
+  assert.equal(markerOf(history, 'data-build-loaded'), `client.history.js:${declared.hash}`);
+  // …and that digest is the one an independent read of the chunk file yields.
+  assert.equal(
+    declared.hash,
+    independentBuildFingerprint(readFileSync(join(here, '..', 'client.history.js'), 'utf8')).hash,
+  );
+});
+
+test('client: a chunk whose served bytes differ from the manifest is 「stale」, never 「matching」', async () => {
+  // Negative control (criterion 3): the entry file is byte-for-byte the one on
+  // disk, and only the *chunk* the host reports differs from what the entry
+  // declares. Before g-045 this could not be expressed — the entry digest saw
+  // no chunk at all — and a silent「一致」here is exactly what the split risks.
+  const chunks = chunkBuildFixture().map((entry) =>
+    entry.name === 'client.history.js' ? { ...entry, hash: 'deadbeef' } : entry,
+  );
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.ping]: pingResponse({ ...buildFixture(independentBuildFingerprint(clientSource).hash), chunks }),
+    }),
+  });
+  const tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-build'), independentBuildFingerprint(clientSource).hash);
+  assert.equal(markerOf(tree, 'data-build-match'), 'false', 'the served chunk is not the declared one');
+  assert.equal(oneBy(tree, 'data-region', 'status').props['data-status-build'], 'false');
+  const advanced = await openAdvanced(page);
+  assert.equal(staleWarnings(advanced).length, 1);
+  assert.ok(hasText(advanced, page.zh.stBuildStaleHint));
+});
+
+test('client: a chunk edited in flight is caught by the page’s own chunk digest', async () => {
+  // The strongest form of "the bytes the page is running vs the bytes on disk":
+  // the host reports the file's digest, the manifest agrees with it, and the
+  // chunk that actually ran reports a *different* digest of itself.
+  const page = makePage({
+    chunkSourceEdit: (name, source) =>
+      name === 'client.history.js'
+        ? source.replace('/* @build-fingerprint:end */', '// edited in flight\n    /* @build-fingerprint:end */')
+        : source,
+    responses: defaultResponses({ [PATHS.ping]: pingResponse(chunkedBuildFixture()) }),
+  });
+  const mine = await page.flush();
+  assert.equal(markerOf(mine, 'data-build-match'), 'true', 'nothing has run the edited bytes yet');
+  await openHistory(page);
+  const tree = page.draw();
+  assert.equal(markerOf(tree, 'data-build-match'), 'false', 'the running chunk is not the served chunk');
+  assert.equal(oneBy(tree, 'data-region', 'status').props['data-status-build'], 'false');
+});
+
+test('client: a chunk list the two sides do not share is 「unknown」, never 「matching」', async () => {
+  const oracle = independentBuildFingerprint(clientSource);
+  // (a) the host serves fewer chunks than this entry declares.
+  const short = makePage({
+    responses: defaultResponses({
+      [PATHS.ping]: pingResponse({ ...buildFixture(oracle.hash, oracle.size), chunks: [] }),
+    }),
+  });
+  assert.equal(markerOf(await short.flush(), 'data-build-match'), 'unknown', 'coverage is incomplete');
+  // (b) the host serves a chunk this entry does not declare.
+  const extra = makePage({
+    responses: defaultResponses({
+      [PATHS.ping]: pingResponse({
+        ...buildFixture(oracle.hash, oracle.size),
+        chunks: [...chunkBuildFixture(), { name: 'client.ghost.js', hash: 'deadbeef', size: 1, mtime: 'x' }],
+      }),
+    }),
+  });
+  assert.equal(markerOf(await extra.flush(), 'data-build-match'), 'unknown', 'and never a guessed verdict');
+  // (c) a malformed list is refused whole rather than half-read.
+  const malformed = makePage({
+    responses: defaultResponses({
+      [PATHS.ping]: pingResponse({
+        ...buildFixture(oracle.hash, oracle.size),
+        chunks: [{ name: 'client.history.js' }],
+      }),
+    }),
+  });
+  assert.equal(markerOf(await malformed.flush(), 'data-build-match'), 'unknown');
+});
+
+test('client: an old host without a chunk list keeps the pre-split answer', async () => {
+  const oracle = independentBuildFingerprint(clientSource);
+  const page = makePage({
+    responses: defaultResponses({ [PATHS.ping]: pingResponse(buildFixture(oracle.hash, oracle.size)) }),
+  });
+  assert.equal(markerOf(await page.flush(), 'data-build-match'), 'true', 'nothing contradicts the entry digest');
+  // Once a chunk has really run, an answer that says nothing about it is no
+  // longer enough to call this tab「一致」.
+  await openHistory(page);
+  assert.equal(markerOf(page.draw(), 'data-build-match'), 'unknown');
+});
+
+// #endregion
 
 // #region g-029: the plugin version the page shows
 

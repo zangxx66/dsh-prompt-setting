@@ -29,6 +29,7 @@ import {
   PREPARE_WARN,
   declaredEntrypoints,
   filesCoverPath,
+  globMatches,
   inspectPackage,
   normalizeRelPath,
   parsePatchNames,
@@ -193,6 +194,23 @@ test('prepare: the script is wired as the package `prepare` hook', () => {
   assert.ok(realManifest.files.includes('scripts'));
 });
 
+test('prepare: every real chunk file ships, whatever the allowlist spells', () => {
+  // g-045: the bundle is the entry plus its chunks. A chunk the allowlist does
+  // not cover is a 404 in the browser — the page then renders its readable
+  // failure card, but the feature is gone for every user. So: whatever the
+  // allowlist says (`client.*.js` today), every real chunk must be covered.
+  const chunkFiles = readdirSync(packageRoot).filter(
+    (name) => /^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$/.test(name),
+  );
+  assert.ok(chunkFiles.length >= 1, 'the split bundle ships at least one chunk');
+  for (const name of chunkFiles) {
+    assert.ok(filesCoverPath(realManifest.files, name), `${name} must be in the files allowlist`);
+  }
+  // And the pattern is what covers it — a manifest that named one chunk by hand
+  // would silently drop the next one.
+  assert.ok(realManifest.files.some((entry) => /[*?]/.test(entry)), 'the chunks are covered by a pattern');
+});
+
 // #endregion
 
 // #region each way a checkout can be incomplete
@@ -272,6 +290,37 @@ test('prepare: `files` entries must exist, and a directory must not be empty', (
   assert.ok(codes(fullDir, PREPARE_OK).includes('FILES-DIR'));
 });
 
+test('prepare: a `files` glob must match something, and it is anchored at the root', () => {
+  const listed = ['index.js', 'client.js', 'cordis.patch.yml'];
+  const chunk = `${FINGERPRINT_BEGIN}\nwindow.__chunk = 1\n${FINGERPRINT_END}\n`;
+  // g-045: a chunked bundle keeps its chunks in the allowlist by pattern, so a
+  // new chunk must not need a manifest edit to ship.
+  const matched = inspect(
+    {
+      './': ['index.js', 'client.js', 'client.history.js', 'cordis.patch.yml', 'core'],
+      'client.history.js': chunk,
+    },
+    healthyManifest({ files: [...listed, 'client.*.js'] }),
+  );
+  assert.ok(codes(matched, PREPARE_OK).includes('FILES-GLOB'), 'a matching pattern is a pass');
+  // A pattern that matches nothing is a failure, not a silent no-op: the
+  // published tarball would be missing files the author meant to ship.
+  const unmatched = inspect(
+    { './': ['index.js', 'client.js', 'cordis.patch.yml'] },
+    healthyManifest({ files: [...listed, 'client.*.js'] }),
+  );
+  assert.equal(unmatched.ok, false);
+  assert.ok(codes(unmatched, PREPARE_FAIL).includes('FILES-MISSING'));
+  // Anchored at the package root: a nested file the loader could never fetch
+  // does not satisfy the pattern.
+  const nested = inspect(
+    { './': ['index.js', 'client.js', 'cordis.patch.yml', 'nested'], 'nested/': ['client.x.js'] },
+    healthyManifest({ files: [...listed, 'client.*.js'] }),
+  );
+  assert.equal(nested.ok, false);
+  assert.ok(codes(nested, PREPARE_FAIL).includes('FILES-MISSING'));
+});
+
 test('prepare: no `files` field warns but still installs', () => {
   const result = inspect({}, healthyManifest({ files: undefined }));
   assert.equal(result.ok, true);
@@ -306,6 +355,15 @@ test('prepare: filesCoverPath honors directories, globs and plain paths', () => 
   assert.equal(filesCoverPath(['inde?.js'], 'index.js'), true);
   assert.equal(filesCoverPath([], 'index.js'), false);
   assert.equal(filesCoverPath(undefined, 'index.js'), false);
+  // g-045: the chunk pattern the bundle relies on, and the sub-path it must not
+  // reach across.
+  assert.equal(filesCoverPath(['client.*.js'], 'client.history.js'), true);
+  assert.equal(filesCoverPath(['client.*.js'], 'client.js'), false);
+  assert.equal(filesCoverPath(['client.*.js'], 'lib/client.history.js'), false);
+  assert.equal(globMatches('client.*.js', 'client.history.js'), true);
+  assert.equal(globMatches('client.*.js', 'client.js'), false);
+  assert.equal(globMatches('client.js', 'client.js'), true);
+  assert.equal(globMatches('', 'client.js'), false);
 });
 
 test('prepare: a declared client half must have an export and a usable fingerprint', () => {

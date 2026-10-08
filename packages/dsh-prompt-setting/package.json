@@ -23,6 +23,7 @@
     "index.js",
     "core",
     "client.js",
+    "client.*.js",
     "cordis.patch.yml",
     "CONTRACT.md",
     "README.md",

@@ -299,16 +299,21 @@ cd packages/dsh-prompt-setting
 node --test                    # 十八个套件（含真实 DSH 包的对照实验，须为 pass 而非 skip）
 node scripts/check-compat.mjs  # 只读兼容性自检：不联网、永不抛、退出码恒 0
 node scripts/prepare.mjs       # prepare 门禁：pnpm 从 git 安装时会自动跑它
-npm pack --dry-run             # 确认发布产物干净（24 个文件、无 test/）
+npm pack --dry-run             # 确认发布产物干净（26 个文件、含 client.*.js chunk、无 test/）
 ```
 
 - **改动怎么生效 / How a change takes effect**：改 `client.js` 什么都不用做（DSH 自带客户端 HMR，
-  已打开的标签页会被热替换）；改 `index.js` / `core/**` **必须重启宿主**（命令行启动的宿主就重新
+  已打开的标签页会被热替换）；**改 `client.*.js` chunk 时请连带 `touch client.js` 或重启宿主** ——
+  chunk 的 URL 绑的是 `client.js` 的 rev，只改 chunk 不换 rev，浏览器会继续用旧的那份（见 `NOTES.md`
+  §122 与 `CONTRACT.md` §14.5）；改 `index.js` / `core/**` **必须重启宿主**（命令行启动的宿主就重新
   运行 `dsh web`，官方桌面端就退出并重新打开 DeepSeek Harness）；换包（改名、换 spec、换安装目标）
   同样必须重启。
-  > `client.js` changes need nothing (DSH ships client HMR, open tabs are hot-swapped); `index.js` /
-  > `core/**` changes **require restarting the host** (re-run `dsh web` after a command-line start, or
-  > quit and reopen DeepSeek Harness in the desktop app); swapping the package itself does too.
+  > `client.js` changes need nothing (DSH ships client HMR, open tabs are hot-swapped); for a
+  > `client.*.js` **chunk**, touch `client.js` or restart the host as well — a chunk's URL carries the
+  > *entry's* rev, so a chunk-only edit is not re-fetched (`NOTES.md` §122, `CONTRACT.md` §14.5);
+  > `index.js` / `core/**` changes **require restarting the host** (re-run `dsh web` after a
+  > command-line start, or quit and reopen DeepSeek Harness in the desktop app); swapping the package
+  > itself does too.
 - **重启的代价 / The cost of a restart**：重启会**终止所有等待确认的会话**，重开标签页找不回来 ——
   宿主半改动请攒批，能在 `client.js` 一侧解决的就别动宿主半。
   > A restart **kills every session waiting for confirmation**, and reopening the tab will not bring it
@@ -317,8 +322,9 @@ npm pack --dry-run             # 确认发布产物干净（24 个文件、无 t
   `构建戳未知`；`data-build-match` 就是它（`unknown` 永远不会被当成过期）。一条命令即可核对：
   > The status card's build fingerprint has three states, and `unknown` is never treated as stale. Check it with:
   ```js
-  await (await fetch('/prompt-setting/ping')).json()   // → clientBuild: {hash, size, mtime}, launchKind: "cli" | "desktop" | "unknown"
+  await (await fetch('/prompt-setting/ping')).json()   // → clientBuild: {hash, size, mtime, chunks: [{name, hash, …}]}, launchKind: "cli" | "desktop" | "unknown"
   document.querySelector('[data-plugin="dsh-prompt-setting"]').dataset.buildMatch   // "true" | "false" | "unknown"
+  document.querySelector('[data-plugin="dsh-prompt-setting"]').dataset.buildLoaded  // "client.history.js:<hash>" | "none"
   ```
 
 ## 出问题时 / When something goes wrong
