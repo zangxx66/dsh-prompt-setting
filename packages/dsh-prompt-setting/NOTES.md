@@ -6179,15 +6179,38 @@ CSS 语义上 1–3 合起来等价于"本 tab 的高度 ≤ 视口、内容只�
 
 ### 五、验收
 
-- `cd packages/dsh-prompt-setting && node --test` ⇒ **724 pass / 0 fail / skipped 0**（基线 710，新增 14 条：chunk 机制/失败路径/指纹 chunk 维度/清单与发布面）；
-- 体积：`client.js` 10249 行 / 484930 B → 主文件行数与字节数见本轮 results 与 `wc -l`；`client.history.js` 承载原「版本历史」一族；
-- `npm pack --dry-run --cache /tmp/...` ⇒ chunk 在包内（`client.history.js`），`scripts/client-chunks.mjs` 随包发布；
-- `node scripts/prepare.mjs` ⇒ **20 项通过**（含 `FILES-GLOB: files: client.*.js（1 项：client.history.js）`）；
+- `cd packages/dsh-prompt-setting && node --test` ⇒ **728 pass / 0 fail / skipped 0**（基线 710；新增 16 条：chunk 机制/失败路径/指纹 chunk 维度/清单与发布面/订阅通知/发布门禁）；
+- 体积：`client.js` 10249 行 / 484930 B → **9505 行 / 453047 B**；`client.history.js` 1163 行 / 50497 B（约 31.9 KB 不再进首屏）；
+- `npm pack --dry-run --cache /tmp/...` ⇒ chunk 在包内（`client.history.js`），`scripts/client-chunks.mjs` 随包发布，26 个文件；
+- `node scripts/prepare.mjs` ⇒ **21 项通过**（含 `FILES-GLOB: files: client.*.js（1 项：client.history.js）` 与新增的 `CHUNK-STAMPS` 门禁）；
 - 零新依赖（`dependencies: {}`）、零构建步骤（`test/host.test.mjs` 两条门禁继续绿）。
 
-### 六、未验证项
+### 六、真机回归：`data-build-loaded` 曾经滞后（返工记录）
 
-- **真机浏览器未跑**：本轮只证明离线 harness 与 host 侧语义；chunk 的真实 `require.async` 网络路径、`React.lazy` 在真实 React 下的
-  Suspense 时序、以及「只改 chunk 不换新」的端到端现象均由代码路径推出（§三 已如实标注为限制）；
-- 失败卡片的真实观感（`data-region="chunk-failure"` 的排版）只有树级断言，无截图核验；
+**缺陷**（主管真机端到端发现，离线 harness 测不到）：`recordLoadedChunk()` 写在 `React.lazy` 的 resolve 回调里，即**渲染期**；
+而 `data-build-loaded` 与 `buildVerdict()` 的第三重循环都在**渲染 root 容器**时求值。chunk 加载只让 Suspense 子树重渲染，
+不会让 root 重渲染 ⇒ 停在「版本历史」tab 的读者会看到 `data-build-loaded="none"`、`data-build-match="true"`，
+要切一次 tab（或任何别的 state 变化）才更新。后果不只是显示不准：**第三重校验——唯一能发现「浏览器实际运行的 chunk 字节 ≠ 宿主 serve 的字节」的那一重——在最需要它的场景下不生效**。
+
+**修复**：给 root 加一个 `useSyncExternalStore(subscribeChunkLoads, chunkLoadRevision, chunkLoadRevision)` 座位
+（与既有的 locale revision 座位并列，仍在 `useState` 之前，hooks 顺序稳定）。`loadedChunks` 变化时 `chunkLoadCount += 1`
+并通知订阅者；快照是**计数器**而不是 Map/新数组（`useSyncExternalStore` 要求渲染间稳定的值）。
+通知走 `queueMicrotask`（引擎没有时同步回退）——`recordLoadedChunk` 在渲染期被调用，直接 setState 会是「渲染期更新」。
+
+**真机证据**（临时 `DSH_HOME` + `dsh web --port 3099` + headless Chrome over CDP；脚本用 `Fetch` 域在 Response 阶段改写 chunk 响应）：
+
+| 场景 | 观察 | 结论 |
+| --- | --- | --- |
+| 正常打开「版本历史」，**不切 tab** | 打开前 `data-build-loaded="none"` / `match="true"`；打开后 `client.history.js:2887cc6c` / `true`，`data-active-tab="history"` | 修复生效；chunk 请求真实发生（`/plugins/dsh-prompt-setting/client.history.js?rev=11d5d7dab4ad`） |
+| 把 chunk 响应在**指纹区间内**加 49 字节，再不切 tab | `data-build-loaded="client.history.js:67d2092d"`（运行字节的真实摘要）、`data-build-match="false"` | 第三重校验真的生效（改坏就红），且随 chunk 到达即时更新 |
+| 阻断 chunk 请求 | `data-region="chunk-failure"` 出现、`data-render-state="ok"`、`data-build-loaded="none"` | 失败降级可读、不白屏、不谎报已加载 |
+
+**发布门禁**：`scripts/prepare.mjs` 新增 `CHUNK-STAMPS` 一项（既有 20 项一字未动，共 21）：清单与磁盘 chunk 摘要不符即
+`prepare` 失败并提示 `node scripts/client-chunks.mjs --write`。理由：「改了 chunk 忘了 `--write`」是这套机制里最容易发生、
+后果是用户侧指纹失真的动作，而测试只有有人跑测试时才拦得住 —— `prepare` 是安装/发布路径上的门。
+
+### 七、未验证项
+
+- 真机只覆盖了 dev 宿主（临时 `DSH_HOME`）与 headless Chrome：**「只改 chunk 不碰 `client.js` 时 HMR 不换新」仍未做端到端实测**
+  （由 `artifactRevision`/`chunkUrl` 的代码路径推出，§三 已标注为限制）；失败卡片只有 DOM 级核对，无视觉截图；
 - 阶段二的其余重块（总览/作用域树/传输/mine、无状态层）未迁，属另一个目标。

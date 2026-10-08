@@ -1880,7 +1880,12 @@ bytes live* and *when they arrive*:
 - **the stamp covers the chunks** (§14.3, §14.4), because the entry's own digest
   cannot see them;
 - `data-build-loaded` (§14.3) is the machine-readable answer to "which chunks has
-  this tab really run".
+  this tab really run", and it updates the moment a chunk arrives;
+- **the chunk manifest is checked on the publish path too**: `scripts/prepare.mjs`
+  fails a checkout whose `client.js` `CHUNK_STAMPS` no longer matches the chunk
+  files — a manifest that lies is a fingerprint that cannot be trusted, and
+  "edited a chunk, forgot `--write`" is the mistake this mechanism invites
+  (`node scripts/client-chunks.mjs --write` repairs it).
 
 The one visible cost is the loading placeholder on a cold open of 「版本历史」;
 the one development-time caveat is §14.5's chunk-rev binding, recorded in
@@ -2839,7 +2844,12 @@ result on the root container:
   the first one. Each hash is what that chunk computed from its own
   `chunkFactory.toString()` (its own marker region, §14.4), so a probe can read
   which parts of the split bundle have actually run in this tab without asking
-  the page to render a tab.
+  the page to render a tab. The attribute follows a chunk **as soon as it
+  arrives** — the page subscribes to the load and re-renders its root container
+  for it — so a reader sitting on the tab that fetched the chunk never sees
+  `none`, and the third check below runs without any tab switch. That is a
+  behaviour and not an implementation note: it was a real defect before it was
+  asserted (`NOTES.md` §122).
 
 **The chunk half of the verdict (Revision 29).** The entry digest alone cannot
 see a chunk, so the verdict compares three things, in this order:

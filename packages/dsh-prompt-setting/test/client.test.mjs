@@ -108,6 +108,14 @@ function makeHooksRuntime(options = {}) {
   let cursor = 0;
   let refCursor = 0;
   let effects = [];
+  /**
+   * Every `useSyncExternalStore` subscription this render registered, and every
+   * notification a store pushed through one (g-045). A case asserts on the
+   * notification, not on the count: "the page re-read the snapshot when it
+   * happened to re-render" is exactly the bug this seat exists to prevent.
+   */
+  const externalSubscriptions = [];
+  const externalNotifications = [];
   // g-039 fourth round: a `useRef` whose `.current` the case can preset. React
   // assigns a ref's `.current` when it mounts the element; the double renders no
   // real DOM, so a case that wants to exercise a measuring code path hands in the
@@ -145,7 +153,15 @@ function makeHooksRuntime(options = {}) {
       cursor += 1;
       // Mirror React's mount behavior: subscribe once, then read the snapshot.
       // This is exactly the path a missing `ctx.locale.subscribe` would break.
-      subscribe(() => {});
+      // g-045: the listener is **kept and really registered**, so a case can
+      // prove a store notifies its subscribers instead of the page merely
+      // re-reading the snapshot on some later render — which is the difference
+      // the root's `data-build-*` attributes depend on (NOTES.md §122).
+      const listener = () => {
+        externalNotifications.push(getSnapshot());
+      };
+      externalSubscriptions.push({ getSnapshot, listener });
+      subscribe(listener);
       return getSnapshot();
     },
     useId: () => 'test-id',
@@ -180,6 +196,8 @@ function makeHooksRuntime(options = {}) {
   };
   return {
     React,
+    externalSubscriptions,
+    externalNotifications,
     render(component, props) {
       cursor = 0;
       refCursor = 0;
@@ -272,6 +290,9 @@ function loadClient(primitives, options = {}) {
     console,
   };
   sandbox.fetch = () => Promise.reject(new Error('fetch not stubbed'));
+  // g-045: the page defers its chunk-load notification to a microtask, so the
+  // sandbox gets one too — the real path is what the tests should exercise.
+  sandbox.queueMicrotask = queueMicrotask;
   // g-032 gives the page a real timer loop (the install poll, and the「已用时」
   // ticker). The sandbox gets the host's own timers with a **floored delay**, so
   // a case that stubs a running install does not spend 1.5 s per poll: the
@@ -1808,6 +1829,40 @@ test('client: an old host without a chunk list keeps the pre-split answer', asyn
   // longer enough to call this tab「一致」.
   await openHistory(page);
   assert.equal(markerOf(page.draw(), 'data-build-match'), 'unknown');
+});
+
+test('client: a chunk that finishes loading notifies the root seat, so the attributes follow', async () => {
+  // The regression this pins (found on a real browser, NOTES.md §122): a chunk's
+  // load re-renders only the Suspense subtree, while `data-build-loaded` and the
+  // verdict live on the **root** container. Without a seat that the store really
+  // notifies, the page reports "no chunk has run" to a reader staring at one —
+  // and the third check never runs when it matters.
+  const page = makePage({ responses: defaultResponses() });
+  const mine = await page.flush();
+  assert.equal(markerOf(mine, 'data-build-loaded'), 'none', 'no chunk has run yet');
+  const before = page.loaded.runtime.externalNotifications.length;
+  await openHistory(page);
+  await settle();
+  assert.ok(
+    page.loaded.runtime.externalNotifications.length > before,
+    'the loaded chunk notifies its useSyncExternalStore subscribers',
+  );
+  assert.ok(
+    page.loaded.runtime.externalNotifications.some((snapshot) => snapshot > 0),
+    'and the snapshot it read really moved',
+  );
+  // The root attributes carry it on the next render, with no tab change: the
+  // history tab is still the open one.
+  const declared = chunkBuildFixture().find((entry) => entry.name === 'client.history.js');
+  const tree = page.draw();
+  assert.equal(oneBy(tree, 'data-region', 'tab-panel').props['data-tab-value'], 'history', 'still on the tab');
+  assert.equal(markerOf(tree, 'data-build-loaded'), `client.history.js:${declared.hash}`);
+  // A chunk that fails to load never claims to have run.
+  const failed = makePage({ chunkFailures: ['client.history.js'], responses: defaultResponses() });
+  await failed.flush();
+  await openHistory(failed);
+  await settle();
+  assert.equal(markerOf(failed.draw(), 'data-build-loaded'), 'none', 'a failed chunk is not a loaded chunk');
 });
 
 // #endregion

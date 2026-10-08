@@ -103,6 +103,17 @@ function inspect(entries, manifest = healthyManifest()) {
   return inspectPackage({ pkg: manifest, ...io });
 }
 
+/**
+ * A stamped client body whose g-045 chunk manifest is **empty**.
+ *
+ * Used by the fixtures that ship no chunk file: an empty manifest is then the
+ * true statement, and the publish gate's CHUNK-STAMPS check passes.
+ * @returns the file text.
+ */
+function emptyManifestClient() {
+  return `${FINGERPRINT_BEGIN}\n    const CHUNK_STAMPS = Object.freeze([\n    ]);\n${FINGERPRINT_END}\n`;
+}
+
 /** The findings with a given code. */
 function codes(result, level) {
   return result.findings.filter((finding) => finding.level === level).map((finding) => finding.code);
@@ -185,6 +196,10 @@ test('prepare: the script exits 0 on the real package and prints its verdict', (
   assert.equal(run.status, 0, `expected exit 0, got ${run.status}\n${run.stdout}\n${run.stderr}`);
   assert.match(run.stdout, /prepare：OK/);
   assert.match(run.stdout, /CLIENT-FINGERPRINT/);
+  // g-045: the publish gate also refuses a chunk manifest that drifted from the
+  // bytes — the failure mode that would otherwise only surface as a page whose
+  // fingerprint lies.
+  assert.match(run.stdout, /CHUNK-STAMPS/);
 });
 
 test('prepare: the script is wired as the package `prepare` hook', () => {
@@ -403,12 +418,13 @@ test('prepare: the script fails an incomplete checkout with a non-zero exit code
   try {
     // A package whose manifest declares a client export that was never
     // committed — exactly the git-install failure mode the gate exists for.
+    // g-045: the whole `core/` and `scripts/` trees are copied, because the
+    // gate now also checks the chunk manifest and therefore imports both.
     mkdirSync(join(root, 'scripts'));
     mkdirSync(join(root, 'core'));
-    for (const file of ['prepare.js', 'build.js']) {
-      cpSync(join(packageRoot, 'core', file), join(root, 'core', file));
+    for (const dir of ['core', 'scripts']) {
+      cpSync(join(packageRoot, dir), join(root, dir), { recursive: true });
     }
-    cpSync(join(packageRoot, 'scripts', 'prepare.mjs'), join(root, 'scripts', 'prepare.mjs'));
     writeFileSync(join(root, 'index.js'), 'export const name = "broken"\n');
     writeFileSync(join(root, 'cordis.patch.yml'), '- insert:\n    - id: broken\n      name: broken-plugin\n');
     writeFileSync(
@@ -436,9 +452,53 @@ test('prepare: the script fails an incomplete checkout with a non-zero exit code
 
     // The same package, made complete, passes — the failure was the missing
     // bytes, not the temp directory.
-    writeFileSync(join(root, 'client.js'), `${FINGERPRINT_BEGIN}\nx\n${FINGERPRINT_END}\n`);
+    writeFileSync(join(root, 'client.js'), emptyManifestClient());
     const fixed = spawnSync(process.execPath, ['scripts/prepare.mjs'], { cwd: root, encoding: 'utf8' });
     assert.equal(fixed.status, 0, `expected exit 0\n${fixed.stdout}\n${fixed.stderr}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('prepare: a CHUNK_STAMPS manifest that drifted from the chunks fails the gate', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-prepare-chunks-'));
+  try {
+    // A faithful copy of the real package, minus `test/`, so the only thing this
+    // run can object to is the manifest.
+    for (const dir of ['core', 'scripts']) {
+      cpSync(join(packageRoot, dir), join(root, dir), { recursive: true });
+    }
+    for (const file of [
+      'package.json',
+      'index.js',
+      'client.js',
+      'client.history.js',
+      'cordis.patch.yml',
+      'CONTRACT.md',
+      'README.md',
+      'NOTES.md',
+    ]) {
+      cpSync(join(packageRoot, file), join(root, file));
+    }
+    const healthyRun = spawnSync(process.execPath, ['scripts/prepare.mjs'], { cwd: root, encoding: 'utf8' });
+    assert.equal(healthyRun.status, 0, `the copy must start clean\n${healthyRun.stdout}`);
+    assert.match(healthyRun.stdout, /ok {4}CHUNK-STAMPS/);
+
+    // Now the drift: the manifest is emptied, so the entry declares no chunk
+    // while one is sitting next to it. This is precisely "edited a chunk and
+    // forgot `--write`", the one mistake the new mechanism invites.
+    const source = readFileSync(join(root, 'client.js'), 'utf8');
+    const emptied = source.replace(
+      /const CHUNK_STAMPS = Object\.freeze\(\[\n[\s\S]*?\n {4}\]\);/,
+      'const CHUNK_STAMPS = Object.freeze([\n    ]);',
+    );
+    assert.notEqual(emptied, source, 'the manifest block must exist to be emptied');
+    writeFileSync(join(root, 'client.js'), emptied);
+
+    const run = spawnSync(process.execPath, ['scripts/prepare.mjs'], { cwd: root, encoding: 'utf8' });
+    assert.notEqual(run.status, 0, `expected a non-zero exit\n${run.stdout}`);
+    assert.match(run.stdout, /FAIL {2}CHUNK-STAMPS/);
+    assert.match(run.stdout, /client-chunks\.mjs --write/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

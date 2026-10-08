@@ -6412,6 +6412,68 @@ window.__ModuleLoader__.load({
 
     /** Chunks this page has really loaded, by file name: `{hash, size}`. */
     const loadedChunks = new Map();
+    /** Subscribers waiting for a chunk to arrive (`useSyncExternalStore`). */
+    const chunkLoadListeners = new Set();
+    /** How many chunks have loaded — the stable snapshot that hook reads. */
+    let chunkLoadCount = 0;
+    /** Whether a notification is already queued for this microtask turn. */
+    let chunkNotifying = false;
+
+    /**
+     * Subscribe to「a chunk has finished loading」(g-045).
+     *
+     * The `data-build-*` attributes live on the **root** container, and a chunk
+     * finishing its load re-renders only the Suspense subtree below it — so
+     * without this seat the page would keep publishing "no chunk has run" while
+     * the reader is looking straight at one.
+     * @param listener - React's re-render callback.
+     * @returns the unsubscribe function.
+     */
+    function subscribeChunkLoads(listener) {
+      chunkLoadListeners.add(listener);
+      return () => {
+        chunkLoadListeners.delete(listener);
+      };
+    }
+
+    /**
+     * The chunk-load snapshot: a counter, never the Map or a fresh array.
+     *
+     * `useSyncExternalStore` compares this value between renders, so it has to be
+     * stable unless the store really changed (a new array each pass would
+     * re-render forever).
+     * @returns the number of chunks loaded so far.
+     */
+    function chunkLoadRevision() {
+      return chunkLoadCount;
+    }
+
+    /**
+     * Tell the page a chunk has arrived — **not** from inside the render phase.
+     *
+     * `recordLoadedChunk` runs in `React.lazy`'s resolve callback, i.e. while
+     * React is rendering; calling a subscriber right there would be an update
+     * during render. The notification is queued to a microtask instead (with a
+     * synchronous fallback for an engine without one), which lands after React
+     * has finished the pass that resolved the chunk.
+     */
+    function notifyChunkLoad() {
+      if (chunkNotifying) return;
+      chunkNotifying = true;
+      const flush = () => {
+        chunkNotifying = false;
+        for (const listener of [...chunkLoadListeners]) {
+          try {
+            listener();
+          } catch {
+            // One broken subscriber must not stop the others: the stamp is
+            // diagnostics, and losing it may never take the page down.
+          }
+        }
+      };
+      if (typeof queueMicrotask === 'function') queueMicrotask(flush);
+      else flush();
+    }
 
     /**
      * Ask the module loader for one chunk of this bundle.
@@ -6443,6 +6505,8 @@ window.__ModuleLoader__.load({
           hash: build.hash,
           size: typeof build.size === 'number' ? build.size : null,
         });
+        chunkLoadCount += 1;
+        notifyChunkLoad();
       }
     }
 
@@ -7431,6 +7495,16 @@ window.__ModuleLoader__.load({
       // exception-free by construction (see `apply`), so this hook cannot be
       // the call that throws.
       React.useSyncExternalStore(subscribe, revision, revision);
+      // g-045: the chunk half of the build stamp, on the same seat. A chunk that
+      // finishes loading writes `loadedChunks` during React's own render pass
+      // (that is when `React.lazy` resolves), which re-renders the Suspense
+      // subtree — and **not** this root, where `data-build-loaded` and the
+      // verdict live. Without this subscription the page would report "no chunk
+      // has run" until some unrelated state change happened to re-render it, and
+      // the third check — the one that compares the chunk bytes this browser is
+      // really running against the ones the host serves — would never run when
+      // it matters.
+      React.useSyncExternalStore(subscribeChunkLoads, chunkLoadRevision, chunkLoadRevision);
 
       // The session seat: a root-level hook on props, no inject required. The
       // `typeof` branch is stable for the life of a mount, and a hook that
