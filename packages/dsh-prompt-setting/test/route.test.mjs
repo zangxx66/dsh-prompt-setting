@@ -30,6 +30,15 @@ const PING_PATH = '/prompt-setting/ping';
 const SNAPSHOT_PATH = '/prompt-setting/snapshot';
 const OVERRIDES_PATH = '/prompt-setting/overrides';
 const IMPORT_PATH = '/prompt-setting/import';
+const UPDATE_CHECK_PATH = '/prompt-setting/update-check';
+const UPDATE_APPLY_PATH = '/prompt-setting/update-apply';
+const UPDATE_APPLY_CANCEL_PATH = '/prompt-setting/update-apply/cancel';
+/** g-043:「下载区域」— the update source the user picks. */
+const DOWNLOAD_REGION_PATH = '/prompt-setting/download-region';
+/** g-042: the npm document, the GitHub fallback, and the registry's install spec. */
+const REGISTRY_URL = 'https://registry.npmjs.org/dsh-prompt-setting';
+const GITHUB_URL = 'https://api.github.com/repos/zangxx66/dsh-prompt-setting/releases/latest';
+const TARBALL_URL = 'https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.1.tgz';
 
 /** Markers as documented in CONTRACT.md §14, written out independently. */
 const BUILD_BEGIN = '/* @build-fingerprint:begin */';
@@ -147,6 +156,9 @@ function makeRequest({ method = 'GET', url = PING_PATH, headers = {}, body } = {
  * @param options.host - the `apply` to mount; defaults to this package's. The
  *   build-stamp liveness test mounts a *copy* of the package so it can change
  *   the bundle on disk without touching the real `client.js`.
+ * @param options.config - the loose plugin config handed to `apply`. Only the
+ *   update routes read it (`updateCheck: {fetch, registry, …}`), which is how the
+ *   g-042 route cases drive the real route offline.
  * @returns the captured route plus the harness handles.
  */
 function mount(options = {}) {
@@ -275,7 +287,7 @@ function mount(options = {}) {
       return disposer;
     },
   };
-  (options.host ?? apply)(ctx);
+  (options.host ?? apply)(ctx, options.config);
   return {
     ctx,
     routes,
@@ -385,10 +397,30 @@ test('host: GET /prompt-setting/ping reports the renderer and the live client bu
   const bytes = readFileSync(CLIENT_PATH, 'utf8');
   const oracle = independentBuildFingerprint(bytes);
   assert.notEqual(oracle, null, 'the published bundle carries a usable marker region');
+  // g-045: the main digest cannot see a chunk — those bytes are not in the main
+  // factory's `toString()` — so the same answer carries the host's digest for
+  // every chunk file it really serves. Independently recomputed here, in
+  // file-name order, because a manifest the host got wrong would be read by the
+  // page as a stale bundle.
+  const chunkFiles = readdirSync(PACKAGE_ROOT)
+    .filter((name) => /^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$/.test(name))
+    .sort();
+  assert.ok(chunkFiles.includes('client.history.js'), 'the 「版本历史」 chunk is part of the published set');
   assert.deepEqual(payload.clientBuild, {
     hash: oracle.hash,
     size: oracle.size,
     mtime: statSync(CLIENT_PATH).mtime.toISOString(),
+    chunks: chunkFiles.map((name) => {
+      const path = join(PACKAGE_ROOT, name);
+      const chunkOracle = independentBuildFingerprint(readFileSync(path, 'utf8'));
+      assert.notEqual(chunkOracle, null, `${name} carries a usable marker region`);
+      return {
+        name,
+        hash: chunkOracle.hash,
+        size: chunkOracle.size,
+        mtime: statSync(path).mtime.toISOString(),
+      };
+    }),
   });
   assert.match(payload.clientBuild.hash, /^[0-9a-f]{8}$/);
   // Two probes answer the same thing while the file is unchanged.
@@ -477,6 +509,111 @@ test('host: wrong methods on the new routes answer 405 with the full allow list'
   const overrides = await call(route, { method: 'POST', url: OVERRIDES_PATH });
   assert.equal(overrides.statusCode, 405);
   assert.equal(overrides.headers.allow, 'GET, PUT, DELETE');
+  // The two update routes (g-030/g-032) keep their own method tables — asserted
+  // here, on a host with no transport at all, so the 405 really is decided before
+  // any check could run.
+  const check = await call(route, { method: 'POST', url: UPDATE_CHECK_PATH });
+  assert.equal(check.statusCode, 405);
+  assert.equal(check.headers.allow, 'GET, PUT');
+  const apply = await call(route, { method: 'DELETE', url: UPDATE_APPLY_PATH });
+  assert.equal(apply.statusCode, 405);
+  assert.equal(apply.headers.allow, 'GET, POST');
+  const cancel = await call(route, { method: 'GET', url: UPDATE_APPLY_CANCEL_PATH });
+  assert.equal(cancel.statusCode, 405);
+  assert.equal(cancel.headers.allow, 'POST');
+  // g-043: the download-region route has its own table, and — like the check's —
+  // the 405 is decided before any probe could run (this mount has no transport).
+  const region = await call(route, { method: 'DELETE', url: DOWNLOAD_REGION_PATH });
+  assert.equal(region.statusCode, 405);
+  assert.equal(region.headers.allow, 'GET, PUT');
+});
+
+// #region the update routes take the npm path first (g-042)
+
+/**
+ * A stub transport that tells the two upstreams apart by URL and records what it
+ * was asked — the offline evidence for which path a route really took.
+ *
+ * The default body is the **real packument shape** (measured 2026-10-08): no
+ * top-level `dist`, the artifact at `versions[<version>].dist.tarball`.
+ * @param handler - `(url) => body`; the default is the canonical npm document.
+ * @returns `{fetch, calls}`.
+ */
+function updateTransport(handler) {
+  const calls = [];
+  const fetch = async (url) => {
+    const target = String(url);
+    calls.push(target);
+    const body = typeof handler === 'function'
+      ? handler(target)
+      : {
+          'dist-tags': { latest: '0.2.1' },
+          versions: { '0.2.1': { version: '0.2.1', dist: { tarball: TARBALL_URL } } },
+        };
+    return { ok: true, status: 200, json: async () => body };
+  };
+  return { fetch, calls };
+}
+
+test('update route: the check answers from npm, and names its source', async () => {
+  const transport = updateTransport();
+  const { route } = mount({ config: { updateCheck: { fetch: transport.fetch } } });
+  const res = await call(route, { url: UPDATE_CHECK_PATH });
+  assert.equal(res.statusCode, 200);
+  const body = json(res);
+  assert.equal(body.source, 'npm');
+  assert.equal(body.hasUpdate, true, 'this package is 0.2.0 and the registry says 0.2.1');
+  assert.equal(body.latest, '0.2.1');
+  assert.equal(body.tarball, TARBALL_URL);
+  assert.deepEqual(transport.calls, [REGISTRY_URL], 'GitHub is not asked while npm answers');
+});
+
+test('update route: a registry that cannot answer falls back to GitHub, still 200', async () => {
+  const calls = [];
+  const failing = async (url) => {
+    const target = String(url);
+    calls.push(target);
+    // A *failure* on the registry is what makes the fallback run; GitHub then
+    // answers the release the check reports.
+    if (target === REGISTRY_URL) return { ok: false, status: 503, json: async () => ({ message: 'down' }) };
+    return { ok: true, status: 200, json: async () => ({ tag_name: 'v0.2.1', html_url: null }) };
+  };
+  const { route } = mount({ config: { updateCheck: { fetch: failing } } });
+  const res = await call(route, { url: UPDATE_CHECK_PATH });
+  assert.equal(res.statusCode, 200);
+  const body = json(res);
+  assert.equal(body.source, 'github');
+  assert.equal(body.hasUpdate, true);
+  assert.equal(body.latest, '0.2.1');
+  assert.equal(body.tarball, null);
+  assert.deepEqual(calls, [REGISTRY_URL, GITHUB_URL], 'npm first, GitHub second');
+});
+
+test('update route: an untrustworthy registry tarball is refused before any package manager', async () => {
+  // The refusal is decided from the check payload alone, so this mount has no
+  // `pluginManager` at all: if the route needed one it would answer
+  // `installer-unavailable`, which is exactly what this asserts it does not do.
+  const transport = updateTransport(() => ({
+    'dist-tags': { latest: '0.2.1' },
+    versions: { '0.2.1': { version: '0.2.1', dist: { tarball: 'https://evil.test/pkg.zip' } } },
+  }));
+  const { route } = mount({ config: { updateCheck: { fetch: transport.fetch } } });
+  const res = await call(route, {
+    method: 'POST',
+    url: UPDATE_APPLY_PATH,
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
+  assert.equal(res.statusCode, 200);
+  const body = json(res);
+  assert.equal(body.ok, false);
+  assert.equal(body.code, 'asset-unverified');
+  assert.match(body.message, /dist\.tarball/);
+  // An npm answer's `releaseUrl` is null, so the refusal itself has to carry a
+  // clickable manual route (g-042 review fix) — the release page, which is the
+  // same shape and the same label a GitHub refusal has always used.
+  assert.equal(body.manual.releaseUrl, 'https://github.com/zangxx66/dsh-prompt-setting/releases/tag/0.2.1');
+  assert.deepEqual(transport.calls, [REGISTRY_URL], 'nothing was probed and nothing was installed');
 });
 
 test('snapshot: reports the base and effective sections in the real assembly order', async () => {

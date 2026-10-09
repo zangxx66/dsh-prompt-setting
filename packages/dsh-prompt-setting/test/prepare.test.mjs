@@ -29,6 +29,7 @@ import {
   PREPARE_WARN,
   declaredEntrypoints,
   filesCoverPath,
+  globMatches,
   inspectPackage,
   normalizeRelPath,
   parsePatchNames,
@@ -100,6 +101,17 @@ function healthyFiles(overrides = {}) {
 function inspect(entries, manifest = healthyManifest()) {
   const io = memIo({ ...healthyFiles(), ...entries });
   return inspectPackage({ pkg: manifest, ...io });
+}
+
+/**
+ * A stamped client body whose g-045 chunk manifest is **empty**.
+ *
+ * Used by the fixtures that ship no chunk file: an empty manifest is then the
+ * true statement, and the publish gate's CHUNK-STAMPS check passes.
+ * @returns the file text.
+ */
+function emptyManifestClient() {
+  return `${FINGERPRINT_BEGIN}\n    const CHUNK_STAMPS = Object.freeze([\n    ]);\n${FINGERPRINT_END}\n`;
 }
 
 /** The findings with a given code. */
@@ -184,6 +196,10 @@ test('prepare: the script exits 0 on the real package and prints its verdict', (
   assert.equal(run.status, 0, `expected exit 0, got ${run.status}\n${run.stdout}\n${run.stderr}`);
   assert.match(run.stdout, /prepare：OK/);
   assert.match(run.stdout, /CLIENT-FINGERPRINT/);
+  // g-045: the publish gate also refuses a chunk manifest that drifted from the
+  // bytes — the failure mode that would otherwise only surface as a page whose
+  // fingerprint lies.
+  assert.match(run.stdout, /CHUNK-STAMPS/);
 });
 
 test('prepare: the script is wired as the package `prepare` hook', () => {
@@ -191,6 +207,23 @@ test('prepare: the script is wired as the package `prepare` hook', () => {
   // …and the hook must ship: `scripts` is in the `files` allowlist, so a packed
   // install carries the same script a git install runs.
   assert.ok(realManifest.files.includes('scripts'));
+});
+
+test('prepare: every real chunk file ships, whatever the allowlist spells', () => {
+  // g-045: the bundle is the entry plus its chunks. A chunk the allowlist does
+  // not cover is a 404 in the browser — the page then renders its readable
+  // failure card, but the feature is gone for every user. So: whatever the
+  // allowlist says (`client.*.js` today), every real chunk must be covered.
+  const chunkFiles = readdirSync(packageRoot).filter(
+    (name) => /^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$/.test(name),
+  );
+  assert.ok(chunkFiles.length >= 1, 'the split bundle ships at least one chunk');
+  for (const name of chunkFiles) {
+    assert.ok(filesCoverPath(realManifest.files, name), `${name} must be in the files allowlist`);
+  }
+  // And the pattern is what covers it — a manifest that named one chunk by hand
+  // would silently drop the next one.
+  assert.ok(realManifest.files.some((entry) => /[*?]/.test(entry)), 'the chunks are covered by a pattern');
 });
 
 // #endregion
@@ -272,6 +305,61 @@ test('prepare: `files` entries must exist, and a directory must not be empty', (
   assert.ok(codes(fullDir, PREPARE_OK).includes('FILES-DIR'));
 });
 
+test('prepare: a `files` glob must match something, and it is anchored at the root', () => {
+  const listed = ['index.js', 'client.js', 'cordis.patch.yml'];
+  const chunk = `${FINGERPRINT_BEGIN}\nwindow.__chunk = 1\n${FINGERPRINT_END}\n`;
+  // g-045: a chunked bundle keeps its chunks in the allowlist by pattern, so a
+  // new chunk must not need a manifest edit to ship.
+  const matched = inspect(
+    {
+      './': ['index.js', 'client.js', 'client.history.js', 'cordis.patch.yml', 'core'],
+      'client.history.js': chunk,
+    },
+    healthyManifest({ files: [...listed, 'client.*.js'] }),
+  );
+  assert.ok(codes(matched, PREPARE_OK).includes('FILES-GLOB'), 'a matching pattern is a pass');
+  // A pattern that matches nothing is a failure, not a silent no-op: the
+  // published tarball would be missing files the author meant to ship.
+  const unmatched = inspect(
+    { './': ['index.js', 'client.js', 'cordis.patch.yml'] },
+    healthyManifest({ files: [...listed, 'client.*.js'] }),
+  );
+  assert.equal(unmatched.ok, false);
+  assert.ok(codes(unmatched, PREPARE_FAIL).includes('FILES-MISSING'));
+  // Anchored at the package root: a nested file the loader could never fetch
+  // does not satisfy the pattern.
+  const nested = inspect(
+    { './': ['index.js', 'client.js', 'cordis.patch.yml', 'nested'], 'nested/': ['client.x.js'] },
+    healthyManifest({ files: [...listed, 'client.*.js'] }),
+  );
+  assert.equal(nested.ok, false);
+  assert.ok(codes(nested, PREPARE_FAIL).includes('FILES-MISSING'));
+});
+
+test('prepare: a `files` pattern that names a directory is matched inside it', () => {
+  const listed = ['index.js', 'client.js', 'cordis.patch.yml'];
+  // npm anchors `core/*.js` inside `core/`, so the gate has to as well — a
+  // directory-qualified pattern that reported FAIL would block a perfectly good
+  // allowlist (`lib/client.*.js` is the official chunk spelling).
+  const inDir = inspect(
+    { './': ['index.js', 'client.js', 'cordis.patch.yml', 'core'], 'core/': ['a.js', 'b.txt'] },
+    healthyManifest({ files: [...listed, 'core/*.js'] }),
+  );
+  assert.equal(inDir.ok, true);
+  const finding = inDir.findings.find((entry) => entry.code === 'FILES-GLOB' && entry.message.includes('core/*.js'));
+  assert.ok(finding, 'the directory-qualified pattern is reported as matched');
+  assert.match(finding.message, /core\/a\.js/, 'and the matched file is named with its directory');
+  assert.equal(finding.message.includes('b.txt'), false, 'the pattern still filters the listing');
+
+  // A directory that is not there is still a failure, not a silent pass.
+  const missingDir = inspect(
+    { './': ['index.js', 'client.js', 'cordis.patch.yml'] },
+    healthyManifest({ files: [...listed, 'nope/*.js'] }),
+  );
+  assert.equal(missingDir.ok, false);
+  assert.ok(codes(missingDir, PREPARE_FAIL).includes('FILES-MISSING'));
+});
+
 test('prepare: no `files` field warns but still installs', () => {
   const result = inspect({}, healthyManifest({ files: undefined }));
   assert.equal(result.ok, true);
@@ -306,6 +394,15 @@ test('prepare: filesCoverPath honors directories, globs and plain paths', () => 
   assert.equal(filesCoverPath(['inde?.js'], 'index.js'), true);
   assert.equal(filesCoverPath([], 'index.js'), false);
   assert.equal(filesCoverPath(undefined, 'index.js'), false);
+  // g-045: the chunk pattern the bundle relies on, and the sub-path it must not
+  // reach across.
+  assert.equal(filesCoverPath(['client.*.js'], 'client.history.js'), true);
+  assert.equal(filesCoverPath(['client.*.js'], 'client.js'), false);
+  assert.equal(filesCoverPath(['client.*.js'], 'lib/client.history.js'), false);
+  assert.equal(globMatches('client.*.js', 'client.history.js'), true);
+  assert.equal(globMatches('client.*.js', 'client.js'), false);
+  assert.equal(globMatches('client.js', 'client.js'), true);
+  assert.equal(globMatches('', 'client.js'), false);
 });
 
 test('prepare: a declared client half must have an export and a usable fingerprint', () => {
@@ -345,12 +442,13 @@ test('prepare: the script fails an incomplete checkout with a non-zero exit code
   try {
     // A package whose manifest declares a client export that was never
     // committed — exactly the git-install failure mode the gate exists for.
+    // g-045: the whole `core/` and `scripts/` trees are copied, because the
+    // gate now also checks the chunk manifest and therefore imports both.
     mkdirSync(join(root, 'scripts'));
     mkdirSync(join(root, 'core'));
-    for (const file of ['prepare.js', 'build.js']) {
-      cpSync(join(packageRoot, 'core', file), join(root, 'core', file));
+    for (const dir of ['core', 'scripts']) {
+      cpSync(join(packageRoot, dir), join(root, dir), { recursive: true });
     }
-    cpSync(join(packageRoot, 'scripts', 'prepare.mjs'), join(root, 'scripts', 'prepare.mjs'));
     writeFileSync(join(root, 'index.js'), 'export const name = "broken"\n');
     writeFileSync(join(root, 'cordis.patch.yml'), '- insert:\n    - id: broken\n      name: broken-plugin\n');
     writeFileSync(
@@ -378,9 +476,61 @@ test('prepare: the script fails an incomplete checkout with a non-zero exit code
 
     // The same package, made complete, passes — the failure was the missing
     // bytes, not the temp directory.
-    writeFileSync(join(root, 'client.js'), `${FINGERPRINT_BEGIN}\nx\n${FINGERPRINT_END}\n`);
+    writeFileSync(join(root, 'client.js'), emptyManifestClient());
     const fixed = spawnSync(process.execPath, ['scripts/prepare.mjs'], { cwd: root, encoding: 'utf8' });
     assert.equal(fixed.status, 0, `expected exit 0\n${fixed.stdout}\n${fixed.stderr}`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('prepare: a CHUNK_STAMPS manifest that drifted from the chunks fails the gate', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-prepare-chunks-'));
+  try {
+    // A faithful copy of the real package, minus `test/`, so the only thing this
+    // run can object to is the manifest.
+    for (const dir of ['core', 'scripts']) {
+      cpSync(join(packageRoot, dir), join(root, dir), { recursive: true });
+    }
+    // The chunk set is discovered, never listed: a hand-written list would keep
+    // passing while a chunk the bundle really ships went missing from the copy
+    // (and the gate it is meant to exercise would be measuring a package that
+    // does not exist).
+    const chunkFiles = readdirSync(packageRoot).filter((name) =>
+      /^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$/.test(name),
+    );
+    assert.ok(chunkFiles.length >= 1, 'the split bundle ships at least one chunk');
+    for (const file of [
+      'package.json',
+      'index.js',
+      'client.js',
+      ...chunkFiles,
+      'cordis.patch.yml',
+      'CONTRACT.md',
+      'README.md',
+      'NOTES.md',
+    ]) {
+      cpSync(join(packageRoot, file), join(root, file));
+    }
+    const healthyRun = spawnSync(process.execPath, ['scripts/prepare.mjs'], { cwd: root, encoding: 'utf8' });
+    assert.equal(healthyRun.status, 0, `the copy must start clean\n${healthyRun.stdout}`);
+    assert.match(healthyRun.stdout, /ok {4}CHUNK-STAMPS/);
+
+    // Now the drift: the manifest is emptied, so the entry declares no chunk
+    // while one is sitting next to it. This is precisely "edited a chunk and
+    // forgot `--write`", the one mistake the new mechanism invites.
+    const source = readFileSync(join(root, 'client.js'), 'utf8');
+    const emptied = source.replace(
+      /const CHUNK_STAMPS = Object\.freeze\(\[\n[\s\S]*?\n {4}\]\);/,
+      'const CHUNK_STAMPS = Object.freeze([\n    ]);',
+    );
+    assert.notEqual(emptied, source, 'the manifest block must exist to be emptied');
+    writeFileSync(join(root, 'client.js'), emptied);
+
+    const run = spawnSync(process.execPath, ['scripts/prepare.mjs'], { cwd: root, encoding: 'utf8' });
+    assert.notEqual(run.status, 0, `expected a non-zero exit\n${run.stdout}`);
+    assert.match(run.stdout, /FAIL {2}CHUNK-STAMPS/);
+    assert.match(run.stdout, /client-chunks\.mjs --write/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

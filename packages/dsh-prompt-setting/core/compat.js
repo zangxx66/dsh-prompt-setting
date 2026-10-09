@@ -28,12 +28,12 @@
  * and is reported as an undetected version rather than guessed, because a
  * wrong verdict here is worse than no verdict.
  *
- * One asymmetry is deliberate (NOTES.md §98, §99, §100): the declared range
- * carries an `||` alternative whose extra admits every `0.2.0` prerelease under
- * **strict** `node-semver` (§11 prerelease exclusion, no `includePrerelease`),
- * and which is what carries the range past the `0.2.0` release up to
- * `0.2.1-0`. This parser implements no such exclusion, so it reads that
- * alternative as a numeric extension of the first one — same verdicts, one
+ * One asymmetry is deliberate (NOTES.md §98, §99, §100, §124): the declared range
+ * carries `||` alternatives whose extras admit each `0.2.x` line's prereleases
+ * under **strict** `node-semver` (§11 prerelease exclusion, no
+ * `includePrerelease`), and which are what carry the range past each release up
+ * to `<0.2.2-0`. This parser implements no such exclusion, so it reads those
+ * alternatives as numeric extensions of the first one — same verdicts, one
  * fewer place to be wrong.
  *
  * @module dsh-prompt-setting/core/compat

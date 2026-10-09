@@ -82,15 +82,25 @@
   不会重复请求（「高级 → 立即重查」会强制重查一次）。
   > **When**: once when the settings page mounts, and not again for six hours in the same process (the
   > "Check now" button forces one).
-- **请求什么**：由**宿主**（Node 侧）发一个 `GET`
-  `https://api.github.com/repos/zangxx66/dsh-prompt-setting/releases/latest`，
-  地址从本包 `package.json` 的 `repository.url` 解析而来。**只读**：没有 body、没有 cookie、
+- **请求什么**：由**宿主**（Node 侧）发一个 `GET`。**先问 npm registry**
+  （`<registry>/dsh-prompt-setting`，读 `dist-tags.latest`，默认 registry 是
+  `https://registry.npmjs.org/`），**npm 不可用时才回退**到 GitHub Releases API
+  （`https://api.github.com/repos/zangxx66/dsh-prompt-setting/releases/latest`，
+  地址从本包 `package.json` 的 `repository.url` 解析而来）。「高级 → 下载区域」可以把源换成
+  中国大陆（`https://registry.npmmirror.com/`）或自定义镜像，切换后**检查与安装都走新源**，
+  且该源不可用时给结构化错误、不静默回退默认源。**只读**：没有 body、没有 cookie、
   不带任何本机 / 会话 / 工作区数据；`User-Agent` 是 `dsh-prompt-setting/<版本>`，5 秒超时。
-  > **What**: the **host** (Node side) sends one `GET` to that GitHub Releases API URL, derived from
-  > this package's `package.json`. Read-only: no body, no cookies, no local/session/workspace data;
-  > `User-Agent: dsh-prompt-setting/<version>`; 5-second timeout.
+  > **What**: the **host** (Node side) sends one `GET`, and it **asks the npm registry first**
+  > (`<registry>/dsh-prompt-setting`, read for `dist-tags.latest`; the default registry is
+  > `https://registry.npmjs.org/`), **falling back to the GitHub Releases API** only when npm cannot
+  > answer (that URL is derived from this package's `package.json`). 「Advanced → Download region」 can
+  > point that at Mainland China (`https://registry.npmmirror.com/`) or a custom mirror, and both the
+  > check **and** the install then use the chosen source — which, when unusable, produces a structured
+  > error instead of silently falling back. Read-only: no body, no cookies, no local/session/workspace
+  > data; `User-Agent: dsh-prompt-setting/<version>`; 5-second timeout.
 - **结果怎么用**：只有「确实有更新」时，页面顶部才出现一条**可关闭**的提示（新版本号 + 发布页链接 +
-  **「立即更新」**按钮）。没有更新、仓库还没发 release、请求失败 —— 页面顶部**一律零提示、零报错**；
+  **「立即更新」**按钮）。发布页链接只在 GitHub 回退路径上出现（npm registry 文档不提供发布页），
+  npm 源时提示条只有版本号与「立即更新」。没有更新、仓库还没发 release、请求失败 —— 页面顶部**一律零提示、零报错**；
   其中「仓库还没发 release / 版本号不可解析」是**上游事实**，只在「高级」的开关卡片里用一句中性
   文案说明（**检查失败不显示该句**）。
   > **What it does with the answer**: only a confirmed newer release shows a **dismissible** banner
@@ -216,14 +226,15 @@ zstd -dc "$F" | jq -r 'select(.type=="system/message") | .data.message.content[0
 
 ## 安装 / Install
 
-**首选从 npm 装**（本包已发布，npm 上的当前版本是 `0.1.5`，`latest`）。需要 DSH
-`>= 0.1.7-rc.2 < 0.2.0 || >= 0.2.0-0 < 0.2.1-0`：`0.1.7-rc.2` 起的 0.1.x、`0.2.0` 的全部预发布
-（`0.2.0-0` / `alpha` / `beta` / `rc.N`）与 **`0.2.0` 正式版**都在范围内；`0.2.1-0` 及以后出界。
+**首选从 npm 装**（本包已发布，npm 上的 `latest` 为 `0.1.5`；本仓库为 `0.2.0`，发布后两者一致）。需要 DSH
+`>= 0.1.7-rc.2 < 0.2.0 || >= 0.2.0-0 < 0.2.1-0 || >= 0.2.1-0 < 0.2.2-0`：`0.1.7-rc.2` 起的 0.1.x、
+`0.2.0` 与 `0.2.1` 的全部预发布（`-0` / `alpha` / `beta` / `rc.N`）与 **这两个 minor 的正式版**都在范围内；
+`0.2.2-0` 及以后出界。
 
-> **Install from npm** — the primary route (this package is published; npm `latest` is `0.1.5`). Requires
-> DSH `>= 0.1.7-rc.2 < 0.2.0 || >= 0.2.0-0 < 0.2.1-0`: every 0.1.x from `0.1.7-rc.2` on, every `0.2.0`
-> prerelease (`0.2.0-0`, `alpha`, `beta`, `rc.N`) and the **`0.2.0` release itself** are in range;
-> `0.2.1-0` and later are out.
+> **Install from npm** — the primary route (this package is published; npm `latest` is `0.1.5`, this repository is `0.2.0`). Requires
+> DSH `>= 0.1.7-rc.2 < 0.2.0 || >= 0.2.0-0 < 0.2.1-0 || >= 0.2.1-0 < 0.2.2-0`: every 0.1.x from `0.1.7-rc.2`
+> on, every `0.2.0` and `0.2.1` prerelease (`alpha`, `beta`, `rc.N`, and the synthetic `-0` floor) and the
+> **`0.2.0` and `0.2.1` releases themselves** are in range; `0.2.2-0` and later are out.
 
 ```sh
 dsh plugin --profile <profile> add dsh-prompt-setting
@@ -289,16 +300,21 @@ cd packages/dsh-prompt-setting
 node --test                    # 十八个套件（含真实 DSH 包的对照实验，须为 pass 而非 skip）
 node scripts/check-compat.mjs  # 只读兼容性自检：不联网、永不抛、退出码恒 0
 node scripts/prepare.mjs       # prepare 门禁：pnpm 从 git 安装时会自动跑它
-npm pack --dry-run             # 确认发布产物干净（24 个文件、无 test/）
+npm pack --dry-run             # 确认发布产物干净（29 个文件、含 4 个 client.*.js chunk、无 test/）
 ```
 
 - **改动怎么生效 / How a change takes effect**：改 `client.js` 什么都不用做（DSH 自带客户端 HMR，
-  已打开的标签页会被热替换）；改 `index.js` / `core/**` **必须重启宿主**（命令行启动的宿主就重新
+  已打开的标签页会被热替换）；**改 `client.*.js` chunk 时请连带 `touch client.js` 或重启宿主** ——
+  chunk 的 URL 绑的是 `client.js` 的 rev，只改 chunk 不换 rev，浏览器会继续用旧的那份（见 `NOTES.md`
+  §122 与 `CONTRACT.md` §14.5）；改 `index.js` / `core/**` **必须重启宿主**（命令行启动的宿主就重新
   运行 `dsh web`，官方桌面端就退出并重新打开 DeepSeek Harness）；换包（改名、换 spec、换安装目标）
   同样必须重启。
-  > `client.js` changes need nothing (DSH ships client HMR, open tabs are hot-swapped); `index.js` /
-  > `core/**` changes **require restarting the host** (re-run `dsh web` after a command-line start, or
-  > quit and reopen DeepSeek Harness in the desktop app); swapping the package itself does too.
+  > `client.js` changes need nothing (DSH ships client HMR, open tabs are hot-swapped); for a
+  > `client.*.js` **chunk**, touch `client.js` or restart the host as well — a chunk's URL carries the
+  > *entry's* rev, so a chunk-only edit is not re-fetched (`NOTES.md` §122, `CONTRACT.md` §14.5);
+  > `index.js` / `core/**` changes **require restarting the host** (re-run `dsh web` after a
+  > command-line start, or quit and reopen DeepSeek Harness in the desktop app); swapping the package
+  > itself does too.
 - **重启的代价 / The cost of a restart**：重启会**终止所有等待确认的会话**，重开标签页找不回来 ——
   宿主半改动请攒批，能在 `client.js` 一侧解决的就别动宿主半。
   > A restart **kills every session waiting for confirmation**, and reopening the tab will not bring it
@@ -307,8 +323,9 @@ npm pack --dry-run             # 确认发布产物干净（24 个文件、无 t
   `构建戳未知`；`data-build-match` 就是它（`unknown` 永远不会被当成过期）。一条命令即可核对：
   > The status card's build fingerprint has three states, and `unknown` is never treated as stale. Check it with:
   ```js
-  await (await fetch('/prompt-setting/ping')).json()   // → clientBuild: {hash, size, mtime}, launchKind: "cli" | "desktop" | "unknown"
+  await (await fetch('/prompt-setting/ping')).json()   // → clientBuild: {hash, size, mtime, chunks: [{name, hash, …}]}, launchKind: "cli" | "desktop" | "unknown"
   document.querySelector('[data-plugin="dsh-prompt-setting"]').dataset.buildMatch   // "true" | "false" | "unknown"
+  document.querySelector('[data-plugin="dsh-prompt-setting"]').dataset.buildLoaded  // "client.history.js:<hash>,…" | "none" —— 本页真正加载过的每个 chunk
   ```
 
 ## 出问题时 / When something goes wrong

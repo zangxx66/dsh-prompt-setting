@@ -66,6 +66,14 @@
  * publish the comparison, whose third state —「未知」— is what an old host or a
  * failed ping yields, and which is deliberately never reported as「过期」.
  *
+ * g-045 splits that bundle: this file is the **entry**, 「版本历史」 lives in
+ * `client.history.js` beside it and arrives on demand (`require.async` behind
+ * `React.lazy`), and the stamp covers the chunks too — `CHUNK_STAMPS` (inside
+ * the region above) plus the host's `clientBuild.chunks` plus the digest each
+ * loaded chunk reports of itself, published as `data-build-loaded`. A chunk the
+ * page cannot fetch renders a readable card in that one tab instead of taking
+ * the page down with it. CONTRACT.md §13.0 / §14.3–§14.5; NOTES.md §122.
+ *
  * g-029 answers the other half of the same question — *which version* is this
  * tab talking to? — without adding a second source. The version rendered beside
  * the page title (as `v` + the version) and published as `data-plugin-version` is
@@ -341,6 +349,18 @@ window.__ModuleLoader__.load({
      */
     const UPDATE_CHECK_PATH = '/prompt-setting/update-check';
     /**
+     * g-043:「下载区域」— which source the check and the install use.
+     *
+     * `GET` reads the choice (and, on the very first visit, lets the Host decide
+     * it by availability); `PUT {region, registry?}` records one, with a `custom`
+     * address validated by the Host **before** anything is written. The page never
+     * probes a registry itself: CORS would make that a lie in the browser, and the
+     * address is untrusted input (§17.8).
+     */
+    const DOWNLOAD_REGION_PATH = '/prompt-setting/download-region';
+    /** The three region ids, in dropdown order — the only values the contract accepts. */
+    const DOWNLOAD_REGIONS = ['default', 'cn', 'custom'];
+    /**
      * The switch's local mirror (g-030).
      *
      * The authoritative preference lives in the Host's `preferences.json`, but a
@@ -440,8 +460,15 @@ window.__ModuleLoader__.load({
     const HISTORY_VIEWPORT_OFFSET = 260;
     const HISTORY_PANEL_HEIGHT = `calc(100vh - ${HISTORY_VIEWPORT_OFFSET}px)`;
     const HISTORY_PANEL_MIN_HEIGHT = 320;
-    /** Room kept between the panel's bottom edge and its measured boundary. */
-    const HISTORY_PANEL_GAP = 16;
+    /**
+     * Room kept between the panel's bottom edge and its measured boundary.
+     *
+     * g-044: 8, not 16. The number is subtracted from a **measured** room (it is
+     * never an estimate of the dialog's own chrome), so halving it hands the
+     * list eight more pixels at no risk of the panel crossing its boundary —
+     * measured at 1440×900 the panel went 480 → 488 (CONTRACT §13.2, Revision 27).
+     */
+    const HISTORY_PANEL_GAP = 8;
     /**
      * g-039 fourth round: `useLayoutEffect` measures **before the paint**, which
      * is what a panel sized from its own position wants — measuring after the
@@ -623,6 +650,43 @@ window.__ModuleLoader__.load({
         '无法取到当前的变量表，本次写入被拒绝（无法判断哪些变量会被展开）。',
         'The current variable table could not be obtained, so this write was refused: there is no way to tell which references would expand.',
       ],
+      // g-043「下载区域」(CONTRACT.md §17.7–§17.10). One key per way the choice can
+      // be refused, because the dialog's red line has to say *which* one happened:
+      // a shape mistake, a malformed address, an address nobody answered, an
+      // address that answered with an error, and an address that answered but is
+      // not a registry are five different things to do something about.
+      'invalid-region': [
+        '下载区域只能是 default、cn 或 custom 之一。',
+        'The download region must be one of default, cn or custom.',
+      ],
+      'registry-invalid': [
+        '镜像地址不合法：必须是 http(s) 地址、主机非空，且不能带账号密码、查询串或片段。',
+        'That mirror address is invalid: it must be an http(s) URL with a host, and no credentials, query string or fragment.',
+      ],
+      'registry-unreachable': [
+        '该镜像地址在超时时间内没有任何响应（超时或网络错误），地址未被保存。',
+        'Nothing answered at that mirror address within the timeout (a timeout or a network error); nothing was saved.',
+      ],
+      'registry-http-error': [
+        '该地址能访问，但返回了错误状态，不是可用的 npm registry。',
+        'That address answered, but with an error status, so it is not a usable npm registry.',
+      ],
+      'registry-not-npm': [
+        '该地址能访问，但返回的不是 npm 包文档（缺少 dist-tags.latest）。',
+        'That address answered, but not with an npm package document (no dist-tags.latest).',
+      ],
+      'registry-unavailable': [
+        '所选下载源当前不可用。不会自动改用默认源：请稍后重试，或换一个下载区域。',
+        'The chosen download source is unavailable. Nothing falls back to the default source: retry later, or pick another download region.',
+      ],
+      // The one code both preferences routes can answer (§17.4, §17.8): a write
+      // that could not be persisted. Without copy the red line would render the
+      // raw identifier, which is exactly what the「no untranslated string」rule
+      // forbids.
+      'preferences-unwritable': [
+        '偏好文件无法写入，本次选择没有生效。',
+        'The preference file could not be written, so nothing took effect.',
+      ],
     };
     // #endregion
 
@@ -702,12 +766,34 @@ window.__ModuleLoader__.load({
       updateSettingOn: '已开启',
       updateSettingOff: '已关闭',
       updateSettingNote:
-        '打开设置页时由宿主向 GitHub 查询一次最新 Release：只发一个 GET，不带任何本机或会话数据。关闭后不再联网检查（含打开本页时）。',
-      updateToggleSaved: '检查更新已{state}。',
+        '打开设置页时由宿主检查一次最新版本：先问 npm registry，npm 不可用时才回退 GitHub Releases；只发一个 GET，不带任何本机或会话数据，且来源按「下载区域」选择（中国大陆＝npmmirror）。关闭后不再联网检查（含打开本页时）；开启时会读取一次下载区域状态。',
+      updateToggleSaved: '检查更新{state}。',
       updateRecheck: '立即重查',
       updateSwitching: '保存中…',
       updateUnknown: '上游暂时没有可用的版本信息。',
       updateLatestKnown: '最新版本 {latest}',
+      // g-043:「下载区域」. The dropdown names the three sources, and the line
+      // under it says what each one means — a「默认」that hides "npm 优先、GitHub 兜底"
+      // would make the other two choices impossible to compare against it.
+      updateRegionLabel: '下载区域',
+      updateRegionDefault: '默认',
+      updateRegionDefaultNote: 'npm 优先；npm 不可用时回退 GitHub release 产物。',
+      updateRegionCn: '中国大陆',
+      updateRegionCnNote: '使用 npmmirror 镜像（registry.npmmirror.com）。',
+      updateRegionCustom: '自定义',
+      updateRegionCustomNote: '使用你填写的镜像地址（提交前会先校验）。',
+      updateRegionAuto: '已自动判定（该源能取到本包）：{region}。',
+      updateRegionSaved: '下载区域已切换为{region}，检查与安装都会走新源。',
+      updateRegionSaving: '切换中…',
+      updateRegionSelectLabel: '更新来源',
+      updateRegionCustomTitle: '自定义镜像源',
+      updateRegionCustomBody:
+        '填写 npm registry 的基地址（http(s)://，可带路径）。提交后宿主会先校验格式并试取一次包文档：不可访问或不是 npm registry 都不会保存，当前生效的源保持不变。',
+      updateRegionCustomPlaceholder: 'https://registry.example.com/',
+      updateRegionCustomSubmit: '校验并保存',
+      updateRegionCustomChecking: '校验中…',
+      updateRegionCustomCancel: '取消',
+      updateRegionUnusable: '已保存的自定义镜像地址不可用：{reason}',
       // g-032:「立即更新」. The whole feature rests on one promise the copy has
       // to keep: the install is done by the host, and the **user** restarts. So
       // every string that describes the outcome says so, and no string anywhere
@@ -722,7 +808,7 @@ window.__ModuleLoader__.load({
       updateApply: '立即更新',
       updateApplyTitle: '更新到 v{latest}',
       updateApplyBody:
-        '宿主将通过官方插件管理器安装 v{latest} 的 Release 包（下载到本机 profile，不自动重启）。',
+        '宿主将通过官方插件管理器安装 v{latest}（按当前下载区域从 npm registry 或 GitHub Release 产物获取，下载到本机 profile，不自动重启）。',
       updateApplyRestartNote: '安装完成后需要你手动重启 DSH 才会生效。',
       updateApplyRestartNoteCli: '安装完成后需要你手动重新运行 dsh web 才会生效。',
       updateApplyRestartNoteDesktop: '安装完成后需要你手动退出并重新打开 DeepSeek Harness 才会生效。',
@@ -745,7 +831,7 @@ window.__ModuleLoader__.load({
       updateApplyUnknownDesktop:
         '这次安装的状态已不可查（可能已完成，也可能是页面刷新过）。请退出并重新打开 DeepSeek Harness，或用「立即重查」确认版本。',
       updateApplyManual: '也可以手动更新：{hint}',
-      updateApplyManualLink: '打开 {tag} 的 Release 页面',
+      updateApplyManualLink: '打开 {tag} 的发布页或包页',
       updateApplyReused: '已有一个安装在进行中。',
       updateApplyAlready: '该版本已安装（v{version}），请手动重启 DSH 生效。',
       updateApplyAlreadyCli: '该版本已安装（v{version}），请手动重新运行 dsh web 生效。',
@@ -891,6 +977,10 @@ window.__ModuleLoader__.load({
       editDisabledFrozen: '当前作用域已冻结，编辑不会生效',
       savedNotice: '已保存到{layer}，下一轮生效（next-turn）。',
       deletedNotice: '已撤销{layer}的覆盖，下一轮生效（next-turn）。',
+      // g-049: appended to a success notice when an operation changed the stored
+      // text while the editor held **unsaved** work, so the reader knows why the
+      // box still shows something other than the new stored value.
+      mineDraftKept: '配置已在别处更新；你编辑器中尚未保存的内容仍保留着。',
       nextTurn: '下一轮生效',
       ovHeading: '已生效覆盖',
       ovEmpty: '当前作用域没有任何覆盖。',
@@ -937,6 +1027,9 @@ window.__ModuleLoader__.load({
       scopeSelected: '当前选中',
       // ---- stage 2: history / diff / reset / transfer ----
       histHeading: '版本历史',
+      // g-044: the summary line of the folded「说明与提示」block, which carries
+      // the retention sentence and the three scope/picking sentences.
+      histNotesToggle: '说明与提示',
       histNote:
         '每次成功保存或撤销都会追加一条记录（最近 {limit} 条）。历史文件按行追加，不做整文件重写。',
       histLayerLabel: '历史层',
@@ -962,7 +1055,8 @@ window.__ModuleLoader__.load({
       histUnreadable: '历史文件不可读：{reason}',
       histLastError: '最近一次历史写入失败：{reason}',
       histCurrent: '当前生效值',
-      histWholeLayer: '（整层）',
+      // g-044: `histWholeLayer`（`name === null` 的占位文本）与 `histPreviewName`
+      // 随段名展示一起删除：列表行与预览弹窗都不再显示段名，没有别处引用它们。
       'histAction.replace': '替换 replace',
       'histAction.hide': '隐藏 hide',
       'histAction.append': '追加 append',
@@ -980,7 +1074,6 @@ window.__ModuleLoader__.load({
       histPreviewAction: '动作',
       histPreviewAt: '时间',
       histPreviewLayer: '层',
-      histPreviewName: '段名',
       histPreviewOrigin: '来源',
       histPreviewNote: '备注',
       histPreviewBefore: '写前 before',
@@ -988,7 +1081,10 @@ window.__ModuleLoader__.load({
       histPreviewNoText: '（无文本）',
       histPreviewSnapshot: '该版本的整层快照（{n} 条覆盖）',
       histPreviewSnapshotEmpty: '这条记录没有带整层快照（旧记录）。',
-      histPreviewSnapshotEntry: '{name} · {action} · {bytes} 字节',
+      // g-044: the section name is gone from the entry line too — the writing
+      // surface is the single reserved section, so the name said nothing a
+      // reader could act on (the name itself is still on `data-preview-snapshot`).
+      histPreviewSnapshotEntry: '{action} · {bytes} 字节',
       histPreviewPolicy: '预览与回滚只涉及「我的 Prompt」段：本层其它段不会被改动。',
       histRollback: '回滚到此处',
       histRollbackTitle: '回滚{layer}到 #{id}',
@@ -1152,12 +1248,32 @@ window.__ModuleLoader__.load({
       updateSettingOn: 'On',
       updateSettingOff: 'Off',
       updateSettingNote:
-        'When the settings page opens, the host asks GitHub once for the latest release: one GET, carrying no local or session data. With this off, no update request is made at all — including on page load.',
+        'When the settings page opens, the host checks once for the latest version: it asks the npm registry first and falls back to GitHub Releases only when npm cannot answer — one GET, carrying no local or session data, from whichever source the download region selects (Mainland China = npmmirror). With this off, no update request is made at all, including on page load; turning it on also reads the download-region state once.',
       updateToggleSaved: 'Update checks are now {state}.',
       updateRecheck: 'Check now',
       updateSwitching: 'Saving…',
       updateUnknown: 'Upstream has no usable version information right now.',
       updateLatestKnown: 'Latest version {latest}',
+      // g-043: the download region (see the zh block for the same nine keys).
+      updateRegionLabel: 'Download region',
+      updateRegionDefault: 'Default',
+      updateRegionDefaultNote: 'npm first; GitHub release artifacts only when npm cannot answer.',
+      updateRegionCn: 'Mainland China',
+      updateRegionCnNote: 'Use the npmmirror registry (registry.npmmirror.com).',
+      updateRegionCustom: 'Custom',
+      updateRegionCustomNote: 'Use the mirror address you type (validated before it is saved).',
+      updateRegionAuto: 'Chosen automatically (the source serves this package): {region}.',
+      updateRegionSaved: 'Download region is now {region}; checks and installs use the new source.',
+      updateRegionSaving: 'Switching…',
+      updateRegionSelectLabel: 'Update source',
+      updateRegionCustomTitle: 'Custom mirror',
+      updateRegionCustomBody:
+        'Enter the base address of an npm registry (http(s)://, a path is allowed). The host validates the format and fetches the package document once: an unreachable address, or one that is not an npm registry, is never saved and the source in force stays as it is.',
+      updateRegionCustomPlaceholder: 'https://registry.example.com/',
+      updateRegionCustomSubmit: 'Validate and save',
+      updateRegionCustomChecking: 'Validating…',
+      updateRegionCustomCancel: 'Cancel',
+      updateRegionUnusable: 'The saved custom mirror address is unusable: {reason}',
       // ---- g-032:「Update now」(mirrors the zh block above). Nothing here may
       // promise an automatic restart: the install is the host's job and the
       // restart is the user's.
@@ -1168,7 +1284,7 @@ window.__ModuleLoader__.load({
       updateApply: 'Update now',
       updateApplyTitle: 'Update to v{latest}',
       updateApplyBody:
-        'The host will install the v{latest} release through the official plugin manager (into this profile; no automatic restart).',
+        'The host will install v{latest} through the official plugin manager (fetched from the npm registry or a GitHub release artifact, whichever your download region selects; into this profile, with no automatic restart).',
       updateApplyRestartNote: 'You will need to restart DSH yourself for the new version to take effect.',
       updateApplyRestartNoteCli: 'You will need to restart dsh web yourself for the new version to take effect.',
       updateApplyRestartNoteDesktop:
@@ -1192,7 +1308,7 @@ window.__ModuleLoader__.load({
       updateApplyUnknownDesktop:
         'This install can no longer be looked up (it may have finished, or this page may have been reloaded). Quit and reopen DeepSeek Harness, or use "Check now" to confirm the version.',
       updateApplyManual: 'You can also update by hand: {hint}',
-      updateApplyManualLink: 'Open the {tag} release page',
+      updateApplyManualLink: 'Open the {tag} release or package page',
       updateApplyReused: 'An install is already running.',
       updateApplyAlready: 'v{version} is already installed — restart DSH to put it to work.',
       updateApplyAlreadyCli: 'v{version} is already installed — restart dsh web to put it to work.',
@@ -1334,6 +1450,8 @@ window.__ModuleLoader__.load({
       editDisabledFrozen: 'The current scope is frozen; an edit would not take effect',
       savedNotice: 'Saved to {layer}; effective from the next turn (next-turn).',
       deletedNotice: 'Removed the {layer} override; effective from the next turn (next-turn).',
+      // g-049: see the zh table.
+      mineDraftKept: 'The configuration changed elsewhere; the text you have not saved is still in the editor.',
       nextTurn: 'next-turn',
       ovHeading: 'Active overrides',
       ovEmpty: 'This scope has no overrides.',
@@ -1381,6 +1499,9 @@ window.__ModuleLoader__.load({
       scopeSelected: 'Currently selected',
       // ---- stage 2: history / diff / reset / transfer ----
       histHeading: 'Version history',
+      // g-044: the summary line of the folded「Notes & tips」block, which carries
+      // the retention sentence and the three scope/picking sentences.
+      histNotesToggle: 'Notes & tips',
       histNote:
         'Every successful save or removal appends one record (the newest {limit} are kept). The history file is appended line by line, never rewritten for a single read.',
       histLayerLabel: 'History layer',
@@ -1405,7 +1526,9 @@ window.__ModuleLoader__.load({
       histUnreadable: 'The history file is unreadable: {reason}',
       histLastError: 'The last history write failed: {reason}',
       histCurrent: 'Current value',
-      histWholeLayer: '(whole layer)',
+      // g-044: `histWholeLayer` (the `name === null` placeholder) and
+      // `histPreviewName` went with the section-name display: neither the row nor
+      // the preview shows a section name, and nothing else referenced them.
       'histAction.replace': 'replace',
       'histAction.hide': 'hide',
       'histAction.append': 'append',
@@ -1425,7 +1548,6 @@ window.__ModuleLoader__.load({
       histPreviewAction: 'Action',
       histPreviewAt: 'Time',
       histPreviewLayer: 'Layer',
-      histPreviewName: 'Section',
       histPreviewOrigin: 'Origin',
       histPreviewNote: 'Note',
       histPreviewBefore: 'Before',
@@ -1433,7 +1555,9 @@ window.__ModuleLoader__.load({
       histPreviewNoText: '(no text)',
       histPreviewSnapshot: 'The whole-layer snapshot of this version ({n} override(s))',
       histPreviewSnapshotEmpty: 'This record carries no whole-layer snapshot (an older record).',
-      histPreviewSnapshotEntry: '{name} · {action} · {bytes} bytes',
+      // g-044: no section name on the entry line either (see the zh table); the
+      // name stays on `data-preview-snapshot` for tests and diagnostics.
+      histPreviewSnapshotEntry: '{action} · {bytes} bytes',
       histPreviewPolicy: 'Preview and rollback concern the "My Prompt" section only: no other section of this layer is touched.',
       histRollback: 'Roll back to this',
       histRollbackTitle: 'Roll the {layer} back to #{id}',
@@ -2525,6 +2649,28 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Index a `[{name, hash}]` list by name, or `null` when it is not one.
+     *
+     * A malformed list is refused whole rather than half-read: comparing a
+     * partial list would let a truncated answer look like a clean match.
+     * @param list - anything.
+     * @returns a `Map` from file name to digest, or `null`.
+     */
+    function chunkStampMap(list) {
+      if (!Array.isArray(list)) return null;
+      const map = new Map();
+      for (const entry of list) {
+        if (entry === null || typeof entry !== 'object') return null;
+        const name = entry.name;
+        const hash = entry.hash;
+        if (typeof name !== 'string' || name.length === 0) return null;
+        if (typeof hash !== 'string' || hash.length === 0) return null;
+        map.set(name, hash);
+      }
+      return map;
+    }
+
+    /**
      * The build stamp's verdict, as the string the page exposes verbatim in
      * `data-build-match` (CONTRACT.md §14).
      *
@@ -2535,6 +2681,16 @@ window.__ModuleLoader__.load({
      * ping — is `'unknown'`. Rendering「过期」from a missing answer would send
      * the reader chasing a non-existent stale bundle, which is exactly the
      * confusion this feature exists to end.
+     *
+     * g-045 splits the bundle, so the main digest is no longer the whole
+     * answer: the page's own chunks are *not* in `factory.toString()`. The
+     * verdict therefore also compares, item by item, this file's manifest
+     * ({@link CHUNK_STAMPS}, inside the region, hence inside `self`) with the
+     * digests the host reports for the files it serves, and with the digest
+     * every chunk this page has **really loaded** reported of itself. A host
+     * that reports no chunk list at all (an old host) keeps the old answer;
+     * a coverage gap — a chunk one side knows and the other does not — is
+     * `'unknown'`, never「一致」.
      * @param boot - the `{self, server, pingFailed}` state.
      * @returns `'true'`, `'false'` or `'unknown'`.
      */
@@ -2542,7 +2698,30 @@ window.__ModuleLoader__.load({
       const self = boot && boot.self && typeof boot.self.hash === 'string' ? boot.self.hash : null;
       const server = boot && boot.server && typeof boot.server.hash === 'string' ? boot.server.hash : null;
       if (self === null || server === null) return 'unknown';
-      return self === server ? 'true' : 'false';
+      if (self !== server) return 'false';
+      const loaded = loadedChunkStamps();
+      const reportedList = boot && boot.server ? boot.server.chunks : null;
+      if (reportedList === null || reportedList === undefined) {
+        // An old host answers no chunk list: there is nothing to compare
+        // against, and a page that has loaded no chunk has no evidence of its
+        // own to contradict it. Once it has, the honest word is「未知」.
+        return loaded.length === 0 ? 'true' : 'unknown';
+      }
+      // A list that is present but unreadable is refused **whole**: a half-read
+      // answer could hide the one chunk that changed.
+      const reported = Array.isArray(reportedList) ? chunkStampMap(reportedList) : null;
+      if (reported === null) return 'unknown';
+      const declared = chunkStampMap(CHUNK_STAMPS);
+      if (declared === null || declared.size !== reported.size) return 'unknown';
+      for (const [name, hash] of declared) {
+        if (!reported.has(name)) return 'unknown';
+        if (reported.get(name) !== hash) return 'false';
+      }
+      for (const entry of loaded) {
+        if (!reported.has(entry.name)) return 'unknown';
+        if (reported.get(entry.name) !== entry.hash) return 'false';
+      }
+      return 'true';
     }
 
     /**
@@ -2987,6 +3166,34 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * g-043: one `GET`/`PUT /download-region` payload as this page's view state.
+     *
+     * Every field is copied defensively — an old Host that does not know this
+     * route, a hand-edited answer and a region id from the future all have to
+     * degrade to something renderable: an unknown id reads as `default`, an
+     * address that is not a string as "no address", `detected` only as the Host's
+     * own `true`. Nothing is inferred, because「自动判定」is a claim about what the
+     * Host did and this page may not make it up.
+     * @param payload - the response body, or anything else.
+     * @returns the region view state.
+     */
+    function regionStateOf(payload) {
+      const source = payload !== null && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+      return {
+        phase: 'ready',
+        region: DOWNLOAD_REGIONS.includes(source.region) ? source.region : 'default',
+        registry: typeof source.registry === 'string' && source.registry.length > 0 ? source.registry : null,
+        custom: typeof source.custom === 'string' && source.custom.length > 0 ? source.custom : null,
+        detected: source.detected === true,
+        stored: source.stored === true,
+        error:
+          source.error !== null && typeof source.error === 'object' && typeof source.error.code === 'string'
+            ? { code: source.error.code, message: typeof source.error.message === 'string' ? source.error.message : '' }
+            : null,
+      };
+    }
+
+    /**
      * Copy text, preferring the probe's own clipboard helper.
      * @param text - the text to copy.
      * @returns whether the copy succeeded.
@@ -3100,19 +3307,6 @@ window.__ModuleLoader__.load({
       const key = `histAction.${String(action)}`;
       const text = safeT(t, key, '');
       return text.length > 0 ? text : String(action);
-    }
-
-    /**
-     * Localized label for one import status.
-     * @param t - the bound translator.
-     * @param status - `added` | `replaced` | `unchanged` | `removed`.
-     * @returns the display string.
-     */
-    function importStatusLabel(t, status) {
-      if (status === 'added') return t('importStatusAdded');
-      if (status === 'replaced') return t('importStatusReplaced');
-      if (status === 'removed') return t('importStatusRemoved');
-      return t('importStatusUnchanged');
     }
 
     /**
@@ -4576,7 +4770,10 @@ window.__ModuleLoader__.load({
           h(UI.Input, {
             'data-role': 'session-search',
             value: m.sessionQuery,
-            placeholder: currentLabel ? fmt(t('sessionCurrentLabel'), { label: currentLabel }) : t('sessionSearch'),
+            // g-047: the placeholder is copy, not a status field. 「当前选中」
+            // has its own displays (the summary, the `session-current` line and
+            // the pinned entry above), so the box never pretends to be one.
+            placeholder: t('sessionSearch'),
             onChange: a.setSessionQuery,
             onKeyDown: a.onSessionKeyDown,
           }),
@@ -4729,1542 +4926,6 @@ window.__ModuleLoader__.load({
       );
 
       return scopeSection(t, m, a, children);
-    }
-
-    /**
-     * Filter tabs for the section view.
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @returns the filter block element.
-     */
-    function renderFilters(t, m, a) {
-      const group = (key, heading, values, selected, onPick) =>
-        h(
-          'div',
-          { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-          h('span', { style: metaStyle }, heading),
-          tabs(
-            values.map((value) => ({
-              value,
-              label: t(filterLabelKey(value)),
-              id: `ps-${key}-${value}`,
-              panelId: 'ps-panel',
-            })),
-            selected,
-            onPick,
-            heading,
-            key,
-          ),
-        );
-      return h(
-        'div',
-        { 'data-region': 'filters', style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-        h('span', { style: { ...metaStyle, fontWeight: 600 } }, t('filterHeading')),
-        group('layer', t('filterLayer'), LAYER_FILTERS, m.filters.layer, a.setLayerFilter),
-        group('overridable', t('filterOverridable'), OVERRIDABLE_FILTERS, m.filters.overridable, a.setOverridableFilter),
-        group('origin', t('filterOrigin'), ORIGIN_FILTERS, m.filters.origin, a.setOriginFilter),
-      );
-    }
-
-    /**
-     * One section row of the read-only overview.
-     *
-     * Since g-015 this row has **no write entry at all**: the Revision 6
-     * 「编辑」 switch, the row-scoped form it opened and the 新增一段 entry are
-     * gone (the only write surface left is 「我的 Prompt」, which writes the one
-     * name the Revision 7 contract accepts). What remains is what a reader
-     * needs: the identity of the segment, its origin/layer/overridable verdict,
-     * the action that produced the effective text, the reason an override did
-     * not take effect when the client can prove it, and a disclosure that shows
-     * the full text. `data-warning="edit-disabled"` — the gate that used to
-     * disable the edit button — is kept as a *statement* rather than a switch:
-     * the same {@link editGate} verdict, read-only.
-     *
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @param section - the `effective.sections` entry.
-     * @returns the row element.
-     */
-    function sectionRow(t, m, a, section) {
-      const origin = originOf(section);
-      const layer = sectionLayer(section);
-      const overridable = section.overridable === true;
-      const gate = editGate(section, m.fz, t);
-      const text = typeof section.text === 'string' ? section.text : '';
-      const expanded = m.expanded === section.name;
-      const cause = ineffectiveCause(t, section, m.incoming);
-      const showHint = origin === 'downstream-added' || origin === 'unmatched-override';
-      // What the effective text *is*, in the vocabulary the goal asked for:
-      // 已覆盖 / 已隐藏 / 追加, or nothing when the section is untouched. It is
-      // read off `section.action` — the action the assembly really applied —
-      // so a row cannot claim a state the override engine did not produce.
-      const statusKey =
-        section.action === 'replace' ? 'ovEffective' : section.action === 'hide' ? 'stHidden' : section.action === 'append' ? 'stAppended' : null;
-      return h(
-        'div',
-        {
-          'data-section-row': section.name,
-          'data-section-name': section.name,
-          'data-origin': origin,
-          'data-layer': layer,
-          'data-overridable': String(overridable),
-          'data-applied': String(section.applied === true),
-          'data-index': section.index === null || section.index === undefined ? '' : String(section.index),
-          style: {
-            border: `1px solid ${token.borderL1}`,
-            borderRadius: 8,
-            padding: '8px 10px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 6,
-          },
-        },
-        h(
-          'div',
-          { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-          h('code', { style: { fontSize: 12, color: token.labelPrimary } }, section.name),
-          h('span', { style: metaStyle }, `#${section.index === null || section.index === undefined ? '—' : section.index}`),
-          h(UI.Tag, { tone: originTone(origin) }, t(originKey(origin))),
-          h(UI.Tag, { tone: layer === 'default' ? 'neutral' : 'info' }, t(layerKey(layer))),
-          h(UI.Tag, { tone: overridable ? 'success' : 'warning' }, overridable ? t('fYes') : t('fNo')),
-          statusKey === null ? null : h(UI.Tag, { tone: 'info' }, t(statusKey)),
-          section.action ? h(UI.Tag, { tone: 'neutral' }, String(section.action)) : null,
-          h('span', { style: metaStyle }, fmt(t('colChars'), { n: text.length })),
-        ),
-        section.reason
-          ? h(
-              'div',
-              { 'data-section-reason': section.name, style: { fontSize: 12, color: token.stateWarn, wordBreak: 'break-word' } },
-              `${t('colReason')}: ${String(section.reason)}`,
-            )
-          : null,
-        showHint
-          ? h('div', { style: { fontSize: 12, color: token.labelTertiary } }, t(origin === 'downstream-added' ? 'originDownstreamHint' : 'originUnmatchedHint'))
-          : null,
-        cause === null
-          ? null
-          : h(
-              'div',
-              {
-                'data-section-ineffective': cause.code,
-                style: { fontSize: 12, color: token.stateWarn, wordBreak: 'break-word' },
-              },
-              `${t('ovReason')}: ${cause.text} ${t('ovFixHint')}`,
-            ),
-        // The gate is reported, not enforced: this list cannot write, so the
-        // honest thing to render is why a write here *would* not take effect.
-        gate.reasons.length === 0
-          ? null
-          : h(
-              'div',
-              {
-                'data-warning': 'edit-disabled',
-                style: { fontSize: 12, color: token.stateError, wordBreak: 'break-word' },
-              },
-              gate.reasons.join(' '),
-            ),
-        h(
-          'div',
-          { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-          h(
-            'button',
-            {
-              type: 'button',
-              'data-action': 'expand',
-              'data-section-name': section.name,
-              'aria-expanded': String(expanded),
-              onClick: () => a.toggleExpanded(section.name),
-              style: {
-                font: 'inherit',
-                fontSize: 12,
-                padding: '2px 8px',
-                borderRadius: 6,
-                cursor: 'pointer',
-                color: token.labelSecondary,
-                background: 'transparent',
-                border: `1px solid ${token.borderL2}`,
-              },
-            },
-            expanded ? t('collapse') : t('expand'),
-          ),
-        ),
-        expanded
-          ? h(
-              'pre',
-              {
-                'data-section-full': section.name,
-                style: {
-                  margin: 0,
-                  padding: '8px 10px',
-                  borderRadius: 8,
-                  border: `1px solid ${token.borderL2}`,
-                  fontSize: 12,
-                  lineHeight: '18px',
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
-                  maxHeight: 320,
-                  overflow: 'auto',
-                  color: token.labelSecondary,
-                  fontFamily: token.mono,
-                },
-              },
-              text,
-            )
-          : null,
-      );
-    }
-
-    /**
-     * The read-only segment list — the `sections` view of 「提示词总览」.
-     *
-     * Read-only by construction: there is no editor slot (the parameter is
-     * gone, so no caller could hand one in) and no 「新增一段」 entry. The two
-     * controls that remain are `copy` (the assembled text, which is what the
-     * overview tab promises) and the per-row `expand` disclosure.
-     *
-     * The reserved section itself is deliberately **not** listed here: it is
-     * what 「我的 Prompt」 owns, and showing the same text twice on one page is
-     * exactly the confusion the split exists to remove. A one-line note says so
-     * whenever the reserved section is actually in the assembly.
-     *
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @returns the view element.
-     */
-    function renderSectionsView(t, m, a) {
-      const all = m.effectiveSections;
-      const sections = all.filter((section) => section.name !== RESERVED_SECTION_NAME);
-      const shown = sections.filter((section) => m.passesFilters(section));
-      return h(
-        'div',
-        { 'data-region': 'sections', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
-        renderFilters(t, m, a),
-        h(
-          'div',
-          { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-          h(
-            'span',
-            {
-              'data-sections-total': String(sections.length),
-              'data-sections-shown': String(shown.length),
-              style: { ...metaStyle },
-            },
-            fmt(t('sectionsShown'), { shown: shown.length, total: sections.length }),
-          ),
-          h(UI.Button, { variant: 'outline', 'data-action': 'copy', onClick: a.copy }, t('copy')),
-        ),
-        h('p', { 'data-note': 'reserved-own-tab', style: { margin: 0, ...metaStyle } }, t('overviewReservedNote')),
-        sections.length === 0
-          ? h(
-              'div',
-              { 'data-empty': 'sections', style: cardStyle },
-              h('strong', { style: { fontSize: 13 } }, t('emptyTitle')),
-              h('p', { style: { margin: '4px 0 0', ...metaStyle } }, t('emptyBody')),
-            )
-          : null,
-        shown.map((section) => h('div', { key: section.name }, sectionRow(t, m, a, section))),
-      );
-    }
-
-    /**
-     * The full-text view: `rendered`, search highlight, unresolved warning,
-     * and the `base` ↔ `effective` comparison.
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @returns the view element.
-     */
-    function renderFullView(t, m, a) {
-      const snapshot = m.snap.data;
-      const sections = m.effectiveSections;
-      const baseSections = snapshot && snapshot.base && Array.isArray(snapshot.base.sections) ? snapshot.base.sections : [];
-      const resolved = snapshot ? snapshot.renderedResolved !== false : true;
-      const unresolved = snapshot && Array.isArray(snapshot.unresolvedVariables) ? snapshot.unresolvedVariables : [];
-      // The server grades an unresolved reference by what it does to the REAL
-      // assembly: one in a section that interpolates makes it throw, one in a
-      // section that does not reaches the model as literal braces. Only the
-      // throwing list is a fault, so only it is a warning. A payload that
-      // predates the grading carries neither list; then the single legacy list
-      // is read as the throwing one, which is the safe reading.
-      const graded = snapshot ? Array.isArray(snapshot.unresolvedThrowing) || Array.isArray(snapshot.unresolvedLiteral) : false;
-      const throwing = snapshot && Array.isArray(snapshot.unresolvedThrowing) ? snapshot.unresolvedThrowing : unresolved;
-      const literal = snapshot && Array.isArray(snapshot.unresolvedLiteral) ? snapshot.unresolvedLiteral : [];
-      const names = (list) => list.map((name) => String(name)).join(', ');
-      // Machine-readable attributes keep the original comma-separated shape.
-      const marks = (list) => list.map((name) => String(name)).join(',');
-      const text =
-        m.fullOrigin === 'all' ? String(snapshot && snapshot.rendered ? snapshot.rendered : '') : composeSections(sections, m.fullOrigin);
-      const lines = splitLines(text);
-      const truncated = lines.length > MAX_VIEW_LINES;
-      const shownText = (truncated ? lines.slice(0, MAX_VIEW_LINES) : lines).join('\n');
-      const hits = countMatches(shownText, m.search);
-      const diffRows = diffSections(baseSections, sections);
-      const changed = diffRows.filter((row) => row.status !== 'same').length;
-
-      return h(
-        'div',
-        { 'data-region': 'full', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
-        throwing.length > 0
-          ? h(
-              'div',
-              {
-                'data-warning': 'rendered-unresolved',
-                'data-unresolved-variables': marks(unresolved),
-                'data-unresolved-throwing': marks(throwing),
-                'data-unresolved-literal': marks(literal),
-                style: { ...cardStyle, borderColor: token.stateWarn },
-              },
-              h('strong', { style: { fontSize: 13, color: token.stateWarn } }, t('unresolvedTitle')),
-              h(
-                'div',
-                { style: { marginTop: 4, fontSize: 13, color: token.labelPrimary } },
-                fmt(t('unresolvedBody'), { list: names(throwing) }),
-              ),
-              h('p', { style: { margin: '4px 0 0', ...metaStyle } }, t('unresolvedNote')),
-              literal.length > 0
-                ? h(
-                    'p',
-                    { 'data-note': 'rendered-literal-inline', style: { margin: '4px 0 0', ...metaStyle } },
-                    fmt(t('unresolvedLiteralInline'), { list: names(literal) }),
-                  )
-                : null,
-            )
-          : graded && literal.length > 0
-            ? h(
-                'div',
-                {
-                  'data-note': 'rendered-literal',
-                  'data-unresolved-variables': marks(unresolved),
-                  'data-unresolved-literal': marks(literal),
-                  style: cardStyle,
-                },
-                h('strong', { style: { fontSize: 13, color: token.labelPrimary } }, t('unresolvedLiteralTitle')),
-                h(
-                  'div',
-                  { style: { marginTop: 4, fontSize: 13, color: token.labelPrimary } },
-                  fmt(t('unresolvedLiteralBody'), { list: names(literal) }),
-                ),
-                h('p', { style: { margin: '4px 0 0', ...metaStyle } }, t('unresolvedLiteralNote')),
-              )
-            : null,
-        h(
-          'div',
-          { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-          h('h3', { style: headingStyle }, t('fullHeading')),
-          h(UI.Button, { variant: 'outline', 'data-action': 'copy', onClick: a.copy }, t('copy')),
-          h(UI.Input, {
-            'data-role': 'search',
-            placeholder: t('searchPlaceholder'),
-            value: m.search,
-            onChange: a.setSearch,
-            style: { maxWidth: 280 },
-          }),
-          h('span', { 'data-search-count': String(hits), style: metaStyle }, hits > 0 ? fmt(t('searchCount'), { n: hits }) : t('searchNone')),
-        ),
-        h(
-          'div',
-          { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-          h('span', { style: metaStyle }, t('filterOrigin')),
-          tabs(
-            ORIGIN_FILTERS.map((value) => ({
-              value,
-              label: t(value === 'all' ? 'fAll' : originKey(value)),
-              id: `ps-full-${value}`,
-              panelId: 'ps-full-panel',
-            })),
-            m.fullOrigin,
-            a.setFullOrigin,
-            t('filterOrigin'),
-            'full-origin',
-          ),
-        ),
-        m.fullOrigin === 'all'
-          ? null
-          : h('p', { 'data-warning': 'full-filtered', style: { margin: 0, ...metaStyle } }, t('fullFiltered')),
-        truncated
-          ? h('p', { 'data-warning': 'truncated', style: { margin: 0, ...metaStyle } }, fmt(t('truncated'), { n: MAX_VIEW_LINES }))
-          : null,
-        h(
-          'pre',
-          {
-            'data-full-text': m.fullOrigin === 'all' ? 'rendered' : 'filtered',
-            'data-rendered-resolved': String(resolved),
-            style: {
-              margin: 0,
-              padding: '10px 12px',
-              borderRadius: 8,
-              border: `1px solid ${token.borderL2}`,
-              fontSize: 12,
-              lineHeight: '18px',
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-              maxHeight: 460,
-              overflow: 'auto',
-              color: token.labelSecondary,
-              fontFamily: token.mono,
-            },
-          },
-          highlightNodes(shownText, m.search),
-        ),
-        h('h3', { style: { ...headingStyle, marginTop: 4 } }, t('diffHeading')),
-        h('p', { style: { margin: 0, ...metaStyle } }, t('diffHint')),
-        h(
-          'div',
-          {
-            'data-region': 'diff',
-            'data-diff-changed': String(changed),
-            'data-diff-total': String(diffRows.length),
-            style: { display: 'flex', flexDirection: 'column', gap: 6 },
-          },
-          diffRows.map((row) => {
-            const pair = row.base && row.effective ? chunkDiff(row.base.text, row.effective.text) : null;
-            return h(
-              'div',
-              {
-                key: row.name,
-                'data-diff-row': row.name,
-                'data-diff-status': row.status,
-                style: {
-                  border: `1px solid ${row.status === 'same' ? token.borderL1 : token.stateWarn}`,
-                  borderRadius: 8,
-                  padding: '6px 10px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 4,
-                },
-              },
-              h(
-                'div',
-                { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-                h('code', { style: { fontSize: 12 } }, row.name),
-                h(UI.Tag, { tone: diffTone(row.status) }, t(diffKey(row.status))),
-                h('span', { style: metaStyle }, fmt(t('colChars'), { n: row.effective ? String(row.effective.text || '').length : 0 })),
-              ),
-              row.status === 'changed' && pair
-                ? h(
-                    'pre',
-                    {
-                      'data-diff-detail': row.name,
-                      style: {
-                        margin: 0,
-                        padding: '6px 8px',
-                        borderRadius: 6,
-                        fontSize: 12,
-                        lineHeight: '18px',
-                        whiteSpace: 'pre-wrap',
-                        wordBreak: 'break-word',
-                        maxHeight: 220,
-                        overflow: 'auto',
-                        fontFamily: token.mono,
-                      },
-                    },
-                    pair.base.length > 0
-                      ? h(
-                          'span',
-                          { 'data-diff-line': 'base', style: { background: token.diffDelFill, display: 'block' } },
-                          pair.base.join('\n'),
-                        )
-                      : null,
-                    pair.effective.length > 0
-                      ? h(
-                          'span',
-                          { 'data-diff-line': 'effective', style: { background: token.diffAddFill, display: 'block' } },
-                          pair.effective.join('\n'),
-                        )
-                      : null,
-                  )
-                : null,
-            );
-          }),
-        ),
-      );
-    }
-
-    /**
-     * The override-management view.
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @returns the view element.
-     */
-    /**
-     * Render one history row, plus the two selectors that feed the comparison.
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @param record - one history record.
-     * @returns the row element.
-     */
-    function historyRow(t, m, a, record) {
-      const id = String(record.id);
-      const selected = m.diffSel.from === id ? 'from' : m.diffSel.to === id ? 'to' : '';
-      const sideStyle = {
-        font: 'inherit',
-        fontSize: 12,
-        padding: '2px 8px',
-        borderRadius: 6,
-        cursor: 'pointer',
-        background: 'transparent',
-        color: token.labelSecondary,
-        border: `1px solid ${token.borderL2}`,
-      };
-      const pickHint = t('histRowPickHint');
-      // A button inside a clickable row must not also re-pick the row: in a real
-      // browser the click bubbles up, so the buttons swallow it. The test
-      // doubles call `onClick` directly with no event, which is why the guard
-      // tolerates a missing one.
-      const stop = (event) => {
-        if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
-      };
-      return h(
-        'div',
-        {
-          key: id,
-          'data-history-row': id,
-          // g-039 third round: the **row itself** is the primary control —
-          // clicking records builds the comparison (first row = from, second =
-          // to and the request fires, then a sliding window). The two small
-          // buttons below stay for exact control.
-          'data-action': 'history-row-pick',
-          'data-history-pick-hint': pickHint,
-          title: pickHint,
-          onClick: () => a.pickHistoryRow(id),
-          'data-history-action': record.action,
-          'data-history-name': record.name === null ? '' : String(record.name),
-          'data-history-origin': record.origin,
-          'data-history-layer': record.layer,
-          'data-history-selected': selected,
-          style: {
-            border: `1px solid ${selected === '' ? token.borderL1 : token.stateBusiness}`,
-            borderRadius: 8,
-            padding: '6px 8px',
-            display: 'flex',
-            gap: 6,
-            alignItems: 'center',
-            flexWrap: 'wrap',
-            cursor: 'pointer',
-          },
-        },
-        h('code', { style: { fontSize: 12 } }, `#${id}`),
-        h(UI.Tag, { tone: 'neutral' }, historyActionLabel(t, record.action)),
-        h('code', { style: { fontSize: 12 } }, record.name === null ? t('histWholeLayer') : String(record.name)),
-        h(
-          'span',
-          { style: metaStyle, title: typeof record.at === 'string' ? record.at : undefined },
-          stampOf(record.at),
-        ),
-        record.origin === 'import' ? h(UI.Tag, { tone: 'warning' }, 'import') : null,
-        record.entries !== null && Array.isArray(record.entries)
-          ? h('span', { 'data-history-entries': String(record.entries.length), style: metaStyle }, `entries=${record.entries.length}`)
-          : null,
-        // g-039 sixth round: no per-row from/to buttons. The row itself is the
-        // control (see the click handler above), so the two remaining buttons are
-        // the ones that open something.
-        h(
-          'button',
-          {
-            type: 'button',
-            'data-action': 'history-preview',
-            'data-history-id': id,
-            'data-preview-selected': m.preview.id === id ? 'true' : 'false',
-            onClick: (event) => {
-              stop(event);
-              a.previewHistoryRecord(id);
-            },
-            style: sideStyle,
-          },
-          t('histPreview'),
-        ),
-        h(
-          'button',
-          {
-            type: 'button',
-            'data-action': 'history-rollback',
-            'data-history-id': id,
-            onClick: (event) => {
-              stop(event);
-              a.requestRollback(id);
-            },
-            style: sideStyle,
-          },
-          t('histRollback'),
-        ),
-      );
-    }
-
-    /**
-     * g-039: one history record, previewed in full.
-     *
-     * Everything it shows is already in the `GET /history` payload the list
-     * beside it was rendered from — the record's `before` / `after` texts, its
-     * `snapshot`, its `note`. That is deliberate: previewing a version is a
-     * **read of what is on screen**, so it issues no request at all, and the
-     * "preview writes nothing" assertion is structural rather than a promise.
-     *
-     * The record is looked up in the current page by id. Paging does not clear
-     * the preview (the same rule the comparison selection follows, CONTRACT
-     * §13.3), so a page that does not hold the record yet renders the explicit
-     * `missing` state instead of silently showing nothing.
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @returns the panel element, or `null` when no record is being previewed.
-     */
-    function renderPreviewModal(t, m, a) {
-      const preview = m.preview;
-      const shell = (children, state) =>
-        modalShell(
-          {
-            key: 'history-preview-modal',
-            region: 'history-preview-modal',
-            title: t('histPreviewHeading'),
-            closeLabel: t('histModalClose'),
-            onClose: a.closeHistoryModal,
-          },
-          h(
-            'div',
-            {
-              'data-region': 'history-preview',
-              'data-preview-state': state,
-              'data-preview-id': preview.id === null ? '' : String(preview.id),
-              style: { display: 'flex', flexDirection: 'column', gap: 6 },
-            },
-            children,
-          ),
-        );
-      if (preview.state === 'missing') {
-        return shell([
-          h('p', { key: 'missing', 'data-preview-missing': 'true', style: { margin: 0, ...metaStyle } }, t('histPreviewMissing')),
-          h('p', { key: 'missing-hint', style: { margin: 0, ...metaStyle } }, t('histPreviewMissingHint')),
-        ], 'missing');
-      }
-      const record = preview.record;
-      const entryText = (entry) =>
-        entry !== null && entry !== undefined && typeof entry.text === 'string' ? entry.text : t('histPreviewNoText');
-      const entryBytes = (entry) =>
-        entry !== null && entry !== undefined && Number.isFinite(entry.bytes) ? String(entry.bytes) : '';
-      const snapshot = Array.isArray(record.snapshot) ? record.snapshot : [];
-      const foreign = snapshot.filter((entry) => entry.name !== RESERVED_SECTION_NAME).length;
-      const field = (key, label, value, title) =>
-        h(
-          'div',
-          { key, 'data-preview-field': key, style: { display: 'flex', gap: 6, alignItems: 'baseline' } },
-          h('span', { key: 'label', style: { ...metaStyle, minWidth: 48 } }, label),
-          h('span', { key: 'value', style: { wordBreak: 'break-word' }, title }, value),
-        );
-      const textBoxStyle = {
-        margin: 0,
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-word',
-        maxHeight: 200,
-        overflowY: 'auto',
-        border: `1px solid ${token.borderL1}`,
-        borderRadius: 6,
-        padding: '4px 6px',
-        fontSize: 12,
-      };
-      const textBox = (key, label, entry) =>
-        h(
-          'div',
-          { key, style: { display: 'flex', flexDirection: 'column', gap: 2 } },
-          h('span', { key: 'label', style: metaStyle }, label),
-          h(
-            'pre',
-            {
-              key: 'text',
-              'data-preview-text': key,
-              'data-preview-bytes': entryBytes(entry),
-              style: textBoxStyle,
-            },
-            entryText(entry),
-          ),
-        );
-      return shell(
-        [
-          h(
-            'div',
-            { key: 'head', style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-            h('code', { key: 'id', style: { fontSize: 12 } }, `#${record.id}`),
-            h('span', { key: 'action', style: metaStyle }, historyActionLabel(t, record.action)),
-          ),
-          h(
-            'div',
-            { key: 'facts', style: { display: 'flex', flexDirection: 'column', gap: 2 } },
-            field('action', t('histPreviewAction'), historyActionLabel(t, record.action)),
-            // Revision 18's single rule, the same one a list row follows: the
-            // reader sees the timestamp in **their own** zone, and the record's
-            // stored UTC string stays on the node's `title`.
-            field(
-              'at',
-              t('histPreviewAt'),
-              stampOf(record.at),
-              typeof record.at === 'string' ? record.at : undefined,
-            ),
-            field('layer', t('histPreviewLayer'), layerLabel(t, record.layer)),
-            field('name', t('histPreviewName'), record.name === null ? t('histWholeLayer') : String(record.name)),
-            field('origin', t('histPreviewOrigin'), record.origin === null || record.origin === undefined ? '' : String(record.origin)),
-            field('note', t('histPreviewNote'), record.note === null || record.note === undefined ? t('histPreviewNoText') : String(record.note)),
-          ),
-          // g-039 rework: say what a rollback would and would not touch, before
-          // the button that starts one. The count is read off this record's own
-          // snapshot, so the sentence is about *this* version.
-          h(
-            'p',
-            { key: 'policy', 'data-preview-policy': 'reserved-only', style: { margin: 0, ...metaStyle } },
-            t('histPreviewPolicy'),
-          ),
-          foreign > 0
-            ? h(
-                'p',
-                {
-                  key: 'foreign',
-                  'data-preview-foreign': String(foreign),
-                  style: { margin: 0, ...metaStyle, color: token.stateWarn },
-                },
-                fmt(t('histRollbackForeign'), { n: foreign }),
-              )
-            : null,
-          textBox('before', t('histPreviewBefore'), record.before),
-          textBox('after', t('histPreviewAfter'), record.after),
-          h(
-            'div',
-            { key: 'snapshot', 'data-preview-snapshot-count': String(snapshot.length), style: { display: 'flex', flexDirection: 'column', gap: 2 } },
-            h(
-              'span',
-              { key: 'label', style: metaStyle },
-              snapshot.length === 0
-                ? t('histPreviewSnapshotEmpty')
-                : fmt(t('histPreviewSnapshot'), { n: snapshot.length }),
-            ),
-            ...snapshot.map((entry) =>
-              h(
-                'div',
-                {
-                  key: `snap-${String(entry.name)}`,
-                  'data-preview-snapshot': String(entry.name),
-                  'data-preview-snapshot-action': String(entry.action),
-                  style: { ...metaStyle, display: 'flex', gap: 6, flexWrap: 'wrap' },
-                },
-                fmt(t('histPreviewSnapshotEntry'), {
-                  name: String(entry.name),
-                  action: String(entry.action),
-                  bytes: entry.bytes === null || entry.bytes === undefined ? '—' : String(entry.bytes),
-                }),
-              ),
-            ),
-          ),
-        ],
-        'ready',
-      );
-    }
-
-    /**
-     * Render the line-level diff: the primitives `DiffBlock` when it is really
-     * available, and a readable hand-built rendering of the host's own ops when
-     * it is not. Both paths show the SAME comparison — the fallback is not a
-     * second diff algorithm, it is a second renderer for the same result.
-     * @param t - the bound translator.
-     * @param lines - `diff.lines` from the host.
-     * @returns the element.
-     */
-    function renderDiffLines(t, lines) {
-      const ops = Array.isArray(lines.ops) ? lines.ops : [];
-      if (HAS_DIFF_BLOCK) {
-        return h(
-          'div',
-          { 'data-region': 'diffblock', 'data-diff-block': 'primitives' },
-          h(primitives.DiffBlock, {
-            diffs: [{
-              path: lines.name,
-              oldText: typeof lines.textBefore === 'string' ? lines.textBefore : '',
-              newText: typeof lines.textAfter === 'string' ? lines.textAfter : '',
-            }],
-            labels: diffBlockLabels(t),
-            maxLines: DIFF_BLOCK_MAX_LINES,
-          }),
-        );
-      }
-      const shown = ops.slice(0, MAX_DIFF_LINES_SHOWN);
-      const cut = shown.length < ops.length || lines.truncated === true;
-      return h(
-        'div',
-        {
-          'data-region': 'diffblock',
-          'data-diff-block': 'fallback',
-          'data-diff-ops': String(ops.length),
-          'data-diff-ops-shown': String(shown.length),
-        },
-        h(
-          'div',
-          {
-            style: {
-              font: `12px/18px ${token.mono}`,
-              maxHeight: 320,
-              overflow: 'auto',
-              border: `1px solid ${token.borderL1}`,
-              borderRadius: 8,
-              padding: '6px 8px',
-            },
-          },
-          shown.map((op, index) =>
-            h(
-              'div',
-              {
-                key: `op-${index}`,
-                'data-diff-op': op.type,
-                'data-diff-op-text': op.text,
-                'data-diff-op-before-line': op.beforeLine === null ? '' : String(op.beforeLine),
-                'data-diff-op-after-line': op.afterLine === null ? '' : String(op.afterLine),
-                style: {
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
-                  background: op.type === 'insert' ? token.diffAddFill : op.type === 'delete' ? token.diffDelFill : 'transparent',
-                },
-              },
-              `${diffOpMarker(op.type)} ${op.text}`,
-            ),
-          ),
-        ),
-        cut ? h('div', { 'data-diff-cut': 'true', style: metaStyle }, fmt(t('histDiffTruncated'), { n: shown.length })) : null,
-      );
-    }
-
-    /**
-     * Render the version comparison result.
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @returns the panel element.
-     */
-    function renderDiffModal(t, m, a) {
-      const label = (value) => (value === null || value === undefined
-        ? '—'
-        : value === DIFF_CURRENT ? t('histCurrent') : `#${value}`);
-      // g-039 sixth round: the dialog holds the comparison and nothing else. The
-      // "clear the comparison" control lives **outside** it (in the list's tool
-      // row), so no control that acts on the list is ever buried inside a dialog,
-      // and the how-to sentence lives there too — a dialog that is showing a
-      // result does not need to explain how to ask for one.
-      const children = [
-        h(
-          'div',
-          { key: 'selection', style: metaStyle },
-          h('span', { 'data-diff-from': m.diffSel.from === null ? '' : String(m.diffSel.from) }, `${t('histDiffFrom')}: ${label(m.diffSel.from)}`),
-          ' · ',
-          h('span', { 'data-diff-to': m.diffSel.to === null ? '' : String(m.diffSel.to) }, `${t('histDiffTo')}: ${label(m.diffSel.to)}`),
-        ),
-      ];
-      if (m.diff.phase === 'loading') children.push(h('p', { key: 'loading', style: metaStyle }, t('loading')));
-      if (m.diff.phase === 'error') children.push(h('div', { key: 'error' }, errorBanner(t, m.diff.error, t('histDiffUnavailable'))));
-      const data = m.diff.data;
-      if (data) {
-        const counts = data.sectionsCounts || {};
-        children.push(
-          h(
-            'div',
-            {
-              key: 'counts',
-              'data-diff-sections': String(counts.total === undefined ? 0 : counts.total),
-              'data-diff-changed': String(counts.changed === undefined ? 0 : counts.changed),
-              'data-diff-added': String(counts.added === undefined ? 0 : counts.added),
-              'data-diff-removed': String(counts.removed === undefined ? 0 : counts.removed),
-              'data-diff-same': String(counts.same === undefined ? 0 : counts.same),
-              style: metaStyle,
-            },
-            fmt(t('histDiffSections'), {
-              total: counts.total === undefined ? 0 : counts.total,
-              changed: counts.changed === undefined ? 0 : counts.changed,
-              added: counts.added === undefined ? 0 : counts.added,
-              removed: counts.removed === undefined ? 0 : counts.removed,
-              same: counts.same === undefined ? 0 : counts.same,
-            }),
-          ),
-        );
-        const rows = Array.isArray(data.sections) ? data.sections : [];
-        children.push(
-          h(
-            'div',
-            { key: 'rows', 'data-diff-row-total': String(rows.length), style: { display: 'flex', flexDirection: 'column', gap: 4 } },
-            rows.map((row) =>
-              h(
-                'div',
-                {
-                  key: row.name,
-                  'data-hd-row': row.name,
-                  'data-hd-status': row.status,
-                  style: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' },
-                },
-                h('code', { style: { fontSize: 12 } }, row.name),
-                h(UI.Tag, { tone: diffTone(row.status) }, t(diffKey(row.status))),
-                h('span', { style: metaStyle }, `${row.before ? row.before.action : '—'} → ${row.after ? row.after.action : '—'}`),
-              ),
-            ),
-          ),
-        );
-        const lines = data.lines;
-        if (lines === null || lines === undefined) {
-          children.push(
-            h('p', { key: 'no-lines', 'data-diff-no-lines': 'true', style: metaStyle }, fmt(t('histDiffNoLines'), { reason: data.lineReason || '' })),
-          );
-        } else {
-          children.push(
-            h(
-              'div',
-              {
-                key: 'line-meta',
-                'data-diff-line-name': lines.name,
-                'data-diff-mode': lines.mode,
-                'data-diff-line-added': String(lines.stats.added),
-                'data-diff-line-removed': String(lines.stats.removed),
-                'data-diff-renderer': HAS_DIFF_BLOCK ? 'diffblock' : 'fallback',
-                style: metaStyle,
-              },
-              fmt(t('histDiffLineStats'), {
-                added: lines.stats.added,
-                removed: lines.stats.removed,
-                mode: lines.mode === 'lcs' ? t('histDiffModeLcs') : t('histDiffModeBounded'),
-              }),
-              h('span', { style: { marginLeft: 8 } }, HAS_DIFF_BLOCK ? t('histDiffBlock') : t('histDiffFallback')),
-            ),
-          );
-          if (lines.crlfNormalized === true) {
-            children.push(h('p', { key: 'crlf', 'data-diff-crlf': 'true', style: metaStyle }, t('histDiffCrlf')));
-          }
-          children.push(h('div', { key: 'lines' }, renderDiffLines(t, lines)));
-        }
-      }
-      return modalShell(
-        {
-          key: 'history-diff-modal',
-          region: 'history-diff-modal',
-          title: t('histDiffHeading'),
-          closeLabel: t('histModalClose'),
-          onClose: a.closeHistoryModal,
-        },
-        h(
-          'div',
-          {
-            'data-region': 'history-diff',
-            'data-diff-state': m.diff.phase,
-            style: { display: 'flex', flexDirection: 'column', gap: 6 },
-          },
-          children,
-        ),
-      );
-    }
-
-    /**
-     * Render the history panel: layer selector, records, and the comparison.
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @returns the panel element.
-     */
-    function renderHistoryPanel(t, m, a) {
-      const data = m.hist.data;
-      const records = data && Array.isArray(data.records) ? data.records : [];
-      const layer = m.historyLayer;
-      const pg = m.histPage;
-      const loading = m.hist.phase === 'loading';
-      const pagerButtonStyle = {
-        font: 'inherit',
-        fontSize: 12,
-        padding: '2px 10px',
-        borderRadius: 6,
-        cursor: 'pointer',
-        background: 'transparent',
-        color: token.labelSecondary,
-        border: `1px solid ${token.borderL2}`,
-      };
-      // The scope sentence: what is on screen right now, in words. A reader must
-      // never have to infer it from a request URL (g-038).
-      const scopeNote =
-        layer === 'user'
-          ? { key: 'scope-global', attr: 'global', text: t('histScopeGlobal') }
-          : m.historyScopeValue.length === 0
-            ? { key: 'no-session', attr: 'no-session', text: t('histNoSession') }
-            : {
-                key: 'scope-workspace',
-                attr: 'workspace',
-                text: fmt(t('histScopeWorkspace'), {
-                  name: m.historyScopeName,
-                  session: m.historyScopeValue,
-                }),
-              };
-      const children = [
-        h('h3', { key: 'heading', style: headingStyle }, t('histHeading')),
-        h('p', { key: 'note', style: { margin: 0, ...metaStyle } }, fmt(t('histNote'), { limit: data && data.retentionLimit ? data.retentionLimit : '' })),
-        h(
-          'div',
-          { key: 'layer', 'data-region': 'history-layer' },
-          tabs(
-            ['user', 'workspace'].map((value) => ({
-              value,
-              label: layerLabel(t, value),
-              id: `ps-hist-${value}`,
-              panelId: 'ps-hist-panel',
-            })),
-            layer,
-            a.setHistoryLayer,
-            t('histLayerLabel'),
-            'history-layer',
-          ),
-        ),
-        // The version history's **own** scope (g-038): independent of the
-        // page-level 「查看范围」, so changing that one can never move this list.
-        //
-        // g-038 second round: the scope is a **collapsed disclosure** — one
-        // summary row that never grows with the number of workspaces, and a
-        // picker (search box + fixed-height scrolling candidate list) rendered
-        // only while it is open. The page's own「查看范围」was collapsed the same
-        // way in g-016; the tab-button wall this replaces pushed the list down
-        // the screen one workspace at a time.
-        h(
-          'div',
-          {
-            key: 'scope',
-            'data-region': 'history-scope',
-            'data-history-scope-mode': m.historyScopeMode,
-            'data-history-scope-applies': layer === 'workspace' ? 'true' : 'false',
-            'data-history-scope-value': m.historyScopeValue,
-            'data-history-scope-options': String(m.historyScopeOptions.length),
-            'data-scope-open': String(m.historyScopeOpen),
-            style: { display: 'flex', flexDirection: 'column', gap: 4 },
-          },
-          h(
-            'div',
-            { key: 'summary', 'data-region': 'history-scope-summary', style: scopeSummaryStyle },
-            h('span', { key: 'label', style: metaStyle }, t('histScopeLabel')),
-            m.historyScopeOptions.length === 0
-              ? h(
-                  'span',
-                  { key: 'empty', 'data-role': 'history-scope-empty', style: scopeSummaryTextStyle },
-                  t('histScopeNone'),
-                )
-              : h(
-                  'span',
-                  { key: 'value', 'data-role': 'history-scope-summary-label', style: scopeSummaryTextStyle },
-                  m.historyScopeName,
-                ),
-            m.historyScopeOptions.length > 0
-              ? h(
-                  UI.Button,
-                  {
-                    key: 'toggle',
-                    variant: 'outline',
-                    'data-action': 'history-scope-toggle',
-                    'data-expanded': String(m.historyScopeOpen),
-                    'aria-expanded': m.historyScopeOpen,
-                    onClick: a.toggleHistoryScopeOpen,
-                  },
-                  m.historyScopeOpen ? t('scopeCollapse') : t('scopeEdit'),
-                )
-              : null,
-          ),
-          ...(m.historyScopeOpen && m.historyScopeOptions.length > 0
-            ? [
-                h(
-                  'div',
-                  { key: 'picker', 'data-region': 'history-scope-picker', style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-                  h(UI.Input, {
-                    key: 'search',
-                    'data-role': 'history-scope-search',
-                    placeholder: t('histScopeSearch'),
-                    value: m.historyScopeSearch,
-                    onChange: a.setHistoryScopeSearch,
-                    style: { maxWidth: 320 },
-                  }),
-                  h(
-                    'div',
-                    {
-                      key: 'list',
-                      'data-history-scope-list': 'scroll',
-                      'data-history-scope-shown': String(m.historyScopeMatches.length),
-                      style: {
-                        height: HISTORY_SCOPE_LIST_HEIGHT,
-                        maxHeight: HISTORY_SCOPE_LIST_HEIGHT,
-                        overflowY: 'auto',
-                        border: `1px solid ${token.borderL1}`,
-                        borderRadius: 8,
-                        padding: 6,
-                        display: 'flex',
-                        flexDirection: 'column',
-                        gap: 4,
-                      },
-                    },
-                    m.historyScopeMatches.length === 0
-                      ? h('span', { key: 'no-match', 'data-role': 'history-scope-no-match', style: metaStyle }, t('histScopeNoMatch'))
-                      : m.historyScopeMatches.map((option) =>
-                          h(
-                            'button',
-                            {
-                              key: option.value,
-                              type: 'button',
-                              'data-role': 'history-scope-option',
-                              'data-history-scope-option': option.value,
-                              'data-selected': option.value === m.historyScopeValue ? 'true' : 'false',
-                              onClick: () => a.setHistoryScope(option.value),
-                              style: {
-                                font: 'inherit',
-                                fontSize: 12,
-                                lineHeight: '18px',
-                                textAlign: 'left',
-                                padding: '4px 8px',
-                                borderRadius: 6,
-                                cursor: 'pointer',
-                                color: option.value === m.historyScopeValue ? token.buttonLabel : token.labelPrimary,
-                                background: option.value === m.historyScopeValue ? token.buttonFill : 'transparent',
-                                border: `1px solid ${option.value === m.historyScopeValue ? 'transparent' : token.borderL2}`,
-                                display: 'flex',
-                                gap: 6,
-                                alignItems: 'center',
-                                justifyContent: 'space-between',
-                                wordBreak: 'break-word',
-                              },
-                            },
-                            h('span', { key: 'name' }, option.label),
-                            option.value === m.historyScopeValue ? h(UI.Tag, { key: 'current', tone: 'info' }, t('scopeSelected')) : null,
-                          ),
-                        ),
-                  ),
-                ),
-              ]
-            : []),
-          m.historyScopeMode === 'sessions'
-            ? h(
-                'span',
-                { key: 'degraded', 'data-warning': 'history-scope-degraded', style: { ...metaStyle, color: token.stateWarn } },
-                t('histScopeDegraded'),
-              )
-            : null,
-          h(
-            'p',
-            {
-              key: 'scope-note',
-              'data-role': 'history-scope-note',
-              'data-history-note': scopeNote.attr,
-              style: { margin: 0, ...metaStyle },
-            },
-            scopeNote.text,
-          ),
-          h('p', { key: 'scope-hint', style: { margin: 0, ...metaStyle } }, t('histScopeHint')),
-          // g-039 sixth round: how to compare, right below the scope sentence …
-          h(
-            'p',
-            { key: 'compare-hint', 'data-role': 'history-compare-hint', style: { margin: 0, ...metaStyle } },
-            t('histCompareHint'),
-          ),
-        ),
-        // …and the one control that acts on the comparison, **outside** every
-        // dialog: what clears the list's selection belongs to the list.
-        h(
-          'div',
-          {
-            key: 'diff-tools',
-            'data-region': 'history-diff-tools',
-            style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
-          },
-          h(
-            UI.Button,
-            {
-              key: 'clear',
-              'data-action': 'diff-clear',
-              disabled: m.diffSel.from === null && m.diffSel.to === DIFF_CURRENT,
-              onClick: a.clearDiff,
-            },
-            t('histDiffClear'),
-          ),
-        ),
-      ];
-      if (loading && !data) children.push(h('p', { key: 'loading', style: metaStyle }, t('loading')));
-      if (m.hist.phase === 'error') children.push(h('div', { key: 'error' }, errorBanner(t, m.hist.error, t('histHeading'))));
-      if (data) {
-        children.push(
-          h(
-            'div',
-            { key: 'meta', 'data-history-total': String(data.total), 'data-history-corrupt': String(data.corrupt), style: metaStyle },
-            fmt(t('histTotal'), { n: data.total }),
-            data.corrupt > 0 ? ` · ${fmt(t('histCorrupt'), { n: data.corrupt })}` : null,
-            data.unreadable ? h('div', { 'data-history-unreadable': 'true', style: { color: token.stateError } }, fmt(t('histUnreadable'), { reason: data.unreadable })) : null,
-            data.lastError ? h('div', { 'data-history-last-error': 'true', style: { color: token.stateError } }, fmt(t('histLastError'), { reason: data.lastError.reason })) : null,
-          ),
-        );
-        // g-038: a box that scrolls **inside** itself, so exactly the current
-        // page of records is ever rendered. g-039 third round: it FILLS the
-        // column (`flex: 1 1 auto; minHeight: 0`) instead of being 320px tall,
-        // because the panel's height now comes from the viewport.
-        children.push(
-          h(
-            'div',
-            {
-              key: 'rows',
-              'data-region': 'history-list',
-              'data-history-list': 'scroll',
-              'data-history-box-height': 'viewport',
-              style: {
-                flex: '1 1 auto',
-                minHeight: 0,
-                overflowY: 'auto',
-                border: `1px solid ${token.borderL1}`,
-                borderRadius: 8,
-                padding: 6,
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 4,
-              },
-            },
-            records.length === 0 ? h('div', { 'data-empty': 'history', style: metaStyle }, t('histEmpty')) : null,
-            records.map((record) => historyRow(t, m, a, record)),
-            // g-039 sixth round: the 「当前生效值」 row is picked the same way a
-            // record row is — click it — so it stays comparable with a record
-            // without its own pair of buttons.
-            h(
-              'div',
-              {
-                key: 'current',
-                'data-history-row': 'current',
-                'data-history-current': 'true',
-                'data-action': 'history-row-pick',
-                'data-history-selected': m.diffSel.from === DIFF_CURRENT ? 'from' : m.diffSel.to === DIFF_CURRENT ? 'to' : '',
-                'data-history-pick-hint': t('histRowPickHint'),
-                title: t('histRowPickHint'),
-                onClick: () => a.pickHistoryRow(DIFF_CURRENT),
-                style: {
-                  border: `1px dashed ${token.borderL2}`,
-                  borderRadius: 8,
-                  padding: '6px 8px',
-                  display: 'flex',
-                  gap: 6,
-                  alignItems: 'center',
-                  flexWrap: 'wrap',
-                  cursor: 'pointer',
-                },
-              },
-              h(UI.Tag, { tone: 'info' }, t('histCurrent')),
-            ),
-          ),
-        );
-        children.push(
-          h(
-            'div',
-            {
-              key: 'pager',
-              'data-region': 'history-pager',
-              'data-history-page': String(pg.pageIndex + 1),
-              'data-history-pages': String(pg.pageCount),
-              'data-history-page-size': String(pg.pageSize),
-              'data-history-offset': String(pg.offset),
-              style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' },
-            },
-            h(
-              'button',
-              {
-                key: 'prev',
-                type: 'button',
-                'data-action': 'history-prev',
-                disabled: pg.offset <= 0 || loading,
-                onClick: a.historyPrev,
-                style: pagerButtonStyle,
-              },
-              t('histPagePrev'),
-            ),
-            h(
-              'span',
-              { key: 'label', 'data-role': 'history-page-label', style: metaStyle },
-              fmt(t('histPager'), {
-                page: pg.pageIndex + 1,
-                pages: Math.max(1, pg.pageCount),
-                total: pg.total,
-              }),
-            ),
-            h(
-              'button',
-              {
-                key: 'next',
-                type: 'button',
-                'data-action': 'history-next',
-                disabled: pg.hasMore !== true || loading,
-                onClick: a.historyNext,
-                style: pagerButtonStyle,
-              },
-              t('histPageNext'),
-            ),
-          ),
-        );
-      }
-      return h(
-        'div',
-        {
-          'data-region': 'history',
-          'data-history-layer': layer,
-          'data-history-state': m.hist.phase,
-          // g-039 third round: the card fills its column, and the record box
-          // inside it takes whatever is left (`flex: 1 1 auto; minHeight: 0`).
-          // `height: 100%` is what makes that possible: without it the card is
-          // content-sized and the box below would size to its own content again.
-          style: {
-            ...cardStyle,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 6,
-            height: '100%',
-            minHeight: 0,
-            overflow: 'hidden',
-          },
-        },
-        children,
-      );
-    }
-
-    /**
-     * The two layer-wide destructive controls of 「高级」, each with its impact
-     * stated before the click.
-     *
-     * They are deliberately side by side, because the difference between them
-     * is the whole point: `reset=true` clears the layer *including* 「我的
-     * Prompt」, while `legacy=true` clears only the frozen Revision 6/7
-     * overrides and **keeps** 「我的 Prompt」 (CONTRACT.md §12.2) — the way back
-     * from a frozen read-only layer without hand-editing a file. Neither may
-     * fire without its own second confirmation.
-     *
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @returns the panel element.
-     */
-    function renderLayerReset(t, m, a) {
-      const layer = m.advancedLayer;
-      const view = m.ovs.data ? m.ovs.data[layer] : null;
-      const list = view && Array.isArray(view.overrides) ? view.overrides : [];
-      const frozen = list.filter((entry) => entry && entry.name !== RESERVED_SECTION_NAME).length;
-      const reserved = list.length - frozen;
-      return h(
-        'div',
-        {
-          'data-region': 'layer-reset',
-          'data-reset-layer': layer,
-          'data-reset-count': String(list.length),
-          'data-reset-frozen-count': String(frozen),
-          'data-reset-reserved-count': String(reserved),
-          style: { border: `1px solid ${token.borderL1}`, borderRadius: 8, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 6 },
-        },
-        h('h4', { style: { margin: 0, fontSize: 13, fontWeight: 600 } }, t('resetLayersLabel')),
-        h(
-          'div',
-          { 'data-region': 'advanced-layer' },
-          tabs(
-            LAYERS.map((value) => ({
-              value,
-              label: layerLabel(t, value),
-              id: `ps-adv-${value}`,
-              panelId: 'ps-adv-panel',
-            })),
-            layer,
-            a.setAdvancedLayer,
-            t('histLayerLabel'),
-            'advanced-layer',
-          ),
-        ),
-        h('p', { style: { margin: 0, ...metaStyle } }, fmt(t('resetLayerBody'), { layer: layerLabel(t, layer), count: list.length })),
-        h(
-          'div',
-          { style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
-          h(
-            UI.Button,
-            {
-              'data-action': 'legacy-clear',
-              'data-layer': layer,
-              disabled: m.busy,
-              onClick: () => a.requestLegacyClear(layer, frozen),
-            },
-            t('resetLegacyButton'),
-          ),
-          h(
-            UI.Button,
-            {
-              'data-action': 'reset-layer',
-              'data-layer': layer,
-              disabled: list.length === 0 || m.busy,
-              onClick: () => a.requestResetLayer(layer, list.length),
-            },
-            t(layer === 'workspace' ? 'resetLayerWorkspace' : 'resetLayerUser'),
-          ),
-        ),
-      );
-    }
-
-    /**
-     * Render the export / import panel.
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @returns the panel element.
-     */
-    function renderTransferPanel(t, m, a) {
-      const transfer = m.transfer;
-      const plan = transfer.plan;
-      const children = [
-        h('h3', { key: 'heading', style: headingStyle }, t('transferHeading')),
-        h('p', { key: 'note', style: { margin: 0, ...metaStyle } }, t('transferNote')),
-        h(
-          'div',
-          { key: 'export', style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-          h(UI.Button, { variant: 'primary', 'data-action': 'export', disabled: m.busy, onClick: a.exportNow }, t('exportButton')),
-          transfer.fileName
-            ? h('span', { 'data-export-name': transfer.fileName, style: metaStyle }, transfer.fileName)
-            : null,
-        ),
-        transfer.exportText
-          ? h(
-              'details',
-              { key: 'preview' },
-              h('summary', { style: metaStyle }, t('exportPreviewLabel')),
-              h(UI.Textarea, {
-                'data-role': 'export-text',
-                readOnly: true,
-                rows: 6,
-                value: transfer.exportText.slice(0, MAX_EXPORT_PREVIEW),
-              }),
-              transfer.exportText.length > MAX_EXPORT_PREVIEW
-                ? h('div', { style: metaStyle }, fmt(t('exportPreviewCut'), { n: MAX_EXPORT_PREVIEW }))
-                : null,
-            )
-          : null,
-        h('h4', { key: 'import-heading', style: { margin: '6px 0 0', fontSize: 13, fontWeight: 600 } }, t('importHeading')),
-        h('label', { key: 'mode-label', style: metaStyle }, t('importModeLabel')),
-        h(
-          'div',
-          { key: 'mode' },
-          tabs(
-            IMPORT_MODES.map((value) => ({
-              value,
-              label: t(value === 'merge' ? 'importModeMerge' : 'importModeReplace'),
-              id: `ps-import-${value}`,
-              panelId: 'ps-import-panel',
-            })),
-            m.importMode,
-            a.setImportMode,
-            t('importModeLabel'),
-            'import-mode',
-          ),
-        ),
-        h('label', { key: 'text-label', style: metaStyle }, t('importTextLabel')),
-        h(UI.Textarea, {
-          key: 'text',
-          'data-role': 'import-text',
-          rows: 8,
-          value: m.importText,
-          placeholder: t('importTextPlaceholder'),
-          onChange: a.setImportText,
-        }),
-        h('label', { key: 'file-label', style: metaStyle }, t('importFileLabel')),
-        h('input', {
-          key: 'file',
-          type: 'file',
-          accept: '.json,application/json',
-          'data-role': 'import-file',
-          onChange: a.pickImportFile,
-        }),
-        h(
-          'div',
-          { key: 'actions', style: { display: 'flex', gap: 8, flexWrap: 'wrap' } },
-          h(
-            UI.Button,
-            {
-              variant: 'primary',
-              'data-action': 'import-preview',
-              disabled: m.busy || String(m.importText).trim().length === 0,
-              onClick: a.previewImport,
-            },
-            transfer.phase === 'previewing' ? t('importPreviewing') : t('importPreviewButton'),
-          ),
-          h(
-            UI.Button,
-            {
-              'data-action': 'import-apply',
-              disabled: m.busy || plan === null,
-              onClick: a.requestImportApply,
-            },
-            transfer.phase === 'applying' ? t('importApplying') : t('importApplyButton'),
-          ),
-        ),
-      ];
-      if (transfer.error) {
-        children.push(h('div', { key: 'error' }, errorBanner(t, transfer.error, t('importHeading'))));
-        children.push(
-          h('p', { key: 'unchanged', 'data-import-unchanged': 'true', style: { margin: 0, ...metaStyle, color: token.stateSuccess } }, t('importUnchangedWarning')),
-        );
-      }
-      if (plan !== null && plan !== undefined) {
-        const changes = [];
-        const layers = plan.layers && typeof plan.layers === 'object' ? plan.layers : {};
-        for (const [layerName, entry] of Object.entries(layers)) {
-          const list = entry && Array.isArray(entry.changes) ? entry.changes : [];
-          for (const change of list) changes.push({ ...change, layer: layerName });
-        }
-        const totals = plan.totals || {};
-        children.push(
-          h(
-            'div',
-            {
-              key: 'plan',
-              'data-import-plan': 'true',
-              'data-import-added': String(totals.added === undefined ? 0 : totals.added),
-              'data-import-replaced': String(totals.replaced === undefined ? 0 : totals.replaced),
-              // `-count` keeps this apart from the standalone
-              // `data-import-unchanged="true"` flag on a failed import.
-              'data-import-unchanged-count': String(totals.unchanged === undefined ? 0 : totals.unchanged),
-              'data-import-removed': String(totals.removed === undefined ? 0 : totals.removed),
-              'data-import-kept': String(totals.kept === undefined ? 0 : totals.kept),
-              'data-import-changes': String(changes.length),
-              'data-import-applied': String(plan.applied === true),
-              style: { border: `1px solid ${token.borderL1}`, borderRadius: 8, padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 4 },
-            },
-            h('strong', { style: { fontSize: 13 } }, t('importPlanHeading')),
-            h('div', { style: metaStyle }, fmt(t('importCounts'), {
-              added: totals.added === undefined ? 0 : totals.added,
-              replaced: totals.replaced === undefined ? 0 : totals.replaced,
-              unchanged: totals.unchanged === undefined ? 0 : totals.unchanged,
-              removed: totals.removed === undefined ? 0 : totals.removed,
-              kept: totals.kept === undefined ? 0 : totals.kept,
-            })),
-            changes.length === 0 ? h('div', { style: metaStyle }, t('importNoChanges')) : null,
-            changes.map((change) =>
-              h(
-                'div',
-                {
-                  key: `${change.layer}:${change.name}`,
-                  'data-import-change': change.name,
-                  'data-import-status': change.status,
-                  'data-import-layer': change.layer,
-                  style: { fontSize: 12, color: token.labelSecondary },
-                },
-                fmt(t('importChangeRow'), { name: change.name, status: importStatusLabel(t, change.status) }),
-              ),
-            ),
-            Array.isArray(plan.skipped) && plan.skipped.length > 0
-              ? h(
-                  'div',
-                  { 'data-import-skipped': String(plan.skipped.length), style: metaStyle },
-                  fmt(t('importSkipped'), { list: plan.skipped.map((entry) => `${entry.layer} (${entry.reason})`).join('; ') }),
-                )
-              : null,
-          ),
-        );
-      }
-      return h(
-        'div',
-        {
-          'data-region': 'transfer',
-          'data-transfer-phase': transfer.phase,
-          'data-import-mode': m.importMode,
-          style: { ...cardStyle, display: 'flex', flexDirection: 'column', gap: 6 },
-        },
-        children,
-      );
     }
 
     /**
@@ -6432,113 +5093,6 @@ window.__ModuleLoader__.load({
             h(UI.Button, { 'data-action': 'confirm-no', disabled: m.busy, onClick: a.cancelConfirm }, t('confirmNo')),
           ),
         ),
-      );
-    }
-
-    /**
-     * The read-only legacy override list of 「高级」.
-     *
-     * This is the Revision 6 list with its two write controls removed
-     * (`data-action="undo"` and `data-action="reset-section"`): since the
-     * write face narrowed to one name (§15.1), a *generic* per-name write is
-     * not something this page may offer, and a list that cannot act is exactly
-     * what the goal asked for here. What it keeps is the diagnosis — what is
-     * configured, in which layer, whether the assembly applied it, and why not
-     * when the client can prove the cause — because that is what a user needs
-     * to decide between the two layer-wide buttons below.
-     *
-     * `data-region="overrides"` and every per-row marker (`data-override-row`,
-     * `data-override-layer`, `data-override-action`, `data-override-applied`,
-     * `data-override-reason`, `data-overrides-total`) are unchanged.
-     *
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @returns the list element.
-     */
-    function renderOverridesList(t, m, a) {
-      const ovs = m.ovs.data;
-      const merged = ovs && ovs.merged && Array.isArray(ovs.merged.overrides) ? ovs.merged.overrides : [];
-      // `merged` says what is configured; `effective` says what it achieved. The
-      // difference is the whole point of this list: a saved override that never
-      // takes effect must be visible as such, with a reason.
-      const achieved = new Map();
-      for (const section of m.effectiveSections) achieved.set(section.name, section);
-      return h(
-        'div',
-        { 'data-region': 'overrides', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
-        h('h3', { style: headingStyle }, t('ovHeading')),
-        h('p', { style: { margin: 0, ...metaStyle } }, t('ovMergedNote')),
-        h(
-          'div',
-          { 'data-overrides-total': String(merged.length), style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-          merged.length === 0
-            ? h('div', { 'data-empty': 'overrides', style: cardStyle }, t('ovEmpty'))
-            : null,
-          merged.map((entry) => {
-            const target = achieved.get(entry.name);
-            const state = target === undefined ? 'unknown' : target.applied === true ? 'applied' : 'ineffective';
-            const hostReason = target && target.reason ? String(target.reason) : '';
-            const cause = ineffectiveCause(t, target, m.incoming);
-            const reasonText = cause === null ? hostReason : cause.text;
-            const isReserved = entry.name === RESERVED_SECTION_NAME;
-            return h(
-              'div',
-              {
-                key: `${entry.layer}:${entry.name}`,
-                'data-override-row': entry.name,
-                'data-override-layer': entry.layer,
-                'data-override-action': entry.action,
-                'data-override-applied': state === 'unknown' ? 'unknown' : String(state === 'applied'),
-                'data-override-reserved': String(isReserved),
-                style: {
-                  border: `1px solid ${state === 'ineffective' ? token.stateError : token.borderL1}`,
-                  borderRadius: 8,
-                  padding: '8px 10px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 4,
-                },
-              },
-              h(
-                'div',
-                { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-                h('code', { style: { fontSize: 12 } }, entry.name),
-                h(UI.Tag, { tone: 'info' }, String(entry.action)),
-                h(UI.Tag, { tone: 'neutral' }, t(entry.layer === 'workspace' ? 'ovWorkspace' : 'ovUser')),
-                h(
-                  UI.Tag,
-                  { tone: state === 'applied' ? 'success' : state === 'ineffective' ? 'danger' : 'outline' },
-                  t(state === 'applied' ? 'ovEffective' : state === 'ineffective' ? 'ovIneffective' : 'ovUnknown'),
-                ),
-                isReserved ? h(UI.Tag, { tone: 'info' }, t('advReservedTag')) : null,
-                typeof entry.text === 'string' && entry.text.length > 0
-                  ? h('span', { style: { ...metaStyle, flex: '1 1 200px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, entry.text.slice(0, 120))
-                  : null,
-              ),
-              state === 'ineffective'
-                ? h(
-                    'div',
-                    {
-                      'data-override-reason': entry.name,
-                      style: { fontSize: 12, color: token.stateError, wordBreak: 'break-word' },
-                    },
-                    `${t('ovReason')}: ${reasonText || t('ovIneffective')}`,
-                  )
-                : null,
-              state === 'ineffective' && cause !== null && hostReason.length > 0
-                ? h('div', { style: { ...metaStyle, wordBreak: 'break-word' } }, `${t('errDetail')}: ${hostReason}`)
-                : null,
-              state === 'ineffective'
-                ? h('div', { style: { ...metaStyle, wordBreak: 'break-word' } }, t('ovFixHint'))
-                : null,
-            );
-          }),
-        ),
-        // The generic per-name write is gone, so the escape hatch is stated
-        // instead of offered: 「我的 Prompt」 owns the reserved name, and the two
-        // layer-wide buttons below are the only writes this tab performs.
-        h('p', { 'data-note': 'overrides-read-only', style: { margin: 0, ...metaStyle } }, t('advReadOnlyNote')),
       );
     }
 
@@ -6940,232 +5494,439 @@ window.__ModuleLoader__.load({
       );
     }
 
+    // #region chunk boundary (g-045)
     /**
-     * 「提示词总览」 — the read-only assembly, in its two existing views.
+     * Every chunk of this bundle, with the digest of the bytes this file was
+     * written against.
      *
-     * The inner `view` tabs (`data-region="view-tabs"`, group `view`) are kept
-     * from Revision 6 because both answers are still wanted and neither writes:
-     * `sections` is the segment list with its origin/layer/applied markers,
-     * `full` is the assembled text with search, highlight, the origin filter and
-     * the base ↔ effective comparison. What is gone is the editor slot and the
-     * write entries — this tab renders no `data-region="editor"` and no
-     * `edit` / `append-new` / `delete` action, by construction: the row builder
-     * no longer takes a form, and no caller builds one.
+     * `SELF_BUILD` cannot see a chunk: those bytes are not part of
+     * `promptSettingFactory.toString()`. This manifest is the bridge. It sits
+     * **inside** the fingerprint region, so it is part of the main digest — a
+     * chunk added, renamed or dropped moves the main stamp — and the page
+     * compares it, item by item, against the digests the host reports for the
+     * chunk files it actually serves (`clientBuild.chunks`). A chunk edited
+     * without this manifest moving therefore reads as `false`, never as「一致」.
      *
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @returns the panel element.
+     * It is rewritten by `scripts/client-chunks.mjs` and asserted against the
+     * real files by `test/build.test.mjs`: a manifest that lied about a chunk
+     * would be exactly the silently false「一致」the stamp exists to prevent.
      */
-    function renderOverviewPanel(t, m, a) {
-      return h(
-        'div',
-        { 'data-region': 'overview', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
-        h(
-          'div',
-          { 'data-region': 'view-tabs' },
-          tabs(
-            VIEWS.map((value) => ({
-              value,
-              label: t(value === 'sections' ? 'viewSections' : 'viewFull'),
-              id: `ps-view-${value}`,
-              panelId: 'ps-view-panel',
-            })),
-            m.view,
-            a.setView,
-            t('title'),
-            'view',
-          ),
-        ),
-        m.view === 'sections' ? renderSectionsView(t, m, a) : renderFullView(t, m, a),
-      );
+    const CHUNK_STAMPS = Object.freeze([
+      { name: 'client.advanced.js', hash: '523d25ee', size: 21505 },
+      { name: 'client.history.js', hash: '2887cc6c', size: 48609 },
+      { name: 'client.overview.js', hash: 'f66cd1b0', size: 23533 },
+      { name: 'client.transfer.js', hash: 'c8af8793', size: 9759 },
+    ]);
+
+    /**
+     * The main factory's half of every cross-chunk facility.
+     *
+     * A chunk gets its own `React.createElement`, token table and helpers from
+     * **this** object through `require('dsh-prompt-setting').__internals.shared`
+     * — never from a copy. Two copies would be two values that can drift, and a
+     * second `h` built on a second `React` would break the one-React-instance
+     * rule the whole page rests on.
+     */
+    const CHUNK_FACILITIES = Object.freeze({
+      h,
+      token,
+      UI,
+      fmt,
+      tabs,
+      primitives,
+      cardStyle,
+      metaStyle,
+      headingStyle,
+      scopeSummaryStyle,
+      scopeSummaryTextStyle,
+      errorBanner,
+      stampOf,
+      layerLabel,
+      historyActionLabel,
+      diffBlockLabels,
+      diffOpMarker,
+      diffKey,
+      diffTone,
+      HAS_DIFF_BLOCK,
+      DIFF_CURRENT,
+      DIFF_BLOCK_MAX_LINES,
+      MAX_DIFF_LINES_SHOWN,
+      HISTORY_SCOPE_LIST_HEIGHT,
+      HISTORY_PANEL_HEIGHT,
+      HISTORY_VIEWPORT_OFFSET,
+      HISTORY_PANEL_MIN_HEIGHT,
+      RESERVED_SECTION_NAME,
+      VIEWS,
+      fingerprintOf,
+      // g-046: what the tab chunks added to that surface. Same rule as above —
+      // these are this factory's own instances (one pure-function set, one
+      // constant table), never copies: a copy is a second value that can drift
+      // away from the page the chunk renders in.
+      LAYER_FILTERS,
+      OVERRIDABLE_FILTERS,
+      ORIGIN_FILTERS,
+      MAX_VIEW_LINES,
+      IMPORT_MODES,
+      MAX_EXPORT_PREVIEW,
+      DOWNLOAD_REGIONS,
+      LAYERS,
+      sectionLayer,
+      originOf,
+      originKey,
+      originTone,
+      filterLabelKey,
+      layerKey,
+      editGate,
+      ineffectiveCause,
+      splitLines,
+      countMatches,
+      highlightNodes,
+      chunkDiff,
+      diffSections,
+      composeSections,
+      errorText,
+      regionLabelKey,
+      renderStatusDetail,
+      renderUpdateApplyStatus,
+    });
+
+    /** Chunks this page has really loaded, by file name: `{hash, size}`. */
+    const loadedChunks = new Map();
+    /** Subscribers waiting for a chunk to arrive (`useSyncExternalStore`). */
+    const chunkLoadListeners = new Set();
+    /** How many chunks have loaded — the stable snapshot that hook reads. */
+    let chunkLoadCount = 0;
+    /** Whether a notification is already queued for this microtask turn. */
+    let chunkNotifying = false;
+
+    /**
+     * Subscribe to「a chunk has finished loading」(g-045).
+     *
+     * The `data-build-*` attributes live on the **root** container, and a chunk
+     * finishing its load re-renders only the Suspense subtree below it — so
+     * without this seat the page would keep publishing "no chunk has run" while
+     * the reader is looking straight at one.
+     * @param listener - React's re-render callback.
+     * @returns the unsubscribe function.
+     */
+    function subscribeChunkLoads(listener) {
+      chunkLoadListeners.add(listener);
+      return () => {
+        chunkLoadListeners.delete(listener);
+      };
     }
 
     /**
-     * 「版本历史」 — the log and the comparison (g-038: the export/import
-     * surface moved to its own 「备份与恢复」 tab).
+     * The chunk-load snapshot: a counter, never the Map or a fresh array.
      *
-     * Nothing here changed in g-015 except *where it lives*: the panel and the
-     * transfer card moved out of the old 覆盖 view, and the lazy load now keys
-     * off this tab instead of that view, so a page that never opens it still
-     * issues exactly the three baseline requests. g-038 then split the two
-     * apart: this renderer is the log's half only.
-     *
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @returns the panel element.
+     * `useSyncExternalStore` compares this value between renders, so it has to be
+     * stable unless the store really changed (a new array each pass would
+     * re-render forever).
+     * @returns the number of chunks loaded so far.
      */
-    /**
-     * g-038: 「版本历史」 — the log and its comparison, arranged as two columns.
-     * g-039 (third round): the arrangement is now a **fixed, viewport-sized
-     * row** rather than a wrapping one.
-     *
-     * The left column is the record list (internally scrolling box, pager); the
-     * right column is the detail pane, which shows exactly one of three views —
-     * the idle note, a record preview, or the comparison. Both columns are
-     * always in the same row and always share the panel's height.
-     *
-     * Why `nowrap` and no px basis: the previous version wrapped when the two
-     * columns no longer fit (`1 1 420px` + `1 1 360px` in a ~700px dialog), so
-     * choosing a record and reading the result were one screen apart. A narrower
-     * panel must narrow the columns — never stack them. `flex: 1 1 0` gives each
-     * column an equal share of whatever width there is and lets the inner boxes
-     * scroll, which is the only scroll this tab is allowed to have.
-     *
-     * Height (g-039 third round, measured in the fourth): the panel is bounded by
-     * what was really available — `m.historyPanel.height` when the measurement
-     * produced one — and falls back to `HISTORY_PANEL_HEIGHT`
-     * (`calc(100vh − offset)`) when it did not. The boxes below take
-     * `flex: 1 1 auto; minHeight: 0` so they fill whatever is left instead of a
-     * fixed 320px. The page's own scroll bar therefore does not appear for this
-     * tab. Which path is in use is reported on the panel itself:
-     * `data-history-height-source` (`measured` | `fallback`) and
-     * `data-history-panel-height` (the px number, or `fallback`).
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @returns the tab element.
-     */
-    function renderHistoryTab(t, m, a) {
-      const panelHeight = m.historyPanel.height === null ? HISTORY_PANEL_HEIGHT : `${m.historyPanel.height}px`;
-      return h(
-        'div',
-        {
-          'data-region': 'history-tab',
-          // g-039 fifth round: one column. The record list owns the full width of
-          // the panel; the preview and the comparison are viewport modals below,
-          // so nothing squeezes the rows any more.
-          'data-history-layout': 'single',
-          'data-history-viewport-offset': String(HISTORY_VIEWPORT_OFFSET),
-          'data-history-height-source': m.historyPanel.source,
-          'data-history-panel-height':
-            m.historyPanel.height === null ? 'fallback' : String(m.historyPanel.height),
-          ref: m.historyPanelRef,
-          style: {
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 10,
-            height: panelHeight,
-            maxHeight: panelHeight,
-            minHeight: HISTORY_PANEL_MIN_HEIGHT,
-            minWidth: 0,
-            overflow: 'hidden',
-          },
-        },
-        renderHistoryPanel(t, m, a),
-        renderHistoryModals(t, m, a),
-      );
+    function chunkLoadRevision() {
+      return chunkLoadCount;
     }
 
     /**
-     * g-039 (fifth round): the preview and the comparison, as viewport modals.
+     * Tell the page a chunk has arrived — **not** from inside the render phase.
      *
-     * They are mutually exclusive by construction — one state
-     * (`m.historyModal`) picks at most one of them — and each is a
-     * `position: fixed` overlay with `role="dialog"` + `aria-modal="true"`, a
-     * header close button, Esc (bound by the page while one is open) and an
-     * internally scrolling body, so a long comparison never scrolls the page
-     * behind it. The record list keeps the full panel width underneath.
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @returns the modal element, or `null` when none is open.
+     * `recordLoadedChunk` runs in `React.lazy`'s resolve callback, i.e. while
+     * React is rendering; calling a subscriber right there would be an update
+     * during render. The notification is queued to a microtask instead (with a
+     * synchronous fallback for an engine without one), which lands after React
+     * has finished the pass that resolved the chunk.
      */
-    function renderHistoryModals(t, m, a) {
-      if (m.historyModal === 'preview') return m.preview.state === 'none' ? null : renderPreviewModal(t, m, a);
-      if (m.historyModal === 'diff') return renderDiffModal(t, m, a);
-      return null;
+    function notifyChunkLoad() {
+      if (chunkNotifying) return;
+      chunkNotifying = true;
+      const flush = () => {
+        chunkNotifying = false;
+        for (const listener of [...chunkLoadListeners]) {
+          try {
+            listener();
+          } catch {
+            // One broken subscriber must not stop the others: the stamp is
+            // diagnostics, and losing it may never take the page down.
+          }
+        }
+      };
+      if (typeof queueMicrotask === 'function') queueMicrotask(flush);
+      // Deliberately **not** a synchronous fallback: `recordLoadedChunk` runs
+      // inside `React.lazy`'s resolve callback, i.e. while React is rendering,
+      // and flushing right here would make this an update during render — the
+      // exact thing the deferral exists to avoid. `setTimeout` keeps the "after
+      // this pass" ordering; an engine with neither cannot render this page.
+      else setTimeout(flush, 0);
     }
 
     /**
-     * The shared modal shell: a fixed, centred overlay with a titled, closeable,
-     * internally scrolling dialog.
-     * @param options - `{key, region, label, title, onClose, closeAction}`.
-     * @param children - the dialog's body.
-     * @returns the overlay element.
+     * Ask the module loader for one chunk of this bundle.
+     *
+     * `require.async` with a `./`-prefixed spec is the loader's one relative
+     * form (`@deepseek-ai/dsh-client-modules` `importChunk`): the spec must match
+     * `client.*.js` and the file must sit next to `client.js`. The direction is
+     * main → chunk only; a chunk reaches back through
+     * `require('dsh-prompt-setting')`, and since the main factory is already
+     * materialized by then the pair cannot form a cycle.
+     * @param fileName - the chunk's file name (`client.history.js`).
+     * @returns whatever the loader answered (a thenable), or `null`.
      */
-    function modalShell(options, children) {
-      return h(
-        'div',
-        {
-          key: options.key,
-          'data-region': 'history-modal-overlay',
-          'data-history-modal': options.region,
-          style: {
-            position: 'fixed',
-            top: 0,
-            right: 0,
-            bottom: 0,
-            left: 0,
-            zIndex: 1000,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: 16,
-            background: 'rgba(0, 0, 0, 0.45)',
-          },
-        },
-        h(
+    function loadChunk(fileName) {
+      if (typeof require.async !== 'function') return null;
+      return require.async(`./${fileName}`);
+    }
+
+    /**
+     * Remember a loaded chunk's own digest, so the page can verify the bytes it
+     * is really running and not just the manifest written into this file.
+     * @param fileName - the chunk's file name.
+     * @param chunkExports - the chunk factory's exports.
+     */
+    function recordLoadedChunk(fileName, chunkExports) {
+      const build = chunkExports && typeof chunkExports === 'object' ? chunkExports.build : null;
+      if (build !== null && typeof build === 'object' && typeof build.hash === 'string' && build.hash.length > 0) {
+        loadedChunks.set(fileName, {
+          hash: build.hash,
+          size: typeof build.size === 'number' ? build.size : null,
+        });
+        chunkLoadCount += 1;
+        notifyChunkLoad();
+      }
+    }
+
+    /** Every chunk digest this page has verified so far. */
+    function loadedChunkStamps() {
+      const out = [];
+      for (const [name, build] of loadedChunks) out.push({ name, hash: build.hash, size: build.size });
+      return out;
+    }
+
+    /**
+     * The readable card a chunk that could not be loaded renders **instead of**
+     * blanking the tab.
+     *
+     * `React.lazy` re-throws a rejected load while rendering, which would take
+     * the whole settings subtree down with it. A chunk can genuinely fail to
+     * arrive (an entry missing from `files`, a 404, an offline host), so the
+     * failure is converted into content rather than an exception — the same
+     * trade the primitives probe makes when it degrades to the hand-built
+     * renderer. The copy is deliberately mechanical: a file name and the
+     * reason, no new dictionary key to keep in sync.
+     * @param fileName - the chunk that failed.
+     * @param error - whatever was thrown, or `null`.
+     * @returns a component.
+     */
+    function chunkFailureComponent(fileName, error) {
+      const reason =
+        error && error.message ? String(error.message) : error === null || error === undefined ? '' : String(error);
+      return function ChunkFailure(props) {
+        const t = props && typeof props.t === 'function' ? props.t : fallbackT || ((key) => key);
+        return h(
           'div',
           {
-            'data-region': options.region,
-            role: 'dialog',
-            'aria-modal': 'true',
-            'aria-label': options.title,
-            style: {
-              ...cardStyle,
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 10,
-              width: 'min(1040px, 92vw)',
-              maxWidth: '92vw',
-              height: 'min(82vh, 900px)',
-              maxHeight: 'min(82vh, 900px)',
-              overflowY: 'auto',
-              padding: '16px 18px',
-              // The close button is anchored to this corner, so it stays put
-              // however long the title or the dialog's scroll position is.
-              position: 'relative',
-              boxShadow: '0 12px 32px rgba(0, 0, 0, 0.35)',
-            },
+            'data-region': 'chunk-failure',
+            'data-chunk': fileName,
+            'data-chunk-state': 'error',
+            style: { ...cardStyle, display: 'flex', flexDirection: 'column', gap: 6 },
           },
+          h('strong', { style: { fontSize: 14, fontWeight: 600 } }, `${safeT(t, 'renderErrorLabel', 'Error')}: ${fileName}`),
           h(
-            UI.Button,
-            {
-              key: 'close',
-              'data-action': 'history-modal-close',
-              'aria-label': options.closeLabel,
-              title: options.closeLabel,
-              onClick: options.onClose,
-              style: { position: 'absolute', top: 10, right: 10 },
-            },
-            '✕',
+            'span',
+            { style: { fontSize: 12, color: token.stateError, wordBreak: 'break-word' } },
+            reason.length === 0 ? fileName : reason,
           ),
-          h(
-            'div',
-            { 'data-role': 'history-modal-head', style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
-            h('strong', { key: 'title', style: { fontSize: 14, fontWeight: 600 } }, options.title),
+        );
+      };
+    }
+
+    /**
+     * Pick one exported component out of a chunk's exports, or explain why it
+     * could not be picked.
+     * @param fileName - the chunk's file name.
+     * @param chunkExports - the chunk factory's exports.
+     * @param pick - selects the component.
+     * @returns a component (never a throw).
+     */
+    function pickChunkComponent(fileName, chunkExports, pick) {
+      try {
+        const component = pick(chunkExports);
+        if (typeof component === 'function') {
+          recordLoadedChunk(fileName, chunkExports);
+          return component;
+        }
+      } catch (error) {
+        return chunkFailureComponent(fileName, error);
+      }
+      return chunkFailureComponent(fileName, null);
+    }
+
+    /**
+     * The `{default}` module object `React.lazy` expects for one chunk — with
+     * every failure already turned into a readable component.
+     *
+     * The wrapper exists because `React.lazy`'s `load()` may only fail or
+     * resolve; there is no third arm for "say so on screen". Doing it here keeps
+     * the lazy call itself one line per chunk.
+     * @param fileName - the chunk's file name.
+     * @param pick - selects the component out of the chunk's exports.
+     * @returns a thenable resolving to `{default: Component}`.
+     */
+    function chunkModule(fileName, pick) {
+      let source = null;
+      let failure = null;
+      try {
+        source = loadChunk(fileName);
+      } catch (error) {
+        failure = error;
+      }
+      if (source === null || typeof source.then !== 'function') {
+        return { then: (onLoaded) => onLoaded({ default: chunkFailureComponent(fileName, failure) }) };
+      }
+      return {
+        then: (onLoaded) =>
+          source.then(
+            (chunkExports) => onLoaded({ default: pickChunkComponent(fileName, chunkExports, pick) }),
+            (error) => onLoaded({ default: chunkFailureComponent(fileName, error) }),
           ),
-          children,
-        ),
+      };
+    }
+
+    /**
+     * Whether this React instance can host the lazy chunk boundary at all.
+     *
+     * `React.lazy` needs `React.Suspense` beside it (both since 16.6), and the
+     * page must not *require* either to stay alive: a React without them would
+     * otherwise turn one tab's laziness into the whole panel's failure — the
+     * same reasoning that makes the primitives probe a probe. When they are
+     * missing the tab renders its own readable card instead of throwing.
+     */
+    const HAS_REACT_LAZY = typeof React.lazy === 'function' && React.Suspense !== undefined;
+
+    /**
+     * 「版本历史」 as a lazily loaded chunk.
+     *
+     * The tab's renderer lives in `client.history.js`, next to this file, and is
+     * fetched the first time the tab is rendered — a page that never opens it
+     * pays nothing for it. Nothing about the tab's tree changes: the chunk calls
+     * the very same `renderHistoryTab(t, m, a)` this file used to call.
+     */
+    const HistoryTabChunk = HAS_REACT_LAZY
+      ? React.lazy(() => chunkModule('client.history.js', (chunkExports) => chunkExports && chunkExports.HistoryTab))
+      : null;
+
+    /**
+     * Mount the lazy chunk behind a `Suspense` boundary.
+     *
+     * The fallback is a sized, marked placeholder rather than the tab's own
+     * frame: an empty panel would be indistinguishable from "no history
+     * recorded", and the reader would be told something false for as long as the
+     * fetch takes.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the boundary element.
+     */
+    function renderHistoryChunk(t, m, a) {
+      if (HistoryTabChunk === null) {
+        const Unsupported = chunkFailureComponent('client.history.js', null);
+        return h(Unsupported, { t });
+      }
+      return h(
+        React.Suspense,
+        {
+          key: 'history',
+          fallback: h('div', {
+            'data-region': 'history-chunk-loading',
+            style: { minHeight: HISTORY_PANEL_MIN_HEIGHT },
+          }),
+        },
+        h(HistoryTabChunk, { t, m, a }),
       );
     }
 
     /**
-     * g-038: 「备份与恢复」 — the export/import surface, and nothing else.
+     * 「提示词总览」 / 「备份与恢复」 / 「高级」 as lazily loaded chunks (g-046).
+     *
+     * Same shape as {@link HistoryTabChunk}: each tab's renderer lives in its
+     * own flat sibling of this file and is fetched the first time that tab is
+     * rendered, so a page that opens one tab pays nothing for the other two.
+     *
+     * The **default** tab (「我的 Prompt」) is deliberately *not* a chunk, and
+     * that is a design decision rather than an omission: it is the tab the
+     * settings page opens on, so it is built on the very first render — a chunk
+     * there would turn first-screen code into a second round trip, and a failed
+     * fetch into a blank default tab. The other three are only ever reached by a
+     * click, which is exactly the case a lazy boundary is for.
+     */
+    const OverviewTabChunk = HAS_REACT_LAZY
+      ? React.lazy(() => chunkModule('client.overview.js', (chunkExports) => chunkExports && chunkExports.OverviewTab))
+      : null;
+    const TransferTabChunk = HAS_REACT_LAZY
+      ? React.lazy(() => chunkModule('client.transfer.js', (chunkExports) => chunkExports && chunkExports.TransferTab))
+      : null;
+    const AdvancedTabChunk = HAS_REACT_LAZY
+      ? React.lazy(() => chunkModule('client.advanced.js', (chunkExports) => chunkExports && chunkExports.AdvancedTab))
+      : null;
+
+    /**
+     * Mount one tab chunk behind a `Suspense` boundary.
+     *
+     * The fallback is a sized, marked placeholder rather than the tab's own
+     * frame: an empty panel would be indistinguishable from "this tab has
+     * nothing to show", and the reader would be told something false for as
+     * long as the fetch takes. A chunk that cannot be loaded at all renders the
+     * same readable card every other chunk failure renders, so one tab's 404
+     * never takes the page (or its other tabs) down with it.
+     * @param Component - the lazy component, or `null` without `React.lazy`.
+     * @param fileName - the chunk's file name.
+     * @param region - the tab's own region name (`overview`), which names the
+     *   placeholder's marker as `${region}-chunk-loading`.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the boundary element.
+     */
+    function renderChunkTab(Component, fileName, region, t, m, a) {
+      if (Component === null) {
+        const Unsupported = chunkFailureComponent(fileName, null);
+        return h(Unsupported, { t });
+      }
+      return h(
+        React.Suspense,
+        {
+          key: region,
+          fallback: h('div', {
+            'data-region': `${region}-chunk-loading`,
+            style: { minHeight: HISTORY_PANEL_MIN_HEIGHT },
+          }),
+        },
+        h(Component, { t, m, a }),
+      );
+    }
+
+    /**
+     * The three lazy tab boundaries, one thin wrapper each.
+     *
+     * They stay here rather than in `renderSection`'s dispatch so the whole
+     * chunk surface (which file, which export, which placeholder) is readable
+     * in one place — and so the dispatch itself keeps the shape it always had.
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
      * @returns the tab element.
      */
-    function renderBackupTab(t, m, a) {
-      return h(
-        'div',
-        { 'data-region': 'backup-tab', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
-        renderTransferPanel(t, m, a),
-      );
+    function renderOverviewChunk(t, m, a) {
+      return renderChunkTab(OverviewTabChunk, 'client.overview.js', 'overview', t, m, a);
     }
+    function renderBackupChunk(t, m, a) {
+      return renderChunkTab(TransferTabChunk, 'client.transfer.js', 'backup', t, m, a);
+    }
+    function renderAdvancedChunk(t, m, a) {
+      return renderChunkTab(AdvancedTabChunk, 'client.advanced.js', 'advanced', t, m, a);
+    }
+    // #endregion
+
 
     /**
      * g-030: the dismissible「有新版本」banner — and, since g-032, the place
@@ -7428,147 +6189,116 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * g-030: the「检查更新」switch, in 「高级」.
-     *
-     * The switch is the whole reason this feature is shippable: the goal is
-     * explicit that off means the plugin makes no outbound request at all,
-     * including when the page mounts, and that the control has to be real UI in
-     * 「高级」 rather than a config file a user must find. So the state shown is
-     * the **Host's** answer (`enabled` on the update-check payload), the mirror
-     * in `localStorage` only saves a round trip, and the button sends the
-     * negation — one click always produces the state the label promised.
-     *
-     * Nothing here is derived from the check's outcome; the line below it is
-     * rendered from the same payload that produced the banner, and is silent for
-     * every inconclusive answer.
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @param a - the page actions.
-     * @returns the settings card element.
+     * g-043: the i18n key for one region id. An unknown id (a Host from the
+     * future, a hand-edited answer) reads as「默认」rather than as a bare enum.
+     * @param id - `default` / `cn` / `custom`, or anything else.
+     * @returns the dictionary key.
      */
-    function renderUpdateSetting(t, m, a) {
-      const u =
-        m.update === null || m.update === undefined
-          ? { enabled: true, phase: 'idle', data: null, check: null }
-          : m.update;
-      const enabled = u.enabled !== false;
-      const saving = u.phase === 'saving';
-      // The two answers this card can explain are **different facts** and must
-      // not be confused (review finding, g-030):
-      //   - `check.hasUpdate === null` is a *successful* check that could not
-      //     decide — no release yet, no `tag_name`, an unparsable tag. Upstream
-      //     said something; it just was not a version. That is what the
-      //     「上游暂时没有可用的版本信息」 line is for;
-      //   - a failed check (`ok:false`, `phase === 'error'`) is *not* a fact about
-      //     upstream, so it gets no such sentence — and no red line either (the
-      //     page's zero-error rule). The last successful answer, if any, stays.
-      // A newer release shows its version; "up to date" says nothing.
-      const check = u.check ?? null;
-      const latest =
-        check !== null && check.hasUpdate === true && typeof check.latest === 'string' ? check.latest : null;
-      const undecided = check !== null && check.hasUpdate === null;
-      return h(
-        'div',
-        {
-          key: 'update-setting',
-          'data-region': 'update-setting',
-          'data-update-enabled': enabled ? 'true' : 'false',
-          style: { ...cardStyle, display: 'flex', flexDirection: 'column', gap: 6 },
-        },
-        h(
-          'div',
-          { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
-          h('span', { style: { fontSize: 13, fontWeight: 600 } }, t('updateSettingLabel')),
-          h(
-            UI.Button,
-            {
-              'data-action': 'update-toggle',
-              'aria-pressed': enabled ? 'true' : 'false',
-              disabled: m.busy || saving,
-              onClick: a.toggleUpdate,
-            },
-            saving ? t('updateSwitching') : t(enabled ? 'updateSettingOn' : 'updateSettingOff'),
-          ),
-          enabled
-            ? h(
-                UI.Button,
-                {
-                  'data-action': 'update-recheck',
-                  disabled: m.busy || saving,
-                  onClick: a.recheckUpdate,
-                },
-                t('updateRecheck'),
-              )
-            : null,
-        ),
-        h('p', { style: { margin: 0, ...metaStyle } }, t('updateSettingNote')),
-        latest === null
-          ? null
-          : h(
-              'p',
-              { style: { margin: 0, ...metaStyle }, 'data-update-state': 'available', 'data-update-known': latest },
-              fmt(t('updateLatestKnown'), { latest }),
-            ),
-        undecided
-          ? h(
-              'p',
-              { style: { margin: 0, ...metaStyle }, 'data-update-state': 'unknown', 'data-update-unknown': 'true' },
-              t('updateUnknown'),
-            )
-          : null,
-        // g-032: the install's state and its controls live here as well as in
-        // the banner. Dismissing the banner must not lose the only place a
-        // running install can be cancelled or a failed one retried — **and
-        // neither may the update-check switch**: an install started while the
-        // switch was on can still be live after it is turned off, and hiding its
-        // row then would take away the only cancel button on the page. So a
-        // known install outranks both conditions; the switch and the
-        // "is there anything to install" line only gate the button that
-        // **starts** one.
-        (u.apply ?? null) === null && (latest === null || !enabled)
-          ? null
-          : h(
-              'div',
-              { 'data-region': 'update-apply', style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
-              (u.apply ?? null) === null
-                ? h(
-                    UI.Button,
-                    {
-                      variant: 'primary',
-                      'data-action': 'update-apply',
-                      disabled: m.busy,
-                      onClick: () => a.requestUpdateApply(latest),
-                    },
-                    t('updateApply'),
-                  )
-                : renderUpdateApplyStatus(t, m, a),
-            ),
-      );
+    function regionLabelKey(id) {
+      return id === 'cn' ? 'updateRegionCn' : id === 'custom' ? 'updateRegionCustom' : 'updateRegionDefault';
     }
 
     /**
-     * 「高级」 — everything rare, everything destructive, everything about the
-     * page itself: the read-only legacy override list, the two layer-wide
-     * buttons (`legacy=true` and `reset=true`, each confirmed), and the full
-     * status block (mount / frozen / build stamp / renderer / primitives
-     * self-check) that the one-line summary at the top compresses away.
+     * g-043: the「自定义」dialog — the address field, its red line, and the two
+     * buttons.
      *
+     * It is its own overlay rather than another `renderConfirm` branch because
+     * what it needs is a **form**: a text field, a validation error that stays on
+     * screen (the confirm overlay has no such slot), and a submit that must not
+     * close the dialog when the Host refuses the address. Three rules from §17.10
+     * are visible here:
+     *   - the failure is **red and in the dialog** (`data-role="region-error"`),
+     *     never a page notice the user could miss while the dialog covers it;
+     *   - the dialog stays open on a refusal, so the address can be corrected in
+     *     place, and closing it is always an explicit choice;
+     *   - it never writes anything itself: the `PUT` is the same action the
+     *     dropdown uses, so there is exactly one save path.
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
-     * @returns the panel element.
+     * @returns the overlay element, or null when the dialog is closed.
      */
-    function renderAdvancedTab(t, m, a) {
+    function renderRegionDialog(t, m, a) {
+      const dialog = m.regionDialog ?? null;
+      if (dialog === null) return null;
+      const checking = dialog.phase === 'saving';
       return h(
         'div',
-        { 'data-region': 'advanced', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
-        renderOverridesList(t, m, a),
-        renderLayerReset(t, m, a),
-        // g-030: the switch that decides whether this plugin may talk to GitHub
-        // at all. It sits above the status block because it is an *action*, and
-        // the status block is a read-out.
-        renderUpdateSetting(t, m, a),
-        renderStatusDetail(t, m),
+        {
+          key: 'region-overlay',
+          'data-region': 'region-overlay',
+          style: {
+            position: 'fixed',
+            top: 0,
+            right: 0,
+            bottom: 0,
+            left: 0,
+            zIndex: 1000,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 16,
+            background: 'rgba(0, 0, 0, 0.45)',
+          },
+        },
+        h(
+          'div',
+          {
+            'data-region': 'region-dialog',
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-label': t('updateRegionCustomTitle'),
+            style: {
+              ...cardStyle,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+              width: '100%',
+              maxWidth: 480,
+              padding: '16px 18px',
+              boxShadow: '0 12px 32px rgba(0, 0, 0, 0.35)',
+            },
+          },
+          h('strong', { style: confirmTitleStyle }, t('updateRegionCustomTitle')),
+          h('div', { 'data-role': 'region-body', style: confirmTextStyle }, t('updateRegionCustomBody')),
+          h(UI.Input, {
+            'data-role': 'region-input',
+            value: dialog.value,
+            placeholder: t('updateRegionCustomPlaceholder'),
+            disabled: m.busy || checking,
+            onChange: a.setRegionCustomValue,
+          }),
+          dialog.error === null
+            ? null
+            : h(
+                'div',
+                {
+                  'data-role': 'region-error',
+                  'data-region-error': typeof dialog.error.code === 'string' ? dialog.error.code : 'unknown',
+                  style: { fontSize: 13, color: token.stateError },
+                },
+                errorText(t, dialog.error),
+              ),
+          h(
+            'div',
+            { 'data-role': 'region-actions', style: confirmActionsStyle },
+            h(
+              UI.Button,
+              {
+                variant: 'primary',
+                'data-action': 'region-save',
+                disabled: m.busy || checking,
+                onClick: a.submitRegionCustom,
+              },
+              checking ? t('updateRegionCustomChecking') : t('updateRegionCustomSubmit'),
+            ),
+            h(
+              UI.Button,
+              { 'data-action': 'region-cancel', disabled: m.busy || checking, onClick: a.cancelRegionCustom },
+              t('updateRegionCustomCancel'),
+            ),
+          ),
+        ),
       );
     }
 
@@ -7668,6 +6398,11 @@ window.__ModuleLoader__.load({
       // panel purely so the panel keeps the last slot in the tree.
       const confirmCard = renderConfirm(t, m, a);
       if (confirmCard !== null) children.push(confirmCard);
+      // g-043: the custom-mirror dialog is the second fixed overlay, and the two
+      // are mutually exclusive in practice (their triggers live in different
+      // cards). Pushed here for the same reason as the confirm card.
+      const regionCard = renderRegionDialog(t, m, a);
+      if (regionCard !== null) children.push(regionCard);
       children.push(
         h('div', { key: 'panel', 'data-region': 'panel' },
           m.snap.phase === 'loading' && !m.snap.data ? h('p', { key: 'loading', style: metaStyle }, t('loading')) : null,
@@ -7678,12 +6413,12 @@ window.__ModuleLoader__.load({
                 m.tab === 'mine'
                   ? renderMinePanel(t, m, a)
                   : m.tab === 'overview'
-                    ? renderOverviewPanel(t, m, a)
+                    ? renderOverviewChunk(t, m, a)
                     : m.tab === 'history'
-                      ? renderHistoryTab(t, m, a)
+                      ? renderHistoryChunk(t, m, a)
                       : m.tab === 'backup'
-                        ? renderBackupTab(t, m, a)
-                        : renderAdvancedTab(t, m, a),
+                        ? renderBackupChunk(t, m, a)
+                        : renderAdvancedChunk(t, m, a),
               )
             : null,
         ),
@@ -7709,6 +6444,14 @@ window.__ModuleLoader__.load({
           'data-build-server':
             m.boot && m.boot.server && typeof m.boot.server.hash === 'string' ? m.boot.server.hash : 'unknown',
           'data-build-match': buildVerdict(m.boot),
+          // g-045: which chunks this page has *actually loaded*, as
+          // `name:hash` pairs (`,`-separated; `none` before the first one). The
+          // main digest above is one file's bytes; this is the other half of the
+          // question, and a probe can see that a tab was opened without asking
+          // the page to render one.
+          'data-build-loaded': loadedChunkStamps()
+            .map((entry) => `${entry.name}:${entry.hash}`)
+            .join(',') || 'none',
           // g-029: the version the host reported in the same ping, verbatim, or
           // `unknown` — never a version this bundle made up. The visible node is
           // beside the page title (Revision 17); this copy stays on the root
@@ -7756,6 +6499,16 @@ window.__ModuleLoader__.load({
       // exception-free by construction (see `apply`), so this hook cannot be
       // the call that throws.
       React.useSyncExternalStore(subscribe, revision, revision);
+      // g-045: the chunk half of the build stamp, on the same seat. A chunk that
+      // finishes loading writes `loadedChunks` during React's own render pass
+      // (that is when `React.lazy` resolves), which re-renders the Suspense
+      // subtree — and **not** this root, where `data-build-loaded` and the
+      // verdict live. Without this subscription the page would report "no chunk
+      // has run" until some unrelated state change happened to re-render it, and
+      // the third check — the one that compares the chunk bytes this browser is
+      // really running against the ones the host serves — would never run when
+      // it matters.
+      React.useSyncExternalStore(subscribeChunkLoads, chunkLoadRevision, chunkLoadRevision);
 
       // The session seat: a root-level hook on props, no inject required. The
       // `typeof` branch is stable for the life of a mount, and a hook that
@@ -7897,6 +6650,13 @@ window.__ModuleLoader__.load({
       const [diffSel, setDiffSel] = React.useState({ from: null, to: DIFF_CURRENT });
       const [diff, setDiff] = React.useState({ phase: 'idle', data: null, error: null });
       const [confirm, setConfirm] = React.useState(null);
+      /**
+       * g-043:「自定义镜像源」dialog: `null` when closed, otherwise
+       * `{value, error, phase}`. Its own state rather than a `confirm` kind
+       * because the error has to survive the dialog staying open — a confirm
+       * carries a body, not a form.
+       */
+      const [regionDialog, setRegionDialog] = React.useState(null);
       const [transfer, setTransfer] = React.useState({ phase: 'idle', plan: null, error: null, exportText: '', fileName: '' });
       const [importText, setImportText] = React.useState('');
       const [importMode, setImportMode] = React.useState('merge');
@@ -7942,6 +6702,18 @@ window.__ModuleLoader__.load({
         applyElapsed: null,
         /** The wall-clock start, which drives the elapsed ticker. */
         applyStartedAt: null,
+        /**
+         * g-043:「下载区域」, exactly as the **Host** reports it:
+         * `{phase, region, registry, custom, detected, stored, error}`, or `null`
+         * until the Host has answered. The three things that matter here are
+         * `region` (what the dropdown shows — never the option the user just
+         * clicked), `detected` (the Host chose it by availability, so the page
+         * says so) and `error` (a saved custom address the Host cannot use).
+         * `null` is not「默认」: it is「this page has not been told yet」, and the
+         * card renders it as the shipped default while saying nothing about
+         * where it came from.
+         */
+        region: null,
       });
 
       const session = selection === null ? seat.currentId || GLOBAL_SESSION : selection;
@@ -8103,6 +6875,12 @@ window.__ModuleLoader__.load({
                     hash: build.hash,
                     size: typeof build.size === 'number' ? build.size : null,
                     mtime: typeof build.mtime === 'string' ? build.mtime : null,
+                    // g-045: the host's digests for every chunk file it really
+                    // serves. Absent on an old host, which is what keeps the
+                    // pre-split answer (`clientBuild` alone) readable; any other
+                    // shape is kept as it arrived, so the verdict can refuse it
+                    // instead of silently treating it as "no list".
+                    chunks: build.chunks === undefined ? null : build.chunks,
                   }
                 : null,
             version: typeof version === 'string' && version.trim().length > 0 ? version : null,
@@ -8122,7 +6900,8 @@ window.__ModuleLoader__.load({
         // Nothing here paints the main page: a newer release renders the banner,
         // a failure renders nothing anywhere, and every undecided upstream
         // answer (`hasUpdate:null`) is explained only inside 「高级」's card, by
-        // `renderUpdateSetting`.
+        // `renderUpdateSetting` — which since g-046 lives in that tab's chunk,
+        // `client.advanced.js`.
         if (readUpdatePref() === false) {
           // The g-032 install state is carried over, never reset by a check:
           // this effect also re-runs on `reload`, and losing a running install's
@@ -8150,6 +6929,14 @@ window.__ModuleLoader__.load({
             }));
           };
           void checkUpdate();
+          // g-043: the download region rides on the same mount, and on the same
+          // zero-request promise: with the mirror saying「off」nothing is asked at
+          // all, and the region is loaded when the switch is turned back on
+          // (`toggleUpdate`). While the switch is on, this one `GET` is what
+          // decides the first-visit default — the page has already rendered, so
+          // the detection arrives asynchronously and never blocks the first
+          // paint, and the Host caps each probe at 2.5 s (§17.9).
+          void loadRegion();
         }
         const load = async () => {
           const snapshot = await requestJson(`${SNAPSHOT_PATH}${query}`);
@@ -8384,6 +7171,32 @@ window.__ModuleLoader__.load({
        * in place, which is what keeps the pager from describing a page that no
        * longer exists.
        */
+      /**
+       * Reconcile the「我的 Prompt」draft after an operation changed a layer's
+       * stored text **behind the editor's back** (g-049: rollback, a whole-layer
+       * reset, or an applied import).
+       *
+       * The box renders the draft while one exists (see `mineText`), so without
+       * this the editor keeps showing text that is no longer the stored value and
+       * the operation reads as «nothing happened». The two cases are deliberately
+       * different:
+       *   - a draft that still equals the stored text has nothing the user typed,
+       *     so it is dropped and the editor follows the new value;
+       *   - a draft that differs **is** unsaved work — it is kept, and the caller
+       *     appends `mineDraftKept` to the notice instead of silently destroying
+       *     the reader's text. §15.4's「no path clears what the user typed」is
+       *     about exactly this second case.
+       * @returns `true` when the editor follows the stored text, `false` when a
+       *   differing draft was kept.
+       */
+      const settleMineDraft = () => {
+        if (mineDraft === null || mineDraft.key !== mineKey) return true;
+        const previous = mineStored === null ? '' : mineStored;
+        if (mineDraft.text !== previous) return false;
+        setMineDraft(null);
+        return true;
+      };
+
       const rollbackTo = async (pending) => {
         setBusy(true);
         const query = historyScopeQuery(historyLayer, historyScopeArg);
@@ -8397,7 +7210,11 @@ window.__ModuleLoader__.load({
           setNotice({ tone: 'error', text: fmt(t('histRollbackFailed'), { reason: errorText(t, result.error) }) });
           return;
         }
-        setNotice({ tone: 'success', text: fmt(t('histRollbackDone'), { id: pending.id }) });
+        const followed = settleMineDraft();
+        setNotice({
+          tone: 'success',
+          text: fmt(t('histRollbackDone'), { id: pending.id }) + (followed ? '' : ` ${t('mineDraftKept')}`),
+        });
         resetHistoryView();
         setReload((value) => value + 1);
       };
@@ -8412,9 +7229,10 @@ window.__ModuleLoader__.load({
           return;
         }
         const count = result.payload && typeof result.payload.count === 'number' ? result.payload.count : 0;
+        const followed = settleMineDraft();
         setNotice({
           tone: 'success',
-          text: count > 0 ? fmt(t('resetDoneNotice'), { count }) : t('resetNoneNotice'),
+          text: (count > 0 ? fmt(t('resetDoneNotice'), { count }) : t('resetNoneNotice')) + (followed ? '' : ` ${t('mineDraftKept')}`),
         });
         setReload((value) => value + 1);
       };
@@ -8533,14 +7351,15 @@ window.__ModuleLoader__.load({
         const totals = result.payload && result.payload.totals ? result.payload.totals : {};
         const count = (totals.added || 0) + (totals.replaced || 0) + (totals.removed || 0);
         setTransfer((current) => ({ ...current, phase: 'applied', plan: result.payload, error: null }));
+        const followed = settleMineDraft();
         setNotice({
           tone: 'success',
-          text: result.payload && result.payload.unchanged === true
+          text: (result.payload && result.payload.unchanged === true
             ? t('importUnchangedNotice')
             : fmt(t('importAppliedNotice'), {
                 written: result.payload && Array.isArray(result.payload.written) ? result.payload.written.length : 0,
                 count,
-              }),
+              })) + (followed ? '' : ` ${t('mineDraftKept')}`),
         });
         setReload((value) => value + 1);
       };
@@ -8778,6 +7597,121 @@ window.__ModuleLoader__.load({
        * 「显示更多」 — those browse the picker, they do not finish with it.
        */
       /**
+       * g-043: read the stored「下载区域」— and, on the first visit ever, let the
+       * Host decide it by availability. One `GET`; a failure leaves the previous
+       * answer alone and says nothing (this is a read-out, not a task).
+       *
+       * The Host's answer is copied into the view state field by field, so
+       * nothing on screen is invented here: an unknown region id reads as
+       *「默认」, a non-string address as「no address」, `detected` only as the
+       * Host's own boolean.
+       */
+      const loadRegion = async () => {
+        const result = await requestJson(DOWNLOAD_REGION_PATH);
+        if (!result.ok) {
+          setUpdate((current) => ({ ...current, region: { ...(current.region ?? {}), phase: 'error' } }));
+          return;
+        }
+        setUpdate((current) => ({ ...current, region: regionStateOf(result.payload) }));
+      };
+
+      /**
+       * g-043: send one region choice and fold the Host's answer back into the
+       * card. Returns the transport result so the dialog can decide whether to
+       * close: `ok:true` means the choice is in force *now*, and anything else
+       * means nothing was written.
+       *
+       * A successful switch drops the previous check's fact (`data` / `check`):
+       * it was an answer from the **old** source, and leaving it would let the
+       * banner announce a version the new source may not even carry — the
+       * 「install this」button would then install the old source's artifact while
+       * the dropdown said otherwise. The re-check below refills it from the new
+       * source.
+       */
+      const saveRegion = async (body) => {
+        const previous = update.region !== null && update.region !== undefined && update.region.phase === 'error' ? 'error' : 'ready';
+        setUpdate((current) => ({ ...current, region: { ...(current.region ?? {}), phase: 'saving' } }));
+        setBusy(true);
+        const result = await requestJson(DOWNLOAD_REGION_PATH, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        setBusy(false);
+        if (!result.ok) {
+          // Nothing was written: the control must keep showing the source that is
+          // actually in force, and the region's phase returns to what it was.
+          setUpdate((current) => ({ ...current, region: { ...(current.region ?? {}), phase: previous } }));
+          return result;
+        }
+        setUpdate((current) => ({ ...current, region: regionStateOf(result.payload), data: null, check: null, dismissed: false }));
+        if (update.enabled !== false) await recheckUpdate();
+        return result;
+      };
+
+      /**
+       * g-043: the dropdown's own `change`. `default` / `cn` are saved straight
+       * away — there is nothing to type and nothing to validate. `custom` only
+       * **opens the dialog**: the address is not a choice the dropdown can
+       * express, and saving the word「自定义」without an address would leave the
+       * npm path unusable.
+       */
+      const setDownloadRegion = async (event) => {
+        const wanted = event && event.target ? String(event.target.value) : '';
+        if (wanted === 'custom') {
+          setRegionDialog({
+            value:
+              update.region !== null && update.region !== undefined && typeof update.region.custom === 'string'
+                ? update.region.custom
+                : '',
+            error: null,
+            phase: 'idle',
+          });
+          return;
+        }
+        if (wanted !== 'default' && wanted !== 'cn') return;
+        const result = await saveRegion({ region: wanted });
+        if (result.ok) {
+          setNotice({ tone: 'success', text: fmt(t('updateRegionSaved'), { region: t(regionLabelKey(wanted)) }) });
+          return;
+        }
+        setNotice({ tone: 'error', text: errorText(t, result.error) });
+      };
+
+      /** g-043: the dialog's field. Typing clears the red line. */
+      const setRegionCustomValue = (event) => {
+        const value = event && event.target ? String(event.target.value) : '';
+        setRegionDialog((current) => (current === null ? null : { ...current, value, error: null }));
+      };
+
+      /** g-043: close the dialog without writing anything. */
+      const cancelRegionCustom = () => setRegionDialog(null);
+
+      /**
+       * g-043: submit the typed address. The Host validates **before** it writes,
+       * so:
+       *   - `ok:true` ⇒ the dialog closes and the new source is already in force;
+       *   - `ok:false` ⇒ the dialog **stays open** with the Host's code rendered
+       *     as a red line inside it, and the saved value is untouched. The page
+       *     notice is deliberately *not* used: it renders behind the overlay.
+       * A transport failure (no answer at all) is the same red line with the
+       * page's own network copy.
+       */
+      const submitRegionCustom = async () => {
+        const dialog = regionDialog;
+        if (dialog === null) return;
+        const address = String(dialog.value ?? '').trim();
+        setRegionDialog((current) => (current === null ? null : { ...current, phase: 'saving', error: null }));
+        const result = await saveRegion({ region: 'custom', registry: address });
+        if (result.ok) {
+          setRegionDialog(null);
+          setNotice({ tone: 'success', text: fmt(t('updateRegionSaved'), { region: t(regionLabelKey('custom')) }) });
+          return;
+        }
+        setRegionDialog((current) => (current === null ? null : { ...current, phase: 'idle', error: result.error }));
+      };
+
+      /**
        * g-030: run the update check again, bypassing the Host's six-hour cache
        * (`?force=1`). The button that calls this is only rendered while the
        * switch is on, so "check now" can never be the thing that re-enables a
@@ -8788,7 +7722,7 @@ window.__ModuleLoader__.load({
        * cases it can be in: a **failed** check leaves the last successful answer
        * (or nothing) on screen, while a **successful** `hasUpdate:null` gets the
        * plain-language explanation that upstream had nothing to compare against
-       * (`renderUpdateSetting`).
+       * (`renderUpdateSetting`, in the 「高级」 chunk `client.advanced.js`).
        */
       const recheckUpdate = async () => {
         setUpdate((current) => ({ ...current, phase: 'checking' }));
@@ -8846,7 +7780,14 @@ window.__ModuleLoader__.load({
           tone: 'success',
           text: fmt(t('updateToggleSaved'), { state: t(enabled ? 'updateSettingOn' : 'updateSettingOff') }),
         });
-        if (enabled) await recheckUpdate();
+        if (enabled) {
+          // g-043: a mount that ran while the switch was off asked the region
+          // nothing at all (the zero-request promise), so the first thing the
+          // switch being turned back on has to fetch is the region — which is
+          // also where the first-visit availability detection happens.
+          if (update.region === null || update.region === undefined) await loadRegion();
+          await recheckUpdate();
+        }
       };
 
       /**
@@ -9146,6 +8087,11 @@ window.__ModuleLoader__.load({
         dismissUpdate: () => setUpdate((current) => ({ ...current, dismissed: true })),
         toggleUpdate,
         recheckUpdate,
+        // g-043:「下载区域」 — the dropdown, and the「自定义」dialog behind it.
+        setDownloadRegion,
+        setRegionCustomValue,
+        submitRegionCustom,
+        cancelRegionCustom,
         // g-032:「立即更新」— open the confirmation, start it, cancel it, retry it.
         requestUpdateApply,
         cancelUpdateApply,
@@ -9180,15 +8126,17 @@ window.__ModuleLoader__.load({
           }),
         pickSession: (id) => {
           setSelection(id);
-          // The box reflects the selection: it refills with the readable title.
-          setSessionQuery(sessionLabelOf(seat.rows, id));
+          // g-047: the box holds the user's own words. Picking a row moves the
+          // selection and nothing else — the query keeps filtering the list, and
+          // 「当前选中」 is shown by the summary, the `session-current` line and
+          // the pinned entry, not by overwriting what the user typed.
           setSessionActive(-1);
           closeScope();
         },
         useCurrent: () => {
           if (seat.currentId.length === 0) return;
           setSelection(seat.currentId);
-          setSessionQuery(sessionLabelOf(seat.rows, seat.currentId));
+          // g-047: same rule as pickSession — the search box is not a label.
           setSessionActive(-1);
           closeScope();
         },
@@ -9214,7 +8162,9 @@ window.__ModuleLoader__.load({
             const picked = sessionVisible[sessionActive] || sessionVisible[0];
             if (picked) {
               setSelection(picked.id);
-              setSessionQuery(sessionLabelOf(seat.rows, picked.id));
+              // g-047: as with a click, Enter moves the selection only — the
+              // typed query survives, so the next Enter still resolves the row
+              // it highlights instead of hunting a title as if it were an id.
               setSessionActive(-1);
               closeScope();
               return;
@@ -9434,6 +8384,8 @@ window.__ModuleLoader__.load({
         // at a time, by construction.
         historyModal,
         confirm,
+        // g-043: `null` when the「自定义镜像源」dialog is closed.
+        regionDialog,
         transfer,
         importText,
         importMode,
@@ -9516,7 +8468,7 @@ window.__ModuleLoader__.load({
        * path) that a rendered tree cannot express. The loader only ever reads
        * `inject` and `apply`; nothing in the page reads this.
        */
-      __internals: { historyPanelHeight },
+      __internals: { historyPanelHeight, shared: CHUNK_FACILITIES },
       apply(ctx) {
         // Every locale call is guarded. `ctx.locale.subscribe` and
         // `getSnapshot().revision` are the one unproven part of the 0.1.7-rc.2

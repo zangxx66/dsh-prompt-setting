@@ -10,7 +10,7 @@
  * Run: `node --test test/`
  */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import test, { afterEach } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -88,6 +88,15 @@ const ERROR_CODES = [
   'variable-lookup-failed',
   // Revision 12 three-state spelling (CONTRACT.md §16.8).
   'invalid-state',
+  // g-043 download region (CONTRACT.md §17.3/§17.7–§17.10).
+  'invalid-region',
+  'registry-invalid',
+  'registry-unreachable',
+  'registry-http-error',
+  'registry-not-npm',
+  'registry-unavailable',
+  // Both preferences routes can answer this one (§17.4, §17.8).
+  'preferences-unwritable',
 ];
 
 /**
@@ -99,6 +108,14 @@ function makeHooksRuntime(options = {}) {
   let cursor = 0;
   let refCursor = 0;
   let effects = [];
+  /**
+   * Every `useSyncExternalStore` subscription this render registered, and every
+   * notification a store pushed through one (g-045). A case asserts on the
+   * notification, not on the count: "the page re-read the snapshot when it
+   * happened to re-render" is exactly the bug this seat exists to prevent.
+   */
+  const externalSubscriptions = [];
+  const externalNotifications = [];
   // g-039 fourth round: a `useRef` whose `.current` the case can preset. React
   // assigns a ref's `.current` when it mounts the element; the double renders no
   // real DOM, so a case that wants to exercise a measuring code path hands in the
@@ -136,14 +153,57 @@ function makeHooksRuntime(options = {}) {
       cursor += 1;
       // Mirror React's mount behavior: subscribe once, then read the snapshot.
       // This is exactly the path a missing `ctx.locale.subscribe` would break.
-      subscribe(() => {});
+      // g-045: the listener is **kept and really registered**, so a case can
+      // prove a store notifies its subscribers instead of the page merely
+      // re-reading the snapshot on some later render — which is the difference
+      // the root's `data-build-*` attributes depend on (NOTES.md §122).
+      const listener = () => {
+        externalNotifications.push(getSnapshot());
+      };
+      externalSubscriptions.push({ getSnapshot, listener });
+      subscribe(listener);
       return getSnapshot();
     },
     useId: () => 'test-id',
     Fragment: Symbol('Fragment'),
+    // g-045: the lazy chunk boundary. `load()` is called on first expansion,
+    // exactly as React calls it on first render; the loader double below
+    // resolves synchronously, so one expansion is enough to get the real panel —
+    // and a chunk that cannot be loaded hands back the page's own readable
+    // failure component, which is what the boundary must render instead of a
+    // blank tab.
+    Suspense: SUSPENSE_TYPE,
+    lazy(load) {
+      const holder = { component: null, started: false };
+      return {
+        $$typeof: LAZY_TYPE,
+        _resolveNode(props) {
+          if (!holder.started) {
+            holder.started = true;
+            try {
+              load().then((moduleObject) => {
+                holder.component =
+                  moduleObject && typeof moduleObject.default === 'function' ? moduleObject.default : null;
+              });
+            } catch {
+              holder.component = null;
+            }
+          }
+          return typeof holder.component === 'function' ? holder.component(props) : null;
+        },
+      };
+    },
   };
+  if (options.withoutReactLazy === true) {
+    // g-045 degradation branch: a React without `lazy`/`Suspense` must leave the
+    // page rendering (the tab says so) instead of taking the panel down.
+    delete React.lazy;
+    delete React.Suspense;
+  }
   return {
     React,
+    externalSubscriptions,
+    externalNotifications,
     render(component, props) {
       cursor = 0;
       refCursor = 0;
@@ -157,17 +217,33 @@ function makeHooksRuntime(options = {}) {
 }
 
 /**
+ * The two element types the lazy chunk boundary produces (g-045).
+ *
+ * 「版本历史」 is mounted through `React.lazy` inside `React.Suspense`, and this
+ * harness expands the tree by hand instead of scheduling a real render, so it
+ * has to recognise both. They are module-level markers rather than locals of the
+ * hooks double because {@link expandTree} — which walks the tree — needs them.
+ */
+const LAZY_TYPE = Symbol('react.lazy');
+const SUSPENSE_TYPE = Symbol('react.suspense');
+
+/**
  * Expand function components into host nodes.
  *
  * The hooks runtime above calls one component directly; the page's atoms are
  * plain functions, so rendering them here is what lets a test click the real
- * `<button>` the fallback branch produced.
+ * `<button>` the fallback branch produced. Since g-045 a tab panel may also be a
+ * **lazy chunk**: the loader double resolves `require.async` synchronously, so
+ * the boundary collapses on first expansion instead of suspending.
  * @param node - an element, an array of children, or a leaf.
  * @returns the expanded tree.
  */
 function expandTree(node) {
   if (node === null || node === undefined || typeof node !== 'object') return node;
   if (Array.isArray(node)) return node.map(expandTree);
+  if (node.type !== null && typeof node.type === 'object' && node.type.$$typeof === LAZY_TYPE) {
+    return expandTree(node.type._resolveNode(node.props));
+  }
   if (typeof node.type === 'symbol') return expandTree(node.props ? node.props.children : null);
   if (typeof node.type === 'function') return expandTree(node.type(node.props));
   return { ...node, props: { ...node.props, children: expandTree(node.props.children) } };
@@ -192,19 +268,37 @@ afterEach(() => {
 });
 
 function loadClient(primitives, options = {}) {
-  let descriptor = null;
+  /**
+   * Every registration this sandbox saw, in order (g-045: the main bundle plus
+   * one entry per chunk — a bundle may `load()` more than once, and the loader
+   * keys chunks by `<id>/<file>`).
+   */
+  const registrations = [];
+  const factoryEntries = new Map();
+  /** Module-table id → exports, the way the real loader memoizes a factory. */
+  const moduleTable = new Map();
+  /** Chunk file name → its materialized exports (each chunk registers once). */
+  const chunkModules = new Map();
+  /** Every chunk file this page asked for, in request order. */
+  const loadedChunkFiles = [];
+  /** Chunk file names a case wants to answer with a rejection (g-045). */
+  const chunkFailures = new Set(options.chunkFailures || []);
   const runtime = makeHooksRuntime(options);
   const sandbox = {
     window: {
       __ModuleLoader__: {
         load(entry) {
-          descriptor = entry;
+          registrations.push(entry);
+          factoryEntries.set(entry.chunk === undefined ? entry.id : `${entry.id}/${entry.chunk}`, entry);
         },
       },
     },
     console,
   };
   sandbox.fetch = () => Promise.reject(new Error('fetch not stubbed'));
+  // g-045: the page defers its chunk-load notification to a microtask, so the
+  // sandbox gets one too — the real path is what the tests should exercise.
+  sandbox.queueMicrotask = queueMicrotask;
   // g-032 gives the page a real timer loop (the install poll, and the「已用时」
   // ticker). The sandbox gets the host's own timers with a **floored delay**, so
   // a case that stubs a running install does not spend 1.5 s per poll: the
@@ -232,6 +326,7 @@ function loadClient(primitives, options = {}) {
   };
   vm.createContext(sandbox);
   vm.runInContext(clientSource, sandbox, { filename: 'client.js' });
+  const descriptor = registrations.find((entry) => entry.chunk === undefined);
   assert.ok(descriptor, 'client.js must register a lazy factory');
   // The primitives double keeps the atoms' *props* reachable (so a real button
   // can be clicked and a real `DiffBlock` call inspected) while rendering
@@ -277,20 +372,76 @@ function loadClient(primitives, options = {}) {
             IconTriangleRightFillRegular: () => null,
           }
         : null;
-  const module = descriptor.factory((name) => {
+  /**
+   * The loader's `require.async('./client.x.js')`, doubled (g-045).
+   *
+   * It does what the real one does, minus the network: reads the chunk from
+   * disk, executes it **in this same sandbox** (so it registers itself and
+   * builds its elements on the page's one `React` double) and answers with its
+   * exports. The answer is a *synchronous* thenable because this harness expands
+   * trees by hand; the page's own loading code is unchanged, and a rejection
+   * still reaches it (see `chunkFailures`).
+   * @param spec - the relative spec the page asked for (`./client.history.js`).
+   * @returns a thenable resolving to the chunk's exports.
+   */
+  const requireAsync = (spec) => {
+    const fileName = String(spec).replace(/^\.\//, '');
+    loadedChunkFiles.push(fileName);
+    if (chunkFailures.has(fileName)) {
+      const failure = new Error(`chunk unavailable: ${fileName}`);
+      return {
+        then: (onLoaded, onFailed) => (typeof onFailed === 'function' ? onFailed(failure) : undefined),
+      };
+    }
+    if (!chunkModules.has(fileName)) {
+      let source;
+      try {
+        source = readFileSync(join(here, '..', fileName), 'utf8');
+      } catch (error) {
+        return {
+          then: (onLoaded, onFailed) => (typeof onFailed === 'function' ? onFailed(error) : undefined),
+        };
+      }
+      // g-045: a case can hand in the bytes the browser would have received
+      // *differently* from the ones on disk — the one way to prove the page
+      // compares what it really ran against what the host serves.
+      if (typeof options.chunkSourceEdit === 'function') source = options.chunkSourceEdit(fileName, source);
+      vm.runInContext(source, sandbox, { filename: fileName });
+      const entry = factoryEntries.get(`${packageJson.name}/${fileName}`);
+      assert.ok(entry, `${fileName} must register itself as a chunk of ${packageJson.name}`);
+      chunkModules.set(fileName, entry.factory(requireFn));
+    }
+    const chunkExports = chunkModules.get(fileName);
+    return { then: (onLoaded) => onLoaded(chunkExports) };
+  };
+  const requireFn = (name) => {
     if (name === 'react') return runtime.React;
     if (name === '@deepseek-ai/dsh-client-ui-primitives') {
       if (primitives === 'throw') throw new Error("Cannot find module '@deepseek-ai/dsh-client-ui-primitives'");
       return primitivesModule;
     }
+    // g-045: a chunk's one way back into the main bundle. The real loader
+    // resolves the package id out of its module table, where the main factory
+    // has already been materialized — hence "no cycle, ever".
+    if (name === packageJson.name || name === `${packageJson.name}/client.js`) {
+      return moduleTable.get(packageJson.name);
+    }
     throw new Error(`unexpected require: ${name}`);
-  });
+  };
+  requireFn.async = requireAsync;
+  // g-045 degradation branch: a loader with no chunk path at all (`require.async`
+  // missing) must produce the readable card, not a throw.
+  if (options.withoutRequireAsync === true) delete requireFn.async;
+  const module = descriptor.factory(requireFn);
+  moduleTable.set(packageJson.name, module);
   return {
     descriptor,
     module,
     sandbox,
     runtime,
     diffBlockCalls,
+    registrations,
+    loadedChunkFiles,
     /** Stop every timer this page's sandbox still holds. */
     stopTimers: () => {
       for (const id of pendingTimers) {
@@ -884,6 +1035,30 @@ function updateAvailableFixture(over = {}) {
   });
 }
 
+/**
+ * `GET /prompt-setting/download-region` payload (g-043).
+ *
+ * The default is the **pre-detection** shape a g-043 host answers with when the
+ * region was already stored: the shipped source, and `detected:false` because no
+ * probe decided it. The two fields that change the copy — `detected` and a
+ * `custom` `error` — are what the cases below drive.
+ * @param over - fields to override.
+ * @returns the payload.
+ */
+function regionFixture(over = {}) {
+  return {
+    ok: true,
+    region: 'default',
+    registry: 'https://registry.npmjs.org/',
+    custom: null,
+    detected: false,
+    stored: true,
+    error: null,
+    probed: false,
+    ...over,
+  };
+}
+
 /** `GET /prompt-setting/overrides` payload. */
 function overridesFixture(over = {}) {
   return {
@@ -1081,6 +1256,8 @@ const PATHS = {
   interpolate: '/prompt-setting/interpolate',
   // g-030: the upstream update check and its on/off switch.
   updateCheck: '/prompt-setting/update-check',
+  // g-043:「下载区域」— the choice, and the first-visit detection behind it.
+  downloadRegion: '/prompt-setting/download-region',
   // g-032:「立即更新」— the install route, its status read and its cancel face.
   updateApply: '/prompt-setting/update-apply',
   updateApplyCancel: '/prompt-setting/update-apply/cancel',
@@ -1113,6 +1290,9 @@ function defaultResponses(over = {}) {
     // g-030: the shipped default — switch on, upstream not ahead, so the default
     // page renders no banner at all.
     [PATHS.updateCheck]: { payload: updateFixture() },
+    // g-043: a host that has already stored a region — so the default page makes
+    // one read and no probe, exactly like a second visit does.
+    [PATHS.downloadRegion]: { payload: regionFixture() },
     [PATHS.interpolate]: {
       payload: { ok: true, interpolateCustom: true, layer: 'user', saved: { enabled: true }, effectiveFrom: 'next-turn' },
     },
@@ -1275,9 +1455,14 @@ test('client: requests stay on the plugin prefix and report the renderer', async
   // page which was reloaded mid-install resume following it. It is a **local**
   // request to this plugin's own prefix, so it does not weaken g-030's promise
   // that a closed switch means no request leaves the machine.
+  //
+  // g-043 adds one more of exactly that kind: `GET /download-region`, the read
+  // that (on a first visit) lets the *host* decide the update source. Still one
+  // request to this plugin's own prefix, and still none at all when the mirror
+  // says the switch is off (asserted in the region section below).
   assert.deepEqual(
     [...new Set(urls.map((url) => url.split('?')[0]))].sort(),
-    [PATHS.overrides, PATHS.ping, PATHS.snapshot, PATHS.updateApply, PATHS.updateCheck],
+    [PATHS.downloadRegion, PATHS.overrides, PATHS.ping, PATHS.snapshot, PATHS.updateApply, PATHS.updateCheck],
   );
   // The global default: no `?session=`, so the workspace layer stays inactive.
   assert.deepEqual(urlsFor(page, PATHS.snapshot), [PATHS.snapshot]);
@@ -1449,6 +1634,470 @@ test('client: no clientBuild, or a failed ping, is "unknown" and never "stale"',
   assert.equal(markerOf(olderTree, 'data-build'), independentBuildFingerprint(clientSource).hash);
   assert.equal(markerOf(failedTree, 'data-build'), independentBuildFingerprint(clientSource).hash);
 });
+
+// #region g-045: the split bundle — chunks, and what the stamp covers now
+
+/** The chunk files this package ships, in file-name order. */
+const CHUNK_FILES = readdirSync(join(here, '..'))
+  .filter((name) => /^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$/.test(name))
+  .sort();
+
+/**
+ * The host's chunk digests, recomputed here from disk.
+ *
+ * Deliberately independent of `core/store.js`: these cases assert what the page
+ * does with the host's answer, so the answer is built by the test.
+ * @returns `[{name, hash, size, mtime}]`, in file-name order.
+ */
+function chunkBuildFixture() {
+  return CHUNK_FILES.map((name) => {
+    const oracle = independentBuildFingerprint(readFileSync(join(here, '..', name), 'utf8'));
+    return { name, hash: oracle.hash, size: oracle.size, mtime: '2024-01-01T00:00:00.000Z' };
+  });
+}
+
+/** A `clientBuild` body that carries the chunk list, as a post-g-045 host sends it. */
+function chunkedBuildFixture() {
+  const oracle = independentBuildFingerprint(clientSource);
+  return { ...buildFixture(oracle.hash, oracle.size), chunks: chunkBuildFixture() };
+}
+
+test('client: the bundle registers its entry plus one entry per chunk, flat and loader-legal', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  await openHistory(page);
+  const entries = page.loaded.registrations.filter((entry) => entry.chunk === undefined);
+  const chunks = page.loaded.registrations.filter((entry) => entry.chunk !== undefined);
+  assert.deepEqual(entries.map((entry) => entry.id), [packageJson.name], 'exactly one entry registration');
+  assert.ok(chunks.length >= 1, 'the split bundle registers at least one chunk');
+  for (const entry of chunks) {
+    assert.equal(entry.id, packageJson.name, 'a chunk names the package that owns it');
+    // The loader refuses any other spelling: `client.<something>.js`, with no
+    // directory separator, so the file must be a flat sibling of client.js.
+    assert.match(entry.chunk, /^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$/);
+    assert.ok(existsSync(join(here, '..', entry.chunk)), `${entry.chunk} is a flat sibling of client.js`);
+    assert.equal(typeof entry.factory, 'function');
+  }
+});
+
+test('client: 「版本历史」 is fetched only when that tab is opened', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  await page.flush();
+  assert.deepEqual(page.loaded.loadedChunkFiles, [], '「我的 Prompt」 pays nothing for the history chunk');
+  const tree = await openHistory(page);
+  assert.deepEqual(page.loaded.loadedChunkFiles, ['client.history.js'], 'opening the tab fetches it');
+  // …and the tree is the same one this file used to build itself: the chunk's
+  // markers, its rows and its panel frame are all still here.
+  assert.equal(oneBy(tree, 'data-region', 'history').props['data-region'], 'history');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history').length, 1);
+  // g-046: 「提示词总览」 has a chunk of its own now, so reaching it adds that
+  // file — and only that file: the history chunk a reader already paid for is
+  // never fetched a second time.
+  await openOverview(page);
+  assert.deepEqual(
+    page.loaded.loadedChunkFiles,
+    ['client.history.js', 'client.overview.js'],
+    'each tab fetches its own chunk, and only once',
+  );
+});
+
+test('client: a chunk reaches the main bundle through require(), never a second React', () => {
+  const source = readFileSync(join(here, '..', 'client.history.js'), 'utf8');
+  // One direction only: the chunk asks the main bundle for the page's shared
+  // facilities. A `require('react')` here would be a second React instance, and
+  // a second element factory under it — the exact drift the split must avoid.
+  assert.ok(source.includes(`require('${packageJson.name}')`), 'the chunk requires the main bundle');
+  assert.equal(source.includes("require('react')"), false, 'the chunk must not build its own React');
+  // The facilities it does get are the main factory's own instance, not copies.
+  const loaded = loadClient('throw');
+  const shared = loaded.module.__internals.shared;
+  assert.equal(shared.h, loaded.runtime.React.createElement, 'one element factory for the whole bundle');
+  assert.ok(shared.token && typeof shared.token === 'object', 'and one theme token table');
+});
+
+test('client: a chunk that cannot be loaded renders a readable card, not a blank tab', async () => {
+  const page = makePage({ chunkFailures: ['client.history.js'], responses: defaultResponses() });
+  const mine = await page.flush();
+  assert.equal(markerOf(mine, 'data-render-state'), 'ok', 'the page itself still renders');
+  const tree = await openHistory(page);
+  const card = oneBy(tree, 'data-region', 'chunk-failure');
+  assert.equal(card.props['data-chunk'], 'client.history.js', 'the card names the chunk');
+  assert.equal(card.props['data-chunk-state'], 'error');
+  assert.ok(hasText(tree, 'chunk unavailable: client.history.js'), 'and the reason is on screen');
+  // The rest of the page is untouched: a chunk failure is one tab's problem.
+  assert.equal(markerOf(tree, 'data-render-state'), 'ok');
+  assert.equal(oneBy(tree, 'data-region', 'tabs').props['data-region'], 'tabs');
+  const overview = await openOverview(page);
+  assert.equal(markerOf(overview, 'data-render-state'), 'ok', 'other tabs still render');
+});
+
+test('client: chunk sources obey the same rules as the entry (no version literal, no repository URL)', () => {
+  for (const name of CHUNK_FILES) {
+    const source = readFileSync(join(here, '..', name), 'utf8');
+    for (const quoted of [`'${packageJson.version}'`, `"${packageJson.version}"`]) {
+      assert.equal(source.includes(quoted), false, `${name} must not contain ${quoted}`);
+    }
+    assert.equal(source.includes('github.com'), false, `${name} must not carry a repository URL`);
+    assert.equal(/<[A-Za-z][^>]*>/.test(source), false, `${name} must not carry JSX`);
+  }
+});
+
+test('client: the stamp covers the host’s chunk digests, and the page verifies the chunk it ran', async () => {
+  const page = makePage({
+    responses: defaultResponses({ [PATHS.ping]: pingResponse(chunkedBuildFixture()) }),
+  });
+  const mine = await page.flush();
+  assert.equal(markerOf(mine, 'data-build-match'), 'true', 'the entry digest and the manifest agree');
+  assert.equal(markerOf(mine, 'data-build-loaded'), 'none', 'no chunk has run yet');
+
+  await openHistory(page);
+  // The chunk has now really run, so the root carries what it reported — the
+  // page reads it on the next render, exactly as React re-renders a boundary.
+  const history = page.draw();
+  assert.equal(markerOf(history, 'data-build-match'), 'true');
+  const declared = chunkBuildFixture().find((entry) => entry.name === 'client.history.js');
+  assert.equal(markerOf(history, 'data-build-loaded'), `client.history.js:${declared.hash}`);
+  // …and that digest is the one an independent read of the chunk file yields.
+  assert.equal(
+    declared.hash,
+    independentBuildFingerprint(readFileSync(join(here, '..', 'client.history.js'), 'utf8')).hash,
+  );
+});
+
+test('client: a chunk whose served bytes differ from the manifest is 「stale」, never 「matching」', async () => {
+  // Negative control (criterion 3): the entry file is byte-for-byte the one on
+  // disk, and only the *chunk* the host reports differs from what the entry
+  // declares. Before g-045 this could not be expressed — the entry digest saw
+  // no chunk at all — and a silent「一致」here is exactly what the split risks.
+  const chunks = chunkBuildFixture().map((entry) =>
+    entry.name === 'client.history.js' ? { ...entry, hash: 'deadbeef' } : entry,
+  );
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.ping]: pingResponse({ ...buildFixture(independentBuildFingerprint(clientSource).hash), chunks }),
+    }),
+  });
+  const tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-build'), independentBuildFingerprint(clientSource).hash);
+  assert.equal(markerOf(tree, 'data-build-match'), 'false', 'the served chunk is not the declared one');
+  assert.equal(oneBy(tree, 'data-region', 'status').props['data-status-build'], 'false');
+  const advanced = await openAdvanced(page);
+  assert.equal(staleWarnings(advanced).length, 1);
+  assert.ok(hasText(advanced, page.zh.stBuildStaleHint));
+});
+
+test('client: a chunk edited in flight is caught by the page’s own chunk digest', async () => {
+  // The strongest form of "the bytes the page is running vs the bytes on disk":
+  // the host reports the file's digest, the manifest agrees with it, and the
+  // chunk that actually ran reports a *different* digest of itself.
+  const page = makePage({
+    chunkSourceEdit: (name, source) =>
+      name === 'client.history.js'
+        ? source.replace('/* @build-fingerprint:end */', '// edited in flight\n    /* @build-fingerprint:end */')
+        : source,
+    responses: defaultResponses({ [PATHS.ping]: pingResponse(chunkedBuildFixture()) }),
+  });
+  const mine = await page.flush();
+  assert.equal(markerOf(mine, 'data-build-match'), 'true', 'nothing has run the edited bytes yet');
+  await openHistory(page);
+  const tree = page.draw();
+  assert.equal(markerOf(tree, 'data-build-match'), 'false', 'the running chunk is not the served chunk');
+  assert.equal(oneBy(tree, 'data-region', 'status').props['data-status-build'], 'false');
+});
+
+test('client: a chunk list the two sides do not share is 「unknown」, never 「matching」', async () => {
+  const oracle = independentBuildFingerprint(clientSource);
+  // (a) the host serves fewer chunks than this entry declares.
+  const short = makePage({
+    responses: defaultResponses({
+      [PATHS.ping]: pingResponse({ ...buildFixture(oracle.hash, oracle.size), chunks: [] }),
+    }),
+  });
+  assert.equal(markerOf(await short.flush(), 'data-build-match'), 'unknown', 'coverage is incomplete');
+  // (b) the host serves a chunk this entry does not declare.
+  const extra = makePage({
+    responses: defaultResponses({
+      [PATHS.ping]: pingResponse({
+        ...buildFixture(oracle.hash, oracle.size),
+        chunks: [...chunkBuildFixture(), { name: 'client.ghost.js', hash: 'deadbeef', size: 1, mtime: 'x' }],
+      }),
+    }),
+  });
+  assert.equal(markerOf(await extra.flush(), 'data-build-match'), 'unknown', 'and never a guessed verdict');
+  // (c) a malformed list is refused whole rather than half-read.
+  const malformed = makePage({
+    responses: defaultResponses({
+      [PATHS.ping]: pingResponse({
+        ...buildFixture(oracle.hash, oracle.size),
+        chunks: [{ name: 'client.history.js' }],
+      }),
+    }),
+  });
+  assert.equal(markerOf(await malformed.flush(), 'data-build-match'), 'unknown');
+});
+
+test('client: an old host without a chunk list keeps the pre-split answer', async () => {
+  const oracle = independentBuildFingerprint(clientSource);
+  const page = makePage({
+    responses: defaultResponses({ [PATHS.ping]: pingResponse(buildFixture(oracle.hash, oracle.size)) }),
+  });
+  assert.equal(markerOf(await page.flush(), 'data-build-match'), 'true', 'nothing contradicts the entry digest');
+  // Once a chunk has really run, an answer that says nothing about it is no
+  // longer enough to call this tab「一致」.
+  await openHistory(page);
+  assert.equal(markerOf(page.draw(), 'data-build-match'), 'unknown');
+  // `chunks: null` is that same answer, spelled out: "I have no list to offer"
+  // (CONTRACT.md §14.3). It is **not** `[]`, which is a claim that no chunk is
+  // served and is therefore compared against the manifest like any other list.
+  const nullList = makePage({
+    responses: defaultResponses({
+      [PATHS.ping]: pingResponse({ ...buildFixture(oracle.hash, oracle.size), chunks: null }),
+    }),
+  });
+  assert.equal(markerOf(await nullList.flush(), 'data-build-match'), 'true', 'null means "no list", like an absent field');
+  await openHistory(nullList);
+  assert.equal(markerOf(nullList.draw(), 'data-build-match'), 'unknown', 'and once a chunk has run, still unknown');
+});
+
+test('client: a chunk that finishes loading notifies the root seat, so the attributes follow', async () => {
+  // The regression this pins (found on a real browser, NOTES.md §122): a chunk's
+  // load re-renders only the Suspense subtree, while `data-build-loaded` and the
+  // verdict live on the **root** container. Without a seat that the store really
+  // notifies, the page reports "no chunk has run" to a reader staring at one —
+  // and the third check never runs when it matters.
+  const page = makePage({ responses: defaultResponses() });
+  const mine = await page.flush();
+  assert.equal(markerOf(mine, 'data-build-loaded'), 'none', 'no chunk has run yet');
+  const before = page.loaded.runtime.externalNotifications.length;
+  await openHistory(page);
+  await settle();
+  assert.ok(
+    page.loaded.runtime.externalNotifications.length > before,
+    'the loaded chunk notifies its useSyncExternalStore subscribers',
+  );
+  assert.ok(
+    page.loaded.runtime.externalNotifications.some((snapshot) => snapshot > 0),
+    'and the snapshot it read really moved',
+  );
+  // The root attributes carry it on the next render, with no tab change: the
+  // history tab is still the open one.
+  const declared = chunkBuildFixture().find((entry) => entry.name === 'client.history.js');
+  const tree = page.draw();
+  assert.equal(oneBy(tree, 'data-region', 'tab-panel').props['data-tab-value'], 'history', 'still on the tab');
+  assert.equal(markerOf(tree, 'data-build-loaded'), `client.history.js:${declared.hash}`);
+  // A chunk that fails to load never claims to have run.
+  const failed = makePage({ chunkFailures: ['client.history.js'], responses: defaultResponses() });
+  await failed.flush();
+  await openHistory(failed);
+  await settle();
+  assert.equal(markerOf(failed.draw(), 'data-build-loaded'), 'none', 'a failed chunk is not a loaded chunk');
+});
+
+test('client: a loader without require.async degrades that tab to a readable card', async () => {
+  // The loader contract has one relative form; an engine that does not offer it
+  // cannot fetch a chunk. That is a degradation of one tab, never a throw and
+  // never a claim that something ran.
+  const page = makePage({ withoutRequireAsync: true, responses: defaultResponses() });
+  const mine = await page.flush();
+  assert.equal(markerOf(mine, 'data-render-state'), 'ok', 'the page itself still renders');
+  const tree = await openHistory(page);
+  assert.equal(oneBy(tree, 'data-region', 'tab-panel').props['data-tab-value'], 'history');
+  const card = oneBy(tree, 'data-region', 'chunk-failure');
+  assert.equal(card.props['data-chunk'], 'client.history.js');
+  assert.equal(card.props['data-chunk-state'], 'error');
+  assert.deepEqual(page.loaded.loadedChunkFiles, [], 'with no loader there is no request to make');
+  assert.equal(markerOf(tree, 'data-build-loaded'), 'none', 'and nothing is reported as loaded');
+});
+
+test('client: a React without lazy/Suspense renders the tab as a readable card', async () => {
+  // The boundary is a probe, like the primitives one: an engine whose React
+  // predates `lazy`/`Suspense` must lose this tab's content, not the panel.
+  const page = makePage({ withoutReactLazy: true, responses: defaultResponses() });
+  const mine = await page.flush();
+  assert.equal(markerOf(mine, 'data-render-state'), 'ok', 'the page itself still renders');
+  const tree = await openHistory(page);
+  assert.equal(oneBy(tree, 'data-region', 'tab-panel').props['data-tab-value'], 'history');
+  assert.equal(oneBy(tree, 'data-region', 'chunk-failure').props['data-chunk'], 'client.history.js');
+  assert.equal(markerOf(tree, 'data-build-loaded'), 'none');
+  assert.deepEqual(page.loaded.loadedChunkFiles, [], 'without a boundary nothing is fetched at all');
+  // The other tabs are untouched by this engine's limitation.
+  const overview = await openOverview(page);
+  assert.equal(markerOf(overview, 'data-render-state'), 'ok');
+});
+
+// #endregion
+
+// #region g-046: the remaining tabs move out
+
+/**
+ * Each **non-default** tab and the chunk that carries it.
+ *
+ * 「我的 Prompt」 is deliberately absent from this table: it is the tab the
+ * settings page opens on, so its renderer stays in the entry file — a chunk
+ * there would put a round trip in front of first-screen code and turn a failed
+ * fetch into a blank default tab.
+ */
+const TAB_CHUNKS = [
+  ['overview', 'client.overview.js'],
+  ['backup', 'client.transfer.js'],
+  ['advanced', 'client.advanced.js'],
+  ['history', 'client.history.js'],
+];
+
+/** A chunk source with its comment lines removed, so only code is asserted on. */
+function chunkCode(source) {
+  return source
+    .split('\n')
+    .filter((line) => {
+      const text = line.trim();
+      return !(text.startsWith('*') || text.startsWith('/*') || text.startsWith('//'));
+    })
+    .join('\n');
+}
+
+test('client: the first screen fetches the entry alone, and each tab fetches only its own chunk (g-046)', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  const mine = await page.flush();
+  assert.equal(markerOf(mine, 'data-render-state'), 'ok');
+  assert.equal(oneBy(mine, 'data-region', 'tab-panel').props['data-tab-value'], 'mine');
+  // Criterion 2, stated at its strongest: opening the settings page is one
+  // request. The default tab is built from bytes this file already carries.
+  assert.deepEqual(page.loaded.loadedChunkFiles, [], 'the first screen is the entry file only');
+
+  const seen = [];
+  for (const [tab, file] of TAB_CHUNKS) {
+    const tree = await openTab(page, tab);
+    seen.push(file);
+    assert.deepEqual(
+      page.loaded.loadedChunkFiles.slice().sort(),
+      seen.slice().sort(),
+      `「${tab}」 fetches ${file} and nothing else`,
+    );
+    assert.equal(oneBy(tree, 'data-region', 'tab-panel').props['data-tab-value'], tab);
+    assert.equal(markerOf(tree, 'data-render-state'), 'ok');
+  }
+  // And a tab that has already been opened never fetches anything again.
+  const again = await openTab(page, 'overview');
+  assert.deepEqual(page.loaded.loadedChunkFiles.slice().sort(), seen.slice().sort(), 'each chunk is fetched once');
+  assert.equal(oneBy(again, 'data-region', 'tab-panel').props['data-tab-value'], 'overview');
+});
+
+test('client: a tab chunk that cannot be loaded degrades that tab alone (g-046)', async () => {
+  // Criterion 3 for every new boundary, not just the first one: one tab's 404
+  // is a readable card in that tab, and nothing else on the page notices.
+  for (const [tab, file] of TAB_CHUNKS) {
+    const page = makePage({ chunkFailures: [file], responses: defaultResponses() });
+    const mine = await page.flush();
+    assert.equal(markerOf(mine, 'data-render-state'), 'ok', `${file}: the page itself still renders`);
+    const tree = await openTab(page, tab);
+    const card = oneBy(tree, 'data-region', 'chunk-failure');
+    assert.equal(card.props['data-chunk'], file, `${file}: the card names the chunk`);
+    assert.equal(card.props['data-chunk-state'], 'error');
+    assert.ok(hasText(tree, `chunk unavailable: ${file}`), `${file}: and the reason is on screen`);
+    assert.equal(markerOf(tree, 'data-render-state'), 'ok', `${file}: a chunk failure is one tab's problem`);
+    // The other tabs are still reachable, and still render.
+    const other = tab === 'overview' ? 'advanced' : 'overview';
+    const next = await openTab(page, other);
+    assert.equal(markerOf(next, 'data-render-state'), 'ok', `${file}: other tabs still render`);
+    assert.equal(oneBy(next, 'data-region', 'tab-panel').props['data-tab-value'], other);
+  }
+});
+
+test('client: every chunk depends on the entry alone — a DAG, with one copy of each facility (g-046)', () => {
+  // Criterion 4, mechanically: the only edge out of a chunk is `require()` of
+  // the entry, so no chunk can name or fetch another one and no cycle can
+  // exist. Everything a chunk uses comes off `__internals.shared` under its own
+  // name — and every key it asks for must really be there, which is what keeps
+  // a facility from being copied into the chunk instead of handed over.
+  const loaded = loadClient('throw');
+  const shared = loaded.module.__internals.shared;
+  for (const name of CHUNK_FILES) {
+    const code = chunkCode(readFileSync(join(here, '..', name), 'utf8'));
+    assert.equal(code.includes('require.async'), false, `${name}: a chunk never fetches another chunk`);
+    assert.equal(code.includes("require('react')"), false, `${name}: no second React instance`);
+    for (const other of CHUNK_FILES) {
+      if (other === name) continue;
+      assert.equal(code.includes(other), false, `${name}: must not name ${other}`);
+    }
+    // No copied data either: a second dictionary or token table would be a
+    // second value that can drift away from the page it renders in.
+    assert.equal(/const (zh|en|ERROR_TEXT|token) = \{/.test(code), false, `${name}: no copied copy table`);
+    // Every reference to the shared surface is collected, in both spellings:
+    // `shared.x` (however it is bound — `const x = shared.x`, `const {x} = shared`,
+    // or used inline) and the destructuring form. Each key asked for must really
+    // be exposed, so a chunk cannot invent a facility the entry never handed it.
+    const asked = [
+      ...[...code.matchAll(/shared\.([A-Za-z0-9_$]+)/g)].map((match) => match[1]),
+      ...[...code.matchAll(/const\s*\{([^}]*)\}\s*=\s*shared\b/g)].flatMap((match) =>
+        match[1]
+          .split(',')
+          .map((part) => part.trim().split(':').pop().trim())
+          .filter((key) => key.length > 0),
+      ),
+    ];
+    assert.ok(asked.length > 0, `${name}: takes its facilities from the shared surface`);
+    for (const key of asked) {
+      assert.ok(key in shared, `${name}: the entry exposes ${key} on __internals.shared`);
+    }
+    // …and it may not build its own: a local `const token = …` or `function fmt(…)`
+    // under a name the entry already owns would be the second copy the whole
+    // mechanism exists to prevent, and the check above cannot see it (the local
+    // binding shadows the shared one instead of reaching for it).
+    for (const key of Object.keys(shared)) {
+      const redefined = new RegExp(`^ {4}(?:const|let|var|function)\\s+${key}\\b`, 'gm');
+      for (const hit of code.matchAll(redefined)) {
+        const line = code.slice(hit.index).split('\n')[0];
+        assert.ok(
+          line.includes(`shared.${key}`),
+          `${name}: ${key} is taken from the shared surface, never redefined — ${line.trim()}`,
+        );
+      }
+    }
+  }
+  assert.equal(shared.h, loaded.runtime.React.createElement, 'one element factory for the whole bundle');
+  assert.ok(shared.token && typeof shared.token === 'object', 'and one theme token table');
+});
+
+test('client: without React.lazy every chunked tab renders its card, and nothing is fetched (g-046)', async () => {
+  // The same probe g-045 asserts for 「版本历史」, now for every boundary: an
+  // engine whose React predates `lazy`/`Suspense` must lose the tab's content,
+  // never the panel — and must not make a request it cannot use.
+  const page = makePage({ withoutReactLazy: true, responses: defaultResponses() });
+  const mine = await page.flush();
+  assert.equal(markerOf(mine, 'data-render-state'), 'ok');
+  for (const [tab, file] of TAB_CHUNKS) {
+    const tree = await openTab(page, tab);
+    assert.equal(oneBy(tree, 'data-region', 'tab-panel').props['data-tab-value'], tab);
+    assert.equal(oneBy(tree, 'data-region', 'chunk-failure').props['data-chunk'], file);
+    assert.equal(markerOf(tree, 'data-render-state'), 'ok');
+  }
+  assert.deepEqual(page.loaded.loadedChunkFiles, [], 'without a boundary nothing is fetched at all');
+  assert.equal(markerOf(page.draw(), 'data-build-loaded'), 'none');
+});
+
+test('client: each tab’s chunk reports a digest an independent read of its file confirms (g-046)', async () => {
+  // Criterion 6 at the chunk level: the third verification is the only one that
+  // can catch "the bytes this page ran are not the bytes the host serves", and
+  // it has to work for every chunk, not just the first one.
+  const page = makePage({
+    responses: defaultResponses({ [PATHS.ping]: pingResponse(chunkedBuildFixture()) }),
+  });
+  await page.flush();
+  assert.equal(markerOf(page.draw(), 'data-build-loaded'), 'none', 'nothing has run yet');
+  const fixture = chunkBuildFixture();
+  const seen = [];
+  for (const [tab, file] of TAB_CHUNKS) {
+    await openTab(page, tab);
+    seen.push(file);
+    // `loadedChunkStamps()` is insertion-ordered, so the attribute is exactly
+    // the chunks opened so far, in that order.
+    const expected = seen.map((name) => `${name}:${fixture.find((entry) => entry.name === name).hash}`).join(',');
+    const tree = page.draw();
+    assert.equal(markerOf(tree, 'data-build-loaded'), expected, `${file}: the page reports its own running bytes`);
+    assert.equal(markerOf(tree, 'data-build-match'), 'true', `${file}: and the manifest agrees`);
+  }
+});
+
+// #endregion
 
 // #region g-029: the plugin version the page shows
 
@@ -1839,18 +2488,66 @@ test('client: the pinned entries are never filtered away', async () => {
   clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'current' });
   tree = await page.flush();
   assert.equal(markerOf(tree, 'data-session'), 's2', 'the current-view entry picks the retained session');
-  assert.equal(oneBy(tree, 'data-role', 'session-search').props.value, 'Beta Two', 'and names it');
+  assert.equal(
+    oneBy(tree, 'data-role', 'session-search').props.value,
+    '',
+    'and the pinned entry leaves the search box as it found it',
+  );
+  assert.ok(
+    hasText(oneBy(tree, 'data-role', 'session-current'), 'Beta Two'),
+    'the current selection is named on its own line',
+  );
+  assert.equal(
+    oneBy(tree, 'data-pinned', 'current').props['data-pinned-active'],
+    'true',
+    'and the pinned current-view entry is lit',
+  );
 });
 
-test('client: picking a row refills the search box with the readable title', async () => {
+test('client: picking a row keeps the query the user typed', async () => {
   const page = makeOpenPage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
   let tree = await page.flush();
+  typeInto(tree, 'session-search', 'alpha');
+  tree = await page.flush();
   const target = sessionOptions(tree).find((option) => option.props['data-session-id'] === 's1');
+  assert.ok(target, 'alpha narrows the list to the Alpha row');
   target.props.onClick();
   tree = await page.flush();
   assert.equal(markerOf(tree, 'data-session'), 's1');
-  assert.equal(oneBy(tree, 'data-role', 'session-search').props.value, 'Alpha One');
-  assert.ok(hasText(oneBy(tree, 'data-role', 'session-current'), 'Alpha One'));
+  const box = () => oneBy(tree, 'data-role', 'session-search');
+  assert.equal(box().props.value, 'alpha', 'the pick does not rewrite what the user typed');
+  assert.equal(box().props.placeholder, page.zh.sessionSearch, 'and the box keeps its own copy, not a status');
+  assert.ok(hasText(oneBy(tree, 'data-role', 'session-current'), 'Alpha One'), 'the pick is named on its own line');
+  assert.ok(oneBy(tree, 'data-pinned', 'current'), 'and the pinned entries are still rendered');
+  assert.ok(
+    hasText(scopeSummary(tree), fillText(page.zh.sessionCurrentLabel, { label: 'Alpha One' })),
+    'and the summary names it too',
+  );
+});
+
+test('client: Enter after a pick resolves the row, never reads a title as an id', async () => {
+  const page = makeOpenPage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
+  let tree = await page.flush();
+  typeInto(tree, 'session-search', 'alpha');
+  tree = await page.flush();
+  const box = () => oneBy(tree, 'data-role', 'session-search');
+  box().props.onKeyDown({ key: 'ArrowDown', preventDefault() {} });
+  tree = await page.flush();
+  box().props.onKeyDown({ key: 'Enter', preventDefault() {} });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-session'), 's1', 'Enter picks the highlighted row');
+  assert.equal(box().props.value, 'alpha', 'and keeps the query that narrowed the list');
+  // The old code wrote the readable title into the box here, so the *next*
+  // Enter had a title sitting where a query belongs. The query must survive.
+  box().props.onKeyDown({ key: 'Enter', preventDefault() {} });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-session'), 's1', 'the second Enter stays on the row');
+  const snapshotUrls = urlsFor(page, PATHS.snapshot);
+  assert.equal(
+    snapshotUrls.some((url) => /Alpha(%20|\+| )One/.test(url)),
+    false,
+    'no readable title was ever sent as a session id',
+  );
 });
 
 test('client: the session list is keyboard reachable', async () => {
@@ -4131,6 +4828,56 @@ test('client: the history panel renders records, their action and their origin',
   assert.ok(strings(region).includes(page.zh.histCurrent));
 });
 
+test('client: a history row shows the version, never the section it was written to (g-044)', async () => {
+  // A log that still holds the names a reader could once type by hand, plus one
+  // whole-layer record (`name === null`) whose placeholder line goes with them.
+  const legacy = ['stage2-e2e', 'ui-e2e-ok'];
+  const records = legacy.map((name, index) => ({
+    id: String(index + 1),
+    seq: index + 1,
+    at: '2024-01-02T10:00:00.000Z',
+    layer: 'user',
+    session: null,
+    action: 'replace',
+    name,
+    origin: 'ui',
+    before: null,
+    after: { text: 'x', hash: 'h-1', bytes: 1 },
+    entries: null,
+    snapshot: [],
+    note: null,
+  }));
+  records.push({ ...records[0], id: '3', seq: 3, name: null });
+  const page = makePage({
+    responses: defaultResponses({ [PATHS.history]: { payload: historyFixture({ records, total: records.length }) } }),
+  });
+  const tree = await openHistory(page);
+
+  // 1. Nothing is filtered: every record is still a row, in the host's order…
+  assert.deepEqual(historyRowIds(tree), ['1', '2', '3']);
+  assert.equal(markerOf(oneBy(tree, 'data-region', 'history'), 'data-history-total'), '3');
+  // …and the name survives **as data**, which is where tests and diagnostics
+  // read it from.
+  assert.equal(historyRowOf(tree, '1').props['data-history-name'], 'stage2-e2e');
+  assert.equal(historyRowOf(tree, '2').props['data-history-name'], 'ui-e2e-ok');
+  assert.equal(historyRowOf(tree, '3').props['data-history-name'], '', 'a null name stays an empty datum');
+
+  // 2. No user-visible text names a section — not the legacy ones, and not the
+  //    `name === null` placeholder that used to stand in for them.
+  const text = strings(tree).join('\n');
+  for (const name of legacy) assert.equal(text.includes(name), false, `${name} is not user-visible`);
+  assert.equal(text.includes('（整层）'), false, 'nor the zh whole-layer placeholder');
+  assert.equal(text.includes('(whole layer)'), false, 'nor the en one');
+  assert.equal(page.zh.histWholeLayer, undefined, 'the placeholder copy key is gone, not left dead');
+  assert.equal(page.zh.histPreviewName, undefined, 'and so is the preview label');
+
+  // 3. The row is the one-line fact list this buys: id, action, time, buttons.
+  const row = historyRowOf(tree, '1');
+  assert.equal(row.props.style.padding, '3px 6px', 'tighter than the 6px it carried while it wrapped');
+  assert.equal(row.props.style.gap, 4);
+  assert.equal(collect(row, (node) => node.type === 'code').length, 1, 'one code node left: the id');
+});
+
 test('client: an empty or unreadable history is stated, never a blank panel', async () => {
   const empty = makePage({
     responses: defaultResponses({ [PATHS.history]: { payload: historyFixture({ records: [], total: 0 }) } }),
@@ -4970,18 +5717,30 @@ test('client: previewing a record opens a modal over the list, and asks the host
   assert.equal(oneBy(tree, 'data-region', 'history-list').props['data-history-list'], 'scroll');
   assert.equal(oneBy(tree, 'data-region', 'history-tab').props['data-history-layout'], 'single');
 
-  // The facts that say WHICH version this is…
+  // The facts that say WHICH version this is… g-044 dropped the `name` field:
+  // the section a record was written to is a leftover of the era when sections
+  // could be added by hand, the write surface is now the single reserved
+  // section, and the list row does not show it either — one rule for both.
   for (const [field, label] of [
     ['action', page.zh.histPreviewAction],
     ['at', page.zh.histPreviewAt],
     ['layer', page.zh.histPreviewLayer],
-    ['name', page.zh.histPreviewName],
     ['origin', page.zh.histPreviewOrigin],
     ['note', page.zh.histPreviewNote],
   ]) {
     assert.ok(hasText(oneBy(preview, 'data-preview-field', field), label), `${field} is labelled`);
   }
-  assert.ok(hasText(oneBy(preview, 'data-preview-field', 'name'), 'project:alpha'));
+  assert.equal(
+    collect(preview, (node) => node.props && node.props['data-preview-field'] === 'name').length,
+    0,
+    'the preview carries no section-name field',
+  );
+  assert.equal(page.zh.histPreviewName, undefined, 'and the copy key is gone, not left as a dead entry');
+  assert.equal(
+    collect(preview, (node) => node.props && node.props['data-preview-field'] === 'layer' && hasText(node, 'project:alpha')).length,
+    0,
+    'and the row\'s section name is not smuggled into another field',
+  );
   assert.ok(hasText(oneBy(preview, 'data-preview-field', 'layer'), page.zh.ovUser));
   assert.ok(hasText(oneBy(preview, 'data-preview-field', 'origin'), 'import'));
   assert.ok(hasText(oneBy(preview, 'data-preview-field', 'note'), 'import mode=merge status=replaced'));
@@ -4997,6 +5756,14 @@ test('client: previewing a record opens a modal over the list, and asks the host
       oneBy(preview, 'data-preview-snapshot', 'project:alpha'),
       fillText(page.zh.histPreviewSnapshotEntry, { name: 'project:alpha', action: 'replace', bytes: 16 }),
     ),
+  );
+  // g-044: an entry says what the snapshot holds, never which section it holds —
+  // the same rule the row and the field list follow. The name is still the
+  // node's `data-preview-snapshot`, which is what the lookup above uses.
+  assert.equal(
+    strings(oneBy(preview, 'data-preview-snapshot', 'project:alpha')).join(' ').includes('project:alpha'),
+    false,
+    'the snapshot entry renders no section name',
   );
 
   // The preview is a read of what is already on screen: no write of any kind,
@@ -5094,6 +5861,86 @@ test('client: a rollback asks first, states that it cannot be undone, then refre
   assert.ok(afterWrite.some((url) => url.startsWith(PATHS.overrides)));
   assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history-preview').length, 0);
 });
+
+// #region g-049: the editor draft when an operation changes the stored text
+
+/** Run one confirmed rollback of `#1` from the history tab. */
+async function rollbackFirst(page) {
+  let tree = await openHistory(page);
+  clickButton(historyRowOf(tree, '1'), { 'data-action': 'history-rollback', 'data-history-id': '1' });
+  tree = await page.flush();
+  clickButton(oneBy(tree, 'data-region', 'confirm-overlay'), { 'data-action': 'confirm-yes' });
+  return page.flush();
+}
+
+test('client: an operation that changes the stored text drops a draft holding nothing new (g-049)', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  const stored = oneBy(tree, 'data-role', 'mine-text').props.value;
+  // A draft equal to the stored text is not unsaved work: the reader typed
+  // nothing new, so the editor may follow the value the operation produced.
+  typeInto(tree, 'mine-text', stored);
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, stored);
+
+  tree = await rollbackFirst(page);
+  assert.ok(hasText(tree, fillText(page.zh.histRollbackDone, { id: '1' })));
+  assert.equal(
+    hasText(tree, page.zh.mineDraftKept),
+    false,
+    'a draft that only repeated the stored text is dropped without a warning',
+  );
+});
+
+test('client: a rollback keeps an unsaved draft and says so in the notice (g-049)', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  const draft = 'a draft the reader has not saved';
+  typeInto(tree, 'mine-text', draft);
+  tree = await page.flush();
+
+  tree = await rollbackFirst(page);
+  // The success copy is still the rollback's own, with the draft warning beside
+  // it: never a silent overwrite of what the reader typed (§15.4).
+  assert.ok(hasText(tree, fillText(page.zh.histRollbackDone, { id: '1' })));
+  assert.ok(hasText(tree, page.zh.mineDraftKept), 'the notice says the unsaved text is still there');
+
+  // …and it really is: coming back to the tab shows the draft, not the stored text.
+  tree = await openTab(page, 'mine', tree);
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, draft);
+});
+
+test('client: a whole-layer reset and an applied import report a kept draft the same way (g-049)', async () => {
+  // Both go through the same reconciliation: one confirmation each, and the
+  // draft warning is appended only when the draft held unsaved work.
+  const reset = makePage({ responses: defaultResponses() });
+  let tree = await reset.flush();
+  typeInto(tree, 'mine-text', 'kept across the layer reset');
+  tree = await reset.flush();
+  tree = await openAdvanced(reset);
+  clickButton(tree, { 'data-action': 'reset-layer' });
+  tree = await reset.flush();
+  clickButton(oneBy(tree, 'data-region', 'confirm-overlay'), { 'data-action': 'confirm-yes' });
+  tree = await reset.flush();
+  assert.ok(hasText(tree, reset.zh.mineDraftKept), 'the layer reset names the kept draft');
+
+  const imported = makePage({ responses: defaultResponses() });
+  tree = await imported.flush();
+  typeInto(tree, 'mine-text', 'kept across the import');
+  tree = await imported.flush();
+  tree = await openBackup(imported);
+  typeInto(tree, 'import-text', JSON.stringify({ schema: 'dsh-prompt-setting/export', version: 1, layers: { user: { overrides: [] } } }));
+  tree = await imported.flush();
+  clickButton(tree, { 'data-action': 'import-preview' });
+  tree = await imported.flush();
+  clickButton(tree, { 'data-action': 'import-apply' });
+  tree = await imported.flush();
+  clickButton(oneBy(tree, 'data-region', 'confirm-overlay'), { 'data-action': 'confirm-yes' });
+  tree = await imported.flush();
+  assert.ok(hasText(tree, imported.zh.mineDraftKept), 'the applied import names the kept draft');
+});
+
+// #endregion
 
 test('client: a refused rollback reports the host answer and leaves the log untouched (g-039)', async () => {
   const page = makePage({
@@ -5498,12 +6345,18 @@ test('client: the list states how to compare, right below the scope sentence (g-
   const scope = oneBy(tree, 'data-region', 'history-scope');
   const hint = oneBy(scope, 'data-role', 'history-compare-hint');
   assert.ok(hasText(hint, page.zh.histCompareHint), 'the how-to line is there, in the reader\'s language');
-  // It is the line **right after** the scope sentence.
-  const kids = Array.isArray(scope.props.children) ? scope.props.children : [scope.props.children];
+  // Both sentences still exist, in this order — but since g-044 they share one
+  // wrapping flex row (`key: 'scope-lines'`) instead of being two stacked
+  // siblings: three stacked lines above the list were three rows of history the
+  // reader never got to see.
+  const lines = oneBy(scope, 'key', 'scope-lines');
+  const kids = Array.isArray(lines.props.children) ? lines.props.children : [lines.props.children];
   const order = kids
     .filter((kid) => kid && kid.props && (kid.props['data-role'] === 'history-scope-note' || kid.props['data-role'] === 'history-compare-hint'))
     .map((kid) => kid.props['data-role']);
   assert.deepEqual(order, ['history-scope-note', 'history-compare-hint']);
+  assert.equal(lines.props.style.display, 'flex', 'one line, not three');
+  assert.equal(lines.props.style.flexWrap, 'wrap', 'and it wraps instead of overflowing');
   // The comparison's own control sits next to the list, not in a dialog.
   assert.ok(oneBy(oneBy(tree, 'data-region', 'history-diff-tools'), 'data-action', 'diff-clear'));
   assert.equal(noHistoryModal(tree), true);
@@ -5597,11 +6450,13 @@ test('client: a measured panel renders the measured height, and says where it ca
   });
   const tree = await openHistory(page);
   const tab = oneBy(tree, 'data-region', 'history-tab');
-  // 900 (the scrollable ancestor's bottom) − 200 (the panel's top) − 16 (the gap).
+  // 900 (the scrollable ancestor's bottom) − 200 (the panel's top) − 8 (the gap;
+  // halved from 16 in g-044 — it is subtracted from a measured room, so the
+  // panel simply gets those pixels).
   assert.equal(tab.props['data-history-height-source'], 'measured');
-  assert.equal(tab.props['data-history-panel-height'], '684');
-  assert.equal(tab.props.style.height, '684px');
-  assert.equal(tab.props.style.maxHeight, '684px');
+  assert.equal(tab.props['data-history-panel-height'], '692');
+  assert.equal(tab.props.style.height, '692px');
+  assert.equal(tab.props.style.maxHeight, '692px');
   assert.equal(tab.props.style.minHeight, 320, 'the floor stays whatever the measurement says');
   // The layout itself is untouched by the measuring: one column, and the record
   // box filling whatever height is left.
@@ -5629,14 +6484,14 @@ test('client: a window resize re-measures the panel, and still nothing else move
     responses: defaultResponses(),
   });
   let tree = await openHistory(page);
-  assert.equal(oneBy(tree, 'data-region', 'history-tab').props['data-history-panel-height'], '684');
+  assert.equal(oneBy(tree, 'data-region', 'history-tab').props['data-history-panel-height'], '692');
   assert.equal(typeof listeners.resize, 'function', 'the page listens for a resize');
 
   // The dialog gets shorter: the boundary moves, so the panel must too.
   state.scrollerBottom = 700;
   listeners.resize();
   tree = await page.flush();
-  assert.equal(oneBy(tree, 'data-region', 'history-tab').props['data-history-panel-height'], '484');
+  assert.equal(oneBy(tree, 'data-region', 'history-tab').props['data-history-panel-height'], '492');
   assert.equal(oneBy(tree, 'data-region', 'history-tab').props['data-history-height-source'], 'measured');
 
   // A boundary that leaves no room at all is a fallback, not a broken panel.
@@ -8856,3 +9711,446 @@ test('client: the install copy exists in both dictionaries and never promises an
 });
 
 // #endregion
+
+// #region g-043:「下载区域」— the dropdown, the dialog and its red line
+
+/**
+ * A `/download-region` stub that **remembers**, like the real host: a `PUT` moves
+ * the stored region and every later `GET` answers it.
+ *
+ * Without this, the mount effect's own read answers the fixture's default and
+ * overwrites whatever the user just chose — the test would then be asserting
+ * against a host that forgets, not the host under test.
+ * @param over - extra fields for the answered payload.
+ * @returns a router entry plus `stored()`.
+ */
+function regionStub(over = {}) {
+  let stored = {
+    region: 'default',
+    registry: 'https://registry.npmjs.org/',
+    custom: null,
+    detected: false,
+    stored: true,
+    ...over,
+  };
+  const handler = (target, init) => {
+    if ((init.method || 'GET') !== 'PUT') return { payload: regionFixture(stored) };
+    const body = JSON.parse(init.body);
+    stored =
+      body.region === 'custom'
+        ? { region: 'custom', registry: 'https://mirror.example/npm/', custom: 'https://mirror.example/npm/', detected: false, stored: true }
+        : {
+            region: body.region,
+            registry: body.region === 'cn' ? 'https://registry.npmmirror.com/' : 'https://registry.npmjs.org/',
+            custom: null,
+            detected: false,
+            stored: true,
+          };
+    return { payload: regionFixture({ ...stored, saved: { region: body.region }, effectiveFrom: 'immediate' }) };
+  };
+  handler.stored = () => stored;
+  return handler;
+}
+
+/** The one region control on the page (the card lives in 「高级」). */
+function regionSelect(tree) {
+  return oneBy(tree, 'data-action', 'update-region-select');
+}
+
+/** One `option` value/child pair, as the select renders it. */
+function regionOptions(tree) {
+  const select = regionSelect(tree);
+  return (select.props.children || []).map((option) => [option.props.value, option.props.children]);
+}
+
+/** Choose one region the way a user does: fire the select's own `change`. */
+function chooseRegion(tree, value) {
+  regionSelect(tree).props.onChange({ target: { value } });
+}
+
+/** The「下载区域」card row (it lives inside `data-region="update-setting"`). */
+function regionRow(tree) {
+  return oneBy(tree, 'data-region', 'download-region');
+}
+
+test('client: 「高级」 carries the download region, with the three sources and their meanings', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  const tree = await openTab(page, 'advanced');
+  const row = regionRow(tree);
+  assert.equal(row.props['data-download-region'], 'default', 'the host answers the shipped source by default');
+  assert.equal(row.props['data-download-region-detected'], 'false');
+  assert.deepEqual(regionOptions(tree), [
+    ['default', '默认'],
+    ['cn', '中国大陆'],
+    ['custom', '自定义'],
+  ]);
+  assert.equal(regionSelect(tree).props.value, 'default');
+  // The line under the control says what the selected source *means*, so the
+  // three options are comparable rather than three words.
+  const note = oneBy(tree, 'data-role', 'update-region-note');
+  assert.match(strings(note).join(' '), /GitHub/);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-role'] === 'update-region-auto').length, 0);
+});
+
+test('client: a region the host decided by connectivity says so, and one it stored does not', async () => {
+  const detected = makePage({
+    responses: defaultResponses({
+      [PATHS.downloadRegion]: { payload: regionFixture({ region: 'cn', registry: 'https://registry.npmmirror.com/', detected: true }) },
+    }),
+  });
+  const tree = await openTab(detected, 'advanced');
+  assert.equal(regionRow(tree).props['data-download-region'], 'cn');
+  assert.equal(regionRow(tree).props['data-download-region-detected'], 'true');
+  const auto = oneBy(tree, 'data-role', 'update-region-auto');
+  assert.match(strings(auto).join(' '), /中国大陆/);
+
+  // The same region, stored: the value is identical, the *claim* is not.
+  const stored = makePage({
+    responses: defaultResponses({
+      [PATHS.downloadRegion]: { payload: regionFixture({ region: 'cn', registry: 'https://registry.npmmirror.com/' }) },
+    }),
+  });
+  const other = await openTab(stored, 'advanced');
+  assert.equal(regionRow(other).props['data-download-region'], 'cn');
+  assert.equal(regionRow(other).props['data-download-region-detected'], 'false');
+  assert.equal(collect(other, (node) => node.props && node.props['data-role'] === 'update-region-auto').length, 0);
+});
+
+test('client: choosing「中国大陆」writes it and shows the host\'s own answer', async () => {
+  const page = makePage({ responses: defaultResponses({ [PATHS.downloadRegion]: regionStub() }) });
+  let tree = await openTab(page, 'advanced');
+  chooseRegion(tree, 'cn');
+  tree = await page.flush();
+  const put = page.router.calls.filter((call) => call.url.startsWith(PATHS.downloadRegion) && call.init.method === 'PUT');
+  assert.equal(put.length, 1);
+  assert.deepEqual(JSON.parse(put[0].init.body), { region: 'cn' }, 'the built-in choices carry no address');
+  assert.equal(regionRow(tree).props['data-download-region'], 'cn');
+  assert.equal(regionSelect(tree).props.value, 'cn');
+  assert.match(strings(tree).join(' '), /下载区域已切换为/);
+});
+
+test('client: a refused region write keeps the source that is actually in force', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.downloadRegion]: (target, init) =>
+        init.method === 'PUT'
+          ? { status: 200, payload: { ok: false, code: 'preferences-unwritable', message: 'cannot write', region: 'cn', registry: null } }
+          : { payload: regionFixture() },
+    }),
+  });
+  let tree = await openTab(page, 'advanced');
+  chooseRegion(tree, 'cn');
+  tree = await page.flush();
+  // The control never moves to the option the user clicked: the host did not
+  // accept it, and the card may not claim otherwise.
+  assert.equal(regionSelect(tree).props.value, 'default');
+  assert.equal(regionRow(tree).props['data-download-region'], 'default');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-notice'] === 'error').length, 1);
+});
+
+test('client: 「自定义」opens the dialog and writes nothing until it is submitted', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openTab(page, 'advanced');
+  chooseRegion(tree, 'custom');
+  tree = page.draw();
+  const dialog = oneBy(tree, 'data-region', 'region-dialog');
+  assert.equal(dialog.props.role, 'dialog');
+  assert.equal(writeCalls(page).length, 0, 'opening the dialog is not a write');
+  assert.equal(oneBy(tree, 'data-role', 'region-input').props.value, '', 'nothing typed yet, nothing stored yet');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-role'] === 'region-error').length, 0);
+});
+
+test('client: a validated custom address is submitted trimmed and closes the dialog', async () => {
+  const page = makePage({ responses: defaultResponses({ [PATHS.downloadRegion]: regionStub() }) });
+  let tree = await openTab(page, 'advanced');
+  chooseRegion(tree, 'custom');
+  tree = page.draw();
+  typeInto(tree, 'region-input', '  https://mirror.example/npm  ');
+  tree = page.draw();
+  clickButton(tree, { 'data-action': 'region-save' });
+  tree = await page.flush();
+  const put = page.router.calls.filter((call) => call.url.startsWith(PATHS.downloadRegion) && call.init.method === 'PUT');
+  assert.equal(put.length, 1);
+  assert.deepEqual(JSON.parse(put[0].init.body), { region: 'custom', registry: 'https://mirror.example/npm' });
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'region-dialog').length, 0, 'the dialog closed');
+  assert.equal(regionRow(tree).props['data-download-region'], 'custom');
+  assert.equal(regionRow(tree).props['data-download-region-stored'], 'true');
+});
+
+test('client: a refused custom address stays in the dialog as a red line, and nothing is saved', async () => {
+  const codes = ['registry-invalid', 'registry-unreachable', 'registry-not-npm'];
+  for (const code of codes) {
+    const page = makePage({
+      responses: defaultResponses({
+        [PATHS.downloadRegion]: (target, init) =>
+          init.method === 'PUT'
+            ? { status: 200, payload: { ok: false, code, message: `the host refused it (${code})`, region: 'custom', registry: null, effectiveFrom: 'unchanged' } }
+            : { payload: regionFixture() },
+      }),
+    });
+    let tree = await openTab(page, 'advanced');
+    const writesBefore = writeCalls(page).length;
+    chooseRegion(tree, 'custom');
+    tree = page.draw();
+    typeInto(tree, 'region-input', 'https://mirror.example/npm');
+    tree = page.draw();
+    clickButton(tree, { 'data-action': 'region-save' });
+    tree = await page.flush();
+    // Still open, with the host's code rendered as prose in red inside it.
+    oneBy(tree, 'data-region', 'region-dialog');
+    const error = oneBy(tree, 'data-role', 'region-error');
+    assert.equal(error.props['data-region-error'], code, `${code}: the code travels`);
+    assert.ok(strings(error).join(' ').length > 0, `${code}: the red line is prose, not an enum`);
+    assert.notEqual(strings(error).join(' '), code);
+    // 「红字」, literally: the theme's error colour, not a neutral meta line.
+    assert.equal(error.props.style.color, 'var(--dsw-alias-state-error-primary)', `${code}: rendered in red`);
+    assert.equal(
+      collect(tree, (node) => node.props && node.props['data-notice'] === 'error').length,
+      0,
+      `${code}: the notice behind the overlay is not used`,
+    );
+    assert.equal(writeCalls(page).length, writesBefore + 1, `${code}: exactly one attempt, nothing else written`);
+    // …and the source in force did not move.
+    assert.equal(regionRow(tree).props['data-download-region'], 'default');
+    assert.equal(regionSelect(page.draw()).props.value, 'default');
+  }
+});
+
+test('client: cancelling the dialog writes nothing and keeps the current source', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openTab(page, 'advanced');
+  chooseRegion(tree, 'custom');
+  tree = page.draw();
+  typeInto(tree, 'region-input', 'https://mirror.example/npm');
+  clickButton(tree, { 'data-action': 'region-cancel' });
+  tree = page.draw();
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'region-dialog').length, 0);
+  assert.equal(writeCalls(page).length, 0);
+  assert.equal(regionSelect(tree).props.value, 'default');
+});
+
+test('client: a stored custom address the host cannot use is reported beside the control', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.downloadRegion]: {
+        payload: regionFixture({
+          region: 'custom',
+          registry: null,
+          custom: 'mirror.example',
+          error: { code: 'registry-invalid', message: 'unusable' },
+        }),
+      },
+    }),
+  });
+  const tree = await openTab(page, 'advanced');
+  assert.equal(regionRow(tree).props['data-download-region'], 'custom');
+  const line = oneBy(tree, 'data-role', 'update-region-unusable');
+  assert.equal(line.props['data-update-region-error'], 'registry-invalid');
+  // The card is the report: a stored-but-unusable mirror is a standing condition,
+  // not the outcome of an action, so it raises no page notice.
+  assert.equal(collect(tree, (node) => node.props && node.props['data-notice'] === 'error').length, 0);
+});
+
+test('client: the region read is skipped entirely while the update mirror says off', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  installUpdateMirror(page, 'off');
+  await page.flush();
+  assert.deepEqual(urlsFor(page, PATHS.downloadRegion), [], 'a closed switch costs no request at all');
+
+  // Turning the switch back on is what loads it — and the host is the one that
+  // decides the first-visit default.
+  let tree = await openTab(page, 'advanced');
+  clickButton(tree, { 'data-action': 'update-toggle' });
+  tree = await page.flush();
+  assert.equal(urlsFor(page, PATHS.downloadRegion).length, 1);
+  assert.equal(regionRow(tree).props['data-download-region'], 'default');
+});
+
+test('client: switching the source drops the previous check\'s fact and re-checks', async () => {
+  // The banner's version came from the **old** source. Keeping it would let the
+  // page offer to install an artifact the new source may not carry.
+  const page = makePage({
+    responses: defaultResponses({
+      // The mount's own check (the old source) found a release; the forced
+      // re-check the region switch triggers is the **new** source's answer.
+      [PATHS.updateCheck]: (target) => ({
+        payload: target.includes('force=1') ? updateFixture() : updateAvailableFixture(),
+      }),
+      [PATHS.downloadRegion]: regionStub(),
+    }),
+  });
+  let tree = await page.flush();
+  assert.equal(updateBanner(tree).length, 1, 'the banner is up before the switch');
+  tree = await openTab(page, 'advanced', tree);
+  chooseRegion(tree, 'cn');
+  // Settle the write without re-running the mount effect: a real React effect
+  // runs once, so the page re-renders from the region's own answer here.
+  await settle();
+  tree = page.draw();
+  assert.equal(updateBanner(tree).length, 0, 'the old source\'s fact is gone');
+  const forced = page.router.calls.filter((call) => call.url === `${PATHS.updateCheck}?force=1`);
+  assert.equal(forced.length, 1, 'the new source is asked once, immediately');
+});
+
+// #endregion
+
+test('client: a page whose region read never answers still renders the card, at the shipped source', async () => {
+  // §17.9: the detection is a side request, never a gate — and the read is not
+  // awaited by the render at all. Two facts are asserted from one run: the card
+  // and its control are on screen **in the same flush that asked**, and an
+  // unanswered read (a host with no such route at all, a transport failure)
+  // degrades to the shipped source without a notice and without crashing.
+  const responses = defaultResponses();
+  delete responses[PATHS.downloadRegion];
+  const page = makePage({ responses });
+  const tree = await openTab(page, 'advanced');
+  const row = regionRow(tree);
+  assert.equal(row.props['data-download-region'], 'default');
+  assert.equal(row.props['data-download-region-detected'], 'false', 'nothing may be claimed without an answer');
+  assert.equal(row.props['data-download-region-stored'], 'false', 'and no choice may be claimed either');
+  assert.equal(regionSelect(tree).props.value, 'default');
+  assert.deepEqual(
+    [...new Set(urlsFor(page, PATHS.downloadRegion))],
+    [PATHS.downloadRegion],
+    'the only region request is the read, and nothing else was tried',
+  );
+  assert.equal(collect(tree, (node) => node.props && node.props['data-notice'] === 'error').length, 0);
+});
+
+test('client: a region the host could not decide claims nothing, and stays「默认」', async () => {
+  // g-043 review BLOCK, client half: the host now answers `detected:false`,
+  // `stored:false`, `undecided:true` when its probe found no usable source (an
+  // offline first visit). The card must render the shipped source **without** the
+  // 「已自动判定（该源能取到本包）」 line, because nothing was decided.
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.downloadRegion]: {
+        payload: regionFixture({ region: 'default', registry: 'https://registry.npmjs.org/', detected: false, stored: false, written: false, undecided: true }),
+      },
+    }),
+  });
+  const tree = await openTab(page, 'advanced');
+  const row = regionRow(tree);
+  assert.equal(row.props['data-download-region'], 'default');
+  assert.equal(row.props['data-download-region-detected'], 'false');
+  assert.equal(row.props['data-download-region-stored'], 'false');
+  assert.equal(regionSelect(tree).props.value, 'default');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-role'] === 'update-region-auto').length,
+    0,
+    'no automatic decision may be claimed',
+  );
+  assert.doesNotMatch(strings(tree).join(' '), /已自动判定/);
+});
+
+test('client: turning the switch back on still re-checks immediately, after the region load', async () => {
+  // The review's "just confirm it": the `if (enabled) await recheckUpdate()` this
+  // revision touched is still there — the region load was **added before it**, not
+  // substituted for it.
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.updateCheck]: (target, init) =>
+        init.method === 'PUT'
+          ? { payload: { ok: true, enabled: true, saved: { enabled: true }, effectiveFrom: 'immediate', error: null } }
+          : { payload: updateFixture() },
+    }),
+  });
+  installUpdateMirror(page, 'off');
+  const tree = await openTab(page, 'advanced');
+  assert.deepEqual(urlsFor(page, PATHS.updateCheck), [], 'off on mount: no check request');
+  assert.deepEqual(urlsFor(page, PATHS.downloadRegion), [], 'off on mount: no region request either');
+  clickButton(tree, { 'data-action': 'update-toggle' });
+  await page.flush();
+  const forced = urlsFor(page, PATHS.updateCheck).filter((url) => url.endsWith('?force=1'));
+  assert.equal(forced.length, 1, 'the immediate forced re-check survived');
+  assert.equal(urlsFor(page, PATHS.downloadRegion).length, 1, 'and the region was loaded too');
+  const order = page.router.calls.map((call) => call.url);
+  assert.ok(
+    order.findIndex((url) => url.startsWith(PATHS.downloadRegion)) < order.findIndex((url) => url.endsWith('?force=1')),
+    'the region load happens before the re-check, not instead of it',
+  );
+});
+
+test('client: the update copy names both sources and never claims a single GitHub path', async () => {
+  // g-043 copy review: the g-030 wording said the host "asks GitHub once", which
+  // stopped being true in Revision 27 (npm registry first, GitHub Releases only as
+  // the fallback) and again in Revision 28 (the source follows the download
+  // region). Three keys lied about it; this freezes the corrected text so the
+  // claim cannot drift back.
+  const page = makePage({ responses: defaultResponses() });
+  const zh = page.zh;
+  const en = page.mounted.dictionaries[0].dict.en;
+  // The rendered tree, not just the dictionary: the sentence a reader actually
+  // sees in「高级」's「检查更新」card is the one asserted below.
+  const rendered = strings(await openTab(page, 'advanced')).join('\n');
+  assert.ok(rendered.includes(zh.updateSettingNote), 'the card renders exactly this sentence');
+  // …and the old wording is nowhere on the page.
+  assert.equal(rendered.includes('向 GitHub 查询一次最新 Release'), false);
+  const pairs = [
+    ['updateSettingNote', zh.updateSettingNote, en.updateSettingNote],
+    ['updateApplyBody', zh.updateApplyBody, en.updateApplyBody],
+    ['updateApplyManualLink', zh.updateApplyManualLink, en.updateApplyManualLink],
+  ];
+  for (const [key, zhText, enText] of pairs) {
+    assert.equal(typeof zhText, 'string', `${key} has zh copy`);
+    assert.equal(typeof enText, 'string', `${key} has en copy`);
+  }
+
+  // ① The card's own explanation: npm first, GitHub as the fallback, and the
+  //    download region decides the source.
+  assert.match(zh.updateSettingNote, /npm/);
+  assert.match(zh.updateSettingNote, /GitHub/);
+  assert.match(zh.updateSettingNote, /下载区域/);
+  assert.equal(/向 GitHub 查询一次/.test(zh.updateSettingNote), false, 'the single-GitHub-path claim is gone');
+  assert.match(en.updateSettingNote, /npm/);
+  assert.match(en.updateSettingNote, /GitHub/);
+  assert.match(en.updateSettingNote, /download region/);
+  assert.equal(/asks GitHub once/.test(en.updateSettingNote), false, 'the single-GitHub-path claim is gone');
+  // Both halves of the switch's promise are still stated: off means no request,
+  // and turning it on costs one download-region read (§17.10) — never "zero".
+  assert.match(zh.updateSettingNote, /关闭后不再联网检查/);
+  assert.match(en.updateSettingNote, /no update request is made at all/i);
+
+  // ② The install is not described as a release package any more: with an npm
+  //    source it installs that registry's own `dist.tarball` (§18.2).
+  assert.equal(/Release 包/.test(zh.updateApplyBody), false, 'no longer "a Release package"');
+  assert.equal(/the v\{latest\} release\b/.test(en.updateApplyBody), false);
+  assert.match(zh.updateApplyBody, /npm registry/);
+  assert.match(zh.updateApplyBody, /下载区域/);
+  assert.match(en.updateApplyBody, /npm registry/);
+  assert.match(en.updateApplyBody, /download region/);
+  assert.match(zh.updateApplyBody, /不自动重启/);
+
+  // ③ The manual link may point at a release page **or** the package page
+  //    (`resolveInstallTarget` falls back to npm's own page), so it may not
+  //    promise a Release page.
+  assert.equal(/Release 页面/.test(zh.updateApplyManualLink), false);
+  assert.equal(/release page/.test(en.updateApplyManualLink), false);
+  assert.match(zh.updateApplyManualLink, /发布页或包页/);
+});
+
+test('client: every update-related key that still names GitHub is accurate, key by key', async () => {
+  // The audit of the rest of the family. Each entry states *why* the copy is
+  // right as written, so a future edit that changes the behaviour has to come
+  // back here.
+  const page = makePage({ responses: defaultResponses({ [PATHS.updateCheck]: { payload: updateAvailableFixture() } }) });
+  const zh = page.zh;
+  const en = page.mounted.dictionaries[0].dict.en;
+  // The banner's link renders only when the check reported a `releaseUrl`, which
+  // an npm answer never carries (§17.2) — so「发布页」is exactly what it opens.
+  const tree = await page.flush();
+  assert.equal(updateBanner(tree).length, 1);
+  assert.equal(/GitHub|Release|发布页/.test(zh.updateAvailable), false, 'the version line names no source');
+  assert.equal(/GitHub|Release|发布页/.test(zh.updateLatestKnown), false);
+  assert.equal(/GitHub|Release|发布页/.test(zh.updateUnknown), false, '"upstream" already covers both sources');
+  assert.equal(/GitHub|Release|发布页/.test(zh.updateToggleSaved), false);
+  assert.equal(/GitHub|Release|发布页/.test(zh.updateRecheck), false);
+  assert.equal(/GitHub|Release|发布页/.test(en.updateAvailable), false);
+  assert.equal(/GitHub|Release|发布页/.test(en.updateLatestKnown), false);
+  assert.equal(/GitHub|Release|发布页/.test(en.updateUnknown), false);
+  // The restart instructions are about *how* to restart, never about a source.
+  for (const key of ['updateApplyRestartNote', 'updateApplyDone', 'updateApplyAlready', 'updateApplyApplied', 'updateApplyFailed', 'updateApplyCancelled', 'updateApplyReused']) {
+    assert.equal(/GitHub|Release|发布页/.test(zh[key]), false, `zh.${key} names no source`);
+    assert.equal(/GitHub|Release/.test(en[key]), false, `en.${key} names no source`);
+  }
+});

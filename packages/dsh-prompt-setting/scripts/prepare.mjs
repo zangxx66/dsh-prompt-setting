@@ -31,6 +31,8 @@ import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { PREPARE_FAIL, PREPARE_OK, PREPARE_WARN, inspectPackage } from '../core/prepare.js';
+import { clientChunkStamps } from '../core/store.js';
+import { readDeclaredStamps, sameStamps } from './client-chunks.mjs';
 
 /** 包根目录（本文件在 `scripts/` 下）。 */
 const PACKAGE_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -70,6 +72,52 @@ function listDir(relPath) {
 const out = [];
 const say = (text = '') => { out.push(text); };
 
+/**
+ * 第 4 类检查：`CHUNK_STAMPS` 清单与磁盘上的 chunk 一致（g-045）。
+ *
+ * 为什么这条要放在**发布门**上：主 factory 的 `toString()` 看不到 chunk 的字节，
+ * 所以主文件里的 `CHUNK_STAMPS` 是页面唯一能拿来与宿主报告的 chunk 摘要逐项对比的
+ * 东西（`CONTRACT.md` §14.3）。清单一旦撒谎——改了 chunk 却忘了更新——指纹就再也
+ * 不能说明任何事，而「改了 chunk 忘了 `--write`」正是这套新机制里最容易发生的一步。
+ * 测试只有在有人跑测试时才拦得住；`prepare` 是安装/发布路径上的门。
+ * @returns 一条 finding（`PREPARE_OK` 或 `PREPARE_FAIL`）。
+ */
+function inspectClientChunks() {
+  const source = readText('client.js');
+  if (source === null) {
+    return { level: PREPARE_FAIL, code: 'CHUNK-STAMPS', message: '读不到 client.js，无法核对 chunk 清单' };
+  }
+  let declared;
+  try {
+    declared = readDeclaredStamps(source);
+  } catch (error) {
+    return {
+      level: PREPARE_FAIL,
+      code: 'CHUNK-STAMPS',
+      message: `client.js 里的 CHUNK_STAMPS 无法解析：${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  const actual = clientChunkStamps(PACKAGE_DIR).map((stamp) => ({
+    name: stamp.name,
+    hash: stamp.hash,
+    size: stamp.size,
+  }));
+  if (sameStamps(declared, actual)) {
+    return {
+      level: PREPARE_OK,
+      code: 'CHUNK-STAMPS',
+      message: `CHUNK-STAMPS 与磁盘上的 ${actual.length} 个 chunk 一致`,
+    };
+  }
+  return {
+    level: PREPARE_FAIL,
+    code: 'CHUNK-STAMPS',
+    message:
+      `CHUNK-STAMPS 与磁盘不符（清单 ${declared.length} 项 / 磁盘 ${actual.length} 项）：` +
+      '先跑 node scripts/client-chunks.mjs --write 再发布',
+  };
+}
+
 say('[dsh-prompt-setting] prepare：发布就绪自检（本包零构建，不做编译）');
 say('');
 
@@ -86,6 +134,9 @@ else {
 }
 
 const { ok, findings } = inspectPackage({ pkg, readText, listDir });
+// g-045: the chunk manifest is the one file-vs-file agreement the build stamp
+// depends on, so it is checked on the publish path too — not only by tests.
+findings.push(inspectClientChunks());
 const label = { [PREPARE_OK]: 'ok  ', [PREPARE_WARN]: 'warn', [PREPARE_FAIL]: 'FAIL' };
 for (const finding of findings) say(`  ${label[finding.level] ?? finding.level}  ${finding.code}: ${finding.message}`);
 if (manifestError !== null) say(`  FAIL  MANIFEST-UNREADABLE: ${manifestError}`);

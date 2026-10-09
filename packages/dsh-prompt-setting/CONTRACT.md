@@ -631,6 +631,8 @@ meaning exactly.
 | `/prompt-setting/update-apply` | `POST` | Start installing the release the last check named, through the official `pluginManager`, and answer a `requestId` immediately: §18.2. Carries `launchKind` (g-036, §18.8). |
 | `/prompt-setting/update-apply` | `GET` | The phase of one tracked install (`?requestId=`), or — with no id — this mount's oldest **running** install: §18.3. Carries `launchKind` (g-036, §18.8). |
 | `/prompt-setting/update-apply/cancel` | `POST` | Stop a running install: `{"requestId": string}` (§18.4). Carries `launchKind` (g-036, §18.8). |
+| `/prompt-setting/download-region` | `GET` | Which update source is in force, and — with nothing stored — the availability decision that sets it (g-043, §17.7). Always `200`. |
+| `/prompt-setting/download-region` | `PUT` | Record the choice: `{"region": "default"\|"cn"\|"custom", "registry"?: string}`, a custom address validated first (g-043, §17.8). |
 
 - An unknown path under the prefix is `404` with
   `{ "code": "not-found", "message": "no route for <path>" }` (no `ok` key —
@@ -639,9 +641,9 @@ meaning exactly.
   listing the supported methods and an **empty** body. `/prompt-setting/ping`
   answers `allow: GET`; `/prompt-setting/overrides` answers
   `allow: GET, PUT, DELETE`; `history`, `diff` and `export` answer `allow: GET`;
-  `import` and `rollback` answer `allow: POST`; `interpolate` and `update-check`
-  answer `allow: GET, PUT`; `update-apply` answers `allow: GET, POST` and
-  `update-apply/cancel` answers `allow: POST`.
+  `import` and `rollback` answer `allow: POST`; `interpolate`, `update-check`
+  and `download-region` answer `allow: GET, PUT`; `update-apply` answers
+  `allow: GET, POST` and `update-apply/cancel` answers `allow: POST`.
 - The fence runs **before** the method check and before any route logic.
 
 ## 2. `GET /prompt-setting/snapshot`
@@ -1579,8 +1581,8 @@ resolve the `workspace` layer).
   "schema": "dsh-prompt-setting/export",
   "version": 1,
   "exportedAt": "2024-01-02T10:00:00.000Z",
-  "plugin": { "name": "dsh-prompt-setting", "version": "0.1.5" },
-  "pluginVersion": "0.1.5",
+  "plugin": { "name": "dsh-prompt-setting", "version": "0.2.0" },
+  "pluginVersion": "0.2.0",
   "layers": {
     "user":      { "layer": "user", "enabled": true,
                    "reason": null,
@@ -1850,6 +1852,134 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   (`data-region="history"`, `"history-list"`) exist **only** in the `history`
   panel.
 
+**Revision 29 (the client half ships as an entry plus chunks — internal
+structure only).** Nothing above changes: the same five tabs, the same order, the
+same markers, the same interaction, the same copy. What changes is *where the
+bytes live* and *when they arrive*:
+
+- `client.js` is the entry (the `load({id, factory})` registration, the page's
+  state machine, the fingerprint) and one or more `client.*.js` **chunks** sit
+  beside it as flat siblings; the module loader serves them on demand
+  (`require.async('./client.history.js')`), so a tab that is never opened costs
+  nothing. The first one is 「版本历史」: its renderer moved into
+  `client.history.js`, mounted through `React.lazy` + `React.Suspense`;
+- the chunk is a **DAG edge, never a cycle**: the entry asks for the chunk
+  asynchronously, and the chunk asks the entry for the page's shared facilities
+  through `require('dsh-prompt-setting')` (one `React`, one `createElement`, one
+  token table — the chunk holds no copy);
+- **while the chunk is in flight** the tab renders a sized placeholder
+  (`data-region="history-chunk-loading"`) rather than an empty panel: "no history
+  recorded" and "not loaded yet" must not look the same;
+- **if the chunk cannot be loaded** (a 404, an entry missing from the published
+  `files`, an offline host) the tab renders a readable card
+  (`data-region="chunk-failure"`, `data-chunk="client.history.js"`,
+  `data-chunk-state="error"`, carrying the file name and the reason) instead of
+  throwing: a failed chunk is one tab's problem, and the rest of the page — the
+  other four tabs included — keeps rendering. `React.lazy` would otherwise
+  re-throw during render and take the whole settings subtree down;
+- **the stamp covers the chunks** (§14.3, §14.4), because the entry's own digest
+  cannot see them;
+- `data-build-loaded` (§14.3) is the machine-readable answer to "which chunks has
+  this tab really run", and it updates the moment a chunk arrives;
+- **the chunk manifest is checked on the publish path too**: `scripts/prepare.mjs`
+  fails a checkout whose `client.js` `CHUNK_STAMPS` no longer matches the chunk
+  files — a manifest that lies is a fingerprint that cannot be trusted, and
+  "edited a chunk, forgot `--write`" is the mistake this mechanism invites
+  (`node scripts/client-chunks.mjs --write` repairs it).
+
+The one visible cost is the loading placeholder on a cold open of a chunked tab;
+the one development-time caveat is §14.5's chunk-rev binding, recorded in
+`NOTES.md` as well.
+
+**Revision 30 (g-046: the remaining three tabs are chunks too — internal
+structure only).** Revision 29 built the mechanism and moved one tab out; this
+revision uses it for the rest of the tab surface. Nothing above changes again:
+the same five tabs, the same order, the same markers, the same copy, the same
+interaction.
+
+- the entry now ships **four** flat siblings — `client.history.js`
+  (「版本历史」), `client.overview.js` (「提示词总览」), `client.transfer.js`
+  (「备份与恢复」) and `client.advanced.js` (「高级」) — each mounted through
+  `React.lazy` + `React.Suspense` behind a `require.async('./client.<name>.js')`;
+- **the first screen still fetches the entry alone.** 「我的 Prompt」 is the tab the
+  settings page opens on, so its renderer stays in `client.js` **by design**: a
+  chunk there would put a round trip in front of first-screen code and turn a
+  failed fetch into a blank default tab. The other four tabs — the three above,
+  plus history — are only ever reached by a click, which is exactly the case a
+  lazy boundary is for;
+- **while a chunk is in flight** the tab renders its own sized placeholder
+  (`data-region="<tab>-chunk-loading"`), and **if it cannot be loaded** the same
+  readable card as Revision 29 (`data-region="chunk-failure"`,
+  `data-chunk="client.<name>.js"`) replaces **that tab alone**: the page and the
+  other four tabs keep rendering, and `data-render-state` stays `ok`;
+- `__internals.shared` grew by what those renderers call (constants, style tables,
+  pure helpers). It is still **one instance per facility**: a chunk takes each name
+  off `__internals.shared` under its own name, and `test/client.test.mjs` asserts
+  both that every name it asks for is really exposed and that no chunk names or
+  fetches another one — the split stays a DAG. That guard is mechanical but
+  **shape-level**: every `shared.<name>` reference and every destructuring form is
+  checked against the exposed keys, and no chunk may redefine an exposed name
+  locally; a full free-variable analysis would need a parser this zero-dependency
+  package does not have. The gap that leaves — a name referenced but never taken —
+  is covered at run time, where an undeclared identifier throws (`NOTES.md` §123);
+- the measured effect (see `NOTES.md` §123 for the migration record): `client.js`
+  **9584 → 8575 lines / 456680 → 411979 bytes**, with `client.overview.js` 577,
+  `client.transfer.js` 264 and `client.advanced.js` 502 lines now fetched on
+  demand. The entry is still the larger file, and that is by construction rather
+  than by leaving work undone: the state machine, the two dictionaries, the token
+  table and the pure helpers are one **synchronous** body, and the default tab is
+  first-screen code. `NOTES.md` §123 lists each block that stayed and the
+  criterion that keeps it there.
+
+**Revision 31 (g-047: the「查看范围」search box holds the user's query, never the
+selection — client-half behaviour change).** One visible interaction fix; no
+route, no query parameter, no stored byte, no marker and no copy key changes.
+
+- **Selecting a session no longer rewrites the search box.** `pickSession` (a row
+  click), `useCurrent` (the pinned 「当前会话」 entry) and the Enter branch over a
+  highlighted row used to write the readable title into it
+  (`setSessionQuery(sessionLabelOf(...))`, self-described as *"the box reflects the
+  selection"*). All three writes are gone: the box keeps **exactly what the user
+  typed**, so the list keeps being narrowed by the user's own words. The three
+  「当前选中」 displays remain the whole answer to "which scope am I in" —
+  `data-role="scope-summary-label"`, the `data-role="session-current"` line and
+  the pinned entry's selected state (§13.7) — and none of them is weakened;
+- **the placeholder is copy again, not a status field.** It is `sessionSearch` in
+  every state; the `sessionCurrentLabel`-filled placeholder is retired along with
+  the writes above;
+- **the knock-on bug goes with them.** That value participates in
+  `filterSessions(...)` and, when no row matches, in the「按该 id 查看」branch
+  (Revision 3's `useTypedId`): a polluted box meant a **title could be read as a
+  session id**. The user's own query is now the only thing that reaches either;
+- **`useGlobal` is deliberately untouched.** The「全局」entry still clears the
+  query — "back to the global scope" means dropping the filter — and so does
+  `Esc`; only the *selection* paths lost their write;
+- **the history scope (§13.3) was checked and does not share the defect**: its
+  picker writes no label into its box (`data-role="history-scope-search"`, whose
+  placeholder is the fixed `histScopeSearch`), and `setHistoryScope` only clears
+  it while collapsing the picker. Nothing there changed.
+
+**Revision 32 (g-049: an operation that changes the stored text reconciles the
+editor's draft — client-half behaviour change).** No route, query parameter,
+stored byte or marker changes; one new copy key (`mineDraftKept`) is added to
+both dictionaries.
+
+- **the editor can no longer show text the layer no longer holds.** The box
+  renders the draft while one exists, so a rollback, a whole-layer reset and an
+  applied import used to leave it showing the pre-operation text while the host,
+  the log and the prompt assembly had all moved on — the operation read as
+  «nothing happened». All three now call one reconciliation helper (§13.1);
+- **only a draft that holds nothing new is dropped.** A draft equal to the stored
+  text *before* the operation is discarded, and the editor follows the new value;
+  a draft that differs is unsaved work and survives, with `mineDraftKept`
+  appended to the success notice. §15.4's「no path clears what the user typed」is
+  exactly this second case, and is why the two branches differ;
+- **`clearLegacy` (`legacy=true`) is deliberately unchanged**: it keeps the
+  reserved section (§12.2), so this panel's text cannot change under the editor;
+- **`data-mine-state` follows the reconciliation**: dropping the draft returns the
+  panel to the stored value's own state, while keeping it leaves the panel
+  `dirty` — which is what「取消」(§13.1) is offered for.
+
 ### 13.1 「我的 Prompt」 — the one write surface
 
 - The panel is `data-region="mine"`, the layer control is
@@ -1875,6 +2005,16 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   layer's configuration and 「保存」 / 「恢复默认」 are untouched. Both cancel and
   the drafts it drops are scoped to one layer+session key, so cancelling in one
   layer never discards another layer's draft.
+- An operation that changes the stored text **behind the editor's back**
+  (Revision 32, g-049: `history-rollback`, the whole-layer `reset=true` delete and
+  an applied `import`) reconciles the draft rather than leaving the box showing
+  text the layer no longer holds. A draft whose text still equals the stored text
+  **before** the operation held nothing the reader typed: it is dropped silently
+  and the editor follows the new value. A draft that differs is unsaved work — it
+  is kept, the success notice carries the extra sentence `mineDraftKept`, and the
+  panel stays `dirty` (so「取消」is still the way to drop it). `clearLegacy`
+  (§12.2) is deliberately not in this set: it never removes the reserved section,
+  so nothing changes under the editor.
 - `data-mine-state` is the machine-readable state: `unconfigured` | `dirty` |
   `saving` | `saved` | `error`. A failed write renders a full
   `data-mine-error="true"` banner (`data-error-code`, the mapped copy, the
@@ -1917,7 +2057,7 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   `sections` / `full`) keep their Revision 3 meaning; the Revision 6
   `overrides` view no longer exists.
 
-### 13.3 「版本历史」(Revision 19: its own scope, paging and a two-column layout; scope disclosure and state resets in Revision 20; record preview and rollback in Revision 21; preview policy and the narrowed rollback in Revision 22; viewport-sized layout, row picking and clearing in Revision 23; the panel height measured at run time in Revision 24; one column and viewport modals in Revision 25; the modal details settled in Revision 26)
+### 13.3 「版本历史」(Revision 19: its own scope, paging and a two-column layout; scope disclosure and state resets in Revision 20; record preview and rollback in Revision 21; preview policy and the narrowed rollback in Revision 22; viewport-sized layout, row picking and clearing in Revision 23; the panel height measured at run time in Revision 24; one column and viewport modals in Revision 25; the modal details settled in Revision 26; the row's section name removed and the panel's chrome tightened in Revision 27)
 
 - The panel is `data-region="history"` (with `data-history-layer`,
   `data-history-state`, `data-history-total`, `data-history-corrupt`,
@@ -2019,7 +2159,9 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
     would actually scroll, read through `getComputedStyle` so a stylesheet
     counts), or `window.innerHeight` when there is no such ancestor;
   - **height** = `clamp(minHeight, boundary − panelTop − gap)`, with the px floor
-    `HISTORY_PANEL_MIN_HEIGHT` (320) and a `gap` of `HISTORY_PANEL_GAP` (16);
+    `HISTORY_PANEL_MIN_HEIGHT` (320) and a `gap` of `HISTORY_PANEL_GAP` (8 since
+    Revision 27; it was 16 — the gap is subtracted from a *measured* room, so
+    halving it only hands the list those pixels);
   - the measurement is the pure function `historyPanelHeight(inputs)` →
     `{height, source}`, and it is **total**: a missing/zero/`NaN` `panelTop`, a
     boundary that is not below the panel, or no usable boundary at all (no
@@ -2039,7 +2181,12 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
     double, a server render, a zero-sized rect) renders the constant path exactly
     as Revision 23 did.
   Below the panel, the record box is `flex: 1 1 auto; minHeight: 0`, so the list
-  takes exactly the height that is left. The page's own height is therefore
+  takes exactly the height that is left. **Revision 27:** how much that is also
+  depends on the panel's own chrome, which is therefore part of this contract —
+  one heading, the layer tabs, one collapsed notes disclosure and the pager row
+  (which now carries the clear control and the record count), with a `gap: 4`
+  between them; a 31px record row that never wraps at the dialog's width. The
+  page's own height is therefore
   independent of how much history exists — and, since Revision 25, independent of
   how long a preview or a comparison is: those render in modals (below), which are
   capped to the viewport and scroll internally. The **reset rules are untouched** by any of this: changing the
@@ -2101,14 +2248,18 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   (`data-role="history-scope-note"`) sits `data-role="history-compare-hint"` with
   the `histCompareHint` copy — the one place that explains the row-picking
   interaction. The comparison dialog carries no such sentence (and no
-  `histDiffHint` copy exists any more).
+  `histDiffHint` copy exists any more). **Revision 27:** both sentences, the
+  retention sentence and the scope sentence, live inside the collapsed
+  `data-role="history-notes-toggle"` disclosure — still rendered, still in this
+  order, no longer occupying the list's height by default.
 - **Record preview (Revision 21; the policy line in Revision 22).** Every record
   row carries
   `data-action="history-preview"` (with `data-history-id`), and the panel it opens
   is `data-region="history-preview"` with `data-preview-state`
   (`"ready"` | `"missing"`), `data-preview-id` and `data-preview-snapshot-count`.
   A ready panel carries `data-preview-field` for `action` / `at` / `layer` /
-  `name` / `origin` / `note` — the facts that say *which* version this is — the two
+  `origin` / `note` — the facts that say *which* version this is (Revision 27
+  dropped `name` from this list; see the Revision 27 paragraph) — the two
   texts `data-preview-text="before"` / `"after"` (`data-preview-bytes` = the stored
   byte count, the text itself being the node's content), and one
   `data-preview-snapshot="<name>"` per snapshot entry with its
@@ -2277,6 +2428,136 @@ rollback).
   remains comparable. The two buttons left on a row are `history-preview` and
   `history-rollback`.
 
+**Revision 27 (the row loses its section name, and the panel stops spending its
+height on chrome — g-044).** Client-half only: **no route, no query parameter and
+no stored byte changes**, and none of the invariants above move (single column,
+measured panel height, modal mutual exclusion, close-keeps-the-selection, the
+file-scoped resets, §19's narrowed rollback).
+
+- **Why.** Two defects a reader sees on a normal desktop window. First, at the
+  settings dialog's height the panel rendered **one** record. Measured on a real
+  page (1440px wide, 757px high) the cause was neither the measurement nor the
+  boundary — `data-history-height-source` said `measured`, and the number was
+  right — but what the panel spent its height on: the panel had 389px, its own
+  chrome (heading + retention sentence + layer tabs + scope block + tool row +
+  count) took 268 of them, and a record row was **65px** tall because it carried
+  the id, the action tag, **the section name**, the timestamp and two buttons, and
+  at the dialog's width those wrapped onto three lines. 268px of chrome plus one
+  65px row is the whole panel. Second, the row and the preview both displayed the
+  record's **section name** (`prompt-setting:custom-prompt`, and the
+  `stage2-e2e` / `ui-e2e-ok` names left over from the era when a reader could add
+  sections by hand). The write surface has since narrowed to the single reserved
+  section, so the name says nothing a reader can act on.
+- **The row renders no section name.** `#id`, the action tag, the timestamp,
+  `entries` when the record carries them, and the two buttons remain; the node
+  that held `record.name` — and the `histWholeLayer` placeholder a `name === null`
+  record used there — is gone, and both copy keys (`histWholeLayer`,
+  `histPreviewName`) are deleted rather than left dead. The name itself is still
+  the row's `data-history-name` (`''` for a null name), which is what tests and
+  diagnostics read. **Records are not filtered**: a log holding hand-written names
+  still lists every one of them, it just no longer says what they are.
+- **The preview follows the row.** `data-preview-field="name"` is gone, and a
+  snapshot entry renders `{action} · {bytes}` (`histPreviewSnapshotEntry` no
+  longer carries `{name}`); the entry's `data-preview-snapshot="<name>"` marker
+  stays.
+- **The panel stops spending its height on chrome.** The retention sentence, the
+  scope sentence, the "this scope belongs to this tab" sentence and the picking
+  rule now live in one **collapsed** `data-region="history-notes"` disclosure
+  behind `data-role="history-notes-toggle"` (the new `histNotesToggle` copy);
+  their nodes and `data-role`s are still rendered inside it, so nothing promised
+  about them above changes — only their default visibility does.
+  `data-region="history-diff-tools"` (`data-action="diff-clear"`) and the record
+  count (`data-history-total` / `data-history-corrupt`) moved into the **pager
+  row** (`data-region="history-pager"`) instead of a row of their own.
+- **What this is worth on a real page.** Measured with headless Chrome against
+  this bundle at a 1440px-wide viewport: chrome above the list fell 268 → 118px, a
+  row 65 → 31px, and the visible record rows in the list box went 1 → **6** at a
+  757px-high viewport, **9** at 900px and **9** at 1080px (the dialog stops
+  growing at 800px tall, so the last two agree). The panel is still measured at
+  run time (Revision 24) and grew 340 → 440 → 488px as the viewport went
+  700 → 800 → 956px; no page-level scrollbar appeared in any of those runs. The
+  fallback path was measured too (a panel whose own rect is unusable ⇒
+  `source: "fallback"`, `calc(100vh − 260px)` = 640px at a 900px viewport):
+  **13** visible rows, so a runtime without geometry never falls back to the
+  one-row panel.
+- **Unit tests.** The row case asserts the new shape directly: the legacy names
+  `stage2-e2e` / `ui-e2e-ok` are on `data-history-name` and in **no** rendered
+  text, every record is still listed, the whole-layer placeholder copy is unused,
+  and the row carries the tightened padding/gap. The preview case asserts the
+  missing field, the missing copy key and a snapshot entry that renders no name;
+  the two panel-height cases moved 684 → 692 and 484 → 492 with
+  `HISTORY_PANEL_GAP`.
+
+**Revision 28 (「下载区域」: the update source is a choice, decided once by
+availability — g-043).** One new route pair, one new preference field group and
+one new card row; **no existing response field, status code or stored byte
+changes meaning**, and the version history / rollback / write surface are
+untouched (g-044's Revision 27 block above stands as written).
+
+**Revision 28, corrected (owner ruling, 2026-10-08).** The goal's own wording was
+wrong in two places, and a real-machine measurement found both. Neither was an
+implementation defect; both were requirements, so the correction changes what the
+code means rather than how it is written:
+
+- **The mainland source is `https://registry.npmmirror.com/`, not the Tsinghua
+  TUNA mirror the requirement first named.** Measured on this machine:
+  `mirrors.tuna.tsinghua.edu.cn/npm/` answers **`404` for every package**
+  (`dsh-prompt-setting` *and* `express`), and `/npmjs/`, `/npm-registry/` and
+  `/help/npm/` are `404` as well — that host serves no npm registry at all, so the
+  address could never have been a source. `registry.npmmirror.com` serves this
+  package (measured `200`, `dist-tags.latest` = `0.1.5`, 64–210 ms). The constant
+  is therefore `CN_NPM_REGISTRY`, named for the **region** rather than for a host,
+  so a further correction cannot leave a name behind that points at the wrong
+  thing;
+- **The detection asks a different question.** It is no longer "is the host
+  reachable" (`/-/ping`, any HTTP answer counted) but "**can this source actually
+  serve this package**": `GET <registry>dsh-prompt-setting` must answer 2xx **and**
+  carry `dist-tags.latest` (§17.9). The old rule read a host that 404s everything
+  as the *best* available source; the probe now asks exactly what the check itself
+  asks, so「可用」and「不可用」are the same fact for both.
+
+- **What a user gets.** In the「检查更新」card (§13.4, §17.10), a「下载区域」
+  dropdown with exactly three options — 「默认」(npm first, GitHub Releases as the
+  degradation path), 「中国大陆」(the npmmirror registry) and 「自定义」(a mirror
+  address they type). Changing it persists in the same `preferences.json` as the
+  update-check switch, and takes effect on the next check **and** the next
+  install.
+- **The first-run default is availability, never location.** With nothing stored,
+  the Host asks npmjs for this package (2.5 s, §17.9) and, only if it is not
+  served, asks npmmirror; the verdict is written as an explicit choice flagged
+  `downloadRegionAuto: true` and reported as `detected: true`, which the page
+  renders as「已自动判定（该源能取到本包）」. **No IP lookup, no third-party geolocation
+  service, no new dependency.** A user behind a proxy is served by npmjs ⇒
+  「默认」, which is the proxy false-positive the probe is designed to avoid.
+- **A chosen mirror is never silently replaced.** With「中国大陆」or「自定义」
+  selected, a registry that cannot answer is `200 {ok:false, code:
+  "registry-unavailable"}` (or `registry-invalid` for an unusable saved address) —
+  GitHub and npmjs.org are not asked behind the user's back, and the answer names
+  the region, the address and the underlying reason.
+- **A typed address is validated before anything is written**: `http(s)`, a host,
+  no credentials, no query string and no fragment (trailing `/` normalized), then
+  one bounded `GET` of `<registry>dsh-prompt-setting` that must answer 2xx **and**
+  carry `dist-tags.latest`. The four failures are four codes, and each one leaves
+  the dialog open with a red line and the effective source untouched.
+- **Bounded, cached, off the critical path.** 2.5 s per probe, 6 h per verdict,
+  one in-flight probe shared by concurrent asks, the detection runs inside its own
+  request (never at mount), and with the update-check switch **off** it does not
+  run at all — §17.4's「off means zero outbound requests」keeps holding.
+- **Review fixes (second round).** Two defects the independent review blocked on,
+  both fixed here and frozen by tests: ① an explicitly refused registry (`null`)
+  was substituted by npmjs.org — see §17.2/§17.6; ② a probe that found no usable
+  source was still written as `downloadRegionAuto: true`, freezing「默认」for good
+  and making the card claim an automatic decision that never happened — see §17.7.
+- **Unit tests.** 54 new cases across `test/update.test.mjs`,
+  `test/client.test.mjs`, `test/install.test.mjs` and `test/route.test.mjs`: the
+  three regions × the registry serving/failing, an **answered `404` that is not
+  availability** (the discriminator the correction exists for), the three
+  validation failures, the detection branches (npmjs serves ⇒ 默认, npmjs 404 +
+  npmmirror serves ⇒ 中国大陆, neither ⇒ 默认), the proxy case, the probe timeout
+  and its cache, the no-write-on-refusal rule, the dialog that stays open, the
+  mount that asks nobody, the install that follows the chosen mirror, and the
+  measured facts about both upstreams (§17.9).
+
 ### 13.3a 「备份与恢复」(Revision 19)
 
 - The tab is `data-region="backup-tab"` and contains the transfer panel
@@ -2310,6 +2591,10 @@ rollback).
   selector): `data-action="legacy-clear"` sends `DELETE …&legacy=true` (§12.2)
   and **keeps** the reserved override, while `data-action="reset-layer"` sends
   `DELETE …&reset=true` (§12.1) and clears the whole layer.
+- **Revision 28:** the「检查更新」card also carries the「下载区域」row
+  (`data-region="download-region"`, `data-action="update-region-select"`) and the
+  「自定义镜像源」dialog overlay (`data-region="region-overlay"` /
+  `data-region="region-dialog"`). Both are specified in §17.10.
 - The full status block is `data-region="status-detail"`: mounted, frozen,
   `generatedAt`, both layers' `enabled`/`path`/`reason`, the build stamp
   (`data-region="build"`), every frozen/build explanation, and the renderer
@@ -2360,7 +2645,7 @@ from `core/custom.js` and asserts that the name in the save body and in the
 delete URL equals it **character for character**. The two copies cannot drift
 apart silently.
 
-### 13.7 The「查看范围」picker is collapsed by default (g-016)
+### 13.7 The「查看范围」picker is collapsed by default (g-016; the search box holds the user's own query since Revision 31, g-047)
 
 Measured in the real settings shell at 1440×900 before this revision: the
 expanded selector was ~500px tall (search box + the grouped tree + paging +
@@ -2402,6 +2687,17 @@ follows the new scope in the same render. Browsing actions — typing in the
 search box, toggling a workspace group,「显示更多」 — deliberately do **not**
 close it: they do not finish the choice.
 
+**The search box belongs to the user (Revision 31, g-047).** `data-role="session-search"`
+holds the query the user typed and nothing else: `pickSession`, `useCurrent` and
+the Enter-over-a-highlighted-row branch all move the **selection** without
+writing a label into it. Its `placeholder` is `sessionSearch` in every state (the
+`sessionCurrentLabel`-filled placeholder is retired), and its value is what
+`filterSessions(...)` reads, so the candidate list is only ever narrowed by the
+user's own words. 「当前选中」 is answered where it belongs — the summary label
+`data-role="scope-summary-label"`, the `data-role="session-current"` line and the
+pinned entry's selected state — never by overwriting the box. The「全局」entry and
+`Esc` still clear the query (Revision 31 leaves that alone).
+
 **This picker no longer feeds the version history (Revision 19).** It scopes the
 snapshot and the override reads (`my Prompt`, `提示词总览`, `高级`); the version
 history reads its own scope (§13.3) and is not a consumer of this one. Before
@@ -2429,7 +2725,7 @@ writes one down either.
   lives on the **root container** instead: `data-plugin-version` is present in
   **every** render state, so a probe reads one attribute and never has to know
   which state it got;
-- **the text** is `v` + the version (`v0.1.5`), or `stPluginVersionUnknown`
+- **the text** is `v` + the version (`v0.2.0`), or `stPluginVersionUnknown`
   (「版本未知」 / `Version unknown`) when the ping carried no usable one. The
   node's `title` is `stPluginVersion` (「插件版本」 / `Plugin version`);
 - **the link:** with a `repositoryUrl` the node is an `a` element whose `href` is
@@ -2448,8 +2744,9 @@ writes one down either.
   card (`data-renderer="none"`), the last two always `unknown` — so a probe reads
   one attribute instead of knowing which state is supposed to carry which marker;
 - the version (and the URL) come from the **same answer** as the build stamp
-  (`data-build`, `data-build-server`, `data-build-match`, §14.3): one ping, one
-  host boot, so the facts on screen can never describe two different hosts;
+  (`data-build`, `data-build-server`, `data-build-match`, §14.3; plus
+  `data-build-loaded`, Revision 29): one ping, one host boot, so the facts on
+  screen can never describe two different hosts;
 - **`unknown`** — the same asymmetry as the build stamp, for the same reason: a
   failed or unreachable ping, a body without `version`, a non-string value
   (`42`, `{}`, `null`), or a string that declares nothing (the empty string, or
@@ -2534,7 +2831,7 @@ makes the mount request nothing.
 
 ---
 
-## 14. Client build stamp (Revision 6)
+## 14. Client build stamp (Revision 6; the bundle ships chunks in Revision 29)
 
 ### 14.1 The problem this answers
 
@@ -2570,12 +2867,22 @@ live probe would read a normal rebuild as a defect.
 {
   "ok": true,
   "plugin": "dsh-prompt-setting",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "repositoryUrl": "https://github.com/zangxx66/dsh-prompt-setting",
   "time": "2026-09-28T12:00:00.000Z",
   "clientRenderer": "fallback",
   "clientReportedAt": "2026-09-28T12:00:00.000Z",
-  "clientBuild": { "hash": "7065b7d2", "size": 240949, "mtime": "2026-09-28T11:58:31.000Z" },
+  "clientBuild": {
+    "hash": "7065b7d2",
+    "size": 240949,
+    "mtime": "2026-09-28T11:58:31.000Z",
+    "chunks": [
+      { "name": "client.advanced.js", "hash": "523d25ee", "size": 21505, "mtime": "2026-09-28T11:58:31.000Z" },
+      { "name": "client.history.js", "hash": "2887cc6c", "size": 48609, "mtime": "2026-09-28T11:58:31.000Z" },
+      { "name": "client.overview.js", "hash": "f66cd1b0", "size": 23533, "mtime": "2026-09-28T11:58:31.000Z" },
+      { "name": "client.transfer.js", "hash": "c8af8793", "size": 9759, "mtime": "2026-09-28T11:58:31.000Z" }
+    ]
+  },
   "launchKind": "cli"
 }
 ```
@@ -2590,6 +2897,16 @@ both.
 - `size` — the length of that region in **UTF-16 code units** (not bytes: see
   §14.4 for why the browser and the host can only agree on this length);
 - `mtime` — the file's modification time as an ISO 8601 string;
+- `chunks` — **Revision 29**: the host's digests for **every chunk file this
+  bundle serves**, in file-name order, each `{name, hash, size, mtime}` carrying
+  the same three fields with the same meaning as the entry's (the chunk's own
+  marker region, its code-unit length, its mtime). The set is exactly the flat
+  siblings of `client.js` whose name matches the module loader's own `client.*.js`
+  pattern (`core/store.js` `CLIENT_CHUNK_PATTERN`). A chunk whose markers are
+  unusable is **omitted** rather than reported with a fabricated digest, and an
+  unreadable directory answers `[]` — never a guess (§14.4). `[]` is also the
+  honest answer for a host that serves no chunk, and the page reads it as
+  "nothing beyond the entry to check";
 - `repositoryUrl` — **Revision 17**: this package's own repository, derived at
   import time from its `package.json` (`repositoryUrlOf`: `repository.url`, else a
   bare `repository` string, else `homepage` — each with its git decoration
@@ -2627,18 +2944,58 @@ result on the root container:
 
 | `data-build-match` | When | What the page renders |
 | --- | --- | --- |
-| `"true"` | both digests answered and are equal | tag「与宿主一致」 |
-| `"false"` | both digests answered and differ | tag「页面版本已过期」 + `data-warning="client-build-stale"` |
-| `"unknown"` | anything else | tag「构建戳未知」 + `data-warning="client-build-unknown"` |
+| `"true"` | both digests answered and are equal, **and** the chunk half agrees | tag「与宿主一致」 |
+| `"false"` | both digests answered and differ, **or** a chunk disagrees | tag「页面版本已过期」 + `data-warning="client-build-stale"` |
+| `"unknown"` | anything else — including an incomplete chunk comparison | tag「构建戳未知」 + `data-warning="client-build-unknown"` |
 
 - `data-build` — the page's **own** digest (or the string `unknown` when it could
   not compute one);
 - `data-build-server` — the host's digest as reported (or `unknown`);
-- `data-build-match` — the verdict above.
+- `data-build-match` — the verdict above;
+- `data-build-loaded` — **Revision 29**: the chunks this page has **really
+  loaded**, as `<name>:<hash>` pairs joined with `,`, or the string `none` before
+  the first one. Each hash is what that chunk computed from its own
+  `chunkFactory.toString()` (its own marker region, §14.4), so a probe can read
+  which parts of the split bundle have actually run in this tab without asking
+  the page to render a tab. The attribute follows a chunk **as soon as it
+  arrives** — the page subscribes to the load and re-renders its root container
+  for it — so a reader sitting on the tab that fetched the chunk never sees
+  `none`, and the third check below runs without any tab switch. That is a
+  behaviour and not an implementation note: it was a real defect before it was
+  asserted (`NOTES.md` §122).
+
+**The chunk half of the verdict (Revision 29).** The entry digest alone cannot
+see a chunk, so the verdict compares three things, in this order:
+
+1. the entry's own digest against the host's (`data-build` vs `data-build-server`)
+   — a difference is `"false"`;
+2. the **manifest** written inside the entry's region
+   (`client.js` `CHUNK_STAMPS`, so it is part of `data-build`) against the host's
+   `clientBuild.chunks` — item by item, both ways. A digest that differs is
+   `"false"`; a chunk one side knows and the other does not is `"unknown"` (the
+   comparison is incomplete, and an incomplete comparison may never be rendered
+   as「一致」);
+3. the digest every chunk this page has **really loaded** reported of itself
+   against the host's list — a difference is `"false"`.
+
+A host that sends **no** `chunks` field at all, **or sends `null` for it**, is a
+pre-Revision-29 host as far as this page is concerned — the two spellings mean the
+same thing ("I have no chunk list to offer"), because a host that predates the
+split omits the field and a host that cannot answer should not have to invent an
+empty list. It is met with the old answer: equality of the entry digests is
+「一致」, because there is nothing on either side to contradict it. Once this page
+has loaded a chunk, though, an answer that says nothing about that chunk is no
+longer enough — the verdict becomes「未知」, never「一致」. An **empty array** is
+different: it is a claim ("I serve no chunk"), so it is compared like any other
+list and an entry that declares a chunk becomes「未知」against it. A `chunks` value
+that is neither absent/`null` nor an array of `{name, hash}` strings is refused
+**whole** and reads as「未知」: a half-read list could hide the one chunk that
+changed.
 
 `"unknown"` covers: an older host that does not send `clientBuild`; a host whose
 bundle is unreadable (`clientBuild: null`); a `client.js` whose markers were
-edited away; a failed or unreachable ping. **None of those may ever be rendered as
+edited away; a failed or unreachable ping; and — since Revision 29 — a chunk list
+the two sides do not share. **None of those may ever be rendered as
 「过期」**: the whole point is to stop chasing a bundle that is fine. The
 asymmetry is deliberate —「一致」 and「过期」 each require a real digest on both
 sides, so the only unsupported verdicts degrade to「未知」, and the page's own
@@ -2664,14 +3021,18 @@ the reader is told to reload rather than told a story about why.
 
 ### 14.4 The region, the normalization, and what this cannot claim
 
-`client.js` carries exactly one pair of marker comments, inside the factory body:
-`/* @build-fingerprint:begin */` and `/* @build-fingerprint:end */`. The region is
-the text **between** them and it must cover the factory's entire body — anything
-outside it could change without moving the digest, which would be a silently
-false「一致」. Both flags are test-asserted against the real file
-(`test/build.test.mjs`), as is the requirement that each marker occurs exactly
-once: two markers would make the region ambiguous, and an ambiguous region is
-refused (`null` ⇒「未知」) rather than resolved arbitrarily.
+**Every file in the bundle carries exactly one pair of marker comments, inside
+its own factory body:** `/* @build-fingerprint:begin */` and
+`/* @build-fingerprint:end */` — `client.js` and every `client.*.js` chunk it
+loads (Revision 29). The region is the text **between** them and it must cover
+*that* factory's entire body — anything outside it could change without moving
+that digest, which would be a silently false「一致」. Both flags are test-asserted
+against the real files (`test/build.test.mjs`), as is the requirement that each
+marker occurs exactly once **in its file**: two markers would make the region
+ambiguous, and an ambiguous region is refused (`null` ⇒「未知」) rather than
+resolved arbitrarily. (The entry file assembles the marker text from two string
+pieces for exactly this reason: a literal copy of the marker inside the region
+would be that second occurrence.)
 
 Before hashing, both sides apply the same normalization: drop one leading BOM,
 and fold `\r\n`/`\r` to `\n`. Without it, any hop that rewrites line endings
@@ -2699,9 +3060,9 @@ payload a real browser receives, byte for byte, so this stays an item in NOTES.m
 page would show「过期」: the visibly wrong direction — a rewrite can never be
 reported as「一致」 — but wrong all the same.
 
-**Accepted limitation, also stated rather than hidden:** the region is the factory
-*body* only. `begin` has to be the body's first statement and `end` its last, so
-everything that wraps the function — the file header comment, the
+**Accepted limitation, also stated rather than hidden: the region is one
+function's *body*.** `begin` has to be the body's first statement and `end` its
+last, so everything that wraps the function — the file header comment, the
 `window.__ModuleLoader__.load({` call, the `id:` line, the `factory:` line and the
 closing `};` / `},` / `});` — sits **outside** it. Editing only those lines
 therefore does not move the digest, and a tab running the older bytes would report
@@ -2710,6 +3071,40 @@ does not exist: the page's only access to its own bytes is `factory.toString()`,
 markers moved outside the function would simply not be seen by the self-check. The
 boundary is acceptable because what lives outside is comments and binding lines —
 the registration surface — whose edits are both rare and loud. See NOTES.md §81.5.
+
+**Revision 29: what covers the chunks.** A chunk's bytes are not in
+`promptSettingFactory.toString()`, so "the region is the whole implementation" is
+no longer true and cannot be made true — the page still has no way to read a file
+it has not run. The coverage is therefore explicit and threefold, and each layer
+has a negative control in `test/build.test.mjs` / `test/client.test.mjs`:
+
+1. **Each source file carries its own one ordered marker pair** — the entry, and
+   every `client.*.js` chunk, with the markers inside *that* factory's body. A
+   chunk's digest is computed by the host from the file and by the page from
+   `chunkFactory.toString()`, over the same region text, exactly as for the entry.
+   The uniqueness requirement is per file: two markers in one file are refused
+   (`null` ⇒「未知」) rather than resolved arbitrarily.
+2. **The entry's region carries the manifest** `CHUNK_STAMPS` — the file names
+   and digests the entry was written against. Because the manifest is inside the
+   region, it is part of `data-build`: adding, renaming, dropping or re-declaring
+   a chunk moves the *entry's* own digest, even before any comparison. The
+   manifest is kept true by `scripts/client-chunks.mjs` (a dev-time tool, not a
+   build step: it rewrites one array in `client.js`, and the published artifacts
+   are the same files that were edited) and is asserted against the bytes by
+   `test/build.test.mjs`.
+3. **The host reports every chunk it serves** (`clientBuild.chunks`, §14.2) and
+   the page compares that list with the manifest and with the digest each
+   *loaded* chunk reported of itself (§14.3).
+
+That is what makes the hard invariant hold after the split: **every source file
+that can change the running page moves a digest the comparison looks at.** The
+entry moving is the ordinary case; a chunk changing moves the host's per-chunk
+digest, which the manifest then contradicts; a manifest edited by hand moves the
+entry's digest. There is no path in which a file changes and the page still reads
+「一致」 — the worst case is「未知」(an incomplete comparison), which is the safe
+direction. What is *not* covered is still the wrapper text of each file (the
+header comment, the `load({` call, the closing braces): the boundary above applies
+per file, unchanged.
 
 ### 14.5 What this stamp is not: content fingerprint vs. DSH's served artifact
 
@@ -2741,6 +3136,28 @@ Consequences, stated rather than discovered later:
   surviving `false` as a DSH-side condition to investigate.
 - conversely, `true` says nothing about HMR health: it only says that at the moment
   of the probe the running bytes and the file agreed.
+
+**Revision 29: a chunk's URL is bound to the *entry's* rev.** The loader builds a
+chunk URL as `/plugins/<pkg>/<file>?rev=<the entry row's rev>`
+(`@deepseek-ai/dsh-client-modules` `chunkUrl`), and that rev is DSH's artifact
+revision of **`client.js`** alone — `framedHash("plugin-artifact",
+[mtimeMs, ctimeMs, size])` over the entry file's metadata. Two consequences, both
+stated rather than discovered in the field:
+
+- **Editing a chunk without touching `client.js` does not make an open tab fetch
+  the new chunk.** The served URL is byte-identical (same path, same rev) and the
+  response is `immutable`, so nothing re-fetches it. During development: touch
+  `client.js` — or restart the Host — after a chunk-only edit. In a release this
+  cannot happen, because a changed chunk always comes with a changed entry (the
+  manifest is inside the entry's region, §14.4).
+- **`clientBuild.chunks` is still read from disk on every ping**, so the *stamp*
+  does move on a chunk-only edit even when the tab cannot: the page then reads
+  「不一致」, which is the correct verdict — the running chunk really is not the
+  served one.
+
+This is a DSH-side mechanism, not something this plugin can change; it is recorded
+here and in `NOTES.md` so the next person to edit a chunk does not spend an
+afternoon on a cache that is behaving as documented.
 
 ## 15. The owned prompt section and the write lock (Revision 7; lastness added in Revision 8)
 
@@ -3603,56 +4020,152 @@ g-026 are untouched.
 
 ---
 
-## 17. The upstream update check (g-030)
+## 17. The upstream update check (g-030; npm first in Revision 27, g-042; the download region in Revision 28, g-043)
 
-### 17.1 Why a Host route, and why GitHub
+**Revision 27 (npm is the primary source, GitHub Releases the fallback — g-042).**
+The check used to ask the GitHub Releases API and nothing else. It now asks the
+**npm registry** first (`<registry>/dsh-prompt-setting`, read for
+`dist-tags.latest`) and falls back to the GitHub Releases API only when npm could
+not answer. Every answer carries a new **`source`** marker (`"npm"` / `"github"` /
+`null`) and, for an npm answer, the packument's own **`versions[<version>].dist.tarball`** —
+which §18.2 then installs from. The registry base address is **injectable**
+(`updateCheck.registry`, default `https://registry.npmjs.org/`); that one slot is
+what g-043's download-region choice wires into. **No route, no query parameter,
+no preference-file byte and no existing field changes meaning**: `source` and
+`tarball` are additive, so a pre-g-042 client renders exactly as it did.
 
-This plugin is installed as a tarball or a `link:`, so nothing in npm ever tells
-a user that upstream moved on. The owner's decision (2026-10-03) is one
-`GET` against the **GitHub Releases API** — not the npm registry — because this
-package's releases are what a user actually installs from. The request is made by
-the **Host**, not the page: Node has no CORS wall, the answer can be cached, the
-request can time out, and the whole feature can be switched off server-side. The
-page only ever reads the result.
+**Revision 28 (the download region, decided once by availability — g-043).** The
+check's source is now the user's choice: 「默认」(npm first, GitHub as the
+fallback) / 「中国大陆」(the npmmirror registry) / 「自定义」(an address they
+typed, validated before it is saved). The choice lives in the same
+`preferences.json` as the switch, is resolved **per check** (§17.6), and the
+first-ever default is decided by a bounded reachability probe of the two
+registries — **never by an IP lookup** (§17.9). Two new methods
+(`GET`/`PUT /prompt-setting/download-region`, §17.7/§17.8), one new card row
+(§17.10), six new codes and **no changed byte** in any existing response field:
+`region` and `registry` are additive on the check payload, and every pre-g-043
+client renders exactly as it did.
 
-Three properties are contract, not implementation:
+### 17.1 Why a Host route, and why npm first
+
+This plugin is installed as a tarball or a `link:`, so nothing in npm's own
+tooling ever tells a user that upstream moved on. The check exists to answer that,
+and it asks the address the package is actually **published** to: the owner's
+original decision (2026-10-03) was one `GET` against the **GitHub Releases API**;
+g-042 re-founded it on the **npm registry** — the registry is where
+`dsh plugin add dsh-prompt-setting` resolves from and the one address a mirror can
+be pointed at — and kept GitHub Releases as the **degradation path**, so a profile
+behind a registry that does not carry the package still gets an answer. The request
+is made by the **Host**, not the page: Node has no CORS wall, the answer can be
+cached, the request can time out, and the whole feature can be switched off
+server-side. The page only ever reads the result.
+
+Four properties are contract, not implementation:
 
 - **never a false positive.** `hasUpdate: true` is emitted only when both
   versions parse and `latest > current`. Every undecidable case is
   `hasUpdate: null`;
 - **a failure is a value.** The route answers `200` for every outcome it can
-  have — including a network error, a timeout and an HTTP error from GitHub.
-  Only a malformed `PUT` body is an ordinary `400` (§17.4). No update check can
-  produce a `5xx`, and none can paint the settings page red;
-- **one request, no user data.** A single `GET`, with
-  `user-agent: dsh-prompt-setting/<version>` and
-  `accept: application/vnd.github+json`. No body, no cookies, no query derived
-  from this machine, this session or this workspace.
+  have — including a network error, a timeout and an HTTP error from either
+  upstream. Only a malformed `PUT` body is an ordinary `400` (§17.4). No update
+  check can produce a `5xx`, and none can paint the settings page red;
+- **npm first, GitHub only as the fallback.** The fallback runs when npm **could
+  not answer** — never because its answer was inconvenient: a registry that says
+  "you are up to date" *is* the answer (§17.2);
+- **one identifiable request per upstream, no user data, and the answer names its
+  source.** At most one `GET` per upstream, `user-agent:
+  dsh-prompt-setting/<version>`, `accept: application/json` for the registry and
+  `accept: application/vnd.github+json` for GitHub. No body, no cookies, no query
+  derived from this machine, this session or this workspace — and `source` says
+  which upstream produced the payload the page is reading.
 
 ### 17.2 `GET /prompt-setting/update-check`
 
-Query: `force` (optional). The single upstream URL is built from
-`package.json`'s `repository.url` — parsed once per check by
-`parseRepositorySlug` into `{owner, repo}`; nothing is hardcoded a second time and
-no request input reaches it. The accepted manifest spellings are
-`git+https://…`, `https://…`, `git://…`, `git+ssh://git@…`, the scp-style
-`git@github.com:owner/repo.git` and the `github:owner/repo` shorthand; anything
-that is not `github.com` with exactly two path segments is refused
-(`400`-free, `ok:false`, `error.code: "no-repository"`).
+Query: `force` (optional). The **npm** URL is `updateCheck.registry` plus the
+package name. That option has **three states**, and the first two may not be
+collapsed into one (g-043 review fix):
 
-The body:
+| `updateCheck.registry` | Means | Effect |
+| --- | --- | --- |
+| absent, `undefined`, blank | "unstated" | the shipped default, `https://registry.npmjs.org/` |
+| `null` | "**this source is refused**" | the npm path is disabled **and the GitHub fallback is not taken either**: `200 {ok:false, code: "registry-invalid"}`, `source: null`, **zero outbound requests**. This is what `resolveDownloadRegion()` answers for a `custom` region whose address is unusable (§17.6) |
+| a string | the configured base | normalized; an unusable string (a bare host, `file:`, junk) disables the npm path and GitHub answers, with the npm reason beside it — Revision 27's behaviour, kept |
+
+A resolver that **throws** counts as unstated, never as a refusal: a broken
+preferences getter must degrade to the shipped default rather than silently
+disabling the npm path.
+The **GitHub** URL is the fallback's: `package.json`'s `repository.url`, parsed
+once per check by `parseRepositorySlug` into `{owner, repo}`; nothing is hardcoded
+a second time and no request input reaches either URL. The accepted manifest
+spellings are `git+https://…`, `https://…`, `git://…`, `git+ssh://git@…`, the
+scp-style `git@github.com:owner/repo.git` and the `github:owner/repo` shorthand;
+anything that is not `github.com` with exactly two path segments is refused
+(`200`, `ok:false`, `error.code: "no-repository"`).
+
+**Decision order, and it is the whole of g-042's change:**
+
+| # | Asked | Outcome |
+| --- | --- | --- |
+| 1 | the switch (§17.4) | off ⇒ `hasUpdate: false`, **zero requests**, `source: null` |
+| 2 | the cache (§17.3) | fresh ⇒ the cached payload with `cached: true`, `source` preserved |
+| 3 | the npm registry | a `dist-tags.latest` that parses ⇒ **that is the answer**, `source: "npm"`, GitHub is not asked |
+| 4 | the npm registry | impossible to answer (see below) ⇒ go to 5 |
+| 5 | the GitHub Releases API | a 2xx release ⇒ the answer, `source: "github"` |
+| 4b | the **region's** registry (§17.6), or an explicitly refused source | step 5 is **skipped** when the region is `cn`/`custom` **or** the option is an explicit `null`. A mirror that cannot answer is `ok:false` with `error.code: "registry-unavailable"`; a source that could not even be asked (an unusable saved address, a refused `null`) is `registry-invalid` with `source: null` and no request at all. Either way `error.region` / `error.registry` / `error.reason` name what was involved, and nothing is cached |
+| 6 | — | neither answered ⇒ `ok:false`, `source: "github"`, `error` naming the GitHub attempt and `error.npm` naming the npm attempt |
+
+The npm attempt is **unusable** — and the check goes on to GitHub — when: there is
+no usable registry, the transport throws, the request times out, the status is not
+2xx (including `404`: this registry does not carry the package), the body is not a
+package document, `dist-tags` or `dist-tags.latest` is missing, or
+`dist-tags.latest` is not a version. Not one of those is reported as "upstream
+says nothing": they are npm's silence, and the fallback exists for exactly them.
+
+The body of an **npm** answer:
 
 ```json
 {
   "ok": true,
   "enabled": true,
-  "current": "0.1.5",
-  "latest": "0.2.0",
-  "latestTag": "v0.2.0",
+  "current": "0.2.0",
+  "latest": "0.2.1",
+  "latestTag": "0.2.0",
   "hasUpdate": true,
-  "releaseUrl": "https://github.com/zangxx66/dsh-prompt-setting/releases/tag/v0.2.0",
+  "releaseUrl": null,
+  "publishedAt": "2026-09-25T00:00:00.000Z",
+  "source": "npm",
+  "tarball": "https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.0.tgz",
+  "region": "default",
+  "registry": "https://registry.npmjs.org/",
+  "checkedAt": "2026-10-08T09:00:00.000Z",
+  "cached": false,
+  "error": null
+}
+```
+
+`region` and `registry` (**Revision 28**, additive) name the download region this
+answer was produced under and the base address the npm path asked — `registry` is
+`null` when it could not be asked at all. They are what makes「which source
+answered」readable off the payload instead of inferred from the settings page. A
+pre-Revision-28 client ignores both and renders exactly as it did.
+
+The body of a **GitHub** answer (the pre-Revision-27 shape, plus `source`):
+
+```json
+{
+  "ok": true,
+  "enabled": true,
+  "current": "0.2.0",
+  "latest": "0.2.1",
+  "latestTag": "v0.2.1",
+  "hasUpdate": true,
+  "releaseUrl": "https://github.com/zangxx66/dsh-prompt-setting/releases/tag/v0.2.1",
   "publishedAt": "2026-10-01T00:00:00Z",
-  "checkedAt": "2026-10-03T09:00:00.000Z",
+  "source": "github",
+  "tarball": null,
+  "region": "default",
+  "registry": "https://registry.npmjs.org/",
+  "checkedAt": "2026-10-08T09:00:00.000Z",
   "cached": false,
   "error": null
 }
@@ -3663,26 +4176,53 @@ The body:
 | `ok` | `true` when the check produced a decidable or explicitly undecidable answer; `false` on a failure, with `error` set. |
 | `enabled` | The switch as persisted (§17.4). Answered on both verbs so the page needs one round trip, not two. |
 | `current` | This package's `PLUGIN_VERSION` (the same constant the ping reports). |
-| `latest` | The normalized `major.minor.patch` of the reported tag, or `null` when there is nothing usable. The raw tag is never echoed as a version. |
-| `hasUpdate` | `true` only for a confirmed newer release; `false` when the current version is equal or newer; `null` when it cannot be decided. |
-| `latestTag` | The tag **as published**, verbatim, for the same release as `latest` — or `null` when the answer is not about a release. `latest` is canonicalized (`v0.1.2` → `0.1.2`) and is therefore the wrong string for a release **asset** path; both travel on one payload, from one request, so「install this version」can never name a tag the check did not see (g-032, §18.2). |
-| `releaseUrl` | The release's `html_url`, else `https://github.com/{owner}/{repo}/releases/tag/{tag}`, else `null`. |
-| `publishedAt` | The release's `published_at`, or `null`. |
+| `latest` | The normalized `major.minor.patch` of the reported version, or `null` when there is nothing usable. The raw string is never echoed as a version. |
+| `hasUpdate` | `true` only for a confirmed newer version; `false` when the current version is equal or newer; `null` when it cannot be decided. |
+| `latestTag` | The version **as published**, verbatim, for the same version as `latest` — the GitHub release tag, or npm's `dist-tags.latest` — or `null` when the answer is not about a published version. `latest` is canonicalized (`v0.1.2` → `0.1.2`) and is therefore the wrong string for a release **asset** path; both travel on one payload, from one request, so「install this version」can never name a tag the check did not see (g-032, §18.2). |
+| `releaseUrl` | GitHub: the release's `html_url`, else `https://github.com/{owner}/{repo}/releases/tag/{tag}`, else `null`. npm: always `null` — the page's one link is labelled for a release page, and pointing that label at a registry URL is g-043's copy to write. |
+| `publishedAt` | GitHub: the release's `published_at`. npm: the registry document's `time[<latest>]`. Either way `null` when upstream did not say. |
+| `source` | **Which upstream produced this payload**: `"npm"`, `"github"`, or `null` when no upstream was consulted at all (the switch is off, or the runtime has no `fetch`). Additive, for display and diagnostics. |
+| `tarball` | **The npm answer's install spec**: the packument's `versions[<version>].dist.tarball`, verbatim — or `null` on any answer that is not an npm one, and `null` when the document carried no usable string. What the field *is* is upstream's word; whether it may be handed to pnpm is decided in §18.2. |
+
+**Where the tarball is read from (revision 27 review fix).** A real npm packument
+has **no top-level `dist`** — full (`application/json`) and abbreviated
+(`application/vnd.npm.install-v1+json`) documents alike put every version's
+artifact at **`versions[<version>].dist.tarball`**; the top level carries `name`,
+`dist-tags`, `versions`, `time` and friends. The first revision of §17 read
+`body.dist` and answered `tarball: null` for **every real check** while passing its
+own tests — the defect the owner's real-machine review caught, and the reason the
+lookup below is stated as contract:
+
+1. `versions[dist-tags.latest]` — the dist-tag **verbatim** (`v0.2.0`);
+2. `versions[<canonical version>]` — the same version canonicalized (`0.2.0`), for a
+   dist-tag that carries a `v` the version keys do not;
+3. a top-level `dist.tarball` — a **tolerance** for a non-standard registry, never
+   the primary source.
+
+The request keeps `accept: application/json` (the full packument, whose `time`
+object is what `publishedAt` reads). Switching to the abbreviated document would
+not move the tarball path at all, but it would drop `publishedAt`; that is a
+deliberate non-change, not an oversight.
 | `checkedAt` | When this answer was produced (ISO 8601), including a cached one — it names the check, not the read. |
 | `cached` | `true` when the answer comes from the cache rather than a fresh request. |
-| `error` | `null`, or `{code, message}` plus `status` for an HTTP error. Codes: `no-repository`, `fetch-unavailable`, `network-error`, `timeout`, `http-error`, `invalid-response`, `no-release`, `unparsable-tag`, `uncomparable-version`. |
+| `error` | `null`, or `{code, message}` plus `status` for an HTTP error. Codes: `no-repository`, `fetch-unavailable`, `network-error`, `timeout`, `http-error`, `invalid-response`, `no-release`, `unparsable-tag`, `uncomparable-version`. When **both** upstreams failed, the payload carries the GitHub attempt's code/message and the npm attempt's own reason as `error.npm` (`{code, message, status?}`, present only when the npm path really ran). |
 
 The decision table, which is the whole point:
 
-| Situation | `ok` | `hasUpdate` | `error.code` |
-| --- | --- | --- | --- |
-| `latest > current` | `true` | `true` | — |
-| equal, or `current` newer | `true` | `false` | — |
-| 404 (no release yet) | `true` | `null` | `no-release` |
-| tag is not a version (`nightly`, `1.2`, `1.2.3.4`) | `true` | `null` | `unparsable-tag` |
-| body is not a release object / has no `tag_name` | `true`/`false` | `null` | `invalid-response` |
-| network error, timeout, HTTP ≠ 2xx/404 | `false` | `null` | `network-error` / `timeout` / `http-error` |
-| switch off (`enabled: false`) | `true` | `false` | — |
+| Situation | `ok` | `hasUpdate` | `error.code` | `source` |
+| --- | --- | --- | --- | --- |
+| npm `latest > current` | `true` | `true` | — | `npm` |
+| npm equal, or `current` newer | `true` | `false` | — | `npm` |
+| npm unusable, GitHub `latest > current` | `true` | `true` | — | `github` |
+| npm unusable, GitHub equal/newer | `true` | `false` | — | `github` |
+| npm unusable, GitHub 404 (no release yet) | `true` | `null` | `no-release` | `github` |
+| npm unusable, GitHub tag is not a version (`nightly`, `1.2`, `1.2.3.4`) | `true` | `null` | `unparsable-tag` | `github` |
+| npm unusable, GitHub body is not a release object / has no `tag_name` | `true` | `null` | `invalid-response` | `github` |
+| npm version parses, this package's own does not | `true` | `null` | `uncomparable-version` | `npm` |
+| both fail to answer (network error, timeout, HTTP ≠ 2xx) | `false` | `null` | `network-error` / `timeout` / `http-error` (+ `error.npm`) | `github` |
+| npm unusable, no usable repository URL either | `false` | `null` | `no-repository` | `github` |
+| no `fetch` at all | `false` | `null` | `fetch-unavailable` | `null` |
+| switch off (`enabled: false`) | `true` | `false` | — | `null` |
 
 `hasUpdate: null` renders **nothing on the main page** (no banner, no error — §13.9);
 inside 「高级」 it gets one neutral sentence (「上游暂时没有可用的版本信息」), because it
@@ -3702,27 +4242,38 @@ direction:
   excludes prereleases upstream by definition and this package ships stable
   releases. Making `1.0.0-rc.1 < 1.0.0` would mean implementing full semver
   precedence for a case the data source cannot produce;
-- comparison is numeric per segment, so `0.10.0` is newer than `0.9.9`.
+- comparison is numeric per segment, so `0.10.0` is newer than `0.9.9`;
+- an npm `dist-tags.latest` that carries npm's own `v`-less spelling is compared
+  the same way; a `latest` that reads `beta`/`next`-style is not a version and
+  sends the check to the fallback rather than being guessed at.
 
 ### 17.3 Cache, timeout, and what is never cached
 
 - **TTL 6 hours** (`UPDATE_CHECK_TTL_MS`). A repeat inside the window answers the
-  cached payload with `cached: true` and performs **no** request. The cache lives
-  on the mount, so a `dsh web` restart starts fresh;
+  cached payload with `cached: true` and performs **no** request — including a
+  payload whose `source` is `github`, which is **not** re-opened by asking npm
+  again. The cache lives on the mount, so a `dsh web` restart starts fresh;
 - **`?force=1`** skips the cache — the「立即重查」button and the tests — and
   skips **only** the cache: a closed switch still answers without asking;
 - **decidable answers are cached, failures are not.** `hasUpdate: true|false` and
-  the determinate "nothing usable" answers (404, an unparsable tag) are cached, so
-  a repository without releases does not get re-asked on every page load. A
-  network error, a timeout and an HTTP error are never cached: the next request
-  tries again;
+  the determinate "nothing usable" answers (a GitHub 404, an unparsable tag) are
+  cached, so an upstream without releases does not get re-asked on every page
+  load. A network error, a timeout and an HTTP error are never cached: the next
+  request starts at npm again;
 - **timeout 5 s** (`UPDATE_CHECK_TIMEOUT_MS`), enforced with both an
   `AbortController` signal and an internal race, so even a transport double that
-  ignores the signal cannot wedge a page;
-- the transport, the clock and the two bounds are injectable through the plugin
-  config (`updateCheck: {fetch, now, ttlMs, timeoutMs}`), which is how the tests
-  drive the real route offline. A profile that declares nothing gets the shipped
-  defaults.
+  ignores the signal cannot wedge a page. It is **per upstream attempt**: a check
+  that has to fall back costs at most two timeouts, and a fallback is never
+  retried inside one check;
+- the transport, the clock, the two bounds **and the registry base address** are
+  injectable through the plugin config
+  (`updateCheck: {fetch, registry, now, ttlMs, timeoutMs}`), which is how the
+  tests drive the real route offline. A profile that declares nothing gets the
+  shipped defaults (`https://registry.npmjs.org/`). Revision 28 shares that
+  **same transport** with the download-region probe (so a profile — or a test —
+  that stubs one `fetch` stubs every outbound request this plugin can make), and
+  adds the probe's own optional bounds
+  (`downloadRegion: {probeTimeoutMs, checkTimeoutMs, ttlMs}`).
 
 ### 17.4 `PUT /prompt-setting/update-check`, and the preference file
 
@@ -3742,6 +4293,27 @@ The preference lives in **its own file**, `<DSH_HOME>/prompt-setting/preferences
 ```json
 { "updateCheck": false }
 ```
+
+**Revision 28** adds the download region to the **same** document and the same
+atomic write path (§17.6): the keys are `downloadRegion`, `downloadRegionRegistry`
+(only meaningful for `custom`) and `downloadRegionAuto` (`true` when the value was
+decided by the availability probe rather than by the user):
+
+```json
+{
+  "updateCheck": true,
+  "downloadRegion": "custom",
+  "downloadRegionRegistry": "https://mirror.example/npm/",
+  "downloadRegionAuto": false
+}
+```
+
+A document that states none of the three normalizes **byte-identically** to what
+it did before this revision (the region keys are carried through only when the
+document states them), an unknown region id or a junk address is dropped rather
+than repaired, and the switch's own write is **merged** into the document — an
+atomic write replaces the whole file, so writing only `{updateCheck}` would
+silently erase the user's region.
 
 - **not** in `overrides.json`. The switch is a fact about this installation's
   behaviour, not an override of any prompt section, and putting it in the layer
@@ -3763,14 +4335,310 @@ The preference lives in **its own file**, `<DSH_HOME>/prompt-setting/preferences
   and the user follows the link. Installing is a separate, explicitly confirmed
   route added by g-032 (§18) — and that one never restarts anything either;
 - no DSH platform version check — that is `scripts/check-compat.mjs` (g-013);
+- ~~no mirror choice and no region detection~~ **(Revision 27; superseded by
+  §17.6–§17.9 in Revision 28).** Revision 27 made the registry base address
+  injectable and stopped there. Revision 28 wires the「下载区域」preference into
+  that slot, and the detection that decides a first-visit default is
+  **availability**, never location: no IP lookup, no third-party geolocation
+  service, no dependency. The historical note is kept because it records what
+  that revision deliberately did not do;
 - no new runtime dependency: Node's built-in `fetch`, nothing else;
 - no change to any existing route's response shape. `ping`, `snapshot`,
   `overrides`, `history`, `diff`, `export`, `import` and `interpolate` answer
-  exactly what they answered before; the eighth route is additive;
+  exactly what they answered before; the eighth route is additive, and the
+  fields Revision 27 and Revision 28 add to it (`source`, `tarball`, `region`,
+  `registry`) are additive too;
 - no user data on the wire, and no per-session/per-workspace variation: the
   answer is the same for every session of one install.
 
-## 18. 「立即更新」— installing a release through the official plugin manager (g-032)
+### 17.6 「下载区域」: the three sources, and the order they are resolved in
+
+**Revision 28 (the download region, and the first-visit detection — g-043).** The
+owner asked for a choice of update **source**, in the「检查更新」card, with a
+sensible first-run default. This revision adds the preference, the two methods
+that read and write it, the detection that decides it once, and the strict
+validation of a typed mirror address. **The update check's own response shape and
+the install route's behaviour for the default source are unchanged**; what a
+region changes is *which registry the npm path asks*, which the check already
+carries (`registry`, §17.2) and the install already follows (§18.2).
+
+Three ids, and only three — `default` / `cn` / `custom` (`DOWNLOAD_REGIONS`):
+
+| `region` | The source it means | `registry` |
+| --- | --- | --- |
+| `default` | npm first, GitHub Releases when npm cannot answer — the shipped order (§17.1) | `https://registry.npmjs.org/` |
+| `cn` | The npmmirror registry | `https://registry.npmmirror.com/` (`CN_NPM_REGISTRY`, a **constant**: the option's whole promise is that this exact address is what gets asked). **Corrected 2026-10-08** — the requirement first named `mirrors.tuna.tsinghua.edu.cn/npm/`, which serves no npm registry at all (§17.9) |
+| `custom` | A base address the user typed and the Host validated | the stored address, normalized |
+
+**Source resolution order** (per check, per install — so a switch takes effect on
+the next one, with no remount):
+
+1. **`config.updateCheck.registry`** — an operator-declared base (Revision 27's
+   injectable slot). When a profile declares it, it **pins the npm base and the
+   fallback policy**: the pre-Revision-28 order stands (npm, then GitHub), because
+   a deployment-level declaration outranks a per-user UI choice;
+2. otherwise the **stored `downloadRegion`** — the user's, or a probe's;
+3. otherwise the **shipped default** (npmjs, with the GitHub fallback).
+
+The effective pair is also the **cache key** of the check: switching a region
+invalidates the cached answer, because a six-hour-old answer from the *previous*
+source being served while the card says「中国大陆」is exactly the confusion
+criterion 7 forbids.
+
+`custom` with an address that cannot be used resolves to `registry: null`, which
+**disables the npm path** rather than substituting npmjs.org — the one thing a
+silent fallback may never do. That `null` is a *statement*, and §17.2 makes it one:
+an explicitly refused source is answered as `200 {ok:false, code:
+"registry-invalid"}` with **zero outbound requests**, and the GitHub fallback is
+not taken either (g-043 review fix: `null` used to fall through
+`normalizeRegistry`'s "not a string ⇒ the default" branch and quietly ask
+npmjs.org, so the page said「自定义」while the request went to the public
+registry).
+
+**Where a `custom` address may come from.** Only from a person typing it into this
+settings page on this machine, and only through `PUT /prompt-setting/download-region`
+(§17.8). It is never read from a workspace file, an override, an exported document
+or any other per-project artifact, so a cloned repository cannot point this
+install's update traffic at an attacker's host. This is stated as a **boundary**,
+not as a mitigation: the address is validated for shape and availability, but the
+defence is that the set of people who can supply one is exactly the set of people
+who can use this machine (a single-user, local-only surface).
+
+### 17.7 `GET /prompt-setting/download-region`
+
+Reads the choice. No request is made to any registry when a region is already
+stored; with nothing stored this method also *decides* it (§17.9). Always `200`:
+
+```json
+{
+  "ok": true,
+  "region": "default",
+  "registry": "https://registry.npmjs.org/",
+  "custom": null,
+  "detected": false,
+  "stored": true,
+  "error": null,
+  "probed": false
+}
+```
+
+- `region` / `registry` are what the check will use, resolved by §17.6;
+- `custom` is the **stored** custom address whatever it resolves to (`null` for
+  the other two regions), and `error` is `{"code": "registry-invalid"}` when a
+  stored custom address is unusable — the one case the card reports as a
+  standing condition rather than a page notice;
+- **`detected: true` means the Host decided this value by the availability probe** on the
+  first visit, not the user (§17.9). It is the marker the page renders as
+  「已自动判定（该源能取到本包）」, and it may never be claimed by the client;
+- `stored` is about the **document**, not the value: an explicit「默认」has been
+  decided and is never re-decided by a later probe;
+- `probed: true` reports that this request ran the detection; a `GET` that
+  skipped it while the switch is off also carries `"skipped": true`;
+- **only a verdict that found a usable source is stored** (g-043 review fix).
+  When neither registry served the package — a timeout, a network error, a runtime
+  with no `fetch`, an offline first visit — the answer is still the conservative
+  `default`, but with `detected: false`, `stored: false`, `written: false` and
+  `"undecided": true`, and **nothing is written**: the next process probes again.
+  Persisting such a run would freeze「默认」for good (a stored region short-circuits
+  every later `GET`, past even the in-process cache) and would let the page claim
+  an automatic decision it never made. The 6 h in-process cache is unaffected and
+  is what spares one process a probe per request — it is not a decision;
+- a write that fails during the first-visit detection answers the probe's own
+  verdict plus `written: false` and `writeError` — the read never becomes an
+  error page, and nothing is re-decided from a failed write.
+
+### 17.8 `PUT /prompt-setting/download-region`, and its codes
+
+Body: `{"region": "default" | "cn" | "custom", "registry": "<address, for custom>"}`.
+
+`region` is a **shape** fact, so anything else is the route's ordinary
+**`400 invalid-region`** and nothing is written. A `custom` **address** is
+*content under validation* — one class of which is decided by a network round
+trip — so every validation failure is a **`200`** with `{ok: false, code, …}`
+for the dialog's red line, exactly like an unwritable preference file:
+
+| `code` | Meaning | What it cost |
+| --- | --- | --- |
+| `registry-invalid` | The address is not `http(s)`, or has an empty host, credentials, a query string or a fragment (§17.8.1). Also when a stored custom address is unusable. | nothing was asked |
+| `registry-unreachable` | Nothing answered within the bound — a timeout or a network error (`reason.code` says which) | one `GET` |
+| `registry-http-error` | Something answered, with a non-2xx status (`status` carries it) | one `GET` |
+| `registry-not-npm` | A 2xx whose body is not a **packument** (no `dist-tags.latest`) | one `GET` |
+| `preferences-unwritable` | The choice validated but could not be persisted | the write |
+
+A successful write answers
+`{"ok": true, "region": …, "registry": …, "saved": {…}, "effectiveFrom": "immediate", "error": null}`.
+**A refusal writes nothing**: the effective source is whatever it was, which is
+also why the page's control may not move to the option that was clicked
+(§17.10).
+
+#### 17.8.1 What a custom address must look like
+
+Strict, and deliberately stricter than the lenient normalization an injected
+profile value gets (`normalizeRegistry`), because this one gates a text field:
+
+- `http(s)://` only — a bare host, `file:`, `ftp:` and junk are refused;
+- **a host, as typed** (`http:///npm` is refused: the URL parser would otherwise
+  read `npm` as the host, a different address from the one in the field);
+- **no credentials** (`https://user:pw@mirror/`) — the host would receive them on
+  every check, and this page may not become a way to make the plugin transmit a
+  password;
+- **no query string and no fragment** — refused rather than silently stripped: a
+  user who typed one meant something by it;
+- otherwise the same address with **exactly one** trailing `/`.
+
+Availability is then decided by one bounded `GET` of `<registry>dsh-prompt-setting`
+(5 s, `REGISTRY_CHECK_TIMEOUT_MS`), which must answer 2xx **and** carry
+`dist-tags.latest` as a non-empty string. The shape checked is the real packument
+shape: there is **no top-level `dist`** in a registry document (that lesson is
+Revision 27's, §17.2, and it is why the availability probe reads `dist-tags`
+rather than a flattened field).
+
+### 17.9 The first-visit default is an availability probe, never a location
+
+With **nothing stored** — and only then — `GET /download-region` decides, in this
+order:
+
+1. one bounded `GET` of `https://registry.npmjs.org/dsh-prompt-setting`
+   (`REGION_PROBE_TIMEOUT_MS` = 2.5 s). The document must answer **2xx** *and*
+   carry a non-empty `dist-tags.latest`; a `404`, an HTML error page, a login
+   page, a timeout and a connection error are all "no". ⇒ `default`;
+2. only if npmjs did not serve the package, the same request against
+   `https://registry.npmmirror.com/dsh-prompt-setting` ⇒ `cn`;
+3. neither served it ⇒ `default`, the conservative fallback.
+
+Then the verdict is **written as an explicit choice** with
+`downloadRegionAuto: true`, so the next visit — and the next restart — reads a
+decision instead of re-deciding. A user's own choice is never overwritten.
+
+**The question is availability, not reachability, and that distinction is the
+whole of the 2026-10-08 correction.** The probe used to read
+`https://registry.npmjs.org/-/ping` and count *any* HTTP answer as success, which
+means a host that answers `404` for every package — a host with no npm registry
+behind it at all — was read as the *best* available source. The probe now issues
+the same request the check itself issues, against the same package, and applies
+the same shape rule (`dist-tags.latest`), so「这个源可用」means exactly one thing
+in both places. It also has one fewer moving part: there is no `/-/ping` path, no
+liveness constant and no second notion of "the registry is fine" anywhere in this
+module.
+
+2.5 s per probe, not 1.5 s, because a **packument is heavier than a ping**: measured
+on this machine, npmjs answers the document in ~0.9 s warm (1.5 s cold) and
+npmmirror in ~0.2 s. The cap still satisfies「短超时」, and the worst case — both
+probes timing out one after the other — is 5 s, on a request the page is not
+waiting to paint for (§17.10).
+
+Five properties are part of the contract, not of the implementation:
+
+- **no IP lookup and no third-party service.** The only two addresses the
+  detection can ask are the two registries themselves; there is no dependency,
+  no geo database and no request to a location API. (A user behind a proxy is
+  served by npmjs, so「默认」is both the safe and the correct answer there — the
+  false-positive case a location guess would get wrong.)
+- **bounded.** Each probe is capped at 2.5 s, so the worst case is 5 s, and
+  validating a typed address is capped at 5 s. `AbortController` plus an internal
+  race, exactly as the check does (§17.3): even a transport that ignores the
+  signal cannot wedge the request.
+- **cached, and one probe at a time.** A verdict is reused for 6 h
+  (`REGION_PROBE_TTL_MS`) and concurrent asks share the single in-flight probe.
+  The probe deliberately does **not** touch the check's own 6 h answer cache
+  (§17.3): the two answer different questions, and a probe is not a check.
+- **never on the page's critical path.** The detection runs inside its own
+  request, never during mount, so the settings page paints first and the verdict
+  arrives asynchronously — and with the update-check switch **off** it does not
+  run at all: no stored region, switch off ⇒ no outbound request, the
+  conservative `default` answered and **not persisted** (there is nothing
+  detected to write). §17.4's「off means zero outbound requests」keeps holding.
+- **a failure is always a value.** A timeout, a network error, a runtime with no
+  `fetch` and an unwritable preference file all degrade to `default` with
+  `ok: true`. Nothing here throws at a route.
+
+**Measured on this machine (2026-10-08), across candidate mirror hosts.** These are
+facts about the upstreams, not about the implementation, and the first two are why
+the requirement itself was corrected:
+
+| Source | `GET <host>/dsh-prompt-setting` | Time | Serves this package |
+| --- | --- | --- | --- |
+| `registry.npmjs.org` | `200`, `dist-tags.latest` = `0.1.5` | 937 ms–1.5 s | ✅ |
+| `registry.npmmirror.com` | `200`, `dist-tags.latest` = `0.1.5` | 64–210 ms | ✅ |
+| `mirrors.tuna.tsinghua.edu.cn/npm` | **`404`** | 346 ms | ❌ — and `express` is `404` too |
+| `mirrors.ustc.edu.cn/npm` | **`404`** | — | ❌ |
+| `mirrors.cloud.tencent.com/npm` / `repo.huaweicloud.com/repository/npm` | `200` | 509 ms / 712 ms | ✅ (candidates, not chosen) |
+
+- **The Tsinghua host is not a mirror of anything npm-shaped.** `/npm/`,
+  `/npmjs/` and `/npm-registry/` all answer `404`, `/help/npm/` is `404`, and the
+  site's remaining npm-era path is `/nodejs-release/`. It is therefore not "a
+  mirror that has not picked this package up" — it is a host that serves no npm
+  registry, which is why §17.6's `cn` registry is `registry.npmmirror.com`: a
+  source has to be able to answer the check, and "reachable" alone was never
+  evidence that it could;
+- **the discriminator is the package document, and the ping-era rule failed it.**
+  `mirrors.tuna.tsinghua.edu.cn/npm/-/ping` answers `404` (nginx), i.e. a host
+  that serves nothing still *answers* — so under「any HTTP answer counts」it read
+  as the best available source and would have been chosen as「中国大陆」. That is
+  the defect this correction removes, and `test/update.test.mjs` freezes it: a
+  probe transport that answers `404` for the document must decide `cn` when the
+  mirror serves it, never `default`;
+- **「中国大陆」now works end to end.** With `PUT {region:"cn"}` stored, the live
+  check answered `200 {ok:true, source:"npm", region:"cn", latest:"0.1.5",
+  tarball:"https://registry.npmmirror.com/dsh-prompt-setting/-/dsh-prompt-setting-0.1.5.tgz"}`
+  — the npmmirror registry serves this package, so both the check and the install
+  now take the mirror's own artifact. The same address passed the custom-address
+  validation (`200 {ok:true}`), while `https://mirrors.tuna.tsinghua.edu.cn/npm`
+  was refused there with `registry-http-error` (`status: 404`) — the validation and
+  the probe apply the *same* rule, so a source that cannot serve the package
+  cannot be selected either way;
+- **what an unusable chosen source does** (the rule, not the Tsinghua case). With
+  「中国大陆」or「自定义」selected and the source unable to serve the package, the
+  check answers `200 {ok:false, error.code: "registry-unavailable"}` with the
+  region, the address and the underlying reason — the structured error of §17.6,
+  with **no** fallback to npmjs.org or to GitHub. That is the intended behaviour
+  (the user asked for that source), and it is why the card reports a mirror's
+  failure instead of quietly showing the default's answer;
+- **live run of the review fix.** With `downloadRegion: "custom"` and an unusable
+  saved address (`mirror.example`) in `preferences.json`, a real mount answered
+  `200 {ok:false, error.code:"registry-invalid", source:null, region:"custom",
+  registry:null}` with **zero outbound requests** (a counting wrapper around the
+  real `fetch` recorded none) — the refusal reaches nobody, not npmjs.org and not
+  GitHub;
+- **live runs.** `detect()` against the real network decided `default`
+  (`npmReachable: true`) in **866 ms**; the same detector with npmjs made
+  unreachable decided `cn` (`cnReachable: true`) in **82 ms**; a first visit on a
+  fresh `$DSH_HOME` answered `200 {"region":"default","detected":true}` in
+  **565–1170 ms** and wrote
+  `{"updateCheck":true,"downloadRegion":"default","downloadRegionAuto":true}`.
+
+### 17.10 Client surface
+
+In the「检查更新」card (`data-region="update-setting"`, §17.2), one more row:
+`data-region="download-region"`, carrying `data-download-region="<id>"`,
+`data-download-region-detected="true|false"` and
+`data-download-region-stored="true|false"`, with the control
+`data-action="update-region-select"` — a native `select` over exactly the three
+ids (`默认` / `中国大陆` / `自定义`) and nothing else. Choosing `default` or `cn`
+sends the `PUT` immediately; choosing `custom` opens the dialog and **writes
+nothing** until it is submitted.
+
+- the value shown is the **Host's** stored region, never the option that was just
+  clicked: a refused write visibly leaves the old source in force;
+- `detected: true` renders `data-role="update-region-auto"` — the
+  「已自动判定（该源能取到本包）」line — so a default the page chose never looks like one
+  the user chose;
+- a stored `custom` address the Host cannot use renders
+  `data-role="update-region-unusable"` (`data-update-region-error="<code>"`)
+  beside the control. It raises **no** page notice: it is a standing condition,
+  not the outcome of an action;
+- the「自定义」dialog is `data-region="region-dialog"` with the field
+  `data-role="region-input"`, the actions `data-action="region-save"` /
+  `data-action="region-cancel"`, and — only while a validation failed —
+  `data-role="region-error"` carrying `data-region-error="<code>"` rendered in
+  the error colour. **The dialog stays open on a refusal**, the saved value is
+  untouched, and the failure is never reported through the page notice, which
+  would render behind the overlay;
+- a successful switch **drops the previous check's fact** (the banner) and
+  re-checks once: the old answer came from the old source, and leaving it up
+  would let 「立即更新」install an artifact the new source may not carry.
+
+## 18. 「立即更新」— installing a release through the official plugin manager (g-032; the npm install spec in Revision 27, g-042)
 
 ### 18.1 What it is, and what it deliberately is not
 
@@ -3799,6 +4667,11 @@ as the positive:
   `approvedBuilds`, so nothing writes the profile's `allowBuilds`. Approving a
   build script is a decision that must be made by a person looking at the script,
   not a side effect of pressing an update button;
+- **never an unvetted spec.** The install spec comes from the check's own answer
+  and from nowhere else; on the npm branch it must also pass an explicit
+  `http(s)`/`.tgz` gate before pnpm ever sees it, and on the GitHub branch it is
+  built from the checked tag and version (§18.2). A value that fails the gate is a
+  named refusal, not an install;
 - **never a `link:` overwrite.** A profile whose `dsh-prompt-setting` dependency
   is a local path is a development working copy; installing over it would replace
   that link with a published package and leave no way back. That case is refused
@@ -3816,17 +4689,40 @@ The tag is a **guard**, not an input: when it is present it must equal the tag
 the current update check reported, and a mismatch is `400 invalid-request`. The
 install spec is always derived from the checker's own answer — the same cached
 answer the banner rendered — so「提示的版本 = 安装的版本」holds even though the
-browser is untrusted:
+browser is untrusted. **Revision 27: which spec that is now follows the check's
+`source` (§17.2) — and neither branch is ever taken from the request:**
 
-```
-https://github.com/zangxx66/dsh-prompt-setting/releases/download/<tag>/dsh-prompt-setting-<version>.tgz
-```
+| `source` | Install spec | Rule |
+| --- | --- | --- |
+| `"npm"` | the check payload's `tarball` — the packument's `versions[<version>].dist.tarball` (§17.2), verbatim | it must be a string that parses as an absolute `http(s)` URL whose path ends in `.tgz`. A payload that names **nothing** is refused `asset-missing`; a value that is present but is not such a URL (`file:`, `ftp:`, `data:`, `javascript:`, a `.zip`/`.tar.gz`, a relative path) is refused `asset-unverified`. **Neither is ever handed to pnpm** |
+| `"github"`, or absent (a pre-Revision-27 Host) | the release asset | `https://github.com/zangxx66/dsh-prompt-setting/releases/download/<tag>/dsh-prompt-setting-<version>.tgz` |
 
-`<tag>` is used verbatim (it is a path segment, and `v0.1.2` and `0.1.2` are
-different asset paths); every segment is `encodeURIComponent`-ed and the result
-is parsed as a `URL`, so no request input can escape its segment. The `.tgz`
-suffix is not decoration: DSH refuses a URL that is neither a git host nor a
-tarball, and pnpm needs the extension to treat it as one.
+**Revision 28: the spec follows the download region too.** The check's payload is
+produced under the region in force (§17.6), so with 「中国大陆」or a valid
+「自定义」selected, the `tarball` above is the **mirror's** own
+`dist.tarball` — the install asks the source the user chose, and no second
+resolution happens here. A mirror that cannot answer produces the check's
+structured `registry-unavailable` and no version at all, so the install refuses
+with the existing `no-update` sentence rather than installing from somewhere the
+user did not pick: nothing is ever silently re-sourced.
+
+**Both npm refusals still carry a clickable manual route** (revision 27 review
+fix). An npm answer's `releaseUrl` is always `null` (§17.2), so a refusal that only
+echoed it would leave the person with nothing to click. The `manual.releaseUrl` of
+these two refusals is therefore, in order: the check's own `releaseUrl` when it has
+one, else `https://github.com/{owner}/{repo}/releases/tag/{tag}`, else the
+package's npm page (`https://www.npmjs.com/package/dsh-prompt-setting`). The first
+two are exactly what a GitHub-branch refusal has always sent, so no client copy
+changes and g-043's labelling work is unaffected.
+
+The `.tgz` requirement is not decoration in either branch: DSH refuses a URL that
+is neither a git host nor a tarball, and pnpm needs the extension to treat it as
+one. In the GitHub branch `<tag>` is used verbatim (it is a path segment, and
+`v0.1.2` and `0.1.2` are different asset paths) and every segment is
+`encodeURIComponent`-ed before the result is parsed as a `URL`, so no request
+input can escape its segment. In the npm branch the URL is upstream's own string:
+it is validated and then passed through unchanged, and the profile's literal
+"already installed" comparison (§18.2, below) works on that same string.
 
 **Why a tarball.** This repository's package carries a `prepare` script, and
 pnpm's build-script approval gate is enforced on the **git** fetch path
@@ -3915,10 +4811,15 @@ about the Host: no request body or query can set it.
 | --- | --- |
 | `installer-unavailable` | No `pluginManager` service in this profile, the profile directory could not be resolved, or the profile's `package.json` could not be read/parsed (so the install form cannot be checked). Nothing was installed, and nothing was written. |
 | `development-link` | The profile holds this package as `link:`/`file:`/a path (§18.1, A1). |
-| `no-update` | The last check confirmed no newer release, or could not decide. |
+| `no-update` | The last check confirmed no newer version, or could not decide. |
 | `invalid-request` | The body's `tag` disagrees with the check's tag, or a `requestId` is missing/empty/absurdly long. |
-| `asset-missing` | The release asset is not there (`404`/`410`). |
-| `asset-unverified` | The asset probe could not confirm it (`401`/`403`), so nothing was installed. |
+| `asset-missing` | The artifact the check named is not there: the release asset (`404`/`410` from the probe, or pnpm's `ERR_PNPM_FETCH_404`/`E404`), **or** an npm document that names no `dist.tarball` at all (Revision 27). |
+| `asset-unverified` | The artifact could not be confirmed: the asset probe answered `401`/`403`, **or** — Revision 27 — the npm document's `dist.tarball` is not an `http(s)` `.tgz` URL. Nothing was installed either way. |
+
+The two artifact codes keep their meanings and their sentences; Revision 27 only
+widens *which upstream artifact* they can be about, and the sentence names that
+upstream (a registry tarball reads "the npm registry's tarball for vX.Y.Z …"
+instead of "the release has no … asset").
 
 **Why the route answers before the install settles.** One install can block for
 the profile lock (measured worst case ~2 minutes) plus pnpm's silence timeout
@@ -3928,10 +4829,11 @@ returns a `requestId` as soon as the install is *started*, and the page polls
 official manager deletes a settled request.
 
 **What is checked before anything is started**, in order: the update check's
-answer (cached, so zero outbound requests), the tag guard, whether an install is
-already running, the plugin manager's presence, the profile directory, the
-profile manifest (readable? which install form?), and one `HEAD` against the
-release asset.
+answer (cached, so zero outbound requests), the install spec's own admissibility
+(Revision 27: the npm `dist.tarball` gate above), the tag guard, whether an
+install is already running, the plugin manager's presence, the profile directory,
+the profile manifest (readable? which install form?), and one `HEAD` against that
+spec.
 
 Two of those checks **fail closed**, because "I could not find out" is not
 evidence that installing is safe:
@@ -3943,8 +4845,8 @@ evidence that installing is safe:
   readable answer, and the install proceeds (it is what restoring a real install
   means);
 - the `HEAD` is a **shortcut, never a gate**. Only two answers refuse:
-  **`404`/`410` ⇒ `asset-missing`** (the release carries no such asset — the state
-  of every release published before this feature existed) and **`401`/`403` ⇒
+  **`404`/`410` ⇒ `asset-missing`** (the artifact is not there — the state of
+  every release published before this feature existed) and **`401`/`403` ⇒
   `asset-unverified`** (it cannot be fetched anonymously). **Every other answer —
   `500`, `429`, `405`, a redirect that never resolved, a throw, no `fetch` at
   all — means "I could not find out" and must not block an install**: the install
@@ -4051,7 +4953,7 @@ verbatim, and every one has its own sentence:
 
 | Code | When |
 | --- | --- |
-| `asset-missing` | A `404`/`410` (from the probe or from pnpm's `ERR_PNPM_FETCH_404`/`E404`). **The expected outcome for a release with no asset** — e.g. a release published before this feature. |
+| `asset-missing` | A `404`/`410` (from the probe or from pnpm's `ERR_PNPM_FETCH_404`/`E404`), or an npm document that names no `dist.tarball` (Revision 27). **The expected outcome for a release with no asset** — e.g. a release published before this feature. |
 | `build-blocked` | pnpm's build-script gate: `ERR_PNPM_IGNORED_BUILDS`, "Ignored build scripts". |
 | `network` | `ENOTFOUND`/`ECONNRESET`/`ETIMEDOUT`/`ECONNREFUSED`/`EAI_AGAIN`/`ERR_PNPM_META_FETCH_FAIL`/… or a probe that could not answer. |
 | `pnpm-missing` | The manager reported `pnpm-missing` (`ENOENT` running pnpm). |

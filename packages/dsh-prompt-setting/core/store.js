@@ -23,7 +23,7 @@
  * @module dsh-prompt-setting/core/store
  */
 
-import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
@@ -199,8 +199,9 @@ export function historyPath(configPath) {
  * or duplicated) is `null` too, because a fabricated digest would show up as a
  * false「页面版本过期」.
  * @param clientPath - the bundle path (`index.js` resolves it from its own URL).
- * @returns `{hash, size, mtime}` — 8 hex digits, the region's UTF-16 code-unit
- *   length and the file's mtime as an ISO string — or `null`.
+ * @returns `{hash, size, mtime, chunks}` — 8 hex digits, the region's UTF-16
+ *   code-unit length, the file's mtime as an ISO string, and (g-045) the same
+ *   three fields for every chunk file beside it — or `null`.
  */
 export function clientBuildInfo(clientPath) {
   try {
@@ -208,10 +209,67 @@ export function clientBuildInfo(clientPath) {
     const stats = statSync(clientPath);
     const fingerprint = fingerprintOf(raw);
     if (fingerprint === null) return null;
-    return { hash: fingerprint.hash, size: fingerprint.size, mtime: stats.mtime.toISOString() };
+    return {
+      hash: fingerprint.hash,
+      size: fingerprint.size,
+      mtime: stats.mtime.toISOString(),
+      // g-045: the main digest cannot see a chunk — those bytes are not in the
+      // main factory's `toString()` — so the same answer carries the host's
+      // digest for every chunk file it really serves, in file-name order.
+      chunks: clientChunkStamps(dirname(clientPath)),
+    };
   } catch {
     return null;
   }
+}
+
+/**
+ * The chunk file name the client module loader accepts (g-045).
+ *
+ * A chunk must be a flat file next to `client.js`: the loader's own pattern
+ * carries no `/`, and it resolves `/plugins/<pkg>/<file>` to
+ * `join(dirname(clientPath), file)`. This is the host-side twin of that rule —
+ * a name it rejects is a name the browser could never fetch.
+ */
+export const CLIENT_CHUNK_PATTERN = /^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$/;
+
+/**
+ * Fingerprint every chunk file sitting next to the main bundle (g-045).
+ *
+ * Each chunk carries the same marker pair as `client.js`, so the host digests
+ * exactly the bytes the page digests out of `chunkFactory.toString()`. A file
+ * whose markers are unusable is **omitted**, never reported with a fabricated
+ * digest: the page would read a made-up answer as「不一致」and send the reader
+ * chasing a stale bundle that is not there. An unreadable directory is an empty
+ * list, which the page reads as an old host.
+ * @param clientDir - the directory `client.js` lives in.
+ * @returns `[{name, hash, size, mtime}]`, sorted by file name.
+ */
+export function clientChunkStamps(clientDir) {
+  let names;
+  try {
+    names = readdirSync(clientDir);
+  } catch {
+    return [];
+  }
+  const stamps = [];
+  for (const name of names.filter((entry) => CLIENT_CHUNK_PATTERN.test(entry)).sort()) {
+    try {
+      const path = join(clientDir, name);
+      const raw = readFileSync(path, 'utf8');
+      const fingerprint = fingerprintOf(raw);
+      if (fingerprint === null) continue;
+      stamps.push({
+        name,
+        hash: fingerprint.hash,
+        size: fingerprint.size,
+        mtime: statSync(path).mtime.toISOString(),
+      });
+    } catch {
+      // An unreadable chunk is simply not claimed — see the contract above.
+    }
+  }
+  return stamps;
 }
 
 /**

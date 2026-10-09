@@ -6124,3 +6124,484 @@ CSS 语义上 1–3 合起来等价于"本 tab 的高度 ≤ 视口、内容只�
 - `npm publish` / `git tag` / `git push` 未做（人工 gate）；提交由主管统一收口，本轮不 commit；
 - README 徽章的 shields.io 在线渲染未目视（离线），只核对了源文本；
 - 只改了表示「本包当前版本」的字面量，无任何产品逻辑改动 ⇒ 无行为回归面。
+
+---
+
+## 122. g-045 阶段一：`client.js` 拆出包内 chunk（「版本历史」按需加载），构建戳覆盖到 chunk（2026-10-08，基线 `e54d1d5` 工作区）
+
+目标 g-045 阶段一：把 10249 行的单文件客户端拆成「主入口 + 包内 chunk」，**不引入构建步骤、不新增运行时依赖**，先打通机制并迁一个重块作样板。阶段二（无状态层与其余 51 个渲染函数）不在此列。
+
+### 一、形态：DSH 原生 chunk，不是自写拼接构建
+
+调研（`card-3812ad36`）确认 DSH 客户端模块系统原生支持「单入口 + 包内 chunk」，且官方已有两个先例
+（`dsh-client-ui-sidebar-terminal` 的 `lib/client.js` + `lib/client.terminal.js`、
+`sidebar-documentpreview` 的 `client.excel.js` / `client.pdf.js`）。落地要点：
+
+- chunk 文件名必须匹配 `^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$`（**不含 `/`**），且必须**平铺**在 `client.js` 同目录；
+- 主入口用 `require.async('./client.history.js')` + `React.lazy` 按需取；
+- chunk 自己 `window.__ModuleLoader__.load({ id: 'dsh-prompt-setting', chunk: 'client.history.js', factory })`；
+- **方向必须是 DAG**：主 → chunk 走 `require.async`（异步），chunk → 主走 `require('dsh-prompt-setting')`（此时主 factory 已物化）。循环依赖在 loader 里是**致命错误**（`require cycle … cannot deliver partial exports`），不是警告。
+
+`package.json` 的 `files` 因此改为通配 `client.*.js`（对齐官方 `lib/client.*.js` 写法）：新增 chunk 不需要改 manifest。
+`core/prepare.js` 的 `files` 自检原先只认字面路径与目录，本轮补上**模式条目**分支（`FILES-GLOB`：按包根匹配，匹配不到即 FAIL）——
+否则一个正确的通配写法会被发布门禁判成「文件不存在」，把好包挡在门外。
+
+### 二、指纹：主 factory 摘要 + chunk 清单 + 每 chunk 实测摘要
+
+**问题**：`factory.toString()` 看不到 chunk 的字节，拆分后「改了 chunk 而戳不变」＝静默假「一致」。这是本次最关键的隐性破坏面。
+
+落地（三层，全部有负向对照测试）：
+
+1. **每个源文件自带一对 marker**（主文件与每个 chunk 各一对，位于各自 factory 体内）。host 对文件求 region 摘要，页面侧对
+   `chunkFactory.toString()` 求同一段 region —— 与主文件完全同构，因此单个 chunk 的摘要口径天然一致；
+2. **主文件 region 内嵌清单 `CHUNK_STAMPS`**（`{name, hash, size}`）。它在 region 内 ⇒ 属于主戳：新增/改名/删除/手工改清单都会移动**主**摘要；
+3. **host 在 ping 里报 `clientBuild.chunks`**（主机对每个 chunk 文件求的 region 摘要），页面逐项比对清单，并把**自己真正加载过的** chunk 自报摘要
+   （chunk factory 里的 `SELF_BUILD`，经 exports 回传给主入口）一并比对。
+
+三态语义保持 `data-build-match` 的 `true` / `false` / `unknown`，新增 `data-build-loaded`（已加载 chunk 的 `name:hash` 列表）：
+主摘要不一致、任一 chunk 摘要不一致 ⇒ `false`；**两边 chunk 清单对不上（覆盖不全）或列表格式非法 ⇒ `unknown`，绝不显示「一致」**；旧 host 不带 `chunks` 字段时保持拆分前的答案（不加载 chunk 时按主摘要判，已加载过 chunk 后变 `unknown`）。
+清单与磁盘的一致性由 `test/build.test.mjs` 断言兜底，`scripts/client-chunks.mjs`（`--write` 就地重写清单，无参数则校验）是唯一的修复入口 —— 它是开发期工具而非构建步骤：chunk 与主文件本身就是发布物。
+
+### 三、开发期限制（务必记住）
+
+**chunk 的 URL 用的是 owner（`client.js`）的 rev**，而该 rev 由 `client.js` 的 mtime/ctime/size 推导
+（`dsh-client-modules` 的 `artifactRevision` + `chunkUrl`）⇒ **只改 chunk、不碰 `client.js` 时，浏览器不会换新 chunk**（同一 URL + immutable 响应）。
+开发期请连带 `touch client.js` 或重启宿主；发布期不会发生（改 chunk 必然意味着清单也要改，而清单在主文件 region 内）。
+另：本机 `~/.npm/_cacache` 有 root-owned 文件，`npm pack` 需 `--cache <可写目录>`（同 §121 环境注记）。
+
+### 四、harness 与断言
+
+`test/client.test.mjs` 的 `load` stub 原先只保留最后一次注册、require stub 对未知名字直接抛错 —— 拆分后这两处不改就是**全部测试挂**。本轮改为：
+收集多次注册（按 `<id>/<chunk>` 索引）、`require.async` 从磁盘读 chunk 并在**同一 sandbox** `vm.runInContext` 后返回其 exports、
+`require('dsh-prompt-setting')` 解析到主模块 exports、`React.lazy` / `Suspense` 双实现（同步 thenable，使既有同步 `expandTree` 断言全部保持原样）；
+文本级断言（版本字面量 / `github.com` / 无 JSX）扩到全部 chunk。`test/build.test.mjs` 的 region 断言按新语义重述：
+不再宣称「region 覆盖整个 factory body / size > 100000」，改为「region 覆盖主 factory 首尾 + 清单在内」，保留「两个标记各恰好一次、有序」不变式，并新增 chunk marker、清单一致性、单字符改动的负向对照。
+
+### 五、验收
+
+- `cd packages/dsh-prompt-setting && node --test` ⇒ **731 pass / 0 fail / skipped 0**（基线 710；新增 21 条：chunk 机制/按需加载/失败路径/`require` 主入口/指纹 chunk 维度/清单与发布面/订阅通知/发布门禁/目录级 glob/两条降级分支）；
+- 体积（**收口后实测**，`wc -l -c client.js client.history.js`）：`client.js` 10249 行 / 484930 B → **9584 行 / 456680 B**（净减 665 行 / 28250 B）；`client.history.js` **1163 行 / 50497 B**（约 49.3 KB 由首屏改为按需加载）；两者合计 10747 行 / 507177 B —— 总量略增，因为主文件里多了 chunk 边界机制与清单（约 350 行），换来的是「版本历史」不再进首屏；
+- `npm pack --dry-run --cache /tmp/...` ⇒ chunk 在包内（`client.history.js`），`scripts/client-chunks.mjs` 随包发布，26 个文件；
+- `node scripts/prepare.mjs` ⇒ **21 项通过**（含 `FILES-GLOB: files: client.*.js（1 项：client.history.js）` 与新增的 `CHUNK-STAMPS` 门禁）；
+- 零新依赖（`dependencies: {}`）、零构建步骤（`test/host.test.mjs` 两条门禁继续绿）。
+
+### 六、真机回归：`data-build-loaded` 曾经滞后（返工记录）
+
+**缺陷**（主管真机端到端发现，离线 harness 测不到）：`recordLoadedChunk()` 写在 `React.lazy` 的 resolve 回调里，即**渲染期**；
+而 `data-build-loaded` 与 `buildVerdict()` 的第三重循环都在**渲染 root 容器**时求值。chunk 加载只让 Suspense 子树重渲染，
+不会让 root 重渲染 ⇒ 停在「版本历史」tab 的读者会看到 `data-build-loaded="none"`、`data-build-match="true"`，
+要切一次 tab（或任何别的 state 变化）才更新。后果不只是显示不准：**第三重校验——唯一能发现「浏览器实际运行的 chunk 字节 ≠ 宿主 serve 的字节」的那一重——在最需要它的场景下不生效**。
+
+**修复**：给 root 加一个 `useSyncExternalStore(subscribeChunkLoads, chunkLoadRevision, chunkLoadRevision)` 座位
+（与既有的 locale revision 座位并列，仍在 `useState` 之前，hooks 顺序稳定）。`loadedChunks` 变化时 `chunkLoadCount += 1`
+并通知订阅者；快照是**计数器**而不是 Map/新数组（`useSyncExternalStore` 要求渲染间稳定的值）。
+通知走 `queueMicrotask`（引擎没有时同步回退）——`recordLoadedChunk` 在渲染期被调用，直接 setState 会是「渲染期更新」。
+
+**真机证据**（临时 `DSH_HOME` + `dsh web --port 3099` + headless Chrome over CDP；脚本用 `Fetch` 域在 Response 阶段改写 chunk 响应）：
+
+| 场景 | 观察 | 结论 |
+| --- | --- | --- |
+| 正常打开「版本历史」，**不切 tab** | 打开前 `data-build-loaded="none"` / `match="true"`；打开后 `client.history.js:2887cc6c` / `true`，`data-active-tab="history"` | 修复生效；chunk 请求真实发生（`/plugins/dsh-prompt-setting/client.history.js?rev=11d5d7dab4ad`） |
+| 把 chunk 响应在**指纹区间内**加 49 字节，再不切 tab | `data-build-loaded="client.history.js:67d2092d"`（运行字节的真实摘要）、`data-build-match="false"` | 第三重校验真的生效（改坏就红），且随 chunk 到达即时更新 |
+| 阻断 chunk 请求 | `data-region="chunk-failure"` 出现、`data-render-state="ok"`、`data-build-loaded="none"` | 失败降级可读、不白屏、不谎报已加载 |
+
+**发布门禁**：`scripts/prepare.mjs` 新增 `CHUNK-STAMPS` 一项（既有 20 项一字未动，共 21）：清单与磁盘 chunk 摘要不符即
+`prepare` 失败并提示 `node scripts/client-chunks.mjs --write`。理由：「改了 chunk 忘了 `--write`」是这套机制里最容易发生、
+后果是用户侧指纹失真的动作，而测试只有有人跑测试时才拦得住 —— `prepare` 是安装/发布路径上的门。
+
+### 七、未验证项
+
+- 真机只覆盖了 dev 宿主（临时 `DSH_HOME`）与 headless Chrome：**「只改 chunk 不碰 `client.js` 时 HMR 不换新」仍未做端到端实测**
+  （由 `artifactRevision`/`chunkUrl` 的代码路径推出，§三 已标注为限制）；失败卡片只有 DOM 级核对，无视觉截图；
+- 阶段二的其余重块（总览/作用域树/传输/mine、无状态层）未迁，属另一个目标。
+
+### 八、收口补丁（独立评审 5 条）
+
+- **F1 · 文档数字回填。**（五）里原来的体积与用例数是返工前的快照。已回填为收口后实测：`client.js`
+  **9584 行 / 456680 B**、`client.history.js` **1163 行 / 50497 B**、`node --test` **731 pass**（新增 21 条）。
+  依据：量化证据一旦滞后，后来人就没法用它判断「这是哪一版字节」，而本次机制的全部价值正是自证版本。
+- **F2 · 契约与代码对齐。** §14.3 原写「`chunks` 存在但非法一律 unknown」，实现把 `chunks: null` 当「老宿主无清单」
+  （未加载 ⇒ `true`、已加载 ⇒ `unknown`）。**选择改契约而不是改实现**（保留对旧宿主的兼容意图）：`absent` 与
+  `null` 同为「无清单」；`[]` 是「我确实不 serve chunk」的**声明**，按清单逐项比对；只有既非 absent/null、
+  又不是 `{name, hash}` 字符串数组时才整份拒绝 ⇒ `unknown`。补断言锁住 `null` 与 `[]` 的区别（后者与声明了 chunk 的
+  清单必然对不上 ⇒ `unknown`）。
+- **F3 · 不可达回退不再是同步 flush。** `notifyChunkLoad` 在 `queueMicrotask` 不可用时原为同步 flush —— 那等于允许
+  「渲染期更新」，正是延后通知要避免的东西。改为 `setTimeout(flush, 0)`（同样异步、同样保证在本次渲染之后）。
+  真实引擎都有 `queueMicrotask`，这条不可达；**正因为不可达才更该写对**。
+- **F4 · 目录级 glob。** `core/prepare.js` 的 `files` 模式校验原先只按包根匹配，`core/*.js`（以及官方的
+  `lib/client.*.js` 写法）会误报 `FAIL`。改为按最后一个 `/` 拆出目录、**在该目录内**匹配（目录部分本身含通配符时
+  回退为整路径匹配），并补测试：`core/*.js` 命中 `core/a.js`、不命中 `b.txt`，目录不存在仍 `FAIL`。
+- **F5 · 两条降级分支补测。** ① `require.async` 缺失（loader 没有 chunk 通道）；② `HAS_REACT_LAZY === false`
+  （React 无 `lazy`/`Suspense`）。各一条：页面照常渲染、该 tab 渲染可读卡片、`data-build-loaded` 保持 `none`、
+  且**不发请求**（没有通道就不该发）。
+
+---
+
+## 123. g-046 阶段二：其余三个 tab 的渲染器迁成按需 chunk（2026-10-08，基线 `355ad3f` 工作区）
+
+目标 g-046 阶段二：复用 g-045 已交付并验证的 chunk 机制，把展示层里**尚未进首屏**的大块继续外提。**不引入构建步骤、不新增运行时依赖、不改状态机结构。**
+
+### 一、切分：能拆的只有三个非默认 tab
+
+对**全部**顶层渲染函数做了闭包测算：逐个判断它是否在首屏 `renderSection` 的同步调用链上。可复现口径（本 commit 实测）：
+
+```bash
+grep -h "^ *function [A-Za-z0-9_$]*(t, m, a)" client.js client.*.js | wc -l   # ⇒ 28
+#   主文件 13 + client.overview.js 4 + client.transfer.js 2 + client.advanced.js 4 + client.history.js 5
+```
+
+（签名带额外参数的变体，如 `renderDownloadRegion(t, m, a, u)`，不计入上表；阶段一 §122 沿用的「51 个」取自结构测绘卡对**全部顶层定义**的另一种统计口径，与本条命令不可互推 —— 本 commit 起以本条为准。）
+结论是「按 tab 拆」只有三个候选：
+
+| 新 chunk | 装了什么 | 行数（`wc -l`，含 shared 解构与 lazy 样板） |
+| --- | --- | --- |
+| `client.overview.js` | `renderOverviewPanel` / `renderSectionsView` / `renderFilters` / `sectionRow` / `renderFullView` | 577 |
+| `client.transfer.js` | `renderBackupTab` / `renderTransferPanel` / `importStatusLabel` | 264 |
+| `client.advanced.js` | `renderAdvancedTab` / `renderOverridesList` / `renderUpdateSetting` / `renderDownloadRegion` / `renderLayerReset` / `regionNoteKey` | 502 |
+
+留在主文件的骨架（首屏第一帧就会走到）：`renderSection`、`renderPluginVersion`+`renderStatusDetail`、`renderStatusLine`、
+`renderSession` 与作用域选择器一族（`scopeSection` / `scopeTreeElement` / `scopeGroupParts` / `pinnedSessionButton` / 两个 glyph / `scopeRowStyle` / `focusVisibleOf`；
+`awk '/^    function focusVisibleOf\(/,/^    function renderSession\(/' client.js | wc -l` ⇒ 643 行）、
+`renderUpdateNotice` + `renderUpdateApplyStatus`、`renderConfirm` / `renderRegionDialog`，以及默认 tab 的 `renderMinePanel`。
+
+### 二、被否的方案（逐条给理由）
+
+- **「我的 Prompt」(mine) 不做 chunk。** 它是设置页的**默认 tab**：第一帧就要渲染。做成 chunk 只会在首屏代码前加一次网络往返，
+  并把一次失败取件变成「默认 tab 空白」。判据 2 的「打开设置页只请求主文件」正是这条。
+- **无状态层（常量 / `ERROR_TEXT` / zh+en 两份字典 / token / `Fx*` 原子 / 纯函数群）留主文件。** 外提必须同时满足「首屏不因此多一次阻塞等待」与
+  「共享 chunk 失败可读降级」：而 factory 是**同步物化**的，主文件渲染第一帧就需要这些值，`require.async` 只能异步 ⇒ 条件①**结构上不可满足**；
+  条件②更糟——共享 chunk 失败会让**整页**既无文案表也无 token，而 tab chunk 失败只影响一个 tab（风险不对称）。
+- **确认弹窗与镜像对话框（`renderConfirm` + `renderRegionDialog` + 5 个 confirm 样式常量）不做 chunk。** 它们确实「交互后才出现」，
+  但那是**破坏性操作**（恢复默认 / 清空覆盖 / 立即更新）的确认面：把「点击 → 弹窗」变成一次异步取件不值得。
+- `renderLayerReset` 同时被「高级」使用，`renderFilters` 只服务总览视图，`importStatusLabel` / `regionNoteKey` 各只有一个消费者 ⇒ 各随其 tab 走，
+  于是三个新 chunk 之间**零依赖**：DAG 只有「主 → chunk」一个方向。
+
+### 三、共享设施：零副本，仍是同一实例
+
+新 chunk 需要的常量与纯函数（`LAYER_FILTERS` / `ORIGIN_FILTERS` / `OVERRIDABLE_FILTERS` / `MAX_VIEW_LINES` / `splitLines` / `highlightNodes` / `chunkDiff` /
+`diffSections` / `composeSections` / `editGate` / `sectionLayer` / `regionLabelKey` / `renderStatusDetail` / `renderUpdateApplyStatus` … 共 26 个名字）
+一律加进主 factory 的 `__internals.shared`（`CHUNK_FACILITIES`）后由 chunk 解构取用，**没有一份副本**。
+
+`test/client.test.mjs` 对这个不变式做的是**双向机械校验**（独立评审意见 P3 收口后）：
+
+- **引用侧**：chunk 的**代码行**里所有 `shared.<name>` 引用（含 `const x = shared.x`、`const { x, y } = shared`、内联 `shared.x` 三种取式）都被收集，逐个断言 `name in __internals.shared`；
+- **定义侧**（反向）：`__internals.shared` 的**每一个键名**，chunk 都不得用 `const` / `let` / `var` / `function` 在本地重新声明（除非该行右侧就是 `shared.<同键>`）。这一条针对的正是「本地造一份副本」的唯一形态 —— 局部绑定会**遮蔽**共享实例，引用侧断言看不见它；
+- 另加一条：不得出现 `require.async`、`require('react')` 或**任何另一个 chunk 的文件名** ⇒ chunk→chunk 依赖与第二个 React 都不可能成立。
+
+负向对照（都实测会红、随后还原）：内联 `shared.nope` ⇒ 引用侧红；`const UI = null`（非字典形态的本地重定义）⇒ 定义侧红；`const token = {…}`、`require.async('./client.transfer.js')` 各自红。
+正向对照：把 `const UI = shared.UI` 改写成 `const { UI } = shared` 仍绿（新取式被正确采集）。
+
+**已知限制（写在文档里，不悄悄留着）**：这是**形态级**守卫，不是完整的自由变量分析（后者需要 JS 解析器，与本包「零依赖」承诺冲突）。
+它覆盖评审点名的三类逃逸取式与本地副本；「chunk 引用了某个名字却忘了取用」这类错误由**运行时**兜底 —— chunk 在 vm 里以严格语义执行，
+未声明的自由标识符直接抛 `ReferenceError`，打开该 tab 的测试随即变红。
+
+### 四、验收
+
+- `cd packages/dsh-prompt-setting && node --test` ⇒ **736 pass / 0 fail / skipped 0**（基线 731；新增 5 条：首屏零请求 + 每个 tab 只取自己的 chunk、每个新 chunk 的失败降级、
+  无 `React.lazy` 时每个 chunked tab 的降级且不发请求、每个 chunk 的第三重校验（自报摘要 vs 独立读盘）、DAG 与零副本）；
+- 体积（实测）：`client.js` **9584 行 / 456680 B → 8575 行 / 411979 B**（净减 1009 行 / 44691 B）；
+  新增 `client.overview.js` 577 行 / 25186 B、`client.transfer.js` 264 行 / 11320 B、`client.advanced.js` 502 行 / 23237 B；
+  连同 g-045 的 `client.history.js`（1163 行 / 50497 B），四个 chunk 合计 2506 行 / 110240 B，整包 11081 行 / 522219 B
+  （比拆分前单文件 10747 行多 334 行：四份 chunk 的 shared 解构与 lazy 样板；换来的是三个新 tab 的渲染器整块不再进首屏）；
+- `node scripts/client-chunks.mjs` ⇒ 4 项与磁盘一致；`--write` 后与仓库逐字零 diff；
+- `node scripts/prepare.mjs` ⇒ **21 项通过**（`FILES-GLOB: files: client.*.js（4 项）` 与 `CHUNK-STAMPS` 绿）；
+- `npm pack --dry-run --cache <可写目录>` ⇒ **29 个文件**，四个 `client.*.js` chunk 全部在包内（`README.md` 的运行提示已同步为 29）；
+- 零新依赖（`dependencies: {}`）、零构建步骤（`test/host.test.mjs` 两条门禁绿）。
+
+### 五、为什么没到「5000-6000 行」（如实说明）
+
+阶段一给的期望是主文件降到 5000-6000 行。实测下限由**首屏同步闭包**决定，只到 8575 行 —— 因为下面每一类都**不能在首屏异步**：
+
+| 不可搬的部分 | 为什么 |
+| --- | --- |
+| `PromptSettingSection`（状态机） | 唯一状态持有者，本目标明令不动 |
+| 无状态层（常量 / `ERROR_TEXT` / zh+en 两份字典 / token / `Fx*` / 纯函数群） | 首屏与所有 chunk 的共同依赖（见二） |
+| 首屏骨架渲染（会话选择器与作用域树 + 状态行/详情 + 版本 + 更新横幅 + 两个 overlay，不含 mine） | `renderSection` 第一帧就会走到 |
+| 「我的 Prompt」面板 | 默认 tab |
+| chunk 边界机制本身（g-045 与本轮） | 加载、清单、指纹、降级卡 |
+
+各块的规模（**本 commit 实测**，命令可直接复现；行号会随后续改动漂移，命令不会）：
+
+```bash
+wc -l -c client.js client.*.js                                     # 主文件 8575 行 / 411979 B；三个新 chunk 合计 1343 行
+git show 355ad3f:packages/dsh-prompt-setting/client.js | wc -l -c   # 迁移前主文件 9584 行 / 456680 B
+awk '/^    function PromptSettingSection\(/,/^    function renderFailureCard\(/' client.js | wc -l  # 状态机 1898
+awk '/^    function focusVisibleOf\(/,/^    function renderSession\(/' client.js | wc -l            # 作用域选择器一族 643
+awk '/^    function renderSession\(/,/^    const confirmTitleStyle/' client.js | wc -l             # 会话选择器 253
+awk '/^    \/\/ #region chunk boundary \(g-045\)/,/^    \/\/ #endregion/' client.js | wc -l        # chunk 边界机制 432
+```
+
+⇒ 展示层里**能搬的都搬了**：可搬集合恰是三个非默认 tab 的渲染器，它们已整块落在三个新 chunk 里（三个新 chunk 共 1343 行，其中每份手写的 shared 解构与 lazy 样板约占 60 行）。
+要再降只能动上面这五类，而每一类都被判据（状态机不动、首屏只请求主文件、零行为变化）或可靠性约束挡住。
+
+### 六、未验证项
+
+- **真机端到端未跑**（g-045 曾用临时 `DSH_HOME` + headless Chrome/CDP）：本轮「首屏只请求主文件、打开某 tab 才请求该 chunk」的证据来自 harness 的
+  `loadedChunkFiles` 序列与 `data-render-state` 断言，不是浏览器网络面板；
+- 三个新 chunk 的**真机失败降级**（阻断请求）未目视，只有 harness 的 `chunkFailures` 证据；
+- 「只改 chunk 不碰 `client.js` 时浏览器不换新」仍是未实测的开发期限制（g-045 已记录，本轮未变）。
+
+### 七、收口补丁（独立评审 3 条）
+
+- **P1 · README 文件数滞后。** `README.md` 的运行提示仍写「26 个文件」（那是 g-045 的实测）。改为**29**（`npm pack --dry-run` 实测，本次新增 3 个 chunk）。
+  同时按「凡是能被 `npm pack` / `wc` 复现的都必须与实测一致」复核了本次受影响的其它数字：`CONTRACT.md` §14.2 的 `chunks` 示例（4 项）与 `client.js` 的 `CHUNK_STAMPS` **逐项一致**（文件名、hash、size，已用命令对照）；README 的「十八个套件」仍等于 `ls test/*.mjs | wc -l` ⇒ 18。
+  包体 kB 不再写进文档：文档本身计入包体，写入精确值必然滞后一步（文件数不受影响，故保留）。
+- **P2 · NOTES 的数字口径不可复现。** §123 原写「51 个统一签名 `(t, m, a)` 的渲染函数」—— 该数字取自阶段一结构测绘卡对**全部顶层定义**的统计口径，本 commit 实测严格签名为 **28**
+  （命令与逐文件分解已写进第一节），故换成可复现口径并注明「与 51 不可互推」。§五 表里引自估算的行数（1900 / 2900 / 1830 / 393 / 450）**全部删除**，
+  改为「只留理由」+ 一组**带命令的实测锚点**（`wc -l -c`、`git show 355ad3f:…`、四条 `awk` 区间计数）。
+- **P3 · DAG /「零副本」断言只认一种取式。** 原断言只匹配 `^ {4}const X = shared.X;$`，`const { X } = shared`、内联 `shared.X` 都会逃逸。按评审建议改为**双向校验**：
+  引用侧收集所有 `shared.<name>` 与解构取式，逐个断言键存在；定义侧反向断言「`__internals.shared` 的每个键名都不得被 chunk 本地重定义」（`const UI = null`、`const token = {…}` 这类副本正是唯一能藏住「第二份实例」的形态）。
+  负向对照实测：内联 `shared.nope` ⇒ 引用侧红；`const UI = null` ⇒ 定义侧红；正向对照：`const { UI } = shared` 仍绿。
+  **未做成完整的自由变量分析**（那需要 JS 解析器，与本包零依赖冲突）—— 这一限制已写进 `CONTRACT.md` §13.0 Revision 30 与本文件第二节，不悄悄留着：剩下的缺口（引用了却没取用）由运行时兜底（未声明标识符抛 `ReferenceError`，打开该 tab 的测试即红）。
+- 收口后复跑：`node --test` ⇒ **736 pass / 0 fail / skipped 0**；`node scripts/client-chunks.mjs` ⇒ 4 项一致；`node scripts/prepare.mjs` ⇒ 21 项通过；`npm pack --dry-run` ⇒ 29 个文件。
+
+## 124. DSH peer 范围纳入 0.2.1 线：新增 `>=0.2.1-0 <0.2.2-0`（2026-10-09，基线 `5f00b76` 工作区）
+
+### 一、P0：插件在 0.2.1-alpha.2 上直接消失
+
+- 运行时升到 **DSH 0.2.1-alpha.2** 后，原范围 `>=0.1.7-rc.2 <0.2.0 || >=0.2.0-0 <0.2.1-0` 把 **0.2.1 整条 line** 排除。
+- 两个可观测后果（本机实测）：
+  1. 宿主 boot 闸门跳过整个 bundle —— 日志逐字：`dsh: skipping profile bundle "dsh-prompt-setting"`；
+  2. 平台**拒绝安装** —— `dsh plugin --profile web add …` 输出 `dsh: nothing was installed.` 并给出
+     `dsh plugin --profile web allow-version dsh-prompt-setting@0.1.5 --dsh-version 0.2.1-alpha.2 --accept-risk`。
+- 与 §100 记的 P0 是**同一机制**：闸门在任何本包代码被 import **之前**生效，所以包内自检（`reportBootCompatibility`）救不了它。
+
+### 二、为什么必须新增分支，而不是放宽上界
+
+§98/§99 已记：严格 `node-semver`（npm/pnpm peer 解析，**不带** `includePrerelease`）只认「**同一个 alternative 内**存在同 `[major, minor, patch]` tuple 且自带 prerelease 的比较器」。
+实测（本机 `semver@7.8.5`）：
+
+| 版本 | 原范围 | 三段式（本轮） | 只把第二分支上界放宽到 `<0.2.2-0` |
+|---|---|---|---|
+| `0.2.1-alpha.2` | false | **true** | **false** |
+| `0.2.1` | false | true | true |
+| `0.2.2-0` | false | false | false |
+
+⇒ 「懒写」`>=0.2.0-0 <0.2.2-0` 对 `0.2.1-alpha.2` **仍然 false**（0.2.1 这个 tuple 里没有任何比较器）。故新增第三分支 `>=0.2.1-0 <0.2.2-0`，下界取该 tuple 的**最小** prerelease（§99 同一理由：白名单只认 tuple，不认排序）。
+
+### 三、终态范围与同步点
+
+```
+"@deepseek-ai/dsh": ">=0.1.7-rc.2 <0.2.0 || >=0.2.0-0 <0.2.1-0 || >=0.2.1-0 <0.2.2-0"
+```
+
+语义：`0.1.7-rc.2` 起的全部 0.1.x、`0.2.0` 与 `0.2.1` 两行的**全部预发布 + 正式版**都在范围内；`0.2.2-0` 及以后一律出界（新 minor 未经评估不放行）。
+
+同步点（**9 文件**）：`package.json`（权威源）、`index.js`（`DSH_PEER_RANGE_FALLBACK` + 注释；测试断言两者逐字相等）、`test/boot.test.mjs`（边界表 + 桥/上界两条形状断言）、`test/host.test.mjs`（manifest 正则）、`scripts/check-compat.mjs`（超范围样例 `0.2.1-0` → `0.2.2-0`）、`core/compat.js`（注释）、四份 README（根/包内 × 中英）+ 两个徽章（`<0.2.1-0` → `<0.2.2-0`，仍是有效集合的上下界写法）。
+
+### 四、护栏与它给出的信号
+
+- 桥断言：`>=0.2.x-` 比较器必须恰为 `['>=0.2.0-0', '>=0.2.1-0']`；
+- 上界断言：所有 `<` 比较器必须恰为 `['<0.2.0', '<0.2.1-0', '<0.2.2-0']`；
+- 所有「超范围样例」从 `0.2.1-0` 改为 `0.2.2-0`。⚠️ 本轮首跑 3 红**正是护栏在指路**：`0.2.1-0` 在新范围里变成**范围内**，于是 `boot.test.mjs` 的两条出界用例与 `host.test.mjs` 的 manifest 正则一起变红——这是「改范围必须同步改动点」的机械保障，不是障碍。
+
+### 五、验证
+
+| 项 | 结果 |
+|---|---|
+| `node --test` | **737 pass / 0 fail / 0 skip** |
+| `node-semver` 实测 | `0.2.1-alpha.2` / `0.2.1` = true；`0.2.2-0` / `0.3.0` = false |
+| `node scripts/check-compat.mjs` | 退出 0，结论「兼容（在已测试范围内）」 |
+| 真机（临时 `DSH_HOME` + 0.2.1-alpha.2 宿主） | 装包成功；宿主日志 `skipping profile bundle` 计数 **0**；`/prompt-setting/ping` 与 `/download-region` 均 **200** |
+
+### 六、未验证
+
+- **未在用户主 profile 上重装验证**（那需要动他的运行环境）；本机以临时 `DSH_HOME` 等价取证。
+- npm 上已发布的 `0.1.5` 仍是**旧 peer** ⇒ 用户若从 npm 装，仍需等一版发布才会带上本修复；本地 `link:` 安装则立即生效。
+- 本次提交**未同步版本号**（当时仍 `0.1.5`），属于发布准备的范围；版本号随后在 §127 升到 `0.2.0`。
+
+---
+
+## 125. g-047：选中会话不再改写「搜索会话」输入框（Revision 31，2026-10-09，基线 `5f00b76` 工作区）
+
+### 一、现象与报告路径
+
+- 负责人真机反馈：在「查看范围」里**选中一个会话**后，下方「搜索会话」的输入框被**会话标题**占用，容易
+  让人误以为那是搜索词。
+- 复核确认这不是显示瑕疵而是**写值**：框里真的被填进了标题文本。
+
+### 二、根因（三处调用，注释自述为设计意图）
+
+| 调用点 | 触发方式 |
+| --- | --- |
+| `pickSession` | 点候选项行 |
+| `useCurrent` | 点固定的「当前会话」条目 |
+| Enter 分支 | 高亮某行时按 Enter |
+
+三处都会 `setSessionQuery(sessionLabelOf(session))`，源码注释自述为 *"the box reflects the selection"*。
+
+### 三、连带副作用（比"不好看"严重）
+
+- 被填入的值**立即参与 `filterSessions(...)`**：列表随即按**标题**过滤，而不是按用户自己敲的词；
+- 当没有任何候选行匹配时，Enter 会走 Revision 3 的「按该 id 查看」分支 ⇒ **一个会话标题可能被当成
+  session id 解析**。
+
+### 四、裁决与改动（负责人选定「保用户输入」）
+
+- 三处写值**全部删除**：输入框**只装用户敲的内容**，列表继续被用户自己的词收窄；
+- `placeholder` 恒为 `sessionSearch`（「搜索会话（标题 / 路径 / session id）」），不再是状态显示位；
+- 「我在哪个范围」仍由**三处**显示承担，一处未削弱：`data-role="scope-summary-label"`、
+  `data-role="session-current"` 行、pinned 条目的选中态（§13.7）；
+- **「全局」与 `Esc` 保持清空行为**（回到全局 = 丢掉过滤），未做对称改动；
+- 核查「版本历史」的独立作用域选择器（§13.3）**无同病**（`data-role="history-scope-search"` 的
+  placeholder 是固定的 `histScopeSearch`，且 `setHistoryScope` 只在收起时清空）。
+
+### 五、教训
+
+**输入框不是状态显示位。** 被程序改写的值会立刻参与过滤、并污染后续解析——「让框反映选中」这类便利
+设计，代价是用户失去对自己输入的掌控。契约 §13.7 与 Revision 31 已把这条写成规则。
+
+---
+
+## 126. DSH `0.2.1-alpha.2` 兼容评估与真机走查：两处真实缺陷（2026-10-09）
+
+### 一、更新日志逐条对照（结论：无破坏性变更）
+
+对照 [dsh-v0.2.1-alpha.2](https://github.com/deepseek-ai/deepseek-harness/releases/tag/dsh-v0.2.1-alpha.2)
+的中英两版正文，与本插件接触面相关的只有几条，且**没有**需要改代码的破坏性变更：
+
+| 更新日志条目 | 与本插件的关系 | 判定 |
+| --- | --- | --- |
+| pi-ai 按模型能力处理**会话中系统提示词更新** | 本插件核心是 `ctx.systemPrompt` 段注册 + waterfall 覆盖 | ✅ 实测装配 8 段、保留段仍在**最后一位** |
+| 修复「插件包元信息不可读 ⇒ **整个请求被阻断**」 | 本插件导入期要读自己的 `package.json` | ✅ 利好（0.2.0 那条会波及整个请求） |
+| 更新「运行时工具、MCP 协议、图片处理和**客户端渲染依赖**」 | 本插件 inject 4 个客户端包 | ✅ 5 tab、4 chunk、交互、构建戳全部正常 |
+| 新增**思考正文 Slot** + 官方 Markdown Content Factory | 本插件用 settings slot | ℹ️ 无关 |
+| 新增实验性**插件 Session 状态记录接口** | 本插件自写 `history.jsonl` | ℹ️ 潜在机会（非必须） |
+| agent-instructions **移除逐行 dshHome** | 影响「提示词总览」里 AGENTS.md 类段的**来源** | ℹ️ 只影响展示内容 |
+| 默认 SDK profile 改**通用 AI Agent 身份** | 影响 `deployment:persona-*` 段内容 | ℹ️ 同上 |
+| `working_directory` 工具（会话可切工作目录） | 本插件按 workspace 归属覆盖/历史 | ⚠️ 新能力边界：运行中切 cwd 会让归属"跳"，非 bug，记录备查 |
+
+### 二、真机走查覆盖（临时 `DSH_HOME` + 0.2.1-alpha.2 宿主，逐项**实操**）
+
+**真点过**：编辑 + 保存、变量替换开关、取消（放弃未保存编辑）、恢复默认（确认 + 取消）、刷新快照、
+历史列表 / 翻页、点行选对比、预览弹窗（字段无段名、时间本地化）、清除对比、关闭弹窗、
+**回滚（确认 + 取消）**、**整层重置（确认 + 取消）**、**导出**（文件名本地化、JSON 可解析、内容正确）、
+**导入**（粘贴 → 干跑预览 → 确认 → 二次确认 → 真的写入，`origin=import` 记入历史）、下载区域下拉、
+自定义镜像弹窗（非法地址红字 `rgb(236,19,19)` 且不落盘、合法地址保存）、更新开关三态、重新检查、
+总览展开 / 复制。
+
+**未覆盖（诚实记录）**：`update-apply` 的**真实安装**——npm 上 `latest` = `0.1.5` = 本地版本 ⇒ 无更新，
+按钮不出现；用页面内 hook `fetch` 伪造「有新版本 9.9.9」可以走到提示条 / 立即更新 / 确认弹窗 / 取消，
+但点确认后宿主的 `POST /update-apply` **自己重做了一次检查**（不走客户端 hook），据真实结果拒绝
+（`no-update`）⇒ **客户端伪造骗不过服务端**。这本身是应有的安全性质；代价是真实安装链路仍需真有新版本
+才能覆盖。
+
+### 三、发现 1：中文提示「检查更新已已开启」（重复字）→ 已修（`e460d45`）
+
+- 模板 `updateToggleSaved: '检查更新已{state}。'` 与状态值 `updateSettingOn: '已开启'` **各带一个「已」**
+  ⇒ 渲染成「检查更新已已开启。」；英文侧 `Update checks are now {state}.` + `On` 本来正常。
+- **修模板**（`'检查更新{state}。'`）而非改值：该值同时是「高级」tab 开关**按钮自身的文本**（
+  `client.advanced.js` 直接 `t(enabled ? 'updateSettingOn' : ...)`），改值会让按钮从「已开启」退化成
+  「开启」，语义变弱。
+- 顺带扫过「已已 / 的的 / 了了」无其它命中。
+
+### 四、发现 2：回滚 / 整层重置 / 导入之后编辑器仍显示旧文本 → 已修（`d6e39c9`，Revision 32）
+
+- **现象**：三个操作的服务端、历史与装配**都已改变**（curl 逐个核实：回滚 `before 10 → after 20` 字符、
+  整层重置后 `overrides: []`、导入后值真的变成目标值），但「我的 Prompt」的编辑框**仍显示操作前的文本**
+  ⇒ 用户会以为「操作没生效」。
+- **根因**：编辑框在草稿存在时渲染草稿（`mineText` 的取值式见 §13.1），而这三处成功后只
+  `setReload(v => v+1)` 重拉数据，**没有对草稿做任何处理**；同面板的「恢复默认」(`resetMine`) 则有
+  `setMineDraft(null)` ⇒ **是遗漏，不是设计**。
+- **修法（负责人选定 A 口径：保守）**：新增 `settleMineDraft()`，三处成功后调用——
+  - 草稿仍等于**操作前**的存储文本 ⇒ 不含用户新写的内容 ⇒ **静默丢弃**，编辑器跟随新值；
+  - 草稿不同 ⇒ 属未保存工作 ⇒ **保留**，并在成功 notice 后追加 `mineDraftKept`
+    （「配置已在别处更新；你编辑器中尚未保存的内容仍保留着。」）。
+  §15.4 的「no path clears what the user typed」正是**第二支**的依据，也是两支必须不同的理由。
+- `clearLegacy`（`legacy=true`）**刻意不入此列**：它保留保留段（§12.2），面板文本不会在编辑器背后变化。
+- **验证**：新增 3 例（草稿等于旧值静默丢弃 / 草稿不等则保留并提示 / 整层重置与导入走同一对账路径）⇒
+  **740 pass**；负向对照注入「未保存草稿不再被识别」⇒ 其中 **2 例红**（212/214）；真机两场景复验，
+  A 场景编辑器显示回滚后的新值且**无**提示，B 场景保留 `G049-UNSAVED-DRAFT` 且 notice 带提示。
+
+### 五、附：`data-renderer = "fallback"` 的定位（不是 0.2.1 引入，也不影响使用）
+
+真机读到 `data-renderer="fallback"`，追查后确认**不是**本次升级造成的降级：
+
+- `dsh-client-ui-primitives@0.2.1-alpha.2` **存在于 DSH 安装内**，但不在任何 profile 的 `node_modules`；
+- 官方插件（`dsh-client-ui-skill` 等）把它放在 **devDependencies**，靠 **bundler（rolldown）内联**进产物
+  ——它们的 `inject` 列表里**也没有**它；
+- 本插件是**零构建手写**，无法内联，只能运行时 `require` 探测；而它从未把该包写进 `inject` / 依赖 ⇒
+  **必然落空**，走自建原子（`Fx*` + `--dsw-alias-*` CSS 变量 + `font: inherit`，因此**跟随主题与字体**）。
+- 判定：**设计内降级，功能不受损**（`render-state=ok`，交互全部通过；且 fallback 是自动化测试的**默认
+  主路径**——harness 的 `primitives` 默认 `'throw'`，740 项断言绝大多数跑在它之下）。插件在对比弹窗里也
+  自报「自绘渲染（primitives 不可用）」，不掩饰。
+- 若将来要恢复官方组件渲染：把该包加进 `dsh.client.inject`——但 inject 是**硬声明**，平台不提供时可能
+  让整个插件加载失败（现在探测失败只是降级），且那正是「零构建」承诺的反面。**本次维持现状。**
+
+---
+
+## 127. 版本号 `0.1.5` → `0.2.0`：同步点、新盲点与白名单依据（g-048，2026-10-09）
+
+### 一、为什么是 `0.2.0`（minor）而不是 `0.1.6`
+
+负责人 2026-10-09 决定直接提到 **`0.2.0`**：本轮有用户可感知的变化（更新检查改从 npm 读取、新增「下载
+区域」、客户端按需分块、peer 范围纳入 DSH 0.2.1 线），且插件自身版本与所支持的 DSH 0.2.x 线就此对齐。
+
+### 二、同步的「本包当前版本」
+
+- **权威源 2 处 / 2 文件**：`package.json` 的 `version`、`index.js` 的 `PLUGIN_VERSION`；
+- **`CONTRACT.md` 5 类**：§10 export 示例（`plugin.version` / `pluginVersion`）、§13.8 版本节点文案
+  （`v0.1.5` → `v0.2.0`）、§13.9 ping 示例的 `version`、§17 update-check 的 **npm 与 GitHub 两个示例**
+  （`current` 0.1.5 → 0.2.0；`latest` 0.2.0 → **0.2.1**、`latestTag` → `v0.2.1`、`releaseUrl` 同步——
+  示例必须保持「有更新」的语义）；
+- **两份根 README + 包内 README 共 8 处**：徽章 2 处；「npm 上的版本」表述 5 处改为**双写**
+  （「npm `latest` 为 `0.1.5`，本仓库为 `0.2.0`，发布后两者一致」）——**发布前**写死 0.2.0 会误导按文档
+  安装的人，故如实区分；
+- **测试 6 个文件**：见下节。
+
+### 三、⚠️ 本轮新盲点：fixture 里的「更新目标版本」
+
+§121 记的盲点是 **banner 的转义正则**（`/0\.1\.4/`）；本轮暴露了**第二类**，且它是升版失败的主因：
+
+- **现象**：改完两个权威源即跑全量 ⇒ **740 中 33 红**，集中在 `install.test.mjs`（26）、`route.test.mjs`
+  （3）、`update.test.mjs`（3）、`stage2.test.mjs`（1）。
+- **根因**：这些测试把**「注册表里的新版本」写死为 `0.2.0`**——在真实版本是 `0.1.5` 的年代，0.2.0 比它高，
+  于是构成「有更新」。真实版本一升到 `0.2.0`，**它不再构成更新** ⇒ `check()` 答 `no-update` ⇒ 依赖
+  「有更新」的全部路由用例连锁失败（首个报错 `actual: 'no-update'`）。
+- **修法**：把所有**作为更新目标**的 `0.2.0` 提到 **`0.2.1`**（含 `TARBALL_URL` / `ASSET_URL` /
+  `npmDocument()` / `makeTransport()` 的默认 GitHub release tag / 各测试自己的 `versions[...]` 覆盖键），
+  并把「本包已经是的那版」`OLD_TARBALL_URL` 从 `0.1.5` 改为 **`0.2.0`**。
+- **收敛过程**（每一轮都由测试指出下一批）：33 红 → 改 fixture 常量后 7 红 → 改 `versions[...]` 覆盖键与
+  个别断言后 1 红 → 改 `body.version` 断言后 0 红。
+- **下一次升版的做法**：升版后**立刻跑全量测试**，把红点当作清单；并在改 fixture 时自问
+  「这个字面量是**更新目标**还是**当前版本**」——两者都要动，但方向相反。
+
+### 四、白名单判断依据（一律未动）
+
+- `CHANGELOG.md` 的 `[0.1.5]` 及更早历史段、`NOTES.md` 历史叙述（含 §121 的升版记录）：历史；
+- `CONTRACT.md` / `core/update.js` 的**镜像实测记录**（`dist-tags.latest` = `0.1.5`、真机响应示例
+  `latest:"0.1.5"`、镜像延迟表）：**当时测得的事实**，改了就是在伪造测量；
+- 纯函数测试里自洽的版本字面量（`buildReleaseAssetUrl('0.2.0','0.2.0')`、
+  `isNewerVersion('0.2.0', ...)`、`packumentLatest({latest:'0.1.5'})` 等）：传什么断言什么，与当前版本无关；
+- `test/update.test.mjs` 的 `currentVersion: '0.1.5'`（4 处）与 `test/client.test.mjs` 的 ping/export
+  **替身响应**（`pluginVersion: '0.1.5'`）：测试自己注入的假数据，不代表真实版本——`client.test.mjs:8896`
+  的 banner 断言 `/0\.1\.5/` 正是匹配这个替身，故它在本轮**天然不红**；
+- `core/install.js` 的「announce 旧版、install 新版」示例（§111/§121 已确立先例）。
+
+### 五、CHANGELOG 定稿
+
+新增 `## [0.2.0] - 2026-10-09`（中英对照），置于 `## [0.1.5]` 之前：`### Added 新增` 2 条（更新检查改从
+npm 读取、下载区域）、`### Changed 变更` 2 条（客户端按需分块、peer 范围纳入 0.2.1 线）、`### Fixed 修复`
+5 条（历史列表高度、历史不再列出插件注册段、搜索框被标题占用、回滚/重置/导入后草稿不刷新、重复字），
+`[0.1.5]` 及更早段一字未动。
+
+### 六、验收
+
+| 项 | 结果 |
+| --- | --- |
+| `node --test` | **740 pass / 0 fail / skipped 0**（升版前基线一致，无断言削弱；中途 739/1 见第三节） |
+| `node scripts/prepare.mjs` | **21 项通过**（含 `CHUNK-STAMPS` 与零运行时依赖） |
+| `npm pack` | **`dsh-prompt-setting-0.2.0.tgz`**：**29 文件**、`test/` 命中 **0**、包内
+`package.json.version` = **`0.2.0`**、体积 **≈636 KB**（不记精确字节数：`NOTES.md` 在 `files` 白名单内） |
+| 残留自查 | `0.1.5` 只剩历史段、镜像实测记录与测试替身（逐条见第四节） |
+
+- 环境注记（承 §121）：本机 `~/.npm/_cacache` 有 root-owned 文件，`npm pack` 需 `--cache <可写临时
+  目录>`，与包本身无关。
+
+### 七、未验证项
+
+- `npm publish` / `git tag` / `git push` / Release 资产：**人工 gate，未做**；因此 **npm 上的 `latest`
+  仍是 `0.1.5`**（README 的双写表述正为此），从 npm 安装的用户要等发布才拿到本版；
+- README 徽章的 shields.io 在线渲染未目视（离线），只核对了源文本；
+- 只改了表示「本包当前版本」的字面量与文档，**无产品逻辑改动** ⇒ 无行为回归面（本轮的行为改动是
+  §126 的两处，已各自单独验证）。
