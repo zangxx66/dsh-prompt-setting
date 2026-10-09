@@ -1959,6 +1959,27 @@ route, no query parameter, no stored byte, no marker and no copy key changes.
   placeholder is the fixed `histScopeSearch`), and `setHistoryScope` only clears
   it while collapsing the picker. Nothing there changed.
 
+**Revision 32 (g-049: an operation that changes the stored text reconciles the
+editor's draft — client-half behaviour change).** No route, query parameter,
+stored byte or marker changes; one new copy key (`mineDraftKept`) is added to
+both dictionaries.
+
+- **the editor can no longer show text the layer no longer holds.** The box
+  renders the draft while one exists, so a rollback, a whole-layer reset and an
+  applied import used to leave it showing the pre-operation text while the host,
+  the log and the prompt assembly had all moved on — the operation read as
+  «nothing happened». All three now call one reconciliation helper (§13.1);
+- **only a draft that holds nothing new is dropped.** A draft equal to the stored
+  text *before* the operation is discarded, and the editor follows the new value;
+  a draft that differs is unsaved work and survives, with `mineDraftKept`
+  appended to the success notice. §15.4's「no path clears what the user typed」is
+  exactly this second case, and is why the two branches differ;
+- **`clearLegacy` (`legacy=true`) is deliberately unchanged**: it keeps the
+  reserved section (§12.2), so this panel's text cannot change under the editor;
+- **`data-mine-state` follows the reconciliation**: dropping the draft returns the
+  panel to the stored value's own state, while keeping it leaves the panel
+  `dirty` — which is what「取消」(§13.1) is offered for.
+
 ### 13.1 「我的 Prompt」 — the one write surface
 
 - The panel is `data-region="mine"`, the layer control is
@@ -1984,6 +2005,16 @@ route, no query parameter, no stored byte, no marker and no copy key changes.
   layer's configuration and 「保存」 / 「恢复默认」 are untouched. Both cancel and
   the drafts it drops are scoped to one layer+session key, so cancelling in one
   layer never discards another layer's draft.
+- An operation that changes the stored text **behind the editor's back**
+  (Revision 32, g-049: `history-rollback`, the whole-layer `reset=true` delete and
+  an applied `import`) reconciles the draft rather than leaving the box showing
+  text the layer no longer holds. A draft whose text still equals the stored text
+  **before** the operation held nothing the reader typed: it is dropped silently
+  and the editor follows the new value. A draft that differs is unsaved work — it
+  is kept, the success notice carries the extra sentence `mineDraftKept`, and the
+  panel stays `dirty` (so「取消」is still the way to drop it). `clearLegacy`
+  (§12.2) is deliberately not in this set: it never removes the reserved section,
+  so nothing changes under the editor.
 - `data-mine-state` is the machine-readable state: `unconfigured` | `dirty` |
   `saving` | `saved` | `error`. A failed write renders a full
   `data-mine-error="true"` banner (`data-error-code`, the mapped copy, the

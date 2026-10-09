@@ -5862,6 +5862,86 @@ test('client: a rollback asks first, states that it cannot be undone, then refre
   assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history-preview').length, 0);
 });
 
+// #region g-049: the editor draft when an operation changes the stored text
+
+/** Run one confirmed rollback of `#1` from the history tab. */
+async function rollbackFirst(page) {
+  let tree = await openHistory(page);
+  clickButton(historyRowOf(tree, '1'), { 'data-action': 'history-rollback', 'data-history-id': '1' });
+  tree = await page.flush();
+  clickButton(oneBy(tree, 'data-region', 'confirm-overlay'), { 'data-action': 'confirm-yes' });
+  return page.flush();
+}
+
+test('client: an operation that changes the stored text drops a draft holding nothing new (g-049)', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  const stored = oneBy(tree, 'data-role', 'mine-text').props.value;
+  // A draft equal to the stored text is not unsaved work: the reader typed
+  // nothing new, so the editor may follow the value the operation produced.
+  typeInto(tree, 'mine-text', stored);
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, stored);
+
+  tree = await rollbackFirst(page);
+  assert.ok(hasText(tree, fillText(page.zh.histRollbackDone, { id: '1' })));
+  assert.equal(
+    hasText(tree, page.zh.mineDraftKept),
+    false,
+    'a draft that only repeated the stored text is dropped without a warning',
+  );
+});
+
+test('client: a rollback keeps an unsaved draft and says so in the notice (g-049)', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  const draft = 'a draft the reader has not saved';
+  typeInto(tree, 'mine-text', draft);
+  tree = await page.flush();
+
+  tree = await rollbackFirst(page);
+  // The success copy is still the rollback's own, with the draft warning beside
+  // it: never a silent overwrite of what the reader typed (§15.4).
+  assert.ok(hasText(tree, fillText(page.zh.histRollbackDone, { id: '1' })));
+  assert.ok(hasText(tree, page.zh.mineDraftKept), 'the notice says the unsaved text is still there');
+
+  // …and it really is: coming back to the tab shows the draft, not the stored text.
+  tree = await openTab(page, 'mine', tree);
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, draft);
+});
+
+test('client: a whole-layer reset and an applied import report a kept draft the same way (g-049)', async () => {
+  // Both go through the same reconciliation: one confirmation each, and the
+  // draft warning is appended only when the draft held unsaved work.
+  const reset = makePage({ responses: defaultResponses() });
+  let tree = await reset.flush();
+  typeInto(tree, 'mine-text', 'kept across the layer reset');
+  tree = await reset.flush();
+  tree = await openAdvanced(reset);
+  clickButton(tree, { 'data-action': 'reset-layer' });
+  tree = await reset.flush();
+  clickButton(oneBy(tree, 'data-region', 'confirm-overlay'), { 'data-action': 'confirm-yes' });
+  tree = await reset.flush();
+  assert.ok(hasText(tree, reset.zh.mineDraftKept), 'the layer reset names the kept draft');
+
+  const imported = makePage({ responses: defaultResponses() });
+  tree = await imported.flush();
+  typeInto(tree, 'mine-text', 'kept across the import');
+  tree = await imported.flush();
+  tree = await openBackup(imported);
+  typeInto(tree, 'import-text', JSON.stringify({ schema: 'dsh-prompt-setting/export', version: 1, layers: { user: { overrides: [] } } }));
+  tree = await imported.flush();
+  clickButton(tree, { 'data-action': 'import-preview' });
+  tree = await imported.flush();
+  clickButton(tree, { 'data-action': 'import-apply' });
+  tree = await imported.flush();
+  clickButton(oneBy(tree, 'data-region', 'confirm-overlay'), { 'data-action': 'confirm-yes' });
+  tree = await imported.flush();
+  assert.ok(hasText(tree, imported.zh.mineDraftKept), 'the applied import names the kept draft');
+});
+
+// #endregion
+
 test('client: a refused rollback reports the host answer and leaves the log untouched (g-039)', async () => {
   const page = makePage({
     responses: defaultResponses({

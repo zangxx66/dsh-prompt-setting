@@ -977,6 +977,10 @@ window.__ModuleLoader__.load({
       editDisabledFrozen: '当前作用域已冻结，编辑不会生效',
       savedNotice: '已保存到{layer}，下一轮生效（next-turn）。',
       deletedNotice: '已撤销{layer}的覆盖，下一轮生效（next-turn）。',
+      // g-049: appended to a success notice when an operation changed the stored
+      // text while the editor held **unsaved** work, so the reader knows why the
+      // box still shows something other than the new stored value.
+      mineDraftKept: '配置已在别处更新；你编辑器中尚未保存的内容仍保留着。',
       nextTurn: '下一轮生效',
       ovHeading: '已生效覆盖',
       ovEmpty: '当前作用域没有任何覆盖。',
@@ -1446,6 +1450,8 @@ window.__ModuleLoader__.load({
       editDisabledFrozen: 'The current scope is frozen; an edit would not take effect',
       savedNotice: 'Saved to {layer}; effective from the next turn (next-turn).',
       deletedNotice: 'Removed the {layer} override; effective from the next turn (next-turn).',
+      // g-049: see the zh table.
+      mineDraftKept: 'The configuration changed elsewhere; the text you have not saved is still in the editor.',
       nextTurn: 'next-turn',
       ovHeading: 'Active overrides',
       ovEmpty: 'This scope has no overrides.',
@@ -7165,6 +7171,32 @@ window.__ModuleLoader__.load({
        * in place, which is what keeps the pager from describing a page that no
        * longer exists.
        */
+      /**
+       * Reconcile the「我的 Prompt」draft after an operation changed a layer's
+       * stored text **behind the editor's back** (g-049: rollback, a whole-layer
+       * reset, or an applied import).
+       *
+       * The box renders the draft while one exists (see `mineText`), so without
+       * this the editor keeps showing text that is no longer the stored value and
+       * the operation reads as «nothing happened». The two cases are deliberately
+       * different:
+       *   - a draft that still equals the stored text has nothing the user typed,
+       *     so it is dropped and the editor follows the new value;
+       *   - a draft that differs **is** unsaved work — it is kept, and the caller
+       *     appends `mineDraftKept` to the notice instead of silently destroying
+       *     the reader's text. §15.4's「no path clears what the user typed」is
+       *     about exactly this second case.
+       * @returns `true` when the editor follows the stored text, `false` when a
+       *   differing draft was kept.
+       */
+      const settleMineDraft = () => {
+        if (mineDraft === null || mineDraft.key !== mineKey) return true;
+        const previous = mineStored === null ? '' : mineStored;
+        if (mineDraft.text !== previous) return false;
+        setMineDraft(null);
+        return true;
+      };
+
       const rollbackTo = async (pending) => {
         setBusy(true);
         const query = historyScopeQuery(historyLayer, historyScopeArg);
@@ -7178,7 +7210,11 @@ window.__ModuleLoader__.load({
           setNotice({ tone: 'error', text: fmt(t('histRollbackFailed'), { reason: errorText(t, result.error) }) });
           return;
         }
-        setNotice({ tone: 'success', text: fmt(t('histRollbackDone'), { id: pending.id }) });
+        const followed = settleMineDraft();
+        setNotice({
+          tone: 'success',
+          text: fmt(t('histRollbackDone'), { id: pending.id }) + (followed ? '' : ` ${t('mineDraftKept')}`),
+        });
         resetHistoryView();
         setReload((value) => value + 1);
       };
@@ -7193,9 +7229,10 @@ window.__ModuleLoader__.load({
           return;
         }
         const count = result.payload && typeof result.payload.count === 'number' ? result.payload.count : 0;
+        const followed = settleMineDraft();
         setNotice({
           tone: 'success',
-          text: count > 0 ? fmt(t('resetDoneNotice'), { count }) : t('resetNoneNotice'),
+          text: (count > 0 ? fmt(t('resetDoneNotice'), { count }) : t('resetNoneNotice')) + (followed ? '' : ` ${t('mineDraftKept')}`),
         });
         setReload((value) => value + 1);
       };
@@ -7314,14 +7351,15 @@ window.__ModuleLoader__.load({
         const totals = result.payload && result.payload.totals ? result.payload.totals : {};
         const count = (totals.added || 0) + (totals.replaced || 0) + (totals.removed || 0);
         setTransfer((current) => ({ ...current, phase: 'applied', plan: result.payload, error: null }));
+        const followed = settleMineDraft();
         setNotice({
           tone: 'success',
-          text: result.payload && result.payload.unchanged === true
+          text: (result.payload && result.payload.unchanged === true
             ? t('importUnchangedNotice')
             : fmt(t('importAppliedNotice'), {
                 written: result.payload && Array.isArray(result.payload.written) ? result.payload.written.length : 0,
                 count,
-              }),
+              })) + (followed ? '' : ` ${t('mineDraftKept')}`),
         });
         setReload((value) => value + 1);
       };
