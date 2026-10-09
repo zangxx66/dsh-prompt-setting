@@ -767,7 +767,7 @@ window.__ModuleLoader__.load({
       updateSettingOff: '已关闭',
       updateSettingNote:
         '打开设置页时由宿主检查一次最新版本：先问 npm registry，npm 不可用时才回退 GitHub Releases；只发一个 GET，不带任何本机或会话数据，且来源按「下载区域」选择（中国大陆＝npmmirror）。关闭后不再联网检查（含打开本页时）；开启时会读取一次下载区域状态。',
-      updateToggleSaved: '检查更新已{state}。',
+      updateToggleSaved: '检查更新{state}。',
       updateRecheck: '立即重查',
       updateSwitching: '保存中…',
       updateUnknown: '上游暂时没有可用的版本信息。',
