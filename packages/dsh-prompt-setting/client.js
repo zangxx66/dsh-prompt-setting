@@ -977,7 +977,7 @@ window.__ModuleLoader__.load({
       editDisabledFrozen: '当前作用域已冻结，编辑不会生效',
       savedNotice: '已保存到{layer}，下一轮生效（next-turn）。',
       deletedNotice: '已撤销{layer}的覆盖，下一轮生效（next-turn）。',
-      // g-049: appended to a success notice when an operation changed the stored
+      // g-050: appended to a success notice when an operation changed the stored
       // text while the editor held **unsaved** work, so the reader knows why the
       // box still shows something other than the new stored value.
       mineDraftKept: '配置已在别处更新；你编辑器中尚未保存的内容仍保留着。',
@@ -1450,7 +1450,7 @@ window.__ModuleLoader__.load({
       editDisabledFrozen: 'The current scope is frozen; an edit would not take effect',
       savedNotice: 'Saved to {layer}; effective from the next turn (next-turn).',
       deletedNotice: 'Removed the {layer} override; effective from the next turn (next-turn).',
-      // g-049: see the zh table.
+      // g-050: see the zh table.
       mineDraftKept: 'The configuration changed elsewhere; the text you have not saved is still in the editor.',
       nextTurn: 'next-turn',
       ovHeading: 'Active overrides',
@@ -7173,7 +7173,7 @@ window.__ModuleLoader__.load({
        */
       /**
        * Reconcile the「我的 Prompt」draft after an operation changed a layer's
-       * stored text **behind the editor's back** (g-049: rollback, a whole-layer
+       * stored text **behind the editor's back** (g-050: rollback, a whole-layer
        * reset, or an applied import).
        *
        * The box renders the draft while one exists (see `mineText`), so without

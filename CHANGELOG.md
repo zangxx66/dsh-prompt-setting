@@ -74,10 +74,10 @@ range takes in the 0.2.1 line, and several version-history and "view scope" defe
   writes its title into the search box — the box holds **only what the user typed**, and its placeholder is
   always "Search sessions (title / path / session id)". The old behaviour also fed that title straight into
   filtering and could even parse it as a session id.
-- **回滚 / 重置 / 导入之后编辑器仍显示旧文本（g-049）**：「我的 Prompt」的编辑框在服务端内容已改变后
+- **回滚 / 重置 / 导入之后编辑器仍显示旧文本（g-050）**：「我的 Prompt」的编辑框在服务端内容已改变后
   不再停留在旧文本上。若框内内容只是原样重复了旧的已保存值，会被静默丢弃并跟上新值；若框内是**尚未保存
   的编辑**，则保留内容并在提示里说明「配置已在别处更新」，**不会悄悄丢掉你写的字**。
-  **After a rollback, a reset or an import the editor still showed the old text (g-049)**: the "My prompt"
+  **After a rollback, a reset or an import the editor still showed the old text (g-050)**: the "My prompt"
   box no longer keeps showing text the layer no longer holds. A box that merely repeated the previous saved
   value is dropped silently and follows the new value; a box holding **unsaved edits** keeps them, and the
   notice says the configuration changed elsewhere — your text is never thrown away silently.

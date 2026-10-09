@@ -1959,7 +1959,7 @@ route, no query parameter, no stored byte, no marker and no copy key changes.
   placeholder is the fixed `histScopeSearch`), and `setHistoryScope` only clears
   it while collapsing the picker. Nothing there changed.
 
-**Revision 32 (g-049: an operation that changes the stored text reconciles the
+**Revision 32 (g-050: an operation that changes the stored text reconciles the
 editor's draft — client-half behaviour change).** No route, query parameter,
 stored byte or marker changes; one new copy key (`mineDraftKept`) is added to
 both dictionaries.
@@ -2006,7 +2006,7 @@ both dictionaries.
   the drafts it drops are scoped to one layer+session key, so cancelling in one
   layer never discards another layer's draft.
 - An operation that changes the stored text **behind the editor's back**
-  (Revision 32, g-049: `history-rollback`, the whole-layer `reset=true` delete and
+  (Revision 32, g-050: `history-rollback`, the whole-layer `reset=true` delete and
   an applied `import`) reconciles the draft rather than leaving the box showing
   text the layer no longer holds. A draft whose text still equals the stored text
   **before** the operation held nothing the reader typed: it is dropped silently
