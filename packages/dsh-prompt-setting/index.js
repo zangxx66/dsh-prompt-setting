@@ -351,35 +351,38 @@ const OWN_MANIFEST_URL = new URL('./package.json', import.meta.url);
  * `peerDependencies['@deepseek-ai/dsh']` in `package.json`, so the two cannot
  * drift apart silently.
  *
- * The `||` alternative has two jobs. Under **strict** `node-semver` (npm/pnpm
- * peer resolution, *without* `includePrerelease`) it is what makes the 0.2.x
- * line reachable at all: strict semver refuses a prerelease unless some
- * comparator names that very `[major, minor, patch]` tuple with a prerelease of
- * its own, and the first branch's only prerelease comparator is `0.1.7-rc.2`.
- * Under *every* parser it is also the branch that carries the range past the
- * `0.2.0` release (`<0.2.0` on its own stops one version short). This plugin's
- * own parser implements no prerelease exclusion, so for it the second branch is
- * numerically a superset extension of the first. The platform's own gate passes
- * `includePrerelease: true`, so there the first branch alone already admits the
- * 0.2.0 prereleases.
+ * Every `||` alternative after the first exists for **strict** `node-semver`
+ * (npm/pnpm peer resolution, *without* `includePrerelease`), which refuses a
+ * prerelease unless some comparator **in the same alternative** names that very
+ * `[major, minor, patch]` tuple with a prerelease of its own. The first branch's
+ * only prerelease comparator is `0.1.7-rc.2` (tuple `0.1.7`), so it cannot admit
+ * any `0.2.x` prerelease on its own; **each 0.2.x minor therefore needs its own
+ * branch**, with a lower bound at that tuple's smallest prerelease. Under every
+ * parser those branches also carry the range past the matching release
+ * (`<0.2.0` on its own stops one version short of `0.2.0`). This plugin's own
+ * parser implements no prerelease exclusion, so for it each added branch is
+ * numerically a superset extension. The platform's own gate passes
+ * `includePrerelease: true`, so there a prerelease merely has to fall inside
+ * some branch numerically — which is why a new minor needs a new branch rather
+ * than a widened bound on an earlier one.
  *
- * The alternative's lower bound must stay at `0.2.0-0`, the **smallest** `0.2.0`
- * prerelease: strict semver whitelists the tuple, it does not rank it, so a
- * higher bound such as `>=0.2.0-rc.2` puts `0.2.0-alpha`, `beta` and `rc.1`
- * out of range.
+ * A branch's lower bound must be the **smallest** prerelease of its tuple
+ * (`0.2.0-0`, `0.2.1-0`, …): strict semver whitelists the tuple, it does not
+ * rank it, so a higher bound such as `>=0.2.1-alpha` would put `0.2.1-0` — and
+ * with it every other `0.2.1` prerelease below `alpha` — out of range.
  *
- * The **final** upper bound is `<0.2.1-0`, not `<0.2.0` (NOTES.md §100). The
+ * The **final** upper bound is `<0.2.2-0`, not `<0.2.1-0` (NOTES.md §124). The
  * platform's boot gate judges each profile bundle against this range and
  * **skips the whole bundle** when it fails (`dsh-app-boot`: `skipping profile
  * bundle … is incompatible with dsh …`), before a single line of this package
- * is imported — so its own self-check cannot help. A range whose highest
- * admitted version is `0.2.0-rc.N` therefore loses the plugin on the day
- * `0.2.0` ships. `0.2.0` and every earlier 0.2.x prerelease are in;
- * `0.2.1-0` and everything after it are out, because a new minor is
- * unverified until a new decision says otherwise.
- * See NOTES.md §98, §99 and §100.
+ * is imported — so its own self-check cannot help. That is exactly what happened
+ * on DSH `0.2.1-alpha.2`: the plugin vanished from the profile and the platform
+ * refused to install it at all. `0.2.1` and every `0.2.1` prerelease are in;
+ * `0.2.2-0` and everything after it are out, because a new minor is unverified
+ * until a new decision says otherwise.
+ * See NOTES.md §98, §99, §100 and §124.
  */
-export const DSH_PEER_RANGE_FALLBACK = '>=0.1.7-rc.2 <0.2.0 || >=0.2.0-0 <0.2.1-0';
+export const DSH_PEER_RANGE_FALLBACK = '>=0.1.7-rc.2 <0.2.0 || >=0.2.0-0 <0.2.1-0 || >=0.2.1-0 <0.2.2-0';
 
 /**
  * The DSH range this plugin was tested against, read from its own manifest at

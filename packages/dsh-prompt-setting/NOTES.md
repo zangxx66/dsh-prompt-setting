@@ -6354,3 +6354,58 @@ awk '/^    \/\/ #region chunk boundary \(g-045\)/,/^    \/\/ #endregion/' client
   负向对照实测：内联 `shared.nope` ⇒ 引用侧红；`const UI = null` ⇒ 定义侧红；正向对照：`const { UI } = shared` 仍绿。
   **未做成完整的自由变量分析**（那需要 JS 解析器，与本包零依赖冲突）—— 这一限制已写进 `CONTRACT.md` §13.0 Revision 30 与本文件第二节，不悄悄留着：剩下的缺口（引用了却没取用）由运行时兜底（未声明标识符抛 `ReferenceError`，打开该 tab 的测试即红）。
 - 收口后复跑：`node --test` ⇒ **736 pass / 0 fail / skipped 0**；`node scripts/client-chunks.mjs` ⇒ 4 项一致；`node scripts/prepare.mjs` ⇒ 21 项通过；`npm pack --dry-run` ⇒ 29 个文件。
+
+## 124. DSH peer 范围纳入 0.2.1 线：新增 `>=0.2.1-0 <0.2.2-0`（2026-10-09，基线 `5f00b76` 工作区）
+
+### 一、P0：插件在 0.2.1-alpha.2 上直接消失
+
+- 运行时升到 **DSH 0.2.1-alpha.2** 后，原范围 `>=0.1.7-rc.2 <0.2.0 || >=0.2.0-0 <0.2.1-0` 把 **0.2.1 整条 line** 排除。
+- 两个可观测后果（本机实测）：
+  1. 宿主 boot 闸门跳过整个 bundle —— 日志逐字：`dsh: skipping profile bundle "dsh-prompt-setting"`；
+  2. 平台**拒绝安装** —— `dsh plugin --profile web add …` 输出 `dsh: nothing was installed.` 并给出
+     `dsh plugin --profile web allow-version dsh-prompt-setting@0.1.5 --dsh-version 0.2.1-alpha.2 --accept-risk`。
+- 与 §100 记的 P0 是**同一机制**：闸门在任何本包代码被 import **之前**生效，所以包内自检（`reportBootCompatibility`）救不了它。
+
+### 二、为什么必须新增分支，而不是放宽上界
+
+§98/§99 已记：严格 `node-semver`（npm/pnpm peer 解析，**不带** `includePrerelease`）只认「**同一个 alternative 内**存在同 `[major, minor, patch]` tuple 且自带 prerelease 的比较器」。
+实测（本机 `semver@7.8.5`）：
+
+| 版本 | 原范围 | 三段式（本轮） | 只把第二分支上界放宽到 `<0.2.2-0` |
+|---|---|---|---|
+| `0.2.1-alpha.2` | false | **true** | **false** |
+| `0.2.1` | false | true | true |
+| `0.2.2-0` | false | false | false |
+
+⇒ 「懒写」`>=0.2.0-0 <0.2.2-0` 对 `0.2.1-alpha.2` **仍然 false**（0.2.1 这个 tuple 里没有任何比较器）。故新增第三分支 `>=0.2.1-0 <0.2.2-0`，下界取该 tuple 的**最小** prerelease（§99 同一理由：白名单只认 tuple，不认排序）。
+
+### 三、终态范围与同步点
+
+```
+"@deepseek-ai/dsh": ">=0.1.7-rc.2 <0.2.0 || >=0.2.0-0 <0.2.1-0 || >=0.2.1-0 <0.2.2-0"
+```
+
+语义：`0.1.7-rc.2` 起的全部 0.1.x、`0.2.0` 与 `0.2.1` 两行的**全部预发布 + 正式版**都在范围内；`0.2.2-0` 及以后一律出界（新 minor 未经评估不放行）。
+
+同步点（**9 文件**）：`package.json`（权威源）、`index.js`（`DSH_PEER_RANGE_FALLBACK` + 注释；测试断言两者逐字相等）、`test/boot.test.mjs`（边界表 + 桥/上界两条形状断言）、`test/host.test.mjs`（manifest 正则）、`scripts/check-compat.mjs`（超范围样例 `0.2.1-0` → `0.2.2-0`）、`core/compat.js`（注释）、四份 README（根/包内 × 中英）+ 两个徽章（`<0.2.1-0` → `<0.2.2-0`，仍是有效集合的上下界写法）。
+
+### 四、护栏与它给出的信号
+
+- 桥断言：`>=0.2.x-` 比较器必须恰为 `['>=0.2.0-0', '>=0.2.1-0']`；
+- 上界断言：所有 `<` 比较器必须恰为 `['<0.2.0', '<0.2.1-0', '<0.2.2-0']`；
+- 所有「超范围样例」从 `0.2.1-0` 改为 `0.2.2-0`。⚠️ 本轮首跑 3 红**正是护栏在指路**：`0.2.1-0` 在新范围里变成**范围内**，于是 `boot.test.mjs` 的两条出界用例与 `host.test.mjs` 的 manifest 正则一起变红——这是「改范围必须同步改动点」的机械保障，不是障碍。
+
+### 五、验证
+
+| 项 | 结果 |
+|---|---|
+| `node --test` | **737 pass / 0 fail / 0 skip** |
+| `node-semver` 实测 | `0.2.1-alpha.2` / `0.2.1` = true；`0.2.2-0` / `0.3.0` = false |
+| `node scripts/check-compat.mjs` | 退出 0，结论「兼容（在已测试范围内）」 |
+| 真机（临时 `DSH_HOME` + 0.2.1-alpha.2 宿主） | 装包成功；宿主日志 `skipping profile bundle` 计数 **0**；`/prompt-setting/ping` 与 `/download-region` 均 **200** |
+
+### 六、未验证
+
+- **未在用户主 profile 上重装验证**（那需要动他的运行环境）；本机以临时 `DSH_HOME` 等价取证。
+- npm 上已发布的 `0.1.5` 仍是**旧 peer** ⇒ 用户若从 npm 装，仍需等一版发布才会带上本修复；本地 `link:` 安装则立即生效。
+- 本次**未同步版本号**（仍 `0.1.5`），属于发布准备的范围。
