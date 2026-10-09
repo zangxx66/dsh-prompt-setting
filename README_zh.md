@@ -9,7 +9,7 @@ Prompt 管理器：**看得见**每一轮会话最终装配出来的系统提示
 全程**不碰 DSH 全局安装包**。
 
 ![license](https://img.shields.io/badge/license-MIT-blue)
-![version](https://img.shields.io/badge/version-0.1.5-blue)
+![version](https://img.shields.io/badge/version-0.2.0-blue)
 ![dsh](https://img.shields.io/badge/DSH-%3E%3D0.1.7--rc.2%20%3C0.2.2--0-blueviolet)
 ![deps](https://img.shields.io/badge/dependencies-0-brightgreen)
 
@@ -88,7 +88,7 @@ DSH 每轮会话都会注入一段由 `@deepseek-ai/dsh-system-prompt` 装配出
 0.1.x、`0.2.0` 与 `0.2.1` 的全部预发布（`-0` / `alpha` / `beta` / `rc.N`）以及 **这两个 minor 的正式版本身**都在
 范围内；`0.2.2-0` 及以后一律出界——新的 minor 未经评估不放行）。跑测试和开发才需要 Node `>= 22`。
 
-**首选从 npm 装**（本包已发布，npm 上的当前版本是 `0.1.5`，`latest`）：
+**首选从 npm 装**（本包已发布，npm 上的 `latest` 为 `0.1.5`；本仓库为 `0.2.0`，发布后两者一致）：
 
 ```sh
 dsh plugin --profile <profile 名> add dsh-prompt-setting
@@ -238,11 +238,11 @@ node --check index.js && node --check client.js && for f in core/*.js scripts/*.
 node --test                    # 十八个套件；集成套件用真 DSH 包跑对照实验，须为 pass（非 skip）
 node scripts/check-compat.mjs  # 只读兼容性自检（不联网、永不抛、退出码恒 0）
 node scripts/prepare.mjs       # prepare 门禁：从 git 安装时 pnpm 会自动跑它（不通过则 exit 1）
-npm pack --dry-run             # 确认发布产物干净（24 个文件、无 test/、无 .dsh-graph）
+npm pack --dry-run             # 确认发布产物干净（29 个文件、无 test/、无 .dsh-graph）
 ```
 
-最近一次在本机跑的结果：`node --test` **634 项全部通过、0 skipped**（含集成套件 31 项），
-`npm pack --dry-run` 24 个文件（2026-10-08 实测）。
+最近一次在本机跑的结果：`node --test` **740 项全部通过、0 skipped**（含集成套件 31 项），
+`npm pack --dry-run` 29 个文件（2026-10-09 实测）。
 
 要点：
 
@@ -280,7 +280,7 @@ DSH 升级后插件没出现、终端也没报错时，先跑 `node scripts/chec
 | [`packages/dsh-prompt-setting/README.md`](./packages/dsh-prompt-setting/README.md) | 使用者 / 开发者 | 包简介与功能（中英对照）、安装、维护者要点、出问题时怎么办 |
 | [`CONTRACT.md`](./packages/dsh-prompt-setting/CONTRACT.md) | 开发者 | 冻结的 REST 契约：字段、动作枚举、字段上限、每一个 4xx |
 | [`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) | 开发者 | 设计取舍与实测记录（含未验证项与已推翻的旧结论） |
-| [`CHANGELOG.md`](./CHANGELOG.md) | 使用者 / 开发者 | 每个版本的用户可感知变更（中英对照；已发布，npm 上的当前版本为 `0.1.5`（`latest`）） |
+| [`CHANGELOG.md`](./CHANGELOG.md) | 使用者 / 开发者 | 每个版本的用户可感知变更（中英对照；已发布——npm 上的 `latest` 为 `0.1.5`，本仓库为 `0.2.0`） |
 
 ## 九、状态与路线图
 

@@ -10,6 +10,83 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
+## [0.2.0] - 2026-10-09
+
+**功能版本：更新检查改从 npm registry 读取并新增「下载区域」选择，客户端按需分块加载，DSH peer 范围纳入
+0.2.1 线，并修复「版本历史」与「查看范围」的多处体验问题。 / Feature release: the update check now reads
+the npm registry and gains a "download region" choice, the client loads in on-demand chunks, the DSH peer
+range takes in the 0.2.1 line, and several version-history and "view scope" defects are fixed.**
+
+### Added 新增
+
+- **更新检查改从 npm registry 读取（g-042）**：插件不再只问 GitHub Release，而是先读 npm registry 的
+  `dist-tags.latest` 与 `versions[<latest>].dist.tarball`（**顶层没有 `dist`，真实下载地址在版本条目
+  里**），GitHub Release 作为回退。安装时同样优先使用该 tarball。响应因此新增 `source` 字段区分来源。
+  **The update check reads the npm registry (g-042)**: instead of asking only GitHub Releases, the plugin
+  first reads the registry's `dist-tags.latest` and `versions[<latest>].dist.tarball` (there is **no
+  top-level `dist`**; the real artifact URL lives in the version entry), falling back to the GitHub
+  release. Installation prefers the same tarball, and the response carries a new `source` field.
+- **「下载区域」选择（g-043）**：「检查更新」卡片新增下载区域——**默认**、**中国大陆**（npmmirror 镜像）、
+  **自定义**。默认值由**能否真正取到本包**这一连通性探测决定（按延迟取最快，**不使用第三方 IP 地理定位**，
+  因此不受代理影响）；自定义地址经严格校验（必须是 http(s)、主机非空，且不带账号密码、查询串或片段），
+  非法时给出红字说明且不落盘。
+  **A "download region" choice (g-043)**: the update card gains a source selector — **Default**, **Chinese
+  mainland** (the npmmirror mirror) and **Custom**. The default is decided by a connectivity probe that asks
+  whether a source can actually serve *this* package (fastest wins; **no third-party IP geolocation**, so a
+  proxy does not mislead it). A custom address is strictly validated (http(s), non-empty host, no
+  credentials, query string or fragment) and an invalid one is refused with a red explanation, writing
+  nothing.
+
+### Changed 变更
+
+- **客户端按需分块（g-045 / g-046）**：设置面板的客户端代码不再一次性全部加载——「提示词总览」「高级」
+  「备份与恢复」「版本历史」各自成为按需加载的分块，主文件瘦身约 16%，打开设置时不请求任何分块。构建
+  指纹随之覆盖全部 5 个文件并逐块校验，页面上的「构建戳」在任一分块损坏时会**明确报不一致**，而不是
+  显示「一致」。
+  **The client loads in on-demand chunks (g-045 / g-046)**: the settings panel no longer ships as one
+  payload — "Prompt overview", "Advanced", "Backup and restore" and "Version history" are each a chunk that
+  loads when its tab is opened; the main file shrank by about 16%, and opening settings requests no chunk at
+  all. The build fingerprint now covers all five files and verifies every chunk, so a damaged chunk makes the
+  page's build stamp report a mismatch instead of "in sync".
+- **DSH peer 范围纳入 0.2.1 线**：`>=0.1.7-rc.2 <0.2.0 || >=0.2.0-0 <0.2.1-0 || >=0.2.1-0 <0.2.2-0`，
+  即 `0.2.1` 的全部预发布与正式版都在支持范围内；`0.2.2-0` 及以后出界。**在 DSH 0.2.1 上插件此前会被
+  平台整体跳过（装不上、也不加载）**，本版修复。
+  **The DSH peer range takes in the 0.2.1 line**: `>=0.1.7-rc.2 <0.2.0 || >=0.2.0-0 <0.2.1-0 ||
+  >=0.2.1-0 <0.2.2-0` — every prerelease and release of `0.2.1` is supported, and `0.2.2-0` onward is out.
+  **On DSH 0.2.1 the plugin used to be skipped by the platform entirely** (it could neither be installed nor
+  loaded); this release fixes that.
+
+### Fixed 修复
+
+- **「版本历史」列表高度过低（g-044）**：窗口化时列表只显示一条、最大化也仅多几条——面板改为按运行时可
+  用高度撑满，不再依赖估算的视口偏移。
+  **The "version history" list was too short (g-044)**: a windowed browser showed a single row (a maximised
+  one only a few), because the panel height was an estimated viewport offset; it now measures the space
+  actually available at run time.
+- **「版本历史」曾列出插件注册的段（g-044）**：列表不再展示由插件注册（而非用户覆盖）的段，只保留用户
+  自己写下的记录。
+  **The history list used to show plugin-registered sections (g-044)**: it no longer lists sections that a
+  plugin registered rather than the user overriding, keeping only the records the user wrote.
+- **「搜索会话」输入框被会话标题占用（g-047）**：在「查看范围」里选中一个会话后，搜索框不再被填入该会话
+  标题——**输入框只装用户自己敲的内容**，占位符恒为「搜索会话（标题 / 路径 / session id）」。此前被填入
+  的标题还会立即参与过滤，甚至可能被当作 session id 解析。
+  **The "search sessions" box was overwritten with the session title (g-047)**: selecting a session no longer
+  writes its title into the search box — the box holds **only what the user typed**, and its placeholder is
+  always "Search sessions (title / path / session id)". The old behaviour also fed that title straight into
+  filtering and could even parse it as a session id.
+- **回滚 / 重置 / 导入之后编辑器仍显示旧文本（g-049）**：「我的 Prompt」的编辑框在服务端内容已改变后
+  不再停留在旧文本上。若框内内容只是原样重复了旧的已保存值，会被静默丢弃并跟上新值；若框内是**尚未保存
+  的编辑**，则保留内容并在提示里说明「配置已在别处更新」，**不会悄悄丢掉你写的字**。
+  **After a rollback, a reset or an import the editor still showed the old text (g-049)**: the "My prompt"
+  box no longer keeps showing text the layer no longer holds. A box that merely repeated the previous saved
+  value is dropped silently and follows the new value; a box holding **unsaved edits** keeps them, and the
+  notice says the configuration changed elsewhere — your text is never thrown away silently.
+- **中文提示「检查更新已已开启」（重复字）**：模板与状态值各带一个「已」，已修正为「检查更新已开启」。
+  **The Chinese notice read "检查更新已已开启" (a duplicated character)**: both the template and the state
+  value carried the same prefix; it now reads "检查更新已开启".
+
+---
+
 ## [0.1.5] - 2026-10-08
 
 **功能版本：版本历史与备份拆成两个 tab，历史作用域与「查看范围」解耦，列表分页，新增记录预览与一键
