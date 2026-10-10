@@ -2002,8 +2002,10 @@ answers with the same fields as before (§3); what changes is which of them
   `mergeLayers`' precedence, the interpolation merge and every assembly result
   are untouched;
 - **no wire change**: `GET /overrides` keeps its fields and their meanings; the
-  fix is which list the client reads. The `null` / `""` distinction is kept: an
-  absent entry is 「未配置」, an entry with empty text is a stored empty value.
+  fix is which list the client reads. The `null` / `""` distinction is kept **in
+  what the reader returns**: an absent entry is `null`, an entry with empty text
+  is `''`. What the panel renders for those two is unchanged — both read as
+  「未配置」, as before this revision (and as §13.1 states below).
 
 ### 13.1 「我的 Prompt」 — the one write surface
 
