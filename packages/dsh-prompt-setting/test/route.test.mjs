@@ -13,13 +13,14 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
+import { tmpdir, homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test, { afterEach, beforeEach } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { apply, inject, CUSTOM_SECTION_NAME } from '../index.js';
-import { renderSections } from '../core/overrides.js';
+import { applyOverrides, mergeLayers, renderSections, validateConfig } from '../core/overrides.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = join(here, '..');
@@ -352,6 +353,27 @@ function workspaceWith(id, sessionId, config) {
     );
   }
   return { id, path: root, title: id, createdAt: '2024-01-01T00:00:00.000Z', updatedAt: '2024-01-01T00:00:00.000Z', sessionIds: [sessionId] };
+}
+
+/**
+ * The repository root of THIS checkout, resolved through git.
+ *
+ * `PACKAGE_ROOT/../..` is the worktree root when the suite runs inside a
+ * `.worktrees/<goal>` tree, which does not carry the real workspace layer file;
+ * the repository root does. Read-only and never fatal: a missing git binary or
+ * a non-repository just yields a path that will not exist, and the caller
+ * reports that instead of guessing.
+ * @returns the absolute repository root, or a path that will not resolve.
+ */
+function repositoryRoot() {
+  try {
+    return execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], {
+      cwd: PACKAGE_ROOT,
+      encoding: 'utf8',
+    }).trim().replace(/\/\.git$/, '');
+  } catch {
+    return join(PACKAGE_ROOT, '..', '..');
+  }
 }
 
 test('host: injects webServer, connection and the hard systemPrompt dependency', () => {
@@ -1009,6 +1031,139 @@ test('g-054 overrides GET: each layer view keeps its own entry when both name th
     { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'USER MINE' },
   ]);
   assert.deepEqual(alone.workspace.overrides, []);
+});
+
+test('g-057 snapshot: a blank workspace reserved section does not blank the user layer text', async () => {
+  // THE production bug, at the assembly layer: the user file holds the real
+  // text and the workspace file holds the same name with `text: ""`. Before
+  // Revision 35 the workspace entry blanked the section and the user's text
+  // never reached a prompt in that workspace.
+  const workspace = workspaceWith('ws', 's1');
+  const { route } = mount({ workspaces: [workspace] });
+  const put = (layer, text, session) =>
+    call(route, {
+      method: 'PUT',
+      url: OVERRIDES_PATH,
+      body: JSON.stringify({
+        layer,
+        ...(session === undefined ? {} : { session }),
+        section: { name: CUSTOM_SECTION_NAME, action: 'replace', text },
+      }),
+    });
+  assert.equal((await put('user', 'USER MINE')).statusCode, 200);
+  assert.equal((await put('workspace', '', 's1')).statusCode, 200);
+
+  // Both files really are on disk in the two-layer shape (the fixture, not a
+  // hand-built merge) — this is what makes the payload below evidence.
+  assert.deepEqual(JSON.parse(readFileSync(userPath(), 'utf8')).overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'USER MINE' },
+  ]);
+  const wsPath = join(workspace.path, '.dsh-prompt-setting', 'overrides.json');
+  assert.deepEqual(JSON.parse(readFileSync(wsPath, 'utf8')).overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: '' },
+  ]);
+
+  const payload = json(await call(route, { url: `${SNAPSHOT_PATH}?session=s1` }));
+  const custom = payload.effective.sections.find((section) => section.name === CUSTOM_SECTION_NAME);
+  assert.equal(custom.text, 'USER MINE', 'the blank workspace layer states nothing, so the user text applies');
+  assert.equal(custom.overrideLayer, 'user');
+  assert.equal(custom.applied, true);
+  assert.equal(payload.rendered.endsWith('\n\nUSER MINE'), true);
+
+  // `merged` is "the list the assembly would apply", so it follows: one entry,
+  // the user's, and no workspace blank competing with it.
+  const overrides = json(await call(route, { url: `${OVERRIDES_PATH}?session=s1` }));
+  assert.deepEqual(overrides.merged.overrides.map((entry) => [entry.name, entry.layer, entry.text]), [
+    [CUSTOM_SECTION_NAME, 'user', 'USER MINE'],
+  ]);
+  // Each layer view still describes its OWN file (g-054), blank entry included:
+  // the write face keeps storing what the user typed.
+  assert.deepEqual(overrides.workspace.overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: '' },
+  ]);
+});
+
+test('g-057 snapshot: a non-empty workspace reserved text still wins, and two blanks apply nothing', async () => {
+  const workspace = workspaceWith('ws', 's1');
+  const { route } = mount({ workspaces: [workspace] });
+  const put = (layer, text, session) =>
+    call(route, {
+      method: 'PUT',
+      url: OVERRIDES_PATH,
+      body: JSON.stringify({
+        layer,
+        ...(session === undefined ? {} : { session }),
+        section: { name: CUSTOM_SECTION_NAME, action: 'replace', text },
+      }),
+    });
+  // Precedence is untouched: a non-empty workspace text overrides. Position too.
+  assert.equal((await put('user', 'USER MINE')).statusCode, 200);
+  assert.equal((await put('workspace', 'WS MINE', 's1')).statusCode, 200);
+  const won = json(await call(route, { url: `${SNAPSHOT_PATH}?session=s1` }));
+  const customWon = won.effective.sections.find((section) => section.name === CUSTOM_SECTION_NAME);
+  assert.deepEqual([customWon.text, customWon.overrideLayer], ['WS MINE', 'workspace']);
+  assert.equal(won.base.sections.at(-1).name, CUSTOM_SECTION_NAME, 'the reserved section stays last');
+  assert.equal(won.rendered.endsWith('\n\nWS MINE'), true);
+
+  // Both layers blank ⇒ nothing is applied to the section at all: it keeps the
+  // text it was registered with (empty), so the renderer drops it and the
+  // prompt is byte-identical to an unconfigured install's.
+  const bare = workspaceWith('bare', 's2');
+  const second = mount({ workspaces: [bare] });
+  const userPut = (layer, text, session) =>
+    call(second.route, {
+      method: 'PUT',
+      url: OVERRIDES_PATH,
+      body: JSON.stringify({
+        layer,
+        ...(session === undefined ? {} : { session }),
+        section: { name: CUSTOM_SECTION_NAME, action: 'replace', text },
+      }),
+    });
+  assert.equal((await userPut('user', '', undefined)).statusCode, 200);
+  assert.equal((await userPut('workspace', '   ', 's2')).statusCode, 200);
+  const both = json(await call(second.route, { url: `${SNAPSHOT_PATH}?session=s2` }));
+  const customBoth = both.effective.sections.find((section) => section.name === CUSTOM_SECTION_NAME);
+  assert.deepEqual([customBoth.text, customBoth.applied, customBoth.overrideLayer], ['', false, null]);
+  assert.equal(both.rendered.endsWith('\n\n'), false, 'no empty section may reach the rendered prompt');
+});
+
+test('g-057 real files: the live 384-char user prompt survives the live blank workspace entry', () => {
+  // 真机数据证据, read-only: the REAL files on this machine, through this
+  // host's own merge/assembly kernels. `/prompt-setting/*` needs auth (401), so
+  // the HTTP route is not the way in; the pure pipeline is. Nothing here writes:
+  // the repository root is resolved through git so the case works both from the
+  // main checkout and from a worktree (whose own root has no layer file).
+  const realUser = join(homedir(), '.dsh', 'prompt-setting', 'overrides.json');
+  const realWorkspace = join(repositoryRoot(), '.dsh-prompt-setting', 'overrides.json');
+  if (!existsSync(realUser) || !existsSync(realWorkspace)) {
+    // A fresh clone has no such files; the fixture assertions above still cover
+    // the same shape. Reported instead of silently skipped.
+    assert.ok(true, `real-file evidence unavailable: ${realUser} / ${realWorkspace}`);
+    return;
+  }
+  const userConfig = validateConfig(JSON.parse(readFileSync(realUser, 'utf8')));
+  const workspaceConfig = validateConfig(JSON.parse(readFileSync(realWorkspace, 'utf8')));
+  const userEntry = userConfig.overrides.find((entry) => entry.name === CUSTOM_SECTION_NAME);
+  const workspaceEntry = workspaceConfig.overrides.find((entry) => entry.name === CUSTOM_SECTION_NAME);
+  assert.ok(userEntry, `the real user file ${realUser} must carry the reserved section`);
+  assert.ok(workspaceEntry, `the real workspace file ${realWorkspace} must carry the reserved section`);
+  assert.equal(workspaceEntry.action, 'replace');
+  assert.equal(workspaceEntry.text, '', 'the real workspace file holds the blank reserved entry');
+  const userText = userEntry.text;
+  assert.equal(userEntry.action, 'replace');
+  assert.ok([...userText].length > 0, 'the real user layer carries the prompt text');
+
+  // The host's own merge + assembly kernels, on those two real documents.
+  const merged = mergeLayers(userConfig, workspaceConfig);
+  assert.deepEqual(
+    merged.overrides.filter((entry) => entry.name === CUSTOM_SECTION_NAME).map((entry) => entry.layer),
+    ['user'],
+  );
+  const applied = applyOverrides([{ name: CUSTOM_SECTION_NAME, text: '' }], merged);
+  const effective = applied.sections.find((section) => section.name === CUSTOM_SECTION_NAME);
+  assert.equal(effective.text, userText, 'the real user prompt is what the assembly receives');
+  assert.ok(effective.text.length > 0);
 });
 
 test('overrides PUT: writes the reserved section atomically and takes effect on the next assembly', async () => {

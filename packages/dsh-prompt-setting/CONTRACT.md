@@ -953,6 +953,12 @@ stored value reads that layer's view, never `merged` (§13.1, g-054).
 `enabled: false` always carries a `reason`; the layer still reports its `path`
 when one could be resolved.
 
+Because `merged` *is* the assembly's list, the reserved-section rule of
+Revision 35 shows up here **as a consequence, not as a field change**: a blank
+`replace` of `prompt-setting:custom-prompt` in one layer is "that layer states
+nothing" for that section, so it is not in `merged` at all and the other layer's
+non-empty entry is. Every other section keeps the plain dedup above.
+
 ## 4. `PUT` and `DELETE /prompt-setting/overrides`
 
 ### 4.1 `PUT` (Revision 7: the reserved section and `replace`, nothing else)
@@ -2057,6 +2063,61 @@ the draft's owner, and `data-warning="mine-draft-elsewhere"` carrying
 - **Revision 32 (g-050) is unchanged**: an operation that changes the stored text
   still reconciles the draft by A's rule — equal to the stored text ⇒ follow the
   new value, different ⇒ keep it and say `mineDraftKept`.
+
+**Revision 35 (g-057: a blank reserved section in one layer states nothing —
+host-half behaviour change; no wire, storage, field or interpolation change).**
+The reserved section `prompt-setting:custom-prompt` now merges across layers by
+*statedness* instead of by "the entry exists". `GET /overrides`, the stored
+files, the response fields and their meanings are all unchanged; what changes is
+**which of two same-named reserved entries the assembly applies** when one of
+them carries no text.
+
+- **what was wrong.** `mergeLayers` deduplicated by name alone, so a workspace
+  entry `{name: "prompt-setting:custom-prompt", action: "replace", text: ""}`
+  replaced the user layer's entry wholesale. The merged list then held one blank
+  entry, the assembly wrote `""` into the reserved section, and the user layer's
+  real text (384 characters on the machine where this was found) never reached a
+  prompt in that workspace — with no notice anywhere, because "an entry exists"
+  read as "this layer has decided";
+- **the rule.** While resolving the reserved section, a layer whose
+  `prompt-setting:custom-prompt` entry is a `replace` with **no text** counts as
+  **that layer stating nothing** for this one section, and does not take part in
+  the section's value. The 口径 (the exact test, matching `statesNoReservedText`
+  in `core/overrides.js`) is: the name is exactly the reserved one; the action is
+  exactly `replace`; and the text is `undefined`, `null`, a missing field, or a
+  string that is empty after `String(text).trim()` — so `""`, `"   "` and
+  `"\n\t"` are all emptiness, and a value that only differs by surrounding
+  whitespace cannot blank a layer by accident;
+- **the consequences.** User layer non-empty + workspace layer blank ⇒ the user
+  text is what the assembly applies (`layer: "user"`); user blank + workspace
+  non-empty ⇒ the workspace text, as before; **both blank ⇒ the section is not in
+  the merged list at all**, so nothing is applied to it and it keeps the empty
+  text it was registered with (§15.2's "zero contribution" is preserved; an
+  unconfigured install and a two-blank install stay byte-identical). Layer
+  precedence, the entry's position in the list and the interpolation merge are
+  untouched: a non-empty workspace text still overrides a non-empty user text;
+- **reserved section only.** Every other section keeps the older semantics, in
+  which `action: "replace"` with `text: ""` is an **explicit instruction to blank
+  that section** — that capability is a feature, not an accident, and it is
+  asserted in `test/overrides.test.mjs` so a later change cannot widen this rule
+  by accident. `action: "hide"` is likewise an explicit declaration (it carries
+  no `text` at all by validation) and keeps hiding the section, in either layer:
+  the new rule applies to a blank **`replace`** and to nothing else. An `append`
+  of the reserved name is refused by the write face (§4.1, §12.1) and is not
+  re-interpreted here;
+- **where it is implemented.** One predicate in `core/overrides.js`
+  (`statesNoReservedText`), applied while each layer is assembled into its tagged
+  list, so it behaves identically whether one layer is present or two. Every
+  caller of `mergeLayers` therefore gets the new semantics with no per-call-site
+  code: `resolvedFor` (the real turn, §15.1), the snapshot probe (§11.3), and
+  `GET /overrides`'s `merged` (§3);
+- **no wire change.** No route, query parameter, response field, config key,
+  stored byte or marker is added, removed or re-typed. `merged` follows the new
+  rule **because it is defined as the list the assembly applies** (§3) — that is
+  the field doing its job, not a new field. Each layer's own view keeps showing
+  what that layer's file stores, blank entry included (§13.1, g-054), and the
+  write face keeps storing what the user typed (g-056). `reservedTextOf`'s
+  per-layer read is untouched.
 
 ### 13.1 「我的 Prompt」 — the one write surface
 

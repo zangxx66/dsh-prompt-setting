@@ -20,6 +20,8 @@
  * @module dsh-prompt-setting/core/overrides
  */
 
+import { CUSTOM_SECTION_NAME } from './custom.js';
+
 /** The only accepted `action` values, in contract order. */
 export const ACTIONS = Object.freeze(['replace', 'hide', 'append']);
 /** The only accepted `layer` values. `workspace` wins over `user` on a name clash. */
@@ -258,6 +260,15 @@ export function validateConfig(raw) {
  * config states nothing at all (which reads as OFF). A workspace layer that
  * states nothing therefore inherits the user layer instead of silently turning
  * the switch off.
+ *
+ * The reserved「我的 Prompt」section merges on statedness too (Revision 35):
+ * a layer whose `replace` carries no text at all (`""`, only whitespace, `null`,
+ * `undefined`, a missing `text` field) counts as *that layer stating nothing*
+ * for this one section, so the other layer's non-empty text survives instead of
+ * being blanked. Only the reserved section name is treated that way; every
+ * other section keeps the older "a text, however short, is a decision"
+ * semantics, which is what lets an empty `text` still blank a section on
+ * purpose.
  * @param userConfig - the user layer (already validated), or null.
  * @param workspaceConfig - the workspace layer (already validated), or null.
  * @returns `{version, overrides}` where every entry carries its `layer`, plus
@@ -277,13 +288,49 @@ export function mergeLayers(userConfig, workspaceConfig) {
 
 /**
  * Tag one layer's validated overrides with their layer name.
+ *
+ * Revision 35: a reserved-section entry that states no text is dropped right
+ * here, before any cross-layer comparison can see it, so it can neither win a
+ * name clash nor count as a workspace-only entry. Dropping it at the per-layer
+ * step (rather than inside the merge loop) is what makes a layer-emptiness rule
+ * behave identically whether one layer or both are present.
  * @param config - the validated layer config, or null.
  * @param layer - the layer name to tag with.
  * @returns the layer-tagged override list (a fresh array).
  */
 function toOverrides(config, layer) {
   const list = Array.isArray(config?.overrides) ? config.overrides : [];
-  return list.map((override) => ({ ...override, layer }));
+  return list
+    .filter((override) => !statesNoReservedText(override))
+    .map((override) => ({ ...override, layer }));
+}
+
+/**
+ * Whether an entry states *nothing* for the reserved「我的 Prompt」section.
+ *
+ * The判定口径 (Revision 35) is deliberately narrow, because it changes what the
+ * assembly applies:
+ * - the name must be exactly {@link CUSTOM_SECTION_NAME};
+ * - the action must be `replace`. `hide` is an *explicit* declaration ("take
+ *   the section out of the prompt") and carries no `text` field by validation,
+ *   so treating its missing text as emptiness would silently undo an explicit
+ *   hide; `append` of the reserved name is refused by the write face anyway
+ *   (`core/custom.js`) and must not be re-interpreted here;
+ * - the text must be `null` / `undefined` / a missing field, or a string that
+ *   is empty after `String(text).trim()`, so `"   "` and `"\n\t"` are emptiness
+ *   too and cannot blank a layer by accident.
+ *
+ * A non-empty text is a decision even for the reserved section, so this is the
+ * ONLY rule that may drop an entry; nothing else about `mergeLayers` changes.
+ * @param override - a validated override record (untagged).
+ * @returns whether the entry must be read as "this layer states nothing".
+ */
+function statesNoReservedText(override) {
+  if (override?.name !== CUSTOM_SECTION_NAME) return false;
+  if (override.action !== 'replace') return false;
+  const text = override.text;
+  if (text === undefined || text === null) return true;
+  return typeof text === 'string' && text.trim() === '';
 }
 
 /**
