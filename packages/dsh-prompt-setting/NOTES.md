@@ -6765,3 +6765,97 @@ npm 读取、下载区域）、`### Changed 变更` 2 条（客户端按需分�
   宿主写入面本身不吞文本（`validateOverride` 接受空串并原样落盘），故工作区层那两条 `textLen=0` 的
   history 与 `text:""` 是「提交了空文本」，不是存储或装配丢文本。修法（新 attempt）方向：草稿键不应
   绑定 scope，或 scope 变化时迁移当前框内容。
+## 130. g-056：草稿键绑定「写入目标」而非「查看范围」（Revision 34，2026-10-10，基线 `91fd55e` 隔离工作树）
+
+### 一、现象（探针实测，非推测）
+
+- 输入未保存文本 → 把「查看范围」从 `s2` 切到 global ⇒ 编辑框值 `""`、`data-mine-state="unconfigured"`；
+  此时点「保存」，实际发出 `PUT /prompt-setting/overrides`，body 为
+  `{"layer":"user","section":{"name":"prompt-setting:custom-prompt","action":"replace","text":""}}`
+  —— **提示保存成功、写入空文本**（工作区层 `history.jsonl` 两条 `textLen=0` 记录的可行解释之一）。
+
+### 二、根因
+
+- 草稿键 `mineKey = ${mineLayer}|${sessionArg}`（`client.js`），编辑框显示
+  「草稿 key 命中 → 草稿，否则 → 该层已存文本」；
+- `sessionArg` / `mineLayer` 一变（会话数据到达、切范围、切层）key 立即失配，编辑框**静默回落**到
+  已存文本（通常 `""`），而「保存」发的是编辑框当前所见 ⇒ 写空且报成功。**与 g-054（读取面读跨层
+  merged）是两个独立缺陷**：g-054 修完，这条路径依然存在。
+
+### 三、键该绑什么：`targetFor`/`workspaceRootFor` 核实结论
+
+- `index.js:1880` `if (layer === 'user') return { path: userConfigPath(), root: null }` —— **完全忽略
+  session**，整个 profile 只有一份用户层文件 ⇒ user 层草稿**不含会话身份**；
+- `index.js:1876-1898` workspace 层走 `workspaceRootFor(sessionId)` →
+  `workspaceRegistry.list()` 里 `sessionIds.includes(sessionId)` 的 `owner.path` →
+  `workspaceConfigPath(root)`；**同一 workspace 内任何 session 解析到同一份文件** ⇒ 决定写哪份文件的
+  是 workspace root，不是会话；客户端 `wsSeat.items`（`useWorkspaces` 的 `WorkspaceView.path`，
+  `client.js` `decodeWorkspaces`）就是同一个字段，两侧命名同一目录；
+- ⇒ 键定为 `user` / `workspace|<workspaceRoot>`；只有在该 session 不属于任何已列出 workspace
+  （或 workspace hook 降级）时才退化为 session id —— 这是**更窄**的身份，只会让两份草稿看起来不同，
+  绝不会让一份草稿被当成另一个写入目标的。
+
+### 四、方案：A（键绑写入目标）+ C（fail-safe 兜底），否掉纯迁移（B）
+
+- **A**：`mineDraftKeyOf(layer, sessionArg, workspaceRoot)` / `workspaceRootOfSession(items, sessionId)`；
+  同 workspace 内切会话、user 层任意切范围，草稿**留在框里**（判据 1 主路径，也是负向对照的死穴）；
+- **C**：另立 `mineForeignDraft`（draft 存在但 key 不匹配且含非空文本）—— 面板渲染
+  `data-warning="mine-draft-elsewhere"`（带 `data-mine-draft-scope` / `data-mine-draft-chars`）与
+  「放弃那份草稿」按钮（`data-action="mine-drop-foreign-draft"`，纯本地、不写数据），`saveMine` 在
+  发请求**之前**直接阻断并给 `mineSaveBlockedDraftElsewhere` notice ⇒ 判据 2「绝不静默写空」；
+- **否掉 B（作用域变化时把草稿迁移到新 key）**：跨 workspace 迁移会把 A 工作区的文本带进 B 工作区的
+  文件，等于凭空发明一个写入目标；迁移只在「同一写入目标」内才有意义，而那种情形 A 已经天然覆盖
+  （键根本没变）。故 B 只保留其可见性部分（提示）；
+- **作用域归属的读法**：草稿里存**结构化** `scope: {layer, session}`，文案在 `renderMinePanel` 内用
+  `mineScopeNameOf(t, …)` 现算 —— 组件自身渲染路径**不得调用 `t`**（`t` 可能就是坏的那个，必须落到
+  失败卡），这是既有测试「a throw while building the tree renders a failure card」钉住的约束；
+- 「归属」读的是**草稿记录的作用域**而不是当前视图，所以切范围后标签不会漂移（测试钉住它仍报
+  `Alpha three`）；
+- 「取消」（g-027）语义未动：仍只清当前写入目标的草稿、仍不发请求、仍只在 `dirty` 时可点。
+
+### 五、改动
+
+- `client.js`：新增 `workspaceRootOfSession` / `mineDraftKeyOf` / `mineScopeNameOf`（模块级纯函数）；
+  `mineKey` 改由写入目标派生并新增 `mineDraftHere` / `mineForeignDraft` / `mineTextSource`；`saveMine`
+  增加发请求前的阻断分支；`setMineText`/`saveMine` 写入草稿时带 `scope`；`renderMinePanel` 增加外来草稿
+  警告块（含放弃按钮）、草稿归属行、编辑框 `data-mine-text-source`；zh/en 各 4 条文案；
+- **未动**：`reservedTextOf`（g-054 正在改它）、`mergeLayers`/装配/插值/存储、`data-*` 冻结标记的名字
+  与数量、既有测试（纯新增）、版本号、CHANGELOG；
+- `CONTRACT.md`：新增 Revision 33 块 + §13.1 正文两处就地修订（草稿键 = 写入目标；外来草稿的可见提示
+  与阻断）；**无 wire 变更**。
+
+### 六、测试（`test/client.test.mjs` 纯新增 4 个用例，0 删除行）
+
+- `switchScopeTo(page, id|null)`：真点「更改」→（必要时展开分组）→ 点会话行 / 「全局」；
+- 用例 1：workspace 层输入 → 切到**同 workspace 的另一会话** ⇒ 框内文本仍在、`data-mine-text-source="draft"`、
+  归属标签仍报输入时的 `Alpha three`；保存 body 的 `text` = 用户输入、`session` = 新会话；
+- 用例 2：user 层输入 → 切「全局」→ 再切 `a2` ⇒ 文本仍在；保存 `layer="user"`、`text` = 用户输入；
+- 用例 3：workspace 层输入 → 切到**另一个 workspace** ⇒ 框显示该目标已存文本（`stored`）、警告块给出
+  作用域与字数、点保存 **0 次写请求** + error notice；切回原会话文本仍在；点「放弃那份草稿」后警告消失、
+  保存放行；
+- 用例 4：切层（user↔workspace）⇒ 另一层的文本不被借用、警告块点名用户级、保存被阻断、切回后草稿仍在；
+- **负向对照（决定性）**：临时把 `mineDraftKeyOf` 改回旧写法 `${layer}|${sessionId}`（其余不动）⇒
+  `node --test --test-name-pattern='g-056' test/client.test.mjs` = **2 pass / 2 fail**（用例 1、2 变红）；
+  恢复后 = **4 pass / 0 fail**。
+
+### 七、实测证据与未验证项
+
+- `node --test test/client.test.mjs` exit 0；首版 `node --test test/*.test.mjs` = **749 pass / 0 fail / exit 0**
+  （基线 745 + 新增 4；返工后见 §八）；`node scripts/client-chunks.mjs` = 4 file match，exit 0（无需 `--write`）；
+- **未验证（UNVERIFIED）**：真机目视（切换范围时警告条与归属行的视觉、按钮位置）未做，只做了离线渲染断言。
+
+### 八、返工：评审 R1/R2/R3（第二个 commit）
+
+评审总判 PASS（判据 1–6 全满足），但报出**本次修复新引入**的假阳性 R1，同批处理 R2/R3；三处都用同一处改动（草稿从「单槽」改成「按写入目标的小映射」）解决：
+
+- **R1（假阳性，必须修）**：保存成功时按 §13.1/g-050 刻意**保留**草稿；旧判定（「draft 存在且 key 不匹配」）于是把这份**已保存**的草稿当成「别处未保存内容」⇒ 切到另一个写入目标就出现假警告（评审实测 `scope=用户级`、`chars=11`、`writeDelta=0`）并误阻断保存。**新判定**：其它 target 的草稿仅当**同时**不满足以下任一弃权条件时才算未保存——(a) 文本等于本次要写入的文本；(b) 文本等于该草稿的 `baseline`（本页上次**写入**该 target 的文本，保存成功时记录）；(c) 文本等于该草稿**自己那个 target** 的已存文本。**分层真源**：(c) 的新 helper `layerReservedTextOf` 读 `payload[layer].overrides` 的保留段，**不读 `merged`**（`reservedTextOf` 未动，g-054 仍在改它）；
+- **跨 workspace 的取舍（写进契约）**：草案所属 target 是**另一个 workspace** 时，本次请求从未读过那份文件，(b)/(c) 都不可判定 ⇒ 按「possibly unsaved」保守提示（`draftTargetTextOf` 返回 `known:false`）。理由：对可能已保存的文本多提示一次是可容忍的误差，把它**静默覆盖**不是；同时「草稿文本 === 当前框里显示的文本」这一明显误报已由 (a) 排除；
+- **R2（基线同样存在，非回归）**：草稿改为**按写入目标的小映射** `mineDrafts: {key: {text, scope, baseline}}`。在一个 target 键入不再替换另一个 target 的草稿（旧单槽语义下第一个草稿会被静默覆盖）；切回仍见原文；
+- **R3（基线同样存在，非回归）**：所有本地清理由 `dropMineDraft(key)` 承担——「取消」、「恢复默认」、g-050 对账、「放弃那份草稿」各清**一个** target，`resetMine` 不再 `setMineDraft(null)` 静默清掉别处草稿；
+- **新增用例 3 个**（`test/client.test.mjs` 纯新增）：R1＝保存成功 → 切到另一写入目标 ⇒ 无 `data-warning="mine-draft-elsewhere"`、`data-mine-text-source="stored"`、保存真的发出写请求；R2＝两个 target 各自输入后互不覆盖、往返都能取回；R3＝user 层「恢复默认」确认后，workspace 层草稿仍在（`dirty`）；
+- **负向对照（3 组，各自红）**：把 R1 三条弃权条件整块回退 ⇒ R1 用例 1 fail；把 R2 的写入改回替换整张表 ⇒ R2 用例 1 fail；把 R3 改回 `setMineDrafts({})` ⇒ R3 用例 1 fail；恢复后 g-056 全 7 用例 pass；
+- **文档**：`CONTRACT.md` 新增 Revision 34 块（集成时由主管顺延；g-054 保留 33）补登记 `data-mine-drop-scope` 与 warning 节点上的 `data-mine-draft-scope`/`data-mine-draft-chars`，并写明「一 target 一草稿 + 只有未保存内容才报 + 已保存草稿永不算未保存」；§13.1 正文同步；
+- **踩坑留痕**：注释里写 `workspace|<root>` 字面量会触发 `test/host.test.mjs` 的「无 JSX / 无构建」断言（`/<[A-Za-z][^>]*>/`），已改写为 `workspace:` + root；全量因此从 751/752 恢复为 752/752；
+- **返工后实测**：`node --test test/client.test.mjs` exit 0；`node --test test/*.test.mjs` = **752 pass / 0 fail / exit 0**（首版 749 + 新增 3）；`node scripts/client-chunks.mjs` = 4 file match，exit 0；未动 4 个 chunk、版本号、CHANGELOG；
+- **仍未验证（UNVERIFIED）**：真机目视（警告条/归属行的视觉与位置）未做。
+- **集成期（主管）**：Revision 编号由 33 顺延为 **34**（g-054 保留 33）；合并后 dev 全量测试由主管复跑。
