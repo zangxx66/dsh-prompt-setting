@@ -6744,15 +6744,16 @@ CHANGELOG 未动。
   仍在 tab 栏之上）；冻结标记各恰好一次、降级提示至多一次；**反向断言**——全树 `h3` 且文本为
   `mineHeading` 的标题**恰好 1 个**且就是 mine 面板自己的标题（复核轮 1）；面板内只读行随
   `sessionArg`（选 a1）与 `mineLayer`（切 workspace）同步变化；只读行内无 `button`（无第二个入口）；
-  ②`declaredHeight` 自身的口径用例（复核轮 2）：px 行高按字面、无单位行高按 fontSize 倍数、
-  无行高时按一行 slack、3 值 margin 只取上下；
+  ②`declaredHeight` 自身的口径用例（复核轮 2，轮 3 扩充）：px 行高按字面、无单位行高按 fontSize
+  倍数、无行高时按一行 slack、3 值 margin 只取上下、padding/margin **长手**（单侧 / 双侧 /
+  覆盖简写 / 非长度不清零）；
 - **首屏几何离线预算**（复核轮 1 补、轮 2 收紧）：新增 `chromeAboveTabsPx(tree)` +
   `declaredHeight(node)` + `declaredLinePx(style)`（纯声明样式折算：padding/margin +
   lineHeight/fontSize/minHeight + flex 行取最高子、列按堆叠加 gap），把 `data-region="tabs"`
   **之前**的全部 chrome 纳入断言。轮 2 三重收紧：
-  - **紧预算**：`CHROME_BUDGET_PX = 224`（本修订实测 220 + 4px 舍入），并保留硬天花板
-    `CHROME_FIRST_SCREEN_CEILING_PX = 900 − 30 − 560 = 310`；轮 1 的 310 上限太松（加回一整行
-    26–28px 标题仍绿），轮 2 任何结构性增长都会红；
+  - **紧预算**：`CHROME_BUDGET_PX = 220 + CHROME_SLACK_PX`（`CHROME_SLACK_PX = 4`，即本修订实测
+    220 + 4px 舍入），并保留硬天花板 `CHROME_FIRST_SCREEN_CEILING_PX = 900 − 30 − 560 = 310`；
+    轮 1 的 310 上限太松（加回一整行 26–28px 标题仍绿），轮 2 起任何结构性增长都会红；
   - **差值定价**「块预算 ≥ note + 卡片」在轮 1 是恒真式（两边同源）；轮 2 改为对**同一棵树剔除
     note 后的对照树**取差值，并写死数字：`chrome − chrome(withoutNote) == 24`（note 行 18 + 块内
     gap 6）。注：折叠态 scope 卡片预算断言（`collapsedScopeHeight` 70px ≤ 80px）原样保留；
@@ -6827,3 +6828,19 @@ CHANGELOG 未动。
      `chrome − chrome(withoutNote) === 24`（写死：note 行 18 + 块内 gap 6）—— 低估 line box 的
      helper 不可能满足这个数字；
    - 紧预算断言排在这三条**之前**，确保「结构性增长」报的是预算本身，而不是下游某个唯一性检查。
+
+### 九、复核轮 3（增量评审）返工：堵住长手这个唯一口子
+
+评审第 11 / 第 4 条，两点，**只动测试侧**（`client.js` 本轮仍零改动；`renderPromptBlock` 结构、
+note 文案与提色、CONTRACT 措辞、冻结标记、chunk、版本号/CHANGELOG 全未动）：
+
+1. **长手（longhand）垂直属性支持**：`declaredVerticalBox` 原先只读 `padding` / `margin` 简写 ——
+   评审实测 `paddingTop: 6` 这类长手会让 chrome 悄悄 +6px，而预算仍绿（简写 +6px 会被拦）。现改为
+   **简写与长手都读、长手覆盖它那一侧**（与 CSS 同规则），解析不成长度的长手值（如 `'auto'`）
+   保留简写值，避免把一侧静默清零。新增 5 条断言：单长手、双长手、长手覆盖简写（padding）、
+   长手覆盖简写（margin）、非长度长手不清零。自证：把长手分支临时改坏（退回只读简写）⇒ 该用例红
+   `a padding longhand is counted`；还原后复绿（`grep` 确认 4 处长手读取全在）；
+2. **slack 具名化**：原来的字面量 `4px` 提为 `CHROME_SLACK_PX`，
+   `CHROME_BUDGET_PX = 220 + CHROME_SLACK_PX`，注释写明「抬高预算只能是对这个数字的显式、
+   可 review 的改动，不能是别的改动的副作用」；硬天花板
+   `CHROME_FIRST_SCREEN_CEILING_PX = 900 − 30 − 560 = 310` 及其兜底断言保留。

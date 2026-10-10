@@ -2629,15 +2629,24 @@ function collapsedScopeHeight(tree) {
 const CHROME_TEXT_LINE_PX = 22;
 
 /**
+ * How much rounder than the measured spend the tight budget is allowed to be
+ * (g-055 review round 3). It is a named constant on purpose: raising it is the
+ * only way to make room for a structurally taller chrome, so it has to be an
+ * explicit, reviewable edit to this number — never a side effect of some other
+ * change.
+ */
+const CHROME_SLACK_PX = 4;
+
+/**
  * The **tight** first-screen budget (g-055; tightened in review round 2) for
  * everything above the tab bar, in px, measured by {@link chromeAboveTabsPx}.
  *
- * It is the measured spend (220px) plus 4px of rounding, deliberately **not** a
- * generous ceiling: the review round 1 number (310px, the hard first-screen
- * derivation below) was so loose that a whole extra title line — 26px — still
- * fitted under it, so the assertion proved nothing. With 4px of slack, any
- * structural growth above the tabs fails it and has to be paid for by raising
- * this number on purpose.
+ * It is the measured spend (220px) plus {@link CHROME_SLACK_PX}, deliberately
+ * **not** a generous ceiling: the review round 1 number (310px, the hard
+ * first-screen derivation below) was so loose that a whole extra title line —
+ * 26px — still fitted under it, so the assertion proved nothing. With that slack,
+ * any structural growth above the tabs fails it and has to be paid for by raising
+ * {@link CHROME_SLACK_PX} (or the measured spend) on purpose.
  *
  * The first-screen argument behind the hard limit is unchanged (CONTRACT §13.7):
  * 900px of screen, minus the tab bar's own row (~30px), minus the 560px of tab
@@ -2645,7 +2654,7 @@ const CHROME_TEXT_LINE_PX = 22;
  * actually spends of it. The real geometry is still measured in the settings
  * shell by the supervisor (NOTES §94).
  */
-const CHROME_BUDGET_PX = 224;
+const CHROME_BUDGET_PX = 220 + CHROME_SLACK_PX;
 
 /** The hard first-screen ceiling the tight budget above must also respect (CONTRACT §13.7). */
 const CHROME_FIRST_SCREEN_CEILING_PX = 900 - 30 - 560;
@@ -2683,19 +2692,45 @@ function declaredLinePx(style) {
   return declaredPx(raw) || Math.max(fontPx, CHROME_TEXT_LINE_PX);
 }
 
-/** The vertical padding + margin one declared `padding` / `margin` shorthand states. */
+/** One declared length in px, or `null` when it is absent or not a length. */
+function declaredLengthPx(value) {
+  if (value === undefined || value === null) return null;
+  const text = String(value).trim();
+  if (text === '') return null;
+  const n = Number.parseFloat(text);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * The vertical padding + margin one declared style states, in px.
+ *
+ * Both the `padding` / `margin` shorthands **and** the `paddingTop` /
+ * `paddingBottom` / `marginTop` / `marginBottom` longhands are read, a longhand
+ * overriding its side of the shorthand exactly as CSS does (g-055 review round
+ * 3). Reading only the shorthands left the one real hole in the budget: a
+ * `paddingTop: 6` would have added 6px to the chrome while the assertion stayed
+ * green. Values that are absent or not lengths leave the shorthand's value in
+ * place, so a non-length longhand can never silently zero a side out.
+ * @param style - a declared style object.
+ * @returns the vertical box in px.
+ */
 function declaredVerticalBox(style) {
-  const vertical = (shorthand) => {
+  const sides = (shorthand) => {
     const parts = String(shorthand === undefined ? '' : shorthand)
       .trim()
       .split(/\s+/)
       .filter((part) => part.length > 0)
       .map(declaredPx);
-    if (parts.length === 0) return 0;
-    if (parts.length <= 2) return parts[0] * 2;
-    return parts[0] + parts[2];
+    if (parts.length === 0) return { top: 0, bottom: 0 };
+    if (parts.length <= 2) return { top: parts[0], bottom: parts[0] };
+    return { top: parts[0], bottom: parts[2] };
   };
-  return vertical(style.padding) + vertical(style.margin);
+  const padding = sides(style.padding);
+  const margin = sides(style.margin);
+  const top = (declaredLengthPx(style.paddingTop) ?? padding.top) + (declaredLengthPx(style.marginTop) ?? margin.top);
+  const bottom =
+    (declaredLengthPx(style.paddingBottom) ?? padding.bottom) + (declaredLengthPx(style.marginBottom) ?? margin.bottom);
+  return top + bottom;
 }
 
 /**
@@ -3118,6 +3153,33 @@ test('client (g-055): the declared-height helper reads px, multiples and default
     declaredHeight({ type: 'div', props: { style: { margin: '6px 0 0', lineHeight: '20px' } } }),
     26,
     'a three-value margin adds the top only',
+  );
+  // Review round 3: the vertical longhands are read too, so a future style that
+  // grows the chrome with `paddingTop` cannot slip past the budget.
+  assert.equal(
+    declaredHeight({ type: 'div', props: { style: { paddingTop: 6, lineHeight: '20px' } } }),
+    26,
+    'a padding longhand is counted',
+  );
+  assert.equal(
+    declaredHeight({ type: 'div', props: { style: { paddingTop: '6px', paddingBottom: '4px', lineHeight: '20px' } } }),
+    30,
+    'both padding longhands are counted',
+  );
+  assert.equal(
+    declaredHeight({ type: 'div', props: { style: { padding: '6px 0', paddingBottom: '10px', lineHeight: '20px' } } }),
+    36,
+    'a longhand overrides that side of the shorthand',
+  );
+  assert.equal(
+    declaredHeight({ type: 'div', props: { style: { margin: '6px 0', marginTop: '12px', lineHeight: '20px' } } }),
+    38,
+    'and the same rule holds for margins',
+  );
+  assert.equal(
+    declaredHeight({ type: 'div', props: { style: { padding: '6px 0', paddingTop: 'auto', lineHeight: '20px' } } }),
+    32,
+    'a non-length longhand leaves the shorthand in place instead of zeroing the side',
   );
 });
 
