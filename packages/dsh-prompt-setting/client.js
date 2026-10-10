@@ -906,6 +906,12 @@ window.__ModuleLoader__.load({
       editLayer: '保存层',
       // ---- g-015: 「我的 Prompt」, the only write surface (the reserved section)
       mineHeading: '我的 Prompt',
+      // g-055: the scope card is this block's header, not a page-wide setting of
+      // its own — the block says so once, above the scope row.
+      promptBlockNote: '这个范围决定「我的 Prompt」写到哪一层；改范围只在这里。',
+      // g-055: the panel states its own write target, so the reader does not have
+      // to look back above the tab bar to know which layer a save lands in.
+      mineTargetNote: '写入目标：{layer}；查看范围：{scope}',
       mineNote:
         '这里写下的内容会成为单独一段 Prompt，排在所有内置段之后，下一轮生效（next-turn）。该段永远不由 DSH 插值；开启「变量替换」后，由本插件在装配时展开 {{...}}——未注册、拼错或当前无值的引用原样保留，不会导致组装失败。',
       mineTextLabel: '内容',
@@ -1392,6 +1398,10 @@ window.__ModuleLoader__.load({
       diffHint: 'Compared per section: base is what was registered, effective is the result after overrides.',
       editLayer: 'Save to layer',
       mineHeading: 'My Prompt',
+      // g-055: see the zh table — the scope card is this block's header.
+      promptBlockNote: 'This scope decides which layer My Prompt is written to — and it is changed here.',
+      // g-055: the panel states its own write target instead of implying it.
+      mineTargetNote: 'Writing to {layer}; scope: {scope}',
       mineNote:
         'What you write here becomes one extra prompt section, placed after every built-in section, effective from the next turn (next-turn). DSH never interpolates it; with variable substitution on, this plugin expands its {{...}} during assembly, and a reference that is unregistered, misspelled or currently valueless stays literal instead of failing the assembly.',
       mineTextLabel: 'Content',
@@ -3271,6 +3281,25 @@ window.__ModuleLoader__.load({
     const scopeSummaryHintStyle = { ...metaStyle, lineHeight: '18px' };
 
     /**
+     * g-055: the「我的 Prompt」block's shared leading rule. The scope card above
+     * the tabs and the panel inside the mine tab are the two halves of one
+     * block, so both carry the same 3px rule with the same 12px inset; the
+     * grouping is the visual claim that the scope row belongs to「我的 Prompt」
+     * rather than to the page at large.
+     */
+    const promptBlockBandStyle = { borderLeft: `3px solid ${token.stateBusiness}`, paddingLeft: 12 };
+    /** The block wrapper above the tabs: one sentence, then the scope card. */
+    const promptBlockStyle = { ...promptBlockBandStyle, display: 'flex', flexDirection: 'column', gap: 6 };
+    /**
+     * The one sentence that ties the scope to the write surface. Since the block
+     * carries no heading of its own (review round 1: a second「我的 Prompt」title
+     * two lines above the panel's own title repeated the name and the level),
+     * this line is what names the grouping, so it is a step darker than plain
+     * meta text.
+     */
+    const promptBlockNoteStyle = { margin: 0, ...metaStyle, lineHeight: '18px', color: token.labelSecondary };
+
+    /**
      * Render one line of layer information.
      * @param t - the bound translator.
      * @param label - the localized layer name.
@@ -4829,6 +4858,23 @@ window.__ModuleLoader__.load({
      * @returns the section element.
      */
     /**
+     * The readable name of the page's「查看范围」, on its own: the session's
+     * readable title (or its raw id when no session service answered), or the
+     * global scope's own name.
+     *
+     * g-055: one definition, because two places now say the same thing — the
+     * summary row of the scope card and the write-target line inside「我的
+     * Prompt」. The two must never drift apart, since the second exists precisely
+     * to save the reader from looking back at the first.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @returns the scope name.
+     */
+    function scopeName(t, m) {
+      return m.sessionArg !== null ? sessionLabelOf(m.seat.rows, m.sessionArg) || m.sessionArg : t('sessionGlobal');
+    }
+
+    /**
      * The「查看范围」card and its collapse rule (g-016).
      *
      * The picker used to be spread open above the tab bar: measured in the real
@@ -4853,8 +4899,8 @@ window.__ModuleLoader__.load({
      */
     function scopeSection(t, m, a, body) {
       const scoped = m.sessionArg !== null;
-      const readable = scoped ? sessionLabelOf(m.seat.rows, m.sessionArg) || m.sessionArg : '';
-      const summaryLabel = scoped ? fmt(t('sessionCurrentLabel'), { label: readable }) : t('sessionGlobal');
+      const readable = scopeName(t, m);
+      const summaryLabel = scoped ? fmt(t('sessionCurrentLabel'), { label: readable }) : readable;
       // A hint only when the scope itself is worth a word: the two degraded
       // seats, which change what the picker can do at all. The healthy tree
       // case says nothing extra, so the line stays short by construction.
@@ -5137,6 +5183,45 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * g-055: the「我的 Prompt」block, with the scope card as its header.
+     *
+     * The「查看范围」selector is page-level state — it scopes the snapshot and the
+     * override reads and it decides which layer a save lands in — so it stays
+     * above the tab bar and stays the *one* place the scope is changed. What was
+     * wrong was the reading, not the position: rendered bare it looked like a
+     * page-wide setting of its own, while「我的 Prompt」— the only surface it
+     * writes — looked like a separate block further down. This wrapper states
+     * the grouping instead: one sentence saying what the scope decides, and then
+     * the card itself, both inside one container that carries the same leading
+     * rule the mine panel carries.
+     *
+     * The block deliberately has **no heading of its own** (review round 1): a
+     * second `h3`「我的 Prompt」two lines above the panel's own title repeated the
+     * same name at the same level, which both weakened the "one block" reading
+     * and listed the title twice in a screen reader's heading list. The panel,
+     * which owns the title, is the only place `mineHeading` is rendered; the
+     * sentence below carries the binding instead.
+     *
+     * The card keeps every frozen marker and its collapse rule exactly as they
+     * were (`data-region="session"` / `"scope-summary"`, `data-scope-open`,
+     * `data-action="scope-toggle"`); the wrapper adds one `section` around it
+     * and moves nothing.
+     *
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the block element.
+     */
+    function renderPromptBlock(t, m, a) {
+      return h(
+        'section',
+        { key: 'prompt-block', 'data-region': 'prompt-block', style: promptBlockStyle },
+        h('p', { key: 'note', 'data-role': 'prompt-block-note', style: promptBlockNoteStyle }, t('promptBlockNote')),
+        renderSession(t, m, a),
+      );
+    }
+
+    /**
      * The confirmation dialog's typography: four levels instead of one uniform
      * gap — the title, the lead sentence that names the action, the sentence
      * that explains it, and a structural "cannot be undone" strip. zh and en
@@ -5323,6 +5408,11 @@ window.__ModuleLoader__.load({
      * `data-warning="mine-frozen"` — §15.4 requires the panel to say that the
      * text will not reach the prompt rather than let a write look effective.
      *
+     * g-055: the panel is the lower half of the「我的 Prompt」block whose header
+     * is the scope card above the tabs, so it names its own write target
+     * (`data-region="mine-target"`, read-only) instead of making the reader look
+     * back up; the scope itself is still changed in exactly one place.
+     *
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
@@ -5395,10 +5485,28 @@ window.__ModuleLoader__.load({
                 : state === 'dirty'
                   ? t('mineDirty')
                   : fmt(t('mineLoaded'), { layer: layerLabel(t, layer) });
+      // g-055: the panel states its own write target, so the reader does not have
+      // to look back above the tab bar to know which layer a save lands in. It is
+      // read-only on purpose: the one place the scope is changed is the block
+      // header above the tabs, and a second switch here would be a second
+      // entrance — exactly what this design refuses.
+      const targetLine = h(
+        'p',
+        {
+          'data-region': 'mine-target',
+          'data-mine-target-layer': layer,
+          'data-mine-target-scope': m.sessionArg === null ? 'global' : String(m.sessionArg),
+          style: { margin: 0, ...metaStyle, color: token.labelSecondary },
+        },
+        fmt(t('mineTargetNote'), { layer: layerLabel(t, layer), scope: scopeName(t, m) }),
+      );
+      // The same leading rule the block header above the tabs carries: the scope
+      // card and this panel are the two halves of one block (g-055).
       return h(
         'div',
-        { 'data-region': 'mine', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+        { 'data-region': 'mine', style: { ...promptBlockBandStyle, display: 'flex', flexDirection: 'column', gap: 10 } },
         h('h3', { style: headingStyle }, t('mineHeading')),
+        targetLine,
         h('p', { style: { margin: 0, ...metaStyle } }, t('mineNote')),
         h(
           'div',
@@ -6583,6 +6691,12 @@ window.__ModuleLoader__.load({
      * selector every tab shares. Everything else moved into the tab that owns
      * it, which is what makes the page short again.
      *
+     * Since g-055 that selector is not a third card floating above the tabs: it
+     * is rendered as the header of the「我的 Prompt」block
+     * ({@link renderPromptBlock}), which is the only surface it writes. The
+     * position is unchanged — it is still above the tab bar, still one
+     * instance, still the one place the scope is changed.
+     *
      * @param t - the bound translator for this namespace.
      * @param m - the page model.
      * @param a - the page actions.
@@ -6611,7 +6725,10 @@ window.__ModuleLoader__.load({
       const updateNotice = renderUpdateNotice(t, m, a);
       if (updateNotice !== null) children.push(updateNotice);
       children.push(renderStatusLine(t, m, a));
-      children.push(renderSession(t, m, a));
+      // g-055: the scope card is the header of the「我的 Prompt」block
+      // (see renderPromptBlock), not a page-level card of its own. It stays
+      // above the tabs, and the tab bar still keeps the last-but-one slot.
+      children.push(renderPromptBlock(t, m, a));
       children.push(
         h(
           'div',

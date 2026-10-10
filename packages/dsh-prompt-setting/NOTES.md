@@ -6859,3 +6859,153 @@ npm 读取、下载区域）、`### Changed 变更` 2 条（客户端按需分�
 - **返工后实测**：`node --test test/client.test.mjs` exit 0；`node --test test/*.test.mjs` = **752 pass / 0 fail / exit 0**（首版 749 + 新增 3）；`node scripts/client-chunks.mjs` = 4 file match，exit 0；未动 4 个 chunk、版本号、CHANGELOG；
 - **仍未验证（UNVERIFIED）**：真机目视（警告条/归属行的视觉与位置）未做。
 - **集成期（主管）**：Revision 编号由 33 顺延为 **34**（g-054 保留 33）；合并后 dev 全量测试由主管复跑。
+
+---
+
+## 131. g-055：把「查看范围」收成「我的 Prompt」块的头部（视觉分组 + 文案，方案 B，2026-10-10，基线 `91fd55e` 隔离工作树）
+
+### 一、要解决的问题与评估结论
+
+负责人反馈：设置页里「查看范围」和「我的 Prompt」在功能上算一个块，交互上却显得分裂。只读评估
+（上下文卡片 `card-62ffb6fa`）结论：**分裂 = 层级归属错位**，不是状态重复 —— `sessionArg` 是页面级
+状态，被三类消费者共用：①页面取数（snapshot / overrides）；②写入目标（mine 三处写动作、
+advanced 整层 reset、backup 导出/导入 `?session=`）；③标签文案；而它的卡片渲染在 tab 栏**之上**，
+读起来像全页面设置。逐 tab：mine 真正依赖；overview 无关系；history 已由 g-038 独立；
+**backup / advanced 真依赖却看不见**（最刺眼的裂口）。
+
+方案对比后负责人选定 **方案 B**：页面级位置与唯一改入口都不动，用**视觉分组 + 文案**把它收成
+「我的 Prompt」块的头部。不做 A（搬进 tab，作废 §13.0「every tab shares」）、不做 C（各 tab 多实例，
+与 g-038 冲突）、不做 B+（不给 backup/advanced 加只读范围行，另议）。
+
+### 二、实现（只改 `client.js` 主入口，含复核轮 1，相对基线 `121+/4-`）
+
+- 新增分组容器 `data-region="prompt-block"`（新函数 `renderPromptBlock`），把既有 scope 卡片包进去：
+  一行新文案 `promptBlockNote`（「这个范围决定「我的 Prompt」写到哪一层；改范围只在这里。」），
+  其下才是 `data-region="session"` 卡片。**块内不放标题**（复核轮 1 的裁决，见 §七）：`mineHeading`
+  只由 mine 面板渲染一次，避免同一标题同屏出现两次；
+- 卡片本身**一字未动**：折叠行为、`data-region="session"`/`"scope-summary"`、`data-scope-open`、
+  `data-action="scope-toggle"`、`data-role="scope-summary-label"|"-hint"` 全部原样、仍各恰好一次
+  （折叠态仍只有一个子节点 ⇒ 首屏预算断言不变）；
+- mine 面板内新增**只读**写入目标行（`data-region="mine-target"`，`data-mine-target-layer` /
+  `data-mine-target-scope`），文案 `mineTargetNote`（「写入目标：{layer}；查看范围：{scope}」）——
+  面板内**没有**第二个改范围入口；
+- 两半共享同一条视觉规则（`promptBlockBandStyle`：3px 左边线 + 12px 内缩），scope 卡片与 mine 面板
+  在视觉上读作同一块的上/下半；
+- scope 名称抽成**一个定义** `scopeName(t, m)`，摘要行与只读行共用，避免两处漂移；
+- 新增 i18n 键 2 个（`promptBlockNote` / `mineTargetNote`），zh/en 一一对应。
+
+### 三、禁项与未碰的东西
+
+scope 未搬进 tab、未做多实例、`historyScope*`（`historyScopeQuery` / `data-region="history-scope"` /
+`histScopeHint`）未动；装配、存储、插值语义未动；`data-*` 冻结标记的名字/数量/语义未动；
+`.dsh-graph/` 未动；**未改任何 chunk 文件**（`client.history/overview/advanced/transfer.js` 零改动）
+⇒ 指纹无需重算。文档只做措辞级补充（CONTRACT §13.0/§13.7、NOTES 本节、README×3），版本号与
+CHANGELOG 未动。
+
+### 四、测试（`test/client.test.mjs` 只增行）
+
+- 新增 2 个用例：①分组收口用例：容器包含 scope 卡片；块仍在 `data-region="tabs"` 之前（页面级、
+  仍在 tab 栏之上）；冻结标记各恰好一次、降级提示至多一次；**反向断言**——全树 `h3` 且文本为
+  `mineHeading` 的标题**恰好 1 个**且就是 mine 面板自己的标题（复核轮 1）；面板内只读行随
+  `sessionArg`（选 a1）与 `mineLayer`（切 workspace）同步变化；只读行内无 `button`（无第二个入口）；
+  ②`declaredHeight` 自身的口径用例（复核轮 2，轮 3 扩充）：px 行高按字面、无单位行高按 fontSize
+  倍数、无行高时按一行 slack、3 值 margin 只取上下、padding/margin **长手**（单侧 / 双侧 /
+  覆盖简写 / 非长度不清零）；
+- **首屏几何离线预算**（复核轮 1 补、轮 2 收紧）：新增 `chromeAboveTabsPx(tree)` +
+  `declaredHeight(node)` + `declaredLinePx(style)`（纯声明样式折算：padding/margin +
+  lineHeight/fontSize/minHeight + flex 行取最高子、列按堆叠加 gap），把 `data-region="tabs"`
+  **之前**的全部 chrome 纳入断言。轮 2 三重收紧：
+  - **紧预算**：`CHROME_BUDGET_PX = 220 + CHROME_SLACK_PX`（`CHROME_SLACK_PX = 4`，即本修订实测
+    220 + 4px 舍入），并保留硬天花板 `CHROME_FIRST_SCREEN_CEILING_PX = 900 − 30 − 560 = 310`；
+    轮 1 的 310 上限太松（加回一整行 26–28px 标题仍绿），轮 2 起任何结构性增长都会红；
+  - **差值定价**「块预算 ≥ note + 卡片」在轮 1 是恒真式（两边同源）；轮 2 改为对**同一棵树剔除
+    note 后的对照树**取差值，并写死数字：`chrome − chrome(withoutNote) == 24`（note 行 18 + 块内
+    gap 6）。注：折叠态 scope 卡片预算断言（`collapsedScopeHeight` 70px ≤ 80px）原样保留；
+  - **无单位行高**：`lineHeight: 1.5` 这类值按 `fontSize × 1.5` 计（<4 视为倍数，否则视为 px），
+    避免轮 2 指出的约 16px 低估；
+- EN 扫描同步登记（只增）：`promptBlockNote`、`['mineTargetNote', {layer, scope}]` 进 copy 清单；
+  `data-region=prompt-block` / `data-region=mine-target` / `data-role=prompt-block-note` 进
+  `EN_REQUIRED_MARKERS`（复核轮 1 要求移除 `data-role=prompt-block-heading`）；既有断言只增不减、
+  未放宽；
+- `test/client.test.mjs` diff（相对基线，含复核轮 2）：`316+/1-`，那 1 行删除只是把单行 `copy:`
+  数组改写为多行，属只增登记。
+
+### 五、实测数字
+
+| 命令 | 结果 |
+| --- | --- |
+| `node --test test/client.test.mjs` | **221 pass / 0 fail / skipped 0**，exit 0（基线 219 + 新增 2） |
+| `node --test test/*.test.mjs` | **747 pass / 0 fail / skipped 0**，exit 0（全量基线 745 + 新增 2） |
+| `node scripts/client-chunks.mjs` | **4 file(s) match the CHUNK_STAMPS manifest**，exit 0（未改 chunk，无需 `--write`） |
+| `node --test test/client.test.mjs`（scope 几何日志） | `collapsed「查看范围」= 70px budget (80px)`，未变 |
+| `node --test test/client.test.mjs`（chrome 几何日志） | `above the tab bar = 220px (tight 224px, hard ceiling 310px)`，「我的 Prompt」块 = 80px |
+
+### 六、未验证项
+
+- **真机 1440×900 目视未做**（本执行无浏览器）：分组视觉（3px 左边线、note 行与卡片的间距）与首屏
+  几何需主管真机复核；离线可断言的部分（scope 卡片 70px ≤ 80px、tabs 之前 chrome 220px ≤ 紧预算
+  224px、note 差值 24px、块内只有两项、标记唯一、标题唯一）已由测试钉住。
+
+### 七、复核轮 1（独立评审）返工
+
+评审结论：无 BLOCK、总判 UNVERIFIED；三条返工全部落实（同一个 worktree / 分支，新 commit）：
+
+1. **去掉重复标题（评审判定必须修）**：删掉 `renderPromptBlock` 里的 `h('h3', …, t('mineHeading'))`
+   与 `data-role="prompt-block-heading"`，并移除 `EN_REQUIRED_MARKERS` 里的对应登记；容器、3px 色带
+   与 note 全部保留，note 的色从 `labelTertiary` 提到 `labelSecondary`（块不再有标题，绑定改由这句话
+   承担）。测试改为**反向断言**：全树 `h3` 且文本 `=== mineHeading` 的节点恰好 1 个且属于 mine 面板。
+   负向对照：把删掉的块头 `h3` 加回去 ⇒ 该断言立刻变红（`exactly one「我的 Prompt」heading`）。
+   理由：同屏两个同名同级标题既削弱「一个块」的观感，也让屏幕阅读器的 heading 列表重复列出同一项，
+   与本次目标的意图相反；
+2. **首屏几何离线预算（评审风险 #1）**：新增 `declaredHeight` / `chromeAboveTabsPx`（口径与既有
+   `collapsedScopeHeight` 一致：只读声明样式，不用布局引擎），把 tabs 之前的全部 chrome 纳入断言，
+   上限 310px（900 − tab 栏 30 − tab-panel 可见 560）；实测 220px。同时断言块预算 ≥ note 行 + 卡片
+   预算，因此新增块内容不可能再「绕过全部断言」；
+3. **CONTRACT §13.0 措辞对齐**：第三项改为「the **「我的 Prompt」block whose header is the session
+   selector every tab shares**」，并删去 §13.7 段落里「块头用 `mineHeading`」的表述，改为「块本身
+   没有标题，`mineHeading` 只由面板渲染一次」；仍不加 Revision、不改既有语义。
+
+### 八、复核轮 2（增量评审）返工：让预算断言真的咬得住
+
+评审判定轮 1 的三条「成立性」问题（仍是 UNVERIFIED、无 BLOCK），本轮全部修掉 —— 共同病因是
+**断言与实现同源/余量过大 ⇒ 没有约束力**：
+
+1. **紧预算（评审：310px 上限加回一整行标题仍绿）**：`CHROME_BUDGET_PX` 从
+   `900 − 30 − 560 = 310` 改为 **224**（本修订实测 220 + 4px 舍入），并保留 310 作为注释里的硬天花板
+   `CHROME_FIRST_SCREEN_CEILING_PX`。自证（两轮实验）：
+   - 把块头 `h3`（`mineHeading`）原样加回 ⇒ 先红在唯一性断言（`exactly one「我的 Prompt」
+     heading`，轮 1 已证）；
+   - 加回一行**异名**标题（让唯一性断言保持绿）⇒ 紧预算断言**自己**红：
+     `the chrome above the tab bar budgets 248px, over the tight 224px budget`。
+   数字来源：那行 22px 行盒 + 块内 6px gap = 28px ⇒ 220 + 28 = 248 > 224；
+2. **无单位行高（评审：`lineHeight: 1.5` 被当成 1.5px，低估约 16px）**：新增 `declaredLinePx(style)`：
+   无单位值 <4 视为 fontSize 的倍数（`1.5 × 12 = 18`），≥4 视为 px；fontSize 缺失时按 22px slack 行
+   缩放。新增一条**专门钉住该 helper 的用例**（px 行高 / 数字倍数 / 字符串倍数 / 无行高默认 /
+   无 fontSize 的倍数 / ≥4 的裸数 / padding 上下各一次 / 3 值 margin 只取上下）。
+   自证：把倍数分支临时改成 `>= 0.1`（等于退回「当 px 用」）⇒ 该用例红：
+   `a unitless line height multiplies the font size`；还原后复绿；
+3. **恒真断言（评审：块预算 ≥ note + 卡片 由同一函数算出，删 note 变红其实来自 `oneBy` 存在性）**：
+   删掉该恒真式，改为**差值型**断言 + 结构性断言：
+   - 结构：`elementChildren(block)` 的 `data-role`/`data-region` 序列**恰为**
+     `['prompt-block-note', 'session']`（块内多任何一项即红）；
+   - 差值：新增 `withoutPromptBlockNote(tree)`（同一棵树的浅拷贝，只剔除 note），断言
+     `chrome − chrome(withoutNote) === 24`（写死：note 行 18 + 块内 gap 6）—— 低估 line box 的
+     helper 不可能满足这个数字；
+   - 紧预算断言排在这三条**之前**，确保「结构性增长」报的是预算本身，而不是下游某个唯一性检查。
+
+### 九、复核轮 3（增量评审）返工：堵住长手这个唯一口子
+
+评审第 11 / 第 4 条，两点，**只动测试侧**（`client.js` 本轮仍零改动；`renderPromptBlock` 结构、
+note 文案与提色、CONTRACT 措辞、冻结标记、chunk、版本号/CHANGELOG 全未动）：
+
+1. **长手（longhand）垂直属性支持**：`declaredVerticalBox` 原先只读 `padding` / `margin` 简写 ——
+   评审实测 `paddingTop: 6` 这类长手会让 chrome 悄悄 +6px，而预算仍绿（简写 +6px 会被拦）。现改为
+   **简写与长手都读、长手覆盖它那一侧**（与 CSS 同规则），解析不成长度的长手值（如 `'auto'`）
+   保留简写值，避免把一侧静默清零。新增 5 条断言：单长手、双长手、长手覆盖简写（padding）、
+   长手覆盖简写（margin）、非长度长手不清零。自证：把长手分支临时改坏（退回只读简写）⇒ 该用例红
+   `a padding longhand is counted`；还原后复绿（`grep` 确认 4 处长手读取全在）；
+2. **slack 具名化**：原来的字面量 `4px` 提为 `CHROME_SLACK_PX`，
+   `CHROME_BUDGET_PX = 220 + CHROME_SLACK_PX`，注释写明「抬高预算只能是对这个数字的显式、
+   可 review 的改动，不能是别的改动的副作用」；硬天花板
+   `CHROME_FIRST_SCREEN_CEILING_PX = 900 − 30 − 560 = 310` 及其兜底断言保留。
+- **集成期（主管）**：本节编号由 §129 顺延为 **§131**（g-054=§129、g-056=§130）；合并后 dev 全量测试由主管复跑。

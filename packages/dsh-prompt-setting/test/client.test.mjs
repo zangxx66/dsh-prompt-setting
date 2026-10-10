@@ -2664,6 +2664,192 @@ function collapsedScopeHeight(tree) {
   return vertical + minHeight + SCOPE_SUMMARY_LINE_PX;
 }
 
+/**
+ * One declared line of text, in px, for a node that states a `fontSize` but no
+ * `lineHeight`: the same "one line of slack" convention
+ * {@link SCOPE_SUMMARY_LINE_PX} uses, never below the font size itself.
+ */
+const CHROME_TEXT_LINE_PX = 22;
+
+/**
+ * How much rounder than the measured spend the tight budget is allowed to be
+ * (g-055 review round 3). It is a named constant on purpose: raising it is the
+ * only way to make room for a structurally taller chrome, so it has to be an
+ * explicit, reviewable edit to this number — never a side effect of some other
+ * change.
+ */
+const CHROME_SLACK_PX = 4;
+
+/**
+ * The **tight** first-screen budget (g-055; tightened in review round 2) for
+ * everything above the tab bar, in px, measured by {@link chromeAboveTabsPx}.
+ *
+ * It is the measured spend (220px) plus {@link CHROME_SLACK_PX}, deliberately
+ * **not** a generous ceiling: the review round 1 number (310px, the hard
+ * first-screen derivation below) was so loose that a whole extra title line —
+ * 26px — still fitted under it, so the assertion proved nothing. With that slack,
+ * any structural growth above the tabs fails it and has to be paid for by raising
+ * {@link CHROME_SLACK_PX} (or the measured spend) on purpose.
+ *
+ * The first-screen argument behind the hard limit is unchanged (CONTRACT §13.7):
+ * 900px of screen, minus the tab bar's own row (~30px), minus the 560px of tab
+ * panel that must stay visible below it ⇒ 310px; 224px is what this revision
+ * actually spends of it. The real geometry is still measured in the settings
+ * shell by the supervisor (NOTES §94).
+ */
+const CHROME_BUDGET_PX = 220 + CHROME_SLACK_PX;
+
+/** The hard first-screen ceiling the tight budget above must also respect (CONTRACT §13.7). */
+const CHROME_FIRST_SCREEN_CEILING_PX = 900 - 30 - 560;
+
+/** One px value out of a declared style value. */
+function declaredPx(value) {
+  const n = Number.parseFloat(String(value === undefined ? '' : value));
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * The line box one declared style asks for, in px.
+ *
+ * A **unitless** `lineHeight` is a multiple of the font size — this project's
+ * own dialog styles state `1.4` / `1.5` / `1.6` — so it is multiplied. Reading
+ * it as a bare px number would under-bill a line by ~16px (review round 2), and
+ * an under-billing budget is worse than a generous one: it would let real growth
+ * through. Values below 4 are read as multiples, everything else as px.
+ * @param style - a declared style object.
+ * @returns the line height in px.
+ */
+function declaredLinePx(style) {
+  const fontPx = declaredPx(style.fontSize);
+  const raw = style.lineHeight;
+  const numeric =
+    typeof raw === 'number'
+      ? raw
+      : /^[0-9]*\.?[0-9]+$/.test(String(raw === undefined ? '' : raw).trim())
+        ? Number(raw)
+        : null;
+  if (numeric !== null && numeric > 0) {
+    if (numeric >= 4) return numeric;
+    return (fontPx > 0 ? fontPx : CHROME_TEXT_LINE_PX) * numeric;
+  }
+  return declaredPx(raw) || Math.max(fontPx, CHROME_TEXT_LINE_PX);
+}
+
+/** One declared length in px, or `null` when it is absent or not a length. */
+function declaredLengthPx(value) {
+  if (value === undefined || value === null) return null;
+  const text = String(value).trim();
+  if (text === '') return null;
+  const n = Number.parseFloat(text);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * The vertical padding + margin one declared style states, in px.
+ *
+ * Both the `padding` / `margin` shorthands **and** the `paddingTop` /
+ * `paddingBottom` / `marginTop` / `marginBottom` longhands are read, a longhand
+ * overriding its side of the shorthand exactly as CSS does (g-055 review round
+ * 3). Reading only the shorthands left the one real hole in the budget: a
+ * `paddingTop: 6` would have added 6px to the chrome while the assertion stayed
+ * green. Values that are absent or not lengths leave the shorthand's value in
+ * place, so a non-length longhand can never silently zero a side out.
+ * @param style - a declared style object.
+ * @returns the vertical box in px.
+ */
+function declaredVerticalBox(style) {
+  const sides = (shorthand) => {
+    const parts = String(shorthand === undefined ? '' : shorthand)
+      .trim()
+      .split(/\s+/)
+      .filter((part) => part.length > 0)
+      .map(declaredPx);
+    if (parts.length === 0) return { top: 0, bottom: 0 };
+    if (parts.length <= 2) return { top: parts[0], bottom: parts[0] };
+    return { top: parts[0], bottom: parts[2] };
+  };
+  const padding = sides(style.padding);
+  const margin = sides(style.margin);
+  const top = (declaredLengthPx(style.paddingTop) ?? padding.top) + (declaredLengthPx(style.marginTop) ?? margin.top);
+  const bottom =
+    (declaredLengthPx(style.paddingBottom) ?? padding.bottom) + (declaredLengthPx(style.marginBottom) ?? margin.bottom);
+  return top + bottom;
+}
+
+/**
+ * The height one subtree must budget for, in px, from **declared styles only** —
+ * the same offline convention as {@link collapsedScopeHeight} (no layout engine,
+ * no fonts): vertical padding and margin, a line box ({@link declaredLinePx}),
+ * `minHeight`, a flex row's tallest child, and a column's stacked children plus
+ * its gaps.
+ *
+ * Wrapping rows may really be shorter than this: the budget is allowed to be too
+ * generous, never too optimistic.
+ * @param node - one rendered element.
+ * @returns the budgeted height in px.
+ */
+function declaredHeight(node) {
+  if (node === null || node === undefined || typeof node !== 'object' || node.type === undefined) return 0;
+  const style = node.props.style || {};
+  const box = declaredVerticalBox(style);
+  const minHeight = declaredPx(style.minHeight);
+  const content = Math.max(minHeight, declaredLinePx(style));
+  const kids = elementChildren(node);
+  if (kids.length === 0) return box + content;
+  const row = style.display === 'flex' && style.flexDirection !== 'column';
+  const gap = declaredPx(style.gap);
+  const stacked = kids.reduce((sum, kid, index) => sum + declaredHeight(kid) + (index > 0 ? gap : 0), 0);
+  return box + (row ? Math.max(content, ...kids.map(declaredHeight)) : Math.max(content, stacked));
+}
+
+/**
+ * Everything above `data-region="tabs"`, budgeted in px from declared styles:
+ * the page chrome the first screen must fit before any tab content can show
+ * (g-055, review round 1).
+ * @param tree - a rendered page tree.
+ * @returns the budgeted height in px.
+ */
+function chromeAboveTabsPx(tree) {
+  const root = oneBy(tree, 'data-plugin', 'dsh-prompt-setting');
+  const kids = elementChildren(root);
+  const tabBar = kids.findIndex((node) => node.props['data-region'] === 'tabs');
+  assert.ok(tabBar > 0, 'the tab bar is rendered below the chrome');
+  const style = root.props.style || {};
+  const gap = declaredPx(style.gap);
+  let total = declaredVerticalBox(style);
+  for (let index = 0; index < tabBar; index += 1) {
+    total += declaredHeight(kids[index]) + (index > 0 ? gap : 0);
+  }
+  return total;
+}
+
+/**
+ * The same page with the block's note line removed (g-055 review round 2).
+ *
+ * The counterfactual exists because a claim like "the block budget covers the
+ * note" is vacuous when both sides come from {@link declaredHeight}: the note has
+ * to be priced by **difference** against the untouched tree, so that a helper
+ * that under-bills the line cannot pass. Only the note is dropped; everything
+ * else is the rendered node graph.
+ * @param tree - a rendered page tree.
+ * @returns a shallow copy of the tree without the note node.
+ */
+function withoutPromptBlockNote(tree) {
+  const root = oneBy(tree, 'data-plugin', 'dsh-prompt-setting');
+  const block = oneBy(tree, 'data-region', 'prompt-block');
+  const stripped = {
+    ...block,
+    props: {
+      ...block.props,
+      children: elementChildren(block).filter((node) => node.props['data-role'] !== 'prompt-block-note'),
+    },
+  };
+  return {
+    ...root,
+    props: { ...root.props, children: elementChildren(root).map((node) => (node === block ? stripped : node)) },
+  };
+}
+
 test('client: the「查看范围」picker ships collapsed, with no body on screen', async () => {
   const page = makePage({
     useSessions: sessionsHook(WORKSPACE_SESSIONS),
@@ -2861,6 +3047,183 @@ test('client: the collapsed「查看范围」block is one row inside an 80px bud
   );
   assert.ok(budget <= 80, `the collapsed block budgets ${budget}px, over the 80px ceiling`);
   assert.ok(expandedNodes > collapsedNodes * 2, `opening the picker adds the body back (${expandedNodes} vs ${collapsedNodes})`);
+});
+
+test('client (g-055): 「查看范围」is the header of the「我的 Prompt」block, and the panel names its write target', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  let tree = await page.flush();
+
+  // One grouping container, and the frozen scope card lives *inside* it: the
+  // card is this block's header, not a page-level card of its own.
+  const block = oneBy(tree, 'data-region', 'prompt-block');
+  assert.equal(
+    collect(block, (node) => node.props && node.props['data-region'] === 'session').length,
+    1,
+    'the scope card is rendered inside the block',
+  );
+  // The block still sits above the tab bar (g-016's first-screen budget).
+  const flow = collect(
+    tree,
+    (node) => node.props && ['prompt-block', 'tabs'].includes(node.props['data-region']),
+  ).map((node) => node.props['data-region']);
+  assert.deepEqual(flow, ['prompt-block', 'tabs'], 'the block is above the tabs, in that order');
+
+  // Every frozen marker is still unique across the whole tree (CONTRACT
+  // §13.0/§13.7): the wrapper adds structure, it moves nothing.
+  for (const [attribute, value] of [
+    ['data-region', 'session'],
+    ['data-region', 'scope-summary'],
+    ['data-role', 'scope-summary-label'],
+    ['data-action', 'scope-toggle'],
+  ]) {
+    assert.equal(
+      collect(tree, (node) => node.props && node.props[attribute] === value).length,
+      1,
+      `${attribute}=${value} stays exactly once`,
+    );
+  }
+  // The degradation hint is "at most one" by design, not "exactly one".
+  assert.ok(
+    collect(tree, (node) => node.props && node.props['data-role'] === 'scope-summary-hint').length <= 1,
+    'at most one degradation hint',
+  );
+
+  // Review round 1: the block must NOT repeat the panel's title. A second
+  // same-level「我的 Prompt」two lines above the panel's own title weakened the
+  // "one block" reading and listed the same heading twice for a screen reader.
+  const mineHeadings = collect(
+    tree,
+    (node) => node.type === 'h3' && node.props.children === page.zh.mineHeading,
+  );
+  assert.equal(mineHeadings.length, 1, 'exactly one「我的 Prompt」heading on the page');
+  assert.equal(
+    elementChildren(oneBy(tree, 'data-region', 'mine'))[0],
+    mineHeadings[0],
+    'and that heading is the mine panel’s own title, not a block header',
+  );
+  const note = oneBy(tree, 'data-role', 'prompt-block-note');
+  assert.ok(hasText(note, page.zh.promptBlockNote), 'the block says what the scope decides');
+
+  // Review rounds 1–2: the block's content sits inside a **tight** budget. The
+  // block may hold exactly two things — the sentence and the card — and the whole
+  // chrome above the tab bar may spend what this revision spends plus 4px of
+  // rounding. Round 1's 310px ceiling let a whole extra 26px title line through,
+  // so it proved nothing; these four numbers do.
+  const blockHeight = declaredHeight(block);
+  const card = oneBy(tree, 'data-region', 'session');
+  const blockGap = declaredPx((block.props.style || {}).gap);
+  const chrome = chromeAboveTabsPx(tree);
+  // The tight budget comes first on purpose: adding anything structural above the
+  // tabs (a title line is 26px) must fail *this* assertion, not merely some
+  // downstream uniqueness check.
+  assert.ok(
+    chrome <= CHROME_BUDGET_PX,
+    `the chrome above the tab bar budgets ${chrome}px, over the tight ${CHROME_BUDGET_PX}px budget`,
+  );
+  assert.ok(chrome < CHROME_FIRST_SCREEN_CEILING_PX, 'and it stays under the hard first-screen ceiling');
+  assert.deepEqual(
+    elementChildren(block).map((node) => node.props['data-role'] || node.props['data-region']),
+    ['prompt-block-note', 'session'],
+    'the block holds the sentence and the card, and nothing else',
+  );
+  assert.ok(
+    blockHeight <= declaredHeight(note) + declaredHeight(card) + blockGap + 2,
+    `the block spends ${blockHeight}px: the note line, the card and the gap, nothing more`,
+  );
+  // The note is priced by difference against the same tree without it: its 18px
+  // line plus the block's 6px gap. A helper that under-billed the line (round 2)
+  // could not produce this number.
+  assert.equal(
+    chrome - chromeAboveTabsPx(withoutPromptBlockNote(tree)),
+    24,
+    'dropping the note line frees its 18px line and the block’s 6px gap',
+  );
+  console.log(
+    `    g-055 chrome geometry: above the tab bar = ${chrome}px (tight ${CHROME_BUDGET_PX}px, hard ceiling ${CHROME_FIRST_SCREEN_CEILING_PX}px), 「我的 Prompt」block = ${blockHeight}px`,
+  );
+
+  // The panel states its own write target, read-only: no second way to change
+  // the scope exists anywhere in the page.
+  let target = oneBy(tree, 'data-region', 'mine-target');
+  assert.equal(target.props['data-mine-target-layer'], 'user', 'the selected layer');
+  assert.equal(target.props['data-mine-target-scope'], markerOf(tree, 'data-session'), 'the page scope, verbatim');
+  assert.ok(
+    hasText(target, fillText(page.zh.mineTargetNote, { layer: page.zh.ovUser, scope: 'Alpha three' })),
+    'and it names both, in the panel',
+  );
+  assert.equal(collect(target, (node) => node.type === 'button').length, 0, 'read-only: no scope switch inside the panel');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-action'] === 'scope-toggle').length, 1, 'still one entrance');
+
+  // Moving the scope above the tabs moves the line inside the panel with it.
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  sessionOptions(tree).find((row) => row.props['data-session-id'] === 'a1').props.onClick();
+  tree = await page.flush();
+  target = oneBy(tree, 'data-region', 'mine-target');
+  assert.equal(target.props['data-mine-target-scope'], 'a1');
+  assert.ok(hasText(target, fillText(page.zh.mineTargetNote, { layer: page.zh.ovUser, scope: 'Alpha one' })));
+
+  // And so does the layer the save would land in.
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  target = oneBy(tree, 'data-region', 'mine-target');
+  assert.equal(target.props['data-mine-target-layer'], 'workspace');
+  assert.ok(hasText(target, fillText(page.zh.mineTargetNote, { layer: page.zh.ovWorkspace, scope: 'Alpha one' })));
+});
+
+test('client (g-055): the declared-height helper reads px, multiples and defaults alike', () => {
+  const line = (style) => declaredHeight({ type: 'p', props: { style } });
+  assert.equal(line({ fontSize: 12, lineHeight: '18px' }), 18, 'a px line height is used as written');
+  assert.equal(line({ fontSize: 12, lineHeight: 1.5 }), 18, 'a unitless line height multiplies the font size');
+  assert.equal(line({ fontSize: 16, lineHeight: '1.5' }), 24, 'a unitless string is a multiple too');
+  assert.equal(line({ fontSize: 12 }), CHROME_TEXT_LINE_PX, 'no line height: one slack line, never the raw font size');
+  assert.equal(
+    line({ lineHeight: 1.5 }),
+    CHROME_TEXT_LINE_PX * 1.5,
+    'a multiple with no font size scales the slack line instead of billing zero',
+  );
+  assert.equal(line({ fontSize: 20, lineHeight: 24 }), 24, 'a bare number of 4 or more is px, not a multiple');
+  assert.equal(
+    declaredHeight({ type: 'div', props: { style: { padding: '6px 10px', lineHeight: '20px' } } }),
+    32,
+    'padding counts top and bottom',
+  );
+  assert.equal(
+    declaredHeight({ type: 'div', props: { style: { margin: '6px 0 0', lineHeight: '20px' } } }),
+    26,
+    'a three-value margin adds the top only',
+  );
+  // Review round 3: the vertical longhands are read too, so a future style that
+  // grows the chrome with `paddingTop` cannot slip past the budget.
+  assert.equal(
+    declaredHeight({ type: 'div', props: { style: { paddingTop: 6, lineHeight: '20px' } } }),
+    26,
+    'a padding longhand is counted',
+  );
+  assert.equal(
+    declaredHeight({ type: 'div', props: { style: { paddingTop: '6px', paddingBottom: '4px', lineHeight: '20px' } } }),
+    30,
+    'both padding longhands are counted',
+  );
+  assert.equal(
+    declaredHeight({ type: 'div', props: { style: { padding: '6px 0', paddingBottom: '10px', lineHeight: '20px' } } }),
+    36,
+    'a longhand overrides that side of the shorthand',
+  );
+  assert.equal(
+    declaredHeight({ type: 'div', props: { style: { margin: '6px 0', marginTop: '12px', lineHeight: '20px' } } }),
+    38,
+    'and the same rule holds for margins',
+  );
+  assert.equal(
+    declaredHeight({ type: 'div', props: { style: { padding: '6px 0', paddingTop: 'auto', lineHeight: '20px' } } }),
+    32,
+    'a non-length longhand leaves the shorthand in place instead of zeroing the side',
+  );
 });
 
 // #endregion
@@ -8251,7 +8614,15 @@ const EN_SWEEP_CASES = [
       ['data-action', 'scope-toggle'],
       ['data-renderer', 'fallback'],
     ],
-    copy: ['sessionHeading', 'scopeEdit', 'scopeSummaryFlat', ['sessionCurrentLabel', { label: 'Alpha three' }]],
+    copy: [
+      'sessionHeading',
+      'scopeEdit',
+      'scopeSummaryFlat',
+      ['sessionCurrentLabel', { label: 'Alpha three' }],
+      // g-055: the block's one sentence and the panel's own write-target line.
+      'promptBlockNote',
+      ['mineTargetNote', { layer: 'user layer', scope: 'Alpha three' }],
+    ],
     async run() {
       const page = enPage({ useSessions: sessionsHook(WORKSPACE_SESSIONS), responses: defaultResponses() });
       const rec = recorder(page);
@@ -8417,6 +8788,12 @@ const EN_REQUIRED_MARKERS = [
   'data-active-tab=advanced',
   'data-region=mine',
   'data-region=mine-layer',
+  // g-055: the write-target line inside the panel, and the block whose header is
+  // the scope card above the tabs (the block carries the sentence, not a second
+  // title — review round 1).
+  'data-region=mine-target',
+  'data-region=prompt-block',
+  'data-role=prompt-block-note',
   'data-region=overview',
   'data-region=advanced',
   'data-region=advanced-layer',
