@@ -965,12 +965,12 @@ window.__ModuleLoader__.load({
       // session is frozen. Two of its own keys keep that distinction separate.
       mineFrozenUnknownWarn: '无法确认所选会话的装配是否被冻结',
       mineFrozenUnknownBody:
-        '全局装配被 complete 段冻结，但选中的会话没有活动 agent，所以无法确认本会话是否同样冻结。文本仍会写入{layer}的配置；如果本会话确实被冻结，它就不会生效。',
+        '全局装配被 complete 段冻结，但所选会话没有活动的 Agent，所以无法确认它是否同样冻结。文本仍会写入{layer}的配置；如果它确实被冻结，就不会生效。',
       mineFrozenHowTo:
-        '要让它生效：换用一个未声明 complete 的 agent preset（例如内置的默认 preset），或去掉当前 preset 里的 complete 声明，然后在本会话重新加载。',
-      mineSavedFrozen: '已保存到{layer}，但本会话冻结中，不会生效。',
+        '要让它生效：换用一个未声明 complete 的 agent preset（例如内置的默认 preset），或去掉当前 preset 里的 complete 声明，然后在所选会话重新加载。',
+      mineSavedFrozen: '已保存到{layer}，但所选会话冻结中，不会生效。',
       mineSavedUnknown: '已保存到{layer}；所选会话的冻结状态未知，若已冻结则不会生效。',
-      savedNoticeFrozen: '已保存到{layer}，但本会话冻结中，本轮不会生效。',
+      savedNoticeFrozen: '已保存到{layer}，但所选会话冻结中，本轮不会生效。',
       savedNoticeUnknown: '已保存到{layer}；所选会话的冻结状态未知，若已冻结则本轮不会生效。',
       mineWorkspaceNeedsSession: '工作区层需要先选择一个会话；未选择时无法写入工作区层。',
       mineResetTitle: '恢复默认：删除{layer}的「我的 Prompt」',
@@ -1443,13 +1443,13 @@ window.__ModuleLoader__.load({
       // session is frozen. Two of its own keys keep that distinction separate.
       mineFrozenUnknownWarn: 'Cannot confirm whether the selected session’s assembly is frozen',
       mineFrozenUnknownBody:
-        'The unscoped assembly is frozen by a complete section, but the selected session has no active agent, so whether this session is frozen cannot be confirmed. The text is still written to the {layer} config; if this session is frozen too, it will not take effect.',
+        'The unscoped assembly is frozen by a complete section, but the selected session has no active agent, so whether it is frozen too cannot be confirmed. The text is still written to the {layer} config; if it is frozen too, it will not take effect.',
       mineFrozenHowTo:
-        'To make it take effect: switch to an agent preset that does not declare complete (the built-in default preset, for example), or drop the complete declaration from the current preset, and then reload this session.',
-      mineSavedFrozen: 'Saved to {layer}, but this session is frozen, so it will not take effect.',
+        'To make it take effect: switch to an agent preset that does not declare complete (the built-in default preset, for example), or drop the complete declaration from the current preset, and then reload the selected session.',
+      mineSavedFrozen: 'Saved to {layer}, but the selected session is frozen, so it will not take effect.',
       mineSavedUnknown:
         'Saved to {layer}; the selected session’s frozen state is unknown, so it may not take effect.',
-      savedNoticeFrozen: 'Saved to {layer}, but this session is frozen; it will not take effect here.',
+      savedNoticeFrozen: 'Saved to {layer}, but the selected session is frozen; it will not take effect here.',
       savedNoticeUnknown:
         'Saved to {layer}; the selected session’s frozen state is unknown, so it may not take effect here.',
       mineWorkspaceNeedsSession: 'The workspace layer needs a session; without one it cannot be written.',

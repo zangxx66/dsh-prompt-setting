@@ -4439,6 +4439,40 @@ test('client: the global-freeze-with-a-session case stays "unknown" in the panel
     !strings(tree).some((text) => text.includes(fillText(page.zh.mineSaved, { layer: page.zh.ovUser }))),
     'the unconditional saved copy is still withheld',
   );
+
+  // g-052 review fix: the frozen copy may not fall back to the bare 「本会话」.
+  // The old wording mixed 「选中的会话」 and 「本会话」 inside a single sentence,
+  // so the panel had two names for one session.
+  const panel = oneBy(tree, 'data-region', 'mine');
+  const panelText = strings(panel).join('\n');
+  assert.ok(!panelText.includes('本会话'), 'no frozen copy in the panel falls back to 「本会话」');
+  assert.ok(panelText.includes('所选会话'), 'the panel names the session it means');
+});
+
+test('client: the unknown panel says "the selected session" in English too (g-052 review fix)', async () => {
+  const page = enPage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({
+      [PATHS.snapshot]: {
+        payload: snapshotFixture({
+          frozenScope: 'global',
+          frozen: true,
+          frozenScopeReason: 'session "s2" has no active agent, so this verdict describes the unscoped assembly',
+        }),
+      },
+    }),
+  });
+  const tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-frozen-state'), 'unknown');
+  assert.equal(markerOf(tree, 'data-mine-effect'), 'unknown');
+  const panel = oneBy(tree, 'data-region', 'mine');
+  const panelText = strings(panel).join('\n');
+  assert.ok(!panelText.includes('this session'), 'the panel never points at a session by that name');
+  assert.ok(panelText.includes('the selected session'), 'and it does name the session it means');
+  assert.ok(
+    hasText(panel, fillText(page.text.mineFrozenUnknownBody, { layer: page.text.ovUser })),
+    'the unknown body is the rewritten copy',
+  );
 });
 
 // #region issue #1: the reserved entry's `applied: false` is not a freeze signal

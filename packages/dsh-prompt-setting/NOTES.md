@@ -6661,3 +6661,18 @@ npm 读取、下载区域）、`### Changed 变更` 2 条（客户端按需分�
 
 - **真机目视未做**：两行新文案的换行、与告警行的间距只按邻近元素样式取值，未在浏览器里看过；
 - 未改动任何判定逻辑，故无行为回归面。
+
+### 七、复核补修：指代收口（同轮追加 commit，`45a4396` 未被 amend）
+
+- 复核发现四处冻结文案仍在用「本会话」/ "this session"，与已统一的「所选会话」并存：
+  `mineFrozenUnknownBody`（同一句里混用「选中的会话」与「本会话」，是明确缺陷）、`mineFrozenHowTo`、
+  `mineSavedFrozen`、`savedNoticeFrozen`（zh/en 各 4 处）；全部统一为「所选会话」，
+  `mineFrozenUnknownBody` 第二次起改用「它」，避免一句话里三次重复「所选会话」；
+- **未动** `client.js:1372` 的 en "assembling this session's prompt"（变量引用段，那里的 "this session"
+  含义正确）、`mineFrozenBody`（certain 正文，无「本会话」）、判定逻辑与 `CONTRACT.md`；
+- 新增断言（只增行）：unknown 面板（`data-region="mine"` 子树）zh 文本不含「本会话」且含「所选会话」；
+  en 面板子树不含 "this session" 且含 "the selected session"；
+- `grep -n "本会话" client.js` → **0 命中**；
+- 实测：`node --test` **743 pass / 0 fail / skipped 0**，exit 0（新增 1 个用例）；`check-compat.mjs`
+  exit 0；`client-chunks.mjs` 4 file match，exit 0；**无既有断言硬编码旧中文串**（全绿，未放宽任何断言）；
+- 补修 diff：`client.js 8+/8-`、`test/client.test.mjs 34+/0-`。
