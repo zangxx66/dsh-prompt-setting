@@ -10,7 +10,7 @@ write your own instructions into it, and roll back a bad edit — all **without 
 install**.
 
 ![license](https://img.shields.io/badge/license-MIT-blue)
-![version](https://img.shields.io/badge/version-0.2.0-blue)
+![version](https://img.shields.io/badge/version-0.2.1-blue)
 ![dsh](https://img.shields.io/badge/DSH-%3E%3D0.1.7--rc.2%20%3C0.2.2--0-blueviolet)
 ![deps](https://img.shields.io/badge/dependencies-0-brightgreen)
 
@@ -106,7 +106,7 @@ synthetic `-0` floor — and the **`0.2.0` and `0.2.1` releases themselves** are
 everything after it are out, because a new minor is unverified). Node `>= 22` is needed only to run the
 tests or to develop.
 
-**The registry is the primary way in** (this package is published; npm `latest` is `0.1.5` — this repository is `0.2.0`, and the two meet when it is published):
+**The registry is the primary way in** (this package is published; npm `latest` is `0.1.5` — this repository is `0.2.1`, and the two meet when it is published):
 
 ```sh
 dsh plugin --profile <name> add dsh-prompt-setting
@@ -335,7 +335,7 @@ README's "For maintainers" section; the detailed measurements are in
 | [`packages/dsh-prompt-setting/README.md`](./packages/dsh-prompt-setting/README.md) | users / developers | package summary and features (bilingual), install, maintainer notes, troubleshooting |
 | [`CONTRACT.md`](./packages/dsh-prompt-setting/CONTRACT.md) | developers | the frozen REST contract: every field, action enum, size limit and 4xx |
 | [`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) | developers | design trade-offs and measurements (including untested items and conclusions we had to retract) |
-| [`CHANGELOG.md`](./CHANGELOG.md) | users / developers | User-visible changes per release (bilingual; published — npm `latest` is 0.1.5, this repository is 0.2.0) |
+| [`CHANGELOG.md`](./CHANGELOG.md) | users / developers | User-visible changes per release (bilingual; published — npm `latest` is 0.1.5, this repository is 0.2.1) |
 
 ## 9. Status and roadmap
 

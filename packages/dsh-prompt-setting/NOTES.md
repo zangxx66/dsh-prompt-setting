@@ -7284,3 +7284,113 @@ exit=0
 - 返工后单行证据：`node --test test/*.test.mjs` = **773 pass / 0 fail**（上一轮 772 + 本次新增 1 条常量用例）；
   `node scripts/client-chunks.mjs` = 4 file(s) match（未 `--write`）；`node scripts/prepare.mjs` = 21 项 OK。
 - 返工以**追加 commit** 落盘（上一轮 `b9826bd` 未 amend）：本目标第二个 commit，见 `git log --oneline`。
+
+---
+
+## 134. 版本号 `0.2.0` → `0.2.1`：同步点清单、盲点核对与包内文件数变化（g-059，2026-10-11，基线 `01babd3` 隔离工作树）
+
+### 一、为什么是 patch
+
+负责人 2026-10-11 裁定「版本号提升至 0.2.1」。本轮没有新字段、新路由或响应形状变化（保留段的
+`replace|append` 是 g-058 / Revision 36 已发布语义），用户可感知变更全部来自 g-052…g-058 ⇒ 按 patch 提升。
+
+### 二、同步的「本包当前版本」（25 处 / 9 文件，全部改为 `0.2.1`；行号为改后行号）
+
+| 文件:行 | 原值 | 说明 |
+| --- | --- | --- |
+| `package.json:3` | `"version": "0.2.0"` | 权威源① |
+| `index.js:185` | `PLUGIN_VERSION = '0.2.0'` | 权威源②（`host.test.mjs` 有 lockstep 断言） |
+| `README.md:13` / `README_zh.md:12` | 徽章 `version-0.2.0` | 两份根 README |
+| `README.md:109` / `README_zh.md:91` | `this repository is 0.2.0` / 「本仓库为 0.2.0」 | 安装段（与「npm `latest` 为 `0.1.5`」双写） |
+| `README.md:338` / `README_zh.md:284` | 文档表内的同一表述 | 发布前如实区分 |
+| 包内 `README.md:234` / `:239` | 同上（中 / 英） | |
+| `CONTRACT.md:1620-1621` | §10 export 示例 `plugin.version` / `pluginVersion` | |
+| `CONTRACT.md:3058` | §13.8 版本节点文案 `v0.2.0` | |
+| `CONTRACT.md:3200` | §13.9 ping 示例 `version` | |
+| `CONTRACT.md:4472` / `:4500` | §17 update-check 两个示例的 `current` | |
+| `CONTRACT.md:5116-5117` | §18 install 示例 `version` / `tag`（`v0.2.0`→`v0.2.1`） | |
+| `CONTRACT.md:5138-5139` | 同节拒绝示例 `releaseUrl` / `releaseLink` | |
+| `test/stage2.test.mjs:1251-1252` | `pluginVersion` / `plugin.version` 断言 | |
+| `test/update.test.mjs:65` / `test/install.test.mjs:70` | `OLD_TARBALL_URL`（「本包已经是的那版」） | |
+| `test/update.test.mjs:989` | ping 的 `body.version` 断言 | |
+
+### 三、⚠️ 盲点核对（本项目升版踩过两次，本轮逐类查）
+
+1. **转义正则形态**（§121 的 banner `/0\.1\.4/`）——`grep -rn '0\\.2\\.0'` 全仓只命中
+   `test/host.test.mjs:168`（**DSH peer 范围**转义正则）、`test/install.test.mjs:439` / `:633`
+   （`/v0\.2\.0/`，对应同文件 `tag: 'v0.2.0'` 的纯函数夹具，与当前版本无关）与 NOTES 历史叙述
+   ⇒ **本轮的「当前版本」断言没有转义正则形态**，但仍按 §127 的做法跑全量兜底。
+2. **真正的盲点是 §127 记的第二类：fixture 里的「更新目标版本」**。改完两个权威源立刻跑全量
+   ⇒ **773 中 33 红**（install 26 / route 3 / update 3 / stage2 1，分布与 §127 完全一致；首个报错仍是
+   `hasUpdate` 由 true 变 false 的连锁）。修法：把**作为更新目标**的 `0.2.1` 提到 **`0.2.2`** ——
+   `test/install.test.mjs:62`（注释）`:64` `:68` `:146` `:152` `:163-164` `:582` `:721` `:738`
+   `:742-743` `:762` `:773` `:775` `:780` `:787` `:797` `:800` `:804-805` `:830` `:925`；
+   `test/route.test.mjs:41` `:550-551` `:565` `:566` `:579` `:587` `:597-598` `:615`；
+   `test/update.test.mjs:63` `:125-126` `:148` `:150` `:153` `:280` `:300-302` `:305` `:327-335` `:348`
+   `:352` `:365` `:367` `:422` `:433-434` `:438` `:464` `:875` `:1429` `:1668`。
+   **收敛**：33 红 → 改这批字面量后 **0 红**（一轮到位，没有第三类原因）。
+
+### 四、刻意不改的白名单（逐类理由）
+
+1. **DSH 的版本**（不是本插件版本）：`package.json:50`、`index.js:385` `DSH_PEER_RANGE_FALLBACK`、
+   `core/compat.js:163/166`、`test/host.test.mjs:168`、`test/boot.test.mjs:327-389`、
+   `scripts/check-compat.mjs:210`、三份 README 的前置条件；
+2. **历史段**：`CHANGELOG.md` 的 `[0.2.0]` 及更早、`NOTES.md` 全部历史叙述（含 §97–§100、§127）；
+3. **镜像实测记录**：`CONTRACT.md:2827` / `:4903-4925`（`dist-tags.latest` = `0.1.5`，当时测得的事实）；
+4. **纯函数自洽举例**：`test/install.test.mjs:326-711`（`buildReleaseAssetUrl('0.2.0','0.2.0')`、
+   `resolveInstallPolicy({ tag:'0.2.0' })`、`table.begin({ tag:'0.2.0', … })`、`MIRROR_TARBALL` 的
+   `…-0.2.0.tgz`）与 `test/update.test.mjs` 的 `isNewerVersion` / `registryTarball` 举例 —— 传什么断言
+   什么，与当前版本无关；表键的 `tag`/`version` 与 `ASSET_URL` 文件名**升版前就不相等**，本次保持既有
+   形态，未借机改写；
+5. **机制说明举例**：`CONTRACT.md:4538-4539`（dist-tag verbatim vs canonicalized）；
+6. **DSH 版本快照**：`docs/prompt-variables.md:7`；
+7. **测试替身**：`test/client.test.mjs` 的 ping/export 假响应与注入的 `currentVersion`（§127 先例）。
+
+### 五、CHANGELOG 0.2.1 段的覆盖范围（与 brief 的一处事实偏差）
+
+brief 写「本次 0.2.1 覆盖 g-050…g-058」。核对仓库事实：**g-050（回滚/重置/导入后编辑器跟随）与 g-051
+（「检查更新已已开启」重复字）的修复已在 `7caa0ac release: v0.2.0` 之内**（`git merge-base --is-ancestor
+7caa0ac HEAD` 成立；重复字修复 commit `e460d45` 早于 `7caa0ac`），条目也已写在 `[0.2.0]` 段。判据又要求
+「不改历史段」⇒ 0.2.1 段**不重复这两条**，改为在段首注明它们随 `[0.2.0]` 发布、见上一段。0.2.1 段实际
+覆盖 **g-052 / g-054 / g-055 / g-056 / g-057 / g-058**（g-053 是 worktree 清理**风险评估**，无代码、无用户
+可感知变更，不写 CHANGELOG）。dev 上 21 个未发布 commit（`git log --oneline 7caa0ac..dev`）与这一范围
+一一对应。
+
+### 六、`npm pack`：29 → 30 文件
+
+- 本机直跑 `npm pack` 会遇到 `EPERM`（`~/.npm/_cacache` 有 root-owned 文件，§121/§127 已记）⇒ 全程
+  用 `--cache /tmp/ps-pack-cache --pack-destination /tmp/ps-pack-out`；
+- **两个 commit 的同命令实测对照**：`7caa0ac`（v0.2.0 发布点）= **29 文件**；本次 = **30 文件**，多出的
+  正是 g-057 新增的 **`scripts/real-layers-check.mjs`**（`files` 白名单含 `scripts`，见 `host.test.mjs:186`
+  与 §91 的理由）。**注**：brief 说「v0.2.0 的包是 24 文件」，与实测（29）不符 —— 以实测为准；
+- 包内 30 项：`package.json`、`LICENSE`、`index.js`、`client.js` + 4 个 `client.*.js` chunk、`core/` 14 个
+  模块、`CONTRACT.md`、`README.md`、`NOTES.md`、`cordis.patch.yml`、`scripts/` 4 个脚本；
+- 复核：包内 `package.json.version` = **`0.2.1`**；`test/` 命中 **0**；`.dsh-graph/` 命中 **0**；`prepare.mjs`
+  的 `FILES-FILE` / `FILES-DIR`（含 `scripts/（4 项）`）全绿；
+- **新入包脚本的路径自查**：`scripts/real-layers-check.mjs` 只用 `homedir()` 与 `DSH_PS_REAL_{USER,
+  WORKSPACE}_FILE` 两个环境变量定位真机文件，`grep -nE '/Users/|/home/'` 零命中，**没有写死开发机绝对
+  路径**。（`NOTES.md` 内的 `/Users/ricardo/...` 是历史实测记录，v0.2.0 起即随包，不是本次引入。）
+
+### 七、验收（单行证据）
+
+- 升版后 `node --test test/*.test.mjs` = **773 pass / 0 fail / skipped 0**；
+- **基线对照**：`git archive 01babd3` 解到 `/tmp/ps-baseline` 跑同一命令 = **773 pass / 0 fail**
+  ⇒ 升版**未增删或削弱任何断言**；
+- `node scripts/prepare.mjs` = **21 项 OK**；`node scripts/client-chunks.mjs` = **4 file(s) match**，exit 0
+  （未加 `--write`，4 个 chunk 字节未变）；
+- **负向对照**：把 `index.js:185` 的 `PLUGIN_VERSION` 回退成 `'0.2.0'`，跑
+  `node --test test/stage2.test.mjs test/update.test.mjs test/route.test.mjs test/install.test.mjs
+  test/host.test.mjs` ⇒ **280 中 4 红**：`host.test.mjs` 的 lockstep 常量用例与 ping 用例、
+  `stage2.test.mjs` 的 export 用例、`update.test.mjs` 的 ping-untouched 用例；还原后全绿；
+- `git diff --stat` = **12 文件**，全部是版本字面量、文档与测试夹具；`core/`、`client.js`、各
+  `client.*.js` chunk **零改动**，`index.js` 仅 `PLUGIN_VERSION` 一行。
+
+### 八、未验证项
+
+- `npm publish` / `git tag` / `git push` / 合入 `main`：**人工 gate，未做**（合入由主管复核后执行）；因此
+  npm 上的 `latest` 仍是 `0.1.5`，README 的双写表述正为此；
+- 徽章的 shields.io 在线渲染未目视（离线），只核对了源文本；
+- 顺带修一处 §127 遗留的文档不一致：`CONTRACT.md` §17 的 npm 示例原为 `latest=0.2.1` 而
+  `latestTag=0.2.0`、`tarball` 指向 `…-0.2.0.tgz`，本次三者统一为 `0.2.2`（该节字段表本就规定
+  `latestTag` 与 `latest` 同版本、`tarball` 取自 `versions[latest]`）。这是**文档内部一致性修复**，
+  不涉及任何实现、路由或响应字段。

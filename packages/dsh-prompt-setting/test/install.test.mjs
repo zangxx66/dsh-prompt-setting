@@ -59,15 +59,15 @@ const UPDATE_APPLY_PATH = '/prompt-setting/update-apply';
 const UPDATE_APPLY_CANCEL_PATH = '/prompt-setting/update-apply/cancel';
 // g-040/g-048 upgrade blind spot: these fixtures name a version **higher** than
 // the package's own, so they must move whenever `package.json` does. Kept one
-// patch above it (0.2.0 → 0.2.1) on purpose: a fixture that merely equals the
+// patch above it (0.2.1 → 0.2.2) on purpose: a fixture that merely equals the
 // current version stops being an update and silently breaks every case here.
-const ASSET_URL = 'https://github.com/zangxx66/dsh-prompt-setting/releases/download/0.2.1/dsh-prompt-setting-0.2.1.tgz';
+const ASSET_URL = 'https://github.com/zangxx66/dsh-prompt-setting/releases/download/0.2.2/dsh-prompt-setting-0.2.2.tgz';
 /** g-042: the npm document the check reads first, and its own install spec. */
 const REGISTRY_URL = 'https://registry.npmjs.org/dsh-prompt-setting';
 const GITHUB_RELEASE_URL = 'https://api.github.com/repos/zangxx66/dsh-prompt-setting/releases/latest';
-const TARBALL_URL = 'https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.1.tgz';
+const TARBALL_URL = 'https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.2.tgz';
 /** The same for the version this package already is — never the install target. */
-const OLD_TARBALL_URL = 'https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.0.tgz';
+const OLD_TARBALL_URL = 'https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.1.tgz';
 
 let home;
 let previousHome;
@@ -143,13 +143,13 @@ function makeTransport(options = {}) {
     if (options.release === 'no-release') return jsonResponse({}, 404);
     // g-048: the fallback fixture must stay **above** the package's own version,
     // or `check()` answers "no update" and every route case below collapses.
-    return jsonResponse(options.release ?? { tag_name: '0.2.1', html_url: null, published_at: '2026-10-01T00:00:00Z' });
+    return jsonResponse(options.release ?? { tag_name: '0.2.2', html_url: null, published_at: '2026-10-01T00:00:00Z' });
   };
   return { fetch, calls };
 }
 
 /**
- * The canonical npm package document ("0.2.1 is the latest").
+ * The canonical npm package document ("0.2.2 is the latest").
  *
  * **Real shape** (measured against `registry.npmjs.org`, 2026-10-08): a
  * packument carries **no** top-level `dist`; the artifact is at
@@ -160,8 +160,8 @@ function makeTransport(options = {}) {
 function npmDocument(over = {}) {
   return {
     name: 'dsh-prompt-setting',
-    'dist-tags': { latest: '0.2.1' },
-    versions: { '0.2.1': { version: '0.2.1', dist: { tarball: TARBALL_URL } } },
+    'dist-tags': { latest: '0.2.2' },
+    versions: { '0.2.2': { version: '0.2.2', dist: { tarball: TARBALL_URL } } },
     ...over,
   };
 }
@@ -579,7 +579,7 @@ test('install: the npm source installs from the registry tarball, not from a rel
   assert.ok(legacy.url.includes('/download/v0.2.0/dsh-prompt-setting-0.2.0.tgz'));
 
   // And a GitHub-sourced payload (an npm fallback) keeps the asset path.
-  const fallback = resolveInstallTarget({ hasUpdate: true, latest: '0.2.1', latestTag: '0.2.1', source: 'github', tarball: TARBALL_URL });
+  const fallback = resolveInstallTarget({ hasUpdate: true, latest: '0.2.2', latestTag: '0.2.2', source: 'github', tarball: TARBALL_URL });
   assert.equal(fallback.source, 'github');
   assert.equal(fallback.url, ASSET_URL, 'a registry tarball on a GitHub answer is ignored, not used');
 });
@@ -718,7 +718,7 @@ test('install route: the install follows the chosen download region (g-043)', as
     calls.push(`${method} ${target}`);
     if (method === 'HEAD') return { ok: true, status: 200 };
     assert.ok(target.startsWith(MIRROR), `${target} must be the region the user chose`);
-    return jsonResponse(npmDocument({ versions: { '0.2.1': { version: '0.2.1', dist: { tarball: MIRROR_TARBALL } } } }));
+    return jsonResponse(npmDocument({ versions: { '0.2.2': { version: '0.2.2', dist: { tarball: MIRROR_TARBALL } } } }));
   };
   const manager = makeManager();
   const { route } = mountHost({ manager, transport: { fetch } });
@@ -735,12 +735,12 @@ test('install route: an npm tarball that is missing or untrustworthy is refused 
   writeProfile({ 'dsh-prompt-setting': '0.1.1' });
   const cases = [
     [undefined, REFUSAL_ASSET_MISSING, 'the document names no dist.tarball'],
-    ['https://evil.test/dsh-prompt-setting-0.2.1.zip', REFUSAL_ASSET_UNVERIFIED, 'a URL pnpm must never see'],
+    ['https://evil.test/dsh-prompt-setting-0.2.2.zip', REFUSAL_ASSET_UNVERIFIED, 'a URL pnpm must never see'],
   ];
   for (const [tarball, code, why] of cases) {
     const document = tarball === undefined
-      ? npmDocument({ versions: { '0.2.1': { version: '0.2.1', dist: {} } } })
-      : npmDocument({ versions: { '0.2.1': { version: '0.2.1', dist: { tarball } } } });
+      ? npmDocument({ versions: { '0.2.2': { version: '0.2.2', dist: {} } } })
+      : npmDocument({ versions: { '0.2.2': { version: '0.2.2', dist: { tarball } } } });
     const transport = makeTransport({ npm: document });
     const manager = makeManager();
     const { route } = mountHost({ manager, transport });
@@ -759,7 +759,7 @@ test('install route: an npm tarball that is missing or untrustworthy is refused 
 test('install route: a real-shaped document with no entry for that version answers asset-missing', async () => {
   writeProfile({ 'dsh-prompt-setting': '0.1.1' });
   // Real packument shape, but `versions` holds no entry for the dist-tag the
-  // check reported: the version is still an answer (source npm, latest 0.2.1),
+  // check reported: the version is still an answer (source npm, latest 0.2.2),
   // it simply names no artifact — and the install route refuses it with the
   // existing code instead of inventing a URL.
   const transport = makeTransport({
@@ -770,21 +770,21 @@ test('install route: a real-shaped document with no entry for that version answe
 
   const check = json(await call(route, { url: UPDATE_CHECK_PATH }));
   assert.equal(check.source, 'npm');
-  assert.equal(check.latest, '0.2.1');
+  assert.equal(check.latest, '0.2.2');
   assert.equal(check.hasUpdate, true);
-  assert.equal(check.tarball, null, 'no versions["0.2.1"] entry, so no tarball');
+  assert.equal(check.tarball, null, 'no versions["0.2.2"] entry, so no tarball');
 
   const refused = await startInstall(route);
   assert.equal(refused.ok, false);
   assert.equal(refused.code, REFUSAL_ASSET_MISSING);
-  assert.equal(refused.manual.releaseUrl, 'https://github.com/zangxx66/dsh-prompt-setting/releases/tag/0.2.1');
+  assert.equal(refused.manual.releaseUrl, 'https://github.com/zangxx66/dsh-prompt-setting/releases/tag/0.2.2');
   assert.equal(manager.calls.length, 0);
   assert.deepEqual(transport.calls.map((entry) => entry.method), ['GET'], 'nothing was probed');
 });
 
 test('install route: tag/version come from the same check, and a mismatched tag is refused', async () => {
   writeProfile({ 'dsh-prompt-setting': '0.1.1' });
-  const transport = makeTransport({ release: { tag_name: 'v0.2.1', html_url: null } });
+  const transport = makeTransport({ release: { tag_name: 'v0.2.2', html_url: null } });
   const manager = makeManager();
   const { route } = mountHost({ manager, transport });
 
@@ -794,15 +794,15 @@ test('install route: tag/version come from the same check, and a mismatched tag 
   assert.equal(manager.calls.length, 0, 'a mismatched tag installs nothing');
 
   // The matching tag is accepted, and the installed URL is the tag the check saw.
-  const matching = await startInstall(route, { tag: 'v0.2.1' });
+  const matching = await startInstall(route, { tag: 'v0.2.2' });
   assert.equal(matching.ok, true);
   await settle();
-  assert.equal(manager.calls[0].spec, 'https://github.com/zangxx66/dsh-prompt-setting/releases/download/v0.2.1/dsh-prompt-setting-0.2.1.tgz');
+  assert.equal(manager.calls[0].spec, 'https://github.com/zangxx66/dsh-prompt-setting/releases/download/v0.2.2/dsh-prompt-setting-0.2.2.tgz');
 
   // g-030's payload now carries the tag, from the same answer as the version.
   const check = json(await call(route, { url: UPDATE_CHECK_PATH }));
-  assert.equal(check.latest, '0.2.1');
-  assert.equal(check.latestTag, 'v0.2.1');
+  assert.equal(check.latest, '0.2.2');
+  assert.equal(check.latestTag, 'v0.2.2');
   assert.equal(check.hasUpdate, true);
 });
 
@@ -827,7 +827,7 @@ test('install route: a link: profile is refused with a manual route, and nothing
   assert.equal(refused.ok, false);
   assert.equal(refused.code, REFUSAL_DEVELOPMENT_LINK);
   assert.match(refused.manual.current, /^link:/);
-  assert.ok(refused.manual.releaseUrl.includes('/releases/tag/0.2.1'));
+  assert.ok(refused.manual.releaseUrl.includes('/releases/tag/0.2.2'));
   assert.equal(manager.calls.length, 0, 'a development link is never overwritten');
   assert.equal(transport.calls.filter((entry) => entry.method === 'HEAD').length, 0);
 });
@@ -922,7 +922,7 @@ test('install route: an official management failure is named, never "could not b
     if (code !== MANAGEMENT_OPERATION_ERROR) {
       assert.doesNotMatch(status.status.error.message, /restored/i, `${code} must not claim a rollback`);
     }
-    assert.ok(status.status.error.manual.releaseUrl.includes('/releases/tag/0.2.1'), `${code} keeps the manual route`);
+    assert.ok(status.status.error.manual.releaseUrl.includes('/releases/tag/0.2.2'), `${code} keeps the manual route`);
   }
 });
 

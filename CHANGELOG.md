@@ -10,6 +10,92 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
+## [0.2.1] - 2026-10-11
+
+**修复版本：修好「我的 Prompt」在分层查看下的读写错位（保存了却读不出来、切换查看范围静默写空），把
+「查看范围」收进「我的 Prompt」块，并为保留段补上「空值＝该层不声明」与「覆盖 / 叠加」两套语义。 /
+Fix release: the layered "My prompt" surface no longer reads the wrong layer or silently writes an empty
+draft when the view scope changes; the "view scope" card is folded into the "My prompt" block; and the
+reserved section gains both "an empty value means this layer states nothing" and an explicit
+override / append mode.**
+
+（g-050 的编辑器跟随修复与「检查更新已已开启」的重复字修复已随 `[0.2.0]` 发布，条目见上一段，本段不
+重复。 / g-050's editor-follow fix and the duplicated "已已开启" copy were released with `[0.2.0]`; their
+entries stay in the previous section and are not repeated here.）
+
+### Added 新增
+
+- **保留段「覆盖 / 叠加」模式（g-058）**：「我的 Prompt」现在可选本层文本和另一层的关系——**覆盖**
+  （本层盖掉另一层，即原来的行为）或**叠加**（本层接在另一层之后：用户层在前、工作区层在后，两层都有
+  内容时中间空一行，只有一层有内容时不留孤立空行）。导出、导入与回滚都会带上这个模式，**任何一次写入
+  都只动当前这一层**。
+  **"Override / append" mode for the reserved section (g-058)**: "My prompt" now states how this layer
+  relates to the other one — **override** (this layer replaces it, the previous behaviour) or **append**
+  (this layer follows it: the user layer first, the workspace layer after, one blank line between two
+  non-empty texts and no stray blank line when only one has text). Exports, imports and rollbacks carry
+  the mode, and **a write only ever touches the layer it targets**.
+
+### Changed 变更
+
+- **版本号 `0.2.0` → `0.2.1`**：同步表示「本包当前版本」的每一处——本包 `package.json` 的 `version`、
+  宿主的 `PLUGIN_VERSION`、`CONTRACT.md` 里的响应与示例、三份 README 的徽章与「当前版本」表述，以及
+  测试中表示本包版本的硬字面量（含 `0.2.1` → `0.2.2` 的更新目标夹具）。版本号本身**不引入任何行为
+  变更**：本版的行为变化全部是下面的条目，版本号不改变路由、落盘内容或既有响应字段。
+  `npm publish` / `git tag` / `git push` 仍是人工 gate，不在本次变更内。
+  **Version `0.2.0` → `0.2.1`**: every place that states "the version this package currently is" was
+  moved together — this package's `package.json`, the host's `PLUGIN_VERSION`, the responses and examples
+  in `CONTRACT.md`, the badges and "current" lines in all three READMEs, and the test literals that assert
+  the package version (including the "update target" fixtures, which moved `0.2.1` → `0.2.2`). The bump
+  itself introduces **no behaviour change**: this release's behaviour changes are the entries below, and
+  the version number alone alters no route, no stored content and no existing response field.
+  `npm publish`, `git tag` and `git push` remain manual gates and are not part of this change.
+- **保留段空值＝该层不声明（g-057 / Revision 35）**：把「我的 Prompt」在某一层写空，不再等于「用空文本
+  盖掉另一层」——空值只表示这一层没表态，另一层已写好的文本照常生效；两层都空则该段什么都不施加。此前
+  工作区层的一个空条目会让用户层写好的文本**永远不生效，而且没有任何提示**。
+  **An empty reserved section means that layer states nothing (g-057 / Revision 35)**: clearing "My prompt"
+  in one layer no longer overwrites the other layer with an empty string — an empty value only means this
+  layer has nothing to say, and the other layer's text stays in effect; with both layers empty the section
+  applies nothing. Before this, one empty workspace-layer entry made the user layer's text **silently
+  never take effect**.
+- **「查看范围」收成「我的 Prompt」块的头部（g-055）**：这两者在功能上是一个块，现在也用同一条视觉
+  带子收在一起，并在「我的 Prompt」里给出一行**只读**的写入目标说明（写到哪一层、看的是哪个范围）。
+  页面级的位置和唯一的改范围入口都没有搬动，折叠行为、标记与既有文案一字未改。
+  **The "view scope" is folded into the head of the "My prompt" block (g-055)**: the two are one feature
+  on the page and now read as one block under a shared visual band, with a **read-only** line inside
+  "My prompt" naming the write target (which layer, which scope). The page-level position and the single
+  scope control are unmoved, and the collapse behaviour, markers and existing copy are unchanged.
+
+### Fixed 修复
+
+- **分层编辑框读错了来源（g-054）**：在某一层保存过「我的 Prompt」之后，切到另一层，编辑框却显示为空
+  （「版本历史」里那条记录明明在，回滚也提示成功）。现在每层的编辑框只读**该层自己的**内容：另一层
+  有同名条目、甚至另一层存的是空文本，都不会再顶替本层显示。
+  **A layered editor read the wrong source (g-054)**: after saving "My prompt" in one layer, switching to
+  the other showed an empty box (while "Version history" held the record and a rollback reported success).
+  Each layer's box now reads **that layer's own** content: a same-named entry in the other layer — even an
+  empty one — no longer stands in for it.
+- **切换「查看范围」会静默把草稿写空（g-056）**：未保存的草稿现在按**写入目标**保管（用户层是整份，
+  工作区层按工作区）——在同一个写入目标里切会话、切范围，草稿都留在框里；草稿属于别的写入目标时，
+  「保存」会被**明确阻断**并说明原因，另给一个「放弃那份草稿」的按钮（纯本地，不写任何数据）。
+  此前切换范围会让编辑框静默回落到空文本，再保存就是一次成功提示背后的空写入。
+  **Changing the "view scope" silently saved an empty draft (g-056)**: an unsaved draft is now kept
+  per **write target** (the user layer is one, each workspace another) — switching sessions or scopes
+  inside the same target keeps the draft in the box; when the draft belongs to another target, "Save" is
+  **blocked with an explanation**, and a "discard that draft" button (local only, writing nothing) is
+  offered. Before this, a scope change silently fell back to empty text, and saving it wrote that empty
+  text behind a success notice.
+- **冻结状态「未知」的文案不再指错人、也不再乱归因（g-052）**：状态条不再原样引用宿主的英文实现
+  术语，也不再暗示「未在运行 / 未打开 / 已结束」这类未经证实的原因；指代统一为**「所选会话」**，并
+  补两行说明——无法探测的是该会话自己的装配，而「未知」**不等于未冻结**（仍可编辑保存，只是不保证
+  生效）。
+  **The "unknown" frozen-state copy no longer names the wrong subject or invents a cause (g-052)**: the
+  status line stops quoting the host's English implementation terms and stops implying unverified causes
+  ("not running / not open / finished"); it says **"the selected session"** throughout and adds two lines
+  — what could not be probed is that session's own assembly, and "unknown" **does not mean unfrozen**
+  (editing and saving still work, they are just not guaranteed to take effect).
+
+---
+
 ## [0.2.0] - 2026-10-09
 
 **功能版本：更新检查改从 npm registry 读取并新增「下载区域」选择，客户端按需分块加载，DSH peer 范围纳入
