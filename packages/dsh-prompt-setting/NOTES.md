@@ -6922,11 +6922,9 @@ npm 读取、下载区域）、`### Changed 变更` 2 条（客户端按需分�
   仍显示自己文件里的空条目（g-054 分层视图不受影响）；⑥ 工作区非空仍覆盖 + 两层都空 ⇒ `applied: false`、
   `overrideLayer: null`、不出现空段进入渲染；⑦ **真机文件证据**：真实用户层文件 + 合成空工作区层（见 §七）；
 - **负向对照（决定性）**：临时把 `statesNoReservedText` 首行改成 `return false;`（其余全不动）⇒
-  `node --test test/overrides.test.mjs test/route.test.mjs` = **122 pass / 4 fail**，变红的正是新增的
-  ①②⑤⑥ 四项（含装配结果层两项）；恢复后 = **126 pass / 0 fail**。真机文件用例 ⑦ 的敏感性另行单独核过：
-  `node --test --test-name-pattern='g-057 real files' test/route.test.mjs` 在同一回退下 = **1 fail**
-  （实测 `actual: [ 'workspace' ], expected: [ 'user' ]`，即真机上工作区那条空文本确实"赢"了），
-  恢复后 = **1 pass / 0 fail**。
+  `node --test test/overrides.test.mjs test/route.test.mjs` = **121 pass / 5 fail**，变红的正是新增的
+  ①②⑤⑥⑦ 五项（含装配结果层两项与真机用例；真机用例实测 `actual: [ 'workspace' ], expected: [ 'user' ]`，
+  即工作区那条空文本确实"赢"了）；恢复后 = **126 pass / 0 fail**。
 
 ### 七、真机数据证据（走宿主自己的代码路径）
 
@@ -6970,7 +6968,8 @@ npm 读取、下载区域）、`### Changed 变更` 2 条（客户端按需分�
 ### 八、实测证据与未验证项
 
 - `node --test test/overrides.test.mjs test/route.test.mjs test/integration.test.mjs` = exit 0；
-- `node --test test/*.test.mjs` = **761 pass / 0 fail / exit 0**（基线 755 + 本次新增 6）；
+- `node --test test/*.test.mjs` = **761 pass / 0 fail / exit 0**（基线 755 + 本次新增 6；数字为第二个
+  commit `1a3bd46` 修正真机用例之后的复跑结果，见 §七(b)）；
 - `node scripts/client-chunks.mjs` = **4 file(s) match**，exit 0，未加 `--write`（本次只动 core/host，
   4 个 `client.*.js` chunk 字节未变）；
 - `CONTRACT.md` 新增 **Revision 35**（g-054=33、g-056=34）并在 §3 就地点明 `merged` 随之变化的性质；
