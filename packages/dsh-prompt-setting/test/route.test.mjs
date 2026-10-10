@@ -969,6 +969,48 @@ test('overrides GET: both layers plus the merged list', async () => {
   assert.deepEqual(payload.merged.overrides.map((entry) => [entry.name, entry.layer]), [['project:beta', 'workspace']]);
 });
 
+test('g-054 overrides GET: each layer view keeps its own entry when both name the same section', async () => {
+  // Both files hold the reserved section, and the fixture has no per-layer view
+  // that leaks. The merged list deduplicates by name (workspace wins) — that is
+  // the *assembly's* list — while `user.overrides` / `workspace.overrides` are
+  // what 「我的 Prompt」 reads to describe each layer's own file.
+  const workspace = workspaceWith('ws', 's1');
+  const { route } = mount({ workspaces: [workspace] });
+  const put = (layer, text, session) =>
+    call(route, {
+      method: 'PUT',
+      url: OVERRIDES_PATH,
+      body: JSON.stringify({
+        layer,
+        ...(session === undefined ? {} : { session }),
+        section: { name: CUSTOM_SECTION_NAME, action: 'replace', text },
+      }),
+    });
+  assert.equal((await put('user', 'USER MINE')).statusCode, 200);
+  assert.equal((await put('workspace', 'WS MINE', 's1')).statusCode, 200);
+
+  const payload = json(await call(route, { url: `${OVERRIDES_PATH}?session=s1` }));
+  assert.deepEqual(payload.user.overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'USER MINE' },
+  ]);
+  assert.deepEqual(payload.workspace.overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'WS MINE' },
+  ]);
+  // One entry per section name in the assembly's list, and it is the workspace's.
+  assert.deepEqual(
+    payload.merged.overrides.map((entry) => [entry.name, entry.layer, entry.text]),
+    [[CUSTOM_SECTION_NAME, 'workspace', 'WS MINE']],
+  );
+
+  // Without a session the workspace layer is inactive; the user view is
+  // unaffected, so the user-layer box still has its text to read.
+  const alone = json(await call(route, { url: OVERRIDES_PATH }));
+  assert.deepEqual(alone.user.overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'USER MINE' },
+  ]);
+  assert.deepEqual(alone.workspace.overrides, []);
+});
+
 test('overrides PUT: writes the reserved section atomically and takes effect on the next assembly', async () => {
   const { route } = mount();
   const res = await call(route, {

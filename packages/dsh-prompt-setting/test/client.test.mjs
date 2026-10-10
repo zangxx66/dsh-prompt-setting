@@ -20,6 +20,11 @@ import vm from 'node:vm';
 // the tests below compare the two, character for character, so the two copies
 // cannot drift apart silently (g-015, requirement: 两侧常量不许漂移).
 import { CUSTOM_SECTION_NAME } from '../core/custom.js';
+// The **host** merge, used to build override fixtures that describe a server
+// state the route could really produce (g-054): `mergeLayers` deduplicates by
+// name across layers, so a hand-written `merged` list holding a same-name pair
+// is a fixture no real `GET /overrides` can answer with.
+import { mergeLayers, validateConfig } from '../core/overrides.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageJson = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8'));
@@ -1082,6 +1087,44 @@ function overridesFixture(over = {}) {
     },
     ...over,
   };
+}
+
+/**
+ * A `GET /prompt-setting/overrides` payload whose layer views and `merged` list
+ * describe the same two files.
+ *
+ * Each view holds **that layer's own** entries, and `merged` is produced by the
+ * host's own `mergeLayers` instead of being written out here — so no fixture can
+ * state a same-name-across-layers pair the real route would have deduplicated,
+ * which is exactly the shape that hid g-054. Entries are given the way a layer
+ * file holds them (no `layer` field); the views carry them verbatim.
+ * @param user - the user layer's raw overrides (`[]` for "nothing stored").
+ * @param workspace - the workspace layer's raw overrides.
+ * @returns the payload.
+ */
+function layeredOverrides(user = [], workspace = []) {
+  const userConfig = validateConfig({ version: 1, overrides: user });
+  const workspaceConfig = workspace.length === 0 ? null : validateConfig({ version: 1, overrides: workspace });
+  return overridesFixture({
+    user: {
+      layer: 'user',
+      enabled: true,
+      path: '/home/u/.dsh/prompt-setting/overrides.json',
+      reason: null,
+      overrides: userConfig.overrides,
+    },
+    workspace: {
+      layer: 'workspace',
+      enabled: workspaceConfig !== null,
+      path: workspaceConfig === null ? null : '/home/w/.dsh-prompt-setting/overrides.json',
+      reason:
+        workspaceConfig === null
+          ? 'no ?session= was supplied, so the workspace layer is inactive for this view'
+          : null,
+      overrides: workspaceConfig === null ? [] : workspaceConfig.overrides,
+    },
+    merged: { overrides: mergeLayers(userConfig, workspaceConfig).overrides },
+  });
 }
 
 /** `GET /prompt-setting/history` payload: two records for one section. */
@@ -4204,9 +4247,9 @@ test('client: a save that the host refuses is reported, never shown as saved', a
 test('client: 「恢复默认」 confirms first, then deletes by the reserved name', async () => {
   const page = makePage({
     responses: defaultResponses({
-      [PATHS.overrides]: { payload: overridesFixture({
-        merged: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text', layer: 'user' }] },
-      }) },
+      [PATHS.overrides]: {
+        payload: layeredOverrides([{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text' }]),
+      },
     }),
   });
   let tree = await page.flush();
@@ -4323,11 +4366,14 @@ test('client: a saved 「我的 Prompt」 is re-read from the changed override l
   typeInto(tree, 'mine-text', 'identity rewritten');
   tree = await page.flush();
   // The host answers the next read with the stored entry: the panel must show
-  // what is configured, not what this render happened to hold.
+  // what is configured, not what this render happened to hold. The workspace
+  // layer holds a same-named entry too (g-054), which must not hide the user
+  // layer's text.
   page.router.set(PATHS.overrides, {
-    payload: overridesFixture({
-      merged: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'identity rewritten', layer: 'user' }] },
-    }),
+    payload: layeredOverrides(
+      [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'identity rewritten' }],
+      [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'WS MINE' }],
+    ),
   });
   clickButton(tree, { 'data-action': 'mine-save' });
   tree = await page.flush();
@@ -7708,9 +7754,7 @@ const EN_SWEEP_CASES = [
             init && init.method === 'PUT'
               ? { status: 403, payload: { ok: false, code: 'write-locked', message: 'only the reserved section may be written' } }
               : {
-                  payload: overridesFixture({
-                    merged: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text', layer: 'user' }] },
-                  }),
+                  payload: layeredOverrides([{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text' }]),
                 },
         }),
       });
@@ -7853,9 +7897,7 @@ const EN_SWEEP_CASES = [
       const page = enPage({
         responses: defaultResponses({
           [PATHS.overrides]: {
-            payload: overridesFixture({
-              merged: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text', layer: 'user' }] },
-            }),
+            payload: layeredOverrides([{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text' }]),
           },
         }),
       });
@@ -8933,9 +8975,7 @@ test('g-027 client: 「取消」 drops the unsaved draft, restores the stored te
   const page = makePage({
     responses: defaultResponses({
       [PATHS.overrides]: {
-        payload: overridesFixture({
-          merged: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text', layer: 'user' }] },
-        }),
+        payload: layeredOverrides([{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text' }]),
       },
     }),
   });
@@ -8987,14 +9027,10 @@ test('g-027 client: 「取消」 only drops the draft of the layer it belongs to
   const page = makePage({
     responses: defaultResponses({
       [PATHS.overrides]: {
-        payload: overridesFixture({
-          merged: {
-            overrides: [
-              { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'user stored', layer: 'user' },
-              { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'workspace stored', layer: 'workspace' },
-            ],
-          },
-        }),
+        payload: layeredOverrides(
+          [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'user stored' }],
+          [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'workspace stored' }],
+        ),
       },
     }),
   });
@@ -9032,6 +9068,81 @@ test('g-027 client: 「取消」 only drops the draft of the layer it belongs to
   assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'user stored');
   assert.equal(markerOf(tree, 'data-mine-state'), 'idle');
   assert.equal(writeCalls(page).length, 0, 'none of this wrote anything');
+});
+
+// ---------------------------------------------------------------------------
+// g-054: each layer's 「我的 Prompt」 reads **that layer's own** stored value.
+//
+// The read used to come from `merged.overrides`, which deduplicates by section
+// name across layers (a workspace entry replaces the user one). So as soon as
+// the workspace layer held a same-named reserved entry, the user layer's box was
+// empty and `unconfigured` even though the user file held the text — a save that
+// looked lost. These cases build both layer views and let the host's own
+// `mergeLayers` produce `merged`, so the double-entry state is the real one.
+// ---------------------------------------------------------------------------
+
+test('g-054 client: each layer shows its own reserved text, never the merged one', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.overrides]: {
+        payload: layeredOverrides(
+          [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'USER MINE' }],
+          [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'WS MINE' }],
+        ),
+      },
+    }),
+  });
+  let tree = await page.flush();
+
+  // The page opens on the user layer: the box shows what the USER layer stored,
+  // and the stored entry is not mistaken for 「未配置」.
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'USER MINE');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'idle', 'the user layer really stored this text');
+  assert.ok(strings(tree).includes(fillText(page.zh.mineLoaded, { layer: page.zh.ovUser })));
+
+  // The workspace layer shows what the WORKSPACE layer stored — the user layer's
+  // same-named entry neither supplies nor hides it.
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'WS MINE');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'idle');
+
+  // …and back again: neither view leaks into the other.
+  clickTab(tree, 'mine-layer', 'user');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'USER MINE');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'idle');
+  assert.equal(writeCalls(page).length, 0, 'reading a layer is not a write');
+});
+
+test("g-054 client: one layer's entry is never answered with the other layer's text", async () => {
+  // The user layer configured empty text while the workspace layer holds real
+  // text — the pair `merged` collapses to the workspace entry. Each box must
+  // still describe its own file: the workspace text may not leak into the user
+  // layer. (`null` and `''` both read as 「未配置」 here, as before g-054; what
+  // this case pins is that the answer comes from the layer being edited.)
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.overrides]: {
+        payload: layeredOverrides(
+          [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: '' }],
+          [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'WS MINE' }],
+        ),
+      },
+    }),
+  });
+  let tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, '');
+  assert.equal(
+    markerOf(tree, 'data-mine-state'),
+    'unconfigured',
+    "the user layer's own empty entry, not the workspace layer's text",
+  );
+
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'WS MINE');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'idle');
 });
 
 // #region g-030: the upstream update check

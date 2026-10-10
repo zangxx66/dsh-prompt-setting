@@ -3646,10 +3646,17 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The reserved section's stored text in one layer, read from the *merged*
-     * override list — the same list the assembly applies (CONTRACT.md §3), so
-     * what 「我的 Prompt」 shows is what is configured rather than what the last
-     * render happened to hold.
+     * The reserved section's stored text in one layer, read from **that layer's
+     * own** override list (`payload.user.overrides` / `payload.workspace.overrides`,
+     * CONTRACT.md §3) — the file the layer itself holds, so what 「我的 Prompt」
+     * shows for a layer is what that layer stored.
+     *
+     * Deliberately not `merged` (g-054). The merged list is the *assembly* view:
+     * it deduplicates by section name across layers, so a workspace entry
+     * replaces a same-named user entry and only one layer is ever named per
+     * section. Reading a specific layer's stored text from it reported `null`
+     * — an empty box in the 「未配置」 state — whenever the other layer held the
+     * same name, even though this layer's file had the text all along.
      *
      * `null` means "the layer has no reserved override at all" (the page shows
      * the unconfigured state); `''` means "configured, but as empty text".
@@ -3658,11 +3665,10 @@ window.__ModuleLoader__.load({
      * @returns the stored text, or null when the entry is absent.
      */
     function reservedTextOf(ovs, layer) {
-      const merged = ovs && ovs.merged && Array.isArray(ovs.merged.overrides) ? ovs.merged.overrides : [];
-      const entry = merged.find(
-        (candidate) =>
-          candidate && candidate.name === RESERVED_SECTION_NAME && candidate.layer === layer,
-      );
+      const view = ovs !== null && typeof ovs === 'object' ? ovs[layer] : null;
+      const list =
+        view !== null && typeof view === 'object' && Array.isArray(view.overrides) ? view.overrides : [];
+      const entry = list.find((candidate) => candidate && candidate.name === RESERVED_SECTION_NAME);
       if (entry === undefined) return null;
       return typeof entry.text === 'string' ? entry.text : '';
     }
@@ -5173,9 +5179,11 @@ window.__ModuleLoader__.load({
      * page already has (`deriveScope` / `scopeMode`): the workspace layer needs
      * a session, and the page says so instead of letting the write fail with
      * `workspace-unresolved`. The text box is bound to the reserved section's
-     * stored value for that layer, read from the *merged* override list — the
-     * same list the assembly applies — so what is shown is what is configured,
-     * not what the last render happened to hold.
+     * stored value for that layer, read from **that layer's own** override list
+     * — `merged` deduplicates by name across layers, so it names at most one of
+     * them per section and cannot answer "what did *this* layer store" (g-054) —
+     * so what is shown is what that layer stored, not what the last render
+     * happened to hold. The merged list still describes the assembly.
      *
      * Two states are stated rather than implied. `data-mine-state` is the
      * machine-readable one (`unconfigured` / `dirty` / `saving` / `saved` /

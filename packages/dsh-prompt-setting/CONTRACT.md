@@ -945,7 +945,11 @@ Query: `session` (optional, selects the workspace layer).
 }
 ```
 
-`merged` is exactly the list the assembly handler applies for this session.
+`merged` is exactly the list the assembly handler applies for this session, and
+it is the list that **deduplicates** a same-named section across layers
+(workspace wins, §3 semantics of `mergeLayers`). `user` / `workspace` are the
+per-layer views of the two files: a surface that describes **one layer's own**
+stored value reads that layer's view, never `merged` (§13.1, g-054).
 `enabled: false` always carries a `reason`; the layer still reports its `path`
 when one could be resolved.
 
@@ -1980,6 +1984,27 @@ both dictionaries.
   panel to the stored value's own state, while keeping it leaves the panel
   `dirty` — which is what「取消」(§13.1) is offered for.
 
+**Revision 33 (g-054: the layer editor reads that layer's own list — client-half
+behaviour change; no route, field or stored byte changes).** `GET /overrides`
+answers with the same fields as before (§3); what changes is which of them
+§13.1 names as the read source.
+
+- **the box showed another layer's absence as this layer's emptiness.** The
+  reserved text for the selected layer was read out of `merged.overrides`, which
+  deduplicates by section name across layers (workspace wins). Whenever the
+  workspace layer held a same-named entry, the user layer's entry was not in that
+  list at all, so the user-layer box rendered as 「未配置」 — while the user file,
+  its history and its rollback all held the text. Saving the box then wrote what
+  the box showed, which is how a saved prompt could read back as lost;
+- **the read source is now the layer's own view** (`user.overrides` /
+  `workspace.overrides`, §3), so each layer's box describes that layer's file.
+  `merged` remains the assembly's list (§3) and its meaning is unchanged:
+  `mergeLayers`' precedence, the interpolation merge and every assembly result
+  are untouched;
+- **no wire change**: `GET /overrides` keeps its fields and their meanings; the
+  fix is which list the client reads. The `null` / `""` distinction is kept: an
+  absent entry is 「未配置」, an entry with empty text is a stored empty value.
+
 ### 13.1 「我的 Prompt」 — the one write surface
 
 - The panel is `data-region="mine"`, the layer control is
@@ -1988,9 +2013,14 @@ both dictionaries.
   `data-action="mine-save"`, `data-action="mine-cancel"` and
   `data-action="mine-reset"`.
 - The value shown is the reserved section's stored text **for the selected
-  layer**, read from the `merged` list of `GET /overrides` — the list the
-  assembly applies (§3). An absent entry means "unconfigured", and the panel
-  says so in words; it never shows a blank box as if the layer held `""`.
+  layer**, read from **that layer's own** view of `GET /overrides`
+  (`user.overrides` / `workspace.overrides`, §3) — the file that layer holds.
+  It is deliberately not the `merged` list: `merged` is the *assembly's* list and
+  deduplicates by section name across layers, so it names at most one layer per
+  section and cannot answer "what did *this* layer store" (g-054 — reading it
+  here left the user-layer box empty whenever the workspace layer held a
+  same-named entry). An absent entry means "unconfigured", and the panel says so
+  in words; it never shows a blank box as if the layer held `""`.
 - Saving is exactly `PUT /prompt-setting/overrides` with
   `section: { name: "prompt-setting:custom-prompt", action: "replace", text }`
   (§4.1) and, when a session is selected, `session`. The text is sent verbatim.

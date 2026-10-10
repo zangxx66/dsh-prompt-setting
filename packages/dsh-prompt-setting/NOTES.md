@@ -6695,3 +6695,73 @@ npm 读取、下载区域）、`### Changed 变更` 2 条（客户端按需分�
 - 实测：`node --test` **745 pass / 0 fail / skipped 0**，exit 0；`check-compat.mjs` exit 0；
   `client-chunks.mjs` 4 file match，exit 0；`grep -c "本会话" client.js` → **0**；
   `test/` diff 仍是**纯新增**（0 删除行）。
+
+## 129. g-054：「我的 Prompt」分层读取面缺陷（只改读取来源，2026-10-10，基线 `91fd55e` 隔离工作树）
+
+### 一、现象（负责人实测）
+
+工作区层写入「我的 Prompt」并保存 → 重开设置页切到用户层，文本框显示为空（未配置态）；
+「历史与备份」里该内容真实存在、回滚提示成功，但编辑框依旧空。重新在用户层输入并保存，
+提示成功，重进设置页仍然空。**存储面是好的，只有编辑框的读取面在撒谎。**
+
+### 二、根因
+
+`client.js` 的 `reservedTextOf(ovs, layer)` 从 `GET /overrides` 的 **`merged.overrides`** 里按
+`name === 保留段名 && layer === 目标层` 找条目；而 `mergeLayers`（`core/overrides.js:266`）按 name
+跨层去重、workspace 条目整体替换 user 条目（**空白文本也照样替换**）⇒ 工作区层存在同名保留段条目时，
+`merged` 里只剩 `layer: "workspace"` 那一条，用户层的读取恒为 `null`，编辑框恒空、
+`data-mine-state` 恒 `unconfigured`。写入面正常（`PUT /overrides` 直写该层文件；`/interpolate`
+只改 config 顶层键，overrides 原样透传），所以呈现出「保存成功却读不出来」。
+
+### 三、修法
+
+`reservedTextOf` 改读**该层自己的视图**（`payload.user.overrides` / `payload.workspace.overrides`，
+服务端 `userLayerView` / `workspaceLayerView` 已在同一响应里给出）。装配语义、`mergeLayers`、
+`GET /overrides` 的既有字段一律未动；`merged` 仍是装配的列表（`client.advanced.js:106-131` 的
+「已配置清单」继续用它，语义正确）。`null`（该层无该条目）与 `''`（该层存了空文本）的区分保持。
+
+### 四、同类读取点排查
+
+`grep 'RESERVED_SECTION_NAME|merged'` 遍查 `client.js` 与各 `client.*.js`：除 `reservedTextOf`
+外，覆盖相关的 `merged` 只出现在 `client.advanced.js`（已配置清单，「装配是否生效」语义，正确未改）；
+`client.js` 其余 `merged`（样式/props 合并）与覆盖无关。
+
+### 五、测试（含负向对照）
+
+- `test/route.test.mjs` 新增：两层各自 PUT 保留段（`USER MINE` / `WS MINE`），
+  `GET /overrides?session=s1` → 断言 `user.overrides` / `workspace.overrides` 各是自己的文本、
+  `merged` 只有 workspace 一条；无 session 时 workspace 视图为空、user 视图不受影响；
+- `test/client.test.mjs` 新增 2 例，夹具 `layeredOverrides` 用**真实 `mergeLayers`** 生成 `merged`
+  （分层视图各带自己的条目）：默认 user 层显示 `USER MINE` 且 `data-mine-state=idle`，切 workspace
+  显示 `WS MINE`、切回仍是 `USER MINE` 且零写入；另一例 user 层 `''` + workspace 层非空时，
+  user 层不被 workspace 文本顶替；
+- 顺带修正 g-027 那条**手写「双层同名 merged」**夹具（真实服务端产不出），改为 `mergeLayers` 生成，
+  用例原意（取消只清本层草稿）不变；另有 5 处「用 merged 冒充该层已存文本」的旧夹具同步改为分层真源；
+- **负向对照**：把 `reservedTextOf` 临时改回 merged 写法 →
+  `node --test --test-name-pattern="g-054|g-027 client: 「取消」 only drops" test/client.test.mjs`
+  = **2 fail**（新用例 + g-027 层用例），恢复分层实现后转绿。
+
+### 六、文档同步
+
+`CONTRACT.md`：§3 补一句「`user`/`workspace` 是两层各自的真源、`merged` 是装配的列表」；§13.1 把
+「read from the `merged` list」改为「读该层自己的视图」；新增 **Revision 33** 记录（无 wire 变更）。
+
+### 七、实测数字
+
+| 项 | 结果 |
+| --- | --- |
+| `node --test test/*.test.mjs` | **748 pass / 0 fail / skipped 0**，exit 0（基线 745 + 新增 3；~36s） |
+| `node scripts/client-chunks.mjs` | **4 file(s) match the CHUNK_STAMPS manifest**，exit 0（未改 chunk 文件，无需 `--write`） |
+| `git diff --numstat` | client.js `20+/12-`、CONTRACT.md `34+/4-`、test/client.test.mjs `135+/24-`、test/route.test.mjs `42+/0-` |
+
+### 八、未验证项 / 风险（如实报告）
+
+- 未在真实浏览器 + 真实 Host 下目视复现（本树只跑离线测试）；
+- **另有一条与本次缺陷无关、但可复现的「已输入文本变空」路径**（只读探针证据，未在本轮修）：
+  `mineKey` 含 `sessionArg`（`client.js:7136`），输入之后若 `sessionArg` 变化（会话数据到达 /
+  「查看范围」切换），草稿失配、编辑框回落到该层 stored；此时点保存，PUT body 的 `section.text`
+  就是空串。探针实测：sessionArg 由 `s2` 变 `global` 后框值 `""`、状态 `unconfigured`，保存请求为
+  `{"layer":"user","section":{"name":"prompt-setting:custom-prompt","action":"replace","text":""}}`。
+  宿主写入面本身不吞文本（`validateOverride` 接受空串并原样落盘），故工作区层那两条 `textLen=0` 的
+  history 与 `text:""` 是「提交了空文本」，不是存储或装配丢文本。修法（新 attempt）方向：草稿键不应
+  绑定 scope，或 scope 变化时迁移当前框内容。
