@@ -20,6 +20,8 @@
  * @module dsh-prompt-setting/core/overrides
  */
 
+import { CUSTOM_SECTION_NAME } from './custom.js';
+
 /** The only accepted `action` values, in contract order. */
 export const ACTIONS = Object.freeze(['replace', 'hide', 'append']);
 /** The only accepted `layer` values. `workspace` wins over `user` on a name clash. */
@@ -68,6 +70,13 @@ export const VARIABLE_GROUP = /^\{\{([^{}]*)\}\}/;
  * pre-Revision-9 assertion and every existing `overrides.json` byte-compatible.
  */
 export const INTERPOLATE_FLAG = 'interpolateCustom';
+/**
+ * Revision 36 (g-058): the separator two **stacked** reserved texts are joined
+ * with — one blank line, i.e. the same `"\n\n"` the shipped renderer puts
+ * between two sections. Exported so the host, the contract's examples and the
+ * tests all name the one literal instead of each typing their own.
+ */
+export const RESERVED_STACK_SEPARATOR = '\n\n';
 const encoder = new TextEncoder();
 
 /**
@@ -258,32 +267,189 @@ export function validateConfig(raw) {
  * config states nothing at all (which reads as OFF). A workspace layer that
  * states nothing therefore inherits the user layer instead of silently turning
  * the switch off.
+ *
+ * The reserved「我的 Prompt」section merges on statedness too (Revision 35):
+ * a layer whose `replace` carries no text at all (`""`, only whitespace, `null`,
+ * `undefined`, a missing `text` field) counts as *that layer stating nothing*
+ * for this one section, so the other layer's non-empty text survives instead of
+ * being blanked. Only the reserved section name is treated that way; every
+ * other section keeps the older "a text, however short, is a decision"
+ * semantics, which is what lets an empty `text` still blank a section on
+ * purpose.
+ *
+ * Revision 36 (g-058) adds the **stack** mode to that one section, and the rule
+ * is symmetrical with Revision 35 rather than layered on top of it: for the
+ * reserved name an `append` **from a layer** means *this layer's text goes
+ * after the other layer's text*, not "insert a new section" (the `append`
+ * meaning every other section keeps). The two layers are therefore resolved
+ * into **one** entry right here — a `replace` whose text is the lower layer's
+ * text, one blank line, this layer's text — so the rest of the pipeline still
+ * sees a single reserved section and the generic name-clash loop below is never
+ * consulted for it. See {@link resolveReservedSection}.
+ *
+ * An `append` layer whose text is blank states nothing, exactly like a blank
+ * `replace` (§Revision 35): stacking nothing would otherwise turn "this layer
+ * has no text" into an extra blank line.
  * @param userConfig - the user layer (already validated), or null.
  * @param workspaceConfig - the workspace layer (already validated), or null.
  * @returns `{version, overrides}` where every entry carries its `layer`, plus
  *   `interpolateCustom` when either layer states one.
  */
 export function mergeLayers(userConfig, workspaceConfig) {
-  const merged = toOverrides(userConfig, 'user');
+  const user = toOverrides(userConfig, 'user');
   const workspace = toOverrides(workspaceConfig, 'workspace');
-  for (const override of workspace) {
-    const at = merged.findIndex((entry) => entry.name === override.name);
-    if (at === -1) merged.push(override);
-    else merged[at] = override;
+  // The reserved section is resolved from both layers at once (Revision 36), so
+  // the stack has both texts to work with. It keeps the position the generic
+  // loop below would have given it — the user layer's own slot when that layer
+  // declares one, the end otherwise — so a layer switch still never reshuffles
+  // the list.
+  const reserved = resolveReservedSection(
+    user.find((entry) => entry.name === CUSTOM_SECTION_NAME) ?? null,
+    workspace.find((entry) => entry.name === CUSTOM_SECTION_NAME) ?? null,
+  );
+  const merged = [];
+  let placed = false;
+  for (const entry of user) {
+    if (entry.name === CUSTOM_SECTION_NAME) {
+      if (reserved !== null) {
+        merged.push(reserved);
+        placed = true;
+      }
+      continue;
+    }
+    merged.push(entry);
   }
+  for (const entry of workspace) {
+    if (entry.name === CUSTOM_SECTION_NAME) continue;
+    const at = merged.findIndex((candidate) => candidate.name === entry.name);
+    if (at === -1) merged.push(entry);
+    else merged[at] = entry;
+  }
+  if (reserved !== null && !placed) merged.push(reserved);
   const stated = interpolateFlagOf(workspaceConfig) ?? interpolateFlagOf(userConfig);
   return withInterpolate({ version: CONFIG_VERSION, overrides: merged }, stated);
 }
 
 /**
+ * Resolve the reserved「我的 Prompt」section across the two layers (Revision 36).
+ *
+ * The vocabulary is the point. For the reserved name only, `action` says what a
+ * layer does with the **other** layer's text, not what the pipeline does with a
+ * section:
+ *
+ * - `replace` (覆盖) — this layer's text is the section's text; the other layer
+ *   does not contribute. Unchanged behaviour, and still the default;
+ * - `append` (叠加) — this layer's text is stacked after the other layer's; both
+ *   reach the prompt. The write face stores the word `append`, and this function
+ *   is where it is translated into the single `replace` the assembly applies.
+ *
+ * Which layer is "the other" is fixed by §5.2 and never by who asked: the user
+ * layer is the lower one and the workspace layer the upper one. So a workspace
+ * `append` stacks after the user text, and a user `append` has nothing under it
+ * — it is flattened to `replace`, which is what "no lower layer" means.
+ *
+ * A `hide` in the upper layer still wins outright (it is an explicit
+ * declaration, Revision 35), and a `hide` in the lower layer contributes no text
+ * to a stack rather than blocking it: hiding a section that the same request
+ * stacks text onto would contradict the request.
+ * @param userEntry - the user layer's reserved entry, or null.
+ * @param workspaceEntry - the workspace layer's reserved entry, or null.
+ * @returns the one resolved `{name, action: 'replace'|'hide', text?, layer}`
+ *   entry, or null when neither layer states anything.
+ */
+function resolveReservedSection(userEntry, workspaceEntry) {
+  if (userEntry === null) return workspaceEntry === null ? null : flattened(workspaceEntry);
+  if (workspaceEntry === null) return flattened(userEntry);
+  // The upper layer wins unless it explicitly asks to stack.
+  if (workspaceEntry.action !== 'append') return workspaceEntry;
+  const under = stackableTextOf(userEntry);
+  const text = under === '' ? workspaceEntry.text : `${under}${RESERVED_STACK_SEPARATOR}${workspaceEntry.text}`;
+  return { name: CUSTOM_SECTION_NAME, action: 'replace', text, layer: workspaceEntry.layer };
+}
+
+/**
+ * Reduce a reserved entry that is alone in its stack to the action the assembly
+ * reads.
+ *
+ * An `append` with nothing beneath it is a `replace`: there is no lower text to
+ * go after. `order` is dropped rather than carried, because a stack position is
+ * not a target index — the write face refuses the field for the reserved name
+ * (`core/custom.js`), and a hand-edited one may not smuggle it into the
+ * resolved list.
+ * @param entry - the entry that survives.
+ * @returns a `replace` entry, or the entry unchanged when it already is one.
+ */
+function flattened(entry) {
+  if (entry.action !== 'append') return entry;
+  return { name: entry.name, action: 'replace', text: entry.text, layer: entry.layer };
+}
+
+/**
+ * The text one layer contributes as the **lower** half of a stack.
+ *
+ * `hide` contributes nothing — it declares the section out of the prompt, and
+ * there is no text to stack onto — but it does not veto the other layer's
+ * `append`, because the request being honoured is the upper layer's. A blank
+ * text is nothing too, the same 口径 Revision 35 uses for statedness.
+ * @param entry - the lower layer's reserved entry (never null here).
+ * @returns the lower text, or `''` when the layer contributes none.
+ */
+function stackableTextOf(entry) {
+  if (entry.action === 'hide') return '';
+  const text = entry.text;
+  return typeof text === 'string' && text.trim() !== '' ? text : '';
+}
+
+/**
  * Tag one layer's validated overrides with their layer name.
+ *
+ * Revision 35: a reserved-section entry that states no text is dropped right
+ * here, before any cross-layer comparison can see it, so it can neither win a
+ * name clash nor count as a workspace-only entry. Dropping it at the per-layer
+ * step (rather than inside the merge loop) is what makes a layer-emptiness rule
+ * behave identically whether one layer or both are present.
  * @param config - the validated layer config, or null.
  * @param layer - the layer name to tag with.
  * @returns the layer-tagged override list (a fresh array).
  */
 function toOverrides(config, layer) {
   const list = Array.isArray(config?.overrides) ? config.overrides : [];
-  return list.map((override) => ({ ...override, layer }));
+  return list
+    .filter((override) => !statesNoReservedText(override))
+    .map((override) => ({ ...override, layer }));
+}
+
+/**
+ * Whether an entry states *nothing* for the reserved「我的 Prompt」section.
+ *
+ * The判定口径 (Revision 35, widened by Revision 36) is deliberately narrow,
+ * because it changes what the assembly applies:
+ * - the name must be exactly {@link CUSTOM_SECTION_NAME};
+ * - the action must be `replace` or `append`. `hide` is an *explicit*
+ *   declaration ("take the section out of the prompt") and carries no `text`
+ *   field by validation, so treating its missing text as emptiness would
+ *   silently undo an explicit hide — it is never dropped here;
+ * - the text must be `null` / `undefined` / a missing field, or a string that
+ *   is empty after `String(text).trim()`, so `"   "` and `"\n\t"` are emptiness
+ *   too and cannot blank a layer by accident.
+ *
+ * Revision 36 extends the rule to `append` for this one section because
+ * `append` on the reserved name means「stack after the other layer」(see
+ * {@link resolveReservedSection}): an `append` with no text would otherwise
+ * contribute an empty half plus a separator — a blank line the user never asked
+ * for. Every other name keeps the older semantics untouched.
+ *
+ * A non-empty text is a decision even for the reserved section, so this is the
+ * ONLY rule that may drop an entry; nothing else about `mergeLayers` changes.
+ * @param override - a validated override record (untagged).
+ * @returns whether the entry must be read as "this layer states nothing".
+ */
+function statesNoReservedText(override) {
+  if (override?.name !== CUSTOM_SECTION_NAME) return false;
+  if (override.action !== 'replace' && override.action !== 'append') return false;
+  const text = override.text;
+  if (text === undefined || text === null) return true;
+  return typeof text === 'string' && text.trim() === '';
 }
 
 /**

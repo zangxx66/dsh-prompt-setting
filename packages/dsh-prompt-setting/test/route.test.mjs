@@ -38,7 +38,7 @@ const DOWNLOAD_REGION_PATH = '/prompt-setting/download-region';
 /** g-042: the npm document, the GitHub fallback, and the registry's install spec. */
 const REGISTRY_URL = 'https://registry.npmjs.org/dsh-prompt-setting';
 const GITHUB_URL = 'https://api.github.com/repos/zangxx66/dsh-prompt-setting/releases/latest';
-const TARBALL_URL = 'https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.1.tgz';
+const TARBALL_URL = 'https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.2.tgz';
 
 /** Markers as documented in CONTRACT.md §14, written out independently. */
 const BUILD_BEGIN = '/* @build-fingerprint:begin */';
@@ -547,8 +547,8 @@ function updateTransport(handler) {
     const body = typeof handler === 'function'
       ? handler(target)
       : {
-          'dist-tags': { latest: '0.2.1' },
-          versions: { '0.2.1': { version: '0.2.1', dist: { tarball: TARBALL_URL } } },
+          'dist-tags': { latest: '0.2.2' },
+          versions: { '0.2.2': { version: '0.2.2', dist: { tarball: TARBALL_URL } } },
         };
     return { ok: true, status: 200, json: async () => body };
   };
@@ -562,8 +562,8 @@ test('update route: the check answers from npm, and names its source', async () 
   assert.equal(res.statusCode, 200);
   const body = json(res);
   assert.equal(body.source, 'npm');
-  assert.equal(body.hasUpdate, true, 'this package is 0.2.0 and the registry says 0.2.1');
-  assert.equal(body.latest, '0.2.1');
+  assert.equal(body.hasUpdate, true, 'this package is 0.2.1 and the registry says 0.2.2');
+  assert.equal(body.latest, '0.2.2');
   assert.equal(body.tarball, TARBALL_URL);
   assert.deepEqual(transport.calls, [REGISTRY_URL], 'GitHub is not asked while npm answers');
 });
@@ -576,7 +576,7 @@ test('update route: a registry that cannot answer falls back to GitHub, still 20
     // A *failure* on the registry is what makes the fallback run; GitHub then
     // answers the release the check reports.
     if (target === REGISTRY_URL) return { ok: false, status: 503, json: async () => ({ message: 'down' }) };
-    return { ok: true, status: 200, json: async () => ({ tag_name: 'v0.2.1', html_url: null }) };
+    return { ok: true, status: 200, json: async () => ({ tag_name: 'v0.2.2', html_url: null }) };
   };
   const { route } = mount({ config: { updateCheck: { fetch: failing } } });
   const res = await call(route, { url: UPDATE_CHECK_PATH });
@@ -584,7 +584,7 @@ test('update route: a registry that cannot answer falls back to GitHub, still 20
   const body = json(res);
   assert.equal(body.source, 'github');
   assert.equal(body.hasUpdate, true);
-  assert.equal(body.latest, '0.2.1');
+  assert.equal(body.latest, '0.2.2');
   assert.equal(body.tarball, null);
   assert.deepEqual(calls, [REGISTRY_URL, GITHUB_URL], 'npm first, GitHub second');
 });
@@ -594,8 +594,8 @@ test('update route: an untrustworthy registry tarball is refused before any pack
   // `pluginManager` at all: if the route needed one it would answer
   // `installer-unavailable`, which is exactly what this asserts it does not do.
   const transport = updateTransport(() => ({
-    'dist-tags': { latest: '0.2.1' },
-    versions: { '0.2.1': { version: '0.2.1', dist: { tarball: 'https://evil.test/pkg.zip' } } },
+    'dist-tags': { latest: '0.2.2' },
+    versions: { '0.2.2': { version: '0.2.2', dist: { tarball: 'https://evil.test/pkg.zip' } } },
   }));
   const { route } = mount({ config: { updateCheck: { fetch: transport.fetch } } });
   const res = await call(route, {
@@ -612,7 +612,7 @@ test('update route: an untrustworthy registry tarball is refused before any pack
   // An npm answer's `releaseUrl` is null, so the refusal itself has to carry a
   // clickable manual route (g-042 review fix) — the release page, which is the
   // same shape and the same label a GitHub refusal has always used.
-  assert.equal(body.manual.releaseUrl, 'https://github.com/zangxx66/dsh-prompt-setting/releases/tag/0.2.1');
+  assert.equal(body.manual.releaseUrl, 'https://github.com/zangxx66/dsh-prompt-setting/releases/tag/0.2.2');
   assert.deepEqual(transport.calls, [REGISTRY_URL], 'nothing was probed and nothing was installed');
 });
 
@@ -969,6 +969,143 @@ test('overrides GET: both layers plus the merged list', async () => {
   assert.deepEqual(payload.merged.overrides.map((entry) => [entry.name, entry.layer]), [['project:beta', 'workspace']]);
 });
 
+test('g-054 overrides GET: each layer view keeps its own entry when both name the same section', async () => {
+  // Both files hold the reserved section, and the fixture has no per-layer view
+  // that leaks. The merged list deduplicates by name (workspace wins) — that is
+  // the *assembly's* list — while `user.overrides` / `workspace.overrides` are
+  // what 「我的 Prompt」 reads to describe each layer's own file.
+  const workspace = workspaceWith('ws', 's1');
+  const { route } = mount({ workspaces: [workspace] });
+  const put = (layer, text, session) =>
+    call(route, {
+      method: 'PUT',
+      url: OVERRIDES_PATH,
+      body: JSON.stringify({
+        layer,
+        ...(session === undefined ? {} : { session }),
+        section: { name: CUSTOM_SECTION_NAME, action: 'replace', text },
+      }),
+    });
+  assert.equal((await put('user', 'USER MINE')).statusCode, 200);
+  assert.equal((await put('workspace', 'WS MINE', 's1')).statusCode, 200);
+
+  const payload = json(await call(route, { url: `${OVERRIDES_PATH}?session=s1` }));
+  assert.deepEqual(payload.user.overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'USER MINE' },
+  ]);
+  assert.deepEqual(payload.workspace.overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'WS MINE' },
+  ]);
+  // One entry per section name in the assembly's list, and it is the workspace's.
+  assert.deepEqual(
+    payload.merged.overrides.map((entry) => [entry.name, entry.layer, entry.text]),
+    [[CUSTOM_SECTION_NAME, 'workspace', 'WS MINE']],
+  );
+
+  // Without a session the workspace layer is inactive; the user view is
+  // unaffected, so the user-layer box still has its text to read.
+  const alone = json(await call(route, { url: OVERRIDES_PATH }));
+  assert.deepEqual(alone.user.overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'USER MINE' },
+  ]);
+  assert.deepEqual(alone.workspace.overrides, []);
+});
+
+test('g-057 snapshot: a blank workspace reserved section does not blank the user layer text', async () => {
+  // THE production bug, at the assembly layer: the user file holds the real
+  // text and the workspace file holds the same name with `text: ""`. Before
+  // Revision 35 the workspace entry blanked the section and the user's text
+  // never reached a prompt in that workspace.
+  const workspace = workspaceWith('ws', 's1');
+  const { route } = mount({ workspaces: [workspace] });
+  const put = (layer, text, session) =>
+    call(route, {
+      method: 'PUT',
+      url: OVERRIDES_PATH,
+      body: JSON.stringify({
+        layer,
+        ...(session === undefined ? {} : { session }),
+        section: { name: CUSTOM_SECTION_NAME, action: 'replace', text },
+      }),
+    });
+  assert.equal((await put('user', 'USER MINE')).statusCode, 200);
+  assert.equal((await put('workspace', '', 's1')).statusCode, 200);
+
+  // Both files really are on disk in the two-layer shape (the fixture, not a
+  // hand-built merge) — this is what makes the payload below evidence.
+  assert.deepEqual(JSON.parse(readFileSync(userPath(), 'utf8')).overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'USER MINE' },
+  ]);
+  const wsPath = join(workspace.path, '.dsh-prompt-setting', 'overrides.json');
+  assert.deepEqual(JSON.parse(readFileSync(wsPath, 'utf8')).overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: '' },
+  ]);
+
+  const payload = json(await call(route, { url: `${SNAPSHOT_PATH}?session=s1` }));
+  const custom = payload.effective.sections.find((section) => section.name === CUSTOM_SECTION_NAME);
+  assert.equal(custom.text, 'USER MINE', 'the blank workspace layer states nothing, so the user text applies');
+  assert.equal(custom.overrideLayer, 'user');
+  assert.equal(custom.applied, true);
+  assert.equal(payload.rendered.endsWith('\n\nUSER MINE'), true);
+
+  // `merged` is "the list the assembly would apply", so it follows: one entry,
+  // the user's, and no workspace blank competing with it.
+  const overrides = json(await call(route, { url: `${OVERRIDES_PATH}?session=s1` }));
+  assert.deepEqual(overrides.merged.overrides.map((entry) => [entry.name, entry.layer, entry.text]), [
+    [CUSTOM_SECTION_NAME, 'user', 'USER MINE'],
+  ]);
+  // Each layer view still describes its OWN file (g-054), blank entry included:
+  // the write face keeps storing what the user typed.
+  assert.deepEqual(overrides.workspace.overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: '' },
+  ]);
+});
+
+test('g-057 snapshot: a non-empty workspace reserved text still wins, and two blanks apply nothing', async () => {
+  const workspace = workspaceWith('ws', 's1');
+  const { route } = mount({ workspaces: [workspace] });
+  const put = (layer, text, session) =>
+    call(route, {
+      method: 'PUT',
+      url: OVERRIDES_PATH,
+      body: JSON.stringify({
+        layer,
+        ...(session === undefined ? {} : { session }),
+        section: { name: CUSTOM_SECTION_NAME, action: 'replace', text },
+      }),
+    });
+  // Precedence is untouched: a non-empty workspace text overrides. Position too.
+  assert.equal((await put('user', 'USER MINE')).statusCode, 200);
+  assert.equal((await put('workspace', 'WS MINE', 's1')).statusCode, 200);
+  const won = json(await call(route, { url: `${SNAPSHOT_PATH}?session=s1` }));
+  const customWon = won.effective.sections.find((section) => section.name === CUSTOM_SECTION_NAME);
+  assert.deepEqual([customWon.text, customWon.overrideLayer], ['WS MINE', 'workspace']);
+  assert.equal(won.base.sections.at(-1).name, CUSTOM_SECTION_NAME, 'the reserved section stays last');
+  assert.equal(won.rendered.endsWith('\n\nWS MINE'), true);
+
+  // Both layers blank ⇒ nothing is applied to the section at all: it keeps the
+  // text it was registered with (empty), so the renderer drops it and the
+  // prompt is byte-identical to an unconfigured install's.
+  const bare = workspaceWith('bare', 's2');
+  const second = mount({ workspaces: [bare] });
+  const userPut = (layer, text, session) =>
+    call(second.route, {
+      method: 'PUT',
+      url: OVERRIDES_PATH,
+      body: JSON.stringify({
+        layer,
+        ...(session === undefined ? {} : { session }),
+        section: { name: CUSTOM_SECTION_NAME, action: 'replace', text },
+      }),
+    });
+  assert.equal((await userPut('user', '', undefined)).statusCode, 200);
+  assert.equal((await userPut('workspace', '   ', 's2')).statusCode, 200);
+  const both = json(await call(second.route, { url: `${SNAPSHOT_PATH}?session=s2` }));
+  const customBoth = both.effective.sections.find((section) => section.name === CUSTOM_SECTION_NAME);
+  assert.deepEqual([customBoth.text, customBoth.applied, customBoth.overrideLayer], ['', false, null]);
+  assert.equal(both.rendered.endsWith('\n\n'), false, 'no empty section may reach the rendered prompt');
+});
+
 test('overrides PUT: writes the reserved section atomically and takes effect on the next assembly', async () => {
   const { route } = mount();
   const res = await call(route, {
@@ -1061,11 +1198,12 @@ test('overrides PUT: every rejection is a readable 4xx and never touches the dis
     [JSON.stringify({ layer: 'user', section: { name: 'a', action: 'hide', text: 'x' } }), 403, 'write-locked'],
     [JSON.stringify({ layer: 'user', section: { name: 'a', action: 'append', text: 'x', order: -2 } }), 403, 'write-locked'],
     [JSON.stringify({ layer: 'user', section: { name: 'a'.repeat(201), action: 'hide' } }), 403, 'write-locked'],
-    // … and the reserved name accepts exactly one action.
+    // … and the reserved name accepts exactly two actions (Revision 36).
     [JSON.stringify({ layer: 'user', section: { name: reserved, action: 'hide' } }), 400, 'unsupported-action'],
-    [JSON.stringify({ layer: 'user', section: { name: reserved, action: 'append', text: 'x' } }), 400, 'unsupported-action'],
     [JSON.stringify({ layer: 'user', section: { name: reserved, action: 'explode', text: 'x' } }), 400, 'unsupported-action'],
     [JSON.stringify({ layer: 'user', section: { name: reserved } }), 400, 'unsupported-action'],
+    // The reserved `append` stacks after the other layer, which is not an index.
+    [JSON.stringify({ layer: 'user', section: { name: reserved, action: 'append', text: 'x', order: 2 } }), 400, 'unexpected-order'],
   ];
   for (const [body, status, code] of cases) {
     const res = await put(body);
@@ -1143,7 +1281,7 @@ test('overrides: the write lock is checked before anything can be written, prove
     ['PUT', OVERRIDES_PATH, JSON.stringify({ layer: 'user', section: { name: 'project:alpha', action: 'replace', text: 'HIJACK' } }), 403],
     ['PUT', OVERRIDES_PATH, JSON.stringify({ layer: 'user', section: { name: 'project:alpha', action: 'hide' } }), 403],
     ['PUT', OVERRIDES_PATH, JSON.stringify({ layer: 'workspace', session: 's-lock', section: { name: 'project:beta', action: 'replace', text: 'HIJACK' } }), 403],
-    ['PUT', OVERRIDES_PATH, JSON.stringify({ layer: 'user', section: { name: CUSTOM_SECTION_NAME, action: 'append', text: 'x' } }), 400],
+    ['PUT', OVERRIDES_PATH, JSON.stringify({ layer: 'user', section: { name: CUSTOM_SECTION_NAME, action: 'append', text: 'x', order: 1 } }), 400],
     ['PUT', OVERRIDES_PATH, JSON.stringify({ layer: 'workspace', session: 's-lock', section: { name: CUSTOM_SECTION_NAME, action: 'hide' } }), 400],
     ['DELETE', `${OVERRIDES_PATH}?layer=user&name=project%3Aalpha`, undefined, 403],
     ['DELETE', `${OVERRIDES_PATH}?layer=user&name=never-existed`, undefined, 403],
@@ -2648,4 +2786,163 @@ test('g-026 rev15: the switch is the only state — ON expands, OFF is literal, 
   assert.equal(closed.rendered.includes('I am {{model}}'), true, 'the braces are literal again, as OFF promises');
   assert.equal(closed.layers.interpolate.effective, false);
   assert.equal(reservedOf(await assembleFor(harness, 'session-e3')).text, 'I am {{model}}');
+});
+
+test('g-058 PUT: the「叠加」mode lives in one layer and stacks in the assembly', async () => {
+  // The shape the real machine has: the user layer holds「我的 Prompt」and the
+  // workspace layer holds its own same-named entry. Choosing「叠加」on the
+  // workspace layer has to put BOTH into the prompt — and must not rewrite the
+  // user layer to do it.
+  writeUserConfig([{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'USER 343' }]);
+  const workspace = workspaceWith('ws-stack', 's-stack', {
+    version: 1,
+    overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'WS 39' }],
+  });
+  const { route } = mount({ workspaces: [workspace] });
+  const workspaceFile = join(workspace.path, '.dsh-prompt-setting', 'overrides.json');
+  const userBefore = sha256(userPath());
+
+  const put = await call(route, {
+    method: 'PUT',
+    url: OVERRIDES_PATH,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      layer: 'workspace',
+      session: 's-stack',
+      section: { name: CUSTOM_SECTION_NAME, action: 'append', text: 'WS 39' },
+    }),
+  });
+  assert.equal(put.statusCode, 200);
+  assert.deepEqual(json(put).saved, { name: CUSTOM_SECTION_NAME, action: 'append', text: 'WS 39', layer: 'workspace' });
+  // The word is stored in the layer that was written...
+  assert.deepEqual(JSON.parse(readFileSync(workspaceFile, 'utf8')).overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'append', text: 'WS 39' },
+  ]);
+  // ...and the other layer was not touched, byte for byte.
+  assert.equal(sha256(userPath()), userBefore, 'switching the mode never rewrites the other layer');
+  assert.deepEqual(JSON.parse(readFileSync(userPath(), 'utf8')).overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'USER 343' },
+  ]);
+
+  // The per-layer views report each file's own stored word; `merged` is what the
+  // assembly applies, i.e. the two halves joined by exactly one blank line.
+  const payload = json(await call(route, { url: `${OVERRIDES_PATH}?session=s-stack` }));
+  assert.deepEqual(payload.workspace.overrides, [{ name: CUSTOM_SECTION_NAME, action: 'append', text: 'WS 39' }]);
+  assert.deepEqual(payload.user.overrides, [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'USER 343' }]);
+  assert.deepEqual(payload.merged.overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'USER 343\n\nWS 39', layer: 'workspace' },
+  ]);
+
+  // ...and the assembled snapshot really carries it, as ONE section.
+  const snapshot = json(await call(route, { url: `${SNAPSHOT_PATH}?session=s-stack` }));
+  const reserved = snapshot.effective.sections.filter((section) => section.name === CUSTOM_SECTION_NAME);
+  assert.equal(reserved.length, 1, 'one reserved section, never two');
+  assert.equal(reserved[0].text, 'USER 343\n\nWS 39');
+  assert.equal(reserved[0].applied, true);
+  assert.equal(snapshot.rendered.includes('USER 343\n\nWS 39'), true);
+
+  // Switching the mode back to「覆盖」overwrites that one entry — still one
+  // layer, still nothing else touched.
+  const back = await call(route, {
+    method: 'PUT',
+    url: OVERRIDES_PATH,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      layer: 'workspace',
+      session: 's-stack',
+      section: { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'WS 39' },
+    }),
+  });
+  assert.equal(back.statusCode, 200);
+  assert.deepEqual(JSON.parse(readFileSync(workspaceFile, 'utf8')).overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'WS 39' },
+  ]);
+  assert.equal(sha256(userPath()), userBefore, 'and switching back does not either');
+  assert.deepEqual(JSON.parse(readFileSync(userPath(), 'utf8')).overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'USER 343' },
+  ], 'the user layer is still exactly what it was');
+});
+
+test('g-058: 「恢复默认」deletes that one entry in that one layer', async () => {
+  writeUserConfig([{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'USER' }]);
+  const workspace = workspaceWith('ws-reset', 's-reset', {
+    version: 1,
+    overrides: [{ name: CUSTOM_SECTION_NAME, action: 'append', text: 'WS' }],
+  });
+  const { route } = mount({ workspaces: [workspace] });
+  const workspaceFile = join(workspace.path, '.dsh-prompt-setting', 'overrides.json');
+  const userBefore = sha256(userPath());
+  const workspaceBefore = sha256(workspaceFile);
+
+  const del = await call(route, {
+    method: 'DELETE',
+    url: `${OVERRIDES_PATH}?layer=workspace&session=s-reset&name=${encodeURIComponent(CUSTOM_SECTION_NAME)}`,
+  });
+  assert.equal(del.statusCode, 200);
+  assert.deepEqual(JSON.parse(readFileSync(workspaceFile, 'utf8')).overrides, []);
+  assert.equal(sha256(userPath()), userBefore, 'the user layer is byte-identical');
+  assert.notEqual(sha256(workspaceFile), workspaceBefore, 'and the layer it targeted did change');
+
+  // The surviving layer alone is what the assembly applies now.
+  const payload = json(await call(route, { url: `${OVERRIDES_PATH}?session=s-reset` }));
+  assert.deepEqual(payload.merged.overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'USER', layer: 'user' },
+  ]);
+});
+
+test('g-058: export, import and a history rollback all carry the mode', async () => {
+  const workspace = workspaceWith('ws-mode', 's-mode', {
+    version: 1,
+    overrides: [{ name: CUSTOM_SECTION_NAME, action: 'append', text: 'WS' }],
+  });
+  const { route } = mount({ workspaces: [workspace] });
+  const workspaceFile = join(workspace.path, '.dsh-prompt-setting', 'overrides.json');
+  const workspaceBefore = sha256(workspaceFile);
+
+  // An export carries the stored word, not a resolved text: a backup restored on
+  // another machine has to produce the same assembly.
+  const exported = json(await call(route, { url: '/prompt-setting/export?layer=workspace&session=s-mode' }));
+  assert.deepEqual(exported.layers.workspace.overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'append', text: 'WS' },
+  ]);
+
+  // Importing a document that carries `append` stores `append` — in the one
+  // layer it names, and nowhere else.
+  const imported = await call(route, {
+    method: 'POST',
+    url: `${IMPORT_PATH}?layer=user`,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      schema: 'dsh-prompt-setting/export',
+      version: 1,
+      exportedAt: '2026-10-10T00:00:00.000Z',
+      layers: { user: { layer: 'user', overrides: [{ name: CUSTOM_SECTION_NAME, action: 'append', text: 'MINE' }] } },
+    }),
+  });
+  assert.equal(imported.statusCode, 200);
+  assert.deepEqual(JSON.parse(readFileSync(userPath(), 'utf8')).overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'append', text: 'MINE' },
+  ]);
+  assert.equal(sha256(workspaceFile), workspaceBefore, 'an import into `user` never rewrites `workspace`');
+
+  // A `replace` write is the next version; rolling back to the `append` one
+  // restores the mode as well as the text.
+  const put = await call(route, {
+    method: 'PUT',
+    url: OVERRIDES_PATH,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ layer: 'user', section: { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' } }),
+  });
+  assert.equal(put.statusCode, 200);
+  const rolled = await call(route, {
+    method: 'POST',
+    url: '/prompt-setting/rollback',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ layer: 'user', seq: 1 }),
+  });
+  assert.equal(rolled.statusCode, 200);
+  assert.deepEqual(JSON.parse(readFileSync(userPath(), 'utf8')).overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'append', text: 'MINE' },
+  ], 'the rollback restores the mode, not just the text');
+  assert.equal(sha256(workspaceFile), workspaceBefore, 'and never the other layer');
 });

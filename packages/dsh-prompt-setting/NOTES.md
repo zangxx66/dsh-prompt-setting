@@ -6605,3 +6605,792 @@ npm 读取、下载区域）、`### Changed 变更` 2 条（客户端按需分�
 - README 徽章的 shields.io 在线渲染未目视（离线），只核对了源文本；
 - 只改了表示「本包当前版本」的字面量与文档，**无产品逻辑改动** ⇒ 无行为回归面（本轮的行为改动是
   §126 的两处，已各自单独验证）。
+
+---
+
+## 128. g-052：冻结状态「未知」的文案改造（指代 + 不归因解释行，2026-10-10，基线 `e59b164` 隔离工作树）
+
+### 一、要解决的问题
+
+在「查看范围」里选中一个本进程从未激活过的会话时，状态条原样引用宿主英文实现术语
+（`session "xxx" has no active agent, ...`），且只写「本会话」——用户读不出**哪个**会话，也读不出
+「未知 ≠ 未冻结，仍可编辑保存」。判定逻辑（`frozenState()` 三态、宿主 `probeTarget`）**一字未改**，
+改的只是呈现。
+
+### 二、事实依据：`running` ≠ `agentAvailable`（本轮最重要的一条）
+
+- 会话列表的 `running` 字段 = `agent.status === 'running'`，与「有没有 live Agent」
+  （`agentAvailable`）**不是一回事**；
+- 刚聊完的空闲会话：`running === false`，但**有** live agent ⇒ 冻结状态**可以确认**；
+- 因此文案**严禁**归因成「未在运行 / 未打开 / 已结束」：用户拿列表里的 ● 标记一对照就矛盾。
+  **本次文案不归因**，只解释「未知」的含义与后果。
+
+### 三、文案决策（措辞由负责人逐字拍板，未自行改写）
+
+- 指代统一为**「所选会话」**：`stFrozenSession` / `stUnfrozenSession` / `stFrozenUnknown` /
+  `mineFrozenUnknownWarn` / `mineSavedUnknown` / `savedNoticeUnknown`（zh/en 一一对应）；
+- 新增两个 key（沿用 `stFrozen*` 命名）：`stFrozenUnknownProbe`（「无法探测该会话自己的装配。」）、
+  `stFrozenUnknownNotFrozen`（「这不等于未冻结；仍可编辑保存，只是不保证生效。」）；
+- `stFrozenGlobal` / `stUnfrozenGlobal` 描述全局装配，**保持不动**；
+- 状态条 unknown 分支：保留原有那行（含宿主 `frozenScopeReason` 英文原句，格式 ` — 原因: <原文>`），
+  其下**新增两个独立 `<p>`**，样式 `fontSize: 12` + `wordBreak: 'break-word'`（第一行 `stateWarn`、
+  第二行 `labelTertiary`）；两行只在 `fz.kind === 'unknown' && !fz.pending` 出现，certain 时绝不出现；
+  既有 `data-warning="frozen-unknown"` 等标记原样保留，新增节点带 `frozen-unknown-probe` /
+  `frozen-unknown-not-frozen` 供机器读取。
+
+### 四、测试（`test/` 只增行：`78 insertions(+), 0 deletions(-)`）
+
+- 新增 2 个用例：unknown 场景锁死两个新 key 的文本都出现、且整页文本**不含**「未在运行」/「未打开」/
+  「已结束」；certain（frozen + unfrozen）场景锁死这两个 key 与其标记都不出现；
+- 既有断言只增不减、不放宽；zh/en 键位一一对应（`client.test.mjs:1396` 的对齐测试自动覆盖）；
+- 顺带撞到一个真实盲点：新注释里写了 `<p>` / `<br>` 字样，被 `host.test.mjs:448` 的
+  「模块里不得出现 JSX/HTML 标签」正则（`/<[A-Za-z][^>]*>/`）判红 —— 注释改成「paragraph nodes /
+  line-break element」后转绿。**教训：在 `client.js` 里连注释都不能出现尖括号标签样式。**
+
+### 五、实测数字
+
+| 项 | 结果 |
+| --- | --- |
+| `node --test` | **742 pass / 0 fail / skipped 0**，exit 0 |
+| `node scripts/check-compat.mjs` | exit 0（只读诊断） |
+| `node scripts/client-chunks.mjs` | **4 file(s) match the CHUNK_STAMPS manifest**，exit 0（未改 chunk，无需 `--write`） |
+| `git diff --stat` | `client.js 52+/12-`、`test/client.test.mjs 78+/0-` |
+| 其它 chunk | `client.history.js` / `client.overview.js` / `client.advanced.js` / `client.transfer.js` 均未引用被改 key ⇒ 无需同步 |
+
+### 六、未验证项
+
+- **真机目视未做**：两行新文案的换行、与告警行的间距只按邻近元素样式取值，未在浏览器里看过；
+- 未改动任何判定逻辑，故无行为回归面。
+
+### 七、复核补修：指代收口（同轮追加 commit，`45a4396` 未被 amend）
+
+- 复核发现四处冻结文案仍在用「本会话」/ "this session"，与已统一的「所选会话」并存：
+  `mineFrozenUnknownBody`（同一句里混用「选中的会话」与「本会话」，是明确缺陷）、`mineFrozenHowTo`、
+  `mineSavedFrozen`、`savedNoticeFrozen`（zh/en 各 4 处）；全部统一为「所选会话」，
+  `mineFrozenUnknownBody` 第二次起改用「它」，避免一句话里三次重复「所选会话」；
+- **未动** `client.js:1372` 的 en "assembling this session's prompt"（变量引用段，那里的 "this session"
+  含义正确）、`mineFrozenBody`（certain 正文，无「本会话」）、判定逻辑与 `CONTRACT.md`；
+- 新增断言（只增行）：unknown 面板（`data-region="mine"` 子树）zh 文本不含「本会话」且含「所选会话」；
+  en 面板子树不含 "this session" 且含 "the selected session"；
+- `grep -n "本会话" client.js` → **0 命中**；
+- 实测：`node --test` **743 pass / 0 fail / skipped 0**，exit 0（新增 1 个用例）；`check-compat.mjs`
+  exit 0；`client-chunks.mjs` 4 file match，exit 0；**无既有断言硬编码旧中文串**（全绿，未放宽任何断言）；
+- 补修 diff：`client.js 8+/8-`、`test/client.test.mjs 34+/0-`。
+
+### 八、返工：解释行必须出现在首屏状态行（再追加 commit）
+
+- **真机发现的位置错误**：负责人首屏只看到一枚 Tag「所选会话的冻结状态未知」，两行解释看不见 ——
+  它们只加在 `renderStatusDetail`（「高级」tab 的详细块），而用户第一眼看到的是 `renderStatusLine`
+  （`data-region="status"`，挂在主页面、紧挨「查看范围」会话选择器）。放错位置 ⇒ 改造目的落空；
+- **修法**：抽出 `unknownFrozenExplanation(t, markers, styles)`，返回两行独立段落节点，**两处复用**
+  （首屏 + 详细块），不复制粘贴；首屏把两行插在 Refresh 按钮之后，该容器是换行 flex 行 ⇒ 每行必须带
+  `flexBasis: '100%'` 才能各自独占一行（否则会挤在 Tag 旁边）；仍只在
+  `fz.kind === 'unknown' && !fz.pending` 出现；
+- **标记分离**（同页出现两个相同 `data-warning` 会让 `oneBy` 唯一性断言变红）：详细块沿用
+  `frozen-unknown-probe` / `frozen-unknown-not-frozen`，首屏改用 `frozen-line-probe` /
+  `frozen-line-not-frozen`；
+- 判定逻辑、`CONTRACT.md`、宿主 `index.js`、`mineFrozen*` 文案**未动**；`renderStatusDetail` 行为不变；
+- 新增 2 个用例：unknown 场景 `data-region="status"` 子树出现两个段落节点（含 `flexBasis: '100%'`
+  断言）、且详细块仍保留自己的一份；certain（frozen / unfrozen）场景该子树既无这两行也无其标记；
+- 实测：`node --test` **745 pass / 0 fail / skipped 0**，exit 0；`check-compat.mjs` exit 0；
+  `client-chunks.mjs` 4 file match，exit 0；`grep -c "本会话" client.js` → **0**；
+  `test/` diff 仍是**纯新增**（0 删除行）。
+
+## 129. g-054：「我的 Prompt」分层读取面缺陷（只改读取来源，2026-10-10，基线 `91fd55e` 隔离工作树）
+
+### 一、现象（负责人实测）
+
+工作区层写入「我的 Prompt」并保存 → 重开设置页切到用户层，文本框显示为空（未配置态）；
+「历史与备份」里该内容真实存在、回滚提示成功，但编辑框依旧空。重新在用户层输入并保存，
+提示成功，重进设置页仍然空。**存储面是好的，只有编辑框的读取面在撒谎。**
+
+### 二、根因
+
+`client.js` 的 `reservedTextOf(ovs, layer)` 从 `GET /overrides` 的 **`merged.overrides`** 里按
+`name === 保留段名 && layer === 目标层` 找条目；而 `mergeLayers`（`core/overrides.js:266`）按 name
+跨层去重、workspace 条目整体替换 user 条目（**空白文本也照样替换**）⇒ 工作区层存在同名保留段条目时，
+`merged` 里只剩 `layer: "workspace"` 那一条，用户层的读取恒为 `null`，编辑框恒空、
+`data-mine-state` 恒 `unconfigured`。写入面正常（`PUT /overrides` 直写该层文件；`/interpolate`
+只改 config 顶层键，overrides 原样透传），所以呈现出「保存成功却读不出来」。
+
+### 三、修法
+
+`reservedTextOf` 改读**该层自己的视图**（`payload.user.overrides` / `payload.workspace.overrides`，
+服务端 `userLayerView` / `workspaceLayerView` 已在同一响应里给出）。装配语义、`mergeLayers`、
+`GET /overrides` 的既有字段一律未动；`merged` 仍是装配的列表（`client.advanced.js:106-131` 的
+「已配置清单」继续用它，语义正确）。`null`（该层无该条目）与 `''`（该层存了空文本）的区分保持。
+
+### 四、同类读取点排查
+
+`grep 'RESERVED_SECTION_NAME|merged'` 遍查 `client.js` 与各 `client.*.js`：除 `reservedTextOf`
+外，覆盖相关的 `merged` 只出现在 `client.advanced.js`（已配置清单，「装配是否生效」语义，正确未改）；
+`client.js` 其余 `merged`（样式/props 合并）与覆盖无关。
+
+### 五、测试（含负向对照）
+
+- `test/route.test.mjs` 新增：两层各自 PUT 保留段（`USER MINE` / `WS MINE`），
+  `GET /overrides?session=s1` → 断言 `user.overrides` / `workspace.overrides` 各是自己的文本、
+  `merged` 只有 workspace 一条；无 session 时 workspace 视图为空、user 视图不受影响；
+- `test/client.test.mjs` 新增 2 例，夹具 `layeredOverrides` 用**真实 `mergeLayers`** 生成 `merged`
+  （分层视图各带自己的条目）：默认 user 层显示 `USER MINE` 且 `data-mine-state=idle`，切 workspace
+  显示 `WS MINE`、切回仍是 `USER MINE` 且零写入；另一例 user 层 `''` + workspace 层非空时，
+  user 层不被 workspace 文本顶替；
+- 顺带修正 g-027 那条**手写「双层同名 merged」**夹具（真实服务端产不出），改为 `mergeLayers` 生成，
+  用例原意（取消只清本层草稿）不变；另有 5 处「用 merged 冒充该层已存文本」的旧夹具同步改为分层真源；
+- **负向对照**：把 `reservedTextOf` 临时改回 merged 写法 →
+  `node --test --test-name-pattern="g-054|g-027 client: 「取消」 only drops" test/client.test.mjs`
+  = **2 fail**（新用例 + g-027 层用例），恢复分层实现后转绿。
+
+### 六、文档同步
+
+`CONTRACT.md`：§3 补一句「`user`/`workspace` 是两层各自的真源、`merged` 是装配的列表」；§13.1 把
+「read from the `merged` list」改为「读该层自己的视图」；新增 **Revision 33** 记录（无 wire 变更）。
+
+### 七、实测数字
+
+| 项 | 结果 |
+| --- | --- |
+| `node --test test/*.test.mjs` | **748 pass / 0 fail / skipped 0**，exit 0（基线 745 + 新增 3；~36s） |
+| `node scripts/client-chunks.mjs` | **4 file(s) match the CHUNK_STAMPS manifest**，exit 0（未改 chunk 文件，无需 `--write`） |
+| `git diff --numstat` | client.js `20+/12-`、CONTRACT.md `34+/4-`、test/client.test.mjs `135+/24-`、test/route.test.mjs `42+/0-` |
+
+### 八、未验证项 / 风险（如实报告）
+
+- 未在真实浏览器 + 真实 Host 下目视复现（本树只跑离线测试）；
+- **另有一条与本次缺陷无关、但可复现的「已输入文本变空」路径**（只读探针证据，未在本轮修）：
+  `mineKey` 含 `sessionArg`（`client.js:7136`），输入之后若 `sessionArg` 变化（会话数据到达 /
+  「查看范围」切换），草稿失配、编辑框回落到该层 stored；此时点保存，PUT body 的 `section.text`
+  就是空串。探针实测：sessionArg 由 `s2` 变 `global` 后框值 `""`、状态 `unconfigured`，保存请求为
+  `{"layer":"user","section":{"name":"prompt-setting:custom-prompt","action":"replace","text":""}}`。
+  宿主写入面本身不吞文本（`validateOverride` 接受空串并原样落盘），故工作区层那两条 `textLen=0` 的
+  history 与 `text:""` 是「提交了空文本」，不是存储或装配丢文本。修法（新 attempt）方向：草稿键不应
+  绑定 scope，或 scope 变化时迁移当前框内容。
+## 130. g-056：草稿键绑定「写入目标」而非「查看范围」（Revision 34，2026-10-10，基线 `91fd55e` 隔离工作树）
+
+### 一、现象（探针实测，非推测）
+
+- 输入未保存文本 → 把「查看范围」从 `s2` 切到 global ⇒ 编辑框值 `""`、`data-mine-state="unconfigured"`；
+  此时点「保存」，实际发出 `PUT /prompt-setting/overrides`，body 为
+  `{"layer":"user","section":{"name":"prompt-setting:custom-prompt","action":"replace","text":""}}`
+  —— **提示保存成功、写入空文本**（工作区层 `history.jsonl` 两条 `textLen=0` 记录的可行解释之一）。
+
+### 二、根因
+
+- 草稿键 `mineKey = ${mineLayer}|${sessionArg}`（`client.js`），编辑框显示
+  「草稿 key 命中 → 草稿，否则 → 该层已存文本」；
+- `sessionArg` / `mineLayer` 一变（会话数据到达、切范围、切层）key 立即失配，编辑框**静默回落**到
+  已存文本（通常 `""`），而「保存」发的是编辑框当前所见 ⇒ 写空且报成功。**与 g-054（读取面读跨层
+  merged）是两个独立缺陷**：g-054 修完，这条路径依然存在。
+
+### 三、键该绑什么：`targetFor`/`workspaceRootFor` 核实结论
+
+- `index.js:1880` `if (layer === 'user') return { path: userConfigPath(), root: null }` —— **完全忽略
+  session**，整个 profile 只有一份用户层文件 ⇒ user 层草稿**不含会话身份**；
+- `index.js:1876-1898` workspace 层走 `workspaceRootFor(sessionId)` →
+  `workspaceRegistry.list()` 里 `sessionIds.includes(sessionId)` 的 `owner.path` →
+  `workspaceConfigPath(root)`；**同一 workspace 内任何 session 解析到同一份文件** ⇒ 决定写哪份文件的
+  是 workspace root，不是会话；客户端 `wsSeat.items`（`useWorkspaces` 的 `WorkspaceView.path`，
+  `client.js` `decodeWorkspaces`）就是同一个字段，两侧命名同一目录；
+- ⇒ 键定为 `user` / `workspace|<workspaceRoot>`；只有在该 session 不属于任何已列出 workspace
+  （或 workspace hook 降级）时才退化为 session id —— 这是**更窄**的身份，只会让两份草稿看起来不同，
+  绝不会让一份草稿被当成另一个写入目标的。
+
+### 四、方案：A（键绑写入目标）+ C（fail-safe 兜底），否掉纯迁移（B）
+
+- **A**：`mineDraftKeyOf(layer, sessionArg, workspaceRoot)` / `workspaceRootOfSession(items, sessionId)`；
+  同 workspace 内切会话、user 层任意切范围，草稿**留在框里**（判据 1 主路径，也是负向对照的死穴）；
+- **C**：另立 `mineForeignDraft`（draft 存在但 key 不匹配且含非空文本）—— 面板渲染
+  `data-warning="mine-draft-elsewhere"`（带 `data-mine-draft-scope` / `data-mine-draft-chars`）与
+  「放弃那份草稿」按钮（`data-action="mine-drop-foreign-draft"`，纯本地、不写数据），`saveMine` 在
+  发请求**之前**直接阻断并给 `mineSaveBlockedDraftElsewhere` notice ⇒ 判据 2「绝不静默写空」；
+- **否掉 B（作用域变化时把草稿迁移到新 key）**：跨 workspace 迁移会把 A 工作区的文本带进 B 工作区的
+  文件，等于凭空发明一个写入目标；迁移只在「同一写入目标」内才有意义，而那种情形 A 已经天然覆盖
+  （键根本没变）。故 B 只保留其可见性部分（提示）；
+- **作用域归属的读法**：草稿里存**结构化** `scope: {layer, session}`，文案在 `renderMinePanel` 内用
+  `mineScopeNameOf(t, …)` 现算 —— 组件自身渲染路径**不得调用 `t`**（`t` 可能就是坏的那个，必须落到
+  失败卡），这是既有测试「a throw while building the tree renders a failure card」钉住的约束；
+- 「归属」读的是**草稿记录的作用域**而不是当前视图，所以切范围后标签不会漂移（测试钉住它仍报
+  `Alpha three`）；
+- 「取消」（g-027）语义未动：仍只清当前写入目标的草稿、仍不发请求、仍只在 `dirty` 时可点。
+
+### 五、改动
+
+- `client.js`：新增 `workspaceRootOfSession` / `mineDraftKeyOf` / `mineScopeNameOf`（模块级纯函数）；
+  `mineKey` 改由写入目标派生并新增 `mineDraftHere` / `mineForeignDraft` / `mineTextSource`；`saveMine`
+  增加发请求前的阻断分支；`setMineText`/`saveMine` 写入草稿时带 `scope`；`renderMinePanel` 增加外来草稿
+  警告块（含放弃按钮）、草稿归属行、编辑框 `data-mine-text-source`；zh/en 各 4 条文案；
+- **未动**：`reservedTextOf`（g-054 正在改它）、`mergeLayers`/装配/插值/存储、`data-*` 冻结标记的名字
+  与数量、既有测试（纯新增）、版本号、CHANGELOG；
+- `CONTRACT.md`：新增 Revision 33 块 + §13.1 正文两处就地修订（草稿键 = 写入目标；外来草稿的可见提示
+  与阻断）；**无 wire 变更**。
+
+### 六、测试（`test/client.test.mjs` 纯新增 4 个用例，0 删除行）
+
+- `switchScopeTo(page, id|null)`：真点「更改」→（必要时展开分组）→ 点会话行 / 「全局」；
+- 用例 1：workspace 层输入 → 切到**同 workspace 的另一会话** ⇒ 框内文本仍在、`data-mine-text-source="draft"`、
+  归属标签仍报输入时的 `Alpha three`；保存 body 的 `text` = 用户输入、`session` = 新会话；
+- 用例 2：user 层输入 → 切「全局」→ 再切 `a2` ⇒ 文本仍在；保存 `layer="user"`、`text` = 用户输入；
+- 用例 3：workspace 层输入 → 切到**另一个 workspace** ⇒ 框显示该目标已存文本（`stored`）、警告块给出
+  作用域与字数、点保存 **0 次写请求** + error notice；切回原会话文本仍在；点「放弃那份草稿」后警告消失、
+  保存放行；
+- 用例 4：切层（user↔workspace）⇒ 另一层的文本不被借用、警告块点名用户级、保存被阻断、切回后草稿仍在；
+- **负向对照（决定性）**：临时把 `mineDraftKeyOf` 改回旧写法 `${layer}|${sessionId}`（其余不动）⇒
+  `node --test --test-name-pattern='g-056' test/client.test.mjs` = **2 pass / 2 fail**（用例 1、2 变红）；
+  恢复后 = **4 pass / 0 fail**。
+
+### 七、实测证据与未验证项
+
+- `node --test test/client.test.mjs` exit 0；首版 `node --test test/*.test.mjs` = **749 pass / 0 fail / exit 0**
+  （基线 745 + 新增 4；返工后见 §八）；`node scripts/client-chunks.mjs` = 4 file match，exit 0（无需 `--write`）；
+- **未验证（UNVERIFIED）**：真机目视（切换范围时警告条与归属行的视觉、按钮位置）未做，只做了离线渲染断言。
+
+### 八、返工：评审 R1/R2/R3（第二个 commit）
+
+评审总判 PASS（判据 1–6 全满足），但报出**本次修复新引入**的假阳性 R1，同批处理 R2/R3；三处都用同一处改动（草稿从「单槽」改成「按写入目标的小映射」）解决：
+
+- **R1（假阳性，必须修）**：保存成功时按 §13.1/g-050 刻意**保留**草稿；旧判定（「draft 存在且 key 不匹配」）于是把这份**已保存**的草稿当成「别处未保存内容」⇒ 切到另一个写入目标就出现假警告（评审实测 `scope=用户级`、`chars=11`、`writeDelta=0`）并误阻断保存。**新判定**：其它 target 的草稿仅当**同时**不满足以下任一弃权条件时才算未保存——(a) 文本等于本次要写入的文本；(b) 文本等于该草稿的 `baseline`（本页上次**写入**该 target 的文本，保存成功时记录）；(c) 文本等于该草稿**自己那个 target** 的已存文本。**分层真源**：(c) 的新 helper `layerReservedTextOf` 读 `payload[layer].overrides` 的保留段，**不读 `merged`**（`reservedTextOf` 未动，g-054 仍在改它）；
+- **跨 workspace 的取舍（写进契约）**：草案所属 target 是**另一个 workspace** 时，本次请求从未读过那份文件，(b)/(c) 都不可判定 ⇒ 按「possibly unsaved」保守提示（`draftTargetTextOf` 返回 `known:false`）。理由：对可能已保存的文本多提示一次是可容忍的误差，把它**静默覆盖**不是；同时「草稿文本 === 当前框里显示的文本」这一明显误报已由 (a) 排除；
+- **R2（基线同样存在，非回归）**：草稿改为**按写入目标的小映射** `mineDrafts: {key: {text, scope, baseline}}`。在一个 target 键入不再替换另一个 target 的草稿（旧单槽语义下第一个草稿会被静默覆盖）；切回仍见原文；
+- **R3（基线同样存在，非回归）**：所有本地清理由 `dropMineDraft(key)` 承担——「取消」、「恢复默认」、g-050 对账、「放弃那份草稿」各清**一个** target，`resetMine` 不再 `setMineDraft(null)` 静默清掉别处草稿；
+- **新增用例 3 个**（`test/client.test.mjs` 纯新增）：R1＝保存成功 → 切到另一写入目标 ⇒ 无 `data-warning="mine-draft-elsewhere"`、`data-mine-text-source="stored"`、保存真的发出写请求；R2＝两个 target 各自输入后互不覆盖、往返都能取回；R3＝user 层「恢复默认」确认后，workspace 层草稿仍在（`dirty`）；
+- **负向对照（3 组，各自红）**：把 R1 三条弃权条件整块回退 ⇒ R1 用例 1 fail；把 R2 的写入改回替换整张表 ⇒ R2 用例 1 fail；把 R3 改回 `setMineDrafts({})` ⇒ R3 用例 1 fail；恢复后 g-056 全 7 用例 pass；
+- **文档**：`CONTRACT.md` 新增 Revision 34 块（集成时由主管顺延；g-054 保留 33）补登记 `data-mine-drop-scope` 与 warning 节点上的 `data-mine-draft-scope`/`data-mine-draft-chars`，并写明「一 target 一草稿 + 只有未保存内容才报 + 已保存草稿永不算未保存」；§13.1 正文同步；
+- **踩坑留痕**：注释里写 `workspace|<root>` 字面量会触发 `test/host.test.mjs` 的「无 JSX / 无构建」断言（`/<[A-Za-z][^>]*>/`），已改写为 `workspace:` + root；全量因此从 751/752 恢复为 752/752；
+- **返工后实测**：`node --test test/client.test.mjs` exit 0；`node --test test/*.test.mjs` = **752 pass / 0 fail / exit 0**（首版 749 + 新增 3）；`node scripts/client-chunks.mjs` = 4 file match，exit 0；未动 4 个 chunk、版本号、CHANGELOG；
+- **仍未验证（UNVERIFIED）**：真机目视（警告条/归属行的视觉与位置）未做。
+- **集成期（主管）**：Revision 编号由 33 顺延为 **34**（g-054 保留 33）；合并后 dev 全量测试由主管复跑。
+
+---
+
+## 131. g-055：把「查看范围」收成「我的 Prompt」块的头部（视觉分组 + 文案，方案 B，2026-10-10，基线 `91fd55e` 隔离工作树）
+
+### 一、要解决的问题与评估结论
+
+负责人反馈：设置页里「查看范围」和「我的 Prompt」在功能上算一个块，交互上却显得分裂。只读评估
+（上下文卡片 `card-62ffb6fa`）结论：**分裂 = 层级归属错位**，不是状态重复 —— `sessionArg` 是页面级
+状态，被三类消费者共用：①页面取数（snapshot / overrides）；②写入目标（mine 三处写动作、
+advanced 整层 reset、backup 导出/导入 `?session=`）；③标签文案；而它的卡片渲染在 tab 栏**之上**，
+读起来像全页面设置。逐 tab：mine 真正依赖；overview 无关系；history 已由 g-038 独立；
+**backup / advanced 真依赖却看不见**（最刺眼的裂口）。
+
+方案对比后负责人选定 **方案 B**：页面级位置与唯一改入口都不动，用**视觉分组 + 文案**把它收成
+「我的 Prompt」块的头部。不做 A（搬进 tab，作废 §13.0「every tab shares」）、不做 C（各 tab 多实例，
+与 g-038 冲突）、不做 B+（不给 backup/advanced 加只读范围行，另议）。
+
+### 二、实现（只改 `client.js` 主入口，含复核轮 1，相对基线 `121+/4-`）
+
+- 新增分组容器 `data-region="prompt-block"`（新函数 `renderPromptBlock`），把既有 scope 卡片包进去：
+  一行新文案 `promptBlockNote`（「这个范围决定「我的 Prompt」写到哪一层；改范围只在这里。」），
+  其下才是 `data-region="session"` 卡片。**块内不放标题**（复核轮 1 的裁决，见 §七）：`mineHeading`
+  只由 mine 面板渲染一次，避免同一标题同屏出现两次；
+- 卡片本身**一字未动**：折叠行为、`data-region="session"`/`"scope-summary"`、`data-scope-open`、
+  `data-action="scope-toggle"`、`data-role="scope-summary-label"|"-hint"` 全部原样、仍各恰好一次
+  （折叠态仍只有一个子节点 ⇒ 首屏预算断言不变）；
+- mine 面板内新增**只读**写入目标行（`data-region="mine-target"`，`data-mine-target-layer` /
+  `data-mine-target-scope`），文案 `mineTargetNote`（「写入目标：{layer}；查看范围：{scope}」）——
+  面板内**没有**第二个改范围入口；
+- 两半共享同一条视觉规则（`promptBlockBandStyle`：3px 左边线 + 12px 内缩），scope 卡片与 mine 面板
+  在视觉上读作同一块的上/下半；
+- scope 名称抽成**一个定义** `scopeName(t, m)`，摘要行与只读行共用，避免两处漂移；
+- 新增 i18n 键 2 个（`promptBlockNote` / `mineTargetNote`），zh/en 一一对应。
+
+### 三、禁项与未碰的东西
+
+scope 未搬进 tab、未做多实例、`historyScope*`（`historyScopeQuery` / `data-region="history-scope"` /
+`histScopeHint`）未动；装配、存储、插值语义未动；`data-*` 冻结标记的名字/数量/语义未动；
+`.dsh-graph/` 未动；**未改任何 chunk 文件**（`client.history/overview/advanced/transfer.js` 零改动）
+⇒ 指纹无需重算。文档只做措辞级补充（CONTRACT §13.0/§13.7、NOTES 本节、README×3），版本号与
+CHANGELOG 未动。
+
+### 四、测试（`test/client.test.mjs` 只增行）
+
+- 新增 2 个用例：①分组收口用例：容器包含 scope 卡片；块仍在 `data-region="tabs"` 之前（页面级、
+  仍在 tab 栏之上）；冻结标记各恰好一次、降级提示至多一次；**反向断言**——全树 `h3` 且文本为
+  `mineHeading` 的标题**恰好 1 个**且就是 mine 面板自己的标题（复核轮 1）；面板内只读行随
+  `sessionArg`（选 a1）与 `mineLayer`（切 workspace）同步变化；只读行内无 `button`（无第二个入口）；
+  ②`declaredHeight` 自身的口径用例（复核轮 2，轮 3 扩充）：px 行高按字面、无单位行高按 fontSize
+  倍数、无行高时按一行 slack、3 值 margin 只取上下、padding/margin **长手**（单侧 / 双侧 /
+  覆盖简写 / 非长度不清零）；
+- **首屏几何离线预算**（复核轮 1 补、轮 2 收紧）：新增 `chromeAboveTabsPx(tree)` +
+  `declaredHeight(node)` + `declaredLinePx(style)`（纯声明样式折算：padding/margin +
+  lineHeight/fontSize/minHeight + flex 行取最高子、列按堆叠加 gap），把 `data-region="tabs"`
+  **之前**的全部 chrome 纳入断言。轮 2 三重收紧：
+  - **紧预算**：`CHROME_BUDGET_PX = 220 + CHROME_SLACK_PX`（`CHROME_SLACK_PX = 4`，即本修订实测
+    220 + 4px 舍入），并保留硬天花板 `CHROME_FIRST_SCREEN_CEILING_PX = 900 − 30 − 560 = 310`；
+    轮 1 的 310 上限太松（加回一整行 26–28px 标题仍绿），轮 2 起任何结构性增长都会红；
+  - **差值定价**「块预算 ≥ note + 卡片」在轮 1 是恒真式（两边同源）；轮 2 改为对**同一棵树剔除
+    note 后的对照树**取差值，并写死数字：`chrome − chrome(withoutNote) == 24`（note 行 18 + 块内
+    gap 6）。注：折叠态 scope 卡片预算断言（`collapsedScopeHeight` 70px ≤ 80px）原样保留；
+  - **无单位行高**：`lineHeight: 1.5` 这类值按 `fontSize × 1.5` 计（<4 视为倍数，否则视为 px），
+    避免轮 2 指出的约 16px 低估；
+- EN 扫描同步登记（只增）：`promptBlockNote`、`['mineTargetNote', {layer, scope}]` 进 copy 清单；
+  `data-region=prompt-block` / `data-region=mine-target` / `data-role=prompt-block-note` 进
+  `EN_REQUIRED_MARKERS`（复核轮 1 要求移除 `data-role=prompt-block-heading`）；既有断言只增不减、
+  未放宽；
+- `test/client.test.mjs` diff（相对基线，含复核轮 2）：`316+/1-`，那 1 行删除只是把单行 `copy:`
+  数组改写为多行，属只增登记。
+
+### 五、实测数字
+
+| 命令 | 结果 |
+| --- | --- |
+| `node --test test/client.test.mjs` | **221 pass / 0 fail / skipped 0**，exit 0（基线 219 + 新增 2） |
+| `node --test test/*.test.mjs` | **747 pass / 0 fail / skipped 0**，exit 0（全量基线 745 + 新增 2） |
+| `node scripts/client-chunks.mjs` | **4 file(s) match the CHUNK_STAMPS manifest**，exit 0（未改 chunk，无需 `--write`） |
+| `node --test test/client.test.mjs`（scope 几何日志） | `collapsed「查看范围」= 70px budget (80px)`，未变 |
+| `node --test test/client.test.mjs`（chrome 几何日志） | `above the tab bar = 220px (tight 224px, hard ceiling 310px)`，「我的 Prompt」块 = 80px |
+
+### 六、未验证项
+
+- **真机 1440×900 目视未做**（本执行无浏览器）：分组视觉（3px 左边线、note 行与卡片的间距）与首屏
+  几何需主管真机复核；离线可断言的部分（scope 卡片 70px ≤ 80px、tabs 之前 chrome 220px ≤ 紧预算
+  224px、note 差值 24px、块内只有两项、标记唯一、标题唯一）已由测试钉住。
+
+### 七、复核轮 1（独立评审）返工
+
+评审结论：无 BLOCK、总判 UNVERIFIED；三条返工全部落实（同一个 worktree / 分支，新 commit）：
+
+1. **去掉重复标题（评审判定必须修）**：删掉 `renderPromptBlock` 里的 `h('h3', …, t('mineHeading'))`
+   与 `data-role="prompt-block-heading"`，并移除 `EN_REQUIRED_MARKERS` 里的对应登记；容器、3px 色带
+   与 note 全部保留，note 的色从 `labelTertiary` 提到 `labelSecondary`（块不再有标题，绑定改由这句话
+   承担）。测试改为**反向断言**：全树 `h3` 且文本 `=== mineHeading` 的节点恰好 1 个且属于 mine 面板。
+   负向对照：把删掉的块头 `h3` 加回去 ⇒ 该断言立刻变红（`exactly one「我的 Prompt」heading`）。
+   理由：同屏两个同名同级标题既削弱「一个块」的观感，也让屏幕阅读器的 heading 列表重复列出同一项，
+   与本次目标的意图相反；
+2. **首屏几何离线预算（评审风险 #1）**：新增 `declaredHeight` / `chromeAboveTabsPx`（口径与既有
+   `collapsedScopeHeight` 一致：只读声明样式，不用布局引擎），把 tabs 之前的全部 chrome 纳入断言，
+   上限 310px（900 − tab 栏 30 − tab-panel 可见 560）；实测 220px。同时断言块预算 ≥ note 行 + 卡片
+   预算，因此新增块内容不可能再「绕过全部断言」；
+3. **CONTRACT §13.0 措辞对齐**：第三项改为「the **「我的 Prompt」block whose header is the session
+   selector every tab shares**」，并删去 §13.7 段落里「块头用 `mineHeading`」的表述，改为「块本身
+   没有标题，`mineHeading` 只由面板渲染一次」；仍不加 Revision、不改既有语义。
+
+### 八、复核轮 2（增量评审）返工：让预算断言真的咬得住
+
+评审判定轮 1 的三条「成立性」问题（仍是 UNVERIFIED、无 BLOCK），本轮全部修掉 —— 共同病因是
+**断言与实现同源/余量过大 ⇒ 没有约束力**：
+
+1. **紧预算（评审：310px 上限加回一整行标题仍绿）**：`CHROME_BUDGET_PX` 从
+   `900 − 30 − 560 = 310` 改为 **224**（本修订实测 220 + 4px 舍入），并保留 310 作为注释里的硬天花板
+   `CHROME_FIRST_SCREEN_CEILING_PX`。自证（两轮实验）：
+   - 把块头 `h3`（`mineHeading`）原样加回 ⇒ 先红在唯一性断言（`exactly one「我的 Prompt」
+     heading`，轮 1 已证）；
+   - 加回一行**异名**标题（让唯一性断言保持绿）⇒ 紧预算断言**自己**红：
+     `the chrome above the tab bar budgets 248px, over the tight 224px budget`。
+   数字来源：那行 22px 行盒 + 块内 6px gap = 28px ⇒ 220 + 28 = 248 > 224；
+2. **无单位行高（评审：`lineHeight: 1.5` 被当成 1.5px，低估约 16px）**：新增 `declaredLinePx(style)`：
+   无单位值 <4 视为 fontSize 的倍数（`1.5 × 12 = 18`），≥4 视为 px；fontSize 缺失时按 22px slack 行
+   缩放。新增一条**专门钉住该 helper 的用例**（px 行高 / 数字倍数 / 字符串倍数 / 无行高默认 /
+   无 fontSize 的倍数 / ≥4 的裸数 / padding 上下各一次 / 3 值 margin 只取上下）。
+   自证：把倍数分支临时改成 `>= 0.1`（等于退回「当 px 用」）⇒ 该用例红：
+   `a unitless line height multiplies the font size`；还原后复绿；
+3. **恒真断言（评审：块预算 ≥ note + 卡片 由同一函数算出，删 note 变红其实来自 `oneBy` 存在性）**：
+   删掉该恒真式，改为**差值型**断言 + 结构性断言：
+   - 结构：`elementChildren(block)` 的 `data-role`/`data-region` 序列**恰为**
+     `['prompt-block-note', 'session']`（块内多任何一项即红）；
+   - 差值：新增 `withoutPromptBlockNote(tree)`（同一棵树的浅拷贝，只剔除 note），断言
+     `chrome − chrome(withoutNote) === 24`（写死：note 行 18 + 块内 gap 6）—— 低估 line box 的
+     helper 不可能满足这个数字；
+   - 紧预算断言排在这三条**之前**，确保「结构性增长」报的是预算本身，而不是下游某个唯一性检查。
+
+### 九、复核轮 3（增量评审）返工：堵住长手这个唯一口子
+
+评审第 11 / 第 4 条，两点，**只动测试侧**（`client.js` 本轮仍零改动；`renderPromptBlock` 结构、
+note 文案与提色、CONTRACT 措辞、冻结标记、chunk、版本号/CHANGELOG 全未动）：
+
+1. **长手（longhand）垂直属性支持**：`declaredVerticalBox` 原先只读 `padding` / `margin` 简写 ——
+   评审实测 `paddingTop: 6` 这类长手会让 chrome 悄悄 +6px，而预算仍绿（简写 +6px 会被拦）。现改为
+   **简写与长手都读、长手覆盖它那一侧**（与 CSS 同规则），解析不成长度的长手值（如 `'auto'`）
+   保留简写值，避免把一侧静默清零。新增 5 条断言：单长手、双长手、长手覆盖简写（padding）、
+   长手覆盖简写（margin）、非长度长手不清零。自证：把长手分支临时改坏（退回只读简写）⇒ 该用例红
+   `a padding longhand is counted`；还原后复绿（`grep` 确认 4 处长手读取全在）；
+2. **slack 具名化**：原来的字面量 `4px` 提为 `CHROME_SLACK_PX`，
+   `CHROME_BUDGET_PX = 220 + CHROME_SLACK_PX`，注释写明「抬高预算只能是对这个数字的显式、
+   可 review 的改动，不能是别的改动的副作用」；硬天花板
+   `CHROME_FIRST_SCREEN_CEILING_PX = 900 − 30 − 560 = 310` 及其兜底断言保留。
+- **集成期（主管）**：本节编号由 §129 顺延为 **§131**（g-054=§129、g-056=§130）；合并后 dev 全量测试由主管复跑。
+
+## 132. g-057：保留段空值语义 —— 任一层写空＝该层不声明（Revision 35，2026-10-10，基线 `4543918` 隔离工作树）
+
+### 一、现象（真机数据，非推测）
+
+本机 `~/.dsh/prompt-setting/overrides.json` 的用户层持有保留段 `prompt-setting:custom-prompt` 的
+`action: "replace"` 文本（当时实测 **384 字**，UTF-8 796 字节；该文件随后被负责人编辑为 343 字），而本工作区
+`.dsh-prompt-setting/overrides.json` 持有同名条目 `text: ""`。结果是件反直觉的事：**用户层那 384 字
+在本工作区的任何会话里从未生效**，而且没有任何提示——面板两个层各显示自己的文件（g-054），装配却把
+保留段写成了空串。
+
+### 二、根因
+
+`core/overrides.js` 的 `mergeLayers` 按 `name` 跨层去重，**谁在列表里谁就赢**：工作区层条目**整体替换**
+用户层条目，`text: ""` 的空条目也照样算「这一层宣布了值」。于是 `merged` 只剩工作区那条空文本 ⇒
+`applyOverrides` 把保留段的 text 覆写成 `""` ⇒ 用户层的 384 字被一句"空"覆盖掉。「条目存在」被当成了
+「这一层已表态」，而事实是「这一层没写东西」。
+
+### 三、语义（负责人 2026-10-10 裁决，范围只限保留段）
+
+- 解析保留段时逐层看 `用户层 → 工作区层`，顺序与优先级**不变**（工作区层**非空**仍覆盖用户层），但
+  **空值＝该层不声明**，不参与该段取值；
+- 用户层非空 + 工作区层空 ⇒ 生效用户层文本；两层都空 ⇒ 该段**不在** `merged` 里，什么都不施加，保留段
+  保持注册时的空文本（§15.2「零贡献」不变：未配置与两层都空在渲染上字节一致）；
+- **只适用保留段**：其它段（含「空文本＝显式置空某段」这一既有能力）与 `action: "hide"`（显式声明，按
+  校验根本不带 `text`）**一字不变**。
+
+### 四、空值判定口径（写进代码注释与契约）
+
+`statesNoReservedText`：`name` 严格等于 `prompt-setting:custom-prompt` **且** `action` 严格等于
+`replace` **且** `text` 为 `undefined` / `null` / 缺字段 / `String(text).trim() === ''`（故 `""`、`"   "`、
+`"\n\t"` 都算空）。限定 `replace` 是关键：`hide` 不带 `text`，若把"缺 text"一律当空，就会把一次显式隐藏
+静默撤销；保留段的 `append` 本来就被写侧拒绝（`core/custom.js`），不在此重新解释。
+
+### 五、实现（只动 `core/overrides.js`，49 行改动）
+
+- 新增 `import { CUSTOM_SECTION_NAME } from './custom.js'`（保留段名唯一真源，避免字面量漂移）；
+- 新增 `statesNoReservedText(override)` 谓词；
+- `toOverrides(config, layer)` 在打 `layer` 标记前 `.filter()` 掉"不声明"的保留段条目。放在**每层各自**
+  的组装步骤（而不是合并循环里）是关键：一条层的空值规则因此在「只有一层」和「两层都有」时行为一致，
+  也自然覆盖「工作区层独有空条目」的情形（旧行为会把它带进 `merged` 并施加一次无意义的替换）；
+- **调用点核对（全部自动获得新语义，无需逐点改动）**：
+  - `index.js:1185` `refreshVariables()` 探针 = `mergeLayers(emptyConfig(), null)`，无保留段条目 ⇒ 不受影响；
+  - `index.js:1529/1531/1532` `resolvedFor()` = 真实回合的解析入口（user+workspace 或 user+null）⇒ 生效；
+  - `index.js:1775` `handleSnapshot()` 的 override 探针 ⇒ 生效（`effective.sections` 因此反映新语义）；
+  - `index.js:1860` `GET /overrides` 的 `merged` ⇒ 生效。`merged` 的定义本就是「装配会应用的那份列表」
+    （§3），所以它如实变化是**期望行为**，不是新的 wire 字段；
+  - 未动 `client.js` 的 `reservedTextOf`（g-054 分层读取）、g-056 的草稿键与写空防护、以及 `applyOverrides`
+    本身——「空＝不声明」在合并层就消化掉了，写侧不需要配合改动。
+
+### 六、测试（合成用例 5 个：纯函数层 3 + 装配结果层 2，0 删除行）
+
+> **原则（评审 R1 后确立）：`node --test` 套件不得读取开发机上的任何文件。** 测试只使用测试装置写进**临时
+> 目录**的合成夹具；真机核对改由只读 dev 脚本承担（见 §七(c)），于是"文件缺失/形状不同 ⇒ 恒绿不计数或假红"
+> 这两类问题在仓库里不再可能。
+
+- `test/overrides.test.mjs`（+3，纯函数层）：① 用户文本 A + 工作区 `""` ⇒ 结果 `layer: 'user'`、文本 A，
+  且 `applyOverrides` 真的把 A 写进段落；② 反向后工作区 B 生效、两层都空 ⇒ `overrides` 为空、`changed: false`；
+  两层非空仍按原优先级被工作区覆盖；③ `""` / `"   "` / `"\n\t "` / `null` / `undefined` / 缺 `text` 六种
+  拼法逐条断言「不会清空另一层」「单独存在时零贡献」；④ **兼容性显式断言**：`hide` 仍隐藏、保留段/普通段的空
+  `append` 仍追加、**普通段空文本仍显式置空且工作区层仍覆盖**（防止将来误扩大适用范围）；⑤ **口径边界
+  （评审 R2）**：`text: 5` 这类非字符串值**不算**空值，条目保留并仍赢得同名冲突——与契约"trim 只作用于
+  字符串"逐字对齐；
+- `test/route.test.mjs`（+2，装配结果层，全部为合成夹具）：⑤ 两层配置经测试装置写进**临时目录**的两份真实
+  文件 + snapshot handler ⇒ `effective.sections` 该段 `text = 'USER MINE'`、`overrideLayer = 'user'`、
+  `applied = true`、`rendered` 以该文本结尾，且 `GET /overrides` 的 `merged` 只有用户层那条、
+  `workspace.overrides` 仍显示自己文件里的空条目（g-054 分层视图不受影响）；⑥ 工作区非空仍覆盖 + 两层都空
+  ⇒ `applied: false`、`overrideLayer: null`、不出现空段进入渲染；
+- **负向对照（决定性）**：临时把 `statesNoReservedText` 首行改成 `return false;`（其余全不动）⇒
+  `node --test test/overrides.test.mjs test/route.test.mjs` = **121 pass / 4 fail**，变红的正是 ①②③⑤ 四个
+  g-057 用例（③⑤ 是断言级失败，⑤ 的装配层实测 `actual: [ 'workspace' ], expected: [ 'user' ]`，即工作区
+  那条空文本确实"赢"了）；恢复后 = **125 pass / 0 fail**。
+
+### 七、真机数据证据（走宿主自己的代码路径，但在测试套件之外）
+
+`/prompt-setting/*` 路由需鉴权（401），不能用 curl 取。改用**宿主自己的纯函数核**读**真实落盘文件**：
+`validateConfig(真实 JSON)` → `mergeLayers(userConfig, workspaceConfig)` → `applyOverrides([{保留段, text:''}])`。
+仓库根经 `git rev-parse --git-common-dir` 解析，故在 worktree 内跑也能读到主树的那份文件；**全程只读**。
+
+**（a）改动生效时的瞬时快照（2026-10-10，修复后、提交前）**：
+
+```
+[g-057 真机证据] user= /Users/ricardo/.dsh/prompt-setting/overrides.json
+                ws=   /Users/ricardo/Documents/办公/dsh-prompt-setting/.dsh-prompt-setting/overrides.json
+                wsText= ""  mergedLayers= [ 'user' ]  userChars= 384  userUtf8Bytes= 796  effectiveChars= 384
+```
+
+即：工作区层是空文本时，合并结果只剩**用户层**那一条，装配后的 `effective` 段落文本 **384 字**，与用户层
+文件逐字相等——修复对象是真实数据，不是构造的 fixture。这正是"用户层 384 字在空工作区条目下重新进入装配"。
+
+**（b）踩坑留痕：真机文件随后被负责人改动**。首次提交后用同一套 `node --test test/*.test.mjs` 复跑出现
+**1 fail**，报 `expected '' / actual '修改dsh-graph卡片的状态前…'`——负责人在这段时间里编辑了这两份文件：
+工作区层的保留段从 `""` 变成了 39 字文本，用户层的 prompt 也从 384 字变为 343 字。**根因不是产品代码，
+而是把"真机当时的文本"写成了断言**：真机文件是负责人的草稿空间、会变，把它钉进测试就是让全套测试依赖
+外部可变状态。
+
+**（c）评审 R1 的裁决与取舍：真机核对从测试套件里移出**。评审实测指出，即使改成"对数据恒真"的断言，
+把真机读取留在 `test/` 里仍然两头都错——文件缺失时走 `assert.ok(true)` ⇒ **恒绿且不计数**（clone/CI 上
+毫无约束力），文件形状不同 ⇒ **假红**。故采纳评审首选方案：
+
+- **测试套件只保留合成夹具**。`test/route.test.mjs` 的真机用例整段删除（连同只为它引入的 `repositoryRoot` /
+  `execFileSync` / `homedir` 导入），⑤⑥ 两个装配层用例本来就用测试装置的临时目录写盘，语义完全等价；
+  **任何 `test/*.test.mjs` 都不再读开发机文件**；
+- **真机核对改为只读 dev 脚本** `scripts/real-layers-check.mjs`（不参与 `node --test`）：默认读真机两份文件并
+  打印证据，`--require-fallback` 时才要求"生产形态"（工作区层保留段为空）。工作区层非空时它**打印优先级
+  结论而仍 exit 0**，故不因真机内容变化而失败；文件缺失/非法配置才 exit 1；
+- **脚本自证（不改用户任何文件）**：两个只读路径可被 `DSH_PS_REAL_USER_FILE` / `DSH_PS_REAL_WORKSPACE_FILE`
+  覆盖，于是在临时目录里复现"生产形态"并核对脚本自身：
+
+```
+$ node scripts/real-layers-check.mjs                      # 真机实时值（ws 层已有 39 字文本）
+  ws   层保留段  : action=replace text="修改dsh-graph卡片的状态前，…" chars=39
+  merged 层归属  : "workspace"    装配后文本 : chars=39
+  生产形态(ws 空): 否——真机 ws 层已有非空文本
+  ⇒ 工作区层保留段非空，按既有优先级覆盖用户层（Revision 35 未改优先级）   exit=0
+
+$ DSH_PS_REAL_USER_FILE=$T/user.json DSH_PS_REAL_WORKSPACE_FILE=$T/ws.json \
+    node scripts/real-layers-check.mjs --require-fallback          # $T 为临时目录副本
+  user 层保留段  : action=replace chars=343
+  ws   层保留段  : action=replace text="" chars=0
+  merged 层归属  : "user"         装配后文本 : chars=343
+  生产形态(ws 空): 是——本次修复的直接对象
+  ⇒ 工作区层保留段为空，装配生效的是用户层文本（g-057 修复的直接证据）   exit=0
+```
+
+后者就是"生产形态下用户层文本重新进入装配"的可复跑直接证据（用真实用户层文本 343 字 + 合成空工作区层，
+与 (a) 的 384 字同构）；`--require-fallback` 在真机 ws 非空时按设计 exit 1，故它不能被用来掩盖失败。
+
+### 八、实测证据与未验证项
+
+- `node --test test/overrides.test.mjs test/route.test.mjs test/integration.test.mjs` = exit 0；
+- `node --test test/*.test.mjs` = **760 pass / 0 fail / exit 0**（基线 755 + 本次新增 5；过程数：修复主体提交时
+  为 761，返工按评审 R1 把测试内的真机用例整段移除后为 760）；
+- **"测试不依赖开发机文件"的自证**（不改用户任何文件）：把 `HOME`/`USERPROFILE` 指向**空临时目录**后复跑
+  g-057 涉及的两个套件，结果与常规完全一致——
+
+```
+$ E=$(mktemp -d); HOME="$E" USERPROFILE="$E" node --test test/overrides.test.mjs test/route.test.mjs
+  ℹ tests 125   ℹ pass 125   ℹ fail 0        # 与常规运行逐项相同，未读任何开发机 profile
+$ E=$(mktemp -d); HOME="$E" USERPROFILE="$E" node --test test/*.test.mjs
+  ℹ tests 760   ℹ pass 759   ℹ fail 1
+  ✖ paths: $DSH_HOME wins, blank falls back to ~/.dsh, and cwd is never consulted
+```
+
+  空 HOME 下唯一的红是**既有**用例 `test/store.test.mjs:38`——它按设计断言"未设 `$DSH_HOME` 时回退到
+  `~/.dsh`"，空 HOME 是它自己的**前置条件**，与 g-057 无关，也不属于本次改动（未删改任何既有测试）；
+- `node scripts/client-chunks.mjs` = **4 file(s) match**，exit 0，未加 `--write`（本次只动 core/host/test/docs
+  与一个 dev 脚本，4 个 `client.*.js` chunk 字节未变）；
+- `CONTRACT.md` 新增 **Revision 35**（g-054=33、g-056=34）并在 §3 就地点明 `merged` 随之变化的性质；
+- **未验证（UNVERIFIED）**：真机目视未做（本改动无 UI 面；装配层文本由 ⑤⑥ 两个合成用例经 snapshot handler
+  断言，真机数据由 `scripts/real-layers-check.mjs` 复核）；未在真实 DSH 宿主里重启验证一次回合装配（宿主重启
+  不可由子代理执行，属主管/负责人复核范围）；
+- **风险**：只影响保留段且只影响「空 `replace`」这一种条目，两层的非空文本与所有其它段语义经既有 760 项
+  测试全绿覆盖；「两层都空」与「未配置」在渲染层仍字节一致（§15.2 的零贡献断言未动）。
+- **返工（评审 R2）**：`CONTRACT.md` 原写 `String(text).trim()`，实现是 `typeof text === 'string' && text.trim()`；
+  对校验后的合法输入等价，但对**手改 JSON 的非字符串标量**（如 `text: 5`）有差异。**以不扩大范围为准改文档**：
+  契约明确写成"trim 判定只作用于字符串；非字符串的非空值**不算**空值，原样进入段落"，并在
+  `test/overrides.test.mjs` 的"六种拼法"用例里补一条断言钉住（`text: 5` 不被读作空、仍赢得同名冲突），
+  实现未动。
+- **集成期（主管）**：本节编号由 §131 顺延为 **§132**（dev 上 §131 已被 g-055 占用）；负向对照红点按评审实测更正为 ①②⑤⑥（原文误写 ①②③⑤）；合并后 dev 全量测试由主管复跑。
+
+## 133. g-058：保留段支持两层叠加（「覆盖 / 叠加」模式，Revision 36，2026-10-10，基线 `8cdb4c3` 隔离工作树）
+
+**需求（负责人 2026-10-10 裁定）**：真机用户层保留段 343 字（语言约束 + 人设），工作区层同名条目 39 字
+（dsh-graph 状态提醒）。现行契约下工作区层非空 ⇒ 整体覆盖用户层，343 字不生效。负责人要求**两段都生效**，
+并点名硬约束：「不要再犯之前的 bug，把用户其他地方的 prompt 给清空了」。
+
+**裁定（不再另提方案）**：A 显式模式 —— 面板提供「覆盖 / 叠加」；覆盖＝该层文本盖掉下层（今天的行为），
+叠加＝该层文本拼在下层之后；用户层在前、工作区层在后，两层都非空时中间插入一个空行，单层非空不留孤立空行。
+
+**表示法：沿用条目既有的 `action` 字段（`replace` / `append`），`append` 在这一段上的含义是「叠加到另一层之后」。**
+- 被否方案一｜新增独立字段（如 `mode`）：它要跟着合并、校验、导出、导入、UI 一起走，而 `action` 本来就表示
+  「这条条目对它的目标做什么」；两个字段编码一个枚举，等于把同一个事实写两遍，迟早不一致。
+- 被否方案二｜直接复用 `applyOverrides` 的 `append` 语义（把上层 `append` 原样放进 resolved）：不可行，且这是
+  勘定阶段最关键的一条事实 —— `core/overrides.js` 的 `append` 是**「在 order 处插入一个全新段」**，而保留段由
+  插件自注册，同名 `append` 会被记 `name-already-present` 并**跳过**，上层文本一个字都进不去。
+- 与 §132（g-057）的关系：空值＝不声明的口径**从 `replace` 扩展到 `append`**（同一条 `statesNoReservedText`）。
+  否则「上层选叠加但没写内容」会贡献一个空半段 + 一个分隔符，即一行没人要的空行。
+
+**实现（4 个文件，无 wire 变更）**
+- `core/overrides.js`：新增 `resolveReservedSection(userEntry, workspaceEntry)`，在 `mergeLayers` 里把两层解析成
+  **一条** `replace` 条目（文本 = 下层 + `RESERVED_STACK_SEPARATOR` + 上层，分隔符就是渲染器两段之间那个
+  `"\n\n"`）；`statesNoReservedText` 接受 `replace` 或 `append`；用户层自己的 `append` 没有下层 ⇒ 压平为
+  `replace`（这也是它能生效的唯一形态）；手改的 `order` 在合成时丢弃。保留段的列表位置沿用原逻辑（user 层的
+  槽位，否则末尾），层切换仍不重排。
+- `core/custom.js`：`RESERVED_WRITABLE_ACTIONS = ['replace','append']`；保留名的 `order` 由写面直接
+  `400 unexpected-order`（叠加位置不是目标索引；落盘一个会被合并核忽略的字段不如拒绝）；`hide` 仍被写面拒绝，
+  但手改文件里的 `hide` 在装配层照旧生效（§132 未动）。
+- `index.js`：写面**只存词、不解析** —— `PUT` 把 `append` 原样落到该层文件，叠加文本由合并核现算；
+  `handleWriteOverride` 的文档写明这一分工。历史 `actionOf` 早已支持 `append`，快照早已记 `{name, action}`，
+  所以导出 / 导入 / 回滚天然携带模式，无需新字段或新路由。
+- `client.js`：`data-region="mine-mode"` + 两个 `data-action="mine-mode"` 按钮（`data-mine-mode-choice` /
+  `data-mine-mode-active`）；区域带 `data-mine-mode`（当前显示）与 `data-mine-mode-stored`（本层已存，
+  `none`＝未设置）；草稿结构加 `mode`（`updateMineDraft` 统一文本与模式两个编辑入口，`baselineMode` 记
+  「本页刚写过什么」），脏判定同时看文本与模式，`settleMineDraft` / `draftTargetOf` 同步比较模式。
+  只读写入目标行加 `data-mine-target-mode` / `data-mine-target-mode-stored`。**没有第二个改范围入口**（g-055）。
+
+**硬约束｜不得清空另一层**：所有写路径的断言都以「另一层文件 SHA-256 不变」为准，且都在**真两份文件**上做：
+- PUT（含切换模式后保存）：写 workspace 层后 user 文件 sha 与条目原样，切回覆盖后再验一次；
+- 「恢复默认」（单名 DELETE）：只删当前层，user 文件 sha 不变、workspace 确实变了；
+- import：文档只带 `user` ⇒ workspace 文件 sha 不变；
+- rollback：回滚只动 user 层条目，workspace 文件 sha 不变；
+- 客户端侧只能发一层：断言保存体 `Object.keys(body) = ['layer','section']`，其它层不在请求里。
+
+**新增断言清单（10 项）**：overrides 3（叠加合成单段 / 空行与空值边界、hide 与两层都叠加 / 其它段 `append`
+语义不变）＋ route 3（PUT 叠加＋装配＋切回覆盖 / 恢复默认只删本层 / 导出导入回滚携带模式）＋ custom 1
+（改写：接受 `replace|append`、拒绝 `order` 与 `hide`）＋ client 4（控件读本层已存模式 / 未设置≠显式覆盖 /
+切叠加变脏且保存体带模式 / 取消恢复已存模式且草稿按目标隔离）。既有测试只就地改写了 4 条**有意变更**的断言
+（保留段 `append` 由 `400 unsupported-action` 变成可写；`order` 由「写面不再接受」变成 `400 unexpected-order`），
+未删改削弱任何其它断言。
+
+**负向对照（两组，实测）**
+- (a) 回退叠加：把 `mergeLayers` 的保留段合成改成永远直取上层条目 ⇒ **4 红**
+  （`g-058 mergeLayers` ×3 + `g-058 PUT` 叠加 ×1），其余 361 项仍绿；
+- (b) 回退写侧放宽：`RESERVED_WRITABLE_ACTIONS` 收回 `['replace']` ⇒ **3 红**
+  （custom 接受度 + route 错误码矩阵 + `g-058 PUT` 叠加），其余 379 项仍绿。
+
+**真机证据（只读，不进仓库测试）**：`node scripts/real-layers-check.mjs`（已按 g-058 扩展：用真机两层的
+**文本**在内存里合成一份「工作区层选叠加」的配置，走同一条合并 + 装配核；全程不写任何文件）
+
+```
+$ node scripts/real-layers-check.mjs
+  user 层保留段    : action=replace mode=replace chars=343
+  ws   层保留段    : action=replace mode=replace chars=39 text="修改dsh-graph卡片的状态前，先读取它的状态再修改，避免跨级或重复操作。"
+  装配后文本       : chars=39
+  叠加预期(合成)   : mode=append chars=384（user 343 + 空行 + ws 39）
+  叠加装配后文本   : chars=384
+  ws 层模式        : replace（覆盖）——真机当前只生效一层
+  ⇒ 叠加语义：成立（装配文本 = user 文本 + 一个空行 + ws 文本，单条保留段，无跳过）
+  ⇒ g-058：真机工作区层当前是覆盖，故只生效一层；把该层模式改成「叠加」后，装配文本将是上面的「叠加预期」（chars=384）
+exit=0
+```
+
+脚本自证（临时目录复现「真机工作区层已选叠加」形态，不动负责人文件）：
+
+```
+$ DSH_PS_REAL_USER_FILE=<tmp>/user.json DSH_PS_REAL_WORKSPACE_FILE=<tmp>/ws.json \
+    node scripts/real-layers-check.mjs --require-append
+  ws   层保留段    : action=append mode=append chars=39
+  merged 文本      : chars=384
+  装配后文本       : chars=384
+  ws 层模式        : append（叠加）——真机已按 g-058 选了两段都生效
+exit=0
+```
+
+**验收（单行证据）**：
+- `node --test test/*.test.mjs` = **772 pass / 0 fail**（基线 762 + 本次新增 10）；
+- `node scripts/client-chunks.mjs` = 4 file(s) match，exit 0，**未加 `--write`**（4 个 `client.*.js` chunk 字节未变）；
+- `node scripts/prepare.mjs` = 21 项 OK。
+
+**未验证（UNVERIFIED）**：未在真实 DSH 宿主里重启验证一次回合装配（宿主重启不可由子代理执行，属主管/负责人
+复核范围）；真机工作区层当前仍写着 `replace`，所以「真机两段同时生效」的端到端形态由脚本的合成叠加证明 ——
+要看到活的 384 字，需要负责人把该层切到「叠加」并重开页面（届时
+`node scripts/real-layers-check.mjs --require-append` 会绿）。
+
+**风险 / 残余**：模式是条目 `action` 的一部分，手改既存文件把保留段写成 `append` 会被读作叠加（有意为之，
+已写进 CONTRACT §4.1 / Revision 36）；本次只改保留段语义，其它段 `append`＝新增段的行为未动（有对照断言）。
+
+**评审返工（R1，2026-10-11）**
+- **补上「两侧常量不许漂移」的硬断言**：`client.js` 的 `RESERVED_SECTION_MODES` 原先只有注释声称与宿主同源，
+  评审实测指出没有任何测试真的引用它 —— 现在 `test/client.test.mjs` 新增一条用例，按 `CUSTOM_SECTION_NAME`
+  的同一口径把两头逐元素比住：宿主 `RESERVED_WRITABLE_ACTIONS` 恰为 `['replace','append']`（契约顺序）、
+  bundle 源码里那份常量与它逐元素相同、页面渲染出的 `data-mine-mode-choice` 集合与它逐元素同序、保存体
+  发出的 `action` 是宿主集合里的值。**负向对照**：把 bundle 常量改成 `['replace']` ⇒ 该用例变红（连同 3 条
+  依赖 append 控件的 g-058 用例，共 **4 红**）；还原后 235 项全绿。
+- **更正一处自报数字**：上一轮交回报文里写「中英 l10n 各 11 键」，实测是**各 10 键**
+  （`mineModeLabel / Replace / Append / HintReplace / HintAppend / Note / BottomNote / StoredNone /
+  Stored / Dirty`，zh/en 对称）。本 NOTES 正文从未出现那个 11（它是报文口误），此处以实测值留痕，避免后人
+  对着一个对不上的数。
+- 其余一切未动：`core/overrides.js` 的合成路径、`core/custom.js` 的写侧放宽与 `unexpected-order`、
+  `client.js` 的模式控件与草稿语义、五条写路径的 SHA-256 反破坏断言、契约 Revision 36、真机只读脚本，以及
+  `test/client.test.mjs` 那条「有意且更精准」的 picker 断言（评审已判定）都保持原样。
+- 返工后单行证据：`node --test test/*.test.mjs` = **773 pass / 0 fail**（上一轮 772 + 本次新增 1 条常量用例）；
+  `node scripts/client-chunks.mjs` = 4 file(s) match（未 `--write`）；`node scripts/prepare.mjs` = 21 项 OK。
+- 返工以**追加 commit** 落盘（上一轮 `b9826bd` 未 amend）：本目标第二个 commit，见 `git log --oneline`。
+
+---
+
+## 134. 版本号 `0.2.0` → `0.2.1`：同步点清单、盲点核对与包内文件数变化（g-059，2026-10-11，基线 `01babd3` 隔离工作树）
+
+### 一、为什么是 patch
+
+负责人 2026-10-11 裁定「版本号提升至 0.2.1」。本轮没有新字段、新路由或响应形状变化（保留段的
+`replace|append` 是 g-058 / Revision 36 已发布语义），用户可感知变更全部来自 g-052…g-058 ⇒ 按 patch 提升。
+
+### 二、同步的「本包当前版本」（25 处 / 9 文件，全部改为 `0.2.1`；行号为改后行号）
+
+| 文件:行 | 原值 | 说明 |
+| --- | --- | --- |
+| `package.json:3` | `"version": "0.2.0"` | 权威源① |
+| `index.js:185` | `PLUGIN_VERSION = '0.2.0'` | 权威源②（`host.test.mjs` 有 lockstep 断言） |
+| `README.md:13` / `README_zh.md:12` | 徽章 `version-0.2.0` | 两份根 README |
+| `README.md:109` / `README_zh.md:91` | `this repository is 0.2.0` / 「本仓库为 0.2.0」 | 安装段（与「npm `latest` 为 `0.1.5`」双写） |
+| `README.md:338` / `README_zh.md:284` | 文档表内的同一表述 | 发布前如实区分 |
+| 包内 `README.md:234` / `:239` | 同上（中 / 英） | |
+| `CONTRACT.md:1620-1621` | §10 export 示例 `plugin.version` / `pluginVersion` | |
+| `CONTRACT.md:3058` | §13.8 版本节点文案 `v0.2.0` | |
+| `CONTRACT.md:3200` | §13.9 ping 示例 `version` | |
+| `CONTRACT.md:4472` / `:4500` | §17 update-check 两个示例的 `current` | |
+| `CONTRACT.md:5116-5117` | §18 install 示例 `version` / `tag`（`v0.2.0`→`v0.2.1`） | |
+| `CONTRACT.md:5138-5139` | 同节拒绝示例 `releaseUrl` / `releaseLink` | |
+| `test/stage2.test.mjs:1251-1252` | `pluginVersion` / `plugin.version` 断言 | |
+| `test/update.test.mjs:65` / `test/install.test.mjs:70` | `OLD_TARBALL_URL`（「本包已经是的那版」） | |
+| `test/update.test.mjs:989` | ping 的 `body.version` 断言 | |
+
+### 三、⚠️ 盲点核对（本项目升版踩过两次，本轮逐类查）
+
+1. **转义正则形态**（§121 的 banner `/0\.1\.4/`）——`grep -rn '0\\.2\\.0'` 全仓只命中
+   `test/host.test.mjs:168`（**DSH peer 范围**转义正则）、`test/install.test.mjs:439` / `:633`
+   （`/v0\.2\.0/`，对应同文件 `tag: 'v0.2.0'` 的纯函数夹具，与当前版本无关）与 NOTES 历史叙述
+   ⇒ **本轮的「当前版本」断言没有转义正则形态**，但仍按 §127 的做法跑全量兜底。
+2. **真正的盲点是 §127 记的第二类：fixture 里的「更新目标版本」**。改完两个权威源立刻跑全量
+   ⇒ **773 中 33 红**（install 26 / route 3 / update 3 / stage2 1，分布与 §127 完全一致；首个报错仍是
+   `hasUpdate` 由 true 变 false 的连锁）。修法：把**作为更新目标**的 `0.2.1` 提到 **`0.2.2`** ——
+   `test/install.test.mjs:62`（注释）`:64` `:68` `:146` `:152` `:163-164` `:582` `:721` `:738`
+   `:742-743` `:762` `:773` `:775` `:780` `:787` `:797` `:800` `:804-805` `:830` `:925`；
+   `test/route.test.mjs:41` `:550-551` `:565` `:566` `:579` `:587` `:597-598` `:615`；
+   `test/update.test.mjs:63` `:125-126` `:148` `:150` `:153` `:280` `:300-302` `:305` `:327-335` `:348`
+   `:352` `:365` `:367` `:422` `:433-434` `:438` `:464` `:875` `:1429` `:1668`。
+   **收敛**：33 红 → 改这批字面量后 **0 红**（一轮到位，没有第三类原因）。
+
+### 四、刻意不改的白名单（逐类理由）
+
+1. **DSH 的版本**（不是本插件版本）：`package.json:50`、`index.js:385` `DSH_PEER_RANGE_FALLBACK`、
+   `core/compat.js:163/166`、`test/host.test.mjs:168`、`test/boot.test.mjs:327-389`、
+   `scripts/check-compat.mjs:210`、三份 README 的前置条件；
+2. **历史段**：`CHANGELOG.md` 的 `[0.2.0]` 及更早、`NOTES.md` 全部历史叙述（含 §97–§100、§127）；
+3. **镜像实测记录**：`CONTRACT.md:2827` / `:4903-4925`（`dist-tags.latest` = `0.1.5`，当时测得的事实）；
+4. **纯函数自洽举例**：`test/install.test.mjs:326-711`（`buildReleaseAssetUrl('0.2.0','0.2.0')`、
+   `resolveInstallPolicy({ tag:'0.2.0' })`、`table.begin({ tag:'0.2.0', … })`、`MIRROR_TARBALL` 的
+   `…-0.2.0.tgz`）与 `test/update.test.mjs` 的 `isNewerVersion` / `registryTarball` 举例 —— 传什么断言
+   什么，与当前版本无关；表键的 `tag`/`version` 与 `ASSET_URL` 文件名**升版前就不相等**，本次保持既有
+   形态，未借机改写；
+5. **机制说明举例**：`CONTRACT.md:4538-4539`（dist-tag verbatim vs canonicalized）；
+6. **DSH 版本快照**：`docs/prompt-variables.md:7`；
+7. **测试替身**：`test/client.test.mjs` 的 ping/export 假响应与注入的 `currentVersion`（§127 先例）。
+
+### 五、CHANGELOG 0.2.1 段的覆盖范围（与 brief 的一处事实偏差）
+
+brief 写「本次 0.2.1 覆盖 g-050…g-058」。核对仓库事实：**g-050（回滚/重置/导入后编辑器跟随）与 g-051
+（「检查更新已已开启」重复字）的修复已在 `7caa0ac release: v0.2.0` 之内**（`git merge-base --is-ancestor
+7caa0ac HEAD` 成立；重复字修复 commit `e460d45` 早于 `7caa0ac`），条目也已写在 `[0.2.0]` 段。判据又要求
+「不改历史段」⇒ 0.2.1 段**不重复这两条**，改为在段首注明它们随 `[0.2.0]` 发布、见上一段。0.2.1 段实际
+覆盖 **g-052 / g-054 / g-055 / g-056 / g-057 / g-058**（g-053 是 worktree 清理**风险评估**，无代码、无用户
+可感知变更，不写 CHANGELOG）。dev 上 21 个未发布 commit（`git log --oneline 7caa0ac..dev`）与这一范围
+一一对应。
+
+### 六、`npm pack`：29 → 30 文件
+
+- 本机直跑 `npm pack` 会遇到 `EPERM`（`~/.npm/_cacache` 有 root-owned 文件，§121/§127 已记）⇒ 全程
+  用 `--cache /tmp/ps-pack-cache --pack-destination /tmp/ps-pack-out`；
+- **两个 commit 的同命令实测对照**：`7caa0ac`（v0.2.0 发布点）= **29 文件**；本次 = **30 文件**，多出的
+  正是 g-057 新增的 **`scripts/real-layers-check.mjs`**（`files` 白名单含 `scripts`，见 `host.test.mjs:186`
+  与 §91 的理由）。**注**：brief 说「v0.2.0 的包是 24 文件」，与实测（29）不符 —— 以实测为准；
+- 包内 30 项：`package.json`、`LICENSE`、`index.js`、`client.js` + 4 个 `client.*.js` chunk、`core/` 14 个
+  模块、`CONTRACT.md`、`README.md`、`NOTES.md`、`cordis.patch.yml`、`scripts/` 4 个脚本；
+- 复核：包内 `package.json.version` = **`0.2.1`**；`test/` 命中 **0**；`.dsh-graph/` 命中 **0**；`prepare.mjs`
+  的 `FILES-FILE` / `FILES-DIR`（含 `scripts/（4 项）`）全绿；
+- **新入包脚本的路径自查**：`scripts/real-layers-check.mjs` 只用 `homedir()` 与 `DSH_PS_REAL_{USER,
+  WORKSPACE}_FILE` 两个环境变量定位真机文件，`grep -nE '/Users/|/home/'` 零命中，**没有写死开发机绝对
+  路径**。（`NOTES.md` 内的 `/Users/ricardo/...` 是历史实测记录，v0.2.0 起即随包，不是本次引入。）
+
+### 七、验收（单行证据）
+
+- 升版后 `node --test test/*.test.mjs` = **773 pass / 0 fail / skipped 0**；
+- **基线对照**：`git archive 01babd3` 解到 `/tmp/ps-baseline` 跑同一命令 = **773 pass / 0 fail**
+  ⇒ 升版**未增删或削弱任何断言**；
+- `node scripts/prepare.mjs` = **21 项 OK**；`node scripts/client-chunks.mjs` = **4 file(s) match**，exit 0
+  （未加 `--write`，4 个 chunk 字节未变）；
+- **负向对照**：把 `index.js:185` 的 `PLUGIN_VERSION` 回退成 `'0.2.0'`，跑
+  `node --test test/stage2.test.mjs test/update.test.mjs test/route.test.mjs test/install.test.mjs
+  test/host.test.mjs` ⇒ **280 中 4 红**：`host.test.mjs` 的 lockstep 常量用例与 ping 用例、
+  `stage2.test.mjs` 的 export 用例、`update.test.mjs` 的 ping-untouched 用例；还原后全绿；
+- `git diff --stat` = **12 文件**，全部是版本字面量、文档与测试夹具；`core/`、`client.js`、各
+  `client.*.js` chunk **零改动**，`index.js` 仅 `PLUGIN_VERSION` 一行。
+
+### 八、未验证项
+
+- `npm publish` / `git tag` / `git push` / 合入 `main`：**人工 gate，未做**（合入由主管复核后执行）；因此
+  npm 上的 `latest` 仍是 `0.1.5`，README 的双写表述正为此；
+- 徽章的 shields.io 在线渲染未目视（离线），只核对了源文本；
+- 顺带修一处 §127 遗留的文档不一致：`CONTRACT.md` §17 的 npm 示例原为 `latest=0.2.1` 而
+  `latestTag=0.2.0`、`tarball` 指向 `…-0.2.0.tgz`，本次三者统一为 `0.2.2`（该节字段表本就规定
+  `latestTag` 与 `latest` 同版本、`tarball` 取自 `versions[latest]`）。这是**文档内部一致性修复**，
+  不涉及任何实现、路由或响应字段。

@@ -184,6 +184,18 @@ function nameList(names, max = 3) {
 }
 
 /**
+ * The actions the reserved name accepts on `PUT /prompt-setting/overrides`,
+ * in contract order (Revision 36).
+ *
+ * `replace` (覆盖) and `append` (叠加) are both modes of the *same* single
+ * section: the write face stores the word, and `mergeLayers` resolves it
+ * (`core/overrides.js`, Revision 36). `hide` stays refused — the panel has no
+ * control for it, and a section the user is typing into is not one they mean to
+ * remove; a hand-edited `hide` keeps working in assembly (Revision 35).
+ */
+export const RESERVED_WRITABLE_ACTIONS = Object.freeze(['replace', 'append']);
+
+/**
  * Enforce the write lock for `PUT /prompt-setting/overrides`.
  *
  * Two independent rules, checked in this order and **before anything else the
@@ -193,23 +205,32 @@ function nameList(names, max = 3) {
  * 1. a name that is a non-empty string other than the reserved one is
  *    `403 write-locked`. This is a wall, not a validation error: the name is
  *    perfectly legal, this route simply may not write it any more;
- * 2. the reserved name accepts exactly one action — `replace`. Anything else,
- *    **including an absent or unknown action**, is `400 unsupported-action`.
- *    The action is therefore not validated by `validateOverride` on this route:
- *    `unsupported-action` is the one code the write face answers for it, which
- *    is what makes the narrowing a two-code policy rather than a soup of
- *    field-level errors. (`unknown-action`, `unexpected-text` and
- *    `invalid-order` stay reachable exactly where they belong — in
- *    `validateOverride`, pinned by `test/overrides.test.mjs`; `missing-text`
- *    and `text-too-large` stay reachable through this route too, because they
- *    are about the fields `replace` does use.)
+ * 2. the reserved name accepts exactly the actions of
+ *    {@link RESERVED_WRITABLE_ACTIONS} — `replace` (Revision 7) and, since
+ *    Revision 36, `append`. Anything else, **including an absent or unknown
+ *    action**, is `400 unsupported-action`. The action is therefore not
+ *    validated by `validateOverride` on this route: `unsupported-action` is the
+ *    one code the write face answers for it, which is what makes the narrowing a
+ *    two-code policy rather than a soup of field-level errors. (`unknown-action`,
+ *    `unexpected-text` and `invalid-order` stay reachable exactly where they
+ *    belong — in `validateOverride`, pinned by `test/overrides.test.mjs`;
+ *    `missing-text` and `text-too-large` stay reachable through this route too,
+ *    because they are about the fields both writing actions use.)
+ *
+ * Revision 36 adds one more rule for the reserved name alone, after the two
+ * above: an `order` field is `400 unexpected-order`. For every other section
+ * `order` is *what `append` means* — where to insert the new section — but on
+ * the reserved name `append` means「stack after the other layer」, which has no
+ * index. Refusing the field here is what keeps a meaningless value out of the
+ * stored file instead of persisting one the merge kernel would then drop.
  *
  * A request with no usable `name` at all is *not* a policy question: it is a
  * malformed override, and it is left to `validateOverride` so it still answers
  * `400 missing-name`. A non-string `name` (a number, an object) takes the same
  * path.
  * @param section - the `section` field of the PUT body.
- * @throws {OverrideError} 403 `write-locked` or 400 `unsupported-action`.
+ * @throws {OverrideError} 403 `write-locked`, 400 `unsupported-action`, or 400
+ *   `unexpected-order`.
  */
 export function assertWritableSection(section) {
   const name = section?.name;
@@ -220,11 +241,19 @@ export function assertWritableSection(section) {
       403,
     );
   }
-  if (isCustomSectionName(name) && section?.action !== 'replace') {
+  if (!isCustomSectionName(name)) return;
+  if (!RESERVED_WRITABLE_ACTIONS.includes(section?.action)) {
     throw fail(
       'unsupported-action',
-      `${JSON.stringify(CUSTOM_SECTION_NAME)} accepts only the "replace" action, not `
+      `${JSON.stringify(CUSTOM_SECTION_NAME)} accepts only the `
+      + `${RESERVED_WRITABLE_ACTIONS.map((action) => JSON.stringify(action)).join(' and ')} actions, not `
       + `${section?.action === undefined ? 'an absent action' : JSON.stringify(section.action)}`,
+    );
+  }
+  if (section?.order !== undefined && section?.order !== null) {
+    throw fail(
+      'unexpected-order',
+      `${JSON.stringify(CUSTOM_SECTION_NAME)} must not carry "order": its "append" stacks after the other layer, it does not name a position`,
     );
   }
 }

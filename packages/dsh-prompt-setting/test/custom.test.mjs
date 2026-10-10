@@ -193,12 +193,26 @@ test('custom: a write to any other name is 403 write-locked and names the one wr
   assert.ok(message.includes('project:alpha'), `and the refused one: ${message}`);
 });
 
-test('custom: the reserved name accepts exactly "replace", and nothing else answers a field code', () => {
-  // The accepted shape never throws.
+test('custom: the reserved name accepts exactly "replace" and "append", and nothing else answers a field code', () => {
+  // The accepted shapes never throw. Revision 36 added `append` — the「叠加」
+  // mode of the same one section (§4.1).
   assertWritableSection({ name: CUSTOM_SECTION_NAME, action: 'replace', text: '' });
+  assertWritableSection({ name: CUSTOM_SECTION_NAME, action: 'append', text: 'after the other layer' });
+  // …but the reserved `append` is not a target index: the stack position is the
+  // other layer, so `order` is refused instead of being stored and ignored.
+  throwsCode(
+    () => assertWritableSection({ name: CUSTOM_SECTION_NAME, action: 'append', text: 'x', order: 0 }),
+    'unexpected-order',
+    400,
+  );
+  throwsCode(
+    () => assertWritableSection({ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'x', order: 0 }),
+    'unexpected-order',
+    400,
+  );
   // Everything else is `unsupported-action` — including an action that is
   // absent or unknown, because the action is decided before its own validation.
-  for (const action of ['hide', 'append', 'delete', 'REPLACE', undefined, null, 42]) {
+  for (const action of ['hide', 'delete', 'REPLACE', undefined, null, 42]) {
     throwsCode(() => assertWritableSection({ name: CUSTOM_SECTION_NAME, action }), 'unsupported-action', 400);
   }
 });

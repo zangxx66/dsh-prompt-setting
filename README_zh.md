@@ -9,7 +9,7 @@ Prompt 管理器：**看得见**每一轮会话最终装配出来的系统提示
 全程**不碰 DSH 全局安装包**。
 
 ![license](https://img.shields.io/badge/license-MIT-blue)
-![version](https://img.shields.io/badge/version-0.2.0-blue)
+![version](https://img.shields.io/badge/version-0.2.1-blue)
 ![dsh](https://img.shields.io/badge/DSH-%3E%3D0.1.7--rc.2%20%3C0.2.2--0-blueviolet)
 ![deps](https://img.shields.io/badge/dependencies-0-brightgreen)
 
@@ -37,7 +37,7 @@ DSH 每轮会话都会注入一段由 `@deepseek-ai/dsh-system-prompt` 装配出
 
 | Tab | 你能做的事 |
 | --- | --- |
-| **我的 Prompt** | 唯一写入口：写下你自己的系统级指令（选作用域 → 编辑 → 保存），一键「恢复默认」。这段文本会**排在所有内置段之后**。 |
+| **我的 Prompt** | 唯一写入口：写下你自己的系统级指令（选作用域 → 编辑 → 保存），一键「恢复默认」。这段文本会**排在所有内置段之后**。上方那一行「查看范围」是这一块的头部——它决定保存落到哪一层，改范围也只有这一处（面板内另有只读提示复述当前写入目标）。 |
 | **提示词总览** | 纯只读：装配后的分段列表（状态标记 / 搜索 / 筛选 / 复制）、完整全文，以及 `base ↔ effective` 对比 —— 一眼看出你的改动究竟改变了什么。 |
 | **版本历史** | 历史列表（定高内滚 + 翻页，默认每页 50）与行级版本对比。历史有自己的**作用域选择器**（工作区维度），与上方「查看范围」互不影响：用户层历史是全局的，不按会话过滤。 |
 | **备份与恢复** | 配置导出下载、导入预览（导入前先看变更计划，确认后才落盘）。 |
@@ -88,7 +88,7 @@ DSH 每轮会话都会注入一段由 `@deepseek-ai/dsh-system-prompt` 装配出
 0.1.x、`0.2.0` 与 `0.2.1` 的全部预发布（`-0` / `alpha` / `beta` / `rc.N`）以及 **这两个 minor 的正式版本身**都在
 范围内；`0.2.2-0` 及以后一律出界——新的 minor 未经评估不放行）。跑测试和开发才需要 Node `>= 22`。
 
-**首选从 npm 装**（本包已发布，npm 上的 `latest` 为 `0.1.5`；本仓库为 `0.2.0`，发布后两者一致）：
+**首选从 npm 装**（本包已发布，npm 上的 `latest` 为 `0.1.5`；本仓库为 `0.2.1`，发布后两者一致）：
 
 ```sh
 dsh plugin --profile <profile 名> add dsh-prompt-setting
@@ -182,7 +182,8 @@ commit（`…#<sha>`）。本包零构建，`prepare` 只做发布自检（入�
 - **生效时机**：保存后从**下一轮 / 新会话**生效，不会改写正在进行中的回合。
 - **写入面很窄**：只有「我的 Prompt」这一段可写。其他内置段**只能看不能改**——
   `PUT`、单名 `DELETE`、`import` 一律返回 `403 write-locked`（拒绝时不碰文件一个字节）。
-- **两层作用域**：用户级默认 + 工作区级覆盖，**工作区级优先**；适合「全局一套，某个项目另加几句」。
+- **两层作用域**：用户级默认 + 工作区级覆盖。默认「覆盖」（工作区级优先）；也可逐层切成「叠加」，
+  该层文本拼在另一层之后（中间一个空行），两层都生效；适合「全局一套，某个项目另加几句」。
 - **装了但没写 = 等于没装**：未填写时这一段对最终 prompt 零贡献，渲染结果逐字节相同。
 - **数据落在哪**：只写插件自己的数据目录（用户级 + 工作区级两个层文件，外加一份 `history.jsonl`）。
 
@@ -280,7 +281,7 @@ DSH 升级后插件没出现、终端也没报错时，先跑 `node scripts/chec
 | [`packages/dsh-prompt-setting/README.md`](./packages/dsh-prompt-setting/README.md) | 使用者 / 开发者 | 包简介与功能（中英对照）、安装、维护者要点、出问题时怎么办 |
 | [`CONTRACT.md`](./packages/dsh-prompt-setting/CONTRACT.md) | 开发者 | 冻结的 REST 契约：字段、动作枚举、字段上限、每一个 4xx |
 | [`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) | 开发者 | 设计取舍与实测记录（含未验证项与已推翻的旧结论） |
-| [`CHANGELOG.md`](./CHANGELOG.md) | 使用者 / 开发者 | 每个版本的用户可感知变更（中英对照；已发布——npm 上的 `latest` 为 `0.1.5`，本仓库为 `0.2.0`） |
+| [`CHANGELOG.md`](./CHANGELOG.md) | 使用者 / 开发者 | 每个版本的用户可感知变更（中英对照；已发布——npm 上的 `latest` 为 `0.1.5`，本仓库为 `0.2.1`） |
 
 ## 九、状态与路线图
 

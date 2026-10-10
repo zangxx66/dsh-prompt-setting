@@ -18,8 +18,16 @@ import vm from 'node:vm';
 // The *host* copy of the reserved section name (CONTRACT.md §15.1). The client
 // hardcodes the same literal because a browser module cannot import host code;
 // the tests below compare the two, character for character, so the two copies
-// cannot drift apart silently (g-015, requirement: 两侧常量不许漂移).
-import { CUSTOM_SECTION_NAME } from '../core/custom.js';
+// cannot drift apart silently (g-015, requirement: 两侧常量不许漂移). Since
+// g-058 the same rule covers the reserved name's **writable actions**
+// (`RESERVED_WRITABLE_ACTIONS`), which the page carries as
+// `RESERVED_SECTION_MODES`.
+import { CUSTOM_SECTION_NAME, RESERVED_WRITABLE_ACTIONS } from '../core/custom.js';
+// The **host** merge, used to build override fixtures that describe a server
+// state the route could really produce (g-054): `mergeLayers` deduplicates by
+// name across layers, so a hand-written `merged` list holding a same-name pair
+// is a fixture no real `GET /overrides` can answer with.
+import { mergeLayers, validateConfig } from '../core/overrides.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageJson = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8'));
@@ -1082,6 +1090,44 @@ function overridesFixture(over = {}) {
     },
     ...over,
   };
+}
+
+/**
+ * A `GET /prompt-setting/overrides` payload whose layer views and `merged` list
+ * describe the same two files.
+ *
+ * Each view holds **that layer's own** entries, and `merged` is produced by the
+ * host's own `mergeLayers` instead of being written out here — so no fixture can
+ * state a same-name-across-layers pair the real route would have deduplicated,
+ * which is exactly the shape that hid g-054. Entries are given the way a layer
+ * file holds them (no `layer` field); the views carry them verbatim.
+ * @param user - the user layer's raw overrides (`[]` for "nothing stored").
+ * @param workspace - the workspace layer's raw overrides.
+ * @returns the payload.
+ */
+function layeredOverrides(user = [], workspace = []) {
+  const userConfig = validateConfig({ version: 1, overrides: user });
+  const workspaceConfig = workspace.length === 0 ? null : validateConfig({ version: 1, overrides: workspace });
+  return overridesFixture({
+    user: {
+      layer: 'user',
+      enabled: true,
+      path: '/home/u/.dsh/prompt-setting/overrides.json',
+      reason: null,
+      overrides: userConfig.overrides,
+    },
+    workspace: {
+      layer: 'workspace',
+      enabled: workspaceConfig !== null,
+      path: workspaceConfig === null ? null : '/home/w/.dsh-prompt-setting/overrides.json',
+      reason:
+        workspaceConfig === null
+          ? 'no ?session= was supplied, so the workspace layer is inactive for this view'
+          : null,
+      overrides: workspaceConfig === null ? [] : workspaceConfig.overrides,
+    },
+    merged: { overrides: mergeLayers(userConfig, workspaceConfig).overrides },
+  });
 }
 
 /** `GET /prompt-setting/history` payload: two records for one section. */
@@ -2621,6 +2667,192 @@ function collapsedScopeHeight(tree) {
   return vertical + minHeight + SCOPE_SUMMARY_LINE_PX;
 }
 
+/**
+ * One declared line of text, in px, for a node that states a `fontSize` but no
+ * `lineHeight`: the same "one line of slack" convention
+ * {@link SCOPE_SUMMARY_LINE_PX} uses, never below the font size itself.
+ */
+const CHROME_TEXT_LINE_PX = 22;
+
+/**
+ * How much rounder than the measured spend the tight budget is allowed to be
+ * (g-055 review round 3). It is a named constant on purpose: raising it is the
+ * only way to make room for a structurally taller chrome, so it has to be an
+ * explicit, reviewable edit to this number — never a side effect of some other
+ * change.
+ */
+const CHROME_SLACK_PX = 4;
+
+/**
+ * The **tight** first-screen budget (g-055; tightened in review round 2) for
+ * everything above the tab bar, in px, measured by {@link chromeAboveTabsPx}.
+ *
+ * It is the measured spend (220px) plus {@link CHROME_SLACK_PX}, deliberately
+ * **not** a generous ceiling: the review round 1 number (310px, the hard
+ * first-screen derivation below) was so loose that a whole extra title line —
+ * 26px — still fitted under it, so the assertion proved nothing. With that slack,
+ * any structural growth above the tabs fails it and has to be paid for by raising
+ * {@link CHROME_SLACK_PX} (or the measured spend) on purpose.
+ *
+ * The first-screen argument behind the hard limit is unchanged (CONTRACT §13.7):
+ * 900px of screen, minus the tab bar's own row (~30px), minus the 560px of tab
+ * panel that must stay visible below it ⇒ 310px; 224px is what this revision
+ * actually spends of it. The real geometry is still measured in the settings
+ * shell by the supervisor (NOTES §94).
+ */
+const CHROME_BUDGET_PX = 220 + CHROME_SLACK_PX;
+
+/** The hard first-screen ceiling the tight budget above must also respect (CONTRACT §13.7). */
+const CHROME_FIRST_SCREEN_CEILING_PX = 900 - 30 - 560;
+
+/** One px value out of a declared style value. */
+function declaredPx(value) {
+  const n = Number.parseFloat(String(value === undefined ? '' : value));
+  return Number.isFinite(n) ? n : 0;
+}
+
+/**
+ * The line box one declared style asks for, in px.
+ *
+ * A **unitless** `lineHeight` is a multiple of the font size — this project's
+ * own dialog styles state `1.4` / `1.5` / `1.6` — so it is multiplied. Reading
+ * it as a bare px number would under-bill a line by ~16px (review round 2), and
+ * an under-billing budget is worse than a generous one: it would let real growth
+ * through. Values below 4 are read as multiples, everything else as px.
+ * @param style - a declared style object.
+ * @returns the line height in px.
+ */
+function declaredLinePx(style) {
+  const fontPx = declaredPx(style.fontSize);
+  const raw = style.lineHeight;
+  const numeric =
+    typeof raw === 'number'
+      ? raw
+      : /^[0-9]*\.?[0-9]+$/.test(String(raw === undefined ? '' : raw).trim())
+        ? Number(raw)
+        : null;
+  if (numeric !== null && numeric > 0) {
+    if (numeric >= 4) return numeric;
+    return (fontPx > 0 ? fontPx : CHROME_TEXT_LINE_PX) * numeric;
+  }
+  return declaredPx(raw) || Math.max(fontPx, CHROME_TEXT_LINE_PX);
+}
+
+/** One declared length in px, or `null` when it is absent or not a length. */
+function declaredLengthPx(value) {
+  if (value === undefined || value === null) return null;
+  const text = String(value).trim();
+  if (text === '') return null;
+  const n = Number.parseFloat(text);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * The vertical padding + margin one declared style states, in px.
+ *
+ * Both the `padding` / `margin` shorthands **and** the `paddingTop` /
+ * `paddingBottom` / `marginTop` / `marginBottom` longhands are read, a longhand
+ * overriding its side of the shorthand exactly as CSS does (g-055 review round
+ * 3). Reading only the shorthands left the one real hole in the budget: a
+ * `paddingTop: 6` would have added 6px to the chrome while the assertion stayed
+ * green. Values that are absent or not lengths leave the shorthand's value in
+ * place, so a non-length longhand can never silently zero a side out.
+ * @param style - a declared style object.
+ * @returns the vertical box in px.
+ */
+function declaredVerticalBox(style) {
+  const sides = (shorthand) => {
+    const parts = String(shorthand === undefined ? '' : shorthand)
+      .trim()
+      .split(/\s+/)
+      .filter((part) => part.length > 0)
+      .map(declaredPx);
+    if (parts.length === 0) return { top: 0, bottom: 0 };
+    if (parts.length <= 2) return { top: parts[0], bottom: parts[0] };
+    return { top: parts[0], bottom: parts[2] };
+  };
+  const padding = sides(style.padding);
+  const margin = sides(style.margin);
+  const top = (declaredLengthPx(style.paddingTop) ?? padding.top) + (declaredLengthPx(style.marginTop) ?? margin.top);
+  const bottom =
+    (declaredLengthPx(style.paddingBottom) ?? padding.bottom) + (declaredLengthPx(style.marginBottom) ?? margin.bottom);
+  return top + bottom;
+}
+
+/**
+ * The height one subtree must budget for, in px, from **declared styles only** —
+ * the same offline convention as {@link collapsedScopeHeight} (no layout engine,
+ * no fonts): vertical padding and margin, a line box ({@link declaredLinePx}),
+ * `minHeight`, a flex row's tallest child, and a column's stacked children plus
+ * its gaps.
+ *
+ * Wrapping rows may really be shorter than this: the budget is allowed to be too
+ * generous, never too optimistic.
+ * @param node - one rendered element.
+ * @returns the budgeted height in px.
+ */
+function declaredHeight(node) {
+  if (node === null || node === undefined || typeof node !== 'object' || node.type === undefined) return 0;
+  const style = node.props.style || {};
+  const box = declaredVerticalBox(style);
+  const minHeight = declaredPx(style.minHeight);
+  const content = Math.max(minHeight, declaredLinePx(style));
+  const kids = elementChildren(node);
+  if (kids.length === 0) return box + content;
+  const row = style.display === 'flex' && style.flexDirection !== 'column';
+  const gap = declaredPx(style.gap);
+  const stacked = kids.reduce((sum, kid, index) => sum + declaredHeight(kid) + (index > 0 ? gap : 0), 0);
+  return box + (row ? Math.max(content, ...kids.map(declaredHeight)) : Math.max(content, stacked));
+}
+
+/**
+ * Everything above `data-region="tabs"`, budgeted in px from declared styles:
+ * the page chrome the first screen must fit before any tab content can show
+ * (g-055, review round 1).
+ * @param tree - a rendered page tree.
+ * @returns the budgeted height in px.
+ */
+function chromeAboveTabsPx(tree) {
+  const root = oneBy(tree, 'data-plugin', 'dsh-prompt-setting');
+  const kids = elementChildren(root);
+  const tabBar = kids.findIndex((node) => node.props['data-region'] === 'tabs');
+  assert.ok(tabBar > 0, 'the tab bar is rendered below the chrome');
+  const style = root.props.style || {};
+  const gap = declaredPx(style.gap);
+  let total = declaredVerticalBox(style);
+  for (let index = 0; index < tabBar; index += 1) {
+    total += declaredHeight(kids[index]) + (index > 0 ? gap : 0);
+  }
+  return total;
+}
+
+/**
+ * The same page with the block's note line removed (g-055 review round 2).
+ *
+ * The counterfactual exists because a claim like "the block budget covers the
+ * note" is vacuous when both sides come from {@link declaredHeight}: the note has
+ * to be priced by **difference** against the untouched tree, so that a helper
+ * that under-bills the line cannot pass. Only the note is dropped; everything
+ * else is the rendered node graph.
+ * @param tree - a rendered page tree.
+ * @returns a shallow copy of the tree without the note node.
+ */
+function withoutPromptBlockNote(tree) {
+  const root = oneBy(tree, 'data-plugin', 'dsh-prompt-setting');
+  const block = oneBy(tree, 'data-region', 'prompt-block');
+  const stripped = {
+    ...block,
+    props: {
+      ...block.props,
+      children: elementChildren(block).filter((node) => node.props['data-role'] !== 'prompt-block-note'),
+    },
+  };
+  return {
+    ...root,
+    props: { ...root.props, children: elementChildren(root).map((node) => (node === block ? stripped : node)) },
+  };
+}
+
 test('client: the「查看范围」picker ships collapsed, with no body on screen', async () => {
   const page = makePage({
     useSessions: sessionsHook(WORKSPACE_SESSIONS),
@@ -2806,6 +3038,12 @@ test('client: the collapsed「查看范围」block is one row inside an 80px bud
   assert.equal(collect(row, (node) => node.type === 'p').length, 0, 'no paragraph can add a second line');
 
   const collapsedNodes = renderedNodeCount(tree);
+  // g-058: the「node ratio grows when the picker opens」assertion below counts the
+  // **scope region** rather than the whole page. The whole-page count moves for
+  // reasons that have nothing to do with this block (the「我的 Prompt」panel grew
+  // a mode control), and a ratio that depends on every other tab's node count is
+  // not a statement about the picker.
+  const collapsedSessionNodes = renderedNodeCount(section);
   const budget = collapsedScopeHeight(tree);
   scopeToggle(tree).props.onClick();
   tree = await page.flush();
@@ -2817,7 +3055,188 @@ test('client: the collapsed「查看范围」block is one row inside an 80px bud
     `    scope geometry: collapsed「查看范围」= ${budget}px budget (80px), ${collapsedNodes} nodes; expanded = ${expandedNodes} nodes`,
   );
   assert.ok(budget <= 80, `the collapsed block budgets ${budget}px, over the 80px ceiling`);
-  assert.ok(expandedNodes > collapsedNodes * 2, `opening the picker adds the body back (${expandedNodes} vs ${collapsedNodes})`);
+  const expandedSessionNodes = renderedNodeCount(oneBy(tree, 'data-region', 'session'));
+  assert.ok(
+    expandedSessionNodes > collapsedSessionNodes * 2,
+    `opening the picker adds the body back (${expandedSessionNodes} vs ${collapsedSessionNodes})`,
+  );
+});
+
+test('client (g-055): 「查看范围」is the header of the「我的 Prompt」block, and the panel names its write target', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  let tree = await page.flush();
+
+  // One grouping container, and the frozen scope card lives *inside* it: the
+  // card is this block's header, not a page-level card of its own.
+  const block = oneBy(tree, 'data-region', 'prompt-block');
+  assert.equal(
+    collect(block, (node) => node.props && node.props['data-region'] === 'session').length,
+    1,
+    'the scope card is rendered inside the block',
+  );
+  // The block still sits above the tab bar (g-016's first-screen budget).
+  const flow = collect(
+    tree,
+    (node) => node.props && ['prompt-block', 'tabs'].includes(node.props['data-region']),
+  ).map((node) => node.props['data-region']);
+  assert.deepEqual(flow, ['prompt-block', 'tabs'], 'the block is above the tabs, in that order');
+
+  // Every frozen marker is still unique across the whole tree (CONTRACT
+  // §13.0/§13.7): the wrapper adds structure, it moves nothing.
+  for (const [attribute, value] of [
+    ['data-region', 'session'],
+    ['data-region', 'scope-summary'],
+    ['data-role', 'scope-summary-label'],
+    ['data-action', 'scope-toggle'],
+  ]) {
+    assert.equal(
+      collect(tree, (node) => node.props && node.props[attribute] === value).length,
+      1,
+      `${attribute}=${value} stays exactly once`,
+    );
+  }
+  // The degradation hint is "at most one" by design, not "exactly one".
+  assert.ok(
+    collect(tree, (node) => node.props && node.props['data-role'] === 'scope-summary-hint').length <= 1,
+    'at most one degradation hint',
+  );
+
+  // Review round 1: the block must NOT repeat the panel's title. A second
+  // same-level「我的 Prompt」two lines above the panel's own title weakened the
+  // "one block" reading and listed the same heading twice for a screen reader.
+  const mineHeadings = collect(
+    tree,
+    (node) => node.type === 'h3' && node.props.children === page.zh.mineHeading,
+  );
+  assert.equal(mineHeadings.length, 1, 'exactly one「我的 Prompt」heading on the page');
+  assert.equal(
+    elementChildren(oneBy(tree, 'data-region', 'mine'))[0],
+    mineHeadings[0],
+    'and that heading is the mine panel’s own title, not a block header',
+  );
+  const note = oneBy(tree, 'data-role', 'prompt-block-note');
+  assert.ok(hasText(note, page.zh.promptBlockNote), 'the block says what the scope decides');
+
+  // Review rounds 1–2: the block's content sits inside a **tight** budget. The
+  // block may hold exactly two things — the sentence and the card — and the whole
+  // chrome above the tab bar may spend what this revision spends plus 4px of
+  // rounding. Round 1's 310px ceiling let a whole extra 26px title line through,
+  // so it proved nothing; these four numbers do.
+  const blockHeight = declaredHeight(block);
+  const card = oneBy(tree, 'data-region', 'session');
+  const blockGap = declaredPx((block.props.style || {}).gap);
+  const chrome = chromeAboveTabsPx(tree);
+  // The tight budget comes first on purpose: adding anything structural above the
+  // tabs (a title line is 26px) must fail *this* assertion, not merely some
+  // downstream uniqueness check.
+  assert.ok(
+    chrome <= CHROME_BUDGET_PX,
+    `the chrome above the tab bar budgets ${chrome}px, over the tight ${CHROME_BUDGET_PX}px budget`,
+  );
+  assert.ok(chrome < CHROME_FIRST_SCREEN_CEILING_PX, 'and it stays under the hard first-screen ceiling');
+  assert.deepEqual(
+    elementChildren(block).map((node) => node.props['data-role'] || node.props['data-region']),
+    ['prompt-block-note', 'session'],
+    'the block holds the sentence and the card, and nothing else',
+  );
+  assert.ok(
+    blockHeight <= declaredHeight(note) + declaredHeight(card) + blockGap + 2,
+    `the block spends ${blockHeight}px: the note line, the card and the gap, nothing more`,
+  );
+  // The note is priced by difference against the same tree without it: its 18px
+  // line plus the block's 6px gap. A helper that under-billed the line (round 2)
+  // could not produce this number.
+  assert.equal(
+    chrome - chromeAboveTabsPx(withoutPromptBlockNote(tree)),
+    24,
+    'dropping the note line frees its 18px line and the block’s 6px gap',
+  );
+  console.log(
+    `    g-055 chrome geometry: above the tab bar = ${chrome}px (tight ${CHROME_BUDGET_PX}px, hard ceiling ${CHROME_FIRST_SCREEN_CEILING_PX}px), 「我的 Prompt」block = ${blockHeight}px`,
+  );
+
+  // The panel states its own write target, read-only: no second way to change
+  // the scope exists anywhere in the page.
+  let target = oneBy(tree, 'data-region', 'mine-target');
+  assert.equal(target.props['data-mine-target-layer'], 'user', 'the selected layer');
+  assert.equal(target.props['data-mine-target-scope'], markerOf(tree, 'data-session'), 'the page scope, verbatim');
+  assert.ok(
+    hasText(target, fillText(page.zh.mineTargetNote, { layer: page.zh.ovUser, scope: 'Alpha three' })),
+    'and it names both, in the panel',
+  );
+  assert.equal(collect(target, (node) => node.type === 'button').length, 0, 'read-only: no scope switch inside the panel');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-action'] === 'scope-toggle').length, 1, 'still one entrance');
+
+  // Moving the scope above the tabs moves the line inside the panel with it.
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  sessionOptions(tree).find((row) => row.props['data-session-id'] === 'a1').props.onClick();
+  tree = await page.flush();
+  target = oneBy(tree, 'data-region', 'mine-target');
+  assert.equal(target.props['data-mine-target-scope'], 'a1');
+  assert.ok(hasText(target, fillText(page.zh.mineTargetNote, { layer: page.zh.ovUser, scope: 'Alpha one' })));
+
+  // And so does the layer the save would land in.
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  target = oneBy(tree, 'data-region', 'mine-target');
+  assert.equal(target.props['data-mine-target-layer'], 'workspace');
+  assert.ok(hasText(target, fillText(page.zh.mineTargetNote, { layer: page.zh.ovWorkspace, scope: 'Alpha one' })));
+});
+
+test('client (g-055): the declared-height helper reads px, multiples and defaults alike', () => {
+  const line = (style) => declaredHeight({ type: 'p', props: { style } });
+  assert.equal(line({ fontSize: 12, lineHeight: '18px' }), 18, 'a px line height is used as written');
+  assert.equal(line({ fontSize: 12, lineHeight: 1.5 }), 18, 'a unitless line height multiplies the font size');
+  assert.equal(line({ fontSize: 16, lineHeight: '1.5' }), 24, 'a unitless string is a multiple too');
+  assert.equal(line({ fontSize: 12 }), CHROME_TEXT_LINE_PX, 'no line height: one slack line, never the raw font size');
+  assert.equal(
+    line({ lineHeight: 1.5 }),
+    CHROME_TEXT_LINE_PX * 1.5,
+    'a multiple with no font size scales the slack line instead of billing zero',
+  );
+  assert.equal(line({ fontSize: 20, lineHeight: 24 }), 24, 'a bare number of 4 or more is px, not a multiple');
+  assert.equal(
+    declaredHeight({ type: 'div', props: { style: { padding: '6px 10px', lineHeight: '20px' } } }),
+    32,
+    'padding counts top and bottom',
+  );
+  assert.equal(
+    declaredHeight({ type: 'div', props: { style: { margin: '6px 0 0', lineHeight: '20px' } } }),
+    26,
+    'a three-value margin adds the top only',
+  );
+  // Review round 3: the vertical longhands are read too, so a future style that
+  // grows the chrome with `paddingTop` cannot slip past the budget.
+  assert.equal(
+    declaredHeight({ type: 'div', props: { style: { paddingTop: 6, lineHeight: '20px' } } }),
+    26,
+    'a padding longhand is counted',
+  );
+  assert.equal(
+    declaredHeight({ type: 'div', props: { style: { paddingTop: '6px', paddingBottom: '4px', lineHeight: '20px' } } }),
+    30,
+    'both padding longhands are counted',
+  );
+  assert.equal(
+    declaredHeight({ type: 'div', props: { style: { padding: '6px 0', paddingBottom: '10px', lineHeight: '20px' } } }),
+    36,
+    'a longhand overrides that side of the shorthand',
+  );
+  assert.equal(
+    declaredHeight({ type: 'div', props: { style: { margin: '6px 0', marginTop: '12px', lineHeight: '20px' } } }),
+    38,
+    'and the same rule holds for margins',
+  );
+  assert.equal(
+    declaredHeight({ type: 'div', props: { style: { padding: '6px 0', paddingTop: 'auto', lineHeight: '20px' } } }),
+    32,
+    'a non-length longhand leaves the shorthand in place instead of zeroing the side',
+  );
 });
 
 // #endregion
@@ -3730,6 +4149,161 @@ test('client: frozenScope "global" with a session is "unknown", never "not froze
   assert.ok(hasText(warning, 'has no active agent'), 'the frozenScopeReason is shown');
 });
 
+// g-052: under the unknown verdict which session is meant, in Chinese, and what
+// "unknown" does *not* claim. The reason may not blame a running state: the
+// session list's `running` is `agent.status === 'running'`, which is not
+// `agentAvailable` — an idle session that just finished a turn has running=false
+// and still has a live agent, so its frozen state is confirmable.
+const UNKNOWN_ONLY_WARNINGS = ['frozen-unknown', 'frozen-unknown-probe', 'frozen-unknown-not-frozen'];
+// g-052 rework: the first-screen status line (`data-region="status"`) carries its
+// own two markers, so one page never holds two nodes with the same data-warning.
+const STATUS_LINE_EXPLANATION = ['frozen-line-probe', 'frozen-line-not-frozen'];
+
+test('client: the unknown frozen verdict explains itself without blaming a running state', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({
+      [PATHS.snapshot]: {
+        payload: snapshotFixture({
+          frozenScope: 'global',
+          frozenScopeReason: 'session "s2" has no active agent, so this verdict describes the unscoped assembly',
+        }),
+      },
+    }),
+  });
+  await page.flush();
+  const advanced = await openAdvanced(page);
+  // Both new sentences are their own paragraph — not one blob, and not a <br>.
+  const probe = oneBy(advanced, 'data-warning', 'frozen-unknown-probe');
+  const notFrozen = oneBy(advanced, 'data-warning', 'frozen-unknown-not-frozen');
+  assert.equal(probe.type, 'p', 'the probe line is its own paragraph');
+  assert.equal(notFrozen.type, 'p', 'the reassurance line is its own paragraph');
+  assert.ok(hasText(probe, page.zh.stFrozenUnknownProbe), 'the probe line states the copy');
+  assert.ok(hasText(notFrozen, page.zh.stFrozenUnknownNotFrozen), 'the reassurance line states the copy');
+  // The host's own English sentence stays where it was, above both.
+  const warning = oneBy(advanced, 'data-warning', 'frozen-unknown');
+  assert.ok(hasText(warning, page.zh.stFrozenUnknown), 'the unknown state is still stated first');
+  assert.ok(hasText(warning, 'has no active agent'), 'and the host reason is still shown verbatim');
+  const text = strings(advanced).join('\n');
+  assert.ok(text.includes(page.zh.stFrozenUnknownProbe), 'the probe line reaches the page');
+  assert.ok(text.includes(page.zh.stFrozenUnknownNotFrozen), 'the reassurance line reaches the page');
+  assert.ok(!text.includes('未在运行'), 'the copy never blames a running state');
+  assert.ok(!text.includes('未打开') && !text.includes('已结束'), 'nor "not open" / "ended"');
+});
+
+test('client: a certain frozen verdict never shows the unknown explanation lines', async () => {
+  const frozenPage = makePage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({
+      [PATHS.snapshot]: {
+        payload: snapshotFixture({
+          frozenScope: 'session',
+          frozen: true,
+          frozenReason: 'the scope collapsed to its complete section',
+        }),
+      },
+    }),
+  });
+  await frozenPage.flush();
+  const frozenAdvanced = await openAdvanced(frozenPage);
+  assert.equal(markerOf(frozenAdvanced, 'data-frozen-state'), 'frozen');
+  assert.equal(
+    collect(
+      frozenAdvanced,
+      (node) => node.props && UNKNOWN_ONLY_WARNINGS.includes(node.props['data-warning']),
+    ).length,
+    0,
+    'a frozen verdict shows none of the unknown lines',
+  );
+  assert.ok(!hasText(frozenAdvanced, frozenPage.zh.stFrozenUnknownProbe));
+  assert.ok(!hasText(frozenAdvanced, frozenPage.zh.stFrozenUnknownNotFrozen));
+
+  const unfrozenPage = makePage({ responses: defaultResponses() });
+  const unfrozenTree = await unfrozenPage.flush();
+  assert.equal(markerOf(unfrozenTree, 'data-frozen-state'), 'unfrozen');
+  assert.equal(
+    collect(unfrozenTree, (node) => node.props && UNKNOWN_ONLY_WARNINGS.includes(node.props['data-warning'])).length,
+    0,
+    'an unfrozen verdict shows none of the unknown lines either',
+  );
+  assert.ok(!hasText(unfrozenTree, unfrozenPage.zh.stFrozenUnknownProbe));
+  assert.ok(!hasText(unfrozenTree, unfrozenPage.zh.stFrozenUnknownNotFrozen));
+});
+
+// g-052 rework: the explanation lines were first put only in `renderStatusDetail`
+// (「高级」), which the reader has to switch tabs to see. The first-screen status
+// line is where the verdict is actually met, so it carries them too.
+test('client: the unknown frozen verdict explains itself on the first-screen status line', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({
+      [PATHS.snapshot]: {
+        payload: snapshotFixture({
+          frozenScope: 'global',
+          frozenScopeReason: 'session "s2" has no active agent, so this verdict describes the unscoped assembly',
+        }),
+      },
+    }),
+  });
+  const tree = await page.flush();
+  const status = oneBy(tree, 'data-region', 'status');
+  const probe = oneBy(status, 'data-warning', 'frozen-line-probe');
+  const notFrozen = oneBy(status, 'data-warning', 'frozen-line-not-frozen');
+  assert.equal(probe.type, 'p', 'the probe line is its own paragraph on the summary');
+  assert.equal(notFrozen.type, 'p', 'the reassurance line is its own paragraph on the summary');
+  assert.ok(hasText(probe, page.zh.stFrozenUnknownProbe), 'the probe line states the copy');
+  assert.ok(hasText(notFrozen, page.zh.stFrozenUnknownNotFrozen), 'the reassurance line states the copy');
+  // The container is a wrapping flex row: without a full basis the two lines
+  // would squeeze in beside the tags instead of taking a row each.
+  assert.equal(probe.props.style.flexBasis, '100%', 'the probe line takes its own row');
+  assert.equal(notFrozen.props.style.flexBasis, '100%', 'the reassurance line takes its own row');
+  assert.ok(hasText(status, page.zh.stFrozenUnknown), 'the tag itself is still on the summary');
+  // The detail block keeps its own copy of the same two sentences.
+  const advanced = await openAdvanced(page);
+  assert.ok(hasText(oneBy(advanced, 'data-warning', 'frozen-unknown-probe'), page.zh.stFrozenUnknownProbe));
+  assert.ok(hasText(oneBy(advanced, 'data-warning', 'frozen-unknown-not-frozen'), page.zh.stFrozenUnknownNotFrozen));
+});
+
+test('client: a certain verdict carries no explanation lines on the first-screen status line', async () => {
+  const frozenPage = makePage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({
+      [PATHS.snapshot]: {
+        payload: snapshotFixture({
+          frozenScope: 'session',
+          frozen: true,
+          frozenReason: 'the scope collapsed to its complete section',
+        }),
+      },
+    }),
+  });
+  const frozenTree = await frozenPage.flush();
+  assert.equal(markerOf(frozenTree, 'data-status-frozen'), 'frozen');
+  const frozenStatus = oneBy(frozenTree, 'data-region', 'status');
+  assert.equal(
+    collect(frozenStatus, (node) => node.props && STATUS_LINE_EXPLANATION.includes(node.props['data-warning'])).length,
+    0,
+    'a frozen verdict shows no explanation lines on the summary',
+  );
+  assert.ok(!hasText(frozenStatus, frozenPage.zh.stFrozenUnknownProbe));
+  assert.ok(!hasText(frozenStatus, frozenPage.zh.stFrozenUnknownNotFrozen));
+
+  const unfrozenPage = makePage({ responses: defaultResponses() });
+  const unfrozenTree = await unfrozenPage.flush();
+  assert.equal(markerOf(unfrozenTree, 'data-status-frozen'), 'unfrozen');
+  const unfrozenStatus = oneBy(unfrozenTree, 'data-region', 'status');
+  assert.equal(
+    collect(
+      unfrozenStatus,
+      (node) => node.props && STATUS_LINE_EXPLANATION.includes(node.props['data-warning']),
+    ).length,
+    0,
+    'an unfrozen verdict shows no explanation lines on the summary either',
+  );
+  assert.ok(!hasText(unfrozenStatus, unfrozenPage.zh.stFrozenUnknownProbe));
+  assert.ok(!hasText(unfrozenStatus, unfrozenPage.zh.stFrozenUnknownNotFrozen));
+});
+
 test('client: frozenScope "global" without a session describes the global assembly', async () => {
   const page = makePage({ responses: defaultResponses() });
   const tree = await page.flush();
@@ -4049,9 +4623,9 @@ test('client: a save that the host refuses is reported, never shown as saved', a
 test('client: 「恢复默认」 confirms first, then deletes by the reserved name', async () => {
   const page = makePage({
     responses: defaultResponses({
-      [PATHS.overrides]: { payload: overridesFixture({
-        merged: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text', layer: 'user' }] },
-      }) },
+      [PATHS.overrides]: {
+        payload: layeredOverrides([{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text' }]),
+      },
     }),
   });
   let tree = await page.flush();
@@ -4168,11 +4742,14 @@ test('client: a saved 「我的 Prompt」 is re-read from the changed override l
   typeInto(tree, 'mine-text', 'identity rewritten');
   tree = await page.flush();
   // The host answers the next read with the stored entry: the panel must show
-  // what is configured, not what this render happened to hold.
+  // what is configured, not what this render happened to hold. The workspace
+  // layer holds a same-named entry too (g-054), which must not hide the user
+  // layer's text.
   page.router.set(PATHS.overrides, {
-    payload: overridesFixture({
-      merged: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'identity rewritten', layer: 'user' }] },
-    }),
+    payload: layeredOverrides(
+      [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'identity rewritten' }],
+      [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'WS MINE' }],
+    ),
   });
   clickButton(tree, { 'data-action': 'mine-save' });
   tree = await page.flush();
@@ -4360,6 +4937,40 @@ test('client: the global-freeze-with-a-session case stays "unknown" in the panel
   assert.ok(
     !strings(tree).some((text) => text.includes(fillText(page.zh.mineSaved, { layer: page.zh.ovUser }))),
     'the unconditional saved copy is still withheld',
+  );
+
+  // g-052 review fix: the frozen copy may not fall back to the bare 「本会话」.
+  // The old wording mixed 「选中的会话」 and 「本会话」 inside a single sentence,
+  // so the panel had two names for one session.
+  const panel = oneBy(tree, 'data-region', 'mine');
+  const panelText = strings(panel).join('\n');
+  assert.ok(!panelText.includes('本会话'), 'no frozen copy in the panel falls back to 「本会话」');
+  assert.ok(panelText.includes('所选会话'), 'the panel names the session it means');
+});
+
+test('client: the unknown panel says "the selected session" in English too (g-052 review fix)', async () => {
+  const page = enPage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({
+      [PATHS.snapshot]: {
+        payload: snapshotFixture({
+          frozenScope: 'global',
+          frozen: true,
+          frozenScopeReason: 'session "s2" has no active agent, so this verdict describes the unscoped assembly',
+        }),
+      },
+    }),
+  });
+  const tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-frozen-state'), 'unknown');
+  assert.equal(markerOf(tree, 'data-mine-effect'), 'unknown');
+  const panel = oneBy(tree, 'data-region', 'mine');
+  const panelText = strings(panel).join('\n');
+  assert.ok(!panelText.includes('this session'), 'the panel never points at a session by that name');
+  assert.ok(panelText.includes('the selected session'), 'and it does name the session it means');
+  assert.ok(
+    hasText(panel, fillText(page.text.mineFrozenUnknownBody, { layer: page.text.ovUser })),
+    'the unknown body is the rewritten copy',
   );
 });
 
@@ -7519,9 +8130,7 @@ const EN_SWEEP_CASES = [
             init && init.method === 'PUT'
               ? { status: 403, payload: { ok: false, code: 'write-locked', message: 'only the reserved section may be written' } }
               : {
-                  payload: overridesFixture({
-                    merged: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text', layer: 'user' }] },
-                  }),
+                  payload: layeredOverrides([{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text' }]),
                 },
         }),
       });
@@ -7664,9 +8273,7 @@ const EN_SWEEP_CASES = [
       const page = enPage({
         responses: defaultResponses({
           [PATHS.overrides]: {
-            payload: overridesFixture({
-              merged: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text', layer: 'user' }] },
-            }),
+            payload: layeredOverrides([{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text' }]),
           },
         }),
       });
@@ -8020,7 +8627,15 @@ const EN_SWEEP_CASES = [
       ['data-action', 'scope-toggle'],
       ['data-renderer', 'fallback'],
     ],
-    copy: ['sessionHeading', 'scopeEdit', 'scopeSummaryFlat', ['sessionCurrentLabel', { label: 'Alpha three' }]],
+    copy: [
+      'sessionHeading',
+      'scopeEdit',
+      'scopeSummaryFlat',
+      ['sessionCurrentLabel', { label: 'Alpha three' }],
+      // g-055: the block's one sentence and the panel's own write-target line.
+      'promptBlockNote',
+      ['mineTargetNote', { layer: 'user layer', scope: 'Alpha three' }],
+    ],
     async run() {
       const page = enPage({ useSessions: sessionsHook(WORKSPACE_SESSIONS), responses: defaultResponses() });
       const rec = recorder(page);
@@ -8186,6 +8801,12 @@ const EN_REQUIRED_MARKERS = [
   'data-active-tab=advanced',
   'data-region=mine',
   'data-region=mine-layer',
+  // g-055: the write-target line inside the panel, and the block whose header is
+  // the scope card above the tabs (the block carries the sentence, not a second
+  // title — review round 1).
+  'data-region=mine-target',
+  'data-region=prompt-block',
+  'data-role=prompt-block-note',
   'data-region=overview',
   'data-region=advanced',
   'data-region=advanced-layer',
@@ -8744,9 +9365,7 @@ test('g-027 client: 「取消」 drops the unsaved draft, restores the stored te
   const page = makePage({
     responses: defaultResponses({
       [PATHS.overrides]: {
-        payload: overridesFixture({
-          merged: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text', layer: 'user' }] },
-        }),
+        payload: layeredOverrides([{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text' }]),
       },
     }),
   });
@@ -8798,14 +9417,10 @@ test('g-027 client: 「取消」 only drops the draft of the layer it belongs to
   const page = makePage({
     responses: defaultResponses({
       [PATHS.overrides]: {
-        payload: overridesFixture({
-          merged: {
-            overrides: [
-              { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'user stored', layer: 'user' },
-              { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'workspace stored', layer: 'workspace' },
-            ],
-          },
-        }),
+        payload: layeredOverrides(
+          [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'user stored' }],
+          [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'workspace stored' }],
+        ),
       },
     }),
   });
@@ -8843,6 +9458,430 @@ test('g-027 client: 「取消」 only drops the draft of the layer it belongs to
   assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'user stored');
   assert.equal(markerOf(tree, 'data-mine-state'), 'idle');
   assert.equal(writeCalls(page).length, 0, 'none of this wrote anything');
+});
+
+// ---------------------------------------------------------------------------
+// g-054: each layer's 「我的 Prompt」 reads **that layer's own** stored value.
+//
+// The read used to come from `merged.overrides`, which deduplicates by section
+// name across layers (a workspace entry replaces the user one). So as soon as
+// the workspace layer held a same-named reserved entry, the user layer's box was
+// empty and `unconfigured` even though the user file held the text — a save that
+// looked lost. These cases build both layer views and let the host's own
+// `mergeLayers` produce `merged`, so the double-entry state is the real one.
+// ---------------------------------------------------------------------------
+
+test('g-054 client: each layer shows its own reserved text, never the merged one', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.overrides]: {
+        payload: layeredOverrides(
+          [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'USER MINE' }],
+          [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'WS MINE' }],
+        ),
+      },
+    }),
+  });
+  let tree = await page.flush();
+
+  // The page opens on the user layer: the box shows what the USER layer stored,
+  // and the stored entry is not mistaken for 「未配置」.
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'USER MINE');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'idle', 'the user layer really stored this text');
+  assert.ok(strings(tree).includes(fillText(page.zh.mineLoaded, { layer: page.zh.ovUser })));
+
+  // The workspace layer shows what the WORKSPACE layer stored — the user layer's
+  // same-named entry neither supplies nor hides it.
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'WS MINE');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'idle');
+
+  // …and back again: neither view leaks into the other.
+  clickTab(tree, 'mine-layer', 'user');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'USER MINE');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'idle');
+  assert.equal(writeCalls(page).length, 0, 'reading a layer is not a write');
+});
+
+test("g-054 client: one layer's entry is never answered with the other layer's text", async () => {
+  // The user layer configured empty text while the workspace layer holds real
+  // text — the pair `merged` collapses to the workspace entry. Each box must
+  // still describe its own file: the workspace text may not leak into the user
+  // layer. (`null` and `''` both read as 「未配置」 here, as before g-054; what
+  // this case pins is that the answer comes from the layer being edited.)
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.overrides]: {
+        payload: layeredOverrides(
+          [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: '' }],
+          [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'WS MINE' }],
+        ),
+      },
+    }),
+  });
+  let tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, '');
+  assert.equal(
+    markerOf(tree, 'data-mine-state'),
+    'unconfigured',
+    "the user layer's own empty entry, not the workspace layer's text",
+  );
+
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'WS MINE');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'idle');
+});
+
+// ---------------------------------------------------------------------------
+// g-056: the「我的 Prompt」draft belongs to the **write target**, not to the view.
+//
+// The old key was `layer|session`, so any「查看范围」change — the session data
+// arriving, a row being picked, 「全局」 being chosen — made the draft key miss,
+// the box silently fell back to the target's stored text (usually `""`), and a
+// save then wrote that empty string while reporting success. The write face says
+// which file a save lands in (`index.js` `targetFor`): one `userConfigPath()` for
+// the user layer whatever the session, and one `workspaceConfigPath(root)` per
+// *workspace* for the workspace layer. The cases below pin the key to that fact,
+// and add the fail-safe: a draft that belongs somewhere else is stated on screen
+// and refuses the save instead of being overwritten.
+// ---------------------------------------------------------------------------
+
+/** Move the page's「查看范围」to one session id (`null` = 「全局」). */
+async function switchScopeTo(page, sessionId) {
+  let tree = await page.flush();
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  if (sessionId === null) {
+    clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
+    return page.flush();
+  }
+  const find = (current) => sessionOptions(current).find((row) => row.props['data-session-id'] === sessionId);
+  let row = find(tree);
+  if (row === undefined) {
+    // A collapsed workspace group does not render its sessions; open them.
+    const collapsed = collect(
+      tree,
+      (node) => node.props && node.props['data-role'] === 'group-toggle' && node.props['data-expanded'] !== 'true',
+    );
+    for (const header of collapsed) {
+      header.props.onClick();
+      tree = await page.flush();
+    }
+    row = find(tree);
+  }
+  assert.notEqual(row, undefined, `the picker offers session ${sessionId}`);
+  row.props.onClick();
+  return page.flush();
+}
+
+/** The single PUT body of a page that wrote exactly once. */
+function onlyPutBody(page) {
+  const puts = writeCalls(page).filter((call) => call.init.method === 'PUT');
+  assert.equal(puts.length, 1, 'exactly one write');
+  return JSON.parse(puts[0].init.body);
+}
+
+/** The page both seats are needed for: two workspaces, current session `a3`. */
+function scopePage() {
+  return makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+}
+
+test('g-056 client: a workspace draft survives a「查看范围」change inside one workspace', async () => {
+  const page = scopePage();
+  let tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-session'), 'a3');
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  typeInto(tree, 'mine-text', 'text for the whole workspace');
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-mine-state'), 'dirty');
+  assert.equal(
+    oneBy(tree, 'data-role', 'mine-text').props['data-mine-text-source'],
+    'draft',
+    'the box says it is holding unsaved text',
+  );
+  assert.ok(
+    String(markerOf(tree, 'data-mine-draft-scope')).includes('Alpha three'),
+    'and which scope the draft belongs to',
+  );
+
+  // `a1` and `a3` are two sessions of **one** workspace, so one file: the draft
+  // is still this target's draft. The old key (`layer|session`) emptied the box
+  // right here.
+  tree = await switchScopeTo(page, 'a1');
+  assert.equal(markerOf(tree, 'data-session'), 'a1');
+  assert.equal(
+    oneBy(tree, 'data-role', 'mine-text').props.value,
+    'text for the whole workspace',
+    'the typed text is still in the box',
+  );
+  assert.equal(markerOf(tree, 'data-mine-state'), 'dirty');
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props['data-mine-text-source'], 'draft');
+  // The scope it names is the one the text was typed in, not the one just picked.
+  assert.ok(
+    String(markerOf(tree, 'data-mine-draft-scope')).includes('Alpha three'),
+    'the draft keeps naming the scope it was typed in',
+  );
+
+  // Saving now writes the user's text — not the stored value the box would have
+  // shown under the old key.
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+  const body = onlyPutBody(page);
+  assert.equal(body.layer, 'workspace');
+  assert.equal(body.session, 'a1', 'the write targets the newly selected session');
+  assert.equal(body.section.text, 'text for the whole workspace', 'the text is the one the user typed');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'saved');
+});
+
+test('g-056 client: a user-layer draft survives any「查看范围」change, including 「全局」', async () => {
+  const page = scopePage();
+  let tree = await page.flush();
+  typeInto(tree, 'mine-text', 'my own house rules');
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-mine-state'), 'dirty');
+
+  // `targetFor('user', …)` ignores the session entirely: one `userConfigPath()`
+  // for the whole profile, so the draft cannot belong to a session.
+  tree = await switchScopeTo(page, null);
+  assert.equal(markerOf(tree, 'data-session'), 'global');
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'my own house rules');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'dirty');
+
+  tree = await switchScopeTo(page, 'a2');
+  assert.equal(markerOf(tree, 'data-session'), 'a2');
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'my own house rules');
+
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+  const body = onlyPutBody(page);
+  assert.equal(body.layer, 'user');
+  // The session rides along on the request but never chooses the file
+  // (`targetFor('user', …)` ignores it), which is exactly why the draft key has
+  // no session in it.
+  assert.equal(body.section.text, 'my own house rules');
+});
+
+test('g-056 client: a draft that belongs to another scope is stated and blocks the save', async () => {
+  const page = scopePage();
+  let tree = await page.flush();
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  typeInto(tree, 'mine-text', 'do not lose me');
+  tree = await page.flush();
+
+  // `b1` belongs to the **other** workspace, so this is a real move out of the
+  // target (another file entirely) — the text must not vanish silently.
+  tree = await switchScopeTo(page, 'b1');
+  assert.equal(markerOf(tree, 'data-session'), 'b1');
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, '', 'the box shows this target, which holds nothing');
+  assert.equal(
+    oneBy(tree, 'data-role', 'mine-text').props['data-mine-text-source'],
+    'stored',
+    'and says the box is not showing a draft',
+  );
+  const warning = oneBy(tree, 'data-warning', 'mine-draft-elsewhere');
+  assert.equal(warning.props['data-mine-draft-chars'], String('do not lose me'.length), 'the count is the text really held');
+  assert.ok(String(warning.props['data-mine-draft-scope']).includes('Alpha three'), 'and it names the scope holding it');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-mine-draft-scope'] !== undefined).length,
+    1,
+    'exactly one scope statement on screen',
+  );
+
+  // The fail-safe: no request at all, so no "saved" banner over an empty write.
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+  assert.equal(writeCalls(page).length, 0, 'a save that would overwrite the other scope is not sent');
+  assert.equal(oneBy(tree, 'data-notice', 'error').props['data-notice'], 'error');
+  assert.ok(
+    hasText(
+      tree,
+      fillText(page.zh.mineSaveBlockedDraftElsewhere, {
+        scope: `${page.zh.ovWorkspace} · Alpha three`,
+        chars: 'do not lose me'.length,
+      }),
+    ),
+    'the notice names the scope that really holds the text, and how much',
+  );
+
+  // Going back restores the text: it was never dropped, only out of view.
+  tree = await switchScopeTo(page, 'a3');
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'do not lose me');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-warning'] === 'mine-draft-elsewhere').length,
+    0,
+    'the warning goes with the scope it described',
+  );
+
+  // Or the reader drops it explicitly, which is the offered way out.
+  tree = await switchScopeTo(page, 'b1');
+  clickButton(tree, { 'data-action': 'mine-drop-foreign-draft' });
+  tree = await page.flush();
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-warning'] === 'mine-draft-elsewhere').length,
+    0,
+    'the draft is gone once it is explicitly discarded',
+  );
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+  onlyPutBody(page);
+});
+
+test('g-056 client: switching layers states the other scope, and never borrows its text', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  typeInto(tree, 'mine-text', 'user words');
+  tree = await page.flush();
+
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, '', 'the workspace layer shows its own value');
+  const warning = oneBy(tree, 'data-warning', 'mine-draft-elsewhere');
+  assert.ok(String(warning.props['data-mine-draft-scope']).includes(page.zh.ovUser), 'and names the user layer');
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+  assert.equal(writeCalls(page).length, 0, 'the workspace layer does not save the user layer over its own text');
+
+  clickTab(tree, 'mine-layer', 'user');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'user words', 'the user layer still has it');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'dirty');
+});
+
+/** `overridesFixture` with one reserved text stored in the user layer (both views). */
+function reservedUserFixture(text) {
+  return overridesFixture({
+    user: {
+      layer: 'user',
+      enabled: true,
+      path: '/home/u/.dsh/prompt-setting/overrides.json',
+      reason: null,
+      overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text }],
+    },
+    merged: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text, layer: 'user' }] },
+  });
+}
+
+test('g-056 client: a draft kept after a successful save is not "unsaved work" elsewhere (R1)', async () => {
+  // The Host really stores what was written, so a re-read must report it: that
+  // is what makes「is this draft still unsaved work?」answerable at all.
+  let stored = null;
+  const page = makePage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({
+      [PATHS.overrides]: (url, init) => {
+        if (init && init.method === 'PUT') {
+          stored = JSON.parse(init.body).section.text;
+          return { payload: { ok: true } };
+        }
+        return { payload: stored === null ? overridesFixture() : reservedUserFixture(stored) };
+      },
+    }),
+  });
+  let tree = await page.flush();
+  typeInto(tree, 'mine-text', 'saved house rules');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-mine-state'), 'saved');
+  assert.equal(
+    oneBy(tree, 'data-role', 'mine-text').props['data-mine-text-source'],
+    'draft',
+    'the draft is deliberately kept after a save (§13.1 / g-050)',
+  );
+
+  // …but it is a draft that was **saved**, so moving to another write target
+  // must not report it as unsaved work nor block the save there. Before R1 the
+  // warning appeared with `chars=11` while nothing had been typed since the save.
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-warning'] === 'mine-draft-elsewhere').length,
+    0,
+    'no「unsaved elsewhere」warning for text that is already stored',
+  );
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props['data-mine-text-source'], 'stored');
+
+  const before = writeCalls(page).length;
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+  assert.equal(writeCalls(page).length, before + 1, 'the save really goes out');
+  const put = writeCalls(page).filter((call) => call.init.method === 'PUT');
+  assert.equal(JSON.parse(put[put.length - 1].init.body).section.text, '', 'and writes this target, which holds nothing');
+});
+
+test('g-056 client: typing in a second write target keeps the first target draft (R2)', async () => {
+  const page = scopePage();
+  let tree = await page.flush();
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  typeInto(tree, 'mine-text', 'alpha draft');
+  tree = await page.flush();
+
+  tree = await switchScopeTo(page, 'b1');
+  typeInto(tree, 'mine-text', 'beta draft');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'beta draft');
+
+  // R2: the first target's text was not replaced by the second one's edit.
+  tree = await switchScopeTo(page, 'a3');
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'alpha draft', 'the alpha draft survived');
+
+  tree = await switchScopeTo(page, 'b1');
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'beta draft', 'and so did the beta one');
+});
+
+test('g-056 client: 「恢复默认」 clears only the write target it deleted (R3)', async () => {
+  let storedUser = 'user stored';
+  const page = makePage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({
+      [PATHS.overrides]: (url, init) => {
+        if (init && init.method === 'DELETE') {
+          storedUser = null;
+          return { payload: { ok: true, removed: true, count: 1 } };
+        }
+        return { payload: storedUser === null ? overridesFixture() : reservedUserFixture(storedUser) };
+      },
+    }),
+  });
+  let tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'user stored');
+
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  typeInto(tree, 'mine-text', 'workspace draft');
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-mine-state'), 'dirty');
+
+  // Delete what the **user** layer stores, from the user layer, while another
+  // target holds unsaved text.
+  clickTab(tree, 'mine-layer', 'user');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'mine-reset' });
+  tree = await page.flush();
+  clickButton(oneBy(tree, 'data-region', 'confirm-overlay'), { 'data-action': 'confirm-yes' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, '', 'the user layer value is gone');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-warning'] === 'mine-draft-elsewhere').length,
+    1,
+    'the other target is still stated as holding unsaved text',
+  );
+
+  // R3: that delete did not silently clear the other target's draft.
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'workspace draft');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'dirty');
 });
 
 // #region g-030: the upstream update check
@@ -10153,4 +11192,196 @@ test('client: every update-related key that still names GitHub is accurate, key 
     assert.equal(/GitHub|Release|发布页/.test(zh[key]), false, `zh.${key} names no source`);
     assert.equal(/GitHub|Release/.test(en[key]), false, `en.${key} names no source`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// g-058: the「覆盖 / 叠加」mode of that one entry.
+//
+// The contract the panel has to keep: the control edits **this write target's**
+// own stored mode, saving sends it with the text in the same one-layer body, and
+// no path here may reach the other layer's file. The route half of「the other
+// layer is byte-identical」lives in `test/route.test.mjs`; what these cases pin
+// is that the client can only ever ask for one layer.
+// ---------------------------------------------------------------------------
+
+/**
+ * g-058: the mode enum the **bundle** declares, read out of its text.
+ *
+ * Same anti-drift device as `CUSTOM_SECTION_NAME`: a browser module cannot
+ * import host code, so the client keeps its own copy of the reserved name's
+ * writable actions, and only a test that reads both copies can stop them from
+ * drifting apart silently.
+ * @returns the literals of `RESERVED_SECTION_MODES`, in source order.
+ */
+function clientModeConstants() {
+  const match = /const RESERVED_SECTION_MODES = \[([^\]]*)\];/.exec(clientSource);
+  assert.ok(match, 'the bundle declares RESERVED_SECTION_MODES');
+  return [...match[1].matchAll(/'([^']*)'/g)].map((entry) => entry[1]);
+}
+
+test('g-058 client: the mode enum is the host\'s, element for element', async () => {
+  // The contract order is part of the enum (§4.1: `replace`, then `append`).
+  assert.deepEqual([...RESERVED_WRITABLE_ACTIONS], ['replace', 'append'], 'the host enum, in contract order');
+  // …and the client's copy is that same list, not a lookalike.
+  assert.deepEqual(
+    clientModeConstants(),
+    [...RESERVED_WRITABLE_ACTIONS],
+    'the client copy of the reserved name\'s writable actions must match the host\'s, element for element',
+  );
+
+  // The page renders that copy: the control offers exactly the host set, in
+  // order, so a value the server would refuse can never be offered.
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  const choices = collect(tree, (node) => node.props && node.props['data-mine-mode-choice'] !== undefined)
+    .map((node) => node.props['data-mine-mode-choice']);
+  assert.deepEqual(choices, [...RESERVED_WRITABLE_ACTIONS], 'the control offers exactly the host set, in order');
+
+  // And what a save actually sends is one of them — asserted here as a value,
+  // not only as an enum: the literal the body carries is the host's literal.
+  typeInto(tree, 'mine-text', 'x');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'mine-mode', 'data-mine-mode-choice': 'append' });
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+  const put = writeCalls(page).filter((call) => call.init && call.init.method === 'PUT');
+  assert.equal(put.length, 1);
+  const sent = JSON.parse(put[0].init.body).section.action;
+  assert.ok(RESERVED_WRITABLE_ACTIONS.includes(sent), `the save sends one of the host's actions (got ${sent})`);
+  assert.equal(sent, 'append');
+});
+
+test('g-058 client: the mode control reads this layer\'s own stored mode', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.overrides]: {
+        payload: layeredOverrides([{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'USER' }]),
+      },
+    }),
+  });
+  const tree = await page.flush();
+
+  const region = oneBy(tree, 'data-region', 'mine-mode');
+  assert.equal(region.props['data-mine-mode'], 'replace', 'the box shows the stored mode by default');
+  assert.equal(region.props['data-mine-mode-stored'], 'replace', 'and says which mode the file stores');
+  assert.equal(oneBy(tree, 'data-mine-mode-choice', 'replace').props['data-mine-mode-active'], 'true');
+  assert.equal(oneBy(tree, 'data-mine-mode-choice', 'append').props['data-mine-mode-active'], 'false');
+  assert.equal(oneBy(tree, 'data-mine-mode-choice', 'replace').props['aria-pressed'], 'true');
+  assert.ok(strings(tree).includes(page.zh.mineModeReplace), 'the control is labelled in words');
+  assert.ok(strings(tree).includes(page.zh.mineModeAppend));
+  assert.ok(
+    hasText(region, fillText(page.zh.mineModeStored, { mode: page.zh.mineModeReplace })),
+    'the stored side is stated, not implied',
+  );
+  // The user layer is the lowest one, and the panel says what「叠加」means there.
+  assert.equal(oneBy(region, 'data-warning', 'mine-mode-bottom').props['data-warning'], 'mine-mode-bottom');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'idle', 'a stored mode is not a dirty mode');
+  // The read-only target line carries the same two facts.
+  const target = oneBy(tree, 'data-region', 'mine-target');
+  assert.equal(target.props['data-mine-target-mode'], 'replace');
+  assert.equal(target.props['data-mine-target-mode-stored'], 'replace');
+});
+
+test('g-058 client: a layer with no entry states no mode, and still reads as「覆盖」', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  const tree = await page.flush();
+  const region = oneBy(tree, 'data-region', 'mine-mode');
+  assert.equal(region.props['data-mine-mode-stored'], 'none', '「未设置」is a different fact from「显式覆盖」');
+  assert.equal(region.props['data-mine-mode'], 'replace', 'and it behaves as the mode it already had');
+  assert.ok(hasText(region, page.zh.mineModeStoredNone));
+  assert.equal(markerOf(tree, 'data-mine-state'), 'unconfigured');
+});
+
+test('g-058 client: choosing「叠加」is unsaved work, and saving sends it in the one-layer body', async () => {
+  // The stub answers like the host: the write stores the mode, the next read
+  // reports it. A static fixture would show a save that did not take.
+  let stored = { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'USER' };
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.overrides]: (url, init) => {
+        if (init && init.method === 'PUT') {
+          const body = JSON.parse(init.body);
+          stored = { name: body.section.name, action: body.section.action, text: body.section.text };
+          return { payload: { ok: true, saved: { ...stored, layer: body.layer }, effectiveFrom: 'next-turn' } };
+        }
+        return { payload: layeredOverrides([stored]) };
+      },
+    }),
+  });
+  let tree = await page.flush();
+  assert.equal(writeCalls(page).length, 0);
+
+  clickButton(tree, { 'data-action': 'mine-mode', 'data-mine-mode-choice': 'append' });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-mine-state'), 'dirty', 'an unsaved mode is unsaved work');
+  assert.equal(oneBy(tree, 'data-region', 'mine-mode').props['data-mine-mode'], 'append');
+  assert.equal(oneBy(tree, 'data-mine-mode-choice', 'append').props['data-mine-mode-active'], 'true');
+  assert.equal(oneBy(tree, 'data-warning', 'mine-mode-dirty').props['data-warning'], 'mine-mode-dirty');
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'USER', 'the text is untouched by a mode change');
+  assert.equal(writeCalls(page).length, 0, 'choosing a mode writes nothing by itself');
+
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+  const put = writeCalls(page).filter((call) => call.init && call.init.method === 'PUT');
+  assert.equal(put.length, 1, 'exactly one write');
+  const body = JSON.parse(put[0].init.body);
+  assert.deepEqual(
+    Object.keys(body).sort(),
+    ['layer', 'section'],
+    'one layer and one section: the other layer is not part of the request at all',
+  );
+  assert.equal(body.layer, 'user');
+  assert.deepEqual(body.section, { name: CUSTOM_SECTION_NAME, action: 'append', text: 'USER' });
+  assert.equal(body.session, undefined, 'the global view still sends no session');
+
+  assert.equal(markerOf(tree, 'data-mine-state'), 'saved');
+  assert.equal(oneBy(tree, 'data-region', 'mine-mode').props['data-mine-mode-stored'], 'append', 'the stored mode followed the save');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-warning'] === 'mine-mode-dirty').length,
+    0,
+    'the unsaved-mode hint is gone',
+  );
+});
+
+test('g-058 client: 「取消」 restores the stored mode, and a mode draft belongs to one target', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.overrides]: {
+        payload: layeredOverrides(
+          [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'user stored' }],
+          [{ name: CUSTOM_SECTION_NAME, action: 'append', text: 'ws stored' }],
+        ),
+      },
+    }),
+  });
+  let tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'mine-mode').props['data-mine-mode-stored'], 'replace');
+
+  clickButton(tree, { 'data-action': 'mine-mode', 'data-mine-mode-choice': 'append' });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-mine-state'), 'dirty');
+
+  // The workspace layer stores `append` itself, so it opens clean — the user
+  // layer's unsaved mode is not silently applied to it (g-056's rule, for the
+  // mode).
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'mine-mode').props['data-mine-mode-stored'], 'append');
+  assert.equal(oneBy(tree, 'data-region', 'mine-mode').props['data-mine-mode'], 'append');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'idle', "the user layer's mode draft is not this layer's");
+  // The workspace layer is not the lowest one, so the「等同覆盖」note is absent.
+  assert.equal(collect(tree, (node) => node.props && node.props['data-warning'] === 'mine-mode-bottom').length, 0);
+
+  clickTab(tree, 'mine-layer', 'user');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'mine-mode').props['data-mine-mode'], 'append', 'the draft survived the round trip');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'dirty');
+
+  clickButton(tree, { 'data-action': 'mine-cancel' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'mine-mode').props['data-mine-mode'], 'replace', 'the stored mode is back');
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'user stored');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'idle');
+  assert.equal(writeCalls(page).length, 0, 'none of this wrote anything');
 });

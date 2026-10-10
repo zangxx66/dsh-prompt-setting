@@ -182,7 +182,7 @@ import {
 /** Package name; echoed by the probe so the browser can assert identity. */
 const PLUGIN_NAME = 'dsh-prompt-setting';
 /** Package version; `test/host.test.mjs` asserts it matches package.json. */
-const PLUGIN_VERSION = '0.2.0';
+const PLUGIN_VERSION = '0.2.1';
 /** The one prefix this plugin owns. Every route lives under it. */
 const ROUTE_PREFIX = '/prompt-setting';
 /** Stage 1A's route: a read-only liveness probe (behaviour frozen). */
@@ -3153,10 +3153,19 @@ function mount(ctx, config, cleanups) {
    *
    * Since Revision 7 the write face is one section wide: the body's name must
    * be the reserved {@link CUSTOM_SECTION_NAME} ({@link assertWritableSection})
-   * and its action must be `replace`. The policy is evaluated before the layer
-   * is resolved, before the current config is read and therefore before any
-   * byte is written, so a rejected write leaves the layer's file byte-identical
-   * (`test/route.test.mjs` hashes it around every rejection).
+   * and its action must be one of the reserved name's writable actions —
+   * `replace` (覆盖) or, since Revision 36, `append` (叠加). The policy is
+   * evaluated before the layer is resolved, before the current config is read
+   * and therefore before any byte is written, so a rejected write leaves the
+   * layer's file byte-identical (`test/route.test.mjs` hashes it around every
+   * rejection).
+   *
+   * Revision 36 also decides where「叠加」is turned into text: **not here**. This
+   * handler stores the word the panel sent, in that layer's own file and in no
+   * other; `mergeLayers` (`core/overrides.js`) is the one place that reads it
+   * and joins the two layers' texts into the single section the assembly
+   * applies. Keeping the two apart is what makes the mode persistable without
+   * either file ever learning about the other one.
    * @param req - the Node request.
    * @param url - the parsed request URL.
    * @param res - the Node response.

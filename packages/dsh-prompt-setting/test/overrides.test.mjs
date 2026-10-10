@@ -17,6 +17,7 @@ import {
   MAX_TEXT_BYTES,
   OverrideError,
   PROBE_SECTION_NAME,
+  RESERVED_STACK_SEPARATOR,
   applyOverrides,
   buildBase,
   buildEffective,
@@ -30,6 +31,7 @@ import {
   validateConfig,
   validateOverride,
 } from '../core/overrides.js';
+import { CUSTOM_SECTION_NAME as RESERVED } from '../core/custom.js';
 
 /** A section-list builder that keeps the tests readable. */
 function sections(...rows) {
@@ -159,6 +161,240 @@ test('mergeLayers: a single layer, and no layers at all', () => {
   assert.deepEqual(mergeLayers(null, workspace).overrides.map((entry) => [entry.name, entry.layer]), [['b', 'workspace']]);
   assert.deepEqual(mergeLayers(null, null), { version: 1, overrides: [] });
   assert.deepEqual(mergeLayers(emptyConfig(), emptyConfig()).overrides, []);
+});
+
+test('g-057 mergeLayers: a blank reserved layer states nothing, so the other layer still wins', () => {
+  // The production shape: the user layer holds the real「我的 Prompt」text and
+  // the workspace layer holds the same name with `text: ""`. The workspace entry
+  // must read as "this layer states nothing", not as "blank the section".
+  const user = validateConfig({ overrides: [{ name: RESERVED, action: 'replace', text: 'TEXT A' }] });
+  const blank = validateConfig({ overrides: [{ name: RESERVED, action: 'replace', text: '' }] });
+
+  const userWins = mergeLayers(user, blank);
+  assert.deepEqual(userWins.overrides.map((entry) => [entry.name, entry.layer, entry.text]), [
+    [RESERVED, 'user', 'TEXT A'],
+  ]);
+  // ...and the assembly really carries it, not the workspace's blank.
+  const applied = applyOverrides(sections([RESERVED, '']), userWins);
+  assert.equal(applied.sections.find((section) => section.name === RESERVED).text, 'TEXT A');
+  assert.deepEqual(applied.report.applied, [{ name: RESERVED, action: 'replace', layer: 'user' }]);
+
+  // The mirror image: user blank, workspace non-empty ⇒ the workspace text wins.
+  const workspace = validateConfig({ overrides: [{ name: RESERVED, action: 'replace', text: 'TEXT B' }] });
+  assert.deepEqual(
+    mergeLayers(blank, workspace).overrides.map((entry) => [entry.name, entry.layer, entry.text]),
+    [[RESERVED, 'workspace', 'TEXT B']],
+  );
+
+  // Both layers blank ⇒ the section is not in the merged list at all, so nothing
+  // is ever applied to it (the registered section's own empty text stands).
+  const bothBlank = mergeLayers(blank, blank);
+  assert.deepEqual(bothBlank.overrides, []);
+  assert.equal(applyOverrides(sections([RESERVED, '']), bothBlank).changed, false);
+
+  // A non-empty workspace text still overrides a non-empty user text: Revision 35
+  // changes *emptiness* handling only, never the layer precedence or position.
+  const both = mergeLayers(user, workspace);
+  assert.deepEqual(both.overrides.map((entry) => [entry.name, entry.layer, entry.text]), [
+    [RESERVED, 'workspace', 'TEXT B'],
+  ]);
+});
+
+test('g-057 mergeLayers: every blank spelling counts as stating nothing', () => {
+  const user = validateConfig({ overrides: [{ name: RESERVED, action: 'replace', text: 'TEXT A' }] });
+  // One name-clashing workspace entry per spelling. `""` / `"   "` / `"\n\t"` go
+  // through the real validator (a string is a string); `null` / `undefined` / a
+  // missing field cannot be persisted by this plugin's write face, so they are
+  // hand-built here — the merge kernel is total over plain data and a
+  // hand-edited `overrides.json` is exactly where they come from.
+  const spellings = [
+    ['empty string', { name: RESERVED, action: 'replace', text: '' }],
+    ['spaces', { name: RESERVED, action: 'replace', text: '   ' }],
+    ['whitespace', { name: RESERVED, action: 'replace', text: '\n\t ' }],
+    ['null text', { name: RESERVED, action: 'replace', text: null }],
+    ['undefined text', { name: RESERVED, action: 'replace', text: undefined }],
+    ['missing text field', { name: RESERVED, action: 'replace' }],
+  ];
+  for (const [label, entry] of spellings) {
+    const blank = { version: CONFIG_VERSION, overrides: [entry] };
+    assert.deepEqual(
+      mergeLayers(user, blank).overrides.map((row) => [row.name, row.layer, row.text]),
+      [[RESERVED, 'user', 'TEXT A']],
+      `${label} must not blank a non-empty other layer`,
+    );
+    // A blank layer on its own contributes nothing either.
+    assert.deepEqual(mergeLayers(blank, null).overrides, [], `${label} alone must contribute nothing`);
+  }
+  // A blank that is not the reserved section is untouched by this rule.
+  const other = { version: CONFIG_VERSION, overrides: [{ name: 'project:alpha', action: 'replace', text: '   ' }] };
+  assert.deepEqual(mergeLayers(other, null).overrides.map((row) => [row.name, row.layer, row.text]), [
+    ['project:alpha', 'user', '   '],
+  ]);
+
+  // The trim test is applied to STRINGS only, and the rule must not widen into
+  // "any unusable value means unstated": a hand-edited non-string `text` is not
+  // emptiness, so the entry is kept and still wins the name clash. Asserted here
+  // because CONTRACT Revision 35 promises exactly this much and no more.
+  const nonString = { version: CONFIG_VERSION, overrides: [{ name: RESERVED, action: 'replace', text: 5 }] };
+  assert.deepEqual(mergeLayers(user, nonString).overrides.map((row) => [row.name, row.layer, row.text]), [
+    [RESERVED, 'workspace', 5],
+  ]);
+});
+
+test('g-057 mergeLayers: only a blank reserved `replace` is dropped — hide, append and other sections are unchanged', () => {
+  // `hide` is an explicit declaration, not emptiness: it carries no `text` by
+  // validation and must keep removing the section.
+  const hide = { version: CONFIG_VERSION, overrides: [{ name: RESERVED, action: 'hide' }] };
+  assert.deepEqual(mergeLayers(hide, null).overrides.map((row) => [row.name, row.action, row.layer]), [
+    [RESERVED, 'hide', 'user'],
+  ]);
+  const hiddenByUser = mergeLayers(hide, hide);
+  assert.deepEqual(hiddenByUser.overrides.map((row) => [row.name, row.action, row.layer]), [
+    [RESERVED, 'hide', 'workspace'],
+  ]);
+  assert.equal(applyOverrides(sections([RESERVED, 'x']), hiddenByUser).changed, true);
+
+  // An `append` of the reserved name is refused by the write face, so it is not
+  // re-interpreted here — and a blank append of any other name stays an append.
+  const append = { version: CONFIG_VERSION, overrides: [{ name: 'extra', action: 'append', text: '' }] };
+  assert.deepEqual(mergeLayers(append, null).overrides.map((row) => [row.name, row.action, row.text]), [
+    ['extra', 'append', ''],
+  ]);
+
+  // THE compatibility assertion: an empty text on a non-reserved section is
+  // still an explicit "blank this section"; a workspace one still wins the clash.
+  const user = validateConfig({
+    overrides: [{ name: 'project:alpha', action: 'replace', text: 'ALPHA' }],
+  });
+  const workspace = validateConfig({
+    overrides: [{ name: 'project:alpha', action: 'replace', text: '' }],
+  });
+  const merged = mergeLayers(user, workspace);
+  assert.deepEqual(merged.overrides.map((row) => [row.name, row.layer, row.text]), [
+    ['project:alpha', 'workspace', ''],
+  ]);
+  const applied = applyOverrides(sections(['project:alpha', 'ALPHA']), merged);
+  assert.equal(applied.sections.find((section) => section.name === 'project:alpha').text, '');
+  assert.equal(applied.changed, true);
+});
+
+test('g-058 mergeLayers: a workspace `append` stacks after the user text, as ONE section', () => {
+  const user = validateConfig({ overrides: [{ name: RESERVED, action: 'replace', text: 'USER' }] });
+  const stack = validateConfig({ overrides: [{ name: RESERVED, action: 'append', text: 'WS' }] });
+
+  const merged = mergeLayers(user, stack);
+  // ONE entry, not two: the `append` is resolved into a `replace` right here, so
+  // nothing downstream can see an `append` of the reserved name — which
+  // `applyOverrides` would skip as `name-already-present` (§5.1), i.e. the upper
+  // layer's text would silently never reach the prompt.
+  assert.equal(merged.overrides.length, 1);
+  assert.deepEqual(merged.overrides.map((row) => [row.name, row.action, row.layer]), [
+    [RESERVED, 'replace', 'workspace'],
+  ]);
+  assert.equal(merged.overrides[0].text, `USER${RESERVED_STACK_SEPARATOR}WS`);
+
+  // ...and the assembly really carries both halves, in one section.
+  const applied = applyOverrides(sections([RESERVED, '']), merged);
+  assert.equal(applied.sections.filter((section) => section.name === RESERVED).length, 1, 'one reserved section, never two');
+  assert.equal(applied.sections.find((section) => section.name === RESERVED).text, 'USER\n\nWS');
+  assert.deepEqual(applied.report.skipped, [], 'nothing is skipped: the stack does take effect');
+  assert.deepEqual(applied.report.applied, [{ name: RESERVED, action: 'replace', layer: 'workspace' }]);
+  // The separator is the one the host renders between two sections: one blank
+  // line, not two and not none.
+  assert.equal(RESERVED_STACK_SEPARATOR, '\n\n');
+  assert.equal(renderSections(applied.sections, {}).text, 'USER\n\nWS');
+});
+
+test('g-058 mergeLayers: the stack leaves no orphan blank line and no empty half', () => {
+  const stack = (text) => validateConfig({ overrides: [{ name: RESERVED, action: 'append', text }] });
+  const replace = (text) => validateConfig({ overrides: [{ name: RESERVED, action: 'replace', text }] });
+  const textOf = (merged) => merged.overrides.map((row) => [row.layer, row.text]);
+
+  // Only the upper layer states text ⇒ its own text, with no leading separator.
+  assert.deepEqual(textOf(mergeLayers(null, stack('WS'))), [['workspace', 'WS']]);
+  // A blank lower half (every g-057 spelling) contributes nothing, so no blank
+  // line is inserted for it.
+  for (const blank of ['', '   ', '\n\t']) {
+    assert.deepEqual(
+      textOf(mergeLayers(replace(blank), stack('WS'))),
+      [['workspace', 'WS']],
+      `a blank lower \`replace\` (${JSON.stringify(blank)}) adds no blank line`,
+    );
+  }
+  // Revision 36 widens g-057 to `append` for this one section: a blank stack
+  // states nothing, so the other layer's text survives untouched.
+  for (const blank of ['', '   ', '\n\t']) {
+    assert.deepEqual(
+      textOf(mergeLayers(replace('USER'), stack(blank))),
+      [['user', 'USER']],
+      `a blank upper \`append\` (${JSON.stringify(blank)}) adds no blank line`,
+    );
+  }
+  assert.deepEqual(mergeLayers(stack('  '), stack('WS')).overrides.map((row) => [row.layer, row.text]), [
+    ['workspace', 'WS'],
+  ], 'a blank lower `append` is not a lower half either');
+
+  // Both halves non-empty ⇒ exactly one blank line between them.
+  assert.deepEqual(textOf(mergeLayers(replace('USER'), stack('WS'))), [['workspace', 'USER\n\nWS']]);
+  // A `hide` below contributes no text but does not veto the upper stack; a
+  // `hide` above still wins outright (an explicit declaration, Revision 35).
+  const hide = validateConfig({ overrides: [{ name: RESERVED, action: 'hide' }] });
+  assert.deepEqual(textOf(mergeLayers(hide, stack('WS'))), [['workspace', 'WS']]);
+  assert.deepEqual(mergeLayers(replace('USER'), hide).overrides.map((row) => [row.action, row.layer]), [
+    ['hide', 'workspace'],
+  ]);
+
+  // The user layer is the lower one, so a user `append` has nothing under it: it
+  // is flattened to `replace` — which is also what makes it take effect at all.
+  const userStack = validateConfig({ overrides: [{ name: RESERVED, action: 'append', text: 'USER' }] });
+  const alone = mergeLayers(userStack, null);
+  assert.deepEqual(alone.overrides.map((row) => [row.action, row.layer, row.text]), [['replace', 'user', 'USER']]);
+  assert.deepEqual(applyOverrides(sections([RESERVED, '']), alone).report.skipped, [], 'the flattened stack takes effect');
+  // Both layers stack ⇒ the user text first, the workspace text second.
+  assert.equal(mergeLayers(userStack, stack('WS')).overrides[0].text, 'USER\n\nWS');
+
+  // A hand-edited `order` on the reserved stack is dropped, not smuggled into
+  // the resolved list: a stack position is not a target index.
+  const ordered = { version: CONFIG_VERSION, overrides: [{ name: RESERVED, action: 'append', text: 'WS', order: 3 }] };
+  const mergedOrdered = mergeLayers(replace('USER'), ordered);
+  assert.deepEqual(mergedOrdered.overrides, [
+    { name: RESERVED, action: 'replace', text: 'USER\n\nWS', layer: 'workspace' },
+  ]);
+});
+
+test('g-058: only the reserved section is re-interpreted — every other `append` keeps its meaning', () => {
+  // A same-named `append` of another section still loses the layer clash and,
+  // being an `append`, is still one entry rather than a stack.
+  const user = validateConfig({ overrides: [{ name: 'extra', action: 'append', text: 'USER-APPEND' }] });
+  const workspace = validateConfig({ overrides: [{ name: 'extra', action: 'append', text: 'WS-APPEND' }] });
+  assert.deepEqual(mergeLayers(user, workspace).overrides.map((row) => [row.name, row.action, row.layer, row.text]), [
+    ['extra', 'append', 'workspace', 'WS-APPEND'],
+  ]);
+
+  // ...and it still INSERTS a new section, which is what `append` means there.
+  const applied = applyOverrides(sections(['a', 'A'], ['b', 'B']), mergeLayers(user, null));
+  assert.deepEqual(applied.sections.map((section) => section.name), ['a', 'b', 'extra']);
+  assert.deepEqual(applied.report.applied, [{ name: 'extra', action: 'append', layer: 'user' }]);
+
+  // A registered same-name `append` is still skipped exactly as before — the
+  // rule that makes the reserved stack impossible to express as an `append`.
+  const clash = applyOverrides(sections(['extra', 'B']), mergeLayers(user, null));
+  assert.equal(clash.report.skipped[0].code, 'name-already-present');
+  assert.deepEqual(clash.sections.map((section) => section.name), ['extra']);
+
+  // The reserved name never reaches `applyOverrides` as an `append` in any
+  // combination of layers.
+  const combinations = [
+    mergeLayers(validateConfig({ overrides: [{ name: RESERVED, action: 'append', text: 'U' }] }), null),
+    mergeLayers(null, validateConfig({ overrides: [{ name: RESERVED, action: 'append', text: 'W' }] })),
+    mergeLayers(
+      validateConfig({ overrides: [{ name: RESERVED, action: 'append', text: 'U' }] }),
+      validateConfig({ overrides: [{ name: RESERVED, action: 'append', text: 'W' }] }),
+    ),
+  ];
+  for (const merged of combinations) {
+    assert.ok(merged.overrides.every((row) => row.action !== 'append'), JSON.stringify(merged.overrides));
+  }
 });
 
 test('applyOverrides: no overrides returns the input array BY IDENTITY (zero-diff guarantee)', () => {

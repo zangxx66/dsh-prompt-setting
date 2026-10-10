@@ -29,9 +29,12 @@
 设置页里会多出一栏 **「Prompt settings」**（`id: prompt-setting`），五个一级 tab：
 
 - **我的 Prompt / My Prompt** —— 唯一写入口：写下你自己的系统级指令（选层 → 编辑 → 保存），
-  一键恢复默认。这段文本**排在所有内置段之后**。
+  一键恢复默认。这段文本**排在所有内置段之后**。上方的「查看范围」是这一块的头部：它决定保存落到
+  哪一层，改范围也只有这一处（面板内那行只读提示会重复告诉你当前写到哪）。
   > The only write surface: your own system-level instructions (pick a layer → edit → save), with a
-  > one-click restore. The text is **placed after every built-in section**.
+  > one-click restore. The text is **placed after every built-in section**. The "View scope" row above
+  > the tabs is this block's header: it decides which layer a save lands in, and it is the only place the
+  > scope is changed (the panel repeats the current target as a read-only line).
 
 - **提示词总览 / Prompt overview** —— 纯只读：分段列表（状态标记 / 搜索 / 筛选 / 复制）、完整全文，
   以及 `base ↔ effective` 对比，一眼看出你的改动究竟改变了什么。
@@ -62,8 +65,10 @@
 
 其它特性 / More:
 
-- **两层作用域 / Two layers** —— 用户级默认 + 工作区级覆盖，**工作区级优先**。
-  > A user-level default plus a workspace-level override; **the workspace wins**.
+- **两层作用域 / Two layers** —— 用户级默认 + 工作区级覆盖：逐层选「覆盖」（默认，工作区级优先）
+  或「叠加」（本层文本拼在另一层之后，中间一个空行，两层都生效）。
+  > A user-level default plus a workspace-level override: **Cover** (the default — the workspace wins) or
+  > **Stack** (this layer's text follows the other layer's, one blank line apart, so both apply).
 - **零运行时依赖、零构建步骤 / Zero runtime dependencies, zero build step** —— 一包纯 JS，不拉依赖、不编译。
   > One package of plain JS — nothing to fetch, nothing to compile.
 - **界面文案跟随 DSH 语言 / UI copy follows DSH** —— DSH 切到中文，这一页就是中文，不需要刷新或重启。
@@ -226,12 +231,12 @@ zstd -dc "$F" | jq -r 'select(.type=="system/message") | .data.message.content[0
 
 ## 安装 / Install
 
-**首选从 npm 装**（本包已发布，npm 上的 `latest` 为 `0.1.5`；本仓库为 `0.2.0`，发布后两者一致）。需要 DSH
+**首选从 npm 装**（本包已发布，npm 上的 `latest` 为 `0.1.5`；本仓库为 `0.2.1`，发布后两者一致）。需要 DSH
 `>= 0.1.7-rc.2 < 0.2.0 || >= 0.2.0-0 < 0.2.1-0 || >= 0.2.1-0 < 0.2.2-0`：`0.1.7-rc.2` 起的 0.1.x、
 `0.2.0` 与 `0.2.1` 的全部预发布（`-0` / `alpha` / `beta` / `rc.N`）与 **这两个 minor 的正式版**都在范围内；
 `0.2.2-0` 及以后出界。
 
-> **Install from npm** — the primary route (this package is published; npm `latest` is `0.1.5`, this repository is `0.2.0`). Requires
+> **Install from npm** — the primary route (this package is published; npm `latest` is `0.1.5`, this repository is `0.2.1`). Requires
 > DSH `>= 0.1.7-rc.2 < 0.2.0 || >= 0.2.0-0 < 0.2.1-0 || >= 0.2.1-0 < 0.2.2-0`: every 0.1.x from `0.1.7-rc.2`
 > on, every `0.2.0` and `0.2.1` prerelease (`alpha`, `beta`, `rc.N`, and the synthetic `-0` floor) and the
 > **`0.2.0` and `0.2.1` releases themselves** are in range; `0.2.2-0` and later are out.

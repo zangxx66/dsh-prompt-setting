@@ -407,8 +407,17 @@ window.__ModuleLoader__.load({
      * this page puts into every save and delete it sends.
      */
     const RESERVED_SECTION_NAME = 'prompt-setting:custom-prompt';
-    /** The one action the reserved name accepts (§4.1). */
-    const RESERVED_SECTION_ACTION = 'replace';
+    /**
+     * The actions the reserved name accepts on `PUT` (§4.1): `replace` (覆盖)
+     * covers the other layer, and — since Revision 36, g-058 — `append` (叠加)
+     * stacks this layer's text after it. The list is the twin of
+     * `RESERVED_WRITABLE_ACTIONS` in `core/custom.js`, and the two are compared
+     * by `test/client.test.mjs` rather than by construction (a browser module
+     * cannot import host code).
+     */
+    const RESERVED_SECTION_MODES = ['replace', 'append'];
+    /** The mode a save sends when the layer stores none (the historical default). */
+    const RESERVED_SECTION_DEFAULT_MODE = 'replace';
     /**
      * The five first-level tabs, in the fixed order they are presented.
      * 「我的 Prompt」 is first and is the default: it is the only write surface
@@ -732,11 +741,19 @@ window.__ModuleLoader__.load({
       stPath: '路径',
       stNone: '（无）',
       stReason: '原因',
-      stFrozenSession: '本会话已冻结',
-      stUnfrozenSession: '本会话未冻结',
+      stFrozenSession: '所选会话已冻结',
+      stUnfrozenSession: '所选会话未冻结',
       stFrozenGlobal: '全局装配已冻结',
       stUnfrozenGlobal: '全局装配未冻结',
-      stFrozenUnknown: '本会话冻结状态未知',
+      stFrozenUnknown: '所选会话的冻结状态未知',
+      // ---- g-052: say what "unknown" means, without attributing a cause.
+      // `running` in the session list is `agent.status === 'running'`, which is
+      // NOT `agentAvailable`: an idle session that just finished a turn has
+      // running=false and a live agent, so its frozen state *is* confirmable.
+      // Any wording about "not running / not open / ended" would contradict the
+      // ● marker the user sees in the list, so this copy stays cause-free.
+      stFrozenUnknownProbe: '无法探测该会话自己的装配。',
+      stFrozenUnknownNotFrozen: '这不等于未冻结；仍可编辑保存，只是不保证生效。',
       stBuild: '构建戳',
       stBuildSame: '与宿主一致',
       stBuildStale: '页面版本已过期',
@@ -898,6 +915,12 @@ window.__ModuleLoader__.load({
       editLayer: '保存层',
       // ---- g-015: 「我的 Prompt」, the only write surface (the reserved section)
       mineHeading: '我的 Prompt',
+      // g-055: the scope card is this block's header, not a page-wide setting of
+      // its own — the block says so once, above the scope row.
+      promptBlockNote: '这个范围决定「我的 Prompt」写到哪一层；改范围只在这里。',
+      // g-055: the panel states its own write target, so the reader does not have
+      // to look back above the tab bar to know which layer a save lands in.
+      mineTargetNote: '写入目标：{layer}；查看范围：{scope}',
       mineNote:
         '这里写下的内容会成为单独一段 Prompt，排在所有内置段之后，下一轮生效（next-turn）。该段永远不由 DSH 插值；开启「变量替换」后，由本插件在装配时展开 {{...}}——未注册、拼错或当前无值的引用原样保留，不会导致组装失败。',
       mineTextLabel: '内容',
@@ -955,18 +978,33 @@ window.__ModuleLoader__.load({
       // The `frozenScope: "global"` + session case is *unknown*, not frozen
       // (CONTRACT.md §2.4/§7.2): the panel may warn, but it may not claim the
       // session is frozen. Two of its own keys keep that distinction separate.
-      mineFrozenUnknownWarn: '冻结状态未知：本会话的装配无法确认',
+      mineFrozenUnknownWarn: '无法确认所选会话的装配是否被冻结',
       mineFrozenUnknownBody:
-        '全局装配被 complete 段冻结，但选中的会话没有活动 agent，所以无法确认本会话是否同样冻结。文本仍会写入{layer}的配置；如果本会话确实被冻结，它就不会生效。',
+        '全局装配被 complete 段冻结，但所选会话没有活动的 Agent，所以无法确认它是否同样冻结。文本仍会写入{layer}的配置；如果它确实被冻结，就不会生效。',
       mineFrozenHowTo:
-        '要让它生效：换用一个未声明 complete 的 agent preset（例如内置的默认 preset），或去掉当前 preset 里的 complete 声明，然后在本会话重新加载。',
-      mineSavedFrozen: '已保存到{layer}，但本会话冻结中，不会生效。',
-      mineSavedUnknown: '已保存到{layer}；本会话冻结状态未知，若已冻结则不会生效。',
-      savedNoticeFrozen: '已保存到{layer}，但本会话冻结中，本轮不会生效。',
-      savedNoticeUnknown: '已保存到{layer}；本会话冻结状态未知，若已冻结则本轮不会生效。',
+        '要让它生效：换用一个未声明 complete 的 agent preset（例如内置的默认 preset），或去掉当前 preset 里的 complete 声明，然后在所选会话重新加载。',
+      mineSavedFrozen: '已保存到{layer}，但所选会话冻结中，不会生效。',
+      mineSavedUnknown: '已保存到{layer}；所选会话的冻结状态未知，若已冻结则不会生效。',
+      savedNoticeFrozen: '已保存到{layer}，但所选会话冻结中，本轮不会生效。',
+      savedNoticeUnknown: '已保存到{layer}；所选会话的冻结状态未知，若已冻结则本轮不会生效。',
       mineWorkspaceNeedsSession: '工作区层需要先选择一个会话；未选择时无法写入工作区层。',
       mineResetTitle: '恢复默认：删除{layer}的「我的 Prompt」',
       mineResetBody: '这会删除该层保存的文本、回到未配置状态。',
+      // ---- g-058 (Revision 36): the「覆盖 / 叠加」mode of this one entry. The
+      // copy has to name the OTHER layer, because that is what the mode is
+      // about: it says what this layer does with the other layer's text, not
+      // where a new section goes (which is what `append` means everywhere else).
+      mineModeLabel: '模式',
+      mineModeReplace: '覆盖',
+      mineModeAppend: '叠加',
+      mineModeHintReplace: '覆盖：只用本层的文本，另一层同名条目不生效。',
+      mineModeHintAppend: '叠加：本层文本拼在另一层之后，两层都生效。',
+      mineModeNote:
+        '模式作用于同一个保留段：用户层文本在前、工作区层文本在后；两层都有内容时中间插入一个空行，只有一层有内容时不留空行。',
+      mineModeBottomNote: '用户层是最底层：在这里「叠加」与「覆盖」等价（下面没有可拼的层）。',
+      mineModeStoredNone: '本层尚未设置模式（按「覆盖」处理）',
+      mineModeStored: '本层已存模式：{mode}',
+      mineModeDirty: '模式已改动，尚未保存。',
       // ---- stage 3: two entries, so an illegal (name, action) pair cannot exist
       blockAppendExisting:
         '该段名已在当前装配中：append 不会生效（两段不可同名，宿主会跳过并记为 name-already-present）。请改用「替换 replace」，或把段名改成一个尚未注册的新名。',
@@ -981,6 +1019,14 @@ window.__ModuleLoader__.load({
       // text while the editor held **unsaved** work, so the reader knows why the
       // box still shows something other than the new stored value.
       mineDraftKept: '配置已在别处更新；你编辑器中尚未保存的内容仍保留着。',
+      // g-056: the draft's scope is the file a save would write, not the view it
+      // was typed in. These three keys are the visible half of that rule.
+      mineDraftScope: '当前编辑框显示的是一份尚未保存的草稿（归属：{scope}）。',
+      mineDraftElsewhere:
+        '你在「{scope}」还有一份未保存的内容（{chars} 字），它没有跟着当前作用域走：内容仍在原作用域里，切回去即可继续编辑。',
+      mineDraftElsewhereDrop: '放弃那份草稿',
+      mineSaveBlockedDraftElsewhere:
+        '已阻止保存：你在「{scope}」还有未保存的内容（{chars} 字），而当前编辑框显示的不是它。请先切回该作用域保存或放弃它，再回到这里保存。',
       nextTurn: '下一轮生效',
       ovHeading: '已生效覆盖',
       ovEmpty: '当前作用域没有任何覆盖。',
@@ -1220,11 +1266,16 @@ window.__ModuleLoader__.load({
       stPath: 'Path',
       stNone: '(none)',
       stReason: 'Reason',
-      stFrozenSession: 'This session is frozen',
-      stUnfrozenSession: 'This session is not frozen',
+      stFrozenSession: 'The selected session is frozen',
+      stUnfrozenSession: 'The selected session is not frozen',
       stFrozenGlobal: 'The global assembly is frozen',
       stUnfrozenGlobal: 'The global assembly is not frozen',
-      stFrozenUnknown: 'This session’s frozen state is unknown',
+      stFrozenUnknown: 'The selected session’s frozen state is unknown',
+      // g-052: see the zh table — no cause is attributed, because `running`
+      // (agent.status === 'running') is not `agentAvailable`.
+      stFrozenUnknownProbe: 'This session’s own assembly cannot be probed.',
+      stFrozenUnknownNotFrozen:
+        'That is not the same as "not frozen"; you can still edit and save, it is just not guaranteed to take effect.',
       stBuild: 'Build',
       stBuildSame: 'Matches the host',
       stBuildStale: 'This tab is stale',
@@ -1371,6 +1422,10 @@ window.__ModuleLoader__.load({
       diffHint: 'Compared per section: base is what was registered, effective is the result after overrides.',
       editLayer: 'Save to layer',
       mineHeading: 'My Prompt',
+      // g-055: see the zh table — the scope card is this block's header.
+      promptBlockNote: 'This scope decides which layer My Prompt is written to — and it is changed here.',
+      // g-055: the panel states its own write target instead of implying it.
+      mineTargetNote: 'Writing to {layer}; scope: {scope}',
       mineNote:
         'What you write here becomes one extra prompt section, placed after every built-in section, effective from the next turn (next-turn). DSH never interpolates it; with variable substitution on, this plugin expands its {{...}} during assembly, and a reference that is unregistered, misspelled or currently valueless stays literal instead of failing the assembly.',
       mineTextLabel: 'Content',
@@ -1428,18 +1483,32 @@ window.__ModuleLoader__.load({
       // The `frozenScope: "global"` + session case is *unknown*, not frozen
       // (CONTRACT.md §2.4/§7.2): the panel may warn, but it may not claim the
       // session is frozen. Two of its own keys keep that distinction separate.
-      mineFrozenUnknownWarn: 'Frozen state unknown: the assembly for this session cannot be confirmed',
+      mineFrozenUnknownWarn: 'Cannot confirm whether the selected session’s assembly is frozen',
       mineFrozenUnknownBody:
-        'The unscoped assembly is frozen by a complete section, but the selected session has no active agent, so whether this session is frozen cannot be confirmed. The text is still written to the {layer} config; if this session is frozen too, it will not take effect.',
+        'The unscoped assembly is frozen by a complete section, but the selected session has no active agent, so whether it is frozen too cannot be confirmed. The text is still written to the {layer} config; if it is frozen too, it will not take effect.',
       mineFrozenHowTo:
-        'To make it take effect: switch to an agent preset that does not declare complete (the built-in default preset, for example), or drop the complete declaration from the current preset, and then reload this session.',
-      mineSavedFrozen: 'Saved to {layer}, but this session is frozen, so it will not take effect.',
-      mineSavedUnknown: 'Saved to {layer}; this session may be frozen, in which case it will not take effect.',
-      savedNoticeFrozen: 'Saved to {layer}, but this session is frozen; it will not take effect here.',
-      savedNoticeUnknown: 'Saved to {layer}; this session may be frozen, in which case it will not take effect here.',
+        'To make it take effect: switch to an agent preset that does not declare complete (the built-in default preset, for example), or drop the complete declaration from the current preset, and then reload the selected session.',
+      mineSavedFrozen: 'Saved to {layer}, but the selected session is frozen, so it will not take effect.',
+      mineSavedUnknown:
+        'Saved to {layer}; the selected session’s frozen state is unknown, so it may not take effect.',
+      savedNoticeFrozen: 'Saved to {layer}, but the selected session is frozen; it will not take effect here.',
+      savedNoticeUnknown:
+        'Saved to {layer}; the selected session’s frozen state is unknown, so it may not take effect here.',
       mineWorkspaceNeedsSession: 'The workspace layer needs a session; without one it cannot be written.',
       mineResetTitle: 'Restore default: delete the {layer} My Prompt',
       mineResetBody: 'This deletes the text stored in that layer and returns it to unconfigured.',
+      // ---- g-058 (Revision 36): the "cover / stack" mode of this one entry.
+      mineModeLabel: 'Mode',
+      mineModeReplace: 'Cover',
+      mineModeAppend: 'Stack',
+      mineModeHintReplace: 'Cover: only this layer\'s text applies; a same-named entry in the other layer does not.',
+      mineModeHintAppend: 'Stack: this layer\'s text follows the other layer\'s, so both apply.',
+      mineModeNote:
+        'The mode acts on the one reserved section: the user layer\'s text first, the workspace layer\'s after it — one blank line between them when both carry text, none when only one does.',
+      mineModeBottomNote: 'The user layer is the lowest one: "Stack" here means the same as "Cover" — there is nothing below it to stack onto.',
+      mineModeStoredNone: 'this layer states no mode (read as "Cover")',
+      mineModeStored: 'stored mode: {mode}',
+      mineModeDirty: 'The mode changed and is not saved yet.',
       // ---- stage 3: two entries, so an illegal (name, action) pair cannot exist
       blockAppendExisting:
         'That name is already in the current assembly, so append would not take effect (two sections may not share a name; the Host skips it as name-already-present). Use Replace instead, or change the name to a new, unregistered one.',
@@ -1452,6 +1521,13 @@ window.__ModuleLoader__.load({
       deletedNotice: 'Removed the {layer} override; effective from the next turn (next-turn).',
       // g-050: see the zh table.
       mineDraftKept: 'The configuration changed elsewhere; the text you have not saved is still in the editor.',
+      // g-056: see the zh table — the draft belongs to the write target.
+      mineDraftScope: 'The editor is showing an unsaved draft (belongs to: {scope}).',
+      mineDraftElsewhere:
+        'You still have unsaved text in "{scope}" ({chars} characters). It did not follow this scope change: it is still there, and going back to that scope continues where you left off.',
+      mineDraftElsewhereDrop: 'Discard that draft',
+      mineSaveBlockedDraftElsewhere:
+        'Save blocked: you have unsaved text in "{scope}" ({chars} characters) and it is not what the editor is showing. Go back to that scope to save or discard it, then save here.',
       nextTurn: 'next-turn',
       ovHeading: 'Active overrides',
       ovEmpty: 'This scope has no overrides.',
@@ -3241,6 +3317,25 @@ window.__ModuleLoader__.load({
     const scopeSummaryHintStyle = { ...metaStyle, lineHeight: '18px' };
 
     /**
+     * g-055: the「我的 Prompt」block's shared leading rule. The scope card above
+     * the tabs and the panel inside the mine tab are the two halves of one
+     * block, so both carry the same 3px rule with the same 12px inset; the
+     * grouping is the visual claim that the scope row belongs to「我的 Prompt」
+     * rather than to the page at large.
+     */
+    const promptBlockBandStyle = { borderLeft: `3px solid ${token.stateBusiness}`, paddingLeft: 12 };
+    /** The block wrapper above the tabs: one sentence, then the scope card. */
+    const promptBlockStyle = { ...promptBlockBandStyle, display: 'flex', flexDirection: 'column', gap: 6 };
+    /**
+     * The one sentence that ties the scope to the write surface. Since the block
+     * carries no heading of its own (review round 1: a second「我的 Prompt」title
+     * two lines above the panel's own title repeated the name and the level),
+     * this line is what names the grouping, so it is a step darker than plain
+     * meta text.
+     */
+    const promptBlockNoteStyle = { margin: 0, ...metaStyle, lineHeight: '18px', color: token.labelSecondary };
+
+    /**
      * Render one line of layer information.
      * @param t - the bound translator.
      * @param label - the localized layer name.
@@ -3631,10 +3726,17 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The reserved section's stored text in one layer, read from the *merged*
-     * override list — the same list the assembly applies (CONTRACT.md §3), so
-     * what 「我的 Prompt」 shows is what is configured rather than what the last
-     * render happened to hold.
+     * The reserved section's stored text in one layer, read from **that layer's
+     * own** override list (`payload.user.overrides` / `payload.workspace.overrides`,
+     * CONTRACT.md §3) — the file the layer itself holds, so what 「我的 Prompt」
+     * shows for a layer is what that layer stored.
+     *
+     * Deliberately not `merged` (g-054). The merged list is the *assembly* view:
+     * it deduplicates by section name across layers, so a workspace entry
+     * replaces a same-named user entry and only one layer is ever named per
+     * section. Reading a specific layer's stored text from it reported `null`
+     * — an empty box in the 「未配置」 state — whenever the other layer held the
+     * same name, even though this layer's file had the text all along.
      *
      * `null` means "the layer has no reserved override at all" (the page shows
      * the unconfigured state); `''` means "configured, but as empty text".
@@ -3643,13 +3745,56 @@ window.__ModuleLoader__.load({
      * @returns the stored text, or null when the entry is absent.
      */
     function reservedTextOf(ovs, layer) {
-      const merged = ovs && ovs.merged && Array.isArray(ovs.merged.overrides) ? ovs.merged.overrides : [];
-      const entry = merged.find(
-        (candidate) =>
-          candidate && candidate.name === RESERVED_SECTION_NAME && candidate.layer === layer,
-      );
-      if (entry === undefined) return null;
+      const entry = reservedEntryOf(ovs, layer);
+      if (entry === null) return null;
       return typeof entry.text === 'string' ? entry.text : '';
+    }
+
+    /**
+     * g-058 (Revision 36): one layer's stored reserved **entry**, or `null`.
+     *
+     * The panel needs two facts from that entry since the mode exists — the text
+     * ({@link reservedTextOf}) and the mode — and both must come from **that
+     * layer's own** view of `GET /overrides` for the same reason the text does
+     * (g-054): `merged` deduplicates by name, so it names at most one layer per
+     * section and cannot answer "what did this layer store".
+     * @param ovs - the `GET /overrides` payload, or null.
+     * @param layer - `user` | `workspace`.
+     * @returns the entry, or null when the layer holds no reserved entry.
+     */
+    function reservedEntryOf(ovs, layer) {
+      const view = ovs !== null && typeof ovs === 'object' ? ovs[layer] : null;
+      const list =
+        view !== null && typeof view === 'object' && Array.isArray(view.overrides) ? view.overrides : [];
+      const entry = list.find((candidate) => candidate && candidate.name === RESERVED_SECTION_NAME);
+      return entry === undefined ? null : entry;
+    }
+
+    /**
+     * g-058 (Revision 36): the mode one stored reserved entry carries.
+     *
+     * The stored word is authoritative: `append` is「叠加」, everything else
+     * (including an entry written before this revision, which carries
+     * `replace`) is「覆盖」— the behaviour that entry already had.
+     * @param entry - a reserved entry, or null.
+     * @returns `'replace'` | `'append'`, or null when there is no entry.
+     */
+    function modeOfEntry(entry) {
+      if (entry === null || entry === undefined) return null;
+      return entry.action === 'append' ? 'append' : RESERVED_SECTION_DEFAULT_MODE;
+    }
+
+    /**
+     * g-058 (Revision 36): the mode **this layer's file** stores, or `null` when
+     * the layer holds no reserved entry at all. `null` is not `'replace'`: the
+     * panel distinguishes「未设置」from「显式覆盖」in words, exactly as it does
+     * for the interpolation switch (§16.1).
+     * @param ovs - the `GET /overrides` payload, or null.
+     * @param layer - `user` | `workspace`.
+     * @returns `'replace'` | `'append'` | null.
+     */
+    function reservedModeOf(ovs, layer) {
+      return modeOfEntry(reservedEntryOf(ovs, layer));
     }
 
     /**
@@ -3660,6 +3805,158 @@ window.__ModuleLoader__.load({
      */
     function layerLabel(t, layer) {
       return t(layer === 'workspace' ? 'ovWorkspace' : 'ovUser');
+    }
+
+    /**
+     * g-056: the workspace root that owns one session, read from the workspace
+     * seat this page already holds.
+     *
+     * This is the client half of the Host's own resolution (`index.js`
+     * `workspaceRootFor` → `workspaceRegistry.list()` → `owner.path`): the same
+     * `WorkspaceView.path` field (`dsh-api-workspace-controller`), so both sides
+     * name the same directory. `null` when the session belongs to no listed
+     * workspace or the workspace hook degraded — the caller then falls back to
+     * the session id, which is the **narrower** identity: it can only make two
+     * drafts look different, it can never make one draft look like another
+     * scope's.
+     * @param items - the workspace seat's `items`.
+     * @param sessionId - the session id, or null.
+     * @returns the workspace root path, or null.
+     */
+    function workspaceRootOfSession(items, sessionId) {
+      if (typeof sessionId !== 'string' || sessionId.length === 0) return null;
+      const list = Array.isArray(items) ? items : [];
+      const owner = list.find(
+        (workspace) =>
+          workspace && Array.isArray(workspace.sessionIds) && workspace.sessionIds.indexOf(sessionId) >= 0,
+      );
+      if (owner === undefined) return null;
+      const path = typeof owner.path === 'string' ? owner.path.trim() : '';
+      return path.length > 0 ? path : null;
+    }
+
+    /**
+     * g-056: the key of the「我的 Prompt」draft — the identity of the **file** a
+     * save would write, per layer.
+     *
+     * The old key was `layer|session`, which made the *view* own the text. The
+     * write face says otherwise (`index.js` `targetFor`):
+     *   - `user`: `targetFor('user', …)` ignores the session entirely — the
+     *     `userConfigPath()` is one path for the whole profile — so every
+     *     session writes the same file and the draft has no session at all;
+     *   - `workspace`: the target is `workspaceConfigPath(workspaceRootFor(
+     *     session))`, and every session of one workspace resolves to the same
+     *     root, so the draft belongs to the **workspace**, not to the session
+     *     that happened to be selected when it was typed.
+     *
+     * A session that resolves to no listed workspace keeps the session id as its
+     * identity: inventing a root would be inventing a write target.
+     * @param layer - `user` | `workspace`.
+     * @param sessionId - the session id, or null.
+     * @param workspaceRoot - the root from {@link workspaceRootOfSession}, or null.
+     * @returns the draft key.
+     */
+    function mineDraftKeyOf(layer, sessionId, workspaceRoot) {
+      if (layer !== 'workspace') return 'user';
+      const identity = workspaceRoot !== null ? workspaceRoot : sessionId === null ? '' : sessionId;
+      return `workspace|${identity}`;
+    }
+
+    /**
+     * g-058 (Revision 36): the mode one recorded draft carries.
+     *
+     * A draft typed before this revision has no `mode` field, and it means
+     * 「覆盖」— the only mode that existed when it was typed. Reading an old draft
+     * as anything else would make an untouched editor look dirty, which is
+     * exactly the silent state change §4.2 refuses.
+     * @param draft - a recorded draft, or null.
+     * @returns `'replace'` | `'append'`.
+     */
+    function draftModeOf(draft) {
+      return draft !== null && draft !== undefined && draft.mode === 'append'
+        ? 'append'
+        : RESERVED_SECTION_DEFAULT_MODE;
+    }
+
+    /**
+     * g-056: the readable name of the scope a draft belongs to, shown beside the
+     * editor so the reader can tell whose text the box holds.
+     * @param t - the bound translator.
+     * @param layer - `user` | `workspace`.
+     * @param sessionId - the session id, or null.
+     * @param rows - the session seat's rows.
+     * @returns the display string.
+     */
+    function mineScopeNameOf(t, layer, sessionId, rows) {
+      const base = layerLabel(t, layer);
+      if (layer !== 'workspace') return base;
+      const label = sessionLabelOf(rows, sessionId === null ? '' : sessionId);
+      return label.length > 0 ? `${base} · ${label}` : base;
+    }
+
+    /**
+     * g-056 (review R1): the reserved text of one layer, read from **that
+     * layer's own view** (`payload[layer].overrides`) rather than from `merged`.
+     *
+     * A draft's "is this still unsaved work?" question is a question about the
+     * file the draft belongs to, so it may only be answered by that file's own
+     * list — the merged list mixes both layers and would report one layer's text
+     * as the other's stored value.
+     * @param ovs - the `GET /overrides` payload, or null.
+     * @param layer - `user` | `workspace`.
+     * @returns the stored text, or null when that layer holds no reserved entry.
+     */
+    function layerReservedTextOf(ovs, layer) {
+      const entry = reservedEntryOf(ovs, layer);
+      if (entry === null) return null;
+      return typeof entry.text === 'string' ? entry.text : '';
+    }
+
+    /**
+     * g-058 (Revision 36): the mode that layer's own file stores, read from the
+     * same per-layer view as {@link layerReservedTextOf} — a foreign draft is
+     * "still unsaved work" for its **text and its mode** alike, so both have to
+     * be answerable from the one file the draft belongs to.
+     * @param ovs - the `GET /overrides` payload, or null.
+     * @param layer - `user` | `workspace`.
+     * @returns `'replace'` | `'append'` | null.
+     */
+    function layerReservedModeOf(ovs, layer) {
+      return modeOfEntry(reservedEntryOf(ovs, layer));
+    }
+
+    /**
+     * g-056 (review R1): the reserved entry a **recorded draft's own write
+     * target** holds, as far as this render can know it.
+     *
+     * `known: false` means「this page has not read that file」: the draft's target
+     * is a workspace other than the one the current request resolved, or the
+     * draft records no scope at all (a draft from before g-056's shape). The
+     * caller must then treat it as *possibly* unsaved — the panel may warn, but
+     * it must never silently overwrite — which is the conservative half of the
+     * trade recorded in `NOTES.md` §129.
+     *
+     * g-058 (Revision 36): the answer carries the **mode** beside the text,
+     * because a draft's unsaved work is the pair. A draft whose text matches the
+     * file but whose mode does not is still text the user would lose by saving
+     * over it, so both facts come from the same per-layer read.
+     * @param ovs - the `GET /overrides` payload, or null.
+     * @param scope - the draft's `{layer, session, root}`.
+     * @param currentRoot - the workspace root the current request resolved.
+     * @returns `{known: true, text, mode}` or `{known: false, text: null, mode: null}`.
+     */
+    function draftTargetOf(ovs, scope, currentRoot) {
+      if (scope === null || scope === undefined) return { known: false, text: null, mode: null };
+      const layer = scope.layer === 'workspace' ? 'workspace' : 'user';
+      if (layer === 'workspace') {
+        const root = typeof scope.root === 'string' && scope.root.length > 0 ? scope.root : null;
+        // A different workspace is a file this request never read: 「unknown」,
+        // never「empty」.
+        if (root === null || currentRoot === null || root !== currentRoot) {
+          return { known: false, text: null, mode: null };
+        }
+      }
+      return { known: true, text: layerReservedTextOf(ovs, layer), mode: layerReservedModeOf(ovs, layer) };
     }
 
     /**
@@ -3877,7 +4174,50 @@ window.__ModuleLoader__.load({
           `${t('stBuild')}: ${t(verdict === 'true' ? 'stBuildSame' : verdict === 'false' ? 'stBuildStale' : 'stBuildUnknown')}`,
         ),
         h(UI.Button, { variant: 'outline', 'data-action': 'refresh', onClick: a.refresh }, t('refresh')),
+        // g-052: the two explanation lines belong on the first-screen summary
+        // too — this is where the reader actually meets the verdict. The
+        // container is a wrapping flex row, so each line takes `flexBasis: 100%`
+        // and drops onto its own full-width row under the tags.
+        ...(fz.kind === 'unknown' && !fz.pending
+          ? unknownFrozenExplanation(
+              t,
+              { probe: 'frozen-line-probe', notFrozen: 'frozen-line-not-frozen' },
+              [
+                { flexBasis: '100%', margin: 0, color: token.stateWarn },
+                { flexBasis: '100%', margin: 0, color: token.labelTertiary },
+              ],
+            )
+          : []),
       );
+    }
+
+    /**
+     * The two explanation lines an *unknown* frozen verdict carries (g-052):
+     * what could not be probed, and what "unknown" does not claim.
+     *
+     * Each sentence is its own paragraph node — not one paragraph, not a
+     * line-break element — so the two stay independently addressable. Two call
+     * sites share them: the first-screen status line (where the reader meets the
+     * verdict) and the full detail block in 「高级」. Each site passes its own
+     * markers, because two copies of one `data-warning` on the same page would
+     * break the uniqueness probes.
+     *
+     * @param t - the bound translator.
+     * @param markers - `{probe, notFrozen}`: the two `data-warning` values.
+     * @param styles - two style objects, in reading order; merged over the
+     *   shared 12px / break-word base.
+     * @returns the two paragraph elements, in reading order.
+     */
+    function unknownFrozenExplanation(t, markers, styles) {
+      const base = { fontSize: 12, wordBreak: 'break-word' };
+      return [
+        h('p', { 'data-warning': markers.probe, style: { ...base, ...styles[0] } }, t('stFrozenUnknownProbe')),
+        h(
+          'p',
+          { 'data-warning': markers.notFrozen, style: { ...base, ...styles[1] } },
+          t('stFrozenUnknownNotFrozen'),
+        ),
+      ];
     }
 
     /**
@@ -3977,6 +4317,18 @@ window.__ModuleLoader__.load({
               `${t('stFrozenUnknown')}${fz.reason ? ` — ${t('stReason')}: ${fz.reason}` : ''}`,
             )
           : null,
+        // g-052: the same two explanation lines, with this block's own markers
+        // (the first-screen copy uses different ones) and its stacked margins.
+        ...(fz.kind === 'unknown' && !fz.pending
+          ? unknownFrozenExplanation(
+              t,
+              { probe: 'frozen-unknown-probe', notFrozen: 'frozen-unknown-not-frozen' },
+              [
+                { margin: '4px 0 0', color: token.stateWarn },
+                { margin: '2px 0 0', color: token.labelTertiary },
+              ],
+            )
+          : []),
         fz.kind === 'unknown' && fz.frozen
           ? h(
               'p',
@@ -4621,6 +4973,23 @@ window.__ModuleLoader__.load({
      * @returns the section element.
      */
     /**
+     * The readable name of the page's「查看范围」, on its own: the session's
+     * readable title (or its raw id when no session service answered), or the
+     * global scope's own name.
+     *
+     * g-055: one definition, because two places now say the same thing — the
+     * summary row of the scope card and the write-target line inside「我的
+     * Prompt」. The two must never drift apart, since the second exists precisely
+     * to save the reader from looking back at the first.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @returns the scope name.
+     */
+    function scopeName(t, m) {
+      return m.sessionArg !== null ? sessionLabelOf(m.seat.rows, m.sessionArg) || m.sessionArg : t('sessionGlobal');
+    }
+
+    /**
      * The「查看范围」card and its collapse rule (g-016).
      *
      * The picker used to be spread open above the tab bar: measured in the real
@@ -4645,8 +5014,8 @@ window.__ModuleLoader__.load({
      */
     function scopeSection(t, m, a, body) {
       const scoped = m.sessionArg !== null;
-      const readable = scoped ? sessionLabelOf(m.seat.rows, m.sessionArg) || m.sessionArg : '';
-      const summaryLabel = scoped ? fmt(t('sessionCurrentLabel'), { label: readable }) : t('sessionGlobal');
+      const readable = scopeName(t, m);
+      const summaryLabel = scoped ? fmt(t('sessionCurrentLabel'), { label: readable }) : readable;
       // A hint only when the scope itself is worth a word: the two degraded
       // seats, which change what the picker can do at all. The healthy tree
       // case says nothing extra, so the line stays short by construction.
@@ -4929,6 +5298,45 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * g-055: the「我的 Prompt」block, with the scope card as its header.
+     *
+     * The「查看范围」selector is page-level state — it scopes the snapshot and the
+     * override reads and it decides which layer a save lands in — so it stays
+     * above the tab bar and stays the *one* place the scope is changed. What was
+     * wrong was the reading, not the position: rendered bare it looked like a
+     * page-wide setting of its own, while「我的 Prompt」— the only surface it
+     * writes — looked like a separate block further down. This wrapper states
+     * the grouping instead: one sentence saying what the scope decides, and then
+     * the card itself, both inside one container that carries the same leading
+     * rule the mine panel carries.
+     *
+     * The block deliberately has **no heading of its own** (review round 1): a
+     * second `h3`「我的 Prompt」two lines above the panel's own title repeated the
+     * same name at the same level, which both weakened the "one block" reading
+     * and listed the title twice in a screen reader's heading list. The panel,
+     * which owns the title, is the only place `mineHeading` is rendered; the
+     * sentence below carries the binding instead.
+     *
+     * The card keeps every frozen marker and its collapse rule exactly as they
+     * were (`data-region="session"` / `"scope-summary"`, `data-scope-open`,
+     * `data-action="scope-toggle"`); the wrapper adds one `section` around it
+     * and moves nothing.
+     *
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the block element.
+     */
+    function renderPromptBlock(t, m, a) {
+      return h(
+        'section',
+        { key: 'prompt-block', 'data-region': 'prompt-block', style: promptBlockStyle },
+        h('p', { key: 'note', 'data-role': 'prompt-block-note', style: promptBlockNoteStyle }, t('promptBlockNote')),
+        renderSession(t, m, a),
+      );
+    }
+
+    /**
      * The confirmation dialog's typography: four levels instead of one uniform
      * gap — the title, the lead sentence that names the action, the sentence
      * that explains it, and a structural "cannot be undone" strip. zh and en
@@ -5103,15 +5511,22 @@ window.__ModuleLoader__.load({
      * page already has (`deriveScope` / `scopeMode`): the workspace layer needs
      * a session, and the page says so instead of letting the write fail with
      * `workspace-unresolved`. The text box is bound to the reserved section's
-     * stored value for that layer, read from the *merged* override list — the
-     * same list the assembly applies — so what is shown is what is configured,
-     * not what the last render happened to hold.
+     * stored value for that layer, read from **that layer's own** override list
+     * — `merged` deduplicates by name across layers, so it names at most one of
+     * them per section and cannot answer "what did *this* layer store" (g-054) —
+     * so what is shown is what that layer stored, not what the last render
+     * happened to hold. The merged list still describes the assembly.
      *
      * Two states are stated rather than implied. `data-mine-state` is the
      * machine-readable one (`unconfigured` / `dirty` / `saving` / `saved` /
      * `error`), and a frozen or discarded scope renders
      * `data-warning="mine-frozen"` — §15.4 requires the panel to say that the
      * text will not reach the prompt rather than let a write look effective.
+     *
+     * g-055: the panel is the lower half of the「我的 Prompt」block whose header
+     * is the scope card above the tabs, so it names its own write target
+     * (`data-region="mine-target"`, read-only) instead of making the reader look
+     * back up; the scope itself is still changed in exactly one place.
      *
      * @param t - the bound translator.
      * @param m - the page model.
@@ -5136,6 +5551,27 @@ window.__ModuleLoader__.load({
       const interpolateState = m.mineInterpolateState === undefined ? 'inherit' : m.mineInterpolateState;
       const warnings = Array.isArray(m.mineWarnings) ? m.mineWarnings : [];
       const layerDisabled = m.mineLayerDisabled === undefined ? null : m.mineLayerDisabled;
+      // g-056: which side of the box is being shown (`draft` vs this target's
+      // stored text), the readable scope the shown draft belongs to, and — when
+      // the reader has unsaved text in a scope this box is **not** showing —
+      // that draft. The last one is stated here and refuses the save below.
+      const textSource = m.mineTextSource === 'draft' ? 'draft' : 'stored';
+      const draftScope = m.mineDraftScope === undefined ? null : m.mineDraftScope;
+      const foreignDraft = m.mineForeignDraft === undefined ? null : m.mineForeignDraft;
+      // The names are built **here**, inside the tree-building try: `t` may be
+      // the broken thing (see `renderFailureCard`), so the component's own path
+      // never calls it.
+      const scopeNameOf = (scope) =>
+        scope === null || scope === undefined
+          ? ''
+          : mineScopeNameOf(
+            t,
+            scope.layer === 'workspace' ? 'workspace' : 'user',
+            typeof scope.session === 'string' ? scope.session : null,
+            m.seat.rows,
+          );
+      const draftScopeName = scopeNameOf(draftScope);
+      const foreignScopeName = scopeNameOf(foreignDraft === null ? null : foreignDraft.scope);
       // The way out depends on WHY the layer is out: an unresolvable reference is
       // fixed in the text, everything else (invalid JSON, an invalid field, a
       // file that vanished) is fixed in the file.
@@ -5164,10 +5600,41 @@ window.__ModuleLoader__.load({
                 : state === 'dirty'
                   ? t('mineDirty')
                   : fmt(t('mineLoaded'), { layer: layerLabel(t, layer) });
+      // g-055: the panel states its own write target, so the reader does not have
+      // to look back above the tab bar to know which layer a save lands in. It is
+      // read-only on purpose: the one place the scope is changed is the block
+      // header above the tabs, and a second switch here would be a second
+      // entrance — exactly what this design refuses.
+      const targetLine = h(
+        'p',
+        {
+          'data-region': 'mine-target',
+          'data-mine-target-layer': layer,
+          'data-mine-target-scope': m.sessionArg === null ? 'global' : String(m.sessionArg),
+          // g-058: the read-only target line also says which mode this save will
+          // send and which one the file stores — the two facts a reader needs to
+          // tell「还没保存」from「已生效」without opening the file.
+          'data-mine-target-mode': m.mineMode,
+          'data-mine-target-mode-stored': m.mineStoredMode === null || m.mineStoredMode === undefined
+            ? 'none'
+            : String(m.mineStoredMode),
+          style: { margin: 0, ...metaStyle, color: token.labelSecondary },
+        },
+        fmt(t('mineTargetNote'), { layer: layerLabel(t, layer), scope: scopeName(t, m) }),
+      );
+      // g-058 (Revision 36): the entry's mode — `append` (叠加) or `replace`
+      // (覆盖). Only the two words the write face accepts; anything else a stale
+      // model might carry reads as the default.
+      const mineMode = m.mineMode === 'append' ? 'append' : RESERVED_SECTION_DEFAULT_MODE;
+      const mineStoredMode =
+        m.mineStoredMode === 'append' || m.mineStoredMode === 'replace' ? m.mineStoredMode : null;
+      // The same leading rule the block header above the tabs carries: the scope
+      // card and this panel are the two halves of one block (g-055).
       return h(
         'div',
-        { 'data-region': 'mine', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+        { 'data-region': 'mine', style: { ...promptBlockBandStyle, display: 'flex', flexDirection: 'column', gap: 10 } },
         h('h3', { style: headingStyle }, t('mineHeading')),
+        targetLine,
         h('p', { style: { margin: 0, ...metaStyle } }, t('mineNote')),
         h(
           'div',
@@ -5408,18 +5875,134 @@ window.__ModuleLoader__.load({
               )
             : null,
         ),
+        // ---- g-058 (Revision 36): the「覆盖 / 叠加」mode of THIS layer's entry.
+        // It is a control over this layer's stored mode and nothing else — it
+        // writes no file on its own, it offers no second way to change the
+        // write scope (the block header keeps that single entrance, g-055), and
+        // it can never reach the other layer's file: the save it feeds carries
+        // one layer and one entry (§4.1).
+        h(
+          'div',
+          {
+            'data-region': 'mine-mode',
+            'data-mine-mode': mineMode,
+            'data-mine-mode-stored': mineStoredMode === null ? 'none' : mineStoredMode,
+            style: {
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4,
+              border: `1px solid ${token.borderL2}`,
+              borderRadius: 6,
+              padding: '8px 10px',
+              wordBreak: 'break-word',
+            },
+          },
+          h(
+            'div',
+            { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+            h('span', { style: metaStyle }, t('mineModeLabel')),
+            ...RESERVED_SECTION_MODES.map((choice) =>
+              h(
+                UI.Button,
+                {
+                  'data-action': 'mine-mode',
+                  'data-mine-mode-choice': choice,
+                  'data-mine-mode-active': String(mineMode === choice),
+                  'aria-pressed': String(mineMode === choice),
+                  disabled: m.busy,
+                  onClick: () => a.setMineMode(choice),
+                },
+                t(choice === 'append' ? 'mineModeAppend' : 'mineModeReplace'),
+              ),
+            ),
+            // The stored side, in words: 「未设置」is a different fact from
+            // 「显式覆盖」, exactly as the interpolation switch's「继承」is (§16.1).
+            h(
+              'span',
+              {
+                'data-mine-mode-stored-label': mineStoredMode === null ? 'none' : mineStoredMode,
+                style: metaStyle,
+              },
+              mineStoredMode === null
+                ? t('mineModeStoredNone')
+                : fmt(t('mineModeStored'), {
+                    mode: t(mineStoredMode === 'append' ? 'mineModeAppend' : 'mineModeReplace'),
+                  }),
+            ),
+          ),
+          h(
+            'p',
+            { 'data-mine-mode-hint': mineMode, style: { margin: 0, ...metaStyle } },
+            t(mineMode === 'append' ? 'mineModeHintAppend' : 'mineModeHintReplace'),
+          ),
+          h('p', { style: { margin: 0, ...metaStyle } }, t('mineModeNote')),
+          layer === 'workspace'
+            ? null
+            : h(
+                'p',
+                { 'data-warning': 'mine-mode-bottom', style: { margin: 0, fontSize: 12, color: token.stateWarn } },
+                t('mineModeBottomNote'),
+              ),
+          (mineStoredMode ?? RESERVED_SECTION_DEFAULT_MODE) !== mineMode
+            ? h(
+                'p',
+                { 'data-warning': 'mine-mode-dirty', style: { margin: 0, fontSize: 12, color: token.stateWarn } },
+                t('mineModeDirty'),
+              )
+            : null,
+        ),
+        foreignDraft === null
+          ? null
+          : h(
+              'div',
+              {
+                'data-warning': 'mine-draft-elsewhere',
+                'data-mine-draft-scope': foreignScopeName,
+                'data-mine-draft-chars': String(foreignDraft.chars),
+                style: { margin: 0, display: 'flex', flexDirection: 'column', gap: 4, wordBreak: 'break-word' },
+              },
+              h(
+                'p',
+                { style: { margin: 0, fontSize: 12, color: token.stateWarn } },
+                fmt(t('mineDraftElsewhere'), { scope: foreignScopeName, chars: foreignDraft.chars }),
+              ),
+              h(
+                UI.Button,
+                {
+                  'data-action': 'mine-drop-foreign-draft',
+                  'data-mine-drop-scope': foreignScopeName,
+                  disabled: m.busy,
+                  onClick: a.dropForeignDraft,
+                },
+                t('mineDraftElsewhereDrop'),
+              ),
+            ),
         h(
           'label',
           { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
           h('span', { style: metaStyle }, t('mineTextLabel')),
           h(UI.Textarea, {
             'data-role': 'mine-text',
+            // g-056: the box says whether it holds unsaved text (`draft`) or the
+            // target's stored value (`stored`), so "my text is gone" is
+            // answerable without reading any copy.
+            'data-mine-text-source': textSource,
             value: m.mineText,
             onChange: a.setMineText,
             rows: 10,
             placeholder: t('minePlaceholder'),
           }),
         ),
+        // g-056: the draft's own scope, read from the draft rather than from the
+        // current view — so a「查看范围」change cannot make the box look like it
+        // belongs to the scope it just moved to.
+        draftScope === null
+          ? null
+          : h(
+              'p',
+              { 'data-mine-draft-scope': draftScopeName, style: { margin: 0, ...metaStyle } },
+              fmt(t('mineDraftScope'), { scope: draftScopeName }),
+            ),
         h(
           'p',
           {
@@ -6312,6 +6895,12 @@ window.__ModuleLoader__.load({
      * selector every tab shares. Everything else moved into the tab that owns
      * it, which is what makes the page short again.
      *
+     * Since g-055 that selector is not a third card floating above the tabs: it
+     * is rendered as the header of the「我的 Prompt」block
+     * ({@link renderPromptBlock}), which is the only surface it writes. The
+     * position is unchanged — it is still above the tab bar, still one
+     * instance, still the one place the scope is changed.
+     *
      * @param t - the bound translator for this namespace.
      * @param m - the page model.
      * @param a - the page actions.
@@ -6340,7 +6929,10 @@ window.__ModuleLoader__.load({
       const updateNotice = renderUpdateNotice(t, m, a);
       if (updateNotice !== null) children.push(updateNotice);
       children.push(renderStatusLine(t, m, a));
-      children.push(renderSession(t, m, a));
+      // g-055: the scope card is the header of the「我的 Prompt」block
+      // (see renderPromptBlock), not a page-level card of its own. It stays
+      // above the tabs, and the tab bar still keeps the last-but-one slot.
+      children.push(renderPromptBlock(t, m, a));
       children.push(
         h(
           'div',
@@ -6546,13 +7138,18 @@ window.__ModuleLoader__.load({
       const [snap, setSnap] = React.useState({ phase: 'loading', data: null, error: null });
       const [ovs, setOvs] = React.useState({ phase: 'loading', data: null, error: null });
       const [reload, setReload] = React.useState(0);
-      // 「我的 Prompt」: the selected layer, the user's unsaved draft (keyed by
-      // layer+session so switching layers cannot carry a draft across), and the
-      // last operation's outcome. `mineDraft === null` means "show what is
-      // stored", which is what makes a fresh load, a layer switch and a
-      // post-save reload all correct without clobbering typing.
+      // 「我的 Prompt」: the selected layer, the user's unsaved drafts, and the
+      // last operation's outcome.
+      //
+      // g-056: the drafts are a small map **keyed by write target**
+      // (`mineDraftKeyOf` — `user`, or `workspace:` + the workspace root), not
+      // one slot keyed by layer+session. One slot is what made a「查看范围」change
+      // miss the key and silently drop the text, and it also meant typing in a
+      // second scope destroyed the first scope's text (review R2). A target with
+      // no entry shows what is stored, which keeps a fresh load, a layer switch
+      // and a post-save reload correct without clobbering typing.
       const [mineLayer, setMineLayer] = React.useState('user');
-      const [mineDraft, setMineDraft] = React.useState(null);
+      const [mineDrafts, setMineDrafts] = React.useState({});
       const [mineStatus, setMineStatus] = React.useState({ kind: 'idle', error: null });
       // Revision 9: the switch's own request state. Kept apart from
       // `mineStatus` because the switch is a config-level fact with its own
@@ -7060,14 +7657,86 @@ window.__ModuleLoader__.load({
       const incoming = incomingNames(snapshot);
 
       // ---- 「我的 Prompt」: the reserved section's stored value and its state
-      // The draft is keyed by layer+session, so a draft typed for `user` is not
-      // shown as if it were the workspace layer's, and switching back restores
-      // it rather than losing it.
-      const mineKey = `${mineLayer}|${sessionArg === null ? '' : sessionArg}`;
+      // g-056: the draft is keyed by the **write target**, so a draft typed for
+      // `user` is not shown as if it were the workspace layer's, and switching
+      // back restores it rather than losing it — while a「查看范围」change that
+      // does not move the target (the same workspace, or any session at all on
+      // the user layer) no longer takes the text off the screen.
+      const mineWorkspaceRoot = workspaceRootOfSession(wsSeat.items, sessionArg);
+      const mineKey = mineDraftKeyOf(mineLayer, sessionArg, mineWorkspaceRoot);
+      // The draft records the scope it was typed in as **data**, never as
+      // localized copy: no key may be produced on the component's own path (a
+      // translator that throws must still land in the failure card).
+      const mineScope = { layer: mineLayer, session: sessionArg, root: mineWorkspaceRoot };
+      /**
+       * The readable name of one recorded draft scope. It is called from event
+       * handlers only — never from this component's own render path, where a
+       * throwing `t` has to reach the failure card instead.
+       */
+      const draftScopeNameOf = (scope) =>
+        scope === null || scope === undefined ? '' : mineScopeNameOf(t, scope.layer, scope.session, seat.rows);
       const mineStored = reservedTextOf(ovs.data, mineLayer);
+      // g-058: the mode **this layer's file** stores (`null` = the layer states
+      // none), read from the same per-layer view as the text (g-054).
+      const mineStoredMode = reservedModeOf(ovs.data, mineLayer);
       const mineConfigured = mineStored !== null && mineStored.length > 0;
-      const mineText =
-        mineDraft !== null && mineDraft.key === mineKey ? mineDraft.text : mineStored === null ? '' : mineStored;
+      const mineEntry = mineDrafts[mineKey] ?? null;
+      const mineText = mineEntry === null ? (mineStored === null ? '' : mineStored) : mineEntry.text;
+      /**
+       * g-058: the mode the box is showing — the draft's while one exists, the
+       * stored one otherwise. A layer that states no mode reads as「覆盖」, which
+       * is what its entry already did and what a save would write again; the
+       * *display* still tells「未设置」from「显式覆盖」separately (the stored-mode
+       * line below), exactly as the interpolation switch does (§16.1).
+       */
+      const mineMode =
+        mineEntry === null ? (mineStoredMode ?? RESERVED_SECTION_DEFAULT_MODE) : draftModeOf(mineEntry);
+      /**
+       * g-056 (review R1): the draft of **another** write target that is still
+       * unsaved work there. It is neither shown in this box nor allowed to be
+       * silently written over, so it is stated and the save below refuses while
+       * it exists.
+       *
+       * Three facts each disqualify a draft, and all three are needed — and since
+       * g-058 each of them compares the draft's **mode** as well as its text,
+       * because a draft that differs only in mode is still work a save would
+       * overwrite:
+       *   - it holds nothing this save would write (no text, and the default
+       *     mode), or
+       *   - it equals what this save would write — same text, same mode (nothing
+       *     can be lost), or
+       *   - it equals `baseline`/`baselineMode`, what this page last **wrote** to
+       *     that target (the post-save draft §13.1 deliberately keeps, so a
+       *     successful save followed by a layer/scope switch is no longer
+       *     reported as unsaved work), or
+       *   - it equals that target's own stored entry — text **and** mode — read
+       *     from the layer's own view (`layerReservedTextOf` /
+       *     `layerReservedModeOf`, never `merged`).
+       * When the target is a workspace this request never read, none of the last
+       * two can be decided: the draft stays「possibly unsaved」and is reported —
+       * warning about text that may already be saved is the tolerable error,
+       * silently overwriting it is not.
+       */
+      const mineForeignDraft = (() => {
+        for (const key of Object.keys(mineDrafts)) {
+          if (key === mineKey) continue;
+          const draft = mineDrafts[key];
+          if (draft === null || draft === undefined || draft.text.length === 0) continue;
+          if (draft.text === mineText && draftModeOf(draft) === mineMode) continue;
+          if (
+            draft.text === (draft.baseline ?? null)
+            && draftModeOf(draft) === (draft.baselineMode ?? RESERVED_SECTION_DEFAULT_MODE)
+          ) {
+            continue;
+          }
+          const own = draftTargetOf(ovs.data, draft.scope, mineWorkspaceRoot);
+          if (own.known && own.text === draft.text && (own.mode ?? RESERVED_SECTION_DEFAULT_MODE) === draftModeOf(draft)) {
+            continue;
+          }
+          return { key, text: draft.text, scope: draft.scope ?? null };
+        }
+        return null;
+      })();
       // g-021: the panel separates *certainly frozen* from *unknown*, and the
       // verdict is the host's alone — `frozenState` reads the snapshot's
       // `frozen` / `frozenScope` (§2.4/§7.2), which covers both the certain
@@ -7097,9 +7766,10 @@ window.__ModuleLoader__.load({
             ? 'saved'
             : mineStatus.kind === 'error'
               ? 'error'
-              : !mineConfigured && mineText.length === 0
+              : !mineConfigured && mineText.length === 0 && mineMode === RESERVED_SECTION_DEFAULT_MODE
                 ? 'unconfigured'
                 : mineStored !== mineText
+                    || (mineStoredMode ?? RESERVED_SECTION_DEFAULT_MODE) !== mineMode
                   ? 'dirty'
                   : 'idle';
       // ---- Revision 9: the variable-substitution switch, as the host reports
@@ -7172,6 +7842,25 @@ window.__ModuleLoader__.load({
        * longer exists.
        */
       /**
+       * g-056 (review R2/R3): remove **one** write target's draft.
+       *
+       * Every local reset goes through this — 「取消」, 「恢复默认」, the g-050
+       * reconciliation and「放弃那份草稿」— so none of them can clear a draft that
+       * belongs to another target (R3), and typing in a second target leaves the
+       * first target's text where it is (R2). No request, no disk byte: this is
+       * view state only.
+       * @param key - the write-target key whose draft to drop.
+       */
+      const dropMineDraft = (key) => {
+        setMineDrafts((current) => {
+          if (current[key] === undefined) return current;
+          const next = { ...current };
+          delete next[key];
+          return next;
+        });
+      };
+
+      /**
        * Reconcile the「我的 Prompt」draft after an operation changed a layer's
        * stored text **behind the editor's back** (g-050: rollback, a whole-layer
        * reset, or an applied import).
@@ -7190,10 +7879,14 @@ window.__ModuleLoader__.load({
        *   differing draft was kept.
        */
       const settleMineDraft = () => {
-        if (mineDraft === null || mineDraft.key !== mineKey) return true;
+        if (mineEntry === null) return true;
         const previous = mineStored === null ? '' : mineStored;
-        if (mineDraft.text !== previous) return false;
-        setMineDraft(null);
+        if (mineEntry.text !== previous) return false;
+        // g-058: the mode is part of the comparison. A draft that still matches
+        // the stored text but states the *other* mode is unsaved work — dropping
+        // it would take the user's mode choice off the screen.
+        if (draftModeOf(mineEntry) !== (mineStoredMode ?? RESERVED_SECTION_DEFAULT_MODE)) return false;
+        dropMineDraft(mineKey);
         return true;
       };
 
@@ -7470,6 +8163,12 @@ window.__ModuleLoader__.load({
        * would be a silent edit of the thing they are configuring — and a
        * workspace write without a session is refused here, with the same code
        * the Host would answer, instead of being sent to be rejected.
+       *
+       * g-056: it is also refused while the user has unsaved text in **another**
+       * scope (`mineForeignDraft`). In that state the box is showing this
+       * target's *stored* text, so sending it would be the silently-successful
+       * overwrite with `""` this goal exists to remove — the request is not sent
+       * at all, and the notice names the scope that really holds the text.
        */
       const saveMine = async () => {
         const layer = mineLayer;
@@ -7480,11 +8179,25 @@ window.__ModuleLoader__.load({
           setNotice({ tone: 'error', text: errorText(t, { code: 'workspace-unresolved' }) });
           return;
         }
+        if (mineForeignDraft !== null) {
+          setMineStatus({ kind: 'idle', error: null });
+          setNotice({
+            tone: 'error',
+            text: fmt(t('mineSaveBlockedDraftElsewhere'), {
+              scope: draftScopeNameOf(mineForeignDraft.scope),
+              chars: mineForeignDraft.text.length,
+            }),
+          });
+          return;
+        }
         setMineStatus({ kind: 'saving', error: null });
         setBusy(true);
         const body = {
           layer,
-          section: { name: RESERVED_SECTION_NAME, action: RESERVED_SECTION_ACTION, text: mineText },
+          // g-058: the mode travels with the text in the same one entry — the
+          // body still names one layer, so the other layer's file is not part of
+          // this request at all.
+          section: { name: RESERVED_SECTION_NAME, action: mineMode, text: mineText },
         };
         if (sessionArg !== null) body.session = sessionArg;
         const result = await requestJson(OVERRIDES_PATH, {
@@ -7500,8 +8213,13 @@ window.__ModuleLoader__.load({
           return;
         }
         // Keep the draft: it is what was just written, so the box does not
-        // flicker back to the stored value while the re-read is in flight.
-        setMineDraft({ key: mineKey, text: mineText });
+        // flicker back to the stored value while the re-read is in flight — and
+        // `baseline` records that this page really wrote exactly this text there,
+        // so the kept draft is never later reported as unsaved work (R1).
+        setMineDrafts((current) => ({
+          ...current,
+          [mineKey]: { text: mineText, mode: mineMode, scope: mineScope, baseline: mineText, baselineMode: mineMode },
+        }));
         // Revision 12 (audit F2): an accepted save may still carry advisories —
         // a registered reference the probe had no value for. They are shown, not
         // dropped, and they are not an error: the write did happen.
@@ -7532,14 +8250,26 @@ window.__ModuleLoader__.load({
        * shows the layer's already stored text again. It is deliberately not a
        * write: no request, no disk byte, and unlike 「恢复默认」 nothing that was
        * ever stored is destroyed, so it asks nothing first. Resetting the draft
-       * is the whole operation: a draft belongs to one layer+session key
-       * (`mineKey`), so a draft typed for another key is left where it is, and
-       * the state falls back to whatever the stored value says (`idle`, or
-       * `unconfigured` for a layer that has none). Only reachable while the
+       * is the whole operation: a draft belongs to one **write target**
+       * (`mineKey`, g-056), so a draft typed for another key is left where it
+       * is, and the state falls back to whatever the stored value says (`idle`,
+       * or `unconfigured` for a layer that has none). Only reachable while the
        * panel is `dirty`, which excludes `saving` / `saved` / `error`.
        */
       const cancelMine = () => {
-        setMineDraft(null);
+        dropMineDraft(mineKey);
+      };
+
+      /**
+       * g-056: throw away the draft that belongs to **another** scope, so the
+       * save above can go through. It is the explicit way out of the block —
+       * like「取消」 it is a local state reset (no request, no byte), and it is
+       * only offered beside the notice that names the scope being dropped. R2/R3:
+       * it names the exact target it drops rather than clearing the store.
+       */
+      const dropForeignDraft = () => {
+        if (mineForeignDraft === null) return;
+        dropMineDraft(mineForeignDraft.key);
       };
 
       /**
@@ -7559,7 +8289,9 @@ window.__ModuleLoader__.load({
           setNotice({ tone: 'error', text: errorText(t, result.error) });
           return;
         }
-        setMineDraft(null);
+        // R3: only **this** write target's draft goes with the value it deleted;
+        // another target's unsaved text is not this operation's to destroy.
+        dropMineDraft(mineKey);
         setMineStatus({ kind: 'idle', error: null });
         setNotice({
           tone: 'success',
@@ -8061,6 +8793,49 @@ window.__ModuleLoader__.load({
 
       const closeScope = () => setScopeOpen(false);
 
+      /**
+       * g-058 (Revision 36): write one of the editor's two facts into this
+       * target's draft, leaving the other as it was.
+       *
+       * Both editors — the text box and the「覆盖 / 叠加」control — produce the
+       * same draft shape (`{text, mode, scope, baseline, baselineMode}`), and
+       * neither may erase the other's edit: typing must not reset the mode to
+       * the stored one, and choosing a mode must not blank the text. The
+       * fallback for whichever field the patch omits is **what the box is
+       * showing now** — the existing draft when there is one, this target's
+       * stored value otherwise — so a mode switch on an untouched box produces a
+       * draft that differs from the file in exactly one field.
+       *
+       * `baseline`/`baselineMode` record what this page last **wrote** to this
+       * target and are carried across edits (g-056 R1).
+       * @param patch - `{text?}` or `{mode?}`.
+       */
+      const updateMineDraft = (patch) => {
+        setMineDrafts((current) => {
+          const existing = current[mineKey] ?? null;
+          const text = patch.text !== undefined
+            ? patch.text
+            : existing === null
+              ? (mineStored === null ? '' : mineStored)
+              : existing.text;
+          const mode = patch.mode !== undefined
+            ? patch.mode
+            : existing === null
+              ? (mineStoredMode ?? RESERVED_SECTION_DEFAULT_MODE)
+              : draftModeOf(existing);
+          return {
+            ...current,
+            [mineKey]: {
+              text,
+              mode,
+              scope: mineScope,
+              baseline: existing === null ? null : existing.baseline ?? null,
+              baselineMode: existing === null ? null : existing.baselineMode ?? null,
+            },
+          };
+        });
+      };
+
       const actions = {
         refresh: () => setReload((value) => value + 1),
         // The「更改」switch: the same button opens and shuts the picker, and
@@ -8075,12 +8850,26 @@ window.__ModuleLoader__.load({
         },
         setMineText: (event) => {
           const value = event && event.target ? String(event.target.value) : '';
-          setMineDraft({ key: mineKey, text: value });
+          // g-056: the draft carries its own scope, so the box can say whose text
+          // it holds after the「查看范围」moved on — and R2: the entry is written
+          // into a map keyed by write target, so typing here cannot destroy the
+          // draft another target is holding. g-058: the mode it was typed under
+          // survives the edit (see `updateMineDraft`).
+          updateMineDraft({ text: value });
+          setMineWarnings([]);
+          setMineStatus({ kind: 'idle', error: null });
+        },
+        // g-058 (Revision 36): the「覆盖 / 叠加」choice. It is view state until
+        // 「保存」 — the file is written by `saveMine` alone, with one layer and
+        // one entry — so switching the mode back and forth never touches a disk.
+        setMineMode: (value) => {
+          updateMineDraft({ mode: value === 'append' ? 'append' : RESERVED_SECTION_DEFAULT_MODE });
           setMineWarnings([]);
           setMineStatus({ kind: 'idle', error: null });
         },
         saveMine,
         cancelMine,
+        dropForeignDraft,
         toggleMineInterpolate,
         setMineInterpolateState,
         // g-030: the update banner's dismissal and the switch in 「高级」.
@@ -8341,6 +9130,20 @@ window.__ModuleLoader__.load({
         tab,
         mineLayer,
         mineText,
+        // g-058 (Revision 36): the mode the box is showing (`replace` | `append`)
+        // and the mode this layer's file stores (`null` = the layer states none).
+        // The pair is what `data-mine-mode` and `data-mine-mode-stored` report.
+        mineMode,
+        mineStoredMode,
+        // g-056: which side of the box is being shown (`draft` | `stored`), the
+        // readable scope the shown draft belongs to (or null), and the draft
+        // that belongs to another scope and therefore blocks a save.
+        mineTextSource: mineEntry === null ? 'stored' : 'draft',
+        mineDraftScope: mineEntry === null ? null : mineEntry.scope ?? null,
+        mineForeignDraft:
+          mineForeignDraft === null
+            ? null
+            : { scope: mineForeignDraft.scope ?? null, chars: mineForeignDraft.text.length },
         mineConfigured,
         mineState,
         mineError: mineStatus.error,

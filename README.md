@@ -10,7 +10,7 @@ write your own instructions into it, and roll back a bad edit — all **without 
 install**.
 
 ![license](https://img.shields.io/badge/license-MIT-blue)
-![version](https://img.shields.io/badge/version-0.2.0-blue)
+![version](https://img.shields.io/badge/version-0.2.1-blue)
 ![dsh](https://img.shields.io/badge/DSH-%3E%3D0.1.7--rc.2%20%3C0.2.2--0-blueviolet)
 ![deps](https://img.shields.io/badge/dependencies-0-brightgreen)
 
@@ -41,7 +41,7 @@ Settings gains a **"Prompt settings"** pane (`id: prompt-setting`) with five top
 
 | Tab | What you can do |
 | --- | --- |
-| **My Prompt** | The only write surface: write your own system-level instructions (pick a layer → edit → save), plus a one-click "Restore default". This text is **placed after every built-in section**. |
+| **My Prompt** | The only write surface: write your own system-level instructions (pick a layer → edit → save), plus a one-click "Restore default". This text is **placed after every built-in section**. The "View scope" row above the tabs is this block's header: it decides which layer a save lands in, and it is the only place the scope is changed (the panel repeats the current target as a read-only line). |
 | **Prompt overview** | Read-only: the assembled section list (status marks / search / filters / copy), the full text, and a `base ↔ effective` diff — so you can see exactly what your change did. |
 | **Version history** | The history list (fixed-height, internally scrolling, paged — 50 per page by default) and line-level version diffs. The log has its **own scope selector** (workspace dimension), independent of the "View scope" selector above: the user layer's log is global and is never sliced by session. |
 | **Backup & restore** | Export the configuration for download, and preview an import (review the change plan before anything is written). |
@@ -106,7 +106,7 @@ synthetic `-0` floor — and the **`0.2.0` and `0.2.1` releases themselves** are
 everything after it are out, because a new minor is unverified). Node `>= 22` is needed only to run the
 tests or to develop.
 
-**The registry is the primary way in** (this package is published; npm `latest` is `0.1.5` — this repository is `0.2.0`, and the two meet when it is published):
+**The registry is the primary way in** (this package is published; npm `latest` is `0.1.5` — this repository is `0.2.1`, and the two meet when it is published):
 
 ```sh
 dsh plugin --profile <name> add dsh-prompt-setting
@@ -215,8 +215,10 @@ and install, bilingual — is in [`packages/dsh-prompt-setting/README.md`](./pac
 - **The write surface is narrow**: only the "My Prompt" section is writable. Every other built-in section
   is **read-only** — `PUT`, single-name `DELETE` and `import` all return `403 write-locked` (and touch not
   one byte of the files when they refuse).
-- **Two layers**: a user-level default plus a workspace-level override, **workspace wins**; handy for
-  "one global set, plus a few extra lines in this project".
+- **Two layers**: a user-level default plus a workspace-level override. **Cover** (the default) lets the
+  workspace text replace the user text; **Stack** makes the workspace text follow the user text, one
+  blank line apart, so both reach the prompt. Handy for "one global set, plus a few extra lines in this
+  project".
 - **Installed but empty = not installed**: with no text, the section contributes nothing to the final
   prompt and the rendering is byte-for-byte identical.
 - **Where the data lives**: only the plugin's own data directory (one user-level and one workspace-level
@@ -333,7 +335,7 @@ README's "For maintainers" section; the detailed measurements are in
 | [`packages/dsh-prompt-setting/README.md`](./packages/dsh-prompt-setting/README.md) | users / developers | package summary and features (bilingual), install, maintainer notes, troubleshooting |
 | [`CONTRACT.md`](./packages/dsh-prompt-setting/CONTRACT.md) | developers | the frozen REST contract: every field, action enum, size limit and 4xx |
 | [`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) | developers | design trade-offs and measurements (including untested items and conclusions we had to retract) |
-| [`CHANGELOG.md`](./CHANGELOG.md) | users / developers | User-visible changes per release (bilingual; published — npm `latest` is 0.1.5, this repository is 0.2.0) |
+| [`CHANGELOG.md`](./CHANGELOG.md) | users / developers | User-visible changes per release (bilingual; published — npm `latest` is 0.1.5, this repository is 0.2.1) |
 
 ## 9. Status and roadmap
 
