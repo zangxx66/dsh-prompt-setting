@@ -732,11 +732,19 @@ window.__ModuleLoader__.load({
       stPath: '路径',
       stNone: '（无）',
       stReason: '原因',
-      stFrozenSession: '本会话已冻结',
-      stUnfrozenSession: '本会话未冻结',
+      stFrozenSession: '所选会话已冻结',
+      stUnfrozenSession: '所选会话未冻结',
       stFrozenGlobal: '全局装配已冻结',
       stUnfrozenGlobal: '全局装配未冻结',
-      stFrozenUnknown: '本会话冻结状态未知',
+      stFrozenUnknown: '所选会话的冻结状态未知',
+      // ---- g-052: say what "unknown" means, without attributing a cause.
+      // `running` in the session list is `agent.status === 'running'`, which is
+      // NOT `agentAvailable`: an idle session that just finished a turn has
+      // running=false and a live agent, so its frozen state *is* confirmable.
+      // Any wording about "not running / not open / ended" would contradict the
+      // ● marker the user sees in the list, so this copy stays cause-free.
+      stFrozenUnknownProbe: '无法探测该会话自己的装配。',
+      stFrozenUnknownNotFrozen: '这不等于未冻结；仍可编辑保存，只是不保证生效。',
       stBuild: '构建戳',
       stBuildSame: '与宿主一致',
       stBuildStale: '页面版本已过期',
@@ -955,15 +963,15 @@ window.__ModuleLoader__.load({
       // The `frozenScope: "global"` + session case is *unknown*, not frozen
       // (CONTRACT.md §2.4/§7.2): the panel may warn, but it may not claim the
       // session is frozen. Two of its own keys keep that distinction separate.
-      mineFrozenUnknownWarn: '冻结状态未知：本会话的装配无法确认',
+      mineFrozenUnknownWarn: '无法确认所选会话的装配是否被冻结',
       mineFrozenUnknownBody:
         '全局装配被 complete 段冻结，但选中的会话没有活动 agent，所以无法确认本会话是否同样冻结。文本仍会写入{layer}的配置；如果本会话确实被冻结，它就不会生效。',
       mineFrozenHowTo:
         '要让它生效：换用一个未声明 complete 的 agent preset（例如内置的默认 preset），或去掉当前 preset 里的 complete 声明，然后在本会话重新加载。',
       mineSavedFrozen: '已保存到{layer}，但本会话冻结中，不会生效。',
-      mineSavedUnknown: '已保存到{layer}；本会话冻结状态未知，若已冻结则不会生效。',
+      mineSavedUnknown: '已保存到{layer}；所选会话的冻结状态未知，若已冻结则不会生效。',
       savedNoticeFrozen: '已保存到{layer}，但本会话冻结中，本轮不会生效。',
-      savedNoticeUnknown: '已保存到{layer}；本会话冻结状态未知，若已冻结则本轮不会生效。',
+      savedNoticeUnknown: '已保存到{layer}；所选会话的冻结状态未知，若已冻结则本轮不会生效。',
       mineWorkspaceNeedsSession: '工作区层需要先选择一个会话；未选择时无法写入工作区层。',
       mineResetTitle: '恢复默认：删除{layer}的「我的 Prompt」',
       mineResetBody: '这会删除该层保存的文本、回到未配置状态。',
@@ -1220,11 +1228,16 @@ window.__ModuleLoader__.load({
       stPath: 'Path',
       stNone: '(none)',
       stReason: 'Reason',
-      stFrozenSession: 'This session is frozen',
-      stUnfrozenSession: 'This session is not frozen',
+      stFrozenSession: 'The selected session is frozen',
+      stUnfrozenSession: 'The selected session is not frozen',
       stFrozenGlobal: 'The global assembly is frozen',
       stUnfrozenGlobal: 'The global assembly is not frozen',
-      stFrozenUnknown: 'This session’s frozen state is unknown',
+      stFrozenUnknown: 'The selected session’s frozen state is unknown',
+      // g-052: see the zh table — no cause is attributed, because `running`
+      // (agent.status === 'running') is not `agentAvailable`.
+      stFrozenUnknownProbe: 'This session’s own assembly cannot be probed.',
+      stFrozenUnknownNotFrozen:
+        'That is not the same as "not frozen"; you can still edit and save, it is just not guaranteed to take effect.',
       stBuild: 'Build',
       stBuildSame: 'Matches the host',
       stBuildStale: 'This tab is stale',
@@ -1428,15 +1441,17 @@ window.__ModuleLoader__.load({
       // The `frozenScope: "global"` + session case is *unknown*, not frozen
       // (CONTRACT.md §2.4/§7.2): the panel may warn, but it may not claim the
       // session is frozen. Two of its own keys keep that distinction separate.
-      mineFrozenUnknownWarn: 'Frozen state unknown: the assembly for this session cannot be confirmed',
+      mineFrozenUnknownWarn: 'Cannot confirm whether the selected session’s assembly is frozen',
       mineFrozenUnknownBody:
         'The unscoped assembly is frozen by a complete section, but the selected session has no active agent, so whether this session is frozen cannot be confirmed. The text is still written to the {layer} config; if this session is frozen too, it will not take effect.',
       mineFrozenHowTo:
         'To make it take effect: switch to an agent preset that does not declare complete (the built-in default preset, for example), or drop the complete declaration from the current preset, and then reload this session.',
       mineSavedFrozen: 'Saved to {layer}, but this session is frozen, so it will not take effect.',
-      mineSavedUnknown: 'Saved to {layer}; this session may be frozen, in which case it will not take effect.',
+      mineSavedUnknown:
+        'Saved to {layer}; the selected session’s frozen state is unknown, so it may not take effect.',
       savedNoticeFrozen: 'Saved to {layer}, but this session is frozen; it will not take effect here.',
-      savedNoticeUnknown: 'Saved to {layer}; this session may be frozen, in which case it will not take effect here.',
+      savedNoticeUnknown:
+        'Saved to {layer}; the selected session’s frozen state is unknown, so it may not take effect here.',
       mineWorkspaceNeedsSession: 'The workspace layer needs a session; without one it cannot be written.',
       mineResetTitle: 'Restore default: delete the {layer} My Prompt',
       mineResetBody: 'This deletes the text stored in that layer and returns it to unconfigured.',
@@ -3975,6 +3990,31 @@ window.__ModuleLoader__.load({
                 style: { margin: '8px 0 0', fontSize: 12, color: token.stateWarn, wordBreak: 'break-word' },
               },
               `${t('stFrozenUnknown')}${fz.reason ? ` — ${t('stReason')}: ${fz.reason}` : ''}`,
+            )
+          : null,
+        // g-052: the "unknown" verdict carries its own two explanation lines.
+        // Separate paragraph nodes (not one paragraph, not a line-break element)
+        // so each sentence is independently addressable, and only under
+        // `unknown` — a certain verdict (frozen / unfrozen) must never show
+        // either of them.
+        fz.kind === 'unknown' && !fz.pending
+          ? h(
+              'p',
+              {
+                'data-warning': 'frozen-unknown-probe',
+                style: { margin: '4px 0 0', fontSize: 12, color: token.stateWarn, wordBreak: 'break-word' },
+              },
+              t('stFrozenUnknownProbe'),
+            )
+          : null,
+        fz.kind === 'unknown' && !fz.pending
+          ? h(
+              'p',
+              {
+                'data-warning': 'frozen-unknown-not-frozen',
+                style: { margin: '2px 0 0', fontSize: 12, color: token.labelTertiary, wordBreak: 'break-word' },
+              },
+              t('stFrozenUnknownNotFrozen'),
             )
           : null,
         fz.kind === 'unknown' && fz.frozen

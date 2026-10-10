@@ -6605,3 +6605,59 @@ npm 读取、下载区域）、`### Changed 变更` 2 条（客户端按需分�
 - README 徽章的 shields.io 在线渲染未目视（离线），只核对了源文本；
 - 只改了表示「本包当前版本」的字面量与文档，**无产品逻辑改动** ⇒ 无行为回归面（本轮的行为改动是
   §126 的两处，已各自单独验证）。
+
+---
+
+## 128. g-052：冻结状态「未知」的文案改造（指代 + 不归因解释行，2026-10-10，基线 `e59b164` 隔离工作树）
+
+### 一、要解决的问题
+
+在「查看范围」里选中一个本进程从未激活过的会话时，状态条原样引用宿主英文实现术语
+（`session "xxx" has no active agent, ...`），且只写「本会话」——用户读不出**哪个**会话，也读不出
+「未知 ≠ 未冻结，仍可编辑保存」。判定逻辑（`frozenState()` 三态、宿主 `probeTarget`）**一字未改**，
+改的只是呈现。
+
+### 二、事实依据：`running` ≠ `agentAvailable`（本轮最重要的一条）
+
+- 会话列表的 `running` 字段 = `agent.status === 'running'`，与「有没有 live Agent」
+  （`agentAvailable`）**不是一回事**；
+- 刚聊完的空闲会话：`running === false`，但**有** live agent ⇒ 冻结状态**可以确认**；
+- 因此文案**严禁**归因成「未在运行 / 未打开 / 已结束」：用户拿列表里的 ● 标记一对照就矛盾。
+  **本次文案不归因**，只解释「未知」的含义与后果。
+
+### 三、文案决策（措辞由负责人逐字拍板，未自行改写）
+
+- 指代统一为**「所选会话」**：`stFrozenSession` / `stUnfrozenSession` / `stFrozenUnknown` /
+  `mineFrozenUnknownWarn` / `mineSavedUnknown` / `savedNoticeUnknown`（zh/en 一一对应）；
+- 新增两个 key（沿用 `stFrozen*` 命名）：`stFrozenUnknownProbe`（「无法探测该会话自己的装配。」）、
+  `stFrozenUnknownNotFrozen`（「这不等于未冻结；仍可编辑保存，只是不保证生效。」）；
+- `stFrozenGlobal` / `stUnfrozenGlobal` 描述全局装配，**保持不动**；
+- 状态条 unknown 分支：保留原有那行（含宿主 `frozenScopeReason` 英文原句，格式 ` — 原因: <原文>`），
+  其下**新增两个独立 `<p>`**，样式 `fontSize: 12` + `wordBreak: 'break-word'`（第一行 `stateWarn`、
+  第二行 `labelTertiary`）；两行只在 `fz.kind === 'unknown' && !fz.pending` 出现，certain 时绝不出现；
+  既有 `data-warning="frozen-unknown"` 等标记原样保留，新增节点带 `frozen-unknown-probe` /
+  `frozen-unknown-not-frozen` 供机器读取。
+
+### 四、测试（`test/` 只增行：`78 insertions(+), 0 deletions(-)`）
+
+- 新增 2 个用例：unknown 场景锁死两个新 key 的文本都出现、且整页文本**不含**「未在运行」/「未打开」/
+  「已结束」；certain（frozen + unfrozen）场景锁死这两个 key 与其标记都不出现；
+- 既有断言只增不减、不放宽；zh/en 键位一一对应（`client.test.mjs:1396` 的对齐测试自动覆盖）；
+- 顺带撞到一个真实盲点：新注释里写了 `<p>` / `<br>` 字样，被 `host.test.mjs:448` 的
+  「模块里不得出现 JSX/HTML 标签」正则（`/<[A-Za-z][^>]*>/`）判红 —— 注释改成「paragraph nodes /
+  line-break element」后转绿。**教训：在 `client.js` 里连注释都不能出现尖括号标签样式。**
+
+### 五、实测数字
+
+| 项 | 结果 |
+| --- | --- |
+| `node --test` | **742 pass / 0 fail / skipped 0**，exit 0 |
+| `node scripts/check-compat.mjs` | exit 0（只读诊断） |
+| `node scripts/client-chunks.mjs` | **4 file(s) match the CHUNK_STAMPS manifest**，exit 0（未改 chunk，无需 `--write`） |
+| `git diff --stat` | `client.js 52+/12-`、`test/client.test.mjs 78+/0-` |
+| 其它 chunk | `client.history.js` / `client.overview.js` / `client.advanced.js` / `client.transfer.js` 均未引用被改 key ⇒ 无需同步 |
+
+### 六、未验证项
+
+- **真机目视未做**：两行新文案的换行、与告警行的间距只按邻近元素样式取值，未在浏览器里看过；
+- 未改动任何判定逻辑，故无行为回归面。
