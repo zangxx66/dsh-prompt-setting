@@ -2085,9 +2085,13 @@ them carries no text.
   the section's value. The 口径 (the exact test, matching `statesNoReservedText`
   in `core/overrides.js`) is: the name is exactly the reserved one; the action is
   exactly `replace`; and the text is `undefined`, `null`, a missing field, or a
-  string that is empty after `String(text).trim()` — so `""`, `"   "` and
-  `"\n\t"` are all emptiness, and a value that only differs by surrounding
-  whitespace cannot blank a layer by accident;
+  **string** whose `trim()` is empty — so `""`, `"   "` and `"\n\t"` are all
+  emptiness, and a value that only differs by surrounding whitespace cannot blank
+  a layer by accident. The trim test is applied to strings only, exactly as
+  implemented: a `text` that is neither a string nor `null`/`undefined` (a
+  hand-edited `text: 5`, say) is **not** read as emptiness — it is left alone
+  and reaches the section as the value it is, which keeps this rule from quietly
+  widening into "any unusable value means unstated";
 - **the consequences.** User layer non-empty + workspace layer blank ⇒ the user
   text is what the assembly applies (`layer: "user"`); user blank + workspace
   non-empty ⇒ the workspace text, as before; **both blank ⇒ the section is not in

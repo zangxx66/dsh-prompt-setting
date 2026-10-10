@@ -6909,29 +6909,34 @@ npm 读取、下载区域）、`### Changed 变更` 2 条（客户端按需分�
   - 未动 `client.js` 的 `reservedTextOf`（g-054 分层读取）、g-056 的草稿键与写空防护、以及 `applyOverrides`
     本身——「空＝不声明」在合并层就消化掉了，写侧不需要配合改动。
 
-### 六、测试（纯新增 6 个用例，0 删除行）
+### 六、测试（合成用例 5 个：纯函数层 3 + 装配结果层 2，0 删除行）
+
+> **原则（评审 R1 后确立）：`node --test` 套件不得读取开发机上的任何文件。** 测试只使用测试装置写进**临时
+> 目录**的合成夹具；真机核对改由只读 dev 脚本承担（见 §七(c)），于是"文件缺失/形状不同 ⇒ 恒绿不计数或假红"
+> 这两类问题在仓库里不再可能。
 
 - `test/overrides.test.mjs`（+3，纯函数层）：① 用户文本 A + 工作区 `""` ⇒ 结果 `layer: 'user'`、文本 A，
   且 `applyOverrides` 真的把 A 写进段落；② 反向后工作区 B 生效、两层都空 ⇒ `overrides` 为空、`changed: false`；
   两层非空仍按原优先级被工作区覆盖；③ `""` / `"   "` / `"\n\t "` / `null` / `undefined` / 缺 `text` 六种
   拼法逐条断言「不会清空另一层」「单独存在时零贡献」；④ **兼容性显式断言**：`hide` 仍隐藏、保留段/普通段的空
-  `append` 仍追加、**普通段空文本仍显式置空且工作区层仍覆盖**（防止将来误扩大适用范围）；
-- `test/route.test.mjs`（+3，装配结果层）：⑤ 真实两层文件（测试装置写盘）+ snapshot handler ⇒
-  `effective.sections` 该段 `text = 'USER MINE'`、`overrideLayer = 'user'`、`applied = true`、
-  `rendered` 以该文本结尾，且 `GET /overrides` 的 `merged` 只有用户层那条、`workspace.overrides`
-  仍显示自己文件里的空条目（g-054 分层视图不受影响）；⑥ 工作区非空仍覆盖 + 两层都空 ⇒ `applied: false`、
-  `overrideLayer: null`、不出现空段进入渲染；⑦ **真机文件证据**：真实用户层文件 + 合成空工作区层（见 §七）；
+  `append` 仍追加、**普通段空文本仍显式置空且工作区层仍覆盖**（防止将来误扩大适用范围）；⑤ **口径边界
+  （评审 R2）**：`text: 5` 这类非字符串值**不算**空值，条目保留并仍赢得同名冲突——与契约"trim 只作用于
+  字符串"逐字对齐；
+- `test/route.test.mjs`（+2，装配结果层，全部为合成夹具）：⑤ 两层配置经测试装置写进**临时目录**的两份真实
+  文件 + snapshot handler ⇒ `effective.sections` 该段 `text = 'USER MINE'`、`overrideLayer = 'user'`、
+  `applied = true`、`rendered` 以该文本结尾，且 `GET /overrides` 的 `merged` 只有用户层那条、
+  `workspace.overrides` 仍显示自己文件里的空条目（g-054 分层视图不受影响）；⑥ 工作区非空仍覆盖 + 两层都空
+  ⇒ `applied: false`、`overrideLayer: null`、不出现空段进入渲染；
 - **负向对照（决定性）**：临时把 `statesNoReservedText` 首行改成 `return false;`（其余全不动）⇒
-  `node --test test/overrides.test.mjs test/route.test.mjs` = **121 pass / 5 fail**，变红的正是新增的
-  ①②⑤⑥⑦ 五项（含装配结果层两项与真机用例；真机用例实测 `actual: [ 'workspace' ], expected: [ 'user' ]`，
-  即工作区那条空文本确实"赢"了）；恢复后 = **126 pass / 0 fail**。
+  `node --test test/overrides.test.mjs test/route.test.mjs` = **121 pass / 4 fail**，变红的正是 ①②③⑤ 四个
+  g-057 用例（③⑤ 是断言级失败，⑤ 的装配层实测 `actual: [ 'workspace' ], expected: [ 'user' ]`，即工作区
+  那条空文本确实"赢"了）；恢复后 = **125 pass / 0 fail**。
 
-### 七、真机数据证据（走宿主自己的代码路径）
+### 七、真机数据证据（走宿主自己的代码路径，但在测试套件之外）
 
 `/prompt-setting/*` 路由需鉴权（401），不能用 curl 取。改用**宿主自己的纯函数核**读**真实落盘文件**：
 `validateConfig(真实 JSON)` → `mergeLayers(userConfig, workspaceConfig)` → `applyOverrides([{保留段, text:''}])`。
-在 `test/route.test.mjs` 里落成常驻用例（仓库根经 `git rev-parse --git-common-dir` 解析，故在 worktree 内
-跑也能读到主树的那份文件；只读，不写任何真机文件）。
+仓库根经 `git rev-parse --git-common-dir` 解析，故在 worktree 内跑也能读到主树的那份文件；**全程只读**。
 
 **（a）改动生效时的瞬时快照（2026-10-10，修复后、提交前）**：
 
@@ -6944,36 +6949,72 @@ npm 读取、下载区域）、`### Changed 变更` 2 条（客户端按需分�
 即：工作区层是空文本时，合并结果只剩**用户层**那一条，装配后的 `effective` 段落文本 **384 字**，与用户层
 文件逐字相等——修复对象是真实数据，不是构造的 fixture。这正是"用户层 384 字在空工作区条目下重新进入装配"。
 
-**（b）真机文件随后被负责人改动，用例因此改成对数据不变的语义断言（踩坑留痕）**：首次提交后用同一套
-`node --test test/*.test.mjs` 复跑出现 **1 fail**，报 `expected '' / actual '修改dsh-graph卡片的状态前…'`——
-负责人在这段时间里编辑了这两份文件：工作区层的保留段从 `""` 变成了 39 字文本，用户层的 prompt 也从 384 字
-变为 343 字。**根因不是产品代码，而是我把"真机当时的文本"写成了断言**：真机文件是负责人的草稿空间，会变，
-把它钉进测试就等于让全量测试依赖外部可变状态。改用例为对数据**恒真**的两条语义断言后复跑全绿（761/761）：
+**（b）踩坑留痕：真机文件随后被负责人改动**。首次提交后用同一套 `node --test test/*.test.mjs` 复跑出现
+**1 fail**，报 `expected '' / actual '修改dsh-graph卡片的状态前…'`——负责人在这段时间里编辑了这两份文件：
+工作区层的保留段从 `""` 变成了 39 字文本，用户层的 prompt 也从 384 字变为 343 字。**根因不是产品代码，
+而是把"真机当时的文本"写成了断言**：真机文件是负责人的草稿空间、会变，把它钉进测试就是让全套测试依赖
+外部可变状态。
 
-- （a′）真实两层走真实核 ⇒ 生效文本 = `workspaceEntry.text.trim() === '' ? userText : workspaceEntry.text`，
-  layer 相应为 `user` / `workspace`：无论真机今天是什么内容都成立，且**仍然钉住优先级没被改动**；
-- （b′）**修复本体**：用户层用**真实文件**，只把工作区层的保留段合成成 `text: ""`（2026-10-10 生产形态的
-  原样复现）⇒ 合并结果只剩用户层那条，装配后 `effective.text` 与真实用户层文本**逐字相等**。
-  只合成"被测的那一侧"，故这条断言不可能靠两侧都是 fixture 而通过。当前实测（真机实时值）：
+**（c）评审 R1 的裁决与取舍：真机核对从测试套件里移出**。评审实测指出，即使改成"对数据恒真"的断言，
+把真机读取留在 `test/` 里仍然两头都错——文件缺失时走 `assert.ok(true)` ⇒ **恒绿且不计数**（clone/CI 上
+毫无约束力），文件形状不同 ⇒ **假红**。故采纳评审首选方案：
+
+- **测试套件只保留合成夹具**。`test/route.test.mjs` 的真机用例整段删除（连同只为它引入的 `repositoryRoot` /
+  `execFileSync` / `homedir` 导入），⑤⑥ 两个装配层用例本来就用测试装置的临时目录写盘，语义完全等价；
+  **任何 `test/*.test.mjs` 都不再读开发机文件**；
+- **真机核对改为只读 dev 脚本** `scripts/real-layers-check.mjs`（不参与 `node --test`）：默认读真机两份文件并
+  打印证据，`--require-fallback` 时才要求"生产形态"（工作区层保留段为空）。工作区层非空时它**打印优先级
+  结论而仍 exit 0**，故不因真机内容变化而失败；文件缺失/非法配置才 exit 1；
+- **脚本自证（不改用户任何文件）**：两个只读路径可被 `DSH_PS_REAL_USER_FILE` / `DSH_PS_REAL_WORKSPACE_FILE`
+  覆盖，于是在临时目录里复现"生产形态"并核对脚本自身：
 
 ```
-[g-057 真机证据] realWs= …/.dsh-prompt-setting/overrides.json
-                wsText= "修改dsh-graph卡片的状态前，先读取它的状态再修改，避免跨级或重复操作。"
-                liveLayer= workspace  userChars= 343  fallbackChars= 343
+$ node scripts/real-layers-check.mjs                      # 真机实时值（ws 层已有 39 字文本）
+  ws   层保留段  : action=replace text="修改dsh-graph卡片的状态前，…" chars=39
+  merged 层归属  : "workspace"    装配后文本 : chars=39
+  生产形态(ws 空): 否——真机 ws 层已有非空文本
+  ⇒ 工作区层保留段非空，按既有优先级覆盖用户层（Revision 35 未改优先级）   exit=0
+
+$ DSH_PS_REAL_USER_FILE=$T/user.json DSH_PS_REAL_WORKSPACE_FILE=$T/ws.json \
+    node scripts/real-layers-check.mjs --require-fallback          # $T 为临时目录副本
+  user 层保留段  : action=replace chars=343
+  ws   层保留段  : action=replace text="" chars=0
+  merged 层归属  : "user"         装配后文本 : chars=343
+  生产形态(ws 空): 是——本次修复的直接对象
+  ⇒ 工作区层保留段为空，装配生效的是用户层文本（g-057 修复的直接证据）   exit=0
 ```
 
-（`liveLayer= workspace` 即真机当前的非空工作区层仍按优先级覆盖；`fallbackChars= 343` 即合成为空后回退到
-真实的 343 字用户文本。）
+后者就是"生产形态下用户层文本重新进入装配"的可复跑直接证据（用真实用户层文本 343 字 + 合成空工作区层，
+与 (a) 的 384 字同构）；`--require-fallback` 在真机 ws 非空时按设计 exit 1，故它不能被用来掩盖失败。
 
 ### 八、实测证据与未验证项
 
 - `node --test test/overrides.test.mjs test/route.test.mjs test/integration.test.mjs` = exit 0；
-- `node --test test/*.test.mjs` = **761 pass / 0 fail / exit 0**（基线 755 + 本次新增 6；数字为第二个
-  commit `1a3bd46` 修正真机用例之后的复跑结果，见 §七(b)）；
-- `node scripts/client-chunks.mjs` = **4 file(s) match**，exit 0，未加 `--write`（本次只动 core/host，
-  4 个 `client.*.js` chunk 字节未变）；
+- `node --test test/*.test.mjs` = **760 pass / 0 fail / exit 0**（基线 755 + 本次新增 5；过程数：修复主体提交时
+  为 761，返工按评审 R1 把测试内的真机用例整段移除后为 760）；
+- **"测试不依赖开发机文件"的自证**（不改用户任何文件）：把 `HOME`/`USERPROFILE` 指向**空临时目录**后复跑
+  g-057 涉及的两个套件，结果与常规完全一致——
+
+```
+$ E=$(mktemp -d); HOME="$E" USERPROFILE="$E" node --test test/overrides.test.mjs test/route.test.mjs
+  ℹ tests 125   ℹ pass 125   ℹ fail 0        # 与常规运行逐项相同，未读任何开发机 profile
+$ E=$(mktemp -d); HOME="$E" USERPROFILE="$E" node --test test/*.test.mjs
+  ℹ tests 760   ℹ pass 759   ℹ fail 1
+  ✖ paths: $DSH_HOME wins, blank falls back to ~/.dsh, and cwd is never consulted
+```
+
+  空 HOME 下唯一的红是**既有**用例 `test/store.test.mjs:38`——它按设计断言"未设 `$DSH_HOME` 时回退到
+  `~/.dsh`"，空 HOME 是它自己的**前置条件**，与 g-057 无关，也不属于本次改动（未删改任何既有测试）；
+- `node scripts/client-chunks.mjs` = **4 file(s) match**，exit 0，未加 `--write`（本次只动 core/host/test/docs
+  与一个 dev 脚本，4 个 `client.*.js` chunk 字节未变）；
 - `CONTRACT.md` 新增 **Revision 35**（g-054=33、g-056=34）并在 §3 就地点明 `merged` 随之变化的性质；
-- **未验证（UNVERIFIED）**：真机目视未做（本改动无 UI 面，`effective.sections` 的文本已由用例 ⑦ 用真实
-  文件断言）；未在真实 DSH 宿主里重启验证一次回合装配（宿主重启不可由子代理执行，属主管/负责人复核范围）；
-- **风险**：只影响保留段且只影响「空 `replace`」这一种条目，两层的非空文本与所有其它段语义经既有 761 项
+- **未验证（UNVERIFIED）**：真机目视未做（本改动无 UI 面；装配层文本由 ⑤⑥ 两个合成用例经 snapshot handler
+  断言，真机数据由 `scripts/real-layers-check.mjs` 复核）；未在真实 DSH 宿主里重启验证一次回合装配（宿主重启
+  不可由子代理执行，属主管/负责人复核范围）；
+- **风险**：只影响保留段且只影响「空 `replace`」这一种条目，两层的非空文本与所有其它段语义经既有 760 项
   测试全绿覆盖；「两层都空」与「未配置」在渲染层仍字节一致（§15.2 的零贡献断言未动）。
+- **返工（评审 R2）**：`CONTRACT.md` 原写 `String(text).trim()`，实现是 `typeof text === 'string' && text.trim()`；
+  对校验后的合法输入等价，但对**手改 JSON 的非字符串标量**（如 `text: 5`）有差异。**以不扩大范围为准改文档**：
+  契约明确写成"trim 判定只作用于字符串；非字符串的非空值**不算**空值，原样进入段落"，并在
+  `test/overrides.test.mjs` 的"六种拼法"用例里补一条断言钉住（`text: 5` 不被读作空、仍赢得同名冲突），
+  实现未动。

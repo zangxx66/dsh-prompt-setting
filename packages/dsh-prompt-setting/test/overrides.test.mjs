@@ -229,6 +229,15 @@ test('g-057 mergeLayers: every blank spelling counts as stating nothing', () => 
   assert.deepEqual(mergeLayers(other, null).overrides.map((row) => [row.name, row.layer, row.text]), [
     ['project:alpha', 'user', '   '],
   ]);
+
+  // The trim test is applied to STRINGS only, and the rule must not widen into
+  // "any unusable value means unstated": a hand-edited non-string `text` is not
+  // emptiness, so the entry is kept and still wins the name clash. Asserted here
+  // because CONTRACT Revision 35 promises exactly this much and no more.
+  const nonString = { version: CONFIG_VERSION, overrides: [{ name: RESERVED, action: 'replace', text: 5 }] };
+  assert.deepEqual(mergeLayers(user, nonString).overrides.map((row) => [row.name, row.layer, row.text]), [
+    [RESERVED, 'workspace', 5],
+  ]);
 });
 
 test('g-057 mergeLayers: only a blank reserved `replace` is dropped — hide, append and other sections are unchanged', () => {
