@@ -1821,17 +1821,20 @@ the first one open by default; Revision 19 (g-038) split the old
 「历史与备份」 into 「版本历史」 and 「备份与恢复」, so there are five. Above them
 there are exactly three things: the
 title line — which carries the plugin version beside the heading since Revision
-17 (§13.8) — one line of deciding facts, and the session selector every tab
-shares — the selector itself is **one line** until「更改」is clicked (§13.7), so
-the tab bar and the tab panel are on the first screen.
+17 (§13.8) — one line of deciding facts, and the **「我的 Prompt」block whose
+header is the session selector every tab shares** — the selector itself is **one
+line** until「更改」is clicked (§13.7), so the tab bar and the tab panel are on
+the first screen.
 
-Since g-055 that selector is rendered **as the header of the「我的 Prompt」
-block** (§13.7, `data-region="prompt-block"`): the block carries the same
-heading the panel uses (`mineHeading`) plus one sentence saying what the scope
-decides, so the selector reads as the header of the write surface rather than as
-a page-wide setting of its own. Nothing about its contract changed — it is still
-above the tab bar, still one instance, and still the only place the scope is
-changed.
+Since g-055 that block is what the third thing *is* (§13.7,
+`data-region="prompt-block"`): the block wraps the selector in one container,
+carries the same leading rule as the mine panel, and states in one sentence what
+the scope decides, so the selector reads as the header of the write surface
+rather than as a page-wide setting of its own. The block deliberately has no
+heading of its own — the mine panel owns `mineHeading`, and a second copy above
+the tabs would list the same title twice. Nothing about the selector's contract
+changed — it is still above the tab bar, still one instance, and still the only
+place the scope is changed.
 
 | order | `data-tab-value` | tab | what it is |
 | --- | --- | --- | --- |
@@ -2662,10 +2665,11 @@ pinned rows + four lines of help), which pushed `data-region="tabs"` to
 with **no tab content visible**. The selector is therefore a disclosure.
 
 **The card is the header of one block (g-055).** The card is rendered inside
-`data-region="prompt-block"`, whose heading is `mineHeading` — the same key and
-the same `h3` level the mine panel uses — followed by one sentence saying what
-the scope decides. The mine panel states its own write target as a **read-only**
-line (`data-region="mine-target"`, `data-mine-target-layer` /
+`data-region="prompt-block"`, which carries one sentence saying what the scope
+decides (and, like the mine panel, the block's 3px leading rule). The block has
+**no heading of its own**: `mineHeading` is rendered once, by the mine panel, so
+the same title is not listed twice. The mine panel states its own write target
+as a **read-only** line (`data-region="mine-target"`, `data-mine-target-layer` /
 `data-mine-target-scope`) instead of making the reader look back above the tab
 bar. Nothing else changed: the collapse rule, the position (still above the tab
 bar) and every frozen marker below are exactly as they were, the card is still

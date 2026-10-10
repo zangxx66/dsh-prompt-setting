@@ -2621,6 +2621,96 @@ function collapsedScopeHeight(tree) {
   return vertical + minHeight + SCOPE_SUMMARY_LINE_PX;
 }
 
+/**
+ * One declared line of text, in px, for a node that states a `fontSize` but no
+ * `lineHeight`: the same "one line of slack" convention
+ * {@link SCOPE_SUMMARY_LINE_PX} uses, never below the font size itself.
+ */
+const CHROME_TEXT_LINE_PX = 22;
+
+/**
+ * The first-screen ceiling (g-055, review round 1) for everything **above the
+ * tab bar**, in px. Derived from the 1440×900 measurement the g-016 budget cites
+ * (CONTRACT §13.7): 900px of first screen, minus the tab bar's own row (~30px),
+ * minus the 560px of tab panel that must still be visible below it ⇒ 310px.
+ *
+ * {@link collapsedScopeHeight} measures the card alone; this is the half that
+ * covers the chrome around it — the title, the status line, and the「我的
+ * Prompt」block the card now heads. Without it, a line added above the tabs slips
+ * past every assertion. The real geometry is still measured in the settings
+ * shell by the supervisor (NOTES §94).
+ */
+const CHROME_BUDGET_PX = 900 - 30 - 560;
+
+/** One px value out of a declared style value. */
+function declaredPx(value) {
+  const n = Number.parseFloat(String(value === undefined ? '' : value));
+  return Number.isFinite(n) ? n : 0;
+}
+
+/** The vertical padding + margin one declared `padding` / `margin` shorthand states. */
+function declaredVerticalBox(style) {
+  const vertical = (shorthand) => {
+    const parts = String(shorthand === undefined ? '' : shorthand)
+      .trim()
+      .split(/\s+/)
+      .filter((part) => part.length > 0)
+      .map(declaredPx);
+    if (parts.length === 0) return 0;
+    if (parts.length <= 2) return parts[0] * 2;
+    return parts[0] + parts[2];
+  };
+  return vertical(style.padding) + vertical(style.margin);
+}
+
+/**
+ * The height one subtree must budget for, in px, from **declared styles only** —
+ * the same offline convention as {@link collapsedScopeHeight} (no layout engine,
+ * no fonts): vertical padding and margin, a `lineHeight` (or, for a line that
+ * states only a `fontSize`, one {@link CHROME_TEXT_LINE_PX} line), `minHeight`,
+ * a flex row's tallest child, and a column's stacked children plus its gaps.
+ *
+ * Wrapping rows may really be shorter than this: the budget is allowed to be too
+ * generous, never too optimistic.
+ * @param node - one rendered element.
+ * @returns the budgeted height in px.
+ */
+function declaredHeight(node) {
+  if (node === null || node === undefined || typeof node !== 'object' || node.type === undefined) return 0;
+  const style = node.props.style || {};
+  const box = declaredVerticalBox(style);
+  const minHeight = declaredPx(style.minHeight);
+  const line = declaredPx(style.lineHeight) || Math.max(declaredPx(style.fontSize), CHROME_TEXT_LINE_PX);
+  const content = Math.max(minHeight, line);
+  const kids = elementChildren(node);
+  if (kids.length === 0) return box + content;
+  const row = style.display === 'flex' && style.flexDirection !== 'column';
+  const gap = declaredPx(style.gap);
+  const stacked = kids.reduce((sum, kid, index) => sum + declaredHeight(kid) + (index > 0 ? gap : 0), 0);
+  return box + (row ? Math.max(content, ...kids.map(declaredHeight)) : Math.max(content, stacked));
+}
+
+/**
+ * Everything above `data-region="tabs"`, budgeted in px from declared styles:
+ * the page chrome the first screen must fit before any tab content can show
+ * (g-055, review round 1).
+ * @param tree - a rendered page tree.
+ * @returns the budgeted height in px.
+ */
+function chromeAboveTabsPx(tree) {
+  const root = oneBy(tree, 'data-plugin', 'dsh-prompt-setting');
+  const kids = elementChildren(root);
+  const tabBar = kids.findIndex((node) => node.props['data-region'] === 'tabs');
+  assert.ok(tabBar > 0, 'the tab bar is rendered below the chrome');
+  const style = root.props.style || {};
+  const gap = declaredPx(style.gap);
+  let total = declaredVerticalBox(style);
+  for (let index = 0; index < tabBar; index += 1) {
+    total += declaredHeight(kids[index]) + (index > 0 ? gap : 0);
+  }
+  return total;
+}
+
 test('client: the「查看范围」picker ships collapsed, with no body on screen', async () => {
   const page = makePage({
     useSessions: sessionsHook(WORKSPACE_SESSIONS),
@@ -2863,15 +2953,38 @@ test('client (g-055): 「查看范围」is the header of the「我的 Prompt」b
     'at most one degradation hint',
   );
 
-  // The block heading and the panel heading are the same key at the same level:
-  // that is what makes the two read as one block.
-  const blockHeading = oneBy(tree, 'data-role', 'prompt-block-heading');
-  const panelHeading = elementChildren(oneBy(tree, 'data-region', 'mine'))[0];
-  assert.equal(blockHeading.props.children, page.zh.mineHeading, 'the block is named after the write surface');
-  assert.equal(panelHeading.props.children, page.zh.mineHeading, 'and the panel keeps the same name');
-  assert.equal(blockHeading.type, panelHeading.type, 'same heading level');
-  assert.deepEqual(blockHeading.props.style, panelHeading.props.style, 'same heading style');
-  assert.ok(hasText(oneBy(tree, 'data-role', 'prompt-block-note'), page.zh.promptBlockNote), 'the block says what the scope decides');
+  // Review round 1: the block must NOT repeat the panel's title. A second
+  // same-level「我的 Prompt」two lines above the panel's own title weakened the
+  // "one block" reading and listed the same heading twice for a screen reader.
+  const mineHeadings = collect(
+    tree,
+    (node) => node.type === 'h3' && node.props.children === page.zh.mineHeading,
+  );
+  assert.equal(mineHeadings.length, 1, 'exactly one「我的 Prompt」heading on the page');
+  assert.equal(
+    elementChildren(oneBy(tree, 'data-region', 'mine'))[0],
+    mineHeadings[0],
+    'and that heading is the mine panel’s own title, not a block header',
+  );
+  const note = oneBy(tree, 'data-role', 'prompt-block-note');
+  assert.ok(hasText(note, page.zh.promptBlockNote), 'the block says what the scope decides');
+
+  // Review round 1: the new block content is inside the first-screen budget, not
+  // only the card — `declaredHeight` converts declared styles into px, and this
+  // asserts the sum of everything above the tab bar (title, status line, block).
+  const blockHeight = declaredHeight(block);
+  const chrome = chromeAboveTabsPx(tree);
+  assert.ok(
+    blockHeight >= declaredHeight(note) + declaredHeight(oneBy(tree, 'data-region', 'session')),
+    'the block budget counts the note line as well as the collapsed card',
+  );
+  assert.ok(
+    chrome <= CHROME_BUDGET_PX,
+    `the chrome above the tab bar budgets ${chrome}px, over the ${CHROME_BUDGET_PX}px ceiling`,
+  );
+  console.log(
+    `    g-055 chrome geometry: above the tab bar = ${chrome}px budget (${CHROME_BUDGET_PX}px), 「我的 Prompt」block = ${blockHeight}px`,
+  );
 
   // The panel states its own write target, read-only: no second way to change
   // the scope exists anywhere in the page.
@@ -8466,10 +8579,10 @@ const EN_REQUIRED_MARKERS = [
   'data-region=mine',
   'data-region=mine-layer',
   // g-055: the write-target line inside the panel, and the block whose header is
-  // the scope card above the tabs.
+  // the scope card above the tabs (the block carries the sentence, not a second
+  // title — review round 1).
   'data-region=mine-target',
   'data-region=prompt-block',
-  'data-role=prompt-block-heading',
   'data-role=prompt-block-note',
   'data-region=overview',
   'data-region=advanced',

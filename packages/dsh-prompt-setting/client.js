@@ -3273,10 +3273,16 @@ window.__ModuleLoader__.load({
      * rather than to the page at large.
      */
     const promptBlockBandStyle = { borderLeft: `3px solid ${token.stateBusiness}`, paddingLeft: 12 };
-    /** The block wrapper above the tabs: heading, one sentence, then the scope card. */
+    /** The block wrapper above the tabs: one sentence, then the scope card. */
     const promptBlockStyle = { ...promptBlockBandStyle, display: 'flex', flexDirection: 'column', gap: 6 };
-    /** The one sentence that ties the scope to the write surface. */
-    const promptBlockNoteStyle = { margin: 0, ...metaStyle, lineHeight: '18px' };
+    /**
+     * The one sentence that ties the scope to the write surface. Since the block
+     * carries no heading of its own (review round 1: a second「我的 Prompt」title
+     * two lines above the panel's own title repeated the name and the level),
+     * this line is what names the grouping, so it is a step darker than plain
+     * meta text.
+     */
+    const promptBlockNoteStyle = { margin: 0, ...metaStyle, lineHeight: '18px', color: token.labelSecondary };
 
     /**
      * Render one line of layer information.
@@ -5047,9 +5053,16 @@ window.__ModuleLoader__.load({
      * wrong was the reading, not the position: rendered bare it looked like a
      * page-wide setting of its own, while「我的 Prompt」— the only surface it
      * writes — looked like a separate block further down. This wrapper states
-     * the grouping instead: one block heading (`mineHeading`: the same key and
-     * the same `h3` level the mine panel uses, so the two read as one block),
-     * one sentence saying what the scope decides, and then the card itself.
+     * the grouping instead: one sentence saying what the scope decides, and then
+     * the card itself, both inside one container that carries the same leading
+     * rule the mine panel carries.
+     *
+     * The block deliberately has **no heading of its own** (review round 1): a
+     * second `h3`「我的 Prompt」two lines above the panel's own title repeated the
+     * same name at the same level, which both weakened the "one block" reading
+     * and listed the title twice in a screen reader's heading list. The panel,
+     * which owns the title, is the only place `mineHeading` is rendered; the
+     * sentence below carries the binding instead.
      *
      * The card keeps every frozen marker and its collapse rule exactly as they
      * were (`data-region="session"` / `"scope-summary"`, `data-scope-open`,
@@ -5065,7 +5078,6 @@ window.__ModuleLoader__.load({
       return h(
         'section',
         { key: 'prompt-block', 'data-region': 'prompt-block', style: promptBlockStyle },
-        h('h3', { key: 'heading', 'data-role': 'prompt-block-heading', style: headingStyle }, t('mineHeading')),
         h('p', { key: 'note', 'data-role': 'prompt-block-note', style: promptBlockNoteStyle }, t('promptBlockNote')),
         renderSession(t, m, a),
       );

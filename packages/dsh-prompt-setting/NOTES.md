@@ -6713,12 +6713,12 @@ advanced 整层 reset、backup 导出/导入 `?session=`）；③标签文案；
 「我的 Prompt」块的头部。不做 A（搬进 tab，作废 §13.0「every tab shares」）、不做 C（各 tab 多实例，
 与 g-038 冲突）、不做 B+（不给 backup/advanced 加只读范围行，另议）。
 
-### 二、实现（只改 `client.js` 主入口，`109+/4-`）
+### 二、实现（只改 `client.js` 主入口，含复核轮 1，相对基线 `121+/4-`）
 
 - 新增分组容器 `data-region="prompt-block"`（新函数 `renderPromptBlock`），把既有 scope 卡片包进去：
-  块头 `h3` 复用 `mineHeading`（与 mine 面板**同键同级同样式**，两处读作一块）、一行新文案
-  `promptBlockNote`（「这个范围决定「我的 Prompt」写到哪一层；改范围只在这里。」），其下才是
-  `data-region="session"` 卡片；
+  一行新文案 `promptBlockNote`（「这个范围决定「我的 Prompt」写到哪一层；改范围只在这里。」），
+  其下才是 `data-region="session"` 卡片。**块内不放标题**（复核轮 1 的裁决，见 §七）：`mineHeading`
+  只由 mine 面板渲染一次，避免同一标题同屏出现两次；
 - 卡片本身**一字未动**：折叠行为、`data-region="session"`/`"scope-summary"`、`data-scope-open`、
   `data-action="scope-toggle"`、`data-role="scope-summary-label"|"-hint"` 全部原样、仍各恰好一次
   （折叠态仍只有一个子节点 ⇒ 首屏预算断言不变）；
@@ -6741,12 +6741,22 @@ CHANGELOG 未动。
 ### 四、测试（`test/client.test.mjs` 只增行）
 
 - 新增 1 个用例：分组容器包含 scope 卡片；块仍在 `data-region="tabs"` 之前（页面级、仍在 tab 栏
-  之上）；冻结标记各恰好一次、降级提示至多一次；块头与面板标题同键/同级/同样式；面板内只读行随
-  `sessionArg`（选 a1）与 `mineLayer`（切 workspace）同步变化；只读行内无 `button`（无第二个入口）；
+  之上）；冻结标记各恰好一次、降级提示至多一次；**反向断言**——全树 `h3` 且文本为 `mineHeading`
+  的标题**恰好 1 个**且就是 mine 面板自己的标题（复核轮 1 要求：块内不得出现第二个同名标题）；
+  面板内只读行随 `sessionArg`（选 a1）与 `mineLayer`（切 workspace）同步变化；只读行内无
+  `button`（无第二个入口）；
+- **首屏几何离线预算**（复核轮 1 要求补）：新增 `chromeAboveTabsPx(tree)` + `declaredHeight(node)`
+  （纯声明样式折算：padding/margin + lineHeight/fontSize/minHeight + flex 行取最高子、列按堆叠加
+  gap），把 `data-region="tabs"` **之前**的全部 chrome 纳入断言，上限
+  `CHROME_BUDGET_PX = 900 − 30（tab 栏行）− 560（tab-panel 最少可见）= 310px`；另断言块的预算
+  ≥ note 行 + 折叠卡片的预算（把新增内容真的算进去，删掉 note 即红）。既有
+  `collapsedScopeHeight`（70px ≤ 80px）原样保留；
 - EN 扫描同步登记（只增）：`promptBlockNote`、`['mineTargetNote', {layer, scope}]` 进 copy 清单；
-  `data-region=prompt-block` / `data-region=mine-target` / `data-role=prompt-block-heading` /
-  `data-role=prompt-block-note` 进 `EN_REQUIRED_MARKERS`；既有断言只增不减、未放宽；
-- `test/client.test.mjs` diff：`97+/1-`，那 1 行删除只是把单行 `copy:` 数组改写为多行，属只增登记。
+  `data-region=prompt-block` / `data-region=mine-target` / `data-role=prompt-block-note` 进
+  `EN_REQUIRED_MARKERS`（复核轮 1 要求移除 `data-role=prompt-block-heading`）；既有断言只增不减、
+  未放宽；
+- `test/client.test.mjs` diff（相对基线，含复核轮 1）：`210+/1-`，那 1 行删除只是把单行 `copy:`
+  数组改写为多行，属只增登记。
 
 ### 五、实测数字
 
@@ -6756,10 +6766,29 @@ CHANGELOG 未动。
 | `node --test test/*.test.mjs` | **746 pass / 0 fail / skipped 0**，exit 0（全量基线 745 + 新增 1） |
 | `node scripts/client-chunks.mjs` | **4 file(s) match the CHUNK_STAMPS manifest**，exit 0（未改 chunk，无需 `--write`） |
 | `node --test test/client.test.mjs`（scope 几何日志） | `collapsed「查看范围」= 70px budget (80px)`，未变 |
+| `node --test test/client.test.mjs`（chrome 几何日志） | `above the tab bar = 220px budget (310px)`，「我的 Prompt」块 = 80px（复核轮 1 新增） |
 
 ### 六、未验证项
 
-- **真机 1440×900 目视未做**（本执行无浏览器）：分组视觉（左边线、块头与卡片的间距）与首屏几何
-  需主管真机复核；离线可断言的部分（预算 70px ≤ 80px、块在 tabs 之前、标记唯一）已由测试钉住；
-- 下方 mine 面板与上方块头在同一个 tab 下同时出现两个「我的 Prompt」标题，是「块头 + 面板标题」的
-  有意重复（同一 key、同一层级）；真机上是否读得顺，留给目视裁决。
+- **真机 1440×900 目视未做**（本执行无浏览器）：分组视觉（3px 左边线、note 行与卡片的间距）与首屏
+  几何需主管真机复核；离线可断言的部分（scope 卡片 70px ≤ 80px、tabs 之前 chrome 220px ≤ 310px、
+  块在 tabs 之前、标记唯一、标题唯一）已由测试钉住。
+
+### 七、复核轮 1（独立评审）返工
+
+评审结论：无 BLOCK、总判 UNVERIFIED；三条返工全部落实（同一个 worktree / 分支，新 commit）：
+
+1. **去掉重复标题（评审判定必须修）**：删掉 `renderPromptBlock` 里的 `h('h3', …, t('mineHeading'))`
+   与 `data-role="prompt-block-heading"`，并移除 `EN_REQUIRED_MARKERS` 里的对应登记；容器、3px 色带
+   与 note 全部保留，note 的色从 `labelTertiary` 提到 `labelSecondary`（块不再有标题，绑定改由这句话
+   承担）。测试改为**反向断言**：全树 `h3` 且文本 `=== mineHeading` 的节点恰好 1 个且属于 mine 面板。
+   负向对照：把删掉的块头 `h3` 加回去 ⇒ 该断言立刻变红（`exactly one「我的 Prompt」heading`）。
+   理由：同屏两个同名同级标题既削弱「一个块」的观感，也让屏幕阅读器的 heading 列表重复列出同一项，
+   与本次目标的意图相反；
+2. **首屏几何离线预算（评审风险 #1）**：新增 `declaredHeight` / `chromeAboveTabsPx`（口径与既有
+   `collapsedScopeHeight` 一致：只读声明样式，不用布局引擎），把 tabs 之前的全部 chrome 纳入断言，
+   上限 310px（900 − tab 栏 30 − tab-panel 可见 560）；实测 220px。同时断言块预算 ≥ note 行 + 卡片
+   预算，因此新增块内容不可能再「绕过全部断言」；
+3. **CONTRACT §13.0 措辞对齐**：第三项改为「the **「我的 Prompt」block whose header is the session
+   selector every tab shares**」，并删去 §13.7 段落里「块头用 `mineHeading`」的表述，改为「块本身
+   没有标题，`mineHeading` 只由面板渲染一次」；仍不加 Revision、不改既有语义。
