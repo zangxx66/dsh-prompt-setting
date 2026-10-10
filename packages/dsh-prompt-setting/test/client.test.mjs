@@ -3035,6 +3035,12 @@ test('client: the collapsed「查看范围」block is one row inside an 80px bud
   assert.equal(collect(row, (node) => node.type === 'p').length, 0, 'no paragraph can add a second line');
 
   const collapsedNodes = renderedNodeCount(tree);
+  // g-058: the「node ratio grows when the picker opens」assertion below counts the
+  // **scope region** rather than the whole page. The whole-page count moves for
+  // reasons that have nothing to do with this block (the「我的 Prompt」panel grew
+  // a mode control), and a ratio that depends on every other tab's node count is
+  // not a statement about the picker.
+  const collapsedSessionNodes = renderedNodeCount(section);
   const budget = collapsedScopeHeight(tree);
   scopeToggle(tree).props.onClick();
   tree = await page.flush();
@@ -3046,7 +3052,11 @@ test('client: the collapsed「查看范围」block is one row inside an 80px bud
     `    scope geometry: collapsed「查看范围」= ${budget}px budget (80px), ${collapsedNodes} nodes; expanded = ${expandedNodes} nodes`,
   );
   assert.ok(budget <= 80, `the collapsed block budgets ${budget}px, over the 80px ceiling`);
-  assert.ok(expandedNodes > collapsedNodes * 2, `opening the picker adds the body back (${expandedNodes} vs ${collapsedNodes})`);
+  const expandedSessionNodes = renderedNodeCount(oneBy(tree, 'data-region', 'session'));
+  assert.ok(
+    expandedSessionNodes > collapsedSessionNodes * 2,
+    `opening the picker adds the body back (${expandedSessionNodes} vs ${collapsedSessionNodes})`,
+  );
 });
 
 test('client (g-055): 「查看范围」is the header of the「我的 Prompt」block, and the panel names its write target', async () => {
@@ -11179,4 +11189,148 @@ test('client: every update-related key that still names GitHub is accurate, key 
     assert.equal(/GitHub|Release|发布页/.test(zh[key]), false, `zh.${key} names no source`);
     assert.equal(/GitHub|Release/.test(en[key]), false, `en.${key} names no source`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// g-058: the「覆盖 / 叠加」mode of that one entry.
+//
+// The contract the panel has to keep: the control edits **this write target's**
+// own stored mode, saving sends it with the text in the same one-layer body, and
+// no path here may reach the other layer's file. The route half of「the other
+// layer is byte-identical」lives in `test/route.test.mjs`; what these cases pin
+// is that the client can only ever ask for one layer.
+// ---------------------------------------------------------------------------
+
+test('g-058 client: the mode control reads this layer\'s own stored mode', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.overrides]: {
+        payload: layeredOverrides([{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'USER' }]),
+      },
+    }),
+  });
+  const tree = await page.flush();
+
+  const region = oneBy(tree, 'data-region', 'mine-mode');
+  assert.equal(region.props['data-mine-mode'], 'replace', 'the box shows the stored mode by default');
+  assert.equal(region.props['data-mine-mode-stored'], 'replace', 'and says which mode the file stores');
+  assert.equal(oneBy(tree, 'data-mine-mode-choice', 'replace').props['data-mine-mode-active'], 'true');
+  assert.equal(oneBy(tree, 'data-mine-mode-choice', 'append').props['data-mine-mode-active'], 'false');
+  assert.equal(oneBy(tree, 'data-mine-mode-choice', 'replace').props['aria-pressed'], 'true');
+  assert.ok(strings(tree).includes(page.zh.mineModeReplace), 'the control is labelled in words');
+  assert.ok(strings(tree).includes(page.zh.mineModeAppend));
+  assert.ok(
+    hasText(region, fillText(page.zh.mineModeStored, { mode: page.zh.mineModeReplace })),
+    'the stored side is stated, not implied',
+  );
+  // The user layer is the lowest one, and the panel says what「叠加」means there.
+  assert.equal(oneBy(region, 'data-warning', 'mine-mode-bottom').props['data-warning'], 'mine-mode-bottom');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'idle', 'a stored mode is not a dirty mode');
+  // The read-only target line carries the same two facts.
+  const target = oneBy(tree, 'data-region', 'mine-target');
+  assert.equal(target.props['data-mine-target-mode'], 'replace');
+  assert.equal(target.props['data-mine-target-mode-stored'], 'replace');
+});
+
+test('g-058 client: a layer with no entry states no mode, and still reads as「覆盖」', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  const tree = await page.flush();
+  const region = oneBy(tree, 'data-region', 'mine-mode');
+  assert.equal(region.props['data-mine-mode-stored'], 'none', '「未设置」is a different fact from「显式覆盖」');
+  assert.equal(region.props['data-mine-mode'], 'replace', 'and it behaves as the mode it already had');
+  assert.ok(hasText(region, page.zh.mineModeStoredNone));
+  assert.equal(markerOf(tree, 'data-mine-state'), 'unconfigured');
+});
+
+test('g-058 client: choosing「叠加」is unsaved work, and saving sends it in the one-layer body', async () => {
+  // The stub answers like the host: the write stores the mode, the next read
+  // reports it. A static fixture would show a save that did not take.
+  let stored = { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'USER' };
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.overrides]: (url, init) => {
+        if (init && init.method === 'PUT') {
+          const body = JSON.parse(init.body);
+          stored = { name: body.section.name, action: body.section.action, text: body.section.text };
+          return { payload: { ok: true, saved: { ...stored, layer: body.layer }, effectiveFrom: 'next-turn' } };
+        }
+        return { payload: layeredOverrides([stored]) };
+      },
+    }),
+  });
+  let tree = await page.flush();
+  assert.equal(writeCalls(page).length, 0);
+
+  clickButton(tree, { 'data-action': 'mine-mode', 'data-mine-mode-choice': 'append' });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-mine-state'), 'dirty', 'an unsaved mode is unsaved work');
+  assert.equal(oneBy(tree, 'data-region', 'mine-mode').props['data-mine-mode'], 'append');
+  assert.equal(oneBy(tree, 'data-mine-mode-choice', 'append').props['data-mine-mode-active'], 'true');
+  assert.equal(oneBy(tree, 'data-warning', 'mine-mode-dirty').props['data-warning'], 'mine-mode-dirty');
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'USER', 'the text is untouched by a mode change');
+  assert.equal(writeCalls(page).length, 0, 'choosing a mode writes nothing by itself');
+
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+  const put = writeCalls(page).filter((call) => call.init && call.init.method === 'PUT');
+  assert.equal(put.length, 1, 'exactly one write');
+  const body = JSON.parse(put[0].init.body);
+  assert.deepEqual(
+    Object.keys(body).sort(),
+    ['layer', 'section'],
+    'one layer and one section: the other layer is not part of the request at all',
+  );
+  assert.equal(body.layer, 'user');
+  assert.deepEqual(body.section, { name: CUSTOM_SECTION_NAME, action: 'append', text: 'USER' });
+  assert.equal(body.session, undefined, 'the global view still sends no session');
+
+  assert.equal(markerOf(tree, 'data-mine-state'), 'saved');
+  assert.equal(oneBy(tree, 'data-region', 'mine-mode').props['data-mine-mode-stored'], 'append', 'the stored mode followed the save');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-warning'] === 'mine-mode-dirty').length,
+    0,
+    'the unsaved-mode hint is gone',
+  );
+});
+
+test('g-058 client: 「取消」 restores the stored mode, and a mode draft belongs to one target', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.overrides]: {
+        payload: layeredOverrides(
+          [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'user stored' }],
+          [{ name: CUSTOM_SECTION_NAME, action: 'append', text: 'ws stored' }],
+        ),
+      },
+    }),
+  });
+  let tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'mine-mode').props['data-mine-mode-stored'], 'replace');
+
+  clickButton(tree, { 'data-action': 'mine-mode', 'data-mine-mode-choice': 'append' });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-mine-state'), 'dirty');
+
+  // The workspace layer stores `append` itself, so it opens clean — the user
+  // layer's unsaved mode is not silently applied to it (g-056's rule, for the
+  // mode).
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'mine-mode').props['data-mine-mode-stored'], 'append');
+  assert.equal(oneBy(tree, 'data-region', 'mine-mode').props['data-mine-mode'], 'append');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'idle', "the user layer's mode draft is not this layer's");
+  // The workspace layer is not the lowest one, so the「等同覆盖」note is absent.
+  assert.equal(collect(tree, (node) => node.props && node.props['data-warning'] === 'mine-mode-bottom').length, 0);
+
+  clickTab(tree, 'mine-layer', 'user');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'mine-mode').props['data-mine-mode'], 'append', 'the draft survived the round trip');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'dirty');
+
+  clickButton(tree, { 'data-action': 'mine-cancel' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'mine-mode').props['data-mine-mode'], 'replace', 'the stored mode is back');
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'user stored');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'idle');
+  assert.equal(writeCalls(page).length, 0, 'none of this wrote anything');
 });

@@ -407,8 +407,17 @@ window.__ModuleLoader__.load({
      * this page puts into every save and delete it sends.
      */
     const RESERVED_SECTION_NAME = 'prompt-setting:custom-prompt';
-    /** The one action the reserved name accepts (§4.1). */
-    const RESERVED_SECTION_ACTION = 'replace';
+    /**
+     * The actions the reserved name accepts on `PUT` (§4.1): `replace` (覆盖)
+     * covers the other layer, and — since Revision 36, g-058 — `append` (叠加)
+     * stacks this layer's text after it. The list is the twin of
+     * `RESERVED_WRITABLE_ACTIONS` in `core/custom.js`, and the two are compared
+     * by `test/client.test.mjs` rather than by construction (a browser module
+     * cannot import host code).
+     */
+    const RESERVED_SECTION_MODES = ['replace', 'append'];
+    /** The mode a save sends when the layer stores none (the historical default). */
+    const RESERVED_SECTION_DEFAULT_MODE = 'replace';
     /**
      * The five first-level tabs, in the fixed order they are presented.
      * 「我的 Prompt」 is first and is the default: it is the only write surface
@@ -981,6 +990,21 @@ window.__ModuleLoader__.load({
       mineWorkspaceNeedsSession: '工作区层需要先选择一个会话；未选择时无法写入工作区层。',
       mineResetTitle: '恢复默认：删除{layer}的「我的 Prompt」',
       mineResetBody: '这会删除该层保存的文本、回到未配置状态。',
+      // ---- g-058 (Revision 36): the「覆盖 / 叠加」mode of this one entry. The
+      // copy has to name the OTHER layer, because that is what the mode is
+      // about: it says what this layer does with the other layer's text, not
+      // where a new section goes (which is what `append` means everywhere else).
+      mineModeLabel: '模式',
+      mineModeReplace: '覆盖',
+      mineModeAppend: '叠加',
+      mineModeHintReplace: '覆盖：只用本层的文本，另一层同名条目不生效。',
+      mineModeHintAppend: '叠加：本层文本拼在另一层之后，两层都生效。',
+      mineModeNote:
+        '模式作用于同一个保留段：用户层文本在前、工作区层文本在后；两层都有内容时中间插入一个空行，只有一层有内容时不留空行。',
+      mineModeBottomNote: '用户层是最底层：在这里「叠加」与「覆盖」等价（下面没有可拼的层）。',
+      mineModeStoredNone: '本层尚未设置模式（按「覆盖」处理）',
+      mineModeStored: '本层已存模式：{mode}',
+      mineModeDirty: '模式已改动，尚未保存。',
       // ---- stage 3: two entries, so an illegal (name, action) pair cannot exist
       blockAppendExisting:
         '该段名已在当前装配中：append 不会生效（两段不可同名，宿主会跳过并记为 name-already-present）。请改用「替换 replace」，或把段名改成一个尚未注册的新名。',
@@ -1473,6 +1497,18 @@ window.__ModuleLoader__.load({
       mineWorkspaceNeedsSession: 'The workspace layer needs a session; without one it cannot be written.',
       mineResetTitle: 'Restore default: delete the {layer} My Prompt',
       mineResetBody: 'This deletes the text stored in that layer and returns it to unconfigured.',
+      // ---- g-058 (Revision 36): the "cover / stack" mode of this one entry.
+      mineModeLabel: 'Mode',
+      mineModeReplace: 'Cover',
+      mineModeAppend: 'Stack',
+      mineModeHintReplace: 'Cover: only this layer\'s text applies; a same-named entry in the other layer does not.',
+      mineModeHintAppend: 'Stack: this layer\'s text follows the other layer\'s, so both apply.',
+      mineModeNote:
+        'The mode acts on the one reserved section: the user layer\'s text first, the workspace layer\'s after it — one blank line between them when both carry text, none when only one does.',
+      mineModeBottomNote: 'The user layer is the lowest one: "Stack" here means the same as "Cover" — there is nothing below it to stack onto.',
+      mineModeStoredNone: 'this layer states no mode (read as "Cover")',
+      mineModeStored: 'stored mode: {mode}',
+      mineModeDirty: 'The mode changed and is not saved yet.',
       // ---- stage 3: two entries, so an illegal (name, action) pair cannot exist
       blockAppendExisting:
         'That name is already in the current assembly, so append would not take effect (two sections may not share a name; the Host skips it as name-already-present). Use Replace instead, or change the name to a new, unregistered one.',
@@ -3709,12 +3745,56 @@ window.__ModuleLoader__.load({
      * @returns the stored text, or null when the entry is absent.
      */
     function reservedTextOf(ovs, layer) {
+      const entry = reservedEntryOf(ovs, layer);
+      if (entry === null) return null;
+      return typeof entry.text === 'string' ? entry.text : '';
+    }
+
+    /**
+     * g-058 (Revision 36): one layer's stored reserved **entry**, or `null`.
+     *
+     * The panel needs two facts from that entry since the mode exists — the text
+     * ({@link reservedTextOf}) and the mode — and both must come from **that
+     * layer's own** view of `GET /overrides` for the same reason the text does
+     * (g-054): `merged` deduplicates by name, so it names at most one layer per
+     * section and cannot answer "what did this layer store".
+     * @param ovs - the `GET /overrides` payload, or null.
+     * @param layer - `user` | `workspace`.
+     * @returns the entry, or null when the layer holds no reserved entry.
+     */
+    function reservedEntryOf(ovs, layer) {
       const view = ovs !== null && typeof ovs === 'object' ? ovs[layer] : null;
       const list =
         view !== null && typeof view === 'object' && Array.isArray(view.overrides) ? view.overrides : [];
       const entry = list.find((candidate) => candidate && candidate.name === RESERVED_SECTION_NAME);
-      if (entry === undefined) return null;
-      return typeof entry.text === 'string' ? entry.text : '';
+      return entry === undefined ? null : entry;
+    }
+
+    /**
+     * g-058 (Revision 36): the mode one stored reserved entry carries.
+     *
+     * The stored word is authoritative: `append` is「叠加」, everything else
+     * (including an entry written before this revision, which carries
+     * `replace`) is「覆盖」— the behaviour that entry already had.
+     * @param entry - a reserved entry, or null.
+     * @returns `'replace'` | `'append'`, or null when there is no entry.
+     */
+    function modeOfEntry(entry) {
+      if (entry === null || entry === undefined) return null;
+      return entry.action === 'append' ? 'append' : RESERVED_SECTION_DEFAULT_MODE;
+    }
+
+    /**
+     * g-058 (Revision 36): the mode **this layer's file** stores, or `null` when
+     * the layer holds no reserved entry at all. `null` is not `'replace'`: the
+     * panel distinguishes「未设置」from「显式覆盖」in words, exactly as it does
+     * for the interpolation switch (§16.1).
+     * @param ovs - the `GET /overrides` payload, or null.
+     * @param layer - `user` | `workspace`.
+     * @returns `'replace'` | `'append'` | null.
+     */
+    function reservedModeOf(ovs, layer) {
+      return modeOfEntry(reservedEntryOf(ovs, layer));
     }
 
     /**
@@ -3783,6 +3863,22 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * g-058 (Revision 36): the mode one recorded draft carries.
+     *
+     * A draft typed before this revision has no `mode` field, and it means
+     * 「覆盖」— the only mode that existed when it was typed. Reading an old draft
+     * as anything else would make an untouched editor look dirty, which is
+     * exactly the silent state change §4.2 refuses.
+     * @param draft - a recorded draft, or null.
+     * @returns `'replace'` | `'append'`.
+     */
+    function draftModeOf(draft) {
+      return draft !== null && draft !== undefined && draft.mode === 'append'
+        ? 'append'
+        : RESERVED_SECTION_DEFAULT_MODE;
+    }
+
+    /**
      * g-056: the readable name of the scope a draft belongs to, shown beside the
      * editor so the reader can tell whose text the box holds.
      * @param t - the bound translator.
@@ -3811,14 +3907,26 @@ window.__ModuleLoader__.load({
      * @returns the stored text, or null when that layer holds no reserved entry.
      */
     function layerReservedTextOf(ovs, layer) {
-      const view = ovs && ovs[layer] && Array.isArray(ovs[layer].overrides) ? ovs[layer].overrides : [];
-      const entry = view.find((candidate) => candidate && candidate.name === RESERVED_SECTION_NAME);
-      if (entry === undefined) return null;
+      const entry = reservedEntryOf(ovs, layer);
+      if (entry === null) return null;
       return typeof entry.text === 'string' ? entry.text : '';
     }
 
     /**
-     * g-056 (review R1): the reserved text a **recorded draft's own write
+     * g-058 (Revision 36): the mode that layer's own file stores, read from the
+     * same per-layer view as {@link layerReservedTextOf} — a foreign draft is
+     * "still unsaved work" for its **text and its mode** alike, so both have to
+     * be answerable from the one file the draft belongs to.
+     * @param ovs - the `GET /overrides` payload, or null.
+     * @param layer - `user` | `workspace`.
+     * @returns `'replace'` | `'append'` | null.
+     */
+    function layerReservedModeOf(ovs, layer) {
+      return modeOfEntry(reservedEntryOf(ovs, layer));
+    }
+
+    /**
+     * g-056 (review R1): the reserved entry a **recorded draft's own write
      * target** holds, as far as this render can know it.
      *
      * `known: false` means「this page has not read that file」: the draft's target
@@ -3827,21 +3935,28 @@ window.__ModuleLoader__.load({
      * caller must then treat it as *possibly* unsaved — the panel may warn, but
      * it must never silently overwrite — which is the conservative half of the
      * trade recorded in `NOTES.md` §129.
+     *
+     * g-058 (Revision 36): the answer carries the **mode** beside the text,
+     * because a draft's unsaved work is the pair. A draft whose text matches the
+     * file but whose mode does not is still text the user would lose by saving
+     * over it, so both facts come from the same per-layer read.
      * @param ovs - the `GET /overrides` payload, or null.
      * @param scope - the draft's `{layer, session, root}`.
      * @param currentRoot - the workspace root the current request resolved.
-     * @returns `{known: true, text}` or `{known: false, text: null}`.
+     * @returns `{known: true, text, mode}` or `{known: false, text: null, mode: null}`.
      */
-    function draftTargetTextOf(ovs, scope, currentRoot) {
-      if (scope === null || scope === undefined) return { known: false, text: null };
+    function draftTargetOf(ovs, scope, currentRoot) {
+      if (scope === null || scope === undefined) return { known: false, text: null, mode: null };
       const layer = scope.layer === 'workspace' ? 'workspace' : 'user';
       if (layer === 'workspace') {
         const root = typeof scope.root === 'string' && scope.root.length > 0 ? scope.root : null;
         // A different workspace is a file this request never read: 「unknown」,
         // never「empty」.
-        if (root === null || currentRoot === null || root !== currentRoot) return { known: false, text: null };
+        if (root === null || currentRoot === null || root !== currentRoot) {
+          return { known: false, text: null, mode: null };
+        }
       }
-      return { known: true, text: layerReservedTextOf(ovs, layer) };
+      return { known: true, text: layerReservedTextOf(ovs, layer), mode: layerReservedModeOf(ovs, layer) };
     }
 
     /**
@@ -5496,10 +5611,23 @@ window.__ModuleLoader__.load({
           'data-region': 'mine-target',
           'data-mine-target-layer': layer,
           'data-mine-target-scope': m.sessionArg === null ? 'global' : String(m.sessionArg),
+          // g-058: the read-only target line also says which mode this save will
+          // send and which one the file stores — the two facts a reader needs to
+          // tell「还没保存」from「已生效」without opening the file.
+          'data-mine-target-mode': m.mineMode,
+          'data-mine-target-mode-stored': m.mineStoredMode === null || m.mineStoredMode === undefined
+            ? 'none'
+            : String(m.mineStoredMode),
           style: { margin: 0, ...metaStyle, color: token.labelSecondary },
         },
         fmt(t('mineTargetNote'), { layer: layerLabel(t, layer), scope: scopeName(t, m) }),
       );
+      // g-058 (Revision 36): the entry's mode — `append` (叠加) or `replace`
+      // (覆盖). Only the two words the write face accepts; anything else a stale
+      // model might carry reads as the default.
+      const mineMode = m.mineMode === 'append' ? 'append' : RESERVED_SECTION_DEFAULT_MODE;
+      const mineStoredMode =
+        m.mineStoredMode === 'append' || m.mineStoredMode === 'replace' ? m.mineStoredMode : null;
       // The same leading rule the block header above the tabs carries: the scope
       // card and this panel are the two halves of one block (g-055).
       return h(
@@ -5744,6 +5872,82 @@ window.__ModuleLoader__.load({
                 'div',
                 { 'data-mine-interpolate-error': 'true' },
                 errorBanner(t, interpolateStatus.error, t('mineInterpolateFailed')),
+              )
+            : null,
+        ),
+        // ---- g-058 (Revision 36): the「覆盖 / 叠加」mode of THIS layer's entry.
+        // It is a control over this layer's stored mode and nothing else — it
+        // writes no file on its own, it offers no second way to change the
+        // write scope (the block header keeps that single entrance, g-055), and
+        // it can never reach the other layer's file: the save it feeds carries
+        // one layer and one entry (§4.1).
+        h(
+          'div',
+          {
+            'data-region': 'mine-mode',
+            'data-mine-mode': mineMode,
+            'data-mine-mode-stored': mineStoredMode === null ? 'none' : mineStoredMode,
+            style: {
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 4,
+              border: `1px solid ${token.borderL2}`,
+              borderRadius: 6,
+              padding: '8px 10px',
+              wordBreak: 'break-word',
+            },
+          },
+          h(
+            'div',
+            { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+            h('span', { style: metaStyle }, t('mineModeLabel')),
+            ...RESERVED_SECTION_MODES.map((choice) =>
+              h(
+                UI.Button,
+                {
+                  'data-action': 'mine-mode',
+                  'data-mine-mode-choice': choice,
+                  'data-mine-mode-active': String(mineMode === choice),
+                  'aria-pressed': String(mineMode === choice),
+                  disabled: m.busy,
+                  onClick: () => a.setMineMode(choice),
+                },
+                t(choice === 'append' ? 'mineModeAppend' : 'mineModeReplace'),
+              ),
+            ),
+            // The stored side, in words: 「未设置」is a different fact from
+            // 「显式覆盖」, exactly as the interpolation switch's「继承」is (§16.1).
+            h(
+              'span',
+              {
+                'data-mine-mode-stored-label': mineStoredMode === null ? 'none' : mineStoredMode,
+                style: metaStyle,
+              },
+              mineStoredMode === null
+                ? t('mineModeStoredNone')
+                : fmt(t('mineModeStored'), {
+                    mode: t(mineStoredMode === 'append' ? 'mineModeAppend' : 'mineModeReplace'),
+                  }),
+            ),
+          ),
+          h(
+            'p',
+            { 'data-mine-mode-hint': mineMode, style: { margin: 0, ...metaStyle } },
+            t(mineMode === 'append' ? 'mineModeHintAppend' : 'mineModeHintReplace'),
+          ),
+          h('p', { style: { margin: 0, ...metaStyle } }, t('mineModeNote')),
+          layer === 'workspace'
+            ? null
+            : h(
+                'p',
+                { 'data-warning': 'mine-mode-bottom', style: { margin: 0, fontSize: 12, color: token.stateWarn } },
+                t('mineModeBottomNote'),
+              ),
+          (mineStoredMode ?? RESERVED_SECTION_DEFAULT_MODE) !== mineMode
+            ? h(
+                'p',
+                { 'data-warning': 'mine-mode-dirty', style: { margin: 0, fontSize: 12, color: token.stateWarn } },
+                t('mineModeDirty'),
               )
             : null,
         ),
@@ -7472,23 +7676,42 @@ window.__ModuleLoader__.load({
       const draftScopeNameOf = (scope) =>
         scope === null || scope === undefined ? '' : mineScopeNameOf(t, scope.layer, scope.session, seat.rows);
       const mineStored = reservedTextOf(ovs.data, mineLayer);
+      // g-058: the mode **this layer's file** stores (`null` = the layer states
+      // none), read from the same per-layer view as the text (g-054).
+      const mineStoredMode = reservedModeOf(ovs.data, mineLayer);
       const mineConfigured = mineStored !== null && mineStored.length > 0;
       const mineEntry = mineDrafts[mineKey] ?? null;
       const mineText = mineEntry === null ? (mineStored === null ? '' : mineStored) : mineEntry.text;
+      /**
+       * g-058: the mode the box is showing — the draft's while one exists, the
+       * stored one otherwise. A layer that states no mode reads as「覆盖」, which
+       * is what its entry already did and what a save would write again; the
+       * *display* still tells「未设置」from「显式覆盖」separately (the stored-mode
+       * line below), exactly as the interpolation switch does (§16.1).
+       */
+      const mineMode =
+        mineEntry === null ? (mineStoredMode ?? RESERVED_SECTION_DEFAULT_MODE) : draftModeOf(mineEntry);
       /**
        * g-056 (review R1): the draft of **another** write target that is still
        * unsaved work there. It is neither shown in this box nor allowed to be
        * silently written over, so it is stated and the save below refuses while
        * it exists.
        *
-       * Three facts each disqualify a draft, and all three are needed:
-       *   - its text equals what this save would write (nothing can be lost), or
-       *   - its text equals `baseline`, what this page last **wrote** to that
-       *     target (the post-save draft §13.1 deliberately keeps, so a
+       * Three facts each disqualify a draft, and all three are needed — and since
+       * g-058 each of them compares the draft's **mode** as well as its text,
+       * because a draft that differs only in mode is still work a save would
+       * overwrite:
+       *   - it holds nothing this save would write (no text, and the default
+       *     mode), or
+       *   - it equals what this save would write — same text, same mode (nothing
+       *     can be lost), or
+       *   - it equals `baseline`/`baselineMode`, what this page last **wrote** to
+       *     that target (the post-save draft §13.1 deliberately keeps, so a
        *     successful save followed by a layer/scope switch is no longer
        *     reported as unsaved work), or
-       *   - its text equals that target's own stored text, read from the layer's
-       *     own view (`layerReservedTextOf`, never `merged`).
+       *   - it equals that target's own stored entry — text **and** mode — read
+       *     from the layer's own view (`layerReservedTextOf` /
+       *     `layerReservedModeOf`, never `merged`).
        * When the target is a workspace this request never read, none of the last
        * two can be decided: the draft stays「possibly unsaved」and is reported —
        * warning about text that may already be saved is the tolerable error,
@@ -7499,10 +7722,17 @@ window.__ModuleLoader__.load({
           if (key === mineKey) continue;
           const draft = mineDrafts[key];
           if (draft === null || draft === undefined || draft.text.length === 0) continue;
-          if (draft.text === mineText) continue;
-          if (draft.text === (draft.baseline ?? null)) continue;
-          const own = draftTargetTextOf(ovs.data, draft.scope, mineWorkspaceRoot);
-          if (own.known && own.text === draft.text) continue;
+          if (draft.text === mineText && draftModeOf(draft) === mineMode) continue;
+          if (
+            draft.text === (draft.baseline ?? null)
+            && draftModeOf(draft) === (draft.baselineMode ?? RESERVED_SECTION_DEFAULT_MODE)
+          ) {
+            continue;
+          }
+          const own = draftTargetOf(ovs.data, draft.scope, mineWorkspaceRoot);
+          if (own.known && own.text === draft.text && (own.mode ?? RESERVED_SECTION_DEFAULT_MODE) === draftModeOf(draft)) {
+            continue;
+          }
           return { key, text: draft.text, scope: draft.scope ?? null };
         }
         return null;
@@ -7536,9 +7766,10 @@ window.__ModuleLoader__.load({
             ? 'saved'
             : mineStatus.kind === 'error'
               ? 'error'
-              : !mineConfigured && mineText.length === 0
+              : !mineConfigured && mineText.length === 0 && mineMode === RESERVED_SECTION_DEFAULT_MODE
                 ? 'unconfigured'
                 : mineStored !== mineText
+                    || (mineStoredMode ?? RESERVED_SECTION_DEFAULT_MODE) !== mineMode
                   ? 'dirty'
                   : 'idle';
       // ---- Revision 9: the variable-substitution switch, as the host reports
@@ -7651,6 +7882,10 @@ window.__ModuleLoader__.load({
         if (mineEntry === null) return true;
         const previous = mineStored === null ? '' : mineStored;
         if (mineEntry.text !== previous) return false;
+        // g-058: the mode is part of the comparison. A draft that still matches
+        // the stored text but states the *other* mode is unsaved work — dropping
+        // it would take the user's mode choice off the screen.
+        if (draftModeOf(mineEntry) !== (mineStoredMode ?? RESERVED_SECTION_DEFAULT_MODE)) return false;
         dropMineDraft(mineKey);
         return true;
       };
@@ -7959,7 +8194,10 @@ window.__ModuleLoader__.load({
         setBusy(true);
         const body = {
           layer,
-          section: { name: RESERVED_SECTION_NAME, action: RESERVED_SECTION_ACTION, text: mineText },
+          // g-058: the mode travels with the text in the same one entry — the
+          // body still names one layer, so the other layer's file is not part of
+          // this request at all.
+          section: { name: RESERVED_SECTION_NAME, action: mineMode, text: mineText },
         };
         if (sessionArg !== null) body.session = sessionArg;
         const result = await requestJson(OVERRIDES_PATH, {
@@ -7980,7 +8218,7 @@ window.__ModuleLoader__.load({
         // so the kept draft is never later reported as unsaved work (R1).
         setMineDrafts((current) => ({
           ...current,
-          [mineKey]: { text: mineText, scope: mineScope, baseline: mineText },
+          [mineKey]: { text: mineText, mode: mineMode, scope: mineScope, baseline: mineText, baselineMode: mineMode },
         }));
         // Revision 12 (audit F2): an accepted save may still carry advisories —
         // a registered reference the probe had no value for. They are shown, not
@@ -8555,6 +8793,49 @@ window.__ModuleLoader__.load({
 
       const closeScope = () => setScopeOpen(false);
 
+      /**
+       * g-058 (Revision 36): write one of the editor's two facts into this
+       * target's draft, leaving the other as it was.
+       *
+       * Both editors — the text box and the「覆盖 / 叠加」control — produce the
+       * same draft shape (`{text, mode, scope, baseline, baselineMode}`), and
+       * neither may erase the other's edit: typing must not reset the mode to
+       * the stored one, and choosing a mode must not blank the text. The
+       * fallback for whichever field the patch omits is **what the box is
+       * showing now** — the existing draft when there is one, this target's
+       * stored value otherwise — so a mode switch on an untouched box produces a
+       * draft that differs from the file in exactly one field.
+       *
+       * `baseline`/`baselineMode` record what this page last **wrote** to this
+       * target and are carried across edits (g-056 R1).
+       * @param patch - `{text?}` or `{mode?}`.
+       */
+      const updateMineDraft = (patch) => {
+        setMineDrafts((current) => {
+          const existing = current[mineKey] ?? null;
+          const text = patch.text !== undefined
+            ? patch.text
+            : existing === null
+              ? (mineStored === null ? '' : mineStored)
+              : existing.text;
+          const mode = patch.mode !== undefined
+            ? patch.mode
+            : existing === null
+              ? (mineStoredMode ?? RESERVED_SECTION_DEFAULT_MODE)
+              : draftModeOf(existing);
+          return {
+            ...current,
+            [mineKey]: {
+              text,
+              mode,
+              scope: mineScope,
+              baseline: existing === null ? null : existing.baseline ?? null,
+              baselineMode: existing === null ? null : existing.baselineMode ?? null,
+            },
+          };
+        });
+      };
+
       const actions = {
         refresh: () => setReload((value) => value + 1),
         // The「更改」switch: the same button opens and shuts the picker, and
@@ -8572,21 +8853,17 @@ window.__ModuleLoader__.load({
           // g-056: the draft carries its own scope, so the box can say whose text
           // it holds after the「查看范围」moved on — and R2: the entry is written
           // into a map keyed by write target, so typing here cannot destroy the
-          // draft another target is holding.
-          setMineDrafts((current) => {
-            const existing = current[mineKey];
-            return {
-              ...current,
-              [mineKey]: {
-                text: value,
-                scope: mineScope,
-                // Editing does not forget what this page last wrote to this
-                // target: `baseline` is what keeps a saved post-save draft (R1)
-                // from being reported as unsaved work later on.
-                baseline: existing === undefined ? null : existing.baseline ?? null,
-              },
-            };
-          });
+          // draft another target is holding. g-058: the mode it was typed under
+          // survives the edit (see `updateMineDraft`).
+          updateMineDraft({ text: value });
+          setMineWarnings([]);
+          setMineStatus({ kind: 'idle', error: null });
+        },
+        // g-058 (Revision 36): the「覆盖 / 叠加」choice. It is view state until
+        // 「保存」 — the file is written by `saveMine` alone, with one layer and
+        // one entry — so switching the mode back and forth never touches a disk.
+        setMineMode: (value) => {
+          updateMineDraft({ mode: value === 'append' ? 'append' : RESERVED_SECTION_DEFAULT_MODE });
           setMineWarnings([]);
           setMineStatus({ kind: 'idle', error: null });
         },
@@ -8853,6 +9130,11 @@ window.__ModuleLoader__.load({
         tab,
         mineLayer,
         mineText,
+        // g-058 (Revision 36): the mode the box is showing (`replace` | `append`)
+        // and the mode this layer's file stores (`null` = the layer states none).
+        // The pair is what `data-mine-mode` and `data-mine-mode-stored` report.
+        mineMode,
+        mineStoredMode,
         // g-056: which side of the box is being shown (`draft` | `stored`), the
         // readable scope the shown draft belongs to (or null), and the draft
         // that belongs to another scope and therefore blocks a save.

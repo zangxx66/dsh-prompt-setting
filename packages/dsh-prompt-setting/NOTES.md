@@ -7169,3 +7169,100 @@ $ E=$(mktemp -d); HOME="$E" USERPROFILE="$E" node --test test/*.test.mjs
   `test/overrides.test.mjs` 的"六种拼法"用例里补一条断言钉住（`text: 5` 不被读作空、仍赢得同名冲突），
   实现未动。
 - **集成期（主管）**：本节编号由 §131 顺延为 **§132**（dev 上 §131 已被 g-055 占用）；负向对照红点按评审实测更正为 ①②⑤⑥（原文误写 ①②③⑤）；合并后 dev 全量测试由主管复跑。
+
+## 133. g-058：保留段支持两层叠加（「覆盖 / 叠加」模式，Revision 36，2026-10-10，基线 `8cdb4c3` 隔离工作树）
+
+**需求（负责人 2026-10-10 裁定）**：真机用户层保留段 343 字（语言约束 + 人设），工作区层同名条目 39 字
+（dsh-graph 状态提醒）。现行契约下工作区层非空 ⇒ 整体覆盖用户层，343 字不生效。负责人要求**两段都生效**，
+并点名硬约束：「不要再犯之前的 bug，把用户其他地方的 prompt 给清空了」。
+
+**裁定（不再另提方案）**：A 显式模式 —— 面板提供「覆盖 / 叠加」；覆盖＝该层文本盖掉下层（今天的行为），
+叠加＝该层文本拼在下层之后；用户层在前、工作区层在后，两层都非空时中间插入一个空行，单层非空不留孤立空行。
+
+**表示法：沿用条目既有的 `action` 字段（`replace` / `append`），`append` 在这一段上的含义是「叠加到另一层之后」。**
+- 被否方案一｜新增独立字段（如 `mode`）：它要跟着合并、校验、导出、导入、UI 一起走，而 `action` 本来就表示
+  「这条条目对它的目标做什么」；两个字段编码一个枚举，等于把同一个事实写两遍，迟早不一致。
+- 被否方案二｜直接复用 `applyOverrides` 的 `append` 语义（把上层 `append` 原样放进 resolved）：不可行，且这是
+  勘定阶段最关键的一条事实 —— `core/overrides.js` 的 `append` 是**「在 order 处插入一个全新段」**，而保留段由
+  插件自注册，同名 `append` 会被记 `name-already-present` 并**跳过**，上层文本一个字都进不去。
+- 与 §132（g-057）的关系：空值＝不声明的口径**从 `replace` 扩展到 `append`**（同一条 `statesNoReservedText`）。
+  否则「上层选叠加但没写内容」会贡献一个空半段 + 一个分隔符，即一行没人要的空行。
+
+**实现（4 个文件，无 wire 变更）**
+- `core/overrides.js`：新增 `resolveReservedSection(userEntry, workspaceEntry)`，在 `mergeLayers` 里把两层解析成
+  **一条** `replace` 条目（文本 = 下层 + `RESERVED_STACK_SEPARATOR` + 上层，分隔符就是渲染器两段之间那个
+  `"\n\n"`）；`statesNoReservedText` 接受 `replace` 或 `append`；用户层自己的 `append` 没有下层 ⇒ 压平为
+  `replace`（这也是它能生效的唯一形态）；手改的 `order` 在合成时丢弃。保留段的列表位置沿用原逻辑（user 层的
+  槽位，否则末尾），层切换仍不重排。
+- `core/custom.js`：`RESERVED_WRITABLE_ACTIONS = ['replace','append']`；保留名的 `order` 由写面直接
+  `400 unexpected-order`（叠加位置不是目标索引；落盘一个会被合并核忽略的字段不如拒绝）；`hide` 仍被写面拒绝，
+  但手改文件里的 `hide` 在装配层照旧生效（§132 未动）。
+- `index.js`：写面**只存词、不解析** —— `PUT` 把 `append` 原样落到该层文件，叠加文本由合并核现算；
+  `handleWriteOverride` 的文档写明这一分工。历史 `actionOf` 早已支持 `append`，快照早已记 `{name, action}`，
+  所以导出 / 导入 / 回滚天然携带模式，无需新字段或新路由。
+- `client.js`：`data-region="mine-mode"` + 两个 `data-action="mine-mode"` 按钮（`data-mine-mode-choice` /
+  `data-mine-mode-active`）；区域带 `data-mine-mode`（当前显示）与 `data-mine-mode-stored`（本层已存，
+  `none`＝未设置）；草稿结构加 `mode`（`updateMineDraft` 统一文本与模式两个编辑入口，`baselineMode` 记
+  「本页刚写过什么」），脏判定同时看文本与模式，`settleMineDraft` / `draftTargetOf` 同步比较模式。
+  只读写入目标行加 `data-mine-target-mode` / `data-mine-target-mode-stored`。**没有第二个改范围入口**（g-055）。
+
+**硬约束｜不得清空另一层**：所有写路径的断言都以「另一层文件 SHA-256 不变」为准，且都在**真两份文件**上做：
+- PUT（含切换模式后保存）：写 workspace 层后 user 文件 sha 与条目原样，切回覆盖后再验一次；
+- 「恢复默认」（单名 DELETE）：只删当前层，user 文件 sha 不变、workspace 确实变了；
+- import：文档只带 `user` ⇒ workspace 文件 sha 不变；
+- rollback：回滚只动 user 层条目，workspace 文件 sha 不变；
+- 客户端侧只能发一层：断言保存体 `Object.keys(body) = ['layer','section']`，其它层不在请求里。
+
+**新增断言清单（10 项）**：overrides 3（叠加合成单段 / 空行与空值边界、hide 与两层都叠加 / 其它段 `append`
+语义不变）＋ route 3（PUT 叠加＋装配＋切回覆盖 / 恢复默认只删本层 / 导出导入回滚携带模式）＋ custom 1
+（改写：接受 `replace|append`、拒绝 `order` 与 `hide`）＋ client 4（控件读本层已存模式 / 未设置≠显式覆盖 /
+切叠加变脏且保存体带模式 / 取消恢复已存模式且草稿按目标隔离）。既有测试只就地改写了 4 条**有意变更**的断言
+（保留段 `append` 由 `400 unsupported-action` 变成可写；`order` 由「写面不再接受」变成 `400 unexpected-order`），
+未删改削弱任何其它断言。
+
+**负向对照（两组，实测）**
+- (a) 回退叠加：把 `mergeLayers` 的保留段合成改成永远直取上层条目 ⇒ **4 红**
+  （`g-058 mergeLayers` ×3 + `g-058 PUT` 叠加 ×1），其余 361 项仍绿；
+- (b) 回退写侧放宽：`RESERVED_WRITABLE_ACTIONS` 收回 `['replace']` ⇒ **3 红**
+  （custom 接受度 + route 错误码矩阵 + `g-058 PUT` 叠加），其余 379 项仍绿。
+
+**真机证据（只读，不进仓库测试）**：`node scripts/real-layers-check.mjs`（已按 g-058 扩展：用真机两层的
+**文本**在内存里合成一份「工作区层选叠加」的配置，走同一条合并 + 装配核；全程不写任何文件）
+
+```
+$ node scripts/real-layers-check.mjs
+  user 层保留段    : action=replace mode=replace chars=343
+  ws   层保留段    : action=replace mode=replace chars=39 text="修改dsh-graph卡片的状态前，先读取它的状态再修改，避免跨级或重复操作。"
+  装配后文本       : chars=39
+  叠加预期(合成)   : mode=append chars=384（user 343 + 空行 + ws 39）
+  叠加装配后文本   : chars=384
+  ws 层模式        : replace（覆盖）——真机当前只生效一层
+  ⇒ 叠加语义：成立（装配文本 = user 文本 + 一个空行 + ws 文本，单条保留段，无跳过）
+  ⇒ g-058：真机工作区层当前是覆盖，故只生效一层；把该层模式改成「叠加」后，装配文本将是上面的「叠加预期」（chars=384）
+exit=0
+```
+
+脚本自证（临时目录复现「真机工作区层已选叠加」形态，不动负责人文件）：
+
+```
+$ DSH_PS_REAL_USER_FILE=<tmp>/user.json DSH_PS_REAL_WORKSPACE_FILE=<tmp>/ws.json \
+    node scripts/real-layers-check.mjs --require-append
+  ws   层保留段    : action=append mode=append chars=39
+  merged 文本      : chars=384
+  装配后文本       : chars=384
+  ws 层模式        : append（叠加）——真机已按 g-058 选了两段都生效
+exit=0
+```
+
+**验收（单行证据）**：
+- `node --test test/*.test.mjs` = **772 pass / 0 fail**（基线 762 + 本次新增 10）；
+- `node scripts/client-chunks.mjs` = 4 file(s) match，exit 0，**未加 `--write`**（4 个 `client.*.js` chunk 字节未变）；
+- `node scripts/prepare.mjs` = 21 项 OK。
+
+**未验证（UNVERIFIED）**：未在真实 DSH 宿主里重启验证一次回合装配（宿主重启不可由子代理执行，属主管/负责人
+复核范围）；真机工作区层当前仍写着 `replace`，所以「真机两段同时生效」的端到端形态由脚本的合成叠加证明 ——
+要看到活的 384 字，需要负责人把该层切到「叠加」并重开页面（届时
+`node scripts/real-layers-check.mjs --require-append` 会绿）。
+
+**风险 / 残余**：模式是条目 `action` 的一部分，手改既存文件把保留段写成 `append` 会被读作叠加（有意为之，
+已写进 CONTRACT §4.1 / Revision 36）；本次只改保留段语义，其它段 `append`＝新增段的行为未动（有对照断言）。

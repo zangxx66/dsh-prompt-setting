@@ -617,7 +617,7 @@ meaning exactly.
 | `/prompt-setting/ping` | `GET` | Stage 1A liveness probe. Behaviour unchanged, plus `clientBuild` since Revision 6 (§14.2), the page's own `version` read since Revision 16, `repositoryUrl` since Revision 17 (§13.8) and `launchKind` since g-036 (§14.2, §18.8). |
 | `/prompt-setting/snapshot` | `GET` | Base + effective section views, frozen verdict, layering. |
 | `/prompt-setting/overrides` | `GET` | Both layers and the merged list. |
-| `/prompt-setting/overrides` | `PUT` | Upsert **the reserved section** into one layer; any other name is `403` (Revision 7, §4.1). |
+| `/prompt-setting/overrides` | `PUT` | Upsert **the reserved section** into one layer, in one of its two modes (`replace` / `append`, Revision 36); any other name is `403` (Revision 7, §4.1). |
 | `/prompt-setting/overrides` | `DELETE` | Drop the **reserved** override; `?reset=true` clears the whole layer (§12); `?legacy=true` clears only its frozen overrides (§12.2). |
 | `/prompt-setting/history` | `GET` | One layer's bounded change log, newest first (Revision 4, §8); paged by `offset` and scoped by `session` / `workspace` since Revision 19. |
 | `/prompt-setting/diff` | `GET` | Section + line comparison of two versions of one layer (Revision 4, §9); same scope as §8 since Revision 19. |
@@ -959,32 +959,47 @@ Revision 35 shows up here **as a consequence, not as a field change**: a blank
 nothing" for that section, so it is not in `merged` at all and the other layer's
 non-empty entry is. Every other section keeps the plain dedup above.
 
+Revision 36 shows up the same way, and this is the shape the field exists for:
+when the upper layer's reserved entry is an `append` (「叠加」), `merged` holds
+**one** entry whose `action` is `replace` and whose `text` is the lower layer's
+text, one blank line, the upper layer's text — `layer: "workspace"`, at the
+position the dedup above would have given it. The per-layer views are untouched
+by the mode: `user.overrides` / `workspace.overrides` report each file's own
+stored word, `append` included (§13.1, g-054).
+
 ## 4. `PUT` and `DELETE /prompt-setting/overrides`
 
-### 4.1 `PUT` (Revision 7: the reserved section and `replace`, nothing else)
+### 4.1 `PUT` (Revision 7: the reserved section only; Revision 36: two modes, `replace` and `append`)
 
 Body:
 
 ```json
-{ "layer": "user" | "workspace", "session": "<id>", "section": { "name": "prompt-setting:custom-prompt", "action": "replace", "text": "…" } }
+{ "layer": "user" | "workspace", "session": "<id>", "section": { "name": "prompt-setting:custom-prompt", "action": "replace" | "append", "text": "…" } }
 ```
 
 **The write face is one name wide.** `section.name` must be exactly
-`prompt-setting:custom-prompt` (§15.1) and `section.action` must be exactly
-`replace`. The policy is evaluated in this order, before the target layer is
-resolved and before the current config is read — i.e. before any byte could be
-written:
+`prompt-setting:custom-prompt` (§15.1) and `section.action` must be one of that
+name's two writable actions: `replace` (覆盖) or, since Revision 36, `append`
+(叠加 — the other layer's text first, this layer's after it, Revision 36). The
+policy is evaluated in this order, before the target layer is resolved and before
+the current config is read — i.e. before any byte could be written:
 
 1. `layer` must be `user` \| `workspace`, else `400 unknown-layer`;
 2. a `name` that is a non-empty string other than the reserved one is
    **`403 write-locked`**. This is a wall, not a field error: the name is legal,
    this route simply may not write it any more. The message names both the
    refused name and the one writable name;
-3. the reserved name accepts **exactly** `action: "replace"`. Anything else —
-   including an absent or unknown action — is **`400 unsupported-action`**. The
-   action is therefore never validated by the field validator on this route, which
-   is what makes the narrowing two codes instead of a soup of field errors;
-4. only then are the `replace` fields validated (`400 missing-text`,
+3. the reserved name accepts **exactly** `action: "replace"` or
+   `action: "append"`. Anything else — including an absent or unknown action, and
+   `hide`, which keeps working in assembly (§15.5) but has no control here — is
+   **`400 unsupported-action`**. The action is therefore never validated by the
+   field validator on this route, which is what makes the narrowing two codes
+   instead of a soup of field errors;
+4. an `order` field on the reserved name is **`400 unexpected-order`**. `order`
+   is what `append` means for every other section — a target index (§5.1) — but
+   the reserved `append` stacks after the other layer, which has no index. The
+   field is refused rather than stored and ignored;
+5. only then are the text fields validated (`400 missing-text`,
    `413 text-too-large`) and the layer resolved (`400 workspace-unresolved`,
    `409 layer-not-writable`).
 
@@ -996,11 +1011,15 @@ Other rules, unchanged from Revision 6:
 
 - `session` may be given in the body or as `?session=`; the body wins.
 - Upsert keyed by `name`, so saving the reserved section twice replaces rather
-  than duplicates, and a frozen entry in the same layer is never touched.
-- `order` is only legal for `append`, which this route no longer accepts; a body
-  carrying it is refused by rule 3 before that rule is ever consulted.
+  than duplicates, and a frozen entry in the same layer is never touched. The
+  mode is part of that one entry: switching modes is an ordinary upsert of it.
+- **The write touches one layer and one entry, whatever the mode.** The other
+  layer's file is not read for a decision and never written, so a save, a mode
+  switch, a `DELETE` or an import can only change the layer it names
+  (`test/route.test.mjs` hashes both files around each path).
 
-Response `200` (byte-identical to Revision 6):
+Response `200` (byte-identical in shape to Revision 6; `action` echoes what was
+stored, so it may be `append`):
 
 ```json
 { "ok": true, "saved": { "name": "prompt-setting:custom-prompt", "action": "replace", "text": "…", "layer": "user" }, "effectiveFrom": "next-turn" }
@@ -1115,6 +1134,13 @@ a target index. **No numeric order is ever fabricated.**
 over a user override for the same `name` and keeps the user entry's position, so
 switching layers never reshuffles. A workspace-only override is appended after
 the user entries, in file order.
+
+The reserved section is the one exception, and only when the workspace layer asks
+for it (Revision 36): a workspace `append` keeps **both** texts and combines them
+into the single entry the merge produces, lower layer first — `user` is always the
+lower layer and `workspace` the upper one, so the order is a property of the
+layers and never of who edited last. Every other name, and a `replace`/`hide` on
+this one, keeps the plain rule above.
 
 ### 5.3 Zero-diff without overrides
 
@@ -1631,6 +1657,12 @@ and `layers.*.layer/enabled/reason` fields are byte-identical to Revision 6; a
 consumer that ignores `exportScope` reads exactly what it read before, minus the
 entries it could no longer import.
 
+**Revision 36 — the entry is exported whole, mode included.** The one override
+per layer is copied as stored, so its `action` may be `append` (「叠加」): a backup
+restored on another machine reproduces the same assembly rather than quietly
+downgrading to「覆盖」. Nothing else about the document changes — the mode is not a
+new field, it is the entry's own `action`, which this route already carried.
+
 ## 11. `POST /prompt-setting/import` (Revision 4; narrowed in Revision 7)
 
 Query: `dryRun` (exactly `true` to preview), `mode` (`merge` | `replace`),
@@ -1821,6 +1853,12 @@ render the raw value rather than guess. The shipped client has had a label for
 every action in this list since g-015 (`histAction.legacy-clear`, and
 `histAction.rollback` since g-039), and §13.3 asserts the label reaches the screen
 instead of the raw enum.
+
+Revision 36 gives `append` one more producer and no new word: saving the reserved
+section with the「叠加」mode records `action: "append"` exactly as any other
+`append` write does (the mode **is** the action, Revision 36). That is what lets
+a rollback restore the mode: `actionOf` already reports the entry's action, and a
+snapshot already stores `{name, action}` (§19.4, §19.7).
 
 ## 13. Client-side contract (Revision 4; re-ordered in Revision 7, g-015; collapsed scope in g-016)
 
@@ -2134,13 +2172,95 @@ them carries no text.
   write face keeps storing what the user typed (g-056). `reservedTextOf`'s
   per-layer read is untouched.
 
+**Revision 36 (g-058: the reserved「我的 Prompt」section gains a second mode —
+「叠加」/stack; host-half behaviour change, one narrow widening of the write face,
+and one client control).**
+The reserved section `prompt-setting:custom-prompt` now carries an **explicit
+mode** in each layer: `replace` (覆盖 — this layer's text is the section's text,
+the behaviour every earlier revision had) or `append` (叠加 — this layer's text is
+stacked after the other layer's). Nothing else in the pipeline moves: the merged
+list keeps naming **one** reserved section, `applyOverrides` sees the `replace` it
+always saw, and no other section's `append` changes meaning.
+
+- **what was wrong.** Two layers that both hold the reserved section produced
+  **one** of them in the prompt, because `mergeLayers` deduplicated by name
+  (workspace wins, §3). On the machine where this was found the user layer held
+  343 characters of language/identity rules and the workspace layer 39 characters
+  of status reminder, and only the 39 reached the model — with no way to ask for
+  both. Revision 35 fixed the *blank* half of that problem; Revision 36 fixes the
+  *non-blank* half;
+- **the representation.** The stored word is the entry's existing `action` field,
+  and for this one name it says what the layer does with the **other layer's**
+  text rather than what the pipeline does with a section:
+
+  | `action` | mode | meaning for the reserved section |
+  | --- | --- | --- |
+  | `replace` | 覆盖 | this layer's text is the section's text (default; unchanged) |
+  | `append` | 叠加 | this layer's text is stacked after the other layer's |
+
+  A **separate field was rejected**: it would have to be merged, validated,
+  exported, imported and shown beside an `action` that already spells "what this
+  entry does with its target" — two fields encoding one enum. Reusing
+  `applyOverrides`' own `append` semantics was rejected as well: there `append`
+  means "insert a NEW section at `order`" (§5.1) and a name that is already
+  registered is skipped as `name-already-present`, so it can never join two texts;
+- **where the stack is built.** `mergeLayers` (`core/overrides.js`, one helper:
+  `resolveReservedSection`) resolves the two layers into the single entry the rest
+  of the pipeline sees. With an upper `append` and two non-empty halves that entry
+  is `{name, action: "replace", text: <lower> + "\n\n" + <upper>, layer:
+  "workspace"}`. Each layer's file keeps the word the panel wrote for it; nothing
+  ever rewrites one file from the other;
+- **order and separator.** The user layer is the lower one and the workspace layer
+  the upper one — fixed by §5.2, never by which layer the user happened to be
+  editing. Two non-empty halves are joined by **exactly one blank line**
+  (`"\n\n"`, exported as `RESERVED_STACK_SEPARATOR`), the same separator the
+  shipped renderer puts between two sections. One empty half inserts nothing: no
+  leading, trailing or doubled blank line. A `hide` below contributes no text and
+  does not veto the upper stack; a `hide` above still wins outright (Revision 35);
+- **emptiness stays Revision 35's rule.** A blank reserved entry states nothing,
+  and Revision 36 widens that 口径 from `replace` to `replace` **or** `append` for
+  this one name: an `append` with no text would otherwise contribute an empty half
+  plus a separator, i.e. a blank line nobody asked for. The spellings are
+  unchanged (`""`, `"   "`, `"\n\t"`, `null`, `undefined`, a missing field — the
+  trim test still applies to strings only). A user-layer `append` has no layer
+  under it and is flattened to `replace`; a hand-edited `order` on the reserved
+  stack is dropped rather than smuggled into the resolved list;
+- **the write face (§4.1, §15.5).** `PUT /prompt-setting/overrides` accepts
+  `action: "append"` for the reserved name, which is what makes the mode
+  persistable per layer. Two rules are unchanged and one is added: the name wall
+  (`403 write-locked`), the action wall (`400 unsupported-action` for anything
+  other than the two actions — `hide` is still refused, the panel has no control
+  for it), and `400 unexpected-order`, because the reserved `append` is a stack
+  and not a target index;
+- **no wire change beyond that.** No route, query parameter, response field or
+  config key is added: the mode **is** the entry's existing `action` field, which
+  `GET /overrides` already reports per layer and `merged` already resolves.
+  Export and import carry it because they carry overrides whole, and a history
+  rollback restores it because a snapshot already records `{name, action}`. Each
+  layer's own file still stores exactly what the panel sent for **that** layer —
+  asserted byte-for-byte in `test/route.test.mjs` around every write path
+  (save, mode switch, 「恢复默认」, import, rollback);
+- **client surface (§13.1).** One control: `data-region="mine-mode"`, with
+  `data-action="mine-mode"` buttons carrying `data-mine-mode-choice`
+  (`replace` | `append`) and `data-mine-mode-active`; the region reports the mode
+  on screen (`data-mine-mode`) and the one the file stores
+  (`data-mine-mode-stored`, `none` when the layer holds no entry). It edits **this
+  write target's** draft (g-056) — the draft carries the mode beside the text —
+  and it is not a second scope entrance (g-055);
+- **where it is implemented.** `core/overrides.js` (the resolver and the widened
+  emptiness predicate), `core/custom.js` (`RESERVED_WRITABLE_ACTIONS`) and
+  `client.js` (the control, the draft field, the save body). `index.js` stores the
+  word and resolves nothing: the stack is built once, in the merge kernel.
+
 ### 13.1 「我的 Prompt」 — the one write surface
 
 - The panel is `data-region="mine"`, the layer control is
   `data-region="mine-layer"` (group `mine-layer`, values `user` / `workspace`),
   the text box is `data-role="mine-text"`, and the three controls are
   `data-action="mine-save"`, `data-action="mine-cancel"` and
-  `data-action="mine-reset"`.
+  `data-action="mine-reset"`. The mode control of Revision 36 is
+  `data-region="mine-mode"` with `data-action="mine-mode"` buttons (see the
+  Revision 36 entry above for its full marker set).
 - The value shown is the reserved section's stored text **for the selected
   layer**, read from **that layer's own** view of `GET /overrides`
   (`user.overrides` / `workspace.overrides`, §3) — the file that layer holds.
@@ -2151,8 +2271,25 @@ them carries no text.
   same-named entry). An absent entry means "unconfigured", and the panel says so
   in words; it never shows a blank box as if the layer held `""`.
 - Saving is exactly `PUT /prompt-setting/overrides` with
-  `section: { name: "prompt-setting:custom-prompt", action: "replace", text }`
-  (§4.1) and, when a session is selected, `session`. The text is sent verbatim.
+  `section: { name: "prompt-setting:custom-prompt", action: <mode>, text }`
+  (§4.1) and, when a session is selected, `session`. The text is sent verbatim;
+  since Revision 36 the mode travels in the same entry — one layer, one entry,
+  never the other layer's file.
+- **The mode (Revision 36, g-058).** The panel offers「覆盖」(`replace`) and
+  「叠加」(`append`), and it shows the mode **this layer's file stores** — read
+  from that layer's own view, like the text (g-054), with「未设置」stated in
+  words rather than as「覆盖」. The control is
+  `data-region="mine-mode"`; each button is `data-action="mine-mode"` carrying
+  `data-mine-mode-choice` and `data-mine-mode-active`, the region carries
+  `data-mine-mode` (what the box shows) and `data-mine-mode-stored`
+  (`replace` | `append` | `none`), and the read-only target line carries the same
+  two facts as `data-mine-target-mode` / `data-mine-target-mode-stored`. The mode
+  is part of the **draft** (g-056): it is keyed by the same write target, the
+  panel is `dirty` while text **or** mode differs from that file's stored entry,
+  「取消」 drops both back to the stored pair, and choosing a mode writes nothing
+  until「保存」 — so a mode switch alone is one ordinary save of one entry. The
+  user layer is the lowest one, and the panel says in words that「叠加」there is
+  equivalent to「覆盖」.
 - 「恢复默认」 is the single-name `DELETE` (§12.1) for the reserved name and the
   selected layer, behind a second confirmation of kind `mine-reset`.
 - 「取消」 (g-027) is the non-destructive counterpart of 「恢复默认」: it drops the
@@ -3473,7 +3610,9 @@ The complete matrix for `PUT /prompt-setting/overrides`:
 | --- | --- | --- |
 | a non-empty string ≠ reserved | anything | `403 write-locked` |
 | reserved | `replace` | validated (`missing-text`, `text-too-large`) and written |
-| reserved | `hide` \| `append` \| unknown \| absent | `400 unsupported-action` |
+| reserved | `append` (Revision 36) | the same validation and write; the stored mode is「叠加」 |
+| reserved, with an `order` field | either | `400 unexpected-order` — for this name a stack position is not a target index |
+| reserved | `hide` \| unknown \| absent | `400 unsupported-action` |
 | absent / empty / not a string | anything | the field validator answers (`400 missing-name`, `400 invalid-override`) |
 
 And for the single-name `DELETE`:
@@ -3496,7 +3635,10 @@ rule except `layer` and a missing name, so `{name: "a", action: "explode"}` is
 `403`, not `400 unknown-action`. `unknown-action`, `unexpected-text` and
 `invalid-order` remain reachable exactly where they belong — in the override
 validator (`test/overrides.test.mjs`) and through `import`'s document validation
-(§11.1).
+(§11.1). `unexpected-order` is the one code this route also answers itself, and
+only for the reserved name (Revision 36): its field-level form in the validator is
+`order` on a non-`append` entry, which this route can never reach because it
+writes no other name.
 
 ### 15.6 `?legacy=true` and the frozen state
 
@@ -3531,6 +3673,13 @@ frozen override); constraining actions as well would break the round trip for a
 hand-edited layer that, say, hides the reserved section — an export of it could
 not be re-imported. Such an entry is applied exactly as `planImport` always
 applied it (§11.4).
+
+Revision 36 gains from that rule rather than changing it: the「叠加」mode is an
+`action`, so an export taken on one machine re-imports as the same mode on
+another, and a rollback restores it from the recorded snapshot. The lock still
+refuses new **names** only, so nothing here widens what an import may touch —
+one entry, in the one layer the document names, with the other layer's file
+byte-identical (§4.1).
 
 Because an export now carries at most one entry per layer, the multi-entry plan
 shapes (`replaced`, `kept`, and `removed` in `merge` mode) are exercised at the

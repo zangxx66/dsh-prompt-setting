@@ -215,8 +215,10 @@ and install, bilingual — is in [`packages/dsh-prompt-setting/README.md`](./pac
 - **The write surface is narrow**: only the "My Prompt" section is writable. Every other built-in section
   is **read-only** — `PUT`, single-name `DELETE` and `import` all return `403 write-locked` (and touch not
   one byte of the files when they refuse).
-- **Two layers**: a user-level default plus a workspace-level override, **workspace wins**; handy for
-  "one global set, plus a few extra lines in this project".
+- **Two layers**: a user-level default plus a workspace-level override. **Cover** (the default) lets the
+  workspace text replace the user text; **Stack** makes the workspace text follow the user text, one
+  blank line apart, so both reach the prompt. Handy for "one global set, plus a few extra lines in this
+  project".
 - **Installed but empty = not installed**: with no text, the section contributes nothing to the final
   prompt and the rendering is byte-for-byte identical.
 - **Where the data lives**: only the plugin's own data directory (one user-level and one workspace-level

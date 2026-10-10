@@ -65,8 +65,10 @@
 
 其它特性 / More:
 
-- **两层作用域 / Two layers** —— 用户级默认 + 工作区级覆盖，**工作区级优先**。
-  > A user-level default plus a workspace-level override; **the workspace wins**.
+- **两层作用域 / Two layers** —— 用户级默认 + 工作区级覆盖：逐层选「覆盖」（默认，工作区级优先）
+  或「叠加」（本层文本拼在另一层之后，中间一个空行，两层都生效）。
+  > A user-level default plus a workspace-level override: **Cover** (the default — the workspace wins) or
+  > **Stack** (this layer's text follows the other layer's, one blank line apart, so both apply).
 - **零运行时依赖、零构建步骤 / Zero runtime dependencies, zero build step** —— 一包纯 JS，不拉依赖、不编译。
   > One package of plain JS — nothing to fetch, nothing to compile.
 - **界面文案跟随 DSH 语言 / UI copy follows DSH** —— DSH 切到中文，这一页就是中文，不需要刷新或重启。
