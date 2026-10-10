@@ -6740,39 +6740,46 @@ CHANGELOG 未动。
 
 ### 四、测试（`test/client.test.mjs` 只增行）
 
-- 新增 1 个用例：分组容器包含 scope 卡片；块仍在 `data-region="tabs"` 之前（页面级、仍在 tab 栏
-  之上）；冻结标记各恰好一次、降级提示至多一次；**反向断言**——全树 `h3` 且文本为 `mineHeading`
-  的标题**恰好 1 个**且就是 mine 面板自己的标题（复核轮 1 要求：块内不得出现第二个同名标题）；
-  面板内只读行随 `sessionArg`（选 a1）与 `mineLayer`（切 workspace）同步变化；只读行内无
-  `button`（无第二个入口）；
-- **首屏几何离线预算**（复核轮 1 要求补）：新增 `chromeAboveTabsPx(tree)` + `declaredHeight(node)`
-  （纯声明样式折算：padding/margin + lineHeight/fontSize/minHeight + flex 行取最高子、列按堆叠加
-  gap），把 `data-region="tabs"` **之前**的全部 chrome 纳入断言，上限
-  `CHROME_BUDGET_PX = 900 − 30（tab 栏行）− 560（tab-panel 最少可见）= 310px`；另断言块的预算
-  ≥ note 行 + 折叠卡片的预算（把新增内容真的算进去，删掉 note 即红）。既有
-  `collapsedScopeHeight`（70px ≤ 80px）原样保留；
+- 新增 2 个用例：①分组收口用例：容器包含 scope 卡片；块仍在 `data-region="tabs"` 之前（页面级、
+  仍在 tab 栏之上）；冻结标记各恰好一次、降级提示至多一次；**反向断言**——全树 `h3` 且文本为
+  `mineHeading` 的标题**恰好 1 个**且就是 mine 面板自己的标题（复核轮 1）；面板内只读行随
+  `sessionArg`（选 a1）与 `mineLayer`（切 workspace）同步变化；只读行内无 `button`（无第二个入口）；
+  ②`declaredHeight` 自身的口径用例（复核轮 2）：px 行高按字面、无单位行高按 fontSize 倍数、
+  无行高时按一行 slack、3 值 margin 只取上下；
+- **首屏几何离线预算**（复核轮 1 补、轮 2 收紧）：新增 `chromeAboveTabsPx(tree)` +
+  `declaredHeight(node)` + `declaredLinePx(style)`（纯声明样式折算：padding/margin +
+  lineHeight/fontSize/minHeight + flex 行取最高子、列按堆叠加 gap），把 `data-region="tabs"`
+  **之前**的全部 chrome 纳入断言。轮 2 三重收紧：
+  - **紧预算**：`CHROME_BUDGET_PX = 224`（本修订实测 220 + 4px 舍入），并保留硬天花板
+    `CHROME_FIRST_SCREEN_CEILING_PX = 900 − 30 − 560 = 310`；轮 1 的 310 上限太松（加回一整行
+    26–28px 标题仍绿），轮 2 任何结构性增长都会红；
+  - **差值定价**「块预算 ≥ note + 卡片」在轮 1 是恒真式（两边同源）；轮 2 改为对**同一棵树剔除
+    note 后的对照树**取差值，并写死数字：`chrome − chrome(withoutNote) == 24`（note 行 18 + 块内
+    gap 6）。注：折叠态 scope 卡片预算断言（`collapsedScopeHeight` 70px ≤ 80px）原样保留；
+  - **无单位行高**：`lineHeight: 1.5` 这类值按 `fontSize × 1.5` 计（<4 视为倍数，否则视为 px），
+    避免轮 2 指出的约 16px 低估；
 - EN 扫描同步登记（只增）：`promptBlockNote`、`['mineTargetNote', {layer, scope}]` 进 copy 清单；
   `data-region=prompt-block` / `data-region=mine-target` / `data-role=prompt-block-note` 进
   `EN_REQUIRED_MARKERS`（复核轮 1 要求移除 `data-role=prompt-block-heading`）；既有断言只增不减、
   未放宽；
-- `test/client.test.mjs` diff（相对基线，含复核轮 1）：`210+/1-`，那 1 行删除只是把单行 `copy:`
+- `test/client.test.mjs` diff（相对基线，含复核轮 2）：`316+/1-`，那 1 行删除只是把单行 `copy:`
   数组改写为多行，属只增登记。
 
 ### 五、实测数字
 
 | 命令 | 结果 |
 | --- | --- |
-| `node --test test/client.test.mjs` | **220 pass / 0 fail / skipped 0**，exit 0（基线 219 + 新增 1） |
-| `node --test test/*.test.mjs` | **746 pass / 0 fail / skipped 0**，exit 0（全量基线 745 + 新增 1） |
+| `node --test test/client.test.mjs` | **221 pass / 0 fail / skipped 0**，exit 0（基线 219 + 新增 2） |
+| `node --test test/*.test.mjs` | **747 pass / 0 fail / skipped 0**，exit 0（全量基线 745 + 新增 2） |
 | `node scripts/client-chunks.mjs` | **4 file(s) match the CHUNK_STAMPS manifest**，exit 0（未改 chunk，无需 `--write`） |
 | `node --test test/client.test.mjs`（scope 几何日志） | `collapsed「查看范围」= 70px budget (80px)`，未变 |
-| `node --test test/client.test.mjs`（chrome 几何日志） | `above the tab bar = 220px budget (310px)`，「我的 Prompt」块 = 80px（复核轮 1 新增） |
+| `node --test test/client.test.mjs`（chrome 几何日志） | `above the tab bar = 220px (tight 224px, hard ceiling 310px)`，「我的 Prompt」块 = 80px |
 
 ### 六、未验证项
 
 - **真机 1440×900 目视未做**（本执行无浏览器）：分组视觉（3px 左边线、note 行与卡片的间距）与首屏
-  几何需主管真机复核；离线可断言的部分（scope 卡片 70px ≤ 80px、tabs 之前 chrome 220px ≤ 310px、
-  块在 tabs 之前、标记唯一、标题唯一）已由测试钉住。
+  几何需主管真机复核；离线可断言的部分（scope 卡片 70px ≤ 80px、tabs 之前 chrome 220px ≤ 紧预算
+  224px、note 差值 24px、块内只有两项、标记唯一、标题唯一）已由测试钉住。
 
 ### 七、复核轮 1（独立评审）返工
 
@@ -6792,3 +6799,31 @@ CHANGELOG 未动。
 3. **CONTRACT §13.0 措辞对齐**：第三项改为「the **「我的 Prompt」block whose header is the session
    selector every tab shares**」，并删去 §13.7 段落里「块头用 `mineHeading`」的表述，改为「块本身
    没有标题，`mineHeading` 只由面板渲染一次」；仍不加 Revision、不改既有语义。
+
+### 八、复核轮 2（增量评审）返工：让预算断言真的咬得住
+
+评审判定轮 1 的三条「成立性」问题（仍是 UNVERIFIED、无 BLOCK），本轮全部修掉 —— 共同病因是
+**断言与实现同源/余量过大 ⇒ 没有约束力**：
+
+1. **紧预算（评审：310px 上限加回一整行标题仍绿）**：`CHROME_BUDGET_PX` 从
+   `900 − 30 − 560 = 310` 改为 **224**（本修订实测 220 + 4px 舍入），并保留 310 作为注释里的硬天花板
+   `CHROME_FIRST_SCREEN_CEILING_PX`。自证（两轮实验）：
+   - 把块头 `h3`（`mineHeading`）原样加回 ⇒ 先红在唯一性断言（`exactly one「我的 Prompt」
+     heading`，轮 1 已证）；
+   - 加回一行**异名**标题（让唯一性断言保持绿）⇒ 紧预算断言**自己**红：
+     `the chrome above the tab bar budgets 248px, over the tight 224px budget`。
+   数字来源：那行 22px 行盒 + 块内 6px gap = 28px ⇒ 220 + 28 = 248 > 224；
+2. **无单位行高（评审：`lineHeight: 1.5` 被当成 1.5px，低估约 16px）**：新增 `declaredLinePx(style)`：
+   无单位值 <4 视为 fontSize 的倍数（`1.5 × 12 = 18`），≥4 视为 px；fontSize 缺失时按 22px slack 行
+   缩放。新增一条**专门钉住该 helper 的用例**（px 行高 / 数字倍数 / 字符串倍数 / 无行高默认 /
+   无 fontSize 的倍数 / ≥4 的裸数 / padding 上下各一次 / 3 值 margin 只取上下）。
+   自证：把倍数分支临时改成 `>= 0.1`（等于退回「当 px 用」）⇒ 该用例红：
+   `a unitless line height multiplies the font size`；还原后复绿；
+3. **恒真断言（评审：块预算 ≥ note + 卡片 由同一函数算出，删 note 变红其实来自 `oneBy` 存在性）**：
+   删掉该恒真式，改为**差值型**断言 + 结构性断言：
+   - 结构：`elementChildren(block)` 的 `data-role`/`data-region` 序列**恰为**
+     `['prompt-block-note', 'session']`（块内多任何一项即红）；
+   - 差值：新增 `withoutPromptBlockNote(tree)`（同一棵树的浅拷贝，只剔除 note），断言
+     `chrome − chrome(withoutNote) === 24`（写死：note 行 18 + 块内 gap 6）—— 低估 line box 的
+     helper 不可能满足这个数字；
+   - 紧预算断言排在这三条**之前**，确保「结构性增长」报的是预算本身，而不是下游某个唯一性检查。
