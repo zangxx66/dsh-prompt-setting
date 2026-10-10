@@ -6695,3 +6695,71 @@ npm 读取、下载区域）、`### Changed 变更` 2 条（客户端按需分�
 - 实测：`node --test` **745 pass / 0 fail / skipped 0**，exit 0；`check-compat.mjs` exit 0；
   `client-chunks.mjs` 4 file match，exit 0；`grep -c "本会话" client.js` → **0**；
   `test/` diff 仍是**纯新增**（0 删除行）。
+
+---
+
+## 129. g-055：把「查看范围」收成「我的 Prompt」块的头部（视觉分组 + 文案，方案 B，2026-10-10，基线 `91fd55e` 隔离工作树）
+
+### 一、要解决的问题与评估结论
+
+负责人反馈：设置页里「查看范围」和「我的 Prompt」在功能上算一个块，交互上却显得分裂。只读评估
+（上下文卡片 `card-62ffb6fa`）结论：**分裂 = 层级归属错位**，不是状态重复 —— `sessionArg` 是页面级
+状态，被三类消费者共用：①页面取数（snapshot / overrides）；②写入目标（mine 三处写动作、
+advanced 整层 reset、backup 导出/导入 `?session=`）；③标签文案；而它的卡片渲染在 tab 栏**之上**，
+读起来像全页面设置。逐 tab：mine 真正依赖；overview 无关系；history 已由 g-038 独立；
+**backup / advanced 真依赖却看不见**（最刺眼的裂口）。
+
+方案对比后负责人选定 **方案 B**：页面级位置与唯一改入口都不动，用**视觉分组 + 文案**把它收成
+「我的 Prompt」块的头部。不做 A（搬进 tab，作废 §13.0「every tab shares」）、不做 C（各 tab 多实例，
+与 g-038 冲突）、不做 B+（不给 backup/advanced 加只读范围行，另议）。
+
+### 二、实现（只改 `client.js` 主入口，`109+/4-`）
+
+- 新增分组容器 `data-region="prompt-block"`（新函数 `renderPromptBlock`），把既有 scope 卡片包进去：
+  块头 `h3` 复用 `mineHeading`（与 mine 面板**同键同级同样式**，两处读作一块）、一行新文案
+  `promptBlockNote`（「这个范围决定「我的 Prompt」写到哪一层；改范围只在这里。」），其下才是
+  `data-region="session"` 卡片；
+- 卡片本身**一字未动**：折叠行为、`data-region="session"`/`"scope-summary"`、`data-scope-open`、
+  `data-action="scope-toggle"`、`data-role="scope-summary-label"|"-hint"` 全部原样、仍各恰好一次
+  （折叠态仍只有一个子节点 ⇒ 首屏预算断言不变）；
+- mine 面板内新增**只读**写入目标行（`data-region="mine-target"`，`data-mine-target-layer` /
+  `data-mine-target-scope`），文案 `mineTargetNote`（「写入目标：{layer}；查看范围：{scope}」）——
+  面板内**没有**第二个改范围入口；
+- 两半共享同一条视觉规则（`promptBlockBandStyle`：3px 左边线 + 12px 内缩），scope 卡片与 mine 面板
+  在视觉上读作同一块的上/下半；
+- scope 名称抽成**一个定义** `scopeName(t, m)`，摘要行与只读行共用，避免两处漂移；
+- 新增 i18n 键 2 个（`promptBlockNote` / `mineTargetNote`），zh/en 一一对应。
+
+### 三、禁项与未碰的东西
+
+scope 未搬进 tab、未做多实例、`historyScope*`（`historyScopeQuery` / `data-region="history-scope"` /
+`histScopeHint`）未动；装配、存储、插值语义未动；`data-*` 冻结标记的名字/数量/语义未动；
+`.dsh-graph/` 未动；**未改任何 chunk 文件**（`client.history/overview/advanced/transfer.js` 零改动）
+⇒ 指纹无需重算。文档只做措辞级补充（CONTRACT §13.0/§13.7、NOTES 本节、README×3），版本号与
+CHANGELOG 未动。
+
+### 四、测试（`test/client.test.mjs` 只增行）
+
+- 新增 1 个用例：分组容器包含 scope 卡片；块仍在 `data-region="tabs"` 之前（页面级、仍在 tab 栏
+  之上）；冻结标记各恰好一次、降级提示至多一次；块头与面板标题同键/同级/同样式；面板内只读行随
+  `sessionArg`（选 a1）与 `mineLayer`（切 workspace）同步变化；只读行内无 `button`（无第二个入口）；
+- EN 扫描同步登记（只增）：`promptBlockNote`、`['mineTargetNote', {layer, scope}]` 进 copy 清单；
+  `data-region=prompt-block` / `data-region=mine-target` / `data-role=prompt-block-heading` /
+  `data-role=prompt-block-note` 进 `EN_REQUIRED_MARKERS`；既有断言只增不减、未放宽；
+- `test/client.test.mjs` diff：`97+/1-`，那 1 行删除只是把单行 `copy:` 数组改写为多行，属只增登记。
+
+### 五、实测数字
+
+| 命令 | 结果 |
+| --- | --- |
+| `node --test test/client.test.mjs` | **220 pass / 0 fail / skipped 0**，exit 0（基线 219 + 新增 1） |
+| `node --test test/*.test.mjs` | **746 pass / 0 fail / skipped 0**，exit 0（全量基线 745 + 新增 1） |
+| `node scripts/client-chunks.mjs` | **4 file(s) match the CHUNK_STAMPS manifest**，exit 0（未改 chunk，无需 `--write`） |
+| `node --test test/client.test.mjs`（scope 几何日志） | `collapsed「查看范围」= 70px budget (80px)`，未变 |
+
+### 六、未验证项
+
+- **真机 1440×900 目视未做**（本执行无浏览器）：分组视觉（左边线、块头与卡片的间距）与首屏几何
+  需主管真机复核；离线可断言的部分（预算 70px ≤ 80px、块在 tabs 之前、标记唯一）已由测试钉住；
+- 下方 mine 面板与上方块头在同一个 tab 下同时出现两个「我的 Prompt」标题，是「块头 + 面板标题」的
+  有意重复（同一 key、同一层级）；真机上是否读得顺，留给目视裁决。

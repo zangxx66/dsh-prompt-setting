@@ -1825,6 +1825,14 @@ title line — which carries the plugin version beside the heading since Revisio
 shares — the selector itself is **one line** until「更改」is clicked (§13.7), so
 the tab bar and the tab panel are on the first screen.
 
+Since g-055 that selector is rendered **as the header of the「我的 Prompt」
+block** (§13.7, `data-region="prompt-block"`): the block carries the same
+heading the panel uses (`mineHeading`) plus one sentence saying what the scope
+decides, so the selector reads as the header of the write surface rather than as
+a page-wide setting of its own. Nothing about its contract changed — it is still
+above the tab bar, still one instance, and still the only place the scope is
+changed.
+
 | order | `data-tab-value` | tab | what it is |
 | --- | --- | --- | --- |
 | 1 (default) | `mine` | 「我的 Prompt」 | the **only** write surface |
@@ -2652,6 +2660,16 @@ expanded selector was ~500px tall (search box + the grouped tree + paging +
 pinned rows + four lines of help), which pushed `data-region="tabs"` to
 `y≈789` and `data-region="tab-panel"` past the 900px fold — the page opened
 with **no tab content visible**. The selector is therefore a disclosure.
+
+**The card is the header of one block (g-055).** The card is rendered inside
+`data-region="prompt-block"`, whose heading is `mineHeading` — the same key and
+the same `h3` level the mine panel uses — followed by one sentence saying what
+the scope decides. The mine panel states its own write target as a **read-only**
+line (`data-region="mine-target"`, `data-mine-target-layer` /
+`data-mine-target-scope`) instead of making the reader look back above the tab
+bar. Nothing else changed: the collapse rule, the position (still above the tab
+bar) and every frozen marker below are exactly as they were, the card is still
+one instance, and the panel gained **no** second way to change the scope.
 
 **Collapsed (the default).** The card is `data-region="session"` with
 `data-scope-open="false"` and renders **exactly one row**:

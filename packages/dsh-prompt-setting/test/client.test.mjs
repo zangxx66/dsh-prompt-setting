@@ -2820,6 +2820,88 @@ test('client: the collapsed「查看范围」block is one row inside an 80px bud
   assert.ok(expandedNodes > collapsedNodes * 2, `opening the picker adds the body back (${expandedNodes} vs ${collapsedNodes})`);
 });
 
+test('client (g-055): 「查看范围」is the header of the「我的 Prompt」block, and the panel names its write target', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  let tree = await page.flush();
+
+  // One grouping container, and the frozen scope card lives *inside* it: the
+  // card is this block's header, not a page-level card of its own.
+  const block = oneBy(tree, 'data-region', 'prompt-block');
+  assert.equal(
+    collect(block, (node) => node.props && node.props['data-region'] === 'session').length,
+    1,
+    'the scope card is rendered inside the block',
+  );
+  // The block still sits above the tab bar (g-016's first-screen budget).
+  const flow = collect(
+    tree,
+    (node) => node.props && ['prompt-block', 'tabs'].includes(node.props['data-region']),
+  ).map((node) => node.props['data-region']);
+  assert.deepEqual(flow, ['prompt-block', 'tabs'], 'the block is above the tabs, in that order');
+
+  // Every frozen marker is still unique across the whole tree (CONTRACT
+  // §13.0/§13.7): the wrapper adds structure, it moves nothing.
+  for (const [attribute, value] of [
+    ['data-region', 'session'],
+    ['data-region', 'scope-summary'],
+    ['data-role', 'scope-summary-label'],
+    ['data-action', 'scope-toggle'],
+  ]) {
+    assert.equal(
+      collect(tree, (node) => node.props && node.props[attribute] === value).length,
+      1,
+      `${attribute}=${value} stays exactly once`,
+    );
+  }
+  // The degradation hint is "at most one" by design, not "exactly one".
+  assert.ok(
+    collect(tree, (node) => node.props && node.props['data-role'] === 'scope-summary-hint').length <= 1,
+    'at most one degradation hint',
+  );
+
+  // The block heading and the panel heading are the same key at the same level:
+  // that is what makes the two read as one block.
+  const blockHeading = oneBy(tree, 'data-role', 'prompt-block-heading');
+  const panelHeading = elementChildren(oneBy(tree, 'data-region', 'mine'))[0];
+  assert.equal(blockHeading.props.children, page.zh.mineHeading, 'the block is named after the write surface');
+  assert.equal(panelHeading.props.children, page.zh.mineHeading, 'and the panel keeps the same name');
+  assert.equal(blockHeading.type, panelHeading.type, 'same heading level');
+  assert.deepEqual(blockHeading.props.style, panelHeading.props.style, 'same heading style');
+  assert.ok(hasText(oneBy(tree, 'data-role', 'prompt-block-note'), page.zh.promptBlockNote), 'the block says what the scope decides');
+
+  // The panel states its own write target, read-only: no second way to change
+  // the scope exists anywhere in the page.
+  let target = oneBy(tree, 'data-region', 'mine-target');
+  assert.equal(target.props['data-mine-target-layer'], 'user', 'the selected layer');
+  assert.equal(target.props['data-mine-target-scope'], markerOf(tree, 'data-session'), 'the page scope, verbatim');
+  assert.ok(
+    hasText(target, fillText(page.zh.mineTargetNote, { layer: page.zh.ovUser, scope: 'Alpha three' })),
+    'and it names both, in the panel',
+  );
+  assert.equal(collect(target, (node) => node.type === 'button').length, 0, 'read-only: no scope switch inside the panel');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-action'] === 'scope-toggle').length, 1, 'still one entrance');
+
+  // Moving the scope above the tabs moves the line inside the panel with it.
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  sessionOptions(tree).find((row) => row.props['data-session-id'] === 'a1').props.onClick();
+  tree = await page.flush();
+  target = oneBy(tree, 'data-region', 'mine-target');
+  assert.equal(target.props['data-mine-target-scope'], 'a1');
+  assert.ok(hasText(target, fillText(page.zh.mineTargetNote, { layer: page.zh.ovUser, scope: 'Alpha one' })));
+
+  // And so does the layer the save would land in.
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  target = oneBy(tree, 'data-region', 'mine-target');
+  assert.equal(target.props['data-mine-target-layer'], 'workspace');
+  assert.ok(hasText(target, fillText(page.zh.mineTargetNote, { layer: page.zh.ovWorkspace, scope: 'Alpha one' })));
+});
+
 // #endregion
 
 // #region the workspace tree (grouping, search ancestors, hard render bounds)
@@ -8209,7 +8291,15 @@ const EN_SWEEP_CASES = [
       ['data-action', 'scope-toggle'],
       ['data-renderer', 'fallback'],
     ],
-    copy: ['sessionHeading', 'scopeEdit', 'scopeSummaryFlat', ['sessionCurrentLabel', { label: 'Alpha three' }]],
+    copy: [
+      'sessionHeading',
+      'scopeEdit',
+      'scopeSummaryFlat',
+      ['sessionCurrentLabel', { label: 'Alpha three' }],
+      // g-055: the block's one sentence and the panel's own write-target line.
+      'promptBlockNote',
+      ['mineTargetNote', { layer: 'user layer', scope: 'Alpha three' }],
+    ],
     async run() {
       const page = enPage({ useSessions: sessionsHook(WORKSPACE_SESSIONS), responses: defaultResponses() });
       const rec = recorder(page);
@@ -8375,6 +8465,12 @@ const EN_REQUIRED_MARKERS = [
   'data-active-tab=advanced',
   'data-region=mine',
   'data-region=mine-layer',
+  // g-055: the write-target line inside the panel, and the block whose header is
+  // the scope card above the tabs.
+  'data-region=mine-target',
+  'data-region=prompt-block',
+  'data-role=prompt-block-heading',
+  'data-role=prompt-block-note',
   'data-region=overview',
   'data-region=advanced',
   'data-region=advanced-layer',

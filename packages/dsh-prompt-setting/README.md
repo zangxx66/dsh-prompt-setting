@@ -29,9 +29,12 @@
 设置页里会多出一栏 **「Prompt settings」**（`id: prompt-setting`），五个一级 tab：
 
 - **我的 Prompt / My Prompt** —— 唯一写入口：写下你自己的系统级指令（选层 → 编辑 → 保存），
-  一键恢复默认。这段文本**排在所有内置段之后**。
+  一键恢复默认。这段文本**排在所有内置段之后**。上方的「查看范围」是这一块的头部：它决定保存落到
+  哪一层，改范围也只有这一处（面板内那行只读提示会重复告诉你当前写到哪）。
   > The only write surface: your own system-level instructions (pick a layer → edit → save), with a
-  > one-click restore. The text is **placed after every built-in section**.
+  > one-click restore. The text is **placed after every built-in section**. The "View scope" row above
+  > the tabs is this block's header: it decides which layer a save lands in, and it is the only place the
+  > scope is changed (the panel repeats the current target as a read-only line).
 
 - **提示词总览 / Prompt overview** —— 纯只读：分段列表（状态标记 / 搜索 / 筛选 / 复制）、完整全文，
   以及 `base ↔ effective` 对比，一眼看出你的改动究竟改变了什么。

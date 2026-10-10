@@ -41,7 +41,7 @@ Settings gains a **"Prompt settings"** pane (`id: prompt-setting`) with five top
 
 | Tab | What you can do |
 | --- | --- |
-| **My Prompt** | The only write surface: write your own system-level instructions (pick a layer → edit → save), plus a one-click "Restore default". This text is **placed after every built-in section**. |
+| **My Prompt** | The only write surface: write your own system-level instructions (pick a layer → edit → save), plus a one-click "Restore default". This text is **placed after every built-in section**. The "View scope" row above the tabs is this block's header: it decides which layer a save lands in, and it is the only place the scope is changed (the panel repeats the current target as a read-only line). |
 | **Prompt overview** | Read-only: the assembled section list (status marks / search / filters / copy), the full text, and a `base ↔ effective` diff — so you can see exactly what your change did. |
 | **Version history** | The history list (fixed-height, internally scrolling, paged — 50 per page by default) and line-level version diffs. The log has its **own scope selector** (workspace dimension), independent of the "View scope" selector above: the user layer's log is global and is never sliced by session. |
 | **Backup & restore** | Export the configuration for download, and preview an import (review the change plan before anything is written). |
