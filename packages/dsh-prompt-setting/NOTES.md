@@ -6771,6 +6771,21 @@ npm 读取、下载区域）、`### Changed 变更` 2 条（客户端按需分�
 
 ### 七、实测证据与未验证项
 
-- `node --test test/client.test.mjs` exit 0；`node --test test/*.test.mjs` = **749 pass / 0 fail / exit 0**
-  （基线 745 + 新增 4）；`node scripts/client-chunks.mjs` = 4 file match，exit 0（无需 `--write`）；
+- `node --test test/client.test.mjs` exit 0；首版 `node --test test/*.test.mjs` = **749 pass / 0 fail / exit 0**
+  （基线 745 + 新增 4；返工后见 §八）；`node scripts/client-chunks.mjs` = 4 file match，exit 0（无需 `--write`）；
 - **未验证（UNVERIFIED）**：真机目视（切换范围时警告条与归属行的视觉、按钮位置）未做，只做了离线渲染断言。
+
+### 八、返工：评审 R1/R2/R3（第二个 commit）
+
+评审总判 PASS（判据 1–6 全满足），但报出**本次修复新引入**的假阳性 R1，同批处理 R2/R3；三处都用同一处改动（草稿从「单槽」改成「按写入目标的小映射」）解决：
+
+- **R1（假阳性，必须修）**：保存成功时按 §13.1/g-050 刻意**保留**草稿；旧判定（「draft 存在且 key 不匹配」）于是把这份**已保存**的草稿当成「别处未保存内容」⇒ 切到另一个写入目标就出现假警告（评审实测 `scope=用户级`、`chars=11`、`writeDelta=0`）并误阻断保存。**新判定**：其它 target 的草稿仅当**同时**不满足以下任一弃权条件时才算未保存——(a) 文本等于本次要写入的文本；(b) 文本等于该草稿的 `baseline`（本页上次**写入**该 target 的文本，保存成功时记录）；(c) 文本等于该草稿**自己那个 target** 的已存文本。**分层真源**：(c) 的新 helper `layerReservedTextOf` 读 `payload[layer].overrides` 的保留段，**不读 `merged`**（`reservedTextOf` 未动，g-054 仍在改它）；
+- **跨 workspace 的取舍（写进契约）**：草案所属 target 是**另一个 workspace** 时，本次请求从未读过那份文件，(b)/(c) 都不可判定 ⇒ 按「possibly unsaved」保守提示（`draftTargetTextOf` 返回 `known:false`）。理由：对可能已保存的文本多提示一次是可容忍的误差，把它**静默覆盖**不是；同时「草稿文本 === 当前框里显示的文本」这一明显误报已由 (a) 排除；
+- **R2（基线同样存在，非回归）**：草稿改为**按写入目标的小映射** `mineDrafts: {key: {text, scope, baseline}}`。在一个 target 键入不再替换另一个 target 的草稿（旧单槽语义下第一个草稿会被静默覆盖）；切回仍见原文；
+- **R3（基线同样存在，非回归）**：所有本地清理由 `dropMineDraft(key)` 承担——「取消」、「恢复默认」、g-050 对账、「放弃那份草稿」各清**一个** target，`resetMine` 不再 `setMineDraft(null)` 静默清掉别处草稿；
+- **新增用例 3 个**（`test/client.test.mjs` 纯新增）：R1＝保存成功 → 切到另一写入目标 ⇒ 无 `data-warning="mine-draft-elsewhere"`、`data-mine-text-source="stored"`、保存真的发出写请求；R2＝两个 target 各自输入后互不覆盖、往返都能取回；R3＝user 层「恢复默认」确认后，workspace 层草稿仍在（`dirty`）；
+- **负向对照（3 组，各自红）**：把 R1 三条弃权条件整块回退 ⇒ R1 用例 1 fail；把 R2 的写入改回替换整张表 ⇒ R2 用例 1 fail；把 R3 改回 `setMineDrafts({})` ⇒ R3 用例 1 fail；恢复后 g-056 全 7 用例 pass；
+- **文档**：`CONTRACT.md` Revision 33 段补登记 `data-mine-drop-scope` 与 warning 节点上的 `data-mine-draft-scope`/`data-mine-draft-chars`，并写明「一 target 一草稿 + 只有未保存内容才报 + 已保存草稿永不算未保存」；§13.1 正文同步。编号按评审判定：保持 33，集成时由主管把本目标顺延为 34（g-054 保留 33）；
+- **踩坑留痕**：注释里写 `workspace|<root>` 字面量会触发 `test/host.test.mjs` 的「无 JSX / 无构建」断言（`/<[A-Za-z][^>]*>/`），已改写为 `workspace:` + root；全量因此从 751/752 恢复为 752/752；
+- **返工后实测**：`node --test test/client.test.mjs` exit 0；`node --test test/*.test.mjs` = **752 pass / 0 fail / exit 0**（首版 749 + 新增 3）；`node scripts/client-chunks.mjs` = 4 file match，exit 0；未动 4 个 chunk、版本号、CHANGELOG；
+- **仍未验证（UNVERIFIED）**：真机目视（警告条/归属行的视觉与位置）未做。

@@ -3764,6 +3764,52 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * g-056 (review R1): the reserved text of one layer, read from **that
+     * layer's own view** (`payload[layer].overrides`) rather than from `merged`.
+     *
+     * A draft's "is this still unsaved work?" question is a question about the
+     * file the draft belongs to, so it may only be answered by that file's own
+     * list — the merged list mixes both layers and would report one layer's text
+     * as the other's stored value.
+     * @param ovs - the `GET /overrides` payload, or null.
+     * @param layer - `user` | `workspace`.
+     * @returns the stored text, or null when that layer holds no reserved entry.
+     */
+    function layerReservedTextOf(ovs, layer) {
+      const view = ovs && ovs[layer] && Array.isArray(ovs[layer].overrides) ? ovs[layer].overrides : [];
+      const entry = view.find((candidate) => candidate && candidate.name === RESERVED_SECTION_NAME);
+      if (entry === undefined) return null;
+      return typeof entry.text === 'string' ? entry.text : '';
+    }
+
+    /**
+     * g-056 (review R1): the reserved text a **recorded draft's own write
+     * target** holds, as far as this render can know it.
+     *
+     * `known: false` means「this page has not read that file」: the draft's target
+     * is a workspace other than the one the current request resolved, or the
+     * draft records no scope at all (a draft from before g-056's shape). The
+     * caller must then treat it as *possibly* unsaved — the panel may warn, but
+     * it must never silently overwrite — which is the conservative half of the
+     * trade recorded in `NOTES.md` §129.
+     * @param ovs - the `GET /overrides` payload, or null.
+     * @param scope - the draft's `{layer, session, root}`.
+     * @param currentRoot - the workspace root the current request resolved.
+     * @returns `{known: true, text}` or `{known: false, text: null}`.
+     */
+    function draftTargetTextOf(ovs, scope, currentRoot) {
+      if (scope === null || scope === undefined) return { known: false, text: null };
+      const layer = scope.layer === 'workspace' ? 'workspace' : 'user';
+      if (layer === 'workspace') {
+        const root = typeof scope.root === 'string' && scope.root.length > 0 ? scope.root : null;
+        // A different workspace is a file this request never read: 「unknown」,
+        // never「empty」.
+        if (root === null || currentRoot === null || root !== currentRoot) return { known: false, text: null };
+      }
+      return { known: true, text: layerReservedTextOf(ovs, layer) };
+    }
+
+    /**
      * Hand a JSON document to the browser as a download.
      *
      * Two surfaces are attempted in order, and the caller is told which one was
@@ -6763,13 +6809,18 @@ window.__ModuleLoader__.load({
       const [snap, setSnap] = React.useState({ phase: 'loading', data: null, error: null });
       const [ovs, setOvs] = React.useState({ phase: 'loading', data: null, error: null });
       const [reload, setReload] = React.useState(0);
-      // 「我的 Prompt」: the selected layer, the user's unsaved draft (keyed by
-      // layer+session so switching layers cannot carry a draft across), and the
-      // last operation's outcome. `mineDraft === null` means "show what is
-      // stored", which is what makes a fresh load, a layer switch and a
-      // post-save reload all correct without clobbering typing.
+      // 「我的 Prompt」: the selected layer, the user's unsaved drafts, and the
+      // last operation's outcome.
+      //
+      // g-056: the drafts are a small map **keyed by write target**
+      // (`mineDraftKeyOf` — `user`, or `workspace:` + the workspace root), not
+      // one slot keyed by layer+session. One slot is what made a「查看范围」change
+      // miss the key and silently drop the text, and it also meant typing in a
+      // second scope destroyed the first scope's text (review R2). A target with
+      // no entry shows what is stored, which keeps a fresh load, a layer switch
+      // and a post-save reload correct without clobbering typing.
       const [mineLayer, setMineLayer] = React.useState('user');
-      const [mineDraft, setMineDraft] = React.useState(null);
+      const [mineDrafts, setMineDrafts] = React.useState({});
       const [mineStatus, setMineStatus] = React.useState({ kind: 'idle', error: null });
       // Revision 9: the switch's own request state. Kept apart from
       // `mineStatus` because the switch is a config-level fact with its own
@@ -7287,7 +7338,7 @@ window.__ModuleLoader__.load({
       // The draft records the scope it was typed in as **data**, never as
       // localized copy: no key may be produced on the component's own path (a
       // translator that throws must still land in the failure card).
-      const mineScope = { layer: mineLayer, session: sessionArg };
+      const mineScope = { layer: mineLayer, session: sessionArg, root: mineWorkspaceRoot };
       /**
        * The readable name of one recorded draft scope. It is called from event
        * handlers only — never from this component's own render path, where a
@@ -7297,13 +7348,40 @@ window.__ModuleLoader__.load({
         scope === null || scope === undefined ? '' : mineScopeNameOf(t, scope.layer, scope.session, seat.rows);
       const mineStored = reservedTextOf(ovs.data, mineLayer);
       const mineConfigured = mineStored !== null && mineStored.length > 0;
-      const mineDraftHere = mineDraft !== null && mineDraft.key === mineKey;
-      // A draft that belongs to *another* write target and holds text the user
-      // typed is neither shown in the box nor allowed to be silently written
-      // over: it is stated, and the save below refuses while it exists.
-      const mineForeignDraft =
-        mineDraft !== null && !mineDraftHere && mineDraft.text.length > 0 ? mineDraft : null;
-      const mineText = mineDraftHere ? mineDraft.text : mineStored === null ? '' : mineStored;
+      const mineEntry = mineDrafts[mineKey] ?? null;
+      const mineText = mineEntry === null ? (mineStored === null ? '' : mineStored) : mineEntry.text;
+      /**
+       * g-056 (review R1): the draft of **another** write target that is still
+       * unsaved work there. It is neither shown in this box nor allowed to be
+       * silently written over, so it is stated and the save below refuses while
+       * it exists.
+       *
+       * Three facts each disqualify a draft, and all three are needed:
+       *   - its text equals what this save would write (nothing can be lost), or
+       *   - its text equals `baseline`, what this page last **wrote** to that
+       *     target (the post-save draft §13.1 deliberately keeps, so a
+       *     successful save followed by a layer/scope switch is no longer
+       *     reported as unsaved work), or
+       *   - its text equals that target's own stored text, read from the layer's
+       *     own view (`layerReservedTextOf`, never `merged`).
+       * When the target is a workspace this request never read, none of the last
+       * two can be decided: the draft stays「possibly unsaved」and is reported —
+       * warning about text that may already be saved is the tolerable error,
+       * silently overwriting it is not.
+       */
+      const mineForeignDraft = (() => {
+        for (const key of Object.keys(mineDrafts)) {
+          if (key === mineKey) continue;
+          const draft = mineDrafts[key];
+          if (draft === null || draft === undefined || draft.text.length === 0) continue;
+          if (draft.text === mineText) continue;
+          if (draft.text === (draft.baseline ?? null)) continue;
+          const own = draftTargetTextOf(ovs.data, draft.scope, mineWorkspaceRoot);
+          if (own.known && own.text === draft.text) continue;
+          return { key, text: draft.text, scope: draft.scope ?? null };
+        }
+        return null;
+      })();
       // g-021: the panel separates *certainly frozen* from *unknown*, and the
       // verdict is the host's alone — `frozenState` reads the snapshot's
       // `frozen` / `frozenScope` (§2.4/§7.2), which covers both the certain
@@ -7408,6 +7486,25 @@ window.__ModuleLoader__.load({
        * longer exists.
        */
       /**
+       * g-056 (review R2/R3): remove **one** write target's draft.
+       *
+       * Every local reset goes through this — 「取消」, 「恢复默认」, the g-050
+       * reconciliation and「放弃那份草稿」— so none of them can clear a draft that
+       * belongs to another target (R3), and typing in a second target leaves the
+       * first target's text where it is (R2). No request, no disk byte: this is
+       * view state only.
+       * @param key - the write-target key whose draft to drop.
+       */
+      const dropMineDraft = (key) => {
+        setMineDrafts((current) => {
+          if (current[key] === undefined) return current;
+          const next = { ...current };
+          delete next[key];
+          return next;
+        });
+      };
+
+      /**
        * Reconcile the「我的 Prompt」draft after an operation changed a layer's
        * stored text **behind the editor's back** (g-050: rollback, a whole-layer
        * reset, or an applied import).
@@ -7426,10 +7523,10 @@ window.__ModuleLoader__.load({
        *   differing draft was kept.
        */
       const settleMineDraft = () => {
-        if (mineDraft === null || mineDraft.key !== mineKey) return true;
+        if (mineEntry === null) return true;
         const previous = mineStored === null ? '' : mineStored;
-        if (mineDraft.text !== previous) return false;
-        setMineDraft(null);
+        if (mineEntry.text !== previous) return false;
+        dropMineDraft(mineKey);
         return true;
       };
 
@@ -7753,8 +7850,13 @@ window.__ModuleLoader__.load({
           return;
         }
         // Keep the draft: it is what was just written, so the box does not
-        // flicker back to the stored value while the re-read is in flight.
-        setMineDraft({ key: mineKey, text: mineText, scope: mineScope });
+        // flicker back to the stored value while the re-read is in flight — and
+        // `baseline` records that this page really wrote exactly this text there,
+        // so the kept draft is never later reported as unsaved work (R1).
+        setMineDrafts((current) => ({
+          ...current,
+          [mineKey]: { text: mineText, scope: mineScope, baseline: mineText },
+        }));
         // Revision 12 (audit F2): an accepted save may still carry advisories —
         // a registered reference the probe had no value for. They are shown, not
         // dropped, and they are not an error: the write did happen.
@@ -7792,18 +7894,19 @@ window.__ModuleLoader__.load({
        * panel is `dirty`, which excludes `saving` / `saved` / `error`.
        */
       const cancelMine = () => {
-        setMineDraft(null);
+        dropMineDraft(mineKey);
       };
 
       /**
        * g-056: throw away the draft that belongs to **another** scope, so the
        * save above can go through. It is the explicit way out of the block —
        * like「取消」 it is a local state reset (no request, no byte), and it is
-       * only offered beside the notice that names the scope being dropped.
+       * only offered beside the notice that names the scope being dropped. R2/R3:
+       * it names the exact target it drops rather than clearing the store.
        */
       const dropForeignDraft = () => {
         if (mineForeignDraft === null) return;
-        setMineDraft(null);
+        dropMineDraft(mineForeignDraft.key);
       };
 
       /**
@@ -7823,7 +7926,9 @@ window.__ModuleLoader__.load({
           setNotice({ tone: 'error', text: errorText(t, result.error) });
           return;
         }
-        setMineDraft(null);
+        // R3: only **this** write target's draft goes with the value it deleted;
+        // another target's unsaved text is not this operation's to destroy.
+        dropMineDraft(mineKey);
         setMineStatus({ kind: 'idle', error: null });
         setNotice({
           tone: 'success',
@@ -8339,9 +8444,24 @@ window.__ModuleLoader__.load({
         },
         setMineText: (event) => {
           const value = event && event.target ? String(event.target.value) : '';
-          // g-056: the scope name travels with the draft, so the box can say
-          // whose text it holds even after the「查看范围」moved on.
-          setMineDraft({ key: mineKey, text: value, scope: mineScope });
+          // g-056: the draft carries its own scope, so the box can say whose text
+          // it holds after the「查看范围」moved on — and R2: the entry is written
+          // into a map keyed by write target, so typing here cannot destroy the
+          // draft another target is holding.
+          setMineDrafts((current) => {
+            const existing = current[mineKey];
+            return {
+              ...current,
+              [mineKey]: {
+                text: value,
+                scope: mineScope,
+                // Editing does not forget what this page last wrote to this
+                // target: `baseline` is what keeps a saved post-save draft (R1)
+                // from being reported as unsaved work later on.
+                baseline: existing === undefined ? null : existing.baseline ?? null,
+              },
+            };
+          });
           setMineWarnings([]);
           setMineStatus({ kind: 'idle', error: null });
         },
@@ -8611,8 +8731,8 @@ window.__ModuleLoader__.load({
         // g-056: which side of the box is being shown (`draft` | `stored`), the
         // readable scope the shown draft belongs to (or null), and the draft
         // that belongs to another scope and therefore blocks a save.
-        mineTextSource: mineDraftHere ? 'draft' : 'stored',
-        mineDraftScope: mineDraftHere ? mineDraft.scope ?? null : null,
+        mineTextSource: mineEntry === null ? 'stored' : 'draft',
+        mineDraftScope: mineEntry === null ? null : mineEntry.scope ?? null,
         mineForeignDraft:
           mineForeignDraft === null
             ? null

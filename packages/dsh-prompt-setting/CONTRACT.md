@@ -1986,8 +1986,10 @@ existing marker changes; four copy keys are added to both dictionaries
 (`mineDraftScope`, `mineDraftElsewhere`, `mineDraftElsewhereDrop`,
 `mineSaveBlockedDraftElsewhere`) and three markers are added to the panel
 (`data-mine-text-source` on the box, `data-mine-draft-scope` on the line naming
-the draft's owner, and `data-warning="mine-draft-elsewhere"` with
-`data-mine-draft-chars` / `data-action="mine-drop-foreign-draft"` on the warning).
+the draft's owner, and `data-warning="mine-draft-elsewhere"` carrying
+`data-mine-draft-scope` / `data-mine-draft-chars` with
+`data-action="mine-drop-foreign-draft"` /
+`data-mine-drop-scope` on the warning and its button).
 
 - **the draft key is the file a save lands in** (§4.2). The old key was
   `layer|session`, so any「查看范围」change — session data arriving, a row being
@@ -1998,6 +2000,18 @@ the draft's owner, and `data-warning="mine-draft-elsewhere"` with
   `workspace|<workspace root>` (the resolved root, falling back to the session id
   only when no listed workspace owns that session — a narrower identity, never a
   different file);
+- **the drafts are one entry per target, and only *unsaved* work is reported.**
+  Typing in one target never replaces another target's draft, and every local
+  reset — 「取消」, 「恢复默认」, the g-050 reconciliation and「放弃那份草稿」 —
+  removes the draft of exactly one target. A draft of another target counts as
+  unsaved work only when its text differs from (a) what this save would write,
+  (b) what this page last **wrote** to that target (§13.1 keeps a draft after a
+  save, so a successful save followed by a layer or scope switch is not a
+  warning), and (c) that target's own stored text, read from the layer's own view
+  (`payload[layer].overrides`, never `merged`). When that target is a workspace
+  this request never read, (b) and (c) cannot be decided: the draft is reported —
+  warning about text that may already be saved is the tolerable error, silently
+  overwriting it is not;
 - **a draft that belongs to another target is stated, and blocks the save.** The
   box reports which side it is showing (`data-mine-text-source="draft" |
   "stored"`) and, while showing a draft, which scope that draft belongs to
@@ -2007,8 +2021,9 @@ the draft's owner, and `data-warning="mine-draft-elsewhere"` with
   `data-warning="mine-draft-elsewhere"` names that scope and its character count,
   and 「保存」 sends **no request at all**, with the notice carrying
   `mineSaveBlockedDraftElsewhere`. The way out is explicit and local:
-  `data-action="mine-drop-foreign-draft"` discards the other draft, or the reader
-  switches back to the scope that holds it — where the text is still waiting;
+  `data-action="mine-drop-foreign-draft"` (with `data-mine-drop-scope`)
+  discards that one draft, or the reader switches back to the scope that holds
+  it — where the text is still waiting;
 - **「取消」 keeps its meaning** (§13.1, g-027): it drops the draft of the target
   being shown, writes nothing, and is still offered only while the panel is
   `dirty`;
@@ -2045,15 +2060,20 @@ the draft's owner, and `data-warning="mine-draft-elsewhere"` with
   that target (the same workspace, or any session on the user layer) does not
   take the text off the screen.
 - The draft's key is the **file** a save would write, not the view it was typed
-  in (Revision 33, g-056, §4.2). While the panel shows the stored side of a
-  target and the reader still has unsaved text in another target, the panel
-  renders `data-warning="mine-draft-elsewhere"` (naming that scope and its
-  character count), 「保存」 sends no request at all, and the notice carries
-  `mineSaveBlockedDraftElsewhere`; `data-action="mine-drop-foreign-draft"` is
-  the explicit, request-free way to discard the other draft. The box itself
+  in (Revision 33, g-056, §4.2), and there is one draft per such key — typing in
+  one target never replaces another's. While the panel shows the stored side of a
+  target and the reader still has *unsaved* text in another target, the panel
+  renders `data-warning="mine-draft-elsewhere"` (carrying
+  `data-mine-draft-scope` and `data-mine-draft-chars`), 「保存」 sends no request
+  at all, and the notice carries `mineSaveBlockedDraftElsewhere`;
+  `data-action="mine-drop-foreign-draft"` (carrying `data-mine-drop-scope`) is
+  the explicit, request-free way to discard that one draft. The box itself
   reports which side it is showing with `data-mine-text-source` (`draft` |
   `stored`) and, while it shows a draft, the scope that draft belongs to with
-  `data-mine-draft-scope`.
+  `data-mine-draft-scope`. A draft kept after a successful save (§13.1) is
+  stored text and is therefore never reported as unsaved work; every local reset
+  — 「取消」, 「恢复默认」, the reconciliation below and「放弃那份草稿」 — clears one
+  target's draft and leaves the others.
 - An operation that changes the stored text **behind the editor's back**
   (Revision 32, g-050: `history-rollback`, the whole-layer `reset=true` delete and
   an applied `import`) reconciles the draft rather than leaving the box showing

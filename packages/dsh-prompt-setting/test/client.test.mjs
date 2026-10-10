@@ -9255,6 +9255,134 @@ test('g-056 client: switching layers states the other scope, and never borrows i
   assert.equal(markerOf(tree, 'data-mine-state'), 'dirty');
 });
 
+/** `overridesFixture` with one reserved text stored in the user layer (both views). */
+function reservedUserFixture(text) {
+  return overridesFixture({
+    user: {
+      layer: 'user',
+      enabled: true,
+      path: '/home/u/.dsh/prompt-setting/overrides.json',
+      reason: null,
+      overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text }],
+    },
+    merged: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text, layer: 'user' }] },
+  });
+}
+
+test('g-056 client: a draft kept after a successful save is not "unsaved work" elsewhere (R1)', async () => {
+  // The Host really stores what was written, so a re-read must report it: that
+  // is what makes「is this draft still unsaved work?」answerable at all.
+  let stored = null;
+  const page = makePage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({
+      [PATHS.overrides]: (url, init) => {
+        if (init && init.method === 'PUT') {
+          stored = JSON.parse(init.body).section.text;
+          return { payload: { ok: true } };
+        }
+        return { payload: stored === null ? overridesFixture() : reservedUserFixture(stored) };
+      },
+    }),
+  });
+  let tree = await page.flush();
+  typeInto(tree, 'mine-text', 'saved house rules');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-mine-state'), 'saved');
+  assert.equal(
+    oneBy(tree, 'data-role', 'mine-text').props['data-mine-text-source'],
+    'draft',
+    'the draft is deliberately kept after a save (§13.1 / g-050)',
+  );
+
+  // …but it is a draft that was **saved**, so moving to another write target
+  // must not report it as unsaved work nor block the save there. Before R1 the
+  // warning appeared with `chars=11` while nothing had been typed since the save.
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-warning'] === 'mine-draft-elsewhere').length,
+    0,
+    'no「unsaved elsewhere」warning for text that is already stored',
+  );
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props['data-mine-text-source'], 'stored');
+
+  const before = writeCalls(page).length;
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+  assert.equal(writeCalls(page).length, before + 1, 'the save really goes out');
+  const put = writeCalls(page).filter((call) => call.init.method === 'PUT');
+  assert.equal(JSON.parse(put[put.length - 1].init.body).section.text, '', 'and writes this target, which holds nothing');
+});
+
+test('g-056 client: typing in a second write target keeps the first target draft (R2)', async () => {
+  const page = scopePage();
+  let tree = await page.flush();
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  typeInto(tree, 'mine-text', 'alpha draft');
+  tree = await page.flush();
+
+  tree = await switchScopeTo(page, 'b1');
+  typeInto(tree, 'mine-text', 'beta draft');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'beta draft');
+
+  // R2: the first target's text was not replaced by the second one's edit.
+  tree = await switchScopeTo(page, 'a3');
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'alpha draft', 'the alpha draft survived');
+
+  tree = await switchScopeTo(page, 'b1');
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'beta draft', 'and so did the beta one');
+});
+
+test('g-056 client: 「恢复默认」 clears only the write target it deleted (R3)', async () => {
+  let storedUser = 'user stored';
+  const page = makePage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({
+      [PATHS.overrides]: (url, init) => {
+        if (init && init.method === 'DELETE') {
+          storedUser = null;
+          return { payload: { ok: true, removed: true, count: 1 } };
+        }
+        return { payload: storedUser === null ? overridesFixture() : reservedUserFixture(storedUser) };
+      },
+    }),
+  });
+  let tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'user stored');
+
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  typeInto(tree, 'mine-text', 'workspace draft');
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-mine-state'), 'dirty');
+
+  // Delete what the **user** layer stores, from the user layer, while another
+  // target holds unsaved text.
+  clickTab(tree, 'mine-layer', 'user');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'mine-reset' });
+  tree = await page.flush();
+  clickButton(oneBy(tree, 'data-region', 'confirm-overlay'), { 'data-action': 'confirm-yes' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, '', 'the user layer value is gone');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-warning'] === 'mine-draft-elsewhere').length,
+    1,
+    'the other target is still stated as holding unsaved text',
+  );
+
+  // R3: that delete did not silently clear the other target's draft.
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'workspace draft');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'dirty');
+});
+
 // #region g-030: the upstream update check
 
 /** The banner node, if the page rendered one. */
