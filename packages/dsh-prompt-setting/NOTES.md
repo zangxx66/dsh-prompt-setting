@@ -6865,7 +6865,7 @@ npm 读取、下载区域）、`### Changed 变更` 2 条（客户端按需分�
 ### 一、现象（真机数据，非推测）
 
 本机 `~/.dsh/prompt-setting/overrides.json` 的用户层持有保留段 `prompt-setting:custom-prompt` 的
-`action: "replace"` 文本（**384 字**，UTF-8 796 字节），而本工作区
+`action: "replace"` 文本（当时实测 **384 字**，UTF-8 796 字节；该文件随后被负责人编辑为 343 字），而本工作区
 `.dsh-prompt-setting/overrides.json` 持有同名条目 `text: ""`。结果是件反直觉的事：**用户层那 384 字
 在本工作区的任何会话里从未生效**，而且没有任何提示——面板两个层各显示自己的文件（g-054），装配却把
 保留段写成了空串。
@@ -6920,7 +6920,7 @@ npm 读取、下载区域）、`### Changed 变更` 2 条（客户端按需分�
   `effective.sections` 该段 `text = 'USER MINE'`、`overrideLayer = 'user'`、`applied = true`、
   `rendered` 以该文本结尾，且 `GET /overrides` 的 `merged` 只有用户层那条、`workspace.overrides`
   仍显示自己文件里的空条目（g-054 分层视图不受影响）；⑥ 工作区非空仍覆盖 + 两层都空 ⇒ `applied: false`、
-  `overrideLayer: null`、不出现空段进入渲染；⑦ **真机文件证据**（见 §七）；
+  `overrideLayer: null`、不出现空段进入渲染；⑦ **真机文件证据**：真实用户层文件 + 合成空工作区层（见 §七）；
 - **负向对照（决定性）**：临时把 `statesNoReservedText` 首行改成 `return false;`（其余全不动）⇒
   `node --test test/overrides.test.mjs test/route.test.mjs` = **122 pass / 4 fail**，变红的正是新增的
   ①②⑤⑥ 四项（含装配结果层两项）；恢复后 = **126 pass / 0 fail**。真机文件用例 ⑦ 的敏感性另行单独核过：
@@ -6933,7 +6933,9 @@ npm 读取、下载区域）、`### Changed 变更` 2 条（客户端按需分�
 `/prompt-setting/*` 路由需鉴权（401），不能用 curl 取。改用**宿主自己的纯函数核**读**真实落盘文件**：
 `validateConfig(真实 JSON)` → `mergeLayers(userConfig, workspaceConfig)` → `applyOverrides([{保留段, text:''}])`。
 在 `test/route.test.mjs` 里落成常驻用例（仓库根经 `git rev-parse --git-common-dir` 解析，故在 worktree 内
-跑也能读到主树的那份文件；只读，不写任何真机文件），实测输出：
+跑也能读到主树的那份文件；只读，不写任何真机文件）。
+
+**（a）改动生效时的瞬时快照（2026-10-10，修复后、提交前）**：
 
 ```
 [g-057 真机证据] user= /Users/ricardo/.dsh/prompt-setting/overrides.json
@@ -6941,8 +6943,29 @@ npm 读取、下载区域）、`### Changed 变更` 2 条（客户端按需分�
                 wsText= ""  mergedLayers= [ 'user' ]  userChars= 384  userUtf8Bytes= 796  effectiveChars= 384
 ```
 
-即：工作区层仍是空文本，而合并结果只剩**用户层**那一条，装配后的 `effective` 段落文本 **384 字**，
-与用户层文件逐字相等——修复对象是真实数据，不是构造的 fixture。
+即：工作区层是空文本时，合并结果只剩**用户层**那一条，装配后的 `effective` 段落文本 **384 字**，与用户层
+文件逐字相等——修复对象是真实数据，不是构造的 fixture。这正是"用户层 384 字在空工作区条目下重新进入装配"。
+
+**（b）真机文件随后被负责人改动，用例因此改成对数据不变的语义断言（踩坑留痕）**：首次提交后用同一套
+`node --test test/*.test.mjs` 复跑出现 **1 fail**，报 `expected '' / actual '修改dsh-graph卡片的状态前…'`——
+负责人在这段时间里编辑了这两份文件：工作区层的保留段从 `""` 变成了 39 字文本，用户层的 prompt 也从 384 字
+变为 343 字。**根因不是产品代码，而是我把"真机当时的文本"写成了断言**：真机文件是负责人的草稿空间，会变，
+把它钉进测试就等于让全量测试依赖外部可变状态。改用例为对数据**恒真**的两条语义断言后复跑全绿（761/761）：
+
+- （a′）真实两层走真实核 ⇒ 生效文本 = `workspaceEntry.text.trim() === '' ? userText : workspaceEntry.text`，
+  layer 相应为 `user` / `workspace`：无论真机今天是什么内容都成立，且**仍然钉住优先级没被改动**；
+- （b′）**修复本体**：用户层用**真实文件**，只把工作区层的保留段合成成 `text: ""`（2026-10-10 生产形态的
+  原样复现）⇒ 合并结果只剩用户层那条，装配后 `effective.text` 与真实用户层文本**逐字相等**。
+  只合成"被测的那一侧"，故这条断言不可能靠两侧都是 fixture 而通过。当前实测（真机实时值）：
+
+```
+[g-057 真机证据] realWs= …/.dsh-prompt-setting/overrides.json
+                wsText= "修改dsh-graph卡片的状态前，先读取它的状态再修改，避免跨级或重复操作。"
+                liveLayer= workspace  userChars= 343  fallbackChars= 343
+```
+
+（`liveLayer= workspace` 即真机当前的非空工作区层仍按优先级覆盖；`fallbackChars= 343` 即合成为空后回退到
+真实的 343 字用户文本。）
 
 ### 八、实测证据与未验证项
 

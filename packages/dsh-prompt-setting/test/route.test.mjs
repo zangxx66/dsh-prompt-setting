@@ -1128,17 +1128,25 @@ test('g-057 snapshot: a non-empty workspace reserved text still wins, and two bl
   assert.equal(both.rendered.endsWith('\n\n'), false, 'no empty section may reach the rendered prompt');
 });
 
-test('g-057 real files: the live 384-char user prompt survives the live blank workspace entry', () => {
-  // 真机数据证据, read-only: the REAL files on this machine, through this
-  // host's own merge/assembly kernels. `/prompt-setting/*` needs auth (401), so
-  // the HTTP route is not the way in; the pure pipeline is. Nothing here writes:
-  // the repository root is resolved through git so the case works both from the
-  // main checkout and from a worktree (whose own root has no layer file).
+test('g-057 real files: the live user prompt is what the live blank workspace entry falls back to', () => {
+  // 真机数据证据, read-only: the REAL files on this machine, through this host's
+  // own merge/assembly kernels. `/prompt-setting/*` needs auth (401), so the HTTP
+  // route is not the way in; the pure pipeline is. Nothing here writes, and the
+  // repository root is resolved through git so the case works from the main
+  // checkout and from a worktree (whose own root carries no layer file).
+  //
+  // The two live files are the负责人's own scratch space and DO get edited, so
+  // the assertions are written against what Revision 35 promises rather than
+  // against today's text: whatever the workspace layer holds, replacing it with
+  // a blank `replace` must make the USER layer's text the one the assembly
+  // applies. On the machine where the bug was found the workspace entry really
+  // was `text: ""` and this same call is what produced the 384-character
+  // evidence in NOTES §131.
   const realUser = join(homedir(), '.dsh', 'prompt-setting', 'overrides.json');
   const realWorkspace = join(repositoryRoot(), '.dsh-prompt-setting', 'overrides.json');
   if (!existsSync(realUser) || !existsSync(realWorkspace)) {
-    // A fresh clone has no such files; the fixture assertions above still cover
-    // the same shape. Reported instead of silently skipped.
+    // A fresh clone has no such files; the fixture cases above cover the same
+    // shape. Reported instead of silently skipped.
     assert.ok(true, `real-file evidence unavailable: ${realUser} / ${realWorkspace}`);
     return;
   }
@@ -1148,14 +1156,31 @@ test('g-057 real files: the live 384-char user prompt survives the live blank wo
   const workspaceEntry = workspaceConfig.overrides.find((entry) => entry.name === CUSTOM_SECTION_NAME);
   assert.ok(userEntry, `the real user file ${realUser} must carry the reserved section`);
   assert.ok(workspaceEntry, `the real workspace file ${realWorkspace} must carry the reserved section`);
-  assert.equal(workspaceEntry.action, 'replace');
-  assert.equal(workspaceEntry.text, '', 'the real workspace file holds the blank reserved entry');
-  const userText = userEntry.text;
   assert.equal(userEntry.action, 'replace');
+  assert.equal(workspaceEntry.action, 'replace');
+  const userText = userEntry.text;
   assert.ok([...userText].length > 0, 'the real user layer carries the prompt text');
 
-  // The host's own merge + assembly kernels, on those two real documents.
-  const merged = mergeLayers(userConfig, workspaceConfig);
+  // (a) The real pair, through the real kernels: the non-empty workspace text
+  // still wins, which is the precedence Revision 35 must not have moved.
+  const liveMerged = mergeLayers(userConfig, workspaceConfig);
+  const liveEntry = liveMerged.overrides.find((entry) => entry.name === CUSTOM_SECTION_NAME);
+  const liveExpected = workspaceEntry.text.trim() === '' ? userText : workspaceEntry.text;
+  assert.equal(liveEntry.text, liveExpected);
+  assert.equal(liveEntry.layer, workspaceEntry.text.trim() === '' ? 'user' : 'workspace');
+  const liveApplied = applyOverrides([{ name: CUSTOM_SECTION_NAME, text: '' }], liveMerged);
+  assert.equal(
+    liveApplied.sections.find((section) => section.name === CUSTOM_SECTION_NAME).text,
+    liveExpected,
+    'the reserved section receives exactly one of the two live texts, never a blank',
+  );
+
+  // (b) THE fix, with `""` supplied in the production shape (the workspace file
+  // held exactly that on 2026-10-10). The user layer is the REAL file; only the
+  // thing under test is synthesized, so the assertion cannot be satisfied by a
+  // fixture on both sides.
+  const blankLayer = { ...workspaceConfig, overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: '' }] };
+  const merged = mergeLayers(userConfig, blankLayer);
   assert.deepEqual(
     merged.overrides.filter((entry) => entry.name === CUSTOM_SECTION_NAME).map((entry) => entry.layer),
     ['user'],
@@ -1163,7 +1188,7 @@ test('g-057 real files: the live 384-char user prompt survives the live blank wo
   const applied = applyOverrides([{ name: CUSTOM_SECTION_NAME, text: '' }], merged);
   const effective = applied.sections.find((section) => section.name === CUSTOM_SECTION_NAME);
   assert.equal(effective.text, userText, 'the real user prompt is what the assembly receives');
-  assert.ok(effective.text.length > 0);
+  assert.equal([...effective.text].length, [...userText].length);
 });
 
 test('overrides PUT: writes the reserved section atomically and takes effect on the next assembly', async () => {
