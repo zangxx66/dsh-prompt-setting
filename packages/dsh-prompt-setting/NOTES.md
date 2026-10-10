@@ -6676,3 +6676,22 @@ npm 读取、下载区域）、`### Changed 变更` 2 条（客户端按需分�
 - 实测：`node --test` **743 pass / 0 fail / skipped 0**，exit 0（新增 1 个用例）；`check-compat.mjs`
   exit 0；`client-chunks.mjs` 4 file match，exit 0；**无既有断言硬编码旧中文串**（全绿，未放宽任何断言）；
 - 补修 diff：`client.js 8+/8-`、`test/client.test.mjs 34+/0-`。
+
+### 八、返工：解释行必须出现在首屏状态行（再追加 commit）
+
+- **真机发现的位置错误**：负责人首屏只看到一枚 Tag「所选会话的冻结状态未知」，两行解释看不见 ——
+  它们只加在 `renderStatusDetail`（「高级」tab 的详细块），而用户第一眼看到的是 `renderStatusLine`
+  （`data-region="status"`，挂在主页面、紧挨「查看范围」会话选择器）。放错位置 ⇒ 改造目的落空；
+- **修法**：抽出 `unknownFrozenExplanation(t, markers, styles)`，返回两行独立段落节点，**两处复用**
+  （首屏 + 详细块），不复制粘贴；首屏把两行插在 Refresh 按钮之后，该容器是换行 flex 行 ⇒ 每行必须带
+  `flexBasis: '100%'` 才能各自独占一行（否则会挤在 Tag 旁边）；仍只在
+  `fz.kind === 'unknown' && !fz.pending` 出现；
+- **标记分离**（同页出现两个相同 `data-warning` 会让 `oneBy` 唯一性断言变红）：详细块沿用
+  `frozen-unknown-probe` / `frozen-unknown-not-frozen`，首屏改用 `frozen-line-probe` /
+  `frozen-line-not-frozen`；
+- 判定逻辑、`CONTRACT.md`、宿主 `index.js`、`mineFrozen*` 文案**未动**；`renderStatusDetail` 行为不变；
+- 新增 2 个用例：unknown 场景 `data-region="status"` 子树出现两个段落节点（含 `flexBasis: '100%'`
+  断言）、且详细块仍保留自己的一份；certain（frozen / unfrozen）场景该子树既无这两行也无其标记；
+- 实测：`node --test` **745 pass / 0 fail / skipped 0**，exit 0；`check-compat.mjs` exit 0；
+  `client-chunks.mjs` 4 file match，exit 0；`grep -c "本会话" client.js` → **0**；
+  `test/` diff 仍是**纯新增**（0 删除行）。

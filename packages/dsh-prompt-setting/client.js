@@ -3892,7 +3892,50 @@ window.__ModuleLoader__.load({
           `${t('stBuild')}: ${t(verdict === 'true' ? 'stBuildSame' : verdict === 'false' ? 'stBuildStale' : 'stBuildUnknown')}`,
         ),
         h(UI.Button, { variant: 'outline', 'data-action': 'refresh', onClick: a.refresh }, t('refresh')),
+        // g-052: the two explanation lines belong on the first-screen summary
+        // too — this is where the reader actually meets the verdict. The
+        // container is a wrapping flex row, so each line takes `flexBasis: 100%`
+        // and drops onto its own full-width row under the tags.
+        ...(fz.kind === 'unknown' && !fz.pending
+          ? unknownFrozenExplanation(
+              t,
+              { probe: 'frozen-line-probe', notFrozen: 'frozen-line-not-frozen' },
+              [
+                { flexBasis: '100%', margin: 0, color: token.stateWarn },
+                { flexBasis: '100%', margin: 0, color: token.labelTertiary },
+              ],
+            )
+          : []),
       );
+    }
+
+    /**
+     * The two explanation lines an *unknown* frozen verdict carries (g-052):
+     * what could not be probed, and what "unknown" does not claim.
+     *
+     * Each sentence is its own paragraph node — not one paragraph, not a
+     * line-break element — so the two stay independently addressable. Two call
+     * sites share them: the first-screen status line (where the reader meets the
+     * verdict) and the full detail block in 「高级」. Each site passes its own
+     * markers, because two copies of one `data-warning` on the same page would
+     * break the uniqueness probes.
+     *
+     * @param t - the bound translator.
+     * @param markers - `{probe, notFrozen}`: the two `data-warning` values.
+     * @param styles - two style objects, in reading order; merged over the
+     *   shared 12px / break-word base.
+     * @returns the two paragraph elements, in reading order.
+     */
+    function unknownFrozenExplanation(t, markers, styles) {
+      const base = { fontSize: 12, wordBreak: 'break-word' };
+      return [
+        h('p', { 'data-warning': markers.probe, style: { ...base, ...styles[0] } }, t('stFrozenUnknownProbe')),
+        h(
+          'p',
+          { 'data-warning': markers.notFrozen, style: { ...base, ...styles[1] } },
+          t('stFrozenUnknownNotFrozen'),
+        ),
+      ];
     }
 
     /**
@@ -3992,31 +4035,18 @@ window.__ModuleLoader__.load({
               `${t('stFrozenUnknown')}${fz.reason ? ` — ${t('stReason')}: ${fz.reason}` : ''}`,
             )
           : null,
-        // g-052: the "unknown" verdict carries its own two explanation lines.
-        // Separate paragraph nodes (not one paragraph, not a line-break element)
-        // so each sentence is independently addressable, and only under
-        // `unknown` — a certain verdict (frozen / unfrozen) must never show
-        // either of them.
-        fz.kind === 'unknown' && !fz.pending
-          ? h(
-              'p',
-              {
-                'data-warning': 'frozen-unknown-probe',
-                style: { margin: '4px 0 0', fontSize: 12, color: token.stateWarn, wordBreak: 'break-word' },
-              },
-              t('stFrozenUnknownProbe'),
+        // g-052: the same two explanation lines, with this block's own markers
+        // (the first-screen copy uses different ones) and its stacked margins.
+        ...(fz.kind === 'unknown' && !fz.pending
+          ? unknownFrozenExplanation(
+              t,
+              { probe: 'frozen-unknown-probe', notFrozen: 'frozen-unknown-not-frozen' },
+              [
+                { margin: '4px 0 0', color: token.stateWarn },
+                { margin: '2px 0 0', color: token.labelTertiary },
+              ],
             )
-          : null,
-        fz.kind === 'unknown' && !fz.pending
-          ? h(
-              'p',
-              {
-                'data-warning': 'frozen-unknown-not-frozen',
-                style: { margin: '2px 0 0', fontSize: 12, color: token.labelTertiary, wordBreak: 'break-word' },
-              },
-              t('stFrozenUnknownNotFrozen'),
-            )
-          : null,
+          : []),
         fz.kind === 'unknown' && fz.frozen
           ? h(
               'p',

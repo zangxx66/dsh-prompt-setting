@@ -3736,6 +3736,9 @@ test('client: frozenScope "global" with a session is "unknown", never "not froze
 // `agentAvailable` — an idle session that just finished a turn has running=false
 // and still has a live agent, so its frozen state is confirmable.
 const UNKNOWN_ONLY_WARNINGS = ['frozen-unknown', 'frozen-unknown-probe', 'frozen-unknown-not-frozen'];
+// g-052 rework: the first-screen status line (`data-region="status"`) carries its
+// own two markers, so one page never holds two nodes with the same data-warning.
+const STATUS_LINE_EXPLANATION = ['frozen-line-probe', 'frozen-line-not-frozen'];
 
 test('client: the unknown frozen verdict explains itself without blaming a running state', async () => {
   const page = makePage({
@@ -3806,6 +3809,80 @@ test('client: a certain frozen verdict never shows the unknown explanation lines
   );
   assert.ok(!hasText(unfrozenTree, unfrozenPage.zh.stFrozenUnknownProbe));
   assert.ok(!hasText(unfrozenTree, unfrozenPage.zh.stFrozenUnknownNotFrozen));
+});
+
+// g-052 rework: the explanation lines were first put only in `renderStatusDetail`
+// (「高级」), which the reader has to switch tabs to see. The first-screen status
+// line is where the verdict is actually met, so it carries them too.
+test('client: the unknown frozen verdict explains itself on the first-screen status line', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({
+      [PATHS.snapshot]: {
+        payload: snapshotFixture({
+          frozenScope: 'global',
+          frozenScopeReason: 'session "s2" has no active agent, so this verdict describes the unscoped assembly',
+        }),
+      },
+    }),
+  });
+  const tree = await page.flush();
+  const status = oneBy(tree, 'data-region', 'status');
+  const probe = oneBy(status, 'data-warning', 'frozen-line-probe');
+  const notFrozen = oneBy(status, 'data-warning', 'frozen-line-not-frozen');
+  assert.equal(probe.type, 'p', 'the probe line is its own paragraph on the summary');
+  assert.equal(notFrozen.type, 'p', 'the reassurance line is its own paragraph on the summary');
+  assert.ok(hasText(probe, page.zh.stFrozenUnknownProbe), 'the probe line states the copy');
+  assert.ok(hasText(notFrozen, page.zh.stFrozenUnknownNotFrozen), 'the reassurance line states the copy');
+  // The container is a wrapping flex row: without a full basis the two lines
+  // would squeeze in beside the tags instead of taking a row each.
+  assert.equal(probe.props.style.flexBasis, '100%', 'the probe line takes its own row');
+  assert.equal(notFrozen.props.style.flexBasis, '100%', 'the reassurance line takes its own row');
+  assert.ok(hasText(status, page.zh.stFrozenUnknown), 'the tag itself is still on the summary');
+  // The detail block keeps its own copy of the same two sentences.
+  const advanced = await openAdvanced(page);
+  assert.ok(hasText(oneBy(advanced, 'data-warning', 'frozen-unknown-probe'), page.zh.stFrozenUnknownProbe));
+  assert.ok(hasText(oneBy(advanced, 'data-warning', 'frozen-unknown-not-frozen'), page.zh.stFrozenUnknownNotFrozen));
+});
+
+test('client: a certain verdict carries no explanation lines on the first-screen status line', async () => {
+  const frozenPage = makePage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({
+      [PATHS.snapshot]: {
+        payload: snapshotFixture({
+          frozenScope: 'session',
+          frozen: true,
+          frozenReason: 'the scope collapsed to its complete section',
+        }),
+      },
+    }),
+  });
+  const frozenTree = await frozenPage.flush();
+  assert.equal(markerOf(frozenTree, 'data-status-frozen'), 'frozen');
+  const frozenStatus = oneBy(frozenTree, 'data-region', 'status');
+  assert.equal(
+    collect(frozenStatus, (node) => node.props && STATUS_LINE_EXPLANATION.includes(node.props['data-warning'])).length,
+    0,
+    'a frozen verdict shows no explanation lines on the summary',
+  );
+  assert.ok(!hasText(frozenStatus, frozenPage.zh.stFrozenUnknownProbe));
+  assert.ok(!hasText(frozenStatus, frozenPage.zh.stFrozenUnknownNotFrozen));
+
+  const unfrozenPage = makePage({ responses: defaultResponses() });
+  const unfrozenTree = await unfrozenPage.flush();
+  assert.equal(markerOf(unfrozenTree, 'data-status-frozen'), 'unfrozen');
+  const unfrozenStatus = oneBy(unfrozenTree, 'data-region', 'status');
+  assert.equal(
+    collect(
+      unfrozenStatus,
+      (node) => node.props && STATUS_LINE_EXPLANATION.includes(node.props['data-warning']),
+    ).length,
+    0,
+    'an unfrozen verdict shows no explanation lines on the summary either',
+  );
+  assert.ok(!hasText(unfrozenStatus, unfrozenPage.zh.stFrozenUnknownProbe));
+  assert.ok(!hasText(unfrozenStatus, unfrozenPage.zh.stFrozenUnknownNotFrozen));
 });
 
 test('client: frozenScope "global" without a session describes the global assembly', async () => {
