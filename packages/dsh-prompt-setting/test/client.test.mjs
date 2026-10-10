@@ -9034,6 +9034,227 @@ test('g-027 client: 「取消」 only drops the draft of the layer it belongs to
   assert.equal(writeCalls(page).length, 0, 'none of this wrote anything');
 });
 
+// ---------------------------------------------------------------------------
+// g-056: the「我的 Prompt」draft belongs to the **write target**, not to the view.
+//
+// The old key was `layer|session`, so any「查看范围」change — the session data
+// arriving, a row being picked, 「全局」 being chosen — made the draft key miss,
+// the box silently fell back to the target's stored text (usually `""`), and a
+// save then wrote that empty string while reporting success. The write face says
+// which file a save lands in (`index.js` `targetFor`): one `userConfigPath()` for
+// the user layer whatever the session, and one `workspaceConfigPath(root)` per
+// *workspace* for the workspace layer. The cases below pin the key to that fact,
+// and add the fail-safe: a draft that belongs somewhere else is stated on screen
+// and refuses the save instead of being overwritten.
+// ---------------------------------------------------------------------------
+
+/** Move the page's「查看范围」to one session id (`null` = 「全局」). */
+async function switchScopeTo(page, sessionId) {
+  let tree = await page.flush();
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  if (sessionId === null) {
+    clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
+    return page.flush();
+  }
+  const find = (current) => sessionOptions(current).find((row) => row.props['data-session-id'] === sessionId);
+  let row = find(tree);
+  if (row === undefined) {
+    // A collapsed workspace group does not render its sessions; open them.
+    const collapsed = collect(
+      tree,
+      (node) => node.props && node.props['data-role'] === 'group-toggle' && node.props['data-expanded'] !== 'true',
+    );
+    for (const header of collapsed) {
+      header.props.onClick();
+      tree = await page.flush();
+    }
+    row = find(tree);
+  }
+  assert.notEqual(row, undefined, `the picker offers session ${sessionId}`);
+  row.props.onClick();
+  return page.flush();
+}
+
+/** The single PUT body of a page that wrote exactly once. */
+function onlyPutBody(page) {
+  const puts = writeCalls(page).filter((call) => call.init.method === 'PUT');
+  assert.equal(puts.length, 1, 'exactly one write');
+  return JSON.parse(puts[0].init.body);
+}
+
+/** The page both seats are needed for: two workspaces, current session `a3`. */
+function scopePage() {
+  return makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+}
+
+test('g-056 client: a workspace draft survives a「查看范围」change inside one workspace', async () => {
+  const page = scopePage();
+  let tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-session'), 'a3');
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  typeInto(tree, 'mine-text', 'text for the whole workspace');
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-mine-state'), 'dirty');
+  assert.equal(
+    oneBy(tree, 'data-role', 'mine-text').props['data-mine-text-source'],
+    'draft',
+    'the box says it is holding unsaved text',
+  );
+  assert.ok(
+    String(markerOf(tree, 'data-mine-draft-scope')).includes('Alpha three'),
+    'and which scope the draft belongs to',
+  );
+
+  // `a1` and `a3` are two sessions of **one** workspace, so one file: the draft
+  // is still this target's draft. The old key (`layer|session`) emptied the box
+  // right here.
+  tree = await switchScopeTo(page, 'a1');
+  assert.equal(markerOf(tree, 'data-session'), 'a1');
+  assert.equal(
+    oneBy(tree, 'data-role', 'mine-text').props.value,
+    'text for the whole workspace',
+    'the typed text is still in the box',
+  );
+  assert.equal(markerOf(tree, 'data-mine-state'), 'dirty');
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props['data-mine-text-source'], 'draft');
+  // The scope it names is the one the text was typed in, not the one just picked.
+  assert.ok(
+    String(markerOf(tree, 'data-mine-draft-scope')).includes('Alpha three'),
+    'the draft keeps naming the scope it was typed in',
+  );
+
+  // Saving now writes the user's text — not the stored value the box would have
+  // shown under the old key.
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+  const body = onlyPutBody(page);
+  assert.equal(body.layer, 'workspace');
+  assert.equal(body.session, 'a1', 'the write targets the newly selected session');
+  assert.equal(body.section.text, 'text for the whole workspace', 'the text is the one the user typed');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'saved');
+});
+
+test('g-056 client: a user-layer draft survives any「查看范围」change, including 「全局」', async () => {
+  const page = scopePage();
+  let tree = await page.flush();
+  typeInto(tree, 'mine-text', 'my own house rules');
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-mine-state'), 'dirty');
+
+  // `targetFor('user', …)` ignores the session entirely: one `userConfigPath()`
+  // for the whole profile, so the draft cannot belong to a session.
+  tree = await switchScopeTo(page, null);
+  assert.equal(markerOf(tree, 'data-session'), 'global');
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'my own house rules');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'dirty');
+
+  tree = await switchScopeTo(page, 'a2');
+  assert.equal(markerOf(tree, 'data-session'), 'a2');
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'my own house rules');
+
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+  const body = onlyPutBody(page);
+  assert.equal(body.layer, 'user');
+  // The session rides along on the request but never chooses the file
+  // (`targetFor('user', …)` ignores it), which is exactly why the draft key has
+  // no session in it.
+  assert.equal(body.section.text, 'my own house rules');
+});
+
+test('g-056 client: a draft that belongs to another scope is stated and blocks the save', async () => {
+  const page = scopePage();
+  let tree = await page.flush();
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  typeInto(tree, 'mine-text', 'do not lose me');
+  tree = await page.flush();
+
+  // `b1` belongs to the **other** workspace, so this is a real move out of the
+  // target (another file entirely) — the text must not vanish silently.
+  tree = await switchScopeTo(page, 'b1');
+  assert.equal(markerOf(tree, 'data-session'), 'b1');
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, '', 'the box shows this target, which holds nothing');
+  assert.equal(
+    oneBy(tree, 'data-role', 'mine-text').props['data-mine-text-source'],
+    'stored',
+    'and says the box is not showing a draft',
+  );
+  const warning = oneBy(tree, 'data-warning', 'mine-draft-elsewhere');
+  assert.equal(warning.props['data-mine-draft-chars'], String('do not lose me'.length), 'the count is the text really held');
+  assert.ok(String(warning.props['data-mine-draft-scope']).includes('Alpha three'), 'and it names the scope holding it');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-mine-draft-scope'] !== undefined).length,
+    1,
+    'exactly one scope statement on screen',
+  );
+
+  // The fail-safe: no request at all, so no "saved" banner over an empty write.
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+  assert.equal(writeCalls(page).length, 0, 'a save that would overwrite the other scope is not sent');
+  assert.equal(oneBy(tree, 'data-notice', 'error').props['data-notice'], 'error');
+  assert.ok(
+    hasText(
+      tree,
+      fillText(page.zh.mineSaveBlockedDraftElsewhere, {
+        scope: `${page.zh.ovWorkspace} · Alpha three`,
+        chars: 'do not lose me'.length,
+      }),
+    ),
+    'the notice names the scope that really holds the text, and how much',
+  );
+
+  // Going back restores the text: it was never dropped, only out of view.
+  tree = await switchScopeTo(page, 'a3');
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'do not lose me');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-warning'] === 'mine-draft-elsewhere').length,
+    0,
+    'the warning goes with the scope it described',
+  );
+
+  // Or the reader drops it explicitly, which is the offered way out.
+  tree = await switchScopeTo(page, 'b1');
+  clickButton(tree, { 'data-action': 'mine-drop-foreign-draft' });
+  tree = await page.flush();
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-warning'] === 'mine-draft-elsewhere').length,
+    0,
+    'the draft is gone once it is explicitly discarded',
+  );
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+  onlyPutBody(page);
+});
+
+test('g-056 client: switching layers states the other scope, and never borrows its text', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  typeInto(tree, 'mine-text', 'user words');
+  tree = await page.flush();
+
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, '', 'the workspace layer shows its own value');
+  const warning = oneBy(tree, 'data-warning', 'mine-draft-elsewhere');
+  assert.ok(String(warning.props['data-mine-draft-scope']).includes(page.zh.ovUser), 'and names the user layer');
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+  assert.equal(writeCalls(page).length, 0, 'the workspace layer does not save the user layer over its own text');
+
+  clickTab(tree, 'mine-layer', 'user');
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'user words', 'the user layer still has it');
+  assert.equal(markerOf(tree, 'data-mine-state'), 'dirty');
+});
+
 // #region g-030: the upstream update check
 
 /** The banner node, if the page rendered one. */

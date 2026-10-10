@@ -6695,3 +6695,82 @@ npm 读取、下载区域）、`### Changed 变更` 2 条（客户端按需分�
 - 实测：`node --test` **745 pass / 0 fail / skipped 0**，exit 0；`check-compat.mjs` exit 0；
   `client-chunks.mjs` 4 file match，exit 0；`grep -c "本会话" client.js` → **0**；
   `test/` diff 仍是**纯新增**（0 删除行）。
+
+## 129. g-056：草稿键绑定「写入目标」而非「查看范围」（Revision 33，2026-10-10，基线 `91fd55e` 隔离工作树）
+
+### 一、现象（探针实测，非推测）
+
+- 输入未保存文本 → 把「查看范围」从 `s2` 切到 global ⇒ 编辑框值 `""`、`data-mine-state="unconfigured"`；
+  此时点「保存」，实际发出 `PUT /prompt-setting/overrides`，body 为
+  `{"layer":"user","section":{"name":"prompt-setting:custom-prompt","action":"replace","text":""}}`
+  —— **提示保存成功、写入空文本**（工作区层 `history.jsonl` 两条 `textLen=0` 记录的可行解释之一）。
+
+### 二、根因
+
+- 草稿键 `mineKey = ${mineLayer}|${sessionArg}`（`client.js`），编辑框显示
+  「草稿 key 命中 → 草稿，否则 → 该层已存文本」；
+- `sessionArg` / `mineLayer` 一变（会话数据到达、切范围、切层）key 立即失配，编辑框**静默回落**到
+  已存文本（通常 `""`），而「保存」发的是编辑框当前所见 ⇒ 写空且报成功。**与 g-054（读取面读跨层
+  merged）是两个独立缺陷**：g-054 修完，这条路径依然存在。
+
+### 三、键该绑什么：`targetFor`/`workspaceRootFor` 核实结论
+
+- `index.js:1880` `if (layer === 'user') return { path: userConfigPath(), root: null }` —— **完全忽略
+  session**，整个 profile 只有一份用户层文件 ⇒ user 层草稿**不含会话身份**；
+- `index.js:1876-1898` workspace 层走 `workspaceRootFor(sessionId)` →
+  `workspaceRegistry.list()` 里 `sessionIds.includes(sessionId)` 的 `owner.path` →
+  `workspaceConfigPath(root)`；**同一 workspace 内任何 session 解析到同一份文件** ⇒ 决定写哪份文件的
+  是 workspace root，不是会话；客户端 `wsSeat.items`（`useWorkspaces` 的 `WorkspaceView.path`，
+  `client.js` `decodeWorkspaces`）就是同一个字段，两侧命名同一目录；
+- ⇒ 键定为 `user` / `workspace|<workspaceRoot>`；只有在该 session 不属于任何已列出 workspace
+  （或 workspace hook 降级）时才退化为 session id —— 这是**更窄**的身份，只会让两份草稿看起来不同，
+  绝不会让一份草稿被当成另一个写入目标的。
+
+### 四、方案：A（键绑写入目标）+ C（fail-safe 兜底），否掉纯迁移（B）
+
+- **A**：`mineDraftKeyOf(layer, sessionArg, workspaceRoot)` / `workspaceRootOfSession(items, sessionId)`；
+  同 workspace 内切会话、user 层任意切范围，草稿**留在框里**（判据 1 主路径，也是负向对照的死穴）；
+- **C**：另立 `mineForeignDraft`（draft 存在但 key 不匹配且含非空文本）—— 面板渲染
+  `data-warning="mine-draft-elsewhere"`（带 `data-mine-draft-scope` / `data-mine-draft-chars`）与
+  「放弃那份草稿」按钮（`data-action="mine-drop-foreign-draft"`，纯本地、不写数据），`saveMine` 在
+  发请求**之前**直接阻断并给 `mineSaveBlockedDraftElsewhere` notice ⇒ 判据 2「绝不静默写空」；
+- **否掉 B（作用域变化时把草稿迁移到新 key）**：跨 workspace 迁移会把 A 工作区的文本带进 B 工作区的
+  文件，等于凭空发明一个写入目标；迁移只在「同一写入目标」内才有意义，而那种情形 A 已经天然覆盖
+  （键根本没变）。故 B 只保留其可见性部分（提示）；
+- **作用域归属的读法**：草稿里存**结构化** `scope: {layer, session}`，文案在 `renderMinePanel` 内用
+  `mineScopeNameOf(t, …)` 现算 —— 组件自身渲染路径**不得调用 `t`**（`t` 可能就是坏的那个，必须落到
+  失败卡），这是既有测试「a throw while building the tree renders a failure card」钉住的约束；
+- 「归属」读的是**草稿记录的作用域**而不是当前视图，所以切范围后标签不会漂移（测试钉住它仍报
+  `Alpha three`）；
+- 「取消」（g-027）语义未动：仍只清当前写入目标的草稿、仍不发请求、仍只在 `dirty` 时可点。
+
+### 五、改动
+
+- `client.js`：新增 `workspaceRootOfSession` / `mineDraftKeyOf` / `mineScopeNameOf`（模块级纯函数）；
+  `mineKey` 改由写入目标派生并新增 `mineDraftHere` / `mineForeignDraft` / `mineTextSource`；`saveMine`
+  增加发请求前的阻断分支；`setMineText`/`saveMine` 写入草稿时带 `scope`；`renderMinePanel` 增加外来草稿
+  警告块（含放弃按钮）、草稿归属行、编辑框 `data-mine-text-source`；zh/en 各 4 条文案；
+- **未动**：`reservedTextOf`（g-054 正在改它）、`mergeLayers`/装配/插值/存储、`data-*` 冻结标记的名字
+  与数量、既有测试（纯新增）、版本号、CHANGELOG；
+- `CONTRACT.md`：新增 Revision 33 块 + §13.1 正文两处就地修订（草稿键 = 写入目标；外来草稿的可见提示
+  与阻断）；**无 wire 变更**。
+
+### 六、测试（`test/client.test.mjs` 纯新增 4 个用例，0 删除行）
+
+- `switchScopeTo(page, id|null)`：真点「更改」→（必要时展开分组）→ 点会话行 / 「全局」；
+- 用例 1：workspace 层输入 → 切到**同 workspace 的另一会话** ⇒ 框内文本仍在、`data-mine-text-source="draft"`、
+  归属标签仍报输入时的 `Alpha three`；保存 body 的 `text` = 用户输入、`session` = 新会话；
+- 用例 2：user 层输入 → 切「全局」→ 再切 `a2` ⇒ 文本仍在；保存 `layer="user"`、`text` = 用户输入；
+- 用例 3：workspace 层输入 → 切到**另一个 workspace** ⇒ 框显示该目标已存文本（`stored`）、警告块给出
+  作用域与字数、点保存 **0 次写请求** + error notice；切回原会话文本仍在；点「放弃那份草稿」后警告消失、
+  保存放行；
+- 用例 4：切层（user↔workspace）⇒ 另一层的文本不被借用、警告块点名用户级、保存被阻断、切回后草稿仍在；
+- **负向对照（决定性）**：临时把 `mineDraftKeyOf` 改回旧写法 `${layer}|${sessionId}`（其余不动）⇒
+  `node --test --test-name-pattern='g-056' test/client.test.mjs` = **2 pass / 2 fail**（用例 1、2 变红）；
+  恢复后 = **4 pass / 0 fail**。
+
+### 七、实测证据与未验证项
+
+- `node --test test/client.test.mjs` exit 0；`node --test test/*.test.mjs` = **749 pass / 0 fail / exit 0**
+  （基线 745 + 新增 4）；`node scripts/client-chunks.mjs` = 4 file match，exit 0（无需 `--write`）；
+- **未验证（UNVERIFIED）**：真机目视（切换范围时警告条与归属行的视觉、按钮位置）未做，只做了离线渲染断言。
