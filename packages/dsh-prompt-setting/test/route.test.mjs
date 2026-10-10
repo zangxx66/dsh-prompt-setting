@@ -1011,6 +1011,101 @@ test('g-054 overrides GET: each layer view keeps its own entry when both name th
   assert.deepEqual(alone.workspace.overrides, []);
 });
 
+test('g-057 snapshot: a blank workspace reserved section does not blank the user layer text', async () => {
+  // THE production bug, at the assembly layer: the user file holds the real
+  // text and the workspace file holds the same name with `text: ""`. Before
+  // Revision 35 the workspace entry blanked the section and the user's text
+  // never reached a prompt in that workspace.
+  const workspace = workspaceWith('ws', 's1');
+  const { route } = mount({ workspaces: [workspace] });
+  const put = (layer, text, session) =>
+    call(route, {
+      method: 'PUT',
+      url: OVERRIDES_PATH,
+      body: JSON.stringify({
+        layer,
+        ...(session === undefined ? {} : { session }),
+        section: { name: CUSTOM_SECTION_NAME, action: 'replace', text },
+      }),
+    });
+  assert.equal((await put('user', 'USER MINE')).statusCode, 200);
+  assert.equal((await put('workspace', '', 's1')).statusCode, 200);
+
+  // Both files really are on disk in the two-layer shape (the fixture, not a
+  // hand-built merge) — this is what makes the payload below evidence.
+  assert.deepEqual(JSON.parse(readFileSync(userPath(), 'utf8')).overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'USER MINE' },
+  ]);
+  const wsPath = join(workspace.path, '.dsh-prompt-setting', 'overrides.json');
+  assert.deepEqual(JSON.parse(readFileSync(wsPath, 'utf8')).overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: '' },
+  ]);
+
+  const payload = json(await call(route, { url: `${SNAPSHOT_PATH}?session=s1` }));
+  const custom = payload.effective.sections.find((section) => section.name === CUSTOM_SECTION_NAME);
+  assert.equal(custom.text, 'USER MINE', 'the blank workspace layer states nothing, so the user text applies');
+  assert.equal(custom.overrideLayer, 'user');
+  assert.equal(custom.applied, true);
+  assert.equal(payload.rendered.endsWith('\n\nUSER MINE'), true);
+
+  // `merged` is "the list the assembly would apply", so it follows: one entry,
+  // the user's, and no workspace blank competing with it.
+  const overrides = json(await call(route, { url: `${OVERRIDES_PATH}?session=s1` }));
+  assert.deepEqual(overrides.merged.overrides.map((entry) => [entry.name, entry.layer, entry.text]), [
+    [CUSTOM_SECTION_NAME, 'user', 'USER MINE'],
+  ]);
+  // Each layer view still describes its OWN file (g-054), blank entry included:
+  // the write face keeps storing what the user typed.
+  assert.deepEqual(overrides.workspace.overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: '' },
+  ]);
+});
+
+test('g-057 snapshot: a non-empty workspace reserved text still wins, and two blanks apply nothing', async () => {
+  const workspace = workspaceWith('ws', 's1');
+  const { route } = mount({ workspaces: [workspace] });
+  const put = (layer, text, session) =>
+    call(route, {
+      method: 'PUT',
+      url: OVERRIDES_PATH,
+      body: JSON.stringify({
+        layer,
+        ...(session === undefined ? {} : { session }),
+        section: { name: CUSTOM_SECTION_NAME, action: 'replace', text },
+      }),
+    });
+  // Precedence is untouched: a non-empty workspace text overrides. Position too.
+  assert.equal((await put('user', 'USER MINE')).statusCode, 200);
+  assert.equal((await put('workspace', 'WS MINE', 's1')).statusCode, 200);
+  const won = json(await call(route, { url: `${SNAPSHOT_PATH}?session=s1` }));
+  const customWon = won.effective.sections.find((section) => section.name === CUSTOM_SECTION_NAME);
+  assert.deepEqual([customWon.text, customWon.overrideLayer], ['WS MINE', 'workspace']);
+  assert.equal(won.base.sections.at(-1).name, CUSTOM_SECTION_NAME, 'the reserved section stays last');
+  assert.equal(won.rendered.endsWith('\n\nWS MINE'), true);
+
+  // Both layers blank ⇒ nothing is applied to the section at all: it keeps the
+  // text it was registered with (empty), so the renderer drops it and the
+  // prompt is byte-identical to an unconfigured install's.
+  const bare = workspaceWith('bare', 's2');
+  const second = mount({ workspaces: [bare] });
+  const userPut = (layer, text, session) =>
+    call(second.route, {
+      method: 'PUT',
+      url: OVERRIDES_PATH,
+      body: JSON.stringify({
+        layer,
+        ...(session === undefined ? {} : { session }),
+        section: { name: CUSTOM_SECTION_NAME, action: 'replace', text },
+      }),
+    });
+  assert.equal((await userPut('user', '', undefined)).statusCode, 200);
+  assert.equal((await userPut('workspace', '   ', 's2')).statusCode, 200);
+  const both = json(await call(second.route, { url: `${SNAPSHOT_PATH}?session=s2` }));
+  const customBoth = both.effective.sections.find((section) => section.name === CUSTOM_SECTION_NAME);
+  assert.deepEqual([customBoth.text, customBoth.applied, customBoth.overrideLayer], ['', false, null]);
+  assert.equal(both.rendered.endsWith('\n\n'), false, 'no empty section may reach the rendered prompt');
+});
+
 test('overrides PUT: writes the reserved section atomically and takes effect on the next assembly', async () => {
   const { route } = mount();
   const res = await call(route, {
