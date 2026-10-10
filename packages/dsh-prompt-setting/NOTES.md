@@ -7266,3 +7266,21 @@ exit=0
 
 **风险 / 残余**：模式是条目 `action` 的一部分，手改既存文件把保留段写成 `append` 会被读作叠加（有意为之，
 已写进 CONTRACT §4.1 / Revision 36）；本次只改保留段语义，其它段 `append`＝新增段的行为未动（有对照断言）。
+
+**评审返工（R1，2026-10-11）**
+- **补上「两侧常量不许漂移」的硬断言**：`client.js` 的 `RESERVED_SECTION_MODES` 原先只有注释声称与宿主同源，
+  评审实测指出没有任何测试真的引用它 —— 现在 `test/client.test.mjs` 新增一条用例，按 `CUSTOM_SECTION_NAME`
+  的同一口径把两头逐元素比住：宿主 `RESERVED_WRITABLE_ACTIONS` 恰为 `['replace','append']`（契约顺序）、
+  bundle 源码里那份常量与它逐元素相同、页面渲染出的 `data-mine-mode-choice` 集合与它逐元素同序、保存体
+  发出的 `action` 是宿主集合里的值。**负向对照**：把 bundle 常量改成 `['replace']` ⇒ 该用例变红（连同 3 条
+  依赖 append 控件的 g-058 用例，共 **4 红**）；还原后 235 项全绿。
+- **更正一处自报数字**：上一轮交回报文里写「中英 l10n 各 11 键」，实测是**各 10 键**
+  （`mineModeLabel / Replace / Append / HintReplace / HintAppend / Note / BottomNote / StoredNone /
+  Stored / Dirty`，zh/en 对称）。本 NOTES 正文从未出现那个 11（它是报文口误），此处以实测值留痕，避免后人
+  对着一个对不上的数。
+- 其余一切未动：`core/overrides.js` 的合成路径、`core/custom.js` 的写侧放宽与 `unexpected-order`、
+  `client.js` 的模式控件与草稿语义、五条写路径的 SHA-256 反破坏断言、契约 Revision 36、真机只读脚本，以及
+  `test/client.test.mjs` 那条「有意且更精准」的 picker 断言（评审已判定）都保持原样。
+- 返工后单行证据：`node --test test/*.test.mjs` = **773 pass / 0 fail**（上一轮 772 + 本次新增 1 条常量用例）；
+  `node scripts/client-chunks.mjs` = 4 file(s) match（未 `--write`）；`node scripts/prepare.mjs` = 21 项 OK。
+- 返工以**追加 commit** 落盘（上一轮 `b9826bd` 未 amend）：本目标第二个 commit，见 `git log --oneline`。

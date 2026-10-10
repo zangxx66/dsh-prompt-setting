@@ -18,8 +18,11 @@ import vm from 'node:vm';
 // The *host* copy of the reserved section name (CONTRACT.md §15.1). The client
 // hardcodes the same literal because a browser module cannot import host code;
 // the tests below compare the two, character for character, so the two copies
-// cannot drift apart silently (g-015, requirement: 两侧常量不许漂移).
-import { CUSTOM_SECTION_NAME } from '../core/custom.js';
+// cannot drift apart silently (g-015, requirement: 两侧常量不许漂移). Since
+// g-058 the same rule covers the reserved name's **writable actions**
+// (`RESERVED_WRITABLE_ACTIONS`), which the page carries as
+// `RESERVED_SECTION_MODES`.
+import { CUSTOM_SECTION_NAME, RESERVED_WRITABLE_ACTIONS } from '../core/custom.js';
 // The **host** merge, used to build override fixtures that describe a server
 // state the route could really produce (g-054): `mergeLayers` deduplicates by
 // name across layers, so a hand-written `merged` list holding a same-name pair
@@ -11200,6 +11203,54 @@ test('client: every update-related key that still names GitHub is accurate, key 
 // layer is byte-identical」lives in `test/route.test.mjs`; what these cases pin
 // is that the client can only ever ask for one layer.
 // ---------------------------------------------------------------------------
+
+/**
+ * g-058: the mode enum the **bundle** declares, read out of its text.
+ *
+ * Same anti-drift device as `CUSTOM_SECTION_NAME`: a browser module cannot
+ * import host code, so the client keeps its own copy of the reserved name's
+ * writable actions, and only a test that reads both copies can stop them from
+ * drifting apart silently.
+ * @returns the literals of `RESERVED_SECTION_MODES`, in source order.
+ */
+function clientModeConstants() {
+  const match = /const RESERVED_SECTION_MODES = \[([^\]]*)\];/.exec(clientSource);
+  assert.ok(match, 'the bundle declares RESERVED_SECTION_MODES');
+  return [...match[1].matchAll(/'([^']*)'/g)].map((entry) => entry[1]);
+}
+
+test('g-058 client: the mode enum is the host\'s, element for element', async () => {
+  // The contract order is part of the enum (§4.1: `replace`, then `append`).
+  assert.deepEqual([...RESERVED_WRITABLE_ACTIONS], ['replace', 'append'], 'the host enum, in contract order');
+  // …and the client's copy is that same list, not a lookalike.
+  assert.deepEqual(
+    clientModeConstants(),
+    [...RESERVED_WRITABLE_ACTIONS],
+    'the client copy of the reserved name\'s writable actions must match the host\'s, element for element',
+  );
+
+  // The page renders that copy: the control offers exactly the host set, in
+  // order, so a value the server would refuse can never be offered.
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+  const choices = collect(tree, (node) => node.props && node.props['data-mine-mode-choice'] !== undefined)
+    .map((node) => node.props['data-mine-mode-choice']);
+  assert.deepEqual(choices, [...RESERVED_WRITABLE_ACTIONS], 'the control offers exactly the host set, in order');
+
+  // And what a save actually sends is one of them — asserted here as a value,
+  // not only as an enum: the literal the body carries is the host's literal.
+  typeInto(tree, 'mine-text', 'x');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'mine-mode', 'data-mine-mode-choice': 'append' });
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+  const put = writeCalls(page).filter((call) => call.init && call.init.method === 'PUT');
+  assert.equal(put.length, 1);
+  const sent = JSON.parse(put[0].init.body).section.action;
+  assert.ok(RESERVED_WRITABLE_ACTIONS.includes(sent), `the save sends one of the host's actions (got ${sent})`);
+  assert.equal(sent, 'append');
+});
 
 test('g-058 client: the mode control reads this layer\'s own stored mode', async () => {
   const page = makePage({
