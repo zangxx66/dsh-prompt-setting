@@ -11472,8 +11472,7 @@ test('g-058 client: 「取消」 restores the stored mode, and a mode draft belo
   assert.equal(writeCalls(page).length, 0, 'none of this wrote anything');
 });
 
-
-// #region presets (g-060, Revision 37)
+// #region presets (g-060, Revision 37; the dialog-based tab since Revision 38 / review R3)
 
 test('client: 「预设」 is the sixth tab, next to 「我的 Prompt」, and is fetched on demand', async () => {
   const page = makePage({ responses: defaultResponses() });
@@ -11488,21 +11487,32 @@ test('client: 「预设」 is the sixth tab, next to 「我的 Prompt」, and is
   assert.equal(oneBy(opened, 'data-region', 'presets').props['data-region'], 'presets');
   assert.equal(markerOf(opened, 'data-preset-state'), 'idle');
   assert.deepEqual(presetRowIds(opened), ['preset-1', 'preset-2'], 'the library is listed');
+  // Review R3: the tab body is the catalogue alone — no dialog is open until a
+  // control opens one.
+  assert.equal(collect(opened, (node) => node.props && node.props['data-region'] === 'preset-editor-dialog').length, 0);
+  assert.equal(collect(opened, (node) => node.props && node.props['data-region'] === 'preset-apply-dialog').length, 0);
 });
 
-test('client: the preset tab shows every workspace’s applied state, orphan included', async () => {
+test('client: a list row opens the apply dialog, which shows every workspace’s applied state', async () => {
   const page = makePage({
     responses: defaultResponses(),
     useWorkspaces: workspacesHook(workspacesFixture()),
   });
   let tree = await openTab(page, 'presets');
+  clickButton(tree, { 'data-action': 'preset-apply-to', 'data-preset-id': 'preset-1' });
+  tree = await page.flush();
+  const dialog = oneBy(tree, 'data-region', 'preset-apply-dialog');
+  assert.equal(dialog.props['data-preset-dialog-preset'], 'preset-1', 'the dialog names the row’s preset');
+  assert.equal(dialog.props.role, 'dialog');
+  assert.ok(strings(dialog).some((text) => text.includes('短答')), 'and its title says which one');
+  assert.ok(strings(dialog).some((text) => text.includes(page.zh.presetApplyToNote)), 'and that the stored version is applied');
   // /work/alpha is applied, /work/beta-dir is not, and the orphan flag is false
   // for the record that still names a stored preset.
   assert.deepEqual(presetWorkspaceRows(tree), [
     ['/work/alpha', 'true', 'false'],
     ['/work/beta-dir', 'false', 'false'],
   ]);
-  assert.ok(strings(tree).includes(fillText(page.zh.presetAppliedAs, { name: '短答' })));
+  assert.ok(strings(tree).some((text) => text.includes(fillText(page.zh.presetAppliedAs, { name: '短答' }))));
   assert.ok(strings(tree).includes(page.zh.presetNotApplied));
 
   // A record whose preset was deleted is reported as an orphan — never as an
@@ -11511,7 +11521,7 @@ test('client: the preset tab shows every workspace’s applied state, orphan inc
     responses: defaultResponses({
       [PATHS.presets]: {
         payload: presetsFixture({
-          presets: [],
+          presets: [{ id: 'preset-1', name: '短答', action: 'replace', text: 'Be brief.', createdAt: 't', updatedAt: 't' }],
           applied: [
             {
               workspaceRoot: '/work/alpha',
@@ -11528,15 +11538,16 @@ test('client: the preset tab shows every workspace’s applied state, orphan inc
     useWorkspaces: workspacesHook(workspacesFixture()),
   });
   tree = await openTab(orphan, 'presets');
+  clickButton(tree, { 'data-action': 'preset-apply-to', 'data-preset-id': 'preset-1' });
+  tree = await orphan.flush();
   assert.deepEqual(presetWorkspaceRows(tree), [
     ['/work/alpha', 'true', 'true'],
     ['/work/beta-dir', 'false', 'false'],
   ]);
   assert.ok(strings(tree).some((text) => text.includes(orphan.zh.presetAppliedOrphan)));
-  assert.equal(orphan.zh.presetAppliedOrphan, '来源已删除', 'the marker the reader sees is the copy');
 });
 
-test('client: saving a preset PUTs the catalogue shape the host documents', async () => {
+test('client: 「新建预设」 opens the editor dialog, and saving PUTs the documented shape', async () => {
   const page = makePage({
     responses: defaultResponses({
       [PATHS.presets]: (url, init) =>
@@ -11556,6 +11567,10 @@ test('client: saving a preset PUTs the catalogue shape the host documents', asyn
   let tree = await openTab(page, 'presets');
   clickButton(tree, { 'data-action': 'preset-new' });
   tree = await page.flush();
+  const dialog = oneBy(tree, 'data-region', 'preset-editor-dialog');
+  assert.equal(dialog.props['data-preset-editing'], 'new');
+  assert.equal(dialog.props['data-preset-dialog'], 'edit');
+
   typeInto(tree, 'preset-name', '新预设');
   typeInto(tree, 'preset-text', 'TEXT');
   tree = await page.flush();
@@ -11567,17 +11582,16 @@ test('client: saving a preset PUTs the catalogue shape the host documents', asyn
   assert.equal(puts[0].url, PATHS.presets);
   assert.deepEqual(JSON.parse(puts[0].init.body), { name: '新预设', action: 'replace', text: 'TEXT' });
   assert.equal(markerOf(tree, 'data-preset-state'), 'saved');
-  // The id the host answered is what the editor now carries, so the very next
-  // save is an edit of it rather than a second insert.
-  assert.equal(oneBy(tree, 'data-region', 'preset-editor').props['data-preset-editing'], 'preset-9');
+  // A successful save closes the dialog: the refreshed catalogue is the answer.
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'preset-editor-dialog').length, 0);
 });
 
-test('client: editing sends the id, and the mode control travels with the text', async () => {
+test('client: a row’s 「编辑」 opens the dialog on that preset, and the id travels on save', async () => {
   const page = makePage({ responses: defaultResponses() });
   let tree = await openTab(page, 'presets');
   clickButton(tree, { 'data-action': 'preset-edit', 'data-preset-id': 'preset-2' });
   tree = await page.flush();
-  assert.equal(oneBy(tree, 'data-region', 'preset-editor').props['data-preset-editing'], 'preset-2');
+  assert.equal(oneBy(tree, 'data-region', 'preset-editor-dialog').props['data-preset-editing'], 'preset-2');
   assert.equal(oneBy(tree, 'data-role', 'preset-name').props.value, '叠加规则');
   assert.equal(oneBy(tree, 'data-role', 'preset-text').props.value, 'Extra rules.');
   // The stored mode of that preset is what the segmented control shows.
@@ -11605,7 +11619,7 @@ test('client: editing sends the id, and the mode control travels with the text',
   });
 });
 
-test('client: deleting a preset DELETEs by id, and clearing the editor when it was the one', async () => {
+test('client: deleting a preset DELETEs by id, and an open editor on it closes with it', async () => {
   const page = makePage({
     responses: defaultResponses({
       [PATHS.presets]: (url, init) =>
@@ -11617,20 +11631,20 @@ test('client: deleting a preset DELETEs by id, and clearing the editor when it w
   let tree = await openTab(page, 'presets');
   clickButton(tree, { 'data-action': 'preset-edit', 'data-preset-id': 'preset-1' });
   tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'preset-editor-dialog').props['data-preset-editing'], 'preset-1');
+
   clickButton(tree, { 'data-action': 'preset-delete', 'data-preset-id': 'preset-1' });
   tree = await page.flush();
-
   const deletes = page.router.calls.filter((call) => call.init && call.init.method === 'DELETE');
   assert.equal(deletes.length, 1, 'exactly one write');
   assert.equal(deletes[0].url, `${PATHS.presets}?id=preset-1`);
-  // The editor no longer points at the deleted entry: saving again would be a
-  // `404 preset-not-found`.
-  assert.equal(oneBy(tree, 'data-region', 'preset-editor').props['data-preset-editing'], 'new');
-  assert.equal(oneBy(tree, 'data-role', 'preset-name').props.value, '');
+  // The dialog's subject no longer exists, so it closes rather than offering a
+  // save that would be answered `404 preset-not-found`.
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'preset-editor-dialog').length, 0);
   assert.equal(markerOf(tree, 'data-preset-state'), 'saved');
 });
 
-test('client: apply and unapply POST the workspace’s session, and never a layer', async () => {
+test('client: the apply dialog’s rows POST apply/unapply with the workspace’s session, never a layer', async () => {
   const page = makePage({
     responses: defaultResponses({
       [PATHS.presetsApply]: {
@@ -11666,10 +11680,7 @@ test('client: apply and unapply POST the workspace’s session, and never a laye
     useWorkspaces: workspacesHook(workspacesFixture()),
   });
   let tree = await openTab(page, 'presets');
-  // A preset must be picked before anything can be applied: the picker says so
-  // and the apply buttons are disabled.
-  assert.equal(collect(tree, (node) => node.props && node.props['data-preset-apply-blocked'] === 'no-preset').length, 1);
-  clickButton(tree, { 'data-action': 'preset-edit', 'data-preset-id': 'preset-2' });
+  clickButton(tree, { 'data-action': 'preset-apply-to', 'data-preset-id': 'preset-2' });
   tree = await page.flush();
 
   clickPresetWorkspaceAction(tree, 'preset-apply', 'a1');
@@ -11679,6 +11690,9 @@ test('client: apply and unapply POST the workspace’s session, and never a laye
   assert.equal(posts[0].url, PATHS.presetsApply);
   assert.deepEqual(JSON.parse(posts[0].init.body), { presetId: 'preset-2', session: 'a1' });
   assert.equal(markerOf(tree, 'data-preset-state'), 'saved');
+  // The dialog stays open: the refreshed applied state is what the reader is
+  // looking at, and it is one more click to leave.
+  assert.equal(oneBy(tree, 'data-region', 'preset-apply-dialog').props['data-preset-dialog-preset'], 'preset-2');
 
   // 「取消应用」 names the same session and no preset: the host restores the
   // snapshot it took, which the page never has to send back.
@@ -11688,6 +11702,11 @@ test('client: apply and unapply POST the workspace’s session, and never a laye
   assert.equal(after.length, 2);
   assert.equal(after[1].url, PATHS.presetsUnapply);
   assert.deepEqual(JSON.parse(after[1].init.body), { session: 'a1' });
+
+  // Closing is an explicit act, and it is the only way the dialog goes away.
+  clickButton(tree, { 'data-action': 'preset-dialog-close' });
+  tree = await page.flush();
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'preset-apply-dialog').length, 0);
 });
 
 test('client: an unreadable preset library is stated, never shown as an empty catalogue', async () => {
@@ -11723,103 +11742,106 @@ test('client: every preset control is reachable from both dictionaries', async (
     language: 'en',
     useWorkspaces: workspacesHook(workspacesFixture()),
   });
-  const tree = await openTab(page, 'presets');
+  let tree = await openTab(page, 'presets');
   assert.deepEqual(presetRowIds(tree), ['preset-1', 'preset-2']);
-  // The English binding really is English: the tab label and the two buttons a
-  // reader acts on come from the en table, not from the zh one.
+  // The English binding really is English: the tab label and the row's own
+  // entrance come from the en table, not from the zh one.
   assert.ok(strings(tree).includes(page.text.tabPresets));
+  assert.ok(strings(tree).includes(page.text.presetApplyTo));
+
+  clickButton(tree, { 'data-action': 'preset-apply-to', 'data-preset-id': 'preset-1' });
+  tree = await page.flush();
   assert.ok(strings(tree).includes(page.text.presetApply));
-  assert.ok(strings(tree).includes(page.text.presetSaveAsCurrent));
+  assert.ok(strings(tree).includes(page.text.presetDialogClose));
+  assert.ok(strings(tree).some((text) => text.includes(page.text.presetApplyToNote)));
 });
 
-test('client: an unsaved edit blocks 「应用」, so a stale preset is never written', async () => {
-  // Review R1: `POST /presets/apply` names a preset by id and the host reads
-  // that preset out of the library, so an unsaved edit in the box would make the
-  // page write the *stored* version and report success. The tab must refuse —
-  // the same promise g-056 made for the text box, on a write that rewrites a
-  // layer rather than a label.
-  let stored = presetsFixture();
+test('client: an unsaved edit is never discarded silently, and never applied', async () => {
+  // Review R1 kept its promise, re-pointed by R3: applying names a preset by id
+  // and the host reads it out of the library, so the apply dialog says so in
+  // words — and the editor dialog may not let a draft vanish without saying it.
   const page = makePage({
-    responses: defaultResponses({
-      [PATHS.presets]: (url, init) => {
-        if (init && init.method === 'PUT') {
-          const body = JSON.parse(init.body);
-          const saved = {
-            id: body.id,
-            name: body.name,
-            action: body.action,
-            text: body.text,
-            createdAt: '2024-01-02T00:00:00.000Z',
-            updatedAt: '2024-01-04T00:00:00.000Z',
-          };
-          stored = presetsFixture({
-            presets: stored.presets.map((preset) => (preset.id === saved.id ? saved : preset)),
-          });
-          return {
-            payload: { ok: true, created: false, preset: saved, presets: stored.presets, applied: stored.applied },
-          };
-        }
-        return { payload: stored };
-      },
-      [PATHS.presetsApply]: {
-        payload: {
-          ok: true,
-          applied: true,
-          preset: { id: 'preset-2', name: '叠加规则', action: 'append', text: 'Extra rules, edited.' },
-          record: { workspaceRoot: '/work/alpha', presetId: 'preset-2', before: null, appliedAt: 't' },
-          workspaceRoot: '/work/alpha',
-          before: null,
-          after: { action: 'append', text: 'Extra rules, edited.' },
-          effectiveFrom: 'next-turn',
-          history: { ok: true, id: '1', seq: 1, dropped: 0, rewritten: false },
-          appliedRecords: [],
-        },
-      },
-    }),
+    responses: defaultResponses(),
     useWorkspaces: workspacesHook(workspacesFixture()),
   });
   let tree = await openTab(page, 'presets');
   clickButton(tree, { 'data-action': 'preset-edit', 'data-preset-id': 'preset-2' });
   tree = await page.flush();
-  // Nothing typed yet: the box matches the stored preset, so the action stands.
-  assert.equal(
-    collect(tree, (node) => node.props && node.props['data-preset-apply-blocked'] !== undefined).length,
-    0,
-    'an untouched editor blocks nothing',
-  );
+  assert.equal(oneBy(tree, 'data-region', 'preset-editor-dialog').props['data-preset-dirty'], 'false');
 
   typeInto(tree, 'preset-text', 'Extra rules, edited.');
   tree = await page.flush();
-  const notice = oneBy(tree, 'data-preset-apply-blocked', 'unsaved');
-  assert.ok(strings(notice).some((text) => text.includes(page.zh.presetApplyUnsaved)), 'and it says why');
-  const applyButton = findOne(
+  const dialog = oneBy(tree, 'data-region', 'preset-editor-dialog');
+  assert.equal(dialog.props['data-preset-dirty'], 'true');
+  assert.ok(strings(tree).some((text) => text.includes(page.zh.presetDialogDirtyHint)), 'the dialog says so');
+  const close = findOne(
     tree,
-    (candidate) =>
-      candidate.type === 'button' &&
-      candidate.props['data-action'] === 'preset-apply' &&
-      candidate.props['data-preset-session'] === 'a1',
-    'apply a1',
+    (candidate) => candidate.type === 'button' && candidate.props['data-action'] === 'preset-dialog-close',
+    'dialog close',
   );
-  assert.equal(applyButton.props.disabled, true, 'the apply button is disabled while the edit is unsaved');
+  assert.equal(close.props['data-preset-dirty'], 'true');
+  assert.equal(close.props.children, page.zh.presetDialogDiscard, 'and the control is named for what it does');
+
+  // Nothing has been sent while the draft is unsaved.
   assert.equal(
-    page.router.calls.filter((call) => call.init && call.init.method === 'POST').length,
+    page.router.calls.filter((call) => call.init && (call.init.method === 'PUT' || call.init.method === 'POST')).length,
     0,
-    'nothing was applied, so no stale version could be written',
+    'an unsaved draft writes nothing',
   );
 
-  // Saving is what clears the block — and then the action really writes.
-  clickButton(tree, { 'data-action': 'preset-save' });
+  // The apply dialog is a different surface, opened from a row: it applies the
+  // **stored** version and says so, and it is never fed the editor's draft.
+  clickButton(tree, { 'data-action': 'preset-apply-to', 'data-preset-id': 'preset-2' });
   tree = await page.flush();
-  tree = await page.flush();
-  assert.equal(
-    collect(tree, (node) => node.props && node.props['data-preset-apply-blocked'] !== undefined).length,
-    0,
-    'a saved draft blocks nothing',
-  );
+  assert.ok(strings(tree).some((text) => text.includes(page.zh.presetApplyToNote)));
   clickPresetWorkspaceAction(tree, 'preset-apply', 'a1');
   tree = await page.flush();
   const posts = page.router.calls.filter((call) => call.init && call.init.method === 'POST');
   assert.equal(posts.length, 1);
   assert.deepEqual(JSON.parse(posts[0].init.body), { presetId: 'preset-2', session: 'a1' });
+});
+
+test('client: a refused save stays inside the editor dialog, and the dialog stays open', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.presets]: (url, init) =>
+        init && init.method === 'PUT'
+          ? { status: 400, payload: { ok: false, code: 'unsupported-action', message: 'no' } }
+          : { payload: presetsFixture() },
+    }),
+  });
+  let tree = await openTab(page, 'presets');
+  clickButton(tree, { 'data-action': 'preset-edit', 'data-preset-id': 'preset-2' });
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'preset-save' });
+  tree = await page.flush();
+
+  // The refusal is on the dialog's own line, the dialog is still open, and the
+  // page-level notice did not take its place.
+  const error = oneBy(tree, 'data-role', 'preset-dialog-error');
+  assert.equal(error.props['data-preset-dialog-error'], 'unsupported-action');
+  assert.ok(strings(error).some((text) => text.includes(page.zh['error.unsupported-action'])));
+  assert.equal(oneBy(tree, 'data-region', 'preset-editor-dialog').props['data-preset-editing'], 'preset-2');
+  assert.equal(markerOf(tree, 'data-preset-state'), 'error');
+});
+
+test('client: an empty name is refused inside the dialog, with no request at all', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openTab(page, 'presets');
+  clickButton(tree, { 'data-action': 'preset-new' });
+  tree = await page.flush();
+  typeInto(tree, 'preset-text', 'typed but unnamed');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'preset-save' });
+  tree = await page.flush();
+
+  assert.equal(
+    page.router.calls.filter((call) => call.init && call.init.method === 'PUT').length,
+    0,
+    'a known refusal never becomes a round trip',
+  );
+  assert.equal(oneBy(tree, 'data-role', 'preset-dialog-error').props['data-preset-dialog-error'], 'invalid-name');
+  assert.equal(oneBy(tree, 'data-region', 'preset-editor-dialog').props['data-preset-editing'], 'new');
+  assert.equal(markerOf(tree, 'data-preset-state'), 'error');
 });
 

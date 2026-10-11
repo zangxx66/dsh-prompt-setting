@@ -7480,3 +7480,28 @@ brief 写「本次 0.2.1 覆盖 g-050…g-058」。核对仓库事实：**g-050�
 - **R2（nit，已修）**：`core/store.js` 里 `readPreferences` 的 JSDoc 收尾行曾被并进函数声明（`*/export function`），
   属与本目标无关的格式噪声，已还原为原来两行；其余新增内容未动。
 
+### 复核轮 2 返工（R3：交互重构为弹窗，2026-10-12）
+
+负责人真机验收提两点：编辑改弹窗、应用到工作区搬到弹窗。实现要点：
+
+- **A 编辑/新建＝弹窗**：`presetEditorDialog` 照 `renderRegionDialog` 先例（全屏遮罩 + `role="dialog"` + `aria-modal="true"`），
+  `data-region="preset-editor-dialog"`；三条规则照抄：失败红字留在弹窗内专用行
+  `data-role="preset-dialog-error"`（`data-preset-dialog-error=<code>`，用既有 `errorText` 本地化），失败**不关闭**，
+  关闭始终显式（`data-action="preset-dialog-close"`）。保存成功才关闭。
+- **B 应用＝弹窗**：列表行新增 `data-action="preset-apply-to"`（带 `data-preset-id`）打开展示目标预设名的弹窗
+  （`data-region="preset-apply-dialog"`，`data-preset-dialog-preset`），工作区逐行沿用
+  `data-preset-session` / `data-preset-applied` / `data-preset-orphan` / `data-preset-name` 与
+  `preset-apply` / `preset-unapply` 两动作；应用/取消成功后弹窗保持打开（刷新后的状态就是读者要看的），退出是显式动作。
+  tab 主体收敛为「标题 + 状态行 + 列表（每行：模式标签 / 文本预览 / 编辑 / 删除 / 应用到工作区）+ 新建/另存入口」。
+- **C 草稿不静默丢弃**：新增 `presetDraftDirty`（新建草稿只要有内容，或编辑草稿与库中同 id 条目不一致）；脏时弹窗
+  `data-preset-dirty="true"` + 可见提示 `data-role="preset-dialog-dirty"`，关闭按钮文案改「放弃修改」并带
+  `data-preset-dirty`。应用弹窗与应用的是**库里已保存版本**（宿主按 id 取值），弹窗文案 `presetApplyToNote` 说明；
+  R1 的「未保存 ⇒ 禁用应用」在两屏分离后不再适用 —— 不变量改由「草稿进不了层写入 + 草稿不会无提示消失」两条承接。
+- **D 同步**：`CONTRACT.md` 新增 Revision 38 段并重写 §20.9（含新 marker、脏态与关闭语义、弹窗结构）；
+  `test/client.test.mjs` 7 个用例按弹窗重写 + 新增 3 个（弹窗内应用/取消应用并保持打开、保存失败留在弹窗内且不关闭、
+  空名本地拒绝零请求）；i18n 移除 `presetNew`/`presetApplyPickOne`/`presetApplyUnsaved`，新增
+  `presetApplyTo`/`presetApplyToTitle`/`presetApplyToNote`/`presetDialogClose`/`presetDialogDiscard`/`presetDialogDirtyHint`
+  （zh/en 键位对齐断言继续通过）；chunk 指纹 `--write` 后校验一致。
+- **证据**：`node --test test/*.test.mjs` ⇒ 803 通过 / 0 失败；`node scripts/prepare.mjs` ⇒ 21 项全绿；
+  `node scripts/client-chunks.mjs` ⇒ 5 个 chunk 一致。
+

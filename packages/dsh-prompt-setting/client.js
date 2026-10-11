@@ -1258,7 +1258,6 @@ window.__ModuleLoader__.load({
       presetModeAppend: '叠加',
       presetSaveNew: '保存为新预设',
       presetSaveEdit: '保存修改',
-      presetNew: '新建',
       presetSaveAsCurrent: '从当前文本另存为预设',
       presetSaveAsCurrentHint:
         '「从当前文本另存为预设」只是把「我的 Prompt」当前显示的文本填进上面的编辑器，不会直接写入预设库。',
@@ -1270,8 +1269,12 @@ window.__ModuleLoader__.load({
       presetWorkspaceEmpty: '这个 profile 没有可用的工作区会话，无法应用预设。',
       presetApply: '应用',
       presetUnapply: '取消应用',
-      presetApplyPickOne: '先在上面的列表里点「编辑」选中一个预设，再点「应用」。',
-      presetApplyUnsaved: '当前编辑尚未保存：先点「保存修改」，再把它应用到工作区 —— 否则应用的是库里已保存的旧版本。',
+      presetApplyTo: '应用到工作区',
+      presetApplyToTitle: '把「{name}」应用到工作区',
+      presetApplyToNote: '应用的是预设库里已保存的版本；编辑弹窗里未保存的改动不会生效。',
+      presetDialogClose: '关闭',
+      presetDialogDiscard: '放弃修改',
+      presetDialogDirtyHint: '有未保存的修改：关闭会丢弃它们。',
       presetNotApplied: '未应用',
       presetAppliedAs: '已应用：{name}',
       presetAppliedOrphan: '来源已删除',
@@ -1808,7 +1811,6 @@ window.__ModuleLoader__.load({
       presetModeAppend: 'Stack',
       presetSaveNew: 'Save as new preset',
       presetSaveEdit: 'Save changes',
-      presetNew: 'New',
       presetSaveAsCurrent: 'Save current text as a preset',
       presetSaveAsCurrentHint:
         '\u201cSave current text as a preset\u201d only fills the editor above with the text \u300cMy Prompt\u300d is showing; it writes nothing by itself.',
@@ -1820,8 +1822,12 @@ window.__ModuleLoader__.load({
       presetWorkspaceEmpty: 'This profile exposes no workspace session, so no preset can be applied.',
       presetApply: 'Apply',
       presetUnapply: 'Cancel application',
-      presetApplyPickOne: 'Select a preset first by clicking \u300cEdit\u300d in the list above, then click \u300cApply\u300d.',
-      presetApplyUnsaved: 'This edit is not saved yet: save the changes first, then apply — otherwise the stored version would be applied.',
+      presetApplyTo: 'Apply to a workspace',
+      presetApplyToTitle: 'Apply \u201c{name}\u201d to a workspace',
+      presetApplyToNote: 'The version stored in the preset library is what gets applied; unsaved changes in the editor dialog are not.',
+      presetDialogClose: 'Close',
+      presetDialogDiscard: 'Discard changes',
+      presetDialogDirtyHint: 'There are unsaved changes: closing discards them.',
       presetNotApplied: 'Not applied',
       presetAppliedAs: 'Applied: {name}',
       presetAppliedOrphan: 'Source deleted',
@@ -6207,7 +6213,7 @@ window.__ModuleLoader__.load({
       { name: 'client.advanced.js', hash: '523d25ee', size: 21505 },
       { name: 'client.history.js', hash: '2887cc6c', size: 48609 },
       { name: 'client.overview.js', hash: 'f66cd1b0', size: 23533 },
-      { name: 'client.presets.js', hash: 'a4461fb6', size: 15841 },
+      { name: 'client.presets.js', hash: 'a9e4a118', size: 20105 },
       { name: 'client.transfer.js', hash: 'c8af8793', size: 9759 },
     ]);
 
@@ -7291,20 +7297,25 @@ window.__ModuleLoader__.load({
       const [mineWarnings, setMineWarnings] = React.useState([]);
       const [notice, setNotice] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
-      // g-060 (Revision 37): the preset library tab's own state.
+      // g-060 (Revision 37; dialog-based since Revision 38 / review R3): the
+      // preset library tab's own state.
       //
       // Four slots, and the split is the same one 「我的 Prompt」 uses: the
       // **library read** (`presets`) is a fact about one host file, the
-      // **draft** (`presetDraft`) is what the editor shows and what the two
+      // **draft** (`presetDraft`) is what the editor dialog shows and what the
       // catalogue writes send, the **request state** (`presetStatus`) is what
-      // the last write answered, and the **picked workspace**
-      // (`presetWorkspace`) is which session the two layer actions name. A
-      // failed write must never look like a failed read, so the last three are
-      // not folded into the first.
+      // the last write answered, and the **open dialog** (`presetDialog`) is
+      // which of the two overlays is on screen (`edit` or `apply`). A failed
+      // write must never look like a failed read, so the last three are not
+      // folded into the first.
       const [presets, setPresets] = React.useState({ phase: 'idle', data: null, error: null });
       const [presetDraft, setPresetDraft] = React.useState({ id: null, name: '', action: 'replace', text: '' });
       const [presetStatus, setPresetStatus] = React.useState({ kind: 'idle', error: null });
-      const [presetWorkspace, setPresetWorkspace] = React.useState(null);
+      // `null` | `{kind: 'edit'}` | `{kind: 'apply', presetId}`. The editor is a
+      // dialog rather than an in-tab form (review R3): the tab is the catalogue,
+      // and both writes it can start happen in an overlay that a reader has to
+      // dismiss.
+      const [presetDialog, setPresetDialog] = React.useState(null);
       // Stage 2 state: history, the comparison, the pending confirmation and
       // the export/import surface. All of it is view state — nothing here is
       // derived from a real config file until a route answers.
@@ -9011,9 +9022,10 @@ window.__ModuleLoader__.load({
         const name = presetDraft.name.trim();
         if (name.length === 0) {
           // The host would answer exactly this; refusing here keeps a known
-          // answer from being turned into a round trip.
+          // answer from being turned into a round trip. The refusal stays **in
+          // the dialog** (review R3): the editor's own error line, never the
+          // page notice, which would sit behind the overlay.
           setPresetStatus({ kind: 'error', error: { code: 'invalid-name' } });
-          setNotice({ tone: 'error', text: errorText(t, { code: 'invalid-name' }) });
           return;
         }
         setPresetStatus({ kind: 'saving', error: null });
@@ -9029,14 +9041,15 @@ window.__ModuleLoader__.load({
         });
         setBusy(false);
         if (!result.ok) {
+          // A refused save leaves the dialog **open** with the reason on its own
+          // line: closing it would throw the draft away and hide why.
           setPresetStatus({ kind: 'error', error: result.error });
-          setNotice({ tone: 'error', text: errorText(t, result.error) });
           return;
         }
         const preset = result.payload && result.payload.preset ? result.payload.preset : null;
-        // Keep editing the entry that was just written: the id it now has is
-        // what the workspace picker's「应用」sends, so dropping it here would make
-        // a freshly created preset unusable until it was clicked again.
+        // Keep the written entry as the editor's draft (so a re-open starts from
+        // what the library now holds), and close the dialog: the save is done,
+        // and the refreshed list is what the reader came back for.
         if (preset !== null) {
           setPresetDraft({
             id: preset.id,
@@ -9046,6 +9059,7 @@ window.__ModuleLoader__.load({
           });
         }
         setPresetStatus({ kind: 'saved', error: null });
+        setPresetDialog(null);
         setNotice({ tone: 'success', text: t('presetSavedNotice') });
         setReload((value) => value + 1);
       };
@@ -9062,6 +9076,12 @@ window.__ModuleLoader__.load({
         }
         // The editor must not keep pointing at an entry that is gone: it would
         // send its id on the next save and be answered `404 preset-not-found`.
+        // An open dialog on that entry closes with it (review R3): its subject
+        // no longer exists. (Checked before the draft is cleared, so the editor
+        // dialog is recognised by the id it was opened on.)
+        if (presetDialog !== null && (presetDialog.kind === 'apply' ? presetDialog.presetId === id : presetDraft.id === id)) {
+          setPresetDialog(null);
+        }
         if (presetDraft.id === id) setPresetDraft({ id: null, name: '', action: 'replace', text: '' });
         setPresetStatus({ kind: 'saved', error: null });
         const orphaned = result.payload && typeof result.payload.orphaned === 'number' ? result.payload.orphaned : 0;
@@ -9075,8 +9095,10 @@ window.__ModuleLoader__.load({
       const applyPreset = async (presetId, session) => {
         if (typeof presetId !== 'string' || presetId.length === 0) return;
         if (typeof session !== 'string' || session.length === 0) {
+          // Review R3: the refusal is rendered **inside the apply dialog**, which
+          // is where the reader is looking — a page notice would sit behind the
+          // scrim and read as "nothing happened".
           setPresetStatus({ kind: 'error', error: { code: 'workspace-unresolved' } });
-          setNotice({ tone: 'error', text: errorText(t, { code: 'workspace-unresolved' }) });
           return;
         }
         setPresetStatus({ kind: 'saving', error: null });
@@ -9089,7 +9111,6 @@ window.__ModuleLoader__.load({
         setBusy(false);
         if (!result.ok) {
           setPresetStatus({ kind: 'error', error: result.error });
-          setNotice({ tone: 'error', text: errorText(t, result.error) });
           return;
         }
         setPresetStatus({ kind: 'saved', error: null });
@@ -9100,7 +9121,6 @@ window.__ModuleLoader__.load({
       const unapplyPreset = async (session) => {
         if (typeof session !== 'string' || session.length === 0) {
           setPresetStatus({ kind: 'error', error: { code: 'workspace-unresolved' } });
-          setNotice({ tone: 'error', text: errorText(t, { code: 'workspace-unresolved' }) });
           return;
         }
         setPresetStatus({ kind: 'saving', error: null });
@@ -9113,7 +9133,6 @@ window.__ModuleLoader__.load({
         setBusy(false);
         if (!result.ok) {
           setPresetStatus({ kind: 'error', error: result.error });
-          setNotice({ tone: 'error', text: errorText(t, result.error) });
           return;
         }
         setPresetStatus({ kind: 'saved', error: null });
@@ -9158,29 +9177,21 @@ window.__ModuleLoader__.load({
           label: sessionLabelOf(seat.rows, row.id) || row.id,
         }));
       })();
-      /** The workspace the layer actions currently name: the picked one, or the first. */
-      const presetActiveWorkspace = presetWorkspace !== null
-        ? presetWorkspace
-        : presetWorkspaces.length > 0
-          ? presetWorkspaces[0].session
-          : null;
-
       /**
-       * g-060 (review R1): does the editor hold an **unsaved** change to a stored
-       * preset?
+       * g-060 (review R1, re-pointed by R3): does the editor hold an **unsaved**
+       * change?
        *
        * `POST /presets/apply` names a preset by **id** and the host reads that
-       * preset out of the library — so while the box holds an unsaved edit, an
-       *「应用」would silently write the *stored* version into a workspace and
-       * report success. That is the class of defect g-056 fixed for the text
-       * box (a draft that does not match what a write would really store), and
-       * it is worse here: apply rewrites a **layer**, not just a label. So the
-       * page refuses to pretend: while this is true the apply buttons are
-       * disabled and the picker says why, and saving the draft is what clears it.
+       * preset out of the library, so an unsaved edit can never be what a layer
+       * write stores — the apply dialog says so in words, and the editor dialog
+       * never lets the draft disappear silently.
        *
-       * `true` also covers "the draft names an entry the library no longer has"
-       * (deleted in another tab or by hand): applying it would be a `404`, and
-       * offering the button would be a promise the page cannot keep.
+       * `presetDirty` covers the *stored* case (the draft names an entry and
+       * differs from it, or names one the library no longer has — a `404` this
+       * page must not dress up as a save); `presetDraftDirty` is the wider
+       * question the **close** control asks, and it also covers a brand-new
+       * draft with anything typed into it, which has no stored counterpart to
+       * compare against.
        * @returns whether the editor differs from the stored preset it names.
        */
       const presetSavedEntry = presetDraft.id === null
@@ -9192,6 +9203,10 @@ window.__ModuleLoader__.load({
           || presetSavedEntry.name !== presetDraft.name
           || (presetSavedEntry.action === 'append' ? 'append' : RESERVED_SECTION_DEFAULT_MODE) !== presetDraft.action
           || (typeof presetSavedEntry.text === 'string' ? presetSavedEntry.text : '') !== presetDraft.text);
+      /** Whether closing the editor dialog would throw work away. */
+      const presetDraftDirty = presetDraft.id === null
+        ? presetDraft.name.trim().length > 0 || presetDraft.text.length > 0
+        : presetDirty;
 
       const actions = {
         refresh: () => setReload((value) => value + 1),
@@ -9249,9 +9264,13 @@ window.__ModuleLoader__.load({
           }));
           setPresetStatus({ kind: 'idle', error: null });
         },
+        // Review R3: 「新建」/「编辑」 both **open the editor dialog** and put the
+        // draft behind it. Nothing is written until a click on 「保存」, and the
+        // dialog is the only surface those fields exist on.
         newPreset: () => {
           setPresetDraft({ id: null, name: '', action: RESERVED_SECTION_DEFAULT_MODE, text: '' });
           setPresetStatus({ kind: 'idle', error: null });
+          setPresetDialog({ kind: 'edit' });
         },
         editPreset: (id) => {
           const list = presets.data && Array.isArray(presets.data.presets) ? presets.data.presets : [];
@@ -9264,12 +9283,27 @@ window.__ModuleLoader__.load({
             text: typeof preset.text === 'string' ? preset.text : '',
           });
           setPresetStatus({ kind: 'idle', error: null });
+          setPresetDialog({ kind: 'edit' });
         },
         // 「从当前文本另存为预设」: it starts a **new** preset from the text the
         // 「我的 Prompt」 panel is showing and writes nothing — the name and the
         // save are still the user's to give (§20.9).
         saveAsCurrentPreset: () => {
           setPresetDraft({ id: null, name: '', action: RESERVED_SECTION_DEFAULT_MODE, text: mineText });
+          setPresetStatus({ kind: 'idle', error: null });
+          setPresetDialog({ kind: 'edit' });
+        },
+        // The apply dialog is opened **from a list row**, so the preset it acts
+        // on is the row's own id — never "whatever the editor happens to hold"
+        // (review R3), which is also why an unsaved draft cannot be applied by
+        // accident: the dialog names a stored preset and says so in words.
+        requestPresetApplyTo: (id) => {
+          if (typeof id !== 'string' || id.length === 0) return;
+          setPresetStatus({ kind: 'idle', error: null });
+          setPresetDialog({ kind: 'apply', presetId: id });
+        },
+        closePresetDialog: () => {
+          setPresetDialog(null);
           setPresetStatus({ kind: 'idle', error: null });
         },
         savePreset: () => {
@@ -9278,7 +9312,6 @@ window.__ModuleLoader__.load({
         deletePreset: (id) => {
           void deletePreset(id);
         },
-        setPresetWorkspace: (id) => setPresetWorkspace(typeof id === 'string' && id.length > 0 ? id : null),
         applyPreset: (presetId, session) => {
           void applyPreset(presetId, session);
         },
@@ -9570,16 +9603,19 @@ window.__ModuleLoader__.load({
         mineLayerDisabled,
         mineFrozenReason,
         mineFrozenCertain,
-        // g-060: the preset tab's four state slots, the picked workspace (with
-        // the list it was picked from), and the text「从当前文本另存为预设」reads.
+        // g-060: the preset tab's state slots, the open dialog, the workspace
+        // list the apply dialog renders, and the text「从当前文本另存为预设」reads.
         presets,
         presetDraft,
         presetStatus,
-        presetWorkspace: presetActiveWorkspace,
+        // `null` | `{kind:'edit'}` | `{kind:'apply', presetId}` (review R3).
+        presetDialog,
         presetWorkspaces,
-        // g-060 (review R1): the editor differs from the stored preset it names
-        // ⇒「应用」 is disabled and the picker says why (never apply a stale copy).
+        // g-060 (review R1, re-pointed by R3): the draft differs from the stored
+        // preset it names, and whether closing the editor would discard work.
+        // The second is what the close control reads (`presetDialogDiscard`).
         presetDirty,
+        presetDraftDirty,
         presetCurrentText: mineText === null || mineText === undefined ? '' : String(mineText),
         advancedLayer,
         view,
