@@ -2133,17 +2133,17 @@ window.__ModuleLoader__.load({
               'data-tab-key': group,
               'data-tab-value': item.value,
               onClick: () => onChange(item.value),
-              style: {
-                font: 'inherit',
-                fontSize: 12,
-                lineHeight: '18px',
-                padding: '3px 10px',
-                borderRadius: 999,
+              // g-061 batch 3: the fallback tab is the chip family's own control.
+              // The selected pair (the button fill under a transparent stroke) is
+              // still decided here, and this is the one call site whose unselected
+              // text colour is the secondary one — the pinned entries and the
+              // search fallback use the primary.
+              style: chipButtonStyle({
                 cursor: 'pointer',
                 color: item.value === value ? token.buttonLabel : token.labelSecondary,
                 background: item.value === value ? token.buttonFill : 'transparent',
-                border: `1px solid ${item.value === value ? 'transparent' : token.borderL2}`,
-              },
+                border: item.value === value ? 'transparent' : token.borderL2,
+              }),
             },
             item.label,
           ),
@@ -2320,11 +2320,15 @@ window.__ModuleLoader__.load({
      */
     function sessionMatchesQuery(row, needle) {
       if (needle.length === 0) return true;
-      const haystack =
-        typeof row.haystack === 'string'
-          ? row.haystack
-          : [row.id, row.displayTitle, row.title, row.cwd].join(' ').toLowerCase();
-      return haystack.indexOf(needle) >= 0;
+      // g-061 batch 3: the same comparison the history scope list makes, with
+      // this side's own cache handed over. `row.haystack` — the pre-lowercased
+      // join `decodeSessions` builds once per list — stays, because a session
+      // list can hold thousands of rows; the field-by-field walk is the fallback
+      // for a row that arrived without it. The fields are listed here rather than
+      // joined inside the shared function, because joining is what lets a match
+      // span two fields: that is a property of this side's cached haystack, not
+      // something the shared comparison may impose on the other side.
+      return matchesNeedle([row.id, row.displayTitle, row.title, row.cwd], needle, { cached: row.haystack });
     }
 
     /**
@@ -2336,7 +2340,7 @@ window.__ModuleLoader__.load({
      */
     function filterSessions(rows, query) {
       const list = Array.isArray(rows) ? rows : [];
-      const needle = typeof query === 'string' ? query.trim().toLowerCase() : '';
+      const needle = normalizeNeedle(query);
       if (needle.length === 0) return list.slice();
       return list.filter((row) => sessionMatchesQuery(row, needle));
     }
@@ -2628,7 +2632,7 @@ window.__ModuleLoader__.load({
       const rows = Array.isArray(input.rows) ? input.rows : [];
       const workspaces = Array.isArray(input.workspaces) ? input.workspaces : [];
       const currentId = typeof input.currentId === 'string' ? input.currentId : '';
-      const needle = typeof input.query === 'string' ? input.query.trim().toLowerCase() : '';
+      const needle = normalizeNeedle(input.query);
       const labels = input.labels && typeof input.labels === 'object' ? input.labels : {};
       const limits = input.limits && typeof input.limits === 'object' ? input.limits : {};
       const expanded = input.expanded && typeof input.expanded === 'object' ? input.expanded : {};
@@ -3572,6 +3576,276 @@ window.__ModuleLoader__.load({
       if (options.radius !== undefined) style.borderRadius = options.radius;
       if (options.padding !== undefined) style.padding = options.padding;
       return style;
+    }
+
+    /**
+     * g-061 batch 3: the dialog shell, the two rows inside it, and the three
+     * ghost button families the page draws its small controls with. Same rule as
+     * batch 2 — a name lives here only because two or more call sites draw the
+     * same shape, and every difference they really have is a stated argument
+     * rather than a default that quietly absorbs it.
+     *
+     * **This batch repairs no drift.** Five values in this family disagree with
+     * their neighbours — the preset dialogs' `maxWidth` 520 against the region
+     * dialog's 480, their `overflow: 'auto'` against everyone else's
+     * `overflowY: 'auto'`, the region dialog's missing `maxHeight` and
+     * `overflow`, the pager's padding `'2px 10px'` against its family's
+     * `'2px 8px'`, and the preset titles' 15 against the confirmation's 14 —
+     * and **all five are kept exactly as they are**, each as an explicit
+     * argument. The owner reviewed them and chose to keep the page as it looks
+     * today; converging them would be a visible change this batch may not make.
+     * Revision 44 records that decision, and the tests assert each value instead
+     * of asserting that the family agrees.
+     */
+
+    /**
+     * The dialog card inside a scrim: one box, its own size and its own scroll.
+     *
+     * Four call sites draw it — the confirmation overlay and the「自定义」dialog
+     * in the entry, the two preset dialogs and the history comparison modal — and
+     * what they share is the shell: the card's stroke, surface and radius, and
+     * the dialog padding (`'16px 18px'`) and shadow (`0 12px 32px`) all four
+     * state identically. Everything a reader can measure differently is an
+     * argument: the width (`'100%'` on three, `min(1040px, 92vw)` on the history
+     * modal — the reason it states an explicit `maxWidth: '92vw'` beside it as
+     * well is not reconstructed here), the `maxWidth` (480 / 480 / **520** /
+     * `'92vw'`), the `height` and `maxHeight` (the history modal states both;
+     * the confirmation and the preset dialogs state `maxHeight: '80vh'`; the
+     *「自定义」dialog states neither), the `overflow` (the confirmation and the
+     * history modal scroll on one axis, the preset dialogs on both), the `gap`
+     * (10 everywhere except the confirmation, which carries **no** gap at all —
+     * its three-level grouping is the `marginTop` spacing §13.5 describes) and the
+     * `position` (`'relative'` on the history modal alone, because its close
+     * button is anchored to that corner).
+     *
+     * `overflow` is the **property name**, not a value: each call site says
+     * which axis it scrolls, so `'overflowY'` and `'overflow'` stay two
+     * different declarations exactly as they are today.
+     * @param options - `{width, maxWidth, maxHeight, height, overflow, gap, position}`.
+     * @returns the card style.
+     */
+    function dialogCardStyle(options) {
+      const style = {
+        ...cardStyle,
+        display: 'flex',
+        flexDirection: 'column',
+        width: options.width,
+      };
+      if (options.gap !== undefined) style.gap = options.gap;
+      if (options.maxWidth !== undefined) style.maxWidth = options.maxWidth;
+      if (options.maxHeight !== undefined) style.maxHeight = options.maxHeight;
+      if (options.height !== undefined) style.height = options.height;
+      if (options.overflow !== undefined) style[options.overflow] = 'auto';
+      if (options.position !== undefined) style.position = options.position;
+      style.padding = '16px 18px';
+      style.boxShadow = '0 12px 32px rgba(0, 0, 0, 0.35)';
+      return style;
+    }
+
+    /**
+     * The dialog's title line: the one emphasized line naming what the dialog is
+     * about.
+     *
+     * Two call sites — the confirmation overlay, which the「自定义」dialog
+     * reuses verbatim so that the two remain the **same object**, and the two
+     * preset dialogs. What is shared is a `strong` node at weight 600; what
+     * differs is stated: the font size (14 against the preset dialogs' **15**),
+     * the tone (the confirmation wears the warning colour, the preset dialogs
+     * inherit) and the line height (the confirmation states 1.4, the preset
+     * dialogs state none).
+     *
+     * The history modal's head is **not** this shape — it is a flex row holding
+     * a title beside an absolutely positioned close button — and stays as it is.
+     * @param options - `{fontSize, tone, lineHeight}`.
+     * @returns the title style.
+     */
+    function dialogTitleStyle(options) {
+      const style = { fontSize: options.fontSize, fontWeight: 600 };
+      if (options.lineHeight !== undefined) style.lineHeight = options.lineHeight;
+      if (options.tone !== undefined) style.color = options.tone;
+      return style;
+    }
+
+    /**
+     * The dialog's button row: one flex line of buttons at the bottom of the
+     * card.
+     *
+     * Two call sites — the confirmation overlay (reused by the「自定义」dialog)
+     * and the two preset dialogs. Shared: an 8px gap between the buttons. Stated
+     * by the caller: where the row sits horizontally (the confirmation starts at
+     * the left edge, the preset dialogs push to the right) and whether it
+     * carries the confirmation's **top divider** — the 16px gap, the 12px inset
+     * and the rule §13.5 calls「behind a top divider」, which the preset dialogs do
+     * not have. The preset dialogs also carry a `flexWrap` that their single
+     * button never needs; it is kept, because dropping it is a change to a
+     * declared style even where it has no visible effect.
+     * @param options - `{align, divider, wrap}`.
+     * @returns the actions style.
+     */
+    function dialogActionsStyle(options) {
+      const style = { display: 'flex', gap: 8 };
+      if (options.align !== undefined) style.justifyContent = options.align;
+      if (options.divider === true) {
+        style.marginTop = 16;
+        style.paddingTop = 12;
+        style.borderTop = `1px solid ${token.borderL1}`;
+      }
+      if (options.wrap === true) style.flexWrap = 'wrap';
+      return style;
+    }
+
+    /**
+     * The pill-shaped ghost button: the small chip control the page draws in its
+     * rows and in the search fallback.
+     *
+     * Three call sites — the fallback tab button, the pinned「全局 / 当前会话」
+     * entries and the「使用这串 id」button — share everything but their colour:
+     * the inherited 12px/18px type, the `'3px 10px'` padding and the 999px radius
+     * are the shape, and the text colour, the fill and the stroke are arguments.
+     * The unselected text colour really differs (**secondary** on the tabs,
+     * **primary** on the other two), so it is the caller's; the selected state —
+     * the button fill under a transparent stroke — stays the caller's own
+     * expression, as does every attribute on the node.
+     *
+     * **A caveat worth stating, not a defect:** under the `primitives` renderer
+     * the page draws its tabs with the host's own `SegmentedTabs`, which paints
+     * its own DOM. Only the fallback branch goes through this factory, so the two
+     * renderers' tabs do not look alike — and they did not before this batch
+     * either. Unifying the fallback cannot close that gap.
+     * @param options - `{cursor, color, background, border}`; `border` is the
+     *   stroke's colour, the 1px width belongs to the shape.
+     * @returns the chip style.
+     */
+    function chipButtonStyle(options) {
+      return {
+        font: 'inherit',
+        fontSize: 12,
+        lineHeight: '18px',
+        padding: '3px 10px',
+        borderRadius: 999,
+        cursor: options.cursor,
+        color: options.color,
+        background: options.background,
+        border: `1px solid ${options.border}`,
+      };
+    }
+
+    /**
+     * The small radius-6 ghost button: the page's tool-strip control.
+     *
+     * Five call sites —「更多」in a scope group, the history row's two side
+     * buttons, the history pager, the overview section's expand toggle and one
+     * option row of the history scope list — share the type, the 6px radius, the
+     * pointer cursor and the fill role; the padding, the colour, the stroke and
+     * whether a line height is stated at all are arguments. **Three of them
+     * state no `lineHeight` and the factory writes none for them**: adding the
+     * 18px their neighbour「更多」carries would change how tall those rows are,
+     * which is not this batch's to change. The pager's `'2px 10px'` sits beside
+     * its family's `'2px 8px'` and is kept as it is.
+     * @param options - `{padding, color, background, border, lineHeight, textAlign}`;
+     *   `border` is the whole declaration, because one call site's is `none`.
+     * @returns the button style.
+     */
+    function miniButtonStyle(options) {
+      const style = { font: 'inherit', fontSize: 12 };
+      if (options.lineHeight !== undefined) style.lineHeight = options.lineHeight;
+      if (options.textAlign !== undefined) style.textAlign = options.textAlign;
+      style.padding = options.padding;
+      style.borderRadius = 6;
+      style.cursor = 'pointer';
+      style.color = options.color;
+      style.background = options.background;
+      style.border = options.border;
+      return style;
+    }
+
+    /**
+     * One session row: the interactive row button the「查看范围」tree and its
+     * flat fallback list are both built from.
+     *
+     * The shared shape is the row itself — the inherited 12px/18px type over a
+     * left-aligned flex line, the 6px radius, the pointer cursor and the
+     * product's focus ring (all of those from `scopeRowStyle`), the primary text
+     * colour, and the three-state fill: a selected or keyboard-highlighted row
+     * takes the business fill, a hovered row the hover fill, everything else is
+     * transparent. `padding` is the argument that really differs — the tree row
+     * carries its 20px indent inside it (`'3px 8px 3px 20px'`), the flat row does
+     * not (`'4px 8px'`) — and `selected` alone decides the left bar and the
+     * stroke, exactly as before.
+     *
+     * **The ARIA shape is not here, and must not move here.** The tree row is a
+     * level-2 `treeitem` marked `data-role="session-row"`; the flat row is an
+     * `option` inside a `listbox`, marked `data-role="session-option"`; the tree
+     * row alone carries `data-scope-parent` and `data-session-running`. Those
+     * are attributes on different nodes with different meanings, and
+     * `test/client.test.mjs` pins both trees. Only the paint moved.
+     * @param options - `{padding, hovered, focused, selected, active}`.
+     * @returns the row style.
+     */
+    function sessionRowStyle(options) {
+      return {
+        ...scopeRowStyle(options.hovered, options.focused),
+        font: 'inherit',
+        fontSize: 12,
+        lineHeight: '18px',
+        textAlign: 'left',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        padding: options.padding,
+        color: token.labelPrimary,
+        background:
+          options.selected || options.active
+            ? token.diffAddFill
+            : options.hovered
+              ? token.hoverFill
+              : 'transparent',
+        boxShadow: options.selected ? `inset 3px 0 0 0 ${token.stateBusiness}` : undefined,
+        border: `1px solid ${options.selected ? token.borderL2 : 'transparent'}`,
+      };
+    }
+
+    /**
+     * The needle every search box on this page compares against: trimmed and
+     * lowercased, and `''` for anything that is not a string.
+     * @param query - the raw box content.
+     * @returns the normalized needle.
+     */
+    function normalizeNeedle(query) {
+      return typeof query === 'string' ? query.trim().toLowerCase() : '';
+    }
+
+    /**
+     * Whether a needle occurs in any of the fields one search box covers.
+     *
+     * `cached` is the one thing the two consumers really differ in. The session
+     * list is lowercased **once**, when it is decoded, into `row.haystack` — one
+     * pre-joined string covering id, title and directory — because it can hold
+     * thousands of rows; the history scope list has no such cache and is compared
+     * field by field. Both behaviours are kept: passing `cached` searches that
+     * string, omitting it walks the fields.
+     *
+     * **The factory never joins the fields itself.** Joining would let a match
+     * span a field boundary (the tail of one title against the head of the next
+     * field), which is a **new** hit on the history side — it would move the
+     * `data-history-scope-shown` count and the assertions that read it. The two
+     * sides therefore keep the semantics they already had, and the shared
+     * function is the shape they have in common rather than a convergence of
+     * their answers.
+     *
+     * `indexOf` and `includes` ask the same question here; the shared path asks
+     * it with `includes`, and the cached path keeps `indexOf` on the
+     * pre-lowercased string.
+     * @param values - the fields to compare, in the order the page has them.
+     * @param needle - the already-normalized needle.
+     * @param options - optional `{cached}`: a pre-lowercased haystack.
+     * @returns whether any field carries the needle.
+     */
+    function matchesNeedle(values, needle, options) {
+      if (needle.length === 0) return true;
+      const cached = options !== undefined && typeof options.cached === 'string' ? options.cached : null;
+      if (cached !== null) return cached.indexOf(needle) >= 0;
+      return values.some((value) => typeof value === 'string' && value.toLowerCase().includes(needle));
     }
 
     /**
@@ -4854,19 +5128,18 @@ window.__ModuleLoader__.load({
           onFocus: (event) => setFocus(focusVisibleOf(event)),
           onBlur: () => setFocus(false),
           style: {
-            font: 'inherit',
-            fontSize: 12,
-            lineHeight: '18px',
+            ...chipButtonStyle({
+              cursor: disabled ? 'default' : 'pointer',
+              color: active ? token.buttonLabel : token.labelPrimary,
+              background: active ? token.buttonFill : hovered && !disabled ? token.hoverFill : 'transparent',
+              border: active ? 'transparent' : token.borderL2,
+            }),
+            // The pill is the chip family's; what this entry adds is the tick's
+            // own row, its disabled opacity and its focus ring.
             display: 'inline-flex',
             alignItems: 'center',
             gap: 4,
-            padding: '3px 10px',
-            borderRadius: 999,
             opacity: disabled ? 0.5 : 1,
-            cursor: disabled ? 'default' : 'pointer',
-            color: active ? token.buttonLabel : token.labelPrimary,
-            background: active ? token.buttonFill : hovered && !disabled ? token.hoverFill : 'transparent',
-            border: `1px solid ${active ? 'transparent' : token.borderL2}`,
             outline: focused ? token.focusRing : 'none',
             outlineOffset: focused ? '-2px' : undefined,
           },
@@ -5050,28 +5323,22 @@ window.__ModuleLoader__.load({
                 if (focusVisibleOf(event)) a.setScopeFocus(`s:${row.id}`);
               },
               onBlur: () => a.setScopeFocus(''),
-              style: {
-                ...scopeRowStyle(rowHovered, rowFocused),
-                font: 'inherit',
-                fontSize: 12,
-                lineHeight: '18px',
-                textAlign: 'left',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
+              // g-061 batch 3: the row's paint is the shared session-row style —
+              // and nothing else about this node moves. It stays a level-2
+              // `treeitem` marked `session-row`, with its own `data-scope-parent`
+              // and `data-session-running`; the flat list's row keeps being an
+              // `option` marked `session-option`.
+              style: sessionRowStyle({
                 padding: '3px 8px 3px 20px',
-                color: token.labelPrimary,
-                background: selected
-                  ? token.diffAddFill
-                  : row.id === activeId && activeId !== ''
-                    ? token.diffAddFill
-                    : rowHovered
-                      ? token.hoverFill
-                      : 'transparent',
-                // The selected row is marked by a bar, not by text alone.
-                boxShadow: selected ? `inset 3px 0 0 0 ${token.stateBusiness}` : undefined,
-                border: `1px solid ${selected ? token.borderL2 : 'transparent'}`,
-              },
+                hovered: rowHovered,
+                focused: rowFocused,
+                selected,
+                // The tree names the highlighted row by id. That is the rule now
+                // — the flat list used to ask the same question by index, and the
+                // rendered attribute is asserted to be value-for-value what the
+                // index form produced.
+                active: row.id === activeId && activeId !== '',
+              }),
             },
             selected
               ? h(
@@ -5146,14 +5413,16 @@ window.__ModuleLoader__.load({
               },
               onBlur: () => a.setScopeFocus(''),
               style: {
-                font: 'inherit',
-                fontSize: 12,
-                lineHeight: '18px',
-                textAlign: 'left',
-                padding: '2px 8px 2px 20px',
-                color: token.stateBusiness,
-                background: 'transparent',
-                border: 'none',
+                ...miniButtonStyle({
+                  padding: '2px 8px 2px 20px',
+                  lineHeight: '18px',
+                  textAlign: 'left',
+                  color: token.stateBusiness,
+                  background: 'transparent',
+                  border: 'none',
+                }),
+                // The hover fill and the focus ring come last, exactly where they
+                // came before: they override the transparent fill above.
                 ...scopeRowStyle(moreHovered, moreFocused),
               },
             },
@@ -5472,6 +5741,14 @@ window.__ModuleLoader__.load({
       if (isTree) {
         children.push(scopeTreeElement(t, m, a));
       } else {
+        // g-061 batch 3: the flat list asked「is this the keyboard-highlighted
+        // row」by index (`index === m.sessionActive`) while the tree asked it by
+        // id. They are the same answer — the index names a row of the very list
+        // being mapped — so both go through the id now. The rendered
+        // `data-session-active` is asserted to be value-for-value what the index
+        // form produced: at `-1`, at 0, at the last row and past the end.
+        const activeRow = m.sessionActive >= 0 ? m.sessionVisible[m.sessionActive] : undefined;
+        const flatActiveId = activeRow ? activeRow.id : '';
         children.push(
           h(
             'div',
@@ -5482,7 +5759,7 @@ window.__ModuleLoader__.load({
               'data-region': 'session-list',
               style: { marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 },
             },
-            m.sessionVisible.map((row, index) => {
+            m.sessionVisible.map((row) => {
               const selected = row.id === m.sessionArg;
               const hovered = m.scopeHover === `s:${row.id}`;
               const focused = m.scopeFocus === `s:${row.id}`;
@@ -5495,7 +5772,7 @@ window.__ModuleLoader__.load({
                   'data-role': 'session-option',
                   'data-session-id': row.id,
                   'data-selected': String(selected),
-                  'data-session-active': String(index === m.sessionActive),
+                  'data-session-active': String(row.id === flatActiveId && flatActiveId !== ''),
                   'data-hover': String(hovered),
                   'data-focus': String(focused),
                   'aria-selected': selected,
@@ -5506,26 +5783,13 @@ window.__ModuleLoader__.load({
                     if (focusVisibleOf(event)) a.setScopeFocus(`s:${row.id}`);
                   },
                   onBlur: () => a.setScopeFocus(''),
-                  style: {
-                    ...scopeRowStyle(hovered, focused),
-                    font: 'inherit',
-                    fontSize: 12,
-                    lineHeight: '18px',
-                    textAlign: 'left',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6,
+                  style: sessionRowStyle({
                     padding: '4px 8px',
-                    color: token.labelPrimary,
-                    background:
-                      selected || index === m.sessionActive
-                        ? token.diffAddFill
-                        : hovered
-                          ? token.hoverFill
-                          : 'transparent',
-                    boxShadow: selected ? `inset 3px 0 0 0 ${token.stateBusiness}` : undefined,
-                    border: `1px solid ${selected ? token.borderL2 : 'transparent'}`,
-                  },
+                    hovered,
+                    focused,
+                    selected,
+                    active: row.id === flatActiveId && flatActiveId !== '',
+                  }),
                 },
                 selected
                   ? h(
@@ -5564,17 +5828,12 @@ window.__ModuleLoader__.load({
                 'data-action': 'session-use-input',
                 'data-session-id': m.sessionQuery.trim(),
                 onClick: a.useTypedId,
-                style: {
-                  font: 'inherit',
-                  fontSize: 12,
-                  lineHeight: '18px',
-                  padding: '3px 10px',
-                  borderRadius: 999,
+                style: chipButtonStyle({
                   cursor: 'pointer',
                   color: token.labelPrimary,
                   background: 'transparent',
-                  border: `1px solid ${token.borderL2}`,
-                },
+                  border: token.borderL2,
+                }),
               },
               fmt(t('sessionUseInput'), { id: m.sessionQuery.trim() }),
             ),
@@ -5653,7 +5912,7 @@ window.__ModuleLoader__.load({
      * `lineHeight` instead of inheriting the shell's, and the spacing between
      * groups (not a single `gap`) is what carries the grouping.
      */
-    const confirmTitleStyle = { fontSize: 14, fontWeight: 600, lineHeight: 1.4, color: token.stateWarn };
+    const confirmTitleStyle = dialogTitleStyle({ fontSize: 14, tone: token.stateWarn, lineHeight: 1.4 });
     const confirmBodyStyle = { display: 'flex', flexDirection: 'column', gap: 4, marginTop: 10 };
     const confirmLeadStyle = {
       fontSize: 13,
@@ -5676,13 +5935,7 @@ window.__ModuleLoader__.load({
       lineHeight: 1.5,
       color: token.stateError,
     };
-    const confirmActionsStyle = {
-      display: 'flex',
-      gap: 8,
-      marginTop: 16,
-      paddingTop: 12,
-      borderTop: `1px solid ${token.borderL1}`,
-    };
+    const confirmActionsStyle = dialogActionsStyle({ divider: true });
 
     /**
      * Render the pending second confirmation. Every destructive action of this
@@ -5792,16 +6045,18 @@ window.__ModuleLoader__.load({
             'aria-modal': 'true',
             'aria-label': t('confirmTitle'),
             style: {
-              ...cardStyle,
+              ...dialogCardStyle({
+                width: '100%',
+                maxWidth: 480,
+                maxHeight: '80vh',
+                overflow: 'overflowY',
+              }),
+              // The confirmation wears the warning stroke, and the shell states
+              // the surface one, so the warning is declared after the factory —
+              // the later declaration is the one that wins. Everything else this
+              // card used to spell out is now the factory's, at the values it
+              // has always had.
               borderColor: token.stateWarn,
-              display: 'flex',
-              flexDirection: 'column',
-              width: '100%',
-              maxWidth: 480,
-              maxHeight: '80vh',
-              overflowY: 'auto',
-              padding: '16px 18px',
-              boxShadow: '0 12px 32px rgba(0, 0, 0, 0.35)',
             },
           },
           h('strong', { style: confirmTitleStyle }, t('confirmTitle')),
@@ -6415,9 +6670,9 @@ window.__ModuleLoader__.load({
      */
     const CHUNK_STAMPS = Object.freeze([
       { name: 'client.advanced.js', hash: '4cbd3181', size: 21376 },
-      { name: 'client.history.js', hash: 'd7880962', size: 48877 },
-      { name: 'client.overview.js', hash: '948056a2', size: 23610 },
-      { name: 'client.presets.js', hash: '116a42f5', size: 22957 },
+      { name: 'client.history.js', hash: '731bd80f', size: 49872 },
+      { name: 'client.overview.js', hash: 'ddbcf423', size: 23861 },
+      { name: 'client.presets.js', hash: 'e1a665bb', size: 24079 },
       { name: 'client.transfer.js', hash: '8b305496', size: 9766 },
     ]);
 
@@ -6499,6 +6754,18 @@ window.__ModuleLoader__.load({
       errorLine,
       emptyCard,
       monoTextBox,
+      // g-061 batch 3: the dialog shell, its two rows, the three ghost button
+      // families and the shared search comparison. Same rule once more — one
+      // binding each, taken off the surface under its own name, never copied
+      // into a chunk.
+      dialogCardStyle,
+      dialogTitleStyle,
+      dialogActionsStyle,
+      chipButtonStyle,
+      miniButtonStyle,
+      sessionRowStyle,
+      normalizeNeedle,
+      matchesNeedle,
     });
 
     /** Chunks this page has really loaded, by file name: `{hash, size}`. */
@@ -7206,16 +7473,14 @@ window.__ModuleLoader__.load({
             role: 'dialog',
             'aria-modal': 'true',
             'aria-label': t('updateRegionCustomTitle'),
-            style: {
-              ...cardStyle,
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 10,
+            style: dialogCardStyle({
               width: '100%',
+              gap: 10,
               maxWidth: 480,
-              padding: '16px 18px',
-              boxShadow: '0 12px 32px rgba(0, 0, 0, 0.35)',
-            },
+              // g-061 batch 3: this dialog states neither `maxHeight` nor an
+              // `overflow` — it always has, and the batch keeps it that way
+              // instead of quietly giving it the confirmation's 80vh.
+            }),
           },
           h('strong', { style: confirmTitleStyle }, t('updateRegionCustomTitle')),
           h('div', { 'data-role': 'region-body', style: confirmTextStyle }, t('updateRegionCustomBody')),
@@ -7820,13 +8085,15 @@ window.__ModuleLoader__.load({
       // always bounded by the scrolling box rather than by a render cap, because
       // the box — not the page — is what grows.
       const historyScopeMatches = (() => {
-        const needle = historyScopeSearch.trim().toLowerCase();
+        const needle = normalizeNeedle(historyScopeSearch);
         if (needle.length === 0) return historyScopes.options;
-        return historyScopes.options.filter(
-          (option) =>
-            option.label.toLowerCase().includes(needle)
-            || option.value.toLowerCase().includes(needle)
-            || option.workspaceId.toLowerCase().includes(needle),
+        // g-061 batch 3: field by field, with no cache — this list is bounded by
+        // the scrolling box, and it is compared exactly as it was before. It is
+        // deliberately **not** handed a joined haystack: a match could then span
+        // two fields, which would be a new hit and would move
+        // `data-history-scope-shown`.
+        return historyScopes.options.filter((option) =>
+          matchesNeedle([option.label, option.value, option.workspaceId], needle),
         );
       })();
 

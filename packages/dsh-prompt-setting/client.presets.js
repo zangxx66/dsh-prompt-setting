@@ -61,6 +61,9 @@ window.__ModuleLoader__.load({
     const errorText = shared.errorText;
     const monoTextBox = shared.monoTextBox;
     const scrimStyle = shared.scrimStyle;
+    const dialogCardStyle = shared.dialogCardStyle;
+    const dialogTitleStyle = shared.dialogTitleStyle;
+    const dialogActionsStyle = shared.dialogActionsStyle;
     /**
      * This chunk's own digest, computed from `toString()` against the same
      * markers the host reads out of this file.
@@ -87,23 +90,39 @@ window.__ModuleLoader__.load({
      * the shared factory has no default that could quietly change it.
      */
     const OVERLAY_STYLE = scrimStyle(1000);
-    /** The dialog card inside the scrim; scrolls when a workspace list is long. */
-    const DIALOG_STYLE = {
-      ...cardStyle,
-      display: 'flex',
-      flexDirection: 'column',
-      gap: 10,
+    /**
+     * The dialog card inside the scrim; scrolls when a workspace list is long.
+     *
+     * g-061 batch 3: the shell is the shared `dialogCardStyle`. This call site
+     * states its own measurements, and **two of them stay what they are even
+     * though they differ from the「自定义」dialog the card is laid out like**:
+     * the width is 520 rather than 480, and the scroll is stated on both axes
+     * (`overflow`) rather than on the vertical one alone. Both are the values
+     * this page has always drawn, the owner reviewed the difference and chose to
+     * keep it, and Revision 44 records that decision. The `maxHeight` is the
+     * same 80vh the confirmation uses.
+     */
+    const DIALOG_STYLE = dialogCardStyle({
       width: '100%',
+      gap: 10,
       maxWidth: 520,
       maxHeight: '80vh',
-      overflow: 'auto',
-      padding: '16px 18px',
-      boxShadow: '0 12px 32px rgba(0, 0, 0, 0.35)',
-    };
-    /** The dialog's title line. */
-    const DIALOG_TITLE_STYLE = { fontSize: 15, fontWeight: 600 };
-    /** The dialog's button row. */
-    const DIALOG_ACTIONS_STYLE = { display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' };
+      overflow: 'overflow',
+    });
+    /**
+     * The dialog's title line. g-061 batch 3: the shape is the shared
+     * `dialogTitleStyle`; the **15** is this call site's own and is kept as it
+     * is — the confirmation's title is 14, and converging them is a visible
+     * change this batch may not make.
+     */
+    const DIALOG_TITLE_STYLE = dialogTitleStyle({ fontSize: 15 });
+    /**
+     * The dialog's button row: right-aligned, through the shared
+     * `dialogActionsStyle`. The `flexWrap` this row carries is kept even though
+     * the row holds a single button today — dropping it would be a change to a
+     * declared style rather than to nothing.
+     */
+    const DIALOG_ACTIONS_STYLE = dialogActionsStyle({ align: 'flex-end', wrap: true });
 
     /**
      * The `replace` / `append` pair, as the segmented control wants it.

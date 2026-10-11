@@ -56,6 +56,7 @@ window.__ModuleLoader__.load({
     const ineffectiveCause = shared.ineffectiveCause;
     const layerKey = shared.layerKey;
     const metaStyle = shared.metaStyle;
+    const miniButtonStyle = shared.miniButtonStyle;
     const monoTextBox = shared.monoTextBox;
     const originKey = shared.originKey;
     const originOf = shared.originOf;
@@ -309,16 +310,16 @@ window.__ModuleLoader__.load({
               'data-section-name': section.name,
               'aria-expanded': String(expanded),
               onClick: () => a.toggleExpanded(section.name),
-              style: {
-                font: 'inherit',
-                fontSize: 12,
+              // g-061 batch 3: the shared radius-6 ghost shape. This call site
+              // states its own padding and colour, and — like its two neighbours
+              // in the history chunk — states **no** line height; the factory
+              // writes none, so the row keeps the height it has today.
+              style: miniButtonStyle({
                 padding: '2px 8px',
-                borderRadius: 6,
-                cursor: 'pointer',
                 color: token.labelSecondary,
                 background: 'transparent',
                 border: `1px solid ${token.borderL2}`,
-              },
+              }),
             },
             expanded ? t('collapse') : t('expand'),
           ),

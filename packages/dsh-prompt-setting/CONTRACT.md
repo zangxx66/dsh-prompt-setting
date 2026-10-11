@@ -2004,6 +2004,14 @@ interaction.
   (each has ≥2 consumers, and each difference the call sites really have is a
   required or explicit parameter rather than a default). The Revision 43 entry
   below lists, family by family, which differences were kept;
+- **Revision 44** adds the dialog shell, the ghost-button families, the session
+  row and the search comparison — `dialogCardStyle({…})`,
+  `dialogTitleStyle({…})`, `dialogActionsStyle({…})`, `chipButtonStyle({…})`,
+  `miniButtonStyle({…})`, `sessionRowStyle({…})`, `normalizeNeedle(query)` and
+  `matchesNeedle(values, needle, {cached})` — under the same rule. It **keeps**
+  five reviewed inconsistencies with their neighbours, each as an explicit
+  argument rather than a default: converging them would be a visible change. The
+  Revision 44 entry below lists them, family by family;
 - the measured effect (see `NOTES.md` §123 for the migration record): `client.js`
   **9584 → 8575 lines / 456680 → 411979 bytes**, with `client.overview.js` 577,
   `client.transfer.js` 264 and `client.advanced.js` 502 lines now fetched on
@@ -2575,6 +2583,115 @@ already was, and `test/client.test.mjs` asserts each of them point by point.
   overview boxes, the preset preview and the history preview's two boxes (which
   are asserted to carry **no** `fontFamily` key). `CHUNK_STAMPS` was recomputed
   with `scripts/client-chunks.mjs --write`.
+
+**Revision 44 (g-061 batch 3: the dialog shell, the ghost buttons, the session
+row and the search — internal structure only).** The third batch of the g-061
+inventory card folds the last five duplicated families into
+`__internals.shared`. No route, no query parameter, no stored byte, no marker, no
+ARIA attribute and no copy key changes: every `data-*` value, every `role` and
+`aria-*`, every font size, every padding, every radius and every measurement the
+page draws is the value it already was, and `test/client.test.mjs` asserts each of
+them point by point.
+
+**This revision repairs no drift, on purpose.** Five values in these families
+disagree with their neighbours — the preset dialogs' `maxWidth` **520** against
+the region dialog's 480, their `overflow: 'auto'` against the other dialogs'
+`overflowY: 'auto'`, the region dialog's **missing** `maxHeight` and `overflow`,
+the history pager's `padding: '2px 10px'` against its family's `'2px 8px'`, and
+the preset titles' **15** against the confirmation's 14. All five were reviewed,
+and the decision is to keep every one of them: converging them would change what
+the page looks like, and this batch may not. Each is now an **explicit argument
+at its own call site**, which is also what keeps a later「cleanup」from happening
+by accident — the tests assert the values rather than the family's agreement.
+
+- **one dialog card, four call sites.** `renderConfirm` and `renderRegionDialog`
+  (the entry), the preset dialogs' `DIALOG_STYLE` (`client.presets.js`) and
+  `modalShell` (`client.history.js`) each spelled out the same box under
+  `cardStyle`. It is `dialogCardStyle({width, maxWidth, maxHeight, height,
+  overflow, gap, position})` now, and every one of those is stated by the caller:
+  the width (`'100%'` on three, `min(1040px, 92vw)` on the history modal), the
+  `maxWidth` (480 / 480 / **520** / `'92vw'`), the height and maxHeight (the
+  history modal states both as `min(82vh, 900px)`; the confirmation and the preset
+  dialogs state `maxHeight: '80vh'`; the「自定义」dialog states **neither**), the
+  `gap` (10 on three, and **none** on the confirmation — its grouping is the
+  `marginTop` spacing §13.5 describes), the `position` (`'relative'` on the
+  history modal alone, because its close button is anchored to that corner) and
+  the `overflow`, which is the **property name** rather than a value, so
+  `'overflowY'` and `'overflow'` stay two different declarations. The padding
+  (`'16px 18px'`), the shadow (`0 12px 32px`) and the card's own stroke, surface
+  and radius are the shell, because all four state them identically. The
+  confirmation's `borderColor: stateWarn` stays its own and is declared after the
+  factory, so that the warning is the stroke that wins;
+- **one title line and one actions row.** `confirmTitleStyle` /
+  `confirmActionsStyle` and the preset dialogs' `DIALOG_TITLE_STYLE` /
+  `DIALOG_ACTIONS_STYLE` are `dialogTitleStyle({fontSize, tone, lineHeight})` and
+  `dialogActionsStyle({align, divider, wrap})`. The confirmation's title is 14
+  under the warning colour with a stated `lineHeight: 1.4`; the preset dialogs'
+  is **15**, inherited, and states no line height. The confirmation's actions row
+  carries the top divider §13.5 names (a 16px gap, a 12px inset, the L1 rule); the
+  preset row is right-aligned and keeps its `flexWrap`, which its single button
+  never needs but which is a declared value. **The「自定义」dialog keeps taking
+  the confirmation's two constants**, so the two remain one binding and cannot
+  drift apart; the history modal's head — a flex row holding a title beside an
+  absolutely positioned close button — is a different shape and takes neither
+  factory;
+- **three ghost-button families, and the row family with them.**
+  `chipButtonStyle({cursor, color, background, border})` is the pill (a 999
+  radius, `'3px 10px'`): the fallback tab, the two pinned entries and the
+  「使用这串 id」fallback. The unselected text colour really differs —
+  `labelSecondary` on the tabs, `labelPrimary` on the other two — so it is an
+  argument, and so are the selected fill and the stroke.
+  `miniButtonStyle({padding, color, background, border, lineHeight, textAlign})`
+  is the radius-6 tool-strip button:「显示更多」, the history row's side buttons,
+  the pager, the overview's expand toggle and one option row of the history scope
+  list. **Three of those state no `lineHeight`** and the factory writes none for
+  them, so those rows keep the height they have; the pager's `'2px 10px'` is that
+  family's odd value and is kept; the 18px belongs to the two call sites that
+  already stated it. **Under the `primitives` renderer the page draws its tabs
+  with the host's own `SegmentedTabs`**, which paints its own DOM: only the
+  fallback branch goes through this factory, so the two renderers' tabs do not
+  look alike — they did not before this revision either, and unifying the
+  fallback cannot close that gap;
+- **one session row, with its ARIA left exactly where it was.**
+  `sessionRowStyle({padding, hovered, focused, selected, active})` is the paint
+  the windowed tree row and the flat fallback row share: the 12px/18px type over
+  a left-aligned flex line, the radius-6 hover and focus treatment, the primary
+  text colour and the three-state fill (the business fill when the row is selected
+  or keyboard-highlighted, the hover fill on hover, transparent otherwise).
+  `padding` is the caller's, because the tree row carries its 20px indent inside
+  it (`'3px 8px 3px 20px'`) and the flat row does not (`'4px 8px'`). **Nothing
+  else about those nodes moved**: the tree row is still a level-2 `treeitem`
+  marked `data-role="session-row"` carrying `data-scope-parent` and
+  `data-session-running`, the flat row is still an `option` inside a `listbox`
+  marked `data-role="session-option"`, a selected row still takes its left bar and
+  its stroke, and the four ARIA cases in `test/client.test.mjs` are unchanged. The
+  one behaviour that did move is internal: **`data-session-active` is now computed
+  from the highlighted row's id on both sides** rather than from its index on the
+  flat side, and the rendered attribute is asserted to be value-for-value what the
+  index form produced (including `-1` and an index past the end);
+- **one search comparison, two search semantics.** `normalizeNeedle(query)` is
+  the trim-and-lowercase both boxes already did, at three call sites (the flat
+  filter, the tree derivation and the history scope list), and
+  `matchesNeedle(values, needle, {cached})` is the comparison they share. **The
+  two sides keep asking different questions, and the factory does not converge
+  them**: the session list is lowercased once, into `row.haystack` (one joined
+  string covering id, title and directory), because it can hold thousands of rows,
+  while the history scope list is compared field by field with no cache. The
+  shared function therefore **never joins the fields itself** — joining would let
+  a match span a field boundary, which is a **new** hit on the history side and
+  would move the `data-history-scope-shown` count and the assertions that read it.
+  The empty-query behaviours are unchanged too: the flat filter still returns a
+  copy of its list, and the history scope still returns its own array;
+- **the guards moved with it.** `test/client.test.mjs` asserts the four
+  factories field for field (including the negatives: an argument nobody states
+  is a key nobody writes), each name's call-site count, and each call site's
+  rendered measurements — the confirmation, the「自定义」dialog, the preset
+  editor, the history comparison modal, the fallback tab, both pinned entries,
+  the「显示更多」row, the overview's expand toggle and a history side button —
+  plus both trees' `role` / `aria-*` / `data-*` markers and the search semantics
+  on both sides (a cross-field needle the cached session haystack finds and the
+  field-by-field scope list does not). `CHUNK_STAMPS` was recomputed with
+  `scripts/client-chunks.mjs --write`.
 
 ### 13.1 「我的 Prompt」 — the one write surface
 

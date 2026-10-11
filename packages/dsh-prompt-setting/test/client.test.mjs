@@ -2615,6 +2615,613 @@ test('client: g-061 — one pre-wrap text box, parameterised point by point (cri
 });
 // #endregion
 
+// #region g-061 batch 3: the dialog shell, the ghost button families, the session row and the search
+
+test('client: g-061 — one dialog card, and every call site’s own measurements survive (criteria 3, 4)', async () => {
+  const shared = loadClient('throw').module.__internals.shared;
+  const token = shared.token;
+  // The shell all four call sites share: the card's own stroke, surface and
+  // radius, plus the dialog padding and shadow they all state identically.
+  const shell = {
+    border: `1px solid ${token.surfaceStroke}`,
+    background: token.surface,
+    borderRadius: 10,
+    display: 'flex',
+    flexDirection: 'column',
+    padding: '16px 18px',
+    boxShadow: '0 12px 32px rgba(0, 0, 0, 0.35)',
+  };
+  // The factory, field for field — and the negative that keeps it honest: a
+  // measurement nobody states is a measurement nobody writes, so no default can
+  // absorb a call site's value.
+  assert.deepEqual(
+    { ...shared.dialogCardStyle({ width: '100%', gap: 10, maxWidth: 480 }) },
+    { ...shell, width: '100%', gap: 10, maxWidth: 480 },
+  );
+  const bare = shared.dialogCardStyle({ width: '100%' });
+  for (const key of ['gap', 'maxWidth', 'maxHeight', 'height', 'overflow', 'overflowY', 'position']) {
+    assert.equal(key in bare, false, `${key} is written only because a caller states it`);
+  }
+  assert.deepEqual(
+    {
+      ...shared.dialogCardStyle({
+        width: 'min(1040px, 92vw)',
+        maxWidth: '92vw',
+        height: 'h',
+        maxHeight: 'm',
+        overflow: 'overflowY',
+        position: 'relative',
+      }),
+    },
+    {
+      ...shell,
+      width: 'min(1040px, 92vw)',
+      maxWidth: '92vw',
+      height: 'h',
+      maxHeight: 'm',
+      overflowY: 'auto',
+      position: 'relative',
+    },
+    'which axis scrolls is the call site’s word, so overflowY and overflow stay two declarations',
+  );
+
+  // Four call sites, one shell: two in the entry, one in each of the two chunks
+  // that draw dialogs of their own.
+  const entry = readFileSync(join(here, '..', 'client.js'), 'utf8');
+  assert.equal(occurrencesOf(entry, 'dialogCardStyle({'), 2, 'the confirmation and the「自定义」dialog');
+  const presets = chunkCode(readFileSync(join(here, '..', 'client.presets.js'), 'utf8'));
+  assert.equal(occurrencesOf(presets, 'dialogCardStyle({'), 1);
+  const history = chunkCode(readFileSync(join(here, '..', 'client.history.js'), 'utf8'));
+  assert.equal(occurrencesOf(history, 'dialogCardStyle({'), 1);
+  // Two other card-shaped blocks are **not** this shell and stay as they are:
+  // they are content cards with their own gaps and no dialog padding or shadow.
+  assert.equal(occurrencesOf(history, '...cardStyle'), 1, 'the comparison card is a content card, not a dialog');
+  assert.equal(occurrencesOf(presets, '...cardStyle'), 2, 'so are the preset card and the library-error box');
+
+  // …and each one really draws what it states. The confirmation first: 480,
+  // 80vh, one axis, and **no** gap at all — its three-level grouping is the
+  // `marginTop` spacing §17 describes — with the warning stroke declared after
+  // the shell so that the warning is the stroke that wins.
+  const confirm = makePage({
+    responses: defaultResponses({
+      [PATHS.overrides]: {
+        payload: layeredOverrides([{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text' }]),
+      },
+    }),
+  });
+  clickButton(await confirm.flush(), { 'data-action': 'mine-reset' });
+  const confirmCard = oneBy(await confirm.flush(), 'data-region', 'confirm');
+  assert.deepEqual(
+    { ...confirmCard.props.style },
+    { ...shell, width: '100%', maxWidth: 480, maxHeight: '80vh', overflowY: 'auto', borderColor: token.stateWarn },
+    'the confirmation’s own 480 / 80vh / one-axis / no-gap, plus its warning stroke',
+  );
+  assert.equal('gap' in confirmCard.props.style, false, 'the confirmation has never had a gap, and gains none');
+
+  // The「自定义」dialog: 480 and a gap, and **neither** a maxHeight nor an
+  // overflow. It is the one call site that states neither, kept as it is.
+  const region = makePage({ responses: defaultResponses() });
+  let regionTree = await openTab(region, 'advanced');
+  chooseRegion(regionTree, 'custom');
+  regionTree = region.draw();
+  const regionCard = oneBy(regionTree, 'data-region', 'region-dialog');
+  assert.deepEqual({ ...regionCard.props.style }, { ...shell, width: '100%', gap: 10, maxWidth: 480 });
+  for (const key of ['maxHeight', 'overflow', 'overflowY', 'height', 'position']) {
+    assert.equal(key in regionCard.props.style, false, `the「自定义」dialog states no ${key}`);
+  }
+
+  // The preset editor: 520 rather than 480, and a two-axis scroll rather than
+  // `overflowY`. Both are the page's own values and both are kept.
+  const presetsPage = makePage({ responses: defaultResponses() });
+  let presetsTree = await openTab(presetsPage, 'presets');
+  clickButton(presetsTree, { 'data-action': 'preset-new' });
+  presetsTree = await presetsPage.flush();
+  const presetCard = oneBy(presetsTree, 'data-region', 'preset-editor-dialog');
+  assert.deepEqual(
+    { ...presetCard.props.style },
+    { ...shell, width: '100%', gap: 10, maxWidth: 520, maxHeight: '80vh', overflow: 'auto' },
+    'the preset dialog keeps its 520 and its two-axis scroll',
+  );
+  assert.equal('overflowY' in presetCard.props.style, false, 'and states no overflowY');
+
+  // The history comparison modal: its own proportional width, both a height and
+  // a maxHeight, the redundant 92vw maxWidth (kept, because removing a declared
+  // value is a change even where it has no effect), and `position: relative`
+  // because its close button is anchored to that corner.
+  const historyPage = makePage({ responses: defaultResponses() });
+  let historyTree = await openHistory(historyPage);
+  clickButton(historyRowOf(historyTree, '2'), { 'data-action': 'history-preview', 'data-history-id': '2' });
+  historyTree = await historyPage.flush();
+  const modalCard = oneBy(historyTree, 'data-region', 'history-preview-modal');
+  assert.deepEqual(
+    { ...modalCard.props.style },
+    {
+      ...shell,
+      width: 'min(1040px, 92vw)',
+      gap: 10,
+      maxWidth: '92vw',
+      height: 'min(82vh, 900px)',
+      maxHeight: 'min(82vh, 900px)',
+      overflowY: 'auto',
+      position: 'relative',
+    },
+    'the history modal keeps its redundant maxWidth and its relative position',
+  );
+});
+
+test('client: g-061 — one dialog title line and one actions row, at each call site’s values (criteria 3, 4)', async () => {
+  const shared = loadClient('throw').module.__internals.shared;
+  const token = shared.token;
+  assert.deepEqual(
+    { ...shared.dialogTitleStyle({ fontSize: 14, tone: token.stateWarn, lineHeight: 1.4 }) },
+    { fontSize: 14, fontWeight: 600, lineHeight: 1.4, color: token.stateWarn },
+  );
+  const plainTitle = shared.dialogTitleStyle({ fontSize: 15 });
+  assert.deepEqual({ ...plainTitle }, { fontSize: 15, fontWeight: 600 }, 'no tone and no line height unless stated');
+  assert.equal('color' in plainTitle, false);
+  assert.equal('lineHeight' in plainTitle, false);
+
+  assert.deepEqual(
+    { ...shared.dialogActionsStyle({ divider: true }) },
+    { display: 'flex', gap: 8, marginTop: 16, paddingTop: 12, borderTop: `1px solid ${token.borderL1}` },
+  );
+  assert.deepEqual(
+    { ...shared.dialogActionsStyle({ align: 'flex-end', wrap: true }) },
+    { display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' },
+    'the preset row is right-aligned and wraps, and carries no divider',
+  );
+
+  const entry = readFileSync(join(here, '..', 'client.js'), 'utf8');
+  assert.equal(occurrencesOf(entry, 'dialogTitleStyle({'), 1, 'the confirmation’s title, reused by the region dialog');
+  assert.equal(occurrencesOf(entry, 'dialogActionsStyle({'), 1, 'and its actions row, likewise');
+  const presets = chunkCode(readFileSync(join(here, '..', 'client.presets.js'), 'utf8'));
+  assert.equal(occurrencesOf(presets, 'dialogTitleStyle({'), 1);
+  assert.equal(occurrencesOf(presets, 'dialogActionsStyle({'), 1);
+  // The history modal's head is a different shape — a flex row holding a title
+  // beside an absolutely positioned close button — and stays one: it takes
+  // neither factory.
+  const history = chunkCode(readFileSync(join(here, '..', 'client.history.js'), 'utf8'));
+  assert.equal(occurrencesOf(history, 'dialogTitleStyle({'), 0, 'the history head is not this shape');
+  assert.equal(occurrencesOf(history, 'dialogActionsStyle({'), 0, 'and it has no actions row');
+
+  // Rendered: the confirmation and the「自定义」dialog are the **same two
+  // objects**, which is what「完全同级」means here; the preset dialogs are their
+  // own, at their own 15.
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.overrides]: {
+        payload: layeredOverrides([{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text' }]),
+      },
+    }),
+  });
+  clickButton(await page.flush(), { 'data-action': 'mine-reset' });
+  const tree = await page.flush();
+  const confirmTitle = elementChildren(oneBy(tree, 'data-region', 'confirm'))[0];
+  assert.deepEqual(
+    { ...confirmTitle.props.style },
+    { fontSize: 14, fontWeight: 600, lineHeight: 1.4, color: token.stateWarn },
+    'the confirmation’s title is 14, warns, and states its own line height',
+  );
+  const confirmActions = oneBy(tree, 'data-role', 'confirm-actions');
+  assert.deepEqual(
+    { ...confirmActions.props.style },
+    { display: 'flex', gap: 8, marginTop: 16, paddingTop: 12, borderTop: `1px solid ${token.borderL1}` },
+    'and its actions row carries the top divider',
+  );
+
+  const region = makePage({ responses: defaultResponses() });
+  let regionTree = await openTab(region, 'advanced');
+  chooseRegion(regionTree, 'custom');
+  regionTree = region.draw();
+  const regionTitle = elementChildren(oneBy(regionTree, 'data-region', 'region-dialog'))[0];
+  assert.deepEqual(
+    { ...regionTitle.props.style },
+    { ...confirmTitle.props.style },
+    'the「自定义」title draws the confirmation’s own values',
+  );
+  const regionActions = oneBy(regionTree, 'data-role', 'region-actions');
+  assert.deepEqual(
+    { ...regionActions.props.style },
+    { ...confirmActions.props.style },
+    'and so does its actions row — the two dialogs stay exactly同级',
+  );
+  // Two bindings, not two values that happen to agree: both「自定义」nodes take
+  // the confirmation's own constants, so the two cannot drift apart.
+  assert.equal(occurrencesOf(entry, 'style: confirmTitleStyle'), 2, 'one title object for both dialogs');
+  assert.equal(occurrencesOf(entry, 'style: confirmActionsStyle'), 2, 'and one actions row');
+
+  const presetsPage = makePage({ responses: defaultResponses() });
+  let presetsTree = await openTab(presetsPage, 'presets');
+  clickButton(presetsTree, { 'data-action': 'preset-new' });
+  presetsTree = await presetsPage.flush();
+  const presetCard = oneBy(presetsTree, 'data-region', 'preset-editor-dialog');
+  assert.deepEqual(
+    { ...elementChildren(presetCard)[0].props.style },
+    { fontSize: 15, fontWeight: 600 },
+    'the preset dialog keeps the 15 beside the confirmation’s 14',
+  );
+  assert.deepEqual(
+    { ...oneBy(presetsTree, 'data-role', 'preset-dialog-actions').props.style },
+    { display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' },
+    'and keeps its right alignment and its (currently idle) wrap',
+  );
+});
+
+test('client: g-061 — three ghost-button families, and not one drift repaired (criteria 3, 4)', async () => {
+  const shared = loadClient('throw').module.__internals.shared;
+  const token = shared.token;
+  // chip: the pill. 999 and 3px/10px are the shape; the colours are the
+  // caller's, and the three call sites really differ in their unselected text.
+  assert.deepEqual(
+    { ...shared.chipButtonStyle({ cursor: 'pointer', color: 'c', background: 'b', border: 's' }) },
+    {
+      font: 'inherit',
+      fontSize: 12,
+      lineHeight: '18px',
+      padding: '3px 10px',
+      borderRadius: 999,
+      cursor: 'pointer',
+      color: 'c',
+      background: 'b',
+      border: '1px solid s',
+    },
+  );
+  // mini: radius 6, and **no lineHeight key** unless the caller states one —
+  // three of the five call sites state none, and adding the 18px would change
+  // how tall those rows are.
+  const mini = shared.miniButtonStyle({ padding: '2px 8px', color: 'c', background: 'transparent', border: 'none' });
+  assert.deepEqual(
+    { ...mini },
+    {
+      font: 'inherit',
+      fontSize: 12,
+      padding: '2px 8px',
+      borderRadius: 6,
+      cursor: 'pointer',
+      color: 'c',
+      background: 'transparent',
+      border: 'none',
+    },
+  );
+  assert.equal('lineHeight' in mini, false, 'no line height is written unless the caller states one');
+  assert.equal(
+    shared.miniButtonStyle({ padding: 'p', lineHeight: '18px', color: 'c', background: 'b', border: 'x' }).lineHeight,
+    '18px',
+    'and it is written verbatim when it is',
+  );
+
+  const entry = readFileSync(join(here, '..', 'client.js'), 'utf8');
+  assert.equal(occurrencesOf(entry, 'chipButtonStyle({'), 3, 'the fallback tab, the pinned entries and the search fallback');
+  assert.equal(occurrencesOf(entry, 'miniButtonStyle({'), 1, '「显示更多」 — the row family is the session row');
+  const history = chunkCode(readFileSync(join(here, '..', 'client.history.js'), 'utf8'));
+  assert.equal(occurrencesOf(history, 'miniButtonStyle({'), 3, 'the two side buttons, the pager and the scope option row');
+  const overview = chunkCode(readFileSync(join(here, '..', 'client.overview.js'), 'utf8'));
+  assert.equal(occurrencesOf(overview, 'miniButtonStyle({'), 1, 'the section expand toggle');
+  // The pager's 2px/10px is this family's one odd value, and it is kept, stated.
+  assert.match(history, /padding: '2px 10px'/, 'the pager keeps the padding its neighbours do not use');
+  for (const name of CHUNK_FILES) {
+    const code = chunkCode(readFileSync(join(here, '..', name), 'utf8'));
+    assert.equal(code.includes('borderRadius: 999'), false, `${name}: the pill radius is not spelled out again`);
+  }
+
+  // Rendered, chip by chip. The fallback tab is the pill; under the `primitives`
+  // renderer the host's own SegmentedTabs paints its own DOM and is out of this
+  // factory's reach — the two renderers do not look alike, and they did not
+  // before this batch either.
+  const page = makeOpenPage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
+  const tree = await page.flush();
+  const chip = {
+    font: 'inherit',
+    fontSize: 12,
+    lineHeight: '18px',
+    padding: '3px 10px',
+    borderRadius: 999,
+    cursor: 'pointer',
+  };
+  const tabButton = (value) => findOne(tree, (node) => node.type === 'button' && node.props['data-tab-value'] === value);
+  assert.deepEqual(
+    { ...tabButton('mine').props.style },
+    { ...chip, color: token.buttonLabel, background: token.buttonFill, border: '1px solid transparent' },
+    'the selected fallback tab keeps the button fill under a transparent stroke',
+  );
+  assert.deepEqual(
+    { ...tabButton('presets').props.style },
+    { ...chip, color: token.labelSecondary, background: 'transparent', border: `1px solid ${token.borderL2}` },
+    'and the unselected one keeps the **secondary** text the other two chips do not use',
+  );
+  const pill = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 4,
+    opacity: 1,
+    outline: 'none',
+    outlineOffset: undefined,
+  };
+  assert.deepEqual(
+    { ...oneBy(tree, 'data-pinned', 'global').props.style },
+    { ...chip, ...pill, color: token.labelPrimary, background: 'transparent', border: `1px solid ${token.borderL2}` },
+    'the pinned entries use the primary text colour, not the tabs’ secondary one',
+  );
+  assert.deepEqual(
+    { ...oneBy(tree, 'data-pinned', 'current').props.style },
+    { ...chip, ...pill, color: token.buttonLabel, background: token.buttonFill, border: '1px solid transparent' },
+    'and the selected pinned entry is the same pill in its selected state',
+  );
+  typeInto(tree, 'session-search', 'zzz-nothing-matches');
+  const searched = await page.flush();
+  assert.deepEqual(
+    {
+      ...findOne(searched, (node) => node.type === 'button' && node.props['data-action'] === 'session-use-input').props
+        .style,
+    },
+    { ...chip, color: token.labelPrimary, background: 'transparent', border: `1px solid ${token.borderL2}` },
+    'the「使用这串 id」 fallback is the third chip',
+  );
+
+  // mini, rendered: 「显示更多」 with its 18px and its 20px indent…
+  const many = manyWorkspaceSessions(1, 20);
+  const morePage = makeOpenPage({
+    useSessions: sessionsHook(many.sessions),
+    useWorkspaces: workspacesHook(many.workspaces),
+    responses: defaultResponses(),
+  });
+  const moreTree = await morePage.flush();
+  const more = findOne(moreTree, (node) => node.props && node.props['data-action'] === 'scope-more');
+  assert.deepEqual(
+    { ...more.props.style },
+    {
+      font: 'inherit',
+      fontSize: 12,
+      lineHeight: '18px',
+      textAlign: 'left',
+      padding: '2px 8px 2px 20px',
+      borderRadius: 6,
+      cursor: 'pointer',
+      color: token.stateBusiness,
+      background: 'transparent',
+      border: 'none',
+      userSelect: 'none',
+      outline: 'none',
+      outlineOffset: undefined,
+    },
+    '「显示更多」 carries the row indent and a line height',
+  );
+
+  // …the overview's expand toggle, which states **no** line height…
+  const overviewPage = makePage({ responses: defaultResponses() });
+  const overviewTree = await openOverview(overviewPage);
+  const expand = collect(overviewTree, (node) => node.props && node.props['data-action'] === 'expand')[0];
+  assert.deepEqual(
+    { ...expand.props.style },
+    {
+      font: 'inherit',
+      fontSize: 12,
+      padding: '2px 8px',
+      borderRadius: 6,
+      cursor: 'pointer',
+      color: token.labelSecondary,
+      background: 'transparent',
+      border: `1px solid ${token.borderL2}`,
+    },
+  );
+  assert.equal('lineHeight' in expand.props.style, false, 'the expand toggle states none, and gains none');
+
+  // …and the history row's side buttons, which state none either.
+  const historyPage = makePage({ responses: defaultResponses() });
+  const historyTree = await openHistory(historyPage);
+  const side = findOne(
+    historyRowOf(historyTree, '2'),
+    (node) => node.props && node.props['data-action'] === 'history-preview',
+  );
+  assert.deepEqual(
+    { ...side.props.style },
+    {
+      font: 'inherit',
+      fontSize: 12,
+      padding: '2px 8px',
+      borderRadius: 6,
+      cursor: 'pointer',
+      color: token.labelSecondary,
+      background: 'transparent',
+      border: `1px solid ${token.borderL2}`,
+    },
+  );
+  assert.equal('lineHeight' in side.props.style, false, 'and neither do these');
+});
+
+test('client: g-061 — one session-row paint, with both trees’ ARIA and markers untouched (criteria 3, 4, 5)', async () => {
+  const shared = loadClient('throw').module.__internals.shared;
+  const token = shared.token;
+  // The row's own paint, field for field. `boxShadow` and `outlineOffset` are
+  // keys the factory always writes — `undefined` where the state does not apply
+  // — so they are asserted as keys, not left out of the expectation.
+  const paint = (over) => ({
+    cursor: 'pointer',
+    userSelect: 'none',
+    background: 'transparent',
+    outline: 'none',
+    outlineOffset: undefined,
+    borderRadius: 6,
+    font: 'inherit',
+    fontSize: 12,
+    lineHeight: '18px',
+    textAlign: 'left',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    color: token.labelPrimary,
+    boxShadow: undefined,
+    border: '1px solid transparent',
+    ...over,
+  });
+  assert.deepEqual(
+    { ...shared.sessionRowStyle({ padding: '4px 8px', hovered: false, focused: false, selected: false, active: false }) },
+    { ...paint({ padding: '4px 8px' }) },
+    'a row at rest is transparent, with no bar and no stroke',
+  );
+  assert.deepEqual(
+    { ...shared.sessionRowStyle({ padding: '4px 8px', hovered: true, focused: true, selected: false, active: false }) },
+    { ...paint({ padding: '4px 8px', background: token.hoverFill, outline: token.focusRing, outlineOffset: '-2px' }) },
+    'hover and focus are the two states the shared row style mirrors',
+  );
+  assert.deepEqual(
+    {
+      ...shared.sessionRowStyle({ padding: '3px 8px 3px 20px', hovered: false, focused: false, selected: true, active: false }),
+    },
+    {
+      ...paint({
+        padding: '3px 8px 3px 20px',
+        background: token.diffAddFill,
+        boxShadow: `inset 3px 0 0 0 ${token.stateBusiness}`,
+        border: `1px solid ${token.borderL2}`,
+      }),
+    },
+    'the selected row takes the bar and the stroke',
+  );
+  assert.deepEqual(
+    { ...shared.sessionRowStyle({ padding: '4px 8px', hovered: false, focused: false, selected: false, active: true }) },
+    { ...paint({ padding: '4px 8px', background: token.diffAddFill }) },
+    'the keyboard-highlighted row takes the fill but no bar',
+  );
+
+  const entry = readFileSync(join(here, '..', 'client.js'), 'utf8');
+  assert.equal(occurrencesOf(entry, 'sessionRowStyle({'), 2, 'the tree row and the flat row, and nothing else');
+
+  // The tree row: a level-2 `treeitem` marked `session-row`, keeping the
+  // markers only it carries, and the padding with the 20px indent inside it.
+  const treePage = makeOpenPage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  const tree = await treePage.flush();
+  const treeRow = sessionOptions(tree)[0];
+  assert.equal(treeRow.props.role, 'treeitem');
+  assert.equal(treeRow.props['aria-level'], 2);
+  assert.equal(treeRow.props['data-scope-parent'], 'w-alpha');
+  assert.equal(typeof treeRow.props['aria-selected'], 'boolean');
+  assert.equal(treeRow.props.style.padding, '3px 8px 3px 20px', 'the tree row keeps its indent inside the padding');
+  assert.equal(treeRow.props.style.borderRadius, 6);
+  assert.equal(treeRow.props.style.border, '1px solid transparent');
+  const runningMarker = collect(tree, (node) => node.props && node.props['data-role'] === 'session-running');
+  assert.equal(runningMarker.length, 1, 'the tree’s own running marker is where it was');
+
+  // The flat fallback: an `option` in a `listbox`, marked `session-option`, with
+  // none of the tree's markers and its own 4px vertical padding.
+  const flatPage = makeOpenPage({ useSessions: sessionsHook(manySessions(200)), responses: defaultResponses() });
+  const flatTree = await flatPage.flush();
+  const flatRow = elementChildren(oneBy(flatTree, 'data-region', 'session-list'))[0];
+  assert.equal(flatRow.props.role, 'option');
+  assert.equal(flatRow.props['data-role'], 'session-option');
+  assert.equal(flatRow.props['aria-level'], undefined, 'a flat row claims no level');
+  assert.equal(flatRow.props['data-scope-parent'], undefined, 'and carries no tree marker');
+  assert.equal(flatRow.props['data-session-running'], undefined);
+  assert.equal(flatRow.props.style.padding, '4px 8px', 'the flat row keeps the padding the tree row does not use');
+
+  // 「Which row is the keyboard highlight」moved from an index comparison to an
+  // id one. The two forms are asserted equivalent over a list — at `-1`, at 0,
+  // at the last row and past the end — before the rendered attribute is checked.
+  const rows = [{ id: 'r1' }, { id: 'r2' }, { id: 'r3' }];
+  const idOf = (value) => {
+    const row = value >= 0 ? rows[value] : undefined;
+    return row ? row.id : '';
+  };
+  for (const value of [-1, 0, 1, 2, 3, 99]) {
+    assert.deepEqual(
+      rows.map((row) => String(row.id === idOf(value) && idOf(value) !== '')),
+      rows.map((row, index) => String(index === value)),
+      `the id form and the index form agree at sessionActive=${value}`,
+    );
+  }
+  const keyboardPage = makeOpenPage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
+  let keyboardTree = await keyboardPage.flush();
+  const search = () => oneBy(keyboardTree, 'data-role', 'session-search');
+  search().props.onKeyDown({ key: 'ArrowDown', preventDefault() {} });
+  keyboardTree = await keyboardPage.flush();
+  const highlighted = collect(keyboardTree, (node) => node.props && node.props['data-session-active'] === 'true');
+  assert.equal(highlighted.length, 1, 'exactly one row is highlighted');
+  assert.equal(highlighted[0].props['data-session-id'], 's1', 'and it is the first rendered row, as before');
+});
+
+test('client: g-061 — one search comparison, two search semantics kept apart (criteria 3, 4)', async () => {
+  const shared = loadClient('throw').module.__internals.shared;
+  assert.equal(shared.normalizeNeedle('  Alpha  '), 'alpha');
+  assert.equal(shared.normalizeNeedle(''), '');
+  assert.equal(shared.normalizeNeedle(undefined), '');
+  assert.equal(shared.normalizeNeedle(7), '');
+
+  // Field by field: any field carrying the needle is a match…
+  assert.equal(shared.matchesNeedle(['Alpha One', 's1', '/work/alpha'], 'alpha'), true);
+  assert.equal(shared.matchesNeedle(['Alpha One', 's1', '/work/alpha'], 'one'), true);
+  assert.equal(shared.matchesNeedle(['Alpha One', 's1', '/work/alpha'], '/work'), true);
+  // …and no single field carrying half of it is **not** one. The shared
+  // comparison never joins the fields: a joined haystack would let a match span
+  // the boundary, and a new hit is a new `data-history-scope-shown` count.
+  assert.equal(shared.matchesNeedle(['Alpha One', 's1', '/work/alpha'], 'one s1'), false);
+  assert.equal(shared.matchesNeedle(['Alpha One', 's1', '/work/alpha'], 's1 /work'), false);
+  // The cached path is the session list's own: one pre-lowercased haystack.
+  assert.equal(shared.matchesNeedle([], 'one alpha', { cached: 's1 alpha one alpha one /work/alpha' }), true);
+  assert.equal(shared.matchesNeedle([], 'one alpha', { cached: 'alpha one' }), false);
+  assert.equal(shared.matchesNeedle(['Alpha'], 'alpha', { cached: 7 }), true, 'a non-string cache is not a cache');
+  assert.equal(shared.matchesNeedle([undefined, null, 3], 'x'), false, 'a non-string field simply does not match');
+  assert.equal(shared.matchesNeedle([], ''), true, 'the empty needle matches everything');
+
+  const entry = readFileSync(join(here, '..', 'client.js'), 'utf8');
+  assert.equal(occurrencesOf(entry, '= normalizeNeedle('), 3, 'the flat filter, the tree derivation and the history scope');
+  assert.equal(occurrencesOf(entry, 'matchesNeedle(['), 2, 'the session rows and the history scope options');
+  assert.equal(occurrencesOf(entry, "join(' ').toLowerCase()"), 1, 'the session list builds its cache where it always did');
+  assert.match(entry, /if \(needle\.length === 0\) return list\.slice\(\);/, 'and the flat filter still returns a copy');
+  assert.match(
+    entry,
+    /if \(needle\.length === 0\) return historyScopes\.options;/,
+    'while the history scope still returns its own array',
+  );
+
+  // The session side keeps the cache's answers: a query that only the joined
+  // haystack carries — the tail of the title against the head of the next field
+  // — still finds the row.
+  const page = makeOpenPage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
+  let tree = await page.flush();
+  typeInto(tree, 'session-search', 'one alpha');
+  tree = await page.flush();
+  assert.deepEqual(
+    sessionOptions(tree).map((row) => row.props['data-session-id']),
+    ['s1'],
+    'the session side still searches its pre-joined haystack, so a match may span two fields',
+  );
+  typeInto(tree, 'session-search', 'zzz');
+  tree = await page.flush();
+  assert.deepEqual(sessionOptions(tree), [], 'and a query no field carries finds nothing');
+
+  // The history scope list has no cache and compares field by field: the same
+  // cross-field needle finds nothing there, so the published count stays where
+  // it was.
+  const historyPage = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  let historyTree = await openHistory(historyPage);
+  clickButton(historyTree, { 'data-action': 'history-scope-toggle' });
+  historyTree = await historyPage.flush();
+  const shown = () => oneBy(historyTree, 'data-history-scope-list', 'scroll').props['data-history-scope-shown'];
+  assert.equal(shown(), '2', 'the whole candidate list to start with');
+  typeInto(historyTree, 'history-scope-search', 'repo a1');
+  historyTree = await historyPage.flush();
+  assert.equal(shown(), '0', 'no cross-field hit on this side, and therefore no new count');
+  typeInto(historyTree, 'history-scope-search', 'a1');
+  historyTree = await historyPage.flush();
+  assert.equal(shown(), '1', 'a value hit still works');
+  typeInto(historyTree, 'history-scope-search', 'alpha');
+  historyTree = await historyPage.flush();
+  assert.equal(shown(), '1', 'and so does a label hit');
+  typeInto(historyTree, 'history-scope-search', '');
+  historyTree = await historyPage.flush();
+  assert.equal(shown(), '2', 'and the empty query is still the whole list');
+});
+
+// #endregion
+
 test('client: without React.lazy every chunked tab renders its card, and nothing is fetched (g-046)', async () => {
   // The same probe g-045 asserts for 「版本历史」, now for every boundary: an
   // engine whose React predates `lazy`/`Suspense` must lose the tab's content,

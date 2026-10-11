@@ -66,6 +66,8 @@ window.__ModuleLoader__.load({
     const VIEWS = shared.VIEWS;
     const monoTextBox = shared.monoTextBox;
     const scrimStyle = shared.scrimStyle;
+    const dialogCardStyle = shared.dialogCardStyle;
+    const miniButtonStyle = shared.miniButtonStyle;
     /**
      * This chunk's own digest, computed from `toString()` against the same
      * markers the host reads out of this file — so the page can verify a chunk
@@ -100,16 +102,15 @@ window.__ModuleLoader__.load({
     function historyRow(t, m, a, record) {
       const id = String(record.id);
       const selected = m.diffSel.from === id ? 'from' : m.diffSel.to === id ? 'to' : '';
-      const sideStyle = {
-        font: 'inherit',
-        fontSize: 12,
+      // g-061 batch 3: the two side buttons of a version row. The shared
+      // radius-6 ghost shape; the `'2px 8px'` padding and the secondary text
+      // colour are this call site's own.
+      const sideStyle = miniButtonStyle({
         padding: '2px 8px',
-        borderRadius: 6,
-        cursor: 'pointer',
-        background: 'transparent',
         color: token.labelSecondary,
+        background: 'transparent',
         border: `1px solid ${token.borderL2}`,
-      };
+      });
       const pickHint = t('histRowPickHint');
       // A button inside a clickable row must not also re-pick the row: in a real
       // browser the click bubbles up, so the buttons swallow it. The test
@@ -577,16 +578,17 @@ window.__ModuleLoader__.load({
       const layer = m.historyLayer;
       const pg = m.histPage;
       const loading = m.hist.phase === 'loading';
-      const pagerButtonStyle = {
-        font: 'inherit',
-        fontSize: 12,
+      // g-061 batch 3: the pager buttons are the same radius-6 ghost shape as
+      // the row's side buttons; their `'2px 10px'` padding is the one value in
+      // this family that differs from its neighbours' `'2px 8px'`, and it is
+      // kept as it is — the owner reviewed the difference and chose to keep the
+      // page exactly as tall as it is today.
+      const pagerButtonStyle = miniButtonStyle({
         padding: '2px 10px',
-        borderRadius: 6,
-        cursor: 'pointer',
-        background: 'transparent',
         color: token.labelSecondary,
+        background: 'transparent',
         border: `1px solid ${token.borderL2}`,
-      };
+      });
       // The scope sentence: what is on screen right now, in words. A reader must
       // never have to infer it from a request URL (g-038).
       const scopeNote =
@@ -721,16 +723,18 @@ window.__ModuleLoader__.load({
                               'data-selected': option.value === m.historyScopeValue ? 'true' : 'false',
                               onClick: () => a.setHistoryScope(option.value),
                               style: {
-                                font: 'inherit',
-                                fontSize: 12,
-                                lineHeight: '18px',
-                                textAlign: 'left',
-                                padding: '4px 8px',
-                                borderRadius: 6,
-                                cursor: 'pointer',
-                                color: option.value === m.historyScopeValue ? token.buttonLabel : token.labelPrimary,
-                                background: option.value === m.historyScopeValue ? token.buttonFill : 'transparent',
-                                border: `1px solid ${option.value === m.historyScopeValue ? 'transparent' : token.borderL2}`,
+                                ...miniButtonStyle({
+                                  padding: '4px 8px',
+                                  lineHeight: '18px',
+                                  textAlign: 'left',
+                                  color:
+                                    option.value === m.historyScopeValue ? token.buttonLabel : token.labelPrimary,
+                                  background: option.value === m.historyScopeValue ? token.buttonFill : 'transparent',
+                                  border: `1px solid ${option.value === m.historyScopeValue ? 'transparent' : token.borderL2}`,
+                                }),
+                                // The one row of this family that is a full-width
+                                // line rather than a tool-strip control: it keeps
+                                // its own flex layout and its name/tag split.
                                 display: 'flex',
                                 gap: 6,
                                 alignItems: 'center',
@@ -1101,22 +1105,23 @@ window.__ModuleLoader__.load({
             role: 'dialog',
             'aria-modal': 'true',
             'aria-label': options.title,
-            style: {
-              ...cardStyle,
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 10,
+            // g-061 batch 3: the card is the shared dialog shell. What this call
+            // site states is what it always drew — a 1040px card that never
+            // exceeds 92vw (the `maxWidth` beside the width is redundant with it
+            // and is **kept**, because removing a declared value is a change even
+            // where it has no effect), both a `height` and a `maxHeight` of
+            // `min(82vh, 900px)`, a one-axis scroll, and `position: 'relative'`.
+            style: dialogCardStyle({
               width: 'min(1040px, 92vw)',
+              gap: 10,
               maxWidth: '92vw',
               height: 'min(82vh, 900px)',
               maxHeight: 'min(82vh, 900px)',
-              overflowY: 'auto',
-              padding: '16px 18px',
+              overflow: 'overflowY',
               // The close button is anchored to this corner, so it stays put
               // however long the title or the dialog's scroll position is.
               position: 'relative',
-              boxShadow: '0 12px 32px rgba(0, 0, 0, 0.35)',
-            },
+            }),
           },
           h(
             UI.Button,

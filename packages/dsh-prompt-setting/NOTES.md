@@ -7730,3 +7730,87 @@ brief 写「本次 0.2.1 覆盖 g-050…g-058」。核对仓库事实：**g-050�
 - 明确未纳入本工厂的相邻形态：history 的 diff op 行（行内折行规则）、`client.js:2008` 的
   `font: 13px/20px mono` 输入框字体、history diff block 的 `font:` 简写盒子（用 `font` 简写会重置
   font-weight，与 `monoTextBox` 语义不同）——三者都留待批次 3 或不做。
+
+## 138. g-061 批次 3：弹窗壳 / ghost 按钮三族 / 会话行 / 搜索比较（Revision 44，2026-10-12，基线 `a8eccce` 隔离工作树）
+
+批次 3 五项**全部走方案 A**（只抽形状相同的骨架、每处差异留显式参数），并按负责人裁决
+「**一处漂移都不修**」执行：五处与邻居不一致的数值全部原样保留，且都成为调用点的显式实参。
+通用实现仍全部落在**既有的**主入口共享面（`client.js` `CHUNK_FACILITIES` → `__internals.shared`），
+不新增 chunk、不下沉 `core/`、不引依赖、零构建。新增八个名字：`dialogCardStyle` / `dialogTitleStyle` /
+`dialogActionsStyle` / `chipButtonStyle` / `miniButtonStyle` / `sessionRowStyle` / `normalizeNeedle` /
+`matchesNeedle`。
+
+**① 弹窗卡片 4 份 → `dialogCardStyle({width, maxWidth, maxHeight, height, overflow, gap, position})`**
+- 工厂固定：`cardStyle`（border/surface/radius）+ `display:flex` + `flexDirection:column` +
+  `padding:'16px 18px'` + `boxShadow:'0 12px 32px rgba(0,0,0,0.35)'`（四处逐字一致）。
+- **四处现值逐点保留**：`renderConfirm`（100% / 480 / 80vh / `overflowY` / **无 gap** / 无 position）、
+  `renderRegionDialog`（100% / 480 / gap 10 / **无 maxHeight、无 overflow**）、
+  `client.presets.js`（100% / **520** / 80vh / **`overflow:'auto'`** / gap 10）、
+  `client.history.js` `modalShell`（`min(1040px, 92vw)` / **`maxWidth:'92vw'` 冗余保留** /
+  `height` 与 `maxHeight` 均 `min(82vh, 900px)` / `overflowY` / **`position:'relative'`**）。
+- `overflow` 参数是**属性名**（`'overflow'` / `'overflowY'`）而非值——两种声明各自保留；`width` 是
+  显式实参，不是被默认值吞掉的差异（`dialogCardStyle({width})` 之外不传就**不写键**，有负向断言）。
+- confirm 的 `borderColor: stateWarn` 留在调用点，且**声明在工厂之后**（后声明者生效，与基线一致）。
+
+**② 标题行 / 动作行 → `dialogTitleStyle({fontSize, tone, lineHeight})` + `dialogActionsStyle({align, divider, wrap})`**
+- confirm：14 + warn 色 + `lineHeight 1.4`；presets：**15**（保留）+ 无 tone + 无 lineHeight。
+- confirm 动作行：gap 8 + marginTop 16 + paddingTop 12 + `borderTop`（§13.5 的 top divider）；
+  presets：右对齐 + **`flexWrap:'wrap'`**（保留，即使只有一个按钮）+ 无分隔线。
+- **region dialog 继续直接复用 `confirmTitleStyle` / `confirmActionsStyle` 两个常量**（两处仍是同一绑定，
+  有源码级 `style: confirmTitleStyle` ×2 断言）；`client.history.js` 的 head（flex 行 + 绝对定位关闭按钮）
+  **结构不同、未并入**——两个工厂在该 chunk 中出现 0 次。
+
+**③ ghost 按钮三族 → `chipButtonStyle` / `miniButtonStyle`（行族见 ⑤）**
+- **chip**（radius 999、padding `3px 10px` 固定）：tabs 回退项、`pinnedSessionButton`、`session-use-input`；
+  未选中文字色**各处不同**（tabs `labelSecondary`、另两处 `labelPrimary`）→ 作参数；pinned 额外的
+  display/gap/opacity/outline 留在调用点。
+- **mini**（radius 6 固定）：scope-more「更多」、history `sideStyle`、`pagerButtonStyle`、overview expand，
+  以及 history scope 的候选行（同为 radius-6 ghost 骨架，其 buttonFill 选中态/flex/wordBreak 留调用点）。
+  `lineHeight` **三处不写**（side/pager/expand，工厂**不补**，有「键不存在」断言）、scope-more 写 18px；
+  pager 的 **`2px 10px`** 异类保留为显式参数。
+- ⚠️ **已知事实（写进结果）**：tabs 在 `primitives` 渲染器下由宿主 `SegmentedTabs` 自绘，插件只能改
+  fallback 分支——两种渲染器的观感差异**不会**因统一而消失（现状即如此）。
+
+**④ 搜索比较 → `normalizeNeedle(query)` + `matchesNeedle(values, needle, {cached})`**
+- `normalizeNeedle` 三个消费方（flat 过滤 / tree 派生 / history scope）；`matchesNeedle` 两个
+  （session 行 / history scope 候选）。
+- **两侧语义保持不同、不被归一**：sessions 侧保留 `row.haystack` 预计算缓存（`decodeSessions` 里那一次
+  `join(' ')` 未动，仍有 1 处断言），history 侧保持**逐字段无缓存**。
+- 工厂**自身不做 `join(' ')`**：joining 会让命中跨越字段边界，在 history 侧是**新命中**，会动
+  `data-history-scope-shown` 计数与既有断言。空 query 行为不变（前者 `list.slice()` 副本、后者原数组，
+  两者都有源码级断言）。`indexOf` 与 `includes` 语义等价：缓存路径保留 `indexOf`、逐字段路径用 `includes`。
+- **实测两侧差异**：`one alpha`（跨 title 尾 + 下一字段头）在 sessions 侧**命中** `s1`；
+  `repo a1`（跨 label 尾 + value 头）在 history 侧**不命中**，`data-history-scope-shown` 仍为 0。
+
+**⑤ 会话行 → `sessionRowStyle({padding, hovered, focused, selected, active})`**
+- 共同骨架 = `scopeRowStyle`（cursor / userSelect / hover 填充 / focus ring / radius 6）+ 12px/18px +
+  左对齐 flex + `labelPrimary` + 三态填充（选中或键盘高亮 → `diffAddFill`；hover → `hoverFill`；否则透明）
+  + 选中左条 `inset 3px 0 0 0` + 选中描边 `borderL2`。
+- `padding` 逐点保留（tree 行 `3px 8px 3px 20px` 含 20px 缩进 / 平铺行 `4px 8px`）。
+- **role / data-role / aria 一律未动**：tree 行仍是 level-2 `treeitem` + `data-role="session-row"` +
+  `data-scope-parent` + `data-session-running`；平铺行仍是 `listbox > option` + `data-role="session-option"`
+  （无 `aria-level`、无 tree 标记）；`session-selected-mark` 等独有标记仍在调用点；四组既有 ARIA 用例未改。
+- **唯一行为变化是内部的**：`data-session-active` 平铺侧由「index 比较」改为「activeId 比较」
+  （tree 侧本来就是 id 比较）。已实测两式等价（`-1` / 0 / 末行 / 越界）并做渲染级抽样
+  （ArrowDown 后恰好一行高亮且为 `s1`）——这是资料中唯一的「未实测项」，现已实测。
+
+**测试与门禁**
+- `test/client.test.mjs` 新增五条（`// #region g-061 batch 3`）：`dialogCardStyle` 四调用点逐字段 +
+  「无参数 ⇒ 无键」负向 + 渲染级四处卡片（confirm / region / presets 编辑器 / history 对比弹窗）；
+  标题与动作行的工厂等价与渲染级（含 region 复用 confirm 常量）；ghost 三族的工厂等价、消费点计数、
+  padding/radius/color/lineHeight 逐点与五个渲染点；`sessionRowStyle` 四态 + 两棵树 role/aria/data-* +
+  `data-session-active` 两式等价；`normalizeNeedle`/`matchesNeedle` 正负用例与两侧语义差异。
+- 负向核对（改坏即红，逐条实测后已还原）：presets `maxWidth 520→480` 红；presets 标题 `15→14` 红；
+  region 补 `maxHeight:'80vh'` 红；pager `padding 2px 10px→2px 8px` 红；`matchesNeedle` 改回
+  `join(' ')` 红（正是「引入新命中」那条）。
+- 契约新增 **Revision 44** 段（§13 末条，含「本轮有意不修漂移」这一裁决的逐条记录），§13.0 共享面清单
+  同步补一句；`CHUNK_STAMPS` 由 `node scripts/client-chunks.mjs --write` 重算。
+- **证据**：`node --test` ⇒ 824 pass / 0 fail（基线 819 + 新增 5 条）；`node scripts/prepare.mjs` ⇒ 21/21；
+  `node scripts/client-chunks.mjs` ⇒ 5 个 chunk 与清单一致。
+
+**残留（批次 4 未动）**
+- 批次 4 chunk 引导块：负责人已裁决**不做**（该段字节属 CONTRACT §14 指纹区，收益最小）。本轮一行未改。
+- 明确未纳入本工厂的相邻形态：history diff op 行、`font: 13px/20px mono` 输入框字体、history diff block
+  的 `font:` 简写盒子（§137 已记录，仍未动）；`client.history.js` 的对比卡（`...cardStyle` + 自有 gap 4）与
+  `client.presets.js` 的预设卡 / 库错误框（`...cardStyle` + `gap 6` / `borderColor`）是**内容卡**而非对话框壳，
+  **未并入** `dialogCardStyle`（形状不同：无工厂固定 padding/boxShadow，尺寸随内容）——三处都有计数断言。
