@@ -1875,7 +1875,7 @@ snapshot already stores `{name, action}` (§19.4, §19.7).
 Since g-015 the settings page is a fixed, ordered set of first-level tabs with
 the first one open by default; Revision 19 (g-038) split the old
 「历史与备份」 into 「版本历史」 and 「备份与恢复」, so there were five; Revision 38
-(g-060) adds 「预设」 — the preset catalogue of §20 — **directly after**
+(g-060) adds 「我的预设」 — the preset catalogue of §20 — **directly after**
 「我的 Prompt」, so there are six. Above them
 there are exactly three things: the
 title line — which carries the plugin version beside the heading since Revision
@@ -1897,7 +1897,7 @@ place the scope is changed.
 | order | `data-tab-value` | tab | what it is |
 | --- | --- | --- | --- |
 | 1 (default) | `mine` | 「我的 Prompt」 | the **only** write surface for the reserved section's text |
-| 2 | `presets` | 「预设」 | the preset catalogue, and the two layer actions it can start (§20) |
+| 2 | `presets` | 「我的预设」 | the preset catalogue, and the two layer actions it can start (§20) |
 | 3 | `overview` | 「提示词总览」 | strictly read-only |
 | 4 | `history` | 「版本历史」 | the log, its own scope and the comparison |
 | 5 | `backup` | 「备份与恢复」 | export / import, and nothing else |
@@ -2363,6 +2363,34 @@ while a draft is unsaved.
   refused save staying inside the dialog, an empty name never becoming a round
   trip (zero requests), the dirty-close label and warning, the apply dialog's rows
   and both POST bodies, and both dictionaries.
+
+---
+
+**Revision 39 (g-060 review R4: 「叠加」 is a real stack, and the two destructive
+acts ask first).** The owner's acceptance pass found three things — two
+behaviour, one copy.
+
+- **`append` stacks (host + policy; no wire shape changes).** `planApply`
+  (`core/presets.js`) now composes the entry: `replace` is the preset's text as
+  the section's text, `append` is *the layer's existing text + the stack
+  separator + the preset's text* — the very `RESERVED_STACK_SEPARATOR` the
+  two-layer stack uses (§13.1, Revision 36), inserted only when there was text to
+  stack onto. The composition is **idempotent**: a text that already is the
+  preset's, or already ends with `SEP` + it, is left untouched and the answer
+  carries `alreadyApplied: true` — no layer write, no history record, and the
+  page says「该预设已在此工作区生效」. The `applied` record is still kept (replaced)
+  in that case, because the record is what keeps「取消应用」available.
+- **The snapshot keeps the mode.** `before` already recorded `{action, text}`;
+  §20.6 now says in words that an `append` snapshot is restored as `append`,
+  never flattened to `replace`.
+- **The two destructive acts ask first, through the page's one confirmation
+  overlay** (g-031's rule — `renderConfirm`, not a bespoke dialog): deleting a
+  preset (`data-confirm-kind="preset-delete"`, whose question names it) and
+  closing a **dirty** editor (`data-confirm-kind="preset-discard"`). A clean
+  editor still closes on the spot: a confirmation for a no-op is noise.
+- **Copy.** The first-level tab is 「我的预设」/「My presets」 (§13.0, §20.9).
+- Nothing else moved: the five routes, their bodies, their codes and every stored
+  byte keep their Revision 37/38 meanings.
 
 ### 13.1 「我的 Prompt」 — the one write surface
 
@@ -5853,24 +5881,44 @@ Body: `{presetId, session}` (`session` may also come from `?session=`).
   the reserved entry is upserted with the preset's `action`/`text`, the rebuilt
   config is validated, and only then is it written atomically and cached. The
   layer's other entries and its `interpolateCustom` switch are carried across.
+- **What each mode writes (Revision 39).** The two words mean here what they mean
+  everywhere else in this plugin:
+  - `replace`: the preset's text **is** the entry's text;
+  - `append`: the preset's text is **stacked after** the text the layer already
+    holds, joined by `RESERVED_STACK_SEPARATOR` — the same separator the
+    two-layer stack of Revision 36 uses (§13.1). This composition happens **in
+    this route and nowhere else**: a layer holds one reserved entry, so the merge
+    kernel cannot join a layer to itself. A layer with no entry (or an empty one)
+    contributes nothing and no separator is inserted.
+- **The composition is idempotent.** If the entry already carries exactly the
+  preset's text, or already ends with `SEP` + that text, the plan writes **no
+  layer at all** — no `writeConfig`, no history record — and answers
+  `alreadyApplied: true` so the page can say「该预设已在此工作区生效」rather than
+  claim a write. The `applied` record is still recorded/replaced in that case:
+  the record is what keeps §20.6 available, and the pointer was already there.
 - The snapshot is taken from the config this request just read, and the `applied`
-  record for that root is **replaced** (one record per root).
+  record for that root is **replaced** (one record per root). It carries the
+  entry's `action` **and** its text, so §20.6 restores the mode as well.
 - A history record is appended exactly as `PUT /overrides` does it (a section
   record: `name` = the reserved name, `before`/`after` = its text on either side,
-  `origin: "ui"`, `action` from the ordinary `actionOf` rule). **No history shape
-  changes** (§8) and no new action or origin is introduced.
+  `origin: "ui"`, `action` from the ordinary `actionOf` rule) — and it is appended
+  only when the layer really changed. **No history shape changes** (§8) and no new
+  action or origin is introduced.
 - Response `200`:
 
 ```json
-{ "ok": true, "applied": true, "preset": { … },
+{ "ok": true, "applied": true, "alreadyApplied": false, "preset": { … },
   "record": { "workspaceRoot": "…", "presetId": "…", "before": { "action": "replace", "text": "MINE" }, "appliedAt": "…" },
-  "workspaceRoot": "…", "before": { "action": "replace", "text": "MINE" }, "after": { "action": "append", "text": "PRESET" },
+  "workspaceRoot": "…", "before": { "action": "replace", "text": "MINE" }, "after": { "action": "append", "text": "MINE\n\nPRESET" },
   "effectiveFrom": "next-turn", "history": { … }, "appliedRecords": [ … ] }
 ```
 
-- Applying the same preset twice is allowed and is not a no-op: the second
-  application's `before` is the first application's result, so「取消应用」goes back
-  to the text the first application wrote.
+- `alreadyApplied` is `true` exactly when the layer already carried the text (and
+  `history` is then `null`); it is always present, so a client never has to infer
+  it from an empty history.
+- Applying a **different** preset or a **changed** one is still a real write: the
+  second application's `before` is the first application's result, so「取消应用」
+  goes back to the text that was there before the latest application.
 - **Order of the two writes, and its residual risk.** The workspace layer is
   written first and the library record second, because a record must describe a
   write that really happened; if the library write then fails, the answer is a
@@ -5886,7 +5934,9 @@ Body: `{session}` (`session` may also come from `?session=`).
   there is nothing to restore, and a `200` would claim a write that did not
   happen.
 - The restoration is **content**: `before: null` removes the reserved entry, a
-  non-null `before` writes its `action`/`text` back. It is not a history rollback
+  non-null `before` writes its `action` **and** its `text` back — an `append`
+  snapshot is restored as `append`, never flattened to `replace` (Revision 39:
+  the mode is part of what was overwritten). It is not a history rollback
   and it consults no log — the value restored is the one the application
   overwrote. The layer's other entries, its switch, the user layer and every other
   workspace are untouched.
@@ -5946,7 +5996,7 @@ request leaves `presets.json` and the layer byte-identical.
 ### 20.9 Client surface (g-060; the tab became dialog-based in Revision 38)
 
 - **The tab.** `MAIN_TABS` gains `presets` **directly after** `mine`, making six
-  first-level tabs in this order: 「我的 Prompt」 / **「预设」** / 「提示词总览」 /
+  first-level tabs in this order: 「我的 Prompt」 / **「我的预设」** / 「提示词总览」 /
   「版本历史」 / 「备份与恢复」 / 「高级」. Its panel is the on-demand chunk
   `client.presets.js` (the g-045/g-046 lazy boundary, `CHUNK_STAMPS` re-run), and
   the tab label key is `tabPresets` in both dictionaries.

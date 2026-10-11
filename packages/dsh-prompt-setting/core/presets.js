@@ -29,7 +29,7 @@
  */
 
 import { CUSTOM_SECTION_NAME } from './custom.js';
-import { MAX_TEXT_BYTES, fail, withInterpolate } from './overrides.js';
+import { MAX_TEXT_BYTES, RESERVED_STACK_SEPARATOR, fail, withInterpolate } from './overrides.js';
 
 /**
  * The presets document version. A stored document may omit it (the first
@@ -375,12 +375,29 @@ function withoutReservedOverride(config) {
  * first record, so「取消应用」goes back to the text that was there before the
  * *latest* application. That is a deliberate one-deep model — a stack of
  * snapshots would be a version history, which this feature does not claim to be.
+ *
+ * **The two modes mean what they mean everywhere else in this plugin
+ * (Revision 39).** `replace` is the preset's text as the section's text.
+ * `append` is the preset's text **stacked after what the workspace layer already
+ * holds**, joined by the same {@link RESERVED_STACK_SEPARATOR} the two-layer
+ * stack of Revision 36 uses — the reserved section is one entry per layer, so
+ * 「叠加」 has to be composed here, at the one moment the text is written; the
+ * merge kernel cannot add the same layer's text twice. An empty/absent stored
+ * text contributes no separator, exactly as in the cross-layer case.
+ *
+ * The composition is **idempotent**: a text that is already the preset's, or
+ * already ends with `SEP + preset.text`, is left alone and the plan says so
+ * (`alreadyApplied`), so clicking「应用」twice cannot grow the section by one
+ * copy each time. The caller still records the pair either way — the record is
+ * what makes「取消应用」available, and the pointer was already there.
  * @param document - the current normalized document.
  * @param options.presetId - the preset to apply.
  * @param options.workspaceRoot - the resolved workspace root.
  * @param options.current - the workspace layer's current validated config.
  * @param options.at - the ISO timestamp to stamp.
- * @returns `{document, preset, before, config, record}`.
+ * @returns `{document, preset, before, config, record, text, alreadyApplied}`
+ *   where `text` is the text the reserved entry ends up with and
+ *   `alreadyApplied` says the layer already carried it.
  * @throws {OverrideError} 404 `preset-not-found`.
  */
 export function planApply(document, options = {}) {
@@ -392,10 +409,28 @@ export function planApply(document, options = {}) {
   const before = entry === null
     ? null
     : { action: entry.action, text: typeof entry.text === 'string' ? entry.text : '' };
+  const stored = entry === null || typeof entry.text !== 'string' ? '' : entry.text;
+  let text;
+  let alreadyApplied = false;
+  if (preset.action === 'append') {
+    if (stored.length === 0) {
+      text = preset.text;
+    } else if (stored === preset.text || stored.endsWith(`${RESERVED_STACK_SEPARATOR}${preset.text}`)) {
+      // Already the whole text, or already the top of the stack: appending again
+      // would duplicate it, which is the one thing a second click must not do.
+      text = stored;
+      alreadyApplied = true;
+    } else {
+      text = `${stored}${RESERVED_STACK_SEPARATOR}${preset.text}`;
+    }
+  } else {
+    text = preset.text;
+    alreadyApplied = entry !== null && stored === preset.text && entry.action === preset.action;
+  }
   const config = withReservedOverride(options.current, {
     name: CUSTOM_SECTION_NAME,
     action: preset.action,
-    text: preset.text,
+    text,
   });
   const record = {
     workspaceRoot: options.workspaceRoot,
@@ -411,6 +446,8 @@ export function planApply(document, options = {}) {
     before,
     config,
     record,
+    text,
+    alreadyApplied,
   };
 }
 

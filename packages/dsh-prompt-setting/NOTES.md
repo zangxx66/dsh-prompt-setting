@@ -7505,3 +7505,28 @@ brief 写「本次 0.2.1 覆盖 g-050…g-058」。核对仓库事实：**g-050�
 - **证据**：`node --test test/*.test.mjs` ⇒ 803 通过 / 0 失败；`node scripts/prepare.mjs` ⇒ 21 项全绿；
   `node scripts/client-chunks.mjs` ⇒ 5 个 chunk 一致。
 
+### 复核轮 3 返工（R4：真叠加 + 二次确认 + tab 文案，2026-10-12）
+
+负责人复验提三条：
+
+- **1 叠加语义修正为「真叠加」（功能）**：`core/presets.js` 的 `planApply` 现在自己组合保留段文本 ——
+  `replace`＝预设文本；`append`＝**层内原文 + `RESERVED_STACK_SEPARATOR` + 预设文本**（分隔符复用
+  `core/overrides.js` 那个，与 g-058 跨层叠加同一个；原文为空则只放预设文本，不留孤立空行）。组合必须在
+  这里发生：一层只有一条保留段 entry，合并核无法把一层与它自己叠加。**幂等**：当前文本已等于预设文本、
+  或以 `SEP + 预设文本` 结尾 ⇒ 不重复追加，`plan.alreadyApplied = true`，宿主**不写层、不记 history**，
+  响应带 `alreadyApplied`（页面提示「该预设已在此工作区生效，未重复叠加」）；`applied` 记录仍写入/替换
+  （它才是「取消应用」可用性的来源）。`before` 快照语义不变，`unapply` 按 `{action, text}` **整体还原**
+  （append 快照还原为 append，不压平成 replace）。
+- **2 二次确认（复用既有 `renderConfirm`）**：列表行「删除」按钮改为只发意图（`a.requestPresetDelete`）⇒
+  `setConfirm({kind:'preset-delete', id, name})`，确认后才 `DELETE`；编辑弹窗**脏草稿**时点关闭
+  （`a.requestPresetDialogClose`）⇒ `setConfirm({kind:'preset-discard'})`，确认后才丢弃并关窗；非脏仍直接关。
+  两个新 kind 的标题/正文走既有确认弹窗排版与按钮（g-031 约束），i18n zh/en 各补 4 键 + 幂等提示 1 键。
+- **3 tab 文案**：一级 tab「预设」→「**我的预设**」（en「My presets」），契约 §13.0/§20.9、两份 README 同步。
+- **契约**：新增 Revision 39 段；§20.5 写明两种模式实际写什么、幂等与 `alreadyApplied`；§20.6 写明还原含 mode。
+- **测试**：`test/presets.test.mjs` 重写 `planApply` 用例（append 保留原文并追加、replace 仍替换）、新增幂等
+  纯逻辑用例与路由级幂等用例（层字节不变、`history: null`、记录仍在）；`test/client.test.mjs` 删除用例改为
+  确认流（取消 ⇒ 0 个 DELETE、确认 ⇒ 1 个 + 编辑弹窗随删关闭）、新增脏草稿关闭确认用例、tab 文案用例、
+  幂等提示用例。
+- **证据**：`node --test test/*.test.mjs` ⇒ 全绿；`node scripts/prepare.mjs` ⇒ 21/21；
+  `node scripts/client-chunks.mjs` ⇒ 5 个 chunk 一致。
+
