@@ -11731,3 +11731,95 @@ test('client: every preset control is reachable from both dictionaries', async (
   assert.ok(strings(tree).includes(page.text.presetApply));
   assert.ok(strings(tree).includes(page.text.presetSaveAsCurrent));
 });
+
+test('client: an unsaved edit blocks 「应用」, so a stale preset is never written', async () => {
+  // Review R1: `POST /presets/apply` names a preset by id and the host reads
+  // that preset out of the library, so an unsaved edit in the box would make the
+  // page write the *stored* version and report success. The tab must refuse —
+  // the same promise g-056 made for the text box, on a write that rewrites a
+  // layer rather than a label.
+  let stored = presetsFixture();
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.presets]: (url, init) => {
+        if (init && init.method === 'PUT') {
+          const body = JSON.parse(init.body);
+          const saved = {
+            id: body.id,
+            name: body.name,
+            action: body.action,
+            text: body.text,
+            createdAt: '2024-01-02T00:00:00.000Z',
+            updatedAt: '2024-01-04T00:00:00.000Z',
+          };
+          stored = presetsFixture({
+            presets: stored.presets.map((preset) => (preset.id === saved.id ? saved : preset)),
+          });
+          return {
+            payload: { ok: true, created: false, preset: saved, presets: stored.presets, applied: stored.applied },
+          };
+        }
+        return { payload: stored };
+      },
+      [PATHS.presetsApply]: {
+        payload: {
+          ok: true,
+          applied: true,
+          preset: { id: 'preset-2', name: '叠加规则', action: 'append', text: 'Extra rules, edited.' },
+          record: { workspaceRoot: '/work/alpha', presetId: 'preset-2', before: null, appliedAt: 't' },
+          workspaceRoot: '/work/alpha',
+          before: null,
+          after: { action: 'append', text: 'Extra rules, edited.' },
+          effectiveFrom: 'next-turn',
+          history: { ok: true, id: '1', seq: 1, dropped: 0, rewritten: false },
+          appliedRecords: [],
+        },
+      },
+    }),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+  });
+  let tree = await openTab(page, 'presets');
+  clickButton(tree, { 'data-action': 'preset-edit', 'data-preset-id': 'preset-2' });
+  tree = await page.flush();
+  // Nothing typed yet: the box matches the stored preset, so the action stands.
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-preset-apply-blocked'] !== undefined).length,
+    0,
+    'an untouched editor blocks nothing',
+  );
+
+  typeInto(tree, 'preset-text', 'Extra rules, edited.');
+  tree = await page.flush();
+  const notice = oneBy(tree, 'data-preset-apply-blocked', 'unsaved');
+  assert.ok(strings(notice).some((text) => text.includes(page.zh.presetApplyUnsaved)), 'and it says why');
+  const applyButton = findOne(
+    tree,
+    (candidate) =>
+      candidate.type === 'button' &&
+      candidate.props['data-action'] === 'preset-apply' &&
+      candidate.props['data-preset-session'] === 'a1',
+    'apply a1',
+  );
+  assert.equal(applyButton.props.disabled, true, 'the apply button is disabled while the edit is unsaved');
+  assert.equal(
+    page.router.calls.filter((call) => call.init && call.init.method === 'POST').length,
+    0,
+    'nothing was applied, so no stale version could be written',
+  );
+
+  // Saving is what clears the block — and then the action really writes.
+  clickButton(tree, { 'data-action': 'preset-save' });
+  tree = await page.flush();
+  tree = await page.flush();
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-preset-apply-blocked'] !== undefined).length,
+    0,
+    'a saved draft blocks nothing',
+  );
+  clickPresetWorkspaceAction(tree, 'preset-apply', 'a1');
+  tree = await page.flush();
+  const posts = page.router.calls.filter((call) => call.init && call.init.method === 'POST');
+  assert.equal(posts.length, 1);
+  assert.deepEqual(JSON.parse(posts[0].init.body), { presetId: 'preset-2', session: 'a1' });
+});
+

@@ -1271,6 +1271,7 @@ window.__ModuleLoader__.load({
       presetApply: '应用',
       presetUnapply: '取消应用',
       presetApplyPickOne: '先在上面的列表里点「编辑」选中一个预设，再点「应用」。',
+      presetApplyUnsaved: '当前编辑尚未保存：先点「保存修改」，再把它应用到工作区 —— 否则应用的是库里已保存的旧版本。',
       presetNotApplied: '未应用',
       presetAppliedAs: '已应用：{name}',
       presetAppliedOrphan: '来源已删除',
@@ -1820,6 +1821,7 @@ window.__ModuleLoader__.load({
       presetApply: 'Apply',
       presetUnapply: 'Cancel application',
       presetApplyPickOne: 'Select a preset first by clicking \u300cEdit\u300d in the list above, then click \u300cApply\u300d.',
+      presetApplyUnsaved: 'This edit is not saved yet: save the changes first, then apply — otherwise the stored version would be applied.',
       presetNotApplied: 'Not applied',
       presetAppliedAs: 'Applied: {name}',
       presetAppliedOrphan: 'Source deleted',
@@ -6205,7 +6207,7 @@ window.__ModuleLoader__.load({
       { name: 'client.advanced.js', hash: '523d25ee', size: 21505 },
       { name: 'client.history.js', hash: '2887cc6c', size: 48609 },
       { name: 'client.overview.js', hash: 'f66cd1b0', size: 23533 },
-      { name: 'client.presets.js', hash: '66c274f7', size: 15158 },
+      { name: 'client.presets.js', hash: 'a4461fb6', size: 15841 },
       { name: 'client.transfer.js', hash: 'c8af8793', size: 9759 },
     ]);
 
@@ -9163,6 +9165,34 @@ window.__ModuleLoader__.load({
           ? presetWorkspaces[0].session
           : null;
 
+      /**
+       * g-060 (review R1): does the editor hold an **unsaved** change to a stored
+       * preset?
+       *
+       * `POST /presets/apply` names a preset by **id** and the host reads that
+       * preset out of the library — so while the box holds an unsaved edit, an
+       *「应用」would silently write the *stored* version into a workspace and
+       * report success. That is the class of defect g-056 fixed for the text
+       * box (a draft that does not match what a write would really store), and
+       * it is worse here: apply rewrites a **layer**, not just a label. So the
+       * page refuses to pretend: while this is true the apply buttons are
+       * disabled and the picker says why, and saving the draft is what clears it.
+       *
+       * `true` also covers "the draft names an entry the library no longer has"
+       * (deleted in another tab or by hand): applying it would be a `404`, and
+       * offering the button would be a promise the page cannot keep.
+       * @returns whether the editor differs from the stored preset it names.
+       */
+      const presetSavedEntry = presetDraft.id === null
+        ? null
+        : (presets.data && Array.isArray(presets.data.presets) ? presets.data.presets : [])
+          .find((entry) => entry.id === presetDraft.id) ?? null;
+      const presetDirty = presetDraft.id !== null
+        && (presetSavedEntry === null
+          || presetSavedEntry.name !== presetDraft.name
+          || (presetSavedEntry.action === 'append' ? 'append' : RESERVED_SECTION_DEFAULT_MODE) !== presetDraft.action
+          || (typeof presetSavedEntry.text === 'string' ? presetSavedEntry.text : '') !== presetDraft.text);
+
       const actions = {
         refresh: () => setReload((value) => value + 1),
         // The「更改」switch: the same button opens and shuts the picker, and
@@ -9547,6 +9577,9 @@ window.__ModuleLoader__.load({
         presetStatus,
         presetWorkspace: presetActiveWorkspace,
         presetWorkspaces,
+        // g-060 (review R1): the editor differs from the stored preset it names
+        // ⇒「应用」 is disabled and the picker says why (never apply a stale copy).
+        presetDirty,
         presetCurrentText: mineText === null || mineText === undefined ? '' : String(mineText),
         advancedLayer,
         view,

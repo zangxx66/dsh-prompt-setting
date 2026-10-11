@@ -279,14 +279,27 @@ window.__ModuleLoader__.load({
       const rows = m.presetWorkspaces;
       const applied = m.presets.data && Array.isArray(m.presets.data.applied) ? m.presets.data.applied : [];
       const selectedId = m.presetDraft.id;
+      // g-060 (review R1): 「应用」 names a preset by id and the host reads that
+      // preset out of the library, so an unsaved edit in the box would make the
+      // page write the *stored* version and call it success. The picker therefore
+      // states which of the two reasons blocks the action, and the buttons follow
+      // the same value — never a silently stale apply.
+      const blocked = selectedId === null ? 'no-preset' : m.presetDirty === true ? 'unsaved' : null;
       return h(
         'div',
         { 'data-region': 'preset-workspace', style: { ...cardStyle, display: 'flex', flexDirection: 'column', gap: 8 } },
         h('h4', { style: { ...headingStyle, fontSize: 13 } }, t('presetWorkspaceHeading')),
         h('p', { style: { margin: 0, ...metaStyle } }, t('presetWorkspaceNote')),
-        selectedId === null
-          ? h('p', { 'data-preset-apply-blocked': 'no-preset', style: { margin: 0, ...metaStyle } }, t('presetApplyPickOne'))
-          : null,
+        blocked === null
+          ? null
+          : h(
+              'p',
+              {
+                'data-preset-apply-blocked': blocked,
+                style: { margin: 0, ...metaStyle, color: blocked === 'unsaved' ? token.stateWarn : undefined },
+              },
+              t(blocked === 'unsaved' ? 'presetApplyUnsaved' : 'presetApplyPickOne'),
+            ),
         rows.length === 0
           ? h('p', { 'data-region': 'preset-workspace-empty', style: { margin: 0, ...metaStyle } }, t('presetWorkspaceEmpty'))
           : rows.slice(0, PRESET_WORKSPACE_LIMIT).map((row) => {
@@ -348,7 +361,7 @@ window.__ModuleLoader__.load({
                   variant: 'outline',
                   'data-action': 'preset-apply',
                   'data-preset-session': row.session,
-                  disabled: m.busy || selectedId === null,
+                  disabled: m.busy || blocked !== null,
                   onClick: () => a.applyPreset(selectedId, row.session),
                 },
                 t('presetApply'),

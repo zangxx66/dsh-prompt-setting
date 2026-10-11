@@ -139,7 +139,8 @@ export function userPreferencesPath(env = process.env) {
  * rewritten — the next save is what repairs it.
  * @param path - the preferences path.
  * @returns `{preferences, missing, error}` where `error` is `{code, message}|null`.
- */export function readPreferences(path) {
+ */
+export function readPreferences(path) {
   let raw;
   try {
     raw = readFileSync(path, 'utf8');

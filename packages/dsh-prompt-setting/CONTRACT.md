@@ -5922,6 +5922,16 @@ request leaves `presets.json` and the layer byte-identical.
   preset (`data-preset-name`), and whether the record is an orphan
   (`data-preset-orphan="true"`). The two actions are
   `data-action="preset-apply"` and `data-action="preset-unapply"`.
+- **An unsaved edit blocks「应用」 (review R1).** Applying names a preset by `id`
+  and the Host reads that preset out of the library (§20.5), so the page may not
+  offer「应用」 while the editor holds a change that has not been saved: the apply
+  buttons are `disabled`, the picker states why
+  (`data-preset-apply-blocked="unsaved"`, whose text is `presetApplyUnsaved`), and
+  **saving is what clears it**. A write that silently used the stored version
+  would rewrite a workspace with a text the reader was no longer looking at —
+  the g-056 defect class, on an action that changes a layer instead of a label.
+  The same marker is `no-preset` while no preset is selected
+  (`presetApplyPickOne`).
 - **Reads and writes.** The tab reads `GET /presets` (with `?session=`, §20.2) and
   writes through §20.3–§20.6 only. It never touches `PUT /overrides`, and it never
   sends a layer name: the layer is implied by the preset routes themselves.
