@@ -13,13 +13,23 @@
  *     already materialized by then; it hands over this chunk's half of the
  *     page's shared facilities — see `__internals.shared`).
  *
- * What this tab is, and what it deliberately is not (`CONTRACT.md` §20.9): it is
- * the **catalogue** — list, create, edit, delete — plus two layer actions on a
- * workspace the reader picks (apply, cancel). It never edits the reserved
- * section through `PUT /overrides`, never sends a layer name, and never writes a
- * file from the catalogue routes; the two writes it does perform go through
- * `POST /presets/apply` and `POST /presets/unapply`, which is where the layer is
- * resolved and snapshotted.
+ * Shape of the tab (`CONTRACT.md` §20.9, Revision 38 / review R3): the body is
+ * the **catalogue** — a heading, a state line and one row per stored preset
+ * (mode tag, text preview, 「编辑」/「删除」/「应用到工作区」) plus a「新建预设」
+ * entry. Both writes the tab can start happen in **overlays**, laid out like
+ * `renderRegionDialog` in `client.js`:
+ *   - the editor dialog (`data-region="preset-editor-dialog"`) holds the
+ *     name/text/mode fields; a refusal stays **inside** it and never closes it,
+ *     and a dirty draft makes the close control say「放弃修改」with a visible
+ *     warning, so nothing is discarded silently;
+ *   - the apply dialog (`data-region="preset-apply-dialog"`) is opened from one
+ *     list row and names that row's preset; it lists every workspace the page
+ *     knows with its applied state and the two layer actions.
+ *
+ * What the tab deliberately is not: it never edits the reserved section through
+ * `PUT /overrides`, never sends a layer name, and never writes a file from the
+ * catalogue routes — the two layer writes go through `POST /presets/apply` and
+ * `POST /presets/unapply`, which is where the host resolves and snapshots.
  *
  * Two hard rules are inherited from `client.js`:
  *   - no bundler, no JSX, no TypeScript, no runtime dependency beyond `react`;
@@ -46,6 +56,7 @@ window.__ModuleLoader__.load({
     const metaStyle = shared.metaStyle;
     const headingStyle = shared.headingStyle;
     const errorBanner = shared.errorBanner;
+    const errorText = shared.errorText;
     /**
      * This chunk's own digest, computed from `toString()` against the same
      * markers the host reads out of this file.
@@ -55,8 +66,43 @@ window.__ModuleLoader__.load({
 
     /** How much of a preset's text a list row previews before it is cut off. */
     const PRESET_PREVIEW_LENGTH = 120;
-    /** How many rows the workspace picker renders at once. */
+    /** How many workspace rows the apply dialog renders at once. */
     const PRESET_WORKSPACE_LIMIT = 50;
+    /**
+     * The overlay backdrop, copied from `client.js`'s `renderRegionDialog` (the
+     * project's own dialog precedent): one full-screen scrim that dims the page
+     * behind the card, so a dialog reads as modal without stealing focus.
+     */
+    const OVERLAY_STYLE = {
+      position: 'fixed',
+      top: 0,
+      right: 0,
+      bottom: 0,
+      left: 0,
+      zIndex: 1000,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 16,
+      background: 'rgba(0, 0, 0, 0.45)',
+    };
+    /** The dialog card inside the scrim; scrolls when a workspace list is long. */
+    const DIALOG_STYLE = {
+      ...cardStyle,
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 10,
+      width: '100%',
+      maxWidth: 520,
+      maxHeight: '80vh',
+      overflow: 'auto',
+      padding: '16px 18px',
+      boxShadow: '0 12px 32px rgba(0, 0, 0, 0.35)',
+    };
+    /** The dialog's title line. */
+    const DIALOG_TITLE_STYLE = { fontSize: 15, fontWeight: 600 };
+    /** The dialog's button row. */
+    const DIALOG_ACTIONS_STYLE = { display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' };
 
     /**
      * The `replace` / `append` pair, as the segmented control wants it.
@@ -81,7 +127,31 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * One stored preset as a row.
+     * The dialog's error line, or `null` when the last write did not fail.
+     *
+     * Review R3: a refusal is rendered **here** — inside the open dialog, on its
+     * own marked line — never through the page-level notice, which would sit
+     * behind the scrim and read as "nothing happened".
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @returns the line element, or null.
+     */
+    function dialogError(t, m) {
+      const error = m.presetStatus.kind === 'error' ? m.presetStatus.error : null;
+      if (error === null || error === undefined) return null;
+      return h(
+        'div',
+        {
+          'data-role': 'preset-dialog-error',
+          'data-preset-dialog-error': typeof error.code === 'string' ? error.code : 'unknown',
+          style: { fontSize: 13, color: token.stateError, wordBreak: 'break-word' },
+        },
+        `${t('presetFailed')}: ${errorText(t, error)}`,
+      );
+    }
+
+    /**
+     * One stored preset as a catalogue row.
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
@@ -150,12 +220,27 @@ window.__ModuleLoader__.load({
             },
             t('presetDelete'),
           ),
+          // Review R3: the layer action's entrance. It opens the apply dialog
+          // **on this row's id**, so what gets applied is always the preset the
+          // reader pointed at — never "whatever the editor happens to hold".
+          h(
+            UI.Button,
+            {
+              variant: 'outline',
+              'data-action': 'preset-apply-to',
+              'data-preset-id': preset.id,
+              disabled: m.busy,
+              onClick: () => a.requestPresetApplyTo(preset.id),
+            },
+            t('presetApplyTo'),
+          ),
         ),
       );
     }
 
     /**
-     * The catalogue: the stored presets, or the reason there are none to show.
+     * The catalogue: the stored presets, the reason there are none to show, and
+     * the two「新建」entrances.
      *
      * An unreadable library is stated as a library problem and **not** as an
      * empty catalogue (`CONTRACT.md` §20.9): the two look identical on screen
@@ -172,7 +257,32 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { 'data-region': 'presets-list', style: { display: 'flex', flexDirection: 'column', gap: 8 } },
-        h('h4', { style: { ...headingStyle, fontSize: 13 } }, t('presetsListHeading')),
+        h(
+          'div',
+          { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+          h('h4', { style: { ...headingStyle, fontSize: 13, margin: 0 } }, t('presetsListHeading')),
+          h(
+            UI.Button,
+            {
+              variant: 'outline',
+              'data-action': 'preset-new',
+              disabled: m.busy,
+              onClick: a.newPreset,
+            },
+            t('presetNewHeading'),
+          ),
+          h(
+            UI.Button,
+            {
+              variant: 'outline',
+              'data-action': 'preset-save-as-current',
+              disabled: m.busy || m.presetCurrentText.length === 0,
+              onClick: a.saveAsCurrentPreset,
+            },
+            t('presetSaveAsCurrent'),
+          ),
+        ),
+        h('p', { style: { margin: 0, ...metaStyle } }, t('presetSaveAsCurrentHint')),
         libraryError !== null
           ? h(
               'div',
@@ -191,194 +301,219 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The editor: the draft the two catalogue writes send.
+     * The editor dialog: the draft both catalogue writes send.
+     *
+     * Three rules are copied from `client.js`'s `renderRegionDialog` (review R3):
+     * a refusal stays **inside** the dialog on its own marked line, the dialog is
+     * **not** closed by a failure, and closing is always an explicit act — while
+     * the draft differs from what the library holds, that act is labelled
+     * 「放弃修改」and the dialog says so in words, so nothing is discarded
+     * silently.
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
-     * @returns the editor element.
+     * @returns the overlay element, or `null` when this dialog is not open.
      */
-    function presetEditor(t, m, a) {
-      const draft = m.presetDraft;
-      const editing = draft.id !== null;
+    function presetEditorDialog(t, m, a) {
+      const dialog = m.presetDialog;
+      if (dialog === null || dialog.kind !== 'edit') return null;
+      const editing = m.presetDraft.id;
+      const dirty = m.presetDraftDirty === true;
+      const saving = m.presetStatus.kind === 'saving';
+      const title = editing === null ? t('presetNewHeading') : t('presetEditHeading');
       return h(
         'div',
-        {
-          'data-region': 'preset-editor',
-          'data-preset-editing': editing ? draft.id : 'new',
-          style: { ...cardStyle, display: 'flex', flexDirection: 'column', gap: 8 },
-        },
-        h('h4', { style: { ...headingStyle, fontSize: 13 } }, editing ? t('presetEditHeading') : t('presetNewHeading')),
-        h('label', { style: metaStyle, htmlFor: 'ps-preset-name' }, t('presetNameLabel')),
-        h(UI.Input, {
-          id: 'ps-preset-name',
-          'data-role': 'preset-name',
-          value: draft.name,
-          placeholder: t('presetNamePlaceholder'),
-          onChange: a.setPresetName,
-        }),
-        h('span', { style: metaStyle }, t('presetModeLabel')),
-        tabs(modeItems(t), draft.action, a.setPresetAction, t('presetModeLabel'), 'preset-mode'),
-        h('label', { style: metaStyle, htmlFor: 'ps-preset-text' }, t('presetTextLabel')),
-        h(UI.Textarea, {
-          id: 'ps-preset-text',
-          'data-role': 'preset-text',
-          value: draft.text,
-          placeholder: t('presetTextPlaceholder'),
-          rows: 8,
-          onChange: a.setPresetText,
-        }),
+        { key: 'preset-editor-overlay', 'data-region': 'preset-editor-overlay', style: OVERLAY_STYLE },
         h(
           'div',
-          { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+          {
+            'data-region': 'preset-editor-dialog',
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-label': title,
+            'data-preset-dialog': 'edit',
+            'data-preset-editing': editing === null ? 'new' : editing,
+            'data-preset-dirty': String(dirty),
+            style: DIALOG_STYLE,
+          },
+          h('strong', { style: DIALOG_TITLE_STYLE }, title),
+          h('label', { style: metaStyle, htmlFor: 'ps-preset-name' }, t('presetNameLabel')),
+          h(UI.Input, {
+            id: 'ps-preset-name',
+            'data-role': 'preset-name',
+            value: m.presetDraft.name,
+            placeholder: t('presetNamePlaceholder'),
+            disabled: saving,
+            onChange: a.setPresetName,
+          }),
+          h('span', { style: metaStyle }, t('presetModeLabel')),
+          tabs(modeItems(t), m.presetDraft.action, a.setPresetAction, t('presetModeLabel'), 'preset-mode'),
+          h('label', { style: metaStyle, htmlFor: 'ps-preset-text' }, t('presetTextLabel')),
+          h(UI.Textarea, {
+            id: 'ps-preset-text',
+            'data-role': 'preset-text',
+            value: m.presetDraft.text,
+            placeholder: t('presetTextPlaceholder'),
+            rows: 8,
+            disabled: saving,
+            onChange: a.setPresetText,
+          }),
+          dirty
+            ? h(
+                'p',
+                { 'data-role': 'preset-dialog-dirty', style: { margin: 0, ...metaStyle, color: token.stateWarn } },
+                t('presetDialogDirtyHint'),
+              )
+            : null,
+          dialogError(t, m),
           h(
-            UI.Button,
-            {
-              variant: 'primary',
-              'data-action': 'preset-save',
-              disabled: m.busy,
-              onClick: () => a.savePreset(),
-            },
-            editing ? t('presetSaveEdit') : t('presetSaveNew'),
-          ),
-          h(
-            UI.Button,
-            { variant: 'outline', 'data-action': 'preset-new', onClick: a.newPreset },
-            t('presetNew'),
-          ),
-          h(
-            UI.Button,
-            {
-              variant: 'outline',
-              'data-action': 'preset-save-as-current',
-              disabled: m.presetCurrentText.length === 0,
-              onClick: a.saveAsCurrentPreset,
-            },
-            t('presetSaveAsCurrent'),
+            'div',
+            { 'data-role': 'preset-dialog-actions', style: DIALOG_ACTIONS_STYLE },
+            h(
+              UI.Button,
+              {
+                variant: 'primary',
+                'data-action': 'preset-save',
+                disabled: m.busy || saving,
+                onClick: () => a.savePreset(),
+              },
+              editing === null ? t('presetSaveNew') : t('presetSaveEdit'),
+            ),
+            h(
+              UI.Button,
+              {
+                'data-action': 'preset-dialog-close',
+                'data-preset-dirty': String(dirty),
+                disabled: m.busy || saving,
+                onClick: a.closePresetDialog,
+              },
+              dirty ? t('presetDialogDiscard') : t('presetDialogClose'),
+            ),
           ),
         ),
-        h('p', { style: { margin: 0, ...metaStyle } }, t('presetSaveAsCurrentHint')),
       );
     }
 
     /**
-     * The workspace picker: the sessions this page can name, with the applied
-     * state of each.
-     *
-     * The Host has no workspace-list route (`CONTRACT.md` §4.2), so the picker
-     * offers what the page already knows: one row per workspace from the
-     * workspace seat, each carrying its first session id — the identity the
-     * apply/unapply routes need. A profile without that seat degrades to the
-     * session list, and a row whose workspace root is unknown simply states no
-     * applied state rather than guessing one.
+     * One workspace row inside the apply dialog.
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
-     * @returns the picker element.
+     * @param row - `{session, root, label}` from the page model.
+     * @param record - the `applied` record for this root, or null.
+     * @param presetId - the preset this dialog is applying.
+     * @returns the row element.
      */
-    function presetWorkspacePicker(t, m, a) {
-      const rows = m.presetWorkspaces;
-      const applied = m.presets.data && Array.isArray(m.presets.data.applied) ? m.presets.data.applied : [];
-      const selectedId = m.presetDraft.id;
-      // g-060 (review R1): 「应用」 names a preset by id and the host reads that
-      // preset out of the library, so an unsaved edit in the box would make the
-      // page write the *stored* version and call it success. The picker therefore
-      // states which of the two reasons blocks the action, and the buttons follow
-      // the same value — never a silently stale apply.
-      const blocked = selectedId === null ? 'no-preset' : m.presetDirty === true ? 'unsaved' : null;
+    function presetWorkspaceRow(t, m, a, row, record, presetId) {
       return h(
         'div',
-        { 'data-region': 'preset-workspace', style: { ...cardStyle, display: 'flex', flexDirection: 'column', gap: 8 } },
-        h('h4', { style: { ...headingStyle, fontSize: 13 } }, t('presetWorkspaceHeading')),
-        h('p', { style: { margin: 0, ...metaStyle } }, t('presetWorkspaceNote')),
-        blocked === null
-          ? null
+        {
+          key: row.session,
+          'data-preset-session': row.session,
+          'data-preset-workspace-root': row.root === null ? 'unknown' : row.root,
+          'data-preset-applied': record === null ? 'false' : 'true',
+          'data-preset-orphan': record !== null && record.orphan === true ? 'true' : 'false',
+          'data-preset-name': record === null || record.presetName === null ? '' : record.presetName,
+          style: {
+            display: 'flex',
+            gap: 8,
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            borderTop: `1px solid ${token.borderL2}`,
+            paddingTop: 6,
+          },
+        },
+        h('span', { style: { fontSize: 12, color: token.labelPrimary, wordBreak: 'break-word' } }, row.label),
+        record === null
+          ? h('span', { style: metaStyle }, t('presetNotApplied'))
           : h(
-              'p',
-              {
-                'data-preset-apply-blocked': blocked,
-                style: { margin: 0, ...metaStyle, color: blocked === 'unsaved' ? token.stateWarn : undefined },
-              },
-              t(blocked === 'unsaved' ? 'presetApplyUnsaved' : 'presetApplyPickOne'),
+              'span',
+              { style: metaStyle },
+              record.orphan === true
+                ? `${t('presetAppliedOrphan')}: ${record.presetId}`
+                : fmt(t('presetAppliedAs'), { name: record.presetName === null ? record.presetId : record.presetName }),
             ),
-        rows.length === 0
-          ? h('p', { 'data-region': 'preset-workspace-empty', style: { margin: 0, ...metaStyle } }, t('presetWorkspaceEmpty'))
-          : rows.slice(0, PRESET_WORKSPACE_LIMIT).map((row) => {
-            const record = row.root === null
-              ? null
-              : applied.find((entry) => entry.workspaceRoot === row.root) ?? null;
-            const isSelected = m.presetWorkspace === row.session;
-            return h(
-              'div',
-              {
-                key: row.session,
-                'data-preset-session': row.session,
-                'data-preset-workspace-root': row.root === null ? 'unknown' : row.root,
-                'data-preset-applied': record === null ? 'false' : 'true',
-                'data-preset-orphan': record !== null && record.orphan === true ? 'true' : 'false',
-                'data-preset-workspace-selected': String(isSelected),
-                style: {
-                  display: 'flex',
-                  gap: 8,
-                  alignItems: 'center',
-                  flexWrap: 'wrap',
-                  borderTop: `1px solid ${token.borderL2}`,
-                  paddingTop: 6,
-                },
-              },
-              h(
-                'button',
-                {
-                  type: 'button',
-                  'data-action': 'preset-workspace-pick',
-                  'data-preset-session': row.session,
-                  'aria-pressed': String(isSelected),
-                  style: {
-                    font: 'inherit',
-                    fontSize: 12,
-                    padding: '2px 8px',
-                    borderRadius: 6,
-                    cursor: 'pointer',
-                    background: isSelected ? token.hoverFill : 'transparent',
-                    color: token.labelPrimary,
-                    border: `1px solid ${token.borderL2}`,
-                  },
-                  onClick: () => a.setPresetWorkspace(row.session),
-                },
-                row.label,
-              ),
-              record === null
-                ? h('span', { 'data-preset-name': '', style: metaStyle }, t('presetNotApplied'))
-                : h(
-                    'span',
-                    { 'data-preset-name': record.presetName === null ? '' : record.presetName, style: metaStyle },
-                    record.orphan === true
-                      ? `${t('presetAppliedOrphan')}: ${record.presetId}`
-                      : fmt(t('presetAppliedAs'), { name: record.presetName === null ? record.presetId : record.presetName }),
-                  ),
-              h(
-                UI.Button,
-                {
-                  variant: 'outline',
-                  'data-action': 'preset-apply',
-                  'data-preset-session': row.session,
-                  disabled: m.busy || blocked !== null,
-                  onClick: () => a.applyPreset(selectedId, row.session),
-                },
-                t('presetApply'),
-              ),
-              h(
-                UI.Button,
-                {
-                  variant: 'outline',
-                  'data-action': 'preset-unapply',
-                  'data-preset-session': row.session,
-                  disabled: m.busy || record === null,
-                  onClick: () => a.unapplyPreset(row.session),
-                },
-                t('presetUnapply'),
-              ),
-            );
-          }),
+        h(
+          UI.Button,
+          {
+            variant: 'outline',
+            'data-action': 'preset-apply',
+            'data-preset-id': presetId,
+            'data-preset-session': row.session,
+            disabled: m.busy,
+            onClick: () => a.applyPreset(presetId, row.session),
+          },
+          t('presetApply'),
+        ),
+        h(
+          UI.Button,
+          {
+            variant: 'outline',
+            'data-action': 'preset-unapply',
+            'data-preset-session': row.session,
+            disabled: m.busy || record === null,
+            onClick: () => a.unapplyPreset(row.session),
+          },
+          t('presetUnapply'),
+        ),
+      );
+    }
+
+    /**
+     * The apply dialog: which preset is being applied, and to which workspace.
+     *
+     * It is opened from one list row and names that row's preset, and it states
+     * in words that the version **stored in the library** is what gets written
+     * (`CONTRACT.md` §20.5): an unsaved edit lives in the other dialog and is
+     * never what a layer write stores.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the overlay element, or `null` when this dialog is not open.
+     */
+    function presetApplyDialog(t, m, a) {
+      const dialog = m.presetDialog;
+      if (dialog === null || dialog.kind !== 'apply') return null;
+      const list = m.presets.data && Array.isArray(m.presets.data.presets) ? m.presets.data.presets : [];
+      const preset = list.find((entry) => entry.id === dialog.presetId) ?? null;
+      const name = preset === null ? dialog.presetId : preset.name;
+      const applied = m.presets.data && Array.isArray(m.presets.data.applied) ? m.presets.data.applied : [];
+      const rows = m.presetWorkspaces;
+      return h(
+        'div',
+        { key: 'preset-apply-overlay', 'data-region': 'preset-apply-overlay', style: OVERLAY_STYLE },
+        h(
+          'div',
+          {
+            'data-region': 'preset-apply-dialog',
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-label': fmt(t('presetApplyToTitle'), { name }),
+            'data-preset-dialog': 'apply',
+            'data-preset-dialog-preset': dialog.presetId,
+            style: DIALOG_STYLE,
+          },
+          h('strong', { style: DIALOG_TITLE_STYLE }, fmt(t('presetApplyToTitle'), { name })),
+          h('p', { style: { margin: 0, ...metaStyle } }, t('presetApplyToNote')),
+          rows.length === 0
+            ? h('p', { 'data-region': 'preset-workspace-empty', style: { margin: 0, ...metaStyle } }, t('presetWorkspaceEmpty'))
+            : rows.slice(0, PRESET_WORKSPACE_LIMIT).map((row) => {
+              const record = row.root === null
+                ? null
+                : applied.find((entry) => entry.workspaceRoot === row.root) ?? null;
+              return presetWorkspaceRow(t, m, a, row, record, dialog.presetId);
+            }),
+          dialogError(t, m),
+          h(
+            'div',
+            { 'data-role': 'preset-dialog-actions', style: DIALOG_ACTIONS_STYLE },
+            h(
+              UI.Button,
+              { 'data-action': 'preset-dialog-close', disabled: m.busy, onClick: a.closePresetDialog },
+              t('presetDialogClose'),
+            ),
+          ),
+        ),
       );
     }
 
@@ -386,8 +521,10 @@ window.__ModuleLoader__.load({
      * The 「预设」 tab.
      *
      * Reads `GET /presets` through the page model and writes through the four
-     * catalogue/apply routes only (§20.3–§20.6). The state line is the same
-     * shape the 「我的 Prompt」 panel uses, so a reader recognises it.
+     * catalogue/apply routes only (§20.3–§20.6). The body is the catalogue; the
+     * two overlays are rendered beside it (they are `position: fixed`, so their
+     * place in the tree does not matter), exactly as the page's other dialogs
+     * are.
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
@@ -421,15 +558,12 @@ window.__ModuleLoader__.load({
           },
           stateText,
         ),
-        m.presetStatus.error !== null
-          ? errorBanner(t, m.presetStatus.error, t('presetFailed'))
-          : null,
         m.presets.phase === 'error'
           ? errorBanner(t, m.presets.error, t('loadFailed'))
           : null,
         presetsList(t, m, a),
-        presetEditor(t, m, a),
-        presetWorkspacePicker(t, m, a),
+        presetEditorDialog(t, m, a),
+        presetApplyDialog(t, m, a),
       );
     }
 

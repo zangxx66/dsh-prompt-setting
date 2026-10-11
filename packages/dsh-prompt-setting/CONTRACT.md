@@ -1374,7 +1374,8 @@ Revision 7 adds these:
     sorts after every section the DSH repository defines; another plugin may
     still legitimately register a larger finite order and sort after this one.
 21. **Resolved in g-015: the client no longer offers the Revision 6 editor.**
-    The settings page is the first-level tabs of §13 (five since Revision 19),
+    The settings page is the first-level tabs of §13 (six since Revision 38,
+    five between Revision 19 and Revision 37),
     and its only write surface is
     「我的 Prompt」, which writes the reserved name with `replace` — so no UI
     path can ask for a write the Host would refuse. What remains a *limitation*
@@ -1869,11 +1870,13 @@ snapshot already stores `{name, action}` (§19.4, §19.7).
 
 ## 13. Client-side contract (Revision 4; re-ordered in Revision 7, g-015; collapsed scope in g-016)
 
-### 13.0 The five first-level tabs
+### 13.0 The six first-level tabs
 
 Since g-015 the settings page is a fixed, ordered set of first-level tabs with
 the first one open by default; Revision 19 (g-038) split the old
-「历史与备份」 into 「版本历史」 and 「备份与恢复」, so there are five. Above them
+「历史与备份」 into 「版本历史」 and 「备份与恢复」, so there were five; Revision 38
+(g-060) adds 「预设」 — the preset catalogue of §20 — **directly after**
+「我的 Prompt」, so there are six. Above them
 there are exactly three things: the
 title line — which carries the plugin version beside the heading since Revision
 17 (§13.8) — one line of deciding facts, and the **「我的 Prompt」block whose
@@ -1893,11 +1896,12 @@ place the scope is changed.
 
 | order | `data-tab-value` | tab | what it is |
 | --- | --- | --- | --- |
-| 1 (default) | `mine` | 「我的 Prompt」 | the **only** write surface |
-| 2 | `overview` | 「提示词总览」 | strictly read-only |
-| 3 | `history` | 「版本历史」 | the log, its own scope and the comparison |
-| 4 | `backup` | 「备份与恢复」 | export / import, and nothing else |
-| 5 | `advanced` | 「高级」 | legacy list, the two layer-wide clears, full status |
+| 1 (default) | `mine` | 「我的 Prompt」 | the **only** write surface for the reserved section's text |
+| 2 | `presets` | 「预设」 | the preset catalogue, and the two layer actions it can start (§20) |
+| 3 | `overview` | 「提示词总览」 | strictly read-only |
+| 4 | `history` | 「版本历史」 | the log, its own scope and the comparison |
+| 5 | `backup` | 「备份与恢复」 | export / import, and nothing else |
+| 6 | `advanced` | 「高级」 | legacy list, the two layer-wide clears, full status |
 
 Markers, on top of the Revision 3/4 ones this revision keeps:
 
@@ -1914,12 +1918,13 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   other tab's top-level regions. In particular the export/import actions
   (`data-action="export"` / `"import-preview"` / `"import-apply"`, the
   `data-role="import-file"` input and the whole `data-region="transfer"` block)
-  exist **only** in the `backup` panel, and the log's own regions
+  exist **only** in the `backup` panel, the log's own regions
   (`data-region="history"`, `"history-list"`) exist **only** in the `history`
-  panel.
+  panel, and the preset catalogue (`data-region="presets"`, its list, and the two
+  dialogs of §20.9) exists **only** in the `presets` panel.
 
 **Revision 29 (the client half ships as an entry plus chunks — internal
-structure only).** Nothing above changes: the same five tabs, the same order, the
+structure only).** Nothing above changes: the same tabs, the same order, the
 same markers, the same interaction, the same copy. What changes is *where the
 bytes live* and *when they arrive*:
 
@@ -2319,6 +2324,45 @@ schema of nothing else moves, and the assembly path gains no read.
   (`userPresetsPath` / `readPresets` / `writePresets`, atomic write),
   `index.js` (the five route adapters), `client.js` + `client.presets.js` (the
   tab and its chunk), `CONTRACT.md` §1/§20 and `test/presets.test.mjs`.
+
+---
+
+**Revision 38 (g-060 review R3: the preset tab becomes dialog-based).**
+Client-half only: **no route, no query parameter, no response field and no stored
+byte changes** — §20.2–§20.7 keep their shapes exactly, and both layer writes still
+go through `POST /presets/apply` / `POST /presets/unapply` with the same bodies.
+What changes is *where* the tab's two writes are made, and what the page promises
+while a draft is unsaved.
+
+- **the catalogue is the tab.** The inline editor form and the bottom workspace
+  picker are gone from the tab body (§20.9): it is now a heading, a state line and
+  one row per preset — mode tag, text preview, and 「编辑」/「删除」/「应用到工作区」
+  — plus the two entrances beside the list heading (`preset-new`,
+  `preset-save-as-current`).
+- **two overlays.** Creating/editing happens in `preset-editor-dialog`, the layer
+  action in `preset-apply-dialog`, both laid out like the page's existing
+  `renderRegionDialog` (a scrim plus a card, `role="dialog"`,
+  `aria-modal="true"`). A refusal is rendered **inside** the open dialog on its own
+  marked line and never through the page-level notice (which would sit behind the
+  scrim), a failure never closes the dialog, and closing is always an explicit
+  act.
+- **an unsaved draft is never discarded silently.** While the editor's draft
+  differs from what the library holds, the dialog states it
+  (`data-role="preset-dialog-dirty"`) and its close control is labelled
+  「放弃修改」/「Discard changes」 — the act that throws work away is named as such,
+  and it carries `data-preset-dirty`.
+- **the apply dialog applies the stored version.** It is opened from **one row**
+  and names that row's preset (`data-preset-dialog-preset`), and it says in words
+  that the library's stored text is what gets written. Revision 37's "an unsaved
+  edit disables「应用」" was a consequence of both surfaces living on one screen;
+  with the draft in a different dialog the block is no longer needed, and the
+  invariant it protected is kept by the two facts above instead — the draft cannot
+  reach a layer write, and it cannot vanish unannounced.
+- **client-only, and pinned by `test/client.test.mjs`**: the tab's order and
+  on-demand chunk, the row entrances, the editor dialog's fields and modes, a
+  refused save staying inside the dialog, an empty name never becoming a round
+  trip (zero requests), the dirty-close label and warning, the apply dialog's rows
+  and both POST bodies, and both dictionaries.
 
 ### 13.1 「我的 Prompt」 — the one write surface
 
@@ -5899,43 +5943,66 @@ request leaves `presets.json` and the layer byte-identical.
   the reserved entry and nothing else; a non-reserved name is still `403`
   `write-locked` (§4.1) and no preset route can reach one.
 
-### 20.9 Client surface (g-060)
+### 20.9 Client surface (g-060; the tab became dialog-based in Revision 38)
 
 - **The tab.** `MAIN_TABS` gains `presets` **directly after** `mine`, making six
   first-level tabs in this order: 「我的 Prompt」 / **「预设」** / 「提示词总览」 /
   「版本历史」 / 「备份与恢复」 / 「高级」. Its panel is the on-demand chunk
   `client.presets.js` (the g-045/g-046 lazy boundary, `CHUNK_STAMPS` re-run), and
   the tab label key is `tabPresets` in both dictionaries.
-- **The panel** is `data-region="presets"`. The catalogue is
-  `data-region="presets-list"`, one row per preset carrying `data-preset-id`, with
-  `data-action="preset-edit"` and `data-action="preset-delete"` on each row.
-- **The editor** is `data-region="preset-editor"`: `data-role="preset-name"`,
-  `data-role="preset-text"`, `data-action="preset-save"` (insert or edit),
-  `data-action="preset-new"` (clear the editor) and
-  `data-action="preset-save-as-current"` (start a **new** preset from the text the
-  「我的 Prompt」 panel currently shows). The action control reuses §13.1's two
-  words (`replace` / `append`).
-- **The workspace picker** is `data-region="preset-workspace"`: it offers the
-  sessions this page already knows (`data-preset-session`), because the Host has
-  no workspace list route (§4.2) and applying needs a session. Each row states
-  whether that workspace is applied (`data-preset-applied="true|false"`), which
-  preset (`data-preset-name`), and whether the record is an orphan
-  (`data-preset-orphan="true"`). The two actions are
-  `data-action="preset-apply"` and `data-action="preset-unapply"`.
-- **An unsaved edit blocks「应用」 (review R1).** Applying names a preset by `id`
-  and the Host reads that preset out of the library (§20.5), so the page may not
-  offer「应用」 while the editor holds a change that has not been saved: the apply
-  buttons are `disabled`, the picker states why
-  (`data-preset-apply-blocked="unsaved"`, whose text is `presetApplyUnsaved`), and
-  **saving is what clears it**. A write that silently used the stored version
-  would rewrite a workspace with a text the reader was no longer looking at —
-  the g-056 defect class, on an action that changes a layer instead of a label.
-  The same marker is `no-preset` while no preset is selected
-  (`presetApplyPickOne`).
+- **The tab body is the catalogue** (`data-region="presets"`): a heading, a state
+  line, and `data-region="presets-list"` — one row per preset carrying
+  `data-preset-id` and `data-preset-selected`, with the mode tag, a text preview
+  (`data-role="preset-preview"`) and exactly three actions:
+  `data-action="preset-edit"`, `data-action="preset-delete"` and
+  `data-action="preset-apply-to"` (each carrying `data-preset-id`). Two entrances
+  sit beside the list heading: `data-action="preset-new"` (an empty draft) and
+  `data-action="preset-save-as-current"` (a **new** draft seeded with the text the
+  「我的 Prompt」 panel currently shows — it writes nothing by itself).
+- **The editor is a dialog** (`data-region="preset-editor-dialog"` inside
+  `data-region="preset-editor-overlay"`), `role="dialog"` + `aria-modal="true"`,
+  laid out like the page's other overlay (`renderRegionDialog`, §13.5): a
+  full-screen scrim, then the card. It carries `data-preset-dialog="edit"` and
+  `data-preset-editing` (`new` or the preset's id), and holds
+  `data-role="preset-name"`, `data-role="preset-text"` and the `replace` /
+  `append` control (§13.1's two words). Its buttons are
+  `data-action="preset-save"` (insert when the draft has no id, edit when it has
+  one, §20.3) and `data-action="preset-dialog-close"`.
+- **A refusal stays inside the editor dialog.** The last write's failure is
+  rendered on the dialog's own line — `data-role="preset-dialog-error"` carrying
+  `data-preset-dialog-error="<code>"` and the page's own localized copy for that
+  code — the dialog is **not** closed by it, and the page-level notice is never
+  used as a substitute (it would sit behind the scrim and read as "nothing
+  happened"). The same rule applies to the apply dialog.
+- **An unsaved draft is never discarded silently, and never applied (review
+  R1, re-pointed by R3).** While the draft differs from what the library holds,
+  the dialog carries `data-preset-dirty="true"`, renders a visible warning
+  (`data-role="preset-dialog-dirty"`, `presetDialogDirtyHint`) and labels its
+  close control 「放弃修改」 (`presetDialogDiscard`) instead of 「关闭」; the close
+  control itself carries `data-preset-dirty` so both the label and the state are
+  machine-readable. Discarding is therefore an explicit, *named* act. And because
+  `POST /presets/apply` resolves the preset **by id out of the library**, the
+  apply dialog never sends an editor draft at all: it applies the **stored**
+  version and says so in words (`presetApplyToNote`).
+- **The apply dialog** (`data-region="preset-apply-dialog"` inside
+  `data-region="preset-apply-overlay"`, `role="dialog"` + `aria-modal="true"`) is
+  opened from **one list row** and carries `data-preset-dialog="apply"` and
+  `data-preset-dialog-preset="<id>"`; its title is `presetApplyToTitle` with that
+  preset's name. It lists the sessions this page already knows
+  (`data-preset-session`), because the Host has no workspace list route (§4.2)
+  and applying needs a session. Each row states whether that workspace is applied
+  (`data-preset-applied="true|false"`), which preset (`data-preset-name`), and
+  whether the record is an orphan (`data-preset-orphan="true"`); its two actions
+  are `data-action="preset-apply"` (carrying the dialog's `data-preset-id` and
+  the row's `data-preset-session`) and `data-action="preset-unapply"` (disabled
+  while the row has no record). A successful apply/unapply keeps the dialog open —
+  the refreshed applied state is what the reader is looking at — so leaving is one
+  more explicit `data-action="preset-dialog-close"`.
 - **Reads and writes.** The tab reads `GET /presets` (with `?session=`, §20.2) and
   writes through §20.3–§20.6 only. It never touches `PUT /overrides`, and it never
   sends a layer name: the layer is implied by the preset routes themselves.
 - **State.** The tab carries `data-preset-state` (`idle` / `saving` / `saved` /
-  `error`) and a notice line, in the shape the other tabs use (§13.1's
-  `mine-state`). A host that answers `error` on the read (§20.2) is shown as a
-  library problem, not as「没有预设」.
+  `error`) in the shape the other tabs use (§13.1's `mine-state`). A host that
+  answers `error` on the read (§20.2) is shown as a library problem, not
+  as「没有预设」 — and an empty catalogue is stated separately
+  (`data-region="presets-empty"`).
