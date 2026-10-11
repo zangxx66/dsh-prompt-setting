@@ -7582,3 +7582,45 @@ brief 写「本次 0.2.1 覆盖 g-050…g-058」。核对仓库事实：**g-050�
 - **证据**：`node --test test/*.test.mjs` ⇒ 全绿；`node scripts/prepare.mjs` ⇒ 21/21；
   `node scripts/client-chunks.mjs` ⇒ 5 个 chunk 一致。
 
+### 复核轮 6 返工（R7：基准 + 应用栈模型，2026-10-12）
+
+负责人复验三条同源：每个工作区只有**一条**记录 + 一个 `before`，所以「取消应用」只能整体回退 —— 应用两个预设
+后取消，层里仍留着第一个。
+
+**数据模型（`core/presets.js`）**
+- `applied` 记录改为 `{workspaceRoot, base: {action,text}|null, stack: [{presetId, appliedAt, action, text}]}`：
+  `base` ＝**首次应用前**该工作区保留段内容；层文本 ＝ `base` 与各栈项按应用顺序用 `RESERVED_STACK_SEPARATOR`
+  拼接（空段不参与）；栈项额外带**写入时的 `{action,text}` 快照** —— 否则预设被删（orphan）后无法重算，也无法
+  单独取消。栈空 ⇒ 记录删除、层还原 `base`（`null` ⇒ 删掉该 entry，`interpolateCustom` 一律不动）。
+- `normalizePresets` **宽容迁移**旧形状 `{presetId, before, appliedAt}` ⇒ `{base: before, stack:[…]}`，缺失的文本
+  快照从同 id 的库条目补；不丢数据、不因旧而丢弃整份文件。
+- `planApply`：栈中已有该 presetId ⇒ 幂等（原样返回 document/record，不写层/库/历史，R5 教训继续有效）；
+  否则追加栈项、重算文本与 action（取栈尾预设的 action）。`planUnapply`：**新增必填 `presetId`**，只移除该项并
+  重算（栈空 ⇒ 还原 base），不在栈中 ⇒ 404 `not-applied`。
+- `publicApplied` 输出 `{workspaceRoot, base, stack:[{presetId, presetName, orphan, appliedAt}]}`。
+
+**接口（`index.js`）**
+- `POST /presets/apply` 响应加 `alreadyApplied`/`base`/`stack`/`record`；幂等时三处文件都不写。
+- `POST /presets/unapply` 需要 `{session, presetId}`（缺失 ⇒ 400 `missing-preset-id`，非法 id ⇒ 400 `invalid-id`，
+  不在栈中 ⇒ 404 `not-applied`），响应含 `removed`/`remaining stack`/`restored`。
+- `DELETE /presets` 的 `orphaned` 改为**统计栈项**（一个预设可能应用在多个工作区）。
+- 契约 §20.1/§20.2/§20.5/§20.6/§20.7/§20.9 全部按栈模型重写，并新增 **Revision 41** 段。
+
+**UI（`client.presets.js` / `client.js`）**
+- 应用弹窗每个工作区行渲染**整条栈**：`data-preset-stack`、`data-preset-stack-list`，每个已应用预设一个
+  `data-preset-link`（带 `data-preset-name`、`data-preset-orphan`）与**各自的**「取消」按钮
+  （`data-action="preset-unapply"` + 该项 `data-preset-id` + 行 `data-preset-session`）；不再有笼统的单个「取消应用」。
+- 某预设已在栈中 ⇒ 该行「应用」按钮 `disabled` 且行带 `data-preset-applied-here="true"`（不再只靠点击后的幂等提示）。
+- 取消其中一项后其余段保留（重算由宿主负责）；词条新增 `presetUnapplyOne`/`presetAppliedHere`，删除不再使用的
+  `presetUnapply` 与 `presetAppliedAs`，zh/en 键位对齐断言继续通过。
+
+**测试**
+- 纯逻辑：栈追加顺序与文本拼接、已入栈幂等（document 原样）、`apply(A) → apply(B) → unapply(A)` ⇒ 文本 = `base + B`
+  且栈中只剩 B、`unapply(B)` ⇒ 栈空并还原 `base`（含原本无 entry ⇒ entry 消失）、旧形状迁移、orphan 仍可重算与取消。
+- 路由级：同一链路（原有 entry / 原无 entry 两条路径）断言层文件与 `presets.json` 内容；负向：缺 `presetId` ⇒ 400、
+  不在栈中的 presetId ⇒ 404，且两个文件字节不变；幂等请求层与库字节都不变。
+- 客户端：已应用行「应用」`disabled`、每行列出全部已应用预设名、取消其一后其余名称保留、orphan 链接显示
+  「来源已删除」。
+- **证据**：`node --test test/*.test.mjs` ⇒ 全绿；`node scripts/prepare.mjs` ⇒ 21/21；`node scripts/client-chunks.mjs`
+  ⇒ 5 个 chunk 一致。
+

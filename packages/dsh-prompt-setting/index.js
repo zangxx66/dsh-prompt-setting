@@ -3575,12 +3575,18 @@ function mount(ctx, config, cleanups) {
     }
     writePresets(file.path, document);
     const applied = publicApplied(document);
+    // Revision 41: an application is a link on a workspace's stack, so the count
+    // is over links — a preset may be applied to several workspaces.
+    const orphaned = applied.reduce(
+      (total, record) => total + record.stack.filter((link) => link.presetId === id).length,
+      0,
+    );
     sendJson(res, 200, {
       ok: true,
       removed: true,
       id,
       preset: removed,
-      orphaned: applied.filter((record) => record.presetId === id).length,
+      orphaned,
       presets: publicPresets(document),
       applied,
     });
@@ -3628,12 +3634,14 @@ function mount(ctx, config, cleanups) {
     const at = new Date().toISOString();
     const plan = planApply(file.document, { presetId, workspaceRoot: target.root, current, at });
     const next = validateConfig(plan.config);
-    // Revision 40: the answer's `before` is the snapshot §20.6 restores — the
-    // state before the **first** application on this root — while the history
-    // record below still describes *this* write (the text it really replaced).
+    // Revisions 40/41: the answer's `base` (and therefore its `before`) is the
+    // snapshot §20.6 restores — the state before the **first** application on
+    // this root — while the history record below still describes *this* write
+    // (the text it really replaced).
     const currentEntry = reservedSectionOf(current);
-    const before = plan.record === null ? currentEntry : plan.record.before;
-    const after = reservedSectionOf(next);
+    const base = plan.alreadyApplied === true ? plan.base : plan.base;
+    const before = base;
+    const after = plan.alreadyApplied === true ? currentEntry : reservedSectionOf(next);
     // Revision 39: an application whose text the layer already carries is a
     // **no-op** — nothing is written, no history record is appended (there was
     // no change), and the answer says `alreadyApplied: true` so the page can say
@@ -3666,42 +3674,62 @@ function mount(ctx, config, cleanups) {
       });
       writePresets(file.path, plan.document);
     }
+    const appliedRecords = publicApplied(plan.alreadyApplied === true ? file.document : plan.document);
+    const record = appliedRecords.find((item) => item.workspaceRoot === target.root) ?? null;
     sendJson(res, 200, {
       ok: true,
       applied: true,
       alreadyApplied: plan.alreadyApplied === true,
       preset: plan.preset,
-      record: plan.record,
+      // The public shape of this workspace's record (base + stack), so the page
+      // can list every preset applied there without a second request.
+      record,
       workspaceRoot: target.root,
+      base,
       before,
       after,
+      stack: record === null ? [] : record.stack,
       effectiveFrom: 'next-turn',
       history,
-      appliedRecords: publicApplied(plan.alreadyApplied === true ? file.document : plan.document),
+      appliedRecords,
     });
   }
 
   /**
-   * `POST /prompt-setting/presets/unapply` — put the workspace layer back.
+   * `POST /prompt-setting/presets/unapply` — take **one** preset off a
+   * workspace's stack (Revision 41).
    *
-   * The restoration is content, not a rollback: the snapshot taken by `apply` is
-   * written back verbatim (`before: null` removes the reserved entry), the
-   * layer's other entries and its switch are untouched, and no other file is
-   * read or written. A workspace with no record is `404 not-applied` — there is
-   * nothing to restore, and answering `200` would claim a write that did not
-   * happen.
+   * The body carries `{session, presetId}`: the request names which application
+   * to cancel, because a workspace holds a stack and「取消应用」is no longer
+   * all-or-nothing. The remaining links stay composed on top of `base`; removing
+   * the last one restores `base` itself (`null` ⇒ the reserved entry is removed),
+   * and the layer's other entries and its switch are untouched either way.
+   *
+   * The text is **recomposed** from base + stack rather than un-appended from the
+   * current bytes, which is what makes cancelling one preset out of several
+   * possible at all — and it means a hand edit made between two applications is
+   * overwritten. That trade is stated in the contract (§20.6) as well as here.
+   *
+   * `presetId` is required (`400 missing-preset-id`), and a preset that is not on
+   * that workspace's stack is `404 not-applied` — the answer must not claim a
+   * write that did not happen.
    * @param req - the Node request.
    * @param url - the parsed request URL.
    * @param res - the Node response.
    */
   async function handleUnapplyPreset(req, url, res) {
     const body = await readJsonBody(req);
+    const rawPresetId = body?.presetId;
+    if (rawPresetId === undefined || rawPresetId === null || rawPresetId === '') {
+      throw fail('missing-preset-id', 'body field "presetId" is required');
+    }
+    const presetId = validatePresetId(rawPresetId);
     const sessionId = presetSessionOf(body, url);
     const target = targetFor('workspace', sessionId);
     const current = writableConfig(target.path);
     const file = writablePresets();
     const at = new Date().toISOString();
-    const plan = planUnapply(file.document, { workspaceRoot: target.root, current });
+    const plan = planUnapply(file.document, { workspaceRoot: target.root, presetId, current });
     const next = validateConfig(plan.config);
     const before = reservedSectionOf(current);
     const after = reservedSectionOf(next);
@@ -3718,21 +3746,28 @@ function mount(ctx, config, cleanups) {
       before: textEntry(before === null ? null : before.text),
       after: textEntry(after === null ? null : after.text),
       snapshot: snapshotOfConfig(next),
-      note: `unapply preset ${plan.record.presetId}`,
+      note: `unapply preset ${presetId}`,
     });
     writePresets(file.path, plan.document);
+    const appliedRecords = publicApplied(plan.document);
+    const record = appliedRecords.find((item) => item.workspaceRoot === target.root) ?? null;
     sendJson(res, 200, {
       ok: true,
       unapplied: true,
-      presetId: plan.record.presetId,
-      record: plan.record,
+      // Which application was cancelled, and what is left on the stack — the two
+      // facts the page needs to keep the remaining names on screen.
+      presetId,
+      removed: { presetId, appliedAt: plan.removed.appliedAt ?? null },
+      record,
       workspaceRoot: target.root,
       restored: plan.restored,
+      base: plan.base,
+      stack: record === null ? [] : record.stack,
       before,
       after,
       effectiveFrom: 'next-turn',
       history,
-      appliedRecords: publicApplied(plan.document),
+      appliedRecords,
     });
   }
 

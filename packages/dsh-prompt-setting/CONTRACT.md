@@ -2417,6 +2417,38 @@ confirmation is drawn above every tab dialog).**
 - Nothing else moved: the five routes, their bodies, their codes, the library's
   shape and every stored byte keep their Revision 37–39 meanings.
 
+---
+
+**Revision 41 (g-060 review R7: one base plus an application stack per
+workspace).** The owner's acceptance pass found that a single `before` snapshot
+could only ever be all-or-nothing: applying two presets and then cancelling left
+the first one in the layer, because one record described one application. The
+record is now a **base plus a stack**, and「取消应用」is per application.
+
+- **the record (§20.1).** `{workspaceRoot, base, stack[]}`: `base` is the reserved
+  entry as it stood before the first application (`null` = there was none), and
+  each link is `{presetId, appliedAt}` plus **the `{action, text}` it wrote** —
+  that snapshot is what lets the text be recomposed, and one link cancelled, after
+  its preset has been deleted. One record per root; an empty stack is not a record.
+- **the text is always a recomposition** of `base` plus the links, joined by
+  `RESERVED_STACK_SEPARATOR` (§20.5). Both routes recompute it rather than
+  appending to (or subtracting from) the layer's current bytes, which is what makes
+  cancelling one application possible at all — and it means a hand edit made
+  between two applications is overwritten. Stated, not hidden.
+- **apply is idempotent per link** (§20.5): a preset already on the stack is not
+  pushed twice, and that request writes no layer, no history and no library file.
+- **unapply names its target** (§20.6): `{session, presetId}`; a workspace with no
+  record, or a preset that is not on its stack, is `404 not-applied`.
+- **`GET /presets` answers the stack** (§20.2): `applied[].stack` carries every
+  application in order, each with `presetName` / `orphan`, so a page can list them.
+- **the client renders it** (§20.9): every workspace row lists its applications,
+  each with its own「取消」, and「应用」is `disabled` for a preset already on that
+  stack.
+- **old records migrate** (§20.1): a Revision 37–40 record is read as a one-link
+  stack, its `before` becoming `base`.
+- Nothing else moved: the five routes, their codes, the export/import/history
+  schemas and every byte of a layer file keep their Revision 37–40 meanings.
+
 ### 13.1 「我的 Prompt」 — the one write surface
 
 - The panel is `data-region="mine"`, the layer control is
@@ -5789,9 +5821,11 @@ every preset route and never on the assembly path:
   "applied": [
     {
       "workspaceRoot": "/abs/path/to/workspace",
-      "presetId": "0f9c1c62-...",
-      "before": { "action": "replace", "text": "MINE" },
-      "appliedAt": "2024-01-02T00:00:00.000Z"
+      "base": { "action": "replace", "text": "MINE" },
+      "stack": [
+        { "presetId": "0f9c1c62-...", "appliedAt": "2024-01-02T00:00:00.000Z", "action": "append", "text": "ONE" },
+        { "presetId": "7c2a1b04-...", "appliedAt": "2024-01-03T00:00:00.000Z", "action": "replace", "text": "TWO" }
+      ]
     }
   ]
 }
@@ -5807,12 +5841,27 @@ every preset route and never on the assembly path:
   or `append` — the reserved name's two writable actions (§4.1) and nothing else.
   `text` is a string of at most 200 KiB (`MAX_TEXT_BYTES`), and `""` is a legal
   value (Revision 35's blank rule applies when it is assembled).
-- `before` is the snapshot「取消应用」restores: `null` means the workspace layer
-  held **no** reserved entry when the preset was applied, so the entry is removed
-  on cancel; otherwise it is the `{action, text}` that was overwritten.
-- At most one `applied` record per `workspaceRoot` (a layer has one reserved
-  entry). A record whose `presetId` is no longer in `presets` is an **orphan**:
-  it is reported, kept, and still restorable.
+- **One record per `workspaceRoot`, and it is a base plus a stack (Revision 41).**
+  - `base` is the reserved entry as it stood **before the first application** on
+    that workspace (`null` = the layer held none then). It is taken once and is
+    never rewritten by a later application.
+  - `stack` holds every preset applied since, **oldest first**. The layer's text
+    is the recomposition of `base` plus the links, joined by
+    `RESERVED_STACK_SEPARATOR`; a part that is empty (or whitespace-only)
+    contributes nothing and no separator (Revision 35's rule, applied per link).
+  - each link also carries the `{action, text}` it wrote **at the time**. That
+    snapshot is what lets the text be recomposed — and one link cancelled — after
+    its preset has been deleted from the library.
+  - a link whose `presetId` is no longer in `presets` is an **orphan**: reported,
+    kept, and still cancellable (§20.2).
+  - an **empty stack is not a record**: cancelling the last link removes the
+    record and leaves the layer at `base`.
+- **Migration.** A document written by Revisions 37–40 (one
+  `{workspaceRoot, presetId, before, appliedAt}` record) is read as a one-link
+  stack: `before` becomes `base`, the preset becomes the only link, and the text
+  snapshot that shape never carried is taken from the library entry of the same
+  id when the document still has one. Nothing is dropped for being old, and no
+  write route rewrites the file merely to change its shape.
 - **Tolerance.** An individual entry this revision cannot use is dropped when the
   file is read (one bad line must not hide every other preset); a file that is
   not a JSON object at all, or that states another version, is **not** rewritten
@@ -5834,11 +5883,11 @@ caller is looking at. It never filters the library (the library is global).
   "applied": [
     {
       "workspaceRoot": "/abs/path",
-      "presetId": "…",
-      "presetName": "…",
-      "orphan": false,
-      "appliedAt": "…",
-      "before": { "action": "replace", "text": "…" }
+      "base": { "action": "replace", "text": "MINE" },
+      "stack": [
+        { "presetId": "…", "presetName": "…", "orphan": false, "appliedAt": "…" },
+        { "presetId": "…", "presetName": null, "orphan": true, "appliedAt": "…" }
+      ]
     }
   ],
   "workspaceRoot": "/abs/path",
@@ -5851,8 +5900,11 @@ caller is looking at. It never filters the library (the library is global).
   so, and the write routes refuse. A read never rewrites the file.
 - `workspaceRoot` is the root the `session` resolved to, or `null` when no
   session was supplied or it does not resolve. It is not an error.
-- `presetName` is `null` for an orphan record; `orphan` is the flag the page
-  renders as「来源已删除」.
+- **`applied[]` is one entry per workspace** (Revision 41): its `base` (as stored)
+  plus its `stack`, in application order, so a page can list **every** preset a
+  workspace holds — which is what its「取消」buttons act on (§20.9). A link carries
+  its `presetName` when the library still has it and `orphan: true` when it does
+  not; the link's own text snapshot is not public, because a page never renders it.
 - The response carries no layer text and never reads a workspace layer.
 
 ### 20.3 `PUT /prompt-setting/presets`
@@ -5902,101 +5954,91 @@ Body: `{presetId, session}` (`session` may also come from `?session=`).
   §4.2 requires; a request without one, or with one that resolves nothing, is
   `400 workspace-unresolved` and writes nothing.
 - The write is `PUT /overrides`' own path with the same guarantees: the layer's
-  current config is read first (`409 layer-not-writable` when it is unusable),
-  the reserved entry is upserted with the preset's `action`/`text`, the rebuilt
-  config is validated, and only then is it written atomically and cached. The
-  layer's other entries and its `interpolateCustom` switch are carried across.
-- **What each mode writes (Revision 39).** The two words mean here what they mean
-  everywhere else in this plugin:
-  - `replace`: the preset's text **is** the entry's text;
-  - `append`: the preset's text is **stacked after** the text the layer already
-    holds, joined by `RESERVED_STACK_SEPARATOR` — the same separator the
-    two-layer stack of Revision 36 uses (§13.1). This composition happens **in
-    this route and nowhere else**: a layer holds one reserved entry, so the merge
-    kernel cannot join a layer to itself. A layer with no entry (or an empty one)
-    contributes nothing and no separator is inserted.
-- **The composition is idempotent, and an idempotent request changes nothing.**
-  If the entry already carries exactly the preset's text, or already ends with
-  `SEP` + that text, the route writes **no layer** (`writeConfig` is skipped), no
-  history record, and **not even the library file** — `presets.json` is left
-  byte-identical (review R5) — and it answers `alreadyApplied: true` so the page
-  can say「该预设已在此工作区生效」rather than claim a write. The `applied` record
-  therefore keeps the snapshot the **first** application took, which is the only
-  thing §20.6 restores: overwriting it with the text the layer holds now would
-  make the cancel a no-op, i.e. the user could never get back. A layer that
-  already carried the text without a record gets **no** new record — this request
-  produced no change to restore — and §20.6's availability simply follows whether
-  a record exists.
-- The snapshot is taken from the config this request just read, and the `applied`
-  record for that root is **replaced** (one record per root). It carries the
-  entry's `action` **and** its text, so §20.6 restores the mode as well.
-- **The snapshot is the state before the *first* application (Revision 40).** A
-  later application on the same root does **not** overwrite `before`: it keeps
-  that snapshot and only moves the pointer (`presetId`, `appliedAt`).「取消应用」
-  therefore always returns that workspace to where it stood before a preset was
-  ever applied, instead of walking back one application at a time and leaving the
-  previous preset in the layer. The response's `before` is that stored snapshot
-  (the value §20.6 will restore); the history record still describes **this**
-  write, i.e. the text it really replaced.
+  current config is read first (`409 layer-not-writable` when it is unusable), the
+  reserved entry is rebuilt, the rebuilt config is validated, and only then is it
+  written atomically and cached. The layer's other entries and its
+  `interpolateCustom` switch are carried across.
+- **The stack (Revision 41).** Applying pushes one link onto that workspace's
+  stack and recomposes the reserved entry from `base` plus the links:
+  - `base` is snapshotted **once**, by the first application on that root, from
+    the config this request just read; a later application keeps it (Revisions
+    40/R6).
+  - the composed text is `base.text` and every link's text, in application order,
+    joined by `RESERVED_STACK_SEPARATOR`, with empty parts contributing nothing;
+  - the entry's `action` is the **newest link's** action: that is the intent most
+    recently stated about how this text relates to the other layer (§13.1).
+- **Recomposition is authoritative.** The text is rebuilt from the stack rather
+  than appended to whatever the layer currently holds, so an edit made to that
+  entry by hand between two applications is overwritten. That is the price of
+  being able to cancel one preset out of several, and it is what this route
+  promises.
+- **Idempotent.** A preset already on the stack is not pushed twice: the route
+  writes **no layer**, no history record and **not even the library file**, and
+  answers `alreadyApplied: true` (Revisions 39/R5).
 - A history record is appended exactly as `PUT /overrides` does it (a section
   record: `name` = the reserved name, `before`/`after` = its text on either side,
-  `origin: "ui"`, `action` from the ordinary `actionOf` rule) — and it is appended
-  only when the layer really changed. **No history shape changes** (§8) and no new
-  action or origin is introduced.
+  `origin: "ui"`, `action` from the ordinary `actionOf` rule) — only when the layer
+  really changed. **No history shape changes** (§8) and no new action or origin is
+  introduced.
 - Response `200`:
 
 ```json
 { "ok": true, "applied": true, "alreadyApplied": false, "preset": { … },
-  "record": { "workspaceRoot": "…", "presetId": "…", "before": { "action": "replace", "text": "MINE" }, "appliedAt": "…" },
-  "workspaceRoot": "…", "before": { "action": "replace", "text": "MINE" }, "after": { "action": "append", "text": "MINE\n\nPRESET" },
-  "effectiveFrom": "next-turn", "history": { … }, "appliedRecords": [ … ] }
+  "record": { "workspaceRoot": "…", "base": { "action": "replace", "text": "MINE" },
+              "stack": [{ "presetId": "…", "presetName": "…", "orphan": false, "appliedAt": "…" }] },
+  "workspaceRoot": "…",
+  "base": { "action": "replace", "text": "MINE" },
+  "before": { "action": "replace", "text": "MINE" },
+  "after": { "action": "append", "text": "MINE\n\nONE" },
+  "stack": [ … ], "effectiveFrom": "next-turn", "history": { … }, "appliedRecords": [ … ] }
 ```
 
-- `alreadyApplied` is `true` exactly when the layer already carried the text; it
-  is always present, so a client never has to infer it from an empty history. In
-  that case `history` is `null`, `record` is the record that was already there
-  (or `null`), `appliedRecords` describes the unchanged library, and no file —
-  layer, log or library — was written.
-- Applying a **different** preset or a **changed** one is still a real write: the
-  second application's `before` is the first application's result, so「取消应用」
-  goes back to the text that was there before the latest application.
+- `before` and `base` carry the same value: the snapshot §20.6 restores when the
+  stack empties. `after` is what this request left in the layer.
+- Applying a **different** preset is a real write: the stack grows, the base does
+  not move, and the history record describes this write alone.
 - **Order of the two writes, and its residual risk.** The workspace layer is
   written first and the library record second, because a record must describe a
   write that really happened; if the library write then fails, the answer is a
   `500` and the layer holds the preset text with no record of how to undo it. The
   opposite order would record an application that never happened, which is worse
-  (the page would offer to cancel a workspace it never touched).
+  (the page would then offer to cancel a workspace it never touched).
 
 ### 20.6 `POST /prompt-setting/presets/unapply`
 
-Body: `{session}` (`session` may also come from `?session=`).
+Body: `{session, presetId}` (`session` may also come from `?session=`).
 
-- The record for that workspace root must exist: `404 not-applied` otherwise —
-  there is nothing to restore, and a `200` would claim a write that did not
-  happen.
-- The restoration is **content**: `before: null` removes the reserved entry, a
-  non-null `before` writes its `action` **and** its `text` back — an `append`
-  snapshot is restored as `append`, never flattened to `replace` (Revision 39:
-  the mode is part of what was overwritten). The snapshot restored is the one the
-  **first** application took (Revision 40): cancelling means「回到任何预设应用之前」,
-  not「撤销上一次应用」. It is not a history rollback
-  and it consults no log — the value restored is the one the application
-  overwrote. The layer's other entries, its switch, the user layer and every other
-  workspace are untouched.
-- The record is dropped, and an ordinary section history record is appended, as in
-  §20.5.
+- `presetId` is **required** (`400 missing-preset-id`) and must be well-formed
+  (`400 invalid-id`). A workspace with no record, or one whose stack does not hold
+  that preset, is `404 not-applied` — there is nothing to remove, and answering
+  `200` would claim a write that did not happen.
+- **One application at a time (Revision 41).** The named link is removed from the
+  stack and the layer's text is **recomposed** from `base` plus what is left: every
+  other application stays exactly as it was. The layer's other entries and its
+  `interpolateCustom` switch are untouched.
+- **When the stack empties**, the layer returns to `base`: a non-null base is
+  written back with its own `action`/`text`, a `null` base removes the reserved
+  entry, and the record itself is removed (there is nothing left to cancel).
+- As on apply, the text is recomposed from `base` + the links rather than
+  "un-appended" from the current bytes, so a hand edit made between two
+  applications is overwritten here as well. That trade is the same one §20.5
+  states.
+- An ordinary section history record is appended, as in §20.5.
 - Response `200`:
 
 ```json
 { "ok": true, "unapplied": true, "presetId": "…",
-  "record": { "workspaceRoot": "…", "presetId": "…", "before": { … }, "appliedAt": "…" },
-  "workspaceRoot": "…", "restored": true,
-  "before": { "action": "append", "text": "PRESET" }, "after": { "action": "replace", "text": "MINE" },
+  "removed": { "presetId": "…", "appliedAt": "…" },
+  "record": { "workspaceRoot": "…", "base": { … }, "stack": [ … ] },
+  "workspaceRoot": "…", "restored": false,
+  "base": { … }, "stack": [ … ], "before": { … }, "after": { … },
   "effectiveFrom": "next-turn", "history": { … }, "appliedRecords": [ … ] }
 ```
 
-- `restored` is `false` exactly when the snapshot was `null` (the entry was
-  removed rather than written back).
+- `stack` is what remains on that workspace, and `presetId` names the link this
+  request removed. `restored` is `true` exactly when the stack is now empty **and**
+  `base` is not `null` — the layer is back to text it held, rather than back to
+  "no entry at all".
 
 ### 20.7 Errors
 
@@ -6013,9 +6055,9 @@ All are `OverrideError` shapes (`{ok: false, code, message}`, §4.4):
 | `invalid-id` | 400 | An `id` is present but does not match the documented shape. |
 | `missing-id` | 400 | `DELETE` carries no `id`. |
 | `preset-not-found` | 404 | `PUT` with an unknown `id`, `DELETE` of an unknown `id`, or `apply` of an unknown `presetId`. |
-| `missing-preset-id` | 400 | `apply` carries no `presetId`. |
+| `missing-preset-id` | 400 | `apply` or `unapply` carries no `presetId` (both name the preset they act on). |
 | `workspace-unresolved` | 400 | `apply`/`unapply` with no session, or one that resolves no workspace. |
-| `not-applied` | 404 | `unapply` for a workspace with no record. |
+| `not-applied` | 404 | `unapply` for a workspace with no record, or for a preset that is not on that workspace's stack (Revision 41). |
 | `presets-not-writable` | 409 | The library file exists but is not a valid document (§20.1). |
 | `layer-not-writable` | 409 | The workspace layer's own file is not a valid config (§4.4, unchanged). |
 
@@ -6083,14 +6125,22 @@ request leaves `presets.json` and the layer byte-identical.
   `data-preset-dialog-preset="<id>"`; its title is `presetApplyToTitle` with that
   preset's name. It lists the sessions this page already knows
   (`data-preset-session`), because the Host has no workspace list route (§4.2)
-  and applying needs a session. Each row states whether that workspace is applied
-  (`data-preset-applied="true|false"`), which preset (`data-preset-name`), and
-  whether the record is an orphan (`data-preset-orphan="true"`); its two actions
-  are `data-action="preset-apply"` (carrying the dialog's `data-preset-id` and
-  the row's `data-preset-session`) and `data-action="preset-unapply"` (disabled
-  while the row has no record). A successful apply/unapply keeps the dialog open —
-  the refreshed applied state is what the reader is looking at — so leaving is one
-  more explicit `data-action="preset-dialog-close"`.
+  and applying needs a session.
+- **Each row renders that workspace's whole stack (Revision 41).** The row carries
+  `data-preset-applied="true|false"` and `data-preset-stack="<n>"`, and — when the
+  stack is not empty — a `data-preset-stack-list="<session>"` group holding one
+  entry per application, in order: `data-preset-link="<presetId>"` with
+  `data-preset-name` and `data-preset-orphan`, and **its own**
+  `data-action="preset-unapply"` carrying that link's `data-preset-id` and the
+  row's `data-preset-session`. There is no all-or-nothing「取消应用」button any
+  more: cancelling one application keeps the others composed (§20.6).
+- The row's `data-action="preset-apply"` (carrying the dialog's `data-preset-id`
+  and the row's `data-preset-session`) is **`disabled`** — and the row carries
+  `data-preset-applied-here="true"` — exactly when that preset is already on that
+  workspace's stack, so the reader sees the state instead of clicking a no-op
+  (§20.5). A successful apply/unapply keeps the dialog open — the refreshed stack
+  is what the reader is looking at — so leaving is one more explicit
+  `data-action="preset-dialog-close"`.
 - **Reads and writes.** The tab reads `GET /presets` (with `?session=`, §20.2) and
   writes through §20.3–§20.6 only. It never touches `PUT /overrides`, and it never
   sends a layer name: the layer is implied by the preset routes themselves.

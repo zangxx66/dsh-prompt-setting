@@ -104,35 +104,75 @@ function normalizeStoredPreset(raw) {
 }
 
 /**
- * Normalize one stored `applied` record.
+ * Normalize one stored `applied` record (Revision 41: one base plus a stack).
  *
- * `before` is the whole point of the record, so a record whose snapshot cannot
- * be read is dropped: "applied, but we do not know what to restore" would make
- *「取消应用」silently wrong. A `null` snapshot is a real value — it means the
- * workspace layer held no reserved entry when the preset was applied, so
- *「取消应用」must remove the entry entirely.
+ * A record describes **one workspace**: `base` is the reserved entry that was
+ * there before the first application (`null` = there was none), and `stack` is
+ * every preset applied since, in application order. Each stack entry carries the
+ * `{action, text}` it wrote at the time, so the layer's text can be recomposed —
+ * and one entry cancelled — even after that preset has been deleted from the
+ * library (an orphan).
+ *
+ * The **Revision 37 shape** (`{workspaceRoot, presetId, before, appliedAt}`) is
+ * migrated in place rather than dropped: its `before` becomes `base`, its single
+ * preset becomes a one-entry stack, and the text snapshot it never carried is
+ * taken from the library entry of the same id when the document still has one.
  * @param raw - one element of a stored `applied` array.
+ * @param presetsById - the document's own presets, for that migration lookup.
  * @returns the normalized record, or `null` when the entry is unusable.
  */
-function normalizeStoredApplied(raw) {
+function normalizeStoredApplied(raw, presetsById = new Map()) {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const workspaceRoot = raw.workspaceRoot;
   if (typeof workspaceRoot !== 'string' || workspaceRoot.length === 0) return null;
+
+  const stacked = Array.isArray(raw.stack);
+  const rawBase = stacked ? raw.base : raw.before;
+  let base = null;
+  if (rawBase !== undefined && rawBase !== null) {
+    if (typeof rawBase !== 'object' || Array.isArray(rawBase)) return null;
+    if (!PRESET_ACTIONS.includes(rawBase.action)) return null;
+    if (typeof rawBase.text !== 'string' || encoder.encode(rawBase.text).length > MAX_TEXT_BYTES) return null;
+    base = { action: rawBase.action, text: rawBase.text };
+  }
+
+  if (stacked) {
+    const stack = [];
+    for (const item of raw.stack) {
+      if (item === null || typeof item !== 'object' || Array.isArray(item)) continue;
+      const presetId = item.presetId;
+      if (typeof presetId !== 'string' || !PRESET_ID_PATTERN.test(presetId)) continue;
+      const known = presetsById.get(presetId) ?? null;
+      const action = PRESET_ACTIONS.includes(item.action)
+        ? item.action
+        : known !== null
+          ? known.action
+          : 'append';
+      const text = typeof item.text === 'string' ? item.text : known === null ? '' : known.text;
+      if (encoder.encode(text).length > MAX_TEXT_BYTES) continue;
+      stack.push({
+        presetId,
+        appliedAt: typeof item.appliedAt === 'string' ? item.appliedAt : null,
+        action,
+        text,
+      });
+    }
+    return { workspaceRoot, base, stack };
+  }
+
+  // Revision 37's one-record shape.
   const presetId = raw.presetId;
   if (typeof presetId !== 'string' || !PRESET_ID_PATTERN.test(presetId)) return null;
-  let before = null;
-  if (raw.before !== undefined && raw.before !== null) {
-    const snapshot = raw.before;
-    if (typeof snapshot !== 'object' || Array.isArray(snapshot)) return null;
-    if (!PRESET_ACTIONS.includes(snapshot.action)) return null;
-    if (typeof snapshot.text !== 'string' || encoder.encode(snapshot.text).length > MAX_TEXT_BYTES) return null;
-    before = { action: snapshot.action, text: snapshot.text };
-  }
+  const known = presetsById.get(presetId) ?? null;
   return {
     workspaceRoot,
-    presetId,
-    before,
-    appliedAt: typeof raw.appliedAt === 'string' ? raw.appliedAt : null,
+    base,
+    stack: [{
+      presetId,
+      appliedAt: typeof raw.appliedAt === 'string' ? raw.appliedAt : null,
+      action: known !== null ? known.action : base === null ? 'replace' : base.action,
+      text: known !== null ? known.text : '',
+    }],
   };
 }
 
@@ -169,9 +209,10 @@ export function normalizePresets(raw) {
     seen.add(preset.id);
     presets.push(preset);
   }
+  const presetsById = new Map(presets.map((preset) => [preset.id, preset]));
   const applied = [];
   for (const entry of raw.applied ?? []) {
-    const record = normalizeStoredApplied(entry);
+    const record = normalizeStoredApplied(entry, presetsById);
     if (record === null) continue;
     const at = applied.findIndex((item) => item.workspaceRoot === record.workspaceRoot);
     if (at === -1) applied.push(record);
@@ -363,48 +404,55 @@ function withoutReservedOverride(config) {
 }
 
 /**
- * Plan「应用」: snapshot what the workspace layer holds now, return the config to
- * write, and return the library document with the record replaced.
+ * The reserved entry's text for one base + stack pair.
  *
- * The snapshot is the whole safety story of「取消应用」: the reserved section is
- * one entry, so writing a preset overwrites whatever the user had typed, and
- * the only way back is the copy taken **before** the write. It is taken from the
- * config the route just read (not from the cache, not from an earlier request).
+ * Parts that are empty (or whitespace-only) contribute nothing — Revision 35's
+ * 「a blank half states nothing」 rule, applied to every link of the chain — and
+ * the non-empty ones are joined by the same {@link RESERVED_STACK_SEPARATOR} the
+ * cross-layer stack uses, so one application of one preset reproduces exactly
+ * what Revision 39 produced.
+ * @param base - the `{action, text}|null` snapshot the stack sits on.
+ * @param stack - the stack entries, in application order.
+ * @returns the composed text.
+ */
+function composeStackText(base, stack) {
+  const parts = [];
+  const baseText = base === null ? '' : base.text;
+  if (baseText.trim().length > 0) parts.push(baseText);
+  for (const item of stack) {
+    if (typeof item.text === 'string' && item.text.trim().length > 0) parts.push(item.text);
+  }
+  return parts.join(RESERVED_STACK_SEPARATOR);
+}
+
+/**
+ * Plan「应用」: push one preset onto a workspace's stack and recompose its text.
  *
- * At most one record per workspace root, and its snapshot is **the state before
- * the first application** on that root (Revision 40): a later application keeps
- * that snapshot and only moves the pointer (`presetId` / `appliedAt`).
- * 「取消应用」therefore always returns the workspace to where it stood before a
- * preset was ever applied — one record, one restore point, deliberately not a
- * stack of versions (a second application that overwrote the snapshot would leave
- * the user holding the previous preset instead of their own text).
+ * **The model (Revision 41).** Each workspace keeps one record: `base` — the
+ * reserved entry as it stood **before the first application** — and the `stack`
+ * of presets applied since, in order. The layer's text is always the recomposition
+ * of that pair, so「取消应用」of *one* preset removes that link and keeps the
+ * others, instead of walking the whole layer back.
  *
- * **The two modes mean what they mean everywhere else in this plugin
- * (Revision 39).** `replace` is the preset's text as the section's text.
- * `append` is the preset's text **stacked after what the workspace layer already
- * holds**, joined by the same {@link RESERVED_STACK_SEPARATOR} the two-layer
- * stack of Revision 36 uses — the reserved section is one entry per layer, so
- * 「叠加」 has to be composed here, at the one moment the text is written; the
- * merge kernel cannot add the same layer's text twice. An empty/absent stored
- * text contributes no separator, exactly as in the cross-layer case.
+ * **Idempotent.** A preset already on the stack is not pushed twice: the plan
+ * returns the caller's own document, the existing record, and
+ * `alreadyApplied: true`, and the route writes nothing at all — layer, history
+ * and library file included (Revisions 39/R5).
  *
- * The composition is **idempotent**: a text that is already the preset's, or
- * already ends with `SEP + preset.text`, is left alone and the plan says so
- * (`alreadyApplied`), so clicking「应用」twice cannot grow the section by one
- * copy each time. Such a request changes **nothing at all**: the returned
- * `document` is the caller's own object, and `record` is the record that was
- * already there (or `null` when this layer never had one — the request produced
- * no change to restore). The snapshot the *first* application took is the only
- * thing「取消应用」restores, so a second click must not overwrite it (review R5).
+ * **The base is taken once.** The first application snapshots the layer as it
+ * stood; later applications never overwrite it (Revision 40/R6 — a snapshot that
+ * followed the current text would turn「取消应用」into a no-op).
+ *
+ * **Recomposition is authoritative.** The text is rebuilt from the stack rather
+ * than appended to whatever the layer currently holds, so a hand edit made
+ * between two applications is overwritten. That is the price of cancelling one
+ * preset out of several, and it is stated in the contract (§20.5).
  * @param document - the current normalized document.
  * @param options.presetId - the preset to apply.
  * @param options.workspaceRoot - the resolved workspace root.
  * @param options.current - the workspace layer's current validated config.
  * @param options.at - the ISO timestamp to stamp.
- * @returns `{document, preset, before, config, record, text, alreadyApplied}`
- *   where `text` is the text the reserved entry ends up with, `alreadyApplied`
- *   says the layer already carried it, and `document`/`record` are the inputs
- *   unchanged in that case (a new record is written only when one is needed).
+ * @returns `{document, preset, record, base, stack, text, config, alreadyApplied}`.
  * @throws {OverrideError} 404 `preset-not-found`.
  */
 export function planApply(document, options = {}) {
@@ -413,113 +461,138 @@ export function planApply(document, options = {}) {
     throw fail('preset-not-found', `no preset with id ${JSON.stringify(options.presetId)}`, 404);
   }
   const entry = reservedEntryOf(options.current);
-  const before = entry === null
-    ? null
-    : { action: entry.action, text: typeof entry.text === 'string' ? entry.text : '' };
-  const stored = entry === null || typeof entry.text !== 'string' ? '' : entry.text;
-  let text;
-  let alreadyApplied = false;
-  if (preset.action === 'append') {
-    if (stored.length === 0) {
-      text = preset.text;
-    } else if (stored === preset.text || stored.endsWith(`${RESERVED_STACK_SEPARATOR}${preset.text}`)) {
-      // Already the whole text, or already the top of the stack: appending again
-      // would duplicate it, which is the one thing a second click must not do.
-      text = stored;
-      alreadyApplied = true;
-    } else {
-      text = `${stored}${RESERVED_STACK_SEPARATOR}${preset.text}`;
-    }
-  } else {
-    text = preset.text;
-    alreadyApplied = entry !== null && stored === preset.text && entry.action === preset.action;
-  }
-  const config = withReservedOverride(options.current, {
-    name: CUSTOM_SECTION_NAME,
-    action: preset.action,
-    text,
-  });
-  // Review R5: an idempotent request changes **nothing**, and that includes the
-  // record. `before` is the only thing「取消应用」restores, so overwriting it with
-  // the text the layer holds *now* would turn the cancel into a no-op — the user
-  // could never get back to the state before the first application. The existing
-  // record is therefore returned untouched (and `null` when this layer never had
-  // one: this request produced no change to restore).
   const existing = appliedListOf(document)
     .find((item) => item.workspaceRoot === options.workspaceRoot) ?? null;
-  if (alreadyApplied) {
+  const stack = existing === null ? [] : existing.stack.slice();
+  const currentText = entry === null || typeof entry.text !== 'string' ? '' : entry.text;
+
+  if (stack.some((item) => item.presetId === preset.id)) {
     return {
       document,
       preset,
-      before,
-      config,
       record: existing,
-      text,
+      base: existing.base,
+      stack,
+      text: currentText,
+      config: options.current,
       alreadyApplied: true,
     };
   }
-  // Review R6: the record's snapshot is the state **before the first
-  // application** on this root, and a later application may not overwrite it —
-  // otherwise「取消应用」would only walk back one step (to the text the previous
-  // application wrote) and the user, who never asked for a stack of versions,
-  // would be left holding the preset. Only the pointer moves: `presetId` and
-  // `appliedAt` describe the application that is happening now.
-  const record = {
-    workspaceRoot: options.workspaceRoot,
+
+  const base = existing === null
+    ? entry === null
+      ? null
+      : { action: entry.action, text: currentText }
+    : existing.base;
+  const nextStack = stack.concat([{
     presetId: preset.id,
-    before: existing === null ? before : existing.before,
     appliedAt: typeof options.at === 'string' ? options.at : null,
-  };
+    action: preset.action,
+    text: preset.text,
+  }]);
+  const text = composeStackText(base, nextStack);
+  // The entry's mode follows the link that was applied last: it describes how
+  // the composed text relates to the other layer (§13.1), and the newest
+  // application is the one that stated an intent about it.
+  const action = nextStack[nextStack.length - 1].action;
+  const config = withReservedOverride(options.current, { name: CUSTOM_SECTION_NAME, action, text });
+  const record = { workspaceRoot: options.workspaceRoot, base, stack: nextStack };
   const applied = appliedListOf(document).filter((item) => item.workspaceRoot !== options.workspaceRoot);
   applied.push(record);
   return {
     document: { version: PRESETS_VERSION, presets: document.presets.slice(), applied },
     preset,
-    before: record.before,
-    config,
     record,
+    base,
+    stack: nextStack,
     text,
+    config,
     alreadyApplied: false,
   };
 }
 
 /**
- * Plan「取消应用」: restore exactly what {@link planApply} snapshotted.
+ * Plan「取消应用」: pop **one** preset off a workspace's stack.
  *
- * The restoration is *content*, not a rollback to a history version: a `null`
- * snapshot removes the reserved entry (the layer had none), and a snapshot
- * writes the recorded `action`/`text` back. The workspace layer's other entries
- * and its interpolation switch are untouched, and no other file is read or
- * written.
+ * Revision 41: the request names the preset to remove. The remaining links stay
+ * — that is the whole point of the stack — and the layer's text is recomposed
+ * from `base` plus what is left. Removing the last link restores `base` itself:
+ * a non-null base is written back with its own `action`/`text`, a `null` base
+ * removes the reserved entry, and the layer's `interpolateCustom` switch and its
+ * other entries are never touched.
+ *
+ * A workspace with no record, or with a record that does not hold that preset,
+ * is `404 not-applied`: there is nothing to remove, and answering `200` would
+ * claim a write that did not happen. The plan is total over the rest — the text
+ * is recomposed rather than un-appended, so it is right even if the layer was
+ * edited by hand in the meantime (the contract states that trade, §20.6).
  * @param document - the current normalized document.
  * @param options.workspaceRoot - the resolved workspace root.
+ * @param options.presetId - the preset to take off the stack.
  * @param options.current - the workspace layer's current validated config.
- * @returns `{document, record, config, restored}` where `restored` is false when
- *   the snapshot was `null` (the entry is removed instead of written back).
+ * @returns `{document, record, removed, base, stack, text, restored, config}`
+ *   where `stack` is what remains, `removed` is the popped link, and `restored`
+ *   says the layer is back to its base (as opposed to merely one shorter).
  * @throws {OverrideError} 404 `not-applied`.
  */
 export function planUnapply(document, options = {}) {
   const applied = appliedListOf(document);
   const record = applied.find((item) => item.workspaceRoot === options.workspaceRoot) ?? null;
-  if (record === null) {
-    throw fail('not-applied', `no preset is applied to ${JSON.stringify(options.workspaceRoot)}`, 404);
+  const at = record === null
+    ? -1
+    : record.stack.findIndex((item) => item.presetId === options.presetId);
+  if (record === null || at === -1) {
+    throw fail(
+      'not-applied',
+      `${JSON.stringify(options.presetId)} is not applied to ${JSON.stringify(options.workspaceRoot)}`,
+      404,
+    );
   }
-  const config = record.before === null
-    ? withoutReservedOverride(options.current)
-    : withReservedOverride(options.current, {
+  const removed = record.stack[at];
+  const stack = record.stack.slice();
+  stack.splice(at, 1);
+  let config;
+  let restored = false;
+  if (stack.length === 0) {
+    restored = record.base !== null;
+    config = record.base === null
+      ? withoutReservedOverride(options.current)
+      : withReservedOverride(options.current, {
+        name: CUSTOM_SECTION_NAME,
+        action: record.base.action,
+        text: record.base.text,
+      });
+  } else {
+    config = withReservedOverride(options.current, {
       name: CUSTOM_SECTION_NAME,
-      action: record.before.action,
-      text: record.before.text,
+      action: stack[stack.length - 1].action,
+      text: composeStackText(record.base, stack),
     });
+  }
+  // An empty stack is not a record: the workspace is back to its base, there is
+  // nothing left to cancel, and keeping a base with no links would only make the
+  // page report an application that no longer exists.
+  const kept = stack.length === 0
+    ? applied.filter((item) => item.workspaceRoot !== options.workspaceRoot)
+    : applied.map((item) => (
+      item.workspaceRoot === options.workspaceRoot ? { workspaceRoot: item.workspaceRoot, base: item.base, stack } : item
+    ));
+  const nextRecord = stack.length === 0
+    ? null
+    : { workspaceRoot: record.workspaceRoot, base: record.base, stack };
   return {
     document: {
       version: PRESETS_VERSION,
       presets: document.presets.slice(),
-      applied: applied.filter((item) => item.workspaceRoot !== options.workspaceRoot),
+      applied: kept,
     },
-    record,
+    record: nextRecord,
+    removed,
+    base: record.base,
+    stack,
+    text: stack.length === 0 ? (record.base === null ? '' : record.base.text) : composeStackText(record.base, stack),
+    restored,
     config,
-    restored: record.before !== null,
   };
 }
 
@@ -545,24 +618,29 @@ export function publicPresets(document) {
 }
 
 /**
- * The public view of the applied records, with the orphan flag.
+ * The public view of the applied records: one entry per workspace, with its base
+ * and its stack.
  *
- * `orphan` says the record's preset is no longer in the library; the workspace
- * layer still holds that text and「取消应用」still restores the snapshot, which is
- * why an orphan is reported rather than cleaned up.
+ * Each stack link carries the preset's **name** when the library still has it and
+ * `orphan: true` when it does not — the link itself keeps its own
+ * `{action, text}` snapshot, which is why an orphan still composes and still
+ * cancels (§20.6). `base` is reported as-is so a page can say what the workspace
+ * will fall back to.
  * @param document - the normalized document.
  * @returns a fresh array.
  */
 export function publicApplied(document) {
   const list = Array.isArray(document?.applied) ? document.applied : [];
-  const names = new Map((Array.isArray(document?.presets) ? document.presets : []).map((p) => [p.id, p.name]));
+  const presets = new Map((Array.isArray(document?.presets) ? document.presets : []).map((p) => [p.id, p]));
   return list.map((record) => ({
     workspaceRoot: record.workspaceRoot,
-    presetId: record.presetId,
-    presetName: names.get(record.presetId) ?? null,
-    orphan: !names.has(record.presetId),
-    appliedAt: record.appliedAt ?? null,
-    before: record.before === null ? null : { action: record.before.action, text: record.before.text },
+    base: record.base === null ? null : { action: record.base.action, text: record.base.text },
+    stack: record.stack.map((item) => ({
+      presetId: item.presetId,
+      presetName: presets.has(item.presetId) ? presets.get(item.presetId).name : null,
+      orphan: !presets.has(item.presetId),
+      appliedAt: item.appliedAt ?? null,
+    })),
   }));
 }
 
