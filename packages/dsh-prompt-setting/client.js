@@ -1268,7 +1268,6 @@ window.__ModuleLoader__.load({
         '选定一个工作区（用它的一个 session 定位），把上面编辑的预设应用过去；也可以取消该工作区已有的应用。',
       presetWorkspaceEmpty: '这个 profile 没有可用的工作区会话，无法应用预设。',
       presetApply: '应用',
-      presetUnapply: '取消应用',
       presetApplyTo: '应用到工作区',
       presetApplyToTitle: '把「{name}」应用到工作区',
       presetApplyToNote: '应用的是预设库里已保存的版本；编辑弹窗里未保存的改动不会生效。',
@@ -1282,7 +1281,8 @@ window.__ModuleLoader__.load({
         '确认后预设库里不再有它。已经应用到工作区的内容不会被改动，但那条应用记录会标记为「来源已删除」。',
       presetAlreadyAppliedNotice: '该预设已在此工作区生效，未重复叠加。',
       presetNotApplied: '未应用',
-      presetAppliedAs: '已应用：{name}',
+      presetUnapplyOne: '取消',
+      presetAppliedHere: '已应用',
       presetAppliedOrphan: '来源已删除',
       presetSaving: '处理中…',
       presetSaved: '已完成',
@@ -1827,7 +1827,6 @@ window.__ModuleLoader__.load({
         'Pick a workspace (located by one of its sessions) and apply the preset being edited to it; an existing application can be cancelled here too.',
       presetWorkspaceEmpty: 'This profile exposes no workspace session, so no preset can be applied.',
       presetApply: 'Apply',
-      presetUnapply: 'Cancel application',
       presetApplyTo: 'Apply to a workspace',
       presetApplyToTitle: 'Apply \u201c{name}\u201d to a workspace',
       presetApplyToNote: 'The version stored in the preset library is what gets applied; unsaved changes in the editor dialog are not.',
@@ -1841,7 +1840,8 @@ window.__ModuleLoader__.load({
         'The library will no longer hold it. What a workspace already carries is not touched, but its applied record is marked \u201csource deleted\u201d.',
       presetAlreadyAppliedNotice: 'This preset is already in force in that workspace; nothing was stacked twice.',
       presetNotApplied: 'Not applied',
-      presetAppliedAs: 'Applied: {name}',
+      presetUnapplyOne: 'Cancel',
+      presetAppliedHere: 'Applied',
       presetAppliedOrphan: 'Source deleted',
       presetSaving: 'Working\u2026',
       presetSaved: 'Done',
@@ -6247,7 +6247,7 @@ window.__ModuleLoader__.load({
       { name: 'client.advanced.js', hash: '523d25ee', size: 21505 },
       { name: 'client.history.js', hash: '2887cc6c', size: 48609 },
       { name: 'client.overview.js', hash: 'f66cd1b0', size: 23533 },
-      { name: 'client.presets.js', hash: 'f3cfc7d7', size: 20857 },
+      { name: 'client.presets.js', hash: '4e82006e', size: 22545 },
       { name: 'client.transfer.js', hash: 'c8af8793', size: 9759 },
     ]);
 
@@ -9158,9 +9158,15 @@ window.__ModuleLoader__.load({
         setReload((value) => value + 1);
       };
 
-      const unapplyPreset = async (session) => {
+      const unapplyPreset = async (session, presetId) => {
         if (typeof session !== 'string' || session.length === 0) {
           setPresetStatus({ kind: 'error', error: { code: 'workspace-unresolved' } });
+          return;
+        }
+        // Revision 41: cancelling names the preset to take off the stack — a
+        // workspace may hold several, and「取消应用」is per application now.
+        if (typeof presetId !== 'string' || presetId.length === 0) {
+          setPresetStatus({ kind: 'error', error: { code: 'missing-preset-id' } });
           return;
         }
         setPresetStatus({ kind: 'saving', error: null });
@@ -9168,7 +9174,7 @@ window.__ModuleLoader__.load({
         const result = await requestJson(PRESETS_UNAPPLY_PATH, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ session }),
+          body: JSON.stringify({ session, presetId }),
         });
         setBusy(false);
         if (!result.ok) {
@@ -9376,8 +9382,8 @@ window.__ModuleLoader__.load({
         applyPreset: (presetId, session) => {
           void applyPreset(presetId, session);
         },
-        unapplyPreset: (session) => {
-          void unapplyPreset(session);
+        unapplyPreset: (session, presetId) => {
+          void unapplyPreset(session, presetId);
         },
         loadPresets: () => setReload((value) => value + 1),
         // g-030: the update banner's dismissal and the switch in 「高级」.

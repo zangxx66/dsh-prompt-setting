@@ -407,66 +407,99 @@ window.__ModuleLoader__.load({
 
     /**
      * One workspace row inside the apply dialog.
+     *
+     * Revision 41: a workspace holds a **stack**, so the row lists every preset
+     * applied there — each with its own「取消」— instead of one all-or-nothing
+     * button, and the「应用」button for the preset this dialog is about is
+     * `disabled` once that preset is on the stack (the reader sees the state
+     * rather than a no-op message).
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
      * @param row - `{session, root, label}` from the page model.
-     * @param record - the `applied` record for this root, or null.
+     * @param record - this root's `applied` record (`{base, stack}`), or null.
      * @param presetId - the preset this dialog is applying.
      * @returns the row element.
      */
     function presetWorkspaceRow(t, m, a, row, record, presetId) {
+      const stack = record === null || !Array.isArray(record.stack) ? [] : record.stack;
+      const appliedHere = stack.some((link) => link.presetId === presetId);
       return h(
         'div',
         {
           key: row.session,
           'data-preset-session': row.session,
           'data-preset-workspace-root': row.root === null ? 'unknown' : row.root,
-          'data-preset-applied': record === null ? 'false' : 'true',
-          'data-preset-orphan': record !== null && record.orphan === true ? 'true' : 'false',
-          'data-preset-name': record === null || record.presetName === null ? '' : record.presetName,
+          'data-preset-applied': stack.length === 0 ? 'false' : 'true',
+          'data-preset-stack': String(stack.length),
+          'data-preset-applied-here': String(appliedHere),
           style: {
             display: 'flex',
-            gap: 8,
-            alignItems: 'center',
-            flexWrap: 'wrap',
+            flexDirection: 'column',
+            gap: 4,
             borderTop: `1px solid ${token.borderL2}`,
             paddingTop: 6,
           },
         },
-        h('span', { style: { fontSize: 12, color: token.labelPrimary, wordBreak: 'break-word' } }, row.label),
-        record === null
-          ? h('span', { style: metaStyle }, t('presetNotApplied'))
+        h(
+          'div',
+          { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+          h('span', { style: { fontSize: 12, color: token.labelPrimary, wordBreak: 'break-word' } }, row.label),
+          stack.length === 0
+            ? h('span', { 'data-preset-none': 'true', style: metaStyle }, t('presetNotApplied'))
+            : null,
+          h(
+            UI.Button,
+            {
+              variant: 'outline',
+              'data-action': 'preset-apply',
+              'data-preset-id': presetId,
+              'data-preset-session': row.session,
+              disabled: m.busy || appliedHere,
+              onClick: () => a.applyPreset(presetId, row.session),
+            },
+            appliedHere ? t('presetAppliedHere') : t('presetApply'),
+          ),
+        ),
+        // Every application on this workspace, oldest first, each cancellable on
+        // its own: cancelling one keeps the others composed (§20.6).
+        stack.length === 0
+          ? null
           : h(
-              'span',
-              { style: metaStyle },
-              record.orphan === true
-                ? `${t('presetAppliedOrphan')}: ${record.presetId}`
-                : fmt(t('presetAppliedAs'), { name: record.presetName === null ? record.presetId : record.presetName }),
+              'div',
+              {
+                'data-preset-stack-list': row.session,
+                style: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' },
+              },
+              stack.map((link) => h(
+                'span',
+                {
+                  key: link.presetId,
+                  'data-preset-link': link.presetId,
+                  'data-preset-session': row.session,
+                  'data-preset-name': link.presetName === null ? '' : link.presetName,
+                  'data-preset-orphan': link.orphan === true ? 'true' : 'false',
+                  style: { display: 'inline-flex', gap: 4, alignItems: 'center', ...metaStyle },
+                },
+                link.orphan === true
+                  ? `${t('presetAppliedOrphan')}: ${link.presetId}`
+                  : link.presetName === null
+                    ? link.presetId
+                    : link.presetName,
+                h(
+                  UI.Button,
+                  {
+                    variant: 'outline',
+                    'data-action': 'preset-unapply',
+                    'data-preset-id': link.presetId,
+                    'data-preset-session': row.session,
+                    disabled: m.busy,
+                    onClick: () => a.unapplyPreset(row.session, link.presetId),
+                  },
+                  t('presetUnapplyOne'),
+                ),
+              )),
             ),
-        h(
-          UI.Button,
-          {
-            variant: 'outline',
-            'data-action': 'preset-apply',
-            'data-preset-id': presetId,
-            'data-preset-session': row.session,
-            disabled: m.busy,
-            onClick: () => a.applyPreset(presetId, row.session),
-          },
-          t('presetApply'),
-        ),
-        h(
-          UI.Button,
-          {
-            variant: 'outline',
-            'data-action': 'preset-unapply',
-            'data-preset-session': row.session,
-            disabled: m.busy || record === null,
-            onClick: () => a.unapplyPreset(row.session),
-          },
-          t('presetUnapply'),
-        ),
       );
     }
 

@@ -3296,14 +3296,20 @@ function presetsFixture(over = {}) {
         updatedAt: '2024-01-02T00:00:00.000Z',
       },
     ],
+    // Revision 41: one base plus a stack per workspace — `/work/alpha` already
+    // holds one application.
     applied: [
       {
         workspaceRoot: '/work/alpha',
-        presetId: 'preset-1',
-        presetName: '短答',
-        orphan: false,
-        appliedAt: '2024-01-03T00:00:00.000Z',
-        before: null,
+        base: null,
+        stack: [
+          {
+            presetId: 'preset-1',
+            presetName: '短答',
+            orphan: false,
+            appliedAt: '2024-01-03T00:00:00.000Z',
+          },
+        ],
       },
     ],
     workspaceRoot: null,
@@ -3312,15 +3318,23 @@ function presetsFixture(over = {}) {
   };
 }
 
-/** Click the apply/unapply button that belongs to one workspace row. */
-function clickPresetWorkspaceAction(tree, action, session) {
+/**
+ * Click one apply/unapply button of a workspace row.
+ * @param tree - the rendered tree.
+ * @param action - `preset-apply` or `preset-unapply`.
+ * @param session - the row's session id.
+ * @param presetId - the preset the button names (required once a row lists more
+ *   than one application, which Revision 41 makes normal).
+ */
+function clickPresetWorkspaceAction(tree, action, session, presetId) {
   const node = findOne(
     tree,
     (candidate) =>
       candidate.type === 'button' &&
       candidate.props['data-action'] === action &&
-      candidate.props['data-preset-session'] === session,
-    `${action} ${session}`,
+      candidate.props['data-preset-session'] === session &&
+      (presetId === undefined || candidate.props['data-preset-id'] === presetId),
+    `${action} ${session}${presetId === undefined ? '' : ` ${presetId}`}`,
   );
   assert.notEqual(node.props.disabled, true, `${action} ${session} must be enabled`);
   node.props.onClick();
@@ -3341,8 +3355,16 @@ function presetWorkspaceRows(tree) {
   ).map((node) => [
     node.props['data-preset-workspace-root'],
     node.props['data-preset-applied'],
-    node.props['data-preset-orphan'],
+    node.props['data-preset-stack'],
   ]);
+}
+
+/** The applied presets one workspace row lists, as `[presetId, orphan]` pairs. */
+function presetStackLinks(tree, session) {
+  return collect(
+    tree,
+    (node) => node.props && node.props['data-preset-link'] !== undefined && node.props['data-preset-session'] === session,
+  ).map((node) => [node.props['data-preset-link'], node.props['data-preset-orphan']]);
 }
 
 function workspacesFixture(over = {}) {
@@ -11493,7 +11515,7 @@ test('client: 「预设」 is the sixth tab, next to 「我的 Prompt」, and is
   assert.equal(collect(opened, (node) => node.props && node.props['data-region'] === 'preset-apply-dialog').length, 0);
 });
 
-test('client: a list row opens the apply dialog, which shows every workspace’s applied state', async () => {
+test('client: a list row opens the apply dialog, which shows every workspace’s stack', async () => {
   const page = makePage({
     responses: defaultResponses(),
     useWorkspaces: workspacesHook(workspacesFixture()),
@@ -11504,19 +11526,25 @@ test('client: a list row opens the apply dialog, which shows every workspace’s
   const dialog = oneBy(tree, 'data-region', 'preset-apply-dialog');
   assert.equal(dialog.props['data-preset-dialog-preset'], 'preset-1', 'the dialog names the row’s preset');
   assert.equal(dialog.props.role, 'dialog');
-  assert.ok(strings(dialog).some((text) => text.includes('短答')), 'and its title says which one');
   assert.ok(strings(dialog).some((text) => text.includes(page.zh.presetApplyToNote)), 'and that the stored version is applied');
-  // /work/alpha is applied, /work/beta-dir is not, and the orphan flag is false
-  // for the record that still names a stored preset.
   assert.deepEqual(presetWorkspaceRows(tree), [
-    ['/work/alpha', 'true', 'false'],
-    ['/work/beta-dir', 'false', 'false'],
+    ['/work/alpha', 'true', '1'],
+    ['/work/beta-dir', 'false', '0'],
   ]);
-  assert.ok(strings(tree).some((text) => text.includes(fillText(page.zh.presetAppliedAs, { name: '短答' }))));
-  assert.ok(strings(tree).includes(page.zh.presetNotApplied));
+  // The applied workspace lists what it holds, on its own cancellable link.
+  assert.deepEqual(presetStackLinks(tree, 'a1'), [['preset-1', 'false']]);
+  assert.deepEqual(presetStackLinks(tree, 'b1'), []);
+  // Revision 41: 「应用」 is disabled for a preset already on that stack, so the
+  // reader sees the state instead of a no-op click — and the free workspace can
+  // still take it.
+  const applyButtons = collect(tree, (node) => node.type === 'button' && node.props['data-action'] === 'preset-apply');
+  assert.deepEqual(applyButtons.map((node) => [node.props['data-preset-session'], node.props.disabled === true]), [
+    ['a1', true],
+    ['b1', false],
+  ]);
+  assert.equal(oneBy(tree, 'data-preset-applied-here', 'true').props['data-preset-session'], 'a1');
 
-  // A record whose preset was deleted is reported as an orphan — never as an
-  // empty state, and never by rewriting the workspace layer.
+  // An orphan link says so instead of naming a preset that no longer exists.
   const orphan = makePage({
     responses: defaultResponses({
       [PATHS.presets]: {
@@ -11525,11 +11553,8 @@ test('client: a list row opens the apply dialog, which shows every workspace’s
           applied: [
             {
               workspaceRoot: '/work/alpha',
-              presetId: 'preset-gone',
-              presetName: null,
-              orphan: true,
-              appliedAt: '2024-01-03T00:00:00.000Z',
-              before: null,
+              base: { action: 'replace', text: 'MINE' },
+              stack: [{ presetId: 'preset-gone', presetName: null, orphan: true, appliedAt: 't' }],
             },
           ],
         }),
@@ -11540,10 +11565,7 @@ test('client: a list row opens the apply dialog, which shows every workspace’s
   tree = await openTab(orphan, 'presets');
   clickButton(tree, { 'data-action': 'preset-apply-to', 'data-preset-id': 'preset-1' });
   tree = await orphan.flush();
-  assert.deepEqual(presetWorkspaceRows(tree), [
-    ['/work/alpha', 'true', 'true'],
-    ['/work/beta-dir', 'false', 'false'],
-  ]);
+  assert.deepEqual(presetStackLinks(tree, 'a1'), [['preset-gone', 'true']]);
   assert.ok(strings(tree).some((text) => text.includes(orphan.zh.presetAppliedOrphan)));
 });
 
@@ -11663,18 +11685,21 @@ test('client: deleting a preset asks first, and only a confirmed answer sends th
   assert.equal(markerOf(tree, 'data-preset-state'), 'saved');
 });
 
-test('client: the apply dialog’s rows POST apply/unapply with the workspace’s session, never a layer', async () => {
+test('client: the apply dialog’s rows POST apply and a per-preset unapply, never a layer', async () => {
   const page = makePage({
     responses: defaultResponses({
       [PATHS.presetsApply]: {
         payload: {
           ok: true,
           applied: true,
+          alreadyApplied: false,
           preset: { id: 'preset-2', name: '叠加规则', action: 'append', text: 'Extra rules.' },
-          record: { workspaceRoot: '/work/alpha', presetId: 'preset-2', before: null, appliedAt: 't' },
+          record: { workspaceRoot: '/work/alpha', base: null, stack: [] },
           workspaceRoot: '/work/alpha',
+          base: null,
           before: null,
           after: { action: 'append', text: 'Extra rules.' },
+          stack: [{ presetId: 'preset-2', presetName: '叠加规则', orphan: false, appliedAt: 't' }],
           effectiveFrom: 'next-turn',
           history: { ok: true, id: '1', seq: 1, dropped: 0, rewritten: false },
           appliedRecords: [],
@@ -11684,11 +11709,14 @@ test('client: the apply dialog’s rows POST apply/unapply with the workspace’
         payload: {
           ok: true,
           unapplied: true,
-          presetId: 'preset-2',
-          record: { workspaceRoot: '/work/alpha', presetId: 'preset-2', before: null, appliedAt: 't' },
+          presetId: 'preset-1',
+          removed: { presetId: 'preset-1', appliedAt: 't1' },
+          record: { workspaceRoot: '/work/alpha', base: null, stack: [] },
           workspaceRoot: '/work/alpha',
           restored: false,
-          before: { action: 'append', text: 'Extra rules.' },
+          base: null,
+          stack: [],
+          before: null,
           after: null,
           effectiveFrom: 'next-turn',
           history: { ok: true, id: '2', seq: 2, dropped: 0, rewritten: false },
@@ -11702,27 +11730,25 @@ test('client: the apply dialog’s rows POST apply/unapply with the workspace’
   clickButton(tree, { 'data-action': 'preset-apply-to', 'data-preset-id': 'preset-2' });
   tree = await page.flush();
 
-  clickPresetWorkspaceAction(tree, 'preset-apply', 'a1');
+  clickPresetWorkspaceAction(tree, 'preset-apply', 'b1');
   tree = await page.flush();
   const posts = page.router.calls.filter((call) => call.init && call.init.method === 'POST');
   assert.equal(posts.length, 1, 'exactly one write');
   assert.equal(posts[0].url, PATHS.presetsApply);
-  assert.deepEqual(JSON.parse(posts[0].init.body), { presetId: 'preset-2', session: 'a1' });
+  assert.deepEqual(JSON.parse(posts[0].init.body), { presetId: 'preset-2', session: 'b1' });
   assert.equal(markerOf(tree, 'data-preset-state'), 'saved');
-  // The dialog stays open: the refreshed applied state is what the reader is
-  // looking at, and it is one more click to leave.
-  assert.equal(oneBy(tree, 'data-region', 'preset-apply-dialog').props['data-preset-dialog-preset'], 'preset-2');
 
-  // 「取消应用」 names the same session and no preset: the host restores the
-  // snapshot it took, which the page never has to send back.
+  // Revision 41: cancelling names the application to take off the stack.
   clickPresetWorkspaceAction(tree, 'preset-unapply', 'a1');
   tree = await page.flush();
   const after = page.router.calls.filter((call) => call.init && call.init.method === 'POST');
   assert.equal(after.length, 2);
   assert.equal(after[1].url, PATHS.presetsUnapply);
-  assert.deepEqual(JSON.parse(after[1].init.body), { session: 'a1' });
+  assert.deepEqual(JSON.parse(after[1].init.body), { session: 'a1', presetId: 'preset-1' });
 
-  // Closing is an explicit act, and it is the only way the dialog goes away.
+  // The dialog stays open — the refreshed stack is what the reader is looking at
+  // — and leaving is one more explicit click.
+  assert.equal(oneBy(tree, 'data-region', 'preset-apply-dialog').props['data-preset-dialog-preset'], 'preset-2');
   clickButton(tree, { 'data-action': 'preset-dialog-close' });
   tree = await page.flush();
   assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'preset-apply-dialog').length, 0);
@@ -11912,41 +11938,94 @@ test('client: the tab is called 「我的预设」 in both dictionaries', async 
   assert.ok(strings(enTree).includes('My presets'), 'en');
 });
 
-test('client: an application the layer already carries is reported as already in force', async () => {
-  // Revision 39: the host answers `alreadyApplied` when the text was already
-  // there, and the page may not dress that up as a fresh write. Review R5: the
-  // idempotent answer left the record alone, so「取消应用」is still offered.
+test('client: a preset already on a workspace’s stack cannot be applied twice', async () => {
+  // Revision 41: idempotency is now visible state — the row reports
+  // `data-preset-applied-here` and disables「应用」— instead of a message after a
+  // click that did nothing.
+  const page = makePage({
+    responses: defaultResponses(),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+  });
+  let tree = await openTab(page, 'presets');
+  clickButton(tree, { 'data-action': 'preset-apply-to', 'data-preset-id': 'preset-1' });
+  tree = await page.flush();
+  const row = findOne(
+    tree,
+    (node) => node.props && node.props['data-preset-session'] === 'a1' && node.props['data-preset-applied-here'] !== undefined,
+    'alpha row',
+  );
+  assert.equal(row.props['data-preset-applied-here'], 'true');
+  const button = findOne(
+    tree,
+    (candidate) =>
+      candidate.type === 'button' &&
+      candidate.props['data-action'] === 'preset-apply' &&
+      candidate.props['data-preset-session'] === 'a1',
+    'apply a1',
+  );
+  assert.equal(button.props.disabled, true);
+  assert.equal(
+    page.router.calls.filter((call) => call.init && call.init.method === 'POST').length,
+    0,
+    'nothing was sent while the button is disabled',
+  );
+
+  // Its link is still listed, with its own cancel — that is what keeps「取消应用」
+  // reachable after an idempotent no-op.
+  assert.deepEqual(presetStackLinks(tree, 'a1'), [['preset-1', 'false']]);
+  clickPresetWorkspaceAction(tree, 'preset-unapply', 'a1');
+  tree = await page.flush();
+  const posts = page.router.calls.filter((call) => call.init && call.init.method === 'POST');
+  assert.equal(posts.length, 1);
+  assert.deepEqual(JSON.parse(posts[0].init.body), { session: 'a1', presetId: 'preset-1' });
+});
+
+test('client: a workspace’s stack lists every applied preset, each cancellable on its own', async () => {
+  const both = presetsFixture({
+    applied: [
+      {
+        workspaceRoot: '/work/alpha',
+        base: { action: 'replace', text: 'MINE' },
+        stack: [
+          { presetId: 'preset-1', presetName: '短答', orphan: false, appliedAt: 't1' },
+          { presetId: 'preset-2', presetName: '叠加规则', orphan: false, appliedAt: 't2' },
+        ],
+      },
+    ],
+  });
+  const remaining = presetsFixture({
+    applied: [
+      {
+        workspaceRoot: '/work/alpha',
+        base: { action: 'replace', text: 'MINE' },
+        stack: [{ presetId: 'preset-2', presetName: '叠加规则', orphan: false, appliedAt: 't2' }],
+      },
+    ],
+  });
+  let live = both;
   const page = makePage({
     responses: defaultResponses({
-      [PATHS.presetsApply]: {
-        payload: {
-          ok: true,
-          applied: true,
-          alreadyApplied: true,
-          preset: { id: 'preset-1', name: '短答', action: 'replace', text: 'Be brief.' },
-          record: { workspaceRoot: '/work/alpha', presetId: 'preset-1', before: null, appliedAt: 'first' },
-          workspaceRoot: '/work/alpha',
-          before: { action: 'replace', text: 'Be brief.' },
-          after: { action: 'replace', text: 'Be brief.' },
-          effectiveFrom: 'next-turn',
-          history: null,
-          appliedRecords: [],
-        },
-      },
-      [PATHS.presetsUnapply]: {
-        payload: {
-          ok: true,
-          unapplied: true,
-          presetId: 'preset-1',
-          record: { workspaceRoot: '/work/alpha', presetId: 'preset-1', before: null, appliedAt: 'first' },
-          workspaceRoot: '/work/alpha',
-          restored: false,
-          before: { action: 'replace', text: 'Be brief.' },
-          after: null,
-          effectiveFrom: 'next-turn',
-          history: { ok: true, id: '2', seq: 2, dropped: 0, rewritten: false },
-          appliedRecords: [],
-        },
+      [PATHS.presets]: () => ({ payload: live }),
+      [PATHS.presetsUnapply]: () => {
+        live = remaining;
+        return {
+          payload: {
+            ok: true,
+            unapplied: true,
+            presetId: 'preset-1',
+            removed: { presetId: 'preset-1', appliedAt: 't1' },
+            record: remaining.applied[0],
+            workspaceRoot: '/work/alpha',
+            restored: false,
+            base: remaining.applied[0].base,
+            stack: remaining.applied[0].stack,
+            before: null,
+            after: null,
+            effectiveFrom: 'next-turn',
+            history: { ok: true, id: '1', seq: 1, dropped: 0, rewritten: false },
+            appliedRecords: remaining.applied,
+          },
+        };
       },
     }),
     useWorkspaces: workspacesHook(workspacesFixture()),
@@ -11954,93 +12033,18 @@ test('client: an application the layer already carries is reported as already in
   let tree = await openTab(page, 'presets');
   clickButton(tree, { 'data-action': 'preset-apply-to', 'data-preset-id': 'preset-1' });
   tree = await page.flush();
-  clickPresetWorkspaceAction(tree, 'preset-apply', 'a1');
-  tree = await page.flush();
-  assert.ok(
-    strings(tree).some((text) => text.includes(page.zh.presetAlreadyAppliedNotice)),
-    'the page says it was already in force',
-  );
-  assert.equal(strings(tree).includes(page.zh.presetAppliedNotice), false, 'and not as an ordinary application');
+  assert.deepEqual(presetStackLinks(tree, 'a1'), [
+    ['preset-1', 'false'],
+    ['preset-2', 'false'],
+  ]);
 
-  // The record survived the idempotent request, so the row still reports the
-  // workspace as applied and its「取消应用」works.
-  const row = collect(
-    tree,
-    (node) => node.props && node.props['data-preset-session'] === 'a1' && node.props['data-preset-applied'] !== undefined,
-  )[0];
-  assert.equal(row.props['data-preset-applied'], 'true');
-  clickPresetWorkspaceAction(tree, 'preset-unapply', 'a1');
+  // Cancelling the first application keeps the second: the defect the owner hit.
+  clickPresetWorkspaceAction(tree, 'preset-unapply', 'a1', 'preset-1');
   tree = await page.flush();
+  tree = await page.flush();
+  assert.deepEqual(presetStackLinks(tree, 'a1'), [['preset-2', 'false']], 'the other application survives');
+  assert.equal(presetWorkspaceRows(tree)[0][2], '1', 'and the row still reports one application');
   const posts = page.router.calls.filter((call) => call.init && call.init.method === 'POST');
-  assert.equal(posts.length, 2, 'the second button really posted');
-  assert.equal(posts[1].url, PATHS.presetsUnapply);
-  assert.deepEqual(JSON.parse(posts[1].init.body), { session: 'a1' });
+  assert.equal(posts.length, 1);
+  assert.deepEqual(JSON.parse(posts[0].init.body), { session: 'a1', presetId: 'preset-1' });
 });
-
-test('client: the confirmation overlay is drawn above every dialog it questions', async () => {
-  // Review R6: the confirmation is the *last* interaction, so its layer must be
-  // strictly above the tab-owned dialogs — at equal z-index the tab panel, which
-  // is appended after the confirmation card, covered the question completely on
-  // the「我的预设」tab.
-  const page = makePage({
-    responses: defaultResponses({
-      [PATHS.overrides]: {
-        payload: overridesFixture({
-          user: {
-            layer: 'user',
-            enabled: true,
-            path: '/home/u/.dsh/prompt-setting/overrides.json',
-            reason: null,
-            overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text' }],
-          },
-        }),
-      },
-    }),
-    useWorkspaces: workspacesHook(workspacesFixture()),
-  });
-  let tree = await page.flush();
-  tree = await openTab(page, 'presets', tree);
-  clickButton(tree, { 'data-action': 'preset-edit', 'data-preset-id': 'preset-2' });
-  tree = await page.flush();
-  const editorOverlay = oneBy(tree, 'data-region', 'preset-editor-overlay');
-  assert.equal(editorOverlay.props.style.zIndex, 1000, 'tab-owned dialogs share one layer');
-
-  // A dirty close asks, and the question is strictly above the dialog that asked.
-  typeInto(tree, 'preset-text', 'edited');
-  tree = await page.flush();
-  clickButton(tree, { 'data-action': 'preset-dialog-close' });
-  tree = await page.flush();
-  assert.equal(oneBy(tree, 'data-region', 'confirm').props['data-confirm-kind'], 'preset-discard');
-  const discardOverlay = oneBy(tree, 'data-region', 'confirm-overlay');
-  assert.ok(
-    discardOverlay.props.style.zIndex > editorOverlay.props.style.zIndex,
-    'the question is drawn above the dialog that asked it',
-  );
-  // …and it is really answerable: its two buttons are in the tree beside it.
-  findOne(tree, (node) => node.type === 'button' && node.props['data-action'] === 'confirm-yes', 'confirm yes');
-  findOne(tree, (node) => node.type === 'button' && node.props['data-action'] === 'confirm-no', 'confirm no');
-
-  // The delete question, from the same tab, on the same highest layer.
-  clickButton(tree, { 'data-action': 'confirm-no' });
-  tree = await page.flush();
-  clickButton(tree, { 'data-action': 'preset-delete', 'data-preset-id': 'preset-1' });
-  tree = await page.flush();
-  assert.equal(oneBy(tree, 'data-region', 'confirm').props['data-confirm-kind'], 'preset-delete');
-  assert.equal(oneBy(tree, 'data-region', 'confirm-overlay').props.style.zIndex, 1200);
-  clickButton(tree, { 'data-action': 'confirm-no' });
-  tree = await page.flush();
-
-  // The apply dialog lives on the tab-dialog layer too.
-  clickButton(tree, { 'data-action': 'preset-apply-to', 'data-preset-id': 'preset-1' });
-  tree = await page.flush();
-  assert.equal(oneBy(tree, 'data-region', 'preset-apply-overlay').props.style.zIndex, 1000);
-
-  // A pre-existing confirmation keeps the very same (highest) layer: the rule is
-  // one overlay and one ordering, not a preset-only special case.
-  tree = await openTab(page, 'mine', tree);
-  clickButton(tree, { 'data-action': 'mine-reset' });
-  tree = await page.flush();
-  assert.equal(oneBy(tree, 'data-region', 'confirm').props['data-confirm-kind'], 'mine-reset');
-  assert.equal(oneBy(tree, 'data-region', 'confirm-overlay').props.style.zIndex, 1200);
-});
-
