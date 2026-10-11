@@ -7624,3 +7624,44 @@ brief 写「本次 0.2.1 覆盖 g-050…g-058」。核对仓库事实：**g-050�
 - **证据**：`node --test test/*.test.mjs` ⇒ 全绿；`node scripts/prepare.mjs` ⇒ 21/21；`node scripts/client-chunks.mjs`
   ⇒ 5 个 chunk 一致。
 
+## 136. g-061 批次 1：四项机械复用归一（Revision 42，2026-10-12，基线 `0654f26` 隔离工作树）
+
+批次 1 只做「同形同义、回归面最小」的四项；通用实现全部落在**既有的**主入口共享面
+（`client.js` `CHUNK_FACILITIES` → `__internals.shared`），不新增 chunk、不下沉 `core/`、不引依赖。
+
+**① `layerLabel` 遗漏复用（#9）**
+- `client.advanced.js` 覆盖行的层标签由内联 `t(entry.layer === 'workspace' ? 'ovWorkspace' : 'ovUser')`
+  改为该 chunk **早已取用**的 `shared.layerLabel(t, entry.layer)`；内联式删除，原处不留并行副本。
+
+**② 枚举 → i18n key 归一（#8）**
+- 主入口 `regionLabelKey(id)` 与 `client.advanced.js` 的 `regionNoteKey(id)` 合为
+  `regionKey(id, family)`（`family: ''` / `'Note'`），未知 id 在两族都回退「默认」；`regionLabelKey` 不再暴露，
+  且**不保留别名**——别名就是同一规则的第二种拼写。
+- `client.transfer.js` 的 `importStatusLabel` **保持原样**：同族不同形——前缀固定、后缀
+  （`Added`/`Replaced`/`Removed`）变化且其中一个成员兼任回退，返回的还是已翻译字符串而非键；并入需引入
+  「成员表 + 默认键」抽象，而变化的消费者只有一个，属为抽象而抽象。
+
+**③ 五份 Tab 包装组件（#13）**
+- 核实结论：`renderChunkTab` 与这 5 份**不等价**——前者建 `Suspense` 边界与「chunk unavailable」卡、接收
+  lazy 组件；后者是 lazy 的**目标组件**，把 `{t,m,a}` 解包回位置参数。两者是一次挂载的两半，删掉 5 份会让
+  `React.lazy` 失去目标组件（且需改 chunk 导出面）。
+- 因此只把**重复的那一半**抽成共享工厂 `chunkTab(render, name)`：5 个 chunk 各留一行
+  `const XTab = chunkTab(renderX, 'XTab');`，组件 `name` 由 `Object.defineProperty` 保持原样（React 报告不变）。
+
+**④ 工作区推导归一（#10）**
+- `historyScopeOptionsOf`（选择器形态 `value`/`label`/`workspaceId`/`sessionIds`，空列表 `{mode:'none',options:[]}`）
+  与 `presetWorkspaces`（拾取器形态 `session`/`root`/`label`，空列表 `[]`）的内核合为
+  `workspaceRows(wsSeat, seat, {withRoot})`（同时挂 `__internals` 供测试）；两侧 mode 判定、空值形态与字段名不变。
+
+**测试与门禁**
+- `test/client.test.mjs` 新增三条：两族 6 个键 + 未知 id 回退、`chunkTab` 的 `name` 与参数顺序、
+  `workspaceRows` 两种形态 / 会话回退 / 空值；并机械断言 chunk 内无 `updateRegion…` 字面量、无 `regionNoteKey`、
+  无本地 props 适配器、无内联 `'ovWorkspace'`。契约新增 **Revision 42** 段（§13 末条），§13.0 共享面段同步补规则。
+- `CHUNK_STAMPS` 由 `node scripts/client-chunks.mjs --write` 重算。
+- **证据**：`node --test` ⇒ 812 pass / 0 fail；`node scripts/prepare.mjs` ⇒ 21/21；`node scripts/client-chunks.mjs`
+  ⇒ 5 个 chunk 与清单一致。
+
+**残留（批次 2–4 未动）**
+- 批次 2 样式常量（遮罩/错误行/空态/等宽框）、批次 3 语义裁决（卡片尺寸/标题行/ghost 态/搜索/会话行按钮）、
+  批次 4 chunk 引导块：本轮一行未改，候选仍以卡片为准。
+

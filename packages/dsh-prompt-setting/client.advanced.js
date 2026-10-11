@@ -36,6 +36,7 @@ window.__ModuleLoader__.load({
     const RESERVED_SECTION_NAME = shared.RESERVED_SECTION_NAME;
     const UI = shared.UI;
     const cardStyle = shared.cardStyle;
+    const chunkTab = shared.chunkTab;
     const errorText = shared.errorText;
     const fmt = shared.fmt;
     const h = shared.h;
@@ -43,7 +44,7 @@ window.__ModuleLoader__.load({
     const ineffectiveCause = shared.ineffectiveCause;
     const layerLabel = shared.layerLabel;
     const metaStyle = shared.metaStyle;
-    const regionLabelKey = shared.regionLabelKey;
+    const regionKey = shared.regionKey;
     const renderStatusDetail = shared.renderStatusDetail;
     const renderUpdateApplyStatus = shared.renderUpdateApplyStatus;
     const tabs = shared.tabs;
@@ -152,7 +153,7 @@ window.__ModuleLoader__.load({
                 { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
                 h('code', { style: { fontSize: 12 } }, entry.name),
                 h(UI.Tag, { tone: 'info' }, String(entry.action)),
-                h(UI.Tag, { tone: 'neutral' }, t(entry.layer === 'workspace' ? 'ovWorkspace' : 'ovUser')),
+                h(UI.Tag, { tone: 'neutral' }, layerLabel(t, entry.layer)),
                 h(
                   UI.Tag,
                   { tone: state === 'applied' ? 'success' : state === 'ineffective' ? 'danger' : 'outline' },
@@ -379,16 +380,16 @@ window.__ModuleLoader__.load({
                 border: `1px solid ${token.borderL2}`,
               },
             },
-            ...DOWNLOAD_REGIONS.map((id) => h('option', { key: id, value: id }, t(regionLabelKey(id)))),
+            ...DOWNLOAD_REGIONS.map((id) => h('option', { key: id, value: id }, t(regionKey(id, '')))),
           ),
           saving ? h('span', { style: { ...metaStyle }, 'data-role': 'update-region-saving' }, t('updateRegionSaving')) : null,
         ),
-        h('p', { style: { margin: 0, ...metaStyle }, 'data-role': 'update-region-note' }, t(regionNoteKey(current))),
+        h('p', { style: { margin: 0, ...metaStyle }, 'data-role': 'update-region-note' }, t(regionKey(current, 'Note'))),
         detected
           ? h(
               'p',
               { style: { margin: 0, ...metaStyle }, 'data-role': 'update-region-auto', 'data-update-region-auto': 'true' },
-              fmt(t('updateRegionAuto'), { region: t(regionLabelKey(current)) }),
+              fmt(t('updateRegionAuto'), { region: t(regionKey(current, '')) }),
             )
           : null,
         unusable === null
@@ -482,19 +483,12 @@ window.__ModuleLoader__.load({
       );
     }
 
-    /** The one-line meaning of one region id (same fallback rule as the label). */
-    function regionNoteKey(id) {
-      return id === 'cn' ? 'updateRegionCnNote' : id === 'custom' ? 'updateRegionCustomNote' : 'updateRegionDefaultNote';
-    }
-
     /**
      * The lazy boundary the main bundle mounts for this tab.
      * @param props - the main bundle's page model, actions and translator.
      * @returns the tab element.
      */
-    function AdvancedTab(props) {
-      return renderAdvancedTab(props.t, props.m, props.a);
-    }
+    const AdvancedTab = chunkTab(renderAdvancedTab, 'AdvancedTab');
 
     return { AdvancedTab, build: SELF_BUILD };
     /* @build-fingerprint:end */

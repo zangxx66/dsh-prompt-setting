@@ -41,6 +41,7 @@ window.__ModuleLoader__.load({
     const tabs = shared.tabs;
     const primitives = shared.primitives;
     const cardStyle = shared.cardStyle;
+    const chunkTab = shared.chunkTab;
     const metaStyle = shared.metaStyle;
     const headingStyle = shared.headingStyle;
     const scopeSummaryStyle = shared.scopeSummaryStyle;
@@ -1153,9 +1154,7 @@ window.__ModuleLoader__.load({
      * @param props - the main bundle's page model, actions and translator.
      * @returns the tab element.
      */
-    function HistoryTab(props) {
-      return renderHistoryTab(props.t, props.m, props.a);
-    }
+    const HistoryTab = chunkTab(renderHistoryTab, 'HistoryTab');
 
     return { HistoryTab, build: SELF_BUILD };
     /* @build-fingerprint:end */

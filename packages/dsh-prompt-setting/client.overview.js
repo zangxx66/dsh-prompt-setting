@@ -39,6 +39,7 @@ window.__ModuleLoader__.load({
     const UI = shared.UI;
     const VIEWS = shared.VIEWS;
     const cardStyle = shared.cardStyle;
+    const chunkTab = shared.chunkTab;
     const chunkDiff = shared.chunkDiff;
     const composeSections = shared.composeSections;
     const countMatches = shared.countMatches;
@@ -567,9 +568,7 @@ window.__ModuleLoader__.load({
      * @param props - the main bundle's page model, actions and translator.
      * @returns the tab element.
      */
-    function OverviewTab(props) {
-      return renderOverviewPanel(props.t, props.m, props.a);
-    }
+    const OverviewTab = chunkTab(renderOverviewPanel, 'OverviewTab');
 
     return { OverviewTab, build: SELF_BUILD };
     /* @build-fingerprint:end */

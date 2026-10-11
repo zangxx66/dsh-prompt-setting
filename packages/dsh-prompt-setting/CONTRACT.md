@@ -1992,7 +1992,12 @@ interaction.
   checked against the exposed keys, and no chunk may redefine an exposed name
   locally; a full free-variable analysis would need a parser this zero-dependency
   package does not have. The gap that leaves — a name referenced but never taken —
-  is covered at run time, where an undeclared identifier throws (`NOTES.md` §123);
+  is covered at run time, where an undeclared identifier throws (`NOTES.md` §123).
+  **Revision 42** states the rule that keeps the surface from becoming a
+  graveyard: a name is added only when ≥2 consumers ask for the same thing, and
+  the name a merge retires (the label-only half of the two region-key families)
+  is **gone** rather than kept as an alias — an alias would be a second spelling
+  of one rule, which is the drift the surface exists to prevent;
 - the measured effect (see `NOTES.md` §123 for the migration record): `client.js`
   **9584 → 8575 lines / 456680 → 411979 bytes**, with `client.overview.js` 577,
   `client.transfer.js` 264 and `client.advanced.js` 502 lines now fetched on
@@ -2448,6 +2453,50 @@ record is now a **base plus a stack**, and「取消应用」is per application.
   stack, its `before` becoming `base`.
 - Nothing else moved: the five routes, their codes, the export/import/history
   schemas and every byte of a layer file keep their Revision 37–40 meanings.
+
+**Revision 42 (g-061 batch 1: the mechanical reuses — internal structure only).**
+Four duplicates the g-061 inventory card named are each one implementation now.
+No route, no query parameter, no stored byte, no marker and no copy key changes:
+the tab trees, their interaction and their markers are the ones Revisions 29–41
+already describe.
+
+- **one props adapter for the five tab chunks.** `renderChunkTab` mounts a chunk's
+  default export as `h(Component, { t, m, a })`, and each chunk's export unpacked
+  that object back into its renderer's three positional arguments — five copies of
+  the same one-liner under five function names. The unpacking is now
+  `__internals.shared.chunkTab(render, name)`; the component keeps its own `name`
+  (`HistoryTab`, `OverviewTab`, …), so what React reports is unchanged. It does
+  **not** replace `renderChunkTab`: that one still builds the `Suspense` boundary
+  and the「chunk unavailable」card, and takes the lazy component — the two are the
+  two halves of one mount, and only the halves with ≥2 copies were merged;
+- **one region-key rule for the two families.** The「查看范围」label
+  (`updateRegionCn` …) and its one-line note (`updateRegionCnNote` …) were two
+  local ternaries of the same shape; both are `shared.regionKey(id, family)` now
+  (`family: ''` / `'Note'`), so the unknown-id fallback to「默认」is one rule in
+  both families. `regionLabelKey` is **gone** from the surface — a label-only name
+  would be a second spelling of it;
+- **`importStatusLabel` stays local, and says why.** Same *kind* of helper, not
+  the same shape: four members whose key suffix varies while the prefix is fixed
+  (`importStatusAdded` …), one of which doubles as the fallback, and its result is
+  the translated string rather than a key. Folding it into `regionKey` would need
+  a member-table abstraction whose only variation is one consumer's — the batch's
+  rule is ≥2 consumers of the *same* shape, and it holds for this one;
+- **one workspace derivation, two published shapes.** The version-history scope
+  selector (§13.3, g-038) and the preset layer picker (§20.9, g-060) each derived
+  one row per workspace — same seat, same「first session id, title or directory
+  name」rule, same session-catalog fallback — written twice. It is
+  `workspaceRows(wsSeat, seat, {withRoot})` now: the selector reads
+  `{value, label, workspaceId, sessionIds}`, the picker reads
+  `{session, root, label}`. Both published shapes, both empty-value shapes
+  (`{mode: 'none', options: []}` versus `[]`), the fields' names and the `root`
+  null-versus-path rule are exactly what they were — only the derivation moved;
+- **the guards moved with it.** `test/client.test.mjs` asserts the merged
+  behaviours (the six keys of the two families, the unknown-id fallback in both,
+  the adapter's name and argument order, both workspace shapes and both
+  fallbacks) and, mechanically, that no chunk keeps a local copy of any of it: no
+  `updateRegion…` literal, no `regionNoteKey`, no local props adapter, and no
+  inlined `'ovWorkspace'` ternary in `client.advanced.js`. `CHUNK_STAMPS` was
+  recomputed with `scripts/client-chunks.mjs --write`.
 
 ### 13.1 「我的 Prompt」 — the one write surface
 

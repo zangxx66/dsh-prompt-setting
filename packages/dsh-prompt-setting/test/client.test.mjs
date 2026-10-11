@@ -2111,6 +2111,115 @@ test('client: every chunk depends on the entry alone — a DAG, with one copy of
   assert.ok(shared.token && typeof shared.token === 'object', 'and one theme token table');
 });
 
+// #region g-061 batch 1: the four mechanical reuses
+test('client: g-061 — one regionKey covers both families, and no chunk keeps its own copy (criterion 3)', () => {
+  const loaded = loadClient('throw');
+  const shared = loaded.module.__internals.shared;
+  // The two families the page names: the「查看范围」label (`''`) and its one-line
+  // note (`'Note'`). These six strings are exactly what the two local helpers
+  // returned before the merge.
+  assert.equal(shared.regionKey('cn', ''), 'updateRegionCn');
+  assert.equal(shared.regionKey('custom', ''), 'updateRegionCustom');
+  assert.equal(shared.regionKey('default', ''), 'updateRegionDefault');
+  assert.equal(shared.regionKey('cn', 'Note'), 'updateRegionCnNote');
+  assert.equal(shared.regionKey('custom', 'Note'), 'updateRegionCustomNote');
+  assert.equal(shared.regionKey('default', 'Note'), 'updateRegionDefaultNote');
+  // An unknown id (a Host from the future, a hand-edited answer) still reads as
+  //「默认」in **both** families — the fallback is the shared rule now, not two
+  // rules that happened to agree.
+  assert.equal(shared.regionKey('soviet', ''), 'updateRegionDefault');
+  assert.equal(shared.regionKey('soviet', 'Note'), 'updateRegionDefaultNote');
+  // And the label-only helper the rule used to be split across is gone from the
+  // surface: nothing is left that could drift away from the other family.
+  assert.equal('regionLabelKey' in shared, false, 'the label-only key helper is gone, not renamed');
+  for (const name of CHUNK_FILES) {
+    const code = chunkCode(readFileSync(join(here, '..', name), 'utf8'));
+    assert.equal(
+      /updateRegion(Cn|Custom|Default)/.test(code),
+      false,
+      `${name}: the region-key rule stays in the entry, never as a chunk-local literal`,
+    );
+    assert.equal(/regionNoteKey/.test(code), false, `${name}: no local note-key helper`);
+  }
+});
+
+test('client: g-061 — every tab chunk takes its props adapter from the entry (criteria 3, 4)', () => {
+  const loaded = loadClient('throw');
+  const shared = loaded.module.__internals.shared;
+  // The adapter is one implementation of「unpack `{t, m, a}` into the positional
+  // arguments the chunk's renderer takes」, and the component it builds keeps the
+  // name its local declaration had — so React reports what it always reported.
+  const calls = [];
+  const t = () => 'x';
+  const m = { seat: 'model' };
+  const a = { seat: 'actions' };
+  const Probe = shared.chunkTab((bt, bm, ba) => {
+    calls.push([bt, bm, ba]);
+    return 'tree';
+  }, 'Probe');
+  assert.equal(Probe.name, 'Probe', 'the factory keeps the export’s own name');
+  assert.equal(Probe({ t, m, a }), 'tree', 'and hands the renderer the same three arguments');
+  assert.deepEqual(calls, [[t, m, a]], 'exactly once, in order');
+  // Five consumers, one implementation: each chunk binds `shared.chunkTab` and
+  // none of them writes the adapter out again.
+  assert.equal(CHUNK_FILES.length, 5, 'the five chunked tabs this batch covers');
+  for (const name of CHUNK_FILES) {
+    const code = chunkCode(readFileSync(join(here, '..', name), 'utf8'));
+    assert.match(code, /shared\.chunkTab/, `${name}: takes the props adapter from the shared surface`);
+    assert.equal(/function [A-Za-z_$]+\(props\)/.test(code), false, `${name}: no local props adapter is left`);
+  }
+  // #9: the one inlined `layerLabel` equivalent — the tag that names an override's
+  // layer. It now calls the shared helper instead of restating the ternary.
+  const advanced = chunkCode(readFileSync(join(here, '..', 'client.advanced.js'), 'utf8'));
+  assert.equal(advanced.includes("'ovWorkspace'"), false, 'the inlined layer ternary is gone');
+  assert.match(advanced, /layerLabel\(t, entry\.layer\)/, 'the tag reads the shared label helper');
+});
+
+test('client: g-061 — one workspace derivation publishes the two shapes it always did (criteria 3, 4)', () => {
+  const rows = loadClient('throw').module.__internals.workspaceRows;
+  const wsSeat = {
+    items: [
+      { workspaceId: 'w1', title: 'Alpha', path: '/tmp/alpha', sessionIds: ['s1', 's2'] },
+      { workspaceId: 'w2', title: '', path: '/tmp/beta', sessionIds: ['s3'] },
+      // A workspace no session ever ran in can only produce a refusal: skipped.
+      { workspaceId: 'w3', title: '', path: '/tmp/gamma', sessionIds: [] },
+      // No title and no path ⇒ the workspace id names it.
+      { workspaceId: 'w4', title: '', path: '', sessionIds: ['s4'] },
+    ],
+  };
+  const seat = { rows: [{ id: 'r1' }, { id: 'r2' }] };
+  // The version-history selector's shape — `value` / `workspaceId` / `sessionIds`,
+  // no `root`: unchanged field by field.
+  assert.deepEqual(JSON.parse(JSON.stringify(rows(wsSeat, seat, { withRoot: false }))), [
+    { value: 's1', label: 'Alpha', workspaceId: 'w1', sessionIds: ['s1', 's2'] },
+    { value: 's3', label: 'beta', workspaceId: 'w2', sessionIds: ['s3'] },
+    { value: 's4', label: 'w4', workspaceId: 'w4', sessionIds: ['s4'] },
+  ]);
+  // The preset picker's shape — `session` / `root` / `label`, and `root` is the
+  // real path or an explicit `null`, never a missing field.
+  assert.deepEqual(JSON.parse(JSON.stringify(rows(wsSeat, seat, { withRoot: true }))), [
+    { session: 's1', root: '/tmp/alpha', label: 'Alpha' },
+    { session: 's3', root: '/tmp/beta', label: 'beta' },
+    { session: 's4', root: null, label: 'w4' },
+  ]);
+  // No usable workspace ⇒ the session catalog in both shapes (the selector
+  // announces that fallback in words; the picker lists the same sessions).
+  assert.deepEqual(JSON.parse(JSON.stringify(rows(null, seat, { withRoot: false }))), [
+    { value: 'r1', label: 'r1', workspaceId: '', sessionIds: ['r1'] },
+    { value: 'r2', label: 'r2', workspaceId: '', sessionIds: ['r2'] },
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(rows(null, seat, { withRoot: true }))), [
+    { session: 'r1', root: null, label: 'r1' },
+    { session: 'r2', root: null, label: 'r2' },
+  ]);
+  // …and nothing at all stays empty, which is what the two call sites turn into
+  // `{mode: 'none', options: []}` and `[]` respectively — the shapes differ, the
+  // derivation does not.
+  assert.deepEqual(JSON.parse(JSON.stringify(rows(null, { rows: [] }, { withRoot: false }))), []);
+  assert.deepEqual(JSON.parse(JSON.stringify(rows(null, { rows: [] }, { withRoot: true }))), []);
+});
+// #endregion
+
 test('client: without React.lazy every chunked tab renders its card, and nothing is fetched (g-046)', async () => {
   // The same probe g-045 asserts for 「版本历史」, now for every boundary: an
   // engine whose React predates `lazy`/`Suspense` must lose the tab's content,

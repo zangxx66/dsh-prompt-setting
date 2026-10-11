@@ -53,6 +53,7 @@ window.__ModuleLoader__.load({
     const fmt = shared.fmt;
     const tabs = shared.tabs;
     const cardStyle = shared.cardStyle;
+    const chunkTab = shared.chunkTab;
     const metaStyle = shared.metaStyle;
     const headingStyle = shared.headingStyle;
     const errorBanner = shared.errorBanner;
@@ -616,9 +617,7 @@ window.__ModuleLoader__.load({
      * @param props - the main bundle's page model, actions and translator.
      * @returns the tab element.
      */
-    function PresetsTab(props) {
-      return renderPresetsPanel(props.t, props.m, props.a);
-    }
+    const PresetsTab = chunkTab(renderPresetsPanel, 'PresetsTab');
 
     return { PresetsTab, build: SELF_BUILD };
     /* @build-fingerprint:end */

@@ -35,6 +35,7 @@ window.__ModuleLoader__.load({
     const MAX_EXPORT_PREVIEW = shared.MAX_EXPORT_PREVIEW;
     const UI = shared.UI;
     const cardStyle = shared.cardStyle;
+    const chunkTab = shared.chunkTab;
     const errorBanner = shared.errorBanner;
     const fmt = shared.fmt;
     const h = shared.h;
@@ -254,9 +255,7 @@ window.__ModuleLoader__.load({
      * @param props - the main bundle's page model, actions and translator.
      * @returns the tab element.
      */
-    function TransferTab(props) {
-      return renderBackupTab(props.t, props.m, props.a);
-    }
+    const TransferTab = chunkTab(renderBackupTab, 'TransferTab');
 
     return { TransferTab, build: SELF_BUILD };
     /* @build-fingerprint:end */

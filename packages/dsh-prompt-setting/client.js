@@ -3801,6 +3801,68 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * g-061: one row per workspace the page can name, derived once for the two
+     * callers that ask the same question — the version-history scope selector
+     * (g-038, {@link historyScopeOptionsOf}) and the preset layer picker (g-060,
+     * `presetWorkspaces`).
+     *
+     * Both hold the same workspace seat and need the same facts: a workspace's
+     * first session id (the identity a Host resolves a root from — `CONTRACT.md`
+     * §4.2, so a client never supplies a path), its title, and, with no title,
+     * its directory name. They *label* those facts differently (`value` /
+     * `workspaceId` / `sessionIds` for the selector, `session` / `root` for the
+     * picker), so the derivation is shared and the field names stay at the call
+     * sites: one computation, two output shapes, each of them exactly what it
+     * was before.
+     *
+     * A workspace no session ever ran in is skipped — the Host resolves a root
+     * from a session, so such a row could only produce a refusal. When the
+     * profile lists no usable workspace the rows degrade to the session catalog,
+     * the same fallback the selector has always announced in words.
+     * @param wsSeat - the workspace seat (`{items}`); `null` reads as "no workspaces".
+     * @param seat - the session seat (`{rows}`) the fallback reads; `null` for none.
+     * @param options - `{withRoot}`: the picker's shape (adds `root`) instead of
+     *   the selector's.
+     * @returns the rows, in seat order.
+     */
+    function workspaceRows(wsSeat, seat, options) {
+      const withRoot = Boolean(options && options.withRoot);
+      const workspaces = Array.isArray(wsSeat && wsSeat.items) ? wsSeat.items : [];
+      const rows = [];
+      for (const workspace of workspaces) {
+        const ids = Array.isArray(workspace && workspace.sessionIds)
+          ? workspace.sessionIds.filter((id) => typeof id === 'string' && id.length > 0)
+          : [];
+        if (ids.length === 0) continue;
+        const title = typeof workspace.title === 'string' ? workspace.title : '';
+        const path = typeof workspace.path === 'string' ? workspace.path : '';
+        const label = title.length > 0 ? title : basenameOf(path) || workspace.workspaceId || ids[0];
+        rows.push(
+          withRoot
+            ? { session: ids[0], root: path.length > 0 ? path : null, label }
+            : {
+                value: ids[0],
+                label,
+                workspaceId: typeof workspace.workspaceId === 'string' ? workspace.workspaceId : '',
+                sessionIds: ids,
+              },
+        );
+      }
+      if (rows.length > 0) return rows;
+      const sessionRows = Array.isArray(seat && seat.rows) ? seat.rows : [];
+      return sessionRows.slice(0, SESSION_MATCH_LIMIT).map((row) =>
+        withRoot
+          ? { session: row.id, root: null, label: sessionLabelOf(sessionRows, row.id) || row.id }
+          : {
+              value: row.id,
+              label: sessionLabelOf(sessionRows, row.id) || row.id,
+              workspaceId: '',
+              sessionIds: [row.id],
+            },
+      );
+    }
+
+    /**
      * g-038: the options the version-history scope selector offers.
      *
      * The scope is a **workspace** dimension: one option per workspace the host
@@ -3819,37 +3881,14 @@ window.__ModuleLoader__.load({
      * @returns `{mode, options}` with options `{value, label, workspaceId, sessionIds}`.
      */
     function historyScopeOptionsOf(wsSeat, seat) {
-      const workspaces = Array.isArray(wsSeat && wsSeat.items) ? wsSeat.items : [];
-      const fromWorkspaces = [];
-      for (const workspace of workspaces) {
-        const ids = Array.isArray(workspace && workspace.sessionIds)
-          ? workspace.sessionIds.filter((id) => typeof id === 'string' && id.length > 0)
-          : [];
-        // A workspace no session ever ran in has no locatable log: the host
-        // resolves a root from a session, so such a row could only produce a
-        // refusal.
-        if (ids.length === 0) continue;
-        const title = typeof workspace.title === 'string' ? workspace.title : '';
-        const path = typeof workspace.path === 'string' ? workspace.path : '';
-        fromWorkspaces.push({
-          value: ids[0],
-          label: title.length > 0 ? title : basenameOf(path) || workspace.workspaceId || ids[0],
-          workspaceId: typeof workspace.workspaceId === 'string' ? workspace.workspaceId : '',
-          sessionIds: ids,
-        });
-      }
+      // Asked twice with one seat each time, so「which half answered」stays a
+      // question of this call site — a `mode` — instead of a third branch inside
+      // the shared derivation.
+      const fromWorkspaces = workspaceRows(wsSeat, null, { withRoot: false });
       if (fromWorkspaces.length > 0) return { mode: 'workspaces', options: fromWorkspaces };
-      const rows = Array.isArray(seat && seat.rows) ? seat.rows : [];
-      if (rows.length === 0) return { mode: 'none', options: [] };
-      return {
-        mode: 'sessions',
-        options: rows.slice(0, SESSION_MATCH_LIMIT).map((row) => ({
-          value: row.id,
-          label: sessionLabelOf(rows, row.id) || row.id,
-          workspaceId: '',
-          sessionIds: [row.id],
-        })),
-      };
+      const fromSessions = workspaceRows(null, seat, { withRoot: false });
+      if (fromSessions.length === 0) return { mode: 'none', options: [] };
+      return { mode: 'sessions', options: fromSessions };
     }
 
     /**
@@ -6244,11 +6283,11 @@ window.__ModuleLoader__.load({
      * would be exactly the silently false「一致」the stamp exists to prevent.
      */
     const CHUNK_STAMPS = Object.freeze([
-      { name: 'client.advanced.js', hash: '523d25ee', size: 21505 },
-      { name: 'client.history.js', hash: '2887cc6c', size: 48609 },
-      { name: 'client.overview.js', hash: 'f66cd1b0', size: 23533 },
-      { name: 'client.presets.js', hash: '4e82006e', size: 22545 },
-      { name: 'client.transfer.js', hash: 'c8af8793', size: 9759 },
+      { name: 'client.advanced.js', hash: 'd188cd91', size: 21227 },
+      { name: 'client.history.js', hash: 'e8f0e166', size: 48615 },
+      { name: 'client.overview.js', hash: 'e66fd05b', size: 23540 },
+      { name: 'client.presets.js', hash: '21d029cc', size: 22551 },
+      { name: 'client.transfer.js', hash: '8b305496', size: 9766 },
     ]);
 
     /**
@@ -6318,9 +6357,10 @@ window.__ModuleLoader__.load({
       diffSections,
       composeSections,
       errorText,
-      regionLabelKey,
+      regionKey,
       renderStatusDetail,
       renderUpdateApplyStatus,
+      chunkTab,
     });
 
     /** Chunks this page has really loaded, by file name: `{hash, size}`. */
@@ -6611,6 +6651,35 @@ window.__ModuleLoader__.load({
     const PresetsTabChunk = HAS_REACT_LAZY
       ? React.lazy(() => chunkModule('client.presets.js', (chunkExports) => chunkExports && chunkExports.PresetsTab))
       : null;
+
+    /**
+     * g-061: the props adapter every lazy tab chunk used to write for itself.
+     *
+     * `renderChunkTab` below mounts a chunk's default export as
+     * `h(Component, { t, m, a })`, and each chunk's export unpacks that one
+     * object back into the three positional arguments its own renderer takes.
+     * Five chunks wrote that same one-liner under five function names — the
+     * unpacking is a shape, not a per-tab decision, so it lives here once and
+     * each chunk keeps its own export name.
+     *
+     * This is **not** `renderChunkTab`: that one builds the `Suspense` boundary
+     * and the「chunk unavailable」card and takes the lazy *component*; this one
+     * builds the component the boundary finally mounts. Both halves are needed;
+     * only this half was duplicated five times.
+     * @param render - the chunk's own `(t, m, a)` renderer.
+     * @param name - the export's name, so the component reports what it always did.
+     * @returns a React function component.
+     */
+    function chunkTab(render, name) {
+      const Tab = function tabComponent(props) {
+        return render(props.t, props.m, props.a);
+      };
+      // The five local declarations were named functions (`function HistoryTab`),
+      // so the mounted component's `name` is part of what the page always said
+      // about itself; a factory-made component keeps that name.
+      Object.defineProperty(Tab, 'name', { value: name, configurable: true });
+      return Tab;
+    }
 
     /**
      * Mount one tab chunk behind a `Suspense` boundary.
@@ -6938,11 +7007,23 @@ window.__ModuleLoader__.load({
     /**
      * g-043: the i18n key for one region id. An unknown id (a Host from the
      * future, a hand-edited answer) reads as「默认」rather than as a bare enum.
+     *
+     * g-061: the same three ids are named in **two** key families — the
+     * 「查看范围」 label (`family: ''`, `updateRegionCn`) and the one-line note
+     * under it (`family: 'Note'`, `updateRegionCnNote`). The id→key rule is
+     * written once here and the family is the only thing a caller adds, so the
+     * two families can never disagree about which id is「默认」.
      * @param id - `default` / `cn` / `custom`, or anything else.
+     * @param family - the suffix that names the family (`''` for the label).
      * @returns the dictionary key.
      */
-    function regionLabelKey(id) {
-      return id === 'cn' ? 'updateRegionCn' : id === 'custom' ? 'updateRegionCustom' : 'updateRegionDefault';
+    function regionKey(id, family) {
+      const suffix = typeof family === 'string' ? family : '';
+      return id === 'cn'
+        ? `updateRegionCn${suffix}`
+        : id === 'custom'
+          ? `updateRegionCustom${suffix}`
+          : `updateRegionDefault${suffix}`;
     }
 
     /**
@@ -8604,7 +8685,7 @@ window.__ModuleLoader__.load({
         if (wanted !== 'default' && wanted !== 'cn') return;
         const result = await saveRegion({ region: wanted });
         if (result.ok) {
-          setNotice({ tone: 'success', text: fmt(t('updateRegionSaved'), { region: t(regionLabelKey(wanted)) }) });
+          setNotice({ tone: 'success', text: fmt(t('updateRegionSaved'), { region: t(regionKey(wanted, '')) }) });
           return;
         }
         setNotice({ tone: 'error', text: errorText(t, result.error) });
@@ -8637,7 +8718,7 @@ window.__ModuleLoader__.load({
         const result = await saveRegion({ region: 'custom', registry: address });
         if (result.ok) {
           setRegionDialog(null);
-          setNotice({ tone: 'success', text: fmt(t('updateRegionSaved'), { region: t(regionLabelKey('custom')) }) });
+          setNotice({ tone: 'success', text: fmt(t('updateRegionSaved'), { region: t(regionKey('custom', '')) }) });
           return;
         }
         setRegionDialog((current) => (current === null ? null : { ...current, phase: 'idle', error: result.error }));
@@ -9197,32 +9278,7 @@ window.__ModuleLoader__.load({
        * (g-038), and a row whose root is unknown simply states no applied state
        * rather than guessing one.
        */
-      const presetWorkspaces = (() => {
-        const items = Array.isArray(wsSeat.items) ? wsSeat.items : [];
-        const fromWorkspaces = [];
-        for (const workspace of items) {
-          const ids = Array.isArray(workspace && workspace.sessionIds)
-            ? workspace.sessionIds.filter((id) => typeof id === 'string' && id.length > 0)
-            : [];
-          // A workspace no session ever ran in can only produce a refusal: the
-          // host resolves the root from a session, so there is nothing to send.
-          if (ids.length === 0) continue;
-          const title = typeof workspace.title === 'string' ? workspace.title : '';
-          const path = typeof workspace.path === 'string' ? workspace.path : '';
-          fromWorkspaces.push({
-            session: ids[0],
-            root: path.length > 0 ? path : null,
-            label: title.length > 0 ? title : basenameOf(path) || workspace.workspaceId || ids[0],
-          });
-        }
-        if (fromWorkspaces.length > 0) return fromWorkspaces;
-        const rows = Array.isArray(seat.rows) ? seat.rows : [];
-        return rows.slice(0, SESSION_MATCH_LIMIT).map((row) => ({
-          session: row.id,
-          root: null,
-          label: sessionLabelOf(seat.rows, row.id) || row.id,
-        }));
-      })();
+      const presetWorkspaces = workspaceRows(wsSeat, seat, { withRoot: true });
       /**
        * g-060 (review R1, re-pointed by R3): does the editor hold an **unsaved**
        * change?
@@ -9811,7 +9867,7 @@ window.__ModuleLoader__.load({
        * path) that a rendered tree cannot express. The loader only ever reads
        * `inject` and `apply`; nothing in the page reads this.
        */
-      __internals: { historyPanelHeight, shared: CHUNK_FACILITIES },
+      __internals: { historyPanelHeight, workspaceRows, shared: CHUNK_FACILITIES },
       apply(ctx) {
         // Every locale call is guarded. `ctx.locale.subscribe` and
         // `getSnapshot().revision` are the one unproven part of the 0.1.7-rc.2
