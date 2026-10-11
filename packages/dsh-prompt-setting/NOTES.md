@@ -7665,3 +7665,61 @@ brief 写「本次 0.2.1 覆盖 g-050…g-058」。核对仓库事实：**g-050�
 - 批次 2 样式常量（遮罩/错误行/空态/等宽框）、批次 3 语义裁决（卡片尺寸/标题行/ghost 态/搜索/会话行按钮）、
   批次 4 chunk 引导块：本轮一行未改，候选仍以卡片为准。
 
+## 137. g-061 批次 2：四类样式常量收敛（Revision 43，2026-10-12，基线 `00d9ef8` 隔离工作树）
+
+批次 2 只抽「同形、消费方 ≥2」的样式常量；通用实现全部落在**既有的**主入口共享面
+（`client.js` `CHUNK_FACILITIES` → `__internals.shared`），不新增 chunk、不下沉 `core/`、不引依赖。
+四类各自新增一个名字：`scrimStyle` / `errorLine` / `emptyCard` / `monoTextBox`。
+
+**① 弹窗遮罩 4 份 → `scrimStyle(zIndex)`**
+- `renderConfirm`（1200）、`renderRegionDialog`（1000）、`client.presets.js` 的 `OVERLAY_STYLE`（1000）、
+  `client.history.js` 的 `modalShell`（1000）逐字相同的 9 个字段合为一份工厂。
+- **zIndex 是必填参数、无默认值**：`scrimStyle(undefined).zIndex === undefined` 有断言；`renderConfirm` 的
+  1200 既由源码正则（`['1200','1000']`）也由**渲染后的 overlay** 断言，不会被默认值吞掉。
+- `OVERLAY_STYLE` 这个 chunk 局部名字保留（它仍被两个对话框引用），但值改为 `scrimStyle(1000)`；
+  各使用点的 `key` / `data-region` / `data-history-modal` 原样。
+
+**② 弹窗内错误行 3 份 → `errorLine(options)`**
+- `region-error`（无前缀、13px、无折行）、`preset-dialog-error`（`presetFailed` 前缀、13px、折行）、
+  `renderFailureCard`（`p`、`margin: 0`、`renderErrorLabel` 前缀、折行）归一；差异全部显式参数化：
+  `tag` / `role` / `probe` / `code` / `text` / `fontSize` / `wrap` / `margin`。
+- **探针标记与字号逐点保持**：`data-role="region-error"` + `data-region-error`、
+  `data-role="preset-dialog-error"` + `data-preset-dialog-error`、失败卡的 `p` 无 `data-*`；
+  三处字号都是 13（由调用方传，工厂不设默认）。
+- `client.presets.js` 保留本地适配器 `dialogError(t, m)`（读 `m.presetStatus` 是该 chunk 自己的事），
+  但元素由共享工厂构造；`'data-…-error': typeof` 式的本地拼装在 chunk 内已为 0 处。
+
+**③ 空态块 4 份 → 只抽「有卡空态」子集 `emptyCard(marker, children)`**
+- 真正同形的是两处：`client.advanced.js`（`div[data-empty=overrides] + cardStyle` 单文本）与
+  `client.overview.js`（同容器 + `strong` + `p`）——容器与样式是共同面，卡内文本仍由调用方给。
+- **另两处不并入，理由是「不同形状」而非「不同文案」**：`client.history.js` 的
+  `div[data-empty=history] + metaStyle` **没有卡**；`client.presets.js` 的
+  `p[data-region=presets-empty] + {margin:0, ...metaStyle}` 换了容器标签与标记族。合并任一都会改变
+  读者看到的盒子，本批次不做。测试同时断言「并入的两处」与「保持不动的两处」。
+
+**④ 等宽 / pre-wrap 文本框 5 处 → `monoTextBox(options)`**
+- 共同骨架只有排版：`margin: 0`、12px、`pre-wrap`、`break-word`、字族；盒子外观全参数化且**无默认**：
+  `maxHeight`（200/220/320/460）、`padding`（`4px 6px`/`6px 8px`/`8px 10px`/`10px 12px`）、
+  `radius`（6/8）、`border`（`borderL1`/`borderL2`/无）、`mono`（`false` 只有 presets 预览，故意继承页面字体）、
+  `lineHeight`（只在线读的盒子上）、`color`（只在非主阅读面）、`scroll`（`overflow` 或 `overflowY`）。
+- `client.history.js` 的 `client.overview.js`×3、`client.presets.js` 各自的调用点逐点保留原值，
+  渲染后的 style 与工厂输出逐字段断言。
+- `client.history.js` 的 diff op 行只有两条折行规则、不是盒子：**保持原样**（不属于本工厂）。
+
+**测试与门禁**
+- `test/client.test.mjs` 新增四条（`// #region g-061 batch 2: the four style families`）：工厂逐字段等价性、
+  「无参数 ⇒ 无值」的负向断言、每个名字的消费点计数与「chunk 内无本地副本」的机械断言，以及
+  渲染级抽样（确认遮罩 1200、region 错误行、两个有卡空态、overview 三个盒子、preset 预览）。
+- 负向核对（改坏即红，逐条实测后已还原）：`scrimStyle(1200)→1000` 红；presets `mono:false→true` 红；
+  `errorLine` 的 region `fontSize:13→12` 红。
+- 契约新增 **Revision 43** 段（§13 末条），§13.0 共享面清单同步补一句；`CHUNK_STAMPS` 由
+  `node scripts/client-chunks.mjs --write` 重算。
+- **证据**：`node --test` ⇒ 819 pass / 0 fail（基线 815 + 新增 4 条）；`node scripts/prepare.mjs` ⇒ 21/21；
+  `node scripts/client-chunks.mjs` ⇒ 5 个 chunk 与清单一致。
+
+**残留（批次 3–4 未动）**
+- 批次 3 语义裁决（弹窗卡片尺寸/标题动作行/ghost 选中态/搜索过滤/会话行按钮）、批次 4 chunk 引导块：
+  本轮一行未改。
+- 明确未纳入本工厂的相邻形态：history 的 diff op 行（行内折行规则）、`client.js:2008` 的
+  `font: 13px/20px mono` 输入框字体、history diff block 的 `font:` 简写盒子（用 `font` 简写会重置
+  font-weight，与 `monoTextBox` 语义不同）——三者都留待批次 3 或不做。

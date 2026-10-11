@@ -64,6 +64,8 @@ window.__ModuleLoader__.load({
     const HISTORY_PANEL_MIN_HEIGHT = shared.HISTORY_PANEL_MIN_HEIGHT;
     const RESERVED_SECTION_NAME = shared.RESERVED_SECTION_NAME;
     const VIEWS = shared.VIEWS;
+    const monoTextBox = shared.monoTextBox;
+    const scrimStyle = shared.scrimStyle;
     /**
      * This chunk's own digest, computed from `toString()` against the same
      * markers the host reads out of this file — so the page can verify a chunk
@@ -258,17 +260,16 @@ window.__ModuleLoader__.load({
           h('span', { key: 'label', style: { ...metaStyle, minWidth: 48 } }, label),
           h('span', { key: 'value', style: { wordBreak: 'break-word' }, title }, value),
         );
-      const textBoxStyle = {
-        margin: 0,
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-word',
-        maxHeight: 200,
-        overflowY: 'auto',
-        border: `1px solid ${token.borderL1}`,
-        borderRadius: 6,
+      const textBoxStyle = monoTextBox({
+        mono: true,
         padding: '4px 6px',
-        fontSize: 12,
-      };
+        radius: 6,
+        border: token.borderL1,
+        maxHeight: 200,
+        // This box scrolls on one axis only: the label above it stays put while
+        // a long record scrolls.
+        scroll: 'overflowY',
+      });
       const textBox = (key, label, entry) =>
         h(
           'div',
@@ -1085,19 +1086,10 @@ window.__ModuleLoader__.load({
           key: options.key,
           'data-region': 'history-modal-overlay',
           'data-history-modal': options.region,
-          style: {
-            position: 'fixed',
-            top: 0,
-            right: 0,
-            bottom: 0,
-            left: 0,
-            zIndex: 1000,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: 16,
-            background: 'rgba(0, 0, 0, 0.45)',
-          },
+          // g-061: the shared scrim, at the tab-dialog layer (1000) — the same
+          // layer as the「自定义」dialog and the two preset dialogs, and below
+          // the confirmation overlay's stated 1200.
+          style: scrimStyle(1000),
         },
         h(
           'div',

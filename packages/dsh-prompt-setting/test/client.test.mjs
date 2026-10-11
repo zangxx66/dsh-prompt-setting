@@ -2220,6 +2220,350 @@ test('client: g-061 — one workspace derivation publishes the two shapes it alw
 });
 // #endregion
 
+// #region g-061 batch 2: the four style families
+
+/** How many times `needle` occurs in `code`. */
+function occurrencesOf(code, needle) {
+  return code.split(needle).length - 1;
+}
+
+test('client: g-061 — one scrim, and the confirmation’s 1200 is its own argument (criteria 3, 4)', async () => {
+  const shared = loadClient('throw').module.__internals.shared;
+  // The backdrop, field for field. Four copies differed in the layer alone, so
+  // the layer is the argument — and it has **no default**: a scrim built with no
+  // argument carries no layer at all, so a call site that forgot to state one
+  // cannot silently become 1000 (or 1200).
+  const backdrop = {
+    position: 'fixed',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+    background: 'rgba(0, 0, 0, 0.45)',
+  };
+  assert.deepEqual({ ...shared.scrimStyle(1000) }, { ...backdrop, zIndex: 1000 });
+  assert.deepEqual({ ...shared.scrimStyle(1200) }, { ...backdrop, zIndex: 1200 });
+  assert.equal(shared.scrimStyle.length, 1, 'the layer is a required parameter');
+  assert.equal(shared.scrimStyle(undefined).zIndex, undefined, 'there is no default layer to absorb the call site’s');
+  assert.notEqual(shared.scrimStyle(1200).zIndex, shared.scrimStyle(1000).zIndex, 'the argument really decides the layer');
+
+  // Four consumers, one implementation: the entry’s two dialogs, and the two
+  // chunks that draw dialogs of their own. No chunk keeps a copy of the
+  // backdrop, and none states a layer in a private object.
+  const entry = readFileSync(join(here, '..', 'client.js'), 'utf8');
+  assert.deepEqual(
+    [...entry.matchAll(/scrimStyle\((\d+)\)/g)].map((match) => match[1]),
+    ['1200', '1000'],
+    'renderConfirm states 1200 and renderRegionDialog states 1000',
+  );
+  const presets = chunkCode(readFileSync(join(here, '..', 'client.presets.js'), 'utf8'));
+  const history = chunkCode(readFileSync(join(here, '..', 'client.history.js'), 'utf8'));
+  assert.match(presets, /OVERLAY_STYLE = scrimStyle\(1000\)/, 'the preset dialogs take the shared scrim at 1000');
+  assert.match(history, /style: scrimStyle\(1000\)/, 'so does the history modal');
+  for (const name of CHUNK_FILES) {
+    const code = chunkCode(readFileSync(join(here, '..', name), 'utf8'));
+    assert.equal(/zIndex:\s*\d+/.test(code), false, `${name}: no copied backdrop layer`);
+    assert.equal(code.includes('rgba(0, 0, 0, 0.45)'), false, `${name}: no copied scrim`);
+  }
+
+  // …and the number is what the page really draws: the confirmation overlay —
+  // the question every tab dialog must stay below — is rendered at 1200.
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.overrides]: {
+        payload: layeredOverrides([{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text' }]),
+      },
+    }),
+  });
+  clickButton(await page.flush(), { 'data-action': 'mine-reset' });
+  const overlay = oneBy(await page.flush(), 'data-region', 'confirm-overlay');
+  assert.deepEqual({ ...overlay.props.style }, { ...backdrop, zIndex: 1200 }, 'the question is above every tab dialog');
+  // The region dialog — the entry’s other scrim — is asserted at run time by
+  // 「a refused custom address stays in the dialog」 (it renders inside the same
+  // overlay object), and the two chunk dialogs by the tables below.
+});
+
+test('client: g-061 — one error line, with each call site’s own markers and size (criteria 2, 3)', async () => {
+  const shared = loadClient('throw').module.__internals.shared;
+  const red = 'var(--dsw-alias-state-error-primary)';
+  // The three shapes, field for field. The shape (a `div`), the red and the
+  // 13px are shared; the tag, the marker, the break rule and the text in front
+  // of the message stay each call site’s own.
+  const regionLine = shared.errorLine({
+    role: 'region-error',
+    probe: 'data-region-error',
+    code: 'registry-invalid',
+    fontSize: 13,
+    text: 'boom',
+  });
+  assert.equal(regionLine.type, 'div');
+  assert.deepEqual({ ...regionLine.props.style }, { fontSize: 13, color: red }, 'no break rule, exactly as before');
+  assert.equal(regionLine.props['data-role'], 'region-error');
+  assert.equal(regionLine.props['data-region-error'], 'registry-invalid');
+  assert.equal(regionLine.props.children, 'boom');
+
+  const presetLine = shared.errorLine({
+    role: 'preset-dialog-error',
+    probe: 'data-preset-dialog-error',
+    code: undefined,
+    fontSize: 13,
+    wrap: true,
+    text: 'Preset failed: boom',
+  });
+  assert.deepEqual(
+    { ...presetLine.props.style },
+    { fontSize: 13, color: red, wordBreak: 'break-word' },
+    'the preset line breaks long host messages',
+  );
+  assert.equal(presetLine.props['data-role'], 'preset-dialog-error');
+  assert.equal(presetLine.props['data-preset-dialog-error'], 'unknown', 'a missing code is still stated, never omitted');
+
+  const failureLine = shared.errorLine({ tag: 'p', fontSize: 13, margin: 0, wrap: true, text: 'Error: boom' });
+  assert.equal(failureLine.type, 'p', 'the failure card’s line is a paragraph, not a div');
+  assert.deepEqual(
+    { ...failureLine.props.style },
+    { fontSize: 13, color: red, margin: 0, wordBreak: 'break-word' },
+    'and it carries the paragraph reset the others do not',
+  );
+  assert.equal(failureLine.props['data-role'], undefined, 'the failure card carries no dialog marker');
+  assert.equal(failureLine.props['data-region-error'], undefined);
+
+  // The size is the caller’s, not a constant the factory hides: another size is
+  // another style, and the two dialog lines keep 13 explicitly.
+  assert.equal(shared.errorLine({ fontSize: 12, text: 'x' }).props.style.fontSize, 12);
+
+  // Three consumers, one implementation — and no call site writes the line out
+  // again. The entry states both of its lines through the factory; the chunk
+  // keeps its own adapter (it reads the model) but builds the element with it.
+  const entry = readFileSync(join(here, '..', 'client.js'), 'utf8');
+  assert.equal(occurrencesOf(entry, "'data-role': 'region-error'"), 0, 'the entry no longer writes the line by hand');
+  assert.equal(occurrencesOf(entry, "role: 'region-error'"), 1);
+  assert.equal(occurrencesOf(entry, "probe: 'data-region-error'"), 1);
+  assert.equal(occurrencesOf(entry, 'errorLine({'), 2, 'the region dialog and the failure card, and nothing else');
+  const presets = chunkCode(readFileSync(join(here, '..', 'client.presets.js'), 'utf8'));
+  assert.equal(occurrencesOf(presets, "'data-preset-dialog-error': typeof"), 0, 'the preset line is not built locally');
+  assert.equal(occurrencesOf(presets, "role: 'preset-dialog-error'"), 1);
+  assert.equal(occurrencesOf(presets, "probe: 'data-preset-dialog-error'"), 1);
+  assert.equal(occurrencesOf(presets, 'errorLine({'), 1);
+
+  // At run time: a refused custom address still renders that exact line — the
+  // marker, the code and a red, non-wrapping 13px div and nothing else.
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.downloadRegion]: (target, init) =>
+        init.method === 'PUT'
+          ? {
+              status: 200,
+              payload: {
+                ok: false,
+                code: 'registry-invalid',
+                message: 'the host refused it',
+                region: 'custom',
+                registry: null,
+                effectiveFrom: 'unchanged',
+              },
+            }
+          : { payload: regionFixture() },
+    }),
+  });
+  let tree = await openTab(page, 'advanced');
+  chooseRegion(tree, 'custom');
+  tree = page.draw();
+  typeInto(tree, 'region-input', 'https://mirror.example/npm');
+  tree = page.draw();
+  clickButton(tree, { 'data-action': 'region-save' });
+  const refused = oneBy(await page.flush(), 'data-role', 'region-error');
+  assert.deepEqual(
+    { ...refused.props.style },
+    { fontSize: 13, color: red },
+    'the rendered line is the factory’s, point for point',
+  );
+});
+
+test('client: g-061 — the carded empty state is shared; the other two are not, and say why (criterion 3)', async () => {
+  const shared = loadClient('throw').module.__internals.shared;
+  // One implementation of「a list with no rows draws a card」: the container and
+  // its marker, nothing else. The text inside stays the caller’s — one line in
+  // 「高级」, a title plus a body in 「提示词总览」.
+  const card = shared.emptyCard('overrides', 'nothing');
+  assert.equal(card.type, 'div');
+  assert.equal(card.props['data-empty'], 'overrides');
+  assert.deepEqual({ ...card.props.style }, { ...shared.cardStyle });
+  assert.equal(card.props.children, 'nothing');
+
+  // Two consumers, and the page really renders both of them.
+  const advanced = makePage({
+    responses: defaultResponses({ [PATHS.overrides]: { payload: overridesFixture({ merged: { overrides: [] } }) } }),
+  });
+  const emptyOverrides = oneBy(await openAdvanced(advanced), 'data-empty', 'overrides');
+  assert.deepEqual({ ...emptyOverrides.props.style }, { ...shared.cardStyle }, '「高级」still draws the card');
+  assert.equal(strings(emptyOverrides).join(''), advanced.zh.ovEmpty);
+
+  const overview = makePage({
+    responses: defaultResponses({
+      [PATHS.snapshot]: { payload: snapshotFixture({ effective: { sections: [] } }) },
+    }),
+  });
+  const emptySections = oneBy(await openOverview(overview), 'data-empty', 'sections');
+  assert.deepEqual({ ...emptySections.props.style }, { ...shared.cardStyle }, '「提示词总览」still draws the card');
+  assert.equal(strings(emptySections).join(''), `${overview.zh.emptyTitle}${overview.zh.emptyBody}`);
+
+  // The other two empty states are **not** this shape and stay as they were:
+  // different container, different marker family, different box. The assertions
+  // record the reason rather than a merge nobody can see.
+  const history = chunkCode(readFileSync(join(here, '..', 'client.history.js'), 'utf8'));
+  assert.match(
+    history,
+    /'data-empty': 'history', style: metaStyle/,
+    '「版本历史」prints one meta line, with no card at all — merging it would add a box',
+  );
+  const presets = chunkCode(readFileSync(join(here, '..', 'client.presets.js'), 'utf8'));
+  assert.match(
+    presets,
+    /'data-region': 'presets-empty', style: \{ margin: 0, \.\.\.metaStyle \}/,
+    '「我的预设」prints a bare marked paragraph with its own margin — a different container and marker family',
+  );
+});
+
+test('client: g-061 — one pre-wrap text box, parameterised point by point (criteria 3, 4)', async () => {
+  const shared = loadClient('throw').module.__internals.shared;
+  const mono = shared.token.mono;
+  const l1 = `1px solid ${shared.token.borderL1}`;
+  const l2 = `1px solid ${shared.token.borderL2}`;
+  const dim = shared.token.labelSecondary;
+  // The skeleton is the same everywhere; the box around it is the caller’s.
+  assert.deepEqual(
+    { ...shared.monoTextBox({ mono: true, padding: '4px 6px', radius: 6, border: shared.token.borderL1, maxHeight: 200, scroll: 'overflowY' }) },
+    {
+      margin: 0,
+      fontSize: 12,
+      whiteSpace: 'pre-wrap',
+      wordBreak: 'break-word',
+      fontFamily: mono,
+      padding: '4px 6px',
+      borderRadius: 6,
+      border: l1,
+      maxHeight: 200,
+      overflowY: 'auto',
+    },
+    'the history preview’s box, field for field',
+  );
+  // Negative: every one of those differences is a parameter, and none of them
+  // has a default that could absorb a call site’s value.
+  assert.equal(shared.monoTextBox({}).maxHeight, undefined, 'no default maxHeight');
+  assert.equal(shared.monoTextBox({}).padding, undefined, 'no default padding');
+  assert.equal(shared.monoTextBox({}).borderRadius, undefined, 'no default radius');
+  assert.equal(shared.monoTextBox({}).border, undefined, 'no default border');
+  assert.equal(shared.monoTextBox({}).overflow, undefined, 'no default scrolling');
+  assert.equal(shared.monoTextBox({}).lineHeight, undefined, 'no default line height');
+  assert.equal(shared.monoTextBox({}).color, undefined, 'no default colour');
+  assert.equal(shared.monoTextBox({ mono: false }).fontFamily, 'inherit', 'inherit is stated, not assumed');
+  assert.equal(shared.monoTextBox({ mono: true }).fontFamily, mono);
+  // The four heights the page really uses are four different boxes.
+  assert.deepEqual(
+    [200, 220, 320, 460].map((maxHeight) => shared.monoTextBox({ maxHeight }).maxHeight),
+    [200, 220, 320, 460],
+  );
+
+  // Five consumers across three chunks; no chunk writes the skeleton out again
+  // (the diff-op line keeps only its two break rules — it is not a box).
+  for (const name of CHUNK_FILES) {
+    const code = chunkCode(readFileSync(join(here, '..', name), 'utf8'));
+    assert.equal(occurrencesOf(code, 'fontFamily:'), 0, `${name}: no local font family decision is left`);
+  }
+  const presets = chunkCode(readFileSync(join(here, '..', 'client.presets.js'), 'utf8'));
+  const overviewCode = chunkCode(readFileSync(join(here, '..', 'client.overview.js'), 'utf8'));
+  const historyCode = chunkCode(readFileSync(join(here, '..', 'client.history.js'), 'utf8'));
+  assert.equal(occurrencesOf(presets, 'monoTextBox({'), 1);
+  assert.equal(occurrencesOf(overviewCode, 'monoTextBox({'), 3, 'the section body, the full text and the diff detail');
+  assert.equal(occurrencesOf(historyCode, 'monoTextBox({'), 1);
+
+  // At run time: the same three overview boxes and the preset preview, each
+  // still carrying its own values.
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openOverview(page);
+  clickButton(tree, { 'data-action': 'expand', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+  assert.deepEqual(
+    { ...oneBy(tree, 'data-section-full', 'project:alpha').props.style },
+    {
+      margin: 0,
+      fontSize: 12,
+      whiteSpace: 'pre-wrap',
+      wordBreak: 'break-word',
+      fontFamily: mono,
+      padding: '8px 10px',
+      borderRadius: 8,
+      border: l2,
+      lineHeight: '18px',
+      maxHeight: 320,
+      overflow: 'auto',
+      color: dim,
+    },
+    'the expanded section’s body keeps 8/10, radius 8, L2 and 320',
+  );
+  clickTab(tree, 'view', 'full');
+  tree = await page.flush();
+  assert.deepEqual(
+    { ...oneBy(tree, 'data-full-text', 'rendered').props.style },
+    {
+      margin: 0,
+      fontSize: 12,
+      whiteSpace: 'pre-wrap',
+      wordBreak: 'break-word',
+      fontFamily: mono,
+      padding: '10px 12px',
+      borderRadius: 8,
+      border: l2,
+      lineHeight: '18px',
+      maxHeight: 460,
+      overflow: 'auto',
+      color: dim,
+    },
+    'the full text keeps 10/12, radius 8, L2 and 460',
+  );
+  assert.deepEqual(
+    { ...oneBy(tree, 'data-diff-detail', 'project:alpha').props.style },
+    {
+      margin: 0,
+      fontSize: 12,
+      whiteSpace: 'pre-wrap',
+      wordBreak: 'break-word',
+      fontFamily: mono,
+      padding: '6px 8px',
+      borderRadius: 6,
+      lineHeight: '18px',
+      maxHeight: 220,
+      overflow: 'auto',
+    },
+    'the diff detail keeps 6/8, radius 6, no stroke and 220',
+  );
+
+  const presetPage = makePage({ responses: defaultResponses() });
+  const presetTree = await openTab(presetPage, 'presets');
+  const previews = collect(presetTree, (node) => node.props && node.props['data-role'] === 'preset-preview');
+  assert.equal(previews.length, 2, 'one preview per stored preset');
+  for (const preview of previews) {
+    assert.deepEqual(
+      { ...preview.props.style },
+      {
+        margin: 0,
+        fontSize: 12,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        fontFamily: 'inherit',
+        color: shared.token.labelSecondary,
+      },
+      'the preset preview is the one box that inherits the page font',
+    );
+  }
+});
+// #endregion
+
 test('client: without React.lazy every chunked tab renders its card, and nothing is fetched (g-046)', async () => {
   // The same probe g-045 asserts for 「版本历史」, now for every boundary: an
   // engine whose React predates `lazy`/`Suspense` must lose the tab's content,

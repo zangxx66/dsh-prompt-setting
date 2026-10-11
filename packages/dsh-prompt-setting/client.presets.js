@@ -57,7 +57,10 @@ window.__ModuleLoader__.load({
     const metaStyle = shared.metaStyle;
     const headingStyle = shared.headingStyle;
     const errorBanner = shared.errorBanner;
+    const errorLine = shared.errorLine;
     const errorText = shared.errorText;
+    const monoTextBox = shared.monoTextBox;
+    const scrimStyle = shared.scrimStyle;
     /**
      * This chunk's own digest, computed from `toString()` against the same
      * markers the host reads out of this file.
@@ -70,30 +73,20 @@ window.__ModuleLoader__.load({
     /** How many workspace rows the apply dialog renders at once. */
     const PRESET_WORKSPACE_LIMIT = 50;
     /**
-     * The overlay backdrop, copied from `client.js`'s `renderRegionDialog` (the
-     * project's own dialog precedent): one full-screen scrim that dims the page
-     * behind the card, so a dialog reads as modal without stealing focus.
+     * The overlay backdrop both dialogs below are drawn on: the shared
+     * `scrimStyle` — one full-screen scrim that dims the page behind the card,
+     * so a dialog reads as modal without stealing focus (g-061; before that the
+     * object was copied from `client.js`'s `renderRegionDialog`).
      *
-     * `zIndex: 1000` is this page's **tab-dialog layer** — the same value the
-     * 「自定义镜像源」 dialog and the history comparison modal use. It is
+     * `1000` is this page's **tab-dialog layer** — the same value the
+     * 「自定义镜像源」 dialog and the history comparison modal pass. It is
      * deliberately **below** the shared confirmation overlay (1200, review R6):
      * a question raised by one of these dialogs must be drawn on top of it, and
      * that ordering is a stated contract rather than a consequence of which node
-     * happens to be appended last.
+     * happens to be appended last. The layer is this call site's own argument;
+     * the shared factory has no default that could quietly change it.
      */
-    const OVERLAY_STYLE = {
-      position: 'fixed',
-      top: 0,
-      right: 0,
-      bottom: 0,
-      left: 0,
-      zIndex: 1000,
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      padding: 16,
-      background: 'rgba(0, 0, 0, 0.45)',
-    };
+    const OVERLAY_STYLE = scrimStyle(1000);
     /** The dialog card inside the scrim; scrolls when a workspace list is long. */
     const DIALOG_STYLE = {
       ...cardStyle,
@@ -147,15 +140,19 @@ window.__ModuleLoader__.load({
     function dialogError(t, m) {
       const error = m.presetStatus.kind === 'error' ? m.presetStatus.error : null;
       if (error === null || error === undefined) return null;
-      return h(
-        'div',
-        {
-          'data-role': 'preset-dialog-error',
-          'data-preset-dialog-error': typeof error.code === 'string' ? error.code : 'unknown',
-          style: { fontSize: 13, color: token.stateError, wordBreak: 'break-word' },
-        },
-        `${t('presetFailed')}: ${errorText(t, error)}`,
-      );
+      // g-061: the line itself is the shared `errorLine`. What stays this call
+      // site's own is exactly what always differed: the two markers
+      // (`data-role="preset-dialog-error"` + `data-preset-dialog-error`), the
+      // wrapping break, the 13px, and the `presetFailed` prefix in front of the
+      // host's message.
+      return errorLine({
+        role: 'preset-dialog-error',
+        probe: 'data-preset-dialog-error',
+        code: error.code,
+        fontSize: 13,
+        wrap: true,
+        text: `${t('presetFailed')}: ${errorText(t, error)}`,
+      });
     }
 
     /**
@@ -193,14 +190,13 @@ window.__ModuleLoader__.load({
           'pre',
           {
             'data-role': 'preset-preview',
-            style: {
-              margin: 0,
-              fontFamily: 'inherit',
-              fontSize: 12,
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
+            // g-061: the shared pre-wrap text box, at the one call site that is
+            // **not** monospace: a preset's text is prose the reader scans, so
+            // it inherits the page font. `mono: false` states that on purpose.
+            style: monoTextBox({
+              mono: false,
               color: token.labelSecondary,
-            },
+            }),
           },
           previewOf(preset.text),
         ),

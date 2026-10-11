@@ -37,6 +37,7 @@ window.__ModuleLoader__.load({
     const UI = shared.UI;
     const cardStyle = shared.cardStyle;
     const chunkTab = shared.chunkTab;
+    const emptyCard = shared.emptyCard;
     const errorText = shared.errorText;
     const fmt = shared.fmt;
     const h = shared.h;
@@ -121,7 +122,9 @@ window.__ModuleLoader__.load({
           'div',
           { 'data-overrides-total': String(merged.length), style: { display: 'flex', flexDirection: 'column', gap: 6 } },
           merged.length === 0
-            ? h('div', { 'data-empty': 'overrides', style: cardStyle }, t('ovEmpty'))
+            // g-061: the carded empty state is the shared `emptyCard`; the
+            // marker and the one line of text are this list's own.
+            ? emptyCard('overrides', t('ovEmpty'))
             : null,
           merged.map((entry) => {
             const target = achieved.get(entry.name);

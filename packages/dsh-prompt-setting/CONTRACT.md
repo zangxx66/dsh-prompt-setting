@@ -1998,6 +1998,12 @@ interaction.
   the name a merge retires (the label-only half of the two region-key families)
   is **gone** rather than kept as an alias — an alias would be a second spelling
   of one rule, which is the drift the surface exists to prevent;
+- **Revision 43** adds the four **render facilities** the entry and the tab
+  chunks draw with — `scrimStyle(zIndex)`, `errorLine({…})`,
+  `emptyCard(marker, children)` and `monoTextBox({…})` — under the same rule
+  (each has ≥2 consumers, and each difference the call sites really have is a
+  required or explicit parameter rather than a default). The Revision 43 entry
+  below lists, family by family, which differences were kept;
 - the measured effect (see `NOTES.md` §123 for the migration record): `client.js`
   **9584 → 8575 lines / 456680 → 411979 bytes**, with `client.overview.js` 577,
   `client.transfer.js` 264 and `client.advanced.js` 502 lines now fetched on
@@ -2497,6 +2503,71 @@ already describe.
   `updateRegion…` literal, no `regionNoteKey`, no local props adapter, and no
   inlined `'ovWorkspace'` ternary in `client.advanced.js`. `CHUNK_STAMPS` was
   recomputed with `scripts/client-chunks.mjs --write`.
+
+**Revision 43 (g-061 batch 2: the four style families — internal structure only).**
+The second batch of the g-061 inventory card folds four duplicated render
+facilities into the shared surface (`__internals.shared`). No route, no query
+parameter, no stored byte, no marker and no copy key changes: every `data-*`
+marker, every font size, every layer and every box measurement is the value it
+already was, and `test/client.test.mjs` asserts each of them point by point.
+
+- **one scrim, four dialogs.** `renderConfirm` (the entry), `renderRegionDialog`
+  (the entry), the preset dialogs' `OVERLAY_STYLE` (`client.presets.js`) and
+  `modalShell` (`client.history.js`) each spelled out the same full-screen
+  backdrop. It is `scrimStyle(zIndex)` now, and the layer is a **required**
+  argument with no default: `renderConfirm` passes **1200** — the confirmation
+  is raised on top of every tab-owned dialog (review R6), and that ordering is
+  asserted against the rendered overlay — while the other three pass 1000. A
+  default would be exactly the way a forgotten argument becomes a silent
+  restack, so `scrimStyle(undefined).zIndex` is asserted to be `undefined`;
+- **one error line, three call sites.** The「自定义」dialog's
+  `data-role="region-error"` line, the preset dialog's
+  `data-role="preset-dialog-error"` line and the render-failure card's
+  paragraph were the same red line written three times. It is
+  `errorLine({tag, role, probe, code, text, fontSize, wrap, margin})` now, with
+  every difference stated by the caller: the tag (`div` / `p`), the probe
+  marker (`data-region-error` / `data-preset-dialog-error` / none), the
+  paragraph reset (`margin: 0` on the failure card only), the break
+  (`wordBreak: 'break-word'` on the preset line and the failure card only), the
+  font size (13 at all three today — a fact asserted, not a default hidden in
+  the factory) and the text in front of the host's message (none /
+  `presetFailed` / `renderErrorLabel`). `client.presets.js` keeps its
+  `dialogError(t, m)` adapter — reading `m.presetStatus` is that chunk's own
+  business — but it builds the element with the shared factory;
+- **one carded empty state, and two that stay apart.** `client.advanced.js`'s
+  override list and `client.overview.js`'s section list both rendered
+  `div[data-empty="…"]` under `cardStyle`; that container is
+  `emptyCard(marker, children)`. The other two empty states are deliberately
+  **not** merged, because they are a different shape rather than a different
+  string: 「版本历史」prints one `metaStyle` line in a `div[data-empty]` with no
+  card at all, and「我的预设」prints a bare `p[data-region="presets-empty"]`
+  with `margin: 0` in front of `metaStyle`. Merging either would add a box the
+  reader does not have today or restate a marker family that means something
+  else. The tests assert the two that moved **and** the two that stayed, so a
+  later batch cannot quietly "finish" the job by changing what the page looks
+  like;
+- **one pre-wrap text box, five boxes.** The history preview's box, the three
+  overview boxes (the expanded section body, the full text, the diff detail)
+  and the preset preview shared a typesetting skeleton — `margin: 0`, 12px,
+  `white-space: pre-wrap`, `word-break: break-word` and the family — and
+  nothing else. It is `monoTextBox({maxHeight, mono, border, padding, radius,
+  lineHeight, color, scroll})`, and every one of those is an explicit argument
+  with no default, because every one of them really differs: `maxHeight` 200 /
+  220 / 320 / 460, `padding` `'4px 6px'` / `'6px 8px'` / `'8px 10px'` /
+  `'10px 12px'`, `radius` 6 or 8, `border` `borderL1` / `borderL2` / none,
+  `mono: false` for the preset preview (which inherits the page font on
+  purpose), `lineHeight` only where the text is read line by line, `color` only
+  where the box is not the primary reading surface, and `scroll` as
+  `'overflow'` or `'overflowY'` (the history box scrolls on one axis only). The
+  diff-op row keeps only its two break rules: it is a line of text, not a box;
+- **the guards moved with it.** `test/client.test.mjs` asserts the four
+  factories field for field (including the negative: no argument, no value), the
+  call-site count of each name, and that no chunk keeps a local copy — no
+  `zIndex` literal, no copied `rgba(0, 0, 0, 0.45)` backdrop, no `fontFamily:`
+  decision of its own — plus the rendered style of the confirmation overlay
+  (1200), the region dialog's error line, both carded empty states, all three
+  overview boxes and the preset preview. `CHUNK_STAMPS` was recomputed with
+  `scripts/client-chunks.mjs --write`.
 
 ### 13.1 「我的 Prompt」 — the one write surface
 

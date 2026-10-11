@@ -3431,6 +3431,137 @@ window.__ModuleLoader__.load({
     const metaStyle = { fontSize: 12, color: token.labelTertiary };
     /** Shared heading style. */
     const headingStyle = { margin: 0, fontSize: 15, fontWeight: 600 };
+
+    /**
+     * g-061 batch 2: the four render facilities the entry and the tab chunks
+     * all draw with. They are defined here — one binding, on the surface every
+     * chunk reaches through `__internals.shared` — because a second copy of any
+     * of them would be a second value that can drift away from the page it
+     * renders in.
+     *
+     * Every parameter below is a difference the call sites really have, and
+     * **none of them is defaulted into agreement**: the confirmation overlay's
+     * 1200 against every tab dialog's 1000, the preset dialog's
+     * `fontFamily: 'inherit'` against the monospace boxes, the four text boxes'
+     * own maxHeight / padding / radius / border / break. A default that quietly
+     * absorbed one call site's value is exactly the regression these factories
+     * exist to make impossible.
+     */
+
+    /**
+     * The modal scrim: one full-screen backdrop that dims the page behind a
+     * dialog card, so the card reads as modal without stealing focus.
+     *
+     * Four copies differed in one number only — the layer the dialog sits on —
+     * so the layer is the argument. It is deliberately **required** rather than
+     * defaulted: the confirmation overlay passes 1200 because it is raised on
+     * top of every tab-owned dialog (review R6 — at equal z-index the panel is
+     * appended later and the question would be invisible and unanswerable), and
+     * the「自定义」dialog, the history comparison modal and the two preset
+     * dialogs pass 1000. That ordering is a stated contract, not a consequence
+     * of which node happens to be appended last.
+     * @param zIndex - the dialog's layer; the caller states it.
+     * @returns the overlay style.
+     */
+    function scrimStyle(zIndex) {
+      return {
+        position: 'fixed',
+        top: 0,
+        right: 0,
+        bottom: 0,
+        left: 0,
+        zIndex,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 16,
+        background: 'rgba(0, 0, 0, 0.45)',
+      };
+    }
+
+    /**
+     * One red line stating why the last write — or the whole render — failed.
+     *
+     * Three copies shared the shape and the red and differed in everything a
+     * reader can measure, so each of those is a parameter: the「自定义」dialog's
+     * line is a `div` marked `data-role="region-error"` +
+     * `data-region-error="…"` carrying the host's code, the preset dialog's is a
+     * `div` marked
+     * `data-role="preset-dialog-error"` + `data-preset-dialog-error="…"`
+     * with a wrapping break and the `presetFailed` prefix, and the failure
+     * card's is a `p` with `margin: 0` and the `renderErrorLabel` prefix. The
+     * font size is the caller's for the same reason: 13 everywhere today is a
+     * fact to assert, not a default to hide behind.
+     * @param options - `{tag, role, probe, code, text, fontSize, wrap, margin}`.
+     * @returns the line element.
+     */
+    function errorLine(options) {
+      const style = { fontSize: options.fontSize, color: token.stateError };
+      if (options.margin !== undefined) style.margin = options.margin;
+      if (options.wrap === true) style.wordBreak = 'break-word';
+      const attributes = { style };
+      if (options.role !== undefined) attributes['data-role'] = options.role;
+      if (options.probe !== undefined) {
+        attributes[options.probe] = typeof options.code === 'string' ? options.code : 'unknown';
+      }
+      return h(options.tag ?? 'div', attributes, options.text);
+    }
+
+    /**
+     * The「nothing here yet」card: the container a list renders instead of its
+     * rows when there are none.
+     *
+     * Two of the four empty states the inventory named share this shape — a
+     * `div` carrying `data-empty="…"` under `cardStyle` — and only those
+     * two are merged. The other two are **not** this shape and stay as they
+     * are: 「版本历史」prints one `metaStyle` line in a `div[data-empty]` with
+     * no card at all, and「我的预设」prints a bare `p[data-region]` with
+     * `margin: 0` in front of `metaStyle`. Different container, different
+     * marker family, different box — merging them would change what the page
+     * looks like, which this batch never does.
+     * @param marker - the `data-empty` value the list has always published.
+     * @param children - the card's text: one line, or a title plus a body.
+     * @returns the card element.
+     */
+    function emptyCard(marker, children) {
+      return h('div', { 'data-empty': marker, style: cardStyle }, children);
+    }
+
+    /**
+     * The monospace (or purposely non-monospace) pre-wrap text box a stored
+     * text, a section body or a diff is shown in.
+     *
+     * What the five call sites really share is the typesetting skeleton —
+     * `margin: 0`, 12px, `white-space: pre-wrap`, `word-break: break-word` and
+     * the family — and that is all this factory fixes. The box around it is
+     * each call site's own, and every one of those differences is an explicit
+     * parameter rather than a default: `maxHeight` 200 / 220 / 320 / 460,
+     * `padding` `'4px 6px'` / `'6px 8px'` / `'8px 10px'` / `'10px 12px'`,
+     * `radius` 6 or 8, `border` `borderL1` or `borderL2` or none, `mono: false`
+     * for the preset preview (which inherits the page font on purpose),
+     * `lineHeight` only where the text is read line by line, `color` only where
+     * the box is not the primary reading surface, and `scroll` as `'overflow'`
+     * or `'overflowY'` (the history box scrolls on one axis only).
+     * @param options - `{maxHeight, mono, border, padding, radius, lineHeight, color, scroll}`.
+     * @returns the style object.
+     */
+    function monoTextBox(options) {
+      const style = {
+        margin: 0,
+        fontSize: 12,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        fontFamily: options.mono === false ? 'inherit' : token.mono,
+      };
+      if (options.lineHeight !== undefined) style.lineHeight = options.lineHeight;
+      if (options.color !== undefined) style.color = options.color;
+      if (options.maxHeight !== undefined) style.maxHeight = options.maxHeight;
+      if (options.scroll !== undefined) style[options.scroll] = 'auto';
+      if (options.border !== undefined) style.border = `1px solid ${options.border}`;
+      if (options.radius !== undefined) style.borderRadius = options.radius;
+      if (options.padding !== undefined) style.padding = options.padding;
+      return style;
+    }
     /**
      * The always-visible「查看范围」summary row (g-016). One flex line — a
      * heading, the readable scope name, an optional short state hint and the
@@ -5630,27 +5761,15 @@ window.__ModuleLoader__.load({
         {
           key: 'confirm-overlay',
           'data-region': 'confirm-overlay',
-          style: {
-            position: 'fixed',
-            top: 0,
-            right: 0,
-            bottom: 0,
-            left: 0,
-            // Review R6: the confirmation is the **last** interaction — it is
-            // raised on top of whatever dialog asked the question — so its layer
-            // is strictly above every tab-owned overlay (1000: this page's
-            // `regionDialog`, the history comparison modal, and the two preset
-            // dialogs). This is a stated invariant, not an accident of tree
-            // order: the panels are appended after this card in the children
-            // array, so at equal z-index the panel would win and the question
-            // would be invisible — and unanswerable — on the「我的预设」tab.
-            zIndex: 1200,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: 16,
-            background: 'rgba(0, 0, 0, 0.45)',
-          },
+          // The confirmation is the **last** interaction — it is raised on top
+          // of whatever dialog asked the question — so it states its own layer:
+          // 1200, strictly above every tab-owned overlay (1000: this page's
+          // `regionDialog`, the history comparison modal, and the two preset
+          // dialogs). Since g-061 the backdrop itself is the shared
+          // `scrimStyle`, and this call site is the one that passes 1200 — the
+          // number is asserted where it is decided, never inherited from a
+          // default that could quietly become 1000 again.
+          style: scrimStyle(1200),
         },
         h(
           'div',
@@ -6283,10 +6402,10 @@ window.__ModuleLoader__.load({
      * would be exactly the silently false「一致」the stamp exists to prevent.
      */
     const CHUNK_STAMPS = Object.freeze([
-      { name: 'client.advanced.js', hash: 'd188cd91', size: 21227 },
-      { name: 'client.history.js', hash: 'e8f0e166', size: 48615 },
-      { name: 'client.overview.js', hash: 'e66fd05b', size: 23540 },
-      { name: 'client.presets.js', hash: '21d029cc', size: 22551 },
+      { name: 'client.advanced.js', hash: '4cbd3181', size: 21376 },
+      { name: 'client.history.js', hash: 'da5d81a8', size: 48619 },
+      { name: 'client.overview.js', hash: '948056a2', size: 23610 },
+      { name: 'client.presets.js', hash: '116a42f5', size: 22957 },
       { name: 'client.transfer.js', hash: '8b305496', size: 9766 },
     ]);
 
@@ -6361,6 +6480,13 @@ window.__ModuleLoader__.load({
       renderStatusDetail,
       renderUpdateApplyStatus,
       chunkTab,
+      // g-061 batch 2: the four render facilities the tab chunks draw with.
+      // Same rule again — one binding each, taken off the surface under its own
+      // name, never copied into a chunk.
+      scrimStyle,
+      errorLine,
+      emptyCard,
+      monoTextBox,
     });
 
     /** Chunks this page has really loaded, by file name: `{hash, size}`. */
@@ -7055,19 +7181,11 @@ window.__ModuleLoader__.load({
         {
           key: 'region-overlay',
           'data-region': 'region-overlay',
-          style: {
-            position: 'fixed',
-            top: 0,
-            right: 0,
-            bottom: 0,
-            left: 0,
-            zIndex: 1000,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: 16,
-            background: 'rgba(0, 0, 0, 0.45)',
-          },
+          // The tab-dialog layer, stated here rather than defaulted: 1000, the
+          // same value the history comparison modal and the two preset dialogs
+          // use, and deliberately **below** the shared confirmation overlay
+          // (1200, review R6).
+          style: scrimStyle(1000),
         },
         h(
           'div',
@@ -7098,15 +7216,13 @@ window.__ModuleLoader__.load({
           }),
           dialog.error === null
             ? null
-            : h(
-                'div',
-                {
-                  'data-role': 'region-error',
-                  'data-region-error': typeof dialog.error.code === 'string' ? dialog.error.code : 'unknown',
-                  style: { fontSize: 13, color: token.stateError },
-                },
-                errorText(t, dialog.error),
-              ),
+            : errorLine({
+                role: 'region-error',
+                probe: 'data-region-error',
+                code: dialog.error.code,
+                fontSize: 13,
+                text: errorText(t, dialog.error),
+              }),
           h(
             'div',
             { 'data-role': 'region-actions', style: confirmActionsStyle },
@@ -9850,11 +9966,13 @@ window.__ModuleLoader__.load({
           { style: { margin: 0, fontSize: 18, fontWeight: 600, lineHeight: '26px' } },
           safeT(t, 'renderErrorTitle', 'Prompt settings — render failure'),
         ),
-        h(
-          'p',
-          { style: { margin: 0, fontSize: 13, color: token.stateError, wordBreak: 'break-word' } },
-          `${safeT(t, 'renderErrorLabel', 'Error')}: ${message}`,
-        ),
+        errorLine({
+          tag: 'p',
+          fontSize: 13,
+          margin: 0,
+          wrap: true,
+          text: `${safeT(t, 'renderErrorLabel', 'Error')}: ${message}`,
+        }),
       );
     }
 
