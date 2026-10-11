@@ -7673,7 +7673,8 @@ brief 写「本次 0.2.1 覆盖 g-050…g-058」。核对仓库事实：**g-050�
 
 **① 弹窗遮罩 4 份 → `scrimStyle(zIndex)`**
 - `renderConfirm`（1200）、`renderRegionDialog`（1000）、`client.presets.js` 的 `OVERLAY_STYLE`（1000）、
-  `client.history.js` 的 `modalShell`（1000）逐字相同的 9 个字段合为一份工厂。
+  `client.history.js` 的 `modalShell`（1000）**除 zIndex 外的 10 个字段**逐字相同（合计 11 键），合为一份工厂，
+  层号由调用方给出。
 - **zIndex 是必填参数、无默认值**：`scrimStyle(undefined).zIndex === undefined` 有断言；`renderConfirm` 的
   1200 既由源码正则（`['1200','1000']`）也由**渲染后的 overlay** 断言，不会被默认值吞掉。
 - `OVERLAY_STYLE` 这个 chunk 局部名字保留（它仍被两个对话框引用），但值改为 `scrimStyle(1000)`；

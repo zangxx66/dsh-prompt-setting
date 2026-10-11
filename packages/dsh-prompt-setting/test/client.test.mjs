@@ -2335,6 +2335,11 @@ test('client: g-061 — one error line, with each call site’s own markers and 
   // The size is the caller’s, not a constant the factory hides: another size is
   // another style, and the two dialog lines keep 13 explicitly.
   assert.equal(shared.errorLine({ fontSize: 12, text: 'x' }).props.style.fontSize, 12);
+  assert.equal(
+    shared.errorLine({ text: 'x' }).props.style.fontSize,
+    undefined,
+    'and with no size stated there is no default to hide behind (reviewer g-061 batch 2)',
+  );
 
   // Three consumers, one implementation — and no call site writes the line out
   // again. The entry states both of its lines through the factory; the chunk
