@@ -483,6 +483,52 @@ test('presets logic: an idempotent application changes nothing at all', () => {
   assert.equal(modeChange.config.overrides[0].action, 'replace');
 });
 
+test('presets logic: a later application keeps the first snapshot (Revision 40)', () => {
+  const p1 = upsertPreset(emptyPresets(), { name: 'one', action: 'append', text: 'ONE' }, {
+    id: PRESET_A,
+    at: 't0',
+  }).document;
+  const p2 = upsertPreset(p1, { name: 'two', action: 'replace', text: 'TWO' }, { id: PRESET_B, at: 't0' }).document;
+  const original = {
+    version: 1,
+    overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' }],
+  };
+  const first = planApply(p2, { presetId: PRESET_A, workspaceRoot: '/w', current: original, at: 't1' });
+  assert.deepEqual(first.record.before, { action: 'replace', text: 'MINE' });
+
+  // The second application changes the layer but **not** the restore point.
+  const second = planApply(first.document, {
+    presetId: PRESET_B,
+    workspaceRoot: '/w',
+    current: first.config,
+    at: 't2',
+  });
+  assert.equal(second.alreadyApplied, false);
+  assert.deepEqual(second.record.before, { action: 'replace', text: 'MINE' }, 'the first snapshot survives');
+  assert.equal(second.record.presetId, PRESET_B, 'only the pointer moves');
+  assert.equal(second.record.appliedAt, 't2');
+  assert.deepEqual(second.before, { action: 'replace', text: 'MINE' });
+  assert.equal(second.config.overrides[0].text, 'TWO', 'and the layer really holds the new preset');
+
+  // So the cancel returns the layer to where it stood before the *first*
+  // application, not to the first preset.
+  const back = planUnapply(second.document, { workspaceRoot: '/w', current: second.config });
+  assert.equal(back.restored, true);
+  assert.deepEqual(back.config.overrides, [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' }]);
+
+  // The same rule on a layer that had no entry at all.
+  const empty = { version: 1, overrides: [] };
+  const onEmpty = planApply(p2, { presetId: PRESET_A, workspaceRoot: '/w', current: empty, at: 't1' });
+  const twice = planApply(onEmpty.document, {
+    presetId: PRESET_B,
+    workspaceRoot: '/w',
+    current: onEmpty.config,
+    at: 't2',
+  });
+  assert.equal(twice.record.before, null, 'still “there was none”');
+  assert.deepEqual(planUnapply(twice.document, { workspaceRoot: '/w', current: twice.config }).config.overrides, []);
+});
+
 test('presets logic: planUnapply restores the snapshot, or removes the entry when there was none', () => {
   const withRecord = {
     version: 1,
@@ -940,6 +986,75 @@ test('route: apply → apply again → unapply still restores the original layer
     original,
     'and the layer is exactly what it was before the first application',
   );
+});
+
+test('route: a second preset keeps the first snapshot, so unapply returns the original layer', async () => {
+  const { route } = mount({ workspaces: [workspaceRow(workspaceRoot, 's-1')] });
+  seedLibrary([
+    { id: PRESET_A, name: 'one', action: 'append', text: 'ONE', createdAt: 't', updatedAt: 't' },
+    { id: PRESET_B, name: 'two', action: 'replace', text: 'TWO', createdAt: 't', updatedAt: 't' },
+  ]);
+  const original = {
+    version: 1,
+    overrides: [
+      { name: 'frozen:one', action: 'replace', text: 'KEEP' },
+      { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' },
+    ],
+  };
+  writeRaw(layerPath(workspaceRoot), `${JSON.stringify(original, null, 2)}\n`);
+
+  const first = json(await call(route, {
+    method: 'POST',
+    url: PRESETS_APPLY_PATH,
+    body: JSON.stringify({ presetId: PRESET_A, session: 's-1' }),
+  }));
+  assert.deepEqual(first.record.before, { action: 'replace', text: 'MINE' });
+  const snapshotAfterFirst = readPresets(presetsPath()).document.applied[0].before;
+
+  const second = json(await call(route, {
+    method: 'POST',
+    url: PRESETS_APPLY_PATH,
+    body: JSON.stringify({ presetId: PRESET_B, session: 's-1' }),
+  }));
+  assert.equal(second.alreadyApplied, false);
+  assert.deepEqual(second.before, { action: 'replace', text: 'MINE' }, 'the answer reports the first snapshot');
+  assert.deepEqual(second.record.before, { action: 'replace', text: 'MINE' });
+  assert.equal(second.record.presetId, PRESET_B);
+  assert.equal(second.after.text, 'TWO', 'while the layer holds the second preset');
+
+  const stored = readPresets(presetsPath()).document.applied[0];
+  assert.deepEqual(stored.before, snapshotAfterFirst, 'the stored snapshot is still the first application’s');
+  assert.equal(stored.presetId, PRESET_B, 'and the pointer moved');
+  assert.equal(readPresets(presetsPath()).document.applied.length, 1, 'one record per root');
+
+  // 「取消应用」returns the layer to the state before the *first* application.
+  const back = json(await call(route, {
+    method: 'POST',
+    url: PRESETS_UNAPPLY_PATH,
+    body: JSON.stringify({ session: 's-1' }),
+  }));
+  assert.equal(back.restored, true);
+  assert.deepEqual(JSON.parse(readFileSync(layerPath(workspaceRoot), 'utf8')), original);
+
+  // …and on a layer that never had an entry, the entry disappears again.
+  writeRaw(layerPath(workspaceRoot), `${JSON.stringify({ version: 1, overrides: [] }, null, 2)}\n`);
+  await call(route, {
+    method: 'POST',
+    url: PRESETS_APPLY_PATH,
+    body: JSON.stringify({ presetId: PRESET_A, session: 's-1' }),
+  });
+  await call(route, {
+    method: 'POST',
+    url: PRESETS_APPLY_PATH,
+    body: JSON.stringify({ presetId: PRESET_B, session: 's-1' }),
+  });
+  const gone = json(await call(route, {
+    method: 'POST',
+    url: PRESETS_UNAPPLY_PATH,
+    body: JSON.stringify({ session: 's-1' }),
+  }));
+  assert.equal(gone.restored, false);
+  assert.deepEqual(JSON.parse(readFileSync(layerPath(workspaceRoot), 'utf8')), { version: 1, overrides: [] });
 });
 
 test('route: /presets is not part of the export or the overrides schema', async () => {

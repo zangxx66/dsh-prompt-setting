@@ -72,6 +72,13 @@ window.__ModuleLoader__.load({
      * The overlay backdrop, copied from `client.js`'s `renderRegionDialog` (the
      * project's own dialog precedent): one full-screen scrim that dims the page
      * behind the card, so a dialog reads as modal without stealing focus.
+     *
+     * `zIndex: 1000` is this page's **tab-dialog layer** — the same value the
+     * 「自定义镜像源」 dialog and the history comparison modal use. It is
+     * deliberately **below** the shared confirmation overlay (1200, review R6):
+     * a question raised by one of these dialogs must be drawn on top of it, and
+     * that ordering is a stated contract rather than a consequence of which node
+     * happens to be appended last.
      */
     const OVERLAY_STYLE = {
       position: 'fixed',

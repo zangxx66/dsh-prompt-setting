@@ -371,10 +371,13 @@ function withoutReservedOverride(config) {
  * the only way back is the copy taken **before** the write. It is taken from the
  * config the route just read (not from the cache, not from an earlier request).
  *
- * At most one record per workspace root: applying a second preset replaces the
- * first record, so「取消应用」goes back to the text that was there before the
- * *latest* application. That is a deliberate one-deep model — a stack of
- * snapshots would be a version history, which this feature does not claim to be.
+ * At most one record per workspace root, and its snapshot is **the state before
+ * the first application** on that root (Revision 40): a later application keeps
+ * that snapshot and only moves the pointer (`presetId` / `appliedAt`).
+ * 「取消应用」therefore always returns the workspace to where it stood before a
+ * preset was ever applied — one record, one restore point, deliberately not a
+ * stack of versions (a second application that overwrote the snapshot would leave
+ * the user holding the previous preset instead of their own text).
  *
  * **The two modes mean what they mean everywhere else in this plugin
  * (Revision 39).** `replace` is the preset's text as the section's text.
@@ -442,9 +445,9 @@ export function planApply(document, options = {}) {
   // could never get back to the state before the first application. The existing
   // record is therefore returned untouched (and `null` when this layer never had
   // one: this request produced no change to restore).
+  const existing = appliedListOf(document)
+    .find((item) => item.workspaceRoot === options.workspaceRoot) ?? null;
   if (alreadyApplied) {
-    const existing = appliedListOf(document)
-      .find((item) => item.workspaceRoot === options.workspaceRoot) ?? null;
     return {
       document,
       preset,
@@ -455,10 +458,16 @@ export function planApply(document, options = {}) {
       alreadyApplied: true,
     };
   }
+  // Review R6: the record's snapshot is the state **before the first
+  // application** on this root, and a later application may not overwrite it —
+  // otherwise「取消应用」would only walk back one step (to the text the previous
+  // application wrote) and the user, who never asked for a stack of versions,
+  // would be left holding the preset. Only the pointer moves: `presetId` and
+  // `appliedAt` describe the application that is happening now.
   const record = {
     workspaceRoot: options.workspaceRoot,
     presetId: preset.id,
-    before,
+    before: existing === null ? before : existing.before,
     appliedAt: typeof options.at === 'string' ? options.at : null,
   };
   const applied = appliedListOf(document).filter((item) => item.workspaceRoot !== options.workspaceRoot);
@@ -466,7 +475,7 @@ export function planApply(document, options = {}) {
   return {
     document: { version: PRESETS_VERSION, presets: document.presets.slice(), applied },
     preset,
-    before,
+    before: record.before,
     config,
     record,
     text,

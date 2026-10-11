@@ -7555,3 +7555,30 @@ brief 写「本次 0.2.1 覆盖 g-050…g-058」。核对仓库事实：**g-050�
 - **证据**：`node --test test/*.test.mjs` ⇒ 全绿；`node scripts/prepare.mjs` ⇒ 21/21；
   `node scripts/client-chunks.mjs` ⇒ 5 个 chunk 一致。
 
+### 复核轮 5 返工（R6：确认弹窗层级 + 取消应用回到首次应用前，2026-10-12）
+
+**1 确认弹窗被预设弹窗遮住（客户端层级缺陷）**
+- 现象：`confirm-overlay` 与预设编辑/应用弹窗的 `zIndex` 都是 1000，而 `confirmCard` 先入 children、tab 面板后入
+  ⇒ 同层下后入树者在上，「我的预设」tab 里点「删除」或脏草稿点「放弃修改」时确认弹窗被完全遮住（负责人实测）。
+- 修法：确认弹窗 `zIndex` 显式提到 **1200**（页面最高），tab 内弹窗（自定义镜像源、历史对比、两个预设弹窗）
+  保持 **1000**；两处注释都写明「确认弹窗永远高于提问它的弹窗」是约定的不变量，不再依赖入树顺序。
+- 测试：新用例断言编辑弹窗 overlay=1000、确认 overlay=1200 且**严格大于**、`preset-discard` 与 `preset-delete`
+  两种 kind 下确认节点在树中且两个按钮可点、应用弹窗同样 1000、既有 `mine-reset` 确认仍是 1200（规则不是
+  预设专属）。
+
+**2「取消应用」统一回到「首次应用前」（语义修正）**
+- 现象：`planApply` 每次应用都用**当时**的层内容重算 `before` 覆盖旧记录 ⇒ 应用 P1 → 再应用 → 取消后
+  层里仍留着 P1，「取消没生效」。
+- 正确语义（Revision 40）：同一 root 的记录保存的是**首次应用前**的快照；后续应用（同预设或另一预设）
+  **不覆盖 `before`**，只更新 `presetId`/`appliedAt`；「取消应用」一律回到首次应用前。
+- 落地：`core/presets.js` `planApply` 非幂等分支 `before: existing === null ? before : existing.before`，
+  返回值 `before` 也取记录里的快照；R5 的幂等分支（原样返回既有记录、不写层不写库）保持不变。
+  `index.js` 的 apply 响应 `before` 用记录快照（§20.6 将还原的值），history 记录仍描述**本次**写入
+  （`currentEntry`），两者分工写进注释。
+- 契约：§20.5 增「快照是首次应用前」、§20.6 增「还原到任何预设应用之前」，并新增 Revision 40 段。
+- 测试：纯逻辑 `apply(P1) → apply(P2) → unapply` 断言层回到最初、`applied[].before` 始终首次快照、
+  `presetId` 已更新；路由级同样两条路径（原有 entry / 原无 entry）并断言层文件与 `presets.json` 内容；
+  R5 的幂等用例继续通过。
+- **证据**：`node --test test/*.test.mjs` ⇒ 全绿；`node scripts/prepare.mjs` ⇒ 21/21；
+  `node scripts/client-chunks.mjs` ⇒ 5 个 chunk 一致。
+

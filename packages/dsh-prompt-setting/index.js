@@ -3628,7 +3628,11 @@ function mount(ctx, config, cleanups) {
     const at = new Date().toISOString();
     const plan = planApply(file.document, { presetId, workspaceRoot: target.root, current, at });
     const next = validateConfig(plan.config);
-    const before = reservedSectionOf(current);
+    // Revision 40: the answer's `before` is the snapshot §20.6 restores — the
+    // state before the **first** application on this root — while the history
+    // record below still describes *this* write (the text it really replaced).
+    const currentEntry = reservedSectionOf(current);
+    const before = plan.record === null ? currentEntry : plan.record.before;
     const after = reservedSectionOf(next);
     // Revision 39: an application whose text the layer already carries is a
     // **no-op** — nothing is written, no history record is appended (there was
@@ -3652,10 +3656,10 @@ function mount(ctx, config, cleanups) {
         at,
         layer: 'workspace',
         session: sessionId ?? null,
-        action: actionOf(before, after),
+        action: actionOf(currentEntry, after),
         name: CUSTOM_SECTION_NAME,
         origin: 'ui',
-        before: textEntry(before === null ? null : before.text),
+        before: textEntry(currentEntry === null ? null : currentEntry.text),
         after: textEntry(after === null ? null : after.text),
         snapshot: snapshotOfConfig(next),
         note: `preset ${plan.preset.id}`,

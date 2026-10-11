@@ -11976,3 +11976,71 @@ test('client: an application the layer already carries is reported as already in
   assert.equal(posts[1].url, PATHS.presetsUnapply);
   assert.deepEqual(JSON.parse(posts[1].init.body), { session: 'a1' });
 });
+
+test('client: the confirmation overlay is drawn above every dialog it questions', async () => {
+  // Review R6: the confirmation is the *last* interaction, so its layer must be
+  // strictly above the tab-owned dialogs — at equal z-index the tab panel, which
+  // is appended after the confirmation card, covered the question completely on
+  // the「我的预设」tab.
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.overrides]: {
+        payload: overridesFixture({
+          user: {
+            layer: 'user',
+            enabled: true,
+            path: '/home/u/.dsh/prompt-setting/overrides.json',
+            reason: null,
+            overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text' }],
+          },
+        }),
+      },
+    }),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+  });
+  let tree = await page.flush();
+  tree = await openTab(page, 'presets', tree);
+  clickButton(tree, { 'data-action': 'preset-edit', 'data-preset-id': 'preset-2' });
+  tree = await page.flush();
+  const editorOverlay = oneBy(tree, 'data-region', 'preset-editor-overlay');
+  assert.equal(editorOverlay.props.style.zIndex, 1000, 'tab-owned dialogs share one layer');
+
+  // A dirty close asks, and the question is strictly above the dialog that asked.
+  typeInto(tree, 'preset-text', 'edited');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'preset-dialog-close' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'confirm').props['data-confirm-kind'], 'preset-discard');
+  const discardOverlay = oneBy(tree, 'data-region', 'confirm-overlay');
+  assert.ok(
+    discardOverlay.props.style.zIndex > editorOverlay.props.style.zIndex,
+    'the question is drawn above the dialog that asked it',
+  );
+  // …and it is really answerable: its two buttons are in the tree beside it.
+  findOne(tree, (node) => node.type === 'button' && node.props['data-action'] === 'confirm-yes', 'confirm yes');
+  findOne(tree, (node) => node.type === 'button' && node.props['data-action'] === 'confirm-no', 'confirm no');
+
+  // The delete question, from the same tab, on the same highest layer.
+  clickButton(tree, { 'data-action': 'confirm-no' });
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'preset-delete', 'data-preset-id': 'preset-1' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'confirm').props['data-confirm-kind'], 'preset-delete');
+  assert.equal(oneBy(tree, 'data-region', 'confirm-overlay').props.style.zIndex, 1200);
+  clickButton(tree, { 'data-action': 'confirm-no' });
+  tree = await page.flush();
+
+  // The apply dialog lives on the tab-dialog layer too.
+  clickButton(tree, { 'data-action': 'preset-apply-to', 'data-preset-id': 'preset-1' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'preset-apply-overlay').props.style.zIndex, 1000);
+
+  // A pre-existing confirmation keeps the very same (highest) layer: the rule is
+  // one overlay and one ordering, not a preset-only special case.
+  tree = await openTab(page, 'mine', tree);
+  clickButton(tree, { 'data-action': 'mine-reset' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'confirm').props['data-confirm-kind'], 'mine-reset');
+  assert.equal(oneBy(tree, 'data-region', 'confirm-overlay').props.style.zIndex, 1200);
+});
+
