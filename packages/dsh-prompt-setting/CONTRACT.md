@@ -2647,7 +2647,9 @@ by accident — the tests assert the values rather than the family's agreement.
   list. **Three of those state no `lineHeight`** and the factory writes none for
   them, so those rows keep the height they have; the pager's `'2px 10px'` is that
   family's odd value and is kept; the 18px belongs to the two call sites that
-  already stated it. **Under the `primitives` renderer the page draws its tabs
+  already stated it. Every padding is the caller's as well — `'2px 8px'` on three,
+  `'2px 8px 2px 20px'` on「显示更多」, `'4px 8px'` on the history scope option row and
+  `'2px 10px'` on the pager — because a padding is a measurement, not a default. **Under the `primitives` renderer the page draws its tabs
   with the host's own `SegmentedTabs`**, which paints its own DOM: only the
   fallback branch goes through this factory, so the two renderers' tabs do not
   look alike — they did not before this revision either, and unifying the

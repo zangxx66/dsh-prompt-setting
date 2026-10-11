@@ -3733,15 +3733,18 @@ window.__ModuleLoader__.load({
     /**
      * The small radius-6 ghost button: the page's tool-strip control.
      *
-     * Five call sites —「更多」in a scope group, the history row's two side
-     * buttons, the history pager, the overview section's expand toggle and one
-     * option row of the history scope list — share the type, the 6px radius, the
-     * pointer cursor and the fill role; the padding, the colour, the stroke and
-     * whether a line height is stated at all are arguments. **Three of them
-     * state no `lineHeight` and the factory writes none for them**: adding the
-     * 18px their neighbour「更多」carries would change how tall those rows are,
-     * which is not this batch's to change. The pager's `'2px 10px'` sits beside
-     * its family's `'2px 8px'` and is kept as it is.
+     * Five `miniButtonStyle` call sites —「更多」in a scope group, the history
+     * row's side style (one call site that feeds two buttons), the history pager,
+     * the overview section's expand toggle and one option row of the history
+     * scope list — share the type, the 6px radius, the pointer cursor and the
+     * fill role; the padding, the colour, the stroke and whether a line height is
+     * stated at all are arguments — four different paddings among them
+     * (`'2px 8px'` on three, `'2px 8px 2px 20px'` on「更多」, `'4px 8px'` on the
+     * scope option row, `'2px 10px'` on the pager). **Three of them state no
+     * `lineHeight` and the factory writes none for them**: adding the 18px their
+     * neighbour「更多」carries would change how tall those rows are, which is not
+     * this batch's to change. The pager's `'2px 10px'` sits beside its family's
+     * `'2px 8px'` and is kept as it is.
      * @param options - `{padding, color, background, border, lineHeight, textAlign}`;
      *   `border` is the whole declaration, because one call site's is `none`.
      * @returns the button style.

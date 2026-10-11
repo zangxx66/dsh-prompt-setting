@@ -7767,7 +7767,8 @@ brief 写「本次 0.2.1 覆盖 g-050…g-058」。核对仓库事实：**g-050�
 - **mini**（radius 6 固定）：scope-more「更多」、history `sideStyle`、`pagerButtonStyle`、overview expand，
   以及 history scope 的候选行（同为 radius-6 ghost 骨架，其 buttonFill 选中态/flex/wordBreak 留调用点）。
   `lineHeight` **三处不写**（side/pager/expand，工厂**不补**，有「键不存在」断言）、scope-more 写 18px；
-  pager 的 **`2px 10px`** 异类保留为显式参数。
+  pager 的 **`2px 10px`** 异类保留为显式参数。padding 四值全部逐点保留（`'2px 8px'` ×3、
+  scope-more `'2px 8px 2px 20px'`、history scope 候选行 `'4px 8px'`、pager `'2px 10px'`）——评审 R3 补记。
 - ⚠️ **已知事实（写进结果）**：tabs 在 `primitives` 渲染器下由宿主 `SegmentedTabs` 自绘，插件只能改
   fallback 分支——两种渲染器的观感差异**不会**因统一而消失（现状即如此）。
 
@@ -7814,3 +7815,13 @@ brief 写「本次 0.2.1 覆盖 g-050…g-058」。核对仓库事实：**g-050�
   的 `font:` 简写盒子（§137 已记录，仍未动）；`client.history.js` 的对比卡（`...cardStyle` + 自有 gap 4）与
   `client.presets.js` 的预设卡 / 库错误框（`...cardStyle` + `gap 6` / `borderColor`）是**内容卡**而非对话框壳，
   **未并入** `dialogCardStyle`（形状不同：无工厂固定 padding/boxShadow，尺寸随内容）——三处都有计数断言。
+
+**评审残余（g-061 批次 3，独立评审 rev-att-003-01 登记，均为不可达边界）**
+- **R1｜`data-session-active` 的空 id 形态**：平铺侧改按 activeId 比较后，若某行 `id === ''` 且恰好被高亮，
+  输出会是 `false` 而基线的 index 式会给 `true`。`decodeSessions` 过滤空 id，**该形态在真实数据上不可达**；
+  已在测试里实测 `-2/-1/0/1/2/3/99` 与空列表逐值一致。
+- **R2｜缺 `haystack` 的行**：`matchesNeedle` 的逐字段分支不跨字段匹配，而基线在缺缓存时会走 `join` 过的字符串；
+  `decodeSessions` 强制写 `haystack`，`seat.rows` / `scope.rows` / `byId` 均源自它，**该分支实测不可达**。
+  若将来出现缺字段行，行为会与基线不同——届时需一并复核这里。
+- **R3｜记录颗粒度**：mini 族消费点计数口径（5 个工厂调用 vs 更多渲染点）曾易误读；padding 四值已如上补记。
+  该族仍有的断言缺口：history scope 候选行只有源码级断言、缺渲染级——留待后续批次。
