@@ -2549,25 +2549,32 @@ already was, and `test/client.test.mjs` asserts each of them point by point.
 - **one pre-wrap text box, five boxes.** The history preview's box, the three
   overview boxes (the expanded section body, the full text, the diff detail)
   and the preset preview shared a typesetting skeleton — `margin: 0`, 12px,
-  `white-space: pre-wrap`, `word-break: break-word` and the family — and
-  nothing else. It is `monoTextBox({maxHeight, mono, border, padding, radius,
-  lineHeight, color, scroll})`, and every one of those is an explicit argument
-  with no default, because every one of them really differs: `maxHeight` 200 /
-  220 / 320 / 460, `padding` `'4px 6px'` / `'6px 8px'` / `'8px 10px'` /
-  `'10px 12px'`, `radius` 6 or 8, `border` `borderL1` / `borderL2` / none,
-  `mono: false` for the preset preview (which inherits the page font on
-  purpose), `lineHeight` only where the text is read line by line, `color` only
-  where the box is not the primary reading surface, and `scroll` as
-  `'overflow'` or `'overflowY'` (the history box scrolls on one axis only). The
-  diff-op row keeps only its two break rules: it is a line of text, not a box;
+  `white-space: pre-wrap` and `word-break: break-word` — and nothing else. It is
+  `monoTextBox({maxHeight, mono, border, padding, radius, lineHeight, color,
+  scroll})`, and every one of those is an explicit argument with no default,
+  because every one of them really differs: `maxHeight` 200 / 220 / 320 / 460,
+  `padding` `'4px 6px'` / `'6px 8px'` / `'8px 10px'` / `'10px 12px'`, `radius` 6
+  or 8, `border` `borderL1` / `borderL2` / none, `lineHeight` only where the
+  text is read line by line, `color` only where the box is not the primary
+  reading surface, and `scroll` as `'overflow'` or `'overflowY'` (the history
+  box scrolls on one axis only). The font family is the one **three-state**
+  parameter, because「states none」is a state the page really has: `mono: true`
+  writes the theme's stack (the three overview boxes), `mono: false` writes
+  `inherit` (the preset preview, which follows the page font on purpose), and
+  **omitting it writes no `fontFamily` key at all** — the history preview's box
+  has never named a family, and its pre element takes the browser's own default. A
+  two-state parameter would have moved that box onto the theme's stack, which is
+  a visible change this batch may not make. The diff-op row keeps only its two
+  break rules: it is a line of text, not a box;
 - **the guards moved with it.** `test/client.test.mjs` asserts the four
   factories field for field (including the negative: no argument, no value), the
   call-site count of each name, and that no chunk keeps a local copy — no
   `zIndex` literal, no copied `rgba(0, 0, 0, 0.45)` backdrop, no `fontFamily:`
   decision of its own — plus the rendered style of the confirmation overlay
   (1200), the region dialog's error line, both carded empty states, all three
-  overview boxes and the preset preview. `CHUNK_STAMPS` was recomputed with
-  `scripts/client-chunks.mjs --write`.
+  overview boxes, the preset preview and the history preview's two boxes (which
+  are asserted to carry **no** `fontFamily` key). `CHUNK_STAMPS` was recomputed
+  with `scripts/client-chunks.mjs --write`.
 
 ### 13.1 「我的 Prompt」 — the one write surface
 

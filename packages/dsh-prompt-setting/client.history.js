@@ -260,8 +260,11 @@ window.__ModuleLoader__.load({
           h('span', { key: 'label', style: { ...metaStyle, minWidth: 48 } }, label),
           h('span', { key: 'value', style: { wordBreak: 'break-word' }, title }, value),
         );
+      // `mono` is deliberately **not** passed: this box has never named a font
+      // family, and its pre element takes the browser's own default. Stating
+      // `mono: true` here would move it onto the theme's stack — a visible
+      // change in a batch that makes none.
       const textBoxStyle = monoTextBox({
-        mono: true,
         padding: '4px 6px',
         radius: 6,
         border: token.borderL1,

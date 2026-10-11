@@ -3441,11 +3441,12 @@ window.__ModuleLoader__.load({
      *
      * Every parameter below is a difference the call sites really have, and
      * **none of them is defaulted into agreement**: the confirmation overlay's
-     * 1200 against every tab dialog's 1000, the preset dialog's
-     * `fontFamily: 'inherit'` against the monospace boxes, the four text boxes'
-     * own maxHeight / padding / radius / border / break. A default that quietly
-     * absorbed one call site's value is exactly the regression these factories
-     * exist to make impossible.
+     * 1200 against every tab dialog's 1000, the theme's monospace stack against
+     * the preset dialog's `fontFamily: 'inherit'` against the history preview's
+     * box, which states no family at all and takes the browser's own, and the
+     * four text boxes' own maxHeight / padding / radius / border / break. A
+     * default that quietly absorbed one call site's value is exactly the
+     * regression these factories exist to make impossible.
      */
 
     /**
@@ -3528,20 +3529,29 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * The monospace (or purposely non-monospace) pre-wrap text box a stored
-     * text, a section body or a diff is shown in.
+     * The pre-wrap text box a stored text, a section body or a diff is shown
+     * in.
      *
      * What the five call sites really share is the typesetting skeleton —
-     * `margin: 0`, 12px, `white-space: pre-wrap`, `word-break: break-word` and
-     * the family — and that is all this factory fixes. The box around it is
-     * each call site's own, and every one of those differences is an explicit
-     * parameter rather than a default: `maxHeight` 200 / 220 / 320 / 460,
-     * `padding` `'4px 6px'` / `'6px 8px'` / `'8px 10px'` / `'10px 12px'`,
-     * `radius` 6 or 8, `border` `borderL1` or `borderL2` or none, `mono: false`
-     * for the preset preview (which inherits the page font on purpose),
-     * `lineHeight` only where the text is read line by line, `color` only where
-     * the box is not the primary reading surface, and `scroll` as `'overflow'`
-     * or `'overflowY'` (the history box scrolls on one axis only).
+     * `margin: 0`, 12px, `white-space: pre-wrap` and `word-break: break-word` —
+     * and that is all this factory fixes. The box around it is each call site's
+     * own, and every one of those differences is an explicit parameter rather
+     * than a default: `maxHeight` 200 / 220 / 320 / 460, `padding`
+     * `'4px 6px'` / `'6px 8px'` / `'8px 10px'` / `'10px 12px'`, `radius` 6 or
+     * 8, `border` `borderL1` or `borderL2` or none, `lineHeight` only where the
+     * text is read line by line, `color` only where the box is not the primary
+     * reading surface, and `scroll` as `'overflow'` or `'overflowY'` (the
+     * history box scrolls on one axis only).
+     *
+     * The font family is the one three-state parameter, because the page really
+     * has three states and「states nothing」is one of them: `mono: true` writes
+     * the theme's monospace stack (the three overview boxes), `mono: false`
+     * writes `inherit` (the preset preview, which follows the page font on
+     * purpose), and **leaving it out writes no `fontFamily` at all** — the
+     * history preview's box has never had one, and its pre element takes the
+     * browser's own default. A two-state parameter here would have silently
+     * moved that box off the UA font and onto the theme's, which is a visible
+     * change this batch may not make.
      * @param options - `{maxHeight, mono, border, padding, radius, lineHeight, color, scroll}`.
      * @returns the style object.
      */
@@ -3551,8 +3561,9 @@ window.__ModuleLoader__.load({
         fontSize: 12,
         whiteSpace: 'pre-wrap',
         wordBreak: 'break-word',
-        fontFamily: options.mono === false ? 'inherit' : token.mono,
       };
+      if (options.mono === true) style.fontFamily = token.mono;
+      else if (options.mono === false) style.fontFamily = 'inherit';
       if (options.lineHeight !== undefined) style.lineHeight = options.lineHeight;
       if (options.color !== undefined) style.color = options.color;
       if (options.maxHeight !== undefined) style.maxHeight = options.maxHeight;
@@ -3562,6 +3573,7 @@ window.__ModuleLoader__.load({
       if (options.padding !== undefined) style.padding = options.padding;
       return style;
     }
+
     /**
      * The always-visible「查看范围」summary row (g-016). One flex line — a
      * heading, the readable scope name, an optional short state hint and the
@@ -6403,7 +6415,7 @@ window.__ModuleLoader__.load({
      */
     const CHUNK_STAMPS = Object.freeze([
       { name: 'client.advanced.js', hash: '4cbd3181', size: 21376 },
-      { name: 'client.history.js', hash: 'da5d81a8', size: 48619 },
+      { name: 'client.history.js', hash: 'd7880962', size: 48877 },
       { name: 'client.overview.js', hash: '948056a2', size: 23610 },
       { name: 'client.presets.js', hash: '116a42f5', size: 22957 },
       { name: 'client.transfer.js', hash: '8b305496', size: 9766 },

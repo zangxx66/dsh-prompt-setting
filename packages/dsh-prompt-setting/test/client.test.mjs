@@ -2436,14 +2436,25 @@ test('client: g-061 — one pre-wrap text box, parameterised point by point (cri
   const l2 = `1px solid ${shared.token.borderL2}`;
   const dim = shared.token.labelSecondary;
   // The skeleton is the same everywhere; the box around it is the caller’s.
+  // The history preview’s box is the one that names **no** family: the key is
+  // absent from the style object, exactly as it was before the merge, so the
+  // pre element keeps taking the browser’s own default instead of the theme’s
+  // stack. Asserting `fontFamily: mono` here would have frozen a visible
+  // change as if it were the baseline.
+  const historyBox = shared.monoTextBox({
+    padding: '4px 6px',
+    radius: 6,
+    border: shared.token.borderL1,
+    maxHeight: 200,
+    scroll: 'overflowY',
+  });
   assert.deepEqual(
-    { ...shared.monoTextBox({ mono: true, padding: '4px 6px', radius: 6, border: shared.token.borderL1, maxHeight: 200, scroll: 'overflowY' }) },
+    { ...historyBox },
     {
       margin: 0,
       fontSize: 12,
       whiteSpace: 'pre-wrap',
       wordBreak: 'break-word',
-      fontFamily: mono,
       padding: '4px 6px',
       borderRadius: 6,
       border: l1,
@@ -2452,6 +2463,7 @@ test('client: g-061 — one pre-wrap text box, parameterised point by point (cri
     },
     'the history preview’s box, field for field',
   );
+  assert.equal('fontFamily' in historyBox, false, 'and with no font family at all, which is its own state');
   // Negative: every one of those differences is a parameter, and none of them
   // has a default that could absorb a call site’s value.
   assert.equal(shared.monoTextBox({}).maxHeight, undefined, 'no default maxHeight');
@@ -2461,8 +2473,14 @@ test('client: g-061 — one pre-wrap text box, parameterised point by point (cri
   assert.equal(shared.monoTextBox({}).overflow, undefined, 'no default scrolling');
   assert.equal(shared.monoTextBox({}).lineHeight, undefined, 'no default line height');
   assert.equal(shared.monoTextBox({}).color, undefined, 'no default colour');
+  assert.equal('fontFamily' in shared.monoTextBox({}), false, 'no default font family either');
   assert.equal(shared.monoTextBox({ mono: false }).fontFamily, 'inherit', 'inherit is stated, not assumed');
-  assert.equal(shared.monoTextBox({ mono: true }).fontFamily, mono);
+  assert.equal(shared.monoTextBox({ mono: true }).fontFamily, mono, 'and the theme’s stack is stated when it is meant');
+  assert.deepEqual(
+    [true, false].map((mono) => 'fontFamily' in shared.monoTextBox({ mono })),
+    [true, true],
+    'both stated families really write the key',
+  );
   // The four heights the page really uses are four different boxes.
   assert.deepEqual(
     [200, 220, 320, 460].map((maxHeight) => shared.monoTextBox({ maxHeight }).maxHeight),
@@ -2559,6 +2577,34 @@ test('client: g-061 — one pre-wrap text box, parameterised point by point (cri
         color: shared.token.labelSecondary,
       },
       'the preset preview is the one box that inherits the page font',
+    );
+  }
+
+  // …and the history preview’s box, at run time, still names no family: the
+  // rendered pre element carries the same key-less skeleton it carried before the
+  // merge, so the browser keeps choosing its font.
+  const historyPage = makePage({ responses: defaultResponses() });
+  let historyTree = await openHistory(historyPage);
+  clickButton(historyRowOf(historyTree, '2'), { 'data-action': 'history-preview', 'data-history-id': '2' });
+  historyTree = await historyPage.flush();
+  const previewTexts = collect(historyTree, (node) => node.props && node.props['data-preview-text'] !== undefined);
+  assert.equal(previewTexts.length, 2, 'the preview renders its before and after boxes');
+  for (const node of previewTexts) {
+    assert.equal('fontFamily' in node.props.style, false, `${node.props['data-preview-text']}: no font family is stated`);
+    assert.deepEqual(
+      { ...node.props.style },
+      {
+        margin: 0,
+        fontSize: 12,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        padding: '4px 6px',
+        borderRadius: 6,
+        border: `1px solid ${shared.token.borderL1}`,
+        maxHeight: 200,
+        overflowY: 'auto',
+      },
+      `${node.props['data-preview-text']}: the history box keeps 4/6, radius 6, L1, 200 and one-axis scrolling`,
     );
   }
 });
