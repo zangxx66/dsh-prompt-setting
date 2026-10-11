@@ -3604,6 +3604,12 @@ function mount(ctx, config, cleanups) {
    * it, and the answer is a `500` — the alternative order would record an
    * application that never happened, which is worse (the page would then offer
    * to「取消应用」a workspace it never touched).
+   *
+   * Revision 39 puts the **composition** here too, through `planApply`: an
+   * `append` preset is stacked after the layer's own text (the merge kernel
+   * cannot join a layer to itself), and a text the layer already carries is a
+   * `alreadyApplied` no-op — no `writeConfig`, no history record, and the answer
+   * says so instead of claiming a write.
    * @param req - the Node request.
    * @param url - the parsed request URL.
    * @param res - the Node response.
@@ -3624,25 +3630,42 @@ function mount(ctx, config, cleanups) {
     const next = validateConfig(plan.config);
     const before = reservedSectionOf(current);
     const after = reservedSectionOf(next);
-    writeConfig(target.path, next);
-    cacheWritten(target, next);
-    const history = recordHistory({
-      path: target.path,
-      at,
-      layer: 'workspace',
-      session: sessionId ?? null,
-      action: actionOf(before, after),
-      name: CUSTOM_SECTION_NAME,
-      origin: 'ui',
-      before: textEntry(before === null ? null : before.text),
-      after: textEntry(after === null ? null : after.text),
-      snapshot: snapshotOfConfig(next),
-      note: `preset ${plan.preset.id}`,
-    });
-    writePresets(file.path, plan.document);
+    // Revision 39: an application whose text the layer already carries is a
+    // **no-op** — nothing is written, no history record is appended (there was
+    // no change), and the answer says `alreadyApplied: true` so the page can say
+    // 「该预设已在此工作区生效」instead of claiming a write.
+    //
+    // Review R5: "nothing" includes the **library file**. `before` is what
+    // 「取消应用」restores, and `planApply` returns the existing record untouched
+    // for this case, so writing the document back would either rewrite the same
+    // bytes or — worse, in the original defect — replace the first application's
+    // snapshot with the layer's current text, turning the cancel into a no-op.
+    // The response reports the records as they stand.
+    let history = null;
+    if (plan.alreadyApplied === true) {
+      cacheWritten(target, current);
+    } else {
+      writeConfig(target.path, next);
+      cacheWritten(target, next);
+      history = recordHistory({
+        path: target.path,
+        at,
+        layer: 'workspace',
+        session: sessionId ?? null,
+        action: actionOf(before, after),
+        name: CUSTOM_SECTION_NAME,
+        origin: 'ui',
+        before: textEntry(before === null ? null : before.text),
+        after: textEntry(after === null ? null : after.text),
+        snapshot: snapshotOfConfig(next),
+        note: `preset ${plan.preset.id}`,
+      });
+      writePresets(file.path, plan.document);
+    }
     sendJson(res, 200, {
       ok: true,
       applied: true,
+      alreadyApplied: plan.alreadyApplied === true,
       preset: plan.preset,
       record: plan.record,
       workspaceRoot: target.root,
@@ -3650,7 +3673,7 @@ function mount(ctx, config, cleanups) {
       after,
       effectiveFrom: 'next-turn',
       history,
-      appliedRecords: publicApplied(plan.document),
+      appliedRecords: publicApplied(plan.alreadyApplied === true ? file.document : plan.document),
     });
   }
 

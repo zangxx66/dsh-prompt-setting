@@ -1240,7 +1240,7 @@ window.__ModuleLoader__.load({
       // g-060 (Revision 37): the「预设」tab — the catalogue of named texts for the
       // reserved section, plus the two layer actions that apply one to a
       // workspace and put that workspace back.
-      tabPresets: '预设',
+      tabPresets: '我的预设',
       presetsHeading: '预设',
       presetsNote:
         '把一段常用文本存成预设，再把它应用到某个工作区的工作区层：应用写入该工作区的保留段，取消应用还原为应用前的内容。',
@@ -1275,6 +1275,12 @@ window.__ModuleLoader__.load({
       presetDialogClose: '关闭',
       presetDialogDiscard: '放弃修改',
       presetDialogDirtyHint: '有未保存的修改：关闭会丢弃它们。',
+      presetDiscardConfirmTitle: '放弃未保存的修改？',
+      presetDiscardConfirmBody: '这个预设的修改还没有保存；确认后关闭弹窗，改动不会写进预设库。',
+      presetDeleteConfirmTitle: '删除预设「{name}」？',
+      presetDeleteConfirmBody:
+        '确认后预设库里不再有它。已经应用到工作区的内容不会被改动，但那条应用记录会标记为「来源已删除」。',
+      presetAlreadyAppliedNotice: '该预设已在此工作区生效，未重复叠加。',
       presetNotApplied: '未应用',
       presetAppliedAs: '已应用：{name}',
       presetAppliedOrphan: '来源已删除',
@@ -1793,7 +1799,7 @@ window.__ModuleLoader__.load({
       // g-060 (Revision 37): the「预设」(presets) tab — the catalogue of named texts
       // for the reserved section, plus the two layer actions that apply one to a
       // workspace and put that workspace back.
-      tabPresets: 'Presets',
+      tabPresets: 'My presets',
       presetsHeading: 'Presets',
       presetsNote:
         'Keep a named text as a preset and apply it to one workspace: applying writes that workspace layer\u2019s reserved section, cancelling restores exactly what was there before.',
@@ -1828,6 +1834,12 @@ window.__ModuleLoader__.load({
       presetDialogClose: 'Close',
       presetDialogDiscard: 'Discard changes',
       presetDialogDirtyHint: 'There are unsaved changes: closing discards them.',
+      presetDiscardConfirmTitle: 'Discard the unsaved changes?',
+      presetDiscardConfirmBody: 'This preset\u2019s changes are not saved yet; confirming closes the dialog and writes nothing to the library.',
+      presetDeleteConfirmTitle: 'Delete the preset \u201c{name}\u201d?',
+      presetDeleteConfirmBody:
+        'The library will no longer hold it. What a workspace already carries is not touched, but its applied record is marked \u201csource deleted\u201d.',
+      presetAlreadyAppliedNotice: 'This preset is already in force in that workspace; nothing was stacked twice.',
       presetNotApplied: 'Not applied',
       presetAppliedAs: 'Applied: {name}',
       presetAppliedOrphan: 'Source deleted',
@@ -5544,6 +5556,20 @@ window.__ModuleLoader__.load({
         body.push(fmt(t('updateApplyTitle'), { latest: confirm.latest ?? '' }));
         body.push(fmt(t('updateApplyBody'), { latest: confirm.latest ?? '' }));
         body.push(t(updateApplyCopyKey('restartNote', modelLaunchKind(m))));
+      } else if (confirm.kind === 'preset-delete') {
+        // g-060 review R4: deleting a preset is a catalogue write with a visible
+        // consequence — an applied record becomes an orphan — so it asks first,
+        // through the same overlay every other destructive act on this page uses
+        // (g-031's rule: one confirmation surface, one layout, one pair of
+        // buttons).
+        body.push(fmt(t('presetDeleteConfirmTitle'), { name: confirm.name ?? '' }));
+        body.push(t('presetDeleteConfirmBody'));
+      } else if (confirm.kind === 'preset-discard') {
+        // …and closing a dirty editor throws typing away, which is the other act
+        // this page never performs silently (review R3's promise, now asked for
+        // explicitly rather than merely labelled).
+        body.push(t('presetDiscardConfirmTitle'));
+        body.push(t('presetDiscardConfirmBody'));
       } else if (confirm.kind === 'rollback') {
         // g-039: the version-history tab's only write. The body names the
         // version it will apply, states the scope the write face allows (the
@@ -6213,7 +6239,7 @@ window.__ModuleLoader__.load({
       { name: 'client.advanced.js', hash: '523d25ee', size: 21505 },
       { name: 'client.history.js', hash: '2887cc6c', size: 48609 },
       { name: 'client.overview.js', hash: 'f66cd1b0', size: 23533 },
-      { name: 'client.presets.js', hash: 'a9e4a118', size: 20105 },
+      { name: 'client.presets.js', hash: 'd11b279a', size: 20424 },
       { name: 'client.transfer.js', hash: 'c8af8793', size: 9759 },
     ]);
 
@@ -9114,7 +9140,13 @@ window.__ModuleLoader__.load({
           return;
         }
         setPresetStatus({ kind: 'saved', error: null });
-        setNotice({ tone: 'success', text: t('presetAppliedNotice') });
+        // Revision 39: an application the layer already carried wrote nothing, so
+        // it must not read as an ordinary「已应用」— the page says what really
+        // happened.
+        setNotice({
+          tone: 'success',
+          text: t(result.payload.alreadyApplied === true ? 'presetAlreadyAppliedNotice' : 'presetAppliedNotice'),
+        });
         setReload((value) => value + 1);
       };
 
@@ -9306,8 +9338,29 @@ window.__ModuleLoader__.load({
           setPresetDialog(null);
           setPresetStatus({ kind: 'idle', error: null });
         },
+        // Review R4: the close control of the **editor** asks first when the
+        // draft is dirty — through the page's one confirmation overlay, not a
+        // bespoke dialog — so throwing typing away is an answered question.
+        // Everything else (a clean draft, the apply dialog) closes directly: a
+        // confirmation for a no-op is noise.
+        requestPresetDialogClose: () => {
+          if (presetDialog !== null && presetDialog.kind === 'edit' && presetDraftDirty === true) {
+            setConfirm({ kind: 'preset-discard' });
+            return;
+          }
+          setPresetDialog(null);
+          setPresetStatus({ kind: 'idle', error: null });
+        },
         savePreset: () => {
           void savePresetDraft();
+        },
+        // Review R4: the row's「删除」only *asks*. The DELETE happens through
+        // `confirmYes`, like every other destructive act on this page.
+        requestPresetDelete: (id) => {
+          const list = presets.data && Array.isArray(presets.data.presets) ? presets.data.presets : [];
+          const preset = list.find((entry) => entry.id === id) ?? null;
+          if (preset === null) return;
+          setConfirm({ kind: 'preset-delete', id, name: preset.name });
         },
         deletePreset: (id) => {
           void deletePreset(id);
@@ -9535,6 +9588,18 @@ window.__ModuleLoader__.load({
           }
           if (pending.kind === 'update-apply') {
             await confirmUpdateApply();
+            return;
+          }
+          // g-060 review R4: the two preset confirmations. Both do exactly what
+          // their button said and nothing else — one DELETE, or one closed dialog
+          // with the draft dropped.
+          if (pending.kind === 'preset-delete') {
+            await deletePreset(pending.id);
+            return;
+          }
+          if (pending.kind === 'preset-discard') {
+            setPresetDialog(null);
+            setPresetStatus({ kind: 'idle', error: null });
             return;
           }
           await applyImport();

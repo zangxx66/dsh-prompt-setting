@@ -36,7 +36,7 @@
   > the tabs is this block's header: it decides which layer a save lands in, and it is the only place the
   > scope is changed (the panel repeats the current target as a read-only line).
 
-- **预设 / Presets** —— 你的常用文本库：把一段文本存成预设（新建 / 编辑 / 删除），再把它**应用到某个
+- **我的预设 / My presets** —— 你的常用文本库：把一段文本存成预设（新建 / 编辑 / 删除），再把它**应用到某个
   工作区**（写入该工作区的保留段），也可以**取消应用**——该工作区会精确还原为应用前的内容。删除一个
   已被应用的预设不会改动任何工作区，只会把那条记录标成「来源已删除」。
   > Your catalogue of reusable texts: save a text as a preset (create / edit / delete), then **apply** it to

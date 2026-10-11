@@ -216,7 +216,9 @@ window.__ModuleLoader__.load({
               'data-action': 'preset-delete',
               'data-preset-id': preset.id,
               disabled: m.busy,
-              onClick: () => a.deletePreset(preset.id),
+              // Review R4: the button only *asks* — the DELETE is sent by the
+              // page's shared confirmation overlay, never on the click itself.
+              onClick: () => a.requestPresetDelete(preset.id),
             },
             t('presetDelete'),
           ),
@@ -385,7 +387,9 @@ window.__ModuleLoader__.load({
                 'data-action': 'preset-dialog-close',
                 'data-preset-dirty': String(dirty),
                 disabled: m.busy || saving,
-                onClick: a.closePresetDialog,
+                // Review R4: a dirty draft is confirmed first (through the shared
+                // overlay); a clean one closes straight away.
+                onClick: a.requestPresetDialogClose,
               },
               dirty ? t('presetDialogDiscard') : t('presetDialogClose'),
             ),

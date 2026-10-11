@@ -11619,7 +11619,9 @@ test('client: a row’s 「编辑」 opens the dialog on that preset, and the id
   });
 });
 
-test('client: deleting a preset DELETEs by id, and an open editor on it closes with it', async () => {
+test('client: deleting a preset asks first, and only a confirmed answer sends the DELETE', async () => {
+  // Review R4: the row's「删除」only *asks*. The DELETE goes through the shared
+  // confirmation overlay (g-031's one confirmation surface), never on the click.
   const page = makePage({
     responses: defaultResponses({
       [PATHS.presets]: (url, init) =>
@@ -11629,17 +11631,34 @@ test('client: deleting a preset DELETEs by id, and an open editor on it closes w
     }),
   });
   let tree = await openTab(page, 'presets');
-  clickButton(tree, { 'data-action': 'preset-edit', 'data-preset-id': 'preset-1' });
-  tree = await page.flush();
-  assert.equal(oneBy(tree, 'data-region', 'preset-editor-dialog').props['data-preset-editing'], 'preset-1');
-
   clickButton(tree, { 'data-action': 'preset-delete', 'data-preset-id': 'preset-1' });
   tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'confirm').props['data-confirm-kind'], 'preset-delete');
+  assert.ok(strings(tree).some((text) => text.includes('短答')), 'the question names the preset');
+  assert.equal(
+    page.router.calls.filter((call) => call.init && call.init.method === 'DELETE').length,
+    0,
+    'nothing is sent before the answer',
+  );
+
+  // Cancelling sends nothing at all.
+  clickButton(tree, { 'data-action': 'confirm-no' });
+  tree = await page.flush();
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'confirm').length, 0);
+  assert.equal(page.router.calls.filter((call) => call.init && call.init.method === 'DELETE').length, 0);
+  assert.deepEqual(presetRowIds(tree), ['preset-1', 'preset-2'], 'and nothing was deleted');
+
+  // Confirming sends exactly one DELETE by id — and, when an editor was open on
+  // that preset, closes the dialog whose subject no longer exists.
+  clickButton(tree, { 'data-action': 'preset-edit', 'data-preset-id': 'preset-1' });
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'preset-delete', 'data-preset-id': 'preset-1' });
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'confirm-yes' });
+  tree = await page.flush();
   const deletes = page.router.calls.filter((call) => call.init && call.init.method === 'DELETE');
-  assert.equal(deletes.length, 1, 'exactly one write');
+  assert.equal(deletes.length, 1, 'exactly one write, and only after the confirmation');
   assert.equal(deletes[0].url, `${PATHS.presets}?id=preset-1`);
-  // The dialog's subject no longer exists, so it closes rather than offering a
-  // save that would be answered `404 preset-not-found`.
   assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'preset-editor-dialog').length, 0);
   assert.equal(markerOf(tree, 'data-preset-state'), 'saved');
 });
@@ -11845,3 +11864,115 @@ test('client: an empty name is refused inside the dialog, with no request at all
   assert.equal(markerOf(tree, 'data-preset-state'), 'error');
 });
 
+test('client: closing a dirty editor asks first; a clean one just closes', async () => {
+  // Review R4 (and R3's promise, now asked for explicitly): the act that throws
+  // typing away is confirmed through the page's own overlay.
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openTab(page, 'presets');
+  clickButton(tree, { 'data-action': 'preset-edit', 'data-preset-id': 'preset-2' });
+  tree = await page.flush();
+  // Clean draft: the close control closes, with no question.
+  clickButton(tree, { 'data-action': 'preset-dialog-close' });
+  tree = await page.flush();
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'preset-editor-dialog').length, 0);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'confirm').length, 0);
+
+  // Dirty draft: it asks, and the cancel keeps both the dialog and the typing.
+  clickButton(tree, { 'data-action': 'preset-edit', 'data-preset-id': 'preset-2' });
+  tree = await page.flush();
+  typeInto(tree, 'preset-text', 'Extra rules, edited.');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'preset-dialog-close' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'confirm').props['data-confirm-kind'], 'preset-discard');
+  clickButton(tree, { 'data-action': 'confirm-no' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'preset-editor-dialog').props['data-preset-editing'], 'preset-2');
+  assert.equal(oneBy(tree, 'data-role', 'preset-text').props.value, 'Extra rules, edited.');
+
+  // Confirming closes it and drops the draft — with nothing written.
+  clickButton(tree, { 'data-action': 'preset-dialog-close' });
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'confirm-yes' });
+  tree = await page.flush();
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'preset-editor-dialog').length, 0);
+  assert.equal(
+    page.router.calls.filter((call) => call.init && (call.init.method === 'PUT' || call.init.method === 'POST')).length,
+    0,
+    'discarding writes nothing',
+  );
+});
+
+test('client: the tab is called 「我的预设」 in both dictionaries', async () => {
+  const zhPage = makePage({ responses: defaultResponses() });
+  const zhTree = await zhPage.flush();
+  assert.ok(strings(zhTree).includes('我的预设'), 'zh');
+  const enPage = makePage({ responses: defaultResponses(), language: 'en' });
+  const enTree = await enPage.flush();
+  assert.ok(strings(enTree).includes('My presets'), 'en');
+});
+
+test('client: an application the layer already carries is reported as already in force', async () => {
+  // Revision 39: the host answers `alreadyApplied` when the text was already
+  // there, and the page may not dress that up as a fresh write. Review R5: the
+  // idempotent answer left the record alone, so「取消应用」is still offered.
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.presetsApply]: {
+        payload: {
+          ok: true,
+          applied: true,
+          alreadyApplied: true,
+          preset: { id: 'preset-1', name: '短答', action: 'replace', text: 'Be brief.' },
+          record: { workspaceRoot: '/work/alpha', presetId: 'preset-1', before: null, appliedAt: 'first' },
+          workspaceRoot: '/work/alpha',
+          before: { action: 'replace', text: 'Be brief.' },
+          after: { action: 'replace', text: 'Be brief.' },
+          effectiveFrom: 'next-turn',
+          history: null,
+          appliedRecords: [],
+        },
+      },
+      [PATHS.presetsUnapply]: {
+        payload: {
+          ok: true,
+          unapplied: true,
+          presetId: 'preset-1',
+          record: { workspaceRoot: '/work/alpha', presetId: 'preset-1', before: null, appliedAt: 'first' },
+          workspaceRoot: '/work/alpha',
+          restored: false,
+          before: { action: 'replace', text: 'Be brief.' },
+          after: null,
+          effectiveFrom: 'next-turn',
+          history: { ok: true, id: '2', seq: 2, dropped: 0, rewritten: false },
+          appliedRecords: [],
+        },
+      },
+    }),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+  });
+  let tree = await openTab(page, 'presets');
+  clickButton(tree, { 'data-action': 'preset-apply-to', 'data-preset-id': 'preset-1' });
+  tree = await page.flush();
+  clickPresetWorkspaceAction(tree, 'preset-apply', 'a1');
+  tree = await page.flush();
+  assert.ok(
+    strings(tree).some((text) => text.includes(page.zh.presetAlreadyAppliedNotice)),
+    'the page says it was already in force',
+  );
+  assert.equal(strings(tree).includes(page.zh.presetAppliedNotice), false, 'and not as an ordinary application');
+
+  // The record survived the idempotent request, so the row still reports the
+  // workspace as applied and its「取消应用」works.
+  const row = collect(
+    tree,
+    (node) => node.props && node.props['data-preset-session'] === 'a1' && node.props['data-preset-applied'] !== undefined,
+  )[0];
+  assert.equal(row.props['data-preset-applied'], 'true');
+  clickPresetWorkspaceAction(tree, 'preset-unapply', 'a1');
+  tree = await page.flush();
+  const posts = page.router.calls.filter((call) => call.init && call.init.method === 'POST');
+  assert.equal(posts.length, 2, 'the second button really posted');
+  assert.equal(posts[1].url, PATHS.presetsUnapply);
+  assert.deepEqual(JSON.parse(posts[1].init.body), { session: 'a1' });
+});
