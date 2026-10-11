@@ -37,6 +37,7 @@ import {
   trimRecords,
 } from './history.js';
 import { OverrideError, emptyConfig, interpolateFlagOf, validateConfig, withInterpolate } from './overrides.js';
+import { emptyPresets, normalizePresets } from './presets.js';
 import { normalizePreferences } from './update.js';
 
 /** Directory (under `$DSH_HOME`) that owns the user layer. */
@@ -56,6 +57,17 @@ const HISTORY_FILE_NAME = 'history.jsonl';
  * contract that must not grow a field because a switch was added.
  */
 const PREFERENCES_FILE_NAME = 'preferences.json';
+/**
+ * The preset library's file name (g-060, Revision 37), inside the user
+ * directory next to `overrides.json`.
+ *
+ * A **third** file, for the same reason `preferences.json` is a second one: the
+ * export / import / history / snapshot schemas are frozen, and a preset is
+ * neither an override of one layer nor a portable backup — it is the user's own
+ * catalogue of texts, read and written by its own five routes. Keeping it apart
+ * is what lets `GET /export` and `overrides.json` stay byte-identical.
+ */
+const PRESETS_FILE_NAME = 'presets.json';
 /** Directory (under a workspace root) that owns the workspace layer. */
 const WORKSPACE_DIRECTORY = '.dsh-prompt-setting';
 
@@ -127,8 +139,7 @@ export function userPreferencesPath(env = process.env) {
  * rewritten — the next save is what repairs it.
  * @param path - the preferences path.
  * @returns `{preferences, missing, error}` where `error` is `{code, message}|null`.
- */
-export function readPreferences(path) {
+ */export function readPreferences(path) {
   let raw;
   try {
     raw = readFileSync(path, 'utf8');
@@ -162,6 +173,83 @@ export function readPreferences(path) {
  */
 export function writePreferences(path, preferences) {
   const normalized = normalizePreferences(preferences);
+  writeTextAtomic(path, `${JSON.stringify(normalized, null, 2)}\n`);
+  return normalized;
+}
+
+/**
+ * The preset library's path (g-060, Revision 37).
+ *
+ * One file for the whole installation, under the user directory and independent
+ * of any workspace: the catalogue is the machine owner's, while *applying* a
+ * preset writes one workspace's layer (`applied` records the pair).
+ * @param env - the environment to read.
+ * @returns `<DSH_HOME>/prompt-setting/presets.json`.
+ */
+export function userPresetsPath(env = process.env) {
+  return join(resolveDshHome(env), USER_DIRECTORY, PRESETS_FILE_NAME);
+}
+
+/**
+ * Read the preset library.
+ *
+ * Never throws, and never reports a library it could not understand as "no
+ * presets": a missing file is an empty library (the honest state of an install
+ * that never made one), while an unreadable, unparsable or wrongly-shaped file
+ * is reported with its reason and answered as an empty library by the read face
+ * — the **write** face refuses on `error !== null`, which is what keeps a save
+ * from overwriting a file this revision does not understand.
+ * @param path - the presets path.
+ * @returns `{document, missing, error}` where `error` is `{code, message}|null`.
+ */
+export function readPresets(path) {
+  let raw;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { document: emptyPresets(), missing: true, error: null };
+    return {
+      document: emptyPresets(),
+      missing: false,
+      error: { code: 'unreadable-file', message: `cannot read ${path}: ${error?.message ?? String(error)}` },
+    };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    return {
+      document: emptyPresets(),
+      missing: false,
+      error: { code: 'invalid-json', message: `${path} is not valid JSON: ${error?.message ?? String(error)}` },
+    };
+  }
+  try {
+    return { document: normalizePresets(parsed), missing: false, error: null };
+  } catch (error) {
+    const code = error instanceof OverrideError ? error.code : 'invalid-presets';
+    return {
+      document: emptyPresets(),
+      missing: false,
+      error: { code, message: `${path}: ${error?.message ?? String(error)}` },
+    };
+  }
+}
+
+/**
+ * Write the preset library atomically.
+ *
+ * Same write path as every other document this plugin owns (`writeTextAtomic`:
+ * temp file in the target directory, then `rename`), so a reader never observes
+ * a half-written library and a crash cannot truncate the previous one.
+ * @param path - the presets path.
+ * @param document - the document to persist (normalized here).
+ * @returns the normalized document that was written.
+ * @throws {OverrideError} when the bytes cannot be written, or when the
+ *   document is not a valid library.
+ */
+export function writePresets(path, document) {
+  const normalized = normalizePresets(document);
   writeTextAtomic(path, `${JSON.stringify(normalized, null, 2)}\n`);
   return normalized;
 }

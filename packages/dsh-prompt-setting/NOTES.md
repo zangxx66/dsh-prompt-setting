@@ -7394,3 +7394,78 @@ brief 写「本次 0.2.1 覆盖 g-050…g-058」。核对仓库事实：**g-050�
   `latestTag=0.2.0`、`tarball` 指向 `…-0.2.0.tgz`，本次三者统一为 `0.2.2`（该节字段表本就规定
   `latestTag` 与 `latest` 同版本、`tarball` 取自 `versions[latest]`）。这是**文档内部一致性修复**，
   不涉及任何实现、路由或响应字段。
+
+## 135. g-060：「预设」功能（独立预设库 + 复用既有写面，Revision 37，2026-10-12，基线 `93b0d9e` 隔离工作树）
+
+**需求（负责人原文）**：新增一个预设功能，用户可以添加/编辑/删除预设，可将预设应用到用户选择的工作区中，
+也可取消应用预设。方案 A（负责人批准）：独立预设库 + 复用既有写面。
+
+**数据形状**（`<DSH_HOME>/prompt-setting/presets.json`，第三个用户文件）：
+
+```json
+{ "version": 1,
+  "presets": [{ "id": "...", "name": "短答", "action": "replace", "text": "...",
+                "createdAt": "...", "updatedAt": "..." }],
+  "applied": [{ "workspaceRoot": "/abs/path", "presetId": "...",
+                "before": { "action": "replace", "text": "MINE" } | null, "appliedAt": "..." }] }
+```
+
+- **为什么是第三个文件**：`overrides.json` 在 export / import / history / snapshot 四个冻结 schema 里，
+  预设不是任何一层的覆盖、也不是可移植备份，而是本机所有者的文本目录 —— 折进去等于让四个 schema 长字段。
+- **被否方案**：预设随 export 走、应用走 import、取消走 history rollback —— 被 `write-locked` 收窄到保留段
+  不说，「取消」还会变成一次日志回滚（可能还原用户从未有过的版本），语义扭曲。
+- `applied` 每个 `workspaceRoot` 至多一条（一层只有一个保留段条目）；再次应用**替换**该条记录，即
+  「取消应用」回到**最后一次应用前**的状态（一层深，刻意不是版本历史）。
+
+**五条路由（契约 §20，Revision 37；`CONTRACT.md` §1 表 + 405 allow 文字同步）**
+
+| 方法 | 路径 | 语义 |
+| --- | --- | --- |
+| GET | `/prompt-setting/presets` | 目录 + `applied` 记录；`?session=` 只用于解析当前工作区。恒 200，库坏时 `error` 字段说明 |
+| PUT | `/prompt-setting/presets` | 无 `id` 新增（**Host** 铸造 id），有 `id` 编辑（未知 id ⇒ 404，绝不静默新建） |
+| DELETE | `/prompt-setting/presets?id=` | 删一条；被应用的预设也允许删，**不改任何层**，记录变 orphan |
+| POST | `/prompt-setting/presets/apply` | `{presetId, session}`：读该工作区层当前保留段存 `before` → 写入预设 → 记 `applied` |
+| POST | `/prompt-setting/presets/unapply` | `{session}`：按 `before` 精确还原（`null` ⇒ 删掉该条目）→ 移除记录 |
+
+**实现（6 个源文件 + 契约 + 测试）**
+
+- `core/presets.js`（新，纯逻辑零 IO，`core/overrides.js` / `core/custom.js` 的同族）：`validatePresetInput`
+  （空名 `invalid-name`、超长名 `name-too-long`、非 `replace|append` 的 `unsupported-action`、超长文本
+  `text-too-large` 一律 **400**）、`normalizePresets`（宽容读取：坏条目逐条丢弃、同 root 记录去重）、
+  `upsertPreset` / `removePreset`、`planApply` / `planUnapply`（快照与还原决策全在这里）、`publicPresets`
+  / `publicApplied`（orphan 标记）。
+- `core/store.js`：`userPresetsPath` / `readPresets` / `writePresets`，照 `preferences.json` 先例走
+  `writeTextAtomic`（临时文件 + rename），坏文件**只报不写** ⇒ 写面 `409 presets-not-writable`。
+- `index.js`：三个路径常量、`ROUTES` 三行、分派链三段、五个 handler。应用/取消应用**复用** `targetFor` +
+  `writableConfig` + `validateConfig` + `writeConfig` + `cacheWritten`，只写保留段 `prompt-setting:custom-prompt`；
+  历史记录沿用既有形状（`actionOf` + `textEntry` + `snapshotOfConfig`，`origin: "ui"`，无新枚举）。
+- `client.presets.js`（新 chunk，按需加载）+ `client.js`：第 6 个一级 tab「预设」（紧跟「我的 Prompt」）、
+  `tabPresets` 词条、`PresetsTabChunk` / `renderPresetsChunk`、panel 分派、四组状态与六个动作、`CHUNK_STAMPS` 重算。
+- `test/presets.test.mjs`（新，19 用例）：纯逻辑 9 + 路由 10，含**负向零副作用**（每类 400/404/409 前后对
+  `presets.json` 取 SHA-256）、应用后 `/snapshot` 装配含预设文本、取消应用还原为应用前 JSON 值且其它层字节不变、
+  删除已应用预设后层字节不变 + orphan 标记、405 allow 清单、导出文档字段集合不变。
+- `test/client.test.mjs`：既有断言同步（tab 顺序、挂载请求路径集合、tab→chunk 映射）+ 7 个新用例（按需拉 chunk、
+  工作区应用状态与 orphan、保存 PUT body、编辑带 id、删除按 id、应用/取消应用 POST body、库坏 ≠ 空目录、en 词条）。
+
+**关键裁决与残余风险**
+
+- **应用只写保留段、取消应用还原「内容」而非字节**：层文件由 `writeConfig` 重写，键序由写入器决定
+  （与既有 `PUT /overrides` 完全一致）；「还原」保证的是 JSON 值等值，用户层与其它工作区层**字节不变**。
+- **两次写盘的顺序**：先写工作区层（+ 历史），再写预设库记录。库写失败 ⇒ 500，层已生效但没有撤销记录
+  （残余风险，已在契约 §20.5 写明）；反序会把「没发生过的应用」记下来，更坏。
+- **不做**：预设随 export 导入导出（`GET /export` 字段不变）、跨工作区批量应用、预设版本历史；
+  应用与取消应用**不碰**插值开关（`before` 只快照 `{action, text}`，若预设改写开关则取消时无法精确还原）。
+- **工作区枚举**：宿主无工作区列表路由（`targetFor` 强制 `?session=`），故 UI 用页面已有的 workspace seat
+  （每个工作区取首个 session）构造选择器，退化时用会话列表。
+
+**验收（单行证据，2026-10-12，worktree `.worktrees/g-060-att-01`）**
+
+- `node --test test/*.test.mjs` ⇒ 800 通过 / 0 失败（19 套件，含新增 `test/presets.test.mjs` 19 用例）；
+- `node scripts/prepare.mjs` ⇒ 21 项全绿（`files: client.*.js` 4 → 5 项）；`node scripts/client-chunks.mjs`
+  ⇒ 5 个 chunk 与 `CHUNK_STAMPS` 一致；`package.json` `dependencies` 仍为空、无构建步骤。
+
+**未验证项**
+
+- 真机（`dsh web` 重启后对真实工作区做一次「应用 → 装配生效 → 取消 → 还原」）由主管复核执行，本轮未做；
+- 契约 Revision 37 的 §20 全文为文档，仅由 `CONTRACT.md` 自身审阅，未被测试断言（沿用本项目惯例）。
+

@@ -633,6 +633,11 @@ meaning exactly.
 | `/prompt-setting/update-apply/cancel` | `POST` | Stop a running install: `{"requestId": string}` (§18.4). Carries `launchKind` (g-036, §18.8). |
 | `/prompt-setting/download-region` | `GET` | Which update source is in force, and — with nothing stored — the availability decision that sets it (g-043, §17.7). Always `200`. |
 | `/prompt-setting/download-region` | `PUT` | Record the choice: `{"region": "default"\|"cn"\|"custom", "registry"?: string}`, a custom address validated first (g-043, §17.8). |
+| `/prompt-setting/presets` | `GET` | The preset library: the stored presets and the records of where they are applied (g-060, §20.2). Always `200`. |
+| `/prompt-setting/presets` | `PUT` | Insert one preset (no `id`, the Host mints it) or edit one by `id` (§20.3). |
+| `/prompt-setting/presets` | `DELETE` | Remove one preset — `?id=` (§20.4). An applied preset may be deleted: the layer keeps its text and the record is reported as an orphan. |
+| `/prompt-setting/presets/apply` | `POST` | Write one preset into the workspace layer that owns `session`, snapshotting what that layer held (`{presetId, session}`, §20.5). |
+| `/prompt-setting/presets/unapply` | `POST` | Put that workspace layer back to the snapshot `apply` took, and drop the record (`{session}`, §20.6). |
 
 - An unknown path under the prefix is `404` with
   `{ "code": "not-found", "message": "no route for <path>" }` (no `ok` key —
@@ -643,7 +648,9 @@ meaning exactly.
   `allow: GET, PUT, DELETE`; `history`, `diff` and `export` answer `allow: GET`;
   `import` and `rollback` answer `allow: POST`; `interpolate`, `update-check`
   and `download-region` answer `allow: GET, PUT`; `update-apply` answers
-  `allow: GET, POST` and `update-apply/cancel` answers `allow: POST`.
+  `allow: GET, POST` and `update-apply/cancel` answers `allow: POST`; `presets`
+  answers `allow: GET, PUT, DELETE`, and `presets/apply` and `presets/unapply`
+  answer `allow: POST`.
 - The fence runs **before** the method check and before any route logic.
 
 ## 2. `GET /prompt-setting/snapshot`
@@ -2251,6 +2258,67 @@ always saw, and no other section's `append` changes meaning.
   emptiness predicate), `core/custom.js` (`RESERVED_WRITABLE_ACTIONS`) and
   `client.js` (the control, the draft field, the save body). `index.js` stores the
   word and resolves nothing: the stack is built once, in the merge kernel.
+
+---
+
+**Revision 37 (g-060: the preset library — a user's own catalogue of texts for
+the reserved section, five routes, and a sixth first-level tab).**
+A **preset** is a named `{action, text}` pair for `prompt-setting:custom-prompt`
+(§13.1). The user keeps a library of them and **applies** one to a **workspace**:
+the workspace layer's reserved entry becomes the preset's, and「取消应用」puts that
+layer back to exactly what it held before. Five routes are added (§1, §20), the
+schema of nothing else moves, and the assembly path gains no read.
+
+- **why a third file.** The library lives in
+  `<DSH_HOME>/prompt-setting/presets.json`, its own document read and written by
+  its own routes. Folding it into `overrides.json` was rejected because that file
+  is inside the frozen export / import / history / snapshot schemas (§10, §11,
+  §8, §2), and a preset is none of those things — it is the machine owner's
+  catalogue, not one layer's override. Folding it into the export document was
+  rejected for the same reason plus one: a backup is portable and a catalogue is
+  not, and a restore would then silently rewrite the catalogue;
+- **applying reuses the one write face.** `POST /presets/apply` resolves the
+  workspace exactly as `PUT /overrides` does (`targetFor` + `writableConfig`),
+  rebuilds the layer with the reserved entry upserted, validates it with
+  `validateConfig`, and writes it with the same atomic `writeConfig` +
+  `cacheWritten` pair. No second write path exists, the layer's other entries and
+  its `interpolateCustom` switch are carried across untouched, and a refusal at
+  any step before the write leaves every file byte-identical. **A preset carries
+  no `action` outside `replace` / `append`**: `hide` is not a preset (§15.5,
+  Revision 36), and a preset never carries `order`;
+- **cancelling restores content, not a version.** The record stores the snapshot
+  `before` the application took from the config that request had just read:
+  `null` when the layer held no reserved entry at all, otherwise its
+  `{action, text}`. `POST /presets/unapply` writes that value back through the
+  same path — a `null` snapshot removes the entry, a non-null one restores
+  `action`/`text` — and drops the record. It is deliberately **not** a history
+  rollback: a rollback walks a log and can restore a version the user never had
+  here, while this route restores the one value the application overwrote. The
+  workspace layer's other entries, its switch, the user layer and every other
+  workspace are untouched (§20.6);
+- **deleting an applied preset changes no layer.** The record survives, the
+  workspace keeps the text it was given, and `GET /presets` reports the record as
+  an `orphan` (`presetName: null`) —「来源已删除」in the page. Rewriting a
+  workspace the request never named would be a write nothing asked for, and
+  silently dropping the record would lose the snapshot the user still needs;
+- **what this revision deliberately does not do.** No preset travels in
+  `GET /export` (the document's fields are unchanged, §20.8), no preset is applied
+  to more than one workspace per request, and the library keeps no version
+  history — one record per workspace root, one level deep: applying a second
+  preset replaces the first record, so「取消应用」goes back to the state before the
+  **latest** application (§20.5);
+- **client surface (§13.1, §20.9).** A sixth first-level tab「预设」sits directly
+  after「我的 Prompt」, in the on-demand chunk `client.presets.js`. It lists the
+  presets, creates/edits/deletes them, offers「从当前文本另存为预设」, applies one to
+  a workspace chosen by that workspace's session, cancels an application, and
+  shows each workspace's applied state (including the orphan marker). The tab is
+  a catalogue view plus two layer actions — it is **not** a second text editor for
+  the reserved section, and it never writes a layer from the catalogue routes;
+- **where it is implemented.** `core/presets.js` (pure: validation,
+  normalization, the apply/unapply decisions), `core/store.js`
+  (`userPresetsPath` / `readPresets` / `writePresets`, atomic write),
+  `index.js` (the five route adapters), `client.js` + `client.presets.js` (the
+  tab and its chunk), `CONTRACT.md` §1/§20 and `test/presets.test.mjs`.
 
 ### 13.1 「我的 Prompt」 — the one write surface
 
@@ -5592,3 +5660,272 @@ layer-wide to section-level. A log written by Revision 21 (a `rollback` record
 with `name: null`) no longer validates and is counted as a corrupt line by §8's
 tolerant reader, which is the documented behaviour for a record this contract
 does not describe.
+
+---
+
+## 20. The preset library (g-060, Revision 37)
+
+A **preset** is a named `{action, text}` pair for the reserved section
+`prompt-setting:custom-prompt` (§13.1). The library is a per-installation
+document; **applying** a preset writes one **workspace** layer (never the user
+layer), and「取消应用」puts that layer back to what it held before.
+
+### 20.1 The stored document
+
+`<DSH_HOME>/prompt-setting/presets.json` — one file per installation, written
+atomically (§5.5's rule: temp file next to the target, then `rename`), read on
+every preset route and never on the assembly path:
+
+```json
+{
+  "version": 1,
+  "presets": [
+    {
+      "id": "0f9c1c62-...",
+      "name": "短答",
+      "action": "replace",
+      "text": "Be brief.",
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z"
+    }
+  ],
+  "applied": [
+    {
+      "workspaceRoot": "/abs/path/to/workspace",
+      "presetId": "0f9c1c62-...",
+      "before": { "action": "replace", "text": "MINE" },
+      "appliedAt": "2024-01-02T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+- `version` is `1`; a document stating another version is refused (`400
+  unsupported-presets-version` on the write face, reported by §20.2's `error` on
+  the read face). A missing `presets`/`applied` is an empty list.
+- `id` is minted by the **Host** (one UUID per new preset) and matches
+  `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`. The client sends an id only to address an
+  existing preset; a malformed id is `400 invalid-id` and never reaches the file.
+- `name` is 1–120 characters with no control characters. `action` is `replace`
+  or `append` — the reserved name's two writable actions (§4.1) and nothing else.
+  `text` is a string of at most 200 KiB (`MAX_TEXT_BYTES`), and `""` is a legal
+  value (Revision 35's blank rule applies when it is assembled).
+- `before` is the snapshot「取消应用」restores: `null` means the workspace layer
+  held **no** reserved entry when the preset was applied, so the entry is removed
+  on cancel; otherwise it is the `{action, text}` that was overwritten.
+- At most one `applied` record per `workspaceRoot` (a layer has one reserved
+  entry). A record whose `presetId` is no longer in `presets` is an **orphan**:
+  it is reported, kept, and still restorable.
+- **Tolerance.** An individual entry this revision cannot use is dropped when the
+  file is read (one bad line must not hide every other preset); a file that is
+  not a JSON object at all, or that states another version, is **not** rewritten
+  by any write route — those answer `409 presets-not-writable` (§20.7) and leave
+  it byte-identical.
+
+### 20.2 `GET /prompt-setting/presets`
+
+Query: `session` (optional). It is **resolution only**, exactly like
+`?workspace=` in §8: a session id that lets the answer name the workspace the
+caller is looking at. It never filters the library (the library is global).
+
+```json
+{
+  "ok": true,
+  "path": "/home/user/.dsh/prompt-setting/presets.json",
+  "version": 1,
+  "presets": [{ "id": "…", "name": "…", "action": "replace", "text": "…", "createdAt": "…", "updatedAt": "…" }],
+  "applied": [
+    {
+      "workspaceRoot": "/abs/path",
+      "presetId": "…",
+      "presetName": "…",
+      "orphan": false,
+      "appliedAt": "…",
+      "before": { "action": "replace", "text": "…" }
+    }
+  ],
+  "workspaceRoot": "/abs/path",
+  "error": null
+}
+```
+
+- Always `200`, failures included: an unreadable or unusable library answers an
+  empty `presets`/`applied` beside `error: {code, message}` — the page then says
+  so, and the write routes refuse. A read never rewrites the file.
+- `workspaceRoot` is the root the `session` resolved to, or `null` when no
+  session was supplied or it does not resolve. It is not an error.
+- `presetName` is `null` for an orphan record; `orphan` is the flag the page
+  renders as「来源已删除」.
+- The response carries no layer text and never reads a workspace layer.
+
+### 20.3 `PUT /prompt-setting/presets`
+
+Body: `{name, action, text}` to insert, or `{id, name, action, text}` to edit.
+
+- Without `id`, the Host mints one and the answer is `created: true`. With an
+  `id`, that preset must exist: `404 preset-not-found` otherwise —「编辑」 never
+  becomes「新建」, so a stale page reports its missing target instead of
+  duplicating it.
+- Order is the contract, as on every other write route (§4.1): the body is
+  validated first (every field-level mistake is a `400` and writes nothing), then
+  the current library is read (`409` when it is unusable), and only then is the
+  whole document written atomically.
+- Response `200`:
+
+```json
+{ "ok": true, "created": true, "preset": { "id": "…", "name": "…", "action": "replace", "text": "…", "createdAt": "…", "updatedAt": "…" },
+  "presets": [ … ], "applied": [ … ] }
+```
+
+- An edit keeps `createdAt` and moves `updatedAt`. Unknown body fields are
+  ignored (a future client's extra key is not a `400`); unknown **preset** fields
+  are dropped, never persisted.
+
+### 20.4 `DELETE /prompt-setting/presets?id=`
+
+- `id` is required (`400 missing-id`) and must be well-formed (`400 invalid-id`);
+  an id that names nothing is `404 preset-not-found`. Every refusal leaves the
+  file byte-identical.
+- Response `200`:
+
+```json
+{ "ok": true, "removed": true, "id": "…", "preset": { … },
+  "orphaned": 1, "presets": [ … ], "applied": [ … ] }
+```
+
+- `orphaned` is how many `applied` records now point at the deleted preset. The
+  layers are **not** touched: the workspace keeps the text it was given, and the
+  record keeps its snapshot so「取消应用」still works.
+
+### 20.5 `POST /prompt-setting/presets/apply`
+
+Body: `{presetId, session}` (`session` may also come from `?session=`).
+
+- The session resolves the workspace root through `workspaceRegistry` exactly as
+  §4.2 requires; a request without one, or with one that resolves nothing, is
+  `400 workspace-unresolved` and writes nothing.
+- The write is `PUT /overrides`' own path with the same guarantees: the layer's
+  current config is read first (`409 layer-not-writable` when it is unusable),
+  the reserved entry is upserted with the preset's `action`/`text`, the rebuilt
+  config is validated, and only then is it written atomically and cached. The
+  layer's other entries and its `interpolateCustom` switch are carried across.
+- The snapshot is taken from the config this request just read, and the `applied`
+  record for that root is **replaced** (one record per root).
+- A history record is appended exactly as `PUT /overrides` does it (a section
+  record: `name` = the reserved name, `before`/`after` = its text on either side,
+  `origin: "ui"`, `action` from the ordinary `actionOf` rule). **No history shape
+  changes** (§8) and no new action or origin is introduced.
+- Response `200`:
+
+```json
+{ "ok": true, "applied": true, "preset": { … },
+  "record": { "workspaceRoot": "…", "presetId": "…", "before": { "action": "replace", "text": "MINE" }, "appliedAt": "…" },
+  "workspaceRoot": "…", "before": { "action": "replace", "text": "MINE" }, "after": { "action": "append", "text": "PRESET" },
+  "effectiveFrom": "next-turn", "history": { … }, "appliedRecords": [ … ] }
+```
+
+- Applying the same preset twice is allowed and is not a no-op: the second
+  application's `before` is the first application's result, so「取消应用」goes back
+  to the text the first application wrote.
+- **Order of the two writes, and its residual risk.** The workspace layer is
+  written first and the library record second, because a record must describe a
+  write that really happened; if the library write then fails, the answer is a
+  `500` and the layer holds the preset text with no record of how to undo it. The
+  opposite order would record an application that never happened, which is worse
+  (the page would offer to cancel a workspace it never touched).
+
+### 20.6 `POST /prompt-setting/presets/unapply`
+
+Body: `{session}` (`session` may also come from `?session=`).
+
+- The record for that workspace root must exist: `404 not-applied` otherwise —
+  there is nothing to restore, and a `200` would claim a write that did not
+  happen.
+- The restoration is **content**: `before: null` removes the reserved entry, a
+  non-null `before` writes its `action`/`text` back. It is not a history rollback
+  and it consults no log — the value restored is the one the application
+  overwrote. The layer's other entries, its switch, the user layer and every other
+  workspace are untouched.
+- The record is dropped, and an ordinary section history record is appended, as in
+  §20.5.
+- Response `200`:
+
+```json
+{ "ok": true, "unapplied": true, "presetId": "…",
+  "record": { "workspaceRoot": "…", "presetId": "…", "before": { … }, "appliedAt": "…" },
+  "workspaceRoot": "…", "restored": true,
+  "before": { "action": "append", "text": "PRESET" }, "after": { "action": "replace", "text": "MINE" },
+  "effectiveFrom": "next-turn", "history": { … }, "appliedRecords": [ … ] }
+```
+
+- `restored` is `false` exactly when the snapshot was `null` (the entry was
+  removed rather than written back).
+
+### 20.7 Errors
+
+All are `OverrideError` shapes (`{ok: false, code, message}`, §4.4):
+
+| Code | Status | When |
+| --- | --- | --- |
+| `invalid-preset` | 400 | The body is not a JSON object. |
+| `invalid-name` | 400 | `name` is missing, not a string, empty/whitespace-only, or carries a control character. |
+| `name-too-long` | 400 | `name` exceeds 120 characters. |
+| `unsupported-action` | 400 | `action` is absent or is neither `replace` nor `append`. |
+| `missing-text` | 400 | A present `action` carries no string `text`. |
+| `text-too-large` | 400 | `text` exceeds 200 KiB of UTF-8. |
+| `invalid-id` | 400 | An `id` is present but does not match the documented shape. |
+| `missing-id` | 400 | `DELETE` carries no `id`. |
+| `preset-not-found` | 404 | `PUT` with an unknown `id`, `DELETE` of an unknown `id`, or `apply` of an unknown `presetId`. |
+| `missing-preset-id` | 400 | `apply` carries no `presetId`. |
+| `workspace-unresolved` | 400 | `apply`/`unapply` with no session, or one that resolves no workspace. |
+| `not-applied` | 404 | `unapply` for a workspace with no record. |
+| `presets-not-writable` | 409 | The library file exists but is not a valid document (§20.1). |
+| `layer-not-writable` | 409 | The workspace layer's own file is not a valid config (§4.4, unchanged). |
+
+Every one of them is decided **before** any file is written, so a rejected
+request leaves `presets.json` and the layer byte-identical.
+
+### 20.8 What this revision does not do
+
+- **No preset travels in an export.** `GET /export`'s fields and
+  `overrides.json`'s schema are unchanged (§10, §4); an export taken before this
+  revision re-imports byte-for-byte, and the new library is not a backup format.
+- **No cross-workspace application.** One request names one session and writes
+  one layer.
+- **No preset version history.** The library keeps the current value of each
+  preset; the applied record is one level deep (§20.5). The existing history
+  (§8) still records every layer write these routes make, in its existing shape.
+- **No second write path and no new writable section.** Both layer actions write
+  the reserved entry and nothing else; a non-reserved name is still `403`
+  `write-locked` (§4.1) and no preset route can reach one.
+
+### 20.9 Client surface (g-060)
+
+- **The tab.** `MAIN_TABS` gains `presets` **directly after** `mine`, making six
+  first-level tabs in this order: 「我的 Prompt」 / **「预设」** / 「提示词总览」 /
+  「版本历史」 / 「备份与恢复」 / 「高级」. Its panel is the on-demand chunk
+  `client.presets.js` (the g-045/g-046 lazy boundary, `CHUNK_STAMPS` re-run), and
+  the tab label key is `tabPresets` in both dictionaries.
+- **The panel** is `data-region="presets"`. The catalogue is
+  `data-region="presets-list"`, one row per preset carrying `data-preset-id`, with
+  `data-action="preset-edit"` and `data-action="preset-delete"` on each row.
+- **The editor** is `data-region="preset-editor"`: `data-role="preset-name"`,
+  `data-role="preset-text"`, `data-action="preset-save"` (insert or edit),
+  `data-action="preset-new"` (clear the editor) and
+  `data-action="preset-save-as-current"` (start a **new** preset from the text the
+  「我的 Prompt」 panel currently shows). The action control reuses §13.1's two
+  words (`replace` / `append`).
+- **The workspace picker** is `data-region="preset-workspace"`: it offers the
+  sessions this page already knows (`data-preset-session`), because the Host has
+  no workspace list route (§4.2) and applying needs a session. Each row states
+  whether that workspace is applied (`data-preset-applied="true|false"`), which
+  preset (`data-preset-name`), and whether the record is an orphan
+  (`data-preset-orphan="true"`). The two actions are
+  `data-action="preset-apply"` and `data-action="preset-unapply"`.
+- **Reads and writes.** The tab reads `GET /presets` (with `?session=`, §20.2) and
+  writes through §20.3–§20.6 only. It never touches `PUT /overrides`, and it never
+  sends a layer name: the layer is implied by the preset routes themselves.
+- **State.** The tab carries `data-preset-state` (`idle` / `saving` / `saved` /
+  `error`) and a notice line, in the shape the other tabs use (§13.1's
+  `mine-state`). A host that answers `error` on the read (§20.2) is shown as a
+  library problem, not as「没有预设」.

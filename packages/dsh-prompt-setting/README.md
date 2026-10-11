@@ -26,7 +26,7 @@
 
 ## 功能 / Features
 
-设置页里会多出一栏 **「Prompt settings」**（`id: prompt-setting`），五个一级 tab：
+设置页里会多出一栏 **「Prompt settings」**（`id: prompt-setting`），六个一级 tab：
 
 - **我的 Prompt / My Prompt** —— 唯一写入口：写下你自己的系统级指令（选层 → 编辑 → 保存），
   一键恢复默认。这段文本**排在所有内置段之后**。上方的「查看范围」是这一块的头部：它决定保存落到
@@ -35,6 +35,14 @@
   > one-click restore. The text is **placed after every built-in section**. The "View scope" row above
   > the tabs is this block's header: it decides which layer a save lands in, and it is the only place the
   > scope is changed (the panel repeats the current target as a read-only line).
+
+- **预设 / Presets** —— 你的常用文本库：把一段文本存成预设（新建 / 编辑 / 删除），再把它**应用到某个
+  工作区**（写入该工作区的保留段），也可以**取消应用**——该工作区会精确还原为应用前的内容。删除一个
+  已被应用的预设不会改动任何工作区，只会把那条记录标成「来源已删除」。
+  > Your catalogue of reusable texts: save a text as a preset (create / edit / delete), then **apply** it to
+  > a workspace (it is written into that workspace layer's reserved section) or **cancel** the application,
+  > which restores exactly what that workspace held before. Deleting an applied preset rewrites no
+  > workspace; the record is simply marked "source deleted".
 
 - **提示词总览 / Prompt overview** —— 纯只读：分段列表（状态标记 / 搜索 / 筛选 / 复制）、完整全文，
   以及 `base ↔ effective` 对比，一眼看出你的改动究竟改变了什么。
