@@ -35,6 +35,10 @@ const UPDATE_APPLY_PATH = '/prompt-setting/update-apply';
 const UPDATE_APPLY_CANCEL_PATH = '/prompt-setting/update-apply/cancel';
 /** g-043:「下载区域」— the update source the user picks. */
 const DOWNLOAD_REGION_PATH = '/prompt-setting/download-region';
+/** g-060 (Revision 37): the preset library and its two workspace actions. */
+const PRESETS_PATH = '/prompt-setting/presets';
+const PRESETS_APPLY_PATH = '/prompt-setting/presets/apply';
+const PRESETS_UNAPPLY_PATH = '/prompt-setting/presets/unapply';
 /** g-042: the npm document, the GitHub fallback, and the registry's install spec. */
 const REGISTRY_URL = 'https://registry.npmjs.org/dsh-prompt-setting';
 const GITHUB_URL = 'https://api.github.com/repos/zangxx66/dsh-prompt-setting/releases/latest';
@@ -526,6 +530,18 @@ test('host: wrong methods on the new routes answer 405 with the full allow list'
   const region = await call(route, { method: 'DELETE', url: DOWNLOAD_REGION_PATH });
   assert.equal(region.statusCode, 405);
   assert.equal(region.headers.allow, 'GET, PUT');
+  // g-060: the preset library's three paths, on the same rule — the method table
+  // is decided before any library or layer file could be read, so a wrong method
+  // costs nothing and touches nothing.
+  const presets = await call(route, { method: 'POST', url: PRESETS_PATH });
+  assert.equal(presets.statusCode, 405);
+  assert.equal(presets.headers.allow, 'GET, PUT, DELETE');
+  const presetsApply = await call(route, { method: 'DELETE', url: PRESETS_APPLY_PATH });
+  assert.equal(presetsApply.statusCode, 405);
+  assert.equal(presetsApply.headers.allow, 'POST');
+  const presetsUnapply = await call(route, { method: 'GET', url: PRESETS_UNAPPLY_PATH });
+  assert.equal(presetsUnapply.statusCode, 405);
+  assert.equal(presetsUnapply.headers.allow, 'POST');
 });
 
 // #region the update routes take the npm path first (g-042)

@@ -358,6 +358,19 @@ window.__ModuleLoader__.load({
      * address is untrusted input (§17.8).
      */
     const DOWNLOAD_REGION_PATH = '/prompt-setting/download-region';
+    /**
+     * g-060 (Revision 37): the preset library — the user's own catalogue of
+     * texts for the reserved section.
+     *
+     * Three paths, mirroring the host half exactly: the catalogue
+     * (`GET` / `PUT` / `DELETE ?id=`) and the two layer actions (`apply`,
+     * `unapply`). The catalogue routes never name a layer; the two actions take
+     * the `session` of the workspace they act on, which is the only identity the
+     * host can resolve a root from (`CONTRACT.md` §4.2, §20).
+     */
+    const PRESETS_PATH = '/prompt-setting/presets';
+    const PRESETS_APPLY_PATH = '/prompt-setting/presets/apply';
+    const PRESETS_UNAPPLY_PATH = '/prompt-setting/presets/unapply';
     /** The three region ids, in dropdown order — the only values the contract accepts. */
     const DOWNLOAD_REGIONS = ['default', 'cn', 'custom'];
     /**
@@ -419,14 +432,16 @@ window.__ModuleLoader__.load({
     /** The mode a save sends when the layer stores none (the historical default). */
     const RESERVED_SECTION_DEFAULT_MODE = 'replace';
     /**
-     * The five first-level tabs, in the fixed order they are presented.
+     * The six first-level tabs, in the fixed order they are presented.
      * 「我的 Prompt」 is first and is the default: it is the only write surface
-     * left, so it is where a user who opened this page for a reason lands.
-     * g-038 split the old 「历史与备份」 in two: 「版本历史」 is the log and its
-     * comparison, 「备份与恢复」 is export/import — one tab may no longer be
-     * both a read-only log and the page's way to overwrite every file.
+     * for the reserved section's **text**, so it is where a user who opened this
+     * page for a reason lands. g-038 split the old 「历史与备份」 in two:
+     * 「版本历史」 is the log and its comparison, 「备份与恢复」 is export/import —
+     * one tab may no longer be both a read-only log and the page's way to
+     * overwrite every file. g-060 adds 「预设」 directly after 「我的 Prompt」: it is
+     * the catalogue of named texts that tab writes, so the two sit together.
      */
-    const MAIN_TABS = ['mine', 'overview', 'history', 'backup', 'advanced'];
+    const MAIN_TABS = ['mine', 'presets', 'overview', 'history', 'backup', 'advanced'];
     /**
      * The two *read-only* views inside 「提示词总览」. `sections` is the
      * assembled segment list; `full` is the assembled text. The Revision 6
@@ -1222,6 +1237,53 @@ window.__ModuleLoader__.load({
       importStatusRemoved: '删除',
       importConfirmTitle: '确认导入',
       importConfirmBody: '将按 {mode} 策略写入以下变更，任何一步失败都不会改动现有配置。',
+      // g-060 (Revision 37): the「预设」tab — the catalogue of named texts for the
+      // reserved section, plus the two layer actions that apply one to a
+      // workspace and put that workspace back.
+      tabPresets: '预设',
+      presetsHeading: '预设',
+      presetsNote:
+        '把一段常用文本存成预设，再把它应用到某个工作区的工作区层：应用写入该工作区的保留段，取消应用还原为应用前的内容。',
+      presetsListHeading: '预设库',
+      presetsEmpty: '还没有预设。可以在下面新建，或把「我的 Prompt」当前的文本另存为预设。',
+      presetsLibraryError: '预设库文件不能读取',
+      presetNewHeading: '新建预设',
+      presetEditHeading: '编辑预设',
+      presetNameLabel: '名称',
+      presetNamePlaceholder: '例如：短答模式',
+      presetTextLabel: '文本',
+      presetTextPlaceholder: '这段文本会写入保留段 prompt-setting:custom-prompt',
+      presetModeLabel: '模式',
+      presetModeReplace: '覆盖',
+      presetModeAppend: '叠加',
+      presetSaveNew: '保存为新预设',
+      presetSaveEdit: '保存修改',
+      presetNew: '新建',
+      presetSaveAsCurrent: '从当前文本另存为预设',
+      presetSaveAsCurrentHint:
+        '「从当前文本另存为预设」只是把「我的 Prompt」当前显示的文本填进上面的编辑器，不会直接写入预设库。',
+      presetEdit: '编辑',
+      presetDelete: '删除',
+      presetWorkspaceHeading: '应用到工作区',
+      presetWorkspaceNote:
+        '选定一个工作区（用它的一个 session 定位），把上面编辑的预设应用过去；也可以取消该工作区已有的应用。',
+      presetWorkspaceEmpty: '这个 profile 没有可用的工作区会话，无法应用预设。',
+      presetApply: '应用',
+      presetUnapply: '取消应用',
+      presetApplyPickOne: '先在上面的列表里点「编辑」选中一个预设，再点「应用」。',
+      presetApplyUnsaved: '当前编辑尚未保存：先点「保存修改」，再把它应用到工作区 —— 否则应用的是库里已保存的旧版本。',
+      presetNotApplied: '未应用',
+      presetAppliedAs: '已应用：{name}',
+      presetAppliedOrphan: '来源已删除',
+      presetSaving: '处理中…',
+      presetSaved: '已完成',
+      presetFailed: '操作失败',
+      presetLoaded: '预设库已加载',
+      presetSavedNotice: '预设已保存。',
+      presetDeletedNotice: '预设已删除。',
+      presetDeletedOrphanNotice: '预设已删除；{count} 个工作区仍保留它的文本，可以继续取消应用。',
+      presetAppliedNotice: '预设已应用到该工作区，下一轮装配生效。',
+      presetUnappliedNotice: '已取消应用：该工作区恢复为应用前的内容。',
     };
 
     const en = {
@@ -1725,6 +1787,53 @@ window.__ModuleLoader__.load({
       importStatusRemoved: 'removed',
       importConfirmTitle: 'Confirm the import',
       importConfirmBody: 'The changes below will be written with the {mode} strategy; a failure at any step leaves the existing configuration untouched.',
+      // g-060 (Revision 37): the「预设」(presets) tab — the catalogue of named texts
+      // for the reserved section, plus the two layer actions that apply one to a
+      // workspace and put that workspace back.
+      tabPresets: 'Presets',
+      presetsHeading: 'Presets',
+      presetsNote:
+        'Keep a named text as a preset and apply it to one workspace: applying writes that workspace layer\u2019s reserved section, cancelling restores exactly what was there before.',
+      presetsListHeading: 'Library',
+      presetsEmpty: 'No presets yet. Create one below, or save the text \u300cMy Prompt\u300d currently shows as a preset.',
+      presetsLibraryError: 'The preset library file cannot be read',
+      presetNewHeading: 'New preset',
+      presetEditHeading: 'Edit preset',
+      presetNameLabel: 'Name',
+      presetNamePlaceholder: 'e.g. Terse mode',
+      presetTextLabel: 'Text',
+      presetTextPlaceholder: 'This text is written into the reserved section prompt-setting:custom-prompt',
+      presetModeLabel: 'Mode',
+      presetModeReplace: 'Replace',
+      presetModeAppend: 'Stack',
+      presetSaveNew: 'Save as new preset',
+      presetSaveEdit: 'Save changes',
+      presetNew: 'New',
+      presetSaveAsCurrent: 'Save current text as a preset',
+      presetSaveAsCurrentHint:
+        '\u201cSave current text as a preset\u201d only fills the editor above with the text \u300cMy Prompt\u300d is showing; it writes nothing by itself.',
+      presetEdit: 'Edit',
+      presetDelete: 'Delete',
+      presetWorkspaceHeading: 'Apply to a workspace',
+      presetWorkspaceNote:
+        'Pick a workspace (located by one of its sessions) and apply the preset being edited to it; an existing application can be cancelled here too.',
+      presetWorkspaceEmpty: 'This profile exposes no workspace session, so no preset can be applied.',
+      presetApply: 'Apply',
+      presetUnapply: 'Cancel application',
+      presetApplyPickOne: 'Select a preset first by clicking \u300cEdit\u300d in the list above, then click \u300cApply\u300d.',
+      presetApplyUnsaved: 'This edit is not saved yet: save the changes first, then apply — otherwise the stored version would be applied.',
+      presetNotApplied: 'Not applied',
+      presetAppliedAs: 'Applied: {name}',
+      presetAppliedOrphan: 'Source deleted',
+      presetSaving: 'Working\u2026',
+      presetSaved: 'Done',
+      presetFailed: 'The request failed',
+      presetLoaded: 'Library loaded',
+      presetSavedNotice: 'The preset was saved.',
+      presetDeletedNotice: 'The preset was deleted.',
+      presetDeletedOrphanNotice: 'The preset was deleted; {count} workspace(s) still hold its text and can still cancel the application.',
+      presetAppliedNotice: 'The preset was applied to that workspace; it takes effect on the next assembly.',
+      presetUnappliedNotice: 'The application was cancelled: that workspace is back to what it held before.',
     };
 
     // One loop keeps zh/en key sets identical by construction, including every
@@ -6098,6 +6207,7 @@ window.__ModuleLoader__.load({
       { name: 'client.advanced.js', hash: '523d25ee', size: 21505 },
       { name: 'client.history.js', hash: '2887cc6c', size: 48609 },
       { name: 'client.overview.js', hash: 'f66cd1b0', size: 23533 },
+      { name: 'client.presets.js', hash: 'a4461fb6', size: 15841 },
       { name: 'client.transfer.js', hash: 'c8af8793', size: 9759 },
     ]);
 
@@ -6451,6 +6561,16 @@ window.__ModuleLoader__.load({
     const AdvancedTabChunk = HAS_REACT_LAZY
       ? React.lazy(() => chunkModule('client.advanced.js', (chunkExports) => chunkExports && chunkExports.AdvancedTab))
       : null;
+    /**
+     * g-060: 「预设」 as a lazily loaded chunk.
+     *
+     * Same shape as its three siblings, and for the same reason: the catalogue
+     * is only ever reached by a click, so a page that never opens it pays
+     * nothing for it.
+     */
+    const PresetsTabChunk = HAS_REACT_LAZY
+      ? React.lazy(() => chunkModule('client.presets.js', (chunkExports) => chunkExports && chunkExports.PresetsTab))
+      : null;
 
     /**
      * Mount one tab chunk behind a `Suspense` boundary.
@@ -6507,6 +6627,10 @@ window.__ModuleLoader__.load({
     }
     function renderAdvancedChunk(t, m, a) {
       return renderChunkTab(AdvancedTabChunk, 'client.advanced.js', 'advanced', t, m, a);
+    }
+    /** g-060:「预设」 — the fourth lazy tab boundary. */
+    function renderPresetsChunk(t, m, a) {
+      return renderChunkTab(PresetsTabChunk, 'client.presets.js', 'presets', t, m, a);
     }
     // #endregion
 
@@ -6947,13 +7071,15 @@ window.__ModuleLoader__.load({
               label: t(
                 value === 'mine'
                   ? 'tabMine'
-                  : value === 'overview'
-                    ? 'tabOverview'
-                    : value === 'history'
-                      ? 'tabHistory'
-                      : value === 'backup'
-                        ? 'tabBackup'
-                        : 'tabAdvanced',
+                  : value === 'presets'
+                    ? 'tabPresets'
+                    : value === 'overview'
+                      ? 'tabOverview'
+                      : value === 'history'
+                        ? 'tabHistory'
+                        : value === 'backup'
+                          ? 'tabBackup'
+                          : 'tabAdvanced',
               ),
               id: `ps-tab-${value}`,
               panelId: 'ps-tab-panel',
@@ -7004,13 +7130,15 @@ window.__ModuleLoader__.load({
                 { key: 'tab-panel', 'data-region': 'tab-panel', 'data-tab-value': m.tab },
                 m.tab === 'mine'
                   ? renderMinePanel(t, m, a)
-                  : m.tab === 'overview'
-                    ? renderOverviewChunk(t, m, a)
-                    : m.tab === 'history'
-                      ? renderHistoryChunk(t, m, a)
-                      : m.tab === 'backup'
-                        ? renderBackupChunk(t, m, a)
-                        : renderAdvancedChunk(t, m, a),
+                  : m.tab === 'presets'
+                    ? renderPresetsChunk(t, m, a)
+                    : m.tab === 'overview'
+                      ? renderOverviewChunk(t, m, a)
+                      : m.tab === 'history'
+                        ? renderHistoryChunk(t, m, a)
+                        : m.tab === 'backup'
+                          ? renderBackupChunk(t, m, a)
+                          : renderAdvancedChunk(t, m, a),
               )
             : null,
         ),
@@ -7163,6 +7291,20 @@ window.__ModuleLoader__.load({
       const [mineWarnings, setMineWarnings] = React.useState([]);
       const [notice, setNotice] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
+      // g-060 (Revision 37): the preset library tab's own state.
+      //
+      // Four slots, and the split is the same one 「我的 Prompt」 uses: the
+      // **library read** (`presets`) is a fact about one host file, the
+      // **draft** (`presetDraft`) is what the editor shows and what the two
+      // catalogue writes send, the **request state** (`presetStatus`) is what
+      // the last write answered, and the **picked workspace**
+      // (`presetWorkspace`) is which session the two layer actions name. A
+      // failed write must never look like a failed read, so the last three are
+      // not folded into the first.
+      const [presets, setPresets] = React.useState({ phase: 'idle', data: null, error: null });
+      const [presetDraft, setPresetDraft] = React.useState({ id: null, name: '', action: 'replace', text: '' });
+      const [presetStatus, setPresetStatus] = React.useState({ kind: 'idle', error: null });
+      const [presetWorkspace, setPresetWorkspace] = React.useState(null);
       // Stage 2 state: history, the comparison, the pending confirmation and
       // the export/import surface. All of it is view state — nothing here is
       // derived from a real config file until a route answers.
@@ -7549,6 +7691,19 @@ window.__ModuleLoader__.load({
             overrides.ok
               ? { phase: 'ready', data: overrides.payload, error: null }
               : { phase: 'error', data: null, error: overrides.error },
+          );
+          // g-060: the preset library rides on the same load. It is one global
+          // file plus the resolved root of the selected session (§20.2), so it
+          // is asked with the same `?session=` the two layer views use — and it
+          // is *not* an error of this page when the host answers a library
+          // reason: `GET /presets` answers `200` with an `error` field, which
+          // the tab renders as a library problem rather than as「没有预设」.
+          const presetsResult = await requestJson(`${PRESETS_PATH}${query}`);
+          if (cancelled) return;
+          setPresets(
+            presetsResult.ok
+              ? { phase: 'ready', data: presetsResult.payload, error: null }
+              : { phase: 'error', data: null, error: presetsResult.error },
           );
         };
         void load();
@@ -8836,6 +8991,208 @@ window.__ModuleLoader__.load({
         });
       };
 
+      /**
+       * g-060 (Revision 37): the preset library's writes.
+       *
+       * Five actions, and the split is exactly the host's (`CONTRACT.md` §20):
+       * three go to the catalogue (`PUT` / `DELETE`, plus the `GET` a refresh
+       * re-runs) and two to the layer (`apply` / `unapply`). The catalogue
+       * actions never name a layer; the two layer actions always send the
+       * `session` of the picked workspace, because that is the only identity the
+       * host can resolve a workspace root from (§4.2).
+       *
+       * Every write goes through `requestJson`, so a refusal arrives as
+       * `{ok: false, code, message}` and is rendered by the same
+       * `errorText` mapping the rest of the page uses. A write that succeeds
+       * bumps `reload`, which re-reads the library and both layer views — the
+       * same "write, then re-read" shape every other write on this page has.
+       */
+      const savePresetDraft = async () => {
+        const name = presetDraft.name.trim();
+        if (name.length === 0) {
+          // The host would answer exactly this; refusing here keeps a known
+          // answer from being turned into a round trip.
+          setPresetStatus({ kind: 'error', error: { code: 'invalid-name' } });
+          setNotice({ tone: 'error', text: errorText(t, { code: 'invalid-name' }) });
+          return;
+        }
+        setPresetStatus({ kind: 'saving', error: null });
+        setBusy(true);
+        const body = { name: presetDraft.name, action: presetDraft.action, text: presetDraft.text };
+        // An `id` is what makes this an edit rather than an insert; without one
+        // the host mints the id (§20.3).
+        if (presetDraft.id !== null) body.id = presetDraft.id;
+        const result = await requestJson(PRESETS_PATH, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        setBusy(false);
+        if (!result.ok) {
+          setPresetStatus({ kind: 'error', error: result.error });
+          setNotice({ tone: 'error', text: errorText(t, result.error) });
+          return;
+        }
+        const preset = result.payload && result.payload.preset ? result.payload.preset : null;
+        // Keep editing the entry that was just written: the id it now has is
+        // what the workspace picker's「应用」sends, so dropping it here would make
+        // a freshly created preset unusable until it was clicked again.
+        if (preset !== null) {
+          setPresetDraft({
+            id: preset.id,
+            name: typeof preset.name === 'string' ? preset.name : '',
+            action: preset.action === 'append' ? 'append' : 'replace',
+            text: typeof preset.text === 'string' ? preset.text : '',
+          });
+        }
+        setPresetStatus({ kind: 'saved', error: null });
+        setNotice({ tone: 'success', text: t('presetSavedNotice') });
+        setReload((value) => value + 1);
+      };
+
+      const deletePreset = async (id) => {
+        setPresetStatus({ kind: 'saving', error: null });
+        setBusy(true);
+        const result = await requestJson(`${PRESETS_PATH}?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+        setBusy(false);
+        if (!result.ok) {
+          setPresetStatus({ kind: 'error', error: result.error });
+          setNotice({ tone: 'error', text: errorText(t, result.error) });
+          return;
+        }
+        // The editor must not keep pointing at an entry that is gone: it would
+        // send its id on the next save and be answered `404 preset-not-found`.
+        if (presetDraft.id === id) setPresetDraft({ id: null, name: '', action: 'replace', text: '' });
+        setPresetStatus({ kind: 'saved', error: null });
+        const orphaned = result.payload && typeof result.payload.orphaned === 'number' ? result.payload.orphaned : 0;
+        setNotice({
+          tone: 'success',
+          text: fmt(t(orphaned > 0 ? 'presetDeletedOrphanNotice' : 'presetDeletedNotice'), { count: orphaned }),
+        });
+        setReload((value) => value + 1);
+      };
+
+      const applyPreset = async (presetId, session) => {
+        if (typeof presetId !== 'string' || presetId.length === 0) return;
+        if (typeof session !== 'string' || session.length === 0) {
+          setPresetStatus({ kind: 'error', error: { code: 'workspace-unresolved' } });
+          setNotice({ tone: 'error', text: errorText(t, { code: 'workspace-unresolved' }) });
+          return;
+        }
+        setPresetStatus({ kind: 'saving', error: null });
+        setBusy(true);
+        const result = await requestJson(PRESETS_APPLY_PATH, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ presetId, session }),
+        });
+        setBusy(false);
+        if (!result.ok) {
+          setPresetStatus({ kind: 'error', error: result.error });
+          setNotice({ tone: 'error', text: errorText(t, result.error) });
+          return;
+        }
+        setPresetStatus({ kind: 'saved', error: null });
+        setNotice({ tone: 'success', text: t('presetAppliedNotice') });
+        setReload((value) => value + 1);
+      };
+
+      const unapplyPreset = async (session) => {
+        if (typeof session !== 'string' || session.length === 0) {
+          setPresetStatus({ kind: 'error', error: { code: 'workspace-unresolved' } });
+          setNotice({ tone: 'error', text: errorText(t, { code: 'workspace-unresolved' }) });
+          return;
+        }
+        setPresetStatus({ kind: 'saving', error: null });
+        setBusy(true);
+        const result = await requestJson(PRESETS_UNAPPLY_PATH, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ session }),
+        });
+        setBusy(false);
+        if (!result.ok) {
+          setPresetStatus({ kind: 'error', error: result.error });
+          setNotice({ tone: 'error', text: errorText(t, result.error) });
+          return;
+        }
+        setPresetStatus({ kind: 'saved', error: null });
+        setNotice({ tone: 'success', text: t('presetUnappliedNotice') });
+        setReload((value) => value + 1);
+      };
+
+      /**
+       * g-060: the workspaces the two layer actions can name.
+       *
+       * The host has no workspace-list route, so the picker offers what this page
+       * already holds: one row per workspace from the workspace seat, each
+       * carrying its first session id — the identity `apply`/`unapply` need to
+       * resolve a root (`CONTRACT.md` §4.2). A profile without that seat degrades
+       * to the session list, exactly as the version history's scope picker does
+       * (g-038), and a row whose root is unknown simply states no applied state
+       * rather than guessing one.
+       */
+      const presetWorkspaces = (() => {
+        const items = Array.isArray(wsSeat.items) ? wsSeat.items : [];
+        const fromWorkspaces = [];
+        for (const workspace of items) {
+          const ids = Array.isArray(workspace && workspace.sessionIds)
+            ? workspace.sessionIds.filter((id) => typeof id === 'string' && id.length > 0)
+            : [];
+          // A workspace no session ever ran in can only produce a refusal: the
+          // host resolves the root from a session, so there is nothing to send.
+          if (ids.length === 0) continue;
+          const title = typeof workspace.title === 'string' ? workspace.title : '';
+          const path = typeof workspace.path === 'string' ? workspace.path : '';
+          fromWorkspaces.push({
+            session: ids[0],
+            root: path.length > 0 ? path : null,
+            label: title.length > 0 ? title : basenameOf(path) || workspace.workspaceId || ids[0],
+          });
+        }
+        if (fromWorkspaces.length > 0) return fromWorkspaces;
+        const rows = Array.isArray(seat.rows) ? seat.rows : [];
+        return rows.slice(0, SESSION_MATCH_LIMIT).map((row) => ({
+          session: row.id,
+          root: null,
+          label: sessionLabelOf(seat.rows, row.id) || row.id,
+        }));
+      })();
+      /** The workspace the layer actions currently name: the picked one, or the first. */
+      const presetActiveWorkspace = presetWorkspace !== null
+        ? presetWorkspace
+        : presetWorkspaces.length > 0
+          ? presetWorkspaces[0].session
+          : null;
+
+      /**
+       * g-060 (review R1): does the editor hold an **unsaved** change to a stored
+       * preset?
+       *
+       * `POST /presets/apply` names a preset by **id** and the host reads that
+       * preset out of the library — so while the box holds an unsaved edit, an
+       *「应用」would silently write the *stored* version into a workspace and
+       * report success. That is the class of defect g-056 fixed for the text
+       * box (a draft that does not match what a write would really store), and
+       * it is worse here: apply rewrites a **layer**, not just a label. So the
+       * page refuses to pretend: while this is true the apply buttons are
+       * disabled and the picker says why, and saving the draft is what clears it.
+       *
+       * `true` also covers "the draft names an entry the library no longer has"
+       * (deleted in another tab or by hand): applying it would be a `404`, and
+       * offering the button would be a promise the page cannot keep.
+       * @returns whether the editor differs from the stored preset it names.
+       */
+      const presetSavedEntry = presetDraft.id === null
+        ? null
+        : (presets.data && Array.isArray(presets.data.presets) ? presets.data.presets : [])
+          .find((entry) => entry.id === presetDraft.id) ?? null;
+      const presetDirty = presetDraft.id !== null
+        && (presetSavedEntry === null
+          || presetSavedEntry.name !== presetDraft.name
+          || (presetSavedEntry.action === 'append' ? 'append' : RESERVED_SECTION_DEFAULT_MODE) !== presetDraft.action
+          || (typeof presetSavedEntry.text === 'string' ? presetSavedEntry.text : '') !== presetDraft.text);
+
       const actions = {
         refresh: () => setReload((value) => value + 1),
         // The「更改」switch: the same button opens and shuts the picker, and
@@ -8872,6 +9229,63 @@ window.__ModuleLoader__.load({
         dropForeignDraft,
         toggleMineInterpolate,
         setMineInterpolateState,
+        // g-060:「预设」— the catalogue editor, the two layer actions, and the
+        // workspace they name. Everything here is view state until a click on
+        // 「保存」/「应用」/「取消应用」, which are the only three controls that write.
+        setPresetName: (event) => {
+          const value = event && event.target ? String(event.target.value) : '';
+          setPresetDraft((current) => ({ ...current, name: value }));
+          setPresetStatus({ kind: 'idle', error: null });
+        },
+        setPresetText: (event) => {
+          const value = event && event.target ? String(event.target.value) : '';
+          setPresetDraft((current) => ({ ...current, text: value }));
+          setPresetStatus({ kind: 'idle', error: null });
+        },
+        setPresetAction: (value) => {
+          setPresetDraft((current) => ({
+            ...current,
+            action: value === 'append' ? 'append' : RESERVED_SECTION_DEFAULT_MODE,
+          }));
+          setPresetStatus({ kind: 'idle', error: null });
+        },
+        newPreset: () => {
+          setPresetDraft({ id: null, name: '', action: RESERVED_SECTION_DEFAULT_MODE, text: '' });
+          setPresetStatus({ kind: 'idle', error: null });
+        },
+        editPreset: (id) => {
+          const list = presets.data && Array.isArray(presets.data.presets) ? presets.data.presets : [];
+          const preset = list.find((entry) => entry.id === id) ?? null;
+          if (preset === null) return;
+          setPresetDraft({
+            id: preset.id,
+            name: typeof preset.name === 'string' ? preset.name : '',
+            action: preset.action === 'append' ? 'append' : RESERVED_SECTION_DEFAULT_MODE,
+            text: typeof preset.text === 'string' ? preset.text : '',
+          });
+          setPresetStatus({ kind: 'idle', error: null });
+        },
+        // 「从当前文本另存为预设」: it starts a **new** preset from the text the
+        // 「我的 Prompt」 panel is showing and writes nothing — the name and the
+        // save are still the user's to give (§20.9).
+        saveAsCurrentPreset: () => {
+          setPresetDraft({ id: null, name: '', action: RESERVED_SECTION_DEFAULT_MODE, text: mineText });
+          setPresetStatus({ kind: 'idle', error: null });
+        },
+        savePreset: () => {
+          void savePresetDraft();
+        },
+        deletePreset: (id) => {
+          void deletePreset(id);
+        },
+        setPresetWorkspace: (id) => setPresetWorkspace(typeof id === 'string' && id.length > 0 ? id : null),
+        applyPreset: (presetId, session) => {
+          void applyPreset(presetId, session);
+        },
+        unapplyPreset: (session) => {
+          void unapplyPreset(session);
+        },
+        loadPresets: () => setReload((value) => value + 1),
         // g-030: the update banner's dismissal and the switch in 「高级」.
         dismissUpdate: () => setUpdate((current) => ({ ...current, dismissed: true })),
         toggleUpdate,
@@ -9156,6 +9570,17 @@ window.__ModuleLoader__.load({
         mineLayerDisabled,
         mineFrozenReason,
         mineFrozenCertain,
+        // g-060: the preset tab's four state slots, the picked workspace (with
+        // the list it was picked from), and the text「从当前文本另存为预设」reads.
+        presets,
+        presetDraft,
+        presetStatus,
+        presetWorkspace: presetActiveWorkspace,
+        presetWorkspaces,
+        // g-060 (review R1): the editor differs from the stored preset it names
+        // ⇒「应用」 is disabled and the picker says why (never apply a stale copy).
+        presetDirty,
+        presetCurrentText: mineText === null || mineText === undefined ? '' : String(mineText),
         advancedLayer,
         view,
         search,

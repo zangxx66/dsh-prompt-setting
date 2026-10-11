@@ -23,10 +23,13 @@
  *   registers and the write lock that narrows every write route to it
  *   (Revision 7).
  * - this file is the adapter: one registered prompt section, two waterfall
- *   listeners and eight REST routes. The eighth (g-030) is the upstream update
+ *   listeners and sixteen REST paths. The eighth (g-030) is the upstream update
  *   check and its on/off switch; its policy is `core/update.js` (pure, with the
  *   transport and the clock injected) and its one byte of state lives in
- *   `preferences.json` through `core/store.js`.
+ *   `preferences.json` through `core/store.js`. The last three (g-060,
+ *   Revision 37) are the preset library — the user's own catalogue of texts for
+ *   the reserved section, its policy in `core/presets.js` (pure) and its file
+ *   `presets.json` again through `core/store.js` (CONTRACT.md §20).
  *
  * The listeners read memory only. The override listener records the
  * pre-waterfall sections (the `base` view and the frozen probe) before
@@ -53,6 +56,7 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -143,20 +147,34 @@ import {
   withInterpolate,
 } from './core/overrides.js';
 import {
+  planApply,
+  planUnapply,
+  publicApplied,
+  publicPresets,
+  removePreset,
+  reservedSectionOf,
+  upsertPreset,
+  validatePresetId,
+  validatePresetInput,
+} from './core/presets.js';
+import {
   appendHistoryRecord,
   clientBuildInfo,
   historyPath,
   readConfig,
   readHistoryFile,
   readPreferences,
+  readPresets,
   removeOverride,
   upsertOverride,
   userConfigPath,
   userPreferencesPath,
+  userPresetsPath,
   workspaceConfigPath,
   writeConfig,
   writeConfigsAtomically,
   writePreferences,
+  writePresets,
 } from './core/store.js';
 import {
   DOWNLOAD_REGION_DEFAULT,
@@ -275,6 +293,30 @@ const UPDATE_APPLY_CANCEL_PATH = `${ROUTE_PREFIX}/update-apply/cancel`;
  *     class of which is decided by a network round trip.
  */
 const DOWNLOAD_REGION_PATH = `${ROUTE_PREFIX}/download-region`;
+/**
+ * g-060 (Revision 37): the preset library — the user's own catalogue of
+ * `{action, text}` pairs for the reserved section.
+ *
+ * Three paths, and the split is the whole design:
+ *   - `GET|PUT|DELETE /presets` is the **catalogue**: list, upsert one preset
+ *     (`PUT`; `DELETE ?id=`) — it never touches a layer;
+ *   - `POST /presets/apply` is the **write**: it takes `{presetId, session}`,
+ *     snapshots what that workspace layer holds now, writes the preset's text
+ *     into the reserved section, and records the pair;
+ *   - `POST /presets/unapply` is the **restore**: it puts that workspace layer
+ *     back to the snapshot it took, and drops the record.
+ *
+ * `apply`/`unapply` are `POST` because they are neither an upsert of the
+ * library nor a removal from it: they act on a **layer**, named by a session,
+ * through the same write path `PUT /overrides` uses. The library itself is
+ * per-installation (`<DSH_HOME>/prompt-setting/presets.json`), which is why the
+ * catalogue routes carry no layer or session at all.
+ */
+const PRESETS_PATH = `${ROUTE_PREFIX}/presets`;
+/** g-060: apply one preset to the workspace that owns a session. */
+const PRESETS_APPLY_PATH = `${ROUTE_PREFIX}/presets/apply`;
+/** g-060: restore the workspace layer to the snapshot `apply` took. */
+const PRESETS_UNAPPLY_PATH = `${ROUTE_PREFIX}/presets/unapply`;
 /** Method table; a known path with any other method is a 405 carrying `allow`. */
 const ROUTES = new Map([
   [PING_PATH, ['GET']],
@@ -290,6 +332,9 @@ const ROUTES = new Map([
   [UPDATE_APPLY_PATH, ['GET', 'POST']],
   [UPDATE_APPLY_CANCEL_PATH, ['POST']],
   [DOWNLOAD_REGION_PATH, ['GET', 'PUT']],
+  [PRESETS_PATH, ['GET', 'PUT', 'DELETE']],
+  [PRESETS_APPLY_PATH, ['POST']],
+  [PRESETS_UNAPPLY_PATH, ['POST']],
 ]);
 /**
  * How long the host waits for the release-asset probe before installing anyway.
@@ -3406,6 +3451,264 @@ function mount(ctx, config, cleanups) {
     });
   }
 
+  /**
+   * The preset library as this mount reads it: path plus the store's verdict.
+   *
+   * Read per request, never cached: the library is a user file that another
+   * process (or a hand edit) may change between two clicks, exactly like the
+   * two override layers, and it is off the assembly path either way.
+   * @returns `{path, document, missing, error}`.
+   */
+  function presetsFile() {
+    const path = userPresetsPath();
+    const read = readPresets(path);
+    return { path, ...read };
+  }
+
+  /**
+   * The library a **write** may modify, refusing to overwrite a file this
+   * revision does not understand.
+   *
+   * The same rule `writableConfig` applies to a layer: a malformed library is
+   * reported and left alone, so a save can never destroy a file the user is
+   * still holding the pieces of. Reads stay permissive (the read face answers
+   * the reason instead).
+   * @returns `{path, document}`.
+   * @throws {OverrideError} 409 `presets-not-writable`.
+   */
+  function writablePresets() {
+    const file = presetsFile();
+    if (file.error !== null) {
+      throw new OverrideError(
+        'presets-not-writable',
+        `${file.path} is not a valid presets library (${file.error.code}: ${file.error.message}); fix or remove it before saving`,
+        409,
+      );
+    }
+    return { path: file.path, document: file.document };
+  }
+
+  /** The `session` a preset body/query names, or null. */
+  function presetSessionOf(body, url) {
+    if (typeof body?.session === 'string' && body.session.length > 0) return body.session;
+    return url.searchParams.get('session');
+  }
+
+  /**
+   * `GET /prompt-setting/presets` — the catalogue and where it is applied.
+   *
+   * Always `200`: the library is one user file, and a file this revision cannot
+   * understand is reported in `error` beside an empty catalogue rather than
+   * failing the page — the page then says「库文件不可读」and the write routes
+   * refuse with the same reason. `workspaceRoot` is present only when the caller
+   * named a session this profile can resolve, so the page can tell「当前工作区
+   * 已应用哪个预设」without a second lookup; an unresolvable session is `null`
+   * here and never an error on a read.
+   * @param url - the parsed request URL.
+   * @param res - the Node response.
+   */
+  function handleReadPresets(url, res) {
+    const file = presetsFile();
+    const sessionId = url.searchParams.get('session');
+    const root = typeof sessionId === 'string' && sessionId.length > 0 ? workspaceRootFor(sessionId).root : null;
+    sendJson(res, 200, {
+      ok: true,
+      path: file.path,
+      version: file.document.version,
+      presets: publicPresets(file.document),
+      applied: publicApplied(file.document),
+      workspaceRoot: root,
+      error: file.error === null ? null : { code: file.error.code, message: file.error.message },
+    });
+  }
+
+  /**
+   * `PUT /prompt-setting/presets` — insert one preset, or edit one by id.
+   *
+   * Order is the contract, as on every other write route: request shape first
+   * ({@link validatePresetInput} answers `400` for every field-level mistake),
+   * then the current library (`409` when it is unusable), and only then a byte.
+   * A body without `id` inserts and the **Host** mints the id; a body with an id
+   * must name an existing preset (`404 preset-not-found`), because「编辑」
+   * silently becoming「新建」would let a stale page duplicate instead of report.
+   * @param req - the Node request.
+   * @param res - the Node response.
+   */
+  async function handleWritePreset(req, res) {
+    const body = await readJsonBody(req);
+    const fields = validatePresetInput(body);
+    const editing = body?.id !== undefined && body?.id !== null;
+    const id = editing ? validatePresetId(body.id, 'invalid-id') : randomUUID();
+    const file = writablePresets();
+    const at = new Date().toISOString();
+    const result = upsertPreset(file.document, editing ? { ...fields, id } : fields, { id, at });
+    writePresets(file.path, result.document);
+    sendJson(res, 200, {
+      ok: true,
+      created: result.created,
+      preset: result.preset,
+      presets: publicPresets(result.document),
+      applied: publicApplied(result.document),
+    });
+  }
+
+  /**
+   * `DELETE /prompt-setting/presets?id=` — drop one preset from the catalogue.
+   *
+   * Deleting a preset that is currently applied is **allowed and changes no
+   * layer**: the workspace keeps the text it was given, and the record becomes
+   * an orphan (`GET /presets` says so, and the page labels it「来源已删除」)
+   * instead of the delete quietly rewriting a workspace the request never named.
+   * @param url - the parsed request URL.
+   * @param res - the Node response.
+   */
+  function handleDeletePreset(url, res) {
+    const raw = url.searchParams.get('id');
+    if (raw === null || raw.length === 0) {
+      throw fail('missing-id', 'query parameter "id" is required');
+    }
+    const id = validatePresetId(raw);
+    const file = writablePresets();
+    const { document, removed } = removePreset(file.document, id);
+    if (removed === null) {
+      throw fail('preset-not-found', `no preset with id ${JSON.stringify(id)}`, 404);
+    }
+    writePresets(file.path, document);
+    const applied = publicApplied(document);
+    sendJson(res, 200, {
+      ok: true,
+      removed: true,
+      id,
+      preset: removed,
+      orphaned: applied.filter((record) => record.presetId === id).length,
+      presets: publicPresets(document),
+      applied,
+    });
+  }
+
+  /**
+   * `POST /prompt-setting/presets/apply` — write one preset into one workspace.
+   *
+   * This is the same write `PUT /overrides` performs (`targetFor` +
+   * `writableConfig` + `writeConfig` + `cacheWritten`), and it deliberately
+   * reuses it rather than growing a second write path: the reserved section is
+   * still the only thing written, the layer's other entries and its switch are
+   * carried across, and a refusal at any step before `writeConfig` leaves every
+   * file byte-identical.
+   *
+   * The snapshot is taken from the config this request just read, and it is what
+   * makes「取消应用」exact. The library write happens **after** the layer write:
+   * the record describes a write that really happened. Residual risk, stated
+   * rather than hidden: if the library write fails after the layer write
+   * succeeded, the workspace holds the preset text with no record of how to undo
+   * it, and the answer is a `500` — the alternative order would record an
+   * application that never happened, which is worse (the page would then offer
+   * to「取消应用」a workspace it never touched).
+   * @param req - the Node request.
+   * @param url - the parsed request URL.
+   * @param res - the Node response.
+   */
+  async function handleApplyPreset(req, url, res) {
+    const body = await readJsonBody(req);
+    const rawPresetId = body?.presetId;
+    if (rawPresetId === undefined || rawPresetId === null || rawPresetId === '') {
+      throw fail('missing-preset-id', 'body field "presetId" is required');
+    }
+    const presetId = validatePresetId(rawPresetId);
+    const sessionId = presetSessionOf(body, url);
+    const target = targetFor('workspace', sessionId);
+    const current = writableConfig(target.path);
+    const file = writablePresets();
+    const at = new Date().toISOString();
+    const plan = planApply(file.document, { presetId, workspaceRoot: target.root, current, at });
+    const next = validateConfig(plan.config);
+    const before = reservedSectionOf(current);
+    const after = reservedSectionOf(next);
+    writeConfig(target.path, next);
+    cacheWritten(target, next);
+    const history = recordHistory({
+      path: target.path,
+      at,
+      layer: 'workspace',
+      session: sessionId ?? null,
+      action: actionOf(before, after),
+      name: CUSTOM_SECTION_NAME,
+      origin: 'ui',
+      before: textEntry(before === null ? null : before.text),
+      after: textEntry(after === null ? null : after.text),
+      snapshot: snapshotOfConfig(next),
+      note: `preset ${plan.preset.id}`,
+    });
+    writePresets(file.path, plan.document);
+    sendJson(res, 200, {
+      ok: true,
+      applied: true,
+      preset: plan.preset,
+      record: plan.record,
+      workspaceRoot: target.root,
+      before,
+      after,
+      effectiveFrom: 'next-turn',
+      history,
+      appliedRecords: publicApplied(plan.document),
+    });
+  }
+
+  /**
+   * `POST /prompt-setting/presets/unapply` — put the workspace layer back.
+   *
+   * The restoration is content, not a rollback: the snapshot taken by `apply` is
+   * written back verbatim (`before: null` removes the reserved entry), the
+   * layer's other entries and its switch are untouched, and no other file is
+   * read or written. A workspace with no record is `404 not-applied` — there is
+   * nothing to restore, and answering `200` would claim a write that did not
+   * happen.
+   * @param req - the Node request.
+   * @param url - the parsed request URL.
+   * @param res - the Node response.
+   */
+  async function handleUnapplyPreset(req, url, res) {
+    const body = await readJsonBody(req);
+    const sessionId = presetSessionOf(body, url);
+    const target = targetFor('workspace', sessionId);
+    const current = writableConfig(target.path);
+    const file = writablePresets();
+    const at = new Date().toISOString();
+    const plan = planUnapply(file.document, { workspaceRoot: target.root, current });
+    const next = validateConfig(plan.config);
+    const before = reservedSectionOf(current);
+    const after = reservedSectionOf(next);
+    writeConfig(target.path, next);
+    cacheWritten(target, next);
+    const history = recordHistory({
+      path: target.path,
+      at,
+      layer: 'workspace',
+      session: sessionId ?? null,
+      action: actionOf(before, after),
+      name: CUSTOM_SECTION_NAME,
+      origin: 'ui',
+      before: textEntry(before === null ? null : before.text),
+      after: textEntry(after === null ? null : after.text),
+      snapshot: snapshotOfConfig(next),
+      note: `unapply preset ${plan.record.presetId}`,
+    });
+    writePresets(file.path, plan.document);
+    sendJson(res, 200, {
+      ok: true,
+      unapplied: true,
+      presetId: plan.record.presetId,
+      record: plan.record,
+      workspaceRoot: target.root,
+      restored: plan.restored,
+      before,
+      after,
+      effectiveFrom: 'next-turn',
+      history,
+      appliedRecords: publicApplied(plan.document),
+    });
+  }
+
   // Load the layers this mount can see. The assembly handler never reads disk.
   // Revision 12: the same entry point the request path uses, so the cross-layer
   // F1 pass also applies to what was already on disk at mount.
@@ -3550,6 +3853,23 @@ function mount(ctx, config, cleanups) {
               // 200 with `{ok:false, code, message}`, and a shape mistake is the
               // route's ordinary 400.
               sendJson(res, 200, req.method === 'POST' ? await handleStartInstall(req) : handleInstallStatus(url));
+              return;
+            }
+            if (url.pathname === PRESETS_PATH) {
+              // g-060: the catalogue. `PUT` is one upsert (insert without an
+              // id, edit with one), `DELETE ?id=` removes one entry; neither
+              // touches a layer, so neither takes a session.
+              if (req.method === 'PUT') await handleWritePreset(req, res);
+              else if (req.method === 'DELETE') handleDeletePreset(url, res);
+              else handleReadPresets(url, res);
+              return;
+            }
+            if (url.pathname === PRESETS_APPLY_PATH) {
+              await handleApplyPreset(req, url, res);
+              return;
+            }
+            if (url.pathname === PRESETS_UNAPPLY_PATH) {
+              await handleUnapplyPreset(req, url, res);
               return;
             }
             if (url.pathname === INTERPOLATE_PATH) {

@@ -1307,6 +1307,10 @@ const PATHS = {
   // g-032:「立即更新」— the install route, its status read and its cancel face.
   updateApply: '/prompt-setting/update-apply',
   updateApplyCancel: '/prompt-setting/update-apply/cancel',
+  // g-060 (Revision 37): the preset library, and the two workspace actions.
+  presets: '/prompt-setting/presets',
+  presetsApply: '/prompt-setting/presets/apply',
+  presetsUnapply: '/prompt-setting/presets/unapply',
 };
 
 /** The default stub table (every route the page may call on mount). */
@@ -1342,6 +1346,8 @@ function defaultResponses(over = {}) {
     [PATHS.interpolate]: {
       payload: { ok: true, interpolateCustom: true, layer: 'user', saved: { enabled: true }, effectiveFrom: 'next-turn' },
     },
+    // g-060: the preset library (CONTRACT.md §20.2).
+    [PATHS.presets]: { payload: presetsFixture() },
     ...over,
   };
 }
@@ -1508,7 +1514,7 @@ test('client: requests stay on the plugin prefix and report the renderer', async
   // says the switch is off (asserted in the region section below).
   assert.deepEqual(
     [...new Set(urls.map((url) => url.split('?')[0]))].sort(),
-    [PATHS.downloadRegion, PATHS.overrides, PATHS.ping, PATHS.snapshot, PATHS.updateApply, PATHS.updateCheck],
+    [PATHS.downloadRegion, PATHS.overrides, PATHS.ping, PATHS.presets, PATHS.snapshot, PATHS.updateApply, PATHS.updateCheck],
   );
   // The global default: no `?session=`, so the workspace layer stays inactive.
   assert.deepEqual(urlsFor(page, PATHS.snapshot), [PATHS.snapshot]);
@@ -1987,6 +1993,8 @@ const TAB_CHUNKS = [
   ['backup', 'client.transfer.js'],
   ['advanced', 'client.advanced.js'],
   ['history', 'client.history.js'],
+  // g-060: 「预设」 is the fourth lazy boundary.
+  ['presets', 'client.presets.js'],
 ];
 
 /** A chunk source with its comment lines removed, so only code is asserted on. */
@@ -3261,6 +3269,82 @@ function workspacesHook(state) {
  * without so the node must fall back to its path basename), one archived
  * session, one pinned session.
  */
+/**
+ * `GET /prompt-setting/presets` payload (CONTRACT.md §20.2): two stored presets
+ * and one of them applied to the first workspace.
+ */
+function presetsFixture(over = {}) {
+  return {
+    ok: true,
+    path: '/home/user/.dsh/prompt-setting/presets.json',
+    version: 1,
+    presets: [
+      {
+        id: 'preset-1',
+        name: '短答',
+        action: 'replace',
+        text: 'Be brief.',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      },
+      {
+        id: 'preset-2',
+        name: '叠加规则',
+        action: 'append',
+        text: 'Extra rules.',
+        createdAt: '2024-01-02T00:00:00.000Z',
+        updatedAt: '2024-01-02T00:00:00.000Z',
+      },
+    ],
+    applied: [
+      {
+        workspaceRoot: '/work/alpha',
+        presetId: 'preset-1',
+        presetName: '短答',
+        orphan: false,
+        appliedAt: '2024-01-03T00:00:00.000Z',
+        before: null,
+      },
+    ],
+    workspaceRoot: null,
+    error: null,
+    ...over,
+  };
+}
+
+/** Click the apply/unapply button that belongs to one workspace row. */
+function clickPresetWorkspaceAction(tree, action, session) {
+  const node = findOne(
+    tree,
+    (candidate) =>
+      candidate.type === 'button' &&
+      candidate.props['data-action'] === action &&
+      candidate.props['data-preset-session'] === session,
+    `${action} ${session}`,
+  );
+  assert.notEqual(node.props.disabled, true, `${action} ${session} must be enabled`);
+  node.props.onClick();
+}
+
+/** The ids of the rendered preset rows, in render order. */
+function presetRowIds(tree) {
+  return collect(tree, (node) => node.props && node.props['data-preset-selected'] !== undefined).map(
+    (node) => node.props['data-preset-id'],
+  );
+}
+
+/** The rendered workspace rows as `[root, applied, orphan]` triples. */
+function presetWorkspaceRows(tree) {
+  return collect(
+    tree,
+    (node) => node.props && node.props['data-preset-session'] !== undefined && node.props['data-preset-applied'] !== undefined,
+  ).map((node) => [
+    node.props['data-preset-workspace-root'],
+    node.props['data-preset-applied'],
+    node.props['data-preset-orphan'],
+  ]);
+}
+
 function workspacesFixture(over = {}) {
   return {
     items: [
@@ -4509,7 +4593,7 @@ test('client: the page opens on 「我的 Prompt」 and every tab is reachable i
 
   // The order is the product decision, so it is asserted verbatim. g-038 split
   // 「历史与备份」 into 「版本历史」 + 「备份与恢复」, in exactly this order.
-  assert.deepEqual(mainTabs(tree), ['mine', 'overview', 'history', 'backup', 'advanced']);
+  assert.deepEqual(mainTabs(tree), ['mine', 'presets', 'overview', 'history', 'backup', 'advanced']);
   assert.equal(tabList(tree).props['data-active-tab'], 'mine', 'the first tab is the default');
   // The root carries the same verdict, so a probe finds it without walking in.
   assert.equal(
@@ -4536,6 +4620,8 @@ test('client: switching a tab renders that tab and nothing else', async () => {
   const page = makePage({ responses: defaultResponses() });
   const expectations = [
     ['mine', 'mine'],
+    // g-060: the sixth tab, next to 「我的 Prompt」.
+    ['presets', 'presets'],
     ['overview', 'sections'],
     ['history', 'history'],
     ['backup', 'transfer'],
@@ -11385,3 +11471,355 @@ test('g-058 client: 「取消」 restores the stored mode, and a mode draft belo
   assert.equal(markerOf(tree, 'data-mine-state'), 'idle');
   assert.equal(writeCalls(page).length, 0, 'none of this wrote anything');
 });
+
+
+// #region presets (g-060, Revision 37)
+
+test('client: 「预设」 is the sixth tab, next to 「我的 Prompt」, and is fetched on demand', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  const first = await page.flush();
+  assert.deepEqual(mainTabs(first), ['mine', 'presets', 'overview', 'history', 'backup', 'advanced']);
+  assert.deepEqual(page.loaded.loadedChunkFiles, [], 'no chunk is fetched before its tab is opened');
+  assert.equal(tabPanel(first).props['data-tab-value'], 'mine');
+
+  const opened = await openTab(page, 'presets', first);
+  assert.deepEqual(page.loaded.loadedChunkFiles, ['client.presets.js']);
+  assert.equal(tabPanel(opened).props['data-tab-value'], 'presets');
+  assert.equal(oneBy(opened, 'data-region', 'presets').props['data-region'], 'presets');
+  assert.equal(markerOf(opened, 'data-preset-state'), 'idle');
+  assert.deepEqual(presetRowIds(opened), ['preset-1', 'preset-2'], 'the library is listed');
+});
+
+test('client: the preset tab shows every workspace’s applied state, orphan included', async () => {
+  const page = makePage({
+    responses: defaultResponses(),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+  });
+  let tree = await openTab(page, 'presets');
+  // /work/alpha is applied, /work/beta-dir is not, and the orphan flag is false
+  // for the record that still names a stored preset.
+  assert.deepEqual(presetWorkspaceRows(tree), [
+    ['/work/alpha', 'true', 'false'],
+    ['/work/beta-dir', 'false', 'false'],
+  ]);
+  assert.ok(strings(tree).includes(fillText(page.zh.presetAppliedAs, { name: '短答' })));
+  assert.ok(strings(tree).includes(page.zh.presetNotApplied));
+
+  // A record whose preset was deleted is reported as an orphan — never as an
+  // empty state, and never by rewriting the workspace layer.
+  const orphan = makePage({
+    responses: defaultResponses({
+      [PATHS.presets]: {
+        payload: presetsFixture({
+          presets: [],
+          applied: [
+            {
+              workspaceRoot: '/work/alpha',
+              presetId: 'preset-gone',
+              presetName: null,
+              orphan: true,
+              appliedAt: '2024-01-03T00:00:00.000Z',
+              before: null,
+            },
+          ],
+        }),
+      },
+    }),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+  });
+  tree = await openTab(orphan, 'presets');
+  assert.deepEqual(presetWorkspaceRows(tree), [
+    ['/work/alpha', 'true', 'true'],
+    ['/work/beta-dir', 'false', 'false'],
+  ]);
+  assert.ok(strings(tree).some((text) => text.includes(orphan.zh.presetAppliedOrphan)));
+  assert.equal(orphan.zh.presetAppliedOrphan, '来源已删除', 'the marker the reader sees is the copy');
+});
+
+test('client: saving a preset PUTs the catalogue shape the host documents', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.presets]: (url, init) =>
+        init && init.method === 'PUT'
+          ? {
+              payload: {
+                ok: true,
+                created: true,
+                preset: { id: 'preset-9', name: '新预设', action: 'replace', text: 'TEXT', createdAt: 't', updatedAt: 't' },
+                presets: [],
+                applied: [],
+              },
+            }
+          : { payload: presetsFixture() },
+    }),
+  });
+  let tree = await openTab(page, 'presets');
+  clickButton(tree, { 'data-action': 'preset-new' });
+  tree = await page.flush();
+  typeInto(tree, 'preset-name', '新预设');
+  typeInto(tree, 'preset-text', 'TEXT');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'preset-save' });
+  tree = await page.flush();
+
+  const puts = page.router.calls.filter((call) => call.init && call.init.method === 'PUT');
+  assert.equal(puts.length, 1, 'exactly one write');
+  assert.equal(puts[0].url, PATHS.presets);
+  assert.deepEqual(JSON.parse(puts[0].init.body), { name: '新预设', action: 'replace', text: 'TEXT' });
+  assert.equal(markerOf(tree, 'data-preset-state'), 'saved');
+  // The id the host answered is what the editor now carries, so the very next
+  // save is an edit of it rather than a second insert.
+  assert.equal(oneBy(tree, 'data-region', 'preset-editor').props['data-preset-editing'], 'preset-9');
+});
+
+test('client: editing sends the id, and the mode control travels with the text', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openTab(page, 'presets');
+  clickButton(tree, { 'data-action': 'preset-edit', 'data-preset-id': 'preset-2' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'preset-editor').props['data-preset-editing'], 'preset-2');
+  assert.equal(oneBy(tree, 'data-role', 'preset-name').props.value, '叠加规则');
+  assert.equal(oneBy(tree, 'data-role', 'preset-text').props.value, 'Extra rules.');
+  // The stored mode of that preset is what the segmented control shows.
+  const modeTabs = collect(
+    tree,
+    (node) => node.type === 'button' && node.props['data-tab-key'] === 'preset-mode',
+  );
+  assert.equal(
+    modeTabs.filter((node) => node.props['aria-selected'] === true).map((node) => node.props['data-tab-value']).join(','),
+    'append',
+    'the editor shows the stored mode',
+  );
+
+  clickTab(tree, 'preset-mode', 'replace');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'preset-save' });
+  tree = await page.flush();
+  const put = page.router.calls.filter((call) => call.init && call.init.method === 'PUT');
+  assert.equal(put.length, 1);
+  assert.deepEqual(JSON.parse(put[0].init.body), {
+    id: 'preset-2',
+    name: '叠加规则',
+    action: 'replace',
+    text: 'Extra rules.',
+  });
+});
+
+test('client: deleting a preset DELETEs by id, and clearing the editor when it was the one', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.presets]: (url, init) =>
+        init && init.method === 'DELETE'
+          ? { payload: { ok: true, removed: true, id: 'preset-1', orphaned: 1, presets: [], applied: [] } }
+          : { payload: presetsFixture() },
+    }),
+  });
+  let tree = await openTab(page, 'presets');
+  clickButton(tree, { 'data-action': 'preset-edit', 'data-preset-id': 'preset-1' });
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'preset-delete', 'data-preset-id': 'preset-1' });
+  tree = await page.flush();
+
+  const deletes = page.router.calls.filter((call) => call.init && call.init.method === 'DELETE');
+  assert.equal(deletes.length, 1, 'exactly one write');
+  assert.equal(deletes[0].url, `${PATHS.presets}?id=preset-1`);
+  // The editor no longer points at the deleted entry: saving again would be a
+  // `404 preset-not-found`.
+  assert.equal(oneBy(tree, 'data-region', 'preset-editor').props['data-preset-editing'], 'new');
+  assert.equal(oneBy(tree, 'data-role', 'preset-name').props.value, '');
+  assert.equal(markerOf(tree, 'data-preset-state'), 'saved');
+});
+
+test('client: apply and unapply POST the workspace’s session, and never a layer', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.presetsApply]: {
+        payload: {
+          ok: true,
+          applied: true,
+          preset: { id: 'preset-2', name: '叠加规则', action: 'append', text: 'Extra rules.' },
+          record: { workspaceRoot: '/work/alpha', presetId: 'preset-2', before: null, appliedAt: 't' },
+          workspaceRoot: '/work/alpha',
+          before: null,
+          after: { action: 'append', text: 'Extra rules.' },
+          effectiveFrom: 'next-turn',
+          history: { ok: true, id: '1', seq: 1, dropped: 0, rewritten: false },
+          appliedRecords: [],
+        },
+      },
+      [PATHS.presetsUnapply]: {
+        payload: {
+          ok: true,
+          unapplied: true,
+          presetId: 'preset-2',
+          record: { workspaceRoot: '/work/alpha', presetId: 'preset-2', before: null, appliedAt: 't' },
+          workspaceRoot: '/work/alpha',
+          restored: false,
+          before: { action: 'append', text: 'Extra rules.' },
+          after: null,
+          effectiveFrom: 'next-turn',
+          history: { ok: true, id: '2', seq: 2, dropped: 0, rewritten: false },
+          appliedRecords: [],
+        },
+      },
+    }),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+  });
+  let tree = await openTab(page, 'presets');
+  // A preset must be picked before anything can be applied: the picker says so
+  // and the apply buttons are disabled.
+  assert.equal(collect(tree, (node) => node.props && node.props['data-preset-apply-blocked'] === 'no-preset').length, 1);
+  clickButton(tree, { 'data-action': 'preset-edit', 'data-preset-id': 'preset-2' });
+  tree = await page.flush();
+
+  clickPresetWorkspaceAction(tree, 'preset-apply', 'a1');
+  tree = await page.flush();
+  const posts = page.router.calls.filter((call) => call.init && call.init.method === 'POST');
+  assert.equal(posts.length, 1, 'exactly one write');
+  assert.equal(posts[0].url, PATHS.presetsApply);
+  assert.deepEqual(JSON.parse(posts[0].init.body), { presetId: 'preset-2', session: 'a1' });
+  assert.equal(markerOf(tree, 'data-preset-state'), 'saved');
+
+  // 「取消应用」 names the same session and no preset: the host restores the
+  // snapshot it took, which the page never has to send back.
+  clickPresetWorkspaceAction(tree, 'preset-unapply', 'a1');
+  tree = await page.flush();
+  const after = page.router.calls.filter((call) => call.init && call.init.method === 'POST');
+  assert.equal(after.length, 2);
+  assert.equal(after[1].url, PATHS.presetsUnapply);
+  assert.deepEqual(JSON.parse(after[1].init.body), { session: 'a1' });
+});
+
+test('client: an unreadable preset library is stated, never shown as an empty catalogue', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.presets]: {
+        payload: {
+          ok: true,
+          path: '/home/user/.dsh/prompt-setting/presets.json',
+          version: 1,
+          presets: [],
+          applied: [],
+          workspaceRoot: null,
+          error: { code: 'invalid-json', message: 'not valid JSON' },
+        },
+      },
+    }),
+  });
+  const tree = await openTab(page, 'presets');
+  const banner = oneBy(tree, 'data-warning', 'presets-library-error');
+  assert.equal(banner.props['data-preset-library-error'], 'invalid-json');
+  assert.ok(strings(banner).some((text) => text.includes(page.zh.presetsLibraryError)));
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-region'] === 'presets-empty').length,
+    0,
+    'an unreadable library is not an empty one',
+  );
+});
+
+test('client: every preset control is reachable from both dictionaries', async () => {
+  const page = makePage({
+    responses: defaultResponses(),
+    language: 'en',
+    useWorkspaces: workspacesHook(workspacesFixture()),
+  });
+  const tree = await openTab(page, 'presets');
+  assert.deepEqual(presetRowIds(tree), ['preset-1', 'preset-2']);
+  // The English binding really is English: the tab label and the two buttons a
+  // reader acts on come from the en table, not from the zh one.
+  assert.ok(strings(tree).includes(page.text.tabPresets));
+  assert.ok(strings(tree).includes(page.text.presetApply));
+  assert.ok(strings(tree).includes(page.text.presetSaveAsCurrent));
+});
+
+test('client: an unsaved edit blocks 「应用」, so a stale preset is never written', async () => {
+  // Review R1: `POST /presets/apply` names a preset by id and the host reads
+  // that preset out of the library, so an unsaved edit in the box would make the
+  // page write the *stored* version and report success. The tab must refuse —
+  // the same promise g-056 made for the text box, on a write that rewrites a
+  // layer rather than a label.
+  let stored = presetsFixture();
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.presets]: (url, init) => {
+        if (init && init.method === 'PUT') {
+          const body = JSON.parse(init.body);
+          const saved = {
+            id: body.id,
+            name: body.name,
+            action: body.action,
+            text: body.text,
+            createdAt: '2024-01-02T00:00:00.000Z',
+            updatedAt: '2024-01-04T00:00:00.000Z',
+          };
+          stored = presetsFixture({
+            presets: stored.presets.map((preset) => (preset.id === saved.id ? saved : preset)),
+          });
+          return {
+            payload: { ok: true, created: false, preset: saved, presets: stored.presets, applied: stored.applied },
+          };
+        }
+        return { payload: stored };
+      },
+      [PATHS.presetsApply]: {
+        payload: {
+          ok: true,
+          applied: true,
+          preset: { id: 'preset-2', name: '叠加规则', action: 'append', text: 'Extra rules, edited.' },
+          record: { workspaceRoot: '/work/alpha', presetId: 'preset-2', before: null, appliedAt: 't' },
+          workspaceRoot: '/work/alpha',
+          before: null,
+          after: { action: 'append', text: 'Extra rules, edited.' },
+          effectiveFrom: 'next-turn',
+          history: { ok: true, id: '1', seq: 1, dropped: 0, rewritten: false },
+          appliedRecords: [],
+        },
+      },
+    }),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+  });
+  let tree = await openTab(page, 'presets');
+  clickButton(tree, { 'data-action': 'preset-edit', 'data-preset-id': 'preset-2' });
+  tree = await page.flush();
+  // Nothing typed yet: the box matches the stored preset, so the action stands.
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-preset-apply-blocked'] !== undefined).length,
+    0,
+    'an untouched editor blocks nothing',
+  );
+
+  typeInto(tree, 'preset-text', 'Extra rules, edited.');
+  tree = await page.flush();
+  const notice = oneBy(tree, 'data-preset-apply-blocked', 'unsaved');
+  assert.ok(strings(notice).some((text) => text.includes(page.zh.presetApplyUnsaved)), 'and it says why');
+  const applyButton = findOne(
+    tree,
+    (candidate) =>
+      candidate.type === 'button' &&
+      candidate.props['data-action'] === 'preset-apply' &&
+      candidate.props['data-preset-session'] === 'a1',
+    'apply a1',
+  );
+  assert.equal(applyButton.props.disabled, true, 'the apply button is disabled while the edit is unsaved');
+  assert.equal(
+    page.router.calls.filter((call) => call.init && call.init.method === 'POST').length,
+    0,
+    'nothing was applied, so no stale version could be written',
+  );
+
+  // Saving is what clears the block — and then the action really writes.
+  clickButton(tree, { 'data-action': 'preset-save' });
+  tree = await page.flush();
+  tree = await page.flush();
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-preset-apply-blocked'] !== undefined).length,
+    0,
+    'a saved draft blocks nothing',
+  );
+  clickPresetWorkspaceAction(tree, 'preset-apply', 'a1');
+  tree = await page.flush();
+  const posts = page.router.calls.filter((call) => call.init && call.init.method === 'POST');
+  assert.equal(posts.length, 1);
+  assert.deepEqual(JSON.parse(posts[0].init.body), { presetId: 'preset-2', session: 'a1' });
+});
+
