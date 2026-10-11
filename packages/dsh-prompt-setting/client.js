@@ -5597,7 +5597,15 @@ window.__ModuleLoader__.load({
             right: 0,
             bottom: 0,
             left: 0,
-            zIndex: 1000,
+            // Review R6: the confirmation is the **last** interaction — it is
+            // raised on top of whatever dialog asked the question — so its layer
+            // is strictly above every tab-owned overlay (1000: this page's
+            // `regionDialog`, the history comparison modal, and the two preset
+            // dialogs). This is a stated invariant, not an accident of tree
+            // order: the panels are appended after this card in the children
+            // array, so at equal z-index the panel would win and the question
+            // would be invisible — and unanswerable — on the「我的预设」tab.
+            zIndex: 1200,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
@@ -6239,7 +6247,7 @@ window.__ModuleLoader__.load({
       { name: 'client.advanced.js', hash: '523d25ee', size: 21505 },
       { name: 'client.history.js', hash: '2887cc6c', size: 48609 },
       { name: 'client.overview.js', hash: 'f66cd1b0', size: 23533 },
-      { name: 'client.presets.js', hash: 'd11b279a', size: 20424 },
+      { name: 'client.presets.js', hash: 'f3cfc7d7', size: 20857 },
       { name: 'client.transfer.js', hash: 'c8af8793', size: 9759 },
     ]);
 

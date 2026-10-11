@@ -2395,6 +2395,28 @@ behaviour, one copy.
 - Nothing else moved: the five routes, their bodies, their codes and every stored
   byte keep their Revision 37/38 meanings.
 
+---
+
+**Revision 40 (g-060 review R6: one restore point per workspace, and the
+confirmation is drawn above every tab dialog).**
+
+- **one restore point per workspace (host half).** `planApply` no longer
+  recomputes the record's `before` on every application: when a record already
+  exists for that root, the new application keeps its snapshot and only updates
+  `presetId` / `appliedAt` (§20.5).「取消应用」therefore restores the state before
+  the **first** application. The owner's acceptance found that applying two
+  presets in a row and then cancelling left the first preset in the layer, which
+  is not what「取消应用」means. Revision 39's idempotent branch is untouched: it
+  changes nothing at all, record included.
+- **the confirmation sits above every tab dialog (client half).** The shared
+  confirmation overlay is `zIndex: 1200`; the tab-owned dialogs (「自定义镜像源」,
+  the history comparison modal and the two preset dialogs of §20.9) stay at
+  `1000`. The ordering is now **stated** instead of inherited from tree order: at
+  equal z-index the tab panel — appended after the confirmation card — covered the
+  question completely on the「我的预设」tab, leaving it invisible and unanswerable.
+- Nothing else moved: the five routes, their bodies, their codes, the library's
+  shape and every stored byte keep their Revision 37–39 meanings.
+
 ### 13.1 「我的 Prompt」 — the one write surface
 
 - The panel is `data-region="mine"`, the layer control is
@@ -5908,6 +5930,14 @@ Body: `{presetId, session}` (`session` may also come from `?session=`).
 - The snapshot is taken from the config this request just read, and the `applied`
   record for that root is **replaced** (one record per root). It carries the
   entry's `action` **and** its text, so §20.6 restores the mode as well.
+- **The snapshot is the state before the *first* application (Revision 40).** A
+  later application on the same root does **not** overwrite `before`: it keeps
+  that snapshot and only moves the pointer (`presetId`, `appliedAt`).「取消应用」
+  therefore always returns that workspace to where it stood before a preset was
+  ever applied, instead of walking back one application at a time and leaving the
+  previous preset in the layer. The response's `before` is that stored snapshot
+  (the value §20.6 will restore); the history record still describes **this**
+  write, i.e. the text it really replaced.
 - A history record is appended exactly as `PUT /overrides` does it (a section
   record: `name` = the reserved name, `before`/`after` = its text on either side,
   `origin: "ui"`, `action` from the ordinary `actionOf` rule) — and it is appended
@@ -5947,7 +5977,9 @@ Body: `{session}` (`session` may also come from `?session=`).
 - The restoration is **content**: `before: null` removes the reserved entry, a
   non-null `before` writes its `action` **and** its `text` back — an `append`
   snapshot is restored as `append`, never flattened to `replace` (Revision 39:
-  the mode is part of what was overwritten). It is not a history rollback
+  the mode is part of what was overwritten). The snapshot restored is the one the
+  **first** application took (Revision 40): cancelling means「回到任何预设应用之前」,
+  not「撤销上一次应用」. It is not a history rollback
   and it consults no log — the value restored is the one the application
   overwrote. The layer's other entries, its switch, the user layer and every other
   workspace are untouched.
