@@ -7658,7 +7658,7 @@ brief 写「本次 0.2.1 覆盖 g-050…g-058」。核对仓库事实：**g-050�
   `workspaceRows` 两种形态 / 会话回退 / 空值；并机械断言 chunk 内无 `updateRegion…` 字面量、无 `regionNoteKey`、
   无本地 props 适配器、无内联 `'ovWorkspace'`。契约新增 **Revision 42** 段（§13 末条），§13.0 共享面段同步补规则。
 - `CHUNK_STAMPS` 由 `node scripts/client-chunks.mjs --write` 重算。
-- **证据**：`node --test` ⇒ 812 pass / 0 fail；`node scripts/prepare.mjs` ⇒ 21/21；`node scripts/client-chunks.mjs`
+- **证据**：`node --test` ⇒ 815 pass / 0 fail（基线 812 + 新增 3 条）；`node scripts/prepare.mjs` ⇒ 21/21；`node scripts/client-chunks.mjs`
   ⇒ 5 个 chunk 与清单一致。
 
 **残留（批次 2–4 未动）**
