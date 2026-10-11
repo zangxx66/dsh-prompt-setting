@@ -2378,8 +2378,11 @@ behaviour, one copy.
   stack onto. The composition is **idempotent**: a text that already is the
   preset's, or already ends with `SEP` + it, is left untouched and the answer
   carries `alreadyApplied: true` — no layer write, no history record, and the
-  page says「该预设已在此工作区生效」. The `applied` record is still kept (replaced)
-  in that case, because the record is what keeps「取消应用」available.
+  page says「该预设已在此工作区生效」. Nothing else changes either: the library file
+  is not written, and the `applied` record keeps the snapshot the **first**
+  application took — review R5 found that overwriting it with the layer's current
+  text turned「取消应用」into a no-op, which is exactly the promise the record exists
+  to keep.
 - **The snapshot keeps the mode.** `before` already recorded `{action, text}`;
   §20.6 now says in words that an `append` snapshot is restored as `append`,
   never flattened to `replace`.
@@ -5890,12 +5893,18 @@ Body: `{presetId, session}` (`session` may also come from `?session=`).
     this route and nowhere else**: a layer holds one reserved entry, so the merge
     kernel cannot join a layer to itself. A layer with no entry (or an empty one)
     contributes nothing and no separator is inserted.
-- **The composition is idempotent.** If the entry already carries exactly the
-  preset's text, or already ends with `SEP` + that text, the plan writes **no
-  layer at all** — no `writeConfig`, no history record — and answers
-  `alreadyApplied: true` so the page can say「该预设已在此工作区生效」rather than
-  claim a write. The `applied` record is still recorded/replaced in that case:
-  the record is what keeps §20.6 available, and the pointer was already there.
+- **The composition is idempotent, and an idempotent request changes nothing.**
+  If the entry already carries exactly the preset's text, or already ends with
+  `SEP` + that text, the route writes **no layer** (`writeConfig` is skipped), no
+  history record, and **not even the library file** — `presets.json` is left
+  byte-identical (review R5) — and it answers `alreadyApplied: true` so the page
+  can say「该预设已在此工作区生效」rather than claim a write. The `applied` record
+  therefore keeps the snapshot the **first** application took, which is the only
+  thing §20.6 restores: overwriting it with the text the layer holds now would
+  make the cancel a no-op, i.e. the user could never get back. A layer that
+  already carried the text without a record gets **no** new record — this request
+  produced no change to restore — and §20.6's availability simply follows whether
+  a record exists.
 - The snapshot is taken from the config this request just read, and the `applied`
   record for that root is **replaced** (one record per root). It carries the
   entry's `action` **and** its text, so §20.6 restores the mode as well.
@@ -5913,9 +5922,11 @@ Body: `{presetId, session}` (`session` may also come from `?session=`).
   "effectiveFrom": "next-turn", "history": { … }, "appliedRecords": [ … ] }
 ```
 
-- `alreadyApplied` is `true` exactly when the layer already carried the text (and
-  `history` is then `null`); it is always present, so a client never has to infer
-  it from an empty history.
+- `alreadyApplied` is `true` exactly when the layer already carried the text; it
+  is always present, so a client never has to infer it from an empty history. In
+  that case `history` is `null`, `record` is the record that was already there
+  (or `null`), `appliedRecords` describes the unchanged library, and no file —
+  layer, log or library — was written.
 - Applying a **different** preset or a **changed** one is still a real write: the
   second application's `before` is the first application's result, so「取消应用」
   goes back to the text that was there before the latest application.

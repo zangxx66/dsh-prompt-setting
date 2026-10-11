@@ -7530,3 +7530,28 @@ brief 写「本次 0.2.1 覆盖 g-050…g-058」。核对仓库事实：**g-050�
 - **证据**：`node --test test/*.test.mjs` ⇒ 全绿；`node scripts/prepare.mjs` ⇒ 21/21；
   `node scripts/client-chunks.mjs` ⇒ 5 个 chunk 一致。
 
+### 复核轮 4 返工（R5：幂等请求不得改写还原快照，2026-10-12）
+
+**复核发现的路径**：工作区层无保留段 → 应用 append 预设 ⇒ 记录 `{before: null}`；再点一次「应用」（幂等）
+时 `planApply` 用**当前内容**重算了 `before`（`{action:'append', text:P}`）并替换记录，`index.js` 又照常写回
+预设库 ⇒ 之后「取消应用」按新 `before` 写回，层内容仍是 P —— 还原退化成 no-op，用户回不到最初状态。
+`replace` 分支同理。
+
+**不变量**：`before` 快照描述的是「应用发生之前」的层内容，是取消应用的唯一依据；幂等的含义正是「层没有
+发生变化」，因此这次请求**不得改写记录**（「库文件字节不变」也是幂等应有的对外承诺）。
+
+**修法（最小正确）**
+- `core/presets.js` `planApply`：`alreadyApplied === true` 时**原样返回**传入的 `document`（不再 filter/push），
+  `record` 返回既有记录（没有则 `null`）；`false` 时维持原行为。
+- `index.js` `handleApplyPreset`：幂等时既不写层、不记 history，**也不写 `presets.json`**；响应仍带
+  `alreadyApplied: true`，`record`/`appliedRecords` 报未改动的记录，`before`/`after` 如实。
+- 契约：§20.5 与 Revision 39 段里「记录仍写入以保取消应用可用」的旧表述按新语义改正 —— 首次应用已留下
+  记录，幂等请求不需要也不得再动它；层里本来就有该文本而没有记录时，幂等请求**不新增记录**（本次没有产生
+  可还原的变更），「取消应用」的可用性按记录有无判定。
+- 测试：纯逻辑用例断言幂等时 `document` 与传入文档逐字相等、`record` 等于既有记录、无记录时不新增；
+  路由用例改写为「应用 → 再应用（幂等）→ 取消应用」两条路径（原本无 entry / 原本有 entry），断言层回到最初
+  形态、`applied[].before` 始终是最初快照、幂等请求让 `presets.json` **字节不变**；客户端用例断言幂等之后
+  「取消应用」仍可用并真的发出请求。
+- **证据**：`node --test test/*.test.mjs` ⇒ 全绿；`node scripts/prepare.mjs` ⇒ 21/21；
+  `node scripts/client-chunks.mjs` ⇒ 5 个 chunk 一致。
+

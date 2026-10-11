@@ -410,49 +410,76 @@ test('presets logic: planApply replaces in replace mode and truly stacks in appe
   );
 });
 
-test('presets logic: applying the same preset twice is idempotent', () => {
+test('presets logic: an idempotent application changes nothing at all', () => {
   const appendDoc = upsertPreset(emptyPresets(), { name: 'p', action: 'append', text: 'PRESET TEXT' }, {
     id: PRESET_A,
     at: 't0',
   }).document;
+  const stackedText = `MINE${RESERVED_STACK_SEPARATOR}PRESET TEXT`;
   const stacked = {
     version: 1,
-    overrides: [{ name: CUSTOM_SECTION_NAME, action: 'append', text: `MINE${RESERVED_STACK_SEPARATOR}PRESET TEXT` }],
+    overrides: [{ name: CUSTOM_SECTION_NAME, action: 'append', text: stackedText }],
   };
-  const again = planApply(appendDoc, { presetId: PRESET_A, workspaceRoot: '/w', current: stacked, at: 't1' });
-  assert.equal(again.alreadyApplied, true, 'an already-stacked preset is not stacked twice');
-  assert.equal(again.text, `MINE${RESERVED_STACK_SEPARATOR}PRESET TEXT`);
-  // A layer whose whole text is the preset's is idempotent too.
-  const exact = planApply(appendDoc, {
+
+  // The layer already carries the stack and a record exists: the document and
+  // the record come back **exactly as they were** (review R5 — the snapshot is
+  // what「取消应用」restores, so a second click may not overwrite it).
+  const withRecord = {
+    version: 1,
+    presets: appendDoc.presets,
+    applied: [{ workspaceRoot: '/w', presetId: PRESET_A, before: null, appliedAt: 'first' }],
+  };
+  const again = planApply(withRecord, { presetId: PRESET_A, workspaceRoot: '/w', current: stacked, at: 't1' });
+  assert.equal(again.alreadyApplied, true);
+  assert.equal(again.text, stackedText);
+  assert.deepEqual(again.document, withRecord, 'the document is returned unchanged');
+  assert.equal(again.record, withRecord.applied[0], 'and the record is the first application’s');
+
+  // The layer already carries the text but has no record: nothing to restore, so
+  // no record is invented and the document is untouched.
+  const noRecord = { version: 1, presets: appendDoc.presets, applied: [] };
+  const none = planApply(noRecord, {
     presetId: PRESET_A,
     workspaceRoot: '/w',
     current: { version: 1, overrides: [{ name: CUSTOM_SECTION_NAME, action: 'append', text: 'PRESET TEXT' }] },
     at: 't2',
   });
-  assert.equal(exact.alreadyApplied, true);
-  assert.equal(exact.text, 'PRESET TEXT');
+  assert.equal(none.alreadyApplied, true);
+  assert.equal(none.record, null, 'no change to restore ⇒ no record');
+  assert.deepEqual(none.document, noRecord);
 
-  // replace is idempotent when the stored pair already is the preset's.
+  // replace is idempotent on the same rule.
   const replaceDoc = upsertPreset(emptyPresets(), { name: 'p', action: 'replace', text: 'PRESET TEXT' }, {
     id: PRESET_B,
     at: 't0',
   }).document;
-  const same = planApply(replaceDoc, {
+  const replaceRecord = {
+    version: 1,
+    presets: replaceDoc.presets,
+    applied: [
+      { workspaceRoot: '/w', presetId: PRESET_B, before: { action: 'replace', text: 'OLD' }, appliedAt: 'first' },
+    ],
+  };
+  const same = planApply(replaceRecord, {
     presetId: PRESET_B,
     workspaceRoot: '/w',
     current: { version: 1, overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'PRESET TEXT' }] },
     at: 't3',
   });
   assert.equal(same.alreadyApplied, true);
-  // …but a same-text entry stored as `append` is still a real change (the mode
-  // is part of what gets written).
-  const modeChange = planApply(replaceDoc, {
+  assert.deepEqual(same.document, replaceRecord);
+  assert.equal(same.record, replaceRecord.applied[0]);
+
+  // …but the same text stored under the other mode is still a real change: the
+  // mode is part of what gets written.
+  const modeChange = planApply(replaceRecord, {
     presetId: PRESET_B,
     workspaceRoot: '/w',
     current: { version: 1, overrides: [{ name: CUSTOM_SECTION_NAME, action: 'append', text: 'PRESET TEXT' }] },
     at: 't4',
   });
   assert.equal(modeChange.alreadyApplied, false);
+  assert.notEqual(modeChange.document, replaceRecord);
   assert.equal(modeChange.config.overrides[0].action, 'replace');
 });
 
@@ -827,39 +854,92 @@ test('route: the preset routes answer 405 with the documented allow list', async
   }
 });
 
-test('route: applying a preset the layer already carries writes nothing and says so', async () => {
+test('route: apply → apply again → unapply still restores the original layer', async () => {
   const { route } = mount({ workspaces: [workspaceRow(workspaceRoot, 's-1')] });
   seedLibrary([{ id: PRESET_A, name: 'a', action: 'append', text: 'STACKED', createdAt: 't', updatedAt: 't' }]);
-  writeRaw(
-    layerPath(workspaceRoot),
-    `${JSON.stringify({
-      version: 1,
-      overrides: [{ name: CUSTOM_SECTION_NAME, action: 'append', text: `MINE${RESERVED_STACK_SEPARATOR}STACKED` }],
-    }, null, 2)}\n`,
-  );
-  const layerBefore = sha256(layerPath(workspaceRoot));
+
+  // Path 1 — the layer had no reserved entry at all.
+  writeRaw(layerPath(workspaceRoot), `${JSON.stringify({ version: 1, overrides: [] }, null, 2)}\n`);
   const first = json(await call(route, {
     method: 'POST',
     url: PRESETS_APPLY_PATH,
     body: JSON.stringify({ presetId: PRESET_A, session: 's-1' }),
   }));
-  assert.equal(first.ok, true);
-  assert.equal(first.applied, true);
-  assert.equal(first.alreadyApplied, true, 'the answer says the preset was already in force');
-  assert.equal(first.history, null, 'and no history record was appended for a write that did not happen');
-  assert.equal(sha256(layerPath(workspaceRoot)), layerBefore, 'the layer is byte-identical');
-  // The pair is recorded all the same: the record is what keeps「取消应用」usable.
-  const listed = json(await call(route, { url: PRESETS_PATH }));
-  assert.equal(listed.applied.length, 1);
-  assert.equal(listed.applied[0].presetId, PRESET_A);
+  assert.equal(first.alreadyApplied, false);
+  assert.equal(first.before, null);
+  const libraryAfterFirst = sha256(presetsPath());
+  assert.deepEqual(readPresets(presetsPath()).document.applied[0].before, null, 'the snapshot is “there was none”');
 
-  // An ordinary application answers `alreadyApplied: false` and keeps its history.
-  const fresh = json(await call(route, {
+  // The idempotent second click: no layer write, no history record, and the
+  // library file is not written either (review R5).
+  const second = json(await call(route, {
     method: 'POST',
     url: PRESETS_APPLY_PATH,
     body: JSON.stringify({ presetId: PRESET_A, session: 's-1' }),
   }));
-  assert.equal(fresh.alreadyApplied, true, 'still idempotent on the second click');
+  assert.equal(second.alreadyApplied, true);
+  assert.equal(second.history, null);
+  assert.equal(second.record.before, null, 'the answer reports the first snapshot');
+  assert.equal(sha256(presetsPath()), libraryAfterFirst, 'presets.json is byte-identical');
+  assert.deepEqual(readPresets(presetsPath()).document.applied[0].before, null, 'and the stored snapshot is unchanged');
+
+  // …so「取消应用」really goes back: the entry that was not there disappears.
+  const unapplied = json(await call(route, {
+    method: 'POST',
+    url: PRESETS_UNAPPLY_PATH,
+    body: JSON.stringify({ session: 's-1' }),
+  }));
+  assert.equal(unapplied.restored, false);
+  assert.deepEqual(
+    JSON.parse(readFileSync(layerPath(workspaceRoot), 'utf8')),
+    { version: 1, overrides: [] },
+    'the layer is back to the state before the first application',
+  );
+
+  // Path 2 — the layer held text of its own.
+  const original = {
+    version: 1,
+    overrides: [
+      { name: 'frozen:one', action: 'replace', text: 'KEEP' },
+      { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' },
+    ],
+  };
+  writeRaw(layerPath(workspaceRoot), `${JSON.stringify(original, null, 2)}\n`);
+  await call(route, {
+    method: 'POST',
+    url: PRESETS_APPLY_PATH,
+    body: JSON.stringify({ presetId: PRESET_A, session: 's-1' }),
+  });
+  const stackedLayer = JSON.parse(readFileSync(layerPath(workspaceRoot), 'utf8'));
+  assert.equal(
+    stackedLayer.overrides[1].text,
+    `MINE${RESERVED_STACK_SEPARATOR}STACKED`,
+    'append stacked the preset after the layer’s own text',
+  );
+  const libraryAfterStack = sha256(presetsPath());
+  const repeat = json(await call(route, {
+    method: 'POST',
+    url: PRESETS_APPLY_PATH,
+    body: JSON.stringify({ presetId: PRESET_A, session: 's-1' }),
+  }));
+  assert.equal(repeat.alreadyApplied, true);
+  assert.equal(sha256(presetsPath()), libraryAfterStack);
+  assert.deepEqual(
+    readPresets(presetsPath()).document.applied[0].before,
+    { action: 'replace', text: 'MINE' },
+    'the snapshot is still the text that was there before the first application',
+  );
+  const back = json(await call(route, {
+    method: 'POST',
+    url: PRESETS_UNAPPLY_PATH,
+    body: JSON.stringify({ session: 's-1' }),
+  }));
+  assert.equal(back.restored, true);
+  assert.deepEqual(
+    JSON.parse(readFileSync(layerPath(workspaceRoot), 'utf8')),
+    original,
+    'and the layer is exactly what it was before the first application',
+  );
 });
 
 test('route: /presets is not part of the export or the overrides schema', async () => {

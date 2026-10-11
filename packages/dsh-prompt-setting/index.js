@@ -3631,11 +3631,16 @@ function mount(ctx, config, cleanups) {
     const before = reservedSectionOf(current);
     const after = reservedSectionOf(next);
     // Revision 39: an application whose text the layer already carries is a
-    // **no-op on the layer** — nothing is written, no history record is appended
-    // (there was no change), and the answer says `alreadyApplied: true` so the
-    // page can say「该预设已在此工作区生效」instead of claiming a write. The pair is
-    // still recorded: the record is what keeps「取消应用」available, and the
-    // pointer was already there.
+    // **no-op** — nothing is written, no history record is appended (there was
+    // no change), and the answer says `alreadyApplied: true` so the page can say
+    // 「该预设已在此工作区生效」instead of claiming a write.
+    //
+    // Review R5: "nothing" includes the **library file**. `before` is what
+    // 「取消应用」restores, and `planApply` returns the existing record untouched
+    // for this case, so writing the document back would either rewrite the same
+    // bytes or — worse, in the original defect — replace the first application's
+    // snapshot with the layer's current text, turning the cancel into a no-op.
+    // The response reports the records as they stand.
     let history = null;
     if (plan.alreadyApplied === true) {
       cacheWritten(target, current);
@@ -3655,8 +3660,8 @@ function mount(ctx, config, cleanups) {
         snapshot: snapshotOfConfig(next),
         note: `preset ${plan.preset.id}`,
       });
+      writePresets(file.path, plan.document);
     }
-    writePresets(file.path, plan.document);
     sendJson(res, 200, {
       ok: true,
       applied: true,
@@ -3668,7 +3673,7 @@ function mount(ctx, config, cleanups) {
       after,
       effectiveFrom: 'next-turn',
       history,
-      appliedRecords: publicApplied(plan.document),
+      appliedRecords: publicApplied(plan.alreadyApplied === true ? file.document : plan.document),
     });
   }
 

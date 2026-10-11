@@ -388,16 +388,20 @@ function withoutReservedOverride(config) {
  * The composition is **idempotent**: a text that is already the preset's, or
  * already ends with `SEP + preset.text`, is left alone and the plan says so
  * (`alreadyApplied`), so clicking「应用」twice cannot grow the section by one
- * copy each time. The caller still records the pair either way — the record is
- * what makes「取消应用」available, and the pointer was already there.
+ * copy each time. Such a request changes **nothing at all**: the returned
+ * `document` is the caller's own object, and `record` is the record that was
+ * already there (or `null` when this layer never had one — the request produced
+ * no change to restore). The snapshot the *first* application took is the only
+ * thing「取消应用」restores, so a second click must not overwrite it (review R5).
  * @param document - the current normalized document.
  * @param options.presetId - the preset to apply.
  * @param options.workspaceRoot - the resolved workspace root.
  * @param options.current - the workspace layer's current validated config.
  * @param options.at - the ISO timestamp to stamp.
  * @returns `{document, preset, before, config, record, text, alreadyApplied}`
- *   where `text` is the text the reserved entry ends up with and
- *   `alreadyApplied` says the layer already carried it.
+ *   where `text` is the text the reserved entry ends up with, `alreadyApplied`
+ *   says the layer already carried it, and `document`/`record` are the inputs
+ *   unchanged in that case (a new record is written only when one is needed).
  * @throws {OverrideError} 404 `preset-not-found`.
  */
 export function planApply(document, options = {}) {
@@ -432,6 +436,25 @@ export function planApply(document, options = {}) {
     action: preset.action,
     text,
   });
+  // Review R5: an idempotent request changes **nothing**, and that includes the
+  // record. `before` is the only thing「取消应用」restores, so overwriting it with
+  // the text the layer holds *now* would turn the cancel into a no-op — the user
+  // could never get back to the state before the first application. The existing
+  // record is therefore returned untouched (and `null` when this layer never had
+  // one: this request produced no change to restore).
+  if (alreadyApplied) {
+    const existing = appliedListOf(document)
+      .find((item) => item.workspaceRoot === options.workspaceRoot) ?? null;
+    return {
+      document,
+      preset,
+      before,
+      config,
+      record: existing,
+      text,
+      alreadyApplied: true,
+    };
+  }
   const record = {
     workspaceRoot: options.workspaceRoot,
     presetId: preset.id,
@@ -447,7 +470,7 @@ export function planApply(document, options = {}) {
     config,
     record,
     text,
-    alreadyApplied,
+    alreadyApplied: false,
   };
 }
 

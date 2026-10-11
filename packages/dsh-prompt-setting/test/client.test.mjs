@@ -11914,7 +11914,8 @@ test('client: the tab is called 「我的预设」 in both dictionaries', async 
 
 test('client: an application the layer already carries is reported as already in force', async () => {
   // Revision 39: the host answers `alreadyApplied` when the text was already
-  // there, and the page may not dress that up as a fresh write.
+  // there, and the page may not dress that up as a fresh write. Review R5: the
+  // idempotent answer left the record alone, so「取消应用」is still offered.
   const page = makePage({
     responses: defaultResponses({
       [PATHS.presetsApply]: {
@@ -11923,12 +11924,27 @@ test('client: an application the layer already carries is reported as already in
           applied: true,
           alreadyApplied: true,
           preset: { id: 'preset-1', name: '短答', action: 'replace', text: 'Be brief.' },
-          record: { workspaceRoot: '/work/alpha', presetId: 'preset-1', before: null, appliedAt: 't' },
+          record: { workspaceRoot: '/work/alpha', presetId: 'preset-1', before: null, appliedAt: 'first' },
           workspaceRoot: '/work/alpha',
-          before: null,
+          before: { action: 'replace', text: 'Be brief.' },
           after: { action: 'replace', text: 'Be brief.' },
           effectiveFrom: 'next-turn',
           history: null,
+          appliedRecords: [],
+        },
+      },
+      [PATHS.presetsUnapply]: {
+        payload: {
+          ok: true,
+          unapplied: true,
+          presetId: 'preset-1',
+          record: { workspaceRoot: '/work/alpha', presetId: 'preset-1', before: null, appliedAt: 'first' },
+          workspaceRoot: '/work/alpha',
+          restored: false,
+          before: { action: 'replace', text: 'Be brief.' },
+          after: null,
+          effectiveFrom: 'next-turn',
+          history: { ok: true, id: '2', seq: 2, dropped: 0, rewritten: false },
           appliedRecords: [],
         },
       },
@@ -11945,5 +11961,18 @@ test('client: an application the layer already carries is reported as already in
     'the page says it was already in force',
   );
   assert.equal(strings(tree).includes(page.zh.presetAppliedNotice), false, 'and not as an ordinary application');
-});
 
+  // The record survived the idempotent request, so the row still reports the
+  // workspace as applied and its「取消应用」works.
+  const row = collect(
+    tree,
+    (node) => node.props && node.props['data-preset-session'] === 'a1' && node.props['data-preset-applied'] !== undefined,
+  )[0];
+  assert.equal(row.props['data-preset-applied'], 'true');
+  clickPresetWorkspaceAction(tree, 'preset-unapply', 'a1');
+  tree = await page.flush();
+  const posts = page.router.calls.filter((call) => call.init && call.init.method === 'POST');
+  assert.equal(posts.length, 2, 'the second button really posted');
+  assert.equal(posts[1].url, PATHS.presetsUnapply);
+  assert.deepEqual(JSON.parse(posts[1].init.body), { session: 'a1' });
+});
