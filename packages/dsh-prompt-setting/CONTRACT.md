@@ -2023,11 +2023,13 @@ interaction.
   answers an incremental feed (`?since=<seq>`), and a resident `shell.overlay`
   entry renders the official `Toast` at each key node. Additive only — two new
   response fields on the read (`notifications`, and `seq` inside a notice), two
-  new `counts` fields (`history`, `bootId`), one new page marker
-  (`data-assembly-note="no-toast"`). No existing field changes meaning, no
+  new `counts` fields (`history`, `bootId`), two new page markers
+  (`data-assembly-toast-seat` and, when the seat is not `ready`,
+  `data-assembly-note="no-toast"`). No existing field changes meaning, no
   existing route changes shape, and no new runtime dependency or build step is
-  introduced. On a Host without the `Toast` primitive nothing is registered and
-  the Revision 45 behaviour is exactly what remains;
+  introduced. On a Host without the `Toast` primitive, or without the
+  `shell.overlay` slot, nothing is registered and the Revision 45 behaviour is
+  exactly what remains — with the page saying so (review C4);
 - the measured effect (see `NOTES.md` §123 for the migration record): `client.js`
   **9584 → 8575 lines / 456680 → 411979 bytes**, with `client.overview.js` 577,
   `client.transfer.js` 264 and `client.advanced.js` 502 lines now fetched on
@@ -6589,11 +6591,15 @@ stated limits are `data-region="assembly-limitation"`. `data-action="assembly-to
 is the switch. Reads happen only while that tab is open, and one short follow-up
 read is made while the reported delivery is still `waiting`.
 
-Revision 46 adds one marker to this block and nothing else: when the Host does not
-expose the `Toast` primitive, `data-assembly-note="no-toast"` states that
-proactive toasts are unavailable on this machine. The block, its switch and its
-read schedule are otherwise unchanged — the toast is **additional**, never a
-replacement.
+Revision 46 adds one marker and one attribute to this block and nothing else.
+`data-assembly-toast-seat` is `ready` (an overlay entry is registered), `absent`
+(the Host has no `Toast` primitive), `pending` (the primitive exists but the
+`shell.overlay` slot was never declared) or `failed` (declared and refused). When
+it is **anything but `ready`**, `data-assembly-note="no-toast"` states the
+degradation — keyed on the **seat**, not on the capability probe, because a Host
+with the primitive and without the slot would otherwise show nothing at all while
+also toasting nothing (review C4). The block, its switch and its read schedule are
+otherwise unchanged — the toast is **additional**, never a replacement.
 
 ### 21.6 The incremental feed and the shell-overlay toast (Revision 46)
 
@@ -6616,17 +6622,25 @@ re-report it.
 
 | Field | Meaning |
 | --- | --- |
-| `bootId` | This Host mount's identity. A cursor is only comparable with notices of the same mount: a restart empties the watch and restarts `noticeSeq` at 0, so the client re-anchors instead of comparing. |
+| `bootId` | This Host mount's identity — **reported, not enforced**: the route takes no `bootId` and compares nothing (it parses `since` only, §21.6). A cursor is comparable with notices of the same mount only, because a restart empties the watch and restarts `noticeSeq` at 0; the client is what re-anchors on this field instead of comparing two incomparable numberings. |
 | `cursor` | The newest `seq` this mount has produced. A client keeps it and sends it back as `?since=`. |
-| `stale` | `true` when the cursor names a notice the bounded birth log (24 entries) has already dropped: the answer then carries the **newest** notice only, never a burst of half-remembered ones. |
-| `notices[]` | `{session, notice}` for every notice with `seq` above the cursor, oldest first. `notice` is the same public shape as `record.notice` (§21.1) — lengths and digests, never the user's prompt. |
+| `stale` | `true` when the notice **after** the cursor has already been dropped from the bounded birth log (24 entries) — i.e. there is a gap between the cursor and the oldest retained notice (`oldest > cursor + 1`; the boundary case `oldest === cursor + 1` is a contiguous window and stays `false`). The answer then carries the **newest** notice only, never a burst of half-remembered ones. |
+| `notices[]` | `{session, notice}` for every notice with `seq` **strictly above** the cursor, oldest first. `notice` is the same public shape as `record.notice` (§21.1) — lengths and digests, never the user's prompt. |
 
 **Cursor rules.**
 
 - An **absent or malformed** `since` means *start from now*: the answer still
   carries `bootId` and `cursor` (that is how a fresh tab learns where "now" is)
   with an empty `notices`. A fresh tab must never replay history.
-- A cursor from **another mount** answers the same way.
+- A cursor from **another mount** is **not detected by this route** — it parses
+  `since` and answers by the numbers it holds, so a new mount whose `noticeSeq`
+  has already passed the old value will hand back notices for it. That is by
+  design: the client sees the different `bootId` and re-anchors instead of
+  comparing (`planToasts`). The route states the identity; the client honours it.
+- The comparison is **exclusive**: `seq === cursor` is the notice the client is
+  already showing, so it is never sent again. This is the host half of "同一事实
+  不得弹两次"; the boundary has its own case in
+  `test/assembly-watch.test.mjs` (review C3a).
 - The route is a **pure read**: it repeats whatever the cursor asks for. The
   client advancing its kept cursor is what turns "no repeat" into a property.
 - With the switch **off** the watch produces no new notice at all (§21.2), so the
@@ -6638,18 +6652,26 @@ re-report it.
 **The toaster, and its degradations.**
 
 - It is registered only when the Host really exposes `Toast` (probed separately
-  from the `Button` probe that selects the renderer). Without it **nothing is
-  registered** and the settings block is the whole surface; the page states that
-  with `data-assembly-note="no-toast"` (§21.5).
+  from the `Button` probe that selects the renderer) **and** declares the
+  `shell.overlay` slot. Without either, **nothing is registered** and the settings
+  block is the whole surface. The page reports which of the two happened through
+  `data-assembly-toast-seat` (§21.5) — the **seat**, never the capability probe,
+  because "has the primitive" and "has a registered overlay" are different facts
+  (review C4).
 - Registration itself is guarded by `slots.inject('shell.overlay', …)`, which runs
   its callback only once the Host has declared the slot — on a Host that predates
-  the slot nothing is registered and the plugin is unaffected.
+  the slot nothing is registered, the seat stays `pending`, and the plugin is
+  otherwise unaffected.
 - The toast draws through the primitive's own body portal (click-through, the
   host stylesheet's z-index); the plugin ships no CSS. Its text is composed from
   the same dictionary keys the block uses, in the Host's language (zh/en).
 - One toast at a time; the queue drains on the primitive's `onDone`, up to 4
   notices. Each toast is keyed by its notice `id`, so a **new** fact with the same
   words re-mounts and replays, while the same fact never does.
+- **Closing the switch is silent immediately**: the next read reports `muted`, and
+  the toaster drops whatever it had already queued instead of playing it out
+  (review C5). The cursor still advances, so re-opening the switch releases no
+  backlog.
 - The tab's cursor lives in `sessionStorage` (per tab, surviving a reload):
   `localStorage` would let one tab advance another's cursor — one lost toast —
   or let both replay one, which is the one thing this must not do.
@@ -6657,7 +6679,8 @@ re-report it.
   shell hands a `shell.overlay` entry (a step ended somewhere, which is exactly
   when a delivery verdict settles), throttled to one read per 3 s; a 20 s
   visibility-aware timer is the fallback when that hook is absent or an event is
-  dropped. A hidden tab does not read and reads once when it becomes visible
-  again. **Stated limitation:** browser timers are throttled in a background tab,
-  so a toast is seen when the user returns to the page — this is not a real-time
+  dropped. Both paths have their own case in `test/client.test.mjs` (review C3b).
+  A hidden tab does not read and reads once when it becomes visible again.
+  **Stated limitation:** browser timers are throttled in a background tab, so a
+  toast is seen when the user returns to the page — this is not a real-time
   channel and does not claim to be.

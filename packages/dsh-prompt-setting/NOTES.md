@@ -8043,3 +8043,40 @@ route +2（无 session 的端到端 feed、变更通知与开关关闭）、clie
 - 首次连接与跨宿主重启不追溯：那份历史不会补弹（宁可漏，不重报）；
 - toast 是**出生那一刻**的结论快照：送达层若在弹出之后才结算，后续更新只体现在设置页详情块里；
 - 客户端在弹出前就推进并持久化游标 ⇒ 「弹之前刷新页面」会丢掉那一次提示（仍是「不重报」优先）。
+
+## 143. g-062 收口轮：评审 rev-att-002-01 的 C1–C5（Revision 46 补记，2026-10-13，承载提交见交付说明）
+
+独立评审对 att-002 判 PASS，同时留下 3 条非阻塞建议与一条**真缺口**。本轮逐条落地，全部是**追加**改动。
+
+**C1｜契约与实现不符（文档）**：`CONTRACT.md` §21.6 原写「另一 mount 的 cursor 以同样方式回答」，但宿主
+`pendingNotices` **没有** `bootId` 入参（`index.js` 只解析 `since`）——异 mount 且新 mount 的 `noticeSeq`
+已超过旧值时，宿主会照数字回 notices，**是客户端**凭 `bootId` 丢弃并重锚。现改为「本条路由不做跨 mount
+检测……由客户端重锚」，`bootId` 行的措辞同步。
+
+**C2｜stale 边界语义（文档）**：原文写「cursor 指名的 notice 已被丢弃」，实现是 `oldest > known + 1`，
+边界 `oldest === known + 1` 为 `false`。现改为「cursor **之后**的那条已被丢弃（即存在断档）」并写明边界值；
+`core/assembly-watch.js` 的 `pendingNotices` JSDoc 同步。
+
+**C3a｜宿主游标严格比较缺保护（测试）**：评审把 `birth.seq > known` 改成 `>=` 后 34/34 仍全绿。新增
+「the cursor is exclusive」用例——必须先产生**第二条** notice 才能观察该边界（只有一条时 `known >= latest`
+会提前返回，这正是原缺口）。实测：正确代码绿，改 `>=` 红，已还原。
+
+**C3b｜事件驱动主路径零覆盖（测试）**：此前所有 client 用例都走 `AssemblyToasterRoot` 的 unsupported /
+timer-only 分支（无 `useSessionStatus` 时 `activity: null`），`ConnectedAssemblyToaster` 完全没被跑过。
+新增用例注入 `useSessionStatus` stub + 可控时钟（`sandbox.Date`），断言：订阅确实发生、挂载读一次、
+状态变化越过 3s 节流后驱动第二次读——即「主触发器是会话状态事件，20s 定时器只是兜底」。
+
+**C4｜降级盲区（真缺口，行为修正）**：`HAS_TOAST === true` 但宿主**未声明 `shell.overlay`** 时，既不注册
+浮层，页内块也不显示 `no-toast`（原标记只看 `HAS_TOAST`）⇒ 用户静默地什么都没有。现引入 **overlay 座位
+（seat）** 作为唯一判据：`absent`（无 Toast 组件）/ `pending`（有组件但插槽未声明）/ `ready`（已注册）/
+`failed`（声明了但 register 抛错），由 `slots.inject` 的回调实际执行结果驱动，并经
+`useSyncExternalStore` 让页内块跟随（插槽晚声明时也会更新）。页内块新增 `data-assembly-toast-seat`，
+`no-toast` 行改由 seat 决定，文案区分「无组件」与「无插槽」两种原因；`__internals.assemblyNotice.overlaySeat()`
+是可断言的信号。负向对照：把判定改回 `HAS_TOAST` ⇒ C4 用例红（已还原）。
+
+**C5｜关闭开关应清空队列（行为改进）**：`planAssemblyToasts` 新增 `muted`（仅当开关为 off），toaster 在
+`muted` 时 `setQueue([])`——「关闭即静音」，而不是把已排队的 toast 播完；游标照旧推进，重新开启不补播。
+
+**测试与门禁**：全量 `886 passed / 0 failed`（上一轮 882 + C3a 1 + C4 1 + C5 1 + C3b 1；另在 2 条既有
+用例上补了 `muted` / seat 断言，未削弱或删改任何既有断言）；`client-chunks` 5 一致、`prepare` 21 项、`check-compat` exit 0；
+零新增依赖、零构建。三处负向对照（客户端 `>=`、宿主 `>=`、判定回退 `HAS_TOAST`）均实测变红并已还原。

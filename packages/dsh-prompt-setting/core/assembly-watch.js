@@ -829,11 +829,17 @@ export function createAssemblyWatch(options = {}) {
    * The incremental feed of notices born after one cursor — "what happened since
    * you last looked", for a client that is **not** on the settings page.
    *
-   * A cursor is an opaque `seq` this module handed out; it is only comparable
-   * with notices of the same mount, which is what `bootId` states. A cursor that
-   * names a notice no longer retained answers `stale: true` with the **newest**
-   * notice only — the client reports what it can still prove instead of a burst
-   * of half-remembered ones.
+   * A cursor is an opaque `seq` this module handed out, and it is **exclusive**:
+   * the notice it names has already been shown, so it is never handed out again.
+   * The comparison is only meaningful inside one mount — `bootId` **states** that
+   * identity, this function does not enforce it (it takes no `bootId`): a client
+   * whose cursor came from another mount is expected to notice the changed
+   * `bootId` and re-anchor instead of comparing two numberings.
+   *
+   * A cursor whose successor has already been dropped from the bounded log — a
+   * real gap, `oldest > known + 1`; a contiguous window is not stale — answers
+   * `stale: true` with the **newest** notice only, so the client reports what it
+   * can still prove instead of a burst of half-remembered ones.
    * @param rawCursor - the client's last seen `seq`, or anything else for
    *   "start from now" (a first connection never replays history).
    * @returns `{bootId, cursor, stale, notices}`; each notice is

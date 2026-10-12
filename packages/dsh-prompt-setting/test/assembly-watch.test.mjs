@@ -596,6 +596,28 @@ test('assembly-watch: the feed yields each new notice once, oldest first, tagged
   assert.equal(JSON.stringify(feed).includes('NEW'), false, 'never the prompt text');
 });
 
+test('assembly-watch: the cursor is exclusive — the notice it names is never handed out again (review C3a)', () => {
+  // The boundary the cursor contract lives on: `seq === cursor` is **not** news.
+  // Two notices are needed for this to be observable at all — with `latest`
+  // still equal to the cursor the function returns early, which is why the
+  // obvious one-notice case passes even when the filter is inclusive.
+  const watch = createAssemblyWatch({ now: () => 0, bootId: 'boot-a' });
+  establish(watch, 's1');
+  const seen = watch.pendingNotices(null).cursor;
+  watch.markPromptWrite({ session: 's1', layer: 'user', action: 'replace', text: 'NEW', at: 1 });
+  watch.observeAssembly({ sessionId: 's1', configuredText: 'NEW', segmentText: 'NEW', at: 2 });
+  const feed = watch.pendingNotices(seen);
+  assert.deepEqual(
+    feed.notices.map((entry) => entry.notice.seq),
+    [seen + 1],
+    'exactly the notice above the cursor, and not the one it already names',
+  );
+  assert.equal(feed.cursor, seen + 1, 'and the cursor moves to the newest notice');
+  // And the same holds one step later: the client may send the cursor of the
+  // notice it is currently showing.
+  assert.deepEqual(watch.pendingNotices(seen + 1).notices, []);
+});
+
 test('assembly-watch: a cursor from another mount is not comparable and is answered "start from now"', () => {
   const first = createAssemblyWatch({ now: () => 0, bootId: 'boot-a' });
   establish(first, 's1');

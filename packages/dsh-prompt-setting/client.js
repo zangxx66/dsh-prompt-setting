@@ -330,6 +330,66 @@ window.__ModuleLoader__.load({
      * not an error.
      */
     const HAS_TOAST = primitivesUsable && typeof primitives.Toast === 'function';
+    /**
+     * g-062 (Revision 46, review C4): is an overlay toaster **really** there?
+     *
+     * `HAS_TOAST` answers "can this Host draw a toast"; this seat answers "is one
+     * actually registered". They are different questions and the difference is
+     * visible to the user: a Host that exposes the primitive but never declares
+     * the `shell.overlay` slot gets **no** overlay at all, and a page that keyed
+     * its degradation notice off `HAS_TOAST` alone would stay silent — "no
+     * notice" and "not working" would look identical, which is the one outcome
+     * this feature must never produce.
+     *
+     * Three states, none of them a guess: `ready` (the slot was declared and the
+     * entry is registered), `failed` (the Host declared it and refused the
+     * registration), and `pending` (this Host has not declared the slot — and
+     * since `slots.inject` runs synchronously for a slot that already exists,
+     * that is what a Host without the slot looks like forever). `absent` is
+     * decided up front by the capability probe, before any slot is involved.
+     */
+    const overlaySeat = {
+      state: HAS_TOAST ? 'pending' : 'absent',
+      listeners: new Set(),
+      revision: 0,
+    };
+
+    /** The seat's snapshot for `useSyncExternalStore` — a counter, never an object. */
+    function overlaySeatRevision() {
+      return overlaySeat.revision;
+    }
+
+    /**
+     * Subscribe to seat changes.
+     * @param listener - called after the seat's state changed.
+     * @returns the unsubscribe.
+     */
+    function subscribeOverlaySeat(listener) {
+      overlaySeat.listeners.add(listener);
+      return () => {
+        overlaySeat.listeners.delete(listener);
+      };
+    }
+
+    /**
+     * Record what really happened to the overlay registration.
+     *
+     * Called from the slot callback (never during a render), so notifying
+     * subscribers here is an ordinary update rather than an update-during-render.
+     * @param state - `'ready'` or `'failed'`.
+     */
+    function markOverlaySeat(state) {
+      if (overlaySeat.state === state) return;
+      overlaySeat.state = state;
+      overlaySeat.revision += 1;
+      for (const listener of [...overlaySeat.listeners]) {
+        try {
+          listener();
+        } catch {
+          // One subscriber that throws must not cost the others their update.
+        }
+      }
+    }
     // #endregion
 
     /** Locale namespace owned by this plugin (zh/en dictionaries are inlined). */
@@ -1082,6 +1142,8 @@ window.__ModuleLoader__.load({
       assemblyToastJoin: '　｜　',
       assemblyToastUnavailable:
         '本机宿主未提供 Toast 组件，主动提示不可用（未注册任何浮层）；结论仍在上方摘要中，功能其余部分不受影响。',
+      assemblyToastSlotMissing:
+        '本机宿主未声明 shell.overlay 浮层插槽，主动提示无法注册（未注册任何浮层）；结论仍在上方摘要中，功能其余部分不受影响。',
       assemblyLimitation:
         '口径：装配层以本插件最终返回的段列表为准——更晚注册的 prepend listener 仍可能改写它，宿主在 waterfall 之后还可能把整份段列表折叠到生效的 complete 段；送达层以本次 step 在 surface 上产生的 system/message（append 或 replace head）为准，HTTP 是否实际发出在插件侧不可观测，本提示不作此声称。',
       mineWarningsHeading: '已保存，但有以下引用需要留意：',
@@ -1690,6 +1752,8 @@ window.__ModuleLoader__.load({
       assemblyToastJoin: ' · ',
       assemblyToastUnavailable:
         'This host does not provide the Toast primitive, so proactive toasts are unavailable (no overlay was registered); the verdicts stay in the summary above and nothing else is affected.',
+      assemblyToastSlotMissing:
+        'This host never declares the shell.overlay slot, so the proactive toast could not be registered (no overlay was registered); the verdicts stay in the summary above and nothing else is affected.',
       assemblyLimitation:
         'Basis: the assembly layer is the section list this plugin finally returned — a `{prepend: true}` listener registered later may still rewrite it, and the Host may collapse the whole list onto the effective `complete` section after the waterfall; the delivery layer is the system/message this step committed on the surface (append or head replace). Whether the HTTP request was actually sent is not observable from a plugin, and this notice does not claim it.',
       mineWarningsHeading: 'Saved, with references to note:',
@@ -6399,14 +6463,16 @@ window.__ModuleLoader__.load({
      *     cursor yet**: restart from the feed's own cursor and show nothing. The
      *     numbers are not comparable across mounts, and a first connection must
      *     never replay history;
-     *   - **switch off**: advance the cursor without showing anything, so turning
-     *     it back on does not release a backlog;
+     *   - **switch off**: advance the cursor without showing anything, and report
+     *     `muted` so a toast already queued is dropped rather than played out —
+     *     "off" means silent now, not "silent after the queue drains";
      *   - otherwise: the notices with `seq` above the cursor, oldest first, at
      *     most `limit` of them (the newest ones — a client that has been away
      *     long enough should see where things stand, not a queue of everything
      *     it missed), and the cursor advanced to the feed's.
      * @param input - `{state, payload, limit}`.
-     * @returns `{bootId, cursor, toasts}`; a toast is `{session, notice}`.
+     * @returns `{bootId, cursor, toasts, muted}`; a toast is `{session, notice}`
+     *   and `muted` is true only when the switch itself is off.
      */
     function planAssemblyToasts(input) {
       const state = input !== null && typeof input === 'object' && input.state !== null && typeof input.state === 'object'
@@ -6419,24 +6485,28 @@ window.__ModuleLoader__.load({
         : null;
       const feed = payload === null ? null : payload.notifications;
       if (feed === null || feed === undefined || typeof feed !== 'object') {
-        return { bootId: state.bootId, cursor: state.cursor, toasts: [] };
+        return { bootId: state.bootId, cursor: state.cursor, toasts: [], muted: false };
       }
       const bootId = typeof feed.bootId === 'string' && feed.bootId.length > 0 ? feed.bootId : null;
       const cursor = Number.isSafeInteger(feed.cursor) && feed.cursor >= 0 ? feed.cursor : null;
-      const enabled = payload.enabled !== false;
-      if (bootId === null || cursor === null || state.cursor === null || bootId !== state.bootId || enabled !== true) {
-        return { bootId, cursor, toasts: [] };
+      const enabled = payload.enabled === true;
+      if (bootId === null || cursor === null || state.cursor === null || bootId !== state.bootId) {
+        return { bootId, cursor, toasts: [], muted: false };
       }
+      if (enabled !== true) return { bootId, cursor, toasts: [], muted: true };
       const toasts = (Array.isArray(feed.notices) ? feed.notices : [])
         .filter(
           (entry) =>
             entry !== null && typeof entry === 'object' && entry.notice !== null && typeof entry.notice === 'object',
         )
+        // Exclusive on purpose: the cursor names a notice this client has
+        // already shown, so `seq === cursor` is **not** news. This is the client
+        // half of "同一事实不得弹两次".
         .filter((entry) => Number.isSafeInteger(entry.notice.seq) && entry.notice.seq > state.cursor)
         .sort((left, right) => left.notice.seq - right.notice.seq)
         .slice(-limit)
         .map((entry) => ({ session: typeof entry.session === 'string' ? entry.session : null, notice: entry.notice }));
-      return { bootId, cursor, toasts };
+      return { bootId, cursor, toasts, muted: false };
     }
 
     /**
@@ -6499,7 +6569,10 @@ window.__ModuleLoader__.load({
             });
             cursorRef.current = { bootId: plan.bootId, cursor: plan.cursor };
             writeAssemblyToastCursor(cursorRef.current);
-            if (plan.toasts.length > 0) {
+            // The switch being off is a statement about **now**: a queued toast
+            // is dropped rather than played out (review C5).
+            if (plan.muted === true) setQueue([]);
+            else if (plan.toasts.length > 0) {
               setQueue((list) => [...list, ...plan.toasts].slice(-ASSEMBLY_TOAST_LIMIT));
             }
           } catch {
@@ -6636,6 +6709,10 @@ window.__ModuleLoader__.load({
       const errorStyle = { margin: 0, fontSize: 12, color: token.stateError, wordBreak: 'break-word' };
       const noteStyle = { margin: 0, ...metaStyle };
       const lineStyle = { margin: 0, fontSize: 13 };
+      // Review C4: the degradation is reported from the **seat** — "no overlay is
+      // registered" — never from the capability probe alone. A Host that has the
+      // primitive but not the slot would otherwise show nothing at all.
+      const toastSeat = overlaySeat.state;
       return h(
         'div',
         {
@@ -6644,6 +6721,7 @@ window.__ModuleLoader__.load({
           'data-assembly-enabled': ready ? String(enabled) : 'unknown',
           'data-assembly-switch': switchStatus.kind,
           'data-assembly-session': hasSession ? 'yes' : 'none',
+          'data-assembly-toast-seat': toastSeat,
           'data-notice-kind': notice === null ? 'none' : String(notice.kind),
           'data-assembly-state':
             notice === null
@@ -6729,12 +6807,20 @@ window.__ModuleLoader__.load({
               h('p', { style: noteStyle }, t('assemblyNoticeOnce')),
             )
           : null,
-        // g-062 (Revision 46): the honest degradation. Without the Toast
-        // primitive there is no proactive surface, and the page says so instead
-        // of letting the user wait for a toast that cannot come.
-        HAS_TOAST
+        // g-062 (Revision 46): the honest degradation, keyed on the **seat**
+        // (review C4). Either the Host cannot draw a toast at all, or it can but
+        // never declared `shell.overlay` — in both cases there is no proactive
+        // surface, and the page says so instead of letting the user wait for a
+        // toast that cannot come. `pending` is that second case: the slot
+        // callback has not run, and it runs synchronously for a slot that
+        // exists.
+        toastSeat === 'ready'
           ? null
-          : h('p', { 'data-assembly-note': 'no-toast', style: noteStyle }, t('assemblyToastUnavailable')),
+          : h(
+              'p',
+              { 'data-assembly-note': 'no-toast', style: noteStyle },
+              t(toastSeat === 'absent' ? 'assemblyToastUnavailable' : 'assemblyToastSlotMissing'),
+            ),
         h('p', { 'data-region': 'assembly-limitation', style: noteStyle }, t('assemblyLimitation')),
       );
     }
@@ -8378,6 +8464,11 @@ window.__ModuleLoader__.load({
       // really running against the ones the host serves — would never run when
       // it matters.
       React.useSyncExternalStore(subscribeChunkLoads, chunkLoadRevision, chunkLoadRevision);
+      // g-062 (Revision 46, review C4): the overlay seat, on the same seat. A
+      // Host that declares `shell.overlay` after this page first rendered would
+      // otherwise leave the degradation note on screen until some unrelated
+      // state change happened to re-render the block.
+      React.useSyncExternalStore(subscribeOverlaySeat, overlaySeatRevision, overlaySeatRevision);
 
       // The session seat: a root-level hook on props, no inject required. The
       // `typeof` branch is stable for the life of a mount, and a hook that
@@ -11022,6 +11113,10 @@ window.__ModuleLoader__.load({
           serializeToastCursor: serializeAssemblyToastCursor,
           planToasts: planAssemblyToasts,
           composeToast: composeAssemblyToastText,
+          // Review C4: what really happened to the overlay registration —
+          // `absent` (no Toast primitive), `pending` (slot never declared),
+          // `ready` (registered) or `failed` (declared and refused).
+          overlaySeat: () => overlaySeat.state,
         },
       },
       apply(ctx) {
@@ -11094,22 +11189,36 @@ window.__ModuleLoader__.load({
         //   - `slots.inject` runs the callback only once the Host has declared
         //     the slot, and a Host that never declares it never calls back — so a
         //     pre-`shell.overlay` Host loses the toast, not the plugin.
+        //
+        // Review C4: the **seat** is what the page reports on, so the two
+        // outcomes (registered / not) are told apart by a fact rather than by
+        // the capability probe. `slots.inject` runs synchronously for a slot the
+        // Host already declared, so the page's first render already knows.
         if (HAS_TOAST) {
-          ctx.slots.inject('shell.overlay', () =>
-            ctx.slots.register(
-              {
-                name: 'shell.overlay',
-                id: 'prompt-setting-toast',
-                // After the shell's own chrome, before nothing in particular:
-                // toasts only order among themselves, and 60 keeps this entry
-                // from jumping ahead of the shipped ones.
-                order: 60,
-                locale: NS,
-                inject: () => face,
-              },
-              AssemblyToasterRoot,
-            ),
-          );
+          ctx.slots.inject('shell.overlay', () => {
+            try {
+              const disposer = ctx.slots.register(
+                {
+                  name: 'shell.overlay',
+                  id: 'prompt-setting-toast',
+                  // After the shell's own chrome, before nothing in particular:
+                  // toasts only order among themselves, and 60 keeps this entry
+                  // from jumping ahead of the shipped ones.
+                  order: 60,
+                  locale: NS,
+                  inject: () => face,
+                },
+                AssemblyToasterRoot,
+              );
+              markOverlaySeat('ready');
+              return disposer;
+            } catch {
+              // A Host that declares the slot and then refuses the registration
+              // gets the same honest degradation as one that never declared it.
+              markOverlaySeat('failed');
+              return undefined;
+            }
+          });
         }
       },
     };

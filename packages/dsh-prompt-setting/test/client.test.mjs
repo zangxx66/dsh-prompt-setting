@@ -501,12 +501,18 @@ const LOCALE_SHAPES = ['full', 'bare', 'throwing', 'noRevision'];
  * Mount the client half against a stubbed cordis context.
  * @param module - the descriptor `client.js` registered.
  * @param localeShape - one of {@link LOCALE_SHAPES}.
+ * @param options - `declaredSlots`: the slots this Host actually declares. Omit
+ *   it for "every slot is declared", which is what every pre-g-062 case means; an
+ *   explicit list is how review C4's Host (the primitive without the slot) is
+ *   expressed, because `slots.inject` is exactly "run once the declaration
+ *   exists".
  * @returns the captured registration, dictionaries and live ctx.
  */
-function mountClient(module, localeShape = 'full') {
+function mountClient(module, localeShape = 'full', options = {}) {
   let registeredSlot = null;
   const registrations = [];
   const dictionaries = [];
+  const declaredSlots = Array.isArray(options.declaredSlots) ? options.declaredSlots : null;
   const record = (ns, dict0) => {
     dictionaries.push({ ns, dict: dict0 });
     return () => {};
@@ -544,6 +550,8 @@ function mountClient(module, localeShape = 'full') {
     slots: {
       inject(slot, thunk) {
         registeredSlot = slot;
+        // The real service calls back only once the slot has been declared.
+        if (declaredSlots !== null && !declaredSlots.includes(slot)) return () => {};
         thunk();
       },
       register(options, component) {
@@ -868,7 +876,7 @@ function makePage(options = {}) {
   // file — the fallback is part of the contract, so a case can ask for that
   // engine instead of trusting a branch no one has run.
   if (options.withoutIntl === true) loaded.sandbox.Intl = undefined;
-  const mounted = mountClient(loaded.module, options.localeShape || 'full');
+  const mounted = mountClient(loaded.module, options.localeShape || 'full', options);
   const router = makeRouter(options.responses || {});
   loaded.sandbox.fetch = router.fetchStub;
   const language = options.language === undefined ? 'zh' : options.language;
@@ -13548,11 +13556,12 @@ test('client: the toaster cursor decides what is new — no replay, no repeat, n
     ['boot-b', 3, 0],
   );
   // 5. Switch off: advance without showing, so switching back on releases no
-  //    backlog ("关闭后不产生新提示").
-  assert.deepEqual(
-    shape(policy.planToasts({ state: { bootId: 'boot-a', cursor: 2 }, payload: { enabled: false, notifications: feed() } })),
-    ['boot-a', 3, 0],
-  );
+  //    backlog ("关闭后不产生新提示"), and say so — the toaster drops what it has
+  //    already queued (review C5).
+  const off = policy.planToasts({ state: { bootId: 'boot-a', cursor: 2 }, payload: { enabled: false, notifications: feed() } });
+  assert.deepEqual(shape(off), ['boot-a', 3, 0]);
+  assert.equal(off.muted, true);
+  assert.equal(fresh.muted, false, 'a shown notice is not a muted answer');
   // 6. No feed at all (an older Host, or a failed read): change nothing — the
   //    settings-page block is still the answer.
   assert.deepEqual(
@@ -13770,6 +13779,11 @@ test('client: without the Toast primitive nothing is registered, and the page sa
     hasText(oneBy(oldTree, 'data-assembly-note', 'no-toast'), old.zh.assemblyToastUnavailable),
     'and the page states the degradation instead of promising a toast',
   );
+  assert.equal(
+    oneBy(oldTree, 'data-region', 'assembly-status').props['data-assembly-toast-seat'],
+    'absent',
+    'review C4: the seat names the reason',
+  );
   assert.notEqual(oneBy(oldTree, 'data-region', 'assembly-status'), undefined, 'the block itself is untouched');
 
   const modern = makePage({
@@ -13786,7 +13800,124 @@ test('client: without the Toast primitive nothing is registered, and the page sa
   // The settings page keeps its detail block and its switch (判据 7).
   const modernTree = await modern.flush();
   assert.equal(oneBy(modernTree, 'data-region', 'assembly-status') !== undefined, true);
+  assert.equal(
+    oneBy(modernTree, 'data-region', 'assembly-status').props['data-assembly-toast-seat'],
+    'ready',
+    'the seat says the overlay really exists',
+  );
   assert.equal(collect(modernTree, (node) => node.props && node.props['data-assembly-note'] === 'no-toast').length, 0);
   assert.equal(oneBy(modernTree, 'data-action', 'assembly-toggle') !== undefined, true);
+});
+
+test('client: a Host with the primitive but no shell.overlay slot is not silently toasterless (review C4)', async () => {
+  // The case a capability probe cannot see: `Toast` exists, the slot does not.
+  // Nothing is registered, so nothing can ever be toasted — and the page has to
+  // say so, because "no toast" and "not working" look identical otherwise.
+  const page = makePage({
+    primitives: 'ok',
+    withToast: true,
+    declaredSlots: ['settings.section'],
+    responses: defaultResponses(),
+    useSessions: sessionsHook(SESSIONS_STATE),
+  });
+  assert.equal(page.loaded.module.__internals.assemblyNotice.HAS_TOAST, true, 'the capability probe says yes');
+  assert.equal(
+    page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay').length,
+    0,
+    'the slot was never declared, so no entry exists',
+  );
+  assert.equal(
+    page.loaded.module.__internals.assemblyNotice.overlaySeat(),
+    'pending',
+    'the seat is the fact the page reads',
+  );
+  const tree = await page.flush();
+  const block = oneBy(tree, 'data-region', 'assembly-status');
+  assert.equal(block.props['data-assembly-toast-seat'], 'pending');
+  assert.ok(
+    hasText(oneBy(tree, 'data-assembly-note', 'no-toast'), page.zh.assemblyToastSlotMissing),
+    'and it names the real reason, not the capability probe',
+  );
+  // The block still works: the detail and the switch are the fallback surface.
+  assert.equal(oneBy(tree, 'data-action', 'assembly-toggle') !== undefined, true);
+});
+
+test('client: turning the switch off empties the queue instead of playing it out (review C5)', async () => {
+  let enabled = true;
+  const notices = [{ session: 's1', notice: { ...assemblyNoticeFixture(), seq: 2, id: 'n2' } }];
+  const listeners = {};
+  const doc = {
+    visibilityState: 'visible',
+    addEventListener: (name, handler) => {
+      listeners[name] = handler;
+    },
+    removeEventListener: (name) => {
+      delete listeners[name];
+    },
+  };
+  const responses = defaultResponses({
+    [PATHS.assemblyStatus]: (url) => {
+      const since = /since=(\d+)/.exec(url);
+      const from = since === null ? 1 : Number(since[1]);
+      return {
+        payload: assemblyFeedFixture({
+          enabled,
+          notifications: { bootId: 'boot-a', cursor: 2, stale: false, notices: from >= 2 ? [] : notices },
+        }),
+      };
+    },
+  });
+  const page = makePage({ primitives: 'ok', withToast: true, responses, document: doc });
+  page.loaded.sandbox.sessionStorage = makeStorage({
+    'dsh-prompt-setting:assembly-toast-cursor': JSON.stringify({ v: 1, bootId: 'boot-a', cursor: 1 }),
+  });
+  const toaster = makeToaster(page);
+  const tree = await toaster.flush();
+  assert.equal(toastNodes(tree).length, 1, 'the notice is queued');
+  // Off while it is still on screen: the next read mutes the toaster and drops
+  // the queue — "off" is a statement about now, not about the next drain.
+  enabled = false;
+  listeners.visibilitychange();
+  await settle();
+  assert.deepEqual(toastNodes(toaster.draw()), [], 'off means silent now');
+  assert.equal(
+    page.loaded.sandbox.sessionStorage.getItem('dsh-prompt-setting:assembly-toast-cursor'),
+    JSON.stringify({ v: 1, bootId: 'boot-a', cursor: 2 }),
+    'the cursor still advances, so switching back on releases no backlog',
+  );
+});
+
+test('client: the shell session-status hook is the toaster\'s primary trigger (review C3b)', async () => {
+  let now = 1000000;
+  let statuses = { s1: { running: false } };
+  let selectorCalls = 0;
+  const hook = (selector) => {
+    selectorCalls += 1;
+    return selector(statuses);
+  };
+  const responses = defaultResponses({ [PATHS.assemblyStatus]: () => ({ payload: assemblyFeedFixture() }) });
+  const page = makePage({ primitives: 'ok', withToast: true, responses });
+  // A controllable clock: the burst throttle is real time, and a case must not
+  // wait 3 s to observe the event-driven path.
+  page.loaded.sandbox.Date = class extends Date {
+    static now() {
+      return now;
+    }
+  };
+  page.loaded.sandbox.sessionStorage = makeStorage({
+    'dsh-prompt-setting:assembly-toast-cursor': JSON.stringify({ v: 1, bootId: 'boot-a', cursor: 2 }),
+  });
+  const toaster = makeToaster(page, { useSessionStatus: hook });
+  await toaster.flush();
+  const reads = () => urlsFor(page, PATHS.assemblyStatus);
+  assert.equal(selectorCalls > 0, true, 'the entry subscribes to the shell hook (the C3b path)');
+  assert.equal(reads().length, 1, 'and reads once on mount');
+  // A status change means a step ended somewhere; past the throttle it is a
+  // second read. The 20 s timer is only the fallback, never the trigger here.
+  statuses = { s1: { running: true } };
+  now += 5000;
+  await toaster.flush();
+  assert.equal(reads().length, 2, 'the status change is what drove the read');
+  assert.equal(selectorCalls >= 2, true);
 });
 // #endregion
