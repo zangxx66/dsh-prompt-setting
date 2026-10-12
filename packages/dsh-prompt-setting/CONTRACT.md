@@ -6598,8 +6598,12 @@ Revision 46 adds one marker and one attribute to this block and nothing else.
 it is **anything but `ready`**, `data-assembly-note="no-toast"` states the
 degradation — keyed on the **seat**, not on the capability probe, because a Host
 with the primitive and without the slot would otherwise show nothing at all while
-also toasting nothing (review C4). The block, its switch and its read schedule are
-otherwise unchanged — the toast is **additional**, never a replacement.
+also toasting nothing (review C4). The three non-`ready` seats have **three
+different sentences** (review R1): `absent`, `pending` and `failed` name the
+missing primitive, the undeclared slot and the refused registration respectively,
+so the page never tells a user that a slot their own Host declared is missing. The
+block, its switch and its read schedule are otherwise unchanged — the toast is
+**additional**, never a replacement.
 
 ### 21.6 The incremental feed and the shell-overlay toast (Revision 46)
 
@@ -6657,7 +6661,7 @@ re-report it.
   block is the whole surface. The page reports which of the two happened through
   `data-assembly-toast-seat` (§21.5) — the **seat**, never the capability probe,
   because "has the primitive" and "has a registered overlay" are different facts
-  (review C4).
+  (review C4), and each non-`ready` seat has its own sentence (review R1).
 - Registration itself is guarded by `slots.inject('shell.overlay', …)`, which runs
   its callback only once the Host has declared the slot — on a Host that predates
   the slot nothing is registered, the seat stays `pending`, and the plugin is

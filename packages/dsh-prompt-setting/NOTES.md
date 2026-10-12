@@ -8080,3 +8080,33 @@ timer-only 分支（无 `useSessionStatus` 时 `activity: null`），`ConnectedA
 **测试与门禁**：全量 `886 passed / 0 failed`（上一轮 882 + C3a 1 + C4 1 + C5 1 + C3b 1；另在 2 条既有
 用例上补了 `muted` / seat 断言，未削弱或删改任何既有断言）；`client-chunks` 5 一致、`prepare` 21 项、`check-compat` exit 0；
 零新增依赖、零构建。三处负向对照（客户端 `>=`、宿主 `>=`、判定回退 `HAS_TOAST`）均实测变红并已还原。
+
+### 143.1 收口轮 2：评审 rev-att-002-02 的 R1、R5（2026-10-13）
+
+**R1｜`failed` 座位的文案与事实相反（必修）**：原先非 `absent` 一律映射到「宿主**未声明**
+`shell.overlay` 插槽」，而 `failed` 的真实含义是「已声明、但**拒绝**注册」——用户会看到一句错误的
+原因说明，恰是 C4 要消灭的那种误报。现三态三句：`absent` → 缺 `Toast` 组件、`pending` → 未声明插槽、
+`failed` → 已声明但拒绝注册（新增 `assemblyToastRefused`，zh/en 各一条）。用例见
+`test/client.test.mjs`「a Host that declares the slot and refuses the registration says exactly that」；
+harness 新增 `refusedSlots` 选项来模拟 `register` 抛错，并断言三种文案两两不同。
+**负向对照**：把三态压回两态（`failed` 复用 `slotMissing`）⇒ 该用例红，已还原（实测）。
+
+**R5｜C3b 的因果未被守护（必修）**：评审把依赖数组换成 `[]` 后仍全绿——因为 harness 的 `useEffect`
+double **无条件**在每次 flush 重跑所有 effect，无法区分「状态变化驱动」与「渲染驱动」。现 harness 支持
+`enforceEffectDeps`（显式开启时才按 `Object.is` 比较依赖；**默认行为逐字不变**，既有用例不受影响），
+该用例改为：静音兜底 timer（harness 把沙箱延迟压到 5 ms，否则 20 s 兜底会混入并掩盖因果）、断言
+「同一 status map + 推进 5 秒 ⇒ 不产生新读」与「status map 变化 ⇒ 产生新读」。
+**负向对照**：依赖改 `[]` ⇒ 第二条断言红；整个依赖数组去掉 ⇒ 第一条断言红。均实测并已还原。
+
+**本轮未复修、按「已知残余」登记的四条**（来源：评审 rev-att-002-02；主管指示不动，随交付说明列出）
+
+- **R2｜`muted` 必要非充分**：`planToasts` 在 `bootId` 不匹配（或本机尚无 cursor）时先返回
+  `muted: false`，所以「开关关闭」与「宿主刚重启」同拍的那一次读不会清空队列（该次读也不弹任何 toast）。
+  影响上限：屏上已排队的一条 toast 会多留一个轮询间隔。
+- **R3｜关闭即静音的延迟**：清队列发生在**下一次成功读**，而不是用户点开关的那一刻；最多一个轮询间隔
+  （可见时 20 s；不可见时不读，回到页面才清）。
+- **R4｜座位是单向闩**：`ready` 之后若宿主撤销 `shell.overlay` 声明（插件热重载、布局变化），seat 不会回到
+  `pending`/`absent`——页内块继续显示「已注册」，而浮层可能已不存在。`markOverlaySeat` 只由注册回调驱动，
+  没有可订阅的反向信号。
+- **R6｜`planToasts` 的 `enabled === true` 收紧**：畸形载荷（缺 `enabled` 字段）从「弹」变为「静音」。
+  更保守，但无用例覆盖该形状；若将来要区分「缺字段」与「显式 false」，需另加分支与用例。

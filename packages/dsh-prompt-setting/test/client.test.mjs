@@ -129,6 +129,21 @@ function makeHooksRuntime(options = {}) {
   // real DOM, so a case that wants to exercise a measuring code path hands in the
   // element it wants the ref to hold.
   const presetRefs = Array.isArray(options.refs) ? options.refs : [];
+  /**
+   * Whether `useEffect`'s dependency array is honoured (review R5).
+   *
+   * Off by default, because this harness is not React: a case renders, collects
+   * the effects and runs them all, which is what every pre-R5 case means by
+   * "flush". That default cannot express "the effect re-ran **because** its
+   * dependency changed" — with it, deleting the array from the code under test
+   * changes nothing and the test stays green. A case that needs that causality
+   * asks for it explicitly and gets React's rule: an effect whose dependencies
+   * are `Object.is`-equal to the previous render's does not run.
+   */
+  const enforceEffectDeps = options.enforceEffectDeps === true;
+  /** React's own comparison: same length, `Object.is` per slot. */
+  const sameDeps = (left, right) =>
+    left.length === right.length && left.every((value, index) => Object.is(value, right[index]));
   const React = {
     createElement(type, props, ...children) {
       return {
@@ -144,9 +159,15 @@ function makeHooksRuntime(options = {}) {
       };
       return [cells[index], set];
     },
-    useEffect(fn) {
-      effects.push(fn);
+    useEffect(fn, deps) {
+      const index = cursor;
       cursor += 1;
+      if (enforceEffectDeps && Array.isArray(deps)) {
+        const previous = cells[index];
+        cells[index] = deps.slice();
+        if (Array.isArray(previous) && sameDeps(previous, deps)) return;
+      }
+      effects.push(fn);
     },
     useRef(initial) {
       const index = cursor++;
@@ -505,7 +526,8 @@ const LOCALE_SHAPES = ['full', 'bare', 'throwing', 'noRevision'];
  *   it for "every slot is declared", which is what every pre-g-062 case means; an
  *   explicit list is how review C4's Host (the primitive without the slot) is
  *   expressed, because `slots.inject` is exactly "run once the declaration
- *   exists".
+ *   exists". `refusedSlots`: the slots this Host declares and then refuses to
+ *   register into — review R1's third seat.
  * @returns the captured registration, dictionaries and live ctx.
  */
 function mountClient(module, localeShape = 'full', options = {}) {
@@ -513,6 +535,7 @@ function mountClient(module, localeShape = 'full', options = {}) {
   const registrations = [];
   const dictionaries = [];
   const declaredSlots = Array.isArray(options.declaredSlots) ? options.declaredSlots : null;
+  const refusedSlots = Array.isArray(options.refusedSlots) ? options.refusedSlots : null;
   const record = (ns, dict0) => {
     dictionaries.push({ ns, dict: dict0 });
     return () => {};
@@ -555,6 +578,11 @@ function mountClient(module, localeShape = 'full', options = {}) {
         thunk();
       },
       register(options, component) {
+        // Review R1: a Host that declares the slot and refuses the entry is a
+        // third, different fact from "no slot".
+        if (refusedSlots !== null && refusedSlots.includes(options.name)) {
+          throw new Error(`the host refused the ${options.name} registration`);
+        }
         registrations.push({ options, component });
         return () => {};
       },
@@ -13887,7 +13915,7 @@ test('client: turning the switch off empties the queue instead of playing it out
   );
 });
 
-test('client: the shell session-status hook is the toaster\'s primary trigger (review C3b)', async () => {
+test('client: the shell session-status hook is the toaster\'s primary trigger (review C3b, causality pinned by R5)', async () => {
   let now = 1000000;
   let statuses = { s1: { running: false } };
   let selectorCalls = 0;
@@ -13896,7 +13924,14 @@ test('client: the shell session-status hook is the toaster\'s primary trigger (r
     return selector(statuses);
   };
   const responses = defaultResponses({ [PATHS.assemblyStatus]: () => ({ payload: assemblyFeedFixture() }) });
-  const page = makePage({ primitives: 'ok', withToast: true, responses });
+  // Review R5: this case asks the harness to honour the dependency array. The
+  // default double re-runs **every** effect on every render, which cannot tell
+  // "the status change drove this read" from "this render did" — with that
+  // default, deleting `[props.activity]` from the toaster left this case green.
+  // With deps enforced, both halves below fail when the array goes away: an
+  // unchanged map must not read (it does, so the count assertion fails), and a
+  // changed map must (it does not, so that one fails too).
+  const page = makePage({ primitives: 'ok', withToast: true, responses, enforceEffectDeps: true });
   // A controllable clock: the burst throttle is real time, and a case must not
   // wait 3 s to observe the event-driven path.
   page.loaded.sandbox.Date = class extends Date {
@@ -13907,17 +13942,67 @@ test('client: the shell session-status hook is the toaster\'s primary trigger (r
   page.loaded.sandbox.sessionStorage = makeStorage({
     'dsh-prompt-setting:assembly-toast-cursor': JSON.stringify({ v: 1, bootId: 'boot-a', cursor: 2 }),
   });
+  // The fallback timer is silenced on purpose. This case is about the **event**
+  // path, and the harness floors every sandbox delay to 5 ms (g-032), so the
+  // 20 s fallback would otherwise fire inside a `settle()` and blur the cause —
+  // which is exactly the confusion R5 is about. `pull` on mount and on a
+  // dependency change does not go through a timer, so nothing else is lost.
+  page.loaded.sandbox.setTimeout = () => 0;
+  page.loaded.sandbox.clearTimeout = () => {};
   const toaster = makeToaster(page, { useSessionStatus: hook });
   await toaster.flush();
   const reads = () => urlsFor(page, PATHS.assemblyStatus);
   assert.equal(selectorCalls > 0, true, 'the entry subscribes to the shell hook (the C3b path)');
   assert.equal(reads().length, 1, 'and reads once on mount');
-  // A status change means a step ended somewhere; past the throttle it is a
-  // second read. The 20 s timer is only the fallback, never the trigger here.
+  // Same status map, five seconds of clock, no timer: the effect must not re-run,
+  // so there is nothing that could read. This is the assertion that fails when
+  // the toaster's dependency array is deleted.
+  now += 5000;
+  await toaster.flush();
+  assert.equal(reads().length, 1, 'an unchanged status map is not a reason to read (R5)');
+  // A new status map means a step ended somewhere; past the 3 s throttle that is
+  // a read. The change is the cause, not the render.
   statuses = { s1: { running: true } };
   now += 5000;
   await toaster.flush();
-  assert.equal(reads().length, 2, 'the status change is what drove the read');
+  assert.equal(reads().length, 2, 'the status change — and nothing else — drove the read');
   assert.equal(selectorCalls >= 2, true);
+});
+
+test('client: a Host that declares the slot and refuses the registration says exactly that (review R1)', async () => {
+  const page = makePage({
+    primitives: 'ok',
+    withToast: true,
+    refusedSlots: ['shell.overlay'],
+    responses: defaultResponses(),
+    useSessions: sessionsHook(SESSIONS_STATE),
+  });
+  assert.equal(
+    page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay').length,
+    0,
+    'the registration was refused, so no entry exists',
+  );
+  assert.equal(page.loaded.module.__internals.assemblyNotice.overlaySeat(), 'failed');
+  const tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'assembly-status').props['data-assembly-toast-seat'], 'failed');
+  const note = oneBy(tree, 'data-assembly-note', 'no-toast');
+  assert.ok(
+    hasText(note, page.zh.assemblyToastRefused),
+    'the reason is the real one: the slot exists and the entry was refused',
+  );
+  assert.equal(
+    hasText(note, page.zh.assemblyToastSlotMissing),
+    false,
+    'not "the slot is missing" — this host declared it',
+  );
+  assert.equal(hasText(note, page.zh.assemblyToastUnavailable), false, 'and not "the primitive is missing" either');
+  // Three seats, three sentences: the mapping is not a two-way switch with a
+  // catch-all, which is exactly what review R1 caught.
+  assert.notEqual(page.zh.assemblyToastRefused, page.zh.assemblyToastSlotMissing);
+  assert.notEqual(page.zh.assemblyToastRefused, page.zh.assemblyToastUnavailable);
+  assert.notEqual(page.zh.assemblyToastSlotMissing, page.zh.assemblyToastUnavailable);
+  const english = makePage({ primitives: 'ok', withToast: true, responses: defaultResponses(), language: 'en' });
+  assert.notEqual(english.text.assemblyToastRefused, english.text.assemblyToastSlotMissing);
+  assert.notEqual(english.text.assemblyToastRefused, english.text.assemblyToastUnavailable);
 });
 // #endregion

@@ -1144,6 +1144,8 @@ window.__ModuleLoader__.load({
         '本机宿主未提供 Toast 组件，主动提示不可用（未注册任何浮层）；结论仍在上方摘要中，功能其余部分不受影响。',
       assemblyToastSlotMissing:
         '本机宿主未声明 shell.overlay 浮层插槽，主动提示无法注册（未注册任何浮层）；结论仍在上方摘要中，功能其余部分不受影响。',
+      assemblyToastRefused:
+        '本机宿主已声明 shell.overlay 插槽，但拒绝了本插件的注册（未注册任何浮层）；结论仍在上方摘要中，功能其余部分不受影响。',
       assemblyLimitation:
         '口径：装配层以本插件最终返回的段列表为准——更晚注册的 prepend listener 仍可能改写它，宿主在 waterfall 之后还可能把整份段列表折叠到生效的 complete 段；送达层以本次 step 在 surface 上产生的 system/message（append 或 replace head）为准，HTTP 是否实际发出在插件侧不可观测，本提示不作此声称。',
       mineWarningsHeading: '已保存，但有以下引用需要留意：',
@@ -1754,6 +1756,8 @@ window.__ModuleLoader__.load({
         'This host does not provide the Toast primitive, so proactive toasts are unavailable (no overlay was registered); the verdicts stay in the summary above and nothing else is affected.',
       assemblyToastSlotMissing:
         'This host never declares the shell.overlay slot, so the proactive toast could not be registered (no overlay was registered); the verdicts stay in the summary above and nothing else is affected.',
+      assemblyToastRefused:
+        'This host declares the shell.overlay slot but refused this plugin\'s registration (no overlay was registered); the verdicts stay in the summary above and nothing else is affected.',
       assemblyLimitation:
         'Basis: the assembly layer is the section list this plugin finally returned — a `{prepend: true}` listener registered later may still rewrite it, and the Host may collapse the whole list onto the effective `complete` section after the waterfall; the delivery layer is the system/message this step committed on the surface (append or head replace). Whether the HTTP request was actually sent is not observable from a plugin, and this notice does not claim it.',
       mineWarningsHeading: 'Saved, with references to note:',
@@ -6808,18 +6812,24 @@ window.__ModuleLoader__.load({
             )
           : null,
         // g-062 (Revision 46): the honest degradation, keyed on the **seat**
-        // (review C4). Either the Host cannot draw a toast at all, or it can but
-        // never declared `shell.overlay` — in both cases there is no proactive
-        // surface, and the page says so instead of letting the user wait for a
-        // toast that cannot come. `pending` is that second case: the slot
-        // callback has not run, and it runs synchronously for a slot that
-        // exists.
+        // (review C4). Three different facts, three different sentences (review
+        // R1) — a Host without the primitive, a Host that never declared the
+        // slot, and a Host that declared it and refused the registration are not
+        // the same thing, and saying "the slot is missing" about a Host that
+        // declared it would be a false statement about the user's own machine.
+        // Only `ready` is silent; everything else says which one happened.
         toastSeat === 'ready'
           ? null
           : h(
               'p',
               { 'data-assembly-note': 'no-toast', style: noteStyle },
-              t(toastSeat === 'absent' ? 'assemblyToastUnavailable' : 'assemblyToastSlotMissing'),
+              t(
+                toastSeat === 'absent'
+                  ? 'assemblyToastUnavailable'
+                  : toastSeat === 'failed'
+                    ? 'assemblyToastRefused'
+                    : 'assemblyToastSlotMissing',
+              ),
             ),
         h('p', { 'data-region': 'assembly-limitation', style: noteStyle }, t('assemblyLimitation')),
       );
