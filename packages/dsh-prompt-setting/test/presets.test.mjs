@@ -181,7 +181,11 @@ function mount(options = {}) {
         tools: [],
         variables: {},
       };
-      const queue = listeners.map((listener) => listener.callback);
+      // The assemble waterfall's own listeners only (g-062: the plugin also
+      // listens to `agent/pre-step` / `session/event` / `session/disposed`).
+      const queue = listeners
+        .filter((listener) => listener.name === 'system-prompt/assemble')
+        .map((listener) => listener.callback);
       const inner = () => Promise.resolve(assembly);
       const next = () => {
         const callback = queue.shift() ?? inner;

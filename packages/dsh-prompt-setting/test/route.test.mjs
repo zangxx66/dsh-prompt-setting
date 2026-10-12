@@ -39,6 +39,8 @@ const DOWNLOAD_REGION_PATH = '/prompt-setting/download-region';
 const PRESETS_PATH = '/prompt-setting/presets';
 const PRESETS_APPLY_PATH = '/prompt-setting/presets/apply';
 const PRESETS_UNAPPLY_PATH = '/prompt-setting/presets/unapply';
+/** g-062: the assembly-status notice and its switch. */
+const ASSEMBLY_STATUS_PATH = '/prompt-setting/assembly-status';
 /** g-042: the npm document, the GitHub fallback, and the registry's install spec. */
 const REGISTRY_URL = 'https://registry.npmjs.org/dsh-prompt-setting';
 const GITHUB_URL = 'https://api.github.com/repos/zangxx66/dsh-prompt-setting/releases/latest';
@@ -241,7 +243,15 @@ function mount(options = {}) {
         tools: [],
         variables: options.variables ?? {},
       };
-      const queue = listeners.map((listener) => listener.callback);
+      // Only the assemble waterfall's own listeners take part. Since g-062 the
+      // plugin also listens to `agent/pre-step`, `session/event` and
+      // `session/disposed`; the shipped dispatcher routes an event to the
+      // listeners registered for **its** name, so a harness that queued every
+      // callback would hand an agent event the waterfall's `(assembly, context,
+      // next)` arguments.
+      const queue = listeners
+        .filter((listener) => listener.name === 'system-prompt/assemble')
+        .map((listener) => listener.callback);
       const inner = () => Promise.resolve(assembly);
       const next = () => {
         const callback = queue.shift() ?? inner;
@@ -303,6 +313,18 @@ function mount(options = {}) {
     systemPrompt,
     sectionRegistrations,
     sectionsDisposedCount: () => sectionsDisposed,
+    /**
+     * Dispatch one host event to this mount's listeners, by event name — the
+     * shipped dispatcher's routing rule (`agent/pre-step`, `session/event`,
+     * `session/disposed` since g-062).
+     * @param name - the event name.
+     * @param args - the listener arguments, after the event name.
+     */
+    emit(name, ...args) {
+      const matched = listeners.filter((listener) => listener.name === name);
+      for (const listener of matched) listener.callback(...args);
+      return matched.length;
+    },
     /**
      * Undo every effect this mount registered, newest first — the unmount path
      * cordis takes when the plugin's fiber is disposed. It exists so a test can
@@ -1386,10 +1408,14 @@ test('assembly: a real scoped turn resolves its workspace layer from the agent s
 
 test('assembly: with no overrides configured the assembly comes back BY IDENTITY', async () => {
   const { ctx, listeners } = mount();
-  // Two listeners since Revision 8, in waterfall order: the `prepend`ed keeper
-  // is outermost, the override listener keeps the registration position it had.
+  // Two assemble listeners since Revision 8, in waterfall order: the `prepend`ed
+  // keeper is outermost, the override listener keeps the registration position it
+  // had. g-062 added three listeners on **other** event names (the assembly-status
+  // observation), which are not part of this waterfall.
   assert.deepEqual(
-    listeners.map((listener) => [listener.name, listener.options?.prepend === true]),
+    listeners
+      .filter((listener) => listener.name === 'system-prompt/assemble')
+      .map((listener) => [listener.name, listener.options?.prepend === true]),
     [['system-prompt/assemble', true], ['system-prompt/assemble', false]],
   );
   // The innermost listener is handed the raw assembly the service built and
@@ -1441,7 +1467,11 @@ test('F1: a third-party listener that appends a section is NOT read as a freeze'
   // ("the result is not registered.length + 1") called that a freeze and marked
   // every section non-overridable, so the whole panel became read-only.
   const { ctx, route, listeners } = mount();
-  assert.equal(listeners.length, 2, 'the prepended keeper and the override listener are mounted');
+  assert.equal(
+    listeners.filter((listener) => listener.name === 'system-prompt/assemble').length,
+    2,
+    'the prepended keeper and the override listener are mounted',
+  );
   // Register the third party AFTER this plugin, so it runs inside our next().
   ctx.on('system-prompt/assemble', (assembly) => ({
     ...assembly,
@@ -2961,4 +2991,293 @@ test('g-058: export, import and a history rollback all carry the mode', async ()
     { name: CUSTOM_SECTION_NAME, action: 'append', text: 'MINE' },
   ], 'the rollback restores the mode, not just the text');
   assert.equal(sha256(workspaceFile), workspaceBefore, 'and never the other layer');
+});
+
+// ---------------------------------------------------------------------------
+// g-062: the in-session assembly-status notice.
+//
+// The watch itself is asserted in `test/assembly-watch.test.mjs`; what is pinned
+// here is the **host wiring**: the route (one path, two methods), the two
+// verdicts end to end through a real assembly and real session events, the probe
+// exclusion, the bounded cleanup and the observer-only promise.
+// ---------------------------------------------------------------------------
+
+/** PUT one reserved-section override through the real write route. */
+async function savePrompt(route, { layer = 'user', session = 's1', text, action = 'replace' } = {}) {
+  return call(route, {
+    method: 'PUT',
+    url: OVERRIDES_PATH,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ layer, session, section: { name: CUSTOM_SECTION_NAME, action, text } }),
+  });
+}
+
+/** GET the assembly-status notice for one session. */
+async function readStatus(route, session) {
+  const suffix = session === undefined ? '' : `?session=${encodeURIComponent(session)}`;
+  return json(await call(route, { url: `${ASSEMBLY_STATUS_PATH}${suffix}` }));
+}
+
+/** One committed `system/message` event, as the host would dispatch it. */
+function systemMessageEvent({ text, turn, step, seq = 9, surfaceOp = 'append' }) {
+  return {
+    type: 'system/message',
+    seq,
+    time: 0,
+    surfaceOp,
+    data: { turn, step, message: { role: 'system', content: [{ type: 'text', text }] } },
+  };
+}
+
+test('g-062: GET /assembly-status is a pure read — an unknown session is a fact, not an error', async () => {
+  const { route } = mount();
+  const res = await call(route, { url: `${ASSEMBLY_STATUS_PATH}?session=nobody` });
+  assert.equal(res.statusCode, 200);
+  const payload = json(res);
+  assert.equal(payload.ok, true);
+  assert.equal(payload.enabled, true, 'the switch defaults to on');
+  assert.equal(payload.session, 'nobody');
+  assert.equal(payload.record, null, 'nothing observed for that session');
+  assert.equal(payload.counts.sessions, 0);
+  // The two stated limits travel as data, so the page renders its own language.
+  assert.deepEqual(payload.basis, {
+    assembly: 'plugin-return',
+    delivery: 'surface-system-message',
+    httpObservable: false,
+    outerRewritePossible: true,
+  });
+  // No `session` at all is the same shape with `session: null`.
+  const global = await readStatus(route);
+  assert.equal(global.session, null);
+  assert.equal(global.record, null);
+});
+
+test('g-062: the notice switch persists into the shared preference document, and validates its body', async () => {
+  const { route } = mount();
+  const put = await call(route, {
+    method: 'PUT',
+    url: ASSEMBLY_STATUS_PATH,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ enabled: false }),
+  });
+  assert.equal(put.statusCode, 200);
+  assert.deepEqual(json(put), {
+    ok: true,
+    enabled: false,
+    saved: { enabled: false },
+    effectiveFrom: 'next-run',
+    error: null,
+  });
+  // Read back: the answer comes from the file, not from a memory mirror.
+  assert.equal((await readStatus(route)).enabled, false);
+  const stored = JSON.parse(readFileSync(join(home, 'prompt-setting', 'preferences.json'), 'utf8'));
+  assert.equal(stored.assemblyNotice, false);
+  assert.equal(stored.updateCheck, true, 'the sibling switch is preserved by the merge');
+
+  // A non-boolean is the existing shape refusal (400), and the wrong method is a
+  // 405 with the full allow list.
+  const bad = await call(route, {
+    method: 'PUT',
+    url: ASSEMBLY_STATUS_PATH,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ enabled: 'yes' }),
+  });
+  assert.equal(bad.statusCode, 400);
+  assert.equal(json(bad).code, 'invalid-enabled');
+  const wrong = await call(route, { method: 'POST', url: ASSEMBLY_STATUS_PATH });
+  assert.equal(wrong.statusCode, 405);
+  assert.equal(wrong.headers.allow, 'GET, PUT');
+});
+
+test('g-062: a new conversation reports its first assembly once, with the assembly-layer verdict', async () => {
+  const harness = mount({ agents: [{ id: 's1' }] });
+  const { ctx, route } = harness;
+  assert.equal((await savePrompt(route, { text: 'MINE' })).statusCode, 200);
+
+  const assembly = await ctx.systemPrompt.assemble({ agent: { id: 's1' }, scope: { marker: 'g062' } });
+  assert.equal(assembly.sections.find((section) => section.name === CUSTOM_SECTION_NAME).text, 'MINE');
+  harness.emit('agent/pre-step', { agent: { id: 's1' }, turn: 1, step: 1, messages: [] });
+  harness.emit('session/event', { id: 's1' }, { type: 'request/header', seq: 1, time: 0, data: { reason: 'initial', header: {} } });
+
+  const payload = await readStatus(route, 's1');
+  const notice = payload.record.notice;
+  assert.equal(notice.kind, 'first-assembly');
+  assert.equal(notice.configured, true, 'the user set a prompt in this plugin');
+  assert.equal(notice.assembly.state, 'assembled');
+  assert.equal(notice.assembly.assembled, true);
+  assert.equal(notice.turn, 1);
+  assert.equal(notice.step, 1);
+  assert.equal(notice.delivery.state, 'waiting', 'the projection has not run yet');
+  // The user's text never travels: lengths and digests only.
+  assert.equal(JSON.stringify(payload).includes('MINE'), false);
+
+  // A second assembly of the same conversation reports nothing new.
+  await ctx.systemPrompt.assemble({ agent: { id: 's1' }, scope: { marker: 'g062' } });
+  assert.equal((await readStatus(route, 's1')).record.notice.kind, 'first-assembly');
+  assert.equal((await readStatus(route, 's1')).counts.sessions, 1);
+});
+
+test('g-062: a configured prompt that never reached the section is reported as "not assembled"', async () => {
+  // The reserved section is not in the assembly's section list (its registration
+  // is gone), so `applyOverrides` skips the stored prompt with
+  // `section-not-present`: the section this plugin returns is empty while the
+  // user really does have a prompt stored. That is scenario A's other half.
+  const harness = mount({ agents: [{ id: 's1' }] });
+  const { ctx, route } = harness;
+  assert.equal((await savePrompt(route, { text: 'MINE' })).statusCode, 200);
+  const at = harness.registered.findIndex((section) => section.name === CUSTOM_SECTION_NAME);
+  assert.notEqual(at, -1, 'the plugin registered its section');
+  harness.registered.splice(at, 1);
+
+  const assembly = await ctx.systemPrompt.assemble({ agent: { id: 's1' }, scope: { marker: 'g062' } });
+  assert.equal(assembly.sections.some((section) => section.name === CUSTOM_SECTION_NAME), false);
+  harness.emit('agent/pre-step', { agent: { id: 's1' }, turn: 1, step: 1, messages: [] });
+  harness.emit('session/event', { id: 's1' }, { type: 'request/header', seq: 1, time: 0, data: { reason: 'initial', header: {} } });
+
+  const notice = (await readStatus(route, 's1')).record.notice;
+  assert.equal(notice.kind, 'first-assembly');
+  assert.equal(notice.configured, true, 'the prompt is still stored in this plugin');
+  assert.equal(notice.assembly.state, 'empty');
+  assert.equal(notice.assembly.assembled, false);
+});
+
+test('g-062: a saved prompt reports both layers on the next run, and only for its own step', async () => {
+  const harness = mount({ agents: [{ id: 's1' }] });
+  const { ctx, route } = harness;
+  // The conversation is already established (it assembled before the save).
+  await ctx.systemPrompt.assemble({ agent: { id: 's1' }, scope: { marker: 'g062' } });
+  assert.equal((await savePrompt(route, { text: 'NEW' })).statusCode, 200);
+
+  // Next run: turn 2, step 1.
+  await ctx.systemPrompt.assemble({ agent: { id: 's1' }, scope: { marker: 'g062' } });
+  harness.emit('agent/pre-step', { agent: { id: 's1' }, turn: 2, step: 1, messages: [] });
+  const notice = (await readStatus(route, 's1')).record.notice;
+  assert.equal(notice.kind, 'prompt-change');
+  assert.equal(notice.assembly.state, 'read', 'assembly layer: the change was read');
+  assert.equal(notice.assembly.expectedDigest.length > 0, true);
+  assert.equal(notice.expected.layer, 'user');
+  assert.equal(notice.delivery.state, 'waiting', 'delivery layer waits for the projection');
+
+  // A system/message from ANOTHER step must not settle this notice.
+  harness.emit('session/event', { id: 's1' }, systemMessageEvent({ text: 'SYSTEM NEW', turn: 1, step: 7 }));
+  assert.equal((await readStatus(route, 's1')).record.notice.delivery.state, 'waiting');
+
+  // The step's own projection does.
+  harness.emit('session/event', { id: 's1' }, systemMessageEvent({ text: 'SYSTEM NEW', turn: 2, step: 1, seq: 12 }));
+  const settled = (await readStatus(route, 's1')).record.notice;
+  assert.equal(settled.delivery.state, 'delivered');
+  assert.equal(settled.delivery.seq, 12);
+  assert.equal(settled.delivery.surfaceOp, 'append');
+  assert.equal(settled.delivery.textMatched, true);
+});
+
+test('g-062: the plugin\'s own probe assembly never enters a session notice', async () => {
+  const harness = mount({ agents: [{ id: 's1' }], workspaces: [workspaceWith('w1', 's1')] });
+  const { route } = harness;
+  assert.equal((await savePrompt(route, { text: 'MINE' })).statusCode, 200);
+
+  // Before any user assembly the snapshot route probes this session's own scope
+  // — with the **real Agent** in the context, which is exactly why
+  // `context.agent === undefined` cannot be the exclusion test. A recorded probe
+  // would create the session's record right here.
+  const snapshot = json(await call(route, { url: `${SNAPSHOT_PATH}?session=s1` }));
+  assert.equal(snapshot.ok, true);
+  assert.equal(snapshot.mounted, true, 'the probe really did assemble this session');
+
+  const probed = await readStatus(route, 's1');
+  assert.equal(probed.counts.sessions, 0, 'a probe creates no session record');
+  assert.equal(probed.record, null, 'and therefore no notice');
+  assert.equal(probed.counts.rejectedProbes >= 1, true, 'the exclusion is visible in the counters');
+
+  // The user's own assembly does create the record — the exclusion is specific
+  // to the probe, not to the session.
+  await harness.ctx.systemPrompt.assemble({ agent: { id: 's1' }, scope: { marker: 'g062' } });
+  const real = await readStatus(route, 's1');
+  assert.equal(real.counts.sessions, 1);
+  assert.equal(real.record.lastAssembly.configured, true);
+});
+
+test('g-062: a disposed session drops its record, and the switch silences new notices', async () => {
+  const harness = mount({ agents: [{ id: 's1' }, { id: 's2' }] });
+  const { ctx, route } = harness;
+  assert.equal((await savePrompt(route, { text: 'MINE' })).statusCode, 200);
+  await ctx.systemPrompt.assemble({ agent: { id: 's1' }, scope: { marker: 'g062' } });
+  harness.emit('session/event', { id: 's1' }, { type: 'request/header', seq: 1, time: 0, data: { reason: 'initial', header: {} } });
+  assert.notEqual((await readStatus(route, 's1')).record, null);
+
+  harness.emit('session/disposed', { id: 's1' });
+  assert.equal((await readStatus(route, 's1')).record, null, 'the bounded record does not outlive the session');
+  assert.equal((await readStatus(route, 's1')).counts.sessions, 0);
+
+  // Switch off: the observation still happens (the assembly is on record), but
+  // no notice is produced.
+  await call(route, {
+    method: 'PUT',
+    url: ASSEMBLY_STATUS_PATH,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ enabled: false }),
+  });
+  await ctx.systemPrompt.assemble({ agent: { id: 's2' }, scope: { marker: 'g062' } });
+  harness.emit('agent/pre-step', { agent: { id: 's2' }, turn: 1, step: 1, messages: [] });
+  harness.emit('session/event', { id: 's2' }, { type: 'request/header', seq: 1, time: 0, data: { reason: 'initial', header: {} } });
+  const silenced = await readStatus(route, 's2');
+  assert.equal(silenced.enabled, false);
+  assert.equal(silenced.record.notice, null);
+  assert.equal(silenced.record.lastAssembly.length > 0, true, 'the observation itself continues');
+});
+
+test('g-062: observer only — the sections an assembly returns do not depend on the watch', async () => {
+  const harness = mount({ agents: [{ id: 's1' }] });
+  const { ctx, route } = harness;
+  assert.equal((await savePrompt(route, { text: 'MINE' })).statusCode, 200);
+  const before = await ctx.systemPrompt.assemble({ agent: { id: 's1' }, scope: { marker: 'g062' } });
+  const snapshotBefore = JSON.parse(JSON.stringify(before.sections));
+  // A full key node: assembly, step label, first header, delivery.
+  harness.emit('agent/pre-step', { agent: { id: 's1' }, turn: 1, step: 1, messages: [] });
+  harness.emit('session/event', { id: 's1' }, { type: 'request/header', seq: 1, time: 0, data: { reason: 'initial', header: {} } });
+  harness.emit('session/event', { id: 's1' }, systemMessageEvent({ text: 'SYSTEM MINE', turn: 1, step: 1 }));
+  assert.equal((await readStatus(route, 's1')).record.notice.delivery.state, 'delivered');
+
+  const after = await ctx.systemPrompt.assemble({ agent: { id: 's1' }, scope: { marker: 'g062' } });
+  assert.deepEqual(after.sections, snapshotBefore, 'the watch changed nothing the model receives');
+  // And the same holds with the notice switched off.
+  await call(route, {
+    method: 'PUT',
+    url: ASSEMBLY_STATUS_PATH,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ enabled: false }),
+  });
+  const off = await ctx.systemPrompt.assemble({ agent: { id: 's1' }, scope: { marker: 'g062' } });
+  assert.deepEqual(off.sections, snapshotBefore);
+});
+
+test('g-062: the step-alignment listener is a waterfall pass-through — it never vetoes a step', async () => {
+  // `agent/pre-step` is a **waterfall**: `AgentLoop.preStep()` consumes the
+  // decision its own listener builds. An observer that returned `undefined`
+  // without calling `next()` would break every step in a real profile, which is
+  // exactly what this case pins.
+  const harness = mount({ agents: [{ id: 's1' }] });
+  const { ctx, route } = harness;
+  assert.equal((await savePrompt(route, { text: 'MINE' })).statusCode, 200);
+  await ctx.systemPrompt.assemble({ agent: { id: 's1' }, scope: { marker: 'g062' } });
+  const listener = harness.listeners.find((entry) => entry.name === 'agent/pre-step');
+  assert.notEqual(listener, undefined, 'the alignment listener is mounted');
+  let called = 0;
+  const decision = { kind: 'enter', messages: [] };
+  const returned = listener.callback({ agent: { id: 's1' }, turn: 4, step: 2, messages: [] }, () => {
+    called += 1;
+    return decision;
+  });
+  assert.equal(called, 1, 'next() is called');
+  assert.equal(returned, decision, 'and the downstream decision is returned unchanged');
+
+  // The same call labelled the node this step belongs to.
+  harness.emit('session/event', { id: 's1' }, { type: 'request/header', seq: 1, time: 0, data: { reason: 'initial', header: {} } });
+  const notice = (await readStatus(route, 's1')).record.notice;
+  assert.equal(notice.turn, 4);
+  assert.equal(notice.step, 2);
+
+  // A double that hands no `next` (an emit-shaped caller) must not throw: the
+  // listener then has nothing to pass on.
+  assert.equal(listener.callback({ agent: { id: 's1' }, turn: 5, step: 1 }), undefined);
 });

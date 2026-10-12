@@ -627,7 +627,9 @@ test('boot: a host with no systemPrompt.section is one readable line and nothing
   assert.equal(run.thrown, null, 'apply must never throw outward');
   assert.equal(harness.logs.length, 1, 'exactly one readable line');
   assert.equal(run.lines.length, 1, 'and exactly one on the terminal too');
-  for (const expected of [PLUGIN_NAME, '挂载失败', '本插件已停用', '已撤销 3 项已注册 effect']) {
+  // g-062 added three observation listeners (agent/pre-step, session/event,
+  // session/disposed), so the rollback now unwinds six effects.
+  for (const expected of [PLUGIN_NAME, '挂载失败', '本插件已停用', '已撤销 6 项已注册 effect']) {
     assert.ok(harness.logs[0].includes(expected), `the line names ${expected}: ${harness.logs[0]}`);
   }
   assert.ok(harness.logs[0].includes('section'), 'and the first cause names the missing method');
@@ -644,7 +646,7 @@ test('boot: a section registration that throws is reported and rolls the mount b
   assert.ok(harness.logs[0].includes('already registered'), 'the host\'s own message is the first cause');
   assert.equal(harness.live.size, 0);
   assert.equal(harness.listeners.length, 0);
-  assert.equal(harness.disposedCount(), 3, 'every earlier effect was undone — the route and both listeners');
+  assert.equal(harness.disposedCount(), 6, 'every earlier effect was undone — the route and all five listeners');
   assert.equal(harness.sectionsDisposedCount(), 0, 'and nothing of the section\'s is left to undo');
 });
 

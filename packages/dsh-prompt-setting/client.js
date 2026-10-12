@@ -371,6 +371,22 @@ window.__ModuleLoader__.load({
     const PRESETS_PATH = '/prompt-setting/presets';
     const PRESETS_APPLY_PATH = '/prompt-setting/presets/apply';
     const PRESETS_UNAPPLY_PATH = '/prompt-setting/presets/unapply';
+    /**
+     * g-062:「装配状态提示」— one path, two methods.
+     *
+     * `GET ?session=` answers the observation for one conversation (the last key
+     * node's assembly-layer and delivery-layer verdicts) plus the switch's state;
+     * `PUT {enabled}` records the switch. The notice is rendered **here**, in the
+     * settings page: it never enters the model context, costs no tokens and does
+     * not change the prompt an assembly returns.
+     */
+    const ASSEMBLY_STATUS_PATH = '/prompt-setting/assembly-status';
+    /**
+     * How long the page waits before re-reading a notice whose delivery layer is
+     * still `waiting` (g-062). Short enough to settle within one step and long
+     * enough to cost one request, not a poll loop.
+     */
+    const ASSEMBLY_POLL_MS = 2500;
     /** The three region ids, in dropdown order — the only values the contract accepts. */
     const DOWNLOAD_REGIONS = ['default', 'cn', 'custom'];
     /**
@@ -976,6 +992,47 @@ window.__ModuleLoader__.load({
       mineInterpolateSetNote: '「继承」= 本层不声明（删掉该字段）；「显式关」= 写入 false，可覆盖上层的「开」。',
       mineInterpolateInheritedOn: '本层未设置，因此跟随上层的「开」。要覆盖它，请选「显式关」。',
       mineInterpolateStateSaved: '本层状态已设为「{state}」，下一轮生效（next-turn）。',
+      // ---- g-062:「装配状态提示」— the two-layer observation, page-only.
+      assemblyHeading: '装配状态提示',
+      assemblyIntro:
+        '只在这里显示，不进入模型上下文、不占 token、也不改变模型收到的 prompt。提示只在关键节点出现一次：新会话首次装配、以及保存 Prompt 之后的下一个 run。',
+      assemblySwitchLabel: '提示',
+      assemblySwitchOn: '已开启',
+      assemblySwitchOff: '已关闭',
+      assemblyTurnOn: '开启提示',
+      assemblyTurnOff: '关闭提示',
+      assemblySaving: '正在切换…',
+      assemblySaveFailed: '切换装配状态提示失败',
+      assemblyEnabledNow: '装配状态提示已开启。',
+      assemblyDisabledNow: '装配状态提示已关闭：不再产生新的提示（已有观察保留）。',
+      assemblyNoSession: '先在上方「查看范围」选择一个会话，才能看到该会话的装配状态。',
+      assemblyNoRecord: '所选会话还没有观察到装配；下一次请求后结果会出现在这里。',
+      assemblyNoNotice:
+        '所选会话已开启提示，但还没有到提示节点（新会话首次装配，或保存 Prompt 之后的下一个 run）。',
+      assemblyWaitingDelivery: '等待本步的送达事件…',
+      assemblyWatching: '正在等待送达层结论…',
+      assemblyKindFirst: '新会话首次装配',
+      assemblyKindChange: '保存 Prompt 之后的下一个 run',
+      assemblyLayerAssembly: '装配层',
+      assemblyLayerDelivery: '送达层',
+      assemblyLayerSep: '：',
+      assemblyMatchedSuffix: '（{note}）',
+      assemblyFirstAssembled: '已装配到用户定义的 Prompt。',
+      assemblyFirstEmpty: '未装配到用户定义的 Prompt（本插件的段最终为空）。',
+      assemblyChangeRead: '本次 assembly 已读到变更后的插件段文本。',
+      assemblyChangeNotRead: '本次 assembly 未读到变更后的插件段文本。',
+      assemblyDeliveryWaiting: '尚未观测到本步的 system/message 事件。',
+      assemblyDeliveryDelivered: '已进入本次请求的 messages（{op}）。',
+      assemblyDeliveryUnconfirmed:
+        '未观测到本步的 system/message 事件，未确认已进入本次请求（可能被去重跳过）。',
+      assemblyOpAppend: '新增 system/message',
+      assemblyOpReplace: '改写 head system/message',
+      assemblyTextMatchedYes: '送达文本包含该 Prompt 全文',
+      assemblyTextMatchedNo: '送达文本不含该 Prompt 全文（可能被变量展开或改写）',
+      assemblyNodeMeta: 'turn {turn} · step {step}',
+      assemblyNoticeOnce: '仅关键节点提示一次，不随每个 step 重复。',
+      assemblyLimitation:
+        '口径：装配层以本插件最终返回的段列表为准——更晚注册的 prepend listener 仍可能改写它；送达层以本次 step 在 surface 上产生的 system/message（append 或 replace head）为准，HTTP 是否实际发出在插件侧不可观测，本提示不作此声称。',
       mineWarningsHeading: '已保存，但有以下引用需要留意：',
       mineWarningUndefined:
         '这些变量在本次探测中没有值，保存已通过（值属于会话，不属于文本）；缺少该值的那一轮，这些引用会保留字面量、不做替换：{list}',
@@ -1537,6 +1594,48 @@ window.__ModuleLoader__.load({
       mineInterpolateSetNote: '"Inherit" states nothing (the field is removed); "Off" writes false, which is what lets a layer close over an inherited ON.',
       mineInterpolateInheritedOn: 'This layer states nothing, so it inherits ON. Choose "Off" to override that.',
       mineInterpolateStateSaved: 'This layer now states {state}; effective from the next turn (next-turn).',
+      // ---- g-062: the assembly-status notice — the two-layer observation, shown
+      // in this page only.
+      assemblyHeading: 'Assembly status notice',
+      assemblyIntro:
+        'Shown here only: it never enters the model context, costs no tokens and does not change the prompt the model receives. A notice appears once per key node — the first assembly of a new conversation, and the next run after a prompt is saved.',
+      assemblySwitchLabel: 'Notice',
+      assemblySwitchOn: 'ON',
+      assemblySwitchOff: 'OFF',
+      assemblyTurnOn: 'Turn the notice on',
+      assemblyTurnOff: 'Turn the notice off',
+      assemblySaving: 'Switching…',
+      assemblySaveFailed: 'Switching the assembly-status notice failed',
+      assemblyEnabledNow: 'The assembly-status notice is on.',
+      assemblyDisabledNow: 'The assembly-status notice is off: no new notice will be produced (existing observations are kept).',
+      assemblyNoSession: 'Pick a session under "Viewing scope" above to see that conversation\'s assembly status.',
+      assemblyNoRecord: 'No assembly has been observed for the selected session yet; the result appears here after the next request.',
+      assemblyNoNotice:
+        'The notice is on for the selected session, but no key node has been reached yet (the first assembly of a new conversation, or the next run after a prompt is saved).',
+      assemblyWaitingDelivery: 'Waiting for this step\'s delivery event…',
+      assemblyWatching: 'Waiting for the delivery-layer verdict…',
+      assemblyKindFirst: 'First assembly of a new conversation',
+      assemblyKindChange: 'Next run after a prompt was saved',
+      assemblyLayerAssembly: 'Assembly layer',
+      assemblyLayerDelivery: 'Delivery layer',
+      assemblyLayerSep: ': ',
+      assemblyMatchedSuffix: ' ({note})',
+      assemblyFirstAssembled: 'Assembled: the prompt you defined is in this assembly.',
+      assemblyFirstEmpty: 'Not assembled: this plugin\'s section is empty in this assembly.',
+      assemblyChangeRead: 'This assembly read the changed plugin-section text.',
+      assemblyChangeNotRead: 'This assembly did NOT read the changed plugin-section text.',
+      assemblyDeliveryWaiting: 'No system/message event has been observed for this step yet.',
+      assemblyDeliveryDelivered: 'Delivered into this request\'s messages ({op}).',
+      assemblyDeliveryUnconfirmed:
+        'No system/message event was observed for this step, so delivery into this request is unconfirmed (the projection may have deduplicated it).',
+      assemblyOpAppend: 'an appended system/message',
+      assemblyOpReplace: 'a rewritten head system/message',
+      assemblyTextMatchedYes: 'the delivered text carries the full prompt',
+      assemblyTextMatchedNo: 'the delivered text does not carry the full prompt (variables expanded, or rewritten)',
+      assemblyNodeMeta: 'turn {turn} · step {step}',
+      assemblyNoticeOnce: 'Once per key node only — it does not pile up per step.',
+      assemblyLimitation:
+        'Basis: the assembly layer is the section list this plugin finally returned — a `{prepend: true}` listener registered later may still rewrite it; the delivery layer is the system/message this step committed on the surface (append or head replace). Whether the HTTP request was actually sent is not observable from a plugin, and this notice does not claim it.',
       mineWarningsHeading: 'Saved, with references to note:',
       mineWarningUndefined:
         'These variables had no value in the probe that was run, so the save was accepted (a value belongs to the session, not to the text); in a turn that has no value for them, they stay literal instead of being substituted: {list}',
@@ -6110,6 +6209,165 @@ window.__ModuleLoader__.load({
      * @param a - the page actions.
      * @returns the panel element.
      */
+    /**
+     * g-062:「装配状态提示」— the two-layer observation, rendered in this page
+     * only.
+     *
+     * It states the two verdicts the goal fixes, and nothing it renders can
+     * reach the model: the block reads `GET /assembly-status` for the selected
+     * session and draws it. The assembly layer is what this plugin's assembly
+     * returned (with its stated limit: a later `{prepend: true}` listener may
+     * still rewrite the sections); the delivery layer is the `system/message`
+     * this step committed on the surface. "Was the HTTP request really sent" is
+     * not observable from a plugin and is not claimed anywhere here.
+     *
+     * One notice is shown — the last key node — because the Host produces one per
+     * node, never one per step.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the block element.
+     */
+    function renderAssemblyStatus(t, m, a) {
+      const state =
+        m.assembly ?? { phase: 'idle', data: null, error: null, enabled: null, status: { kind: 'idle', error: null } };
+      const payload = state.data !== null && typeof state.data === 'object' ? state.data : null;
+      const ready = state.phase === 'ready' && payload !== null;
+      const enabled = ready ? payload.enabled === true : m.assemblyEnabled === true;
+      const switchStatus = m.assemblyStatus ?? { kind: 'idle', error: null };
+      const record = ready && payload.record !== null && typeof payload.record === 'object' ? payload.record : null;
+      const notice =
+        record !== null && record.notice !== null && typeof record.notice === 'object' ? record.notice : null;
+      const hasSession = m.sessionArg !== null;
+      // The one punctuation the two languages disagree about, so no sentence is
+      // assembled by concatenating a hardcoded separator.
+      const sep = t('assemblyLayerSep');
+      const kindLabel = (kind) => t(kind === 'first-assembly' ? 'assemblyKindFirst' : 'assemblyKindChange');
+      const opLabel = (op) => t(op === 'replace' ? 'assemblyOpReplace' : 'assemblyOpAppend');
+      const assemblyVerdict =
+        notice === null
+          ? null
+          : notice.kind === 'first-assembly'
+            ? t(notice.assembly.assembled === true ? 'assemblyFirstAssembled' : 'assemblyFirstEmpty')
+            : t(notice.assembly.state === 'read' ? 'assemblyChangeRead' : 'assemblyChangeNotRead');
+      const deliveryVerdict =
+        notice === null
+          ? null
+          : notice.delivery.state === 'delivered'
+            ? fmt(t('assemblyDeliveryDelivered'), { op: opLabel(notice.delivery.surfaceOp) })
+            : notice.delivery.state === 'waiting'
+              ? t('assemblyDeliveryWaiting')
+              : t('assemblyDeliveryUnconfirmed');
+      const matchedNote =
+        notice !== null && notice.delivery.state === 'delivered' && notice.delivery.textMatched !== null
+          ? fmt(t('assemblyMatchedSuffix'), {
+              note: t(notice.delivery.textMatched === true ? 'assemblyTextMatchedYes' : 'assemblyTextMatchedNo'),
+            })
+          : '';
+      const meta =
+        notice !== null && notice.turn !== null && notice.step !== null
+          ? fmt(t('assemblyNodeMeta'), { turn: String(notice.turn), step: String(notice.step) })
+          : null;
+      const errorStyle = { margin: 0, fontSize: 12, color: token.stateError, wordBreak: 'break-word' };
+      const noteStyle = { margin: 0, ...metaStyle };
+      const lineStyle = { margin: 0, fontSize: 13 };
+      return h(
+        'div',
+        {
+          'data-region': 'assembly-status',
+          'data-assembly-phase': state.phase,
+          'data-assembly-enabled': ready ? String(enabled) : 'unknown',
+          'data-assembly-switch': switchStatus.kind,
+          'data-assembly-session': hasSession ? 'yes' : 'none',
+          'data-notice-kind': notice === null ? 'none' : String(notice.kind),
+          'data-assembly-state':
+            notice === null
+              ? 'none'
+              : notice.kind === 'first-assembly'
+                ? notice.assembly.assembled === true
+                  ? 'assembled'
+                  : 'empty'
+                : String(notice.assembly.state),
+          'data-delivery-state': notice === null ? 'none' : String(notice.delivery.state),
+          style: { ...cardStyle, display: 'flex', flexDirection: 'column', gap: 6 },
+        },
+        h(
+          'div',
+          { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+          h('h3', { style: headingStyle }, t('assemblyHeading')),
+          h('span', { style: metaStyle }, t('assemblySwitchLabel')),
+          h(
+            UI.Button,
+            {
+              'data-action': 'assembly-toggle',
+              'aria-pressed': ready && enabled ? 'true' : 'false',
+              disabled: m.busy || !ready || switchStatus.kind === 'saving',
+              onClick: a.toggleAssemblyNotice,
+            },
+            switchStatus.kind === 'saving'
+              ? t('assemblySaving')
+              : t(ready && enabled ? 'assemblyTurnOff' : 'assemblyTurnOn'),
+          ),
+          h(
+            'span',
+            { 'data-assembly-switch-state': ready ? (enabled ? 'on' : 'off') : 'unknown', style: metaStyle },
+            ready ? t(enabled ? 'assemblySwitchOn' : 'assemblySwitchOff') : '',
+          ),
+        ),
+        h('p', { style: noteStyle }, t('assemblyIntro')),
+        state.phase === 'error'
+          ? h('p', { 'data-warning': 'assembly-unreadable', style: errorStyle }, errorText(t, state.error))
+          : null,
+        switchStatus.kind === 'error'
+          ? h(
+              'p',
+              { 'data-warning': 'assembly-switch-failed', style: errorStyle },
+              `${t('assemblySaveFailed')}${sep}${errorText(t, switchStatus.error)}`,
+            )
+          : null,
+        !hasSession
+          ? h('p', { 'data-assembly-note': 'no-session', style: noteStyle }, t('assemblyNoSession'))
+          : null,
+        hasSession && ready && record === null
+          ? h('p', { 'data-assembly-note': 'no-record', style: noteStyle }, t('assemblyNoRecord'))
+          : null,
+        hasSession && record !== null && notice === null
+          ? h('p', { 'data-assembly-note': 'no-notice', style: noteStyle }, t('assemblyNoNotice'))
+          : null,
+        notice !== null
+          ? h(
+              'div',
+              { 'data-region': 'assembly-notice', style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+              h(
+                'p',
+                { 'data-assembly-kind': String(notice.kind), style: { margin: 0, fontWeight: 600 } },
+                meta === null ? kindLabel(notice.kind) : `${kindLabel(notice.kind)} · ${meta}`,
+              ),
+              h(
+                'p',
+                {
+                  'data-assembly-layer':
+                    notice.kind === 'first-assembly'
+                      ? notice.assembly.assembled === true
+                        ? 'assembled'
+                        : 'empty'
+                      : String(notice.assembly.state),
+                  style: lineStyle,
+                },
+                `${t('assemblyLayerAssembly')}${sep}${assemblyVerdict}`,
+              ),
+              h(
+                'p',
+                { 'data-delivery-layer': String(notice.delivery.state), style: lineStyle },
+                `${t('assemblyLayerDelivery')}${sep}${deliveryVerdict}${matchedNote}`,
+              ),
+              h('p', { style: noteStyle }, t('assemblyNoticeOnce')),
+            )
+          : null,
+        h('p', { 'data-region': 'assembly-limitation', style: noteStyle }, t('assemblyLimitation')),
+      );
+    }
+
     function renderMinePanel(t, m, a) {
       const workspace = m.snap.data && m.snap.data.layers ? m.snap.data.layers.workspace : null;
       const workspaceUsable = workspace && workspace.enabled === true;
@@ -6211,6 +6469,9 @@ window.__ModuleLoader__.load({
         'div',
         { 'data-region': 'mine', style: { ...promptBlockBandStyle, display: 'flex', flexDirection: 'column', gap: 10 } },
         h('h3', { style: headingStyle }, t('mineHeading')),
+        // g-062: the observation of the two layers sits at the top of the write
+        // surface — the place a user returns to right after saving a prompt.
+        renderAssemblyStatus(t, m, a),
         targetLine,
         h('p', { style: { margin: 0, ...metaStyle } }, t('mineNote')),
         h(
@@ -7806,6 +8067,23 @@ window.__ModuleLoader__.load({
       // their own slot and the panel renders them beside the state they qualify,
       // instead of inside an error banner that would deny the write.
       const [mineWarnings, setMineWarnings] = React.useState([]);
+      /**
+       * g-062:「装配状态提示」— the observation this page renders, its switch's
+       * state, and the last switch attempt.
+       *
+       * `data` is the Host's answer verbatim (`record` is `null` until it has
+       * observed an assembly for the selected session), `enabled` is the switch
+       * as the **Host** reports it (`null` until it answered — the page never
+       * guesses), and `status` is the switch's own request state, kept separate
+       * from the read's, so a failed toggle cannot read as a failed read.
+       */
+      const [assembly, setAssembly] = React.useState({
+        phase: 'idle',
+        data: null,
+        error: null,
+        enabled: null,
+        status: { kind: 'idle', error: null },
+      });
       const [notice, setNotice] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
       // g-060 (Revision 37; dialog-based since Revision 38 / review R3): the
@@ -8248,6 +8526,50 @@ window.__ModuleLoader__.load({
       // by. The user layer is global; the workspace layer needs a locatable
       // workspace, so an unresolved scope shows the note instead of a request
       // the host must refuse.
+      React.useEffect(() => {
+        if (tab !== 'mine') return undefined;
+        let cancelled = false;
+        let timer = null;
+        const query = sessionArg === null ? '' : `?session=${encodeURIComponent(sessionArg)}`;
+        // One read per mount/tab/scope change, plus a short follow-up **only**
+        // while the Host reports a notice whose delivery layer is still
+        // `waiting`: that verdict is settled by a session event which arrives
+        // after the assembly, so a single read may legitimately see it pending.
+        // Nothing here writes to a session and nothing reaches the model.
+        const run = async () => {
+          const result = await requestJson(`${ASSEMBLY_STATUS_PATH}${query}`);
+          if (cancelled) return;
+          if (!result.ok) {
+            setAssembly((current) => ({ ...current, phase: 'error', error: result.error }));
+            return;
+          }
+          const payload = result.payload;
+          setAssembly((current) => ({
+            ...current,
+            phase: 'ready',
+            data: payload,
+            error: null,
+            enabled: payload !== null && typeof payload === 'object' && payload.enabled === true,
+          }));
+          const waiting =
+            payload !== null &&
+            typeof payload === 'object' &&
+            payload.record !== null &&
+            typeof payload.record === 'object' &&
+            payload.record.notice !== null &&
+            typeof payload.record.notice === 'object' &&
+            payload.record.notice.delivery !== null &&
+            typeof payload.record.notice.delivery === 'object' &&
+            payload.record.notice.delivery.state === 'waiting';
+          if (waiting) timer = setTimeout(run, ASSEMBLY_POLL_MS);
+        };
+        void run();
+        return () => {
+          cancelled = true;
+          if (timer !== null) clearTimeout(timer);
+        };
+      }, [tab, sessionArg, reload]);
+
       React.useEffect(() => {
         if (tab !== 'history') return undefined;
         if (historyLayer === 'workspace' && historyScopeValue.length === 0) {
@@ -8833,6 +9155,42 @@ window.__ModuleLoader__.load({
           }),
         });
         setReload((value) => value + 1);
+      };
+
+      /**
+       * g-062: turn the assembly-status notice on or off.
+       *
+       * One `PUT` of the boolean the Host stores in `preferences.json`, merged
+       * with whatever else that document holds. The switch is the user's, so a
+       * write failure is reported in the block rather than retried silently; the
+       * page's own state is the Host's answer, never the wish.
+       */
+      const toggleAssemblyNotice = async () => {
+        const next = assembly.enabled !== true;
+        setAssembly((current) => ({ ...current, status: { kind: 'saving', error: null } }));
+        setBusy(true);
+        const result = await requestJson(ASSEMBLY_STATUS_PATH, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ enabled: next }),
+        });
+        setBusy(false);
+        if (!result.ok) {
+          setAssembly((current) => ({ ...current, status: { kind: 'error', error: result.error } }));
+          setNotice({ tone: 'error', text: `${t('assemblySaveFailed')} — ${errorText(t, result.error)}` });
+          return;
+        }
+        const applied = result.payload !== null && typeof result.payload === 'object' && result.payload.enabled === true;
+        setAssembly((current) => ({
+          ...current,
+          enabled: applied,
+          data:
+            current.data === null || typeof current.data !== 'object'
+              ? current.data
+              : { ...current.data, enabled: applied },
+          status: { kind: 'saved', error: null },
+        }));
+        setNotice({ tone: 'success', text: t(applied ? 'assemblyEnabledNow' : 'assemblyDisabledNow') });
       };
 
       /**
@@ -9744,6 +10102,8 @@ window.__ModuleLoader__.load({
         dropForeignDraft,
         toggleMineInterpolate,
         setMineInterpolateState,
+        // g-062: the assembly-status notice's own switch (page-only feature).
+        toggleAssemblyNotice,
         // g-060:「预设」— the catalogue editor, the two layer actions, and the
         // workspace they name. Everything here is view state until a click on
         // 「保存」/「应用」/「取消应用」, which are the only three controls that write.
@@ -10136,6 +10496,14 @@ window.__ModuleLoader__.load({
         mineLayerDisabled,
         mineFrozenReason,
         mineFrozenCertain,
+        // g-062: the assembly-status observation the「我的 Prompt」block renders —
+        // the Host's answer verbatim, the switch as the Host reported it, and the
+        // switch's own request state.
+        assembly,
+        assemblyEnabled: assembly.enabled,
+        assemblyPhase: assembly.phase,
+        assemblyError: assembly.error,
+        assemblyStatus: assembly.status,
         // g-060: the preset tab's state slots, the open dialog, the workspace
         // list the apply dialog renders, and the text「从当前文本另存为预设」reads.
         presets,

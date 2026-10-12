@@ -1044,6 +1044,52 @@ function updateAvailableFixture(over = {}) {
 }
 
 /**
+ * `GET /prompt-setting/assembly-status` payload (g-062).
+ *
+ * The default is the "nothing observed yet" shape: the switch on, no session
+ * named and therefore no record. A case that renders a notice passes `record`.
+ * @param over - fields to override.
+ * @returns the payload.
+ */
+function assemblyFixture(over = {}) {
+  return {
+    ok: true,
+    enabled: true,
+    session: null,
+    record: null,
+    counts: { sessions: 0, notices: 0, droppedNotices: 0, writes: 0, rejectedProbes: 0, noticeSeq: 0 },
+    basis: {
+      assembly: 'plugin-return',
+      delivery: 'surface-system-message',
+      httpObservable: false,
+      outerRewritePossible: true,
+    },
+    ...over,
+  };
+}
+
+/**
+ * One g-062 notice, as the host serializes it.
+ * @param over - fields to override.
+ * @returns the notice.
+ */
+function assemblyNoticeFixture(over = {}) {
+  return {
+    id: 'n1',
+    kind: 'first-assembly',
+    at: 1700000000000,
+    turn: 1,
+    step: 1,
+    configured: true,
+    assembly: { state: 'assembled', assembled: true, digest: 'abcd1234', length: 4, expectedDigest: 'abcd1234' },
+    delivery: { state: 'delivered', at: 1700000000100, seq: 12, surfaceOp: 'append', textMatched: true },
+    assemblyBasis: 'plugin-return',
+    probe: false,
+    ...over,
+  };
+}
+
+/**
  * `GET /prompt-setting/download-region` payload (g-043).
  *
  * The default is the **pre-detection** shape a g-043 host answers with when the
@@ -1311,6 +1357,8 @@ const PATHS = {
   presets: '/prompt-setting/presets',
   presetsApply: '/prompt-setting/presets/apply',
   presetsUnapply: '/prompt-setting/presets/unapply',
+  // g-062:「装配状态提示」— the observation read and its switch.
+  assemblyStatus: '/prompt-setting/assembly-status',
 };
 
 /** The default stub table (every route the page may call on mount). */
@@ -1348,6 +1396,8 @@ function defaultResponses(over = {}) {
     },
     // g-060: the preset library (CONTRACT.md §20.2).
     [PATHS.presets]: { payload: presetsFixture() },
+    // g-062: nothing observed yet — the switch on, no session named.
+    [PATHS.assemblyStatus]: { payload: assemblyFixture() },
     ...over,
   };
 }
@@ -1512,9 +1562,21 @@ test('client: requests stay on the plugin prefix and report the renderer', async
   // that (on a first visit) lets the *host* decide the update source. Still one
   // request to this plugin's own prefix, and still none at all when the mirror
   // says the switch is off (asserted in the region section below).
+  // g-062 adds the baseline read of the assembly-status notice for the「我的
+  // Prompt」tab — again one request to this plugin's own prefix, and one that is
+  // only made while that tab is open.
   assert.deepEqual(
     [...new Set(urls.map((url) => url.split('?')[0]))].sort(),
-    [PATHS.downloadRegion, PATHS.overrides, PATHS.ping, PATHS.presets, PATHS.snapshot, PATHS.updateApply, PATHS.updateCheck],
+    [
+      PATHS.assemblyStatus,
+      PATHS.downloadRegion,
+      PATHS.overrides,
+      PATHS.ping,
+      PATHS.presets,
+      PATHS.snapshot,
+      PATHS.updateApply,
+      PATHS.updateCheck,
+    ],
   );
   // The global default: no `?session=`, so the workspace layer stays inactive.
   assert.deepEqual(urlsFor(page, PATHS.snapshot), [PATHS.snapshot]);
@@ -13159,3 +13221,158 @@ test('client: a workspace’s stack lists every applied preset, each cancellable
   assert.equal(posts.length, 1);
   assert.deepEqual(JSON.parse(posts[0].init.body), { session: 'a1', presetId: 'preset-1' });
 });
+
+// #region g-062 — the assembly-status notice (page-only observation)
+
+/** The record one session's notice lives in, as the host serializes it. */
+function assemblyRecordFixture(over = {}) {
+  const notice = over.notice === undefined ? assemblyNoticeFixture() : over.notice;
+  return {
+    session: 's2',
+    firstNoticeDone: true,
+    lastAssembly: { at: 1700000000000, digest: 'abcd1234', length: 4, configured: true },
+    notice,
+    notices: notice === null ? [] : [notice],
+    dropped: 0,
+    ...over,
+  };
+}
+
+test('client: the「我的 Prompt」tab renders the assembly-status block, and an unselected session says so', async () => {
+  const page = makeOpenPage({ useSessions: sessionsHook(SESSIONS_STATE), responses: defaultResponses() });
+  let tree = await page.flush();
+  const block = oneBy(tree, 'data-region', 'assembly-status');
+  assert.equal(block.props['data-assembly-enabled'], 'true');
+  assert.equal(block.props['data-assembly-session'], 'yes');
+  assert.equal(block.props['data-notice-kind'], 'none');
+  assert.equal(block.props['data-assembly-state'], 'none');
+  assert.equal(block.props['data-delivery-state'], 'none');
+  assert.ok(hasText(block, page.zh.assemblyHeading));
+  assert.ok(hasText(oneBy(tree, 'data-assembly-note', 'no-record'), page.zh.assemblyNoRecord));
+  assert.ok(hasText(oneBy(tree, 'data-region', 'assembly-limitation'), page.zh.assemblyLimitation));
+  assert.deepEqual(urlsFor(page, PATHS.assemblyStatus), [`${PATHS.assemblyStatus}?session=s2`]);
+
+  // The global scope names no session, so the block says what to do instead of
+  // reading a conversation it cannot describe.
+  clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
+  tree = await page.flush();
+  const global = oneBy(tree, 'data-region', 'assembly-status');
+  assert.equal(global.props['data-assembly-session'], 'none');
+  assert.ok(hasText(oneBy(tree, 'data-assembly-note', 'no-session'), page.zh.assemblyNoSession));
+});
+
+test('client: the block reports both layers of the last key node, and never the prompt text', async () => {
+  const responses = defaultResponses({
+    [PATHS.assemblyStatus]: { payload: assemblyFixture({ session: 's2', record: assemblyRecordFixture() }) },
+  });
+  const page = makeOpenPage({ useSessions: sessionsHook(SESSIONS_STATE), responses });
+  const tree = await page.flush();
+  const block = oneBy(tree, 'data-region', 'assembly-status');
+  assert.equal(block.props['data-notice-kind'], 'first-assembly');
+  assert.equal(block.props['data-assembly-state'], 'assembled');
+  assert.equal(block.props['data-delivery-state'], 'delivered');
+
+  const notice = oneBy(tree, 'data-region', 'assembly-notice');
+  assert.notEqual(oneBy(tree, 'data-assembly-kind', 'first-assembly'), undefined);
+  assert.ok(hasText(notice, page.zh.assemblyKindFirst), 'the key node is named');
+  // Both verdicts are on screen, each with its own sentence.
+  assert.ok(
+    hasText(oneBy(tree, 'data-assembly-layer', 'assembled'), page.zh.assemblyFirstAssembled),
+    'assembly layer: assembled',
+  );
+  const delivery = oneBy(tree, 'data-delivery-layer', 'delivered');
+  assert.ok(hasText(delivery, page.zh.assemblyLayerDelivery), 'delivery layer is named');
+  assert.ok(
+    hasText(delivery, fillText(page.zh.assemblyDeliveryDelivered, { op: page.zh.assemblyOpAppend })),
+    'delivery layer: delivered, with the surface op',
+  );
+  assert.ok(hasText(delivery, page.zh.assemblyTextMatchedYes), 'and the text match detail');
+  assert.ok(hasText(notice, page.zh.assemblyNoticeOnce), 'the once-per-node promise is stated');
+  // The page renders digests and lengths, never the user's prompt.
+  assert.equal(strings(block).some((text) => text.includes('abcd1234')), false);
+});
+
+test('client: the notice distinguishes "not assembled" and "not re-read", with a pending delivery', async () => {
+  const first = assemblyNoticeFixture({
+    kind: 'first-assembly',
+    assembly: { state: 'empty', assembled: false, digest: 'empty', length: 0, expectedDigest: 'abcd1234' },
+    delivery: { state: 'waiting', at: null, seq: null, surfaceOp: null, textMatched: null },
+  });
+  const page = makeOpenPage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({
+      [PATHS.assemblyStatus]: {
+        payload: assemblyFixture({ session: 's2', record: assemblyRecordFixture({ notice: first }) }),
+      },
+    }),
+  });
+  const tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'assembly-status').props['data-assembly-state'], 'empty');
+  assert.ok(
+    hasText(oneBy(tree, 'data-assembly-layer', 'empty'), page.zh.assemblyFirstEmpty),
+    'scenario A: configured but not assembled',
+  );
+  assert.ok(
+    hasText(oneBy(tree, 'data-delivery-layer', 'waiting'), page.zh.assemblyDeliveryWaiting),
+    'the delivery layer is still pending',
+  );
+  // A pending delivery is the one state that asks for a follow-up read.
+  assert.equal(page.router.calls.filter((call) => call.url.startsWith(PATHS.assemblyStatus)).length >= 1, true);
+  page.dispose();
+
+  // The change-shaped notice: the assembly layer reports "not re-read", and the
+  // delivery layer reports the unconfirmed outcome rather than being stuck at
+  // "waiting" forever.
+  const change = assemblyNoticeFixture({
+    kind: 'prompt-change',
+    assembly: { state: 'not-read', assembled: true, digest: 'deadbeef', length: 8, expectedDigest: 'cafebabe' },
+    delivery: { state: 'unconfirmed', at: null, seq: null, surfaceOp: null, textMatched: null },
+    expected: { length: 8, layer: 'user', action: 'replace' },
+  });
+  const changed = makeOpenPage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({
+      [PATHS.assemblyStatus]: {
+        payload: assemblyFixture({ session: 's2', record: assemblyRecordFixture({ notice: change }) }),
+      },
+    }),
+  });
+  const changeTree = await changed.flush();
+  assert.equal(oneBy(changeTree, 'data-region', 'assembly-status').props['data-notice-kind'], 'prompt-change');
+  assert.ok(
+    hasText(oneBy(changeTree, 'data-assembly-layer', 'not-read'), page.zh.assemblyChangeNotRead),
+    'the assembly layer names the failure to re-read',
+  );
+  assert.ok(
+    hasText(oneBy(changeTree, 'data-delivery-layer', 'unconfirmed'), page.zh.assemblyDeliveryUnconfirmed),
+    'the delivery layer says what it could not confirm',
+  );
+});
+
+test('client: the assembly-status switch sends one PUT and follows the host answer', async () => {
+  // The stub behaves like the host: the switch it answers a read with is the one
+  // the last write stored, so a page that re-reads after the write sees the new
+  // value rather than flipping back.
+  let stored = true;
+  const responses = defaultResponses({
+    [PATHS.assemblyStatus]: (url, init) => {
+      if (init && init.method === 'PUT') {
+        stored = JSON.parse(init.body).enabled;
+        return { payload: assemblyFixture({ enabled: stored, session: 's2' }) };
+      }
+      return { payload: assemblyFixture({ enabled: stored, session: 's2', record: assemblyRecordFixture() }) };
+    },
+  });
+  const page = makeOpenPage({ useSessions: sessionsHook(SESSIONS_STATE), responses });
+  let tree = await page.flush();
+  assert.notEqual(oneBy(tree, 'data-assembly-switch-state', 'on'), undefined);
+  clickButton(tree, { 'data-action': 'assembly-toggle' });
+  await settle();
+  tree = await page.flush();
+  const writes = writeCalls(page).filter((call) => call.url.split('?')[0] === PATHS.assemblyStatus);
+  assert.equal(writes.length, 1, 'exactly one write');
+  assert.deepEqual(JSON.parse(writes[0].init.body), { enabled: false });
+  assert.notEqual(oneBy(tree, 'data-assembly-switch-state', 'off'), undefined);
+  assert.ok(hasText(tree, page.zh.assemblyDisabledNow), 'the page repeats the host\'s answer');
+});
+// #endregion

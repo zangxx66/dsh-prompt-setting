@@ -78,6 +78,13 @@ import {
   legacyPlan,
   reservedSectionLast,
 } from './core/custom.js';
+import {
+  CHANGE_NOTICE,
+  FIRST_NOTICE,
+  configuredTextOf,
+  createAssemblyWatch,
+  sectionTextOf,
+} from './core/assembly-watch.js';
 import { EXPERIMENTS } from './core/experiments.js';
 import {
   INSTALL_REQUEST_LIMIT,
@@ -177,6 +184,8 @@ import {
   writePresets,
 } from './core/store.js';
 import {
+  ASSEMBLY_NOTICE_DEFAULT,
+  ASSEMBLY_NOTICE_FLAG,
   DOWNLOAD_REGION_DEFAULT,
   REGION_PROBE_TIMEOUT_MS,
   REGISTRY_CHECK_TIMEOUT_MS,
@@ -185,6 +194,7 @@ import {
   createDownloadRegion,
   createUpdateChecker,
   isDownloadRegion,
+  normalizePreferences,
   resolveDownloadRegion,
 } from './core/update.js';
 import {
@@ -317,6 +327,24 @@ const PRESETS_PATH = `${ROUTE_PREFIX}/presets`;
 const PRESETS_APPLY_PATH = `${ROUTE_PREFIX}/presets/apply`;
 /** g-060: restore the workspace layer to the snapshot `apply` took. */
 const PRESETS_UNAPPLY_PATH = `${ROUTE_PREFIX}/presets/unapply`;
+/**
+ * g-062: the「装配状态提示」— did the prompt this plugin set get assembled, and
+ * did that text enter the model request?
+ *
+ * One path, two methods, and they are two different questions about one feature:
+ *   - `GET ?session=<id>` answers the **observation**: the last key-node notice
+ *     of that session (first assembly of a new conversation / the next run after
+ *     a save), each with its assembly-layer and delivery-layer verdicts, plus the
+ *     switch's current state. A read never writes a notice and never probes: an
+ *     unknown session answers `record: null`, not an error;
+ *   - `PUT {enabled}` records the switch in `preferences.json` (the same
+ *     document the update check uses). Turning it off silences the notices; it
+ *     does not stop the (side-effect-free) observation on the assembly path.
+ *
+ * Nothing here reaches the model: the notice is rendered in the settings page
+ * only, it costs no tokens and it never changes the prompt an assembly returns.
+ */
+const ASSEMBLY_STATUS_PATH = `${ROUTE_PREFIX}/assembly-status`;
 /** Method table; a known path with any other method is a 405 carrying `allow`. */
 const ROUTES = new Map([
   [PING_PATH, ['GET']],
@@ -335,6 +363,7 @@ const ROUTES = new Map([
   [PRESETS_PATH, ['GET', 'PUT', 'DELETE']],
   [PRESETS_APPLY_PATH, ['POST']],
   [PRESETS_UNAPPLY_PATH, ['POST']],
+  [ASSEMBLY_STATUS_PATH, ['GET', 'PUT']],
 ]);
 /**
  * How long the host waits for the release-asset probe before installing anyway.
@@ -1059,6 +1088,61 @@ function mount(ctx, config, cleanups) {
   };
 
   /**
+   * g-062: this mount's assembly-status watch — the per-session record of the
+   * last key-node notice (the first assembly of a new conversation, and the next
+   * run after the user saved a new prompt), each carrying both verdicts.
+   *
+   * The switch is read **per notice**, never cached, for the same reason the
+   * update switch is: a hand edit of `preferences.json` must be honoured on the
+   * next run without a remount. The whole watch is an observer — nothing it
+   * records can change the section list an assembly returns.
+   */
+  const assemblyWatch = createAssemblyWatch({
+    sectionName: CUSTOM_SECTION_NAME,
+    enabled: () => assemblyNoticeEnabled(),
+  });
+
+  /**
+   * Is the g-062 notice switch on?
+   *
+   * Absent means on (`ASSEMBLY_NOTICE_DEFAULT`), and an unreadable document
+   * fails open to on: the switch exists to silence a notice, not to break a
+   * settings page or a turn.
+   * @returns true when notices may be produced.
+   */
+  function assemblyNoticeEnabled() {
+    try {
+      return readPreferenceDocument()[ASSEMBLY_NOTICE_FLAG] !== false;
+    } catch {
+      return ASSEMBLY_NOTICE_DEFAULT;
+    }
+  }
+
+  /**
+   * Persist the g-062 switch.
+   *
+   * Merged into the current document, exactly like the update switch: an atomic
+   * write replaces the whole file, so writing only this key would erase a stored
+   * download region.
+   * @param enabled - the requested state.
+   * @returns `{written, enabled, error}`; a write failure is a value, never a throw.
+   */
+  function setAssemblyNotice(enabled) {
+    const next = normalizePreferences({ ...readPreferenceDocument(), [ASSEMBLY_NOTICE_FLAG]: enabled === true });
+    try {
+      writePreferences(updatePreferencesPath, next);
+    } catch (error) {
+      const message = error instanceof Error ? String(error.message).split('\n')[0] : String(error);
+      return {
+        written: false,
+        enabled: assemblyNoticeEnabled(),
+        error: { code: 'preferences-unwritable', message },
+      };
+    }
+    return { written: true, enabled: next[ASSEMBLY_NOTICE_FLAG] === true, error: null };
+  }
+
+  /**
    * The agent registry, or undefined when this profile has none.
    * @returns the service, or undefined.
    */
@@ -1600,6 +1684,11 @@ function mount(ctx, config, cleanups) {
     const registered = Array.isArray(assembly?.sections) ? assembly.sections : [];
     const record = { seq: (state.records.get(key)?.seq ?? 0) + 1, registered, downstream: null };
     state.records.set(key, record);
+    // g-062: captured **before** `resolvedFor` consumes `pendingProbe`. Object
+    // identity is the only reliable test: `probeTarget()` hands the real Agent
+    // when the session has one, so a probe is indistinguishable from a turn by
+    // its shape (card-e29d15f5, risk 2).
+    const probe = state.pendingProbe !== null && context === state.pendingProbe.context;
     const resolved = resolvedFor(context);
 
     const downstream = await next();
@@ -1628,13 +1717,87 @@ function mount(ctx, config, cleanups) {
     // (workspace over user, on statedness), and the table is this assembly's own
     // (`downstream.variables ?? assembly.variables`) — never a cached reading.
     // A failure here costs at most one unexpanded turn, so it fails open.
-    if (interpolateFlagOf(resolved) !== true) return base;
+    let result = base;
+    if (interpolateFlagOf(resolved) === true) {
+      try {
+        const current = Array.isArray(base?.sections) ? base.sections : sections;
+        const expanded = expandReservedSection(current, assemblyVariablesOf(assembly, downstream));
+        if (expanded !== current) result = { ...base, sections: expanded };
+      } catch {
+        result = base;
+      }
+    }
+    // g-062: the observation, after every decision above and before the value
+    // leaves this handler. It reads the section list this plugin is about to
+    // return and produces nothing the assembly path consumes; it is fail-open
+    // (`observeUserAssembly` swallows its own errors), so no observation can
+    // break a turn and no observation can change the returned sections.
+    observeUserAssembly({ probe, context, resolved, sections: result?.sections, at: Date.now() });
+    return result;
+  }
+
+  /**
+   * g-062: fold one finished assembly into the status watch.
+   *
+   * Called with the exact section list {@link assembleHandler} returns. Two
+   * assemblies are deliberately **not** attributed to a user session:
+   *   - this plugin's own probe (matched by the identity of the very
+   *     `AssembleContext` object `probe()` handed to `assemble()`): a probe
+   *     assembles without any delivery and must never enter a session's notice;
+   *   - an unscoped assembly (no session id), which belongs to no conversation.
+   *
+   * Both are counted instead of silently dropped, so the diagnostics can show
+   * that the exclusion is running.
+   * @param input - `{probe, context, resolved, sections, at}`.
+   */
+  function observeUserAssembly(input) {
     try {
-      const current = Array.isArray(base?.sections) ? base.sections : sections;
-      const expanded = expandReservedSection(current, assemblyVariablesOf(assembly, downstream));
-      return expanded === current ? base : { ...base, sections: expanded };
+      if (input.probe === true) {
+        assemblyWatch.rejectProbe();
+        return;
+      }
+      const sessionId = sessionIdOf(input.context);
+      if (sessionId === undefined) {
+        assemblyWatch.rejectProbe();
+        return;
+      }
+      assemblyWatch.observeAssembly({
+        sessionId,
+        // The config this assembly resolved — "what the user set in this plugin",
+        // independent of whether it reached the rendered section.
+        configuredText: configuredTextOf(input.resolved?.overrides, CUSTOM_SECTION_NAME),
+        // The plugin's own final text for the reserved section; absent means the
+        // section did not survive to this list, which is reported as "not
+        // assembled" rather than guessed at.
+        segmentText: sectionTextOf(input.sections, CUSTOM_SECTION_NAME) ?? '',
+        at: input.at,
+      });
     } catch {
-      return base;
+      // Fail open. An observation bug must never break a user's turn.
+    }
+  }
+
+  /**
+   * g-062: note a save of the reserved section, so that session's **next run**
+   * can report whether the change was re-assembled and delivered.
+   *
+   * Called after a successful write and strictly side-effect-free with respect to
+   * it: a note that cannot be taken never fails a save.
+   * @param input - `{layer, session, action, text}`.
+   */
+  function notePromptWrite(input) {
+    try {
+      assemblyWatch.markPromptWrite({
+        layer: input.layer,
+        // `null` (a user-layer save with no session) addresses every session; a
+        // workspace save addresses the one whose workspace layer was written.
+        session: typeof input.session === 'string' && input.session.length > 0 ? input.session : null,
+        action: input.action,
+        text: typeof input.text === 'string' ? input.text : '',
+        at: Date.now(),
+      });
+    } catch {
+      // Fail open: the save already happened and its response is unaffected.
     }
   }
 
@@ -2604,6 +2767,75 @@ function mount(ctx, config, cleanups) {
   }
 
   /**
+   * `GET /prompt-setting/assembly-status` — what this plugin observed about the
+   * prompt's two layers for one session.
+   *
+   * The answer is a **pure read**: it never assembles, never probes and never
+   * writes a notice. An unknown session (one this mount has not seen an assembly
+   * for) answers `record: null` with `ok: true` — "nothing observed yet" is a
+   * fact, not an error.
+   *
+   * The two verdicts are the goal's口径, and `basis` states them as data so the
+   * page can render its own language rather than parse prose:
+   *   - `assembly: 'plugin-return'` — the recorded text is the section list this
+   *     plugin returned, and a `{prepend: true}` listener registered **after**
+   *     this plugin may still rewrite it;
+   *   - `delivery: 'surface-system-message'` — delivered means this step
+   *     committed a `system/message` on the surface (append or head replace);
+   *     `httpObservable: false` — whether the HTTP request was really sent is not
+   *     observable from a plugin, and this route does not claim it.
+   * @param url - the parsed request URL (`?session=`).
+   * @param res - the Node response.
+   */
+  function handleReadAssemblyStatus(url, res) {
+    const raw = url.searchParams.get('session');
+    const sessionId = typeof raw === 'string' && raw.length > 0 ? raw : null;
+    sendJson(res, 200, {
+      ok: true,
+      enabled: assemblyNoticeEnabled(),
+      session: sessionId,
+      record: sessionId === null ? null : assemblyWatch.status(sessionId),
+      counts: assemblyWatch.stats(),
+      basis: {
+        assembly: 'plugin-return',
+        delivery: 'surface-system-message',
+        httpObservable: false,
+        outerRewritePossible: true,
+      },
+    });
+  }
+
+  /**
+   * `PUT /prompt-setting/assembly-status` — record the notice switch.
+   *
+   * Same shape rules as the update switch (a non-boolean is the existing 400
+   * `invalid-enabled`; an unwritable preference file is a 200 `ok:false`). The
+   * write is merged into the current document, so it cannot erase the update
+   * switch or a stored download region.
+   * @param req - the Node request.
+   * @param res - the Node response.
+   */
+  async function handleWriteAssemblyStatus(req, res) {
+    const body = await readJsonBody(req);
+    if (typeof body?.enabled !== 'boolean') {
+      throw new OverrideError(
+        'invalid-enabled',
+        '"enabled" must be a boolean (true = show assembly-status notices, false = never show them)',
+      );
+    }
+    const saved = setAssemblyNotice(body.enabled);
+    sendJson(res, 200, {
+      ok: saved.written,
+      enabled: saved.enabled,
+      saved: { enabled: saved.enabled },
+      effectiveFrom: 'next-run',
+      ...(saved.written
+        ? { error: null }
+        : { code: saved.error.code, message: saved.error.message, error: saved.error }),
+    });
+  }
+
+  /**
    * `PUT /prompt-setting/update-check` — record the on/off switch.
    *
    * The switch is the one thing that makes this feature acceptable to ship: with
@@ -3240,6 +3472,17 @@ function mount(ctx, config, cleanups) {
     const warnings = await assertTextInterpolatable(override, next, target);
     writeConfig(target.path, next);
     cacheWritten(target, next);
+    // g-062: a save of the reserved section is exactly the change the session's
+    // next run has to report on. Noted after the write succeeded, read from the
+    // body rather than re-read from disk, and unable to affect the response.
+    if (override.name === CUSTOM_SECTION_NAME) {
+      notePromptWrite({
+        layer,
+        session: sessionId ?? null,
+        action: override.action,
+        text: override.action === 'hide' ? '' : override.text,
+      });
+    }
     // History is written after the config it describes, and a history failure
     // never turns a successful save into an error (CONTRACT §8.4).
     recordHistory({
@@ -3659,6 +3902,11 @@ function mount(ctx, config, cleanups) {
     } else {
       writeConfig(target.path, next);
       cacheWritten(target, next);
+      // g-062: applying a preset is a prompt change like any other save, so the
+      // workspace's next run reports it. `alreadyApplied` above stays a no-op.
+      if (after !== null && typeof after.text === 'string') {
+        notePromptWrite({ layer: 'workspace', session: sessionId ?? null, action: 'replace', text: after.text });
+      }
       history = recordHistory({
         path: target.path,
         at,
@@ -3735,6 +3983,11 @@ function mount(ctx, config, cleanups) {
     const after = reservedSectionOf(next);
     writeConfig(target.path, next);
     cacheWritten(target, next);
+    // g-062: cancelling an application restores text — also a prompt change, and
+    // reported on the workspace's next run like any other save.
+    if (after !== null && typeof after.text === 'string') {
+      notePromptWrite({ layer: 'workspace', session: sessionId ?? null, action: 'replace', text: after.text });
+    }
     const history = recordHistory({
       path: target.path,
       at,
@@ -3934,6 +4187,14 @@ function mount(ctx, config, cleanups) {
               await handleUnapplyPreset(req, url, res);
               return;
             }
+            if (url.pathname === ASSEMBLY_STATUS_PATH) {
+              // g-062: `GET` is a pure read of the observation (never assembles,
+              // never probes); `PUT` records the notice switch. Neither reaches
+              // the model.
+              if (req.method === 'PUT') await handleWriteAssemblyStatus(req, res);
+              else handleReadAssemblyStatus(url, res);
+              return;
+            }
             if (url.pathname === INTERPOLATE_PATH) {
               if (req.method === 'PUT') await handleWriteInterpolate(req, url, res);
               else handleReadInterpolate(url, res);
@@ -3969,6 +4230,74 @@ function mount(ctx, config, cleanups) {
     cleanups,
     () => ctx.on('system-prompt/assemble', assembleHandler),
     'prompt-setting: system-prompt/assemble override',
+  );
+
+  // g-062: the two host feeds the assembly-status notice needs, on the same
+  // ledger as every other effect (unmounting drops them with the route).
+  //
+  // `agent/pre-step` fires immediately after the assembly that step just ran
+  // (`AgentLoop.preStep()`: assemble → this waterfall), and its payload carries
+  // `{agent, messages, turn, step, signal}` — the agent is the session id, and
+  // turn/step are what align a notice with the projection that follows.
+  //
+  // It is a **waterfall**, not an emit: the framework's own listener decides
+  // `{kind: 'enter'|'reject', messages}` and `AgentLoop` consumes that decision.
+  // A listener that returns `undefined` without calling `next()` would drop the
+  // decision on the floor and break every step, so this one reads its payload,
+  // contains its own errors and then **passes the waterfall on unchanged** — it
+  // must never delay, veto or rewrite a step. `typeof` guards the double: an
+  // emit-shaped caller (the test harness, an older host) hands no `next`.
+  registerEffect(
+    ctx,
+    cleanups,
+    () => ctx.on('agent/pre-step', (payload, next) => {
+      try {
+        const agent = payload?.agent;
+        if (agent !== null && typeof agent === 'object' && typeof agent.id === 'string') {
+          assemblyWatch.observePreStep({ sessionId: agent.id, turn: payload?.turn, step: payload?.step });
+        }
+      } catch {
+        // Fail open: an observation must never break a user's turn.
+      }
+      return typeof next === 'function' ? next() : undefined;
+    }),
+    'prompt-setting: assembly-status step alignment',
+  );
+
+  // `session/event` is the post-commit, fire-and-forget append feed: the only
+  // place a `system/message` (the delivery evidence) or a `request/header`
+  // (`reason: 'initial'`, the new-conversation signal) can be observed. It is
+  // observed and never relied on for a synchronous decision — listener failures
+  // are contained by the host, and this listener contains its own.
+  registerEffect(
+    ctx,
+    cleanups,
+    () => ctx.on('session/event', (session, event) => {
+      try {
+        const sessionId = session !== null && typeof session === 'object' && typeof session.id === 'string' ? session.id : null;
+        if (sessionId === null) return;
+        assemblyWatch.observeSessionEvent({ sessionId, event, at: Date.now() });
+      } catch {
+        // Fail open.
+      }
+    }),
+    'prompt-setting: assembly-status delivery observation',
+  );
+
+  // The bounded record is dropped when the Host says the session left the store,
+  // so a long-lived profile does not accumulate one record per conversation.
+  registerEffect(
+    ctx,
+    cleanups,
+    () => ctx.on('session/disposed', (session) => {
+      try {
+        const sessionId = session !== null && typeof session === 'object' && typeof session.id === 'string' ? session.id : null;
+        if (sessionId !== null) assemblyWatch.disposeSession(sessionId);
+      } catch {
+        // Fail open.
+      }
+    }),
+    'prompt-setting: assembly-status session cleanup',
   );
 
   // Revision 8's deliverable: the listener that keeps the reserved section

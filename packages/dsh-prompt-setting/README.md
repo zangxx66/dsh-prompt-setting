@@ -35,6 +35,18 @@
   > one-click restore. The text is **placed after every built-in section**. The "View scope" row above
   > the tabs is this block's header: it decides which layer a save lands in, and it is the only place the
   > scope is changed (the panel repeats the current target as a read-only line).
+  >
+  > 面板顶部是**「装配状态提示」**（g-062）：新会话的第一次装配，以及保存 Prompt 之后的下一个 run，
+  > 会在**设置页**给出两层结论——装配层（本次 assembly 是否读到你的 Prompt）与送达层（该文本是否进入
+  > 本次请求的 messages）。它不进入模型上下文、不占 token、不改变模型收到的 prompt，并可在同一处关闭。
+  > 口径与边界见 `CONTRACT.md` §21（例如：HTTP 是否真的发出在插件侧不可观测，本提示不作此声称）。
+  > The **assembly-status notice** at the top of the panel (g-062): the first assembly of a new
+  > conversation, and the next run after a prompt is saved, each report two verdicts **in this page** —
+  > the assembly layer (did this step's assembly read your prompt) and the delivery layer (did that text
+  > enter this request's messages). It never enters the model context, costs no tokens and changes nothing
+  > the model receives; the switch sits in the same block. The exact口径 and its limits are in
+  > `CONTRACT.md` §21 (for one: whether the HTTP request was actually sent is not observable from a
+  > plugin, and this notice does not claim it).
 
 - **我的预设 / My presets** —— 你的常用文本库：把一段文本存成预设（新建 / 编辑 / 删除），再把它**应用到某个
   工作区**（写入该工作区的保留段），也可以**取消应用**——该工作区会精确还原为应用前的内容。删除一个

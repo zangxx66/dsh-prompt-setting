@@ -7825,3 +7825,47 @@ brief 写「本次 0.2.1 覆盖 g-050…g-058」。核对仓库事实：**g-050�
   若将来出现缺字段行，行为会与基线不同——届时需一并复核这里。
 - **R3｜记录颗粒度**：mini 族消费点计数口径（5 个工厂调用 vs 更多渲染点）曾易误读；padding 四值已如上补记。
   该族仍有的断言缺口：history scope 候选行只有源码级断言、缺渲染级——留待后续批次。
+
+## 139. g-062：会话内「装配状态提示」（设置页可见性出口，2026-10-13，基线 `7c5b2e5` 隔离工作树）
+
+**问题**：DSH 每个 model step 重新装配 system prompt，但「装配到」≠「送达到模型」——
+`SystemPromptProjection.project()` 会去重，文本未变时**零事件**。用户改了 Prompt 却感觉没生效，
+缺一个可见性出口。负责人已定口径：提示**只落设置页 UI**（不进上下文、不占 token、不改模型收到的 prompt）、
+**两层都报**、**仅关键节点一次** + 设置页开关。
+
+**落地**：新增 `core/assembly-watch.js`（纯策略、零依赖、注入时钟与上限）承载全部状态机；
+`index.js` 只做宿主接线（`assembleHandler` 末尾观察、`agent/pre-step` 打 turn/step 标签、
+`session/event` 折叠送达证据、`session/disposed` 清理、`GET|PUT /prompt-setting/assembly-status`）；
+`client.js` 在「我的 Prompt」面板顶部渲染该块（`data-region="assembly-status"`）并读写开关。
+开关复用 `preferences.json`：`core/update.js` 的 `normalizePreferences` 新增 **stated-only** 的
+`assemblyNotice` 键（未声明则文件字节不变，缺省＝开），写入走同一 merge，因此不会抹掉
+`updateCheck` / `downloadRegion`。
+
+**五个实现决定（都写进了契约 §21）**
+
+1. **首次装配优先于「变更」**：一个会话在本 mount 的**第一次**装配即场景 A；即使紧跟一次保存，
+   该 write 也被静默消费（`consumedWriteSeq`），不重复报同一件事。判定「已设定但未装配到」用
+   `resolved.overrides` 里的保留段文本（configured）对比插件最终返回的段文本（assembled），
+   因此「段被跳过（`section-not-present`）」如实报 `empty`。
+2. **送达层只认本步证据**：`system/message` 事件且 `turn`/`step` 与本 notice 对齐才结算；
+   其它 step 的事件不结算。零事件（去重）＝ `unconfirmed`，正是要曝光的那个盲点。
+   「HTTP 是否真的发出」插件侧不可观测，路由与页面都不声称（`basis.httpObservable:false`）。
+3. **探针排除用对象身份**：`state.pendingProbe.context` 与本次 `context` 同一对象才排除——`probeTarget()`
+   在会话有活跃 agent 时会带上**真实 Agent**，所以 `context.agent === undefined` 判不出来（card-e29d15f5 风险 2）。
+   未作用域装配（无 session id）同路径排除，两者都计入 `counts.rejectedProbes`。
+4. **有界 + 惰性结算**：每会话 6 条通知、64 个会话（LRU）、8 条写入记录；等待送达的 notice 在**读取时**
+   惰性结算为 `unconfirmed`，不注册任何定时器；`session/disposed` 删除记录。
+5. **fail-open**：watch 的每个方法自带 try/catch，监听器自身包错，写路径**在写成功之后**登记变更；
+   任何观测异常都不可能影响用户 turn，也不会改变装配返回的段列表（有断言）。
+
+**测试**：新增 `test/assembly-watch.test.mjs`（21 例：两层判定、首次/变更、resume 丢弃、跨 step 不误判、
+超时结算、有界、开关关闭、抛错开关、畸形输入、探针计数）；`test/route.test.mjs` 新增 8 例宿主接线
+（读/写路由、405、首装配两分支、变更两层、探针不进入会话记录、disposed 清理、observer-only 段不变）；
+`test/client.test.mjs` 新增 4 例渲染（块与两层文案、`empty`/`not-read`/`waiting`/`unconfirmed`、
+开关 PUT 与主机答案跟随）。既有断言的同步改动：三个 harness 的 assemble 队列改为**按事件名过滤**
+（g-062 之前它们把所有 listener 当 waterfall 参与者，真实 dispatcher 是按名字路由的），
+监听器数量断言 2→5、撤销计数 3→6、客户端路由白名单加 `assembly-status`。全量 `857` 例通过。
+
+**已知边界（照实写进 UI 文案）**：装配层记录的是**本插件最终返回的段列表**，更晚注册的
+`{prepend:true}` listener 仍可改写（`assemblyBasis:'plugin-return'`、`outerRewritePossible:true`）；
+送达层只到 surface 事件为止。

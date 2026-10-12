@@ -638,6 +638,8 @@ meaning exactly.
 | `/prompt-setting/presets` | `DELETE` | Remove one preset — `?id=` (§20.4). An applied preset may be deleted: the layer keeps its text and the record is reported as an orphan. |
 | `/prompt-setting/presets/apply` | `POST` | Write one preset into the workspace layer that owns `session`, snapshotting what that layer held (`{presetId, session}`, §20.5). |
 | `/prompt-setting/presets/unapply` | `POST` | Put that workspace layer back to the snapshot `apply` took, and drop the record (`{session}`, §20.6). |
+| `/prompt-setting/assembly-status` | `GET` | The in-session assembly-status notice for one session (`?session=`): the last key node with its assembly-layer and delivery-layer verdicts, plus the switch's state (g-062, §21). Always `200`; an unknown session answers `record: null`. |
+| `/prompt-setting/assembly-status` | `PUT` | Record the notice switch: `{"enabled": bool}` (g-062, §21.2). |
 
 - An unknown path under the prefix is `404` with
   `{ "code": "not-found", "message": "no route for <path>" }` (no `ok` key —
@@ -646,8 +648,8 @@ meaning exactly.
   listing the supported methods and an **empty** body. `/prompt-setting/ping`
   answers `allow: GET`; `/prompt-setting/overrides` answers
   `allow: GET, PUT, DELETE`; `history`, `diff` and `export` answer `allow: GET`;
-  `import` and `rollback` answer `allow: POST`; `interpolate`, `update-check`
-  and `download-region` answer `allow: GET, PUT`; `update-apply` answers
+  `import` and `rollback` answer `allow: POST`; `interpolate`, `update-check`,
+  `download-region` and `assembly-status` answer `allow: GET, PUT`; `update-apply` answers
   `allow: GET, POST` and `update-apply/cancel` answers `allow: POST`; `presets`
   answers `allow: GET, PUT, DELETE`, and `presets/apply` and `presets/unapply`
   answer `allow: POST`.
@@ -6395,3 +6397,132 @@ request leaves `presets.json` and the layer byte-identical.
   answers `error` on the read (§20.2) is shown as a library problem, not
   as「没有预设」 — and an empty catalogue is stated separately
   (`data-region="presets-empty"`).
+
+## 21. The in-session assembly-status notice (g-062)
+
+DSH re-assembles the system prompt on **every** model step (`AgentLoop.preStep()`
+→ `systemPrompt.assemble()`), but "assembled" is not "delivered":
+`SystemPromptProjection.project()` deduplicates, so an unchanged prompt commits
+**zero** `system/message` events. A user who edits their prompt therefore has no
+way to tell whether the change reached the model. This section defines the
+observation that answers that question — in the settings page only.
+
+### 21.1 `GET /prompt-setting/assembly-status`
+
+Query: `session` (optional). With a session the route answers that session's
+observation; with none it answers `record: null` and the switch's state.
+
+```json
+{
+  "ok": true,
+  "enabled": true,
+  "session": "s1",
+  "record": {
+    "session": "s1",
+    "firstNoticeDone": true,
+    "lastAssembly": { "at": 1700000000000, "digest": "abcd1234", "length": 4, "configured": true },
+    "notice": {
+      "id": "n2",
+      "kind": "first-assembly",
+      "at": 1700000000000,
+      "turn": 1,
+      "step": 1,
+      "configured": true,
+      "assembly": { "state": "assembled", "assembled": true, "digest": "abcd1234", "length": 4, "expectedDigest": "abcd1234" },
+      "delivery": { "state": "delivered", "at": 1700000000100, "seq": 12, "surfaceOp": "append", "textMatched": true },
+      "assemblyBasis": "plugin-return",
+      "probe": false
+    },
+    "notices": [],
+    "dropped": 0
+  },
+  "counts": { "sessions": 1, "notices": 1, "droppedNotices": 0, "writes": 1, "rejectedProbes": 0, "noticeSeq": 2 },
+  "basis": { "assembly": "plugin-return", "delivery": "surface-system-message", "httpObservable": false, "outerRewritePossible": true }
+}
+```
+
+- **Always `200`.** A session this mount has not observed answers
+  `record: null`; "nothing observed yet" is a fact, not an error. The read never
+  assembles, never probes and never writes a notice.
+- **`notice` is the last key node** (newest first in `notices`, capped at 6 per
+  session with `dropped` counting what fell off). `kind` is `first-assembly` or
+  `prompt-change`; the two kinds use different keys for the same two layers on
+  purpose (§21.3).
+- **Nothing of the user's prompt text travels.** Only lengths and FNV-1a 32
+  digests (`assembly.digest`, `assembly.expectedDigest`).
+- `expected` is present on a `prompt-change` notice: `{length, layer, action}` —
+  what the save wrote, still without its text.
+- `basis` states the口径 as data so the page renders its own language:
+  `assembly: "plugin-return"` (the recorded text is the section list **this
+  plugin** returned) and `delivery: "surface-system-message"` (the step
+  committed a `system/message`); `httpObservable: false` and
+  `outerRewritePossible: true` are the two stated limits (§21.4).
+
+### 21.2 `PUT /prompt-setting/assembly-status`
+
+Body `{"enabled": bool}`. A non-boolean is the existing `400 invalid-enabled`;
+an unwritable preference file is `200 {ok:false, code:'preferences-unwritable'}`,
+exactly like the update switch. The key is `assemblyNotice` in the **same**
+`preferences.json`, written through the same merge (so this write cannot erase
+`updateCheck` or `downloadRegion`), and it is carried through
+`normalizePreferences` only when the document states a boolean — a pre-g-062
+file stays byte-identical. An absent key means **on**.
+
+### 21.3 The two verdicts, and where each comes from
+
+| Layer | Question | Observation | Values |
+| --- | --- | --- | --- |
+| assembly | Did this step's assembly read the (changed) plugin-section text? | the section list `assembleHandler` returns, read in the same listener | `first-assembly`: `assembled` \| `empty` (the section text is `''`); `prompt-change`: `read` \| `not-read` (digest equal, or the stored text is a substring of what was assembled when the ON-switch expanded variables) |
+| delivery | Did that text enter this request's messages? | `session/event`: a `system/message` on the surface with a matching `turn`/`step` | `waiting` \| `delivered` (with `surfaceOp`: `append` \| `replace`, and `textMatched` when the text is short enough to check) \| `unconfirmed` (the wait expired, lazily, on read) |
+
+- **Delivery is not "the HTTP request was sent".** That is not observable from a
+  plugin, and neither the route nor the page claims it. A `system/message`
+  committed for this step is the agreed evidence, and `project()`'s "zero events
+  because the text did not change" is reported as **not delivered**, which is
+  exactly the visibility the goal asked for.
+- **New-conversation signal.** `request/header` with `reason === 'initial'`
+  (resume/fork answer `'resume'`) is what turns a pending first assembly into a
+  `first-assembly` notice. A header that is not `initial` **drops** the pending
+  notice rather than reporting it late; turn/step numbers are never the signal
+  (they restart after a Host restart).
+
+### 21.4 Key nodes, probes, bounds and fail-open
+
+- **One notice per key node.** A conversation gets at most one
+  `first-assembly` notice; a save produces at most one `prompt-change` notice,
+  consumed by the next assembly that sees it. Repeated assemblies with no change
+  add nothing.
+- **The first assembly of a conversation is scenario A, never a "change".** If a
+  save immediately precedes it, the write is consumed silently — the same fact is
+  not reported twice.
+- **Which sessions a save addresses.** A `user`-layer save addresses every
+  session; a `workspace`-layer save addresses only the session whose workspace
+  layer was written. Applies and unapplies of presets (§20.5–§20.6) are recorded
+  as saves too.
+- **Probes are excluded by object identity.** The `AssembleContext` object
+  `probe()` handed to `assemble()` is what marks a probe
+  (`state.pendingProbe.context`), because `probeTarget()` supplies the **real**
+  Agent for a live session — `context.agent === undefined` cannot tell them
+  apart. An unscoped assembly (no session id) is excluded by the same path. Both
+  are counted in `counts.rejectedProbes`.
+- **Bounded and cleaned up.** At most 6 notices per session, at most 64 tracked
+  sessions (least-recently-touched dropped), at most 8 retained writes, and
+  `session/disposed` drops that session's record.
+- **Fail-open.** Every method of the watch swallows its own errors, the
+  listeners contain themselves, and the write paths note a save **after** the
+  write succeeded. No observation can fail a turn, and none can change the
+  sections an assembly returns.
+
+### 21.5 Page surface
+
+The block lives at the top of the「我的 Prompt」panel and carries
+`data-region="assembly-status"` with `data-assembly-phase`
+(`idle`/`loading`/`ready`/`error`), `data-assembly-enabled`
+(`true`/`false`/`unknown` — unknown until the Host answers),
+`data-assembly-switch-state` (`on`/`off`/`unknown`), `data-assembly-session`
+(`yes`/`none`), `data-notice-kind`, `data-assembly-state` and
+`data-delivery-state`. The notice itself is `data-region="assembly-notice"` with
+`data-assembly-kind`, `data-assembly-layer` and `data-delivery-layer`; the
+stated limits are `data-region="assembly-limitation"`. `data-action="assembly-toggle"`
+is the switch. Reads happen only while that tab is open, and one short follow-up
+read is made while the reported delivery is still `waiting`.
