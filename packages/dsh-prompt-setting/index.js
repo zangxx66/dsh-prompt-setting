@@ -3504,7 +3504,10 @@ function mount(ctx, config, cleanups) {
     if (override.name === CUSTOM_SECTION_NAME) {
       notePromptWrite({
         layer,
-        session: sessionId ?? null,
+        // Contract §21.4: a `user`-layer save addresses **every** session, so a
+        // `?session=` the page happens to carry must not scope it to one
+        // (review W3). Only a workspace write names a session.
+        session: layer === 'workspace' ? sessionId ?? null : null,
         action: override.action,
         text: override.action === 'hide' ? '' : override.text,
       });
@@ -3589,7 +3592,8 @@ function mount(ctx, config, cleanups) {
     // g-062: dropping the reserved entry changes the prompt this layer
     // contributes, so the layer's next run reports it like any other save.
     if (name === CUSTOM_SECTION_NAME) {
-      notePromptWrite({ layer, session: sessionId ?? null, action: 'hide', text: '' });
+      // §21.4: only a workspace write is scoped to one session (review W3).
+      notePromptWrite({ layer, session: layer === 'workspace' ? sessionId ?? null : null, action: 'hide', text: '' });
     }
     recordHistory({
       path: target.path,
@@ -3638,7 +3642,8 @@ function mount(ctx, config, cleanups) {
     // g-062: a reset that took the reserved entry away is a prompt change; a
     // reset of a layer that never held one is not.
     if (removed.some((entry) => entry.name === CUSTOM_SECTION_NAME)) {
-      notePromptWrite({ layer, session: sessionId ?? null, action: 'hide', text: '' });
+      // §21.4: only a workspace write is scoped to one session (review W3).
+      notePromptWrite({ layer, session: layer === 'workspace' ? sessionId ?? null : null, action: 'hide', text: '' });
     }
     const history = recordHistory({
       path: target.path,

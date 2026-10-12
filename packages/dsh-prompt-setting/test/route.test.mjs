@@ -3312,20 +3312,27 @@ async function establishConversation(harness, sessionId) {
   harness.emit('session/event', { id: sessionId }, { type: 'request/header', seq: 1, time: 0, data: { reason: 'resume', header: {} } });
 }
 
-test('g-062: a save landing before the first assembly of an existing conversation still reports (review R1)', async () => {
+test('g-062: a save landing before the first assembly of an existing conversation reports delivered (review R1/W2)', async () => {
   const harness = mount({ agents: [{ id: 's1' }] });
   const { ctx, route } = harness;
   // The Host restarted; the user saves a prompt first, then sends a message.
   assert.equal((await savePrompt(route, { text: 'NEW' })).statusCode, 200);
   await ctx.systemPrompt.assemble({ agent: { id: 's1' }, scope: { marker: 'g062' } });
   harness.emit('agent/pre-step', { agent: { id: 's1' }, turn: 1, step: 1, messages: [] });
+  // The Host's real order: the step's projection commits BEFORE the header.
+  harness.emit('session/event', { id: 's1' }, systemMessageEvent({ text: 'SYSTEM NEW', turn: 1, step: 1, seq: 31 }));
   // The conversation already exists, so its header answers `resume`.
   harness.emit('session/event', { id: 's1' }, { type: 'request/header', seq: 1, time: 0, data: { reason: 'resume', header: {} } });
   const record = (await readStatus(route, 's1')).record;
   assert.equal(record.notice.kind, 'prompt-change', 'the save is not swallowed by the open scenario-A question');
   assert.equal(record.notice.assembly.state, 'read');
   assert.equal(record.notice.turn, 1);
+  assert.equal(record.notice.delivery.state, 'delivered', 'and the step\'s own projection is not lost (review W1)');
+  assert.equal(record.notice.delivery.seq, 31);
   assert.equal(record.notices.length, 1, 'and no phantom first-assembly notice exists');
+  // The step ending afterwards must not undo a delivered verdict.
+  harness.emit('session/event', { id: 's1' }, { type: 'step/end', seq: 32, time: 0, data: { turn: 1, step: 1 } });
+  assert.equal((await readStatus(route, 's1')).record.notice.delivery.state, 'delivered');
 });
 
 test('g-062: a first assembly whose projection committed before the header is delivered (review R3)', async () => {
@@ -3400,4 +3407,58 @@ test('g-062: import, rollback and DELETE each report the prompt change they make
   const afterDelete = (await readStatus(deleted.route, 's1')).record.notice;
   assert.equal(afterDelete.kind, 'prompt-change', 'clearing the reserved entry is a prompt change');
   assert.equal(afterDelete.configured, false, 'and the plugin no longer has a prompt configured');
+});
+
+test('g-062: a user-layer save addresses every session, while a workspace save stays scoped (review W3)', async () => {
+  // The page carries `?session=` whenever the scope picker has a session, even
+  // for a save that writes the global user layer (review W3) — so the recorded
+  // scope must follow the **layer**, never the query string.
+  const global = mount({ agents: [{ id: 'a' }, { id: 'b' }] });
+  for (const id of ['a', 'b']) await establishConversation(global, id);
+  const saved = await call(global.route, {
+    method: 'PUT',
+    url: `${OVERRIDES_PATH}?session=a`,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      layer: 'user',
+      session: 'a',
+      section: { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'GLOBAL' },
+    }),
+  });
+  assert.equal(saved.statusCode, 200);
+  await global.ctx.systemPrompt.assemble({ agent: { id: 'a' }, scope: { marker: 'g062' } });
+  assert.equal((await readStatus(global.route, 'a')).record.notice.kind, 'prompt-change');
+  // Session B never sent a request, yet its next run reports the same change.
+  await global.ctx.systemPrompt.assemble({ agent: { id: 'b' }, scope: { marker: 'g062' } });
+  assert.equal(
+    (await readStatus(global.route, 'b')).record.notice.kind,
+    'prompt-change',
+    'a user-layer save is global, whatever ?session= the page sent',
+  );
+
+  // The workspace layer stays scoped to the session whose workspace it is.
+  const scoped = mount({
+    agents: [{ id: 'a' }, { id: 'b' }],
+    workspaces: [workspaceWith('w1', 'a'), workspaceWith('w2', 'b')],
+  });
+  for (const id of ['a', 'b']) await establishConversation(scoped, id);
+  const written = await call(scoped.route, {
+    method: 'PUT',
+    url: OVERRIDES_PATH,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      layer: 'workspace',
+      session: 'a',
+      section: { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'ONLY-A' },
+    }),
+  });
+  assert.equal(written.statusCode, 200);
+  await scoped.ctx.systemPrompt.assemble({ agent: { id: 'a' }, scope: { marker: 'g062' } });
+  assert.equal((await readStatus(scoped.route, 'a')).record.notice.kind, 'prompt-change');
+  await scoped.ctx.systemPrompt.assemble({ agent: { id: 'b' }, scope: { marker: 'g062' } });
+  assert.equal(
+    (await readStatus(scoped.route, 'b')).record.notice,
+    null,
+    'a workspace-layer save does not leak into another session',
+  );
 });

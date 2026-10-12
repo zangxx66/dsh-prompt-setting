@@ -6479,7 +6479,7 @@ file stays byte-identical. An absent key means **on**.
 | Layer | Question | Observation | Values |
 | --- | --- | --- | --- |
 | assembly | Did this step's assembly read the (changed) plugin-section text? | the section list `assembleHandler` returns, read in the same listener | `first-assembly`: `assembled` \| `empty` (the section text is `''`); `prompt-change`: `read` \| `not-read` (digest equal, or the stored text is a substring of what was assembled when the ON-switch expanded variables) |
-| delivery | Did that text enter this request's messages? | `session/event`: a `system/message` on the surface with **this notice's own** `turn`/`step` | `waiting` \| `delivered` (with `surfaceOp`: `append` \| `replace`, and `textMatched` when the text is short enough to check) \| `unconfirmed` (the step ended without it, or the fallback deadline passed) |
+| delivery | Did that text enter this request's messages? | `session/event`: a `system/message` on the surface with **this notice's own** `turn`/`step` | `waiting` \| `delivered` (with `surfaceOp`: `append` \| `replace`, and `textMatched` when the text is short enough to check) \| `unconfirmed` (the step ended, or a later step started, without it) |
 
 - **Delivery is not "the HTTP request was sent".** That is not observable from a
   plugin, and neither the route nor the page claims it. A `system/message`
@@ -6490,18 +6490,24 @@ file stays byte-identical. An absent key means **on**.
   `system/message` carrying the same `turn`/`step`. A notice that has no label
   refuses to settle at all (§21.4) — reporting "delivered" off an unrelated step
   is the one mistake this feature must not make.
-- **The deadline is the step's end.** The step's own `step/end` settles a still
-  `waiting` notice as `unconfirmed` — an exact fact (the step is over, so no
-  further `system/message` can belong to it). A long fallback deadline covers a
-  step that never ends, so a slow streaming step is never judged early.
+- **Only events settle a verdict; a read never does.** `status()` — and therefore
+  every poll the page makes — is a pure read and cannot rewrite a delivery state
+  (review W4). A still `waiting` notice is settled by an event: its own step's
+  `step/end` (an exact fact: the step is over, so no further `system/message` can
+  belong to it), or a later `agent/pre-step` (the step that was running is over).
+  No deadline is applied to a read, so a slow streaming step is never judged
+  early and a late projection of the same step still settles as `delivered`.
 - **New-conversation signal.** `request/header` with `reason === 'initial'`
   (resume/fork answer `'resume'`) is what turns a pending first assembly into a
   `first-assembly` notice; turn/step numbers are never the signal (they restart
   after a Host restart).
-- **The Host may commit the projection before the header.** The newest
-  `system/message` of the session is cached, and a `first-assembly` notice whose
-  own `turn`/`step` matches it is born `delivered` — otherwise a guaranteed first
-  projection would be reported as unconfirmed, which would be a false statement.
+- **Every notice is born with the same-step projection already folded in.** The
+  newest `system/message` of the session is cached, and **every** notice birth
+  point — the `initial` header, a non-`initial` header, and an assembly-path
+  change — settles itself from that cache when the cached event carries exactly
+  the notice's own `turn`/`step`. Otherwise a projection that really was
+  committed would be reported as unconfirmed, which is a false statement (review
+  R3 for the first assembly, review W1 for the resume path).
 
 ### 21.4 Key nodes, probes, bounds and fail-open
 
@@ -6516,9 +6522,12 @@ file stays byte-identical. An absent key means **on**.
   header ever arrives — resolves it as an **existing** conversation and the save
   is reported as the `prompt-change` it is. A conversation this mount merely sees
   for the first time is not automatically a new one.
-- **Which sessions a save addresses.** A `user`-layer save addresses every
-  session; a `workspace`-layer save addresses only the session whose workspace
-  layer was written.
+- **Which sessions a save addresses — the layer decides, never the query string.**
+  A `user`-layer save addresses **every** session, even when the page sent a
+  `?session=` (it does whenever the scope picker has one, review W3); a
+  `workspace`-layer save addresses only the session whose workspace layer was
+  written. `PUT /overrides`, `DELETE /overrides` and `reset=true` all normalize by
+  layer, exactly like `rollback`, `import` and the preset actions.
 - **Every write path that changes the reserved section is recorded**, not just
   the editor's save: `PUT /overrides`, preset apply/unapply (§20.5–§20.6),
   `POST /import`, `POST /rollback`, `DELETE /overrides` (including `reset=true`)

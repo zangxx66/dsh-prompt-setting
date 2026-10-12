@@ -7913,9 +7913,10 @@ brief 写「本次 0.2.1 覆盖 g-050…g-058」。核对仓库事实：**g-050�
    稳态一步（无待报 write、新会话问题已答）**完全不读** `preferences.json`；因此不需要 mtime/TTL 缓存
    （缓存会引入「刚改开关却读到旧值」的窗口，而收窄调用点的收益更大且无窗口）。有测试锁住
    「关闭后不再产生新 notice」与「稳态装配不产生 notice」。
-2. **`settle` 计时基准（已改）**：主判据改为**本步的 `step/end`**——step 结束仍未见 `system/message`
-   即 `unconfirmed`（精确事实，长流式 step 不会被提前判死）；时间兜底从 20s 放宽到 120s，只用于
-   「step 永不结束」的极端情况。UI 文案未承诺任何秒数，无需改措辞。
+2. **`settle` 计时基准（第一轮改法，已被 §141 W4 再改）**：当时把主判据改为**本步的 `step/end`**，
+   并把时间兜底从 20s 放宽到 120s。第三轮评审指出「读取时结算」会让长 step（>120s）被提前判死且不可逆
+   （`status()` 一读就把 waiting 改成 unconfirmed），§141 已改为**纯事件判定：`status()` 不改写任何状态、
+   时间兜底整个删除**。
 3. **装配层局限（已补）**：`basis` 增加 `postWaterfallCollapse:true`，中英文局限文案补充
    「宿主在 waterfall 之后还可能把整份段列表折叠到生效的 `complete` 段」。
 
@@ -7924,3 +7925,60 @@ brief 写「本次 0.2.1 覆盖 g-050…g-058」。核对仓库事实：**g-050�
 route +3：R1 同拍、R3 首装配 delivered、R4 三写路径），另把「变更两层」用例改为真实 `resume` 顺序。
 负向对照（改坏即红、验证后还原）：去掉 fail-open ⇒ observer-only 用例红；关闭探针排除 ⇒ 探针用例红；
 去掉 waterfall 透传 ⇒ pass-through 用例红。
+
+## 141. g-062 第三轮修复：W1–W5（Revision 45 补记，2026-10-13，候选 `da8304f`）
+
+第二轮评审判 BLOCK：R2/R3（首装配）已修好，**R1 只修了一半**，另有测试编排、写入作用域与读取副作用
+三处问题。逐条落点与理由如下。
+
+**W1｜`prompt-change` 缺同 step 缓存补判（送达层假阴性）**
+- 根因：`recentSystem` 补判只写在 `FIRST_NOTICE` 出生点；非 `initial` header 分支（resume 路径）没有。
+  宿主同一 `step()` 内 `system/message` **先**、`request/header` **后**，于是该路径的 notice 出生即
+  `waiting`，紧接着同 step 的 `step/end` 又把它判成 `unconfirmed` —— 事件明明存在却报没送达。
+- 修法：抽出**单一出口** `finalizeNotice(record, notice)` = `settleFromRecentSameStep` + `pushNotice`，
+  在**每一个** notice 出生点调用：`initial` header、非 `initial` header、装配路径 `emitChangeNotice`
+  （`resolveStalePendingFirst` 经它间接覆盖）。匹配仍严格「`turn`/`step` 完全一致才采用」。
+  自查：grep 全部 `pushNotice` 调用点，除 `finalizeNotice` 自身外**零残留**。
+
+**W2｜测试编排必须等于宿主真实顺序**
+- `assembly-watch.test.mjs` 的 R1 用例原为「header 先、system/message 后」的逆序（实现恰好能过），已改为
+  真实顺序 `assemble → pre-step → system/message → header(resume)` 并断言 `delivered`；另新增一条
+  `initial` 的同顺序用例。`route.test.mjs` 的同拍用例补上送达层断言（`delivered` + `seq`），并补
+  「其后 `step/end` 不得把已 delivered 改写」。
+
+**W3｜user 层写入被错误 scoped 到单会话**
+- `PUT /overrides`（`index.js:3510`）、`DELETE`（`:3596`）、`reset`（`:3646`）原先传
+  `session: sessionId ?? null`，而页面只要选中会话就必然带 `?session=`；`rollback` / `import` / `presets`
+  早已按 layer 归一 ⇒ 漏改。现三处统一为 `layer === 'workspace' ? sessionId ?? null : null`，
+  与契约 §21.4 逐字一致：**layer 决定作用域，query string 不决定**。
+- 用例：user 层带 `?session=a` 保存 ⇒ 会话 b 的下一 run 也报 `prompt-change`；workspace 层保存 ⇒
+  另一会话 `notice` 仍为 `null`（不得反向放宽）。
+
+**W4｜`status()` 必须是纯读，判定只能由事件驱动**
+- 根因：`settle()` 在读取时把 `waiting` 改成 `unconfirmed`，而客户端每 2.5s 轮询会触发读取；长 step
+  （>120s）因此被提前判死，且判死后**同 step 晚到的 `system/message` 永不再结算**（早退条件）。
+- 修法：删除 `settle()` 与 `DELIVERY_SETTLE_MS`（连同 `settleMs` 选项），`status()` 只读。
+  `unconfirmed` 现在只有两个**事件**来源：① 本 step 的 `step/end` 且 `turn`/`step` 匹配；
+  ② 观察到**后继** `agent/pre-step`（该 notice 有标签且与本次 `(turn,step)` 不同）——「上一步已收尾」。
+  晚到的同 step `system/message` 因此仍能正常结算为 `delivered`。
+- 用例：① 推进时钟 10 分钟后连续读取 `status()`，状态必须仍为 `waiting`，随后同 step 事件必须结算为
+  `delivered`；② 后继 `pre-step` 把 missed delivery 判为 `unconfirmed`。
+- 已知取舍：若宿主崩溃/取消导致**既无 `step/end` 也无后继 `pre-step`**，该 notice 会一直是 `waiting`
+  （页面仅在打开该 tab 时轮询，离开即停）。这是刻意的：宁可留在「等待」也不猜。
+
+**W5｜文档自洽 + 已知盲区**
+- `CONTRACT.md` §21.3 的 delivery 取值改为「the step ended, or a later step started, without it」，
+  「The deadline is the step's end」改写为「Only events settle a verdict; a read never does」；
+  §21.4 的作用域条目补「layer 决定，query string 不决定（含 `DELETE` / `reset`）」；§21.3 新增
+  「每一个 notice 出生点都折叠同 step 缓存」一条（W1 的契约化表述）。
+- **有意的已知盲区（本轮不改行为）**：`PUT /interpolate`（`index.js` 的插值开关写面）会改变最终渲染文本
+  （开启后装配时展开 `{{...}}`），但**不登记** prompt 变更 ⇒ 用户只翻转该开关时不会得到装配状态提示。
+  原因：该开关是「文本如何展开」的配置，不是「prompt 文本变了」；把它计入会把「同一条 prompt 的展示方式
+  变化」误报成「你改了 prompt」，且会与 `mine` 面板的保存语义混淆。若将来要覆盖，应在 `interpolate`
+  写成功后登记一条与该层当前文本等价的 write，并在文案上与「保存」区分。
+
+**测试与证据**：`node --test test/*.test.mjs` → **870 passed / 0 failed**；`client-chunks` 5 chunk 一致；
+`check-compat` exit 0；零新增依赖、零构建。本轮新增/改写用例：core +2（W4 纯读、后继 pre-step 结算）
+并改写 2 条为宿主真实顺序；route +1（W3 双路径）并给同拍用例补送达层断言。
+**负向对照（改坏即红，均已还原）**：去掉 `finalizeNotice` 的补判 ⇒ 三条真实顺序用例红（R1/W2/R3）；
+把三处 layer 归一改回 `sessionId ?? null` ⇒ W3 用例红。

@@ -44,15 +44,6 @@ export const SESSION_LIMIT = 64;
 /** How many prompt writes are retained as "the change to watch for". */
 export const WRITE_LIMIT = 8;
 /**
- * How long a notice may wait for its delivery evidence before it is reported as
- * unconfirmed. The **primary** settlement is the `step/end` of the notice's own
- * step (an exact fact: the step is over, so no further `system/message` can
- * belong to it); this deadline is the fallback for a step that never ends
- * (cancellation, a Host that drops the event) and is deliberately long enough
- * not to fire inside a slow streaming step.
- */
-export const DELIVERY_SETTLE_MS = 120 * 1000;
-/**
  * Longest plugin-section text this module will `includes()`-probe inside a
  * delivered system message. Above it the delivery verdict still stands (the
  * event exists), only the "does this text carry the section" detail is left
@@ -152,7 +143,6 @@ export function configuredTextOf(overrides, name) {
  * @param options.noticeLimit - notices retained per session.
  * @param options.sessionLimit - sessions tracked at once.
  * @param options.writeLimit - retained prompt writes.
- * @param options.settleMs - delivery wait before a notice reads unconfirmed.
  * @param options.sectionName - the reserved section name (never guessed here).
  * @param options.enabled - `() => boolean`; when it answers false no **new**
  *   notice is produced (the switch is off), while bookkeeping stays intact.
@@ -164,7 +154,6 @@ export function createAssemblyWatch(options = {}) {
   const sessionLimit =
     Number.isSafeInteger(options.sessionLimit) && options.sessionLimit > 0 ? options.sessionLimit : SESSION_LIMIT;
   const writeLimit = Number.isSafeInteger(options.writeLimit) && options.writeLimit > 0 ? options.writeLimit : WRITE_LIMIT;
-  const settleMs = Number.isSafeInteger(options.settleMs) && options.settleMs >= 0 ? options.settleMs : DELIVERY_SETTLE_MS;
   const sectionName = typeof options.sectionName === 'string' ? options.sectionName : null;
   const enabled = typeof options.enabled === 'function' ? options.enabled : () => true;
 
@@ -401,10 +390,12 @@ export function createAssemblyWatch(options = {}) {
     notice.expected = { length: write.length, layer: write.layer ?? null, action: write.action ?? null };
     // A change notice answers the pending question, so any half-armed first
     // notice is gone: leaving it would keep stealing the step label from this
-    // notice (review R2).
+    // notice (review R2). The same-step cache is applied by `finalizeNotice` —
+    // this path is born inside the assembly, before the step's own pre-step can
+    // label it, so it usually has nothing to adopt; the header paths are the
+    // ones that need it (review W1).
     record.pendingFirst = null;
-    pushNotice(record, notice);
-    return notice;
+    return finalizeNotice(record, notice);
   }
 
   /**
@@ -560,11 +551,27 @@ export function createAssemblyWatch(options = {}) {
       const record = records.get(input?.sessionId);
       if (record === undefined) return;
       record.touchedAt = now();
+      const turn = Number.isFinite(input?.turn) ? input.turn : null;
+      const step = Number.isFinite(input?.step) ? input.step : null;
+      const active = record.active;
+      // A step starting means the **previous** step is over. A notice still
+      // waiting for a projection from an earlier step can never receive one, so
+      // this event — not a page read — settles it (review W4).
+      if (
+        active !== null &&
+        active.delivery?.state === 'waiting' &&
+        Number.isFinite(active.turn) &&
+        Number.isFinite(active.step) &&
+        (active.turn !== turn || active.step !== step)
+      ) {
+        active.delivery = { ...active.delivery, state: 'unconfirmed' };
+        record.active = null;
+      }
       const target =
         record.active !== null && record.active.delivery?.state === 'waiting' ? record.active : record.pendingFirst;
       if (target === null || target === undefined) return;
-      if (!Number.isFinite(target.turn) && Number.isFinite(input?.turn)) target.turn = input.turn;
-      if (!Number.isFinite(target.step) && Number.isFinite(input?.step)) target.step = input.step;
+      if (!Number.isFinite(target.turn) && turn !== null) target.turn = turn;
+      if (!Number.isFinite(target.step) && step !== null) target.step = step;
     } catch {
       // Fail open.
     }
@@ -591,6 +598,46 @@ export function createAssemblyWatch(options = {}) {
           ? null
           : text.includes(expected),
     };
+    return notice;
+  }
+
+  /**
+   * Settle a notice from the cached `system/message` of **exactly its own**
+   * turn/step, if there is one.
+   *
+   * The Host may commit this step's projection before the notice is born (the
+   * first-assembly case, and the resume-header case of review W1), so every
+   * notice birth point asks this question. The match is exact: a cached event of
+   * another step is never adopted.
+   * @param record - the session record.
+   * @param notice - the freshly built notice.
+   * @returns the notice (possibly settled).
+   */
+  function settleFromRecentSameStep(record, notice) {
+    if (notice.delivery?.state !== 'waiting') return notice;
+    const recent = record.recentSystem;
+    if (recent === null) return notice;
+    if (!Number.isFinite(notice.turn) || !Number.isFinite(notice.step)) return notice;
+    if (recent.turn !== notice.turn || recent.step !== notice.step) return notice;
+    return settleDelivered(notice, {
+      at: recent.at,
+      seq: recent.seq,
+      surfaceOp: recent.surfaceOp,
+      text: recent.text,
+    });
+  }
+
+  /**
+   * The single exit for every notice: settle it from the same-step cache, then
+   * retain it. Every birth point goes through here, so no path can be born
+   * "waiting" while its own step's projection is already on record (review W1).
+   * @param record - the session record.
+   * @param notice - the notice to retain.
+   * @returns the notice.
+   */
+  function finalizeNotice(record, notice) {
+    settleFromRecentSameStep(record, notice);
+    pushNotice(record, notice);
     return notice;
   }
 
@@ -642,16 +689,22 @@ export function createAssemblyWatch(options = {}) {
             expectedText: write.text,
           });
           notice.expected = { length: write.length, layer: write.layer ?? null, action: write.action ?? null };
-          pushNotice(record, notice);
-          return notice;
+          return finalizeNotice(record, notice);
         }
         // The log's first request header: scenario A really is a new
         // conversation, and the write — if any — was the user setting the prompt
         // this conversation starts with, so it is consumed as an already-done
         // fact instead of being reported twice.
+        //
+        // The switch is consulted **before** the write is consumed: while it is
+        // off nothing is produced and nothing is spent, so turning it back on
+        // still reports the pending change on a later run.
+        if (noticesAllowed() !== true) return null;
         if (pending.writeSeq !== null) record.consumedWriteSeq = Math.max(record.consumedWriteSeq, pending.writeSeq);
         record.firstNoticeDone = true;
-        const notice = makeNotice(FIRST_NOTICE, {
+        // `finalizeNotice` applies the same-step cache here too (review R3 and W1
+        // agree: the Host may commit the projection before this header).
+        return finalizeNotice(record, makeNotice(FIRST_NOTICE, {
           at: pending.at,
           turn: pending.turn,
           step: pending.step,
@@ -662,22 +715,7 @@ export function createAssemblyWatch(options = {}) {
           length: pending.length,
           expectedDigest: pending.expectedDigest,
           expectedText: pending.expectedText,
-        });
-        // The Host may commit this step's projection **before** this header
-        // (review R3): the cached `system/message` of exactly this turn/step is
-        // this notice's delivery evidence, not a guess.
-        const recent = record.recentSystem;
-        if (
-          recent !== null &&
-          Number.isFinite(notice.turn) &&
-          Number.isFinite(notice.step) &&
-          recent.turn === notice.turn &&
-          recent.step === notice.step
-        ) {
-          settleDelivered(notice, { at: recent.at, seq: recent.seq, surfaceOp: recent.surfaceOp, text: recent.text });
-        }
-        pushNotice(record, notice);
-        return notice;
+        }));
       }
 
       if (event.type === 'system/message') {
@@ -743,23 +781,13 @@ export function createAssemblyWatch(options = {}) {
   }
 
   /**
-   * Settle a record's pending delivery waits whose deadline has passed.
-   *
-   * Lazy on purpose: no timer is registered, so this module owns no lifecycle
-   * and a page that never reads costs nothing.
-   * @param record - the session record.
-   * @param at - the current clock reading.
-   */
-  function settle(record, at) {
-    for (const notice of record.notices) {
-      if (notice.delivery?.state !== 'waiting') continue;
-      if (at - notice.at < settleMs) continue;
-      notice.delivery = { ...notice.delivery, state: 'unconfirmed' };
-    }
-  }
-
-  /**
    * The public, read-only view of one session.
+   *
+   * **Read-only is a contract, not a description** (review W4): this function
+   * never rewrites a delivery state. A verdict is produced by events — the
+   * step's own `step/end`, a later `agent/pre-step`, or the step's own
+   * `system/message` — so polling the page cannot freeze a late projection out
+   * of its own verdict.
    * @param sessionId - the session id.
    * @returns the view, or null when this mount has never seen the session.
    */
@@ -767,8 +795,6 @@ export function createAssemblyWatch(options = {}) {
     try {
       const record = records.get(sessionId);
       if (record === undefined) return null;
-      const at = now();
-      settle(record, at);
       const notice = record.notices[0] ?? null;
       return {
         session: record.sessionId,
