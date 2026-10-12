@@ -7843,8 +7843,9 @@ brief 写「本次 0.2.1 覆盖 g-050…g-058」。核对仓库事实：**g-050�
 
 **五个实现决定（都写进了契约 §21）**
 
-1. **首次装配优先于「变更」**：一个会话在本 mount 的**第一次**装配即场景 A；即使紧跟一次保存，
-   该 write 也被静默消费（`consumedWriteSeq`），不重复报同一件事。判定「已设定但未装配到」用
+1. **首次装配优先于「变更」（第一轮口径，已被 §140 修订）**：一个会话在本 mount 的**第一次**装配即场景 A；
+    ~~即使紧跟一次保存，该 write 也被静默消费~~——评审 R1 证明该口径在既有会话（`resume`）下会吞掉变更，
+    §140 改为「等 header 定性、未定性前不消费」。判定「已设定但未装配到」用
    `resolved.overrides` 里的保留段文本（configured）对比插件最终返回的段文本（assembled），
    因此「段被跳过（`section-not-present`）」如实报 `empty`。
 2. **送达层只认本步证据**：`system/message` 事件且 `turn`/`step` 与本 notice 对齐才结算；
@@ -7859,13 +7860,67 @@ brief 写「本次 0.2.1 覆盖 g-050…g-058」。核对仓库事实：**g-050�
    任何观测异常都不可能影响用户 turn，也不会改变装配返回的段列表（有断言）。
 
 **测试**：新增 `test/assembly-watch.test.mjs`（21 例：两层判定、首次/变更、resume 丢弃、跨 step 不误判、
-超时结算、有界、开关关闭、抛错开关、畸形输入、探针计数）；`test/route.test.mjs` 新增 8 例宿主接线
-（读/写路由、405、首装配两分支、变更两层、探针不进入会话记录、disposed 清理、observer-only 段不变）；
+超时结算、有界、开关关闭、抛错开关、畸形输入、探针计数）；`test/route.test.mjs` 新增 9 例宿主接线
+（读/写路由、405、首装配两分支、变更两层、探针不进入会话记录、disposed 清理、observer-only 段不变、
+`agent/pre-step` waterfall 透传）；
 `test/client.test.mjs` 新增 4 例渲染（块与两层文案、`empty`/`not-read`/`waiting`/`unconfirmed`、
 开关 PUT 与主机答案跟随）。既有断言的同步改动：三个 harness 的 assemble 队列改为**按事件名过滤**
 （g-062 之前它们把所有 listener 当 waterfall 参与者，真实 dispatcher 是按名字路由的），
-监听器数量断言 2→5、撤销计数 3→6、客户端路由白名单加 `assembly-status`。全量 `857` 例通过。
+监听器数量断言 2→5、撤销计数 3→6、客户端路由白名单加 `assembly-status`。第一轮全量 `858` 例通过
+（评审实测；本轮修复后为 `867`，见 §140）。
 
 **已知边界（照实写进 UI 文案）**：装配层记录的是**本插件最终返回的段列表**，更晚注册的
 `{prepend:true}` listener 仍可改写（`assemblyBasis:'plugin-return'`、`outerRewritePossible:true`）；
 送达层只到 surface 事件为止。
+
+## 140. g-062 评审修复：R1–R5 与 P2 三项（Revision 45 补记，2026-10-13，基线 `7c5b2e5` 隔离工作树，候选 `2edff9e`）
+
+独立评审在 `2edff9e` 上给出 **BLOCK**（三处实质缺陷 + 一处覆盖缺口 + 文档订正）。以下按评审项记录
+**改了什么、为什么这样改、以及被否的替代方案**。
+
+**R1｜既有会话 `resume` 下变更提示丢失（判据 2）**
+- 根因：`firstSight`（本 mount 首次见到该会话）被当作「新会话」，并**无条件消费**待报的 write；
+  随后 `request/header` 的 `resume` 丢弃 pendingFirst ⇒ 该变更既没被当作场景 A 报出，也被记为已消费。
+- 修法：引入 `firstDecided`（新会话问题是否已答）。装配时若有待报 write 而问题未决，只**武装**
+  `pendingFirst`（记 `writeSeq` 与预计算的 `readBack`），**不消费**；`initial` header 才把它判为场景 A
+  并消费；非 `initial` header 立刻按**变更**产出 `prompt-change`（用候选里已存的装配证据）；若 header
+  始终不来，**下一轮装配**判定为既有会话并同样产出 `prompt-change`。
+- 被否：只在 header 到达时补发（若平台不追加 header 就永久丢失 —— 平台只在配置/工具/series 变化时追加）。
+
+**R2｜`pendingFirst` 长期占用导致对齐失效 + 错误「已送达」（判据 3）**
+- 修法：① `observePreStep` 改为**优先**给 `record.active`（waiting）打标签，候选仅回退；② 产生 change
+  notice 时清空候选；③ 候选由「下一轮装配」兜底清理解析（不再长期残留）；④ **标签缺失即拒绝结算**——
+  notice 的 `turn`/`step` 未定时，任何 `system/message` 都不结算（宁可 `unconfirmed`，绝不误报 delivered）。
+
+**R3｜首装配送达层恒 `unconfirmed`（判据 1，事实错误）**
+- 修法：`record.recentSystem` 缓存该会话最近一条 `system/message`（**无论当时有没有 notice**）；创建
+  `first-assembly` notice 时若缓存事件的 `turn`/`step` 与本 notice **完全一致**即直接置 `delivered`
+  （含 `surfaceOp` / `seq` / `textMatched`）。缓存按 turn/step 匹配而非「最近」，异 step 的缓存不采用。
+- 被否：首装配不展示送达层（会削掉判据 1 要求的可见性，只在缓存不可行时才该退到这一步）。
+
+**R4｜写路径覆盖缺口（判据 2 完整性）**
+- `POST /import`（每层按 plan 的 `changes` 登记）、`POST /rollback`、`DELETE /overrides`
+  （单删保留段与 `reset=true`；`legacy=true` 不动保留段故不登记）现均调用 `notePromptWrite`。
+  三条路径各有 route 级用例断言产出 `prompt-change`。
+
+**R5｜文档订正**
+- `NOTES.md` §139：`857` → `858`（第一轮实测）、`route.test.mjs` 新增 `8` → `9` 例；
+- `CONTRACT.md` §21.5：`data-assembly-phase` 的枚举去掉不存在的 `loading`（客户端只有 `idle`/`ready`/`error`）；
+- `CONTRACT.md` 补 **Revision 45** 标注（§13 的修订清单 + §21 标题）。
+
+**P2 三项结论**
+1. **热路径同步 IO（已消除，非「可接受」）**：开关读取从「每次装配」收窄到「即将产生 notice 时」——
+   稳态一步（无待报 write、新会话问题已答）**完全不读** `preferences.json`；因此不需要 mtime/TTL 缓存
+   （缓存会引入「刚改开关却读到旧值」的窗口，而收窄调用点的收益更大且无窗口）。有测试锁住
+   「关闭后不再产生新 notice」与「稳态装配不产生 notice」。
+2. **`settle` 计时基准（已改）**：主判据改为**本步的 `step/end`**——step 结束仍未见 `system/message`
+   即 `unconfirmed`（精确事实，长流式 step 不会被提前判死）；时间兜底从 20s 放宽到 120s，只用于
+   「step 永不结束」的极端情况。UI 文案未承诺任何秒数，无需改措辞。
+3. **装配层局限（已补）**：`basis` 增加 `postWaterfallCollapse:true`，中英文局限文案补充
+   「宿主在 waterfall 之后还可能把整份段列表折叠到生效的 `complete` 段」。
+
+**测试与证据**：`node --test test/*.test.mjs` → **867 passed / 0 failed**；`client-chunks` 5 chunk 一致；
+`check-compat` exit 0；零新增依赖、零构建。本轮新增用例 9 条（core +6：R1×2、R2、step/end、R3×2；
+route +3：R1 同拍、R3 首装配 delivered、R4 三写路径），另把「变更两层」用例改为真实 `resume` 顺序。
+负向对照（改坏即红、验证后还原）：去掉 fail-open ⇒ observer-only 用例红；关闭探针排除 ⇒ 探针用例红；
+去掉 waterfall 透传 ⇒ pass-through 用例红。

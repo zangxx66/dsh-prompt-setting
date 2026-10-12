@@ -1032,7 +1032,7 @@ window.__ModuleLoader__.load({
       assemblyNodeMeta: 'turn {turn} · step {step}',
       assemblyNoticeOnce: '仅关键节点提示一次，不随每个 step 重复。',
       assemblyLimitation:
-        '口径：装配层以本插件最终返回的段列表为准——更晚注册的 prepend listener 仍可能改写它；送达层以本次 step 在 surface 上产生的 system/message（append 或 replace head）为准，HTTP 是否实际发出在插件侧不可观测，本提示不作此声称。',
+        '口径：装配层以本插件最终返回的段列表为准——更晚注册的 prepend listener 仍可能改写它，宿主在 waterfall 之后还可能把整份段列表折叠到生效的 complete 段；送达层以本次 step 在 surface 上产生的 system/message（append 或 replace head）为准，HTTP 是否实际发出在插件侧不可观测，本提示不作此声称。',
       mineWarningsHeading: '已保存，但有以下引用需要留意：',
       mineWarningUndefined:
         '这些变量在本次探测中没有值，保存已通过（值属于会话，不属于文本）；缺少该值的那一轮，这些引用会保留字面量、不做替换：{list}',
@@ -1635,7 +1635,7 @@ window.__ModuleLoader__.load({
       assemblyNodeMeta: 'turn {turn} · step {step}',
       assemblyNoticeOnce: 'Once per key node only — it does not pile up per step.',
       assemblyLimitation:
-        'Basis: the assembly layer is the section list this plugin finally returned — a `{prepend: true}` listener registered later may still rewrite it; the delivery layer is the system/message this step committed on the surface (append or head replace). Whether the HTTP request was actually sent is not observable from a plugin, and this notice does not claim it.',
+        'Basis: the assembly layer is the section list this plugin finally returned — a `{prepend: true}` listener registered later may still rewrite it, and the Host may collapse the whole list onto the effective `complete` section after the waterfall; the delivery layer is the system/message this step committed on the surface (append or head replace). Whether the HTTP request was actually sent is not observable from a plugin, and this notice does not claim it.',
       mineWarningsHeading: 'Saved, with references to note:',
       mineWarningUndefined:
         'These variables had no value in the probe that was run, so the save was accepted (a value belongs to the session, not to the text); in a turn that has no value for them, they stay literal instead of being substituted: {list}',

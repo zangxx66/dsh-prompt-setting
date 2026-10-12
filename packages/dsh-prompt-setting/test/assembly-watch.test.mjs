@@ -297,8 +297,13 @@ test('assembly-watch: a stale change only fires once, on the next run', () => {
 
 test('assembly-watch: a user-layer write addresses every session; a workspace write only its own', () => {
   const watch = createAssemblyWatch({ now: () => 0 });
-  watch.observeAssembly({ sessionId: 's1', configuredText: null, segmentText: '', at: 0 });
-  watch.observeAssembly({ sessionId: 's2', configuredText: null, segmentText: '', at: 0 });
+  // Both sessions are established conversations: the header answers the
+  // new-conversation question (review R1 — until it does, a save stays pending
+  // rather than being consumed).
+  for (const id of ['s1', 's2']) {
+    watch.observeAssembly({ sessionId: id, configuredText: null, segmentText: '', at: 0 });
+    watch.observeSessionEvent({ sessionId: id, event: headerEvent('resume'), at: 0 });
+  }
   watch.markPromptWrite({ session: 's1', layer: 'workspace', action: 'replace', text: 'W', at: 1 });
   assert.equal(watch.observeAssembly({ sessionId: 's2', configuredText: 'W', segmentText: 'W', at: 2 }), null);
   assert.equal(
@@ -378,4 +383,107 @@ test('assembly-watch: the probe counter is bookkeeping the page can read, not a 
   watch.rejectProbe();
   assert.equal(watch.stats().rejectedProbes, 2);
   assert.equal(watch.stats().sessions, 0);
+});
+
+test('assembly-watch: a save on an existing conversation survives a resume header as a change (review R1)', () => {
+  const watch = createAssemblyWatch({ now: () => 0 });
+  // The mount sees this conversation for the first time in the very step the
+  // user saved a new prompt — a Host restart is the everyday version of this.
+  watch.markPromptWrite({ session: 's1', layer: 'user', action: 'replace', text: 'NEW', at: 0 });
+  watch.observeAssembly({ sessionId: 's1', configuredText: 'NEW', segmentText: 'NEW', at: 1 });
+  watch.observePreStep({ sessionId: 's1', turn: 3, step: 1 });
+  // An existing conversation answers `resume`, never `initial`.
+  const notice = watch.observeSessionEvent({ sessionId: 's1', event: headerEvent('resume'), at: 2 });
+  assert.equal(notice.kind, CHANGE_NOTICE, 'the save is reported as the change it is');
+  assert.equal(notice.assembly.state, 'read');
+  assert.equal(notice.turn, 3, 'and it kept the step label');
+  assert.equal(notice.step, 1);
+  // The delivery layer still settles on this step's own projection.
+  watch.observeSessionEvent({
+    sessionId: 's1',
+    event: systemEvent({ text: 'SYSTEM NEW', turn: 3, step: 1, seq: 5 }),
+    at: 3,
+  });
+  assert.equal(watch.status('s1').notice.delivery.state, 'delivered');
+  assert.equal(watch.stats().notices, 1, 'exactly one notice — the same fact is never reported twice');
+});
+
+test('assembly-watch: a save is not swallowed when no header ever arrives (review R1)', () => {
+  const watch = createAssemblyWatch({ now: () => 0 });
+  watch.markPromptWrite({ session: 's1', layer: 'user', action: 'replace', text: 'NEW', at: 0 });
+  watch.observeAssembly({ sessionId: 's1', configuredText: 'NEW', segmentText: 'NEW', at: 1 });
+  watch.observePreStep({ sessionId: 's1', turn: 1, step: 1 });
+  // The platform appends a header only when the configuration or the series
+  // changed, so the next assembly resolves the candidate the other way.
+  const notice = watch.observeAssembly({ sessionId: 's1', configuredText: 'NEW', segmentText: 'NEW', at: 2 });
+  assert.equal(notice.kind, CHANGE_NOTICE);
+  assert.equal(watch.status('s1').notice.delivery.state, 'waiting');
+  assert.equal(watch.stats().notices, 1);
+});
+
+test('assembly-watch: a notice without a step label never settles off an unrelated step (review R2)', () => {
+  const watch = createAssemblyWatch({ now: () => 0 });
+  establish(watch, 's1');
+  // A change whose run never produced a pre-step: no label is available.
+  watch.markPromptWrite({ session: 's1', layer: 'user', action: 'replace', text: 'NEW', at: 1 });
+  const notice = watch.observeAssembly({ sessionId: 's1', configuredText: 'NEW', segmentText: 'NEW', at: 2 });
+  assert.equal(notice.turn, null);
+  assert.equal(notice.step, null);
+  // An unrelated step's projection must NOT be read as this notice's delivery.
+  assert.equal(
+    watch.observeSessionEvent({ sessionId: 's1', event: systemEvent({ text: 'SYSTEM', turn: 3, step: 9, seq: 99 }), at: 3 }),
+    null,
+  );
+  assert.equal(watch.status('s1').notice.delivery.state, 'waiting');
+  // Its own step, once labelled, still settles.
+  watch.observePreStep({ sessionId: 's1', turn: 4, step: 1 });
+  watch.observeSessionEvent({ sessionId: 's1', event: systemEvent({ text: 'SYSTEM NEW', turn: 4, step: 1, seq: 7 }), at: 4 });
+  assert.equal(watch.status('s1').notice.delivery.state, 'delivered');
+});
+
+test('assembly-watch: the step end is the exact deadline — no event by then is unconfirmed (review P2)', () => {
+  const watch = createAssemblyWatch({ now: () => 0 });
+  establish(watch, 's1');
+  watch.markPromptWrite({ session: 's1', layer: 'user', action: 'replace', text: 'NEW', at: 1 });
+  watch.observeAssembly({ sessionId: 's1', configuredText: 'NEW', segmentText: 'NEW', at: 2 });
+  watch.observePreStep({ sessionId: 's1', turn: 5, step: 2 });
+  assert.equal(watch.status('s1').notice.delivery.state, 'waiting');
+  // The step closes without a system/message: the miss is now a fact, not a
+  // timeout that a slow streaming step could still earn back.
+  watch.observeSessionEvent({ sessionId: 's1', event: { type: 'step/end', seq: 8, time: 0, data: { turn: 5, step: 2 } }, at: 3 });
+  assert.equal(watch.status('s1').notice.delivery.state, 'unconfirmed');
+  // A `step/end` of another step changes nothing.
+  watch.observeSessionEvent({ sessionId: 's1', event: { type: 'step/end', seq: 9, time: 0, data: { turn: 5, step: 3 } }, at: 4 });
+  assert.equal(watch.status('s1').notice.delivery.state, 'unconfirmed');
+});
+
+test('assembly-watch: a first assembly whose projection already committed reads as delivered (review R3)', () => {
+  const watch = createAssemblyWatch({ now: () => 0 });
+  watch.markPromptWrite({ session: 's1', layer: 'user', action: 'replace', text: 'MINE', at: 0 });
+  watch.observeAssembly({ sessionId: 's1', configuredText: 'MINE', segmentText: 'MINE', at: 1 });
+  watch.observePreStep({ sessionId: 's1', turn: 1, step: 1 });
+  // The Host commits this step's projection BEFORE the header that creates the
+  // notice (the order review R3 measured) — without the cache this delivery
+  // would be lost and misreported as unconfirmed.
+  watch.observeSessionEvent({
+    sessionId: 's1',
+    event: systemEvent({ text: 'SYSTEM MINE', turn: 1, step: 1, seq: 7, surfaceOp: 'append' }),
+    at: 2,
+  });
+  const notice = watch.observeSessionEvent({ sessionId: 's1', event: headerEvent('initial'), at: 3 });
+  assert.equal(notice.kind, FIRST_NOTICE);
+  assert.equal(notice.delivery.state, 'delivered');
+  assert.equal(notice.delivery.seq, 7);
+  assert.equal(notice.delivery.surfaceOp, 'append');
+  assert.equal(notice.delivery.textMatched, true);
+});
+
+test('assembly-watch: a cached projection of ANOTHER step does not settle a first assembly (review R3)', () => {
+  const watch = createAssemblyWatch({ now: () => 0 });
+  watch.observeAssembly({ sessionId: 's1', configuredText: 'MINE', segmentText: 'MINE', at: 0 });
+  watch.observePreStep({ sessionId: 's1', turn: 2, step: 1 });
+  // A projection belonging to a previous step, then the header of this one.
+  watch.observeSessionEvent({ sessionId: 's1', event: systemEvent({ text: 'OLD', turn: 1, step: 9, seq: 3 }), at: 1 });
+  const notice = watch.observeSessionEvent({ sessionId: 's1', event: headerEvent('initial'), at: 2 });
+  assert.equal(notice.delivery.state, 'waiting', 'the cache is matched by turn/step, never by recency alone');
 });

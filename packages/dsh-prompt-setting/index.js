@@ -2480,6 +2480,14 @@ function mount(ctx, config, cleanups) {
     const isSection = sectionOf(next);
     writeConfig(target.path, next);
     cacheWritten(target, next);
+    // g-062: a rollback rewrites the reserved section, so it is a prompt change
+    // like any other and the layer's next run reports it.
+    notePromptWrite({
+      layer,
+      session: layer === 'workspace' ? scopeSession ?? null : null,
+      action: isSection === null ? 'hide' : isSection.action,
+      text: isSection === null || isSection.action === 'hide' ? '' : String(isSection.text ?? ''),
+    });
     const written = recordHistory({
       path: target.path,
       at: new Date().toISOString(),
@@ -2645,6 +2653,19 @@ function mount(ctx, config, cleanups) {
     const history = {};
     for (const name of importedNames) {
       cacheWritten(targets[name], plans[name].next);
+      // g-062: an import that changes the reserved section is a prompt change like
+      // any save, so the affected layer's next run reports it. Read from the plan
+      // that was just committed, never re-read from disk.
+      for (const change of plans[name].changes) {
+        if (change.name !== CUSTOM_SECTION_NAME || change.status === 'unchanged') continue;
+        const after = change.after === undefined ? null : change.after;
+        notePromptWrite({
+          layer: name,
+          session: name === 'workspace' ? sessionId ?? null : null,
+          action: after === null ? 'hide' : after.action,
+          text: after === null || after.action === 'hide' ? '' : String(after.text ?? ''),
+        });
+      }
       const snapshot = snapshotOfConfig(plans[name].next);
       const reported = [];
       for (const change of plans[name].changes) {
@@ -2801,6 +2822,11 @@ function mount(ctx, config, cleanups) {
         delivery: 'surface-system-message',
         httpObservable: false,
         outerRewritePossible: true,
+        // The Host collapses the whole section list onto the effective `complete`
+        // section **after** the waterfall (`SystemPrompt.assemble()`), so the
+        // recorded text is what this plugin returned, not necessarily what the
+        // service finally kept — stated instead of hidden (review P2.3).
+        postWaterfallCollapse: true,
       },
     });
   }
@@ -3560,6 +3586,11 @@ function mount(ctx, config, cleanups) {
     }
     writeConfig(target.path, config);
     cacheWritten(target, config);
+    // g-062: dropping the reserved entry changes the prompt this layer
+    // contributes, so the layer's next run reports it like any other save.
+    if (name === CUSTOM_SECTION_NAME) {
+      notePromptWrite({ layer, session: sessionId ?? null, action: 'hide', text: '' });
+    }
     recordHistory({
       path: target.path,
       at: new Date().toISOString(),
@@ -3604,6 +3635,11 @@ function mount(ctx, config, cleanups) {
     const config = emptyConfig();
     writeConfig(target.path, config);
     cacheWritten(target, config);
+    // g-062: a reset that took the reserved entry away is a prompt change; a
+    // reset of a layer that never held one is not.
+    if (removed.some((entry) => entry.name === CUSTOM_SECTION_NAME)) {
+      notePromptWrite({ layer, session: sessionId ?? null, action: 'hide', text: '' });
+    }
     const history = recordHistory({
       path: target.path,
       at: new Date().toISOString(),

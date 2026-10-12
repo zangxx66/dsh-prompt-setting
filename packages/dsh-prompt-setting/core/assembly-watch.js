@@ -45,9 +45,13 @@ export const SESSION_LIMIT = 64;
 export const WRITE_LIMIT = 8;
 /**
  * How long a notice may wait for its delivery evidence before it is reported as
- * unconfirmed. The wait is settled lazily on read, so this module needs no timer.
+ * unconfirmed. The **primary** settlement is the `step/end` of the notice's own
+ * step (an exact fact: the step is over, so no further `system/message` can
+ * belong to it); this deadline is the fallback for a step that never ends
+ * (cancellation, a Host that drops the event) and is deliberately long enough
+ * not to fire inside a slow streaming step.
  */
-export const DELIVERY_SETTLE_MS = 20 * 1000;
+export const DELIVERY_SETTLE_MS = 120 * 1000;
 /**
  * Longest plugin-section text this module will `includes()`-probe inside a
  * delivered system message. Above it the delivery verdict still stands (the
@@ -198,7 +202,23 @@ export function createAssemblyWatch(options = {}) {
     record = {
       sessionId,
       firstNoticeDone: false,
+      /**
+       * Whether the new-conversation question has been answered for this session
+       * (`initial` header seen, or proven not to be one). Until it is, an
+       * assembly arms {@link armFirstNotice} and the pending write stays
+       * **unconsumed** — a conversation this mount happens to see for the first
+       * time is not automatically a new conversation (review R1).
+       */
+      firstDecided: false,
       pendingFirst: null,
+      /**
+       * The newest `system/message` this session committed, kept whether or not a
+       * notice was waiting for it: the Host may commit this step's projection
+       * **before** the `request/header` that turns a pending first assembly into
+       * a notice, and without this cache that step's delivery would be lost and
+       * misreported as unconfirmed (review R3).
+       */
+      recentSystem: null,
       lastAssembly: null,
       active: null,
       notices: [],
@@ -299,12 +319,33 @@ export function createAssemblyWatch(options = {}) {
   }
 
   /**
+   * Did an assembly's section text carry the text a save wrote?
+   *
+   * An exact digest match is the precise case; the `includes` fallback covers the
+   * ON-switch expansion, where variables in the stored text are substituted
+   * before the section is rendered — the stored text is then a substring of what
+   * was assembled, and calling that "not re-assembled" would be wrong.
+   * @param segmentText - the plugin section's final text.
+   * @param write - the save entry (`null` when none is attached).
+   * @returns true / false, or `null` when there is nothing to compare against.
+   */
+  function readBackOf(segmentText, write) {
+    if (write === null || write === undefined) return null;
+    if (textDigest(segmentText) === write.digest) return true;
+    if (write.text === null) return false;
+    return segmentText.length > 0 && segmentText.includes(write.text);
+  }
+
+  /**
    * Arm scenario A's pending first notice for one session.
    *
-   * The notice itself is only produced when the `request/header` event confirms
-   * this is really a new conversation (`reason: 'initial'`).
+   * The notice itself is produced only when the `request/header` event confirms
+   * this really is a new conversation (`reason: 'initial'`); a non-`initial`
+   * header resolves the question the other way and — when a save is attached —
+   * produces the `prompt-change` notice instead. Until then the attached write is
+   * deliberately **not** consumed.
    * @param record - the session record.
-   * @param input - `{at, configuredText, segmentText}`.
+   * @param input - `{at, configuredText, segmentText, write}`.
    */
   function armFirstNotice(record, input) {
     record.pendingFirst = {
@@ -315,9 +356,92 @@ export function createAssemblyWatch(options = {}) {
       length: input.segmentText.length,
       expectedDigest: textDigest(input.configuredText),
       expectedText: input.configuredText.length > TEXT_MATCH_LIMIT ? null : input.configuredText,
+      // Precomputed while the text is in hand: if the header answers "not a new
+      // conversation", the assembly layer's verdict is already decided and there
+      // is no reason to keep (or recompute from) the text.
+      readBack: readBackOf(input.segmentText, input.write),
       turn: null,
       step: null,
+      // The write whose fate depends on the header's reason, or null when the
+      // user's prompt did not change under this mount's eyes.
+      writeSeq: input.write === null || input.write === undefined ? null : input.write.seq,
     };
+  }
+
+  /**
+   * Build and retain the `prompt-change` notice for one write against one
+   * assembly's text.
+   *
+   * The assembly layer answers "did this step's assembly read the changed text":
+   * an exact digest match is the precise case, while the `includes` fallback
+   * covers the ON-switch expansion, where variables in the stored text are
+   * substituted before the section is rendered — the stored text is then a
+   * substring of what was assembled, and calling that "not re-assembled" would be
+   * wrong.
+   * @param record - the session record.
+   * @param input - `{at, turn, step, configuredText, segmentText, write}`.
+   * @returns the notice, already pushed.
+   */
+  function emitChangeNotice(record, input) {
+    const { write } = input;
+    const digest = textDigest(input.segmentText);
+    const readBack = readBackOf(input.segmentText, write) === true;
+    const notice = makeNotice(CHANGE_NOTICE, {
+      at: input.at,
+      turn: input.turn ?? null,
+      step: input.step ?? null,
+      configured: input.configuredText !== null,
+      assemblyState: readBack ? 'read' : 'not-read',
+      assembled: input.segmentText.length > 0,
+      digest,
+      length: input.segmentText.length,
+      expectedDigest: write.digest,
+      expectedText: write.text,
+    });
+    notice.expected = { length: write.length, layer: write.layer ?? null, action: write.action ?? null };
+    // A change notice answers the pending question, so any half-armed first
+    // notice is gone: leaving it would keep stealing the step label from this
+    // notice (review R2).
+    record.pendingFirst = null;
+    pushNotice(record, notice);
+    return notice;
+  }
+
+  /**
+   * Resolve a pending first notice that no `request/header` settled before the
+   * next assembly ran.
+   *
+   * The Host appends the header inside the very step the assembly belongs to, so
+   * a candidate still pending when the **next** assembly starts has proven not to
+   * be a new conversation (or produced no header at all — the platform appends
+   * one only when the configuration or the series changed). The question is
+   * therefore answered "not a new conversation": the candidate is dropped, and an
+   * attached write becomes a `prompt-change` notice — exactly the case review R1
+   * found to be silently swallowed.
+   * @param record - the session record.
+   * @param input - the running assembly's `{at, configuredText, segmentText}`.
+   * @returns the notice this resolution produced, or null.
+   */
+  function resolveStalePendingFirst(record, input) {
+    const pending = record.pendingFirst;
+    if (pending === null) return null;
+    record.pendingFirst = null;
+    record.firstDecided = true;
+    if (pending.writeSeq === null) return null;
+    const write = writes.find((entry) => entry.seq === pending.writeSeq) ?? null;
+    if (write === null || write.seq <= record.consumedWriteSeq) return null;
+    if (noticesAllowed() !== true) return null;
+    record.consumedWriteSeq = write.seq;
+    // The change is reported against the assembly running **now**: that is the
+    // step whose delivery this notice waits for.
+    return emitChangeNotice(record, {
+      at: input.at,
+      turn: null,
+      step: null,
+      configuredText: input.configuredText,
+      segmentText: input.segmentText,
+      write,
+    });
   }
 
   /**
@@ -336,71 +460,56 @@ export function createAssemblyWatch(options = {}) {
       const segmentText = typeof input?.segmentText === 'string' ? input.segmentText : '';
       const configuredText = typeof input?.configuredText === 'string' ? input.configuredText : null;
       const record = recordFor(sessionId);
-      // The very first assembly this mount sees for a conversation is scenario A
-      // — "the user set a prompt, report whether it was assembled" — even when a
-      // save happened moments earlier. Recording first, so the branch below can
-      // tell the two cases apart.
-      const firstSight = record.lastAssembly === null;
+      // A candidate that survived into the *next* assembly was never settled by a
+      // header: resolve it before this assembly's own evidence replaces
+      // `lastAssembly`.
+      const stale = resolveStalePendingFirst(record, { at, configuredText, segmentText });
       record.lastAssembly = {
         at,
         digest: textDigest(segmentText),
         length: segmentText.length,
         configured: configuredText !== null,
       };
-      if (noticesAllowed() !== true) return null;
 
       const write = writeFor(sessionId);
       const hasPendingWrite = write !== null && write.seq > record.consumedWriteSeq;
 
-      if (firstSight === true) {
-        // Consume the pending write without reporting it as a change: setting a
-        // prompt before (or while) opening a conversation is not "the prompt
-        // changed under an existing conversation", and reporting both would be
-        // the same fact twice.
-        if (hasPendingWrite) record.consumedWriteSeq = write.seq;
-        // Scenario A's precondition: the user must have set a prompt in this
-        // plugin. Without one there is nothing to report, assembled or not.
-        if (configuredText === null) return null;
-        armFirstNotice(record, { at, configuredText, segmentText });
-        return null;
-      }
-
       if (hasPendingWrite === true) {
-        record.consumedWriteSeq = write.seq;
-        const digest = textDigest(segmentText);
-        // The assembly layer: did the section this step assembled carry the text
-        // the save wrote? An exact digest match is the precise case; the
-        // `includes` fallback covers the ON-switch expansion, where variables in
-        // the stored text are substituted before the section is rendered — the
-        // stored text is then a substring of what was assembled, and calling
-        // that "not re-assembled" would be wrong.
-        const readBack =
-          digest === write.digest ||
-          (write.text !== null && segmentText.length > 0 && segmentText.includes(write.text));
-        const notice = makeNotice(CHANGE_NOTICE, {
-          at,
-          turn: null,
-          step: null,
-          configured: configuredText !== null,
-          assemblyState: readBack ? 'read' : 'not-read',
-          assembled: segmentText.length > 0,
-          digest,
-          length: segmentText.length,
-          expectedDigest: write.digest,
-          expectedText: write.text,
-        });
-        notice.expected = { length: write.length, layer: write.layer ?? null, action: write.action ?? null };
-        pushNotice(record, notice);
-        return notice;
+        if (record.firstNoticeDone === true || record.firstDecided === true) {
+          // An established conversation: a save is a change, reported on the very
+          // next run. The switch is consulted only where a notice may be born.
+          if (noticesAllowed() !== true) return stale;
+          record.consumedWriteSeq = write.seq;
+          const notice = emitChangeNotice(record, { at, turn: null, step: null, configuredText, segmentText, write });
+          return notice ?? stale;
+        }
+        // The new-conversation question is still open. Arm (or refresh) the
+        // candidate **without consuming the write**: only an `initial` header
+        // makes this scenario A, and even then the write is consumed as the
+        // already-done fact rather than reported twice.
+        if (record.pendingFirst === null) {
+          armFirstNotice(record, { at, configuredText, segmentText, write });
+        } else {
+          record.pendingFirst.writeSeq = write.seq;
+          record.pendingFirst.at = at;
+          record.pendingFirst.assembled = segmentText.length > 0;
+          record.pendingFirst.digest = textDigest(segmentText);
+          record.pendingFirst.length = segmentText.length;
+          record.pendingFirst.readBack = readBackOf(segmentText, write);
+        }
+        return stale;
       }
 
-      if (record.firstNoticeDone === true || record.pendingFirst !== null) return null;
-      // A later assembly of an already-seen conversation with no pending write:
-      // only relevant when a prompt appeared *without* a save this mount saw
-      // (a hand edit of the layer files), which is still scenario A.
-      if (configuredText === null) return null;
-      armFirstNotice(record, { at, configuredText, segmentText });
-      return null;
+      // No pending write: scenario A's precondition is simply "the user has a
+      // prompt configured in this plugin" (a hand-edited layer file satisfies it
+      // too). Asked once per session, and only while the question is open.
+      if (record.firstNoticeDone === true || record.firstDecided === true || record.pendingFirst !== null) {
+        return stale;
+      }
+      if (configuredText === null) return stale;
+      if (noticesAllowed() !== true) return stale;
+      armFirstNotice(record, { at, configuredText, segmentText, write: null });
+      return stale;
     } catch {
       return null;
     }
@@ -440,6 +549,10 @@ export function createAssemblyWatch(options = {}) {
   /**
    * Label the node currently waiting (the assembly this step just ran) with the
    * turn/step the Host dispatched it under.
+   *
+   * The **active** notice wins over a pending first candidate: the candidate's
+   * own step is not the one a change notice is waiting for, and letting it keep
+   * the label is what made the alignment silently disappear (review R2).
    * @param input - `{sessionId, turn, step}`.
    */
   function observePreStep(input) {
@@ -447,13 +560,38 @@ export function createAssemblyWatch(options = {}) {
       const record = records.get(input?.sessionId);
       if (record === undefined) return;
       record.touchedAt = now();
-      const target = record.pendingFirst ?? (record.active?.delivery?.state === 'waiting' ? record.active : null);
+      const target =
+        record.active !== null && record.active.delivery?.state === 'waiting' ? record.active : record.pendingFirst;
       if (target === null || target === undefined) return;
       if (!Number.isFinite(target.turn) && Number.isFinite(input?.turn)) target.turn = input.turn;
       if (!Number.isFinite(target.step) && Number.isFinite(input?.step)) target.step = input.step;
     } catch {
       // Fail open.
     }
+  }
+
+  /**
+   * Settle one waiting notice as delivered by one observed `system/message`.
+   * @param notice - the waiting notice.
+   * @param input - `{at, seq, surfaceOp, text}` of that event.
+   * @returns the notice.
+   */
+  function settleDelivered(notice, input) {
+    const expected = notice.expectedText;
+    const text = typeof input?.text === 'string' ? input.text : '';
+    notice.delivery = {
+      // The agreed verdict: this step committed a `system/message` on the
+      // surface, so the prompt text is in this request's messages.
+      state: 'delivered',
+      at: input.at,
+      seq: Number.isFinite(input.seq) ? input.seq : null,
+      surfaceOp: input.surfaceOp ?? null,
+      textMatched:
+        typeof expected !== 'string' || expected.length === 0 || expected.length > TEXT_MATCH_LIMIT
+          ? null
+          : text.includes(expected),
+    };
+    return notice;
   }
 
   /**
@@ -468,62 +606,124 @@ export function createAssemblyWatch(options = {}) {
       record.touchedAt = now();
       const event = input?.event;
       if (event === null || typeof event !== 'object') return null;
+      const at = Number.isFinite(input?.at) ? input.at : now();
 
       if (event.type === 'request/header') {
         const reason = event?.data?.reason;
-        if (record.pendingFirst === null) return null;
-        if (reason === 'initial') {
-          // The strongest new-conversation signal: the log's first request
-          // header. `resume` / `fork` never produce it (`RequestHeaderReason`).
-          const pending = record.pendingFirst;
-          record.pendingFirst = null;
-          record.firstNoticeDone = true;
-          const notice = makeNotice(FIRST_NOTICE, {
+        const pending = record.pendingFirst;
+        record.pendingFirst = null;
+        const alreadyDecided = record.firstDecided === true;
+        // A header answers the new-conversation question for this session even
+        // when no candidate was armed (the step assembled no configured prompt),
+        // and it is answered exactly once. `firstNoticeDone` still means "a first
+        // notice really was produced", so it is set where the notice is.
+        record.firstDecided = true;
+        if (pending === null || alreadyDecided === true) return null;
+        if (reason !== 'initial') {
+          // Not a new conversation (a resume, a fork, a later change): scenario A
+          // does not apply. A write attached to the candidate is **not** lost —
+          // it is reported as the change it is (review R1), against the assembly
+          // evidence the candidate already recorded.
+          if (pending.writeSeq === null) return null;
+          const write = writes.find((entry) => entry.seq === pending.writeSeq) ?? null;
+          if (write === null || write.seq <= record.consumedWriteSeq) return null;
+          if (noticesAllowed() !== true) return null;
+          record.consumedWriteSeq = write.seq;
+          const notice = makeNotice(CHANGE_NOTICE, {
             at: pending.at,
             turn: pending.turn,
             step: pending.step,
             configured: pending.configured,
-            assemblyState: pending.assembled ? 'assembled' : 'empty',
+            assemblyState: pending.readBack === true ? 'read' : 'not-read',
             assembled: pending.assembled,
             digest: pending.digest,
             length: pending.length,
-            expectedDigest: pending.expectedDigest,
-            expectedText: pending.expectedText,
+            expectedDigest: write.digest,
+            expectedText: write.text,
           });
+          notice.expected = { length: write.length, layer: write.layer ?? null, action: write.action ?? null };
           pushNotice(record, notice);
           return notice;
         }
-        // Not a new conversation (a resume, a fork, a later change): scenario A
-        // does not apply, so the pending first notice is dropped rather than
-        // reported as a first assembly.
-        record.pendingFirst = null;
-        return null;
+        // The log's first request header: scenario A really is a new
+        // conversation, and the write — if any — was the user setting the prompt
+        // this conversation starts with, so it is consumed as an already-done
+        // fact instead of being reported twice.
+        if (pending.writeSeq !== null) record.consumedWriteSeq = Math.max(record.consumedWriteSeq, pending.writeSeq);
+        record.firstNoticeDone = true;
+        const notice = makeNotice(FIRST_NOTICE, {
+          at: pending.at,
+          turn: pending.turn,
+          step: pending.step,
+          configured: pending.configured,
+          assemblyState: pending.assembled ? 'assembled' : 'empty',
+          assembled: pending.assembled,
+          digest: pending.digest,
+          length: pending.length,
+          expectedDigest: pending.expectedDigest,
+          expectedText: pending.expectedText,
+        });
+        // The Host may commit this step's projection **before** this header
+        // (review R3): the cached `system/message` of exactly this turn/step is
+        // this notice's delivery evidence, not a guess.
+        const recent = record.recentSystem;
+        if (
+          recent !== null &&
+          Number.isFinite(notice.turn) &&
+          Number.isFinite(notice.step) &&
+          recent.turn === notice.turn &&
+          recent.step === notice.step
+        ) {
+          settleDelivered(notice, { at: recent.at, seq: recent.seq, surfaceOp: recent.surfaceOp, text: recent.text });
+        }
+        pushNotice(record, notice);
+        return notice;
       }
 
-      if (event.type !== 'system/message') return null;
-      const active = record.active;
-      if (active === null || active.delivery?.state !== 'waiting') return null;
-      const turn = event?.data?.turn;
-      const step = event?.data?.step;
-      // Align on the step this notice belongs to when both sides state one: a
-      // later step's projection must not be read as this step's delivery.
-      if (Number.isFinite(active.turn) && Number.isFinite(turn) && active.turn !== turn) return null;
-      if (Number.isFinite(active.step) && Number.isFinite(step) && active.step !== step) return null;
-      const text = systemTextOf(event);
-      const expected = active.expectedText;
-      active.delivery = {
-        // The agreed verdict: this step committed a `system/message` on the
-        // surface, so the prompt text is in this request's messages.
-        state: 'delivered',
-        at: Number.isFinite(input?.at) ? input.at : now(),
-        seq: Number.isFinite(event?.seq) ? event.seq : null,
-        surfaceOp: surfaceOperationOf(event),
-        textMatched:
-          typeof expected !== 'string' || expected.length === 0 || expected.length > TEXT_MATCH_LIMIT
-            ? null
-            : text.includes(expected),
-      };
-      return active;
+      if (event.type === 'system/message') {
+        const turn = event?.data?.turn;
+        const step = event?.data?.step;
+        // Cache first, settle second: this event may be the delivery of a notice
+        // that does not exist yet (the first-assembly case), and it is the only
+        // copy of that fact.
+        record.recentSystem = {
+          turn: Number.isFinite(turn) ? turn : null,
+          step: Number.isFinite(step) ? step : null,
+          seq: Number.isFinite(event?.seq) ? event.seq : null,
+          surfaceOp: surfaceOperationOf(event),
+          text: systemTextOf(event),
+          at,
+        };
+        const active = record.active;
+        if (active === null || active.delivery?.state !== 'waiting') return null;
+        // Alignment is the only proof that this projection belongs to this
+        // notice. A notice without a label therefore **refuses** to settle
+        // (review R2): reporting "delivered" off an unrelated step is the one
+        // mistake this feature must never make.
+        if (!Number.isFinite(active.turn) || !Number.isFinite(active.step)) return null;
+        if (turn !== active.turn || step !== active.step) return null;
+        return settleDelivered(active, {
+          at,
+          seq: record.recentSystem.seq,
+          surfaceOp: record.recentSystem.surfaceOp,
+          text: record.recentSystem.text,
+        });
+      }
+
+      if (event.type === 'step/end') {
+        // An exact fact, and a better deadline than any clock: the step is over,
+        // so no further `system/message` can belong to it (review P2.2).
+        const active = record.active;
+        if (active === null || active.delivery?.state !== 'waiting') return null;
+        const turn = event?.data?.turn;
+        const step = event?.data?.step;
+        if (!Number.isFinite(active.turn) || !Number.isFinite(active.step)) return null;
+        if (turn !== active.turn || step !== active.step) return null;
+        active.delivery = { ...active.delivery, state: 'unconfirmed' };
+        return active;
+      }
+
+      return null;
     } catch {
       return null;
     }

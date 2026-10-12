@@ -2014,6 +2014,11 @@ interaction.
   five reviewed inconsistencies with their neighbours, each as an explicit
   argument rather than a default: converging them would be a visible change. The
   Revision 44 entry below lists them, family by family;
+- **Revision 45** adds the in-session **assembly-status notice** (g-062, §21): one
+  new route pair (`GET`/`PUT /prompt-setting/assembly-status`), one new
+  `preferences.json` key (`assemblyNotice`, stated-only), and one new block at the
+  top of the「我的 Prompt」panel. It changes no existing route, no existing
+  response field and no existing stored byte;
 - the measured effect (see `NOTES.md` §123 for the migration record): `client.js`
   **9584 → 8575 lines / 456680 → 411979 bytes**, with `client.overview.js` 577,
   `client.transfer.js` 264 and `client.advanced.js` 502 lines now fetched on
@@ -6398,7 +6403,7 @@ request leaves `presets.json` and the layer byte-identical.
   as「没有预设」 — and an empty catalogue is stated separately
   (`data-region="presets-empty"`).
 
-## 21. The in-session assembly-status notice (g-062)
+## 21. The in-session assembly-status notice (g-062, Revision 45)
 
 DSH re-assembles the system prompt on **every** model step (`AgentLoop.preStep()`
 → `systemPrompt.assemble()`), but "assembled" is not "delivered":
@@ -6437,7 +6442,7 @@ observation; with none it answers `record: null` and the switch's state.
     "dropped": 0
   },
   "counts": { "sessions": 1, "notices": 1, "droppedNotices": 0, "writes": 1, "rejectedProbes": 0, "noticeSeq": 2 },
-  "basis": { "assembly": "plugin-return", "delivery": "surface-system-message", "httpObservable": false, "outerRewritePossible": true }
+  "basis": { "assembly": "plugin-return", "delivery": "surface-system-message", "httpObservable": false, "outerRewritePossible": true, "postWaterfallCollapse": true }
 }
 ```
 
@@ -6455,8 +6460,9 @@ observation; with none it answers `record: null` and the switch's state.
 - `basis` states the口径 as data so the page renders its own language:
   `assembly: "plugin-return"` (the recorded text is the section list **this
   plugin** returned) and `delivery: "surface-system-message"` (the step
-  committed a `system/message`); `httpObservable: false` and
-  `outerRewritePossible: true` are the two stated limits (§21.4).
+  committed a `system/message`); `httpObservable: false`,
+  `outerRewritePossible: true` and `postWaterfallCollapse: true` are the three
+  stated limits (§21.4).
 
 ### 21.2 `PUT /prompt-setting/assembly-status`
 
@@ -6473,18 +6479,29 @@ file stays byte-identical. An absent key means **on**.
 | Layer | Question | Observation | Values |
 | --- | --- | --- | --- |
 | assembly | Did this step's assembly read the (changed) plugin-section text? | the section list `assembleHandler` returns, read in the same listener | `first-assembly`: `assembled` \| `empty` (the section text is `''`); `prompt-change`: `read` \| `not-read` (digest equal, or the stored text is a substring of what was assembled when the ON-switch expanded variables) |
-| delivery | Did that text enter this request's messages? | `session/event`: a `system/message` on the surface with a matching `turn`/`step` | `waiting` \| `delivered` (with `surfaceOp`: `append` \| `replace`, and `textMatched` when the text is short enough to check) \| `unconfirmed` (the wait expired, lazily, on read) |
+| delivery | Did that text enter this request's messages? | `session/event`: a `system/message` on the surface with **this notice's own** `turn`/`step` | `waiting` \| `delivered` (with `surfaceOp`: `append` \| `replace`, and `textMatched` when the text is short enough to check) \| `unconfirmed` (the step ended without it, or the fallback deadline passed) |
 
 - **Delivery is not "the HTTP request was sent".** That is not observable from a
   plugin, and neither the route nor the page claims it. A `system/message`
   committed for this step is the agreed evidence, and `project()`'s "zero events
   because the text did not change" is reported as **not delivered**, which is
   exactly the visibility the goal asked for.
+- **Alignment is required, never assumed.** A notice is settled only by a
+  `system/message` carrying the same `turn`/`step`. A notice that has no label
+  refuses to settle at all (§21.4) — reporting "delivered" off an unrelated step
+  is the one mistake this feature must not make.
+- **The deadline is the step's end.** The step's own `step/end` settles a still
+  `waiting` notice as `unconfirmed` — an exact fact (the step is over, so no
+  further `system/message` can belong to it). A long fallback deadline covers a
+  step that never ends, so a slow streaming step is never judged early.
 - **New-conversation signal.** `request/header` with `reason === 'initial'`
   (resume/fork answer `'resume'`) is what turns a pending first assembly into a
-  `first-assembly` notice. A header that is not `initial` **drops** the pending
-  notice rather than reporting it late; turn/step numbers are never the signal
-  (they restart after a Host restart).
+  `first-assembly` notice; turn/step numbers are never the signal (they restart
+  after a Host restart).
+- **The Host may commit the projection before the header.** The newest
+  `system/message` of the session is cached, and a `first-assembly` notice whose
+  own `turn`/`step` matches it is born `delivered` — otherwise a guaranteed first
+  projection would be reported as unconfirmed, which would be a false statement.
 
 ### 21.4 Key nodes, probes, bounds and fail-open
 
@@ -6492,13 +6509,21 @@ file stays byte-identical. An absent key means **on**.
   `first-assembly` notice; a save produces at most one `prompt-change` notice,
   consumed by the next assembly that sees it. Repeated assemblies with no change
   add nothing.
-- **The first assembly of a conversation is scenario A, never a "change".** If a
-  save immediately precedes it, the write is consumed silently — the same fact is
-  not reported twice.
+- **The new-conversation question is answered once, by a header.** A save
+  observed before that answer is **held**, not consumed: an `initial` header makes
+  it the prompt the new conversation starts with (scenario A, the write consumed
+  as an already-done fact), while any other header — or the next assembly, if no
+  header ever arrives — resolves it as an **existing** conversation and the save
+  is reported as the `prompt-change` it is. A conversation this mount merely sees
+  for the first time is not automatically a new one.
 - **Which sessions a save addresses.** A `user`-layer save addresses every
   session; a `workspace`-layer save addresses only the session whose workspace
-  layer was written. Applies and unapplies of presets (§20.5–§20.6) are recorded
-  as saves too.
+  layer was written.
+- **Every write path that changes the reserved section is recorded**, not just
+  the editor's save: `PUT /overrides`, preset apply/unapply (§20.5–§20.6),
+  `POST /import`, `POST /rollback`, `DELETE /overrides` (including `reset=true`)
+  and the update-check-independent import path. Each is noted **after** its write
+  succeeded.
 - **Probes are excluded by object identity.** The `AssembleContext` object
   `probe()` handed to `assemble()` is what marks a probe
   (`state.pendingProbe.context`), because `probeTarget()` supplies the **real**
@@ -6508,16 +6533,19 @@ file stays byte-identical. An absent key means **on**.
 - **Bounded and cleaned up.** At most 6 notices per session, at most 64 tracked
   sessions (least-recently-touched dropped), at most 8 retained writes, and
   `session/disposed` drops that session's record.
-- **Fail-open.** Every method of the watch swallows its own errors, the
-  listeners contain themselves, and the write paths note a save **after** the
-  write succeeded. No observation can fail a turn, and none can change the
-  sections an assembly returns.
+- **Fail-open, and out of the hot path.** Every method of the watch swallows its
+  own errors, the listeners contain themselves, and the write paths note a save
+  **after** the write succeeded. The notice switch is read from
+  `preferences.json` only where a notice may actually be born — a steady-state
+  step (no pending save, question already answered) performs **no** preference IO
+  at all. No observation can fail a turn, and none can change the sections an
+  assembly returns.
 
 ### 21.5 Page surface
 
 The block lives at the top of the「我的 Prompt」panel and carries
 `data-region="assembly-status"` with `data-assembly-phase`
-(`idle`/`loading`/`ready`/`error`), `data-assembly-enabled`
+(`idle`/`ready`/`error`), `data-assembly-enabled`
 (`true`/`false`/`unknown` — unknown until the Host answers),
 `data-assembly-switch-state` (`on`/`off`/`unknown`), `data-assembly-session`
 (`yes`/`none`), `data-notice-kind`, `data-assembly-state` and
