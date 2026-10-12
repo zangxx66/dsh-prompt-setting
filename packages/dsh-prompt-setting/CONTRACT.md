@@ -3384,6 +3384,17 @@ code means rather than how it is written:
   `data-status-build` on `data-region="status"`. **Revision 18:** `generatedAt`
   renders in the browser's own zone, with the stored UTC string on the node's
   `title` (see the Revision 18 paragraph above).
+  **Revision 47 (g-062 fix round):** `data-region="renderer-info"` also carries
+  three diagnostic rows, so the fallback-without-a-reason pair the real machine
+  reported can never be read as "not working": `data-primitives-detail="true"`
+  (whether the `require` threw, its error text, the returned value's `typeof`,
+  whether it is an object, and the first ≤8 key names),
+  `data-primitives-members="true"` (`typeof` of `Button` and `Toast` before and
+  after unwrapping a `module.default` wrapper), and
+  `data-primitives-toast-source="module" | "default" | "none"` (which namespace
+  the **toast** capability decision used). The renderer decision
+  (`RENDERER` / `data-renderer`) still keys on the raw module's `Button` only;
+  only the toast probe may unwrap.
 
 ### 13.5 Second confirmation is required
 

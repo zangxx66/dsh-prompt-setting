@@ -431,6 +431,32 @@ function loadClient(primitives, options = {}) {
           }
         : null;
   /**
+   * g-062 fix round: the **interop shapes** a CJS `require` of an ESM module
+   * can hand back, so a case can pin what the probe does with each.
+   *
+   * `flat` (default) is the shape the platform's seed table really publishes
+   * (named exports on the namespace itself). `default` is the
+   * `__toESM(mod, 1)`-style wrapper the official client bundles normalize
+   * (every named export sits one `.default` down). `flat-with-default` is the
+   * trap: the atoms are there, so the *renderer* probe is satisfied, and the
+   * `Toast` sits under `.default` — the exact pair the real machine reported
+   * (`fallback` was not that pair, but the toast decision has to be right for
+   * both). `empty-object` and `undefined` are the two "resolved but useless"
+   * answers, and they must not be read as "the Host has a Toast".
+   * @param shape - the interop shape to publish.
+   * @param base - the flat namespace to wrap.
+   * @returns what the sandbox's `require` answers with.
+   */
+  const inInteropShape = (shape, base) => {
+    if (base === null) return null;
+    if (shape === 'undefined') return undefined;
+    if (shape === 'empty-object') return {};
+    if (shape === 'default') return { default: base };
+    if (shape === 'flat-with-default') return { ...base, default: atoms };
+    return base;
+  };
+  const publishedModule = inInteropShape(options.primitivesShape || (options.unwrapAtoms === true ? 'default' : 'flat'), primitivesModule);
+  /**
    * The loader's `require.async('./client.x.js')`, doubled (g-045).
    *
    * It does what the real one does, minus the network: reads the chunk from
@@ -476,7 +502,7 @@ function loadClient(primitives, options = {}) {
     if (name === 'react') return runtime.React;
     if (name === '@deepseek-ai/dsh-client-ui-primitives') {
       if (primitives === 'throw') throw new Error("Cannot find module '@deepseek-ai/dsh-client-ui-primitives'");
-      return primitivesModule;
+      return publishedModule;
     }
     // g-045: a chunk's one way back into the main bundle. The real loader
     // resolves the package id out of its module table, where the main factory
@@ -14004,5 +14030,172 @@ test('client: a Host that declares the slot and refuses the registration says ex
   const english = makePage({ primitives: 'ok', withToast: true, responses: defaultResponses(), language: 'en' });
   assert.notEqual(english.text.assemblyToastRefused, english.text.assemblyToastSlotMissing);
   assert.notEqual(english.text.assemblyToastRefused, english.text.assemblyToastUnavailable);
+});
+
+// ---------------------------------------------------------------------------
+// g-062 fix round — the primitives probe's interop shapes
+//
+// The real machine reported what looked like a contradiction: `Render branch:
+// fallback` **with no** "why primitives is unavailable" line. That pair is
+// consistent with several different worlds, and the fix round's whole demand is
+// that the page stop leaving them to inference. These cases pin the three
+// shapes the brief names (require throws / a flat namespace / `{default: ns}`)
+// plus the two "resolved but useless" answers, and they pin the boundary the
+// lead set: the **toast** decision may unwrap, the **renderer** decision must
+// not move.
+// ---------------------------------------------------------------------------
+
+test('client: a flat primitives namespace is used as-is, and the diagnosis says so (fix round)', async () => {
+  const page = makePage({
+    primitives: 'ok',
+    withToast: true,
+    primitivesShape: 'flat',
+    responses: defaultResponses(),
+  });
+  const notice = page.loaded.module.__internals.assemblyNotice;
+  assert.equal(notice.toastNamespace(), 'module', 'the namespace itself is the one the decision used');
+  assert.equal(page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay').length, 1);
+  const probe = notice.primitivesProbe();
+  assert.equal(probe.moduleType, 'object');
+  assert.equal(probe.isObject, true);
+  assert.equal(probe.hasDefault, false, 'a flat namespace has no wrapper to unwrap');
+  assert.equal(probe.buttonAfter, 'function');
+  assert.equal(probe.toastAfter, 'function');
+  assert.equal(probe.toastSource, 'module');
+  assert.equal(probe.renderer, 'primitives', 'a flat namespace with Button keeps the primitives renderer');
+
+  // The self-check lives in the full status block, which g-015 moved into
+  // 「高级」 — the one tab that is about the page itself.
+  const tree = await openAdvanced(page);
+  const info = oneBy(tree, 'data-region', 'renderer-info');
+  assert.ok(hasText(info, page.text.rendererPrimitives), 'the renderer branch is untouched by the fix');
+  const detail = oneBy(info, 'data-primitives-detail', 'true');
+  assert.ok(hasText(detail, page.text.primitivesDetailYes), 'the require did not throw');
+  assert.ok(hasText(detail, 'Button'), 'and the key prefix names a real export');
+  const members = oneBy(info, 'data-primitives-members', 'true');
+  assert.ok(hasText(members, 'Button=function'), 'the key types are printed before and after unwrapping');
+  assert.ok(hasText(members, 'Toast=function'));
+  assert.equal(oneBy(info, 'data-primitives-toast-source', 'module').props['data-primitives-toast-source'], 'module');
+  assert.ok(
+    hasText(oneBy(info, 'data-primitives-toast-source', 'module'), page.text.toastNamespaceModule),
+    'the line names the namespace the toast decision used',
+  );
+});
+
+test('client: an ESM/CJS wrapper is unwrapped for the toast, and only for the toast (fix round)', async () => {
+  // The brief's hypothesis, made real: every named export sits one `.default`
+  // down. `Button` is **still** reachable on the flat value, so the renderer
+  // probe is satisfied either way — which is what makes this the shape that
+  // could previously hide a Toast behind a passing renderer.
+  const page = makePage({
+    primitives: 'ok',
+    withToast: true,
+    primitivesShape: 'default',
+    responses: defaultResponses(),
+  });
+  const probe = page.loaded.module.__internals.assemblyNotice.primitivesProbe();
+  assert.equal(probe.hasDefault, true, 'there is a wrapper');
+  assert.equal(probe.buttonBefore, 'undefined', 'and nothing named Button lives at the top level');
+  assert.equal(probe.toastBefore, 'undefined');
+  assert.equal(probe.buttonAfter, 'function', 'the unwrapped namespace has them');
+  assert.equal(probe.toastAfter, 'function');
+  assert.equal(page.loaded.module.__internals.assemblyNotice.HAS_TOAST, true);
+  assert.equal(page.loaded.module.__internals.assemblyNotice.toastNamespace(), 'default');
+  assert.equal(
+    page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay').length,
+    1,
+    'the toaster is registered on the strength of the unwrapped namespace',
+  );
+
+  const tree = await openAdvanced(page);
+  const info = oneBy(tree, 'data-region', 'renderer-info');
+  // The boundary: the raw module has no `Button`, so the page's own renderer
+  // stays exactly where it was before this fix.
+  assert.ok(hasText(info, page.text.rendererFallback), 'the renderer branch did not move');
+  assert.equal(
+    oneBy(info, 'data-primitives-toast-source', 'default').props['data-primitives-toast-source'],
+    'default',
+  );
+  assert.ok(hasText(oneBy(info, 'data-primitives-members', 'true'), 'Button=function'));
+});
+
+test('client: a resolved-but-empty primitives answer says so instead of looking like a flat one (fix round)', async () => {
+  for (const shape of ['empty-object', 'undefined']) {
+    const page = makePage({ primitives: 'ok', primitivesShape: shape, responses: defaultResponses() });
+    const probe = page.loaded.module.__internals.assemblyNotice.primitivesProbe();
+    assert.equal(probe.threw, false, `${shape}: require resolved`);
+    assert.equal(probe.error, '', `${shape}: so there is no error text to show`);
+    assert.equal(
+      page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay').length,
+      0,
+      `${shape}: nothing drawable, so nothing is registered`,
+    );
+    const tree = await openAdvanced(page);
+    const info = oneBy(tree, 'data-region', 'renderer-info');
+    assert.ok(hasText(info, page.text.rendererFallback), `${shape}: the renderer falls back`);
+    const detail = oneBy(info, 'data-primitives-detail', 'true');
+    assert.ok(hasText(detail, page.text.primitivesDetailNo), `${shape}: and the line says no object came back`);
+    assert.equal(
+      oneBy(info, 'data-primitives-toast-source', 'none').props['data-primitives-toast-source'],
+      'none',
+      `${shape}: the toast namespace is named as absent`,
+    );
+    if (shape === 'empty-object') {
+      assert.ok(hasText(detail, page.text.primitivesDetailNone), 'an object with no keys is stated, not left blank');
+    } else {
+      assert.equal(probe.moduleType, 'undefined', 'the value really was undefined, not an empty object');
+    }
+  }
+});
+
+test('client: a throwing require is reported with its own message, and the old failure line survives (fix round)', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  const probe = page.loaded.module.__internals.assemblyNotice.primitivesProbe();
+  assert.equal(probe.threw, true, 'the probe really threw');
+  assert.ok(probe.error.includes('Cannot find module'), `the error text is kept: ${probe.error}`);
+  assert.equal(probe.moduleType, 'object', 'a failed require leaves the module as the `null` it was seeded with');
+  assert.equal(probe.isObject, false, 'and the object check still says no');
+  assert.equal(page.loaded.module.__internals.assemblyNotice.toastNamespace(), 'none');
+  const tree = await openAdvanced(page);
+  const info = oneBy(tree, 'data-region', 'renderer-info');
+  // The line g-015 added is still there — the new detail rows add to the
+  // diagnosis, they do not replace it.
+  assert.equal(oneBy(info, 'data-primitives-failure', 'true').props['data-primitives-failure'], 'true');
+  assert.ok(hasText(info, 'Cannot find module'), 'the reason is still printed');
+  assert.ok(
+    hasText(oneBy(info, 'data-primitives-detail', 'true'), 'Cannot find module'),
+    'and the detail line repeats it, because that is what "threw" means',
+  );
+  assert.equal(oneBy(info, 'data-primitives-toast-source', 'none').props['data-primitives-toast-source'], 'none');
+});
+
+test('client: the three probe shapes get three different diagnosis lines (fix round, negative control)', async () => {
+  // "Changed and it goes red": the three worlds the real machine could not tell
+  // apart must not collapse into one rendering. If the diagnosis line stops
+  // depending on the shape, this case fails while every other case still passes.
+  const lines = async (options) => {
+    const page = makePage({ primitives: 'ok', responses: defaultResponses(), ...options });
+    const info = oneBy(await openAdvanced(page), 'data-region', 'renderer-info');
+    // Read the line's own attribute rather than searching by an expected value:
+    // the point here is that the value *differs* per shape.
+    const sourceNodes = collect(info, (node) => node.props && node.props['data-primitives-toast-source'] !== undefined);
+    assert.equal(sourceNodes.length, 1, 'exactly one toast-namespace line');
+    return {
+      detail: JSON.stringify(oneBy(info, 'data-primitives-detail', 'true').props.children),
+      members: JSON.stringify(oneBy(info, 'data-primitives-members', 'true').props.children),
+      source: sourceNodes[0].props['data-primitives-toast-source'],
+    };
+  };
+  const flat = await lines({ withToast: true, primitivesShape: 'flat' });
+  const wrapped = await lines({ withToast: true, primitivesShape: 'default' });
+  const empty = await lines({ primitivesShape: 'empty-object' });
+  for (const [a, b] of [
+    [flat, wrapped],
+    [flat, empty],
+    [wrapped, empty],
+  ]) {
+    assert.notDeepEqual(a, b, 'two different probe shapes must not render the same diagnosis');
+  }
+  assert.notEqual(flat.source, wrapped.source, 'and the namespace line is the one that names the difference');
 });
 // #endregion

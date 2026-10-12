@@ -105,6 +105,44 @@ brief 建议「声明宿主行与客户端行（行 `id` 建议 `prompt-setting`
 **离线已验证的部分**（`test/client.test.mjs`，在 `node:vm` 里跑真实 `client.js`）：
 `require` 抛错 → 渲染出 `data-renderer="fallback"` 且页面含失败原因；`require` 成功 → `data-renderer="primitives"`。
 
+### 4.1 g-062 修复轮：互操作包装、诊断行与「渲染分支不许动」的边界
+
+**触发**：真机重启后设置页显示 `渲染分支: fallback（自绘 + 主题变量）`，却**没有**「primitives 不可用原因」
+那一行。这一对读数只说明「`require` 没抛错、但取不到 `Button`」；它同时兼容三种世界——
+① 抛错但错误原文为空；② 返回了非命名空间的值（`undefined` / 空对象）；③ 导出其实挂在一层
+`.default` 包装下（官方客户端 bundle 的 `__toESM(mod, 1)` 形态，先例
+`dshmarket/client/client.js:30`）。本轮不再靠推断：**把三种世界渲染成三行不同的读数**。
+
+**平台 seed 的实测形态（0.2.1-alpha.2，只读核对）**：`@deepseek-ai/dsh-web-frontend` 的
+`dist/assets/index-*.js` 里 `staticModules` 由 `hM()` 给出，`"@deepseek-ai/dsh-client-ui-primitives"`
+绑定的对象是 `Object.freeze(Object.defineProperty({__proto__:null, Button:…, Toast:…}, …))` ——
+**平铺命名空间，`Button` 与 `Toast` 都在顶层**（`dsh-client-modules/lib/client.js:551` 把它原样放进 seed Map）。
+所以在这一版宿主上，「平铺」是预期形态；`{default: ns}` 是**旧版/编译形态**的兜底，不是当前版本的形态。
+
+**规则（`client.js`）**：
+
+| 常量 | 判据 | 是否允许解包 |
+| --- | --- | --- |
+| `primitives` / `primitivesUsable` / `RENDERER` | 原样读 `require` 的返回值，`typeof primitives.Button === 'function'` | **否** —— 设置页渲染分支必须与修复前逐字一致 |
+| `toastPrimitivesModule` | `module.default` 是对象时取它，否则 `undefined` | —— |
+| `toastPrimitives` / `HAS_TOAST` | 先在解包候选上找 `Toast`，再回落到原模块；两处都要 `typeof === 'function'` | 是（**只**服务 toast） |
+| `toastNamespaceSource` | `module` / `default` / `none`，即 toast 决策真正用了哪个命名空间 | —— |
+
+**页面读数（`data-region="renderer-info"` 内部，g-015 已把它放在「高级」的完整状态块里）**：
+
+- 原有第一行 `渲染分支: …` 与可选 `primitives 不可用原因: …` 都**原样保留**；
+- 新增 `data-primitives-detail="true"`：`require 抛错=是/否｜错误原文=…｜返回值类型=…｜是对象=…｜键名前缀=[…]`（键名最多 8 个）；
+- 新增 `data-primitives-members="true"`：`解包前 Button=…｜解包后 Button=…｜解包前 Toast=…｜解包后 Toast=…`；
+- 新增 `data-primitives-toast-source="module|default|none"`：toast 决策用了哪个命名空间。
+
+**真机预期（重要）**：若宿主确实平铺导出，则第一行应是 `渲染分支: primitives（官方基础件）`
+（`RENDERER` 由平铺的 `Button` 决定），而 `data-primitives-toast-source` 应为 `module`，toast 注册
+（`data-assembly-toast-seat="ready"`）。若仍是 `fallback`，三行新读数会直接指出是抛错、是空对象、
+还是 `Toast` 只在 `default` 上——**不需要再猜**。
+
+**未确证**：真机（经 `dsh web` 重启后的浏览器）上 `require` 究竟返回哪一种形态，插件侧无法离线断定；
+`sandbox` 里的三种形态都是**被断言过的**分支，不是对真机的断言。
+
 ## 5. 客户端半的其它决策
 
 - **免构建**：`require('react')` 取 seed 模块，`React.useSyncExternalStore` 订阅 `ctx.locale` 以切换 zh/en；

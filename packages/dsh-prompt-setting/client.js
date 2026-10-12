@@ -303,7 +303,19 @@ window.__ModuleLoader__.load({
     }
     const primitives =
       primitivesModule !== null && typeof primitivesModule === 'object' ? primitivesModule : null;
-    const primitivesUsable = primitives !== null && typeof primitives.Button === 'function';
+    /**
+     * Does one namespace carry the atoms this page draws?
+     *
+     * Extracted so the **renderer** probe (which must not move) and the
+     * **toast** probe (which may unwrap) can ask the same question of different
+     * candidates without either one restating the rule.
+     * @param namespace - a candidate module namespace.
+     * @returns `true` only for an object whose `Button` really is a component.
+     */
+    function isPrimitivesNamespace(namespace) {
+      return namespace !== null && typeof namespace === 'object' && typeof namespace.Button === 'function';
+    }
+    const primitivesUsable = isPrimitivesNamespace(primitives);
     /** Which renderer this module instance actually uses: 'primitives' | 'fallback'. */
     const RENDERER = primitivesUsable ? 'primitives' : 'fallback';
     /**
@@ -319,17 +331,121 @@ window.__ModuleLoader__.load({
         ? 'primitives'
         : 'inline';
     /**
+     * The keys of a namespace, for the settings page's diagnostic line.
+     *
+     * A **bounded prefix**, not a dump: enough to tell an empty wrapper from a
+     * populated one at a glance, and never a screenful of 200 export names.
+     * @param namespace - a candidate module namespace.
+     * @param limit - how many names to keep.
+     * @returns the names, each truncated, or an empty list for a non-object.
+     */
+    function namespaceKeyPrefix(namespace, limit = 8) {
+      if (namespace === null || typeof namespace !== 'object') return [];
+      let keys = [];
+      try {
+        keys = Object.keys(namespace);
+      } catch {
+        // Deliberately not spelled with angle brackets: `test/host.test.mjs`
+        // scans this file's text for a JSX-looking element, and a message that
+        // looks like one would trip it.
+        return ['(keys unavailable)'];
+      }
+      return keys.slice(0, limit).map((key) => (String(key).length > 40 ? `${String(key).slice(0, 40)}…` : String(key)));
+    }
+
+    /**
+     * The `typeof` of a name on a candidate namespace, never a throw.
+     * @param namespace - a candidate module namespace.
+     * @param name - the export to look up.
+     * @returns the `typeof`, or `'(none)'` when there is no namespace at all.
+     */
+    function namespaceMemberType(namespace, name) {
+      if (namespace === null || namespace === undefined) return '(none)';
+      try {
+        return typeof namespace[name];
+      } catch {
+        return '(getter threw)';
+      }
+    }
+
+    /**
+     * g-062 fix round: the one interop gap a direct property read can fall into.
+     *
+     * A CJS `require` of an ESM module may hand back a **wrapper** whose named
+     * exports sit on `.default` (the `__toESM(mod, 1)` shape every official
+     * client bundle normalizes: `dshmarket/client/client.js:30`). The wrapper is
+     * still an object, so it passes the "is this an object" check and then has
+     * no `Toast` on it — and a probe that only looked at the top level would
+     * report "this Host has no Toast" about a Host that has one.
+     *
+     * `undefined` means **no wrapper** (this is the flat shape, take it as it
+     * is); an object means the caller must use that object instead.
+     * @param module - the raw result of the `require`.
+     * @returns the unwrapped namespace, or `undefined` when there is none.
+     */
+    function unwrapNamespaceDefault(module) {
+      if (module === null || typeof module !== 'object') return undefined;
+      if (typeof module.default !== 'object' || module.default === null) return undefined;
+      return module.default;
+    }
+
+    /**
      * g-062 (Revision 46): can this Host show a toast at all?
      *
-     * Probed, never assumed — and probed **separately** from `Button`, which is
+     * Probed, never assumed — and probed **independently** of `Button`, which is
      * what `RENDERER` keys on: a Host may ship the atoms this page draws while
      * predating the `Toast` primitive (the peer range starts at `0.1.7-rc.2` and
      * the version that added `Toast` is not pinned), so one probe cannot answer
      * both questions. When this is false the toaster is never registered and the
      * settings-page block stays the only surface — the documented degradation,
      * not an error.
+     *
+     * That independence is now **structural**, not just a comment: the toast
+     * side may unwrap an interop wrapper, while `primitives` / `primitivesUsable`
+     * / `RENDERER` keep reading the raw module exactly as before (the lead's
+     * boundary for this round: fix the toast, leave the settings page's renderer
+     * branch alone).
      */
-    const HAS_TOAST = primitivesUsable && typeof primitives.Toast === 'function';
+    const toastPrimitivesModule = unwrapNamespaceDefault(primitivesModule);
+    const toastPrimitives =
+      toastPrimitivesModule !== undefined && typeof toastPrimitivesModule.Toast === 'function'
+        ? toastPrimitivesModule
+        : typeof primitives?.Toast === 'function'
+          ? primitives
+          : null;
+    const HAS_TOAST = toastPrimitives !== null;
+    /**
+     * The namespace the toast question was really asked of: the wrapper's
+     * `.default` when there is one, otherwise the module. `undefined` means the
+     * `require` failed outright, and then there is nothing to inspect at all.
+     */
+    const toastProbeTarget = toastPrimitives !== null ? toastPrimitives : toastPrimitivesModule;
+    /** Which shape the toast namespace came from, for the diagnosis line. */
+    const toastNamespaceSource =
+      toastPrimitives === null ? 'none' : toastPrimitives === toastPrimitivesModule ? 'default' : 'module';
+    /**
+     * The probe's last step, kept as one value so the diagnostics section can
+     * only restate what this decision really used.
+     */
+    const primitivesProbe = {
+      threw: primitivesFailure !== '',
+      error: primitivesFailure,
+      moduleType: typeof primitivesModule,
+      isObject: primitivesModule !== null && typeof primitivesModule === 'object',
+      keys: namespaceKeyPrefix(primitivesModule),
+      hasDefault: toastPrimitivesModule !== undefined,
+      defaultKeys: namespaceKeyPrefix(toastPrimitivesModule),
+      buttonBefore: namespaceMemberType(primitivesModule, 'Button'),
+      // "after unwrapping" = the namespace the toast question was actually asked
+      // of: the wrapper's `.default` when there is one, otherwise the module
+      // itself (nothing was unwrapped, and saying `(none)` there would be a
+      // worse lie than saying "the same value").
+      buttonAfter: namespaceMemberType(toastProbeTarget, 'Button'),
+      toastBefore: namespaceMemberType(primitivesModule, 'Toast'),
+      toastAfter: namespaceMemberType(toastProbeTarget, 'Toast'),
+      toastSource: toastNamespaceSource,
+      renderer: primitivesUsable ? 'primitives' : 'fallback',
+    };
     /**
      * g-062 (Revision 46, review C4): is an overlay toaster **really** there?
      *
@@ -1238,6 +1354,19 @@ window.__ModuleLoader__.load({
       rendererPrimitives: 'primitives（官方基础件）',
       rendererFallback: 'fallback（自绘 + 主题变量）',
       primitivesFailure: 'primitives 不可用原因',
+      primitivesDetailLabel: 'primitives 探测细节',
+      primitivesDetailText:
+        'require 抛错={threw}｜错误原文={error}｜返回值类型={type}｜是对象={object}｜键名前缀=[{keys}]',
+      primitivesDetailYes: '是',
+      primitivesDetailNo: '否',
+      primitivesDetailNone: '（无键）',
+      primitivesMembersLabel: 'primitives 键 typeof',
+      primitivesMembersText:
+        '解包前 Button={buttonBefore}｜解包后 Button={buttonAfter}｜解包前 Toast={toastBefore}｜解包后 Toast={toastAfter}',
+      primitivesToastLabel: 'toast 命名空间',
+      toastNamespaceNone: '无（未找到可用 Toast）',
+      toastNamespaceDefault: 'module.default（已解包）',
+      toastNamespaceModule: 'module（未解包）',
       renderErrorTitle: 'Prompt 管理：渲染失败',
       renderErrorLabel: '错误',
       scopeDefaultWorkspace: '默认工作区',
@@ -1846,6 +1975,19 @@ window.__ModuleLoader__.load({
       rendererPrimitives: 'primitives (official atoms)',
       rendererFallback: 'fallback (hand-built + theme tokens)',
       primitivesFailure: 'Why primitives is unavailable',
+      primitivesDetailLabel: 'primitives probe details',
+      primitivesDetailText:
+        'require threw={threw} | error={error} | typeof value={type} | is object={object} | key prefix=[{keys}]',
+      primitivesDetailYes: 'yes',
+      primitivesDetailNo: 'no',
+      primitivesDetailNone: '(no keys)',
+      primitivesMembersLabel: 'primitives key typeof',
+      primitivesMembersText:
+        'Button before unwrap={buttonBefore} | Button after unwrap={buttonAfter} | Toast before unwrap={toastBefore} | Toast after unwrap={toastAfter}',
+      primitivesToastLabel: 'toast namespace',
+      toastNamespaceNone: 'none (no usable Toast found)',
+      toastNamespaceDefault: 'module.default (unwrapped)',
+      toastNamespaceModule: 'module (not unwrapped)',
       renderErrorTitle: 'Prompt settings — render failure',
       renderErrorLabel: 'Error',
       scopeDefaultWorkspace: 'Default workspace',
@@ -5172,14 +5314,60 @@ window.__ModuleLoader__.load({
           'div',
           { 'data-region': 'renderer-info', style: { marginTop: 8, fontSize: 12, color: token.labelTertiary } },
           `${t('rendererLabel')}: ${t(RENDERER === 'primitives' ? 'rendererPrimitives' : 'rendererFallback')}`,
+          RENDERER === 'fallback' && primitivesFailure
+            ? h(
+                'div',
+                { 'data-primitives-failure': 'true', style: { marginTop: 2, wordBreak: 'break-word' } },
+                `${t('primitivesFailure')}: ${primitivesFailure}`,
+              )
+            : null,
+          // g-062 fix round: the probe's own account of itself. The real machine
+          // showed `fallback` **without** a failure line, and that pair is
+          // consistent with three different worlds (the require threw and the
+          // message was empty / it returned something that is not a namespace /
+          // the exports sit one `.default` down). These three lines tell them
+          // apart on sight instead of by inference — and they say plainly which
+          // candidate the toast decision used, which is the one fact that
+          // decides whether a toast can appear at all.
+          h(
+            'div',
+            { 'data-primitives-detail': 'true', style: { marginTop: 4, wordBreak: 'break-word' } },
+            `${t('primitivesDetailLabel')}: ${fmt(t('primitivesDetailText'), {
+              threw: t(primitivesProbe.threw ? 'primitivesDetailYes' : 'primitivesDetailNo'),
+              error: primitivesProbe.error === '' ? '-' : primitivesProbe.error,
+              type: primitivesProbe.moduleType,
+              object: t(primitivesProbe.isObject ? 'primitivesDetailYes' : 'primitivesDetailNo'),
+              keys:
+                primitivesProbe.keys.length === 0
+                  ? t('primitivesDetailNone')
+                  : primitivesProbe.keys.join(', '),
+            })}`,
+          ),
+          h(
+            'div',
+            { 'data-primitives-members': 'true', style: { marginTop: 2, wordBreak: 'break-word' } },
+            `${t('primitivesMembersLabel')}: ${fmt(t('primitivesMembersText'), {
+              buttonBefore: primitivesProbe.buttonBefore,
+              buttonAfter: primitivesProbe.buttonAfter,
+              toastBefore: primitivesProbe.toastBefore,
+              toastAfter: primitivesProbe.toastAfter,
+            })}`,
+          ),
+          h(
+            'div',
+            {
+              'data-primitives-toast-source': primitivesProbe.toastSource,
+              style: { marginTop: 2, wordBreak: 'break-word' },
+            },
+            `${t('primitivesToastLabel')}: ${
+              primitivesProbe.toastSource === 'none'
+                ? t('toastNamespaceNone')
+                : primitivesProbe.toastSource === 'default'
+                  ? t('toastNamespaceDefault')
+                  : t('toastNamespaceModule')
+            }`,
+          ),
         ),
-        RENDERER === 'fallback' && primitivesFailure
-          ? h(
-              'div',
-              { 'data-primitives-failure': 'true', style: { fontSize: 12, color: token.labelTertiary, wordBreak: 'break-word' } },
-              `${t('primitivesFailure')}: ${primitivesFailure}`,
-            )
-          : null,
       );
     }
 
@@ -6619,10 +6807,17 @@ window.__ModuleLoader__.load({
 
       const current = queue.length > 0 ? queue[0] : null;
       if (current === null) return null;
+      // The namespace the capability probe settled on (`toastPrimitives`, not
+      // `primitives`): the fix round's whole point is that these two can
+      // disagree, and the renderer's branch must not be the one to decide.
+      // Still guarded — `HAS_TOAST` is what keeps this component from ever
+      // mounting without a drawable `Toast`, and a component that cannot draw
+      // is worse than none.
+      if (toastPrimitives === null || typeof toastPrimitives.Toast !== 'function') return null;
       // The official Toast owns its own lifetime and reports completion; keying
       // by the notice id is what lets the same text appear again for a **new**
       // fact (the primitive restarts its cycle only when remounted).
-      return h(primitives.Toast, {
+      return h(toastPrimitives.Toast, {
         key: `assembly-toast-${current.notice.id}`,
         text: composeAssemblyToastText(t, current.notice),
         holdMs: ASSEMBLY_TOAST_HOLD_MS,
@@ -11127,6 +11322,12 @@ window.__ModuleLoader__.load({
           // `absent` (no Toast primitive), `pending` (slot never declared),
           // `ready` (registered) or `failed` (declared and refused).
           overlaySeat: () => overlaySeat.state,
+          // g-062 fix round: the capability probe's own facts — which namespace
+          // the toast decision used (`module` / `default` / `none`) and the
+          // whole diagnostic record the settings page prints. A rendered tree
+          // can assert the line; these let a unit case assert the decision.
+          toastNamespace: () => toastNamespaceSource,
+          primitivesProbe: () => ({ ...primitivesProbe, keys: [...primitivesProbe.keys] }),
         },
       },
       apply(ctx) {
