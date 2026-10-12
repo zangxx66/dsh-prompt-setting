@@ -6528,11 +6528,19 @@ file stays byte-identical. An absent key means **on**.
   `workspace`-layer save addresses only the session whose workspace layer was
   written. `PUT /overrides`, `DELETE /overrides` and `reset=true` all normalize by
   layer, exactly like `rollback`, `import` and the preset actions.
-- **Every write path that changes the reserved section is recorded**, not just
-  the editor's save: `PUT /overrides`, preset apply/unapply (§20.5–§20.6),
-  `POST /import`, `POST /rollback`, `DELETE /overrides` (including `reset=true`)
-  and the update-check-independent import path. Each is noted **after** its write
+- **Every write path that changes the reserved section's stored text is
+  recorded**, not just the editor's save: `PUT /overrides`, preset
+  apply/unapply (§20.5–§20.6), `POST /import`, `POST /rollback` and
+  `DELETE /overrides` (including `reset=true`). Each is noted **after** its write
   succeeded.
+- **Stated blind spot: `PUT /interpolate` is not recorded.** Flipping the
+  variable-substitution switch can change the text an assembly finally renders
+  (with it ON, this plugin expands `{{…}}` during assembly) while no stored
+  prompt text changes, so it produces no `prompt-change` notice. It changes *how*
+  the stored text is rendered, not the prompt the user wrote; reporting it as a
+  prompt edit would mix the two. Stated here so the contract and the
+  implementation agree — `NOTES.md` §141 records the same, together with what a
+  future coverage would have to do if the口径 ever widens.
 - **Probes are excluded by object identity.** The `AssembleContext` object
   `probe()` handed to `assemble()` is what marks a probe
   (`state.pendingProbe.context`), because `probeTarget()` supplies the **real**
