@@ -337,12 +337,23 @@ const PRESETS_UNAPPLY_PATH = `${ROUTE_PREFIX}/presets/unapply`;
  *     a save), each with its assembly-layer and delivery-layer verdicts, plus the
  *     switch's current state. A read never writes a notice and never probes: an
  *     unknown session answers `record: null`, not an error;
+ *   - `GET ?since=<seq>` answers the **incremental feed**: the notices born after
+ *     that cursor, newest last, each tagged with its session. This is the channel
+ *     the shell-overlay toaster reads: it has no session in hand (it lives outside
+ *     the settings page) and it must never replay a notice it already showed, so
+ *     the cursor — not a re-read of the same record — is what makes "once per key
+ *     node" hold on the client too. An absent or malformed cursor means "start
+ *     from now" (the current cursor and `bootId` come back with no notices), a
+ *     cursor from another mount (`bootId`) is answered the same way, and a cursor
+ *     older than the retained log is answered `stale: true` with the newest
+ *     notice only;
  *   - `PUT {enabled}` records the switch in `preferences.json` (the same
  *     document the update check uses). Turning it off silences the notices; it
  *     does not stop the (side-effect-free) observation on the assembly path.
  *
- * Nothing here reaches the model: the notice is rendered in the settings page
- * only, it costs no tokens and it never changes the prompt an assembly returns.
+ * Nothing here reaches the model: the notice is rendered in the settings page and
+ * in a shell-overlay toast, it costs no tokens and it never changes the prompt an
+ * assembly returns.
  */
 const ASSEMBLY_STATUS_PATH = `${ROUTE_PREFIX}/assembly-status`;
 /** Method table; a known path with any other method is a 405 carrying `allow`. */
@@ -2789,7 +2800,8 @@ function mount(ctx, config, cleanups) {
 
   /**
    * `GET /prompt-setting/assembly-status` — what this plugin observed about the
-   * prompt's two layers for one session.
+   * prompt's two layers for one session, plus the incremental feed a toaster
+   * outside the settings page reads.
    *
    * The answer is a **pure read**: it never assembles, never probes and never
    * writes a notice. An unknown session (one this mount has not seen an assembly
@@ -2805,18 +2817,29 @@ function mount(ctx, config, cleanups) {
    *     committed a `system/message` on the surface (append or head replace);
    *     `httpObservable: false` — whether the HTTP request was really sent is not
    *     observable from a plugin, and this route does not claim it.
-   * @param url - the parsed request URL (`?session=`).
+   * @param url - the parsed request URL (`?session=`, `?since=`).
    * @param res - the Node response.
    */
   function handleReadAssemblyStatus(url, res) {
     const raw = url.searchParams.get('session');
     const sessionId = typeof raw === 'string' && raw.length > 0 ? raw : null;
+    // The incremental feed is opt-in by query, so a plain read (the settings
+    // page's own) can never consume a cursor it does not keep. A missing or
+    // malformed `since` reads as "start from now": the answer still carries the
+    // current cursor and `bootId` (that is how a fresh client learns where "now"
+    // is without replaying history), but no notices. The cursor is the client's
+    // optimisation, not a resource of this route, so a bad value is never an
+    // error.
+    const rawSince = url.searchParams.get('since');
+    const since =
+      typeof rawSince === 'string' && /^[0-9]{1,15}$/.test(rawSince.trim()) ? Number(rawSince.trim()) : null;
     sendJson(res, 200, {
       ok: true,
       enabled: assemblyNoticeEnabled(),
       session: sessionId,
       record: sessionId === null ? null : assemblyWatch.status(sessionId),
       counts: assemblyWatch.stats(),
+      notifications: assemblyWatch.pendingNotices(since),
       basis: {
         assembly: 'plugin-return',
         delivery: 'surface-system-message',

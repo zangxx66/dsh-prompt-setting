@@ -221,6 +221,19 @@ function makeHooksRuntime(options = {}) {
       effects = [];
       return { tree, pending };
     },
+    /**
+     * The effects registered while {@link expandTree} walked the tree — i.e. the
+     * ones a **wrapper** component's children registered, which `render`'s own
+     * `pending` cannot see (it starts and ends before the walk). g-062's toaster
+     * entry is exactly that shape: the registered component picks a child and the
+     * child owns the interval.
+     * @returns the collected effects, and clears them.
+     */
+    takeEffects() {
+      const taken = effects;
+      effects = [];
+      return taken;
+    },
   };
 }
 
@@ -368,6 +381,22 @@ function loadClient(primitives, options = {}) {
       return null;
     },
   };
+  // g-062 (Revision 46): the proactive surface. `Toast` is a **separate**
+  // capability from the atoms this page draws (the page probes `Button` for the
+  // renderer and `Toast` for the toaster), so a case opts in explicitly — and a
+  // case that does not is the "old Host" the plugin must degrade against.
+  if (options.withToast === true) {
+    atoms.Toast = (props) =>
+      runtime.React.createElement('div', {
+        'data-toast': props.text,
+        'data-toast-hold': props.holdMs === undefined ? null : String(props.holdMs),
+        // The real React strips `key` before the component sees it; this double
+        // keeps it reachable, because "the same text replays only when remounted"
+        // is a property of the key and nothing else here can pin it.
+        'data-toast-key': typeof props.key === 'string' ? props.key : null,
+        onClick: typeof props.onDone === 'function' ? props.onDone : undefined,
+      });
+  }
   const primitivesModule =
     primitives === 'ok'
       ? atoms
@@ -13374,5 +13403,390 @@ test('client: the assembly-status switch sends one PUT and follows the host answ
   assert.deepEqual(JSON.parse(writes[0].init.body), { enabled: false });
   assert.notEqual(oneBy(tree, 'data-assembly-switch-state', 'off'), undefined);
   assert.ok(hasText(tree, page.zh.assemblyDisabledNow), 'the page repeats the host\'s answer');
+});
+// #endregion
+
+// #region g-062 (Revision 46) — the shell-overlay toaster
+
+/** A `Storage`-shaped double, so a case can preset the toaster's cursor. */
+function makeStorage(initial = {}) {
+  const map = new Map(Object.entries(initial));
+  return {
+    getItem: (key) => (map.has(key) ? map.get(key) : null),
+    setItem: (key, value) => {
+      map.set(key, String(value));
+    },
+    removeItem: (key) => {
+      map.delete(key);
+    },
+    entries: () => [...map.entries()],
+  };
+}
+
+/**
+ * The incremental `?since=` answer, as the Host serializes it (CONTRACT.md §21.6).
+ * @param over - field overrides (`notifications` included).
+ * @returns the payload.
+ */
+function assemblyFeedFixture(over = {}) {
+  return {
+    ok: true,
+    enabled: true,
+    session: null,
+    record: null,
+    counts: {
+      sessions: 0,
+      notices: 0,
+      droppedNotices: 0,
+      writes: 0,
+      rejectedProbes: 0,
+      noticeSeq: 0,
+      history: 0,
+      bootId: 'boot-a',
+    },
+    notifications: { bootId: 'boot-a', cursor: 0, stale: false, notices: [] },
+    basis: {
+      assembly: 'plugin-return',
+      delivery: 'surface-system-message',
+      httpObservable: false,
+      outerRewritePossible: true,
+      postWaterfallCollapse: true,
+    },
+    ...over,
+  };
+}
+
+/** Every element the toaster drew through the official Toast primitive. */
+function toastNodes(tree) {
+  return collect(tree, (node) => node.props && node.props['data-toast'] !== undefined);
+}
+
+/**
+ * Render the `shell.overlay` entry the way the shell would: its own component,
+ * its own props, its own effects. The settings page is not involved.
+ * @param page - the page harness from {@link makePage}.
+ * @param props - extra owner props (`useSessionStatus`, `activity`).
+ * @returns `{props, draw, flush}` for the registered toaster.
+ */
+function makeToaster(page, props = {}) {
+  const registration = page.mounted.registrations.find((entry) => entry.options.name === 'shell.overlay');
+  assert.notEqual(registration, undefined, 'the toaster entry is registered');
+  const bound = {
+    t: (key) => dict(page.mounted.dictionaries, NS, key, page.language),
+    activity: null,
+    ...props,
+  };
+  const component = registration.component;
+  const render = () => page.loaded.runtime.render(component, bound);
+  return {
+    registration,
+    props: bound,
+    draw: () => expandTree(render().tree),
+    flush: async () => {
+      // The registered entry is a wrapper: the interval lives in the child it
+      // renders, so the tree has to be walked once before its effects exist.
+      expandTree(render().tree);
+      const pending = page.loaded.runtime.takeEffects();
+      for (const effect of pending) effect();
+      await settle();
+      return expandTree(render().tree);
+    },
+  };
+}
+
+test('client: the toaster cursor decides what is new — no replay, no repeat, no crossing a restart', async () => {
+  const page = makePage({ primitives: 'ok', withToast: true, responses: defaultResponses() });
+  const policy = page.loaded.module.__internals.assemblyNotice;
+  assert.equal(policy.HAS_TOAST, true, 'the Toast probe is separate from the renderer probe');
+  assert.equal(page.loaded.module.__internals.assemblyNotice.planToasts !== undefined, true);
+  const notice = (seq) => ({ ...assemblyNoticeFixture(), seq, id: `n${seq}` });
+  const feed = (over = {}) => ({
+    bootId: 'boot-a',
+    cursor: 3,
+    stale: false,
+    notices: [{ session: 's1', notice: notice(3) }],
+    ...over,
+  });
+
+  // The policy runs in the plugin's own `vm` realm, so every assertion below
+  // reads fields or copies through `Array.from`: a cross-realm object is never
+  // deep-equal to a literal, however identical its contents.
+  const shape = (result) => [result.bootId, result.cursor, result.toasts.length];
+  const ids = (result) => Array.from(result.toasts, (entry) => [entry.session, entry.notice.id]);
+
+  // 1. First connection: adopt the cursor and replay nothing. A fresh tab must
+  //    not toast the history that a page already showed before it.
+  assert.deepEqual(
+    shape(policy.planToasts({ state: { bootId: null, cursor: null }, payload: { enabled: true, notifications: feed() } })),
+    ['boot-a', 3, 0],
+  );
+  // 2. A notice above the cursor is new, and it names its conversation.
+  const fresh = policy.planToasts({
+    state: { bootId: 'boot-a', cursor: 2 },
+    payload: { enabled: true, notifications: feed() },
+  });
+  assert.deepEqual(ids(fresh), [['s1', 'n3']]);
+  assert.equal(fresh.cursor, 3);
+  // 3. The same answer against the cursor it returned is not new again — the
+  //    client's own half of "同一事实不得弹两次".
+  assert.equal(
+    policy.planToasts({
+      state: { bootId: fresh.bootId, cursor: fresh.cursor },
+      payload: { enabled: true, notifications: feed() },
+    }).toasts.length,
+    0,
+  );
+  // 4. Another mount: the numbers mean something else, so nothing is shown and
+  //    the cursor is re-anchored instead of compared.
+  assert.deepEqual(
+    shape(
+      policy.planToasts({
+        state: { bootId: 'boot-a', cursor: 2 },
+        payload: { enabled: true, notifications: feed({ bootId: 'boot-b', notices: [{ session: 's2', notice: notice(1) }] }) },
+      }),
+    ),
+    ['boot-b', 3, 0],
+  );
+  // 5. Switch off: advance without showing, so switching back on releases no
+  //    backlog ("关闭后不产生新提示").
+  assert.deepEqual(
+    shape(policy.planToasts({ state: { bootId: 'boot-a', cursor: 2 }, payload: { enabled: false, notifications: feed() } })),
+    ['boot-a', 3, 0],
+  );
+  // 6. No feed at all (an older Host, or a failed read): change nothing — the
+  //    settings-page block is still the answer.
+  assert.deepEqual(
+    shape(policy.planToasts({ state: { bootId: 'boot-a', cursor: 2 }, payload: { enabled: true } })),
+    ['boot-a', 2, 0],
+  );
+  // 7. More news than fits one screen keeps the newest, oldest last.
+  const backlog = policy.planToasts({
+    state: { bootId: 'boot-a', cursor: 0 },
+    payload: {
+      enabled: true,
+      notifications: feed({ cursor: 5, notices: [1, 2, 3, 4, 5].map((seq) => ({ session: 's1', notice: notice(seq) })) }),
+    },
+    limit: 2,
+  });
+  assert.deepEqual(Array.from(backlog.toasts, (entry) => entry.notice.id), ['n4', 'n5']);
+  assert.equal(backlog.cursor, 5);
+
+  // The cursor round-trips, and anything unreadable means "start from now".
+  assert.deepEqual(shape({ bootId: null, cursor: null, toasts: [] }), [null, null, 0]);
+  const roundTrip = policy.parseToastCursor(policy.serializeToastCursor({ bootId: 'boot-a', cursor: 7 }));
+  assert.deepEqual([roundTrip.bootId, roundTrip.cursor], ['boot-a', 7]);
+  const broken = policy.parseToastCursor('{ not json');
+  assert.deepEqual([broken.bootId, broken.cursor], [null, null]);
+  const future = policy.parseToastCursor(JSON.stringify({ v: 99, bootId: 'x', cursor: 3 }));
+  assert.deepEqual([future.bootId, future.cursor], [null, null]);
+  const absent = policy.parseToastCursor(null);
+  assert.deepEqual([absent.bootId, absent.cursor], [null, null]);
+});
+
+test('client: the toast names the key node and both layers, in the language the host uses', async () => {
+  const page = makePage({ primitives: 'ok', withToast: true, responses: defaultResponses() });
+  const policy = page.loaded.module.__internals.assemblyNotice;
+  const t = (key) => (page.zh[key] === undefined ? key : page.zh[key]);
+  const text = policy.composeToast(t, assemblyNoticeFixture());
+  assert.ok(text.includes(page.zh.assemblyToastFirst), 'the key node is named');
+  assert.ok(text.includes(page.zh.assemblyLayerAssembly) && text.includes(page.zh.assemblyFirstAssembled));
+  assert.ok(
+    text.includes(page.zh.assemblyLayerDelivery) &&
+      text.includes(fillText(page.zh.assemblyDeliveryDelivered, { op: page.zh.assemblyOpAppend })),
+    'both layers, each with its own verdict',
+  );
+  const change = policy.composeToast(
+    t,
+    assemblyNoticeFixture({
+      kind: 'prompt-change',
+      assembly: { state: 'not-read', assembled: true, digest: 'deadbeef', length: 8, expectedDigest: 'cafebabe' },
+      delivery: { state: 'unconfirmed', at: null, seq: null, surfaceOp: null, textMatched: null },
+    }),
+  );
+  assert.ok(change.includes(page.zh.assemblyToastChange));
+  assert.ok(change.includes(page.zh.assemblyChangeNotRead), 'a change that was not re-read says so');
+  assert.ok(change.includes(page.zh.assemblyDeliveryUnconfirmed), 'and an unproven delivery is not dressed up as one');
+
+  // The English dictionary carries the same two key-node headings (判据 8: the
+  // surface follows the DSH language, it is not zh-only copy).
+  const english = makePage({ primitives: 'ok', withToast: true, responses: defaultResponses(), language: 'en' });
+  const en = english.text;
+  const enText = english.loaded.module.__internals.assemblyNotice.composeToast(
+    (key) => (en[key] === undefined ? key : en[key]),
+    assemblyNoticeFixture(),
+  );
+  assert.ok(enText.includes(en.assemblyToastFirst));
+  assert.ok(enText.includes(en.assemblyFirstAssembled));
+  assert.notEqual(en.assemblyToastFirst, page.zh.assemblyToastFirst, 'the two dictionaries really differ');
+});
+
+test('client: the toaster shows one notice at a time, keeps the cursor, and only ever reads', async () => {
+  const listeners = {};
+  const doc = {
+    visibilityState: 'visible',
+    addEventListener: (name, handler) => {
+      listeners[name] = handler;
+    },
+    removeEventListener: (name) => {
+      delete listeners[name];
+    },
+  };
+  const notices = [
+    { session: 's1', notice: { ...assemblyNoticeFixture({ kind: 'first-assembly' }), seq: 2, id: 'n2' } },
+    {
+      session: 's1',
+      notice: {
+        ...assemblyNoticeFixture({
+          kind: 'prompt-change',
+          assembly: { state: 'read', assembled: true, digest: 'deadbeef', length: 8, expectedDigest: 'cafebabe' },
+        }),
+        seq: 3,
+        id: 'n3',
+      },
+    },
+  ];
+  const responses = defaultResponses({
+    [PATHS.assemblyStatus]: (url) => {
+      const since = /since=(\d+)/.exec(url);
+      const from = since === null ? 1 : Number(since[1]);
+      return {
+        payload: assemblyFeedFixture({
+          notifications: {
+            bootId: 'boot-a',
+            cursor: 3,
+            stale: false,
+            notices: from >= 3 ? [] : notices,
+          },
+        }),
+      };
+    },
+  });
+  const page = makePage({ primitives: 'ok', withToast: true, responses, document: doc });
+  page.loaded.sandbox.sessionStorage = makeStorage({
+    'dsh-prompt-setting:assembly-toast-cursor': JSON.stringify({ v: 1, bootId: 'boot-a', cursor: 1 }),
+  });
+  const toaster = makeToaster(page);
+  let tree = await toaster.flush();
+  assert.deepEqual(
+    urlsFor(page, PATHS.assemblyStatus),
+    [`${PATHS.assemblyStatus}?since=1`],
+    'the toaster asks from the cursor it kept, with no session to name',
+  );
+  const shown = toastNodes(tree);
+  assert.equal(shown.length, 1, 'one toast at a time, not a stack');
+  assert.equal(shown[0].props['data-toast-key'], 'assembly-toast-n2', 'the key is the notice, so a repeat re-mounts');
+  assert.equal(shown[0].props['data-toast-hold'], '7000');
+  assert.ok(String(shown[0].props['data-toast']).includes(page.zh.assemblyToastFirst));
+  assert.ok(String(shown[0].props['data-toast']).includes(page.zh.assemblyFirstAssembled));
+  assert.equal(
+    page.loaded.sandbox.sessionStorage.getItem('dsh-prompt-setting:assembly-toast-cursor'),
+    JSON.stringify({ v: 1, bootId: 'boot-a', cursor: 3 }),
+    'the cursor is kept, so a reload cannot replay what was already shown',
+  );
+  assert.deepEqual(writeCalls(page), [], 'the toaster is an observer: it writes nothing');
+
+  // The primitive reports done ⇒ that notice is over and the queue advances.
+  shown[0].props.onClick();
+  tree = toaster.draw();
+  const second = toastNodes(tree);
+  assert.equal(second.length, 1);
+  assert.equal(second[0].props['data-toast-key'], 'assembly-toast-n3');
+  assert.ok(String(second[0].props['data-toast']).includes(page.zh.assemblyToastChange));
+
+  // The next flush inside the throttle window is not a second read; a tab that
+  // comes back is — and it carries the cursor this tab kept, so the notices
+  // already handed out are not handed out again.
+  tree = await toaster.flush();
+  assert.equal(toastNodes(tree)[0].props['data-toast-key'], 'assembly-toast-n3', 'the queue is unchanged');
+  assert.equal(urlsFor(page, PATHS.assemblyStatus).length, 1, 'the burst stays one read');
+  listeners.visibilitychange();
+  await settle();
+  assert.deepEqual(
+    urlsFor(page, PATHS.assemblyStatus).slice(-1),
+    [`${PATHS.assemblyStatus}?since=3`],
+    'the forced read carries the cursor this tab kept',
+  );
+  assert.equal(
+    toastNodes(toaster.draw())[0].props['data-toast-key'],
+    'assembly-toast-n3',
+    'and it does not revive a finished notice',
+  );
+
+  second[0].props.onClick();
+  assert.deepEqual(toastNodes(toaster.draw()), [], 'and the queue really drains');
+});
+
+test('client: the toaster reads on mount, throttles a status burst, and re-reads when the tab returns', async () => {
+  const listeners = {};
+  const doc = {
+    visibilityState: 'visible',
+    addEventListener: (name, handler) => {
+      listeners[name] = handler;
+    },
+    removeEventListener: (name) => {
+      delete listeners[name];
+    },
+  };
+  const responses = defaultResponses({ [PATHS.assemblyStatus]: () => ({ payload: assemblyFeedFixture() }) });
+  const page = makePage({ primitives: 'ok', withToast: true, responses, document: doc });
+  page.loaded.sandbox.sessionStorage = makeStorage({
+    'dsh-prompt-setting:assembly-toast-cursor': JSON.stringify({ v: 1, bootId: 'boot-a', cursor: 2 }),
+  });
+  const toaster = makeToaster(page);
+  await toaster.flush();
+  const reads = () => urlsFor(page, PATHS.assemblyStatus);
+  assert.equal(reads().length, 1, 'the mount reads once');
+  assert.equal(reads()[0], `${PATHS.assemblyStatus}?since=2`);
+
+  // A session-status change re-runs the effect, but a burst inside the throttle
+  // window is one read, not one request per step.
+  toaster.props.activity = { s1: { running: true } };
+  await toaster.flush();
+  assert.equal(reads().length, 1, 'the burst is throttled to the mount read');
+  assert.equal(typeof listeners.visibilitychange, 'function', 'the tab is watched');
+
+  // A hidden tab does not read (its timers are throttled anyway); coming back
+  // reads immediately — that is what "you see it when you return" means.
+  doc.visibilityState = 'hidden';
+  listeners.visibilitychange();
+  await settle();
+  assert.equal(reads().length, 1, 'nothing is read while hidden');
+  doc.visibilityState = 'visible';
+  listeners.visibilitychange();
+  await settle();
+  assert.equal(reads().length, 2, 'returning to the tab reads at once');
+  page.dispose();
+});
+
+test('client: without the Toast primitive nothing is registered, and the page says so', async () => {
+  const old = makePage({ primitives: 'ok', responses: defaultResponses(), useSessions: sessionsHook(SESSIONS_STATE) });
+  assert.equal(
+    old.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay').length,
+    0,
+    'a Host without Toast gets no overlay entry at all',
+  );
+  const oldTree = await old.flush();
+  assert.ok(
+    hasText(oneBy(oldTree, 'data-assembly-note', 'no-toast'), old.zh.assemblyToastUnavailable),
+    'and the page states the degradation instead of promising a toast',
+  );
+  assert.notEqual(oneBy(oldTree, 'data-region', 'assembly-status'), undefined, 'the block itself is untouched');
+
+  const modern = makePage({
+    primitives: 'ok',
+    withToast: true,
+    responses: defaultResponses(),
+    useSessions: sessionsHook(SESSIONS_STATE),
+  });
+  const overlay = modern.mounted.registrations.find((entry) => entry.options.name === 'shell.overlay');
+  assert.notEqual(overlay, undefined);
+  assert.equal(overlay.options.id, 'prompt-setting-toast');
+  assert.equal(overlay.options.order, 60, 'it is added beside the shipped entries, never over them');
+  assert.equal(typeof overlay.component, 'function');
+  // The settings page keeps its detail block and its switch (判据 7).
+  const modernTree = await modern.flush();
+  assert.equal(oneBy(modernTree, 'data-region', 'assembly-status') !== undefined, true);
+  assert.equal(collect(modernTree, (node) => node.props && node.props['data-assembly-note'] === 'no-toast').length, 0);
+  assert.equal(oneBy(modernTree, 'data-action', 'assembly-toggle') !== undefined, true);
 });
 // #endregion

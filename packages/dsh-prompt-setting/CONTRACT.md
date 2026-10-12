@@ -638,7 +638,7 @@ meaning exactly.
 | `/prompt-setting/presets` | `DELETE` | Remove one preset — `?id=` (§20.4). An applied preset may be deleted: the layer keeps its text and the record is reported as an orphan. |
 | `/prompt-setting/presets/apply` | `POST` | Write one preset into the workspace layer that owns `session`, snapshotting what that layer held (`{presetId, session}`, §20.5). |
 | `/prompt-setting/presets/unapply` | `POST` | Put that workspace layer back to the snapshot `apply` took, and drop the record (`{session}`, §20.6). |
-| `/prompt-setting/assembly-status` | `GET` | The in-session assembly-status notice for one session (`?session=`): the last key node with its assembly-layer and delivery-layer verdicts, plus the switch's state (g-062, §21). Always `200`; an unknown session answers `record: null`. |
+| `/prompt-setting/assembly-status` | `GET` | The in-session assembly-status notice for one session (`?session=`): the last key node with its assembly-layer and delivery-layer verdicts, plus the switch's state (g-062, §21). The same answer carries the **incremental feed** (`?since=<seq>`, §21.6) the shell-overlay toaster reads. Always `200`; an unknown session answers `record: null`. |
 | `/prompt-setting/assembly-status` | `PUT` | Record the notice switch: `{"enabled": bool}` (g-062, §21.2). |
 
 - An unknown path under the prefix is `404` with
@@ -2019,6 +2019,15 @@ interaction.
   `preferences.json` key (`assemblyNotice`, stated-only), and one new block at the
   top of the「我的 Prompt」panel. It changes no existing route, no existing
   response field and no existing stored byte;
+- **Revision 46** makes that notice **proactive** (g-062, §21.6): the same `GET`
+  answers an incremental feed (`?since=<seq>`), and a resident `shell.overlay`
+  entry renders the official `Toast` at each key node. Additive only — two new
+  response fields on the read (`notifications`, and `seq` inside a notice), two
+  new `counts` fields (`history`, `bootId`), one new page marker
+  (`data-assembly-note="no-toast"`). No existing field changes meaning, no
+  existing route changes shape, and no new runtime dependency or build step is
+  introduced. On a Host without the `Toast` primitive nothing is registered and
+  the Revision 45 behaviour is exactly what remains;
 - the measured effect (see `NOTES.md` §123 for the migration record): `client.js`
   **9584 → 8575 lines / 456680 → 411979 bytes**, with `client.overview.js` 577,
   `client.transfer.js` 264 and `client.advanced.js` 502 lines now fetched on
@@ -6403,19 +6412,23 @@ request leaves `presets.json` and the layer byte-identical.
   as「没有预设」 — and an empty catalogue is stated separately
   (`data-region="presets-empty"`).
 
-## 21. The in-session assembly-status notice (g-062, Revision 45)
+## 21. The in-session assembly-status notice (g-062, Revision 45; toasts added in Revision 46)
 
 DSH re-assembles the system prompt on **every** model step (`AgentLoop.preStep()`
 → `systemPrompt.assemble()`), but "assembled" is not "delivered":
 `SystemPromptProjection.project()` deduplicates, so an unchanged prompt commits
 **zero** `system/message` events. A user who edits their prompt therefore has no
 way to tell whether the change reached the model. This section defines the
-observation that answers that question — in the settings page only.
+observation that answers that question — rendered in the settings page, and (from
+Revision 46) toasted at the key node by a resident `shell.overlay` entry, so the
+user does not have to go looking for it.
 
 ### 21.1 `GET /prompt-setting/assembly-status`
 
 Query: `session` (optional). With a session the route answers that session's
-observation; with none it answers `record: null` and the switch's state.
+observation; with none it answers `record: null` and the switch's state. `since`
+(optional, Revision 46) selects the **incremental feed** the toaster reads; the
+answer always carries `notifications`, and its meaning is defined in §21.6.
 
 ```json
 {
@@ -6428,6 +6441,7 @@ observation; with none it answers `record: null` and the switch's state.
     "lastAssembly": { "at": 1700000000000, "digest": "abcd1234", "length": 4, "configured": true },
     "notice": {
       "id": "n2",
+      "seq": 2,
       "kind": "first-assembly",
       "at": 1700000000000,
       "turn": 1,
@@ -6441,7 +6455,8 @@ observation; with none it answers `record: null` and the switch's state.
     "notices": [],
     "dropped": 0
   },
-  "counts": { "sessions": 1, "notices": 1, "droppedNotices": 0, "writes": 1, "rejectedProbes": 0, "noticeSeq": 2 },
+  "counts": { "sessions": 1, "notices": 1, "droppedNotices": 0, "writes": 1, "rejectedProbes": 0, "noticeSeq": 2, "history": 1, "bootId": "m1-ab12cd" },
+  "notifications": { "bootId": "m1-ab12cd", "cursor": 2, "stale": false, "notices": [] },
   "basis": { "assembly": "plugin-return", "delivery": "surface-system-message", "httpObservable": false, "outerRewritePossible": true, "postWaterfallCollapse": true }
 }
 ```
@@ -6452,7 +6467,9 @@ observation; with none it answers `record: null` and the switch's state.
 - **`notice` is the last key node** (newest first in `notices`, capped at 6 per
   session with `dropped` counting what fell off). `kind` is `first-assembly` or
   `prompt-change`; the two kinds use different keys for the same two layers on
-  purpose (§21.3).
+  purpose (§21.3). `seq` (Revision 46) is the numeric half of `id` and the cursor
+  a client keeps; it is monotone within one mount only, which is what `bootId`
+  states.
 - **Nothing of the user's prompt text travels.** Only lengths and FNV-1a 32
   digests (`assembly.digest`, `assembly.expectedDigest`).
 - `expected` is present on a `prompt-change` notice: `{length, layer, action}` —
@@ -6571,3 +6588,76 @@ The block lives at the top of the「我的 Prompt」panel and carries
 stated limits are `data-region="assembly-limitation"`. `data-action="assembly-toggle"`
 is the switch. Reads happen only while that tab is open, and one short follow-up
 read is made while the reported delivery is still `waiting`.
+
+Revision 46 adds one marker to this block and nothing else: when the Host does not
+expose the `Toast` primitive, `data-assembly-note="no-toast"` states that
+proactive toasts are unavailable on this machine. The block, its switch and its
+read schedule are otherwise unchanged — the toast is **additional**, never a
+replacement.
+
+### 21.6 The incremental feed and the shell-overlay toast (Revision 46)
+
+The notice used to be visible only to a user who opened this panel. Revision 46
+makes it proactive: a resident client entry in the `shell.overlay` slot renders
+the official `Toast` primitive at each key node. The口径 does not change — the
+two layers are still the two layers, one notice per key node, observer only, no
+token cost, no build step — and neither does the data: a toast renders exactly the
+verdicts §21.3 defines.
+
+**Why the feed exists.** The `shell.overlay` entry lives outside the settings
+page, so it has no `?session=` to ask about and no session picker to read. It also
+cannot be handed a notice push: DSH exposes no plugin `EventSource`, and the one
+WebSocket the page owns is the Host's own RPC mux. What it can do is keep a
+**cursor** and ask what is new — which is also the only way to keep "同一事实不
+得弹两次" true on the client, because a re-read of the same record would otherwise
+re-report it.
+
+**The answer.**
+
+| Field | Meaning |
+| --- | --- |
+| `bootId` | This Host mount's identity. A cursor is only comparable with notices of the same mount: a restart empties the watch and restarts `noticeSeq` at 0, so the client re-anchors instead of comparing. |
+| `cursor` | The newest `seq` this mount has produced. A client keeps it and sends it back as `?since=`. |
+| `stale` | `true` when the cursor names a notice the bounded birth log (24 entries) has already dropped: the answer then carries the **newest** notice only, never a burst of half-remembered ones. |
+| `notices[]` | `{session, notice}` for every notice with `seq` above the cursor, oldest first. `notice` is the same public shape as `record.notice` (§21.1) — lengths and digests, never the user's prompt. |
+
+**Cursor rules.**
+
+- An **absent or malformed** `since` means *start from now*: the answer still
+  carries `bootId` and `cursor` (that is how a fresh tab learns where "now" is)
+  with an empty `notices`. A fresh tab must never replay history.
+- A cursor from **another mount** answers the same way.
+- The route is a **pure read**: it repeats whatever the cursor asks for. The
+  client advancing its kept cursor is what turns "no repeat" into a property.
+- With the switch **off** the watch produces no new notice at all (§21.2), so the
+  feed has nothing to hand out: closing the switch neither toasts nor queues a
+  backlog. A notice that already exists is still readable through `record`.
+- `stale` never hides a fact: the newest notice still travels, and the client
+  reports it like any other.
+
+**The toaster, and its degradations.**
+
+- It is registered only when the Host really exposes `Toast` (probed separately
+  from the `Button` probe that selects the renderer). Without it **nothing is
+  registered** and the settings block is the whole surface; the page states that
+  with `data-assembly-note="no-toast"` (§21.5).
+- Registration itself is guarded by `slots.inject('shell.overlay', …)`, which runs
+  its callback only once the Host has declared the slot — on a Host that predates
+  the slot nothing is registered and the plugin is unaffected.
+- The toast draws through the primitive's own body portal (click-through, the
+  host stylesheet's z-index); the plugin ships no CSS. Its text is composed from
+  the same dictionary keys the block uses, in the Host's language (zh/en).
+- One toast at a time; the queue drains on the primitive's `onDone`, up to 4
+  notices. Each toast is keyed by its notice `id`, so a **new** fact with the same
+  words re-mounts and replays, while the same fact never does.
+- The tab's cursor lives in `sessionStorage` (per tab, surviving a reload):
+  `localStorage` would let one tab advance another's cursor — one lost toast —
+  or let both replay one, which is the one thing this must not do.
+- Read cadence: the primary trigger is a change in the session-status map the
+  shell hands a `shell.overlay` entry (a step ended somewhere, which is exactly
+  when a delivery verdict settles), throttled to one read per 3 s; a 20 s
+  visibility-aware timer is the fallback when that hook is absent or an event is
+  dropped. A hidden tab does not read and reads once when it becomes visible
+  again. **Stated limitation:** browser timers are throttled in a background tab,
+  so a toast is seen when the user returns to the page — this is not a real-time
+  channel and does not claim to be.

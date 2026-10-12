@@ -544,3 +544,108 @@ test('assembly-watch: a cached projection of ANOTHER step does not settle a firs
   const notice = watch.observeSessionEvent({ sessionId: 's1', event: headerEvent('initial'), at: 2 });
   assert.equal(notice.delivery.state, 'waiting', 'the cache is matched by turn/step, never by recency alone');
 });
+
+// ---------------------------------------------------------------------------
+// g-062 (Revision 46): the incremental feed the shell-overlay toaster reads.
+//
+// The per-session record answers "what is the latest key node"; the feed answers
+// "what was born since cursor N", which is the only question a client that is
+// not on the settings page can ask. What is pinned here is the cursor contract:
+// an absent cursor never replays history, a cursor is only comparable within one
+// mount, a consumed cursor never yields the same notice twice, and the log's
+// bound turns into `stale` rather than into a burst.
+// ---------------------------------------------------------------------------
+
+test('assembly-watch: an absent cursor starts from now and never replays history', () => {
+  const watch = createAssemblyWatch({ now: () => 0, bootId: 'boot-a' });
+  establish(watch, 's1');
+  const feed = watch.pendingNotices(null);
+  assert.equal(feed.bootId, 'boot-a', 'the cursor belongs to one mount, and it says which');
+  assert.equal(feed.cursor, watch.stats().noticeSeq, 'the answer says where "now" is');
+  assert.deepEqual(feed.notices, [], 'a first connection is not a re-play');
+  // A non-numeric cursor is the same request: "start from now".
+  assert.deepEqual(watch.pendingNotices(undefined).notices, []);
+  assert.deepEqual(watch.pendingNotices('n1').notices, []);
+});
+
+test('assembly-watch: the feed yields each new notice once, oldest first, tagged with its session', () => {
+  const watch = createAssemblyWatch({ now: () => 0, bootId: 'boot-a' });
+  const start = watch.pendingNotices(null).cursor;
+  establish(watch, 's1');
+  watch.markPromptWrite({ session: 's1', layer: 'user', action: 'replace', text: 'NEW', at: 1 });
+  watch.observeAssembly({ sessionId: 's1', configuredText: 'NEW', segmentText: 'NEW', at: 2 });
+
+  const feed = watch.pendingNotices(start);
+  assert.equal(feed.stale, false);
+  assert.deepEqual(
+    feed.notices.map((entry) => [entry.session, entry.notice.kind, entry.notice.seq]),
+    [
+      ['s1', FIRST_NOTICE, start + 1],
+      ['s1', CHANGE_NOTICE, start + 2],
+    ],
+    'both key nodes, oldest first, each naming its conversation',
+  );
+  // The same cursor twice is the client's guarantee against a double toast: the
+  // second answer is empty, because the cursor it was handed is now the newest.
+  assert.deepEqual(watch.pendingNotices(feed.cursor).notices, []);
+  // A notice carries the same public shape the page renders, plus `seq`.
+  const [first] = feed.notices;
+  assert.equal(first.notice.kind, FIRST_NOTICE);
+  assert.equal(typeof first.notice.assembly.digest, 'string');
+  assert.equal(first.notice.probe, false);
+  assert.equal(JSON.stringify(feed).includes('NEW'), false, 'never the prompt text');
+});
+
+test('assembly-watch: a cursor from another mount is not comparable and is answered "start from now"', () => {
+  const first = createAssemblyWatch({ now: () => 0, bootId: 'boot-a' });
+  establish(first, 's1');
+  const consumed = first.pendingNotices(null).cursor;
+  // A Host restart empties this watch and restarts `noticeSeq`: the same number
+  // means something else, so the client must be told, not left comparing them.
+  const restarted = createAssemblyWatch({ now: () => 0, bootId: 'boot-b' });
+  establish(restarted, 's2');
+  const feed = restarted.pendingNotices(consumed);
+  assert.equal(feed.bootId, 'boot-b');
+  assert.deepEqual(feed.notices, [], 'nothing is replayed across a restart');
+  assert.equal(feed.cursor >= 1, true, 'but the cursor is re-anchored to this mount');
+  // And the default boot id is a real per-mount identity, not a constant.
+  assert.notEqual(createAssemblyWatch({ now: () => 0 }).bootId, createAssemblyWatch({ now: () => 0 }).bootId);
+});
+
+test('assembly-watch: a cursor older than the retained log is stale, and yields the newest notice only', () => {
+  const watch = createAssemblyWatch({ now: () => 0, bootId: 'boot-a', historyLimit: 3 });
+  establish(watch, 's1');
+  const start = watch.pendingNotices(null).cursor;
+  // Four more key nodes; only three births can be retained, so `start` is older
+  // than the log by the time the client looks.
+  for (let index = 0; index < 4; index += 1) {
+    watch.markPromptWrite({ session: 's1', layer: 'user', action: 'replace', text: `T${index}`, at: index });
+    watch.observeAssembly({ sessionId: 's1', configuredText: `T${index}`, segmentText: `T${index}`, at: index });
+  }
+  const feed = watch.pendingNotices(start);
+  assert.equal(feed.stale, true, 'the client is told its cursor fell off the log');
+  assert.equal(feed.notices.length, 1, 'one notice, not a burst of half-remembered ones');
+  assert.equal(feed.notices[0].notice.seq, feed.cursor, 'and it is the newest');
+  assert.equal(watch.stats().history <= 3, true, 'the log itself stays bounded');
+});
+
+test('assembly-watch: a disposed conversation leaves the feed, and the switch off produces nothing to send', () => {
+  let enabled = true;
+  const watch = createAssemblyWatch({ now: () => 0, bootId: 'boot-a', enabled: () => enabled });
+  const start = watch.pendingNotices(null).cursor;
+  establish(watch, 's1');
+  assert.equal(watch.pendingNotices(start).notices.length, 1);
+  // A conversation the Host removed is one the user can no longer open: its
+  // notices must not be toasted after the fact.
+  assert.equal(watch.disposeSession('s1'), true);
+  assert.deepEqual(watch.pendingNotices(start).notices, []);
+
+  // With the switch off no notice is born at all, so the feed has nothing to
+  // report — "closed ⇒ no new prompt" is the Host's promise, not the page's.
+  enabled = false;
+  watch.markPromptWrite({ session: 's2', layer: 'user', action: 'replace', text: 'NEW', at: 1 });
+  watch.observeAssembly({ sessionId: 's2', configuredText: 'NEW', segmentText: 'NEW', at: 2 });
+  watch.observeSessionEvent({ sessionId: 's2', event: headerEvent('initial'), at: 3 });
+  assert.deepEqual(watch.pendingNotices(start).notices, []);
+  assert.equal(watch.status('s2').notice, null);
+});

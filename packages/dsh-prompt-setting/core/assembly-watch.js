@@ -44,6 +44,18 @@ export const SESSION_LIMIT = 64;
 /** How many prompt writes are retained as "the change to watch for". */
 export const WRITE_LIMIT = 8;
 /**
+ * How many notices the **global** birth log retains for the incremental feed
+ * (`pendingNotices`) the shell-overlay toaster reads.
+ *
+ * The per-session record answers "what is the latest key node for this
+ * conversation" and is read on demand; this log answers "what was born since
+ * cursor N", which is what a client that is *not* on the settings page needs.
+ * It is deliberately smaller than `SESSION_LIMIT * NOTICE_LIMIT`: a client
+ * that has been away long enough to fall off this log is answered with
+ * `stale: true` plus the newest notice, never with a burst of old ones.
+ */
+export const NOTICE_HISTORY_LIMIT = 24;
+/**
  * Longest plugin-section text this module will `includes()`-probe inside a
  * delivered system message. Above it the delivery verdict still stands (the
  * event exists), only the "does this text carry the section" detail is left
@@ -146,6 +158,10 @@ export function configuredTextOf(overrides, name) {
  * @param options.sectionName - the reserved section name (never guessed here).
  * @param options.enabled - `() => boolean`; when it answers false no **new**
  *   notice is produced (the switch is off), while bookkeeping stays intact.
+ * @param options.bootId - this mount's identity, handed to clients that keep a
+ *   cursor across page loads: a cursor is only comparable with notices of the
+ *   **same** mount, because a Host restart empties this watch and restarts
+ *   `noticeSeq` at 0 (defaults to a fresh per-mount id).
  * @returns the watcher.
  */
 export function createAssemblyWatch(options = {}) {
@@ -154,13 +170,25 @@ export function createAssemblyWatch(options = {}) {
   const sessionLimit =
     Number.isSafeInteger(options.sessionLimit) && options.sessionLimit > 0 ? options.sessionLimit : SESSION_LIMIT;
   const writeLimit = Number.isSafeInteger(options.writeLimit) && options.writeLimit > 0 ? options.writeLimit : WRITE_LIMIT;
+  const historyLimit =
+    Number.isSafeInteger(options.historyLimit) && options.historyLimit > 0 ? options.historyLimit : NOTICE_HISTORY_LIMIT;
   const sectionName = typeof options.sectionName === 'string' ? options.sectionName : null;
   const enabled = typeof options.enabled === 'function' ? options.enabled : () => true;
+  const bootId =
+    typeof options.bootId === 'string' && options.bootId.length > 0
+      ? options.bootId
+      : `${now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
   /** Per-session records, insertion-ordered by first sight and re-touched on use. */
   const records = new Map();
   /** Retained prompt writes, oldest first; the tail is the newest change. */
   const writes = [];
+  /**
+   * The global birth log, oldest first and bounded by {@link NOTICE_HISTORY_LIMIT}:
+   * `{seq, sessionId, notice}` for every notice this mount produced. It is what
+   * makes the incremental feed possible without walking every session record.
+   */
+  let births = [];
   let writeSeq = 0;
   let noticeSeq = 0;
   let droppedNotices = 0;
@@ -253,6 +281,10 @@ export function createAssemblyWatch(options = {}) {
 
   /**
    * Push one notice onto a record, newest first, and make it the active one.
+   *
+   * This is also the single place a notice enters the global birth log, so the
+   * incremental feed and the per-session record can never disagree about
+   * whether a notice exists.
    * @param record - the session record.
    * @param notice - the notice to retain.
    */
@@ -264,6 +296,8 @@ export function createAssemblyWatch(options = {}) {
       droppedNotices += 1;
     }
     record.active = notice;
+    births.push({ seq: notice.seq, sessionId: record.sessionId, notice });
+    if (births.length > historyLimit) births.splice(0, births.length - historyLimit);
   }
 
   /**
@@ -276,6 +310,12 @@ export function createAssemblyWatch(options = {}) {
     noticeSeq += 1;
     return {
       id: `n${noticeSeq}`,
+      /**
+       * The numeric half of `id`, and the cursor a client keeps: it is monotone
+       * **within one mount**, which is exactly the scope a cursor may be
+       * compared across (`bootId` says which mount).
+       */
+      seq: noticeSeq,
       kind,
       at: input.at,
       turn: input.turn ?? null,
@@ -769,14 +809,56 @@ export function createAssemblyWatch(options = {}) {
 
   /**
    * Drop one session's record (the Host announced it left the store).
+   *
+   * Its notices leave the global birth log with it: a conversation that no
+   * longer exists must not be toasted at a user who can no longer open it.
    * @param sessionId - the session id.
    * @returns true when a record was dropped.
    */
   function disposeSession(sessionId) {
     try {
-      return records.delete(sessionId);
+      const dropped = records.delete(sessionId);
+      births = births.filter((birth) => birth.sessionId !== sessionId);
+      return dropped;
     } catch {
       return false;
+    }
+  }
+
+  /**
+   * The incremental feed of notices born after one cursor — "what happened since
+   * you last looked", for a client that is **not** on the settings page.
+   *
+   * A cursor is an opaque `seq` this module handed out; it is only comparable
+   * with notices of the same mount, which is what `bootId` states. A cursor that
+   * names a notice no longer retained answers `stale: true` with the **newest**
+   * notice only — the client reports what it can still prove instead of a burst
+   * of half-remembered ones.
+   * @param rawCursor - the client's last seen `seq`, or anything else for
+   *   "start from now" (a first connection never replays history).
+   * @returns `{bootId, cursor, stale, notices}`; each notice is
+   *   `{session, notice}` so a toast can name the conversation it belongs to.
+   */
+  function pendingNotices(rawCursor) {
+    try {
+      const latest = noticeSeq;
+      const known =
+        typeof rawCursor === 'number' && Number.isSafeInteger(rawCursor) && rawCursor >= 0
+          ? Math.min(rawCursor, latest)
+          : latest;
+      if (known >= latest) return { bootId, cursor: latest, stale: false, notices: [] };
+      const oldest = births.length > 0 ? births[0].seq : latest + 1;
+      const stale = oldest > known + 1;
+      const fresh = births.filter((birth) => birth.seq > known).sort((a, b) => a.seq - b.seq);
+      const selected = stale && fresh.length > 1 ? [fresh[fresh.length - 1]] : fresh;
+      return {
+        bootId,
+        cursor: latest,
+        stale,
+        notices: selected.map((birth) => ({ session: birth.sessionId, notice: publicNotice(birth.notice) })),
+      };
+    } catch {
+      return { bootId, cursor: noticeSeq, stale: false, notices: [] };
     }
   }
 
@@ -818,6 +900,7 @@ export function createAssemblyWatch(options = {}) {
   function publicNotice(notice) {
     return {
       id: notice.id,
+      seq: notice.seq,
       kind: notice.kind,
       at: notice.at,
       turn: notice.turn,
@@ -841,9 +924,13 @@ export function createAssemblyWatch(options = {}) {
         writes: writes.length,
         rejectedProbes,
         noticeSeq,
+        // How much of the incremental feed is still retained; a client whose
+        // cursor is older than this is answered `stale`.
+        history: births.length,
+        bootId,
       };
     } catch {
-      return { sessions: 0, notices: 0, droppedNotices, writes: 0, rejectedProbes, noticeSeq };
+      return { sessions: 0, notices: 0, droppedNotices, writes: 0, rejectedProbes, noticeSeq, history: 0, bootId };
     }
   }
 
@@ -858,11 +945,13 @@ export function createAssemblyWatch(options = {}) {
 
   return {
     sectionName,
+    bootId,
     observeAssembly,
     markPromptWrite,
     observePreStep,
     observeSessionEvent,
     disposeSession,
+    pendingNotices,
     status,
     stats,
     rejectProbe,

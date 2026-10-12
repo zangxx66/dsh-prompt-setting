@@ -37,16 +37,21 @@
   > scope is changed (the panel repeats the current target as a read-only line).
   >
   > 面板顶部是**「装配状态提示」**（g-062）：新会话的第一次装配，以及保存 Prompt 之后的下一个 run，
-  > 会在**设置页**给出两层结论——装配层（本次 assembly 是否读到你的 Prompt）与送达层（该文本是否进入
-  > 本次请求的 messages）。它不进入模型上下文、不占 token、不改变模型收到的 prompt，并可在同一处关闭。
-  > 口径与边界见 `CONTRACT.md` §21（例如：HTTP 是否真的发出在插件侧不可观测，本提示不作此声称）。
-  > The **assembly-status notice** at the top of the panel (g-062): the first assembly of a new
-  > conversation, and the next run after a prompt is saved, each report two verdicts **in this page** —
-  > the assembly layer (did this step's assembly read your prompt) and the delivery layer (did that text
-  > enter this request's messages). It never enters the model context, costs no tokens and changes nothing
-  > the model receives; the switch sits in the same block. The exact口径 and its limits are in
-  > `CONTRACT.md` §21 (for one: whether the HTTP request was actually sent is not observable from a
-  > plugin, and this notice does not claim it).
+  > 会**主动弹 toast** 给出两层结论——装配层（本次 assembly 是否读到你的 Prompt）与送达层（该文本是否进入
+  > 本次请求的 messages）；同一条结论仍保留在设置页的提示块里，供回查，开关也在那里。
+  > 它不进入模型上下文、不占 token、不改变模型收到的 prompt；宿主未提供 Toast 组件时不会注册任何浮层，
+  > 设置页会说明这一降级，功能其余部分不受影响。
+  > 口径与边界见 `CONTRACT.md` §21（例如：HTTP 是否真的发出在插件侧不可观测，本提示不作此声称；
+  > 后台标签页的计时器被浏览器节流，因此提示在回到页面时可见，不是实时通道）。
+  > The **assembly-status notice** (g-062) now **raises a toast** at each key node — the first assembly of a
+  > new conversation, and the next run after a prompt is saved — reporting two verdicts: the assembly layer
+  > (did this step's assembly read your prompt) and the delivery layer (did that text enter this request's
+  > messages). The same verdicts stay in the settings-page block, which is also where the switch lives.
+  > It never enters the model context, costs no tokens and changes nothing the model receives; a host that
+  > does not provide the `Toast` primitive gets no overlay at all, and the page states that degradation.
+  > The exact口径 and its limits are in `CONTRACT.md` §21 (for one: whether the HTTP request was actually
+  > sent is not observable from a plugin, and this notice does not claim it; background-tab timers are
+  > throttled by the browser, so a toast is seen when you return to the page — it is not real-time).
 
 - **我的预设 / My presets** —— 你的常用文本库：把一段文本存成预设（新建 / 编辑 / 删除），再把它**应用到某个
   工作区**（写入该工作区的保留段），也可以**取消应用**——该工作区会精确还原为应用前的内容。删除一个

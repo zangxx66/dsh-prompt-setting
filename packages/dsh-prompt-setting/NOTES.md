@@ -7995,3 +7995,51 @@ route +3：R1 同拍、R3 首装配 delivered、R4 三写路径），另把「�
   「Every write path that changes the reserved section's **text** …」，并**把 `PUT /interpolate` 这一
   已知盲区同步写进契约条目**（与本节上文的记录同源），不再只存在于 NOTES。
 - 评审第 3 条建议（客户端 `waiting` 时续读加次数上限）本轮**不做**，记为后续可选事项。
+
+## 142. g-062 修订：提示改为「toast 主动提示为主 + 设置页保留详情与开关」（Revision 46，2026-10-13，基线 `0445166` 隔离工作树 `g-062-att-02`）
+
+**负责人反馈**：v1 把提示只落在设置页「我的 Prompt」面板顶部，「每次进设置页查看太麻烦」——改为
+**toast 主动提示为主 + 设置页保留详情与开关**。既有口径一字不放宽：两层都报、仅关键节点一次、
+同一事实不得弹两次、只做观察者（不进上下文、不占 token、不改 prompt）、fail-open、零依赖零构建。
+
+**通道核实（card-77666b3e，只读）**：DSH 无 ctx 级通知服务；弹提示的唯一通道是
+`ctx.slots.inject('shell.overlay', …)` 挂常驻组件 + 官方 `Toast`（`@deepseek-ai/dsh-client-ui-primitives`）。
+**没有插件可用的推送通道**（无插件 `EventSource`；页面唯一的 WebSocket 是宿主自己的 RPC mux）
+⇒ 客户端只能「带着游标来问」，这也决定了下面的取舍。
+
+**落地**
+- `core/assembly-watch.js`：新增**全局出生日志**（有界 24 条，`pushNotice` 是唯一入口）与
+  `pendingNotices(cursor)`；notice 新增数字 `seq`（`id` 的数字半身）；新增 `bootId`（每个 mount 一个身份，
+  可注入以便测试）；`disposeSession` 同时把该会话逐出出生日志；`stats()` 增 `history` / `bootId`。
+- `index.js`：`GET /assembly-status` 增 `?since=` → `notifications`；缺省/畸形 `since` 读作「从此刻开始」
+  （只回游标，不回历史），非法值不是错误。
+- `client.js`：`HAS_TOAST` 与 `RENDERER` **分开探测**（宿主可能只有 atoms 没有 `Toast`）；新增
+  `AssemblyToasterRoot` 注册进 `shell.overlay`（`id: prompt-setting-toast`，order 60）；游标/队列/文案
+  是纯函数（经 `__internals.assemblyNotice` 供测试）；游标存 **sessionStorage**；读节奏＝会话状态变化
+  （节流 3s）为主 + 20s 可见性感知兜底 + 回到页面立即读；设置页块保留，并加
+  `data-assembly-note="no-toast"` 说明宿主不支持主动提示。
+
+**五个实现决定（都写进契约 §21.6）**
+1. **增量游标，而不是「重读最新」**：重读同一条 record 会把同一事实反复报出来；游标让「已展示」成为
+   客户端的显式状态，这也是「同一事实不得弹两次」在客户端唯一可证明的形态。
+2. **跨 mount 的游标不可比**：宿主重启会清空 watch 且 `noticeSeq` 归零 ⇒ 用 `bootId` 判定；不同 mount 时
+   重新锚定且不追溯（宁可漏一次，绝不重报）。
+3. **首次连接不追溯**：缺省 `since` 只回游标；新开的标签页不得把保留窗口里的历史一次性弹给用户。
+4. **落后于保留窗口只给最新一条**（`stale: true`）：避免「回来一看刷出一串旧提示」，同时不隐藏事实。
+5. **事件驱动为主、定时器兜底**：`useSessionStatus`（`shell.overlay` entry 能拿到 root hook，whale-pet 先例）
+   的变化是客户端真有的「某一步已结束」信号；20s 定时器只是 hook 缺失/事件丢失的兜底。**被否方案**：
+   常驻高频轮询（更贵且仍不实时）、浏览器系统通知（DSH 未封装、需自请权限）、自绘浮层（要自管
+   z-index/主题/样式隔离/卸载清理，且 `dsh-graph` 同款实现的 setTimeout 自清理在插件卸载时不回收节点）。
+
+**测试**：core +5（缺省游标不追溯、逐条一次且带会话、跨 mount 重锚、stale 只给最新、dispose/开关关闭）、
+route +2（无 session 的端到端 feed、变更通知与开关关闭）、client +5（游标策略、文案与 en 词典、
+一次一条与队列排空、读节奏与可见性、无 Toast 的降级）。全量 `882 passed / 0 failed`；
+`client-chunks` 5 chunk 一致、`check-compat` exit 0、`prepare` 21 项 OK；零新增依赖、零构建。
+**负向对照（改坏即红，均已还原）**：客户端 `entry.notice.seq > state.cursor` 改成 `>=` ⇒ 游标用例红；
+宿主 stale 分支去掉、只保留全量 ⇒ stale 用例红。
+
+**已知局限（照实写进契约 §21.6）**
+- 后台标签页计时器被节流 ⇒ 只能「回到页面时看到」，不是实时通道，也不声称是；
+- 首次连接与跨宿主重启不追溯：那份历史不会补弹（宁可漏，不重报）；
+- toast 是**出生那一刻**的结论快照：送达层若在弹出之后才结算，后续更新只体现在设置页详情块里；
+- 客户端在弹出前就推进并持久化游标 ⇒ 「弹之前刷新页面」会丢掉那一次提示（仍是「不重报」优先）。

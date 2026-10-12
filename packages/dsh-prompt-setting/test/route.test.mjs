@@ -3462,3 +3462,101 @@ test('g-062: a user-layer save addresses every session, while a workspace save s
     'a workspace-layer save does not leak into another session',
   );
 });
+
+// ---------------------------------------------------------------------------
+// g-062 (Revision 46): the incremental feed behind the shell-overlay toaster.
+//
+// The toaster lives outside the settings page and therefore has no `?session=`
+// to ask about: it reads `?since=<cursor>` and gets the notices born after it.
+// What is pinned here is the host wiring — a fresh client is told where "now" is
+// without being told what happened before, a consumed cursor is what stops a
+// repeat, and the plugin's own probe assembly is not a user event.
+// ---------------------------------------------------------------------------
+
+/** GET the incremental assembly-notice feed, optionally from one cursor. */
+async function readFeed(route, since) {
+  const suffix = since === undefined ? '' : `?since=${encodeURIComponent(String(since))}`;
+  return json(await call(route, { url: `${ASSEMBLY_STATUS_PATH}${suffix}` }));
+}
+
+test('g-062 (R46): the feed needs no session, hands out one cursor, and never repeats a notice', async () => {
+  const harness = mount({ agents: [{ id: 's1' }] });
+  const { ctx, route } = harness;
+  // A fresh client is told where "now" is, and nothing else: replaying the
+  // retained history into a page that has just opened is exactly the double
+  // report the goal forbids.
+  const opening = await readFeed(route);
+  assert.equal(opening.session, null, 'the feed is not a session view');
+  assert.equal(typeof opening.notifications.bootId, 'string');
+  assert.equal(Number.isSafeInteger(opening.notifications.cursor), true);
+  assert.deepEqual(opening.notifications.notices, []);
+  assert.equal(opening.notifications.stale, false);
+  const start = opening.notifications.cursor;
+
+  assert.equal((await savePrompt(route, { text: 'MINE' })).statusCode, 200);
+  await ctx.systemPrompt.assemble({ agent: { id: 's1' }, scope: { marker: 'g062' } });
+  harness.emit('agent/pre-step', { agent: { id: 's1' }, turn: 1, step: 1, messages: [] });
+  harness.emit('session/event', { id: 's1' }, { type: 'request/header', seq: 1, time: 0, data: { reason: 'initial', header: {} } });
+  harness.emit('session/event', { id: 's1' }, systemMessageEvent({ text: 'SYSTEM MINE', turn: 1, step: 1 }));
+
+  const first = await readFeed(route, start);
+  assert.equal(first.notifications.notices.length, 1);
+  const entry = first.notifications.notices[0];
+  assert.equal(entry.session, 's1', 'each notice names the conversation it belongs to');
+  assert.equal(entry.notice.kind, 'first-assembly');
+  assert.equal(entry.notice.assembly.assembled, true);
+  assert.equal(entry.notice.delivery.state, 'delivered', 'both layers travel on the feed');
+  assert.equal(entry.notice.seq > start, true, 'the cursor is the notice seq, not an index');
+  assert.equal(JSON.stringify(first).includes('MINE'), false, 'never the prompt text');
+
+  // The cursor the client kept is what makes the answer empty the second time:
+  // the route itself is a pure read and repeats whatever the cursor asks for.
+  const consumed = first.notifications.cursor;
+  assert.deepEqual((await readFeed(route, consumed)).notifications.notices, []);
+
+  // The plugin's own probe assembly is not a user key node, so it adds nothing
+  // to the feed either — the `pendingProbe` exclusion reaches this channel too.
+  assert.equal((await call(route, { url: '/prompt-setting/snapshot' })).statusCode, 200);
+  assert.deepEqual((await readFeed(route, consumed)).notifications.notices, []);
+
+  // A session-shaped read answers the same feed alongside the record, and a
+  // malformed cursor reads as "start from now" rather than as an error.
+  const shaped = json(await call(route, { url: `${ASSEMBLY_STATUS_PATH}?session=s1&since=not-a-number` }));
+  assert.equal(shaped.record.session, 's1');
+  assert.deepEqual(shaped.notifications.notices, []);
+  assert.equal(shaped.notifications.cursor, consumed);
+});
+
+test('g-062 (R46): the feed carries the next run\'s change notice, and the switch off supplies none', async () => {
+  const harness = mount({ agents: [{ id: 's1' }] });
+  const { ctx, route } = harness;
+  await establishConversation(harness, 's1');
+  const start = (await readFeed(route)).notifications.cursor;
+
+  assert.equal((await savePrompt(route, { text: 'NEW' })).statusCode, 200);
+  await ctx.systemPrompt.assemble({ agent: { id: 's1' }, scope: { marker: 'g062' } });
+  const changed = await readFeed(route, start);
+  assert.equal(changed.notifications.notices.length, 1);
+  assert.equal(changed.notifications.notices[0].notice.kind, 'prompt-change');
+  assert.equal(changed.notifications.notices[0].notice.assembly.state, 'read');
+
+  // With the switch off the observation itself continues, but no notice is born
+  // — so the feed has nothing to hand out, which is what "关闭后不产生新提示"
+  // means on this channel.
+  const cursor = changed.notifications.cursor;
+  const refused = await call(route, {
+    method: 'PUT',
+    url: ASSEMBLY_STATUS_PATH,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ enabled: false }),
+  });
+  assert.equal(refused.statusCode, 200);
+  assert.equal((await savePrompt(route, { text: 'NEWER' })).statusCode, 200);
+  await ctx.systemPrompt.assemble({ agent: { id: 's1' }, scope: { marker: 'g062' } });
+  assert.deepEqual((await readFeed(route, cursor)).notifications.notices, []);
+  assert.equal(
+    (await readStatus(route, 's1')).record.lastAssembly.length > 0,
+    true,
+    'the observation itself continues while the switch is off',
+  );
+});
