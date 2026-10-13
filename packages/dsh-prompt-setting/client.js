@@ -304,16 +304,128 @@ window.__ModuleLoader__.load({
     const primitives =
       primitivesModule !== null && typeof primitivesModule === 'object' ? primitivesModule : null;
     /**
+     * The brand one React factory stamps on the component **object** it returns,
+     * read off a real product of this Host's factory.
+     *
+     * `React.forwardRef` hands back `{ $$typeof, render }` and `React.memo`
+     * `{ $$typeof, type }`; both are components, both are `typeof === 'object'`.
+     * Reading the brand from React itself keeps this file from restating a
+     * string React owns — a React double without that factory answers
+     * `undefined` and the documented `Symbol.for(...)` spelling still applies.
+     * @param factory - `React.forwardRef` / `React.memo`, or anything at all.
+     * @param argument - what that factory accepts (a render function / component).
+     * @returns the brand, or `undefined` when it cannot be observed.
+     */
+    function reactFactoryBrand(factory, argument) {
+      if (typeof factory !== 'function') return undefined;
+      try {
+        const product = factory(argument);
+        return product !== null && typeof product === 'object' && typeof product.$$typeof === 'symbol'
+          ? product.$$typeof
+          : undefined;
+      } catch {
+        return undefined;
+      }
+    }
+
+    /**
+     * The component kinds that are **objects** rather than functions: brand →
+     * the structural field that must be there too.
+     *
+     * Only the two shapes this page's atoms can arrive in are listed, and each
+     * one is validated structurally (`render` is a function; `type` is itself a
+     * component), so an object that merely *claims* a brand — or carries a kind
+     * this page cannot render — is **not** mistaken for a component. The brand
+     * value comes from React's own factories above, with `Symbol.for(...)` —
+     * React's global-registry spelling, shared by the Host's React copy and
+     * this plugin's — as the documented fallback.
+     */
+    const OBJECT_COMPONENT_FIELDS = new Map();
+    {
+      const registrySymbol = (key) =>
+        typeof Symbol === 'function' && typeof Symbol.for === 'function' ? Symbol.for(key) : undefined;
+      const brands = [
+        [reactFactoryBrand(React.forwardRef, () => null), 'render'],
+        [reactFactoryBrand(React.memo, () => null), 'type'],
+        [registrySymbol('react.forward_ref'), 'render'],
+        [registrySymbol('react.memo'), 'type'],
+      ];
+      for (const [brand, field] of brands) {
+        if (typeof brand === 'symbol' && !OBJECT_COMPONENT_FIELDS.has(brand)) OBJECT_COMPONENT_FIELDS.set(brand, field);
+      }
+    }
+
+    /**
+     * Is this export value something React can render?
+     *
+     * `typeof === 'function'` is the whole story only for function components:
+     * `React.forwardRef(...)` — which is exactly what the Host's `Button` and
+     * `Input` are — returns an object, so a probe keyed on `typeof` alone reads
+     * every `forwardRef` atom as absent. That is why this page spent its whole
+     * life on the hand-built renderer while the official atoms were right there
+     * (g-063).
+     *
+     * Deliberately conservative in the other direction: an object whose brand is
+     * unknown, whose brand-carrying field is missing (or is not a function),
+     * answers **false** — which keeps the page on the hand-built renderer
+     * instead of handing React a type it cannot render.
+     * @param value - one export of a candidate module namespace.
+     * @returns `true` when React can render it.
+     */
+    function isComponentExport(value) {
+      if (typeof value === 'function') return true;
+      if (value === null || value === undefined || typeof value !== 'object') return false;
+      let brand;
+      try {
+        brand = value.$$typeof;
+      } catch {
+        return false;
+      }
+      const field = OBJECT_COMPONENT_FIELDS.get(brand);
+      if (field === undefined) return false;
+      let inner;
+      try {
+        inner = value[field];
+      } catch {
+        return false;
+      }
+      // `memo` wraps another component (possibly a `forwardRef` one);
+      // `forwardRef` wraps the render function it was handed.
+      return field === 'type' ? isComponentExport(inner) : typeof inner === 'function';
+    }
+
+    /**
+     * {@link isComponentExport} asked of one namespace member, never a throw.
+     *
+     * A namespace member behind a throwing getter must read as "not usable"
+     * (the fallback renderer draws instead), never take the page down: the whole
+     * probe is fail-open.
+     * @param namespace - a candidate module namespace, or nothing at all.
+     * @param name - the export to ask about.
+     * @returns `true` when that export is a component React can render.
+     */
+    function hasComponentExport(namespace, name) {
+      if (namespace === null || namespace === undefined) return false;
+      try {
+        return isComponentExport(namespace[name]);
+      } catch {
+        return false;
+      }
+    }
+
+    /**
      * Does one namespace carry the atoms this page draws?
      *
-     * Extracted so the **renderer** probe (which must not move) and the
-     * **toast** probe (which may unwrap) can ask the same question of different
-     * candidates without either one restating the rule.
+     * Extracted so the **renderer** probe and the **toast** probe (which may
+     * unwrap) can ask the same question of different candidates without either
+     * one restating the rule. g-063: the question is asked with
+     * {@link hasComponentExport}, because the Host's `Button` is a `forwardRef`
+     * component and `typeof` it is `'object'`, not `'function'`.
      * @param namespace - a candidate module namespace.
      * @returns `true` only for an object whose `Button` really is a component.
      */
     function isPrimitivesNamespace(namespace) {
-      return namespace !== null && typeof namespace === 'object' && typeof namespace.Button === 'function';
+      return namespace !== null && typeof namespace === 'object' && hasComponentExport(namespace, 'Button');
     }
     const primitivesUsable = isPrimitivesNamespace(primitives);
     /** Which renderer this module instance actually uses: 'primitives' | 'fallback'. */
@@ -325,9 +437,9 @@ window.__ModuleLoader__.load({
      */
     const ICON_SOURCE =
       primitivesUsable &&
-      typeof primitives.IconFolderOpenRegular === 'function' &&
-      typeof primitives.IconFolderCloseRegular === 'function' &&
-      typeof primitives.IconTriangleRightFillRegular === 'function'
+      hasComponentExport(primitives, 'IconFolderOpenRegular') &&
+      hasComponentExport(primitives, 'IconFolderCloseRegular') &&
+      hasComponentExport(primitives, 'IconTriangleRightFillRegular')
         ? 'primitives'
         : 'inline';
     /**
@@ -408,9 +520,9 @@ window.__ModuleLoader__.load({
      */
     const toastPrimitivesModule = unwrapNamespaceDefault(primitivesModule);
     const toastPrimitives =
-      toastPrimitivesModule !== undefined && typeof toastPrimitivesModule.Toast === 'function'
+      hasComponentExport(toastPrimitivesModule, 'Toast')
         ? toastPrimitivesModule
-        : typeof primitives?.Toast === 'function'
+        : hasComponentExport(primitives, 'Toast')
           ? primitives
           : null;
     const HAS_TOAST = toastPrimitives !== null;
@@ -444,6 +556,11 @@ window.__ModuleLoader__.load({
       toastBefore: namespaceMemberType(primitivesModule, 'Toast'),
       toastAfter: namespaceMemberType(toastProbeTarget, 'Toast'),
       toastSource: toastNamespaceSource,
+      // g-063: the `typeof` above is an observation, THIS is the decision. The
+      // real machine reported `Button=object` and `fallback` together, which is
+      // exactly the pair a `typeof === 'function'`-only probe produces for a
+      // `forwardRef` atom — the two readings now carry the answer side by side.
+      buttonComponent: hasComponentExport(primitivesModule, 'Button'),
       renderer: primitivesUsable ? 'primitives' : 'fallback',
     };
     /**
@@ -2437,10 +2554,10 @@ window.__ModuleLoader__.load({
                 props.children,
               ),
             Input: (props) =>
-              typeof primitives.Input === 'function' ? h(primitives.Input, props) : h(FxInput, props),
+              hasComponentExport(primitives, 'Input') ? h(primitives.Input, props) : h(FxInput, props),
             Textarea: FxTextarea,
             Tag: (props) =>
-              typeof primitives.Tag === 'function'
+              hasComponentExport(primitives, 'Tag')
                 ? h(primitives.Tag, { tone: props.tone }, props.children)
                 : h(FxTag, props),
           }
@@ -2466,7 +2583,7 @@ window.__ModuleLoader__.load({
      * @returns the tab list element.
      */
     function tabs(items, value, onChange, label, group) {
-      if (RENDERER === 'primitives' && typeof primitives.SegmentedTabs === 'function') {
+      if (RENDERER === 'primitives' && hasComponentExport(primitives, 'SegmentedTabs')) {
         // The official control owns its own DOM, so it cannot be asked to carry
         // our markers. `display: contents` keeps this wrapper invisible to
         // layout while giving a probe the *same* `data-tab-group` it reads in
@@ -3772,6 +3889,9 @@ window.__ModuleLoader__.load({
      */
     async function copyText(text) {
       try {
+        // NOT a component: `writeClipboard` is called as a function, so
+        // `typeof === 'function'` stays the whole question here (g-063: the
+        // `forwardRef`-aware probe is for exports React renders, not for this).
         if (primitives && typeof primitives.writeClipboard === 'function') {
           await primitives.writeClipboard(text);
           return true;
@@ -4986,7 +5106,7 @@ window.__ModuleLoader__.load({
      * Whether the primitives module really exposes the official diff renderer.
      * Probed, never assumed — exactly like the Button/Tag probes.
      */
-    const HAS_DIFF_BLOCK = primitivesUsable && typeof primitives.DiffBlock === 'function';
+    const HAS_DIFF_BLOCK = primitivesUsable && hasComponentExport(primitives, 'DiffBlock');
 
     /**
      * The localized chrome `DiffBlock` asks its owner for.
@@ -5345,7 +5465,15 @@ window.__ModuleLoader__.load({
           ),
           h(
             'div',
-            { 'data-primitives-members': 'true', style: { marginTop: 2, wordBreak: 'break-word' } },
+            {
+              'data-primitives-members': 'true',
+              // g-063: `Button=object` alone is ambiguous (an unusable wrapper
+              // reads the same way); this says whether the `forwardRef`-aware
+              // decision read it as a component, so the pair on screen is
+              // 「typeof」 plus 「what was decided」.
+              'data-primitives-button-component': String(primitivesProbe.buttonComponent),
+              style: { marginTop: 2, wordBreak: 'break-word' },
+            },
             `${t('primitivesMembersLabel')}: ${fmt(t('primitivesMembersText'), {
               buttonBefore: primitivesProbe.buttonBefore,
               buttonAfter: primitivesProbe.buttonAfter,
@@ -7855,6 +7983,10 @@ window.__ModuleLoader__.load({
     function pickChunkComponent(fileName, chunkExports, pick) {
       try {
         const component = pick(chunkExports);
+        // A function by construction: this is one of **our own** chunks
+        // (`client.history.js` exports `HistoryTab` as a function declaration),
+        // not a Host atom — the `forwardRef`-aware judge is for the Host's
+        // exports only (g-063).
         if (typeof component === 'function') {
           recordLoadedChunk(fileName, chunkExports);
           return component;

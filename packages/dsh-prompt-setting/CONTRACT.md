@@ -3395,6 +3395,23 @@ code means rather than how it is written:
   the **toast** capability decision used). The renderer decision
   (`RENDERER` / `data-renderer`) still keys on the raw module's `Button` only;
   only the toast probe may unwrap.
+  **Revision 48 (g-063):** the `Button` question is no longer
+  `typeof === 'function'`. The Host ships `Button` and `Input` as
+  `React.forwardRef(...)` products, whose `typeof` is `'object'`, so the old
+  judge read a fully-stocked Host as empty and pinned this page to the fallback
+  renderer for its whole life. "Usable" now means: a function, **or** an object
+  carrying a React component brand (`forwardRef` → `{ $$typeof, render }`,
+  `memo` → `{ $$typeof, type }`) whose structural field is present and valid;
+  the brand is read off this Host's own `forwardRef` / `memo` where they exist,
+  with `Symbol.for('react.forward_ref' | 'react.memo')` as the documented
+  fallback, and an unknown brand, a missing field or a throwing getter means
+  **not usable** (fallback, never a blank panel). The same judge is used for
+  `ICON_SOURCE`, `HAS_DIFF_BLOCK`, `UI.Input` / `UI.Tag`, the
+  `SegmentedTabs` branch and the toast `Toast` probe; `writeClipboard` keeps
+  `typeof === 'function'` because it is called, not rendered.
+  `data-primitives-members="true"` also carries
+  `data-primitives-button-component="true" | "false"` — the decision, beside the
+  `typeof` it was made from.
 
 ### 13.5 Second confirmation is required
 

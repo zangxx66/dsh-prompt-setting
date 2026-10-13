@@ -195,6 +195,16 @@ function makeHooksRuntime(options = {}) {
     },
     useId: () => 'test-id',
     Fragment: Symbol('Fragment'),
+    // g-063: the two **object**-shaped component kinds. `forwardRef` is what the
+    // Host's real `Button` / `Input` are, and `typeof` one of those is
+    // `'object'` — the double has to publish the same shape, or the probe under
+    // test would only ever be asked about function components.
+    forwardRef(render) {
+      return { $$typeof: FORWARD_REF_TYPE, render };
+    },
+    memo(type) {
+      return { $$typeof: MEMO_TYPE, type };
+    },
     // g-045: the lazy chunk boundary. `load()` is called on first expansion,
     // exactly as React calls it on first render; the loader double below
     // resolves synchronously, so one expansion is enough to get the real panel —
@@ -268,6 +278,16 @@ function makeHooksRuntime(options = {}) {
  */
 const LAZY_TYPE = Symbol('react.lazy');
 const SUSPENSE_TYPE = Symbol('react.suspense');
+/**
+ * The two object-shaped component brands (g-063).
+ *
+ * `Symbol.for(...)` on purpose: React registers its brands in the **global**
+ * symbol registry, so this test-side spelling and whatever the page reads off
+ * the Host's React are the same symbol — which is exactly the property the
+ * production probe relies on when it falls back to `Symbol.for`.
+ */
+const FORWARD_REF_TYPE = Symbol.for('react.forward_ref');
+const MEMO_TYPE = Symbol.for('react.memo');
 
 /**
  * Expand function components into host nodes.
@@ -285,6 +305,15 @@ function expandTree(node) {
   if (Array.isArray(node)) return node.map(expandTree);
   if (node.type !== null && typeof node.type === 'object' && node.type.$$typeof === LAZY_TYPE) {
     return expandTree(node.type._resolveNode(node.props));
+  }
+  // g-063: the official atoms are `forwardRef` (and `memo`) products — objects,
+  // not functions — so the walk has to call their render function the way React
+  // would, or a primitives-branch tree would stop expanding at the first atom.
+  if (node.type !== null && typeof node.type === 'object' && node.type.$$typeof === FORWARD_REF_TYPE) {
+    return expandTree(node.type.render(node.props, null));
+  }
+  if (node.type !== null && typeof node.type === 'object' && node.type.$$typeof === MEMO_TYPE) {
+    return expandTree({ ...node, type: node.type.type });
   }
   if (typeof node.type === 'symbol') return expandTree(node.props ? node.props.children : null);
   if (typeof node.type === 'function') return expandTree(node.type(node.props));
@@ -455,7 +484,15 @@ function loadClient(primitives, options = {}) {
     if (shape === 'flat-with-default') return { ...base, default: atoms };
     return base;
   };
-  const publishedModule = inInteropShape(options.primitivesShape || (options.unwrapAtoms === true ? 'default' : 'flat'), primitivesModule);
+  const publishedModule = inInteropShape(
+    options.primitivesShape || (options.unwrapAtoms === true ? 'default' : 'flat'),
+    // g-063: a case can publish the atoms in the shape the **real** Host ships
+    // them (`forwardRef` / `memo` objects, or an unusable look-alike) instead of
+    // the plain function components every earlier case used. The callback gets
+    // the default atoms and this sandbox's React double, and returns whatever
+    // block should sit at the module's top level.
+    typeof options.primitivesAtoms === 'function' ? options.primitivesAtoms(atoms, runtime.React) : primitivesModule,
+  );
   /**
    * The loader's `require.async('./client.x.js')`, doubled (g-045).
    *
@@ -14237,3 +14274,150 @@ test('client: the three probe shapes get three different diagnosis lines (fix ro
   assert.notEqual(flat.source, wrapped.source, 'and the namespace line is the one that names the difference');
 });
 // #endregion
+
+// ---------------------------------------------------------------------------
+// g-063 — the probe has to recognise the atoms' **real** shape
+//
+// The Host ships `Button` / `Input` as `React.forwardRef(...)` products, whose
+// `typeof` is `'object'`. A probe keyed on `typeof === 'function'` therefore
+// read a fully-stocked Host as empty and pinned this page to the hand-built
+// renderer for its whole life. These cases publish the shapes the real Host
+// ships — and the look-alikes that must keep degrading — and they assert both
+// the decision (`buttonComponent` / `data-renderer`) and the drawing (the
+// official atoms really rendered the tree).
+// ---------------------------------------------------------------------------
+
+/**
+ * The real Host's atom shape: `forwardRef` products, marked so a test can tell
+ * them apart from the hand-built fallback atoms they replace.
+ * @param atoms - the default function-component double.
+ * @param React - this sandbox's React double.
+ * @returns the namespace to publish.
+ */
+const forwardRefAtoms = (atoms, React) => ({
+  ...atoms,
+  Button: React.forwardRef((props) => React.createElement('button', { ...props, 'data-atom': 'button' })),
+  Input: React.forwardRef((props) => React.createElement('input', { ...props, 'data-atom': 'input' })),
+});
+
+test('client: a forwardRef Button selects the primitives renderer (g-063)', async () => {
+  // `makeOpenPage`: the session selector's `Input` only exists while the scope
+  // picker is open, and this case wants to see the official input, not just the
+  // official button.
+  const page = makeOpenPage({
+    primitives: 'ok',
+    primitivesAtoms: forwardRefAtoms,
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses(),
+  });
+  const probe = page.loaded.module.__internals.assemblyNotice.primitivesProbe();
+  assert.equal(probe.buttonBefore, 'object', 'a forwardRef atom reports typeof object, which is the whole bug');
+  assert.equal(probe.buttonComponent, true, 'and the probe still recognises it as a component');
+  assert.equal(probe.renderer, 'primitives', 'so the renderer branch really moves');
+
+  const tree = await page.flush();
+  assert.equal(rendererOf(tree), 'primitives');
+  // The activated branch really drew, with the official atoms: `data-atom` only
+  // exists on the double this case published, so a probe that fell back to
+  // `typeof === 'function'` would render the same page WITHOUT these markers.
+  assert.equal(oneBy(tree, 'data-action', 'refresh').props['data-atom'], 'button');
+  assert.equal(oneBy(tree, 'data-role', 'session-search').props['data-atom'], 'input');
+  // The official `Button` is a real host `button`: the page did not lose a click.
+  assert.equal(oneBy(tree, 'data-action', 'refresh').type, 'button');
+  assert.ok(tabPanel(tree), 'the page is drawn, not blank');
+  assert.equal(markerOf(tree, 'data-render-state'), 'ok');
+
+  const info = oneBy(await openAdvanced(page), 'data-region', 'renderer-info');
+  assert.ok(hasText(info, page.text.rendererPrimitives), 'the diagnosis names the branch now in use');
+  assert.ok(hasText(oneBy(info, 'data-primitives-members', 'true'), 'Button=object'));
+  assert.equal(
+    oneBy(info, 'data-primitives-button-component', 'true').props['data-primitives-button-component'],
+    'true',
+    'the typeof and the decision sit side by side for the operator',
+  );
+});
+
+test('client: a memo Button is a component too (g-063)', async () => {
+  const page = makePage({
+    primitives: 'ok',
+    primitivesAtoms: (atoms, React) => ({
+      ...atoms,
+      Button: React.memo((props) => React.createElement('button', { ...props, 'data-atom': 'button' })),
+    }),
+    responses: defaultResponses(),
+  });
+  const probe = page.loaded.module.__internals.assemblyNotice.primitivesProbe();
+  assert.equal(probe.buttonBefore, 'object');
+  assert.equal(probe.buttonComponent, true, 'memo is an object-shaped component kind as well');
+  const tree = await page.flush();
+  assert.equal(rendererOf(tree), 'primitives');
+  assert.equal(oneBy(tree, 'data-action', 'refresh').props['data-atom'], 'button');
+});
+
+test('client: a forwardRef Toast is still a toast (g-063)', async () => {
+  const page = makePage({
+    primitives: 'ok',
+    withToast: true,
+    primitivesAtoms: (atoms, React) => ({
+      ...atoms,
+      Toast: React.forwardRef((props) => React.createElement('div', { 'data-toast': props.text })),
+    }),
+    responses: defaultResponses(),
+  });
+  const notice = page.loaded.module.__internals.assemblyNotice;
+  assert.equal(notice.HAS_TOAST, true, 'the toast probe asks the same forwardRef-aware question');
+  assert.equal(notice.toastNamespace(), 'module');
+  assert.equal(
+    page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay').length,
+    1,
+    'so the overlay is registered',
+  );
+});
+
+test('client: an unrecognised component shape still falls back (g-063, negative control)', async () => {
+  // "Changed and it goes red": every one of these is an object a
+  // `typeof`-only probe would also reject — the point is that the NEW probe
+  // rejects them for the RIGHT reason (no usable brand), instead of accepting
+  // any object at all.
+  const shapes = [
+    ['an unknown brand', { $$typeof: Symbol.for('react.something_else') }],
+    ['a forwardRef brand with no render', { $$typeof: FORWARD_REF_TYPE }],
+    ['a forwardRef brand whose render is not a function', { $$typeof: FORWARD_REF_TYPE, render: 'nope' }],
+    ['a plain object that merely looks component-ish', { render: () => null }],
+    ['a memo around something unusable', { $$typeof: MEMO_TYPE, type: { $$typeof: FORWARD_REF_TYPE } }],
+  ];
+  for (const [name, Button] of shapes) {
+    const page = makePage({
+      primitives: 'ok',
+      primitivesAtoms: (atoms) => ({ ...atoms, Button }),
+      responses: defaultResponses(),
+    });
+    const probe = page.loaded.module.__internals.assemblyNotice.primitivesProbe();
+    assert.equal(probe.buttonComponent, false, `${name}: not read as a component`);
+    assert.equal(probe.renderer, 'fallback', `${name}: the renderer falls back`);
+    const tree = await openAdvanced(page);
+    assert.equal(rendererOf(tree), 'fallback', `${name}: and the page says which branch it took`);
+    assert.ok(tabPanel(tree), `${name}: the fallback still draws the panel`);
+  }
+});
+
+test('client: a throwing Button getter degrades instead of blanking the page (g-063, fail-open)', async () => {
+  const page = makePage({
+    primitives: 'ok',
+    primitivesAtoms: (atoms) => ({
+      ...atoms,
+      get Button() {
+        throw new Error('the Host getter threw');
+      },
+    }),
+    responses: defaultResponses(),
+  });
+  const probe = page.loaded.module.__internals.assemblyNotice.primitivesProbe();
+  assert.equal(probe.buttonComponent, false, 'a throwing read is "not usable", never a crash');
+  assert.equal(probe.buttonBefore, '(getter threw)', 'and the diagnosis says why');
+  assert.equal(probe.renderer, 'fallback');
+  const tree = await openAdvanced(page);
+  assert.equal(rendererOf(tree), 'fallback');
+  assert.equal(markerOf(tree, 'data-render-state'), 'ok', 'the panel is not blank');
+  assert.ok(tabPanel(tree));
+});

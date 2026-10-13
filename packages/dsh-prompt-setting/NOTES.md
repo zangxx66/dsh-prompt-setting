@@ -65,7 +65,7 @@ brief 建议「声明宿主行与客户端行（行 `id` 建议 `prompt-setting`
 
 | 位置 | 内容 |
 | --- | --- |
-| `client.js` 顶部 `#region primitives probe` | `try { primitivesModule = require('@deepseek-ai/dsh-client-ui-primitives') } catch (error) { primitivesFailure = error.message }`；随后判定 `primitivesUsable = typeof primitives.Button === 'function'` |
+| `client.js` 顶部 `#region primitives probe` | `try { primitivesModule = require('@deepseek-ai/dsh-client-ui-primitives') } catch (error) { primitivesFailure = error.message }`；随后判定 `primitivesUsable = isPrimitivesNamespace(primitives)`。**g-063 起**该判定走 `isComponentExport`：函数组件**或** React 对象组件（`forwardRef` 的 `{$$typeof, render}` / `memo` 的 `{$$typeof, type}`，字段必需存在且合法），不再只看 `typeof === 'function'` —— 详见 §4.2 |
 | `client.js` `RENDERER` | `primitivesUsable ? 'primitives' : 'fallback'`，模块实例内**固定不变** |
 | `client.js` `UI`（`#region fallback atoms` 下方） | `RENDERER === 'primitives'` → 用 `primitives.Button/Input/Tag`；否则用手绘 `FxButton/FxInput/FxTag`（纯 `React.createElement` + `--dsw-alias-*` 变量） |
 | `client.js` 页面末尾 | `<div data-renderer="primitives|fallback">`；页脚同时有一行人类可读的 `渲染分支: ...` |
@@ -142,6 +142,49 @@ brief 建议「声明宿主行与客户端行（行 `id` 建议 `prompt-setting`
 
 **未确证**：真机（经 `dsh web` 重启后的浏览器）上 `require` 究竟返回哪一种形态，插件侧无法离线断定；
 `sandbox` 里的三种形态都是**被断言过的**分支，不是对真机的断言。
+
+### 4.2 g-063：`forwardRef` 组件的探测 ——「自诞生即 fallback」的根因
+
+**触发**：负责人重启后从 `data-region="renderer-info"` 读到
+
+```
+primitives 键 typeof: 解包前 Button=object｜解包后 Button=object｜
+  解包前 Toast=function｜解包后 Toast=function
+toast 命名空间: module（未解包）
+渲染分支: fallback（自绘 + 主题变量）
+```
+
+`require` 成功、模块是对象、键齐全、`Toast` 是函数，唯独 `Button` 的 `typeof` 是 `object` —— 这正是
+`React.forwardRef(...)` 的产物形态（`{ $$typeof: Symbol.for('react.forward_ref'), render }`）。
+旧判定 `typeof primitives.Button === 'function'` 对 forwardRef 组件**恒为 false**，所以 `RENDERER`
+自本插件诞生起一直是 `fallback`：设置页从未真正跑过 primitives 渲染分支（自绘完整，故长期未暴露）。
+g-062 用「渲染分支与 toast 能力解耦」绕开了连带问题，本节修的是**根**。
+
+**宿主形态（0.2.1-alpha.2，只读核对 `lib/index.js`）**：`Button`（3235 行）与 `Input`（3548 行）是
+`forwardRef`；`Toast` / `Tag` / `SegmentedTabs` / `DiffBlock` 与三个 sidebar 图标都是函数组件。也就是
+说**只有 `Button` 与 `Input` 会被旧判定误杀**，但 `Button` 恰好是 `RENDERER` 的钥匙。
+
+**规则（`client.js`）**：
+
+| 位置 | 判据（g-063 起） |
+| --- | --- |
+| `isComponentExport(value)` | `typeof value === 'function'` → 是；否则须是对象、`$$typeof` 为已知 brand、且该 brand 的结构字段合法（`render` 是函数 / `type` 本身是组件）。未知 brand、字段缺失或 getter 抛错 → **否** |
+| brand 来源 | 优先从本宿主自己的 `React.forwardRef` / `React.memo` 产物读 `$$typeof`（不重述 React 的字符串）；宿主 React 没有该工厂时回落 `Symbol.for('react.forward_ref' \| 'react.memo')`（React 的全局注册表拼写，跨 realm / 跨 React 副本一致） |
+| `isPrimitivesNamespace` / `RENDERER` | `primitives.Button` 走上面这条判据；仍**只读 `require` 的原始返回值**，不解包 |
+| `ICON_SOURCE` / `HAS_DIFF_BLOCK` / `UI.Input` / `UI.Tag` / `tabs()` 的 `SegmentedTabs` | 一律改用 `hasComponentExport(namespace, name)`（同判据 + 绝不抛） |
+| `toastPrimitives` / `HAS_TOAST` | 同判据，解包顺序不变（先 `default` 候选，再原模块） |
+| `writeClipboard` | **保持** `typeof === 'function'`：它是被调用的函数，不是被渲染的组件 |
+
+**页面读数**：`data-primitives-members="true"` 上新增 `data-primitives-button-component="true|false"`
+—— 把「`typeof` 观测」与「据此做出的判定」并排放；真机上 `Button=object`、
+`data-primitives-button-component="true"`、`data-renderer="primitives"` 应同时出现。
+
+**真机预期**：`渲染分支: primitives（官方基础件）`；`Button=object`；各 tab 首次由官方原子绘制。
+外观会变（这正是本目标的目的），布局/交互由负责人目视确认。
+
+**未确证 / 风险**：① primitives 的 CSS 是否已由宿主页面注入（即 §4 开头那条旧风险）——官方
+`Button`/`Input` 依赖 `*.module.css`，本插件无法离线断定；② 本插件传给 `Tag` 的 `title` 在两条分支
+都不生效（`FxTag` 与官方 `Tag` 都只取 `tone`/`children`），属既有行为、非本次回归。
 
 ## 5. 客户端半的其它决策
 
