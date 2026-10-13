@@ -2641,21 +2641,29 @@ window.__ModuleLoader__.load({
      * `gridTemplateColumns: repeat(items.length, minmax(0, 1fr))` **inline** on
      * its root (`lib/index.js:3312`), i.e. it divides its own width into n equal
      * columns. That premise fits short labels and a wide container; this page has
-     * **six Chinese labels** and the settings panel's content width. Measured on
-     * the real machine, both directions fail:
+     * **six Chinese labels** and the settings panel's content width. Two real
+     * machines readings, both recorded as **observations**:
      *
      *   - Too narrow: `minmax(0, 1fr)` has a `0` minimum, so every column may
-     *     shrink below its label → the labels wrapped inside their cells.
-     *   - Forced wide (`min-width: max-content`, the first repair): under a
-     *     `max-content` constraint each `1fr` track resolves to the **widest**
-     *     label's width, so every tab inflated ("显得过大"), and the strip's
-     *     own natural width exceeded the panel and pushed the row out of the
-     *     page ("往右偏移、跑出页面"). The `overflow-x: auto` on our
-     *     `div[data-region="tabs"]` could not absorb that: the strip was laid out
-     *     from an ancestor whose used width came from *our* content's
-     *     `max-content` contribution (this plugin sets no width and no
-     *     `min-width: 0` anywhere), so the box that grew was not the scroll
-     *     container alone — the whole settings column widened with it.
+     *     shrink below its label → the labels wrapped inside their cells. The
+     *     mechanism here is read straight off the inline style and is not in
+     *     doubt.
+     *   - Forced wide (`min-width: max-content`, the first repair): every tab
+     *     inflated ("显得过大") and the strip ran out of the panel ("往右偏移、
+     *     跑出页面"). The inflation follows from `max-content`: each `1fr` track
+     *     resolves to the **widest** label's width. **Why the
+     *     `overflow-x: auto` on our own `div[data-region="tabs"]` did not absorb
+     *     the overflow is NOT established** — the hypothesis once written here
+     *     (the control's `max-content` minimum propagating up through a flex item
+     *     and widening an ancestor column) does not survive a read of the Host's
+     *     `SettingsRoot.module.css`: `settings.section` is a list slot rendered
+     *     without a DOM wrapper, `.options` is a **block-level scrolling
+     *     container** (`display` default) so this plugin's root is an ordinary
+     *     block child and `min-width: auto` does not apply to it, and `.content`
+     *     already carries `min-width: 0`. Content that overflows `.options`
+     *     should therefore scroll inside it rather than widen an ancestor. The
+     *     symptom was real; its cause is **unproven** pending a real-machine DOM
+     *     look.
      *
      * The hand-built strip (below) lays out with `flex-wrap`: buttons keep their
      * content width and a row that does not fit moves to the next line. It is the
@@ -2663,14 +2671,16 @@ window.__ModuleLoader__.load({
      * drew a complaint. So this one control stays hand-built **on purpose**: the
      * Host's `Button`, `Input`, `Tag`, `DiffBlock`, the sidebar icons and `Toast`
      * all still come from the official module — only the tabs do not (NOTES §4.2,
-     * `CONTRACT.md` §13.4 Revision 49).
+     * `CONTRACT.md` §13.4 Revision 49). Note what that does and does not settle:
+     * it removes the failed repair and returns to a layout with no complaint
+     * against it, which is the right choice under **either** explanation.
      *
      * Rejected repairs, kept for the record: `min-width: max-content` (inflated
-     * tabs + page overflow), `white-space: nowrap` alone (labels would then
-     * overflow or overlap their cells), and leaving the official equal fractions
-     * as they are (labels wrapped). The lesson worth keeping: **an equal-fraction
-     * control assumes short labels**; long localized labels need a wrapping,
-     * content-sized layout instead.
+     * tabs, and an overflow whose path is unexplained), `white-space: nowrap`
+     * alone (labels would then overflow or overlap their cells), and leaving the
+     * official equal fractions as they are (labels wrapped). The lesson worth
+     * keeping: **an equal-fraction control assumes short labels**; long localized
+     * labels need a wrapping, content-sized layout instead.
      */
 
     /**

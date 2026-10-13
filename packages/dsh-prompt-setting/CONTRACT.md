@@ -1910,11 +1910,12 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
 - the tab list is `data-region="tabs"` with `data-active-tab="<value>"`, and the
   root container carries the same `data-active-tab`;
 - each tab control carries `data-tab-value="<value>"` and its group
-  (`data-tab-key="main"` in the fallback branch); the group marker
-  `data-tab-group="main"` is carried by the group's container in **both**
-  renderer branches — when the official `SegmentedTabs` is used, a
-  `display: contents` wrapper carries it, because the official control owns its
-  own DOM and cannot be asked to;
+  (`data-tab-key="main"`), and the group's container carries the same
+  `data-tab-group="main"`. Both markers are written by the hand-built tab list,
+  which is the **only** one this page renders under either renderer (g-063's
+  third real-machine round removed the official `SegmentedTabs` branch and the
+  `display: contents` wrapper that used to carry the group marker for it — §13.4
+  Revision 49);
 - exactly **one** tab panel is rendered: `data-region="tab-panel"` with
   `data-tab-value="<value>"`. Switching a tab renders that tab's panel and no
   other tab's top-level regions. In particular the export/import actions
@@ -2667,11 +2668,12 @@ by accident — the tests assert the values rather than the family's agreement.
   family's odd value and is kept; the 18px belongs to the two call sites that
   already stated it. Every padding is the caller's as well — `'2px 8px'` on three,
   `'2px 8px 2px 20px'` on「显示更多」, `'4px 8px'` on the history scope option row and
-  `'2px 10px'` on the pager — because a padding is a measurement, not a default. **Under the `primitives` renderer the page draws its tabs
-  with the host's own `SegmentedTabs`**, which paints its own DOM: only the
-  fallback branch goes through this factory, so the two renderers' tabs do not
-  look alike — they did not before this revision either, and unifying the
-  fallback cannot close that gap;
+  `'2px 10px'` on the pager — because a padding is a measurement, not a default.
+  **That two-renderer caveat is gone as of g-063's third real-machine round**: the
+  tab strip is hand-built under **both** renderers (the Host's `SegmentedTabs`
+  divides its own width into equal fractions, which six long Chinese labels do not
+  fit — §13.4 Revision 49), so this factory is now the tab strip's only shape and
+  the two renderers' tabs do look alike;
 - **one session row, with its ARIA left exactly where it was.**
   `sessionRowStyle({padding, hovered, focused, selected, active})` is the paint
   the windowed tree row and the flat fallback row share: the 12px/18px type over
@@ -3406,12 +3408,15 @@ code means rather than how it is written:
   with `Symbol.for('react.forward_ref' | 'react.memo')` as the documented
   fallback, and an unknown brand, a missing field or a throwing getter means
   **not usable** (fallback, never a blank panel). The same judge is used for
-  `iconSource()`, `diffBlockUsable()`, `UI.Input` / `UI.Tag`, the
-  `SegmentedTabs` branch, the toast `Toast` probe **and the toaster's own
+  `iconSource()`, `diffBlockUsable()`, `UI.Input` / `UI.Tag`, the toast `Toast`
+  probe **and the toaster's own
   render-time guard** (`AssemblyToaster` returns `null` unless
   `hasComponentExport(toastPrimitives, 'Toast')`) — a capability probe that
   says yes while the renderer says no would register an overlay that can never
-  draw a notice. `writeClipboard` keeps `typeof === 'function'` because it is
+  draw a notice. The one deliberate exception is the tab strip: `tabs()` no longer
+  asks this judge about `SegmentedTabs` at all, because it does not render that
+  atom under any renderer (see the real-machine follow-up below).
+  `writeClipboard` keeps `typeof === 'function'` because it is
   called, not rendered.
   The probe only guards `require` and building elements; React calls the Host's
   atoms during **render**, and that path became reachable the moment this
@@ -3440,30 +3445,41 @@ code means rather than how it is written:
   `gridTemplateColumns: repeat(items.length, minmax(0, 1fr))` **inline** on its
   root (`lib/index.js:3312`), i.e. it divides its own width into n equal
   fractions. That premise assumes short labels and a wide container; this page
-  has six Chinese labels and the settings panel's content width, and both
-  directions were observed on the real machine:
+  has six Chinese labels and the settings panel's content width. Two real-machine
+  readings, recorded as **observations**:
   - untouched, `minmax(0, 1fr)`'s `0` minimum lets a column shrink below its
-    label → the labels **wrapped inside their cells**;
+    label → the labels **wrapped inside their cells** (read straight off the
+    inline style; the mechanism is not in doubt);
   - forced wide with `min-width: max-content`, every `1fr` track resolves to the
-    **widest** label, so all tabs inflated and the strip's natural width pushed
-    the row **out of the page** — the `overflow-x: auto` on our own container
-    could not absorb it, because the widened box was an ancestor of the scroll
-    container (this plugin sets no `width` and no `min-width: 0` anywhere, so the
-    control's `max-content` contribution propagated up the column).
+    **widest** label, so all tabs inflated, and the operator saw the strip run
+    **out of the page**. **Why the `overflow-x: auto` on our own container did
+    not absorb that is not established.** The explanation once written here — the
+    control's `max-content` minimum propagating up a flex item and widening an
+    ancestor column — does not survive a read of the Host's
+    `SettingsRoot.module.css`: `settings.section` is a list slot with no DOM
+    wrapper, `.options` is a **block-level scrolling container** (`display`
+    default), so this plugin's root is an ordinary block child and `min-width:
+    auto` does not apply to it, and `.content` already carries `min-width: 0`.
+    Overflowing content should scroll inside `.options` rather than widen an
+    ancestor. The symptom is real; the cause is **unproven** pending a
+    real-machine DOM inspection.
 
   Therefore **`tabs()` always renders the hand-built strip** and the official
   `SegmentedTabs` is deliberately **exempt** here: `flex-wrap` sizes every button
   to its own label and moves a row that does not fit to the next line, which is
   the layout this page used before g-063 and the only one that drew no complaint.
-  Every other Host atom — `Button`, `Input`, `Tag`, `DiffBlock`, the sidebar icons
-  and `Toast` — still comes from the official module. The injected tab style and
-  the strip's `overflow-x` are **removed**; two rules were no-ops under that inline
-  column definition anyway (`grid-auto-flow`, `grid-auto-columns`), and no test may
-  claim otherwise. Lesson kept for the future: **an equal-fraction control assumes
-  short labels**; long localized labels need a content-sized wrapping layout.
-  Rejected repairs, on the record: `min-width: max-content` (inflated tabs + page
-  overflow), `white-space: nowrap` alone (labels overflow or overlap their cells),
-  and leaving the official equal fractions as they are (labels wrapped).
+  That choice does not depend on the unexplained part: it removes the failed
+  repair and returns to a layout with no complaint against it. Every other Host
+  atom — `Button`, `Input`, `Tag`, `DiffBlock`, the sidebar icons and `Toast` —
+  still comes from the official module. The injected tab style and the strip's
+  `overflow-x` are **removed**; two rules were no-ops under that inline column
+  definition anyway (`grid-auto-flow`, `grid-auto-columns`), and no test may claim
+  otherwise. Lesson kept for the future: **an equal-fraction control assumes short
+  labels**; long localized labels need a content-sized wrapping layout. Rejected
+  repairs, on the record: `min-width: max-content` (inflated tabs, plus an
+  overflow whose path is unexplained), `white-space: nowrap` alone (labels
+  overflow or overlap their cells), and leaving the official equal fractions as
+  they are (labels wrapped).
 
 ### 13.5 Second confirmation is required
 

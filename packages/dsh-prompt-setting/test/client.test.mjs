@@ -469,14 +469,15 @@ function loadClient(primitives, options = {}) {
     Button: (props) => runtime.React.createElement('button', props),
     Input: () => null,
     Tag: (props) => runtime.React.createElement('span', props),
+    // g-063 H2/B5: the Host really exports this atom, but the page no longer
+    // renders it (the tabs are hand-built under every renderer). The double stays
+    // as the **counter-example probe**: if the official branch ever comes back,
+    // its `data-tabs-class` marker appears in the tree and the H2 case goes red.
     SegmentedTabs: (props) =>
       runtime.React.createElement(
         'div',
         {
           role: 'tablist',
-          // g-063 (real-machine feedback): the official control's column layout
-          // is **caller-owned**, so the class the page hands it is a fact worth
-          // asserting — the double carries it through instead of dropping it.
           'data-tabs-class': props.className === undefined ? '(none)' : props.className,
         },
         (props.items || []).map((item) =>
@@ -876,10 +877,10 @@ function tabPanel(tree) {
 }
 
 /**
- * Open one first-level tab. Selection is by value alone so this works in both
- * renderer branches (the official `SegmentedTabs` double labels its own group
- * `primitives`): the five values `mine` / `overview` / `history` / `backup` /
- * `advanced` occur on exactly one control each.
+ * Open one first-level tab. Selection is by value alone: the strip is the
+ * hand-built one under every renderer (g-063 H2), and the six values `mine` /
+ * `presets` / `overview` / `history` / `backup` / `advanced` occur on exactly one
+ * control each.
  */
 async function openTab(page, value, from) {
   const tree = from === undefined ? await page.flush() : from;

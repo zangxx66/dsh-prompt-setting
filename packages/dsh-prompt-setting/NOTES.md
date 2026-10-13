@@ -161,8 +161,9 @@ toast 命名空间: module（未解包）
 g-062 用「渲染分支与 toast 能力解耦」绕开了连带问题，本节修的是**根**。
 
 **宿主形态（0.2.1-alpha.2，只读核对 `lib/index.js`）**：`Button`（3235 行）与 `Input`（3548 行）是
-`forwardRef`；`Toast` / `Tag` / `SegmentedTabs` / `DiffBlock` 与三个 sidebar 图标都是函数组件。也就是
-说**只有 `Button` 与 `Input` 会被旧判定误杀**，但 `Button` 恰好是 `RENDERER` 的钥匙。
+`forwardRef`；`Toast` / `Tag` / `SegmentedTabs` / `DiffBlock` 与三个 sidebar 图标都是函数组件。也就是说
+**在本页用到的原子里**，只有 `Button` 与 `Input` 会被旧判定误杀（该库别处还有 `forwardRef` 导出，例如
+`MenuSurface`，本页不渲染它们），而 `Button` 恰好是 `RENDERER` 的钥匙。
 
 **规则（`client.js`）**：
 
@@ -213,29 +214,33 @@ g-062 用「渲染分支与 toast 能力解耦」绕开了连带问题，本节�
 第一轮写下的「列布局由调用方提供 ⇒ grid 退化成单列、每个 tab 独占一行」与宿主实现直接冲突，**已删除**。真正的机制是
 `minmax(0, 1fr)` 的**最小值为 0**：列可以合法地被压到比内容还窄 ⇒ 只要容器宽度 < 标签固有宽度之和，标签就在列内折行。
 
-**宽度链（评审 G3 要求的证据；代码级 + 定量估算，像素值无法离线测得）**：本插件**处处不设宽度** —— 根 `div` 只有
-`display:flex;flex-direction:column;gap:12`；`div[data-region="tabs"]` 原是无样式块级框；`tabs()` 的 `display:contents`
-包装**根本不生成盒子**。所以官方控件宽度 = 设置面板内容区宽度，列宽 = 该宽度 ÷ **6**（六个一级 tab）。中文标签
+**宽度链（评审 G3 要求的证据；代码级 + 定量估算，像素值无法离线测得）**：**就 tabs 的祖先链而言**本插件不设宽度 ——
+根 `div` 的样式是 `{display:flex;flex-direction:column;gap:12,maxWidth:860}`（**有上限 860、无 `width`/`min-width:0`**）；
+`div[data-region="tabs"]` 原是无样式块级框；`tabs()` 的 `display:contents` 包装**不生成盒子**。所以官方控件宽度 =
+设置面板内容区宽度（受根容器 `maxWidth:860` 约束），列宽 = 该宽度 ÷ **6**（六个一级 tab）。中文标签
 （「我的 Prompt」约 77px、「提示词总览」/「备份与恢复」各约 70px、其余三个合计约 140px）加每个 tab 左右各 12px padding，
 需要约 **500px**；面板窄于这个数，等分列就落到标签固有宽度以下 ⇒ 折行。旁证：自绘分支用 `flex-wrap`（按钮按内容宽、
 装不下整行换行），同宽度下一直正常 —— 与负责人「只有 tab 这一处不对」一致。
 
 **第二轮修法（已被第三轮否决，留档）**：给官方控件传 `className` 并注入 `.dsh-prompt-setting-tabs{min-width:max-content}`
 + `>button{white-space:nowrap}`，外层加 `overflow-x:auto`。**真机第二轮反馈：两个新毛病** —— ①「备份与恢复」长标签
-不再越界，但**整条 tab 往右偏移、跑出页面**；②除「我的 Prompt」外其他 tab **显得过大**。两者同源：`max-content` 约束下
-n 条 `1fr` 轨道都解析为**最宽那个标签**的宽度 ⇒ 每个 tab 被撑到最宽标签（过大），整条固有宽度超过面板（溢出）。
-`overflow-x:auto` 之所以没吸收：被撑破的**不只是**那个滚动容器 —— 这条内容链上没有任何 `width` / `min-width: 0` 约束，
-控件自身的 `max-content` 最小贡献沿着祖先向上传播（flex/grid 子项的 `min-width:auto` 不会收缩），于是变宽的是祖先列本身。
-结论：**`min-width:max-content` 的 `1fr` 等分轨道 = 全部取最宽项**，这条 CSS 事实值得记住。
+不再越界，但**整条 tab 往右偏移、跑出页面**；②除「我的 Prompt」外其他 tab **显得过大**。「过大」有 CSS 层面的依据：
+`max-content` 约束下 n 条 `1fr` 轨道都解析为**最宽那个标签**的宽度 ⇒ 每个 tab 被撑到最宽标签。但「整条跑出页面」
+**只有症状、没有已证实的机制**：这里曾写下「被撑宽的是祖先列（flex 子项 `min-width:auto` 不收缩）」，**该假设经不起
+核对，已撤回** —— 读宿主 `SettingsRoot.module.css` 可知：`settings.section` 是 list 槽、渲染不产生 DOM 包装，
+`.options` 是**块级滚动容器**（`display` 取默认值），所以本插件根是普通流里的块级子节点、`min-width:auto` 对它不适用，
+且同链的 `.content` **本来就带 `min-width: 0`**；按此，溢出应被 `.options` 自己滚掉，而不是撑宽祖先。**结论：症状为真，
+成因未证实**（待真机 DOM 复核）。唯一站得住的那条 CSS 事实是：`min-width:max-content` 下 `1fr` 等分轨道**全部取最宽项**。
 
 **第三轮定案（当前实现）**：`tabs()` **始终自绘**，官方 `SegmentedTabs` 在本页**有意豁免**；注入的样式与那层 `overflow-x`
 全部移除。理由三条：①自绘 `flex-wrap` 布局在本页用了整整一辈子、真机从未出问题，两轮抱怨都出在官方等分列上；
 ②官方控件的设计前提是「标签短 + 容器够宽」（inline `repeat(n, minmax(0,1fr))` 等分），与本页 **6 个较长中文标签 + 面板宽度**
-不匹配：压 ⇒ 折行，撑 ⇒ 过大/溢出，两条路都不好；③这不是放弃官方组件 —— `Button` / `Input` / `Tag` / `DiffBlock` /
-侧边栏图标 / `Toast` 仍全部走官方，只有 tab 这一处例外。
+不匹配：压 ⇒ 折行，撑 ⇒ 过大（以及成因未明的溢出），两条路都不好；③这不是放弃官方组件 —— `Button` / `Input` / `Tag` /
+`DiffBlock` / 侧边栏图标 / `Toast` 仍全部走官方，只有 tab 这一处例外。**该结论不依赖那条未证实的机制**：它撤回的是一次
+失败的修法，回到一个从未被抱怨过的布局。
 
 **经验结论（留给将来）**：**等分列的控件假设标签短**；本地化的长标签需要「按内容宽 + 换行」的布局。已否决的方案一并留档：
-`min-width:max-content`（撑宽 ⇒ 过大/溢出）、只用 `white-space:nowrap`（⇒ 溢出列格/重叠）、沿用官方等分列（⇒ 折行）、
+`min-width:max-content`（撑宽 ⇒ 过大，溢出路径未明）、只用 `white-space:nowrap`（⇒ 溢出列格/重叠）、沿用官方等分列（⇒ 折行）、
 以及两条在当前宿主下为 no-op 的 `grid-auto-flow`/`grid-auto-columns`（inline 显式列已足、无隐式列、inline 优先级更高）。
 
 **官方先例调研（谁给 SegmentedTabs 传什么 className）**：官方在宿主包里**只有一个调用方**
@@ -998,11 +1003,11 @@ NC-F1 的 5 项变红里，两项在**内核层**、两项在**路由层**、一
 
 | directive 提到 | 落地 | 理由 |
 | --- | --- | --- |
-| `SegmentedTabs` | primitives 分支用官方件；fallback 分支自绘 | fallback 分支必须能在**无 primitives**时工作，且真机判据靠 `data-*`；自绘件把 `data-tab-key/-value` 留在真实 DOM 上，测试与真机都能读 |
+| `SegmentedTabs` | primitives 分支用官方件；fallback 分支自绘（**g-063 第三轮起已豁免官方件：tab 一律自绘**，见 §4.2） | fallback 分支必须能在**无 primitives**时工作，且真机判据靠 `data-*`；自绘件把 `data-tab-key/-value` 留在真实 DOM 上，测试与真机都能读 |
 | `CodeBlock` | 未用，改用自绘等宽 `pre` | 全文视图需要**搜索命中高亮**（往文本里插 `mark` 片段），`CodeBlock` 逐字渲染源码、无法注入 span；引它只会多一层 shiki 依赖而拿不到判据 |
 | `Modal` | 未用，编辑面板内联在页面中 | 减少 portal/焦点管理面；真机截图同样可见「编辑态」 |
 | `SearchBlock` | 未用 | 它是「工具搜索结果卡片」形状，与「在最终文本里检索」不是一回事 |
-| primitives 复用 | `Button` / `Input` / `Tag`（+ `SegmentedTabs`）+ `writeClipboard` | 沿用 g-002 的双分支探针与 `data-renderer` 标记，两条分支都保留 |
+| primitives 复用 | `Button` / `Input` / `Tag` + `writeClipboard`（**`SegmentedTabs` 自 g-063 第三轮起不再复用**，见 §4.2） | 沿用 g-002 的双分支探针与 `data-renderer` 标记，两条分支都保留 |
 
 其余实现细节：文本域/原生下拉无对应 primitive，直接手绘（`--dsw-alias-*` token，深浅色可读）；
 `append` 的 `order` 只在 action=`append` 时出现在请求体里（`replace`/`hide` 不带，见 §31 测试）；
@@ -1053,7 +1058,8 @@ locale seat 四种退化形状仍渲染；`t` 抛错时渲染失败卡（不白�
    编辑态截图，以及「保存覆盖 → 新回合装配已改变」的端到端证据 —— 均属集成检查点（需重启
    `dsh web` 或带 cookie 请求），本轮**没有**做，也未安装进 profile。
 2. **primitives 分支的交互**：离线测试的点击链路跑在 fallback 分支（primitives 用桩件），
-   官方 `SegmentedTabs` 的真实键盘/布局行为未在浏览器里核过。
+   官方 `SegmentedTabs` 的真实键盘/布局行为未在浏览器里核过。（**g-063 第三轮起该件已不再使用**：
+   tab 两分支都自绘，见 §4.2；本条剩下的只有其它官方原子。）
 3. **`useSessions` 的真实形状**：本 profile 是否启用了 `dsh-client-ui-session`（决定真机是
    sessions 还是 manual 分支）需真机确认；selector 的相等/重渲染语义仍是照抄产品用法。
 4. **`renderedResolved` 在带 session 时的真实解析率**（CONTRACT §2.3 的预期未在真机复核）。
@@ -1611,7 +1617,7 @@ CRLF：`\r\n` 与 `\r` 都当行分隔，`crlfNormalized: true` 明说「这个�
 | 二次确认 | `data-region="confirm"` + `data-confirm-kind="reset-section|reset-layer|import"` + `data-action="confirm-yes|confirm-no"` |
 
 primitives 复用：新增 `DiffBlock`（`data-diff-renderer="diffblock"` 是机器可判定的分支标记），
-`Button`/`SegmentedTabs` 沿用。**没有**为任何 UI 件引入 npm 依赖，也没有构建步骤。
+`Button` 沿用（`SegmentedTabs` 自 g-063 第三轮起不再复用，见 §4.2）。**没有**为任何 UI 件引入 npm 依赖，也没有构建步骤。
 
 ## 62. 自测证据（工作树内执行）
 
@@ -3155,7 +3161,7 @@ export 只含保留名且显式声明省略、加上 `test/custom.test.mjs` 的 
 | --- | --- | --- |
 | 页面是一条长列：标题/副标题 → 会话选择器 → 状态卡 → 视图页签 → 编辑器槽位 → 面板 | `renderSection` ~`:5109` | 「太长」的主因 |
 | 覆盖视图把覆盖列表 + 差异 + 历史 + 层重置 + 导入导出串在一起 | `renderOverridesView` ~`:4982` | 五个不同频率的面板挤在一个视图里 |
-| 已有 `tabs()` 助手，优先 `SegmentedTabs`、否则自绘 `role="tablist"` | ~`:1184` | 直接复用，不自造导航 |
+| 已有 `tabs()` 助手，优先 `SegmentedTabs`、否则自绘 `role="tablist"`（**g-063 第三轮起只走自绘**，见 §4.2） | ~`:1184` | 直接复用，不自造导航 |
 | 客户端**没有**保留名常量，保存走任意名 | 全文 | 与 Revision 7 契约不符（§7 限制 21） |
 | 历史动作词表缺 `legacy-clear` 的客户端文案 | `historyActionLabel` ~`:2514` | g-014 遗留：会渲染原始动作串 |
 
@@ -3268,7 +3274,8 @@ checkout 会把整个改动回滚掉），并用 `shasum -a 256 -c` 确认逐字
   > 200 `count:0` / `history:null`；`reset=true&legacy=true` 同时给 ⇒ 400 `conflicting-query`；
   > `?reset=true` 原语义不变。证据见 `.dsh-graph` 的 `goals/g-014/goal.md`「§七·补」与 g-015 评论区。
 - **滚动手感与 VoiceOver 层级朗读未验证**：tab 切换后的焦点位置、`SegmentedTabs` 在真实 DSH 里的键盘行为
-  没有在真机上逐项走查（本机只做了 CDP DOM 探针，不做朗读）。
+  没有在真机上逐项走查（本机只做了 CDP DOM 探针，不做朗读）。（**g-063 第三轮起 tab 两分支都自绘**，
+  该件的键盘行为已与本页无关；本条剩下的对象是其它官方原子及其自绘控件。）
 - **`mine-frozen` 的两种来源未在真机分别复现**：一种是 `frozenScope:"session"` + `frozen:true`，
   另一种是保留段 `applied:false`；两者都由单测覆盖，真机需要构造 `complete` 段才能触发。
 - **英文文案的字距/换行未在真机核对**：只保证 en 渲染横扫无 CJK、无裸键。
@@ -3320,7 +3327,8 @@ checkout 会把整个改动回滚掉），并用 `shasum -a 256 -c` 确认逐字
    都在硬性禁止之列。
 
 因此以下三项**仍未在 `dsh web` 外壳内验证**，留给主管：真机滚动手感、tab 切换后的焦点位置与 VoiceOver
-层级朗读、`SegmentedTabs`（primitives 分支）在真实 DSH 里的键盘行为。
+层级朗读、`SegmentedTabs`（primitives 分支）在真实 DSH 里的键盘行为（**g-063 第三轮起该件已不再使用**，
+tab 两分支都自绘，见 §4.2）。
 
 ## 94. 「查看范围」默认收成一行摘要 +「更改」展开（g-016，2026-09-29，基线 `cc9f844`）
 
@@ -7926,7 +7934,8 @@ brief 写「本次 0.2.1 覆盖 g-050…g-058」。核对仓库事实：**g-050�
   pager 的 **`2px 10px`** 异类保留为显式参数。padding 四值全部逐点保留（`'2px 8px'` ×3、
   scope-more `'2px 8px 2px 20px'`、history scope 候选行 `'4px 8px'`、pager `'2px 10px'`）——评审 R3 补记。
 - ⚠️ **已知事实（写进结果）**：tabs 在 `primitives` 渲染器下由宿主 `SegmentedTabs` 自绘，插件只能改
-  fallback 分支——两种渲染器的观感差异**不会**因统一而消失（现状即如此）。
+  fallback 分支——两种渲染器的观感差异**不会**因统一而消失（现状即如此）。（**g-063 第三轮起该差异已消除**：
+  tab 两分支都自绘，见 §4.2；此条按当时事实留档。）
 
 **④ 搜索比较 → `normalizeNeedle(query)` + `matchesNeedle(values, needle, {cached})`**
 - `normalizeNeedle` 三个消费方（flat 过滤 / tree 派生 / history scope）；`matchesNeedle` 两个
