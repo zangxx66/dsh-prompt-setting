@@ -428,20 +428,68 @@ window.__ModuleLoader__.load({
       return namespace !== null && typeof namespace === 'object' && hasComponentExport(namespace, 'Button');
     }
     const primitivesUsable = isPrimitivesNamespace(primitives);
-    /** Which renderer this module instance actually uses: 'primitives' | 'fallback'. */
+    /** Which renderer this module instance **probed** for: 'primitives' | 'fallback'. */
     const RENDERER = primitivesUsable ? 'primitives' : 'fallback';
+    /**
+     * Whether the Host's atoms have already thrown **while React rendered them**
+     * (g-063, review E1).
+     *
+     * A different failure from the probe's, and reachable only now that this page
+     * really enters the primitives branch: the probe can only see `require`
+     * returning a namespace, while React calls the component long after that. The
+     * error boundary below flips this the moment a Host atom throws mid-render,
+     * and **every** branch decision made after the flip is the hand-built one —
+     * which is what turns "the official `Button` blew up" into "the page keeps
+     * drawing" instead of a blank panel.
+     */
+    let primitivesRenderFailed = false;
+    /** The boundary's one-line account of that failure, for the diagnosis rows. */
+    let primitivesRenderFailure = '';
+    /**
+     * Is the Host's atom set the one **this** render should use?
+     *
+     * Exactly `RENDERER === 'primitives'`, plus "and it has not blown up yet".
+     * One place decides, so the atoms, the tab control, the icons and the diff
+     * block can never disagree about which renderer is in force.
+     * @returns `true` when this render may draw the Host's atoms.
+     */
+    function primitivesActive() {
+      return RENDERER === 'primitives' && !primitivesRenderFailed;
+    }
+    /** Which renderer the page is **really** using right now, for its markers. */
+    function activeRenderer() {
+      return primitivesActive() ? 'primitives' : 'fallback';
+    }
+    /**
+     * Record a render-time failure of the Host's atoms and settle this module
+     * instance on the hand-built renderer for good.
+     *
+     * Deliberately **one-way**: a component that threw once is not retried on
+     * the next render, because retrying is exactly what would let the same
+     * failure take the whole subtree down twice.
+     * @param error - the thrown value.
+     */
+    function capturePrimitivesRenderFailure(error) {
+      primitivesRenderFailed = true;
+      primitivesRenderFailure = error && error.message ? String(error.message) : String(error);
+    }
     /**
      * Which folder/caret artwork the tree actually renders. The primitives
      * module is used when it really exposes the sidebar's icon components;
      * otherwise the identical inlined geometry is drawn (NOTES §54).
+     *
+     * A function, not a constant: after a render-time failure the icons must
+     * fall back with everything else (g-063 E1).
+     * @returns `'primitives'` or `'inline'`.
      */
-    const ICON_SOURCE =
-      primitivesUsable &&
-      hasComponentExport(primitives, 'IconFolderOpenRegular') &&
-      hasComponentExport(primitives, 'IconFolderCloseRegular') &&
-      hasComponentExport(primitives, 'IconTriangleRightFillRegular')
+    function iconSource() {
+      return primitivesActive() &&
+        hasComponentExport(primitives, 'IconFolderOpenRegular') &&
+        hasComponentExport(primitives, 'IconFolderCloseRegular') &&
+        hasComponentExport(primitives, 'IconTriangleRightFillRegular')
         ? 'primitives'
         : 'inline';
+    }
     /**
      * The keys of a namespace, for the settings page's diagnostic line.
      *
@@ -2535,38 +2583,54 @@ window.__ModuleLoader__.load({
     }
     // #endregion
 
+    /** The atoms as the Host ships them, wrapped so every call site keeps its shape. */
+    const PRIMITIVES_UI = {
+      Button: (props) =>
+        h(
+          primitives.Button,
+          {
+            ...props,
+            variant: props.variant === 'primary' ? 'primary' : 'outline',
+            size: 'sm',
+            disabled: props.disabled,
+          },
+          props.children,
+        ),
+      Input: (props) => (hasComponentExport(primitives, 'Input') ? h(primitives.Input, props) : h(FxInput, props)),
+      Textarea: FxTextarea,
+      Tag: (props) =>
+        hasComponentExport(primitives, 'Tag') ? h(primitives.Tag, { tone: props.tone }, props.children) : h(FxTag, props),
+    };
+    /** The same four seats, hand-built (no Host module involved at all). */
+    const FALLBACK_UI = {
+      Button: FxButton,
+      Input: FxInput,
+      Textarea: FxTextarea,
+      Tag: FxTag,
+    };
     /**
-     * Resolve the atoms once: `RENDERER` is fixed for this module instance, so
-     * re-deciding per render would only remount children needlessly.
+     * Resolve the atoms **at render time**, not once at load.
+     *
+     * It has to be a getter object rather than a frozen choice: when a Host atom
+     * throws while React renders it, the boundary below switches
+     * {@link primitivesActive} off and the *very next* render of the same tree
+     * has to be the hand-built one. Every call site keeps writing `UI.Button`,
+     * so there is exactly one place that decides (g-063 E1).
      */
-    const UI =
-      RENDERER === 'primitives'
-        ? {
-            Button: (props) =>
-              h(
-                primitives.Button,
-                {
-                  ...props,
-                  variant: props.variant === 'primary' ? 'primary' : 'outline',
-                  size: 'sm',
-                  disabled: props.disabled,
-                },
-                props.children,
-              ),
-            Input: (props) =>
-              hasComponentExport(primitives, 'Input') ? h(primitives.Input, props) : h(FxInput, props),
-            Textarea: FxTextarea,
-            Tag: (props) =>
-              hasComponentExport(primitives, 'Tag')
-                ? h(primitives.Tag, { tone: props.tone }, props.children)
-                : h(FxTag, props),
-          }
-        : {
-            Button: FxButton,
-            Input: FxInput,
-            Textarea: FxTextarea,
-            Tag: FxTag,
-          };
+    const UI = {
+      get Button() {
+        return primitivesActive() ? PRIMITIVES_UI.Button : FALLBACK_UI.Button;
+      },
+      get Input() {
+        return primitivesActive() ? PRIMITIVES_UI.Input : FALLBACK_UI.Input;
+      },
+      get Textarea() {
+        return FALLBACK_UI.Textarea;
+      },
+      get Tag() {
+        return primitivesActive() ? PRIMITIVES_UI.Tag : FALLBACK_UI.Tag;
+      },
+    };
 
     /**
      * Render a segmented control.
@@ -2583,7 +2647,7 @@ window.__ModuleLoader__.load({
      * @returns the tab list element.
      */
     function tabs(items, value, onChange, label, group) {
-      if (RENDERER === 'primitives' && hasComponentExport(primitives, 'SegmentedTabs')) {
+      if (primitivesActive() && hasComponentExport(primitives, 'SegmentedTabs')) {
         // The official control owns its own DOM, so it cannot be asked to carry
         // our markers. `display: contents` keeps this wrapper invisible to
         // layout while giving a probe the *same* `data-tab-group` it reads in
@@ -5103,10 +5167,18 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Whether the primitives module really exposes the official diff renderer.
-     * Probed, never assumed — exactly like the Button/Tag probes.
+     * Whether this render may draw the official diff renderer.
+     *
+     * Probed, never assumed — exactly like the Button/Tag probes — and asked
+     * **per render**, because the version-history chunk caches whatever it
+     * reads: a `DiffBlock` that threw while React rendered it must be replaced
+     * by the hand-built diff on the next render, not re-rendered from a stale
+     * `true` (g-063 E1).
+     * @returns `true` when the Host's `DiffBlock` is usable right now.
      */
-    const HAS_DIFF_BLOCK = primitivesUsable && hasComponentExport(primitives, 'DiffBlock');
+    function diffBlockUsable() {
+      return primitivesActive() && hasComponentExport(primitives, 'DiffBlock');
+    }
 
     /**
      * The localized chrome `DiffBlock` asks its owner for.
@@ -5432,8 +5504,23 @@ window.__ModuleLoader__.load({
         ),
         h(
           'div',
-          { 'data-region': 'renderer-info', style: { marginTop: 8, fontSize: 12, color: token.labelTertiary } },
-          `${t('rendererLabel')}: ${t(RENDERER === 'primitives' ? 'rendererPrimitives' : 'rendererFallback')}`,
+          {
+            'data-region': 'renderer-info',
+            // g-063 E1: whether the Host's atoms have already thrown while React
+            // rendered them. `data-renderer` is the branch **in use**; this says
+            // why it is not the probed one, and the failure text sits in
+            // `data-primitives-render-error` below.
+            'data-primitives-render-failed': String(primitivesRenderFailed),
+            style: { marginTop: 8, fontSize: 12, color: token.labelTertiary },
+          },
+          `${t('rendererLabel')}: ${t(activeRenderer() === 'primitives' ? 'rendererPrimitives' : 'rendererFallback')}`,
+          activeRenderer() === 'fallback' && primitivesRenderFailed
+            ? h(
+                'div',
+                { 'data-primitives-render-error': 'true', style: { marginTop: 2, wordBreak: 'break-word' } },
+                `${t('primitivesFailure')}: ${primitivesRenderFailure}`,
+              )
+            : null,
           RENDERER === 'fallback' && primitivesFailure
             ? h(
                 'div',
@@ -5537,7 +5624,7 @@ window.__ModuleLoader__.load({
      * @returns the icon element.
      */
     function scopeFolderGlyph(open, size) {
-      if (ICON_SOURCE === 'primitives') {
+      if (iconSource() === 'primitives') {
         const Icon = open ? primitives.IconFolderOpenRegular : primitives.IconFolderCloseRegular;
         return h(Icon, { size, 'data-role': 'scope-folder-glyph' });
       }
@@ -5594,7 +5681,7 @@ window.__ModuleLoader__.load({
         transition: 'transform 0.15s',
         color: token.labelTertiary,
       };
-      if (ICON_SOURCE === 'primitives') {
+      if (iconSource() === 'primitives') {
         return h('span', { style }, h(primitives.IconTriangleRightFillRegular, { size }));
       }
       return h(
@@ -5773,7 +5860,7 @@ window.__ModuleLoader__.load({
               key: 'icon',
               'data-role': 'scope-folder-icon',
               'data-icon-state': group.expanded ? 'open' : 'closed',
-              'data-icon-source': ICON_SOURCE,
+              'data-icon-source': iconSource(),
               'data-scope-toggle': group.key,
               'aria-hidden': 'true',
               onClick: (event) => {
@@ -6980,12 +7067,22 @@ window.__ModuleLoader__.load({
     /**
      * The registered entry: the event-driven toaster when the Host offers the
      * hook, the timer-only one when it does not.
+     *
+     * Since g-063 (review E1) it also sits behind the same boundary as the
+     * settings page: the toaster is the other place this plugin renders a Host
+     * atom, and an overlay entry that throws during render would take the
+     * shell's overlay subtree with it. Its degraded form is `null` — no toast
+     * is strictly better than a broken overlay, and the settings page's own
+     * block still states everything the toast would have said.
      * @param props - the shell-overlay owner props.
-     * @returns the toaster.
+     * @returns the toaster, wrapped in the boundary while the Host's atoms are
+     *   the ones in use.
      */
     function AssemblyToasterRoot(props) {
       const supported = typeof props.useSessionStatus === 'function';
-      return supported ? h(ConnectedAssemblyToaster, props) : h(AssemblyToaster, { ...props, activity: null });
+      const toaster = supported ? h(ConnectedAssemblyToaster, props) : h(AssemblyToaster, { ...props, activity: null });
+      if (!primitivesActive()) return toaster;
+      return h(PrimitivesErrorBoundary, { renderFallback: () => null }, toaster);
     }
 
     // #endregion
@@ -7727,7 +7824,7 @@ window.__ModuleLoader__.load({
      */
     const CHUNK_STAMPS = Object.freeze([
       { name: 'client.advanced.js', hash: '4cbd3181', size: 21376 },
-      { name: 'client.history.js', hash: '731bd80f', size: 49872 },
+      { name: 'client.history.js', hash: 'a3ec9d47', size: 50647 },
       { name: 'client.overview.js', hash: 'ddbcf423', size: 23861 },
       { name: 'client.presets.js', hash: 'e1a665bb', size: 24079 },
       { name: 'client.transfer.js', hash: '8b305496', size: 9766 },
@@ -7762,7 +7859,10 @@ window.__ModuleLoader__.load({
       diffOpMarker,
       diffKey,
       diffTone,
-      HAS_DIFF_BLOCK,
+      // A function, not a boolean snapshot: the chunk must ask per render, so a
+      // `DiffBlock` render failure can really switch the diff back to the
+      // hand-built one (g-063 E1).
+      diffBlockUsable,
       DIFF_CURRENT,
       DIFF_BLOCK_MAX_LINES,
       MAX_DIFF_LINES_SHOWN,
@@ -7986,10 +8086,11 @@ window.__ModuleLoader__.load({
     function pickChunkComponent(fileName, chunkExports, pick) {
       try {
         const component = pick(chunkExports);
-        // A function by construction: this is one of **our own** chunks
-        // (`client.history.js` exports `HistoryTab` as a function declaration),
-        // not a Host atom — the `forwardRef`-aware judge is for the Host's
-        // exports only (g-063).
+        // A function by construction: this is one of **our own** chunks, whose
+        // tab component is the named function `chunkTab()` builds
+        // (`client.history.js` exports `HistoryTab`, its `name` preserved) — not
+        // a Host atom. The `forwardRef`-aware judge is for the Host's exports
+        // only (g-063).
         if (typeof component === 'function') {
           recordLoadedChunk(fileName, chunkExports);
           return component;
@@ -8722,7 +8823,10 @@ window.__ModuleLoader__.load({
         'div',
         {
           'data-plugin': 'dsh-prompt-setting',
-          'data-renderer': RENDERER,
+          // `activeRenderer()`, not the probe's `RENDERER`: after a render-time
+          // failure of the Host's atoms this page draws with the hand-built
+          // atoms, and the marker has to name the branch really in use (g-063 E1).
+          'data-renderer': activeRenderer(),
           'data-render-state': 'ok',
           'data-phase': m.phase,
           'data-session-mode': m.seat.mode,
@@ -11372,7 +11476,28 @@ window.__ModuleLoader__.load({
       };
 
       try {
-        return renderSection(t, model, actions);
+        const tree = renderSection(t, model, actions);
+        // Only the primitives branch needs a boundary: the hand-built atoms are
+        // this page's own code, and a render-time throw from them is a bug the
+        // outer `catch` (and the failure card) already answers. The Host's atoms
+        // are the ones this page cannot see through (g-063 E1).
+        if (!primitivesActive()) return tree;
+        return h(
+          PrimitivesErrorBoundary,
+          {
+            // Rebuilds the same page with the hand-built atoms — the same call
+            // the try above makes, so the degraded page is the real page, not a
+            // placeholder. Its own throw still lands on the failure card.
+            renderFallback: () => {
+              try {
+                return renderSection(t, model, actions);
+              } catch (error) {
+                return renderFailureCard(t, error);
+              }
+            },
+          },
+          tree,
+        );
       } catch (error) {
         return renderFailureCard(t, error);
       }
@@ -11395,7 +11520,7 @@ window.__ModuleLoader__.load({
         'div',
         {
           'data-plugin': 'dsh-prompt-setting',
-          'data-renderer': RENDERER,
+          'data-renderer': activeRenderer(),
           'data-render-state': 'error',
           // The failure card cannot ask the host anything (that is the point of
           // it), but it can still say which bundle it is: the self-digest needs
@@ -11426,6 +11551,70 @@ window.__ModuleLoader__.load({
           text: `${safeT(t, 'renderErrorLabel', 'Error')}: ${message}`,
         }),
       );
+    }
+
+    /**
+     * The base class the boundary extends.
+     *
+     * `React.Component` on every React this page has ever seen; the fallback
+     * keeps a Host with an exotic React from breaking the **whole bundle** at
+     * load time (`class X extends undefined` throws before a single render).
+     */
+    const ReactComponentBase =
+      React !== null && React !== undefined && typeof React.Component === 'function'
+        ? React.Component
+        : class {
+            constructor(props) {
+              this.props = props || {};
+              this.state = {};
+            }
+          };
+
+    /**
+     * The boundary that keeps a Host atom's **render-time** failure from taking
+     * the settings panel down (g-063, review E1).
+     *
+     * Activating the primitives branch made this path reachable for the first
+     * time: the probe's `try/catch` only guards `require` and *building*
+     * elements (`h(Button, …)` does not call the component), while React calls
+     * the Host's atoms later, during render. Before g-063 the page never got
+     * there, so a throwing atom could only be a theory; now it is one render
+     * away, and a section that throws with no boundary around it would blank
+     * the panel.
+     *
+     * The recovery is **"rebuild this page with the hand-built atoms"**, not
+     * "show an error": `renderFallback` is called on every render once the flip
+     * has happened, and the flip (`capturePrimitivesRenderFailure`) happens in
+     * `getDerivedStateFromError` — i.e. **before** React re-renders the
+     * boundary — so the tree that replaces the broken one can no longer contain
+     * the atom that threw, in this render or any later one.
+     */
+    class PrimitivesErrorBoundary extends ReactComponentBase {
+      constructor(props) {
+        super(props);
+        this.state = { failed: false };
+      }
+      /**
+       * One-way, and deliberately side-effecting: React calls this before the
+       * re-render, and the module-wide flip is what makes that re-render
+       * hand-built. `componentDidCatch` repeats it idempotently for the case
+       * where a Host's React calls only the commit-phase hook.
+       * @param error - the thrown value.
+       * @returns the next state.
+       */
+      static getDerivedStateFromError(error) {
+        capturePrimitivesRenderFailure(error);
+        return { failed: true };
+      }
+      /** The commit-phase half of the same record. */
+      componentDidCatch(error) {
+        capturePrimitivesRenderFailure(error);
+      }
+      /** @returns the rebuilt (hand-built) page, or the tree that is still fine. */
+      render() {
+        if (this.state.failed) return this.props.renderFallback();
+        return this.props.children;
+      }
     }
 
     return {
@@ -11462,7 +11651,18 @@ window.__ModuleLoader__.load({
           // whole diagnostic record the settings page prints. A rendered tree
           // can assert the line; these let a unit case assert the decision.
           toastNamespace: () => toastNamespaceSource,
-          primitivesProbe: () => ({ ...primitivesProbe, keys: [...primitivesProbe.keys] }),
+          primitivesProbe: () => ({
+            ...primitivesProbe,
+            keys: [...primitivesProbe.keys],
+            // g-063 E1: the probe's verdict is fixed at load, but the branch in
+            // use can still move — a Host atom that throws while React renders
+            // it flips the page to the hand-built atoms. Reported as facts, so a
+            // case (or the operator) can tell "probed fallback" from "probed
+            // primitives, then degraded".
+            renderer: activeRenderer(),
+            renderFailed: primitivesRenderFailed,
+            renderFailure: primitivesRenderFailure,
+          }),
         },
       },
       apply(ctx) {

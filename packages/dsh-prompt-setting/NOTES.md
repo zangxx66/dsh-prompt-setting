@@ -171,25 +171,41 @@ g-062 用「渲染分支与 toast 能力解耦」绕开了连带问题，本节�
 | `isComponentExport(value)` | `typeof value === 'function'` → 是；否则须是对象、`$$typeof` 为已知 brand、且该 brand 的结构字段合法（`render` 是函数 / `type` 本身是组件）。未知 brand、字段缺失或 getter 抛错 → **否** |
 | brand 来源 | 优先从本宿主自己的 `React.forwardRef` / `React.memo` 产物读 `$$typeof`（不重述 React 的字符串）；宿主 React 没有该工厂时回落 `Symbol.for('react.forward_ref' \| 'react.memo')`（React 的全局注册表拼写，跨 realm / 跨 React 副本一致） |
 | `isPrimitivesNamespace` / `RENDERER` | `primitives.Button` 走上面这条判据；仍**只读 `require` 的原始返回值**，不解包 |
-| `ICON_SOURCE` / `HAS_DIFF_BLOCK` / `UI.Input` / `UI.Tag` / `tabs()` 的 `SegmentedTabs` | 一律改用 `hasComponentExport(namespace, name)`（同判据 + 绝不抛） |
+| `iconSource()` / `diffBlockUsable()` / `UI` / `tabs()` 的 `SegmentedTabs` | 一律问 `primitivesActive() && hasComponentExport(...)`（同判据 + 绝不抛），且**每次渲染求值**：渲染期失败后必须立刻切回自绘 |
 | `toastPrimitives` / `HAS_TOAST` | 同判据，解包顺序不变（先 `default` 候选，再原模块） |
 | `AssemblyToaster` 的**渲染守门** | **同判据**（`hasComponentExport(toastPrimitives, 'Toast')`）—— 评审 R1：探测说 yes、渲染守门说 no 会让 overlay 注册成功却永远画不出 toast；两侧必须问同一个问题 |
+| `PrimitivesErrorBoundary`（页面根 + `shell.overlay` 的 toaster） | 评审 E1：见下方「渲染期失败」段 |
 | `writeClipboard` | **保持** `typeof === 'function'`：它是被调用的函数，不是被渲染的组件 |
-| `pickChunkComponent` / `HAS_REACT_LAZY` / `useLayoutEffect` | **保持** `typeof === 'function'`：前者挑本插件自有 chunk 的导出（`HistoryTab` 是函数声明），后两者是 React 自己的工厂/hook，都不是宿主组件 |
+| `pickChunkComponent` / `HAS_REACT_LAZY` / `useLayoutEffect` | **保持** `typeof === 'function'`：前者挑本插件自有 chunk 的导出（`HistoryTab` 是 `chunkTab()` 产出的**具名函数**），后两者是 React 自己的工厂/hook，都不是宿主组件 |
 
 **页面读数**：`data-primitives-members="true"` 上新增 `data-primitives-button-component="true|false"`
 —— 把「`typeof` 观测」与「据此做出的判定」并排放；真机上 `Button=object`、
 `data-primitives-button-component="true"`、`data-renderer="primitives"` 应同时出现。
 
+**渲染期失败（评审 E1）**：探测期的 `try/catch` 只覆盖 `require` 与**建元素**（`h(Button, …)` 不调用组件），
+而 React 是在 render 阶段才调用宿主原子的——这条路径**只有在 primitives 分支被真正激活后才可达**。
+因此页面根（以及 `shell.overlay` 的 toaster）外面包了 `PrimitivesErrorBoundary`：
+
+- `getDerivedStateFromError` 里调用 `capturePrimitivesRenderFailure(error)`，把 `primitivesActive()` **单向**翻到 false
+  （之所以放在这里：React 捕获后会**立即**重渲染边界，降级必须在那一刻之前生效，否则重建出来的树仍含抛错的原子）；
+- 边界随后调用 `renderFallback()` **重建同一页**（用自绘原子，不是占位符、也不是错误文字）；toaster 侧的降级形态是 `null`；
+- chunk 侧的 `diffBlockUsable()` 是**函数**、每次渲染求值，所以「`DiffBlock` 渲染期抛错」也能落到自绘 diff 上，
+  而不是从 chunk 加载时缓存的 `true` 再次渲染同一个坏原子；
+- 诊断行：`data-renderer` 改为**实际在用的分支**（`activeRenderer()`），`data-region="renderer-info"` 新增
+  `data-primitives-render-failed="true|false"`，失败时另有一行 `data-primitives-render-error="true"` 带错误原文；
+  `primitivesProbe()` 也补了 `renderFailed` / `renderFailure` / 实际 `renderer`。
+
 **真机预期**：`渲染分支: primitives（官方基础件）`；`Button=object`；各 tab 首次由官方原子绘制。
-外观会变（这正是本目标的目的），布局/交互由负责人目视确认。
+外观会变（这正是本目标的目的），布局/交互由负责人目视确认。若宿主原子在渲染期抛错，预期读数是
+`渲染分支: fallback`＋`data-primitives-render-failed="true"`＋错误原文，而**页面照常可用**（自绘）。
 
 **未确证 / 风险**：① primitives 的 CSS 是否已由宿主页面注入（即 §4 开头那条旧风险）——官方
 `Button`/`Input` 依赖 `*.module.css`，本插件无法离线断定；② 本插件传给 `Tag` 的 `title` 在两条分支
 都不生效（`FxTag` 与官方 `Tag` 都只取 `tone`/`children`），属既有行为、非本次回归；③ 评审 R1 的教训：
 同一能力位在**探测侧**与**渲染侧**各有一道判据时，必须一起改——`toastPrimitives` 探测已改而
-`AssemblyToaster` 守门未改，就是「注册成功、永远画不出」。上表即宿主组件判定的**全量清单**（另附三处
-明确保持 `typeof` 的位置及其依据），新增宿主组件使用点时照表问 `hasComponentExport`，不再手写 `typeof`。
+`AssemblyToaster` 守门未改，就是「注册成功、永远画不出」。上表即宿主组件判定的**全量清单**（另有两行
+记录明确保持 `typeof` 的位置及其依据：`writeClipboard` 一行，`pickChunkComponent`/`HAS_REACT_LAZY`/
+`useLayoutEffect` 一行），新增宿主组件使用点时照表问 `hasComponentExport`，不再手写 `typeof`。
 
 ## 5. 客户端半的其它决策
 
@@ -1356,6 +1372,8 @@ evidence: suite=all    passed=164 failed=0 exit=0 ms=2194 diff=3f/+1309/-81 comm
 - 诚实说明：primitives 的图标组件只解构 `{size, className, strokeWidth}`，**不会把未知 props 透传到 `<svg>`**，
   所以 `data-role="scope-folder-glyph"` 这个「确实画了图标」的机器标记只在 inline 分支出现；两条分支都稳定的
   标记是外层 span 的 `data-role="scope-folder-icon"` + `data-icon-state` + `data-icon-source`。
+- **g-063 注记**：这里的 `ICON_SOURCE` 已改为函数 `iconSource()`，**每次渲染求值**（宿主原子在渲染期抛错后
+  必须立刻切回 inline 几何），判定同样加了 `primitivesActive()` 条件——见 §4.2。
 
 ## 55. 可交互线索清单（对齐侧边栏，且都能机器核验）
 

@@ -54,7 +54,21 @@ window.__ModuleLoader__.load({
     const diffOpMarker = shared.diffOpMarker;
     const diffKey = shared.diffKey;
     const diffTone = shared.diffTone;
-    const HAS_DIFF_BLOCK = shared.HAS_DIFF_BLOCK;
+    // g-063 E1: a **function**, asked per render. The main bundle flips it off
+    // when a Host atom throws while React renders, so a `DiffBlock` failure
+    // really lands on the hand-built diff below instead of being re-rendered
+    // from a value this chunk cached at load time.
+    const diffBlockUsable = shared.diffBlockUsable;
+    /**
+     * May this render draw the Host's `DiffBlock`?
+     *
+     * Asked per render, and answered defensively: an old main bundle without
+     * the function (a mixed-version page) simply gets the hand-built diff.
+     * @returns `true` only when the Host's renderer is usable right now.
+     */
+    function diffBlockAvailable() {
+      return typeof diffBlockUsable === 'function' && diffBlockUsable() === true;
+    }
     const DIFF_CURRENT = shared.DIFF_CURRENT;
     const DIFF_BLOCK_MAX_LINES = shared.DIFF_BLOCK_MAX_LINES;
     const MAX_DIFF_LINES_SHOWN = shared.MAX_DIFF_LINES_SHOWN;
@@ -381,7 +395,8 @@ window.__ModuleLoader__.load({
      */
     function renderDiffLines(t, lines) {
       const ops = Array.isArray(lines.ops) ? lines.ops : [];
-      if (HAS_DIFF_BLOCK) {
+      const useDiffBlock = diffBlockAvailable();
+      if (useDiffBlock) {
         return h(
           'div',
           { 'data-region': 'diffblock', 'data-diff-block': 'primitives' },
@@ -528,7 +543,7 @@ window.__ModuleLoader__.load({
                 'data-diff-mode': lines.mode,
                 'data-diff-line-added': String(lines.stats.added),
                 'data-diff-line-removed': String(lines.stats.removed),
-                'data-diff-renderer': HAS_DIFF_BLOCK ? 'diffblock' : 'fallback',
+                'data-diff-renderer': diffBlockAvailable() ? 'diffblock' : 'fallback',
                 style: metaStyle,
               },
               fmt(t('histDiffLineStats'), {
@@ -536,7 +551,7 @@ window.__ModuleLoader__.load({
                 removed: lines.stats.removed,
                 mode: lines.mode === 'lcs' ? t('histDiffModeLcs') : t('histDiffModeBounded'),
               }),
-              h('span', { style: { marginLeft: 8 } }, HAS_DIFF_BLOCK ? t('histDiffBlock') : t('histDiffFallback')),
+              h('span', { style: { marginLeft: 8 } }, diffBlockAvailable() ? t('histDiffBlock') : t('histDiffFallback')),
             ),
           );
           if (lines.crlfNormalized === true) {

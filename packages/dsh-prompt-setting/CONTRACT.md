@@ -3406,13 +3406,27 @@ code means rather than how it is written:
   with `Symbol.for('react.forward_ref' | 'react.memo')` as the documented
   fallback, and an unknown brand, a missing field or a throwing getter means
   **not usable** (fallback, never a blank panel). The same judge is used for
-  `ICON_SOURCE`, `HAS_DIFF_BLOCK`, `UI.Input` / `UI.Tag`, the
+  `iconSource()`, `diffBlockUsable()`, `UI.Input` / `UI.Tag`, the
   `SegmentedTabs` branch, the toast `Toast` probe **and the toaster's own
   render-time guard** (`AssemblyToaster` returns `null` unless
   `hasComponentExport(toastPrimitives, 'Toast')`) — a capability probe that
   says yes while the renderer says no would register an overlay that can never
   draw a notice. `writeClipboard` keeps `typeof === 'function'` because it is
   called, not rendered.
+  The probe only guards `require` and building elements; React calls the Host's
+  atoms during **render**, and that path became reachable the moment this
+  revision activated the branch. `PrimitivesErrorBoundary` (around the page tree
+  and around the `shell.overlay` toaster) catches such a throw, flips the
+  one-way `primitivesActive()` in `getDerivedStateFromError`, and rebuilds the
+  same page with the hand-built atoms (`renderFallback()`; the toaster degrades
+  to `null`). Because of that flip, `iconSource()`, `diffBlockUsable()` and the
+  atoms are all resolved **per render** — that is why two of them are functions
+  rather than constants, and why the version-history chunk asks
+  `diffBlockUsable()` per render instead of caching it. `data-renderer` (and the
+  diagnosis line) names the branch **really in use** through `activeRenderer()`;
+  `data-region="renderer-info"` carries
+  `data-primitives-render-failed="true" | "false"` and, when true, a
+  `data-primitives-render-error="true"` row with the error text.
   `data-primitives-members="true"` also carries
   `data-primitives-button-component="true" | "false"` — the decision, beside the
   `typeof` it was made from.

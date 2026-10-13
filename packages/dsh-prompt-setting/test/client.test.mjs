@@ -195,6 +195,19 @@ function makeHooksRuntime(options = {}) {
     },
     useId: () => 'test-id',
     Fragment: Symbol('Fragment'),
+    // g-063 E1: the page's error boundary is a class component, so the double
+    // needs the one base class React gives it. `setState` is here because a
+    // boundary is allowed to use it; the page's own boundary only reads
+    // `this.state` (it is driven by `getDerivedStateFromError`).
+    Component: class Component {
+      constructor(props) {
+        this.props = props || {};
+        this.state = {};
+      }
+      setState(next) {
+        this.state = { ...this.state, ...(typeof next === 'function' ? next(this.state) : next) };
+      }
+    },
     // g-063: the two **object**-shaped component kinds. `forwardRef` is what the
     // Host's real `Button` / `Input` are, and `typeof` one of those is
     // `'object'` — the double has to publish the same shape, or the probe under
@@ -316,8 +329,46 @@ function expandTree(node) {
     return expandTree({ ...node, type: node.type.type });
   }
   if (typeof node.type === 'symbol') return expandTree(node.props ? node.props.children : null);
-  if (typeof node.type === 'function') return expandTree(node.type(node.props));
+  if (typeof node.type === 'function') {
+    // g-063 E1: React **instantiates** a class component instead of calling it,
+    // and its `getDerivedStateFromError` is what turns a subtree throw into a
+    // degraded render. Without this arm the page's error boundary could not be
+    // exercised at all — a boundary bug would look exactly like a working one.
+    if (isClassComponent(node.type)) return renderClassElement(node);
+    return expandTree(node.type(node.props));
+  }
   return { ...node, props: { ...node.props, children: expandTree(node.props.children) } };
+}
+
+/** Does React instantiate this component type rather than call it? */
+function isClassComponent(type) {
+  return (
+    typeof type === 'function' && type.prototype !== undefined && typeof type.prototype.render === 'function'
+  );
+}
+
+/**
+ * The class-component arm of {@link expandTree}, including React's error
+ * boundary contract: render, and when the **expanded** children throw, take
+ * `getDerivedStateFromError`'s next state, run `componentDidCatch`, and render
+ * once more. A class without that static (an ordinary class component) passes
+ * the error straight through, exactly as React does.
+ * @param node - the class element.
+ * @returns the expanded tree of whichever render won.
+ */
+function renderClassElement(node) {
+  const instance = new node.type(node.props);
+  instance.props = node.props;
+  try {
+    return expandTree(instance.render());
+  } catch (error) {
+    const derived =
+      typeof node.type.getDerivedStateFromError === 'function' ? node.type.getDerivedStateFromError(error) : null;
+    if (derived === null || derived === undefined) throw error;
+    instance.state = { ...instance.state, ...derived };
+    if (typeof instance.componentDidCatch === 'function') instance.componentDidCatch(error, { componentStack: '' });
+    return expandTree(instance.render());
+  }
 }
 
 /**
@@ -14450,4 +14501,48 @@ test('client: a throwing Button getter degrades instead of blanking the page (g-
   assert.equal(rendererOf(tree), 'fallback');
   assert.equal(markerOf(tree, 'data-render-state'), 'ok', 'the panel is not blank');
   assert.ok(tabPanel(tree));
+});
+
+test('client: a Host atom that throws mid-render degrades instead of blanking the page (g-063 E1)', async () => {
+  // The primitives branch is the only branch where this can happen: the probe's
+  // `try/catch` covers `require` and building elements, while React calls the
+  // Host's component *during* render — a path the page never reached before
+  // g-063 activated the branch.
+  const page = makePage({
+    primitives: 'ok',
+    primitivesAtoms: (atoms, React) => ({
+      ...atoms,
+      Button: React.forwardRef(() => {
+        throw new Error('the Host button exploded mid-render');
+      }),
+    }),
+    responses: defaultResponses(),
+  });
+  const tree = await page.flush();
+  // ① not blank, ② visibly degraded to the hand-built renderer.
+  assert.equal(rendererOf(tree), 'fallback', 'the marker names the branch really in use, not the probed one');
+  assert.equal(markerOf(tree, 'data-render-state'), 'ok', 'the page is drawn, not blank');
+  assert.ok(tabPanel(tree), 'and the tab panel is there');
+  // ③ the degraded page is the REAL page, not a placeholder: it is the same tree
+  // rebuilt with the hand-built atoms (the exploding `forwardRef` is gone).
+  assert.equal(oneBy(tree, 'data-action', 'refresh').props['data-atom'], undefined);
+  assert.equal(oneBy(tree, 'data-action', 'refresh').type, 'button');
+
+  const probe = page.loaded.module.__internals.assemblyNotice.primitivesProbe();
+  assert.equal(probe.buttonComponent, true, 'the probe itself was right — the atom is a component');
+  assert.equal(probe.renderFailed, true, 'it just could not be rendered');
+  assert.equal(probe.renderer, 'fallback', 'so the branch in use moved');
+  assert.ok(probe.renderFailure.includes('exploded mid-render'), `the failure is kept: ${probe.renderFailure}`);
+
+  const info = oneBy(await openAdvanced(page), 'data-region', 'renderer-info');
+  assert.ok(hasText(info, page.text.rendererFallback));
+  assert.equal(
+    oneBy(info, 'data-primitives-render-failed', 'true').props['data-primitives-render-failed'],
+    'true',
+    'the diagnosis row names the render-time failure',
+  );
+  assert.ok(
+    hasText(oneBy(info, 'data-primitives-render-error', 'true'), 'exploded mid-render'),
+    'with the error text, so the operator does not have to guess',
+  );
 });
