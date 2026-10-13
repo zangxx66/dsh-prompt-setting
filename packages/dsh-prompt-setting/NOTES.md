@@ -8013,6 +8013,7 @@ brief 写「本次 0.2.1 覆盖 g-050…g-058」。核对仓库事实：**g-050�
 `index.js` 只做宿主接线（`assembleHandler` 末尾观察、`agent/pre-step` 打 turn/step 标签、
 `session/event` 折叠送达证据、`session/disposed` 清理、`GET|PUT /prompt-setting/assembly-status`）；
 `client.js` 在「我的 Prompt」面板顶部渲染该块（`data-region="assembly-status"`）并读写开关。
+（**g-065 已把该块移到「高级」面板顶部**，行为不变——见 §146；本节其余内容仍是当时的实现记录。）
 开关复用 `preferences.json`：`core/update.js` 的 `normalizePreferences` 新增 **stated-only** 的
 `assemblyNotice` 键（未声明则文件字节不变，缺省＝开），写入走同一 merge，因此不会抹掉
 `updateCheck` / `downloadRegion`。
@@ -8460,3 +8461,60 @@ feed → cursor → toast 不丢、文案不含 `undefined`）。全量 `896 pas
 - `npm publish` / `git tag` / `git push` / 合入 `main` / 分支收口：**人工 gate，本轮未做**（合入与删分支
   由主管复核后执行）；因此 npm 上的 `latest` 仍是 `0.1.5`，README 的双写表述正为此；
 - 徽章的 shields.io 在线渲染未目视（离线），只核对了源文本。
+
+## 146. g-065：「装配状态提示」从「我的 Prompt」移到「高级」顶部（2026-10-14，基线 `445ad6d`，dev 工作树直改）
+
+**问题（负责人反馈）**：g-062 把两层装配观察块挂在「我的 Prompt」（写入口）顶部，而它的读者是
+「改完 Prompt 却没生效、要查为什么」的人——那正是打开「高级」的动机。本次只挪位置，**功能行为零变化**：
+开关语义、偏好键、轮询游标、toast、宿主 `core/assembly-watch.js` 都不动。
+
+**落地（唯一实现留主入口，chunk 只绑定一次）**
+
+| 位置 | 改动 |
+| --- | --- |
+| `client.js` `CHUNK_FACILITIES` | 新增一键 `renderAssemblyStatus`（沿用 g-061 批次 1–3 的「一个名字一个绑定、零副本」规则） |
+| `client.advanced.js` | `const renderAssemblyStatus = shared.renderAssemblyStatus;`（按字母序插在 `regionKey` 与 `renderStatusDetail` 之间），`renderAdvancedTab` children 首位调用它 |
+| `client.js` `renderMinePanel` | 删掉 g-062 的调用点与注释；mine 树回到标题→targetLine，**不留空容器/空标题/间距** |
+| `client.js` assembly 读取 effect | 守卫 `tab !== 'mine'` → `tab !== 'advanced'`：读取跟着块走。顺带把错位在 assembly effect 前面的 g-038/history 注释**归位**到 history effect 之前（g-062 插入 effect 时留下的注释错位） |
+| `client.js` `CHUNK_STAMPS` | `client.advanced.js` `4cbd3181/21376` → `20024f50/21859`（`node scripts/client-chunks.mjs --write` 重算） |
+
+**为什么不是另外两条路**：①「chunk 内重组」＝把块搬进 `client.advanced.js` 自持——那是第二份拷贝，
+且会立刻踩 `test/client.test.mjs` 的机械门禁；②「element 挂到 model 上再取」没有先例，且把渲染时机
+藏进数据里。A 案的 `m`/`a` 本来就与 tab 无关（分派给每个 tab 的是同一个 `{t,m,a}`），
+`assembly`/`assemblyEnabled`/`assemblyStatus`/`a.toggleAssemblyNotice` 跨 tab 后仍然可达，**无需搬数据**。
+
+**测试同步（改的是「在哪个 tab 断言」，不是断言本身）**
+
+- 基线请求集合：默认 tab 不再有 `assembly-status`，断言列表去掉该路由，并新增「默认 tab 读 0 次」；
+- 4 组渲染用例（块是否渲染、两层结论、`empty/not-read/waiting`、开关 PUT）改走 `openTab(page,'advanced')`；
+- 3 组 seat 用例（`absent`/`pending`/`failed`）同样改走「高级」；
+- 新增负向断言：「我的 Prompt」树里 **0 个** `data-region="assembly-status"`、无 `assemblyHeading` 文案、
+  0 次 assembly-status 请求；新增位置断言：装配标题在 `ovHeading` 之前（真的在「高级」开头）。
+
+**文档同步**：`CONTRACT.md` §21.5（块位置 + g-065 说明）、Revision 45 条目补注；
+`README.md`：位置段从「我的 Prompt」条目移到「高级」条目（zh/en）；
+仓库根 `CHANGELOG.md` 新增 `[Unreleased]` 段。
+
+**评审返工（README 中英对称，minor）**：搬迁时英文段没跟着走，留下「我的 Prompt」条目一段孤立英文
+（含 `The exact口径` 的中英混排瑕疵），而「高级」英文段又比中文段少「口径与边界」两行。已按评审口径
+收口：删掉「我的 Prompt」内的英文残段，「高级」英文段补齐口径并写成完整英文。`README.md` 的净变化
+现在是「只删『我的 Prompt』段、只增『高级』段」。
+
+### 一、验收（单行证据）
+
+- `node --test test/*.test.mjs` = **905 pass / 0 fail / skipped 0 / todo 0**（基线 904 + 本节新增 1 例）；
+- `node --test test/build.test.mjs test/prepare.test.mjs` = **38 pass / 0 fail**；
+- `node scripts/client-chunks.mjs`（无 `--write`）= 5 file(s) match；`node scripts/prepare.mjs` = OK（21 项）；
+- `git diff --stat` = **7 文件 / +209 −43**；`git diff -- packages/dsh-prompt-setting/core` = 空
+  （`core/assembly-watch.js` 零改动）；
+- **负向对照**：① `renderAssemblyStatus` 未登记进 `CHUNK_FACILITIES` 时
+  `client: every chunk depends on the entry alone — a DAG…` **实测红**
+  （`client.advanced.js: the entry exposes renderAssemblyStatus on __internals.shared`），登记后绿；
+  ② `CHUNK_STAMPS` 未重算时三条指纹用例（入口戳一致、in-flight 编辑被抓、每 chunk 摘要与独立读文件一致）
+  **实测红**（`client.overview.js: and the manifest agrees` 等），重算后转绿。
+
+### 二、未验证项
+
+- **真机截图 / 真机 DOM 断言未做**：本 attempt 无浏览器侧执行条件，`~/.dsh/profiles/web` 的 symlink
+  指向本工作树（改动对真机可见），但截图与真机 `data-region` 读值由主管在集成检查点补做，**不伪造**；
+- 视觉层（「高级」首屏是否因该块变长而需要滚动）未目视。

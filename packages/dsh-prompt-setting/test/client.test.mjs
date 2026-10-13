@@ -1758,13 +1758,14 @@ test('client: requests stay on the plugin prefix and report the renderer', async
   // that (on a first visit) lets the *host* decide the update source. Still one
   // request to this plugin's own prefix, and still none at all when the mirror
   // says the switch is off (asserted in the region section below).
-  // g-062 adds the baseline read of the assembly-status notice for the「我的
-  // Prompt」tab — again one request to this plugin's own prefix, and one that is
-  // only made while that tab is open.
+  // g-065: the assembly-status notice moved to 「高级」, and its read follows the
+  // block — so a mount that leaves the default tab open (「我的 Prompt」) issues
+  // no assembly-status request at all, and the baseline set below does **not**
+  // contain it. The tab's own section asserts the read happens when it opens.
+  assert.equal(urlsFor(page, PATHS.assemblyStatus).length, 0, 'the default tab reads no assembly status (g-065)');
   assert.deepEqual(
     [...new Set(urls.map((url) => url.split('?')[0]))].sort(),
     [
-      PATHS.assemblyStatus,
       PATHS.downloadRegion,
       PATHS.overrides,
       PATHS.ping,
@@ -13434,9 +13435,24 @@ function assemblyRecordFixture(over = {}) {
   };
 }
 
-test('client: the「我的 Prompt」tab renders the assembly-status block, and an unselected session says so', async () => {
+test('client: the「高级」tab renders the assembly-status block at its top, and an unselected session says so', async () => {
   const page = makeOpenPage({ useSessions: sessionsHook(SESSIONS_STATE), responses: defaultResponses() });
-  let tree = await page.flush();
+  // g-065: the block moved out of 「我的 Prompt」. The default tab must render
+  // nothing of it — no container, no heading — and must not read its status.
+  const mineTree = await page.flush();
+  assert.equal(
+    collect(mineTree, (node) => node.props && node.props['data-region'] === 'assembly-status').length,
+    0,
+    'the 「我的 Prompt」 tab renders no assembly-status container',
+  );
+  assert.equal(hasText(mineTree, page.zh.assemblyHeading), false, 'and not its heading either');
+  assert.equal(
+    collect(mineTree, (node) => node.props && String(node.props['data-region'] || '').startsWith('assembly')).length,
+    0,
+    'nor any of its parts (limitation / notice / notes)',
+  );
+  assert.equal(urlsFor(page, PATHS.assemblyStatus).length, 0, 'and it reads no assembly status');
+  let tree = await openTab(page, 'advanced');
   const block = oneBy(tree, 'data-region', 'assembly-status');
   assert.equal(block.props['data-assembly-enabled'], 'true');
   assert.equal(block.props['data-assembly-session'], 'yes');
@@ -13447,6 +13463,13 @@ test('client: the「我的 Prompt」tab renders the assembly-status block, and a
   assert.ok(hasText(oneBy(tree, 'data-assembly-note', 'no-record'), page.zh.assemblyNoRecord));
   assert.ok(hasText(oneBy(tree, 'data-region', 'assembly-limitation'), page.zh.assemblyLimitation));
   assert.deepEqual(urlsFor(page, PATHS.assemblyStatus), [`${PATHS.assemblyStatus}?session=s2`]);
+  // The block is the **first** card of the tab: the「装配状态提示」heading precedes
+  // the first heading of the override list, so "at the top" is not just "inside".
+  const texts = strings(tree);
+  assert.ok(
+    texts.indexOf(page.zh.assemblyHeading) < texts.indexOf(page.zh.ovHeading),
+    'the assembly block sits above the override list',
+  );
 
   // The global scope names no session, so the block says what to do instead of
   // reading a conversation it cannot describe.
@@ -13462,7 +13485,7 @@ test('client: the block reports both layers of the last key node, and never the 
     [PATHS.assemblyStatus]: { payload: assemblyFixture({ session: 's2', record: assemblyRecordFixture() }) },
   });
   const page = makeOpenPage({ useSessions: sessionsHook(SESSIONS_STATE), responses });
-  const tree = await page.flush();
+  const tree = await openTab(page, 'advanced');
   const block = oneBy(tree, 'data-region', 'assembly-status');
   assert.equal(block.props['data-notice-kind'], 'first-assembly');
   assert.equal(block.props['data-assembly-state'], 'assembled');
@@ -13502,7 +13525,7 @@ test('client: the notice distinguishes "not assembled" and "not re-read", with a
       },
     }),
   });
-  const tree = await page.flush();
+  const tree = await openTab(page, 'advanced');
   assert.equal(oneBy(tree, 'data-region', 'assembly-status').props['data-assembly-state'], 'empty');
   assert.ok(
     hasText(oneBy(tree, 'data-assembly-layer', 'empty'), page.zh.assemblyFirstEmpty),
@@ -13533,7 +13556,7 @@ test('client: the notice distinguishes "not assembled" and "not re-read", with a
       },
     }),
   });
-  const changeTree = await changed.flush();
+  const changeTree = await openTab(changed, 'advanced');
   assert.equal(oneBy(changeTree, 'data-region', 'assembly-status').props['data-notice-kind'], 'prompt-change');
   assert.ok(
     hasText(oneBy(changeTree, 'data-assembly-layer', 'not-read'), page.zh.assemblyChangeNotRead),
@@ -13560,7 +13583,7 @@ test('client: the assembly-status switch sends one PUT and follows the host answ
     },
   });
   const page = makeOpenPage({ useSessions: sessionsHook(SESSIONS_STATE), responses });
-  let tree = await page.flush();
+  let tree = await openTab(page, 'advanced');
   assert.notEqual(oneBy(tree, 'data-assembly-switch-state', 'on'), undefined);
   clickButton(tree, { 'data-action': 'assembly-toggle' });
   await settle();
@@ -13570,6 +13593,56 @@ test('client: the assembly-status switch sends one PUT and follows the host answ
   assert.deepEqual(JSON.parse(writes[0].init.body), { enabled: false });
   assert.notEqual(oneBy(tree, 'data-assembly-switch-state', 'off'), undefined);
   assert.ok(hasText(tree, page.zh.assemblyDisabledNow), 'the page repeats the host\'s answer');
+});
+
+test('client: the assembly switch keeps its in-flight and failed states in 「高级」 (g-065)', async () => {
+  // The move must not have cost the switch its other two states: the label it
+  // shows while the PUT is in flight, and the line it shows when the PUT fails.
+  // Both are read off the new location, and both would have gone missing if the
+  // block had been copied into the chunk with a second, drifting state.
+  const responses = defaultResponses();
+  const inFlight = makeOpenPage({ useSessions: sessionsHook(SESSIONS_STATE), responses });
+  let tree = await openTab(inFlight, 'advanced');
+  const realFetch = inFlight.loaded.sandbox.fetch;
+  inFlight.loaded.sandbox.fetch = (url, init) => {
+    if (String(url).split('?')[0] === PATHS.assemblyStatus && init && init.method === 'PUT') {
+      return new Promise(() => {});
+    }
+    return realFetch(url, init);
+  };
+  clickButton(tree, { 'data-action': 'assembly-toggle' });
+  tree = inFlight.draw();
+  assert.equal(
+    oneBy(tree, 'data-region', 'assembly-status').props['data-assembly-switch'],
+    'saving',
+    'the block reports the request as in flight',
+  );
+  const pendingButton = findOne(tree, (node) => node.props && node.props['data-action'] === 'assembly-toggle');
+  assert.equal(pendingButton.props.children, inFlight.zh.assemblySaving, 'and the button says 「正在切换…」');
+  assert.equal(pendingButton.props.disabled, true, 'a second click cannot race the first');
+  inFlight.dispose();
+
+  const failed = makeOpenPage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({
+      [PATHS.assemblyStatus]: (url, init) =>
+        init && init.method === 'PUT'
+          ? { status: 500, payload: { code: 'unreadable', message: 'boom' } }
+          : { payload: assemblyFixture({ session: 's2' }) },
+    }),
+  });
+  let failedTree = await openTab(failed, 'advanced');
+  clickButton(failedTree, { 'data-action': 'assembly-toggle' });
+  await settle();
+  failedTree = await failed.flush();
+  const warning = oneBy(failedTree, 'data-warning', 'assembly-switch-failed');
+  assert.ok(hasText(warning, failed.zh.assemblySaveFailed), 'the failure line is the same sentence, in the new tab');
+  assert.notEqual(
+    oneBy(failedTree, 'data-assembly-switch-state', 'on'),
+    undefined,
+    'a failed write never flips the switch: the host answer still stands',
+  );
+  failed.dispose();
 });
 // #endregion
 
@@ -13971,7 +14044,7 @@ test('client: without the Toast primitive nothing is registered, and the page sa
     0,
     'a Host without Toast gets no overlay entry at all',
   );
-  const oldTree = await old.flush();
+  const oldTree = await openTab(old, 'advanced');
   assert.ok(
     hasText(oneBy(oldTree, 'data-assembly-note', 'no-toast'), old.zh.assemblyToastUnavailable),
     'and the page states the degradation instead of promising a toast',
@@ -13994,8 +14067,9 @@ test('client: without the Toast primitive nothing is registered, and the page sa
   assert.equal(overlay.options.id, 'prompt-setting-toast');
   assert.equal(overlay.options.order, 60, 'it is added beside the shipped entries, never over them');
   assert.equal(typeof overlay.component, 'function');
-  // The settings page keeps its detail block and its switch (判据 7).
-  const modernTree = await modern.flush();
+  // The settings page keeps its detail block and its switch (判据 7), and since
+  // g-065 that block lives in 「高级」.
+  const modernTree = await openTab(modern, 'advanced');
   assert.equal(oneBy(modernTree, 'data-region', 'assembly-status') !== undefined, true);
   assert.equal(
     oneBy(modernTree, 'data-region', 'assembly-status').props['data-assembly-toast-seat'],
@@ -14028,7 +14102,7 @@ test('client: a Host with the primitive but no shell.overlay slot is not silentl
     'pending',
     'the seat is the fact the page reads',
   );
-  const tree = await page.flush();
+  const tree = await openTab(page, 'advanced');
   const block = oneBy(tree, 'data-region', 'assembly-status');
   assert.equal(block.props['data-assembly-toast-seat'], 'pending');
   assert.ok(
@@ -14152,7 +14226,7 @@ test('client: a Host that declares the slot and refuses the registration says ex
     'the registration was refused, so no entry exists',
   );
   assert.equal(page.loaded.module.__internals.assemblyNotice.overlaySeat(), 'failed');
-  const tree = await page.flush();
+  const tree = await openTab(page, 'advanced');
   assert.equal(oneBy(tree, 'data-region', 'assembly-status').props['data-assembly-toast-seat'], 'failed');
   const note = oneBy(tree, 'data-assembly-note', 'no-toast');
   assert.ok(

@@ -7329,9 +7329,6 @@ window.__ModuleLoader__.load({
         'div',
         { 'data-region': 'mine', style: { ...promptBlockBandStyle, display: 'flex', flexDirection: 'column', gap: 10 } },
         h('h3', { style: headingStyle }, t('mineHeading')),
-        // g-062: the observation of the two layers sits at the top of the write
-        // surface — the place a user returns to right after saving a prompt.
-        renderAssemblyStatus(t, m, a),
         targetLine,
         h('p', { style: { margin: 0, ...metaStyle } }, t('mineNote')),
         h(
@@ -7793,7 +7790,7 @@ window.__ModuleLoader__.load({
      * would be exactly the silently false「一致」the stamp exists to prevent.
      */
     const CHUNK_STAMPS = Object.freeze([
-      { name: 'client.advanced.js', hash: '4cbd3181', size: 21376 },
+      { name: 'client.advanced.js', hash: '20024f50', size: 21859 },
       { name: 'client.history.js', hash: 'a3ec9d47', size: 50647 },
       { name: 'client.overview.js', hash: 'ddbcf423', size: 23861 },
       { name: 'client.presets.js', hash: 'e1a665bb', size: 24079 },
@@ -7893,6 +7890,11 @@ window.__ModuleLoader__.load({
       sessionRowStyle,
       normalizeNeedle,
       matchesNeedle,
+      // g-065: the two-layer observation block moved from 「我的 Prompt」 to the
+      // top of 「高级」. Same rule once more — the chunk takes this one binding
+      // off the surface under its own name, so there is exactly one copy of the
+      // block in the bundle and the two tabs can never drift apart.
+      renderAssemblyStatus,
     });
 
     /** Chunks this page has really loaded, by file name: `{hash, size}`. */
@@ -9396,20 +9398,12 @@ window.__ModuleLoader__.load({
         };
       }, [sessionArg, reload]);
 
-      // History is loaded only while 「版本历史」 is open: 「我的 Prompt」 and
-      // 「提示词总览」 must not pay for a log they never show, and a mount that
-      // never opens that tab must issue exactly the baseline requests.
-      //
-      // g-038: the request is `layer` + `offset` (+ `workspace` for the
-      // workspace layer) and **no** `session` — the page's 「查看范围」 is not a
-      // parameter of this read at all, so changing it can never re-slice or
-      // re-fetch the log. `limit` is omitted on purpose: the host owns the page
-      // size and answers it as `pageLimit`, which is what the pager then steps
-      // by. The user layer is global; the workspace layer needs a locatable
-      // workspace, so an unresolved scope shows the note instead of a request
-      // the host must refuse.
+      // The assembly-status read belongs to 「高级」: since g-065 that tab owns
+      // the two-layer observation block (its own chunk renders it), so the read
+      // follows the block instead of the write surface. A mount that never opens
+      // that tab still issues no assembly-status request at all.
       React.useEffect(() => {
-        if (tab !== 'mine') return undefined;
+        if (tab !== 'advanced') return undefined;
         let cancelled = false;
         let timer = null;
         const query = sessionArg === null ? '' : `?session=${encodeURIComponent(sessionArg)}`;
@@ -9452,6 +9446,18 @@ window.__ModuleLoader__.load({
         };
       }, [tab, sessionArg, reload]);
 
+      // History is loaded only while 「版本历史」 is open: 「我的 Prompt」 and
+      // 「提示词总览」 must not pay for a log they never show, and a mount that
+      // never opens that tab must issue exactly the baseline requests.
+      //
+      // g-038: the request is `layer` + `offset` (+ `workspace` for the
+      // workspace layer) and **no** `session` — the page's 「查看范围」 is not a
+      // parameter of this read at all, so changing it can never re-slice or
+      // re-fetch the log. `limit` is omitted on purpose: the host owns the page
+      // size and answers it as `pageLimit`, which is what the pager then steps
+      // by. The user layer is global; the workspace layer needs a locatable
+      // workspace, so an unresolved scope shows the note instead of a request
+      // the host must refuse.
       React.useEffect(() => {
         if (tab !== 'history') return undefined;
         if (historyLayer === 'workspace' && historyScopeValue.length === 0) {

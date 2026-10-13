@@ -2018,7 +2018,8 @@ interaction.
 - **Revision 45** adds the in-session **assembly-status notice** (g-062, §21): one
   new route pair (`GET`/`PUT /prompt-setting/assembly-status`), one new
   `preferences.json` key (`assemblyNotice`, stated-only), and one new block at the
-  top of the「我的 Prompt」panel. It changes no existing route, no existing
+  top of the「我的 Prompt」panel (since **g-065** that block, and the read that
+  feeds it, live at the top of「高级」instead — §21.5). It changes no existing route, no existing
   response field and no existing stored byte;
 - **Revision 46** makes that notice **proactive** (g-062, §21.6): the same `GET`
   answers an incremental feed (`?since=<seq>`), and a resident `shell.overlay`
@@ -6701,7 +6702,10 @@ file stays byte-identical. An absent key means **on**.
 
 ### 21.5 Page surface
 
-The block lives at the top of the「我的 Prompt」panel and carries
+The block lives at the top of the「高级」panel (g-065 moved it there from
+「我的 Prompt」; the block, its markers, its switch and its read schedule are
+otherwise unchanged, and 「我的 Prompt」 keeps nothing of it — no container, no
+heading, no gap) and carries
 `data-region="assembly-status"` with `data-assembly-phase`
 (`idle`/`ready`/`error`), `data-assembly-enabled`
 (`true`/`false`/`unknown` — unknown until the Host answers),

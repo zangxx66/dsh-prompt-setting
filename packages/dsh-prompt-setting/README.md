@@ -35,24 +35,6 @@
   > one-click restore. The text is **placed after every built-in section**. The "View scope" row above
   > the tabs is this block's header: it decides which layer a save lands in, and it is the only place the
   > scope is changed (the panel repeats the current target as a read-only line).
-  >
-  > 面板顶部是**「装配状态提示」**（g-062）：新会话的第一次装配，以及保存 Prompt 之后的下一个 run，
-  > 会**主动弹 toast** 给出两层结论——装配层（本次 assembly 是否读到你的 Prompt）与送达层（该文本是否进入
-  > 本次请求的 messages）；同一条结论仍保留在设置页的提示块里，供回查，开关也在那里。
-  > 它不进入模型上下文、不占 token、不改变模型收到的 prompt；宿主未提供 Toast 组件、或未声明浮层插槽时，
-  > 不会注册任何浮层，设置页会说明这一降级（`data-assembly-toast-seat`），功能其余部分不受影响。
-  > 口径与边界见 `CONTRACT.md` §21（例如：HTTP 是否真的发出在插件侧不可观测，本提示不作此声称；
-  > 后台标签页的计时器被浏览器节流，因此提示在回到页面时可见，不是实时通道）。
-  > The **assembly-status notice** (g-062) now **raises a toast** at each key node — the first assembly of a
-  > new conversation, and the next run after a prompt is saved — reporting two verdicts: the assembly layer
-  > (did this step's assembly read your prompt) and the delivery layer (did that text enter this request's
-  > messages). The same verdicts stay in the settings-page block, which is also where the switch lives.
-  > It never enters the model context, costs no tokens and changes nothing the model receives; a host that
-  > provides neither the `Toast` primitive nor the `shell.overlay` slot gets no overlay at all, and the page
-  > states which (its `data-assembly-toast-seat`).
-  > The exact口径 and its limits are in `CONTRACT.md` §21 (for one: whether the HTTP request was actually
-  > sent is not observable from a plugin, and this notice does not claim it; background-tab timers are
-  > throttled by the browser, so a toast is seen when you return to the page — it is not real-time).
 
 - **我的预设 / My presets** —— 你的常用文本库：把一段文本存成预设（新建 / 编辑 / 删除），再把它**应用到某个
   工作区**（写入该工作区的保留段），也可以**取消应用**——该工作区会精确还原为应用前的内容。删除一个
@@ -88,6 +70,26 @@
   > you restart yourself — re-run `dsh web` after a command-line start, or quit and reopen DeepSeek
   > Harness in the desktop app), and a full status area (mount state / build fingerprint / renderer
   > self-check).
+  >
+  > 面板顶部是**「装配状态提示」**（g-062 引入，g-065 起从「我的 Prompt」移到这里）：新会话的第一次装配，
+  > 以及保存 Prompt 之后的下一个 run，会**主动弹 toast** 给出两层结论——装配层（本次 assembly 是否读到你的
+  > Prompt）与送达层（该文本是否进入本次请求的 messages）；同一条结论也保留在这个面板顶部的提示块里，供回查，
+  > 开关也在那里。
+  > 它不进入模型上下文、不占 token、不改变模型收到的 prompt；宿主未提供 Toast 组件、或未声明浮层插槽时，
+  > 不会注册任何浮层，页面会说明这一降级（`data-assembly-toast-seat`），功能其余部分不受影响。
+  > 口径与边界见 `CONTRACT.md` §21（例如：HTTP 是否真的发出在插件侧不可观测，本提示不作此声称；
+  > 后台标签页的计时器被浏览器节流，因此提示在回到页面时可见，不是实时通道）。
+  > The **assembly-status notice** (g-062) sits at the top of this panel since g-065 (it moved here from
+  > "My Prompt"): at each key node — the first assembly of a new conversation, and the next run after a
+  > prompt is saved — it **raises a toast** reporting the assembly layer (did this step's assembly read
+  > your prompt) and the delivery layer (did that text enter this request's messages). The same verdicts
+  > stay in the block at the top of this panel, which is also where the switch lives. It never enters the
+  > model context, costs no tokens and changes nothing the model receives; a host that provides neither the
+  > `Toast` primitive nor the `shell.overlay` slot gets no overlay at all, and the page states which (its
+  > `data-assembly-toast-seat`).
+  > The exact wording and its limits are in `CONTRACT.md` §21 (for one: whether the HTTP request was
+  > actually sent is not observable from a plugin, and this notice does not claim it; background-tab timers
+  > are throttled by the browser, so a toast is seen when you return to the page — it is not real-time).
 
 其它特性 / More:
 

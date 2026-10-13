@@ -10,6 +10,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
+## [Unreleased]
+
+### Changed 变更
+
+- **「装配状态提示」移到「高级」面板顶部（g-065）**：这块两层装配观察（开关 + 装配层/送达层结论 +
+  toast 降级说明）原先挂在「我的 Prompt」（写入口）顶部，而它的读者是「改完 Prompt 却没生效、要查为什么」
+  的人，动机正好是打开「高级」。本次只换渲染位置：开关语义、偏好键、读取时机与轮询游标、toast 主动提示
+  与宿主侧装配观察全部不变；「我的 Prompt」不再出现该块任何元素（不留空容器与空标题）。
+  **The assembly-status block moved to the top of the "Advanced" panel (g-065)**: the two-layer
+  observation (switch + assembly/delivery verdicts + toast-degradation note) used to sit at the top of
+  "My Prompt" — the write surface — while its reader is the person whose saved prompt seems not to have
+  taken effect, which is exactly why "Advanced" gets opened. Only the render position changed: the
+  switch, its preference key, the read schedule and poll cursor, the proactive toast and the host-side
+  assembly watch are all untouched, and "My Prompt" keeps no element of the block (no empty container, no
+  leftover heading).
+
 ## [0.2.2] - 2026-10-13
 
 **功能版本：新增「预设」库（保存 / 编辑 / 删除，可应用到工作区、也可取消应用），装配状态改为会话内

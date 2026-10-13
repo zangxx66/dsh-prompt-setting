@@ -46,6 +46,7 @@ window.__ModuleLoader__.load({
     const layerLabel = shared.layerLabel;
     const metaStyle = shared.metaStyle;
     const regionKey = shared.regionKey;
+    const renderAssemblyStatus = shared.renderAssemblyStatus;
     const renderStatusDetail = shared.renderStatusDetail;
     const renderUpdateApplyStatus = shared.renderUpdateApplyStatus;
     const tabs = shared.tabs;
@@ -63,7 +64,10 @@ window.__ModuleLoader__.load({
      * page itself: the read-only legacy override list, the two layer-wide
      * buttons (`legacy=true` and `reset=true`, each confirmed), and the full
      * status block (mount / frozen / build stamp / renderer / primitives
-     * self-check) that the one-line summary at the top compresses away.
+     * self-check) that the one-line summary at the top compresses away. Since
+     * g-065 it also owns the two-layer observation block
+     * (`data-region="assembly-status"`), which the entry renders for this tab
+     * under its own name — one copy in the bundle, never a second one here.
      *
      * @param t - the bound translator.
      * @param m - the page model.
@@ -74,6 +78,9 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { 'data-region': 'advanced', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+        // g-065: the observation of the two layers sits at the very top of this
+        // tab — the block a user opens when a prompt seems not to have arrived.
+        renderAssemblyStatus(t, m, a),
         renderOverridesList(t, m, a),
         renderLayerReset(t, m, a),
         // g-030: the switch that decides whether this plugin may talk to GitHub
