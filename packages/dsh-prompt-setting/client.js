@@ -7031,7 +7031,16 @@ window.__ModuleLoader__.load({
       // capability probe (`hasComponentExport`, not `typeof === 'function'`),
       // because a `forwardRef` Toast would otherwise ship a registered overlay
       // that can never draw a single notice: probe says yes, renderer says no.
-      if (toastPrimitives === null || !hasComponentExport(toastPrimitives, 'Toast')) return null;
+      // Review F1: and once the Host's atoms have failed anywhere in this module
+      // instance, that atom is not rendered again — the entry above returns
+      // `null`, and this guard is the second, cheaper half of the same rule.
+      if (
+        primitivesRenderFailed ||
+        toastPrimitives === null ||
+        !hasComponentExport(toastPrimitives, 'Toast')
+      ) {
+        return null;
+      }
       // The official Toast owns its own lifetime and reports completion; keying
       // by the notice id is what lets the same text appear again for a **new**
       // fact (the primitive restarts its cycle only when remounted).
@@ -7068,17 +7077,28 @@ window.__ModuleLoader__.load({
      * The registered entry: the event-driven toaster when the Host offers the
      * hook, the timer-only one when it does not.
      *
-     * Since g-063 (review E1) it also sits behind the same boundary as the
-     * settings page: the toaster is the other place this plugin renders a Host
-     * atom, and an overlay entry that throws during render would take the
-     * shell's overlay subtree with it. Its degraded form is `null` — no toast
-     * is strictly better than a broken overlay, and the settings page's own
-     * block still states everything the toast would have said.
+     * Since g-063 (reviews E1 / F1) it sits behind the same boundary as the
+     * settings page, because the toaster is the other place this plugin renders
+     * a Host atom and an overlay entry that throws during render would take the
+     * shell's overlay subtree with it. Two rules, in this order:
+     *
+     *   1. **Once the Host's atoms have failed anywhere in this module
+     *      instance, this entry renders nothing.** The flip is instance-wide and
+     *      one-way, so after it there is no `primitivesActive()` branch to fall
+     *      into: wrapping the entry again would re-render the very atom that
+     *      threw, and dropping the wrapper (the pre-F1 shape) would do it
+     *      *unwrapped*. `null` is the only shape that cannot throw — the
+     *      settings page's own block still says everything the toast would.
+     *   2. While the atoms are still in use, the boundary is what converts a
+     *      first failure into that `null` (and into the instance-wide flip).
+     *
+     * The g-062 baseline is untouched: a Host whose probe never passed has no
+     * `Toast` to render in the first place, and gets the plain entry back.
      * @param props - the shell-overlay owner props.
-     * @returns the toaster, wrapped in the boundary while the Host's atoms are
-     *   the ones in use.
+     * @returns the toaster, the boundary around it, or `null` after a failure.
      */
     function AssemblyToasterRoot(props) {
+      if (primitivesRenderFailed) return null;
       const supported = typeof props.useSessionStatus === 'function';
       const toaster = supported ? h(ConnectedAssemblyToaster, props) : h(AssemblyToaster, { ...props, activity: null });
       if (!primitivesActive()) return toaster;

@@ -173,8 +173,8 @@ g-062 用「渲染分支与 toast 能力解耦」绕开了连带问题，本节�
 | `isPrimitivesNamespace` / `RENDERER` | `primitives.Button` 走上面这条判据；仍**只读 `require` 的原始返回值**，不解包 |
 | `iconSource()` / `diffBlockUsable()` / `UI` / `tabs()` 的 `SegmentedTabs` | 一律问 `primitivesActive() && hasComponentExport(...)`（同判据 + 绝不抛），且**每次渲染求值**：渲染期失败后必须立刻切回自绘 |
 | `toastPrimitives` / `HAS_TOAST` | 同判据，解包顺序不变（先 `default` 候选，再原模块） |
-| `AssemblyToaster` 的**渲染守门** | **同判据**（`hasComponentExport(toastPrimitives, 'Toast')`）—— 评审 R1：探测说 yes、渲染守门说 no 会让 overlay 注册成功却永远画不出 toast；两侧必须问同一个问题 |
-| `PrimitivesErrorBoundary`（页面根 + `shell.overlay` 的 toaster） | 评审 E1：见下方「渲染期失败」段 |
+| `AssemblyToaster` 的**渲染守门** | **同判据**（`hasComponentExport(toastPrimitives, 'Toast')`）**外加 flip 条件** —— 评审 R1：探测说 yes、渲染守门说 no 会让 overlay 注册成功却永远画不出 toast；两侧必须问同一个问题。评审 F1：flip 之后连这道守门都不该有机会跑 |
+| `PrimitivesErrorBoundary`（页面根 + `shell.overlay` 的 toaster 入口） | 评审 E1/F1：见下方「渲染期失败」段 |
 | `writeClipboard` | **保持** `typeof === 'function'`：它是被调用的函数，不是被渲染的组件 |
 | `pickChunkComponent` / `HAS_REACT_LAZY` / `useLayoutEffect` | **保持** `typeof === 'function'`：前者挑本插件自有 chunk 的导出（`HistoryTab` 是 `chunkTab()` 产出的**具名函数**），后两者是 React 自己的工厂/hook，都不是宿主组件 |
 
@@ -182,13 +182,20 @@ g-062 用「渲染分支与 toast 能力解耦」绕开了连带问题，本节�
 —— 把「`typeof` 观测」与「据此做出的判定」并排放；真机上 `Button=object`、
 `data-primitives-button-component="true"`、`data-renderer="primitives"` 应同时出现。
 
-**渲染期失败（评审 E1）**：探测期的 `try/catch` 只覆盖 `require` 与**建元素**（`h(Button, …)` 不调用组件），
+**渲染期失败（评审 E1 / F1）**：探测期的 `try/catch` 只覆盖 `require` 与**建元素**（`h(Button, …)` 不调用组件），
 而 React 是在 render 阶段才调用宿主原子的——这条路径**只有在 primitives 分支被真正激活后才可达**。
-因此页面根（以及 `shell.overlay` 的 toaster）外面包了 `PrimitivesErrorBoundary`：
+因此页面根外面包了 `PrimitivesErrorBoundary`：
 
 - `getDerivedStateFromError` 里调用 `capturePrimitivesRenderFailure(error)`，把 `primitivesActive()` **单向**翻到 false
-  （之所以放在这里：React 捕获后会**立即**重渲染边界，降级必须在那一刻之前生效，否则重建出来的树仍含抛错的原子）；
-- 边界随后调用 `renderFallback()` **重建同一页**（用自绘原子，不是占位符、也不是错误文字）；toaster 侧的降级形态是 `null`；
+  （之所以放在这里：React 捕获后会**立即**重渲染边界，降级必须在那一刻之前生效，否则重建出来的树仍含抛错的原子；
+  只有 commit 阶段才 flip 的写法**测不过**——测试 harness 的 `componentDidCatch` 已被订正为「commit 之后才调用」，
+  见 `test/client.test.mjs` 的 `renderClassElement`）；
+- 边界随后调用 `renderFallback()` **重建同一页**（用自绘原子，不是占位符、也不是错误文字）；
+- **flip 的粒度是「本模块实例」且永久**：任何一处宿主原子在渲染期抛错，整张设置页（含 `shell.overlay` 的
+  toaster 入口）就此停在自绘分支，直到 bundle 重新加载。toaster 入口在 flip 之后直接 `return null`
+  （**不是**「摘掉边界继续裸渲染宿主 `Toast`」——那正是评审 F1 抓到的二次抛错路径：外壳下一次 commit
+  重渲染该入口时，同一个坏原子会在无边界下再次抛出，把 overlay 子树带走）；`AssemblyToaster` 的守门也带了
+  flip 条件作为第二道；
 - chunk 侧的 `diffBlockUsable()` 是**函数**、每次渲染求值，所以「`DiffBlock` 渲染期抛错」也能落到自绘 diff 上，
   而不是从 chunk 加载时缓存的 `true` 再次渲染同一个坏原子；
 - 诊断行：`data-renderer` 改为**实际在用的分支**（`activeRenderer()`），`data-region="renderer-info"` 新增
@@ -1605,7 +1612,7 @@ evidence: suite=npm-pack passed=13 failed=0 exit=0 commit=ec5e958
 | NC-4 | `core/transfer.js`：去掉导入的版本校验 | `transfer`+`stage2` fail 2 / pass 42 | `transfer: every malformed document is rejected with a stable code`、`stage2: every rejected import leaves BOTH config files and the history byte-identical` |
 | NC-5 | `core/history.js`：快照指纹恒为常量（段级 diff 失明） | fail 2 / pass 69 | `history: a snapshot entry is comparable without carrying any text`、`stage2: two history records of one section diff at section and line level` |
 | NC-6 | `client.js`：整层重置跳过二次确认直接发请求 | `client` fail 1 / pass 76 | `client: resetting a whole layer needs a confirmation and states the impact` |
-| NC-7 | `client.js`：`HAS_DIFF_BLOCK` 恒为 `false`（永不使用官方 DiffBlock） | `client` fail 1（叠加 NC-6 时为 2） | `client: the primitives branch renders the comparison with the official DiffBlock` |
+| NC-7 | `client.js`：diff 的官方渲染器判定恒为 `false`（永不使用官方 DiffBlock）。**g-063 起**变异对象是 `diffBlockUsable()`（让它恒返回 `false`），不再是被取代的 `HAS_DIFF_BLOCK` 常量 | `client` fail 1（叠加 NC-6 时为 2） | `client: the primitives branch renders the comparison with the official DiffBlock` |
 
 ## 63. 未验证项（诚实清单，交给主管在集成检查点裁决）
 

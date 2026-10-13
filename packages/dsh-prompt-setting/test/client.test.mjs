@@ -349,10 +349,17 @@ function isClassComponent(type) {
 
 /**
  * The class-component arm of {@link expandTree}, including React's error
- * boundary contract: render, and when the **expanded** children throw, take
- * `getDerivedStateFromError`'s next state, run `componentDidCatch`, and render
- * once more. A class without that static (an ordinary class component) passes
- * the error straight through, exactly as React does.
+ * boundary contract, in React's own order: render, and when the **expanded**
+ * children throw, take `getDerivedStateFromError`'s next state and render
+ * again; only **after that render commits** does `componentDidCatch` run.
+ *
+ * The order is the point (g-063 review F2): a boundary that flips its
+ * module-wide state only in the commit-phase hook has already re-rendered the
+ * throwing atom, so a double that called `componentDidCatch` *before* the
+ * second render would report such a boundary as working — and the "the flip
+ * must happen before the re-render" mechanism would have no test protecting it.
+ * A class without the static (an ordinary class component) passes the error
+ * straight through, exactly as React does.
  * @param node - the class element.
  * @returns the expanded tree of whichever render won.
  */
@@ -366,8 +373,11 @@ function renderClassElement(node) {
       typeof node.type.getDerivedStateFromError === 'function' ? node.type.getDerivedStateFromError(error) : null;
     if (derived === null || derived === undefined) throw error;
     instance.state = { ...instance.state, ...derived };
+    // Commit first: a second throw here propagates, which is what a real React
+    // does with a fallback UI that throws as well.
+    const committed = expandTree(instance.render());
     if (typeof instance.componentDidCatch === 'function') instance.componentDidCatch(error, { componentStack: '' });
-    return expandTree(instance.render());
+    return committed;
   }
 }
 
@@ -14545,4 +14555,49 @@ test('client: a Host atom that throws mid-render degrades instead of blanking th
     hasText(oneBy(info, 'data-primitives-render-error', 'true'), 'exploded mid-render'),
     'with the error text, so the operator does not have to guess',
   );
+});
+
+test('client: after a render-time failure the toaster entry stops rendering instead of throwing again (g-063 F1)', async () => {
+  const notices = [
+    { session: 's1', notice: { ...assemblyNoticeFixture({ kind: 'first-assembly' }), seq: 2, id: 'n2' } },
+  ];
+  const responses = defaultResponses({
+    [PATHS.assemblyStatus]: () => ({
+      payload: assemblyFeedFixture({ notifications: { bootId: 'boot-a', cursor: 2, stale: false, notices } }),
+    }),
+  });
+  const page = makePage({
+    primitives: 'ok',
+    withToast: true,
+    primitivesAtoms: (atoms, React) => ({
+      ...atoms,
+      Toast: React.forwardRef(() => {
+        throw new Error('the Host toast exploded mid-render');
+      }),
+    }),
+    responses,
+  });
+  page.loaded.sandbox.sessionStorage = makeStorage({
+    'dsh-prompt-setting:assembly-toast-cursor': JSON.stringify({ v: 1, bootId: 'boot-a', cursor: 1 }),
+  });
+  const toaster = makeToaster(page);
+  // First render: the boundary catches the throwing Host atom and the entry's
+  // degraded shape is "nothing".
+  assert.equal(await toaster.flush(), null, 'the first failure is caught, not propagated');
+  const probe = page.loaded.module.__internals.assemblyNotice.primitivesProbe();
+  assert.equal(probe.renderFailed, true, 'and the instance-wide flip happened');
+  assert.equal(probe.renderer, 'fallback');
+  // Second render — the shape the shell really asks for on its next commit.
+  // With the boundary dropped once the atoms went inactive (the pre-F1 shape)
+  // this is where the SAME atom would be rendered bare and throw out of the
+  // overlay subtree; the fix is that the entry renders nothing at all instead.
+  let threw = null;
+  let tree = null;
+  try {
+    tree = toaster.draw();
+  } catch (error) {
+    threw = error;
+  }
+  assert.equal(threw, null, `the entry must stop rendering after the flip (threw: ${threw && threw.message})`);
+  assert.equal(tree, null, 'and its degraded shape is "nothing", never a bare Host atom');
 });

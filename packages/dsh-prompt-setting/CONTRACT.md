@@ -3415,15 +3415,20 @@ code means rather than how it is written:
   called, not rendered.
   The probe only guards `require` and building elements; React calls the Host's
   atoms during **render**, and that path became reachable the moment this
-  revision activated the branch. `PrimitivesErrorBoundary` (around the page tree
-  and around the `shell.overlay` toaster) catches such a throw, flips the
-  one-way `primitivesActive()` in `getDerivedStateFromError`, and rebuilds the
-  same page with the hand-built atoms (`renderFallback()`; the toaster degrades
-  to `null`). Because of that flip, `iconSource()`, `diffBlockUsable()` and the
-  atoms are all resolved **per render** — that is why two of them are functions
-  rather than constants, and why the version-history chunk asks
-  `diffBlockUsable()` per render instead of caching it. `data-renderer` (and the
-  diagnosis line) names the branch **really in use** through `activeRenderer()`;
+  revision activated the branch. `PrimitivesErrorBoundary` catches such a throw
+  and rebuilds the same page with the hand-built atoms (`renderFallback()`), and
+  `getDerivedStateFromError` flips `primitivesActive()` **before** that rebuild —
+  the flip is **module-instance-wide and one-way**: one Host atom throwing
+  during render settles this whole settings page on the hand-built atoms until
+  the bundle is reloaded. The `shell.overlay` toaster is inside that same
+  instance-wide rule, and once the flip has happened its entry renders
+  **`null`** rather than dropping back to a bare Host `Toast` — re-rendering the
+  atom that threw, wrapped or unwrapped, is exactly what must not happen again.
+  Because of that flip, `iconSource()`, `diffBlockUsable()` and the atoms are all
+  resolved **per render** — that is why two of them are functions rather than
+  constants, and why the version-history chunk asks `diffBlockUsable()` per
+  render instead of caching it. Page readings: `data-renderer` (and the diagnosis
+  line) names the branch **really in use** through `activeRenderer()`;
   `data-region="renderer-info"` carries
   `data-primitives-render-failed="true" | "false"` and, when true, a
   `data-primitives-render-error="true"` row with the error text.
