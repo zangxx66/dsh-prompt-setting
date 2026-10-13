@@ -41,6 +41,7 @@ window.__ModuleLoader__.load({
     const tabs = shared.tabs;
     const primitives = shared.primitives;
     const cardStyle = shared.cardStyle;
+    const chunkTab = shared.chunkTab;
     const metaStyle = shared.metaStyle;
     const headingStyle = shared.headingStyle;
     const scopeSummaryStyle = shared.scopeSummaryStyle;
@@ -53,7 +54,21 @@ window.__ModuleLoader__.load({
     const diffOpMarker = shared.diffOpMarker;
     const diffKey = shared.diffKey;
     const diffTone = shared.diffTone;
-    const HAS_DIFF_BLOCK = shared.HAS_DIFF_BLOCK;
+    // g-063 E1: a **function**, asked per render. The main bundle flips it off
+    // when a Host atom throws while React renders, so a `DiffBlock` failure
+    // really lands on the hand-built diff below instead of being re-rendered
+    // from a value this chunk cached at load time.
+    const diffBlockUsable = shared.diffBlockUsable;
+    /**
+     * May this render draw the Host's `DiffBlock`?
+     *
+     * Asked per render, and answered defensively: an old main bundle without
+     * the function (a mixed-version page) simply gets the hand-built diff.
+     * @returns `true` only when the Host's renderer is usable right now.
+     */
+    function diffBlockAvailable() {
+      return typeof diffBlockUsable === 'function' && diffBlockUsable() === true;
+    }
     const DIFF_CURRENT = shared.DIFF_CURRENT;
     const DIFF_BLOCK_MAX_LINES = shared.DIFF_BLOCK_MAX_LINES;
     const MAX_DIFF_LINES_SHOWN = shared.MAX_DIFF_LINES_SHOWN;
@@ -63,6 +78,10 @@ window.__ModuleLoader__.load({
     const HISTORY_PANEL_MIN_HEIGHT = shared.HISTORY_PANEL_MIN_HEIGHT;
     const RESERVED_SECTION_NAME = shared.RESERVED_SECTION_NAME;
     const VIEWS = shared.VIEWS;
+    const monoTextBox = shared.monoTextBox;
+    const scrimStyle = shared.scrimStyle;
+    const dialogCardStyle = shared.dialogCardStyle;
+    const miniButtonStyle = shared.miniButtonStyle;
     /**
      * This chunk's own digest, computed from `toString()` against the same
      * markers the host reads out of this file — so the page can verify a chunk
@@ -97,16 +116,15 @@ window.__ModuleLoader__.load({
     function historyRow(t, m, a, record) {
       const id = String(record.id);
       const selected = m.diffSel.from === id ? 'from' : m.diffSel.to === id ? 'to' : '';
-      const sideStyle = {
-        font: 'inherit',
-        fontSize: 12,
+      // g-061 batch 3: the two side buttons of a version row. The shared
+      // radius-6 ghost shape; the `'2px 8px'` padding and the secondary text
+      // colour are this call site's own.
+      const sideStyle = miniButtonStyle({
         padding: '2px 8px',
-        borderRadius: 6,
-        cursor: 'pointer',
-        background: 'transparent',
         color: token.labelSecondary,
+        background: 'transparent',
         border: `1px solid ${token.borderL2}`,
-      };
+      });
       const pickHint = t('histRowPickHint');
       // A button inside a clickable row must not also re-pick the row: in a real
       // browser the click bubbles up, so the buttons swallow it. The test
@@ -257,17 +275,19 @@ window.__ModuleLoader__.load({
           h('span', { key: 'label', style: { ...metaStyle, minWidth: 48 } }, label),
           h('span', { key: 'value', style: { wordBreak: 'break-word' }, title }, value),
         );
-      const textBoxStyle = {
-        margin: 0,
-        whiteSpace: 'pre-wrap',
-        wordBreak: 'break-word',
-        maxHeight: 200,
-        overflowY: 'auto',
-        border: `1px solid ${token.borderL1}`,
-        borderRadius: 6,
+      // `mono` is deliberately **not** passed: this box has never named a font
+      // family, and its pre element takes the browser's own default. Stating
+      // `mono: true` here would move it onto the theme's stack — a visible
+      // change in a batch that makes none.
+      const textBoxStyle = monoTextBox({
         padding: '4px 6px',
-        fontSize: 12,
-      };
+        radius: 6,
+        border: token.borderL1,
+        maxHeight: 200,
+        // This box scrolls on one axis only: the label above it stays put while
+        // a long record scrolls.
+        scroll: 'overflowY',
+      });
       const textBox = (key, label, entry) =>
         h(
           'div',
@@ -375,7 +395,8 @@ window.__ModuleLoader__.load({
      */
     function renderDiffLines(t, lines) {
       const ops = Array.isArray(lines.ops) ? lines.ops : [];
-      if (HAS_DIFF_BLOCK) {
+      const useDiffBlock = diffBlockAvailable();
+      if (useDiffBlock) {
         return h(
           'div',
           { 'data-region': 'diffblock', 'data-diff-block': 'primitives' },
@@ -522,7 +543,7 @@ window.__ModuleLoader__.load({
                 'data-diff-mode': lines.mode,
                 'data-diff-line-added': String(lines.stats.added),
                 'data-diff-line-removed': String(lines.stats.removed),
-                'data-diff-renderer': HAS_DIFF_BLOCK ? 'diffblock' : 'fallback',
+                'data-diff-renderer': diffBlockAvailable() ? 'diffblock' : 'fallback',
                 style: metaStyle,
               },
               fmt(t('histDiffLineStats'), {
@@ -530,7 +551,7 @@ window.__ModuleLoader__.load({
                 removed: lines.stats.removed,
                 mode: lines.mode === 'lcs' ? t('histDiffModeLcs') : t('histDiffModeBounded'),
               }),
-              h('span', { style: { marginLeft: 8 } }, HAS_DIFF_BLOCK ? t('histDiffBlock') : t('histDiffFallback')),
+              h('span', { style: { marginLeft: 8 } }, diffBlockAvailable() ? t('histDiffBlock') : t('histDiffFallback')),
             ),
           );
           if (lines.crlfNormalized === true) {
@@ -572,16 +593,17 @@ window.__ModuleLoader__.load({
       const layer = m.historyLayer;
       const pg = m.histPage;
       const loading = m.hist.phase === 'loading';
-      const pagerButtonStyle = {
-        font: 'inherit',
-        fontSize: 12,
+      // g-061 batch 3: the pager buttons are the same radius-6 ghost shape as
+      // the row's side buttons; their `'2px 10px'` padding is the one value in
+      // this family that differs from its neighbours' `'2px 8px'`, and it is
+      // kept as it is — the owner reviewed the difference and chose to keep the
+      // page exactly as tall as it is today.
+      const pagerButtonStyle = miniButtonStyle({
         padding: '2px 10px',
-        borderRadius: 6,
-        cursor: 'pointer',
-        background: 'transparent',
         color: token.labelSecondary,
+        background: 'transparent',
         border: `1px solid ${token.borderL2}`,
-      };
+      });
       // The scope sentence: what is on screen right now, in words. A reader must
       // never have to infer it from a request URL (g-038).
       const scopeNote =
@@ -716,16 +738,18 @@ window.__ModuleLoader__.load({
                               'data-selected': option.value === m.historyScopeValue ? 'true' : 'false',
                               onClick: () => a.setHistoryScope(option.value),
                               style: {
-                                font: 'inherit',
-                                fontSize: 12,
-                                lineHeight: '18px',
-                                textAlign: 'left',
-                                padding: '4px 8px',
-                                borderRadius: 6,
-                                cursor: 'pointer',
-                                color: option.value === m.historyScopeValue ? token.buttonLabel : token.labelPrimary,
-                                background: option.value === m.historyScopeValue ? token.buttonFill : 'transparent',
-                                border: `1px solid ${option.value === m.historyScopeValue ? 'transparent' : token.borderL2}`,
+                                ...miniButtonStyle({
+                                  padding: '4px 8px',
+                                  lineHeight: '18px',
+                                  textAlign: 'left',
+                                  color:
+                                    option.value === m.historyScopeValue ? token.buttonLabel : token.labelPrimary,
+                                  background: option.value === m.historyScopeValue ? token.buttonFill : 'transparent',
+                                  border: `1px solid ${option.value === m.historyScopeValue ? 'transparent' : token.borderL2}`,
+                                }),
+                                // The one row of this family that is a full-width
+                                // line rather than a tool-strip control: it keeps
+                                // its own flex layout and its name/tag split.
                                 display: 'flex',
                                 gap: 6,
                                 alignItems: 'center',
@@ -1084,19 +1108,10 @@ window.__ModuleLoader__.load({
           key: options.key,
           'data-region': 'history-modal-overlay',
           'data-history-modal': options.region,
-          style: {
-            position: 'fixed',
-            top: 0,
-            right: 0,
-            bottom: 0,
-            left: 0,
-            zIndex: 1000,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: 16,
-            background: 'rgba(0, 0, 0, 0.45)',
-          },
+          // g-061: the shared scrim, at the tab-dialog layer (1000) — the same
+          // layer as the「自定义」dialog and the two preset dialogs, and below
+          // the confirmation overlay's stated 1200.
+          style: scrimStyle(1000),
         },
         h(
           'div',
@@ -1105,22 +1120,23 @@ window.__ModuleLoader__.load({
             role: 'dialog',
             'aria-modal': 'true',
             'aria-label': options.title,
-            style: {
-              ...cardStyle,
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 10,
+            // g-061 batch 3: the card is the shared dialog shell. What this call
+            // site states is what it always drew — a 1040px card that never
+            // exceeds 92vw (the `maxWidth` beside the width is redundant with it
+            // and is **kept**, because removing a declared value is a change even
+            // where it has no effect), both a `height` and a `maxHeight` of
+            // `min(82vh, 900px)`, a one-axis scroll, and `position: 'relative'`.
+            style: dialogCardStyle({
               width: 'min(1040px, 92vw)',
+              gap: 10,
               maxWidth: '92vw',
               height: 'min(82vh, 900px)',
               maxHeight: 'min(82vh, 900px)',
-              overflowY: 'auto',
-              padding: '16px 18px',
+              overflow: 'overflowY',
               // The close button is anchored to this corner, so it stays put
               // however long the title or the dialog's scroll position is.
               position: 'relative',
-              boxShadow: '0 12px 32px rgba(0, 0, 0, 0.35)',
-            },
+            }),
           },
           h(
             UI.Button,
@@ -1153,9 +1169,7 @@ window.__ModuleLoader__.load({
      * @param props - the main bundle's page model, actions and translator.
      * @returns the tab element.
      */
-    function HistoryTab(props) {
-      return renderHistoryTab(props.t, props.m, props.a);
-    }
+    const HistoryTab = chunkTab(renderHistoryTab, 'HistoryTab');
 
     return { HistoryTab, build: SELF_BUILD };
     /* @build-fingerprint:end */

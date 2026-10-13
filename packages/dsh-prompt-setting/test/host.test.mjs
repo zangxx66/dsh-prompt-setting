@@ -218,26 +218,36 @@ test('host: one prefix route owns the /prompt-setting prefix', () => {
   assert.equal(route.path, '/prompt-setting');
 });
 
-test('host: mounting registers two assemble listeners (one prepended), one route and one prompt section, all disposable', () => {
+test('host: mounting registers two assemble listeners (one prepended), the observation listeners, one route and one prompt section, all disposable', () => {
   const { listeners, routes, disposers, disposedCount, sectionsDisposedCount } = mount();
-  assert.deepEqual(listeners.map((listener) => listener.name), ['system-prompt/assemble', 'system-prompt/assemble']);
+  const assembleListeners = listeners.filter((listener) => listener.name === 'system-prompt/assemble');
+  assert.deepEqual(assembleListeners.map((listener) => listener.name), ['system-prompt/assemble', 'system-prompt/assemble']);
+  // g-062: the assembly-status observation rides three listeners of its own,
+  // one per host feed (`agent/pre-step` labels the step, `session/event` folds
+  // the delivery evidence, `session/disposed` drops the bounded record). None of
+  // them is part of the assemble waterfall.
+  assert.deepEqual(
+    listeners.filter((listener) => listener.name !== 'system-prompt/assemble').map((listener) => listener.name),
+    ['agent/pre-step', 'session/event', 'session/disposed'],
+  );
   // Revision 8's keeper is the one that asks for the front of the waterfall
   // (`prepend`), and it is the ONLY one: the override listener keeps the plain
   // registration position it has had since Revision 1.
-  const prepended = listeners.filter((listener) => listener.options?.prepend === true);
-  const plain = listeners.filter((listener) => listener.options?.prepend !== true);
+  const prepended = assembleListeners.filter((listener) => listener.options?.prepend === true);
+  const plain = assembleListeners.filter((listener) => listener.options?.prepend !== true);
   assert.equal(prepended.length, 1, 'exactly one listener is prepended');
   assert.equal(plain.length, 1, 'and the override listener was not moved');
   assert.notEqual(prepended[0].callback, plain[0].callback, 'two distinct listeners, not one registered twice');
   assert.equal(routes.length, 1);
-  // Two effects for the two listeners, one for the routes, one for the reserved
-  // prompt section (Revision 7): unloading the plugin removes the override
-  // engine, the keeper, the route and the registration with it.
-  assert.equal(disposers.length, 4);
+  // Five effects for the five listeners, one for the routes, one for the
+  // reserved prompt section (Revision 7): unloading the plugin removes the
+  // override engine, the keeper, the observation, the route and the registration
+  // with it.
+  assert.equal(disposers.length, 7);
   assert.equal(disposedCount(), 0);
   assert.equal(sectionsDisposedCount(), 0);
   for (const disposer of disposers) disposer();
-  assert.equal(disposedCount(), 3, 'the route and both listeners');
+  assert.equal(disposedCount(), 6, 'the route and all five listeners');
   assert.equal(sectionsDisposedCount(), 1, 'and the section registration went with them');
   assert.equal(listeners.length, 0);
 });

@@ -129,6 +129,21 @@ function makeHooksRuntime(options = {}) {
   // real DOM, so a case that wants to exercise a measuring code path hands in the
   // element it wants the ref to hold.
   const presetRefs = Array.isArray(options.refs) ? options.refs : [];
+  /**
+   * Whether `useEffect`'s dependency array is honoured (review R5).
+   *
+   * Off by default, because this harness is not React: a case renders, collects
+   * the effects and runs them all, which is what every pre-R5 case means by
+   * "flush". That default cannot express "the effect re-ran **because** its
+   * dependency changed" — with it, deleting the array from the code under test
+   * changes nothing and the test stays green. A case that needs that causality
+   * asks for it explicitly and gets React's rule: an effect whose dependencies
+   * are `Object.is`-equal to the previous render's does not run.
+   */
+  const enforceEffectDeps = options.enforceEffectDeps === true;
+  /** React's own comparison: same length, `Object.is` per slot. */
+  const sameDeps = (left, right) =>
+    left.length === right.length && left.every((value, index) => Object.is(value, right[index]));
   const React = {
     createElement(type, props, ...children) {
       return {
@@ -144,9 +159,15 @@ function makeHooksRuntime(options = {}) {
       };
       return [cells[index], set];
     },
-    useEffect(fn) {
-      effects.push(fn);
+    useEffect(fn, deps) {
+      const index = cursor;
       cursor += 1;
+      if (enforceEffectDeps && Array.isArray(deps)) {
+        const previous = cells[index];
+        cells[index] = deps.slice();
+        if (Array.isArray(previous) && sameDeps(previous, deps)) return;
+      }
+      effects.push(fn);
     },
     useRef(initial) {
       const index = cursor++;
@@ -174,6 +195,29 @@ function makeHooksRuntime(options = {}) {
     },
     useId: () => 'test-id',
     Fragment: Symbol('Fragment'),
+    // g-063 E1: the page's error boundary is a class component, so the double
+    // needs the one base class React gives it. `setState` is here because a
+    // boundary is allowed to use it; the page's own boundary only reads
+    // `this.state` (it is driven by `getDerivedStateFromError`).
+    Component: class Component {
+      constructor(props) {
+        this.props = props || {};
+        this.state = {};
+      }
+      setState(next) {
+        this.state = { ...this.state, ...(typeof next === 'function' ? next(this.state) : next) };
+      }
+    },
+    // g-063: the two **object**-shaped component kinds. `forwardRef` is what the
+    // Host's real `Button` / `Input` are, and `typeof` one of those is
+    // `'object'` — the double has to publish the same shape, or the probe under
+    // test would only ever be asked about function components.
+    forwardRef(render) {
+      return { $$typeof: FORWARD_REF_TYPE, render };
+    },
+    memo(type) {
+      return { $$typeof: MEMO_TYPE, type };
+    },
     // g-045: the lazy chunk boundary. `load()` is called on first expansion,
     // exactly as React calls it on first render; the loader double below
     // resolves synchronously, so one expansion is enough to get the real panel —
@@ -221,6 +265,19 @@ function makeHooksRuntime(options = {}) {
       effects = [];
       return { tree, pending };
     },
+    /**
+     * The effects registered while {@link expandTree} walked the tree — i.e. the
+     * ones a **wrapper** component's children registered, which `render`'s own
+     * `pending` cannot see (it starts and ends before the walk). g-062's toaster
+     * entry is exactly that shape: the registered component picks a child and the
+     * child owns the interval.
+     * @returns the collected effects, and clears them.
+     */
+    takeEffects() {
+      const taken = effects;
+      effects = [];
+      return taken;
+    },
   };
 }
 
@@ -234,6 +291,16 @@ function makeHooksRuntime(options = {}) {
  */
 const LAZY_TYPE = Symbol('react.lazy');
 const SUSPENSE_TYPE = Symbol('react.suspense');
+/**
+ * The two object-shaped component brands (g-063).
+ *
+ * `Symbol.for(...)` on purpose: React registers its brands in the **global**
+ * symbol registry, so this test-side spelling and whatever the page reads off
+ * the Host's React are the same symbol — which is exactly the property the
+ * production probe relies on when it falls back to `Symbol.for`.
+ */
+const FORWARD_REF_TYPE = Symbol.for('react.forward_ref');
+const MEMO_TYPE = Symbol.for('react.memo');
 
 /**
  * Expand function components into host nodes.
@@ -252,9 +319,66 @@ function expandTree(node) {
   if (node.type !== null && typeof node.type === 'object' && node.type.$$typeof === LAZY_TYPE) {
     return expandTree(node.type._resolveNode(node.props));
   }
+  // g-063: the official atoms are `forwardRef` (and `memo`) products — objects,
+  // not functions — so the walk has to call their render function the way React
+  // would, or a primitives-branch tree would stop expanding at the first atom.
+  if (node.type !== null && typeof node.type === 'object' && node.type.$$typeof === FORWARD_REF_TYPE) {
+    return expandTree(node.type.render(node.props, null));
+  }
+  if (node.type !== null && typeof node.type === 'object' && node.type.$$typeof === MEMO_TYPE) {
+    return expandTree({ ...node, type: node.type.type });
+  }
   if (typeof node.type === 'symbol') return expandTree(node.props ? node.props.children : null);
-  if (typeof node.type === 'function') return expandTree(node.type(node.props));
+  if (typeof node.type === 'function') {
+    // g-063 E1: React **instantiates** a class component instead of calling it,
+    // and its `getDerivedStateFromError` is what turns a subtree throw into a
+    // degraded render. Without this arm the page's error boundary could not be
+    // exercised at all — a boundary bug would look exactly like a working one.
+    if (isClassComponent(node.type)) return renderClassElement(node);
+    return expandTree(node.type(node.props));
+  }
   return { ...node, props: { ...node.props, children: expandTree(node.props.children) } };
+}
+
+/** Does React instantiate this component type rather than call it? */
+function isClassComponent(type) {
+  return (
+    typeof type === 'function' && type.prototype !== undefined && typeof type.prototype.render === 'function'
+  );
+}
+
+/**
+ * The class-component arm of {@link expandTree}, including React's error
+ * boundary contract, in React's own order: render, and when the **expanded**
+ * children throw, take `getDerivedStateFromError`'s next state and render
+ * again; only **after that render commits** does `componentDidCatch` run.
+ *
+ * The order is the point (g-063 review F2): a boundary that flips its
+ * module-wide state only in the commit-phase hook has already re-rendered the
+ * throwing atom, so a double that called `componentDidCatch` *before* the
+ * second render would report such a boundary as working — and the "the flip
+ * must happen before the re-render" mechanism would have no test protecting it.
+ * A class without the static (an ordinary class component) passes the error
+ * straight through, exactly as React does.
+ * @param node - the class element.
+ * @returns the expanded tree of whichever render won.
+ */
+function renderClassElement(node) {
+  const instance = new node.type(node.props);
+  instance.props = node.props;
+  try {
+    return expandTree(instance.render());
+  } catch (error) {
+    const derived =
+      typeof node.type.getDerivedStateFromError === 'function' ? node.type.getDerivedStateFromError(error) : null;
+    if (derived === null || derived === undefined) throw error;
+    instance.state = { ...instance.state, ...derived };
+    // Commit first: a second throw here propagates, which is what a real React
+    // does with a fallback UI that throws as well.
+    const committed = expandTree(instance.render());
+    if (typeof instance.componentDidCatch === 'function') instance.componentDidCatch(error, { componentStack: '' });
+    return committed;
+  }
 }
 
 /**
@@ -345,10 +469,17 @@ function loadClient(primitives, options = {}) {
     Button: (props) => runtime.React.createElement('button', props),
     Input: () => null,
     Tag: (props) => runtime.React.createElement('span', props),
+    // g-063 H2/B5: the Host really exports this atom, but the page no longer
+    // renders it (the tabs are hand-built under every renderer). The double stays
+    // as the **counter-example probe**: if the official branch ever comes back,
+    // its `data-tabs-class` marker appears in the tree and the H2 case goes red.
     SegmentedTabs: (props) =>
       runtime.React.createElement(
         'div',
-        { role: 'tablist' },
+        {
+          role: 'tablist',
+          'data-tabs-class': props.className === undefined ? '(none)' : props.className,
+        },
         (props.items || []).map((item) =>
           runtime.React.createElement(
             'button',
@@ -368,6 +499,22 @@ function loadClient(primitives, options = {}) {
       return null;
     },
   };
+  // g-062 (Revision 46): the proactive surface. `Toast` is a **separate**
+  // capability from the atoms this page draws (the page probes `Button` for the
+  // renderer and `Toast` for the toaster), so a case opts in explicitly — and a
+  // case that does not is the "old Host" the plugin must degrade against.
+  if (options.withToast === true) {
+    atoms.Toast = (props) =>
+      runtime.React.createElement('div', {
+        'data-toast': props.text,
+        'data-toast-hold': props.holdMs === undefined ? null : String(props.holdMs),
+        // The real React strips `key` before the component sees it; this double
+        // keeps it reachable, because "the same text replays only when remounted"
+        // is a property of the key and nothing else here can pin it.
+        'data-toast-key': typeof props.key === 'string' ? props.key : null,
+        onClick: typeof props.onDone === 'function' ? props.onDone : undefined,
+      });
+  }
   const primitivesModule =
     primitives === 'ok'
       ? atoms
@@ -380,6 +527,40 @@ function loadClient(primitives, options = {}) {
             IconTriangleRightFillRegular: () => null,
           }
         : null;
+  /**
+   * g-062 fix round: the **interop shapes** a CJS `require` of an ESM module
+   * can hand back, so a case can pin what the probe does with each.
+   *
+   * `flat` (default) is the shape the platform's seed table really publishes
+   * (named exports on the namespace itself). `default` is the
+   * `__toESM(mod, 1)`-style wrapper the official client bundles normalize
+   * (every named export sits one `.default` down). `flat-with-default` is the
+   * trap: the atoms are there, so the *renderer* probe is satisfied, and the
+   * `Toast` sits under `.default` — the exact pair the real machine reported
+   * (`fallback` was not that pair, but the toast decision has to be right for
+   * both). `empty-object` and `undefined` are the two "resolved but useless"
+   * answers, and they must not be read as "the Host has a Toast".
+   * @param shape - the interop shape to publish.
+   * @param base - the flat namespace to wrap.
+   * @returns what the sandbox's `require` answers with.
+   */
+  const inInteropShape = (shape, base) => {
+    if (base === null) return null;
+    if (shape === 'undefined') return undefined;
+    if (shape === 'empty-object') return {};
+    if (shape === 'default') return { default: base };
+    if (shape === 'flat-with-default') return { ...base, default: atoms };
+    return base;
+  };
+  const publishedModule = inInteropShape(
+    options.primitivesShape || (options.unwrapAtoms === true ? 'default' : 'flat'),
+    // g-063: a case can publish the atoms in the shape the **real** Host ships
+    // them (`forwardRef` / `memo` objects, or an unusable look-alike) instead of
+    // the plain function components every earlier case used. The callback gets
+    // the default atoms and this sandbox's React double, and returns whatever
+    // block should sit at the module's top level.
+    typeof options.primitivesAtoms === 'function' ? options.primitivesAtoms(atoms, runtime.React) : primitivesModule,
+  );
   /**
    * The loader's `require.async('./client.x.js')`, doubled (g-045).
    *
@@ -426,7 +607,7 @@ function loadClient(primitives, options = {}) {
     if (name === 'react') return runtime.React;
     if (name === '@deepseek-ai/dsh-client-ui-primitives') {
       if (primitives === 'throw') throw new Error("Cannot find module '@deepseek-ai/dsh-client-ui-primitives'");
-      return primitivesModule;
+      return publishedModule;
     }
     // g-045: a chunk's one way back into the main bundle. The real loader
     // resolves the package id out of its module table, where the main factory
@@ -472,12 +653,20 @@ const LOCALE_SHAPES = ['full', 'bare', 'throwing', 'noRevision'];
  * Mount the client half against a stubbed cordis context.
  * @param module - the descriptor `client.js` registered.
  * @param localeShape - one of {@link LOCALE_SHAPES}.
+ * @param options - `declaredSlots`: the slots this Host actually declares. Omit
+ *   it for "every slot is declared", which is what every pre-g-062 case means; an
+ *   explicit list is how review C4's Host (the primitive without the slot) is
+ *   expressed, because `slots.inject` is exactly "run once the declaration
+ *   exists". `refusedSlots`: the slots this Host declares and then refuses to
+ *   register into — review R1's third seat.
  * @returns the captured registration, dictionaries and live ctx.
  */
-function mountClient(module, localeShape = 'full') {
+function mountClient(module, localeShape = 'full', options = {}) {
   let registeredSlot = null;
   const registrations = [];
   const dictionaries = [];
+  const declaredSlots = Array.isArray(options.declaredSlots) ? options.declaredSlots : null;
+  const refusedSlots = Array.isArray(options.refusedSlots) ? options.refusedSlots : null;
   const record = (ns, dict0) => {
     dictionaries.push({ ns, dict: dict0 });
     return () => {};
@@ -515,9 +704,16 @@ function mountClient(module, localeShape = 'full') {
     slots: {
       inject(slot, thunk) {
         registeredSlot = slot;
+        // The real service calls back only once the slot has been declared.
+        if (declaredSlots !== null && !declaredSlots.includes(slot)) return () => {};
         thunk();
       },
       register(options, component) {
+        // Review R1: a Host that declares the slot and refuses the entry is a
+        // third, different fact from "no slot".
+        if (refusedSlots !== null && refusedSlots.includes(options.name)) {
+          throw new Error(`the host refused the ${options.name} registration`);
+        }
         registrations.push({ options, component });
         return () => {};
       },
@@ -653,7 +849,7 @@ function historyRowIds(tree) {
   );
 }
 
-/** Click a tab in either branch: the fallback uses data-tab-key, the double does not. */
+/** Click a tab: the strip is hand-built under every renderer, so it is one selector (g-063 H2). */
 function clickAnyTab(tree, value) {
   const node = findOne(
     tree,
@@ -681,10 +877,10 @@ function tabPanel(tree) {
 }
 
 /**
- * Open one first-level tab. Selection is by value alone so this works in both
- * renderer branches (the official `SegmentedTabs` double labels its own group
- * `primitives`): the five values `mine` / `overview` / `history` / `backup` /
- * `advanced` occur on exactly one control each.
+ * Open one first-level tab. Selection is by value alone: the strip is the
+ * hand-built one under every renderer (g-063 H2), and the six values `mine` /
+ * `presets` / `overview` / `history` / `backup` / `advanced` occur on exactly one
+ * control each.
  */
 async function openTab(page, value, from) {
   const tree = from === undefined ? await page.flush() : from;
@@ -839,7 +1035,7 @@ function makePage(options = {}) {
   // file — the fallback is part of the contract, so a case can ask for that
   // engine instead of trusting a branch no one has run.
   if (options.withoutIntl === true) loaded.sandbox.Intl = undefined;
-  const mounted = mountClient(loaded.module, options.localeShape || 'full');
+  const mounted = mountClient(loaded.module, options.localeShape || 'full', options);
   const router = makeRouter(options.responses || {});
   loaded.sandbox.fetch = router.fetchStub;
   const language = options.language === undefined ? 'zh' : options.language;
@@ -1041,6 +1237,52 @@ function updateAvailableFixture(over = {}) {
     publishedAt: '2024-06-01T00:00:00.000Z',
     ...over,
   });
+}
+
+/**
+ * `GET /prompt-setting/assembly-status` payload (g-062).
+ *
+ * The default is the "nothing observed yet" shape: the switch on, no session
+ * named and therefore no record. A case that renders a notice passes `record`.
+ * @param over - fields to override.
+ * @returns the payload.
+ */
+function assemblyFixture(over = {}) {
+  return {
+    ok: true,
+    enabled: true,
+    session: null,
+    record: null,
+    counts: { sessions: 0, notices: 0, droppedNotices: 0, writes: 0, rejectedProbes: 0, noticeSeq: 0 },
+    basis: {
+      assembly: 'plugin-return',
+      delivery: 'surface-system-message',
+      httpObservable: false,
+      outerRewritePossible: true,
+    },
+    ...over,
+  };
+}
+
+/**
+ * One g-062 notice, as the host serializes it.
+ * @param over - fields to override.
+ * @returns the notice.
+ */
+function assemblyNoticeFixture(over = {}) {
+  return {
+    id: 'n1',
+    kind: 'first-assembly',
+    at: 1700000000000,
+    turn: 1,
+    step: 1,
+    configured: true,
+    assembly: { state: 'assembled', assembled: true, digest: 'abcd1234', length: 4, expectedDigest: 'abcd1234' },
+    delivery: { state: 'delivered', at: 1700000000100, seq: 12, surfaceOp: 'append', textMatched: true },
+    assemblyBasis: 'plugin-return',
+    probe: false,
+    ...over,
+  };
 }
 
 /**
@@ -1307,6 +1549,12 @@ const PATHS = {
   // g-032:「立即更新」— the install route, its status read and its cancel face.
   updateApply: '/prompt-setting/update-apply',
   updateApplyCancel: '/prompt-setting/update-apply/cancel',
+  // g-060 (Revision 37): the preset library, and the two workspace actions.
+  presets: '/prompt-setting/presets',
+  presetsApply: '/prompt-setting/presets/apply',
+  presetsUnapply: '/prompt-setting/presets/unapply',
+  // g-062:「装配状态提示」— the observation read and its switch.
+  assemblyStatus: '/prompt-setting/assembly-status',
 };
 
 /** The default stub table (every route the page may call on mount). */
@@ -1342,6 +1590,10 @@ function defaultResponses(over = {}) {
     [PATHS.interpolate]: {
       payload: { ok: true, interpolateCustom: true, layer: 'user', saved: { enabled: true }, effectiveFrom: 'next-turn' },
     },
+    // g-060: the preset library (CONTRACT.md §20.2).
+    [PATHS.presets]: { payload: presetsFixture() },
+    // g-062: nothing observed yet — the switch on, no session named.
+    [PATHS.assemblyStatus]: { payload: assemblyFixture() },
     ...over,
   };
 }
@@ -1506,9 +1758,21 @@ test('client: requests stay on the plugin prefix and report the renderer', async
   // that (on a first visit) lets the *host* decide the update source. Still one
   // request to this plugin's own prefix, and still none at all when the mirror
   // says the switch is off (asserted in the region section below).
+  // g-062 adds the baseline read of the assembly-status notice for the「我的
+  // Prompt」tab — again one request to this plugin's own prefix, and one that is
+  // only made while that tab is open.
   assert.deepEqual(
     [...new Set(urls.map((url) => url.split('?')[0]))].sort(),
-    [PATHS.downloadRegion, PATHS.overrides, PATHS.ping, PATHS.snapshot, PATHS.updateApply, PATHS.updateCheck],
+    [
+      PATHS.assemblyStatus,
+      PATHS.downloadRegion,
+      PATHS.overrides,
+      PATHS.ping,
+      PATHS.presets,
+      PATHS.snapshot,
+      PATHS.updateApply,
+      PATHS.updateCheck,
+    ],
   );
   // The global default: no `?session=`, so the workspace layer stays inactive.
   assert.deepEqual(urlsFor(page, PATHS.snapshot), [PATHS.snapshot]);
@@ -1987,6 +2251,8 @@ const TAB_CHUNKS = [
   ['backup', 'client.transfer.js'],
   ['advanced', 'client.advanced.js'],
   ['history', 'client.history.js'],
+  // g-060: 「预设」 is the fourth lazy boundary.
+  ['presets', 'client.presets.js'],
 ];
 
 /** A chunk source with its comment lines removed, so only code is asserted on. */
@@ -2102,6 +2368,1117 @@ test('client: every chunk depends on the entry alone — a DAG, with one copy of
   assert.equal(shared.h, loaded.runtime.React.createElement, 'one element factory for the whole bundle');
   assert.ok(shared.token && typeof shared.token === 'object', 'and one theme token table');
 });
+
+// #region g-061 batch 1: the four mechanical reuses
+test('client: g-061 — one regionKey covers both families, and no chunk keeps its own copy (criterion 3)', () => {
+  const loaded = loadClient('throw');
+  const shared = loaded.module.__internals.shared;
+  // The two families the page names: the「查看范围」label (`''`) and its one-line
+  // note (`'Note'`). These six strings are exactly what the two local helpers
+  // returned before the merge.
+  assert.equal(shared.regionKey('cn', ''), 'updateRegionCn');
+  assert.equal(shared.regionKey('custom', ''), 'updateRegionCustom');
+  assert.equal(shared.regionKey('default', ''), 'updateRegionDefault');
+  assert.equal(shared.regionKey('cn', 'Note'), 'updateRegionCnNote');
+  assert.equal(shared.regionKey('custom', 'Note'), 'updateRegionCustomNote');
+  assert.equal(shared.regionKey('default', 'Note'), 'updateRegionDefaultNote');
+  // An unknown id (a Host from the future, a hand-edited answer) still reads as
+  //「默认」in **both** families — the fallback is the shared rule now, not two
+  // rules that happened to agree.
+  assert.equal(shared.regionKey('soviet', ''), 'updateRegionDefault');
+  assert.equal(shared.regionKey('soviet', 'Note'), 'updateRegionDefaultNote');
+  // And the label-only helper the rule used to be split across is gone from the
+  // surface: nothing is left that could drift away from the other family.
+  assert.equal('regionLabelKey' in shared, false, 'the label-only key helper is gone, not renamed');
+  for (const name of CHUNK_FILES) {
+    const code = chunkCode(readFileSync(join(here, '..', name), 'utf8'));
+    assert.equal(
+      /updateRegion(Cn|Custom|Default)/.test(code),
+      false,
+      `${name}: the region-key rule stays in the entry, never as a chunk-local literal`,
+    );
+    assert.equal(/regionNoteKey/.test(code), false, `${name}: no local note-key helper`);
+  }
+});
+
+test('client: g-061 — every tab chunk takes its props adapter from the entry (criteria 3, 4)', () => {
+  const loaded = loadClient('throw');
+  const shared = loaded.module.__internals.shared;
+  // The adapter is one implementation of「unpack `{t, m, a}` into the positional
+  // arguments the chunk's renderer takes」, and the component it builds keeps the
+  // name its local declaration had — so React reports what it always reported.
+  const calls = [];
+  const t = () => 'x';
+  const m = { seat: 'model' };
+  const a = { seat: 'actions' };
+  const Probe = shared.chunkTab((bt, bm, ba) => {
+    calls.push([bt, bm, ba]);
+    return 'tree';
+  }, 'Probe');
+  assert.equal(Probe.name, 'Probe', 'the factory keeps the export’s own name');
+  assert.equal(Probe({ t, m, a }), 'tree', 'and hands the renderer the same three arguments');
+  assert.deepEqual(calls, [[t, m, a]], 'exactly once, in order');
+  // Five consumers, one implementation: each chunk binds `shared.chunkTab` and
+  // none of them writes the adapter out again.
+  assert.equal(CHUNK_FILES.length, 5, 'the five chunked tabs this batch covers');
+  for (const name of CHUNK_FILES) {
+    const code = chunkCode(readFileSync(join(here, '..', name), 'utf8'));
+    assert.match(code, /shared\.chunkTab/, `${name}: takes the props adapter from the shared surface`);
+    assert.equal(/function [A-Za-z_$]+\(props\)/.test(code), false, `${name}: no local props adapter is left`);
+  }
+  // #9: the one inlined `layerLabel` equivalent — the tag that names an override's
+  // layer. It now calls the shared helper instead of restating the ternary.
+  const advanced = chunkCode(readFileSync(join(here, '..', 'client.advanced.js'), 'utf8'));
+  assert.equal(advanced.includes("'ovWorkspace'"), false, 'the inlined layer ternary is gone');
+  assert.match(advanced, /layerLabel\(t, entry\.layer\)/, 'the tag reads the shared label helper');
+});
+
+test('client: g-061 — one workspace derivation publishes the two shapes it always did (criteria 3, 4)', () => {
+  const rows = loadClient('throw').module.__internals.workspaceRows;
+  const wsSeat = {
+    items: [
+      { workspaceId: 'w1', title: 'Alpha', path: '/tmp/alpha', sessionIds: ['s1', 's2'] },
+      { workspaceId: 'w2', title: '', path: '/tmp/beta', sessionIds: ['s3'] },
+      // A workspace no session ever ran in can only produce a refusal: skipped.
+      { workspaceId: 'w3', title: '', path: '/tmp/gamma', sessionIds: [] },
+      // No title and no path ⇒ the workspace id names it.
+      { workspaceId: 'w4', title: '', path: '', sessionIds: ['s4'] },
+    ],
+  };
+  const seat = { rows: [{ id: 'r1' }, { id: 'r2' }] };
+  // The version-history selector's shape — `value` / `workspaceId` / `sessionIds`,
+  // no `root`: unchanged field by field.
+  assert.deepEqual(JSON.parse(JSON.stringify(rows(wsSeat, seat, { withRoot: false }))), [
+    { value: 's1', label: 'Alpha', workspaceId: 'w1', sessionIds: ['s1', 's2'] },
+    { value: 's3', label: 'beta', workspaceId: 'w2', sessionIds: ['s3'] },
+    { value: 's4', label: 'w4', workspaceId: 'w4', sessionIds: ['s4'] },
+  ]);
+  // The preset picker's shape — `session` / `root` / `label`, and `root` is the
+  // real path or an explicit `null`, never a missing field.
+  assert.deepEqual(JSON.parse(JSON.stringify(rows(wsSeat, seat, { withRoot: true }))), [
+    { session: 's1', root: '/tmp/alpha', label: 'Alpha' },
+    { session: 's3', root: '/tmp/beta', label: 'beta' },
+    { session: 's4', root: null, label: 'w4' },
+  ]);
+  // No usable workspace ⇒ the session catalog in both shapes (the selector
+  // announces that fallback in words; the picker lists the same sessions).
+  assert.deepEqual(JSON.parse(JSON.stringify(rows(null, seat, { withRoot: false }))), [
+    { value: 'r1', label: 'r1', workspaceId: '', sessionIds: ['r1'] },
+    { value: 'r2', label: 'r2', workspaceId: '', sessionIds: ['r2'] },
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(rows(null, seat, { withRoot: true }))), [
+    { session: 'r1', root: null, label: 'r1' },
+    { session: 'r2', root: null, label: 'r2' },
+  ]);
+  // …and nothing at all stays empty, which is what the two call sites turn into
+  // `{mode: 'none', options: []}` and `[]` respectively — the shapes differ, the
+  // derivation does not.
+  assert.deepEqual(JSON.parse(JSON.stringify(rows(null, { rows: [] }, { withRoot: false }))), []);
+  assert.deepEqual(JSON.parse(JSON.stringify(rows(null, { rows: [] }, { withRoot: true }))), []);
+});
+// #endregion
+
+// #region g-061 batch 2: the four style families
+
+/** How many times `needle` occurs in `code`. */
+function occurrencesOf(code, needle) {
+  return code.split(needle).length - 1;
+}
+
+test('client: g-061 — one scrim, and the confirmation’s 1200 is its own argument (criteria 3, 4)', async () => {
+  const shared = loadClient('throw').module.__internals.shared;
+  // The backdrop, field for field. Four copies differed in the layer alone, so
+  // the layer is the argument — and it has **no default**: a scrim built with no
+  // argument carries no layer at all, so a call site that forgot to state one
+  // cannot silently become 1000 (or 1200).
+  const backdrop = {
+    position: 'fixed',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+    background: 'rgba(0, 0, 0, 0.45)',
+  };
+  assert.deepEqual({ ...shared.scrimStyle(1000) }, { ...backdrop, zIndex: 1000 });
+  assert.deepEqual({ ...shared.scrimStyle(1200) }, { ...backdrop, zIndex: 1200 });
+  assert.equal(shared.scrimStyle.length, 1, 'the layer is a required parameter');
+  assert.equal(shared.scrimStyle(undefined).zIndex, undefined, 'there is no default layer to absorb the call site’s');
+  assert.notEqual(shared.scrimStyle(1200).zIndex, shared.scrimStyle(1000).zIndex, 'the argument really decides the layer');
+
+  // Four consumers, one implementation: the entry’s two dialogs, and the two
+  // chunks that draw dialogs of their own. No chunk keeps a copy of the
+  // backdrop, and none states a layer in a private object.
+  const entry = readFileSync(join(here, '..', 'client.js'), 'utf8');
+  assert.deepEqual(
+    [...entry.matchAll(/scrimStyle\((\d+)\)/g)].map((match) => match[1]),
+    ['1200', '1000'],
+    'renderConfirm states 1200 and renderRegionDialog states 1000',
+  );
+  const presets = chunkCode(readFileSync(join(here, '..', 'client.presets.js'), 'utf8'));
+  const history = chunkCode(readFileSync(join(here, '..', 'client.history.js'), 'utf8'));
+  assert.match(presets, /OVERLAY_STYLE = scrimStyle\(1000\)/, 'the preset dialogs take the shared scrim at 1000');
+  assert.match(history, /style: scrimStyle\(1000\)/, 'so does the history modal');
+  for (const name of CHUNK_FILES) {
+    const code = chunkCode(readFileSync(join(here, '..', name), 'utf8'));
+    assert.equal(/zIndex:\s*\d+/.test(code), false, `${name}: no copied backdrop layer`);
+    assert.equal(code.includes('rgba(0, 0, 0, 0.45)'), false, `${name}: no copied scrim`);
+  }
+
+  // …and the number is what the page really draws: the confirmation overlay —
+  // the question every tab dialog must stay below — is rendered at 1200.
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.overrides]: {
+        payload: layeredOverrides([{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text' }]),
+      },
+    }),
+  });
+  clickButton(await page.flush(), { 'data-action': 'mine-reset' });
+  const overlay = oneBy(await page.flush(), 'data-region', 'confirm-overlay');
+  assert.deepEqual({ ...overlay.props.style }, { ...backdrop, zIndex: 1200 }, 'the question is above every tab dialog');
+  // The region dialog — the entry’s other scrim — is asserted at run time by
+  // 「a refused custom address stays in the dialog」 (it renders inside the same
+  // overlay object), and the two chunk dialogs by the tables below.
+});
+
+test('client: g-061 — one error line, with each call site’s own markers and size (criteria 2, 3)', async () => {
+  const shared = loadClient('throw').module.__internals.shared;
+  const red = 'var(--dsw-alias-state-error-primary)';
+  // The three shapes, field for field. The shape (a `div`), the red and the
+  // 13px are shared; the tag, the marker, the break rule and the text in front
+  // of the message stay each call site’s own.
+  const regionLine = shared.errorLine({
+    role: 'region-error',
+    probe: 'data-region-error',
+    code: 'registry-invalid',
+    fontSize: 13,
+    text: 'boom',
+  });
+  assert.equal(regionLine.type, 'div');
+  assert.deepEqual({ ...regionLine.props.style }, { fontSize: 13, color: red }, 'no break rule, exactly as before');
+  assert.equal(regionLine.props['data-role'], 'region-error');
+  assert.equal(regionLine.props['data-region-error'], 'registry-invalid');
+  assert.equal(regionLine.props.children, 'boom');
+
+  const presetLine = shared.errorLine({
+    role: 'preset-dialog-error',
+    probe: 'data-preset-dialog-error',
+    code: undefined,
+    fontSize: 13,
+    wrap: true,
+    text: 'Preset failed: boom',
+  });
+  assert.deepEqual(
+    { ...presetLine.props.style },
+    { fontSize: 13, color: red, wordBreak: 'break-word' },
+    'the preset line breaks long host messages',
+  );
+  assert.equal(presetLine.props['data-role'], 'preset-dialog-error');
+  assert.equal(presetLine.props['data-preset-dialog-error'], 'unknown', 'a missing code is still stated, never omitted');
+
+  const failureLine = shared.errorLine({ tag: 'p', fontSize: 13, margin: 0, wrap: true, text: 'Error: boom' });
+  assert.equal(failureLine.type, 'p', 'the failure card’s line is a paragraph, not a div');
+  assert.deepEqual(
+    { ...failureLine.props.style },
+    { fontSize: 13, color: red, margin: 0, wordBreak: 'break-word' },
+    'and it carries the paragraph reset the others do not',
+  );
+  assert.equal(failureLine.props['data-role'], undefined, 'the failure card carries no dialog marker');
+  assert.equal(failureLine.props['data-region-error'], undefined);
+
+  // The size is the caller’s, not a constant the factory hides: another size is
+  // another style, and the two dialog lines keep 13 explicitly.
+  assert.equal(shared.errorLine({ fontSize: 12, text: 'x' }).props.style.fontSize, 12);
+  assert.equal(
+    shared.errorLine({ text: 'x' }).props.style.fontSize,
+    undefined,
+    'and with no size stated there is no default to hide behind (reviewer g-061 batch 2)',
+  );
+
+  // Three consumers, one implementation — and no call site writes the line out
+  // again. The entry states both of its lines through the factory; the chunk
+  // keeps its own adapter (it reads the model) but builds the element with it.
+  const entry = readFileSync(join(here, '..', 'client.js'), 'utf8');
+  assert.equal(occurrencesOf(entry, "'data-role': 'region-error'"), 0, 'the entry no longer writes the line by hand');
+  assert.equal(occurrencesOf(entry, "role: 'region-error'"), 1);
+  assert.equal(occurrencesOf(entry, "probe: 'data-region-error'"), 1);
+  assert.equal(occurrencesOf(entry, 'errorLine({'), 2, 'the region dialog and the failure card, and nothing else');
+  const presets = chunkCode(readFileSync(join(here, '..', 'client.presets.js'), 'utf8'));
+  assert.equal(occurrencesOf(presets, "'data-preset-dialog-error': typeof"), 0, 'the preset line is not built locally');
+  assert.equal(occurrencesOf(presets, "role: 'preset-dialog-error'"), 1);
+  assert.equal(occurrencesOf(presets, "probe: 'data-preset-dialog-error'"), 1);
+  assert.equal(occurrencesOf(presets, 'errorLine({'), 1);
+
+  // At run time: a refused custom address still renders that exact line — the
+  // marker, the code and a red, non-wrapping 13px div and nothing else.
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.downloadRegion]: (target, init) =>
+        init.method === 'PUT'
+          ? {
+              status: 200,
+              payload: {
+                ok: false,
+                code: 'registry-invalid',
+                message: 'the host refused it',
+                region: 'custom',
+                registry: null,
+                effectiveFrom: 'unchanged',
+              },
+            }
+          : { payload: regionFixture() },
+    }),
+  });
+  let tree = await openTab(page, 'advanced');
+  chooseRegion(tree, 'custom');
+  tree = page.draw();
+  typeInto(tree, 'region-input', 'https://mirror.example/npm');
+  tree = page.draw();
+  clickButton(tree, { 'data-action': 'region-save' });
+  const refused = oneBy(await page.flush(), 'data-role', 'region-error');
+  assert.deepEqual(
+    { ...refused.props.style },
+    { fontSize: 13, color: red },
+    'the rendered line is the factory’s, point for point',
+  );
+});
+
+test('client: g-061 — the carded empty state is shared; the other two are not, and say why (criterion 3)', async () => {
+  const shared = loadClient('throw').module.__internals.shared;
+  // One implementation of「a list with no rows draws a card」: the container and
+  // its marker, nothing else. The text inside stays the caller’s — one line in
+  // 「高级」, a title plus a body in 「提示词总览」.
+  const card = shared.emptyCard('overrides', 'nothing');
+  assert.equal(card.type, 'div');
+  assert.equal(card.props['data-empty'], 'overrides');
+  assert.deepEqual({ ...card.props.style }, { ...shared.cardStyle });
+  assert.equal(card.props.children, 'nothing');
+
+  // Two consumers, and the page really renders both of them.
+  const advanced = makePage({
+    responses: defaultResponses({ [PATHS.overrides]: { payload: overridesFixture({ merged: { overrides: [] } }) } }),
+  });
+  const emptyOverrides = oneBy(await openAdvanced(advanced), 'data-empty', 'overrides');
+  assert.deepEqual({ ...emptyOverrides.props.style }, { ...shared.cardStyle }, '「高级」still draws the card');
+  assert.equal(strings(emptyOverrides).join(''), advanced.zh.ovEmpty);
+
+  const overview = makePage({
+    responses: defaultResponses({
+      [PATHS.snapshot]: { payload: snapshotFixture({ effective: { sections: [] } }) },
+    }),
+  });
+  const emptySections = oneBy(await openOverview(overview), 'data-empty', 'sections');
+  assert.deepEqual({ ...emptySections.props.style }, { ...shared.cardStyle }, '「提示词总览」still draws the card');
+  assert.equal(strings(emptySections).join(''), `${overview.zh.emptyTitle}${overview.zh.emptyBody}`);
+
+  // The other two empty states are **not** this shape and stay as they were:
+  // different container, different marker family, different box. The assertions
+  // record the reason rather than a merge nobody can see.
+  const history = chunkCode(readFileSync(join(here, '..', 'client.history.js'), 'utf8'));
+  assert.match(
+    history,
+    /'data-empty': 'history', style: metaStyle/,
+    '「版本历史」prints one meta line, with no card at all — merging it would add a box',
+  );
+  const presets = chunkCode(readFileSync(join(here, '..', 'client.presets.js'), 'utf8'));
+  assert.match(
+    presets,
+    /'data-region': 'presets-empty', style: \{ margin: 0, \.\.\.metaStyle \}/,
+    '「我的预设」prints a bare marked paragraph with its own margin — a different container and marker family',
+  );
+});
+
+test('client: g-061 — one pre-wrap text box, parameterised point by point (criteria 3, 4)', async () => {
+  const shared = loadClient('throw').module.__internals.shared;
+  const mono = shared.token.mono;
+  const l1 = `1px solid ${shared.token.borderL1}`;
+  const l2 = `1px solid ${shared.token.borderL2}`;
+  const dim = shared.token.labelSecondary;
+  // The skeleton is the same everywhere; the box around it is the caller’s.
+  // The history preview’s box is the one that names **no** family: the key is
+  // absent from the style object, exactly as it was before the merge, so the
+  // pre element keeps taking the browser’s own default instead of the theme’s
+  // stack. Asserting `fontFamily: mono` here would have frozen a visible
+  // change as if it were the baseline.
+  const historyBox = shared.monoTextBox({
+    padding: '4px 6px',
+    radius: 6,
+    border: shared.token.borderL1,
+    maxHeight: 200,
+    scroll: 'overflowY',
+  });
+  assert.deepEqual(
+    { ...historyBox },
+    {
+      margin: 0,
+      fontSize: 12,
+      whiteSpace: 'pre-wrap',
+      wordBreak: 'break-word',
+      padding: '4px 6px',
+      borderRadius: 6,
+      border: l1,
+      maxHeight: 200,
+      overflowY: 'auto',
+    },
+    'the history preview’s box, field for field',
+  );
+  assert.equal('fontFamily' in historyBox, false, 'and with no font family at all, which is its own state');
+  // Negative: every one of those differences is a parameter, and none of them
+  // has a default that could absorb a call site’s value.
+  assert.equal(shared.monoTextBox({}).maxHeight, undefined, 'no default maxHeight');
+  assert.equal(shared.monoTextBox({}).padding, undefined, 'no default padding');
+  assert.equal(shared.monoTextBox({}).borderRadius, undefined, 'no default radius');
+  assert.equal(shared.monoTextBox({}).border, undefined, 'no default border');
+  assert.equal(shared.monoTextBox({}).overflow, undefined, 'no default scrolling');
+  assert.equal(shared.monoTextBox({}).lineHeight, undefined, 'no default line height');
+  assert.equal(shared.monoTextBox({}).color, undefined, 'no default colour');
+  assert.equal('fontFamily' in shared.monoTextBox({}), false, 'no default font family either');
+  assert.equal(shared.monoTextBox({ mono: false }).fontFamily, 'inherit', 'inherit is stated, not assumed');
+  assert.equal(shared.monoTextBox({ mono: true }).fontFamily, mono, 'and the theme’s stack is stated when it is meant');
+  assert.deepEqual(
+    [true, false].map((mono) => 'fontFamily' in shared.monoTextBox({ mono })),
+    [true, true],
+    'both stated families really write the key',
+  );
+  // The four heights the page really uses are four different boxes.
+  assert.deepEqual(
+    [200, 220, 320, 460].map((maxHeight) => shared.monoTextBox({ maxHeight }).maxHeight),
+    [200, 220, 320, 460],
+  );
+
+  // Five consumers across three chunks; no chunk writes the skeleton out again
+  // (the diff-op line keeps only its two break rules — it is not a box).
+  for (const name of CHUNK_FILES) {
+    const code = chunkCode(readFileSync(join(here, '..', name), 'utf8'));
+    assert.equal(occurrencesOf(code, 'fontFamily:'), 0, `${name}: no local font family decision is left`);
+  }
+  const presets = chunkCode(readFileSync(join(here, '..', 'client.presets.js'), 'utf8'));
+  const overviewCode = chunkCode(readFileSync(join(here, '..', 'client.overview.js'), 'utf8'));
+  const historyCode = chunkCode(readFileSync(join(here, '..', 'client.history.js'), 'utf8'));
+  assert.equal(occurrencesOf(presets, 'monoTextBox({'), 1);
+  assert.equal(occurrencesOf(overviewCode, 'monoTextBox({'), 3, 'the section body, the full text and the diff detail');
+  assert.equal(occurrencesOf(historyCode, 'monoTextBox({'), 1);
+
+  // At run time: the same three overview boxes and the preset preview, each
+  // still carrying its own values.
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openOverview(page);
+  clickButton(tree, { 'data-action': 'expand', 'data-section-name': 'project:alpha' });
+  tree = await page.flush();
+  assert.deepEqual(
+    { ...oneBy(tree, 'data-section-full', 'project:alpha').props.style },
+    {
+      margin: 0,
+      fontSize: 12,
+      whiteSpace: 'pre-wrap',
+      wordBreak: 'break-word',
+      fontFamily: mono,
+      padding: '8px 10px',
+      borderRadius: 8,
+      border: l2,
+      lineHeight: '18px',
+      maxHeight: 320,
+      overflow: 'auto',
+      color: dim,
+    },
+    'the expanded section’s body keeps 8/10, radius 8, L2 and 320',
+  );
+  clickTab(tree, 'view', 'full');
+  tree = await page.flush();
+  assert.deepEqual(
+    { ...oneBy(tree, 'data-full-text', 'rendered').props.style },
+    {
+      margin: 0,
+      fontSize: 12,
+      whiteSpace: 'pre-wrap',
+      wordBreak: 'break-word',
+      fontFamily: mono,
+      padding: '10px 12px',
+      borderRadius: 8,
+      border: l2,
+      lineHeight: '18px',
+      maxHeight: 460,
+      overflow: 'auto',
+      color: dim,
+    },
+    'the full text keeps 10/12, radius 8, L2 and 460',
+  );
+  assert.deepEqual(
+    { ...oneBy(tree, 'data-diff-detail', 'project:alpha').props.style },
+    {
+      margin: 0,
+      fontSize: 12,
+      whiteSpace: 'pre-wrap',
+      wordBreak: 'break-word',
+      fontFamily: mono,
+      padding: '6px 8px',
+      borderRadius: 6,
+      lineHeight: '18px',
+      maxHeight: 220,
+      overflow: 'auto',
+    },
+    'the diff detail keeps 6/8, radius 6, no stroke and 220',
+  );
+
+  const presetPage = makePage({ responses: defaultResponses() });
+  const presetTree = await openTab(presetPage, 'presets');
+  const previews = collect(presetTree, (node) => node.props && node.props['data-role'] === 'preset-preview');
+  assert.equal(previews.length, 2, 'one preview per stored preset');
+  for (const preview of previews) {
+    assert.deepEqual(
+      { ...preview.props.style },
+      {
+        margin: 0,
+        fontSize: 12,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        fontFamily: 'inherit',
+        color: shared.token.labelSecondary,
+      },
+      'the preset preview is the one box that inherits the page font',
+    );
+  }
+
+  // …and the history preview’s box, at run time, still names no family: the
+  // rendered pre element carries the same key-less skeleton it carried before the
+  // merge, so the browser keeps choosing its font.
+  const historyPage = makePage({ responses: defaultResponses() });
+  let historyTree = await openHistory(historyPage);
+  clickButton(historyRowOf(historyTree, '2'), { 'data-action': 'history-preview', 'data-history-id': '2' });
+  historyTree = await historyPage.flush();
+  const previewTexts = collect(historyTree, (node) => node.props && node.props['data-preview-text'] !== undefined);
+  assert.equal(previewTexts.length, 2, 'the preview renders its before and after boxes');
+  for (const node of previewTexts) {
+    assert.equal('fontFamily' in node.props.style, false, `${node.props['data-preview-text']}: no font family is stated`);
+    assert.deepEqual(
+      { ...node.props.style },
+      {
+        margin: 0,
+        fontSize: 12,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+        padding: '4px 6px',
+        borderRadius: 6,
+        border: `1px solid ${shared.token.borderL1}`,
+        maxHeight: 200,
+        overflowY: 'auto',
+      },
+      `${node.props['data-preview-text']}: the history box keeps 4/6, radius 6, L1, 200 and one-axis scrolling`,
+    );
+  }
+});
+// #endregion
+
+// #region g-061 batch 3: the dialog shell, the ghost button families, the session row and the search
+
+test('client: g-061 — one dialog card, and every call site’s own measurements survive (criteria 3, 4)', async () => {
+  const shared = loadClient('throw').module.__internals.shared;
+  const token = shared.token;
+  // The shell all four call sites share: the card's own stroke, surface and
+  // radius, plus the dialog padding and shadow they all state identically.
+  const shell = {
+    border: `1px solid ${token.surfaceStroke}`,
+    background: token.surface,
+    borderRadius: 10,
+    display: 'flex',
+    flexDirection: 'column',
+    padding: '16px 18px',
+    boxShadow: '0 12px 32px rgba(0, 0, 0, 0.35)',
+  };
+  // The factory, field for field — and the negative that keeps it honest: a
+  // measurement nobody states is a measurement nobody writes, so no default can
+  // absorb a call site's value.
+  assert.deepEqual(
+    { ...shared.dialogCardStyle({ width: '100%', gap: 10, maxWidth: 480 }) },
+    { ...shell, width: '100%', gap: 10, maxWidth: 480 },
+  );
+  const bare = shared.dialogCardStyle({ width: '100%' });
+  for (const key of ['gap', 'maxWidth', 'maxHeight', 'height', 'overflow', 'overflowY', 'position']) {
+    assert.equal(key in bare, false, `${key} is written only because a caller states it`);
+  }
+  assert.deepEqual(
+    {
+      ...shared.dialogCardStyle({
+        width: 'min(1040px, 92vw)',
+        maxWidth: '92vw',
+        height: 'h',
+        maxHeight: 'm',
+        overflow: 'overflowY',
+        position: 'relative',
+      }),
+    },
+    {
+      ...shell,
+      width: 'min(1040px, 92vw)',
+      maxWidth: '92vw',
+      height: 'h',
+      maxHeight: 'm',
+      overflowY: 'auto',
+      position: 'relative',
+    },
+    'which axis scrolls is the call site’s word, so overflowY and overflow stay two declarations',
+  );
+
+  // Four call sites, one shell: two in the entry, one in each of the two chunks
+  // that draw dialogs of their own.
+  const entry = readFileSync(join(here, '..', 'client.js'), 'utf8');
+  assert.equal(occurrencesOf(entry, 'dialogCardStyle({'), 2, 'the confirmation and the「自定义」dialog');
+  const presets = chunkCode(readFileSync(join(here, '..', 'client.presets.js'), 'utf8'));
+  assert.equal(occurrencesOf(presets, 'dialogCardStyle({'), 1);
+  const history = chunkCode(readFileSync(join(here, '..', 'client.history.js'), 'utf8'));
+  assert.equal(occurrencesOf(history, 'dialogCardStyle({'), 1);
+  // Two other card-shaped blocks are **not** this shell and stay as they are:
+  // they are content cards with their own gaps and no dialog padding or shadow.
+  assert.equal(occurrencesOf(history, '...cardStyle'), 1, 'the comparison card is a content card, not a dialog');
+  assert.equal(occurrencesOf(presets, '...cardStyle'), 2, 'so are the preset card and the library-error box');
+
+  // …and each one really draws what it states. The confirmation first: 480,
+  // 80vh, one axis, and **no** gap at all — its three-level grouping is the
+  // `marginTop` spacing §17 describes — with the warning stroke declared after
+  // the shell so that the warning is the stroke that wins.
+  const confirm = makePage({
+    responses: defaultResponses({
+      [PATHS.overrides]: {
+        payload: layeredOverrides([{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text' }]),
+      },
+    }),
+  });
+  clickButton(await confirm.flush(), { 'data-action': 'mine-reset' });
+  const confirmCard = oneBy(await confirm.flush(), 'data-region', 'confirm');
+  assert.deepEqual(
+    { ...confirmCard.props.style },
+    { ...shell, width: '100%', maxWidth: 480, maxHeight: '80vh', overflowY: 'auto', borderColor: token.stateWarn },
+    'the confirmation’s own 480 / 80vh / one-axis / no-gap, plus its warning stroke',
+  );
+  assert.equal('gap' in confirmCard.props.style, false, 'the confirmation has never had a gap, and gains none');
+
+  // The「自定义」dialog: 480 and a gap, and **neither** a maxHeight nor an
+  // overflow. It is the one call site that states neither, kept as it is.
+  const region = makePage({ responses: defaultResponses() });
+  let regionTree = await openTab(region, 'advanced');
+  chooseRegion(regionTree, 'custom');
+  regionTree = region.draw();
+  const regionCard = oneBy(regionTree, 'data-region', 'region-dialog');
+  assert.deepEqual({ ...regionCard.props.style }, { ...shell, width: '100%', gap: 10, maxWidth: 480 });
+  for (const key of ['maxHeight', 'overflow', 'overflowY', 'height', 'position']) {
+    assert.equal(key in regionCard.props.style, false, `the「自定义」dialog states no ${key}`);
+  }
+
+  // The preset editor: 520 rather than 480, and a two-axis scroll rather than
+  // `overflowY`. Both are the page's own values and both are kept.
+  const presetsPage = makePage({ responses: defaultResponses() });
+  let presetsTree = await openTab(presetsPage, 'presets');
+  clickButton(presetsTree, { 'data-action': 'preset-new' });
+  presetsTree = await presetsPage.flush();
+  const presetCard = oneBy(presetsTree, 'data-region', 'preset-editor-dialog');
+  assert.deepEqual(
+    { ...presetCard.props.style },
+    { ...shell, width: '100%', gap: 10, maxWidth: 520, maxHeight: '80vh', overflow: 'auto' },
+    'the preset dialog keeps its 520 and its two-axis scroll',
+  );
+  assert.equal('overflowY' in presetCard.props.style, false, 'and states no overflowY');
+
+  // The history comparison modal: its own proportional width, both a height and
+  // a maxHeight, the redundant 92vw maxWidth (kept, because removing a declared
+  // value is a change even where it has no effect), and `position: relative`
+  // because its close button is anchored to that corner.
+  const historyPage = makePage({ responses: defaultResponses() });
+  let historyTree = await openHistory(historyPage);
+  clickButton(historyRowOf(historyTree, '2'), { 'data-action': 'history-preview', 'data-history-id': '2' });
+  historyTree = await historyPage.flush();
+  const modalCard = oneBy(historyTree, 'data-region', 'history-preview-modal');
+  assert.deepEqual(
+    { ...modalCard.props.style },
+    {
+      ...shell,
+      width: 'min(1040px, 92vw)',
+      gap: 10,
+      maxWidth: '92vw',
+      height: 'min(82vh, 900px)',
+      maxHeight: 'min(82vh, 900px)',
+      overflowY: 'auto',
+      position: 'relative',
+    },
+    'the history modal keeps its redundant maxWidth and its relative position',
+  );
+});
+
+test('client: g-061 — one dialog title line and one actions row, at each call site’s values (criteria 3, 4)', async () => {
+  const shared = loadClient('throw').module.__internals.shared;
+  const token = shared.token;
+  assert.deepEqual(
+    { ...shared.dialogTitleStyle({ fontSize: 14, tone: token.stateWarn, lineHeight: 1.4 }) },
+    { fontSize: 14, fontWeight: 600, lineHeight: 1.4, color: token.stateWarn },
+  );
+  const plainTitle = shared.dialogTitleStyle({ fontSize: 15 });
+  assert.deepEqual({ ...plainTitle }, { fontSize: 15, fontWeight: 600 }, 'no tone and no line height unless stated');
+  assert.equal('color' in plainTitle, false);
+  assert.equal('lineHeight' in plainTitle, false);
+
+  assert.deepEqual(
+    { ...shared.dialogActionsStyle({ divider: true }) },
+    { display: 'flex', gap: 8, marginTop: 16, paddingTop: 12, borderTop: `1px solid ${token.borderL1}` },
+  );
+  assert.deepEqual(
+    { ...shared.dialogActionsStyle({ align: 'flex-end', wrap: true }) },
+    { display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' },
+    'the preset row is right-aligned and wraps, and carries no divider',
+  );
+
+  const entry = readFileSync(join(here, '..', 'client.js'), 'utf8');
+  assert.equal(occurrencesOf(entry, 'dialogTitleStyle({'), 1, 'the confirmation’s title, reused by the region dialog');
+  assert.equal(occurrencesOf(entry, 'dialogActionsStyle({'), 1, 'and its actions row, likewise');
+  const presets = chunkCode(readFileSync(join(here, '..', 'client.presets.js'), 'utf8'));
+  assert.equal(occurrencesOf(presets, 'dialogTitleStyle({'), 1);
+  assert.equal(occurrencesOf(presets, 'dialogActionsStyle({'), 1);
+  // The history modal's head is a different shape — a flex row holding a title
+  // beside an absolutely positioned close button — and stays one: it takes
+  // neither factory.
+  const history = chunkCode(readFileSync(join(here, '..', 'client.history.js'), 'utf8'));
+  assert.equal(occurrencesOf(history, 'dialogTitleStyle({'), 0, 'the history head is not this shape');
+  assert.equal(occurrencesOf(history, 'dialogActionsStyle({'), 0, 'and it has no actions row');
+
+  // Rendered: the confirmation and the「自定义」dialog are the **same two
+  // objects**, which is what「完全同级」means here; the preset dialogs are their
+  // own, at their own 15.
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.overrides]: {
+        payload: layeredOverrides([{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text' }]),
+      },
+    }),
+  });
+  clickButton(await page.flush(), { 'data-action': 'mine-reset' });
+  const tree = await page.flush();
+  const confirmTitle = elementChildren(oneBy(tree, 'data-region', 'confirm'))[0];
+  assert.deepEqual(
+    { ...confirmTitle.props.style },
+    { fontSize: 14, fontWeight: 600, lineHeight: 1.4, color: token.stateWarn },
+    'the confirmation’s title is 14, warns, and states its own line height',
+  );
+  const confirmActions = oneBy(tree, 'data-role', 'confirm-actions');
+  assert.deepEqual(
+    { ...confirmActions.props.style },
+    { display: 'flex', gap: 8, marginTop: 16, paddingTop: 12, borderTop: `1px solid ${token.borderL1}` },
+    'and its actions row carries the top divider',
+  );
+
+  const region = makePage({ responses: defaultResponses() });
+  let regionTree = await openTab(region, 'advanced');
+  chooseRegion(regionTree, 'custom');
+  regionTree = region.draw();
+  const regionTitle = elementChildren(oneBy(regionTree, 'data-region', 'region-dialog'))[0];
+  assert.deepEqual(
+    { ...regionTitle.props.style },
+    { ...confirmTitle.props.style },
+    'the「自定义」title draws the confirmation’s own values',
+  );
+  const regionActions = oneBy(regionTree, 'data-role', 'region-actions');
+  assert.deepEqual(
+    { ...regionActions.props.style },
+    { ...confirmActions.props.style },
+    'and so does its actions row — the two dialogs stay exactly同级',
+  );
+  // Two bindings, not two values that happen to agree: both「自定义」nodes take
+  // the confirmation's own constants, so the two cannot drift apart.
+  assert.equal(occurrencesOf(entry, 'style: confirmTitleStyle'), 2, 'one title object for both dialogs');
+  assert.equal(occurrencesOf(entry, 'style: confirmActionsStyle'), 2, 'and one actions row');
+
+  const presetsPage = makePage({ responses: defaultResponses() });
+  let presetsTree = await openTab(presetsPage, 'presets');
+  clickButton(presetsTree, { 'data-action': 'preset-new' });
+  presetsTree = await presetsPage.flush();
+  const presetCard = oneBy(presetsTree, 'data-region', 'preset-editor-dialog');
+  assert.deepEqual(
+    { ...elementChildren(presetCard)[0].props.style },
+    { fontSize: 15, fontWeight: 600 },
+    'the preset dialog keeps the 15 beside the confirmation’s 14',
+  );
+  assert.deepEqual(
+    { ...oneBy(presetsTree, 'data-role', 'preset-dialog-actions').props.style },
+    { display: 'flex', gap: 8, justifyContent: 'flex-end', flexWrap: 'wrap' },
+    'and keeps its right alignment and its (currently idle) wrap',
+  );
+});
+
+test('client: g-061 — three ghost-button families, and not one drift repaired (criteria 3, 4)', async () => {
+  const shared = loadClient('throw').module.__internals.shared;
+  const token = shared.token;
+  // chip: the pill. 999 and 3px/10px are the shape; the colours are the
+  // caller's, and the three call sites really differ in their unselected text.
+  assert.deepEqual(
+    { ...shared.chipButtonStyle({ cursor: 'pointer', color: 'c', background: 'b', border: 's' }) },
+    {
+      font: 'inherit',
+      fontSize: 12,
+      lineHeight: '18px',
+      padding: '3px 10px',
+      borderRadius: 999,
+      cursor: 'pointer',
+      color: 'c',
+      background: 'b',
+      border: '1px solid s',
+    },
+  );
+  // mini: radius 6, and **no lineHeight key** unless the caller states one —
+  // three of the five call sites state none, and adding the 18px would change
+  // how tall those rows are.
+  const mini = shared.miniButtonStyle({ padding: '2px 8px', color: 'c', background: 'transparent', border: 'none' });
+  assert.deepEqual(
+    { ...mini },
+    {
+      font: 'inherit',
+      fontSize: 12,
+      padding: '2px 8px',
+      borderRadius: 6,
+      cursor: 'pointer',
+      color: 'c',
+      background: 'transparent',
+      border: 'none',
+    },
+  );
+  assert.equal('lineHeight' in mini, false, 'no line height is written unless the caller states one');
+  assert.equal(
+    shared.miniButtonStyle({ padding: 'p', lineHeight: '18px', color: 'c', background: 'b', border: 'x' }).lineHeight,
+    '18px',
+    'and it is written verbatim when it is',
+  );
+
+  const entry = readFileSync(join(here, '..', 'client.js'), 'utf8');
+  assert.equal(occurrencesOf(entry, 'chipButtonStyle({'), 3, 'the fallback tab, the pinned entries and the search fallback');
+  assert.equal(occurrencesOf(entry, 'miniButtonStyle({'), 1, '「显示更多」 — the row family is the session row');
+  const history = chunkCode(readFileSync(join(here, '..', 'client.history.js'), 'utf8'));
+  assert.equal(occurrencesOf(history, 'miniButtonStyle({'), 3, 'the two side buttons, the pager and the scope option row');
+  const overview = chunkCode(readFileSync(join(here, '..', 'client.overview.js'), 'utf8'));
+  assert.equal(occurrencesOf(overview, 'miniButtonStyle({'), 1, 'the section expand toggle');
+  // The pager's 2px/10px is this family's one odd value, and it is kept, stated.
+  assert.match(history, /padding: '2px 10px'/, 'the pager keeps the padding its neighbours do not use');
+  for (const name of CHUNK_FILES) {
+    const code = chunkCode(readFileSync(join(here, '..', name), 'utf8'));
+    assert.equal(code.includes('borderRadius: 999'), false, `${name}: the pill radius is not spelled out again`);
+  }
+
+  // Rendered, chip by chip. The tabs are this factory's own control under every
+  // renderer (g-063 H2: the Host's `SegmentedTabs` divides its width into equal
+  // fractions, which six long Chinese labels do not fit), so the pill below is
+  // the one the page really draws.
+  const page = makeOpenPage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
+  const tree = await page.flush();
+  const chip = {
+    font: 'inherit',
+    fontSize: 12,
+    lineHeight: '18px',
+    padding: '3px 10px',
+    borderRadius: 999,
+    cursor: 'pointer',
+  };
+  const tabButton = (value) => findOne(tree, (node) => node.type === 'button' && node.props['data-tab-value'] === value);
+  assert.deepEqual(
+    { ...tabButton('mine').props.style },
+    { ...chip, color: token.buttonLabel, background: token.buttonFill, border: '1px solid transparent' },
+    'the selected fallback tab keeps the button fill under a transparent stroke',
+  );
+  assert.deepEqual(
+    { ...tabButton('presets').props.style },
+    { ...chip, color: token.labelSecondary, background: 'transparent', border: `1px solid ${token.borderL2}` },
+    'and the unselected one keeps the **secondary** text the other two chips do not use',
+  );
+  const pill = {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 4,
+    opacity: 1,
+    outline: 'none',
+    outlineOffset: undefined,
+  };
+  assert.deepEqual(
+    { ...oneBy(tree, 'data-pinned', 'global').props.style },
+    { ...chip, ...pill, color: token.labelPrimary, background: 'transparent', border: `1px solid ${token.borderL2}` },
+    'the pinned entries use the primary text colour, not the tabs’ secondary one',
+  );
+  assert.deepEqual(
+    { ...oneBy(tree, 'data-pinned', 'current').props.style },
+    { ...chip, ...pill, color: token.buttonLabel, background: token.buttonFill, border: '1px solid transparent' },
+    'and the selected pinned entry is the same pill in its selected state',
+  );
+  typeInto(tree, 'session-search', 'zzz-nothing-matches');
+  const searched = await page.flush();
+  assert.deepEqual(
+    {
+      ...findOne(searched, (node) => node.type === 'button' && node.props['data-action'] === 'session-use-input').props
+        .style,
+    },
+    { ...chip, color: token.labelPrimary, background: 'transparent', border: `1px solid ${token.borderL2}` },
+    'the「使用这串 id」 fallback is the third chip',
+  );
+
+  // mini, rendered: 「显示更多」 with its 18px and its 20px indent…
+  const many = manyWorkspaceSessions(1, 20);
+  const morePage = makeOpenPage({
+    useSessions: sessionsHook(many.sessions),
+    useWorkspaces: workspacesHook(many.workspaces),
+    responses: defaultResponses(),
+  });
+  const moreTree = await morePage.flush();
+  const more = findOne(moreTree, (node) => node.props && node.props['data-action'] === 'scope-more');
+  assert.deepEqual(
+    { ...more.props.style },
+    {
+      font: 'inherit',
+      fontSize: 12,
+      lineHeight: '18px',
+      textAlign: 'left',
+      padding: '2px 8px 2px 20px',
+      borderRadius: 6,
+      cursor: 'pointer',
+      color: token.stateBusiness,
+      background: 'transparent',
+      border: 'none',
+      userSelect: 'none',
+      outline: 'none',
+      outlineOffset: undefined,
+    },
+    '「显示更多」 carries the row indent and a line height',
+  );
+
+  // …the overview's expand toggle, which states **no** line height…
+  const overviewPage = makePage({ responses: defaultResponses() });
+  const overviewTree = await openOverview(overviewPage);
+  const expand = collect(overviewTree, (node) => node.props && node.props['data-action'] === 'expand')[0];
+  assert.deepEqual(
+    { ...expand.props.style },
+    {
+      font: 'inherit',
+      fontSize: 12,
+      padding: '2px 8px',
+      borderRadius: 6,
+      cursor: 'pointer',
+      color: token.labelSecondary,
+      background: 'transparent',
+      border: `1px solid ${token.borderL2}`,
+    },
+  );
+  assert.equal('lineHeight' in expand.props.style, false, 'the expand toggle states none, and gains none');
+
+  // …and the history row's side buttons, which state none either.
+  const historyPage = makePage({ responses: defaultResponses() });
+  const historyTree = await openHistory(historyPage);
+  const side = findOne(
+    historyRowOf(historyTree, '2'),
+    (node) => node.props && node.props['data-action'] === 'history-preview',
+  );
+  assert.deepEqual(
+    { ...side.props.style },
+    {
+      font: 'inherit',
+      fontSize: 12,
+      padding: '2px 8px',
+      borderRadius: 6,
+      cursor: 'pointer',
+      color: token.labelSecondary,
+      background: 'transparent',
+      border: `1px solid ${token.borderL2}`,
+    },
+  );
+  assert.equal('lineHeight' in side.props.style, false, 'and neither do these');
+});
+
+test('client: g-061 — one session-row paint, with both trees’ ARIA and markers untouched (criteria 3, 4, 5)', async () => {
+  const shared = loadClient('throw').module.__internals.shared;
+  const token = shared.token;
+  // The row's own paint, field for field. `boxShadow` and `outlineOffset` are
+  // keys the factory always writes — `undefined` where the state does not apply
+  // — so they are asserted as keys, not left out of the expectation.
+  const paint = (over) => ({
+    cursor: 'pointer',
+    userSelect: 'none',
+    background: 'transparent',
+    outline: 'none',
+    outlineOffset: undefined,
+    borderRadius: 6,
+    font: 'inherit',
+    fontSize: 12,
+    lineHeight: '18px',
+    textAlign: 'left',
+    display: 'flex',
+    alignItems: 'center',
+    gap: 6,
+    color: token.labelPrimary,
+    boxShadow: undefined,
+    border: '1px solid transparent',
+    ...over,
+  });
+  assert.deepEqual(
+    { ...shared.sessionRowStyle({ padding: '4px 8px', hovered: false, focused: false, selected: false, active: false }) },
+    { ...paint({ padding: '4px 8px' }) },
+    'a row at rest is transparent, with no bar and no stroke',
+  );
+  assert.deepEqual(
+    { ...shared.sessionRowStyle({ padding: '4px 8px', hovered: true, focused: true, selected: false, active: false }) },
+    { ...paint({ padding: '4px 8px', background: token.hoverFill, outline: token.focusRing, outlineOffset: '-2px' }) },
+    'hover and focus are the two states the shared row style mirrors',
+  );
+  assert.deepEqual(
+    {
+      ...shared.sessionRowStyle({ padding: '3px 8px 3px 20px', hovered: false, focused: false, selected: true, active: false }),
+    },
+    {
+      ...paint({
+        padding: '3px 8px 3px 20px',
+        background: token.diffAddFill,
+        boxShadow: `inset 3px 0 0 0 ${token.stateBusiness}`,
+        border: `1px solid ${token.borderL2}`,
+      }),
+    },
+    'the selected row takes the bar and the stroke',
+  );
+  assert.deepEqual(
+    { ...shared.sessionRowStyle({ padding: '4px 8px', hovered: false, focused: false, selected: false, active: true }) },
+    { ...paint({ padding: '4px 8px', background: token.diffAddFill }) },
+    'the keyboard-highlighted row takes the fill but no bar',
+  );
+
+  const entry = readFileSync(join(here, '..', 'client.js'), 'utf8');
+  assert.equal(occurrencesOf(entry, 'sessionRowStyle({'), 2, 'the tree row and the flat row, and nothing else');
+
+  // The tree row: a level-2 `treeitem` marked `session-row`, keeping the
+  // markers only it carries, and the padding with the 20px indent inside it.
+  const treePage = makeOpenPage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  const tree = await treePage.flush();
+  const treeRow = sessionOptions(tree)[0];
+  assert.equal(treeRow.props.role, 'treeitem');
+  assert.equal(treeRow.props['aria-level'], 2);
+  assert.equal(treeRow.props['data-scope-parent'], 'w-alpha');
+  assert.equal(typeof treeRow.props['aria-selected'], 'boolean');
+  assert.equal(treeRow.props.style.padding, '3px 8px 3px 20px', 'the tree row keeps its indent inside the padding');
+  assert.equal(treeRow.props.style.borderRadius, 6);
+  assert.equal(treeRow.props.style.border, '1px solid transparent');
+  const runningMarker = collect(tree, (node) => node.props && node.props['data-role'] === 'session-running');
+  assert.equal(runningMarker.length, 1, 'the tree’s own running marker is where it was');
+
+  // The flat fallback: an `option` in a `listbox`, marked `session-option`, with
+  // none of the tree's markers and its own 4px vertical padding.
+  const flatPage = makeOpenPage({ useSessions: sessionsHook(manySessions(200)), responses: defaultResponses() });
+  const flatTree = await flatPage.flush();
+  const flatRow = elementChildren(oneBy(flatTree, 'data-region', 'session-list'))[0];
+  assert.equal(flatRow.props.role, 'option');
+  assert.equal(flatRow.props['data-role'], 'session-option');
+  assert.equal(flatRow.props['aria-level'], undefined, 'a flat row claims no level');
+  assert.equal(flatRow.props['data-scope-parent'], undefined, 'and carries no tree marker');
+  assert.equal(flatRow.props['data-session-running'], undefined);
+  assert.equal(flatRow.props.style.padding, '4px 8px', 'the flat row keeps the padding the tree row does not use');
+
+  // 「Which row is the keyboard highlight」moved from an index comparison to an
+  // id one. The two forms are asserted equivalent over a list — at `-1`, at 0,
+  // at the last row and past the end — before the rendered attribute is checked.
+  const rows = [{ id: 'r1' }, { id: 'r2' }, { id: 'r3' }];
+  const idOf = (value) => {
+    const row = value >= 0 ? rows[value] : undefined;
+    return row ? row.id : '';
+  };
+  for (const value of [-1, 0, 1, 2, 3, 99]) {
+    assert.deepEqual(
+      rows.map((row) => String(row.id === idOf(value) && idOf(value) !== '')),
+      rows.map((row, index) => String(index === value)),
+      `the id form and the index form agree at sessionActive=${value}`,
+    );
+  }
+  const keyboardPage = makeOpenPage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
+  let keyboardTree = await keyboardPage.flush();
+  const search = () => oneBy(keyboardTree, 'data-role', 'session-search');
+  search().props.onKeyDown({ key: 'ArrowDown', preventDefault() {} });
+  keyboardTree = await keyboardPage.flush();
+  const highlighted = collect(keyboardTree, (node) => node.props && node.props['data-session-active'] === 'true');
+  assert.equal(highlighted.length, 1, 'exactly one row is highlighted');
+  assert.equal(highlighted[0].props['data-session-id'], 's1', 'and it is the first rendered row, as before');
+});
+
+test('client: g-061 — one search comparison, two search semantics kept apart (criteria 3, 4)', async () => {
+  const shared = loadClient('throw').module.__internals.shared;
+  assert.equal(shared.normalizeNeedle('  Alpha  '), 'alpha');
+  assert.equal(shared.normalizeNeedle(''), '');
+  assert.equal(shared.normalizeNeedle(undefined), '');
+  assert.equal(shared.normalizeNeedle(7), '');
+
+  // Field by field: any field carrying the needle is a match…
+  assert.equal(shared.matchesNeedle(['Alpha One', 's1', '/work/alpha'], 'alpha'), true);
+  assert.equal(shared.matchesNeedle(['Alpha One', 's1', '/work/alpha'], 'one'), true);
+  assert.equal(shared.matchesNeedle(['Alpha One', 's1', '/work/alpha'], '/work'), true);
+  // …and no single field carrying half of it is **not** one. The shared
+  // comparison never joins the fields: a joined haystack would let a match span
+  // the boundary, and a new hit is a new `data-history-scope-shown` count.
+  assert.equal(shared.matchesNeedle(['Alpha One', 's1', '/work/alpha'], 'one s1'), false);
+  assert.equal(shared.matchesNeedle(['Alpha One', 's1', '/work/alpha'], 's1 /work'), false);
+  // The cached path is the session list's own: one pre-lowercased haystack.
+  assert.equal(shared.matchesNeedle([], 'one alpha', { cached: 's1 alpha one alpha one /work/alpha' }), true);
+  assert.equal(shared.matchesNeedle([], 'one alpha', { cached: 'alpha one' }), false);
+  assert.equal(shared.matchesNeedle(['Alpha'], 'alpha', { cached: 7 }), true, 'a non-string cache is not a cache');
+  assert.equal(shared.matchesNeedle([undefined, null, 3], 'x'), false, 'a non-string field simply does not match');
+  assert.equal(shared.matchesNeedle([], ''), true, 'the empty needle matches everything');
+
+  const entry = readFileSync(join(here, '..', 'client.js'), 'utf8');
+  assert.equal(occurrencesOf(entry, '= normalizeNeedle('), 3, 'the flat filter, the tree derivation and the history scope');
+  assert.equal(occurrencesOf(entry, 'matchesNeedle(['), 2, 'the session rows and the history scope options');
+  assert.equal(occurrencesOf(entry, "join(' ').toLowerCase()"), 1, 'the session list builds its cache where it always did');
+  assert.match(entry, /if \(needle\.length === 0\) return list\.slice\(\);/, 'and the flat filter still returns a copy');
+  assert.match(
+    entry,
+    /if \(needle\.length === 0\) return historyScopes\.options;/,
+    'while the history scope still returns its own array',
+  );
+
+  // The session side keeps the cache's answers: a query that only the joined
+  // haystack carries — the tail of the title against the head of the next field
+  // — still finds the row.
+  const page = makeOpenPage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
+  let tree = await page.flush();
+  typeInto(tree, 'session-search', 'one alpha');
+  tree = await page.flush();
+  assert.deepEqual(
+    sessionOptions(tree).map((row) => row.props['data-session-id']),
+    ['s1'],
+    'the session side still searches its pre-joined haystack, so a match may span two fields',
+  );
+  typeInto(tree, 'session-search', 'zzz');
+  tree = await page.flush();
+  assert.deepEqual(sessionOptions(tree), [], 'and a query no field carries finds nothing');
+
+  // The history scope list has no cache and compares field by field: the same
+  // cross-field needle finds nothing there, so the published count stays where
+  // it was.
+  const historyPage = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  let historyTree = await openHistory(historyPage);
+  clickButton(historyTree, { 'data-action': 'history-scope-toggle' });
+  historyTree = await historyPage.flush();
+  const shown = () => oneBy(historyTree, 'data-history-scope-list', 'scroll').props['data-history-scope-shown'];
+  assert.equal(shown(), '2', 'the whole candidate list to start with');
+  typeInto(historyTree, 'history-scope-search', 'repo a1');
+  historyTree = await historyPage.flush();
+  assert.equal(shown(), '0', 'no cross-field hit on this side, and therefore no new count');
+  typeInto(historyTree, 'history-scope-search', 'a1');
+  historyTree = await historyPage.flush();
+  assert.equal(shown(), '1', 'a value hit still works');
+  typeInto(historyTree, 'history-scope-search', 'alpha');
+  historyTree = await historyPage.flush();
+  assert.equal(shown(), '1', 'and so does a label hit');
+  typeInto(historyTree, 'history-scope-search', '');
+  historyTree = await historyPage.flush();
+  assert.equal(shown(), '2', 'and the empty query is still the whole list');
+});
+
+// #endregion
 
 test('client: without React.lazy every chunked tab renders its card, and nothing is fetched (g-046)', async () => {
   // The same probe g-045 asserts for 「版本历史」, now for every boundary: an
@@ -3261,6 +4638,104 @@ function workspacesHook(state) {
  * without so the node must fall back to its path basename), one archived
  * session, one pinned session.
  */
+/**
+ * `GET /prompt-setting/presets` payload (CONTRACT.md §20.2): two stored presets
+ * and one of them applied to the first workspace.
+ */
+function presetsFixture(over = {}) {
+  return {
+    ok: true,
+    path: '/home/user/.dsh/prompt-setting/presets.json',
+    version: 1,
+    presets: [
+      {
+        id: 'preset-1',
+        name: '短答',
+        action: 'replace',
+        text: 'Be brief.',
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      },
+      {
+        id: 'preset-2',
+        name: '叠加规则',
+        action: 'append',
+        text: 'Extra rules.',
+        createdAt: '2024-01-02T00:00:00.000Z',
+        updatedAt: '2024-01-02T00:00:00.000Z',
+      },
+    ],
+    // Revision 41: one base plus a stack per workspace — `/work/alpha` already
+    // holds one application.
+    applied: [
+      {
+        workspaceRoot: '/work/alpha',
+        base: null,
+        stack: [
+          {
+            presetId: 'preset-1',
+            presetName: '短答',
+            orphan: false,
+            appliedAt: '2024-01-03T00:00:00.000Z',
+          },
+        ],
+      },
+    ],
+    workspaceRoot: null,
+    error: null,
+    ...over,
+  };
+}
+
+/**
+ * Click one apply/unapply button of a workspace row.
+ * @param tree - the rendered tree.
+ * @param action - `preset-apply` or `preset-unapply`.
+ * @param session - the row's session id.
+ * @param presetId - the preset the button names (required once a row lists more
+ *   than one application, which Revision 41 makes normal).
+ */
+function clickPresetWorkspaceAction(tree, action, session, presetId) {
+  const node = findOne(
+    tree,
+    (candidate) =>
+      candidate.type === 'button' &&
+      candidate.props['data-action'] === action &&
+      candidate.props['data-preset-session'] === session &&
+      (presetId === undefined || candidate.props['data-preset-id'] === presetId),
+    `${action} ${session}${presetId === undefined ? '' : ` ${presetId}`}`,
+  );
+  assert.notEqual(node.props.disabled, true, `${action} ${session} must be enabled`);
+  node.props.onClick();
+}
+
+/** The ids of the rendered preset rows, in render order. */
+function presetRowIds(tree) {
+  return collect(tree, (node) => node.props && node.props['data-preset-selected'] !== undefined).map(
+    (node) => node.props['data-preset-id'],
+  );
+}
+
+/** The rendered workspace rows as `[root, applied, orphan]` triples. */
+function presetWorkspaceRows(tree) {
+  return collect(
+    tree,
+    (node) => node.props && node.props['data-preset-session'] !== undefined && node.props['data-preset-applied'] !== undefined,
+  ).map((node) => [
+    node.props['data-preset-workspace-root'],
+    node.props['data-preset-applied'],
+    node.props['data-preset-stack'],
+  ]);
+}
+
+/** The applied presets one workspace row lists, as `[presetId, orphan]` pairs. */
+function presetStackLinks(tree, session) {
+  return collect(
+    tree,
+    (node) => node.props && node.props['data-preset-link'] !== undefined && node.props['data-preset-session'] === session,
+  ).map((node) => [node.props['data-preset-link'], node.props['data-preset-orphan']]);
+}
+
 function workspacesFixture(over = {}) {
   return {
     items: [
@@ -4509,7 +5984,7 @@ test('client: the page opens on 「我的 Prompt」 and every tab is reachable i
 
   // The order is the product decision, so it is asserted verbatim. g-038 split
   // 「历史与备份」 into 「版本历史」 + 「备份与恢复」, in exactly this order.
-  assert.deepEqual(mainTabs(tree), ['mine', 'overview', 'history', 'backup', 'advanced']);
+  assert.deepEqual(mainTabs(tree), ['mine', 'presets', 'overview', 'history', 'backup', 'advanced']);
   assert.equal(tabList(tree).props['data-active-tab'], 'mine', 'the first tab is the default');
   // The root carries the same verdict, so a probe finds it without walking in.
   assert.equal(
@@ -4536,6 +6011,8 @@ test('client: switching a tab renders that tab and nothing else', async () => {
   const page = makePage({ responses: defaultResponses() });
   const expectations = [
     ['mine', 'mine'],
+    // g-060: the sixth tab, next to 「我的 Prompt」.
+    ['presets', 'presets'],
     ['overview', 'sections'],
     ['history', 'history'],
     ['backup', 'transfer'],
@@ -8748,8 +10225,8 @@ const EN_SWEEP_CASES = [
       const page = enPage({ primitives: 'ok', responses: defaultResponses() });
       const rec = recorder(page);
       await rec.take();
-      // The official SegmentedTabs double labels every group 'primitives', so
-      // the tabs are picked by value alone in this branch.
+      // The tabs are hand-built under every renderer (g-063 H2), so they are
+      // picked by value alone — the same selector both branches answer.
       clickAnyTab(rec.last(), 'overview');
       await rec.take();
       clickAnyTab(rec.last(), 'full');
@@ -11384,4 +12861,1783 @@ test('g-058 client: 「取消」 restores the stored mode, and a mode draft belo
   assert.equal(oneBy(tree, 'data-role', 'mine-text').props.value, 'user stored');
   assert.equal(markerOf(tree, 'data-mine-state'), 'idle');
   assert.equal(writeCalls(page).length, 0, 'none of this wrote anything');
+});
+
+// #region presets (g-060, Revision 37; the dialog-based tab since Revision 38 / review R3)
+
+test('client: 「预设」 is the sixth tab, next to 「我的 Prompt」, and is fetched on demand', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  const first = await page.flush();
+  assert.deepEqual(mainTabs(first), ['mine', 'presets', 'overview', 'history', 'backup', 'advanced']);
+  assert.deepEqual(page.loaded.loadedChunkFiles, [], 'no chunk is fetched before its tab is opened');
+  assert.equal(tabPanel(first).props['data-tab-value'], 'mine');
+
+  const opened = await openTab(page, 'presets', first);
+  assert.deepEqual(page.loaded.loadedChunkFiles, ['client.presets.js']);
+  assert.equal(tabPanel(opened).props['data-tab-value'], 'presets');
+  assert.equal(oneBy(opened, 'data-region', 'presets').props['data-region'], 'presets');
+  assert.equal(markerOf(opened, 'data-preset-state'), 'idle');
+  assert.deepEqual(presetRowIds(opened), ['preset-1', 'preset-2'], 'the library is listed');
+  // Review R3: the tab body is the catalogue alone — no dialog is open until a
+  // control opens one.
+  assert.equal(collect(opened, (node) => node.props && node.props['data-region'] === 'preset-editor-dialog').length, 0);
+  assert.equal(collect(opened, (node) => node.props && node.props['data-region'] === 'preset-apply-dialog').length, 0);
+});
+
+test('client: a list row opens the apply dialog, which shows every workspace’s stack', async () => {
+  const page = makePage({
+    responses: defaultResponses(),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+  });
+  let tree = await openTab(page, 'presets');
+  clickButton(tree, { 'data-action': 'preset-apply-to', 'data-preset-id': 'preset-1' });
+  tree = await page.flush();
+  const dialog = oneBy(tree, 'data-region', 'preset-apply-dialog');
+  assert.equal(dialog.props['data-preset-dialog-preset'], 'preset-1', 'the dialog names the row’s preset');
+  assert.equal(dialog.props.role, 'dialog');
+  assert.ok(strings(dialog).some((text) => text.includes(page.zh.presetApplyToNote)), 'and that the stored version is applied');
+  assert.deepEqual(presetWorkspaceRows(tree), [
+    ['/work/alpha', 'true', '1'],
+    ['/work/beta-dir', 'false', '0'],
+  ]);
+  // The applied workspace lists what it holds, on its own cancellable link.
+  assert.deepEqual(presetStackLinks(tree, 'a1'), [['preset-1', 'false']]);
+  assert.deepEqual(presetStackLinks(tree, 'b1'), []);
+  // Revision 41: 「应用」 is disabled for a preset already on that stack, so the
+  // reader sees the state instead of a no-op click — and the free workspace can
+  // still take it.
+  const applyButtons = collect(tree, (node) => node.type === 'button' && node.props['data-action'] === 'preset-apply');
+  assert.deepEqual(applyButtons.map((node) => [node.props['data-preset-session'], node.props.disabled === true]), [
+    ['a1', true],
+    ['b1', false],
+  ]);
+  assert.equal(oneBy(tree, 'data-preset-applied-here', 'true').props['data-preset-session'], 'a1');
+
+  // An orphan link says so instead of naming a preset that no longer exists.
+  const orphan = makePage({
+    responses: defaultResponses({
+      [PATHS.presets]: {
+        payload: presetsFixture({
+          presets: [{ id: 'preset-1', name: '短答', action: 'replace', text: 'Be brief.', createdAt: 't', updatedAt: 't' }],
+          applied: [
+            {
+              workspaceRoot: '/work/alpha',
+              base: { action: 'replace', text: 'MINE' },
+              stack: [{ presetId: 'preset-gone', presetName: null, orphan: true, appliedAt: 't' }],
+            },
+          ],
+        }),
+      },
+    }),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+  });
+  tree = await openTab(orphan, 'presets');
+  clickButton(tree, { 'data-action': 'preset-apply-to', 'data-preset-id': 'preset-1' });
+  tree = await orphan.flush();
+  assert.deepEqual(presetStackLinks(tree, 'a1'), [['preset-gone', 'true']]);
+  assert.ok(strings(tree).some((text) => text.includes(orphan.zh.presetAppliedOrphan)));
+});
+
+test('client: 「新建预设」 opens the editor dialog, and saving PUTs the documented shape', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.presets]: (url, init) =>
+        init && init.method === 'PUT'
+          ? {
+              payload: {
+                ok: true,
+                created: true,
+                preset: { id: 'preset-9', name: '新预设', action: 'replace', text: 'TEXT', createdAt: 't', updatedAt: 't' },
+                presets: [],
+                applied: [],
+              },
+            }
+          : { payload: presetsFixture() },
+    }),
+  });
+  let tree = await openTab(page, 'presets');
+  clickButton(tree, { 'data-action': 'preset-new' });
+  tree = await page.flush();
+  const dialog = oneBy(tree, 'data-region', 'preset-editor-dialog');
+  assert.equal(dialog.props['data-preset-editing'], 'new');
+  assert.equal(dialog.props['data-preset-dialog'], 'edit');
+
+  typeInto(tree, 'preset-name', '新预设');
+  typeInto(tree, 'preset-text', 'TEXT');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'preset-save' });
+  tree = await page.flush();
+
+  const puts = page.router.calls.filter((call) => call.init && call.init.method === 'PUT');
+  assert.equal(puts.length, 1, 'exactly one write');
+  assert.equal(puts[0].url, PATHS.presets);
+  assert.deepEqual(JSON.parse(puts[0].init.body), { name: '新预设', action: 'replace', text: 'TEXT' });
+  assert.equal(markerOf(tree, 'data-preset-state'), 'saved');
+  // A successful save closes the dialog: the refreshed catalogue is the answer.
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'preset-editor-dialog').length, 0);
+});
+
+test('client: a row’s 「编辑」 opens the dialog on that preset, and the id travels on save', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openTab(page, 'presets');
+  clickButton(tree, { 'data-action': 'preset-edit', 'data-preset-id': 'preset-2' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'preset-editor-dialog').props['data-preset-editing'], 'preset-2');
+  assert.equal(oneBy(tree, 'data-role', 'preset-name').props.value, '叠加规则');
+  assert.equal(oneBy(tree, 'data-role', 'preset-text').props.value, 'Extra rules.');
+  // The stored mode of that preset is what the segmented control shows.
+  const modeTabs = collect(
+    tree,
+    (node) => node.type === 'button' && node.props['data-tab-key'] === 'preset-mode',
+  );
+  assert.equal(
+    modeTabs.filter((node) => node.props['aria-selected'] === true).map((node) => node.props['data-tab-value']).join(','),
+    'append',
+    'the editor shows the stored mode',
+  );
+
+  clickTab(tree, 'preset-mode', 'replace');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'preset-save' });
+  tree = await page.flush();
+  const put = page.router.calls.filter((call) => call.init && call.init.method === 'PUT');
+  assert.equal(put.length, 1);
+  assert.deepEqual(JSON.parse(put[0].init.body), {
+    id: 'preset-2',
+    name: '叠加规则',
+    action: 'replace',
+    text: 'Extra rules.',
+  });
+});
+
+test('client: deleting a preset asks first, and only a confirmed answer sends the DELETE', async () => {
+  // Review R4: the row's「删除」only *asks*. The DELETE goes through the shared
+  // confirmation overlay (g-031's one confirmation surface), never on the click.
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.presets]: (url, init) =>
+        init && init.method === 'DELETE'
+          ? { payload: { ok: true, removed: true, id: 'preset-1', orphaned: 1, presets: [], applied: [] } }
+          : { payload: presetsFixture() },
+    }),
+  });
+  let tree = await openTab(page, 'presets');
+  clickButton(tree, { 'data-action': 'preset-delete', 'data-preset-id': 'preset-1' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'confirm').props['data-confirm-kind'], 'preset-delete');
+  assert.ok(strings(tree).some((text) => text.includes('短答')), 'the question names the preset');
+  assert.equal(
+    page.router.calls.filter((call) => call.init && call.init.method === 'DELETE').length,
+    0,
+    'nothing is sent before the answer',
+  );
+
+  // Cancelling sends nothing at all.
+  clickButton(tree, { 'data-action': 'confirm-no' });
+  tree = await page.flush();
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'confirm').length, 0);
+  assert.equal(page.router.calls.filter((call) => call.init && call.init.method === 'DELETE').length, 0);
+  assert.deepEqual(presetRowIds(tree), ['preset-1', 'preset-2'], 'and nothing was deleted');
+
+  // Confirming sends exactly one DELETE by id — and, when an editor was open on
+  // that preset, closes the dialog whose subject no longer exists.
+  clickButton(tree, { 'data-action': 'preset-edit', 'data-preset-id': 'preset-1' });
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'preset-delete', 'data-preset-id': 'preset-1' });
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'confirm-yes' });
+  tree = await page.flush();
+  const deletes = page.router.calls.filter((call) => call.init && call.init.method === 'DELETE');
+  assert.equal(deletes.length, 1, 'exactly one write, and only after the confirmation');
+  assert.equal(deletes[0].url, `${PATHS.presets}?id=preset-1`);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'preset-editor-dialog').length, 0);
+  assert.equal(markerOf(tree, 'data-preset-state'), 'saved');
+});
+
+test('client: the apply dialog’s rows POST apply and a per-preset unapply, never a layer', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.presetsApply]: {
+        payload: {
+          ok: true,
+          applied: true,
+          alreadyApplied: false,
+          preset: { id: 'preset-2', name: '叠加规则', action: 'append', text: 'Extra rules.' },
+          record: { workspaceRoot: '/work/alpha', base: null, stack: [] },
+          workspaceRoot: '/work/alpha',
+          base: null,
+          before: null,
+          after: { action: 'append', text: 'Extra rules.' },
+          stack: [{ presetId: 'preset-2', presetName: '叠加规则', orphan: false, appliedAt: 't' }],
+          effectiveFrom: 'next-turn',
+          history: { ok: true, id: '1', seq: 1, dropped: 0, rewritten: false },
+          appliedRecords: [],
+        },
+      },
+      [PATHS.presetsUnapply]: {
+        payload: {
+          ok: true,
+          unapplied: true,
+          presetId: 'preset-1',
+          removed: { presetId: 'preset-1', appliedAt: 't1' },
+          record: { workspaceRoot: '/work/alpha', base: null, stack: [] },
+          workspaceRoot: '/work/alpha',
+          restored: false,
+          base: null,
+          stack: [],
+          before: null,
+          after: null,
+          effectiveFrom: 'next-turn',
+          history: { ok: true, id: '2', seq: 2, dropped: 0, rewritten: false },
+          appliedRecords: [],
+        },
+      },
+    }),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+  });
+  let tree = await openTab(page, 'presets');
+  clickButton(tree, { 'data-action': 'preset-apply-to', 'data-preset-id': 'preset-2' });
+  tree = await page.flush();
+
+  clickPresetWorkspaceAction(tree, 'preset-apply', 'b1');
+  tree = await page.flush();
+  const posts = page.router.calls.filter((call) => call.init && call.init.method === 'POST');
+  assert.equal(posts.length, 1, 'exactly one write');
+  assert.equal(posts[0].url, PATHS.presetsApply);
+  assert.deepEqual(JSON.parse(posts[0].init.body), { presetId: 'preset-2', session: 'b1' });
+  assert.equal(markerOf(tree, 'data-preset-state'), 'saved');
+
+  // Revision 41: cancelling names the application to take off the stack.
+  clickPresetWorkspaceAction(tree, 'preset-unapply', 'a1');
+  tree = await page.flush();
+  const after = page.router.calls.filter((call) => call.init && call.init.method === 'POST');
+  assert.equal(after.length, 2);
+  assert.equal(after[1].url, PATHS.presetsUnapply);
+  assert.deepEqual(JSON.parse(after[1].init.body), { session: 'a1', presetId: 'preset-1' });
+
+  // The dialog stays open — the refreshed stack is what the reader is looking at
+  // — and leaving is one more explicit click.
+  assert.equal(oneBy(tree, 'data-region', 'preset-apply-dialog').props['data-preset-dialog-preset'], 'preset-2');
+  clickButton(tree, { 'data-action': 'preset-dialog-close' });
+  tree = await page.flush();
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'preset-apply-dialog').length, 0);
+});
+
+test('client: an unreadable preset library is stated, never shown as an empty catalogue', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.presets]: {
+        payload: {
+          ok: true,
+          path: '/home/user/.dsh/prompt-setting/presets.json',
+          version: 1,
+          presets: [],
+          applied: [],
+          workspaceRoot: null,
+          error: { code: 'invalid-json', message: 'not valid JSON' },
+        },
+      },
+    }),
+  });
+  const tree = await openTab(page, 'presets');
+  const banner = oneBy(tree, 'data-warning', 'presets-library-error');
+  assert.equal(banner.props['data-preset-library-error'], 'invalid-json');
+  assert.ok(strings(banner).some((text) => text.includes(page.zh.presetsLibraryError)));
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-region'] === 'presets-empty').length,
+    0,
+    'an unreadable library is not an empty one',
+  );
+});
+
+test('client: every preset control is reachable from both dictionaries', async () => {
+  const page = makePage({
+    responses: defaultResponses(),
+    language: 'en',
+    useWorkspaces: workspacesHook(workspacesFixture()),
+  });
+  let tree = await openTab(page, 'presets');
+  assert.deepEqual(presetRowIds(tree), ['preset-1', 'preset-2']);
+  // The English binding really is English: the tab label and the row's own
+  // entrance come from the en table, not from the zh one.
+  assert.ok(strings(tree).includes(page.text.tabPresets));
+  assert.ok(strings(tree).includes(page.text.presetApplyTo));
+
+  clickButton(tree, { 'data-action': 'preset-apply-to', 'data-preset-id': 'preset-1' });
+  tree = await page.flush();
+  assert.ok(strings(tree).includes(page.text.presetApply));
+  assert.ok(strings(tree).includes(page.text.presetDialogClose));
+  assert.ok(strings(tree).some((text) => text.includes(page.text.presetApplyToNote)));
+});
+
+test('client: an unsaved edit is never discarded silently, and never applied', async () => {
+  // Review R1 kept its promise, re-pointed by R3: applying names a preset by id
+  // and the host reads it out of the library, so the apply dialog says so in
+  // words — and the editor dialog may not let a draft vanish without saying it.
+  const page = makePage({
+    responses: defaultResponses(),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+  });
+  let tree = await openTab(page, 'presets');
+  clickButton(tree, { 'data-action': 'preset-edit', 'data-preset-id': 'preset-2' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'preset-editor-dialog').props['data-preset-dirty'], 'false');
+
+  typeInto(tree, 'preset-text', 'Extra rules, edited.');
+  tree = await page.flush();
+  const dialog = oneBy(tree, 'data-region', 'preset-editor-dialog');
+  assert.equal(dialog.props['data-preset-dirty'], 'true');
+  assert.ok(strings(tree).some((text) => text.includes(page.zh.presetDialogDirtyHint)), 'the dialog says so');
+  const close = findOne(
+    tree,
+    (candidate) => candidate.type === 'button' && candidate.props['data-action'] === 'preset-dialog-close',
+    'dialog close',
+  );
+  assert.equal(close.props['data-preset-dirty'], 'true');
+  assert.equal(close.props.children, page.zh.presetDialogDiscard, 'and the control is named for what it does');
+
+  // Nothing has been sent while the draft is unsaved.
+  assert.equal(
+    page.router.calls.filter((call) => call.init && (call.init.method === 'PUT' || call.init.method === 'POST')).length,
+    0,
+    'an unsaved draft writes nothing',
+  );
+
+  // The apply dialog is a different surface, opened from a row: it applies the
+  // **stored** version and says so, and it is never fed the editor's draft.
+  clickButton(tree, { 'data-action': 'preset-apply-to', 'data-preset-id': 'preset-2' });
+  tree = await page.flush();
+  assert.ok(strings(tree).some((text) => text.includes(page.zh.presetApplyToNote)));
+  clickPresetWorkspaceAction(tree, 'preset-apply', 'a1');
+  tree = await page.flush();
+  const posts = page.router.calls.filter((call) => call.init && call.init.method === 'POST');
+  assert.equal(posts.length, 1);
+  assert.deepEqual(JSON.parse(posts[0].init.body), { presetId: 'preset-2', session: 'a1' });
+});
+
+test('client: a refused save stays inside the editor dialog, and the dialog stays open', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.presets]: (url, init) =>
+        init && init.method === 'PUT'
+          ? { status: 400, payload: { ok: false, code: 'unsupported-action', message: 'no' } }
+          : { payload: presetsFixture() },
+    }),
+  });
+  let tree = await openTab(page, 'presets');
+  clickButton(tree, { 'data-action': 'preset-edit', 'data-preset-id': 'preset-2' });
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'preset-save' });
+  tree = await page.flush();
+
+  // The refusal is on the dialog's own line, the dialog is still open, and the
+  // page-level notice did not take its place.
+  const error = oneBy(tree, 'data-role', 'preset-dialog-error');
+  assert.equal(error.props['data-preset-dialog-error'], 'unsupported-action');
+  assert.ok(strings(error).some((text) => text.includes(page.zh['error.unsupported-action'])));
+  assert.equal(oneBy(tree, 'data-region', 'preset-editor-dialog').props['data-preset-editing'], 'preset-2');
+  assert.equal(markerOf(tree, 'data-preset-state'), 'error');
+});
+
+test('client: an empty name is refused inside the dialog, with no request at all', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openTab(page, 'presets');
+  clickButton(tree, { 'data-action': 'preset-new' });
+  tree = await page.flush();
+  typeInto(tree, 'preset-text', 'typed but unnamed');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'preset-save' });
+  tree = await page.flush();
+
+  assert.equal(
+    page.router.calls.filter((call) => call.init && call.init.method === 'PUT').length,
+    0,
+    'a known refusal never becomes a round trip',
+  );
+  assert.equal(oneBy(tree, 'data-role', 'preset-dialog-error').props['data-preset-dialog-error'], 'invalid-name');
+  assert.equal(oneBy(tree, 'data-region', 'preset-editor-dialog').props['data-preset-editing'], 'new');
+  assert.equal(markerOf(tree, 'data-preset-state'), 'error');
+});
+
+test('client: closing a dirty editor asks first; a clean one just closes', async () => {
+  // Review R4 (and R3's promise, now asked for explicitly): the act that throws
+  // typing away is confirmed through the page's own overlay.
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openTab(page, 'presets');
+  clickButton(tree, { 'data-action': 'preset-edit', 'data-preset-id': 'preset-2' });
+  tree = await page.flush();
+  // Clean draft: the close control closes, with no question.
+  clickButton(tree, { 'data-action': 'preset-dialog-close' });
+  tree = await page.flush();
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'preset-editor-dialog').length, 0);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'confirm').length, 0);
+
+  // Dirty draft: it asks, and the cancel keeps both the dialog and the typing.
+  clickButton(tree, { 'data-action': 'preset-edit', 'data-preset-id': 'preset-2' });
+  tree = await page.flush();
+  typeInto(tree, 'preset-text', 'Extra rules, edited.');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'preset-dialog-close' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'confirm').props['data-confirm-kind'], 'preset-discard');
+  clickButton(tree, { 'data-action': 'confirm-no' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'preset-editor-dialog').props['data-preset-editing'], 'preset-2');
+  assert.equal(oneBy(tree, 'data-role', 'preset-text').props.value, 'Extra rules, edited.');
+
+  // Confirming closes it and drops the draft — with nothing written.
+  clickButton(tree, { 'data-action': 'preset-dialog-close' });
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'confirm-yes' });
+  tree = await page.flush();
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'preset-editor-dialog').length, 0);
+  assert.equal(
+    page.router.calls.filter((call) => call.init && (call.init.method === 'PUT' || call.init.method === 'POST')).length,
+    0,
+    'discarding writes nothing',
+  );
+});
+
+test('client: the tab is called 「我的预设」 in both dictionaries', async () => {
+  const zhPage = makePage({ responses: defaultResponses() });
+  const zhTree = await zhPage.flush();
+  assert.ok(strings(zhTree).includes('我的预设'), 'zh');
+  const enPage = makePage({ responses: defaultResponses(), language: 'en' });
+  const enTree = await enPage.flush();
+  assert.ok(strings(enTree).includes('My presets'), 'en');
+});
+
+test('client: a preset already on a workspace’s stack cannot be applied twice', async () => {
+  // Revision 41: idempotency is now visible state — the row reports
+  // `data-preset-applied-here` and disables「应用」— instead of a message after a
+  // click that did nothing.
+  const page = makePage({
+    responses: defaultResponses(),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+  });
+  let tree = await openTab(page, 'presets');
+  clickButton(tree, { 'data-action': 'preset-apply-to', 'data-preset-id': 'preset-1' });
+  tree = await page.flush();
+  const row = findOne(
+    tree,
+    (node) => node.props && node.props['data-preset-session'] === 'a1' && node.props['data-preset-applied-here'] !== undefined,
+    'alpha row',
+  );
+  assert.equal(row.props['data-preset-applied-here'], 'true');
+  const button = findOne(
+    tree,
+    (candidate) =>
+      candidate.type === 'button' &&
+      candidate.props['data-action'] === 'preset-apply' &&
+      candidate.props['data-preset-session'] === 'a1',
+    'apply a1',
+  );
+  assert.equal(button.props.disabled, true);
+  assert.equal(
+    page.router.calls.filter((call) => call.init && call.init.method === 'POST').length,
+    0,
+    'nothing was sent while the button is disabled',
+  );
+
+  // Its link is still listed, with its own cancel — that is what keeps「取消应用」
+  // reachable after an idempotent no-op.
+  assert.deepEqual(presetStackLinks(tree, 'a1'), [['preset-1', 'false']]);
+  clickPresetWorkspaceAction(tree, 'preset-unapply', 'a1');
+  tree = await page.flush();
+  const posts = page.router.calls.filter((call) => call.init && call.init.method === 'POST');
+  assert.equal(posts.length, 1);
+  assert.deepEqual(JSON.parse(posts[0].init.body), { session: 'a1', presetId: 'preset-1' });
+});
+
+test('client: a workspace’s stack lists every applied preset, each cancellable on its own', async () => {
+  const both = presetsFixture({
+    applied: [
+      {
+        workspaceRoot: '/work/alpha',
+        base: { action: 'replace', text: 'MINE' },
+        stack: [
+          { presetId: 'preset-1', presetName: '短答', orphan: false, appliedAt: 't1' },
+          { presetId: 'preset-2', presetName: '叠加规则', orphan: false, appliedAt: 't2' },
+        ],
+      },
+    ],
+  });
+  const remaining = presetsFixture({
+    applied: [
+      {
+        workspaceRoot: '/work/alpha',
+        base: { action: 'replace', text: 'MINE' },
+        stack: [{ presetId: 'preset-2', presetName: '叠加规则', orphan: false, appliedAt: 't2' }],
+      },
+    ],
+  });
+  let live = both;
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.presets]: () => ({ payload: live }),
+      [PATHS.presetsUnapply]: () => {
+        live = remaining;
+        return {
+          payload: {
+            ok: true,
+            unapplied: true,
+            presetId: 'preset-1',
+            removed: { presetId: 'preset-1', appliedAt: 't1' },
+            record: remaining.applied[0],
+            workspaceRoot: '/work/alpha',
+            restored: false,
+            base: remaining.applied[0].base,
+            stack: remaining.applied[0].stack,
+            before: null,
+            after: null,
+            effectiveFrom: 'next-turn',
+            history: { ok: true, id: '1', seq: 1, dropped: 0, rewritten: false },
+            appliedRecords: remaining.applied,
+          },
+        };
+      },
+    }),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+  });
+  let tree = await openTab(page, 'presets');
+  clickButton(tree, { 'data-action': 'preset-apply-to', 'data-preset-id': 'preset-1' });
+  tree = await page.flush();
+  assert.deepEqual(presetStackLinks(tree, 'a1'), [
+    ['preset-1', 'false'],
+    ['preset-2', 'false'],
+  ]);
+
+  // Cancelling the first application keeps the second: the defect the owner hit.
+  clickPresetWorkspaceAction(tree, 'preset-unapply', 'a1', 'preset-1');
+  tree = await page.flush();
+  tree = await page.flush();
+  assert.deepEqual(presetStackLinks(tree, 'a1'), [['preset-2', 'false']], 'the other application survives');
+  assert.equal(presetWorkspaceRows(tree)[0][2], '1', 'and the row still reports one application');
+  const posts = page.router.calls.filter((call) => call.init && call.init.method === 'POST');
+  assert.equal(posts.length, 1);
+  assert.deepEqual(JSON.parse(posts[0].init.body), { session: 'a1', presetId: 'preset-1' });
+});
+
+// #region g-062 — the assembly-status notice (page-only observation)
+
+/** The record one session's notice lives in, as the host serializes it. */
+function assemblyRecordFixture(over = {}) {
+  const notice = over.notice === undefined ? assemblyNoticeFixture() : over.notice;
+  return {
+    session: 's2',
+    firstNoticeDone: true,
+    lastAssembly: { at: 1700000000000, digest: 'abcd1234', length: 4, configured: true },
+    notice,
+    notices: notice === null ? [] : [notice],
+    dropped: 0,
+    ...over,
+  };
+}
+
+test('client: the「我的 Prompt」tab renders the assembly-status block, and an unselected session says so', async () => {
+  const page = makeOpenPage({ useSessions: sessionsHook(SESSIONS_STATE), responses: defaultResponses() });
+  let tree = await page.flush();
+  const block = oneBy(tree, 'data-region', 'assembly-status');
+  assert.equal(block.props['data-assembly-enabled'], 'true');
+  assert.equal(block.props['data-assembly-session'], 'yes');
+  assert.equal(block.props['data-notice-kind'], 'none');
+  assert.equal(block.props['data-assembly-state'], 'none');
+  assert.equal(block.props['data-delivery-state'], 'none');
+  assert.ok(hasText(block, page.zh.assemblyHeading));
+  assert.ok(hasText(oneBy(tree, 'data-assembly-note', 'no-record'), page.zh.assemblyNoRecord));
+  assert.ok(hasText(oneBy(tree, 'data-region', 'assembly-limitation'), page.zh.assemblyLimitation));
+  assert.deepEqual(urlsFor(page, PATHS.assemblyStatus), [`${PATHS.assemblyStatus}?session=s2`]);
+
+  // The global scope names no session, so the block says what to do instead of
+  // reading a conversation it cannot describe.
+  clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
+  tree = await page.flush();
+  const global = oneBy(tree, 'data-region', 'assembly-status');
+  assert.equal(global.props['data-assembly-session'], 'none');
+  assert.ok(hasText(oneBy(tree, 'data-assembly-note', 'no-session'), page.zh.assemblyNoSession));
+});
+
+test('client: the block reports both layers of the last key node, and never the prompt text', async () => {
+  const responses = defaultResponses({
+    [PATHS.assemblyStatus]: { payload: assemblyFixture({ session: 's2', record: assemblyRecordFixture() }) },
+  });
+  const page = makeOpenPage({ useSessions: sessionsHook(SESSIONS_STATE), responses });
+  const tree = await page.flush();
+  const block = oneBy(tree, 'data-region', 'assembly-status');
+  assert.equal(block.props['data-notice-kind'], 'first-assembly');
+  assert.equal(block.props['data-assembly-state'], 'assembled');
+  assert.equal(block.props['data-delivery-state'], 'delivered');
+
+  const notice = oneBy(tree, 'data-region', 'assembly-notice');
+  assert.notEqual(oneBy(tree, 'data-assembly-kind', 'first-assembly'), undefined);
+  assert.ok(hasText(notice, page.zh.assemblyKindFirst), 'the key node is named');
+  // Both verdicts are on screen, each with its own sentence.
+  assert.ok(
+    hasText(oneBy(tree, 'data-assembly-layer', 'assembled'), page.zh.assemblyFirstAssembled),
+    'assembly layer: assembled',
+  );
+  const delivery = oneBy(tree, 'data-delivery-layer', 'delivered');
+  assert.ok(hasText(delivery, page.zh.assemblyLayerDelivery), 'delivery layer is named');
+  assert.ok(
+    hasText(delivery, fillText(page.zh.assemblyDeliveryDelivered, { op: page.zh.assemblyOpAppend })),
+    'delivery layer: delivered, with the surface op',
+  );
+  assert.ok(hasText(delivery, page.zh.assemblyTextMatchedYes), 'and the text match detail');
+  assert.ok(hasText(notice, page.zh.assemblyNoticeOnce), 'the once-per-node promise is stated');
+  // The page renders digests and lengths, never the user's prompt.
+  assert.equal(strings(block).some((text) => text.includes('abcd1234')), false);
+});
+
+test('client: the notice distinguishes "not assembled" and "not re-read", with a pending delivery', async () => {
+  const first = assemblyNoticeFixture({
+    kind: 'first-assembly',
+    assembly: { state: 'empty', assembled: false, digest: 'empty', length: 0, expectedDigest: 'abcd1234' },
+    delivery: { state: 'waiting', at: null, seq: null, surfaceOp: null, textMatched: null },
+  });
+  const page = makeOpenPage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({
+      [PATHS.assemblyStatus]: {
+        payload: assemblyFixture({ session: 's2', record: assemblyRecordFixture({ notice: first }) }),
+      },
+    }),
+  });
+  const tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'assembly-status').props['data-assembly-state'], 'empty');
+  assert.ok(
+    hasText(oneBy(tree, 'data-assembly-layer', 'empty'), page.zh.assemblyFirstEmpty),
+    'scenario A: configured but not assembled',
+  );
+  assert.ok(
+    hasText(oneBy(tree, 'data-delivery-layer', 'waiting'), page.zh.assemblyDeliveryWaiting),
+    'the delivery layer is still pending',
+  );
+  // A pending delivery is the one state that asks for a follow-up read.
+  assert.equal(page.router.calls.filter((call) => call.url.startsWith(PATHS.assemblyStatus)).length >= 1, true);
+  page.dispose();
+
+  // The change-shaped notice: the assembly layer reports "not re-read", and the
+  // delivery layer reports the unconfirmed outcome rather than being stuck at
+  // "waiting" forever.
+  const change = assemblyNoticeFixture({
+    kind: 'prompt-change',
+    assembly: { state: 'not-read', assembled: true, digest: 'deadbeef', length: 8, expectedDigest: 'cafebabe' },
+    delivery: { state: 'unconfirmed', at: null, seq: null, surfaceOp: null, textMatched: null },
+    expected: { length: 8, layer: 'user', action: 'replace' },
+  });
+  const changed = makeOpenPage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({
+      [PATHS.assemblyStatus]: {
+        payload: assemblyFixture({ session: 's2', record: assemblyRecordFixture({ notice: change }) }),
+      },
+    }),
+  });
+  const changeTree = await changed.flush();
+  assert.equal(oneBy(changeTree, 'data-region', 'assembly-status').props['data-notice-kind'], 'prompt-change');
+  assert.ok(
+    hasText(oneBy(changeTree, 'data-assembly-layer', 'not-read'), page.zh.assemblyChangeNotRead),
+    'the assembly layer names the failure to re-read',
+  );
+  assert.ok(
+    hasText(oneBy(changeTree, 'data-delivery-layer', 'unconfirmed'), page.zh.assemblyDeliveryUnconfirmed),
+    'the delivery layer says what it could not confirm',
+  );
+});
+
+test('client: the assembly-status switch sends one PUT and follows the host answer', async () => {
+  // The stub behaves like the host: the switch it answers a read with is the one
+  // the last write stored, so a page that re-reads after the write sees the new
+  // value rather than flipping back.
+  let stored = true;
+  const responses = defaultResponses({
+    [PATHS.assemblyStatus]: (url, init) => {
+      if (init && init.method === 'PUT') {
+        stored = JSON.parse(init.body).enabled;
+        return { payload: assemblyFixture({ enabled: stored, session: 's2' }) };
+      }
+      return { payload: assemblyFixture({ enabled: stored, session: 's2', record: assemblyRecordFixture() }) };
+    },
+  });
+  const page = makeOpenPage({ useSessions: sessionsHook(SESSIONS_STATE), responses });
+  let tree = await page.flush();
+  assert.notEqual(oneBy(tree, 'data-assembly-switch-state', 'on'), undefined);
+  clickButton(tree, { 'data-action': 'assembly-toggle' });
+  await settle();
+  tree = await page.flush();
+  const writes = writeCalls(page).filter((call) => call.url.split('?')[0] === PATHS.assemblyStatus);
+  assert.equal(writes.length, 1, 'exactly one write');
+  assert.deepEqual(JSON.parse(writes[0].init.body), { enabled: false });
+  assert.notEqual(oneBy(tree, 'data-assembly-switch-state', 'off'), undefined);
+  assert.ok(hasText(tree, page.zh.assemblyDisabledNow), 'the page repeats the host\'s answer');
+});
+// #endregion
+
+// #region g-062 (Revision 46) — the shell-overlay toaster
+
+/** A `Storage`-shaped double, so a case can preset the toaster's cursor. */
+function makeStorage(initial = {}) {
+  const map = new Map(Object.entries(initial));
+  return {
+    getItem: (key) => (map.has(key) ? map.get(key) : null),
+    setItem: (key, value) => {
+      map.set(key, String(value));
+    },
+    removeItem: (key) => {
+      map.delete(key);
+    },
+    entries: () => [...map.entries()],
+  };
+}
+
+/**
+ * The incremental `?since=` answer, as the Host serializes it (CONTRACT.md §21.6).
+ * @param over - field overrides (`notifications` included).
+ * @returns the payload.
+ */
+function assemblyFeedFixture(over = {}) {
+  return {
+    ok: true,
+    enabled: true,
+    session: null,
+    record: null,
+    counts: {
+      sessions: 0,
+      notices: 0,
+      droppedNotices: 0,
+      writes: 0,
+      rejectedProbes: 0,
+      noticeSeq: 0,
+      history: 0,
+      bootId: 'boot-a',
+    },
+    notifications: { bootId: 'boot-a', cursor: 0, stale: false, notices: [] },
+    basis: {
+      assembly: 'plugin-return',
+      delivery: 'surface-system-message',
+      httpObservable: false,
+      outerRewritePossible: true,
+      postWaterfallCollapse: true,
+    },
+    ...over,
+  };
+}
+
+/** Every element the toaster drew through the official Toast primitive. */
+function toastNodes(tree) {
+  return collect(tree, (node) => node.props && node.props['data-toast'] !== undefined);
+}
+
+/**
+ * Render the `shell.overlay` entry the way the shell would: its own component,
+ * its own props, its own effects. The settings page is not involved.
+ * @param page - the page harness from {@link makePage}.
+ * @param props - extra owner props (`useSessionStatus`, `activity`).
+ * @returns `{props, draw, flush}` for the registered toaster.
+ */
+function makeToaster(page, props = {}) {
+  const registration = page.mounted.registrations.find((entry) => entry.options.name === 'shell.overlay');
+  assert.notEqual(registration, undefined, 'the toaster entry is registered');
+  const bound = {
+    t: (key) => dict(page.mounted.dictionaries, NS, key, page.language),
+    activity: null,
+    ...props,
+  };
+  const component = registration.component;
+  const render = () => page.loaded.runtime.render(component, bound);
+  return {
+    registration,
+    props: bound,
+    draw: () => expandTree(render().tree),
+    flush: async () => {
+      // The registered entry is a wrapper: the interval lives in the child it
+      // renders, so the tree has to be walked once before its effects exist.
+      expandTree(render().tree);
+      const pending = page.loaded.runtime.takeEffects();
+      for (const effect of pending) effect();
+      await settle();
+      return expandTree(render().tree);
+    },
+  };
+}
+
+test('client: the toaster cursor decides what is new — no replay, no repeat, no crossing a restart', async () => {
+  const page = makePage({ primitives: 'ok', withToast: true, responses: defaultResponses() });
+  const policy = page.loaded.module.__internals.assemblyNotice;
+  assert.equal(policy.HAS_TOAST, true, 'the Toast probe is separate from the renderer probe');
+  assert.equal(page.loaded.module.__internals.assemblyNotice.planToasts !== undefined, true);
+  const notice = (seq) => ({ ...assemblyNoticeFixture(), seq, id: `n${seq}` });
+  const feed = (over = {}) => ({
+    bootId: 'boot-a',
+    cursor: 3,
+    stale: false,
+    notices: [{ session: 's1', notice: notice(3) }],
+    ...over,
+  });
+
+  // The policy runs in the plugin's own `vm` realm, so every assertion below
+  // reads fields or copies through `Array.from`: a cross-realm object is never
+  // deep-equal to a literal, however identical its contents.
+  const shape = (result) => [result.bootId, result.cursor, result.toasts.length];
+  const ids = (result) => Array.from(result.toasts, (entry) => [entry.session, entry.notice.id]);
+
+  // 1. First connection: adopt the cursor and replay nothing. A fresh tab must
+  //    not toast the history that a page already showed before it.
+  assert.deepEqual(
+    shape(policy.planToasts({ state: { bootId: null, cursor: null }, payload: { enabled: true, notifications: feed() } })),
+    ['boot-a', 3, 0],
+  );
+  // 2. A notice above the cursor is new, and it names its conversation.
+  const fresh = policy.planToasts({
+    state: { bootId: 'boot-a', cursor: 2 },
+    payload: { enabled: true, notifications: feed() },
+  });
+  assert.deepEqual(ids(fresh), [['s1', 'n3']]);
+  assert.equal(fresh.cursor, 3);
+  // 3. The same answer against the cursor it returned is not new again — the
+  //    client's own half of "同一事实不得弹两次".
+  assert.equal(
+    policy.planToasts({
+      state: { bootId: fresh.bootId, cursor: fresh.cursor },
+      payload: { enabled: true, notifications: feed() },
+    }).toasts.length,
+    0,
+  );
+  // 4. Another mount: the numbers mean something else, so nothing is shown and
+  //    the cursor is re-anchored instead of compared.
+  assert.deepEqual(
+    shape(
+      policy.planToasts({
+        state: { bootId: 'boot-a', cursor: 2 },
+        payload: { enabled: true, notifications: feed({ bootId: 'boot-b', notices: [{ session: 's2', notice: notice(1) }] }) },
+      }),
+    ),
+    ['boot-b', 3, 0],
+  );
+  // 5. Switch off: advance without showing, so switching back on releases no
+  //    backlog ("关闭后不产生新提示"), and say so — the toaster drops what it has
+  //    already queued (review C5).
+  const off = policy.planToasts({ state: { bootId: 'boot-a', cursor: 2 }, payload: { enabled: false, notifications: feed() } });
+  assert.deepEqual(shape(off), ['boot-a', 3, 0]);
+  assert.equal(off.muted, true);
+  assert.equal(fresh.muted, false, 'a shown notice is not a muted answer');
+  // 6. No feed at all (an older Host, or a failed read): change nothing — the
+  //    settings-page block is still the answer.
+  assert.deepEqual(
+    shape(policy.planToasts({ state: { bootId: 'boot-a', cursor: 2 }, payload: { enabled: true } })),
+    ['boot-a', 2, 0],
+  );
+  // 7. More news than fits one screen keeps the newest, oldest last.
+  const backlog = policy.planToasts({
+    state: { bootId: 'boot-a', cursor: 0 },
+    payload: {
+      enabled: true,
+      notifications: feed({ cursor: 5, notices: [1, 2, 3, 4, 5].map((seq) => ({ session: 's1', notice: notice(seq) })) }),
+    },
+    limit: 2,
+  });
+  assert.deepEqual(Array.from(backlog.toasts, (entry) => entry.notice.id), ['n4', 'n5']);
+  assert.equal(backlog.cursor, 5);
+
+  // The cursor round-trips, and anything unreadable means "start from now".
+  assert.deepEqual(shape({ bootId: null, cursor: null, toasts: [] }), [null, null, 0]);
+  const roundTrip = policy.parseToastCursor(policy.serializeToastCursor({ bootId: 'boot-a', cursor: 7 }));
+  assert.deepEqual([roundTrip.bootId, roundTrip.cursor], ['boot-a', 7]);
+  const broken = policy.parseToastCursor('{ not json');
+  assert.deepEqual([broken.bootId, broken.cursor], [null, null]);
+  const future = policy.parseToastCursor(JSON.stringify({ v: 99, bootId: 'x', cursor: 3 }));
+  assert.deepEqual([future.bootId, future.cursor], [null, null]);
+  const absent = policy.parseToastCursor(null);
+  assert.deepEqual([absent.bootId, absent.cursor], [null, null]);
+});
+
+test('client: a clearing reaches the toast too — the empty prompt-change is not dropped on the way', async () => {
+  // Revision 48: the preset unapply that restores「there was none」now produces a
+  // `prompt-change` notice whose expected text is empty (`action: 'hide'`). The
+  // host half is pinned in `test/route.test.mjs`; what this case adds is that the
+  // client's own path — feed → cursor → toast — carries that shape without
+  // special-casing it away.
+  const page = makePage({ primitives: 'ok', withToast: true, responses: defaultResponses() });
+  const policy = page.loaded.module.__internals.assemblyNotice;
+  const clearing = {
+    ...assemblyNoticeFixture({
+      id: 'clear-1',
+      kind: 'prompt-change',
+      configured: false,
+      assembly: { state: 'read', assembled: false, digest: 'empty', length: 0, expectedDigest: 'empty' },
+      delivery: { state: 'delivered', at: 1700000000200, seq: 13, surfaceOp: 'replace', textMatched: null },
+      expected: { length: 0, layer: 'workspace', action: 'hide' },
+    }),
+    seq: 4,
+  };
+  const feed = {
+    bootId: 'boot-a',
+    cursor: 4,
+    stale: false,
+    notices: [{ session: 's1', notice: clearing }],
+  };
+  const plan = policy.planToasts({
+    state: { bootId: 'boot-a', cursor: 3 },
+    payload: { enabled: true, notifications: feed },
+  });
+  assert.equal(plan.toasts.length, 1, 'a clearing is a new fact like any other');
+  assert.equal(plan.toasts[0].notice.kind, 'prompt-change');
+  const t = (key) => (page.zh[key] === undefined ? key : page.zh[key]);
+  const text = policy.composeToast(t, plan.toasts[0].notice);
+  assert.ok(text.includes(page.zh.assemblyToastChange), 'the key node is the change, not the first assembly');
+  assert.ok(text.includes(page.zh.assemblyChangeRead), 'the assembly layer reports the empty text as read');
+  assert.equal(text.includes('undefined'), false, 'and nothing is rendered from a missing field');
+});
+
+test('client: the toast names the key node and both layers, in the language the host uses', async () => {
+  const page = makePage({ primitives: 'ok', withToast: true, responses: defaultResponses() });
+  const policy = page.loaded.module.__internals.assemblyNotice;
+  const t = (key) => (page.zh[key] === undefined ? key : page.zh[key]);
+  const text = policy.composeToast(t, assemblyNoticeFixture());
+  assert.ok(text.includes(page.zh.assemblyToastFirst), 'the key node is named');
+  assert.ok(text.includes(page.zh.assemblyLayerAssembly) && text.includes(page.zh.assemblyFirstAssembled));
+  assert.ok(
+    text.includes(page.zh.assemblyLayerDelivery) &&
+      text.includes(fillText(page.zh.assemblyDeliveryDelivered, { op: page.zh.assemblyOpAppend })),
+    'both layers, each with its own verdict',
+  );
+  const change = policy.composeToast(
+    t,
+    assemblyNoticeFixture({
+      kind: 'prompt-change',
+      assembly: { state: 'not-read', assembled: true, digest: 'deadbeef', length: 8, expectedDigest: 'cafebabe' },
+      delivery: { state: 'unconfirmed', at: null, seq: null, surfaceOp: null, textMatched: null },
+    }),
+  );
+  assert.ok(change.includes(page.zh.assemblyToastChange));
+  assert.ok(change.includes(page.zh.assemblyChangeNotRead), 'a change that was not re-read says so');
+  assert.ok(change.includes(page.zh.assemblyDeliveryUnconfirmed), 'and an unproven delivery is not dressed up as one');
+
+  // The English dictionary carries the same two key-node headings (判据 8: the
+  // surface follows the DSH language, it is not zh-only copy).
+  const english = makePage({ primitives: 'ok', withToast: true, responses: defaultResponses(), language: 'en' });
+  const en = english.text;
+  const enText = english.loaded.module.__internals.assemblyNotice.composeToast(
+    (key) => (en[key] === undefined ? key : en[key]),
+    assemblyNoticeFixture(),
+  );
+  assert.ok(enText.includes(en.assemblyToastFirst));
+  assert.ok(enText.includes(en.assemblyFirstAssembled));
+  assert.notEqual(en.assemblyToastFirst, page.zh.assemblyToastFirst, 'the two dictionaries really differ');
+});
+
+test('client: the toaster shows one notice at a time, keeps the cursor, and only ever reads', async () => {
+  const listeners = {};
+  const doc = {
+    visibilityState: 'visible',
+    addEventListener: (name, handler) => {
+      listeners[name] = handler;
+    },
+    removeEventListener: (name) => {
+      delete listeners[name];
+    },
+  };
+  const notices = [
+    { session: 's1', notice: { ...assemblyNoticeFixture({ kind: 'first-assembly' }), seq: 2, id: 'n2' } },
+    {
+      session: 's1',
+      notice: {
+        ...assemblyNoticeFixture({
+          kind: 'prompt-change',
+          assembly: { state: 'read', assembled: true, digest: 'deadbeef', length: 8, expectedDigest: 'cafebabe' },
+        }),
+        seq: 3,
+        id: 'n3',
+      },
+    },
+  ];
+  const responses = defaultResponses({
+    [PATHS.assemblyStatus]: (url) => {
+      const since = /since=(\d+)/.exec(url);
+      const from = since === null ? 1 : Number(since[1]);
+      return {
+        payload: assemblyFeedFixture({
+          notifications: {
+            bootId: 'boot-a',
+            cursor: 3,
+            stale: false,
+            notices: from >= 3 ? [] : notices,
+          },
+        }),
+      };
+    },
+  });
+  const page = makePage({ primitives: 'ok', withToast: true, responses, document: doc });
+  page.loaded.sandbox.sessionStorage = makeStorage({
+    'dsh-prompt-setting:assembly-toast-cursor': JSON.stringify({ v: 1, bootId: 'boot-a', cursor: 1 }),
+  });
+  const toaster = makeToaster(page);
+  let tree = await toaster.flush();
+  assert.deepEqual(
+    urlsFor(page, PATHS.assemblyStatus),
+    [`${PATHS.assemblyStatus}?since=1`],
+    'the toaster asks from the cursor it kept, with no session to name',
+  );
+  const shown = toastNodes(tree);
+  assert.equal(shown.length, 1, 'one toast at a time, not a stack');
+  assert.equal(shown[0].props['data-toast-key'], 'assembly-toast-n2', 'the key is the notice, so a repeat re-mounts');
+  assert.equal(shown[0].props['data-toast-hold'], '7000');
+  assert.ok(String(shown[0].props['data-toast']).includes(page.zh.assemblyToastFirst));
+  assert.ok(String(shown[0].props['data-toast']).includes(page.zh.assemblyFirstAssembled));
+  assert.equal(
+    page.loaded.sandbox.sessionStorage.getItem('dsh-prompt-setting:assembly-toast-cursor'),
+    JSON.stringify({ v: 1, bootId: 'boot-a', cursor: 3 }),
+    'the cursor is kept, so a reload cannot replay what was already shown',
+  );
+  assert.deepEqual(writeCalls(page), [], 'the toaster is an observer: it writes nothing');
+
+  // The primitive reports done ⇒ that notice is over and the queue advances.
+  shown[0].props.onClick();
+  tree = toaster.draw();
+  const second = toastNodes(tree);
+  assert.equal(second.length, 1);
+  assert.equal(second[0].props['data-toast-key'], 'assembly-toast-n3');
+  assert.ok(String(second[0].props['data-toast']).includes(page.zh.assemblyToastChange));
+
+  // The next flush inside the throttle window is not a second read; a tab that
+  // comes back is — and it carries the cursor this tab kept, so the notices
+  // already handed out are not handed out again.
+  tree = await toaster.flush();
+  assert.equal(toastNodes(tree)[0].props['data-toast-key'], 'assembly-toast-n3', 'the queue is unchanged');
+  assert.equal(urlsFor(page, PATHS.assemblyStatus).length, 1, 'the burst stays one read');
+  listeners.visibilitychange();
+  await settle();
+  assert.deepEqual(
+    urlsFor(page, PATHS.assemblyStatus).slice(-1),
+    [`${PATHS.assemblyStatus}?since=3`],
+    'the forced read carries the cursor this tab kept',
+  );
+  assert.equal(
+    toastNodes(toaster.draw())[0].props['data-toast-key'],
+    'assembly-toast-n3',
+    'and it does not revive a finished notice',
+  );
+
+  second[0].props.onClick();
+  assert.deepEqual(toastNodes(toaster.draw()), [], 'and the queue really drains');
+});
+
+test('client: the toaster reads on mount, throttles a status burst, and re-reads when the tab returns', async () => {
+  const listeners = {};
+  const doc = {
+    visibilityState: 'visible',
+    addEventListener: (name, handler) => {
+      listeners[name] = handler;
+    },
+    removeEventListener: (name) => {
+      delete listeners[name];
+    },
+  };
+  const responses = defaultResponses({ [PATHS.assemblyStatus]: () => ({ payload: assemblyFeedFixture() }) });
+  const page = makePage({ primitives: 'ok', withToast: true, responses, document: doc });
+  page.loaded.sandbox.sessionStorage = makeStorage({
+    'dsh-prompt-setting:assembly-toast-cursor': JSON.stringify({ v: 1, bootId: 'boot-a', cursor: 2 }),
+  });
+  const toaster = makeToaster(page);
+  await toaster.flush();
+  const reads = () => urlsFor(page, PATHS.assemblyStatus);
+  assert.equal(reads().length, 1, 'the mount reads once');
+  assert.equal(reads()[0], `${PATHS.assemblyStatus}?since=2`);
+
+  // A session-status change re-runs the effect, but a burst inside the throttle
+  // window is one read, not one request per step.
+  toaster.props.activity = { s1: { running: true } };
+  await toaster.flush();
+  assert.equal(reads().length, 1, 'the burst is throttled to the mount read');
+  assert.equal(typeof listeners.visibilitychange, 'function', 'the tab is watched');
+
+  // A hidden tab does not read (its timers are throttled anyway); coming back
+  // reads immediately — that is what "you see it when you return" means.
+  doc.visibilityState = 'hidden';
+  listeners.visibilitychange();
+  await settle();
+  assert.equal(reads().length, 1, 'nothing is read while hidden');
+  doc.visibilityState = 'visible';
+  listeners.visibilitychange();
+  await settle();
+  assert.equal(reads().length, 2, 'returning to the tab reads at once');
+  page.dispose();
+});
+
+test('client: without the Toast primitive nothing is registered, and the page says so', async () => {
+  const old = makePage({ primitives: 'ok', responses: defaultResponses(), useSessions: sessionsHook(SESSIONS_STATE) });
+  assert.equal(
+    old.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay').length,
+    0,
+    'a Host without Toast gets no overlay entry at all',
+  );
+  const oldTree = await old.flush();
+  assert.ok(
+    hasText(oneBy(oldTree, 'data-assembly-note', 'no-toast'), old.zh.assemblyToastUnavailable),
+    'and the page states the degradation instead of promising a toast',
+  );
+  assert.equal(
+    oneBy(oldTree, 'data-region', 'assembly-status').props['data-assembly-toast-seat'],
+    'absent',
+    'review C4: the seat names the reason',
+  );
+  assert.notEqual(oneBy(oldTree, 'data-region', 'assembly-status'), undefined, 'the block itself is untouched');
+
+  const modern = makePage({
+    primitives: 'ok',
+    withToast: true,
+    responses: defaultResponses(),
+    useSessions: sessionsHook(SESSIONS_STATE),
+  });
+  const overlay = modern.mounted.registrations.find((entry) => entry.options.name === 'shell.overlay');
+  assert.notEqual(overlay, undefined);
+  assert.equal(overlay.options.id, 'prompt-setting-toast');
+  assert.equal(overlay.options.order, 60, 'it is added beside the shipped entries, never over them');
+  assert.equal(typeof overlay.component, 'function');
+  // The settings page keeps its detail block and its switch (判据 7).
+  const modernTree = await modern.flush();
+  assert.equal(oneBy(modernTree, 'data-region', 'assembly-status') !== undefined, true);
+  assert.equal(
+    oneBy(modernTree, 'data-region', 'assembly-status').props['data-assembly-toast-seat'],
+    'ready',
+    'the seat says the overlay really exists',
+  );
+  assert.equal(collect(modernTree, (node) => node.props && node.props['data-assembly-note'] === 'no-toast').length, 0);
+  assert.equal(oneBy(modernTree, 'data-action', 'assembly-toggle') !== undefined, true);
+});
+
+test('client: a Host with the primitive but no shell.overlay slot is not silently toasterless (review C4)', async () => {
+  // The case a capability probe cannot see: `Toast` exists, the slot does not.
+  // Nothing is registered, so nothing can ever be toasted — and the page has to
+  // say so, because "no toast" and "not working" look identical otherwise.
+  const page = makePage({
+    primitives: 'ok',
+    withToast: true,
+    declaredSlots: ['settings.section'],
+    responses: defaultResponses(),
+    useSessions: sessionsHook(SESSIONS_STATE),
+  });
+  assert.equal(page.loaded.module.__internals.assemblyNotice.HAS_TOAST, true, 'the capability probe says yes');
+  assert.equal(
+    page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay').length,
+    0,
+    'the slot was never declared, so no entry exists',
+  );
+  assert.equal(
+    page.loaded.module.__internals.assemblyNotice.overlaySeat(),
+    'pending',
+    'the seat is the fact the page reads',
+  );
+  const tree = await page.flush();
+  const block = oneBy(tree, 'data-region', 'assembly-status');
+  assert.equal(block.props['data-assembly-toast-seat'], 'pending');
+  assert.ok(
+    hasText(oneBy(tree, 'data-assembly-note', 'no-toast'), page.zh.assemblyToastSlotMissing),
+    'and it names the real reason, not the capability probe',
+  );
+  // The block still works: the detail and the switch are the fallback surface.
+  assert.equal(oneBy(tree, 'data-action', 'assembly-toggle') !== undefined, true);
+});
+
+test('client: turning the switch off empties the queue instead of playing it out (review C5)', async () => {
+  let enabled = true;
+  const notices = [{ session: 's1', notice: { ...assemblyNoticeFixture(), seq: 2, id: 'n2' } }];
+  const listeners = {};
+  const doc = {
+    visibilityState: 'visible',
+    addEventListener: (name, handler) => {
+      listeners[name] = handler;
+    },
+    removeEventListener: (name) => {
+      delete listeners[name];
+    },
+  };
+  const responses = defaultResponses({
+    [PATHS.assemblyStatus]: (url) => {
+      const since = /since=(\d+)/.exec(url);
+      const from = since === null ? 1 : Number(since[1]);
+      return {
+        payload: assemblyFeedFixture({
+          enabled,
+          notifications: { bootId: 'boot-a', cursor: 2, stale: false, notices: from >= 2 ? [] : notices },
+        }),
+      };
+    },
+  });
+  const page = makePage({ primitives: 'ok', withToast: true, responses, document: doc });
+  page.loaded.sandbox.sessionStorage = makeStorage({
+    'dsh-prompt-setting:assembly-toast-cursor': JSON.stringify({ v: 1, bootId: 'boot-a', cursor: 1 }),
+  });
+  const toaster = makeToaster(page);
+  const tree = await toaster.flush();
+  assert.equal(toastNodes(tree).length, 1, 'the notice is queued');
+  // Off while it is still on screen: the next read mutes the toaster and drops
+  // the queue — "off" is a statement about now, not about the next drain.
+  enabled = false;
+  listeners.visibilitychange();
+  await settle();
+  assert.deepEqual(toastNodes(toaster.draw()), [], 'off means silent now');
+  assert.equal(
+    page.loaded.sandbox.sessionStorage.getItem('dsh-prompt-setting:assembly-toast-cursor'),
+    JSON.stringify({ v: 1, bootId: 'boot-a', cursor: 2 }),
+    'the cursor still advances, so switching back on releases no backlog',
+  );
+});
+
+test('client: the shell session-status hook is the toaster\'s primary trigger (review C3b, causality pinned by R5)', async () => {
+  let now = 1000000;
+  let statuses = { s1: { running: false } };
+  let selectorCalls = 0;
+  const hook = (selector) => {
+    selectorCalls += 1;
+    return selector(statuses);
+  };
+  const responses = defaultResponses({ [PATHS.assemblyStatus]: () => ({ payload: assemblyFeedFixture() }) });
+  // Review R5: this case asks the harness to honour the dependency array. The
+  // default double re-runs **every** effect on every render, which cannot tell
+  // "the status change drove this read" from "this render did" — with that
+  // default, deleting `[props.activity]` from the toaster left this case green.
+  // With deps enforced, both halves below fail when the array goes away: an
+  // unchanged map must not read (it does, so the count assertion fails), and a
+  // changed map must (it does not, so that one fails too).
+  const page = makePage({ primitives: 'ok', withToast: true, responses, enforceEffectDeps: true });
+  // A controllable clock: the burst throttle is real time, and a case must not
+  // wait 3 s to observe the event-driven path.
+  page.loaded.sandbox.Date = class extends Date {
+    static now() {
+      return now;
+    }
+  };
+  page.loaded.sandbox.sessionStorage = makeStorage({
+    'dsh-prompt-setting:assembly-toast-cursor': JSON.stringify({ v: 1, bootId: 'boot-a', cursor: 2 }),
+  });
+  // The fallback timer is silenced on purpose. This case is about the **event**
+  // path, and the harness floors every sandbox delay to 5 ms (g-032), so the
+  // 20 s fallback would otherwise fire inside a `settle()` and blur the cause —
+  // which is exactly the confusion R5 is about. `pull` on mount and on a
+  // dependency change does not go through a timer, so nothing else is lost.
+  page.loaded.sandbox.setTimeout = () => 0;
+  page.loaded.sandbox.clearTimeout = () => {};
+  const toaster = makeToaster(page, { useSessionStatus: hook });
+  await toaster.flush();
+  const reads = () => urlsFor(page, PATHS.assemblyStatus);
+  assert.equal(selectorCalls > 0, true, 'the entry subscribes to the shell hook (the C3b path)');
+  assert.equal(reads().length, 1, 'and reads once on mount');
+  // Same status map, five seconds of clock, no timer: the effect must not re-run,
+  // so there is nothing that could read. This is the assertion that fails when
+  // the toaster's dependency array is deleted.
+  now += 5000;
+  await toaster.flush();
+  assert.equal(reads().length, 1, 'an unchanged status map is not a reason to read (R5)');
+  // A new status map means a step ended somewhere; past the 3 s throttle that is
+  // a read. The change is the cause, not the render.
+  statuses = { s1: { running: true } };
+  now += 5000;
+  await toaster.flush();
+  assert.equal(reads().length, 2, 'the status change — and nothing else — drove the read');
+  assert.equal(selectorCalls >= 2, true);
+});
+
+test('client: a Host that declares the slot and refuses the registration says exactly that (review R1)', async () => {
+  const page = makePage({
+    primitives: 'ok',
+    withToast: true,
+    refusedSlots: ['shell.overlay'],
+    responses: defaultResponses(),
+    useSessions: sessionsHook(SESSIONS_STATE),
+  });
+  assert.equal(
+    page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay').length,
+    0,
+    'the registration was refused, so no entry exists',
+  );
+  assert.equal(page.loaded.module.__internals.assemblyNotice.overlaySeat(), 'failed');
+  const tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'assembly-status').props['data-assembly-toast-seat'], 'failed');
+  const note = oneBy(tree, 'data-assembly-note', 'no-toast');
+  assert.ok(
+    hasText(note, page.zh.assemblyToastRefused),
+    'the reason is the real one: the slot exists and the entry was refused',
+  );
+  assert.equal(
+    hasText(note, page.zh.assemblyToastSlotMissing),
+    false,
+    'not "the slot is missing" — this host declared it',
+  );
+  assert.equal(hasText(note, page.zh.assemblyToastUnavailable), false, 'and not "the primitive is missing" either');
+  // Three seats, three sentences: the mapping is not a two-way switch with a
+  // catch-all, which is exactly what review R1 caught.
+  assert.notEqual(page.zh.assemblyToastRefused, page.zh.assemblyToastSlotMissing);
+  assert.notEqual(page.zh.assemblyToastRefused, page.zh.assemblyToastUnavailable);
+  assert.notEqual(page.zh.assemblyToastSlotMissing, page.zh.assemblyToastUnavailable);
+  const english = makePage({ primitives: 'ok', withToast: true, responses: defaultResponses(), language: 'en' });
+  assert.notEqual(english.text.assemblyToastRefused, english.text.assemblyToastSlotMissing);
+  assert.notEqual(english.text.assemblyToastRefused, english.text.assemblyToastUnavailable);
+});
+
+// ---------------------------------------------------------------------------
+// g-062 fix round — the primitives probe's interop shapes
+//
+// The real machine reported what looked like a contradiction: `Render branch:
+// fallback` **with no** "why primitives is unavailable" line. That pair is
+// consistent with several different worlds, and the fix round's whole demand is
+// that the page stop leaving them to inference. These cases pin the three
+// shapes the brief names (require throws / a flat namespace / `{default: ns}`)
+// plus the two "resolved but useless" answers, and they pin the boundary the
+// lead set: the **toast** decision may unwrap, the **renderer** decision must
+// not move.
+// ---------------------------------------------------------------------------
+
+test('client: a flat primitives namespace is used as-is, and the diagnosis says so (fix round)', async () => {
+  const page = makePage({
+    primitives: 'ok',
+    withToast: true,
+    primitivesShape: 'flat',
+    responses: defaultResponses(),
+  });
+  const notice = page.loaded.module.__internals.assemblyNotice;
+  assert.equal(notice.toastNamespace(), 'module', 'the namespace itself is the one the decision used');
+  assert.equal(page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay').length, 1);
+  const probe = notice.primitivesProbe();
+  assert.equal(probe.toastSource, 'module');
+  assert.equal(probe.renderer, 'primitives', 'a flat namespace with Button keeps the primitives renderer');
+
+  // The self-check lives in the full status block, which g-015 moved into
+  // 「高级」 — the one tab that is about the page itself.
+  const tree = await openAdvanced(page);
+  const info = oneBy(tree, 'data-region', 'renderer-info');
+  assert.ok(hasText(info, page.text.rendererPrimitives), 'the renderer branch is untouched by the fix');
+  // g-063 wrap-up: the always-on probe rows are gone; the toast row and the
+  // branch line are what the block still reports.
+  assert.equal(
+    collect(info, (node) => node.props && node.props['data-primitives-detail'] !== undefined).length,
+    0,
+    'the removed probe-detail row is not rendered',
+  );
+  assert.equal(
+    collect(info, (node) => node.props && node.props['data-primitives-members'] !== undefined).length,
+    0,
+    'the removed key-typeof row is not rendered',
+  );
+  assert.equal(oneBy(info, 'data-primitives-toast-source', 'module').props['data-primitives-toast-source'], 'module');
+  assert.ok(
+    hasText(oneBy(info, 'data-primitives-toast-source', 'module'), page.text.toastNamespaceModule),
+    'the line names the namespace the toast decision used',
+  );
+});
+
+test('client: an ESM/CJS wrapper is unwrapped for the toast, and only for the toast (fix round)', async () => {
+  // The brief's hypothesis, made real: every named export sits one `.default`
+  // down. `Button` is **still** reachable on the flat value, so the renderer
+  // probe is satisfied either way — which is what makes this the shape that
+  // could previously hide a Toast behind a passing renderer.
+  const page = makePage({
+    primitives: 'ok',
+    withToast: true,
+    primitivesShape: 'default',
+    responses: defaultResponses(),
+  });
+  const probe = page.loaded.module.__internals.assemblyNotice.primitivesProbe();
+  assert.equal(page.loaded.module.__internals.assemblyNotice.HAS_TOAST, true);
+  assert.equal(page.loaded.module.__internals.assemblyNotice.toastNamespace(), 'default');
+  assert.equal(
+    page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay').length,
+    1,
+    'the toaster is registered on the strength of the unwrapped namespace',
+  );
+
+  const tree = await openAdvanced(page);
+  const info = oneBy(tree, 'data-region', 'renderer-info');
+  // The boundary: the raw module has no `Button`, so the page's own renderer
+  // stays exactly where it was before this fix.
+  assert.ok(hasText(info, page.text.rendererFallback), 'the renderer branch did not move');
+  assert.equal(
+    oneBy(info, 'data-primitives-toast-source', 'default').props['data-primitives-toast-source'],
+    'default',
+  );
+  assert.equal(probe.toastSource, 'default', 'the decision behind that row really used the unwrapped namespace');
+});
+
+test('client: a resolved-but-empty primitives answer says so instead of looking like a flat one (fix round)', async () => {
+  for (const shape of ['empty-object', 'undefined']) {
+    const page = makePage({ primitives: 'ok', primitivesShape: shape, responses: defaultResponses() });
+    assert.equal(
+      page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay').length,
+      0,
+      `${shape}: nothing drawable, so nothing is registered`,
+    );
+    const tree = await openAdvanced(page);
+    const info = oneBy(tree, 'data-region', 'renderer-info');
+    assert.ok(hasText(info, page.text.rendererFallback), `${shape}: the renderer falls back`);
+    assert.equal(
+      oneBy(info, 'data-primitives-toast-source', 'none').props['data-primitives-toast-source'],
+      'none',
+      `${shape}: the toast namespace is named as absent`,
+    );
+    assert.equal(
+      collect(info, (node) => node.props && node.props['data-primitives-detail'] !== undefined).length,
+      0,
+      `${shape}: and the removed probe-detail row is gone`,
+    );
+  }
+});
+
+test('client: a throwing require is reported with its own message, and the old failure line survives (fix round)', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  assert.equal(page.loaded.module.__internals.assemblyNotice.toastNamespace(), 'none');
+  const tree = await openAdvanced(page);
+  const info = oneBy(tree, 'data-region', 'renderer-info');
+  // The line g-015 added is still there — it is the "a degradation must say why"
+  // carrier, and the g-063 wrap-up kept it while removing the always-on rows.
+  assert.equal(oneBy(info, 'data-primitives-failure', 'true').props['data-primitives-failure'], 'true');
+  assert.ok(hasText(info, 'Cannot find module'), 'the reason is still printed');
+  assert.equal(
+    collect(info, (node) => node.props && node.props['data-primitives-detail'] !== undefined).length,
+    0,
+    'the removed probe-detail row no longer repeats it — the failure line is the only carrier now',
+  );
+  assert.equal(oneBy(info, 'data-primitives-toast-source', 'none').props['data-primitives-toast-source'], 'none');
+});
+
+// g-063 wrap-up: the "three probe shapes get three different diagnosis lines"
+// case lived here. It existed to prove the two **always-on** diagnostic rows
+// (plus the toast-namespace row) told three worlds apart. Those rows were removed
+// on the lead's request once they had located the `forwardRef` defect, and the
+// toast-namespace row's three values are still asserted one by one in the three
+// cases above.
+// #endregion
+
+// ---------------------------------------------------------------------------
+// g-063 — the probe has to recognise the atoms' **real** shape
+//
+// The Host ships `Button` / `Input` as `React.forwardRef(...)` products, whose
+// `typeof` is `'object'`. A probe keyed on `typeof === 'function'` therefore
+// read a fully-stocked Host as empty and pinned this page to the hand-built
+// renderer for its whole life. These cases publish the shapes the real Host
+// ships — and the look-alikes that must keep degrading — and they assert the
+// decision through `data-renderer` / the probe's `renderer` plus the drawing (the
+// official atoms really rendered the tree).
+// ---------------------------------------------------------------------------
+
+/**
+ * The real Host's atom shape: `forwardRef` products, marked so a test can tell
+ * them apart from the hand-built fallback atoms they replace.
+ * @param atoms - the default function-component double.
+ * @param React - this sandbox's React double.
+ * @returns the namespace to publish.
+ */
+const forwardRefAtoms = (atoms, React) => ({
+  ...atoms,
+  Button: React.forwardRef((props) => React.createElement('button', { ...props, 'data-atom': 'button' })),
+  Input: React.forwardRef((props) => React.createElement('input', { ...props, 'data-atom': 'input' })),
+});
+
+test('client: a forwardRef Button selects the primitives renderer (g-063)', async () => {
+  // `makeOpenPage`: the session selector's `Input` only exists while the scope
+  // picker is open, and this case wants to see the official input, not just the
+  // official button.
+  const page = makeOpenPage({
+    primitives: 'ok',
+    primitivesAtoms: forwardRefAtoms,
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses(),
+  });
+  const probe = page.loaded.module.__internals.assemblyNotice.primitivesProbe();
+  assert.equal(probe.renderer, 'primitives', 'the renderer branch really moves for a forwardRef atom');
+
+  const tree = await page.flush();
+  assert.equal(rendererOf(tree), 'primitives');
+  // The activated branch really drew, with the official atoms: `data-atom` only
+  // exists on the double this case published, so a probe that fell back to
+  // `typeof === 'function'` would render the same page WITHOUT these markers.
+  assert.equal(oneBy(tree, 'data-action', 'refresh').props['data-atom'], 'button');
+  assert.equal(oneBy(tree, 'data-role', 'session-search').props['data-atom'], 'input');
+  // The official `Button` is a real host `button`: the page did not lose a click.
+  assert.equal(oneBy(tree, 'data-action', 'refresh').type, 'button');
+  assert.ok(tabPanel(tree), 'the page is drawn, not blank');
+  assert.equal(markerOf(tree, 'data-render-state'), 'ok');
+
+  const info = oneBy(await openAdvanced(page), 'data-region', 'renderer-info');
+  assert.ok(hasText(info, page.text.rendererPrimitives), 'the diagnosis names the branch now in use');
+  assert.equal(
+    collect(info, (node) => node.props && node.props['data-primitives-members'] !== undefined).length,
+    0,
+    'and it no longer prints the key-typeof table the wrap-up removed',
+  );
+});
+
+test('client: a memo Button is a component too (g-063)', async () => {
+  const page = makePage({
+    primitives: 'ok',
+    primitivesAtoms: (atoms, React) => ({
+      ...atoms,
+      Button: React.memo((props) => React.createElement('button', { ...props, 'data-atom': 'button' })),
+    }),
+    responses: defaultResponses(),
+  });
+  const probe = page.loaded.module.__internals.assemblyNotice.primitivesProbe();
+  assert.equal(probe.renderer, 'primitives', 'memo is an object-shaped component kind as well');
+  const tree = await page.flush();
+  assert.equal(rendererOf(tree), 'primitives');
+  assert.equal(oneBy(tree, 'data-action', 'refresh').props['data-atom'], 'button');
+});
+
+test('client: a forwardRef Toast is still a toast, and it really draws (g-063)', async () => {
+  const notices = [
+    { session: 's1', notice: { ...assemblyNoticeFixture({ kind: 'first-assembly' }), seq: 2, id: 'n2' } },
+  ];
+  const responses = defaultResponses({
+    [PATHS.assemblyStatus]: () => ({
+      payload: assemblyFeedFixture({
+        notifications: { bootId: 'boot-a', cursor: 2, stale: false, notices },
+      }),
+    }),
+  });
+  const page = makePage({
+    primitives: 'ok',
+    withToast: true,
+    primitivesAtoms: (atoms, React) => ({
+      ...atoms,
+      Toast: React.forwardRef((props) =>
+        React.createElement('div', {
+          'data-toast': props.text,
+          'data-toast-key': typeof props.key === 'string' ? props.key : null,
+        }),
+      ),
+    }),
+    responses,
+  });
+  page.loaded.sandbox.sessionStorage = makeStorage({
+    'dsh-prompt-setting:assembly-toast-cursor': JSON.stringify({ v: 1, bootId: 'boot-a', cursor: 1 }),
+  });
+  const notice = page.loaded.module.__internals.assemblyNotice;
+  assert.equal(notice.HAS_TOAST, true, 'the toast probe asks the same forwardRef-aware question');
+  assert.equal(notice.toastNamespace(), 'module');
+  assert.equal(
+    page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay').length,
+    1,
+    'so the overlay is registered',
+  );
+  // Registration alone is not the claim (review R2): the render-time guard has
+  // to answer with the SAME judge as the capability probe. A `typeof`-only
+  // guard leaves the queue non-empty and this tree with zero toast nodes —
+  // HAS_TOAST=yes, overlay registered, and nothing ever drawn.
+  const tree = await makeToaster(page).flush();
+  const shown = toastNodes(tree);
+  assert.equal(shown.length, 1, 'the forwardRef Toast really rendered the notice');
+  assert.equal(shown[0].props['data-toast-key'], 'assembly-toast-n2');
+  assert.ok(
+    String(shown[0].props['data-toast']).includes(page.zh.assemblyFirstAssembled),
+    'and it carries the same copy the function-component double produced',
+  );
+});
+
+test('client: an unrecognised component shape still falls back (g-063, negative control)', async () => {
+  // "Changed and it goes red": every one of these is an object a
+  // `typeof`-only probe would also reject — the point is that the NEW probe
+  // rejects them for the RIGHT reason (no usable brand), instead of accepting
+  // any object at all.
+  const shapes = [
+    ['an unknown brand', { $$typeof: Symbol.for('react.something_else') }],
+    ['a forwardRef brand with no render', { $$typeof: FORWARD_REF_TYPE }],
+    ['a forwardRef brand whose render is not a function', { $$typeof: FORWARD_REF_TYPE, render: 'nope' }],
+    ['a plain object that merely looks component-ish', { render: () => null }],
+    ['a memo around something unusable', { $$typeof: MEMO_TYPE, type: { $$typeof: FORWARD_REF_TYPE } }],
+  ];
+  for (const [name, Button] of shapes) {
+    const page = makePage({
+      primitives: 'ok',
+      primitivesAtoms: (atoms) => ({ ...atoms, Button }),
+      responses: defaultResponses(),
+    });
+    const probe = page.loaded.module.__internals.assemblyNotice.primitivesProbe();
+    assert.equal(probe.renderer, 'fallback', `${name}: the renderer falls back`);
+    const tree = await openAdvanced(page);
+    assert.equal(rendererOf(tree), 'fallback', `${name}: and the page says which branch it took`);
+    assert.ok(tabPanel(tree), `${name}: the fallback still draws the panel`);
+  }
+});
+
+test('client: a throwing Button getter degrades instead of blanking the page (g-063, fail-open)', async () => {
+  const page = makePage({
+    primitives: 'ok',
+    primitivesAtoms: (atoms) => ({
+      ...atoms,
+      get Button() {
+        throw new Error('the Host getter threw');
+      },
+    }),
+    responses: defaultResponses(),
+  });
+  const probe = page.loaded.module.__internals.assemblyNotice.primitivesProbe();
+  assert.equal(probe.renderer, 'fallback', 'a throwing read is "not usable", never a crash');
+  const tree = await openAdvanced(page);
+  assert.equal(rendererOf(tree), 'fallback');
+  assert.equal(markerOf(tree, 'data-render-state'), 'ok', 'the panel is not blank');
+  assert.ok(tabPanel(tree));
+});
+
+test('client: a Host atom that throws mid-render degrades instead of blanking the page (g-063 E1)', async () => {
+  // The primitives branch is the only branch where this can happen: the probe's
+  // `try/catch` covers `require` and building elements, while React calls the
+  // Host's component *during* render — a path the page never reached before
+  // g-063 activated the branch.
+  const page = makePage({
+    primitives: 'ok',
+    primitivesAtoms: (atoms, React) => ({
+      ...atoms,
+      Button: React.forwardRef(() => {
+        throw new Error('the Host button exploded mid-render');
+      }),
+    }),
+    responses: defaultResponses(),
+  });
+  const tree = await page.flush();
+  // ① not blank, ② visibly degraded to the hand-built renderer.
+  assert.equal(rendererOf(tree), 'fallback', 'the marker names the branch really in use, not the probed one');
+  assert.equal(markerOf(tree, 'data-render-state'), 'ok', 'the page is drawn, not blank');
+  assert.ok(tabPanel(tree), 'and the tab panel is there');
+  // ③ the degraded page is the REAL page, not a placeholder: it is the same tree
+  // rebuilt with the hand-built atoms (the exploding `forwardRef` is gone).
+  assert.equal(oneBy(tree, 'data-action', 'refresh').props['data-atom'], undefined);
+  assert.equal(oneBy(tree, 'data-action', 'refresh').type, 'button');
+
+  const probe = page.loaded.module.__internals.assemblyNotice.primitivesProbe();
+  assert.equal(probe.renderFailed, true, 'the probe had accepted the atom — it just could not be rendered');
+  assert.equal(probe.renderer, 'fallback', 'so the branch in use moved');
+  assert.ok(probe.renderFailure.includes('exploded mid-render'), `the failure is kept: ${probe.renderFailure}`);
+
+  const info = oneBy(await openAdvanced(page), 'data-region', 'renderer-info');
+  assert.ok(hasText(info, page.text.rendererFallback));
+  assert.equal(
+    oneBy(info, 'data-primitives-render-failed', 'true').props['data-primitives-render-failed'],
+    'true',
+    'the diagnosis row names the render-time failure',
+  );
+  assert.ok(
+    hasText(oneBy(info, 'data-primitives-render-error', 'true'), 'exploded mid-render'),
+    'with the error text, so the operator does not have to guess',
+  );
+});
+
+test('client: after a render-time failure the toaster entry stops rendering instead of throwing again (g-063 F1)', async () => {
+  const notices = [
+    { session: 's1', notice: { ...assemblyNoticeFixture({ kind: 'first-assembly' }), seq: 2, id: 'n2' } },
+  ];
+  const responses = defaultResponses({
+    [PATHS.assemblyStatus]: () => ({
+      payload: assemblyFeedFixture({ notifications: { bootId: 'boot-a', cursor: 2, stale: false, notices } }),
+    }),
+  });
+  const page = makePage({
+    primitives: 'ok',
+    withToast: true,
+    primitivesAtoms: (atoms, React) => ({
+      ...atoms,
+      Toast: React.forwardRef(() => {
+        throw new Error('the Host toast exploded mid-render');
+      }),
+    }),
+    responses,
+  });
+  page.loaded.sandbox.sessionStorage = makeStorage({
+    'dsh-prompt-setting:assembly-toast-cursor': JSON.stringify({ v: 1, bootId: 'boot-a', cursor: 1 }),
+  });
+  const toaster = makeToaster(page);
+  // First render: the boundary catches the throwing Host atom and the entry's
+  // degraded shape is "nothing".
+  assert.equal(await toaster.flush(), null, 'the first failure is caught, not propagated');
+  const probe = page.loaded.module.__internals.assemblyNotice.primitivesProbe();
+  assert.equal(probe.renderFailed, true, 'and the instance-wide flip happened');
+  assert.equal(probe.renderer, 'fallback');
+  // Second render — the shape the shell really asks for on its next commit.
+  // With the boundary dropped once the atoms went inactive (the pre-F1 shape)
+  // this is where the SAME atom would be rendered bare and throw out of the
+  // overlay subtree; the fix is that the entry renders nothing at all instead.
+  let threw = null;
+  let tree = null;
+  try {
+    tree = toaster.draw();
+  } catch (error) {
+    threw = error;
+  }
+  assert.equal(threw, null, `the entry must stop rendering after the flip (threw: ${threw && threw.message})`);
+  assert.equal(tree, null, 'and its degraded shape is "nothing", never a bare Host atom');
+});
+
+/**
+ * A `document` that records what a `<style>` injection does (g-063, real-machine
+ * feedback). Nothing else in the page needs it beyond the scroll lock's
+ * `body.style`, so the double is deliberately small.
+ * @returns `{doc, appended}` — the fake document and its injected nodes.
+ */
+function styleRecordingDocument() {
+  const appended = [];
+  return {
+    appended,
+    doc: {
+      head: { appendChild: (node) => appended.push(node) },
+      body: { style: {}, appendChild() {}, removeChild() {} },
+      createElement(tag) {
+        return {
+          tag,
+          attrs: {},
+          textContent: '',
+          setAttribute(name, value) {
+            this.attrs[name] = String(value);
+          },
+        };
+      },
+      querySelector: () => null,
+    },
+  };
+}
+
+test('client: the tab strip stays hand-built on a primitives Host, and injects nothing (g-063 H2)', async () => {
+  // Real-machine rounds 1–3 retired the official `SegmentedTabs` here: its
+  // premise is "equal fractions of my own width", which with six long Chinese
+  // labels either crushes them (labels wrapped) or inflates the strip until it
+  // pushed the row out of the panel. The hand-built `flex-wrap` strip is the
+  // layout this page used for its whole life and never drew a complaint, so the
+  // tabs stay ours **on purpose** while every other Host atom is still used.
+  const { appended, doc } = styleRecordingDocument();
+  const page = makePage({ primitives: 'ok', responses: defaultResponses(), document: doc });
+  const tree = await page.flush();
+
+  // The page really is on the primitives branch (it probed the Host's atoms and
+  // chose them) — this is not a degraded page.
+  assert.equal(rendererOf(tree), 'primitives');
+
+  // …and yet the tabs are hand-built: no official control, no injected CSS.
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-tabs-class'] !== undefined).length,
+    0,
+    'the official SegmentedTabs is deliberately not used',
+  );
+  assert.equal(appended.length, 0, 'and the tab strip needs no injected style');
+
+  // The strip is the hand-built tablist: six real buttons in the fixed order,
+  // carrying the markers the rest of the suite clicks and asserts on.
+  const strip = tabList(tree).props.children;
+  assert.equal(strip.props.role, 'tablist', 'the hand-built tab list is what is rendered');
+  assert.equal(strip.props.style.flexWrap, 'wrap', 'content-sized wrapping layout, not equal fractions');
+  assert.deepEqual(mainTabs(tree), ['mine', 'presets', 'overview', 'history', 'backup', 'advanced']);
+
+  // Switching tabs still works, and still injects nothing.
+  await openTab(page, 'overview');
+  assert.equal(appended.length, 0, 'a later render injects nothing either');
+});
+
+test('client: the tab strip is hand-built under the fallback renderer too (g-063 H2)', async () => {
+  const { appended, doc } = styleRecordingDocument();
+  const page = makePage({ primitives: 'throw', responses: defaultResponses(), document: doc });
+  const tree = await page.flush();
+  assert.equal(rendererOf(tree), 'fallback');
+  assert.equal(appended.length, 0, 'no injected CSS on either branch');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-tabs-class'] !== undefined).length,
+    0,
+    'and no official control was rendered',
+  );
+  assert.deepEqual(mainTabs(tree), ['mine', 'presets', 'overview', 'history', 'backup', 'advanced']);
 });

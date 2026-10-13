@@ -75,6 +75,21 @@ export const UPDATE_SOURCE_GITHUB = 'github';
 export const UPDATE_CHECK_DEFAULT = true;
 
 /**
+ * g-062: the「装配状态提示」preference key, in the same document as the update
+ * switch.
+ *
+ * It gates the settings-page notice that reports whether a saved prompt was
+ * re-assembled and delivered. The default is **on**: the notice is the whole
+ * point of the feature, and a missing or malformed document must not silently
+ * read as "the feature the user is looking for is off" (`normalizePreferences`
+ * carries the key through only when the document states a boolean, so a
+ * pre-g-062 file stays byte-identical).
+ */
+export const ASSEMBLY_NOTICE_FLAG = 'assemblyNotice';
+/** The default `assemblyNotice`: on. */
+export const ASSEMBLY_NOTICE_DEFAULT = true;
+
+/**
  * g-043: the「下载区域」preference key, in the **same** document as the switch.
  *
  * Three values only ({@link DOWNLOAD_REGIONS}): `default` (npmjs first, GitHub
@@ -433,15 +448,18 @@ export function statedDownloadRegion(raw) {
  * **carried through only when the document states them**
  * ({@link statedDownloadRegion}), which is what keeps every pre-g-043 document —
  * and every write this module makes for a profile that never chose a region —
- * byte-identical to what it was.
+ * byte-identical to what it was. g-062's {@link ASSEMBLY_NOTICE_FLAG} follows the
+ * same stated-only rule.
  * @param raw - the parsed `preferences.json`, or anything else.
- * @returns `{updateCheck: boolean, downloadRegion?, downloadRegionRegistry?, downloadRegionAuto?}`.
+ * @returns `{updateCheck: boolean, assemblyNotice?: boolean, downloadRegion?, downloadRegionRegistry?, downloadRegionAuto?}`.
  */
 export function normalizePreferences(raw) {
   const stated = isRecord(raw) ? raw[UPDATE_CHECK_FLAG] : undefined;
+  const statedNotice = isRecord(raw) ? raw[ASSEMBLY_NOTICE_FLAG] : undefined;
   return {
     [UPDATE_CHECK_FLAG]: stated === false ? false : UPDATE_CHECK_DEFAULT,
     ...statedDownloadRegion(raw),
+    ...(typeof statedNotice === 'boolean' ? { [ASSEMBLY_NOTICE_FLAG]: statedNotice } : {}),
   };
 }
 

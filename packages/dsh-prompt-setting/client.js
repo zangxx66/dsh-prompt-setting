@@ -303,21 +303,326 @@ window.__ModuleLoader__.load({
     }
     const primitives =
       primitivesModule !== null && typeof primitivesModule === 'object' ? primitivesModule : null;
-    const primitivesUsable = primitives !== null && typeof primitives.Button === 'function';
-    /** Which renderer this module instance actually uses: 'primitives' | 'fallback'. */
+    /**
+     * The brand one React factory stamps on the component **object** it returns,
+     * read off a real product of this Host's factory.
+     *
+     * `React.forwardRef` hands back `{ $$typeof, render }` and `React.memo`
+     * `{ $$typeof, type }`; both are components, both are `typeof === 'object'`.
+     * Reading the brand from React itself keeps this file from restating a
+     * string React owns — a React double without that factory answers
+     * `undefined` and the documented `Symbol.for(...)` spelling still applies.
+     * @param factory - `React.forwardRef` / `React.memo`, or anything at all.
+     * @param argument - what that factory accepts (a render function / component).
+     * @returns the brand, or `undefined` when it cannot be observed.
+     */
+    function reactFactoryBrand(factory, argument) {
+      if (typeof factory !== 'function') return undefined;
+      try {
+        const product = factory(argument);
+        return product !== null && typeof product === 'object' && typeof product.$$typeof === 'symbol'
+          ? product.$$typeof
+          : undefined;
+      } catch {
+        return undefined;
+      }
+    }
+
+    /**
+     * The component kinds that are **objects** rather than functions: brand →
+     * the structural field that must be there too.
+     *
+     * Only the two shapes this page's atoms can arrive in are listed, and each
+     * one is validated structurally (`render` is a function; `type` is itself a
+     * component), so an object that merely *claims* a brand — or carries a kind
+     * this page cannot render — is **not** mistaken for a component. The brand
+     * value comes from React's own factories above, with `Symbol.for(...)` —
+     * React's global-registry spelling, shared by the Host's React copy and
+     * this plugin's — as the documented fallback.
+     */
+    const OBJECT_COMPONENT_FIELDS = new Map();
+    {
+      const registrySymbol = (key) =>
+        typeof Symbol === 'function' && typeof Symbol.for === 'function' ? Symbol.for(key) : undefined;
+      const brands = [
+        [reactFactoryBrand(React.forwardRef, () => null), 'render'],
+        [reactFactoryBrand(React.memo, () => null), 'type'],
+        [registrySymbol('react.forward_ref'), 'render'],
+        [registrySymbol('react.memo'), 'type'],
+      ];
+      for (const [brand, field] of brands) {
+        if (typeof brand === 'symbol' && !OBJECT_COMPONENT_FIELDS.has(brand)) OBJECT_COMPONENT_FIELDS.set(brand, field);
+      }
+    }
+
+    /**
+     * Is this export value something React can render?
+     *
+     * `typeof === 'function'` is the whole story only for function components:
+     * `React.forwardRef(...)` — which is exactly what the Host's `Button` and
+     * `Input` are — returns an object, so a probe keyed on `typeof` alone reads
+     * every `forwardRef` atom as absent. That is why this page spent its whole
+     * life on the hand-built renderer while the official atoms were right there
+     * (g-063).
+     *
+     * Deliberately conservative in the other direction: an object whose brand is
+     * unknown, whose brand-carrying field is missing (or is not a function),
+     * answers **false** — which keeps the page on the hand-built renderer
+     * instead of handing React a type it cannot render.
+     * @param value - one export of a candidate module namespace.
+     * @returns `true` when React can render it.
+     */
+    function isComponentExport(value) {
+      if (typeof value === 'function') return true;
+      if (value === null || value === undefined || typeof value !== 'object') return false;
+      let brand;
+      try {
+        brand = value.$$typeof;
+      } catch {
+        return false;
+      }
+      const field = OBJECT_COMPONENT_FIELDS.get(brand);
+      if (field === undefined) return false;
+      let inner;
+      try {
+        inner = value[field];
+      } catch {
+        return false;
+      }
+      // `memo` wraps another component (possibly a `forwardRef` one);
+      // `forwardRef` wraps the render function it was handed.
+      return field === 'type' ? isComponentExport(inner) : typeof inner === 'function';
+    }
+
+    /**
+     * {@link isComponentExport} asked of one namespace member, never a throw.
+     *
+     * A namespace member behind a throwing getter must read as "not usable"
+     * (the fallback renderer draws instead), never take the page down: the whole
+     * probe is fail-open.
+     * @param namespace - a candidate module namespace, or nothing at all.
+     * @param name - the export to ask about.
+     * @returns `true` when that export is a component React can render.
+     */
+    function hasComponentExport(namespace, name) {
+      if (namespace === null || namespace === undefined) return false;
+      try {
+        return isComponentExport(namespace[name]);
+      } catch {
+        return false;
+      }
+    }
+
+    /**
+     * Does one namespace carry the atoms this page draws?
+     *
+     * Extracted so the **renderer** probe and the **toast** probe (which may
+     * unwrap) can ask the same question of different candidates without either
+     * one restating the rule. g-063: the question is asked with
+     * {@link hasComponentExport}, because the Host's `Button` is a `forwardRef`
+     * component and `typeof` it is `'object'`, not `'function'`.
+     * @param namespace - a candidate module namespace.
+     * @returns `true` only for an object whose `Button` really is a component.
+     */
+    function isPrimitivesNamespace(namespace) {
+      return namespace !== null && typeof namespace === 'object' && hasComponentExport(namespace, 'Button');
+    }
+    const primitivesUsable = isPrimitivesNamespace(primitives);
+    /** Which renderer this module instance **probed** for: 'primitives' | 'fallback'. */
     const RENDERER = primitivesUsable ? 'primitives' : 'fallback';
+    /**
+     * Whether the Host's atoms have already thrown **while React rendered them**
+     * (g-063, review E1).
+     *
+     * A different failure from the probe's, and reachable only now that this page
+     * really enters the primitives branch: the probe can only see `require`
+     * returning a namespace, while React calls the component long after that. The
+     * error boundary below flips this the moment a Host atom throws mid-render,
+     * and **every** branch decision made after the flip is the hand-built one —
+     * which is what turns "the official `Button` blew up" into "the page keeps
+     * drawing" instead of a blank panel.
+     */
+    let primitivesRenderFailed = false;
+    /** The boundary's one-line account of that failure, for the diagnosis rows. */
+    let primitivesRenderFailure = '';
+    /**
+     * Is the Host's atom set the one **this** render should use?
+     *
+     * Exactly `RENDERER === 'primitives'`, plus "and it has not blown up yet".
+     * One place decides, so the atoms, the tab control, the icons and the diff
+     * block can never disagree about which renderer is in force.
+     * @returns `true` when this render may draw the Host's atoms.
+     */
+    function primitivesActive() {
+      return RENDERER === 'primitives' && !primitivesRenderFailed;
+    }
+    /** Which renderer the page is **really** using right now, for its markers. */
+    function activeRenderer() {
+      return primitivesActive() ? 'primitives' : 'fallback';
+    }
+    /**
+     * Record a render-time failure of the Host's atoms and settle this module
+     * instance on the hand-built renderer for good.
+     *
+     * Deliberately **one-way**: a component that threw once is not retried on
+     * the next render, because retrying is exactly what would let the same
+     * failure take the whole subtree down twice.
+     * @param error - the thrown value.
+     */
+    function capturePrimitivesRenderFailure(error) {
+      primitivesRenderFailed = true;
+      primitivesRenderFailure = error && error.message ? String(error.message) : String(error);
+    }
     /**
      * Which folder/caret artwork the tree actually renders. The primitives
      * module is used when it really exposes the sidebar's icon components;
      * otherwise the identical inlined geometry is drawn (NOTES §54).
+     *
+     * A function, not a constant: after a render-time failure the icons must
+     * fall back with everything else (g-063 E1).
+     * @returns `'primitives'` or `'inline'`.
      */
-    const ICON_SOURCE =
-      primitivesUsable &&
-      typeof primitives.IconFolderOpenRegular === 'function' &&
-      typeof primitives.IconFolderCloseRegular === 'function' &&
-      typeof primitives.IconTriangleRightFillRegular === 'function'
+    function iconSource() {
+      return primitivesActive() &&
+        hasComponentExport(primitives, 'IconFolderOpenRegular') &&
+        hasComponentExport(primitives, 'IconFolderCloseRegular') &&
+        hasComponentExport(primitives, 'IconTriangleRightFillRegular')
         ? 'primitives'
         : 'inline';
+    }
+    /**
+     * g-062 fix round: the one interop gap a direct property read can fall into.
+     *
+     * A CJS `require` of an ESM module may hand back a **wrapper** whose named
+     * exports sit on `.default` (the `__toESM(mod, 1)` shape every official
+     * client bundle normalizes: `dshmarket/client/client.js:30`). The wrapper is
+     * still an object, so it passes the "is this an object" check and then has
+     * no `Toast` on it — and a probe that only looked at the top level would
+     * report "this Host has no Toast" about a Host that has one.
+     *
+     * `undefined` means **no wrapper** (this is the flat shape, take it as it
+     * is); an object means the caller must use that object instead.
+     * @param module - the raw result of the `require`.
+     * @returns the unwrapped namespace, or `undefined` when there is none.
+     */
+    function unwrapNamespaceDefault(module) {
+      if (module === null || typeof module !== 'object') return undefined;
+      if (typeof module.default !== 'object' || module.default === null) return undefined;
+      return module.default;
+    }
+
+    /**
+     * g-062 (Revision 46): can this Host show a toast at all?
+     *
+     * Probed, never assumed — and probed **independently** of `Button`, which is
+     * what `RENDERER` keys on: a Host may ship the atoms this page draws while
+     * predating the `Toast` primitive (the peer range starts at `0.1.7-rc.2` and
+     * the version that added `Toast` is not pinned), so one probe cannot answer
+     * both questions. When this is false the toaster is never registered and the
+     * settings-page block stays the only surface — the documented degradation,
+     * not an error.
+     *
+     * That independence is now **structural**, not just a comment: the toast
+     * side may unwrap an interop wrapper, while `primitives` / `primitivesUsable`
+     * / `RENDERER` keep reading the raw module exactly as before (the lead's
+     * boundary for this round: fix the toast, leave the settings page's renderer
+     * branch alone).
+     */
+    const toastPrimitivesModule = unwrapNamespaceDefault(primitivesModule);
+    const toastPrimitives =
+      hasComponentExport(toastPrimitivesModule, 'Toast')
+        ? toastPrimitivesModule
+        : hasComponentExport(primitives, 'Toast')
+          ? primitives
+          : null;
+    const HAS_TOAST = toastPrimitives !== null;
+    /**
+     * The namespace the toast question was really asked of: the wrapper's
+     * `.default` when there is one, otherwise the module. `undefined` means the
+     * `require` failed outright, and then there is nothing to inspect at all.
+     */
+    const toastProbeTarget = toastPrimitives !== null ? toastPrimitives : toastPrimitivesModule;
+    /** Which shape the toast namespace came from, for the diagnosis line. */
+    const toastNamespaceSource =
+      toastPrimitives === null ? 'none' : toastPrimitives === toastPrimitivesModule ? 'default' : 'module';
+    /**
+     * The probe's last step, kept as one value so the diagnostics section can
+     * only restate what this decision really used.
+     *
+     * g-063 wrap-up: the two **always-on** diagnostic rows (the `require`
+     * details and the `Button`/`Toast` `typeof` table) were removed once they had
+     * done their job — g-062's fix round and g-063 added them to locate the
+     * `forwardRef` defect on a real machine, and the branch is settled now. What
+     * remains is exactly what the surviving rows read: the namespace the toast
+     * decision used (`toastSource`, printed on the toast row) and the branch in
+     * use (`renderer`); the render-time failure record lives outside this object
+     * (`primitivesRenderFailed` / `primitivesRenderFailure`) because it is a
+     * runtime fact, not a load-time probe result.
+     */
+    const primitivesProbe = {
+      toastSource: toastNamespaceSource,
+      renderer: primitivesUsable ? 'primitives' : 'fallback',
+    };
+    /**
+     * g-062 (Revision 46, review C4): is an overlay toaster **really** there?
+     *
+     * `HAS_TOAST` answers "can this Host draw a toast"; this seat answers "is one
+     * actually registered". They are different questions and the difference is
+     * visible to the user: a Host that exposes the primitive but never declares
+     * the `shell.overlay` slot gets **no** overlay at all, and a page that keyed
+     * its degradation notice off `HAS_TOAST` alone would stay silent — "no
+     * notice" and "not working" would look identical, which is the one outcome
+     * this feature must never produce.
+     *
+     * Three states, none of them a guess: `ready` (the slot was declared and the
+     * entry is registered), `failed` (the Host declared it and refused the
+     * registration), and `pending` (this Host has not declared the slot — and
+     * since `slots.inject` runs synchronously for a slot that already exists,
+     * that is what a Host without the slot looks like forever). `absent` is
+     * decided up front by the capability probe, before any slot is involved.
+     */
+    const overlaySeat = {
+      state: HAS_TOAST ? 'pending' : 'absent',
+      listeners: new Set(),
+      revision: 0,
+    };
+
+    /** The seat's snapshot for `useSyncExternalStore` — a counter, never an object. */
+    function overlaySeatRevision() {
+      return overlaySeat.revision;
+    }
+
+    /**
+     * Subscribe to seat changes.
+     * @param listener - called after the seat's state changed.
+     * @returns the unsubscribe.
+     */
+    function subscribeOverlaySeat(listener) {
+      overlaySeat.listeners.add(listener);
+      return () => {
+        overlaySeat.listeners.delete(listener);
+      };
+    }
+
+    /**
+     * Record what really happened to the overlay registration.
+     *
+     * Called from the slot callback (never during a render), so notifying
+     * subscribers here is an ordinary update rather than an update-during-render.
+     * @param state - `'ready'` or `'failed'`.
+     */
+    function markOverlaySeat(state) {
+      if (overlaySeat.state === state) return;
+      overlaySeat.state = state;
+      overlaySeat.revision += 1;
+      for (const listener of [...overlaySeat.listeners]) {
+        try {
+          listener();
+        } catch {
+          // One subscriber that throws must not cost the others their update.
+        }
+      }
+    }
     // #endregion
 
     /** Locale namespace owned by this plugin (zh/en dictionaries are inlined). */
@@ -358,6 +663,69 @@ window.__ModuleLoader__.load({
      * address is untrusted input (§17.8).
      */
     const DOWNLOAD_REGION_PATH = '/prompt-setting/download-region';
+    /**
+     * g-060 (Revision 37): the preset library — the user's own catalogue of
+     * texts for the reserved section.
+     *
+     * Three paths, mirroring the host half exactly: the catalogue
+     * (`GET` / `PUT` / `DELETE ?id=`) and the two layer actions (`apply`,
+     * `unapply`). The catalogue routes never name a layer; the two actions take
+     * the `session` of the workspace they act on, which is the only identity the
+     * host can resolve a root from (`CONTRACT.md` §4.2, §20).
+     */
+    const PRESETS_PATH = '/prompt-setting/presets';
+    const PRESETS_APPLY_PATH = '/prompt-setting/presets/apply';
+    const PRESETS_UNAPPLY_PATH = '/prompt-setting/presets/unapply';
+    /**
+     * g-062:「装配状态提示」— one path, two methods.
+     *
+     * `GET ?session=` answers the observation for one conversation (the last key
+     * node's assembly-layer and delivery-layer verdicts) plus the switch's state;
+     * `GET ?since=` answers the incremental feed the shell-overlay toaster reads
+     * (no session needed, each notice tagged with its conversation); `PUT
+     * {enabled}` records the switch. Neither surface reaches the model: a notice
+     * never enters the model context, costs no tokens and does not change the
+     * prompt an assembly returns.
+     */
+    const ASSEMBLY_STATUS_PATH = '/prompt-setting/assembly-status';
+    /**
+     * How long the page waits before re-reading a notice whose delivery layer is
+     * still `waiting` (g-062). Short enough to settle within one step and long
+     * enough to cost one request, not a poll loop.
+     */
+    const ASSEMBLY_POLL_MS = 2500;
+    /**
+     * g-062 (Revision 46): the toaster's own cadence.
+     *
+     * The **primary** trigger is an event the client really has — a change in the
+     * session status map the shell hands to a `shell.overlay` entry — and the
+     * timer below is only the fallback for a Host whose hook is missing or whose
+     * event was dropped. Everything is visibility-aware: a hidden tab does not
+     * poll (browser timers are throttled there anyway) and re-reads the moment it
+     * becomes visible, which is exactly what "you see it when you come back"
+     * means. There is no push channel to subscribe to: DSH exposes no plugin
+     * `EventSource`, and the one WebSocket the page owns is the Host's own RPC
+     * mux, so a low-frequency read is the honest transport.
+     */
+    const ASSEMBLY_TOAST_POLL_MS = 20000;
+    /** Shortest gap between two reads triggered by session-status changes. */
+    const ASSEMBLY_TOAST_MIN_GAP_MS = 3000;
+    /** How long one toast holds at full opacity before it fades. */
+    const ASSEMBLY_TOAST_HOLD_MS = 7000;
+    /** How many notices one session's toaster will queue at once. */
+    const ASSEMBLY_TOAST_LIMIT = 4;
+    /** Bumped when the stored cursor's shape changes; an older shape is dropped. */
+    const ASSEMBLY_TOAST_CURSOR_VERSION = 1;
+    /**
+     * Where this **tab** keeps its cursor.
+     *
+     * `sessionStorage`, not `localStorage`: the cursor answers "which notices has
+     * this tab already shown", and two tabs sharing one key would let the first
+     * to advance the second's cursor (a lost toast) or have both replay it (the
+     * one thing the goal forbids). It survives a reload, which is what keeps a
+     * notice from being toasted twice after one.
+     */
+    const ASSEMBLY_TOAST_STORE_KEY = 'dsh-prompt-setting:assembly-toast-cursor';
     /** The three region ids, in dropdown order — the only values the contract accepts. */
     const DOWNLOAD_REGIONS = ['default', 'cn', 'custom'];
     /**
@@ -419,14 +787,16 @@ window.__ModuleLoader__.load({
     /** The mode a save sends when the layer stores none (the historical default). */
     const RESERVED_SECTION_DEFAULT_MODE = 'replace';
     /**
-     * The five first-level tabs, in the fixed order they are presented.
+     * The six first-level tabs, in the fixed order they are presented.
      * 「我的 Prompt」 is first and is the default: it is the only write surface
-     * left, so it is where a user who opened this page for a reason lands.
-     * g-038 split the old 「历史与备份」 in two: 「版本历史」 is the log and its
-     * comparison, 「备份与恢复」 is export/import — one tab may no longer be
-     * both a read-only log and the page's way to overwrite every file.
+     * for the reserved section's **text**, so it is where a user who opened this
+     * page for a reason lands. g-038 split the old 「历史与备份」 in two:
+     * 「版本历史」 is the log and its comparison, 「备份与恢复」 is export/import —
+     * one tab may no longer be both a read-only log and the page's way to
+     * overwrite every file. g-060 adds 「预设」 directly after 「我的 Prompt」: it is
+     * the catalogue of named texts that tab writes, so the two sit together.
      */
-    const MAIN_TABS = ['mine', 'overview', 'history', 'backup', 'advanced'];
+    const MAIN_TABS = ['mine', 'presets', 'overview', 'history', 'backup', 'advanced'];
     /**
      * The two *read-only* views inside 「提示词总览」. `sections` is the
      * assembled segment list; `full` is the assembled text. The Revision 6
@@ -961,6 +1331,56 @@ window.__ModuleLoader__.load({
       mineInterpolateSetNote: '「继承」= 本层不声明（删掉该字段）；「显式关」= 写入 false，可覆盖上层的「开」。',
       mineInterpolateInheritedOn: '本层未设置，因此跟随上层的「开」。要覆盖它，请选「显式关」。',
       mineInterpolateStateSaved: '本层状态已设为「{state}」，下一轮生效（next-turn）。',
+      // ---- g-062:「装配状态提示」— the two-layer observation, page-only.
+      assemblyHeading: '装配状态提示',
+      assemblyIntro:
+        '只在这里显示，不进入模型上下文、不占 token、也不改变模型收到的 prompt。提示只在关键节点出现一次：新会话首次装配、以及保存 Prompt 之后的下一个 run。',
+      assemblySwitchLabel: '提示',
+      assemblySwitchOn: '已开启',
+      assemblySwitchOff: '已关闭',
+      assemblyTurnOn: '开启提示',
+      assemblyTurnOff: '关闭提示',
+      assemblySaving: '正在切换…',
+      assemblySaveFailed: '切换装配状态提示失败',
+      assemblyEnabledNow: '装配状态提示已开启。',
+      assemblyDisabledNow: '装配状态提示已关闭：不再产生新的提示（已有观察保留）。',
+      assemblyNoSession: '先在上方「查看范围」选择一个会话，才能看到该会话的装配状态。',
+      assemblyNoRecord: '所选会话还没有观察到装配；下一次请求后结果会出现在这里。',
+      assemblyNoNotice:
+        '所选会话已开启提示，但还没有到提示节点（新会话首次装配，或保存 Prompt 之后的下一个 run）。',
+      assemblyWaitingDelivery: '等待本步的送达事件…',
+      assemblyWatching: '正在等待送达层结论…',
+      assemblyKindFirst: '新会话首次装配',
+      assemblyKindChange: '保存 Prompt 之后的下一个 run',
+      assemblyLayerAssembly: '装配层',
+      assemblyLayerDelivery: '送达层',
+      assemblyLayerSep: '：',
+      assemblyMatchedSuffix: '（{note}）',
+      assemblyFirstAssembled: '已装配到用户定义的 Prompt。',
+      assemblyFirstEmpty: '未装配到用户定义的 Prompt（本插件的段最终为空）。',
+      assemblyChangeRead: '本次 assembly 已读到变更后的插件段文本。',
+      assemblyChangeNotRead: '本次 assembly 未读到变更后的插件段文本。',
+      assemblyDeliveryWaiting: '尚未观测到本步的 system/message 事件。',
+      assemblyDeliveryDelivered: '已进入本次请求的 messages（{op}）。',
+      assemblyDeliveryUnconfirmed:
+        '未观测到本步的 system/message 事件，未确认已进入本次请求（可能被去重跳过）。',
+      assemblyOpAppend: '新增 system/message',
+      assemblyOpReplace: '改写 head system/message',
+      assemblyTextMatchedYes: '送达文本包含该 Prompt 全文',
+      assemblyTextMatchedNo: '送达文本不含该 Prompt 全文（可能被变量展开或改写）',
+      assemblyNodeMeta: 'turn {turn} · step {step}',
+      assemblyNoticeOnce: '仅关键节点提示一次，不随每个 step 重复。',
+      assemblyToastFirst: '新会话首次装配',
+      assemblyToastChange: 'Prompt 变更后的下一轮',
+      assemblyToastJoin: '　｜　',
+      assemblyToastUnavailable:
+        '本机宿主未提供 Toast 组件，主动提示不可用（未注册任何浮层）；结论仍在上方摘要中，功能其余部分不受影响。',
+      assemblyToastSlotMissing:
+        '本机宿主未声明 shell.overlay 浮层插槽，主动提示无法注册（未注册任何浮层）；结论仍在上方摘要中，功能其余部分不受影响。',
+      assemblyToastRefused:
+        '本机宿主已声明 shell.overlay 插槽，但拒绝了本插件的注册（未注册任何浮层）；结论仍在上方摘要中，功能其余部分不受影响。',
+      assemblyLimitation:
+        '口径：装配层以本插件最终返回的段列表为准——更晚注册的 prepend listener 仍可能改写它，宿主在 waterfall 之后还可能把整份段列表折叠到生效的 complete 段；送达层以本次 step 在 surface 上产生的 system/message（append 或 replace head）为准，HTTP 是否实际发出在插件侧不可观测，本提示不作此声称。',
       mineWarningsHeading: '已保存，但有以下引用需要留意：',
       mineWarningUndefined:
         '这些变量在本次探测中没有值，保存已通过（值属于会话，不属于文本）；缺少该值的那一轮，这些引用会保留字面量、不做替换：{list}',
@@ -1051,6 +1471,13 @@ window.__ModuleLoader__.load({
       rendererPrimitives: 'primitives（官方基础件）',
       rendererFallback: 'fallback（自绘 + 主题变量）',
       primitivesFailure: 'primitives 不可用原因',
+      // g-063 wrap-up: `primitivesDetail*` / `primitivesMembers*` lived here —
+      // the copy for the two always-on probe rows. Removed with those rows once
+      // they had located the `forwardRef` defect on a real machine.
+      primitivesToastLabel: 'toast 命名空间',
+      toastNamespaceNone: '无（未找到可用 Toast）',
+      toastNamespaceDefault: 'module.default（已解包）',
+      toastNamespaceModule: 'module（未解包）',
       renderErrorTitle: 'Prompt 管理：渲染失败',
       renderErrorLabel: '错误',
       scopeDefaultWorkspace: '默认工作区',
@@ -1222,6 +1649,62 @@ window.__ModuleLoader__.load({
       importStatusRemoved: '删除',
       importConfirmTitle: '确认导入',
       importConfirmBody: '将按 {mode} 策略写入以下变更，任何一步失败都不会改动现有配置。',
+      // g-060 (Revision 37): the「预设」tab — the catalogue of named texts for the
+      // reserved section, plus the two layer actions that apply one to a
+      // workspace and put that workspace back.
+      tabPresets: '我的预设',
+      presetsHeading: '预设',
+      presetsNote:
+        '把一段常用文本存成预设，再把它应用到某个工作区的工作区层：应用写入该工作区的保留段，取消应用还原为应用前的内容。',
+      presetsListHeading: '预设库',
+      presetsEmpty: '还没有预设。可以在下面新建，或把「我的 Prompt」当前的文本另存为预设。',
+      presetsLibraryError: '预设库文件不能读取',
+      presetNewHeading: '新建预设',
+      presetEditHeading: '编辑预设',
+      presetNameLabel: '名称',
+      presetNamePlaceholder: '例如：短答模式',
+      presetTextLabel: '文本',
+      presetTextPlaceholder: '这段文本会写入保留段 prompt-setting:custom-prompt',
+      presetModeLabel: '模式',
+      presetModeReplace: '覆盖',
+      presetModeAppend: '叠加',
+      presetSaveNew: '保存为新预设',
+      presetSaveEdit: '保存修改',
+      presetSaveAsCurrent: '从当前文本另存为预设',
+      presetSaveAsCurrentHint:
+        '「从当前文本另存为预设」只是把「我的 Prompt」当前显示的文本填进上面的编辑器，不会直接写入预设库。',
+      presetEdit: '编辑',
+      presetDelete: '删除',
+      presetWorkspaceHeading: '应用到工作区',
+      presetWorkspaceNote:
+        '选定一个工作区（用它的一个 session 定位），把上面编辑的预设应用过去；也可以取消该工作区已有的应用。',
+      presetWorkspaceEmpty: '这个 profile 没有可用的工作区会话，无法应用预设。',
+      presetApply: '应用',
+      presetApplyTo: '应用到工作区',
+      presetApplyToTitle: '把「{name}」应用到工作区',
+      presetApplyToNote: '应用的是预设库里已保存的版本；编辑弹窗里未保存的改动不会生效。',
+      presetDialogClose: '关闭',
+      presetDialogDiscard: '放弃修改',
+      presetDialogDirtyHint: '有未保存的修改：关闭会丢弃它们。',
+      presetDiscardConfirmTitle: '放弃未保存的修改？',
+      presetDiscardConfirmBody: '这个预设的修改还没有保存；确认后关闭弹窗，改动不会写进预设库。',
+      presetDeleteConfirmTitle: '删除预设「{name}」？',
+      presetDeleteConfirmBody:
+        '确认后预设库里不再有它。已经应用到工作区的内容不会被改动，但那条应用记录会标记为「来源已删除」。',
+      presetAlreadyAppliedNotice: '该预设已在此工作区生效，未重复叠加。',
+      presetNotApplied: '未应用',
+      presetUnapplyOne: '取消',
+      presetAppliedHere: '已应用',
+      presetAppliedOrphan: '来源已删除',
+      presetSaving: '处理中…',
+      presetSaved: '已完成',
+      presetFailed: '操作失败',
+      presetLoaded: '预设库已加载',
+      presetSavedNotice: '预设已保存。',
+      presetDeletedNotice: '预设已删除。',
+      presetDeletedOrphanNotice: '预设已删除；{count} 个工作区仍保留它的文本，可以继续取消应用。',
+      presetAppliedNotice: '预设已应用到该工作区，下一轮装配生效。',
+      presetUnappliedNotice: '已取消应用：该工作区恢复为应用前的内容。',
     };
 
     const en = {
@@ -1466,6 +1949,57 @@ window.__ModuleLoader__.load({
       mineInterpolateSetNote: '"Inherit" states nothing (the field is removed); "Off" writes false, which is what lets a layer close over an inherited ON.',
       mineInterpolateInheritedOn: 'This layer states nothing, so it inherits ON. Choose "Off" to override that.',
       mineInterpolateStateSaved: 'This layer now states {state}; effective from the next turn (next-turn).',
+      // ---- g-062: the assembly-status notice — the two-layer observation, shown
+      // in this page only.
+      assemblyHeading: 'Assembly status notice',
+      assemblyIntro:
+        'Shown here only: it never enters the model context, costs no tokens and does not change the prompt the model receives. A notice appears once per key node — the first assembly of a new conversation, and the next run after a prompt is saved.',
+      assemblySwitchLabel: 'Notice',
+      assemblySwitchOn: 'ON',
+      assemblySwitchOff: 'OFF',
+      assemblyTurnOn: 'Turn the notice on',
+      assemblyTurnOff: 'Turn the notice off',
+      assemblySaving: 'Switching…',
+      assemblySaveFailed: 'Switching the assembly-status notice failed',
+      assemblyEnabledNow: 'The assembly-status notice is on.',
+      assemblyDisabledNow: 'The assembly-status notice is off: no new notice will be produced (existing observations are kept).',
+      assemblyNoSession: 'Pick a session under "Viewing scope" above to see that conversation\'s assembly status.',
+      assemblyNoRecord: 'No assembly has been observed for the selected session yet; the result appears here after the next request.',
+      assemblyNoNotice:
+        'The notice is on for the selected session, but no key node has been reached yet (the first assembly of a new conversation, or the next run after a prompt is saved).',
+      assemblyWaitingDelivery: 'Waiting for this step\'s delivery event…',
+      assemblyWatching: 'Waiting for the delivery-layer verdict…',
+      assemblyKindFirst: 'First assembly of a new conversation',
+      assemblyKindChange: 'Next run after a prompt was saved',
+      assemblyLayerAssembly: 'Assembly layer',
+      assemblyLayerDelivery: 'Delivery layer',
+      assemblyLayerSep: ': ',
+      assemblyMatchedSuffix: ' ({note})',
+      assemblyFirstAssembled: 'Assembled: the prompt you defined is in this assembly.',
+      assemblyFirstEmpty: 'Not assembled: this plugin\'s section is empty in this assembly.',
+      assemblyChangeRead: 'This assembly read the changed plugin-section text.',
+      assemblyChangeNotRead: 'This assembly did NOT read the changed plugin-section text.',
+      assemblyDeliveryWaiting: 'No system/message event has been observed for this step yet.',
+      assemblyDeliveryDelivered: 'Delivered into this request\'s messages ({op}).',
+      assemblyDeliveryUnconfirmed:
+        'No system/message event was observed for this step, so delivery into this request is unconfirmed (the projection may have deduplicated it).',
+      assemblyOpAppend: 'an appended system/message',
+      assemblyOpReplace: 'a rewritten head system/message',
+      assemblyTextMatchedYes: 'the delivered text carries the full prompt',
+      assemblyTextMatchedNo: 'the delivered text does not carry the full prompt (variables expanded, or rewritten)',
+      assemblyNodeMeta: 'turn {turn} · step {step}',
+      assemblyNoticeOnce: 'Once per key node only — it does not pile up per step.',
+      assemblyToastFirst: 'First assembly of a new conversation',
+      assemblyToastChange: 'Next run after your prompt change',
+      assemblyToastJoin: ' · ',
+      assemblyToastUnavailable:
+        'This host does not provide the Toast primitive, so proactive toasts are unavailable (no overlay was registered); the verdicts stay in the summary above and nothing else is affected.',
+      assemblyToastSlotMissing:
+        'This host never declares the shell.overlay slot, so the proactive toast could not be registered (no overlay was registered); the verdicts stay in the summary above and nothing else is affected.',
+      assemblyToastRefused:
+        'This host declares the shell.overlay slot but refused this plugin\'s registration (no overlay was registered); the verdicts stay in the summary above and nothing else is affected.',
+      assemblyLimitation:
+        'Basis: the assembly layer is the section list this plugin finally returned — a `{prepend: true}` listener registered later may still rewrite it, and the Host may collapse the whole list onto the effective `complete` section after the waterfall; the delivery layer is the system/message this step committed on the surface (append or head replace). Whether the HTTP request was actually sent is not observable from a plugin, and this notice does not claim it.',
       mineWarningsHeading: 'Saved, with references to note:',
       mineWarningUndefined:
         'These variables had no value in the probe that was run, so the save was accepted (a value belongs to the session, not to the text); in a turn that has no value for them, they stay literal instead of being substituted: {list}',
@@ -1552,6 +2086,12 @@ window.__ModuleLoader__.load({
       rendererPrimitives: 'primitives (official atoms)',
       rendererFallback: 'fallback (hand-built + theme tokens)',
       primitivesFailure: 'Why primitives is unavailable',
+      // g-063 wrap-up: `primitivesDetail*` / `primitivesMembers*` stood here and
+      // went with the two always-on probe rows.
+      primitivesToastLabel: 'toast namespace',
+      toastNamespaceNone: 'none (no usable Toast found)',
+      toastNamespaceDefault: 'module.default (unwrapped)',
+      toastNamespaceModule: 'module (not unwrapped)',
       renderErrorTitle: 'Prompt settings — render failure',
       renderErrorLabel: 'Error',
       scopeDefaultWorkspace: 'Default workspace',
@@ -1725,6 +2265,62 @@ window.__ModuleLoader__.load({
       importStatusRemoved: 'removed',
       importConfirmTitle: 'Confirm the import',
       importConfirmBody: 'The changes below will be written with the {mode} strategy; a failure at any step leaves the existing configuration untouched.',
+      // g-060 (Revision 37): the「预设」(presets) tab — the catalogue of named texts
+      // for the reserved section, plus the two layer actions that apply one to a
+      // workspace and put that workspace back.
+      tabPresets: 'My presets',
+      presetsHeading: 'Presets',
+      presetsNote:
+        'Keep a named text as a preset and apply it to one workspace: applying writes that workspace layer\u2019s reserved section, cancelling restores exactly what was there before.',
+      presetsListHeading: 'Library',
+      presetsEmpty: 'No presets yet. Create one below, or save the text \u300cMy Prompt\u300d currently shows as a preset.',
+      presetsLibraryError: 'The preset library file cannot be read',
+      presetNewHeading: 'New preset',
+      presetEditHeading: 'Edit preset',
+      presetNameLabel: 'Name',
+      presetNamePlaceholder: 'e.g. Terse mode',
+      presetTextLabel: 'Text',
+      presetTextPlaceholder: 'This text is written into the reserved section prompt-setting:custom-prompt',
+      presetModeLabel: 'Mode',
+      presetModeReplace: 'Replace',
+      presetModeAppend: 'Stack',
+      presetSaveNew: 'Save as new preset',
+      presetSaveEdit: 'Save changes',
+      presetSaveAsCurrent: 'Save current text as a preset',
+      presetSaveAsCurrentHint:
+        '\u201cSave current text as a preset\u201d only fills the editor above with the text \u300cMy Prompt\u300d is showing; it writes nothing by itself.',
+      presetEdit: 'Edit',
+      presetDelete: 'Delete',
+      presetWorkspaceHeading: 'Apply to a workspace',
+      presetWorkspaceNote:
+        'Pick a workspace (located by one of its sessions) and apply the preset being edited to it; an existing application can be cancelled here too.',
+      presetWorkspaceEmpty: 'This profile exposes no workspace session, so no preset can be applied.',
+      presetApply: 'Apply',
+      presetApplyTo: 'Apply to a workspace',
+      presetApplyToTitle: 'Apply \u201c{name}\u201d to a workspace',
+      presetApplyToNote: 'The version stored in the preset library is what gets applied; unsaved changes in the editor dialog are not.',
+      presetDialogClose: 'Close',
+      presetDialogDiscard: 'Discard changes',
+      presetDialogDirtyHint: 'There are unsaved changes: closing discards them.',
+      presetDiscardConfirmTitle: 'Discard the unsaved changes?',
+      presetDiscardConfirmBody: 'This preset\u2019s changes are not saved yet; confirming closes the dialog and writes nothing to the library.',
+      presetDeleteConfirmTitle: 'Delete the preset \u201c{name}\u201d?',
+      presetDeleteConfirmBody:
+        'The library will no longer hold it. What a workspace already carries is not touched, but its applied record is marked \u201csource deleted\u201d.',
+      presetAlreadyAppliedNotice: 'This preset is already in force in that workspace; nothing was stacked twice.',
+      presetNotApplied: 'Not applied',
+      presetUnapplyOne: 'Cancel',
+      presetAppliedHere: 'Applied',
+      presetAppliedOrphan: 'Source deleted',
+      presetSaving: 'Working\u2026',
+      presetSaved: 'Done',
+      presetFailed: 'The request failed',
+      presetLoaded: 'Library loaded',
+      presetSavedNotice: 'The preset was saved.',
+      presetDeletedNotice: 'The preset was deleted.',
+      presetDeletedOrphanNotice: 'The preset was deleted; {count} workspace(s) still hold its text and can still cancel the application.',
+      presetAppliedNotice: 'The preset was applied to that workspace; it takes effect on the next assembly.',
+      presetUnappliedNotice: 'The application was cancelled: that workspace is back to what it held before.',
     };
 
     // One loop keeps zh/en key sets identical by construction, including every
@@ -1926,46 +2522,117 @@ window.__ModuleLoader__.load({
     }
     // #endregion
 
+    /** The atoms as the Host ships them, wrapped so every call site keeps its shape. */
+    const PRIMITIVES_UI = {
+      Button: (props) =>
+        h(
+          primitives.Button,
+          {
+            ...props,
+            variant: props.variant === 'primary' ? 'primary' : 'outline',
+            size: 'sm',
+            disabled: props.disabled,
+          },
+          props.children,
+        ),
+      Input: (props) => (hasComponentExport(primitives, 'Input') ? h(primitives.Input, props) : h(FxInput, props)),
+      Textarea: FxTextarea,
+      Tag: (props) =>
+        hasComponentExport(primitives, 'Tag') ? h(primitives.Tag, { tone: props.tone }, props.children) : h(FxTag, props),
+    };
+    /** The same four seats, hand-built (no Host module involved at all). */
+    const FALLBACK_UI = {
+      Button: FxButton,
+      Input: FxInput,
+      Textarea: FxTextarea,
+      Tag: FxTag,
+    };
     /**
-     * Resolve the atoms once: `RENDERER` is fixed for this module instance, so
-     * re-deciding per render would only remount children needlessly.
+     * Resolve the atoms **at render time**, not once at load.
+     *
+     * It has to be a getter object rather than a frozen choice: when a Host atom
+     * throws while React renders it, the boundary below switches
+     * {@link primitivesActive} off and the *very next* render of the same tree
+     * has to be the hand-built one. Every call site keeps writing `UI.Button`,
+     * so there is exactly one place that decides (g-063 E1).
      */
-    const UI =
-      RENDERER === 'primitives'
-        ? {
-            Button: (props) =>
-              h(
-                primitives.Button,
-                {
-                  ...props,
-                  variant: props.variant === 'primary' ? 'primary' : 'outline',
-                  size: 'sm',
-                  disabled: props.disabled,
-                },
-                props.children,
-              ),
-            Input: (props) =>
-              typeof primitives.Input === 'function' ? h(primitives.Input, props) : h(FxInput, props),
-            Textarea: FxTextarea,
-            Tag: (props) =>
-              typeof primitives.Tag === 'function'
-                ? h(primitives.Tag, { tone: props.tone }, props.children)
-                : h(FxTag, props),
-          }
-        : {
-            Button: FxButton,
-            Input: FxInput,
-            Textarea: FxTextarea,
-            Tag: FxTag,
-          };
+    const UI = {
+      get Button() {
+        return primitivesActive() ? PRIMITIVES_UI.Button : FALLBACK_UI.Button;
+      },
+      get Input() {
+        return primitivesActive() ? PRIMITIVES_UI.Input : FALLBACK_UI.Input;
+      },
+      get Textarea() {
+        return FALLBACK_UI.Textarea;
+      },
+      get Tag() {
+        return primitivesActive() ? PRIMITIVES_UI.Tag : FALLBACK_UI.Tag;
+      },
+    };
 
     /**
-     * Render a segmented control.
+     * Why the tab strip is the **one** place that deliberately does NOT use the
+     * Host's atoms (g-063, real-machine rounds 1–3 — the decision, and the two
+     * rejected repairs).
      *
-     * Deliberately *not* a component: it is called during tree building so the
-     * fallback branch emits real host button nodes (role="tab") carrying the
-     * `data-tab-*` markers the tests assert on. The primitives branch uses the
-     * official `SegmentedTabs` (same `items`/`value`/`onChange` shape).
+     * The official `SegmentedTabs` sets
+     * `gridTemplateColumns: repeat(items.length, minmax(0, 1fr))` **inline** on
+     * its root (`lib/index.js:3312`), i.e. it divides its own width into n equal
+     * columns. That premise fits short labels and a wide container; this page has
+     * **six Chinese labels** and the settings panel's content width. Two real
+     * machines readings, both recorded as **observations**:
+     *
+     *   - Too narrow: `minmax(0, 1fr)` has a `0` minimum, so every column may
+     *     shrink below its label → the labels wrapped inside their cells. The
+     *     mechanism here is read straight off the inline style and is not in
+     *     doubt.
+     *   - Forced wide (`min-width: max-content`, the first repair): every tab
+     *     inflated ("显得过大") and the strip ran out of the panel ("往右偏移、
+     *     跑出页面"). The inflation follows from `max-content`: each `1fr` track
+     *     resolves to the **widest** label's width. **Why the
+     *     `overflow-x: auto` on our own `div[data-region="tabs"]` did not absorb
+     *     the overflow is NOT established** — the hypothesis once written here
+     *     (the control's `max-content` minimum propagating up through a flex item
+     *     and widening an ancestor column) does not survive a read of the Host's
+     *     `SettingsRoot.module.css`: `settings.section` is a list slot rendered
+     *     without a DOM wrapper, `.options` is a **block-level scrolling
+     *     container** (`display` default) so this plugin's root is an ordinary
+     *     block child and `min-width: auto` does not apply to it, and `.content`
+     *     already carries `min-width: 0`. Content that overflows `.options`
+     *     should therefore scroll inside it rather than widen an ancestor. The
+     *     symptom was real; its cause is **unproven** pending a real-machine DOM
+     *     look.
+     *
+     * The hand-built strip (below) lays out with `flex-wrap`: buttons keep their
+     * content width and a row that does not fit moves to the next line. It is the
+     * layout this page used for its whole life before g-063, and it never once
+     * drew a complaint. So this one control stays hand-built **on purpose**: the
+     * Host's `Button`, `Input`, `Tag`, `DiffBlock`, the sidebar icons and `Toast`
+     * all still come from the official module — only the tabs do not (NOTES §4.2,
+     * `CONTRACT.md` §13.4 Revision 49). Note what that does and does not settle:
+     * it removes the failed repair and returns to a layout with no complaint
+     * against it, which is the right choice under **either** explanation.
+     *
+     * Rejected repairs, kept for the record: `min-width: max-content` (inflated
+     * tabs, and an overflow whose path is unexplained), `white-space: nowrap`
+     * alone (labels would then overflow or overlap their cells), and leaving the
+     * official equal fractions as they are (labels wrapped). The lesson worth
+     * keeping: **an equal-fraction control assumes short labels**; long localized
+     * labels need a wrapping, content-sized layout instead.
+     */
+
+    /**
+     * Render a segmented control — **always hand-built** (see the decision
+     * comment above).
+     *
+     * Deliberately *not* a component: it is called during tree building so it
+     * emits real host button nodes (role="tab") carrying the `data-tab-*` markers
+     * the tests assert on. It is also the one control this page keeps hand-built
+     * on a primitives Host: `flex-wrap` sizes every button to its own label and
+     * moves a row that does not fit to the next line, which is what six long
+     * Chinese labels need; the official `SegmentedTabs` divides its width into n
+     * equal fractions instead (NOTES §4.2 / CONTRACT §13.4 Revision 49).
      * @param items - `{value, label, id, panelId}` entries, non-empty.
      * @param value - the selected value.
      * @param onChange - selection callback.
@@ -1974,18 +2641,6 @@ window.__ModuleLoader__.load({
      * @returns the tab list element.
      */
     function tabs(items, value, onChange, label, group) {
-      if (RENDERER === 'primitives' && typeof primitives.SegmentedTabs === 'function') {
-        // The official control owns its own DOM, so it cannot be asked to carry
-        // our markers. `display: contents` keeps this wrapper invisible to
-        // layout while giving a probe the *same* `data-tab-group` it reads in
-        // the fallback branch — the marker is a fact about every branch, not
-        // about the one that happens to be taken.
-        return h(
-          'div',
-          { 'data-tab-group': group, style: { display: 'contents' } },
-          h(primitives.SegmentedTabs, { items, value, onChange, label }),
-        );
-      }
       return h(
         'div',
         {
@@ -2006,17 +2661,17 @@ window.__ModuleLoader__.load({
               'data-tab-key': group,
               'data-tab-value': item.value,
               onClick: () => onChange(item.value),
-              style: {
-                font: 'inherit',
-                fontSize: 12,
-                lineHeight: '18px',
-                padding: '3px 10px',
-                borderRadius: 999,
+              // g-061 batch 3: the fallback tab is the chip family's own control.
+              // The selected pair (the button fill under a transparent stroke) is
+              // still decided here, and this is the one call site whose unselected
+              // text colour is the secondary one — the pinned entries and the
+              // search fallback use the primary.
+              style: chipButtonStyle({
                 cursor: 'pointer',
                 color: item.value === value ? token.buttonLabel : token.labelSecondary,
                 background: item.value === value ? token.buttonFill : 'transparent',
-                border: `1px solid ${item.value === value ? 'transparent' : token.borderL2}`,
-              },
+                border: item.value === value ? 'transparent' : token.borderL2,
+              }),
             },
             item.label,
           ),
@@ -2193,11 +2848,15 @@ window.__ModuleLoader__.load({
      */
     function sessionMatchesQuery(row, needle) {
       if (needle.length === 0) return true;
-      const haystack =
-        typeof row.haystack === 'string'
-          ? row.haystack
-          : [row.id, row.displayTitle, row.title, row.cwd].join(' ').toLowerCase();
-      return haystack.indexOf(needle) >= 0;
+      // g-061 batch 3: the same comparison the history scope list makes, with
+      // this side's own cache handed over. `row.haystack` — the pre-lowercased
+      // join `decodeSessions` builds once per list — stays, because a session
+      // list can hold thousands of rows; the field-by-field walk is the fallback
+      // for a row that arrived without it. The fields are listed here rather than
+      // joined inside the shared function, because joining is what lets a match
+      // span two fields: that is a property of this side's cached haystack, not
+      // something the shared comparison may impose on the other side.
+      return matchesNeedle([row.id, row.displayTitle, row.title, row.cwd], needle, { cached: row.haystack });
     }
 
     /**
@@ -2209,7 +2868,7 @@ window.__ModuleLoader__.load({
      */
     function filterSessions(rows, query) {
       const list = Array.isArray(rows) ? rows : [];
-      const needle = typeof query === 'string' ? query.trim().toLowerCase() : '';
+      const needle = normalizeNeedle(query);
       if (needle.length === 0) return list.slice();
       return list.filter((row) => sessionMatchesQuery(row, needle));
     }
@@ -2501,7 +3160,7 @@ window.__ModuleLoader__.load({
       const rows = Array.isArray(input.rows) ? input.rows : [];
       const workspaces = Array.isArray(input.workspaces) ? input.workspaces : [];
       const currentId = typeof input.currentId === 'string' ? input.currentId : '';
-      const needle = typeof input.query === 'string' ? input.query.trim().toLowerCase() : '';
+      const needle = normalizeNeedle(input.query);
       const labels = input.labels && typeof input.labels === 'object' ? input.labels : {};
       const limits = input.limits && typeof input.limits === 'object' ? input.limits : {};
       const expanded = input.expanded && typeof input.expanded === 'object' ? input.expanded : {};
@@ -3276,6 +3935,9 @@ window.__ModuleLoader__.load({
      */
     async function copyText(text) {
       try {
+        // NOT a component: `writeClipboard` is called as a function, so
+        // `typeof === 'function'` stays the whole question here (g-063: the
+        // `forwardRef`-aware probe is for exports React renders, not for this).
         if (primitives && typeof primitives.writeClipboard === 'function') {
           await primitives.writeClipboard(text);
           return true;
@@ -3304,6 +3966,422 @@ window.__ModuleLoader__.load({
     const metaStyle = { fontSize: 12, color: token.labelTertiary };
     /** Shared heading style. */
     const headingStyle = { margin: 0, fontSize: 15, fontWeight: 600 };
+
+    /**
+     * g-061 batch 2: the four render facilities the entry and the tab chunks
+     * all draw with. They are defined here — one binding, on the surface every
+     * chunk reaches through `__internals.shared` — because a second copy of any
+     * of them would be a second value that can drift away from the page it
+     * renders in.
+     *
+     * Every parameter below is a difference the call sites really have, and
+     * **none of them is defaulted into agreement**: the confirmation overlay's
+     * 1200 against every tab dialog's 1000, the theme's monospace stack against
+     * the preset dialog's `fontFamily: 'inherit'` against the history preview's
+     * box, which states no family at all and takes the browser's own, and the
+     * four text boxes' own maxHeight / padding / radius / border / break. A
+     * default that quietly absorbed one call site's value is exactly the
+     * regression these factories exist to make impossible.
+     */
+
+    /**
+     * The modal scrim: one full-screen backdrop that dims the page behind a
+     * dialog card, so the card reads as modal without stealing focus.
+     *
+     * Four copies differed in one number only — the layer the dialog sits on —
+     * so the layer is the argument. It is deliberately **required** rather than
+     * defaulted: the confirmation overlay passes 1200 because it is raised on
+     * top of every tab-owned dialog (review R6 — at equal z-index the panel is
+     * appended later and the question would be invisible and unanswerable), and
+     * the「自定义」dialog, the history comparison modal and the two preset
+     * dialogs pass 1000. That ordering is a stated contract, not a consequence
+     * of which node happens to be appended last.
+     * @param zIndex - the dialog's layer; the caller states it.
+     * @returns the overlay style.
+     */
+    function scrimStyle(zIndex) {
+      return {
+        position: 'fixed',
+        top: 0,
+        right: 0,
+        bottom: 0,
+        left: 0,
+        zIndex,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 16,
+        background: 'rgba(0, 0, 0, 0.45)',
+      };
+    }
+
+    /**
+     * One red line stating why the last write — or the whole render — failed.
+     *
+     * Three copies shared the shape and the red and differed in everything a
+     * reader can measure, so each of those is a parameter: the「自定义」dialog's
+     * line is a `div` marked `data-role="region-error"` +
+     * `data-region-error="…"` carrying the host's code, the preset dialog's is a
+     * `div` marked
+     * `data-role="preset-dialog-error"` + `data-preset-dialog-error="…"`
+     * with a wrapping break and the `presetFailed` prefix, and the failure
+     * card's is a `p` with `margin: 0` and the `renderErrorLabel` prefix. The
+     * font size is the caller's for the same reason: 13 everywhere today is a
+     * fact to assert, not a default to hide behind.
+     * @param options - `{tag, role, probe, code, text, fontSize, wrap, margin}`.
+     * @returns the line element.
+     */
+    function errorLine(options) {
+      const style = { fontSize: options.fontSize, color: token.stateError };
+      if (options.margin !== undefined) style.margin = options.margin;
+      if (options.wrap === true) style.wordBreak = 'break-word';
+      const attributes = { style };
+      if (options.role !== undefined) attributes['data-role'] = options.role;
+      if (options.probe !== undefined) {
+        attributes[options.probe] = typeof options.code === 'string' ? options.code : 'unknown';
+      }
+      return h(options.tag ?? 'div', attributes, options.text);
+    }
+
+    /**
+     * The「nothing here yet」card: the container a list renders instead of its
+     * rows when there are none.
+     *
+     * Two of the four empty states the inventory named share this shape — a
+     * `div` carrying `data-empty="…"` under `cardStyle` — and only those
+     * two are merged. The other two are **not** this shape and stay as they
+     * are: 「版本历史」prints one `metaStyle` line in a `div[data-empty]` with
+     * no card at all, and「我的预设」prints a bare `p[data-region]` with
+     * `margin: 0` in front of `metaStyle`. Different container, different
+     * marker family, different box — merging them would change what the page
+     * looks like, which this batch never does.
+     * @param marker - the `data-empty` value the list has always published.
+     * @param children - the card's text: one line, or a title plus a body.
+     * @returns the card element.
+     */
+    function emptyCard(marker, children) {
+      return h('div', { 'data-empty': marker, style: cardStyle }, children);
+    }
+
+    /**
+     * The pre-wrap text box a stored text, a section body or a diff is shown
+     * in.
+     *
+     * What the five call sites really share is the typesetting skeleton —
+     * `margin: 0`, 12px, `white-space: pre-wrap` and `word-break: break-word` —
+     * and that is all this factory fixes. The box around it is each call site's
+     * own, and every one of those differences is an explicit parameter rather
+     * than a default: `maxHeight` 200 / 220 / 320 / 460, `padding`
+     * `'4px 6px'` / `'6px 8px'` / `'8px 10px'` / `'10px 12px'`, `radius` 6 or
+     * 8, `border` `borderL1` or `borderL2` or none, `lineHeight` only where the
+     * text is read line by line, `color` only where the box is not the primary
+     * reading surface, and `scroll` as `'overflow'` or `'overflowY'` (the
+     * history box scrolls on one axis only).
+     *
+     * The font family is the one three-state parameter, because the page really
+     * has three states and「states nothing」is one of them: `mono: true` writes
+     * the theme's monospace stack (the three overview boxes), `mono: false`
+     * writes `inherit` (the preset preview, which follows the page font on
+     * purpose), and **leaving it out writes no `fontFamily` at all** — the
+     * history preview's box has never had one, and its pre element takes the
+     * browser's own default. A two-state parameter here would have silently
+     * moved that box off the UA font and onto the theme's, which is a visible
+     * change this batch may not make.
+     * @param options - `{maxHeight, mono, border, padding, radius, lineHeight, color, scroll}`.
+     * @returns the style object.
+     */
+    function monoTextBox(options) {
+      const style = {
+        margin: 0,
+        fontSize: 12,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+      };
+      if (options.mono === true) style.fontFamily = token.mono;
+      else if (options.mono === false) style.fontFamily = 'inherit';
+      if (options.lineHeight !== undefined) style.lineHeight = options.lineHeight;
+      if (options.color !== undefined) style.color = options.color;
+      if (options.maxHeight !== undefined) style.maxHeight = options.maxHeight;
+      if (options.scroll !== undefined) style[options.scroll] = 'auto';
+      if (options.border !== undefined) style.border = `1px solid ${options.border}`;
+      if (options.radius !== undefined) style.borderRadius = options.radius;
+      if (options.padding !== undefined) style.padding = options.padding;
+      return style;
+    }
+
+    /**
+     * g-061 batch 3: the dialog shell, the two rows inside it, and the three
+     * ghost button families the page draws its small controls with. Same rule as
+     * batch 2 — a name lives here only because two or more call sites draw the
+     * same shape, and every difference they really have is a stated argument
+     * rather than a default that quietly absorbs it.
+     *
+     * **This batch repairs no drift.** Five values in this family disagree with
+     * their neighbours — the preset dialogs' `maxWidth` 520 against the region
+     * dialog's 480, their `overflow: 'auto'` against everyone else's
+     * `overflowY: 'auto'`, the region dialog's missing `maxHeight` and
+     * `overflow`, the pager's padding `'2px 10px'` against its family's
+     * `'2px 8px'`, and the preset titles' 15 against the confirmation's 14 —
+     * and **all five are kept exactly as they are**, each as an explicit
+     * argument. The owner reviewed them and chose to keep the page as it looks
+     * today; converging them would be a visible change this batch may not make.
+     * Revision 44 records that decision, and the tests assert each value instead
+     * of asserting that the family agrees.
+     */
+
+    /**
+     * The dialog card inside a scrim: one box, its own size and its own scroll.
+     *
+     * Four call sites draw it — the confirmation overlay and the「自定义」dialog
+     * in the entry, the two preset dialogs and the history comparison modal — and
+     * what they share is the shell: the card's stroke, surface and radius, and
+     * the dialog padding (`'16px 18px'`) and shadow (`0 12px 32px`) all four
+     * state identically. Everything a reader can measure differently is an
+     * argument: the width (`'100%'` on three, `min(1040px, 92vw)` on the history
+     * modal — the reason it states an explicit `maxWidth: '92vw'` beside it as
+     * well is not reconstructed here), the `maxWidth` (480 / 480 / **520** /
+     * `'92vw'`), the `height` and `maxHeight` (the history modal states both;
+     * the confirmation and the preset dialogs state `maxHeight: '80vh'`; the
+     *「自定义」dialog states neither), the `overflow` (the confirmation and the
+     * history modal scroll on one axis, the preset dialogs on both), the `gap`
+     * (10 everywhere except the confirmation, which carries **no** gap at all —
+     * its three-level grouping is the `marginTop` spacing §13.5 describes) and the
+     * `position` (`'relative'` on the history modal alone, because its close
+     * button is anchored to that corner).
+     *
+     * `overflow` is the **property name**, not a value: each call site says
+     * which axis it scrolls, so `'overflowY'` and `'overflow'` stay two
+     * different declarations exactly as they are today.
+     * @param options - `{width, maxWidth, maxHeight, height, overflow, gap, position}`.
+     * @returns the card style.
+     */
+    function dialogCardStyle(options) {
+      const style = {
+        ...cardStyle,
+        display: 'flex',
+        flexDirection: 'column',
+        width: options.width,
+      };
+      if (options.gap !== undefined) style.gap = options.gap;
+      if (options.maxWidth !== undefined) style.maxWidth = options.maxWidth;
+      if (options.maxHeight !== undefined) style.maxHeight = options.maxHeight;
+      if (options.height !== undefined) style.height = options.height;
+      if (options.overflow !== undefined) style[options.overflow] = 'auto';
+      if (options.position !== undefined) style.position = options.position;
+      style.padding = '16px 18px';
+      style.boxShadow = '0 12px 32px rgba(0, 0, 0, 0.35)';
+      return style;
+    }
+
+    /**
+     * The dialog's title line: the one emphasized line naming what the dialog is
+     * about.
+     *
+     * Two call sites — the confirmation overlay, which the「自定义」dialog
+     * reuses verbatim so that the two remain the **same object**, and the two
+     * preset dialogs. What is shared is a `strong` node at weight 600; what
+     * differs is stated: the font size (14 against the preset dialogs' **15**),
+     * the tone (the confirmation wears the warning colour, the preset dialogs
+     * inherit) and the line height (the confirmation states 1.4, the preset
+     * dialogs state none).
+     *
+     * The history modal's head is **not** this shape — it is a flex row holding
+     * a title beside an absolutely positioned close button — and stays as it is.
+     * @param options - `{fontSize, tone, lineHeight}`.
+     * @returns the title style.
+     */
+    function dialogTitleStyle(options) {
+      const style = { fontSize: options.fontSize, fontWeight: 600 };
+      if (options.lineHeight !== undefined) style.lineHeight = options.lineHeight;
+      if (options.tone !== undefined) style.color = options.tone;
+      return style;
+    }
+
+    /**
+     * The dialog's button row: one flex line of buttons at the bottom of the
+     * card.
+     *
+     * Two call sites — the confirmation overlay (reused by the「自定义」dialog)
+     * and the two preset dialogs. Shared: an 8px gap between the buttons. Stated
+     * by the caller: where the row sits horizontally (the confirmation starts at
+     * the left edge, the preset dialogs push to the right) and whether it
+     * carries the confirmation's **top divider** — the 16px gap, the 12px inset
+     * and the rule §13.5 calls「behind a top divider」, which the preset dialogs do
+     * not have. The preset dialogs also carry a `flexWrap` that their single
+     * button never needs; it is kept, because dropping it is a change to a
+     * declared style even where it has no visible effect.
+     * @param options - `{align, divider, wrap}`.
+     * @returns the actions style.
+     */
+    function dialogActionsStyle(options) {
+      const style = { display: 'flex', gap: 8 };
+      if (options.align !== undefined) style.justifyContent = options.align;
+      if (options.divider === true) {
+        style.marginTop = 16;
+        style.paddingTop = 12;
+        style.borderTop = `1px solid ${token.borderL1}`;
+      }
+      if (options.wrap === true) style.flexWrap = 'wrap';
+      return style;
+    }
+
+    /**
+     * The pill-shaped ghost button: the small chip control the page draws in its
+     * rows and in the search fallback.
+     *
+     * Three call sites — the fallback tab button, the pinned「全局 / 当前会话」
+     * entries and the「使用这串 id」button — share everything but their colour:
+     * the inherited 12px/18px type, the `'3px 10px'` padding and the 999px radius
+     * are the shape, and the text colour, the fill and the stroke are arguments.
+     * The unselected text colour really differs (**secondary** on the tabs,
+     * **primary** on the other two), so it is the caller's; the selected state —
+     * the button fill under a transparent stroke — stays the caller's own
+     * expression, as does every attribute on the node.
+     *
+     * **A caveat worth stating, not a defect:** that second-renderer caveat is
+     * gone as of g-063's third real-machine round — the tabs are hand-built under
+     * **both** renderers (the Host's `SegmentedTabs` divides its width into equal
+     * fractions, which six long Chinese labels do not fit), so this factory is now
+     * the tab strip's only shape and the two renderers' tabs do look alike.
+     * @param options - `{cursor, color, background, border}`; `border` is the
+     *   stroke's colour, the 1px width belongs to the shape.
+     * @returns the chip style.
+     */
+    function chipButtonStyle(options) {
+      return {
+        font: 'inherit',
+        fontSize: 12,
+        lineHeight: '18px',
+        padding: '3px 10px',
+        borderRadius: 999,
+        cursor: options.cursor,
+        color: options.color,
+        background: options.background,
+        border: `1px solid ${options.border}`,
+      };
+    }
+
+    /**
+     * The small radius-6 ghost button: the page's tool-strip control.
+     *
+     * Five `miniButtonStyle` call sites —「更多」in a scope group, the history
+     * row's side style (one call site that feeds two buttons), the history pager,
+     * the overview section's expand toggle and one option row of the history
+     * scope list — share the type, the 6px radius, the pointer cursor and the
+     * fill role; the padding, the colour, the stroke and whether a line height is
+     * stated at all are arguments — four different paddings among them
+     * (`'2px 8px'` on three, `'2px 8px 2px 20px'` on「更多」, `'4px 8px'` on the
+     * scope option row, `'2px 10px'` on the pager). **Three of them state no
+     * `lineHeight` and the factory writes none for them**: adding the 18px their
+     * neighbour「更多」carries would change how tall those rows are, which is not
+     * this batch's to change. The pager's `'2px 10px'` sits beside its family's
+     * `'2px 8px'` and is kept as it is.
+     * @param options - `{padding, color, background, border, lineHeight, textAlign}`;
+     *   `border` is the whole declaration, because one call site's is `none`.
+     * @returns the button style.
+     */
+    function miniButtonStyle(options) {
+      const style = { font: 'inherit', fontSize: 12 };
+      if (options.lineHeight !== undefined) style.lineHeight = options.lineHeight;
+      if (options.textAlign !== undefined) style.textAlign = options.textAlign;
+      style.padding = options.padding;
+      style.borderRadius = 6;
+      style.cursor = 'pointer';
+      style.color = options.color;
+      style.background = options.background;
+      style.border = options.border;
+      return style;
+    }
+
+    /**
+     * One session row: the interactive row button the「查看范围」tree and its
+     * flat fallback list are both built from.
+     *
+     * The shared shape is the row itself — the inherited 12px/18px type over a
+     * left-aligned flex line, the 6px radius, the pointer cursor and the
+     * product's focus ring (all of those from `scopeRowStyle`), the primary text
+     * colour, and the three-state fill: a selected or keyboard-highlighted row
+     * takes the business fill, a hovered row the hover fill, everything else is
+     * transparent. `padding` is the argument that really differs — the tree row
+     * carries its 20px indent inside it (`'3px 8px 3px 20px'`), the flat row does
+     * not (`'4px 8px'`) — and `selected` alone decides the left bar and the
+     * stroke, exactly as before.
+     *
+     * **The ARIA shape is not here, and must not move here.** The tree row is a
+     * level-2 `treeitem` marked `data-role="session-row"`; the flat row is an
+     * `option` inside a `listbox`, marked `data-role="session-option"`; the tree
+     * row alone carries `data-scope-parent` and `data-session-running`. Those
+     * are attributes on different nodes with different meanings, and
+     * `test/client.test.mjs` pins both trees. Only the paint moved.
+     * @param options - `{padding, hovered, focused, selected, active}`.
+     * @returns the row style.
+     */
+    function sessionRowStyle(options) {
+      return {
+        ...scopeRowStyle(options.hovered, options.focused),
+        font: 'inherit',
+        fontSize: 12,
+        lineHeight: '18px',
+        textAlign: 'left',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        padding: options.padding,
+        color: token.labelPrimary,
+        background:
+          options.selected || options.active
+            ? token.diffAddFill
+            : options.hovered
+              ? token.hoverFill
+              : 'transparent',
+        boxShadow: options.selected ? `inset 3px 0 0 0 ${token.stateBusiness}` : undefined,
+        border: `1px solid ${options.selected ? token.borderL2 : 'transparent'}`,
+      };
+    }
+
+    /**
+     * The needle every search box on this page compares against: trimmed and
+     * lowercased, and `''` for anything that is not a string.
+     * @param query - the raw box content.
+     * @returns the normalized needle.
+     */
+    function normalizeNeedle(query) {
+      return typeof query === 'string' ? query.trim().toLowerCase() : '';
+    }
+
+    /**
+     * Whether a needle occurs in any of the fields one search box covers.
+     *
+     * `cached` is the one thing the two consumers really differ in. The session
+     * list is lowercased **once**, when it is decoded, into `row.haystack` — one
+     * pre-joined string covering id, title and directory — because it can hold
+     * thousands of rows; the history scope list has no such cache and is compared
+     * field by field. Both behaviours are kept: passing `cached` searches that
+     * string, omitting it walks the fields.
+     *
+     * **The factory never joins the fields itself.** Joining would let a match
+     * span a field boundary (the tail of one title against the head of the next
+     * field), which is a **new** hit on the history side — it would move the
+     * `data-history-scope-shown` count and the assertions that read it. The two
+     * sides therefore keep the semantics they already had, and the shared
+     * function is the shape they have in common rather than a convergence of
+     * their answers.
+     *
+     * `indexOf` and `includes` ask the same question here; the shared path asks
+     * it with `includes`, and the cached path keeps `indexOf` on the
+     * pre-lowercased string.
+     * @param values - the fields to compare, in the order the page has them.
+     * @param needle - the already-normalized needle.
+     * @param options - optional `{cached}`: a pre-lowercased haystack.
+     * @returns whether any field carries the needle.
+     */
+    function matchesNeedle(values, needle, options) {
+      if (needle.length === 0) return true;
+      const cached = options !== undefined && typeof options.cached === 'string' ? options.cached : null;
+      if (cached !== null) return cached.indexOf(needle) >= 0;
+      return values.some((value) => typeof value === 'string' && value.toLowerCase().includes(needle));
+    }
+
     /**
      * The always-visible「查看范围」summary row (g-016). One flex line — a
      * heading, the readable scope name, an optional short state hint and the
@@ -3674,6 +4752,68 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * g-061: one row per workspace the page can name, derived once for the two
+     * callers that ask the same question — the version-history scope selector
+     * (g-038, {@link historyScopeOptionsOf}) and the preset layer picker (g-060,
+     * `presetWorkspaces`).
+     *
+     * Both hold the same workspace seat and need the same facts: a workspace's
+     * first session id (the identity a Host resolves a root from — `CONTRACT.md`
+     * §4.2, so a client never supplies a path), its title, and, with no title,
+     * its directory name. They *label* those facts differently (`value` /
+     * `workspaceId` / `sessionIds` for the selector, `session` / `root` for the
+     * picker), so the derivation is shared and the field names stay at the call
+     * sites: one computation, two output shapes, each of them exactly what it
+     * was before.
+     *
+     * A workspace no session ever ran in is skipped — the Host resolves a root
+     * from a session, so such a row could only produce a refusal. When the
+     * profile lists no usable workspace the rows degrade to the session catalog,
+     * the same fallback the selector has always announced in words.
+     * @param wsSeat - the workspace seat (`{items}`); `null` reads as "no workspaces".
+     * @param seat - the session seat (`{rows}`) the fallback reads; `null` for none.
+     * @param options - `{withRoot}`: the picker's shape (adds `root`) instead of
+     *   the selector's.
+     * @returns the rows, in seat order.
+     */
+    function workspaceRows(wsSeat, seat, options) {
+      const withRoot = Boolean(options && options.withRoot);
+      const workspaces = Array.isArray(wsSeat && wsSeat.items) ? wsSeat.items : [];
+      const rows = [];
+      for (const workspace of workspaces) {
+        const ids = Array.isArray(workspace && workspace.sessionIds)
+          ? workspace.sessionIds.filter((id) => typeof id === 'string' && id.length > 0)
+          : [];
+        if (ids.length === 0) continue;
+        const title = typeof workspace.title === 'string' ? workspace.title : '';
+        const path = typeof workspace.path === 'string' ? workspace.path : '';
+        const label = title.length > 0 ? title : basenameOf(path) || workspace.workspaceId || ids[0];
+        rows.push(
+          withRoot
+            ? { session: ids[0], root: path.length > 0 ? path : null, label }
+            : {
+                value: ids[0],
+                label,
+                workspaceId: typeof workspace.workspaceId === 'string' ? workspace.workspaceId : '',
+                sessionIds: ids,
+              },
+        );
+      }
+      if (rows.length > 0) return rows;
+      const sessionRows = Array.isArray(seat && seat.rows) ? seat.rows : [];
+      return sessionRows.slice(0, SESSION_MATCH_LIMIT).map((row) =>
+        withRoot
+          ? { session: row.id, root: null, label: sessionLabelOf(sessionRows, row.id) || row.id }
+          : {
+              value: row.id,
+              label: sessionLabelOf(sessionRows, row.id) || row.id,
+              workspaceId: '',
+              sessionIds: [row.id],
+            },
+      );
+    }
+
+    /**
      * g-038: the options the version-history scope selector offers.
      *
      * The scope is a **workspace** dimension: one option per workspace the host
@@ -3692,37 +4832,14 @@ window.__ModuleLoader__.load({
      * @returns `{mode, options}` with options `{value, label, workspaceId, sessionIds}`.
      */
     function historyScopeOptionsOf(wsSeat, seat) {
-      const workspaces = Array.isArray(wsSeat && wsSeat.items) ? wsSeat.items : [];
-      const fromWorkspaces = [];
-      for (const workspace of workspaces) {
-        const ids = Array.isArray(workspace && workspace.sessionIds)
-          ? workspace.sessionIds.filter((id) => typeof id === 'string' && id.length > 0)
-          : [];
-        // A workspace no session ever ran in has no locatable log: the host
-        // resolves a root from a session, so such a row could only produce a
-        // refusal.
-        if (ids.length === 0) continue;
-        const title = typeof workspace.title === 'string' ? workspace.title : '';
-        const path = typeof workspace.path === 'string' ? workspace.path : '';
-        fromWorkspaces.push({
-          value: ids[0],
-          label: title.length > 0 ? title : basenameOf(path) || workspace.workspaceId || ids[0],
-          workspaceId: typeof workspace.workspaceId === 'string' ? workspace.workspaceId : '',
-          sessionIds: ids,
-        });
-      }
+      // Asked twice with one seat each time, so「which half answered」stays a
+      // question of this call site — a `mode` — instead of a third branch inside
+      // the shared derivation.
+      const fromWorkspaces = workspaceRows(wsSeat, null, { withRoot: false });
       if (fromWorkspaces.length > 0) return { mode: 'workspaces', options: fromWorkspaces };
-      const rows = Array.isArray(seat && seat.rows) ? seat.rows : [];
-      if (rows.length === 0) return { mode: 'none', options: [] };
-      return {
-        mode: 'sessions',
-        options: rows.slice(0, SESSION_MATCH_LIMIT).map((row) => ({
-          value: row.id,
-          label: sessionLabelOf(rows, row.id) || row.id,
-          workspaceId: '',
-          sessionIds: [row.id],
-        })),
-      };
+      const fromSessions = workspaceRows(null, seat, { withRoot: false });
+      if (fromSessions.length === 0) return { mode: 'none', options: [] };
+      return { mode: 'sessions', options: fromSessions };
     }
 
     /**
@@ -4032,10 +5149,18 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Whether the primitives module really exposes the official diff renderer.
-     * Probed, never assumed — exactly like the Button/Tag probes.
+     * Whether this render may draw the official diff renderer.
+     *
+     * Probed, never assumed — exactly like the Button/Tag probes — and asked
+     * **per render**, because the version-history chunk caches whatever it
+     * reads: a `DiffBlock` that threw while React rendered it must be replaced
+     * by the hand-built diff on the next render, not re-rendered from a stale
+     * `true` (g-063 E1).
+     * @returns `true` when the Host's `DiffBlock` is usable right now.
      */
-    const HAS_DIFF_BLOCK = primitivesUsable && typeof primitives.DiffBlock === 'function';
+    function diffBlockUsable() {
+      return primitivesActive() && hasComponentExport(primitives, 'DiffBlock');
+    }
 
     /**
      * The localized chrome `DiffBlock` asks its owner for.
@@ -4361,16 +5486,53 @@ window.__ModuleLoader__.load({
         ),
         h(
           'div',
-          { 'data-region': 'renderer-info', style: { marginTop: 8, fontSize: 12, color: token.labelTertiary } },
-          `${t('rendererLabel')}: ${t(RENDERER === 'primitives' ? 'rendererPrimitives' : 'rendererFallback')}`,
+          {
+            'data-region': 'renderer-info',
+            // g-063 E1: whether the Host's atoms have already thrown while React
+            // rendered them. `data-renderer` is the branch **in use**; this says
+            // why it is not the probed one, and the failure text sits in
+            // `data-primitives-render-error` below.
+            'data-primitives-render-failed': String(primitivesRenderFailed),
+            style: { marginTop: 8, fontSize: 12, color: token.labelTertiary },
+          },
+          `${t('rendererLabel')}: ${t(activeRenderer() === 'primitives' ? 'rendererPrimitives' : 'rendererFallback')}`,
+          activeRenderer() === 'fallback' && primitivesRenderFailed
+            ? h(
+                'div',
+                { 'data-primitives-render-error': 'true', style: { marginTop: 2, wordBreak: 'break-word' } },
+                `${t('primitivesFailure')}: ${primitivesRenderFailure}`,
+              )
+            : null,
+          RENDERER === 'fallback' && primitivesFailure
+            ? h(
+                'div',
+                { 'data-primitives-failure': 'true', style: { marginTop: 2, wordBreak: 'break-word' } },
+                `${t('primitivesFailure')}: ${primitivesFailure}`,
+              )
+            : null,
+          // g-063 wrap-up: the two always-on probe rows that used to sit here
+          // (`data-primitives-detail`, `data-primitives-members` — the `require`
+          // details and the `Button`/`Toast` `typeof` table, plus
+          // `data-primitives-button-component`) were removed by the lead's
+          // request. They were diagnostics for locating the `forwardRef` defect
+          // on a real machine; that job is done, so the block keeps the branch
+          // line above and the two **exceptional** reason rows below (both
+          // render only when something actually went wrong).
+          h(
+            'div',
+            {
+              'data-primitives-toast-source': primitivesProbe.toastSource,
+              style: { marginTop: 2, wordBreak: 'break-word' },
+            },
+            `${t('primitivesToastLabel')}: ${
+              primitivesProbe.toastSource === 'none'
+                ? t('toastNamespaceNone')
+                : primitivesProbe.toastSource === 'default'
+                  ? t('toastNamespaceDefault')
+                  : t('toastNamespaceModule')
+            }`,
+          ),
         ),
-        RENDERER === 'fallback' && primitivesFailure
-          ? h(
-              'div',
-              { 'data-primitives-failure': 'true', style: { fontSize: 12, color: token.labelTertiary, wordBreak: 'break-word' } },
-              `${t('primitivesFailure')}: ${primitivesFailure}`,
-            )
-          : null,
       );
     }
 
@@ -4412,7 +5574,7 @@ window.__ModuleLoader__.load({
      * @returns the icon element.
      */
     function scopeFolderGlyph(open, size) {
-      if (ICON_SOURCE === 'primitives') {
+      if (iconSource() === 'primitives') {
         const Icon = open ? primitives.IconFolderOpenRegular : primitives.IconFolderCloseRegular;
         return h(Icon, { size, 'data-role': 'scope-folder-glyph' });
       }
@@ -4469,7 +5631,7 @@ window.__ModuleLoader__.load({
         transition: 'transform 0.15s',
         color: token.labelTertiary,
       };
-      if (ICON_SOURCE === 'primitives') {
+      if (iconSource() === 'primitives') {
         return h('span', { style }, h(primitives.IconTriangleRightFillRegular, { size }));
       }
       return h(
@@ -4545,19 +5707,18 @@ window.__ModuleLoader__.load({
           onFocus: (event) => setFocus(focusVisibleOf(event)),
           onBlur: () => setFocus(false),
           style: {
-            font: 'inherit',
-            fontSize: 12,
-            lineHeight: '18px',
+            ...chipButtonStyle({
+              cursor: disabled ? 'default' : 'pointer',
+              color: active ? token.buttonLabel : token.labelPrimary,
+              background: active ? token.buttonFill : hovered && !disabled ? token.hoverFill : 'transparent',
+              border: active ? 'transparent' : token.borderL2,
+            }),
+            // The pill is the chip family's; what this entry adds is the tick's
+            // own row, its disabled opacity and its focus ring.
             display: 'inline-flex',
             alignItems: 'center',
             gap: 4,
-            padding: '3px 10px',
-            borderRadius: 999,
             opacity: disabled ? 0.5 : 1,
-            cursor: disabled ? 'default' : 'pointer',
-            color: active ? token.buttonLabel : token.labelPrimary,
-            background: active ? token.buttonFill : hovered && !disabled ? token.hoverFill : 'transparent',
-            border: `1px solid ${active ? 'transparent' : token.borderL2}`,
             outline: focused ? token.focusRing : 'none',
             outlineOffset: focused ? '-2px' : undefined,
           },
@@ -4649,7 +5810,7 @@ window.__ModuleLoader__.load({
               key: 'icon',
               'data-role': 'scope-folder-icon',
               'data-icon-state': group.expanded ? 'open' : 'closed',
-              'data-icon-source': ICON_SOURCE,
+              'data-icon-source': iconSource(),
               'data-scope-toggle': group.key,
               'aria-hidden': 'true',
               onClick: (event) => {
@@ -4741,28 +5902,22 @@ window.__ModuleLoader__.load({
                 if (focusVisibleOf(event)) a.setScopeFocus(`s:${row.id}`);
               },
               onBlur: () => a.setScopeFocus(''),
-              style: {
-                ...scopeRowStyle(rowHovered, rowFocused),
-                font: 'inherit',
-                fontSize: 12,
-                lineHeight: '18px',
-                textAlign: 'left',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 6,
+              // g-061 batch 3: the row's paint is the shared session-row style —
+              // and nothing else about this node moves. It stays a level-2
+              // `treeitem` marked `session-row`, with its own `data-scope-parent`
+              // and `data-session-running`; the flat list's row keeps being an
+              // `option` marked `session-option`.
+              style: sessionRowStyle({
                 padding: '3px 8px 3px 20px',
-                color: token.labelPrimary,
-                background: selected
-                  ? token.diffAddFill
-                  : row.id === activeId && activeId !== ''
-                    ? token.diffAddFill
-                    : rowHovered
-                      ? token.hoverFill
-                      : 'transparent',
-                // The selected row is marked by a bar, not by text alone.
-                boxShadow: selected ? `inset 3px 0 0 0 ${token.stateBusiness}` : undefined,
-                border: `1px solid ${selected ? token.borderL2 : 'transparent'}`,
-              },
+                hovered: rowHovered,
+                focused: rowFocused,
+                selected,
+                // The tree names the highlighted row by id. That is the rule now
+                // — the flat list used to ask the same question by index, and the
+                // rendered attribute is asserted to be value-for-value what the
+                // index form produced.
+                active: row.id === activeId && activeId !== '',
+              }),
             },
             selected
               ? h(
@@ -4837,14 +5992,16 @@ window.__ModuleLoader__.load({
               },
               onBlur: () => a.setScopeFocus(''),
               style: {
-                font: 'inherit',
-                fontSize: 12,
-                lineHeight: '18px',
-                textAlign: 'left',
-                padding: '2px 8px 2px 20px',
-                color: token.stateBusiness,
-                background: 'transparent',
-                border: 'none',
+                ...miniButtonStyle({
+                  padding: '2px 8px 2px 20px',
+                  lineHeight: '18px',
+                  textAlign: 'left',
+                  color: token.stateBusiness,
+                  background: 'transparent',
+                  border: 'none',
+                }),
+                // The hover fill and the focus ring come last, exactly where they
+                // came before: they override the transparent fill above.
                 ...scopeRowStyle(moreHovered, moreFocused),
               },
             },
@@ -5163,6 +6320,14 @@ window.__ModuleLoader__.load({
       if (isTree) {
         children.push(scopeTreeElement(t, m, a));
       } else {
+        // g-061 batch 3: the flat list asked「is this the keyboard-highlighted
+        // row」by index (`index === m.sessionActive`) while the tree asked it by
+        // id. They are the same answer — the index names a row of the very list
+        // being mapped — so both go through the id now. The rendered
+        // `data-session-active` is asserted to be value-for-value what the index
+        // form produced: at `-1`, at 0, at the last row and past the end.
+        const activeRow = m.sessionActive >= 0 ? m.sessionVisible[m.sessionActive] : undefined;
+        const flatActiveId = activeRow ? activeRow.id : '';
         children.push(
           h(
             'div',
@@ -5173,7 +6338,7 @@ window.__ModuleLoader__.load({
               'data-region': 'session-list',
               style: { marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 },
             },
-            m.sessionVisible.map((row, index) => {
+            m.sessionVisible.map((row) => {
               const selected = row.id === m.sessionArg;
               const hovered = m.scopeHover === `s:${row.id}`;
               const focused = m.scopeFocus === `s:${row.id}`;
@@ -5186,7 +6351,7 @@ window.__ModuleLoader__.load({
                   'data-role': 'session-option',
                   'data-session-id': row.id,
                   'data-selected': String(selected),
-                  'data-session-active': String(index === m.sessionActive),
+                  'data-session-active': String(row.id === flatActiveId && flatActiveId !== ''),
                   'data-hover': String(hovered),
                   'data-focus': String(focused),
                   'aria-selected': selected,
@@ -5197,26 +6362,13 @@ window.__ModuleLoader__.load({
                     if (focusVisibleOf(event)) a.setScopeFocus(`s:${row.id}`);
                   },
                   onBlur: () => a.setScopeFocus(''),
-                  style: {
-                    ...scopeRowStyle(hovered, focused),
-                    font: 'inherit',
-                    fontSize: 12,
-                    lineHeight: '18px',
-                    textAlign: 'left',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6,
+                  style: sessionRowStyle({
                     padding: '4px 8px',
-                    color: token.labelPrimary,
-                    background:
-                      selected || index === m.sessionActive
-                        ? token.diffAddFill
-                        : hovered
-                          ? token.hoverFill
-                          : 'transparent',
-                    boxShadow: selected ? `inset 3px 0 0 0 ${token.stateBusiness}` : undefined,
-                    border: `1px solid ${selected ? token.borderL2 : 'transparent'}`,
-                  },
+                    hovered,
+                    focused,
+                    selected,
+                    active: row.id === flatActiveId && flatActiveId !== '',
+                  }),
                 },
                 selected
                   ? h(
@@ -5255,17 +6407,12 @@ window.__ModuleLoader__.load({
                 'data-action': 'session-use-input',
                 'data-session-id': m.sessionQuery.trim(),
                 onClick: a.useTypedId,
-                style: {
-                  font: 'inherit',
-                  fontSize: 12,
-                  lineHeight: '18px',
-                  padding: '3px 10px',
-                  borderRadius: 999,
+                style: chipButtonStyle({
                   cursor: 'pointer',
                   color: token.labelPrimary,
                   background: 'transparent',
-                  border: `1px solid ${token.borderL2}`,
-                },
+                  border: token.borderL2,
+                }),
               },
               fmt(t('sessionUseInput'), { id: m.sessionQuery.trim() }),
             ),
@@ -5344,7 +6491,7 @@ window.__ModuleLoader__.load({
      * `lineHeight` instead of inheriting the shell's, and the spacing between
      * groups (not a single `gap`) is what carries the grouping.
      */
-    const confirmTitleStyle = { fontSize: 14, fontWeight: 600, lineHeight: 1.4, color: token.stateWarn };
+    const confirmTitleStyle = dialogTitleStyle({ fontSize: 14, tone: token.stateWarn, lineHeight: 1.4 });
     const confirmBodyStyle = { display: 'flex', flexDirection: 'column', gap: 4, marginTop: 10 };
     const confirmLeadStyle = {
       fontSize: 13,
@@ -5367,13 +6514,7 @@ window.__ModuleLoader__.load({
       lineHeight: 1.5,
       color: token.stateError,
     };
-    const confirmActionsStyle = {
-      display: 'flex',
-      gap: 8,
-      marginTop: 16,
-      paddingTop: 12,
-      borderTop: `1px solid ${token.borderL1}`,
-    };
+    const confirmActionsStyle = dialogActionsStyle({ divider: true });
 
     /**
      * Render the pending second confirmation. Every destructive action of this
@@ -5429,6 +6570,20 @@ window.__ModuleLoader__.load({
         body.push(fmt(t('updateApplyTitle'), { latest: confirm.latest ?? '' }));
         body.push(fmt(t('updateApplyBody'), { latest: confirm.latest ?? '' }));
         body.push(t(updateApplyCopyKey('restartNote', modelLaunchKind(m))));
+      } else if (confirm.kind === 'preset-delete') {
+        // g-060 review R4: deleting a preset is a catalogue write with a visible
+        // consequence — an applied record becomes an orphan — so it asks first,
+        // through the same overlay every other destructive act on this page uses
+        // (g-031's rule: one confirmation surface, one layout, one pair of
+        // buttons).
+        body.push(fmt(t('presetDeleteConfirmTitle'), { name: confirm.name ?? '' }));
+        body.push(t('presetDeleteConfirmBody'));
+      } else if (confirm.kind === 'preset-discard') {
+        // …and closing a dirty editor throws typing away, which is the other act
+        // this page never performs silently (review R3's promise, now asked for
+        // explicitly rather than merely labelled).
+        body.push(t('presetDiscardConfirmTitle'));
+        body.push(t('presetDiscardConfirmBody'));
       } else if (confirm.kind === 'rollback') {
         // g-039: the version-history tab's only write. The body names the
         // version it will apply, states the scope the write face allows (the
@@ -5450,19 +6605,15 @@ window.__ModuleLoader__.load({
         {
           key: 'confirm-overlay',
           'data-region': 'confirm-overlay',
-          style: {
-            position: 'fixed',
-            top: 0,
-            right: 0,
-            bottom: 0,
-            left: 0,
-            zIndex: 1000,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: 16,
-            background: 'rgba(0, 0, 0, 0.45)',
-          },
+          // The confirmation is the **last** interaction — it is raised on top
+          // of whatever dialog asked the question — so it states its own layer:
+          // 1200, strictly above every tab-owned overlay (1000: this page's
+          // `regionDialog`, the history comparison modal, and the two preset
+          // dialogs). Since g-061 the backdrop itself is the shared
+          // `scrimStyle`, and this call site is the one that passes 1200 — the
+          // number is asserted where it is decided, never inherited from a
+          // default that could quietly become 1000 again.
+          style: scrimStyle(1200),
         },
         h(
           'div',
@@ -5473,16 +6624,18 @@ window.__ModuleLoader__.load({
             'aria-modal': 'true',
             'aria-label': t('confirmTitle'),
             style: {
-              ...cardStyle,
+              ...dialogCardStyle({
+                width: '100%',
+                maxWidth: 480,
+                maxHeight: '80vh',
+                overflow: 'overflowY',
+              }),
+              // The confirmation wears the warning stroke, and the shell states
+              // the surface one, so the warning is declared after the factory —
+              // the later declaration is the one that wins. Everything else this
+              // card used to spell out is now the factory's, at the values it
+              // has always had.
               borderColor: token.stateWarn,
-              display: 'flex',
-              flexDirection: 'column',
-              width: '100%',
-              maxWidth: 480,
-              maxHeight: '80vh',
-              overflowY: 'auto',
-              padding: '16px 18px',
-              boxShadow: '0 12px 32px rgba(0, 0, 0, 0.35)',
             },
           },
           h('strong', { style: confirmTitleStyle }, t('confirmTitle')),
@@ -5533,6 +6686,548 @@ window.__ModuleLoader__.load({
      * @param a - the page actions.
      * @returns the panel element.
      */
+    // #region g-062 (Revision 46) — the shell-overlay toaster
+
+    /**
+     * The assembly layer's verdict, in words (g-062's first layer).
+     *
+     * Shared by the settings-page block and the toast on purpose: one fact, one
+     * sentence. A toast that disagreed with the page it summarizes would be
+     * worse than no toast at all.
+     * @param t - the bound translator.
+     * @param notice - one public notice.
+     * @returns the localized verdict.
+     */
+    function assemblyVerdictOf(t, notice) {
+      return notice.kind === 'first-assembly'
+        ? t(notice.assembly.assembled === true ? 'assemblyFirstAssembled' : 'assemblyFirstEmpty')
+        : t(notice.assembly.state === 'read' ? 'assemblyChangeRead' : 'assemblyChangeNotRead');
+    }
+
+    /**
+     * The delivery layer's verdict, in words (g-062's second layer).
+     *
+     * "Not observable from a plugin" is part of the sentence, not a footnote: a
+     * `waiting`/`unconfirmed` toast must not read as "it failed" when the truth
+     * is "no `system/message` proved it".
+     * @param t - the bound translator.
+     * @param notice - one public notice.
+     * @returns the localized verdict.
+     */
+    function deliveryVerdictOf(t, notice) {
+      if (notice.delivery.state === 'delivered') {
+        return fmt(t('assemblyDeliveryDelivered'), {
+          op: t(notice.delivery.surfaceOp === 'replace' ? 'assemblyOpReplace' : 'assemblyOpAppend'),
+        });
+      }
+      return notice.delivery.state === 'waiting' ? t('assemblyDeliveryWaiting') : t('assemblyDeliveryUnconfirmed');
+    }
+
+    /**
+     * One notice as the single line a toast can carry: the key node, then both
+     * layers, joined by the language's own separator.
+     * @param t - the bound translator.
+     * @param notice - one public notice.
+     * @returns the toast text.
+     */
+    function composeAssemblyToastText(t, notice) {
+      const join = t('assemblyToastJoin');
+      const sep = t('assemblyLayerSep');
+      return [
+        t(notice.kind === 'first-assembly' ? 'assemblyToastFirst' : 'assemblyToastChange'),
+        `${t('assemblyLayerAssembly')}${sep}${assemblyVerdictOf(t, notice)}`,
+        `${t('assemblyLayerDelivery')}${sep}${deliveryVerdictOf(t, notice)}`,
+      ].join(join);
+    }
+
+    /**
+     * One stored cursor, read defensively.
+     *
+     * Three answers, like the update-switch mirror: a valid cursor, or
+     * `{bootId: null, cursor: null}` for "this tab has shown nothing" — which is
+     * what a missing store, a hand-edited value and a document from an older
+     * shape must all produce. `null` means **start from now**, never "replay
+     * everything" (a fresh tab must not toast the whole retained history).
+     * @param raw - the stored string, or anything else.
+     * @returns `{bootId, cursor}`.
+     */
+    function parseAssemblyToastCursor(raw) {
+      const empty = { bootId: null, cursor: null };
+      if (typeof raw !== 'string' || raw.length === 0) return empty;
+      let stored = null;
+      try {
+        stored = JSON.parse(raw);
+      } catch {
+        return empty;
+      }
+      if (stored === null || typeof stored !== 'object') return empty;
+      if (stored.v !== ASSEMBLY_TOAST_CURSOR_VERSION) return empty;
+      return {
+        bootId: typeof stored.bootId === 'string' && stored.bootId.length > 0 ? stored.bootId : null,
+        cursor: Number.isSafeInteger(stored.cursor) && stored.cursor >= 0 ? stored.cursor : null,
+      };
+    }
+
+    /**
+     * The inverse of {@link parseAssemblyToastCursor}.
+     * @param state - `{bootId, cursor}`.
+     * @returns the string to store.
+     */
+    function serializeAssemblyToastCursor(state) {
+      const bootId = state !== null && typeof state === 'object' && typeof state.bootId === 'string' ? state.bootId : null;
+      const cursor =
+        state !== null && typeof state === 'object' && Number.isSafeInteger(state.cursor) && state.cursor >= 0
+          ? state.cursor
+          : null;
+      return JSON.stringify({ v: ASSEMBLY_TOAST_CURSOR_VERSION, bootId, cursor });
+    }
+
+    /** This tab's cursor; every failure degrades to "start from now". */
+    function readAssemblyToastCursor() {
+      try {
+        if (typeof sessionStorage === 'undefined' || sessionStorage === null) return { bootId: null, cursor: null };
+        return parseAssemblyToastCursor(sessionStorage.getItem(ASSEMBLY_TOAST_STORE_KEY));
+      } catch {
+        return { bootId: null, cursor: null };
+      }
+    }
+
+    /**
+     * Remember this tab's cursor. Best effort by design: a browser that refuses
+     * storage replays at worst the notices born while the page was open — the
+     * in-memory cursor still prevents a repeat within one page's lifetime.
+     * @param state - `{bootId, cursor}`.
+     */
+    function writeAssemblyToastCursor(state) {
+      try {
+        if (typeof sessionStorage === 'undefined' || sessionStorage === null) return;
+        sessionStorage.setItem(ASSEMBLY_TOAST_STORE_KEY, serializeAssemblyToastCursor(state));
+      } catch {
+        // The cursor is an optimisation; a refusal is not an error.
+      }
+    }
+
+    /**
+     * One incremental answer plus the cursor this tab already had → the notices
+     * worth showing, and the cursor to keep.
+     *
+     * This is where "same fact never twice" is enforced on the client, so it is
+     * the one function here with no IO and no React in it (`__internals` exposes
+     * it to `test/client.test.mjs`). The rules, in order:
+     *   - **no feed** (an older Host, or a failed read): change nothing, show
+     *     nothing — the settings-page block is still there;
+     *   - **another mount** (`bootId` differs, i.e. the Host restarted) or **no
+     *     cursor yet**: restart from the feed's own cursor and show nothing. The
+     *     numbers are not comparable across mounts, and a first connection must
+     *     never replay history;
+     *   - **switch off**: advance the cursor without showing anything, and report
+     *     `muted` so a toast already queued is dropped rather than played out —
+     *     "off" means silent now, not "silent after the queue drains";
+     *   - otherwise: the notices with `seq` above the cursor, oldest first, at
+     *     most `limit` of them (the newest ones — a client that has been away
+     *     long enough should see where things stand, not a queue of everything
+     *     it missed), and the cursor advanced to the feed's.
+     * @param input - `{state, payload, limit}`.
+     * @returns `{bootId, cursor, toasts, muted}`; a toast is `{session, notice}`
+     *   and `muted` is true only when the switch itself is off.
+     */
+    function planAssemblyToasts(input) {
+      const state = input !== null && typeof input === 'object' && input.state !== null && typeof input.state === 'object'
+        ? input.state
+        : { bootId: null, cursor: null };
+      const limit =
+        Number.isSafeInteger(input?.limit) && input.limit > 0 ? input.limit : ASSEMBLY_TOAST_LIMIT;
+      const payload = input !== null && typeof input === 'object' && input.payload !== null && typeof input.payload === 'object'
+        ? input.payload
+        : null;
+      const feed = payload === null ? null : payload.notifications;
+      if (feed === null || feed === undefined || typeof feed !== 'object') {
+        return { bootId: state.bootId, cursor: state.cursor, toasts: [], muted: false };
+      }
+      const bootId = typeof feed.bootId === 'string' && feed.bootId.length > 0 ? feed.bootId : null;
+      const cursor = Number.isSafeInteger(feed.cursor) && feed.cursor >= 0 ? feed.cursor : null;
+      const enabled = payload.enabled === true;
+      if (bootId === null || cursor === null || state.cursor === null || bootId !== state.bootId) {
+        return { bootId, cursor, toasts: [], muted: false };
+      }
+      if (enabled !== true) return { bootId, cursor, toasts: [], muted: true };
+      const toasts = (Array.isArray(feed.notices) ? feed.notices : [])
+        .filter(
+          (entry) =>
+            entry !== null && typeof entry === 'object' && entry.notice !== null && typeof entry.notice === 'object',
+        )
+        // Exclusive on purpose: the cursor names a notice this client has
+        // already shown, so `seq === cursor` is **not** news. This is the client
+        // half of "同一事实不得弹两次".
+        .filter((entry) => Number.isSafeInteger(entry.notice.seq) && entry.notice.seq > state.cursor)
+        .sort((left, right) => left.notice.seq - right.notice.seq)
+        .slice(-limit)
+        .map((entry) => ({ session: typeof entry.session === 'string' ? entry.session : null, notice: entry.notice }));
+      return { bootId, cursor, toasts, muted: false };
+    }
+
+    /**
+     * g-062 (Revision 46): the resident toaster, mounted in `shell.overlay`.
+     *
+     * It is the whole reason the notice stopped being settings-only: it lives
+     * outside the settings page, so a key node reaches the user wherever they
+     * are. Four properties are load-bearing:
+     *   - **observer only** — it draws text that already exists and never posts
+     *     anything but the switch the page owns; nothing it does can change a
+     *     prompt or an assembly;
+     *   - **once per fact** — the cursor, not a re-read, decides what is new, and
+     *     a notice is dropped from the queue the moment its toast reports done;
+     *   - **visibility-aware** — a hidden tab stops reading (browsers throttle
+     *     its timers anyway) and reads once when it comes back, which is the
+     *     honest form of "you will see it when you return";
+     *   - **fail-open** — every read is guarded and every failure is silent: a
+     *     toaster must never be the reason a user's turn looks broken.
+     * @param props - the shell-overlay owner props (`t`, the session hooks) plus
+     *   this mount's `activity` snapshot.
+     * @returns the current toast, or nothing.
+     */
+    function AssemblyToaster(props) {
+      const t = typeof props.t === 'function' ? props.t : fallbackT;
+      const [queue, setQueue] = React.useState([]);
+      const cursorRef = React.useRef(null);
+      const lastPullRef = React.useRef(0);
+      const startedRef = React.useRef(false);
+      if (cursorRef.current === null) cursorRef.current = readAssemblyToastCursor();
+
+      React.useEffect(() => {
+        let cancelled = false;
+        let timer = null;
+        let inflight = false;
+        const hidden = () => {
+          try {
+            return typeof document !== 'undefined' && document !== null && document.visibilityState === 'hidden';
+          } catch {
+            return false;
+          }
+        };
+        /**
+         * One read. `force` is only for the mount, and for a tab that just came
+         * back: those two must not be rate-limited by the activity throttle.
+         */
+        const pull = async (force) => {
+          if (cancelled || inflight) return;
+          if (force !== true && Date.now() - lastPullRef.current < ASSEMBLY_TOAST_MIN_GAP_MS) return;
+          inflight = true;
+          lastPullRef.current = Date.now();
+          try {
+            const state = cursorRef.current;
+            const query = state !== null && Number.isSafeInteger(state.cursor) ? `?since=${state.cursor}` : '';
+            const result = await requestJson(`${ASSEMBLY_STATUS_PATH}${query}`);
+            if (cancelled || result.ok !== true) return;
+            const plan = planAssemblyToasts({
+              state: cursorRef.current,
+              payload: result.payload,
+              limit: ASSEMBLY_TOAST_LIMIT,
+            });
+            cursorRef.current = { bootId: plan.bootId, cursor: plan.cursor };
+            writeAssemblyToastCursor(cursorRef.current);
+            // The switch being off is a statement about **now**: a queued toast
+            // is dropped rather than played out (review C5).
+            if (plan.muted === true) setQueue([]);
+            else if (plan.toasts.length > 0) {
+              setQueue((list) => [...list, ...plan.toasts].slice(-ASSEMBLY_TOAST_LIMIT));
+            }
+          } catch {
+            // Fail open: a toaster is never worth a broken page.
+          } finally {
+            inflight = false;
+          }
+        };
+        const first = startedRef.current !== true;
+        startedRef.current = true;
+        void pull(first);
+        const arm = () => {
+          if (cancelled) return;
+          timer = setTimeout(() => {
+            if (cancelled) return;
+            if (!hidden()) void pull(false);
+            arm();
+          }, ASSEMBLY_TOAST_POLL_MS);
+        };
+        arm();
+        const onVisibility = () => {
+          if (!hidden()) void pull(true);
+        };
+        let watched = null;
+        try {
+          watched =
+            typeof document !== 'undefined' && document !== null && typeof document.addEventListener === 'function'
+              ? document
+              : null;
+        } catch {
+          watched = null;
+        }
+        if (watched !== null) watched.addEventListener('visibilitychange', onVisibility);
+        return () => {
+          cancelled = true;
+          if (timer !== null) clearTimeout(timer);
+          if (watched !== null) watched.removeEventListener('visibilitychange', onVisibility);
+        };
+      }, [props.activity]);
+
+      const current = queue.length > 0 ? queue[0] : null;
+      if (current === null) return null;
+      // The namespace the capability probe settled on (`toastPrimitives`, not
+      // `primitives`): the fix round's whole point is that these two can
+      // disagree, and the renderer's branch must not be the one to decide.
+      // Still guarded — `HAS_TOAST` is what keeps this component from ever
+      // mounting without a drawable `Toast`, and a component that cannot draw
+      // is worse than none. g-063: the guard asks the **same** question as the
+      // capability probe (`hasComponentExport`, not `typeof === 'function'`),
+      // because a `forwardRef` Toast would otherwise ship a registered overlay
+      // that can never draw a single notice: probe says yes, renderer says no.
+      // Review F1: and once the Host's atoms have failed anywhere in this module
+      // instance, that atom is not rendered again — the entry above returns
+      // `null`, and this guard is the second, cheaper half of the same rule.
+      if (
+        primitivesRenderFailed ||
+        toastPrimitives === null ||
+        !hasComponentExport(toastPrimitives, 'Toast')
+      ) {
+        return null;
+      }
+      // The official Toast owns its own lifetime and reports completion; keying
+      // by the notice id is what lets the same text appear again for a **new**
+      // fact (the primitive restarts its cycle only when remounted).
+      return h(toastPrimitives.Toast, {
+        key: `assembly-toast-${current.notice.id}`,
+        text: composeAssemblyToastText(t, current.notice),
+        holdMs: ASSEMBLY_TOAST_HOLD_MS,
+        onDone: () => setQueue((list) => list.slice(1)),
+      });
+    }
+
+    /**
+     * The same toaster, wired to the one client-side event that really exists.
+     *
+     * A `shell.overlay` entry receives the root hooks (proven by
+     * `dsh-plugin-whale-pet`), and a change in the session-status map means a
+     * step ended somewhere — which is exactly when a key node's delivery verdict
+     * has just settled. The hook is called inside a guard because a throwing hook
+     * must cost the event, never the overlay.
+     * @param props - the shell-overlay owner props.
+     * @returns the toaster.
+     */
+    function ConnectedAssemblyToaster(props) {
+      let activity = null;
+      try {
+        activity = props.useSessionStatus((map) => map);
+      } catch {
+        activity = null;
+      }
+      return h(AssemblyToaster, { ...props, activity });
+    }
+
+    /**
+     * The registered entry: the event-driven toaster when the Host offers the
+     * hook, the timer-only one when it does not.
+     *
+     * Since g-063 (reviews E1 / F1) it sits behind the same boundary as the
+     * settings page, because the toaster is the other place this plugin renders
+     * a Host atom and an overlay entry that throws during render would take the
+     * shell's overlay subtree with it. Two rules, in this order:
+     *
+     *   1. **Once the Host's atoms have failed anywhere in this module
+     *      instance, this entry renders nothing.** The flip is instance-wide and
+     *      one-way, so after it there is no `primitivesActive()` branch to fall
+     *      into: wrapping the entry again would re-render the very atom that
+     *      threw, and dropping the wrapper (the pre-F1 shape) would do it
+     *      *unwrapped*. `null` is the only shape that cannot throw — the
+     *      settings page's own block still says everything the toast would.
+     *   2. While the atoms are still in use, the boundary is what converts a
+     *      first failure into that `null` (and into the instance-wide flip).
+     *
+     * The g-062 baseline is untouched: a Host whose probe never passed has no
+     * `Toast` to render in the first place, and gets the plain entry back.
+     * @param props - the shell-overlay owner props.
+     * @returns the toaster, the boundary around it, or `null` after a failure.
+     */
+    function AssemblyToasterRoot(props) {
+      if (primitivesRenderFailed) return null;
+      const supported = typeof props.useSessionStatus === 'function';
+      const toaster = supported ? h(ConnectedAssemblyToaster, props) : h(AssemblyToaster, { ...props, activity: null });
+      if (!primitivesActive()) return toaster;
+      return h(PrimitivesErrorBoundary, { renderFallback: () => null }, toaster);
+    }
+
+    // #endregion
+
+    /**
+     * g-062:「装配状态提示」— the two-layer observation, rendered in this page
+     * only.
+     *
+     * It states the two verdicts the goal fixes, and nothing it renders can
+     * reach the model: the block reads `GET /assembly-status` for the selected
+     * session and draws it. The assembly layer is what this plugin's assembly
+     * returned (with its stated limit: a later `{prepend: true}` listener may
+     * still rewrite the sections); the delivery layer is the `system/message`
+     * this step committed on the surface. "Was the HTTP request really sent" is
+     * not observable from a plugin and is not claimed anywhere here.
+     *
+     * One notice is shown — the last key node — because the Host produces one per
+     * node, never one per step.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the block element.
+     */
+    function renderAssemblyStatus(t, m, a) {
+      const state =
+        m.assembly ?? { phase: 'idle', data: null, error: null, enabled: null, status: { kind: 'idle', error: null } };
+      const payload = state.data !== null && typeof state.data === 'object' ? state.data : null;
+      const ready = state.phase === 'ready' && payload !== null;
+      const enabled = ready ? payload.enabled === true : m.assemblyEnabled === true;
+      const switchStatus = m.assemblyStatus ?? { kind: 'idle', error: null };
+      const record = ready && payload.record !== null && typeof payload.record === 'object' ? payload.record : null;
+      const notice =
+        record !== null && record.notice !== null && typeof record.notice === 'object' ? record.notice : null;
+      const hasSession = m.sessionArg !== null;
+      // The one punctuation the two languages disagree about, so no sentence is
+      // assembled by concatenating a hardcoded separator.
+      const sep = t('assemblyLayerSep');
+      const kindLabel = (kind) => t(kind === 'first-assembly' ? 'assemblyKindFirst' : 'assemblyKindChange');
+      const assemblyVerdict = notice === null ? null : assemblyVerdictOf(t, notice);
+      const deliveryVerdict = notice === null ? null : deliveryVerdictOf(t, notice);
+      const matchedNote =
+        notice !== null && notice.delivery.state === 'delivered' && notice.delivery.textMatched !== null
+          ? fmt(t('assemblyMatchedSuffix'), {
+              note: t(notice.delivery.textMatched === true ? 'assemblyTextMatchedYes' : 'assemblyTextMatchedNo'),
+            })
+          : '';
+      const meta =
+        notice !== null && notice.turn !== null && notice.step !== null
+          ? fmt(t('assemblyNodeMeta'), { turn: String(notice.turn), step: String(notice.step) })
+          : null;
+      const errorStyle = { margin: 0, fontSize: 12, color: token.stateError, wordBreak: 'break-word' };
+      const noteStyle = { margin: 0, ...metaStyle };
+      const lineStyle = { margin: 0, fontSize: 13 };
+      // Review C4: the degradation is reported from the **seat** — "no overlay is
+      // registered" — never from the capability probe alone. A Host that has the
+      // primitive but not the slot would otherwise show nothing at all.
+      const toastSeat = overlaySeat.state;
+      return h(
+        'div',
+        {
+          'data-region': 'assembly-status',
+          'data-assembly-phase': state.phase,
+          'data-assembly-enabled': ready ? String(enabled) : 'unknown',
+          'data-assembly-switch': switchStatus.kind,
+          'data-assembly-session': hasSession ? 'yes' : 'none',
+          'data-assembly-toast-seat': toastSeat,
+          'data-notice-kind': notice === null ? 'none' : String(notice.kind),
+          'data-assembly-state':
+            notice === null
+              ? 'none'
+              : notice.kind === 'first-assembly'
+                ? notice.assembly.assembled === true
+                  ? 'assembled'
+                  : 'empty'
+                : String(notice.assembly.state),
+          'data-delivery-state': notice === null ? 'none' : String(notice.delivery.state),
+          style: { ...cardStyle, display: 'flex', flexDirection: 'column', gap: 6 },
+        },
+        h(
+          'div',
+          { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+          h('h3', { style: headingStyle }, t('assemblyHeading')),
+          h('span', { style: metaStyle }, t('assemblySwitchLabel')),
+          h(
+            UI.Button,
+            {
+              'data-action': 'assembly-toggle',
+              'aria-pressed': ready && enabled ? 'true' : 'false',
+              disabled: m.busy || !ready || switchStatus.kind === 'saving',
+              onClick: a.toggleAssemblyNotice,
+            },
+            switchStatus.kind === 'saving'
+              ? t('assemblySaving')
+              : t(ready && enabled ? 'assemblyTurnOff' : 'assemblyTurnOn'),
+          ),
+          h(
+            'span',
+            { 'data-assembly-switch-state': ready ? (enabled ? 'on' : 'off') : 'unknown', style: metaStyle },
+            ready ? t(enabled ? 'assemblySwitchOn' : 'assemblySwitchOff') : '',
+          ),
+        ),
+        h('p', { style: noteStyle }, t('assemblyIntro')),
+        state.phase === 'error'
+          ? h('p', { 'data-warning': 'assembly-unreadable', style: errorStyle }, errorText(t, state.error))
+          : null,
+        switchStatus.kind === 'error'
+          ? h(
+              'p',
+              { 'data-warning': 'assembly-switch-failed', style: errorStyle },
+              `${t('assemblySaveFailed')}${sep}${errorText(t, switchStatus.error)}`,
+            )
+          : null,
+        !hasSession
+          ? h('p', { 'data-assembly-note': 'no-session', style: noteStyle }, t('assemblyNoSession'))
+          : null,
+        hasSession && ready && record === null
+          ? h('p', { 'data-assembly-note': 'no-record', style: noteStyle }, t('assemblyNoRecord'))
+          : null,
+        hasSession && record !== null && notice === null
+          ? h('p', { 'data-assembly-note': 'no-notice', style: noteStyle }, t('assemblyNoNotice'))
+          : null,
+        notice !== null
+          ? h(
+              'div',
+              { 'data-region': 'assembly-notice', style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+              h(
+                'p',
+                { 'data-assembly-kind': String(notice.kind), style: { margin: 0, fontWeight: 600 } },
+                meta === null ? kindLabel(notice.kind) : `${kindLabel(notice.kind)} · ${meta}`,
+              ),
+              h(
+                'p',
+                {
+                  'data-assembly-layer':
+                    notice.kind === 'first-assembly'
+                      ? notice.assembly.assembled === true
+                        ? 'assembled'
+                        : 'empty'
+                      : String(notice.assembly.state),
+                  style: lineStyle,
+                },
+                `${t('assemblyLayerAssembly')}${sep}${assemblyVerdict}`,
+              ),
+              h(
+                'p',
+                { 'data-delivery-layer': String(notice.delivery.state), style: lineStyle },
+                `${t('assemblyLayerDelivery')}${sep}${deliveryVerdict}${matchedNote}`,
+              ),
+              h('p', { style: noteStyle }, t('assemblyNoticeOnce')),
+            )
+          : null,
+        // g-062 (Revision 46): the honest degradation, keyed on the **seat**
+        // (review C4). Three different facts, three different sentences (review
+        // R1) — a Host without the primitive, a Host that never declared the
+        // slot, and a Host that declared it and refused the registration are not
+        // the same thing, and saying "the slot is missing" about a Host that
+        // declared it would be a false statement about the user's own machine.
+        // Only `ready` is silent; everything else says which one happened.
+        toastSeat === 'ready'
+          ? null
+          : h(
+              'p',
+              { 'data-assembly-note': 'no-toast', style: noteStyle },
+              t(
+                toastSeat === 'absent'
+                  ? 'assemblyToastUnavailable'
+                  : toastSeat === 'failed'
+                    ? 'assemblyToastRefused'
+                    : 'assemblyToastSlotMissing',
+              ),
+            ),
+        h('p', { 'data-region': 'assembly-limitation', style: noteStyle }, t('assemblyLimitation')),
+      );
+    }
+
     function renderMinePanel(t, m, a) {
       const workspace = m.snap.data && m.snap.data.layers ? m.snap.data.layers.workspace : null;
       const workspaceUsable = workspace && workspace.enabled === true;
@@ -5634,6 +7329,9 @@ window.__ModuleLoader__.load({
         'div',
         { 'data-region': 'mine', style: { ...promptBlockBandStyle, display: 'flex', flexDirection: 'column', gap: 10 } },
         h('h3', { style: headingStyle }, t('mineHeading')),
+        // g-062: the observation of the two layers sits at the top of the write
+        // surface — the place a user returns to right after saving a prompt.
+        renderAssemblyStatus(t, m, a),
         targetLine,
         h('p', { style: { margin: 0, ...metaStyle } }, t('mineNote')),
         h(
@@ -6095,10 +7793,11 @@ window.__ModuleLoader__.load({
      * would be exactly the silently false「一致」the stamp exists to prevent.
      */
     const CHUNK_STAMPS = Object.freeze([
-      { name: 'client.advanced.js', hash: '523d25ee', size: 21505 },
-      { name: 'client.history.js', hash: '2887cc6c', size: 48609 },
-      { name: 'client.overview.js', hash: 'f66cd1b0', size: 23533 },
-      { name: 'client.transfer.js', hash: 'c8af8793', size: 9759 },
+      { name: 'client.advanced.js', hash: '4cbd3181', size: 21376 },
+      { name: 'client.history.js', hash: 'a3ec9d47', size: 50647 },
+      { name: 'client.overview.js', hash: 'ddbcf423', size: 23861 },
+      { name: 'client.presets.js', hash: 'e1a665bb', size: 24079 },
+      { name: 'client.transfer.js', hash: '8b305496', size: 9766 },
     ]);
 
     /**
@@ -6130,7 +7829,10 @@ window.__ModuleLoader__.load({
       diffOpMarker,
       diffKey,
       diffTone,
-      HAS_DIFF_BLOCK,
+      // A function, not a boolean snapshot: the chunk must ask per render, so a
+      // `DiffBlock` render failure can really switch the diff back to the
+      // hand-built one (g-063 E1).
+      diffBlockUsable,
       DIFF_CURRENT,
       DIFF_BLOCK_MAX_LINES,
       MAX_DIFF_LINES_SHOWN,
@@ -6168,9 +7870,29 @@ window.__ModuleLoader__.load({
       diffSections,
       composeSections,
       errorText,
-      regionLabelKey,
+      regionKey,
       renderStatusDetail,
       renderUpdateApplyStatus,
+      chunkTab,
+      // g-061 batch 2: the four render facilities the tab chunks draw with.
+      // Same rule again — one binding each, taken off the surface under its own
+      // name, never copied into a chunk.
+      scrimStyle,
+      errorLine,
+      emptyCard,
+      monoTextBox,
+      // g-061 batch 3: the dialog shell, its two rows, the three ghost button
+      // families and the shared search comparison. Same rule once more — one
+      // binding each, taken off the surface under its own name, never copied
+      // into a chunk.
+      dialogCardStyle,
+      dialogTitleStyle,
+      dialogActionsStyle,
+      chipButtonStyle,
+      miniButtonStyle,
+      sessionRowStyle,
+      normalizeNeedle,
+      matchesNeedle,
     });
 
     /** Chunks this page has really loaded, by file name: `{hash, size}`. */
@@ -6334,6 +8056,11 @@ window.__ModuleLoader__.load({
     function pickChunkComponent(fileName, chunkExports, pick) {
       try {
         const component = pick(chunkExports);
+        // A function by construction: this is one of **our own** chunks, whose
+        // tab component is the named function `chunkTab()` builds
+        // (`client.history.js` exports `HistoryTab`, its `name` preserved) — not
+        // a Host atom. The `forwardRef`-aware judge is for the Host's exports
+        // only (g-063).
         if (typeof component === 'function') {
           recordLoadedChunk(fileName, chunkExports);
           return component;
@@ -6451,6 +8178,45 @@ window.__ModuleLoader__.load({
     const AdvancedTabChunk = HAS_REACT_LAZY
       ? React.lazy(() => chunkModule('client.advanced.js', (chunkExports) => chunkExports && chunkExports.AdvancedTab))
       : null;
+    /**
+     * g-060: 「预设」 as a lazily loaded chunk.
+     *
+     * Same shape as its three siblings, and for the same reason: the catalogue
+     * is only ever reached by a click, so a page that never opens it pays
+     * nothing for it.
+     */
+    const PresetsTabChunk = HAS_REACT_LAZY
+      ? React.lazy(() => chunkModule('client.presets.js', (chunkExports) => chunkExports && chunkExports.PresetsTab))
+      : null;
+
+    /**
+     * g-061: the props adapter every lazy tab chunk used to write for itself.
+     *
+     * `renderChunkTab` below mounts a chunk's default export as
+     * `h(Component, { t, m, a })`, and each chunk's export unpacks that one
+     * object back into the three positional arguments its own renderer takes.
+     * Five chunks wrote that same one-liner under five function names — the
+     * unpacking is a shape, not a per-tab decision, so it lives here once and
+     * each chunk keeps its own export name.
+     *
+     * This is **not** `renderChunkTab`: that one builds the `Suspense` boundary
+     * and the「chunk unavailable」card and takes the lazy *component*; this one
+     * builds the component the boundary finally mounts. Both halves are needed;
+     * only this half was duplicated five times.
+     * @param render - the chunk's own `(t, m, a)` renderer.
+     * @param name - the export's name, so the component reports what it always did.
+     * @returns a React function component.
+     */
+    function chunkTab(render, name) {
+      const Tab = function tabComponent(props) {
+        return render(props.t, props.m, props.a);
+      };
+      // The five local declarations were named functions (`function HistoryTab`),
+      // so the mounted component's `name` is part of what the page always said
+      // about itself; a factory-made component keeps that name.
+      Object.defineProperty(Tab, 'name', { value: name, configurable: true });
+      return Tab;
+    }
 
     /**
      * Mount one tab chunk behind a `Suspense` boundary.
@@ -6507,6 +8273,10 @@ window.__ModuleLoader__.load({
     }
     function renderAdvancedChunk(t, m, a) {
       return renderChunkTab(AdvancedTabChunk, 'client.advanced.js', 'advanced', t, m, a);
+    }
+    /** g-060:「预设」 — the fourth lazy tab boundary. */
+    function renderPresetsChunk(t, m, a) {
+      return renderChunkTab(PresetsTabChunk, 'client.presets.js', 'presets', t, m, a);
     }
     // #endregion
 
@@ -6774,11 +8544,23 @@ window.__ModuleLoader__.load({
     /**
      * g-043: the i18n key for one region id. An unknown id (a Host from the
      * future, a hand-edited answer) reads as「默认」rather than as a bare enum.
+     *
+     * g-061: the same three ids are named in **two** key families — the
+     * 「查看范围」 label (`family: ''`, `updateRegionCn`) and the one-line note
+     * under it (`family: 'Note'`, `updateRegionCnNote`). The id→key rule is
+     * written once here and the family is the only thing a caller adds, so the
+     * two families can never disagree about which id is「默认」.
      * @param id - `default` / `cn` / `custom`, or anything else.
+     * @param family - the suffix that names the family (`''` for the label).
      * @returns the dictionary key.
      */
-    function regionLabelKey(id) {
-      return id === 'cn' ? 'updateRegionCn' : id === 'custom' ? 'updateRegionCustom' : 'updateRegionDefault';
+    function regionKey(id, family) {
+      const suffix = typeof family === 'string' ? family : '';
+      return id === 'cn'
+        ? `updateRegionCn${suffix}`
+        : id === 'custom'
+          ? `updateRegionCustom${suffix}`
+          : `updateRegionDefault${suffix}`;
     }
 
     /**
@@ -6810,19 +8592,11 @@ window.__ModuleLoader__.load({
         {
           key: 'region-overlay',
           'data-region': 'region-overlay',
-          style: {
-            position: 'fixed',
-            top: 0,
-            right: 0,
-            bottom: 0,
-            left: 0,
-            zIndex: 1000,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            padding: 16,
-            background: 'rgba(0, 0, 0, 0.45)',
-          },
+          // The tab-dialog layer, stated here rather than defaulted: 1000, the
+          // same value the history comparison modal and the two preset dialogs
+          // use, and deliberately **below** the shared confirmation overlay
+          // (1200, review R6).
+          style: scrimStyle(1000),
         },
         h(
           'div',
@@ -6831,16 +8605,14 @@ window.__ModuleLoader__.load({
             role: 'dialog',
             'aria-modal': 'true',
             'aria-label': t('updateRegionCustomTitle'),
-            style: {
-              ...cardStyle,
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 10,
+            style: dialogCardStyle({
               width: '100%',
+              gap: 10,
               maxWidth: 480,
-              padding: '16px 18px',
-              boxShadow: '0 12px 32px rgba(0, 0, 0, 0.35)',
-            },
+              // g-061 batch 3: this dialog states neither `maxHeight` nor an
+              // `overflow` — it always has, and the batch keeps it that way
+              // instead of quietly giving it the confirmation's 80vh.
+            }),
           },
           h('strong', { style: confirmTitleStyle }, t('updateRegionCustomTitle')),
           h('div', { 'data-role': 'region-body', style: confirmTextStyle }, t('updateRegionCustomBody')),
@@ -6853,15 +8625,13 @@ window.__ModuleLoader__.load({
           }),
           dialog.error === null
             ? null
-            : h(
-                'div',
-                {
-                  'data-role': 'region-error',
-                  'data-region-error': typeof dialog.error.code === 'string' ? dialog.error.code : 'unknown',
-                  style: { fontSize: 13, color: token.stateError },
-                },
-                errorText(t, dialog.error),
-              ),
+            : errorLine({
+                role: 'region-error',
+                probe: 'data-region-error',
+                code: dialog.error.code,
+                fontSize: 13,
+                text: errorText(t, dialog.error),
+              }),
           h(
             'div',
             { 'data-role': 'region-actions', style: confirmActionsStyle },
@@ -6940,6 +8710,12 @@ window.__ModuleLoader__.load({
             key: 'tabs',
             'data-region': 'tabs',
             'data-active-tab': m.tab,
+            // No `overflow` here any more (real-machine round 3): the strip is
+            // hand-built again and lays out with `flex-wrap`, so it never
+            // overflows this box, and the `overflow-x: auto` of round 2 could not
+            // absorb the official control's forced natural width anyway (the
+            // widened box was an ancestor, not just this one — see the tab
+            // decision comment in `tabs()`).
           },
           tabs(
             MAIN_TABS.map((value) => ({
@@ -6947,13 +8723,15 @@ window.__ModuleLoader__.load({
               label: t(
                 value === 'mine'
                   ? 'tabMine'
-                  : value === 'overview'
-                    ? 'tabOverview'
-                    : value === 'history'
-                      ? 'tabHistory'
-                      : value === 'backup'
-                        ? 'tabBackup'
-                        : 'tabAdvanced',
+                  : value === 'presets'
+                    ? 'tabPresets'
+                    : value === 'overview'
+                      ? 'tabOverview'
+                      : value === 'history'
+                        ? 'tabHistory'
+                        : value === 'backup'
+                          ? 'tabBackup'
+                          : 'tabAdvanced',
               ),
               id: `ps-tab-${value}`,
               panelId: 'ps-tab-panel',
@@ -7004,13 +8782,15 @@ window.__ModuleLoader__.load({
                 { key: 'tab-panel', 'data-region': 'tab-panel', 'data-tab-value': m.tab },
                 m.tab === 'mine'
                   ? renderMinePanel(t, m, a)
-                  : m.tab === 'overview'
-                    ? renderOverviewChunk(t, m, a)
-                    : m.tab === 'history'
-                      ? renderHistoryChunk(t, m, a)
-                      : m.tab === 'backup'
-                        ? renderBackupChunk(t, m, a)
-                        : renderAdvancedChunk(t, m, a),
+                  : m.tab === 'presets'
+                    ? renderPresetsChunk(t, m, a)
+                    : m.tab === 'overview'
+                      ? renderOverviewChunk(t, m, a)
+                      : m.tab === 'history'
+                        ? renderHistoryChunk(t, m, a)
+                        : m.tab === 'backup'
+                          ? renderBackupChunk(t, m, a)
+                          : renderAdvancedChunk(t, m, a),
               )
             : null,
         ),
@@ -7019,7 +8799,10 @@ window.__ModuleLoader__.load({
         'div',
         {
           'data-plugin': 'dsh-prompt-setting',
-          'data-renderer': RENDERER,
+          // `activeRenderer()`, not the probe's `RENDERER`: after a render-time
+          // failure of the Host's atoms this page draws with the hand-built
+          // atoms, and the marker has to name the branch really in use (g-063 E1).
+          'data-renderer': activeRenderer(),
           'data-render-state': 'ok',
           'data-phase': m.phase,
           'data-session-mode': m.seat.mode,
@@ -7101,6 +8884,11 @@ window.__ModuleLoader__.load({
       // really running against the ones the host serves — would never run when
       // it matters.
       React.useSyncExternalStore(subscribeChunkLoads, chunkLoadRevision, chunkLoadRevision);
+      // g-062 (Revision 46, review C4): the overlay seat, on the same seat. A
+      // Host that declares `shell.overlay` after this page first rendered would
+      // otherwise leave the degradation note on screen until some unrelated
+      // state change happened to re-render the block.
+      React.useSyncExternalStore(subscribeOverlaySeat, overlaySeatRevision, overlaySeatRevision);
 
       // The session seat: a root-level hook on props, no inject required. The
       // `typeof` branch is stable for the life of a mount, and a hook that
@@ -7161,8 +8949,44 @@ window.__ModuleLoader__.load({
       // their own slot and the panel renders them beside the state they qualify,
       // instead of inside an error banner that would deny the write.
       const [mineWarnings, setMineWarnings] = React.useState([]);
+      /**
+       * g-062:「装配状态提示」— the observation this page renders, its switch's
+       * state, and the last switch attempt.
+       *
+       * `data` is the Host's answer verbatim (`record` is `null` until it has
+       * observed an assembly for the selected session), `enabled` is the switch
+       * as the **Host** reports it (`null` until it answered — the page never
+       * guesses), and `status` is the switch's own request state, kept separate
+       * from the read's, so a failed toggle cannot read as a failed read.
+       */
+      const [assembly, setAssembly] = React.useState({
+        phase: 'idle',
+        data: null,
+        error: null,
+        enabled: null,
+        status: { kind: 'idle', error: null },
+      });
       const [notice, setNotice] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
+      // g-060 (Revision 37; dialog-based since Revision 38 / review R3): the
+      // preset library tab's own state.
+      //
+      // Four slots, and the split is the same one 「我的 Prompt」 uses: the
+      // **library read** (`presets`) is a fact about one host file, the
+      // **draft** (`presetDraft`) is what the editor dialog shows and what the
+      // catalogue writes send, the **request state** (`presetStatus`) is what
+      // the last write answered, and the **open dialog** (`presetDialog`) is
+      // which of the two overlays is on screen (`edit` or `apply`). A failed
+      // write must never look like a failed read, so the last three are not
+      // folded into the first.
+      const [presets, setPresets] = React.useState({ phase: 'idle', data: null, error: null });
+      const [presetDraft, setPresetDraft] = React.useState({ id: null, name: '', action: 'replace', text: '' });
+      const [presetStatus, setPresetStatus] = React.useState({ kind: 'idle', error: null });
+      // `null` | `{kind: 'edit'}` | `{kind: 'apply', presetId}`. The editor is a
+      // dialog rather than an in-tab form (review R3): the tab is the catalogue,
+      // and both writes it can start happen in an overlay that a reader has to
+      // dismiss.
+      const [presetDialog, setPresetDialog] = React.useState(null);
       // Stage 2 state: history, the comparison, the pending confirmation and
       // the export/import surface. All of it is view state — nothing here is
       // derived from a real config file until a route answers.
@@ -7424,13 +9248,15 @@ window.__ModuleLoader__.load({
       // always bounded by the scrolling box rather than by a render cap, because
       // the box — not the page — is what grows.
       const historyScopeMatches = (() => {
-        const needle = historyScopeSearch.trim().toLowerCase();
+        const needle = normalizeNeedle(historyScopeSearch);
         if (needle.length === 0) return historyScopes.options;
-        return historyScopes.options.filter(
-          (option) =>
-            option.label.toLowerCase().includes(needle)
-            || option.value.toLowerCase().includes(needle)
-            || option.workspaceId.toLowerCase().includes(needle),
+        // g-061 batch 3: field by field, with no cache — this list is bounded by
+        // the scrolling box, and it is compared exactly as it was before. It is
+        // deliberately **not** handed a joined haystack: a match could then span
+        // two fields, which would be a new hit and would move
+        // `data-history-scope-shown`.
+        return historyScopes.options.filter((option) =>
+          matchesNeedle([option.label, option.value, option.workspaceId], needle),
         );
       })();
 
@@ -7550,6 +9376,19 @@ window.__ModuleLoader__.load({
               ? { phase: 'ready', data: overrides.payload, error: null }
               : { phase: 'error', data: null, error: overrides.error },
           );
+          // g-060: the preset library rides on the same load. It is one global
+          // file plus the resolved root of the selected session (§20.2), so it
+          // is asked with the same `?session=` the two layer views use — and it
+          // is *not* an error of this page when the host answers a library
+          // reason: `GET /presets` answers `200` with an `error` field, which
+          // the tab renders as a library problem rather than as「没有预设」.
+          const presetsResult = await requestJson(`${PRESETS_PATH}${query}`);
+          if (cancelled) return;
+          setPresets(
+            presetsResult.ok
+              ? { phase: 'ready', data: presetsResult.payload, error: null }
+              : { phase: 'error', data: null, error: presetsResult.error },
+          );
         };
         void load();
         return () => {
@@ -7569,6 +9408,50 @@ window.__ModuleLoader__.load({
       // by. The user layer is global; the workspace layer needs a locatable
       // workspace, so an unresolved scope shows the note instead of a request
       // the host must refuse.
+      React.useEffect(() => {
+        if (tab !== 'mine') return undefined;
+        let cancelled = false;
+        let timer = null;
+        const query = sessionArg === null ? '' : `?session=${encodeURIComponent(sessionArg)}`;
+        // One read per mount/tab/scope change, plus a short follow-up **only**
+        // while the Host reports a notice whose delivery layer is still
+        // `waiting`: that verdict is settled by a session event which arrives
+        // after the assembly, so a single read may legitimately see it pending.
+        // Nothing here writes to a session and nothing reaches the model.
+        const run = async () => {
+          const result = await requestJson(`${ASSEMBLY_STATUS_PATH}${query}`);
+          if (cancelled) return;
+          if (!result.ok) {
+            setAssembly((current) => ({ ...current, phase: 'error', error: result.error }));
+            return;
+          }
+          const payload = result.payload;
+          setAssembly((current) => ({
+            ...current,
+            phase: 'ready',
+            data: payload,
+            error: null,
+            enabled: payload !== null && typeof payload === 'object' && payload.enabled === true,
+          }));
+          const waiting =
+            payload !== null &&
+            typeof payload === 'object' &&
+            payload.record !== null &&
+            typeof payload.record === 'object' &&
+            payload.record.notice !== null &&
+            typeof payload.record.notice === 'object' &&
+            payload.record.notice.delivery !== null &&
+            typeof payload.record.notice.delivery === 'object' &&
+            payload.record.notice.delivery.state === 'waiting';
+          if (waiting) timer = setTimeout(run, ASSEMBLY_POLL_MS);
+        };
+        void run();
+        return () => {
+          cancelled = true;
+          if (timer !== null) clearTimeout(timer);
+        };
+      }, [tab, sessionArg, reload]);
+
       React.useEffect(() => {
         if (tab !== 'history') return undefined;
         if (historyLayer === 'workspace' && historyScopeValue.length === 0) {
@@ -8157,6 +10040,42 @@ window.__ModuleLoader__.load({
       };
 
       /**
+       * g-062: turn the assembly-status notice on or off.
+       *
+       * One `PUT` of the boolean the Host stores in `preferences.json`, merged
+       * with whatever else that document holds. The switch is the user's, so a
+       * write failure is reported in the block rather than retried silently; the
+       * page's own state is the Host's answer, never the wish.
+       */
+      const toggleAssemblyNotice = async () => {
+        const next = assembly.enabled !== true;
+        setAssembly((current) => ({ ...current, status: { kind: 'saving', error: null } }));
+        setBusy(true);
+        const result = await requestJson(ASSEMBLY_STATUS_PATH, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ enabled: next }),
+        });
+        setBusy(false);
+        if (!result.ok) {
+          setAssembly((current) => ({ ...current, status: { kind: 'error', error: result.error } }));
+          setNotice({ tone: 'error', text: `${t('assemblySaveFailed')} — ${errorText(t, result.error)}` });
+          return;
+        }
+        const applied = result.payload !== null && typeof result.payload === 'object' && result.payload.enabled === true;
+        setAssembly((current) => ({
+          ...current,
+          enabled: applied,
+          data:
+            current.data === null || typeof current.data !== 'object'
+              ? current.data
+              : { ...current.data, enabled: applied },
+          status: { kind: 'saved', error: null },
+        }));
+        setNotice({ tone: 'success', text: t(applied ? 'assemblyEnabledNow' : 'assemblyDisabledNow') });
+      };
+
+      /**
        * 「我的 Prompt」 save: `PUT /prompt-setting/overrides` with the reserved
        * name and `replace`, which is the entire write face since Revision 7
        * (§4.1). The text is sent exactly as typed — trimming someone's prompt
@@ -8404,7 +10323,7 @@ window.__ModuleLoader__.load({
         if (wanted !== 'default' && wanted !== 'cn') return;
         const result = await saveRegion({ region: wanted });
         if (result.ok) {
-          setNotice({ tone: 'success', text: fmt(t('updateRegionSaved'), { region: t(regionLabelKey(wanted)) }) });
+          setNotice({ tone: 'success', text: fmt(t('updateRegionSaved'), { region: t(regionKey(wanted, '')) }) });
           return;
         }
         setNotice({ tone: 'error', text: errorText(t, result.error) });
@@ -8437,7 +10356,7 @@ window.__ModuleLoader__.load({
         const result = await saveRegion({ region: 'custom', registry: address });
         if (result.ok) {
           setRegionDialog(null);
-          setNotice({ tone: 'success', text: fmt(t('updateRegionSaved'), { region: t(regionLabelKey('custom')) }) });
+          setNotice({ tone: 'success', text: fmt(t('updateRegionSaved'), { region: t(regionKey('custom', '')) }) });
           return;
         }
         setRegionDialog((current) => (current === null ? null : { ...current, phase: 'idle', error: result.error }));
@@ -8836,6 +10755,199 @@ window.__ModuleLoader__.load({
         });
       };
 
+      /**
+       * g-060 (Revision 37): the preset library's writes.
+       *
+       * Five actions, and the split is exactly the host's (`CONTRACT.md` §20):
+       * three go to the catalogue (`PUT` / `DELETE`, plus the `GET` a refresh
+       * re-runs) and two to the layer (`apply` / `unapply`). The catalogue
+       * actions never name a layer; the two layer actions always send the
+       * `session` of the picked workspace, because that is the only identity the
+       * host can resolve a workspace root from (§4.2).
+       *
+       * Every write goes through `requestJson`, so a refusal arrives as
+       * `{ok: false, code, message}` and is rendered by the same
+       * `errorText` mapping the rest of the page uses. A write that succeeds
+       * bumps `reload`, which re-reads the library and both layer views — the
+       * same "write, then re-read" shape every other write on this page has.
+       */
+      const savePresetDraft = async () => {
+        const name = presetDraft.name.trim();
+        if (name.length === 0) {
+          // The host would answer exactly this; refusing here keeps a known
+          // answer from being turned into a round trip. The refusal stays **in
+          // the dialog** (review R3): the editor's own error line, never the
+          // page notice, which would sit behind the overlay.
+          setPresetStatus({ kind: 'error', error: { code: 'invalid-name' } });
+          return;
+        }
+        setPresetStatus({ kind: 'saving', error: null });
+        setBusy(true);
+        const body = { name: presetDraft.name, action: presetDraft.action, text: presetDraft.text };
+        // An `id` is what makes this an edit rather than an insert; without one
+        // the host mints the id (§20.3).
+        if (presetDraft.id !== null) body.id = presetDraft.id;
+        const result = await requestJson(PRESETS_PATH, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        setBusy(false);
+        if (!result.ok) {
+          // A refused save leaves the dialog **open** with the reason on its own
+          // line: closing it would throw the draft away and hide why.
+          setPresetStatus({ kind: 'error', error: result.error });
+          return;
+        }
+        const preset = result.payload && result.payload.preset ? result.payload.preset : null;
+        // Keep the written entry as the editor's draft (so a re-open starts from
+        // what the library now holds), and close the dialog: the save is done,
+        // and the refreshed list is what the reader came back for.
+        if (preset !== null) {
+          setPresetDraft({
+            id: preset.id,
+            name: typeof preset.name === 'string' ? preset.name : '',
+            action: preset.action === 'append' ? 'append' : 'replace',
+            text: typeof preset.text === 'string' ? preset.text : '',
+          });
+        }
+        setPresetStatus({ kind: 'saved', error: null });
+        setPresetDialog(null);
+        setNotice({ tone: 'success', text: t('presetSavedNotice') });
+        setReload((value) => value + 1);
+      };
+
+      const deletePreset = async (id) => {
+        setPresetStatus({ kind: 'saving', error: null });
+        setBusy(true);
+        const result = await requestJson(`${PRESETS_PATH}?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+        setBusy(false);
+        if (!result.ok) {
+          setPresetStatus({ kind: 'error', error: result.error });
+          setNotice({ tone: 'error', text: errorText(t, result.error) });
+          return;
+        }
+        // The editor must not keep pointing at an entry that is gone: it would
+        // send its id on the next save and be answered `404 preset-not-found`.
+        // An open dialog on that entry closes with it (review R3): its subject
+        // no longer exists. (Checked before the draft is cleared, so the editor
+        // dialog is recognised by the id it was opened on.)
+        if (presetDialog !== null && (presetDialog.kind === 'apply' ? presetDialog.presetId === id : presetDraft.id === id)) {
+          setPresetDialog(null);
+        }
+        if (presetDraft.id === id) setPresetDraft({ id: null, name: '', action: 'replace', text: '' });
+        setPresetStatus({ kind: 'saved', error: null });
+        const orphaned = result.payload && typeof result.payload.orphaned === 'number' ? result.payload.orphaned : 0;
+        setNotice({
+          tone: 'success',
+          text: fmt(t(orphaned > 0 ? 'presetDeletedOrphanNotice' : 'presetDeletedNotice'), { count: orphaned }),
+        });
+        setReload((value) => value + 1);
+      };
+
+      const applyPreset = async (presetId, session) => {
+        if (typeof presetId !== 'string' || presetId.length === 0) return;
+        if (typeof session !== 'string' || session.length === 0) {
+          // Review R3: the refusal is rendered **inside the apply dialog**, which
+          // is where the reader is looking — a page notice would sit behind the
+          // scrim and read as "nothing happened".
+          setPresetStatus({ kind: 'error', error: { code: 'workspace-unresolved' } });
+          return;
+        }
+        setPresetStatus({ kind: 'saving', error: null });
+        setBusy(true);
+        const result = await requestJson(PRESETS_APPLY_PATH, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ presetId, session }),
+        });
+        setBusy(false);
+        if (!result.ok) {
+          setPresetStatus({ kind: 'error', error: result.error });
+          return;
+        }
+        setPresetStatus({ kind: 'saved', error: null });
+        // Revision 39: an application the layer already carried wrote nothing, so
+        // it must not read as an ordinary「已应用」— the page says what really
+        // happened.
+        setNotice({
+          tone: 'success',
+          text: t(result.payload.alreadyApplied === true ? 'presetAlreadyAppliedNotice' : 'presetAppliedNotice'),
+        });
+        setReload((value) => value + 1);
+      };
+
+      const unapplyPreset = async (session, presetId) => {
+        if (typeof session !== 'string' || session.length === 0) {
+          setPresetStatus({ kind: 'error', error: { code: 'workspace-unresolved' } });
+          return;
+        }
+        // Revision 41: cancelling names the preset to take off the stack — a
+        // workspace may hold several, and「取消应用」is per application now.
+        if (typeof presetId !== 'string' || presetId.length === 0) {
+          setPresetStatus({ kind: 'error', error: { code: 'missing-preset-id' } });
+          return;
+        }
+        setPresetStatus({ kind: 'saving', error: null });
+        setBusy(true);
+        const result = await requestJson(PRESETS_UNAPPLY_PATH, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ session, presetId }),
+        });
+        setBusy(false);
+        if (!result.ok) {
+          setPresetStatus({ kind: 'error', error: result.error });
+          return;
+        }
+        setPresetStatus({ kind: 'saved', error: null });
+        setNotice({ tone: 'success', text: t('presetUnappliedNotice') });
+        setReload((value) => value + 1);
+      };
+
+      /**
+       * g-060: the workspaces the two layer actions can name.
+       *
+       * The host has no workspace-list route, so the picker offers what this page
+       * already holds: one row per workspace from the workspace seat, each
+       * carrying its first session id — the identity `apply`/`unapply` need to
+       * resolve a root (`CONTRACT.md` §4.2). A profile without that seat degrades
+       * to the session list, exactly as the version history's scope picker does
+       * (g-038), and a row whose root is unknown simply states no applied state
+       * rather than guessing one.
+       */
+      const presetWorkspaces = workspaceRows(wsSeat, seat, { withRoot: true });
+      /**
+       * g-060 (review R1, re-pointed by R3): does the editor hold an **unsaved**
+       * change?
+       *
+       * `POST /presets/apply` names a preset by **id** and the host reads that
+       * preset out of the library, so an unsaved edit can never be what a layer
+       * write stores — the apply dialog says so in words, and the editor dialog
+       * never lets the draft disappear silently.
+       *
+       * `presetDirty` covers the *stored* case (the draft names an entry and
+       * differs from it, or names one the library no longer has — a `404` this
+       * page must not dress up as a save); `presetDraftDirty` is the wider
+       * question the **close** control asks, and it also covers a brand-new
+       * draft with anything typed into it, which has no stored counterpart to
+       * compare against.
+       * @returns whether the editor differs from the stored preset it names.
+       */
+      const presetSavedEntry = presetDraft.id === null
+        ? null
+        : (presets.data && Array.isArray(presets.data.presets) ? presets.data.presets : [])
+          .find((entry) => entry.id === presetDraft.id) ?? null;
+      const presetDirty = presetDraft.id !== null
+        && (presetSavedEntry === null
+          || presetSavedEntry.name !== presetDraft.name
+          || (presetSavedEntry.action === 'append' ? 'append' : RESERVED_SECTION_DEFAULT_MODE) !== presetDraft.action
+          || (typeof presetSavedEntry.text === 'string' ? presetSavedEntry.text : '') !== presetDraft.text);
+      /** Whether closing the editor dialog would throw work away. */
+      const presetDraftDirty = presetDraft.id === null
+        ? presetDraft.name.trim().length > 0 || presetDraft.text.length > 0
+        : presetDirty;
+
       const actions = {
         refresh: () => setReload((value) => value + 1),
         // The「更改」switch: the same button opens and shuts the picker, and
@@ -8872,6 +10984,104 @@ window.__ModuleLoader__.load({
         dropForeignDraft,
         toggleMineInterpolate,
         setMineInterpolateState,
+        // g-062: the assembly-status notice's own switch (page-only feature).
+        toggleAssemblyNotice,
+        // g-060:「预设」— the catalogue editor, the two layer actions, and the
+        // workspace they name. Everything here is view state until a click on
+        // 「保存」/「应用」/「取消应用」, which are the only three controls that write.
+        setPresetName: (event) => {
+          const value = event && event.target ? String(event.target.value) : '';
+          setPresetDraft((current) => ({ ...current, name: value }));
+          setPresetStatus({ kind: 'idle', error: null });
+        },
+        setPresetText: (event) => {
+          const value = event && event.target ? String(event.target.value) : '';
+          setPresetDraft((current) => ({ ...current, text: value }));
+          setPresetStatus({ kind: 'idle', error: null });
+        },
+        setPresetAction: (value) => {
+          setPresetDraft((current) => ({
+            ...current,
+            action: value === 'append' ? 'append' : RESERVED_SECTION_DEFAULT_MODE,
+          }));
+          setPresetStatus({ kind: 'idle', error: null });
+        },
+        // Review R3: 「新建」/「编辑」 both **open the editor dialog** and put the
+        // draft behind it. Nothing is written until a click on 「保存」, and the
+        // dialog is the only surface those fields exist on.
+        newPreset: () => {
+          setPresetDraft({ id: null, name: '', action: RESERVED_SECTION_DEFAULT_MODE, text: '' });
+          setPresetStatus({ kind: 'idle', error: null });
+          setPresetDialog({ kind: 'edit' });
+        },
+        editPreset: (id) => {
+          const list = presets.data && Array.isArray(presets.data.presets) ? presets.data.presets : [];
+          const preset = list.find((entry) => entry.id === id) ?? null;
+          if (preset === null) return;
+          setPresetDraft({
+            id: preset.id,
+            name: typeof preset.name === 'string' ? preset.name : '',
+            action: preset.action === 'append' ? 'append' : RESERVED_SECTION_DEFAULT_MODE,
+            text: typeof preset.text === 'string' ? preset.text : '',
+          });
+          setPresetStatus({ kind: 'idle', error: null });
+          setPresetDialog({ kind: 'edit' });
+        },
+        // 「从当前文本另存为预设」: it starts a **new** preset from the text the
+        // 「我的 Prompt」 panel is showing and writes nothing — the name and the
+        // save are still the user's to give (§20.9).
+        saveAsCurrentPreset: () => {
+          setPresetDraft({ id: null, name: '', action: RESERVED_SECTION_DEFAULT_MODE, text: mineText });
+          setPresetStatus({ kind: 'idle', error: null });
+          setPresetDialog({ kind: 'edit' });
+        },
+        // The apply dialog is opened **from a list row**, so the preset it acts
+        // on is the row's own id — never "whatever the editor happens to hold"
+        // (review R3), which is also why an unsaved draft cannot be applied by
+        // accident: the dialog names a stored preset and says so in words.
+        requestPresetApplyTo: (id) => {
+          if (typeof id !== 'string' || id.length === 0) return;
+          setPresetStatus({ kind: 'idle', error: null });
+          setPresetDialog({ kind: 'apply', presetId: id });
+        },
+        closePresetDialog: () => {
+          setPresetDialog(null);
+          setPresetStatus({ kind: 'idle', error: null });
+        },
+        // Review R4: the close control of the **editor** asks first when the
+        // draft is dirty — through the page's one confirmation overlay, not a
+        // bespoke dialog — so throwing typing away is an answered question.
+        // Everything else (a clean draft, the apply dialog) closes directly: a
+        // confirmation for a no-op is noise.
+        requestPresetDialogClose: () => {
+          if (presetDialog !== null && presetDialog.kind === 'edit' && presetDraftDirty === true) {
+            setConfirm({ kind: 'preset-discard' });
+            return;
+          }
+          setPresetDialog(null);
+          setPresetStatus({ kind: 'idle', error: null });
+        },
+        savePreset: () => {
+          void savePresetDraft();
+        },
+        // Review R4: the row's「删除」only *asks*. The DELETE happens through
+        // `confirmYes`, like every other destructive act on this page.
+        requestPresetDelete: (id) => {
+          const list = presets.data && Array.isArray(presets.data.presets) ? presets.data.presets : [];
+          const preset = list.find((entry) => entry.id === id) ?? null;
+          if (preset === null) return;
+          setConfirm({ kind: 'preset-delete', id, name: preset.name });
+        },
+        deletePreset: (id) => {
+          void deletePreset(id);
+        },
+        applyPreset: (presetId, session) => {
+          void applyPreset(presetId, session);
+        },
+        unapplyPreset: (session, presetId) => {
+          void unapplyPreset(session, presetId);
+        },
+        loadPresets: () => setReload((value) => value + 1),
         // g-030: the update banner's dismissal and the switch in 「高级」.
         dismissUpdate: () => setUpdate((current) => ({ ...current, dismissed: true })),
         toggleUpdate,
@@ -9090,6 +11300,18 @@ window.__ModuleLoader__.load({
             await confirmUpdateApply();
             return;
           }
+          // g-060 review R4: the two preset confirmations. Both do exactly what
+          // their button said and nothing else — one DELETE, or one closed dialog
+          // with the draft dropped.
+          if (pending.kind === 'preset-delete') {
+            await deletePreset(pending.id);
+            return;
+          }
+          if (pending.kind === 'preset-discard') {
+            setPresetDialog(null);
+            setPresetStatus({ kind: 'idle', error: null });
+            return;
+          }
           await applyImport();
         },
         exportNow,
@@ -9156,6 +11378,28 @@ window.__ModuleLoader__.load({
         mineLayerDisabled,
         mineFrozenReason,
         mineFrozenCertain,
+        // g-062: the assembly-status observation the「我的 Prompt」block renders —
+        // the Host's answer verbatim, the switch as the Host reported it, and the
+        // switch's own request state.
+        assembly,
+        assemblyEnabled: assembly.enabled,
+        assemblyPhase: assembly.phase,
+        assemblyError: assembly.error,
+        assemblyStatus: assembly.status,
+        // g-060: the preset tab's state slots, the open dialog, the workspace
+        // list the apply dialog renders, and the text「从当前文本另存为预设」reads.
+        presets,
+        presetDraft,
+        presetStatus,
+        // `null` | `{kind:'edit'}` | `{kind:'apply', presetId}` (review R3).
+        presetDialog,
+        presetWorkspaces,
+        // g-060 (review R1, re-pointed by R3): the draft differs from the stored
+        // preset it names, and whether closing the editor would discard work.
+        // The second is what the close control reads (`presetDialogDiscard`).
+        presetDirty,
+        presetDraftDirty,
+        presetCurrentText: mineText === null || mineText === undefined ? '' : String(mineText),
         advancedLayer,
         view,
         search,
@@ -9208,7 +11452,28 @@ window.__ModuleLoader__.load({
       };
 
       try {
-        return renderSection(t, model, actions);
+        const tree = renderSection(t, model, actions);
+        // Only the primitives branch needs a boundary: the hand-built atoms are
+        // this page's own code, and a render-time throw from them is a bug the
+        // outer `catch` (and the failure card) already answers. The Host's atoms
+        // are the ones this page cannot see through (g-063 E1).
+        if (!primitivesActive()) return tree;
+        return h(
+          PrimitivesErrorBoundary,
+          {
+            // Rebuilds the same page with the hand-built atoms — the same call
+            // the try above makes, so the degraded page is the real page, not a
+            // placeholder. Its own throw still lands on the failure card.
+            renderFallback: () => {
+              try {
+                return renderSection(t, model, actions);
+              } catch (error) {
+                return renderFailureCard(t, error);
+              }
+            },
+          },
+          tree,
+        );
       } catch (error) {
         return renderFailureCard(t, error);
       }
@@ -9231,7 +11496,7 @@ window.__ModuleLoader__.load({
         'div',
         {
           'data-plugin': 'dsh-prompt-setting',
-          'data-renderer': RENDERER,
+          'data-renderer': activeRenderer(),
           'data-render-state': 'error',
           // The failure card cannot ask the host anything (that is the point of
           // it), but it can still say which bundle it is: the self-digest needs
@@ -9254,12 +11519,78 @@ window.__ModuleLoader__.load({
           { style: { margin: 0, fontSize: 18, fontWeight: 600, lineHeight: '26px' } },
           safeT(t, 'renderErrorTitle', 'Prompt settings — render failure'),
         ),
-        h(
-          'p',
-          { style: { margin: 0, fontSize: 13, color: token.stateError, wordBreak: 'break-word' } },
-          `${safeT(t, 'renderErrorLabel', 'Error')}: ${message}`,
-        ),
+        errorLine({
+          tag: 'p',
+          fontSize: 13,
+          margin: 0,
+          wrap: true,
+          text: `${safeT(t, 'renderErrorLabel', 'Error')}: ${message}`,
+        }),
       );
+    }
+
+    /**
+     * The base class the boundary extends.
+     *
+     * `React.Component` on every React this page has ever seen; the fallback
+     * keeps a Host with an exotic React from breaking the **whole bundle** at
+     * load time (`class X extends undefined` throws before a single render).
+     */
+    const ReactComponentBase =
+      React !== null && React !== undefined && typeof React.Component === 'function'
+        ? React.Component
+        : class {
+            constructor(props) {
+              this.props = props || {};
+              this.state = {};
+            }
+          };
+
+    /**
+     * The boundary that keeps a Host atom's **render-time** failure from taking
+     * the settings panel down (g-063, review E1).
+     *
+     * Activating the primitives branch made this path reachable for the first
+     * time: the probe's `try/catch` only guards `require` and *building*
+     * elements (`h(Button, …)` does not call the component), while React calls
+     * the Host's atoms later, during render. Before g-063 the page never got
+     * there, so a throwing atom could only be a theory; now it is one render
+     * away, and a section that throws with no boundary around it would blank
+     * the panel.
+     *
+     * The recovery is **"rebuild this page with the hand-built atoms"**, not
+     * "show an error": `renderFallback` is called on every render once the flip
+     * has happened, and the flip (`capturePrimitivesRenderFailure`) happens in
+     * `getDerivedStateFromError` — i.e. **before** React re-renders the
+     * boundary — so the tree that replaces the broken one can no longer contain
+     * the atom that threw, in this render or any later one.
+     */
+    class PrimitivesErrorBoundary extends ReactComponentBase {
+      constructor(props) {
+        super(props);
+        this.state = { failed: false };
+      }
+      /**
+       * One-way, and deliberately side-effecting: React calls this before the
+       * re-render, and the module-wide flip is what makes that re-render
+       * hand-built. `componentDidCatch` repeats it idempotently for the case
+       * where a Host's React calls only the commit-phase hook.
+       * @param error - the thrown value.
+       * @returns the next state.
+       */
+      static getDerivedStateFromError(error) {
+        capturePrimitivesRenderFailure(error);
+        return { failed: true };
+      }
+      /** The commit-phase half of the same record. */
+      componentDidCatch(error) {
+        capturePrimitivesRenderFailure(error);
+      }
+      /** @returns the rebuilt (hand-built) page, or the tree that is still fine. */
+      render() {
+        if (this.state.failed) return this.props.renderFallback();
+        return this.props.children;
+      }
     }
 
     return {
@@ -9271,7 +11602,43 @@ window.__ModuleLoader__.load({
        * path) that a rendered tree cannot express. The loader only ever reads
        * `inject` and `apply`; nothing in the page reads this.
        */
-      __internals: { historyPanelHeight, shared: CHUNK_FACILITIES },
+      __internals: {
+        historyPanelHeight,
+        workspaceRows,
+        shared: CHUNK_FACILITIES,
+        /**
+         * g-062 (Revision 46): the toaster's IO-free half, exported for the same
+         * reason as the two above — "which notices are new", "what does the
+         * stored cursor say" and "what is the sentence" are policies a rendered
+         * tree cannot express. Nothing in the page reads this.
+         */
+        assemblyNotice: {
+          HAS_TOAST,
+          parseToastCursor: parseAssemblyToastCursor,
+          serializeToastCursor: serializeAssemblyToastCursor,
+          planToasts: planAssemblyToasts,
+          composeToast: composeAssemblyToastText,
+          // Review C4: what really happened to the overlay registration —
+          // `absent` (no Toast primitive), `pending` (slot never declared),
+          // `ready` (registered) or `failed` (declared and refused).
+          overlaySeat: () => overlaySeat.state,
+          // g-062 fix round / g-063: the capability probe's own facts — which
+          // namespace the toast decision used (`module` / `default` / `none`),
+          // the branch really in use and, since g-063 E1, the render-time failure
+          // record. The two always-on diagnostic rows that used to print the
+          // `require` details and the `Button`/`Toast` `typeof` table were
+          // removed in g-063's wrap-up, and their fields with them; a rendered
+          // tree still asserts the surviving rows, and these let a unit case
+          // assert the decisions behind them.
+          toastNamespace: () => toastNamespaceSource,
+          primitivesProbe: () => ({
+            ...primitivesProbe,
+            renderer: activeRenderer(),
+            renderFailed: primitivesRenderFailed,
+            renderFailure: primitivesRenderFailure,
+          }),
+        },
+      },
       apply(ctx) {
         // Every locale call is guarded. `ctx.locale.subscribe` and
         // `getSnapshot().revision` are the one unproven part of the 0.1.7-rc.2
@@ -9327,6 +11694,52 @@ window.__ModuleLoader__.load({
             PromptSettingSection,
           ),
         );
+
+        // g-062 (Revision 46): the proactive half. `shell.overlay` is the frame's
+        // own floating layer (a **list** slot: an id is added beside the shipped
+        // entries, never over them, and it stays click-through until an entry
+        // opts into pointer events — which the official Toast does only for its
+        // action text, so nothing here can block the app underneath).
+        //
+        // Two guards, both deliberate:
+        //   - no `Toast` primitive ⇒ nothing is registered at all. A component
+        //     that cannot draw is worse than no component: it would be a
+        //     registered overlay that silently does nothing, and the settings
+        //     block already states this degradation on the page;
+        //   - `slots.inject` runs the callback only once the Host has declared
+        //     the slot, and a Host that never declares it never calls back — so a
+        //     pre-`shell.overlay` Host loses the toast, not the plugin.
+        //
+        // Review C4: the **seat** is what the page reports on, so the two
+        // outcomes (registered / not) are told apart by a fact rather than by
+        // the capability probe. `slots.inject` runs synchronously for a slot the
+        // Host already declared, so the page's first render already knows.
+        if (HAS_TOAST) {
+          ctx.slots.inject('shell.overlay', () => {
+            try {
+              const disposer = ctx.slots.register(
+                {
+                  name: 'shell.overlay',
+                  id: 'prompt-setting-toast',
+                  // After the shell's own chrome, before nothing in particular:
+                  // toasts only order among themselves, and 60 keeps this entry
+                  // from jumping ahead of the shipped ones.
+                  order: 60,
+                  locale: NS,
+                  inject: () => face,
+                },
+                AssemblyToasterRoot,
+              );
+              markOverlaySeat('ready');
+              return disposer;
+            } catch {
+              // A Host that declares the slot and then refuses the registration
+              // gets the same honest degradation as one that never declared it.
+              markOverlaySeat('failed');
+              return undefined;
+            }
+          });
+        }
       },
     };
     }

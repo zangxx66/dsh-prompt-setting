@@ -26,7 +26,7 @@
 
 ## 功能 / Features
 
-设置页里会多出一栏 **「Prompt settings」**（`id: prompt-setting`），五个一级 tab：
+设置页里会多出一栏 **「Prompt settings」**（`id: prompt-setting`），六个一级 tab：
 
 - **我的 Prompt / My Prompt** —— 唯一写入口：写下你自己的系统级指令（选层 → 编辑 → 保存），
   一键恢复默认。这段文本**排在所有内置段之后**。上方的「查看范围」是这一块的头部：它决定保存落到
@@ -35,6 +35,32 @@
   > one-click restore. The text is **placed after every built-in section**. The "View scope" row above
   > the tabs is this block's header: it decides which layer a save lands in, and it is the only place the
   > scope is changed (the panel repeats the current target as a read-only line).
+  >
+  > 面板顶部是**「装配状态提示」**（g-062）：新会话的第一次装配，以及保存 Prompt 之后的下一个 run，
+  > 会**主动弹 toast** 给出两层结论——装配层（本次 assembly 是否读到你的 Prompt）与送达层（该文本是否进入
+  > 本次请求的 messages）；同一条结论仍保留在设置页的提示块里，供回查，开关也在那里。
+  > 它不进入模型上下文、不占 token、不改变模型收到的 prompt；宿主未提供 Toast 组件、或未声明浮层插槽时，
+  > 不会注册任何浮层，设置页会说明这一降级（`data-assembly-toast-seat`），功能其余部分不受影响。
+  > 口径与边界见 `CONTRACT.md` §21（例如：HTTP 是否真的发出在插件侧不可观测，本提示不作此声称；
+  > 后台标签页的计时器被浏览器节流，因此提示在回到页面时可见，不是实时通道）。
+  > The **assembly-status notice** (g-062) now **raises a toast** at each key node — the first assembly of a
+  > new conversation, and the next run after a prompt is saved — reporting two verdicts: the assembly layer
+  > (did this step's assembly read your prompt) and the delivery layer (did that text enter this request's
+  > messages). The same verdicts stay in the settings-page block, which is also where the switch lives.
+  > It never enters the model context, costs no tokens and changes nothing the model receives; a host that
+  > provides neither the `Toast` primitive nor the `shell.overlay` slot gets no overlay at all, and the page
+  > states which (its `data-assembly-toast-seat`).
+  > The exact口径 and its limits are in `CONTRACT.md` §21 (for one: whether the HTTP request was actually
+  > sent is not observable from a plugin, and this notice does not claim it; background-tab timers are
+  > throttled by the browser, so a toast is seen when you return to the page — it is not real-time).
+
+- **我的预设 / My presets** —— 你的常用文本库：把一段文本存成预设（新建 / 编辑 / 删除），再把它**应用到某个
+  工作区**（写入该工作区的保留段），也可以**取消应用**——该工作区会精确还原为应用前的内容。删除一个
+  已被应用的预设不会改动任何工作区，只会把那条记录标成「来源已删除」。
+  > Your catalogue of reusable texts: save a text as a preset (create / edit / delete), then **apply** it to
+  > a workspace (it is written into that workspace layer's reserved section) or **cancel** the application,
+  > which restores exactly what that workspace held before. Deleting an applied preset rewrites no
+  > workspace; the record is simply marked "source deleted".
 
 - **提示词总览 / Prompt overview** —— 纯只读：分段列表（状态标记 / 搜索 / 筛选 / 复制）、完整全文，
   以及 `base ↔ effective` 对比，一眼看出你的改动究竟改变了什么。
@@ -231,12 +257,12 @@ zstd -dc "$F" | jq -r 'select(.type=="system/message") | .data.message.content[0
 
 ## 安装 / Install
 
-**首选从 npm 装**（本包已发布，npm 上的 `latest` 为 `0.1.5`；本仓库为 `0.2.1`，发布后两者一致）。需要 DSH
+**首选从 npm 装**（本包已发布，npm 上的 `latest` 为 `0.1.5`；本仓库为 `0.2.2`，发布后两者一致）。需要 DSH
 `>= 0.1.7-rc.2 < 0.2.0 || >= 0.2.0-0 < 0.2.1-0 || >= 0.2.1-0 < 0.2.2-0`：`0.1.7-rc.2` 起的 0.1.x、
 `0.2.0` 与 `0.2.1` 的全部预发布（`-0` / `alpha` / `beta` / `rc.N`）与 **这两个 minor 的正式版**都在范围内；
 `0.2.2-0` 及以后出界。
 
-> **Install from npm** — the primary route (this package is published; npm `latest` is `0.1.5`, this repository is `0.2.1`). Requires
+> **Install from npm** — the primary route (this package is published; npm `latest` is `0.1.5`, this repository is `0.2.2`). Requires
 > DSH `>= 0.1.7-rc.2 < 0.2.0 || >= 0.2.0-0 < 0.2.1-0 || >= 0.2.1-0 < 0.2.2-0`: every 0.1.x from `0.1.7-rc.2`
 > on, every `0.2.0` and `0.2.1` prerelease (`alpha`, `beta`, `rc.N`, and the synthetic `-0` floor) and the
 > **`0.2.0` and `0.2.1` releases themselves** are in range; `0.2.2-0` and later are out.

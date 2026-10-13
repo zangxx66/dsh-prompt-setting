@@ -65,7 +65,7 @@ brief 建议「声明宿主行与客户端行（行 `id` 建议 `prompt-setting`
 
 | 位置 | 内容 |
 | --- | --- |
-| `client.js` 顶部 `#region primitives probe` | `try { primitivesModule = require('@deepseek-ai/dsh-client-ui-primitives') } catch (error) { primitivesFailure = error.message }`；随后判定 `primitivesUsable = typeof primitives.Button === 'function'` |
+| `client.js` 顶部 `#region primitives probe` | `try { primitivesModule = require('@deepseek-ai/dsh-client-ui-primitives') } catch (error) { primitivesFailure = error.message }`；随后判定 `primitivesUsable = isPrimitivesNamespace(primitives)`。**g-063 起**该判定走 `isComponentExport`：函数组件**或** React 对象组件（`forwardRef` 的 `{$$typeof, render}` / `memo` 的 `{$$typeof, type}`，字段必需存在且合法），不再只看 `typeof === 'function'` —— 详见 §4.2 |
 | `client.js` `RENDERER` | `primitivesUsable ? 'primitives' : 'fallback'`，模块实例内**固定不变** |
 | `client.js` `UI`（`#region fallback atoms` 下方） | `RENDERER === 'primitives'` → 用 `primitives.Button/Input/Tag`；否则用手绘 `FxButton/FxInput/FxTag`（纯 `React.createElement` + `--dsw-alias-*` 变量） |
 | `client.js` 页面末尾 | `<div data-renderer="primitives|fallback">`；页脚同时有一行人类可读的 `渲染分支: ...` |
@@ -104,6 +104,176 @@ brief 建议「声明宿主行与客户端行（行 `id` 建议 `prompt-setting`
 
 **离线已验证的部分**（`test/client.test.mjs`，在 `node:vm` 里跑真实 `client.js`）：
 `require` 抛错 → 渲染出 `data-renderer="fallback"` 且页面含失败原因；`require` 成功 → `data-renderer="primitives"`。
+
+### 4.1 g-062 修复轮：互操作包装、诊断行与「渲染分支不许动」的边界
+
+**触发**：真机重启后设置页显示 `渲染分支: fallback（自绘 + 主题变量）`，却**没有**「primitives 不可用原因」
+那一行。这一对读数只说明「`require` 没抛错、但取不到 `Button`」；它同时兼容三种世界——
+① 抛错但错误原文为空；② 返回了非命名空间的值（`undefined` / 空对象）；③ 导出其实挂在一层
+`.default` 包装下（官方客户端 bundle 的 `__toESM(mod, 1)` 形态，先例
+`dshmarket/client/client.js:30`）。本轮不再靠推断：**把三种世界渲染成三行不同的读数**。
+
+**平台 seed 的实测形态（0.2.1-alpha.2，只读核对）**：`@deepseek-ai/dsh-web-frontend` 的
+`dist/assets/index-*.js` 里 `staticModules` 由 `hM()` 给出，`"@deepseek-ai/dsh-client-ui-primitives"`
+绑定的对象是 `Object.freeze(Object.defineProperty({__proto__:null, Button:…, Toast:…}, …))` ——
+**平铺命名空间，`Button` 与 `Toast` 都在顶层**（`dsh-client-modules/lib/client.js:551` 把它原样放进 seed Map）。
+所以在这一版宿主上，「平铺」是预期形态；`{default: ns}` 是**旧版/编译形态**的兜底，不是当前版本的形态。
+
+**规则（`client.js`）**：
+
+| 常量 | 判据 | 是否允许解包 |
+| --- | --- | --- |
+| `primitives` / `primitivesUsable` / `RENDERER` | 原样读 `require` 的返回值，`typeof primitives.Button === 'function'` | **否** —— 设置页渲染分支必须与修复前逐字一致 |
+| `toastPrimitivesModule` | `module.default` 是对象时取它，否则 `undefined` | —— |
+| `toastPrimitives` / `HAS_TOAST` | 先在解包候选上找 `Toast`，再回落到原模块；两处都要 `typeof === 'function'` | 是（**只**服务 toast） |
+| `toastNamespaceSource` | `module` / `default` / `none`，即 toast 决策真正用了哪个命名空间 | —— |
+
+**页面读数（`data-region="renderer-info"` 内部，g-015 已把它放在「高级」的完整状态块里）**：
+
+- 原有第一行 `渲染分支: …` 与可选 `primitives 不可用原因: …` 都**原样保留**；
+- 新增 `data-primitives-detail="true"`：`require 抛错=是/否｜错误原文=…｜返回值类型=…｜是对象=…｜键名前缀=[…]`（键名最多 8 个）；
+- 新增 `data-primitives-members="true"`：`解包前 Button=…｜解包后 Button=…｜解包前 Toast=…｜解包后 Toast=…`；
+- 新增 `data-primitives-toast-source="module|default|none"`：toast 决策用了哪个命名空间。
+- **g-063 收尾（2026-10-13）：前两条（`data-primitives-detail` / `data-primitives-members`，含挂在后者上的
+  `data-primitives-button-component`）已按负责人要求移除**，连同只服务它们的文案键（`primitivesDetail*` /
+  `primitivesMembers*`）与 `primitivesProbe` 字段（`threw`/`error`/`moduleType`/`isObject`/`keys`/`hasDefault`/
+  `defaultKeys`/`buttonBefore`/`buttonAfter`/`toastBefore`/`toastAfter`/`buttonComponent`，以及
+  `namespaceKeyPrefix`/`namespaceMemberType` 两个辅助函数）。**原因：诊断使命完成** —— 它们是为在真机上定位
+  `forwardRef` 缺陷而加的常驻读数，缺陷已定位并修复，常驻诊断不再需要。**保留**：`渲染分支` 行、
+  `data-primitives-toast-source` 行（其数据源 `primitivesProbe.toastSource` 保留），以及两条**仅异常时出现**
+  的原因行（`data-primitives-failure` = `require` 失败、`data-primitives-render-error` = 错误边界捕获渲染期抛错）。
+  真机核对口径从此是 `data-renderer` / `渲染分支` / `data-primitives-toast-source`。
+
+**真机预期（重要）**：若宿主确实平铺导出，则第一行应是 `渲染分支: primitives（官方基础件）`
+（`RENDERER` 由平铺的 `Button` 决定），而 `data-primitives-toast-source` 应为 `module`，toast 注册
+（`data-assembly-toast-seat="ready"`）。若仍是 `fallback`，异常原因行（`primitives 不可用原因` /
+渲染期失败原因）会直接指出是抛错还是渲染期炸掉——**不需要再猜**。
+
+**未确证**：真机（经 `dsh web` 重启后的浏览器）上 `require` 究竟返回哪一种形态，插件侧无法离线断定；
+`sandbox` 里的三种形态都是**被断言过的**分支，不是对真机的断言。
+
+### 4.2 g-063：`forwardRef` 组件的探测 ——「自诞生即 fallback」的根因（Revision 49）
+
+**触发**：负责人重启后从 `data-region="renderer-info"` 读到
+
+```
+primitives 键 typeof: 解包前 Button=object｜解包后 Button=object｜
+  解包前 Toast=function｜解包后 Toast=function
+toast 命名空间: module（未解包）
+渲染分支: fallback（自绘 + 主题变量）
+```
+
+`require` 成功、模块是对象、键齐全、`Toast` 是函数，唯独 `Button` 的 `typeof` 是 `object` —— 这正是
+`React.forwardRef(...)` 的产物形态（`{ $$typeof: Symbol.for('react.forward_ref'), render }`）。
+旧判定 `typeof primitives.Button === 'function'` 对 forwardRef 组件**恒为 false**，所以 `RENDERER`
+自本插件诞生起一直是 `fallback`：设置页从未真正跑过 primitives 渲染分支（自绘完整，故长期未暴露）。
+g-062 用「渲染分支与 toast 能力解耦」绕开了连带问题，本节修的是**根**。
+
+**宿主形态（0.2.1-alpha.2，只读核对 `lib/index.js`）**：`Button`（3235 行）与 `Input`（3548 行）是
+`forwardRef`；`Toast` / `Tag` / `SegmentedTabs` / `DiffBlock` 与三个 sidebar 图标都是函数组件。也就是说
+**在本页用到的原子里**，只有 `Button` 与 `Input` 会被旧判定误杀（该库别处还有 `forwardRef` 导出，例如
+`MenuSurface`，本页不渲染它们），而 `Button` 恰好是 `RENDERER` 的钥匙。
+
+**规则（`client.js`）**：
+
+| 位置 | 判据（g-063 起） |
+| --- | --- |
+| `isComponentExport(value)` | `typeof value === 'function'` → 是；否则须是对象、`$$typeof` 为已知 brand、且该 brand 的结构字段合法（`render` 是函数 / `type` 本身是组件）。未知 brand、字段缺失或 getter 抛错 → **否** |
+| brand 来源 | 优先从本宿主自己的 `React.forwardRef` / `React.memo` 产物读 `$$typeof`（不重述 React 的字符串）；宿主 React 没有该工厂时回落 `Symbol.for('react.forward_ref' \| 'react.memo')`（React 的全局注册表拼写，跨 realm / 跨 React 副本一致） |
+| `isPrimitivesNamespace` / `RENDERER` | `primitives.Button` 走上面这条判据；仍**只读 `require` 的原始返回值**，不解包 |
+| `iconSource()` / `diffBlockUsable()` / `UI` | 一律问 `primitivesActive() && hasComponentExport(...)`（同判据 + 绝不抛），且**每次渲染求值**：渲染期失败后必须立刻切回自绘 |
+| `tabs()` 的 `SegmentedTabs` | **有意豁免**（真机第三轮定案）：不使用官方 `SegmentedTabs`，始终自绘 —— 见下方「tab 一处为何不用官方控件」 |
+| `toastPrimitives` / `HAS_TOAST` | 同判据，解包顺序不变（先 `default` 候选，再原模块） |
+| `AssemblyToaster` 的**渲染守门** | **同判据**（`hasComponentExport(toastPrimitives, 'Toast')`）**外加 flip 条件** —— 评审 R1：探测说 yes、渲染守门说 no 会让 overlay 注册成功却永远画不出 toast；两侧必须问同一个问题。评审 F1：flip 之后连这道守门都不该有机会跑 |
+| `PrimitivesErrorBoundary`（页面根 + `shell.overlay` 的 toaster 入口） | 评审 E1/F1：见下方「渲染期失败」段 |
+| `writeClipboard` | **保持** `typeof === 'function'`：它是被调用的函数，不是被渲染的组件 |
+| `pickChunkComponent` / `HAS_REACT_LAZY` / `useLayoutEffect` | **保持** `typeof === 'function'`：前者挑本插件自有 chunk 的导出（`HistoryTab` 是 `chunkTab()` 产出的**具名函数**），后两者是 React 自己的工厂/hook，都不是宿主组件 |
+
+**页面读数**：`data-primitives-members` 与它挂的 `data-primitives-button-component` 曾把「`typeof` 观测」与
+「据此做出的判定」并排显示，**已随 g-063 收尾移除**（见 §4.1 的「g-063 收尾」条）。现在的口径是
+`data-renderer="primitives"`（或「高级」里的 `渲染分支: primitives（官方基础件）`）；判定本身
+（`isComponentExport` / `hasComponentExport`）不变，只是不再常驻上屏。
+
+**渲染期失败（评审 E1 / F1）**：探测期的 `try/catch` 只覆盖 `require` 与**建元素**（`h(Button, …)` 不调用组件），
+而 React 是在 render 阶段才调用宿主原子的——这条路径**只有在 primitives 分支被真正激活后才可达**。
+因此页面根外面包了 `PrimitivesErrorBoundary`：
+
+- `getDerivedStateFromError` 里调用 `capturePrimitivesRenderFailure(error)`，把 `primitivesActive()` **单向**翻到 false
+  （之所以放在这里：React 捕获后会**立即**重渲染边界，降级必须在那一刻之前生效，否则重建出来的树仍含抛错的原子；
+  只有 commit 阶段才 flip 的写法**测不过**——测试 harness 的 `componentDidCatch` 已被订正为「commit 之后才调用」，
+  见 `test/client.test.mjs` 的 `renderClassElement`）；
+- 边界随后调用 `renderFallback()` **重建同一页**（用自绘原子，不是占位符、也不是错误文字）；
+- **flip 的粒度是「本模块实例」且永久**：任何一处宿主原子在渲染期抛错，整张设置页（含 `shell.overlay` 的
+  toaster 入口）就此停在自绘分支，直到 bundle 重新加载。toaster 入口在 flip 之后直接 `return null`
+  （**不是**「摘掉边界继续裸渲染宿主 `Toast`」——那正是评审 F1 抓到的二次抛错路径：外壳下一次 commit
+  重渲染该入口时，同一个坏原子会在无边界下再次抛出，把 overlay 子树带走）；`AssemblyToaster` 的守门也带了
+  flip 条件作为第二道；
+- chunk 侧的 `diffBlockUsable()` 是**函数**、每次渲染求值，所以「`DiffBlock` 渲染期抛错」也能落到自绘 diff 上，
+  而不是从 chunk 加载时缓存的 `true` 再次渲染同一个坏原子；
+- 诊断行：`data-renderer` 改为**实际在用的分支**（`activeRenderer()`），`data-region="renderer-info"` 新增
+  `data-primitives-render-failed="true|false"`，失败时另有一行 `data-primitives-render-error="true"` 带错误原文；
+  `primitivesProbe()` 也补了 `renderFailed` / `renderFailure` / 实际 `renderer`。
+
+**真机反馈（2026-10-13，三轮目视；最终定案在第三轮）**
+
+**第一轮**：primitives 分支确实生效，官方按钮/输入框显示正常 —— 即 **官方 CSS 已由宿主页面注入**
+（旧的「CSS 可能未注入」风险就此解除）；但 **tab 文字拥挤、标签折行**。
+
+**根因（第二轮更正；第一轮的诊断是错的，此处如实留档）**：宿主实现（`lib/index.js:3312`）给根元素**内联**了显式列
+`style: { gridTemplateColumns: 'repeat(' + items.length + ', minmax(0, 1fr))' }` —— 列数 = 项数，n 列 n 项必然同处第一行；
+第一轮写下的「列布局由调用方提供 ⇒ grid 退化成单列、每个 tab 独占一行」与宿主实现直接冲突，**已删除**。真正的机制是
+`minmax(0, 1fr)` 的**最小值为 0**：列可以合法地被压到比内容还窄 ⇒ 只要容器宽度 < 标签固有宽度之和，标签就在列内折行。
+
+**宽度链（评审 G3 要求的证据；代码级 + 定量估算，像素值无法离线测得）**：**就 tabs 的祖先链而言**本插件不设宽度 ——
+根 `div` 的样式是 `{display:flex;flex-direction:column;gap:12,maxWidth:860}`（**有上限 860、无 `width`/`min-width:0`**）；
+`div[data-region="tabs"]` 原是无样式块级框；`tabs()` 的 `display:contents` 包装**不生成盒子**。所以官方控件宽度 =
+设置面板内容区宽度（受根容器 `maxWidth:860` 约束），列宽 = 该宽度 ÷ **6**（六个一级 tab）。中文标签
+（「我的 Prompt」约 77px、「提示词总览」/「备份与恢复」各约 70px、其余三个合计约 140px）加每个 tab 左右各 12px padding，
+需要约 **500px**；面板窄于这个数，等分列就落到标签固有宽度以下 ⇒ 折行。旁证：自绘分支用 `flex-wrap`（按钮按内容宽、
+装不下整行换行），同宽度下一直正常 —— 与负责人「只有 tab 这一处不对」一致。
+
+**第二轮修法（已被第三轮否决，留档）**：给官方控件传 `className` 并注入 `.dsh-prompt-setting-tabs{min-width:max-content}`
++ `>button{white-space:nowrap}`，外层加 `overflow-x:auto`。**真机第二轮反馈：两个新毛病** —— ①「备份与恢复」长标签
+不再越界，但**整条 tab 往右偏移、跑出页面**；②除「我的 Prompt」外其他 tab **显得过大**。「过大」有 CSS 层面的依据：
+`max-content` 约束下 n 条 `1fr` 轨道都解析为**最宽那个标签**的宽度 ⇒ 每个 tab 被撑到最宽标签。但「整条跑出页面」
+**只有症状、没有已证实的机制**：这里曾写下「被撑宽的是祖先列（flex 子项 `min-width:auto` 不收缩）」，**该假设经不起
+核对，已撤回** —— 读宿主 `SettingsRoot.module.css` 可知：`settings.section` 是 list 槽、渲染不产生 DOM 包装，
+`.options` 是**块级滚动容器**（`display` 取默认值），所以本插件根是普通流里的块级子节点、`min-width:auto` 对它不适用，
+且同链的 `.content` **本来就带 `min-width: 0`**；按此，溢出应被 `.options` 自己滚掉，而不是撑宽祖先。**结论：症状为真，
+成因未证实**（待真机 DOM 复核）。唯一站得住的那条 CSS 事实是：`min-width:max-content` 下 `1fr` 等分轨道**全部取最宽项**。
+
+**第三轮定案（当前实现）**：`tabs()` **始终自绘**，官方 `SegmentedTabs` 在本页**有意豁免**；注入的样式与那层 `overflow-x`
+全部移除。理由三条：①自绘 `flex-wrap` 布局在本页用了整整一辈子、真机从未出问题，两轮抱怨都出在官方等分列上；
+②官方控件的设计前提是「标签短 + 容器够宽」（inline `repeat(n, minmax(0,1fr))` 等分），与本页 **6 个较长中文标签 + 面板宽度**
+不匹配：压 ⇒ 折行，撑 ⇒ 过大（以及成因未明的溢出），两条路都不好；③这不是放弃官方组件 —— `Button` / `Input` / `Tag` /
+`DiffBlock` / 侧边栏图标 / `Toast` 仍全部走官方，只有 tab 这一处例外。**该结论不依赖那条未证实的机制**：它撤回的是一次
+失败的修法，回到一个从未被抱怨过的布局。
+
+**经验结论（留给将来）**：**等分列的控件假设标签短**；本地化的长标签需要「按内容宽 + 换行」的布局。已否决的方案一并留档：
+`min-width:max-content`（撑宽 ⇒ 过大，溢出路径未明）、只用 `white-space:nowrap`（⇒ 溢出列格/重叠）、沿用官方等分列（⇒ 折行）、
+以及两条在当前宿主下为 no-op 的 `grid-auto-flow`/`grid-auto-columns`（inline 显式列已足、无隐式列、inline 优先级更高）。
+
+**官方先例调研（谁给 SegmentedTabs 传什么 className）**：官方在宿主包里**只有一个调用方**
+（`@deepseek-ai/dsh-client-ui-agent-preset` 的预设引导对话框），写法是
+`className: PresetGuideDialog_module_css_default.guideTabs` —— 传**调用方自己的 CSS module 类**（该包内联 CSS 字符串
+自行注入），其规则仅 `flex:none;margin:0 28px 22px`。即官方形态是「谁调用谁给类」，但**没有可照抄的列布局类**；
+即便照抄，也仍然绕不开「等分列 vs 长标签」这条前提冲突。
+
+**真机预期**：`渲染分支: primitives（官方基础件）`（读数口径即 `data-renderer`）；除 tab 外的控件由官方原子绘制。
+（曾经用于定位缺陷的 `Button=object` 那一行已随 g-063 收尾移除，见 §4.1。）
+**tab 复验清单**：①六个 tab 按内容宽横向排列、装不下时**整行换行**（不是标签内折行）；②标签不折行、不重叠、不越界；
+③整页无横向偏移/溢出；④tab 切换与指示（选中态）正常；⑤其他官方控件维持不变。若宿主原子在渲染期抛错，
+预期读数是 `渲染分支: fallback`＋`data-primitives-render-failed="true"`＋错误原文，而**页面照常可用**（自绘）。
+
+**未确证 / 风险**：① primitives 的 CSS 是否已由宿主页面注入 —— **真机已证伪该风险**；
+①′ 面板内容区的**实际像素宽度**与 tab 自绘后的**真机视觉结果**（是否整行换行、有无越界）只能真机目视，离线无法测得；
+② 本插件传给 `Tag` 的 `title` 在两条分支
+都不生效（`FxTag` 与官方 `Tag` 都只取 `tone`/`children`），属既有行为、非本次回归；③ 评审 R1 的教训：
+同一能力位在**探测侧**与**渲染侧**各有一道判据时，必须一起改——`toastPrimitives` 探测已改而
+`AssemblyToaster` 守门未改，就是「注册成功、永远画不出」。上表即宿主组件判定的**全量清单**（含 `tabs()`
+**有意豁免**官方控件那一行，另有两行记录明确保持 `typeof` 的位置及其依据：`writeClipboard` 一行，
+`pickChunkComponent`/`HAS_REACT_LAZY`/`useLayoutEffect` 一行），新增宿主组件使用点时照表问
+`hasComponentExport`，不再手写 `typeof`。
 
 ## 5. 客户端半的其它决策
 
@@ -844,11 +1014,11 @@ NC-F1 的 5 项变红里，两项在**内核层**、两项在**路由层**、一
 
 | directive 提到 | 落地 | 理由 |
 | --- | --- | --- |
-| `SegmentedTabs` | primitives 分支用官方件；fallback 分支自绘 | fallback 分支必须能在**无 primitives**时工作，且真机判据靠 `data-*`；自绘件把 `data-tab-key/-value` 留在真实 DOM 上，测试与真机都能读 |
+| `SegmentedTabs` | primitives 分支用官方件；fallback 分支自绘（**g-063 第三轮起已豁免官方件：tab 一律自绘**，见 §4.2） | fallback 分支必须能在**无 primitives**时工作，且真机判据靠 `data-*`；自绘件把 `data-tab-key/-value` 留在真实 DOM 上，测试与真机都能读 |
 | `CodeBlock` | 未用，改用自绘等宽 `pre` | 全文视图需要**搜索命中高亮**（往文本里插 `mark` 片段），`CodeBlock` 逐字渲染源码、无法注入 span；引它只会多一层 shiki 依赖而拿不到判据 |
 | `Modal` | 未用，编辑面板内联在页面中 | 减少 portal/焦点管理面；真机截图同样可见「编辑态」 |
 | `SearchBlock` | 未用 | 它是「工具搜索结果卡片」形状，与「在最终文本里检索」不是一回事 |
-| primitives 复用 | `Button` / `Input` / `Tag`（+ `SegmentedTabs`）+ `writeClipboard` | 沿用 g-002 的双分支探针与 `data-renderer` 标记，两条分支都保留 |
+| primitives 复用 | `Button` / `Input` / `Tag` + `writeClipboard`（**`SegmentedTabs` 自 g-063 第三轮起不再复用**，见 §4.2） | 沿用 g-002 的双分支探针与 `data-renderer` 标记，两条分支都保留 |
 
 其余实现细节：文本域/原生下拉无对应 primitive，直接手绘（`--dsw-alias-*` token，深浅色可读）；
 `append` 的 `order` 只在 action=`append` 时出现在请求体里（`replace`/`hide` 不带，见 §31 测试）；
@@ -899,7 +1069,8 @@ locale seat 四种退化形状仍渲染；`t` 抛错时渲染失败卡（不白�
    编辑态截图，以及「保存覆盖 → 新回合装配已改变」的端到端证据 —— 均属集成检查点（需重启
    `dsh web` 或带 cookie 请求），本轮**没有**做，也未安装进 profile。
 2. **primitives 分支的交互**：离线测试的点击链路跑在 fallback 分支（primitives 用桩件），
-   官方 `SegmentedTabs` 的真实键盘/布局行为未在浏览器里核过。
+   官方 `SegmentedTabs` 的真实键盘/布局行为未在浏览器里核过。（**g-063 第三轮起该件已不再使用**：
+   tab 两分支都自绘，见 §4.2；本条剩下的只有其它官方原子。）
 3. **`useSessions` 的真实形状**：本 profile 是否启用了 `dsh-client-ui-session`（决定真机是
    sessions 还是 manual 分支）需真机确认；selector 的相等/重渲染语义仍是照抄产品用法。
 4. **`renderedResolved` 在带 session 时的真实解析率**（CONTRACT §2.3 的预期未在真机复核）。
@@ -1270,6 +1441,8 @@ evidence: suite=all    passed=164 failed=0 exit=0 ms=2194 diff=3f/+1309/-81 comm
 - 诚实说明：primitives 的图标组件只解构 `{size, className, strokeWidth}`，**不会把未知 props 透传到 `<svg>`**，
   所以 `data-role="scope-folder-glyph"` 这个「确实画了图标」的机器标记只在 inline 分支出现；两条分支都稳定的
   标记是外层 span 的 `data-role="scope-folder-icon"` + `data-icon-state` + `data-icon-source`。
+- **g-063 注记**：这里的 `ICON_SOURCE` 已改为函数 `iconSource()`，**每次渲染求值**（宿主原子在渲染期抛错后
+  必须立刻切回 inline 几何），判定同样加了 `primitivesActive()` 条件——见 §4.2。
 
 ## 55. 可交互线索清单（对齐侧边栏，且都能机器核验）
 
@@ -1455,7 +1628,7 @@ CRLF：`\r\n` 与 `\r` 都当行分隔，`crlfNormalized: true` 明说「这个�
 | 二次确认 | `data-region="confirm"` + `data-confirm-kind="reset-section|reset-layer|import"` + `data-action="confirm-yes|confirm-no"` |
 
 primitives 复用：新增 `DiffBlock`（`data-diff-renderer="diffblock"` 是机器可判定的分支标记），
-`Button`/`SegmentedTabs` 沿用。**没有**为任何 UI 件引入 npm 依赖，也没有构建步骤。
+`Button` 沿用（`SegmentedTabs` 自 g-063 第三轮起不再复用，见 §4.2）。**没有**为任何 UI 件引入 npm 依赖，也没有构建步骤。
 
 ## 62. 自测证据（工作树内执行）
 
@@ -1501,7 +1674,7 @@ evidence: suite=npm-pack passed=13 failed=0 exit=0 commit=ec5e958
 | NC-4 | `core/transfer.js`：去掉导入的版本校验 | `transfer`+`stage2` fail 2 / pass 42 | `transfer: every malformed document is rejected with a stable code`、`stage2: every rejected import leaves BOTH config files and the history byte-identical` |
 | NC-5 | `core/history.js`：快照指纹恒为常量（段级 diff 失明） | fail 2 / pass 69 | `history: a snapshot entry is comparable without carrying any text`、`stage2: two history records of one section diff at section and line level` |
 | NC-6 | `client.js`：整层重置跳过二次确认直接发请求 | `client` fail 1 / pass 76 | `client: resetting a whole layer needs a confirmation and states the impact` |
-| NC-7 | `client.js`：`HAS_DIFF_BLOCK` 恒为 `false`（永不使用官方 DiffBlock） | `client` fail 1（叠加 NC-6 时为 2） | `client: the primitives branch renders the comparison with the official DiffBlock` |
+| NC-7 | `client.js`：diff 的官方渲染器判定恒为 `false`（永不使用官方 DiffBlock）。**g-063 起**变异对象是 `diffBlockUsable()`（让它恒返回 `false`），不再是被取代的 `HAS_DIFF_BLOCK` 常量 | `client` fail 1（叠加 NC-6 时为 2） | `client: the primitives branch renders the comparison with the official DiffBlock` |
 
 ## 63. 未验证项（诚实清单，交给主管在集成检查点裁决）
 
@@ -2999,7 +3172,7 @@ export 只含保留名且显式声明省略、加上 `test/custom.test.mjs` 的 
 | --- | --- | --- |
 | 页面是一条长列：标题/副标题 → 会话选择器 → 状态卡 → 视图页签 → 编辑器槽位 → 面板 | `renderSection` ~`:5109` | 「太长」的主因 |
 | 覆盖视图把覆盖列表 + 差异 + 历史 + 层重置 + 导入导出串在一起 | `renderOverridesView` ~`:4982` | 五个不同频率的面板挤在一个视图里 |
-| 已有 `tabs()` 助手，优先 `SegmentedTabs`、否则自绘 `role="tablist"` | ~`:1184` | 直接复用，不自造导航 |
+| 已有 `tabs()` 助手，优先 `SegmentedTabs`、否则自绘 `role="tablist"`（**g-063 第三轮起只走自绘**，见 §4.2） | ~`:1184` | 直接复用，不自造导航 |
 | 客户端**没有**保留名常量，保存走任意名 | 全文 | 与 Revision 7 契约不符（§7 限制 21） |
 | 历史动作词表缺 `legacy-clear` 的客户端文案 | `historyActionLabel` ~`:2514` | g-014 遗留：会渲染原始动作串 |
 
@@ -3112,7 +3285,8 @@ checkout 会把整个改动回滚掉），并用 `shasum -a 256 -c` 确认逐字
   > 200 `count:0` / `history:null`；`reset=true&legacy=true` 同时给 ⇒ 400 `conflicting-query`；
   > `?reset=true` 原语义不变。证据见 `.dsh-graph` 的 `goals/g-014/goal.md`「§七·补」与 g-015 评论区。
 - **滚动手感与 VoiceOver 层级朗读未验证**：tab 切换后的焦点位置、`SegmentedTabs` 在真实 DSH 里的键盘行为
-  没有在真机上逐项走查（本机只做了 CDP DOM 探针，不做朗读）。
+  没有在真机上逐项走查（本机只做了 CDP DOM 探针，不做朗读）。（**g-063 第三轮起 tab 两分支都自绘**，
+  该件的键盘行为已与本页无关；本条剩下的对象是其它官方原子及其自绘控件。）
 - **`mine-frozen` 的两种来源未在真机分别复现**：一种是 `frozenScope:"session"` + `frozen:true`，
   另一种是保留段 `applied:false`；两者都由单测覆盖，真机需要构造 `complete` 段才能触发。
 - **英文文案的字距/换行未在真机核对**：只保证 en 渲染横扫无 CJK、无裸键。
@@ -3164,7 +3338,8 @@ checkout 会把整个改动回滚掉），并用 `shasum -a 256 -c` 确认逐字
    都在硬性禁止之列。
 
 因此以下三项**仍未在 `dsh web` 外壳内验证**，留给主管：真机滚动手感、tab 切换后的焦点位置与 VoiceOver
-层级朗读、`SegmentedTabs`（primitives 分支）在真实 DSH 里的键盘行为。
+层级朗读、`SegmentedTabs`（primitives 分支）在真实 DSH 里的键盘行为（**g-063 第三轮起该件已不再使用**，
+tab 两分支都自绘，见 §4.2）。
 
 ## 94. 「查看范围」默认收成一行摘要 +「更改」展开（g-016，2026-09-29，基线 `cc9f844`）
 
@@ -7394,3 +7569,894 @@ brief 写「本次 0.2.1 覆盖 g-050…g-058」。核对仓库事实：**g-050�
   `latestTag=0.2.0`、`tarball` 指向 `…-0.2.0.tgz`，本次三者统一为 `0.2.2`（该节字段表本就规定
   `latestTag` 与 `latest` 同版本、`tarball` 取自 `versions[latest]`）。这是**文档内部一致性修复**，
   不涉及任何实现、路由或响应字段。
+
+## 135. g-060：「预设」功能（独立预设库 + 复用既有写面，Revision 37，2026-10-12，基线 `93b0d9e` 隔离工作树）
+
+**需求（负责人原文）**：新增一个预设功能，用户可以添加/编辑/删除预设，可将预设应用到用户选择的工作区中，
+也可取消应用预设。方案 A（负责人批准）：独立预设库 + 复用既有写面。
+
+**数据形状**（`<DSH_HOME>/prompt-setting/presets.json`，第三个用户文件）：
+
+```json
+{ "version": 1,
+  "presets": [{ "id": "...", "name": "短答", "action": "replace", "text": "...",
+                "createdAt": "...", "updatedAt": "..." }],
+  "applied": [{ "workspaceRoot": "/abs/path", "presetId": "...",
+                "before": { "action": "replace", "text": "MINE" } | null, "appliedAt": "..." }] }
+```
+
+- **为什么是第三个文件**：`overrides.json` 在 export / import / history / snapshot 四个冻结 schema 里，
+  预设不是任何一层的覆盖、也不是可移植备份，而是本机所有者的文本目录 —— 折进去等于让四个 schema 长字段。
+- **被否方案**：预设随 export 走、应用走 import、取消走 history rollback —— 被 `write-locked` 收窄到保留段
+  不说，「取消」还会变成一次日志回滚（可能还原用户从未有过的版本），语义扭曲。
+- `applied` 每个 `workspaceRoot` 至多一条（一层只有一个保留段条目）；再次应用**替换**该条记录，即
+  「取消应用」回到**最后一次应用前**的状态（一层深，刻意不是版本历史）。
+
+**五条路由（契约 §20，Revision 37；`CONTRACT.md` §1 表 + 405 allow 文字同步）**
+
+| 方法 | 路径 | 语义 |
+| --- | --- | --- |
+| GET | `/prompt-setting/presets` | 目录 + `applied` 记录；`?session=` 只用于解析当前工作区。恒 200，库坏时 `error` 字段说明 |
+| PUT | `/prompt-setting/presets` | 无 `id` 新增（**Host** 铸造 id），有 `id` 编辑（未知 id ⇒ 404，绝不静默新建） |
+| DELETE | `/prompt-setting/presets?id=` | 删一条；被应用的预设也允许删，**不改任何层**，记录变 orphan |
+| POST | `/prompt-setting/presets/apply` | `{presetId, session}`：读该工作区层当前保留段存 `before` → 写入预设 → 记 `applied` |
+| POST | `/prompt-setting/presets/unapply` | `{session}`：按 `before` 精确还原（`null` ⇒ 删掉该条目）→ 移除记录 |
+
+**实现（6 个源文件 + 契约 + 测试）**
+
+- `core/presets.js`（新，纯逻辑零 IO，`core/overrides.js` / `core/custom.js` 的同族）：`validatePresetInput`
+  （空名 `invalid-name`、超长名 `name-too-long`、非 `replace|append` 的 `unsupported-action`、超长文本
+  `text-too-large` 一律 **400**）、`normalizePresets`（宽容读取：坏条目逐条丢弃、同 root 记录去重）、
+  `upsertPreset` / `removePreset`、`planApply` / `planUnapply`（快照与还原决策全在这里）、`publicPresets`
+  / `publicApplied`（orphan 标记）。
+- `core/store.js`：`userPresetsPath` / `readPresets` / `writePresets`，照 `preferences.json` 先例走
+  `writeTextAtomic`（临时文件 + rename），坏文件**只报不写** ⇒ 写面 `409 presets-not-writable`。
+- `index.js`：三个路径常量、`ROUTES` 三行、分派链三段、五个 handler。应用/取消应用**复用** `targetFor` +
+  `writableConfig` + `validateConfig` + `writeConfig` + `cacheWritten`，只写保留段 `prompt-setting:custom-prompt`；
+  历史记录沿用既有形状（`actionOf` + `textEntry` + `snapshotOfConfig`，`origin: "ui"`，无新枚举）。
+- `client.presets.js`（新 chunk，按需加载）+ `client.js`：第 6 个一级 tab「预设」（紧跟「我的 Prompt」）、
+  `tabPresets` 词条、`PresetsTabChunk` / `renderPresetsChunk`、panel 分派、四组状态与六个动作、`CHUNK_STAMPS` 重算。
+- `test/presets.test.mjs`（新，19 用例）：纯逻辑 9 + 路由 10，含**负向零副作用**（每类 400/404/409 前后对
+  `presets.json` 取 SHA-256）、应用后 `/snapshot` 装配含预设文本、取消应用还原为应用前 JSON 值且其它层字节不变、
+  删除已应用预设后层字节不变 + orphan 标记、405 allow 清单、导出文档字段集合不变。
+- `test/client.test.mjs`：既有断言同步（tab 顺序、挂载请求路径集合、tab→chunk 映射）+ 7 个新用例（按需拉 chunk、
+  工作区应用状态与 orphan、保存 PUT body、编辑带 id、删除按 id、应用/取消应用 POST body、库坏 ≠ 空目录、en 词条）。
+
+**关键裁决与残余风险**
+
+- **应用只写保留段、取消应用还原「内容」而非字节**：层文件由 `writeConfig` 重写，键序由写入器决定
+  （与既有 `PUT /overrides` 完全一致）；「还原」保证的是 JSON 值等值，用户层与其它工作区层**字节不变**。
+- **两次写盘的顺序**：先写工作区层（+ 历史），再写预设库记录。库写失败 ⇒ 500，层已生效但没有撤销记录
+  （残余风险，已在契约 §20.5 写明）；反序会把「没发生过的应用」记下来，更坏。
+- **不做**：预设随 export 导入导出（`GET /export` 字段不变）、跨工作区批量应用、预设版本历史；
+  应用与取消应用**不碰**插值开关（`before` 只快照 `{action, text}`，若预设改写开关则取消时无法精确还原）。
+- **工作区枚举**：宿主无工作区列表路由（`targetFor` 强制 `?session=`），故 UI 用页面已有的 workspace seat
+  （每个工作区取首个 session）构造选择器，退化时用会话列表。
+
+**验收（单行证据，2026-10-12，worktree `.worktrees/g-060-att-01`）**
+
+- `node --test test/*.test.mjs` ⇒ 800 通过 / 0 失败（19 套件，含新增 `test/presets.test.mjs` 19 用例）；
+- `node scripts/prepare.mjs` ⇒ 21 项全绿（`files: client.*.js` 4 → 5 项）；`node scripts/client-chunks.mjs`
+  ⇒ 5 个 chunk 与 `CHUNK_STAMPS` 一致；`package.json` `dependencies` 仍为空、无构建步骤。
+
+**未验证项**
+
+- 真机（`dsh web` 重启后对真实工作区做一次「应用 → 装配生效 → 取消 → 还原」）由主管复核执行，本轮未做；
+- 契约 Revision 37 的 §20 全文为文档，仅由 `CONTRACT.md` 自身审阅，未被测试断言（沿用本项目惯例）。
+
+### 复核轮 1 返工（2026-10-12）
+
+- **R1（minor，已修）**：预设编辑器存在未保存改动时点某工作区的「应用」，宿主按 id 从库里取**已保存版本**
+  写入工作区，页面却报成功 —— 与 g-056 同类缺陷（草稿与实际写入不一致），且 apply 改的是**层**而不是标签。
+  修法：`client.js` 计算 `presetDirty`（draft 与库中同 id 已保存条目的 name/action/text 任一不一致，或该条目
+  已不在库中）；工作区行的「应用」按钮 `disabled`，并以 `data-preset-apply-blocked="unsaved"` +
+  `presetApplyUnsaved`（zh/en 键位对齐）说明原因；保存后自动恢复可用。新客户端用例：未保存 ⇒ 不发 POST
+  且有可见提示；保存后 ⇒ 应用可用并真的发出 POST。契约 §20.9 增补该条。
+- **R2（nit，已修）**：`core/store.js` 里 `readPreferences` 的 JSDoc 收尾行曾被并进函数声明（`*/export function`），
+  属与本目标无关的格式噪声，已还原为原来两行；其余新增内容未动。
+
+### 复核轮 2 返工（R3：交互重构为弹窗，2026-10-12）
+
+负责人真机验收提两点：编辑改弹窗、应用到工作区搬到弹窗。实现要点：
+
+- **A 编辑/新建＝弹窗**：`presetEditorDialog` 照 `renderRegionDialog` 先例（全屏遮罩 + `role="dialog"` + `aria-modal="true"`），
+  `data-region="preset-editor-dialog"`；三条规则照抄：失败红字留在弹窗内专用行
+  `data-role="preset-dialog-error"`（`data-preset-dialog-error=<code>`，用既有 `errorText` 本地化），失败**不关闭**，
+  关闭始终显式（`data-action="preset-dialog-close"`）。保存成功才关闭。
+- **B 应用＝弹窗**：列表行新增 `data-action="preset-apply-to"`（带 `data-preset-id`）打开展示目标预设名的弹窗
+  （`data-region="preset-apply-dialog"`，`data-preset-dialog-preset`），工作区逐行沿用
+  `data-preset-session` / `data-preset-applied` / `data-preset-orphan` / `data-preset-name` 与
+  `preset-apply` / `preset-unapply` 两动作；应用/取消成功后弹窗保持打开（刷新后的状态就是读者要看的），退出是显式动作。
+  tab 主体收敛为「标题 + 状态行 + 列表（每行：模式标签 / 文本预览 / 编辑 / 删除 / 应用到工作区）+ 新建/另存入口」。
+- **C 草稿不静默丢弃**：新增 `presetDraftDirty`（新建草稿只要有内容，或编辑草稿与库中同 id 条目不一致）；脏时弹窗
+  `data-preset-dirty="true"` + 可见提示 `data-role="preset-dialog-dirty"`，关闭按钮文案改「放弃修改」并带
+  `data-preset-dirty`。应用弹窗与应用的是**库里已保存版本**（宿主按 id 取值），弹窗文案 `presetApplyToNote` 说明；
+  R1 的「未保存 ⇒ 禁用应用」在两屏分离后不再适用 —— 不变量改由「草稿进不了层写入 + 草稿不会无提示消失」两条承接。
+- **D 同步**：`CONTRACT.md` 新增 Revision 38 段并重写 §20.9（含新 marker、脏态与关闭语义、弹窗结构）；
+  `test/client.test.mjs` 7 个用例按弹窗重写 + 新增 3 个（弹窗内应用/取消应用并保持打开、保存失败留在弹窗内且不关闭、
+  空名本地拒绝零请求）；i18n 移除 `presetNew`/`presetApplyPickOne`/`presetApplyUnsaved`，新增
+  `presetApplyTo`/`presetApplyToTitle`/`presetApplyToNote`/`presetDialogClose`/`presetDialogDiscard`/`presetDialogDirtyHint`
+  （zh/en 键位对齐断言继续通过）；chunk 指纹 `--write` 后校验一致。
+- **证据**：`node --test test/*.test.mjs` ⇒ 803 通过 / 0 失败；`node scripts/prepare.mjs` ⇒ 21 项全绿；
+  `node scripts/client-chunks.mjs` ⇒ 5 个 chunk 一致。
+
+### 复核轮 3 返工（R4：真叠加 + 二次确认 + tab 文案，2026-10-12）
+
+负责人复验提三条：
+
+- **1 叠加语义修正为「真叠加」（功能）**：`core/presets.js` 的 `planApply` 现在自己组合保留段文本 ——
+  `replace`＝预设文本；`append`＝**层内原文 + `RESERVED_STACK_SEPARATOR` + 预设文本**（分隔符复用
+  `core/overrides.js` 那个，与 g-058 跨层叠加同一个；原文为空则只放预设文本，不留孤立空行）。组合必须在
+  这里发生：一层只有一条保留段 entry，合并核无法把一层与它自己叠加。**幂等**：当前文本已等于预设文本、
+  或以 `SEP + 预设文本` 结尾 ⇒ 不重复追加，`plan.alreadyApplied = true`，宿主**不写层、不记 history**，
+  响应带 `alreadyApplied`（页面提示「该预设已在此工作区生效，未重复叠加」）；`applied` 记录仍写入/替换
+  （它才是「取消应用」可用性的来源）。`before` 快照语义不变，`unapply` 按 `{action, text}` **整体还原**
+  （append 快照还原为 append，不压平成 replace）。
+- **2 二次确认（复用既有 `renderConfirm`）**：列表行「删除」按钮改为只发意图（`a.requestPresetDelete`）⇒
+  `setConfirm({kind:'preset-delete', id, name})`，确认后才 `DELETE`；编辑弹窗**脏草稿**时点关闭
+  （`a.requestPresetDialogClose`）⇒ `setConfirm({kind:'preset-discard'})`，确认后才丢弃并关窗；非脏仍直接关。
+  两个新 kind 的标题/正文走既有确认弹窗排版与按钮（g-031 约束），i18n zh/en 各补 4 键 + 幂等提示 1 键。
+- **3 tab 文案**：一级 tab「预设」→「**我的预设**」（en「My presets」），契约 §13.0/§20.9、两份 README 同步。
+- **契约**：新增 Revision 39 段；§20.5 写明两种模式实际写什么、幂等与 `alreadyApplied`；§20.6 写明还原含 mode。
+- **测试**：`test/presets.test.mjs` 重写 `planApply` 用例（append 保留原文并追加、replace 仍替换）、新增幂等
+  纯逻辑用例与路由级幂等用例（层字节不变、`history: null`、记录仍在）；`test/client.test.mjs` 删除用例改为
+  确认流（取消 ⇒ 0 个 DELETE、确认 ⇒ 1 个 + 编辑弹窗随删关闭）、新增脏草稿关闭确认用例、tab 文案用例、
+  幂等提示用例。
+- **证据**：`node --test test/*.test.mjs` ⇒ 全绿；`node scripts/prepare.mjs` ⇒ 21/21；
+  `node scripts/client-chunks.mjs` ⇒ 5 个 chunk 一致。
+
+### 复核轮 4 返工（R5：幂等请求不得改写还原快照，2026-10-12）
+
+**复核发现的路径**：工作区层无保留段 → 应用 append 预设 ⇒ 记录 `{before: null}`；再点一次「应用」（幂等）
+时 `planApply` 用**当前内容**重算了 `before`（`{action:'append', text:P}`）并替换记录，`index.js` 又照常写回
+预设库 ⇒ 之后「取消应用」按新 `before` 写回，层内容仍是 P —— 还原退化成 no-op，用户回不到最初状态。
+`replace` 分支同理。
+
+**不变量**：`before` 快照描述的是「应用发生之前」的层内容，是取消应用的唯一依据；幂等的含义正是「层没有
+发生变化」，因此这次请求**不得改写记录**（「库文件字节不变」也是幂等应有的对外承诺）。
+
+**修法（最小正确）**
+- `core/presets.js` `planApply`：`alreadyApplied === true` 时**原样返回**传入的 `document`（不再 filter/push），
+  `record` 返回既有记录（没有则 `null`）；`false` 时维持原行为。
+- `index.js` `handleApplyPreset`：幂等时既不写层、不记 history，**也不写 `presets.json`**；响应仍带
+  `alreadyApplied: true`，`record`/`appliedRecords` 报未改动的记录，`before`/`after` 如实。
+- 契约：§20.5 与 Revision 39 段里「记录仍写入以保取消应用可用」的旧表述按新语义改正 —— 首次应用已留下
+  记录，幂等请求不需要也不得再动它；层里本来就有该文本而没有记录时，幂等请求**不新增记录**（本次没有产生
+  可还原的变更），「取消应用」的可用性按记录有无判定。
+- 测试：纯逻辑用例断言幂等时 `document` 与传入文档逐字相等、`record` 等于既有记录、无记录时不新增；
+  路由用例改写为「应用 → 再应用（幂等）→ 取消应用」两条路径（原本无 entry / 原本有 entry），断言层回到最初
+  形态、`applied[].before` 始终是最初快照、幂等请求让 `presets.json` **字节不变**；客户端用例断言幂等之后
+  「取消应用」仍可用并真的发出请求。
+- **证据**：`node --test test/*.test.mjs` ⇒ 全绿；`node scripts/prepare.mjs` ⇒ 21/21；
+  `node scripts/client-chunks.mjs` ⇒ 5 个 chunk 一致。
+
+### 复核轮 5 返工（R6：确认弹窗层级 + 取消应用回到首次应用前，2026-10-12）
+
+**1 确认弹窗被预设弹窗遮住（客户端层级缺陷）**
+- 现象：`confirm-overlay` 与预设编辑/应用弹窗的 `zIndex` 都是 1000，而 `confirmCard` 先入 children、tab 面板后入
+  ⇒ 同层下后入树者在上，「我的预设」tab 里点「删除」或脏草稿点「放弃修改」时确认弹窗被完全遮住（负责人实测）。
+- 修法：确认弹窗 `zIndex` 显式提到 **1200**（页面最高），tab 内弹窗（自定义镜像源、历史对比、两个预设弹窗）
+  保持 **1000**；两处注释都写明「确认弹窗永远高于提问它的弹窗」是约定的不变量，不再依赖入树顺序。
+- 测试：新用例断言编辑弹窗 overlay=1000、确认 overlay=1200 且**严格大于**、`preset-discard` 与 `preset-delete`
+  两种 kind 下确认节点在树中且两个按钮可点、应用弹窗同样 1000、既有 `mine-reset` 确认仍是 1200（规则不是
+  预设专属）。
+
+**2「取消应用」统一回到「首次应用前」（语义修正）**
+- 现象：`planApply` 每次应用都用**当时**的层内容重算 `before` 覆盖旧记录 ⇒ 应用 P1 → 再应用 → 取消后
+  层里仍留着 P1，「取消没生效」。
+- 正确语义（Revision 40）：同一 root 的记录保存的是**首次应用前**的快照；后续应用（同预设或另一预设）
+  **不覆盖 `before`**，只更新 `presetId`/`appliedAt`；「取消应用」一律回到首次应用前。
+- 落地：`core/presets.js` `planApply` 非幂等分支 `before: existing === null ? before : existing.before`，
+  返回值 `before` 也取记录里的快照；R5 的幂等分支（原样返回既有记录、不写层不写库）保持不变。
+  `index.js` 的 apply 响应 `before` 用记录快照（§20.6 将还原的值），history 记录仍描述**本次**写入
+  （`currentEntry`），两者分工写进注释。
+- 契约：§20.5 增「快照是首次应用前」、§20.6 增「还原到任何预设应用之前」，并新增 Revision 40 段。
+- 测试：纯逻辑 `apply(P1) → apply(P2) → unapply` 断言层回到最初、`applied[].before` 始终首次快照、
+  `presetId` 已更新；路由级同样两条路径（原有 entry / 原无 entry）并断言层文件与 `presets.json` 内容；
+  R5 的幂等用例继续通过。
+- **证据**：`node --test test/*.test.mjs` ⇒ 全绿；`node scripts/prepare.mjs` ⇒ 21/21；
+  `node scripts/client-chunks.mjs` ⇒ 5 个 chunk 一致。
+
+### 复核轮 6 返工（R7：基准 + 应用栈模型，2026-10-12）
+
+负责人复验三条同源：每个工作区只有**一条**记录 + 一个 `before`，所以「取消应用」只能整体回退 —— 应用两个预设
+后取消，层里仍留着第一个。
+
+**数据模型（`core/presets.js`）**
+- `applied` 记录改为 `{workspaceRoot, base: {action,text}|null, stack: [{presetId, appliedAt, action, text}]}`：
+  `base` ＝**首次应用前**该工作区保留段内容；层文本 ＝ `base` 与各栈项按应用顺序用 `RESERVED_STACK_SEPARATOR`
+  拼接（空段不参与）；栈项额外带**写入时的 `{action,text}` 快照** —— 否则预设被删（orphan）后无法重算，也无法
+  单独取消。栈空 ⇒ 记录删除、层还原 `base`（`null` ⇒ 删掉该 entry，`interpolateCustom` 一律不动）。
+- `normalizePresets` **宽容迁移**旧形状 `{presetId, before, appliedAt}` ⇒ `{base: before, stack:[…]}`，缺失的文本
+  快照从同 id 的库条目补；不丢数据、不因旧而丢弃整份文件。
+- `planApply`：栈中已有该 presetId ⇒ 幂等（原样返回 document/record，不写层/库/历史，R5 教训继续有效）；
+  否则追加栈项、重算文本与 action（取栈尾预设的 action）。`planUnapply`：**新增必填 `presetId`**，只移除该项并
+  重算（栈空 ⇒ 还原 base），不在栈中 ⇒ 404 `not-applied`。
+- `publicApplied` 输出 `{workspaceRoot, base, stack:[{presetId, presetName, orphan, appliedAt}]}`。
+
+**接口（`index.js`）**
+- `POST /presets/apply` 响应加 `alreadyApplied`/`base`/`stack`/`record`；幂等时三处文件都不写。
+- `POST /presets/unapply` 需要 `{session, presetId}`（缺失 ⇒ 400 `missing-preset-id`，非法 id ⇒ 400 `invalid-id`，
+  不在栈中 ⇒ 404 `not-applied`），响应含 `removed`/`remaining stack`/`restored`。
+- `DELETE /presets` 的 `orphaned` 改为**统计栈项**（一个预设可能应用在多个工作区）。
+- 契约 §20.1/§20.2/§20.5/§20.6/§20.7/§20.9 全部按栈模型重写，并新增 **Revision 41** 段。
+
+**UI（`client.presets.js` / `client.js`）**
+- 应用弹窗每个工作区行渲染**整条栈**：`data-preset-stack`、`data-preset-stack-list`，每个已应用预设一个
+  `data-preset-link`（带 `data-preset-name`、`data-preset-orphan`）与**各自的**「取消」按钮
+  （`data-action="preset-unapply"` + 该项 `data-preset-id` + 行 `data-preset-session`）；不再有笼统的单个「取消应用」。
+- 某预设已在栈中 ⇒ 该行「应用」按钮 `disabled` 且行带 `data-preset-applied-here="true"`（不再只靠点击后的幂等提示）。
+- 取消其中一项后其余段保留（重算由宿主负责）；词条新增 `presetUnapplyOne`/`presetAppliedHere`，删除不再使用的
+  `presetUnapply` 与 `presetAppliedAs`，zh/en 键位对齐断言继续通过。
+
+**测试**
+- 纯逻辑：栈追加顺序与文本拼接、已入栈幂等（document 原样）、`apply(A) → apply(B) → unapply(A)` ⇒ 文本 = `base + B`
+  且栈中只剩 B、`unapply(B)` ⇒ 栈空并还原 `base`（含原本无 entry ⇒ entry 消失）、旧形状迁移、orphan 仍可重算与取消。
+- 路由级：同一链路（原有 entry / 原无 entry 两条路径）断言层文件与 `presets.json` 内容；负向：缺 `presetId` ⇒ 400、
+  不在栈中的 presetId ⇒ 404，且两个文件字节不变；幂等请求层与库字节都不变。
+- 客户端：已应用行「应用」`disabled`、每行列出全部已应用预设名、取消其一后其余名称保留、orphan 链接显示
+  「来源已删除」。
+- **证据**：`node --test test/*.test.mjs` ⇒ 全绿；`node scripts/prepare.mjs` ⇒ 21/21；`node scripts/client-chunks.mjs`
+  ⇒ 5 个 chunk 一致。
+
+## 136. g-061 批次 1：四项机械复用归一（Revision 42，2026-10-12，基线 `0654f26` 隔离工作树）
+
+批次 1 只做「同形同义、回归面最小」的四项；通用实现全部落在**既有的**主入口共享面
+（`client.js` `CHUNK_FACILITIES` → `__internals.shared`），不新增 chunk、不下沉 `core/`、不引依赖。
+
+**① `layerLabel` 遗漏复用（#9）**
+- `client.advanced.js` 覆盖行的层标签由内联 `t(entry.layer === 'workspace' ? 'ovWorkspace' : 'ovUser')`
+  改为该 chunk **早已取用**的 `shared.layerLabel(t, entry.layer)`；内联式删除，原处不留并行副本。
+
+**② 枚举 → i18n key 归一（#8）**
+- 主入口 `regionLabelKey(id)` 与 `client.advanced.js` 的 `regionNoteKey(id)` 合为
+  `regionKey(id, family)`（`family: ''` / `'Note'`），未知 id 在两族都回退「默认」；`regionLabelKey` 不再暴露，
+  且**不保留别名**——别名就是同一规则的第二种拼写。
+- `client.transfer.js` 的 `importStatusLabel` **保持原样**：同族不同形——前缀固定、后缀
+  （`Added`/`Replaced`/`Removed`）变化且其中一个成员兼任回退，返回的还是已翻译字符串而非键；并入需引入
+  「成员表 + 默认键」抽象，而变化的消费者只有一个，属为抽象而抽象。
+
+**③ 五份 Tab 包装组件（#13）**
+- 核实结论：`renderChunkTab` 与这 5 份**不等价**——前者建 `Suspense` 边界与「chunk unavailable」卡、接收
+  lazy 组件；后者是 lazy 的**目标组件**，把 `{t,m,a}` 解包回位置参数。两者是一次挂载的两半，删掉 5 份会让
+  `React.lazy` 失去目标组件（且需改 chunk 导出面）。
+- 因此只把**重复的那一半**抽成共享工厂 `chunkTab(render, name)`：5 个 chunk 各留一行
+  `const XTab = chunkTab(renderX, 'XTab');`，组件 `name` 由 `Object.defineProperty` 保持原样（React 报告不变）。
+
+**④ 工作区推导归一（#10）**
+- `historyScopeOptionsOf`（选择器形态 `value`/`label`/`workspaceId`/`sessionIds`，空列表 `{mode:'none',options:[]}`）
+  与 `presetWorkspaces`（拾取器形态 `session`/`root`/`label`，空列表 `[]`）的内核合为
+  `workspaceRows(wsSeat, seat, {withRoot})`（同时挂 `__internals` 供测试）；两侧 mode 判定、空值形态与字段名不变。
+
+**测试与门禁**
+- `test/client.test.mjs` 新增三条：两族 6 个键 + 未知 id 回退、`chunkTab` 的 `name` 与参数顺序、
+  `workspaceRows` 两种形态 / 会话回退 / 空值；并机械断言 chunk 内无 `updateRegion…` 字面量、无 `regionNoteKey`、
+  无本地 props 适配器、无内联 `'ovWorkspace'`。契约新增 **Revision 42** 段（§13 末条），§13.0 共享面段同步补规则。
+- `CHUNK_STAMPS` 由 `node scripts/client-chunks.mjs --write` 重算。
+- **证据**：`node --test` ⇒ 815 pass / 0 fail（基线 812 + 新增 3 条）；`node scripts/prepare.mjs` ⇒ 21/21；`node scripts/client-chunks.mjs`
+  ⇒ 5 个 chunk 与清单一致。
+
+**残留（批次 2–4 未动）**
+- 批次 2 样式常量（遮罩/错误行/空态/等宽框）、批次 3 语义裁决（卡片尺寸/标题行/ghost 态/搜索/会话行按钮）、
+  批次 4 chunk 引导块：本轮一行未改，候选仍以卡片为准。
+
+## 137. g-061 批次 2：四类样式常量收敛（Revision 43，2026-10-12，基线 `00d9ef8` 隔离工作树）
+
+批次 2 只抽「同形、消费方 ≥2」的样式常量；通用实现全部落在**既有的**主入口共享面
+（`client.js` `CHUNK_FACILITIES` → `__internals.shared`），不新增 chunk、不下沉 `core/`、不引依赖。
+四类各自新增一个名字：`scrimStyle` / `errorLine` / `emptyCard` / `monoTextBox`。
+
+**① 弹窗遮罩 4 份 → `scrimStyle(zIndex)`**
+- `renderConfirm`（1200）、`renderRegionDialog`（1000）、`client.presets.js` 的 `OVERLAY_STYLE`（1000）、
+  `client.history.js` 的 `modalShell`（1000）**除 zIndex 外的 10 个字段**逐字相同（合计 11 键），合为一份工厂，
+  层号由调用方给出。
+- **zIndex 是必填参数、无默认值**：`scrimStyle(undefined).zIndex === undefined` 有断言；`renderConfirm` 的
+  1200 既由源码正则（`['1200','1000']`）也由**渲染后的 overlay** 断言，不会被默认值吞掉。
+- `OVERLAY_STYLE` 这个 chunk 局部名字保留（它仍被两个对话框引用），但值改为 `scrimStyle(1000)`；
+  各使用点的 `key` / `data-region` / `data-history-modal` 原样。
+
+**② 弹窗内错误行 3 份 → `errorLine(options)`**
+- `region-error`（无前缀、13px、无折行）、`preset-dialog-error`（`presetFailed` 前缀、13px、折行）、
+  `renderFailureCard`（`p`、`margin: 0`、`renderErrorLabel` 前缀、折行）归一；差异全部显式参数化：
+  `tag` / `role` / `probe` / `code` / `text` / `fontSize` / `wrap` / `margin`。
+- **探针标记与字号逐点保持**：`data-role="region-error"` + `data-region-error`、
+  `data-role="preset-dialog-error"` + `data-preset-dialog-error`、失败卡的 `p` 无 `data-*`；
+  三处字号都是 13（由调用方传，工厂不设默认）。
+- `client.presets.js` 保留本地适配器 `dialogError(t, m)`（读 `m.presetStatus` 是该 chunk 自己的事），
+  但元素由共享工厂构造；`'data-…-error': typeof` 式的本地拼装在 chunk 内已为 0 处。
+
+**③ 空态块 4 份 → 只抽「有卡空态」子集 `emptyCard(marker, children)`**
+- 真正同形的是两处：`client.advanced.js`（`div[data-empty=overrides] + cardStyle` 单文本）与
+  `client.overview.js`（同容器 + `strong` + `p`）——容器与样式是共同面，卡内文本仍由调用方给。
+- **另两处不并入，理由是「不同形状」而非「不同文案」**：`client.history.js` 的
+  `div[data-empty=history] + metaStyle` **没有卡**；`client.presets.js` 的
+  `p[data-region=presets-empty] + {margin:0, ...metaStyle}` 换了容器标签与标记族。合并任一都会改变
+  读者看到的盒子，本批次不做。测试同时断言「并入的两处」与「保持不动的两处」。
+
+**④ 等宽 / pre-wrap 文本框 5 处 → `monoTextBox(options)`**
+- 共同骨架只有排版：`margin: 0`、12px、`pre-wrap`、`break-word`；盒子外观与字族全参数化且**无默认**：
+  `maxHeight`（200/220/320/460）、`padding`（`4px 6px`/`6px 8px`/`8px 10px`/`10px 12px`）、
+  `radius`（6/8）、`border`（`borderL1`/`borderL2`/无）、`lineHeight`（只在线读的盒子上）、
+  `color`（只在非主阅读面）、`scroll`（`overflow` 或 `overflowY`）。
+- **字族是三态参数**（复核返工修正）：`mono: true` 写主题等宽栈（overview 三处）、`mono: false` 写
+  `'inherit'`（presets 预览，故意跟随页面字体）、**省略则该键完全不写**——history 预览框基线就**没有**
+  `fontFamily` 键，`<pre>` 一直取浏览器 UA 默认。首版用 `mono: true` 把它改成 `token.mono` 是**未声明的
+  视觉变化**（UA `monospace`→主题栈），测试还把它固化成了「正确」，已按复核意见改为「不设即不写」。
+- `client.history.js`、`client.overview.js`×3、`client.presets.js` 各自的调用点逐点保留原值，
+  渲染后的 style 与工厂输出逐字段断言（history 两处断言 `'fontFamily' in style === false`）。
+- `client.history.js` 的 diff op 行只有两条折行规则、不是盒子：**保持原样**（不属于本工厂）。
+
+**测试与门禁**
+- `test/client.test.mjs` 新增四条（`// #region g-061 batch 2: the four style families`）：工厂逐字段等价性、
+  「无参数 ⇒ 无值」的负向断言、每个名字的消费点计数与「chunk 内无本地副本」的机械断言，以及
+  渲染级抽样（确认遮罩 1200、region 错误行、两个有卡空态、overview 三个盒子、preset 预览、history 预览两框）。
+- 负向核对（改坏即红，逐条实测后已还原）：`scrimStyle(1200)→1000` 红；presets `mono:false→true` 红；
+  `errorLine` 的 region `fontSize:13→12` 红；history 文本框**加回** `mono: true` 红（报「no font family is stated」）。
+- 契约新增 **Revision 43** 段（§13 末条），§13.0 共享面清单同步补一句；`CHUNK_STAMPS` 由
+  `node scripts/client-chunks.mjs --write` 重算。
+- **证据**：`node --test` ⇒ 819 pass / 0 fail（基线 815 + 新增 4 条）；`node scripts/prepare.mjs` ⇒ 21/21；
+  `node scripts/client-chunks.mjs` ⇒ 5 个 chunk 与清单一致。
+- **给后续批次的坑**：`host.test.mjs` 与 `client.test.mjs` 各有一条机械断言「源码里出现 `<字母…>` 即判为
+  JSX」，**注释也扫**。本批次两次踩中（`<code>` 占位符、`<pre>` 元素名），写文档性注释时别用尖括号包元素名。
+
+**残留（批次 3–4 未动）**
+- 批次 3 语义裁决（弹窗卡片尺寸/标题动作行/ghost 选中态/搜索过滤/会话行按钮）、批次 4 chunk 引导块：
+  本轮一行未改。
+- 明确未纳入本工厂的相邻形态：history 的 diff op 行（行内折行规则）、`client.js:2008` 的
+  `font: 13px/20px mono` 输入框字体、history diff block 的 `font:` 简写盒子（用 `font` 简写会重置
+  font-weight，与 `monoTextBox` 语义不同）——三者都留待批次 3 或不做。
+
+## 138. g-061 批次 3：弹窗壳 / ghost 按钮三族 / 会话行 / 搜索比较（Revision 44，2026-10-12，基线 `a8eccce` 隔离工作树）
+
+批次 3 五项**全部走方案 A**（只抽形状相同的骨架、每处差异留显式参数），并按负责人裁决
+「**一处漂移都不修**」执行：五处与邻居不一致的数值全部原样保留，且都成为调用点的显式实参。
+通用实现仍全部落在**既有的**主入口共享面（`client.js` `CHUNK_FACILITIES` → `__internals.shared`），
+不新增 chunk、不下沉 `core/`、不引依赖、零构建。新增八个名字：`dialogCardStyle` / `dialogTitleStyle` /
+`dialogActionsStyle` / `chipButtonStyle` / `miniButtonStyle` / `sessionRowStyle` / `normalizeNeedle` /
+`matchesNeedle`。
+
+**① 弹窗卡片 4 份 → `dialogCardStyle({width, maxWidth, maxHeight, height, overflow, gap, position})`**
+- 工厂固定：`cardStyle`（border/surface/radius）+ `display:flex` + `flexDirection:column` +
+  `padding:'16px 18px'` + `boxShadow:'0 12px 32px rgba(0,0,0,0.35)'`（四处逐字一致）。
+- **四处现值逐点保留**：`renderConfirm`（100% / 480 / 80vh / `overflowY` / **无 gap** / 无 position）、
+  `renderRegionDialog`（100% / 480 / gap 10 / **无 maxHeight、无 overflow**）、
+  `client.presets.js`（100% / **520** / 80vh / **`overflow:'auto'`** / gap 10）、
+  `client.history.js` `modalShell`（`min(1040px, 92vw)` / **`maxWidth:'92vw'` 冗余保留** /
+  `height` 与 `maxHeight` 均 `min(82vh, 900px)` / `overflowY` / **`position:'relative'`**）。
+- `overflow` 参数是**属性名**（`'overflow'` / `'overflowY'`）而非值——两种声明各自保留；`width` 是
+  显式实参，不是被默认值吞掉的差异（`dialogCardStyle({width})` 之外不传就**不写键**，有负向断言）。
+- confirm 的 `borderColor: stateWarn` 留在调用点，且**声明在工厂之后**（后声明者生效，与基线一致）。
+
+**② 标题行 / 动作行 → `dialogTitleStyle({fontSize, tone, lineHeight})` + `dialogActionsStyle({align, divider, wrap})`**
+- confirm：14 + warn 色 + `lineHeight 1.4`；presets：**15**（保留）+ 无 tone + 无 lineHeight。
+- confirm 动作行：gap 8 + marginTop 16 + paddingTop 12 + `borderTop`（§13.5 的 top divider）；
+  presets：右对齐 + **`flexWrap:'wrap'`**（保留，即使只有一个按钮）+ 无分隔线。
+- **region dialog 继续直接复用 `confirmTitleStyle` / `confirmActionsStyle` 两个常量**（两处仍是同一绑定，
+  有源码级 `style: confirmTitleStyle` ×2 断言）；`client.history.js` 的 head（flex 行 + 绝对定位关闭按钮）
+  **结构不同、未并入**——两个工厂在该 chunk 中出现 0 次。
+
+**③ ghost 按钮三族 → `chipButtonStyle` / `miniButtonStyle`（行族见 ⑤）**
+- **chip**（radius 999、padding `3px 10px` 固定）：tabs 回退项、`pinnedSessionButton`、`session-use-input`；
+  未选中文字色**各处不同**（tabs `labelSecondary`、另两处 `labelPrimary`）→ 作参数；pinned 额外的
+  display/gap/opacity/outline 留在调用点。
+- **mini**（radius 6 固定）：scope-more「更多」、history `sideStyle`、`pagerButtonStyle`、overview expand，
+  以及 history scope 的候选行（同为 radius-6 ghost 骨架，其 buttonFill 选中态/flex/wordBreak 留调用点）。
+  `lineHeight` **三处不写**（side/pager/expand，工厂**不补**，有「键不存在」断言）、scope-more 写 18px；
+  pager 的 **`2px 10px`** 异类保留为显式参数。padding 四值全部逐点保留（`'2px 8px'` ×3、
+  scope-more `'2px 8px 2px 20px'`、history scope 候选行 `'4px 8px'`、pager `'2px 10px'`）——评审 R3 补记。
+- ⚠️ **已知事实（写进结果）**：tabs 在 `primitives` 渲染器下由宿主 `SegmentedTabs` 自绘，插件只能改
+  fallback 分支——两种渲染器的观感差异**不会**因统一而消失（现状即如此）。（**g-063 第三轮起该差异已消除**：
+  tab 两分支都自绘，见 §4.2；此条按当时事实留档。）
+
+**④ 搜索比较 → `normalizeNeedle(query)` + `matchesNeedle(values, needle, {cached})`**
+- `normalizeNeedle` 三个消费方（flat 过滤 / tree 派生 / history scope）；`matchesNeedle` 两个
+  （session 行 / history scope 候选）。
+- **两侧语义保持不同、不被归一**：sessions 侧保留 `row.haystack` 预计算缓存（`decodeSessions` 里那一次
+  `join(' ')` 未动，仍有 1 处断言），history 侧保持**逐字段无缓存**。
+- 工厂**自身不做 `join(' ')`**：joining 会让命中跨越字段边界，在 history 侧是**新命中**，会动
+  `data-history-scope-shown` 计数与既有断言。空 query 行为不变（前者 `list.slice()` 副本、后者原数组，
+  两者都有源码级断言）。`indexOf` 与 `includes` 语义等价：缓存路径保留 `indexOf`、逐字段路径用 `includes`。
+- **实测两侧差异**：`one alpha`（跨 title 尾 + 下一字段头）在 sessions 侧**命中** `s1`；
+  `repo a1`（跨 label 尾 + value 头）在 history 侧**不命中**，`data-history-scope-shown` 仍为 0。
+
+**⑤ 会话行 → `sessionRowStyle({padding, hovered, focused, selected, active})`**
+- 共同骨架 = `scopeRowStyle`（cursor / userSelect / hover 填充 / focus ring / radius 6）+ 12px/18px +
+  左对齐 flex + `labelPrimary` + 三态填充（选中或键盘高亮 → `diffAddFill`；hover → `hoverFill`；否则透明）
+  + 选中左条 `inset 3px 0 0 0` + 选中描边 `borderL2`。
+- `padding` 逐点保留（tree 行 `3px 8px 3px 20px` 含 20px 缩进 / 平铺行 `4px 8px`）。
+- **role / data-role / aria 一律未动**：tree 行仍是 level-2 `treeitem` + `data-role="session-row"` +
+  `data-scope-parent` + `data-session-running`；平铺行仍是 `listbox > option` + `data-role="session-option"`
+  （无 `aria-level`、无 tree 标记）；`session-selected-mark` 等独有标记仍在调用点；四组既有 ARIA 用例未改。
+- **唯一行为变化是内部的**：`data-session-active` 平铺侧由「index 比较」改为「activeId 比较」
+  （tree 侧本来就是 id 比较）。已实测两式等价（`-1` / 0 / 末行 / 越界）并做渲染级抽样
+  （ArrowDown 后恰好一行高亮且为 `s1`）——这是资料中唯一的「未实测项」，现已实测。
+
+**测试与门禁**
+- `test/client.test.mjs` 新增五条（`// #region g-061 batch 3`）：`dialogCardStyle` 四调用点逐字段 +
+  「无参数 ⇒ 无键」负向 + 渲染级四处卡片（confirm / region / presets 编辑器 / history 对比弹窗）；
+  标题与动作行的工厂等价与渲染级（含 region 复用 confirm 常量）；ghost 三族的工厂等价、消费点计数、
+  padding/radius/color/lineHeight 逐点与五个渲染点；`sessionRowStyle` 四态 + 两棵树 role/aria/data-* +
+  `data-session-active` 两式等价；`normalizeNeedle`/`matchesNeedle` 正负用例与两侧语义差异。
+- 负向核对（改坏即红，逐条实测后已还原）：presets `maxWidth 520→480` 红；presets 标题 `15→14` 红；
+  region 补 `maxHeight:'80vh'` 红；pager `padding 2px 10px→2px 8px` 红；`matchesNeedle` 改回
+  `join(' ')` 红（正是「引入新命中」那条）。
+- 契约新增 **Revision 44** 段（§13 末条，含「本轮有意不修漂移」这一裁决的逐条记录），§13.0 共享面清单
+  同步补一句；`CHUNK_STAMPS` 由 `node scripts/client-chunks.mjs --write` 重算。
+- **证据**：`node --test` ⇒ 824 pass / 0 fail（基线 819 + 新增 5 条）；`node scripts/prepare.mjs` ⇒ 21/21；
+  `node scripts/client-chunks.mjs` ⇒ 5 个 chunk 与清单一致。
+
+**残留（批次 4 未动）**
+- 批次 4 chunk 引导块：负责人已裁决**不做**（该段字节属 CONTRACT §14 指纹区，收益最小）。本轮一行未改。
+- 明确未纳入本工厂的相邻形态：history diff op 行、`font: 13px/20px mono` 输入框字体、history diff block
+  的 `font:` 简写盒子（§137 已记录，仍未动）；`client.history.js` 的对比卡（`...cardStyle` + 自有 gap 4）与
+  `client.presets.js` 的预设卡 / 库错误框（`...cardStyle` + `gap 6` / `borderColor`）是**内容卡**而非对话框壳，
+  **未并入** `dialogCardStyle`（形状不同：无工厂固定 padding/boxShadow，尺寸随内容）——三处都有计数断言。
+
+**评审残余（g-061 批次 3，独立评审 rev-att-003-01 登记，均为不可达边界）**
+- **R1｜`data-session-active` 的空 id 形态**：平铺侧改按 activeId 比较后，若某行 `id === ''` 且恰好被高亮，
+  输出会是 `false` 而基线的 index 式会给 `true`。`decodeSessions` 过滤空 id，**该形态在真实数据上不可达**；
+  已在测试里实测 `-2/-1/0/1/2/3/99` 与空列表逐值一致。
+- **R2｜缺 `haystack` 的行**：`matchesNeedle` 的逐字段分支不跨字段匹配，而基线在缺缓存时会走 `join` 过的字符串；
+  `decodeSessions` 强制写 `haystack`，`seat.rows` / `scope.rows` / `byId` 均源自它，**该分支实测不可达**。
+  若将来出现缺字段行，行为会与基线不同——届时需一并复核这里。
+- **R3｜记录颗粒度**：mini 族消费点计数口径（5 个工厂调用 vs 更多渲染点）曾易误读；padding 四值已如上补记。
+  该族仍有的断言缺口：history scope 候选行只有源码级断言、缺渲染级——留待后续批次。
+
+## 139. g-062：会话内「装配状态提示」（设置页可见性出口，2026-10-13，基线 `7c5b2e5` 隔离工作树）
+
+**问题**：DSH 每个 model step 重新装配 system prompt，但「装配到」≠「送达到模型」——
+`SystemPromptProjection.project()` 会去重，文本未变时**零事件**。用户改了 Prompt 却感觉没生效，
+缺一个可见性出口。负责人已定口径：提示**只落设置页 UI**（不进上下文、不占 token、不改模型收到的 prompt）、
+**两层都报**、**仅关键节点一次** + 设置页开关。
+
+**落地**：新增 `core/assembly-watch.js`（纯策略、零依赖、注入时钟与上限）承载全部状态机；
+`index.js` 只做宿主接线（`assembleHandler` 末尾观察、`agent/pre-step` 打 turn/step 标签、
+`session/event` 折叠送达证据、`session/disposed` 清理、`GET|PUT /prompt-setting/assembly-status`）；
+`client.js` 在「我的 Prompt」面板顶部渲染该块（`data-region="assembly-status"`）并读写开关。
+开关复用 `preferences.json`：`core/update.js` 的 `normalizePreferences` 新增 **stated-only** 的
+`assemblyNotice` 键（未声明则文件字节不变，缺省＝开），写入走同一 merge，因此不会抹掉
+`updateCheck` / `downloadRegion`。
+
+**五个实现决定（都写进了契约 §21）**
+
+1. **首次装配优先于「变更」（第一轮口径，已被 §140 修订）**：一个会话在本 mount 的**第一次**装配即场景 A；
+    ~~即使紧跟一次保存，该 write 也被静默消费~~——评审 R1 证明该口径在既有会话（`resume`）下会吞掉变更，
+    §140 改为「等 header 定性、未定性前不消费」。判定「已设定但未装配到」用
+   `resolved.overrides` 里的保留段文本（configured）对比插件最终返回的段文本（assembled），
+   因此「段被跳过（`section-not-present`）」如实报 `empty`。
+2. **送达层只认本步证据**：`system/message` 事件且 `turn`/`step` 与本 notice 对齐才结算；
+   其它 step 的事件不结算。零事件（去重）＝ `unconfirmed`，正是要曝光的那个盲点。
+   「HTTP 是否真的发出」插件侧不可观测，路由与页面都不声称（`basis.httpObservable:false`）。
+3. **探针排除用对象身份**：`state.pendingProbe.context` 与本次 `context` 同一对象才排除——`probeTarget()`
+   在会话有活跃 agent 时会带上**真实 Agent**，所以 `context.agent === undefined` 判不出来（card-e29d15f5 风险 2）。
+   未作用域装配（无 session id）同路径排除，两者都计入 `counts.rejectedProbes`。
+4. **有界 + 惰性结算**：每会话 6 条通知、64 个会话（LRU）、8 条写入记录；等待送达的 notice 在**读取时**
+   惰性结算为 `unconfirmed`，不注册任何定时器；`session/disposed` 删除记录。
+5. **fail-open**：watch 的每个方法自带 try/catch，监听器自身包错，写路径**在写成功之后**登记变更；
+   任何观测异常都不可能影响用户 turn，也不会改变装配返回的段列表（有断言）。
+
+**测试**：新增 `test/assembly-watch.test.mjs`（21 例：两层判定、首次/变更、resume 丢弃、跨 step 不误判、
+超时结算、有界、开关关闭、抛错开关、畸形输入、探针计数）；`test/route.test.mjs` 新增 9 例宿主接线
+（读/写路由、405、首装配两分支、变更两层、探针不进入会话记录、disposed 清理、observer-only 段不变、
+`agent/pre-step` waterfall 透传）；
+`test/client.test.mjs` 新增 4 例渲染（块与两层文案、`empty`/`not-read`/`waiting`/`unconfirmed`、
+开关 PUT 与主机答案跟随）。既有断言的同步改动：三个 harness 的 assemble 队列改为**按事件名过滤**
+（g-062 之前它们把所有 listener 当 waterfall 参与者，真实 dispatcher 是按名字路由的），
+监听器数量断言 2→5、撤销计数 3→6、客户端路由白名单加 `assembly-status`。第一轮全量 `858` 例通过
+（评审实测；本轮修复后为 `867`，见 §140）。
+
+**已知边界（照实写进 UI 文案）**：装配层记录的是**本插件最终返回的段列表**，更晚注册的
+`{prepend:true}` listener 仍可改写（`assemblyBasis:'plugin-return'`、`outerRewritePossible:true`）；
+送达层只到 surface 事件为止。
+
+## 140. g-062 评审修复：R1–R5 与 P2 三项（Revision 45 补记，2026-10-13，基线 `7c5b2e5` 隔离工作树，评审对象 `2edff9e`）
+
+标题里的「评审对象」一律指**被评审的那个 commit**，不是承载修复的提交。本节记录的是对 `2edff9e`
+（评审 rev-att-001-01）所提问题的修复，**承载该修复的提交是 `da8304f`**；§141 同款记法：
+评审对象 `da8304f`，承载提交 `4f04259`。取证请以「承载提交」为准，勿把评审对象当作本轮证据。
+
+独立评审在 `2edff9e` 上给出 **BLOCK**（三处实质缺陷 + 一处覆盖缺口 + 文档订正）。以下按评审项记录
+**改了什么、为什么这样改、以及被否的替代方案**。
+
+**R1｜既有会话 `resume` 下变更提示丢失（判据 2）**
+- 根因：`firstSight`（本 mount 首次见到该会话）被当作「新会话」，并**无条件消费**待报的 write；
+  随后 `request/header` 的 `resume` 丢弃 pendingFirst ⇒ 该变更既没被当作场景 A 报出，也被记为已消费。
+- 修法：引入 `firstDecided`（新会话问题是否已答）。装配时若有待报 write 而问题未决，只**武装**
+  `pendingFirst`（记 `writeSeq` 与预计算的 `readBack`），**不消费**；`initial` header 才把它判为场景 A
+  并消费；非 `initial` header 立刻按**变更**产出 `prompt-change`（用候选里已存的装配证据）；若 header
+  始终不来，**下一轮装配**判定为既有会话并同样产出 `prompt-change`。
+- 被否：只在 header 到达时补发（若平台不追加 header 就永久丢失 —— 平台只在配置/工具/series 变化时追加）。
+
+**R2｜`pendingFirst` 长期占用导致对齐失效 + 错误「已送达」（判据 3）**
+- 修法：① `observePreStep` 改为**优先**给 `record.active`（waiting）打标签，候选仅回退；② 产生 change
+  notice 时清空候选；③ 候选由「下一轮装配」兜底清理解析（不再长期残留）；④ **标签缺失即拒绝结算**——
+  notice 的 `turn`/`step` 未定时，任何 `system/message` 都不结算（宁可 `unconfirmed`，绝不误报 delivered）。
+
+**R3｜首装配送达层恒 `unconfirmed`（判据 1，事实错误）**
+- 修法：`record.recentSystem` 缓存该会话最近一条 `system/message`（**无论当时有没有 notice**）；创建
+  `first-assembly` notice 时若缓存事件的 `turn`/`step` 与本 notice **完全一致**即直接置 `delivered`
+  （含 `surfaceOp` / `seq` / `textMatched`）。缓存按 turn/step 匹配而非「最近」，异 step 的缓存不采用。
+- 被否：首装配不展示送达层（会削掉判据 1 要求的可见性，只在缓存不可行时才该退到这一步）。
+
+**R4｜写路径覆盖缺口（判据 2 完整性）**
+- `POST /import`（每层按 plan 的 `changes` 登记）、`POST /rollback`、`DELETE /overrides`
+  （单删保留段与 `reset=true`；`legacy=true` 不动保留段故不登记）现均调用 `notePromptWrite`。
+  三条路径各有 route 级用例断言产出 `prompt-change`。
+
+**R5｜文档订正**
+- `NOTES.md` §139：`857` → `858`（第一轮实测）、`route.test.mjs` 新增 `8` → `9` 例；
+- `CONTRACT.md` §21.5：`data-assembly-phase` 的枚举去掉不存在的 `loading`（客户端只有 `idle`/`ready`/`error`）；
+- `CONTRACT.md` 补 **Revision 45** 标注（§13 的修订清单 + §21 标题）。
+
+**P2 三项结论**
+1. **热路径同步 IO（已消除，非「可接受」）**：开关读取从「每次装配」收窄到「即将产生 notice 时」——
+   稳态一步（无待报 write、新会话问题已答）**完全不读** `preferences.json`；因此不需要 mtime/TTL 缓存
+   （缓存会引入「刚改开关却读到旧值」的窗口，而收窄调用点的收益更大且无窗口）。有测试锁住
+   「关闭后不再产生新 notice」与「稳态装配不产生 notice」。
+2. **`settle` 计时基准（第一轮改法，已被 §141 W4 再改）**：当时把主判据改为**本步的 `step/end`**，
+   并把时间兜底从 20s 放宽到 120s。第三轮评审指出「读取时结算」会让长 step（>120s）被提前判死且不可逆
+   （`status()` 一读就把 waiting 改成 unconfirmed），§141 已改为**纯事件判定：`status()` 不改写任何状态、
+   时间兜底整个删除**。
+3. **装配层局限（已补）**：`basis` 增加 `postWaterfallCollapse:true`，中英文局限文案补充
+   「宿主在 waterfall 之后还可能把整份段列表折叠到生效的 `complete` 段」。
+
+**测试与证据**：`node --test test/*.test.mjs` → **867 passed / 0 failed**；`client-chunks` 5 chunk 一致；
+`check-compat` exit 0；零新增依赖、零构建。本轮新增用例 9 条（core +6：R1×2、R2、step/end、R3×2；
+route +3：R1 同拍、R3 首装配 delivered、R4 三写路径），另把「变更两层」用例改为真实 `resume` 顺序。
+负向对照（改坏即红、验证后还原）：去掉 fail-open ⇒ observer-only 用例红；关闭探针排除 ⇒ 探针用例红；
+去掉 waterfall 透传 ⇒ pass-through 用例红。
+
+## 141. g-062 第三轮修复：W1–W5（Revision 45 补记，2026-10-13，评审对象 `da8304f`，承载提交 `4f04259`）
+
+第二轮评审判 BLOCK：R2/R3（首装配）已修好，**R1 只修了一半**，另有测试编排、写入作用域与读取副作用
+三处问题。逐条落点与理由如下。
+
+**W1｜`prompt-change` 缺同 step 缓存补判（送达层假阴性）**
+- 根因：`recentSystem` 补判只写在 `FIRST_NOTICE` 出生点；非 `initial` header 分支（resume 路径）没有。
+  宿主同一 `step()` 内 `system/message` **先**、`request/header` **后**，于是该路径的 notice 出生即
+  `waiting`，紧接着同 step 的 `step/end` 又把它判成 `unconfirmed` —— 事件明明存在却报没送达。
+- 修法：抽出**单一出口** `finalizeNotice(record, notice)` = `settleFromRecentSameStep` + `pushNotice`，
+  在**每一个** notice 出生点调用：`initial` header、非 `initial` header、装配路径 `emitChangeNotice`
+  （`resolveStalePendingFirst` 经它间接覆盖）。匹配仍严格「`turn`/`step` 完全一致才采用」。
+  自查：grep 全部 `pushNotice` 调用点，除 `finalizeNotice` 自身外**零残留**。
+
+**W2｜测试编排必须等于宿主真实顺序**
+- `assembly-watch.test.mjs` 的 R1 用例原为「header 先、system/message 后」的逆序（实现恰好能过），已改为
+  真实顺序 `assemble → pre-step → system/message → header(resume)` 并断言 `delivered`；另新增一条
+  `initial` 的同顺序用例。`route.test.mjs` 的同拍用例补上送达层断言（`delivered` + `seq`），并补
+  「其后 `step/end` 不得把已 delivered 改写」。
+
+**W3｜user 层写入被错误 scoped 到单会话**
+- `PUT /overrides`（`index.js:3510`）、`DELETE`（`:3596`）、`reset`（`:3646`）原先传
+  `session: sessionId ?? null`，而页面只要选中会话就必然带 `?session=`；`rollback` / `import` / `presets`
+  早已按 layer 归一 ⇒ 漏改。现三处统一为 `layer === 'workspace' ? sessionId ?? null : null`，
+  与契约 §21.4 逐字一致：**layer 决定作用域，query string 不决定**。
+- 用例：user 层带 `?session=a` 保存 ⇒ 会话 b 的下一 run 也报 `prompt-change`；workspace 层保存 ⇒
+  另一会话 `notice` 仍为 `null`（不得反向放宽）。
+
+**W4｜`status()` 必须是纯读，判定只能由事件驱动**
+- 根因：`settle()` 在读取时把 `waiting` 改成 `unconfirmed`，而客户端每 2.5s 轮询会触发读取；长 step
+  （>120s）因此被提前判死，且判死后**同 step 晚到的 `system/message` 永不再结算**（早退条件）。
+- 修法：删除 `settle()` 与 `DELIVERY_SETTLE_MS`（连同 `settleMs` 选项），`status()` 只读。
+  `unconfirmed` 现在只有两个**事件**来源：① 本 step 的 `step/end` 且 `turn`/`step` 匹配；
+  ② 观察到**后继** `agent/pre-step`（该 notice 有标签且与本次 `(turn,step)` 不同）——「上一步已收尾」。
+  晚到的同 step `system/message` 因此仍能正常结算为 `delivered`。
+- 用例：① 推进时钟 10 分钟后连续读取 `status()`，状态必须仍为 `waiting`，随后同 step 事件必须结算为
+  `delivered`；② 后继 `pre-step` 把 missed delivery 判为 `unconfirmed`。
+- 已知取舍：若宿主崩溃/取消导致**既无 `step/end` 也无后继 `pre-step`**，该 notice 会一直是 `waiting`
+  （页面仅在打开该 tab 时轮询，离开即停）。这是刻意的：宁可留在「等待」也不猜。
+
+**W5｜文档自洽 + 已知盲区**
+- `CONTRACT.md` §21.3 的 delivery 取值改为「the step ended, or a later step started, without it」，
+  「The deadline is the step's end」改写为「Only events settle a verdict; a read never does」；
+  §21.4 的作用域条目补「layer 决定，query string 不决定（含 `DELETE` / `reset`）」；§21.3 新增
+  「每一个 notice 出生点都折叠同 step 缓存」一条（W1 的契约化表述）。
+- **有意的已知盲区（本轮不改行为）**：`PUT /interpolate`（`index.js` 的插值开关写面）会改变最终渲染文本
+  （开启后装配时展开 `{{...}}`），但**不登记** prompt 变更 ⇒ 用户只翻转该开关时不会得到装配状态提示。
+  原因：该开关是「文本如何展开」的配置，不是「prompt 文本变了」；把它计入会把「同一条 prompt 的展示方式
+  变化」误报成「你改了 prompt」，且会与 `mine` 面板的保存语义混淆。若将来要覆盖，应在 `interpolate`
+  写成功后登记一条与该层当前文本等价的 write，并在文案上与「保存」区分。
+
+**测试与证据**：`node --test test/*.test.mjs` → **870 passed / 0 failed**；`client-chunks` 5 chunk 一致；
+`check-compat` exit 0；零新增依赖、零构建。本轮新增/改写用例：core +2（W4 纯读、后继 pre-step 结算）
+并改写 2 条为宿主真实顺序；route +1（W3 双路径）并给同拍用例补送达层断言。
+**负向对照（改坏即红，均已还原）**：去掉 `finalizeNotice` 的补判 ⇒ 三条真实顺序用例红（R1/W2/R3）；
+把三处 layer 归一改回 `sessionId ?? null` ⇒ W3 用例红。
+
+**第四轮（评审 rev-att-001-03 PASS 后的两条非阻塞收口，一档纯文档）**
+- **B1｜记法订正**：§140/§141 的标题把被评审的 commit 写成了「候选」，容易被后来者当成本轮证据。
+  现统一为「**评审对象** `X`（= 被评的那个 commit）」，并在 §140 顶部显式写出各节的**承载提交**
+  （§140 → `da8304f`，§141 → `4f04259`）；取证以承载提交为准。
+- **B2｜契约与实现逐字相符**：`CONTRACT.md` §21.4 的写入路径条目由「Every write path …」软化为
+  「Every write path that changes the reserved section's **text** …」，并**把 `PUT /interpolate` 这一
+  已知盲区同步写进契约条目**（与本节上文的记录同源），不再只存在于 NOTES。
+- 评审第 3 条建议（客户端 `waiting` 时续读加次数上限）本轮**不做**，记为后续可选事项。
+
+## 142. g-062 修订：提示改为「toast 主动提示为主 + 设置页保留详情与开关」（Revision 46，2026-10-13，基线 `0445166` 隔离工作树 `g-062-att-02`）
+
+**负责人反馈**：v1 把提示只落在设置页「我的 Prompt」面板顶部，「每次进设置页查看太麻烦」——改为
+**toast 主动提示为主 + 设置页保留详情与开关**。既有口径一字不放宽：两层都报、仅关键节点一次、
+同一事实不得弹两次、只做观察者（不进上下文、不占 token、不改 prompt）、fail-open、零依赖零构建。
+
+**通道核实（card-77666b3e，只读）**：DSH 无 ctx 级通知服务；弹提示的唯一通道是
+`ctx.slots.inject('shell.overlay', …)` 挂常驻组件 + 官方 `Toast`（`@deepseek-ai/dsh-client-ui-primitives`）。
+**没有插件可用的推送通道**（无插件 `EventSource`；页面唯一的 WebSocket 是宿主自己的 RPC mux）
+⇒ 客户端只能「带着游标来问」，这也决定了下面的取舍。
+
+**落地**
+- `core/assembly-watch.js`：新增**全局出生日志**（有界 24 条，`pushNotice` 是唯一入口）与
+  `pendingNotices(cursor)`；notice 新增数字 `seq`（`id` 的数字半身）；新增 `bootId`（每个 mount 一个身份，
+  可注入以便测试）；`disposeSession` 同时把该会话逐出出生日志；`stats()` 增 `history` / `bootId`。
+- `index.js`：`GET /assembly-status` 增 `?since=` → `notifications`；缺省/畸形 `since` 读作「从此刻开始」
+  （只回游标，不回历史），非法值不是错误。
+- `client.js`：`HAS_TOAST` 与 `RENDERER` **分开探测**（宿主可能只有 atoms 没有 `Toast`）；新增
+  `AssemblyToasterRoot` 注册进 `shell.overlay`（`id: prompt-setting-toast`，order 60）；游标/队列/文案
+  是纯函数（经 `__internals.assemblyNotice` 供测试）；游标存 **sessionStorage**；读节奏＝会话状态变化
+  （节流 3s）为主 + 20s 可见性感知兜底 + 回到页面立即读；设置页块保留，并加
+  `data-assembly-note="no-toast"` 说明宿主不支持主动提示。
+
+**五个实现决定（都写进契约 §21.6）**
+1. **增量游标，而不是「重读最新」**：重读同一条 record 会把同一事实反复报出来；游标让「已展示」成为
+   客户端的显式状态，这也是「同一事实不得弹两次」在客户端唯一可证明的形态。
+2. **跨 mount 的游标不可比**：宿主重启会清空 watch 且 `noticeSeq` 归零 ⇒ 用 `bootId` 判定；不同 mount 时
+   重新锚定且不追溯（宁可漏一次，绝不重报）。
+3. **首次连接不追溯**：缺省 `since` 只回游标；新开的标签页不得把保留窗口里的历史一次性弹给用户。
+4. **落后于保留窗口只给最新一条**（`stale: true`）：避免「回来一看刷出一串旧提示」，同时不隐藏事实。
+5. **事件驱动为主、定时器兜底**：`useSessionStatus`（`shell.overlay` entry 能拿到 root hook，whale-pet 先例）
+   的变化是客户端真有的「某一步已结束」信号；20s 定时器只是 hook 缺失/事件丢失的兜底。**被否方案**：
+   常驻高频轮询（更贵且仍不实时）、浏览器系统通知（DSH 未封装、需自请权限）、自绘浮层（要自管
+   z-index/主题/样式隔离/卸载清理，且 `dsh-graph` 同款实现的 setTimeout 自清理在插件卸载时不回收节点）。
+
+**测试**：core +5（缺省游标不追溯、逐条一次且带会话、跨 mount 重锚、stale 只给最新、dispose/开关关闭）、
+route +2（无 session 的端到端 feed、变更通知与开关关闭）、client +5（游标策略、文案与 en 词典、
+一次一条与队列排空、读节奏与可见性、无 Toast 的降级）。全量 `882 passed / 0 failed`；
+`client-chunks` 5 chunk 一致、`check-compat` exit 0、`prepare` 21 项 OK；零新增依赖、零构建。
+**负向对照（改坏即红，均已还原）**：客户端 `entry.notice.seq > state.cursor` 改成 `>=` ⇒ 游标用例红；
+宿主 stale 分支去掉、只保留全量 ⇒ stale 用例红。
+
+**已知局限（照实写进契约 §21.6）**
+- 后台标签页计时器被节流 ⇒ 只能「回到页面时看到」，不是实时通道，也不声称是；
+- 首次连接与跨宿主重启不追溯：那份历史不会补弹（宁可漏，不重报）；
+- toast 是**出生那一刻**的结论快照：送达层若在弹出之后才结算，后续更新只体现在设置页详情块里；
+- 客户端在弹出前就推进并持久化游标 ⇒ 「弹之前刷新页面」会丢掉那一次提示（仍是「不重报」优先）。
+
+## 143. g-062 收口轮：评审 rev-att-002-01 的 C1–C5（Revision 46 补记，2026-10-13，承载提交见交付说明）
+
+独立评审对 att-002 判 PASS，同时留下 3 条非阻塞建议与一条**真缺口**。本轮逐条落地，全部是**追加**改动。
+
+**C1｜契约与实现不符（文档）**：`CONTRACT.md` §21.6 原写「另一 mount 的 cursor 以同样方式回答」，但宿主
+`pendingNotices` **没有** `bootId` 入参（`index.js` 只解析 `since`）——异 mount 且新 mount 的 `noticeSeq`
+已超过旧值时，宿主会照数字回 notices，**是客户端**凭 `bootId` 丢弃并重锚。现改为「本条路由不做跨 mount
+检测……由客户端重锚」，`bootId` 行的措辞同步。
+
+**C2｜stale 边界语义（文档）**：原文写「cursor 指名的 notice 已被丢弃」，实现是 `oldest > known + 1`，
+边界 `oldest === known + 1` 为 `false`。现改为「cursor **之后**的那条已被丢弃（即存在断档）」并写明边界值；
+`core/assembly-watch.js` 的 `pendingNotices` JSDoc 同步。
+
+**C3a｜宿主游标严格比较缺保护（测试）**：评审把 `birth.seq > known` 改成 `>=` 后 34/34 仍全绿。新增
+「the cursor is exclusive」用例——必须先产生**第二条** notice 才能观察该边界（只有一条时 `known >= latest`
+会提前返回，这正是原缺口）。实测：正确代码绿，改 `>=` 红，已还原。
+
+**C3b｜事件驱动主路径零覆盖（测试）**：此前所有 client 用例都走 `AssemblyToasterRoot` 的 unsupported /
+timer-only 分支（无 `useSessionStatus` 时 `activity: null`），`ConnectedAssemblyToaster` 完全没被跑过。
+新增用例注入 `useSessionStatus` stub + 可控时钟（`sandbox.Date`），断言：订阅确实发生、挂载读一次、
+状态变化越过 3s 节流后驱动第二次读——即「主触发器是会话状态事件，20s 定时器只是兜底」。
+
+**C4｜降级盲区（真缺口，行为修正）**：`HAS_TOAST === true` 但宿主**未声明 `shell.overlay`** 时，既不注册
+浮层，页内块也不显示 `no-toast`（原标记只看 `HAS_TOAST`）⇒ 用户静默地什么都没有。现引入 **overlay 座位
+（seat）** 作为唯一判据：`absent`（无 Toast 组件）/ `pending`（有组件但插槽未声明）/ `ready`（已注册）/
+`failed`（声明了但 register 抛错），由 `slots.inject` 的回调实际执行结果驱动，并经
+`useSyncExternalStore` 让页内块跟随（插槽晚声明时也会更新）。页内块新增 `data-assembly-toast-seat`，
+`no-toast` 行改由 seat 决定，文案区分「无组件」与「无插槽」两种原因；`__internals.assemblyNotice.overlaySeat()`
+是可断言的信号。负向对照：把判定改回 `HAS_TOAST` ⇒ C4 用例红（已还原）。
+
+**C5｜关闭开关应清空队列（行为改进）**：`planAssemblyToasts` 新增 `muted`（仅当开关为 off），toaster 在
+`muted` 时 `setQueue([])`——「关闭即静音」，而不是把已排队的 toast 播完；游标照旧推进，重新开启不补播。
+
+**测试与门禁**：全量 `886 passed / 0 failed`（上一轮 882 + C3a 1 + C4 1 + C5 1 + C3b 1；另在 2 条既有
+用例上补了 `muted` / seat 断言，未削弱或删改任何既有断言）；`client-chunks` 5 一致、`prepare` 21 项、`check-compat` exit 0；
+零新增依赖、零构建。三处负向对照（客户端 `>=`、宿主 `>=`、判定回退 `HAS_TOAST`）均实测变红并已还原。
+
+### 143.1 收口轮 2：评审 rev-att-002-02 的 R1、R5（2026-10-13）
+
+**R1｜`failed` 座位的文案与事实相反（必修）**：原先非 `absent` 一律映射到「宿主**未声明**
+`shell.overlay` 插槽」，而 `failed` 的真实含义是「已声明、但**拒绝**注册」——用户会看到一句错误的
+原因说明，恰是 C4 要消灭的那种误报。现三态三句：`absent` → 缺 `Toast` 组件、`pending` → 未声明插槽、
+`failed` → 已声明但拒绝注册（新增 `assemblyToastRefused`，zh/en 各一条）。用例见
+`test/client.test.mjs`「a Host that declares the slot and refuses the registration says exactly that」；
+harness 新增 `refusedSlots` 选项来模拟 `register` 抛错，并断言三种文案两两不同。
+**负向对照**：把三态压回两态（`failed` 复用 `slotMissing`）⇒ 该用例红，已还原（实测）。
+
+**R5｜C3b 的因果未被守护（必修）**：评审把依赖数组换成 `[]` 后仍全绿——因为 harness 的 `useEffect`
+double **无条件**在每次 flush 重跑所有 effect，无法区分「状态变化驱动」与「渲染驱动」。现 harness 支持
+`enforceEffectDeps`（显式开启时才按 `Object.is` 比较依赖；**默认行为逐字不变**，既有用例不受影响），
+该用例改为：静音兜底 timer（harness 把沙箱延迟压到 5 ms，否则 20 s 兜底会混入并掩盖因果）、断言
+「同一 status map + 推进 5 秒 ⇒ 不产生新读」与「status map 变化 ⇒ 产生新读」。
+**负向对照**：依赖改 `[]` ⇒ 第二条断言红；整个依赖数组去掉 ⇒ 第一条断言红。均实测并已还原。
+
+**本轮未复修、按「已知残余」登记的四条**（来源：评审 rev-att-002-02；主管指示不动，随交付说明列出）
+
+- **R2｜`muted` 必要非充分**：`planToasts` 在 `bootId` 不匹配（或本机尚无 cursor）时先返回
+  `muted: false`，所以「开关关闭」与「宿主刚重启」同拍的那一次读不会清空队列（该次读也不弹任何 toast）。
+  影响上限：屏上已排队的一条 toast 会多留一个轮询间隔。
+- **R3｜关闭即静音的延迟**：清队列发生在**下一次成功读**，而不是用户点开关的那一刻；最多一个轮询间隔
+  （可见时 20 s；不可见时不读，回到页面才清）。
+- **R4｜座位是单向闩**：`ready` 之后若宿主撤销 `shell.overlay` 声明（插件热重载、布局变化），seat 不会回到
+  `pending`/`absent`——页内块继续显示「已注册」，而浮层可能已不存在。`markOverlaySeat` 只由注册回调驱动，
+  没有可订阅的反向信号。
+- **R6｜`planToasts` 的 `enabled === true` 收紧**：畸形载荷（缺 `enabled` 字段）从「弹」变为「静音」。
+  更保守，但无用例覆盖该形状；若将来要区分「缺字段」与「显式 false」，需另加分支与用例。
+
+## 144. g-062 第四轮修复：预设「取消应用」清空不弹 toast（Revision 48，2026-10-13，基线 `e17f1e7` 隔离工作树 `g-062-att-04`）
+
+真机复验（att-003 合入后）：新会话首次装配弹、保存「我的 Prompt」后下一 run 弹；但预设面板的
+「应用到工作区」「取消应用」两处都**不弹**。
+
+**复现（route 级，真机序列）**：新增两例（`test/route.test.mjs`「R48」两例），走真实路由
+（`PUT /presets` 建库 → `POST /presets/apply` → 该会话 `assemble()` → `GET /assembly-status?since=`）：
+
+- **「取消应用」确实是缺陷，且被原样复现**：工作区层原本**没有**保留段时 `apply` 首次把 base 记为
+  `null`；`unapply` 恢复 base 即**清空**保留段（`after === null`），而登记写成
+  `if (after !== null && typeof after.text === 'string')` ⇒ 登记被整体跳过 ⇒ `writes` 里没有这次
+  变更 ⇒ 下一次装配不产生 `prompt-change` notice ⇒ 客户端 feed 无内容可弹。修复后同序列产生
+  notice（`assembly.state === 'read'`、`expected.action === 'hide'`、`expected.length === 0`）。
+- **「应用到工作区」首次在 route 级是登记的**（修复前该用例即绿）：`apply` 首次的 `after` 恒非空
+  （`reservedSectionOf(next)` 返回新写的保留段），旧守卫对它不生效。**该侧真机不弹的原因本轮无法
+  离线确证**，最可能的解释是 `alreadyApplied === true` 的**重复应用 no-op**（stack 里已有这条链接
+  ——首次点过、或 Host 重启后再点），按 §21.4「no-op 不登记」的既有语义它本就不该弹；真机复验时
+  应为该工作区**首次**应用一次。此判断留在交付说明，未改任何 no-op 语义。
+
+**修复（`index.js`，两处）**：登记条件改为「真的写了就登记」——`apply` 的非 no-op 分支无条件登记；
+`unapply` 无条件登记。`after === null`（清空）用空文本 `''` + `action: 'hide'` 表达，与
+`DELETE` / `reset` 既有写法一致；`plan.alreadyApplied === true` 分支（只 `cacheWritten`、不写盘）
+仍不登记。
+
+**同类自查（判据 4，全文件写路径）**：
+
+| 写点 | 是否登记 | 依据 |
+| --- | --- | --- |
+| `PUT /overrides` | 总是登记 | 写空由 `action: 'hide'` 表达，无 `after` 守卫 |
+| `DELETE /overrides?name=` | 移除保留段时登记 | 无条件，`hide` + `''` |
+| `DELETE …?reset=true` | 移除过保留段时登记 | 先 `removed.some(…)` 再登记；空层提前返回（无写） |
+| `DELETE …?legacy=true` | 不登记 | 只移除非保留段，保留段一个字节不动 |
+| `POST /rollback` | 总是登记 | 已覆盖清空（条目不存在 → `hide` + `''`） |
+| `POST /import` | 保留段的每条真实变更登记 | `status === 'unchanged'` 已排除；`after === null` 走 `hide` + `''` |
+| `preset apply` | 非 no-op 无条件登记 | **本轮修复** |
+| `preset unapply` | 无条件登记 | **本轮修复** |
+| `PUT /interpolate` | 不登记 | 契约 §21.4 已声明的盲点：它改的是渲染方式，不是用户写的文本 |
+
+**测试与门禁**：`test/route.test.mjs` 新增 2 例（apply 首次 / apply no-op 不登记 / unapply 恢复
+非空 / unapply 恢复为空）、`test/assembly-watch.test.mjs` 新增 1 例（空文本 write 在 watch 层同样
+产生 `prompt-change` 且 `assembly.state === 'read'`）、`test/client.test.mjs` 新增 1 例（同一形状经
+feed → cursor → toast 不丢、文案不含 `undefined`）。全量 `896 passed / 0 failed`（基线 892 + 新增
+4 条；未削弱、未删改任何既有断言）；`client-chunks` 5 一致、`prepare` 21 项、`check-compat` exit 0；
+零新增依赖、零构建。
+
+**负向对照（判据 5）**：把 `unapply` 的登记改回 `if (after !== null && …)` ⇒ 清空用例红
+（`0 !== 1`，"clearing the prompt is a prompt change"），已实测并还原。`apply` 侧做同一对照时
+用例**仍绿**——这正是「apply 首次的 `after` 恒非空」的佐证，说明该守卫在 apply 侧不可能漏掉写入，
+本轮对 apply 侧的去守卫属于**契约本意归位**而非行为修复。
+
+
+---
+
+## 145. 版本号 `0.2.1` → `0.2.2`：同步点清单、盲点核对与包内文件数变化（g-064，2026-10-13，基线 `f8bc6b9` 隔离工作树 `g-064-att-01`）
+
+### 一、为什么是 patch
+
+负责人 2026-10-13 裁定「提升版本号至 0.2.2」（同批指令还有「dev 合并到主分支」「只保留主分支和 dev」，
+后两项由主管在复核后执行，不在本轮）。本轮没有新字段、新路由或响应形状变化 ⇒ 按 patch 提升；本版
+用户可感知变更全部来自 g-060…g-063。
+
+### 二、发布范围核实（不凭记忆）
+
+`git merge-base main dev` = **`93b0d9e`**（0.2.1 升版提交），dev 领先 merge-base **37** 个提交，main 侧
+1 个（`009ec61` = 0.2.1 发布合并提交）⇒ 本次合入 main 是真 merge（非 ff）。四个目标的代表提交逐项用
+`git merge-base --is-ancestor` 核实（**都是 HEAD 的祖先、都不是 `009ec61` 的祖先**）：
+
+| 目标 | 代表提交 | 是 HEAD 祖先 | 是 `009ec61` 祖先 |
+| --- | --- | --- | --- |
+| g-060「预设」库 | `61bcdc4` | YES | NO |
+| g-061 客户端半复用收口 | `38299ed` | YES | NO |
+| g-062 会话内装配状态提示 | `861f871` | YES | NO |
+| g-063 primitives 探测修复 | `b0ba1cd` | YES | NO |
+
+### 三、同步的「本包当前版本」（30 处 / 11 文件，全部改为 `0.2.2`；行号为改后行号）
+
+| 文件:行 | 原值 | 说明 |
+| --- | --- | --- |
+| `package.json:3` | `"version": "0.2.1"` | 权威源① |
+| `index.js:213` | `PLUGIN_VERSION = '0.2.1'` | 权威源②（`host.test.mjs` 有 lockstep 断言） |
+| `README.md:13` / `README_zh.md:12` | 徽章 `version-0.2.1` | 两份根 README |
+| `README.md:110` / `README_zh.md:92` | `this repository is 0.2.1` / 「本仓库为 0.2.1」 | 安装段（与「npm `latest` 为 `0.1.5`」双写） |
+| `README.md:339` / `README_zh.md:285` | 文档表内的同一表述 | 发布前如实区分 |
+| 包内 `README.md:260` / `:265` | 同上（中 / 英） | |
+| `CONTRACT.md:1630-1631` | §10 export 示例 `plugin.version` / `pluginVersion` | |
+| `CONTRACT.md:3631` | §13.8 版本节点文案 `v0.2.1` | |
+| `CONTRACT.md:3773` | §13.9 ping 示例 `version` | |
+| `CONTRACT.md:5045` / `:5073` | §17 update-check 两个示例的 `current` | |
+| `CONTRACT.md:5689-5690` | §18.8 update-apply 状态示例 `version` / `tag` | |
+| `CONTRACT.md:5711-5712` | §18 install 拒绝示例 `releaseUrl` / `releaseLink` | |
+| `test/stage2.test.mjs:1251-1252` | `pluginVersion` / `plugin.version` 断言 | |
+| `test/update.test.mjs:65` / `test/install.test.mjs:70` | `OLD_TARBALL_URL`（「本包已经是的那版」） | |
+| `test/update.test.mjs:989` | ping 的 `body.version` 断言 | |
+
+### 四、随权威源移动的「更新目标」夹具（4 文件，`0.2.2` → `0.2.3`）
+
+这些夹具必须**比本包版本高一档**（`test/install.test.mjs:60-63` 的注释写明了理由），否则「有更新」
+会翻成「无更新」，route/install/update 的整片用例会连锁塌掉。行号为改后行号：
+
+| 文件:行 | 说明 |
+| --- | --- |
+| `test/install.test.mjs:62` `:64` `:68` `:146` `:152` `:163-164` `:582` `:721` `:738` `:742-743` `:762` `:773` `:775` `:780` `:787` `:797` `:800` `:804-805` `:830` `:925` | `ASSET_URL` / `TARBALL_URL` / `tag_name` 兜底、`npmDocument`、镜像与拒绝用例、`releaseUrl` 断言 |
+| `test/route.test.mjs:47` `:588-589` `:603` `:604` `:617` `:625` `:635-636` `:653` | `TARBALL_URL`、`updateTransport` 默认文档、`hasUpdate` 注释与断言、假恶意 tarball 文档 |
+| `test/update.test.mjs:63` `:125-126` `:148` `:150` `:153` `:348` `:352` `:365` `:367` `:422` `:433-434` `:438` `:464` `:875` `:1429` `:1668` | `TARBALL_URL`、`releaseResponse`、`npmResponse` 的 `dist-tags` / `versions` / `time`，以及消费它们的 `latest` / `latestTag` / `releaseUrl` 断言与区域探针的假文档 |
+| `CONTRACT.md:5046-5047` `:5052` | §17 npm 示例的 `latest` / `latestTag` / `tarball`（与 `current` 同段：`current` 是 0.2.2、`latest` 随之是 0.2.3） |
+| `CONTRACT.md:5074-5075` `:5077` | §17 GitHub 示例的 `latest` / `latestTag` / `releaseUrl` |
+
+### 五、⚠️ 盲点核对（本项目升版踩过两次，本轮逐类查）
+
+1. **转义正则形态**（§121 的 banner `/0\.1\.4/`）：`grep -rn '0\\.2\\.1'` 全仓只命中
+   `test/host.test.mjs:168`（**DSH peer 范围**转义正则）与 `test/install.test.mjs:439` / `:633`
+   （`/v0\.2\.0/`，对应同文件 `tag: 'v0.2.0'` 的纯函数夹具，与当前版本无关）
+   ⇒ **本轮的「当前版本」断言没有转义正则形态**，但仍按 §127/§134 的做法跑全量兜底。
+2. **本轮真实盲点是「更新目标夹具」**（§127 记的第二类，方向恰好相反）：夹具**已经是** `0.2.2`，
+   升版后与本包版本相等 ⇒ `hasUpdate` 翻假。第一次全量跑实测 **904 中 2 红**，红点都在
+   `test/update.test.mjs` 的 `update route` 两例（`GET answers the documented shape` 的
+   `hasUpdate`，与 `an npm failure falls back to GitHub` 的同名断言），根因是 `npmResponse()` **函数体**
+   （`:148` / `:150` / `:153`）漏在批量替换的清单外；补齐后 **0 红**（一轮到位，没有第三类原因）。
+   ⚠️ 教训：**列行号不能替代按语义扫全文**——函数体的行号不在首轮清单里。
+
+### 六、刻意不改的白名单（逐类理由）
+
+1. **DSH 的版本**（不是本插件版本）：`package.json:50`、`index.js` 的 `DSH_PEER_RANGE_FALLBACK` 与注释、
+   `core/compat.js:166` 的 `@param` 示例、`test/host.test.mjs:168`、`test/boot.test.mjs:328-493`、
+   `scripts/check-compat.mjs:210`、三份 README 的前置条件与 DSH 徽章（`<0.2.2-0`）；
+2. **历史段**：`CHANGELOG.md` 的 `[0.2.1]` 及更早、`NOTES.md` 全部历史叙述（含 §124、§127、§134）；
+3. **镜像实测记录**：`CONTRACT.md` 的 `dist-tags.latest` = `0.1.5` 两处（当时测得的事实）；
+4. **纯函数自洽举例**：`test/update.test.mjs` 的 `isNewerVersion` / `registryTarball` 举例（`:280`、
+   `:300-335`）与 `test/install.test.mjs` 的 `buildReleaseAssetUrl('0.2.0','0.2.0')`、`MIRROR_TARBALL`
+   ——传什么断言什么，与当前版本无关；表键与 `ASSET_URL` 文件名**升版前就不相等**，保持既有形态；
+5. **测试替身注入的 `currentVersion`**：`test/update.test.mjs` 的 `makeChecker` 默认 `'0.1.1'`（§127 先例）。
+
+### 七、`npm pack`：30 → 33 文件
+
+- 本机直跑 `npm pack` 仍会遇到 `EPERM`（`~/.npm/_cacache` 有 root-owned 文件，§121/§127/§134 已记）
+  ⇒ 全程用 `--cache /tmp/ps-pack-cache-022 --pack-destination /tmp/ps-pack-out-022`；
+- 实测 **33 文件**（v0.2.1 = 30）；**+3** = `core/presets.js`（g-060 预设库）、`core/assembly-watch.js`
+  （g-062 装配状态机）、`client.presets.js`（g-060 的预设立项分块）；
+- 包内 33 项：`package.json`、`LICENSE`、`index.js`、`client.js` + **5** 个 `client.*.js` chunk、
+  `core/` 16 个模块、`CONTRACT.md`、`README.md`、`NOTES.md`、`cordis.patch.yml`、`scripts/` 4 个脚本；
+- 复核：包内 `package.json.version` = **`0.2.2`**；`test/` 命中 **0**；`.dsh-graph/` 命中 **0**；
+  `prepare.mjs` 的 `CHUNK-STAMPS` 断言磁盘上 **5** 个 chunk 一致。
+
+### 八、与 brief 的三处事实偏差（以实测为准）
+
+1. brief 写「`client-chunks.mjs` 4 match」——实测 **5 file(s) match**（v0.2.1 时是 5：`client.js` +
+   4 chunk；本版 g-060 新增 `client.presets.js` ⇒ 5 chunk、manifest 6 项，`prepare` 的
+   `CHUNK-STAMPS` 逐项核对 **5**）；
+2. brief 写「上版 `npm pack` 30 文件」，与 §134 的实测一致（30），本版 33；
+3. brief 写「g-060 新增『预设』功能」把 0.2.2 称作 patch 提升——g-060 在开发期是 feature，但它与
+   g-061…g-063 都**未出现在 `[0.2.1]` 段**（0.2.1 段只覆盖 g-052…g-058），因此 0.2.2 作为 patch
+   版本把这一批一次放出，`[0.2.2]` 段如实记全部条目。
+
+### 九、验收（单行证据）
+
+- 升版后 `node --test test/*.test.mjs` = **904 pass / 0 fail / skipped 0**（升版前基线同数，未增删断言）；
+- `node scripts/prepare.mjs` = **21 项 OK**；`node scripts/client-chunks.mjs` = **5 file(s) match**，exit 0；
+- **负向对照**：见「十、负向对照」；
+- `git diff --stat` = **11 文件**，全部是版本字面量、文档与测试夹具；`core/`、`client.js` 与 5 个
+  `client.*.js` chunk、`scripts/` **零改动**，`index.js` 仅 `PLUGIN_VERSION` 一行。
+
+### 十、负向对照（判据 6）
+
+把 `index.js:213` 的 `PLUGIN_VERSION` 回退成 `'0.2.1'`（其余不动），跑定向用例
+`node --test test/host.test.mjs test/stage2.test.mjs test/update.test.mjs test/route.test.mjs test/install.test.mjs`
+⇒ **实测变红**（lockstep 常量用例 + ping/update/install/route 各一族的版本断言），随后还原为 `'0.2.2'`；
+命令与红点清单见本目标的结果文件（results-att-001.md）。
+
+### 十一、未验证项
+
+- `npm publish` / `git tag` / `git push` / 合入 `main` / 分支收口：**人工 gate，本轮未做**（合入与删分支
+  由主管复核后执行）；因此 npm 上的 `latest` 仍是 `0.1.5`，README 的双写表述正为此；
+- 徽章的 shields.io 在线渲染未目视（离线），只核对了源文本。

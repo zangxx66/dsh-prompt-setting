@@ -39,6 +39,7 @@ window.__ModuleLoader__.load({
     const UI = shared.UI;
     const VIEWS = shared.VIEWS;
     const cardStyle = shared.cardStyle;
+    const chunkTab = shared.chunkTab;
     const chunkDiff = shared.chunkDiff;
     const composeSections = shared.composeSections;
     const countMatches = shared.countMatches;
@@ -46,6 +47,7 @@ window.__ModuleLoader__.load({
     const diffSections = shared.diffSections;
     const diffTone = shared.diffTone;
     const editGate = shared.editGate;
+    const emptyCard = shared.emptyCard;
     const filterLabelKey = shared.filterLabelKey;
     const fmt = shared.fmt;
     const h = shared.h;
@@ -54,6 +56,8 @@ window.__ModuleLoader__.load({
     const ineffectiveCause = shared.ineffectiveCause;
     const layerKey = shared.layerKey;
     const metaStyle = shared.metaStyle;
+    const miniButtonStyle = shared.miniButtonStyle;
+    const monoTextBox = shared.monoTextBox;
     const originKey = shared.originKey;
     const originOf = shared.originOf;
     const originTone = shared.originTone;
@@ -152,12 +156,10 @@ window.__ModuleLoader__.load({
         ),
         h('p', { 'data-note': 'reserved-own-tab', style: { margin: 0, ...metaStyle } }, t('overviewReservedNote')),
         sections.length === 0
-          ? h(
-              'div',
-              { 'data-empty': 'sections', style: cardStyle },
+          ? emptyCard('sections', [
               h('strong', { style: { fontSize: 13 } }, t('emptyTitle')),
               h('p', { style: { margin: '4px 0 0', ...metaStyle } }, t('emptyBody')),
-            )
+            ])
           : null,
         shown.map((section) => h('div', { key: section.name }, sectionRow(t, m, a, section))),
       );
@@ -308,16 +310,16 @@ window.__ModuleLoader__.load({
               'data-section-name': section.name,
               'aria-expanded': String(expanded),
               onClick: () => a.toggleExpanded(section.name),
-              style: {
-                font: 'inherit',
-                fontSize: 12,
+              // g-061 batch 3: the shared radius-6 ghost shape. This call site
+              // states its own padding and colour, and — like its two neighbours
+              // in the history chunk — states **no** line height; the factory
+              // writes none, so the row keeps the height it has today.
+              style: miniButtonStyle({
                 padding: '2px 8px',
-                borderRadius: 6,
-                cursor: 'pointer',
                 color: token.labelSecondary,
                 background: 'transparent',
                 border: `1px solid ${token.borderL2}`,
-              },
+              }),
             },
             expanded ? t('collapse') : t('expand'),
           ),
@@ -327,20 +329,18 @@ window.__ModuleLoader__.load({
               'pre',
               {
                 'data-section-full': section.name,
-                style: {
-                  margin: 0,
+                // g-061: the shared text box; this one is the expanded section's
+                // own read of it (8/10 padding, radius 8, the L2 stroke, 320px).
+                style: monoTextBox({
+                  mono: true,
                   padding: '8px 10px',
-                  borderRadius: 8,
-                  border: `1px solid ${token.borderL2}`,
-                  fontSize: 12,
+                  radius: 8,
+                  border: token.borderL2,
                   lineHeight: '18px',
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
                   maxHeight: 320,
-                  overflow: 'auto',
+                  scroll: 'overflow',
                   color: token.labelSecondary,
-                  fontFamily: token.mono,
-                },
+                }),
               },
               text,
             )
@@ -471,20 +471,18 @@ window.__ModuleLoader__.load({
           {
             'data-full-text': m.fullOrigin === 'all' ? 'rendered' : 'filtered',
             'data-rendered-resolved': String(resolved),
-            style: {
-              margin: 0,
+            // g-061: the same box again, at the full-text size (10/12 padding,
+            // radius 8, the L2 stroke, 460px).
+            style: monoTextBox({
+              mono: true,
               padding: '10px 12px',
-              borderRadius: 8,
-              border: `1px solid ${token.borderL2}`,
-              fontSize: 12,
+              radius: 8,
+              border: token.borderL2,
               lineHeight: '18px',
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
               maxHeight: 460,
-              overflow: 'auto',
+              scroll: 'overflow',
               color: token.labelSecondary,
-              fontFamily: token.mono,
-            },
+            }),
           },
           highlightNodes(shownText, m.search),
         ),
@@ -527,18 +525,17 @@ window.__ModuleLoader__.load({
                     'pre',
                     {
                       'data-diff-detail': row.name,
-                      style: {
-                        margin: 0,
+                      // g-061: the same box once more — the diff detail has no
+                      // stroke and no dimmed colour of its own (6/8, radius 6,
+                      // 220px), and that is stated here rather than defaulted.
+                      style: monoTextBox({
+                        mono: true,
                         padding: '6px 8px',
-                        borderRadius: 6,
-                        fontSize: 12,
+                        radius: 6,
                         lineHeight: '18px',
-                        whiteSpace: 'pre-wrap',
-                        wordBreak: 'break-word',
                         maxHeight: 220,
-                        overflow: 'auto',
-                        fontFamily: token.mono,
-                      },
+                        scroll: 'overflow',
+                      }),
                     },
                     pair.base.length > 0
                       ? h(
@@ -567,9 +564,7 @@ window.__ModuleLoader__.load({
      * @param props - the main bundle's page model, actions and translator.
      * @returns the tab element.
      */
-    function OverviewTab(props) {
-      return renderOverviewPanel(props.t, props.m, props.a);
-    }
+    const OverviewTab = chunkTab(renderOverviewPanel, 'OverviewTab');
 
     return { OverviewTab, build: SELF_BUILD };
     /* @build-fingerprint:end */

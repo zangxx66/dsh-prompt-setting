@@ -23,10 +23,13 @@
  *   registers and the write lock that narrows every write route to it
  *   (Revision 7).
  * - this file is the adapter: one registered prompt section, two waterfall
- *   listeners and eight REST routes. The eighth (g-030) is the upstream update
+ *   listeners and sixteen REST paths. The eighth (g-030) is the upstream update
  *   check and its on/off switch; its policy is `core/update.js` (pure, with the
  *   transport and the clock injected) and its one byte of state lives in
- *   `preferences.json` through `core/store.js`.
+ *   `preferences.json` through `core/store.js`. The last three (g-060,
+ *   Revision 37) are the preset library — the user's own catalogue of texts for
+ *   the reserved section, its policy in `core/presets.js` (pure) and its file
+ *   `presets.json` again through `core/store.js` (CONTRACT.md §20).
  *
  * The listeners read memory only. The override listener records the
  * pre-waterfall sections (the `base` view and the frozen probe) before
@@ -53,6 +56,7 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -74,6 +78,13 @@ import {
   legacyPlan,
   reservedSectionLast,
 } from './core/custom.js';
+import {
+  CHANGE_NOTICE,
+  FIRST_NOTICE,
+  configuredTextOf,
+  createAssemblyWatch,
+  sectionTextOf,
+} from './core/assembly-watch.js';
 import { EXPERIMENTS } from './core/experiments.js';
 import {
   INSTALL_REQUEST_LIMIT,
@@ -143,22 +154,38 @@ import {
   withInterpolate,
 } from './core/overrides.js';
 import {
+  planApply,
+  planUnapply,
+  publicApplied,
+  publicPresets,
+  removePreset,
+  reservedSectionOf,
+  upsertPreset,
+  validatePresetId,
+  validatePresetInput,
+} from './core/presets.js';
+import {
   appendHistoryRecord,
   clientBuildInfo,
   historyPath,
   readConfig,
   readHistoryFile,
   readPreferences,
+  readPresets,
   removeOverride,
   upsertOverride,
   userConfigPath,
   userPreferencesPath,
+  userPresetsPath,
   workspaceConfigPath,
   writeConfig,
   writeConfigsAtomically,
   writePreferences,
+  writePresets,
 } from './core/store.js';
 import {
+  ASSEMBLY_NOTICE_DEFAULT,
+  ASSEMBLY_NOTICE_FLAG,
   DOWNLOAD_REGION_DEFAULT,
   REGION_PROBE_TIMEOUT_MS,
   REGISTRY_CHECK_TIMEOUT_MS,
@@ -167,6 +194,7 @@ import {
   createDownloadRegion,
   createUpdateChecker,
   isDownloadRegion,
+  normalizePreferences,
   resolveDownloadRegion,
 } from './core/update.js';
 import {
@@ -182,7 +210,7 @@ import {
 /** Package name; echoed by the probe so the browser can assert identity. */
 const PLUGIN_NAME = 'dsh-prompt-setting';
 /** Package version; `test/host.test.mjs` asserts it matches package.json. */
-const PLUGIN_VERSION = '0.2.1';
+const PLUGIN_VERSION = '0.2.2';
 /** The one prefix this plugin owns. Every route lives under it. */
 const ROUTE_PREFIX = '/prompt-setting';
 /** Stage 1A's route: a read-only liveness probe (behaviour frozen). */
@@ -275,6 +303,59 @@ const UPDATE_APPLY_CANCEL_PATH = `${ROUTE_PREFIX}/update-apply/cancel`;
  *     class of which is decided by a network round trip.
  */
 const DOWNLOAD_REGION_PATH = `${ROUTE_PREFIX}/download-region`;
+/**
+ * g-060 (Revision 37): the preset library — the user's own catalogue of
+ * `{action, text}` pairs for the reserved section.
+ *
+ * Three paths, and the split is the whole design:
+ *   - `GET|PUT|DELETE /presets` is the **catalogue**: list, upsert one preset
+ *     (`PUT`; `DELETE ?id=`) — it never touches a layer;
+ *   - `POST /presets/apply` is the **write**: it takes `{presetId, session}`,
+ *     snapshots what that workspace layer holds now, writes the preset's text
+ *     into the reserved section, and records the pair;
+ *   - `POST /presets/unapply` is the **restore**: it puts that workspace layer
+ *     back to the snapshot it took, and drops the record.
+ *
+ * `apply`/`unapply` are `POST` because they are neither an upsert of the
+ * library nor a removal from it: they act on a **layer**, named by a session,
+ * through the same write path `PUT /overrides` uses. The library itself is
+ * per-installation (`<DSH_HOME>/prompt-setting/presets.json`), which is why the
+ * catalogue routes carry no layer or session at all.
+ */
+const PRESETS_PATH = `${ROUTE_PREFIX}/presets`;
+/** g-060: apply one preset to the workspace that owns a session. */
+const PRESETS_APPLY_PATH = `${ROUTE_PREFIX}/presets/apply`;
+/** g-060: restore the workspace layer to the snapshot `apply` took. */
+const PRESETS_UNAPPLY_PATH = `${ROUTE_PREFIX}/presets/unapply`;
+/**
+ * g-062: the「装配状态提示」— did the prompt this plugin set get assembled, and
+ * did that text enter the model request?
+ *
+ * One path, two methods, and they are two different questions about one feature:
+ *   - `GET ?session=<id>` answers the **observation**: the last key-node notice
+ *     of that session (first assembly of a new conversation / the next run after
+ *     a save), each with its assembly-layer and delivery-layer verdicts, plus the
+ *     switch's current state. A read never writes a notice and never probes: an
+ *     unknown session answers `record: null`, not an error;
+ *   - `GET ?since=<seq>` answers the **incremental feed**: the notices born after
+ *     that cursor, newest last, each tagged with its session. This is the channel
+ *     the shell-overlay toaster reads: it has no session in hand (it lives outside
+ *     the settings page) and it must never replay a notice it already showed, so
+ *     the cursor — not a re-read of the same record — is what makes "once per key
+ *     node" hold on the client too. An absent or malformed cursor means "start
+ *     from now" (the current cursor and `bootId` come back with no notices), a
+ *     cursor from another mount (`bootId`) is answered the same way, and a cursor
+ *     older than the retained log is answered `stale: true` with the newest
+ *     notice only;
+ *   - `PUT {enabled}` records the switch in `preferences.json` (the same
+ *     document the update check uses). Turning it off silences the notices; it
+ *     does not stop the (side-effect-free) observation on the assembly path.
+ *
+ * Nothing here reaches the model: the notice is rendered in the settings page and
+ * in a shell-overlay toast, it costs no tokens and it never changes the prompt an
+ * assembly returns.
+ */
+const ASSEMBLY_STATUS_PATH = `${ROUTE_PREFIX}/assembly-status`;
 /** Method table; a known path with any other method is a 405 carrying `allow`. */
 const ROUTES = new Map([
   [PING_PATH, ['GET']],
@@ -290,6 +371,10 @@ const ROUTES = new Map([
   [UPDATE_APPLY_PATH, ['GET', 'POST']],
   [UPDATE_APPLY_CANCEL_PATH, ['POST']],
   [DOWNLOAD_REGION_PATH, ['GET', 'PUT']],
+  [PRESETS_PATH, ['GET', 'PUT', 'DELETE']],
+  [PRESETS_APPLY_PATH, ['POST']],
+  [PRESETS_UNAPPLY_PATH, ['POST']],
+  [ASSEMBLY_STATUS_PATH, ['GET', 'PUT']],
 ]);
 /**
  * How long the host waits for the release-asset probe before installing anyway.
@@ -1014,6 +1099,61 @@ function mount(ctx, config, cleanups) {
   };
 
   /**
+   * g-062: this mount's assembly-status watch — the per-session record of the
+   * last key-node notice (the first assembly of a new conversation, and the next
+   * run after the user saved a new prompt), each carrying both verdicts.
+   *
+   * The switch is read **per notice**, never cached, for the same reason the
+   * update switch is: a hand edit of `preferences.json` must be honoured on the
+   * next run without a remount. The whole watch is an observer — nothing it
+   * records can change the section list an assembly returns.
+   */
+  const assemblyWatch = createAssemblyWatch({
+    sectionName: CUSTOM_SECTION_NAME,
+    enabled: () => assemblyNoticeEnabled(),
+  });
+
+  /**
+   * Is the g-062 notice switch on?
+   *
+   * Absent means on (`ASSEMBLY_NOTICE_DEFAULT`), and an unreadable document
+   * fails open to on: the switch exists to silence a notice, not to break a
+   * settings page or a turn.
+   * @returns true when notices may be produced.
+   */
+  function assemblyNoticeEnabled() {
+    try {
+      return readPreferenceDocument()[ASSEMBLY_NOTICE_FLAG] !== false;
+    } catch {
+      return ASSEMBLY_NOTICE_DEFAULT;
+    }
+  }
+
+  /**
+   * Persist the g-062 switch.
+   *
+   * Merged into the current document, exactly like the update switch: an atomic
+   * write replaces the whole file, so writing only this key would erase a stored
+   * download region.
+   * @param enabled - the requested state.
+   * @returns `{written, enabled, error}`; a write failure is a value, never a throw.
+   */
+  function setAssemblyNotice(enabled) {
+    const next = normalizePreferences({ ...readPreferenceDocument(), [ASSEMBLY_NOTICE_FLAG]: enabled === true });
+    try {
+      writePreferences(updatePreferencesPath, next);
+    } catch (error) {
+      const message = error instanceof Error ? String(error.message).split('\n')[0] : String(error);
+      return {
+        written: false,
+        enabled: assemblyNoticeEnabled(),
+        error: { code: 'preferences-unwritable', message },
+      };
+    }
+    return { written: true, enabled: next[ASSEMBLY_NOTICE_FLAG] === true, error: null };
+  }
+
+  /**
    * The agent registry, or undefined when this profile has none.
    * @returns the service, or undefined.
    */
@@ -1555,6 +1695,11 @@ function mount(ctx, config, cleanups) {
     const registered = Array.isArray(assembly?.sections) ? assembly.sections : [];
     const record = { seq: (state.records.get(key)?.seq ?? 0) + 1, registered, downstream: null };
     state.records.set(key, record);
+    // g-062: captured **before** `resolvedFor` consumes `pendingProbe`. Object
+    // identity is the only reliable test: `probeTarget()` hands the real Agent
+    // when the session has one, so a probe is indistinguishable from a turn by
+    // its shape (card-e29d15f5, risk 2).
+    const probe = state.pendingProbe !== null && context === state.pendingProbe.context;
     const resolved = resolvedFor(context);
 
     const downstream = await next();
@@ -1583,13 +1728,87 @@ function mount(ctx, config, cleanups) {
     // (workspace over user, on statedness), and the table is this assembly's own
     // (`downstream.variables ?? assembly.variables`) — never a cached reading.
     // A failure here costs at most one unexpanded turn, so it fails open.
-    if (interpolateFlagOf(resolved) !== true) return base;
+    let result = base;
+    if (interpolateFlagOf(resolved) === true) {
+      try {
+        const current = Array.isArray(base?.sections) ? base.sections : sections;
+        const expanded = expandReservedSection(current, assemblyVariablesOf(assembly, downstream));
+        if (expanded !== current) result = { ...base, sections: expanded };
+      } catch {
+        result = base;
+      }
+    }
+    // g-062: the observation, after every decision above and before the value
+    // leaves this handler. It reads the section list this plugin is about to
+    // return and produces nothing the assembly path consumes; it is fail-open
+    // (`observeUserAssembly` swallows its own errors), so no observation can
+    // break a turn and no observation can change the returned sections.
+    observeUserAssembly({ probe, context, resolved, sections: result?.sections, at: Date.now() });
+    return result;
+  }
+
+  /**
+   * g-062: fold one finished assembly into the status watch.
+   *
+   * Called with the exact section list {@link assembleHandler} returns. Two
+   * assemblies are deliberately **not** attributed to a user session:
+   *   - this plugin's own probe (matched by the identity of the very
+   *     `AssembleContext` object `probe()` handed to `assemble()`): a probe
+   *     assembles without any delivery and must never enter a session's notice;
+   *   - an unscoped assembly (no session id), which belongs to no conversation.
+   *
+   * Both are counted instead of silently dropped, so the diagnostics can show
+   * that the exclusion is running.
+   * @param input - `{probe, context, resolved, sections, at}`.
+   */
+  function observeUserAssembly(input) {
     try {
-      const current = Array.isArray(base?.sections) ? base.sections : sections;
-      const expanded = expandReservedSection(current, assemblyVariablesOf(assembly, downstream));
-      return expanded === current ? base : { ...base, sections: expanded };
+      if (input.probe === true) {
+        assemblyWatch.rejectProbe();
+        return;
+      }
+      const sessionId = sessionIdOf(input.context);
+      if (sessionId === undefined) {
+        assemblyWatch.rejectProbe();
+        return;
+      }
+      assemblyWatch.observeAssembly({
+        sessionId,
+        // The config this assembly resolved — "what the user set in this plugin",
+        // independent of whether it reached the rendered section.
+        configuredText: configuredTextOf(input.resolved?.overrides, CUSTOM_SECTION_NAME),
+        // The plugin's own final text for the reserved section; absent means the
+        // section did not survive to this list, which is reported as "not
+        // assembled" rather than guessed at.
+        segmentText: sectionTextOf(input.sections, CUSTOM_SECTION_NAME) ?? '',
+        at: input.at,
+      });
     } catch {
-      return base;
+      // Fail open. An observation bug must never break a user's turn.
+    }
+  }
+
+  /**
+   * g-062: note a save of the reserved section, so that session's **next run**
+   * can report whether the change was re-assembled and delivered.
+   *
+   * Called after a successful write and strictly side-effect-free with respect to
+   * it: a note that cannot be taken never fails a save.
+   * @param input - `{layer, session, action, text}`.
+   */
+  function notePromptWrite(input) {
+    try {
+      assemblyWatch.markPromptWrite({
+        layer: input.layer,
+        // `null` (a user-layer save with no session) addresses every session; a
+        // workspace save addresses the one whose workspace layer was written.
+        session: typeof input.session === 'string' && input.session.length > 0 ? input.session : null,
+        action: input.action,
+        text: typeof input.text === 'string' ? input.text : '',
+        at: Date.now(),
+      });
+    } catch {
+      // Fail open: the save already happened and its response is unaffected.
     }
   }
 
@@ -2272,6 +2491,14 @@ function mount(ctx, config, cleanups) {
     const isSection = sectionOf(next);
     writeConfig(target.path, next);
     cacheWritten(target, next);
+    // g-062: a rollback rewrites the reserved section, so it is a prompt change
+    // like any other and the layer's next run reports it.
+    notePromptWrite({
+      layer,
+      session: layer === 'workspace' ? scopeSession ?? null : null,
+      action: isSection === null ? 'hide' : isSection.action,
+      text: isSection === null || isSection.action === 'hide' ? '' : String(isSection.text ?? ''),
+    });
     const written = recordHistory({
       path: target.path,
       at: new Date().toISOString(),
@@ -2437,6 +2664,19 @@ function mount(ctx, config, cleanups) {
     const history = {};
     for (const name of importedNames) {
       cacheWritten(targets[name], plans[name].next);
+      // g-062: an import that changes the reserved section is a prompt change like
+      // any save, so the affected layer's next run reports it. Read from the plan
+      // that was just committed, never re-read from disk.
+      for (const change of plans[name].changes) {
+        if (change.name !== CUSTOM_SECTION_NAME || change.status === 'unchanged') continue;
+        const after = change.after === undefined ? null : change.after;
+        notePromptWrite({
+          layer: name,
+          session: name === 'workspace' ? sessionId ?? null : null,
+          action: after === null ? 'hide' : after.action,
+          text: after === null || after.action === 'hide' ? '' : String(after.text ?? ''),
+        });
+      }
       const snapshot = snapshotOfConfig(plans[name].next);
       const reported = [];
       for (const change of plans[name].changes) {
@@ -2556,6 +2796,92 @@ function mount(ctx, config, cleanups) {
    */
   async function handleUpdateCheck(url, res) {
     sendJson(res, 200, await updateChecker.check({ force: url.searchParams.get('force') === '1' }));
+  }
+
+  /**
+   * `GET /prompt-setting/assembly-status` — what this plugin observed about the
+   * prompt's two layers for one session, plus the incremental feed a toaster
+   * outside the settings page reads.
+   *
+   * The answer is a **pure read**: it never assembles, never probes and never
+   * writes a notice. An unknown session (one this mount has not seen an assembly
+   * for) answers `record: null` with `ok: true` — "nothing observed yet" is a
+   * fact, not an error.
+   *
+   * The two verdicts are the goal's口径, and `basis` states them as data so the
+   * page can render its own language rather than parse prose:
+   *   - `assembly: 'plugin-return'` — the recorded text is the section list this
+   *     plugin returned, and a `{prepend: true}` listener registered **after**
+   *     this plugin may still rewrite it;
+   *   - `delivery: 'surface-system-message'` — delivered means this step
+   *     committed a `system/message` on the surface (append or head replace);
+   *     `httpObservable: false` — whether the HTTP request was really sent is not
+   *     observable from a plugin, and this route does not claim it.
+   * @param url - the parsed request URL (`?session=`, `?since=`).
+   * @param res - the Node response.
+   */
+  function handleReadAssemblyStatus(url, res) {
+    const raw = url.searchParams.get('session');
+    const sessionId = typeof raw === 'string' && raw.length > 0 ? raw : null;
+    // The incremental feed is opt-in by query, so a plain read (the settings
+    // page's own) can never consume a cursor it does not keep. A missing or
+    // malformed `since` reads as "start from now": the answer still carries the
+    // current cursor and `bootId` (that is how a fresh client learns where "now"
+    // is without replaying history), but no notices. The cursor is the client's
+    // optimisation, not a resource of this route, so a bad value is never an
+    // error.
+    const rawSince = url.searchParams.get('since');
+    const since =
+      typeof rawSince === 'string' && /^[0-9]{1,15}$/.test(rawSince.trim()) ? Number(rawSince.trim()) : null;
+    sendJson(res, 200, {
+      ok: true,
+      enabled: assemblyNoticeEnabled(),
+      session: sessionId,
+      record: sessionId === null ? null : assemblyWatch.status(sessionId),
+      counts: assemblyWatch.stats(),
+      notifications: assemblyWatch.pendingNotices(since),
+      basis: {
+        assembly: 'plugin-return',
+        delivery: 'surface-system-message',
+        httpObservable: false,
+        outerRewritePossible: true,
+        // The Host collapses the whole section list onto the effective `complete`
+        // section **after** the waterfall (`SystemPrompt.assemble()`), so the
+        // recorded text is what this plugin returned, not necessarily what the
+        // service finally kept — stated instead of hidden (review P2.3).
+        postWaterfallCollapse: true,
+      },
+    });
+  }
+
+  /**
+   * `PUT /prompt-setting/assembly-status` — record the notice switch.
+   *
+   * Same shape rules as the update switch (a non-boolean is the existing 400
+   * `invalid-enabled`; an unwritable preference file is a 200 `ok:false`). The
+   * write is merged into the current document, so it cannot erase the update
+   * switch or a stored download region.
+   * @param req - the Node request.
+   * @param res - the Node response.
+   */
+  async function handleWriteAssemblyStatus(req, res) {
+    const body = await readJsonBody(req);
+    if (typeof body?.enabled !== 'boolean') {
+      throw new OverrideError(
+        'invalid-enabled',
+        '"enabled" must be a boolean (true = show assembly-status notices, false = never show them)',
+      );
+    }
+    const saved = setAssemblyNotice(body.enabled);
+    sendJson(res, 200, {
+      ok: saved.written,
+      enabled: saved.enabled,
+      saved: { enabled: saved.enabled },
+      effectiveFrom: 'next-run',
+      ...(saved.written
+        ? { error: null }
+        : { code: saved.error.code, message: saved.error.message, error: saved.error }),
+    });
   }
 
   /**
@@ -3195,6 +3521,20 @@ function mount(ctx, config, cleanups) {
     const warnings = await assertTextInterpolatable(override, next, target);
     writeConfig(target.path, next);
     cacheWritten(target, next);
+    // g-062: a save of the reserved section is exactly the change the session's
+    // next run has to report on. Noted after the write succeeded, read from the
+    // body rather than re-read from disk, and unable to affect the response.
+    if (override.name === CUSTOM_SECTION_NAME) {
+      notePromptWrite({
+        layer,
+        // Contract §21.4: a `user`-layer save addresses **every** session, so a
+        // `?session=` the page happens to carry must not scope it to one
+        // (review W3). Only a workspace write names a session.
+        session: layer === 'workspace' ? sessionId ?? null : null,
+        action: override.action,
+        text: override.action === 'hide' ? '' : override.text,
+      });
+    }
     // History is written after the config it describes, and a history failure
     // never turns a successful save into an error (CONTRACT §8.4).
     recordHistory({
@@ -3272,6 +3612,12 @@ function mount(ctx, config, cleanups) {
     }
     writeConfig(target.path, config);
     cacheWritten(target, config);
+    // g-062: dropping the reserved entry changes the prompt this layer
+    // contributes, so the layer's next run reports it like any other save.
+    if (name === CUSTOM_SECTION_NAME) {
+      // §21.4: only a workspace write is scoped to one session (review W3).
+      notePromptWrite({ layer, session: layer === 'workspace' ? sessionId ?? null : null, action: 'hide', text: '' });
+    }
     recordHistory({
       path: target.path,
       at: new Date().toISOString(),
@@ -3316,6 +3662,12 @@ function mount(ctx, config, cleanups) {
     const config = emptyConfig();
     writeConfig(target.path, config);
     cacheWritten(target, config);
+    // g-062: a reset that took the reserved entry away is a prompt change; a
+    // reset of a layer that never held one is not.
+    if (removed.some((entry) => entry.name === CUSTOM_SECTION_NAME)) {
+      // §21.4: only a workspace write is scoped to one session (review W3).
+      notePromptWrite({ layer, session: layer === 'workspace' ? sessionId ?? null : null, action: 'hide', text: '' });
+    }
     const history = recordHistory({
       path: target.path,
       at: new Date().toISOString(),
@@ -3403,6 +3755,358 @@ function mount(ctx, config, cleanups) {
       entries,
       effectiveFrom: 'next-turn',
       history,
+    });
+  }
+
+  /**
+   * The preset library as this mount reads it: path plus the store's verdict.
+   *
+   * Read per request, never cached: the library is a user file that another
+   * process (or a hand edit) may change between two clicks, exactly like the
+   * two override layers, and it is off the assembly path either way.
+   * @returns `{path, document, missing, error}`.
+   */
+  function presetsFile() {
+    const path = userPresetsPath();
+    const read = readPresets(path);
+    return { path, ...read };
+  }
+
+  /**
+   * The library a **write** may modify, refusing to overwrite a file this
+   * revision does not understand.
+   *
+   * The same rule `writableConfig` applies to a layer: a malformed library is
+   * reported and left alone, so a save can never destroy a file the user is
+   * still holding the pieces of. Reads stay permissive (the read face answers
+   * the reason instead).
+   * @returns `{path, document}`.
+   * @throws {OverrideError} 409 `presets-not-writable`.
+   */
+  function writablePresets() {
+    const file = presetsFile();
+    if (file.error !== null) {
+      throw new OverrideError(
+        'presets-not-writable',
+        `${file.path} is not a valid presets library (${file.error.code}: ${file.error.message}); fix or remove it before saving`,
+        409,
+      );
+    }
+    return { path: file.path, document: file.document };
+  }
+
+  /** The `session` a preset body/query names, or null. */
+  function presetSessionOf(body, url) {
+    if (typeof body?.session === 'string' && body.session.length > 0) return body.session;
+    return url.searchParams.get('session');
+  }
+
+  /**
+   * `GET /prompt-setting/presets` — the catalogue and where it is applied.
+   *
+   * Always `200`: the library is one user file, and a file this revision cannot
+   * understand is reported in `error` beside an empty catalogue rather than
+   * failing the page — the page then says「库文件不可读」and the write routes
+   * refuse with the same reason. `workspaceRoot` is present only when the caller
+   * named a session this profile can resolve, so the page can tell「当前工作区
+   * 已应用哪个预设」without a second lookup; an unresolvable session is `null`
+   * here and never an error on a read.
+   * @param url - the parsed request URL.
+   * @param res - the Node response.
+   */
+  function handleReadPresets(url, res) {
+    const file = presetsFile();
+    const sessionId = url.searchParams.get('session');
+    const root = typeof sessionId === 'string' && sessionId.length > 0 ? workspaceRootFor(sessionId).root : null;
+    sendJson(res, 200, {
+      ok: true,
+      path: file.path,
+      version: file.document.version,
+      presets: publicPresets(file.document),
+      applied: publicApplied(file.document),
+      workspaceRoot: root,
+      error: file.error === null ? null : { code: file.error.code, message: file.error.message },
+    });
+  }
+
+  /**
+   * `PUT /prompt-setting/presets` — insert one preset, or edit one by id.
+   *
+   * Order is the contract, as on every other write route: request shape first
+   * ({@link validatePresetInput} answers `400` for every field-level mistake),
+   * then the current library (`409` when it is unusable), and only then a byte.
+   * A body without `id` inserts and the **Host** mints the id; a body with an id
+   * must name an existing preset (`404 preset-not-found`), because「编辑」
+   * silently becoming「新建」would let a stale page duplicate instead of report.
+   * @param req - the Node request.
+   * @param res - the Node response.
+   */
+  async function handleWritePreset(req, res) {
+    const body = await readJsonBody(req);
+    const fields = validatePresetInput(body);
+    const editing = body?.id !== undefined && body?.id !== null;
+    const id = editing ? validatePresetId(body.id, 'invalid-id') : randomUUID();
+    const file = writablePresets();
+    const at = new Date().toISOString();
+    const result = upsertPreset(file.document, editing ? { ...fields, id } : fields, { id, at });
+    writePresets(file.path, result.document);
+    sendJson(res, 200, {
+      ok: true,
+      created: result.created,
+      preset: result.preset,
+      presets: publicPresets(result.document),
+      applied: publicApplied(result.document),
+    });
+  }
+
+  /**
+   * `DELETE /prompt-setting/presets?id=` — drop one preset from the catalogue.
+   *
+   * Deleting a preset that is currently applied is **allowed and changes no
+   * layer**: the workspace keeps the text it was given, and the record becomes
+   * an orphan (`GET /presets` says so, and the page labels it「来源已删除」)
+   * instead of the delete quietly rewriting a workspace the request never named.
+   * @param url - the parsed request URL.
+   * @param res - the Node response.
+   */
+  function handleDeletePreset(url, res) {
+    const raw = url.searchParams.get('id');
+    if (raw === null || raw.length === 0) {
+      throw fail('missing-id', 'query parameter "id" is required');
+    }
+    const id = validatePresetId(raw);
+    const file = writablePresets();
+    const { document, removed } = removePreset(file.document, id);
+    if (removed === null) {
+      throw fail('preset-not-found', `no preset with id ${JSON.stringify(id)}`, 404);
+    }
+    writePresets(file.path, document);
+    const applied = publicApplied(document);
+    // Revision 41: an application is a link on a workspace's stack, so the count
+    // is over links — a preset may be applied to several workspaces.
+    const orphaned = applied.reduce(
+      (total, record) => total + record.stack.filter((link) => link.presetId === id).length,
+      0,
+    );
+    sendJson(res, 200, {
+      ok: true,
+      removed: true,
+      id,
+      preset: removed,
+      orphaned,
+      presets: publicPresets(document),
+      applied,
+    });
+  }
+
+  /**
+   * `POST /prompt-setting/presets/apply` — write one preset into one workspace.
+   *
+   * This is the same write `PUT /overrides` performs (`targetFor` +
+   * `writableConfig` + `writeConfig` + `cacheWritten`), and it deliberately
+   * reuses it rather than growing a second write path: the reserved section is
+   * still the only thing written, the layer's other entries and its switch are
+   * carried across, and a refusal at any step before `writeConfig` leaves every
+   * file byte-identical.
+   *
+   * The snapshot is taken from the config this request just read, and it is what
+   * makes「取消应用」exact. The library write happens **after** the layer write:
+   * the record describes a write that really happened. Residual risk, stated
+   * rather than hidden: if the library write fails after the layer write
+   * succeeded, the workspace holds the preset text with no record of how to undo
+   * it, and the answer is a `500` — the alternative order would record an
+   * application that never happened, which is worse (the page would then offer
+   * to「取消应用」a workspace it never touched).
+   *
+   * Revision 39 puts the **composition** here too, through `planApply`: an
+   * `append` preset is stacked after the layer's own text (the merge kernel
+   * cannot join a layer to itself), and a text the layer already carries is a
+   * `alreadyApplied` no-op — no `writeConfig`, no history record, and the answer
+   * says so instead of claiming a write.
+   * @param req - the Node request.
+   * @param url - the parsed request URL.
+   * @param res - the Node response.
+   */
+  async function handleApplyPreset(req, url, res) {
+    const body = await readJsonBody(req);
+    const rawPresetId = body?.presetId;
+    if (rawPresetId === undefined || rawPresetId === null || rawPresetId === '') {
+      throw fail('missing-preset-id', 'body field "presetId" is required');
+    }
+    const presetId = validatePresetId(rawPresetId);
+    const sessionId = presetSessionOf(body, url);
+    const target = targetFor('workspace', sessionId);
+    const current = writableConfig(target.path);
+    const file = writablePresets();
+    const at = new Date().toISOString();
+    const plan = planApply(file.document, { presetId, workspaceRoot: target.root, current, at });
+    const next = validateConfig(plan.config);
+    // Revisions 40/41: the answer's `base` (and therefore its `before`) is the
+    // snapshot §20.6 restores — the state before the **first** application on
+    // this root — while the history record below still describes *this* write
+    // (the text it really replaced).
+    const currentEntry = reservedSectionOf(current);
+    const base = plan.alreadyApplied === true ? plan.base : plan.base;
+    const before = base;
+    const after = plan.alreadyApplied === true ? currentEntry : reservedSectionOf(next);
+    // Revision 39: an application whose text the layer already carries is a
+    // **no-op** — nothing is written, no history record is appended (there was
+    // no change), and the answer says `alreadyApplied: true` so the page can say
+    // 「该预设已在此工作区生效」instead of claiming a write.
+    //
+    // Review R5: "nothing" includes the **library file**. `before` is what
+    // 「取消应用」restores, and `planApply` returns the existing record untouched
+    // for this case, so writing the document back would either rewrite the same
+    // bytes or — worse, in the original defect — replace the first application's
+    // snapshot with the layer's current text, turning the cancel into a no-op.
+    // The response reports the records as they stand.
+    let history = null;
+    if (plan.alreadyApplied === true) {
+      cacheWritten(target, current);
+    } else {
+      writeConfig(target.path, next);
+      cacheWritten(target, next);
+      // g-062: applying a preset is a prompt change like any other save, so the
+      // workspace's next run reports it. `alreadyApplied` above stays a no-op —
+      // this branch is the one that really wrote.
+      //
+      // Revision 48: the registration is **not** conditioned on `after` existing,
+      // because `writeConfig` above already happened either way. A preset can
+      // legitimately leave the layer with no reserved entry (a `hide`-shaped
+      // plan), and "the prompt is now empty" is exactly the kind of change the
+      // next run has to report; the empty text is the same spelling
+      // `DELETE`/`reset` use (`action: 'hide'`, `text: ''`).
+      notePromptWrite({
+        layer: 'workspace',
+        session: sessionId ?? null,
+        action: after === null || after.action === 'hide' ? 'hide' : 'replace',
+        text: after === null || after.action === 'hide' ? '' : String(after.text ?? ''),
+      });
+      history = recordHistory({
+        path: target.path,
+        at,
+        layer: 'workspace',
+        session: sessionId ?? null,
+        action: actionOf(currentEntry, after),
+        name: CUSTOM_SECTION_NAME,
+        origin: 'ui',
+        before: textEntry(currentEntry === null ? null : currentEntry.text),
+        after: textEntry(after === null ? null : after.text),
+        snapshot: snapshotOfConfig(next),
+        note: `preset ${plan.preset.id}`,
+      });
+      writePresets(file.path, plan.document);
+    }
+    const appliedRecords = publicApplied(plan.alreadyApplied === true ? file.document : plan.document);
+    const record = appliedRecords.find((item) => item.workspaceRoot === target.root) ?? null;
+    sendJson(res, 200, {
+      ok: true,
+      applied: true,
+      alreadyApplied: plan.alreadyApplied === true,
+      preset: plan.preset,
+      // The public shape of this workspace's record (base + stack), so the page
+      // can list every preset applied there without a second request.
+      record,
+      workspaceRoot: target.root,
+      base,
+      before,
+      after,
+      stack: record === null ? [] : record.stack,
+      effectiveFrom: 'next-turn',
+      history,
+      appliedRecords,
+    });
+  }
+
+  /**
+   * `POST /prompt-setting/presets/unapply` — take **one** preset off a
+   * workspace's stack (Revision 41).
+   *
+   * The body carries `{session, presetId}`: the request names which application
+   * to cancel, because a workspace holds a stack and「取消应用」is no longer
+   * all-or-nothing. The remaining links stay composed on top of `base`; removing
+   * the last one restores `base` itself (`null` ⇒ the reserved entry is removed),
+   * and the layer's other entries and its switch are untouched either way.
+   *
+   * The text is **recomposed** from base + stack rather than un-appended from the
+   * current bytes, which is what makes cancelling one preset out of several
+   * possible at all — and it means a hand edit made between two applications is
+   * overwritten. That trade is stated in the contract (§20.6) as well as here.
+   *
+   * `presetId` is required (`400 missing-preset-id`), and a preset that is not on
+   * that workspace's stack is `404 not-applied` — the answer must not claim a
+   * write that did not happen.
+   * @param req - the Node request.
+   * @param url - the parsed request URL.
+   * @param res - the Node response.
+   */
+  async function handleUnapplyPreset(req, url, res) {
+    const body = await readJsonBody(req);
+    const rawPresetId = body?.presetId;
+    if (rawPresetId === undefined || rawPresetId === null || rawPresetId === '') {
+      throw fail('missing-preset-id', 'body field "presetId" is required');
+    }
+    const presetId = validatePresetId(rawPresetId);
+    const sessionId = presetSessionOf(body, url);
+    const target = targetFor('workspace', sessionId);
+    const current = writableConfig(target.path);
+    const file = writablePresets();
+    const at = new Date().toISOString();
+    const plan = planUnapply(file.document, { workspaceRoot: target.root, presetId, current });
+    const next = validateConfig(plan.config);
+    const before = reservedSectionOf(current);
+    const after = reservedSectionOf(next);
+    writeConfig(target.path, next);
+    cacheWritten(target, next);
+    // g-062: cancelling an application restores text — also a prompt change, and
+    // reported on the workspace's next run like any other save.
+    //
+    // Revision 48: "restores text" includes restoring **nothing**. Cancelling the
+    // last link of a workspace that never held a reserved entry clears the
+    // section (`after === null`), and a clearing is a prompt change: the guard
+    // that used to sit here (`after !== null && typeof after.text === 'string'`)
+    // silently dropped it, which is why「取消应用」never toasted on the live
+    // machine. The empty text is the existing spelling of a removal
+    // (`DELETE`/`reset` use `action: 'hide'`, `text: ''`).
+    notePromptWrite({
+      layer: 'workspace',
+      session: sessionId ?? null,
+      action: after === null || after.action === 'hide' ? 'hide' : 'replace',
+      text: after === null || after.action === 'hide' ? '' : String(after.text ?? ''),
+    });
+    const history = recordHistory({
+      path: target.path,
+      at,
+      layer: 'workspace',
+      session: sessionId ?? null,
+      action: actionOf(before, after),
+      name: CUSTOM_SECTION_NAME,
+      origin: 'ui',
+      before: textEntry(before === null ? null : before.text),
+      after: textEntry(after === null ? null : after.text),
+      snapshot: snapshotOfConfig(next),
+      note: `unapply preset ${presetId}`,
+    });
+    writePresets(file.path, plan.document);
+    const appliedRecords = publicApplied(plan.document);
+    const record = appliedRecords.find((item) => item.workspaceRoot === target.root) ?? null;
+    sendJson(res, 200, {
+      ok: true,
+      unapplied: true,
+      // Which application was cancelled, and what is left on the stack — the two
+      // facts the page needs to keep the remaining names on screen.
+      presetId,
+      removed: { presetId, appliedAt: plan.removed.appliedAt ?? null },
+      record,
+      workspaceRoot: target.root,
+      restored: plan.restored,
+      base: plan.base,
+      stack: record === null ? [] : record.stack,
+      before,
+      after,
+      effectiveFrom: 'next-turn',
+      history,
+      appliedRecords,
     });
   }
 
@@ -3552,6 +4256,31 @@ function mount(ctx, config, cleanups) {
               sendJson(res, 200, req.method === 'POST' ? await handleStartInstall(req) : handleInstallStatus(url));
               return;
             }
+            if (url.pathname === PRESETS_PATH) {
+              // g-060: the catalogue. `PUT` is one upsert (insert without an
+              // id, edit with one), `DELETE ?id=` removes one entry; neither
+              // touches a layer, so neither takes a session.
+              if (req.method === 'PUT') await handleWritePreset(req, res);
+              else if (req.method === 'DELETE') handleDeletePreset(url, res);
+              else handleReadPresets(url, res);
+              return;
+            }
+            if (url.pathname === PRESETS_APPLY_PATH) {
+              await handleApplyPreset(req, url, res);
+              return;
+            }
+            if (url.pathname === PRESETS_UNAPPLY_PATH) {
+              await handleUnapplyPreset(req, url, res);
+              return;
+            }
+            if (url.pathname === ASSEMBLY_STATUS_PATH) {
+              // g-062: `GET` is a pure read of the observation (never assembles,
+              // never probes); `PUT` records the notice switch. Neither reaches
+              // the model.
+              if (req.method === 'PUT') await handleWriteAssemblyStatus(req, res);
+              else handleReadAssemblyStatus(url, res);
+              return;
+            }
             if (url.pathname === INTERPOLATE_PATH) {
               if (req.method === 'PUT') await handleWriteInterpolate(req, url, res);
               else handleReadInterpolate(url, res);
@@ -3587,6 +4316,74 @@ function mount(ctx, config, cleanups) {
     cleanups,
     () => ctx.on('system-prompt/assemble', assembleHandler),
     'prompt-setting: system-prompt/assemble override',
+  );
+
+  // g-062: the two host feeds the assembly-status notice needs, on the same
+  // ledger as every other effect (unmounting drops them with the route).
+  //
+  // `agent/pre-step` fires immediately after the assembly that step just ran
+  // (`AgentLoop.preStep()`: assemble → this waterfall), and its payload carries
+  // `{agent, messages, turn, step, signal}` — the agent is the session id, and
+  // turn/step are what align a notice with the projection that follows.
+  //
+  // It is a **waterfall**, not an emit: the framework's own listener decides
+  // `{kind: 'enter'|'reject', messages}` and `AgentLoop` consumes that decision.
+  // A listener that returns `undefined` without calling `next()` would drop the
+  // decision on the floor and break every step, so this one reads its payload,
+  // contains its own errors and then **passes the waterfall on unchanged** — it
+  // must never delay, veto or rewrite a step. `typeof` guards the double: an
+  // emit-shaped caller (the test harness, an older host) hands no `next`.
+  registerEffect(
+    ctx,
+    cleanups,
+    () => ctx.on('agent/pre-step', (payload, next) => {
+      try {
+        const agent = payload?.agent;
+        if (agent !== null && typeof agent === 'object' && typeof agent.id === 'string') {
+          assemblyWatch.observePreStep({ sessionId: agent.id, turn: payload?.turn, step: payload?.step });
+        }
+      } catch {
+        // Fail open: an observation must never break a user's turn.
+      }
+      return typeof next === 'function' ? next() : undefined;
+    }),
+    'prompt-setting: assembly-status step alignment',
+  );
+
+  // `session/event` is the post-commit, fire-and-forget append feed: the only
+  // place a `system/message` (the delivery evidence) or a `request/header`
+  // (`reason: 'initial'`, the new-conversation signal) can be observed. It is
+  // observed and never relied on for a synchronous decision — listener failures
+  // are contained by the host, and this listener contains its own.
+  registerEffect(
+    ctx,
+    cleanups,
+    () => ctx.on('session/event', (session, event) => {
+      try {
+        const sessionId = session !== null && typeof session === 'object' && typeof session.id === 'string' ? session.id : null;
+        if (sessionId === null) return;
+        assemblyWatch.observeSessionEvent({ sessionId, event, at: Date.now() });
+      } catch {
+        // Fail open.
+      }
+    }),
+    'prompt-setting: assembly-status delivery observation',
+  );
+
+  // The bounded record is dropped when the Host says the session left the store,
+  // so a long-lived profile does not accumulate one record per conversation.
+  registerEffect(
+    ctx,
+    cleanups,
+    () => ctx.on('session/disposed', (session) => {
+      try {
+        const sessionId = session !== null && typeof session === 'object' && typeof session.id === 'string' ? session.id : null;
+        if (sessionId !== null) assemblyWatch.disposeSession(sessionId);
+      } catch {
+        // Fail open.
+      }
+    }),
+    'prompt-setting: assembly-status session cleanup',
   );
 
   // Revision 8's deliverable: the listener that keeps the reserved section

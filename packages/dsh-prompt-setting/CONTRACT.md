@@ -633,6 +633,13 @@ meaning exactly.
 | `/prompt-setting/update-apply/cancel` | `POST` | Stop a running install: `{"requestId": string}` (§18.4). Carries `launchKind` (g-036, §18.8). |
 | `/prompt-setting/download-region` | `GET` | Which update source is in force, and — with nothing stored — the availability decision that sets it (g-043, §17.7). Always `200`. |
 | `/prompt-setting/download-region` | `PUT` | Record the choice: `{"region": "default"\|"cn"\|"custom", "registry"?: string}`, a custom address validated first (g-043, §17.8). |
+| `/prompt-setting/presets` | `GET` | The preset library: the stored presets and the records of where they are applied (g-060, §20.2). Always `200`. |
+| `/prompt-setting/presets` | `PUT` | Insert one preset (no `id`, the Host mints it) or edit one by `id` (§20.3). |
+| `/prompt-setting/presets` | `DELETE` | Remove one preset — `?id=` (§20.4). An applied preset may be deleted: the layer keeps its text and the record is reported as an orphan. |
+| `/prompt-setting/presets/apply` | `POST` | Write one preset into the workspace layer that owns `session`, snapshotting what that layer held (`{presetId, session}`, §20.5). |
+| `/prompt-setting/presets/unapply` | `POST` | Put that workspace layer back to the snapshot `apply` took, and drop the record (`{session}`, §20.6). |
+| `/prompt-setting/assembly-status` | `GET` | The in-session assembly-status notice for one session (`?session=`): the last key node with its assembly-layer and delivery-layer verdicts, plus the switch's state (g-062, §21). The same answer carries the **incremental feed** (`?since=<seq>`, §21.6) the shell-overlay toaster reads. Always `200`; an unknown session answers `record: null`. |
+| `/prompt-setting/assembly-status` | `PUT` | Record the notice switch: `{"enabled": bool}` (g-062, §21.2). |
 
 - An unknown path under the prefix is `404` with
   `{ "code": "not-found", "message": "no route for <path>" }` (no `ok` key —
@@ -641,9 +648,11 @@ meaning exactly.
   listing the supported methods and an **empty** body. `/prompt-setting/ping`
   answers `allow: GET`; `/prompt-setting/overrides` answers
   `allow: GET, PUT, DELETE`; `history`, `diff` and `export` answer `allow: GET`;
-  `import` and `rollback` answer `allow: POST`; `interpolate`, `update-check`
-  and `download-region` answer `allow: GET, PUT`; `update-apply` answers
-  `allow: GET, POST` and `update-apply/cancel` answers `allow: POST`.
+  `import` and `rollback` answer `allow: POST`; `interpolate`, `update-check`,
+  `download-region` and `assembly-status` answer `allow: GET, PUT`; `update-apply` answers
+  `allow: GET, POST` and `update-apply/cancel` answers `allow: POST`; `presets`
+  answers `allow: GET, PUT, DELETE`, and `presets/apply` and `presets/unapply`
+  answer `allow: POST`.
 - The fence runs **before** the method check and before any route logic.
 
 ## 2. `GET /prompt-setting/snapshot`
@@ -1367,7 +1376,8 @@ Revision 7 adds these:
     sorts after every section the DSH repository defines; another plugin may
     still legitimately register a larger finite order and sort after this one.
 21. **Resolved in g-015: the client no longer offers the Revision 6 editor.**
-    The settings page is the first-level tabs of §13 (five since Revision 19),
+    The settings page is the first-level tabs of §13 (six since Revision 38,
+    five between Revision 19 and Revision 37),
     and its only write surface is
     「我的 Prompt」, which writes the reserved name with `replace` — so no UI
     path can ask for a write the Host would refuse. What remains a *limitation*
@@ -1617,8 +1627,8 @@ resolve the `workspace` layer).
   "schema": "dsh-prompt-setting/export",
   "version": 1,
   "exportedAt": "2024-01-02T10:00:00.000Z",
-  "plugin": { "name": "dsh-prompt-setting", "version": "0.2.1" },
-  "pluginVersion": "0.2.1",
+  "plugin": { "name": "dsh-prompt-setting", "version": "0.2.2" },
+  "pluginVersion": "0.2.2",
   "layers": {
     "user":      { "layer": "user", "enabled": true,
                    "reason": null,
@@ -1862,11 +1872,13 @@ snapshot already stores `{name, action}` (§19.4, §19.7).
 
 ## 13. Client-side contract (Revision 4; re-ordered in Revision 7, g-015; collapsed scope in g-016)
 
-### 13.0 The five first-level tabs
+### 13.0 The six first-level tabs
 
 Since g-015 the settings page is a fixed, ordered set of first-level tabs with
 the first one open by default; Revision 19 (g-038) split the old
-「历史与备份」 into 「版本历史」 and 「备份与恢复」, so there are five. Above them
+「历史与备份」 into 「版本历史」 and 「备份与恢复」, so there were five; Revision 38
+(g-060) adds 「我的预设」 — the preset catalogue of §20 — **directly after**
+「我的 Prompt」, so there are six. Above them
 there are exactly three things: the
 title line — which carries the plugin version beside the heading since Revision
 17 (§13.8) — one line of deciding facts, and the **「我的 Prompt」block whose
@@ -1886,33 +1898,36 @@ place the scope is changed.
 
 | order | `data-tab-value` | tab | what it is |
 | --- | --- | --- | --- |
-| 1 (default) | `mine` | 「我的 Prompt」 | the **only** write surface |
-| 2 | `overview` | 「提示词总览」 | strictly read-only |
-| 3 | `history` | 「版本历史」 | the log, its own scope and the comparison |
-| 4 | `backup` | 「备份与恢复」 | export / import, and nothing else |
-| 5 | `advanced` | 「高级」 | legacy list, the two layer-wide clears, full status |
+| 1 (default) | `mine` | 「我的 Prompt」 | the **only** write surface for the reserved section's text |
+| 2 | `presets` | 「我的预设」 | the preset catalogue, and the two layer actions it can start (§20) |
+| 3 | `overview` | 「提示词总览」 | strictly read-only |
+| 4 | `history` | 「版本历史」 | the log, its own scope and the comparison |
+| 5 | `backup` | 「备份与恢复」 | export / import, and nothing else |
+| 6 | `advanced` | 「高级」 | legacy list, the two layer-wide clears, full status |
 
 Markers, on top of the Revision 3/4 ones this revision keeps:
 
 - the tab list is `data-region="tabs"` with `data-active-tab="<value>"`, and the
   root container carries the same `data-active-tab`;
 - each tab control carries `data-tab-value="<value>"` and its group
-  (`data-tab-key="main"` in the fallback branch); the group marker
-  `data-tab-group="main"` is carried by the group's container in **both**
-  renderer branches — when the official `SegmentedTabs` is used, a
-  `display: contents` wrapper carries it, because the official control owns its
-  own DOM and cannot be asked to;
+  (`data-tab-key="main"`), and the group's container carries the same
+  `data-tab-group="main"`. Both markers are written by the hand-built tab list,
+  which is the **only** one this page renders under either renderer (g-063's
+  third real-machine round removed the official `SegmentedTabs` branch and the
+  `display: contents` wrapper that used to carry the group marker for it — §13.4
+  Revision 49);
 - exactly **one** tab panel is rendered: `data-region="tab-panel"` with
   `data-tab-value="<value>"`. Switching a tab renders that tab's panel and no
   other tab's top-level regions. In particular the export/import actions
   (`data-action="export"` / `"import-preview"` / `"import-apply"`, the
   `data-role="import-file"` input and the whole `data-region="transfer"` block)
-  exist **only** in the `backup` panel, and the log's own regions
+  exist **only** in the `backup` panel, the log's own regions
   (`data-region="history"`, `"history-list"`) exist **only** in the `history`
-  panel.
+  panel, and the preset catalogue (`data-region="presets"`, its list, and the two
+  dialogs of §20.9) exists **only** in the `presets` panel.
 
 **Revision 29 (the client half ships as an entry plus chunks — internal
-structure only).** Nothing above changes: the same five tabs, the same order, the
+structure only).** Nothing above changes: the same tabs, the same order, the
 same markers, the same interaction, the same copy. What changes is *where the
 bytes live* and *when they arrive*:
 
@@ -1980,7 +1995,42 @@ interaction.
   checked against the exposed keys, and no chunk may redefine an exposed name
   locally; a full free-variable analysis would need a parser this zero-dependency
   package does not have. The gap that leaves — a name referenced but never taken —
-  is covered at run time, where an undeclared identifier throws (`NOTES.md` §123);
+  is covered at run time, where an undeclared identifier throws (`NOTES.md` §123).
+  **Revision 42** states the rule that keeps the surface from becoming a
+  graveyard: a name is added only when ≥2 consumers ask for the same thing, and
+  the name a merge retires (the label-only half of the two region-key families)
+  is **gone** rather than kept as an alias — an alias would be a second spelling
+  of one rule, which is the drift the surface exists to prevent;
+- **Revision 43** adds the four **render facilities** the entry and the tab
+  chunks draw with — `scrimStyle(zIndex)`, `errorLine({…})`,
+  `emptyCard(marker, children)` and `monoTextBox({…})` — under the same rule
+  (each has ≥2 consumers, and each difference the call sites really have is a
+  required or explicit parameter rather than a default). The Revision 43 entry
+  below lists, family by family, which differences were kept;
+- **Revision 44** adds the dialog shell, the ghost-button families, the session
+  row and the search comparison — `dialogCardStyle({…})`,
+  `dialogTitleStyle({…})`, `dialogActionsStyle({…})`, `chipButtonStyle({…})`,
+  `miniButtonStyle({…})`, `sessionRowStyle({…})`, `normalizeNeedle(query)` and
+  `matchesNeedle(values, needle, {cached})` — under the same rule. It **keeps**
+  five reviewed inconsistencies with their neighbours, each as an explicit
+  argument rather than a default: converging them would be a visible change. The
+  Revision 44 entry below lists them, family by family;
+- **Revision 45** adds the in-session **assembly-status notice** (g-062, §21): one
+  new route pair (`GET`/`PUT /prompt-setting/assembly-status`), one new
+  `preferences.json` key (`assemblyNotice`, stated-only), and one new block at the
+  top of the「我的 Prompt」panel. It changes no existing route, no existing
+  response field and no existing stored byte;
+- **Revision 46** makes that notice **proactive** (g-062, §21.6): the same `GET`
+  answers an incremental feed (`?since=<seq>`), and a resident `shell.overlay`
+  entry renders the official `Toast` at each key node. Additive only — two new
+  response fields on the read (`notifications`, and `seq` inside a notice), two
+  new `counts` fields (`history`, `bootId`), two new page markers
+  (`data-assembly-toast-seat` and, when the seat is not `ready`,
+  `data-assembly-note="no-toast"`). No existing field changes meaning, no
+  existing route changes shape, and no new runtime dependency or build step is
+  introduced. On a Host without the `Toast` primitive, or without the
+  `shell.overlay` slot, nothing is registered and the Revision 45 behaviour is
+  exactly what remains — with the page saying so (review C4);
 - the measured effect (see `NOTES.md` §123 for the migration record): `client.js`
   **9584 → 8575 lines / 456680 → 411979 bytes**, with `client.overview.js` 577,
   `client.transfer.js` 264 and `client.advanced.js` 502 lines now fetched on
@@ -2251,6 +2301,419 @@ always saw, and no other section's `append` changes meaning.
   emptiness predicate), `core/custom.js` (`RESERVED_WRITABLE_ACTIONS`) and
   `client.js` (the control, the draft field, the save body). `index.js` stores the
   word and resolves nothing: the stack is built once, in the merge kernel.
+
+---
+
+**Revision 37 (g-060: the preset library — a user's own catalogue of texts for
+the reserved section, five routes, and a sixth first-level tab).**
+A **preset** is a named `{action, text}` pair for `prompt-setting:custom-prompt`
+(§13.1). The user keeps a library of them and **applies** one to a **workspace**:
+the workspace layer's reserved entry becomes the preset's, and「取消应用」puts that
+layer back to exactly what it held before. Five routes are added (§1, §20), the
+schema of nothing else moves, and the assembly path gains no read.
+
+- **why a third file.** The library lives in
+  `<DSH_HOME>/prompt-setting/presets.json`, its own document read and written by
+  its own routes. Folding it into `overrides.json` was rejected because that file
+  is inside the frozen export / import / history / snapshot schemas (§10, §11,
+  §8, §2), and a preset is none of those things — it is the machine owner's
+  catalogue, not one layer's override. Folding it into the export document was
+  rejected for the same reason plus one: a backup is portable and a catalogue is
+  not, and a restore would then silently rewrite the catalogue;
+- **applying reuses the one write face.** `POST /presets/apply` resolves the
+  workspace exactly as `PUT /overrides` does (`targetFor` + `writableConfig`),
+  rebuilds the layer with the reserved entry upserted, validates it with
+  `validateConfig`, and writes it with the same atomic `writeConfig` +
+  `cacheWritten` pair. No second write path exists, the layer's other entries and
+  its `interpolateCustom` switch are carried across untouched, and a refusal at
+  any step before the write leaves every file byte-identical. **A preset carries
+  no `action` outside `replace` / `append`**: `hide` is not a preset (§15.5,
+  Revision 36), and a preset never carries `order`;
+- **cancelling restores content, not a version.** The record stores the snapshot
+  `before` the application took from the config that request had just read:
+  `null` when the layer held no reserved entry at all, otherwise its
+  `{action, text}`. `POST /presets/unapply` writes that value back through the
+  same path — a `null` snapshot removes the entry, a non-null one restores
+  `action`/`text` — and drops the record. It is deliberately **not** a history
+  rollback: a rollback walks a log and can restore a version the user never had
+  here, while this route restores the one value the application overwrote. The
+  workspace layer's other entries, its switch, the user layer and every other
+  workspace are untouched (§20.6);
+- **deleting an applied preset changes no layer.** The record survives, the
+  workspace keeps the text it was given, and `GET /presets` reports the record as
+  an `orphan` (`presetName: null`) —「来源已删除」in the page. Rewriting a
+  workspace the request never named would be a write nothing asked for, and
+  silently dropping the record would lose the snapshot the user still needs;
+- **what this revision deliberately does not do.** No preset travels in
+  `GET /export` (the document's fields are unchanged, §20.8), no preset is applied
+  to more than one workspace per request, and the library keeps no version
+  history — one record per workspace root, one level deep: applying a second
+  preset replaces the first record, so「取消应用」goes back to the state before the
+  **latest** application (§20.5);
+- **client surface (§13.1, §20.9).** A sixth first-level tab「预设」sits directly
+  after「我的 Prompt」, in the on-demand chunk `client.presets.js`. It lists the
+  presets, creates/edits/deletes them, offers「从当前文本另存为预设」, applies one to
+  a workspace chosen by that workspace's session, cancels an application, and
+  shows each workspace's applied state (including the orphan marker). The tab is
+  a catalogue view plus two layer actions — it is **not** a second text editor for
+  the reserved section, and it never writes a layer from the catalogue routes;
+- **where it is implemented.** `core/presets.js` (pure: validation,
+  normalization, the apply/unapply decisions), `core/store.js`
+  (`userPresetsPath` / `readPresets` / `writePresets`, atomic write),
+  `index.js` (the five route adapters), `client.js` + `client.presets.js` (the
+  tab and its chunk), `CONTRACT.md` §1/§20 and `test/presets.test.mjs`.
+
+---
+
+**Revision 38 (g-060 review R3: the preset tab becomes dialog-based).**
+Client-half only: **no route, no query parameter, no response field and no stored
+byte changes** — §20.2–§20.7 keep their shapes exactly, and both layer writes still
+go through `POST /presets/apply` / `POST /presets/unapply` with the same bodies.
+What changes is *where* the tab's two writes are made, and what the page promises
+while a draft is unsaved.
+
+- **the catalogue is the tab.** The inline editor form and the bottom workspace
+  picker are gone from the tab body (§20.9): it is now a heading, a state line and
+  one row per preset — mode tag, text preview, and 「编辑」/「删除」/「应用到工作区」
+  — plus the two entrances beside the list heading (`preset-new`,
+  `preset-save-as-current`).
+- **two overlays.** Creating/editing happens in `preset-editor-dialog`, the layer
+  action in `preset-apply-dialog`, both laid out like the page's existing
+  `renderRegionDialog` (a scrim plus a card, `role="dialog"`,
+  `aria-modal="true"`). A refusal is rendered **inside** the open dialog on its own
+  marked line and never through the page-level notice (which would sit behind the
+  scrim), a failure never closes the dialog, and closing is always an explicit
+  act.
+- **an unsaved draft is never discarded silently.** While the editor's draft
+  differs from what the library holds, the dialog states it
+  (`data-role="preset-dialog-dirty"`) and its close control is labelled
+  「放弃修改」/「Discard changes」 — the act that throws work away is named as such,
+  and it carries `data-preset-dirty`.
+- **the apply dialog applies the stored version.** It is opened from **one row**
+  and names that row's preset (`data-preset-dialog-preset`), and it says in words
+  that the library's stored text is what gets written. Revision 37's "an unsaved
+  edit disables「应用」" was a consequence of both surfaces living on one screen;
+  with the draft in a different dialog the block is no longer needed, and the
+  invariant it protected is kept by the two facts above instead — the draft cannot
+  reach a layer write, and it cannot vanish unannounced.
+- **client-only, and pinned by `test/client.test.mjs`**: the tab's order and
+  on-demand chunk, the row entrances, the editor dialog's fields and modes, a
+  refused save staying inside the dialog, an empty name never becoming a round
+  trip (zero requests), the dirty-close label and warning, the apply dialog's rows
+  and both POST bodies, and both dictionaries.
+
+---
+
+**Revision 39 (g-060 review R4: 「叠加」 is a real stack, and the two destructive
+acts ask first).** The owner's acceptance pass found three things — two
+behaviour, one copy.
+
+- **`append` stacks (host + policy; no wire shape changes).** `planApply`
+  (`core/presets.js`) now composes the entry: `replace` is the preset's text as
+  the section's text, `append` is *the layer's existing text + the stack
+  separator + the preset's text* — the very `RESERVED_STACK_SEPARATOR` the
+  two-layer stack uses (§13.1, Revision 36), inserted only when there was text to
+  stack onto. The composition is **idempotent**: a text that already is the
+  preset's, or already ends with `SEP` + it, is left untouched and the answer
+  carries `alreadyApplied: true` — no layer write, no history record, and the
+  page says「该预设已在此工作区生效」. Nothing else changes either: the library file
+  is not written, and the `applied` record keeps the snapshot the **first**
+  application took — review R5 found that overwriting it with the layer's current
+  text turned「取消应用」into a no-op, which is exactly the promise the record exists
+  to keep.
+- **The snapshot keeps the mode.** `before` already recorded `{action, text}`;
+  §20.6 now says in words that an `append` snapshot is restored as `append`,
+  never flattened to `replace`.
+- **The two destructive acts ask first, through the page's one confirmation
+  overlay** (g-031's rule — `renderConfirm`, not a bespoke dialog): deleting a
+  preset (`data-confirm-kind="preset-delete"`, whose question names it) and
+  closing a **dirty** editor (`data-confirm-kind="preset-discard"`). A clean
+  editor still closes on the spot: a confirmation for a no-op is noise.
+- **Copy.** The first-level tab is 「我的预设」/「My presets」 (§13.0, §20.9).
+- Nothing else moved: the five routes, their bodies, their codes and every stored
+  byte keep their Revision 37/38 meanings.
+
+---
+
+**Revision 40 (g-060 review R6: one restore point per workspace, and the
+confirmation is drawn above every tab dialog).**
+
+- **one restore point per workspace (host half).** `planApply` no longer
+  recomputes the record's `before` on every application: when a record already
+  exists for that root, the new application keeps its snapshot and only updates
+  `presetId` / `appliedAt` (§20.5).「取消应用」therefore restores the state before
+  the **first** application. The owner's acceptance found that applying two
+  presets in a row and then cancelling left the first preset in the layer, which
+  is not what「取消应用」means. Revision 39's idempotent branch is untouched: it
+  changes nothing at all, record included.
+- **the confirmation sits above every tab dialog (client half).** The shared
+  confirmation overlay is `zIndex: 1200`; the tab-owned dialogs (「自定义镜像源」,
+  the history comparison modal and the two preset dialogs of §20.9) stay at
+  `1000`. The ordering is now **stated** instead of inherited from tree order: at
+  equal z-index the tab panel — appended after the confirmation card — covered the
+  question completely on the「我的预设」tab, leaving it invisible and unanswerable.
+- Nothing else moved: the five routes, their bodies, their codes, the library's
+  shape and every stored byte keep their Revision 37–39 meanings.
+
+---
+
+**Revision 41 (g-060 review R7: one base plus an application stack per
+workspace).** The owner's acceptance pass found that a single `before` snapshot
+could only ever be all-or-nothing: applying two presets and then cancelling left
+the first one in the layer, because one record described one application. The
+record is now a **base plus a stack**, and「取消应用」is per application.
+
+- **the record (§20.1).** `{workspaceRoot, base, stack[]}`: `base` is the reserved
+  entry as it stood before the first application (`null` = there was none), and
+  each link is `{presetId, appliedAt}` plus **the `{action, text}` it wrote** —
+  that snapshot is what lets the text be recomposed, and one link cancelled, after
+  its preset has been deleted. One record per root; an empty stack is not a record.
+- **the text is always a recomposition** of `base` plus the links, joined by
+  `RESERVED_STACK_SEPARATOR` (§20.5). Both routes recompute it rather than
+  appending to (or subtracting from) the layer's current bytes, which is what makes
+  cancelling one application possible at all — and it means a hand edit made
+  between two applications is overwritten. Stated, not hidden.
+- **apply is idempotent per link** (§20.5): a preset already on the stack is not
+  pushed twice, and that request writes no layer, no history and no library file.
+- **unapply names its target** (§20.6): `{session, presetId}`; a workspace with no
+  record, or a preset that is not on its stack, is `404 not-applied`.
+- **`GET /presets` answers the stack** (§20.2): `applied[].stack` carries every
+  application in order, each with `presetName` / `orphan`, so a page can list them.
+- **the client renders it** (§20.9): every workspace row lists its applications,
+  each with its own「取消」, and「应用」is `disabled` for a preset already on that
+  stack.
+- **old records migrate** (§20.1): a Revision 37–40 record is read as a one-link
+  stack, its `before` becoming `base`.
+- Nothing else moved: the five routes, their codes, the export/import/history
+  schemas and every byte of a layer file keep their Revision 37–40 meanings.
+
+**Revision 42 (g-061 batch 1: the mechanical reuses — internal structure only).**
+Four duplicates the g-061 inventory card named are each one implementation now.
+No route, no query parameter, no stored byte, no marker and no copy key changes:
+the tab trees, their interaction and their markers are the ones Revisions 29–41
+already describe.
+
+- **one props adapter for the five tab chunks.** `renderChunkTab` mounts a chunk's
+  default export as `h(Component, { t, m, a })`, and each chunk's export unpacked
+  that object back into its renderer's three positional arguments — five copies of
+  the same one-liner under five function names. The unpacking is now
+  `__internals.shared.chunkTab(render, name)`; the component keeps its own `name`
+  (`HistoryTab`, `OverviewTab`, …), so what React reports is unchanged. It does
+  **not** replace `renderChunkTab`: that one still builds the `Suspense` boundary
+  and the「chunk unavailable」card, and takes the lazy component — the two are the
+  two halves of one mount, and only the halves with ≥2 copies were merged;
+- **one region-key rule for the two families.** The「查看范围」label
+  (`updateRegionCn` …) and its one-line note (`updateRegionCnNote` …) were two
+  local ternaries of the same shape; both are `shared.regionKey(id, family)` now
+  (`family: ''` / `'Note'`), so the unknown-id fallback to「默认」is one rule in
+  both families. `regionLabelKey` is **gone** from the surface — a label-only name
+  would be a second spelling of it;
+- **`importStatusLabel` stays local, and says why.** Same *kind* of helper, not
+  the same shape: four members whose key suffix varies while the prefix is fixed
+  (`importStatusAdded` …), one of which doubles as the fallback, and its result is
+  the translated string rather than a key. Folding it into `regionKey` would need
+  a member-table abstraction whose only variation is one consumer's — the batch's
+  rule is ≥2 consumers of the *same* shape, and it holds for this one;
+- **one workspace derivation, two published shapes.** The version-history scope
+  selector (§13.3, g-038) and the preset layer picker (§20.9, g-060) each derived
+  one row per workspace — same seat, same「first session id, title or directory
+  name」rule, same session-catalog fallback — written twice. It is
+  `workspaceRows(wsSeat, seat, {withRoot})` now: the selector reads
+  `{value, label, workspaceId, sessionIds}`, the picker reads
+  `{session, root, label}`. Both published shapes, both empty-value shapes
+  (`{mode: 'none', options: []}` versus `[]`), the fields' names and the `root`
+  null-versus-path rule are exactly what they were — only the derivation moved;
+- **the guards moved with it.** `test/client.test.mjs` asserts the merged
+  behaviours (the six keys of the two families, the unknown-id fallback in both,
+  the adapter's name and argument order, both workspace shapes and both
+  fallbacks) and, mechanically, that no chunk keeps a local copy of any of it: no
+  `updateRegion…` literal, no `regionNoteKey`, no local props adapter, and no
+  inlined `'ovWorkspace'` ternary in `client.advanced.js`. `CHUNK_STAMPS` was
+  recomputed with `scripts/client-chunks.mjs --write`.
+
+**Revision 43 (g-061 batch 2: the four style families — internal structure only).**
+The second batch of the g-061 inventory card folds four duplicated render
+facilities into the shared surface (`__internals.shared`). No route, no query
+parameter, no stored byte, no marker and no copy key changes: every `data-*`
+marker, every font size, every layer and every box measurement is the value it
+already was, and `test/client.test.mjs` asserts each of them point by point.
+
+- **one scrim, four dialogs.** `renderConfirm` (the entry), `renderRegionDialog`
+  (the entry), the preset dialogs' `OVERLAY_STYLE` (`client.presets.js`) and
+  `modalShell` (`client.history.js`) each spelled out the same full-screen
+  backdrop. It is `scrimStyle(zIndex)` now, and the layer is a **required**
+  argument with no default: `renderConfirm` passes **1200** — the confirmation
+  is raised on top of every tab-owned dialog (review R6), and that ordering is
+  asserted against the rendered overlay — while the other three pass 1000. A
+  default would be exactly the way a forgotten argument becomes a silent
+  restack, so `scrimStyle(undefined).zIndex` is asserted to be `undefined`;
+- **one error line, three call sites.** The「自定义」dialog's
+  `data-role="region-error"` line, the preset dialog's
+  `data-role="preset-dialog-error"` line and the render-failure card's
+  paragraph were the same red line written three times. It is
+  `errorLine({tag, role, probe, code, text, fontSize, wrap, margin})` now, with
+  every difference stated by the caller: the tag (`div` / `p`), the probe
+  marker (`data-region-error` / `data-preset-dialog-error` / none), the
+  paragraph reset (`margin: 0` on the failure card only), the break
+  (`wordBreak: 'break-word'` on the preset line and the failure card only), the
+  font size (13 at all three today — a fact asserted, not a default hidden in
+  the factory) and the text in front of the host's message (none /
+  `presetFailed` / `renderErrorLabel`). `client.presets.js` keeps its
+  `dialogError(t, m)` adapter — reading `m.presetStatus` is that chunk's own
+  business — but it builds the element with the shared factory;
+- **one carded empty state, and two that stay apart.** `client.advanced.js`'s
+  override list and `client.overview.js`'s section list both rendered
+  `div[data-empty="…"]` under `cardStyle`; that container is
+  `emptyCard(marker, children)`. The other two empty states are deliberately
+  **not** merged, because they are a different shape rather than a different
+  string: 「版本历史」prints one `metaStyle` line in a `div[data-empty]` with no
+  card at all, and「我的预设」prints a bare `p[data-region="presets-empty"]`
+  with `margin: 0` in front of `metaStyle`. Merging either would add a box the
+  reader does not have today or restate a marker family that means something
+  else. The tests assert the two that moved **and** the two that stayed, so a
+  later batch cannot quietly "finish" the job by changing what the page looks
+  like;
+- **one pre-wrap text box, five boxes.** The history preview's box, the three
+  overview boxes (the expanded section body, the full text, the diff detail)
+  and the preset preview shared a typesetting skeleton — `margin: 0`, 12px,
+  `white-space: pre-wrap` and `word-break: break-word` — and nothing else. It is
+  `monoTextBox({maxHeight, mono, border, padding, radius, lineHeight, color,
+  scroll})`, and every one of those is an explicit argument with no default,
+  because every one of them really differs: `maxHeight` 200 / 220 / 320 / 460,
+  `padding` `'4px 6px'` / `'6px 8px'` / `'8px 10px'` / `'10px 12px'`, `radius` 6
+  or 8, `border` `borderL1` / `borderL2` / none, `lineHeight` only where the
+  text is read line by line, `color` only where the box is not the primary
+  reading surface, and `scroll` as `'overflow'` or `'overflowY'` (the history
+  box scrolls on one axis only). The font family is the one **three-state**
+  parameter, because「states none」is a state the page really has: `mono: true`
+  writes the theme's stack (the three overview boxes), `mono: false` writes
+  `inherit` (the preset preview, which follows the page font on purpose), and
+  **omitting it writes no `fontFamily` key at all** — the history preview's box
+  has never named a family, and its pre element takes the browser's own default. A
+  two-state parameter would have moved that box onto the theme's stack, which is
+  a visible change this batch may not make. The diff-op row keeps only its two
+  break rules: it is a line of text, not a box;
+- **the guards moved with it.** `test/client.test.mjs` asserts the four
+  factories field for field (including the negative: no argument, no value), the
+  call-site count of each name, and that no chunk keeps a local copy — no
+  `zIndex` literal, no copied `rgba(0, 0, 0, 0.45)` backdrop, no `fontFamily:`
+  decision of its own — plus the rendered style of the confirmation overlay
+  (1200), the region dialog's error line, both carded empty states, all three
+  overview boxes, the preset preview and the history preview's two boxes (which
+  are asserted to carry **no** `fontFamily` key). `CHUNK_STAMPS` was recomputed
+  with `scripts/client-chunks.mjs --write`.
+
+**Revision 44 (g-061 batch 3: the dialog shell, the ghost buttons, the session
+row and the search — internal structure only).** The third batch of the g-061
+inventory card folds the last five duplicated families into
+`__internals.shared`. No route, no query parameter, no stored byte, no marker, no
+ARIA attribute and no copy key changes: every `data-*` value, every `role` and
+`aria-*`, every font size, every padding, every radius and every measurement the
+page draws is the value it already was, and `test/client.test.mjs` asserts each of
+them point by point.
+
+**This revision repairs no drift, on purpose.** Five values in these families
+disagree with their neighbours — the preset dialogs' `maxWidth` **520** against
+the region dialog's 480, their `overflow: 'auto'` against the other dialogs'
+`overflowY: 'auto'`, the region dialog's **missing** `maxHeight` and `overflow`,
+the history pager's `padding: '2px 10px'` against its family's `'2px 8px'`, and
+the preset titles' **15** against the confirmation's 14. All five were reviewed,
+and the decision is to keep every one of them: converging them would change what
+the page looks like, and this batch may not. Each is now an **explicit argument
+at its own call site**, which is also what keeps a later「cleanup」from happening
+by accident — the tests assert the values rather than the family's agreement.
+
+- **one dialog card, four call sites.** `renderConfirm` and `renderRegionDialog`
+  (the entry), the preset dialogs' `DIALOG_STYLE` (`client.presets.js`) and
+  `modalShell` (`client.history.js`) each spelled out the same box under
+  `cardStyle`. It is `dialogCardStyle({width, maxWidth, maxHeight, height,
+  overflow, gap, position})` now, and every one of those is stated by the caller:
+  the width (`'100%'` on three, `min(1040px, 92vw)` on the history modal), the
+  `maxWidth` (480 / 480 / **520** / `'92vw'`), the height and maxHeight (the
+  history modal states both as `min(82vh, 900px)`; the confirmation and the preset
+  dialogs state `maxHeight: '80vh'`; the「自定义」dialog states **neither**), the
+  `gap` (10 on three, and **none** on the confirmation — its grouping is the
+  `marginTop` spacing §13.5 describes), the `position` (`'relative'` on the
+  history modal alone, because its close button is anchored to that corner) and
+  the `overflow`, which is the **property name** rather than a value, so
+  `'overflowY'` and `'overflow'` stay two different declarations. The padding
+  (`'16px 18px'`), the shadow (`0 12px 32px`) and the card's own stroke, surface
+  and radius are the shell, because all four state them identically. The
+  confirmation's `borderColor: stateWarn` stays its own and is declared after the
+  factory, so that the warning is the stroke that wins;
+- **one title line and one actions row.** `confirmTitleStyle` /
+  `confirmActionsStyle` and the preset dialogs' `DIALOG_TITLE_STYLE` /
+  `DIALOG_ACTIONS_STYLE` are `dialogTitleStyle({fontSize, tone, lineHeight})` and
+  `dialogActionsStyle({align, divider, wrap})`. The confirmation's title is 14
+  under the warning colour with a stated `lineHeight: 1.4`; the preset dialogs'
+  is **15**, inherited, and states no line height. The confirmation's actions row
+  carries the top divider §13.5 names (a 16px gap, a 12px inset, the L1 rule); the
+  preset row is right-aligned and keeps its `flexWrap`, which its single button
+  never needs but which is a declared value. **The「自定义」dialog keeps taking
+  the confirmation's two constants**, so the two remain one binding and cannot
+  drift apart; the history modal's head — a flex row holding a title beside an
+  absolutely positioned close button — is a different shape and takes neither
+  factory;
+- **three ghost-button families, and the row family with them.**
+  `chipButtonStyle({cursor, color, background, border})` is the pill (a 999
+  radius, `'3px 10px'`): the fallback tab, the two pinned entries and the
+  「使用这串 id」fallback. The unselected text colour really differs —
+  `labelSecondary` on the tabs, `labelPrimary` on the other two — so it is an
+  argument, and so are the selected fill and the stroke.
+  `miniButtonStyle({padding, color, background, border, lineHeight, textAlign})`
+  is the radius-6 tool-strip button:「显示更多」, the history row's side buttons,
+  the pager, the overview's expand toggle and one option row of the history scope
+  list. **Three of those state no `lineHeight`** and the factory writes none for
+  them, so those rows keep the height they have; the pager's `'2px 10px'` is that
+  family's odd value and is kept; the 18px belongs to the two call sites that
+  already stated it. Every padding is the caller's as well — `'2px 8px'` on three,
+  `'2px 8px 2px 20px'` on「显示更多」, `'4px 8px'` on the history scope option row and
+  `'2px 10px'` on the pager — because a padding is a measurement, not a default.
+  **That two-renderer caveat is gone as of g-063's third real-machine round**: the
+  tab strip is hand-built under **both** renderers (the Host's `SegmentedTabs`
+  divides its own width into equal fractions, which six long Chinese labels do not
+  fit — §13.4 Revision 49), so this factory is now the tab strip's only shape and
+  the two renderers' tabs do look alike;
+- **one session row, with its ARIA left exactly where it was.**
+  `sessionRowStyle({padding, hovered, focused, selected, active})` is the paint
+  the windowed tree row and the flat fallback row share: the 12px/18px type over
+  a left-aligned flex line, the radius-6 hover and focus treatment, the primary
+  text colour and the three-state fill (the business fill when the row is selected
+  or keyboard-highlighted, the hover fill on hover, transparent otherwise).
+  `padding` is the caller's, because the tree row carries its 20px indent inside
+  it (`'3px 8px 3px 20px'`) and the flat row does not (`'4px 8px'`). **Nothing
+  else about those nodes moved**: the tree row is still a level-2 `treeitem`
+  marked `data-role="session-row"` carrying `data-scope-parent` and
+  `data-session-running`, the flat row is still an `option` inside a `listbox`
+  marked `data-role="session-option"`, a selected row still takes its left bar and
+  its stroke, and the four ARIA cases in `test/client.test.mjs` are unchanged. The
+  one behaviour that did move is internal: **`data-session-active` is now computed
+  from the highlighted row's id on both sides** rather than from its index on the
+  flat side, and the rendered attribute is asserted to be value-for-value what the
+  index form produced (including `-1` and an index past the end);
+- **one search comparison, two search semantics.** `normalizeNeedle(query)` is
+  the trim-and-lowercase both boxes already did, at three call sites (the flat
+  filter, the tree derivation and the history scope list), and
+  `matchesNeedle(values, needle, {cached})` is the comparison they share. **The
+  two sides keep asking different questions, and the factory does not converge
+  them**: the session list is lowercased once, into `row.haystack` (one joined
+  string covering id, title and directory), because it can hold thousands of rows,
+  while the history scope list is compared field by field with no cache. The
+  shared function therefore **never joins the fields itself** — joining would let
+  a match span a field boundary, which is a **new** hit on the history side and
+  would move the `data-history-scope-shown` count and the assertions that read it.
+  The empty-query behaviours are unchanged too: the flat filter still returns a
+  copy of its list, and the history scope still returns its own array;
+- **the guards moved with it.** `test/client.test.mjs` asserts the four
+  factories field for field (including the negatives: an argument nobody states
+  is a key nobody writes), each name's call-site count, and each call site's
+  rendered measurements — the confirmation, the「自定义」dialog, the preset
+  editor, the history comparison modal, the fallback tab, both pinned entries,
+  the「显示更多」row, the overview's expand toggle and a history side button —
+  plus both trees' `role` / `aria-*` / `data-*` markers and the search semantics
+  on both sides (a cross-field needle the cached session haystack finds and the
+  field-by-field scope list does not). `CHUNK_STAMPS` was recomputed with
+  `scripts/client-chunks.mjs --write`.
 
 ### 13.1 「我的 Prompt」 — the one write surface
 
@@ -2923,6 +3386,116 @@ code means rather than how it is written:
   `data-status-build` on `data-region="status"`. **Revision 18:** `generatedAt`
   renders in the browser's own zone, with the stored UTC string on the node's
   `title` (see the Revision 18 paragraph above).
+  **Revision 47 (g-062 fix round):** `data-region="renderer-info"` also carried
+  three diagnostic rows, so the fallback-without-a-reason pair the real machine
+  reported could never be read as "not working": `data-primitives-detail="true"`
+  (whether the `require` threw, its error text, the returned value's `typeof`,
+  whether it is an object, and the first ≤8 key names),
+  `data-primitives-members="true"` (`typeof` of `Button` and `Toast` before and
+  after unwrapping a `module.default` wrapper), and
+  `data-primitives-toast-source="module" | "default" | "none"` (which namespace
+  the **toast** capability decision used). The renderer decision
+  (`RENDERER` / `data-renderer`) still keys on the raw module's `Button` only;
+  only the toast probe may unwrap.
+  **Revision 49, wrap-up (g-063):** the first two of those three rows were
+  **removed**, by the operator's request, together with their copy keys and the
+  probe fields only they printed
+  (`primitivesDetail*` / `primitivesMembers*`, `threw` / `error` / `moduleType` /
+  `isObject` / `keys` / `hasDefault` / `defaultKeys` / `buttonBefore` /
+  `buttonAfter` / `toastBefore` / `toastAfter` / `buttonComponent`, and the
+  `namespaceKeyPrefix` / `namespaceMemberType` helpers). They were diagnostics
+  added by the g-062 fix round to locate the `forwardRef` defect on a real
+  machine; that job is done, and they only ever printed in the 「高级」 status
+  block. **Kept:** the `渲染分支` line, the toast-namespace row
+  (`data-primitives-toast-source`, which is what the surviving
+  `primitivesProbe.toastSource` field feeds), and the two rows that render
+  **only when something went wrong** — `data-primitives-failure` (the `require`
+  failed) and `data-primitives-render-error` (the error boundary caught a
+  render-time throw, beside `data-primitives-render-failed="true"`). The
+  real-machine readings this contract is checked against are therefore
+  `data-renderer` / the `渲染分支` line / `data-primitives-toast-source`.
+  **Revision 49 (g-063):** the `Button` question is no longer
+  `typeof === 'function'`. The Host ships `Button` and `Input` as
+  `React.forwardRef(...)` products, whose `typeof` is `'object'`, so the old
+  judge read a fully-stocked Host as empty and pinned this page to the fallback
+  renderer for its whole life. "Usable" now means: a function, **or** an object
+  carrying a React component brand (`forwardRef` → `{ $$typeof, render }`,
+  `memo` → `{ $$typeof, type }`) whose structural field is present and valid;
+  the brand is read off this Host's own `forwardRef` / `memo` where they exist,
+  with `Symbol.for('react.forward_ref' | 'react.memo')` as the documented
+  fallback, and an unknown brand, a missing field or a throwing getter means
+  **not usable** (fallback, never a blank panel). The same judge is used for
+  `iconSource()`, `diffBlockUsable()`, `UI.Input` / `UI.Tag`, the toast `Toast`
+  probe **and the toaster's own
+  render-time guard** (`AssemblyToaster` returns `null` unless
+  `hasComponentExport(toastPrimitives, 'Toast')`) — a capability probe that
+  says yes while the renderer says no would register an overlay that can never
+  draw a notice. The one deliberate exception is the tab strip: `tabs()` no longer
+  asks this judge about `SegmentedTabs` at all, because it does not render that
+  atom under any renderer (see the real-machine follow-up below).
+  `writeClipboard` keeps `typeof === 'function'` because it is
+  called, not rendered.
+  The probe only guards `require` and building elements; React calls the Host's
+  atoms during **render**, and that path became reachable the moment this
+  revision activated the branch. `PrimitivesErrorBoundary` catches such a throw
+  and rebuilds the same page with the hand-built atoms (`renderFallback()`), and
+  `getDerivedStateFromError` flips `primitivesActive()` **before** that rebuild —
+  the flip is **module-instance-wide and one-way**: one Host atom throwing
+  during render settles this whole settings page on the hand-built atoms until
+  the bundle is reloaded. The `shell.overlay` toaster is inside that same
+  instance-wide rule, and once the flip has happened its entry renders
+  **`null`** rather than dropping back to a bare Host `Toast` — re-rendering the
+  atom that threw, wrapped or unwrapped, is exactly what must not happen again.
+  Because of that flip, `iconSource()`, `diffBlockUsable()` and the atoms are all
+  resolved **per render** — that is why two of them are functions rather than
+  constants, and why the version-history chunk asks `diffBlockUsable()` per
+  render instead of caching it. Page readings: `data-renderer` (and the diagnosis
+  line) names the branch **really in use** through `activeRenderer()`;
+  `data-region="renderer-info"` carries
+  `data-primitives-render-failed="true" | "false"` and, when true, a
+  `data-primitives-render-error="true"` row with the error text. (The
+  `data-primitives-button-component` marker that used to ride on the removed
+  key-typeof row is gone with it — the decision is read from `data-renderer`.)
+  **Revision 49, real-machine follow-up — the tab strip is hand-built on purpose:**
+  the official `SegmentedTabs` sets
+  `gridTemplateColumns: repeat(items.length, minmax(0, 1fr))` **inline** on its
+  root (`lib/index.js:3312`), i.e. it divides its own width into n equal
+  fractions. That premise assumes short labels and a wide container; this page
+  has six Chinese labels and the settings panel's content width. Two real-machine
+  readings, recorded as **observations**:
+  - untouched, `minmax(0, 1fr)`'s `0` minimum lets a column shrink below its
+    label → the labels **wrapped inside their cells** (read straight off the
+    inline style; the mechanism is not in doubt);
+  - forced wide with `min-width: max-content`, every `1fr` track resolves to the
+    **widest** label, so all tabs inflated, and the operator saw the strip run
+    **out of the page**. **Why the `overflow-x: auto` on our own container did
+    not absorb that is not established.** The explanation once written here — the
+    control's `max-content` minimum propagating up a flex item and widening an
+    ancestor column — does not survive a read of the Host's
+    `SettingsRoot.module.css`: `settings.section` is a list slot with no DOM
+    wrapper, `.options` is a **block-level scrolling container** (`display`
+    default), so this plugin's root is an ordinary block child and `min-width:
+    auto` does not apply to it, and `.content` already carries `min-width: 0`.
+    Overflowing content should scroll inside `.options` rather than widen an
+    ancestor. The symptom is real; the cause is **unproven** pending a
+    real-machine DOM inspection.
+
+  Therefore **`tabs()` always renders the hand-built strip** and the official
+  `SegmentedTabs` is deliberately **exempt** here: `flex-wrap` sizes every button
+  to its own label and moves a row that does not fit to the next line, which is
+  the layout this page used before g-063 and the only one that drew no complaint.
+  That choice does not depend on the unexplained part: it removes the failed
+  repair and returns to a layout with no complaint against it. Every other Host
+  atom — `Button`, `Input`, `Tag`, `DiffBlock`, the sidebar icons and `Toast` —
+  still comes from the official module. The injected tab style and the strip's
+  `overflow-x` are **removed**; two rules were no-ops under that inline column
+  definition anyway (`grid-auto-flow`, `grid-auto-columns`), and no test may claim
+  otherwise. Lesson kept for the future: **an equal-fraction control assumes short
+  labels**; long localized labels need a content-sized wrapping layout. Rejected
+  repairs, on the record: `min-width: max-content` (inflated tabs, plus an
+  overflow whose path is unexplained), `white-space: nowrap` alone (labels
+  overflow or overlap their cells), and leaving the official equal fractions as
+  they are (labels wrapped).
 
 ### 13.5 Second confirmation is required
 
@@ -3055,7 +3628,7 @@ writes one down either.
   lives on the **root container** instead: `data-plugin-version` is present in
   **every** render state, so a probe reads one attribute and never has to know
   which state it got;
-- **the text** is `v` + the version (`v0.2.1`), or `stPluginVersionUnknown`
+- **the text** is `v` + the version (`v0.2.2`), or `stPluginVersionUnknown`
   (「版本未知」 / `Version unknown`) when the ping carried no usable one. The
   node's `title` is `stPluginVersion` (「插件版本」 / `Plugin version`);
 - **the link:** with a `repositoryUrl` the node is an `a` element whose `href` is
@@ -3197,7 +3770,7 @@ live probe would read a normal rebuild as a defect.
 {
   "ok": true,
   "plugin": "dsh-prompt-setting",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "repositoryUrl": "https://github.com/zangxx66/dsh-prompt-setting",
   "time": "2026-09-28T12:00:00.000Z",
   "clientRenderer": "fallback",
@@ -4469,7 +5042,7 @@ The body of an **npm** answer:
 {
   "ok": true,
   "enabled": true,
-  "current": "0.2.1",
+  "current": "0.2.2",
   "latest": "0.2.2",
   "latestTag": "0.2.2",
   "hasUpdate": true,
@@ -4497,7 +5070,7 @@ The body of a **GitHub** answer (the pre-Revision-27 shape, plus `source`):
 {
   "ok": true,
   "enabled": true,
-  "current": "0.2.1",
+  "current": "0.2.2",
   "latest": "0.2.2",
   "latestTag": "v0.2.2",
   "hasUpdate": true,
@@ -5113,8 +5686,8 @@ Otherwise, the answer:
     "status": "running",
     "known": true,
     "application": null,
-    "version": "0.2.1",
-    "tag": "v0.2.1",
+    "version": "0.2.2",
+    "tag": "v0.2.2",
     "startedAt": "2026-10-04T09:00:00.000Z",
     "finishedAt": null,
     "cancelRequested": false,
@@ -5135,8 +5708,8 @@ A refusal — nothing was started, so there is no request to track:
   "message": "this profile installs dsh-prompt-setting from a local path (link:../x), which is a development working copy: …",
   "launchKind": "cli",
   "manual": {
-    "releaseUrl": "https://github.com/zangxx66/dsh-prompt-setting/releases/tag/0.2.1",
-    "releaseLink": "open the 0.2.1 release page",
+    "releaseUrl": "https://github.com/zangxx66/dsh-prompt-setting/releases/tag/0.2.2",
+    "releaseLink": "open the 0.2.2 release page",
     "command": "dsh plugin add <tarball-or-path>",
     "current": "link:../x"
   }
@@ -5592,3 +6165,648 @@ layer-wide to section-level. A log written by Revision 21 (a `rollback` record
 with `name: null`) no longer validates and is counted as a corrupt line by §8's
 tolerant reader, which is the documented behaviour for a record this contract
 does not describe.
+
+---
+
+## 20. The preset library (g-060, Revision 37)
+
+A **preset** is a named `{action, text}` pair for the reserved section
+`prompt-setting:custom-prompt` (§13.1). The library is a per-installation
+document; **applying** a preset writes one **workspace** layer (never the user
+layer), and「取消应用」puts that layer back to what it held before.
+
+### 20.1 The stored document
+
+`<DSH_HOME>/prompt-setting/presets.json` — one file per installation, written
+atomically (§5.5's rule: temp file next to the target, then `rename`), read on
+every preset route and never on the assembly path:
+
+```json
+{
+  "version": 1,
+  "presets": [
+    {
+      "id": "0f9c1c62-...",
+      "name": "短答",
+      "action": "replace",
+      "text": "Be brief.",
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z"
+    }
+  ],
+  "applied": [
+    {
+      "workspaceRoot": "/abs/path/to/workspace",
+      "base": { "action": "replace", "text": "MINE" },
+      "stack": [
+        { "presetId": "0f9c1c62-...", "appliedAt": "2024-01-02T00:00:00.000Z", "action": "append", "text": "ONE" },
+        { "presetId": "7c2a1b04-...", "appliedAt": "2024-01-03T00:00:00.000Z", "action": "replace", "text": "TWO" }
+      ]
+    }
+  ]
+}
+```
+
+- `version` is `1`; a document stating another version is refused (`400
+  unsupported-presets-version` on the write face, reported by §20.2's `error` on
+  the read face). A missing `presets`/`applied` is an empty list.
+- `id` is minted by the **Host** (one UUID per new preset) and matches
+  `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`. The client sends an id only to address an
+  existing preset; a malformed id is `400 invalid-id` and never reaches the file.
+- `name` is 1–120 characters with no control characters. `action` is `replace`
+  or `append` — the reserved name's two writable actions (§4.1) and nothing else.
+  `text` is a string of at most 200 KiB (`MAX_TEXT_BYTES`), and `""` is a legal
+  value (Revision 35's blank rule applies when it is assembled).
+- **One record per `workspaceRoot`, and it is a base plus a stack (Revision 41).**
+  - `base` is the reserved entry as it stood **before the first application** on
+    that workspace (`null` = the layer held none then). It is taken once and is
+    never rewritten by a later application.
+  - `stack` holds every preset applied since, **oldest first**. The layer's text
+    is the recomposition of `base` plus the links, joined by
+    `RESERVED_STACK_SEPARATOR`; a part that is empty (or whitespace-only)
+    contributes nothing and no separator (Revision 35's rule, applied per link).
+  - each link also carries the `{action, text}` it wrote **at the time**. That
+    snapshot is what lets the text be recomposed — and one link cancelled — after
+    its preset has been deleted from the library.
+  - a link whose `presetId` is no longer in `presets` is an **orphan**: reported,
+    kept, and still cancellable (§20.2).
+  - an **empty stack is not a record**: cancelling the last link removes the
+    record and leaves the layer at `base`.
+- **Migration.** A document written by Revisions 37–40 (one
+  `{workspaceRoot, presetId, before, appliedAt}` record) is read as a one-link
+  stack: `before` becomes `base`, the preset becomes the only link, and the text
+  snapshot that shape never carried is taken from the library entry of the same
+  id when the document still has one. Nothing is dropped for being old, and no
+  write route rewrites the file merely to change its shape.
+- **Tolerance.** An individual entry this revision cannot use is dropped when the
+  file is read (one bad line must not hide every other preset); a file that is
+  not a JSON object at all, or that states another version, is **not** rewritten
+  by any write route — those answer `409 presets-not-writable` (§20.7) and leave
+  it byte-identical.
+
+### 20.2 `GET /prompt-setting/presets`
+
+Query: `session` (optional). It is **resolution only**, exactly like
+`?workspace=` in §8: a session id that lets the answer name the workspace the
+caller is looking at. It never filters the library (the library is global).
+
+```json
+{
+  "ok": true,
+  "path": "/home/user/.dsh/prompt-setting/presets.json",
+  "version": 1,
+  "presets": [{ "id": "…", "name": "…", "action": "replace", "text": "…", "createdAt": "…", "updatedAt": "…" }],
+  "applied": [
+    {
+      "workspaceRoot": "/abs/path",
+      "base": { "action": "replace", "text": "MINE" },
+      "stack": [
+        { "presetId": "…", "presetName": "…", "orphan": false, "appliedAt": "…" },
+        { "presetId": "…", "presetName": null, "orphan": true, "appliedAt": "…" }
+      ]
+    }
+  ],
+  "workspaceRoot": "/abs/path",
+  "error": null
+}
+```
+
+- Always `200`, failures included: an unreadable or unusable library answers an
+  empty `presets`/`applied` beside `error: {code, message}` — the page then says
+  so, and the write routes refuse. A read never rewrites the file.
+- `workspaceRoot` is the root the `session` resolved to, or `null` when no
+  session was supplied or it does not resolve. It is not an error.
+- **`applied[]` is one entry per workspace** (Revision 41): its `base` (as stored)
+  plus its `stack`, in application order, so a page can list **every** preset a
+  workspace holds — which is what its「取消」buttons act on (§20.9). A link carries
+  its `presetName` when the library still has it and `orphan: true` when it does
+  not; the link's own text snapshot is not public, because a page never renders it.
+- The response carries no layer text and never reads a workspace layer.
+
+### 20.3 `PUT /prompt-setting/presets`
+
+Body: `{name, action, text}` to insert, or `{id, name, action, text}` to edit.
+
+- Without `id`, the Host mints one and the answer is `created: true`. With an
+  `id`, that preset must exist: `404 preset-not-found` otherwise —「编辑」 never
+  becomes「新建」, so a stale page reports its missing target instead of
+  duplicating it.
+- Order is the contract, as on every other write route (§4.1): the body is
+  validated first (every field-level mistake is a `400` and writes nothing), then
+  the current library is read (`409` when it is unusable), and only then is the
+  whole document written atomically.
+- Response `200`:
+
+```json
+{ "ok": true, "created": true, "preset": { "id": "…", "name": "…", "action": "replace", "text": "…", "createdAt": "…", "updatedAt": "…" },
+  "presets": [ … ], "applied": [ … ] }
+```
+
+- An edit keeps `createdAt` and moves `updatedAt`. Unknown body fields are
+  ignored (a future client's extra key is not a `400`); unknown **preset** fields
+  are dropped, never persisted.
+
+### 20.4 `DELETE /prompt-setting/presets?id=`
+
+- `id` is required (`400 missing-id`) and must be well-formed (`400 invalid-id`);
+  an id that names nothing is `404 preset-not-found`. Every refusal leaves the
+  file byte-identical.
+- Response `200`:
+
+```json
+{ "ok": true, "removed": true, "id": "…", "preset": { … },
+  "orphaned": 1, "presets": [ … ], "applied": [ … ] }
+```
+
+- `orphaned` is how many `applied` records now point at the deleted preset. The
+  layers are **not** touched: the workspace keeps the text it was given, and the
+  record keeps its snapshot so「取消应用」still works.
+
+### 20.5 `POST /prompt-setting/presets/apply`
+
+Body: `{presetId, session}` (`session` may also come from `?session=`).
+
+- The session resolves the workspace root through `workspaceRegistry` exactly as
+  §4.2 requires; a request without one, or with one that resolves nothing, is
+  `400 workspace-unresolved` and writes nothing.
+- The write is `PUT /overrides`' own path with the same guarantees: the layer's
+  current config is read first (`409 layer-not-writable` when it is unusable), the
+  reserved entry is rebuilt, the rebuilt config is validated, and only then is it
+  written atomically and cached. The layer's other entries and its
+  `interpolateCustom` switch are carried across.
+- **The stack (Revision 41).** Applying pushes one link onto that workspace's
+  stack and recomposes the reserved entry from `base` plus the links:
+  - `base` is snapshotted **once**, by the first application on that root, from
+    the config this request just read; a later application keeps it (Revisions
+    40/R6).
+  - the composed text is `base.text` and every link's text, in application order,
+    joined by `RESERVED_STACK_SEPARATOR`, with empty parts contributing nothing;
+  - the entry's `action` is the **newest link's** action: that is the intent most
+    recently stated about how this text relates to the other layer (§13.1).
+- **Recomposition is authoritative.** The text is rebuilt from the stack rather
+  than appended to whatever the layer currently holds, so an edit made to that
+  entry by hand between two applications is overwritten. That is the price of
+  being able to cancel one preset out of several, and it is what this route
+  promises.
+- **Idempotent.** A preset already on the stack is not pushed twice: the route
+  writes **no layer**, no history record and **not even the library file**, and
+  answers `alreadyApplied: true` (Revisions 39/R5).
+- A history record is appended exactly as `PUT /overrides` does it (a section
+  record: `name` = the reserved name, `before`/`after` = its text on either side,
+  `origin: "ui"`, `action` from the ordinary `actionOf` rule) — only when the layer
+  really changed. **No history shape changes** (§8) and no new action or origin is
+  introduced.
+- Response `200`:
+
+```json
+{ "ok": true, "applied": true, "alreadyApplied": false, "preset": { … },
+  "record": { "workspaceRoot": "…", "base": { "action": "replace", "text": "MINE" },
+              "stack": [{ "presetId": "…", "presetName": "…", "orphan": false, "appliedAt": "…" }] },
+  "workspaceRoot": "…",
+  "base": { "action": "replace", "text": "MINE" },
+  "before": { "action": "replace", "text": "MINE" },
+  "after": { "action": "append", "text": "MINE\n\nONE" },
+  "stack": [ … ], "effectiveFrom": "next-turn", "history": { … }, "appliedRecords": [ … ] }
+```
+
+- `before` and `base` carry the same value: the snapshot §20.6 restores when the
+  stack empties. `after` is what this request left in the layer.
+- Applying a **different** preset is a real write: the stack grows, the base does
+  not move, and the history record describes this write alone.
+- **Order of the two writes, and its residual risk.** The workspace layer is
+  written first and the library record second, because a record must describe a
+  write that really happened; if the library write then fails, the answer is a
+  `500` and the layer holds the preset text with no record of how to undo it. The
+  opposite order would record an application that never happened, which is worse
+  (the page would then offer to cancel a workspace it never touched).
+
+### 20.6 `POST /prompt-setting/presets/unapply`
+
+Body: `{session, presetId}` (`session` may also come from `?session=`).
+
+- `presetId` is **required** (`400 missing-preset-id`) and must be well-formed
+  (`400 invalid-id`). A workspace with no record, or one whose stack does not hold
+  that preset, is `404 not-applied` — there is nothing to remove, and answering
+  `200` would claim a write that did not happen.
+- **One application at a time (Revision 41).** The named link is removed from the
+  stack and the layer's text is **recomposed** from `base` plus what is left: every
+  other application stays exactly as it was. The layer's other entries and its
+  `interpolateCustom` switch are untouched.
+- **When the stack empties**, the layer returns to `base`: a non-null base is
+  written back with its own `action`/`text`, a `null` base removes the reserved
+  entry, and the record itself is removed (there is nothing left to cancel).
+- As on apply, the text is recomposed from `base` + the links rather than
+  "un-appended" from the current bytes, so a hand edit made between two
+  applications is overwritten here as well. That trade is the same one §20.5
+  states.
+- An ordinary section history record is appended, as in §20.5.
+- Response `200`:
+
+```json
+{ "ok": true, "unapplied": true, "presetId": "…",
+  "removed": { "presetId": "…", "appliedAt": "…" },
+  "record": { "workspaceRoot": "…", "base": { … }, "stack": [ … ] },
+  "workspaceRoot": "…", "restored": false,
+  "base": { … }, "stack": [ … ], "before": { … }, "after": { … },
+  "effectiveFrom": "next-turn", "history": { … }, "appliedRecords": [ … ] }
+```
+
+- `stack` is what remains on that workspace, and `presetId` names the link this
+  request removed. `restored` is `true` exactly when the stack is now empty **and**
+  `base` is not `null` — the layer is back to text it held, rather than back to
+  "no entry at all".
+
+### 20.7 Errors
+
+All are `OverrideError` shapes (`{ok: false, code, message}`, §4.4):
+
+| Code | Status | When |
+| --- | --- | --- |
+| `invalid-preset` | 400 | The body is not a JSON object. |
+| `invalid-name` | 400 | `name` is missing, not a string, empty/whitespace-only, or carries a control character. |
+| `name-too-long` | 400 | `name` exceeds 120 characters. |
+| `unsupported-action` | 400 | `action` is absent or is neither `replace` nor `append`. |
+| `missing-text` | 400 | A present `action` carries no string `text`. |
+| `text-too-large` | 400 | `text` exceeds 200 KiB of UTF-8. |
+| `invalid-id` | 400 | An `id` is present but does not match the documented shape. |
+| `missing-id` | 400 | `DELETE` carries no `id`. |
+| `preset-not-found` | 404 | `PUT` with an unknown `id`, `DELETE` of an unknown `id`, or `apply` of an unknown `presetId`. |
+| `missing-preset-id` | 400 | `apply` or `unapply` carries no `presetId` (both name the preset they act on). |
+| `workspace-unresolved` | 400 | `apply`/`unapply` with no session, or one that resolves no workspace. |
+| `not-applied` | 404 | `unapply` for a workspace with no record, or for a preset that is not on that workspace's stack (Revision 41). |
+| `presets-not-writable` | 409 | The library file exists but is not a valid document (§20.1). |
+| `layer-not-writable` | 409 | The workspace layer's own file is not a valid config (§4.4, unchanged). |
+
+Every one of them is decided **before** any file is written, so a rejected
+request leaves `presets.json` and the layer byte-identical.
+
+### 20.8 What this revision does not do
+
+- **No preset travels in an export.** `GET /export`'s fields and
+  `overrides.json`'s schema are unchanged (§10, §4); an export taken before this
+  revision re-imports byte-for-byte, and the new library is not a backup format.
+- **No cross-workspace application.** One request names one session and writes
+  one layer.
+- **No preset version history.** The library keeps the current value of each
+  preset; the applied record is one level deep (§20.5). The existing history
+  (§8) still records every layer write these routes make, in its existing shape.
+- **No second write path and no new writable section.** Both layer actions write
+  the reserved entry and nothing else; a non-reserved name is still `403`
+  `write-locked` (§4.1) and no preset route can reach one.
+
+### 20.9 Client surface (g-060; the tab became dialog-based in Revision 38)
+
+- **The tab.** `MAIN_TABS` gains `presets` **directly after** `mine`, making six
+  first-level tabs in this order: 「我的 Prompt」 / **「我的预设」** / 「提示词总览」 /
+  「版本历史」 / 「备份与恢复」 / 「高级」. Its panel is the on-demand chunk
+  `client.presets.js` (the g-045/g-046 lazy boundary, `CHUNK_STAMPS` re-run), and
+  the tab label key is `tabPresets` in both dictionaries.
+- **The tab body is the catalogue** (`data-region="presets"`): a heading, a state
+  line, and `data-region="presets-list"` — one row per preset carrying
+  `data-preset-id` and `data-preset-selected`, with the mode tag, a text preview
+  (`data-role="preset-preview"`) and exactly three actions:
+  `data-action="preset-edit"`, `data-action="preset-delete"` and
+  `data-action="preset-apply-to"` (each carrying `data-preset-id`). Two entrances
+  sit beside the list heading: `data-action="preset-new"` (an empty draft) and
+  `data-action="preset-save-as-current"` (a **new** draft seeded with the text the
+  「我的 Prompt」 panel currently shows — it writes nothing by itself).
+- **The editor is a dialog** (`data-region="preset-editor-dialog"` inside
+  `data-region="preset-editor-overlay"`), `role="dialog"` + `aria-modal="true"`,
+  laid out like the page's other overlay (`renderRegionDialog`, §13.5): a
+  full-screen scrim, then the card. It carries `data-preset-dialog="edit"` and
+  `data-preset-editing` (`new` or the preset's id), and holds
+  `data-role="preset-name"`, `data-role="preset-text"` and the `replace` /
+  `append` control (§13.1's two words). Its buttons are
+  `data-action="preset-save"` (insert when the draft has no id, edit when it has
+  one, §20.3) and `data-action="preset-dialog-close"`.
+- **A refusal stays inside the editor dialog.** The last write's failure is
+  rendered on the dialog's own line — `data-role="preset-dialog-error"` carrying
+  `data-preset-dialog-error="<code>"` and the page's own localized copy for that
+  code — the dialog is **not** closed by it, and the page-level notice is never
+  used as a substitute (it would sit behind the scrim and read as "nothing
+  happened"). The same rule applies to the apply dialog.
+- **An unsaved draft is never discarded silently, and never applied (review
+  R1, re-pointed by R3).** While the draft differs from what the library holds,
+  the dialog carries `data-preset-dirty="true"`, renders a visible warning
+  (`data-role="preset-dialog-dirty"`, `presetDialogDirtyHint`) and labels its
+  close control 「放弃修改」 (`presetDialogDiscard`) instead of 「关闭」; the close
+  control itself carries `data-preset-dirty` so both the label and the state are
+  machine-readable. Discarding is therefore an explicit, *named* act. And because
+  `POST /presets/apply` resolves the preset **by id out of the library**, the
+  apply dialog never sends an editor draft at all: it applies the **stored**
+  version and says so in words (`presetApplyToNote`).
+- **The apply dialog** (`data-region="preset-apply-dialog"` inside
+  `data-region="preset-apply-overlay"`, `role="dialog"` + `aria-modal="true"`) is
+  opened from **one list row** and carries `data-preset-dialog="apply"` and
+  `data-preset-dialog-preset="<id>"`; its title is `presetApplyToTitle` with that
+  preset's name. It lists the sessions this page already knows
+  (`data-preset-session`), because the Host has no workspace list route (§4.2)
+  and applying needs a session.
+- **Each row renders that workspace's whole stack (Revision 41).** The row carries
+  `data-preset-applied="true|false"` and `data-preset-stack="<n>"`, and — when the
+  stack is not empty — a `data-preset-stack-list="<session>"` group holding one
+  entry per application, in order: `data-preset-link="<presetId>"` with
+  `data-preset-name` and `data-preset-orphan`, and **its own**
+  `data-action="preset-unapply"` carrying that link's `data-preset-id` and the
+  row's `data-preset-session`. There is no all-or-nothing「取消应用」button any
+  more: cancelling one application keeps the others composed (§20.6).
+- The row's `data-action="preset-apply"` (carrying the dialog's `data-preset-id`
+  and the row's `data-preset-session`) is **`disabled`** — and the row carries
+  `data-preset-applied-here="true"` — exactly when that preset is already on that
+  workspace's stack, so the reader sees the state instead of clicking a no-op
+  (§20.5). A successful apply/unapply keeps the dialog open — the refreshed stack
+  is what the reader is looking at — so leaving is one more explicit
+  `data-action="preset-dialog-close"`.
+- **Reads and writes.** The tab reads `GET /presets` (with `?session=`, §20.2) and
+  writes through §20.3–§20.6 only. It never touches `PUT /overrides`, and it never
+  sends a layer name: the layer is implied by the preset routes themselves.
+- **State.** The tab carries `data-preset-state` (`idle` / `saving` / `saved` /
+  `error`) in the shape the other tabs use (§13.1's `mine-state`). A host that
+  answers `error` on the read (§20.2) is shown as a library problem, not
+  as「没有预设」 — and an empty catalogue is stated separately
+  (`data-region="presets-empty"`).
+
+## 21. The in-session assembly-status notice (g-062, Revision 45; toasts added in Revision 46)
+
+DSH re-assembles the system prompt on **every** model step (`AgentLoop.preStep()`
+→ `systemPrompt.assemble()`), but "assembled" is not "delivered":
+`SystemPromptProjection.project()` deduplicates, so an unchanged prompt commits
+**zero** `system/message` events. A user who edits their prompt therefore has no
+way to tell whether the change reached the model. This section defines the
+observation that answers that question — rendered in the settings page, and (from
+Revision 46) toasted at the key node by a resident `shell.overlay` entry, so the
+user does not have to go looking for it.
+
+### 21.1 `GET /prompt-setting/assembly-status`
+
+Query: `session` (optional). With a session the route answers that session's
+observation; with none it answers `record: null` and the switch's state. `since`
+(optional, Revision 46) selects the **incremental feed** the toaster reads; the
+answer always carries `notifications`, and its meaning is defined in §21.6.
+
+```json
+{
+  "ok": true,
+  "enabled": true,
+  "session": "s1",
+  "record": {
+    "session": "s1",
+    "firstNoticeDone": true,
+    "lastAssembly": { "at": 1700000000000, "digest": "abcd1234", "length": 4, "configured": true },
+    "notice": {
+      "id": "n2",
+      "seq": 2,
+      "kind": "first-assembly",
+      "at": 1700000000000,
+      "turn": 1,
+      "step": 1,
+      "configured": true,
+      "assembly": { "state": "assembled", "assembled": true, "digest": "abcd1234", "length": 4, "expectedDigest": "abcd1234" },
+      "delivery": { "state": "delivered", "at": 1700000000100, "seq": 12, "surfaceOp": "append", "textMatched": true },
+      "assemblyBasis": "plugin-return",
+      "probe": false
+    },
+    "notices": [],
+    "dropped": 0
+  },
+  "counts": { "sessions": 1, "notices": 1, "droppedNotices": 0, "writes": 1, "rejectedProbes": 0, "noticeSeq": 2, "history": 1, "bootId": "m1-ab12cd" },
+  "notifications": { "bootId": "m1-ab12cd", "cursor": 2, "stale": false, "notices": [] },
+  "basis": { "assembly": "plugin-return", "delivery": "surface-system-message", "httpObservable": false, "outerRewritePossible": true, "postWaterfallCollapse": true }
+}
+```
+
+- **Always `200`.** A session this mount has not observed answers
+  `record: null`; "nothing observed yet" is a fact, not an error. The read never
+  assembles, never probes and never writes a notice.
+- **`notice` is the last key node** (newest first in `notices`, capped at 6 per
+  session with `dropped` counting what fell off). `kind` is `first-assembly` or
+  `prompt-change`; the two kinds use different keys for the same two layers on
+  purpose (§21.3). `seq` (Revision 46) is the numeric half of `id` and the cursor
+  a client keeps; it is monotone within one mount only, which is what `bootId`
+  states.
+- **Nothing of the user's prompt text travels.** Only lengths and FNV-1a 32
+  digests (`assembly.digest`, `assembly.expectedDigest`).
+- `expected` is present on a `prompt-change` notice: `{length, layer, action}` —
+  what the save wrote, still without its text.
+- `basis` states the口径 as data so the page renders its own language:
+  `assembly: "plugin-return"` (the recorded text is the section list **this
+  plugin** returned) and `delivery: "surface-system-message"` (the step
+  committed a `system/message`); `httpObservable: false`,
+  `outerRewritePossible: true` and `postWaterfallCollapse: true` are the three
+  stated limits (§21.4).
+
+### 21.2 `PUT /prompt-setting/assembly-status`
+
+Body `{"enabled": bool}`. A non-boolean is the existing `400 invalid-enabled`;
+an unwritable preference file is `200 {ok:false, code:'preferences-unwritable'}`,
+exactly like the update switch. The key is `assemblyNotice` in the **same**
+`preferences.json`, written through the same merge (so this write cannot erase
+`updateCheck` or `downloadRegion`), and it is carried through
+`normalizePreferences` only when the document states a boolean — a pre-g-062
+file stays byte-identical. An absent key means **on**.
+
+### 21.3 The two verdicts, and where each comes from
+
+| Layer | Question | Observation | Values |
+| --- | --- | --- | --- |
+| assembly | Did this step's assembly read the (changed) plugin-section text? | the section list `assembleHandler` returns, read in the same listener | `first-assembly`: `assembled` \| `empty` (the section text is `''`); `prompt-change`: `read` \| `not-read` (digest equal, or the stored text is a substring of what was assembled when the ON-switch expanded variables) |
+| delivery | Did that text enter this request's messages? | `session/event`: a `system/message` on the surface with **this notice's own** `turn`/`step` | `waiting` \| `delivered` (with `surfaceOp`: `append` \| `replace`, and `textMatched` when the text is short enough to check) \| `unconfirmed` (the step ended, or a later step started, without it) |
+
+- **Delivery is not "the HTTP request was sent".** That is not observable from a
+  plugin, and neither the route nor the page claims it. A `system/message`
+  committed for this step is the agreed evidence, and `project()`'s "zero events
+  because the text did not change" is reported as **not delivered**, which is
+  exactly the visibility the goal asked for.
+- **Alignment is required, never assumed.** A notice is settled only by a
+  `system/message` carrying the same `turn`/`step`. A notice that has no label
+  refuses to settle at all (§21.4) — reporting "delivered" off an unrelated step
+  is the one mistake this feature must not make.
+- **Only events settle a verdict; a read never does.** `status()` — and therefore
+  every poll the page makes — is a pure read and cannot rewrite a delivery state
+  (review W4). A still `waiting` notice is settled by an event: its own step's
+  `step/end` (an exact fact: the step is over, so no further `system/message` can
+  belong to it), or a later `agent/pre-step` (the step that was running is over).
+  No deadline is applied to a read, so a slow streaming step is never judged
+  early and a late projection of the same step still settles as `delivered`.
+- **New-conversation signal.** `request/header` with `reason === 'initial'`
+  (resume/fork answer `'resume'`) is what turns a pending first assembly into a
+  `first-assembly` notice; turn/step numbers are never the signal (they restart
+  after a Host restart).
+- **Every notice is born with the same-step projection already folded in.** The
+  newest `system/message` of the session is cached, and **every** notice birth
+  point — the `initial` header, a non-`initial` header, and an assembly-path
+  change — settles itself from that cache when the cached event carries exactly
+  the notice's own `turn`/`step`. Otherwise a projection that really was
+  committed would be reported as unconfirmed, which is a false statement (review
+  R3 for the first assembly, review W1 for the resume path).
+
+### 21.4 Key nodes, probes, bounds and fail-open
+
+- **One notice per key node.** A conversation gets at most one
+  `first-assembly` notice; a save produces at most one `prompt-change` notice,
+  consumed by the next assembly that sees it. Repeated assemblies with no change
+  add nothing.
+- **The new-conversation question is answered once, by a header.** A save
+  observed before that answer is **held**, not consumed: an `initial` header makes
+  it the prompt the new conversation starts with (scenario A, the write consumed
+  as an already-done fact), while any other header — or the next assembly, if no
+  header ever arrives — resolves it as an **existing** conversation and the save
+  is reported as the `prompt-change` it is. A conversation this mount merely sees
+  for the first time is not automatically a new one.
+- **Which sessions a save addresses — the layer decides, never the query string.**
+  A `user`-layer save addresses **every** session, even when the page sent a
+  `?session=` (it does whenever the scope picker has one, review W3); a
+  `workspace`-layer save addresses only the session whose workspace layer was
+  written. `PUT /overrides`, `DELETE /overrides` and `reset=true` all normalize by
+  layer, exactly like `rollback`, `import` and the preset actions.
+- **Every write path that changes the reserved section's stored text is
+  recorded**, not just the editor's save: `PUT /overrides`, preset
+  apply/unapply (§20.5–§20.6), `POST /import`, `POST /rollback` and
+  `DELETE /overrides` (including `reset=true`). Each is noted **after** its write
+  succeeded.
+- **"Changes the stored text" includes clearing it** (Revision 48, g-062 fix
+  round): a write that leaves the layer with **no** reserved entry —
+  `DELETE /overrides`, `reset=true`, and a preset unapply whose base was「there
+  was none」— is recorded exactly like a text edit, spelled `action: 'hide'` with
+  an empty text, and therefore reports a `prompt-change` on that layer's next run.
+  A registration is conditioned on the write having happened, never on an `after`
+  entry existing; the mirror rule is that a **no-op** (an `alreadyApplied` preset
+  application, a `reset` of a layer that held no reserved entry, a `legacy=true`
+  clear, which touches no reserved entry at all) is **not** recorded, because
+  nothing changed.
+- **Stated blind spot: `PUT /interpolate` is not recorded.** Flipping the
+  variable-substitution switch can change the text an assembly finally renders
+  (with it ON, this plugin expands `{{…}}` during assembly) while no stored
+  prompt text changes, so it produces no `prompt-change` notice. It changes *how*
+  the stored text is rendered, not the prompt the user wrote; reporting it as a
+  prompt edit would mix the two. Stated here so the contract and the
+  implementation agree — `NOTES.md` §141 records the same, together with what a
+  future coverage would have to do if the口径 ever widens.
+- **Probes are excluded by object identity.** The `AssembleContext` object
+  `probe()` handed to `assemble()` is what marks a probe
+  (`state.pendingProbe.context`), because `probeTarget()` supplies the **real**
+  Agent for a live session — `context.agent === undefined` cannot tell them
+  apart. An unscoped assembly (no session id) is excluded by the same path. Both
+  are counted in `counts.rejectedProbes`.
+- **Bounded and cleaned up.** At most 6 notices per session, at most 64 tracked
+  sessions (least-recently-touched dropped), at most 8 retained writes, and
+  `session/disposed` drops that session's record.
+- **Fail-open, and out of the hot path.** Every method of the watch swallows its
+  own errors, the listeners contain themselves, and the write paths note a save
+  **after** the write succeeded. The notice switch is read from
+  `preferences.json` only where a notice may actually be born — a steady-state
+  step (no pending save, question already answered) performs **no** preference IO
+  at all. No observation can fail a turn, and none can change the sections an
+  assembly returns.
+
+### 21.5 Page surface
+
+The block lives at the top of the「我的 Prompt」panel and carries
+`data-region="assembly-status"` with `data-assembly-phase`
+(`idle`/`ready`/`error`), `data-assembly-enabled`
+(`true`/`false`/`unknown` — unknown until the Host answers),
+`data-assembly-switch-state` (`on`/`off`/`unknown`), `data-assembly-session`
+(`yes`/`none`), `data-notice-kind`, `data-assembly-state` and
+`data-delivery-state`. The notice itself is `data-region="assembly-notice"` with
+`data-assembly-kind`, `data-assembly-layer` and `data-delivery-layer`; the
+stated limits are `data-region="assembly-limitation"`. `data-action="assembly-toggle"`
+is the switch. Reads happen only while that tab is open, and one short follow-up
+read is made while the reported delivery is still `waiting`.
+
+Revision 46 adds one marker and one attribute to this block and nothing else.
+`data-assembly-toast-seat` is `ready` (an overlay entry is registered), `absent`
+(the Host has no `Toast` primitive), `pending` (the primitive exists but the
+`shell.overlay` slot was never declared) or `failed` (declared and refused). When
+it is **anything but `ready`**, `data-assembly-note="no-toast"` states the
+degradation — keyed on the **seat**, not on the capability probe, because a Host
+with the primitive and without the slot would otherwise show nothing at all while
+also toasting nothing (review C4). The three non-`ready` seats have **three
+different sentences** (review R1): `absent`, `pending` and `failed` name the
+missing primitive, the undeclared slot and the refused registration respectively,
+so the page never tells a user that a slot their own Host declared is missing. The
+block, its switch and its read schedule are otherwise unchanged — the toast is
+**additional**, never a replacement.
+
+### 21.6 The incremental feed and the shell-overlay toast (Revision 46)
+
+The notice used to be visible only to a user who opened this panel. Revision 46
+makes it proactive: a resident client entry in the `shell.overlay` slot renders
+the official `Toast` primitive at each key node. The口径 does not change — the
+two layers are still the two layers, one notice per key node, observer only, no
+token cost, no build step — and neither does the data: a toast renders exactly the
+verdicts §21.3 defines.
+
+**Why the feed exists.** The `shell.overlay` entry lives outside the settings
+page, so it has no `?session=` to ask about and no session picker to read. It also
+cannot be handed a notice push: DSH exposes no plugin `EventSource`, and the one
+WebSocket the page owns is the Host's own RPC mux. What it can do is keep a
+**cursor** and ask what is new — which is also the only way to keep "同一事实不
+得弹两次" true on the client, because a re-read of the same record would otherwise
+re-report it.
+
+**The answer.**
+
+| Field | Meaning |
+| --- | --- |
+| `bootId` | This Host mount's identity — **reported, not enforced**: the route takes no `bootId` and compares nothing (it parses `since` only, §21.6). A cursor is comparable with notices of the same mount only, because a restart empties the watch and restarts `noticeSeq` at 0; the client is what re-anchors on this field instead of comparing two incomparable numberings. |
+| `cursor` | The newest `seq` this mount has produced. A client keeps it and sends it back as `?since=`. |
+| `stale` | `true` when the notice **after** the cursor has already been dropped from the bounded birth log (24 entries) — i.e. there is a gap between the cursor and the oldest retained notice (`oldest > cursor + 1`; the boundary case `oldest === cursor + 1` is a contiguous window and stays `false`). The answer then carries the **newest** notice only, never a burst of half-remembered ones. |
+| `notices[]` | `{session, notice}` for every notice with `seq` **strictly above** the cursor, oldest first. `notice` is the same public shape as `record.notice` (§21.1) — lengths and digests, never the user's prompt. |
+
+**Cursor rules.**
+
+- An **absent or malformed** `since` means *start from now*: the answer still
+  carries `bootId` and `cursor` (that is how a fresh tab learns where "now" is)
+  with an empty `notices`. A fresh tab must never replay history.
+- A cursor from **another mount** is **not detected by this route** — it parses
+  `since` and answers by the numbers it holds, so a new mount whose `noticeSeq`
+  has already passed the old value will hand back notices for it. That is by
+  design: the client sees the different `bootId` and re-anchors instead of
+  comparing (`planToasts`). The route states the identity; the client honours it.
+- The comparison is **exclusive**: `seq === cursor` is the notice the client is
+  already showing, so it is never sent again. This is the host half of "同一事实
+  不得弹两次"; the boundary has its own case in
+  `test/assembly-watch.test.mjs` (review C3a).
+- The route is a **pure read**: it repeats whatever the cursor asks for. The
+  client advancing its kept cursor is what turns "no repeat" into a property.
+- With the switch **off** the watch produces no new notice at all (§21.2), so the
+  feed has nothing to hand out: closing the switch neither toasts nor queues a
+  backlog. A notice that already exists is still readable through `record`.
+- `stale` never hides a fact: the newest notice still travels, and the client
+  reports it like any other.
+
+**The toaster, and its degradations.**
+
+- It is registered only when the Host really exposes `Toast` (probed separately
+  from the `Button` probe that selects the renderer) **and** declares the
+  `shell.overlay` slot. Without either, **nothing is registered** and the settings
+  block is the whole surface. The page reports which of the two happened through
+  `data-assembly-toast-seat` (§21.5) — the **seat**, never the capability probe,
+  because "has the primitive" and "has a registered overlay" are different facts
+  (review C4), and each non-`ready` seat has its own sentence (review R1).
+- Registration itself is guarded by `slots.inject('shell.overlay', …)`, which runs
+  its callback only once the Host has declared the slot — on a Host that predates
+  the slot nothing is registered, the seat stays `pending`, and the plugin is
+  otherwise unaffected.
+- The toast draws through the primitive's own body portal (click-through, the
+  host stylesheet's z-index); the plugin ships no CSS. Its text is composed from
+  the same dictionary keys the block uses, in the Host's language (zh/en).
+- One toast at a time; the queue drains on the primitive's `onDone`, up to 4
+  notices. Each toast is keyed by its notice `id`, so a **new** fact with the same
+  words re-mounts and replays, while the same fact never does.
+- **Closing the switch is silent immediately**: the next read reports `muted`, and
+  the toaster drops whatever it had already queued instead of playing it out
+  (review C5). The cursor still advances, so re-opening the switch releases no
+  backlog.
+- The tab's cursor lives in `sessionStorage` (per tab, surviving a reload):
+  `localStorage` would let one tab advance another's cursor — one lost toast —
+  or let both replay one, which is the one thing this must not do.
+- Read cadence: the primary trigger is a change in the session-status map the
+  shell hands a `shell.overlay` entry (a step ended somewhere, which is exactly
+  when a delivery verdict settles), throttled to one read per 3 s; a 20 s
+  visibility-aware timer is the fallback when that hook is absent or an event is
+  dropped. Both paths have their own case in `test/client.test.mjs` (review C3b).
+  A hidden tab does not read and reads once when it becomes visible again.
+  **Stated limitation:** browser timers are throttled in a background tab, so a
+  toast is seen when the user returns to the page — this is not a real-time
+  channel and does not claim to be.
