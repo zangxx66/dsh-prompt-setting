@@ -491,44 +491,6 @@ window.__ModuleLoader__.load({
         : 'inline';
     }
     /**
-     * The keys of a namespace, for the settings page's diagnostic line.
-     *
-     * A **bounded prefix**, not a dump: enough to tell an empty wrapper from a
-     * populated one at a glance, and never a screenful of 200 export names.
-     * @param namespace - a candidate module namespace.
-     * @param limit - how many names to keep.
-     * @returns the names, each truncated, or an empty list for a non-object.
-     */
-    function namespaceKeyPrefix(namespace, limit = 8) {
-      if (namespace === null || typeof namespace !== 'object') return [];
-      let keys = [];
-      try {
-        keys = Object.keys(namespace);
-      } catch {
-        // Deliberately not spelled with angle brackets: `test/host.test.mjs`
-        // scans this file's text for a JSX-looking element, and a message that
-        // looks like one would trip it.
-        return ['(keys unavailable)'];
-      }
-      return keys.slice(0, limit).map((key) => (String(key).length > 40 ? `${String(key).slice(0, 40)}…` : String(key)));
-    }
-
-    /**
-     * The `typeof` of a name on a candidate namespace, never a throw.
-     * @param namespace - a candidate module namespace.
-     * @param name - the export to look up.
-     * @returns the `typeof`, or `'(none)'` when there is no namespace at all.
-     */
-    function namespaceMemberType(namespace, name) {
-      if (namespace === null || namespace === undefined) return '(none)';
-      try {
-        return typeof namespace[name];
-      } catch {
-        return '(getter threw)';
-      }
-    }
-
-    /**
      * g-062 fix round: the one interop gap a direct property read can fall into.
      *
      * A CJS `require` of an ESM module may hand back a **wrapper** whose named
@@ -586,29 +548,19 @@ window.__ModuleLoader__.load({
     /**
      * The probe's last step, kept as one value so the diagnostics section can
      * only restate what this decision really used.
+     *
+     * g-063 wrap-up: the two **always-on** diagnostic rows (the `require`
+     * details and the `Button`/`Toast` `typeof` table) were removed once they had
+     * done their job — g-062's fix round and g-063 added them to locate the
+     * `forwardRef` defect on a real machine, and the branch is settled now. What
+     * remains is exactly what the surviving rows read: the namespace the toast
+     * decision used (`toastSource`, printed on the toast row) and the branch in
+     * use (`renderer`); the render-time failure record lives outside this object
+     * (`primitivesRenderFailed` / `primitivesRenderFailure`) because it is a
+     * runtime fact, not a load-time probe result.
      */
     const primitivesProbe = {
-      threw: primitivesFailure !== '',
-      error: primitivesFailure,
-      moduleType: typeof primitivesModule,
-      isObject: primitivesModule !== null && typeof primitivesModule === 'object',
-      keys: namespaceKeyPrefix(primitivesModule),
-      hasDefault: toastPrimitivesModule !== undefined,
-      defaultKeys: namespaceKeyPrefix(toastPrimitivesModule),
-      buttonBefore: namespaceMemberType(primitivesModule, 'Button'),
-      // "after unwrapping" = the namespace the toast question was actually asked
-      // of: the wrapper's `.default` when there is one, otherwise the module
-      // itself (nothing was unwrapped, and saying `(none)` there would be a
-      // worse lie than saying "the same value").
-      buttonAfter: namespaceMemberType(toastProbeTarget, 'Button'),
-      toastBefore: namespaceMemberType(primitivesModule, 'Toast'),
-      toastAfter: namespaceMemberType(toastProbeTarget, 'Toast'),
       toastSource: toastNamespaceSource,
-      // g-063: the `typeof` above is an observation, THIS is the decision. The
-      // real machine reported `Button=object` and `fallback` together, which is
-      // exactly the pair a `typeof === 'function'`-only probe produces for a
-      // `forwardRef` atom — the two readings now carry the answer side by side.
-      buttonComponent: hasComponentExport(primitivesModule, 'Button'),
       renderer: primitivesUsable ? 'primitives' : 'fallback',
     };
     /**
@@ -1519,15 +1471,9 @@ window.__ModuleLoader__.load({
       rendererPrimitives: 'primitives（官方基础件）',
       rendererFallback: 'fallback（自绘 + 主题变量）',
       primitivesFailure: 'primitives 不可用原因',
-      primitivesDetailLabel: 'primitives 探测细节',
-      primitivesDetailText:
-        'require 抛错={threw}｜错误原文={error}｜返回值类型={type}｜是对象={object}｜键名前缀=[{keys}]',
-      primitivesDetailYes: '是',
-      primitivesDetailNo: '否',
-      primitivesDetailNone: '（无键）',
-      primitivesMembersLabel: 'primitives 键 typeof',
-      primitivesMembersText:
-        '解包前 Button={buttonBefore}｜解包后 Button={buttonAfter}｜解包前 Toast={toastBefore}｜解包后 Toast={toastAfter}',
+      // g-063 wrap-up: `primitivesDetail*` / `primitivesMembers*` lived here —
+      // the copy for the two always-on probe rows. Removed with those rows once
+      // they had located the `forwardRef` defect on a real machine.
       primitivesToastLabel: 'toast 命名空间',
       toastNamespaceNone: '无（未找到可用 Toast）',
       toastNamespaceDefault: 'module.default（已解包）',
@@ -2140,15 +2086,8 @@ window.__ModuleLoader__.load({
       rendererPrimitives: 'primitives (official atoms)',
       rendererFallback: 'fallback (hand-built + theme tokens)',
       primitivesFailure: 'Why primitives is unavailable',
-      primitivesDetailLabel: 'primitives probe details',
-      primitivesDetailText:
-        'require threw={threw} | error={error} | typeof value={type} | is object={object} | key prefix=[{keys}]',
-      primitivesDetailYes: 'yes',
-      primitivesDetailNo: 'no',
-      primitivesDetailNone: '(no keys)',
-      primitivesMembersLabel: 'primitives key typeof',
-      primitivesMembersText:
-        'Button before unwrap={buttonBefore} | Button after unwrap={buttonAfter} | Toast before unwrap={toastBefore} | Toast after unwrap={toastAfter}',
+      // g-063 wrap-up: `primitivesDetail*` / `primitivesMembers*` stood here and
+      // went with the two always-on probe rows.
       primitivesToastLabel: 'toast namespace',
       toastNamespaceNone: 'none (no usable Toast found)',
       toastNamespaceDefault: 'module.default (unwrapped)',
@@ -5571,46 +5510,14 @@ window.__ModuleLoader__.load({
                 `${t('primitivesFailure')}: ${primitivesFailure}`,
               )
             : null,
-          // g-062 fix round: the probe's own account of itself. The real machine
-          // showed `fallback` **without** a failure line, and that pair is
-          // consistent with three different worlds (the require threw and the
-          // message was empty / it returned something that is not a namespace /
-          // the exports sit one `.default` down). These three lines tell them
-          // apart on sight instead of by inference — and they say plainly which
-          // candidate the toast decision used, which is the one fact that
-          // decides whether a toast can appear at all.
-          h(
-            'div',
-            { 'data-primitives-detail': 'true', style: { marginTop: 4, wordBreak: 'break-word' } },
-            `${t('primitivesDetailLabel')}: ${fmt(t('primitivesDetailText'), {
-              threw: t(primitivesProbe.threw ? 'primitivesDetailYes' : 'primitivesDetailNo'),
-              error: primitivesProbe.error === '' ? '-' : primitivesProbe.error,
-              type: primitivesProbe.moduleType,
-              object: t(primitivesProbe.isObject ? 'primitivesDetailYes' : 'primitivesDetailNo'),
-              keys:
-                primitivesProbe.keys.length === 0
-                  ? t('primitivesDetailNone')
-                  : primitivesProbe.keys.join(', '),
-            })}`,
-          ),
-          h(
-            'div',
-            {
-              'data-primitives-members': 'true',
-              // g-063: `Button=object` alone is ambiguous (an unusable wrapper
-              // reads the same way); this says whether the `forwardRef`-aware
-              // decision read it as a component, so the pair on screen is
-              // 「typeof」 plus 「what was decided」.
-              'data-primitives-button-component': String(primitivesProbe.buttonComponent),
-              style: { marginTop: 2, wordBreak: 'break-word' },
-            },
-            `${t('primitivesMembersLabel')}: ${fmt(t('primitivesMembersText'), {
-              buttonBefore: primitivesProbe.buttonBefore,
-              buttonAfter: primitivesProbe.buttonAfter,
-              toastBefore: primitivesProbe.toastBefore,
-              toastAfter: primitivesProbe.toastAfter,
-            })}`,
-          ),
+          // g-063 wrap-up: the two always-on probe rows that used to sit here
+          // (`data-primitives-detail`, `data-primitives-members` — the `require`
+          // details and the `Button`/`Toast` `typeof` table, plus
+          // `data-primitives-button-component`) were removed by the lead's
+          // request. They were diagnostics for locating the `forwardRef` defect
+          // on a real machine; that job is done, so the block keeps the branch
+          // line above and the two **exceptional** reason rows below (both
+          // render only when something actually went wrong).
           h(
             'div',
             {
@@ -11715,19 +11622,17 @@ window.__ModuleLoader__.load({
           // `absent` (no Toast primitive), `pending` (slot never declared),
           // `ready` (registered) or `failed` (declared and refused).
           overlaySeat: () => overlaySeat.state,
-          // g-062 fix round: the capability probe's own facts — which namespace
-          // the toast decision used (`module` / `default` / `none`) and the
-          // whole diagnostic record the settings page prints. A rendered tree
-          // can assert the line; these let a unit case assert the decision.
+          // g-062 fix round / g-063: the capability probe's own facts — which
+          // namespace the toast decision used (`module` / `default` / `none`),
+          // the branch really in use and, since g-063 E1, the render-time failure
+          // record. The two always-on diagnostic rows that used to print the
+          // `require` details and the `Button`/`Toast` `typeof` table were
+          // removed in g-063's wrap-up, and their fields with them; a rendered
+          // tree still asserts the surviving rows, and these let a unit case
+          // assert the decisions behind them.
           toastNamespace: () => toastNamespaceSource,
           primitivesProbe: () => ({
             ...primitivesProbe,
-            keys: [...primitivesProbe.keys],
-            // g-063 E1: the probe's verdict is fixed at load, but the branch in
-            // use can still move — a Host atom that throws while React renders
-            // it flips the page to the hand-built atoms. Reported as facts, so a
-            // case (or the operator) can tell "probed fallback" from "probed
-            // primitives, then degraded".
             renderer: activeRenderer(),
             renderFailed: primitivesRenderFailed,
             renderFailure: primitivesRenderFailure,

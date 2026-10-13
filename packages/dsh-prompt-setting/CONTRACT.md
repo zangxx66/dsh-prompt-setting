@@ -3386,9 +3386,9 @@ code means rather than how it is written:
   `data-status-build` on `data-region="status"`. **Revision 18:** `generatedAt`
   renders in the browser's own zone, with the stored UTC string on the node's
   `title` (see the Revision 18 paragraph above).
-  **Revision 47 (g-062 fix round):** `data-region="renderer-info"` also carries
+  **Revision 47 (g-062 fix round):** `data-region="renderer-info"` also carried
   three diagnostic rows, so the fallback-without-a-reason pair the real machine
-  reported can never be read as "not working": `data-primitives-detail="true"`
+  reported could never be read as "not working": `data-primitives-detail="true"`
   (whether the `require` threw, its error text, the returned value's `typeof`,
   whether it is an object, and the first ≤8 key names),
   `data-primitives-members="true"` (`typeof` of `Button` and `Toast` before and
@@ -3397,6 +3397,23 @@ code means rather than how it is written:
   the **toast** capability decision used). The renderer decision
   (`RENDERER` / `data-renderer`) still keys on the raw module's `Button` only;
   only the toast probe may unwrap.
+  **Revision 49, wrap-up (g-063):** the first two of those three rows were
+  **removed**, by the operator's request, together with their copy keys and the
+  probe fields only they printed
+  (`primitivesDetail*` / `primitivesMembers*`, `threw` / `error` / `moduleType` /
+  `isObject` / `keys` / `hasDefault` / `defaultKeys` / `buttonBefore` /
+  `buttonAfter` / `toastBefore` / `toastAfter` / `buttonComponent`, and the
+  `namespaceKeyPrefix` / `namespaceMemberType` helpers). They were diagnostics
+  added by the g-062 fix round to locate the `forwardRef` defect on a real
+  machine; that job is done, and they only ever printed in the 「高级」 status
+  block. **Kept:** the `渲染分支` line, the toast-namespace row
+  (`data-primitives-toast-source`, which is what the surviving
+  `primitivesProbe.toastSource` field feeds), and the two rows that render
+  **only when something went wrong** — `data-primitives-failure` (the `require`
+  failed) and `data-primitives-render-error` (the error boundary caught a
+  render-time throw, beside `data-primitives-render-failed="true"`). The
+  real-machine readings this contract is checked against are therefore
+  `data-renderer` / the `渲染分支` line / `data-primitives-toast-source`.
   **Revision 49 (g-063):** the `Button` question is no longer
   `typeof === 'function'`. The Host ships `Button` and `Input` as
   `React.forwardRef(...)` products, whose `typeof` is `'object'`, so the old
@@ -3436,10 +3453,9 @@ code means rather than how it is written:
   line) names the branch **really in use** through `activeRenderer()`;
   `data-region="renderer-info"` carries
   `data-primitives-render-failed="true" | "false"` and, when true, a
-  `data-primitives-render-error="true"` row with the error text.
-  `data-primitives-members="true"` also carries
-  `data-primitives-button-component="true" | "false"` — the decision, beside the
-  `typeof` it was made from.
+  `data-primitives-render-error="true"` row with the error text. (The
+  `data-primitives-button-component` marker that used to ride on the removed
+  key-typeof row is gone with it — the decision is read from `data-renderer`.)
   **Revision 49, real-machine follow-up — the tab strip is hand-built on purpose:**
   the official `SegmentedTabs` sets
   `gridTemplateColumns: repeat(items.length, minmax(0, 1fr))` **inline** on its

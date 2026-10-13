@@ -14199,11 +14199,6 @@ test('client: a flat primitives namespace is used as-is, and the diagnosis says 
   assert.equal(notice.toastNamespace(), 'module', 'the namespace itself is the one the decision used');
   assert.equal(page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay').length, 1);
   const probe = notice.primitivesProbe();
-  assert.equal(probe.moduleType, 'object');
-  assert.equal(probe.isObject, true);
-  assert.equal(probe.hasDefault, false, 'a flat namespace has no wrapper to unwrap');
-  assert.equal(probe.buttonAfter, 'function');
-  assert.equal(probe.toastAfter, 'function');
   assert.equal(probe.toastSource, 'module');
   assert.equal(probe.renderer, 'primitives', 'a flat namespace with Button keeps the primitives renderer');
 
@@ -14212,12 +14207,18 @@ test('client: a flat primitives namespace is used as-is, and the diagnosis says 
   const tree = await openAdvanced(page);
   const info = oneBy(tree, 'data-region', 'renderer-info');
   assert.ok(hasText(info, page.text.rendererPrimitives), 'the renderer branch is untouched by the fix');
-  const detail = oneBy(info, 'data-primitives-detail', 'true');
-  assert.ok(hasText(detail, page.text.primitivesDetailYes), 'the require did not throw');
-  assert.ok(hasText(detail, 'Button'), 'and the key prefix names a real export');
-  const members = oneBy(info, 'data-primitives-members', 'true');
-  assert.ok(hasText(members, 'Button=function'), 'the key types are printed before and after unwrapping');
-  assert.ok(hasText(members, 'Toast=function'));
+  // g-063 wrap-up: the always-on probe rows are gone; the toast row and the
+  // branch line are what the block still reports.
+  assert.equal(
+    collect(info, (node) => node.props && node.props['data-primitives-detail'] !== undefined).length,
+    0,
+    'the removed probe-detail row is not rendered',
+  );
+  assert.equal(
+    collect(info, (node) => node.props && node.props['data-primitives-members'] !== undefined).length,
+    0,
+    'the removed key-typeof row is not rendered',
+  );
   assert.equal(oneBy(info, 'data-primitives-toast-source', 'module').props['data-primitives-toast-source'], 'module');
   assert.ok(
     hasText(oneBy(info, 'data-primitives-toast-source', 'module'), page.text.toastNamespaceModule),
@@ -14237,11 +14238,6 @@ test('client: an ESM/CJS wrapper is unwrapped for the toast, and only for the to
     responses: defaultResponses(),
   });
   const probe = page.loaded.module.__internals.assemblyNotice.primitivesProbe();
-  assert.equal(probe.hasDefault, true, 'there is a wrapper');
-  assert.equal(probe.buttonBefore, 'undefined', 'and nothing named Button lives at the top level');
-  assert.equal(probe.toastBefore, 'undefined');
-  assert.equal(probe.buttonAfter, 'function', 'the unwrapped namespace has them');
-  assert.equal(probe.toastAfter, 'function');
   assert.equal(page.loaded.module.__internals.assemblyNotice.HAS_TOAST, true);
   assert.equal(page.loaded.module.__internals.assemblyNotice.toastNamespace(), 'default');
   assert.equal(
@@ -14259,15 +14255,12 @@ test('client: an ESM/CJS wrapper is unwrapped for the toast, and only for the to
     oneBy(info, 'data-primitives-toast-source', 'default').props['data-primitives-toast-source'],
     'default',
   );
-  assert.ok(hasText(oneBy(info, 'data-primitives-members', 'true'), 'Button=function'));
+  assert.equal(probe.toastSource, 'default', 'the decision behind that row really used the unwrapped namespace');
 });
 
 test('client: a resolved-but-empty primitives answer says so instead of looking like a flat one (fix round)', async () => {
   for (const shape of ['empty-object', 'undefined']) {
     const page = makePage({ primitives: 'ok', primitivesShape: shape, responses: defaultResponses() });
-    const probe = page.loaded.module.__internals.assemblyNotice.primitivesProbe();
-    assert.equal(probe.threw, false, `${shape}: require resolved`);
-    assert.equal(probe.error, '', `${shape}: so there is no error text to show`);
     assert.equal(
       page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay').length,
       0,
@@ -14276,71 +14269,42 @@ test('client: a resolved-but-empty primitives answer says so instead of looking 
     const tree = await openAdvanced(page);
     const info = oneBy(tree, 'data-region', 'renderer-info');
     assert.ok(hasText(info, page.text.rendererFallback), `${shape}: the renderer falls back`);
-    const detail = oneBy(info, 'data-primitives-detail', 'true');
-    assert.ok(hasText(detail, page.text.primitivesDetailNo), `${shape}: and the line says no object came back`);
     assert.equal(
       oneBy(info, 'data-primitives-toast-source', 'none').props['data-primitives-toast-source'],
       'none',
       `${shape}: the toast namespace is named as absent`,
     );
-    if (shape === 'empty-object') {
-      assert.ok(hasText(detail, page.text.primitivesDetailNone), 'an object with no keys is stated, not left blank');
-    } else {
-      assert.equal(probe.moduleType, 'undefined', 'the value really was undefined, not an empty object');
-    }
+    assert.equal(
+      collect(info, (node) => node.props && node.props['data-primitives-detail'] !== undefined).length,
+      0,
+      `${shape}: and the removed probe-detail row is gone`,
+    );
   }
 });
 
 test('client: a throwing require is reported with its own message, and the old failure line survives (fix round)', async () => {
   const page = makePage({ responses: defaultResponses() });
-  const probe = page.loaded.module.__internals.assemblyNotice.primitivesProbe();
-  assert.equal(probe.threw, true, 'the probe really threw');
-  assert.ok(probe.error.includes('Cannot find module'), `the error text is kept: ${probe.error}`);
-  assert.equal(probe.moduleType, 'object', 'a failed require leaves the module as the `null` it was seeded with');
-  assert.equal(probe.isObject, false, 'and the object check still says no');
   assert.equal(page.loaded.module.__internals.assemblyNotice.toastNamespace(), 'none');
   const tree = await openAdvanced(page);
   const info = oneBy(tree, 'data-region', 'renderer-info');
-  // The line g-015 added is still there — the new detail rows add to the
-  // diagnosis, they do not replace it.
+  // The line g-015 added is still there — it is the "a degradation must say why"
+  // carrier, and the g-063 wrap-up kept it while removing the always-on rows.
   assert.equal(oneBy(info, 'data-primitives-failure', 'true').props['data-primitives-failure'], 'true');
   assert.ok(hasText(info, 'Cannot find module'), 'the reason is still printed');
-  assert.ok(
-    hasText(oneBy(info, 'data-primitives-detail', 'true'), 'Cannot find module'),
-    'and the detail line repeats it, because that is what "threw" means',
+  assert.equal(
+    collect(info, (node) => node.props && node.props['data-primitives-detail'] !== undefined).length,
+    0,
+    'the removed probe-detail row no longer repeats it — the failure line is the only carrier now',
   );
   assert.equal(oneBy(info, 'data-primitives-toast-source', 'none').props['data-primitives-toast-source'], 'none');
 });
 
-test('client: the three probe shapes get three different diagnosis lines (fix round, negative control)', async () => {
-  // "Changed and it goes red": the three worlds the real machine could not tell
-  // apart must not collapse into one rendering. If the diagnosis line stops
-  // depending on the shape, this case fails while every other case still passes.
-  const lines = async (options) => {
-    const page = makePage({ primitives: 'ok', responses: defaultResponses(), ...options });
-    const info = oneBy(await openAdvanced(page), 'data-region', 'renderer-info');
-    // Read the line's own attribute rather than searching by an expected value:
-    // the point here is that the value *differs* per shape.
-    const sourceNodes = collect(info, (node) => node.props && node.props['data-primitives-toast-source'] !== undefined);
-    assert.equal(sourceNodes.length, 1, 'exactly one toast-namespace line');
-    return {
-      detail: JSON.stringify(oneBy(info, 'data-primitives-detail', 'true').props.children),
-      members: JSON.stringify(oneBy(info, 'data-primitives-members', 'true').props.children),
-      source: sourceNodes[0].props['data-primitives-toast-source'],
-    };
-  };
-  const flat = await lines({ withToast: true, primitivesShape: 'flat' });
-  const wrapped = await lines({ withToast: true, primitivesShape: 'default' });
-  const empty = await lines({ primitivesShape: 'empty-object' });
-  for (const [a, b] of [
-    [flat, wrapped],
-    [flat, empty],
-    [wrapped, empty],
-  ]) {
-    assert.notDeepEqual(a, b, 'two different probe shapes must not render the same diagnosis');
-  }
-  assert.notEqual(flat.source, wrapped.source, 'and the namespace line is the one that names the difference');
-});
+// g-063 wrap-up: the "three probe shapes get three different diagnosis lines"
+// case lived here. It existed to prove the two **always-on** diagnostic rows
+// (plus the toast-namespace row) told three worlds apart. Those rows were removed
+// on the lead's request once they had located the `forwardRef` defect, and the
+// toast-namespace row's three values are still asserted one by one in the three
+// cases above.
 // #endregion
 
 // ---------------------------------------------------------------------------
@@ -14350,8 +14314,8 @@ test('client: the three probe shapes get three different diagnosis lines (fix ro
 // `typeof` is `'object'`. A probe keyed on `typeof === 'function'` therefore
 // read a fully-stocked Host as empty and pinned this page to the hand-built
 // renderer for its whole life. These cases publish the shapes the real Host
-// ships — and the look-alikes that must keep degrading — and they assert both
-// the decision (`buttonComponent` / `data-renderer`) and the drawing (the
+// ships — and the look-alikes that must keep degrading — and they assert the
+// decision through `data-renderer` / the probe's `renderer` plus the drawing (the
 // official atoms really rendered the tree).
 // ---------------------------------------------------------------------------
 
@@ -14379,9 +14343,7 @@ test('client: a forwardRef Button selects the primitives renderer (g-063)', asyn
     responses: defaultResponses(),
   });
   const probe = page.loaded.module.__internals.assemblyNotice.primitivesProbe();
-  assert.equal(probe.buttonBefore, 'object', 'a forwardRef atom reports typeof object, which is the whole bug');
-  assert.equal(probe.buttonComponent, true, 'and the probe still recognises it as a component');
-  assert.equal(probe.renderer, 'primitives', 'so the renderer branch really moves');
+  assert.equal(probe.renderer, 'primitives', 'the renderer branch really moves for a forwardRef atom');
 
   const tree = await page.flush();
   assert.equal(rendererOf(tree), 'primitives');
@@ -14397,11 +14359,10 @@ test('client: a forwardRef Button selects the primitives renderer (g-063)', asyn
 
   const info = oneBy(await openAdvanced(page), 'data-region', 'renderer-info');
   assert.ok(hasText(info, page.text.rendererPrimitives), 'the diagnosis names the branch now in use');
-  assert.ok(hasText(oneBy(info, 'data-primitives-members', 'true'), 'Button=object'));
   assert.equal(
-    oneBy(info, 'data-primitives-button-component', 'true').props['data-primitives-button-component'],
-    'true',
-    'the typeof and the decision sit side by side for the operator',
+    collect(info, (node) => node.props && node.props['data-primitives-members'] !== undefined).length,
+    0,
+    'and it no longer prints the key-typeof table the wrap-up removed',
   );
 });
 
@@ -14415,8 +14376,7 @@ test('client: a memo Button is a component too (g-063)', async () => {
     responses: defaultResponses(),
   });
   const probe = page.loaded.module.__internals.assemblyNotice.primitivesProbe();
-  assert.equal(probe.buttonBefore, 'object');
-  assert.equal(probe.buttonComponent, true, 'memo is an object-shaped component kind as well');
+  assert.equal(probe.renderer, 'primitives', 'memo is an object-shaped component kind as well');
   const tree = await page.flush();
   assert.equal(rendererOf(tree), 'primitives');
   assert.equal(oneBy(tree, 'data-action', 'refresh').props['data-atom'], 'button');
@@ -14491,7 +14451,6 @@ test('client: an unrecognised component shape still falls back (g-063, negative 
       responses: defaultResponses(),
     });
     const probe = page.loaded.module.__internals.assemblyNotice.primitivesProbe();
-    assert.equal(probe.buttonComponent, false, `${name}: not read as a component`);
     assert.equal(probe.renderer, 'fallback', `${name}: the renderer falls back`);
     const tree = await openAdvanced(page);
     assert.equal(rendererOf(tree), 'fallback', `${name}: and the page says which branch it took`);
@@ -14511,9 +14470,7 @@ test('client: a throwing Button getter degrades instead of blanking the page (g-
     responses: defaultResponses(),
   });
   const probe = page.loaded.module.__internals.assemblyNotice.primitivesProbe();
-  assert.equal(probe.buttonComponent, false, 'a throwing read is "not usable", never a crash');
-  assert.equal(probe.buttonBefore, '(getter threw)', 'and the diagnosis says why');
-  assert.equal(probe.renderer, 'fallback');
+  assert.equal(probe.renderer, 'fallback', 'a throwing read is "not usable", never a crash');
   const tree = await openAdvanced(page);
   assert.equal(rendererOf(tree), 'fallback');
   assert.equal(markerOf(tree, 'data-render-state'), 'ok', 'the panel is not blank');
@@ -14546,8 +14503,7 @@ test('client: a Host atom that throws mid-render degrades instead of blanking th
   assert.equal(oneBy(tree, 'data-action', 'refresh').type, 'button');
 
   const probe = page.loaded.module.__internals.assemblyNotice.primitivesProbe();
-  assert.equal(probe.buttonComponent, true, 'the probe itself was right — the atom is a component');
-  assert.equal(probe.renderFailed, true, 'it just could not be rendered');
+  assert.equal(probe.renderFailed, true, 'the probe had accepted the atom — it just could not be rendered');
   assert.equal(probe.renderer, 'fallback', 'so the branch in use moved');
   assert.ok(probe.renderFailure.includes('exploded mid-render'), `the failure is kept: ${probe.renderFailure}`);
 

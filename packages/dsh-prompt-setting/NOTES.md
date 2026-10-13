@@ -134,11 +134,20 @@ brief 建议「声明宿主行与客户端行（行 `id` 建议 `prompt-setting`
 - 新增 `data-primitives-detail="true"`：`require 抛错=是/否｜错误原文=…｜返回值类型=…｜是对象=…｜键名前缀=[…]`（键名最多 8 个）；
 - 新增 `data-primitives-members="true"`：`解包前 Button=…｜解包后 Button=…｜解包前 Toast=…｜解包后 Toast=…`；
 - 新增 `data-primitives-toast-source="module|default|none"`：toast 决策用了哪个命名空间。
+- **g-063 收尾（2026-10-13）：前两条（`data-primitives-detail` / `data-primitives-members`，含挂在后者上的
+  `data-primitives-button-component`）已按负责人要求移除**，连同只服务它们的文案键（`primitivesDetail*` /
+  `primitivesMembers*`）与 `primitivesProbe` 字段（`threw`/`error`/`moduleType`/`isObject`/`keys`/`hasDefault`/
+  `defaultKeys`/`buttonBefore`/`buttonAfter`/`toastBefore`/`toastAfter`/`buttonComponent`，以及
+  `namespaceKeyPrefix`/`namespaceMemberType` 两个辅助函数）。**原因：诊断使命完成** —— 它们是为在真机上定位
+  `forwardRef` 缺陷而加的常驻读数，缺陷已定位并修复，常驻诊断不再需要。**保留**：`渲染分支` 行、
+  `data-primitives-toast-source` 行（其数据源 `primitivesProbe.toastSource` 保留），以及两条**仅异常时出现**
+  的原因行（`data-primitives-failure` = `require` 失败、`data-primitives-render-error` = 错误边界捕获渲染期抛错）。
+  真机核对口径从此是 `data-renderer` / `渲染分支` / `data-primitives-toast-source`。
 
 **真机预期（重要）**：若宿主确实平铺导出，则第一行应是 `渲染分支: primitives（官方基础件）`
 （`RENDERER` 由平铺的 `Button` 决定），而 `data-primitives-toast-source` 应为 `module`，toast 注册
-（`data-assembly-toast-seat="ready"`）。若仍是 `fallback`，三行新读数会直接指出是抛错、是空对象、
-还是 `Toast` 只在 `default` 上——**不需要再猜**。
+（`data-assembly-toast-seat="ready"`）。若仍是 `fallback`，异常原因行（`primitives 不可用原因` /
+渲染期失败原因）会直接指出是抛错还是渲染期炸掉——**不需要再猜**。
 
 **未确证**：真机（经 `dsh web` 重启后的浏览器）上 `require` 究竟返回哪一种形态，插件侧无法离线断定；
 `sandbox` 里的三种形态都是**被断言过的**分支，不是对真机的断言。
@@ -180,9 +189,10 @@ g-062 用「渲染分支与 toast 能力解耦」绕开了连带问题，本节�
 | `writeClipboard` | **保持** `typeof === 'function'`：它是被调用的函数，不是被渲染的组件 |
 | `pickChunkComponent` / `HAS_REACT_LAZY` / `useLayoutEffect` | **保持** `typeof === 'function'`：前者挑本插件自有 chunk 的导出（`HistoryTab` 是 `chunkTab()` 产出的**具名函数**），后两者是 React 自己的工厂/hook，都不是宿主组件 |
 
-**页面读数**：`data-primitives-members="true"` 上新增 `data-primitives-button-component="true|false"`
-—— 把「`typeof` 观测」与「据此做出的判定」并排放；真机上 `Button=object`、
-`data-primitives-button-component="true"`、`data-renderer="primitives"` 应同时出现。
+**页面读数**：`data-primitives-members` 与它挂的 `data-primitives-button-component` 曾把「`typeof` 观测」与
+「据此做出的判定」并排显示，**已随 g-063 收尾移除**（见 §4.1 的「g-063 收尾」条）。现在的口径是
+`data-renderer="primitives"`（或「高级」里的 `渲染分支: primitives（官方基础件）`）；判定本身
+（`isComponentExport` / `hasComponentExport`）不变，只是不再常驻上屏。
 
 **渲染期失败（评审 E1 / F1）**：探测期的 `try/catch` 只覆盖 `require` 与**建元素**（`h(Button, …)` 不调用组件），
 而 React 是在 render 阶段才调用宿主原子的——这条路径**只有在 primitives 分支被真正激活后才可达**。
@@ -249,7 +259,8 @@ g-062 用「渲染分支与 toast 能力解耦」绕开了连带问题，本节�
 自行注入），其规则仅 `flex:none;margin:0 28px 22px`。即官方形态是「谁调用谁给类」，但**没有可照抄的列布局类**；
 即便照抄，也仍然绕不开「等分列 vs 长标签」这条前提冲突。
 
-**真机预期**：`渲染分支: primitives（官方基础件）`；`Button=object`；除 tab 外的控件由官方原子绘制。
+**真机预期**：`渲染分支: primitives（官方基础件）`（读数口径即 `data-renderer`）；除 tab 外的控件由官方原子绘制。
+（曾经用于定位缺陷的 `Button=object` 那一行已随 g-063 收尾移除，见 §4.1。）
 **tab 复验清单**：①六个 tab 按内容宽横向排列、装不下时**整行换行**（不是标签内折行）；②标签不折行、不重叠、不越界；
 ③整页无横向偏移/溢出；④tab 切换与指示（选中态）正常；⑤其他官方控件维持不变。若宿主原子在渲染期抛错，
 预期读数是 `渲染分支: fallback`＋`data-primitives-render-failed="true"`＋错误原文，而**页面照常可用**（自绘）。
