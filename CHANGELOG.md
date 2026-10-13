@@ -12,6 +12,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added 新增
+
+- **文案真源迁出 bundle：`locale/*.json` + `scripts/locale-pack.mjs`（g-066）**：插件全部用户可见文案
+  （564 键/语言 = 513 主词典 + 51 个 `error.<code>`）从 `client.js` 搬到 `locale/zh.json` 与
+  `locale/en.json`，成为**唯一人工真源**；`client.js` 里的 `zh`/`en` 两段改为**生成物**，由
+  `node scripts/locale-pack.mjs --write` 渲染、`--check` 校验（`prepare` 门禁也跑同一条检查）。浏览器
+  运行时**不读**这两份 JSON（bundle 是 classic script、宿主零转译、插件路由不服务子目录），因此
+  `ctx.locale.register(NS, {zh, en})` 仍是**同步**调用：首帧文案不变，也没有新增网络请求。`files` 纳入
+  `locale`，`npm pack --dry-run` 实测 36 个文件（含两份 JSON 与生成脚本）。文案与键名一字未改。
+  **Copy moved out of the bundle (g-066)**: every user-visible string (564 keys per language = 513 main
+  + 51 `error.<code>`) now lives in `locale/zh.json` / `locale/en.json` as the single human source; the
+  `zh`/`en` blocks inside `client.js` became a generated artifact produced and checked by
+  `scripts/locale-pack.mjs` (the same check runs on the `prepare` gate). The JSON is **not** fetched at
+  runtime — the bundle is a classic script, the Host does not transpile it, and the plugin route serves
+  no subdirectories — so `ctx.locale.register(NS, {zh, en})` stays **synchronous**: the first frame is
+  unchanged and no request was added. `files` now includes `locale`, and `npm pack --dry-run` measures
+  36 files including both JSONs and the generator.
+
 ### Changed 变更
 
 - **「装配状态提示」移到「高级」面板顶部（g-065）**：这块两层装配观察（开关 + 装配层/送达层结论 +
@@ -25,6 +43,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   switch, its preference key, the read schedule and poll cursor, the proactive toast and the host-side
   assembly watch are all untouched, and "My Prompt" keeps no element of the block (no empty container, no
   leftover heading).
+
+### Fixed 修复
+
+- **英文文案泄露（g-066）**：导出失败时不再把浏览器侧的英文原文（`no document`）拼进界面文案，改为
+  走本地化兜底；`errorText` 对**未登记**的错误码不再把 `error.<code>` 裸键显示出来，而是退回本地化的
+  `errUnknown`（原始 code 仍由错误横幅的 `errorCode` 行如实呈现）；另修掉两条英文文案里残留的中文
+  书名号（`「My Prompt」` → `"My Prompt"`）。
+  **English leaks fixed (g-066)**: a failed export no longer splices the browser's own English wording
+  (`no document`) into localized copy, and `errorText` no longer renders a bare `error.<code>` key for a
+  code that has no entry — it falls back to the localized `errUnknown` (the raw code is still shown
+  verbatim on the banner). Two English strings that carried Chinese corner brackets were normalized too.
 
 ## [0.2.2] - 2026-10-13
 

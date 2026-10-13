@@ -176,6 +176,10 @@ test('manifest: bundle, client and publish contract', () => {
     // file names) is what lets a new chunk ship without a manifest edit — and a
     // chunk the allowlist misses is a 404 in the browser (NOTES.md §122).
     'client.*.js',
+    // g-066: the two JSON dictionaries are the human source of the `zh`/`en`
+    // blocks inlined into client.js; they ship so the installed package carries
+    // the source a reader can regenerate (and diff) the bundle copy from.
+    'locale',
     'cordis.patch.yml',
     'CONTRACT.md',
     'README.md',

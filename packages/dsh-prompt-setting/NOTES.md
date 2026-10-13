@@ -1005,8 +1005,13 @@ NC-F1 的 5 项变红里，两项在**内核层**、两项在**路由层**、一
 
 ## 33. 4xx → 可读文案：单一来源表
 
-`ERROR_TEXT` 是唯一来源（`code → [zh, en]`），字典在注册时用同一个循环生成
-`error.<code>` 键，因此**不可能出现某个 code 只有 zh 没有 en**，也不可能出现「只显示原始 code」。
+**（g-066 更新）** 文案真源已迁到 `locale/zh.json` / `locale/en.json`：51 条 `code → [zh, en]` 现在
+就是两份 JSON 里的 `error.<code>` 键（与 513 条主词典同处一份文件、同一次生成），`ERROR_TEXT` 表与
+注入循环已删除。全包只有这一份人工词典，因此**不可能出现某个 code 只有 zh 没有 en**，也不可能出现
+「只显示原始 code」：消费端走 `errorText(t, err)` → `t('error.' + code)`，而查找未命中（宿主 locale
+的兜底是**回显 key 本身**）时回退到本地化的 `errUnknown`，原始 code 仍经 banner 的 `data-error-code`
+/ `errCode` 行如实呈现。详见 §147 与 `CONTRACT.md` §22。
+
 覆盖 20 条：契约 §4.4 的 18 条 + `not-found`、`duplicate-name`。
 未知 code 也不会裸奔：退回通用文案 + `errCode` 标签 + 宿主 message。
 
@@ -8518,3 +8523,68 @@ feed → cursor → toast 不丢、文案不含 `undefined`）。全量 `896 pas
 - **真机截图 / 真机 DOM 断言未做**：本 attempt 无浏览器侧执行条件，`~/.dsh/profiles/web` 的 symlink
   指向本工作树（改动对真机可见），但截图与真机 `data-region` 读值由主管在集成检查点补做，**不伪造**；
 - 视觉层（「高级」首屏是否因该块变长而需要滚动）未目视。
+
+## 147. g-066：文案真源迁到 `locale/*.json` + 生成脚本与发布门禁（Revision 49，2026-10-14，基线 `629afe8`，dev 工作树直改）
+
+**问题**：全插件的用户可见文案硬编码在 `client.js` 里，共 3 段 —— `zh`（513 键）、`en`（513 键）、
+`ERROR_TEXT`（51 条 `code → [zh, en]`，注册前循环展开成 `error.<code>`），运行时 **564 键/语言**。
+改一句话要在 1.1 万行的 bundle 里按行号找；两份语言表的一致性靠「同一个循环」结构性保证，任何人手工
+插一条 `error.x` 都会破坏它。
+
+**落地**
+
+| 位置 | 改动 |
+| --- | --- |
+| `locale/zh.json` / `locale/en.json`（新） | 唯一人工真源：各 564 键（513 主词典 + 51 个 `error.<code>`），键集与**顺序**两文件一致 |
+| `scripts/locale-pack.mjs`（新） | `--write` 由 JSON 重渲染 `client.js` 的两段（幂等）；`--check`（默认）逐字比对，不一致非零退出；导出 `checkLocaleSync` 供 `prepare` 复用 |
+| `client.js` | 删 `ERROR_TEXT` 表（原 897–1070 行）与注入循环；`zh`/`en` 段降为生成物，包在 `// #region generated: …` … `// #endregion` 里；两段改为**每键一行**（含点的键加引号，如 `'histAction.replace'`） |
+| `client.js` `errorText` | 命中判定改为「查找结果 ≠ key 本身」：宿主 locale 未命中时回显 key，旧写法会把 `error.<code>` 裸键渲染进 UI（既有缺陷，`download-failed` 就踩它） |
+| `client.js` `downloadText` | 失败返回 `{ok:false, code:'download-failed'}`（机器码），不再返回英文 `reason: 'no document'`；调用点用 `errorText` 渲染 `{reason}` → 本地化的 `errUnknown` |
+| `package.json` `files` | 加 `locale`（两份 JSON 随包发布）；`test/host.test.mjs` 的 `deepEqual` 白名单同步 |
+| `scripts/prepare.mjs` | 新增第 5 类检查 `LOCALE-SYNC`（JSON 合法 + 键对齐 + 与生成段逐字一致 + 在 `files` 内）；不适用（既无文件也没声明）的 fixture 包跳过为 `LOCALE-SYNC-N/A` |
+
+**为什么必须内联而不是运行时读 JSON**（收集卡已实测，勿再设计）：`client.js` / `client.*.js` 是
+classic `<script>` 自注册 CJS 工厂，宿主对字节**零转译**；插件路由只服务 combo 入口与**包根**
+`client.*.js`，不服务子目录 ⇒ `locale/*.json` 在浏览器里是 404。若改成 `fetch`，`ctx.locale.register`
+就不再同步，`test/client.test.mjs` 的 `SWEEP_TABLES` / `mountClient` 在模块加载时同步取词典会大面积变红，
+且首帧会露 key。所以：**JSON 只服务于人，进 bundle 的字节由脚本生成**，注册调用一字未改。
+
+**测试同步**
+
+- 新增 `test/locale.test.mjs`（7 例）：564 = 513 + 51 的键结构、键集与顺序、`error.*` 是真实双语、
+  占位符漂移白名单（唯一既有例外 `mineInterpolateNote` 的 `{variables}`）、生成段与 `--write` 逐字相等、
+  **负向对照**（把 `nav` 改一个字 ⇒ `LOCALE-SYNC` 红）、`client.js` 不含第二份词典、仍是 classic script
+  且 `register` 同步；
+- `test/client.test.mjs`：`no document` 断言改为 `page.zh.errUnknown` 并**新增负向断言**
+  `hasText(tree,'no document') === false`；EN sweep 的 `downloadFailed` 期望改用 `EN_TABLE.errUnknown`；
+  **新增 presets EN sweep 用例**并把这 4 个 `data-*` 标记登记进 `EN_REQUIRED_MARKERS`；
+- `test/prepare.test.mjs`：忠实副本测试补拷 `locale/`。
+
+**EN sweep 缺口与两条英文文案修复**：`client.presets.js` 从未被 EN sweep 走过，根因是它的两条 en 文案
+带中文书名号 —— `presetsEmpty` 与 `presetSaveAsCurrentHint` 里的 `「My Prompt」`（`CJK_ON_SCREEN` 含
+`\u3000-\u303f`）。要让新用例真的通过，只能把这 2 条 en 文案的括号改为 ASCII `"…"`（这是**唯一**的文案
+字节变更，见下「文案零变化」口径）；改动后 sweep 全绿，缺口由 `EN_REQUIRED_MARKERS` 永久封住。
+
+**文案零变化（自动比对证据）**：从基线 `629afe8` 的 `client.js` 提取 564×2 键值，与两份 JSON 逐字比对，
+**差异 0**（键序也一致；占位符键 102 条两语言一致）。全量 564 键中只有 2 条 en 值被有意改动（上段的
+中文括号归一），以及 `downloadFailed` 的**实参**来源变化（模板字符串本身未改）。
+
+**为什么不是另外两条路**：①「运行时 `fetch` + host 端点」引入首帧 key 与网络契约，且要新增契约面；
+②「词典放进 chunk」撞 `test/client.test.mjs` 的「chunk 不得有第二份词典/令牌表」机械门禁，且 5 个 chunk
+共用同一 NS 词典，拆分必然产生 5 份拷贝。
+
+### 一、验收（单行证据）
+
+- `node --test`（包目录，全套件）= **912 pass / 0 fail / cancelled 0 / skipped 0 / todo 0**（基线 905 + 本目标新增 `test/locale.test.mjs` 7 例；presets EN sweep 是既有用例内的新 case，不增计数）；
+- `node scripts/locale-pack.mjs --check` = ok（564 键/语言）；`--write` 连跑两次第二次为 `已是最新`（幂等）；
+- `node scripts/prepare.mjs` = **OK（23 项）**（基线 21：`+FILES-DIR locale`、`+LOCALE-SYNC`）；
+- `node --check client.js` = 通过（classic script 语法）；`npm_config_cache=/tmp/g066-npm-cache npm pack --dry-run` = **36 个文件**，含 `locale/zh.json`(40.2kB)、`locale/en.json`(42.5kB)、`scripts/locale-pack.mjs`；
+- **负向对照**：① `test/locale.test.mjs` 内「改一个字符 ⇒ `LOCALE-SYNC` 红」实测通过；② 缺 `locale/` 假包 + `files:['locale']` ⇒ prepare 红（`LOCALE-FILES`），补文件后绿；③ 未声明也未带 JSON 的最小 fixture 包 ⇒ `LOCALE-SYNC-N/A`，不误报。
+
+### 二、未验证项
+
+- **真机验证未做**：本 attempt 无浏览器侧执行条件，未做真机首帧目视与真机 `t()` 读值；`locale/*.json`
+  真源、生成段与注册路径均由 vm 测试与脚本断言覆盖，真机复核留给主管集成检查点，**不伪造**；
+- `mineInterpolateNote` 的既有占位符漂移（en 有 `{variables}`、zh 没有）**未修**（文案冻结），只登记为例外；
+- `errorText` 的「key 回显即未命中」判定只在本地 vm 桩上验证过宿主 fallback 语义（收集卡实测），未在真机复跑。
+

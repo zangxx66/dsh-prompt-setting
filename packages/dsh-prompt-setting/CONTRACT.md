@@ -6814,3 +6814,67 @@ re-report it.
   **Stated limitation:** browser timers are throttled in a background tab, so a
   toast is seen when the user returns to the page — this is not a real-time
   channel and does not claim to be.
+
+## 22. The locale dictionaries (g-066, Revision 49)
+
+Every user-visible string this plugin renders — 564 keys per language — used to
+be hardcoded inside `client.js`: a 513-key `zh` object, a 513-key `en` object,
+and an `ERROR_TEXT` table of 51 `code → [zh, en]` rows that a loop expanded into
+`error.<code>` entries. The copy now lives in two JSON files, and the inlined
+objects are a generated artifact.
+
+### 22.1 Source of truth
+
+- `locale/zh.json` and `locale/en.json` are the **only** human source. Each
+  holds exactly 564 string values: the 513 main keys plus 51 `error.<code>`
+  keys. Keys are identical between the two files, **in the same order** (the
+  order is what the generated block follows, so a reordered file is a
+  513-line diff rather than a copy change).
+- Nothing else in the package is hand-edited for copy. `client.js` carries the
+  blocks inside the `// #region generated: locale/zh.json + locale/en.json`
+  … `// #endregion` span; a hand edit there is overwritten by the next `--write`
+  and reported by `--check`.
+
+### 22.2 The blocks are generated, not loaded
+
+`locale/*.json` is **not** read at runtime, and cannot be:
+
+- the client bundle is a classic `<script>` self-registering a CJS factory, and
+  the Host applies **no transpilation** to those bytes — ESM syntax inside would
+  be a syntax error in the browser;
+- the plugin route serves the combo entry (`client.js`, `client.js.map`) and
+  **bundle-root** `client.*.js` chunks only; it does not serve subdirectories,
+  so `locale/*.json` is a 404 from the page;
+- the Host has no file-level language-pack convention to inherit (its README's
+  "language pack" is a *runtime* `register` call, which is what this plugin
+  already does).
+
+Therefore `ctx.locale.register(NS, {zh, en})` (§13) stays **synchronous and
+inline**: no `await`, no `fetch`, no import — the first frame is localized and
+there is no network surface. What changed is only who maintains the bytes.
+
+### 22.3 Tools and gates
+
+| Where | What it guarantees |
+| --- | --- |
+| `scripts/locale-pack.mjs --write` | Re-renders both blocks from the JSON. Idempotent: a second run changes nothing. |
+| `scripts/locale-pack.mjs --check` | Fails (exit 1) when a block is not byte-for-byte what `--write` would produce. |
+| `scripts/prepare.mjs` → `LOCALE-SYNC` | The same check on the **install/publish** path, plus a `files` allowlist test for both JSONs (a source that does not ship cannot be re-derived from the installed package). |
+| `test/locale.test.mjs` | Key parity, the 513 + 51 split, no new placeholder drift, byte equality with `--write`, a negative control (one drifted character is refused), and that the delivery shape is still a classic script with a synchronous register. |
+
+### 22.4 Error codes
+
+`error.<code>` is now an ordinary dictionary key; the `ERROR_TEXT` table and its
+injection loop are gone, and consumers resolve copy through
+`errorText(t, error)` → `t('error.' + code)` — the same runtime semantics, one
+source. `errorText` treats "the lookup answered with the key itself" as a miss
+(the locale lookup's last resort is the key) and falls back to the localized
+`errUnknown`, so a code with no entry can never render a bare identifier; the
+raw code still reaches the UI through the banner's own `data-error-code` /
+`errCode` line.
+
+### 22.5 Publishing
+
+`files` includes `locale`; `test/host.test.mjs` pins that allowlist exactly;
+`npm pack` ships both JSONs (36 files, measured with `npm pack --dry-run`).
+

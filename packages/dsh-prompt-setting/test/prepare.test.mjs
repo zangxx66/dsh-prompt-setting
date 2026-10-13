@@ -488,8 +488,10 @@ test('prepare: a CHUNK_STAMPS manifest that drifted from the chunks fails the ga
   const root = mkdtempSync(join(tmpdir(), 'dsh-prepare-chunks-'));
   try {
     // A faithful copy of the real package, minus `test/`, so the only thing this
-    // run can object to is the manifest.
-    for (const dir of ['core', 'scripts']) {
+    // run can object to is the manifest. g-066: `locale/` is part of "faithful"
+    // now — the gate compares the JSON truth against the bundle's generated
+    // blocks, so a copy without it would fail for the wrong reason.
+    for (const dir of ['core', 'scripts', 'locale']) {
       cpSync(join(packageRoot, dir), join(root, dir), { recursive: true });
     }
     // The chunk set is discovered, never listed: a hand-written list would keep

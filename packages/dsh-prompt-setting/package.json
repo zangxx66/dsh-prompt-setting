@@ -24,6 +24,7 @@
     "core",
     "client.js",
     "client.*.js",
+    "locale",
     "cordis.patch.yml",
     "CONTRACT.md",
     "README.md",

@@ -7374,7 +7374,11 @@ test('client: an export with no download surface still yields the JSON and says 
   tree = await page.flush();
   // No `document` in the sandbox at all: the page must not claim a download.
   assert.equal(oneBy(tree, 'data-region', 'transfer').props['data-transfer-phase'], 'error');
-  assert.ok(hasText(tree, page.zh.downloadFailed.replace('{reason}', 'no document')));
+  // g-066: the reason is a *dictionary lookup* now (`errorText` → `errUnknown`),
+  // not the browser's own English phrase — the sandbox has no `document`, and
+  // that machine fact must not reach localized copy as prose.
+  assert.ok(hasText(tree, page.zh.downloadFailed.replace('{reason}', page.zh.errUnknown)));
+  assert.equal(hasText(tree, 'no document'), false, 'the machine reason never reaches the UI');
   assert.equal(JSON.parse(oneBy(tree, 'data-role', 'export-text').props.value).version, 1);
   assert.ok(oneBy(tree, 'data-error-code', 'download-failed'));
 });
@@ -9537,7 +9541,7 @@ const EN_SWEEP_CASES = [
       ['data-transfer-phase', 'error'],
       ['data-error-code', 'download-failed'],
     ],
-    copy: [['downloadFailed', { reason: 'no document' }]],
+    copy: [['downloadFailed', { reason: EN_TABLE.errUnknown }]],
     async run() {
       const page = enPage({ responses: defaultResponses() });
       const rec = recorder(page);
@@ -10244,6 +10248,69 @@ const EN_SWEEP_CASES = [
     },
   },
   {
+    // g-066: 「预设」 was the one first-level tab the sweep never walked. Its
+    // two en strings even carried CJK brackets (`「My Prompt」`), which is
+    // precisely the leak this sweep exists to catch — the case below is what
+    // closed the gap, and `EN_REQUIRED_MARKERS` keeps it closed.
+    name: 'presets: the library lists a stored preset and its workspace state',
+    marks: [
+      ['data-active-tab', 'presets'],
+      ['data-region', 'presets'],
+      ['data-region', 'presets-state'],
+      ['data-region', 'presets-list'],
+    ],
+    copy: [
+      'presetsHeading',
+      'presetsNote',
+      'presetsListHeading',
+      'presetNewHeading',
+      'presetSaveAsCurrent',
+      'presetSaveAsCurrentHint',
+      'presetEdit',
+      'presetDelete',
+      'presetApplyTo',
+    ],
+    async run() {
+      const page = enPage({
+        responses: defaultResponses({
+          [PATHS.presets]: {
+            payload: presetsFixture({
+              presets: [
+                {
+                  id: 'preset-1',
+                  name: 'Short answers',
+                  action: 'replace',
+                  text: 'Be brief.',
+                  createdAt: '2024-01-01T00:00:00.000Z',
+                  updatedAt: '2024-01-01T00:00:00.000Z',
+                },
+              ],
+              applied: [
+                {
+                  workspaceRoot: '/work/alpha',
+                  base: null,
+                  stack: [
+                    {
+                      presetId: 'preset-1',
+                      presetName: 'Short answers',
+                      orphan: false,
+                      appliedAt: '2024-01-03T00:00:00.000Z',
+                    },
+                  ],
+                },
+              ],
+            }),
+          },
+        }),
+      });
+      const rec = recorder(page);
+      await rec.take();
+      clickAnyTab(rec.last(), 'presets');
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
     name: 'the render-failure card falls back to readable copy, never a blank',
     marks: [['data-render-state', 'error'], ['data-renderer', 'fallback']],
     raw: ['render failure', 'Error'],
@@ -10277,6 +10344,13 @@ const EN_REQUIRED_MARKERS = [
   'data-active-tab=history',
   'data-active-tab=backup',
   'data-active-tab=advanced',
+  // g-066: 「预设」 was the sixth first-level tab and the one the sweep had
+  // never rendered; its two en strings carried CJK brackets until this case
+  // walked the surface.
+  'data-active-tab=presets',
+  'data-region=presets',
+  'data-region=presets-list',
+  'data-region=presets-state',
   'data-region=mine',
   'data-region=mine-layer',
   // g-055: the write-target line inside the panel, and the block whose header is

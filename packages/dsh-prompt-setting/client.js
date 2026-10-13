@@ -894,186 +894,15 @@ window.__ModuleLoader__.load({
     const SCOPE_TOTAL_MAX = 100;
     const SCOPE_GROUP_LIMIT = 40;
 
-    // #region error-code dictionary (CONTRACT.md §4.4, every code gets copy)
-    /**
-     * `code` → `[zh, en]`. The table is the single source of both the
-     * `error.CODE` dictionary entries and the lookup used when a request
-     * fails, so a code can never be rendered as a bare identifier.
-     */
-    const ERROR_TEXT = {
-      'invalid-json': ['请求体不是合法 JSON。', 'The request body is not valid JSON.'],
-      'invalid-override': ['section 缺失或不是对象。', 'The "section" field is missing or not an object.'],
-      'missing-name': ['缺少段名 name。', 'The section "name" is missing.'],
-      'name-too-long': ['段名超过 200 个字符。', 'The section name exceeds 200 characters.'],
-      'invalid-name': ['段名包含控制字符。', 'The section name contains control characters.'],
-      'unknown-action': [
-        'action 必须是 replace、hide 或 append。',
-        'The action must be replace, hide, or append.',
-      ],
-      'missing-text': [
-        'replace 或 append 必须提供字符串文本。',
-        'replace and append require a text string.',
-      ],
-      'unexpected-text': ['hide 不能携带文本。', 'A hide override must not carry text.'],
-      'invalid-order': [
-        'order 必须是不小于 0 的整数（结果数组下标）。',
-        'The order must be a non-negative integer (a target index).',
-      ],
-      'unexpected-order': [
-        'replace 与 hide 不能携带 order。',
-        'replace and hide must not carry an order.',
-      ],
-      'unknown-layer': ['layer 必须是 user 或 workspace。', 'The layer must be user or workspace.'],
-      'workspace-unresolved': [
-        '工作区层需要一个可解析的 session id。',
-        'The workspace layer needs a resolvable session id.',
-      ],
-      'override-not-found': [
-        '该层没有这条覆盖，无法撤销。',
-        'That layer holds no such override to remove.',
-      ],
-      'layer-not-writable': [
-        '目标配置文件不是合法配置，拒绝覆盖写入。',
-        'The target config file is not a valid config; it is never overwritten.',
-      ],
-      'text-too-large': ['文本超过 200 KiB。', 'The text exceeds 200 KiB.'],
-      'body-too-large': ['请求体超过 256 KiB。', 'The request body exceeds 256 KiB.'],
-      'assemble-failed': [
-        '宿主装配 system prompt 时抛错，快照不可用。',
-        'The host assembly threw while building the snapshot.',
-      ],
-      'trust-fence-unavailable': [
-        '连接服务不可用，请求被信任栅栏拒绝。',
-        'The connection service is unavailable, so the trust fence refused the request.',
-      ],
-      'not-found': ['宿主没有这个路由。', 'The host has no such route.'],
-      'duplicate-name': ['同一层出现重复段名。', 'The layer holds a duplicate section name.'],
-      // Revision 7 write face (§15.5–§15.7): the three codes the narrowed route
-      // answers with. Without copy the panel would render the raw enum as if it
-      // were a sentence, which is exactly what the "no untranslated string"
-      // rule forbids.
-      'write-locked': [
-        '该写入被拒绝：只有本插件自有的段 prompt-setting:custom-prompt 可以被写入或删除。',
-        'This write was refused: only this plugin\u2019s own section, prompt-setting:custom-prompt, may be written or deleted.',
-      ],
-      'unsupported-action': [
-        '该段只接受 action=replace。',
-        'That section accepts only action=replace.',
-      ],
-      'conflicting-query': [
-        'reset 与 legacy 不能同时使用：reset 清空整层，legacy 只清旧覆盖。',
-        'reset and legacy cannot be combined: reset clears the whole layer, legacy clears only the legacy overrides.',
-      ],
-      // Stage 2 (CONTRACT.md Revision 4).
-      'invalid-history-record': [
-        '历史记录格式非法，该行已被跳过。',
-        'That history line is malformed and was skipped.',
-      ],
-      'history-unusable': ['历史文件不可读写。', 'The history file cannot be read or written.'],
-      'history-not-found': ['该层历史中没有这条记录。', 'That layer history holds no such record.'],
-      'missing-diff-selector': [
-        '需要 from 或 to（历史 id 或 current）。',
-        'Supply ?from= and/or ?to= (a history id or "current").',
-      ],
-      'invalid-diff-selector': [
-        'from/to 只能是 current 或历史记录 id。',
-        'A diff selector must be "current" or a history record id.',
-      ],
-      'invalid-export': ['导入内容必须是 JSON 对象。', 'An export document must be a JSON object.'],
-      'unknown-export-schema': [
-        'schema 不是本插件的导出格式。',
-        'The "schema" is not this plugin’s export format.',
-      ],
-      'missing-export-version': ['导入文件缺少 version。', 'The import document has no "version".'],
-      'unsupported-export-version': [
-        '导入文件版本不受支持。',
-        'The import document version is not supported.',
-      ],
-      'missing-export-layers': ['导入文件缺少 layers。', 'The import document has no "layers".'],
-      'missing-export-layer': ['导入文件不含所请求的层。', 'The import document carries no such layer.'],
-      'invalid-export-layer': ['导入文件的层结构非法。', 'A layer in the import document is malformed.'],
-      'unknown-import-mode': [
-        'mode 只能是 merge 或 replace。',
-        'The mode must be merge or replace.',
-      ],
-      'import-verify-failed': [
-        '导入的临时文件校验失败，现有配置未改动。',
-        'The staged import failed its own validation; nothing was changed.',
-      ],
-      'import-staging-failed': [
-        '导入无法写入临时文件，现有配置未改动。',
-        'The import could not be staged; nothing was changed.',
-      ],
-      'import-commit-failed': [
-        '导入提交失败，可能有层已被替换。',
-        'The import could not be committed; some layers may already be replaced.',
-      ],
-      // Revision 9 — the interpolation switch (§16).
-      'invalid-interpolate-flag': [
-        '配置里的 interpolateCustom 必须是布尔值；该层已被停用。',
-        'The config\'s "interpolateCustom" must be a boolean; that layer was disabled.',
-      ],
-      'unresolvable-variable': [
-        '这段文本里的 {{…}} 引用永远不会被替换成值（未注册、名字非法或写歪），因此保存被拒绝。请删掉该引用、改用已注册的变量，或先关闭变量替换。',
-        'A {{…}} reference in this text could never be substituted (unregistered, illegal or malformed), so the save was refused. Delete the reference, use a registered variable, or turn variable substitution off first.',
-      ],
-      'invalid-enabled': [
-        '开关请求缺少布尔值 enabled。',
-        'The switch request needs a boolean "enabled".',
-      ],
-      'invalid-state': [
-        '本层状态只能是 inherit、on 或 off 之一。',
-        'A layer state must be one of inherit, on or off.',
-      ],
-      'variable-lookup-failed': [
-        '无法取到当前的变量表，本次写入被拒绝（无法判断哪些变量会被展开）。',
-        'The current variable table could not be obtained, so this write was refused: there is no way to tell which references would expand.',
-      ],
-      // g-043「下载区域」(CONTRACT.md §17.7–§17.10). One key per way the choice can
-      // be refused, because the dialog's red line has to say *which* one happened:
-      // a shape mistake, a malformed address, an address nobody answered, an
-      // address that answered with an error, and an address that answered but is
-      // not a registry are five different things to do something about.
-      'invalid-region': [
-        '下载区域只能是 default、cn 或 custom 之一。',
-        'The download region must be one of default, cn or custom.',
-      ],
-      'registry-invalid': [
-        '镜像地址不合法：必须是 http(s) 地址、主机非空，且不能带账号密码、查询串或片段。',
-        'That mirror address is invalid: it must be an http(s) URL with a host, and no credentials, query string or fragment.',
-      ],
-      'registry-unreachable': [
-        '该镜像地址在超时时间内没有任何响应（超时或网络错误），地址未被保存。',
-        'Nothing answered at that mirror address within the timeout (a timeout or a network error); nothing was saved.',
-      ],
-      'registry-http-error': [
-        '该地址能访问，但返回了错误状态，不是可用的 npm registry。',
-        'That address answered, but with an error status, so it is not a usable npm registry.',
-      ],
-      'registry-not-npm': [
-        '该地址能访问，但返回的不是 npm 包文档（缺少 dist-tags.latest）。',
-        'That address answered, but not with an npm package document (no dist-tags.latest).',
-      ],
-      'registry-unavailable': [
-        '所选下载源当前不可用。不会自动改用默认源：请稍后重试，或换一个下载区域。',
-        'The chosen download source is unavailable. Nothing falls back to the default source: retry later, or pick another download region.',
-      ],
-      // The one code both preferences routes can answer (§17.4, §17.8): a write
-      // that could not be persisted. Without copy the red line would render the
-      // raw identifier, which is exactly what the「no untranslated string」rule
-      // forbids.
-      'preferences-unwritable': [
-        '偏好文件无法写入，本次选择没有生效。',
-        'The preference file could not be written, so nothing took effect.',
-      ],
-    };
-    // #endregion
-
+    // #region generated: locale/zh.json + locale/en.json (g-066)
+    // 下面两段是**生成物**，不是真源：文案只改 locale/*.json，然后跑
+    // `node scripts/locale-pack.mjs --write`；`--check` 是发布门（prepare 也会跑）。
+    // 浏览器运行时读不到包内的 JSON —— bundle 是 classic script、宿主零转译、插件路由
+    // 也不服务子目录 —— 所以词典必须内联进 bundle，只是不再手工维护它（CONTRACT.md §14.5）。
     const zh = {
       nav: 'Prompt 管理',
       title: 'Prompt 管理',
-      subtitle:
-        '查看并覆盖每轮会话最终装配的 system prompt。写入作用于下一轮装配（next-turn）。',
+      subtitle: '查看并覆盖每轮会话最终装配的 system prompt。写入作用于下一轮装配（next-turn）。',
       refresh: '刷新快照',
       loading: '加载中…',
       loadFailed: '快照加载失败',
@@ -1081,8 +910,7 @@ window.__ModuleLoader__.load({
       sessionGlobal: '全局（不指定会话）',
       sessionManualPlaceholder: '粘贴 session id（Agent.id）',
       sessionApply: '应用',
-      sessionLimit:
-        '当前 profile 未提供 useSessions（会话服务不可用），已降级为手动输入 session id：无法列出会话下拉。',
+      sessionLimit: '当前 profile 未提供 useSessions（会话服务不可用），已降级为手动输入 session id：无法列出会话下拉。',
       sessionEmpty: '会话列表为空，可手动输入 session id 或使用「全局」。',
       sessionGlobalNote: '未指定会话：快照描述全局装配，工作区层不参与。',
       sessionSearch: '搜索会话（标题 / 路径 / session id）',
@@ -1093,7 +921,6 @@ window.__ModuleLoader__.load({
       sessionNoMatch: '没有匹配的会话，可直接按输入的 id 查看。',
       sessionKeyboardHint: '↑↓ 移动，Enter 选中，Esc 清空搜索',
       sessionSelectedNote: '已指定会话：快照在该会话自身作用域下探测。',
-      // g-016: the collapsed「查看范围」summary row.
       scopeEdit: '更改',
       scopeCollapse: '收起',
       scopeSummaryManual: '会话服务不可用：手动输入 id',
@@ -1116,12 +943,6 @@ window.__ModuleLoader__.load({
       stFrozenGlobal: '全局装配已冻结',
       stUnfrozenGlobal: '全局装配未冻结',
       stFrozenUnknown: '所选会话的冻结状态未知',
-      // ---- g-052: say what "unknown" means, without attributing a cause.
-      // `running` in the session list is `agent.status === 'running'`, which is
-      // NOT `agentAvailable`: an idle session that just finished a turn has
-      // running=false and a live agent, so its frozen state *is* confirmable.
-      // Any wording about "not running / not open / ended" would contradict the
-      // ● marker the user sees in the list, so this copy stays cause-free.
       stFrozenUnknownProbe: '无法探测该会话自己的装配。',
       stFrozenUnknownNotFrozen: '这不等于未冻结；仍可编辑保存，只是不保证生效。',
       stBuild: '构建戳',
@@ -1130,38 +951,23 @@ window.__ModuleLoader__.load({
       stBuildUnknown: '构建戳未知',
       stBuildSelf: '本页',
       stBuildServer: '宿主',
-      stBuildStaleHint:
-        '本页运行的 client.js 与宿主正在发布的字节不同：这是旧标签页在跑旧 bundle。开一个新标签（或在新标签里重新打开设置）即可，改客户端不需要重启宿主。',
-      stBuildUnknownHint:
-        '宿主没有报告 client.js 指纹（宿主版本旧、文件不可读、或标记缺失/重复），因此无法判断本页是否过期；这里不会当作过期。',
+      stBuildStaleHint: '本页运行的 client.js 与宿主正在发布的字节不同：这是旧标签页在跑旧 bundle。开一个新标签（或在新标签里重新打开设置）即可，改客户端不需要重启宿主。',
+      stBuildUnknownHint: '宿主没有报告 client.js 指纹（宿主版本旧、文件不可读、或标记缺失/重复），因此无法判断本页是否过期；这里不会当作过期。',
       stBuildPingFailedHint: 'ping 请求失败，拿不到宿主指纹，因此无法判断本页是否过期。',
-      // g-029: the version the host reported in the ping. The tag renders a real
-      // answer as `v` + the version; this label and the one below are the only two
-      // strings the missing case needs, and the version itself is never written
-      // in this file.
       stPluginVersion: '插件版本',
       stPluginVersionUnknown: '版本未知',
-      // ---- g-030: the upstream update check. Three surfaces, one vocabulary:
-      // the dismissible banner, the「高级」switch that owns the preference, and
-      // the silent path (no update / no information / a failure) which renders
-      // nothing at all — so there is deliberately no "up to date" string here to
-      // put on the page by accident.
       updateAvailable: '有新版本 {latest} 可用（当前 {current}）。',
       updateReleaseLink: '查看发布页',
       updateDismiss: '关闭提示',
       updateSettingLabel: '检查更新',
       updateSettingOn: '已开启',
       updateSettingOff: '已关闭',
-      updateSettingNote:
-        '打开设置页时由宿主检查一次最新版本：先问 npm registry，npm 不可用时才回退 GitHub Releases；只发一个 GET，不带任何本机或会话数据，且来源按「下载区域」选择（中国大陆＝npmmirror）。关闭后不再联网检查（含打开本页时）；开启时会读取一次下载区域状态。',
+      updateSettingNote: '打开设置页时由宿主检查一次最新版本：先问 npm registry，npm 不可用时才回退 GitHub Releases；只发一个 GET，不带任何本机或会话数据，且来源按「下载区域」选择（中国大陆＝npmmirror）。关闭后不再联网检查（含打开本页时）；开启时会读取一次下载区域状态。',
       updateToggleSaved: '检查更新{state}。',
       updateRecheck: '立即重查',
       updateSwitching: '保存中…',
       updateUnknown: '上游暂时没有可用的版本信息。',
       updateLatestKnown: '最新版本 {latest}',
-      // g-043:「下载区域」. The dropdown names the three sources, and the line
-      // under it says what each one means — a「默认」that hides "npm 优先、GitHub 兜底"
-      // would make the other two choices impossible to compare against it.
       updateRegionLabel: '下载区域',
       updateRegionDefault: '默认',
       updateRegionDefaultNote: 'npm 优先；npm 不可用时回退 GitHub release 产物。',
@@ -1174,28 +980,15 @@ window.__ModuleLoader__.load({
       updateRegionSaving: '切换中…',
       updateRegionSelectLabel: '更新来源',
       updateRegionCustomTitle: '自定义镜像源',
-      updateRegionCustomBody:
-        '填写 npm registry 的基地址（http(s)://，可带路径）。提交后宿主会先校验格式并试取一次包文档：不可访问或不是 npm registry 都不会保存，当前生效的源保持不变。',
+      updateRegionCustomBody: '填写 npm registry 的基地址（http(s)://，可带路径）。提交后宿主会先校验格式并试取一次包文档：不可访问或不是 npm registry 都不会保存，当前生效的源保持不变。',
       updateRegionCustomPlaceholder: 'https://registry.example.com/',
       updateRegionCustomSubmit: '校验并保存',
       updateRegionCustomChecking: '校验中…',
       updateRegionCustomCancel: '取消',
       updateRegionUnusable: '已保存的自定义镜像地址不可用：{reason}',
-      // g-032:「立即更新」. The whole feature rests on one promise the copy has
-      // to keep: the install is done by the host, and the **user** restarts. So
-      // every string that describes the outcome says so, and no string anywhere
-      // promises an automatic restart.
-      //
-      // g-036: the restart instruction is partitioned by launch shape. The bare
-      // key is the `unknown` copy — what an old Host (no `launchKind`) and an
-      // undecidable profile get — and it names no launch form, so a terminal
-      // user and a desktop user can both follow it. `…Cli` addresses the command
-      // line, `…Desktop` the official desktop application, whose copy must never
-      // contain `dsh web`: that user has no terminal to run it in.
       updateApply: '立即更新',
       updateApplyTitle: '更新到 v{latest}',
-      updateApplyBody:
-        '宿主将通过官方插件管理器安装 v{latest}（按当前下载区域从 npm registry 或 GitHub Release 产物获取，下载到本机 profile，不自动重启）。',
+      updateApplyBody: '宿主将通过官方插件管理器安装 v{latest}（按当前下载区域从 npm registry 或 GitHub Release 产物获取，下载到本机 profile，不自动重启）。',
       updateApplyRestartNote: '安装完成后需要你手动重启 DSH 才会生效。',
       updateApplyRestartNoteCli: '安装完成后需要你手动重新运行 dsh web 才会生效。',
       updateApplyRestartNoteDesktop: '安装完成后需要你手动退出并重新打开 DeepSeek Harness 才会生效。',
@@ -1211,12 +1004,9 @@ window.__ModuleLoader__.load({
       updateApplyFailed: '安装失败：{reason}',
       updateApplyRetry: '重试',
       updateApplyCancelled: '已取消安装；profile 文件已还原。',
-      updateApplyUnknown:
-        '这次安装的状态已不可查（可能已完成，也可能是页面刷新过）。请手动重启 DSH 或用「立即重查」确认版本。',
-      updateApplyUnknownCli:
-        '这次安装的状态已不可查（可能已完成，也可能是页面刷新过）。请手动重新运行 dsh web 或用「立即重查」确认版本。',
-      updateApplyUnknownDesktop:
-        '这次安装的状态已不可查（可能已完成，也可能是页面刷新过）。请退出并重新打开 DeepSeek Harness，或用「立即重查」确认版本。',
+      updateApplyUnknown: '这次安装的状态已不可查（可能已完成，也可能是页面刷新过）。请手动重启 DSH 或用「立即重查」确认版本。',
+      updateApplyUnknownCli: '这次安装的状态已不可查（可能已完成，也可能是页面刷新过）。请手动重新运行 dsh web 或用「立即重查」确认版本。',
+      updateApplyUnknownDesktop: '这次安装的状态已不可查（可能已完成，也可能是页面刷新过）。请退出并重新打开 DeepSeek Harness，或用「立即重查」确认版本。',
       updateApplyManual: '也可以手动更新：{hint}',
       updateApplyManualLink: '打开 {tag} 的发布页或包页',
       updateApplyReused: '已有一个安装在进行中。',
@@ -1225,10 +1015,8 @@ window.__ModuleLoader__.load({
       updateApplyAlreadyDesktop: '该版本已安装（v{version}），请退出并重新打开 DeepSeek Harness 生效。',
       viewSections: '分段',
       viewFull: '全文',
-      // g-015: the four first-level tabs, in their fixed presentation order.
       tabMine: '我的 Prompt',
       tabOverview: '提示词总览',
-      // g-038: 「历史与备份」 became two tabs, in this exact order.
       tabHistory: '版本历史',
       tabBackup: '备份与恢复',
       tabAdvanced: '高级',
@@ -1243,8 +1031,6 @@ window.__ModuleLoader__.load({
       fWorkspace: '工作区级',
       fYes: '可覆盖',
       fNo: '不可覆盖',
-      // The editor's "label: value" row cannot echo its own label; these two
-      // are the values of that row only, never of the sections-list Tag.
       originRegistered: '注册段',
       originAppended: '本插件 append',
       originDownstream: '其它插件加入',
@@ -1268,13 +1054,11 @@ window.__ModuleLoader__.load({
       fullFiltered: '已按来源筛选：此处为重组后的预览文本，不是服务端 rendered。',
       unresolvedTitle: '真实装配会失败',
       unresolvedBody: '会 throw 的引用：{list}',
-      unresolvedNote:
-        '这些引用所在的段参与变量替换，宿主每轮组装该会话的 prompt 时都会直接抛错——该会话的 prompt 组装不出来，因此这段文本不是真实 prompt。',
+      unresolvedNote: '这些引用所在的段参与变量替换，宿主每轮组装该会话的 prompt 时都会直接抛错——该会话的 prompt 组装不出来，因此这段文本不是真实 prompt。',
       unresolvedLiteralInline: '另有 {list} 位于不参与替换的段中：真实 prompt 里它们就是原样的字面量。',
       unresolvedLiteralTitle: '真实 prompt 就是这些字面量',
       unresolvedLiteralBody: '不参与替换的引用：{list}',
-      unresolvedLiteralNote:
-        '这些引用所在的段不由宿主插值（interpolate: false；「我的 Prompt」永远如此），无论本插件的变量替换是否开启、是否解析得出值，它们都会原样交给模型——预览里的字面量就是真实 prompt，预览即真相。',
+      unresolvedLiteralNote: '这些引用所在的段不由宿主插值（interpolate: false；「我的 Prompt」永远如此），无论本插件的变量替换是否开启、是否解析得出值，它们都会原样交给模型——预览里的字面量就是真实 prompt，预览即真相。',
       truncated: '文本过长，仅显示前 {n} 行。',
       diffHeading: 'base ↔ effective 对比',
       diffSame: '一致',
@@ -1283,20 +1067,13 @@ window.__ModuleLoader__.load({
       diffRemoved: '仅 base',
       diffHint: '逐段比较：base 是注册原文，effective 是覆盖后的结果。',
       editLayer: '保存层',
-      // ---- g-015: 「我的 Prompt」, the only write surface (the reserved section)
       mineHeading: '我的 Prompt',
-      // g-055: the scope card is this block's header, not a page-wide setting of
-      // its own — the block says so once, above the scope row.
       promptBlockNote: '这个范围决定「我的 Prompt」写到哪一层；改范围只在这里。',
-      // g-055: the panel states its own write target, so the reader does not have
-      // to look back above the tab bar to know which layer a save lands in.
       mineTargetNote: '写入目标：{layer}；查看范围：{scope}',
-      mineNote:
-        '这里写下的内容会成为单独一段 Prompt，排在所有内置段之后，下一轮生效（next-turn）。该段永远不由 DSH 插值；开启「变量替换」后，由本插件在装配时展开 {{...}}——未注册、拼错或当前无值的引用原样保留，不会导致组装失败。',
+      mineNote: '这里写下的内容会成为单独一段 Prompt，排在所有内置段之后，下一轮生效（next-turn）。该段永远不由 DSH 插值；开启「变量替换」后，由本插件在装配时展开 {{...}}——未注册、拼错或当前无值的引用原样保留，不会导致组装失败。',
       mineTextLabel: '内容',
       minePlaceholder: '在这里写下你的 Prompt…',
       mineSave: '保存',
-      // g-027: not a confirmation-bearing action — it drops an unsaved draft.
       mineCancel: '取消',
       mineReset: '恢复默认',
       mineSaving: '保存中…',
@@ -1305,16 +1082,13 @@ window.__ModuleLoader__.load({
       mineUnconfigured: '尚未配置：该层还没有「我的 Prompt」，文本为空。',
       mineDirty: '有未保存的修改。',
       mineLoaded: '已加载{layer}的「我的 Prompt」。',
-      // ---- Revision 9: the variable-substitution switch
       mineInterpolateLabel: '变量替换',
       mineInterpolateOn: '已开启',
       mineInterpolateOff: '已关闭',
       mineInterpolateTurnOn: '开启变量替换',
       mineInterpolateTurnOff: '关闭变量替换',
-      mineInterpolateNote:
-        '开启后，这段文本里的 {{变量}} 由本插件在装配时展开：{{model}} → 当前模型名、{{cwd}} → 工作目录、{{provider}} → provider。未注册、拼错或当前无值的引用会原样保留（不会导致组装失败）。关闭时所有 {{...}} 都原样交给模型。',
-      mineInterpolateWarn:
-        '注意：DSH 没有转义机制。开启后你无法再在这里写字面量 {{...}}——未注册、拼错或写歪的引用永远拿不到值，所以保存时会被直接拒绝。它不会让会话装配失败，只会一直保持字面量。',
+      mineInterpolateNote: '开启后，这段文本里的 {{变量}} 由本插件在装配时展开：{{model}} → 当前模型名、{{cwd}} → 工作目录、{{provider}} → provider。未注册、拼错或当前无值的引用会原样保留（不会导致组装失败）。关闭时所有 {{...}} 都原样交给模型。',
+      mineInterpolateWarn: '注意：DSH 没有转义机制。开启后你无法再在这里写字面量 {{...}}——未注册、拼错或写歪的引用永远拿不到值，所以保存时会被直接拒绝。它不会让会话装配失败，只会一直保持字面量。',
       mineInterpolateInherit: '该层未设置：跟随用户层。',
       mineInterpolateStated: '该层显式设置为{state}。',
       mineInterpolateSaving: '正在切换…',
@@ -1322,8 +1096,6 @@ window.__ModuleLoader__.load({
       mineInterpolateFailed: '切换变量替换失败',
       mineInterpolateWorkspaceNeedsSession: '工作区层需要先选择一个会话；未选择时无法在工作区层切换。',
       mineInterpolateLayerOnly: '开关按所选层保存；工作区层未设置时继承用户层。',
-      // ---- Revision 12 (att-002): the three states, and the advisory the host
-      // used to compute and drop.
       mineInterpolateStatesLabel: '本层状态',
       mineInterpolateSetInherit: '继承',
       mineInterpolateSetOn: '显式开',
@@ -1331,10 +1103,8 @@ window.__ModuleLoader__.load({
       mineInterpolateSetNote: '「继承」= 本层不声明（删掉该字段）；「显式关」= 写入 false，可覆盖上层的「开」。',
       mineInterpolateInheritedOn: '本层未设置，因此跟随上层的「开」。要覆盖它，请选「显式关」。',
       mineInterpolateStateSaved: '本层状态已设为「{state}」，下一轮生效（next-turn）。',
-      // ---- g-062:「装配状态提示」— the two-layer observation, page-only.
       assemblyHeading: '装配状态提示',
-      assemblyIntro:
-        '只在这里显示，不进入模型上下文、不占 token、也不改变模型收到的 prompt。提示只在关键节点出现一次：新会话首次装配、以及保存 Prompt 之后的下一个 run。',
+      assemblyIntro: '只在这里显示，不进入模型上下文、不占 token、也不改变模型收到的 prompt。提示只在关键节点出现一次：新会话首次装配、以及保存 Prompt 之后的下一个 run。',
       assemblySwitchLabel: '提示',
       assemblySwitchOn: '已开启',
       assemblySwitchOff: '已关闭',
@@ -1346,8 +1116,7 @@ window.__ModuleLoader__.load({
       assemblyDisabledNow: '装配状态提示已关闭：不再产生新的提示（已有观察保留）。',
       assemblyNoSession: '先在上方「查看范围」选择一个会话，才能看到该会话的装配状态。',
       assemblyNoRecord: '所选会话还没有观察到装配；下一次请求后结果会出现在这里。',
-      assemblyNoNotice:
-        '所选会话已开启提示，但还没有到提示节点（新会话首次装配，或保存 Prompt 之后的下一个 run）。',
+      assemblyNoNotice: '所选会话已开启提示，但还没有到提示节点（新会话首次装配，或保存 Prompt 之后的下一个 run）。',
       assemblyWaitingDelivery: '等待本步的送达事件…',
       assemblyWatching: '正在等待送达层结论…',
       assemblyKindFirst: '新会话首次装配',
@@ -1362,8 +1131,7 @@ window.__ModuleLoader__.load({
       assemblyChangeNotRead: '本次 assembly 未读到变更后的插件段文本。',
       assemblyDeliveryWaiting: '尚未观测到本步的 system/message 事件。',
       assemblyDeliveryDelivered: '已进入本次请求的 messages（{op}）。',
-      assemblyDeliveryUnconfirmed:
-        '未观测到本步的 system/message 事件，未确认已进入本次请求（可能被去重跳过）。',
+      assemblyDeliveryUnconfirmed: '未观测到本步的 system/message 事件，未确认已进入本次请求（可能被去重跳过）。',
       assemblyOpAppend: '新增 system/message',
       assemblyOpReplace: '改写 head system/message',
       assemblyTextMatchedYes: '送达文本包含该 Prompt 全文',
@@ -1373,36 +1141,22 @@ window.__ModuleLoader__.load({
       assemblyToastFirst: '新会话首次装配',
       assemblyToastChange: 'Prompt 变更后的下一轮',
       assemblyToastJoin: '　｜　',
-      assemblyToastUnavailable:
-        '本机宿主未提供 Toast 组件，主动提示不可用（未注册任何浮层）；结论仍在上方摘要中，功能其余部分不受影响。',
-      assemblyToastSlotMissing:
-        '本机宿主未声明 shell.overlay 浮层插槽，主动提示无法注册（未注册任何浮层）；结论仍在上方摘要中，功能其余部分不受影响。',
-      assemblyToastRefused:
-        '本机宿主已声明 shell.overlay 插槽，但拒绝了本插件的注册（未注册任何浮层）；结论仍在上方摘要中，功能其余部分不受影响。',
-      assemblyLimitation:
-        '口径：装配层以本插件最终返回的段列表为准——更晚注册的 prepend listener 仍可能改写它，宿主在 waterfall 之后还可能把整份段列表折叠到生效的 complete 段；送达层以本次 step 在 surface 上产生的 system/message（append 或 replace head）为准，HTTP 是否实际发出在插件侧不可观测，本提示不作此声称。',
+      assemblyToastUnavailable: '本机宿主未提供 Toast 组件，主动提示不可用（未注册任何浮层）；结论仍在上方摘要中，功能其余部分不受影响。',
+      assemblyToastSlotMissing: '本机宿主未声明 shell.overlay 浮层插槽，主动提示无法注册（未注册任何浮层）；结论仍在上方摘要中，功能其余部分不受影响。',
+      assemblyToastRefused: '本机宿主已声明 shell.overlay 插槽，但拒绝了本插件的注册（未注册任何浮层）；结论仍在上方摘要中，功能其余部分不受影响。',
+      assemblyLimitation: '口径：装配层以本插件最终返回的段列表为准——更晚注册的 prepend listener 仍可能改写它，宿主在 waterfall 之后还可能把整份段列表折叠到生效的 complete 段；送达层以本次 step 在 surface 上产生的 system/message（append 或 replace head）为准，HTTP 是否实际发出在插件侧不可观测，本提示不作此声称。',
       mineWarningsHeading: '已保存，但有以下引用需要留意：',
-      mineWarningUndefined:
-        '这些变量在本次探测中没有值，保存已通过（值属于会话，不属于文本）；缺少该值的那一轮，这些引用会保留字面量、不做替换：{list}',
+      mineWarningUndefined: '这些变量在本次探测中没有值，保存已通过（值属于会话，不属于文本）；缺少该值的那一轮，这些引用会保留字面量、不做替换：{list}',
       mineWarningList: '引用 {name}',
       mineLayerDisabled: '本层已被停用，当前不参与任何装配。',
       mineLayerDisabledReason: '原因：{reason}',
-      mineLayerDisabledFix:
-        '修复路径：删掉该层配置里无法解析的 {{…}} 引用（或把变量替换关掉），然后重新打开本页；插件不会改写你的文件。',
-      mineLayerDisabledFixGeneric:
-        '修复路径：修正或删除该层的配置文件（JSON 非法、字段非法、文件被删都会落到这里），然后重新打开本页；插件不会改写你的文件。',
-      // ---- g-021: a frozen scope is a blocking statement, not a footnote
+      mineLayerDisabledFix: '修复路径：删掉该层配置里无法解析的 {{…}} 引用（或把变量替换关掉），然后重新打开本页；插件不会改写你的文件。',
+      mineLayerDisabledFixGeneric: '修复路径：修正或删除该层的配置文件（JSON 非法、字段非法、文件被删都会落到这里），然后重新打开本页；插件不会改写你的文件。',
       mineFrozenWarn: '该作用域已被冻结：你写下的 Prompt 不会生效',
-      mineFrozenBody:
-        '保存按钮仍然可用，文本会写入{layer}的配置；但这个作用域被 complete 段冻结，本次写入不会进入最终 Prompt，也不会在下一轮生效。',
-      // The `frozenScope: "global"` + session case is *unknown*, not frozen
-      // (CONTRACT.md §2.4/§7.2): the panel may warn, but it may not claim the
-      // session is frozen. Two of its own keys keep that distinction separate.
+      mineFrozenBody: '保存按钮仍然可用，文本会写入{layer}的配置；但这个作用域被 complete 段冻结，本次写入不会进入最终 Prompt，也不会在下一轮生效。',
       mineFrozenUnknownWarn: '无法确认所选会话的装配是否被冻结',
-      mineFrozenUnknownBody:
-        '全局装配被 complete 段冻结，但所选会话没有活动的 Agent，所以无法确认它是否同样冻结。文本仍会写入{layer}的配置；如果它确实被冻结，就不会生效。',
-      mineFrozenHowTo:
-        '要让它生效：换用一个未声明 complete 的 agent preset（例如内置的默认 preset），或去掉当前 preset 里的 complete 声明，然后在所选会话重新加载。',
+      mineFrozenUnknownBody: '全局装配被 complete 段冻结，但所选会话没有活动的 Agent，所以无法确认它是否同样冻结。文本仍会写入{layer}的配置；如果它确实被冻结，就不会生效。',
+      mineFrozenHowTo: '要让它生效：换用一个未声明 complete 的 agent preset（例如内置的默认 preset），或去掉当前 preset 里的 complete 声明，然后在所选会话重新加载。',
       mineSavedFrozen: '已保存到{layer}，但所选会话冻结中，不会生效。',
       mineSavedUnknown: '已保存到{layer}；所选会话的冻结状态未知，若已冻结则不会生效。',
       savedNoticeFrozen: '已保存到{layer}，但所选会话冻结中，本轮不会生效。',
@@ -1410,43 +1164,28 @@ window.__ModuleLoader__.load({
       mineWorkspaceNeedsSession: '工作区层需要先选择一个会话；未选择时无法写入工作区层。',
       mineResetTitle: '恢复默认：删除{layer}的「我的 Prompt」',
       mineResetBody: '这会删除该层保存的文本、回到未配置状态。',
-      // ---- g-058 (Revision 36): the「覆盖 / 叠加」mode of this one entry. The
-      // copy has to name the OTHER layer, because that is what the mode is
-      // about: it says what this layer does with the other layer's text, not
-      // where a new section goes (which is what `append` means everywhere else).
       mineModeLabel: '模式',
       mineModeReplace: '覆盖',
       mineModeAppend: '叠加',
       mineModeHintReplace: '覆盖：只用本层的文本，另一层同名条目不生效。',
       mineModeHintAppend: '叠加：本层文本拼在另一层之后，两层都生效。',
-      mineModeNote:
-        '模式作用于同一个保留段：用户层文本在前、工作区层文本在后；两层都有内容时中间插入一个空行，只有一层有内容时不留空行。',
+      mineModeNote: '模式作用于同一个保留段：用户层文本在前、工作区层文本在后；两层都有内容时中间插入一个空行，只有一层有内容时不留空行。',
       mineModeBottomNote: '用户层是最底层：在这里「叠加」与「覆盖」等价（下面没有可拼的层）。',
       mineModeStoredNone: '本层尚未设置模式（按「覆盖」处理）',
       mineModeStored: '本层已存模式：{mode}',
       mineModeDirty: '模式已改动，尚未保存。',
-      // ---- stage 3: two entries, so an illegal (name, action) pair cannot exist
-      blockAppendExisting:
-        '该段名已在当前装配中：append 不会生效（两段不可同名，宿主会跳过并记为 name-already-present）。请改用「替换 replace」，或把段名改成一个尚未注册的新名。',
-      blockNotPresent:
-        '该段名当前不在装配中：replace / hide 会被跳过（宿主记为 section-not-present）。请改用一个已注册的段名，或改用「追加 append」新建段。',
+      blockAppendExisting: '该段名已在当前装配中：append 不会生效（两段不可同名，宿主会跳过并记为 name-already-present）。请改用「替换 replace」，或把段名改成一个尚未注册的新名。',
+      blockNotPresent: '该段名当前不在装配中：replace / hide 会被跳过（宿主记为 section-not-present）。请改用一个已注册的段名，或改用「追加 append」新建段。',
       blockMissingName: '段名不能为空（宿主会返回 missing-name）。',
       editDisabledOverridable: '该段不可覆盖',
       editDisabledFrozen: '当前作用域已冻结，编辑不会生效',
       savedNotice: '已保存到{layer}，下一轮生效（next-turn）。',
       deletedNotice: '已撤销{layer}的覆盖，下一轮生效（next-turn）。',
-      // g-050: appended to a success notice when an operation changed the stored
-      // text while the editor held **unsaved** work, so the reader knows why the
-      // box still shows something other than the new stored value.
       mineDraftKept: '配置已在别处更新；你编辑器中尚未保存的内容仍保留着。',
-      // g-056: the draft's scope is the file a save would write, not the view it
-      // was typed in. These three keys are the visible half of that rule.
       mineDraftScope: '当前编辑框显示的是一份尚未保存的草稿（归属：{scope}）。',
-      mineDraftElsewhere:
-        '你在「{scope}」还有一份未保存的内容（{chars} 字），它没有跟着当前作用域走：内容仍在原作用域里，切回去即可继续编辑。',
+      mineDraftElsewhere: '你在「{scope}」还有一份未保存的内容（{chars} 字），它没有跟着当前作用域走：内容仍在原作用域里，切回去即可继续编辑。',
       mineDraftElsewhereDrop: '放弃那份草稿',
-      mineSaveBlockedDraftElsewhere:
-        '已阻止保存：你在「{scope}」还有未保存的内容（{chars} 字），而当前编辑框显示的不是它。请先切回该作用域保存或放弃它，再回到这里保存。',
+      mineSaveBlockedDraftElsewhere: '已阻止保存：你在「{scope}」还有未保存的内容（{chars} 字），而当前编辑框显示的不是它。请先切回该作用域保存或放弃它，再回到这里保存。',
       nextTurn: '下一轮生效',
       ovHeading: '已生效覆盖',
       ovEmpty: '当前作用域没有任何覆盖。',
@@ -1471,9 +1210,6 @@ window.__ModuleLoader__.load({
       rendererPrimitives: 'primitives（官方基础件）',
       rendererFallback: 'fallback（自绘 + 主题变量）',
       primitivesFailure: 'primitives 不可用原因',
-      // g-063 wrap-up: `primitivesDetail*` / `primitivesMembers*` lived here —
-      // the copy for the two always-on probe rows. Removed with those rows once
-      // they had located the `forwardRef` defect on a real machine.
       primitivesToastLabel: 'toast 命名空间',
       toastNamespaceNone: '无（未找到可用 Toast）',
       toastNamespaceDefault: 'module.default（已解包）',
@@ -1487,36 +1223,26 @@ window.__ModuleLoader__.load({
       scopeSessions: '{n} 个会话',
       scopeMore: '显示更多（还有 {n} 条）',
       scopeCut: '还有 {n} 条已到渲染上限，请用搜索缩小范围。',
-      scopeTruncated:
-        '已达渲染上限（同一时刻最多渲染 {n} 条会话）：请用搜索缩小范围，或先收起其它工作区。',
+      scopeTruncated: '已达渲染上限（同一时刻最多渲染 {n} 条会话）：请用搜索缩小范围，或先收起其它工作区。',
       scopeGroupsTruncated: '工作区分组过多，仅显示部分分组：请用搜索缩小范围。',
-      scopeDegraded:
-        '当前 profile 未提供 useWorkspaces（工作区服务不可用），已降级为平铺会话列表：无法按工作区分组。',
+      scopeDegraded: '当前 profile 未提供 useWorkspaces（工作区服务不可用），已降级为平铺会话列表：无法按工作区分组。',
       scopeArchivedHidden: '另有 {n} 个已归档会话未显示（与侧边栏默认一致），可用搜索或直接输入 id 查看。',
-      scopeSearchHint:
-        '按工作区分组，与左侧「工作区」一致；搜索会保留匹配项所属的工作区分组，匹配工作区名时其下会话一并显示。',
-      scopeToggleAria: '工作区「{name}」：展开或收起',
+      scopeSearchHint: '按工作区分组，与左侧「工作区」一致；搜索会保留匹配项所属的工作区分组，匹配工作区名时其下会话一并显示。',
       scopeToggleAria: '工作区「{name}」：展开或收起',
       scopeSelected: '当前选中',
-      // ---- stage 2: history / diff / reset / transfer ----
       histHeading: '版本历史',
-      // g-044: the summary line of the folded「说明与提示」block, which carries
-      // the retention sentence and the three scope/picking sentences.
       histNotesToggle: '说明与提示',
-      histNote:
-        '每次成功保存或撤销都会追加一条记录（最近 {limit} 条）。历史文件按行追加，不做整文件重写。',
+      histNote: '每次成功保存或撤销都会追加一条记录（最近 {limit} 条）。历史文件按行追加，不做整文件重写。',
       histLayerLabel: '历史层',
       histEmpty: '该层还没有历史记录。',
       histNoSession: '工作区层需要一个可解析的 session id 才能读取历史。',
       histTotal: '共 {n} 条',
-      // ---- g-038: the version history's own scope, and its paging ----
       histScopeLabel: '历史作用域',
       histScopeGlobal: '用户层历史是全局的：这里展示该层全部记录，不按会话过滤。',
       histScopeWorkspace: '当前展示「{name}」这一工作区的历史文件（由会话 {session} 定位），是该工作区的全部记录。',
       histScopeNone: '还没有可用的工作区作用域：请先在左侧打开一个会话，或让宿主列出工作区。',
       histScopeDegraded: '工作区服务不可用，已降级为按会话定位历史文件。',
       histScopeHint: '作用域只属于「版本历史」，与上方「查看范围」互不影响。',
-      // g-038 二轮：作用域是「一行摘要 + 更改展开」，不把每个工作区平铺成按钮。
       histScopeSearch: '搜索作用域（工作区 / 会话）',
       histScopeNoMatch: '没有匹配的作用域。',
       histPager: '第 {page} / {pages} 页 · 共 {total} 条',
@@ -1528,8 +1254,6 @@ window.__ModuleLoader__.load({
       histUnreadable: '历史文件不可读：{reason}',
       histLastError: '最近一次历史写入失败：{reason}',
       histCurrent: '当前生效值',
-      // g-044: `histWholeLayer`（`name === null` 的占位文本）与 `histPreviewName`
-      // 随段名展示一起删除：列表行与预览弹窗都不再显示段名，没有别处引用它们。
       'histAction.replace': '替换 replace',
       'histAction.hide': '隐藏 hide',
       'histAction.append': '追加 append',
@@ -1537,7 +1261,6 @@ window.__ModuleLoader__.load({
       'histAction.reset-layer': '整层重置',
       'histAction.legacy-clear': '清除旧覆盖 legacy-clear',
       'histAction.rollback': '回滚 rollback',
-      // g-039：详情区的第三个视图——单条记录的预览，以及整层回滚。
       histPreview: '预览',
       histPreviewHeading: '记录预览',
       histPreviewClose: '关闭预览',
@@ -1554,16 +1277,11 @@ window.__ModuleLoader__.load({
       histPreviewNoText: '（无文本）',
       histPreviewSnapshot: '该版本的整层快照（{n} 条覆盖）',
       histPreviewSnapshotEmpty: '这条记录没有带整层快照（旧记录）。',
-      // g-044: the section name is gone from the entry line too — the writing
-      // surface is the single reserved section, so the name said nothing a
-      // reader could act on (the name itself is still on `data-preview-snapshot`).
       histPreviewSnapshotEntry: '{action} · {bytes} 字节',
       histPreviewPolicy: '预览与回滚只涉及「我的 Prompt」段：本层其它段不会被改动。',
       histRollback: '回滚到此处',
       histRollbackTitle: '回滚{layer}到 #{id}',
-      histRollbackBody:
-        '会把「我的 Prompt」段恢复成 #{id} 这一版的内容，并追加一条 rollback 记录（因此这次回滚本身也可以再回滚）。',
-      // g-039 返工：回滚与写入面政策一致——只动保留段，非保留段一律不碰。
+      histRollbackBody: '会把「我的 Prompt」段恢复成 #{id} 这一版的内容，并追加一条 rollback 记录（因此这次回滚本身也可以再回滚）。',
       histRollbackScope: '本次回滚只恢复「我的 Prompt」段，本层其它段保持原样。',
       histRollbackForeign: '该版本另有 {n} 条非「我的 Prompt」段覆盖，按写入面政策不会被恢复。',
       histRollbackDone: '已回滚到 #{id}：历史列表与当前生效值已刷新，下一轮装配生效。',
@@ -1598,14 +1316,12 @@ window.__ModuleLoader__.load({
       resetLayerWorkspace: '重置工作区级层',
       resetLegacyButton: '清除全部覆盖',
       resetLegacyTitle: '清除{layer}的全部旧覆盖',
-      resetLegacyBody:
-        '将删除{layer}的 {count} 条冻结覆盖（即「我的 Prompt」以外的全部旧覆盖），并保留「我的 Prompt」本身。',
+      resetLegacyBody: '将删除{layer}的 {count} 条冻结覆盖（即「我的 Prompt」以外的全部旧覆盖），并保留「我的 Prompt」本身。',
       resetLegacyEmpty: '{layer}没有可清除的冻结覆盖；「我的 Prompt」会保留。',
       advReservedTag: '我的 Prompt',
       advReadOnlyNote: '本列表只读：唯一的写入口是「我的 Prompt」，层级清理请用下面两个按钮。',
       resetLayerTitle: '重置{layer}',
-      resetLayerBody:
-        '将清空{layer}的全部 {count} 条覆盖，下一轮装配生效；被删除的内容会记入历史。',
+      resetLayerBody: '将清空{layer}的全部 {count} 条覆盖，下一轮装配生效；被删除的内容会记入历史。',
       resetLayerEmpty: '{layer}当前没有任何覆盖，无需重置。',
       resetIrreversible: '此操作不可撤销。',
       confirmTitle: '请确认',
@@ -1614,8 +1330,7 @@ window.__ModuleLoader__.load({
       resetDoneNotice: '已恢复默认：删除 {count} 条覆盖，下一轮生效（next-turn）。',
       resetNoneNotice: '没有需要删除的覆盖。',
       transferHeading: '导出 / 导入',
-      transferNote:
-        '导出为带 schema 与版本号的 JSON；导入前先干跑预览变更，确认后才会写入（先写临时文件，校验通过再原子替换）。',
+      transferNote: '导出为带 schema 与版本号的 JSON；导入前先干跑预览变更，确认后才会写入（先写临时文件，校验通过再原子替换）。',
       exportButton: '导出 JSON',
       exportPreviewLabel: '导出内容（可复制）',
       exportPreviewCut: '预览仅显示前 {n} 个字符，下载内容为完整文件。',
@@ -1649,13 +1364,9 @@ window.__ModuleLoader__.load({
       importStatusRemoved: '删除',
       importConfirmTitle: '确认导入',
       importConfirmBody: '将按 {mode} 策略写入以下变更，任何一步失败都不会改动现有配置。',
-      // g-060 (Revision 37): the「预设」tab — the catalogue of named texts for the
-      // reserved section, plus the two layer actions that apply one to a
-      // workspace and put that workspace back.
       tabPresets: '我的预设',
       presetsHeading: '预设',
-      presetsNote:
-        '把一段常用文本存成预设，再把它应用到某个工作区的工作区层：应用写入该工作区的保留段，取消应用还原为应用前的内容。',
+      presetsNote: '把一段常用文本存成预设，再把它应用到某个工作区的工作区层：应用写入该工作区的保留段，取消应用还原为应用前的内容。',
       presetsListHeading: '预设库',
       presetsEmpty: '还没有预设。可以在下面新建，或把「我的 Prompt」当前的文本另存为预设。',
       presetsLibraryError: '预设库文件不能读取',
@@ -1671,13 +1382,11 @@ window.__ModuleLoader__.load({
       presetSaveNew: '保存为新预设',
       presetSaveEdit: '保存修改',
       presetSaveAsCurrent: '从当前文本另存为预设',
-      presetSaveAsCurrentHint:
-        '「从当前文本另存为预设」只是把「我的 Prompt」当前显示的文本填进上面的编辑器，不会直接写入预设库。',
+      presetSaveAsCurrentHint: '「从当前文本另存为预设」只是把「我的 Prompt」当前显示的文本填进上面的编辑器，不会直接写入预设库。',
       presetEdit: '编辑',
       presetDelete: '删除',
       presetWorkspaceHeading: '应用到工作区',
-      presetWorkspaceNote:
-        '选定一个工作区（用它的一个 session 定位），把上面编辑的预设应用过去；也可以取消该工作区已有的应用。',
+      presetWorkspaceNote: '选定一个工作区（用它的一个 session 定位），把上面编辑的预设应用过去；也可以取消该工作区已有的应用。',
       presetWorkspaceEmpty: '这个 profile 没有可用的工作区会话，无法应用预设。',
       presetApply: '应用',
       presetApplyTo: '应用到工作区',
@@ -1689,8 +1398,7 @@ window.__ModuleLoader__.load({
       presetDiscardConfirmTitle: '放弃未保存的修改？',
       presetDiscardConfirmBody: '这个预设的修改还没有保存；确认后关闭弹窗，改动不会写进预设库。',
       presetDeleteConfirmTitle: '删除预设「{name}」？',
-      presetDeleteConfirmBody:
-        '确认后预设库里不再有它。已经应用到工作区的内容不会被改动，但那条应用记录会标记为「来源已删除」。',
+      presetDeleteConfirmBody: '确认后预设库里不再有它。已经应用到工作区的内容不会被改动，但那条应用记录会标记为「来源已删除」。',
       presetAlreadyAppliedNotice: '该预设已在此工作区生效，未重复叠加。',
       presetNotApplied: '未应用',
       presetUnapplyOne: '取消',
@@ -1705,13 +1413,63 @@ window.__ModuleLoader__.load({
       presetDeletedOrphanNotice: '预设已删除；{count} 个工作区仍保留它的文本，可以继续取消应用。',
       presetAppliedNotice: '预设已应用到该工作区，下一轮装配生效。',
       presetUnappliedNotice: '已取消应用：该工作区恢复为应用前的内容。',
+      'error.invalid-json': '请求体不是合法 JSON。',
+      'error.invalid-override': 'section 缺失或不是对象。',
+      'error.missing-name': '缺少段名 name。',
+      'error.name-too-long': '段名超过 200 个字符。',
+      'error.invalid-name': '段名包含控制字符。',
+      'error.unknown-action': 'action 必须是 replace、hide 或 append。',
+      'error.missing-text': 'replace 或 append 必须提供字符串文本。',
+      'error.unexpected-text': 'hide 不能携带文本。',
+      'error.invalid-order': 'order 必须是不小于 0 的整数（结果数组下标）。',
+      'error.unexpected-order': 'replace 与 hide 不能携带 order。',
+      'error.unknown-layer': 'layer 必须是 user 或 workspace。',
+      'error.workspace-unresolved': '工作区层需要一个可解析的 session id。',
+      'error.override-not-found': '该层没有这条覆盖，无法撤销。',
+      'error.layer-not-writable': '目标配置文件不是合法配置，拒绝覆盖写入。',
+      'error.text-too-large': '文本超过 200 KiB。',
+      'error.body-too-large': '请求体超过 256 KiB。',
+      'error.assemble-failed': '宿主装配 system prompt 时抛错，快照不可用。',
+      'error.trust-fence-unavailable': '连接服务不可用，请求被信任栅栏拒绝。',
+      'error.not-found': '宿主没有这个路由。',
+      'error.duplicate-name': '同一层出现重复段名。',
+      'error.write-locked': '该写入被拒绝：只有本插件自有的段 prompt-setting:custom-prompt 可以被写入或删除。',
+      'error.unsupported-action': '该段只接受 action=replace。',
+      'error.conflicting-query': 'reset 与 legacy 不能同时使用：reset 清空整层，legacy 只清旧覆盖。',
+      'error.invalid-history-record': '历史记录格式非法，该行已被跳过。',
+      'error.history-unusable': '历史文件不可读写。',
+      'error.history-not-found': '该层历史中没有这条记录。',
+      'error.missing-diff-selector': '需要 from 或 to（历史 id 或 current）。',
+      'error.invalid-diff-selector': 'from/to 只能是 current 或历史记录 id。',
+      'error.invalid-export': '导入内容必须是 JSON 对象。',
+      'error.unknown-export-schema': 'schema 不是本插件的导出格式。',
+      'error.missing-export-version': '导入文件缺少 version。',
+      'error.unsupported-export-version': '导入文件版本不受支持。',
+      'error.missing-export-layers': '导入文件缺少 layers。',
+      'error.missing-export-layer': '导入文件不含所请求的层。',
+      'error.invalid-export-layer': '导入文件的层结构非法。',
+      'error.unknown-import-mode': 'mode 只能是 merge 或 replace。',
+      'error.import-verify-failed': '导入的临时文件校验失败，现有配置未改动。',
+      'error.import-staging-failed': '导入无法写入临时文件，现有配置未改动。',
+      'error.import-commit-failed': '导入提交失败，可能有层已被替换。',
+      'error.invalid-interpolate-flag': '配置里的 interpolateCustom 必须是布尔值；该层已被停用。',
+      'error.unresolvable-variable': '这段文本里的 {{…}} 引用永远不会被替换成值（未注册、名字非法或写歪），因此保存被拒绝。请删掉该引用、改用已注册的变量，或先关闭变量替换。',
+      'error.invalid-enabled': '开关请求缺少布尔值 enabled。',
+      'error.invalid-state': '本层状态只能是 inherit、on 或 off 之一。',
+      'error.variable-lookup-failed': '无法取到当前的变量表，本次写入被拒绝（无法判断哪些变量会被展开）。',
+      'error.invalid-region': '下载区域只能是 default、cn 或 custom 之一。',
+      'error.registry-invalid': '镜像地址不合法：必须是 http(s) 地址、主机非空，且不能带账号密码、查询串或片段。',
+      'error.registry-unreachable': '该镜像地址在超时时间内没有任何响应（超时或网络错误），地址未被保存。',
+      'error.registry-http-error': '该地址能访问，但返回了错误状态，不是可用的 npm registry。',
+      'error.registry-not-npm': '该地址能访问，但返回的不是 npm 包文档（缺少 dist-tags.latest）。',
+      'error.registry-unavailable': '所选下载源当前不可用。不会自动改用默认源：请稍后重试，或换一个下载区域。',
+      'error.preferences-unwritable': '偏好文件无法写入，本次选择没有生效。',
     };
 
     const en = {
       nav: 'Prompt settings',
       title: 'Prompt settings',
-      subtitle:
-        'Inspect and override the system prompt assembled into every session. A write applies to the next assembly (next-turn).',
+      subtitle: 'Inspect and override the system prompt assembled into every session. A write applies to the next assembly (next-turn).',
       refresh: 'Refresh snapshot',
       loading: 'Loading…',
       loadFailed: 'Snapshot request failed',
@@ -1719,8 +1477,7 @@ window.__ModuleLoader__.load({
       sessionGlobal: 'Global (no session)',
       sessionManualPlaceholder: 'Paste a session id (Agent.id)',
       sessionApply: 'Apply',
-      sessionLimit:
-        'This profile provides no useSessions (session service unavailable); the picker degraded to a manual session id and cannot list sessions.',
+      sessionLimit: 'This profile provides no useSessions (session service unavailable); the picker degraded to a manual session id and cannot list sessions.',
       sessionEmpty: 'The session list is empty; enter a session id or use Global.',
       sessionGlobalNote: 'No session: the snapshot describes the global assembly and the workspace layer stays inactive.',
       sessionSearch: 'Search sessions (title, path, session id)',
@@ -1731,7 +1488,6 @@ window.__ModuleLoader__.load({
       sessionNoMatch: 'No session matches; you can view the typed id directly.',
       sessionKeyboardHint: 'Up/Down to move, Enter to select, Esc to clear the search',
       sessionSelectedNote: 'Session selected: the snapshot probes that session’s own scope.',
-      // g-016: the collapsed「查看范围」summary row.
       scopeEdit: 'Change',
       scopeCollapse: 'Collapse',
       scopeSummaryManual: 'Session service unavailable: type an id',
@@ -1754,41 +1510,31 @@ window.__ModuleLoader__.load({
       stFrozenGlobal: 'The global assembly is frozen',
       stUnfrozenGlobal: 'The global assembly is not frozen',
       stFrozenUnknown: 'The selected session’s frozen state is unknown',
-      // g-052: see the zh table — no cause is attributed, because `running`
-      // (agent.status === 'running') is not `agentAvailable`.
       stFrozenUnknownProbe: 'This session’s own assembly cannot be probed.',
-      stFrozenUnknownNotFrozen:
-        'That is not the same as "not frozen"; you can still edit and save, it is just not guaranteed to take effect.',
+      stFrozenUnknownNotFrozen: 'That is not the same as "not frozen"; you can still edit and save, it is just not guaranteed to take effect.',
       stBuild: 'Build',
       stBuildSame: 'Matches the host',
       stBuildStale: 'This tab is stale',
       stBuildUnknown: 'Build unknown',
       stBuildSelf: 'This tab',
       stBuildServer: 'Host',
-      stBuildStaleHint:
-        'The client.js this tab is running is not the build the host is serving byte for byte: an older tab kept an older bundle. Open a new tab (or reopen Settings in one); a client change needs no host restart.',
-      stBuildUnknownHint:
-        'The host reported no client.js fingerprint (older host, unreadable file, or missing/duplicated markers), so this tab cannot be judged — it is not treated as stale.',
+      stBuildStaleHint: 'The client.js this tab is running is not the build the host is serving byte for byte: an older tab kept an older bundle. Open a new tab (or reopen Settings in one); a client change needs no host restart.',
+      stBuildUnknownHint: 'The host reported no client.js fingerprint (older host, unreadable file, or missing/duplicated markers), so this tab cannot be judged — it is not treated as stale.',
       stBuildPingFailedHint: 'The ping request failed, so there is no host fingerprint and this tab cannot be judged.',
-      // g-029: the version the host reported in the ping, or「unknown」when the
-      // same ping carried none. Never a version this bundle invented.
       stPluginVersion: 'Plugin version',
       stPluginVersionUnknown: 'Version unknown',
-      // ---- g-030: the upstream update check (mirrors the zh block above).
       updateAvailable: 'Version {latest} is available (you have {current}).',
       updateReleaseLink: 'Open the release page',
       updateDismiss: 'Dismiss',
       updateSettingLabel: 'Check for updates',
       updateSettingOn: 'On',
       updateSettingOff: 'Off',
-      updateSettingNote:
-        'When the settings page opens, the host checks once for the latest version: it asks the npm registry first and falls back to GitHub Releases only when npm cannot answer — one GET, carrying no local or session data, from whichever source the download region selects (Mainland China = npmmirror). With this off, no update request is made at all, including on page load; turning it on also reads the download-region state once.',
+      updateSettingNote: 'When the settings page opens, the host checks once for the latest version: it asks the npm registry first and falls back to GitHub Releases only when npm cannot answer — one GET, carrying no local or session data, from whichever source the download region selects (Mainland China = npmmirror). With this off, no update request is made at all, including on page load; turning it on also reads the download-region state once.',
       updateToggleSaved: 'Update checks are now {state}.',
       updateRecheck: 'Check now',
       updateSwitching: 'Saving…',
       updateUnknown: 'Upstream has no usable version information right now.',
       updateLatestKnown: 'Latest version {latest}',
-      // g-043: the download region (see the zh block for the same nine keys).
       updateRegionLabel: 'Download region',
       updateRegionDefault: 'Default',
       updateRegionDefaultNote: 'npm first; GitHub release artifacts only when npm cannot answer.',
@@ -1801,28 +1547,18 @@ window.__ModuleLoader__.load({
       updateRegionSaving: 'Switching…',
       updateRegionSelectLabel: 'Update source',
       updateRegionCustomTitle: 'Custom mirror',
-      updateRegionCustomBody:
-        'Enter the base address of an npm registry (http(s)://, a path is allowed). The host validates the format and fetches the package document once: an unreachable address, or one that is not an npm registry, is never saved and the source in force stays as it is.',
+      updateRegionCustomBody: 'Enter the base address of an npm registry (http(s)://, a path is allowed). The host validates the format and fetches the package document once: an unreachable address, or one that is not an npm registry, is never saved and the source in force stays as it is.',
       updateRegionCustomPlaceholder: 'https://registry.example.com/',
       updateRegionCustomSubmit: 'Validate and save',
       updateRegionCustomChecking: 'Validating…',
       updateRegionCustomCancel: 'Cancel',
       updateRegionUnusable: 'The saved custom mirror address is unusable: {reason}',
-      // ---- g-032:「Update now」(mirrors the zh block above). Nothing here may
-      // promise an automatic restart: the install is the host's job and the
-      // restart is the user's.
-      //
-      // g-036: mirrored partition — the bare key is the shape-neutral `unknown`
-      // copy, `…Cli` the command line and `…Desktop` the official desktop
-      // application. No `…Desktop` string may contain `dsh web`.
       updateApply: 'Update now',
       updateApplyTitle: 'Update to v{latest}',
-      updateApplyBody:
-        'The host will install v{latest} through the official plugin manager (fetched from the npm registry or a GitHub release artifact, whichever your download region selects; into this profile, with no automatic restart).',
+      updateApplyBody: 'The host will install v{latest} through the official plugin manager (fetched from the npm registry or a GitHub release artifact, whichever your download region selects; into this profile, with no automatic restart).',
       updateApplyRestartNote: 'You will need to restart DSH yourself for the new version to take effect.',
       updateApplyRestartNoteCli: 'You will need to restart dsh web yourself for the new version to take effect.',
-      updateApplyRestartNoteDesktop:
-        'You will need to quit and reopen DeepSeek Harness yourself for the new version to take effect.',
+      updateApplyRestartNoteDesktop: 'You will need to quit and reopen DeepSeek Harness yourself for the new version to take effect.',
       updateApplying: 'Installing…',
       updateApplyStarting: 'Starting the install…',
       updateApplyCancel: 'Cancel install',
@@ -1835,12 +1571,9 @@ window.__ModuleLoader__.load({
       updateApplyFailed: 'The install failed: {reason}',
       updateApplyRetry: 'Retry',
       updateApplyCancelled: 'The install was cancelled; the profile files were restored.',
-      updateApplyUnknown:
-        'This install can no longer be looked up (it may have finished, or this page may have been reloaded). Restart DSH, or use "Check now" to confirm the version.',
-      updateApplyUnknownCli:
-        'This install can no longer be looked up (it may have finished, or this page may have been reloaded). Restart dsh web, or use "Check now" to confirm the version.',
-      updateApplyUnknownDesktop:
-        'This install can no longer be looked up (it may have finished, or this page may have been reloaded). Quit and reopen DeepSeek Harness, or use "Check now" to confirm the version.',
+      updateApplyUnknown: 'This install can no longer be looked up (it may have finished, or this page may have been reloaded). Restart DSH, or use "Check now" to confirm the version.',
+      updateApplyUnknownCli: 'This install can no longer be looked up (it may have finished, or this page may have been reloaded). Restart dsh web, or use "Check now" to confirm the version.',
+      updateApplyUnknownDesktop: 'This install can no longer be looked up (it may have finished, or this page may have been reloaded). Quit and reopen DeepSeek Harness, or use "Check now" to confirm the version.',
       updateApplyManual: 'You can also update by hand: {hint}',
       updateApplyManualLink: 'Open the {tag} release or package page',
       updateApplyReused: 'An install is already running.',
@@ -1869,8 +1602,7 @@ window.__ModuleLoader__.load({
       originAppended: 'Our append',
       originDownstream: 'Added by another plugin',
       originUnmatched: 'Unmatched override',
-      originDownstreamHint:
-        'Another plugin added this section after the waterfall. It is not our override and not an anomaly.',
+      originDownstreamHint: 'Another plugin added this section after the waterfall. It is not our override and not an anomaly.',
       originUnmatchedHint: 'This override had no target section to act on.',
       colChars: 'Chars {n}',
       colReason: 'Reason',
@@ -1889,13 +1621,11 @@ window.__ModuleLoader__.load({
       fullFiltered: 'Filtered by origin: this is a recomposed preview, not the server-side rendered text.',
       unresolvedTitle: 'The real assembly will fail',
       unresolvedBody: 'References that will throw: {list}',
-      unresolvedNote:
-        'These references sit in sections that DO interpolate, so the Host throws on every turn while assembling this session\'s prompt: the prompt cannot be built, and this text is not the real prompt.',
+      unresolvedNote: 'These references sit in sections that DO interpolate, so the Host throws on every turn while assembling this session\'s prompt: the prompt cannot be built, and this text is not the real prompt.',
       unresolvedLiteralInline: 'Also {list}, in sections that are not interpolated: the real prompt carries them as literal braces.',
       unresolvedLiteralTitle: 'The real prompt is exactly these literal braces',
       unresolvedLiteralBody: 'References in non-interpolated sections: {list}',
-      unresolvedLiteralNote:
-        'These references sit in sections the Host never interpolates (interpolate: false; My Prompt always is one), so they reach the model exactly as written whether or not this plugin\'s own expansion resolved them — the braces in this preview are the real prompt.',
+      unresolvedLiteralNote: 'These references sit in sections the Host never interpolates (interpolate: false; My Prompt always is one), so they reach the model exactly as written whether or not this plugin\'s own expansion resolved them — the braces in this preview are the real prompt.',
       truncated: 'Long text: showing the first {n} lines only.',
       diffHeading: 'base ↔ effective',
       diffSame: 'Same',
@@ -1905,16 +1635,12 @@ window.__ModuleLoader__.load({
       diffHint: 'Compared per section: base is what was registered, effective is the result after overrides.',
       editLayer: 'Save to layer',
       mineHeading: 'My Prompt',
-      // g-055: see the zh table — the scope card is this block's header.
       promptBlockNote: 'This scope decides which layer My Prompt is written to — and it is changed here.',
-      // g-055: the panel states its own write target instead of implying it.
       mineTargetNote: 'Writing to {layer}; scope: {scope}',
-      mineNote:
-        'What you write here becomes one extra prompt section, placed after every built-in section, effective from the next turn (next-turn). DSH never interpolates it; with variable substitution on, this plugin expands its {{...}} during assembly, and a reference that is unregistered, misspelled or currently valueless stays literal instead of failing the assembly.',
+      mineNote: 'What you write here becomes one extra prompt section, placed after every built-in section, effective from the next turn (next-turn). DSH never interpolates it; with variable substitution on, this plugin expands its {{...}} during assembly, and a reference that is unregistered, misspelled or currently valueless stays literal instead of failing the assembly.',
       mineTextLabel: 'Content',
       minePlaceholder: 'Write your prompt here…',
       mineSave: 'Save',
-      // g-027: not a confirmation-bearing action — it drops an unsaved draft.
       mineCancel: 'Cancel',
       mineReset: 'Restore default',
       mineSaving: 'Saving…',
@@ -1923,25 +1649,20 @@ window.__ModuleLoader__.load({
       mineUnconfigured: 'Not configured yet: this layer has no My Prompt, so the text is empty.',
       mineDirty: 'You have unsaved changes.',
       mineLoaded: 'Loaded the {layer} My Prompt.',
-      // ---- Revision 9: the variable-substitution switch
       mineInterpolateLabel: 'Variable substitution',
       mineInterpolateOn: 'ON',
       mineInterpolateOff: 'OFF',
       mineInterpolateTurnOn: 'Turn variable substitution on',
       mineInterpolateTurnOff: 'Turn variable substitution off',
-      mineInterpolateNote:
-        'When on, this plugin expands {{variables}} in this text during assembly: {{model}} \u2192 the current model, {{cwd}} \u2192 the working directory, {{provider}} \u2192 the provider. A reference that is unregistered, misspelled or currently valueless stays literal and never fails the assembly. When off, every {{...}} reaches the model exactly as written.',
-      mineInterpolateWarn:
-        'Note: DSH has no escape syntax. With this on you can no longer write a literal {{...}} here \u2014 an unregistered, misspelled or malformed reference can never resolve, so saving one is refused outright. It would not break the session; it would simply stay literal forever.',
+      mineInterpolateNote: 'When on, this plugin expands {{variables}} in this text during assembly: {{model}} → the current model, {{cwd}} → the working directory, {{provider}} → the provider. A reference that is unregistered, misspelled or currently valueless stays literal and never fails the assembly. When off, every {{...}} reaches the model exactly as written.',
+      mineInterpolateWarn: 'Note: DSH has no escape syntax. With this on you can no longer write a literal {{...}} here — an unregistered, misspelled or malformed reference can never resolve, so saving one is refused outright. It would not break the session; it would simply stay literal forever.',
       mineInterpolateInherit: 'This layer states nothing: it inherits the user layer.',
       mineInterpolateStated: 'This layer states {state} explicitly.',
-      mineInterpolateSaving: 'Switching\u2026',
+      mineInterpolateSaving: 'Switching…',
       mineInterpolateSaved: 'Variable substitution is now {state}; effective from the next turn (next-turn).',
       mineInterpolateFailed: 'Switching variable substitution failed',
       mineInterpolateWorkspaceNeedsSession: 'The workspace layer needs a selected session; without one the switch cannot be written there.',
       mineInterpolateLayerOnly: 'The switch is saved per selected layer; a workspace layer that states nothing inherits the user layer.',
-      // ---- Revision 12 (att-002): the three states, and the advisory the host
-      // used to compute and drop.
       mineInterpolateStatesLabel: 'This layer',
       mineInterpolateSetInherit: 'Inherit',
       mineInterpolateSetOn: 'On',
@@ -1949,11 +1670,8 @@ window.__ModuleLoader__.load({
       mineInterpolateSetNote: '"Inherit" states nothing (the field is removed); "Off" writes false, which is what lets a layer close over an inherited ON.',
       mineInterpolateInheritedOn: 'This layer states nothing, so it inherits ON. Choose "Off" to override that.',
       mineInterpolateStateSaved: 'This layer now states {state}; effective from the next turn (next-turn).',
-      // ---- g-062: the assembly-status notice — the two-layer observation, shown
-      // in this page only.
       assemblyHeading: 'Assembly status notice',
-      assemblyIntro:
-        'Shown here only: it never enters the model context, costs no tokens and does not change the prompt the model receives. A notice appears once per key node — the first assembly of a new conversation, and the next run after a prompt is saved.',
+      assemblyIntro: 'Shown here only: it never enters the model context, costs no tokens and does not change the prompt the model receives. A notice appears once per key node — the first assembly of a new conversation, and the next run after a prompt is saved.',
       assemblySwitchLabel: 'Notice',
       assemblySwitchOn: 'ON',
       assemblySwitchOff: 'OFF',
@@ -1965,8 +1683,7 @@ window.__ModuleLoader__.load({
       assemblyDisabledNow: 'The assembly-status notice is off: no new notice will be produced (existing observations are kept).',
       assemblyNoSession: 'Pick a session under "Viewing scope" above to see that conversation\'s assembly status.',
       assemblyNoRecord: 'No assembly has been observed for the selected session yet; the result appears here after the next request.',
-      assemblyNoNotice:
-        'The notice is on for the selected session, but no key node has been reached yet (the first assembly of a new conversation, or the next run after a prompt is saved).',
+      assemblyNoNotice: 'The notice is on for the selected session, but no key node has been reached yet (the first assembly of a new conversation, or the next run after a prompt is saved).',
       assemblyWaitingDelivery: 'Waiting for this step\'s delivery event…',
       assemblyWatching: 'Waiting for the delivery-layer verdict…',
       assemblyKindFirst: 'First assembly of a new conversation',
@@ -1981,8 +1698,7 @@ window.__ModuleLoader__.load({
       assemblyChangeNotRead: 'This assembly did NOT read the changed plugin-section text.',
       assemblyDeliveryWaiting: 'No system/message event has been observed for this step yet.',
       assemblyDeliveryDelivered: 'Delivered into this request\'s messages ({op}).',
-      assemblyDeliveryUnconfirmed:
-        'No system/message event was observed for this step, so delivery into this request is unconfirmed (the projection may have deduplicated it).',
+      assemblyDeliveryUnconfirmed: 'No system/message event was observed for this step, so delivery into this request is unconfirmed (the projection may have deduplicated it).',
       assemblyOpAppend: 'an appended system/message',
       assemblyOpReplace: 'a rewritten head system/message',
       assemblyTextMatchedYes: 'the delivered text carries the full prompt',
@@ -1992,76 +1708,51 @@ window.__ModuleLoader__.load({
       assemblyToastFirst: 'First assembly of a new conversation',
       assemblyToastChange: 'Next run after your prompt change',
       assemblyToastJoin: ' · ',
-      assemblyToastUnavailable:
-        'This host does not provide the Toast primitive, so proactive toasts are unavailable (no overlay was registered); the verdicts stay in the summary above and nothing else is affected.',
-      assemblyToastSlotMissing:
-        'This host never declares the shell.overlay slot, so the proactive toast could not be registered (no overlay was registered); the verdicts stay in the summary above and nothing else is affected.',
-      assemblyToastRefused:
-        'This host declares the shell.overlay slot but refused this plugin\'s registration (no overlay was registered); the verdicts stay in the summary above and nothing else is affected.',
-      assemblyLimitation:
-        'Basis: the assembly layer is the section list this plugin finally returned — a `{prepend: true}` listener registered later may still rewrite it, and the Host may collapse the whole list onto the effective `complete` section after the waterfall; the delivery layer is the system/message this step committed on the surface (append or head replace). Whether the HTTP request was actually sent is not observable from a plugin, and this notice does not claim it.',
+      assemblyToastUnavailable: 'This host does not provide the Toast primitive, so proactive toasts are unavailable (no overlay was registered); the verdicts stay in the summary above and nothing else is affected.',
+      assemblyToastSlotMissing: 'This host never declares the shell.overlay slot, so the proactive toast could not be registered (no overlay was registered); the verdicts stay in the summary above and nothing else is affected.',
+      assemblyToastRefused: 'This host declares the shell.overlay slot but refused this plugin\'s registration (no overlay was registered); the verdicts stay in the summary above and nothing else is affected.',
+      assemblyLimitation: 'Basis: the assembly layer is the section list this plugin finally returned — a `{prepend: true}` listener registered later may still rewrite it, and the Host may collapse the whole list onto the effective `complete` section after the waterfall; the delivery layer is the system/message this step committed on the surface (append or head replace). Whether the HTTP request was actually sent is not observable from a plugin, and this notice does not claim it.',
       mineWarningsHeading: 'Saved, with references to note:',
-      mineWarningUndefined:
-        'These variables had no value in the probe that was run, so the save was accepted (a value belongs to the session, not to the text); in a turn that has no value for them, they stay literal instead of being substituted: {list}',
+      mineWarningUndefined: 'These variables had no value in the probe that was run, so the save was accepted (a value belongs to the session, not to the text); in a turn that has no value for them, they stay literal instead of being substituted: {list}',
       mineWarningList: 'reference {name}',
       mineLayerDisabled: 'This layer is disabled and contributes nothing to any assembly right now.',
       mineLayerDisabledReason: 'Reason: {reason}',
-      mineLayerDisabledFix:
-        'Fix: delete the unresolvable {{...}} reference in that layer\'s config (or turn variable substitution off), then reopen this page. The plugin never rewrites your file.',
-      mineLayerDisabledFixGeneric:
-        'Fix: repair or remove that layer\'s config file (invalid JSON, an invalid field and a deleted file all land here), then reopen this page. The plugin never rewrites your file.',
-      // ---- g-021: a frozen scope is a blocking statement, not a footnote
+      mineLayerDisabledFix: 'Fix: delete the unresolvable {{...}} reference in that layer\'s config (or turn variable substitution off), then reopen this page. The plugin never rewrites your file.',
+      mineLayerDisabledFixGeneric: 'Fix: repair or remove that layer\'s config file (invalid JSON, an invalid field and a deleted file all land here), then reopen this page. The plugin never rewrites your file.',
       mineFrozenWarn: 'This scope is frozen: the prompt you write will not take effect',
-      mineFrozenBody:
-        'Saving still works and the text is stored in the {layer} config, but this scope is frozen by a complete section: this write never reaches the final prompt, and it does not take effect from the next turn either.',
-      // The `frozenScope: "global"` + session case is *unknown*, not frozen
-      // (CONTRACT.md §2.4/§7.2): the panel may warn, but it may not claim the
-      // session is frozen. Two of its own keys keep that distinction separate.
+      mineFrozenBody: 'Saving still works and the text is stored in the {layer} config, but this scope is frozen by a complete section: this write never reaches the final prompt, and it does not take effect from the next turn either.',
       mineFrozenUnknownWarn: 'Cannot confirm whether the selected session’s assembly is frozen',
-      mineFrozenUnknownBody:
-        'The unscoped assembly is frozen by a complete section, but the selected session has no active agent, so whether it is frozen too cannot be confirmed. The text is still written to the {layer} config; if it is frozen too, it will not take effect.',
-      mineFrozenHowTo:
-        'To make it take effect: switch to an agent preset that does not declare complete (the built-in default preset, for example), or drop the complete declaration from the current preset, and then reload the selected session.',
+      mineFrozenUnknownBody: 'The unscoped assembly is frozen by a complete section, but the selected session has no active agent, so whether it is frozen too cannot be confirmed. The text is still written to the {layer} config; if it is frozen too, it will not take effect.',
+      mineFrozenHowTo: 'To make it take effect: switch to an agent preset that does not declare complete (the built-in default preset, for example), or drop the complete declaration from the current preset, and then reload the selected session.',
       mineSavedFrozen: 'Saved to {layer}, but the selected session is frozen, so it will not take effect.',
-      mineSavedUnknown:
-        'Saved to {layer}; the selected session’s frozen state is unknown, so it may not take effect.',
+      mineSavedUnknown: 'Saved to {layer}; the selected session’s frozen state is unknown, so it may not take effect.',
       savedNoticeFrozen: 'Saved to {layer}, but the selected session is frozen; it will not take effect here.',
-      savedNoticeUnknown:
-        'Saved to {layer}; the selected session’s frozen state is unknown, so it may not take effect here.',
+      savedNoticeUnknown: 'Saved to {layer}; the selected session’s frozen state is unknown, so it may not take effect here.',
       mineWorkspaceNeedsSession: 'The workspace layer needs a session; without one it cannot be written.',
       mineResetTitle: 'Restore default: delete the {layer} My Prompt',
       mineResetBody: 'This deletes the text stored in that layer and returns it to unconfigured.',
-      // ---- g-058 (Revision 36): the "cover / stack" mode of this one entry.
       mineModeLabel: 'Mode',
       mineModeReplace: 'Cover',
       mineModeAppend: 'Stack',
       mineModeHintReplace: 'Cover: only this layer\'s text applies; a same-named entry in the other layer does not.',
       mineModeHintAppend: 'Stack: this layer\'s text follows the other layer\'s, so both apply.',
-      mineModeNote:
-        'The mode acts on the one reserved section: the user layer\'s text first, the workspace layer\'s after it — one blank line between them when both carry text, none when only one does.',
+      mineModeNote: 'The mode acts on the one reserved section: the user layer\'s text first, the workspace layer\'s after it — one blank line between them when both carry text, none when only one does.',
       mineModeBottomNote: 'The user layer is the lowest one: "Stack" here means the same as "Cover" — there is nothing below it to stack onto.',
       mineModeStoredNone: 'this layer states no mode (read as "Cover")',
       mineModeStored: 'stored mode: {mode}',
       mineModeDirty: 'The mode changed and is not saved yet.',
-      // ---- stage 3: two entries, so an illegal (name, action) pair cannot exist
-      blockAppendExisting:
-        'That name is already in the current assembly, so append would not take effect (two sections may not share a name; the Host skips it as name-already-present). Use Replace instead, or change the name to a new, unregistered one.',
-      blockNotPresent:
-        'That name is not in the current assembly, so replace / hide would be skipped (the Host records section-not-present). Pick a registered name, or use Append to create a new section.',
+      blockAppendExisting: 'That name is already in the current assembly, so append would not take effect (two sections may not share a name; the Host skips it as name-already-present). Use Replace instead, or change the name to a new, unregistered one.',
+      blockNotPresent: 'That name is not in the current assembly, so replace / hide would be skipped (the Host records section-not-present). Pick a registered name, or use Append to create a new section.',
       blockMissingName: 'The section name cannot be empty (the Host answers missing-name).',
       editDisabledOverridable: 'This section is not overridable',
       editDisabledFrozen: 'The current scope is frozen; an edit would not take effect',
       savedNotice: 'Saved to {layer}; effective from the next turn (next-turn).',
       deletedNotice: 'Removed the {layer} override; effective from the next turn (next-turn).',
-      // g-050: see the zh table.
       mineDraftKept: 'The configuration changed elsewhere; the text you have not saved is still in the editor.',
-      // g-056: see the zh table — the draft belongs to the write target.
       mineDraftScope: 'The editor is showing an unsaved draft (belongs to: {scope}).',
-      mineDraftElsewhere:
-        'You still have unsaved text in "{scope}" ({chars} characters). It did not follow this scope change: it is still there, and going back to that scope continues where you left off.',
+      mineDraftElsewhere: 'You still have unsaved text in "{scope}" ({chars} characters). It did not follow this scope change: it is still there, and going back to that scope continues where you left off.',
       mineDraftElsewhereDrop: 'Discard that draft',
-      mineSaveBlockedDraftElsewhere:
-        'Save blocked: you have unsaved text in "{scope}" ({chars} characters) and it is not what the editor is showing. Go back to that scope to save or discard it, then save here.',
+      mineSaveBlockedDraftElsewhere: 'Save blocked: you have unsaved text in "{scope}" ({chars} characters) and it is not what the editor is showing. Go back to that scope to save or discard it, then save here.',
       nextTurn: 'next-turn',
       ovHeading: 'Active overrides',
       ovEmpty: 'This scope has no overrides.',
@@ -2086,8 +1777,6 @@ window.__ModuleLoader__.load({
       rendererPrimitives: 'primitives (official atoms)',
       rendererFallback: 'fallback (hand-built + theme tokens)',
       primitivesFailure: 'Why primitives is unavailable',
-      // g-063 wrap-up: `primitivesDetail*` / `primitivesMembers*` stood here and
-      // went with the two always-on probe rows.
       primitivesToastLabel: 'toast namespace',
       toastNamespaceNone: 'none (no usable Toast found)',
       toastNamespaceDefault: 'module.default (unwrapped)',
@@ -2101,30 +1790,20 @@ window.__ModuleLoader__.load({
       scopeSessions: '{n} sessions',
       scopeMore: 'Show more ({n} remaining)',
       scopeCut: '{n} more rows exceed the render cap; narrow the range with search.',
-      scopeTruncated:
-        'Render cap reached (at most {n} session rows at a time): narrow the range with search, or fold other workspaces first.',
+      scopeTruncated: 'Render cap reached (at most {n} session rows at a time): narrow the range with search, or fold other workspaces first.',
       scopeGroupsTruncated: 'Too many workspace groups; only part of them is shown: narrow the range with search.',
-      scopeDegraded:
-        'This profile provides no useWorkspaces (workspace service unavailable); the picker degraded to a flat session list and cannot group by workspace.',
-      scopeArchivedHidden:
-        '{n} archived sessions are hidden (matching the sidebar default); use search, or type an id to view one.',
-      scopeSearchHint:
-        'Grouped by workspace, exactly like the left sidebar; a search keeps the owning workspace group of every match, and a workspace-name match keeps all of its sessions.',
-      scopeToggleAria: 'Workspace "{name}": expand or collapse',
+      scopeDegraded: 'This profile provides no useWorkspaces (workspace service unavailable); the picker degraded to a flat session list and cannot group by workspace.',
+      scopeArchivedHidden: '{n} archived sessions are hidden (matching the sidebar default); use search, or type an id to view one.',
+      scopeSearchHint: 'Grouped by workspace, exactly like the left sidebar; a search keeps the owning workspace group of every match, and a workspace-name match keeps all of its sessions.',
       scopeToggleAria: 'Workspace "{name}": expand or collapse',
       scopeSelected: 'Currently selected',
-      // ---- stage 2: history / diff / reset / transfer ----
       histHeading: 'Version history',
-      // g-044: the summary line of the folded「Notes & tips」block, which carries
-      // the retention sentence and the three scope/picking sentences.
       histNotesToggle: 'Notes & tips',
-      histNote:
-        'Every successful save or removal appends one record (the newest {limit} are kept). The history file is appended line by line, never rewritten for a single read.',
+      histNote: 'Every successful save or removal appends one record (the newest {limit} are kept). The history file is appended line by line, never rewritten for a single read.',
       histLayerLabel: 'History layer',
       histEmpty: 'This layer has no history yet.',
       histNoSession: 'The workspace layer needs a resolvable session id to read its history.',
       histTotal: '{n} records',
-      // ---- g-038: the version history's own scope, and its paging ----
       histScopeLabel: 'History scope',
       histScopeGlobal: 'The user layer is global: every record of the layer is listed here, filtered by no session.',
       histScopeWorkspace: 'Showing the history file of workspace "{name}" (located by session {session}) — every record of that workspace.',
@@ -2142,9 +1821,6 @@ window.__ModuleLoader__.load({
       histUnreadable: 'The history file is unreadable: {reason}',
       histLastError: 'The last history write failed: {reason}',
       histCurrent: 'Current value',
-      // g-044: `histWholeLayer` (the `name === null` placeholder) and
-      // `histPreviewName` went with the section-name display: neither the row nor
-      // the preview shows a section name, and nothing else referenced them.
       'histAction.replace': 'replace',
       'histAction.hide': 'hide',
       'histAction.append': 'append',
@@ -2152,9 +1828,6 @@ window.__ModuleLoader__.load({
       'histAction.reset-layer': 'reset the layer',
       'histAction.legacy-clear': 'clear legacy overrides',
       'histAction.rollback': 'rollback',
-      // g-039: the detail pane's third view — one record's preview — and the
-      // reserved-section rollback it enables (Revision 22 narrowed the write to
-      // that one section, so the copy says so).
       histPreview: 'Preview',
       histPreviewHeading: 'Record preview',
       histPreviewClose: 'Close the preview',
@@ -2171,15 +1844,11 @@ window.__ModuleLoader__.load({
       histPreviewNoText: '(no text)',
       histPreviewSnapshot: 'The whole-layer snapshot of this version ({n} override(s))',
       histPreviewSnapshotEmpty: 'This record carries no whole-layer snapshot (an older record).',
-      // g-044: no section name on the entry line either (see the zh table); the
-      // name stays on `data-preview-snapshot` for tests and diagnostics.
       histPreviewSnapshotEntry: '{action} · {bytes} bytes',
       histPreviewPolicy: 'Preview and rollback concern the "My Prompt" section only: no other section of this layer is touched.',
       histRollback: 'Roll back to this',
       histRollbackTitle: 'Roll the {layer} back to #{id}',
-      histRollbackBody:
-        'This restores the "My Prompt" section to the content of #{id} and appends a rollback record, which is what makes this rollback itself a version you can roll back again.',
-      // g-039 rework: the rollback follows the write-face policy — one section.
+      histRollbackBody: 'This restores the "My Prompt" section to the content of #{id} and appends a rollback record, which is what makes this rollback itself a version you can roll back again.',
       histRollbackScope: 'This rollback restores the "My Prompt" section only; every other section of this layer is left as it is.',
       histRollbackForeign: 'That version also overrode {n} section(s) other than "My Prompt"; the write face does not accept those names, so they are not restored.',
       histRollbackDone: 'Rolled back to #{id}: the log and the current value are refreshed, effective from the next assembly.',
@@ -2214,14 +1883,12 @@ window.__ModuleLoader__.load({
       resetLayerWorkspace: 'Reset the workspace layer',
       resetLegacyButton: 'Clear all overrides',
       resetLegacyTitle: 'Clear every legacy override of the {layer}',
-      resetLegacyBody:
-        'This deletes the {count} frozen override(s) of the {layer} (everything except My Prompt) and keeps My Prompt itself.',
+      resetLegacyBody: 'This deletes the {count} frozen override(s) of the {layer} (everything except My Prompt) and keeps My Prompt itself.',
       resetLegacyEmpty: 'The {layer} has no frozen overrides to clear; My Prompt is kept.',
       advReservedTag: 'My Prompt',
       advReadOnlyNote: 'This list is read-only: My Prompt is the only write surface, and the two buttons below clear a whole layer.',
       resetLayerTitle: 'Reset the {layer}',
-      resetLayerBody:
-        'This clears all {count} overrides of the {layer}, effective from the next assembly; the removed content goes to history.',
+      resetLayerBody: 'This clears all {count} overrides of the {layer}, effective from the next assembly; the removed content goes to history.',
       resetLayerEmpty: 'The {layer} holds no override, so there is nothing to reset.',
       resetIrreversible: 'This cannot be undone.',
       confirmTitle: 'Please confirm',
@@ -2230,8 +1897,7 @@ window.__ModuleLoader__.load({
       resetDoneNotice: 'Restored the default: {count} override(s) removed, effective next turn (next-turn).',
       resetNoneNotice: 'There was nothing to remove.',
       transferHeading: 'Export / import',
-      transferNote:
-        'Export produces JSON carrying a schema and a version; an import is previewed with a dry run first, and only a confirmed import writes — staged to a temp file, validated, then renamed atomically.',
+      transferNote: 'Export produces JSON carrying a schema and a version; an import is previewed with a dry run first, and only a confirmed import writes — staged to a temp file, validated, then renamed atomically.',
       exportButton: 'Export JSON',
       exportPreviewLabel: 'Exported content (copyable)',
       exportPreviewCut: 'The preview shows the first {n} characters; the download is the complete file.',
@@ -2265,15 +1931,11 @@ window.__ModuleLoader__.load({
       importStatusRemoved: 'removed',
       importConfirmTitle: 'Confirm the import',
       importConfirmBody: 'The changes below will be written with the {mode} strategy; a failure at any step leaves the existing configuration untouched.',
-      // g-060 (Revision 37): the「预设」(presets) tab — the catalogue of named texts
-      // for the reserved section, plus the two layer actions that apply one to a
-      // workspace and put that workspace back.
       tabPresets: 'My presets',
       presetsHeading: 'Presets',
-      presetsNote:
-        'Keep a named text as a preset and apply it to one workspace: applying writes that workspace layer\u2019s reserved section, cancelling restores exactly what was there before.',
+      presetsNote: 'Keep a named text as a preset and apply it to one workspace: applying writes that workspace layer’s reserved section, cancelling restores exactly what was there before.',
       presetsListHeading: 'Library',
-      presetsEmpty: 'No presets yet. Create one below, or save the text \u300cMy Prompt\u300d currently shows as a preset.',
+      presetsEmpty: 'No presets yet. Create one below, or save the text "My Prompt" currently shows as a preset.',
       presetsLibraryError: 'The preset library file cannot be read',
       presetNewHeading: 'New preset',
       presetEditHeading: 'Edit preset',
@@ -2287,32 +1949,29 @@ window.__ModuleLoader__.load({
       presetSaveNew: 'Save as new preset',
       presetSaveEdit: 'Save changes',
       presetSaveAsCurrent: 'Save current text as a preset',
-      presetSaveAsCurrentHint:
-        '\u201cSave current text as a preset\u201d only fills the editor above with the text \u300cMy Prompt\u300d is showing; it writes nothing by itself.',
+      presetSaveAsCurrentHint: '“Save current text as a preset” only fills the editor above with the text "My Prompt" is showing; it writes nothing by itself.',
       presetEdit: 'Edit',
       presetDelete: 'Delete',
       presetWorkspaceHeading: 'Apply to a workspace',
-      presetWorkspaceNote:
-        'Pick a workspace (located by one of its sessions) and apply the preset being edited to it; an existing application can be cancelled here too.',
+      presetWorkspaceNote: 'Pick a workspace (located by one of its sessions) and apply the preset being edited to it; an existing application can be cancelled here too.',
       presetWorkspaceEmpty: 'This profile exposes no workspace session, so no preset can be applied.',
       presetApply: 'Apply',
       presetApplyTo: 'Apply to a workspace',
-      presetApplyToTitle: 'Apply \u201c{name}\u201d to a workspace',
+      presetApplyToTitle: 'Apply “{name}” to a workspace',
       presetApplyToNote: 'The version stored in the preset library is what gets applied; unsaved changes in the editor dialog are not.',
       presetDialogClose: 'Close',
       presetDialogDiscard: 'Discard changes',
       presetDialogDirtyHint: 'There are unsaved changes: closing discards them.',
       presetDiscardConfirmTitle: 'Discard the unsaved changes?',
-      presetDiscardConfirmBody: 'This preset\u2019s changes are not saved yet; confirming closes the dialog and writes nothing to the library.',
-      presetDeleteConfirmTitle: 'Delete the preset \u201c{name}\u201d?',
-      presetDeleteConfirmBody:
-        'The library will no longer hold it. What a workspace already carries is not touched, but its applied record is marked \u201csource deleted\u201d.',
+      presetDiscardConfirmBody: 'This preset’s changes are not saved yet; confirming closes the dialog and writes nothing to the library.',
+      presetDeleteConfirmTitle: 'Delete the preset “{name}”?',
+      presetDeleteConfirmBody: 'The library will no longer hold it. What a workspace already carries is not touched, but its applied record is marked “source deleted”.',
       presetAlreadyAppliedNotice: 'This preset is already in force in that workspace; nothing was stacked twice.',
       presetNotApplied: 'Not applied',
       presetUnapplyOne: 'Cancel',
       presetAppliedHere: 'Applied',
       presetAppliedOrphan: 'Source deleted',
-      presetSaving: 'Working\u2026',
+      presetSaving: 'Working…',
       presetSaved: 'Done',
       presetFailed: 'The request failed',
       presetLoaded: 'Library loaded',
@@ -2321,14 +1980,59 @@ window.__ModuleLoader__.load({
       presetDeletedOrphanNotice: 'The preset was deleted; {count} workspace(s) still hold its text and can still cancel the application.',
       presetAppliedNotice: 'The preset was applied to that workspace; it takes effect on the next assembly.',
       presetUnappliedNotice: 'The application was cancelled: that workspace is back to what it held before.',
+      'error.invalid-json': 'The request body is not valid JSON.',
+      'error.invalid-override': 'The "section" field is missing or not an object.',
+      'error.missing-name': 'The section "name" is missing.',
+      'error.name-too-long': 'The section name exceeds 200 characters.',
+      'error.invalid-name': 'The section name contains control characters.',
+      'error.unknown-action': 'The action must be replace, hide, or append.',
+      'error.missing-text': 'replace and append require a text string.',
+      'error.unexpected-text': 'A hide override must not carry text.',
+      'error.invalid-order': 'The order must be a non-negative integer (a target index).',
+      'error.unexpected-order': 'replace and hide must not carry an order.',
+      'error.unknown-layer': 'The layer must be user or workspace.',
+      'error.workspace-unresolved': 'The workspace layer needs a resolvable session id.',
+      'error.override-not-found': 'That layer holds no such override to remove.',
+      'error.layer-not-writable': 'The target config file is not a valid config; it is never overwritten.',
+      'error.text-too-large': 'The text exceeds 200 KiB.',
+      'error.body-too-large': 'The request body exceeds 256 KiB.',
+      'error.assemble-failed': 'The host assembly threw while building the snapshot.',
+      'error.trust-fence-unavailable': 'The connection service is unavailable, so the trust fence refused the request.',
+      'error.not-found': 'The host has no such route.',
+      'error.duplicate-name': 'The layer holds a duplicate section name.',
+      'error.write-locked': 'This write was refused: only this plugin’s own section, prompt-setting:custom-prompt, may be written or deleted.',
+      'error.unsupported-action': 'That section accepts only action=replace.',
+      'error.conflicting-query': 'reset and legacy cannot be combined: reset clears the whole layer, legacy clears only the legacy overrides.',
+      'error.invalid-history-record': 'That history line is malformed and was skipped.',
+      'error.history-unusable': 'The history file cannot be read or written.',
+      'error.history-not-found': 'That layer history holds no such record.',
+      'error.missing-diff-selector': 'Supply ?from= and/or ?to= (a history id or "current").',
+      'error.invalid-diff-selector': 'A diff selector must be "current" or a history record id.',
+      'error.invalid-export': 'An export document must be a JSON object.',
+      'error.unknown-export-schema': 'The "schema" is not this plugin’s export format.',
+      'error.missing-export-version': 'The import document has no "version".',
+      'error.unsupported-export-version': 'The import document version is not supported.',
+      'error.missing-export-layers': 'The import document has no "layers".',
+      'error.missing-export-layer': 'The import document carries no such layer.',
+      'error.invalid-export-layer': 'A layer in the import document is malformed.',
+      'error.unknown-import-mode': 'The mode must be merge or replace.',
+      'error.import-verify-failed': 'The staged import failed its own validation; nothing was changed.',
+      'error.import-staging-failed': 'The import could not be staged; nothing was changed.',
+      'error.import-commit-failed': 'The import could not be committed; some layers may already be replaced.',
+      'error.invalid-interpolate-flag': 'The config\'s "interpolateCustom" must be a boolean; that layer was disabled.',
+      'error.unresolvable-variable': 'A {{…}} reference in this text could never be substituted (unregistered, illegal or malformed), so the save was refused. Delete the reference, use a registered variable, or turn variable substitution off first.',
+      'error.invalid-enabled': 'The switch request needs a boolean "enabled".',
+      'error.invalid-state': 'A layer state must be one of inherit, on or off.',
+      'error.variable-lookup-failed': 'The current variable table could not be obtained, so this write was refused: there is no way to tell which references would expand.',
+      'error.invalid-region': 'The download region must be one of default, cn or custom.',
+      'error.registry-invalid': 'That mirror address is invalid: it must be an http(s) URL with a host, and no credentials, query string or fragment.',
+      'error.registry-unreachable': 'Nothing answered at that mirror address within the timeout (a timeout or a network error); nothing was saved.',
+      'error.registry-http-error': 'That address answered, but with an error status, so it is not a usable npm registry.',
+      'error.registry-not-npm': 'That address answered, but not with an npm package document (no dist-tags.latest).',
+      'error.registry-unavailable': 'The chosen download source is unavailable. Nothing falls back to the default source: retry later, or pick another download region.',
+      'error.preferences-unwritable': 'The preference file could not be written, so nothing took effect.',
     };
-
-    // One loop keeps zh/en key sets identical by construction, including every
-    // `error.CODE` entry.
-    for (const [code, pair] of Object.entries(ERROR_TEXT)) {
-      zh[`error.${code}`] = pair[0];
-      en[`error.${code}`] = pair[1];
-    }
+    // #endregion
 
     /**
      * Last-resort translator, replaced by the bound `t` in `apply`. Only used
@@ -3796,7 +3500,12 @@ window.__ModuleLoader__.load({
       if (error.code) {
         const key = `error.${error.code}`;
         const text = safeT(t, key, '');
-        if (text.length > 0) return text;
+        // g-066: the locale lookup answers a miss with the key itself, so a
+        // code with no entry would otherwise put `error.foo` on screen. Treat
+        // "the answer is the key" as a miss and fall through to localized prose
+        // (`errUnknown`) — the raw code still reaches the UI through the
+        // banner's own `data-error-code` / `errCode` line.
+        if (text.length > 0 && text !== key) return text;
       }
       if (error.network) return t('errNetwork');
       if (error.status) return fmt(t('errHttp'), { status: error.status });
@@ -5086,7 +4795,7 @@ window.__ModuleLoader__.load({
      * 2. a `data:` URL on the same anchor — the fallback where `Blob` is absent.
      * @param text - the JSON text.
      * @param filename - the suggested file name.
-     * @returns `{ok: true, mode}` or `{ok: false, reason}`.
+     * @returns `{ok: true, mode}` or `{ok: false, code: 'download-failed'}`.
      */
     function downloadText(text, filename) {
       const click = (href) => {
@@ -5100,7 +4809,11 @@ window.__ModuleLoader__.load({
       };
       try {
         if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
-          return { ok: false, reason: 'no document' };
+          // g-066: the answer is a *machine* code, never prose. What the user
+          // reads comes from the dictionary (`errorText` → `errUnknown`), so an
+          // English sentence written for a console log cannot leak into
+          // localized copy (the export notice interpolates this reason).
+          return { ok: false, code: 'download-failed' };
         }
         if (typeof Blob === 'function' && typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
           const url = URL.createObjectURL(new Blob([text], { type: 'application/json;charset=utf-8' }));
@@ -5114,7 +4827,7 @@ window.__ModuleLoader__.load({
         click(`data:application/json;charset=utf-8,${encodeURIComponent(text)}`);
         return { ok: true, mode: 'data-url' };
       } catch (error) {
-        return { ok: false, reason: error && error.message ? String(error.message) : String(error) };
+        return { ok: false, code: 'download-failed' };
       }
     }
 
@@ -9837,16 +9550,21 @@ window.__ModuleLoader__.load({
         const text = JSON.stringify(document, null, 2);
         const fileName = exportFileName(document.exportedAt);
         const download = downloadText(text, fileName);
+        // g-066: the failure reason is a dictionary lookup, not the browser's
+        // own wording — `error.download-failed` is not a host rejection code,
+        // so `errorText` falls back to the localized `errUnknown` and the
+        // English phrase never reaches the notice.
+        const downloadError = download.ok ? null : { code: download.code };
         setTransfer({
           phase: download.ok ? 'exported' : 'error',
           plan: null,
-          error: download.ok ? null : { code: 'download-failed', message: download.reason },
+          error: downloadError,
           exportText: text,
           fileName,
         });
         setNotice({
           tone: download.ok ? 'success' : 'error',
-          text: download.ok ? fmt(t('downloadDone'), { name: fileName }) : fmt(t('downloadFailed'), { reason: download.reason }),
+          text: download.ok ? fmt(t('downloadDone'), { name: fileName }) : fmt(t('downloadFailed'), { reason: errorText(t, downloadError) }),
         });
       };
 

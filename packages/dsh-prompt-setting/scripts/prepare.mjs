@@ -30,9 +30,10 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { PREPARE_FAIL, PREPARE_OK, PREPARE_WARN, inspectPackage } from '../core/prepare.js';
+import { PREPARE_FAIL, PREPARE_OK, PREPARE_WARN, filesCoverPath, inspectPackage } from '../core/prepare.js';
 import { clientChunkStamps } from '../core/store.js';
 import { readDeclaredStamps, sameStamps } from './client-chunks.mjs';
+import { LOCALE_DIR, LOCALES, checkLocaleSync } from './locale-pack.mjs';
 
 /** 包根目录（本文件在 `scripts/` 下）。 */
 const PACKAGE_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -118,6 +119,46 @@ function inspectClientChunks() {
   };
 }
 
+/**
+ * 第 5 类检查：词典真源（`locale/*.json`）与 bundle 内联段一致（g-066）。
+ *
+ * 为什么这条要放在**发布门**上：`client.js` 里的 `zh`/`en` 段是生成物，人只改
+ * `locale/*.json`。生成段一旦漂移，用户看到的就是上一版文案 —— 而「改了 JSON 忘了
+ * `--write`」正是这套新机制里最容易发生的一步（与 `CHUNK-STAMPS` 同理）。测试只有
+ * 在有人跑测试时才拦得住；`prepare` 是安装/发布路径上的门。
+ *
+ * 同一条 finding 顺带守住发布面：JSON 不在 `files` 白名单里时，装到用户机器上的包
+ * 里没有真源，脚本的 `--check` 会在下一版开发时才炸。
+ * @param filesField - `package.json` 的 `files` 数组。
+ * @returns 一条 finding（`PREPARE_OK` 或 `PREPARE_FAIL`）。
+ */
+function inspectLocale(filesField) {
+  const relPaths = Object.keys(LOCALES).map((name) => `${LOCALE_DIR}/${name}.json`);
+  const declared = filesCoverPath(filesField, relPaths[0]);
+  const existing = relPaths.filter((relPath) => readText(relPath) !== null);
+  // A package that neither ships nor declares the JSON is simply not using this
+  // mechanism (the gate also runs against minimal fixture packages) — that is
+  // "not applicable", not a failure. A package that declares it, or that has the
+  // files, is held to all of it below.
+  if (!declared && existing.length === 0) {
+    return { level: PREPARE_OK, code: 'LOCALE-SYNC-N/A', message: '未使用 locale/*.json 词典（无文件、files 也未声明），跳过' };
+  }
+  const missing = relPaths.filter((relPath) => !existing.includes(relPath));
+  if (missing.length > 0) {
+    return { level: PREPARE_FAIL, code: 'LOCALE-FILES', message: `读不到 ${missing.join('、')}（词典真源缺失）` };
+  }
+  const cut = relPaths.filter((relPath) => !filesCoverPath(filesField, relPath));
+  if (cut.length > 0) {
+    return {
+      level: PREPARE_FAIL,
+      code: 'LOCALE-NOT-SHIPPED',
+      message: `${cut.join('、')} 不在 files 白名单里：安装时会被裁掉，包里只剩生成物`,
+    };
+  }
+  const result = checkLocaleSync({ packageDir: PACKAGE_DIR, readText });
+  return { level: result.ok ? PREPARE_OK : PREPARE_FAIL, code: result.code, message: result.message };
+}
+
 say('[dsh-prompt-setting] prepare：发布就绪自检（本包零构建，不做编译）');
 say('');
 
@@ -137,6 +178,9 @@ const { ok, findings } = inspectPackage({ pkg, readText, listDir });
 // g-045: the chunk manifest is the one file-vs-file agreement the build stamp
 // depends on, so it is checked on the publish path too — not only by tests.
 findings.push(inspectClientChunks());
+// g-066: same reasoning for the dictionaries — the inlined blocks are generated
+// from locale/*.json, and a stale generation ships yesterday's copy.
+findings.push(inspectLocale(pkg && pkg.files));
 const label = { [PREPARE_OK]: 'ok  ', [PREPARE_WARN]: 'warn', [PREPARE_FAIL]: 'FAIL' };
 for (const finding of findings) say(`  ${label[finding.level] ?? finding.level}  ${finding.code}: ${finding.message}`);
 if (manifestError !== null) say(`  FAIL  MANIFEST-UNREADABLE: ${manifestError}`);
