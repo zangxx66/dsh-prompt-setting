@@ -472,7 +472,13 @@ function loadClient(primitives, options = {}) {
     SegmentedTabs: (props) =>
       runtime.React.createElement(
         'div',
-        { role: 'tablist' },
+        {
+          role: 'tablist',
+          // g-063 (real-machine feedback): the official control's column layout
+          // is **caller-owned**, so the class the page hands it is a fact worth
+          // asserting — the double carries it through instead of dropping it.
+          'data-tabs-class': props.className === undefined ? '(none)' : props.className,
+        },
         (props.items || []).map((item) =>
           runtime.React.createElement(
             'button',
@@ -14600,4 +14606,87 @@ test('client: after a render-time failure the toaster entry stops rendering inst
   }
   assert.equal(threw, null, `the entry must stop rendering after the flip (threw: ${threw && threw.message})`);
   assert.equal(tree, null, 'and its degraded shape is "nothing", never a bare Host atom');
+});
+
+/**
+ * A `document` that records what a `<style>` injection does (g-063, real-machine
+ * feedback). Nothing else in the page needs it beyond the scroll lock's
+ * `body.style`, so the double is deliberately small.
+ * @returns `{doc, appended}` — the fake document and its injected nodes.
+ */
+function styleRecordingDocument() {
+  const appended = [];
+  return {
+    appended,
+    doc: {
+      head: { appendChild: (node) => appended.push(node) },
+      body: { style: {}, appendChild() {}, removeChild() {} },
+      createElement(tag) {
+        return {
+          tag,
+          attrs: {},
+          textContent: '',
+          setAttribute(name, value) {
+            this.attrs[name] = String(value);
+          },
+        };
+      },
+      querySelector: () => null,
+    },
+  };
+}
+
+test('client: the official tab control gets the caller-owned layout class, injected once (g-063 real-machine)', async () => {
+  // The official `.tabs` rule is `display: grid` with **no** column definition;
+  // its own doc comment says the layout is the caller's job. Without a class
+  // from us the grid falls back to one tab per row — the real-machine reading
+  // was "labels crowded and wrapped".
+  const { appended, doc } = styleRecordingDocument();
+  const page = makePage({ primitives: 'ok', responses: defaultResponses(), document: doc });
+  const tree = await page.flush();
+  const tablists = collect(tree, (node) => node.props && node.props['data-tabs-class'] !== undefined);
+  assert.ok(tablists.length > 0, 'the primitives branch really rendered the official control');
+  for (const node of tablists) {
+    assert.equal(
+      node.props['data-tabs-class'],
+      'dsh-prompt-setting-tabs',
+      'every official tab control gets the caller-owned layout class',
+    );
+  }
+
+  // Injection discipline: exactly once, prefixed, and carrying the columns the
+  // official sheet omits.
+  assert.equal(appended.length, 1, 'the layout rule is injected exactly once');
+  assert.equal(appended[0].tag, 'style');
+  assert.equal(
+    appended[0].attrs['data-dsh-prompt-setting'],
+    'dsh-prompt-setting-tabs',
+    'the style is ours and prefixed, never a Host class name',
+  );
+  assert.ok(
+    appended[0].textContent.includes('grid-auto-flow:column') &&
+      appended[0].textContent.includes('grid-auto-columns:1fr'),
+    `the rule supplies the columns the official sheet leaves to the caller: ${appended[0].textContent}`,
+  );
+  assert.ok(
+    appended[0].textContent.includes('white-space:nowrap'),
+    'and no label may wrap — a wrapped label is the defect being fixed',
+  );
+
+  // Idempotent: another render (a tab switch) must not stack a second copy.
+  await openTab(page, 'overview');
+  assert.equal(appended.length, 1, 'a second render injects nothing');
+});
+
+test('client: the fallback branch needs neither the class nor the injected rule (g-063 real-machine)', async () => {
+  const { appended, doc } = styleRecordingDocument();
+  const page = makePage({ primitives: 'throw', responses: defaultResponses(), document: doc });
+  const tree = await page.flush();
+  assert.equal(appended.length, 0, 'the hand-built tab control needs no injected CSS at all');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-tabs-class'] !== undefined).length,
+    0,
+    'and no official control was rendered',
+  );
+  assert.ok(tabList(tree), 'the fallback tab list is still there, unchanged');
 });

@@ -3435,6 +3435,21 @@ code means rather than how it is written:
   `data-primitives-members="true"` also carries
   `data-primitives-button-component="true" | "false"` — the decision, beside the
   `typeof` it was made from.
+  **Revision 49, real-machine follow-up:** the official `SegmentedTabs` supplies
+  only `display: grid` and, by its own contract, takes the **column layout from
+  the caller's `className`**; called without one it laid every tab on its own row
+  (labels crowded and wrapped, seen on the real machine). The tab control is now
+  given `className="dsh-prompt-setting-tabs"`, and the plugin injects that one
+  rule itself — `grid-auto-flow: column; grid-auto-columns: 1fr` plus
+  `white-space: nowrap` for its buttons, the shape the Host's own equal-width
+  `SegmentedControl` uses. The style is **prefixed** (class and
+  `data-dsh-prompt-setting` attribute), **injected once** (instance flag plus a
+  document probe, so a reloaded bundle cannot stack copies), **fail-open** (no
+  `document`, or a refused `appendChild`, only means no injection), and **kept
+  for the page's lifetime** on purpose — the elements that reference it are still
+  mounted, so removing it would re-break the layout. No Host class name is ever
+  referenced. The fallback branch is untouched: it renders its own tab list and
+  injects nothing.
 
 ### 13.5 Second confirmation is required
 

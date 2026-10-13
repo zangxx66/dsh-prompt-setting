@@ -2633,12 +2633,84 @@ window.__ModuleLoader__.load({
     };
 
     /**
+     * The layout class the Host's `SegmentedTabs` asks its **caller** for.
+     *
+     * The official stylesheet gives `.tabs` only `display: grid` — no
+     * `grid-auto-flow`, no `grid-template-columns` — and its own doc comment says
+     * so out loud ("equal-width tabs … `className` - layout placement; panels
+     * remain caller-owned"). Without a caller-supplied column layout the grid
+     * falls back to one item per row, which is exactly what the real machine
+     * showed: every tab on its own line, its label wrapped. The rule below is
+     * the shape the Host itself uses for its equal-width segmented control
+     * (`SegmentedControl.module.css`: `display: inline-grid;
+     * grid-auto-flow: column; grid-auto-columns: 1fr`), minus the parts the
+     * official `.tabs` already sets; `white-space: nowrap` is added because a
+     * wrapped label is the defect being fixed.
+     *
+     * Real-machine feedback (g-063): the official caller whose code was inspected
+     * (`dsh-client-ui-agent-preset`) passes its **own** CSS-module class
+     * (`guideTabs`, rules: `flex: none; margin: …`) and therefore supplies no
+     * columns either — so there is no official class to copy by name (and
+     * copying its hashed class names is forbidden anyway). The layout shape is
+     * copied from the Host's own `SegmentedControl`, and the class is ours,
+     * prefixed, and injected once.
+     */
+    const TABS_LAYOUT_CLASS = 'dsh-prompt-setting-tabs';
+    /** Two rules, one line, ours only — see {@link ensureTabsLayoutStyle}. */
+    const TABS_LAYOUT_CSS = `.${TABS_LAYOUT_CLASS}{grid-auto-flow:column;grid-auto-columns:1fr}.${TABS_LAYOUT_CLASS}>button{white-space:nowrap}`;
+    /**
+     * Has this module instance already put {@link TABS_LAYOUT_CSS} in the page?
+     *
+     * The style is **kept for the page's lifetime on purpose**: it is two rules
+     * scoped to our own prefixed class, it is referenced by elements this page
+     * renders, and removing it while those elements are still mounted would
+     * re-break the layout. A reload of the bundle is what clears it.
+     */
+    let tabsLayoutStyleInjected = false;
+    /**
+     * Inject the tab layout rule once, and never throw.
+     *
+     * Three disciplines, in order: **idempotent** (the instance flag, plus a
+     * `style[data-dsh-prompt-setting]` probe so a reloaded bundle does not stack
+     * a second copy), **prefixed** (our class, our attribute — never a Host
+     * class name), and **fail-open** (no `document`, a Host that refuses
+     * `appendChild`, anything: the tabs still render, they may just stack).
+     * @returns nothing.
+     */
+    function ensureTabsLayoutStyle() {
+      if (tabsLayoutStyleInjected) return;
+      try {
+        if (typeof document === 'undefined' || document === null || typeof document.createElement !== 'function') {
+          return;
+        }
+        tabsLayoutStyleInjected = true;
+        const head = document.head || document.body;
+        if (head === null || head === undefined || typeof head.appendChild !== 'function') return;
+        if (
+          typeof document.querySelector === 'function' &&
+          document.querySelector(`style[data-dsh-prompt-setting="${TABS_LAYOUT_CLASS}"]`) !== null
+        ) {
+          return;
+        }
+        const style = document.createElement('style');
+        style.setAttribute('data-dsh-prompt-setting', TABS_LAYOUT_CLASS);
+        style.textContent = TABS_LAYOUT_CSS;
+        head.appendChild(style);
+      } catch {
+        // Fail-open: an unstyled tab control is worse than a styled one and far
+        // better than a blank settings panel.
+        tabsLayoutStyleInjected = true;
+      }
+    }
+
+    /**
      * Render a segmented control.
      *
      * Deliberately *not* a component: it is called during tree building so the
      * fallback branch emits real host button nodes (role="tab") carrying the
      * `data-tab-*` markers the tests assert on. The primitives branch uses the
-     * official `SegmentedTabs` (same `items`/`value`/`onChange` shape).
+     * official `SegmentedTabs` (same `items`/`value`/`onChange` shape) **plus the
+     * caller-owned layout class** the official control requires (review F5).
      * @param items - `{value, label, id, panelId}` entries, non-empty.
      * @param value - the selected value.
      * @param onChange - selection callback.
@@ -2648,6 +2720,7 @@ window.__ModuleLoader__.load({
      */
     function tabs(items, value, onChange, label, group) {
       if (primitivesActive() && hasComponentExport(primitives, 'SegmentedTabs')) {
+        ensureTabsLayoutStyle();
         // The official control owns its own DOM, so it cannot be asked to carry
         // our markers. `display: contents` keeps this wrapper invisible to
         // layout while giving a probe the *same* `data-tab-group` it reads in
@@ -2656,7 +2729,7 @@ window.__ModuleLoader__.load({
         return h(
           'div',
           { 'data-tab-group': group, style: { display: 'contents' } },
-          h(primitives.SegmentedTabs, { items, value, onChange, label }),
+          h(primitives.SegmentedTabs, { items, value, onChange, label, className: TABS_LAYOUT_CLASS }),
         );
       }
       return h(

@@ -202,12 +202,33 @@ g-062 用「渲染分支与 toast 能力解耦」绕开了连带问题，本节�
   `data-primitives-render-failed="true|false"`，失败时另有一行 `data-primitives-render-error="true"` 带错误原文；
   `primitivesProbe()` 也补了 `renderFailed` / `renderFailure` / 实际 `renderer`。
 
-**真机预期**：`渲染分支: primitives（官方基础件）`；`Button=object`；各 tab 首次由官方原子绘制。
-外观会变（这正是本目标的目的），布局/交互由负责人目视确认。若宿主原子在渲染期抛错，预期读数是
-`渲染分支: fallback`＋`data-primitives-render-failed="true"`＋错误原文，而**页面照常可用**（自绘）。
+**真机反馈一（2026-10-13，负责人重启后目视）**：primitives 分支确实生效，官方按钮/输入框显示正常
+—— 即 **官方 CSS 已由宿主页面注入**（本条旧风险解除）；但 **tab 文字拥挤、被分行**。根因：官方
+`SegmentedTabs.module.css` 的 `.tabs` 只有 `display: grid`，**没有任何列定义**（无 `grid-auto-flow`、
+无 `grid-template-columns`），而它的注释明说「equal-width tabs … `className` - layout placement」——
+列布局由调用方提供；我们原先只传 `{ items, value, onChange, label }` ⇒ grid 退化成单列、每个 tab 独占一行。
 
-**未确证 / 风险**：① primitives 的 CSS 是否已由宿主页面注入（即 §4 开头那条旧风险）——官方
-`Button`/`Input` 依赖 `*.module.css`，本插件无法离线断定；② 本插件传给 `Tag` 的 `title` 在两条分支
+**修法（`tabs()`，真机反馈一）**：给官方控件传 `className: 'dsh-prompt-setting-tabs'`，并在首次使用时注入一条
+**本插件前缀**的规则：`.dsh-prompt-setting-tabs{grid-auto-flow:column;grid-auto-columns:1fr}` +
+`.dsh-prompt-setting-tabs>button{white-space:nowrap}`。形态取自宿主自己的等宽分段控件
+（`SegmentedControl.module.css`：`display:inline-grid;grid-auto-flow:column;grid-auto-columns:1fr`），
+**不引用官方 CSS module 的 hash 类名**。注入纪律四条：①**幂等**（实例标志 + `style[data-dsh-prompt-setting]` 探测，
+重载的 bundle 不会叠加第二份）；②**前缀**（类名与 style 属性都带 `dsh-prompt-setting`）；③**fail-open**
+（无 `document`、`appendChild` 被拒等一律只是不注入，tab 仍渲染）；④**保留无害**（两条规则只作用于自有类名，
+元素仍挂载时移除反而会重新弄坏布局，故随页面存续，刷新/重载才清）。
+
+**官方先例调研（谁给 SegmentedTabs 传什么 className）**：官方在宿主包里**只有一个调用方**
+（`@deepseek-ai/dsh-client-ui-agent-preset` 的预设引导对话框），写法是
+`className: PresetGuideDialog_module_css_default.guideTabs` —— 传**调用方自己的 CSS module 类**（该包内联 CSS 字符串
+自行注入），其规则仅 `flex:none;margin:0 28px 22px`，**同样没有列定义**；也就是说「谁调用谁提供布局类」是官方形态，
+但**没有可直接照抄的列布局类**，故按宿主 `SegmentedControl` 的等宽写法自建（见上）。
+
+**真机预期**：`渲染分支: primitives（官方基础件）`；`Button=object`；各 tab 首次由官方原子绘制。
+**tab 一行横向排列、等宽、文字不换行、指示条可滑动**（真机反馈一的复验项）；若宿主原子在渲染期抛错，
+预期读数是 `渲染分支: fallback`＋`data-primitives-render-failed="true"`＋错误原文，而**页面照常可用**（自绘）。
+
+**未确证 / 风险**：① primitives 的 CSS 是否已由宿主页面注入 —— **真机已证伪该风险**（见「真机反馈一」）；
+② 本插件传给 `Tag` 的 `title` 在两条分支
 都不生效（`FxTag` 与官方 `Tag` 都只取 `tone`/`children`），属既有行为、非本次回归；③ 评审 R1 的教训：
 同一能力位在**探测侧**与**渲染侧**各有一道判据时，必须一起改——`toastPrimitives` 探测已改而
 `AssemblyToaster` 守门未改，就是「注册成功、永远画不出」。上表即宿主组件判定的**全量清单**（另有两行
