@@ -8148,3 +8148,54 @@ double **无条件**在每次 flush 重跑所有 effect，无法区分「状态�
   没有可订阅的反向信号。
 - **R6｜`planToasts` 的 `enabled === true` 收紧**：畸形载荷（缺 `enabled` 字段）从「弹」变为「静音」。
   更保守，但无用例覆盖该形状；若将来要区分「缺字段」与「显式 false」，需另加分支与用例。
+
+## 144. g-062 第四轮修复：预设「取消应用」清空不弹 toast（Revision 48，2026-10-13，基线 `e17f1e7` 隔离工作树 `g-062-att-04`）
+
+真机复验（att-003 合入后）：新会话首次装配弹、保存「我的 Prompt」后下一 run 弹；但预设面板的
+「应用到工作区」「取消应用」两处都**不弹**。
+
+**复现（route 级，真机序列）**：新增两例（`test/route.test.mjs`「R48」两例），走真实路由
+（`PUT /presets` 建库 → `POST /presets/apply` → 该会话 `assemble()` → `GET /assembly-status?since=`）：
+
+- **「取消应用」确实是缺陷，且被原样复现**：工作区层原本**没有**保留段时 `apply` 首次把 base 记为
+  `null`；`unapply` 恢复 base 即**清空**保留段（`after === null`），而登记写成
+  `if (after !== null && typeof after.text === 'string')` ⇒ 登记被整体跳过 ⇒ `writes` 里没有这次
+  变更 ⇒ 下一次装配不产生 `prompt-change` notice ⇒ 客户端 feed 无内容可弹。修复后同序列产生
+  notice（`assembly.state === 'read'`、`expected.action === 'hide'`、`expected.length === 0`）。
+- **「应用到工作区」首次在 route 级是登记的**（修复前该用例即绿）：`apply` 首次的 `after` 恒非空
+  （`reservedSectionOf(next)` 返回新写的保留段），旧守卫对它不生效。**该侧真机不弹的原因本轮无法
+  离线确证**，最可能的解释是 `alreadyApplied === true` 的**重复应用 no-op**（stack 里已有这条链接
+  ——首次点过、或 Host 重启后再点），按 §21.4「no-op 不登记」的既有语义它本就不该弹；真机复验时
+  应为该工作区**首次**应用一次。此判断留在交付说明，未改任何 no-op 语义。
+
+**修复（`index.js`，两处）**：登记条件改为「真的写了就登记」——`apply` 的非 no-op 分支无条件登记；
+`unapply` 无条件登记。`after === null`（清空）用空文本 `''` + `action: 'hide'` 表达，与
+`DELETE` / `reset` 既有写法一致；`plan.alreadyApplied === true` 分支（只 `cacheWritten`、不写盘）
+仍不登记。
+
+**同类自查（判据 4，全文件写路径）**：
+
+| 写点 | 是否登记 | 依据 |
+| --- | --- | --- |
+| `PUT /overrides` | 总是登记 | 写空由 `action: 'hide'` 表达，无 `after` 守卫 |
+| `DELETE /overrides?name=` | 移除保留段时登记 | 无条件，`hide` + `''` |
+| `DELETE …?reset=true` | 移除过保留段时登记 | 先 `removed.some(…)` 再登记；空层提前返回（无写） |
+| `DELETE …?legacy=true` | 不登记 | 只移除非保留段，保留段一个字节不动 |
+| `POST /rollback` | 总是登记 | 已覆盖清空（条目不存在 → `hide` + `''`） |
+| `POST /import` | 保留段的每条真实变更登记 | `status === 'unchanged'` 已排除；`after === null` 走 `hide` + `''` |
+| `preset apply` | 非 no-op 无条件登记 | **本轮修复** |
+| `preset unapply` | 无条件登记 | **本轮修复** |
+| `PUT /interpolate` | 不登记 | 契约 §21.4 已声明的盲点：它改的是渲染方式，不是用户写的文本 |
+
+**测试与门禁**：`test/route.test.mjs` 新增 2 例（apply 首次 / apply no-op 不登记 / unapply 恢复
+非空 / unapply 恢复为空）、`test/assembly-watch.test.mjs` 新增 1 例（空文本 write 在 watch 层同样
+产生 `prompt-change` 且 `assembly.state === 'read'`）、`test/client.test.mjs` 新增 1 例（同一形状经
+feed → cursor → toast 不丢、文案不含 `undefined`）。全量 `896 passed / 0 failed`（基线 892 + 新增
+4 条；未削弱、未删改任何既有断言）；`client-chunks` 5 一致、`prepare` 21 项、`check-compat` exit 0；
+零新增依赖、零构建。
+
+**负向对照（判据 5）**：把 `unapply` 的登记改回 `if (after !== null && …)` ⇒ 清空用例红
+（`0 !== 1`，"clearing the prompt is a prompt change"），已实测并还原。`apply` 侧做同一对照时
+用例**仍绿**——这正是「apply 首次的 `after` 恒非空」的佐证，说明该守卫在 apply 侧不可能漏掉写入，
+本轮对 apply 侧的去守卫属于**契约本意归位**而非行为修复。
+

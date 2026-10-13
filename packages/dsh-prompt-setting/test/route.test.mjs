@@ -3560,3 +3560,137 @@ test('g-062 (R46): the feed carries the next run\'s change notice, and the switc
     'the observation itself continues while the switch is off',
   );
 });
+
+// ---------------------------------------------------------------------------
+// g-062 (Revision 48): the preset panel's two workspace actions.
+//
+// The live machine reported them silent —「应用到工作区」and「取消应用」produced
+// no toast while「我的 Prompt」saving did — because both handlers registered the
+// change only when the **after** entry existed. The unapply of a workspace whose
+// layer never held a reserved entry restores *nothing*, i.e. it really clears the
+// prompt, and that clearing was skipped by the `after !== null` guard. These cases
+// walk the live sequence (layer starts with no reserved entry) through the real
+// routes and the real feed, so a guard that drops a write shows up here.
+// ---------------------------------------------------------------------------
+
+/** PUT one preset into the library and answer its Host id. */
+async function createPreset(route, { name, action = 'replace', text }) {
+  const created = json(await call(route, {
+    method: 'PUT',
+    url: PRESETS_PATH,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name, action, text }),
+  }));
+  assert.equal(created.ok, true, 'the preset library accepted the preset');
+  return created.preset.id;
+}
+
+/** POST one of the two workspace actions for one session. */
+async function presetsAction(route, path, presetId, session) {
+  const res = await call(route, {
+    method: 'POST',
+    url: path,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ presetId, session }),
+  });
+  assert.equal(res.statusCode, 200, `${path} answered 200`);
+  return json(res);
+}
+
+test('g-062 (R48): a first「应用到工作区」whose layer held no reserved entry reports the change', async () => {
+  const workspace = workspaceWith('w1', 's1');
+  const harness = mount({ agents: [{ id: 's1' }], workspaces: [workspace] });
+  const { ctx, route } = harness;
+  await establishConversation(harness, 's1');
+  // The live machine's state: the workspace layer exists (or is empty) and holds
+  // **no** reserved entry, so this application is the first thing that puts one
+  // there.
+  assert.equal(existsSync(join(workspace.path, '.dsh-prompt-setting', 'overrides.json')), false);
+
+  const presetId = await createPreset(route, { name: '短答', text: 'BE BRIEF' });
+  let cursor = (await readFeed(route)).notifications.cursor;
+
+  // --- apply (first time) ------------------------------------------------------
+  const applied = await presetsAction(route, PRESETS_APPLY_PATH, presetId, 's1');
+  assert.equal(applied.alreadyApplied, false, 'this application really did write');
+  assert.equal(applied.after.text, 'BE BRIEF');
+  await ctx.systemPrompt.assemble({ agent: { id: 's1' }, scope: { marker: 'g062' } });
+  const afterApply = await readFeed(route, cursor);
+  assert.equal(afterApply.notifications.notices.length, 1, 'the next assembly of this session reports the change');
+  assert.equal(afterApply.notifications.notices[0].notice.kind, 'prompt-change');
+  assert.equal(afterApply.notifications.notices[0].notice.assembly.state, 'read', 'assembly layer: the agent read it');
+  assert.equal(afterApply.notifications.notices[0].notice.expected.layer, 'workspace');
+  cursor = afterApply.notifications.cursor;
+
+  // --- apply again (no-op) -----------------------------------------------------
+  // `alreadyApplied === true` means no byte moved, so there is nothing to report;
+  // a notice here would be the mirror-image defect of the one above.
+  const again = await presetsAction(route, PRESETS_APPLY_PATH, presetId, 's1');
+  assert.equal(again.alreadyApplied, true);
+  await ctx.systemPrompt.assemble({ agent: { id: 's1' }, scope: { marker: 'g062' } });
+  assert.deepEqual(
+    (await readFeed(route, cursor)).notifications.notices,
+    [],
+    'a re-application writes nothing and therefore reports nothing',
+  );
+
+  // --- unapply (restores a non-empty base) -------------------------------------
+  // The base was「there was a reserved entry」— the hand-written one — so this
+  // unapply restores that text rather than clearing the section.
+  const withBase = mount({
+    agents: [{ id: 's2' }],
+    workspaces: [workspaceWith('w2', 's2', {
+      version: 1,
+      overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' }],
+    })],
+  });
+  await establishConversation(withBase, 's2');
+  const secondId = await createPreset(withBase.route, { name: '短答', action: 'append', text: 'MORE' });
+  let secondCursor = (await readFeed(withBase.route)).notifications.cursor;
+  await presetsAction(withBase.route, PRESETS_APPLY_PATH, secondId, 's2');
+  await withBase.ctx.systemPrompt.assemble({ agent: { id: 's2' }, scope: { marker: 'g062' } });
+  secondCursor = (await readFeed(withBase.route, secondCursor)).notifications.cursor;
+  const dropped = await presetsAction(withBase.route, PRESETS_UNAPPLY_PATH, secondId, 's2');
+  assert.equal(dropped.after.text, 'MINE', 'the base text comes back');
+  await withBase.ctx.systemPrompt.assemble({ agent: { id: 's2' }, scope: { marker: 'g062' } });
+  const afterUnapply = await readFeed(withBase.route, secondCursor);
+  assert.equal(afterUnapply.notifications.notices.length, 1, 'the unapply is a prompt change too');
+  assert.equal(afterUnapply.notifications.notices[0].notice.kind, 'prompt-change');
+  assert.equal(afterUnapply.notifications.notices[0].notice.assembly.state, 'read');
+});
+
+test('g-062 (R48):「取消应用」of the only application clears the section — and that clearing is reported', async () => {
+  const workspace = workspaceWith('w1', 's1');
+  const harness = mount({ agents: [{ id: 's1' }], workspaces: [workspace] });
+  const { ctx, route } = harness;
+  await establishConversation(harness, 's1');
+
+  const presetId = await createPreset(route, { name: '短答', text: 'BE BRIEF' });
+  let cursor = (await readFeed(route)).notifications.cursor;
+  const applied = await presetsAction(route, PRESETS_APPLY_PATH, presetId, 's1');
+  assert.equal(applied.base, null, 'there was no reserved entry before this application');
+  await ctx.systemPrompt.assemble({ agent: { id: 's1' }, scope: { marker: 'g062' } });
+  cursor = (await readFeed(route, cursor)).notifications.cursor;
+
+  // Cancelling the only link restores "there was none": the reserved entry is
+  // removed, which is a real change to what the model is sent, not a no-op.
+  const cancelled = await presetsAction(route, PRESETS_UNAPPLY_PATH, presetId, 's1');
+  assert.equal(cancelled.restored, false, 'the base was「there was none」');
+  assert.equal(cancelled.after, null, 'so the workspace layer carries no reserved entry again');
+  const assembly = await ctx.systemPrompt.assemble({ agent: { id: 's1' }, scope: { marker: 'g062' } });
+  assert.equal(
+    assembly.sections.find((section) => section.name === CUSTOM_SECTION_NAME).text,
+    '',
+    'the section really is empty again',
+  );
+
+  const feed = await readFeed(route, cursor);
+  assert.equal(feed.notifications.notices.length, 1, 'clearing the prompt is a prompt change');
+  const notice = feed.notifications.notices[0].notice;
+  assert.equal(notice.kind, 'prompt-change');
+  assert.equal(notice.assembly.state, 'read', 'assembly layer: the empty text really was read');
+  assert.equal(notice.configured, false, 'this plugin no longer has a prompt configured');
+  assert.equal(notice.expected.length, 0, 'the change is a clearing, so it carries no text');
+  assert.equal(notice.expected.action, 'hide');
+});
+

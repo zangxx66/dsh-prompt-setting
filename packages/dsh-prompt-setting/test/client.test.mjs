@@ -13646,6 +13646,44 @@ test('client: the toaster cursor decides what is new — no replay, no repeat, n
   assert.deepEqual([absent.bootId, absent.cursor], [null, null]);
 });
 
+test('client: a clearing reaches the toast too — the empty prompt-change is not dropped on the way', async () => {
+  // Revision 48: the preset unapply that restores「there was none」now produces a
+  // `prompt-change` notice whose expected text is empty (`action: 'hide'`). The
+  // host half is pinned in `test/route.test.mjs`; what this case adds is that the
+  // client's own path — feed → cursor → toast — carries that shape without
+  // special-casing it away.
+  const page = makePage({ primitives: 'ok', withToast: true, responses: defaultResponses() });
+  const policy = page.loaded.module.__internals.assemblyNotice;
+  const clearing = {
+    ...assemblyNoticeFixture({
+      id: 'clear-1',
+      kind: 'prompt-change',
+      configured: false,
+      assembly: { state: 'read', assembled: false, digest: 'empty', length: 0, expectedDigest: 'empty' },
+      delivery: { state: 'delivered', at: 1700000000200, seq: 13, surfaceOp: 'replace', textMatched: null },
+      expected: { length: 0, layer: 'workspace', action: 'hide' },
+    }),
+    seq: 4,
+  };
+  const feed = {
+    bootId: 'boot-a',
+    cursor: 4,
+    stale: false,
+    notices: [{ session: 's1', notice: clearing }],
+  };
+  const plan = policy.planToasts({
+    state: { bootId: 'boot-a', cursor: 3 },
+    payload: { enabled: true, notifications: feed },
+  });
+  assert.equal(plan.toasts.length, 1, 'a clearing is a new fact like any other');
+  assert.equal(plan.toasts[0].notice.kind, 'prompt-change');
+  const t = (key) => (page.zh[key] === undefined ? key : page.zh[key]);
+  const text = policy.composeToast(t, plan.toasts[0].notice);
+  assert.ok(text.includes(page.zh.assemblyToastChange), 'the key node is the change, not the first assembly');
+  assert.ok(text.includes(page.zh.assemblyChangeRead), 'the assembly layer reports the empty text as read');
+  assert.equal(text.includes('undefined'), false, 'and nothing is rendered from a missing field');
+});
+
 test('client: the toast names the key node and both layers, in the language the host uses', async () => {
   const page = makePage({ primitives: 'ok', withToast: true, responses: defaultResponses() });
   const policy = page.loaded.module.__internals.assemblyNotice;

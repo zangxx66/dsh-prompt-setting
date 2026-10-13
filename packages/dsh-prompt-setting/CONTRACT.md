@@ -6563,6 +6563,16 @@ file stays byte-identical. An absent key means **on**.
   apply/unapply (§20.5–§20.6), `POST /import`, `POST /rollback` and
   `DELETE /overrides` (including `reset=true`). Each is noted **after** its write
   succeeded.
+- **"Changes the stored text" includes clearing it** (Revision 48, g-062 fix
+  round): a write that leaves the layer with **no** reserved entry —
+  `DELETE /overrides`, `reset=true`, and a preset unapply whose base was「there
+  was none」— is recorded exactly like a text edit, spelled `action: 'hide'` with
+  an empty text, and therefore reports a `prompt-change` on that layer's next run.
+  A registration is conditioned on the write having happened, never on an `after`
+  entry existing; the mirror rule is that a **no-op** (an `alreadyApplied` preset
+  application, a `reset` of a layer that held no reserved entry, a `legacy=true`
+  clear, which touches no reserved entry at all) is **not** recorded, because
+  nothing changed.
 - **Stated blind spot: `PUT /interpolate` is not recorded.** Flipping the
   variable-substitution switch can change the text an assembly finally renders
   (with it ON, this plugin expands `{{…}}` during assembly) while no stored

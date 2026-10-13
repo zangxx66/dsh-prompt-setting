@@ -3967,10 +3967,21 @@ function mount(ctx, config, cleanups) {
       writeConfig(target.path, next);
       cacheWritten(target, next);
       // g-062: applying a preset is a prompt change like any other save, so the
-      // workspace's next run reports it. `alreadyApplied` above stays a no-op.
-      if (after !== null && typeof after.text === 'string') {
-        notePromptWrite({ layer: 'workspace', session: sessionId ?? null, action: 'replace', text: after.text });
-      }
+      // workspace's next run reports it. `alreadyApplied` above stays a no-op —
+      // this branch is the one that really wrote.
+      //
+      // Revision 48: the registration is **not** conditioned on `after` existing,
+      // because `writeConfig` above already happened either way. A preset can
+      // legitimately leave the layer with no reserved entry (a `hide`-shaped
+      // plan), and "the prompt is now empty" is exactly the kind of change the
+      // next run has to report; the empty text is the same spelling
+      // `DELETE`/`reset` use (`action: 'hide'`, `text: ''`).
+      notePromptWrite({
+        layer: 'workspace',
+        session: sessionId ?? null,
+        action: after === null || after.action === 'hide' ? 'hide' : 'replace',
+        text: after === null || after.action === 'hide' ? '' : String(after.text ?? ''),
+      });
       history = recordHistory({
         path: target.path,
         at,
@@ -4049,9 +4060,20 @@ function mount(ctx, config, cleanups) {
     cacheWritten(target, next);
     // g-062: cancelling an application restores text — also a prompt change, and
     // reported on the workspace's next run like any other save.
-    if (after !== null && typeof after.text === 'string') {
-      notePromptWrite({ layer: 'workspace', session: sessionId ?? null, action: 'replace', text: after.text });
-    }
+    //
+    // Revision 48: "restores text" includes restoring **nothing**. Cancelling the
+    // last link of a workspace that never held a reserved entry clears the
+    // section (`after === null`), and a clearing is a prompt change: the guard
+    // that used to sit here (`after !== null && typeof after.text === 'string'`)
+    // silently dropped it, which is why「取消应用」never toasted on the live
+    // machine. The empty text is the existing spelling of a removal
+    // (`DELETE`/`reset` use `action: 'hide'`, `text: ''`).
+    notePromptWrite({
+      layer: 'workspace',
+      session: sessionId ?? null,
+      action: after === null || after.action === 'hide' ? 'hide' : 'replace',
+      text: after === null || after.action === 'hide' ? '' : String(after.text ?? ''),
+    });
     const history = recordHistory({
       path: target.path,
       at,

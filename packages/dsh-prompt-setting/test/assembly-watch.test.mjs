@@ -206,6 +206,26 @@ test('assembly-watch: a change that was not re-assembled says so, and a replace-
   assert.equal(watch.status('s1').notice.delivery.textMatched, false);
 });
 
+test('assembly-watch: a cleared prompt is a change too — the empty write reports as read', () => {
+  // Revision 48: the write paths spell "the prompt is now empty" as
+  // `action: 'hide'` with an empty text (`DELETE`, `reset`, and since this round
+  // the preset unapply that restores「there was none」). The watch must treat it
+  // as the change it is: the assembly really did read an empty section.
+  const watch = createAssemblyWatch({ now: () => 100 });
+  establish(watch, 's1');
+  watch.markPromptWrite({ session: 's1', layer: 'workspace', action: 'hide', text: '', at: 100 });
+  const notice = watch.observeAssembly({ sessionId: 's1', configuredText: null, segmentText: '', at: 110 });
+  assert.equal(notice.kind, CHANGE_NOTICE, 'a clearing is a prompt change, not silence');
+  assert.equal(notice.assembly.state, 'read', 'the empty text is what the assembly really returned');
+  assert.equal(notice.assembly.assembled, false);
+  assert.equal(notice.configured, false, 'and this plugin no longer has a prompt configured');
+  assert.equal(notice.expected.length, 0);
+  assert.equal(notice.expected.action, 'hide');
+  assert.equal(notice.expected.layer, 'workspace');
+  // A second assembly with no further write adds nothing.
+  assert.equal(watch.observeAssembly({ sessionId: 's1', configuredText: null, segmentText: '', at: 120 }), null);
+});
+
 test('assembly-watch: an expanded text still counts as "read" (the stored text is a substring)', () => {
   const watch = createAssemblyWatch({ now: () => 100 });
   establish(watch, 's1');
