@@ -848,7 +848,7 @@ function historyRowIds(tree) {
   );
 }
 
-/** Click a tab in either branch: the fallback uses data-tab-key, the double does not. */
+/** Click a tab: the strip is hand-built under every renderer, so it is one selector (g-063 H2). */
 function clickAnyTab(tree, value) {
   const node = findOne(
     tree,
@@ -3161,10 +3161,10 @@ test('client: g-061 — three ghost-button families, and not one drift repaired 
     assert.equal(code.includes('borderRadius: 999'), false, `${name}: the pill radius is not spelled out again`);
   }
 
-  // Rendered, chip by chip. The fallback tab is the pill; under the `primitives`
-  // renderer the host's own SegmentedTabs paints its own DOM and is out of this
-  // factory's reach — the two renderers do not look alike, and they did not
-  // before this batch either.
+  // Rendered, chip by chip. The tabs are this factory's own control under every
+  // renderer (g-063 H2: the Host's `SegmentedTabs` divides its width into equal
+  // fractions, which six long Chinese labels do not fit), so the pill below is
+  // the one the page really draws.
   const page = makeOpenPage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
   const tree = await page.flush();
   const chip = {
@@ -10224,8 +10224,8 @@ const EN_SWEEP_CASES = [
       const page = enPage({ primitives: 'ok', responses: defaultResponses() });
       const rec = recorder(page);
       await rec.take();
-      // The official SegmentedTabs double labels every group 'primitives', so
-      // the tabs are picked by value alone in this branch.
+      // The tabs are hand-built under every renderer (g-063 H2), so they are
+      // picked by value alone — the same selector both branches answer.
       clickAnyTab(rec.last(), 'overview');
       await rec.take();
       clickAnyTab(rec.last(), 'full');
@@ -14636,83 +14636,51 @@ function styleRecordingDocument() {
   };
 }
 
-test('client: the official tab control gets the layout class, injected once (g-063 real-machine)', async () => {
-  // The Host's own implementation already sets
-  // `gridTemplateColumns: repeat(items.length, minmax(0, 1fr))` inline
-  // (`lib/index.js:3312`), so the columns are explicit and equal — the real
-  // symptom was a label wrapping **inside** a column squeezed below its width.
-  // The class therefore only has to do two things: keep the labels on one line,
-  // and give the control its natural width so the equal fractions cannot fall
-  // below a label.
+test('client: the tab strip stays hand-built on a primitives Host, and injects nothing (g-063 H2)', async () => {
+  // Real-machine rounds 1–3 retired the official `SegmentedTabs` here: its
+  // premise is "equal fractions of my own width", which with six long Chinese
+  // labels either crushes them (labels wrapped) or inflates the strip until it
+  // pushed the row out of the panel. The hand-built `flex-wrap` strip is the
+  // layout this page used for its whole life and never drew a complaint, so the
+  // tabs stay ours **on purpose** while every other Host atom is still used.
   const { appended, doc } = styleRecordingDocument();
   const page = makePage({ primitives: 'ok', responses: defaultResponses(), document: doc });
   const tree = await page.flush();
-  const tablists = collect(tree, (node) => node.props && node.props['data-tabs-class'] !== undefined);
-  assert.ok(tablists.length > 0, 'the primitives branch really rendered the official control');
-  for (const node of tablists) {
-    assert.equal(
-      node.props['data-tabs-class'],
-      'dsh-prompt-setting-tabs',
-      'every official tab control gets our class',
-    );
-  }
 
-  // Injection discipline: exactly once, prefixed.
-  assert.equal(appended.length, 1, 'the layout rule is injected exactly once');
-  assert.equal(appended[0].tag, 'style');
+  // The page really is on the primitives branch (it probed the Host's atoms and
+  // chose them) — this is not a degraded page.
+  assert.equal(rendererOf(tree), 'primitives');
+
+  // …and yet the tabs are hand-built: no official control, no injected CSS.
   assert.equal(
-    appended[0].attrs['data-dsh-prompt-setting'],
-    'dsh-prompt-setting-tabs',
-    'the style is ours and prefixed, never a Host class name',
+    collect(tree, (node) => node.props && node.props['data-tabs-class'] !== undefined).length,
+    0,
+    'the official SegmentedTabs is deliberately not used',
   );
-  const css = appended[0].textContent;
-  assert.ok(
-    css.includes('min-width:max-content'),
-    `the control keeps its natural width, so the equal fractions cannot fall below a label: ${css}`,
-  );
-  assert.ok(css.includes('white-space:nowrap'), 'and no label may wrap — the real-machine defect');
-  // Review G2: these two were no-ops under the Host's inline columns (no implicit
-  // columns exist, and n columns for n items place the same either way, with the
-  // inline style outranking any class). They must not come back as "protection".
-  assert.ok(!css.includes('grid-auto-flow'), `no no-op rules: ${css}`);
-  assert.ok(!css.includes('grid-auto-columns'), `no no-op rules: ${css}`);
+  assert.equal(appended.length, 0, 'and the tab strip needs no injected style');
 
-  // The strip — our own box — absorbs the overflow the natural width creates.
-  const strip = oneBy(tree, 'data-region', 'tabs');
-  assert.equal(strip.props.style.overflowX, 'auto', 'our own tab strip scrolls instead of crushing the labels');
+  // The strip is the hand-built tablist: six real buttons in the fixed order,
+  // carrying the markers the rest of the suite clicks and asserts on.
+  const strip = tabList(tree).props.children;
+  assert.equal(strip.props.role, 'tablist', 'the hand-built tab list is what is rendered');
+  assert.equal(strip.props.style.flexWrap, 'wrap', 'content-sized wrapping layout, not equal fractions');
+  assert.deepEqual(mainTabs(tree), ['mine', 'presets', 'overview', 'history', 'backup', 'advanced']);
 
-  // Idempotent: another render (a tab switch) must not stack a second copy.
+  // Switching tabs still works, and still injects nothing.
   await openTab(page, 'overview');
-  assert.equal(appended.length, 1, 'a second render injects nothing');
+  assert.equal(appended.length, 0, 'a later render injects nothing either');
 });
 
-test('client: the fallback branch needs neither the class nor the injected rule (g-063 real-machine)', async () => {
+test('client: the tab strip is hand-built under the fallback renderer too (g-063 H2)', async () => {
   const { appended, doc } = styleRecordingDocument();
   const page = makePage({ primitives: 'throw', responses: defaultResponses(), document: doc });
   const tree = await page.flush();
-  assert.equal(appended.length, 0, 'the hand-built tab control needs no injected CSS at all');
+  assert.equal(rendererOf(tree), 'fallback');
+  assert.equal(appended.length, 0, 'no injected CSS on either branch');
   assert.equal(
     collect(tree, (node) => node.props && node.props['data-tabs-class'] !== undefined).length,
     0,
     'and no official control was rendered',
   );
-  assert.ok(tabList(tree), 'the fallback tab list is still there, unchanged');
-});
-
-test('client: a refused style injection degrades silently and the tabs still render (g-063 G5)', async () => {
-  const { appended, doc } = styleRecordingDocument();
-  doc.head.appendChild = () => {
-    throw new Error('the document refused the style');
-  };
-  const page = makePage({ primitives: 'ok', responses: defaultResponses(), document: doc });
-  const tree = await page.flush();
-  // Fail-open: the injection threw, so its rule is absent — and the page must
-  // still draw the official control (labels may wrap; that is the documented
-  // degradation, never a blank panel).
-  assert.equal(appended.length, 0, 'a refused appendChild injects nothing');
-  assert.ok(
-    collect(tree, (node) => node.props && node.props['data-tabs-class'] === 'dsh-prompt-setting-tabs').length > 0,
-    'the official control is still rendered, still carrying our class',
-  );
-  assert.ok(tabList(tree), 'and the tab strip is still there');
+  assert.deepEqual(mainTabs(tree), ['mine', 'presets', 'overview', 'history', 'backup', 'advanced']);
 });

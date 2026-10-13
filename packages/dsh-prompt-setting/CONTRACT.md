@@ -3435,30 +3435,35 @@ code means rather than how it is written:
   `data-primitives-members="true"` also carries
   `data-primitives-button-component="true" | "false"` — the decision, beside the
   `typeof` it was made from.
-  **Revision 49, real-machine follow-up:** the official `SegmentedTabs` sets
+  **Revision 49, real-machine follow-up — the tab strip is hand-built on purpose:**
+  the official `SegmentedTabs` sets
   `gridTemplateColumns: repeat(items.length, minmax(0, 1fr))` **inline** on its
-  root (`lib/index.js:3312`), so its columns are already explicit, equal and one
-  per tab. The real-machine symptom was therefore **a label wrapping inside a
-  column**, never "a tab per row": `minmax(0, 1fr)` has a `0` minimum, so a column
-  may legally shrink below its label whenever the container is narrower than the
-  sum of the labels (this plugin sets no width anywhere, so that container width
-  is the settings panel's content width divided by six). The tab control now gets
-  `className="dsh-prompt-setting-tabs"`, and the plugin injects that rule itself:
-  `min-width: max-content` (keep the control at its natural width, so the equal
-  fractions cannot fall below a label) plus `white-space: nowrap` for its
-  buttons; our own `div[data-region="tabs"]` carries `overflow-x: auto`, so a
-  narrow panel scrolls the strip instead of crushing it.
-  `grid-auto-flow` / `grid-auto-columns` are deliberately **not** written: under
-  that inline column definition they are no-ops (no implicit columns exist,
-  `column` and `row` place n items in n columns identically, and an inline style
-  outranks any class), and no test may claim otherwise. The style is
-  **prefixed** (class and `data-dsh-prompt-setting` attribute), **injected once**
-  (instance flag plus a document probe, so a reloaded bundle cannot stack
-  copies), **fail-open** (no `document`, or a refused `appendChild`, only means
-  no injection), and **kept for the page's lifetime** on purpose — the elements
-  that reference it are still mounted, so removing it would re-break the layout.
-  No Host class name is ever referenced. The fallback branch is untouched: it
-  lays out with `flex-wrap` and injects nothing.
+  root (`lib/index.js:3312`), i.e. it divides its own width into n equal
+  fractions. That premise assumes short labels and a wide container; this page
+  has six Chinese labels and the settings panel's content width, and both
+  directions were observed on the real machine:
+  - untouched, `minmax(0, 1fr)`'s `0` minimum lets a column shrink below its
+    label → the labels **wrapped inside their cells**;
+  - forced wide with `min-width: max-content`, every `1fr` track resolves to the
+    **widest** label, so all tabs inflated and the strip's natural width pushed
+    the row **out of the page** — the `overflow-x: auto` on our own container
+    could not absorb it, because the widened box was an ancestor of the scroll
+    container (this plugin sets no `width` and no `min-width: 0` anywhere, so the
+    control's `max-content` contribution propagated up the column).
+
+  Therefore **`tabs()` always renders the hand-built strip** and the official
+  `SegmentedTabs` is deliberately **exempt** here: `flex-wrap` sizes every button
+  to its own label and moves a row that does not fit to the next line, which is
+  the layout this page used before g-063 and the only one that drew no complaint.
+  Every other Host atom — `Button`, `Input`, `Tag`, `DiffBlock`, the sidebar icons
+  and `Toast` — still comes from the official module. The injected tab style and
+  the strip's `overflow-x` are **removed**; two rules were no-ops under that inline
+  column definition anyway (`grid-auto-flow`, `grid-auto-columns`), and no test may
+  claim otherwise. Lesson kept for the future: **an equal-fraction control assumes
+  short labels**; long localized labels need a content-sized wrapping layout.
+  Rejected repairs, on the record: `min-width: max-content` (inflated tabs + page
+  overflow), `white-space: nowrap` alone (labels overflow or overlap their cells),
+  and leaving the official equal fractions as they are (labels wrapped).
 
 ### 13.5 Second confirmation is required
 
