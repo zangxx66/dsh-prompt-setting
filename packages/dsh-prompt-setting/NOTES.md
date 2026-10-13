@@ -143,7 +143,7 @@ brief 建议「声明宿主行与客户端行（行 `id` 建议 `prompt-setting`
 **未确证**：真机（经 `dsh web` 重启后的浏览器）上 `require` 究竟返回哪一种形态，插件侧无法离线断定；
 `sandbox` 里的三种形态都是**被断言过的**分支，不是对真机的断言。
 
-### 4.2 g-063：`forwardRef` 组件的探测 ——「自诞生即 fallback」的根因
+### 4.2 g-063：`forwardRef` 组件的探测 ——「自诞生即 fallback」的根因（Revision 49）
 
 **触发**：负责人重启后从 `data-region="renderer-info"` 读到
 
@@ -173,7 +173,9 @@ g-062 用「渲染分支与 toast 能力解耦」绕开了连带问题，本节�
 | `isPrimitivesNamespace` / `RENDERER` | `primitives.Button` 走上面这条判据；仍**只读 `require` 的原始返回值**，不解包 |
 | `ICON_SOURCE` / `HAS_DIFF_BLOCK` / `UI.Input` / `UI.Tag` / `tabs()` 的 `SegmentedTabs` | 一律改用 `hasComponentExport(namespace, name)`（同判据 + 绝不抛） |
 | `toastPrimitives` / `HAS_TOAST` | 同判据，解包顺序不变（先 `default` 候选，再原模块） |
+| `AssemblyToaster` 的**渲染守门** | **同判据**（`hasComponentExport(toastPrimitives, 'Toast')`）—— 评审 R1：探测说 yes、渲染守门说 no 会让 overlay 注册成功却永远画不出 toast；两侧必须问同一个问题 |
 | `writeClipboard` | **保持** `typeof === 'function'`：它是被调用的函数，不是被渲染的组件 |
+| `pickChunkComponent` / `HAS_REACT_LAZY` / `useLayoutEffect` | **保持** `typeof === 'function'`：前者挑本插件自有 chunk 的导出（`HistoryTab` 是函数声明），后两者是 React 自己的工厂/hook，都不是宿主组件 |
 
 **页面读数**：`data-primitives-members="true"` 上新增 `data-primitives-button-component="true|false"`
 —— 把「`typeof` 观测」与「据此做出的判定」并排放；真机上 `Button=object`、
@@ -184,7 +186,10 @@ g-062 用「渲染分支与 toast 能力解耦」绕开了连带问题，本节�
 
 **未确证 / 风险**：① primitives 的 CSS 是否已由宿主页面注入（即 §4 开头那条旧风险）——官方
 `Button`/`Input` 依赖 `*.module.css`，本插件无法离线断定；② 本插件传给 `Tag` 的 `title` 在两条分支
-都不生效（`FxTag` 与官方 `Tag` 都只取 `tone`/`children`），属既有行为、非本次回归。
+都不生效（`FxTag` 与官方 `Tag` 都只取 `tone`/`children`），属既有行为、非本次回归；③ 评审 R1 的教训：
+同一能力位在**探测侧**与**渲染侧**各有一道判据时，必须一起改——`toastPrimitives` 探测已改而
+`AssemblyToaster` 守门未改，就是「注册成功、永远画不出」。上表即宿主组件判定的**全量清单**（另附三处
+明确保持 `typeof` 的位置及其依据），新增宿主组件使用点时照表问 `hasComponentExport`，不再手写 `typeof`。
 
 ## 5. 客户端半的其它决策
 

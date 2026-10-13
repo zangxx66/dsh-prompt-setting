@@ -14354,15 +14354,33 @@ test('client: a memo Button is a component too (g-063)', async () => {
   assert.equal(oneBy(tree, 'data-action', 'refresh').props['data-atom'], 'button');
 });
 
-test('client: a forwardRef Toast is still a toast (g-063)', async () => {
+test('client: a forwardRef Toast is still a toast, and it really draws (g-063)', async () => {
+  const notices = [
+    { session: 's1', notice: { ...assemblyNoticeFixture({ kind: 'first-assembly' }), seq: 2, id: 'n2' } },
+  ];
+  const responses = defaultResponses({
+    [PATHS.assemblyStatus]: () => ({
+      payload: assemblyFeedFixture({
+        notifications: { bootId: 'boot-a', cursor: 2, stale: false, notices },
+      }),
+    }),
+  });
   const page = makePage({
     primitives: 'ok',
     withToast: true,
     primitivesAtoms: (atoms, React) => ({
       ...atoms,
-      Toast: React.forwardRef((props) => React.createElement('div', { 'data-toast': props.text })),
+      Toast: React.forwardRef((props) =>
+        React.createElement('div', {
+          'data-toast': props.text,
+          'data-toast-key': typeof props.key === 'string' ? props.key : null,
+        }),
+      ),
     }),
-    responses: defaultResponses(),
+    responses,
+  });
+  page.loaded.sandbox.sessionStorage = makeStorage({
+    'dsh-prompt-setting:assembly-toast-cursor': JSON.stringify({ v: 1, bootId: 'boot-a', cursor: 1 }),
   });
   const notice = page.loaded.module.__internals.assemblyNotice;
   assert.equal(notice.HAS_TOAST, true, 'the toast probe asks the same forwardRef-aware question');
@@ -14371,6 +14389,18 @@ test('client: a forwardRef Toast is still a toast (g-063)', async () => {
     page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay').length,
     1,
     'so the overlay is registered',
+  );
+  // Registration alone is not the claim (review R2): the render-time guard has
+  // to answer with the SAME judge as the capability probe. A `typeof`-only
+  // guard leaves the queue non-empty and this tree with zero toast nodes —
+  // HAS_TOAST=yes, overlay registered, and nothing ever drawn.
+  const tree = await makeToaster(page).flush();
+  const shown = toastNodes(tree);
+  assert.equal(shown.length, 1, 'the forwardRef Toast really rendered the notice');
+  assert.equal(shown[0].props['data-toast-key'], 'assembly-toast-n2');
+  assert.ok(
+    String(shown[0].props['data-toast']).includes(page.zh.assemblyFirstAssembled),
+    'and it carries the same copy the function-component double produced',
   );
 });
 

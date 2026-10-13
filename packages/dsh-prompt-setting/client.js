@@ -6940,8 +6940,11 @@ window.__ModuleLoader__.load({
       // disagree, and the renderer's branch must not be the one to decide.
       // Still guarded — `HAS_TOAST` is what keeps this component from ever
       // mounting without a drawable `Toast`, and a component that cannot draw
-      // is worse than none.
-      if (toastPrimitives === null || typeof toastPrimitives.Toast !== 'function') return null;
+      // is worse than none. g-063: the guard asks the **same** question as the
+      // capability probe (`hasComponentExport`, not `typeof === 'function'`),
+      // because a `forwardRef` Toast would otherwise ship a registered overlay
+      // that can never draw a single notice: probe says yes, renderer says no.
+      if (toastPrimitives === null || !hasComponentExport(toastPrimitives, 'Toast')) return null;
       // The official Toast owns its own lifetime and reports completion; keying
       // by the notice id is what lets the same text appear again for a **new**
       // fact (the primitive restarts its cycle only when remounted).

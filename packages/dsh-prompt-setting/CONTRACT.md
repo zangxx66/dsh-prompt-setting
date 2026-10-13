@@ -3395,7 +3395,7 @@ code means rather than how it is written:
   the **toast** capability decision used). The renderer decision
   (`RENDERER` / `data-renderer`) still keys on the raw module's `Button` only;
   only the toast probe may unwrap.
-  **Revision 48 (g-063):** the `Button` question is no longer
+  **Revision 49 (g-063):** the `Button` question is no longer
   `typeof === 'function'`. The Host ships `Button` and `Input` as
   `React.forwardRef(...)` products, whose `typeof` is `'object'`, so the old
   judge read a fully-stocked Host as empty and pinned this page to the fallback
@@ -3407,8 +3407,12 @@ code means rather than how it is written:
   fallback, and an unknown brand, a missing field or a throwing getter means
   **not usable** (fallback, never a blank panel). The same judge is used for
   `ICON_SOURCE`, `HAS_DIFF_BLOCK`, `UI.Input` / `UI.Tag`, the
-  `SegmentedTabs` branch and the toast `Toast` probe; `writeClipboard` keeps
-  `typeof === 'function'` because it is called, not rendered.
+  `SegmentedTabs` branch, the toast `Toast` probe **and the toaster's own
+  render-time guard** (`AssemblyToaster` returns `null` unless
+  `hasComponentExport(toastPrimitives, 'Toast')`) — a capability probe that
+  says yes while the renderer says no would register an overlay that can never
+  draw a notice. `writeClipboard` keeps `typeof === 'function'` because it is
+  called, not rendered.
   `data-primitives-members="true"` also carries
   `data-primitives-button-component="true" | "false"` — the decision, beside the
   `typeof` it was made from.
