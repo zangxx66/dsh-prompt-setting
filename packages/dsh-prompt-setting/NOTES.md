@@ -203,31 +203,51 @@ g-062 用「渲染分支与 toast 能力解耦」绕开了连带问题，本节�
   `primitivesProbe()` 也补了 `renderFailed` / `renderFailure` / 实际 `renderer`。
 
 **真机反馈一（2026-10-13，负责人重启后目视）**：primitives 分支确实生效，官方按钮/输入框显示正常
-—— 即 **官方 CSS 已由宿主页面注入**（本条旧风险解除）；但 **tab 文字拥挤、被分行**。根因：官方
-`SegmentedTabs.module.css` 的 `.tabs` 只有 `display: grid`，**没有任何列定义**（无 `grid-auto-flow`、
-无 `grid-template-columns`），而它的注释明说「equal-width tabs … `className` - layout placement」——
-列布局由调用方提供；我们原先只传 `{ items, value, onChange, label }` ⇒ grid 退化成单列、每个 tab 独占一行。
+—— 即 **官方 CSS 已由宿主页面注入**（本条旧风险解除）；但 **tab 文字拥挤、标签折行**。
 
-**修法（`tabs()`，真机反馈一）**：给官方控件传 `className: 'dsh-prompt-setting-tabs'`，并在首次使用时注入一条
-**本插件前缀**的规则：`.dsh-prompt-setting-tabs{grid-auto-flow:column;grid-auto-columns:1fr}` +
-`.dsh-prompt-setting-tabs>button{white-space:nowrap}`。形态取自宿主自己的等宽分段控件
-（`SegmentedControl.module.css`：`display:inline-grid;grid-auto-flow:column;grid-auto-columns:1fr`），
-**不引用官方 CSS module 的 hash 类名**。注入纪律四条：①**幂等**（实例标志 + `style[data-dsh-prompt-setting]` 探测，
-重载的 bundle 不会叠加第二份）；②**前缀**（类名与 style 属性都带 `dsh-prompt-setting`）；③**fail-open**
-（无 `document`、`appendChild` 被拒等一律只是不注入，tab 仍渲染）；④**保留无害**（两条规则只作用于自有类名，
-元素仍挂载时移除反而会重新弄坏布局，故随页面存续，刷新/重载才清）。
+**根因（第二轮更正，前一轮诊断是错的）**：宿主实现（`lib/index.js:3312`）给根元素**内联**了显式列：
+`style: { gridTemplateColumns: 'repeat(' + items.length + ', minmax(0, 1fr))' }` —— 列数 = 项数，n 列 n 项
+**必然同处第一行**，「每个 tab 独占一行」在数学上不可能（前一轮写下的这条与宿主实现直接冲突，已删除）。
+真正的机制是 `minmax(0, 1fr)`：**最小值是 0**，列可以合法地被压到**比内容还窄** ⇒ 只要容器宽度 < 各项标签
+固有宽度之和，标签就在列内折行。
+
+**宽度链（评审 G3 要求的证据，本轮只到代码级 + 定量估算，像素值无法离线测得）**：
+本插件**处处不设宽度** —— 根 `div` 只有 `display:flex;flex-direction:column;gap:12`；`div[data-region="tabs"]`
+原是无样式块级框（撑满父宽）；`tabs()` 的 `display:contents` 包装**根本不生成盒子**。所以官方控件的宽度
+**就等于设置面板内容区宽度**，而列宽 = 该宽度 ÷ 6。中文标签（「我的 Prompt」约 77px、「提示词总览」/「备份与恢复」
+各约 70px、其余 3 个合计约 140px）加上每个 tab 左右各 12px padding，需要约 **500px**；面板内容区一旦窄于这个数，
+等分列就落到标签固有宽度以下 ⇒ 折行。旁证：fallback 分支用 `flex-wrap`（按钮按内容宽、装不下整行换行），
+所以同宽度下它一直正常 —— 也与负责人「只有 tab 这一处不对」的观察一致。
+
+**修法（`tabs()`，真机反馈一第二轮）**：给官方控件传 `className: 'dsh-prompt-setting-tabs'`，并在首次使用时注入
+**本插件前缀**的规则：`.dsh-prompt-setting-tabs{min-width:max-content}` +
+`.dsh-prompt-setting-tabs>button{white-space:nowrap}`；同时给**我们自己的**外层 `div[data-region="tabs"]` 加
+`overflow-x:auto`。两条规则各司其职：`nowrap` 让标签不再折行，`min-width:max-content` 让控件保持固有宽度
+（等分列因此不会低于标签宽），溢出的部分由我们的容器**横向滚动**吸收 —— 取舍是「宁可出现横向滚动条，也不要
+折行或重叠」，因为本目标正是要留在官方控件上。**不引用任何官方 hash 类名**。
+
+**评审 G2：两条冗余规则的如实处理**：先前注入的 `grid-auto-flow:column` 与 `grid-auto-columns:1fr` 在当前宿主下
+是 **no-op**（inline 显式列已足、不存在隐式列；n 列 n 项时 column 与默认 row 的放置结果相同；且 inline style
+优先级高于类，覆盖不了列宽）——**已删除**，不再让测试去保护无效果的代码。注入纪律四条不变：①**幂等**
+（实例标志 + `style[data-dsh-prompt-setting]` 探测）；②**前缀**；③**fail-open**（无 `document`、`appendChild` 被拒
+一律只是不注入，tab 仍渲染 —— 仓库内有对应用例）；④**保留无害**（只作用于自有类名，元素仍挂载时移除反而会重新
+弄坏布局，故随页面存续、刷新/重载才清）。
 
 **官方先例调研（谁给 SegmentedTabs 传什么 className）**：官方在宿主包里**只有一个调用方**
 （`@deepseek-ai/dsh-client-ui-agent-preset` 的预设引导对话框），写法是
 `className: PresetGuideDialog_module_css_default.guideTabs` —— 传**调用方自己的 CSS module 类**（该包内联 CSS 字符串
-自行注入），其规则仅 `flex:none;margin:0 28px 22px`，**同样没有列定义**；也就是说「谁调用谁提供布局类」是官方形态，
-但**没有可直接照抄的列布局类**，故按宿主 `SegmentedControl` 的等宽写法自建（见上）。
+自行注入），其规则仅 `flex:none;margin:0 28px 22px`：即官方形态是「谁调用谁给类」，但**没有可照抄的列布局类**，
+故本轮按官方实现的实际需要自建（见上），不再照抄 `SegmentedControl` 的 grid 写法。
 
 **真机预期**：`渲染分支: primitives（官方基础件）`；`Button=object`；各 tab 首次由官方原子绘制。
-**tab 一行横向排列、等宽、文字不换行、指示条可滑动**（真机反馈一的复验项）；若宿主原子在渲染期抛错，
+**复验清单（评审 G4，第二轮）**：①tab 是否仍一行横向排列、等宽；②**标签是否完全不折行**；
+③**是否出现文字溢出列格或相邻标签重叠**（`nowrap` 只能阻止折行、不能加宽列——若列宽真的小于标签宽，
+现象会从「折行」变成「溢出/重叠」，这是我们宁可换成横向滚动也要避免的）；④窄面板下我们的容器是否如预期
+**出现横向滚动**而不是压窄标签；⑤指示条是否正常滑动；⑥其他官方控件是否维持不变。若宿主原子在渲染期抛错，
 预期读数是 `渲染分支: fallback`＋`data-primitives-render-failed="true"`＋错误原文，而**页面照常可用**（自绘）。
 
 **未确证 / 风险**：① primitives 的 CSS 是否已由宿主页面注入 —— **真机已证伪该风险**（见「真机反馈一」）；
+①′ 面板内容区的**实际像素宽度**与改动后的**真机视觉结果**（溢出/重叠/滚动条）只能真机目视，离线无法测得；
 ② 本插件传给 `Tag` 的 `title` 在两条分支
 都不生效（`FxTag` 与官方 `Tag` 都只取 `tone`/`children`），属既有行为、非本次回归；③ 评审 R1 的教训：
 同一能力位在**探测侧**与**渲染侧**各有一道判据时，必须一起改——`toastPrimitives` 探测已改而

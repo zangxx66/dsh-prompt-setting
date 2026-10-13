@@ -3435,21 +3435,30 @@ code means rather than how it is written:
   `data-primitives-members="true"` also carries
   `data-primitives-button-component="true" | "false"` — the decision, beside the
   `typeof` it was made from.
-  **Revision 49, real-machine follow-up:** the official `SegmentedTabs` supplies
-  only `display: grid` and, by its own contract, takes the **column layout from
-  the caller's `className`**; called without one it laid every tab on its own row
-  (labels crowded and wrapped, seen on the real machine). The tab control is now
-  given `className="dsh-prompt-setting-tabs"`, and the plugin injects that one
-  rule itself — `grid-auto-flow: column; grid-auto-columns: 1fr` plus
-  `white-space: nowrap` for its buttons, the shape the Host's own equal-width
-  `SegmentedControl` uses. The style is **prefixed** (class and
-  `data-dsh-prompt-setting` attribute), **injected once** (instance flag plus a
-  document probe, so a reloaded bundle cannot stack copies), **fail-open** (no
-  `document`, or a refused `appendChild`, only means no injection), and **kept
-  for the page's lifetime** on purpose — the elements that reference it are still
-  mounted, so removing it would re-break the layout. No Host class name is ever
-  referenced. The fallback branch is untouched: it renders its own tab list and
-  injects nothing.
+  **Revision 49, real-machine follow-up:** the official `SegmentedTabs` sets
+  `gridTemplateColumns: repeat(items.length, minmax(0, 1fr))` **inline** on its
+  root (`lib/index.js:3312`), so its columns are already explicit, equal and one
+  per tab. The real-machine symptom was therefore **a label wrapping inside a
+  column**, never "a tab per row": `minmax(0, 1fr)` has a `0` minimum, so a column
+  may legally shrink below its label whenever the container is narrower than the
+  sum of the labels (this plugin sets no width anywhere, so that container width
+  is the settings panel's content width divided by six). The tab control now gets
+  `className="dsh-prompt-setting-tabs"`, and the plugin injects that rule itself:
+  `min-width: max-content` (keep the control at its natural width, so the equal
+  fractions cannot fall below a label) plus `white-space: nowrap` for its
+  buttons; our own `div[data-region="tabs"]` carries `overflow-x: auto`, so a
+  narrow panel scrolls the strip instead of crushing it.
+  `grid-auto-flow` / `grid-auto-columns` are deliberately **not** written: under
+  that inline column definition they are no-ops (no implicit columns exist,
+  `column` and `row` place n items in n columns identically, and an inline style
+  outranks any class), and no test may claim otherwise. The style is
+  **prefixed** (class and `data-dsh-prompt-setting` attribute), **injected once**
+  (instance flag plus a document probe, so a reloaded bundle cannot stack
+  copies), **fail-open** (no `document`, or a refused `appendChild`, only means
+  no injection), and **kept for the page's lifetime** on purpose — the elements
+  that reference it are still mounted, so removing it would re-break the layout.
+  No Host class name is ever referenced. The fallback branch is untouched: it
+  lays out with `flex-wrap` and injects nothing.
 
 ### 13.5 Second confirmation is required
 

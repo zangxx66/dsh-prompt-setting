@@ -2633,31 +2633,44 @@ window.__ModuleLoader__.load({
     };
 
     /**
-     * The layout class the Host's `SegmentedTabs` asks its **caller** for.
+     * The class the Host's `SegmentedTabs` gets from us, and the **one** rule in
+     * it that changes behaviour (g-063, real-machine round 2).
      *
-     * The official stylesheet gives `.tabs` only `display: grid` — no
-     * `grid-auto-flow`, no `grid-template-columns` — and its own doc comment says
-     * so out loud ("equal-width tabs … `className` - layout placement; panels
-     * remain caller-owned"). Without a caller-supplied column layout the grid
-     * falls back to one item per row, which is exactly what the real machine
-     * showed: every tab on its own line, its label wrapped. The rule below is
-     * the shape the Host itself uses for its equal-width segmented control
-     * (`SegmentedControl.module.css`: `display: inline-grid;
-     * grid-auto-flow: column; grid-auto-columns: 1fr`), minus the parts the
-     * official `.tabs` already sets; `white-space: nowrap` is added because a
-     * wrapped label is the defect being fixed.
+     * What the Host really does — checked against the implementation, not just
+     * its stylesheet (`lib/index.js:3312`): the root element carries an
+     * **inline** `gridTemplateColumns: repeat(items.length, minmax(0, 1fr))`.
+     * So the columns are already explicit and equal-width, one per tab; "every
+     * tab on its own row" is arithmetically impossible. `minmax(0, 1fr)` is what
+     * matters: its minimum is `0`, so a column may legally be squeezed **below
+     * its content width** — and the real-machine symptom ("labels crowded,
+     * wrapped") is the label wrapping *inside* a too-narrow column whenever the
+     * container is narrower than the sum of the labels.
      *
-     * Real-machine feedback (g-063): the official caller whose code was inspected
-     * (`dsh-client-ui-agent-preset`) passes its **own** CSS-module class
-     * (`guideTabs`, rules: `flex: none; margin: …`) and therefore supplies no
-     * columns either — so there is no official class to copy by name (and
-     * copying its hashed class names is forbidden anyway). The layout shape is
-     * copied from the Host's own `SegmentedControl`, and the class is ours,
-     * prefixed, and injected once.
+     * Consequences for this class (all verified against that inline style):
+     *   - `grid-auto-columns` / `grid-auto-flow` would be **no-ops** here (no
+     *     implicit columns exist, and with n columns for n items `column` and
+     *     `row` produce the same placement), and an inline style outranks any
+     *     class for the column widths anyway — so they are **not** written.
+     *   - `white-space: nowrap` on the tabs stops the labels wrapping.
+     *   - `min-width: max-content` gives the control its natural width, so the
+     *     columns (equal fractions of *that* width) stay at or above each
+     *     label's width. The caller side then has to allow the overflow:
+     *     `div[data-region="tabs"]` carries `overflow-x: auto`, so a narrow
+     *     settings panel scrolls the tab strip instead of crushing it. This is
+     *     the trade this round makes: keep the official control (that is the
+     *     point of the target), prefer a scrollbar over wrapped or overlapping
+     *     labels.
+     *
+     * Weight chain that produced the symptom, for the record: this plugin sets
+     * no width anywhere (`display: contents` on our wrapper generates no box at
+     * all, and `div[data-region="tabs"]` is an unstyled block), so the control's
+     * width is exactly the settings panel's content width — six Chinese labels
+     * plus their 12px side padding need roughly 500px, and below that the
+     * fractions shrink under the labels.
      */
     const TABS_LAYOUT_CLASS = 'dsh-prompt-setting-tabs';
     /** Two rules, one line, ours only — see {@link ensureTabsLayoutStyle}. */
-    const TABS_LAYOUT_CSS = `.${TABS_LAYOUT_CLASS}{grid-auto-flow:column;grid-auto-columns:1fr}.${TABS_LAYOUT_CLASS}>button{white-space:nowrap}`;
+    const TABS_LAYOUT_CSS = `.${TABS_LAYOUT_CLASS}{min-width:max-content}.${TABS_LAYOUT_CLASS}>button{white-space:nowrap}`;
     /**
      * Has this module instance already put {@link TABS_LAYOUT_CSS} in the page?
      *
@@ -2674,7 +2687,7 @@ window.__ModuleLoader__.load({
      * `style[data-dsh-prompt-setting]` probe so a reloaded bundle does not stack
      * a second copy), **prefixed** (our class, our attribute — never a Host
      * class name), and **fail-open** (no `document`, a Host that refuses
-     * `appendChild`, anything: the tabs still render, they may just stack).
+     * `appendChild`, anything: the tabs still render, they may just wrap).
      * @returns nothing.
      */
     function ensureTabsLayoutStyle() {
@@ -2710,7 +2723,9 @@ window.__ModuleLoader__.load({
      * fallback branch emits real host button nodes (role="tab") carrying the
      * `data-tab-*` markers the tests assert on. The primitives branch uses the
      * official `SegmentedTabs` (same `items`/`value`/`onChange` shape) **plus the
-     * caller-owned layout class** the official control requires (review F5).
+     * class that keeps its equal-width columns above the labels' own width**
+     * (real-machine round 2; see {@link ensureTabsLayoutStyle} for the weight
+     * chain).
      * @param items - `{value, label, id, panelId}` entries, non-empty.
      * @param value - the selected value.
      * @param onChange - selection callback.
@@ -8833,6 +8848,15 @@ window.__ModuleLoader__.load({
             key: 'tabs',
             'data-region': 'tabs',
             'data-active-tab': m.tab,
+            // Real-machine round 2: the official control's columns are equal
+            // fractions of its own width and may legally shrink below a label
+            // (`minmax(0, 1fr)`), so the strip is given its natural width
+            // (`min-width: max-content` on the control) and **this** box, which
+            // is ours, absorbs the overflow: a settings panel narrower than six
+            // labels scrolls the strip instead of wrapping or overlapping the
+            // labels. The fallback branch lays out with `flex-wrap` and never
+            // overflows, so the property is inert there.
+            style: { overflowX: 'auto' },
           },
           tabs(
             MAIN_TABS.map((value) => ({

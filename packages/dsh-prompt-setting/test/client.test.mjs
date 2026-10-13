@@ -14636,11 +14636,14 @@ function styleRecordingDocument() {
   };
 }
 
-test('client: the official tab control gets the caller-owned layout class, injected once (g-063 real-machine)', async () => {
-  // The official `.tabs` rule is `display: grid` with **no** column definition;
-  // its own doc comment says the layout is the caller's job. Without a class
-  // from us the grid falls back to one tab per row — the real-machine reading
-  // was "labels crowded and wrapped".
+test('client: the official tab control gets the layout class, injected once (g-063 real-machine)', async () => {
+  // The Host's own implementation already sets
+  // `gridTemplateColumns: repeat(items.length, minmax(0, 1fr))` inline
+  // (`lib/index.js:3312`), so the columns are explicit and equal — the real
+  // symptom was a label wrapping **inside** a column squeezed below its width.
+  // The class therefore only has to do two things: keep the labels on one line,
+  // and give the control its natural width so the equal fractions cannot fall
+  // below a label.
   const { appended, doc } = styleRecordingDocument();
   const page = makePage({ primitives: 'ok', responses: defaultResponses(), document: doc });
   const tree = await page.flush();
@@ -14650,12 +14653,11 @@ test('client: the official tab control gets the caller-owned layout class, injec
     assert.equal(
       node.props['data-tabs-class'],
       'dsh-prompt-setting-tabs',
-      'every official tab control gets the caller-owned layout class',
+      'every official tab control gets our class',
     );
   }
 
-  // Injection discipline: exactly once, prefixed, and carrying the columns the
-  // official sheet omits.
+  // Injection discipline: exactly once, prefixed.
   assert.equal(appended.length, 1, 'the layout rule is injected exactly once');
   assert.equal(appended[0].tag, 'style');
   assert.equal(
@@ -14663,15 +14665,21 @@ test('client: the official tab control gets the caller-owned layout class, injec
     'dsh-prompt-setting-tabs',
     'the style is ours and prefixed, never a Host class name',
   );
+  const css = appended[0].textContent;
   assert.ok(
-    appended[0].textContent.includes('grid-auto-flow:column') &&
-      appended[0].textContent.includes('grid-auto-columns:1fr'),
-    `the rule supplies the columns the official sheet leaves to the caller: ${appended[0].textContent}`,
+    css.includes('min-width:max-content'),
+    `the control keeps its natural width, so the equal fractions cannot fall below a label: ${css}`,
   );
-  assert.ok(
-    appended[0].textContent.includes('white-space:nowrap'),
-    'and no label may wrap — a wrapped label is the defect being fixed',
-  );
+  assert.ok(css.includes('white-space:nowrap'), 'and no label may wrap — the real-machine defect');
+  // Review G2: these two were no-ops under the Host's inline columns (no implicit
+  // columns exist, and n columns for n items place the same either way, with the
+  // inline style outranking any class). They must not come back as "protection".
+  assert.ok(!css.includes('grid-auto-flow'), `no no-op rules: ${css}`);
+  assert.ok(!css.includes('grid-auto-columns'), `no no-op rules: ${css}`);
+
+  // The strip — our own box — absorbs the overflow the natural width creates.
+  const strip = oneBy(tree, 'data-region', 'tabs');
+  assert.equal(strip.props.style.overflowX, 'auto', 'our own tab strip scrolls instead of crushing the labels');
 
   // Idempotent: another render (a tab switch) must not stack a second copy.
   await openTab(page, 'overview');
@@ -14689,4 +14697,22 @@ test('client: the fallback branch needs neither the class nor the injected rule 
     'and no official control was rendered',
   );
   assert.ok(tabList(tree), 'the fallback tab list is still there, unchanged');
+});
+
+test('client: a refused style injection degrades silently and the tabs still render (g-063 G5)', async () => {
+  const { appended, doc } = styleRecordingDocument();
+  doc.head.appendChild = () => {
+    throw new Error('the document refused the style');
+  };
+  const page = makePage({ primitives: 'ok', responses: defaultResponses(), document: doc });
+  const tree = await page.flush();
+  // Fail-open: the injection threw, so its rule is absent — and the page must
+  // still draw the official control (labels may wrap; that is the documented
+  // degradation, never a blank panel).
+  assert.equal(appended.length, 0, 'a refused appendChild injects nothing');
+  assert.ok(
+    collect(tree, (node) => node.props && node.props['data-tabs-class'] === 'dsh-prompt-setting-tabs').length > 0,
+    'the official control is still rendered, still carrying our class',
+  );
+  assert.ok(tabList(tree), 'and the tab strip is still there');
 });
