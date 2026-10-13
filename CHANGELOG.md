@@ -10,6 +10,102 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
+## [0.2.2] - 2026-10-13
+
+**功能版本：新增「预设」库（保存 / 编辑 / 删除，可应用到工作区、也可取消应用），装配状态改为会话内
+主动提示，并修复官方组件探测（设置页首次真正启用宿主官方组件）。底层还做了客户端半代码复用收口。 /
+Feature release: a new preset library (save / edit / delete, apply to a workspace and un-apply), an
+in-session assembly-status notice, and a fix to the official-component probe (the settings page now
+actually uses the host's own components for the first time). The client half also got a code-reuse
+cleanup underneath.**
+
+（本次发布覆盖 g-060…g-063；范围经 `git merge-base --is-ancestor` 逐项核实——四个目标的代表提交都是
+`dev` 的祖先、都不是 `009ec61`（0.2.1 发布合并提交）的祖先，`merge-base(main,dev) = 93b0d9e`（0.2.1
+升版提交）。 / This release covers g-060…g-063; each was verified with `git merge-base --is-ancestor` —
+every target's representative commit is an ancestor of `dev` and not of `009ec61` (the 0.2.1 release merge
+commit), with `merge-base(main,dev) = 93b0d9e` (the 0.2.1 version bump).）
+
+### Added 新增
+
+- **「预设」库（g-060 / Revision 37–41）**：设置面板新增「我的预设」tab，可以把一整套 Prompt 存成命名
+  预设，随时**编辑**或**删除**；一次「应用」把预设写进所选工作区，再点一次即**取消应用**。预设按**粒度**
+  独立记账：要取消的是哪一次应用就还原哪一次，后一次应用不会吞掉前一次，重复应用同一预设是幂等的
+  （不会叠加成双份），多个预设叠加时按应用顺序回放。编辑与覆盖已应用的预设、以及所有破坏性动作
+  （删除、取消应用）都走**二次确认**，未保存的草稿在关闭弹窗时**受保护**，不会被静默丢弃。
+  **The preset library (g-060 / Revision 37–41)**: a new "My presets" tab saves a whole prompt as a named
+  preset that can be **edited** or **deleted** at any time, and one "apply" writes it into the chosen
+  workspace — clicking again **un-applies** it. Presets are tracked **per application**, so un-applying
+  restores exactly the application you are undoing: a later apply never swallows an earlier one, applying
+  the same preset twice is idempotent (it does not double up), and stacked presets are replayed in apply
+  order. Editing or overwriting an applied preset, and every destructive action (delete, un-apply), go
+  through a **second confirmation**, and an unsaved draft is **protected** when the dialog is closed
+  instead of being silently dropped.
+- **会话内「装配状态提示」（g-062 / Revision 46–48）**：DSH 每个 model step 都会重新装配 system prompt，
+  但「装配到」不等于「送达到模型」。改动 Prompt 后的下一个 run 会**主动弹一次 toast**，说明本次装配是否
+  读到了新文本、以及它是否进入本次请求；设置页保留同一份详情与开关。提示**只落界面**——不进上下文、
+  不占 token、不改模型收到的 prompt，且只在关键节点提示一次（新会话首次装配、每次变更后的下一个 run），
+  因此不会变成刷屏。
+  **The in-session assembly-status notice (g-062 / Revision 46–48)**: DSH re-assembles the system prompt on
+  every model step, and "assembled" is not the same as "delivered to the model". After a prompt change, the
+  next run **raises one toast** saying whether this assembly read the new text and whether it entered the
+  request; the settings page keeps the same detail plus its switch. The notice is **UI only** — it never
+  enters the context, costs no tokens and changes no prompt the model receives — and it fires only at key
+  points (a new session's first assembly, and the next run after each change), so it cannot turn into noise.
+
+### Changed 变更
+
+- **版本号 `0.2.1` → `0.2.2`**：同步表示「本包当前版本」的每一处——本包 `package.json` 的 `version`、
+  宿主的 `PLUGIN_VERSION`、`CONTRACT.md` 里的响应与示例、三份 README 的徽章与「当前版本」表述，以及
+  测试中表示本包版本的硬字面量（含 `0.2.1` → `0.2.2` 的本包版本字面量，以及随之配套的更新目标夹具
+  `0.2.2` → `0.2.3`）。版本号本身**不引入任何行为
+  变更**：本版的行为变化全部是下面的条目，版本号不改变路由、落盘内容或既有响应字段。
+  `npm publish` / `git tag` / `git push` 仍是人工 gate，不在本次变更内。
+  **Version `0.2.1` → `0.2.2`**: every place that states "the version this package currently is" was
+  moved together — this package's `package.json`, the host's `PLUGIN_VERSION`, the responses and examples
+  in `CONTRACT.md`, the badges and "current" lines in all three READMEs, and the test literals that assert
+  the package version (the package-version literals `0.2.1` → `0.2.2`, plus the "update target" fixtures that
+  move with them, `0.2.2` → `0.2.3`). The bump
+  itself introduces **no behaviour change**: this release's behaviour changes are the entries below, and
+  the version number alone alters no route, no stored content and no existing response field.
+  `npm publish`, `git tag` and `git push` remain manual gates and are not part of this change.
+- **客户端半代码复用收口（g-061 / Revision 42–44）**：设置面板的各分块与主入口之间，把重复实现的
+  机械部分收敛成共享模块（样式常量、层标签、下载区域文案键、tab 适配器、工作区推导等）。外观与交互
+  **一字未改**，产物的分块划分（本版共 5 个分块，新增的 `client.presets.js` 即下方「预设」tab 一项）
+  与构建指纹口径也不变。
+  **Client-half code reuse cleanup (g-061 / Revision 42–44)**: mechanical duplication between the settings
+  panel's chunks and its main entry is folded into shared modules (style constants, layer labels, download
+  region copy keys, tab adapters, workspace derivation). The look and the interactions are **unchanged**,
+  as are the artifact's chunk split (5 chunks in this release, the new `client.presets.js` being the
+  "Presets" tab below) and the build-fingerprint rules.
+- **「高级」状态区的两条常驻探测诊断行已移除（g-063 收尾）**：`data-primitives-detail` 与
+  `data-primitives-members` 是为在真机定位下方那个 forwardRef 缺陷而临时加的常驻读数，使命完成后删除；
+  渲染分支行、`data-primitives-toast-source` 行与两条仅在异常时出现的**原因行**（`data-primitives-failure`
+  / `data-primitives-render-error`）全部保留。
+  **Two always-on probe readout lines were removed from the "Advanced" status area (g-063 wrap-up)**:
+  `data-primitives-detail` and `data-primitives-members` were temporary always-on readouts added to locate
+  the forwardRef defect below on a real machine; they are removed now that they have served that purpose.
+  The render-branch line and the `data-primitives-toast-source` line stay, and so do both **reason lines**
+  (`data-primitives-failure` / `data-primitives-render-error`) that appear only when something went wrong.
+
+### Fixed 修复
+
+- **官方组件探测恒为假（g-063）**：判定「宿主是否提供官方组件」的条件是 `typeof Button === 'function'`，
+  但 `React.forwardRef` 的产物是**对象**，`typeof` 永远是 `'object'` ⇒ 该判定自诞生起恒为 false，设置页
+  一直退回自绘控件，从未真正启用宿主官方组件。现在新增 `isComponentExport`：函数组件，或带 React
+  组件 brand（`forwardRef` → `render`、`memo` → `type`）且结构字段合法者；未知 brand、字段缺失或
+  getter 抛错一律判不可用（保持 fail-open）。同一判据统一用于图标、差异块、`UI.Input` / `Tag`、分段
+  tab 与 toast。
+  **The official-component probe was always false (g-063)**: the check for "does the host ship its own
+  components" was `typeof Button === 'function'`, but `React.forwardRef` yields an **object** whose `typeof`
+  is always `'object'`, so the test was false from the day it was written and the settings page always fell
+  back to its own controls instead of ever using the host's. A new `isComponentExport` accepts a function
+  component, or anything carrying the React component brand (`forwardRef` → `render`, `memo` → `type`)
+  with valid structural fields; an unknown brand, a missing field or a throwing getter is treated as
+  unusable (fail-open preserved). The same predicate now drives icons, diff blocks, `UI.Input` / `Tag`,
+  segmented tabs and the toast.
+
+---
+
 ## [0.2.1] - 2026-10-11
 
 **修复版本：修好「我的 Prompt」在分层查看下的读写错位（保存了却读不出来、切换查看范围静默写空），把

@@ -1627,8 +1627,8 @@ resolve the `workspace` layer).
   "schema": "dsh-prompt-setting/export",
   "version": 1,
   "exportedAt": "2024-01-02T10:00:00.000Z",
-  "plugin": { "name": "dsh-prompt-setting", "version": "0.2.1" },
-  "pluginVersion": "0.2.1",
+  "plugin": { "name": "dsh-prompt-setting", "version": "0.2.2" },
+  "pluginVersion": "0.2.2",
   "layers": {
     "user":      { "layer": "user", "enabled": true,
                    "reason": null,
@@ -3628,7 +3628,7 @@ writes one down either.
   lives on the **root container** instead: `data-plugin-version` is present in
   **every** render state, so a probe reads one attribute and never has to know
   which state it got;
-- **the text** is `v` + the version (`v0.2.1`), or `stPluginVersionUnknown`
+- **the text** is `v` + the version (`v0.2.2`), or `stPluginVersionUnknown`
   (「版本未知」 / `Version unknown`) when the ping carried no usable one. The
   node's `title` is `stPluginVersion` (「插件版本」 / `Plugin version`);
 - **the link:** with a `repositoryUrl` the node is an `a` element whose `href` is
@@ -3770,7 +3770,7 @@ live probe would read a normal rebuild as a defect.
 {
   "ok": true,
   "plugin": "dsh-prompt-setting",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "repositoryUrl": "https://github.com/zangxx66/dsh-prompt-setting",
   "time": "2026-09-28T12:00:00.000Z",
   "clientRenderer": "fallback",
@@ -5042,7 +5042,7 @@ The body of an **npm** answer:
 {
   "ok": true,
   "enabled": true,
-  "current": "0.2.1",
+  "current": "0.2.2",
   "latest": "0.2.2",
   "latestTag": "0.2.2",
   "hasUpdate": true,
@@ -5070,7 +5070,7 @@ The body of a **GitHub** answer (the pre-Revision-27 shape, plus `source`):
 {
   "ok": true,
   "enabled": true,
-  "current": "0.2.1",
+  "current": "0.2.2",
   "latest": "0.2.2",
   "latestTag": "v0.2.2",
   "hasUpdate": true,
@@ -5686,8 +5686,8 @@ Otherwise, the answer:
     "status": "running",
     "known": true,
     "application": null,
-    "version": "0.2.1",
-    "tag": "v0.2.1",
+    "version": "0.2.2",
+    "tag": "v0.2.2",
     "startedAt": "2026-10-04T09:00:00.000Z",
     "finishedAt": null,
     "cancelRequested": false,
@@ -5708,8 +5708,8 @@ A refusal — nothing was started, so there is no request to track:
   "message": "this profile installs dsh-prompt-setting from a local path (link:../x), which is a development working copy: …",
   "launchKind": "cli",
   "manual": {
-    "releaseUrl": "https://github.com/zangxx66/dsh-prompt-setting/releases/tag/0.2.1",
-    "releaseLink": "open the 0.2.1 release page",
+    "releaseUrl": "https://github.com/zangxx66/dsh-prompt-setting/releases/tag/0.2.2",
+    "releaseLink": "open the 0.2.2 release page",
     "command": "dsh plugin add <tarball-or-path>",
     "current": "link:../x"
   }

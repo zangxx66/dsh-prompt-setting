@@ -8337,3 +8337,126 @@ feed → cursor → toast 不丢、文案不含 `undefined`）。全量 `896 pas
 用例**仍绿**——这正是「apply 首次的 `after` 恒非空」的佐证，说明该守卫在 apply 侧不可能漏掉写入，
 本轮对 apply 侧的去守卫属于**契约本意归位**而非行为修复。
 
+
+---
+
+## 145. 版本号 `0.2.1` → `0.2.2`：同步点清单、盲点核对与包内文件数变化（g-064，2026-10-13，基线 `f8bc6b9` 隔离工作树 `g-064-att-01`）
+
+### 一、为什么是 patch
+
+负责人 2026-10-13 裁定「提升版本号至 0.2.2」（同批指令还有「dev 合并到主分支」「只保留主分支和 dev」，
+后两项由主管在复核后执行，不在本轮）。本轮没有新字段、新路由或响应形状变化 ⇒ 按 patch 提升；本版
+用户可感知变更全部来自 g-060…g-063。
+
+### 二、发布范围核实（不凭记忆）
+
+`git merge-base main dev` = **`93b0d9e`**（0.2.1 升版提交），dev 领先 merge-base **37** 个提交，main 侧
+1 个（`009ec61` = 0.2.1 发布合并提交）⇒ 本次合入 main 是真 merge（非 ff）。四个目标的代表提交逐项用
+`git merge-base --is-ancestor` 核实（**都是 HEAD 的祖先、都不是 `009ec61` 的祖先**）：
+
+| 目标 | 代表提交 | 是 HEAD 祖先 | 是 `009ec61` 祖先 |
+| --- | --- | --- | --- |
+| g-060「预设」库 | `61bcdc4` | YES | NO |
+| g-061 客户端半复用收口 | `38299ed` | YES | NO |
+| g-062 会话内装配状态提示 | `861f871` | YES | NO |
+| g-063 primitives 探测修复 | `b0ba1cd` | YES | NO |
+
+### 三、同步的「本包当前版本」（30 处 / 11 文件，全部改为 `0.2.2`；行号为改后行号）
+
+| 文件:行 | 原值 | 说明 |
+| --- | --- | --- |
+| `package.json:3` | `"version": "0.2.1"` | 权威源① |
+| `index.js:213` | `PLUGIN_VERSION = '0.2.1'` | 权威源②（`host.test.mjs` 有 lockstep 断言） |
+| `README.md:13` / `README_zh.md:12` | 徽章 `version-0.2.1` | 两份根 README |
+| `README.md:110` / `README_zh.md:92` | `this repository is 0.2.1` / 「本仓库为 0.2.1」 | 安装段（与「npm `latest` 为 `0.1.5`」双写） |
+| `README.md:339` / `README_zh.md:285` | 文档表内的同一表述 | 发布前如实区分 |
+| 包内 `README.md:260` / `:265` | 同上（中 / 英） | |
+| `CONTRACT.md:1630-1631` | §10 export 示例 `plugin.version` / `pluginVersion` | |
+| `CONTRACT.md:3631` | §13.8 版本节点文案 `v0.2.1` | |
+| `CONTRACT.md:3773` | §13.9 ping 示例 `version` | |
+| `CONTRACT.md:5045` / `:5073` | §17 update-check 两个示例的 `current` | |
+| `CONTRACT.md:5689-5690` | §18.8 update-apply 状态示例 `version` / `tag` | |
+| `CONTRACT.md:5711-5712` | §18 install 拒绝示例 `releaseUrl` / `releaseLink` | |
+| `test/stage2.test.mjs:1251-1252` | `pluginVersion` / `plugin.version` 断言 | |
+| `test/update.test.mjs:65` / `test/install.test.mjs:70` | `OLD_TARBALL_URL`（「本包已经是的那版」） | |
+| `test/update.test.mjs:989` | ping 的 `body.version` 断言 | |
+
+### 四、随权威源移动的「更新目标」夹具（4 文件，`0.2.2` → `0.2.3`）
+
+这些夹具必须**比本包版本高一档**（`test/install.test.mjs:60-63` 的注释写明了理由），否则「有更新」
+会翻成「无更新」，route/install/update 的整片用例会连锁塌掉。行号为改后行号：
+
+| 文件:行 | 说明 |
+| --- | --- |
+| `test/install.test.mjs:62` `:64` `:68` `:146` `:152` `:163-164` `:582` `:721` `:738` `:742-743` `:762` `:773` `:775` `:780` `:787` `:797` `:800` `:804-805` `:830` `:925` | `ASSET_URL` / `TARBALL_URL` / `tag_name` 兜底、`npmDocument`、镜像与拒绝用例、`releaseUrl` 断言 |
+| `test/route.test.mjs:47` `:588-589` `:603` `:604` `:617` `:625` `:635-636` `:653` | `TARBALL_URL`、`updateTransport` 默认文档、`hasUpdate` 注释与断言、假恶意 tarball 文档 |
+| `test/update.test.mjs:63` `:125-126` `:148` `:150` `:153` `:348` `:352` `:365` `:367` `:422` `:433-434` `:438` `:464` `:875` `:1429` `:1668` | `TARBALL_URL`、`releaseResponse`、`npmResponse` 的 `dist-tags` / `versions` / `time`，以及消费它们的 `latest` / `latestTag` / `releaseUrl` 断言与区域探针的假文档 |
+| `CONTRACT.md:5046-5047` `:5052` | §17 npm 示例的 `latest` / `latestTag` / `tarball`（与 `current` 同段：`current` 是 0.2.2、`latest` 随之是 0.2.3） |
+| `CONTRACT.md:5074-5075` `:5077` | §17 GitHub 示例的 `latest` / `latestTag` / `releaseUrl` |
+
+### 五、⚠️ 盲点核对（本项目升版踩过两次，本轮逐类查）
+
+1. **转义正则形态**（§121 的 banner `/0\.1\.4/`）：`grep -rn '0\\.2\\.1'` 全仓只命中
+   `test/host.test.mjs:168`（**DSH peer 范围**转义正则）与 `test/install.test.mjs:439` / `:633`
+   （`/v0\.2\.0/`，对应同文件 `tag: 'v0.2.0'` 的纯函数夹具，与当前版本无关）
+   ⇒ **本轮的「当前版本」断言没有转义正则形态**，但仍按 §127/§134 的做法跑全量兜底。
+2. **本轮真实盲点是「更新目标夹具」**（§127 记的第二类，方向恰好相反）：夹具**已经是** `0.2.2`，
+   升版后与本包版本相等 ⇒ `hasUpdate` 翻假。第一次全量跑实测 **904 中 2 红**，红点都在
+   `test/update.test.mjs` 的 `update route` 两例（`GET answers the documented shape` 的
+   `hasUpdate`，与 `an npm failure falls back to GitHub` 的同名断言），根因是 `npmResponse()` **函数体**
+   （`:148` / `:150` / `:153`）漏在批量替换的清单外；补齐后 **0 红**（一轮到位，没有第三类原因）。
+   ⚠️ 教训：**列行号不能替代按语义扫全文**——函数体的行号不在首轮清单里。
+
+### 六、刻意不改的白名单（逐类理由）
+
+1. **DSH 的版本**（不是本插件版本）：`package.json:50`、`index.js` 的 `DSH_PEER_RANGE_FALLBACK` 与注释、
+   `core/compat.js:166` 的 `@param` 示例、`test/host.test.mjs:168`、`test/boot.test.mjs:328-493`、
+   `scripts/check-compat.mjs:210`、三份 README 的前置条件与 DSH 徽章（`<0.2.2-0`）；
+2. **历史段**：`CHANGELOG.md` 的 `[0.2.1]` 及更早、`NOTES.md` 全部历史叙述（含 §124、§127、§134）；
+3. **镜像实测记录**：`CONTRACT.md` 的 `dist-tags.latest` = `0.1.5` 两处（当时测得的事实）；
+4. **纯函数自洽举例**：`test/update.test.mjs` 的 `isNewerVersion` / `registryTarball` 举例（`:280`、
+   `:300-335`）与 `test/install.test.mjs` 的 `buildReleaseAssetUrl('0.2.0','0.2.0')`、`MIRROR_TARBALL`
+   ——传什么断言什么，与当前版本无关；表键与 `ASSET_URL` 文件名**升版前就不相等**，保持既有形态；
+5. **测试替身注入的 `currentVersion`**：`test/update.test.mjs` 的 `makeChecker` 默认 `'0.1.1'`（§127 先例）。
+
+### 七、`npm pack`：30 → 33 文件
+
+- 本机直跑 `npm pack` 仍会遇到 `EPERM`（`~/.npm/_cacache` 有 root-owned 文件，§121/§127/§134 已记）
+  ⇒ 全程用 `--cache /tmp/ps-pack-cache-022 --pack-destination /tmp/ps-pack-out-022`；
+- 实测 **33 文件**（v0.2.1 = 30）；**+3** = `core/presets.js`（g-060 预设库）、`core/assembly-watch.js`
+  （g-062 装配状态机）、`client.presets.js`（g-060 的预设立项分块）；
+- 包内 33 项：`package.json`、`LICENSE`、`index.js`、`client.js` + **5** 个 `client.*.js` chunk、
+  `core/` 16 个模块、`CONTRACT.md`、`README.md`、`NOTES.md`、`cordis.patch.yml`、`scripts/` 4 个脚本；
+- 复核：包内 `package.json.version` = **`0.2.2`**；`test/` 命中 **0**；`.dsh-graph/` 命中 **0**；
+  `prepare.mjs` 的 `CHUNK-STAMPS` 断言磁盘上 **5** 个 chunk 一致。
+
+### 八、与 brief 的三处事实偏差（以实测为准）
+
+1. brief 写「`client-chunks.mjs` 4 match」——实测 **5 file(s) match**（v0.2.1 时是 5：`client.js` +
+   4 chunk；本版 g-060 新增 `client.presets.js` ⇒ 5 chunk、manifest 6 项，`prepare` 的
+   `CHUNK-STAMPS` 逐项核对 **5**）；
+2. brief 写「上版 `npm pack` 30 文件」，与 §134 的实测一致（30），本版 33；
+3. brief 写「g-060 新增『预设』功能」把 0.2.2 称作 patch 提升——g-060 在开发期是 feature，但它与
+   g-061…g-063 都**未出现在 `[0.2.1]` 段**（0.2.1 段只覆盖 g-052…g-058），因此 0.2.2 作为 patch
+   版本把这一批一次放出，`[0.2.2]` 段如实记全部条目。
+
+### 九、验收（单行证据）
+
+- 升版后 `node --test test/*.test.mjs` = **904 pass / 0 fail / skipped 0**（升版前基线同数，未增删断言）；
+- `node scripts/prepare.mjs` = **21 项 OK**；`node scripts/client-chunks.mjs` = **5 file(s) match**，exit 0；
+- **负向对照**：见「十、负向对照」；
+- `git diff --stat` = **11 文件**，全部是版本字面量、文档与测试夹具；`core/`、`client.js` 与 5 个
+  `client.*.js` chunk、`scripts/` **零改动**，`index.js` 仅 `PLUGIN_VERSION` 一行。
+
+### 十、负向对照（判据 6）
+
+把 `index.js:213` 的 `PLUGIN_VERSION` 回退成 `'0.2.1'`（其余不动），跑定向用例
+`node --test test/host.test.mjs test/stage2.test.mjs test/update.test.mjs test/route.test.mjs test/install.test.mjs`
+⇒ **实测变红**（lockstep 常量用例 + ping/update/install/route 各一族的版本断言），随后还原为 `'0.2.2'`；
+命令与红点清单见本目标的结果文件（results-att-001.md）。
+
+### 十一、未验证项
+
+- `npm publish` / `git tag` / `git push` / 合入 `main` / 分支收口：**人工 gate，本轮未做**（合入与删分支
+  由主管复核后执行）；因此 npm 上的 `latest` 仍是 `0.1.5`，README 的双写表述正为此；
+- 徽章的 shields.io 在线渲染未目视（离线），只核对了源文本。

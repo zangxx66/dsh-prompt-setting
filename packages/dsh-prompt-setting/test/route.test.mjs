@@ -44,7 +44,7 @@ const ASSEMBLY_STATUS_PATH = '/prompt-setting/assembly-status';
 /** g-042: the npm document, the GitHub fallback, and the registry's install spec. */
 const REGISTRY_URL = 'https://registry.npmjs.org/dsh-prompt-setting';
 const GITHUB_URL = 'https://api.github.com/repos/zangxx66/dsh-prompt-setting/releases/latest';
-const TARBALL_URL = 'https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.2.tgz';
+const TARBALL_URL = 'https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.3.tgz';
 
 /** Markers as documented in CONTRACT.md §14, written out independently. */
 const BUILD_BEGIN = '/* @build-fingerprint:begin */';
@@ -585,8 +585,8 @@ function updateTransport(handler) {
     const body = typeof handler === 'function'
       ? handler(target)
       : {
-          'dist-tags': { latest: '0.2.2' },
-          versions: { '0.2.2': { version: '0.2.2', dist: { tarball: TARBALL_URL } } },
+          'dist-tags': { latest: '0.2.3' },
+          versions: { '0.2.3': { version: '0.2.3', dist: { tarball: TARBALL_URL } } },
         };
     return { ok: true, status: 200, json: async () => body };
   };
@@ -600,8 +600,8 @@ test('update route: the check answers from npm, and names its source', async () 
   assert.equal(res.statusCode, 200);
   const body = json(res);
   assert.equal(body.source, 'npm');
-  assert.equal(body.hasUpdate, true, 'this package is 0.2.1 and the registry says 0.2.2');
-  assert.equal(body.latest, '0.2.2');
+  assert.equal(body.hasUpdate, true, 'this package is 0.2.2 and the registry says 0.2.3');
+  assert.equal(body.latest, '0.2.3');
   assert.equal(body.tarball, TARBALL_URL);
   assert.deepEqual(transport.calls, [REGISTRY_URL], 'GitHub is not asked while npm answers');
 });
@@ -614,7 +614,7 @@ test('update route: a registry that cannot answer falls back to GitHub, still 20
     // A *failure* on the registry is what makes the fallback run; GitHub then
     // answers the release the check reports.
     if (target === REGISTRY_URL) return { ok: false, status: 503, json: async () => ({ message: 'down' }) };
-    return { ok: true, status: 200, json: async () => ({ tag_name: 'v0.2.2', html_url: null }) };
+    return { ok: true, status: 200, json: async () => ({ tag_name: 'v0.2.3', html_url: null }) };
   };
   const { route } = mount({ config: { updateCheck: { fetch: failing } } });
   const res = await call(route, { url: UPDATE_CHECK_PATH });
@@ -622,7 +622,7 @@ test('update route: a registry that cannot answer falls back to GitHub, still 20
   const body = json(res);
   assert.equal(body.source, 'github');
   assert.equal(body.hasUpdate, true);
-  assert.equal(body.latest, '0.2.2');
+  assert.equal(body.latest, '0.2.3');
   assert.equal(body.tarball, null);
   assert.deepEqual(calls, [REGISTRY_URL, GITHUB_URL], 'npm first, GitHub second');
 });
@@ -632,8 +632,8 @@ test('update route: an untrustworthy registry tarball is refused before any pack
   // `pluginManager` at all: if the route needed one it would answer
   // `installer-unavailable`, which is exactly what this asserts it does not do.
   const transport = updateTransport(() => ({
-    'dist-tags': { latest: '0.2.2' },
-    versions: { '0.2.2': { version: '0.2.2', dist: { tarball: 'https://evil.test/pkg.zip' } } },
+    'dist-tags': { latest: '0.2.3' },
+    versions: { '0.2.3': { version: '0.2.3', dist: { tarball: 'https://evil.test/pkg.zip' } } },
   }));
   const { route } = mount({ config: { updateCheck: { fetch: transport.fetch } } });
   const res = await call(route, {
@@ -650,7 +650,7 @@ test('update route: an untrustworthy registry tarball is refused before any pack
   // An npm answer's `releaseUrl` is null, so the refusal itself has to carry a
   // clickable manual route (g-042 review fix) — the release page, which is the
   // same shape and the same label a GitHub refusal has always used.
-  assert.equal(body.manual.releaseUrl, 'https://github.com/zangxx66/dsh-prompt-setting/releases/tag/0.2.2');
+  assert.equal(body.manual.releaseUrl, 'https://github.com/zangxx66/dsh-prompt-setting/releases/tag/0.2.3');
   assert.deepEqual(transport.calls, [REGISTRY_URL], 'nothing was probed and nothing was installed');
 });
 
