@@ -103,6 +103,15 @@
   > One package of plain JS — nothing to fetch, nothing to compile.
 - **界面文案跟随 DSH 语言 / UI copy follows DSH** —— DSH 切到中文，这一页就是中文，不需要刷新或重启。
   > Switch DSH to Chinese and this page turns Chinese, with no refresh or restart.
+- **一级 tab 是纯文字行（含计数与更新红点）/ The top-level bar is a plain-text row (with a count and an update dot)** ——
+  六个一级 tab 无底色、无边框、不等分列宽；选中项下方一条短下划线，压在整条栏底部的淡分隔线上；窄容器下
+  **单行横向滚动**而不是折行，也不会撑宽页面。「我的预设」显示库条数 `(N)`，数据未读到时**不显示数字**
+  （绝无占位 `(0)`）；「高级」在确有可用新版本时显示红点，关掉顶部提示条**不清除**红点。
+  > The six top-level tabs are plain text: no fill, no border, no equal-width columns. The selected one
+  > carries a short underline on the faint rule under the bar, and the bar stays on one line, scrolling
+  > sideways in a narrow panel instead of widening it. 「My presets」shows its library size as `(N)`, and
+  > shows no number at all until that size is known (never a placeholder `(0)`); 「Advanced」shows a red
+  > dot while a newer release is on offer, and dismissing the banner does not clear it.
 - **装了但没写 = 等于没装 / Installed but empty = not installed** —— 未填写时这一段对最终 prompt
   零贡献，渲染结果逐字节相同。
   > With no text the section contributes nothing to the final prompt; the rendering is byte-for-byte identical.

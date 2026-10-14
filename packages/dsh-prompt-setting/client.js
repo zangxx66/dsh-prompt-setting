@@ -1020,6 +1020,7 @@ window.__ModuleLoader__.load({
       tabHistory: '版本历史',
       tabBackup: '备份与恢复',
       tabAdvanced: '高级',
+      tabUpdateBadge: '有可用更新',
       overviewReservedNote: '「我的 Prompt」那一段不在这里重复显示：它归「我的 Prompt」tab 所有，请到那里查看和编辑。',
       filterHeading: '筛选',
       filterLayer: '来源层',
@@ -1589,6 +1590,7 @@ window.__ModuleLoader__.load({
       tabHistory: 'Version history',
       tabBackup: 'Backup & restore',
       tabAdvanced: 'Advanced',
+      tabUpdateBadge: 'Update available',
       overviewReservedNote: 'The My Prompt section is not repeated here: it belongs to the My Prompt tab, where it is read and written.',
       filterHeading: 'Filters',
       filterLayer: 'Layer',
@@ -2328,11 +2330,29 @@ window.__ModuleLoader__.load({
      * official equal fractions as they are (labels wrapped). The lesson worth
      * keeping: **an equal-fraction control assumes short labels**; long localized
      * labels need a wrapping, content-sized layout instead.
+     *
+     * g-070 keeps the exemption and narrows what it covers. The **first-level**
+     * strip is now its own renderer ({@link mainTabStrip}): plain text with an
+     * underlined selection, the look the operator asked for. `tabs()` below stays
+     * the **chip** family — the「我的 Prompt」layer selector still uses it — so one
+     * function no longer has to speak two visual languages. The first-level strip
+     * is also single-line now (`flex-wrap: nowrap` + `overflow-x: auto`) instead
+     * of wrapping, and it buys that safety from the scroll container rather than
+     * from a wrap: a block-level box with `overflow-x: auto` is only as wide as
+     * its parent says, and the CSS automatic minimum size — the rule that would
+     * let content push it wide — does not apply to a scroll container. Still no
+     * equal fractions and no `max-content` anywhere in it.
      */
 
     /**
      * Render a segmented control — **always hand-built** (see the decision
      * comment above).
+     *
+     * Since g-070 this is the **chip** family only: the「我的 Prompt」layer
+     * selector (`data-tab-group="mine-layer"`) is its one remaining call site,
+     * and the first-level tab bar is {@link mainTabStrip} instead. Both emit the
+     * same markers, so a test that clicks a tab by value does not care which one
+     * drew it.
      *
      * Deliberately *not* a component: it is called during tree building so it
      * emits real host button nodes (role="tab") carrying the `data-tab-*` markers
@@ -2384,6 +2404,214 @@ window.__ModuleLoader__.load({
             item.label,
           ),
         ),
+      );
+    }
+
+    /**
+     * How many presets the library really holds — or `null` when that number is
+     * not known (g-070).
+     *
+     * The count is only ever a **fact this page has already read**: 「还在加载」
+     * /「请求失败」/「库文件读不出来」 all answer `null`, and the tab then renders
+     * no suffix at all. `0` is reserved for a library that really came back
+     * empty, because a `(0)` drawn before the read lands is a number the page
+     * cannot stand behind (CONTRACT §13.4 Revision 51).
+     *
+     * The slot is the main entry's own (`m.presets`): g-060 already has the
+     * library ride the same mount load as the snapshot and the overrides, asked
+     * with the same `?session=` — so this count costs **no** extra request, no
+     * second read and no polling. Choosing that over "ask the presets chunk to
+     * report up" is stated in NOTES §149: the data is already here, and a
+     * cross-chunk report would only be needed for a number the main entry never
+     * had.
+     * @param presets - the page model's preset-library slot (`{phase, data}`).
+     * @returns the entry count, or `null` when unknown.
+     */
+    function presetCountOf(presets) {
+      if (presets === null || presets === undefined || presets.phase !== 'ready') return null;
+      const payload = presets.data;
+      if (payload === null || typeof payload !== 'object') return null;
+      // `GET /presets` answers `200` **with** an `error` field when the library
+      // file cannot be read (CONTRACT §20.9): that is a library problem, not an
+      // empty library, so it may not be shown as `(0)` either.
+      if (payload.error) return null;
+      return Array.isArray(payload.presets) ? payload.presets.length : null;
+    }
+
+    /**
+     * Whether a newer release is on offer — the **objective** state the「高级」
+     * red dot expresses (g-070).
+     *
+     * Deliberately the same test {@link renderUpdateNotice} makes — `latest` is a
+     * non-empty string — minus one term: `dismissed` is **not** consulted here.
+     * Dismissing closes the banner; it cannot un-happen a release, and the dot
+     * exists to keep that fact visible after the banner is gone (CONTRACT §13.4
+     * Revision 51).
+     * @param update - the page model's update slot.
+     * @returns `true` when a newer release is on offer.
+     */
+    function updateOffered(update) {
+      if (update === null || update === undefined) return false;
+      const data = update.data;
+      if (data === null || data === undefined) return false;
+      return typeof data.latest === 'string' && data.latest.length > 0;
+    }
+
+    /**
+     * The **first-level** tab bar: plain text, one line, underlined selection
+     * (g-070).
+     *
+     * A second renderer rather than another branch inside {@link tabs} on
+     * purpose. `tabs()` is shared with the「我的 Prompt」layer selector, which
+     * keeps the chip look, and one function carrying two visual languages is the
+     * drift this split exists to prevent. The two do share every **marker** the
+     * tests and the panel binding read (`role="tablist"` / `role="tab"` /
+     * `aria-selected` / `tabIndex` / `data-tab-group` / `data-tab-key` /
+     * `data-tab-value`), so only the drawing differs.
+     *
+     * The layout, and why each part is what it is:
+     * - **No equal fractions.** Every button is `flex: 0 0 auto` at its own
+     *   label's width — no `flex: 1`, no `grid`, no `repeat(n, …)`, no
+     *   `min-width: max-content`. That is exactly what g-063 caught (labels
+     *   wrapped, then the strip inflated the row; see the decision comment
+     *   above).
+     * - **One line, scrollable.** `flexWrap: 'nowrap'` + `overflowX: 'auto'`
+     *   keeps six Chinese labels on one line and lets the strip scroll sideways
+     *   when the panel is narrower than they are.
+     * - **Nothing widens an ancestor.** The strip is a block-level scroll
+     *   container, so it is only as wide as its parent allocates, and the CSS
+     *   automatic minimum size does not apply to it (it would be `0` for a scroll
+     *   container anyway).
+     * - **The faint rule** under the whole bar is the container's `borderBottom`,
+     *   taken from the weakest border token on the page. The selected tab's 2px
+     *   indicator is drawn `bottom: 0` inside that button, i.e. pressed against
+     *   the rule, with the button's own bottom padding as the gap.
+     * - **Text-only tabs**: no fill, no stroke, no radius. Unselected is the
+     *   secondary label colour, selected is the primary one plus a slightly
+     *   stronger weight.
+     * @param items - `{value, label, count, badge}` entries, in display order.
+     *   `count` is a number or `null` (unknown); `badge` marks the red dot.
+     * @param value - the selected value.
+     * @param onChange - selection callback.
+     * @param label - accessible name for the tab list.
+     * @param badgeText - the readable description the red dot carries.
+     * @returns the tab list element.
+     */
+    function mainTabStrip(items, value, onChange, label, badgeText) {
+      return h(
+        'div',
+        {
+          role: 'tablist',
+          'aria-label': label,
+          'data-tab-group': 'main',
+          style: {
+            display: 'flex',
+            alignItems: 'stretch',
+            flexWrap: 'nowrap',
+            gap: 24,
+            overflowX: 'auto',
+            overflowY: 'hidden',
+            borderBottom: `1px solid ${token.borderL1}`,
+          },
+        },
+        items.map((item) => {
+          const selected = item.value === value;
+          const count = typeof item.count === 'number' ? item.count : null;
+          return h(
+            'button',
+            {
+              key: item.value,
+              type: 'button',
+              role: 'tab',
+              'aria-selected': selected,
+              tabIndex: selected ? 0 : -1,
+              'data-tab-key': 'main',
+              'data-tab-value': item.value,
+              onClick: () => onChange(item.value),
+              style: {
+                // The tab itself is text: the fill/stroke pair `tabs()` draws
+                // belongs to the chip family, not to this bar.
+                position: 'relative',
+                flex: '0 0 auto',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                margin: 0,
+                padding: '6px 0 10px',
+                font: 'inherit',
+                fontSize: 13,
+                lineHeight: '20px',
+                fontWeight: selected ? 600 : 400,
+                // One line per label, always: the strip scrolls instead.
+                whiteSpace: 'nowrap',
+                color: selected ? token.labelPrimary : token.labelSecondary,
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                // The shell's own focus ring is drawn inset
+                // (`outline-offset: -2px`), so it stays visible inside the
+                // scrolling box instead of being clipped by `overflow`.
+                outlineOffset: -2,
+              },
+            },
+            item.label,
+            count === null
+              ? null
+              : h(
+                  'span',
+                  {
+                    key: 'count',
+                    'data-role': 'tab-count',
+                    style: {
+                      fontSize: 11,
+                      lineHeight: '16px',
+                      fontWeight: 'inherit',
+                      // One step weaker than the label's own colour — a token,
+                      // never a second palette.
+                      color: selected ? token.labelSecondary : token.labelTertiary,
+                    },
+                  },
+                  ` (${count})`,
+                ),
+            item.badge !== true
+              ? null
+              : h('span', {
+                  key: 'badge',
+                  'data-role': 'tab-update-dot',
+                  role: 'img',
+                  // Readable in both channels: the tooltip for a pointer, and the
+                  // text alternative the dot contributes to the tab's own name
+                  // (「高级 有可用更新」) — a bare decorative dot would say nothing.
+                  title: badgeText,
+                  'aria-label': badgeText,
+                  style: {
+                    flex: '0 0 auto',
+                    width: 7,
+                    height: 7,
+                    borderRadius: '50%',
+                    background: token.stateError,
+                  },
+                }),
+            selected
+              ? h('span', {
+                  key: 'indicator',
+                  'data-role': 'tab-indicator',
+                  'data-tab-indicator': item.value,
+                  'aria-hidden': 'true',
+                  style: {
+                    position: 'absolute',
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    height: 2,
+                    borderRadius: 1,
+                    background: token.stateBusiness,
+                    pointerEvents: 'none',
+                  },
+                })
+              : null,
+          );
+        }),
       );
     }
 
@@ -8443,6 +8671,13 @@ window.__ModuleLoader__.load({
       // (see renderPromptBlock), not a page-level card of its own. It stays
       // above the tabs, and the tab bar still keeps the last-but-one slot.
       children.push(renderPromptBlock(t, m, a));
+      // g-070: the two decorations the first-level bar carries, both read as
+      // facts rather than assumed: the preset library's real entry count
+      // (`null` ⇒ no suffix at all, never a false `(0)`) and whether a newer
+      // release is on offer (the banner's own test, minus its dismissal — see
+      // `updateOffered`).
+      const presetCount = presetCountOf(m.presets);
+      const updateDot = updateOffered(m.update);
       children.push(
         h(
           'div',
@@ -8450,14 +8685,13 @@ window.__ModuleLoader__.load({
             key: 'tabs',
             'data-region': 'tabs',
             'data-active-tab': m.tab,
-            // No `overflow` here any more (real-machine round 3): the strip is
-            // hand-built again and lays out with `flex-wrap`, so it never
-            // overflows this box, and the `overflow-x: auto` of round 2 could not
-            // absorb the official control's forced natural width anyway (the
-            // widened box was an ancestor, not just this one — see the tab
-            // decision comment in `tabs()`).
+            // No `overflow` here: since g-070 the scroll container **is** the
+            // tablist rendered below (`mainTabStrip`), and the wrapper stays a
+            // plain block so nothing about the strip's width reaches an ancestor.
+            // The g-063 rounds 1–3 note this line used to carry is kept in the
+            // decision comment above `tabs()`.
           },
-          tabs(
+          mainTabStrip(
             MAIN_TABS.map((value) => ({
               value,
               label: t(
@@ -8473,13 +8707,20 @@ window.__ModuleLoader__.load({
                           ? 'tabBackup'
                           : 'tabAdvanced',
               ),
+              // The two identity fields the items have always carried (`tabs()`
+              // does not read them either); kept so the item contract around
+              // `MAIN_TABS` is unchanged in this batch.
               id: `ps-tab-${value}`,
               panelId: 'ps-tab-panel',
+              // g-070: the count hangs off「我的预设」, the red dot off「高级」 —
+              // the two tabs the operator named, and no others.
+              count: value === 'presets' ? presetCount : null,
+              badge: value === 'advanced' && updateDot,
             })),
             m.tab,
             a.setTab,
             t('title'),
-            'main',
+            t('tabUpdateBadge'),
           ),
         ),
       );

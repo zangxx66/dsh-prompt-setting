@@ -3150,7 +3150,7 @@ test('client: g-061 — three ghost-button families, and not one drift repaired 
   );
 
   const entry = readFileSync(join(here, '..', 'client.js'), 'utf8');
-  assert.equal(occurrencesOf(entry, 'chipButtonStyle({'), 3, 'the fallback tab, the pinned entries and the search fallback');
+  assert.equal(occurrencesOf(entry, 'chipButtonStyle({'), 3, 'the layer selector, the pinned entries and the search fallback');
   assert.equal(occurrencesOf(entry, 'miniButtonStyle({'), 1, '「显示更多」 — the row family is the session row');
   const history = chunkCode(readFileSync(join(here, '..', 'client.history.js'), 'utf8'));
   assert.equal(occurrencesOf(history, 'miniButtonStyle({'), 3, 'the two side buttons, the pager and the scope option row');
@@ -3163,10 +3163,13 @@ test('client: g-061 — three ghost-button families, and not one drift repaired 
     assert.equal(code.includes('borderRadius: 999'), false, `${name}: the pill radius is not spelled out again`);
   }
 
-  // Rendered, chip by chip. The tabs are this factory's own control under every
+  // Rendered, chip by chip. `tabs()` is this factory's own control under every
   // renderer (g-063 H2: the Host's `SegmentedTabs` divides its width into equal
   // fractions, which six long Chinese labels do not fit), so the pill below is
-  // the one the page really draws.
+  // the one the page really draws. Since g-070 the chip family's rendered call
+  // site is the「我的 Prompt」layer selector (`data-tab-key="mine-layer"`) — the
+  // first-level bar is `mainTabStrip()`'s plain text and is asserted separately —
+  // so this pair reads the pills off that group.
   const page = makeOpenPage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
   const tree = await page.flush();
   const chip = {
@@ -3177,14 +3180,22 @@ test('client: g-061 — three ghost-button families, and not one drift repaired 
     borderRadius: 999,
     cursor: 'pointer',
   };
-  const tabButton = (value) => findOne(tree, (node) => node.type === 'button' && node.props['data-tab-value'] === value);
+  const layerTab = (selected) =>
+    findOne(
+      tree,
+      (node) =>
+        node.type === 'button' &&
+        node.props['data-tab-key'] === 'mine-layer' &&
+        node.props['aria-selected'] === selected,
+      `the ${selected ? 'selected' : 'unselected'} layer chip`,
+    );
   assert.deepEqual(
-    { ...tabButton('mine').props.style },
+    { ...layerTab(true).props.style },
     { ...chip, color: token.buttonLabel, background: token.buttonFill, border: '1px solid transparent' },
-    'the selected fallback tab keeps the button fill under a transparent stroke',
+    'the selected layer chip keeps the button fill under a transparent stroke',
   );
   assert.deepEqual(
-    { ...tabButton('presets').props.style },
+    { ...layerTab(false).props.style },
     { ...chip, color: token.labelSecondary, background: 'transparent', border: `1px solid ${token.borderL2}` },
     'and the unselected one keeps the **secondary** text the other two chips do not use',
   );
@@ -10311,6 +10322,24 @@ const EN_SWEEP_CASES = [
     },
   },
   {
+    // g-070: the first-level bar's two new decorations. Both are copy-bearing
+    // (`tabUpdateBadge` is a `title`/`aria-label`), so they belong in the sweep:
+    // a hardcoded Chinese tooltip on the dot is exactly the leak this catches.
+    name: 'the first-level bar carries the preset count and the update dot',
+    marks: [
+      ['data-role', 'tab-count'],
+      ['data-role', 'tab-update-dot'],
+      ['data-tab-group', 'main'],
+    ],
+    copy: ['tabPresets', 'tabUpdateBadge'],
+    async run() {
+      const page = enPage({
+        responses: defaultResponses({ [PATHS.updateCheck]: { payload: updateAvailableFixture() } }),
+      });
+      return [await page.flush()];
+    },
+  },
+  {
     name: 'the render-failure card falls back to readable copy, never a blank',
     marks: [['data-render-state', 'error'], ['data-renderer', 'fallback']],
     raw: ['render failure', 'Error'],
@@ -10339,6 +10368,11 @@ const EN_REQUIRED_MARKERS = [
   // split 「历史与备份」 into 「版本历史」 and 「备份与恢复」.
   'data-region=tabs',
   'data-region=tab-panel',
+  // g-070: the two decorations on the first-level bar — a count on「我的预设」
+  // and a red dot on「高级」. Both are copy-bearing (the dot through
+  // `title`/`aria-label`), so both must be walked by the en sweep.
+  'data-role=tab-count',
+  'data-role=tab-update-dot',
   'data-active-tab=mine',
   'data-active-tab=overview',
   'data-active-tab=history',
@@ -14796,12 +14830,15 @@ function styleRecordingDocument() {
 }
 
 test('client: the tab strip stays hand-built on a primitives Host, and injects nothing (g-063 H2)', async () => {
+  const token = loadClient('throw').module.__internals.shared.token;
   // Real-machine rounds 1–3 retired the official `SegmentedTabs` here: its
   // premise is "equal fractions of my own width", which with six long Chinese
   // labels either crushes them (labels wrapped) or inflates the strip until it
-  // pushed the row out of the panel. The hand-built `flex-wrap` strip is the
-  // layout this page used for its whole life and never drew a complaint, so the
-  // tabs stay ours **on purpose** while every other Host atom is still used.
+  // pushed the row out of the panel. The hand-built strip is the layout this page
+  // used for its whole life and never drew a complaint, so the tabs stay ours
+  // **on purpose** while every other Host atom is still used. Since g-070 it is
+  // `mainTabStrip()`: content-sized, single-line and scrollable (see the layout
+  // assertions below).
   const { appended, doc } = styleRecordingDocument();
   const page = makePage({ primitives: 'ok', responses: defaultResponses(), document: doc });
   const tree = await page.flush();
@@ -14822,8 +14859,24 @@ test('client: the tab strip stays hand-built on a primitives Host, and injects n
   // carrying the markers the rest of the suite clicks and asserts on.
   const strip = tabList(tree).props.children;
   assert.equal(strip.props.role, 'tablist', 'the hand-built tab list is what is rendered');
-  assert.equal(strip.props.style.flexWrap, 'wrap', 'content-sized wrapping layout, not equal fractions');
+  // g-070: the first-level bar is single-line, not wrapping (the operator's
+  // reference look). The safety that `flex-wrap` used to provide is bought from
+  // the scroll container instead — and the two properties below are what keep
+  // the widest label from ever reaching an ancestor: a scroll container is as
+  // wide as its parent says, and its automatic minimum size is 0.
+  assert.equal(strip.props.style.flexWrap, 'nowrap', 'one line: no wrapping, no equal fractions');
+  assert.equal(strip.props.style.overflowX, 'auto', 'and the strip scrolls sideways instead of widening');
+  assert.equal(strip.props.style.gap, 24, 'the tab-to-tab gap the reference shows (~20–28px)');
+  assert.equal(strip.props.style.borderBottom, `1px solid ${token.borderL1}`, 'the faint rule under the whole bar');
   assert.deepEqual(mainTabs(tree), ['mine', 'presets', 'overview', 'history', 'backup', 'advanced']);
+  // No button may be an equal fraction of the strip, and none may size itself by
+  // its own `max-content` (the two shapes g-063 caught).
+  for (const node of collect(tree, (candidate) => candidate.type === 'button' && candidate.props['data-tab-key'] === 'main')) {
+    assert.equal(node.props.style.flex, '0 0 auto', `tab ${node.props['data-tab-value']} is sized by its own label`);
+    assert.equal(node.props.style.whiteSpace, 'nowrap', `tab ${node.props['data-tab-value']} never wraps its label`);
+    assert.equal(node.props.style.border, 'none', `tab ${node.props['data-tab-value']} is plain text, not a chip`);
+    assert.equal(node.props.style.background, 'transparent', `tab ${node.props['data-tab-value']} has no fill`);
+  }
 
   // Switching tabs still works, and still injects nothing.
   await openTab(page, 'overview');
@@ -14842,4 +14895,174 @@ test('client: the tab strip is hand-built under the fallback renderer too (g-063
     'and no official control was rendered',
   );
   assert.deepEqual(mainTabs(tree), ['mine', 'presets', 'overview', 'history', 'backup', 'advanced']);
+});
+
+/** The one tab button of one group carrying a value. */
+function groupTab(tree, group, value) {
+  return findOne(
+    tree,
+    (node) =>
+      node.type === 'button' &&
+      node.props['data-tab-key'] === group &&
+      node.props['data-tab-value'] === value,
+    `tab ${group}=${value}`,
+  );
+}
+
+/** Every first-level underline indicator currently drawn. */
+function tabIndicators(tree) {
+  return collect(tree, (node) => node.props && node.props['data-role'] === 'tab-indicator');
+}
+
+/** Every preset-count suffix currently drawn. */
+function tabCounts(tree) {
+  return collect(tree, (node) => node.props && node.props['data-role'] === 'tab-count');
+}
+
+/** Every update red dot currently drawn. */
+function tabDots(tree) {
+  return collect(tree, (node) => node.props && node.props['data-role'] === 'tab-update-dot');
+}
+
+test('client: the first-level bar is plain text with an underline, and the layer chips are untouched (g-070)', async () => {
+  const token = loadClient('throw').module.__internals.shared.token;
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+
+  // The strip's own markers are unchanged (the tests and the panel binding read
+  // them); only the drawing is new.
+  const strip = tabList(tree).props.children;
+  assert.equal(strip.props.role, 'tablist');
+  assert.equal(strip.props['data-tab-group'], 'main', 'the first-level group marker survives');
+  assert.equal(strip.props['aria-label'], page.text.title);
+
+  // Plain text, not a chip: no fill, no stroke, no pill — and the selection is
+  // carried by colour, weight and the underline below.
+  const selected = groupTab(tree, 'main', 'mine');
+  const unselected = groupTab(tree, 'main', 'presets');
+  assert.equal(selected.props['aria-selected'], true);
+  assert.equal(selected.props.tabIndex, 0);
+  assert.equal(unselected.props['aria-selected'], false);
+  assert.equal(unselected.props.tabIndex, -1);
+  assert.equal(selected.props.style.color, token.labelPrimary, 'the selected label is the bright one');
+  assert.equal(unselected.props.style.color, token.labelSecondary, 'the rest carry the secondary colour');
+  for (const value of ['mine', 'presets', 'overview', 'history', 'backup', 'advanced']) {
+    const tab = groupTab(tree, 'main', value);
+    assert.equal(tab.props.role, 'tab', `${value}: still a tab`);
+    assert.equal(tab.props.style.background, 'transparent', `${value}: no fill`);
+    assert.equal(tab.props.style.border, 'none', `${value}: no stroke`);
+    assert.equal(tab.props.style.borderRadius, undefined, `${value}: no pill`);
+  }
+
+  // Exactly one underline, under the selected label, pressed against the bar's
+  // bottom rule, in an accent token.
+  const indicators = tabIndicators(tree);
+  assert.equal(indicators.length, 1, 'exactly one underline is drawn');
+  assert.equal(indicators[0].props['data-tab-indicator'], 'mine');
+  assert.equal(indicators[0].props.style.height, 2);
+  assert.equal(indicators[0].props.style.bottom, 0, 'it sits on the bar’s bottom rule');
+  assert.equal(indicators[0].props.style.background, token.stateBusiness, 'accent token, no literal colour');
+
+  // The「我的 Prompt」layer selector is a different control and keeps the chip
+  // family it has always had (g-070 changes the first-level bar only).
+  const layerGroup = oneBy(tree, 'data-tab-group', 'mine-layer');
+  assert.equal(layerGroup.props.role, 'tablist');
+  assert.equal(layerGroup.props.style.flexWrap, 'wrap', 'the layer selector still wraps its chips');
+  const layerChips = collect(tree, (node) => node.type === 'button' && node.props['data-tab-key'] === 'mine-layer');
+  assert.equal(layerChips.length, 2, 'two layers, two chips');
+  for (const chip of layerChips) {
+    assert.equal(chip.props.style.borderRadius, 999, 'the layer selector is still the pill family');
+    assert.notEqual(chip.props.style.border, 'none', 'and still draws its stroke');
+  }
+
+  // Switching tabs moves the underline — it is not painted on a fixed slot.
+  tree = await openTab(page, 'advanced');
+  const moved = tabIndicators(tree);
+  assert.equal(moved.length, 1);
+  assert.equal(moved[0].props['data-tab-indicator'], 'advanced');
+  assert.equal(groupTab(tree, 'main', 'advanced').props['aria-selected'], true);
+  assert.equal(groupTab(tree, 'main', 'mine').props['aria-selected'], false);
+});
+
+test('client: the「我的预设」count is the real library size and never a false (0) (g-070)', async () => {
+  // A library with entries: the suffix is drawn, on the presets tab and nowhere
+  // else, and it is that library's real size.
+  const page = makePage({ responses: defaultResponses() });
+  const tree = await page.flush();
+  const counts = tabCounts(tree);
+  assert.equal(counts.length, 1, 'one tab carries a count');
+  assert.equal(strings(counts[0]).join(''), ' (2)', 'the fixture holds two presets');
+  assert.equal(
+    collect(groupTab(tree, 'main', 'presets'), (node) => node.props && node.props['data-role'] === 'tab-count').length,
+    1,
+    'and it hangs off 「我的预设」',
+  );
+
+  // A library that really is empty says (0): that is a fact, not a placeholder.
+  const empty = makePage({
+    responses: defaultResponses({ [PATHS.presets]: { payload: presetsFixture({ presets: [] }) } }),
+  });
+  const emptyTree = await empty.flush();
+  assert.equal(strings(tabCounts(emptyTree)[0]).join(''), ' (0)', 'an empty library answers (0) honestly');
+
+  // Every unknown state — failed read, unreadable library file, a payload that
+  // carries no list at all — draws **no** suffix, and certainly not a false (0).
+  const unknown = [
+    ['a failed read', new Error('network down')],
+    ['an unreadable library', { payload: { ok: true, error: { code: 'presets-library-unreadable', message: 'nope' } } }],
+    ['a payload with no list', { payload: { ok: true } }],
+  ];
+  for (const [label, response] of unknown) {
+    const unknownPage = makePage({ responses: defaultResponses({ [PATHS.presets]: response }) });
+    const unknownTree = await unknownPage.flush();
+    assert.equal(tabCounts(unknownTree).length, 0, `${label}: no count is drawn at all`);
+    assert.equal(
+      strings(tabList(unknownTree)).join('').includes('(0)'),
+      false,
+      `${label}: and certainly not a false (0)`,
+    );
+    assert.equal(
+      collect(unknownTree, (node) => node.type === 'button' && node.props['data-tab-key'] === 'main').length,
+      6,
+      `${label}: the bar itself is still complete`,
+    );
+  }
+});
+
+test('client: the「高级」red dot tracks a newer release and outlives a dismissed banner (g-070)', async () => {
+  const token = loadClient('throw').module.__internals.shared.token;
+  // No release upstream: no dot anywhere, and the tab bar is otherwise intact.
+  const quiet = makePage({ responses: defaultResponses() });
+  const quietTree = await quiet.flush();
+  assert.equal(tabDots(quietTree).length, 0, 'no release ⇒ no dot');
+  assert.equal(updateBanner(quietTree).length, 0, 'and no banner either');
+
+  // A confirmed newer release: the banner is up and the dot rides「高级」.
+  const page = makePage({
+    responses: defaultResponses({ [PATHS.updateCheck]: { payload: updateAvailableFixture() } }),
+  });
+  let tree = await page.flush();
+  assert.equal(updateBanner(tree).length, 1, 'the banner is up too');
+  const dots = tabDots(tree);
+  assert.equal(dots.length, 1, 'exactly one dot');
+  const advancedTab = groupTab(tree, 'main', 'advanced');
+  assert.equal(
+    collect(advancedTab, (node) => node.props && node.props['data-role'] === 'tab-update-dot').length,
+    1,
+    'the dot is inside the「高级」tab button',
+  );
+  assert.equal(dots[0].props.style.background, token.stateError, 'the danger token, not a literal red');
+  assert.equal(dots[0].props.title, page.text.tabUpdateBadge);
+  assert.equal(dots[0].props['aria-label'], page.text.tabUpdateBadge);
+  assert.ok(page.text.tabUpdateBadge.trim().length > 0, 'and that description is real copy');
+  // The tab is still readable: its own name comes first, the dot's description
+  // follows it, and neither is a bare glyph.
+  assert.equal(advancedTab.props.children[0], page.text.tabAdvanced);
+
+  // Dismissing closes the banner. It does not clear the dot: the release did not
+  // un-happen, so the objective state stays visible (CONTRACT §13.4).
+  clickButton(tree, { 'data-action': 'update-dismiss' });
+  tree = page.draw();
+  assert.equal(updateBanner(tree).length, 0, 'the banner is gone');
+  assert.equal(tabDots(tree).length, 1, 'the dot is not');
 });

@@ -119,6 +119,7 @@
   "tabHistory": "版本历史",
   "tabBackup": "备份与恢复",
   "tabAdvanced": "高级",
+  "tabUpdateBadge": "有可用更新",
   "overviewReservedNote": "「我的 Prompt」那一段不在这里重复显示：它归「我的 Prompt」tab 所有，请到那里查看和编辑。",
   "filterHeading": "筛选",
   "filterLayer": "来源层",

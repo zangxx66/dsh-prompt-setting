@@ -1916,6 +1916,13 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   third real-machine round removed the official `SegmentedTabs` branch and the
   `display: contents` wrapper that used to carry the group marker for it — §13.4
   Revision 49);
+- the first-level bar's two decorations are machine-readable too (Revision 51,
+  g-070): the selected tab carries `data-role="tab-indicator"` with
+  `data-tab-indicator="<value>"` (the 2px underline), 「我的预设」carries
+  `data-role="tab-count"` when — and only when — the library's size is actually
+  known, and 「高级」carries `data-role="tab-update-dot"` when a newer release is
+  on offer (independent of the banner's dismissal). All three live **inside** the
+  tab buttons, so the tablist's own markers are untouched;
 - exactly **one** tab panel is rendered: `data-region="tab-panel"` with
   `data-tab-value="<value>"`. Switching a tab renders that tab's panel and no
   other tab's top-level regions. In particular the export/import actions
@@ -2657,10 +2664,12 @@ by accident — the tests assert the values rather than the family's agreement.
   factory;
 - **three ghost-button families, and the row family with them.**
   `chipButtonStyle({cursor, color, background, border})` is the pill (a 999
-  radius, `'3px 10px'`): the fallback tab, the two pinned entries and the
+  radius, `'3px 10px'`): the layer selector, the two pinned entries and the
   「使用这串 id」fallback. The unselected text colour really differs —
-  `labelSecondary` on the tabs, `labelPrimary` on the other two — so it is an
-  argument, and so are the selected fill and the stroke.
+  `labelSecondary` on the layer selector, `labelPrimary` on the other two — so it
+  is an argument, and so are the selected fill and the stroke. (Revision 51 moved
+  the first-level tab bar off this factory: it is plain text now, drawn by
+  `mainTabStrip()` — see §13.4.)
   `miniButtonStyle({padding, color, background, border, lineHeight, textAlign})`
   is the radius-6 tool-strip button:「显示更多」, the history row's side buttons,
   the pager, the overview's expand toggle and one option row of the history scope
@@ -2673,8 +2682,10 @@ by accident — the tests assert the values rather than the family's agreement.
   **That two-renderer caveat is gone as of g-063's third real-machine round**: the
   tab strip is hand-built under **both** renderers (the Host's `SegmentedTabs`
   divides its own width into equal fractions, which six long Chinese labels do not
-  fit — §13.4 Revision 49), so this factory is now the tab strip's only shape and
-  the two renderers' tabs do look alike;
+  fit — §13.4 Revision 49), so both renderers draw the same strip and the tabs do
+  look alike. Revision 51 split that hand-built strip into two renderers of its
+  own — `tabs()` for this chip family, `mainTabStrip()` for the plain-text
+  first-level bar — and both are still hand-built, so the exemption is unchanged;
 - **one session row, with its ARIA left exactly where it was.**
   `sessionRowStyle({padding, hovered, focused, selected, active})` is the paint
   the windowed tree row and the flat fallback row share: the 12px/18px type over
@@ -3481,7 +3492,7 @@ code means rather than how it is written:
     ancestor. The symptom is real; the cause is **unproven** pending a
     real-machine DOM inspection.
 
-  Therefore **`tabs()` always renders the hand-built strip** and the official
+  Therefore the tab strip is **always hand-built** and the official
   `SegmentedTabs` is deliberately **exempt** here: `flex-wrap` sizes every button
   to its own label and moves a row that does not fit to the next line, which is
   the layout this page used before g-063 and the only one that drew no complaint.
@@ -3492,11 +3503,67 @@ code means rather than how it is written:
   `overflow-x` are **removed**; two rules were no-ops under that inline column
   definition anyway (`grid-auto-flow`, `grid-auto-columns`), and no test may claim
   otherwise. Lesson kept for the future: **an equal-fraction control assumes short
-  labels**; long localized labels need a content-sized wrapping layout. Rejected
+  labels**; long localized labels need a content-sized layout. Rejected
   repairs, on the record: `min-width: max-content` (inflated tabs, plus an
   overflow whose path is unexplained), `white-space: nowrap` alone (labels
   overflow or overlap their cells), and leaving the official equal fractions as
   they are (labels wrapped).
+  **Revision 51 (g-070) — two renderers, and the first-level bar is plain text:**
+  `tabs()` drew the whole page's tabs until this revision. It now draws the
+  **chip family** only (its rendered call site is the「我的 Prompt」layer
+  selector, `data-tab-group="mine-layer"`), and the first-level bar is its own
+  function, `mainTabStrip()`. The split is deliberate: one function carrying two
+  visual languages is the drift it prevents, and the layer selector must not move.
+  What the first-level bar is, and why:
+  - **Plain text.** No fill, no stroke, no radius — the chip's selected
+    fill/stroke pair belongs to the other family. Unselected labels take
+    `labelSecondary`, the selected one `labelPrimary` plus a stronger weight.
+  - **A 2px underline indicator on the selected tab**, drawn `bottom: 0` inside
+    that button (the button's own bottom padding is the gap) and in
+    `stateBusiness`, the accent token the sidebar already tints active rows with.
+    It is marked `data-role="tab-indicator"` with `data-tab-indicator="<value>"`,
+    so a test asserts both its existence and *which* tab it belongs to.
+  - **A faint rule under the whole bar**: the strip's own `borderBottom`, taken
+    from the weakest border token on the page (`borderL1`). Everything here is a
+    theme token; there is no literal colour in the bar.
+  - **Single line, scrollable — not wrapping, and still not equal fractions.**
+    The bar is `flex-wrap: nowrap` + `overflow-x: auto`, and every button is
+    `flex: 0 0 auto` at its own label's width. There is **no** `flex: 1`, no
+    `grid`, no `repeat(n, …)` and no `min-width: max-content`: those are the two
+    shapes g-063 caught (labels wrapped; the strip then inflated the row). A
+    block-level scroll container is only as wide as its parent allocates and the
+    CSS automatic minimum size does not apply to it, so the widest label cannot
+    reach an ancestor — which is why this buys the same safety `flex-wrap` did,
+    on one line instead of two. `tabs()` keeps its `flex-wrap` for the chip
+    family, where the labels are two short ones.
+  - **A count on「我的预设」, and only there.** The visible text is
+    `我的预设 (N)` / `My presets (N)` — the label, then a slightly smaller,
+    slightly weaker ` (N)` span marked `data-role="tab-count"`. `N` is the
+    library's **real** entry count, read from the main entry's own `m.presets`
+    slot, which g-060 already loads on mount with the same `?session=` as the
+    snapshot (§20.2): the count therefore costs **no** extra request, no second
+    read and no polling. `N` is drawn only when the read really landed
+    (`phase === 'ready'`, a payload that is not a library error, an actual
+    `presets` array). 「还在加载」/「请求失败」/「库文件读不出来」 all draw **no**
+    suffix at all: **a `(0)` this page cannot stand behind must never appear**,
+    and `(0)` is reserved for a library that really came back empty.
+  - **A red dot on「高级」, and only there.** A 7px dot in `stateError` (the
+    danger token; no literal red), marked `data-role="tab-update-dot"`, sitting
+    after the label in the button's flex line. It carries **both** a `title` and
+    an `aria-label` — the localized `tabUpdateBadge`（有可用更新 / Update
+    available）— so the dot has a readable description and the tab's accessible
+    name degrades to 「高级 有可用更新」 rather than to a bare glyph. Its
+    condition is the update banner's own test — `update.latest` is a non-empty
+    string (§17.2) — **minus one term**: `dismissed` is deliberately *not*
+    consulted. Dismissing closes the banner (§17.10); it cannot un-happen the
+    release, so the dot survives the dismissal on purpose (asserted both ways).
+  - **What did not move.** The markers the tests and the panel binding read are
+    unchanged: `role="tablist"` / `role="tab"` / `aria-selected` / `tabIndex` /
+    `data-tab-group` / `data-tab-key` / `data-tab-value`, the six values and
+    their order, `data-active-tab`, the panel binding, and the layer selector's
+    own group with its chip look. The focus ring is left to the Host's default
+    with `outline-offset: -2px` (the shell's own inset offset), so it stays
+    visible inside the scrolling box.
 
 ### 13.5 Second confirmation is required
 
@@ -6926,8 +6993,8 @@ re-report it.
 
 ## 22. The locale dictionaries (g-066, Revision 49)
 
-Every user-visible string this plugin renders — **566** keys per language since
-g-069 (Revision 50; 564 through Revision 49) — used to
+Every user-visible string this plugin renders — **567** keys per language since
+g-070 (Revision 51; 566 through Revision 50, 564 through Revision 49) — used to
 be hardcoded inside `client.js`: a 513-key `zh` object, a 513-key `en` object,
 and an `ERROR_TEXT` table of 51 `code → [zh, en]` rows that a loop expanded into
 `error.<code>` entries. The copy now lives in two JSON files, and the inlined
@@ -6936,10 +7003,10 @@ objects are a generated artifact.
 ### 22.1 Source of truth
 
 - `locale/zh.json` and `locale/en.json` are the **only** human source. Each
-  holds exactly 566 string values: the 515 main keys plus 51 `error.<code>`
+  holds exactly 567 string values: the 516 main keys plus 51 `error.<code>`
   keys. Keys are identical between the two files, **in the same order** (the
   order is what the generated block follows, so a reordered file is a
-  515-line diff rather than a copy change).
+  516-line diff rather than a copy change).
 - Nothing else in the package is hand-edited for copy. `client.js` carries the
   blocks inside the `// #region generated: locale/zh.json + locale/en.json`
   … `// #endregion` span; a hand edit there is overwritten by the next `--write`
@@ -6970,7 +7037,7 @@ there is no network surface. What changed is only who maintains the bytes.
 | `scripts/locale-pack.mjs --write` | Re-renders both blocks from the JSON. Idempotent: a second run changes nothing. |
 | `scripts/locale-pack.mjs --check` | Fails (exit 1) when a block is not byte-for-byte what `--write` would produce. |
 | `scripts/prepare.mjs` → `LOCALE-SYNC` | The same check on the **install/publish** path, plus a `files` allowlist test for both JSONs (a source that does not ship cannot be re-derived from the installed package). |
-| `test/locale.test.mjs` | Key parity, the 515 + 51 split, no new placeholder drift, byte equality with `--write`, a negative control (one drifted character is refused), and that the delivery shape is still a classic script with a synchronous register. |
+| `test/locale.test.mjs` | Key parity, the 516 + 51 split, no new placeholder drift, byte equality with `--write`, a negative control (one drifted character is refused), and that the delivery shape is still a classic script with a synchronous register. |
 
 ### 22.4 Error codes
 

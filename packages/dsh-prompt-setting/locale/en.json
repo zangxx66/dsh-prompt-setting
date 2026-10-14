@@ -119,6 +119,7 @@
   "tabHistory": "Version history",
   "tabBackup": "Backup & restore",
   "tabAdvanced": "Advanced",
+  "tabUpdateBadge": "Update available",
   "overviewReservedNote": "The My Prompt section is not repeated here: it belongs to the My Prompt tab, where it is read and written.",
   "filterHeading": "Filters",
   "filterLayer": "Layer",

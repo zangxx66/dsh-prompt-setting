@@ -51,6 +51,14 @@ Settings gains a **"Prompt settings"** pane (`id: prompt-setting`) with six top-
 > All UI copy follows DSH's language setting: switch DSH to Chinese and this page turns Chinese, with no
 > refresh or restart.
 
+> **The tab bar itself.** The six top-level tabs are plain text — no fill, no border, no equal-width
+> columns. The selected one carries a short underline pressed against the faint rule under the bar, and
+> the bar stays on **one line**, scrolling sideways when the panel is narrower than the labels (it never
+> widens the page). 「My presets」shows its library size as `(N)` — and shows **no** number until that
+> size is really known, so a placeholder `(0)` can never appear. 「Advanced」shows a small red dot while
+> a newer release is on offer; dismissing the update banner does **not** clear the dot, because the dot
+> states a fact while the banner is only a notice.
+
 ### Network access: it checks for updates once (and you can turn it off)
 
 When the settings page opens, the **host** (Node side) sends one `GET` to

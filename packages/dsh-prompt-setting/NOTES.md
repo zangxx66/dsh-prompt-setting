@@ -253,6 +253,13 @@ g-062 用「渲染分支与 toast 能力解耦」绕开了连带问题，本节�
 `min-width:max-content`（撑宽 ⇒ 过大，溢出路径未明）、只用 `white-space:nowrap`（⇒ 溢出列格/重叠）、沿用官方等分列（⇒ 折行）、
 以及两条在当前宿主下为 no-op 的 `grid-auto-flow`/`grid-auto-columns`（inline 显式列已足、无隐式列、inline 优先级更高）。
 
+**Revision 51（g-070）补记**：上面的「自绘」定案不变，但自绘从此**分两个渲染器**：`tabs()` 只画 **chip 家族**
+（现在唯一的渲染调用点是「我的 Prompt」里的层选择器 `data-tab-group="mine-layer"`），一级 tab 条改为
+`mainTabStrip()` —— 纯文字 + 选中项下划线 + 底部淡分隔线，且是**单行横向滚动**（`flex-wrap:nowrap` +
+`overflow-x:auto`，每个按钮 `flex:0 0 auto`）而不是换行。安全性没有因此丢掉：块级滚动容器只占父级给它的宽度，
+CSS automatic minimum size 对它不适用，所以最宽的标签也够不到祖先（等分列与 `max-content` 仍然**一个都没有**）。
+详见 §149。
+
 **官方先例调研（谁给 SegmentedTabs 传什么 className）**：官方在宿主包里**只有一个调用方**
 （`@deepseek-ai/dsh-client-ui-agent-preset` 的预设引导对话框），写法是
 `className: PresetGuideDialog_module_css_default.guideTabs` —— 传**调用方自己的 CSS module 类**（该包内联 CSS 字符串
@@ -8691,3 +8698,87 @@ classic `<script>` 自注册 CJS 工厂，宿主对字节**零转译**；插件�
 - 手改 `applied` 记录里 `workspaceRoot` 非字符串/空的极端情形未加专门用例（现有实现会按
   `workspaceConfigPath` 解析并让预检拒绝，方向是「拒绝而不是越权写」）。
 
+## 149. g-070：一级 tab 换成参考图语言（纯文字 + 选中下划线 + 计数 + 更新红点）（Revision 51，2026-10-15，基线 `405927f` 隔离工作树 `g-070-att-01`）
+
+**需求（负责人 2026-10-15 下达 + 两轮问答确认）**：把设置页**主 tab**（`data-tab-group="main"`）的视觉换成
+参考图样式 —— 深色底上一行**纯文字** tab、未选中暗灰、选中变亮且**下方一条短下划线**、整条栏底有**极淡分隔线**；
+「我的预设」带计数后缀 `(N)`（N = 预设库实际条数），「高级」在**存在可用新版本**时带一个红色小圆点。
+无背景块、无边框、**不等分列宽**。功能语义、tab 名称与顺序一律不动。
+
+**只改主 tab，不动 mine-layer**：`tabs()` 从 g-063 起是自绘的 chip 家族。本次**不往 `tabs()` 里塞分支**，
+而是新增独立渲染器 `mainTabStrip()`（`client.js`）：一个函数说两种视觉语言正是要防的漂移。`tabs()` 保留原样，
+其唯一渲染调用点变成「我的 Prompt」面板里的层选择器（另有 presets chunk 的 `preset-mode` 等调用点走
+`__internals.shared.tabs`），因此 `chipButtonStyle({` 的出现次数仍是 3，测试里的「选中 chip / 未选中 chip」两条
+断言改从 `data-tab-key="mine-layer"` 的按钮上读。
+
+**布局（这是本次最容易出事的一处，写清依据）**：一级条 `display:flex` + `flex-wrap:nowrap` + `gap:24` +
+`overflow-x:auto`，每个按钮 `flex:0 0 auto`、`white-space:nowrap`、`padding:'6px 0 10px'`。于是：
+① 六个中文标签**永远单行**，窄容器横向滚动；② 每个按钮按自己标签的宽度，**没有** `flex:1`、`grid`、
+`repeat(n,…)`、`min-width:max-content`（g-063 那两次事故的形状一个都没回来）；③ 撑不宽祖先 —— 滚动容器是块级
+盒子，只占父级分配的宽度，且 CSS automatic minimum size 对滚动容器不适用（即便适用也是 0）。分隔线不是额外节点，
+就是这条 strip 自己的 `borderBottom: 1px solid token.borderL1`；选中下划线是按钮内 `position:absolute; bottom:0;
+height:2px; background: token.stateBusiness` 的 span（`data-role="tab-indicator"` +
+`data-tab-indicator="<value>"`），压在分隔线上、宽度≈文字宽。颜色全部取本文件既有 `token.*`，**零硬编码颜色**。
+焦点环不动（不写 `outline:'none'`），只写 `outlineOffset:-2`（宿主自己的 focus ring 就是 inset 2px），
+这样在滚动盒里不会被裁掉。
+
+**计数数据源（现场核实后的选择，含代价）**：核实结论是**主入口拿得到** —— g-060 已经让预设库搭在 mount 的
+同一次加载上（`client.js` 的 `load()`：snapshot → overrides → `GET /prompt-setting/presets`，同一个
+`?session=` query），状态落在主入口自己的 `presets` slot 并进入页面模型 `m.presets`。因此取数走
+`presetCountOf(m.presets)`，**零新增请求、零轮询、零跨 chunk 上报**。被否方案：①「主入口再拉一次
+`/prompt-setting/presets`」= 同一次 mount 里重复大请求；②「由 presets chunk 向主入口上报计数（复用 g-061 半代码
+复用通道）」= 为一份主入口本来就有的数据多造一条跨 chunk 状态链，还要处理 chunk 未加载/卸载，收益为负。
+诚实口径：只有 `phase==='ready'` 且 `data` 是非 null 对象、**无 `error` 字段**、`presets` 是数组时才给数；
+「还在加载 / 请求失败 / 库文件读不出来 / 响应里没有列表」一律 **不渲染任何后缀**（不是 `(0)`），
+`(0)` 只表示**真的空库**。代价如实记：`GET /presets` 是主入口既有的一次读，若宿主那条读失败，计数就永远不显示
+（方向正确：宁缺勿假）。
+
+**红点边界（负责人已定，进契约）**：「有可用更新」= `m.update.data.latest` 是非空字符串（与顶部提示条
+`renderUpdateNotice` 的判定同一个口径），**唯独不看 `dismissed`**。dismiss 只关提示条，不能把已发布的版本
+「取消发生」，所以红点要留下来 —— 两条方向都进了测试（有更新时出现、无更新时不出现、dismiss 后仍在）。
+颜色取 `token.stateError`（危险 token，无固定红值）。红点同时带 `title` 与 `aria-label`（本地化
+`tabUpdateBadge`），tab 的可访问名退化成「高级 有可用更新」而不是一个裸圆点；`role=tablist` / `role=tab` /
+`aria-selected` / `tabIndex` / `data-tab-*` 全部原样保留。
+
+**文案**：`locale/zh.json` / `locale/en.json` 为唯一真源，新增 1 键 `tabUpdateBadge`
+（`有可用更新` / `Update available`），`node scripts/locale-pack.mjs --write` 重建 `client.js` 生成段，
+键数 566 → **567（516 主 + 51 error）**，`test/locale.test.mjs` 的两个常量与断言、`CONTRACT.md` §22 同步。
+计数后缀 `(N)` 是数字加括号、不是散文，故不占 locale 键。
+
+**测试**（`test/client.test.mjs`，新增 3 条 + 修订 2 条既有断言）
+- 新增「纯文字 + 下划线 + mine-layer 回归」：六个 tab 无填充/无边框/无圆角，选中 `labelPrimary` 其余
+  `labelSecondary`，**恰好一条** `data-role="tab-indicator"` 且 `data-tab-indicator` 指向选中项、`height:2`、
+  `bottom:0`、`background === token.stateBusiness`，切 tab 后下划线跟着走；`data-tab-group="mine-layer"`
+  仍是 `flexWrap:'wrap'`、两个 chip 仍 `borderRadius:999` 且带描边；
+- 新增「计数两向」：默认 fixture（2 条）⇒ ` (2)` 且只挂在「我的预设」；空库 ⇒ ` (0)`（诚实）；
+  失败 / 库不可读 / 响应无列表三种未知态 ⇒ **没有任何计数节点**，且 tab 条文本里不出现 `(0)`；
+- 新增「红点两向 + dismissed 独立」：无更新 ⇒ 全树 0 个红点；有更新 ⇒ 恰好 1 个、在「高级」按钮内部、
+  `background === token.stateError`、`title`/`aria-label` 等于本地化文案、按钮第一个子节点仍是 tab 名；
+  点 dismiss 后提示条消失而红点**仍在**；
+- 修订 g-063 H2 那条：`flexWrap` `'wrap'` → `'nowrap'`，并**加强**为同时断言 `overflowX:'auto'`、`gap:24`、
+  分隔线颜色，以及六个按钮各自 `flex:'0 0 auto'` / `whiteSpace:'nowrap'` / `border:'none'` /
+  `background:'transparent'`（即「不得等分、不得撑宽」被逐按钮钉住）；
+- 修订 g-061 chip 那条：chip 样式改从 `mine-layer` 按钮读（等价修订，断言强度不变）；
+- EN sweep 新增一条 case（`data-role=tab-count` + `data-role=tab-update-dot`，`copy: tabPresets/tabUpdateBadge`）
+  并把两个 marker 加进 `EN_REQUIRED_MARKERS`：红点的 `title`/`aria-label` 也进「en 渲染不得出现 CJK/裸键」的扫描。
+
+### 一、验收（单行证据）
+
+- evidence: suite=node --test passed=920 failed=0 exit=0 ms=（见交付说明）
+- `node scripts/locale-pack.mjs`（校验）与 `--write` 后 `--check` 均为 ok（各 567 键，与生成段逐字一致，exit 0）；
+- `node scripts/prepare.mjs` = OK（含 `LOCALE-SYNC` 567 键），exit 0；`node --check client.js` 通过；
+- **负向对照（改坏就红后还原）**：① `flexWrap:'nowrap'` 改回 `'wrap'` ⇒ g-063 H2 与 g-070 纯文字用例变红；
+  ② `updateOffered` 加回 `dismissed` 判断 ⇒ 红点用例的「dismiss 后仍在」变红；③ 计数未知态改成回退 0 ⇒
+  计数两向用例变红；④ 把红点 `title`/`aria-label` 换成硬编码中文 ⇒ EN sweep 的 CJK 扫描变红。
+- **基线对照**：改动前 `node --test` = 917 通过 / 0 失败；改动后 920 通过 / 0 失败（净增 3 条新用例，2 条等价修订）。
+
+### 二、未验证项
+
+- **真机未跑**：本 attempt 无浏览器侧执行条件，一级条的实际观感（下划线与分隔线是否真的压在一起、窄容器下
+  横向滚动的滚动条样式/触控板手感、浅色主题对比度）未做真机目视，留给主管集成检查点；DOM 结构与颜色 token、
+  单行不折行、不撑宽的依据均为代码级 + CSS 规则级断言，**不伪造真机读数**；
+- **祖先撑宽只有规则级依据**：`overflow-x:auto` 的滚动容器不会被内容撑宽属 CSS 规则，但未在真实宿主
+  `SettingsRoot.module.css` 链上做 DOM 实测（g-063 那条「成因未证实」的溢出仍未复核）；本实现选择的是
+  不需要该机制成立也安全的形状；
+- `presetCountOf` 只覆盖了「phase/error/presets 数组」三类形状，宿主返回 `presets` 为畸形数组元素
+  （非对象项）时按元素个数照数 —— 与 presets tab 列表自身的 lenient 口径一致，未加专门用例。

@@ -32,6 +32,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed 变更
 
+- **「一级 tab」换成纯文字 + 选中下划线，并加计数与更新红点（g-070，Revision 51）**：设置页**主 tab**
+  （`data-tab-group="main"`）不再是一排 chip，而是参考图那样的一行纯文字：无底色、无边框、无圆角，
+  未选中用次要色、选中项文字变亮并在**下方**压一条 2px 下划线（强调色 token），整条栏底部是一条最弱边框色
+  的淡分隔线。六个中文标签**单行不折行**：`flex-wrap:nowrap` + `overflow-x:auto`，每个按钮按自己标签宽度
+  （`flex:0 0 auto`），**没有**等分列、没有 `max-content`，也不会撑宽祖先（滚动容器只占父级给的宽度）。
+  「我的预设」带库条数后缀 `(N)`；N 取自主入口 mount 时**已有的**一次 `GET /prompt-setting/presets`
+  （同一个 `?session=`，**零新增请求、零轮询**），且只有确实读到库时才显示——「还在加载 / 请求失败 /
+  库文件读不出来」**不显示任何数字**，`(0)` 只表示真的空库。「高级」在确有可用新版本时显示一个红点
+  （危险色 token + 可读的 `title`/`aria-label`）；它**与提示条的 `dismissed` 独立**——关掉提示条不会
+  清掉红点。`role=tablist/tab`、`aria-selected`、`tabIndex`、`data-tab-*` 与「我的 Prompt」内的层选择器
+  （仍是 chip，`data-tab-group="mine-layer"`）全部未动。新增文案 `tabUpdateBadge`（有可用更新 /
+  Update available）走 `locale/*.json` 真源，键数 566 → **567（516 主 + 51 `error.<code>`）**。
+  **Plain-text top-level tabs with an underline, a count and an update dot (g-070, Revision 51)**: the
+  first-level bar is no longer a row of chips — it is plain text (no fill, no border, no radius), the
+  selected label brightens with a 2px accent underline pressed against a faint rule under the whole
+  bar, and the six Chinese labels stay on one line (`flex-wrap:nowrap` + `overflow-x:auto`, every button
+  `flex:0 0 auto`) — no equal fractions, no `max-content`, and nothing that can widen an ancestor.
+  「My presets」carries its library size as `(N)`, read from the request the page already makes on mount
+  (no new request, no polling) and shown **only** when that size is really known — never a placeholder
+  `(0)`. 「Advanced」shows a red dot (danger token, with a readable `title`/`aria-label`) while a newer
+  release is on offer, and it is **independent** of the banner's dismissal. Every tab marker, the ARIA
+  and the「My Prompt」layer selector (still chips) are unchanged; the one new locale key brings the
+  dictionaries to 567.
 - **删除预设＝对每个已应用的工作区取消应用（g-069，Revision 50）**：`DELETE /presets?id=` 不再只从预设库
   剔项——它先查出所有 `applied` 记录中含该预设的工作区，对每个工作区按**既有栈语义**执行取消应用
   （剩余栈非空 ⇒ 按 `base` + 剩余 link 重算；栈空 ⇒ 写回 `base`，`base` 为 `null` 则移除保留段条目；层的
