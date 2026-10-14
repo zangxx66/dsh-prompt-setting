@@ -253,8 +253,9 @@ g-062 用「渲染分支与 toast 能力解耦」绕开了连带问题，本节�
 `min-width:max-content`（撑宽 ⇒ 过大，溢出路径未明）、只用 `white-space:nowrap`（⇒ 溢出列格/重叠）、沿用官方等分列（⇒ 折行）、
 以及两条在当前宿主下为 no-op 的 `grid-auto-flow`/`grid-auto-columns`（inline 显式列已足、无隐式列、inline 优先级更高）。
 
-**Revision 51（g-070）补记**：上面的「自绘」定案不变，但自绘从此**分两个渲染器**：`tabs()` 只画 **chip 家族**
-（现在唯一的渲染调用点是「我的 Prompt」里的层选择器 `data-tab-group="mine-layer"`），一级 tab 条改为
+**Revision 51（g-070）补记**：上面的「自绘」定案不变，但自绘从此**分两个样式族 / 两个渲染函数**：`tabs()` 仍画
+**chip 家族**，其渲染调用点是各二级分组选择器（`mine-layer`、`advanced-layer`、`history-layer`、`view` /
+筛选组、`full-origin`、`import-mode`、`preset-mode`，共 8 处，分布在本文件与 4 个 chunk 里），一级 tab 条改为
 `mainTabStrip()` —— 纯文字 + 选中项下划线 + 底部淡分隔线，且是**单行横向滚动**（`flex-wrap:nowrap` +
 `overflow-x:auto`，每个按钮 `flex:0 0 auto`）而不是换行。安全性没有因此丢掉：块级滚动容器只占父级给它的宽度，
 CSS automatic minimum size 对它不适用，所以最宽的标签也够不到祖先（等分列与 `max-content` 仍然**一个都没有**）。
@@ -8705,11 +8706,13 @@ classic `<script>` 自注册 CJS 工厂，宿主对字节**零转译**；插件�
 「我的预设」带计数后缀 `(N)`（N = 预设库实际条数），「高级」在**存在可用新版本**时带一个红色小圆点。
 无背景块、无边框、**不等分列宽**。功能语义、tab 名称与顺序一律不动。
 
-**只改主 tab，不动 mine-layer**：`tabs()` 从 g-063 起是自绘的 chip 家族。本次**不往 `tabs()` 里塞分支**，
-而是新增独立渲染器 `mainTabStrip()`（`client.js`）：一个函数说两种视觉语言正是要防的漂移。`tabs()` 保留原样，
-其唯一渲染调用点变成「我的 Prompt」面板里的层选择器（另有 presets chunk 的 `preset-mode` 等调用点走
-`__internals.shared.tabs`），因此 `chipButtonStyle({` 的出现次数仍是 3，测试里的「选中 chip / 未选中 chip」两条
-断言改从 `data-tab-key="mine-layer"` 的按钮上读。
+**只改主 tab，不动二级分组**：`tabs()` 从 g-063 起是自绘的 chip 家族。本次**不往 `tabs()` 里塞分支**，
+而是新增独立渲染函数 `mainTabStrip()`（`client.js`）：一个函数说两种视觉语言正是要防的漂移。`tabs()` 保留原样，
+它**仍然是 chip 家族**，渲染调用点是各二级分组选择器：`mine-layer`（`client.js`）、`advanced-layer`
+（`client.advanced.js`）、`history-layer`（`client.history.js`）、`view` 与筛选组、`full-origin`
+（`client.overview.js`）、`import-mode`（`client.transfer.js`）、`preset-mode`（`client.presets.js`），
+共 **8 处**（chunk 侧经 `__internals.shared.tabs` 取同一个绑定）。因此 `chipButtonStyle({` 的出现次数仍是 3，
+测试里的「选中 chip / 未选中 chip」两条断言改从 `data-tab-key="mine-layer"` 的按钮上读。
 
 **布局（这是本次最容易出事的一处，写清依据）**：一级条 `display:flex` + `flex-wrap:nowrap` + `gap:24` +
 `overflow-x:auto`，每个按钮 `flex:0 0 auto`、`white-space:nowrap`、`padding:'6px 0 10px'`。于是：

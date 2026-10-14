@@ -53,8 +53,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   (no new request, no polling) and shown **only** when that size is really known — never a placeholder
   `(0)`. 「Advanced」shows a red dot (danger token, with a readable `title`/`aria-label`) while a newer
   release is on offer, and it is **independent** of the banner's dismissal. Every tab marker, the ARIA
-  and the「My Prompt」layer selector (still chips) are unchanged; the one new locale key brings the
-  dictionaries to 567.
+  and every chip-family sub-group selector `tabs()` still draws (「My Prompt」's layer selector, and the
+  chunk-level group selectors) are unchanged; the one new locale key brings the dictionaries to 567.
 - **删除预设＝对每个已应用的工作区取消应用（g-069，Revision 50）**：`DELETE /presets?id=` 不再只从预设库
   剔项——它先查出所有 `applied` 记录中含该预设的工作区，对每个工作区按**既有栈语义**执行取消应用
   （剩余栈非空 ⇒ 按 `base` + 剩余 link 重算；栈空 ⇒ 写回 `base`，`base` 为 `null` 则移除保留段条目；层的

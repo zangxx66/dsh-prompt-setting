@@ -2664,12 +2664,12 @@ by accident — the tests assert the values rather than the family's agreement.
   factory;
 - **three ghost-button families, and the row family with them.**
   `chipButtonStyle({cursor, color, background, border})` is the pill (a 999
-  radius, `'3px 10px'`): the layer selector, the two pinned entries and the
-  「使用这串 id」fallback. The unselected text colour really differs —
-  `labelSecondary` on the layer selector, `labelPrimary` on the other two — so it
-  is an argument, and so are the selected fill and the stroke. (Revision 51 moved
-  the first-level tab bar off this factory: it is plain text now, drawn by
-  `mainTabStrip()` — see §13.4.)
+  radius, `'3px 10px'`): the hand-built `tabs()` control, the two pinned entries
+  and the「使用这串 id」fallback. The unselected text colour really differs —
+  `labelSecondary` on `tabs()`, `labelPrimary` on the other two — so it is an
+  argument, and so are the selected fill and the stroke. (Revision 51 moved the
+  first-level tab bar off `tabs()`, which is unchanged and still draws the chip
+  family for its eight sub-group selectors — see §13.4.)
   `miniButtonStyle({padding, color, background, border, lineHeight, textAlign})`
   is the radius-6 tool-strip button:「显示更多」, the history row's side buttons,
   the pager, the overview's expand toggle and one option row of the history scope
@@ -2683,9 +2683,12 @@ by accident — the tests assert the values rather than the family's agreement.
   tab strip is hand-built under **both** renderers (the Host's `SegmentedTabs`
   divides its own width into equal fractions, which six long Chinese labels do not
   fit — §13.4 Revision 49), so both renderers draw the same strip and the tabs do
-  look alike. Revision 51 split that hand-built strip into two renderers of its
-  own — `tabs()` for this chip family, `mainTabStrip()` for the plain-text
-  first-level bar — and both are still hand-built, so the exemption is unchanged;
+  look alike. Revision 51 added a second hand-built renderer for the first-level
+  bar alone — `mainTabStrip()`, plain text with an underlined selection — while
+  `tabs()` keeps drawing the chip family for every sub-group selector in the entry
+  and the chunks (`mine-layer`, `advanced-layer`, `history-layer`, `view` and the
+  overview filter groups, `full-origin`, `import-mode`, `preset-mode`); both are
+  still hand-built, so the exemption is unchanged;
 - **one session row, with its ARIA left exactly where it was.**
   `sessionRowStyle({padding, hovered, focused, selected, active})` is the paint
   the windowed tree row and the flat fallback row share: the 12px/18px type over
@@ -3509,11 +3512,14 @@ code means rather than how it is written:
   overflow or overlap their cells), and leaving the official equal fractions as
   they are (labels wrapped).
   **Revision 51 (g-070) — two renderers, and the first-level bar is plain text:**
-  `tabs()` drew the whole page's tabs until this revision. It now draws the
-  **chip family** only (its rendered call site is the「我的 Prompt」layer
-  selector, `data-tab-group="mine-layer"`), and the first-level bar is its own
-  function, `mainTabStrip()`. The split is deliberate: one function carrying two
-  visual languages is the drift it prevents, and the layer selector must not move.
+  `tabs()` drew the whole page's tab strips until this revision, and it still
+  draws every **sub-group** strip: `mainTabStrip()` is added for the first-level
+  bar alone, while `tabs()` keeps drawing the chip family for its sub-group
+  selectors — `mine-layer`, `advanced-layer`, `history-layer`, `view` and the
+  overview filter groups, `full-origin`, `import-mode` and `preset-mode` (eight
+  rendered call sites across the entry and the chunks, read off the source, not
+  assumed). The split is deliberate: one function carrying two visual languages is
+  the drift it prevents, and no sub-group selector moves.
   What the first-level bar is, and why:
   - **Plain text.** No fill, no stroke, no radius — the chip's selected
     fill/stroke pair belongs to the other family. Unselected labels take
@@ -3560,8 +3566,9 @@ code means rather than how it is written:
   - **What did not move.** The markers the tests and the panel binding read are
     unchanged: `role="tablist"` / `role="tab"` / `aria-selected` / `tabIndex` /
     `data-tab-group` / `data-tab-key` / `data-tab-value`, the six values and
-    their order, `data-active-tab`, the panel binding, and the layer selector's
-    own group with its chip look. The focus ring is left to the Host's default
+    their order, `data-active-tab`, the panel binding, and every sub-group
+    selector `tabs()` still draws — each keeps its own `data-tab-group`/`data-tab-key`
+    and its chip look. The focus ring is left to the Host's default
     with `outline-offset: -2px` (the shell's own inset offset), so it stays
     visible inside the scrolling box.
 
