@@ -2334,7 +2334,7 @@ window.__ModuleLoader__.load({
      * g-070 keeps the exemption and narrows what it covers. The **first-level**
      * strip is now its own renderer ({@link mainTabStrip}): plain text with an
      * underlined selection, the look the operator asked for. `tabs()` below stays
-     * the **chip** family — the「我的 Prompt」layer selector still uses it — so one
+     * the **chip** family — every sub-group selector still uses it — so one
      * function no longer has to speak two visual languages. The first-level strip
      * is also single-line now (`flex-wrap: nowrap` + `overflow-x: auto`) instead
      * of wrapping, and it buys that safety from the scroll container rather than
@@ -2348,19 +2348,23 @@ window.__ModuleLoader__.load({
      * Render a segmented control — **always hand-built** (see the decision
      * comment above).
      *
-     * Since g-070 this is the **chip** family only: the「我的 Prompt」layer
-     * selector (`data-tab-group="mine-layer"`) is its one remaining call site,
-     * and the first-level tab bar is {@link mainTabStrip} instead. Both emit the
-     * same markers, so a test that clicks a tab by value does not care which one
-     * drew it.
+     * Since g-070 `tabs()` is the **chip** family and {@link mainTabStrip} draws
+     * the first-level bar. `tabs()` itself is unchanged and still renders every
+     * **sub-group** selector in the bundle: `mine-layer` (this file),
+     * `advanced-layer`, `history-layer`, `view` and the overview filter groups,
+     * `full-origin`, `import-mode` and `preset-mode` — eight rendered call sites
+     * across the entry and the four chunks, which take this same binding off
+     * `__internals.shared.tabs`. Both renderers emit the same markers, so a test
+     * that clicks a tab by value does not care which one drew it.
      *
      * Deliberately *not* a component: it is called during tree building so it
      * emits real host button nodes (role="tab") carrying the `data-tab-*` markers
-     * the tests assert on. It is also the one control this page keeps hand-built
-     * on a primitives Host: `flex-wrap` sizes every button to its own label and
-     * moves a row that does not fit to the next line, which is what six long
-     * Chinese labels need; the official `SegmentedTabs` divides its width into n
-     * equal fractions instead (NOTES §4.2 / CONTRACT §13.4 Revision 49).
+     * the tests assert on. It is also part of the one control this page keeps
+     * hand-built on a primitives Host — the tab strips (this chip family and
+     * {@link mainTabStrip}) — and it keeps the content-sized `flex-wrap` row it has
+     * always drawn; the official `SegmentedTabs` divides its width into n equal
+     * fractions instead, which is what fails the first-level bar's six long Chinese
+     * labels (NOTES §4.2 / CONTRACT §13.4 Revisions 49 and 51).
      * @param items - `{value, label, id, panelId}` entries, non-empty.
      * @param value - the selected value.
      * @param onChange - selection callback.
@@ -2462,9 +2466,9 @@ window.__ModuleLoader__.load({
      * (g-070).
      *
      * A second renderer rather than another branch inside {@link tabs} on
-     * purpose. `tabs()` is shared with the「我的 Prompt」layer selector, which
-     * keeps the chip look, and one function carrying two visual languages is the
-     * drift this split exists to prevent. The two do share every **marker** the
+     * purpose. `tabs()` is shared with every sub-group selector in the bundle,
+     * which keeps the chip look, and one function carrying two visual languages is
+     * the drift this split exists to prevent. The two do share every **marker** the
      * tests and the panel binding read (`role="tablist"` / `role="tab"` /
      * `aria-selected` / `tabIndex` / `data-tab-group` / `data-tab-key` /
      * `data-tab-value`), so only the drawing differs.
@@ -4174,16 +4178,20 @@ window.__ModuleLoader__.load({
      * entries and the「使用这串 id」button — share everything but their colour:
      * the inherited 12px/18px type, the `'3px 10px'` padding and the 999px radius
      * are the shape, and the text colour, the fill and the stroke are arguments.
-     * The unselected text colour really differs (**secondary** on the tabs,
-     * **primary** on the other two), so it is the caller's; the selected state —
+     * The unselected text colour really differs (**secondary** on the chip-family
+     * `tabs()` call sites, **primary** on the other two), so it is the caller's;
+     * the selected state —
      * the button fill under a transparent stroke — stays the caller's own
      * expression, as does every attribute on the node.
      *
      * **A caveat worth stating, not a defect:** that second-renderer caveat is
-     * gone as of g-063's third real-machine round — the tabs are hand-built under
-     * **both** renderers (the Host's `SegmentedTabs` divides its width into equal
-     * fractions, which six long Chinese labels do not fit), so this factory is now
-     * the tab strip's only shape and the two renderers' tabs do look alike.
+     * gone as of g-063's third real-machine round — the tab strips are hand-built
+     * under **both** renderers (the Host's `SegmentedTabs` divides its width into
+     * equal fractions, which the first-level bar's six long Chinese labels do not
+     * fit), so both renderers draw the same strips and they do look alike. Since
+     * g-070 the first-level bar is {@link mainTabStrip}'s plain text, so this
+     * factory is the **chip family's** shape — the sub-group selectors — and no
+     * longer the whole strip's.
      * @param options - `{cursor, color, background, border}`; `border` is the
      *   stroke's colour, the 1px width belongs to the shape.
      * @returns the chip style.
