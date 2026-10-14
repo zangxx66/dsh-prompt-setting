@@ -46,27 +46,38 @@ function readText(relPath) {
   }
 }
 
-/** The number of `error.*` entries the `ERROR_TEXT` table expanded to. */
+/**
+ * The number of `error.*` entries the `ERROR_TEXT` table expanded to.
+ *
+ * g-069 (Revision 50) grew the main dictionary from 513 to 515: the deletion
+ * confirmation now states the restore it performs (`presetDeleteConfirmApplied`,
+ * `presetDeleteAppliedList`) and its success notice reports how many workspaces
+ * were restored (`presetDeletedRestoredNotice`), while the sentence that promised
+ * a workspace「still holds its text」(`presetDeletedOrphanNotice`) is gone with
+ * the behaviour it described.
+ */
 const ERROR_KEY_COUNT = 51;
-/** The inline table's own key count (513) — the two numbers must add to 564. */
-const MAIN_KEY_COUNT = 513;
+/** The main dictionary's own key count (515) — the two numbers must add to 566. */
+const MAIN_KEY_COUNT = 515;
+/** The full key count both files must hold, in the same order. */
+const TOTAL_KEY_COUNT = MAIN_KEY_COUNT + ERROR_KEY_COUNT;
 
 test('locale: both JSON files are valid, key-aligned dictionaries', () => {
   const { dictionaries, keys } = readDictionaries(packageRoot);
   assert.deepEqual(Object.keys(dictionaries), Object.keys(LOCALES));
-  assert.equal(keys.length, MAIN_KEY_COUNT + ERROR_KEY_COUNT);
-  assert.equal(keys.length, 564);
+  assert.equal(keys.length, TOTAL_KEY_COUNT);
+  assert.equal(keys.length, 566);
   for (const name of Object.keys(LOCALES)) {
     const dict = dictionaries[name];
-    assert.equal(Object.keys(dict).length, 564, `${name}: 564 keys`);
+    assert.equal(Object.keys(dict).length, TOTAL_KEY_COUNT, `${name}: ${TOTAL_KEY_COUNT} keys`);
     // Key *sets* are not enough: the generated blocks follow file order, so a
-    // reordered file is a silent 513-line diff of the bundle.
+    // reordered file is a silent 515-line diff of the bundle.
     assert.deepEqual(Object.keys(dict), keys, `${name}: same keys in the same order as zh`);
     for (const key of keys) assert.equal(typeof dict[key], 'string');
   }
 });
 
-test('locale: the 564 keys split into 513 main entries and 51 error codes', () => {
+test('locale: the 566 keys split into 515 main entries and 51 error codes', () => {
   const { dictionaries, keys } = readDictionaries(packageRoot);
   const errorKeys = keys.filter((key) => key.startsWith('error.'));
   assert.equal(errorKeys.length, ERROR_KEY_COUNT);

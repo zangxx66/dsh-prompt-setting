@@ -32,6 +32,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed 变更
 
+- **删除预设＝对每个已应用的工作区取消应用（g-069，Revision 50）**：`DELETE /presets?id=` 不再只从预设库
+  剔项——它先查出所有 `applied` 记录中含该预设的工作区，对每个工作区按**既有栈语义**执行取消应用
+  （剩余栈非空 ⇒ 按 `base` + 剩余 link 重算；栈空 ⇒ 写回 `base`，`base` 为 `null` 则移除保留段条目；层的
+  其它条目与 `interpolateCustom` 开关不动），逐个落盘并登记与既有「取消应用」同等的历史记录与 prompt
+  变更提示，全部成功后才删除预设。任一工作区还原失败 ⇒ 整体中止、**预设保留**，错误如实列出已还原/
+  未还原的工作区；未被任何工作区应用时行为与从前逐字节一致（不写任何工作区层）。响应改为
+  `restoredWorkspaces` / `links` / `workspaces[]`，正常删除不再产生 orphan（orphan 仅剩手改文件与
+  Revisions 37–49 历史数据一种来源，仍可读、可取消）。客户端删除确认浮层在已应用时明确提示
+  「会将被应用的工作区还原（即取消预设）」并列出受影响工作区，成功 notice 改为如实说明还原数量；文案
+  仍以 `locale/*.json` 为唯一真源（现为 515 主词典 + 51 `error.<code>` = 566 键/语言）。
+  **Deleting a preset now cancels it (g-069, Revision 50)**: `DELETE /presets?id=` no longer just drops the
+  entry — every workspace whose `applied` record holds the preset is taken off its stack first, with the
+  existing stack semantics (remaining links recomposed over `base`; an empty stack restores `base` itself,
+  `null` removing the reserved entry; other entries and the `interpolateCustom` switch untouched), each
+  restore is written and registered like the existing「cancel application」(history record + prompt-write
+  note), and only then is the preset deleted. A workspace that cannot be restored aborts the whole
+  deletion, **keeps the preset**, and the refusal lists which workspaces were restored and which were not;
+  a preset nothing applied behaves exactly as before (no workspace layer is written). The answer now
+  carries `restoredWorkspaces` / `links` / `workspaces[]`, and an ordinary deletion produces no orphan
+  (orphans now only come from a hand-edited file or Revisions 37–49 data, and stay readable and
+  cancellable). The deletion confirmation states the restore and names the affected workspaces, and the
+  success notice reports how many were restored; copy stays sourced from `locale/*.json` (now 515 main +
+  51 `error.<code>` = 566 keys per language).
 - **「装配状态提示」移到「高级」面板顶部（g-065）**：这块两层装配观察（开关 + 装配层/送达层结论 +
   toast 降级说明）原先挂在「我的 Prompt」（写入口）顶部，而它的读者是「改完 Prompt 却没生效、要查为什么」
   的人，动机正好是打开「高级」。本次只换渲染位置：开关语义、偏好键、读取时机与轮询游标、toast 主动提示

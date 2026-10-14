@@ -340,12 +340,16 @@ export function upsertPreset(document, fields, options = {}) {
 }
 
 /**
- * Remove one preset.
+ * Remove one preset — the **catalogue** half of a deletion, and nothing else.
  *
- * Deleting an applied preset is allowed and changes **no layer**: the record
- * stays (and is then reported as an orphan), because rewriting a workspace the
- * user did not name would be a write no request asked for. The caller decides
- * how to report that.
+ * Since Revision 50 the normal deletion path is {@link planPresetRemoval}: every
+ * application of the preset is cancelled (the workspace layer is restored to
+ * `base` plus what is left of its stack) **before** this function drops the
+ * entry, so an ordinary delete produces no orphan at all. This function itself
+ * still touches no layer, which is what keeps it usable for the two cases that
+ * are not an ordinary delete: a hand-edited `applied` record (or one written by
+ * Revisions 37–49) whose link outlives its preset keeps its own snapshot and is
+ * still reported as an orphan and still cancellable (§20.1).
  * @param document - the current normalized document.
  * @param id - the preset id.
  * @returns `{document, removed}` where `removed` is the deleted preset or null.
@@ -593,6 +597,113 @@ export function planUnapply(document, options = {}) {
     text: stack.length === 0 ? (record.base === null ? '' : record.base.text) : composeStackText(record.base, stack),
     restored,
     config,
+  };
+}
+
+/**
+ * The workspaces whose `applied` record holds one preset, in file order.
+ *
+ * The route half needs this list **before** it plans anything: it is the set of
+ * layers the deletion is about to restore, and therefore the set a refusal has
+ * to account for ("which of these were restored, which were not").
+ * @param document - the current normalized document.
+ * @param presetId - the preset id.
+ * @returns a fresh array of workspace roots (deduplicated).
+ */
+export function appliedRootsOf(document, presetId) {
+  const roots = [];
+  for (const record of appliedListOf(document)) {
+    if (!record.stack.some((item) => item.presetId === presetId)) continue;
+    if (!roots.includes(record.workspaceRoot)) roots.push(record.workspaceRoot);
+  }
+  return roots;
+}
+
+/**
+ * Plan「删除预设」: cancel **every** application of one preset, then drop it.
+ *
+ * Revision 50. Deleting an applied preset is no longer a catalogue-only write:
+ * the text the deletion would otherwise leave behind, with a record that can
+ * never name its source again, is exactly what the user asked to be rid of. Each
+ * workspace that holds the preset is taken off its stack with
+ * {@link planUnapply}'s own semantics — the remaining links (if any) are
+ * recomposed over `base`, an empty stack restores `base` itself (`null` removes
+ * the reserved entry), and the layer's `interpolateCustom` switch and its other
+ * entries are never touched — and only then is the entry removed from the
+ * library.
+ *
+ * **Pure.** The workspace layers are read by the caller and handed in through
+ * `currentOf`; this function decides, it never writes. That is what makes the
+ * atomicity the route needs possible: every read, every plan and every
+ * validation happens before the first byte moves, so a workspace that cannot be
+ * restored refuses the whole deletion instead of leaving "the preset is gone and
+ * the layer is not".
+ *
+ * A workspace whose hand-edited record carries the same preset **twice** is
+ * given the same treatment link by link: {@link planUnapply} pops one at a time,
+ * so the loop below runs until the record no longer names the preset at all —
+ * an ordinary document needs exactly one pass.
+ * @param document - the current normalized document.
+ * @param options.presetId - the preset to delete and cancel.
+ * @param options.currentOf - `(workspaceRoot) => validated config`; the caller's
+ *   read of that layer. Throwing from it refuses the whole plan (and nothing has
+ *   been written).
+ * @returns `{document, removed, plans, links}`. `document` is the library with
+ *   the preset dropped and every one of its links gone; `removed` is `null` when
+ *   the library has no such preset (and then nothing else is reported);
+ *   `plans` is one entry per restored workspace
+ *   (`{workspaceRoot, removed, links, before, after, config, restored, base, stack, text}`);
+ *   `links` is the total number of stack links cancelled.
+ */
+export function planPresetRemoval(document, options = {}) {
+  const presetId = options.presetId;
+  const roots = appliedRootsOf(document, presetId);
+  // Nothing applied it: the deletion is a catalogue write and nothing else, byte
+  // for byte what Revision 49 did — no layer is opened, let alone written.
+  if (roots.length === 0) {
+    const dropped = removePreset(document, presetId);
+    return { document: dropped.document, removed: dropped.removed, plans: [], links: 0 };
+  }
+  let working = document;
+  const plans = [];
+  for (const workspaceRoot of roots) {
+    const current = options.currentOf(workspaceRoot);
+    let config = null;
+    let step = null;
+    const removed = [];
+    const before = reservedSectionOf(current);
+    for (;;) {
+      const record = appliedListOf(working).find((item) => item.workspaceRoot === workspaceRoot) ?? null;
+      if (record === null || !record.stack.some((item) => item.presetId === presetId)) break;
+      step = planUnapply(working, {
+        workspaceRoot,
+        presetId,
+        current: config === null ? current : config,
+      });
+      working = step.document;
+      config = step.config;
+      removed.push(step.removed);
+    }
+    plans.push({
+      workspaceRoot,
+      removed,
+      links: removed.length,
+      before,
+      after: reservedSectionOf(config),
+      config,
+      restored: step === null ? false : step.restored,
+      base: step === null ? null : step.base,
+      stack: step === null ? [] : step.stack,
+      text: step === null ? '' : step.text,
+    });
+  }
+  const dropped = removePreset(working, presetId);
+  if (dropped.removed === null) return { document, removed: null, plans: [], links: 0 };
+  return {
+    document: dropped.document,
+    removed: dropped.removed,
+    plans,
+    links: plans.reduce((total, plan) => total + plan.links, 0),
   };
 }
 

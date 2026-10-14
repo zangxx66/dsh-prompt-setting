@@ -635,7 +635,7 @@ meaning exactly.
 | `/prompt-setting/download-region` | `PUT` | Record the choice: `{"region": "default"\|"cn"\|"custom", "registry"?: string}`, a custom address validated first (g-043, §17.8). |
 | `/prompt-setting/presets` | `GET` | The preset library: the stored presets and the records of where they are applied (g-060, §20.2). Always `200`. |
 | `/prompt-setting/presets` | `PUT` | Insert one preset (no `id`, the Host mints it) or edit one by `id` (§20.3). |
-| `/prompt-setting/presets` | `DELETE` | Remove one preset — `?id=` (§20.4). An applied preset may be deleted: the layer keeps its text and the record is reported as an orphan. |
+| `/prompt-setting/presets` | `DELETE` | Remove one preset **and cancel every application of it** — `?id=` (§20.4). Each affected workspace layer is restored before the library is written; a workspace that cannot be restored refuses the whole deletion. |
 | `/prompt-setting/presets/apply` | `POST` | Write one preset into the workspace layer that owns `session`, snapshotting what that layer held (`{presetId, session}`, §20.5). |
 | `/prompt-setting/presets/unapply` | `POST` | Put that workspace layer back to the snapshot `apply` took, and drop the record (`{session}`, §20.6). |
 | `/prompt-setting/assembly-status` | `GET` | The in-session assembly-status notice for one session (`?session=`): the last key node with its assembly-layer and delivery-layer verdicts, plus the switch's state (g-062, §21). The same answer carries the **incremental feed** (`?since=<seq>`, §21.6) the shell-overlay toaster reads. Always `200`; an unknown session answers `record: null`. |
@@ -6169,7 +6169,7 @@ does not describe.
 
 ---
 
-## 20. The preset library (g-060, Revision 37)
+## 20. The preset library (g-060, Revision 37; g-069/Revision 50: a deletion cancels its applications)
 
 A **preset** is a named `{action, text}` pair for the reserved section
 `prompt-setting:custom-prompt` (§13.1). The library is a per-installation
@@ -6230,7 +6230,12 @@ every preset route and never on the assembly path:
     snapshot is what lets the text be recomposed — and one link cancelled — after
     its preset has been deleted from the library.
   - a link whose `presetId` is no longer in `presets` is an **orphan**: reported,
-    kept, and still cancellable (§20.2).
+    kept, and still cancellable (§20.2). Since Revision 50 an **ordinary**
+    deletion produces none — it cancels every application first (§20.4) — so an
+    orphan is the signature of a **hand-edited file or a document written by
+    Revisions 37–49**, where a link outlived its preset. That shape stays
+    readable, reportable and cancellable; it is simply no longer something this
+    plugin creates.
   - an **empty stack is not a record**: cancelling the last link removes the
     record and leaves the layer at `base`.
 - **Migration.** A document written by Revisions 37–40 (one
@@ -6307,21 +6312,50 @@ Body: `{name, action, text}` to insert, or `{id, name, action, text}` to edit.
   ignored (a future client's extra key is not a `400`); unknown **preset** fields
   are dropped, never persisted.
 
-### 20.4 `DELETE /prompt-setting/presets?id=`
+### 20.4 `DELETE /prompt-setting/presets?id=` (Revision 50: the deletion cancels)
 
 - `id` is required (`400 missing-id`) and must be well-formed (`400 invalid-id`);
   an id that names nothing is `404 preset-not-found`. Every refusal leaves the
   file byte-identical.
+- **A deletion cancels every application of that preset.** Each workspace whose
+  `applied` record holds it is taken off its stack first, with §20.6's own
+  semantics — the remaining links are recomposed over `base`, an empty stack
+  restores `base` itself (`null` ⇒ the reserved entry is removed), and the
+  layer's `interpolateCustom` switch and its other entries are untouched — and
+  each restore is written **and registered like `unapply`** (a history record,
+  and a prompt-write note for that workspace). Only then is the entry dropped
+  from the library, so an ordinary deletion leaves **no orphan** (§20.1).
+- **Order, and what a refusal means.** Every affected layer is read and planned
+  **before** the first write. A workspace whose layer is unusable (`409`
+  `layer-not-writable`) refuses the whole request as `preset-unapply-failed`
+  (§20.7): the preset stays in the library and **no** workspace is rewritten. A
+  failure inside the commit loop (an I/O error after some layers were already
+  restored) also leaves the preset in the library; the refusal names the
+  workspaces that were restored and the ones that were not, so「the preset is
+  gone and the layer is not」cannot happen. The residual risk is the other
+  direction, stated rather than hidden: that second failure can leave some
+  workspaces restored with the preset still in the library — the recoverable
+  side of the trade (delete again, or cancel the remaining applications by hand).
+- **Nothing applied it: nothing else happens.** With no `applied` record naming
+  the preset, the deletion is the catalogue write it always was — no workspace
+  layer is opened, and every layer file stays byte-identical.
 - Response `200`:
 
 ```json
 { "ok": true, "removed": true, "id": "…", "preset": { … },
-  "orphaned": 1, "presets": [ … ], "applied": [ … ] }
+  "restoredWorkspaces": 2, "links": 2,
+  "workspaces": [ { "workspaceRoot": "…", "links": 1, "restored": true } ],
+  "presets": [ … ], "applied": [ … ] }
 ```
 
-- `orphaned` is how many `applied` records now point at the deleted preset. The
-  layers are **not** touched: the workspace keeps the text it was given, and the
-  record keeps its snapshot so「取消应用」still works.
+- `restoredWorkspaces` is how many workspaces were restored, `links` how many
+  stack links that took, and `workspaces[]` names each one with its own link
+  count and whether the layer went all the way back to `base` (`restored`, the
+  same boolean §20.6 reports). `presets`/`applied` are §20.2's shapes, so the
+  page can refresh from the answer alone.
+- `?session=` is **resolution only**, as on the read face (§20.2): when the
+  caller names one, the workspace it resolves to is the one whose history record
+  carries that session; every other restored workspace is logged without one.
 
 ### 20.5 `POST /prompt-setting/presets/apply`
 
@@ -6437,9 +6471,14 @@ All are `OverrideError` shapes (`{ok: false, code, message}`, §4.4):
 | `not-applied` | 404 | `unapply` for a workspace with no record, or for a preset that is not on that workspace's stack (Revision 41). |
 | `presets-not-writable` | 409 | The library file exists but is not a valid document (§20.1). |
 | `layer-not-writable` | 409 | The workspace layer's own file is not a valid config (§4.4, unchanged). |
+| `preset-unapply-failed` | 409 / 500 | A `DELETE` could not restore one of the workspaces the preset was applied to (§20.4). The status is the failing read's own when the refusal is decided before any write (`409` for an unusable layer), `500` when a write failed mid-commit. The message names the failing workspace and lists `restored:` / `not restored:`; **the preset is not deleted**, and no workspace is rewritten on the pre-write path. |
 
-Every one of them is decided **before** any file is written, so a rejected
-request leaves `presets.json` and the layer byte-identical.
+Every one of them is decided **before** any file is written — `preset-unapply-failed`
+included on the pre-write path, which is the only path it is expected to take — so
+a rejected request leaves `presets.json` and the layer byte-identical. The one
+failure that can land after some bytes moved is `preset-unapply-failed` raised
+inside §20.4's commit loop; it still leaves the **preset** in the library (the
+library is written last) and reports exactly which workspaces were restored.
 
 ### 20.8 What this revision does not do
 
@@ -6521,11 +6560,50 @@ request leaves `presets.json` and the layer byte-identical.
 - **Reads and writes.** The tab reads `GET /presets` (with `?session=`, §20.2) and
   writes through §20.3–§20.6 only. It never touches `PUT /overrides`, and it never
   sends a layer name: the layer is implied by the preset routes themselves.
+- **The deletion confirmation states the restore (Revision 50).** The row's
+  `data-action="preset-delete"` still only *asks* — the `DELETE` is sent by
+  `data-action="confirm-yes"`, through the page's one confirmation surface
+  (§13.5, `data-confirm-kind="preset-delete"`). When the preset is applied
+  anywhere in `GET /presets`' `applied`, the question adds
+  `data-role="confirm-preset-workspaces"` carrying
+  `data-preset-workspace-count="<n>"` and renders the affected workspaces by
+  count **and** label (the page's own workspace label when it has one, the root
+  otherwise): the reader is agreeing to a restore, not to a catalogue edit. A
+  preset nothing applied shows the plain sentence and **no** such node. The
+  success notice reports `restoredWorkspaces` from the answer rather than
+  claiming a workspace「still holds the text」.
 - **State.** The tab carries `data-preset-state` (`idle` / `saving` / `saved` /
   `error`) in the shape the other tabs use (§13.1's `mine-state`). A host that
   answers `error` on the read (§20.2) is shown as a library problem, not
   as「没有预设」 — and an empty catalogue is stated separately
   (`data-region="presets-empty"`).
+
+**Revision 50 (g-069: deleting a preset cancels every application of it).** An
+applied preset used to be deletable in a way that left the workspace holding text
+whose source no longer existed — the record survived as an orphan and the page
+could only say「来源已删除」. The deletion now means what the button says: every
+application is cancelled (each affected layer restored through §20.6's own
+semantics), and only then is the entry dropped.
+
+- **the route (§20.4).** `DELETE /presets?id=` reads and plans every affected
+  layer **first**, then writes each layer, then writes the library — so a
+  workspace that cannot be restored refuses the whole request (`409`/`500`
+  `preset-unapply-failed`) and the preset survives. The answer reports
+  `restoredWorkspaces`, `links` and `workspaces[]`; the Revision 49 `orphaned`
+  count is gone, because the links it counted no longer exist.
+- **the registration is the same one.** Each restore appends a history record and
+  takes a prompt-write note for its workspace, exactly as `POST /presets/unapply`
+  does (§20.6, Revision 48 included: restoring *nothing* counts).
+- **orphans are now only an inherited shape (§20.1).** A hand-edited file, or one
+  written by Revisions 37–49, still reads, reports and cancels an orphan link;
+  no write route of this revision creates one.
+- **the client (§20.9).** The confirmation names the workspaces it will restore,
+  and the success notice reports how many were restored; the copy promises no
+  workspace「still holds its text」any more.
+- **superseded wording.** Revision 37's bullet「deleting an applied preset changes
+  no layer」and the `orphaned` field of Revision 41's §20.4 answer are the two
+  statements this revision replaces; everything else in §20 keeps its meaning,
+  its markers and its stored bytes.
 
 ## 21. The in-session assembly-status notice (g-062, Revision 45; toasts added in Revision 46)
 
@@ -6817,7 +6895,8 @@ re-report it.
 
 ## 22. The locale dictionaries (g-066, Revision 49)
 
-Every user-visible string this plugin renders — 564 keys per language — used to
+Every user-visible string this plugin renders — **566** keys per language since
+g-069 (Revision 50; 564 through Revision 49) — used to
 be hardcoded inside `client.js`: a 513-key `zh` object, a 513-key `en` object,
 and an `ERROR_TEXT` table of 51 `code → [zh, en]` rows that a loop expanded into
 `error.<code>` entries. The copy now lives in two JSON files, and the inlined
@@ -6826,10 +6905,10 @@ objects are a generated artifact.
 ### 22.1 Source of truth
 
 - `locale/zh.json` and `locale/en.json` are the **only** human source. Each
-  holds exactly 564 string values: the 513 main keys plus 51 `error.<code>`
+  holds exactly 566 string values: the 515 main keys plus 51 `error.<code>`
   keys. Keys are identical between the two files, **in the same order** (the
   order is what the generated block follows, so a reordered file is a
-  513-line diff rather than a copy change).
+  515-line diff rather than a copy change).
 - Nothing else in the package is hand-edited for copy. `client.js` carries the
   blocks inside the `// #region generated: locale/zh.json + locale/en.json`
   … `// #endregion` span; a hand edit there is overwritten by the next `--write`
@@ -6860,7 +6939,7 @@ there is no network surface. What changed is only who maintains the bytes.
 | `scripts/locale-pack.mjs --write` | Re-renders both blocks from the JSON. Idempotent: a second run changes nothing. |
 | `scripts/locale-pack.mjs --check` | Fails (exit 1) when a block is not byte-for-byte what `--write` would produce. |
 | `scripts/prepare.mjs` → `LOCALE-SYNC` | The same check on the **install/publish** path, plus a `files` allowlist test for both JSONs (a source that does not ship cannot be re-derived from the installed package). |
-| `test/locale.test.mjs` | Key parity, the 513 + 51 split, no new placeholder drift, byte equality with `--write`, a negative control (one drifted character is refused), and that the delivery shape is still a classic script with a synchronous register. |
+| `test/locale.test.mjs` | Key parity, the 515 + 51 split, no new placeholder drift, byte equality with `--write`, a negative control (one drifted character is refused), and that the delivery shape is still a classic script with a synchronous register. |
 
 ### 22.4 Error codes
 

@@ -13092,15 +13092,50 @@ test('client: deleting a preset asks first, and only a confirmed answer sends th
     responses: defaultResponses({
       [PATHS.presets]: (url, init) =>
         init && init.method === 'DELETE'
-          ? { payload: { ok: true, removed: true, id: 'preset-1', orphaned: 1, presets: [], applied: [] } }
+          ? {
+              payload: {
+                ok: true,
+                removed: true,
+                id: 'preset-1',
+                restoredWorkspaces: 1,
+                links: 1,
+                workspaces: [{ workspaceRoot: '/work/alpha', links: 1, restored: true }],
+                presets: [],
+                applied: [],
+              },
+            }
           : { payload: presetsFixture() },
     }),
+    // Revision 50: the confirmation names the workspaces the deletion restores,
+    // and it prefers the page's own label for one — which needs the workspace
+    // seat in reach.
+    useWorkspaces: workspacesHook(workspacesFixture()),
   });
   let tree = await openTab(page, 'presets');
+  tree = await page.flush();
   clickButton(tree, { 'data-action': 'preset-delete', 'data-preset-id': 'preset-1' });
   tree = await page.flush();
   assert.equal(oneBy(tree, 'data-region', 'confirm').props['data-confirm-kind'], 'preset-delete');
   assert.ok(strings(tree).some((text) => text.includes('短答')), 'the question names the preset');
+  // Revision 50 (g-069): an applied preset is deleted **and cancelled**, so the
+  // question states that and lists the workspaces it will restore — count plus a
+  // label the reader recognises. The plain「nothing is touched」sentence is not
+  // shown for this case at all.
+  const restorable = oneBy(tree, 'data-role', 'confirm-preset-workspaces');
+  assert.equal(restorable.props['data-preset-workspace-count'], '1');
+  assert.ok(
+    strings(tree).some((text) => text.includes(page.zh.presetDeleteAppliedList.replace('{list}', 'Alpha repo'))),
+    'the affected workspace is named by the page’s own label for it',
+  );
+  assert.ok(
+    strings(tree).some((text) => text.includes(page.zh.presetDeleteConfirmApplied.split('{count}')[0])),
+    'and the body states that the applications are cancelled',
+  );
+  assert.equal(
+    strings(tree).filter((text) => text === page.zh.presetDeleteConfirmBody).length,
+    0,
+    'the unapplied sentence is not used for an applied preset',
+  );
   assert.equal(
     page.router.calls.filter((call) => call.init && call.init.method === 'DELETE').length,
     0,
@@ -13113,6 +13148,20 @@ test('client: deleting a preset asks first, and only a confirmed answer sends th
   assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'confirm').length, 0);
   assert.equal(page.router.calls.filter((call) => call.init && call.init.method === 'DELETE').length, 0);
   assert.deepEqual(presetRowIds(tree), ['preset-1', 'preset-2'], 'and nothing was deleted');
+
+  // A preset no workspace holds keeps the plain question: there is no restore to
+  // warn about, and claiming one would be false.
+  clickButton(tree, { 'data-action': 'preset-delete', 'data-preset-id': 'preset-2' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'confirm').props['data-confirm-kind'], 'preset-delete');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-role'] === 'confirm-preset-workspaces').length,
+    0,
+    'an unapplied preset asks the plain question',
+  );
+  assert.ok(strings(tree).some((text) => text === page.zh.presetDeleteConfirmBody));
+  clickButton(tree, { 'data-action': 'confirm-no' });
+  tree = await page.flush();
 
   // Confirming sends exactly one DELETE by id — and, when an editor was open on
   // that preset, closes the dialog whose subject no longer exists.
@@ -13127,6 +13176,11 @@ test('client: deleting a preset asks first, and only a confirmed answer sends th
   assert.equal(deletes[0].url, `${PATHS.presets}?id=preset-1`);
   assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'preset-editor-dialog').length, 0);
   assert.equal(markerOf(tree, 'data-preset-state'), 'saved');
+  // …and the notice reports the restore the host really performed.
+  assert.ok(
+    strings(tree).some((text) => text.includes(page.zh.presetDeletedRestoredNotice.replace('{count}', '1'))),
+    'the success notice states how many workspaces were restored',
+  );
 });
 
 test('client: the apply dialog’s rows POST apply and a per-preset unapply, never a layer', async () => {

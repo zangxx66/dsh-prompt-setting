@@ -8588,3 +8588,77 @@ classic `<script>` 自注册 CJS 工厂，宿主对字节**零转译**；插件�
 - `mineInterpolateNote` 的既有占位符漂移（en 有 `{variables}`、zh 没有）**未修**（文案冻结），只登记为例外；
 - `errorText` 的「key 回显即未命中」判定只在本地 vm 桩上验证过宿主 fallback 语义（收集卡实测），未在真机复跑。
 
+## 148. g-069：删除预设＝对每个已应用的工作区真的取消应用（Revision 50，2026-10-15，基线 `d4e470b` 隔离工作树 `g-069-att-01`）
+
+**需求（负责人 2026-10-15 裁决，方案 A）**：删除一个**已被应用**的预设时，宿主必须对该预设已应用的
+**每个工作区**真的执行取消应用（还原工作区层文本），并在客户端删除确认浮层明确提示该后果。
+
+**现状缺陷**：`removePreset()` 只从 `presets` 数组剔项、`applied` 经 `appliedListOf()` 原样拷贝，
+`handleDeletePreset` 全程只 `writePresets()` —— 层里那份已应用的文本原样留存，记录变 orphan
+（「来源已删除」），用户从 UI 上无法直观把它恢复。
+
+**实现**
+
+- `core/presets.js`（纯）：新增 `appliedRootsOf(document, presetId)` 与
+  `planPresetRemoval(document, {presetId, currentOf})`。后者对每个受影响 root 反复调用既有
+  `planUnapply()` 直到该记录不再含这个 `presetId`（手改文件里同一 link 出现两次也只走两轮），
+  全部规划完成后才 `removePreset()`；`currentOf` 抛错即整体拒绝，**未写一个字节**。
+- `index.js` `handleDeletePreset`：两阶段。① 预检/规划：`writableConfig(workspaceConfigPath(root))`
+  + `planPresetRemoval`；② 提交：逐个 `writeConfig` + `cacheWritten` + `notePromptWrite` +
+  `recordHistory`（与既有 unapply 路由同一组副作用，note 为 `delete preset <id>`），**最后**才
+  `writePresets`。任一阶段失败 ⇒ 抛 `preset-unapply-failed`（预检沿用原错误 status，提交 500），
+  message 里 `restored: … / not restored: …`，**预设不删**、绝不出现「预设已删而工作区未还原」。
+  响应换成 `restoredWorkspaces` / `links` / `workspaces[]`；Revision 41/49 的 `orphaned`（按栈项计）
+  随行为一起退场。
+- 客户端：`requestPresetDelete` 从 `GET /presets` 的 `applied` 里筛出受影响工作区（label 优先取
+  页面自己的工作区标签，没有则用 root），确认浮层在非空时渲染
+  `data-role="confirm-preset-workspaces"` + `data-preset-workspace-count` 并列出清单；未应用时仍是
+  原来那句。成功 notice 改用 `restoredWorkspaces`。文案真源 `locale/zh.json` / `locale/en.json`
+  改 2 键（`presetDeleteConfirmBody` 收敛为中性；`presetDeletedOrphanNotice` 退场）、加 3 键
+  （`presetDeleteConfirmApplied`、`presetDeleteAppliedList`、`presetDeletedRestoredNotice`），
+  生成段用 `node scripts/locale-pack.mjs --write` 重建（**515 + 51 = 566 键/语言**）。
+
+**关键取舍**
+
+- **两阶段而不是「还原一个、删一个」**：判据要求「任一工作区还原失败 ⇒ 预设保留」。逐工作区提交时，
+  第二个工作区失败会让第一个已还原而预设仍在（可恢复方向），但如果顺序反了（先删预设）就会留下
+  不可恢复的坏状态。所以把**所有读与规划**放在第一个字节之前，这覆盖了现实中几乎全部失败
+  （层文件损坏 409、root 不可解析）；提交中途 I/O 失败是残余风险，如实列清单而不是假装原子。
+- **不做回滚**：把已还原的层写回旧文本同样是 I/O，回滚本身也会失败，且会让「已还原」清单失真；
+  提交失败的可恢复出路（再删一次，或手工取消剩余应用）已写进契约 §20.4。
+- **orphan 兼容不动**：`removePreset()` 仍是「只剔项」的纯函数，手改文件/历史数据里的 orphan link
+  依旧可读、可报、可取消（§20.1 明说它现在只可能来自这两种来源）；正常删除路径不再产生 orphan。
+- **`?session=` 只做 resolution**（照 §20.2 读面口径）：能解析时该 root 的历史记录带这个 session，
+  其余工作区按既有拼法记 `session: null`，绝不猜。
+
+**测试**
+
+- `test/presets.test.mjs`：改写原「删已应用预设不改层 + orphan」用例为
+  「删除会取消每个工作区并还原层」（两个不同 base、多工作区、含开关与其它条目不变、无 orphan 残留、
+  history 记录与 prompt-write 计数）；**等价修订**原 sha256 断言为「未被应用时删除不写层」（层文件
+  sha256 不变、`counts.writes` 不变）；新增多栈（删 A 留 B、文本重算为 `base+SEP+B`、B 仍可取消）、
+  负向对照（一个工作区层损坏 ⇒ 409 `preset-unapply-failed`、预设 sha256 不变、另一个工作区
+  层 sha256 不变、message 列出 restored/not restored）、纯函数（手改记录里同一预设两个 link）。
+- `test/client.test.mjs`：删除用例补断言 —— 已应用时确认浮层出现清单节点、`data-preset-workspace-count`
+  正确、label 用页面自己的工作区名、中性句不出现；未应用时不出现该节点、中性句出现；成功 notice
+  如实说还原数。locale 计数常量 513/564 → 515/566。
+
+### 一、验收（单行证据）
+
+- evidence: suite=node --test passed=916 failed=0 exit=0 ms=51553 diff=10f/+326/-76 commit=（见交付说明）
+- `node scripts/locale-pack.mjs` = ok（各 566 键，与生成段逐字一致，exit 0）；
+- `node scripts/prepare.mjs` = **OK（23 项）**（含 `LOCALE-SYNC` 566 键），exit 0；
+- `node --check index.js`、`node --check core/presets.js`、`node --check client.js` 均通过；
+- **负向对照**：① 一个工作区层不可写 ⇒ 删除整体拒绝（`preset-unapply-failed` 409），预设与另一个工作区
+  层 sha256 双不变；② 未应用时删除 ⇒ 层 sha256 与 `counts.writes` 双不变（判据 3 的原断言等价保留）；
+  ③ 客户端未应用预设的确认浮层**没有**清单节点。
+
+### 二、未验证项
+
+- **真机未跑**：无浏览器侧执行条件，确认浮层的目视排版与真实宿主（真实 workspaceRegistry 多root）
+  的删除路径未做真机走查；路由与页面行为由 fake Host + vm 渲染断言覆盖，真机复核留给主管集成检查点；
+- 提交阶段中途 I/O 失败（写第二个工作区时磁盘错误）只在代码路径上成立，测试用「预检失败」覆盖了
+  拒绝语义，**没有**制造真实的部分提交故障（不可在单测里稳定复现，故如实列为残余风险）；
+- 手改 `applied` 记录里 `workspaceRoot` 非字符串/空的极端情形未加专门用例（现有实现会按
+  `workspaceConfigPath` 解析并让预检拒绝，方向是「拒绝而不是越权写」）。
+

@@ -1398,7 +1398,9 @@ window.__ModuleLoader__.load({
       presetDiscardConfirmTitle: '放弃未保存的修改？',
       presetDiscardConfirmBody: '这个预设的修改还没有保存；确认后关闭弹窗，改动不会写进预设库。',
       presetDeleteConfirmTitle: '删除预设「{name}」？',
-      presetDeleteConfirmBody: '确认后预设库里不再有它。已经应用到工作区的内容不会被改动，但那条应用记录会标记为「来源已删除」。',
+      presetDeleteConfirmBody: '确认后预设库里不再有它。',
+      presetDeleteConfirmApplied: '这个预设已应用到 {count} 个工作区；确认后会先取消这些应用、把它们还原为应用前的内容，再删除预设。',
+      presetDeleteAppliedList: '会被还原的工作区：{list}',
       presetAlreadyAppliedNotice: '该预设已在此工作区生效，未重复叠加。',
       presetNotApplied: '未应用',
       presetUnapplyOne: '取消',
@@ -1410,7 +1412,7 @@ window.__ModuleLoader__.load({
       presetLoaded: '预设库已加载',
       presetSavedNotice: '预设已保存。',
       presetDeletedNotice: '预设已删除。',
-      presetDeletedOrphanNotice: '预设已删除；{count} 个工作区仍保留它的文本，可以继续取消应用。',
+      presetDeletedRestoredNotice: '预设已删除；{count} 个工作区已还原（取消应用）。',
       presetAppliedNotice: '预设已应用到该工作区，下一轮装配生效。',
       presetUnappliedNotice: '已取消应用：该工作区恢复为应用前的内容。',
       'error.invalid-json': '请求体不是合法 JSON。',
@@ -1965,7 +1967,9 @@ window.__ModuleLoader__.load({
       presetDiscardConfirmTitle: 'Discard the unsaved changes?',
       presetDiscardConfirmBody: 'This preset’s changes are not saved yet; confirming closes the dialog and writes nothing to the library.',
       presetDeleteConfirmTitle: 'Delete the preset “{name}”?',
-      presetDeleteConfirmBody: 'The library will no longer hold it. What a workspace already carries is not touched, but its applied record is marked “source deleted”.',
+      presetDeleteConfirmBody: 'The library will no longer hold it.',
+      presetDeleteConfirmApplied: 'This preset is applied to {count} workspace(s); confirming cancels those applications — each workspace is restored to what it held before — and deletes the preset.',
+      presetDeleteAppliedList: 'Workspaces that will be restored: {list}',
       presetAlreadyAppliedNotice: 'This preset is already in force in that workspace; nothing was stacked twice.',
       presetNotApplied: 'Not applied',
       presetUnapplyOne: 'Cancel',
@@ -1977,7 +1981,7 @@ window.__ModuleLoader__.load({
       presetLoaded: 'Library loaded',
       presetSavedNotice: 'The preset was saved.',
       presetDeletedNotice: 'The preset was deleted.',
-      presetDeletedOrphanNotice: 'The preset was deleted; {count} workspace(s) still hold its text and can still cancel the application.',
+      presetDeletedRestoredNotice: 'The preset was deleted; {count} workspace(s) were restored (their applications cancelled).',
       presetAppliedNotice: 'The preset was applied to that workspace; it takes effect on the next assembly.',
       presetUnappliedNotice: 'The application was cancelled: that workspace is back to what it held before.',
       'error.invalid-json': 'The request body is not valid JSON.',
@@ -6285,12 +6289,33 @@ window.__ModuleLoader__.load({
         body.push(t(updateApplyCopyKey('restartNote', modelLaunchKind(m))));
       } else if (confirm.kind === 'preset-delete') {
         // g-060 review R4: deleting a preset is a catalogue write with a visible
-        // consequence — an applied record becomes an orphan — so it asks first,
-        // through the same overlay every other destructive act on this page uses
-        // (g-031's rule: one confirmation surface, one layout, one pair of
-        // buttons).
+        // consequence, so it asks first, through the same overlay every other
+        // destructive act on this page uses (g-031's rule: one confirmation
+        // surface, one layout, one pair of buttons).
+        //
+        // Revision 50 (g-069): the consequence is now「every workspace that had it
+        // applied is restored」, so the body says exactly that and names them —
+        // the count and the labels are what the reader is being asked to agree
+        // to. A preset nothing applied keeps the plain sentence: there is no
+        // restore to warn about, and inventing one would be false.
         body.push(fmt(t('presetDeleteConfirmTitle'), { name: confirm.name ?? '' }));
-        body.push(t('presetDeleteConfirmBody'));
+        const restorable = Array.isArray(confirm.workspaces) ? confirm.workspaces : [];
+        if (restorable.length === 0) {
+          body.push(t('presetDeleteConfirmBody'));
+        } else {
+          body.push(fmt(t('presetDeleteConfirmApplied'), { count: restorable.length }));
+          body.push(
+            h(
+              'div',
+              {
+                'data-role': 'confirm-preset-workspaces',
+                'data-preset-workspace-count': String(restorable.length),
+                style: confirmTextStyle,
+              },
+              fmt(t('presetDeleteAppliedList'), { list: restorable.map((entry) => entry.label).join(', ') }),
+            ),
+          );
+        }
       } else if (confirm.kind === 'preset-discard') {
         // …and closing a dirty editor throws typing away, which is the other act
         // this page never performs silently (review R3's promise, now asked for
@@ -10561,10 +10586,12 @@ window.__ModuleLoader__.load({
         }
         if (presetDraft.id === id) setPresetDraft({ id: null, name: '', action: 'replace', text: '' });
         setPresetStatus({ kind: 'saved', error: null });
-        const orphaned = result.payload && typeof result.payload.orphaned === 'number' ? result.payload.orphaned : 0;
+        const restored = result.payload && typeof result.payload.restoredWorkspaces === 'number'
+          ? result.payload.restoredWorkspaces
+          : 0;
         setNotice({
           tone: 'success',
-          text: fmt(t(orphaned > 0 ? 'presetDeletedOrphanNotice' : 'presetDeletedNotice'), { count: orphaned }),
+          text: fmt(t(restored > 0 ? 'presetDeletedRestoredNotice' : 'presetDeletedNotice'), { count: restored }),
         });
         setReload((value) => value + 1);
       };
@@ -10794,7 +10821,22 @@ window.__ModuleLoader__.load({
           const list = presets.data && Array.isArray(presets.data.presets) ? presets.data.presets : [];
           const preset = list.find((entry) => entry.id === id) ?? null;
           if (preset === null) return;
-          setConfirm({ kind: 'preset-delete', id, name: preset.name });
+          // Revision 50 (g-069): the question must state what the deletion really
+          // does. Every workspace whose record holds this preset is about to have
+          // its layer restored, so the confirmation lists them — a count plus an
+          // identifiable label (the page's own workspace label when it has one,
+          // the root otherwise) — instead of promising that nothing is touched.
+          const applied = presets.data && Array.isArray(presets.data.applied) ? presets.data.applied : [];
+          const restorable = applied
+            .filter((record) => Array.isArray(record.stack) && record.stack.some((link) => link.presetId === id))
+            .map((record) => {
+              const row = presetWorkspaces.find((entry) => entry.root === record.workspaceRoot) ?? null;
+              const label = row === null || typeof row.label !== 'string' || row.label.length === 0
+                ? record.workspaceRoot
+                : row.label;
+              return { root: record.workspaceRoot, label };
+            });
+          setConfirm({ kind: 'preset-delete', id, name: preset.name, workspaces: restorable });
         },
         deletePreset: (id) => {
           void deletePreset(id);

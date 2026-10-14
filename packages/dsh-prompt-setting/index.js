@@ -154,11 +154,13 @@ import {
   withInterpolate,
 } from './core/overrides.js';
 import {
+  appliedRootsOf,
   planApply,
+  planPresetRemoval,
   planUnapply,
+  presetById,
   publicApplied,
   publicPresets,
-  removePreset,
   reservedSectionOf,
   upsertPreset,
   validatePresetId,
@@ -3860,12 +3862,36 @@ function mount(ctx, config, cleanups) {
   }
 
   /**
-   * `DELETE /prompt-setting/presets?id=` — drop one preset from the catalogue.
+   * `DELETE /prompt-setting/presets?id=` — drop one preset, and with it **every
+   * application of it** (Revision 50).
    *
-   * Deleting a preset that is currently applied is **allowed and changes no
-   * layer**: the workspace keeps the text it was given, and the record becomes
-   * an orphan (`GET /presets` says so, and the page labels it「来源已删除」)
-   * instead of the delete quietly rewriting a workspace the request never named.
+   * Deleting a preset that is currently applied used to be a catalogue-only
+   * write: the workspace kept the text it was given and its record became an
+   * orphan. That state is real but it is not what「删除」means to the person
+   * clicking it — the text they asked to be rid of stayed in the prompt, under a
+   * name no longer in the library. So the deletion now **cancels** the
+   * applications first, through the same kernel「取消应用」uses
+   * ({@link planPresetRemoval} → `planUnapply`): each affected workspace's layer
+   * is recomposed from `base` plus the links that remain, the last link restores
+   * `base` itself (`null` ⇒ the reserved entry is removed), and nothing else in
+   * the layer is touched. Only then is the library written.
+   *
+   * **Atomic, in the only order that can be.** Every affected layer is read and
+   * planned **before** the first write, so a workspace whose layer is unusable
+   * refuses the whole request with nothing changed: never "the preset is gone
+   * and the layer is not". A failure inside the commit loop (an I/O error after
+   * some layers were already restored) stops there too — the preset is **not**
+   * deleted, and the refusal names which workspaces were restored and which were
+   * not (§20.4, §20.7 `preset-unapply-failed`). The residual risk is stated
+   * rather than hidden: that second failure can leave some workspaces restored
+   * with the preset still in the library, which is the recoverable direction of
+   * the trade (the user can delete again, or cancel the remaining applications by
+   * hand).
+   *
+   * `?session=` is resolution only, exactly as on the read face (§20.2): when the
+   * caller names one, the workspace it resolves to is the one whose history
+   * record carries that session; every other restored workspace is logged without
+   * one, the existing spelling for a workspace write no session asked for.
    * @param url - the parsed request URL.
    * @param res - the Node response.
    */
@@ -3876,27 +3902,126 @@ function mount(ctx, config, cleanups) {
     }
     const id = validatePresetId(raw);
     const file = writablePresets();
-    const { document, removed } = removePreset(file.document, id);
-    if (removed === null) {
+    if (presetById(file.document, id) === null) {
       throw fail('preset-not-found', `no preset with id ${JSON.stringify(id)}`, 404);
     }
-    writePresets(file.path, document);
-    const applied = publicApplied(document);
-    // Revision 41: an application is a link on a workspace's stack, so the count
-    // is over links — a preset may be applied to several workspaces.
-    const orphaned = applied.reduce(
-      (total, record) => total + record.stack.filter((link) => link.presetId === id).length,
-      0,
-    );
+    const affected = appliedRootsOf(file.document, id);
+    const rawSession = url.searchParams.get('session');
+    const sessionId = typeof rawSession === 'string' && rawSession.length > 0 ? rawSession : null;
+    const sessionRoot = sessionId === null ? null : workspaceRootFor(sessionId).root;
+    const at = new Date().toISOString();
+    // Phase 1 — read and plan every affected layer. Nothing is written here, so
+    // any refusal (an unusable layer, an unknown workspace) leaves both files
+    // byte-identical and the preset in the library.
+    let plan;
+    let reading = null;
+    try {
+      plan = planPresetRemoval(file.document, {
+        presetId: id,
+        currentOf: (root) => {
+          reading = root;
+          return writableConfig(workspaceConfigPath(root));
+        },
+      });
+    } catch (error) {
+      const reason = error instanceof OverrideError
+        ? `${error.code}: ${error.message}`
+        : `${error?.message ?? String(error)}`;
+      throw fail(
+        'preset-unapply-failed',
+        `${restoreRefusal('restoring', reading, affected, [])} (${reason}); the preset was NOT deleted`,
+        error instanceof OverrideError ? error.status : 500,
+      );
+    }
+    if (plan.removed === null) {
+      throw fail('preset-not-found', `no preset with id ${JSON.stringify(id)}`, 404);
+    }
+    // Phase 2 — commit. The library is written **last**, after every layer write
+    // has succeeded, so the record always describes a state that really exists.
+    const restored = [];
+    try {
+      for (const entry of plan.plans) {
+        const path = workspaceConfigPath(entry.workspaceRoot);
+        const next = validateConfig(entry.config);
+        writeConfig(path, next);
+        cacheWritten({ path, root: entry.workspaceRoot }, next);
+        const session = entry.workspaceRoot === sessionRoot ? sessionId : null;
+        // g-062: a restore is a prompt change like any other save, and it is
+        // reported on that workspace's next run (the same call the `unapply`
+        // route makes, Revision 48 included: restoring **nothing** counts).
+        notePromptWrite({
+          layer: 'workspace',
+          session,
+          action: entry.after === null || entry.after.action === 'hide' ? 'hide' : 'replace',
+          text: entry.after === null || entry.after.action === 'hide' ? '' : String(entry.after.text ?? ''),
+        });
+        recordHistory({
+          path,
+          at,
+          layer: 'workspace',
+          session,
+          action: actionOf(entry.before, entry.after),
+          name: CUSTOM_SECTION_NAME,
+          origin: 'ui',
+          before: textEntry(entry.before === null ? null : entry.before.text),
+          after: textEntry(entry.after === null ? null : entry.after.text),
+          snapshot: snapshotOfConfig(next),
+          note: `delete preset ${id}`,
+        });
+        restored.push(entry.workspaceRoot);
+      }
+    } catch (error) {
+      const reason = error instanceof OverrideError
+        ? `${error.code}: ${error.message}`
+        : `${error?.message ?? String(error)}`;
+      throw fail(
+        'preset-unapply-failed',
+        `${restoreRefusal('restoring', null, affected, restored)} (${reason}); the preset was NOT deleted`,
+        500,
+      );
+    }
+    writePresets(file.path, plan.document);
     sendJson(res, 200, {
       ok: true,
       removed: true,
       id,
-      preset: removed,
-      orphaned,
-      presets: publicPresets(document),
-      applied,
+      preset: plan.removed,
+      // What really happened, in the two counts the page needs (Revision 50):
+      // how many workspaces were restored, and how many stack links that took.
+      restoredWorkspaces: plan.plans.length,
+      links: plan.links,
+      workspaces: plan.plans.map((entry) => ({
+        workspaceRoot: entry.workspaceRoot,
+        links: entry.links,
+        restored: entry.restored,
+      })),
+      presets: publicPresets(plan.document),
+      applied: publicApplied(plan.document),
     });
+  }
+
+  /**
+   * The「which workspaces were restored, which were not」half of a refused
+   * deletion (Revision 50): one sentence, both lists, so the answer can never
+   * claim more than it did.
+   *
+   * `failedRoot` names the workspace the refusal came from when it is known
+   * (phase 1); in phase 2 the already-restored list is the interesting half and
+   * `failedRoot` is `null` — the remaining workspaces are simply the ones not in
+   * `restored`.
+   * @param verb - what was being attempted (`restoring`).
+   * @param failedRoot - the workspace whose restore failed, or null.
+   * @param affected - every workspace the deletion had to restore.
+   * @param restored - the workspaces already restored, in commit order.
+   * @returns a human-readable sentence.
+   */
+  function restoreRefusal(verb, failedRoot, affected, restored) {
+    const quote = (roots) => (roots.length === 0 ? 'none' : roots.map((root) => JSON.stringify(root)).join(', '));
+    const pending = affected.filter((root) => !restored.includes(root));
+    const head = failedRoot === null
+      ? `${verb} ${quote(pending)} failed`
+      : `${verb} workspace ${JSON.stringify(failedRoot)} failed`;
+    return `${head}; restored: ${quote(restored)}; not restored: ${quote(pending)}`;
   }
 
   /**
