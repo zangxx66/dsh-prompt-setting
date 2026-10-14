@@ -41,7 +41,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   `restoredWorkspaces` / `links` / `workspaces[]`，正常删除不再产生 orphan（orphan 仅剩手改文件与
   Revisions 37–49 历史数据一种来源，仍可读、可取消）。客户端删除确认浮层在已应用时明确提示
   「会将被应用的工作区还原（即取消预设）」并列出受影响工作区，成功 notice 改为如实说明还原数量；文案
-  仍以 `locale/*.json` 为唯一真源（现为 515 主词典 + 51 `error.<code>` = 566 键/语言）。
+  仍以 `locale/*.json` 为唯一真源（现为 515 主词典 + 51 `error.<code>` = 566 键/语言）。**层文件已被
+  删除（`ENOENT`）的工作区按「无可还原」跳过**：不写层、不重建目录、不记历史，但其应用记录仍随预设
+  一起清理（不留 orphan），响应以 `missing: true` 标记，且不计入还原数；层存在但不可读/非法仍是拒绝
+  （`preset-unapply-failed`）。拒绝文案只把**真正失败**的那个工作区写成 failed。
   **Deleting a preset now cancels it (g-069, Revision 50)**: `DELETE /presets?id=` no longer just drops the
   entry — every workspace whose `applied` record holds the preset is taken off its stack first, with the
   existing stack semantics (remaining links recomposed over `base`; an empty stack restores `base` itself,
@@ -54,7 +57,11 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   (orphans now only come from a hand-edited file or Revisions 37–49 data, and stay readable and
   cancellable). The deletion confirmation states the restore and names the affected workspaces, and the
   success notice reports how many were restored; copy stays sourced from `locale/*.json` (now 515 main +
-  51 `error.<code>` = 566 keys per language).
+  51 `error.<code>` = 566 keys per language). **A workspace whose layer file is gone (`ENOENT`) is
+  skipped**: nothing is written, no directory is rebuilt and no history is logged, while its record is
+  still cleaned up with the preset (no orphan is left), reported as `missing: true` and never counted as
+  restored; a layer that exists but is unreadable still refuses the deletion
+  (`preset-unapply-failed`), whose message names only the workspace that really failed.
 - **「装配状态提示」移到「高级」面板顶部（g-065）**：这块两层装配观察（开关 + 装配层/送达层结论 +
   toast 降级说明）原先挂在「我的 Prompt」（写入口）顶部，而它的读者是「改完 Prompt 却没生效、要查为什么」
   的人，动机正好是打开「高级」。本次只换渲染位置：开关语义、偏好键、读取时机与轮询游标、toast 主动提示

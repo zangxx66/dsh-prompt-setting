@@ -8603,7 +8603,7 @@ classic `<script>` 自注册 CJS 工厂，宿主对字节**零转译**；插件�
   `planPresetRemoval(document, {presetId, currentOf})`。后者对每个受影响 root 反复调用既有
   `planUnapply()` 直到该记录不再含这个 `presetId`（手改文件里同一 link 出现两次也只走两轮），
   全部规划完成后才 `removePreset()`；`currentOf` 抛错即整体拒绝，**未写一个字节**。
-- `index.js` `handleDeletePreset`：两阶段。① 预检/规划：`writableConfig(workspaceConfigPath(root))`
+- `index.js` `handleDeletePreset`：两阶段。① 预检/规划：`readConfig(workspaceConfigPath(root))`
   + `planPresetRemoval`；② 提交：逐个 `writeConfig` + `cacheWritten` + `notePromptWrite` +
   `recordHistory`（与既有 unapply 路由同一组副作用，note 为 `delete preset <id>`），**最后**才
   `writePresets`。任一阶段失败 ⇒ 抛 `preset-unapply-failed`（预检沿用原错误 status，提交 500），
@@ -8643,15 +8643,44 @@ classic `<script>` 自注册 CJS 工厂，宿主对字节**零转译**；插件�
   正确、label 用页面自己的工作区名、中性句不出现；未应用时不出现该节点、中性句出现；成功 notice
   如实说还原数。locale 计数常量 513/564 → 515/566。
 
+**返工轮（独立评审判 BLOCK，两项同批修）**
+
+- **BLOCK A（必修）——层文件已删除的工作区被「重建」**：`readConfig()` 对 ENOENT 返回
+  `{config: emptyConfig(), missing: true, error: null}`，而旧代码走 `writableConfig()` 只取 `.error`，
+  丢掉 `missing`，于是仍为该 root 产计划，`writeConfig()` 的 `mkdirSync(…, {recursive:true})` 把用户
+  已删的目录树重建出来（评审实测 `ghost root rebuilt: true`）。修法：`currentOf` 改用 `readConfig()`，
+  `missing === true` 时返回 `null`；`planPresetRemoval` 把这种 root 记为 `missing: true` / `config: null`
+  —— **link 照旧取消**（否则又留 orphan），但路由不 `writeConfig`、不 `cacheWritten`、不 `notePromptWrite`、
+  不 `recordHistory`；响应给 `missing: true` / `restored: false`，`restoredWorkspaces` 只计真正写了层的工作区，
+  `links` 照旧计全部被取消的栈链接。层**存在但不可读/非法**仍是拒绝（409 `preset-unapply-failed`），
+  不变的负向对照没有被放松。
+- **BLOCK B（次要）——拒绝文案把「没轮到的工作区」写成 failed**：旧 `restoreRefusal('restoring', null, …)`
+  在提交阶段把整个 `pending` 列表当失败名单；读阶段则把全部 root 写成 failed，与 §20.7 自称的
+  「names the failing workspace」不符。修法：提交循环里用 `committing` 记录**正在写**的那个 root 并作为
+  `failedRoot` 传入；头部文案固定为 `restoring workspace "<root>" failed`（无 failedRoot 时
+  `restoring stopped before any layer was written`）；预检阶段把已读到的 `missing` root 收集成 `absent`，
+  从 `not restored` 里剔除并单独列 `no layer to restore:`。`restored:` / `not restored:` 两个列表保持准确。
+
+**返工轮的测试同步**
+
+- 新增 `route: a workspace whose layer is gone is skipped, and nothing is rebuilt`：造 applied 记录 →
+  `rmSync(workspaceRoot)` → `DELETE` ⇒ ① `existsSync(root) === false`（无幽灵目录、无幽灵层文件）
+  ② 200 且该 `workspaces` 项 `missing: true` / `restored: false` ③ `presets.json` 与读面的 `applied` 均空
+  ④ 另一个正常存在的工作区仍被还原（真实写入，`counts.writes` 只 +1）；
+- 纯函数用例补 `currentOf: () => null` 分支（`config: null`、记录仍被清、无 orphan）；
+- 拒绝用例的 message 断言按新措辞加强：包含 `restoring workspace "<坏 root>" failed`，且**不**包含
+  `restoring workspace "<未轮到的 root>" failed`。
+
 ### 一、验收（单行证据）
 
-- evidence: suite=node --test passed=916 failed=0 exit=0 ms=51553 diff=10f/+326/-76 commit=（见交付说明）
+- evidence: suite=node --test passed=917 failed=0 exit=0 ms=56372 diff/commit=<见交付说明>
 - `node scripts/locale-pack.mjs` = ok（各 566 键，与生成段逐字一致，exit 0）；
 - `node scripts/prepare.mjs` = **OK（23 项）**（含 `LOCALE-SYNC` 566 键），exit 0；
 - `node --check index.js`、`node --check core/presets.js`、`node --check client.js` 均通过；
 - **负向对照**：① 一个工作区层不可写 ⇒ 删除整体拒绝（`preset-unapply-failed` 409），预设与另一个工作区
   层 sha256 双不变；② 未应用时删除 ⇒ 层 sha256 与 `counts.writes` 双不变（判据 3 的原断言等价保留）；
-  ③ 客户端未应用预设的确认浮层**没有**清单节点。
+  ③ 客户端未应用预设的确认浮层**没有**清单节点；④ 把 `planPresetRemoval` 的 roots 临时置空（模拟旧
+  「只剔项」行为）⇒ 4 条新用例变红，还原后 29/29 绿。
 
 ### 二、未验证项
 

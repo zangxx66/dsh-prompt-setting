@@ -1000,7 +1000,7 @@ test('route: deleting one preset of a stack keeps the presets that remain (Revis
   const deleted = json(await call(route, { method: 'DELETE', url: `${PRESETS_PATH}?id=${PRESET_A}` }));
   assert.equal(deleted.restoredWorkspaces, 1);
   assert.equal(deleted.links, 1);
-  assert.deepEqual(deleted.workspaces, [{ workspaceRoot, links: 1, restored: false }]);
+  assert.deepEqual(deleted.workspaces, [{ workspaceRoot, links: 1, restored: false, missing: false }]);
   assert.equal(
     JSON.parse(readFileSync(layerPath(workspaceRoot), 'utf8')).overrides[0].text,
     `MINE${SEP}TWO`,
@@ -1044,6 +1044,17 @@ test('route: a workspace that cannot be restored refuses the whole deletion, pre
   assert.equal(json(refused).code, 'preset-unapply-failed');
   assert.equal(refused.statusCode, 409, 'the layer refusal keeps its own status');
   assert.ok(json(refused).message.includes(JSON.stringify(workspaceRoot)), 'the unusable workspace is named');
+  // g-069 review B: the refusal names the workspace whose restore really failed —
+  // never the ones the read had not reached yet.
+  assert.ok(
+    json(refused).message.includes(`restoring workspace ${JSON.stringify(workspaceRoot)} failed`),
+    'the failing workspace is the one called failed',
+  );
+  assert.equal(
+    json(refused).message.includes(`restoring workspace ${JSON.stringify(otherRoot)} failed`),
+    false,
+    'the workspace that was never reached is not called a failure',
+  );
   assert.ok(json(refused).message.includes('restored: none'), 'nothing was restored');
   assert.ok(json(refused).message.includes('not restored:'), 'and the answer states what was left');
   assert.ok(json(refused).message.includes('was NOT deleted'));
@@ -1051,6 +1062,56 @@ test('route: a workspace that cannot be restored refuses the whole deletion, pre
   assert.equal(sha256(layerPath(otherRoot)), otherBefore, 'and no workspace was rewritten on the way out');
   const listed = json(await call(route, { url: PRESETS_PATH }));
   assert.deepEqual(listed.presets.map((preset) => preset.id), [PRESET_A]);
+});
+
+test('route: a workspace whose layer is gone is skipped, and nothing is rebuilt (Revision 50)', async () => {
+  const { route } = mount({ workspaces: [workspaceRow(workspaceRoot, 's-1'), workspaceRow(otherRoot, 's-2')] });
+  seedLibrary(
+    [storedPreset(PRESET_A, 'a', 'replace', 'PRESET')],
+    [
+      {
+        workspaceRoot,
+        base: null,
+        stack: [
+          { presetId: PRESET_A, appliedAt: 't1', action: 'replace', text: 'PRESET' },
+          { presetId: PRESET_A, appliedAt: 't2', action: 'replace', text: 'PRESET' },
+        ],
+      },
+      { workspaceRoot: otherRoot, base: null, stack: [{ presetId: PRESET_A, appliedAt: 't', action: 'replace', text: 'PRESET' }] },
+    ],
+  );
+  // The user deleted that workspace directory, layer and all — but its applied
+  // record is still in the library. There is no text to restore there, and the
+  // deletion must not invent one (g-069 review A: the ghost root the old code
+  // rebuilt through `writeConfig`'s `mkdirSync`).
+  rmSync(workspaceRoot, { recursive: true, force: true });
+  writeRaw(layerPath(otherRoot), `${JSON.stringify({ version: 1, overrides: [] }, null, 2)}\n`);
+  assert.equal(existsSync(workspaceRoot), false);
+  const writesBefore = json(await call(route, { url: ASSEMBLY_STATUS_PATH })).counts.writes;
+
+  const deleted = json(await call(route, { method: 'DELETE', url: `${PRESETS_PATH}?id=${PRESET_A}` }));
+  assert.equal(deleted.ok, true);
+  assert.equal(existsSync(workspaceRoot), false, 'no ghost workspace directory is rebuilt');
+  assert.equal(existsSync(layerPath(workspaceRoot)), false, 'and no layer file is invented');
+  assert.equal(deleted.restoredWorkspaces, 1, 'only the workspace that really had a layer was restored');
+  assert.equal(deleted.links, 3, 'every stack link is cancelled, the gone workspace’s two included');
+  const ghost = deleted.workspaces.find((entry) => entry.workspaceRoot === workspaceRoot);
+  assert.equal(ghost.missing, true, 'the absent layer is reported as such');
+  assert.equal(ghost.restored, false);
+  assert.equal(ghost.links, 2);
+  const real = deleted.workspaces.find((entry) => entry.workspaceRoot === otherRoot);
+  assert.equal(real.missing, false);
+  // A workspace with no layer is not a restore, so it takes no prompt-write note.
+  assert.equal(
+    json(await call(route, { url: ASSEMBLY_STATUS_PATH })).counts.writes,
+    writesBefore + 1,
+    'one note for the one workspace that was really written',
+  );
+  // …but its links are gone all the same: the deletion leaves no orphan behind.
+  assert.deepEqual(readPresets(presetsPath()).document.applied, []);
+  const listed = json(await call(route, { url: PRESETS_PATH }));
+  assert.deepEqual(listed.applied, []);
+  assert.deepEqual(listed.presets, []);
 });
 
 test('presets logic: planPresetRemoval cancels every link of a hand-edited record (Revision 50)', () => {
@@ -1097,6 +1158,25 @@ test('presets logic: planPresetRemoval cancels every link of a hand-edited recor
   } });
   assert.equal(untouched.removed, null);
   assert.deepEqual(untouched.plans, []);
+
+  // g-069 review A: a layer file that is gone (the caller answered `null`) is
+  // planned as a cleanup — the links come off, and there is no config to write.
+  const ghost = planPresetRemoval(
+    {
+      version: 1,
+      presets: [{ id: PRESET_A, name: 'one', action: 'append', text: 'ONE', createdAt: 't', updatedAt: 't' }],
+      applied: [{ workspaceRoot: '/gone', base: null, stack: [{ presetId: PRESET_A, appliedAt: 't', action: 'append', text: 'ONE' }] }],
+    },
+    { presetId: PRESET_A, currentOf: () => null },
+  );
+  assert.equal(ghost.links, 1, 'the link is cancelled even though the layer is gone');
+  assert.deepEqual(ghost.document.applied, [], 'so the deletion leaves no orphan behind');
+  assert.deepEqual(ghost.document.presets, []);
+  assert.equal(ghost.plans[0].missing, true);
+  assert.equal(ghost.plans[0].config, null, 'nothing to write');
+  assert.equal(ghost.plans[0].restored, false);
+  assert.equal(ghost.plans[0].before, null);
+  assert.equal(ghost.plans[0].after, null);
 });
 
 

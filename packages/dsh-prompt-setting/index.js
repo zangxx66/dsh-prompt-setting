@@ -3888,6 +3888,15 @@ function mount(ctx, config, cleanups) {
    * the trade (the user can delete again, or cancel the remaining applications by
    * hand).
    *
+   * **A layer that is gone is skipped, not recreated** (g-069 review A). When the
+   * `applied` record points at a workspace root the user has since deleted, there
+   * is no text to restore and the request must not build one: `writeConfig` would
+   * `mkdirSync` the whole `.dsh-prompt-setting` tree back. That workspace is
+   * planned as `missing`, its links still come off the record (no orphan is left
+   * behind), and it is reported as `missing: true` / `restored: false` without
+   * being counted in `restoredWorkspaces`. The opposite case — a layer file that
+   * exists but cannot be read or parsed — is still a refusal.
+   *
    * `?session=` is resolution only, exactly as on the read face (§20.2): when the
    * caller names one, the workspace it resolves to is the one whose history
    * record carries that session; every other restored workspace is logged without
@@ -3913,14 +3922,36 @@ function mount(ctx, config, cleanups) {
     // Phase 1 — read and plan every affected layer. Nothing is written here, so
     // any refusal (an unusable layer, an unknown workspace) leaves both files
     // byte-identical and the preset in the library.
+    //
+    // g-069 review A: a layer file that is **gone** (ENOENT) is not a refusal and
+    // not a restore. It is planned as `missing` — the record's links are cancelled
+    // so the deletion still leaves no orphan, but the route writes, caches and
+    // logs nothing for that workspace: `writeConfig` would `mkdirSync` the
+    // directory tree the user deleted. A layer that **exists but cannot be read**
+    // stays a refusal (the read throws), which is the behaviour the negative
+    // control pins.
     let plan;
     let reading = null;
+    const absent = [];
     try {
       plan = planPresetRemoval(file.document, {
         presetId: id,
         currentOf: (root) => {
           reading = root;
-          return writableConfig(workspaceConfigPath(root));
+          const path = workspaceConfigPath(root);
+          const read = readConfig(path);
+          if (read.error !== null) {
+            throw new OverrideError(
+              'layer-not-writable',
+              `${path} is not a valid config (${read.error.code}: ${read.error.message}); fix or remove it before saving`,
+              409,
+            );
+          }
+          if (read.missing === true) {
+            absent.push(root);
+            return null;
+          }
+          return read.config;
         },
       });
     } catch (error) {
@@ -3929,7 +3960,7 @@ function mount(ctx, config, cleanups) {
         : `${error?.message ?? String(error)}`;
       throw fail(
         'preset-unapply-failed',
-        `${restoreRefusal('restoring', reading, affected, [])} (${reason}); the preset was NOT deleted`,
+        `${restoreRefusal('restoring', reading, affected, [], absent)} (${reason}); the preset was NOT deleted`,
         error instanceof OverrideError ? error.status : 500,
       );
     }
@@ -3939,8 +3970,14 @@ function mount(ctx, config, cleanups) {
     // Phase 2 — commit. The library is written **last**, after every layer write
     // has succeeded, so the record always describes a state that really exists.
     const restored = [];
+    let committing = null;
     try {
       for (const entry of plan.plans) {
+        // No layer file, nothing to put back: the links are already off the
+        // record (§20.4), and inventing the layer here is the defect this branch
+        // exists to prevent.
+        if (entry.missing === true) continue;
+        committing = entry.workspaceRoot;
         const path = workspaceConfigPath(entry.workspaceRoot);
         const next = validateConfig(entry.config);
         writeConfig(path, next);
@@ -3976,7 +4013,7 @@ function mount(ctx, config, cleanups) {
         : `${error?.message ?? String(error)}`;
       throw fail(
         'preset-unapply-failed',
-        `${restoreRefusal('restoring', null, affected, restored)} (${reason}); the preset was NOT deleted`,
+        `${restoreRefusal('restoring', committing, affected, restored, absent)} (${reason}); the preset was NOT deleted`,
         500,
       );
     }
@@ -3987,13 +4024,17 @@ function mount(ctx, config, cleanups) {
       id,
       preset: plan.removed,
       // What really happened, in the two counts the page needs (Revision 50):
-      // how many workspaces were restored, and how many stack links that took.
-      restoredWorkspaces: plan.plans.length,
+      // how many workspaces were **really written**, and how many stack links
+      // that took across every affected workspace. A workspace whose layer file
+      // is gone is reported in `workspaces[]` as `missing: true` and is not
+      // counted as restored (g-069 review A).
+      restoredWorkspaces: restored.length,
       links: plan.links,
       workspaces: plan.plans.map((entry) => ({
         workspaceRoot: entry.workspaceRoot,
         links: entry.links,
         restored: entry.restored,
+        missing: entry.missing === true,
       })),
       presets: publicPresets(plan.document),
       applied: publicApplied(plan.document),
@@ -4005,23 +4046,28 @@ function mount(ctx, config, cleanups) {
    * deletion (Revision 50): one sentence, both lists, so the answer can never
    * claim more than it did.
    *
-   * `failedRoot` names the workspace the refusal came from when it is known
-   * (phase 1); in phase 2 the already-restored list is the interesting half and
-   * `failedRoot` is `null` — the remaining workspaces are simply the ones not in
-   * `restored`.
+   * `failedRoot` names the workspace the refusal really came from — the one whose
+   * read threw in phase 1, or the one the commit loop was writing in phase 2
+   * (g-069 review B: the previous wording listed every not-yet-reached workspace
+   * as if it had failed, which §20.7 already promised not to do). `absent` names
+   * the workspaces whose layer file does not exist: they are neither restored nor
+   * failed, so they are excluded from `not restored` and reported separately.
    * @param verb - what was being attempted (`restoring`).
    * @param failedRoot - the workspace whose restore failed, or null.
-   * @param affected - every workspace the deletion had to restore.
+   * @param affected - every workspace the deletion had to account for.
    * @param restored - the workspaces already restored, in commit order.
+   * @param absent - the workspaces with no layer file (skipped, not restored).
    * @returns a human-readable sentence.
    */
-  function restoreRefusal(verb, failedRoot, affected, restored) {
+  function restoreRefusal(verb, failedRoot, affected, restored, absent = []) {
     const quote = (roots) => (roots.length === 0 ? 'none' : roots.map((root) => JSON.stringify(root)).join(', '));
-    const pending = affected.filter((root) => !restored.includes(root));
-    const head = failedRoot === null
-      ? `${verb} ${quote(pending)} failed`
+    const pending = affected.filter((root) => !restored.includes(root) && !absent.includes(root));
+    const head = failedRoot === null || failedRoot === undefined
+      ? `${verb} stopped before any layer was written`
       : `${verb} workspace ${JSON.stringify(failedRoot)} failed`;
-    return `${head}; restored: ${quote(restored)}; not restored: ${quote(pending)}`;
+    const parts = [`${head}`, `restored: ${quote(restored)}`, `not restored: ${quote(pending)}`];
+    if (absent.length > 0) parts.push(`no layer to restore: ${quote(absent)}`);
+    return parts.join('; ');
   }
 
   /**

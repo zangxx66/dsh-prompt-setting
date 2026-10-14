@@ -6339,20 +6339,40 @@ Body: `{name, action, text}` to insert, or `{id, name, action, text}` to edit.
 - **Nothing applied it: nothing else happens.** With no `applied` record naming
   the preset, the deletion is the catalogue write it always was — no workspace
   layer is opened, and every layer file stays byte-identical.
+- **A layer that is gone is skipped, never recreated (g-069 review A).** When an
+  `applied` record names a workspace root whose layer file does not exist
+  (`ENOENT`), there is **no text to restore**: that workspace is not written, not
+  cached, and gets neither a history record nor a prompt-write note — the request
+  must not `mkdirSync` back the `.dsh-prompt-setting` tree of a workspace the user
+  deleted. `ENOENT` is therefore **not an error code**: the links of that record
+  are still cancelled with the preset (so the deletion leaves no orphan behind),
+  and the answer reports that workspace as `missing: true` with `restored: false`.
+  A layer file that **exists but cannot be read or parsed** is the opposite case:
+  it refuses the whole deletion (§20.7 `preset-unapply-failed`) with the library
+  and every layer file byte-identical.
 - Response `200`:
 
 ```json
 { "ok": true, "removed": true, "id": "…", "preset": { … },
-  "restoredWorkspaces": 2, "links": 2,
-  "workspaces": [ { "workspaceRoot": "…", "links": 1, "restored": true } ],
+  "restoredWorkspaces": 1, "links": 3,
+  "workspaces": [
+    { "workspaceRoot": "…", "links": 1, "restored": true, "missing": false },
+    { "workspaceRoot": "…", "links": 2, "restored": false, "missing": true }
+  ],
   "presets": [ … ], "applied": [ … ] }
 ```
 
-- `restoredWorkspaces` is how many workspaces were restored, `links` how many
-  stack links that took, and `workspaces[]` names each one with its own link
-  count and whether the layer went all the way back to `base` (`restored`, the
-  same boolean §20.6 reports). `presets`/`applied` are §20.2's shapes, so the
-  page can refresh from the answer alone.
+- `restoredWorkspaces` counts only the workspaces whose layer was **really
+  written** (a `missing` one is not among them), `links` counts every stack link
+  cancelled across all of them, and `workspaces[]` names each affected workspace
+  with its own link count, whether the layer went all the way back to `base`
+  (`restored`, the same boolean §20.6 reports), and whether its layer file was
+  absent (`missing`, §20.4's `ENOENT` rule). `presets`/`applied` are §20.2's
+  shapes, so the page can refresh from the answer alone.
+- A refused deletion's message names the workspace whose restore **really failed**
+  (`restoring workspace "<root>" failed`) and lists `restored:`, `not restored:`,
+  plus `no layer to restore:` when some were skipped. A workspace the loop had not
+  reached yet is never reported as failed.
 - `?session=` is **resolution only**, as on the read face (§20.2): when the
   caller names one, the workspace it resolves to is the one whose history record
   carries that session; every other restored workspace is logged without one.
@@ -6471,7 +6491,7 @@ All are `OverrideError` shapes (`{ok: false, code, message}`, §4.4):
 | `not-applied` | 404 | `unapply` for a workspace with no record, or for a preset that is not on that workspace's stack (Revision 41). |
 | `presets-not-writable` | 409 | The library file exists but is not a valid document (§20.1). |
 | `layer-not-writable` | 409 | The workspace layer's own file is not a valid config (§4.4, unchanged). |
-| `preset-unapply-failed` | 409 / 500 | A `DELETE` could not restore one of the workspaces the preset was applied to (§20.4). The status is the failing read's own when the refusal is decided before any write (`409` for an unusable layer), `500` when a write failed mid-commit. The message names the failing workspace and lists `restored:` / `not restored:`; **the preset is not deleted**, and no workspace is rewritten on the pre-write path. |
+| `preset-unapply-failed` | 409 / 500 | A `DELETE` could not restore one of the workspaces the preset was applied to (§20.4). The status is the failing read's own when the refusal is decided before any write (`409` for a layer that exists but is unusable), `500` when a write failed mid-commit. The message names the workspace whose restore really failed and lists `restored:` / `not restored:` (plus `no layer to restore:` for skipped ones); **the preset is not deleted**, and no workspace is rewritten on the pre-write path. A **missing** layer file (`ENOENT`) is not this error — it is skipped, never recreated (§20.4). |
 
 Every one of them is decided **before** any file is written — `preset-unapply-failed`
 included on the pre-write path, which is the only path it is expected to take — so
@@ -6571,7 +6591,10 @@ library is written last) and reports exactly which workspaces were restored.
   otherwise): the reader is agreeing to a restore, not to a catalogue edit. A
   preset nothing applied shows the plain sentence and **no** such node. The
   success notice reports `restoredWorkspaces` from the answer rather than
-  claiming a workspace「still holds the text」.
+  claiming a workspace「still holds the text」. The list is what the `applied`
+  records hold — the read face cannot say whether a layer file still exists, and
+  the Host skips a workspace whose layer is gone (§20.4), so the notice (which
+  comes from the answer) is the exact half.
 - **State.** The tab carries `data-preset-state` (`idle` / `saving` / `saved` /
   `error`) in the shape the other tabs use (§13.1's `mine-state`). A host that
   answers `error` on the read (§20.2) is shown as a library problem, not
@@ -6594,6 +6617,14 @@ semantics), and only then is the entry dropped.
 - **the registration is the same one.** Each restore appends a history record and
   takes a prompt-write note for its workspace, exactly as `POST /presets/unapply`
   does (§20.6, Revision 48 included: restoring *nothing* counts).
+- **a gone layer is skipped, not created (review A).** A record pointing at a
+  workspace whose layer file no longer exists (`ENOENT`) is cleaned up without a
+  write: its links are cancelled with the preset and it is reported `missing:
+  true` / `restored: false`, never counted in `restoredWorkspaces`. Recreating
+  the deleted workspace through `writeConfig`'s `mkdirSync` was the defect this
+  rule closes. A layer that exists but is unusable still refuses the whole
+  deletion, and a refusal names the workspace whose restore really failed — not
+  the ones the loop had not reached (review B).
 - **orphans are now only an inherited shape (§20.1).** A hand-edited file, or one
   written by Revisions 37–49, still reads, reports and cancels an orphan link;
   no write route of this revision creates one.

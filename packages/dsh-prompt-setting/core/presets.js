@@ -29,7 +29,7 @@
  */
 
 import { CUSTOM_SECTION_NAME } from './custom.js';
-import { MAX_TEXT_BYTES, RESERVED_STACK_SEPARATOR, fail, withInterpolate } from './overrides.js';
+import { MAX_TEXT_BYTES, RESERVED_STACK_SEPARATOR, emptyConfig, fail, withInterpolate } from './overrides.js';
 
 /**
  * The presets document version. A stored document may omit it (the first
@@ -643,16 +643,26 @@ export function appliedRootsOf(document, presetId) {
  * given the same treatment link by link: {@link planUnapply} pops one at a time,
  * so the loop below runs until the record no longer names the preset at all —
  * an ordinary document needs exactly one pass.
+ *
+ * **A layer that is not there is skipped, not invented.** When `currentOf`
+ * answers `null`/`undefined` — the caller read the file and found ENOENT — the
+ * workspace has no text to restore, so its plan carries `missing: true` and
+ * `config: null`: the route must not write, cache or log it, and it must **not**
+ * create the directory a write would need. Its links are still cancelled here, so
+ * the deletion leaves no orphan behind even then. An unreadable or invalid layer
+ * is the opposite case: it is a `throw` from `currentOf`, which refuses the whole
+ * plan.
  * @param document - the current normalized document.
  * @param options.presetId - the preset to delete and cancel.
- * @param options.currentOf - `(workspaceRoot) => validated config`; the caller's
- *   read of that layer. Throwing from it refuses the whole plan (and nothing has
- *   been written).
+ * @param options.currentOf - `(workspaceRoot) => validated config|null`; the
+ *   caller's read of that layer. `null` means the layer file does not exist
+ *   (ENOENT). Throwing from it refuses the whole plan (and nothing has been
+ *   written).
  * @returns `{document, removed, plans, links}`. `document` is the library with
  *   the preset dropped and every one of its links gone; `removed` is `null` when
  *   the library has no such preset (and then nothing else is reported);
- *   `plans` is one entry per restored workspace
- *   (`{workspaceRoot, removed, links, before, after, config, restored, base, stack, text}`);
+ *   `plans` is one entry per affected workspace
+ *   (`{workspaceRoot, missing, removed, links, before, after, config, restored, base, stack, text}`);
  *   `links` is the total number of stack links cancelled.
  */
 export function planPresetRemoval(document, options = {}) {
@@ -667,11 +677,19 @@ export function planPresetRemoval(document, options = {}) {
   let working = document;
   const plans = [];
   for (const workspaceRoot of roots) {
-    const current = options.currentOf(workspaceRoot);
+    // `null` means **this workspace has no layer file at all** (the caller's read
+    // reported ENOENT). There is no text to restore, so this entry is planned as
+    // a cleanup only: `missing: true`, `config: null`, and the route must not
+    // write, cache or log it — restoring a layer that does not exist would create
+    // the workspace directory the user deleted (g-069 review A). The links still
+    // come off the record here, so the deletion cannot leave an orphan behind.
+    const read = options.currentOf(workspaceRoot);
+    const missing = read === null || read === undefined;
+    const current = missing ? emptyConfig() : read;
     let config = null;
     let step = null;
     const removed = [];
-    const before = reservedSectionOf(current);
+    const before = missing ? null : reservedSectionOf(current);
     for (;;) {
       const record = appliedListOf(working).find((item) => item.workspaceRoot === workspaceRoot) ?? null;
       if (record === null || !record.stack.some((item) => item.presetId === presetId)) break;
@@ -686,12 +704,13 @@ export function planPresetRemoval(document, options = {}) {
     }
     plans.push({
       workspaceRoot,
+      missing,
       removed,
       links: removed.length,
       before,
-      after: reservedSectionOf(config),
-      config,
-      restored: step === null ? false : step.restored,
+      after: missing ? null : reservedSectionOf(config),
+      config: missing ? null : config,
+      restored: missing || step === null ? false : step.restored,
       base: step === null ? null : step.base,
       stack: step === null ? [] : step.stack,
       text: step === null ? '' : step.text,
