@@ -555,7 +555,7 @@ fingerprintOf(加 1 行头注后的同一文件)      = 4d998612 / 567230   # �
 | T7 | 阶段 2 的段细化（页面模型拆 3 段、mine panel 独立、加头注） | 段重排 | 中（段序敏感，见 §5.2） |
 | T8 | `CONTRACT.md` 新增「客户端源码布局」条款 + README 改口「零编译」 | 文档 | 中（**契约变更，需负责人裁决**） |
 | T9 | 既有测试同步：`test/host.test.mjs` 的 `files` 枚举 + `test/prepare.test.mjs` 的两个 fixture（含 faithful copy 的目录列表加 `src`） | 约 20 行 | 低（**预期内**，见 §5.2） |
-| T10 | `docs/check-refs.mjs` 引用体检 + 两张表复算脚本（§10，**只读**、fail-closed；已在本轮交付） | 1 新脚本 576 行 | 无 |
+| T10 | `docs/check-refs.mjs` 引用体检 + 两张表复算脚本（§10，**只读**、fail-closed；已在本轮交付） | 1 新脚本 577 行 | 无 |
 
 ### 7.2 必须另立目标
 

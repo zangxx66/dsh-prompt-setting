@@ -553,7 +553,7 @@ function main() {
   process.stdout.write(
     `check-refs: REFS 表 ${REFS.length} 条 → REFS∩declared=${REFS.length - notDeclared.length}`
     + `（计入覆盖率，其中 verified=${verified}） / REFS\\declared=${notDeclared.length}`
-    + `（文档里不存在，不计入覆盖率；其中 ${notDeclaredOk} 条独立校验通过）\n`,
+    + `（未被收集器识别的写法：裸行号 / 不同区间写法等，不计入覆盖率；其中 ${notDeclaredOk} 条独立校验通过）\n`,
   );
   process.stdout.write(
     `check-refs: 恒等式 total == verified + rangeOnly + manual + unresolved = `
