@@ -29,12 +29,14 @@
 设置页里会多出一栏 **「Prompt settings」**（`id: prompt-setting`），六个一级 tab：
 
 - **我的 Prompt / My Prompt** —— 唯一写入口：写下你自己的系统级指令（选层 → 编辑 → 保存），
-  一键恢复默认。这段文本**排在所有内置段之后**。上方的「查看范围」是这一块的头部：它决定保存落到
-  哪一层，改范围也只有这一处（面板内那行只读提示会重复告诉你当前写到哪）。
+  一键恢复默认。这段文本**排在所有内置段之后**。「查看范围」选择器就在**这一面板内、标题之下**（g-071 起）：
+  它决定保存落到哪一层，改范围也只有这一处（面板内那行只读提示会重复告诉你当前写到哪；其他 tab 只在各自
+  面板顶部用一行只读提示说明当前范围）。
   > The only write surface: your own system-level instructions (pick a layer → edit → save), with a
-  > one-click restore. The text is **placed after every built-in section**. The "View scope" row above
-  > the tabs is this block's header: it decides which layer a save lands in, and it is the only place the
-  > scope is changed (the panel repeats the current target as a read-only line).
+  > one-click restore. The text is **placed after every built-in section**. The "View scope" selector is
+  > **inside this panel, under its title** (since g-071): it decides which layer a save lands in, and it
+  > is the only place the scope is changed (the panel repeats the current target as a read-only line;
+  > every other tab states the scope read-only at the top of its own panel).
 
 - **我的预设 / My presets** —— 你的常用文本库：把一段文本存成预设（新建 / 编辑 / 删除），再把它**应用到某个
   工作区**（写入该工作区的保留段），也可以**取消应用**——该工作区会精确还原为应用前的内容。删除一个
@@ -52,11 +54,11 @@
   > `base ↔ effective` diff, so you can see exactly what your change did.
 
 - **版本历史 / Version history** —— 历史列表（定高内滚 + 翻页，默认每页 50）与行级版本对比。
-  历史有自己的**作用域选择器**（工作区维度），与上方「查看范围」互不影响：用户层历史是全局的，
+  历史有自己的**作用域选择器**（工作区维度），与「我的 Prompt」里的「查看范围」互不影响：用户层历史是全局的，
   不按会话过滤。
   > The history list (fixed-height, internally scrolling, paged) and line-level diffs. The log has its
-  > **own** scope selector (workspace dimension), independent of the「查看范围」selector above: the user
-  > layer's log is global and is never sliced by session.
+  > **own** scope selector (workspace dimension), independent of the "View scope" selector in **My
+  > Prompt**: the user layer's log is global and is never sliced by session.
 
 - **备份与恢复 / Backup & restore** —— 配置导出下载、导入预览（先看变更计划，确认后才落盘）。
   > Export the configuration for download, and preview an import — the change plan is shown before

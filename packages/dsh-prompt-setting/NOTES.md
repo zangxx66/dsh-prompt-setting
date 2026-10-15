@@ -8825,26 +8825,32 @@ chunk 文件（`client.*.js`）**零改动**，故 `CHUNK_STAMPS` 与 5 个 chun
 - 修订 g-055 那条（`renders inside`）：`flow === ['prompt-block','tabs']`（区块在 tabs 上方）改写为「区块在
   mine 面板内（按节点同一性钉住）+ tab bar 上方没有它」；`withoutPromptBlockNote` 改为**整树递归**替换
   （旧实现按 `root.children` 映射，区块移走后会找不到块而返回原树，差值 0 是假绿），差值断言 24 → **0**
-  （负向对照：区块不在 chrome 里）；
+  （负向对照：区块不在 chrome 里）；R1-2 进一步把该 walk 的递归条件与 `collect` **同口径**（只看
+  `props.children`，不再以 `type` 是否存在早退）；
 - 首屏预算按新实测值重推：`CHROME_BUDGET_PX` 由 `220 + 4` 改为 **`128 + 4`**（`chromeAboveTabsPx` 实测
   128px），硬上限 310px 不变；注释记录「不收紧就等于 g-055 复核轮 1 诊断过的松预算」；
 - 修订 2 条既有用例的**取用位置**（g-038「改页面范围不动历史列表」、advanced 装配状态「全局时怎么说」）：
   范围改在 mine 里改，再切回目标 tab 验证；
 - EN sweep 新增 1 条 case（`data-region=scope-readonly-note`、`data-scope-active=s2`、
   `copy: ['tabScopeReadOnly', { scope: 'Second' }]`；「我的预设」用 `chunkFailures` 让它只渲染失败卡片，
-  避免把 fixture 里刻意的中文预设文本误报成文案泄漏）；`EN_REQUIRED_MARKERS` 增补 2 项。
+  避免把 fixture 里刻意的中文预设文本误报成文案泄漏）；`EN_REQUIRED_MARKERS` 增补 2 项；
+- 新增 1 条 helper 单测（R1-2）：把 block 放在**没有 `type`、只有 `props.children`** 的包裹节点之下，断言
+  `withoutPromptBlockNote` 仍能去掉 note、保留 card（旧口径的 `type === undefined` 早退会漏掉整棵子树，
+  而断言那边仍读到 0 —— 这正是要关掉的假绿通道）。
 
 ### 一、验收（单行证据）
 
-- evidence: suite=node --test passed=921 failed=0 exit=0 ms=52198.7 diff=8f/+476/-108 commit=（由主管收口）
+- evidence: suite=node --test passed=922 failed=0 exit=0 ms=55329.4 diff=8f/+485/-113 commit=adf4881（主交付）+ R1 返工 5f/+91/-23（未提交，同 worktree；两处 diff 数字由主管按 `git diff --numstat` 真源校正）
 - `node scripts/prepare.mjs` = OK（23 项，含 `CHUNK-STAMPS` 5 项一致、`LOCALE-SYNC` 568 键），exit 0；
 - `node scripts/locale-pack.mjs --check` 与 `node scripts/client-chunks.mjs`（校验）均 exit 0；
-- **负向对照（改坏就红，已全部还原；`grep -n "NEGATIVE CONTROL"` 为空）**：① 删掉只读提示那一行 ⇒ 新用例红
-  （`presets: exactly one read-only page-scope line`）；② 让「版本历史」也渲染提示 ⇒ 红
-  （`history: no read-only page-scope line`）；③ 把 `renderPromptBlock` 临时 push 回 tab 上方 ⇒ 两条用例红
-  （`exactly one data-region=prompt-block`、`mine: no prompt-block above the tab bar`）。
+- **负向对照（改坏就红，已全部还原；代码/测试里 `grep -n "NEGATIVE CONTROL"` 为空）**：① 删掉只读提示那一行 ⇒
+  新用例红（`presets: exactly one read-only page-scope line`）；② 让「版本历史」也渲染提示 ⇒ 红
+  （`history: no read-only page-scope line`）；③ 把 `renderPromptBlock` 临时 push 回 tab 上方（即回到旧布局）⇒
+  两条布局用例红（`exactly one data-region=prompt-block`、`mine: no prompt-block above the tab bar`）；
+  ④ **R1-2 口径对照**：把 `withoutPromptBlockNote` 的 walk 改回旧口径（`type === undefined` 早退）⇒ 新增的
+  helper 单测红（`and comes back with the note dropped: sentence gone, card kept`），证明同口径这条断言有牙齿。
 - **基线对照**：基线 `6368c9e` 上全量为 920 通过 / 0 失败（NOTES §149 的实测值；g-070 返工只改注释、
-  未动用例数）；本次 921 通过 / 0 失败（净增 1 条用例，1 条改写 + 3 条既有用例等价修订）。
+  未动用例数）；本次 922 通过 / 0 失败（净增 2 条用例，1 条改写 + 3 条既有用例等价修订）。
 
 ### 二、未验证项
 
@@ -8856,3 +8862,27 @@ chunk 文件（`client.*.js`）**零改动**，故 `CHUNK_STAMPS` 与 5 个 chun
   范围内）；展开选择器时面板随之变高是既有行为，未新增断言；
 - 「只读提示无控件」是结构级断言（节点类型 + `data-action` 计数），未做真机可点击性验证——没有控件可言，
   结构判定已足够。
+
+### 三、R1 返工（评审 rev-att-001-01：UNVERIFIED / 无 BLOCK，1 必修 + 1 建议修）
+
+**R1-1（必修）三份 README 的方位描述是事实错误。** picker 已移入 mine 面板、位于该面板 `h3` 之下，但三份
+README（仓库根英文、仓库根中文、包内中英对照）仍写「上方 / above the tabs」。修正 6 处表述，中英两侧同步：
+- `README.md`：My Prompt 行改为「The "View scope" selector is **inside this panel, under its title** (since
+  g-071)…」，并补一句其他 tab 在各自面板顶部只读提示；Version history 行的「independent of the "View scope"
+  selector above」改为「…in **My Prompt**」；
+- `README_zh.md`：同两处对应改写（「就在**这一面板内、标题之下**（g-071 起）」/「与「我的 Prompt」里的「查看
+  范围」互不影响」）；
+- `packages/dsh-prompt-setting/README.md`：上述两处的**中英对照各一**，同样改写。
+「版本历史」的作用域**解耦语义不变**（它仍与自己面板内的 scope 选择器独立），只去掉「上方」这个方位词。
+验证：`grep -rn "above the tabs\|上方.*查看范围\|查看范围.*上方" README.md README_zh.md
+packages/dsh-prompt-setting/README.md` ⇒ **零命中**（exit 1），并逐处读过确认 zh/en 含义一致。
+
+**R1-2（建议修）测试 walk helper 与 `collect` 同口径。** `walk` 原以 `node.type === undefined` 早退，而断言
+读树用的 `collect` 只看 `props.children`：两者口径不一致，将来一个没有 `type` 的中间包裹节点会让 helper
+漏掉其后的子树、替换不到 block，于是「chrome 差值为 0」这条断言**假绿**。已改为「只要有 `props.children`
+就递归」（保留数组与原始值的安全处理），并新增 1 条 helper 单测把该口径钉死（block 挂在无 `type` 包裹节点
+之下，note 必须被去掉、card 必须留下）；负向对照见验收段的 ④。
+
+**未做（按返工说明）**：真机几何/视觉未动；`m.sessionArg` 语义与任何冻结 marker 未动；不 `git commit`
+（仍由主管收口）；评审列的既有历史遗留（NOTES §131 追加式历史、test「five tabs」笔误、presets `?session=`
+既有断言缺口、`String()` 化差异）不在本次范围内。

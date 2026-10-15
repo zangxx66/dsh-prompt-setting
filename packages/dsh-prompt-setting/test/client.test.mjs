@@ -4230,6 +4230,9 @@ function chromeAboveTabsPx(tree) {
  * own children, so the replacement is a whole-tree walk rather than a map over
  * `root.children` — otherwise the helper would return the tree unchanged and the
  * difference would be 0 for the wrong reason (the block not being found at all).
+ * The walk reaches exactly what `collect` reaches (anything carrying
+ * `props.children`, with or without a `type`), so "the helper found the block"
+ * and "the assertion looked at the same nodes" cannot drift apart.
  * @param tree - a rendered page tree.
  * @returns a copy of the tree with the note node dropped from the block.
  */
@@ -4239,14 +4242,20 @@ function withoutPromptBlockNote(tree) {
     ...block,
     props: {
       ...block.props,
-      children: elementChildren(block).filter((node) => node.props['data-role'] !== 'prompt-block-note'),
+      children: elementChildren(block).filter((node) => node.props && node.props['data-role'] !== 'prompt-block-note'),
     },
   };
   const walk = (node) => {
     if (node === block) return stripped;
     if (Array.isArray(node)) return node.map(walk);
-    if (node === null || typeof node !== 'object' || node.type === undefined) return node;
-    if (node.props.children === undefined) return node;
+    if (node === null || typeof node !== 'object') return node;
+    // The same reach as `collect` (the traversal the assertion reads the tree
+    // with): anything carrying `props.children` is walked, whether or not it
+    // declares a `type`. An early return on `type === undefined` would let a
+    // wrapper without one hide the block from this helper — the replacement would
+    // miss, and the "the chrome does not move" difference below would be 0 for
+    // the wrong reason.
+    if (node.props === undefined || node.props.children === undefined) return node;
     return { ...node, props: { ...node.props, children: walk(node.props.children) } };
   };
   return walk(tree);
@@ -4684,6 +4693,33 @@ test('client (g-071): the page scope is changed in「我的 Prompt」and stated 
   assert.equal(moved.props['data-scope-active'], 'global');
   assert.ok(hasText(moved, fillText(page.zh.tabScopeReadOnly, { scope: page.zh.sessionGlobal })));
   assert.equal(markerOf(tree, 'data-session'), 'global', 'and it is the same value the page carries');
+});
+
+test('client (g-055/g-071): the note counterfactual reaches a block under an untyped wrapper', () => {
+  const note = { type: 'p', props: { 'data-role': 'prompt-block-note', children: 'sentence' } };
+  const card = { type: 'section', props: { 'data-region': 'session', children: [] } };
+  const block = { type: 'section', props: { 'data-region': 'prompt-block', children: [note, card] } };
+  // A node that declares no `type` but still carries children: `collect` — the
+  // traversal every assertion reads the tree with — walks straight through it, so
+  // the counterfactual helper must reach the block the same way (g-071 review
+  // R1-2). With the old `type === undefined ⇒ return` early exit this helper
+  // would miss the block, replace nothing, and still report the expected 0.
+  const wrapper = { props: { children: [block] } };
+  const tree = { type: 'div', props: { 'data-plugin': 'dsh-prompt-setting', children: [wrapper] } };
+
+  const stripped = withoutPromptBlockNote(tree);
+  const blocks = collect(stripped, (node) => node.props && node.props['data-region'] === 'prompt-block');
+  assert.equal(blocks.length, 1, 'the block survives the walk');
+  assert.deepEqual(
+    elementChildren(blocks[0]).map((node) => node.props['data-role'] || node.props['data-region']),
+    ['session'],
+    'and comes back with the note dropped: sentence gone, card kept',
+  );
+  assert.equal(
+    collect(stripped, (node) => node.props && node.props['data-role'] === 'prompt-block-note').length,
+    0,
+    'no note node anywhere in the copy',
+  );
 });
 
 test('client (g-055): the declared-height helper reads px, multiples and defaults alike', () => {
