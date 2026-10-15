@@ -1,25 +1,40 @@
 #!/usr/bin/env node
 /**
- * `docs/refactor-plan.md` 的**引用体检**（g-072 评审 R3-R5）。
+ * `docs/refactor-plan.md` 的**引用体检**（g-072 评审 R3-R5；R4 收敛轮加固为 fail-closed）。
  *
- * 为什么需要它：方案文档里手写了上百条 `文件:行` 引用，靠人眼维护必然漂移。
- * 三轮评审已经在这个问题上来回命中（R1-5、R2-D1、R3-R1 都是同一类）。与其修一个个案，
- * 不如给文档装一次"体检"：**能自动判的逐条断言，判不了的如实列进人工清单**。
+ * 为什么需要它：方案文档里手写了上百条 `文件:行` 引用，靠人眼维护必然漂移
+ * （R1-5 / R2-D1 / R3-R1 / R4 都是同一类）。与其修一个个案，不如给文档装一次体检。
+ *
+ * **R4 的四条加固**（这四条决定了 `failed=0` 是否可信）：
+ *   1. **fail-closed**：归属失败（`<unresolved>`）、包内文件读不到、行号越界，一律计入失败
+ *      ⇒ 非零退出码。只有**明确的仓库外路径**（宿主 `loader.js` / `lib/index.js` /
+ *      `@deepseek-ai/…`）才允许留在 manual。恒等式：
+ *      `文档引用数 == verified + rangeOnly + manual + unresolved`。
+ *   2. **计数口径分开**：`verified` 只统计「期望表 ∩ 文档引用」里通过的条数——即**文档引用
+ *      真的被验证了**的条数；期望表里那些文档中并不存在的条目（`REFS\declared`）单独报数，
+ *      **不计入覆盖率**，避免用它们给 `verified` 注水。
+ *   3. **manual 不是垃圾桶**：包内可读的引用一律自动判定（越界即 FAIL），manual 只收仓库外路径。
+ *   4. **区间端点与宽度**：区间必须声明 `toExpect`（端点逐字断言）或 `loose: true`
+ *      （长区间，明确声明只判首行）；跨度 > 90 行而不声明 `loose` ⇒ FAIL；`at` 必须落在区间内。
+ *   另：**围栏代码块内的文本不参与体检**（§10 记录的"历史错值"因此不会污染计数）。
+ *
+ * 另外校验 **§1.3 版图表**与 **§5.1 目标段表**（R4-C1）：行数 == 区间长度、区间首尾相接、
+ * 合计 == 11879、每段 ≤ 1200。这两张表是阶段 1/2 的门禁基础，必须可复跑而不是粘贴输出。
  *
  * 本脚本**只读**：不写任何文件、不改产品代码。它放在 `docs/` 下，而 `package.json`
  * 的 `files` 白名单不含 `docs`，所以它不会随包发布。
  *
  * 用法（在 `packages/dsh-prompt-setting/` 下）：
- *   node docs/check-refs.mjs          # 体检；有不符 ⇒ 非零退出码
+ *   node docs/check-refs.mjs          # 体检；有 fail/unresolved ⇒ 非零退出码
  *
- * 输出三类：
- *   ok    —— 期望表里的引用，行内容与文档声称的符号一致；
- *   FAIL  —— 期望表里的引用，行内容对不上（退出码 1）；
- *   manual—— 文档里出现、但本脚本无法自动判定的引用（外部 loader、行号省略等），
- *            逐条列出供人工核对；**它们不影响退出码**。
+ * 输出四类：
+ *   ok        —— 期望表内、且文档确实引用了，行内容与声称的符号一致；
+ *   rangeOnly —— 文档引用了、包内可读、行号合法，但期望表没有符号期望（最小验证）；
+ *   manual    —— 仓库外路径，无法自动判定，逐条列出供人工核对（**不影响退出码**）；
+ *   unresolved/FAIL —— 归属失败、读不到、越界或断言不符（**非零退出码**）。
  */
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -31,12 +46,29 @@ const PACKAGE_DIR = dirname(DOCS_DIR);
 const DOC_PATH = join(DOCS_DIR, 'refactor-plan.md');
 
 /**
+ * **仓库外**路径前缀：这些引用指向宿主包或安装目录，本仓库读不到，只能人工核对。
+ * 其余"读不到"的引用一律算失败（fail-closed）——`src/README.md` 这种尚未存在的路径也算。
+ */
+const OUT_OF_REPO = [
+  /^@deepseek-ai\//,
+  /^deepseek-ai\//, // 正则剥掉 `@` 后剩下的形式
+  /^lib\//,
+  /^loader\.js$/,
+  /^dsh-client-modules\//,
+  /^node_modules\//,
+];
+
+/** 一个引用是否属于"仓库外、只可人工核对"。 */
+const isOutOfRepo = (file) => OUT_OF_REPO.some((pattern) => pattern.test(file));
+
+/**
  * 期望表：文档中声称「`file:line` 处就是 `expect`」的引用。
  *
  * `from` 与 `to` 都是 1 基行号；`to` 缺省表示单行引用。`expect` 用 `includes`
  * 判定；`stripEquals` 用于「该行去掉缩进后恰好等于某串」这类断言（例如闭括号）。
  * `at`（缺省 `from`）用于「区间以 JSDoc/注释开头、被断言的符号在区间中段」的引用。
- * @type {{ref: string, file: string, from: number, to?: number, at?: number, expect?: string, stripEquals?: string}[]}
+ * `toExpect` / `fromExpect` 给出区间**末行/首行**的逐字断言；`loose: true` 声明「长区间，只判 `at` 行」。跨度 > 90 行且未声明 `loose` ⇒ FAIL；跨度 ≤ 90 且无 `toExpect` ⇒ FAIL。
+ * @type {{ref: string, file: string, from: number, to?: number, at?: number, expect?: string, stripEquals?: string, fromExpect?: string, toExpect?: string, loose?: boolean}[]}
  */
 const REFS = [
   // ── client.js ────────────────────────────────────────────────────────────
@@ -45,28 +77,28 @@ const REFS = [
   { ref: 'client.js:115', file: 'client.js', from: 115, expect: '@build-fingerprint:begin' },
   { ref: 'client.js:182', file: 'client.js', from: 182, expect: 'SELF_BUILD = fingerprintOf(promptSettingFactory.toString())' },
   { ref: 'client.js:213', file: 'client.js', from: 213, expect: "const React = require('react');" },
-  { ref: 'client.js:903-2047', file: 'client.js', from: 903, to: 2047, expect: '#region generated: locale' },
+  { ref: 'client.js:903-2047', file: 'client.js', from: 903, to: 2047, expect: '#region generated: locale', toExpect: "// #endregion", loose: true },
   { ref: 'client.js:2116', file: 'client.js', from: 2116, expect: '#region fallback atoms' },
   { ref: 'client.js:2650', file: 'client.js', from: 2650, expect: '#region pure helpers' },
   { ref: 'client.js:3340', file: 'client.js', from: 3340, expect: 'function chunkStampMap' },
   { ref: 'client.js:3378', file: 'client.js', from: 3378, expect: 'function buildVerdict' },
   { ref: 'client.js:7224', file: 'client.js', from: 7224, expect: 'function renderMinePanel' },
-  { ref: 'client.js:7224-7770', file: 'client.js', from: 7224, to: 7770, expect: 'function renderMinePanel' },
+  { ref: 'client.js:7224-7770', file: 'client.js', from: 7224, to: 7770, expect: 'function renderMinePanel', toExpect: "}", loose: true },
   { ref: 'client.js:7770', file: 'client.js', from: 7770, stripEquals: '}' },
   { ref: 'client.js:7789', file: 'client.js', from: 7789, expect: 'const CHUNK_STAMPS = Object.freeze([' },
   { ref: 'client.js:7806', file: 'client.js', from: 7806, expect: 'const CHUNK_FACILITIES = Object.freeze({' },
-  { ref: 'client.js:7806-7895', file: 'client.js', from: 7806, to: 7895, expect: 'const CHUNK_FACILITIES = Object.freeze({' },
+  { ref: 'client.js:7806-7895', file: 'client.js', from: 7806, to: 7895, expect: 'const CHUNK_FACILITIES = Object.freeze({', toExpect: "});" },
   { ref: 'client.js:7895', file: 'client.js', from: 7895, stripEquals: '});' },
   { ref: 'client.js:7979', file: 'client.js', from: 7979, expect: 'function loadChunk' },
   { ref: 'client.js:7990', file: 'client.js', from: 7990, expect: 'function recordLoadedChunk' },
   { ref: 'client.js:8084', file: 'client.js', from: 8084, expect: 'function chunkModule' },
   { ref: 'client.js:8124', file: 'client.js', from: 8124, expect: 'client.history.js' },
-  { ref: 'client.js:8160-8188', file: 'client.js', from: 8160, to: 8188, expect: 'HistoryTabChunk' },
-  { ref: 'client.js:8164-8169', file: 'client.js', from: 8164, to: 8169, expect: 'deliberately' },
+  { ref: 'client.js:8160-8188', file: 'client.js', from: 8160, to: 8188, expect: 'HistoryTabChunk', toExpect: "? React.lazy(() => chunkModule('client.presets.js', (chunkExports) => chunkExports && chunkExports.PresetsTab))" },
+  { ref: 'client.js:8164-8169', file: 'client.js', from: 8164, to: 8169, expect: 'deliberately', toExpect: "* click, which is exactly the case a lazy boundary is for." },
   { ref: 'client.js:8209', file: 'client.js', from: 8209, expect: 'function chunkTab' },
   { ref: 'client.js:8844', file: 'client.js', from: 8844, expect: 'data-build-loaded' },
   { ref: 'client.js:8884', file: 'client.js', from: 8884, expect: 'function PromptSettingSection' },
-  { ref: 'client.js:8884-11523', file: 'client.js', from: 8884, to: 11523, expect: 'function PromptSettingSection' },
+  { ref: 'client.js:8884-11523', file: 'client.js', from: 8884, to: 11523, expect: 'function PromptSettingSection', toExpect: "}", loose: true },
   { ref: 'client.js:8893', file: 'client.js', from: 8893, expect: 'React.useSyncExternalStore(' },
   { ref: 'client.js:11523', file: 'client.js', from: 11523, stripEquals: '}' },
   { ref: 'client.js:11536', file: 'client.js', from: 11536, expect: 'function renderFailureCard' },
@@ -111,75 +143,111 @@ const REFS = [
   { ref: 'package.json:19', file: 'package.json', from: 19, expect: '"./client": "./client.js"' },
   // ── test/ ────────────────────────────────────────────────────────────────
   { ref: 'test/build.test.mjs:136', file: 'test/build.test.mjs', from: 136, expect: 'the real client.js region covers' },
-  { ref: 'test/build.test.mjs:136-171', file: 'test/build.test.mjs', from: 136, to: 171, expect: 'the real client.js region covers' },
+  { ref: 'test/build.test.mjs:136-171', file: 'test/build.test.mjs', from: 136, to: 171, expect: 'the real client.js region covers', toExpect: "assert.ok(fingerprint.size > 50000, 'the region is the bulk of the entry file');" },
   { ref: 'test/build.test.mjs:171', file: 'test/build.test.mjs', from: 171, expect: 'size > 50000' },
   { ref: 'test/build.test.mjs:174', file: 'test/build.test.mjs', from: 174, expect: 'every chunk carries one marker pair' },
-  { ref: 'test/build.test.mjs:174-198', file: 'test/build.test.mjs', from: 174, to: 198, expect: 'every chunk carries one marker pair' },
+  { ref: 'test/build.test.mjs:174-198', file: 'test/build.test.mjs', from: 174, to: 198, expect: 'every chunk carries one marker pair', toExpect: "});" },
   { ref: 'test/build.test.mjs:200', file: 'test/build.test.mjs', from: 200, expect: 'CHUNK_STAMPS manifest is exactly' },
   { ref: 'test/client.test.mjs:1988', file: 'test/client.test.mjs', from: 1988, expect: 'flat sibling' },
-  { ref: 'test/client.test.mjs:2029-2036', file: 'test/client.test.mjs', from: 2029, to: 2036, expect: 'chunkFailures' },
+  { ref: 'test/client.test.mjs:2029-2036', file: 'test/client.test.mjs', from: 2029, to: 2036, expect: 'chunkFailures', toExpect: "assert.ok(hasText(tree, 'chunk unavailable: client.history.js'), 'and the reason is on screen');" },
   { ref: 'test/client.test.mjs:2338', file: 'test/client.test.mjs', from: 2338, expect: 'shared.x' },
-  { ref: 'test/client.test.mjs:2338-2360', file: 'test/client.test.mjs', from: 2338, to: 2360, expect: 'shared.x' },
+  { ref: 'test/client.test.mjs:2338-2360', file: 'test/client.test.mjs', from: 2338, to: 2360, expect: 'shared.x', toExpect: "for (const hit of code.matchAll(redefined)) {" },
   { ref: 'test/client.test.mjs:2518', file: 'test/client.test.mjs', from: 2518, expect: 'scrimStyle' },
-  { ref: 'test/client.test.mjs:2516-2520', file: 'test/client.test.mjs', from: 2516, to: 2520, expect: 'readFileSync' },
+  { ref: 'test/client.test.mjs:2516-2520', file: 'test/client.test.mjs', from: 2516, to: 2520, expect: 'readFileSync', toExpect: "'renderConfirm states 1200 and renderRegionDialog states 1000'," },
   { ref: 'test/boot.test.mjs:56', file: 'test/boot.test.mjs', from: 56, expect: "client.js" },
   { ref: 'test/host.test.mjs:171', file: 'test/host.test.mjs', from: 171, expect: 'packageJson.files' },
-  { ref: 'test/host.test.mjs:171-197', file: 'test/host.test.mjs', from: 171, to: 197, expect: 'packageJson.files' },
+  { ref: 'test/host.test.mjs:171-197', file: 'test/host.test.mjs', from: 171, to: 197, expect: 'packageJson.files', toExpect: "});" },
   { ref: 'test/prepare.test.mjs:440', file: 'test/prepare.test.mjs', from: 440, expect: 'incomplete checkout' },
-  { ref: 'test/prepare.test.mjs:440-485', file: 'test/prepare.test.mjs', from: 440, to: 485, expect: 'incomplete checkout' },
+  { ref: 'test/prepare.test.mjs:440-485', file: 'test/prepare.test.mjs', from: 440, to: 485, expect: 'incomplete checkout', toExpect: "});" },
   { ref: 'test/prepare.test.mjs:487', file: 'test/prepare.test.mjs', from: 487, expect: 'CHUNK_STAMPS manifest that drifted' },
-  { ref: 'test/prepare.test.mjs:487-539', file: 'test/prepare.test.mjs', from: 487, to: 539, expect: 'CHUNK_STAMPS manifest that drifted' },
+  { ref: 'test/prepare.test.mjs:487-539', file: 'test/prepare.test.mjs', from: 487, to: 539, expect: 'CHUNK_STAMPS manifest that drifted', toExpect: "});" },
   // ── 仓库内文档（零构建承诺等）─────────────────────────────────────────────
   { ref: 'README.md:102', file: 'README.md', from: 102, expect: '零构建步骤' },
   { ref: 'NOTES.md:3635', file: 'NOTES.md', from: 3635, expect: '零构建' },
   { ref: 'CONTRACT.md:3855', file: 'CONTRACT.md', from: 3855, expect: '## 14. Client build stamp' },
   { ref: 'CONTRACT.md:6966', file: 'CONTRACT.md', from: 6966, expect: 'no build step' },
   // ── 文档里实际引用的区间（补全，减少人工核对项）──────────────────────────
-  { ref: 'client.js:55-61', file: 'client.js', from: 55, to: 61, expect: 'Two hard rules' },
-  { ref: 'client.js:62-66', file: 'client.js', from: 62, to: 66, expect: 'Markers the page carries' },
-  { ref: 'client.js:67-73', file: 'client.js', from: 67, to: 73, expect: 'Revision 6 adds' },
-  { ref: 'client.js:903-911', file: 'client.js', from: 903, to: 911, expect: '#region generated' },
-  { ref: 'client.js:3922-3926', file: 'client.js', from: 3922, to: 3926, expect: 'g-061 batch 2' },
-  { ref: 'client.js:7789-7795', file: 'client.js', from: 7789, to: 7795, expect: 'const CHUNK_STAMPS' },
-  { ref: 'client.js:7797-7805', file: 'client.js', from: 7797, to: 7805, at: 7798, expect: 'cross-chunk facility' },
-  { ref: 'client.js:7916-7943', file: 'client.js', from: 7916, to: 7943, expect: 'function subscribeChunkLoads' },
-  { ref: 'client.js:7979-7982', file: 'client.js', from: 7979, to: 7982, expect: 'function loadChunk' },
-  { ref: 'client.js:7990-8000', file: 'client.js', from: 7990, to: 8000, expect: 'function recordLoadedChunk' },
+  { ref: 'client.js:55-61', file: 'client.js', from: 55, to: 61, expect: 'Two hard rules', toExpect: "*" },
+  { ref: 'client.js:62-66', file: 'client.js', from: 62, to: 66, expect: 'Markers the page carries', toExpect: "*" },
+  { ref: 'client.js:67-73', file: 'client.js', from: 67, to: 73, expect: 'Revision 6 adds', toExpect: "* failed ping yields, and which is deliberately never reported as「过期」." },
+  { ref: 'client.js:903-911', file: 'client.js', from: 903, to: 911, expect: '#region generated', toExpect: "subtitle: '查看并覆盖每轮会话最终装配的 system prompt。写入作用于下一轮装配（next-turn）。'," },
+  { ref: 'client.js:3922-3926', file: 'client.js', from: 3922, to: 3926, expect: 'g-061 batch 2', toExpect: "* renders in." },
+  { ref: 'client.js:7789-7795', file: 'client.js', from: 7789, to: 7795, expect: 'const CHUNK_STAMPS', toExpect: "]);" },
+  { ref: 'client.js:7797-7805', file: 'client.js', from: 7797, to: 7805, at: 7798, expect: 'cross-chunk facility', toExpect: "*/" },
+  { ref: 'client.js:7916-7943', file: 'client.js', from: 7916, to: 7943, expect: 'function subscribeChunkLoads', toExpect: "*/" },
+  { ref: 'client.js:7979-7982', file: 'client.js', from: 7979, to: 7982, expect: 'function loadChunk', toExpect: "}" },
+  { ref: 'client.js:7990-8000', file: 'client.js', from: 7990, to: 8000, expect: 'function recordLoadedChunk', toExpect: "}" },
   { ref: 'client.js:8003', file: 'client.js', from: 8003, expect: 'function loadedChunkStamps' },
   { ref: 'client.js:8024', file: 'client.js', from: 8024, expect: 'function chunkFailureComponent' },
   { ref: 'client.js:8139', file: 'client.js', from: 8139, expect: 'function renderHistoryChunk' },
-  { ref: 'client.js:8209-8277', file: 'client.js', from: 8209, to: 8277, expect: 'function chunkTab' },
-  { ref: 'client.js:11648-11651', file: 'client.js', from: 11648, to: 11651, expect: '__internals' },
+  { ref: 'client.js:8209-8277', file: 'client.js', from: 8209, to: 8277, expect: 'function chunkTab', toExpect: "function renderPresetsChunk(t, m, a) {" },
+  { ref: 'client.js:11648-11651', file: 'client.js', from: 11648, to: 11651, expect: '__internals', toExpect: "shared: CHUNK_FACILITIES," },
   { ref: 'client.history.js:36', file: 'client.history.js', from: 36, expect: "require('dsh-prompt-setting')" },
-  { ref: 'core/store.js:277-293', file: 'core/store.js', from: 277, to: 293, at: 278, expect: 'Read the published client bundle' },
-  { ref: 'core/store.js:295-315', file: 'core/store.js', from: 295, to: 315, expect: 'function clientBuildInfo' },
-  { ref: 'core/store.js:337-364', file: 'core/store.js', from: 337, to: 364, expect: 'function clientChunkStamps' },
-  { ref: 'core/build.js:35-37', file: 'core/build.js', from: 35, to: 37, expect: 'FINGERPRINT_BEGIN' },
-  { ref: 'core/build.js:66-78', file: 'core/build.js', from: 66, to: 78, expect: 'function fingerprintRegion' },
-  { ref: 'core/build.js:85-95', file: 'core/build.js', from: 85, to: 95, expect: 'function fnv1a32' },
-  { ref: 'core/build.js:101-105', file: 'core/build.js', from: 101, to: 105, expect: 'function fingerprintOf' },
-  { ref: 'scripts/prepare.mjs:1-30', file: 'scripts/prepare.mjs', from: 1, to: 30, expect: '#!/usr/bin/env node' },
-  { ref: 'scripts/prepare.mjs:86-129', file: 'scripts/prepare.mjs', from: 86, to: 129, expect: 'function inspectClientChunks' },
-  { ref: 'scripts/prepare.mjs:135-167', file: 'scripts/prepare.mjs', from: 135, to: 167, expect: 'function inspectLocale' },
-  { ref: 'scripts/prepare.mjs:139-145', file: 'scripts/prepare.mjs', from: 139, to: 145, at: 144, expect: 'LOCALE-SYNC-N/A' },
-  { ref: 'scripts/prepare.mjs:150-157', file: 'scripts/prepare.mjs', from: 150, to: 157, expect: 'const cut =' },
+  { ref: 'core/store.js:277-293', file: 'core/store.js', from: 277, to: 293, at: 278, expect: 'Read the published client bundle', toExpect: "*   three fields for every chunk file beside it — or `null`." },
+  { ref: 'core/store.js:295-315', file: 'core/store.js', from: 295, to: 315, expect: 'function clientBuildInfo', toExpect: "/**" },
+  { ref: 'core/store.js:337-364', file: 'core/store.js', from: 337, to: 364, expect: 'function clientChunkStamps', toExpect: "/**" },
+  { ref: 'core/build.js:35-37', file: 'core/build.js', from: 35, to: 37, expect: 'FINGERPRINT_BEGIN', toExpect: "export const FINGERPRINT_END = '/* @build-fingerprint:end */';" },
+  { ref: 'core/build.js:66-78', file: 'core/build.js', from: 66, to: 78, expect: 'function fingerprintRegion', toExpect: "}" },
+  { ref: 'core/build.js:85-95', file: 'core/build.js', from: 85, to: 95, expect: 'function fnv1a32', toExpect: "* Fingerprint a whole file's {@link fingerprintRegion}." },
+  { ref: 'core/build.js:101-105', file: 'core/build.js', from: 101, to: 105, expect: 'function fingerprintOf', toExpect: "}" },
+  { ref: 'scripts/prepare.mjs:1-30', file: 'scripts/prepare.mjs', from: 1, to: 30, expect: '#!/usr/bin/env node', toExpect: "import { dirname, join, resolve, sep } from 'node:path';" },
+  { ref: 'scripts/prepare.mjs:86-129', file: 'scripts/prepare.mjs', from: 86, to: 129, expect: 'function inspectClientChunks', toExpect: "*" },
+  { ref: 'scripts/prepare.mjs:135-167', file: 'scripts/prepare.mjs', from: 135, to: 167, expect: 'function inspectLocale', toExpect: "let manifestError = null;" },
+  { ref: 'scripts/prepare.mjs:139-145', file: 'scripts/prepare.mjs', from: 139, to: 145, at: 144, expect: 'LOCALE-SYNC-N/A', toExpect: "}" },
+  { ref: 'scripts/prepare.mjs:150-157', file: 'scripts/prepare.mjs', from: 150, to: 157, expect: 'const cut =', toExpect: "}" },
   { ref: 'scripts/prepare.mjs:162', file: 'scripts/prepare.mjs', from: 162, expect: '零构建' },
-  { ref: 'scripts/prepare.mjs:180-183', file: 'scripts/prepare.mjs', from: 180, to: 183, expect: 'findings.push' },
-  { ref: 'scripts/client-chunks.mjs:32-34', file: 'scripts/client-chunks.mjs', from: 32, to: 34, expect: 'BLOCK_OPEN' },
-  { ref: 'scripts/client-chunks.mjs:41-97', file: 'scripts/client-chunks.mjs', from: 41, to: 97, expect: 'function renderStampRows' },
-  { ref: 'package.json:22-33', file: 'package.json', from: 22, to: 33, expect: '"files": [' },
-  { ref: 'index.js:778-792', file: 'index.js', from: 778, to: 792, expect: 'export function apply' },
-  { ref: 'index.js:983-4612', file: 'index.js', from: 983, to: 4612, expect: 'function mount' },
-  { ref: 'index.js:2262-2746', file: 'index.js', from: 2262, to: 2746, expect: 'function handleHistory' },
+  { ref: 'scripts/prepare.mjs:180-183', file: 'scripts/prepare.mjs', from: 180, to: 183, expect: 'findings.push', toExpect: "findings.push(inspectLocale(pkg && pkg.files));" },
+  { ref: 'scripts/client-chunks.mjs:32-34', file: 'scripts/client-chunks.mjs', from: 32, to: 34, expect: 'BLOCK_OPEN', toExpect: "const BLOCK_CLOSE = '    ]);';" },
+  { ref: 'scripts/client-chunks.mjs:41-97', file: 'scripts/client-chunks.mjs', from: 41, to: 97, expect: 'function renderStampRows', toExpect: "}" },
+  { ref: 'package.json:22-33', file: 'package.json', from: 22, to: 33, expect: '"files": [', toExpect: "]," },
+  { ref: 'index.js:778-792', file: 'index.js', from: 778, to: 792, expect: 'export function apply', toExpect: "}" },
+  { ref: 'index.js:983-4612', file: 'index.js', from: 983, to: 4612, expect: 'function mount', toExpect: "}", loose: true },
+  { ref: 'index.js:2262-2746', file: 'index.js', from: 2262, to: 2746, expect: 'function handleHistory', toExpect: "*/", loose: true },
   { ref: 'CONTRACT.md:613', file: 'CONTRACT.md', from: 613, expect: '## 1. Routes and methods' },
   { ref: 'CONTRACT.md:1873', file: 'CONTRACT.md', from: 1873, expect: '## 13. Client-side contract' },
-  { ref: 'CONTRACT.md:4137-4145', file: 'CONTRACT.md', from: 4137, to: 4145, expect: 'what the page is running' },
+  { ref: 'CONTRACT.md:4137-4145', file: 'CONTRACT.md', from: 4137, to: 4145, expect: 'what the page is running', toExpect: "moment." },
   { ref: 'README.md:325', file: 'README.md', from: 325, expect: '零构建' },
   { ref: 'README.md:344', file: 'README.md', from: 344, expect: 'node --test' },
   { ref: 'NOTES.md:3679', file: 'NOTES.md', from: 3679, expect: '这一条对用户是' },
   { ref: 'test/client.test.mjs:10', file: 'test/client.test.mjs', from: 10, expect: 'Run:' },
-  { ref: 'test/build.test.mjs:138-141', file: 'test/build.test.mjs', from: 138, to: 141, at: 140, expect: 'occurrences(clientSource, BEGIN)' },
+  { ref: 'test/build.test.mjs:138-141', file: 'test/build.test.mjs', from: 138, to: 141, at: 140, expect: 'occurrences(clientSource, BEGIN)', toExpect: "assert.equal(occurrences(clientSource, END), 1, 'exactly one end marker');" },
+  // ── rangeOnly 收编（R4-A3：包内可读的引用一律纳入自动判定）──────────────
+  { ref: 'scripts/prepare.mjs:170-186', file: 'scripts/prepare.mjs', from: 170, to: 186, expect: "try {", toExpect: "if (manifestError !== null) say(`  FAIL  MANIFEST-UNREADABLE: ${manife" },
+  { ref: 'client.js:107-114', file: 'client.js', from: 107, to: 114, expect: "window.__ModuleLoader__.load({", toExpect: "factory: function promptSettingFactory(require) {" },
+  { ref: 'core/build.js:52-56', file: 'core/build.js', from: 52, to: 56, expect: "export function normalizeBuildText(text) {", toExpect: "}" },
+  { ref: 'core/store.js:277-294', file: 'core/store.js', from: 277, to: 294, expect: "/**", toExpect: "*/" },
+  { ref: 'test/build.test.mjs:136-172', file: 'test/build.test.mjs', from: 136, to: 172, expect: "test('build: the real client.js region covers every byte the entry fac", toExpect: "});" },
+  { ref: 'index.js:4352-4372', file: 'index.js', from: 4352, to: 4372, expect: "ok: true,", toExpect: "}" },
+  { ref: 'package.json:27', file: 'package.json', from: 27, expect: "\"locale\"," },
+  { ref: 'test/client.test.mjs:2516', file: 'test/client.test.mjs', from: 2516, expect: "const entry = readFileSync(join(here, '..', 'client.js'), 'utf8');" },
+  { ref: 'test/client.test.mjs:2522-2530', file: 'test/client.test.mjs', from: 2522, to: 2530, expect: "const presets = chunkCode(readFileSync(join(here, '..', 'client.preset", toExpect: "}" },
+  { ref: 'index.js:1126-1193', file: 'index.js', from: 1126, to: 1193, expect: "function assemblyNoticeEnabled() {", toExpect: "function workspaceRegistry() {" },
+  { ref: 'test/host.test.mjs:194-196', file: 'test/host.test.mjs', from: 194, to: 196, expect: "assert.equal(packageJson.files.includes('test'), false);", toExpect: "assert.equal(packageJson.files.includes('node_modules'), false);" },
+  { ref: 'test/build.test.mjs:142', file: 'test/build.test.mjs', from: 142, expect: "assert.ok(clientSource.indexOf(BEGIN) < clientSource.indexOf(END), 'be" },
+  { ref: 'client.js:11877', file: 'client.js', from: 11877, expect: "/* @build-fingerprint:end */" },
+  { ref: 'client.js:214', file: 'client.js', from: 214, expect: "const h = React.createElement;" },
+  { ref: 'client.js:310', file: 'client.js', from: 310, expect: "const primitives =" },
+  { ref: 'client.js:2055', file: 'client.js', from: 2055, expect: "let fallbackT = (key) => key;" },
+  { ref: 'client.js:2058', file: 'client.js', from: 2058, expect: "const token = {" },
+  { ref: 'client.js:2275', file: 'client.js', from: 2275, expect: "const UI = {" },
+  { ref: 'client.js:2381', file: 'client.js', from: 2381, expect: "function tabs(items, value, onChange, label, group) {" },
+  { ref: 'client.js:2658', file: 'client.js', from: 2658, expect: "function fmt(text, params) {" },
+  { ref: 'client.js:3910', file: 'client.js', from: 3910, expect: "const cardStyle = {" },
+  { ref: 'client.js:3953', file: 'client.js', from: 3953, expect: "function scrimStyle(zIndex) {" },
+  { ref: 'client.js:4415', file: 'client.js', from: 4415, expect: "function errorBanner(t, error, title) {" },
+  { ref: 'client.js:4556', file: 'client.js', from: 4556, expect: "function stampOf(at) {" },
+  { ref: 'client.js:4886', file: 'client.js', from: 4886, expect: "function layerLabel(t, layer) {" },
+  { ref: 'README.md:330', file: 'README.md', from: 330, expect: "> zero-build; `prepare` only runs a release self-check). To avoid the " },
 ];
+
+/** 一个包内相对路径是否真实存在（用于归属时优先选"包内存在"的候选）。 */
+function fileExists(relPath) {
+  try {
+    return existsSync(resolve(PACKAGE_DIR, relPath));
+  } catch {
+    return false;
+  }
+}
 
 /** 缓存文件行，避免重复读盘。 */
 const fileLines = new Map();
@@ -202,32 +270,47 @@ function linesOf(relPath) {
 }
 
 /**
- * 校验一条期望。
+ * 校验一条期望（fail-closed）。
+ *
+ * 规则：①文件必须可读；②行号必须落在文件内；③`at` 必须在 `[from, to]` 内；
+ * ④区间跨度 > 90 行必须声明 `loose: true`，跨度 ≤ 90 行必须给 `toExpect`；
+ * ⑤`expect` 判 `at` 行、`fromExpect` 判首行、`toExpect` 判末行（都按 `includes` 逐字）。
  * @param entry - 期望表条目。
  * @returns `{ok, detail}`。
  */
-function checkOne(entry) {
+function checkExpectation(entry) {
   const lines = linesOf(entry.file);
   if (lines === null) return { ok: false, detail: `读不到 ${entry.file}` };
   const last = entry.to ?? entry.from;
-  const at = entry.at ?? entry.from;
-  const first = lines[at - 1];
-  const end = lines[last - 1];
-  if (first === undefined || end === undefined) {
+  if (entry.from < 1 || last > lines.length) {
     return { ok: false, detail: `${entry.file} 行数不足（要 ${last}，实有 ${lines.length}）` };
   }
-  if (entry.stripEquals !== undefined) {
-    if (first.trim() !== entry.stripEquals) {
-      return { ok: false, detail: `${entry.file}:${at} 期望 "${entry.stripEquals}"，实为 "${first.trim()}"` };
+  const at = entry.at ?? entry.from;
+  if (entry.to !== undefined && (at < entry.from || at > entry.to)) {
+    return { ok: false, detail: `${entry.ref}: at=${at} 不在区间 [${entry.from}, ${entry.to}] 内` };
+  }
+  if (entry.to !== undefined) {
+    const span = entry.to - entry.from + 1;
+    if (span > 90 && entry.loose !== true) {
+      return { ok: false, detail: `${entry.ref}: 跨度 ${span} 行 > 90，必须声明 loose: true（或收窄区间）` };
     }
-    return { ok: true, detail: '' };
+    if (span <= 90 && entry.toExpect === undefined) {
+      return { ok: false, detail: `${entry.ref}: 跨度 ${span} 行 ≤ 90，必须给出 toExpect（端点逐字断言）` };
+    }
   }
-  if (!first.includes(entry.expect)) {
-    return { ok: false, detail: `${entry.file}:${at} 不含 "${entry.expect}"，实为 "${first.trim().slice(0, 80)}"` };
+  const atLine = lines[at - 1];
+  if (entry.stripEquals !== undefined) {
+    if (atLine.trim() !== entry.stripEquals) {
+      return { ok: false, detail: `${entry.file}:${at} 期望 "${entry.stripEquals}"，实为 "${atLine.trim()}"` };
+    }
+  } else if (entry.expect !== undefined && !atLine.includes(entry.expect)) {
+    return { ok: false, detail: `${entry.file}:${at} 不含 "${entry.expect}"，实为 "${atLine.trim().slice(0, 80)}"` };
   }
-  // 区间引用另外检查末端：末行是空行说明区间尾巴写多了（例如把 `#endregion` 之后也圈进来）。
-  if (entry.to !== undefined && end.trim() === '') {
-    return { ok: false, detail: `${entry.file}:${entry.to} 是空行（区间末端可疑）` };
+  if (entry.fromExpect !== undefined && !lines[entry.from - 1].includes(entry.fromExpect)) {
+    return { ok: false, detail: `${entry.file}:${entry.from} 不含 fromExpect "${entry.fromExpect}"，实为 "${lines[entry.from - 1].trim().slice(0, 80)}"` };
+  }
+  if (entry.toExpect !== undefined && !lines[last - 1].includes(entry.toExpect)) {
+    return { ok: false, detail: `${entry.file}:${last} 不含 toExpect "${entry.toExpect}"，实为 "${lines[last - 1].trim().slice(0, 80)}"` };
   }
   return { ok: true, detail: '' };
 }
@@ -235,18 +318,26 @@ function checkOne(entry) {
 /**
  * 从文档正文里抽出所有 `文件:行` / `文件:行-行` / 简写 `:行` 引用。
  *
- * §10 的证据索引用**简写**（`**\`packages/.../client.js\`**` 标题下的 `:107`，以及
- * 同一行里跟在 `client.test.mjs:1988` 之后的 `:2338-2360`），所以归属分两级：
- *   1. 同一行内该简写**之前**若出现过文件名，归属到它（按 basename 在全文的路径索引解析）；
- *   2. 否则归属到当前文件区块标题（`**\`…\`**`）；标题是目录（以 `/` 结尾）时无法归属。
+ * **跳过围栏代码块**（§10 记录的"历史错值"因此不参与体检）。归属分两级：
+ *   1. 同一行内该简写**之前**若出现过文件名，归属到它（按 basename 索引解析）；
+ *   2. 否则归属到当前文件区块标题（`**\`…\`**`）；标题是目录时**无法归属**，记入 `unowned`。
+ *
+ * `pathOf` 优先选**包内真实存在**的候选，因此本包 `index.js` 不会被误挂到宿主的
+ * `lib/index.js`，`src/README.md` 也不会顶掉真实存在的 `README.md`。
  * @param doc - 文档全文。
- * @returns `Map<ref, true>`。
+ * @returns `{declared: Map<ref, {file, from, to}>, unowned: string[]}`。
  */
 function collectRefs(doc) {
-  const lines = doc.split('\n');
-  // 第一遍：全文的 basename → 路径索引（用于把 `:2338-2360` 归属回 `test/client.test.mjs`）。
-  // 包前缀先剥掉，好让标题里的 `packages/dsh-prompt-setting/client.js` 与正文里的
-  // 裸 `client.js` 归一成同一个键。
+  const scannable = [];
+  let inFence = false;
+  for (const line of doc.split('\n')) {
+    if (/^\s*```/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (!inFence) scannable.push(line);
+  }
+
   const PREFIX = 'packages/dsh-prompt-setting/';
   const byBasename = new Map();
   const notePath = (path) => {
@@ -255,88 +346,231 @@ function collectRefs(doc) {
     if (!byBasename.has(base)) byBasename.set(base, new Set());
     byBasename.get(base).add(normalized);
   };
-  for (const line of lines) {
+  for (const line of scannable) {
     for (const m of line.matchAll(/((?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\.(?:js|mjs|json|md))/g)) notePath(m[1]);
     for (const m of line.matchAll(/(?<![/\w.-])([A-Za-z0-9_.-]+\.(?:js|mjs|json|md))/g)) notePath(m[1]);
   }
   const pathOf = (base) => {
-    const paths = byBasename.get(base);
-    if (paths === undefined || paths.size === 0) return null;
-    // 带目录的同名路径唯一 ⇒ 用它（`store.js` → `core/store.js`）；
-    // 没有带目录的形式 ⇒ 就是包根文件（`client.js`）。
-    const withDir = [...paths].filter((path) => path.includes('/'));
-    if (withDir.length === 1) return withDir[0];
-    if (withDir.length === 0) return base;
-    return null; // 多义（多个目录下同名）⇒ 放弃归属，交人工
+    const candidates = [...(byBasename.get(base) ?? [])];
+    // ① 包内真实存在的候选优先（唯一 ⇒ 直接用它）
+    const existing = candidates.filter(fileExists);
+    if (existing.length === 1) return existing[0];
+    // ② 多个存在 ⇒ 优先包根（不带目录）的那个
+    if (existing.length > 1) return existing.find((path) => !path.includes('/')) ?? null;
+    // ③ 裸名在包根不存在时，探测常见子目录（§10 的索引写的是 `boot.test.mjs:56` 这种简写）
+    if (!base.includes('/')) {
+      for (const dir of ['test/', 'core/', 'scripts/', 'locale/']) {
+        if (fileExists(dir + base)) return dir + base;
+      }
+    }
+    // ④ 一个都不存在：唯一候选就用它（随后会因"读不到"而 FAIL，正是 fail-closed 想要的）
+    if (candidates.length === 1) return candidates[0];
+    return null;
   };
 
-  // 第二遍：抽引用。
-  const found = new Map();
-  // 归一：`store.js:295` 与 `core/store.js:295` 是同一处引用，统一成后者。
-  const normalize = (file, line) => {
-    const base = file.slice(file.lastIndexOf('/') + 1);
-    return `${pathOf(base) ?? file}:${line}`;
-  };
+  const declared = new Map();
+  const unowned = [];
   let currentFile = '';
-  for (const line of lines) {
+  for (const line of scannable) {
     const heading = /^\*\*`([^`]+)`\*\*$/.exec(line.trim());
     if (heading !== null) {
       const raw = heading[1];
-      currentFile = raw.startsWith('packages/dsh-prompt-setting/')
-        ? raw.slice('packages/dsh-prompt-setting/'.length)
-        : raw;
+      currentFile = raw.startsWith(PREFIX) ? raw.slice(PREFIX.length) : raw;
       continue;
     }
     for (const m of line.matchAll(/([A-Za-z0-9_./-]+\.(?:js|mjs|json|md)):(\d+)(?:-(\d+))?/g)) {
-      const span = m[3] === undefined ? `${m[2]}` : `${m[2]}-${m[3]}`;
-      found.set(normalize(m[1], span), true);
+      const rawFile = m[1];
+      const base = rawFile.slice(rawFile.lastIndexOf('/') + 1);
+      // 带路径的引用**不许**被 basename 顶成包内同名文件（宿主 `lib/index.js`、`…/lib/client.js`）
+      const stripped = rawFile.startsWith(PREFIX) ? rawFile.slice(PREFIX.length) : rawFile;
+      const file = rawFile.includes('/')
+        ? (isOutOfRepo(stripped) || fileExists(stripped) ? stripped : (pathOf(base) ?? stripped))
+        : (pathOf(base) ?? rawFile);
+      const from = Number(m[2]);
+      const to = m[3] === undefined ? undefined : Number(m[3]);
+      const key = to === undefined ? `${file}:${from}` : `${file}:${from}-${to}`;
+      declared.set(key, { file, from, to });
     }
     for (const m of line.matchAll(/(?<![A-Za-z0-9_.-]):(\d+)(?:-(\d+))?/g)) {
       const before = line.slice(0, m.index);
-      const named = [...before.matchAll(/(?<![/\w.-])([A-Za-z0-9_.-]+\.(?:js|mjs|json|md))/g)].map((x) => x[1]);
-      const owner = named.length > 0
-        ? pathOf(named[named.length - 1])
-        : (currentFile !== '' && !currentFile.endsWith('/') ? currentFile : null);
-      if (owner === null) continue;
-      found.set(`${owner}:${m[2] === undefined ? m[1] : `${m[1]}-${m[2]}`}`, true);
+      // 同行内、该简写**之前**最后一个文件引用：先看"带路径"的形式（`test/x.mjs`、
+      // `@deepseek-ai/.../lib/client.js`），它比裸名更具体（否则宿主 `lib/client.js`
+      // 会被裸名 `client.js` 顶成包内文件）；没有再退回裸名。
+      const full = [...before.matchAll(/([A-Za-z0-9_./@-]+\.(?:js|mjs|json|md))/g)].map((x) => x[1]);
+      const lastFull = full.length > 0 ? full[full.length - 1] : null;
+      let owner = null;
+      if (lastFull !== null && (lastFull.includes('/') || lastFull.startsWith('@'))) {
+        const stripped = lastFull.startsWith(PREFIX) ? lastFull.slice(PREFIX.length) : lastFull;
+        owner = isOutOfRepo(stripped) || existsSync(resolve(PACKAGE_DIR, stripped)) ? stripped : pathOf(lastFull.slice(lastFull.lastIndexOf('/') + 1));
+      } else if (lastFull !== null) {
+        owner = pathOf(lastFull);
+      }
+      if (owner === null && currentFile !== '' && !currentFile.endsWith('/')) owner = currentFile;
+      const from = Number(m[1]);
+      const to = m[2] === undefined ? undefined : Number(m[2]);
+      if (owner === null) {
+        unowned.push(`:${m[1]}${m[2] === undefined ? '' : `-${m[2]}`}`);
+        continue;
+      }
+      const key = to === undefined ? `${owner}:${from}` : `${owner}:${from}-${to}`;
+      declared.set(key, { file: owner, from, to });
     }
   }
-  return found;
+  return { declared, unowned };
 }
 
-/** 主流程。 */
+/**
+ * 从文档里解析一张「行区间 / 行数」表。
+ * @param lines - 文档行数组（**已剔除围栏代码块**）。
+ * @param startPrefix - 表格所在小节/段落的起始行前缀。
+ * @param endPrefix - 表格结束后的第一行前缀。
+ * @param rowPattern - 行正则，捕获组 1/2/3 = 起始行、结束行、行数。
+ * @returns `{from, to, count}[]`。
+ */
+function parseSpanTable(lines, startPrefix, endPrefix, rowPattern) {
+  const start = lines.findIndex((line) => line.startsWith(startPrefix));
+  const end = lines.findIndex((line, index) => index > start && line.startsWith(endPrefix));
+  const rows = [];
+  for (const line of lines.slice(start, end === -1 ? undefined : end)) {
+    const m = rowPattern.exec(line);
+    if (m !== null) rows.push({ from: Number(m[1]), to: Number(m[2]), count: Number(m[3]) });
+  }
+  return rows;
+}
+
+/**
+ * 校验 §1.3 版图表与 §5.1 目标段表（R4-C1）的可复算不变式。
+ * @param lines - 文档行数组（已剔除围栏代码块）。
+ * @returns 失败说明数组（空数组 = 全部成立）。
+ */
+function checkTables(lines) {
+  const failures = [];
+  const rules = [
+    {
+      name: '§1.3 版图表',
+      rows: parseSpanTable(lines, '### 1.3', '**上表互不重叠', /^\|\s*(?:\*\*)?(\d+)[–-](\d+)(?:\*\*)?\s*\|\s*(?:\*\*)?(\d+)(?:\*\*)?\s*\|/),
+      maxCount: Infinity,
+    },
+    {
+      name: '§5.1 目标段表',
+      rows: parseSpanTable(lines, '**阶段 2 的目标段划分', '合计 11879 行', /^\|\s*`[^`]+`\s*\|\s*(\d+)[–-](\d+)\s*\|\s*(\d+)\s*\|/),
+      maxCount: 1200,
+    },
+  ];
+  for (const rule of rules) {
+    const { name, rows, maxCount } = rule;
+    if (rows.length === 0) {
+      failures.push(`${name}: 没解析到任何行（表格结构变了？）`);
+      continue;
+    }
+    for (const row of rows) {
+      if (row.to - row.from + 1 !== row.count) {
+        failures.push(`${name}: ${row.from}–${row.to} 标称 ${row.count} 行，实为 ${row.to - row.from + 1} 行`);
+      }
+      if (row.count > maxCount) {
+        failures.push(`${name}: ${row.from}–${row.to} 有 ${row.count} 行，超过上限 ${maxCount}`);
+      }
+    }
+    for (let k = 0; k + 1 < rows.length; k += 1) {
+      if (rows[k].to + 1 !== rows[k + 1].from) {
+        failures.push(`${name}: ${rows[k].to} 与 ${rows[k + 1].from} 之间不连续（有空隙或重叠）`);
+      }
+    }
+    if (rows[0].from !== 1) failures.push(`${name}: 首行是 ${rows[0].from}，应为 1`);
+    if (rows[rows.length - 1].to !== 11879) failures.push(`${name}: 末行是 ${rows[rows.length - 1].to}，应为 11879`);
+    const total = rows.reduce((sum, row) => sum + row.count, 0);
+    if (total !== 11879) failures.push(`${name}: 行数合计 ${total}，应为 11879`);
+    process.stdout.write(`  table ${name}: rows=${rows.length} 合计=${total} 最大段=${Math.max(...rows.map((r) => r.count))}\n`);
+  }
+  return failures;
+}
+
+/** 主流程：文档引用体检 + 两张表复算。 */
 function main() {
   const doc = readFileSync(DOC_PATH, 'utf8');
-  const declared = collectRefs(doc);
+  const { declared, unowned } = collectRefs(doc);
   const table = new Map(REFS.map((entry) => [entry.ref, entry]));
 
-  const failures = [];
+  const failures = [...checkTables(doc.split('\n'))];
+  const manualList = [];
+  const rangeOnlyList = [];
   let verified = 0;
-  for (const entry of REFS) {
-    const result = checkOne(entry);
+  let rangeOnly = 0;
+  let manual = 0;
+
+  // ① 文档里出现、且期望表也有的引用 —— 这才是"文档引用被验证"的条数
+  for (const [key, meta] of declared) {
+    const entry = table.get(key);
+    if (entry === undefined) {
+      // ② 期望表没有的引用：包内可读 + 行号合法 = 最小验证；否则 FAIL（fail-closed）
+      const lines = linesOf(meta.file);
+      if (lines === null) {
+        if (isOutOfRepo(meta.file)) {
+          manual += 1;
+          manualList.push(key);
+        } else {
+          failures.push(`${key}: 包内读不到该文件（fail-closed）`);
+        }
+        continue;
+      }
+      const last = meta.to ?? meta.from;
+      if (meta.from < 1 || last > lines.length) {
+        failures.push(`${key}: 行号越界（${meta.file} 实有 ${lines.length} 行）（fail-closed）`);
+        continue;
+      }
+      rangeOnly += 1;
+      rangeOnlyList.push(key);
+      continue;
+    }
+    const result = checkExpectation(entry);
     if (result.ok) {
       verified += 1;
-      process.stdout.write(`  ok    ${entry.ref}\n`);
     } else {
-      failures.push(`${entry.ref}: ${result.detail}`);
-      process.stdout.write(`  FAIL  ${entry.ref} — ${result.detail}\n`);
+      failures.push(result.detail);
     }
   }
 
-  const manual = [...declared.keys()].filter((ref) => !table.has(ref)).sort();
-  for (const ref of manual) process.stdout.write(`  manual ${ref}（需人工核对）\n`);
+  // ③ 归属失败的简写引用：一律 unresolved ⇒ 失败（fail-closed）
+  for (const raw of unowned) {
+    failures.push(`${raw}: 无法归属到具体文件（fail-closed）`);
+  }
 
+  // ④ 期望表里文档中并不存在的条目：独立校验，但**不计入覆盖率**
+  const notDeclared = REFS.filter((entry) => !declared.has(entry.ref));
+  let notDeclaredOk = 0;
+  for (const entry of notDeclared) {
+    const result = checkExpectation(entry);
+    if (result.ok) notDeclaredOk += 1;
+    else failures.push(`[REFS\\declared] ${result.detail}`);
+  }
+
+  const total = declared.size + unowned.length;
+  const unresolved = failures.length;
   process.stdout.write(
-    `\ncheck-refs: verified=${verified} failed=${failures.length} manual=${manual.length} `
-    + `(文档共出现 ${declared.size} 条引用)\n`,
+    `\ncheck-refs: 文档引用 total=${total} | verified=${verified} | rangeOnly=${rangeOnly} `
+    + `| manual=${manual} | unresolved+failed=${unresolved}\n`,
   );
+  process.stdout.write(
+    `check-refs: REFS 表 ${REFS.length} 条 → REFS∩declared=${REFS.length - notDeclared.length}`
+    + `（计入覆盖率，其中 verified=${verified}） / REFS\\declared=${notDeclared.length}`
+    + `（文档里不存在，不计入覆盖率；其中 ${notDeclaredOk} 条独立校验通过）\n`,
+  );
+  process.stdout.write(
+    `check-refs: 恒等式 total == verified + rangeOnly + manual + unresolved = `
+    + `${verified} + ${rangeOnly} + ${manual} + ${unresolved}\n`,
+  );
+  for (const key of manualList) process.stdout.write(`  manual ${key}（仓库外路径，需人工核对）\n`);
+  if (process.argv.includes('--verbose')) {
+    for (const key of rangeOnlyList) process.stdout.write(`  rangeOnly ${key}（包内可读 + 行号合法，但期望表无符号断言）\n`);
+  }
+
   if (failures.length > 0) {
-    process.stdout.write('\n不符项（先修文档或修期望表，别弱化断言）：\n');
+    process.stdout.write('\n不符项（修文档或修期望值；**不要弱化断言**）：\n');
     for (const failure of failures) process.stdout.write(`  - ${failure}\n`);
     process.exitCode = 1;
     return 1;
   }
-  process.stdout.write('check-refs: 期望表内的引用全部成立；manual 项请人工核对（不影响退出码）\n');
+  process.stdout.write('check-refs: 文档引用的可自动判定部分全部成立；manual 项请人工核对\n');
   return 0;
 }
 

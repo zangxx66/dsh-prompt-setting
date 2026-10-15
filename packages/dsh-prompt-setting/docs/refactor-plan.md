@@ -149,10 +149,10 @@
 ### 2.5 指纹与清单机制
 
 - 标记常量：`core/build.js:35-37`（`/* @build-fingerprint:begin */` / `end`）。
-- 区间抽取与摘要：`fingerprintRegion`（`core/build.js:66-78`，拒绝重复/歧义标记；`:52-64` 的 `normalizeBuildText` 在它之前）、`fnv1a32`（`core/build.js:85-95`）、`fingerprintOf`（`core/build.js:101-105`），返回 8 位十六进制 hash + 区间 UTF-16 长度。
+- 区间抽取与摘要：`fingerprintRegion`（`core/build.js:66-78`，拒绝重复/歧义标记；`:52-56` 的 `normalizeBuildText` 在它之前）、`fnv1a32`（`core/build.js:85-95`）、`fingerprintOf`（`core/build.js:101-105`），返回 8 位十六进制 hash + 区间 UTF-16 长度。
 - 页面侧自证：`const SELF_BUILD = fingerprintOf(promptSettingFactory.toString());`（`client.js:182`），位于 factory body 第一条语句之后。
-- 宿主侧读文件字节：`clientBuildInfo`（`core/store.js:295-315`），**每次 ping 重读、不缓存**（注释 `core/store.js:277-293` 说明理由）。
-- 区间覆盖范围有测试硬约束：必须包含 `const React = require('react');`、`CHUNK_STAMPS`、末尾的 `'prompt-setting: section dictionaries'`（`test/build.test.mjs:136-165`）；区间 `size > 50000`（`test/build.test.mjs:171`）。
+- 宿主侧读文件字节：`clientBuildInfo`（`core/store.js:295-315`），**每次 ping 重读、不缓存**（注释 `core/store.js:277-294` 说明理由）。
+- 区间覆盖范围有测试硬约束：必须包含 `const React = require('react');`、`CHUNK_STAMPS`、末尾的 `'prompt-setting: section dictionaries'`（`test/build.test.mjs:136-172`）；区间 `size > 50000`（`test/build.test.mjs:171`）。
 - 清单同步：`scripts/client-chunks.mjs` —— `readDeclaredStamps`（52）、`writeDeclaredStamps`（75）、`sameStamps`（91）、`main`（100，`--write` 重算 / 无参校验）。
 - 清单真值与磁盘扫描：`clientChunkStamps(clientDir)`（`core/store.js:337-364`）按文件名排序后逐个 `fingerprintOf`，**标记不可用的文件被省略而非伪造**。
 - 发布门禁：`inspectClientChunks`（`scripts/prepare.mjs:86-129`）→ `findings.push(...)`（`scripts/prepare.mjs:180`），不一致即 `PREPARE_FAIL` + 非零退出码。
@@ -341,7 +341,7 @@ packages/dsh-prompt-setting/
 **段边界规则（R2-D2，选方案 ①「只重切、不移动」）**
 
 1. **每个段文件必须对应 `client.js` 中一段连续区间**，且**段编号按该区间在文件中的出现顺序递增**；
-2. **任何段划分都不得让代码块跨段移动**——阶段 2 允许的只有"在连续区间内部换切点"与"合并相邻段"，**不允许**把 `renderMinePanel`（7052–7771）或 chunk boundary（7772–8280）这类块搬到别处；
+2. **任何段划分都不得让代码块跨段移动**——阶段 2 允许的只有"在连续区间内部换切点"与"合并相邻段"，**不允许**把 `renderMinePanel`（**7224–7770**）或 chunk boundary（7772–8280）这类块搬到别处；
 3. 由此，**「文件名字典序 = 代码顺序」是段划分规则的自动结果**，不是一条需要单独维护的约定（§9-3）；
 4. 段之间**不共享作用域**：每段都是同一 factory body 的一部分，拼接后共处一个函数作用域 ⇒ **不需要 `import`/`export`，不需要改任何变量可见性**。
 
@@ -377,7 +377,7 @@ packages/dsh-prompt-setting/
 
 - 交付 `docs/architecture-map.md`：域 → `client.js` 行区间 → 入口函数 → 相关 CONTRACT 章节 → 相关测试文件。
 - 交付 `docs/refactor-plan.md`（本文档）。
-- 交付 `docs/check-refs.mjs`：本文档的**引用体检**脚本（只读；评审 R3-R5 的治本项）。它逐条断言文档里可自动核验的 `文件:行` 引用，并把判不了的条目如实列进人工清单；**阶段 1/2 每改动一次代码或文档，都应先跑它**（§10 有复跑命令与实跑输出）。
+- 交付 `docs/check-refs.mjs`：本文档的**引用体检 + 两张表复算**脚本（只读；评审 R3-R5 的治本项，R4 收敛轮加固为 **fail-closed**）。它逐条断言文档里可自动核验的 `文件:行` 引用与区间端点，复算 §1.3/§5.1 两张表的不变式，并把**仓库外**引用如实列进人工清单；归属失败 / 包内读不到 / 越界一律非零退出。**阶段 1/2 每改动一次代码或文档，都应先跑它**（§10 有复跑命令、口径说明与实跑输出）。
 - **可验证判据**：文档存在；随机抽 5 个域，按文档给出的行区间能定位到正确函数（人工核对即可，不需自动化）。
 - **影响文件**：`docs/*.md`（2 个新文件）。
 - **回滚**：删除文档。
@@ -406,7 +406,8 @@ packages/dsh-prompt-setting/
 3. `node --test test/*.test.mjs` 全绿。**既有断言文本零改动**（R1-2 / R2-D4 订正）：阶段 1 的测试面改动只有三类 —— ①`test/host.test.mjs:171-197` 的 `files` 白名单枚举同步、②`test/prepare.test.mjs` 的两个 fixture 同步、③**新增**结构用例（可并入 `test/build.test.mjs` 或新建 `test/client-source.test.mjs`）。除这三类外，既有断言一行不改（字节等价 ⇒ `fingerprintOf` 与所有 DOM / 源码文本断言原样成立）；
 4. `node scripts/prepare.mjs` 退出码 `0`，且输出含 `CLIENT-SRC` 相关 finding；
 5. **幂等判据（已实测，见 §8-U3 与本节"实跑证据"）**：`writeDeclaredStamps(clientSource, clientChunkStamps(pkgDir)) === clientSource` 为 `true` ⇒ 正常状态下 `--write` 产出与磁盘逐字节相同，`git diff` 为空、**不触碰 mtime**（这一点同时是 §6.2 闸门 5 的依据）；
-6. 负向对照：手工改一行 `src/03-facilities.js` 后 `--check` 必须**非零退出**；不改 `src` 只改 `client.js` 后 `--check` 也必须**非零退出**。
+6. 负向对照：手工改一行 `src/03-facilities.js` 后 `--check` 必须**非零退出**；不改 `src` 只改 `client.js` 后 `--check` 也必须**非零退出**；
+7. `node docs/check-refs.mjs` 退出码 `0`（文档引用与两张表自洽；`unresolved+failed=0`）。
 
 **实跑证据（本次返工为验证上述判据所做）**
 
@@ -453,7 +454,8 @@ fingerprintOf(加 1 行头注后的同一文件)      = 4d998612 / 567230   # �
 2. **代码零移动的强判据**：阶段 2 生成的 `client.js` **去掉文件顶部的生成物头注**后，与阶段 1 的产物**逐字节相同**。`tail -n +K`（`K` = 头注行数 + 1）在这里是成立的，因为**段首声明不进产物**（生成器已逐段剥离，见 §5.2 实现约束第 3 条）——只有文件最顶部那一段头注需要跳过。这条判据同时证明"只重切、不移动"，且比任何语义断言都强；
 3. **新增结构断言**：每个 `src/*.js` 段 ≤ 1200 行；段的「声明行区间」在生成物中**单调递增且无空隙**（机器可验证：逐段记录首行在生成物中的偏移，偏移严格递增、前一段末行 + 1 = 后一段首行）；
 4. 同一功能点的改动**只触及 1 个段**（人工作业纪律，写进 CONTRACT，见 §6.2）；
-5. 头注落在 begin 标记之前：`clientSource.indexOf(头注) < clientSource.indexOf(BEGIN)`（沿用 `test/build.test.mjs:138-141` 的写法）。
+5. 头注落在 begin 标记之前：`clientSource.indexOf(头注) < clientSource.indexOf(BEGIN)`（该断言在 `test/build.test.mjs:142`）；
+6. `node docs/check-refs.mjs` 退出码 `0`（含 §5.1 段表的复算：连续、合计 11879、每段 ≤ 1200）。
 
 **影响文件清单**：`src/*.js`（重切）、新增 `test/client-source.test.mjs` 的结构断言、`CONTRACT.md`（新增客户端源码布局条款）、`README.md`。
 
@@ -472,8 +474,8 @@ fingerprintOf(加 1 行头注后的同一文件)      = 4d998612 / 567230   # �
 | 阶段 | 判据 |
 |---|---|
 | 0 | 两份文档存在；抽样 5 个域可定位 |
-| 1 | `--check` = 0；`--write` 后 `git diff` 为空（**且阶段 1 不含头注**）；生成器幂等（`writeDeclaredStamps(...) === clientSource`）；`node --test test/*.test.mjs` 全绿（仅 `test/host.test.mjs` 的 `files` 枚举与 `test/prepare.test.mjs` 的两个 fixture 属预期内同步更新）；`prepare` = 0 且含 `CLIENT-SRC` finding；两条负向对照（改 `src` / 改 `client.js`）均非零退出 |
-| 2 | 阶段 1 全部判据 + 每段 ≤ 1200 行 + 段总行数对账通过 + 头注在 begin 标记之前 + CONTRACT 有新条款 |
+| 1 | `--check` = 0；`--write` 后 `git diff` 为空（**且阶段 1 不含头注**）；生成器幂等（`writeDeclaredStamps(...) === clientSource`）；`node --test test/*.test.mjs` 全绿（仅 `test/host.test.mjs` 的 `files` 枚举与 `test/prepare.test.mjs` 的两个 fixture 属预期内同步更新）；`prepare` = 0 且含 `CLIENT-SRC` finding；两条负向对照（改 `src` / 改 `client.js`）均非零退出；`node docs/check-refs.mjs` = 0 |
+| 2 | 阶段 1 全部判据 + 每段 ≤ 1200 行 + 段总行数对账通过 + 代码零移动（去头注后与阶段 1 产物逐字节相同）+ 头注在 begin 标记之前 + CONTRACT 有新条款 |
 | 3 | 另立目标（`index.js` ≤ 800 行/模块，`route.test.mjs` / `host.test.mjs` / `integration.test.mjs` 全绿） |
 | 4 | 另立目标 |
 
@@ -517,12 +519,15 @@ fingerprintOf(加 1 行头注后的同一文件)      = 4d998612 / 567230   # �
 
    | 新增/修改的东西 | 归属（段名见 §5.1 目标段表） |
    |---|---|
-   | 指纹区间 / 注册形态 / factory guard / `buildPlugin` 头 | `00-entry.js`（**协议，改动等于改契约**） |
+   | **指纹标记的书写位置**：`begin`（`client.js:115`） | `00-entry.js`（1–215） |
+   | **指纹标记的书写位置**：`end`（`client.js:11877`） | `16-boot.js`（11524–11879） |
+   | **被两端标记覆盖的区间**（`115–11877`） | **横跨全部 17 段**——它跟随内容走，**不受段划分影响**，不得为它单独建段 |
+   | 注册形态（`client.js:107`）/ factory guard（185–198）/ `buildPlugin` 头（212） | `00-entry.js`（**协议，改动等于改契约**） |
    | 某个 tab 的渲染逻辑 | 对应 tab chunk（`client.*.js`） |
    | 默认 tab「我的 Prompt」（`renderMinePanel`） | `10-toaster-mine.js`（含 toaster 与装配状态） |
    | 跨 tab chrome（状态行/范围树/会话/confirm） | `08-chrome-a.js` / `09-chrome-b.js` |
    | 更新条 / 区域弹窗 / `renderSection` | `12-update.js` |
-   | 主入口与 chunk 共用的**设施实现**（`token`/`fallbackT`/atoms/`tabs`/`fmt` 等） | `03-facilities.js`（§5.1 表 = 2048–2649） |
+   | 主入口与 chunk 共用的**设施实现** | **按其实现本身所在的连续区间归段**（不得把实现搬进别的段）：`h`（`client.js:214`）→ `00-entry.js`；`primitives`（`client.js:310`）→ `01-shared-head.js`；`fallbackT`（`client.js:2055`）/`token`（`client.js:2058`）/`UI`（`client.js:2275`）/`tabs`（`client.js:2381`）→ `03-facilities.js`；`fmt`（`client.js:2658`）→ `04-helpers-a.js`；`cardStyle`（`client.js:3910`）/`scrimStyle`（`client.js:3953`）/`errorBanner`（`client.js:4415`）/`stampOf`（`client.js:4556`）→ `06-tree.js`；`layerLabel`（`client.js:4886`）→ `07-stage2.js` |
    | `CHUNK_FACILITIES` 这份**名字登记**（`client.js:7806`，与 `CHUNK_STAMPS`、加载器同在 chunk 协议区） | **`11-chunks.js`（§5.1 表 = 7772–8280），不得移动** |
    | 页面 state / fetch / handler | `13-page-a.js`（hooks/state）/ `14-page-b.js`（fetch/handler）/ `15-page-c.js`（root 树） |
    | 纯函数 | `04-helpers-a.js` / `05-helpers-b.js` |
@@ -550,7 +555,7 @@ fingerprintOf(加 1 行头注后的同一文件)      = 4d998612 / 567230   # �
 | T7 | 阶段 2 的段细化（页面模型拆 3 段、mine panel 独立、加头注） | 段重排 | 中（段序敏感，见 §5.2） |
 | T8 | `CONTRACT.md` 新增「客户端源码布局」条款 + README 改口「零编译」 | 文档 | 中（**契约变更，需负责人裁决**） |
 | T9 | 既有测试同步：`test/host.test.mjs` 的 `files` 枚举 + `test/prepare.test.mjs` 的两个 fixture（含 faithful copy 的目录列表加 `src`） | 约 20 行 | 低（**预期内**，见 §5.2） |
-| T10 | `docs/check-refs.mjs` 引用体检脚本（§10，**只读**；已在本轮交付） | 1 新脚本 | 无 |
+| T10 | `docs/check-refs.mjs` 引用体检 + 两张表复算脚本（§10，**只读**、fail-closed；已在本轮交付） | 1 新脚本 576 行 | 无 |
 
 ### 7.2 必须另立目标
 
@@ -686,25 +691,45 @@ node --test test/client.test.mjs # pass 295 / fail 0
   §5.1 目标段表 : segs=17, 行数不符=[], 不连续=[], 首尾 1–11879, 合计=11879, 最大段=1145, 超 1200 的段=[]
 ```
 
-**文档引用体检（R3-R5 治本项）：`docs/check-refs.mjs`**
+**文档引用体检（R3-R5 治本项 + R4 收敛轮加固）：`docs/check-refs.mjs`**
 
-它扫描本文档里所有 `文件:行` / `文件:行-行` / 简写 `:行` 引用，对**期望表内**的每一条断言"该行确实含有文档所声称的符号"；
-期望表外的引用逐条列进 **manual（需人工核对）** 清单——**判不了的如实列出，不假装通过**。有不符 ⇒ 非零退出码。
+它做两件事：
+
+1. **引用体检**：扫描本文档里所有 `文件:行` / `文件:行-行` / 简写 `:行` 引用（**跳过围栏代码块**，所以 §10 记录的"历史错值"不会污染计数），对期望表内的逐条断言"该行确实含文档声称的符号"；区间还必须给出 `toExpect`（端点逐字断言）或声明 `loose: true`（长区间，明确只判首行）。
+2. **两张表复算**（R4-C1）：§1.3 版图表与 §5.1 目标段表 —— 行数 == 区间长度、区间首尾相接、合计 == 11879、每段 ≤ 1200。这两张表是阶段 1/2 的门禁基础，必须**可复跑**，而不是一段粘贴输出。
+
+**fail-closed 的四条规矩**（R4-A1…A4，它们决定 `failed=0` 是否可信）：
+
+- **归属失败 / 包内文件读不到 / 行号越界 ⇒ 一律失败**（非零退出码）。只有明确的**仓库外**路径（宿主 `loader.js` / `lib/index.js` / `@deepseek-ai/…`）才允许留在 manual。
+- **恒等式**：`文档引用数 == verified + rangeOnly + manual + unresolved`（不满足即说明有引用被静默吞掉）。
+- **`verified` 只统计「期望表 ∩ 文档引用」里通过的条数**；期望表里文档中并不存在的条目（`REFS\declared`）单独报数、**不计入覆盖率** —— 否则就是拿"产品代码该行有该符号"冒充"文档引用已验证"。
+- **`rangeOnly` 单列**：包内可读 + 行号合法，但期望表没有符号断言（这是**最小验证**，不是通过的同义词）。
 
 ```bash
 cd packages/dsh-prompt-setting
-node docs/check-refs.mjs
+node docs/check-refs.mjs              # 体检；有 fail/unresolved ⇒ 非零退出码
+node docs/check-refs.mjs --verbose    # 另列 rangeOnly 明细
 ```
 
-```
-本次返工实跑输出：
-check-refs: verified=132 failed=0 manual=58 (文档共出现 148 条引用)
-check-refs: 期望表内的引用全部成立；manual 项请人工核对（不影响退出码）
+最终实跑输出（R4 收敛轮）：
+
+```text
+  table §1.3 版图表: rows=24 合计=11879 最大段=2640
+  table §5.1 目标段表: rows=17 合计=11879 最大段=1145
+check-refs: 文档引用 total=153 | verified=132 | rangeOnly=0 | manual=21 | unresolved+failed=0
+check-refs: REFS 表 158 条 → REFS∩declared=132（计入覆盖率，其中 verified=132） / REFS\declared=26（文档里不存在，不计入覆盖率；其中 26 条独立校验通过）
+check-refs: 恒等式 total == verified + rangeOnly + manual + unresolved = 132 + 0 + 21 + 0
+check-refs: 文档引用的可自动判定部分全部成立；manual 项请人工核对
 exit=0
 ```
 
+> `manual=21` **全部**是仓库外路径（宿主 `loader.js` / `lib/index.js` / `@deepseek-ai/…`），本仓库读不到、只能人工核对 —— 它们**不是**通过项。
+
 **它在本轮抓到的真实偏差**（7 处文档行号 + 3 处区间端点，全部已修）：
 
+下列**历史错值**只作记录，不参与引用体检（`check-refs.mjs` **跳过围栏代码块**）：
+
+```text
 | 脚本报出的不符 | 实际 | 处理 |
 |---|---|---|
 | `client.js:7796-7804` 首行是空行 | 注释在 7797–7805 | 改文档 |
@@ -716,6 +741,7 @@ exit=0
 | `CONTRACT.md:4137-4146` 末行是空行 | 4137–4145 | 改文档 |
 | `client.js:7990-8001` / `:151-157` 等 | — | 同上 |
 | `core/store.js:277-293`、`prepare.mjs:139-145`、`build.test.mjs:138-141` | 区间以 JSDoc 开头，被断言符号在中段 | 期望表加 `at` 字段（**文档本身正确**） |
+```
 
 > 这条脚本不是"让文档好看"：上面 7 处里有 3 处（`7931-7943` 指错函数、`101-107` 越界、`41-98` 多一行）都会让后续执行者**按错行号定位**。
 
