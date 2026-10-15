@@ -8891,3 +8891,43 @@ packages/dsh-prompt-setting/README.md` ⇒ **零命中**（exit 1），并逐处
 above the tabs」是自基线遗留的现行时态方位错误（全文件唯一一处；:4356 属历史叙述、:8710/:8746/:8751 描述
 chrome 仍正确），由主管按评审建议改为「at the top of **this panel** since g-071 moved it in from above the
 tab bar」。纯注释，零实现/断言改动。
+
+### 四、R4 撤回（负责人真机目视，2026-10-16）
+
+**决定**：负责人看过真机后**否决**四个 tab 的只读范围提示。原话要点：「我的预设」不需要（预设操作与
+「我的 prompt」没有直接关联）；「提示词总览」不需要（会用「版本历史」那样的**历史作用域**组件切换作用域）；
+「备份与恢复」不需要（按理说应导出插件的所有设置，不该被作用域限制）；「高级」不需要（里面的设置不受作用域
+影响）。结论：页面级「查看范围」本就不该是四个 tab 的共同状态——每个 tab 有自己的作用域语义。四个 tab 与
+页面作用域**解耦**是另一个目标 **g-073**，不在本次范围。本小节之前 §150 各段（实现 / R1–R3）是过程记录，
+其中的四 tab 只读提示 UI 与对应文案**已按本节撤回**。
+
+**纯撤回（不新增行为）**
+- `client.js`：删除 `scopeReadOnlyNote()` 与 `scopeReadOnlyNoteStyle`；删除 `renderSection` 中 tab-panel
+  首子节点的注入（`tabNote` 与数组展开）及那段注释；文件头、`renderPromptBlock`、`renderSection`、
+  mine-panel 的注释同步改写，并注明「四个 tab 不渲染任何 scope 界面，解耦见 g-073」；
+- `locale/{zh,en}.json`：删除 `tabScopeReadOnly`，`node scripts/locale-pack.mjs --write` 同步生成段 ⇒ 词典
+  回到 **567 键 = 516 主 + 51 `error.<code>`**；`test/locale.test.mjs` 计数常量回到 516/567（注释说明
+  Revision 52 是布局修订、不新增键，该键已在 R4 撤回）；
+- `test/client.test.mjs`：g-071 六 tab 用例删除只读提示的全部断言（存在性、`data-scope-active`、无控件循环、
+  panel 首节点），**保留**「tab bar 上方无 `prompt-block`」「区块只在 mine 面板内 + 切换按钮同在」的位置与
+  节点同一性断言，并新增一条**结构断言**（每个 tab 的 `data-region="tab-panel"` 恰有 1 个元素子节点）——
+  这是「面板里不得再注入任何东西」的可测形式，也是本轮负向对照的牙齿；删除 EN sweep 为只读提示新增的那条
+  case 与 `EN_REQUIRED_MARKERS` 的 2 项；
+- 文档：三份 README 删除「其他 tab 只读提示」表述（R1 的方位修正保留）；`CONTRACT.md` §13.0 与 §13.7 撤回
+  该条款、改写为「其余 tab 不渲染任何 scope 界面；解耦见 g-073」并新增 Revision 记录，§22 计数回到
+  567/516；`CHANGELOG.md` 的 g-071 条目改为「移入 + 负责人否决只读提示 + 解耦另立 g-073」；
+- **未动**（本目标要保留的成果）：`renderMinePanel` 里 `renderPromptBlock` 的位置、`CHROME_BUDGET_PX`（132）、
+  `withoutPromptBlockNote` 的 walk 口径，以及任何请求构造 / `m.sessionArg` / `layerQuery` / `?session=`——
+  过渡期四个 tab 仍按页面 scope 取数，与 g-071 之前的既有行为一致。
+
+**验收（本轮实跑）**
+- evidence: suite=node --test passed=922 failed=0 exit=0 ms=59268.4 diff=10f/+102/-214（基于 `fc1898e`，未提交）；
+- 用例数与 922 持平（未减少）：R4 撤掉的是 EN sweep 的一条 case 条目、两个 marker 登记，以及一条用例**内部**
+  的断言块，没有删除任何 `test(...)` 函数，故总数不变；
+- `node scripts/prepare.mjs` = OK（23 项，`LOCALE-SYNC` 567 键）exit 0；`locale-pack --check`、
+  `client-chunks` 校验 exit 0；
+- `grep -rn "scope-readonly-note\|scopeReadOnlyNote\|tabScopeReadOnly" packages/` ⇒ 仅 `NOTES.md` 本小节与
+  §150 的**历史过程记录**命中（有意保留），代码 / 文案 / 测试 / 契约 / CHANGELOG 零命中；
+- **负向对照**：临时把提示行加回四个 tab（在 `renderSection` 注入一个 `data-region="scope-readonly-note"` 的
+  `p`）⇒ g-071 位置用例红（`presets: the panel holds this tab's own surface, and nothing else`）；还原后
+  `grep -rn "NEGATIVE CONTROL"` 在代码/测试中零命中。

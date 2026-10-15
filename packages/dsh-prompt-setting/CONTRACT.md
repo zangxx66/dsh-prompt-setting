@@ -1883,9 +1883,8 @@ there are exactly **two** things: the
 title line — which carries the plugin version beside the heading since Revision
 17 (§13.8) — and one line of deciding facts. Since g-071 the session selector is
 **not** one of them: it renders inside「我的 Prompt」, the only surface it writes,
-and the tabs that read the scope without owning the picker open with a one-line
-**read-only** statement of it (`data-region="scope-readonly-note"`, Revision 52,
-§13.7).
+and no other tab carries a scope surface of its own (Revision 52; the read-only
+line g-071 first gave them was withdrawn in R4 — §13.7).
 
 **g-055/g-071: the scope card is one block inside「我的 Prompt」** (§13.7,
 `data-region="prompt-block"`). The block wraps the selector in one container and
@@ -1933,14 +1932,15 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   (`data-region="history"`, `"history-list"`) exist **only** in the `history`
   panel, and the preset catalogue (`data-region="presets"`, its list, and the two
   dialogs of §20.9) exists **only** in the `presets` panel.
-- the four tabs that read the page scope without owning its picker
-  (`presets` / `overview` / `backup` / `advanced`) open their own panel with **one
-  read-only line** (Revision 52, g-071): `data-region="scope-readonly-note"` is a
-  `p` carrying `data-scope-active` (`global` or the raw session id — the same value
-  the root container's `data-session` carries) and the readable range name, and it
-  renders **no control of any kind**. 「我的 Prompt」owns the picker and so renders
-  none of these; 「版本历史」renders none either, because it has its own scope since
-  Revision 19 (§13.3, §13.7).
+- the tabs other than「我的 Prompt」render **no** scope surface at all (Revision
+  52 / R4): the one-line read-only statement of the page scope that g-071 first
+  gave them was **withdrawn** after the owner's real-machine review, because each
+  of those tabs has its own scope semantics — 「提示词总览」will get its own
+  switcher, 「备份与恢复」should export the whole configuration, 「高级」is not
+  scope-dependent, and 「我的预设」is not tied to this scope either. Decoupling
+  them from the page-level value is **g-073**, not something this page may assert
+  in the meantime. 「版本历史」has had its own scope since Revision 19 (§13.3,
+  §13.7).
 
 **Revision 29 (the client half ships as an entry plus chunks — internal
 structure only).** Nothing above changes: the same tabs, the same order, the
@@ -3642,36 +3642,37 @@ states its own write target as a **read-only** line (`data-region="mine-target"`
 collapse rule and every frozen marker below are exactly as they were, the card is
 still one instance, and the panel gained **no** second way to change the scope.
 
-**The picker moved into the mine panel, and the other tabs state the scope
-read-only (Revision 52, g-071).** g-055 kept the block above the tab bar and fixed
-the *reading* instead; the owner then corrected the position itself. Where the
-block renders is where it belongs:「我的 Prompt」is the only surface this scope
-writes to. Consequently:
+**The picker moved into the mine panel, and the other tabs carry no scope surface
+(Revision 52, g-071; the read-only echoes withdrawn in R4).** g-055 kept the block
+above the tab bar and fixed the *reading* instead; the owner then corrected the
+position itself. Where the block renders is where it belongs:「我的 Prompt」is the
+only surface this scope writes to. Consequently:
 
 - the chrome above the tab bar holds **two** things now (the title row and the
   status line) and no scope-shaped node at all. `data-region="prompt-block"` exists
   **only** inside `data-region="mine"`, and the first-screen budget was re-derived
   from the smaller spend (128px above the tab bar, asserted by
   `chromeAboveTabsPx`; the hard first-screen ceiling is unchanged);
-- every tab that **reads** the page scope without owning the picker
-  (`presets` / `overview` / `backup` / `advanced`) opens its own panel with one
-  **read-only** line: `data-region="scope-readonly-note"`, carrying
-  `data-scope-active` (`global` or the raw session id — the same value the root
-  container's `data-session` carries) and the readable range name through
-  `scopeName`, the single definition the summary row and the mine target line
-  already shared. It renders a `p` and **nothing else** — no picker, no input, no
-  switch, no button — so the page still has exactly **one** way to change the
-  scope, and it is inside「我的 Prompt」;
-- 「版本历史」renders **no** such line, and that is a decision rather than an
-  omission: since Revision 19 (g-038) that tab has its **own** scope, stated a few
-  lines further down by `data-region="history-scope-summary"`. A page-scope line
-  there would claim a range the log below it was not read in, and a second,
-  differently-worded line would still be one line a reader can mistake for the
-  other. The honest answer on that tab is the one it already gives;
+- **R4 withdrew the read-only scope notice this revision first gave the other
+  tabs.** g-071 had rendered one line, at the top of its own panel, on
+  `presets` / `overview` / `backup` / `advanced`; the owner's real-machine review
+  ruled that the page-level scope is not a shared state of those tabs at all —
+  each has its own scope semantics (「提示词总览」will carry its own switcher;
+  「备份与恢复」should export the whole configuration rather than a range; 「高级」
+  is not scope-dependent; 「我的预设」is not tied to this scope either). A line
+  none of them may legitimately claim would have shipped a surface the owner
+  refused. Decoupling those tabs from this page-level value is **g-073**, and
+  until then they keep taking their numbers in the page scope exactly as they did
+  before g-071. So the page states the scope in **exactly one** place again — the
+  block inside「我的 Prompt」— and no other tab renders any scope node at all;
+- 「版本历史」never carried such a line, and that remains true: since Revision 19
+  (g-038) that tab has its **own** scope, stated a few lines further down by
+  `data-region="history-scope-summary"`. A page-scope line there would claim a
+  range the log below it was not read in;
 - nothing about the **value** changed: `m.sessionArg` still scopes the snapshot,
   the override reads, the export/import range, the presets request and which layer
   a save lands in (§13.7's last paragraph below is unchanged). Only the picker's
-  position and the read-only echoes did.
+  position changed.
 
 **Collapsed (the default).** The card is `data-region="session"` with
 `data-scope-open="false"` and renders **exactly one row**:
@@ -7042,9 +7043,8 @@ re-report it.
 
 ## 22. The locale dictionaries (g-066, Revision 49)
 
-Every user-visible string this plugin renders — **568** keys per language since
-g-071 (Revision 52; 567 through Revision 51, 566 through Revision 50, 564 through
-Revision 49) — used to
+Every user-visible string this plugin renders — **567** keys per language since
+g-070 (Revision 51; 566 through Revision 50, 564 through Revision 49) — used to
 be hardcoded inside `client.js`: a 513-key `zh` object, a 513-key `en` object,
 and an `ERROR_TEXT` table of 51 `code → [zh, en]` rows that a loop expanded into
 `error.<code>` entries. The copy now lives in two JSON files, and the inlined
@@ -7053,10 +7053,10 @@ objects are a generated artifact.
 ### 22.1 Source of truth
 
 - `locale/zh.json` and `locale/en.json` are the **only** human source. Each
-  holds exactly 568 string values: the 517 main keys plus 51 `error.<code>`
+  holds exactly 567 string values: the 516 main keys plus 51 `error.<code>`
   keys. Keys are identical between the two files, **in the same order** (the
   order is what the generated block follows, so a reordered file is a
-  517-line diff rather than a copy change).
+  516-line diff rather than a copy change).
 - Nothing else in the package is hand-edited for copy. `client.js` carries the
   blocks inside the `// #region generated: locale/zh.json + locale/en.json`
   … `// #endregion` span; a hand edit there is overwritten by the next `--write`
@@ -7087,7 +7087,7 @@ there is no network surface. What changed is only who maintains the bytes.
 | `scripts/locale-pack.mjs --write` | Re-renders both blocks from the JSON. Idempotent: a second run changes nothing. |
 | `scripts/locale-pack.mjs --check` | Fails (exit 1) when a block is not byte-for-byte what `--write` would produce. |
 | `scripts/prepare.mjs` → `LOCALE-SYNC` | The same check on the **install/publish** path, plus a `files` allowlist test for both JSONs (a source that does not ship cannot be re-derived from the installed package). |
-| `test/locale.test.mjs` | Key parity, the 517 + 51 split, no new placeholder drift, byte equality with `--write`, a negative control (one drifted character is refused), and that the delivery shape is still a classic script with a synchronous register. |
+| `test/locale.test.mjs` | Key parity, the 516 + 51 split, no new placeholder drift, byte equality with `--write`, a negative control (one drifted character is refused), and that the delivery shape is still a classic script with a synchronous register. |
 
 ### 22.4 Error codes
 

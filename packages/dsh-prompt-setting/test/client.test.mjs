@@ -4611,16 +4611,14 @@ test('client (g-055/g-071): 「查看范围」renders inside「我的 Prompt」,
   assert.ok(hasText(target, fillText(page.zh.mineTargetNote, { layer: page.zh.ovWorkspace, scope: 'Alpha one' })));
 });
 
-test('client (g-071): the page scope is changed in「我的 Prompt」and stated read-only on every other tab', async () => {
+test('client (g-071): the picker lives in「我的 Prompt」, and no「查看范围」block sits above the tab bar', async () => {
   const page = makePage({
     useSessions: sessionsHook(WORKSPACE_SESSIONS),
     useWorkspaces: workspacesHook(workspacesFixture()),
     responses: defaultResponses(),
   });
-  // The four tabs that read the page scope without owning its picker.
-  const readingTabs = ['presets', 'overview', 'backup', 'advanced'];
 
-  for (const tab of ['mine', ...readingTabs, 'history']) {
+  for (const tab of ['mine', 'presets', 'overview', 'history', 'backup', 'advanced']) {
     const tree = tab === 'mine' ? await page.flush() : await openTab(page, tab);
 
     // (1) No「查看范围」block above the tab bar — on any tab, in any state.
@@ -4647,41 +4645,22 @@ test('client (g-071): the page scope is changed in「我的 Prompt」and stated 
       );
     }
 
-    // (3) The read-only statement: on the four, absent on the two that must not
-    // claim the page scope —「我的 Prompt」owns the picker, and「版本历史」has its
-    // own scope (g-038), which a page-scope line would be mistaken for.
-    const notes = collect(tree, (node) => node.props && node.props['data-region'] === 'scope-readonly-note');
-    if (tab === 'mine' || tab === 'history') {
-      assert.equal(notes.length, 0, `${tab}: no read-only page-scope line`);
-      continue;
-    }
-    assert.equal(notes.length, 1, `${tab}: exactly one read-only page-scope line`);
-    const note = notes[0];
-    assert.equal(note.type, 'p', `${tab}: one line of text`);
-    assert.equal(note.props['data-scope-active'], markerOf(tree, 'data-session'), `${tab}: it names the page scope`);
-    assert.ok(
-      hasText(note, fillText(page.zh.tabScopeReadOnly, { scope: 'Alpha three' })),
-      `${tab}: in the readable form of the current range`,
-    );
-    // Not one control anywhere inside it.
-    for (const type of ['button', 'input', 'select', 'textarea']) {
-      assert.equal(collect(note, (node) => node.type === type).length, 0, `${tab}: no ${type} in the note`);
-    }
+    // (3) The panel holds that tab's own surface and nothing else. R4 (the
+    // owner's real-machine review) withdrew the read-only page-scope line g-071
+    // first rendered here: each tab has its own scope semantics, and decoupling
+    // them from this page-level value is g-073 rather than a line this page may
+    // claim. A node injected into this container — a scope line or anything else —
+    // makes it two, which is what this asserts.
     assert.equal(
-      collect(note, (node) => node.props && node.props['data-action'] !== undefined).length,
-      0,
-      `${tab}: the note offers no action`,
-    );
-    assert.equal(
-      elementChildren(oneBy(tree, 'data-region', 'tab-panel'))[0],
-      note,
-      `${tab}: and it is the panel's first node`,
+      elementChildren(oneBy(tree, 'data-region', 'tab-panel')).length,
+      1,
+      `${tab}: the panel holds this tab's own surface, and nothing else`,
     );
   }
 
-  // (4) The statement follows the one page-level value it states: the picker in
-  // 「我的 Prompt」is still the only place it changes, and the other tabs pick the
-  // new range up.
+  // (4) The picker in「我的 Prompt」is still the only place the page-level value
+  // changes, and the change still reaches the rest of the page — the four tabs
+  // keep taking their numbers in the page scope (their own scopes are g-073).
   let tree = await openTab(page, 'mine');
   scopeToggle(tree).props.onClick();
   tree = await page.flush();
@@ -4689,10 +4668,7 @@ test('client (g-071): the page scope is changed in「我的 Prompt」and stated 
   tree = await page.flush();
   assert.equal(markerOf(tree, 'data-session'), 'global', 'the page scope moved, from the picker in the panel');
   tree = await openTab(page, 'advanced');
-  const moved = oneBy(tree, 'data-region', 'scope-readonly-note');
-  assert.equal(moved.props['data-scope-active'], 'global');
-  assert.ok(hasText(moved, fillText(page.zh.tabScopeReadOnly, { scope: page.zh.sessionGlobal })));
-  assert.equal(markerOf(tree, 'data-session'), 'global', 'and it is the same value the page carries');
+  assert.equal(markerOf(tree, 'data-session'), 'global', 'and every tab carries the same page-level value');
 });
 
 test('client (g-055/g-071): the note counterfactual reaches a block under an untyped wrapper', () => {
@@ -10488,36 +10464,6 @@ const EN_SWEEP_CASES = [
     },
   },
   {
-    name: 'g-071: every tab but「我的 Prompt」and「版本历史」states the page scope read-only',
-    marks: [
-      ['data-region', 'scope-readonly-note'],
-      ['data-scope-active', 's2'],
-      ['data-active-tab', 'presets'],
-      ['data-active-tab', 'overview'],
-      ['data-active-tab', 'backup'],
-      ['data-active-tab', 'advanced'],
-    ],
-    copy: [['tabScopeReadOnly', { scope: 'Second' }]],
-    async run() {
-      const page = enPage({
-        useSessions: sessionsHook(SESSIONS_STATE),
-        // 「我的预设」's own case above already walks the library; here the tab only
-        // has to exist for *its* panel to carry the read-only line. Its chunk is
-        // failed so the sweep does not re-render the stored presets, whose fixture
-        // text is Chinese on purpose (it is data, not copy).
-        chunkFailures: ['client.presets.js'],
-        responses: defaultResponses(),
-      });
-      const rec = recorder(page);
-      await rec.take();
-      for (const tab of ['presets', 'overview', 'backup', 'advanced']) {
-        clickAnyTab(rec.last(), tab);
-        await rec.take();
-      }
-      return rec.trees;
-    },
-  },
-  {
     name: 'the render-failure card falls back to readable copy, never a blank',
     marks: [['data-render-state', 'error'], ['data-renderer', 'fallback']],
     raw: ['render failure', 'Error'],
@@ -10622,9 +10568,6 @@ const EN_REQUIRED_MARKERS = [
   'data-action=scope-toggle',
   'data-role=scope-summary-label',
   'data-role=scope-summary-hint',
-  // g-071: the read-only scope line on the tabs that do not own the picker.
-  'data-region=scope-readonly-note',
-  'data-scope-active=s2',
   'data-region=build',
   'data-renderer=fallback',
   'data-renderer=primitives',

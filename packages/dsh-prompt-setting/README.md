@@ -30,13 +30,11 @@
 
 - **我的 Prompt / My Prompt** —— 唯一写入口：写下你自己的系统级指令（选层 → 编辑 → 保存），
   一键恢复默认。这段文本**排在所有内置段之后**。「查看范围」选择器就在**这一面板内、标题之下**（g-071 起）：
-  它决定保存落到哪一层，改范围也只有这一处（面板内那行只读提示会重复告诉你当前写到哪；其他 tab 只在各自
-  面板顶部用一行只读提示说明当前范围）。
+  它决定保存落到哪一层，改范围也只有这一处（面板内那行只读提示会重复告诉你当前写到哪）。
   > The only write surface: your own system-level instructions (pick a layer → edit → save), with a
   > one-click restore. The text is **placed after every built-in section**. The "View scope" selector is
   > **inside this panel, under its title** (since g-071): it decides which layer a save lands in, and it
-  > is the only place the scope is changed (the panel repeats the current target as a read-only line;
-  > every other tab states the scope read-only at the top of its own panel).
+  > is the only place the scope is changed (the panel repeats the current target as a read-only line).
 
 - **我的预设 / My presets** —— 你的常用文本库：把一段文本存成预设（新建 / 编辑 / 删除），再把它**应用到某个
   工作区**（写入该工作区的保留段），也可以**取消应用**——该工作区会精确还原为应用前的内容。删除一个

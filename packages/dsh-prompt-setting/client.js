@@ -34,8 +34,11 @@
  * the plugin version beside the heading, Revision 17) and one line of deciding
  * facts (mounted / frozen three-state / build stamp). The session selector every
  * tab used to share is no longer chrome: since g-071 it is the first block
- * **inside**「我的 Prompt」, the only surface it writes, and the tabs that read
- * the scope state it read-only at the top of their own panel. The selector is
+ * **inside**「我的 Prompt」, the only surface it writes. R4 (the owner's
+ * real-machine review) removed the read-only scope line the other tabs briefly
+ * carried: each of them has its own scope semantics, and decoupling them from
+ * this page-level value is g-073 rather than something this page may assert. The
+ * selector is
  * still sourced from the **props**
  * `useSessions` root hook, grouped as a workspace tree from the **props**
  * `useWorkspaces` root hook (same grouping/ordering/visibility rules as the
@@ -1073,7 +1076,6 @@ window.__ModuleLoader__.load({
       editLayer: '保存层',
       mineHeading: '我的 Prompt',
       promptBlockNote: '这个范围决定「我的 Prompt」写到哪一层；改范围只在这里。',
-      tabScopeReadOnly: '查看范围：{scope}（只读；在「我的 Prompt」里更改）',
       mineTargetNote: '写入目标：{layer}；查看范围：{scope}',
       mineNote: '这里写下的内容会成为单独一段 Prompt，排在所有内置段之后，下一轮生效（next-turn）。该段永远不由 DSH 插值；开启「变量替换」后，由本插件在装配时展开 {{...}}——未注册、拼错或当前无值的引用原样保留，不会导致组装失败。',
       mineTextLabel: '内容',
@@ -1644,7 +1646,6 @@ window.__ModuleLoader__.load({
       editLayer: 'Save to layer',
       mineHeading: 'My Prompt',
       promptBlockNote: 'This scope decides which layer My Prompt is written to — and it is changed here.',
-      tabScopeReadOnly: 'Scope: {scope} (read-only; change it in My Prompt)',
       mineTargetNote: 'Writing to {layer}; scope: {scope}',
       mineNote: 'What you write here becomes one extra prompt section, placed after every built-in section, effective from the next turn (next-turn). DSH never interpolates it; with variable substitution on, this plugin expands its {{...}} during assembly, and a reference that is unregistered, misspelled or currently valueless stays literal instead of failing the assembly.',
       mineTextLabel: 'Content',
@@ -4376,13 +4377,6 @@ window.__ModuleLoader__.load({
     const promptBlockNoteStyle = { margin: 0, ...metaStyle, lineHeight: '18px', color: token.labelSecondary };
 
     /**
-     * g-071: the one-line, read-only scope note the tabs that do **not** own the
-     * picker open with. Plain meta copy — one line, no box, no rule: it is a
-     * statement about the numbers below it, not a second card.
-     */
-    const scopeReadOnlyNoteStyle = { margin: 0, ...metaStyle, color: token.labelSecondary };
-
-    /**
      * Render one line of layer information.
      * @param t - the bound translator.
      * @param label - the localized layer name.
@@ -6120,50 +6114,6 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * g-071: the read-only statement of the page's current scope, at the top of
-     * every tab that **reads** the scope but no longer contains its picker —
-     * 「我的预设」/「提示词总览」/「备份与恢复」/「高级」.
-     *
-     * The scope itself did not change: it is one page-level value that decides
-     * the snapshot, the override reads, the export/import range and which layer
-     * a save lands in, so a tab that shows any of those numbers has to be able to
-     * say which range they were read in. What changed is only where the scope is
-     * *changed*: the picker moved into「我的 Prompt」(g-071), which is the one
-     * surface it writes. This line therefore carries **no control at all** — no
-     * picker, no input, no switch, no button: `data-region="scope-readonly-note"`
-     * with `data-scope-active` naming the range (`global` or the raw session id,
-     * the same value the root container's `data-session` carries), and the
-     * readable name through {@link scopeName} — the single definition the summary
-     * row and the mine panel's write-target line already share.
-     *
-     * 「版本历史」is deliberately **excluded**, and `m.tab === 'history'` is the
-     * whole rule. That tab has its own scope since g-038 (it is decoupled from
-     * this one on purpose), so a page-scope line there would sit a few lines
-     * above `data-region="history-scope-summary"` and claim a range that tab's
-     * numbers were not read in. Saying nothing is the honest option; a second,
-     * differently-worded line would still be one line a reader can mistake for
-     * the other.
-     *
-     * @param t - the bound translator.
-     * @param m - the page model.
-     * @returns the note element, or `null` for the two tabs that are not rendered
-     *   with it (the mine panel owns the picker; the history tab owns its scope).
-     */
-    function scopeReadOnlyNote(t, m) {
-      if (m.tab === 'mine' || m.tab === 'history') return null;
-      return h(
-        'p',
-        {
-          key: 'scope-readonly-note',
-          'data-region': 'scope-readonly-note',
-          'data-scope-active': m.sessionArg === null ? 'global' : String(m.sessionArg),
-          style: scopeReadOnlyNoteStyle,
-        },
-        fmt(t('tabScopeReadOnly'), { scope: scopeName(t, m) }),
-      );
-    }
-
-    /**
      * The「查看范围」card and its collapse rule (g-016).
      *
      * The picker used to be spread open above the tab bar: measured in the real
@@ -6471,8 +6421,10 @@ window.__ModuleLoader__.load({
      * saying what the scope decides, then the card, in one container) but kept the
      * block above the tab bar; g-071 is the owner's correction of that position:
      * the block belongs to the surface it writes, so it is rendered by that
-     * surface. The other tabs state the scope read-only
-     * ({@link scopeReadOnlyNote}) instead of carrying the picker.
+     * surface. The other tabs render nothing scope-shaped of their own: the
+     * read-only line g-071 first gave them was withdrawn in R4 (each tab has its
+     * own scope semantics; decoupling them is g-073), so the page still states the
+     * scope in exactly one place — this block.
      *
      * The block deliberately has **no heading of its own** (review round 1): a
      * second `h3`「我的 Prompt」two lines above the panel's own title repeated the
@@ -8715,8 +8667,9 @@ window.__ModuleLoader__.load({
      * block ({@link renderPromptBlock}), which is the only surface it writes;
      * g-071 moved that block itself **into** the mine panel, so the selector is
      * rendered by the surface it belongs to and the chrome no longer depends on it
-     * at all. The tabs that read the scope but do not own the picker state it
-     * read-only at the top of their own panel ({@link scopeReadOnlyNote}).
+     * at all. The tabs other than「我的 Prompt」render no scope surface of their
+     * own (R4 withdrew the read-only line g-071 first gave them — their scopes are
+     * their own business, see g-073).
      * The selector is still one instance and still the one place the scope is
      * changed.
      *
@@ -8749,9 +8702,9 @@ window.__ModuleLoader__.load({
       if (updateNotice !== null) children.push(updateNotice);
       children.push(renderStatusLine(t, m, a));
       // g-071: nothing scope-shaped lives above the tabs any more. The picker is
-      // rendered by「我的 Prompt」itself (renderMinePanel → renderPromptBlock), and
-      // every other tab that reads the scope states it read-only inside its own
-      // panel. The tab bar keeps the last-but-one slot.
+      // rendered by「我的 Prompt」itself (renderMinePanel → renderPromptBlock);
+      // no other tab carries a scope surface of its own (R4), and the tab bar
+      // keeps the last-but-one slot.
       // g-070: the two decorations the first-level bar carries, both read as
       // facts rather than assumed: the preset library's real entry count
       // (`null` ⇒ no suffix at all, never a false `(0)`) and whether a newer
@@ -8835,9 +8788,8 @@ window.__ModuleLoader__.load({
       // cards). Pushed here for the same reason as the confirm card.
       const regionCard = renderRegionDialog(t, m, a);
       if (regionCard !== null) children.push(regionCard);
-      // g-071: the read-only scope line that every tab but「我的 Prompt」(it owns
-      // the picker) and「版本历史」(it owns its own scope) opens its panel with.
-      const tabNote = scopeReadOnlyNote(t, m);
+      // g-071: the tab panel holds the tab's own surface and nothing else. No
+      // scope-shaped node is injected here (R4 withdrew the read-only line).
       children.push(
         h('div', { key: 'panel', 'data-region': 'panel' },
           m.snap.phase === 'loading' && !m.snap.data ? h('p', { key: 'loading', style: metaStyle }, t('loading')) : null,
@@ -8845,10 +8797,6 @@ window.__ModuleLoader__.load({
             ? h(
                 'div',
                 { key: 'tab-panel', 'data-region': 'tab-panel', 'data-tab-value': m.tab },
-                // First child of the panel on purpose: it is true of everything
-                // the panel renders below it, and it is the only scope-shaped
-                // thing on these tabs — there is no control here to change it.
-                ...(tabNote === null ? [] : [tabNote]),
                 m.tab === 'mine'
                   ? renderMinePanel(t, m, a)
                   : m.tab === 'presets'

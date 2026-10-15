@@ -169,7 +169,6 @@
   "editLayer": "Save to layer",
   "mineHeading": "My Prompt",
   "promptBlockNote": "This scope decides which layer My Prompt is written to — and it is changed here.",
-  "tabScopeReadOnly": "Scope: {scope} (read-only; change it in My Prompt)",
   "mineTargetNote": "Writing to {layer}; scope: {scope}",
   "mineNote": "What you write here becomes one extra prompt section, placed after every built-in section, effective from the next turn (next-turn). DSH never interpolates it; with variable substitution on, this plugin expands its {{...}} during assembly, and a reference that is unregistered, misspelled or currently valueless stays literal instead of failing the assembly.",
   "mineTextLabel": "Content",
