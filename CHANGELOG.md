@@ -32,6 +32,29 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed 变更
 
+- **「查看范围」移入「我的 Prompt」，其他 tab 顶部改为只读范围提示（g-071，Revision 52）**：会话范围选择器
+  （含树体/手动输入/展开收起与全部既有 marker）不再渲染在 tab bar 上方，而是作为「我的 Prompt」面板内、
+  面板标题之下的第一块（`data-region="prompt-block"` 现在只存在于 `data-region="mine"` 内部）。据此，
+  tab bar 上方的页面 chrome 只剩两样：标题行（含插件版本）与状态行；首屏预算由 g-055 的实测值（含该区块
+  的 220px + 4px）重新推导为 **128px + 4px**（`chromeAboveTabsPx` 断言），硬上限 310px 不变。**读取**页面
+  范围的四个 tab（「我的预设」「提示词总览」「备份与恢复」「高级」）各自在**自己的面板顶部**增加**一行只读**
+  范围提示：`data-region="scope-readonly-note"` 是一个 `p`，带 `data-scope-active`（`global` 或会话原始
+  id，与根节点 `data-session` 同值）与可读范围名，**不含任何可改控件**（无选择器/输入框/开关/按钮），
+  全页仍只有**一个**改范围的入口。「版本历史」**不**加此提示：它自 Revision 19（g-038）起有自己的 scope，
+  由 `data-region="history-scope-summary"` 陈述，多一行页面范围会与它混同（判断理由记入 `CONTRACT.md`
+  §13.7）。页面级 scope 语义一字未改：`m.sessionArg` 仍作用于快照、覆盖读取、导入导出、预设请求与
+  mine 写入层。新增文案 `tabScopeReadOnly`（查看范围：{scope}（只读；在「我的 Prompt」里更改） /
+  Scope: {scope} (read-only; change it in My Prompt)），键数 567 → **568（517 主 + 51 `error.<code>`）**。
+  **The scope picker moved into「My Prompt」; other tabs state it read-only (g-071, Revision 52)**: the
+  session-scope selector no longer renders above the tab bar — it is the first block inside the
+  「My Prompt」panel, under that panel's own title (`data-region="prompt-block"` now exists only inside
+  `data-region="mine"`). The chrome above the tabs is down to the title row and the status line, and the
+  first-screen budget was re-derived from the smaller spend (128px + 4px slack, hard ceiling unchanged).
+  The four tabs that read the page scope but do not own the picker open their own panel with one
+  **read-only** line (`data-region="scope-readonly-note"`, `data-scope-active`, no control of any kind),
+  so the page still has exactly one place to change the scope. 「Version history」renders no such line on
+  purpose: it has its own scope since g-038. The page-level scope value, every frozen marker and the write
+  path are unchanged; one locale key (`tabScopeReadOnly`) brings the dictionaries to 568.
 - **「一级 tab」换成纯文字 + 选中下划线，并加计数与更新红点（g-070，Revision 51）**：设置页**主 tab**
   （`data-tab-group="main"`）不再是一排 chip，而是参考图那样的一行纯文字：无底色、无边框、无圆角，
   未选中用次要色、选中项文字变亮并在**下方**压一条 2px 下划线（强调色 token），整条栏底部是一条最弱边框色

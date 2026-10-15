@@ -169,6 +169,7 @@
   "editLayer": "保存层",
   "mineHeading": "我的 Prompt",
   "promptBlockNote": "这个范围决定「我的 Prompt」写到哪一层；改范围只在这里。",
+  "tabScopeReadOnly": "查看范围：{scope}（只读；在「我的 Prompt」里更改）",
   "mineTargetNote": "写入目标：{layer}；查看范围：{scope}",
   "mineNote": "这里写下的内容会成为单独一段 Prompt，排在所有内置段之后，下一轮生效（next-turn）。该段永远不由 DSH 插值；开启「变量替换」后，由本插件在装配时展开 {{...}}——未注册、拼错或当前无值的引用原样保留，不会导致组装失败。",
   "mineTextLabel": "内容",

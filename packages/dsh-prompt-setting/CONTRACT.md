@@ -1879,22 +1879,23 @@ the first one open by default; Revision 19 (g-038) split the old
 「历史与备份」 into 「版本历史」 and 「备份与恢复」, so there were five; Revision 38
 (g-060) adds 「我的预设」 — the preset catalogue of §20 — **directly after**
 「我的 Prompt」, so there are six. Above them
-there are exactly three things: the
+there are exactly **two** things: the
 title line — which carries the plugin version beside the heading since Revision
-17 (§13.8) — one line of deciding facts, and the **「我的 Prompt」block whose
-header is the session selector every tab shares** — the selector itself is **one
-line** until「更改」is clicked (§13.7), so the tab bar and the tab panel are on
-the first screen.
+17 (§13.8) — and one line of deciding facts. Since g-071 the session selector is
+**not** one of them: it renders inside「我的 Prompt」, the only surface it writes,
+and the tabs that read the scope without owning the picker open with a one-line
+**read-only** statement of it (`data-region="scope-readonly-note"`, Revision 52,
+§13.7).
 
-Since g-055 that block is what the third thing *is* (§13.7,
-`data-region="prompt-block"`): the block wraps the selector in one container,
-carries the same leading rule as the mine panel, and states in one sentence what
-the scope decides, so the selector reads as the header of the write surface
-rather than as a page-wide setting of its own. The block deliberately has no
-heading of its own — the mine panel owns `mineHeading`, and a second copy above
-the tabs would list the same title twice. Nothing about the selector's contract
-changed — it is still above the tab bar, still one instance, and still the only
-place the scope is changed.
+**g-055/g-071: the scope card is one block inside「我的 Prompt」** (§13.7,
+`data-region="prompt-block"`). The block wraps the selector in one container and
+states in one sentence what the scope decides. It has **no heading of its own** —
+the mine panel owns `mineHeading`, and a second copy would list the same title
+twice — and it renders as the panel's first block, under that title, so the
+selector reads as part of the write surface rather than as a page-wide setting of
+its own. The selector is still **one instance** and still the only place the scope
+is changed; only its position changed (g-055 put the block above the tab bar,
+g-071 is the owner's correction of that position).
 
 | order | `data-tab-value` | tab | what it is |
 | --- | --- | --- | --- |
@@ -1932,6 +1933,14 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   (`data-region="history"`, `"history-list"`) exist **only** in the `history`
   panel, and the preset catalogue (`data-region="presets"`, its list, and the two
   dialogs of §20.9) exists **only** in the `presets` panel.
+- the four tabs that read the page scope without owning its picker
+  (`presets` / `overview` / `backup` / `advanced`) open their own panel with **one
+  read-only line** (Revision 52, g-071): `data-region="scope-readonly-note"` is a
+  `p` carrying `data-scope-active` (`global` or the raw session id — the same value
+  the root container's `data-session` carries) and the readable range name, and it
+  renders **no control of any kind**. 「我的 Prompt」owns the picker and so renders
+  none of these; 「版本历史」renders none either, because it has its own scope since
+  Revision 19 (§13.3, §13.7).
 
 **Revision 29 (the client half ships as an entry plus chunks — internal
 structure only).** Nothing above changes: the same tabs, the same order, the
@@ -3612,7 +3621,7 @@ from `core/custom.js` and asserts that the name in the save body and in the
 delete URL equals it **character for character**. The two copies cannot drift
 apart silently.
 
-### 13.7 The「查看范围」picker is collapsed by default (g-016; the search box holds the user's own query since Revision 31, g-047)
+### 13.7 The「查看范围」picker is collapsed by default, and lives inside「我的 Prompt」since Revision 52 (g-016; the search box holds the user's own query since Revision 31, g-047)
 
 Measured in the real settings shell at 1440×900 before this revision: the
 expanded selector was ~500px tall (search box + the grouped tree + paging +
@@ -3620,16 +3629,49 @@ pinned rows + four lines of help), which pushed `data-region="tabs"` to
 `y≈789` and `data-region="tab-panel"` past the 900px fold — the page opened
 with **no tab content visible**. The selector is therefore a disclosure.
 
-**The card is the header of one block (g-055).** The card is rendered inside
-`data-region="prompt-block"`, which carries one sentence saying what the scope
-decides (and, like the mine panel, the block's 3px leading rule). The block has
-**no heading of its own**: `mineHeading` is rendered once, by the mine panel, so
-the same title is not listed twice. The mine panel states its own write target
-as a **read-only** line (`data-region="mine-target"`, `data-mine-target-layer` /
-`data-mine-target-scope`) instead of making the reader look back above the tab
-bar. Nothing else changed: the collapse rule, the position (still above the tab
-bar) and every frozen marker below are exactly as they were, the card is still
-one instance, and the panel gained **no** second way to change the scope.
+**The card is one block, rendered inside「我的 Prompt」(g-055; moved there by
+g-071).** The card is rendered inside `data-region="prompt-block"`, which carries
+one sentence saying what the scope decides. The block has **no heading of its
+own**: `mineHeading` is rendered once, by the mine panel, so the same title is not
+listed twice — that panel's `h3` is still its first child, and the block follows
+it. The 3px leading rule is stated **once**, by the panel that contains the block
+(g-071: two nested copies would draw two parallel bars a few pixels apart and read
+as two blocks — the reading the rule was introduced to prevent). The mine panel
+states its own write target as a **read-only** line (`data-region="mine-target"`,
+`data-mine-target-layer` / `data-mine-target-scope`) directly below the block. The
+collapse rule and every frozen marker below are exactly as they were, the card is
+still one instance, and the panel gained **no** second way to change the scope.
+
+**The picker moved into the mine panel, and the other tabs state the scope
+read-only (Revision 52, g-071).** g-055 kept the block above the tab bar and fixed
+the *reading* instead; the owner then corrected the position itself. Where the
+block renders is where it belongs:「我的 Prompt」is the only surface this scope
+writes to. Consequently:
+
+- the chrome above the tab bar holds **two** things now (the title row and the
+  status line) and no scope-shaped node at all. `data-region="prompt-block"` exists
+  **only** inside `data-region="mine"`, and the first-screen budget was re-derived
+  from the smaller spend (128px above the tab bar, asserted by
+  `chromeAboveTabsPx`; the hard first-screen ceiling is unchanged);
+- every tab that **reads** the page scope without owning the picker
+  (`presets` / `overview` / `backup` / `advanced`) opens its own panel with one
+  **read-only** line: `data-region="scope-readonly-note"`, carrying
+  `data-scope-active` (`global` or the raw session id — the same value the root
+  container's `data-session` carries) and the readable range name through
+  `scopeName`, the single definition the summary row and the mine target line
+  already shared. It renders a `p` and **nothing else** — no picker, no input, no
+  switch, no button — so the page still has exactly **one** way to change the
+  scope, and it is inside「我的 Prompt」;
+- 「版本历史」renders **no** such line, and that is a decision rather than an
+  omission: since Revision 19 (g-038) that tab has its **own** scope, stated a few
+  lines further down by `data-region="history-scope-summary"`. A page-scope line
+  there would claim a range the log below it was not read in, and a second,
+  differently-worded line would still be one line a reader can mistake for the
+  other. The honest answer on that tab is the one it already gives;
+- nothing about the **value** changed: `m.sessionArg` still scopes the snapshot,
+  the override reads, the export/import range, the presets request and which layer
+  a save lands in (§13.7's last paragraph below is unchanged). Only the picker's
+  position and the read-only echoes did.
 
 **Collapsed (the default).** The card is `data-region="session"` with
 `data-scope-open="false"` and renders **exactly one row**:
@@ -7000,8 +7042,9 @@ re-report it.
 
 ## 22. The locale dictionaries (g-066, Revision 49)
 
-Every user-visible string this plugin renders — **567** keys per language since
-g-070 (Revision 51; 566 through Revision 50, 564 through Revision 49) — used to
+Every user-visible string this plugin renders — **568** keys per language since
+g-071 (Revision 52; 567 through Revision 51, 566 through Revision 50, 564 through
+Revision 49) — used to
 be hardcoded inside `client.js`: a 513-key `zh` object, a 513-key `en` object,
 and an `ERROR_TEXT` table of 51 `code → [zh, en]` rows that a loop expanded into
 `error.<code>` entries. The copy now lives in two JSON files, and the inlined
@@ -7010,10 +7053,10 @@ objects are a generated artifact.
 ### 22.1 Source of truth
 
 - `locale/zh.json` and `locale/en.json` are the **only** human source. Each
-  holds exactly 567 string values: the 516 main keys plus 51 `error.<code>`
+  holds exactly 568 string values: the 517 main keys plus 51 `error.<code>`
   keys. Keys are identical between the two files, **in the same order** (the
   order is what the generated block follows, so a reordered file is a
-  516-line diff rather than a copy change).
+  517-line diff rather than a copy change).
 - Nothing else in the package is hand-edited for copy. `client.js` carries the
   blocks inside the `// #region generated: locale/zh.json + locale/en.json`
   … `// #endregion` span; a hand edit there is overwritten by the next `--write`
@@ -7044,7 +7087,7 @@ there is no network surface. What changed is only who maintains the bytes.
 | `scripts/locale-pack.mjs --write` | Re-renders both blocks from the JSON. Idempotent: a second run changes nothing. |
 | `scripts/locale-pack.mjs --check` | Fails (exit 1) when a block is not byte-for-byte what `--write` would produce. |
 | `scripts/prepare.mjs` → `LOCALE-SYNC` | The same check on the **install/publish** path, plus a `files` allowlist test for both JSONs (a source that does not ship cannot be re-derived from the installed package). |
-| `test/locale.test.mjs` | Key parity, the 516 + 51 split, no new placeholder drift, byte equality with `--write`, a negative control (one drifted character is refused), and that the delivery shape is still a classic script with a synchronous register. |
+| `test/locale.test.mjs` | Key parity, the 517 + 51 split, no new placeholder drift, byte equality with `--write`, a negative control (one drifted character is refused), and that the delivery shape is still a classic script with a synchronous register. |
 
 ### 22.4 Error codes
 

@@ -58,13 +58,15 @@ function readText(relPath) {
  */
 const ERROR_KEY_COUNT = 51;
 /**
- * The main dictionary's own key count (516) — the two numbers must add to 567.
+ * The main dictionary's own key count (517) — the two numbers must add to 568.
  *
  * g-070 (Revision 51) added one more: `tabUpdateBadge`, the readable description
  * the「高级」tab's red dot carries (`title` / `aria-label`). The count suffix on
- * 「我的预设」is a number in brackets, not prose, so it needs no key.
+ * 「我的预设」is a number in brackets, not prose, so it needs no key. g-071
+ * (Revision 52) added `tabScopeReadOnly`, the read-only scope line every tab but
+ * 「我的 Prompt」(owns the picker) and「版本历史」(owns its own scope) opens with.
  */
-const MAIN_KEY_COUNT = 516;
+const MAIN_KEY_COUNT = 517;
 /** The full key count both files must hold, in the same order. */
 const TOTAL_KEY_COUNT = MAIN_KEY_COUNT + ERROR_KEY_COUNT;
 
@@ -72,18 +74,18 @@ test('locale: both JSON files are valid, key-aligned dictionaries', () => {
   const { dictionaries, keys } = readDictionaries(packageRoot);
   assert.deepEqual(Object.keys(dictionaries), Object.keys(LOCALES));
   assert.equal(keys.length, TOTAL_KEY_COUNT);
-  assert.equal(keys.length, 567);
+  assert.equal(keys.length, 568);
   for (const name of Object.keys(LOCALES)) {
     const dict = dictionaries[name];
     assert.equal(Object.keys(dict).length, TOTAL_KEY_COUNT, `${name}: ${TOTAL_KEY_COUNT} keys`);
     // Key *sets* are not enough: the generated blocks follow file order, so a
-    // reordered file is a silent 516-line diff of the bundle.
+    // reordered file is a silent 517-line diff of the bundle.
     assert.deepEqual(Object.keys(dict), keys, `${name}: same keys in the same order as zh`);
     for (const key of keys) assert.equal(typeof dict[key], 'string');
   }
 });
 
-test('locale: the 567 keys split into 516 main entries and 51 error codes', () => {
+test('locale: the 568 keys split into 517 main entries and 51 error codes', () => {
   const { dictionaries, keys } = readDictionaries(packageRoot);
   const errorKeys = keys.filter((key) => key.startsWith('error.'));
   assert.equal(errorKeys.length, ERROR_KEY_COUNT);

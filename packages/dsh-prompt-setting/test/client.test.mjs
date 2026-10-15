@@ -4073,23 +4073,25 @@ const CHROME_TEXT_LINE_PX = 22;
 const CHROME_SLACK_PX = 4;
 
 /**
- * The **tight** first-screen budget (g-055; tightened in review round 2) for
- * everything above the tab bar, in px, measured by {@link chromeAboveTabsPx}.
+ * The **tight** first-screen budget (g-055; tightened in review round 2, and
+ * re-derived by g-071) for everything above the tab bar, in px, measured by
+ * {@link chromeAboveTabsPx}.
  *
- * It is the measured spend (220px) plus {@link CHROME_SLACK_PX}, deliberately
- * **not** a generous ceiling: the review round 1 number (310px, the hard
- * first-screen derivation below) was so loose that a whole extra title line —
- * 26px — still fitted under it, so the assertion proved nothing. With that slack,
- * any structural growth above the tabs fails it and has to be paid for by raising
- * {@link CHROME_SLACK_PX} (or the measured spend) on purpose.
+ * g-055's number was the spend **including** the「查看范围」block (220px + slack).
+ * g-071 moved that block into the mine panel, so the chrome is now the title, the
+ * version, the subtitle and the status line — 128px, measured by the same helper
+ * on the same tree. Leaving the old ceiling in place would have been the exact
+ * failure g-055 review round 1 diagnosed: a budget so loose that a whole extra
+ * title line (26px) still fits under it, which proves nothing. A structural growth
+ * above the tabs therefore has to be paid for by editing this number on purpose.
  *
  * The first-screen argument behind the hard limit is unchanged (CONTRACT §13.7):
  * 900px of screen, minus the tab bar's own row (~30px), minus the 560px of tab
- * panel that must stay visible below it ⇒ 310px; 224px is what this revision
+ * panel that must stay visible below it ⇒ 310px; 128px is what this revision
  * actually spends of it. The real geometry is still measured in the settings
  * shell by the supervisor (NOTES §94).
  */
-const CHROME_BUDGET_PX = 220 + CHROME_SLACK_PX;
+const CHROME_BUDGET_PX = 128 + CHROME_SLACK_PX;
 
 /** The hard first-screen ceiling the tight budget above must also respect (CONTRACT §13.7). */
 const CHROME_FIRST_SCREEN_CEILING_PX = 900 - 30 - 560;
@@ -4223,11 +4225,15 @@ function chromeAboveTabsPx(tree) {
  * to be priced by **difference** against the untouched tree, so that a helper
  * that under-bills the line cannot pass. Only the note is dropped; everything
  * else is the rendered node graph.
+ *
+ * g-071: the block now lives inside the mine panel instead of among the page's
+ * own children, so the replacement is a whole-tree walk rather than a map over
+ * `root.children` — otherwise the helper would return the tree unchanged and the
+ * difference would be 0 for the wrong reason (the block not being found at all).
  * @param tree - a rendered page tree.
- * @returns a shallow copy of the tree without the note node.
+ * @returns a copy of the tree with the note node dropped from the block.
  */
 function withoutPromptBlockNote(tree) {
-  const root = oneBy(tree, 'data-plugin', 'dsh-prompt-setting');
   const block = oneBy(tree, 'data-region', 'prompt-block');
   const stripped = {
     ...block,
@@ -4236,10 +4242,14 @@ function withoutPromptBlockNote(tree) {
       children: elementChildren(block).filter((node) => node.props['data-role'] !== 'prompt-block-note'),
     },
   };
-  return {
-    ...root,
-    props: { ...root.props, children: elementChildren(root).map((node) => (node === block ? stripped : node)) },
+  const walk = (node) => {
+    if (node === block) return stripped;
+    if (Array.isArray(node)) return node.map(walk);
+    if (node === null || typeof node !== 'object' || node.type === undefined) return node;
+    if (node.props.children === undefined) return node;
+    return { ...node, props: { ...node.props, children: walk(node.props.children) } };
   };
+  return walk(tree);
 }
 
 test('client: the「查看范围」picker ships collapsed, with no body on screen', async () => {
@@ -4451,7 +4461,7 @@ test('client: the collapsed「查看范围」block is one row inside an 80px bud
   );
 });
 
-test('client (g-055): 「查看范围」is the header of the「我的 Prompt」block, and the panel names its write target', async () => {
+test('client (g-055/g-071): 「查看范围」renders inside「我的 Prompt」, and the panel names its write target', async () => {
   const page = makePage({
     useSessions: sessionsHook(WORKSPACE_SESSIONS),
     useWorkspaces: workspacesHook(workspacesFixture()),
@@ -4467,12 +4477,24 @@ test('client (g-055): 「查看范围」is the header of the「我的 Prompt」b
     1,
     'the scope card is rendered inside the block',
   );
-  // The block still sits above the tab bar (g-016's first-screen budget).
-  const flow = collect(
-    tree,
-    (node) => node.props && ['prompt-block', 'tabs'].includes(node.props['data-region']),
-  ).map((node) => node.props['data-region']);
-  assert.deepEqual(flow, ['prompt-block', 'tabs'], 'the block is above the tabs, in that order');
+  // g-071: the block is no longer chrome above the tab bar. It is rendered by
+  // 「我的 Prompt」itself — the one surface it writes — and the tabs that only
+  // read the scope state it read-only instead (asserted on its own below).
+  const minePanel = oneBy(tree, 'data-region', 'mine');
+  assert.equal(
+    oneBy(minePanel, 'data-region', 'prompt-block'),
+    block,
+    'the block is rendered inside the mine panel',
+  );
+  const root = oneBy(tree, 'data-plugin', 'dsh-prompt-setting');
+  const chromeNodes = elementChildren(root);
+  const tabBarIndex = chromeNodes.findIndex((node) => node.props['data-region'] === 'tabs');
+  assert.ok(tabBarIndex > 0, 'the tab bar is rendered below the chrome');
+  assert.equal(
+    chromeNodes.slice(0, tabBarIndex).some((node) => node.props && node.props['data-region'] === 'prompt-block'),
+    false,
+    'the「查看范围」block is not above the tab bar any more',
+  );
 
   // Every frozen marker is still unique across the whole tree (CONTRACT
   // §13.0/§13.7): the wrapper adds structure, it moves nothing.
@@ -4511,10 +4533,11 @@ test('client (g-055): 「查看范围」is the header of the「我的 Prompt」b
   assert.ok(hasText(note, page.zh.promptBlockNote), 'the block says what the scope decides');
 
   // Review rounds 1–2: the block's content sits inside a **tight** budget. The
-  // block may hold exactly two things — the sentence and the card — and the whole
-  // chrome above the tab bar may spend what this revision spends plus 4px of
-  // rounding. Round 1's 310px ceiling let a whole extra 26px title line through,
-  // so it proved nothing; these four numbers do.
+  // block may hold exactly two things — the sentence and the card — and the chrome
+  // above the tab bar stays inside the budget g-055 derived from what it spends.
+  // Since g-071 the block is not part of that chrome at all, so the two claims are
+  // asserted separately: the block's own geometry, and the chrome's independence
+  // from it (with a real counterfactual, below).
   const blockHeight = declaredHeight(block);
   const card = oneBy(tree, 'data-region', 'session');
   const blockGap = declaredPx((block.props.style || {}).gap);
@@ -4536,16 +4559,18 @@ test('client (g-055): 「查看范围」is the header of the「我的 Prompt」b
     blockHeight <= declaredHeight(note) + declaredHeight(card) + blockGap + 2,
     `the block spends ${blockHeight}px: the note line, the card and the gap, nothing more`,
   );
-  // The note is priced by difference against the same tree without it: its 18px
-  // line plus the block's 6px gap. A helper that under-billed the line (round 2)
-  // could not produce this number.
+  // g-071: the note counterfactual is now the **negative** half of the position
+  // claim. Dropping the note line cannot move the chrome above the tab bar by even
+  // one pixel, because the block is not in there — and the block's identity is
+  // pinned inside the mine panel above, so this cannot pass by the helper failing
+  // to find it (a walk that replaced nothing would report the same 0).
   assert.equal(
     chrome - chromeAboveTabsPx(withoutPromptBlockNote(tree)),
-    24,
-    'dropping the note line frees its 18px line and the block’s 6px gap',
+    0,
+    'the「我的 Prompt」block is not part of the chrome above the tab bar',
   );
   console.log(
-    `    g-055 chrome geometry: above the tab bar = ${chrome}px (tight ${CHROME_BUDGET_PX}px, hard ceiling ${CHROME_FIRST_SCREEN_CEILING_PX}px), 「我的 Prompt」block = ${blockHeight}px`,
+    `    g-071 geometry: above the tab bar = ${chrome}px (tight ${CHROME_BUDGET_PX}px, hard ceiling ${CHROME_FIRST_SCREEN_CEILING_PX}px), 「我的 Prompt」block = ${blockHeight}px (not in the chrome)`,
   );
 
   // The panel states its own write target, read-only: no second way to change
@@ -4575,6 +4600,90 @@ test('client (g-055): 「查看范围」is the header of the「我的 Prompt」b
   target = oneBy(tree, 'data-region', 'mine-target');
   assert.equal(target.props['data-mine-target-layer'], 'workspace');
   assert.ok(hasText(target, fillText(page.zh.mineTargetNote, { layer: page.zh.ovWorkspace, scope: 'Alpha one' })));
+});
+
+test('client (g-071): the page scope is changed in「我的 Prompt」and stated read-only on every other tab', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  // The four tabs that read the page scope without owning its picker.
+  const readingTabs = ['presets', 'overview', 'backup', 'advanced'];
+
+  for (const tab of ['mine', ...readingTabs, 'history']) {
+    const tree = tab === 'mine' ? await page.flush() : await openTab(page, tab);
+
+    // (1) No「查看范围」block above the tab bar — on any tab, in any state.
+    const root = oneBy(tree, 'data-plugin', 'dsh-prompt-setting');
+    const chrome = elementChildren(root);
+    const tabBar = chrome.findIndex((node) => node.props['data-region'] === 'tabs');
+    assert.ok(tabBar > 0, `${tab}: the tab bar sits below the chrome`);
+    assert.equal(
+      chrome.slice(0, tabBar).some((node) => node.props && node.props['data-region'] === 'prompt-block'),
+      false,
+      `${tab}: no prompt-block above the tab bar`,
+    );
+
+    // (2) The block is rendered by「我的 Prompt」, and by nothing else.
+    const blocks = collect(tree, (node) => node.props && node.props['data-region'] === 'prompt-block');
+    assert.equal(blocks.length, tab === 'mine' ? 1 : 0, `${tab}: the picker block lives in「我的 Prompt」alone`);
+    if (tab === 'mine') {
+      const mine = oneBy(tree, 'data-region', 'mine');
+      assert.equal(oneBy(mine, 'data-region', 'prompt-block'), blocks[0], 'the block is inside the mine panel');
+      assert.equal(
+        oneBy(mine, 'data-action', 'scope-toggle'),
+        scopeToggle(tree),
+        'and its「更改」switch is inside the block, in the panel',
+      );
+    }
+
+    // (3) The read-only statement: on the four, absent on the two that must not
+    // claim the page scope —「我的 Prompt」owns the picker, and「版本历史」has its
+    // own scope (g-038), which a page-scope line would be mistaken for.
+    const notes = collect(tree, (node) => node.props && node.props['data-region'] === 'scope-readonly-note');
+    if (tab === 'mine' || tab === 'history') {
+      assert.equal(notes.length, 0, `${tab}: no read-only page-scope line`);
+      continue;
+    }
+    assert.equal(notes.length, 1, `${tab}: exactly one read-only page-scope line`);
+    const note = notes[0];
+    assert.equal(note.type, 'p', `${tab}: one line of text`);
+    assert.equal(note.props['data-scope-active'], markerOf(tree, 'data-session'), `${tab}: it names the page scope`);
+    assert.ok(
+      hasText(note, fillText(page.zh.tabScopeReadOnly, { scope: 'Alpha three' })),
+      `${tab}: in the readable form of the current range`,
+    );
+    // Not one control anywhere inside it.
+    for (const type of ['button', 'input', 'select', 'textarea']) {
+      assert.equal(collect(note, (node) => node.type === type).length, 0, `${tab}: no ${type} in the note`);
+    }
+    assert.equal(
+      collect(note, (node) => node.props && node.props['data-action'] !== undefined).length,
+      0,
+      `${tab}: the note offers no action`,
+    );
+    assert.equal(
+      elementChildren(oneBy(tree, 'data-region', 'tab-panel'))[0],
+      note,
+      `${tab}: and it is the panel's first node`,
+    );
+  }
+
+  // (4) The statement follows the one page-level value it states: the picker in
+  // 「我的 Prompt」is still the only place it changes, and the other tabs pick the
+  // new range up.
+  let tree = await openTab(page, 'mine');
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-session'), 'global', 'the page scope moved, from the picker in the panel');
+  tree = await openTab(page, 'advanced');
+  const moved = oneBy(tree, 'data-region', 'scope-readonly-note');
+  assert.equal(moved.props['data-scope-active'], 'global');
+  assert.ok(hasText(moved, fillText(page.zh.tabScopeReadOnly, { scope: page.zh.sessionGlobal })));
+  assert.equal(markerOf(tree, 'data-session'), 'global', 'and it is the same value the page carries');
 });
 
 test('client (g-055): the declared-height helper reads px, multiples and defaults alike', () => {
@@ -7171,7 +7280,9 @@ test('client: changing 「查看范围」 never moves the version history list (
   assert.deepEqual(before, [`${PATHS.history}?layer=user&offset=0`]);
   const rowsBefore = historyRowIds(tree);
 
-  // Move the **page** scope twice: another session, then 全局.
+  // Move the **page** scope twice — through「我的 Prompt」, which is where the page
+  // picker lives since g-071 — and then come back to the log.
+  tree = await openTab(page, 'mine');
   scopeToggle(tree).props.onClick();
   tree = await page.flush();
   sessionOptions(tree).find((row) => row.props['data-session-id'] === 'a2').props.onClick();
@@ -7189,6 +7300,7 @@ test('client: changing 「查看范围」 never moves the version history list (
     'false',
     'the page picker closed on the pick',
   );
+  tree = await openHistory(page);
 
   // The test double's `useEffect` re-runs unconditionally (it has no dependency
   // diffing), so the invariant asserted here is the request **shape**: whatever
@@ -10340,6 +10452,36 @@ const EN_SWEEP_CASES = [
     },
   },
   {
+    name: 'g-071: every tab but「我的 Prompt」and「版本历史」states the page scope read-only',
+    marks: [
+      ['data-region', 'scope-readonly-note'],
+      ['data-scope-active', 's2'],
+      ['data-active-tab', 'presets'],
+      ['data-active-tab', 'overview'],
+      ['data-active-tab', 'backup'],
+      ['data-active-tab', 'advanced'],
+    ],
+    copy: [['tabScopeReadOnly', { scope: 'Second' }]],
+    async run() {
+      const page = enPage({
+        useSessions: sessionsHook(SESSIONS_STATE),
+        // 「我的预设」's own case above already walks the library; here the tab only
+        // has to exist for *its* panel to carry the read-only line. Its chunk is
+        // failed so the sweep does not re-render the stored presets, whose fixture
+        // text is Chinese on purpose (it is data, not copy).
+        chunkFailures: ['client.presets.js'],
+        responses: defaultResponses(),
+      });
+      const rec = recorder(page);
+      await rec.take();
+      for (const tab of ['presets', 'overview', 'backup', 'advanced']) {
+        clickAnyTab(rec.last(), tab);
+        await rec.take();
+      }
+      return rec.trees;
+    },
+  },
+  {
     name: 'the render-failure card falls back to readable copy, never a blank',
     marks: [['data-render-state', 'error'], ['data-renderer', 'fallback']],
     raw: ['render failure', 'Error'],
@@ -10444,6 +10586,9 @@ const EN_REQUIRED_MARKERS = [
   'data-action=scope-toggle',
   'data-role=scope-summary-label',
   'data-role=scope-summary-hint',
+  // g-071: the read-only scope line on the tabs that do not own the picker.
+  'data-region=scope-readonly-note',
+  'data-scope-active=s2',
   'data-region=build',
   'data-renderer=fallback',
   'data-renderer=primitives',
@@ -13634,9 +13779,16 @@ test('client: the「高级」tab renders the assembly-status block at its top, a
   );
 
   // The global scope names no session, so the block says what to do instead of
-  // reading a conversation it cannot describe.
+  // reading a conversation it cannot describe. The scope is changed where it
+  // lives —「我的 Prompt」(g-071) — and the tab is then reopened: this tab only
+  // states it read-only.
+  tree = await openTab(page, 'mine');
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
   clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
   tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-session'), 'global');
+  tree = await openTab(page, 'advanced');
   const global = oneBy(tree, 'data-region', 'assembly-status');
   assert.equal(global.props['data-assembly-session'], 'none');
   assert.ok(hasText(oneBy(tree, 'data-assembly-note', 'no-session'), page.zh.assemblyNoSession));

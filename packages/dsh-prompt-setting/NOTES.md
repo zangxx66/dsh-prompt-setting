@@ -8785,3 +8785,74 @@ height:2px; background: token.stateBusiness` 的 span（`data-role="tab-indicato
   不需要该机制成立也安全的形状；
 - `presetCountOf` 只覆盖了「phase/error/presets 数组」三类形状，宿主返回 `presets` 为畸形数组元素
   （非对象项）时按元素个数照数 —— 与 presets tab 列表自身的 lenient 口径一致，未加专门用例。
+
+---
+
+## 150. g-071：把「查看范围」移入「我的 Prompt」，其他 tab 顶部改为只读范围提示（Revision 52，2026-10-16，基线 `6368c9e` 隔离工作树 `g-071-att-01`）
+
+**需求**：设置页的「查看范围」选择器**整体**从 tab bar 上方移入「我的 Prompt」tab 面板内；**读取**页面范围的
+其他 tab（「我的预设」/「提示词总览」/「备份与恢复」/「高级」）各自在**面板顶部**显示**一行只读**范围提示；
+「版本历史」自 g-038 有自己的 scope，不得与之混同；页面级范围语义（快照 / 覆盖读取 / 导入导出 / 预设请求 /
+mine 写入层）**一字不改**。这是负责人对 g-055「与『我的 Prompt』收口为同一功能块但保留在 tab bar 上方」
+这一位置决策的修正。
+
+**实现**（`packages/dsh-prompt-setting/client.js`）
+- `renderSection` 不再 `children.push(renderPromptBlock(...))`：tab bar 上方 chrome 只剩**两样**（标题行 +
+  状态行），页面上不再有 scope 形状的节点；
+- `renderMinePanel` 在自身 `h3` 之后渲染 `renderPromptBlock`，即 `data-region="prompt-block"` 现在是
+  mine 面板的第一个子块、且**只**存在于 `data-region="mine"` 内部；面板仍带 `promptBlockBandStyle`，
+  而 `promptBlockStyle` 去掉了重复的 3px 左边线——嵌套两层会画成两条平行竖线、读成两个块，正是 g-055
+  引入该规则要避免的读法；
+- 新增 `scopeReadOnlyNote(t, m)`：`m.tab === 'mine' || m.tab === 'history'` 返回 `null`；其余 tab 返回一个
+  `p`（`data-region="scope-readonly-note"`、`data-scope-active` = `global` 或会话原始 id、文案
+  `tabScopeReadOnly`、范围名复用既有 `scopeName`），作为 `data-region="tab-panel"` 的**第一个子节点**
+  渲染，**不含任何控件**（无选择器/输入框/开关/按钮、无 `data-action`）；
+- 冻结 marker 与语义未动：`data-region="session"|"scope-summary"|"session-tree"|"prompt-block"`、
+  `data-action="scope-toggle"`、`data-scope-open`、`data-mine-target-scope` 全部保持原语义；
+  `m.sessionArg` 仍是唯一的页面级范围值，仍是全页唯一改范围的入口（在 mine 面板内）。
+
+**文案 / 门禁**：`locale/{zh,en}.json` 同序新增 `tabScopeReadOnly`（「查看范围：{scope}（只读；在
+「我的 Prompt」里更改）」/ `Scope: {scope} (read-only; change it in My Prompt)`），
+`node scripts/locale-pack.mjs --write` 重写 `client.js` 生成段；`test/locale.test.mjs` 的
+`MAIN_KEY_COUNT` 516 → 517、`TOTAL_KEY_COUNT` 567 → 568，`CONTRACT.md` §13.0/§13.7/§22 同步。
+chunk 文件（`client.*.js`）**零改动**，故 `CHUNK_STAMPS` 与 5 个 chunk 摘要不变。
+
+**测试**（`test/client.test.mjs`）
+- 新增 1 条：六个 tab 逐个断言「tab bar 上方无 `prompt-block`」「区块只在 mine 面板内、切换按钮同在」
+  「四个 tab 各有一行只读提示：`data-scope-active` 与根 `data-session` 同值、文案含可读范围名、内部无
+  button/input/select/textarea、无 `data-action`、且是 tab-panel 第一个子节点」「mine/history 无该行」；
+  最后在 mine 内把范围改成「全局」，打开「高级」断言提示跟着变（同值、同文案）；
+- 修订 g-055 那条（`renders inside`）：`flow === ['prompt-block','tabs']`（区块在 tabs 上方）改写为「区块在
+  mine 面板内（按节点同一性钉住）+ tab bar 上方没有它」；`withoutPromptBlockNote` 改为**整树递归**替换
+  （旧实现按 `root.children` 映射，区块移走后会找不到块而返回原树，差值 0 是假绿），差值断言 24 → **0**
+  （负向对照：区块不在 chrome 里）；
+- 首屏预算按新实测值重推：`CHROME_BUDGET_PX` 由 `220 + 4` 改为 **`128 + 4`**（`chromeAboveTabsPx` 实测
+  128px），硬上限 310px 不变；注释记录「不收紧就等于 g-055 复核轮 1 诊断过的松预算」；
+- 修订 2 条既有用例的**取用位置**（g-038「改页面范围不动历史列表」、advanced 装配状态「全局时怎么说」）：
+  范围改在 mine 里改，再切回目标 tab 验证；
+- EN sweep 新增 1 条 case（`data-region=scope-readonly-note`、`data-scope-active=s2`、
+  `copy: ['tabScopeReadOnly', { scope: 'Second' }]`；「我的预设」用 `chunkFailures` 让它只渲染失败卡片，
+  避免把 fixture 里刻意的中文预设文本误报成文案泄漏）；`EN_REQUIRED_MARKERS` 增补 2 项。
+
+### 一、验收（单行证据）
+
+- evidence: suite=node --test passed=921 failed=0 exit=0 ms=52198.7 diff=8f/+476/-108 commit=（由主管收口）
+- `node scripts/prepare.mjs` = OK（23 项，含 `CHUNK-STAMPS` 5 项一致、`LOCALE-SYNC` 568 键），exit 0；
+- `node scripts/locale-pack.mjs --check` 与 `node scripts/client-chunks.mjs`（校验）均 exit 0；
+- **负向对照（改坏就红，已全部还原；`grep -n "NEGATIVE CONTROL"` 为空）**：① 删掉只读提示那一行 ⇒ 新用例红
+  （`presets: exactly one read-only page-scope line`）；② 让「版本历史」也渲染提示 ⇒ 红
+  （`history: no read-only page-scope line`）；③ 把 `renderPromptBlock` 临时 push 回 tab 上方 ⇒ 两条用例红
+  （`exactly one data-region=prompt-block`、`mine: no prompt-block above the tab bar`）。
+- **基线对照**：基线 `6368c9e` 上全量为 920 通过 / 0 失败（NOTES §149 的实测值；g-070 返工只改注释、
+  未动用例数）；本次 921 通过 / 0 失败（净增 1 条用例，1 条改写 + 3 条既有用例等价修订）。
+
+### 二、未验证项
+
+- **真机未跑**：本 attempt 无浏览器侧执行条件。区块移入面板后的真实几何（mine 面板在展开态含选择器时的
+  首屏高度、卡与面板标题的实际间距、只读提示行在窄容器下的换行）未做真机目视，留给主管集成检查点；
+  离线侧的结论只声明可恒等复算的部分：tab bar 上方 chrome 由 `chromeAboveTabsPx` 按声明式样式计价为
+  128px，且「去掉区块 note」的反事实差为 0（区块不在其中）。**不伪造真机读数**；
+- **面板内高度未计价**：本次未对 mine 面板自身高度设预算（那属于 tab 内容，不在 g-055 的首屏 chrome 论证
+  范围内）；展开选择器时面板随之变高是既有行为，未新增断言；
+- 「只读提示无控件」是结构级断言（节点类型 + `data-action` 计数），未做真机可点击性验证——没有控件可言，
+  结构判定已足够。
