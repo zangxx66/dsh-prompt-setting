@@ -6717,7 +6717,8 @@ window.__ModuleLoader__.load({
      * text will not reach the prompt rather than let a write look effective.
      *
      * g-055: the panel is the lower half of the「我的 Prompt」block whose header
-     * is the scope card above the tabs, so it names its own write target
+     * is the scope card — at the top of **this panel** since g-071 moved it in
+     * from above the tab bar — so it names its own write target
      * (`data-region="mine-target"`, read-only) instead of making the reader look
      * back up; the scope itself is still changed in exactly one place.
      *

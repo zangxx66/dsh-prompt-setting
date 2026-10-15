@@ -8840,7 +8840,7 @@ chunk 文件（`client.*.js`）**零改动**，故 `CHUNK_STAMPS` 与 5 个 chun
 
 ### 一、验收（单行证据）
 
-- evidence: suite=node --test passed=922 failed=0 exit=0 ms=55329.4 diff=8f/+485/-113 commit=adf4881（主交付）+ R1 返工 5f/+91/-23（未提交，同 worktree；两处 diff 数字由主管按 `git diff --numstat` 真源校正）
+- evidence: suite=node --test passed=922 failed=0 exit=0 ms=55329.4 diff=8f/+485/-113 commit=adf4881（主交付）+ R1 返工 5f/+91/-23 commit=6a8d15d（两处 diff 数字由主管按 `git diff --numstat` 真源校正）
 - `node scripts/prepare.mjs` = OK（23 项，含 `CHUNK-STAMPS` 5 项一致、`LOCALE-SYNC` 568 键），exit 0；
 - `node scripts/locale-pack.mjs --check` 与 `node scripts/client-chunks.mjs`（校验）均 exit 0；
 - **负向对照（改坏就红，已全部还原；代码/测试里 `grep -n "NEGATIVE CONTROL"` 为空）**：① 删掉只读提示那一行 ⇒
@@ -8883,6 +8883,11 @@ packages/dsh-prompt-setting/README.md` ⇒ **零命中**（exit 1），并逐处
 就递归」（保留数组与原始值的安全处理），并新增 1 条 helper 单测把该口径钉死（block 挂在无 `type` 包裹节点
 之下，note 必须被去掉、card 必须留下）；负向对照见验收段的 ④。
 
-**未做（按返工说明）**：真机几何/视觉未动；`m.sessionArg` 语义与任何冻结 marker 未动；不 `git commit`
-（仍由主管收口）；评审列的既有历史遗留（NOTES §131 追加式历史、test「five tabs」笔误、presets `?session=`
+**未做（按返工说明）**：真机几何/视觉未动；`m.sessionArg` 语义与任何冻结 marker 未动；提交由主管收口
+（R1 = `6a8d15d`）；评审列的既有历史遗留（NOTES §131 追加式历史、test「five tabs」笔误、presets `?session=`
 既有断言缺口、`String()` 化差异）不在本次范围内。
+
+**R2（第二轮评审 rev-att-001-02）修正**：`client.js` mine-panel 的 JSDoc 中「whose header is the scope card
+above the tabs」是自基线遗留的现行时态方位错误（全文件唯一一处；:4356 属历史叙述、:8709/:8745/:8750 描述
+chrome 仍正确），由主管按评审建议改为「at the top of **this panel** since g-071 moved it in from above the
+tab bar」。纯注释，零实现/断言改动。
