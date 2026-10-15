@@ -8888,6 +8888,6 @@ packages/dsh-prompt-setting/README.md` ⇒ **零命中**（exit 1），并逐处
 既有断言缺口、`String()` 化差异）不在本次范围内。
 
 **R2（第二轮评审 rev-att-001-02）修正**：`client.js` mine-panel 的 JSDoc 中「whose header is the scope card
-above the tabs」是自基线遗留的现行时态方位错误（全文件唯一一处；:4356 属历史叙述、:8709/:8745/:8750 描述
+above the tabs」是自基线遗留的现行时态方位错误（全文件唯一一处；:4356 属历史叙述、:8710/:8746/:8751 描述
 chrome 仍正确），由主管按评审建议改为「at the top of **this panel** since g-071 moved it in from above the
 tab bar」。纯注释，零实现/断言改动。
