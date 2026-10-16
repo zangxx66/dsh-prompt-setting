@@ -9441,9 +9441,9 @@ g-074 改了 `index.js` / `CONTRACT.md` 却没有同步 `docs/refactor-plan.md` 
 
 **验收（本文件最终版、未提交实跑）**
 
-- evidence: suite=node --test(test/*.test.mjs) passed=942 failed=0 exit=0（基线 938，本轮 +4：`client.test.mjs` 新增 4 个 g-073 用例）；
+- evidence: suite=node --test(test/*.test.mjs) passed=944 failed=0 exit=0（基线 938，本轮 +6：`client.test.mjs` 新增 4 个 g-073 用例 + 2 个 R1 回归用例）；
 - evidence: suite=node scripts/prepare.mjs passed=23 failed=0 exit=0（`CHUNK-STAMPS` 5 个 chunk / `LOCALE-SYNC` 586 键）；
-- evidence: suite=node docs/check-refs.mjs verified=129 rangeOnly=6 manual=21 failed=0 exit=0（§1.3 表 24 行合计 12284、§5.1 表 17 行合计 12284、最大段 1200）；
+- evidence: suite=node docs/check-refs.mjs verified=132 **rangeOnly=0** manual=21 failed=0 exit=0（§1.3 表 24 行合计 12320、§5.1 表 17 行合计 12320、最大段 1200）；
 - evidence: suite=node scripts/locale-pack.mjs --check passed=586 failed=0 exit=0。
 
 **负向对照 2 条（改坏就红，已还原、零残留）**：① 让 `GET /presets` 重新带上页面 `?session=` ⇒
@@ -9455,3 +9455,33 @@ scope` 红（三个会话被压成一个）。
 GUI 截图核验；"高级"的默认值取"当前会话"而非工作区代表会话，这一点在契约里写明了理由（record 按 sessionId 存），
 但真机上多个会话同属一个工作区时的观感仍需负责人目视；`docs/check-refs.mjs` 的 6 条 `rangeOnly`（简写与完整形式
 换算精度差）保持"包内可读 + 行号合法"的最小验证，未强行收编。
+
+**返工 R1（独立评审 rev-att-001-01 判 BLOCK 后的 4 项必修 + 2 项建议，2026-10-16）**
+
+- **R1-1 `CHANGELOG.md` 漏记**：在根 `CHANGELOG.md` 的 `## [Unreleased]` → `### Changed 变更` 首条补 g-073 / Revision 55
+  条目（中英双语，含四个落点、§13.10、586 键），与 Rev 50–54 的惯例一致。
+- **R1-2 高级面板的渲染门控仍跟随页面作用域**：原来 `panelSnap = m.tab === 'overview' ? m.overviewSnap : m.snap`，
+  高级的**取数**虽已按自己的作用域，**门控**却仍要求页面 snapshot 到位——页面 scope 读失败时整块空白。改为
+  `panelGate`：`mine → m.snap`、`overview → m.overviewSnap`、`advanced → m.advancedSnap`，而
+  `presets / history / backup` **不再被任何 snapshot 门控**（它们各自持有库 / 日志 / 传输文档，且各自渲染自己的
+  phase；`presets` 与 `history` 在 `idle`/`loading` 帧显示加载行，`backup` 无自有读、直接渲染）。新增回归用例
+  `g-073 R1 — a failing page-scoped snapshot blanks no other tab`：让本次 mount 的第一个 `/snapshot` 失败，
+  断言高级 / 总览 / 备份 / 预设 / 历史五个 tab 依旧渲染，而只有「我的 Prompt」空白。
+  ⚠️ 一处既有用例随之改写：`「高级」 carries the same install control…` 原用 `page.draw()` 跳过 effect（避免重跑
+  更新检查），现在高级面板依赖自己的读，故改为打开 tab 后 `flush` 一次，其后仍是 `draw()`。
+- **R1-3 正文与 REFS 表脱钩**：本轮把 `docs/refactor-plan.md` 正文里残留的旧行号一并对齐——`index.js:982-4614`
+  → `982-5059`（4 处）、`store.js:295/308/323/337` → `298/311/326/340`、`client.test.mjs:1988` → `2008`、
+  `7806–7895` → `7911–8000`、`8223/8139/8209-8277` → `8223/8229/8314-8382`、`8084-8086` → `8084-8087`、
+  §13.0/§14 的裸数字 `1875`/`3855` → `2313`/`4439`、§5.2 的 `7772–8280` → `7775–8385`、正文里三处
+  `7329-7773`/`8095-8101`/`2544-2550` → 新端点，以及 §1.2 的构成统计（11879 = 293+4235+7351 →
+  **12320 = 299+4397+7624**）。§1.1 的规模表保留为「基线 `c6bbccb` 快照」并注明主入口当前 12320 行。
+  **`rangeOnly` 由 6 → 0**（这才说明正文与 REFS 表真的对齐，而不只是 `failed=0`）。
+- **R1-4 REFS 表端点靠 `loose` + `includes("}")` 过关**：`index.js:982-4614` → `982-5059`（loose 保留：跨度
+  4078 > 90，脚本规则要求）、`client.js:8084-8086` → `8084-8087`、`8095-8101` → `8095-8105`、
+  `7329-7773` → `7329-7875`（loose 保留：547 > 90）、`test/client.test.mjs:2544-2550` → `2544-2552`；
+  有 `loose` 的两处都是跨度硬约束，其余三处跨度 ≤90 且以 `toExpect: "}"` 逐字钉住闭行。
+- **建议项一并处理**：R1-5 新增计数用例 `g-073 R1 — a tab-owned scope reads once per tab open and scope change`
+  （`enforceEffectDeps: true`：开 tab 1 次、纯重渲染 0 次、展开披露 0 次、换作用域 +1 且 URL 为新会话；总览侧同）；
+  R1-6 `client.js` 的注释改正为「state 初值 `null`，有效值回落 `seat.currentId`」。
+- **负向对照（R1-2 专用）**：把 `panelGate` 的高级分支改回 `m.snap` ⇒ 新用例
+  `g-073 R1 — a failing page-scoped snapshot blanks no other tab` 变红（高级 0 节点），已还原。

@@ -12358,13 +12358,14 @@ test('client: 「高级」 carries the same install control, so dismissing the b
     }),
   });
   const tree = await page.flush();
-  // The「高级」card is opened by its own tab click rather than through
-  // `openTab`/`flush`: this harness re-runs every effect on a flush (its hooks
-  // runtime compares no dependencies), so a flush would legitimately re-run the
-  // update check — and that is the *check* resetting its own view state, not the
-  // dismissal being lost.
+  // The「高级」card is opened by its own tab click. One flush is what runs that
+  // tab's own reads (since g-073 the panel is gated on **its own** snapshot, not
+  // on the page's); the harness re-runs every effect on a flush, so that flush
+  // legitimately re-runs the update check too — and that is the *check* resetting
+  // its own view state, not the dismissal being lost. Everything after it is a
+  // plain `draw()`, which runs no effect at all.
   clickAnyTab(tree, 'advanced');
-  const advanced = page.draw();
+  const advanced = await page.flush();
   assert.equal(updateBanner(advanced).length, 1, 'the banner is still there to dismiss');
   clickButton(advanced, { 'data-action': 'update-dismiss' });
   const dismissed = page.draw();
@@ -15554,6 +15555,99 @@ test('client: g-073 —「高级」aims its reads at its own workspace selector 
     ],
     'both clears name the workspace this selector picked, never the page scope',
   );
+});
+
+test('client: g-073 R1 — a failing page-scoped snapshot blanks no other tab (criterion 3)', async () => {
+  // Review R1-2: the advanced tab's **reads** were already its own, but its panel
+  // was still gated on the page-scoped snapshot, so a failing page read blanked a
+  // tab whose data had arrived. This walks the gate: the first `/snapshot` of the
+  // mount (the page-scoped one) fails, every later one answers.
+  //
+  // The dependency rule is enforced on purpose: without it this harness re-runs
+  // every effect on every flush, so the page-scoped read would succeed on its
+  // second attempt and the very gate under test would stop being tested.
+  let snapshotCalls = 0;
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses({
+      [PATHS.snapshot]: () => {
+        snapshotCalls += 1;
+        return snapshotCalls === 1 ? new Error('page scope read failed') : { payload: scopedSnapshotFixture('alpha') };
+      },
+    }),
+    enforceEffectDeps: true,
+  });
+  const mine = await page.flush();
+  assert.equal(markerOf(mine, 'data-render-state'), 'ok', 'the page still renders its failure banner');
+  assert.equal(
+    collect(mine, (node) => node.props && node.props['data-region'] === 'tab-panel').length,
+    0,
+    '「我的 Prompt」 is the one tab gated on that read, so it is the one that stays blank',
+  );
+  // 「提示词总览」 reads in its own scope, so it renders.
+  let tree = await openTab(page, 'overview', mine);
+  assert.equal(oneBy(tree, 'data-region', 'overview-scope').props['data-overview-scope-value'], 'a3');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'sections').length, 1);
+  // 「高级」 too: its own snapshot, override list and layer counts all render.
+  tree = await openTab(page, 'advanced', tree);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'advanced-scope').length, 1);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'overrides').length, 1);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'layer-reset').length, 1);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'assembly-status').length, 1);
+  // …and so do the tabs that never read a snapshot at all.
+  tree = await openTab(page, 'backup', tree);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'transfer').length, 1);
+  tree = await openTab(page, 'presets', tree);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'presets').length, 1);
+  tree = await openTab(page, 'history', tree);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history').length, 1);
+});
+
+test('client: g-073 R1 — a tab-owned scope reads once per tab open and scope change (criterion 2/3)', async () => {
+  // Review R1-5: §13.10 claims "one request per tab open / scope change / reload".
+  // Counted, not eyeballed: with the dependency rule enforced, a plain re-render
+  // and an opened disclosure must both cost nothing.
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+    enforceEffectDeps: true,
+  });
+  let tree = await openAdvanced(page);
+  const statusReads = () => urlsFor(page, PATHS.assemblyStatus);
+  assert.equal(statusReads().length, 1, 'one assembly-status read when the tab opens');
+  tree = await page.flush();
+  assert.equal(statusReads().length, 1, 'a plain re-render reads nothing');
+  clickButton(tree, { 'data-action': 'advanced-scope-toggle' });
+  tree = await page.flush();
+  assert.equal(statusReads().length, 1, 'opening the disclosure reads nothing');
+  clickButton(tree, { 'data-advanced-scope-option': 'b1' });
+  tree = await page.flush();
+  assert.equal(statusReads().length, 2, 'changing the scope reads once more');
+  assert.equal(statusReads()[1], `${PATHS.assemblyStatus}?session=b1`);
+
+  // The overview's own snapshot behaves the same way.
+  const overviewPage = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+    enforceEffectDeps: true,
+  });
+  const mine = await overviewPage.flush();
+  const snapReads = () => urlsFor(overviewPage, PATHS.snapshot);
+  assert.equal(snapReads().length, 1, 'the page-scoped snapshot read on mount');
+  let overviewTree = await openTab(overviewPage, 'overview', mine);
+  assert.equal(snapReads().length, 2, 'the overview reads in its own scope when it opens');
+  overviewTree = await overviewPage.flush();
+  assert.equal(snapReads().length, 2, 'and not again on a plain re-render');
+  clickButton(overviewTree, { 'data-action': 'overview-scope-toggle' });
+  overviewTree = await overviewPage.flush();
+  assert.equal(snapReads().length, 2, 'nor when the picker opens');
+  clickButton(overviewTree, { 'data-overview-scope-option': 'b1' });
+  overviewTree = await overviewPage.flush();
+  assert.equal(snapReads().length, 3, 'a new scope reads once');
+  assert.equal(snapReads()[2], `${PATHS.snapshot}?session=b1`);
 });
 
 // #endregion

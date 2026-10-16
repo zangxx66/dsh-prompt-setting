@@ -32,6 +32,34 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed 变更
 
+- **作用域模型收敛：页面「查看范围」只服务「我的 Prompt」（g-073，Revision 55）**：负责人 2026-10-16 目视后
+  要求页面级作用域只管「我的 Prompt」，其余 tab 各自解耦——g-074 先交付全量备份，本次处理行为层。四个落点：
+  ①「我的预设」的库读取不再携带 `?session=`（库是全局文件，与页面作用域无直接关联；apply / unapply 仍按对话框里
+  选中的工作区生效，行为未变）；②「提示词总览」自带作用域切换组件——**按工作区分组、可选到具体会话**，切换后按
+  该作用域重新读取快照，页面「查看范围」不再影响它。取值**不照抄**「版本历史」的「每个工作区取首个会话 id」：
+  `/snapshot` 的 `session` 同时定位工作区层文件并在该会话自身作用域里探测装配，frozen 判定与变量解析是 per-scope
+  事实，用替身会让页面显示用户没选的会话的结论；③「高级」自带**工作区**选择器（`?reset=true` / `?legacy=true`
+  清的是整个工作区文件、该工作区所有会话共享，所以选择器的语义是"选工作区"而非"选会话"），旧版覆盖列表、层计数与
+  装配状态都按它自己的作用域取数，用户层仍是全局；④页面作用域 `m.sessionArg` 的消费点收敛为只剩「我的 Prompt」
+  （快照 + 覆盖读取 + 面板自己的写入目标展示），`/export`、`/import`、`/presets` 不再携带它（备份自 Revision 53
+  起已是全量）。总览与高级的读都是**开 tab 才发**（每次 `/snapshot` 要跑两次 `assemble()`）；面板渲染门控按各 tab
+  自己的数据源，页面作用域的读失败不会再让别的 tab 空白。新增契约 §13.10「作用域模型」总表与 6 条不变式；
+  §13.0 / §13.2 / §13.3a / §13.4 / §13.7 / §20.2 同步；词典新增 13 键（**586 键/语言** = 535 主 +
+  51 `error.<code>`），并修正两条随之过时的文案。
+  **The scope model converges: the page-level "View scope" serves「My Prompt」alone (g-073, Revision 55)**:
+  the four decouplings are — the preset library is read without `?session=`; 「Prompt overview」gets its own
+  switcher, **grouped by workspace and resolving down to a concrete session** (never the workspace's first
+  session: `/snapshot`'s `session` locates the workspace layer *and* probes the assembly in that session's
+  own scope, so the frozen verdict and the variable resolution are per-scope facts); 「Advanced」gets its own
+  **workspace** selector (both layer-wide clears act on a whole workspace file shared by every session in
+  it), with the legacy list, the layer counts and the assembly status all read in that scope and the user
+  layer still global; and `m.sessionArg` is left scoping「My Prompt」alone, so `/export`, `/import` and
+  `/presets` no longer carry it. Both tab-owned reads happen only while their tab is open (every `/snapshot`
+  costs two `assemble()` runs) and each panel is gated on its own data source, so a failing page-scoped read
+  can no longer blank another tab. Contract gains §13.10 (the model, with six invariants); §13.0 / §13.2 /
+  §13.3a / §13.4 / §13.7 / §20.2 updated; the dictionaries grow to **586 keys per language** (535 main +
+  51 `error.<code>`), with two now-stale strings corrected.
+
 - **跨机备份恢复改为「跳过」语义 + 导入预览提示「整份替换」（g-074 att-002，Revision 54）**：负责人 2026-10-16
   追加指示「如果不是本机已注册的则跳过」。`POST /import` 过去对「路径形状合法但本机注册表未包含」的工作区
   root 整体 `400 unknown-workspace-root` 拒绝，现在改为**跳过并在响应 `skipped[]` 中如实声明**

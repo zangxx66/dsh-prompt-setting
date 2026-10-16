@@ -8896,15 +8896,49 @@ window.__ModuleLoader__.load({
       // g-071: the tab panel holds the tab's own surface and nothing else. No
       // scope-shaped node is injected here (R4 withdrew the read-only line).
       //
-      // g-073 (Revision 55): 「提示词总览」draws from **its own** snapshot, so this
-      // gate follows the tab: the page's read must not hide the overview, and the
-      // overview's read must not hide anything else. Every other tab keeps the
-      // page-scoped gate it always had.
-      const panelSnap = m.tab === 'overview' ? m.overviewSnap : m.snap;
+      // g-073 (Revision 55; extended in review R1): the panel's gate follows
+      // **the tab's own** read, because the page-scoped snapshot is not a
+      // prerequisite of any other surface:
+      //   - 「我的 Prompt」 is the read that page scope belongs to, so it is the one
+      //     tab gated on `m.snap`;
+      //   - 「提示词总览」 and 「高级」 read `/snapshot` in **their own** scopes, so
+      //     their panels follow `m.overviewSnap` / `m.advancedSnap` — a failing
+      //     page-scoped read must not blank a tab that already has its data;
+      //   - 「我的预设」 (the library), 「版本历史」 (the log) and 「备份与恢复」 (the
+      //     transfer document) consume **no** snapshot at all: each carries its own
+      //     state and renders its own phase, so none of them is gated on a read it
+      //     never made.
+      const panelGate = (() => {
+        if (m.tab === 'mine') {
+          return { loading: m.snap.phase === 'loading' && !m.snap.data, ready: Boolean(m.snap.data) };
+        }
+        if (m.tab === 'overview') {
+          return {
+            loading: m.overviewSnap.phase === 'loading' && !m.overviewSnap.data,
+            ready: Boolean(m.overviewSnap.data),
+          };
+        }
+        if (m.tab === 'advanced') {
+          return {
+            loading: m.advancedSnap.phase === 'loading' && !m.advancedSnap.data,
+            ready: Boolean(m.advancedSnap.data),
+          };
+        }
+        if (m.tab === 'presets') {
+          // Its own read is the library; `idle` is the one frame before that read
+          // has been issued, and it must not render as「没有预设」.
+          return { loading: m.presets.phase === 'idle' || m.presets.phase === 'loading', ready: true };
+        }
+        if (m.tab === 'history') {
+          return { loading: m.hist.phase === 'idle' || m.hist.phase === 'loading', ready: true };
+        }
+        // 「备份与恢复」 issues no read of its own until a button is pressed.
+        return { loading: false, ready: true };
+      })();
       children.push(
         h('div', { key: 'panel', 'data-region': 'panel' },
-          panelSnap.phase === 'loading' && !panelSnap.data ? h('p', { key: 'loading', style: metaStyle }, t('loading')) : null,
-          panelSnap.data
+          panelGate.loading ? h('p', { key: 'loading', style: metaStyle }, t('loading')) : null,
+          panelGate.ready
             ? h(
                 'div',
                 { key: 'tab-panel', 'data-region': 'tab-panel', 'data-tab-value': m.tab },
@@ -9421,9 +9455,11 @@ window.__ModuleLoader__.load({
 
       // ---- g-073 (Revision 55): the two tab-owned scopes --------------------
       // Neither of these is the page's「查看范围」: that one serves「我的 Prompt」
-      // alone now (§13.7). Both default to「跟随当前会话」(`null`), so a fresh page
-      // behaves exactly as it did — what changed is **who may move them**, and
-      // that the page scope can no longer move them.
+      // alone now (§13.7). Each **state** starts as `null` (「跟随当前会话」), and
+      // the effective value it then falls back to is a real session id —
+      // `seat.currentId` (or, with nothing current, the first candidate) — so a
+      // fresh page behaves exactly as it did; what changed is **who may move
+      // them**, and that the page scope can no longer move them.
       //
       // 「提示词总览」: one group per workspace, one option per **session**
       // (see `overviewScopeOptionsOf` for why a session id is required here).
