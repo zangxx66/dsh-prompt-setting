@@ -39,7 +39,7 @@
  * `CLIENT_HEAD_LINES` 平移处理（文档的 `client.js:行` 引用记的是**段真源坐标**）。
  */
 
-import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -62,6 +62,33 @@ export const CLIENT_SRC_DIR = 'src';
  * 所以这里拒绝它而不是猜。
  */
 export const SEGMENT_PATTERN = /^(\d{2})-([a-z0-9]+(?:-[a-z0-9]+)*)\.js$/;
+/**
+ * `docs/refactor-plan.md` §5.1 目标段表的段名集合（顺序 = 文件名字典序 = 代码顺序）。
+ *
+ * 为什么另立一份常量、而不是从 `src/` 目录派生：这份表要能发现「段被删了一个」，
+ * 而从目录派生的清单永远同意自己（g-076 项 2 的原始现象就是 `src/12-update.js`
+ * 被删后 `prepare` 仍 exit 0）。它是 §5.1 目标段表的**代码副本**，两处一起改；
+ * `test/client-source.test.mjs` 把这条绑定钉住（缺段、多段都红）。
+ */
+export const EXPECTED_SEGMENTS = Object.freeze([
+  '00-entry.js',
+  '01-shared-head.js',
+  '02-locale.js',
+  '03-facilities.js',
+  '04-helpers-a.js',
+  '05-helpers-b.js',
+  '06-tree.js',
+  '07-stage2.js',
+  '08-chrome-a.js',
+  '09-chrome-b.js',
+  '10-toaster-mine.js',
+  '11-chunks.js',
+  '12-update.js',
+  '13-page-a.js',
+  '14-page-b.js',
+  '15-page-c.js',
+  '16-boot.js',
+]);
 /**
  * 阶段 2 起每个段文件的首行声明（§5.2 R1-9）。
  *
@@ -243,10 +270,15 @@ export function renderClient(options = {}) {
  *     例如 `test/prepare.test.mjs` 的最小 fixture）；
  *   - **FILES**：`src/` 存在或已声明，却没有可用的段文件 ⇒ FAIL；
  *   - **NOT-SHIPPED**：段文件在，却不在 `files` 白名单里 ⇒ FAIL（安装时会被裁掉）。
- * 段文件都在且都声明了 ⇒ `CLIENT-SRC`（ok）。
+ *   - **SEGMENTS**（g-076 项 2）：段文件在、也发，但**段集合**与 §5.1 的目标段表不符
+ *     （缺段或多出陌生段）⇒ FAIL。原实现只看「有没有、发不发」，于是删掉一个段之后
+ *     `prepare` 仍 exit 0：产物（已发布的 `client.js`）完整、产品行为不变，但装到用户
+ *     机器上的 `src/` 真源不完整、再也生成不出完整产物 —— 那正是这道门存在要防的事。
+ * 段文件都在、都声明了、集合也对上 ⇒ `CLIENT-SRC`（ok）。
  *
- * 注意本门禁只看**发布面**（有没有、发不发）；「生成物与段是否一致」由
- * `node scripts/client-build.mjs --check` 负责（阶段 1 的判据 1 / 5）。
+ * 注意本门禁看**发布面 + 集合**；「生成物与段是否**逐字节**一致」由
+ * `node scripts/client-build.mjs --check` 负责（阶段 1 的判据 1 / 5），本门不读
+ * `client.js`，也不比对字节。
  * @param filesField - `package.json` 的 `files` 数组。
  * @param io - `{packageDir, listDir}` 可注入；`listDir(relPath)` 读不到时返回 `null`。
  * @returns 一条 finding（`PREPARE_OK` 或 `PREPARE_FAIL`）。
@@ -289,10 +321,28 @@ export function inspectClientSource(filesField, io = {}) {
       message: `${CLIENT_SRC_DIR}/ 不在 files 白名单里：安装时会被裁掉，包里只剩生成物 client.js`,
     };
   }
+  // g-076 项 2：集合对账（段名逐名比对 §5.1 目标段表）。缺段 ⇒ 装到用户机器上的
+  // `src/` 真源再也生成不出完整产物，与「真源缺失」是同一类后果；多出陌生段 ⇒ 有人
+  // 重切了段却没同步这份表，同样要停。
+  const found = segments.map((segment) => segment.name);
+  const missing = EXPECTED_SEGMENTS.filter((name) => !found.includes(name));
+  const unexpected = found.filter((name) => !EXPECTED_SEGMENTS.includes(name));
+  if (missing.length > 0 || unexpected.length > 0) {
+    const parts = [];
+    if (missing.length > 0) parts.push(`缺 ${missing.join('、')}`);
+    if (unexpected.length > 0) parts.push(`多出 ${unexpected.join('、')}`);
+    return {
+      level: PREPARE_FAIL,
+      code: 'CLIENT-SRC-SEGMENTS',
+      message:
+        `${CLIENT_SRC_DIR}/ 的段集合与 docs/refactor-plan.md §5.1 目标段表不符（${parts.join('；')}；`
+        + `实有 ${found.length} 段）：装上去的 src/ 真源无法再生成出完整的 client.js`,
+    };
+  }
   return {
     level: PREPARE_OK,
     code: 'CLIENT-SRC',
-    message: `${CLIENT_SRC_DIR}/ 下 ${segments.length} 个段文件，files 白名单已覆盖`,
+    message: `${CLIENT_SRC_DIR}/ 下 ${segments.length} 个段文件（段集合与 §5.1 目标段表一致），files 白名单已覆盖`,
   };
 }
 
@@ -361,6 +411,21 @@ function main(argv) {
 }
 
 // 只有作为脚本运行时才执行：测试会 import 上面的纯函数与门禁。
-if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.argv[1]) {
+//
+// g-076 项 1（symlink 假绿）：`process.argv[1]` 是**调用时的字面路径**，而
+// `import.meta.url` 已被 Node 解析成真实路径。经软链调用（`npm link`、pnpm
+// workspace、`node_modules/<pkg>`、`.bin`）时两者永不相等 ⇒ 守卫整段被跳过、
+// **静默 exit 0** —— 连 `--bogus` 的参数校验都不跑，在自动化里等于假绿。
+// 统一改成 realpath 比较；`argv[1]` 可能不存在或无法解析，所以包在 try/catch 里
+// （拿不到真实路径就不当成直接运行，fail-closed）。同款守卫、同款理由见
+// `scripts/client-chunks.mjs` 与 `scripts/locale-pack.mjs`（三处必须一起改，不许分裂）。
+const isDirectRun = (() => {
+  try {
+    return process.argv[1] !== undefined && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+})();
+if (isDirectRun) {
   process.exitCode = main(process.argv.slice(2));
 }

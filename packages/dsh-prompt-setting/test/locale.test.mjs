@@ -244,10 +244,22 @@ test('locale: --write lands in the src/ segment and rebuilds client.js in one sh
     // ① 段真源带上新文案
     const segmentText = readFileSync(join(root, CLIENT_SRC_DIR, segment.name), 'utf8');
     assert.equal(readDeclaredBlock(segmentText, 'zh').text, renderDictionaryBlock('zh', dictionaries.zh));
+    // ①' 非自参照断言（g-076 项 6）：期望写成**字面量**，不经被测函数生成 ——
+    // 上面那条用 `renderDictionaryBlock` 造期望，而它正是被测对象，生成器改坏时
+    // 两边会一起坏、断言照样绿。这两条只信「文件里有没有那一行」。
+    const segmentLines = segmentText.split('\n');
+    assert.equal(segmentLines.includes("      nav: 'R1 一次到位',"), true, '段真源里的 nav 必须就是新文案那一行');
+    assert.equal(segmentLines.includes("      nav: 'Prompt 管理',"), false, '旧文案必须从段真源消失');
     // ② 生成物也带上 —— 一次 --write 之后两边同时最新（这就是旧实现丢掉的那一步）
     assert.equal(
       readDeclaredBlock(readFileSync(join(root, 'client.js'), 'utf8'), 'zh').text,
       renderDictionaryBlock('zh', dictionaries.zh),
+    );
+    // ②' 同一条字面量断言落在产物上：产物里的 nav 也是那一行。
+    assert.equal(
+      readFileSync(join(root, 'client.js'), 'utf8').split('\n').includes("      nav: 'R1 一次到位',"),
+      true,
+      '产物里的 nav 必须就是新文案那一行（同样不经生成器）。',
     );
     // ③ / ④ 两道门都绿
     assert.equal(run(root, 'scripts/client-build.mjs', '--check').status, 0, 'client-build --check 必须绿');
@@ -255,6 +267,22 @@ test('locale: --write lands in the src/ segment and rebuilds client.js in one sh
     // 反向：把刚写进段的文案手改掉（不跑 --write）⇒ 门必须红。
     writeFileSync(join(root, CLIENT_SRC_DIR, segment.name), segmentText.replace('R1 一次到位', '手动回退'));
     assert.notEqual(run(root, 'scripts/locale-pack.mjs', '--check').status, 0, '手改段真源必须被拒');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('locale: --write without a src/ truth source falls back loudly, not silently', () => {
+  // g-076 项 5：`src/` 被误删时 `--write` 仍走老路径直接写 client.js（这是为阶段 2
+  // 之前的包与最小 fixture 保留的兼容分支，本身要留着）—— 但它必须**说出来**，
+  // 否则「src/ 没了」会被这条分支静默吞掉，直到 `client-build --check` 才红。
+  const root = throwawayPackage();
+  try {
+    rmSync(join(root, CLIENT_SRC_DIR), { recursive: true, force: true });
+    const write = run(root, 'scripts/locale-pack.mjs', '--write');
+    assert.equal(write.status, 0, `无 src/ 的回退分支本身是合法路径\n${write.stderr}`);
+    assert.match(write.stderr, /未找到 src\/ 段真源/, '回退必须打印显式提示（不能静默）');
+    assert.match(write.stdout, /client\.js/, '回退写的是老路径 client.js，提示要说清');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -275,6 +303,21 @@ test('locale: the dictionary segment is found, never hard-coded, and ambiguity i
   assert.throws(() => findLocaleSegment({ packageDir: packageRoot, readText: readNone, readDir }), /真源缺失/);
   // 没有 src/ ⇒ N/A（返回 null，不抛）：阶段 2 之前的包与最小 fixture 走这条。
   assert.equal(findLocaleSegment({ packageDir: packageRoot, readDir: () => null }), null);
+  // g-076 项 4 的负向对照：文本里**恰好出现**两个块头行、但块不闭合 —— 只按「行是否
+  // 出现过」判定的旧实现会把它当真源；现在候选判定复用 `readDeclaredBlock`（要块头 +
+  // 闭合行），所以它不算命中 ⇒ 真源缺失（fail-closed），绝不往这个段里写词典。
+  const decoy = 'const outer = {\n    const zh = {\n};\n    const en = {\n};\n';
+  const decoyLines = decoy.split('\n');
+  assert.equal(
+    decoyLines.includes('    const zh = {') && decoyLines.includes('    const en = {'),
+    true,
+    '诱饵确实含两行块头（旧判据会命中它）',
+  );
+  const readDecoy = (relPath) => (relPath === `${CLIENT_SRC_DIR}/${found.name}` ? decoy : readText(relPath));
+  assert.throws(
+    () => findLocaleSegment({ packageDir: packageRoot, readDir, readText: readDecoy }),
+    /真源缺失/,
+  );
 });
 
 test('locale: client.js carries no second copy of the dictionaries', () => {

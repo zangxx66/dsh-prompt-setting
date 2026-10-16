@@ -21,7 +21,7 @@
  * Run: `node --test`
  */
 import assert from 'node:assert/strict';
-import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -33,6 +33,7 @@ import { PREPARE_FAIL, PREPARE_OK } from '../core/prepare.js';
 import { clientChunkStamps } from '../core/store.js';
 import {
   CLIENT_SRC_DIR,
+  EXPECTED_SEGMENTS,
   GENERATED_BANNER,
   SEGMENT_DECLARATION,
   concatSegments,
@@ -286,6 +287,26 @@ test('client source: the publish gate is tri-state (N/A / FILES / NOT-SHIPPED)',
   assert.equal(ok.level, PREPARE_OK);
   assert.equal(ok.code, 'CLIENT-SRC');
   assert.match(ok.message, /17 个段文件/);
+
+  // g-076 项 2：段集合对账。缺一段 ⇒ FAIL（旧实现只报「16 个段文件」然后放行 ——
+  // 产物完整、产品行为不变，但装到用户机器上的 src/ 真源不完整、无法再生）。
+  const diskSegments = segmentNames(realDir()).map((segment) => segment.name);
+  const withoutUpdate = diskSegments.filter((name) => name !== '12-update.js');
+  assert.equal(withoutUpdate.length, diskSegments.length - 1, '负向对照真的少了一段');
+  assert.equal(withoutUpdate.length, 16);
+  const missing = inspectClientSource(packageJson.files, { listDir: () => withoutUpdate });
+  assert.equal(missing.level, PREPARE_FAIL);
+  assert.equal(missing.code, 'CLIENT-SRC-SEGMENTS');
+  assert.match(missing.message, /12-update\.js/);
+  assert.match(missing.message, /§5\.1/);
+  // 多出一个陌生段（有人重切了段却没同步 §5.1 表与这份常量）⇒ 同样 FAIL。
+  const extra = inspectClientSource(packageJson.files, { listDir: () => [...realDir(), '17-extra.js'] });
+  assert.equal(extra.level, PREPARE_FAIL);
+  assert.equal(extra.code, 'CLIENT-SRC-SEGMENTS');
+  assert.match(extra.message, /17-extra\.js/);
+  // 集合真源只有一份：这份常量必须与测试里写死的 §5.1 表、以及磁盘上的 src/ 三方一致。
+  assert.deepEqual([...EXPECTED_SEGMENTS], SEGMENTS.map((segment) => segment[2]));
+  assert.deepEqual([...EXPECTED_SEGMENTS], segmentNames(readdirSync(join(packageDir, CLIENT_SRC_DIR))).map((s) => s.name));
 });
 
 test('client build --check: a healthy copy is green, and one edited src/ line is red', () => {
@@ -317,6 +338,45 @@ test('client build --check: editing the generated client.js alone is red too', (
     // 头注落在第一行：任何手改都会先撞上它，而不是撞上别的东西。
     assert.equal(readFileSync(join(root, 'client.js'), 'utf8').split('\n')[0], GENERATED_BANNER.split('\n')[0]);
     assert.equal(readFileSync(join(root, CLIENT_SRC_DIR, '00-entry.js'), 'utf8').startsWith(SEGMENT_DECLARATION), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('client source: a symlinked entry point really runs — it never exits 0 with no output', () => {
+  // g-076 项 1 的回归用例（可复现原缺陷）：把三处入口各软链到别处再调用。
+  // 旧守卫 `fileURLToPath(import.meta.url) === process.argv[1]` 在软链下恒为假
+  // （`import.meta.url` 已 realpath、`argv[1]` 是字面路径）⇒ 守卫整段跳过，
+  // 进程 **exit 0 且零输出**：`--check` 报不出不一致、`--bogus` 的参数校验也不跑。
+  // 判据是「要么正常执行、要么非零退出」，所以这里对每个脚本同时钉住两件事：
+  //   ① 软链调用与正常调用的行为一致（stdout 逐字相同 ⇒ 真的跑了 main）；
+  //   ② 绝不出现「exit 0 + 零输出」这个假绿形态。
+  const scripts = ['client-build.mjs', 'client-chunks.mjs', 'locale-pack.mjs'];
+  const root = mkdtempSync(join(tmpdir(), 'dsh-entry-symlink-'));
+  try {
+    for (const script of scripts) {
+      const link = join(root, script);
+      symlinkSync(join(packageDir, 'scripts', script), link);
+      const direct = spawnSync(process.execPath, [join('scripts', script), '--check'], { cwd: packageDir, encoding: 'utf8' });
+      const linked = spawnSync(process.execPath, [link, '--check'], { cwd: packageDir, encoding: 'utf8' });
+      assert.equal(direct.status, 0, `${script}: 正常调用必须绿\n${direct.stdout}\n${direct.stderr}`);
+      assert.notEqual(linked.stdout.trim(), '', `${script}: symlink 调用零输出（守卫没跑 main）`);
+      assert.equal(linked.stdout, direct.stdout, `${script}: symlink 调用必须跑出与正常调用相同的结果`);
+      assert.equal(linked.status, 0, `${script}: symlink 调用下 --check 应是绿\n${linked.stderr}`);
+
+      // 未知参数：client-build / locale-pack 会当场拒绝（exit 2）；client-chunks 不校验
+      // 参数，但无论如何都必须**执行**（有输出），而不是静默 0。旧缺陷下三者都是
+      // 「exit 0 + 零输出」，所以这条断言在旧代码上是红的。
+      const bogus = spawnSync(process.execPath, [link, '--bogus'], { cwd: packageDir, encoding: 'utf8' });
+      const silentZero = bogus.status === 0 && `${bogus.stdout}${bogus.stderr}`.trim() === '';
+      assert.equal(silentZero, false, `${script}: symlink + --bogus 静默 exit 0 且零输出（假绿）`);
+    }
+    // 参数校验仍在：symlink 调用下 `--bogus` 必须是被拒绝的那一类（不是被跳过的那一类）。
+    for (const script of ['client-build.mjs', 'locale-pack.mjs']) {
+      const link = join(root, script);
+      const bogus = spawnSync(process.execPath, [link, '--bogus'], { cwd: packageDir, encoding: 'utf8' });
+      assert.equal(bogus.status, 2, `${script}: 未知参数必须被拒绝（exit 2），而不是静默跳过`);
+    }
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

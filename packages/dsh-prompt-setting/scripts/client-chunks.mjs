@@ -18,7 +18,7 @@
  *   node scripts/client-chunks.mjs --write  # 重算清单并写回 client.js
  */
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -121,7 +121,22 @@ function main(argv) {
 }
 
 // 只有作为脚本运行时才执行：测试会 import 上面的纯函数。
-if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.argv[1]) {
+//
+// g-076 项 1（symlink 假绿）：`process.argv[1]` 是**调用时的字面路径**，而
+// `import.meta.url` 已被 Node 解析成真实路径。经软链调用（`npm link`、pnpm
+// workspace、`node_modules/<pkg>`、`.bin`）时两者永不相等 ⇒ 守卫整段被跳过、
+// **静默 exit 0** —— 连 `--bogus` 的参数校验都不跑，在自动化里等于假绿。
+// 统一改成 realpath 比较；`argv[1]` 可能不存在或无法解析，所以包在 try/catch 里
+// （拿不到真实路径就不当成直接运行，fail-closed）。同款守卫、同款理由见
+// `scripts/client-build.mjs` 与 `scripts/locale-pack.mjs`（三处必须一起改，不许分裂）。
+const isDirectRun = (() => {
+  try {
+    return process.argv[1] !== undefined && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+})();
+if (isDirectRun) {
   process.exitCode = main(process.argv.slice(2));
 }
 

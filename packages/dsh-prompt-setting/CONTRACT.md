@@ -7847,11 +7847,20 @@ looking a documented line number up in the generated file.
 | `node scripts/client-build.mjs --write` | Rebuilds `client.js` from `src/`. It writes **only when the bytes differ**, so a routine run does not touch mtime — and mtime is what changes the DSH artifact revision and reloads an open page. |
 | `node scripts/client-build.mjs --check` | The read-only form, with a non-zero exit code when `src/` and `client.js` disagree. |
 | `node scripts/locale-pack.mjs --write` | Re-renders the `zh` / `en` dictionary blocks from `locale/*.json` into the slice that carries them, **then** rebuilds `client.js` — one run, both sides current (§22). |
-| `node scripts/prepare.mjs` → `CLIENT-SRC*` | The publish gate, tri-state like `LOCALE-*`: `src/` must exist with usable slices **and** be covered by the `files` allowlist, or an installed package carries only an artifact that can no longer be regenerated or diffed. |
+| `node scripts/prepare.mjs` → `CLIENT-SRC*` | The publish gate, tri-state like `LOCALE-*`: `src/` must exist with usable slices **and** be covered by the `files` allowlist, or an installed package carries only an artifact that can no longer be regenerated or diffed. Since g-076 it also checks the **segment set** against §5.1 of `docs/refactor-plan.md` (`CLIENT-SRC-SEGMENTS`): a missing slice ships a source tree that can no longer rebuild the artifact, which is the same failure this gate exists to prevent. |
 
 `CHUNK_STAMPS` keeps its single writer: the builder calls
 `scripts/client-chunks.mjs` (`readDeclaredStamps` / `writeDeclaredStamps` →
-`renderStampRows`) instead of re-implementing the block.
+`renderStampRows`) instead of re-implementing the block. The copy of that block
+which sits **inside the slice** (`src/11-chunks.js`) is a **derived copy, not a
+second source of truth**: the truth is the `client.*.js` files on disk, and
+every `--write` path recomputes the rows from them. The recomputed rows are what
+lands in `client.js` — the builder overwrites the block as it concatenates the
+slices — so the slice's own rows are never what ships, and a slice whose rows
+lag behind the disk is expected and harmless between a chunk change and the next
+`--write`. `client-build.mjs --check` accordingly compares the **artifact's**
+rows against the disk, which is the comparison the fingerprint depends on
+(g-076 item 3).
 
 ### 23.2 Invariants (what a change to `src/` may and may not do)
 

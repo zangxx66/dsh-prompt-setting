@@ -9653,3 +9653,71 @@ GUI 截图核验；"高级"的默认值取"当前会话"而非工作区代表会
 - **验收**：`client-build --check` / `locale-pack --check` / `prepare` / `check-refs` 全部 exit 0；
   `node --test test/*.test.mjs` **963 pass / 0 fail**；**判据 8 未回退** —— `tail -n +10 client.js`
   与 `git show d3db711:…/client.js` 仍逐字节相同（`cmp` 空输出），`client.js` 本轮**零字节改动**。
+
+---
+
+## 157. g-076：g-075 遗留技术债清理 —— symlink 假绿、段集合门禁、派生副本口径与两处评估（2026-10-16，基线 `9a5c057` 隔离工作树 `g-076-att-01`）
+
+g-075（客户端生成期分段，已 delivered）交付时由独立评审标记、但不阻断交付的边界问题逐项收口。
+**产品行为零改动**：`client.js` 字节不变（`git diff --exit-code client.js` = 0），改动只落在
+脚本、文档与测试。
+
+- **项 1（F1，最高优先）三处入口守卫的 symlink 假绿**：守卫原为
+  `fileURLToPath(import.meta.url) === process.argv[1]`。`import.meta.url` 已被 Node 解析成**真实
+  路径**，而 `argv[1]` 是**调用时的字面路径** ⇒ 经软链访问（`npm link`、pnpm workspace、
+  `node_modules/<pkg>`、`.bin`）时永不相等，守卫整段被跳过，进程 **exit 0 且零输出**（`--check`
+  报不出不一致，连 `--bogus` 的参数校验都不跑）。三处**一起**改为
+  `realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)`，包 `try/catch`（`argv[1]`
+  缺失或无法解析就不当成直接运行，fail-closed）：`scripts/client-build.mjs`、
+  `scripts/client-chunks.mjs`、`scripts/locale-pack.mjs`。三处各自内联同款判断、不引入跨脚本
+  helper —— 因为 `client-chunks.mjs` 的行锚点（`docs/check-refs.mjs`）落在 32–100 行，任何 import
+  区新增行都会下推它们；内联 + 把 `realpathSync` 并入既有 import 行，让三处改动**全部行数中性**。
+  用例（`test/client-source.test.mjs` 新增）：三个脚本各 `ln -s` 到临时目录后调用，断言
+  ①软链 `--check` 的 stdout 与正常调用**逐字相同**且 exit 0；②软链 `--bogus` **绝不**出现
+  「exit 0 + 零输出」；③`client-build` / `locale-pack` 的 `--bogus` 仍 exit 2（参数校验没被跳过）。
+  负向对照：临时恢复旧守卫 ⇒ 用例红（`pass 13 / fail 1`），还原后 14/0。
+- **项 2（段集合门禁）选 ①**：`inspectClientSource` 现在把 `src/` 的段名集合与
+  `docs/refactor-plan.md` §5.1 目标段表**逐名对账**（新增导出常量 `EXPECTED_SEGMENTS`），缺段或
+  多出陌生段 ⇒ **FAIL `CLIENT-SRC-SEGMENTS`**。**选 ① 不选 ② 的理由**：②（只在文档里写明「这道门
+  刻意只看有没有/发不发」）把防线全推给 `--check` 与测试，而这两者只在**开发/测试机**上跑；这道门
+  恰恰是**安装现场**唯一还敢说话的检查 —— 删掉一个段后 `prepare` 报 `ok CLIENT-SRC: 16 个段文件`
+  就是发布面上的假绿，与项 1 同一种病。代价是 §5.1 段表多一份代码副本，用测试三方钉住
+  （`EXPECTED_SEGMENTS` == 测试里写死的 §5.1 表 == 磁盘 `src/` 段名），重切段时不会静默漂移。
+  覆盖：纯函数三例（缺段 / 多段 / 三方一致）+ `test/prepare.test.mjs` 端到端一例（删
+  `src/12-update.js` ⇒ `prepare` 非零退出且输出 `FAIL CLIENT-SRC-SEGMENTS`）。
+  `CONTRACT.md` §23.1 与 `src/README.md` 同步该口径（行内改写，行数中性）。
+- **项 3（`CHUNK_STAMPS` 段内声明是派生副本）**：`CONTRACT.md` §23.1 在 "keeps its single writer"
+  之后补一段：段内（`src/11-chunks.js`）那一份是**派生副本、不是第二真源**；真源是磁盘上的
+  `client.*.js`；每次 `--write` 都按磁盘重算行，重算后的行**写进 `client.js`**（生成器拼接时整块
+  覆盖）⇒ 段内那一份从不进发布物，它落后于磁盘是**预期且无害**的；`client-build --check` 比的是
+  **产物**的清单 vs 磁盘（指纹依赖的就是这条比较）。`src/README.md` 加对应的规则 6。
+- **项 4（`findLocaleSegment` 行集合匹配）—— 结论：修（已修）**。旧判据只要求
+  `    const zh = {` / `    const en = {` 两行在**行集合里出现过**，不要求它构成可解析的块；危险组合
+  是「真源段缺失 + 另一段（块注释里）恰好写出这两行」⇒ `--write` 会写错段。**修法选「复用
+  `readDeclaredBlock` 的实际解析结果」而不是「锚定非注释行首」**：后者需要在整份 JS 里跟踪块注释
+  开闭状态机（字符串、正则里同样会出现这些字节），漏判/误判风险比它治的病更大；前者让候选判定与
+  唯一写入者共用**同一个解析器**（要块头 **且** 有 `    };` 闭合），既消重又把判定收紧一个量级。
+  负向用例：一段含两行块头但不闭合的文本，旧实现会把它当真源，新实现报「真源缺失」（fail-closed）；
+  实测负向对照在旧实现下该用例红。**残余**：某段若真写出**完整闭合**的两个块，仍会被当作候选
+  （此时它确实是"可写目标"，两个命中触发"真源不唯一"的 fail-closed）；双端核对（段 + `client.js`）
+  与 `client-build --check` 继续兜底。
+- **项 5（无 `src/` 时的回退可见）**：`locale-pack.mjs --write` 走「读不到 `src/` ⇒ 按旧语义直接写
+  `client.js`」这条兼容分支时，先往 **stderr** 打一行
+  `[locale-pack] 未找到 src/ 段真源（读不到该目录）：按旧语义直接写 client.js`。回退本身保留
+  （阶段 2 之前的包与最小 fixture 要走），只是不再静默。用例：`test/locale.test.mjs` 在一次性副本里
+  删掉 `src/` 跑 `--write`，断言 exit 0 + stderr 含提示 + stdout 指向 `client.js`。
+- **项 6（locale 端到端用例的非自参照断言）**：`test/locale.test.mjs` 的端到端副本用例原来用
+  `renderDictionaryBlock` 造期望，而它正是被测对象（生成器改坏时两边一起坏）。补两条**字面量**
+  断言：段真源与产物里都必须**逐字含** `      nav: 'R1 一次到位',`，且旧文案行不再出现。
+- **项 7（`CLIENT-SRC-DRIFT`）—— 结论：不做（维持原判，未实施）**。理由：① 它要挡的是「`src/` 与
+  产物字节漂移」，而这在**消费者机器上无害** —— 运行物是 `client.js`，`src/` 只服务「可再生成」这一
+  承诺；让它 FAIL 等于把「开发期忘了跑 `--write`」升级成「用户装不上」，惩罚错位。② 代价不只是安装期
+  多读约 600 KB 段文件、拼 1.2 MB 产物做字节比较，还多一条**最常发生**的失败路径挂在安装上。
+  ③ 已有三道防线：`client-build --check`、`test/client-source.test.mjs` 的逐字节断言、`prepare` 的
+  `CLIENT-SRC*` + `LOCALE-SYNC`。**影响面**：不加 ⇒ 安装路径零新增 IO、零新 finding；**残余风险**是
+  「`src/` 漂移的 checkout 仍可被安装」（用户拿到不一致的真源，产物本身正确），开发者本地
+  `--check` 会红。若将来出现「消费者需要在目标机上重新生成 `client.js`」的真实用例，这份门才值得
+  重估，且应以 `PREPARE_WARN`（提示级）而不是 FAIL 落地。
+- **验收**：`client-build --check` / `locale-pack --check` / `prepare` / `check-refs` 全部 exit 0；
+  `node --test test/*.test.mjs` **965 pass / 0 fail**（基线 963 + 2 条新用例；另有 3 条既有用例被扩展）；
+  `git diff --exit-code packages/dsh-prompt-setting/client.js` 退出码 0（产品字节零改动）。

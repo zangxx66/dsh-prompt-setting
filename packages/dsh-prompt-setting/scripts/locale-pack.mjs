@@ -30,7 +30,7 @@
  *   node scripts/locale-pack.mjs --write  # 由两份 JSON 重写 src/ 里的生成段，并重建 client.js
  */
 
-import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -198,8 +198,15 @@ export function readDictionaries(packageDir) {
  *
  * **刻意不硬编码 `02-locale.js`**：段名与段边界属于 `docs/refactor-plan.md` §5.1 的目标
  * 段表，重切是允许的（`CONTRACT.md` §23.2 规则 1）。硬编码会在下一次重切之后静默写错
- * 文件，所以这里改成「扫描 + fail-closed」：要求**恰好一个**段同时含两个 `blockOpen(name)`
- * 行；命中 0 个或多个一律抛错，绝不猜。
+ * 文件，所以这里改成「扫描 + fail-closed」：要求**恰好一个**段能解析出两个 locale 生成
+ * 段；命中 0 个或多个一律抛错，绝不猜。
+ *
+ * **候选判定复用自己的解析器（g-076 项 4）**：g-075 的实现用「行集合里出现过
+ * `blockOpen('zh')` 与 `blockOpen('en')` 两行」判定候选 —— 只要求**行出现**，不要求
+ * 它是一段可解析的块，所以块注释里恰好写出这两行的段会被误当成真源。现在改为
+ * {@link readDeclaredBlock}（也就是 `--write` 真正用的那个解析器）：两个块都能被解析
+ * 出来才算候选。仍然**不做**完整的注释剥离 —— 那需要在整份 JS 里跟踪「块注释开闭」
+ * 的状态机（字符串与正则里同样会出现这些字节），误判风险比它治的病更大。
  * @param io - `{packageDir, readDir|listDir, readText}` 可注入（测试与 `prepare` 用）。
  * @returns `{name, text}`；**读不到 `src/` 目录时返回 `null`**（阶段 2 之前的包、最小 fixture）。
  */
@@ -221,16 +228,25 @@ export function findLocaleSegment(io = {}) {
   });
   const entries = readDir(CLIENT_SRC_DIR);
   if (entries === null) return null;
-  const wanted = Object.keys(LOCALES).map((name) => blockOpen(name));
+  const names = Object.keys(LOCALES);
+  const wanted = names.map((name) => blockOpen(name));
   const hits = [];
   for (const entry of [...entries].filter((name) => name.endsWith('.js')).sort()) {
     const text = readText(`${CLIENT_SRC_DIR}/${entry}`);
     if (typeof text !== 'string') continue;
-    const lines = new Set(text.split('\n'));
-    if (wanted.every((line) => lines.has(line))) hits.push({ name: entry, text });
+    // 两个块都要能被解析出来（块头 + 闭合行），而不是「行出现过」。
+    const carries = names.every((name) => {
+      try {
+        readDeclaredBlock(text, name);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    if (carries) hits.push({ name: entry, text });
   }
   if (hits.length === 0) {
-    throw new Error(`${CLIENT_SRC_DIR}/ 下没有任何段同时含 ${wanted.join(' / ')}：locale 生成段的真源缺失`);
+    throw new Error(`${CLIENT_SRC_DIR}/ 下没有任何段同时含可解析的 ${wanted.join(' / ')} 块：locale 生成段的真源缺失`);
   }
   if (hits.length > 1) {
     throw new Error(
@@ -374,6 +390,9 @@ function main(argv) {
     const notes = [];
     if (segment === null) {
       // 没有 src/ ⇒ 这个包还没迁移到分段真源，按老语义直接写 client.js（不存在两个写入者）。
+      // g-076 项 5：这条兼容分支必须**可见**。否则「src/ 被误删」会被它静默吞掉 —— 脚本
+      // 报成功、写的却是老路径，要等到 `client-build.mjs --check` 才红。
+      console.warn(`[locale-pack] 未找到 ${CLIENT_SRC_DIR}/ 段真源（读不到该目录）：按旧语义直接写 client.js`);
       const source = readPackageText('client.js');
       if (source === null) {
         console.error('[locale-pack] 读不到 client.js，也无 src/ 段真源');
@@ -419,4 +438,20 @@ function main(argv) {
   process.exitCode = 1;
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) main(process.argv.slice(2));
+// 只有作为脚本运行时才执行：测试会 import 上面的纯函数。
+//
+// g-076 项 1（symlink 假绿）：`process.argv[1]` 是**调用时的字面路径**，而
+// `import.meta.url` 已被 Node 解析成真实路径。经软链调用（`npm link`、pnpm
+// workspace、`node_modules/<pkg>`、`.bin`）时两者永不相等 ⇒ 守卫整段被跳过、
+// **静默 exit 0** —— 连 `--bogus` 的参数校验都不跑，在自动化里等于假绿。
+// 统一改成 realpath 比较；`argv[1]` 可能不存在或无法解析，所以包在 try/catch 里
+// （拿不到真实路径就不当成直接运行，fail-closed）。同款守卫、同款理由见
+// `scripts/client-build.mjs` 与 `scripts/client-chunks.mjs`（三处必须一起改，不许分裂）。
+const isDirectRun = (() => {
+  try {
+    return process.argv[1] !== undefined && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+})();
+if (isDirectRun) main(process.argv.slice(2));
