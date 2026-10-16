@@ -19,11 +19,18 @@
  *   layer keeps its text (deleting a preset never rewrites a layer); the record
  *   is only reported as pointing at a preset that no longer exists.
  *
- * Why the library is not folded into `overrides.json` (or into an export): the
- * export / import / history / snapshot schemas are frozen contracts, and a
- * preset is neither an override of one layer nor a portable backup — it is the
- * user's own catalogue of texts, which is why it lives in a third file
+ * Why the library is not folded into `overrides.json`: the layer config, the
+ * history and the snapshot schemas are frozen contracts, and a preset is
+ * neither an override of one layer nor a layer-scoped fact — it is the user's
+ * own catalogue of texts, which is why it lives in a third file
  * (`<DSH_HOME>/prompt-setting/presets.json`) with its own shape.
+ *
+ * Revision 53 (g-074) made that catalogue **part of a full backup**: the export
+ * document carries it as a top-level `presets` field, and an import validates it
+ * with {@link validatePresetsDocument} and replaces the file from it. It is
+ * still never folded into a layer — the document carries the library as a
+ * document, never as loose override entries, so `overrides.json` and the
+ * `/overrides` view keep exactly the shape they had.
  *
  * @module dsh-prompt-setting/core/presets
  */
@@ -218,6 +225,216 @@ export function normalizePresets(raw) {
     if (at === -1) applied.push(record);
     else applied[at] = record;
   }
+  return { version: PRESETS_VERSION, presets, applied };
+}
+
+/**
+ * The keys a stored preset document may carry (Revision 53).
+ *
+ * An entry's shape is a contract, not a suggestion: `normalizePresets` is the
+ * *read* face and drops what it cannot use, while {@link validatePresetsDocument}
+ * is the *import* face and refuses the document. Keeping the two apart is what
+ * lets one bad hand-edited line keep the library readable without letting a
+ * crafted backup write it.
+ */
+const PRESET_DOCUMENT_KEYS = Object.freeze(['version', 'presets', 'applied']);
+const PRESET_ENTRY_KEYS = Object.freeze(['id', 'name', 'action', 'text', 'createdAt', 'updatedAt']);
+const APPLIED_ENTRY_KEYS = Object.freeze(['workspaceRoot', 'base', 'stack']);
+const STACK_ENTRY_KEYS = Object.freeze(['presetId', 'appliedAt', 'action', 'text']);
+
+/**
+ * Refuse an object that carries a key this revision does not define.
+ * @param value - the object.
+ * @param allowed - the accepted keys.
+ * @param where - the dotted location for the message.
+ * @throws {OverrideError} `invalid-presets`.
+ */
+function assertKnownKeys(value, allowed, where) {
+  for (const key of Object.keys(value)) {
+    if (!allowed.includes(key)) {
+      throw fail('invalid-presets', `${where} carries an unknown key ${JSON.stringify(key)}`);
+    }
+  }
+}
+
+/**
+ * Validate one preset entry **strictly** (Revision 53).
+ *
+ * Every rule `normalizeStoredPreset` tolerates by dropping the entry is a
+ * refusal here, and each refusal names the rule it broke. Nothing is
+ * normalized away: an import must write exactly what the document asked for,
+ * or write nothing at all.
+ * @param raw - one element of a document's `presets` array.
+ * @param where - the dotted location for the message.
+ * @returns the validated `{id, name, action, text, createdAt, updatedAt}`.
+ * @throws {OverrideError} with a stable code.
+ */
+function validatePresetEntry(raw, where) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw fail('invalid-preset', `${where} must be a JSON object`);
+  }
+  assertKnownKeys(raw, PRESET_ENTRY_KEYS, where);
+  const id = raw.id;
+  if (typeof id !== 'string' || !PRESET_ID_PATTERN.test(id)) {
+    throw fail('invalid-preset-id', `${where}.id must be a preset id (1-64 characters of [A-Za-z0-9._-])`);
+  }
+  const name = raw.name;
+  if (typeof name !== 'string' || name.trim().length === 0) {
+    throw fail('invalid-name', `${where} requires a non-empty string "name"`);
+  }
+  if (name.length > MAX_PRESET_NAME_LENGTH) {
+    throw fail('name-too-long', `${where}.name exceeds ${MAX_PRESET_NAME_LENGTH} characters`);
+  }
+  if (CONTROL_CHARACTERS.test(name)) {
+    throw fail('invalid-name', `${where}.name must not contain control characters`);
+  }
+  const action = raw.action;
+  if (typeof action !== 'string' || !PRESET_ACTIONS.includes(action)) {
+    throw fail('unsupported-action', `${where}.action must be one of ${PRESET_ACTIONS.map((value) => JSON.stringify(value)).join(', ')}`);
+  }
+  if (typeof raw.text !== 'string') {
+    throw fail('missing-text', `${where} requires a string "text"`);
+  }
+  if (encoder.encode(raw.text).length > MAX_TEXT_BYTES) {
+    throw fail('text-too-large', `${where}.text exceeds ${MAX_TEXT_BYTES} UTF-8 bytes`);
+  }
+  for (const key of ['createdAt', 'updatedAt']) {
+    if (raw[key] !== undefined && raw[key] !== null && typeof raw[key] !== 'string') {
+      throw fail('invalid-preset', `${where}.${key} must be a string or null`);
+    }
+  }
+  return {
+    id,
+    name,
+    action,
+    text: raw.text,
+    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : null,
+    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : null,
+  };
+}
+
+/**
+ * Validate one `applied` record strictly (Revision 53).
+ *
+ * The Revision 41 shape (`{workspaceRoot, base, stack}`) is the only one
+ * accepted: a Revision 37 record is a *stored* shape the read face migrates,
+ * never something this build writes, and an import that silently migrated it
+ * would report a write it did not perform.
+ * @param raw - one element of a document's `applied` array.
+ * @param where - the dotted location for the message.
+ * @returns the validated record.
+ * @throws {OverrideError} with a stable code.
+ */
+function validateAppliedEntry(raw, where) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw fail('invalid-applied', `${where} must be a JSON object`);
+  }
+  assertKnownKeys(raw, APPLIED_ENTRY_KEYS, where);
+  const workspaceRoot = raw.workspaceRoot;
+  if (typeof workspaceRoot !== 'string' || workspaceRoot.length === 0) {
+    throw fail('invalid-applied', `${where} requires a non-empty string "workspaceRoot"`);
+  }
+  let base = null;
+  if (raw.base !== undefined && raw.base !== null) {
+    if (typeof raw.base !== 'object' || Array.isArray(raw.base)) {
+      throw fail('invalid-applied', `${where}.base must be an object or null`);
+    }
+    assertKnownKeys(raw.base, ['action', 'text'], `${where}.base`);
+    if (!PRESET_ACTIONS.includes(raw.base.action)) {
+      throw fail('unsupported-action', `${where}.base.action must be one of ${PRESET_ACTIONS.join(', ')}`);
+    }
+    if (typeof raw.base.text !== 'string') {
+      throw fail('missing-text', `${where}.base requires a string "text"`);
+    }
+    if (encoder.encode(raw.base.text).length > MAX_TEXT_BYTES) {
+      throw fail('text-too-large', `${where}.base.text exceeds ${MAX_TEXT_BYTES} UTF-8 bytes`);
+    }
+    base = { action: raw.base.action, text: raw.base.text };
+  }
+  if (raw.stack !== undefined && !Array.isArray(raw.stack)) {
+    throw fail('invalid-applied', `${where}.stack must be an array`);
+  }
+  const stack = (raw.stack ?? []).map((item, index) => {
+    const at = `${where}.stack[${index}]`;
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+      throw fail('invalid-applied', `${at} must be a JSON object`);
+    }
+    assertKnownKeys(item, STACK_ENTRY_KEYS, at);
+    if (typeof item.presetId !== 'string' || !PRESET_ID_PATTERN.test(item.presetId)) {
+      throw fail('invalid-preset-id', `${at}.presetId must be a preset id`);
+    }
+    if (item.appliedAt !== undefined && item.appliedAt !== null && typeof item.appliedAt !== 'string') {
+      throw fail('invalid-applied', `${at}.appliedAt must be a string or null`);
+    }
+    if (!PRESET_ACTIONS.includes(item.action)) {
+      throw fail('unsupported-action', `${at}.action must be one of ${PRESET_ACTIONS.join(', ')}`);
+    }
+    if (typeof item.text !== 'string') {
+      throw fail('missing-text', `${at} requires a string "text"`);
+    }
+    if (encoder.encode(item.text).length > MAX_TEXT_BYTES) {
+      throw fail('text-too-large', `${at}.text exceeds ${MAX_TEXT_BYTES} UTF-8 bytes`);
+    }
+    return {
+      presetId: item.presetId,
+      appliedAt: typeof item.appliedAt === 'string' ? item.appliedAt : null,
+      action: item.action,
+      text: item.text,
+    };
+  });
+  return { workspaceRoot, base, stack };
+}
+
+/**
+ * Validate a whole preset document **strictly**, for an import (Revision 53).
+ *
+ * This is the document-level twin of {@link normalizePresets} and the two
+ * differ on exactly one axis, on purpose: `normalizePresets` answers「what can
+ * this file still mean?」and drops what it cannot, while this answers「may this
+ * document be written?」and refuses. An import replaces `presets.json` as a
+ * whole, so a document with one unusable entry must write **nothing** rather
+ * than quietly delete the rest of the library.
+ * @param raw - the parsed document.
+ * @returns the normalized `{version, presets, applied}`.
+ * @throws {OverrideError} `invalid-presets` / `unsupported-presets-version` /
+ *   `invalid-preset` / `invalid-preset-id` / `duplicate-preset-id` /
+ *   `invalid-name` / `name-too-long` / `unsupported-action` / `missing-text` /
+ *   `text-too-large` / `invalid-applied`.
+ */
+export function validatePresetsDocument(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw fail('invalid-presets', 'the presets document must be a JSON object');
+  }
+  assertKnownKeys(raw, PRESET_DOCUMENT_KEYS, 'presets');
+  if (raw.version !== undefined && raw.version !== PRESETS_VERSION) {
+    throw fail('unsupported-presets-version', `unsupported presets version ${JSON.stringify(raw.version)}`);
+  }
+  if (raw.presets !== undefined && !Array.isArray(raw.presets)) {
+    throw fail('invalid-presets', '"presets" must be an array');
+  }
+  if (raw.applied !== undefined && !Array.isArray(raw.applied)) {
+    throw fail('invalid-presets', '"applied" must be an array');
+  }
+  const presets = [];
+  const ids = new Set();
+  (raw.presets ?? []).forEach((entry, index) => {
+    const preset = validatePresetEntry(entry, `presets[${index}]`);
+    if (ids.has(preset.id)) {
+      throw fail('duplicate-preset-id', `"presets" names the preset id ${JSON.stringify(preset.id)} twice`);
+    }
+    ids.add(preset.id);
+    presets.push(preset);
+  });
+  const applied = [];
+  const roots = new Set();
+  (raw.applied ?? []).forEach((entry, index) => {
+    const record = validateAppliedEntry(entry, `applied[${index}]`);
+    if (roots.has(record.workspaceRoot)) {
+      throw fail('invalid-applied', `"applied" names the workspace ${JSON.stringify(record.workspaceRoot)} twice`);
+    }
+    roots.add(record.workspaceRoot);
+    applied.push(record);
+  });
   return { version: PRESETS_VERSION, presets, applied };
 }
 

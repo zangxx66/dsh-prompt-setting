@@ -8931,3 +8931,86 @@ tab bar」。纯注释，零实现/断言改动。
 - **负向对照**：临时把提示行加回四个 tab（在 `renderSection` 注入一个 `data-region="scope-readonly-note"` 的
   `p`）⇒ g-071 位置用例红（`presets: the panel holds this tab's own surface, and nothing else`）；还原后
   `grep -rn "NEGATIVE CONTROL"` 在代码/测试中零命中。
+
+## 151. g-074：全量备份与恢复 —— 导出整机安装 + 成对解除导入写锁（Revision 53，2026-10-16，基线 `9e8ed64` 隔离工作树 `g-074-att-01`）
+
+**需求（负责人 2026-10-16）**：「备份与恢复」应当导出插件的**所有**设置，不该被作用域限制；并据此同步解除
+导入侧写锁，让备份**真的能恢复回去**。负责人同时明确：**导入依然需要验证格式与字段合法性**——解除写锁
+**不等于**放松校验。
+
+**现状（开工前核实）**：`handleExport` 取两层视图后用 `customOverridesOnly` 裁到只剩
+`prompt-setting:custom-prompt`，附 `exportScope = {only, omitted}`；完全不含冻结覆盖、预设库、偏好设置，工作区
+层只有 `?session=` 解析到的那一个。`assertImportableDocument` 对任何非保留名返回 `403 write-locked`——于是
+「全量导出」与「导入写锁」必须**成对**改，否则产出「导得出去、导不回来」的文件。
+
+**设计决定（及被否方案）**
+
+- **文档升为 `version: 2`，读侧同时接受 `1`**（`EXPORT_ACCEPTED_VERSIONS`）。旧备份原样可导；`version: 1` 却带
+  `workspaces`/`presets`/`preferences` 的文档判 `400 unexpected-export-field`（半读比拒绝更危险）。被否：直接
+  在 v1 上加字段——那样旧客户端会把「全量文档」当合法 v1 读，且无从区分。
+- **`workspaces[]` 携带 `root` 绝对路径**。这是 v2 唯一带绝对路径的地方，也是恢复的必要信息（旧文案「no
+  absolute path is exported」仍描述 `layers` 与 v1 文档，契约 §10 已就此追加说明）。被否：导出「工作区 id」——
+  注册表 id 不保证稳定，且导入时无法映射到真实路径。
+- **路径安全两层**：纯层（`validateWorkspaceRoot`）校验绝对路径、无 `..`、无控制字符、非卷根；宿主层
+  （`assertKnownWorkspaceRoot`）要求 root 在本机 `workspaceRegistry.list()` 里，否则 `400 unknown-workspace-root`
+  整体拒绝。被否：未注册 root 就跳过（silent partial import 正是要防的失败形态）；被否：按 root 自由写入（那
+  等于让文档指定任意磁盘路径）。代价已知并写进契约：跨机备份需先在本机打开对应工作区。
+- **校验只增不减**：层名白名单（未知层名从「静默忽略」改为拒绝）、每个条目字段（复用 `validateOverride`，带
+  定位信息）、预设库与偏好文档各自**严格**校验（新增 `validatePresetsDocument`、`validatePreferencesDocument`；
+  未知偏好键**拒绝**而非忽略——忽略会让「恢复了备份但开关没回来」）。全部发生在任何落盘之前。
+- **四种文件一次批次提交**：`writeConfigsAtomically` 泛化为 `writeDocumentsAtomically`（每个文档 staged + 用
+  自己的 reader 回读校验，全部通过后才逐个 rename），`writeConfigsAtomically` 变薄包装以保持既有错误码与断言。
+  这样「零写入拒绝」覆盖整份备份，而不只是一个文件族。
+- **`?layer=` 只收窄两层视图**：安装级文档此时不应用、并在 `skipped` 里声明条目数（不半应用）。被否：
+  让 `?layer=user` 顺带替换预设库——用户不会预期。
+- **`exportScope` 语义更新**（契约要求）：`full: true`、`only: null`、`layers.<layer>`（携带条数）、
+  `workspaces`、`presets`、`preferences`、`omitted`（全 `0`，保留给旧读者）、`unavailable`（库/偏好读不出来时
+  给原因，且**不携带**——空库当全量导出会在恢复时清掉用户真库）。
+- 删除 `customOverridesOnly` 与 `assertImportableDocument`（Revision 7 那套的两个半边，均已被废止，且无其它
+  调用者）；`write-locked` 仍保留在 `PUT` / 单名 `DELETE` 上。
+
+**改动清单**
+
+| 文件 | 加了什么 |
+| --- | --- |
+| `core/transfer.js` | `EXPORT_VERSION=2`、`EXPORT_ACCEPTED_VERSIONS`；`buildExport` 带 `workspaces`/`presets`/`preferences`；`parseExport` 增加层名白名单、`workspaces[]` 校验（`parseExportWorkspaces`）、两个安装级文档的严格校验、v1/v2 规则；`validateWorkspaceRoot` |
+| `core/presets.js` | `validatePresetsDocument`（严格：顶层键、版本、preset 条目 id/name/action/text/时间戳、id 唯一、`applied` 记录与 stack 逐项） |
+| `core/update.js` | `PREFERENCE_KEYS`、`validatePreferencesDocument`（已知键类型与取值域，未知键拒绝） |
+| `core/custom.js` | `exportScope` 改为全量语义；删除 `customOverridesOnly` / `assertImportableDocument` / `nameList` |
+| `core/store.js` | `writeDocumentsAtomically`（泛化的多文档 staged+回读+rename）；`writeConfigsAtomically` 变薄包装 |
+| `index.js` | `handleExport` 全量（`workspaceLayerExports` 遍历注册表全部工作区 + 读库/偏好 + `unavailable`）；`handleImport` 重构为统一 `units` 模型（层视图 + 工作区 + 两个安装级文档），`assertKnownWorkspaceRoot`、去重/冲突拒绝、预检先于落盘、单批提交 |
+| `test/transfer.test.mjs` | v2 文档、v1 兼容、层名白名单、workspaces 结构、路径形状、presets/preferences 严格校验（16 → 23 例） |
+| `test/custom.test.mjs` | `exportScope` 新语义；删除两个已废止函数的用例 |
+| `test/stage2.test.mjs` | 全量导出断言、冻结项不再被丢、**往返等价**、**写锁解除后真的写入**、多工作区恢复、未注册 root 整体拒绝、库/偏好不可读 409、库不可读不导出为空、负向表扩到 22 例（含路径越界/相对路径/卷根/未知层名/presets/preferences 非法）且**每条都跑 dry-run 同码 + 6 个文件哈希不变**（40 → 45 例） |
+| `test/presets.test.mjs` | 原「预设不进导出」用例改写为「库作为顶层文档随备份走、层文件形状不变」 |
+| `test/route.test.mjs` | 结构断言接受泛化后的批量写入器名 |
+| `CONTRACT.md` | §10、§11.1、新 §11.7、§4.4 错误码表、§15.7、§15.8、§20.8、§7 概览追加 Revision 53；§11.6 残余风险措辞扩到「四种文件」 |
+| `README.md` / `README_zh.md` / `packages/.../README.md` | 写入面例外（`import`）与「备份与恢复」能力描述同步 |
+| `CHANGELOG.md` | `[Unreleased] / Changed` 追加 g-074 中英条目 |
+
+**验收（本轮实跑）**
+
+- evidence: suite=node --test(test/*.test.mjs) passed=930 failed=0 exit=0 ms=53518 diff=17f/+1879/-290 commit=9e8ed64（基线，未提交）
+- `node scripts/prepare.mjs` = OK（23 项，`LOCALE-SYNC` 567 键）exit 0；
+- 用例总数 **922 → 930**（`custom.test.mjs` 17 → 13、`transfer.test.mjs` 16 → 23、`stage2.test.mjs` 40 → 45，其余
+  文件不变）。被删的 4 例 `custom.test.mjs` 用例断言的正是本轮明确废止的行为（`customOverridesOnly`、
+  `assertImportableDocument`、旧 `exportScope` 口径），其**反面**已在 `stage2.test.mjs`（全量导出、写锁解除后
+  真的写入、往返等价）与 `transfer.test.mjs`（v1 兼容、路径与文档校验）重建；没有删除任何仍成立的行为断言；
+- **负向对照（改坏就会红）**：把 `parseExport` 的 `validateWorkspaceRoot` 调用换成直接 `entry.root` ⇒
+  `transfer: the workspaces array is validated entry by entry`、`stage2: every rejected import leaves … byte-identical`
+  两条红；把 `handleImport` 的 `assertKnownWorkspaceRoot` 换成 `return root` ⇒ `stage2: a workspace layer the
+  profile does not register aborts the whole import, library included` 红（`/tmp/not-a-registered-dsh-workspace`
+  会被真的写盘）；还原后全绿；
+- **基线对照**：未改动的 `test/history.test.mjs`（`writeConfigsAtomically` 的三条原子性用例）在泛化后仍绿，
+  证明 `writeDocumentsAtomically` 没有改变既有错误码与「staged 失败不落盘」语义。
+
+**未验证 / 残余**
+
+- 真机 `dsh web` 里点一次「导出 → 导入」的目视核验未做（本轮全部走离线 fake Host；`handleExport`/`handleImport`
+  未在真实 `workspaceRegistry` 上跑过）。判据要求的是离线全绿 + prepare 门禁，已满足；
+- 跨机恢复的缺口是**有意的**：v2 文档里的工作区 root 必须在本机注册表内，否则整体 `400 unknown-workspace-root`；
+- 新错误码（`unknown-workspace-root`、`invalid-workspace-root`、`presets-not-writable`、`unknown-preference` …）
+  暂无 `error.<code>` 的 zh/en 文案，UI 走 `errUnknown` 兜底并如实显示原始 code——与既有 presets 路由的错误码
+  （`invalid-presets`、`preset-not-found` 等）同样未登记文案，保持一致；若要补，需同步 `locale/*.json`、
+  `scripts/locale-pack.mjs --write`、`test/locale.test.mjs` 的 516+51 计数与契约 §22。
+

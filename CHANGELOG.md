@@ -120,6 +120,30 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   assembly watch are all untouched, and "My Prompt" keeps no element of the block (no empty container, no
   leftover heading).
 
+- **「备份与恢复」变成真正的全量备份，并同步解除导入写锁（g-074，Revision 53）**：`GET /export` 过去只带
+  每层的一个保留段条目（`customOverridesOnly` 裁剪），现在带**整机安装**——两层**全部**覆盖（冻结项一并
+  带上，`action` 原样保留）、**全部已注册工作区层**（不再只带 `?session=` 解析到的那一个）、预设库
+  （`presets.json`）与偏好设置（`preferences.json`）；文档 `version` 升为 `2`，同时仍**接受** `version: 1`
+  的旧备份。配套地，`POST /import` **解除** Revision 7 的按名字写锁（原先任何非保留名一律 `403
+  write-locked`，导致「导得出去、导不回来」），并把它换成**更严**的逐项校验，且全部发生在任何落盘之前：
+  层名白名单、每个条目字段（`name`/`action`/`text`/`order` 及唯一性）、每个工作区 root（绝对路径、无
+  `..`、非卷根，且必须是本机注册表中真实存在的工作区，否则 `unknown-workspace-root` 整体拒绝）、预设库与
+  偏好文档各自的结构合法性（未知偏好键**拒绝**而非忽略）。任何一项不合法即整体拒绝、**零写入**；四种文件
+  （层配置、工作区配置、预设库、偏好）在同一个批次里先全部 staged 并回读校验，再逐个 rename。`?layer=`
+  仍然只收窄两层视图，安装级文档此时不应用并在 `skipped` 里说明。契约 §10、§11.1、§4.4、新 §11.7、§15.7、
+  §15.8、§20.8 与 §7 概览同步修订，并记 **Revision 53**。
+  **A full backup, and the import write lock removed (g-074, Revision 53)**: `GET /export` used to carry one
+  reserved entry per layer; it now carries the whole installation — every override of both layers (frozen
+  entries included, `action` preserved), **every registered workspace layer** (no longer only the one a
+  session resolved), the preset library and the preference document. The document is `version: 2`, and
+  `version: 1` backups still import. `POST /import` drops Revision 7's name-based write lock — which made
+  a full backup unrestorable — and replaces it with **stricter** validation that runs before anything is
+  staged: the layer-name whitelist, every override field, every workspace root (an absolute path, no `..`,
+  not a volume root, and a workspace this profile really registers), and the library / preference documents.
+  Any invalid input is refused whole, with zero writes; all four kinds of file are staged and read back in
+  one batch before the first rename. Contract §10, §11.1, §4.4, the new §11.7, §15.7, §15.8 and §20.8 are
+  updated, and Revision 53 is recorded.
+
 ### Fixed 修复
 
 - **英文文案泄露（g-066）**：导出失败时不再把浏览器侧的英文原文（`no document`）拼进界面文案，改为

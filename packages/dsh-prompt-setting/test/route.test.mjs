@@ -1755,7 +1755,10 @@ test('refresh: every write path caches only after its own file write returned', 
     assert.equal(commitAt > start, true, `${name} still caches what it wrote`);
     const before = source.slice(start, commitAt);
     assert.equal(before.includes('state.'), false, `${name} must not touch the cache before its write returns`);
-    assert.match(before, /writeConfig(sAtomically)?\(/, `${name} writes the file before caching it`);
+    // Revision 53 generalized the atomic writer for `handleImport` (a full
+    // import stages layer configs, workspace configs, the library and the
+    // preferences in one batch), so both names are the same guarantee.
+    assert.match(before, /(?:writeConfig|writeConfigsAtomically|writeDocumentsAtomically)\(/, `${name} writes the file before caching it`);
   }
 });
 

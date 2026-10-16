@@ -222,8 +222,12 @@ and install, bilingual — is in [`packages/dsh-prompt-setting/README.md`](./pac
 - **When it takes effect**: saved text applies from the **next turn / next session**; it never rewrites
   a turn already in flight.
 - **The write surface is narrow**: only the "My Prompt" section is writable. Every other built-in section
-  is **read-only** — `PUT`, single-name `DELETE` and `import` all return `403 write-locked` (and touch not
-  one byte of the files when they refuse).
+  is **read-only** — `PUT` and the single-name `DELETE` return `403 write-locked` (and touch not one byte
+  of the files when they refuse). Since g-074 **`import` is the one exception**: a backup is the whole
+  installation (every override of both layers, every registered workspace layer, the preset library, the
+  preferences), and restoring it must not be blocked by the write face. That exemption costs no check —
+  the document is validated at least as strictly as before, and a rejected import writes nothing
+  (CONTRACT §11.1, §11.7, §15.7).
 - **Two layers**: a user-level default plus a workspace-level override. **Cover** (the default) lets the
   workspace text replace the user text; **Stack** makes the workspace text follow the user text, one
   blank line apart, so both reach the prompt. Handy for "one global set, plus a few extra lines in this

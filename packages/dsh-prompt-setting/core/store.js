@@ -52,9 +52,11 @@ const HISTORY_FILE_NAME = 'history.jsonl';
  *
  * It is a **separate file on purpose**: the update-check switch is a fact about
  * this installation's behaviour, not an override of any prompt section, and
- * folding it into `overrides.json` would put it in the path of the export /
- * import / history / snapshot schemas — every one of which is a frozen
- * contract that must not grow a field because a switch was added.
+ * folding it into `overrides.json` would put it in the path of the history /
+ * snapshot schemas — frozen contracts that must not grow a field because a
+ * switch was added. Revision 53 (g-074) carries it in a **full backup** as the
+ * export document's own top-level `preferences` field, which keeps that
+ * property: it is still a document of its own, still not a field of any layer.
  */
 const PREFERENCES_FILE_NAME = 'preferences.json';
 /**
@@ -62,10 +64,11 @@ const PREFERENCES_FILE_NAME = 'preferences.json';
  * directory next to `overrides.json`.
  *
  * A **third** file, for the same reason `preferences.json` is a second one: the
- * export / import / history / snapshot schemas are frozen, and a preset is
- * neither an override of one layer nor a portable backup — it is the user's own
- * catalogue of texts, read and written by its own five routes. Keeping it apart
- * is what lets `GET /export` and `overrides.json` stay byte-identical.
+ * layer config, history and snapshot schemas are frozen, and a preset is
+ * neither an override of one layer nor a field of a layer's config — it is the
+ * user's own catalogue of texts, read and written by its own five routes.
+ * Keeping it apart is what lets `GET /export` place the library in its own
+ * top-level field (Revision 53) and `overrides.json` stay byte-identical.
  */
 const PRESETS_FILE_NAME = 'presets.json';
 /** Directory (under a workspace root) that owns the workspace layer. */
@@ -579,28 +582,38 @@ export function appendHistoryRecord(path, fields, limit = DEFAULT_HISTORY_LIMIT)
 }
 
 /**
- * Replace several config files with one all-or-nothing guarantee as strong as
- * the filesystem allows.
+ * Replace several files with one all-or-nothing guarantee as strong as the
+ * filesystem allows.
  *
- * Phase 1 stages every layer: serialize, create the directory chain, write a
- * temp file next to the target, then **read the temp file back and validate
- * it**. Any failure here removes every temp file and throws — the real config
- * files were never opened for writing, so they are byte-identical to what they
- * were. Phase 2 renames the staged temp files into place, which is atomic per
- * file.
+ * Phase 1 stages every document: create the directory chain, write the exact
+ * bytes to a temp file next to the target, then **read the temp file back and
+ * validate it** with the caller's own reader. Any failure here removes every
+ * temp file and throws — the real files were never opened for writing, so they
+ * are byte-identical to what they were. Phase 2 renames the staged temp files
+ * into place, which is atomic per file.
+ *
+ * Revision 53 (g-074) generalized this from "one config per layer" to "one
+ * document per file", because a full import restores four kinds of file at
+ * once — layer configs, workspace configs, `presets.json` and
+ * `preferences.json` — and staging all of them before committing any is what
+ * keeps「a rejected import writes nothing」true across the whole set. The
+ * reader stays the caller's (`verify`), so each kind is checked by the module
+ * that owns its schema rather than by a shape test here.
  *
  * Residual risk, stated rather than hidden: the multi-file commit is not a
  * transaction. A filesystem failure between two renames leaves the earlier
- * layer replaced and the later one untouched; the thrown error says how many
- * layers were committed so the caller can report it truthfully.
- * @param entries - `[{path, config}]`.
+ * file replaced and the later one untouched; the thrown error says how many
+ * were committed so the caller can report it truthfully.
+ * @param entries - `[{path, text, verify?}]` where `verify(tempPath, path)`
+ *   returns `{error}|null` (defaults to {@link readConfig}).
  * @returns `{ok: true, paths}`.
  * @throws {OverrideError} when staging or committing fails.
  */
-export function writeConfigsAtomically(entries) {
+export function writeDocumentsAtomically(entries) {
   const list = (Array.isArray(entries) ? entries : []).map((entry) => ({
     path: String(entry.path),
-    serialized: `${JSON.stringify(entry.config, null, 2)}\n`,
+    text: String(entry.text),
+    verify: typeof entry.verify === 'function' ? entry.verify : readConfig,
   }));
   const staged = [];
   try {
@@ -608,10 +621,10 @@ export function writeConfigsAtomically(entries) {
       const directory = dirname(entry.path);
       mkdirSync(directory, { recursive: true });
       const temp = tempPathFor(entry.path);
-      writeFileSync(temp, entry.serialized, 'utf8');
+      writeFileSync(temp, entry.text, 'utf8');
       staged.push({ temp, path: entry.path });
-      const verify = readConfig(temp);
-      if (verify.error !== null) {
+      const verify = entry.verify(temp, entry.path);
+      if (verify !== null && verify !== undefined && verify.error !== null && verify.error !== undefined) {
         throw new OverrideError(
           'import-verify-failed',
           `the staged file for ${entry.path} did not validate (${verify.error.code}: ${verify.error.message})`,
@@ -635,10 +648,29 @@ export function writeConfigsAtomically(entries) {
     for (const item of staged) discardTemp(item.temp);
     throw new OverrideError(
       'import-commit-failed',
-      `the staged import could not be committed: ${error?.message ?? String(error)} (${committed.length} of ${staged.length} layer(s) were already replaced)`,
+      `the staged import could not be committed: ${error?.message ?? String(error)} (${committed.length} of ${staged.length} file(s) were already replaced)`,
       500,
     );
   }
   return { ok: true, paths: committed };
+}
+
+/**
+ * Replace several config files with one all-or-nothing guarantee as strong as
+ * the filesystem allows.
+ *
+ * The layer-config case of {@link writeDocumentsAtomically}: the bytes are
+ * `JSON.stringify(config, null, 2) + "\n"` and the read-back validator is the
+ * config reader, so a config the reader would refuse can never be committed.
+ * @param entries - `[{path, config}]`.
+ * @returns `{ok: true, paths}`.
+ * @throws {OverrideError} when staging or committing fails.
+ */
+export function writeConfigsAtomically(entries) {
+  return writeDocumentsAtomically((Array.isArray(entries) ? entries : []).map((entry) => ({
+    path: entry.path,
+    text: `${JSON.stringify(entry.config, null, 2)}\n`,
+    verify: readConfig,
+  })));
 }
 

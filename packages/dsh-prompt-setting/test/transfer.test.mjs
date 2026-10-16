@@ -12,16 +12,19 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  EXPORT_ACCEPTED_VERSIONS,
   EXPORT_LAYERS,
   EXPORT_SCHEMA,
   EXPORT_VERSION,
   IMPORT_MODES,
   buildExport,
   parseExport,
+  parseExportWorkspaces,
   planImport,
   publicPlan,
   resolveMode,
   totalCounts,
+  validateWorkspaceRoot,
 } from '../core/transfer.js';
 
 /** A public layer view for {@link buildExport}. */
@@ -29,7 +32,7 @@ function layerView(overrides, over = {}) {
   return { layer: 'user', enabled: true, path: '/home/u/.dsh/prompt-setting/overrides.json', reason: null, overrides, ...over };
 }
 
-/** A valid export document. */
+/** A valid version 2 export document. */
 function document(over = {}) {
   return {
     schema: EXPORT_SCHEMA,
@@ -40,23 +43,30 @@ function document(over = {}) {
       user: { layer: 'user', enabled: true, reason: null, overrides: [{ name: 'a', action: 'replace', text: 'A' }] },
       workspace: { layer: 'workspace', enabled: false, reason: 'no session', overrides: [] },
     },
+    workspaces: [{ root: '/home/u/project', enabled: true, reason: null, overrides: [{ name: 'b', action: 'hide' }] }],
+    presets: { version: 1, presets: [], applied: [] },
+    preferences: { updateCheck: false, downloadRegion: 'cn' },
     ...over,
   };
 }
 
 // #region export document
 
-test('transfer: an export carries its schema, version, time, plugin identity and layers', () => {
+test('transfer: a full export carries its schema, version, time, plugin identity, every layer and the two installation documents', () => {
   const built = buildExport({
     layers: {
       user: layerView([{ name: 'a', action: 'replace', text: 'A' }]),
       workspace: layerView([], { layer: 'workspace', enabled: false, path: null, reason: 'no ?session=' }),
     },
+    workspaceLayers: [{ root: '/home/u/project', enabled: true, reason: null, overrides: [{ name: 'b', action: 'hide' }] }],
+    presets: { version: 1, presets: [{ id: 'p1', name: 'P', action: 'replace', text: 'T', createdAt: null, updatedAt: null }], applied: [] },
+    preferences: { updateCheck: false },
     pluginVersion: '0.1.0',
     exportedAt: '2024-01-01T00:00:00.000Z',
   });
   assert.equal(built.schema, 'dsh-prompt-setting/export');
-  assert.equal(built.version, 1);
+  assert.equal(built.version, 2);
+  assert.deepEqual(EXPORT_ACCEPTED_VERSIONS, [2, 1]);
   assert.equal(built.exportedAt, '2024-01-01T00:00:00.000Z');
   assert.equal(built.pluginVersion, '0.1.0');
   assert.deepEqual(built.plugin, { name: 'dsh-prompt-setting', version: '0.1.0' });
@@ -64,10 +74,13 @@ test('transfer: an export carries its schema, version, time, plugin identity and
   assert.deepEqual(built.layers.user.overrides, [{ name: 'a', action: 'replace', text: 'A' }]);
   assert.equal(built.layers.workspace.enabled, false);
   assert.equal(built.layers.workspace.reason, 'no ?session=');
-  assert.equal(JSON.stringify(built).includes('/home/u/'), false, 'a path is never exported');
+  assert.deepEqual(built.workspaces, [{ root: '/home/u/project', enabled: true, reason: null, overrides: [{ name: 'b', action: 'hide' }] }]);
+  assert.equal(built.presets.presets.length, 1);
+  assert.deepEqual(built.preferences, { updateCheck: false });
+  assert.equal(JSON.stringify(built).includes('/home/u/.dsh/'), false, 'a layer view path is never exported');
 });
 
-test('transfer: an export can be limited to one layer', () => {
+test('transfer: an export can be limited to one layer view', () => {
   const built = buildExport({
     layers: { user: layerView([]), workspace: layerView([], { layer: 'workspace' }) },
     pluginVersion: '0.1.0',
@@ -82,13 +95,42 @@ test('transfer: an export can be limited to one layer', () => {
 
 // #region import validation
 
-test('transfer: a well-formed document parses to validated override lists', () => {
+test('transfer: a well-formed document parses to validated override lists, workspaces and documents', () => {
   const parsed = parseExport(document());
   assert.equal(parsed.schema, EXPORT_SCHEMA);
-  assert.equal(parsed.version, 1);
+  assert.equal(parsed.version, 2);
   assert.equal(parsed.exportedAt, '2024-01-01T00:00:00.000Z');
   assert.deepEqual(parsed.layers.user, [{ name: 'a', action: 'replace', text: 'A' }]);
   assert.deepEqual(parsed.layers.workspace, []);
+  assert.deepEqual(parsed.workspaces, [{ root: '/home/u/project', overrides: [{ name: 'b', action: 'hide' }] }]);
+  assert.deepEqual(parsed.presets, { version: 1, presets: [], applied: [] });
+  assert.deepEqual(parsed.preferences, { updateCheck: false, downloadRegion: 'cn' });
+});
+
+test('transfer: a version 1 backup still imports, frozen names included', () => {
+  // The pre-g-074 shape: reserved entries only, and no installation documents.
+  const legacy = {
+    schema: EXPORT_SCHEMA,
+    version: 1,
+    exportedAt: '2024-01-01T00:00:00.000Z',
+    layers: {
+      user: { overrides: [{ name: 'prompt-setting:custom-prompt', action: 'replace', text: 'MINE' }] },
+      workspace: { overrides: [{ name: 'keep', action: 'hide' }] },
+    },
+  };
+  const parsed = parseExport(legacy);
+  assert.equal(parsed.version, 1);
+  assert.deepEqual(parsed.layers.workspace, [{ name: 'keep', action: 'hide' }], 'a frozen name is imported, not refused');
+  assert.deepEqual(parsed.workspaces, []);
+  assert.equal(parsed.presets, null);
+  assert.equal(parsed.preferences, null);
+});
+
+test('transfer: a version 1 document carrying version 2 fields is refused rather than half-read', () => {
+  assert.throws(
+    () => parseExport(document({ version: 1 })),
+    (error) => error.code === 'unexpected-export-field',
+  );
 });
 
 test('transfer: every malformed document is rejected with a stable code', () => {
@@ -100,13 +142,16 @@ test('transfer: every malformed document is rejected with a stable code', () => 
     [document({ schema: 'other' }), 'unknown-export-schema'],
     [document({ version: undefined }), 'missing-export-version'],
     [document({ version: '1' }), 'missing-export-version'],
-    [document({ version: 2 }), 'unsupported-export-version'],
+    [document({ version: 3 }), 'unsupported-export-version'],
     [document({ version: 0 }), 'unsupported-export-version'],
     [document({ layers: undefined }), 'missing-export-layers'],
     [document({ layers: [] }), 'missing-export-layers'],
     [document({ layers: {} }), 'missing-export-layers'],
     [document({ layers: { user: 'nope' } }), 'invalid-export-layer'],
     [document({ layers: { user: { overrides: 'nope' } } }), 'invalid-export-layer'],
+    // The layer-name whitelist (Revision 53): an unknown layer is refused, not
+    // silently ignored.
+    [document({ layers: { user: { overrides: [] }, project: { overrides: [] } } }), 'unknown-export-layer'],
     // Field validation reuses the stage 1 codes, with the location in the message.
     [document({ layers: { user: { overrides: [{ name: 'a', action: 'nope' }] } } }), 'unknown-action'],
     [document({ layers: { user: { overrides: [{ name: '', action: 'replace', text: 'x' }] } } }), 'missing-name'],
@@ -152,6 +197,133 @@ test('transfer: an over-large text is refused with the existing 413 code', () =>
 test('transfer: a literal empty body is refused rather than read as an empty import', () => {
   assert.throws(() => parseExport({}), (error) => error.code === 'unknown-export-schema');
   assert.equal(IMPORT_MODES.join(','), 'merge,replace');
+});
+
+// #endregion
+
+// #region workspace roots (Revision 53: path safety)
+
+test('transfer: a workspace root must be a legal absolute path', () => {
+  for (const good of ['/home/u/project', 'C:\\Users\\u\\project', '\\\\server\\share\\project']) {
+    assert.equal(validateWorkspaceRoot(good), good);
+  }
+  const bad = [
+    ['relative/path', 'invalid-workspace-root'],
+    ['./project', 'invalid-workspace-root'],
+    ['/home/u/../etc', 'invalid-workspace-root'],
+    ['/home/u/\u0000evil', 'invalid-workspace-root'],
+    ['/', 'invalid-workspace-root'],
+    ['C:\\', 'invalid-workspace-root'],
+    ['', 'invalid-workspace-root'],
+    [null, 'invalid-workspace-root'],
+    [42, 'invalid-workspace-root'],
+    ['x'.repeat(4097), 'invalid-workspace-root'],
+  ];
+  for (const [input, code] of bad) {
+    assert.throws(() => validateWorkspaceRoot(input), (error) => error.code === code, `${JSON.stringify(input)} => ${code}`);
+  }
+});
+
+test('transfer: the workspaces array is validated entry by entry', () => {
+  const cases = [
+    [{ workspaces: 'nope' }, 'invalid-export-workspaces'],
+    [{ workspaces: [null] }, 'invalid-export-workspace'],
+    [{ workspaces: [{ root: '/a', overrides: [], extra: 1 }] }, 'invalid-export-workspace'],
+    [{ workspaces: [{ root: '/a', overrides: 'nope' }] }, 'invalid-export-workspace'],
+    [{ workspaces: [{ root: '/a', overrides: [{ name: 'x', action: 'nope' }] }] }, 'unknown-action'],
+    [
+      { workspaces: [{ root: '/a', overrides: [{ name: 'x', action: 'hide' }, { name: 'x', action: 'hide' }] }] },
+      'duplicate-name',
+    ],
+    [
+      { workspaces: [{ root: '/a', overrides: [] }, { root: '/a', overrides: [] }] },
+      'duplicate-workspace-root',
+    ],
+    [{ workspaces: [{ root: 'relative', overrides: [] }] }, 'invalid-workspace-root'],
+  ];
+  for (const [over, code] of cases) {
+    assert.throws(() => parseExport(document(over)), (error) => error.code === code, `${JSON.stringify(over)} => ${code}`);
+  }
+  // An absent array is an empty one (a version 1 backup, or a narrowed export).
+  assert.deepEqual(parseExportWorkspaces(undefined), []);
+  assert.deepEqual(parseExportWorkspaces(null), []);
+  const parsed = parseExportWorkspaces([{ root: '/a', enabled: true, reason: null, overrides: [{ name: 'x', action: 'hide' }] }]);
+  assert.deepEqual(parsed, [{ root: '/a', overrides: [{ name: 'x', action: 'hide' }] }]);
+});
+
+// #endregion
+
+// #region the two installation documents (Revision 53)
+
+test('transfer: a preset document is validated strictly, never silently repaired', () => {
+  const preset = { id: 'p1', name: 'P', action: 'replace', text: 'T', createdAt: null, updatedAt: null };
+  const parsed = parseExport(document({ presets: { version: 1, presets: [preset], applied: [] } }));
+  assert.deepEqual(parsed.presets.presets, [preset]);
+
+  const cases = [
+    [{ version: 1, presets: 'nope' }, 'invalid-presets'],
+    [{ version: 9, presets: [] }, 'unsupported-presets-version'],
+    [{ version: 1, presets: [], nope: 1 }, 'invalid-presets'],
+    [{ version: 1, presets: [{ id: 'a b', name: 'P', action: 'replace', text: 'T' }] }, 'invalid-preset-id'],
+    [{ version: 1, presets: [{ id: 'p1', name: '  ', action: 'replace', text: 'T' }] }, 'invalid-name'],
+    [{ version: 1, presets: [{ id: 'p1', name: 'P', action: 'hide', text: 'T' }] }, 'unsupported-action'],
+    [{ version: 1, presets: [{ id: 'p1', name: 'P', action: 'replace' }] }, 'missing-text'],
+    [{ version: 1, presets: [{ id: 'p1', name: 'P', action: 'replace', text: 7 }] }, 'missing-text'],
+    [
+      { version: 1, presets: [preset, { ...preset, name: 'P2' }] },
+      'duplicate-preset-id',
+    ],
+    [
+      { version: 1, presets: [], applied: [{ workspaceRoot: '/a', base: { action: 'nope', text: 'x' }, stack: [] }] },
+      'unsupported-action',
+    ],
+    [
+      { version: 1, presets: [], applied: [{ workspaceRoot: '/a', base: null, stack: [{ presetId: 'p1', appliedAt: null, action: 'replace' }] }] },
+      'missing-text',
+    ],
+    [
+      { version: 1, presets: [], applied: [{ workspaceRoot: '/a', base: null, stack: [] }, { workspaceRoot: '/a', base: null, stack: [] }] },
+      'invalid-applied',
+    ],
+  ];
+  for (const [presets, code] of cases) {
+    assert.throws(() => parseExport(document({ presets })), (error) => error.code === code, `${JSON.stringify(presets)} => ${code}`);
+  }
+});
+
+test('transfer: a preference document is validated strictly, unknown keys included', () => {
+  const parsed = parseExport(document({ preferences: { updateCheck: true, assemblyNotice: false, downloadRegion: 'custom', downloadRegionRegistry: 'https://mirror/' } }));
+  assert.deepEqual(parsed.preferences, {
+    updateCheck: true,
+    downloadRegion: 'custom',
+    downloadRegionRegistry: 'https://mirror/',
+    assemblyNotice: false,
+  });
+
+  const cases = [
+    [{ nope: 1 }, 'unknown-preference'],
+    [{ updateCheck: 'false' }, 'invalid-preference'],
+    [{ assemblyNotice: 1 }, 'invalid-preference'],
+    [{ downloadRegionAuto: 'yes' }, 'invalid-preference'],
+    [{ downloadRegion: 'mars' }, 'invalid-preference'],
+    [{ downloadRegionRegistry: '' }, 'invalid-preference'],
+    [{ downloadRegionRegistry: 7 }, 'invalid-preference'],
+    ['nope', 'invalid-preferences'],
+  ];
+  for (const [preferences, code] of cases) {
+    assert.throws(() => parseExport(document({ preferences })), (error) => error.code === code, `${JSON.stringify(preferences)} => ${code}`);
+  }
+});
+
+test('transfer: the location prefix of a nested document error names the key', () => {
+  assert.throws(
+    () => parseExport(document({ preferences: { nope: 1 } })),
+    (error) => error.message.startsWith('preferences: ') && error.status === 400,
+  );
+  assert.throws(
+    () => parseExport(document({ presets: { version: 9 } })),
+    (error) => error.message.startsWith('presets: '),
+  );
 });
 
 // #endregion

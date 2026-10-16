@@ -18,9 +18,7 @@ import {
   CUSTOM_SECTION_TEXT,
   REPO_MAX_SECTION_ORDER,
   assertDeletableName,
-  assertImportableDocument,
   assertWritableSection,
-  customOverridesOnly,
   customSection,
   exportScope,
   isCustomSectionName,
@@ -266,74 +264,44 @@ test('custom: legacyPlan tolerates every empty shape, and a reserved-only layer 
   assert.deepEqual(reservedOnly.next.overrides.map((entry) => entry.name), [CUSTOM_SECTION_NAME]);
 });
 
-test('custom: customOverridesOnly keeps the reserved entry and drops the rest, without mutating its input', () => {
-  const overrides = [
-    { name: 'a', action: 'hide' },
-    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' },
-  ];
-  assert.deepEqual(customOverridesOnly(overrides), [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' }]);
-  assert.equal(overrides.length, 2);
-  for (const input of [undefined, null, 'nope', {}]) {
-    assert.deepEqual(customOverridesOnly(input), []);
-  }
-});
-
-test('custom: exportScope declares what an export dropped, per layer and in total', () => {
-  const views = {
-    user: { overrides: [{ name: 'a' }, { name: CUSTOM_SECTION_NAME }, { name: 'b' }] },
-    workspace: { overrides: [{ name: CUSTOM_SECTION_NAME }] },
+test('custom: exportScope declares a full backup, and the omitted counts stay truthfully zero', () => {
+  const inputs = {
+    layers: {
+      user: { overrides: [{ name: 'a' }, { name: CUSTOM_SECTION_NAME }, { name: 'b' }] },
+      workspace: { overrides: [{ name: CUSTOM_SECTION_NAME }] },
+    },
+    workspaceLayers: [{ root: '/a' }, { root: '/b' }],
+    presets: { version: 1, presets: [{ id: 'p1' }, { id: 'p2' }], applied: [] },
+    preferences: { updateCheck: true },
   };
-  assert.deepEqual(exportScope(views, ['user', 'workspace']), {
-    only: CUSTOM_SECTION_NAME,
-    omitted: { user: 2, workspace: 0, total: 2 },
+  assert.deepEqual(exportScope(inputs, ['user', 'workspace']), {
+    full: true,
+    only: null,
+    layers: { user: 3, workspace: 1 },
+    workspaces: 2,
+    presets: 2,
+    preferences: true,
+    omitted: { user: 0, workspace: 0, total: 0 },
+    unavailable: { presets: null, preferences: null },
   });
-  // A subset export counts only the layers it covers.
-  assert.deepEqual(exportScope(views, ['workspace']), { only: CUSTOM_SECTION_NAME, omitted: { workspace: 0, total: 0 } });
-  assert.deepEqual(exportScope(views, ['user']), { only: CUSTOM_SECTION_NAME, omitted: { user: 2, total: 2 } });
+  // A subset export counts only the layer views it covers — and still declares
+  // the installation-level half it carries, because `?layer=` never narrowed it.
+  assert.deepEqual(exportScope(inputs, ['user']).layers, { user: 3 });
+  assert.deepEqual(exportScope(inputs, ['user']).omitted, { user: 0, total: 0 });
+  assert.equal(exportScope(inputs, ['user']).workspaces, 2);
+
+  // An absent installation-level document is not carried: the flag says so
+  // rather than claiming a library that was not read.
+  const bare = exportScope({ layers: { user: { overrides: [] } } }, ['user']);
+  assert.equal(bare.presets, 0);
+  assert.equal(bare.preferences, false);
   // A layer whose config is unusable reports no readable overrides: `0` means
   // "none seen", and the layer's own `reason` is where its state is stated.
-  assert.deepEqual(exportScope({ user: {} }, ['user']), { only: CUSTOM_SECTION_NAME, omitted: { user: 0, total: 0 } });
-  assert.deepEqual(exportScope(undefined, ['user']), { only: CUSTOM_SECTION_NAME, omitted: { user: 0, total: 0 } });
-});
+  assert.deepEqual(exportScope({ layers: { user: {} } }, ['user']).layers, { user: 0 });
+  assert.deepEqual(exportScope(undefined, ['user']).layers, { user: 0 });
 
-test('custom: an import document carrying any frozen name is 403 write-locked, whichever layer holds it', () => {
-  throwsCode(
-    () => assertImportableDocument({ layers: { user: [{ name: 'project:alpha', action: 'replace', text: 'x' }] } }),
-    'write-locked',
-    403,
-  );
-  // The check is document-wide: a frozen name in a layer the request would not
-  // import is still a refusal, because the document as a whole is not importable.
-  throwsCode(
-    () => assertImportableDocument({ layers: { user: [], workspace: [{ name: 'project:beta', action: 'hide' }] } }),
-    'write-locked',
-    403,
-  );
-});
-
-test('custom: an import document of reserved entries only is accepted, whatever action it carries', () => {
-  // The name is the boundary; the action is taken from the document as it
-  // stands, so a hand-edited config that hides the reserved section still
-  // round-trips through export → import.
-  for (const action of ['replace', 'hide', 'append']) {
-    const entry = action === 'hide' ? { name: CUSTOM_SECTION_NAME, action } : { name: CUSTOM_SECTION_NAME, action, text: 'x' };
-    assert.doesNotThrow(() => assertImportableDocument({ layers: { user: [entry] } }));
-  }
-  for (const document of [undefined, null, {}, { layers: null }, { layers: {} }, { layers: { user: [] } }]) {
-    assert.doesNotThrow(() => assertImportableDocument(document), JSON.stringify(document));
-  }
-});
-
-test('custom: the refusal message is bounded, however many frozen entries a document carries', () => {
-  const overrides = Array.from({ length: 500 }, (_, index) => ({ name: `project:${index}`, action: 'hide' }));
-  let message = '';
-  try {
-    assertImportableDocument({ layers: { user: overrides } });
-  } catch (error) {
-    message = error.message;
-  }
-  assert.equal(message.includes('\n'), false, 'one sentence, not a dump');
-  assert.ok(message.length < 300, `the message stays short: ${message.length} chars`);
-  assert.ok(message.includes('500'), 'and it still states the true count');
-  assert.ok(message.includes('and 497 more'), `and admits the truncation: ${message}`);
+  // An unreadable document is declared, never silently exported as empty.
+  const declared = exportScope({ ...inputs, unavailable: { presets: 'invalid-json: nope' } }, ['user']);
+  assert.equal(declared.unavailable.presets, 'invalid-json: nope');
+  assert.equal(declared.unavailable.preferences, null);
 });

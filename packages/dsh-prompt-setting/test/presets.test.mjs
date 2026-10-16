@@ -1195,7 +1195,7 @@ test('route: the preset routes answer 405 with the documented allow list', async
   }
 });
 
-test('route: /presets is not part of the export or the overrides schema', async () => {
+test('route: the library travels inside the export document, and never inside a layer file', async () => {
   const { route } = mount({ workspaces: [workspaceRow(workspaceRoot, 's-1')] });
   seedLibrary([storedPreset(PRESET_A, 'a', 'replace', 'PRESET')]);
   await call(route, {
@@ -1211,9 +1211,17 @@ test('route: /presets is not part of the export or the overrides schema', async 
     'ok',
     'plugin',
     'pluginVersion',
+    'preferences',
+    'presets',
     'schema',
     'version',
+    'workspaces',
   ]);
+  // Revision 53 (g-074): the catalogue is part of the backup — as its own
+  // top-level document, never folded into a layer's `overrides`, so the layer
+  // file and the `/overrides` view keep exactly the shape they always had.
+  assert.equal(exported.version, 2);
+  assert.deepEqual(exported.presets.presets.map((preset) => preset.name), ['a']);
   for (const view of Object.values(exported.layers)) {
     for (const entry of view.overrides ?? []) {
       assert.deepEqual(Object.keys(entry).sort(), ['action', 'name', 'text']);

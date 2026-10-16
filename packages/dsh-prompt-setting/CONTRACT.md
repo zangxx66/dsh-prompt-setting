@@ -146,6 +146,17 @@ revision that narrows rather than adds:
   update or import one any more. It is *frozen read-only*, and a hand edit of the
   layer's file remains the escape hatch (§15.8).
 
+**Revision 53 (g-074) withdraws two of those bullets, and nothing else.** The
+import bullet (a document carrying a non-reserved name) and the export bullet
+(`GET /export` carries only the reserved entry) describe the「导得出去、导不回来」
+shape the owner retired on 2026-10-16. §10 and §11.7 now say that an export is
+the whole installation and an import restores it, with `version: 2` written and
+`version: 1` still read for the backups that already exist. The `PUT` bullet, the
+single-name `DELETE` bullet, `?legacy=true` / `?reset=true`, and「an existing
+override keeps working exactly as it did」are **unchanged**: a frozen override is
+still frozen against the write face, it is only no longer frozen against a
+backup.
+
 One consequence is stated rather than left to be discovered: the plugin's own
 section is always registered, so it is always visible in `base`/`effective` and
 counts as one more entry there — while contributing **zero bytes** to the
@@ -1106,6 +1117,21 @@ human-readable `message`.
 | `500` | `import-verify-failed` | A staged temp file failed its own read-back validation; nothing was replaced. |
 | `500` | `import-staging-failed` | A staged temp file could not be written; nothing was replaced. |
 | `500` | `import-commit-failed` | A rename failed during the commit; the message says how many layers were already replaced. |
+| `400` | `unknown-export-layer` | **Revision 53.** A `layers` key other than `user`/`workspace` (§11.1). |
+| `400` | `unexpected-export-field` | **Revision 53.** A version 1 document carries `workspaces`/`presets`/`preferences`. |
+| `400` | `invalid-export-workspaces` / `invalid-export-workspace` | **Revision 53.** `workspaces` is not an array, or an entry is not `{root, enabled?, reason?, overrides?}`. |
+| `400` | `duplicate-workspace-root` | **Revision 53.** Two entries name the same workspace root. |
+| `400` | `invalid-workspace-root` | **Revision 53.** A root is not an absolute path, or carries a `..` segment / a control character, or is a volume root. |
+| `400` | `unknown-workspace-root` | **Revision 53.** A legal absolute path that this profile's registry does not list (§11.7). |
+| `400` | `conflicting-import-target` | **Revision 53.** Two parts of the document carry different override lists for the same file. |
+| `409` | `presets-not-writable` / `preferences-not-writable` | **Revision 53.** The existing library / preference file is unusable; it is never overwritten. |
+| `400` | `invalid-presets`, `unsupported-presets-version`, `invalid-preset-id`, `duplicate-preset-id`, `invalid-applied` | **Revision 53.** The library document is malformed; the codes are §20's own. |
+| `400` | `invalid-preferences`, `unknown-preference`, `invalid-preference` | **Revision 53.** The preference document is not an object, carries an unknown key, or breaks a known key's type or value domain. |
+
+**Revision 53 note on `write-locked`.** The row it has above is unchanged for
+`PUT` and the single-name `DELETE`; an **import** no longer answers it.
+`write-locked` was Revision 7's import write lock, and Revision 53 removed that
+lock on the owner's requirement that a backup be restorable (§11.1, §15.7).
 
 An import **reuses** the stage 1B field-validation codes verbatim for a bad
 entry inside the document (`invalid-override`, `missing-name`, `name-too-long`,
@@ -1122,6 +1148,12 @@ malformed entry answers its field code, and only a *well-formed* entry with a
 frozen name reaches `403 write-locked` (§11.1). On `PUT` the order is the
 opposite by design — the name is the subject of that request, so the wall comes
 before every field rule except `layer` and the absence of a name (§4.1).
+
+**Revision 53 (g-074): the paragraph above is now a history note.** The document
+is still schema- and field-validated first — the codes listed above, plus the
+layer-name whitelist, the workspace roots and the two installation documents —
+but there is no longer a name-based wall for a well-formed entry to reach. On
+`PUT` the order is unchanged.
 
 Two writes deliberately refuse rather than guess: an unreadable layer file is
 `409` and is left untouched, and a workspace that cannot be resolved is `400`
@@ -1616,7 +1648,7 @@ one section differs; pass ?name= to compare one of them`).
 - `ops` is capped at 4000 entries with `truncated: true`; `stats` still
   describes the whole change.
 
-## 10. `GET /prompt-setting/export` (Revision 4; narrowed in Revision 7)
+## 10. `GET /prompt-setting/export` (Revision 4; narrowed in Revision 7; **full backup in Revision 53**)
 
 Query: `layer` (optional — limit the document to one layer), `session` (to
 resolve the `workspace` layer).
@@ -1673,7 +1705,50 @@ restored on another machine reproduces the same assembly rather than quietly
 downgrading to「覆盖」. Nothing else about the document changes — the mode is not a
 new field, it is the entry's own `action`, which this route already carried.
 
-## 11. `POST /prompt-setting/import` (Revision 4; narrowed in Revision 7)
+**Revision 53 (g-074) — the document is the whole installation, and `version` is 2.**
+
+The owner's requirement (2026-10-16) was that「备份与恢复」export *every* setting,
+so the Revision 7 narrowing is withdrawn. The document now carries:
+
+| Field | What it holds |
+| --- | --- |
+| `layers.user` / `layers.workspace` | **Every** override of that layer view — frozen entries included, copied as stored (`action` and all, Revision 36). Nothing is filtered; `customOverridesOnly` is gone. |
+| `workspaces[]` | One entry per workspace layer **the Host registers**, as `{root, enabled, reason, overrides}`. This is what makes「所有工作区层」true: the exported set no longer depends on which session asked. Sorted by `root`, so two exports of an unchanged installation agree byte for byte. |
+| `presets` | The whole preset library (§20) — or `null` when this process could not read it. |
+| `preferences` | The preference document (§17) — or `null` when this process could not read it. |
+
+`version` is `2`. A **version 1** document (one reserved entry per layer, no
+`workspaces`/`presets`/`preferences`) is still accepted on import, which is what
+keeps a pre-g-074 backup restorable; a version 1 document that *does* carry those
+fields is refused (`400 unexpected-export-field`) rather than half-read.
+
+The layer views stay path-free — `buildExport` copies only
+`{layer, enabled, reason, overrides}`. The **one** absolute path a version 2
+document carries is a workspace's own `root`, and it carries it deliberately: a
+backup that did not name its workspaces could not put them back. The portability
+sentence above therefore still describes `layers`, and describes a version 1
+document entirely; a version 2 document is a **machine-local backup**, and §11.7
+says what an import does with a root this machine does not register.
+
+`exportScope` keeps its name and changes its meaning: it now **declares what the
+document holds**, and every count that used to report an omission is truthfully
+zero.
+
+| Field | Meaning |
+| --- | --- |
+| `full` | `true`. This document is not narrowed. |
+| `only` | `null`. No section is singled out any more. |
+| `layers.<layer>` | How many overrides this export carried for that layer view. |
+| `workspaces` | How many workspace entries the document carries. |
+| `presets` | How many presets the library carried (`0` when it was not carried). |
+| `preferences` | Whether the preference document was carried. |
+| `omitted.<layer>` / `omitted.total` | Always `0` — a full export drops nothing. Kept so a pre-Revision-53 reader reads「complete」instead of finding a field missing. |
+| `unavailable.presets` / `unavailable.preferences` | Why a document was **not** carried (`invalid-json: …`), or `null`. An unreadable library is never exported as an empty one: restoring that would clear the user's real catalogue. |
+
+`?layer=` still limits the **layer views** the document carries. It never
+narrowed, and does not narrow, the installation-level half.
+
+## 11. `POST /prompt-setting/import` (Revision 4; narrowed in Revision 7; **write lock removed in Revision 53**)
 
 Query: `dryRun` (exactly `true` to preview), `mode` (`merge` | `replace`),
 `layer` (optional — import only that layer), `session`. Body: one export
@@ -1702,6 +1777,33 @@ A failure in steps 1–5 or 7 removes every temp file and throws. The real confi
 files were never opened for writing before step 8, so they are **byte-identical**
 to what they were — this is asserted in `test/stage2.test.mjs` with a SHA-256 of
 each file, not merely with a 4xx status.
+
+**Revision 53 (g-074): step 3 is gone, and its weight moved into step 2.** The
+owner's requirement is that a backup be restorable, so an import no longer
+refuses a document for naming a frozen section — that is the whole point of a
+full backup. **Removing the lock removed no check.** The refusals that took its
+place all happen before anything is staged, and each still answers one stable
+code:
+
+- the **layer-name whitelist**: `layers` may carry `user` and `workspace` only
+  (`400 unknown-export-layer`) — an unknown key is refused, not ignored;
+- every override field, through the same validator `PUT` uses (`name`, `action`,
+  `text`, `order`, uniqueness) — the stage 1 codes, with the location in the
+  message;
+- every **workspace root**: an absolute path with no `..` segment, no control
+  character and not a volume root (`400 invalid-workspace-root`), naming a
+  workspace this profile's `workspaceRegistry` actually lists
+  (`400 unknown-workspace-root`) — see §11.7;
+- the **library** and the **preference document**, each validated by the module
+  that owns its schema (`invalid-presets`, `unsupported-presets-version`,
+  `invalid-preset-id`, `duplicate-preset-id`, `invalid-applied`,
+  `unknown-preference`, `invalid-preference`, `invalid-preferences`).
+
+Step 4 also resolves the document's `workspaces[]` entries (not only the two
+layer views), and marks a local `presets.json` / `preferences.json` this process
+cannot understand as `409 presets-not-writable` / `409 preferences-not-writable`.
+`?dryRun=true` answers every one of these exactly as the real run would, and
+neither touches a byte.
 
 ### 11.2 Response
 
@@ -1765,6 +1867,59 @@ The commit is atomic **per file**, not across layers. A filesystem failure
 between two `rename` calls leaves the earlier layer replaced and the later one
 untouched; the thrown `500 import-commit-failed` message says how many layers
 were already committed. No stage before the renames can leave a partial state.
+Since Revision 53 the same sentence covers four kinds of file (layer configs,
+workspace configs, the library, the preferences) rather than one, and it says
+"file(s)" where it used to say "layer(s)".
+
+### 11.7 The full backup: workspace layers, the library, the preferences (Revision 53)
+
+**Which files an import may write.** Exactly two shapes, both derived by the
+Host and never named by the document:
+
+- a workspace layer at `workspaceConfigPath(root)` —
+  `<root>/.dsh-prompt-setting/overrides.json` — and only for a `root` that
+  `workspaceRegistry.list()` returned for this profile;
+- the installation documents at the fixed `userPresetsPath()` and
+  `userPreferencesPath()` under `$DSH_HOME`.
+
+No field of the document can name a path. A root that passes the shape checks
+but is not registered is `400 unknown-workspace-root`, and the **whole** import
+is refused: nothing staged, every file byte-identical. That is the security
+boundary this revision draws in place of the old name lock — an import may write
+into a workspace the user has *here*, and nowhere else. A backup taken on another
+machine therefore restores its layers, library and preferences only after the
+workspaces it names have been opened here once, and the refusal says so.
+
+**One file, one plan.** The `workspace` layer view and a `workspaces[]` entry may
+name the same workspace (a session-resolved export does exactly that). When they
+carry the same entries the second is de-duplicated and reported in `skipped`;
+when they carry different ones the import is `400 conflicting-import-target`
+rather than an order-dependent surprise.
+
+**The two installation documents are replaced, not merged.** A library and a
+preference set have no per-entry merge semantics, and the document an export
+produced is the authoritative snapshot; a local `presets.json` or
+`preferences.json` this process cannot understand is `409 presets-not-writable` /
+`409 preferences-not-writable` and is never overwritten. `?layer=` narrows the
+import to the named layer view: the installation half is then **not applied at
+all**, and the response reports it in `skipped` with the count it left alone.
+
+**Everything is staged before anything is renamed**, in one
+`writeDocumentsAtomically` batch — layer configs, workspace configs,
+`presets.json` and `preferences.json` are each written to a temp file beside
+their target and read back through their own reader, and only then are they
+renamed into place. The per-file atomicity and the residual above are unchanged;
+what changed is that one rejection now covers the whole backup instead of one
+file family.
+
+**The response says what it did.** `layers` and its `totals` are unchanged in
+shape; a `workspaces[]` array reports each restored workspace layer
+(`{root, counts, changes, path, enabled}`), `importedWorkspaces` lists the roots
+that were planned, `workspaceTotals` sums them, and `presets` / `preferences`
+report `{path, changed, …}` for the two installation documents. `written` names
+every file the commit replaced. A version 1 document carries none of the
+installation half, so all of those fields are present and empty — a client that
+ignores them reads exactly what it read before.
 
 ## 12. `DELETE /prompt-setting/overrides` (Revision 4; `legacy` added in Revision 7)
 
@@ -4378,6 +4533,33 @@ route level through `mode=replace` plus a seeded frozen entry rather than throug
 several imported names; the multi-name kernel behaviour itself is unchanged and
 pinned in `test/transfer.test.mjs`.
 
+**Revision 53 (g-074) — the import lock is removed, and says what replaced it.**
+The owner's requirement (2026-10-16) is that「备份与恢复」restore what it exported,
+and the lock was the half that made a full backup unrestorable. So an import no
+longer refuses a document for carrying a frozen name: it applies it. Two things
+this does **not** change:
+
+- **the checks are not relaxed, they are moved.** Everything the lock used to
+  stand in front of — schema, version, the layer-name whitelist, every override
+  field, every workspace root, the library and the preference document — is
+  validated before a byte is staged, and §11.1 lists the codes. The number of
+  refusals an import can answer **grew** in this revision; the one thing it
+  stopped answering is「this name is frozen」;
+- **the write face is untouched.** `PUT /prompt-setting/overrides` and the
+  single-name `DELETE` still refuse a non-reserved name with `403 write-locked`
+  (§4.1, §12.3). Editing a frozen override from the panel is still impossible;
+  importing a backup that contains one is now possible, which is exactly the
+  asymmetry a backup needs.
+
+The「the action of a reserved-name entry is not additionally constrained」
+paragraph above stands, and now applies to every imported entry: an import
+applies the document as it stands (`planImport`, §11.4), having first proved the
+document *is* one.
+
+Because an export carries every name again, the multi-entry plan shapes are
+reachable through a plain full backup once more — the `mode=replace` route above
+is still valid, and is still what the older assertions use.
+
 ### 15.8 What a frozen override is, and is not
 
 | | Frozen override (any other name) | Reserved override |
@@ -4390,6 +4572,14 @@ pinned in `test/transfer.test.mjs`.
 | Exported | no — counted in `exportScope.omitted` | yes |
 | Imported | `403 write-locked` | yes |
 | Editable by hand | yes (the file is the source of truth) | yes |
+
+**Revision 53 (g-074) changes two rows of that table, and only those two.** A
+frozen override is now **Exported** — it is part of the layer, and a backup that
+dropped it could not restore it — and **Imported**, because the lock is gone
+(§15.7). Its `PUT` and single-name `DELETE` rows are unchanged (`403
+write-locked`), and so is「editable by hand」. The `exportScope.omitted` count a
+pre-Revision-53 reader used to see for such an entry is `0`; §10's `exportScope`
+table says why.
 
 ### 15.9 Failure behaviour of the registration
 
@@ -6630,6 +6820,17 @@ library is written last) and reports exactly which workspaces were restored.
 - **No second write path and no new writable section.** Both layer actions write
   the reserved entry and nothing else; a non-reserved name is still `403`
   `write-locked` (§4.1) and no preset route can reach one.
+
+**Revision 53 (g-074) withdraws the first bullet of「20.8」, and only that one.**
+The library now **is** part of a backup: `GET /export` carries it as the
+top-level `presets` field, and an import replaces `presets.json` from it (§10,
+§11.7). Nothing else about this chapter changed — the five preset routes, the
+stored document's shape and `overrides.json`'s schema are exactly what
+Revision 37–50 left them at, and a version 1 export (which carries no library)
+still re-imports byte-for-byte. The reason for keeping the library in its own
+file also survives the change: it is still not folded into a layer's
+`overrides`, so the import reader validates it as a document of its own
+(`validatePresetsDocument`) rather than as loose entries.
 
 ### 20.9 Client surface (g-060; the tab became dialog-based in Revision 38)
 

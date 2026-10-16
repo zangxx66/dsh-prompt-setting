@@ -58,9 +58,13 @@
   > **own** scope selector (workspace dimension), independent of the "View scope" selector in **My
   > Prompt**: the user layer's log is global and is never sliced by session.
 
-- **备份与恢复 / Backup & restore** —— 配置导出下载、导入预览（先看变更计划，确认后才落盘）。
-  > Export the configuration for download, and preview an import — the change plan is shown before
-  > anything is written.
+- **备份与恢复 / Backup & restore** —— 全量备份导出下载（两层全部覆盖含冻结项、全部已注册工作区层、
+  预设库、偏好设置）、导入预览（先看变更计划，确认后才落盘；导入逐项校验格式 / 字段 / 路径，非法即整体
+  拒绝、零写入）。
+  > Export a **full** backup for download (every override of both layers, every registered workspace layer,
+  > the preset library, the preferences) and preview an import — the change plan is shown before anything
+  > is written. An import validates the document field by field and refuses a bad one whole, writing
+  > nothing.
 
 - **高级 / Advanced** —— 旧版覆盖的只读列表、「清除全部覆盖」与「整层恢复默认」两个二次确认按钮、
   **「检查更新」开关**（默认开启；关闭后本插件**完全不再联网**）、**「立即更新」**（把提示条里的版本
