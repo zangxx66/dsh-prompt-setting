@@ -1,3 +1,4 @@
+// 本文件是 client.js 的片段，不是独立模块，不得单独 parse/lint/执行。
 
     // #region tree builders (host elements, so `data-*` markers survive)
 
@@ -526,3 +527,140 @@
       );
     }
 
+    // #region stage 2 helpers (history / diff / reset / transfer)
+
+    /**
+     * Localized label for one history action.
+     * @param t - the bound translator.
+     * @param action - `replace` | `hide` | `append` | `remove` | `reset-layer`.
+     * @returns the display string (the raw action for an unknown value).
+     */
+    function historyActionLabel(t, action) {
+      const key = `histAction.${String(action)}`;
+      const text = safeT(t, key, '');
+      return text.length > 0 ? text : String(action);
+    }
+
+    /**
+     * The pre-localization rendering, kept as the fallback for a value no
+     * `Date` can parse. Shape-preserving rather than invented: an unknown
+     * string is shown as it arrived, minus the `T`/millisecond noise.
+     * @param at - a non-empty string.
+     * @returns the fallback display string.
+     */
+    function rawStamp(at) {
+      return at.replace('T', ' ').replace(/\.\d+Z$/, 'Z');
+    }
+
+    let stampFormatter = null;
+    let stampFormatterResolved = false;
+
+    /**
+     * The cached formatter for the **browser's own** time zone, or null when
+     * this engine cannot build one.
+     *
+     * Built lazily and once: the zone cannot change while the tab is open, and
+     * a history list calls the stamp per row, so constructing a formatter per
+     * row would be the one cost this page does not need. An engine that rejects
+     * `shortOffset` degrades to `short` (`GMT+8` either way on the engines this
+     * page runs on) and then to no zone label at all — never to a blank cell.
+     * @returns the formatter, or null.
+     */
+    function localStampFormatter() {
+      if (stampFormatterResolved) return stampFormatter;
+      stampFormatterResolved = true;
+      if (typeof Intl === 'undefined' || typeof Intl.DateTimeFormat !== 'function') return null;
+      const skeleton = {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hourCycle: 'h23',
+      };
+      for (const timeZoneName of ['shortOffset', 'short', null]) {
+        try {
+          stampFormatter = new Intl.DateTimeFormat(
+            undefined,
+            timeZoneName === null ? skeleton : { ...skeleton, timeZoneName },
+          );
+          return stampFormatter;
+        } catch {
+          stampFormatter = null;
+        }
+      }
+      return null;
+    }
+
+    /**
+     * The reader's-zone parts of one timestamp — `{date, time, zone}` in the
+     * fixed `YYYY-MM-DD` / `HH:mm:ss` / `GMT±h[:mm]` shape — or null when the
+     * value cannot be read as a time, or when this engine cannot build a
+     * formatter.
+     *
+     * One extractor, two renderers: the visible stamp ({@link stampOf}) and the
+     * export file name ({@link exportFileName}). A second parsing path would be
+     * a second place for the zone to go wrong, and the two would then disagree
+     * about the same instant.
+     * @param at - a non-empty string.
+     * @returns the parts, or null.
+     */
+    function localStampParts(at) {
+      const value = Date.parse(at);
+      if (!Number.isFinite(value)) return null;
+      const formatter = localStampFormatter();
+      if (formatter === null) return null;
+      try {
+        const parts = formatter.formatToParts(new Date(value));
+        const part = (type) => {
+          const found = parts.find((entry) => entry.type === type);
+          return found === undefined ? '' : found.value;
+        };
+        return {
+          date: `${part('year')}-${part('month')}-${part('day')}`,
+          time: `${part('hour')}:${part('minute')}:${part('second')}`,
+          zone: part('timeZoneName'),
+        };
+      } catch {
+        return null;
+      }
+    }
+
+    /**
+     * A readable timestamp in the **reader's own time zone**.
+     *
+     * The host stores and answers UTC ISO strings, which is the right thing to
+     * store and the wrong thing to read: `2024-01-02T10:00:00.000Z` is 18:00
+     * for a reader at UTC+8, so echoing the stored string makes every reader do
+     * the arithmetic — and, because the stored form carries no zone spelling,
+     * makes them guess whether the `Z` even matters. The stamp is therefore
+     * rendered in the browser's zone with the zone named:
+     * `2024-01-02 18:00:00 GMT+8`.
+     *
+     * The *shape* stays fixed (`YYYY-MM-DD HH:mm:ss` + zone label) rather than
+     * following the locale: what differs per reader is the zone, and only the
+     * zone, so two people comparing notes still read the same skeleton. The
+     * stored UTC value stays available as the node's `title`.
+     *
+     * Never throws, like the version it replaces: an unparsable value is echoed
+     * (see {@link rawStamp}) and an engine without `Intl` prints the UTC string
+     * rather than nothing.
+     * @param at - the ISO timestamp, or null.
+     * @returns the display string.
+     */
+    function stampOf(at) {
+      if (typeof at !== 'string' || at.length === 0) return '';
+      const local = localStampParts(at);
+      if (local === null) return rawStamp(at);
+      return local.zone.length > 0
+        ? `${local.date} ${local.time} ${local.zone}`
+        : `${local.date} ${local.time}`;
+    }
+
+    /**
+     * The query string one stage 2 request needs for a layer.
+     * @param layer - `user` | `workspace`.
+     * @param sessionArg - the session id, or null.
+     * @returns `layer=…&session=…`.
+     */

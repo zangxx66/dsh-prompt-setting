@@ -6,7 +6,7 @@
  * 官方发布文档称之为「从 GitHub 安装：构建脚本这道坎」—— 插件作者必须自己保证
  * 装到用户机器上的东西是完整的。
  *
- * 本包是零构建包（`index.js` / `client.js` / `core/*.js` 本身就是发布入口），所以这道坎
+ * 本包是零编译包（无 bundler / JSX / TypeScript；`index.js` / `core/*.js` 是入口，`client.js` 是 `src/` 的生成物），所以这道坎
  * 在这里不是「编译」，而是**打包**：本机实测（pnpm 12.3.4，2026-09-30）
  *   pnpm add 'github:zangxx66/dsh-prompt-setting#path:/packages/dsh-prompt-setting'
  * 装到 `node_modules` 里的**恰好是 `files` 白名单**加上 npm 永远保留的两项
@@ -159,7 +159,7 @@ function inspectLocale(filesField) {
   return { level: result.ok ? PREPARE_OK : PREPARE_FAIL, code: result.code, message: result.message };
 }
 
-say('[dsh-prompt-setting] prepare：发布就绪自检（本包零构建，不做编译）');
+say('[dsh-prompt-setting] prepare：发布就绪自检（本包零编译；`client.js` 是 `src/` 的生成物）');
 say('');
 
 const manifestText = readText('package.json');

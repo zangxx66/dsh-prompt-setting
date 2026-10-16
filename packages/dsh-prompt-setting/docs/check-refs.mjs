@@ -21,6 +21,16 @@
  * 另外校验 **§1.3 版图表**与 **§5.1 目标段表**（R4-C1）：行数 == 区间长度、区间首尾相接、
  * 合计 == 12382、每段 ≤ 1200。这两张表是阶段 1/2 的门禁基础，必须可复跑而不是粘贴输出。
  *
+ * **生成物头注与坐标平移（g-075 阶段 2）**：`client.js` 从阶段 2 起是**生成物**，
+ * 顶部有 `scripts/client-build.mjs` 注入的「生成物，勿手改」头注（{@link GENERATED_BANNER}）。
+ * 文档里的 `client.js:行` 引用与 §1.3/§5.1 两张表记的是**段真源坐标** —— 也就是每个
+ * `src/*.js` 切片所处的坐标，头注不属于任何段（它是生成器加的前缀）。真源坐标是唯一
+ * 稳定的坐标：头注文案调整不该让上百条文档引用一起漂移。因此本脚本把期望表里
+ * `client.js` 的行号按**头注行数**平移后再断言，而文档里的数字保持段真源坐标不变。
+ * 这不是"弱化断言"：`CLIENT_HEAD_LINES` 由 {@link GENERATED_BANNER} 实测得出，且
+ * `test/client-source.test.mjs` 独立断言头注是纯前缀、在 fingerprint `begin` 之前、
+ * 且不改变 `fingerprintOf` 的 hash/size。
+ *
  * 本脚本**只读**：不写任何文件、不改产品代码。它放在 `docs/` 下，而 `package.json`
  * 的 `files` 白名单不含 `docs`，所以它不会随包发布。
  *
@@ -38,12 +48,23 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { GENERATED_BANNER } from '../scripts/client-build.mjs';
+
 /** `docs/` 目录（本文件所在）。 */
 const DOCS_DIR = dirname(fileURLToPath(import.meta.url));
 /** 包根目录。 */
 const PACKAGE_DIR = dirname(DOCS_DIR);
 /** 被体检的文档。 */
 const DOC_PATH = join(DOCS_DIR, 'refactor-plan.md');
+
+/**
+ * 段真源坐标 → 生成物行号的平移量：生成物头注的行数（g-075 阶段 2）。
+ *
+ * 头注是 `client.js` 的纯前缀，所以 `生成物第 N 行 == 段真源第 N - CLIENT_HEAD_LINES 行`。
+ * 只有 `file === 'client.js'` 的期望需要平移；段文件、`index.js`、`scripts/`、`test/`
+ * 一律不动（它们的行锚点是行数中性维护的）。
+ */
+const CLIENT_HEAD_LINES = GENERATED_BANNER.split('\n').length - 1;
 
 /**
  * **仓库外**路径前缀：这些引用指向宿主包或安装目录，本仓库读不到，只能人工核对。
@@ -132,7 +153,7 @@ const REFS = [
   { ref: 'scripts/client-chunks.mjs:75', file: 'scripts/client-chunks.mjs', from: 75, expect: 'function writeDeclaredStamps' },
   { ref: 'scripts/client-chunks.mjs:91', file: 'scripts/client-chunks.mjs', from: 91, expect: 'function sameStamps' },
   { ref: 'scripts/client-chunks.mjs:100', file: 'scripts/client-chunks.mjs', from: 100, expect: 'function main(' },
-  { ref: 'scripts/prepare.mjs:9', file: 'scripts/prepare.mjs', from: 9, expect: '零构建包' },
+  { ref: 'scripts/prepare.mjs:9', file: 'scripts/prepare.mjs', from: 9, expect: '零编译包' },
   { ref: 'scripts/prepare.mjs:86', file: 'scripts/prepare.mjs', from: 86, expect: 'function inspectClientChunks' },
   { ref: 'scripts/prepare.mjs:135', file: 'scripts/prepare.mjs', from: 135, expect: 'function inspectLocale' },
   { ref: 'scripts/prepare.mjs:144', file: 'scripts/prepare.mjs', from: 144, expect: 'LOCALE-SYNC-N/A' },
@@ -161,9 +182,9 @@ const REFS = [
   { ref: 'test/prepare.test.mjs:440-485', file: 'test/prepare.test.mjs', from: 440, to: 485, expect: 'incomplete checkout', toExpect: "});" },
   { ref: 'test/prepare.test.mjs:487', file: 'test/prepare.test.mjs', from: 487, expect: 'CHUNK_STAMPS manifest that drifted' },
   { ref: 'test/prepare.test.mjs:487-539', file: 'test/prepare.test.mjs', from: 487, to: 539, expect: 'CHUNK_STAMPS manifest that drifted', toExpect: "});" },
-  // ── 仓库内文档（零构建承诺等）─────────────────────────────────────────────
-  { ref: 'README.md:116', file: 'README.md', from: 116, expect: '零构建步骤' },
-  { ref: 'NOTES.md:3635', file: 'NOTES.md', from: 3635, expect: '零构建' },
+  // ── 仓库内文档（零编译承诺 / 客户端入口为生成物；g-075 阶段 2 按 §9-1 裁决改口）──────
+  { ref: 'README.md:116', file: 'README.md', from: 116, expect: '零编译' },
+  { ref: 'NOTES.md:3635', file: 'NOTES.md', from: 3635, expect: '零编译' },
   { ref: 'CONTRACT.md:4458', file: 'CONTRACT.md', from: 4458, expect: '## 14. Client build stamp' },
   { ref: 'CONTRACT.md:7673', file: 'CONTRACT.md', from: 7673, expect: 'no build step' },
   // ── 文档里实际引用的区间（补全，减少人工核对项）──────────────────────────
@@ -195,7 +216,7 @@ const REFS = [
   { ref: 'scripts/prepare.mjs:135-167', file: 'scripts/prepare.mjs', from: 135, to: 167, expect: 'function inspectLocale', toExpect: "let manifestError = null;" },
   { ref: 'scripts/prepare.mjs:139-145', file: 'scripts/prepare.mjs', from: 139, to: 145, at: 144, expect: 'LOCALE-SYNC-N/A', toExpect: "}" },
   { ref: 'scripts/prepare.mjs:150-157', file: 'scripts/prepare.mjs', from: 150, to: 157, expect: 'const cut =', toExpect: "}" },
-  { ref: 'scripts/prepare.mjs:162', file: 'scripts/prepare.mjs', from: 162, expect: '零构建' },
+  { ref: 'scripts/prepare.mjs:162', file: 'scripts/prepare.mjs', from: 162, expect: '零编译' },
   { ref: 'scripts/prepare.mjs:180-183', file: 'scripts/prepare.mjs', from: 180, to: 183, expect: 'findings.push', toExpect: "findings.push(inspectLocale(pkg && pkg.files));" },
   { ref: 'scripts/client-chunks.mjs:32-34', file: 'scripts/client-chunks.mjs', from: 32, to: 34, expect: 'BLOCK_OPEN', toExpect: "const BLOCK_CLOSE = '    ]);';" },
   { ref: 'scripts/client-chunks.mjs:41-97', file: 'scripts/client-chunks.mjs', from: 41, to: 97, expect: 'function renderStampRows', toExpect: "}" },
@@ -206,7 +227,7 @@ const REFS = [
   { ref: 'CONTRACT.md:630', file: 'CONTRACT.md', from: 630, expect: '## 1. Routes and methods' },
   { ref: 'CONTRACT.md:2311', file: 'CONTRACT.md', from: 2311, expect: '## 13. Client-side contract' },
   { ref: 'CONTRACT.md:4740-4748', file: 'CONTRACT.md', from: 4740, to: 4748, expect: 'what the page is running', toExpect: "moment." },
-  { ref: 'README.md:339', file: 'README.md', from: 339, expect: '零构建' },
+  { ref: 'README.md:339', file: 'README.md', from: 339, expect: '零编译' },
   { ref: 'README.md:358', file: 'README.md', from: 358, expect: 'node --test' },
   { ref: 'NOTES.md:3679', file: 'NOTES.md', from: 3679, expect: '这一条对用户是' },
   { ref: 'test/client.test.mjs:10', file: 'test/client.test.mjs', from: 10, expect: 'Run:' },
@@ -237,7 +258,7 @@ const REFS = [
   { ref: 'client.js:4453', file: 'client.js', from: 4453, expect: "function errorBanner(t, error, title) {" },
   { ref: 'client.js:4594', file: 'client.js', from: 4594, expect: "function stampOf(at) {" },
   { ref: 'client.js:4983', file: 'client.js', from: 4983, expect: "function layerLabel(t, layer) {" },
-  { ref: 'README.md:344', file: 'README.md', from: 344, expect: "> zero-build; `prepare` only runs a release self-check). To avoid the " },
+  { ref: 'README.md:344', file: 'README.md', from: 344, expect: "> zero-compilation; `client.js` is generated from `src/`" },
 ];
 
 /** 一个包内相对路径是否真实存在（用于归属时优先选"包内存在"的候选）。 */
@@ -275,22 +296,28 @@ function linesOf(relPath) {
  * 规则：①文件必须可读；②行号必须落在文件内；③`at` 必须在 `[from, to]` 内；
  * ④区间跨度 > 90 行必须声明 `loose: true`，跨度 ≤ 90 行必须给 `toExpect`；
  * ⑤`expect` 判 `at` 行、`fromExpect` 判首行、`toExpect` 判末行（都按 `includes` 逐字）。
- * @param entry - 期望表条目。
- * @returns `{ok, detail}`。
+ *
+ * 期望表一律记**段真源坐标**；`client.js` 的条目在这里按 {@link CLIENT_HEAD_LINES}
+ * 平移到生成物行号后断言（见文件头「生成物头注与坐标平移」）。
+ * @param entry - 期望表条目（段真源坐标）。
+ * @returns `{ok, detail}`（`detail` 里的行号是**生成物行号**，即实际读到的那一行）。
  */
 function checkExpectation(entry) {
   const lines = linesOf(entry.file);
   if (lines === null) return { ok: false, detail: `读不到 ${entry.file}` };
-  const last = entry.to ?? entry.from;
-  if (entry.from < 1 || last > lines.length) {
+  const shift = entry.file === 'client.js' ? CLIENT_HEAD_LINES : 0;
+  const from = entry.from + shift;
+  const to = entry.to === undefined ? undefined : entry.to + shift;
+  const last = to ?? from;
+  if (from < 1 || last > lines.length) {
     return { ok: false, detail: `${entry.file} 行数不足（要 ${last}，实有 ${lines.length}）` };
   }
-  const at = entry.at ?? entry.from;
-  if (entry.to !== undefined && (at < entry.from || at > entry.to)) {
-    return { ok: false, detail: `${entry.ref}: at=${at} 不在区间 [${entry.from}, ${entry.to}] 内` };
+  const at = entry.at === undefined ? from : entry.at + shift;
+  if (to !== undefined && (at < from || at > to)) {
+    return { ok: false, detail: `${entry.ref}: at=${at} 不在区间 [${from}, ${to}] 内` };
   }
-  if (entry.to !== undefined) {
-    const span = entry.to - entry.from + 1;
+  if (to !== undefined) {
+    const span = to - from + 1;
     if (span > 90 && entry.loose !== true) {
       return { ok: false, detail: `${entry.ref}: 跨度 ${span} 行 > 90，必须声明 loose: true（或收窄区间）` };
     }
@@ -306,8 +333,8 @@ function checkExpectation(entry) {
   } else if (entry.expect !== undefined && !atLine.includes(entry.expect)) {
     return { ok: false, detail: `${entry.file}:${at} 不含 "${entry.expect}"，实为 "${atLine.trim().slice(0, 80)}"` };
   }
-  if (entry.fromExpect !== undefined && !lines[entry.from - 1].includes(entry.fromExpect)) {
-    return { ok: false, detail: `${entry.file}:${entry.from} 不含 fromExpect "${entry.fromExpect}"，实为 "${lines[entry.from - 1].trim().slice(0, 80)}"` };
+  if (entry.fromExpect !== undefined && !lines[from - 1].includes(entry.fromExpect)) {
+    return { ok: false, detail: `${entry.file}:${from} 不含 fromExpect "${entry.fromExpect}"，实为 "${lines[from - 1].trim().slice(0, 80)}"` };
   }
   if (entry.toExpect !== undefined && !lines[last - 1].includes(entry.toExpect)) {
     return { ok: false, detail: `${entry.file}:${last} 不含 toExpect "${entry.toExpect}"，实为 "${lines[last - 1].trim().slice(0, 80)}"` };

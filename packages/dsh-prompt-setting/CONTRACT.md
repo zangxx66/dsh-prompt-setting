@@ -7813,3 +7813,75 @@ raw code still reaches the UI through the banner's own `data-error-code` /
 `files` includes `locale`; `test/host.test.mjs` pins that allowlist exactly;
 `npm pack` ships both JSONs (36 files, measured with `npm pack --dry-run`).
 
+---
+
+## 23. Client source layout (「客户端源码布局」, g-075; `client.js` is generated)
+
+`client.js` is a **build artifact of this repository**, not a hand-edited entry.
+Its source of truth is the `src/` directory: every `src/NN-name.js` file is one
+**contiguous slice** of `client.js`, and `scripts/client-build.mjs` concatenates
+the slices in file-name order. The zero-padded numeric prefix makes file-name
+order == code order, so "the order" is a property of the naming rule rather than
+a hand-maintained manifest (§5.1 of `docs/refactor-plan.md`).
+
+### 23.1 The commands that guard it
+
+| Command | What it guarantees |
+| --- | --- |
+| `node scripts/client-build.mjs --write` | Rebuilds `client.js` from `src/`. It writes **only when the bytes differ**, so a routine run does not touch mtime — and mtime is what changes the DSH artifact revision and reloads an open page. |
+| `node scripts/client-build.mjs --check` | The read-only form, with a non-zero exit code when `src/` and `client.js` disagree. |
+| `node scripts/prepare.mjs` → `CLIENT-SRC*` | The publish gate, tri-state like `LOCALE-*`: `src/` must exist with usable slices **and** be covered by the `files` allowlist, or an installed package carries only an artifact that can no longer be regenerated or diffed. |
+
+`CHUNK_STAMPS` keeps its single writer: the builder calls
+`scripts/client-chunks.mjs` (`readDeclaredStamps` / `writeDeclaredStamps` →
+`renderStampRows`) instead of re-implementing the block.
+
+### 23.2 Invariants (what a change to `src/` may and may not do)
+
+1. **Contiguous slices only.** Each segment is a contiguous range of
+   `client.js`, and segment numbers increase in code order. A change may move a
+   cut-off point *inside* an existing range, or merge adjacent segments; it may
+   **not** move a code block across segments.
+2. **Why that rule is hard**: the slices are one factory body. Moving a block
+   changes the TDZ boundary of `const`/`class` declarations and the visibility
+   of hoisted function declarations, and no existing test proves such a move
+   harmless. The machine proof that nothing moved is the refactor plan's stage-2
+   criterion 8 — the generated `client.js` with its banner stripped is
+   **byte-for-byte identical** to the pre-rearrangement artifact.
+3. **No separators, no normalization.** The builder strips the per-segment
+   declaration line and concatenates. It inserts no comment and no blank line,
+   and trims/normalizes nothing: either would change `fingerprintOf`'s UTF-16
+   length and hash.
+4. **One functionality per segment.** A change to one feature should touch
+   exactly one `src/` file. Needing two is a signal that the cut is in the wrong
+   place, not that the rule should be relaxed.
+5. **The generated banner stays outside the fingerprint.** The "generated file,
+   do not edit" banner is emitted by the builder and sits **before** the
+   `@build-fingerprint:begin` marker, so it never moves the hash/size the host
+   reports for this bundle (§14) — a hand edit of `client.js`, banner included,
+   is rejected by `client:check`.
+6. **The per-segment declaration line does not ship.** Each `src/*.js` starts
+   with a one-line comment saying it is a slice of `client.js` rather than a
+   module; the builder strips it before concatenation, and a set of segments
+   that is only half declared is refused ("all or nothing").
+7. **Exception — the locale region.** The generated locale region inside
+   `client.js` is still produced by `scripts/locale-pack.mjs --write`; the slice
+   that contains it is embedded verbatim (§22).
+
+### 23.3 What does not change
+
+The published artifact is still the same single `client.js`, registered through
+`window.__ModuleLoader__.load({...})`: `exports["./client"]`, the fingerprint
+region, `CHUNK_STAMPS`, the chunk protocol and every `data-*` marker are
+untouched. There is no bundler, no JSX and no TypeScript — the package stays
+**zero-compilation**, and only the client entry becomes a **generated** file
+whose source lives in `src/`. `docs/architecture-map.md` maps each domain to its
+`client.js` range, entry functions, contract section and tests.
+
+### 23.4 Rollback
+
+Reverting `src/` (or the builder) restores the previous layout with no product
+behaviour change: the generator only rearranges **where** the bytes live on
+disk, never **which** bytes exist.
+
+

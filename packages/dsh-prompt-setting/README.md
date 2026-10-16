@@ -113,7 +113,7 @@
   或「叠加」（本层文本拼在另一层之后，中间一个空行，两层都生效）。
   > A user-level default plus a workspace-level override: **Cover** (the default — the workspace wins) or
   > **Stack** (this layer's text follows the other layer's, one blank line apart, so both apply).
-- **零运行时依赖、零构建步骤 / Zero runtime dependencies, zero build step** —— 一包纯 JS，不拉依赖、不编译。
+- **零运行时依赖、零编译 / Zero runtime dependencies, zero compilation** —— 纯 JS，不拉依赖、无 bundler / JSX / TypeScript；客户端入口 `client.js` 是 `src/` 的**生成物**（真源在 `src/`）。
   > One package of plain JS — nothing to fetch, nothing to compile.
 - **界面文案跟随 DSH 语言 / UI copy follows DSH** —— DSH 切到中文，这一页就是中文，不需要刷新或重启。
   > Switch DSH to Chinese and this page turns Chinese, with no refresh or restart.
@@ -336,12 +336,12 @@ dsh plugin --profile <profile> add '<absolute path to the .tgz>'
 
 pnpm ≥10 默认不运行 git 依赖的构建脚本，第一次会失败并打印一个**确切的包键**；把它复制进该 profile 的
 `pnpm-workspace.yaml` 的 `allowBuilds` 再重跑即可。**该授权 = 允许该包的代码在安装时于你的机器上执行**
-（本包零构建，`prepare` 只做发布自检）。不想授权就用 `pnpm pack` 打 tarball 再 `add`，功能一致。
+（本包零编译，客户端入口 `client.js` 是 `src/` 的生成物；`prepare` 只做发布自检）。不想授权就用 `pnpm pack` 打 tarball 再 `add`，功能一致。
 
 > pnpm ≥10 does not run a git dependency's build scripts by default: the first attempt fails and prints an
 > **exact package key** — copy it into the profile's `pnpm-workspace.yaml` under `allowBuilds` and re-run.
 > **That grant means this package's code may execute on your machine at install time** (this package is
-> zero-build; `prepare` only runs a release self-check). To avoid the grant, `pnpm pack` a tarball and
+> zero-compilation; `client.js` is generated from `src/`, and `prepare` only runs a release self-check). To avoid the grant, `pnpm pack` a tarball and
 > `add` that instead — identical behaviour.
 
 安装后：打开「设置」应看到这一栏；想确认宿主半挂上了，页面的「原始响应」区会显示

@@ -569,7 +569,7 @@ test('prepare: the src/ gate reports the shipped source, and fails both ways it 
     // ⓪ 段在、也声明了 ⇒ ok（并且报出段数，这是发布面上"真源确实随包"的证据）。
     const healthy = runPrepare();
     assert.equal(healthy.status, 0, `the copy must start clean\n${healthy.stdout}`);
-    assert.match(healthy.stdout, /ok {4}CLIENT-SRC: src\/ 下 24 个段文件/);
+    assert.match(healthy.stdout, /ok {4}CLIENT-SRC: src\/ 下 17 个段文件/);
 
     // ① 段在，白名单不覆盖 ⇒ 装到用户机器上的包只剩生成物。
     manifest.files = manifest.files.filter((entry) => entry !== 'src');

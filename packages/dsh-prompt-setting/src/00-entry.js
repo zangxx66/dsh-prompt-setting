@@ -1,3 +1,4 @@
+// 本文件是 client.js 的片段，不是独立模块，不得单独 parse/lint/执行。
 /**
  * `dsh-prompt-setting` — Client half (stage 1C: the Prompt manager settings page).
  *
@@ -104,3 +105,112 @@
  * the switch off — renders nothing: this is a background question, and the only
  * two honest answers are silence and usefulness.
  */
+window.__ModuleLoader__.load({
+  id: 'dsh-prompt-setting',
+  // A *named function expression*, not the method shorthand, so the body can
+  // refer to the function itself (`promptSettingFactory.toString()`) and
+  // fingerprint the very bytes this tab is running — the only way an already
+  // open tab can say which build it is (CONTRACT.md §14). The loader still
+  // calls `descriptor.factory(require)`; nothing about that changes.
+  factory: function promptSettingFactory(require) {
+    /* @build-fingerprint:begin */
+    // #region build stamp — the fingerprint region
+    // Everything between the two marker comments above/below is the region the
+    // host hashes (core/build.js `fingerprintOf`). It must cover the whole
+    // factory body: anything outside the region could change without changing
+    // the digest, i.e. a silently false「一致」.
+    //
+    // The markers are assembled from two string pieces *on purpose*: the marker
+    // text has to occur exactly once in this file, and a literal copy here
+    // would be that second occurrence — `fingerprintRegion` refuses ambiguous
+    // markers, so the stamp would degrade to「未知」for everyone.
+    const FINGERPRINT_BEGIN = '/* @build-' + 'fingerprint:begin */';
+    const FINGERPRINT_END = '/* @build-' + 'fingerprint:end */';
+    const FNV_OFFSET_BASIS = 0x811c9dc5;
+    const FNV_PRIME = 0x01000193;
+
+    /**
+     * Inline twin of `core/build.js` — the browser cannot import host code, so
+     * the same three pure functions are repeated here. `test/build.test.mjs`
+     * and `test/client.test.mjs` assert the two copies agree bit for bit on
+     * this real file; keep them in sync by hand if either changes.
+     * @param text - any value; non-strings are stringified.
+     * @returns the normalized text (never throws).
+     */
+    function normalizeBuildText(text) {
+      let value = typeof text === 'string' ? text : text === undefined || text === null ? '' : String(text);
+      if (value.charCodeAt(0) === 0xfeff) value = value.slice(1);
+      return value.replace(/\r\n?/g, '\n');
+    }
+
+    /**
+     * The text between exactly one ordered pair of markers, else `null`.
+     * @param text - the file (or factory) text.
+     * @returns the region, or `null`.
+     */
+    function fingerprintRegion(text) {
+      const value = normalizeBuildText(text);
+      const begin = value.indexOf(FINGERPRINT_BEGIN);
+      if (begin === -1) return null;
+      const end = value.indexOf(FINGERPRINT_END);
+      if (end === -1) return null;
+      if (value.indexOf(FINGERPRINT_BEGIN, begin + FINGERPRINT_BEGIN.length) !== -1) return null;
+      if (value.indexOf(FINGERPRINT_END, end + FINGERPRINT_END.length) !== -1) return null;
+      if (begin >= end) return null;
+      return value.slice(begin + FINGERPRINT_BEGIN.length, end);
+    }
+
+    /**
+     * FNV-1a over UTF-16 code units (no `Buffer` in a browser).
+     * @param text - the region text.
+     * @returns the 8-hex-digit digest plus the region length.
+     */
+    function fingerprintOf(text) {
+      const region = fingerprintRegion(text);
+      if (region === null) return null;
+      let hash = FNV_OFFSET_BASIS;
+      for (let index = 0; index < region.length; index += 1) {
+        hash ^= region.charCodeAt(index);
+        hash = Math.imul(hash, FNV_PRIME) >>> 0;
+      }
+      return { hash: hash.toString(16).padStart(8, '0'), size: region.length };
+    }
+
+    /**
+     * Which bytes this tab is running. `null` when this engine will not hand
+     * back the source (or the markers are unusable) — rendered as「未知」.
+     */
+    const SELF_BUILD = fingerprintOf(promptSettingFactory.toString());
+    // #endregion
+
+    // #region factory guard (g-013)
+    // The loader calls `descriptor.factory(require)` while it boots the page: a
+    // throw here reaches DSH's module loader, not a boundary this plugin can
+    // apologize from. So the whole body is built behind one guard — the two
+    // failure modes seen in the field are `require('react')` missing and the
+    // self-fingerprint above (an engine that refuses `Function#toString`).
+    // `buildPlugin` is hoisted, so the guard can call a body that is declared
+    // below it.
+    try {
+      return buildPlugin(require);
+    } catch (error) {
+      return degradedPlugin(require, error);
+    }
+    // #endregion
+
+    /**
+     * The plugin body — everything this half does once it can be built.
+     *
+     * The body is deliberately **not** shifted one indent level deeper: it is
+     * ~6k lines of hand-written code whose structure is asserted by
+     * `test/build.test.mjs` (the fingerprint region covers exactly this text),
+     * and a re-indent would be a 6k-line diff for zero behaviour change. The
+     * declaration sits outside the build-stamp region's helpers only in
+     * position, not in scope; the guard above is its only caller.
+     * @param require - the loader's require.
+     * @returns the plugin descriptor.
+     */
+    function buildPlugin(require) {
+    const React = require('react');
+    const h = React.createElement;
+

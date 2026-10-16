@@ -3632,7 +3632,7 @@ g-014 用 `order: 1000000` 让保留段排在**所有注册段**的最后，真�
 **源码而不是构建产物**，pnpm 会在安装现场运行 `prepare`；用户侧还要为该包在 profile 的
 `pnpm-workspace.yaml` 里授权构建脚本（`allowBuilds`），否则第一次 `add` 会失败。
 
-本包是**零构建**包：`index.js` / `client.js` / `core/*.js` 本身就是发布入口，没有编译产物。
+本包是**零编译**包（无 bundler / JSX / TypeScript）：`index.js` / `core/*.js` 本身就是发布入口，`client.js` 是 `src/` 的**生成物**，没有编译产物。
 所以这一节落到本包上，问题不是「怎么编译」，而是「**装到用户机器上的那一份到底全不全**」。
 本轮把它做成一个可执行、可失败的门禁：`core/prepare.js`（纯函数，零 IO）+
 `scripts/prepare.mjs`（注入 `node:fs`，不通过则 `exit 1`）。
@@ -9585,3 +9585,37 @@ GUI 截图核验；"高级"的默认值取"当前会话"而非工作区代表会
   由负责人在阶段 2 派发前裁决。
 - **残余**：`prepare` 的 `CLIENT-SRC` 只看**发布面**（有没有、发不发），不做"生成物与段是否一致"的
   字节比对——那一步在阶段 1 仍由 `client-build.mjs --check` 与测试守住（方案 §6.2 原样如此）。
+
+---
+
+## 155. g-075 att-002：客户端生成期分段 —— 阶段 2（17 段重切 + 生成物头注 + 契约改口）（2026-10-16，基线 `d3db711` 隔离工作树 `g-075-att-02`）
+
+在阶段 1 的管线上把 `src/` 从 24 段收敛到方案 §5.1 的**目标段表 17 段**（每段 ≤ 1200 行）；
+`PromptSettingSection` 在**函数体内部**切成 `13/14/15-page-*.js` 三段（只重切、不移动）；生成器在
+`client.js` 顶部注入「生成物，勿手改」头注（9 行，落在 fingerprint `begin` 之前）；每个段文件首行加
+片段声明；`CONTRACT.md` 新增 §23「Client source layout」；按 §9-1 裁决把 6 处「零构建」改口为
+「零编译 + 客户端入口为生成物」。
+
+- **交付**：`src/` 17 段（`00-entry.js` … `16-boot.js`）、`src/README.md`、`docs/architecture-map.md`；
+  `scripts/client-build.mjs`（`GENERATED_BANNER` / `stripBanner` / `renderClient` 注入头注，`readSegments().lines`
+  改为**剥掉声明后的区间行数**，否则 `13-page-a` 会被算成 1201 行）；`docs/check-refs.mjs`
+  （`CLIENT_HEAD_LINES` 坐标平移 + REFS 期望文本同步）；改口 6 处（`README.md:116` / `:339` / `:344`、
+  `NOTES.md:3635`、`scripts/prepare.mjs:9` / `:162`）；`docs/refactor-plan.md` §9-1 基线快照注记；
+  测试同步 `test/client-source.test.mjs`（结构断言按 17 段重写）、`test/prepare.test.mjs:572`（24 → 17）。
+- **核心判据（代码零移动）**：`tail -n +10 client.js` 与 `git show d3db711:…/client.js` 逐字节相同（`cmp` 空输出）；
+  `fingerprintOf(client.js)` 与去头注后**完全相同**（`404d9c67 / 596124`）⇒ 头注不污染指纹。
+- **实测验收**：`node scripts/client-build.mjs --check` exit 0（17 段，`CHUNK_STAMPS` 5 项与磁盘一致）；
+  `node --test test/*.test.mjs` **960 pass / 0 fail**；`node docs/check-refs.mjs` exit 0
+  （`§1.3 rows=24 合计=12382` / `§5.1 rows=17 合计=12382 最大段=1200`，`unresolved+failed=0`）；
+  `node scripts/prepare.mjs` exit 0 且报 `CLIENT-SRC: src/ 下 17 个段文件`；`--write` 不再触碰 mtime。
+- **四条负向对照**（一次性包副本，均已还原）：① 只把 README 改回"零构建步骤" ⇒ `check-refs` 非零
+  （证明没有"只改 REFS 不改文档"的假绿灯）；② 改 `src/12-update.js` 一行 ⇒ `--check` 非零；③ 只改
+  `client.js` ⇒ `--check` 非零；④ 删掉头注 ⇒ `test/client-source.test.mjs` 红（13 条断言失败）。
+- **两处刻意的坐标约定**：① 文档里的 `client.js:行` 一律记**段真源坐标**（= 去头注），由
+  `CLIENT_HEAD_LINES` 平移到生成物行号后再断言 —— 头注文案调整不会让上百条引用一起漂移；
+  ② 6 处改口全部**行数中性**（1 行换 1 行），所以 `README.md:358`、`NOTES.md:3679`、
+  `scripts/prepare.mjs` 的其它行锚点无需重算。
+- **已知残余（留给后续）**：① `NOTES.md:3679` 仍写"本包零构建，`prepare` 只做自检"，它不在本次裁决点名的
+  6 处清单内，未改（属越界改动）；② 本文档的历史轮次记录（如 §154）保留"24 段""零构建"原样 ——
+  那是当时的实况，不改写历史；③ 段重切让 git 无法识别 rename，`git diff` 会显示"删 24 个、加 17 个"，
+  评审应依据"去头注后逐字节相同"这条判据，而不是 diff 的形状。

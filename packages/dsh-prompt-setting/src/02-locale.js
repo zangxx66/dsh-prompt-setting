@@ -1,3 +1,4 @@
+// 本文件是 client.js 的片段，不是独立模块，不得单独 parse/lint/执行。
     // #region generated: locale/zh.json + locale/en.json (g-066)
     // 下面两段是**生成物**，不是真源：文案只改 locale/*.json，然后跑
     // `node scripts/locale-pack.mjs --write`；`--check` 是发布门（prepare 也会跑）。

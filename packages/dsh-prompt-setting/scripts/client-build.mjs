@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * `dsh-prompt-setting` 的客户端生成器（g-075 阶段 1）。
+ * `dsh-prompt-setting` 的客户端生成器（g-075 阶段 1 就位，阶段 2 收敛到 17 段 + 头注）。
  *
  * 为什么需要它：`client.js` 是 **12382 行**的单文件 factory，读一次就要按整块
  * 计费，改一行也要在 2640 行的不可分函数体里定位（`docs/refactor-plan.md` §1）。
@@ -19,9 +19,12 @@
  *      （`readDeclaredStamps` / `writeDeclaredStamps` → `renderStampRows`），本
  *      脚本不另写一份实现（§5.2「清单的写入权」）。
  *
- * 阶段 1 **不写任何头注**：加头注就是改字节，与「逐字节等价」互斥（R1-1）。阶段 2
- * 起每个段文件首行会带一行「片段，不是独立模块」声明，由 {@link stripDeclaration}
- * 在拼接前逐段剥离（本阶段没有声明，剥离是恒等操作，`--check` 仍要求「全有或全无」）。
+ * 阶段 1 **不写任何头注**（加头注就是改字节，与「逐字节等价」互斥，R1-1）。**阶段 2
+ * 起**两件被推迟的事落地：①{@link GENERATED_BANNER}（「生成物，勿手改」，构造上
+ * 落在 fingerprint `begin` 之前）；②每个段文件首行带一行「片段，不是独立模块」声明，
+ * 由 {@link stripDeclaration} 在拼接前逐段剥离（`--check` 要求「全有或全无」）。
+ * 于是阶段 2 的验收不再是字节等价，而是更强的**代码零移动**判据：
+ * `stripBanner(renderClient())` 与阶段 1 的产物逐字节相同（方案 §5.2 阶段 2 判据 2）。
  *
  * 用法：
  *   node scripts/client-build.mjs           # 校验（等价于 --check）
@@ -31,7 +34,9 @@
  * **行锚点纪律（阶段 1）**：`docs/check-refs.mjs` 把本包若干文件的**行号**当断言
  * （`package.json:22-33`、`scripts/prepare.mjs:180-183`、`test/host.test.mjs:171-197`
  * 等）。因此阶段 1 对既有文件的改动都是**行数中性**的（新增内容与既有行同排，或占用
- * 原本的空行）；本文件与 `src/` 是新增文件，不在此限。
+ * 原本的空行）；本文件与 `src/` 是新增文件，不在此限。阶段 2 的改口同样走行数中性，
+ * 只有 `client.js` 因为头注整体下移 —— 那一条由 `docs/check-refs.mjs` 的
+ * `CLIENT_HEAD_LINES` 平移处理（文档的 `client.js:行` 引用记的是**段真源坐标**）。
  */
 
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -65,6 +70,31 @@ export const SEGMENT_PATTERN = /^(\d{2})-([a-z0-9]+(?:-[a-z0-9]+)*)\.js$/;
  * 在拼接前逐段剥离。
  */
 export const SEGMENT_DECLARATION = '// 本文件是 client.js 的片段，不是独立模块，不得单独 parse/lint/执行。';
+/**
+ * 生成物头注（g-075 阶段 2；方案 §5.2 阶段 2 + §9-4）。
+ *
+ * 三条性质，都是被别人断言的：
+ *   1. **它由生成器产出**，不是手写在 `client.js` 里的 —— 手写的那一份会在下一次
+ *      `--write` 时消失，于是「勿手改」这句话本身先被自己违反；
+ *   2. **它落在 fingerprint `begin` 标记之前**（`client.js` 最顶部）——
+ *      `test/build.test.mjs` 的 `clientSource.indexOf(头注) < clientSource.indexOf(BEGIN)`
+ *      是这条的机器证明；头注不在 region 里，所以既不进 `SELF_BUILD` 摘要、也不
+ *      改变宿主报给 ping 的 `clientBuild`（方案 §5.2 R1-1 实测：加头注后 hash/size 不变）；
+ *   3. **它是纯粹的前缀**，因此 `stripBanner()` 能精确还原无头注的产物 —— 阶段 2 的
+ *      核心判据「去掉头注后与阶段 1 产物逐字节相同」由这条性质成立。
+ *
+ * 阶段 1 **不写**它：阶段 1 的验收是「`--write` 后 `git diff` 为空」，加头注就是改字节，
+ * 两条判据互斥（方案 §5.2 R1-1）。
+ */
+export const GENERATED_BANNER = '/* 生成物，勿手改 — GENERATED FILE, DO NOT EDIT.\n'
+  + ' * Rebuilt by `node scripts/client-build.mjs --write` from `src/*.js`: every file in\n'
+  + ' * `src/` is one contiguous slice of this file, concatenated in file-name order, and\n'
+  + ' * the slice header line on top of each file is stripped before it lands here.\n'
+  + ' * Edit `src/`, never this file — `client:check` and `test/client-source.test.mjs`\n'
+  + ' * both fail on a hand edit, and the slices are the only source of truth.\n'
+  + ' * This banner sits deliberately *outside* the build-fingerprint region below: it must\n'
+  + ' * never move the digest the host reports for this bundle (CONTRACT.md §23).\n'
+  + ' */\n';
 
 /** 把异常或任意值渲染成一行消息。 */
 function reason(error) {
@@ -133,7 +163,11 @@ export function concatSegments(segments) {
  * `segmentDir` 相对 `packageDir`；`io.readDir` / `io.read` 可注入（测试用），缺省读盘。
  * @param packageDir - 包根目录。
  * @param io - 可选的读取环境。
- * @returns `[{name, index, text, lines}]`（`lines` 按 `\n` 计，末尾换行不算一行）。
+ * @returns `[{name, index, text, lines, declares}]`。
+ *   `lines` 是**该段在 `client.js` 中占的行数**（按 `\n` 计，末尾换行不算一行），
+ *   也就是**去掉段首声明行之后**的行数 —— 声明行是元信息，不是切片的内容，所以它
+ *   既不计入行数预算（方案 §5.1 表里 `13-page-a.js` 是 1200 行，段文件本身 1201 行），
+ *   也不进入产物。这样 `lines` 与 §1.3/§5.1 两张表的「行数」列始终可直接对账。
  */
 export function readSegments(packageDir = PACKAGE_DIR, io = {}) {
   const readDir = io.readDir ?? ((relPath) => readdirSync(join(packageDir, relPath)));
@@ -156,7 +190,10 @@ export function readSegments(packageDir = PACKAGE_DIR, io = {}) {
     if (typeof text !== 'string') {
       throw new Error(`读不到段文件 ${CLIENT_SRC_DIR}/${name}`);
     }
-    return { name, index, text, lines: text.split('\n').length - 1, declares: text.startsWith(SEGMENT_DECLARATION) };
+    const declares = text.startsWith(SEGMENT_DECLARATION);
+    // 声明若不独占一行，`stripDeclaration` 当场抛错 —— 这正是我们要的 fail-closed。
+    const body = stripDeclaration(text);
+    return { name, index, text, body, lines: body.split('\n').length - 1, declares };
   });
   // 「全有或全无」：阶段 1 一个声明都没有，阶段 2 每个段都有。半数是拼接出错的先兆。
   const declared = segments.filter((segment) => segment.declares).length;
@@ -167,7 +204,23 @@ export function readSegments(packageDir = PACKAGE_DIR, io = {}) {
 }
 
 /**
- * 渲染 `client.js`：拼接段 + 按磁盘重算 `CHUNK_STAMPS` 块。
+ * 剥离生成物头注（{@link GENERATED_BANNER}）。头注是纯前缀，所以这是它的精确逆。
+ *
+ * 阶段 2 的核心判据就写在这上面：`stripBanner(renderClient()) === 阶段 1 的产物`，
+ * 逐字节。这条同时证明「段重排只换切点、不移动任何代码」（方案 §5.2 阶段 2 判据 2）。
+ * @param text - 生成物全文（或任意文本）。
+ * @returns 去掉头注后的文本；没有头注时原样返回。
+ */
+export function stripBanner(text) {
+  if (!text.startsWith(GENERATED_BANNER)) return text;
+  return text.slice(GENERATED_BANNER.length);
+}
+
+/**
+ * 渲染 `client.js`：头注 + 拼接段 + 按磁盘重算 `CHUNK_STAMPS` 块。
+ *
+ * 顺序是**先头注、后段**：头注必须落在 fingerprint `begin` 标记之前，而 `begin`
+ * 在 `00-entry.js` 里（段拼接结果内部），所以只有把头注放在整个产物最前面才成立。
  * @param options - `packageDir` / `readDir` / `read` / `chunkStamps` 可注入。
  * @returns 生成物全文。
  */
@@ -175,7 +228,7 @@ export function renderClient(options = {}) {
   const packageDir = options.packageDir ?? PACKAGE_DIR;
   const segments = readSegments(packageDir, { readDir: options.readDir, read: options.read });
   const stamps = (options.chunkStamps ?? clientChunkStamps)(packageDir);
-  return writeDeclaredStamps(concatSegments(segments), stamps);
+  return GENERATED_BANNER + writeDeclaredStamps(concatSegments(segments), stamps);
 }
 
 /**
@@ -279,7 +332,7 @@ function main(argv) {
     const concatenated = concatSegments(segments);
     stamps = clientChunkStamps(PACKAGE_DIR);
     declared = readDeclaredStamps(concatenated);
-    generated = writeDeclaredStamps(concatenated, stamps);
+    generated = GENERATED_BANNER + writeDeclaredStamps(concatenated, stamps);
   } catch (error) {
     process.stderr.write(`client build: ${reason(error)}\n`);
     return 1;

@@ -1,3 +1,16 @@
+// 本文件是 client.js 的片段，不是独立模块，不得单独 parse/lint/执行。
+
+    /**
+     * Last-resort card, rendered when building the page tree itself throws.
+     * It carries the same `data-plugin` / `data-renderer` / `data-render-state`
+     * markers as the real page — plus `data-build` and `data-plugin-version`,
+     * both `unknown` because nothing was asked — so a broken render is still
+     * machine-visible, and it shows the error text so the settings panel is
+     * never blank.
+     * @param t - candidate translator; may itself be what broke.
+     * @param error - the thrown value.
+     * @returns the failure card element.
+     */
     function renderFailureCard(t, error) {
       const message = error && error.message ? String(error.message) : String(error);
       return h(

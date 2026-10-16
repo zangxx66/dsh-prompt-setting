@@ -1,3 +1,12 @@
+/* 生成物，勿手改 — GENERATED FILE, DO NOT EDIT.
+ * Rebuilt by `node scripts/client-build.mjs --write` from `src/*.js`: every file in
+ * `src/` is one contiguous slice of this file, concatenated in file-name order, and
+ * the slice header line on top of each file is stripped before it lands here.
+ * Edit `src/`, never this file — `client:check` and `test/client-source.test.mjs`
+ * both fail on a hand edit, and the slices are the only source of truth.
+ * This banner sits deliberately *outside* the build-fingerprint region below: it must
+ * never move the digest the host reports for this bundle (CONTRACT.md §23).
+ */
 /**
  * `dsh-prompt-setting` — Client half (stage 1C: the Prompt manager settings page).
  *
