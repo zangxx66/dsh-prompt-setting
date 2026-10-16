@@ -7847,7 +7847,7 @@ looking a documented line number up in the generated file.
 | `node scripts/client-build.mjs --write` | Rebuilds `client.js` from `src/`. It writes **only when the bytes differ**, so a routine run does not touch mtime — and mtime is what changes the DSH artifact revision and reloads an open page. |
 | `node scripts/client-build.mjs --check` | The read-only form, with a non-zero exit code when `src/` and `client.js` disagree. |
 | `node scripts/locale-pack.mjs --write` | Re-renders the `zh` / `en` dictionary blocks from `locale/*.json` into the slice that carries them, **then** rebuilds `client.js` — one run, both sides current (§22). |
-| `node scripts/prepare.mjs` → `CLIENT-SRC*` | The publish gate, tri-state like `LOCALE-*`: `src/` must exist with usable slices **and** be covered by the `files` allowlist, or an installed package carries only an artifact that can no longer be regenerated or diffed. Since g-076 it also checks the **segment set** (`CLIENT-SRC-SEGMENTS`) against the `EXPECTED_SEGMENTS` constant in `scripts/client-build.mjs` — the code copy of §5.1 of `docs/refactor-plan.md`, cited by constant rather than by document because `docs/` is not in the `files` allowlist and does not reach an installed package. A missing slice ships a source tree that can no longer rebuild the artifact, which is the same failure this gate exists to prevent; an extra, unknown slice means a re-cut landed without updating the set. |
+| `node scripts/prepare.mjs` → `CLIENT-SRC*` | The publish gate, tri-state like `LOCALE-*`: `src/` must exist with usable slices **and** be covered by the `files` allowlist, or an installed package carries only an artifact that can no longer be regenerated or diffed. Since g-077 the **segment set is no longer checked against a hand-kept list**: the gate re-renders `src/` with `renderClient()` and compares it **byte for byte** with the shipped `client.js` (`CLIENT-SRC-DRIFT`; on failure it names the actionable `node scripts/client-build.mjs --write` command plus the first differing line). The artifact is the only anchor for "which slices should exist" — a list derived from `src/` always agrees with itself (delete a slice, re-run `--write`, and the derived list loses that slice too), so this single comparison catches a **missing slice**, an **extra, unknown slice** and **in-slice drift** (an edited line nobody rebuilt), with no checklist to keep in sync. |
 
 `CHUNK_STAMPS` keeps its single writer: the builder calls
 `scripts/client-chunks.mjs` (`readDeclaredStamps` / `writeDeclaredStamps` →
@@ -7900,6 +7900,17 @@ rows against the disk, which is the comparison the fingerprint depends on
    match refused — and then rebuilds `client.js`. A single `--write` therefore
    leaves the source and the artifact in sync, and `--check` compares **both**
    (§22).
+8. **The slice set is anchored on the artifact, not on a checklist.** There is
+   no hand-kept list of segment names anywhere in `scripts/`, and adding,
+   re-cutting or merging a slice therefore requires **no manifest edit**: "which
+   slices should exist" cannot be derived from `src/` itself (delete a slice,
+   re-run `--write`, and any list derived from the directory loses that slice
+   too and still agrees with itself), so the anchor is the shipped `client.js`.
+   `prepare` re-renders `src/` and compares it byte for byte
+   (`CLIENT-SRC-DRIFT`), which catches a missing slice, an extra slice and
+   in-slice drift alike; a re-cut is made green by one
+   `node scripts/client-build.mjs --write`. `docs/check-refs.mjs` separately
+   pins "the §5.1 table == the slice names on disk, order included".
 
 ### 23.3 What does not change
 

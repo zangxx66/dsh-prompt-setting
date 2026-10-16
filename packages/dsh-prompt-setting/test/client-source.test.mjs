@@ -33,10 +33,10 @@ import { PREPARE_FAIL, PREPARE_OK } from '../core/prepare.js';
 import { clientChunkStamps } from '../core/store.js';
 import {
   CLIENT_SRC_DIR,
-  EXPECTED_SEGMENTS,
   GENERATED_BANNER,
   SEGMENT_DECLARATION,
   concatSegments,
+  inspectClientDrift,
   inspectClientSource,
   readSegments,
   renderClient,
@@ -90,7 +90,7 @@ const clientBody = stripBanner(clientSource);
 const clientLines = clientBody.split('\n');
 
 /** 一个一次性包目录：只放 `client-build.mjs` 读得到的东西。 */
-function throwawayPackage() {
+function throwawayPackage(without = []) {
   const root = mkdtempSync(join(tmpdir(), 'dsh-client-build-'));
   for (const dir of ['core', 'scripts', CLIENT_SRC_DIR]) {
     cpSync(join(packageDir, dir), join(root, dir), { recursive: true });
@@ -100,6 +100,8 @@ function throwawayPackage() {
       cpSync(join(packageDir, name), join(root, name));
     }
   }
+  // g-077 负向对照用：副本里删掉指定的段（`client.js` 保持发布面那一份不动）。
+  for (const name of without) rmSync(join(root, CLIENT_SRC_DIR, name));
   return root;
 }
 
@@ -282,39 +284,93 @@ test('client source: the publish gate is tri-state (N/A / FILES / NOT-SHIPPED)',
   assert.equal(notShipped.level, PREPARE_FAIL);
   assert.equal(notShipped.code, 'CLIENT-SRC-NOT-SHIPPED');
 
-  // 真包：段在、也声明了 ⇒ ok，且段数与 §5.1 目标段表一致。
+  // 真包：段在、也声明了，且重建结果与磁盘产物逐字节一致 ⇒ ok。
   const ok = inspectClientSource(packageJson.files, { listDir: realDir });
   assert.equal(ok.level, PREPARE_OK);
   assert.equal(ok.code, 'CLIENT-SRC');
   assert.match(ok.message, /17 个段文件/);
+  assert.match(ok.message, /与 client\.js 逐字节一致/);
 
-  // g-076 项 2：段集合对账。缺一段 ⇒ FAIL（旧实现只报「16 个段文件」然后放行 ——
-  // 产物完整、产品行为不变，但装到用户机器上的 src/ 真源不完整、无法再生）。
-  const diskSegments = segmentNames(realDir()).map((segment) => segment.name);
-  const withoutUpdate = diskSegments.filter((name) => name !== '12-update.js');
-  assert.equal(withoutUpdate.length, diskSegments.length - 1, '负向对照真的少了一段');
-  assert.equal(withoutUpdate.length, 16);
-  const missing = inspectClientSource(packageJson.files, { listDir: () => withoutUpdate });
-  assert.equal(missing.level, PREPARE_FAIL);
-  assert.equal(missing.code, 'CLIENT-SRC-SEGMENTS');
-  assert.match(missing.message, /12-update\.js/);
-  // 返工 S1：指引必须指向**随包发布**的常量，而不是安装现场读不到的 docs/…
-  assert.match(missing.message, /scripts\/client-build\.mjs 的 EXPECTED_SEGMENTS/);
-  assert.match(missing.message, /不随包发布/);
-  // …且 §5.1 只作为「这份常量的来源」被提及（它不在 files 白名单里）。
-  assert.match(missing.message, /§5\.1/);
-  // 返工 S3：缺段说的是「真源段丢了」，不是笼统的集合不符。
-  assert.match(missing.message, /真源段丢了/);
-  // 多出一个陌生段（有人重切了段却没同步这份集合契约）⇒ 同样 FAIL，但语义不同。
-  const extra = inspectClientSource(packageJson.files, { listDir: () => [...realDir(), '17-extra.js'] });
-  assert.equal(extra.level, PREPARE_FAIL);
-  assert.equal(extra.code, 'CLIENT-SRC-SEGMENTS');
-  assert.match(extra.message, /17-extra\.js/);
-  assert.match(extra.message, /重切\/合并了段/);
-  assert.doesNotMatch(extra.message, /真源段丢了/);
-  // 集合真源只有一份：这份常量必须与测试里写死的 §5.1 表、以及磁盘上的 src/ 三方一致。
-  assert.deepEqual([...EXPECTED_SEGMENTS], SEGMENTS.map((segment) => segment[2]));
-  assert.deepEqual([...EXPECTED_SEGMENTS], segmentNames(readdirSync(join(packageDir, CLIENT_SRC_DIR))).map((s) => s.name));
+  // §5.1 那份区间表在测试里仍然**写死**（它是「零移动」断言的坐标），但 g-077 起它不再是
+  // `prepare` 的集合真源：这里只钉「测试表 == 磁盘 src/」，文档那一侧由 docs/check-refs.mjs 管。
+  assert.deepEqual(
+    SEGMENTS.map((segment) => segment[2]),
+    segmentNames(readdirSync(join(packageDir, CLIENT_SRC_DIR))).map((segment) => segment.name),
+  );
+});
+
+test('client source: completeness is anchored on the artifact, not on a hand-kept list (g-077)', () => {
+  // 立论（实测见 NOTES.md）：删掉一个段再跑 `client-build --write`，任何**从目录派生**的
+  // 清单都会跟着少一段、两边照样「一致」——「应该有哪些段」无法从 `src/` 自身派生。唯一
+  // 不依赖手工清单的锚是磁盘上的产物 `client.js`。下面三种不完整必须全部被抓，且消息可操作。
+  const cases = [
+    {
+      label: '缺一个段',
+      make: () => throwawayPackage(['12-update.js']),
+    },
+    {
+      label: '多出一个陌生段',
+      make: () => {
+        const root = throwawayPackage();
+        writeFileSync(join(root, CLIENT_SRC_DIR, '17-extra.js'), `${SEGMENT_DECLARATION}\nconst extra = 1;\n`);
+        return root;
+      },
+    },
+    {
+      label: '段内被改了一行',
+      make: () => {
+        const root = throwawayPackage();
+        const target = join(root, CLIENT_SRC_DIR, '12-update.js');
+        writeFileSync(target, readFileSync(target, 'utf8').replace('\n', '\n// one edited line\n'));
+        return root;
+      },
+    },
+  ];
+  for (const { label, make } of cases) {
+    const root = make();
+    try {
+      const finding = inspectClientDrift({ packageDir: root, clientSource });
+      assert.equal(finding.level, PREPARE_FAIL, `${label}: 必须 FAIL`);
+      assert.equal(finding.code, 'CLIENT-SRC-DRIFT', `${label}: 独立 code`);
+      assert.match(finding.message, /首处差异在第 \d+ 行/, `${label}: 必须给出首个差异位置`);
+      assert.match(finding.message, /node scripts\/client-build\.mjs --write/, `${label}: 指引必须可操作`);
+      assert.match(finding.message, /手工段名清单/, `${label}: 口径要说明不依赖手工清单`);
+      // 同一条漂移也要能从发布门（`prepare` 调用的那个入口）冒出来。
+      const throughGate = inspectClientSource(packageJson.files, {
+        listDir: () => segmentNames(readdirSync(join(root, CLIENT_SRC_DIR))).map((segment) => segment.name),
+        clientSource,
+        render: () => renderClient({ packageDir: root }),
+      });
+      assert.equal(throughGate.level, PREPARE_FAIL, `${label}: 发布门必须一起红`);
+      assert.equal(throughGate.code, 'CLIENT-SRC-DRIFT');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+  // 负向对照的反面：健康包上同一组入口必须绿。
+  const healthy = inspectClientDrift({ clientSource });
+  assert.equal(healthy.level, PREPARE_OK);
+  assert.equal(healthy.code, 'CLIENT-SRC-DRIFT');
+  assert.match(healthy.message, /逐字节一致/);
+  // 安装现场 IO（判据 6）：`prepare` 把已读到的 client.js 经 `clientSource` 传进来，drift
+  // **不再读盘**那份 610 KiB。机器证明：给一个**不存在**的 packageDir 注入产物字节与渲染
+  // 结果，它必须照样判绿 —— 若它仍偷偷读 `packageDir/client.js`，这里会变成 FAIL。
+  const virtual = inspectClientDrift({
+    packageDir: join(packageDir, 'no-such-dir-for-g077'),
+    clientSource,
+    render: () => clientSource,
+  });
+  assert.equal(virtual.level, PREPARE_OK, '注入 clientSource 后不得再读磁盘 client.js');
+  // 反向也能 fail-closed：既不注入、目录也不存在 ⇒ 明确 FAIL，而不是静默放行。
+  const unreadable = inspectClientDrift({ packageDir: join(packageDir, 'no-such-dir-for-g077') });
+  assert.equal(unreadable.level, PREPARE_FAIL);
+  assert.match(unreadable.message, /读不到 client\.js/);
+  // 判据 2：`scripts/` 下不再有任何手工段名清单（grep 可验，这里是机器化版本）。
+  const scriptsText = readdirSync(join(packageDir, 'scripts'))
+    .filter((name) => name.endsWith('.mjs'))
+    .map((name) => readFileSync(join(packageDir, 'scripts', name), 'utf8'))
+    .join('\n');
+  assert.doesNotMatch(scriptsText, /EXPECTED_SEGMENTS/, 'scripts/ 下不得再有手工段名清单');
 });
 
 test('client build --check: a healthy copy is green, and one edited src/ line is red', () => {

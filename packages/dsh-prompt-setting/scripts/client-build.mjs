@@ -63,33 +63,6 @@ export const CLIENT_SRC_DIR = 'src';
  */
 export const SEGMENT_PATTERN = /^(\d{2})-([a-z0-9]+(?:-[a-z0-9]+)*)\.js$/;
 /**
- * `docs/refactor-plan.md` §5.1 目标段表的段名集合（顺序 = 文件名字典序 = 代码顺序）。
- *
- * 为什么另立一份常量、而不是从 `src/` 目录派生：这份表要能发现「段被删了一个」，
- * 而从目录派生的清单永远同意自己（g-076 项 2 的原始现象就是 `src/12-update.js`
- * 被删后 `prepare` 仍 exit 0）。它是 §5.1 目标段表的**代码副本**，两处一起改；
- * `test/client-source.test.mjs` 把这条绑定钉住（缺段、多段都红）。
- */
-export const EXPECTED_SEGMENTS = Object.freeze([
-  '00-entry.js',
-  '01-shared-head.js',
-  '02-locale.js',
-  '03-facilities.js',
-  '04-helpers-a.js',
-  '05-helpers-b.js',
-  '06-tree.js',
-  '07-stage2.js',
-  '08-chrome-a.js',
-  '09-chrome-b.js',
-  '10-toaster-mine.js',
-  '11-chunks.js',
-  '12-update.js',
-  '13-page-a.js',
-  '14-page-b.js',
-  '15-page-c.js',
-  '16-boot.js',
-]);
-/**
  * 阶段 2 起每个段文件的首行声明（§5.2 R1-9）。
  *
  * 段是**同一个 factory body** 的连续切片，单独 parse/lint 必然报错，却会随 `files`
@@ -270,20 +243,22 @@ export function renderClient(options = {}) {
  *     例如 `test/prepare.test.mjs` 的最小 fixture）；
  *   - **FILES**：`src/` 存在或已声明，却没有可用的段文件 ⇒ FAIL；
  *   - **NOT-SHIPPED**：段文件在，却不在 `files` 白名单里 ⇒ FAIL（安装时会被裁掉）。
- *   - **SEGMENTS**（g-076 项 2）：段文件在、也发，但**段集合**与 {@link EXPECTED_SEGMENTS}
- *     不符 ⇒ FAIL（缺段 ⇒ 真源段丢了、再也生成不出完整产物；多出陌生段 ⇒ 有人重切/合并了
- *     段却没同步这份集合契约）。原实现只看「有没有、发不发」，于是删掉一个段之后 `prepare`
- *     仍 exit 0：产物（已发布的 `client.js`）完整、产品行为不变，但装到用户机器上的 `src/`
- *     真源不完整 —— 那正是这道门存在要防的事。集合真源记为 {@link EXPECTED_SEGMENTS}
- *     （`docs/refactor-plan.md` §5.1 目标段表的代码副本），因为 `docs/` 不随包发布、
- *     安装现场读不到它，指引必须落在随包的常量上（g-076 返工 S1）。
- * 段文件都在、都声明了、集合也对上 ⇒ `CLIENT-SRC`（ok）。
+ *   - **DRIFT**（g-077，{@link inspectClientDrift}）：段文件在、也发，但**按 `src/` 重建
+ *     出来的字节与磁盘上的 `client.js` 不一致** ⇒ FAIL。这是本门禁找「段集合不完整」的
+ *     唯一锚：g-076 曾用一份**手工段名常量**与段名对账，但**「段集合
+ *     应该是什么」无法从 `src/` 自身派生** —— 删掉一个段再 `--write`，任何从目录派生的
+ *     清单都会跟着少一段、两边照样「一致」（实测见 NOTES.md）。唯一不依赖手工清单的锚
+ *     是**产物**：`renderClient()` 与磁盘 `client.js` 逐字节比对，于是缺段、多出陌生段、
+ *     以及**段内漂移**（改了 `src/` 一行却忘了 `--write`）会一并暴露。
+ * 段文件都在、都声明了、重建结果与产物逐字节相同 ⇒ `CLIENT-SRC`（ok）。
  *
- * 注意本门禁看**发布面 + 集合**；「生成物与段是否**逐字节**一致」由
- * `node scripts/client-build.mjs --check` 负责（阶段 1 的判据 1 / 5），本门不读
- * `client.js`，也不比对字节。
+ * 注意：DRIFT 比的是**磁盘上那一份** `client.js`（发布面的字节），所以它同时覆盖
+ * 「段集合」与「段内容」两类漂移；`node scripts/client-build.mjs --check` 是同一比对的
+ * 命令行入口（CLI 侧消息更详细）。
  * @param filesField - `package.json` 的 `files` 数组。
- * @param io - `{packageDir, listDir}` 可注入；`listDir(relPath)` 读不到时返回 `null`。
+ * @param io - `{packageDir, listDir, clientSource, render}` 可注入；`listDir(relPath)`
+ *   读不到时返回 `null`；`clientSource` 是**已读到的** `client.js` 文本（安装现场复用
+ *   `prepare.mjs` 读过的同一份字节，避免重复读盘）；`render` 可注入渲染函数（测试用）。
  * @returns 一条 finding（`PREPARE_OK` 或 `PREPARE_FAIL`）。
  */
 export function inspectClientSource(filesField, io = {}) {
@@ -324,41 +299,107 @@ export function inspectClientSource(filesField, io = {}) {
       message: `${CLIENT_SRC_DIR}/ 不在 files 白名单里：安装时会被裁掉，包里只剩生成物 client.js`,
     };
   }
-  // g-076 项 2：集合对账（段名逐名比对 §5.1 目标段表的代码副本 {@link EXPECTED_SEGMENTS}）。
-  // 缺段 ⇒ 装到用户机器上的 `src/` 真源再也生成不出完整产物，与「真源缺失」是同一类
-  // 后果；多出陌生段 ⇒ 有人重切了段却没同步这份集合契约。两种语义在下面的消息里分开说，
-  // 因为它们要修的是不同的一边。
-  const found = segments.map((segment) => segment.name);
-  const missing = EXPECTED_SEGMENTS.filter((name) => !found.includes(name));
-  const unexpected = found.filter((name) => !EXPECTED_SEGMENTS.includes(name));
-  if (missing.length > 0 || unexpected.length > 0) {
-    const parts = [];
-    if (missing.length > 0) {
-      parts.push(`缺 ${missing.join('、')}（真源段丢了：装上去的 ${CLIENT_SRC_DIR}/ 再也生成不出完整产物）`);
-    }
-    if (unexpected.length > 0) {
-      parts.push(`多出 ${unexpected.join('、')}（有人重切/合并了段，却没同步这份段集合契约）`);
-    }
-    return {
-      level: PREPARE_FAIL,
-      code: 'CLIENT-SRC-SEGMENTS',
-      // 指引必须指向**随包发布**的东西：`docs/` 不在 `files` 白名单里，安装现场读不到它。
-      message:
-        `${CLIENT_SRC_DIR}/ 的段集合与 scripts/client-build.mjs 的 EXPECTED_SEGMENTS 不符（${parts.join('；')}；`
-        + `实有 ${found.length} 段）。EXPECTED_SEGMENTS 是 docs/refactor-plan.md §5.1 目标段表的代码副本`
-        + `（docs/ 目录不在 files 白名单、不随包发布，所以这里指向随包的脚本常量）：`
-        + `按它补齐 ${CLIENT_SRC_DIR}/ 的段，或同步 EXPECTED_SEGMENTS 与 §5.1 表`,
-    };
-  }
+  // g-077：段集合完整性不再对账任何手工段名清单 —— 改由「段 ↔ 磁盘产物逐字节一致」
+  // 保证（{@link inspectClientDrift}）。手工清单发现不了「段被删」：删段后跑
+  // `--write`，从目录派生的清单会跟着少一段、两边照样一致；而磁盘产物是有意的
+  // 发布面字节，缺段/多段/段内漂移都会让它对不上。
+  const drift = inspectClientDrift({
+    packageDir,
+    clientSource: io.clientSource,
+    render: io.render,
+  });
+  if (drift.level !== PREPARE_OK) return drift;
   return {
     level: PREPARE_OK,
     code: 'CLIENT-SRC',
-    message: `${CLIENT_SRC_DIR}/ 下 ${segments.length} 个段文件（段集合与 EXPECTED_SEGMENTS 一致），files 白名单已覆盖`,
+    message: `${CLIENT_SRC_DIR}/ 下 ${segments.length} 个段文件与 client.js 逐字节一致`
+      + `（重建后用 node scripts/client-build.mjs --write 可再同步），files 白名单已覆盖`,
+  };
+}
+
+/**
+ * 第 7 类发布门禁（g-077）：**段 ↔ 产物逐字节一致性** —— 段集合完整性的唯一锚。
+ *
+ * 为什么不能靠「清单」：`prepare` 要发现「段被删了一个」，就得知道**应该有哪些段**。
+ * 这份信息无法从 `src/` 自身派生 —— 删掉 `src/12-update.js` 再跑
+ * `node scripts/client-build.mjs --write`，任何从目录派生的清单都会跟着少一段，两边
+ * 照样「一致」（g-076 项 7 的实测结论，也是本目标换掉手工常量的立论）。g-076 后来
+ * 换成了一份**手工段名常量**，代价是重切/合并段要同步 4 处；g-077 把它删掉、改用下面
+ * 的产物锚。
+ *
+ * 不依赖手工清单的锚只有一个：**磁盘上的 `client.js`**（发布面的字节）。用
+ * {@link renderClient} 按 `src/` 重算，与它逐字节比对：
+ *   - **缺段** ⇒ 重建结果短了一整个区间 ⇒ FAIL；
+ *   - **多出陌生段** ⇒ 重建结果多了不存在的字节 ⇒ FAIL；
+ *   - **段内改了一行** ⇒ 正是这个门相对「集合对账」多出来的收益 ⇒ FAIL；
+ *   - 一致 ⇒ 段真源与产物同一份代码，段集合完整性由产物锚定，不需要任何清单。
+ *
+ * 失败的指引落在**随包发布**的东西上（`scripts/client-build.mjs` 本身；`docs/` 不在
+ * `files` 白名单里、安装现场读不到），并给出**首个差异位置**（行号 + 两侧内容），
+ * 因为「哪一侧才是真源」需要人来判断：产物才是有意的那一份就 `--write`，段才是就改
+ * `src/` 直到 `--check` 绿。
+ *
+ * 纯函数、只读：不写任何文件。`prepare` 把已读到的 `client.js` 文本经 `clientSource`
+ * 传进来，所以安装现场**不会重复读**这 ~612 KB（`inspectClientChunks` 已读过一次）。
+ * @param options - `{packageDir, clientSource, render}` 可注入。
+ *   `clientSource` 省略时自行读 `client.js`（读不到 ⇒ FAIL，fail-closed）。
+ * @returns 一条 finding（`PREPARE_OK` 或 `PREPARE_FAIL`）。
+ */
+export function inspectClientDrift(options = {}) {
+  const packageDir = options.packageDir ?? PACKAGE_DIR;
+  let current = options.clientSource;
+  if (current === undefined) {
+    try {
+      current = readFileSync(join(packageDir, 'client.js'), 'utf8');
+    } catch {
+      current = null;
+    }
+  }
+  if (typeof current !== 'string') {
+    return {
+      level: PREPARE_FAIL,
+      code: 'CLIENT-SRC-DRIFT',
+      message: `读不到 client.js：无法核对 ${CLIENT_SRC_DIR}/ 段与发布产物是否逐字节一致`,
+    };
+  }
+  let generated;
+  try {
+    generated = (options.render ?? renderClient)({ packageDir });
+  } catch (error) {
+    return {
+      level: PREPARE_FAIL,
+      code: 'CLIENT-SRC-DRIFT',
+      message: `无法按 ${CLIENT_SRC_DIR}/ 重建 client.js：${reason(error)}`
+        + `（先跑 node scripts/client-build.mjs --check 看细节）`,
+    };
+  }
+  const currentLines = current.split('\n').length;
+  const generatedLines = generated.split('\n').length;
+  if (generated === current) {
+    return {
+      level: PREPARE_OK,
+      code: 'CLIENT-SRC-DRIFT',
+      message: `${CLIENT_SRC_DIR}/ 段与 client.js 逐字节一致（${generatedLines} 行）`,
+    };
+  }
+  const difference = firstDifference(generated, current);
+  const where = difference === null
+    ? `首处差异无法按行定位（两侧同为 ${generatedLines} 行，但字节不同）`
+    : `首处差异在第 ${difference.line} 行：src/ 生成 ${JSON.stringify(preview(difference.generated))}`
+      + ` vs client.js ${JSON.stringify(preview(difference.current))}`;
+  return {
+    level: PREPARE_FAIL,
+    code: 'CLIENT-SRC-DRIFT',
+    message: `${CLIENT_SRC_DIR}/ 与 client.js 逐字节不一致（${where}；`
+      + `src/ 重建 ${generatedLines} 行 vs 产物 ${currentLines} 行）。段集合完整性由此锚定`
+      + `（段被删、多出陌生段、段内改了行都会在这里暴露，不再依赖任何手工段名清单）：`
+      + `若产物才是发布面那一份，跑 node scripts/client-build.mjs --write 按 ${CLIENT_SRC_DIR}/ 重建；`
+      + `若段才是真源（例如误删了段），把段恢复到与产物一致再跑 node scripts/client-build.mjs --check`,
   };
 }
 
 /** 找两份文本的第一处差异（行号 + 两侧内容），给 `--check` 的失败一个可执行的提示。 */
-function firstDifference(generated, current) {
+export function firstDifference(generated, current) {
   const left = generated.split('\n');
   const right = current.split('\n');
   const count = Math.max(left.length, right.length);

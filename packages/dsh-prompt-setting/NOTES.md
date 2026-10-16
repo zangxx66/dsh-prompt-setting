@@ -9757,3 +9757,76 @@ g-075（客户端生成期分段，已 delivered）交付时由独立评审标�
   `table §5.1 段名集合: 与 EXPECTED_SEGMENTS 一致（17 段）`）全部 exit 0；
   `node --test test/*.test.mjs` **965 pass / 0 fail**；
   `git diff --exit-code packages/dsh-prompt-setting/client.js` 退出码 0（产品字节仍零改动）。
+
+## 159. g-077 att-001：段集合完整性改锚「段 ↔ 产物逐字节一致」—— 删除手工常量 `EXPECTED_SEGMENTS`（2026-10-16，基线 `5b5c95f` 隔离工作树 `g-077-att-01`）
+
+**目标**：消除 g-076 项 2 引入的手工段名常量（§5.1 文档表的代码副本，重切/合并段要同步 4 处），
+恢复方案 §6.2 闸门 4 的承诺「新增/重切段不需要改任何清单」。
+
+### 立论自证（动手前，一次性副本内；这是换掉手工清单的依据）
+从 `src/` 派生的清单**发现不了缺段**：副本里删 `src/12-update.js` ⇒ `client-build --write` ⇒
+派生清单（`segmentNames(readdirSync('src'))`）**跟着少一段**、与磁盘 `src/` 仍然「一致」（永远
+同意自己）；而 `renderClient()` 与**删段前**的产物比对 ⇒ `false`，首处差异在第 **8396** 行。
+（`--write` 之后的产物与 `src/` 又自洽 ⇒ 锚必须是**发布面上的那一份** `client.js`，不能是「刚
+重建的产物」，所以新门禁读磁盘产物、不写它。）
+
+### 实现（5 项交付）
+1. 新门禁 `CLIENT-SRC-DRIFT`（`scripts/client-build.mjs` 的 `inspectClientDrift`，与
+   `inspectClientSource` 同层、由后者末尾调用）：`renderClient()` 重算与磁盘 `client.js` **逐字节**
+   比对；不一致 ⇒ FAIL，消息给 `node scripts/client-build.mjs --write` + **首个差异位置**（行号 +
+   两侧预览）+ 双向指引（产物才是有意的那份 ⇒ `--write`；段才是 ⇒ 恢复段再 `--check`）。
+   `firstDifference` 改为导出复用。
+2. 删除 `EXPECTED_SEGMENTS` 常量与 `inspectClientSource` 的段集合对账分支；`test/client-source.test.mjs`
+   / `test/prepare.test.mjs` 的相应用例改为断言新行为（并把「`scripts/` 下无手工段名清单」机器化）。
+3. `docs/check-refs.mjs`：段名断言改为「§5.1 文档表段名集合 == 磁盘 `src/` 段名集合（含顺序）」，
+   不再 import 常量（改 import `CLIENT_SRC_DIR` / `segmentNames` + `readdirSync`）。
+4. 口径同步：`CONTRACT.md` §23.1 表格行 + §23.2 新增不变式 8；`src/README.md` 规则 1。
+5. `LOCALE-SYNC` 双端核对**保留**（未动 `locale-pack.mjs`）：它与 DRIFT 正交 —— locale 门管「词典
+   ↔ 生成段」的**定位**，DRIFT 管「段 ↔ 产物」的字节一致。
+- **`prepare` 只读一次 `client.js`**：主流程一次 `readText('client.js')` 传给 `inspectClientChunks(source)`
+  与 `inspectClientSource(..., { clientSource })`；为保 `scripts/prepare.mjs` 的行锚点（86/135/180/183/186
+  与 180-183、170-186 区间），改动走**行数中性**，`docs/refactor-plan.md` 的既有行引用无需重算。
+
+### 实测（判据 1/2/3/4/6/7/8）
+- **负向对照（三种不完整都红）**：一次性副本里 ① 删 `12-update.js`；② 加 `17-extra.js`；③ 在
+  `12-update.js` 里插一行 ⇒ `prepare` 三条全 `FAIL CLIENT-SRC-DRIFT`，消息均含「首处差异在第 N 行」
+  与「node scripts/client-build.mjs --write」（端到端断言在 `test/prepare.test.mjs`，纯函数用例在
+  `test/client-source.test.mjs`）。③ 正是 g-076 的遗留缺口：旧的集合对账只管段名，段内漂移在**安装
+  现场**发现不了（只有 `client:check` 管）。
+- **正向证明（无需清单）**：副本里把 `src/16-boot.js` 在连续区间内切成 `16-boot.js` + `17-boot-tail.js`
+  （合法重切）⇒ `--write` 后产物与基线**逐字节一致**（`cmp` ok，故报「未落盘」）。同一操作在**旧实现**
+  （5b5c95f 的 scripts/）⇒ `prepare` exit 1、`FAIL CLIENT-SRC-SEGMENTS`（「多出 17-boot-tail.js」）；
+  新实现 ⇒ exit 0、`ok CLIENT-SRC: src/ 下 18 个段文件与 client.js 逐字节一致`。再把 §5.1 表拆成两行
+  （**只改 `docs/refactor-plan.md`，`scripts/` 与测试零改动**，`grep EXPECTED_SEGMENTS scripts/` = 0 命中）
+  ⇒ **四道门禁全 exit 0**（`check-refs` 输出 `table §5.1 段名集合: 与磁盘 src/ 一致（18 段）`）。
+- **判据 4 两条负向**：改**文档** §5.1 段名（`12-update.js` → `12-updates.js`）⇒ `check-refs` exit 1
+  「文档缺 12-update.js；文档多出 12-updates.js」；改**磁盘**段名（→ `12-updated.js`）⇒ exit 1
+  「文档缺 12-updated.js；文档多出 12-update.js」。
+- **IO / 耗时**：`inspectClientDrift` 单次 median **8.4 ms**（min 7.4 / max 14.6）；新增读取
+  **769 KiB** = `src/` 段 610 KiB + chunk 文件 158 KiB；**`client.js`（610 KiB）零重复读** —— 主流程注入
+  已读字节，并用例以「不存在的 packageDir + 注入 clientSource」证明它不再读盘（否则会红）。端到端
+  `prepare` 旧 vs 新（各 15 次，中位数）：**98.6 ms → 109.9 ms**（+11.3 ms；其中约 65 ms 是 Node 启动）。
+  残余：chunk 文件被 `inspectClientChunks` 与 `renderClient` 各读一次（158 KiB，~2 ms）。
+- **安装路径**：`npm pack`（会触发 npm 的 `prepare` 生命周期）⇒ prepare **OK 25 项**、打包成功；解开
+  tarball 后在包内跑 `prepare` 与 `client-build --check` 均 exit 0 ⇒ **registry tarball 路径不受影响**
+  （tarball 里 `src/` 与 `client.js` 同一份字节；registry 安装默认不跑 prepare）。
+- **CRLF 检出（新增 FAIL 路径的唯一边界，实测）**：**全 CRLF** 检出（`src/` + `client.js`）下**旧实现
+  也** exit 1（`CHUNK-STAMPS`：client.js 里解析不到 CHUNK_STAMPS；外加 `LOCALE-SYNC` 段定位失败）⇒
+  DRIFT 没把「本来能装的形态」变成装不上；**半 CRLF**（只有 `src/` 一段）才会在 DRIFT 上红（「段首
+  声明行必须独占一行」）。仓库当前**无 `.gitattributes`**，要做 Windows/autocrlf 加固需新增
+  `*.js text eol=lf` —— 超出本目标 5 项边界，记入后续目标。
+- **验收**：`client-build --check` / `locale-pack --check` / `prepare` / `check-refs` 全 exit 0；
+  `node --test test/*.test.mjs` = **966 pass / 0 fail**（基线 965，新增 1 个 g-077 用例块）；
+  `git diff --exit-code packages/dsh-prompt-setting/client.js` 退出码 **0**（产品字节零改动）。
+
+### 残余 / 明确不做
+- **重切后仍需同步的 2 处是开发侧资产，不是发布面清单**：`docs/refactor-plan.md` §5.1 表（不同步则
+  `check-refs` 红，这正是它的职责）与 `test/client-source.test.mjs` 里写死的 §5.1 区间表（「零移动」
+  坐标；实测重切副本里该文件 6 条红）。发布面（`prepare` / `client:check`）**零同步** —— 这正是本目标
+  相对 g-076 消掉的那一处（`scripts/` 常量）。判据 3 字面的「四道门禁全绿」只有在**同步 §5.1 表之后**
+  成立（本文件已实测两种情况）。
+- 「诱饵段」残余（g-076 项 4）**未被本目标覆盖**：那是 `locale-pack` 对 `zh`/`en` 块的段**定位**歧义，
+  DRIFT 只比对产物字节、不参与定位（多候选仍是拒绝）。
+- 不做：不引入 bundler / 第二真源，不动 `CHUNK_STAMPS` 语义与任一 `data-*` marker，不降级任何 FAIL，
+  不自行 commit（按本次 directive，改动留在 worktree 待主管复核）。
+

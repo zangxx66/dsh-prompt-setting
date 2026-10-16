@@ -20,9 +20,11 @@
  *
  * 另外校验 **§1.3 版图表**与 **§5.1 目标段表**（R4-C1）：行数 == 区间长度、区间首尾相接、
  * 合计 == 12382、每段 ≤ 1200。这两张表是阶段 1/2 的门禁基础，必须可复跑而不是粘贴输出。
- * **§5.1 的段名集合还与发布门的 `EXPECTED_SEGMENTS` 逐名对账（g-076 返工 S2）**：
- * 「文档 ↔ 常量 ↔ 测试表 ↔ 磁盘」四方都必须在机器链上，否则文档里改错一个段名无人发现
- * —— 而 `docs/` 不随包发布，安装现场只能看到随包的常量，两侧一旦漂移就再也对不上。
+ * **§5.1 的段名集合还与磁盘 `src/` 的段名集合逐名对账（g-077 起）**：
+ * 「文档 ↔ 磁盘」之间不再经过任何手工常量 —— 段集合的完整性由「段 ↔ 产物逐字节一致」
+ * （`prepare` 的 `CLIENT-SRC-DRIFT`）保证，本文档这一侧只断言「§5.1 表写的段名 == 磁盘
+ * `src/` 里真实存在的段名（含顺序）」，于是文档改错一个段名、或磁盘换了段名没同步文档，
+ * 都会在这里红。
  *
  * **生成物头注与坐标平移（g-075 阶段 2）**：`client.js` 从阶段 2 起是**生成物**，
  * 顶部有 `scripts/client-build.mjs` 注入的「生成物，勿手改」头注（{@link GENERATED_BANNER}）。
@@ -47,11 +49,11 @@
  *   unresolved/FAIL —— 归属失败、读不到、越界或断言不符（**非零退出码**）。
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { EXPECTED_SEGMENTS, GENERATED_BANNER } from '../scripts/client-build.mjs';
+import { CLIENT_SRC_DIR, GENERATED_BANNER, segmentNames } from '../scripts/client-build.mjs';
 
 /** `docs/` 目录（本文件所在）。 */
 const DOCS_DIR = dirname(fileURLToPath(import.meta.url));
@@ -471,10 +473,11 @@ function parseSpanTable(lines, startPrefix, endPrefix, rowPattern) {
 /**
  * 从 §5.1 目标段表里解析**段名集合**（每行第一列的反引号段名，按表内顺序）。
  *
- * 为什么体检要管这个（g-076 返工 S2）：段名集合从此有两份真源 —— 文档表与
- * `scripts/client-build.mjs` 的 {@link EXPECTED_SEGMENTS}（发布门 `CLIENT-SRC-SEGMENTS`
- * 比的就是后者，因为 `docs/` 不随包发布）。只钉住「常量 ↔ 测试写死的表 ↔ 磁盘」而漏掉
- * 「文档 ↔ 常量」，文档里改错一个段名就无人发现 —— 这正是 g-072 反复吃的亏。
+ * 为什么体检要管这个（g-076 返工 S2，g-077 换成磁盘锚）：段名集合有两份真源 —— 文档表
+ * 与磁盘 `src/` 的段文件。只钉住「磁盘 ↔ 产物」（发布门 `CLIENT-SRC-DRIFT`）而漏掉
+ * 「文档 ↔ 磁盘」，文档里改错一个段名就无人发现 —— 这正是 g-072 反复吃的亏。而 g-077
+ * 删掉了手工常量，所以这里直接对磁盘 `src/` 的段名（`segmentNames` 给出含顺序的集合），
+ * 不再依赖任何手写清单。
  * @param lines - 文档行数组。
  * @returns 段名数组（解析不到时为空数组）。
  */
@@ -533,21 +536,32 @@ function checkTables(lines) {
     if (total !== 12382) failures.push(`${name}: 行数合计 ${total}，应为 12382`);
     process.stdout.write(`  table ${name}: rows=${rows.length} 合计=${total} 最大段=${Math.max(...rows.map((r) => r.count))}\n`);
   }
-  // g-076 返工 S2：§5.1 的**段名集合**必须与 `scripts/client-build.mjs` 的
-  // EXPECTED_SEGMENTS 逐名一致 —— 发布门 `CLIENT-SRC-SEGMENTS` 比对的是后者（`docs/`
-  // 不随包发布），所以文档这一侧也得在机器链上，否则改错段名无人发现。
+  // g-077：§5.1 的**段名集合**（含顺序）必须与磁盘 `src/` 的段名集合一致 —— 不再经过
+  // 任何手工常量（g-076 那份段名常量已在 g-077 删除）。发布门 `CLIENT-SRC-DRIFT` 锚的是
+  // 「段 ↔ 产物逐字节一致」，文档这一侧锚的是磁盘段名：两边都锚在真实文件上，中间没有
+  // 需要人手同步的清单。
   const documented = parseSegmentNames(lines);
   if (documented.length === 0) {
     failures.push('§5.1 目标段表: 没解析到任何段名（表格第一列的结构变了？）');
-  } else if (documented.join('\n') !== [...EXPECTED_SEGMENTS].join('\n')) {
-    const missing = EXPECTED_SEGMENTS.filter((name) => !documented.includes(name));
-    const extra = documented.filter((name) => !EXPECTED_SEGMENTS.includes(name));
-    const detail = missing.length > 0 || extra.length > 0
-      ? `文档缺 ${missing.join('、') || '(无)'}；文档多出 ${extra.join('、') || '(无)'}`
-      : `段名相同但顺序不同：文档 ${documented.join(',')} ≠ EXPECTED_SEGMENTS ${[...EXPECTED_SEGMENTS].join(',')}`;
-    failures.push(`§5.1 目标段表的段名集合与 scripts/client-build.mjs 的 EXPECTED_SEGMENTS 不符（${detail}）`);
   } else {
-    process.stdout.write(`  table §5.1 段名集合: 与 EXPECTED_SEGMENTS 一致（${documented.length} 段）\n`);
+    let onDisk = null;
+    try {
+      onDisk = segmentNames(readdirSync(join(PACKAGE_DIR, CLIENT_SRC_DIR))).map((segment) => segment.name);
+    } catch (error) {
+      failures.push(`${CLIENT_SRC_DIR}/ 的段名读不到：${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (onDisk !== null) {
+      if (documented.join('\n') !== onDisk.join('\n')) {
+        const missing = onDisk.filter((name) => !documented.includes(name));
+        const extra = documented.filter((name) => !onDisk.includes(name));
+        const detail = missing.length > 0 || extra.length > 0
+          ? `文档缺 ${missing.join('、') || '(无)'}；文档多出 ${extra.join('、') || '(无)'}`
+          : `段名相同但顺序不同：文档 ${documented.join(',')} ≠ 磁盘 ${onDisk.join(',')}`;
+        failures.push(`§5.1 目标段表的段名集合与磁盘 ${CLIENT_SRC_DIR}/ 不符（${detail}）`);
+      } else {
+        process.stdout.write(`  table §5.1 段名集合: 与磁盘 ${CLIENT_SRC_DIR}/ 一致（${documented.length} 段）\n`);
+      }
+    }
   }
   return failures;
 }

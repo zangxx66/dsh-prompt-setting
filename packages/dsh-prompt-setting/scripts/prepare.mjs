@@ -83,8 +83,8 @@ const say = (text = '') => { out.push(text); };
  * 测试只有在有人跑测试时才拦得住；`prepare` 是安装/发布路径上的门。
  * @returns 一条 finding（`PREPARE_OK` 或 `PREPARE_FAIL`）。
  */
-function inspectClientChunks() {
-  const source = readText('client.js');
+function inspectClientChunks(source) {
+  // g-077: `client.js` 文本由调用方传入 —— 与「段 ↔ 产物」门共用同一份字节，不重复读盘。
   if (source === null) {
     return { level: PREPARE_FAIL, code: 'CHUNK-STAMPS', message: '读不到 client.js，无法核对 chunk 清单' };
   }
@@ -175,11 +175,11 @@ else {
 }
 
 const { ok, findings } = inspectPackage({ pkg, readText, listDir });
-// g-045: the chunk manifest is the one file-vs-file agreement the build stamp
-// depends on, so it is checked on the publish path too — not only by tests.
-findings.push(inspectClientChunks());
+// g-045/g-077: 一次读入 client.js，chunk 清单门与「段 ↔ 产物」门共用这一份字节。
+const clientSource = readText('client.js');
+findings.push(inspectClientChunks(clientSource));
 // g-066/g-075: the dictionaries and the client segments are the truth client.js is generated from.
-findings.push(inspectClientSource(pkg && pkg.files));
+findings.push(inspectClientSource(pkg && pkg.files, { clientSource }));
 findings.push(inspectLocale(pkg && pkg.files));
 const label = { [PREPARE_OK]: 'ok  ', [PREPARE_WARN]: 'warn', [PREPARE_FAIL]: 'FAIL' };
 for (const finding of findings) say(`  ${label[finding.level] ?? finding.level}  ${finding.code}: ${finding.message}`);

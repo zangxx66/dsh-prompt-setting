@@ -566,25 +566,35 @@ test('prepare: the src/ gate reports the shipped source, and fails both ways it 
     const writeManifest = () => writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
     const runPrepare = () => spawnSync(process.execPath, ['scripts/prepare.mjs'], { cwd: root, encoding: 'utf8' });
 
-    // ⓪ 段在、也声明了 ⇒ ok（并且报出段数，这是发布面上"真源确实随包"的证据）。
+    // ⓪ 段在、也声明了，且重建结果与磁盘产物逐字节一致 ⇒ ok。
     const healthy = runPrepare();
     assert.equal(healthy.status, 0, `the copy must start clean\n${healthy.stdout}`);
     assert.match(healthy.stdout, /ok {4}CLIENT-SRC: src\/ 下 17 个段文件/);
-    assert.match(healthy.stdout, /段集合与 EXPECTED_SEGMENTS 一致/);
+    assert.match(healthy.stdout, /与 client\.js 逐字节一致/);
 
-    // ⓪' g-076 项 2：段**少了一个** ⇒ FAIL。旧实现只报「16 个段文件」然后 exit 0 ——
-    // 产物完整、产品行为不变，但装到用户机器上的 src/ 再也生成不出完整产物。
+    // ⓪' g-077：段集合完整性锚在**产物**上，不再对账任何手工段名清单。三种不完整都必须
+    // 在安装现场 FAIL，消息可操作（指向随包的 `--write`）且给出首个差异位置。
+    const assertDriftFails = (label) => {
+      const failed = runPrepare();
+      assert.notEqual(failed.status, 0, `${label}: expected a non-zero exit\n${failed.stdout}`);
+      assert.match(failed.stdout, /FAIL {2}CLIENT-SRC-DRIFT/, `${label}: 独立 code`);
+      assert.match(failed.stdout, /首处差异在第 \d+ 行/, `${label}: 首个差异位置`);
+      assert.match(failed.stdout, /node scripts\/client-build\.mjs --write/, `${label}: 可操作指引`);
+      assert.match(failed.stdout, /逐字节不一致/, label);
+    };
     const droppedSegment = join(root, 'src', '12-update.js');
     const droppedText = readFileSync(droppedSegment, 'utf8');
-    rmSync(droppedSegment);
-    const shortSet = runPrepare();
-    assert.notEqual(shortSet.status, 0, `expected a non-zero exit\n${shortSet.stdout}`);
-    assert.match(shortSet.stdout, /FAIL {2}CLIENT-SRC-SEGMENTS/);
-    assert.match(shortSet.stdout, /12-update\.js/);
-    // 返工 S1：安装现场读不到 docs/，指引必须指向随包的 scripts/client-build.mjs 常量…
-    assert.match(shortSet.stdout, /scripts\/client-build\.mjs 的 EXPECTED_SEGMENTS/);
-    // …并且说清这是「真源段丢了」，而不是别的什么。
-    assert.match(shortSet.stdout, /真源段丢了/);
+    rmSync(droppedSegment); // ① 段被删了一个（旧实现放行 = g-076 项 2 的原始现象）
+    assertDriftFails('缺一个段');
+    writeFileSync(droppedSegment, droppedText);
+
+    const extraSegment = join(root, 'src', '17-extra.js'); // ② 多出一个陌生段（重切没同步）
+    writeFileSync(extraSegment, '// 本文件是 client.js 的片段，不是独立模块，不得单独 parse/lint/执行。\nconst extra = 1;\n');
+    assertDriftFails('多出一个陌生段');
+    rmSync(extraSegment);
+
+    writeFileSync(droppedSegment, droppedText.replace('\n', '\n// one edited line\n')); // ③ 段内改一行
+    assertDriftFails('段内被改了一行');
     writeFileSync(droppedSegment, droppedText); // 复位：后面的步骤从干净状态继续
 
     // ① 段在，白名单不覆盖 ⇒ 装到用户机器上的包只剩生成物。
