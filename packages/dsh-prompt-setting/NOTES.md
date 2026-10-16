@@ -9142,3 +9142,52 @@ phase 1/2 直接用记录里的 root 拼 `workspaceConfigPath(root)` 并 `writeC
 - evidence: suite=node --test(test/*.test.mjs) passed=935 failed=0 exit=0 ms=52428；`node scripts/prepare.mjs` = OK（23 项，`LOCALE-SYNC` 567 键）exit 0（纯文档改动，用例数不变）；
 - `grep -n "how many layers\|refuse any other name\|are gone from the table" CONTRACT.md` ⇒ **零命中**。
 
+### 151.4 R4 返工：4 处修复 + **章节驱动的穷举覆盖**（评审 rev-att-001-04 BLOCK，仍是判据 6）
+
+**评审诊断（我认可）**：R3 的「行为驱动」解决了**措辞**覆盖，但没解决**章节识别错误**造成的**范围**覆盖——我把文档开头的「Revision 7 概览」(`:142/:144/:145`) 当成了「§7 概览」，而真正的 **§7 Known limitations**（`:1321` 起）整章不在穷举范围内，`git diff` 也确认没有任何 hunk 触及 1321–1440。结论：**只要「找的范围」是猜的，就一定会漏** ⇒ 本轮把范围也变成可核验的机械清单。
+
+**4 处修复（行号＝当前文件，由内容锚点脚本取得）**
+
+| # | 位置 | 问题 | 处置 |
+| --- | --- | --- | --- |
+| R4-1 | §15.6 `:4654-4665` | 「no route can create, update or **import** one any more」在 Revision 53 下是假的（`:4742` 的 `Imported | yes` 与之互斥） | 改为「no **write** route can create or update one any more *(Revision 7–52; the import half … withdrawn in Revision 53)*」，并在「hand-editing」bullet 后补「an **import** can bring one in — or drop one in `mode=replace`」 |
+| R4-2 | §7 Known limitations `:1395-1400`（item 16）、`:1420-1422`（item 21） | 两处现在时、零标注：item 16「No route creates, updates or **imports** one」；item 21「can only be removed by the layer-wide `?legacy=true` clear or by hand」 | item 16 改为「No **write** route … *(Revision 7–52 also said no route **imports** one; Revision 53 withdrew that half)*」；item 21 补「or — since Revision 53 — by importing a backup that carries the layer without that entry (`mode=replace`，§11.4)」 |
+| R4-3 | §11.2 示例 `:1863` + 说明 `:1890-1896` | 示例头 `"dryRun": false` 却带 `schema`/`exportedAt`（实现里这两键**只在 dry-run 分支**） | 按评审②：从示例移除 `schema`/`exportedAt`，说明句改为「`schema`/`exportedAt` are echoed on the `?dryRun=true` answer **only**，`written`/`history` 只在真实导入出现——示例带后者不带前者」 |
+| R4-4 | `:4669-4675`（§15.7 注）、`:638-639`（§1 表）、`:1774`（§10 悬空指代） | ① 废置注只声称盖「two paragraphs」，而第 3 段（`:4702` 之前）同样含旧锁表述；② §1 的 export 行仍写「One or both layers」；③ 「The portability sentence above」是悬空指代（全文 `portab` 只剩 `:2645` 的历史引用） | ① 注改为「The **three paragraphs** below describe the Revision 7 lock（前两段陈述规则、第三段在 Revision 36 后复述）」；② export 行改为「The **whole installation** … full backup since Revision 53」、import 行补「name-based write lock removed in Revision 53」；③ 改写为「A document's **layer views** are therefore still portable in the Revision 4 sense…」 |
+| R4-5 | §Rev7 概览最后一条 bullet `:149-153` + 撤回段 `:154-163` | **主管要求的 `grep "import one any more"` 复核时新发现**：该 bullet（「an existing override … no route can create, update or **import** one any more」）同样含旧行为且无 inline 标注；撤回段还写着「withdraws **two** of those bullets」，与该 bullet 的第三处「or import」不符 | 该 bullet 改为「no **write** route can create or update one any more *(Revision 7–52 also said no route **imports** one; Revision 53 withdrew that half)*」；撤回段改为「withdraws the migration half of **three** of those bullets」并把第三种点明 |
+
+**章节覆盖表（机械提取 `grep -n "^## "` 得到的 22 章，每章一行）**
+
+| 章（行范围） | 涉及 Rev53 行为？ | 契约位置（当前行号） | 当前表述 → 处置 |
+| --- | --- | --- | --- |
+| §1 Routes and methods (626-670) | 是：export/import 能力描述 | `:638-639` | 旧「One or both layers」→「whole installation…full backup since Revision 53」；import 行补「name-based write lock removed in Revision 53」（**R4-4② 本轮修**） |
+| §2 snapshot (671-955) | 否 | — | 装配/快照视图不写文件；`:931` 的「unregistered」指路由随插件卸载 |
+| §3 overrides GET (956-991) | 否 | — | 纯读面 |
+| §4 PUT/DELETE + 错误码 (992-1163) | 是：写锁仍生效 + 新错误码 | `:1011`,`:1071`,`:1098` 写锁（正确）；`:1111-1127` 错误码表；`:1133-1136` `write-locked` 的 Revision 53 note；`:1150-1156` history note | 写锁行现在时**正确**（PUT/单名 DELETE）；导出相关新码与 note 已加 |
+| §5 Semantics (1164-1278) | 否 | — | 合并/装配语义；`:1199` 的 byte-identical 指渲染 |
+| §6 E1–E5 (1279-1320) | 否 | — | 实机测量结论 |
+| **§7 Known limitations (1321-1444)** | **是（R3 曾整章漏扫）** | `:1395-1400` item 16、`:1420-1422` item 21 | 旧「No route … imports one」「only … or by hand」→ **R4-2 本轮加 Revision 53 更正**；其余条目（:1346/:1385/:1438）与本次变更无关 |
+| §8 history (1445-1568) | 否 | — | 变更日志 |
+| §9 diff (1569-1656) | 否 | — | 版本对比 |
+| §10 export (1657-1797) | 是 | `:1662-1704` v2 示例；`:1719-1741` Rev7 段+表；`:1745-1749` Rev36 inline；`:1753-1797` v2 段 + `exportScope` 表（含 `omittedApplied`）；`:1774` 端口性表述 | R2/R3/R4 逐处处理；`:1774` 悬空指代 **R4-4③ 本轮修** |
+| §11 import (1798-2073) | 是 | `:1809-1811` step 3 inline；`:1826-1856` R53 校验清单；`:1859-1896` 响应示例+说明；`:1945-2072` §11.7（三防线、读面不变量、R2 段） | 全部正确；示例 **R4-3 本轮修** |
+| §12 DELETE overrides (2074-2177) | 是：写锁仍生效 | `:2108`,`:2146`,`:2164` | 单名 DELETE 仍 `403 write-locked` —— 现在时**正确** |
+| §13 Client-side (2178-4165) | 是：库/备份关系、导入预览 UI | `:2524`,`:2603` 写面语境（正确）；`:2638-2646` why-a-third-file（R3 本轮修）；`:3924` 导入预览客户端行为（未变） | 正确/已修 |
+| §14 build stamp (4166-4493) | 否 | — | 构建戳 |
+| §15 owned section + write lock (4494-4886) | 是（主场） | `:4607-4632` §15.5 写锁表（PUT/DELETE，正确）；`:4654-4665` §15.6（**R4-1**）；`:4667-4745` §15.7（**R4-4①** 注覆盖前三段、`:4702` 第 4 段 inline、R53 段）；`:4737-4750` §15.8（R3-1 修） | 全部正确 |
+| §16 interpolate (4887-5421) | 否 | — | 插值开关；`:5111` 提及 import 只是说明同一校验的覆盖面 |
+| §17 update check (5422-6039) | 否（R2-5 的校验函数来自本章路由） | — | 本章不描述导出/导入；`validateRegistryAddress` 由 §11.7 `:2037` 引用 |
+| §18 install (6040-6490) | 否 | — | 官方安装流程 |
+| §19 rollback (6491-6656) | 是：前提句 | `:6502-6505` | 旧「`PUT`、单名 `DELETE` 和 `POST /import` all refuse any other name」→ **R4-4 前身（R3-4）本轮复核**为两条写路由 + import 更正 |
+| §20 preset library (6657-7148) | 是 | `:6800-6848` §20.4（R1 白名单）；`:6990` §20.7 表；`:7002-7022` §20.8（R3 inline + 撤回段）；`:2638`（§13）why-a-third-file | 正确/已修 |
+| §21 assembly notice (7149-7436) | 否 | — | 会话内提示 |
+| §22 locale (7437-7501) | 否 | — | 文案字典 |
+
+**行号自查（评审抽查发现上一版两处行号不存在）**：确认属实——上版写的 `§15.7 :4682` 与 `§20.8 :6975` 在当前文件里分别是 `:4702`（「Because an export now carries at most one entry per layer」，R3 加的 inline 就在其后）与 `:7002`（「No preset travels in an export」）。漂移原因是 R3 自己的编辑使行号后移，而我当时沿用了更早的 grep 结果——**这正是 §15.7 第 3 段被漏标的同一原因**。本轮改为**内容锚点取号**：用一段脚本对每个引用片段做唯一子串定位并打印行号（31 个锚点），表中每个行号都取自该输出；随后又用「锚点 → 期望行号」的断言脚本复核（首轮 15 处 ±1–5 行偏差被纠正，本轮表内行号全部通过）。
+
+**验收（R4 实跑，基于 b38eb89 之上的工作树、未提交）**
+
+- evidence: suite=node --test(test/*.test.mjs) passed=935 failed=0 exit=0 ms=51784；`node scripts/prepare.mjs` = OK（23 项，`LOCALE-SYNC` 567 键）exit 0（纯文档改动，用例数不变）；
+- `grep -n "import one any more\|writable only by hand\|portability sentence above" CONTRACT.md` ⇒ 逐处确认：`portability sentence above` **零命中**；`import one any more` 只剩 `:156`（撤回段里**引用**该 clause，带更正语境）；`writable only by hand` 只剩 `:1399`（item 16 的**标题句**，紧随其后的句子就是 Revision 53 更正）。加宽扫描 `update or import|create or import|creates, updates or imports|may not be imported` ⇒ **零命中**。
+- **本轮方法收益**：章节清单（`grep -n "^## "` 22 章）让 §7 Known limitations（1321–1444，前三轮从未触及）暴露出来；而主管给的三条验证 grep 又在本轮末尾抓出 R4-5（§Rev7 概览最后一条 bullet）——两种机械范围（章节 / 指定 grep）各抓出一处，说明「范围可核验」比「措辞穷举」更关键。
+

@@ -144,13 +144,17 @@ revision that narrows rather than adds:
   it dropped, per layer and in total, as `exportScope` (§10).
   **(Revision 7; withdrawn in Revision 53 — see below.)**
 - an existing override of any other name keeps working **exactly** as it did in
-  Revision 6 — same assembly result, byte for byte — but no route can create,
-  update or import one any more. It is *frozen read-only*, and a hand edit of the
-  layer's file remains the escape hatch (§15.8).
+  Revision 6 — same assembly result, byte for byte — but no **write** route can
+  create or update one any more *(Revision 7–52 also said no route **imports**
+  one; Revision 53 (g-074) withdrew that half — §15.7)*. It is *frozen
+  read-only* against the write face, and a hand edit of the layer's file remains
+  the escape hatch (§15.8).
 
-**Revision 53 (g-074) withdraws two of those bullets, and nothing else.** The
-import bullet (a document carrying a non-reserved name) and the export bullet
-(`GET /export` carries only the reserved entry) describe the「导得出去、导不回来」
+**Revision 53 (g-074) withdraws the migration half of three of those bullets,
+and nothing else.** The import bullet (a document carrying a non-reserved name),
+the export bullet (`GET /export` carries only the reserved entry) and the
+「no route can … import one any more」 clause of the last bullet describe the
+「导得出去、导不回来」
 shape the owner retired on 2026-10-16. §10 and §11.7 now say that an export is
 the whole installation and an import restores it, with `version: 2` written and
 `version: 1` still read for the backups that already exist. The `PUT` bullet, the
@@ -635,8 +639,8 @@ meaning exactly.
 | `/prompt-setting/history` | `GET` | One layer's bounded change log, newest first (Revision 4, §8); paged by `offset` and scoped by `session` / `workspace` since Revision 19. |
 | `/prompt-setting/diff` | `GET` | Section + line comparison of two versions of one layer (Revision 4, §9); same scope as §8 since Revision 19. |
 | `/prompt-setting/rollback` | `POST` | Move the **reserved section** back to a recorded version, appending a section-level `rollback` record (Revision 21; narrowed to that one section in Revision 22, §19). |
-| `/prompt-setting/export` | `GET` | One or both layers as a schema-versioned JSON document (Revision 4, §10). |
-| `/prompt-setting/import` | `POST` | Apply such a document atomically, with a `dryRun` preview (Revision 4, §11). |
+| `/prompt-setting/export` | `GET` | The **whole installation** as a schema-versioned JSON document: both layer views, every registered workspace layer, the preset library and the preferences (Revision 4; full backup since Revision 53, §10). |
+| `/prompt-setting/import` | `POST` | Apply such a document atomically, with a `dryRun` preview — and restore that whole installation (Revision 4; the name-based write lock was removed in Revision 53, §11). |
 | `/prompt-setting/interpolate` | `GET` | The「我的 Prompt」variable-substitution switch, per layer and effective (Revision 11, §16.4). |
 | `/prompt-setting/interpolate` | `PUT` | Set that switch for one layer: `{"enabled": bool}` (Revision 11) or `{"state": "inherit"|"on"|"off"}` (Revision 12, §16.8). |
 | `/prompt-setting/update-check` | `GET` | The upstream release check: is a newer release published, and is checking on at all? Always `200`, failures included (g-030, §17). |
@@ -1392,8 +1396,10 @@ Stage 3 (Revision 5) adds one:
 
 Revision 7 adds these:
 
-16. **A frozen override is writable only by hand.** No route creates, updates or
-    imports one; `?legacy=true` removes the whole frozen half and `?reset=true`
+16. **A frozen override is writable only by hand.** No **write** route creates or
+    updates one *(Revision 7–52 also said no route **imports** one; Revision 53
+    (g-074) withdrew that half — an import may carry a frozen override, §15.7)*;
+    `?legacy=true` removes the whole frozen half and `?reset=true`
     removes everything. That is a policy choice with a cost, stated here rather
     than discovered: a user who wants to change one frozen entry must edit the
     layer's file (§15.6, §15.8).
@@ -1416,7 +1422,9 @@ Revision 7 adds these:
     「我的 Prompt」, which writes the reserved name with `replace` — so no UI
     path can ask for a write the Host would refuse. What remains a *limitation*
     of the narrowed write face is recorded in §15.8: a frozen override can only
-    be removed by the layer-wide `?legacy=true` clear (§12.2) or by hand.
+    be removed by the layer-wide `?legacy=true` clear (§12.2), by hand, or —
+    since Revision 53 (g-074) — by importing a backup that carries the layer
+    without that entry (`mode=replace`, §11.4).
     The tab order, defaults and markers are specified in §13.0; the client
     cannot enforce the freeze, only state it.
 
@@ -1766,10 +1774,11 @@ fields is refused (`400 unexpected-export-field`) rather than half-read.
 The layer views stay path-free — `buildExport` copies only
 `{layer, enabled, reason, overrides}`. The **one** absolute path a version 2
 document carries is a workspace's own `root`, and it carries it deliberately: a
-backup that did not name its workspaces could not put them back. The portability
-sentence above therefore still describes `layers`, and describes a version 1
-document entirely; a version 2 document is a **machine-local backup**, and §11.7
-says what an import does with a root this machine does not register.
+backup that did not name its workspaces could not put them back. A document's
+**layer views** are therefore still portable in the Revision 4 sense (and a
+version 1 document is entirely so); a version 2 document taken as a whole is a
+**machine-local backup**, and §11.7 says what an import does with a root this
+machine does not register.
 
 `exportScope` keeps its name and changes its meaning: it now **declares what the
 document holds**, and every count that used to report an omission is truthfully
@@ -1856,7 +1865,6 @@ neither touches a byte.
 ```json
 {
   "ok": true, "dryRun": false, "mode": "merge", "session": null,
-  "schema": "dsh-prompt-setting/export", "exportedAt": "2024-01-02T10:00:00.000Z",
   "layers": {
     "user": { "counts": { "added": 1, "replaced": 1, "unchanged": 0, "removed": 0, "kept": 1 },
               "changes": [ { "name": "project:alpha", "status": "replaced", "action": "replace" } ],
@@ -1882,9 +1890,11 @@ neither touches a byte.
 }
 ```
 
-The keys above are the Revision 53 (g-074) shape; `schema` / `exportedAt` are
-echoed on the `?dryRun=true` answer only, `written` / `history` only on a real
-one, and the installation-level half (`workspaces`, `presets`, `preferences`,
+The keys above are the Revision 53 (g-074) shape of a **real** import
+(`dryRun: false`). Two sets are conditional: `schema` / `exportedAt` are echoed
+on the `?dryRun=true` answer **only**, and `written` / `history` appear on a real
+import **only** — the example above carries the latter pair and not the former.
+The installation-level half (`workspaces`, `presets`, `preferences`,
 `importedWorkspaces`, `workspaceTotals`) is present on both — see §11.7 for what
 each field means. A version 1 document carries none of the installation half, so
 those fields come back empty. `totals` sums the **layer views**; the workspace
@@ -4645,17 +4655,23 @@ exists for:
   earlier, by hand, or by a config-sync tool. It **keeps working**: the override
   engine, `mergeLayers`, `buildEffective` and `detectFrozen` are unchanged by this
   revision, so the assembly result for such a layer is byte-for-byte what it was.
-- no route can create, update or import one any more. It is therefore *frozen
-  read-only*: visible in `GET /overrides` and in every snapshot view, removable as
-  a whole with `?legacy=true`, removable one name at a time only by…
+- no **write** route can create or update one any more *(Revision 7–52; the
+  import half of this bullet was withdrawn in Revision 53 — an import may carry a
+  frozen override, §15.7)*. It is therefore *frozen read-only* against the write
+  face: visible in `GET /overrides` and in every snapshot view, removable as a
+  whole with `?legacy=true`, removable one name at a time only by…
 - …**hand-editing the layer's file**. That is the documented escape hatch: the
   file stays the source of truth, every route request re-reads it before doing
   anything else (§5.5), and an external edit is visible to the very next request
   with no remount. There is deliberately no route that reopens the write face.
+  *(An **import** can still bring a frozen override in — or drop one in
+  `mode=replace` — because that is a restore of a document the user chose, not a
+  reopened write face; §11.7.)*
 
 ### 15.7 Import: the write lock is gone, the checks are not (Revision 7; **lock removed in Revision 53**)
 
-*The two paragraphs below describe the **Revision 7** lock, which **Revision 53
+*The **three paragraphs** below describe the **Revision 7** lock (the first two
+state the rule, the third restates it after Revision 36), which **Revision 53
 (g-074) removed**: an import no longer refuses a document for carrying a
 non-reserved name — that is what makes a full backup restorable. They are kept as
 the history of the boundary, and the「Revision 53」note at the end of this section
@@ -4678,10 +4694,14 @@ applied it (§11.4).
 
 Revision 36 gains from that rule rather than changing it: the「叠加」mode is an
 `action`, so an export taken on one machine re-imports as the same mode on
-another, and a rollback restores it from the recorded snapshot. The lock still
-refuses new **names** only, so nothing here widens what an import may touch —
-one entry, in the one layer the document names, with the other layer's file
-byte-identical (§4.1).
+another, and a rollback restores it from the recorded snapshot.
+
+*（Revision 7–52 continued here:「The lock still refuses new **names** only, so
+nothing here widens what an import may touch — one entry, in the one layer the
+document names, with the other layer's file byte-identical (§4.1).」**Withdrawn
+in Revision 53 (g-074)**: the name lock is gone, so a document may carry any
+number of entries under any names, and the refusals that replaced the lock are
+listed in §11.1 and §11.7.)*
 
 Because an export now carries at most one entry per layer, the multi-entry plan
 shapes (`replaced`, `kept`, and `removed` in `merge` mode) are exercised at the
