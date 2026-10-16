@@ -1127,7 +1127,7 @@ human-readable `message`.
 | `400` | `unexpected-export-field` | **Revision 53.** A version 1 document carries `workspaces`/`presets`/`preferences`. A field that is `null` counts as **not carried**, so `{"version":1,"presets":null}` is a version 1 document like any other. |
 | `400` | `invalid-export-workspaces` / `invalid-export-workspace` | **Revision 53.** `workspaces` is not an array, or an entry is not `{root, enabled?, reason?, overrides?}`. |
 | `400` | `duplicate-workspace-root` | **Revision 53.** Two entries name the same workspace root. |
-| `400` | `invalid-workspace-root` | **Revision 53.** A root — `workspaces[].root` **or** `presets.applied[].workspaceRoot` (R1) — is not an absolute path, or carries a `..` segment / a control character, or is a volume root. |
+| `400` | `invalid-workspace-root` | **Revision 53.** A root — `workspaces[].root` **or** `presets.applied[].workspaceRoot` (R1) — is not an absolute path, or carries a `..` segment / a control character, or is a volume root (a POSIX `/` or a bare drive such as `C:\`; a UNC share root is treated as an ordinary directory, §11.7). |
 | `400` | `unknown-workspace-root` | **Revision 53.** A legal absolute path that this profile's registry does not list (§11.7). Since R1 this also covers an `applied` record the delete-preset route is about to restore into. |
 | `400` | `conflicting-import-target` | **Revision 53.** Two parts of the document carry different override lists for the same file. |
 | `409` | `presets-not-writable` / `preferences-not-writable` | **Revision 53.** The existing library / preference file is unusable; it is never overwritten. |
@@ -1396,7 +1396,8 @@ Stage 3 (Revision 5) adds one:
 
 Revision 7 adds these:
 
-16. **A frozen override is writable only by hand.** No **write** route creates or
+16. **A frozen override is writable only by hand — and, since Revision 53, by
+    importing a backup that carries it.** No **write** route creates or
     updates one *(Revision 7–52 also said no route **imports** one; Revision 53
     (g-074) withdrew that half — an import may carry a frozen override, §15.7)*;
     `?legacy=true` removes the whole frozen half and `?reset=true`
@@ -1843,7 +1844,8 @@ code:
   `text`, `order`, uniqueness) — the stage 1 codes, with the location in the
   message;
 - every **workspace root**: an absolute path with no `..` segment, no control
-  character and not a volume root (`400 invalid-workspace-root`), naming a
+  character and not a volume root — a POSIX `/` or a bare drive such as `C:\`
+  (`400 invalid-workspace-root`) — naming a
   workspace this profile's `workspaceRegistry` actually lists
   (`400 unknown-workspace-root`) — see §11.7;
 - the **library** and the **preference document**, each validated by the module
@@ -1880,7 +1882,7 @@ neither touches a byte.
   "preferences": { "path": "…/preferences.json", "changed": false, "keys": ["updateCheck", "downloadRegion"] },
   "imported": ["user"],
   "importedWorkspaces": ["/abs/path/to/workspace"],
-  "skipped": [],
+  "skipped": [ { "layer": "workspace", "reason": "layer \"workspace\" requires a \"session\" id to resolve the workspace root", "entries": 0 } ],
   "totals": { "added": 1, "replaced": 1, "unchanged": 0, "removed": 0, "kept": 1 },
   "workspaceTotals": { "added": 1, "replaced": 0, "unchanged": 0, "removed": 0, "kept": 1 },
   "unchanged": false,
@@ -1899,6 +1901,15 @@ The installation-level half (`workspaces`, `presets`, `preferences`,
 each field means. A version 1 document carries none of the installation half, so
 those fields come back empty. `totals` sums the **layer views**; the workspace
 entries are summed separately in `workspaceTotals`.
+
+`skipped[]` is `{layer, reason, entries}[]`: one entry per layer view or
+workspace layer the import did **not** apply — a layer it could not resolve with
+nothing in it (§11.3), a workspace that carries no override (§11.7), or an
+installation-level half a `?layer=` request deliberately left alone. `entries` is
+how many overrides that layer would have contributed, `0` when the document asked
+for nothing in it. Those three field names are what this contract fixes; att-002
+(the panel-side「what was skipped」declaration) builds its display on exactly this
+shape.
 
 `counts.kept` is the number of local entries the document does not mention and
 that survive the strategy. `unchanged: true` means the plan changes nothing: no
@@ -2018,7 +2029,12 @@ Three things close it, and all three are asserted:
   `validateWorkspaceRoot` (`core/workspace-root.js`, a module of its own so
   `core/presets.js` can import it without a cycle): a non-empty absolute path, no
   `..` segment, no control character, not a volume root. Either field answers
-  `400 invalid-workspace-root`;
+  `400 invalid-workspace-root`. The two roots the rule refuses are the **POSIX
+  root** (`/`) and a **bare drive** (`C:\`, `C:/`): both would place the plugin's
+  directory at the top of a volume. A **UNC share root** (`\\server\share`) is
+  *not* refused — it is an ordinary directory path as far as this rule is
+  concerned, and what keeps it honest is the registry check below (a share this
+  profile does not register is `unknown-workspace-root`);
 - **one registry rule, applied at every writer.** `assertKnownWorkspaceRoot` is
   called for `workspaces[].root` on an import, for `presets.applied[].
   workspaceRoot` on an import, and for **every** applied root the delete-preset
@@ -5697,6 +5713,11 @@ The preference lives in **its own file**, `<DSH_HOME>/prompt-setting/preferences
 { "updateCheck": false }
 ```
 
+**This file is also carried by a full backup (Revision 53, §11.7)**: `GET
+/export` copies the whole document into its top-level `preferences` field, and
+`POST /prompt-setting/import` **replaces this file as a whole** from that field —
+so the routes in this chapter are no longer its only writer.
+
 **Revision 28** adds the download region to the **same** document and the same
 atomic write path (§17.6): the keys are `downloadRegion`, `downloadRegionRegistry`
 (only meaningful for `custom`) and `downloadRegionAuto` (`true` when the value was
@@ -7227,7 +7248,9 @@ exactly like the update switch. The key is `assemblyNotice` in the **same**
 `preferences.json`, written through the same merge (so this write cannot erase
 `updateCheck` or `downloadRegion`), and it is carried through
 `normalizePreferences` only when the document states a boolean — a pre-g-062
-file stays byte-identical. An absent key means **on**.
+file stays byte-identical. An absent key means **on**. *(Since Revision 53 this
+key also travels in a full backup, and `POST /prompt-setting/import` replaces
+the whole `preferences.json` — see §17.4 and §11.7.)*
 
 ### 21.3 The two verdicts, and where each comes from
 

@@ -9158,6 +9158,8 @@ phase 1/2 直接用记录里的 root 拼 `workspaceConfigPath(root)` 并 `writeC
 
 **章节覆盖表（机械提取 `grep -n "^## "` 得到的 22 章，每章一行）**
 
+> ⚠️ **本表的行号已过期，勿引用**：R4 的最后一个 hunk（在 §1 之前插入 4 行）使其后所有行号整体下移，而本表的取号是在那次编辑**之前**跑的。**以 §151.5 的「R5 行号重取表」为准**（那是在当前文件上重跑的结果）；本表只保留「哪一章涉及哪些行为」的判断结论。
+
 | 章（行范围） | 涉及 Rev53 行为？ | 契约位置（当前行号） | 当前表述 → 处置 |
 | --- | --- | --- | --- |
 | §1 Routes and methods (626-670) | 是：export/import 能力描述 | `:638-639` | 旧「One or both layers」→「whole installation…full backup since Revision 53」；import 行补「name-based write lock removed in Revision 53」（**R4-4② 本轮修**） |
@@ -9183,11 +9185,50 @@ phase 1/2 直接用记录里的 root 拼 `workspaceConfigPath(root)` 并 `writeC
 | §21 assembly notice (7149-7436) | 否 | — | 会话内提示 |
 | §22 locale (7437-7501) | 否 | — | 文案字典 |
 
-**行号自查（评审抽查发现上一版两处行号不存在）**：确认属实——上版写的 `§15.7 :4682` 与 `§20.8 :6975` 在当前文件里分别是 `:4702`（「Because an export now carries at most one entry per layer」，R3 加的 inline 就在其后）与 `:7002`（「No preset travels in an export」）。漂移原因是 R3 自己的编辑使行号后移，而我当时沿用了更早的 grep 结果——**这正是 §15.7 第 3 段被漏标的同一原因**。本轮改为**内容锚点取号**：用一段脚本对每个引用片段做唯一子串定位并打印行号（31 个锚点），表中每个行号都取自该输出；随后又用「锚点 → 期望行号」的断言脚本复核（首轮 15 处 ±1–5 行偏差被纠正，本轮表内行号全部通过）。
+**行号自查（评审抽查发现上一版两处行号不存在）**：确认属实——上版写的 `§15.7 :4682` 与 `§20.8 :6975` 在当前文件里分别是 `:4702`（「Because an export now carries at most one entry per layer」，R3 加的 inline 就在其后）与 `:7002`（「No preset travels in an export」）。漂移原因是 R3 自己的编辑使行号后移，而我当时沿用了更早的 grep 结果——**这正是 §15.7 第 3 段被漏标的同一原因**。本轮改为**内容锚点取号**：用一段脚本对每个引用片段做唯一子串定位并打印行号（31 个锚点），表中每个行号都取自该输出。
+
+**R5 实测更正（2026-10-16，评审 rev-att-001-05 抽查）**：上面那句「本轮表内行号全部通过」**不成立，已撤回**——评审实测指出本表行号**系统性 +4**（626→630、1321→1325、2074→2078、4494→4498），且 §12 一处更硬：本表称 `:2108`/`:2146`/`:2164` 三处 `write-locked`，而**当前文件 §12 范围内唯一命中是 `:2166`**（`:2108` 已是 `effectiveFrom: next-turn`、`:2164` 是 Revision 22 的描述）。根因：R4 首个 hunk 插入 4 行后**没有重跑取号**，我沿用了编辑前的输出并写成「全部通过」。**教训（第三次同类）**：凡写「已通过/已完成」，必须是**刚跑出来的结果**；引用行号必须在**最终文件**上重取。重取结果与逐行 `sed` 抽查见 §151.5。
 
 **验收（R4 实跑，基于 b38eb89 之上的工作树、未提交）**
 
 - evidence: suite=node --test(test/*.test.mjs) passed=935 failed=0 exit=0 ms=51784；`node scripts/prepare.mjs` = OK（23 项，`LOCALE-SYNC` 567 键）exit 0（纯文档改动，用例数不变）；
 - `grep -n "import one any more\|writable only by hand\|portability sentence above" CONTRACT.md` ⇒ 逐处确认：`portability sentence above` **零命中**；`import one any more` 只剩 `:156`（撤回段里**引用**该 clause，带更正语境）；`writable only by hand` 只剩 `:1399`（item 16 的**标题句**，紧随其后的句子就是 Revision 53 更正）。加宽扫描 `update or import|create or import|creates, updates or imports|may not be imported` ⇒ **零命中**。
 - **本轮方法收益**：章节清单（`grep -n "^## "` 22 章）让 §7 Known limitations（1321–1444，前三轮从未触及）暴露出来；而主管给的三条验证 grep 又在本轮末尾抓出 R4-5（§Rev7 概览最后一条 bullet）——两种机械范围（章节 / 指定 grep）各抓出一处，说明「范围可核验」比「措辞穷举」更关键。
+
+### 151.5 R5 返工：`skipped` 形状回归 + **行号在最终文件上重取**（评审 rev-att-001-05 BLOCK，只剩 2 条）
+
+**R5-1 §11.2 示例的 `skipped` 元素形状（R3-3 引入的回归）**：R3 把示例补全时写了 `"skipped": []`，而基线是 `"skipped": [ { "layer": "workspace", "reason": "…", "entries": 0 } ]` —— **三字段形状只由这一个示例承载**（实现仍在输出：`index.js` 的 `{layer: name, reason: error.message, entries: 0}` 与 `{…, entries: entry.overrides.length}`），而 Rev53 契约在 skipped 语境下 `layer`/`reason` 零命中。这既在响应契约上留了缺口，也**直接阻塞 att-002 的判据 9**（前端要展示「被跳过的未注册工作区（列表 + 计数）」却没有字段形状可依）。处置：示例恢复元素形状（字段名与实现逐字一致），并在说明段新增一段：
+
+> `skipped[]` is `{layer, reason, entries}[]`: one entry per layer view or workspace layer the import did **not** apply … Those three field names are what this contract fixes; **att-002** (the panel-side「what was skipped」declaration) builds its display on exactly this shape.
+
+**R5-2 行号在最终文件上重取**（评审实测：本表行号系统性 +4；§12 的所谓三处 `write-locked` 实测只有一处）
+
+| 章 | 起始行（重取） | 章 | 起始行（重取） |
+| --- | --- | --- | --- |
+| §1 Routes and methods | `:630` | §12 DELETE overrides | `:2094` |
+| §2 snapshot | `:675` | §13 Client-side | `:2198` |
+| §3 overrides GET | `:960` | §14 build stamp | `:4186` |
+| §4 PUT/DELETE + errors | `:996` | §15 owned section + write lock | `:4514` |
+| §5 Semantics | `:1168` | §16 interpolate switch | `:4907` |
+| §6 E1–E5 | `:1283` | §17 update check | `:5442` |
+| §7 Known limitations | `:1325` | §18 install | `:6065` |
+| §8 history | `:1450` | §19 rollback | `:6516` |
+| §9 diff | `:1574` | §20 preset library | `:6682` |
+| §10 export | `:1662` | §21 assembly notice | `:7174` |
+| §11 import | `:1803` | §22 locale | `:7464` |
+
+R4 表内**引用行号**的重取结果（当前文件）：§1 `:642-643`（export/import 行）；§4 `:1015`/`:1075`/`:1102`（写锁）、`:1115`/`:1125`/`:1126`/`:1127`/`:1130`/`:1131`（错误码表）、`:1137`（`write-locked` 的 Revision 53 note）、`:1158`（history note）、`### 4.4` `:1083`；§7 `:1399`（item 16）、`:1425`（item 21）；§10 `:1667`（v2 示例）、`:1725`（Superseded）、`:1750`（Rev36 inline）、`:1758`（v2 段）、`:1766`（`workspaces[]` 行）、`:1779`（端口性表述）；§11 `### 11.2` `:1865`、`"skipped"` 元素 `:1885`、说明段 `:1905`、`### 11.7` `:1960`、R2 段 `:2057`、step 3 `:1814`、R53 校验段 `:1837`；§12 实测 `write-locked` **唯一命中 `:2166`**（原先写的 `:2108`/`:2146`/`:2164` 全错）；§13 写面语境 `:2541`/`:2623`（正确）、why-a-third-file `:2663`、导入预览 `:3944`、rollback 语境 `:3417`；§15 `### 15.5` `:4627`、§15.6 `:4665`、`:4674`（R4-1 句）、`### 15.7` `:4687`、`:4689`（三段落注）、`:4722`（第 4 段）、`### 15.8` `:4757`、`:4770`（R3-1 说明）；§19 `### 19.1` `:6521`、`:6527`（更正句）；§20 `### 20.4` `:6825`、`### 20.7` `:6995`、`### 20.8` `:7025`、`:7027`（bullet）、`:7041`（撤回段）；§Rev7 概览 `:153`（「withdraws the migration half of **three**」）。
+
+**逐行 `sed` 抽查**：上表全部行号由 31 个内容锚点在**当前文件**上定位取得（脚本输出行号与片段一并打印），并逐条用 `sed -n "<n>p"` 复核落在所描述内容上；`NOTES.md` 中旧表的引用已加「⚠️ 已过期，以 §151.5 为准」，`:9186` 的「全部通过」声明已**撤回并改写**为如实记录（系统性 +4 / §12 三处错误 / 根因＝编辑后未重跑取号）。
+
+**R5-3/4/5（同批，非阻断）**
+- **R5-3 §7 item 16 标题句**：改为「A frozen override is writable only by hand — **and, since Revision 53, by importing a backup that carries it**」。
+- **R5-4 偏好文件的第二写面**：§17.4（`:5716`）新增「**This file is also carried by a full backup (Revision 53, §11.7)**：`GET /export` 整份复制、`POST /import` **整份替换**」；§21.2（`:7251`）补「*(Since Revision 53 this key also travels in a full backup, and `POST /import` replaces the whole `preferences.json` — see §17.4 and §11.7.)*」。
+- **R5-5 UNC 措辞**：按评审倾向**只改契约、不改实现**——§11.7（`:2030-2036`）明确「规则拒绝的两个根是 **POSIX `/`** 与 **裸盘符 `C:\`**；**UNC 共享根 `\\server\share` 不被拒**，它按普通目录处理，由注册表白名单兜底」；§4.4（`:1130`）与 §11.1（`:1847`）同步该限定。
+
+**验收（R5 实跑，最终文件、未提交）**
+
+- evidence: suite=node --test(test/*.test.mjs) passed=935 failed=0 exit=0；`node scripts/prepare.mjs` = OK（23 项，`LOCALE-SYNC` 567 键）exit 0（纯文档改动，用例数不变）；
+- `grep -n '"layer"' CONTRACT.md` 在 §11 范围命中（`:1885` 示例元素、`:1905` 说明段）；`grep -n "entries" CONTRACT.md` 与实现的四处语义一致（`entries: 0` / `entry.overrides.length` 的计数含义）；
+- `grep -n "no route can create, update or import one any more" CONTRACT.md` ⇒ **零命中**。
 
