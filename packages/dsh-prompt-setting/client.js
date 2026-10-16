@@ -1121,7 +1121,7 @@ window.__ModuleLoader__.load({
       assemblySaveFailed: '切换装配状态提示失败',
       assemblyEnabledNow: '装配状态提示已开启。',
       assemblyDisabledNow: '装配状态提示已关闭：不再产生新的提示（已有观察保留）。',
-      assemblyNoSession: '先在上方「查看范围」选择一个会话，才能看到该会话的装配状态。',
+      assemblyNoSession: '「高级」的工作区选择器还没有可用的会话：请先在左侧打开一个会话，或让宿主列出工作区。',
       assemblyNoRecord: '所选会话还没有观察到装配；下一次请求后结果会出现在这里。',
       assemblyNoNotice: '所选会话已开启提示，但还没有到提示节点（新会话首次装配，或保存 Prompt 之后的下一个 run）。',
       assemblyWaitingDelivery: '等待本步的送达事件…',
@@ -1249,9 +1249,22 @@ window.__ModuleLoader__.load({
       histScopeWorkspace: '当前展示「{name}」这一工作区的历史文件（由会话 {session} 定位），是该工作区的全部记录。',
       histScopeNone: '还没有可用的工作区作用域：请先在左侧打开一个会话，或让宿主列出工作区。',
       histScopeDegraded: '工作区服务不可用，已降级为按会话定位历史文件。',
-      histScopeHint: '作用域只属于「版本历史」，与上方「查看范围」互不影响。',
+      histScopeHint: '作用域只属于「版本历史」，与「我的 Prompt」里的「查看范围」互不影响。',
       histScopeSearch: '搜索作用域（工作区 / 会话）',
       histScopeNoMatch: '没有匹配的作用域。',
+      overviewScopeLabel: '总览作用域',
+      overviewScopeNone: '还没有可选的会话：请先在左侧打开一个会话，或让宿主列出工作区与会话。',
+      overviewScopeDegraded: '工作区服务不可用，已降级为按会话选择作用域。',
+      overviewScopeSearch: '搜索作用域（工作区 / 会话）',
+      overviewScopeNoMatch: '没有匹配的会话。',
+      overviewScopeAuto: '跟随当前会话',
+      advancedScopeLabel: '工作区（层操作对象）',
+      advancedScopeNone: '还没有可选的工作区：请先在左侧打开一个会话，或让宿主列出工作区。',
+      advancedScopeDegraded: '工作区服务不可用，已降级为按会话定位工作区层。',
+      advancedScopeSearch: '搜索工作区',
+      advancedScopeNoMatch: '没有匹配的工作区。',
+      advancedScopeAuto: '跟随当前会话',
+      advancedScopeNote: '这里选的是工作区：整层清除作用于该工作区层文件（该工作区所有会话共享）。用户层是全局的，与这里的选择无关。',
       histPager: '第 {page} / {pages} 页 · 共 {total} 条',
       histPagePrev: '上一页',
       histPageNext: '下一页',
@@ -1697,7 +1710,7 @@ window.__ModuleLoader__.load({
       assemblySaveFailed: 'Switching the assembly-status notice failed',
       assemblyEnabledNow: 'The assembly-status notice is on.',
       assemblyDisabledNow: 'The assembly-status notice is off: no new notice will be produced (existing observations are kept).',
-      assemblyNoSession: 'Pick a session under "Viewing scope" above to see that conversation\'s assembly status.',
+      assemblyNoSession: 'The Advanced tab\'s workspace selector has no session to name yet: open a session on the left, or have the host list the workspaces.',
       assemblyNoRecord: 'No assembly has been observed for the selected session yet; the result appears here after the next request.',
       assemblyNoNotice: 'The notice is on for the selected session, but no key node has been reached yet (the first assembly of a new conversation, or the next run after a prompt is saved).',
       assemblyWaitingDelivery: 'Waiting for this step\'s delivery event…',
@@ -1825,9 +1838,22 @@ window.__ModuleLoader__.load({
       histScopeWorkspace: 'Showing the history file of workspace "{name}" (located by session {session}) — every record of that workspace.',
       histScopeNone: 'No workspace scope is available yet: open a session on the left, or have the host list the workspaces.',
       histScopeDegraded: 'The workspace service is unavailable; the scope degraded to locating the history file by session.',
-      histScopeHint: 'This scope belongs to Version history alone and is independent of the View scope above.',
+      histScopeHint: 'This scope belongs to Version history alone and is independent of the View scope inside My Prompt.',
       histScopeSearch: 'Search scopes (workspaces / sessions)',
       histScopeNoMatch: 'No scope matches.',
+      overviewScopeLabel: 'Overview scope',
+      overviewScopeNone: 'No session is available to scope by yet: open a session on the left, or have the host list workspaces and sessions.',
+      overviewScopeDegraded: 'The workspace service is unavailable; the scope degraded to picking a session.',
+      overviewScopeSearch: 'Search sessions (workspaces / sessions)',
+      overviewScopeNoMatch: 'No session matches.',
+      overviewScopeAuto: 'Follow the current session',
+      advancedScopeLabel: 'Workspace (what layer actions target)',
+      advancedScopeNone: 'No workspace is available yet: open a session on the left, or have the host list the workspaces.',
+      advancedScopeDegraded: 'The workspace service is unavailable; the target degraded to locating a workspace by session.',
+      advancedScopeSearch: 'Search workspaces',
+      advancedScopeNoMatch: 'No workspace matches.',
+      advancedScopeAuto: 'Follow the current session',
+      advancedScopeNote: 'What you pick here is a workspace: a whole-layer clear acts on that workspace’s file (shared by every session in it). The user layer is global and independent of this choice.',
       histPager: 'Page {page} / {pages} · {total} records',
       histPagePrev: 'Previous',
       histPageNext: 'Next',
@@ -4818,6 +4844,65 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * g-073 (Revision 55): the options「提示词总览」's own scope selector offers.
+     *
+     * The shape is dictated by what the host does with `?session=`: it resolves
+     * the workspace layer file from it **and** probes the assembly in that
+     * session's own scope, so the frozen verdict and the variable resolution the
+     * overview shows are per-session facts (§2.4). A workspace is therefore a
+     * **group**, never an option, and every option's value is a concrete session
+     * id — never the workspace's first one. `historyScopeOptionsOf` may compress
+     * a workspace into one member session because a log file really is per
+     * workspace; this selector may not, and copying that shortcut here is the
+     * mistake this derivation exists to prevent.
+     *
+     * A session the workspace list does not claim is offered last, under the
+     * session catalogue's own order; an empty seat yields `mode: 'none'`, which
+     * the panel states in words instead of asking the host a question it must
+     * refuse.
+     * @param wsSeat - the workspace seat (`{items}`).
+     * @param seat - the session seat (`{rows}`).
+     * @returns `{mode, groups, options}`; a group is `{id, label, options}`.
+     */
+    function overviewScopeOptionsOf(wsSeat, seat) {
+      const rows = Array.isArray(seat && seat.rows) ? seat.rows : [];
+      const workspaces = Array.isArray(wsSeat && wsSeat.items) ? wsSeat.items : [];
+      const groups = [];
+      const claimed = new Set();
+      for (const workspace of workspaces) {
+        const ids = Array.isArray(workspace && workspace.sessionIds)
+          ? workspace.sessionIds.filter((id) => typeof id === 'string' && id.length > 0)
+          : [];
+        if (ids.length === 0) continue;
+        const title = typeof workspace.title === 'string' ? workspace.title : '';
+        const path = typeof workspace.path === 'string' ? workspace.path : '';
+        const label = title.length > 0 ? title : basenameOf(path) || workspace.workspaceId || ids[0];
+        const options = ids.map((id) => ({
+          value: id,
+          label: sessionLabelOf(rows, id) || id,
+          workspaceId: typeof workspace.workspaceId === 'string' ? workspace.workspaceId : '',
+        }));
+        for (const option of options) claimed.add(option.value);
+        groups.push({
+          id: typeof workspace.workspaceId === 'string' && workspace.workspaceId.length > 0 ? workspace.workspaceId : label,
+          label,
+          options,
+        });
+      }
+      const rest = [];
+      for (const row of rows) {
+        if (row === null || row === undefined || typeof row.id !== 'string' || row.id.length === 0) continue;
+        if (claimed.has(row.id)) continue;
+        rest.push({ value: row.id, label: sessionLabelOf(rows, row.id) || row.id, workspaceId: '' });
+      }
+      if (rest.length > 0) groups.push({ id: 'sessions', label: '', options: rest });
+      const options = [];
+      for (const group of groups) for (const option of group.options) options.push(option);
+      if (options.length === 0) return { mode: 'none', groups: [], options: [] };
+      return { mode: workspaces.length > 0 ? 'workspaces' : 'sessions', groups, options };
+    }
+
+    /**
      * The reserved section's stored text in one layer, read from **that layer's
      * own** override list (`payload.user.overrides` / `payload.workspace.overrides`,
      * CONTRACT.md §3) — the file the layer itself holds, so what 「我的 Prompt」
@@ -6427,16 +6512,18 @@ window.__ModuleLoader__.load({
      * g-055: the「我的 Prompt」block. Since g-071 it renders **inside** the mine
      * panel, right below that panel's own `h3`, and no longer above the tab bar.
      *
-     * The「查看范围」selector is page-level state — it scopes the snapshot and the
-     * override reads and it decides which layer a save lands in — and it stays
-     * the *one* place the scope is changed. g-055 fixed the reading (one sentence
-     * saying what the scope decides, then the card, in one container) but kept the
-     * block above the tab bar; g-071 is the owner's correction of that position:
-     * the block belongs to the surface it writes, so it is rendered by that
-     * surface. The other tabs render nothing scope-shaped of their own: the
-     * read-only line g-071 first gave them was withdrawn in R4 (each tab has its
-     * own scope semantics; decoupling them is g-073), so the page still states the
-     * scope in exactly one place — this block.
+     * The「查看范围」selector is「我的 Prompt」's own state — it scopes **this
+     * panel's** snapshot and override reads and it decides which layer a save
+     * lands in — and it stays the *one* place that scope is changed. g-055 fixed
+     * the reading (one sentence saying what the scope decides, then the card, in
+     * one container) but kept the block above the tab bar; g-071 is the owner's
+     * correction of that position: the block belongs to the surface it writes, so
+     * it is rendered by that surface. **g-073 finished the thought**: the other
+     * tabs are decoupled from this value — 「提示词总览」and「高级」have their own
+     * selectors, 「我的预设」and「备份与恢复」carry no scope at all — so the page
+     * states this scope in exactly one place, this block, and the other five tabs
+     * render none of `data-region="session"` / `data-region="scope-summary"` /
+     * `data-action="scope-toggle"`.
      *
      * The block deliberately has **no heading of its own** (review round 1): a
      * second `h3`「我的 Prompt」two lines above the panel's own title repeated the
@@ -7091,7 +7178,13 @@ window.__ModuleLoader__.load({
       const record = ready && payload.record !== null && typeof payload.record === 'object' ? payload.record : null;
       const notice =
         record !== null && record.notice !== null && typeof record.notice === 'object' ? record.notice : null;
-      const hasSession = m.sessionArg !== null;
+      // g-073 (Revision 55): 「高级」's own workspace selector names the session
+      // whose assembly record is read (the host keys one record per session id) —
+      // no longer the page's「查看范围」, which serves「我的 Prompt」alone. The
+      // fallback keeps an older model shape readable; it is never reached by this
+      // page, which always hands `assemblySession` over.
+      const hasSession =
+        m.assemblySession !== undefined ? m.assemblySession !== null : m.sessionArg !== null;
       // The one punctuation the two languages disagree about, so no sentence is
       // assembled by concatenating a hardcoded separator.
       const sep = t('assemblyLayerSep');
@@ -7799,9 +7892,9 @@ window.__ModuleLoader__.load({
      * would be exactly the silently false「一致」the stamp exists to prevent.
      */
     const CHUNK_STAMPS = Object.freeze([
-      { name: 'client.advanced.js', hash: '20024f50', size: 21859 },
+      { name: 'client.advanced.js', hash: '22e9b127', size: 29441 },
       { name: 'client.history.js', hash: 'a3ec9d47', size: 50647 },
-      { name: 'client.overview.js', hash: 'ddbcf423', size: 23861 },
+      { name: 'client.overview.js', hash: '525dad60', size: 32356 },
       { name: 'client.presets.js', hash: 'e1a665bb', size: 24079 },
       { name: 'client.transfer.js', hash: '01b94760', size: 15861 },
     ]);
@@ -8802,10 +8895,16 @@ window.__ModuleLoader__.load({
       if (regionCard !== null) children.push(regionCard);
       // g-071: the tab panel holds the tab's own surface and nothing else. No
       // scope-shaped node is injected here (R4 withdrew the read-only line).
+      //
+      // g-073 (Revision 55): 「提示词总览」draws from **its own** snapshot, so this
+      // gate follows the tab: the page's read must not hide the overview, and the
+      // overview's read must not hide anything else. Every other tab keeps the
+      // page-scoped gate it always had.
+      const panelSnap = m.tab === 'overview' ? m.overviewSnap : m.snap;
       children.push(
         h('div', { key: 'panel', 'data-region': 'panel' },
-          m.snap.phase === 'loading' && !m.snap.data ? h('p', { key: 'loading', style: metaStyle }, t('loading')) : null,
-          m.snap.data
+          panelSnap.phase === 'loading' && !panelSnap.data ? h('p', { key: 'loading', style: metaStyle }, t('loading')) : null,
+          panelSnap.data
             ? h(
                 'div',
                 { key: 'tab-panel', 'data-region': 'tab-panel', 'data-tab-value': m.tab },
@@ -9093,6 +9192,37 @@ window.__ModuleLoader__.load({
         return restore;
       }, [historyModal]);
       const [historyPanelPx, setHistoryPanelPx] = React.useState(null);
+      // g-073 (Revision 55):「提示词总览」's **own** scope, deliberately not the
+      // page's「查看范围」. `null` means「跟随当前会话」; a string is the session id
+      // the reader picked in the overview scope selector. The shape is *by
+      // workspace group, down to one session*, not one option per workspace: the
+      // host's `/snapshot` reads `session` twice — it resolves the workspace layer
+      // file *and* probes the assembly in that session's own scope — and the
+      // frozen verdict and variable resolution are per-scope facts (§2.4), so a
+      // "first session of the workspace" stand-in would show a verdict that is
+      // not the reader's session's.
+      const [overviewScope, setOverviewScope] = React.useState(null);
+      const [overviewScopeOpen, setOverviewScopeOpen] = React.useState(false);
+      const [overviewScopeSearch, setOverviewScopeSearch] = React.useState('');
+      // The overview's own read of `/snapshot`. It is taken **only** while that
+      // tab is open (one request per tab open / scope change / reload), because
+      // every `/snapshot` answer costs two `assemble()` runs on the host (§2.6).
+      const [overviewSnap, setOverviewSnap] = React.useState({ phase: 'loading', data: null, error: null });
+      // g-073 (Revision 55):「高级」's **own** workspace selector. Layer-wide
+      // operations (`reset=true` / `legacy=true`) clear a whole workspace file —
+      // every session in it shares that file — so the thing to choose here is a
+      // **workspace**, not a session, and it is no longer inherited from the
+      // page's「查看范围」. `null` means「跟随当前会话」.
+      const [advancedScope, setAdvancedScope] = React.useState(null);
+      const [advancedScopeOpen, setAdvancedScopeOpen] = React.useState(false);
+      const [advancedScopeSearch, setAdvancedScopeSearch] = React.useState('');
+      // The advanced tab's own override read: the legacy list and the two
+      // layer-wide counts describe the layer the selector names, so they may not
+      // be taken from a page-scoped response. Its snapshot read is the other half
+      // of the same question — `applied` is a fact about the assembly in **this**
+      // scope, so a row cannot be judged against another workspace's assembly.
+      const [advancedOvs, setAdvancedOvs] = React.useState({ phase: 'idle', data: null, error: null });
+      const [advancedSnap, setAdvancedSnap] = React.useState({ phase: 'loading', data: null, error: null });
       // 「高级」 picks its own layer: the two layer-wide buttons are destructive,
       // and silently sharing another tab's selector would make selecting a log
       // filter change what a clear button is aimed at.
@@ -9289,6 +9419,95 @@ window.__ModuleLoader__.load({
         );
       })();
 
+      // ---- g-073 (Revision 55): the two tab-owned scopes --------------------
+      // Neither of these is the page's「查看范围」: that one serves「我的 Prompt」
+      // alone now (§13.7). Both default to「跟随当前会话」(`null`), so a fresh page
+      // behaves exactly as it did — what changed is **who may move them**, and
+      // that the page scope can no longer move them.
+      //
+      // 「提示词总览」: one group per workspace, one option per **session**
+      // (see `overviewScopeOptionsOf` for why a session id is required here).
+      const overviewScopes = overviewScopeOptionsOf(wsSeat, seat);
+      const overviewScopeAuto =
+        seat.currentId.length > 0
+          ? seat.currentId
+          : overviewScopes.options.length > 0
+            ? overviewScopes.options[0].value
+            : '';
+      const overviewScopeValue =
+        overviewScope !== null && overviewScopes.options.some((option) => option.value === overviewScope)
+          ? overviewScope
+          : overviewScopeAuto;
+      // The readable name of the overview scope, as **data**: `''` means the
+      // global scope, and the chunk that renders it turns that into
+      // `sessionGlobal` — no key may be produced on this component's own path,
+      // where a throwing translator has to reach the failure card instead
+      // (g-063 E1).
+      const overviewScopeName =
+        overviewScopeValue.length === 0 ? '' : sessionLabelOf(seat.rows, overviewScopeValue) || overviewScopeValue;
+      const overviewScopeArg = overviewScopeValue.length > 0 ? overviewScopeValue : null;
+      // The candidate groups the open overview picker renders: the search narrows
+      // each group's options, and a group left with no option is not rendered at
+      // all (an empty heading is not a hit). No cache: the list is bounded by the
+      // scrolling box, not by a render cap, and it is compared field by field so
+      // a match can never span two fields.
+      const overviewScopeGroups = (() => {
+        const needle = normalizeNeedle(overviewScopeSearch);
+        if (needle.length === 0) return overviewScopes.groups;
+        const filtered = [];
+        for (const group of overviewScopes.groups) {
+          const options = group.options.filter((option) =>
+            matchesNeedle([option.label, option.value, group.label], needle),
+          );
+          if (options.length > 0) filtered.push({ ...group, options });
+        }
+        return filtered;
+      })();
+
+      // 「高级」: a **workspace** dimension, exactly like the version history's own
+      // scope (`historyScopeOptionsOf`), because a workspace layer file — and what
+      // `reset=true` / `legacy=true` clear — is per workspace, shared by every
+      // session in it. The option's value is still a session id: the host resolves
+      // a workspace root from a session and a client never supplies a path (§4.2).
+      const advancedScopes = historyScopeOptionsOf(wsSeat, seat);
+      const advancedScopeAuto = (() => {
+        const owner = advancedScopes.options.find((option) => option.sessionIds.includes(seat.currentId));
+        // The owner lookup is the history selector's, but the **value** is the
+        // current session itself, not the workspace's first one: this selector
+        // also decides which session's assembly record the status block reads,
+        // and records are keyed by session id. Standing a different session in
+        // would silently move the default view off the conversation the reader
+        // is looking at.
+        if (owner !== undefined) return seat.currentId;
+        if (seat.currentId.length > 0) return seat.currentId;
+        return advancedScopes.options.length > 0 ? advancedScopes.options[0].value : '';
+      })();
+      const advancedScopeValue =
+        advancedScope !== null && advancedScopes.options.some((option) => option.value === advancedScope)
+          ? advancedScope
+          : advancedScopeAuto;
+      const advancedScopeOwner =
+        advancedScopes.options.find((option) => option.sessionIds.includes(advancedScopeValue)) ?? null;
+      // The name is the **workspace**'s, because that is what the layer actions
+      // act on; while the scope still follows the current session, the session's
+      // own name rides along so "which conversation's record is this" is not a
+      // question the reader has to guess at.
+      const advancedScopeName = (() => {
+        const sessionName = sessionLabelOf(seat.rows, advancedScopeValue) || advancedScopeValue;
+        if (advancedScopeOwner === null) return sessionName;
+        if (advancedScope !== null) return advancedScopeOwner.label;
+        if (sessionName.length === 0 || sessionName === advancedScopeOwner.label) return advancedScopeOwner.label;
+        return `${advancedScopeOwner.label} · ${sessionName}`;
+      })();
+      const advancedScopeArg = advancedScopeValue.length > 0 ? advancedScopeValue : null;
+      const advancedScopeMatches = (() => {
+        const needle = normalizeNeedle(advancedScopeSearch);
+        if (needle.length === 0) return advancedScopes.options;
+        return advancedScopes.options.filter((option) =>
+          matchesNeedle([option.label, option.value, option.workspaceId], needle),
+        );
+      })();
+
       React.useEffect(() => {
         let cancelled = false;
         setSnap({ phase: 'loading', data: null, error: null });
@@ -9405,19 +9624,6 @@ window.__ModuleLoader__.load({
               ? { phase: 'ready', data: overrides.payload, error: null }
               : { phase: 'error', data: null, error: overrides.error },
           );
-          // g-060: the preset library rides on the same load. It is one global
-          // file plus the resolved root of the selected session (§20.2), so it
-          // is asked with the same `?session=` the two layer views use — and it
-          // is *not* an error of this page when the host answers a library
-          // reason: `GET /presets` answers `200` with an `error` field, which
-          // the tab renders as a library problem rather than as「没有预设」.
-          const presetsResult = await requestJson(`${PRESETS_PATH}${query}`);
-          if (cancelled) return;
-          setPresets(
-            presetsResult.ok
-              ? { phase: 'ready', data: presetsResult.payload, error: null }
-              : { phase: 'error', data: null, error: presetsResult.error },
-          );
         };
         void load();
         return () => {
@@ -9425,15 +9631,106 @@ window.__ModuleLoader__.load({
         };
       }, [sessionArg, reload]);
 
+      // g-073 (Revision 55): the preset library is **not** read in the page scope
+      // any more. It is one global file plus the records each workspace states
+      // (§20.2), and the page's「查看范围」serves「我的 Prompt」alone — so this read
+      // carries no `?session=` at all, and moving the page scope neither
+      // re-slices nor re-fetches it. It still rides on `reload`, because the
+      // writes that change that file (a save, a delete, an applied import) are
+      // what bump that counter. A library reason is still *not* an error of this
+      // page: `GET /presets` answers `200` with an `error` field, which the tab
+      // renders as a library problem rather than as「没有预设」.
+      React.useEffect(() => {
+        let cancelled = false;
+        const run = async () => {
+          const presetsResult = await requestJson(PRESETS_PATH);
+          if (cancelled) return;
+          setPresets(
+            presetsResult.ok
+              ? { phase: 'ready', data: presetsResult.payload, error: null }
+              : { phase: 'error', data: null, error: presetsResult.error },
+          );
+        };
+        void run();
+        return () => {
+          cancelled = true;
+        };
+      }, [reload]);
+
+      // g-073 (Revision 55):「提示词总览」reads the snapshot in **its own** scope.
+      // The read is gated on the tab being open — one request per tab open, scope
+      // change or reload — because every `/snapshot` answer costs the host two
+      // `assemble()` runs (§2.6): re-reading it on every render (or on every move
+      // of the page's「查看范围」) is exactly what this shape avoids. The page
+      // scope can move all it likes; this request never carries it.
+      React.useEffect(() => {
+        if (tab !== 'overview') return undefined;
+        let cancelled = false;
+        setOverviewSnap({ phase: 'loading', data: null, error: null });
+        const query = overviewScopeArg === null ? '' : `?session=${encodeURIComponent(overviewScopeArg)}`;
+        const run = async () => {
+          const result = await requestJson(`${SNAPSHOT_PATH}${query}`);
+          if (cancelled) return;
+          setOverviewSnap(
+            result.ok
+              ? { phase: 'ready', data: result.payload, error: null }
+              : { phase: 'error', data: null, error: result.error },
+          );
+        };
+        void run();
+        return () => {
+          cancelled = true;
+        };
+      }, [tab, overviewScopeArg, reload]);
+
+      // g-073 (Revision 55):「高级」reads **both** halves of its own scope — the
+      // override lists the legacy view renders and the snapshot its `applied`
+      // verdicts come from. The legacy list and the two layer-wide counts
+      // describe one layer file, so they may not come from the page-scoped
+      // response — that one belongs to「我的 Prompt」. Gated on the tab being open,
+      // exactly like the assembly-status read below, so a mount that never opens
+      // this tab still pays nothing.
+      React.useEffect(() => {
+        if (tab !== 'advanced') return undefined;
+        let cancelled = false;
+        setAdvancedSnap({ phase: 'loading', data: null, error: null });
+        const query = advancedScopeArg === null ? '' : `?session=${encodeURIComponent(advancedScopeArg)}`;
+        const run = async () => {
+          const overrides = await requestJson(`${OVERRIDES_PATH}${query}`);
+          if (cancelled) return;
+          setAdvancedOvs(
+            overrides.ok
+              ? { phase: 'ready', data: overrides.payload, error: null }
+              : { phase: 'error', data: null, error: overrides.error },
+          );
+          const snapshot = await requestJson(`${SNAPSHOT_PATH}${query}`);
+          if (cancelled) return;
+          setAdvancedSnap(
+            snapshot.ok
+              ? { phase: 'ready', data: snapshot.payload, error: null }
+              : { phase: 'error', data: null, error: snapshot.error },
+          );
+        };
+        void run();
+        return () => {
+          cancelled = true;
+        };
+      }, [tab, advancedScopeArg, reload]);
+
       // The assembly-status read belongs to 「高级」: since g-065 that tab owns
       // the two-layer observation block (its own chunk renders it), so the read
       // follows the block instead of the write surface. A mount that never opens
       // that tab still issues no assembly-status request at all.
+      //
+      // g-073 (Revision 55): it is asked in the advanced tab's **own** scope. The
+      // host keys one record per session id (`core/assembly-watch.js`), so the
+      // selector's value — a member session of the chosen workspace — is what
+      // names the record to read; the page's「查看范围」no longer does.
       React.useEffect(() => {
         if (tab !== 'advanced') return undefined;
         let cancelled = false;
         let timer = null;
-        const query = sessionArg === null ? '' : `?session=${encodeURIComponent(sessionArg)}`;
+        const query = advancedScopeArg === null ? '' : `?session=${encodeURIComponent(advancedScopeArg)}`;
         // One read per mount/tab/scope change, plus a short follow-up **only**
         // while the Host reports a notice whose delivery layer is still
         // `waiting`: that verdict is settled by a session event which arrives
@@ -9471,7 +9768,7 @@ window.__ModuleLoader__.load({
           cancelled = true;
           if (timer !== null) clearTimeout(timer);
         };
-      }, [tab, sessionArg, reload]);
+      }, [tab, advancedScopeArg, reload]);
 
       // History is loaded only while 「版本历史」 is open: 「我的 Prompt」 and
       // 「提示词总览」 must not pay for a log they never show, and a mount that
@@ -9571,6 +9868,27 @@ window.__ModuleLoader__.load({
           : [];
       const phase = snap.phase === 'ready' && effectiveSections.length === 0 ? 'empty' : snap.phase;
       const incoming = incomingNames(snapshot);
+      // g-073 (Revision 55): the four derived facts「提示词总览」renders, taken from
+      // **its own** snapshot. They are separate values rather than a switched
+      // source so the page-scoped ones above keep describing「我的 Prompt」exactly
+      // as before, in every tab, and a tab switch cannot change what another
+      // surface's model says.
+      const overviewSnapshot = overviewSnap.data;
+      const overviewFz = frozenState(overviewSnapshot, overviewScopeArg !== null);
+      const overviewEffectiveSections =
+        overviewSnapshot && overviewSnapshot.effective && Array.isArray(overviewSnapshot.effective.sections)
+          ? overviewSnapshot.effective.sections
+          : [];
+      const overviewIncoming = incomingNames(overviewSnapshot);
+      // g-073 (Revision 55): the same two facts for「高级」, from **its own**
+      // snapshot — the legacy list's `applied` verdict is a statement about the
+      // assembly in this scope, not about the page scope's.
+      const advancedSnapshot = advancedSnap.data;
+      const advancedEffectiveSections =
+        advancedSnapshot && advancedSnapshot.effective && Array.isArray(advancedSnapshot.effective.sections)
+          ? advancedSnapshot.effective.sections
+          : [];
+      const advancedIncoming = incomingNames(advancedSnapshot);
 
       // ---- 「我的 Prompt」: the reserved section's stored value and its state
       // g-056: the draft is keyed by the **write target**, so a draft typed for
@@ -9828,10 +10146,19 @@ window.__ModuleLoader__.load({
         setReload((value) => value + 1);
       };
 
-      /** Clear one whole layer (`DELETE …&reset=true`). */
+      /**
+       * Clear one whole layer (`DELETE …&reset=true`).
+       *
+       * g-073 (Revision 55): the workspace is the one **「高级」's own selector**
+       * names, not the page's「查看范围」. The semantics are worth restating: on the
+       * workspace layer this clears the **whole workspace file** — every session in
+       * that workspace shares it — so the selector aims at a workspace, and which
+       * member session stands for it changes nothing about what is cleared. The
+       * user layer is global and reads no session at all.
+       */
       const resetLayer = async (layer) => {
         setBusy(true);
-        const result = await requestJson(`${OVERRIDES_PATH}?${layerQuery(layer, sessionArg)}&reset=true`, { method: 'DELETE' });
+        const result = await requestJson(`${OVERRIDES_PATH}?${layerQuery(layer, advancedScopeArg)}&reset=true`, { method: 'DELETE' });
         setBusy(false);
         if (!result.ok) {
           setNotice({ tone: 'error', text: errorText(t, result.error) });
@@ -9846,11 +10173,20 @@ window.__ModuleLoader__.load({
         setReload((value) => value + 1);
       };
 
-      /** Fetch the export document, hold its text, and try to download it. */
+      /**
+       * Fetch the export document, hold its text, and try to download it.
+       *
+       * g-073 (Revision 55): the request carries **no** page scope. A backup is
+       * not a view of one range — since Revision 53 it carries every layer's
+       * overrides, every workspace layer, the preset library and the preferences
+       * (§10) — so the page's「查看范围」has no business in it, and a document that
+       * depended on which session happened to be selected could not be called a
+       * backup. The host's `?session=` (still accepted) only ever located the one
+       * workspace layer view it used to narrow the document to.
+       */
       const exportNow = async () => {
         setBusy(true);
-        const query = sessionArg === null ? '' : `?session=${encodeURIComponent(sessionArg)}`;
-        const result = await requestJson(`${EXPORT_PATH}${query}`);
+        const result = await requestJson(EXPORT_PATH);
         setBusy(false);
         if (!result.ok) {
           setTransfer((current) => ({ ...current, phase: 'error', error: result.error, plan: null }));
@@ -9931,7 +10267,7 @@ window.__ModuleLoader__.load({
         }
         setTransfer((current) => ({ ...current, phase: 'previewing', error: null }));
         setBusy(true);
-        const query = `dryRun=true&mode=${encodeURIComponent(importMode)}${sessionArg === null ? '' : `&session=${encodeURIComponent(sessionArg)}`}`;
+        const query = `dryRun=true&mode=${encodeURIComponent(importMode)}`;
         const result = await requestJson(`${IMPORT_PATH}?${query}`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -9950,7 +10286,7 @@ window.__ModuleLoader__.load({
         const raw = String(importText).trim();
         setTransfer((current) => ({ ...current, phase: 'applying', error: null }));
         setBusy(true);
-        const query = `mode=${encodeURIComponent(importMode)}${sessionArg === null ? '' : `&session=${encodeURIComponent(sessionArg)}`}`;
+        const query = `mode=${encodeURIComponent(importMode)}`;
         const result = await requestJson(`${IMPORT_PATH}?${query}`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -10264,7 +10600,7 @@ window.__ModuleLoader__.load({
        */
       const clearLegacy = async (layer) => {
         setBusy(true);
-        const result = await requestJson(`${OVERRIDES_PATH}?${layerQuery(layer, sessionArg)}&legacy=true`, { method: 'DELETE' });
+        const result = await requestJson(`${OVERRIDES_PATH}?${layerQuery(layer, advancedScopeArg)}&legacy=true`, { method: 'DELETE' });
         setBusy(false);
         if (!result.ok) {
           setNotice({ tone: 'error', text: errorText(t, result.error) });
@@ -11270,6 +11606,27 @@ window.__ModuleLoader__.load({
         toggleHistoryScopeOpen: () => setHistoryScopeOpen((open) => !open),
         setHistoryScopeSearch: (event) =>
           setHistoryScopeSearch(event && event.target ? String(event.target.value) : ''),
+        // g-073 (Revision 55): the two tab-owned scopes. Like the history scope's
+        // own action, neither of these is `pickSession`: moving one moves no
+        // page-scoped read and never touches `setSelection`. Picking **finishes
+        // the interaction** — the disclosure collapses and the search box is
+        // dropped — exactly as the page-level picker does (§13.7).
+        setOverviewScope: (value) => {
+          setOverviewScope(typeof value === 'string' && value.length > 0 ? value : null);
+          setOverviewScopeOpen(false);
+          setOverviewScopeSearch('');
+        },
+        toggleOverviewScopeOpen: () => setOverviewScopeOpen((open) => !open),
+        setOverviewScopeSearch: (event) =>
+          setOverviewScopeSearch(event && event.target ? String(event.target.value) : ''),
+        setAdvancedScope: (value) => {
+          setAdvancedScope(typeof value === 'string' && value.length > 0 ? value : null);
+          setAdvancedScopeOpen(false);
+          setAdvancedScopeSearch('');
+        },
+        toggleAdvancedScopeOpen: () => setAdvancedScopeOpen((open) => !open),
+        setAdvancedScopeSearch: (event) =>
+          setAdvancedScopeSearch(event && event.target ? String(event.target.value) : ''),
         historyPrev,
         historyNext,
         // g-039 fifth round: the preview lives in a modal, and this is what opens
@@ -11382,8 +11739,12 @@ window.__ModuleLoader__.load({
         previewImport,
         requestImportApply: () => setConfirm({ kind: 'import' }),
         copy: async () => {
+          // g-073 (Revision 55): the copy buttons live in 「提示词总览」, so they
+          // copy **that tab's** assembly — the one its own scope produced.
           const text =
-            fullOrigin === 'all' ? String(snapshot && snapshot.rendered ? snapshot.rendered : '') : composeSections(effectiveSections, fullOrigin);
+            fullOrigin === 'all'
+              ? String(overviewSnapshot && overviewSnapshot.rendered ? overviewSnapshot.rendered : '')
+              : composeSections(overviewEffectiveSections, fullOrigin);
           const copied = await copyText(text);
           setNotice({ tone: copied ? 'success' : 'error', text: copied ? t('copied') : t('copyFail') });
         },
@@ -11463,6 +11824,38 @@ window.__ModuleLoader__.load({
         expanded,
         snap,
         ovs,
+        // g-073 (Revision 55):「提示词总览」's own snapshot read and its own scope.
+        // The overview chunk reads these four — never `snap` / `fz` /
+        // `effectiveSections` / `incoming`, which keep describing the page-scoped
+        // assembly「我的 Prompt」writes to.
+        overviewSnap,
+        overviewSnapshot,
+        overviewFz,
+        overviewEffectiveSections,
+        overviewIncoming,
+        overviewScope,
+        overviewScopeValue,
+        overviewScopeName,
+        overviewScopeOptions: overviewScopes.options,
+        overviewScopeGroups,
+        overviewScopeMode: overviewScopes.mode,
+        overviewScopeOpen,
+        overviewScopeSearch,
+        // g-073 (Revision 55):「高级」's own workspace selector, the override read
+        // it scopes, and the session its assembly record is read for.
+        advancedScope,
+        advancedScopeValue,
+        advancedScopeName,
+        advancedScopeOptions: advancedScopes.options,
+        advancedScopeMatches,
+        advancedScopeMode: advancedScopes.mode,
+        advancedScopeOpen,
+        advancedScopeSearch,
+        advancedOvs,
+        advancedSnap,
+        advancedEffectiveSections,
+        advancedIncoming,
+        assemblySession: advancedScopeArg,
         notice,
         busy,
         hist,

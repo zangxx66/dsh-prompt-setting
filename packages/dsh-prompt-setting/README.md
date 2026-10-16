@@ -31,25 +31,31 @@
 - **我的 Prompt / My Prompt** —— 唯一写入口：写下你自己的系统级指令（选层 → 编辑 → 保存），
   一键恢复默认。这段文本**排在所有内置段之后**。「查看范围」选择器就在**这一面板内、标题之下**（g-071 起）：
   它决定保存落到哪一层，改范围也只有这一处（面板内那行只读提示会重复告诉你当前写到哪）。
+  **它只服务这一面板**（g-073 起）：其余 tab 各自解耦（见下）。
   > The only write surface: your own system-level instructions (pick a layer → edit → save), with a
   > one-click restore. The text is **placed after every built-in section**. The "View scope" selector is
   > **inside this panel, under its title** (since g-071): it decides which layer a save lands in, and it
   > is the only place the scope is changed (the panel repeats the current target as a read-only line).
+  > **It serves this panel alone** (since g-073): every other tab is decoupled from it.
 
 - **我的预设 / My presets** —— 你的常用文本库：把一段文本存成预设（新建 / 编辑 / 删除），再把它**应用到某个
   工作区**（写入该工作区的保留段），也可以**取消应用**——该工作区会精确还原为应用前的内容。删除一个
   已被应用的预设会**先取消它的应用**：每个受影响的工作区都还原为应用前的内容，然后预设才从库里删除
-  （确认浮层会列出这些工作区）。
+  （确认浮层会列出这些工作区）。预设库是全局的，**不受「查看范围」影响**（g-073 起）。
   > Your catalogue of reusable texts: save a text as a preset (create / edit / delete), then **apply** it to
   > a workspace (it is written into that workspace layer's reserved section) or **cancel** the application,
   > which restores exactly what that workspace held before. Deleting an applied preset **cancels its
   > applications first**: every affected workspace is restored to what it held before, and only then is the
-  > preset removed from the library (the confirmation names those workspaces).
+  > preset removed from the library (the confirmation names those workspaces). The library is global and
+  > **not affected by the "View scope"** (since g-073).
 
 - **提示词总览 / Prompt overview** —— 纯只读：分段列表（状态标记 / 搜索 / 筛选 / 复制）、完整全文，
-  以及 `base ↔ effective` 对比，一眼看出你的改动究竟改变了什么。
+  以及 `base ↔ effective` 对比，一眼看出你的改动究竟改变了什么。它有自己的**作用域选择器**（g-073 起）：
+  **按工作区分组、可选到具体会话**，切换后按该作用域重新读取快照；页面「查看范围」不再影响它。
   > Read-only: the assembled section list (status marks / search / filters / copy), the full text, and a
-  > `base ↔ effective` diff, so you can see exactly what your change did.
+  > `base ↔ effective` diff, so you can see exactly what your change did. It has its **own** scope
+  > selector (since g-073), **grouped by workspace and resolving down to a concrete session**; changing it
+  > re-reads the snapshot in that scope, and the page's "View scope" no longer affects it.
 
 - **版本历史 / Version history** —— 历史列表（定高内滚 + 翻页，默认每页 50）与行级版本对比。
   历史有自己的**作用域选择器**（工作区维度），与「我的 Prompt」里的「查看范围」互不影响：用户层历史是全局的，
@@ -59,23 +65,27 @@
   > Prompt**: the user layer's log is global and is never sliced by session.
 
 - **备份与恢复 / Backup & restore** —— 全量备份导出下载（两层全部覆盖含冻结项、全部已注册工作区层、
-  预设库、偏好设置）、导入预览（先看变更计划，确认后才落盘；导入逐项校验格式 / 字段 / 路径，非法即整体
-  拒绝、零写入）。
+  预设库、偏好设置；**不带页面作用域**）、导入预览（先看变更计划，确认后才落盘；导入逐项校验格式 /
+  字段 / 路径，非法即整体拒绝、零写入）。
   > Export a **full** backup for download (every override of both layers, every registered workspace layer,
-  > the preset library, the preferences) and preview an import — the change plan is shown before anything
-  > is written. An import validates the document field by field and refuses a bad one whole, writing
-  > nothing.
+  > the preset library, the preferences; **no page scope involved**) and preview an import — the change plan
+  > is shown before anything is written. An import validates the document field by field and refuses a bad
+  > one whole, writing nothing.
 
 - **高级 / Advanced** —— 旧版覆盖的只读列表、「清除全部覆盖」与「整层恢复默认」两个二次确认按钮、
   **「检查更新」开关**（默认开启；关闭后本插件**完全不再联网**）、**「立即更新」**（把提示条里的版本
   交给宿主安装，装完需要你**手动重启**：命令行启动就重新运行 `dsh web`，官方桌面端就退出并重新
-  打开 DeepSeek Harness），以及完整状态区（挂载情况 / 构建戳 / 渲染器自检）。
+  打开 DeepSeek Harness），以及完整状态区（挂载情况 / 构建戳 / 渲染器自检）。它有自己的**工作区选择器**
+  （g-073 起）：两个清除按钮、旧版覆盖列表与装配状态都按所选工作区取数，**不再跟随页面「查看范围」**；
+  用户层是全局的（选择器上那句说明写着）。
   > A read-only list of legacy overrides, two double-confirm buttons ("clear all overrides", "reset the
   > whole layer"), the **"Check for updates" switch** (on by default; off means this plugin makes **no
   > network request at all**), an **"Update now"** button (the host installs the version the banner named;
   > you restart yourself — re-run `dsh web` after a command-line start, or quit and reopen DeepSeek
   > Harness in the desktop app), and a full status area (mount state / build fingerprint / renderer
-  > self-check).
+  > self-check). It has its **own** workspace selector (since g-073): both clears, the legacy override list
+  > and the assembly status all read the workspace it names, and none of them follows the page's "View
+  > scope" any more; the user layer is global (the sentence under the control says so).
   >
   > 面板顶部是**「装配状态提示」**（g-062 引入，g-065 起从「我的 Prompt」移到这里）：新会话的第一次装配，
   > 以及保存 Prompt 之后的下一个 run，会**主动弹 toast** 给出两层结论——装配层（本次 assembly 是否读到你的
@@ -355,12 +365,12 @@ npm pack --dry-run             # 确认发布产物干净（36 个文件、含 5
 - **改文案只改 `locale/*.json` / Copy lives in `locale/*.json`**：`client.js` 里的 `zh`/`en` 两段
   是**生成物**（`// #region generated:` … `// #endregion`），由 `scripts/locale-pack.mjs --write`
   从两份 JSON 渲染；`--check` 是门禁（`prepare` 也会跑，测试见 `test/locale.test.mjs`）。JSON 共
-  566 键/语言（515 主词典 + 51 个 `error.<code>`），是**唯一人工真源**。浏览器运行时**不读**这两份
+  586 键/语言（535 主词典 + 51 个 `error.<code>`），是**唯一人工真源**。浏览器运行时**不读**这两份
   JSON —— bundle 是 classic script、宿主零转译、插件路由不服务子目录 —— 所以词典必须内联，只是不再
   手工维护（`CONTRACT.md` §22）。
   > Edit copy in `locale/zh.json` / `locale/en.json` only. The `zh`/`en` blocks inside `client.js` are
   > generated by `scripts/locale-pack.mjs --write`; `--check` (also run by `prepare`) fails on any
-  > drift. Both files hold 566 keys each (515 main + 51 `error.<code>`) and are the single human source.
+  > drift. Both files hold 586 keys each (535 main + 51 `error.<code>`) and are the single human source.
   > They are never fetched at runtime — the bundle is a classic script and the plugin route does not
   > serve subdirectories — so the dictionaries stay inlined and synchronous (`CONTRACT.md` §22).
 

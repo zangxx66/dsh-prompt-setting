@@ -73,8 +73,18 @@ const ERROR_KEY_COUNT = 51;
  * (`importWorkspacesHeading`, `importWorkspaceRow`) and the per-entry skipped
  * row (`importSkippedRow`). `importSkipped` keeps its key and now carries the
  * count instead of a joined list.
+ *
+ * g-073 (Revision 55) added thirteen, the two tab-owned scopes' own copy: six for
+ * 「提示词总览」's by-workspace, per-session selector (`overviewScopeLabel`,
+ * `overviewScopeNone`, `overviewScopeDegraded`, `overviewScopeSearch`,
+ * `overviewScopeNoMatch`, `overviewScopeAuto`) and seven for「高级」's workspace
+ * selector (`advancedScopeLabel`, `advancedScopeNone`, `advancedScopeDegraded`,
+ * `advancedScopeSearch`, `advancedScopeNoMatch`, `advancedScopeAuto`,
+ * `advancedScopeNote`). The disclosure and「当前选中」words (`scopeEdit`,
+ * `scopeCollapse`, `scopeSelected`) are shared with the version history's own
+ * selector and needed no new key.
  */
-const MAIN_KEY_COUNT = 522;
+const MAIN_KEY_COUNT = 535;
 /** The full key count both files must hold, in the same order. */
 const TOTAL_KEY_COUNT = MAIN_KEY_COUNT + ERROR_KEY_COUNT;
 
@@ -82,7 +92,7 @@ test('locale: both JSON files are valid, key-aligned dictionaries', () => {
   const { dictionaries, keys } = readDictionaries(packageRoot);
   assert.deepEqual(Object.keys(dictionaries), Object.keys(LOCALES));
   assert.equal(keys.length, TOTAL_KEY_COUNT);
-  assert.equal(keys.length, 573);
+  assert.equal(keys.length, 586);
   for (const name of Object.keys(LOCALES)) {
     const dict = dictionaries[name];
     assert.equal(Object.keys(dict).length, TOTAL_KEY_COUNT, `${name}: ${TOTAL_KEY_COUNT} keys`);
@@ -93,7 +103,7 @@ test('locale: both JSON files are valid, key-aligned dictionaries', () => {
   }
 });
 
-test('locale: the 573 keys split into 522 main entries and 51 error codes', () => {
+test('locale: the 586 keys split into 535 main entries and 51 error codes', () => {
   const { dictionaries, keys } = readDictionaries(packageRoot);
   const errorKeys = keys.filter((key) => key.startsWith('error.'));
   assert.equal(errorKeys.length, ERROR_KEY_COUNT);

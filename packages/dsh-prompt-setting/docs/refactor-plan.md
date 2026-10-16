@@ -9,7 +9,7 @@
 
 ## 0. 摘要（先给结论）
 
-1. **膨胀根因是机制性的，不是纪律问题**：chunk 准入条件是「被点击才到达的**整块 tab 渲染器**」（`client.js:8160-8188` 的注释与代码）。g-046 之后新做的 7 个提案里，只有 1 个（g-060 预设）满足该条件并新建了 chunk，其余 6 个（跨 tab chrome、默认 tab、生成物、页面模型）在结构上都不满足，只能回落到主入口。**只要这个准入条件不变，第三次拆分同样会失效。**
+1. **膨胀根因是机制性的，不是纪律问题**：chunk 准入条件是「被点击才到达的**整块 tab 渲染器**」（`client.js:8245-8293` 的注释与代码）。g-046 之后新做的 7 个提案里，只有 1 个（g-060 预设）满足该条件并新建了 chunk，其余 6 个（跨 tab chrome、默认 tab、生成物、页面模型）在结构上都不满足，只能回落到主入口。**只要这个准入条件不变，第三次拆分同样会失效。**
 
 2. **「拆文件」在现有运行期协议下有硬天花板**：浏览器模块加载器里，主 factory 是唯一**同步可达**的模块（`dsh-client-modules/lib/client.js:831-850`：`require(spec)` 只认平台 seed、已 materialize 的模块、已注册的 factory；`require.async` 才是加载新文件的唯一路径，而它是异步的）。一个同步 factory 无法在自身执行期把"共享设施"从另一个文件取来。因此主入口里「共享设施 + 页面模型（`PromptSettingSection`，2640 行）+ 协议代码」这三块**结构上搬不走**。g-045/g-046 已经把能搬的都搬了（主入口 10249 → 8575，-1674 行）；剩下的 11879 行里，可搬部分已经不多。
 
@@ -67,24 +67,24 @@
 | 216–297 | 82 | launch shape | 可拆 |
 | 298–632 | 335 | 分隔行 + primitives probe（299–632） | 可拆（被全页共享） |
 | 633–902 | 270 | 常量（`NS`、路由、`SCOPE_TOTAL_MAX` 等） | 共享 |
-| **903–2047** | **1145** | **内联 locale 生成段（g-066）** | 生成物，见 §4.2 |
-| 2048–2115 | 68 | 分隔行 + `fallbackT`、`token` 主题表 | 共享设施 |
-| 2116–2239 | 124 | fallback atoms（`FxButton` 等） | 共享设施 |
-| 2240–2649 | 410 | `PRIMITIVES_UI` 包装 + `tabs()` + `presetCountOf` 等 | 共享设施 |
-| 2650–3905 | 1256 | pure helpers（`originOf`/`diffSections`/`stampOf` …） | 可拆，但需同步可达 |
-| 3906–4433 | 528 | 分隔行 + tree builders（3907–4433） | 部分 |
-| 4434–5158 | 725 | stage 2 helpers（history / diff / reset / transfer）+ `#endregion`（5158） | 部分 |
-| 5159–6681 | 1523 | 分隔行 + 状态行 / 范围树 / 会话 / `renderConfirm` | 部分 |
-| 6682–7051 | 370 | g-062 toaster（6682 `#region` … 7051 `#endregion`） | 跨 tab chrome |
-| 7052–7771 | 720 | 装配状态 + `renderMinePanel`（7224） | 默认 tab |
-| 7772–8280 | 509 | **chunk boundary（g-045 协议）** | 不可拆（协议） |
-| 8281–8869 | 589 | 更新条 + 区域弹窗 + `renderSection`（8681）+ `#endregion`（8869） | 跨 tab chrome |
-| 8870–8883 | 14 | `PromptSettingSection` 的 JSDoc | 随页面模型 |
-| **8884–11523** | **2640** | **`PromptSettingSection`（页面模型：hooks/state/handlers/root 树）** | **不可拆（页面 root）** |
-| 11524–11535 | 12 | 分隔行 + `renderFailureCard` 的 JSDoc（11525–11535） | 协议 |
-| 11536–11879 | 344 | `renderFailureCard` / `degradedPlugin`（11808）/ boot 返回 | 协议 |
+| **903–2085** | **1183** | **内联 locale 生成段（g-066）** | 生成物，见 §4.2 |
+| 2086–2153 | 68 | 分隔行 + `fallbackT`、`token` 主题表 | 共享设施 |
+| 2154–2277 | 124 | fallback atoms（`FxButton` 等） | 共享设施 |
+| 2278–2687 | 410 | `PRIMITIVES_UI` 包装 + `tabs()` + `presetCountOf` 等 | 共享设施 |
+| 2688–3943 | 1256 | pure helpers（`originOf`/`diffSections`/`stampOf` …） | 可拆，但需同步可达 |
+| 3944–4471 | 528 | 分隔行 + tree builders（3945–4471） | 部分 |
+| 4472–5255 | 784 | stage 2 helpers（history / diff / reset / transfer）+ `#endregion`（5255） | 部分 |
+| 5256–6786 | 1531 | 分隔行 + 状态行 / 范围树 / 会话 / `renderConfirm` | 部分 |
+| 6787–7156 | 370 | g-062 toaster（6779 `#region` … 7148 `#endregion`） | 跨 tab chrome |
+| 7157–7774 | 618 | 装配状态 + `renderMinePanel`（7327） | 默认 tab |
+| 7775–8385 | 611 | **chunk boundary（g-045 协议）** | 不可拆（协议） |
+| 8386–8980 | 595 | 更新条 + 区域弹窗 + `renderSection`（8784）+ `#endregion`（8978） | 跨 tab chrome |
+| 8981–8994 | 14 | `PromptSettingSection` 的 JSDoc | 随页面模型 |
+| **8995–11928** | **2934** | **`PromptSettingSection`（页面模型：hooks/state/handlers/root 树）** | **不可拆（页面 root）** |
+| 11929–11940 | 12 | 分隔行 + `renderFailureCard` 的 JSDoc（11930–11940） | 协议 |
+| 11941–12284 | 344 | `renderFailureCard` / `degradedPlugin`（12213）/ boot 返回 | 协议 |
 
-**上表互不重叠、首尾连续，行数合计 = 11879**（评审 R2-D1 订正：原稿把 `PromptSettingSection` 写成 `8884–11536` / 2652 行，实际函数体结束于 **11523**、**2640 行**；`11536` 是下一个函数 `renderFailureCard` 的定义行，其 JSDoc 在 11525–11535）。**每个区间都是一个连续的代码切片**——这正是 §5.1 段划分的依据（只重切、不移动）。
+**上表互不重叠、首尾连续，行数合计 = 12284**（评审 R2-D1 订正：原稿把 `PromptSettingSection` 写成 `8884–11536` / 2652 行，实际函数体结束于 **11928**、**2934 行**；`11941` 是下一个函数 `renderFailureCard` 的定义行，其 JSDoc 在 11930–11940）。**每个区间都是一个连续的代码切片**——这正是 §5.1 段划分的依据（只重切、不移动）。
 
 ---
 
@@ -116,21 +116,21 @@
 **由上述事实推出的三条硬边界**（本方案的关键约束）：
 
 - **B1（同步可达唯一性）**：主 factory 的执行期内，只有"已经注册/已加载"的模块能同步取到。主 factory 自己就是**唯一保证同步可达**的模块 ⇒ 任何"主入口与 chunk 都要用的东西"必须住在主入口。
-- **B2（异步不可回退）**：`require.async` 返回 thenable，主 factory 本身不能 `await`。想让共享设施住到别的文件，只能在 `apply(ctx)`（`client.js:11685`）阶段异步预加载并存入可变容器——**未实测**（见 §8）。
-- **B3（新增 chunk 零宿主改动）**：只要文件名匹配 `/^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$/`（`core/store.js:323`）且与 `client.js` 同级平铺，宿主就会 serve 它。
+- **B2（异步不可回退）**：`require.async` 返回 thenable，主 factory 本身不能 `await`。想让共享设施住到别的文件，只能在 `apply(ctx)`（`client.js:12090`）阶段异步预加载并存入可变容器——**未实测**（见 §8）。
+- **B3（新增 chunk 零宿主改动）**：只要文件名匹配 `/^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$/`（`core/store.js:326`）且与 `client.js` 同级平铺，宿主就会 serve 它。
 
 ### 2.3 共享设施与注入协议
 
-- 主 factory 把跨 chunk 设施收在一个冻结面上：`const CHUNK_FACILITIES = Object.freeze({...})`（`client.js:7806`，区间 `7806–7895` = **90 行**），含 `h`/`token`/`UI`/`fmt`/`tabs`/`cardStyle`/`errorBanner`/`stampOf`/`layerLabel`/`diff*`/`scrimStyle` 等。
+- 主 factory 把跨 chunk 设施收在一个冻结面上：`const CHUNK_FACILITIES = Object.freeze({...})`（`client.js:7911`，区间 `7806–7895` = **90 行**），含 `h`/`token`/`UI`/`fmt`/`tabs`/`cardStyle`/`errorBanner`/`stampOf`/`layerLabel`/`diff*`/`scrimStyle` 等。
 - chunk 侧取用方式：`const shared = require('dsh-prompt-setting').__internals.shared;`（`client.history.js:36`，同一段解构 20+ 个设施名）。
-- 导出面：`client.js:11648-11651`（`__internals: { historyPanelHeight, workspaceRows, shared: CHUNK_FACILITIES, assemblyNotice: {...} }`）。
-- 设计原则（代码注释明写）：**一份实例，不复制**——"a copy would be a second value that can drift away from the page it renders in"（`client.js:7797-7805`、`client.js:3922-3926`）。测试把这条原则固化成源码断言：chunk 里不得出现 `shared.` 之外的重复定义（`test/client.test.mjs:2338-2360`）。
+- 导出面：`client.js:12053-12056`（`__internals: { historyPanelHeight, workspaceRows, shared: CHUNK_FACILITIES, assemblyNotice: {...} }`）。
+- 设计原则（代码注释明写）：**一份实例，不复制**——"a copy would be a second value that can drift away from the page it renders in"（`client.js:7902-7910`、`client.js:3960-3964`）。测试把这条原则固化成源码断言：chunk 里不得出现 `shared.` 之外的重复定义（`test/client.test.mjs:2360-2382`）。
 
 > 这条原则是**为什么共享设施不能复制到 chunk**，也是 g-061「收敛复用」那批改动净增 601 行的原因之一：收敛的每一步都要先在主入口造门面 + JSDoc。
 
 ### 2.4 chunk 加载 / 失效协议
 
-- 主入口持 5 个 chunk 的内嵌清单 `CHUNK_STAMPS`（`client.js:7789-7795`）。
+- 主入口持 5 个 chunk 的内嵌清单 `CHUNK_STAMPS`（`client.js:7894-7900`）。
 
 ```
 { name: 'client.advanced.js', hash: '20024f50', size: 21859 },
@@ -140,41 +140,41 @@
 { name: 'client.transfer.js', hash: '8b305496', size: 9766 },
 ```
 
-- 加载路径：`require.async('./client.history.js')` 包在 `React.lazy` 里（`client.js:8124`、`8139`、`8209-8277`），由 `loadChunk`（`client.js:7979-7982`）发出。
-- 到达后记录自证摘要：`recordLoadedChunk`（`client.js:7990-8000`）→ `loadedChunkStamps()`（`client.js:8003`）→ 渲染为 `data-build-loaded`（`client.js:8844`）。
-- 失败降级：`chunkFailureComponent`（`client.js:8024`）在该 tab 内渲染可读卡片，不掀翻整页；加载失败对照 `test/client.test.mjs:2029-2036`。
-- 刷新订阅：主页面用 `useSyncExternalStore` 订阅 chunk 到达事件（`client.js:7916-7943`、`client.js:8893`），否则 `data-build-loaded` 会停在"没有 chunk 跑过"。
-- **默认 tab 刻意不做 chunk**：`client.js:8164-8169` 的注释给出理由（首屏二次往返 + 失败即空白默认 tab）。这条决定了「我的 Prompt」那 **547 行**（`renderMinePanel`，`client.js:7224-7770`）**不能**按现有模式迁出。
+- 加载路径：`require.async('./client.history.js')` 包在 `React.lazy` 里（`client.js:8223`、`8139`、`8209-8277`），由 `loadChunk`（`client.js:8084-8086`）发出。
+- 到达后记录自证摘要：`recordLoadedChunk`（`client.js:8095-8101`）→ `loadedChunkStamps()`（`client.js:8108`）→ 渲染为 `data-build-loaded`（`client.js:8955`）。
+- 失败降级：`chunkFailureComponent`（`client.js:8129`）在该 tab 内渲染可读卡片，不掀翻整页；加载失败对照 `test/client.test.mjs:2051-2058`。
+- 刷新订阅：主页面用 `useSyncExternalStore` 订阅 chunk 到达事件（`client.js:8021-8035`、`client.js:9004`），否则 `data-build-loaded` 会停在"没有 chunk 跑过"。
+- **默认 tab 刻意不做 chunk**：`client.js:8269-8274` 的注释给出理由（首屏二次往返 + 失败即空白默认 tab）。这条决定了「我的 Prompt」那 **547 行**（`renderMinePanel`，`client.js:7329-7773`）**不能**按现有模式迁出。
 
 ### 2.5 指纹与清单机制
 
 - 标记常量：`core/build.js:35-37`（`/* @build-fingerprint:begin */` / `end`）。
 - 区间抽取与摘要：`fingerprintRegion`（`core/build.js:66-78`，拒绝重复/歧义标记；`:52-56` 的 `normalizeBuildText` 在它之前）、`fnv1a32`（`core/build.js:85-95`）、`fingerprintOf`（`core/build.js:101-105`），返回 8 位十六进制 hash + 区间 UTF-16 长度。
 - 页面侧自证：`const SELF_BUILD = fingerprintOf(promptSettingFactory.toString());`（`client.js:182`），位于 factory body 第一条语句之后。
-- 宿主侧读文件字节：`clientBuildInfo`（`core/store.js:295-315`），**每次 ping 重读、不缓存**（注释 `core/store.js:277-294` 说明理由）。
+- 宿主侧读文件字节：`clientBuildInfo`（`core/store.js:298-318`），**每次 ping 重读、不缓存**（注释 `core/store.js:280-297` 说明理由）。
 - 区间覆盖范围有测试硬约束：必须包含 `const React = require('react');`、`CHUNK_STAMPS`、末尾的 `'prompt-setting: section dictionaries'`（`test/build.test.mjs:136-172`）；区间 `size > 50000`（`test/build.test.mjs:171`）。
 - 清单同步：`scripts/client-chunks.mjs` —— `readDeclaredStamps`（52）、`writeDeclaredStamps`（75）、`sameStamps`（91）、`main`（100，`--write` 重算 / 无参校验）。
-- 清单真值与磁盘扫描：`clientChunkStamps(clientDir)`（`core/store.js:337-364`）按文件名排序后逐个 `fingerprintOf`，**标记不可用的文件被省略而非伪造**。
+- 清单真值与磁盘扫描：`clientChunkStamps(clientDir)`（`core/store.js:340-367`）按文件名排序后逐个 `fingerprintOf`，**标记不可用的文件被省略而非伪造**。
 - 发布门禁：`inspectClientChunks`（`scripts/prepare.mjs:86-129`）→ `findings.push(...)`（`scripts/prepare.mjs:180`），不一致即 `PREPARE_FAIL` + 非零退出码。
-- 三态判定：`chunkStampMap`（`client.js:3340`）、`buildVerdict`（`client.js:3378`），第三态是「未知」且**永不**报「过期」（`client.js:67-73` 头注释、CONTRACT §14.3）。
+- 三态判定：`chunkStampMap`（`client.js:3416`）、`buildVerdict`（`client.js:3416`），第三态是「未知」且**永不**报「过期」（`client.js:67-73` 头注释、CONTRACT §14.3）。
 
 ### 2.6 宿主读取 client.js 的方式
 
-- 路径只解析一次，从模块自身 URL 出发（绝不用 cwd）：`index.js:226`（`CLIENT_BUNDLE_PATH`）。
-- ping 里报告：`index.js:4363`（`clientBuild: clientBuildInfo(CLIENT_BUNDLE_PATH)`），随 `version`、`repositoryUrl`、`launchKind` 一起返回（`index.js:4352-4372`）。
+- 路径只解析一次，从模块自身 URL 出发（绝不用 cwd）：`index.js:225`（`CLIENT_BUNDLE_PATH`）。
+- ping 里报告：`index.js:4810`（`clientBuild: clientBuildInfo(CLIENT_BUNDLE_PATH)`），随 `version`、`repositoryUrl`、`launchKind` 一起返回（`index.js:4292-4364`）。
 - **含义**：宿主读的是**文件字节**，不关心文件里有多少个逻辑模块。任何"拆分后 client.js 仍是同一个文件"的方案，宿主侧零改动。
 
 ### 2.7 冻结契约与测试面
 
-- `CONTRACT.md` 456 KB，章节 §1–§20+（`CONTRACT.md:613` 起）；与客户端形态直接相关的是 §13（客户端契约，`CONTRACT.md:1873`）、§13.0（六个一级 tab，`1875`）、§14（构建戳，`3855`，含 §14.2 `clientBuild`、§14.3 三态、§14.4 区间与归一化、§14.5 边界）。
+- `CONTRACT.md` 456 KB，章节 §1–§20+（`CONTRACT.md:630` 起）；与客户端形态直接相关的是 §13（客户端契约，`CONTRACT.md:2311`）、§13.0（六个一级 tab，`1875`）、§14（构建戳，`3855`，含 §14.2 `clientBuild`、§14.3 三态、§14.4 区间与归一化、§14.5 边界）。
 - 测试规模：21 个 `test/*.test.mjs`，**实测 922 个用例全部通过**（`node --test test/*.test.mjs`，pass 922 / fail 0，本基线 `c6bbccb` 于本次分析中实跑）；`assert.*` 调用约 **6290** 处（`test/client.test.mjs` 单文件 2383 处断言 / 295 个用例）。
-  > **命令注意**：Node 24 下 `node --test test/` 会把 `test/` 当模块名并报 `MODULE_NOT_FOUND`（实测）；可执行形式是 `node --test test/*.test.mjs`。仓库里的正确写法见 `README.md:344`（`node --test`，在包目录下自动发现）；`test/client.test.mjs:10` 的 `Run: node --test test/` 属历史写法。
+  > **命令注意**：Node 24 下 `node --test test/` 会把 `test/` 当模块名并报 `MODULE_NOT_FOUND`（实测）；可执行形式是 `node --test test/*.test.mjs`。仓库里的正确写法见 `README.md:358`（`node --test`，在包目录下自动发现）；`test/client.test.mjs:10` 的 `Run: node --test test/` 属历史写法。
   > 目标描述里"900+ 断言"应理解为**用例数**；实际断言调用数是六千量级。这个差别对本方案有利也有害：**用例数**决定回归成本，**断言数**决定源码文本断言的密度。
 - **最硬的约束不是 DOM marker，而是"对源码文本的断言"**：
-  - `test/client.test.mjs:2516-2520`：读 `client.js` 全文，用 `/scrimStyle\((\d+)\)/g` 断言出现顺序恰为 `['1200','1000']`（即 `renderConfirm` 先、`renderRegionDialog` 后）。**任何把这两处搬去别处或调换段序的动作都会打红这条**。
-  - `test/client.test.mjs:2338-2360`、`2395`、`2426-2432`、`2522-2530`、`2611`、`2682-2688`、`2757-2762`：对 chunk 源码做正则/文本断言（不得复制 scrim、不得重定义共享设施、必须声明自己的 chunk 名）。
+  - `test/client.test.mjs:2538-2542`：读 `client.js` 全文，用 `/scrimStyle\((\d+)\)/g` 断言出现顺序恰为 `['1200','1000']`（即 `renderConfirm` 先、`renderRegionDialog` 后）。**任何把这两处搬去别处或调换段序的动作都会打红这条**。
+  - `test/client.test.mjs:2360-2382`、`2395`、`2426-2432`、`2522-2530`、`2611`、`2682-2688`、`2757-2762`：对 chunk 源码做正则/文本断言（不得复制 scrim、不得重定义共享设施、必须声明自己的 chunk 名）。
   - `test/build.test.mjs:174-198`：每个 `client.*.js` 必须自带一对标记、命名为具名函数表达式、且 `toString()` 自证。
-  - `test/client.test.mjs:1988`：chunk 必须是 `client.js` 的**平铺同级文件**。
+  - `test/client.test.mjs:2008`：chunk 必须是 `client.js` 的**平铺同级文件**。
 - DOM 侧：`data-plugin` / `data-renderer` / `data-render-state` / `data-phase` / `data-frozen-state` / `data-section-name` / `data-error-code` / `data-build*` / `data-region` 等 marker 由渲染树断言（`client.js:62-66` 头注释自述），是冻结面，**本方案一律不动**。
 
 ---
@@ -206,7 +206,7 @@ git show <sha>:packages/dsh-prompt-setting/client.js | wc -l
 ### 3.2 六个机制性原因（每条可核验）
 
 **M1｜chunk 准入条件过窄 ⇒ 新增能力天然落在主入口。**
-现有 chunk 的必要条件是「**被点击才到达的整块 tab 渲染器**」（`client.js:8160-8188` 注释 + 5 处 `React.lazy`）。g-046 之后新增的 7 个提案中：
+现有 chunk 的必要条件是「**被点击才到达的整块 tab 渲染器**」（`client.js:8245-8293` 注释 + 5 处 `React.lazy`）。g-046 之后新增的 7 个提案中：
 
 | 提案 | 新增落点 | 是否满足 chunk 条件 |
 |---|---|---|
@@ -221,10 +221,10 @@ git show <sha>:packages/dsh-prompt-setting/client.js | wc -l
 **7 个里只有 1 个新建了 chunk。** 这不是"大家忘了拆"，而是**准入条件把 6 个都排除了**。
 
 **M2｜共享设施的唯一合法住处是主入口。**
-由 §2.2 的 B1（同步可达唯一性）：`require('dsh-prompt-setting').__internals.shared` 是 chunk 拿设施的唯一路径（`client.history.js:36`），而它必须由主 factory 定义并导出（`client.js:7806`、`11651`）。**新增一个 chunk 的真实成本不是"搬走 500 行"，而是"先在主线造门面 + JSDoc + `shared` 导出 + 测试里的防复制断言"**。g-061「收敛复用」三批净增 601 行，正是这笔成本的实证。
+由 §2.2 的 B1（同步可达唯一性）：`require('dsh-prompt-setting').__internals.shared` 是 chunk 拿设施的唯一路径（`client.history.js:36`），而它必须由主 factory 定义并导出（`client.js:7911`、`11651`）。**新增一个 chunk 的真实成本不是"搬走 500 行"，而是"先在主线造门面 + JSDoc + `shared` 导出 + 测试里的防复制断言"**。g-061「收敛复用」三批净增 601 行，正是这笔成本的实证。
 
 **M3｜默认 tab 被设计排除在 chunk 之外。**
-`client.js:8164-8169` 明确写出理由（首屏二次往返、失败即空白）。于是「我的 Prompt」这条**最活跃、改动最频繁**的线（g-058 / g-055 / g-056 / g-071 都在改它）永久住在主入口：`renderMinePanel` **547 行**（`client.js:7224-7770`）+ 页面模型里对应的大段 state/handler。
+`client.js:8269-8274` 明确写出理由（首屏二次往返、失败即空白）。于是「我的 Prompt」这条**最活跃、改动最频繁**的线（g-058 / g-055 / g-056 / g-071 都在改它）永久住在主入口：`renderMinePanel` **547 行**（`client.js:7329-7773`）+ 页面模型里对应的大段 state/handler。
 
 **M4｜生成物继续住在主入口。**
 g-066 把文案真源搬到 `locale/*.json`（各 569 行），但**运行时读不到包内 JSON**，所以词典必须内联回 `client.js`（`client.js:903-911` 注释自述），留下 1145 行生成段。**这是第一个"文件变多了、主文件没变小"的先例**——它同时是本方案 §4.2 的可行性证据与 M4 的直接受害者。
@@ -233,7 +233,7 @@ g-066 把文案真源搬到 `locale/*.json`（各 569 行），但**运行时读
 `test/build.test.mjs:136-171` 要求区间覆盖 factory body 首尾。改主入口任意一行 ⇒ 主戳变 ⇒ 页面与宿主比对结果变。**这不直接导致膨胀，但它让"大文件内的任何小改动"都带有全局语义**，从而鼓励"把改动塞进已有的大函数里"而不是"新开一个模块再更新清单"。
 
 **M6｜源码文本断言把"文件布局"冻结进了契约。**
-`test/client.test.mjs:2516-2520` 用全文正则断言 `scrimStyle(1200)` 在 `scrimStyle(1000)` 之前。这类断言（§2.7 列了 8 组）让"搬家"从"改文件"升级为"改契约 + 改测试 + 改 CONTRACT"。**拆分成本上升是真实存在的，且可量化**：一次 g-070 规模的 tab 改版就要动 11 个文件、708 行（`git show --stat a9fa57a`）。
+`test/client.test.mjs:2538-2542` 用全文正则断言 `scrimStyle(1200)` 在 `scrimStyle(1000)` 之前。这类断言（§2.7 列了 8 组）让"搬家"从"改文件"升级为"改契约 + 改测试 + 改 CONTRACT"。**拆分成本上升是真实存在的，且可量化**：一次 g-070 规模的 tab 改版就要动 11 个文件、708 行（`git show --stat a9fa57a`）。
 
 ### 3.3 结论
 
@@ -254,8 +254,8 @@ g-066 把文案真源搬到 `locale/*.json`（各 569 行），但**运行时读
 | 可行性 | 低。可搬的 tab 渲染器已经搬完：g-045 搬出 1 个（`client.history.js`）、g-046 搬出 3 个（`client.overview.js` / `client.transfer.js` / `client.advanced.js`），**合计 4 个**；第 5 个（`client.presets.js`）不是拆分所得，而是 g-060 新建 tab 时一并新建的。剩下满足准入条件的代码**几乎没有**（§3.3） |
 | 硬约束冲突 | 与 M1/M2 正面冲突：新 chunk 会让 `CHUNK_STAMPS` 变长，但搬走的量远小于为它造门面的量 |
 | 迁移成本 | 每个新 chunk ≈ 主入口加 30–80 行门面/JSDoc + 新文件 + `--write` 清单 + 测试防复制断言 |
-| 风险 | 中。`client.js:8164-8169` 的"默认 tab 不做 chunk"若被打破，首屏会变成二次往返 + 失败即空白 |
-| 对 922 用例的影响 | 中高：新增 chunk 会触发 `test/build.test.mjs:174-198`（标记/具名函数/自证）与 `test/client.test.mjs:2338-2360`（防复制）的连带修改 |
+| 风险 | 中。`client.js:8269-8274` 的"默认 tab 不做 chunk"若被打破，首屏会变成二次往返 + 失败即空白 |
+| 对 922 用例的影响 | 中高：新增 chunk 会触发 `test/build.test.mjs:174-198`（标记/具名函数/自证）与 `test/client.test.mjs:2360-2382`（防复制）的连带修改 |
 | **结论** | **不可行/收益为负**（净行数很可能增加），仅作为对照 |
 
 ### 4.2 候选 B：生成期分段（`src/` 源段 → 拼接生成 `client.js`）★推荐
@@ -264,8 +264,8 @@ g-066 把文案真源搬到 `locale/*.json`（各 569 行），但**运行时读
 
 | 维度 | 评估 |
 |---|---|
-| 可行性 | **高**。包内已有完全同构的先例：`locale/*.json`（真源）→ `client.js` 内联生成段（`client.js:903-2047`）+ `scripts/locale-pack.mjs --write/--check` + `scripts/prepare.mjs:135-167`（含 `LOCALE-FILES` / `LOCALE-NOT-SHIPPED` 两条门禁）+ `files` 白名单含 `locale`（`package.json:27`） |
-| 硬约束冲突 | ①「零构建包」定位需改口为「零**编译**，但有生成期拼接」——**这是契约级修改，需负责人裁决**；② 生成物与源码段可能漂移（用 `--check` 门禁解决，与 locale 同法）；③ 段序会影响 `test/client.test.mjs:2516` 的顺序断言（把该断言改为"段内断言"或固定段序即可，见 §5.2） |
+| 可行性 | **高**。包内已有完全同构的先例：`locale/*.json`（真源）→ `client.js` 内联生成段（`client.js:903-2085`）+ `scripts/locale-pack.mjs --write/--check` + `scripts/prepare.mjs:135-167`（含 `LOCALE-FILES` / `LOCALE-NOT-SHIPPED` 两条门禁）+ `files` 白名单含 `locale`（`package.json:27`） |
+| 硬约束冲突 | ①「零构建包」定位需改口为「零**编译**，但有生成期拼接」——**这是契约级修改，需负责人裁决**；② 生成物与源码段可能漂移（用 `--check` 门禁解决，与 locale 同法）；③ 段序会影响 `test/client.test.mjs:2538` 的顺序断言（把该断言改为"段内断言"或固定段序即可，见 §5.2） |
 | 迁移成本 | 阶段 1（零语义搬家）≈ 1 个生成脚本（150–250 行）+ `files` 加 `src`（1 行）+ `prepare` 加 `inspectClientSource()`（两条 finding，约 40 行）+ 2 个既有测试文件的**同步更新**（`test/host.test.mjs` 的 `files` 列举、`test/prepare.test.mjs` 的两个 fixture）+ 1 个新结构测试（约 40 行）。**产品代码 0 行改动** |
 | 风险 | 低-中。最大风险是"有人直接改 `client.js`"——阶段 1 靠 `--check` 门禁 + prepare 非零退出码拦住。**阶段 1 不写生成物头注**（加头注会改变字节、破坏判据 2，见 §5.2 风险点）；头注推迟到阶段 2，那时本就要重排段边界、不再要求字节等价。与 `locale` 同属一套纪律 |
 | 对 922 用例的影响 | **零**（`client.js` 字节等价，`fingerprintOf` 不变，所有 DOM 与源码文本断言原样通过）。阶段 1 的验收判据正是"生成物与现状字节级一致" |
@@ -278,11 +278,11 @@ g-066 把文案真源搬到 `locale/*.json`（各 569 行），但**运行时读
 | 维度 | 评估 |
 |---|---|
 | 可行性 | **技术上有基础**：`importChunk` 的 `ownerId` 是主包，因此 chunk 之间也能 `require.async`（`loader.js:876`）；宿主会 serve 任何平铺的 `client.*.js`（`loader.js:952-976`）。**但未实测**（§8） |
-| 硬约束冲突 | ① 主 factory 是同步的（`loader.js:804`），设施只能在 `apply` 之后可用 ⇒ 渲染前必须全部就位，失败路径需要新的降级设计；② `CHUNK_FACILITIES` 的"一份实例"原则要重新论证；③ `client.js:7806` 的设施被 5 个 chunk 解构，全部要改 |
-| 迁移成本 | 高：5 个 chunk + 主入口的设施引用全改；指纹/清单机制不变但设施搬家会动 `test/client.test.mjs:2338-2360` 的防复制断言语义 |
+| 硬约束冲突 | ① 主 factory 是同步的（`loader.js:804`），设施只能在 `apply` 之后可用 ⇒ 渲染前必须全部就位，失败路径需要新的降级设计；② `CHUNK_FACILITIES` 的"一份实例"原则要重新论证；③ `client.js:7911` 的设施被 5 个 chunk 解构，全部要改 |
+| 迁移成本 | 高：5 个 chunk + 主入口的设施引用全改；指纹/清单机制不变但设施搬家会动 `test/client.test.mjs:2360-2382` 的防复制断言语义 |
 | 风险 | **高**：出现"设施未就绪就渲染"的窗口 ⇒ 空白页，而空白页是本项目历来最忌讳的失败形态（`client.js:55-61` 的两条硬规则） |
 | 收益 | 中：只搬走共享设施（约 1000 行），页面模型（2640 行）与默认 tab（547 行）仍在主入口 ⇒ **收益有天花板** |
-| 对 922 用例的影响 | 高：`test/client.test.mjs:2338-2360`（chunk 只能通过 `shared` 取设施）与 `:2522-2530`（不得复制 scrim）的语义全部要重写；5 个 chunk 的取用方式连带改动 |
+| 对 922 用例的影响 | 高：`test/client.test.mjs:2360-2382`（chunk 只能通过 `shared` 取设施）与 `:2544-2550`（不得复制 scrim）的语义全部要重写；5 个 chunk 的取用方式连带改动 |
 | **结论** | 不作为本版本推荐；若未来要新增"非 tab 的按需大块"，可作为独立目标评估 |
 
 ### 4.4 候选 D：不拆文件，改"读取代价"本身（导航 + 索引 + 工作流）
@@ -301,17 +301,17 @@ g-066 把文案真源搬到 `locale/*.json`（各 569 行），但**运行时读
 
 ### 4.5 候选 E（附带）：宿主侧 `index.js` 拆分
 
-`index.js` 是 `"type": "module"` 的 ESM（`package.json:15`），**不受 factory 协议约束**，可以自由 `import`。真正的成本只有一项：`mount`（`index.js:983-4612`，**约 3630 行**）内部 60+ 个闭包共享可变状态（`report`、layers 缓存、`variables` 等，例如 `index.js:1126-1193`、`1618-1660`、`1695-1766`）。注意 `export function apply`（`index.js:778-792`）只有 15 行，是 `mount` 的薄守卫（`try { mount(...) } catch { reportMountFailure(...) }`）——**巨型函数是 `mount`，不是 `apply`**（评审 R1-12 订正）。
+`index.js` 是 `"type": "module"` 的 ESM（`package.json:15`），**不受 factory 协议约束**，可以自由 `import`。真正的成本只有一项：`mount`（`index.js:982-4614`，**约 3630 行**）内部 60+ 个闭包共享可变状态（`report`、layers 缓存、`variables` 等，例如 `index.js:1125-1192`、`1618-1660`、`1695-1766`）。注意 `export function apply`（`index.js:777-791`）只有 15 行，是 `mount` 的薄守卫（`try { mount(...) } catch { reportMountFailure(...) }`）——**巨型函数是 `mount`，不是 `apply`**（评审 R1-12 订正）。
 
 | 维度 | 评估 |
 |---|---|
 | 可行性 | 高（需要一次"闭包状态显式化"的小重构） |
 | 硬约束冲突 | 无协议冲突；但 `core/*.js` 已有 18 个模块，新模块要遵守既有的纯函数 + 注入惯例 |
-| 迁移成本 | 中：每搬一个域（如 history/export/diff/rollback/import 五个 handler，`index.js:2262-2746`）需显式传入 state 访问器 |
+| 迁移成本 | 中：每搬一个域（如 history/export/diff/rollback/import 五个 handler，`index.js:2398-2759`）需显式传入 state 访问器 |
 | 风险 | 中（宿主侧改坏 = 插件起不来；但 `test/route.test.mjs` 822 断言 / 109 用例是强网） |
 | 收益 | 4626 → 最大模块约 800 行（把 `mount` 的 3630 行按域搬出后）；宿主侧注释占比 45%，拆分收益明显（若另立目标并实施） |
 | 对 922 用例的影响 | **中**：`test/route.test.mjs`（822 断言 / 109 用例）、`test/host.test.mjs`、`test/integration.test.mjs` 覆盖宿主路由；拆分为纯搬运时断言不动，但 `mount` 状态显式化会触及多处闭包引用 |
-| **结论** | **另立目标**（不在本方案实施范围内）。宿主侧可拆是真事实，但 `mount`（`index.js:983-4612`）的闭包状态显式化是独立类型的重构；本方案只做客户端生成期分段，把它列为 §7.2 的另立目标 |
+| **结论** | **另立目标**（不在本方案实施范围内）。宿主侧可拆是真事实，但 `mount`（`index.js:982-4614`）的闭包状态显式化是独立类型的重构；本方案只做客户端生成期分段，把它列为 §7.2 的另立目标 |
 
 ---
 
@@ -341,7 +341,7 @@ packages/dsh-prompt-setting/
 **段边界规则（R2-D2，选方案 ①「只重切、不移动」）**
 
 1. **每个段文件必须对应 `client.js` 中一段连续区间**，且**段编号按该区间在文件中的出现顺序递增**；
-2. **任何段划分都不得让代码块跨段移动**——阶段 2 允许的只有"在连续区间内部换切点"与"合并相邻段"，**不允许**把 `renderMinePanel`（**7224–7770**）或 chunk boundary（7772–8280）这类块搬到别处；
+2. **任何段划分都不得让代码块跨段移动**——阶段 2 允许的只有"在连续区间内部换切点"与"合并相邻段"，**不允许**把 `renderMinePanel`（**7327–7873**）或 chunk boundary（7773–8383）这类块搬到别处；
 3. 由此，**「文件名字典序 = 代码顺序」是段划分规则的自动结果**，不是一条需要单独维护的约定（§9-3）；
 4. 段之间**不共享作用域**：每段都是同一 factory body 的一部分，拼接后共处一个函数作用域 ⇒ **不需要 `import`/`export`，不需要改任何变量可见性**。
 
@@ -353,23 +353,23 @@ packages/dsh-prompt-setting/
 |---|---|---:|---|
 | `00-entry.js` | 1–215 | 215 | 文件头 + load 注册 + 指纹区间 + factory guard + `buildPlugin` 头 |
 | `01-shared-head.js` | 216–902 | 687 | launch shape + primitives probe + 常量 |
-| `02-locale.js` | 903–2047 | 1145 | locale 内联段（由 `locale-pack.mjs --write` 产出，生成器原样嵌入） |
-| `03-facilities.js` | 2048–2649 | 602 | `token` / `fallbackT` / fallback atoms / `PRIMITIVES_UI` / `tabs` |
-| `04-helpers-a.js` | 2650–3300 | 651 | pure helpers 前半 |
-| `05-helpers-b.js` | 3301–3905 | 605 | pure helpers 后半（含 `chunkStampMap` / `buildVerdict`） |
-| `06-tree.js` | 3906–4570 | 665 | tree builders + stage 2 helpers 前半 |
-| `07-stage2.js` | 4571–5158 | 588 | stage 2 helpers 后半 |
-| `08-chrome-a.js` | 5159–5900 | 742 | 状态行 / 范围树 / 会话 |
-| `09-chrome-b.js` | 5901–6681 | 781 | `scopeTreeElement` / `renderConfirm` |
-| `10-toaster-mine.js` | 6682–7771 | 1090 | g-062 toaster + 装配状态 + `renderMinePanel` |
-| `11-chunks.js` | 7772–8280 | 509 | chunk boundary（协议） |
-| `12-update.js` | 8281–8869 | 589 | 更新条 + 区域弹窗 + `renderSection` |
-| `13-page-a.js` | 8870–9800 | 931 | `PromptSettingSection`：JSDoc + hooks/state |
-| `14-page-b.js` | 9801–10800 | 1000 | `PromptSettingSection`：fetch / handlers |
-| `15-page-c.js` | 10801–11523 | 723 | `PromptSettingSection`：root 树 |
-| `16-boot.js` | 11524–11879 | 356 | `renderFailureCard` / `degradedPlugin` / boot 返回 |
+| `02-locale.js` | 903–2085 | 1183 | locale 内联段（由 `locale-pack.mjs --write` 产出，生成器原样嵌入） |
+| `03-facilities.js` | 2086–2687 | 602 | `token` / `fallbackT` / fallback atoms / `PRIMITIVES_UI` / `tabs` |
+| `04-helpers-a.js` | 2688–3338 | 651 | pure helpers 前半 |
+| `05-helpers-b.js` | 3339–3943 | 605 | pure helpers 后半（含 `chunkStampMap` / `buildVerdict`） |
+| `06-tree.js` | 3944–4608 | 665 | tree builders + stage 2 helpers 前半 |
+| `07-stage2.js` | 4609–5255 | 647 | stage 2 helpers 后半 |
+| `08-chrome-a.js` | 5256–5997 | 742 | 状态行 / 范围树 / 会话 |
+| `09-chrome-b.js` | 5998–6786 | 789 | `scopeTreeElement` / `renderConfirm` |
+| `10-toaster-mine.js` | 6787–7774 | 988 | g-062 toaster + 装配状态 + `renderMinePanel` |
+| `11-chunks.js` | 7775–8385 | 611 | chunk boundary（协议） |
+| `12-update.js` | 8386–8980 | 595 | 更新条 + 区域弹窗 + `renderSection` |
+| `13-page-a.js` | 8981–10180 | 1200 | `PromptSettingSection`：JSDoc + hooks/state |
+| `14-page-b.js` | 10181–11326 | 1146 | `PromptSettingSection`：fetch / handlers |
+| `15-page-c.js` | 11327–11928 | 602 | `PromptSettingSection`：actions / model / root 树 |
+| `16-boot.js` | 11929–12284 | 356 | `renderFailureCard` / `degradedPlugin` / boot 返回 |
 
-合计 11879 行，每段 ≤ 1200 行（最大两段是 `02-locale.js` 1145 与 `10-toaster-mine.js` 1090）。**注意 `13/14/15` 三段切的是同一个函数的函数体内部**——它们拼接后仍是同一个 `PromptSettingSection`，这是"只重切、不移动"能做到的最大粒度。
+合计 12284 行，每段 ≤ 1200 行（最大两段是 `13-page-a.js` 1200 与 `02-locale.js` 1183）。**注意 `13/14/15` 三段切的是同一个函数的函数体内部**——它们拼接后仍是同一个 `PromptSettingSection`，这是"只重切、不移动"能做到的最大粒度。
 
 ### 5.2 分阶段落地
 
@@ -426,7 +426,7 @@ fingerprintOf(加 1 行头注后的同一文件)      = 4d998612 / 567230   # �
 
 **风险点与实现约束（阶段 1 必须处理的细节）**
 - **不写头注（R1-1，硬约束）**：判据 2 要求逐字节等价，而任何头注都会改变字节。实测（§10 实跑）：加 1 行头注后指纹 hash/size **不变**（仍 `4d998612 / 567230`），但字节**已变**。所以两条不能并存，阶段 1 **选"不加头注"**；头注移到阶段 2（那时本就要重排段边界，本就不追求字节等价）。
-- **段序敏感**：`test/client.test.mjs:2516-2520` 断言 `scrimStyle(1200)` 先于 `scrimStyle(1000)`。阶段 1 保持现有顺序即天然满足；阶段 2 重排时必须保留"`renderConfirm` 段在 `renderRegionDialog` 段之前"。
+- **段序敏感**：`test/client.test.mjs:2538-2542` 断言 `scrimStyle(1200)` 先于 `scrimStyle(1000)`。阶段 1 保持现有顺序即天然满足；阶段 2 重排时必须保留"`renderConfirm` 段在 `renderRegionDialog` 段之前"。
 - **拼接的实现约束（R1-11 + R2-D2，写进生成器与它的测试）**：
   1. **段间不插任何分隔符**（不加注释、不加空行）；
   2. **末尾换行与现状一致**：文件为 UTF-8、**无 CR**（实测 `grep -c $'\r' client.js` = 0），最后一行是 `});` 后紧跟一个 `\n`（实测末字节 `} ) ; \n`）；
@@ -445,7 +445,7 @@ fingerprintOf(加 1 行头注后的同一文件)      = 4d998612 / 567230   # �
 - 段文件头各加一行「片段，不是独立模块」声明（§5.2 风险点 R1-9）。**这行声明不会进入 `client.js`**——生成器在拼接前逐段剥离它（见 §5.2 实现约束第 3 条），所以它不影响阶段 2 判据 2 的逐字节比对。
 
 其它重点：
-- 把 **2640 行**的 `PromptSettingSection`（`client.js:8884-11523`）在**函数体内部**沿连续区间切成 3 段（`13-page-a/b/c`：JSDoc+hooks/state、fetch/handlers、root 树）——拼接后仍是同一个函数体，不移动任何行；
+- 把 **2640 行**的 `PromptSettingSection`（`client.js:8995-11928`）在**函数体内部**沿连续区间切成 3 段（`13-page-a/b/c`：JSDoc+hooks/state、fetch/handlers、root 树）——拼接后仍是同一个函数体，不移动任何行；
 - locale 生成段（`02-locale.js`，1145 行）与其它段解耦：内容由 `scripts/locale-pack.mjs --write` 产出，生成器原样嵌入；
 - 合并相邻小段（如 §1.3 的 216–902 三段合成 `01-shared-head.js`），把段数从阶段 1 的 24 段收敛到 17 段。
 
@@ -463,7 +463,7 @@ fingerprintOf(加 1 行头注后的同一文件)      = 4d998612 / 567230   # �
 
 #### 阶段 3（另立目标）：宿主侧 `index.js` 拆分
 
-见 §4.5。建议单独立目标，理由是：宿主侧是 ESM 自由拆分，但 `mount`（`index.js:983-4612`，约 3630 行）的闭包状态显式化是一次真正的重构，风险面与客户端阶段 1/2 完全不同，混在一起会互相拖累。`apply`（`:778-792`）只是 15 行的守卫，不构成拆分对象。
+见 §4.5。建议单独立目标，理由是：宿主侧是 ESM 自由拆分，但 `mount`（`index.js:982-4614`，约 3630 行）的闭包状态显式化是一次真正的重构，风险面与客户端阶段 1/2 完全不同，混在一起会互相拖累。`apply`（`:777-791`）只是 15 行的守卫，不构成拆分对象。
 
 #### 阶段 4（另立目标，可选）：运行期 chunk 协议扩展
 
@@ -496,7 +496,7 @@ fingerprintOf(加 1 行头注后的同一文件)      = 4d998612 / 567230   # �
 | 改动类型 | 现状 C | 目标 C（阶段 2 后） | 口径说明 |
 |---|---:|---:|---|
 | **A. 单域内改动**（tab 视觉/交互、某个 helper） | 800–2000 | 400–1200 | 现状 = `grep` 定位 + 读目标函数 + 读 `CHUNK_FACILITIES` 接口段；目标 = 读 1 个域段 + 设施段接口。**实证**：g-070（`git show --stat a9fa57a`）动 11 个文件 708 行，其中 `client.js +257/−36`、`test/client.test.mjs +245`、`CONTRACT.md +91` |
-| **B. 页面模型内部改动**（state / fetch / handler） | **2640（一个不可分的函数体）** | 600–1200 | `PromptSettingSection`（`client.js:8884-11523`）闭包互相引用，现状无法局部读；目标 = `13/14/15-page-*.js` 三段之一 |
+| **B. 页面模型内部改动**（state / fetch / handler） | **2640（一个不可分的函数体）** | 600–1200 | `PromptSettingSection`（`client.js:8995-11928`）闭包互相引用，现状无法局部读；目标 = `13/14/15-page-*.js` 三段之一 |
 | **C. 跨段改动 / 共享设施签名变更** | 2000–3500 | **2000–3500（不降）** | 必须 `grep` 全库找调用点，分段**不改变**这一点 |
 | **D. 全量通读**（接手、审计；罕见） | 11879 | ≤1200（最大段）+ 生成器 | 只有这一类是「全量 vs 最大段」；**不得**用它的降幅代表整体收益 |
 | **E. 宿主侧**（另立目标，本方案不实施） | 4626（其中 `mount` 3630 不可分） | ≤800 | 见 §7.2 |
@@ -520,15 +520,15 @@ fingerprintOf(加 1 行头注后的同一文件)      = 4d998612 / 567230   # �
    | 新增/修改的东西 | 归属（段名见 §5.1 目标段表） |
    |---|---|
    | **指纹标记的书写位置**：`begin`（`client.js:115`） | `00-entry.js`（1–215） |
-   | **指纹标记的书写位置**：`end`（`client.js:11877`） | `16-boot.js`（11524–11879） |
+   | **指纹标记的书写位置**：`end`（`client.js:12282`） | `16-boot.js`（11929–12284） |
    | **被两端标记覆盖的区间**（`115–11877`） | **横跨全部 17 段**——它跟随内容走，**不受段划分影响**，不得为它单独建段 |
    | 注册形态（`client.js:107`）/ factory guard（185–198）/ `buildPlugin` 头（212） | `00-entry.js`（**协议，改动等于改契约**） |
    | 某个 tab 的渲染逻辑 | 对应 tab chunk（`client.*.js`） |
    | 默认 tab「我的 Prompt」（`renderMinePanel`） | `10-toaster-mine.js`（含 toaster 与装配状态） |
    | 跨 tab chrome（状态行/范围树/会话/confirm） | `08-chrome-a.js` / `09-chrome-b.js` |
    | 更新条 / 区域弹窗 / `renderSection` | `12-update.js` |
-   | 主入口与 chunk 共用的**设施实现** | **按其实现本身所在的连续区间归段**（不得把实现搬进别的段）：`h`（`client.js:214`）→ `00-entry.js`；`primitives`（`client.js:310`）→ `01-shared-head.js`；`fallbackT`（`client.js:2055`）/`token`（`client.js:2058`）/`UI`（`client.js:2275`）/`tabs`（`client.js:2381`）→ `03-facilities.js`；`fmt`（`client.js:2658`）→ `04-helpers-a.js`；`cardStyle`（`client.js:3910`）/`scrimStyle`（`client.js:3953`）/`errorBanner`（`client.js:4415`）/`stampOf`（`client.js:4556`）→ `06-tree.js`；`layerLabel`（`client.js:4886`）→ `07-stage2.js` |
-   | `CHUNK_FACILITIES` 这份**名字登记**（`client.js:7806`，与 `CHUNK_STAMPS`、加载器同在 chunk 协议区） | **`11-chunks.js`（§5.1 表 = 7772–8280），不得移动** |
+   | 主入口与 chunk 共用的**设施实现** | **按其实现本身所在的连续区间归段**（不得把实现搬进别的段）：`h`（`client.js:214`）→ `00-entry.js`；`primitives`（`client.js:310`）→ `01-shared-head.js`；`fallbackT`（`client.js:2093`）/`token`（`client.js:2096`）/`UI`（`client.js:2313`）/`tabs`（`client.js:2419`）→ `03-facilities.js`；`fmt`（`client.js:2696`）→ `04-helpers-a.js`；`cardStyle`（`client.js:3948`）/`scrimStyle`（`client.js:3991`）/`errorBanner`（`client.js:4453`）/`stampOf`（`client.js:4594`）→ `06-tree.js`；`layerLabel`（`client.js:4983`）→ `07-stage2.js` |
+   | `CHUNK_FACILITIES` 这份**名字登记**（`client.js:7911`，与 `CHUNK_STAMPS`、加载器同在 chunk 协议区） | **`11-chunks.js`（§5.1 表 = 7772–8280），不得移动** |
    | 页面 state / fetch / handler | `13-page-a.js`（hooks/state）/ `14-page-b.js`（fetch/handler）/ `15-page-c.js`（root 树） |
    | 纯函数 | `04-helpers-a.js` / `05-helpers-b.js` |
    | chunk 加载/失效协议 | `11-chunks.js`（**协议**） |
@@ -561,9 +561,9 @@ fingerprintOf(加 1 行头注后的同一文件)      = 4d998612 / 567230   # �
 
 | 工作 | 为什么另立 |
 |---|---|
-| 宿主 `index.js` 拆分（候选 E） | `mount`（`index.js:983-4612`，约 3630 行）的闭包状态显式化是独立类型的工作，风险面与客户端无关（`apply` 只是 15 行守卫） |
+| 宿主 `index.js` 拆分（候选 E） | `mount`（`index.js:982-4614`，约 3630 行）的闭包状态显式化是独立类型的工作，风险面与客户端无关（`apply` 只是 15 行守卫） |
 | 运行期 chunk 协议扩展（候选 C） | 需要新的降级设计（设施未就绪 → 空白页），属新能力而非重构 |
-| 把「我的 Prompt」做成 chunk | 与 `client.js:8164-8169` 的既有设计决定冲突，属产品决策 |
+| 把「我的 Prompt」做成 chunk | 与 `client.js:8269-8274` 的既有设计决定冲突，属产品决策 |
 | `core/*.js` 内部拆分（`update.js` 1729 / `install.js` 1064） | 与客户端痛点无关，收益独立 |
 | Notes/NOTES.md（808 KB）的整理 | 与本目标（插件代码读取代价）无关 |
 
@@ -588,7 +588,7 @@ fingerprintOf(加 1 行头注后的同一文件)      = 4d998612 / 567230   # �
 | U2 | `apply(ctx)` 阶段异步预加载共享设施是否安全（React 渲染是否一定在其之后） | 只影响候选 C | 真机 + 失败注入 |
 | U3 | ~~生成器对 `CHUNK_STAMPS` 的写入是否与 `client-chunks.mjs --write` 等价~~ → **已升为已验证**（R1-4，见下「本次返工已实测的事实」） | — | 已实测 |
 | U4 | 宿主 `index.js` 拆分的实际耦合度（闭包共享状态的清单） | 只影响阶段 3 的估工 | 立目标后先做一次"闭包变量 → 归属域"的盘点 |
-| U5 | "零编译但有生成期拼接"是否符合项目对"零构建包"的定位（承诺散落在 `README.md:102` / `README.md:325` / `README.md:330` / `NOTES.md:3635` / `NOTES.md:3679` / `scripts/prepare.mjs:9` / `scripts/prepare.mjs:162`；`CONTRACT.md:6966` 仅顺带提及 "no build step"） | 影响 T8 的契约改口 | **需负责人裁决**（见 §9-1） |
+| U5 | "零编译但有生成期拼接"是否符合项目对"零构建包"的定位（承诺散落在 `README.md:116` / `README.md:339` / `README.md:344` / `NOTES.md:3635` / `NOTES.md:3679` / `scripts/prepare.mjs:9` / `scripts/prepare.mjs:162`；`CONTRACT.md:7654` 仅顺带提及 "no build step"） | 影响 T8 的契约改口 | **需负责人裁决**（见 §9-1） |
 | U6 | 阶段 2 起段文件语法不完整却随包发布，是否改用 `.js.part` / `.seg` 后缀 | 影响阶段 2 的读者体验 | **需负责人裁决**（见 §9-5） |
 
 **本次返工已实测的事实（R1-4，可复算）**
@@ -612,10 +612,10 @@ withHead = '// GENERATED...\n' + src
 **已知风险（推荐方案内）**
 
 - R1｜**双真源焦虑**：`client.js` 与 `src/` 同时存在于仓库，新人可能改错文件。缓解：`--check` 门禁（非零退出码即安装失败）+ `docs/architecture-map.md` 首段警示 + 阶段 2 起的生成物头注。与 `locale/*.json` 的现状完全同构，**已被证明可管理**。
-- R2｜**段序敏感**：`test/client.test.mjs:2516-2520` 依赖 `client.js` 内的出现顺序。缓解：把该断言改为"在指定段内断言"，或把段序写进生成器的固定清单并加断言。
+- R2｜**段序敏感**：`test/client.test.mjs:2538-2542` 依赖 `client.js` 内的出现顺序。缓解：把该断言改为"在指定段内断言"，或把段序写进生成器的固定清单并加断言。
 - R3｜**生成器成为新的单点**：`client-build.mjs` 出错会阻塞整个客户端改动。缓解：`--check` 只读、`--write` 幂等、并被 `prepare` 覆盖（prepare 失败即安装失败，与今天 chunk 清单漂移的失败模式一致）。
 - R4｜**收益不自证**：行数下降不等于 token 下降（注释占比高）。已用 §1.2 的构成数据校准口径（§6.1），并披露"跨段改动不降"。
-- R5｜**生成器重写会改 mtime ⇒ 开发期重载噪音（R1-8a）**：DSH 的 `artifactRevision(baseline) = framedHash("plugin-artifact", [mtimeMs, ctimeMs, size])`，**rev 不变则不重读、不通知**（`CONTRACT.md:4137-4145`）；反过来，mtime 变了即使字节相同，rev 也变，会触发重读 + SSE 通知 + 页面重载。**缓解**：`client-build.mjs --write` **仅在内容不同时落盘**（先算再比，相同则不动文件），这条已作为实现约束写进 §5.2；`--check` 天然只读。**残余**：阶段 2 起任何真实改动都会动 mtime，这与今天手改 `client.js` 的后果完全一样，不是新增风险。
+- R5｜**生成器重写会改 mtime ⇒ 开发期重载噪音（R1-8a）**：DSH 的 `artifactRevision(baseline) = framedHash("plugin-artifact", [mtimeMs, ctimeMs, size])`，**rev 不变则不重读、不通知**（`CONTRACT.md:4721-4729`）；反过来，mtime 变了即使字节相同，rev 也变，会触发重读 + SSE 通知 + 页面重载。**缓解**：`client-build.mjs --write` **仅在内容不同时落盘**（先算再比，相同则不动文件），这条已作为实现约束写进 §5.2；`--check` 天然只读。**残余**：阶段 2 起任何真实改动都会动 mtime，这与今天手改 `client.js` 的后果完全一样，不是新增风险。
 - R6｜**「重切」越界成「移动」会引入语义风险（R2-D2）**：被切的是**同一个函数体**，跨块移动会改变 `const`/`class` 的 TDZ 边界与函数声明的提升可见性，而**现有 922 个用例没有一条能证明这种移动无害**（它们断言的是渲染结果与源码文本，不是声明顺序语义）。**缓解**：①§5.1 段边界规则把「只重切、不移动」写成硬规则；②阶段 2 判据 2 用「去头注后与阶段 1 产物逐字节相同」做强证明；③判据 3 用「段偏移单调递增、无空隙」做机器检查。**残余**：这三条拦的是"无意越界"，拦不住"有意重排 + 通过全部判据"——若将来确有必要移动代码，应另立目标并按新语义审计。
 
 ---
@@ -624,7 +624,7 @@ withHead = '// GENERATED...\n' + src
 
 1. **T8 的契约改口**：是否允许把本包定位从「零构建包」表述为「零**编译**（无 bundler/TS/JSX），但客户端入口为**生成物**（源段在 `src/`）」？
    - 默认建议：**允许**。理由是包里已有同类先例（`locale/*.json` → 内联段，`scripts/prepare.mjs:135-167`），且本方案的阶段 1 可以用"生成物与现状字节等价"来验收，风险封顶。
-   - **改口要同步的位置（R1-8b，实测清点）**：`README.md:102`（"零运行时依赖、零构建步骤"）、`README.md:325` / `README.md:330`（"本包零构建，`prepare` 只做发布自检"）、`NOTES.md:3635`（"本包是**零构建**包：`index.js` / `client.js` / `core/*.js` 本身就是发布入口，没有编译产物"）、`scripts/prepare.mjs:9`（"本包是零构建包（`index.js` / `client.js` / `core/*.js` 本身就是发布入口）"）与 `scripts/prepare.mjs:162`（运行时打印的"本包零构建，不做编译"）。`CONTRACT.md:6966` 只有一句顺带提及 "no build step"，不是承诺条款。改口的准确措辞是「**零编译**（无 bundler / JSX / TypeScript），客户端入口为**生成物**（真源在 `src/`）」，而不是"零构建"。
+   - **改口要同步的位置（R1-8b，实测清点）**：`README.md:116`（"零运行时依赖、零构建步骤"）、`README.md:339` / `README.md:344`（"本包零构建，`prepare` 只做发布自检"）、`NOTES.md:3635`（"本包是**零构建**包：`index.js` / `client.js` / `core/*.js` 本身就是发布入口，没有编译产物"）、`scripts/prepare.mjs:9`（"本包是零构建包（`index.js` / `client.js` / `core/*.js` 本身就是发布入口）"）与 `scripts/prepare.mjs:162`（运行时打印的"本包零构建，不做编译"）。`CONTRACT.md:7654` 只有一句顺带提及 "no build step"，不是承诺条款。改口的准确措辞是「**零编译**（无 bundler / JSX / TypeScript），客户端入口为**生成物**（真源在 `src/`）」，而不是"零构建"。
 2. **实施边界**：本目标是否只交付本文档（→ 另立实施目标），还是允许在本文档之后**由同一目标继续推进阶段 0/1**？
    - 默认建议：**本目标只交付文档**（符合 directive），阶段 0/1 另立目标，按 §5.2 的判据派工。
 3. **`src/` 的命名与段编号风格**（`00-entry.js` 这类数字前缀 vs `entry.js`）：
@@ -639,10 +639,10 @@ withHead = '// GENERATED...\n' + src
 ## 10. 附：证据索引（按文件）
 
 **`packages/dsh-prompt-setting/client.js`**
-`:107` load 注册 · `:114` factory 头 · `:115` begin 标记 / `:182` `SELF_BUILD` · `:903-2047` locale 生成段 · `:2116` fallback atoms · `:2650` pure helpers region · `:3340` `chunkStampMap` · `:3378` `buildVerdict` · `:7224` `renderMinePanel` · `:7789` `CHUNK_STAMPS` · `:7806` `CHUNK_FACILITIES` · `:7979` `loadChunk` · `:7990` `recordLoadedChunk` · `:8084` `chunkModule` · `:8124` `HistoryTabChunk` · `:8160-8188` "默认 tab 不做 chunk" 的设计说明 · `:8209` `chunkTab` · `:8844` `data-build-loaded` · `:8884` `PromptSettingSection` · `:11536` `renderFailureCard` · `:11639` `return {`（`:11640` 是 `inject: ['slots', 'locale'],` 行） · `:11648` `__internals` · `:11651` `shared: CHUNK_FACILITIES` · `:11685` `apply(ctx)` · `:11808` `degradedPlugin`
+`:107` load 注册 · `:114` factory 头 · `:115` begin 标记 / `:182` `SELF_BUILD` · `:903-2085` locale 生成段 · `:2154` fallback atoms · `:2688` pure helpers region · `:3378` `chunkStampMap` · `:3416` `buildVerdict` · `:7329` `renderMinePanel` · `:7894` `CHUNK_STAMPS` · `:7911` `CHUNK_FACILITIES` · `:8084` `loadChunk` · `:8095` `recordLoadedChunk` · `:8189` `chunkModule` · `:8223` `HistoryTabChunk` · `:8245-8293` "默认 tab 不做 chunk" 的设计说明 · `:8314` `chunkTab` · `:8955` `data-build-loaded` · `:8995` `PromptSettingSection` · `:11941` `renderFailureCard` · `:12031` `return {`（`:12045` 是 `inject: ['slots', 'locale'],` 行） · `:12053` `__internals` · `:12056` `shared: CHUNK_FACILITIES` · `:12090` `apply(ctx)` · `:12213` `degradedPlugin`
 
 **`packages/dsh-prompt-setting/index.js`**
-`:226` `CLIENT_BUNDLE_PATH` · `:778-792` `export function apply`（15 行薄守卫） · `:983-4612` `mount`（约 3630 行） · `:2262-2746` history/export/diff/rollback/import handlers · `:4352-4372` ping 响应 · `:4363` `clientBuild: clientBuildInfo(...)` · `:4615` 文件尾 `export { ACTIONS, LAYERS, sameSections }`
+`:225` `CLIENT_BUNDLE_PATH` · `:777-791` `export function apply`（15 行薄守卫） · `:982-5059` `mount`（约 3630 行） · `:2398-2759` history/export/diff/rollback/import handlers · `:4292-4364` ping 响应 · `:4810` `clientBuild: clientBuildInfo(...)` · `:5062` 文件尾 `export { ACTIONS, LAYERS, sameSections }`
 
 **`packages/dsh-prompt-setting/core/`**
 `store.js:295` `clientBuildInfo` · `store.js:308` `chunks: clientChunkStamps(...)` · `store.js:323` `CLIENT_CHUNK_PATTERN` · `store.js:337` `clientChunkStamps` · `build.js:35-37` 指纹标记 · `build.js:52` `normalizeBuildText` · `build.js:66` `fingerprintRegion` · `build.js:101` `fingerprintOf`
@@ -651,7 +651,7 @@ withHead = '// GENERATED...\n' + src
 `client-chunks.mjs:32-34` 清单块锚点 · `:41` `renderStampRows` · `:52` `readDeclaredStamps` · `:75` `writeDeclaredStamps` · `:91` `sameStamps` · `:100` `main` · `prepare.mjs:9` 「零构建包」承诺 · `:86` `inspectClientChunks` · `:135-167` `inspectLocale`（可照搬的三态模板，`:139-145` 是 N/A 分支、`:150-157` 是 NOT-SHIPPED 分支） · `:180-183` findings 接入
 
 **`packages/dsh-prompt-setting/test/`**
-`build.test.mjs:136-171` 指纹区间断言（`:171` 是 `size > 50000`） · `:174-198` chunk 形态断言 · `:200` 清单对账 · `client.test.mjs:1988` 平铺同级断言 · `:2338-2360` 防复制断言 · `:2516-2520` `scrimStyle` 顺序断言（**段序敏感点**） · `boot.test.mjs:56` 读 `client.js` · `host.test.mjs:171-197` `files` 白名单精确枚举（**阶段 1 同步点**） · `prepare.test.mjs:440-485` 最小 fixture（期望 exit 0） · `:487-539` faithful copy（**阶段 1 同步点**）
+`build.test.mjs:136-171` 指纹区间断言（`:171` 是 `size > 50000`） · `:174-198` chunk 形态断言 · `:200` 清单对账 · `client.test.mjs:1988` 平铺同级断言 · `:2360-2382` 防复制断言 · `:2538-2542` `scrimStyle` 顺序断言（**段序敏感点**） · `boot.test.mjs:56` 读 `client.js` · `host.test.mjs:171-197` `files` 白名单精确枚举（**阶段 1 同步点**） · `prepare.test.mjs:440-485` 最小 fixture（期望 exit 0） · `:487-539` faithful copy（**阶段 1 同步点**）
 
 **`packages/dsh-prompt-setting/package.json`**
 `:15` `"type": "module"` · `:19` `exports["./client"]` · `:22-33` `files` 白名单
@@ -732,15 +732,15 @@ exit=0
 ```text
 | 脚本报出的不符 | 实际 | 处理 |
 |---|---|---|
-| `client.js:7796-7804` 首行是空行 | 注释在 7797–7805 | 改文档 |
-| `client.js:7931-7943` 首行是 `chunkLoadRevision` | `subscribeChunkLoads` 在 7916 | 改文档 |
-| `client.js:7990-8001` 末行是空行 | 函数在 7990–8000 | 改文档 |
+| `client.js:7798-7806` 首行是空行 | 注释在 7797–7805 | 改文档 |
+| `client.js:7933-7945` 首行是 `chunkLoadRevision` | `subscribeChunkLoads` 在 7916 | 改文档 |
+| `client.js:7992-8003` 末行是空行 | 函数在 7990–8000 | 改文档 |
 | `core/build.js:101-107` 越界（文件 105 行） | 101–105 | 改文档 |
 | `scripts/prepare.mjs:151-157` 首行是 `if (cut…)` | `const cut =` 在 150 | 改文档 |
 | `scripts/client-chunks.mjs:41-98` 末行是空行 | 41–97 | 改文档 |
 | `CONTRACT.md:4137-4146` 末行是空行 | 4137–4145 | 改文档 |
-| `client.js:7990-8001` / `:151-157` 等 | — | 同上 |
-| `core/store.js:277-293`、`prepare.mjs:139-145`、`build.test.mjs:138-141` | 区间以 JSDoc 开头，被断言符号在中段 | 期望表加 `at` 字段（**文档本身正确**） |
+| `client.js:7992-8003` / `:151-157` 等 | — | 同上 |
+| `core/store.js:280-296`、`prepare.mjs:139-145`、`build.test.mjs:138-141` | 区间以 JSDoc 开头，被断言符号在中段 | 期望表加 `at` 字段（**文档本身正确**） |
 ```
 
 > 这条脚本不是"让文档好看"：上面 7 处里有 3 处（`7931-7943` 指错函数、`101-107` 越界、`41-98` 多一行）都会让后续执行者**按错行号定位**。

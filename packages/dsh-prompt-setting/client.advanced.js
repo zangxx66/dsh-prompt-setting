@@ -45,6 +45,7 @@ window.__ModuleLoader__.load({
     const ineffectiveCause = shared.ineffectiveCause;
     const layerLabel = shared.layerLabel;
     const metaStyle = shared.metaStyle;
+    const miniButtonStyle = shared.miniButtonStyle;
     const regionKey = shared.regionKey;
     const renderAssemblyStatus = shared.renderAssemblyStatus;
     const renderStatusDetail = shared.renderStatusDetail;
@@ -78,6 +79,10 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { 'data-region': 'advanced', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+        // g-073 (Revision 55): the workspace this tab operates on, stated before
+        // anything that acts on it. It is this tab's own selector — the page's
+        // 「查看范围」no longer decides what a clear button is aimed at.
+        renderAdvancedScope(t, m, a),
         // g-065: the observation of the two layers sits at the very top of this
         // tab — the block a user opens when a prompt seems not to have arrived.
         renderAssemblyStatus(t, m, a),
@@ -88,6 +93,154 @@ window.__ModuleLoader__.load({
         // the status block is a read-out.
         renderUpdateSetting(t, m, a),
         renderStatusDetail(t, m),
+      );
+    }
+
+    /**
+     * The height of this selector's scrolling candidate list, in px — a fixed
+     * box, so the tab's height never depends on how many workspaces exist.
+     */
+    const ADVANCED_SCOPE_LIST_HEIGHT = 180;
+
+    /**
+     * g-073 (Revision 55):「高级」's **own** workspace selector.
+     *
+     * The dimension is a **workspace**, not a session, and that is the whole
+     * point of stating it here: `reset=true` and `legacy=true` clear an entire
+     * workspace file, which every session of that workspace shares (§12.1) — so
+     * "which session is selected" has never described what those buttons do. The
+     * option's value is nevertheless a session id, because that is the identity
+     * the host resolves a workspace root from and a client never supplies a path
+     * (§4.2); the same member session also names the assembly record the status
+     * block above reads.
+     *
+     * The user layer is global and reads no session at all — the sentence below
+     * the control says so rather than letting a reader infer it.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the scope block element.
+     */
+    function renderAdvancedScope(t, m, a) {
+      const empty = m.advancedScopeMode === 'none';
+      const summaryTextStyle = { fontSize: 13, color: token.labelPrimary, wordBreak: 'break-word' };
+      return h(
+        'div',
+        {
+          'data-region': 'advanced-scope',
+          'data-advanced-scope-mode': m.advancedScopeMode,
+          'data-advanced-scope-value': m.advancedScopeValue,
+          'data-advanced-scope-options': String(m.advancedScopeOptions.length),
+          'data-scope-open': String(m.advancedScopeOpen),
+          style: { ...cardStyle, display: 'flex', flexDirection: 'column', gap: 6 },
+        },
+        h(
+          'div',
+          { 'data-region': 'advanced-scope-summary', style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+          h('span', { style: metaStyle }, t('advancedScopeLabel')),
+          empty
+            ? h('span', { 'data-role': 'advanced-scope-empty', style: metaStyle }, t('advancedScopeNone'))
+            : h('span', { 'data-role': 'advanced-scope-summary-label', style: summaryTextStyle }, m.advancedScopeName),
+          empty
+            ? null
+            : h(
+                UI.Button,
+                {
+                  variant: 'outline',
+                  'data-action': 'advanced-scope-toggle',
+                  'data-expanded': String(m.advancedScopeOpen),
+                  'aria-expanded': m.advancedScopeOpen,
+                  onClick: a.toggleAdvancedScopeOpen,
+                },
+                m.advancedScopeOpen ? t('scopeCollapse') : t('scopeEdit'),
+              ),
+        ),
+        h('p', { style: { margin: 0, ...metaStyle } }, t('advancedScopeNote')),
+        m.advancedScopeOpen && !empty
+          ? h(
+              'div',
+              { 'data-region': 'advanced-scope-picker', style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+              h(UI.Input, {
+                'data-role': 'advanced-scope-search',
+                placeholder: t('advancedScopeSearch'),
+                value: m.advancedScopeSearch,
+                onChange: a.setAdvancedScopeSearch,
+                style: { maxWidth: 320 },
+              }),
+              h(
+                'div',
+                {
+                  'data-advanced-scope-list': 'scroll',
+                  'data-advanced-scope-shown': String(m.advancedScopeMatches.length),
+                  style: {
+                    height: ADVANCED_SCOPE_LIST_HEIGHT,
+                    maxHeight: ADVANCED_SCOPE_LIST_HEIGHT,
+                    overflowY: 'auto',
+                    border: `1px solid ${token.borderL1}`,
+                    borderRadius: 8,
+                    padding: 6,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 4,
+                  },
+                },
+                m.advancedScopeMatches.length === 0
+                  ? h('span', { 'data-role': 'advanced-scope-no-match', style: metaStyle }, t('advancedScopeNoMatch'))
+                  : m.advancedScopeMatches.map((option) =>
+                      h(
+                        'button',
+                        {
+                          key: option.value,
+                          type: 'button',
+                          'data-role': 'advanced-scope-option',
+                          'data-advanced-scope-option': option.value,
+                          'data-selected': option.value === m.advancedScopeValue ? 'true' : 'false',
+                          onClick: () => a.setAdvancedScope(option.value),
+                          style: {
+                            ...miniButtonStyle({
+                              padding: '4px 8px',
+                              lineHeight: '18px',
+                              textAlign: 'left',
+                              color: option.value === m.advancedScopeValue ? token.buttonLabel : token.labelPrimary,
+                              background: option.value === m.advancedScopeValue ? token.buttonFill : 'transparent',
+                              border: `1px solid ${option.value === m.advancedScopeValue ? 'transparent' : token.borderL2}`,
+                            }),
+                            display: 'flex',
+                            gap: 6,
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            wordBreak: 'break-word',
+                          },
+                        },
+                        h('span', { key: 'name' }, option.label),
+                        option.value === m.advancedScopeValue
+                          ? h(UI.Tag, { key: 'current', tone: 'info' }, t('scopeSelected'))
+                          : null,
+                      ),
+                    ),
+              ),
+              h(
+                'div',
+                { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+                h(
+                  UI.Button,
+                  {
+                    'data-action': 'advanced-scope-auto',
+                    'data-advanced-scope-auto': 'true',
+                    onClick: () => a.setAdvancedScope(null),
+                  },
+                  t('advancedScopeAuto'),
+                ),
+              ),
+            )
+          : null,
+        m.advancedScopeMode === 'sessions'
+          ? h(
+              'span',
+              { 'data-warning': 'advanced-scope-degraded', style: { ...metaStyle, color: token.stateWarn } },
+              t('advancedScopeDegraded'),
+            )
+          : null,
       );
     }
 
@@ -113,13 +266,17 @@ window.__ModuleLoader__.load({
      * @returns the list element.
      */
     function renderOverridesList(t, m, a) {
-      const ovs = m.ovs.data;
+      // g-073 (Revision 55): the list describes the layer file the tab's own
+      // workspace selector names (`m.advancedOvs`), not a page-scoped read.
+      const ovs = m.advancedOvs.data;
       const merged = ovs && ovs.merged && Array.isArray(ovs.merged.overrides) ? ovs.merged.overrides : [];
       // `merged` says what is configured; `effective` says what it achieved. The
       // difference is the whole point of this list: a saved override that never
-      // takes effect must be visible as such, with a reason.
+      // takes effect must be visible as such, with a reason. Both halves come
+      // from **this tab's own scope** (g-073), so a row can never compare one
+      // workspace's overrides against another workspace's assembly.
       const achieved = new Map();
-      for (const section of m.effectiveSections) achieved.set(section.name, section);
+      for (const section of m.advancedEffectiveSections) achieved.set(section.name, section);
       return h(
         'div',
         { 'data-region': 'overrides', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
@@ -137,7 +294,7 @@ window.__ModuleLoader__.load({
             const target = achieved.get(entry.name);
             const state = target === undefined ? 'unknown' : target.applied === true ? 'applied' : 'ineffective';
             const hostReason = target && target.reason ? String(target.reason) : '';
-            const cause = ineffectiveCause(t, target, m.incoming);
+            const cause = ineffectiveCause(t, target, m.advancedIncoming);
             const reasonText = cause === null ? hostReason : cause.text;
             const isReserved = entry.name === RESERVED_SECTION_NAME;
             return h(
@@ -434,7 +591,9 @@ window.__ModuleLoader__.load({
      */
     function renderLayerReset(t, m, a) {
       const layer = m.advancedLayer;
-      const view = m.ovs.data ? m.ovs.data[layer] : null;
+      // g-073 (Revision 55): the counts describe the layer file this tab's own
+      // workspace selector names, not a page-scoped read.
+      const view = m.advancedOvs.data ? m.advancedOvs.data[layer] : null;
       const list = view && Array.isArray(view.overrides) ? view.overrides : [];
       const frozen = list.filter((entry) => entry && entry.name !== RESERVED_SECTION_NAME).length;
       const reserved = list.length - frozen;

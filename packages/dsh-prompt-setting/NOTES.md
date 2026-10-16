@@ -9372,3 +9372,86 @@ R4 表内**引用行号**的重取结果（当前文件）：§1 `:642-643`（ex
 
 **未验证项 / 残余**：跳过语义只在 fake Host + 真实文件系统（真实 SHA-256 / 真实目录创建）上验证，未在真机
 DSH 上手工目视「跨机备份」全流程；预览三块在 GUI 上只经渲染树断言与 EN sweep，未做真机截图核验。
+
+---
+
+## 153. g-073：作用域模型收敛 —— 页面「查看范围」只服务「我的 Prompt」（Revision 55，2026-10-16，基线 `6ebaf5e` 隔离工作树 `g-073-att-01`）
+
+**负责人 2026-10-16 目视后的要求**：页面级「查看范围」应只服务「我的 Prompt」；其余 tab 各自解耦——「我的预设」与它
+无直接关联、「提示词总览」自带作用域切换组件（按工作区分组、可选中具体会话）、「高级」自带工作区选择器、「版本历史」
+自 g-038 起已解耦（本次的参照实现）。g-074（全量备份）先交付，本目标处理**行为层**的解耦。
+
+**四个落点（全部在客户端；宿主端路由未改）**
+
+1. **「我的预设」脱离页面作用域**（`client.js` 的独立 effect，`PRESETS_PATH` 无 `?session=`）。原来的读与
+   snapshot / overrides 共用一个 effect（依赖 `[sessionArg, reload]`），页面作用域一动就重发；现在它只随
+   `reload` 刷新。宿主端 `GET /presets` 的 `session` 仍被接受（只做 workspace 解析），页面不再提供它——
+   `CONTRACT.md` §20.2 就地限定。apply / unapply 行为不变（它们的 workspace 来自对话框自己的行）。
+2. **「提示词总览」自带作用域**（`overviewScope*` state + `overviewScopeOptionsOf()` + 独立 snapshot effect +
+   `client.overview.js` 的 `data-region="overview-scope"` 披露组件）。**形态是"工作区分组、值是会话"**：
+   `/snapshot` 的 `?session=` 是双重语义（定位工作区层文件 + 以该会话的 live Agent 作探测 scope），frozen 判定与
+   变量解析是 per-scope 事实（§2.4），所以**不照抄**历史作用域的「工作区首个会话」取值法——`overviewScopeOptionsOf`
+   每个工作区出一个**分组**、组内每个会话一个选项，未被工作区认领的会话归入末尾的 `sessions` 组。
+   取数是 tab-gated（每个 tab 打开 / 作用域改变 / reload 各一次），因为每次 `/snapshot` 要跑两次 `assemble()`（§2.6）。
+   总览读自己的 `m.overview*`（sections / fz / incoming / snap），页面作用域不再影响它。
+3. **「高级」自带工作区选择器**（`advancedScope*` state + `data-region="advanced-scope"` + 自己的 overrides /
+   snapshot / assembly-status 读）。层操作（`reset=true` / `legacy=true`）与旧版覆盖列表、装配状态都按所选工作区；
+   `resetLayer` / `clearLegacy` 的 `layerQuery(layer, advancedScopeArg)` 取代了页面 `sessionArg`。
+   选择器的**维度是工作区**（整层清除动的是整个工作区文件，所有会话共享，§12.1），但**默认值是当前会话本身**
+   （历史作用域那种「首个会话」会把默认视图从"当前会话的装配状态"换成别人的——record 按 sessionId 存）。
+   为此新增 `m.advancedSnap` / `m.advancedEffectiveSections` / `m.advancedIncoming`：旧版列表的 `applied`
+   是"本作用域装配"的事实，不能拿页面作用域的 assembly 去判。
+4. **页面作用域收敛**：`m.sessionArg` 的消费点只剩「我的 Prompt」（snapshot + overrides 两次读、面板自己的
+   `data-region="mine-target"` 展示、保存落层）；`/export`、`/import`（dryRun 与 apply 都不带）、`/presets`
+   不再携带它（备份是全量的，§10 Revision 53；空工作区层视图的导入由宿主按 `skipped` 答复，§11.1）。
+
+**契约同步清单（只追加 / 就地限定，不删历史正文）**：§13.0（tab 表的"其余 tab 无作用域"就地限定 + Revision 55）、
+§13.2（新增 Revision 55 条：marker 全表 + "值是会话不是首个会话"的理由）、§13.3a（新增 Revision 55 条：备份不带页面
+作用域）、§13.4（新增 Revision 55 条：工作区选择器 + 三次读 + 用户层全局）、§13.7（末段就地限定为"只 scope
+「我的 Prompt」"+ 消费点清单）、**§13.10（新增）：作用域模型总表 + 6 条不变式**、§20.2（`?session=` 就地限定）、
+§22（键数 573/522 → 586/535）。
+
+**测试与断言（`test/client.test.mjs` 新增 4 个用例）**
+
+- `g-073 — the preset library is read without the page scope`：`enforceEffectDeps: true` 下断言
+  `/presets` 只在挂载时读一次、URL 无 `?session=`，把页面作用域改成全局后**不重发**，而 snapshot 确实跟随；
+- `g-073 — no tab but 「我的 Prompt」renders the page-scope surface`：**直接 marker 断言**——`presets` /
+  `overview` / `history` / `backup` / `advanced` 五棵树里 `data-region="session"`、`data-region="scope-summary"`、
+  `data-action="scope-toggle"` 各为 **0**，而 `mine` 为 1；
+- `g-073 —「提示词总览」owns a by-workspace, per-session scope`：默认跟随当前会话（a3）、按路由函数按 `?session=`
+  返回不同快照；`w-alpha` 组内三个会话 a1/a2/a3 **都被渲染**（不是首个会话一个替身）、`loose` 落在 `sessions` 组；
+  选 b1 后请求与渲染都换成 beta；再把页面作用域改成全局，总览的值与内容**不动**；
+- `g-073 —「高级」aims its reads at its own workspace selector`：默认 a3（当前会话）、`data-reset-count` 随所选
+  工作区变；页面作用域改成全局后仍 a3；选 b1 后 assembly-status / overrides 都换 b1；`reset=true` 与 `legacy=true`
+  发的是 `layer=workspace&session=b1&…`（而非页面作用域）。
+- 既有断言同步两处：export 请求不再带 `?session=`（`client.test.mjs` 的导出用例）；assembly-status 用例的第二段改为
+  "页面作用域改全局后本 tab 不变"，并把 no-session 分支改由无会话服务的页面覆盖。
+- g-061 的两条计数守卫（`miniButtonStyle({` / `normalizeNeedle(` / `matchesNeedle([`）按新调用点更新，**未弱化**。
+
+**门禁**：`node scripts/locale-pack.mjs --write`（586 键）与 `node scripts/client-chunks.mjs --write` 均为生成段/清单，
+非手改；`node scripts/prepare.mjs` 通过（含 `CHUNK-STAMPS` 5 个 chunk、`LOCALE-SYNC` 586 键）。
+
+**`docs/check-refs.mjs` 的修复（本轮的额外工作）**：基线（`6ebaf5e`）跑该体检**已经是红灯**（89 条不符）——
+g-074 改了 `index.js` / `CONTRACT.md` 却没有同步 `docs/refactor-plan.md` 里手写的 `文件:行` 与脚本内的 REFS 期望表。
+本轮按"改完必须 exit 0"把它修到绿：用**锚文本**在当前文件里重新定位 REFS 表 158 条（`expect` / `toExpect` /
+`stripEquals`），把文档里的完整形式与简写引用（`:1234`）按同一批采样换算，并把 §1.3 / §5.1 两张表按新的
+`client.js` 布局重算（合计 11879 → **12284**，`PromptSettingSection` 2640 → 2934 行，`13/14/15` 三段重切到
+1200 / 1146 / 602，脚本里的常量同步）。**未弱化任何断言**：REFS 表条目数不变（158），区间端点断言不变，
+`verified` 从 56 升到 129。
+
+**验收（本文件最终版、未提交实跑）**
+
+- evidence: suite=node --test(test/*.test.mjs) passed=942 failed=0 exit=0（基线 938，本轮 +4：`client.test.mjs` 新增 4 个 g-073 用例）；
+- evidence: suite=node scripts/prepare.mjs passed=23 failed=0 exit=0（`CHUNK-STAMPS` 5 个 chunk / `LOCALE-SYNC` 586 键）；
+- evidence: suite=node docs/check-refs.mjs verified=129 rangeOnly=6 manual=21 failed=0 exit=0（§1.3 表 24 行合计 12284、§5.1 表 17 行合计 12284、最大段 1200）；
+- evidence: suite=node scripts/locale-pack.mjs --check passed=586 failed=0 exit=0。
+
+**负向对照 2 条（改坏就红，已还原、零残留）**：① 让 `GET /presets` 重新带上页面 `?session=` ⇒
+`g-073 — the preset library is read without the page scope` 红；② 把 `overviewScopeOptionsOf` 的每工作区选项压成
+`ids.slice(0, 1)`（即历史作用域那种"首个会话"取值法）⇒ `g-073 —「提示词总览」owns a by-workspace, per-session
+scope` 红（三个会话被压成一个）。
+
+**未验证项 / 残余**：作用域选择器的视觉（披露高度、"跟随当前会话"高亮）只在渲染树与 marker 上断言，未做真机
+GUI 截图核验；"高级"的默认值取"当前会话"而非工作区代表会话，这一点在契约里写明了理由（record 按 sessionId 存），
+但真机上多个会话同属一个工作区时的观感仍需负责人目视；`docs/check-refs.mjs` 的 6 条 `rangeOnly`（简写与完整形式
+换算精度差）保持"包内可读 + 行号合法"的最小验证，未强行收编。

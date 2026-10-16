@@ -2322,7 +2322,9 @@ title line — which carries the plugin version beside the heading since Revisio
 17 (§13.8) — and one line of deciding facts. Since g-071 the session selector is
 **not** one of them: it renders inside「我的 Prompt」, the only surface it writes,
 and no other tab carries a scope surface of its own (Revision 52; the read-only
-line g-071 first gave them was withdrawn in R4 — §13.7).
+line g-071 first gave them was withdrawn in R4 — §13.7). **Revision 55 (g-073)**
+completes that reading: the page value scopes「我的 Prompt」alone, and the two
+tabs that need a scope state their own (§13.2, §13.4, §13.10).
 
 **g-055/g-071: the scope card is one block inside「我的 Prompt」** (§13.7,
 `data-region="prompt-block"`). The block wraps the selector in one container and
@@ -2370,15 +2372,23 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   (`data-region="history"`, `"history-list"`) exist **only** in the `history`
   panel, and the preset catalogue (`data-region="presets"`, its list, and the two
   dialogs of §20.9) exists **only** in the `presets` panel.
-- the tabs other than「我的 Prompt」render **no** scope surface at all (Revision
-  52 / R4): the one-line read-only statement of the page scope that g-071 first
-  gave them was **withdrawn** after the owner's real-machine review, because each
-  of those tabs has its own scope semantics — 「提示词总览」will get its own
-  switcher, 「备份与恢复」should export the whole configuration, 「高级」is not
-  scope-dependent, and 「我的预设」is not tied to this scope either. Decoupling
-  them from the page-level value is **g-073**, not something this page may assert
-  in the meantime. 「版本历史」has had its own scope since Revision 19 (§13.3,
-  §13.7).
+- the tabs other than「我的 Prompt」render **no scope surface of the page's**
+  (Revision 52 / R4): the one-line read-only statement of the page scope that
+  g-071 first gave them was **withdrawn** after the owner's real-machine review,
+  because each of those tabs has its own scope semantics — 「提示词总览」will get
+  its own switcher, 「备份与恢复」should export the whole configuration, 「高级」is
+  not scope-dependent, and 「我的预设」is not tied to this scope either.
+  **Revision 55 (g-073) is that decoupling**, and it is asserted by direct marker
+  rather than by structure: in `presets` / `overview` / `backup` / `advanced`
+  (and `history`) the tree holds **zero** nodes with `data-region="session"`,
+  `data-region="scope-summary"` or `data-action="scope-toggle"` — the page scope
+  is drawn in「我的 Prompt」and nowhere else. What those tabs have instead is
+  stated where it belongs: 「提示词总览」carries its own by-workspace, per-session
+  switcher (§13.2), 「高级」carries its own workspace selector (§13.4),
+  「备份与恢复」exports the whole configuration (§10, Revision 53) and is read
+  without a page scope (§13.3a), 「我的预设」is read without one too (§20), and
+  「版本历史」has had its own since Revision 19 (§13.3, §13.7). The model is
+  summarised in §13.10.
 
 **Revision 29 (the client half ships as an entry plus chunks — internal
 structure only).** Nothing above changes: the same tabs, the same order, the
@@ -3306,6 +3316,35 @@ by accident — the tests assert the values rather than the family's agreement.
 - The two inner views (`data-region="view-tabs"`, group `view`, values
   `sections` / `full`) keep their Revision 3 meaning; the Revision 6
   `overrides` view no longer exists.
+- **Revision 55 (g-073): the tab has its own scope, and it is not the page's.**
+  `data-region="overview-scope"` carries `data-overview-scope-mode`
+  (`workspaces` | `sessions` | `none`), `data-overview-scope-value` (the session
+  id the snapshot is read in, `''` for the global scope),
+  `data-overview-scope-options` (how many candidates exist) and
+  `data-scope-open` — the same fixed-height disclosure the version history's own
+  selector uses (§13.3): a summary row
+  (`data-region="overview-scope-summary"`, `data-role="overview-scope-summary-label"`,
+  the switch `data-action="overview-scope-toggle"` with `data-expanded` /
+  `aria-expanded`), and, only while open, `data-region="overview-scope-picker"`
+  with `data-role="overview-scope-search"`, a scrolling
+  `data-overview-scope-list="scroll"` carrying `data-overview-scope-shown`, the
+  workspace groups (`data-overview-scope-group="<workspaceId>"`, `sessions` for
+  the sessions no workspace claims) and one button per **session**
+  (`data-role="overview-scope-option"`, `data-overview-scope-option="<sessionId>"`,
+  `data-overview-scope-workspace`, `data-selected`; the pick *is* the click, so
+  the row states no `data-action`), plus `data-action="overview-scope-auto"` for
+  「跟随当前会话」. Picking one collapses the picker and drops the search box.
+  **The dimension is a workspace group, but the value is a session, never the
+  workspace's first one**: `/snapshot` reads `?session=` twice — it locates the
+  workspace layer file *and* probes the assembly in that session's own scope —
+  and the frozen verdict and the variable resolution are per-scope facts (§2.4),
+  so 「该工作区首个会话」would show a verdict that is not the reader's session's.
+  The tab therefore reads the snapshot in **its own** scope, gated on the tab
+  being open (one request per tab open / scope change / reload), because every
+  `/snapshot` costs two `assemble()` runs (§2.6); the sections, the full text,
+  the diff, `editGate` and the ineffective-cause note all come from that read
+  (`m.overview*`), never from the page-scoped one. Moving the page's「查看范围」
+  changes none of it.
 
 ### 13.3 「版本历史」(Revision 19: its own scope, paging and a two-column layout; scope disclosure and state resets in Revision 20; record preview and rollback in Revision 21; preview policy and the narrowed rollback in Revision 22; viewport-sized layout, row picking and clearing in Revision 23; the panel height measured at run time in Revision 24; one column and viewport modals in Revision 25; the modal details settled in Revision 26; the row's section name removed and the panel's chrome tightened in Revision 27)
 
@@ -3826,6 +3865,14 @@ code means rather than how it is written:
 - Revision 18's export file name rule is unchanged
   (`dsh-prompt-setting-YYYY-MM-DD-HH-mm-ss.json`, the reader's zone, derived from
   the document's own `exportedAt`).
+- **Revision 55 (g-073): the tab carries no page scope.** `GET /export` and
+  `POST /import` (dry run and apply alike) are sent **without** `?session=`: a
+  backup is the whole installation (§10, Revision 53), so the page's「查看范围」
+  has no business in it and `data-region="mine"` is the only surface that
+  changes what those two requests carry. The host still accepts `?session=`
+  (it locates one workspace layer view); the page simply never supplies it, and
+  an import of a document whose workspace layer view is empty is answered with a
+  `skipped` entry rather than a refusal (§11.1).
 
 ### 13.4 「高级」
 
@@ -3841,6 +3888,31 @@ code means rather than how it is written:
   selector): `data-action="legacy-clear"` sends `DELETE …&legacy=true` (§12.2)
   and **keeps** the reserved override, while `data-action="reset-layer"` sends
   `DELETE …&reset=true` (§12.1) and clears the whole layer.
+- **Revision 55 (g-073): the tab's own workspace selector, and what it aims at.**
+  `data-region="advanced-scope"` carries `data-advanced-scope-mode`
+  (`workspaces` | `sessions` | `none`), `data-advanced-scope-value` (a session
+  id that resolves the workspace, `''` for none), `data-advanced-scope-options`
+  and `data-scope-open`; it is the same disclosure family as §13.2/§13.3
+  (`data-region="advanced-scope-summary"`,
+  `data-role="advanced-scope-summary-label"`,
+  `data-action="advanced-scope-toggle"`, and, while open,
+  `data-region="advanced-scope-picker"`, `data-role="advanced-scope-search"`, a
+  scrolling `data-advanced-scope-list="scroll"` with
+  `data-advanced-scope-shown`, `data-role="advanced-scope-option"` rows carrying
+  `data-advanced-scope-option`, and `data-action="advanced-scope-auto"`). The
+  dimension is a **workspace**, because that is what the two clears act on:
+  `?reset=true` / `?legacy=true` on the workspace layer clear the whole workspace
+  file, which every session of that workspace shares (§12.1) — so the choice never
+  was a session choice. The value is a session id only because the host resolves a
+  workspace root from a session and a client never supplies a path (§4.2); the
+  default is the **current session itself** (not the workspace's first one),
+  because the same value names the assembly record the status block above reads
+  and records are keyed by session id. Both reads of this tab are made in this
+  scope and only while the tab is open: the legacy list, its two counts and its
+  `applied` verdict come from `?session=<scope>` reads of `/overrides` and
+  `/snapshot`, and `GET /assembly-status` is asked for the same session. The two
+  clears send `layer=<layer>&session=<scope>`; the user layer is global and the
+  host ignores the session there. Moving the page's「查看范围」changes none of it.
 - **Revision 28:** the「检查更新」card also carries the「下载区域」row
   (`data-region="download-region"`, `data-action="update-region-select"`) and the
   「自定义镜像源」dialog overlay (`data-region="region-overlay"` /
@@ -4164,10 +4236,35 @@ pinned entry's selected state — never by overwriting the box. The「全局」e
 `Esc` still clear the query (Revision 31 leaves that alone).
 
 **This picker no longer feeds the version history (Revision 19).** It scopes the
-snapshot and the override reads (`my Prompt`, `提示词总览`, `高级`); the version
-history reads its own scope (§13.3) and is not a consumer of this one. Before
-Revision 19 the same value was appended to the history request as `?session=`,
-which is exactly why the log looked like it lost records when the scope moved.
+snapshot and the override reads of **「我的 Prompt」**; the version history reads
+its own scope (§13.3) and is not a consumer of this one. Before Revision 19 the
+same value was appended to the history request as `?session=`, which is exactly
+why the log looked like it lost records when the scope moved.
+
+**Revision 55 (g-073) narrows that sentence to what it now means.** The two
+reads it scopes are the ones this panel needs — `GET /snapshot` and
+`GET /overrides`, both asked for the write target's own workspace — and nothing
+else follows the value any more:
+
+- `GET /presets` is read **without** `?session=` (§20.2): the library is one
+  global file plus per-workspace records, and this panel's scope never described
+  it. Its apply / unapply actions are unchanged — those name a workspace from
+  their own dialog rows, which was true before this revision too;
+- 「提示词总览」reads the snapshot in its **own** scope (§13.2) and 「高级」reads
+  `/overrides`, `/snapshot` and `/assembly-status` in its own (§13.4);
+- `GET /export` and `POST /import` carry **no** page scope: a backup is the whole
+  installation (§10, Revision 53), so which session happened to be selected has
+  no business in it (and an import document that names no session is handled —
+  an empty workspace layer view is reported as `skipped`, not refused, §11.1);
+- the version history keeps its own scope (§13.3).
+
+So the value is consumed in exactly two places: the snapshot and the override
+reads of this panel, plus the panel's own display of the write target
+(`data-region="mine-target"`) and the layer a save lands in. These trees state
+it as `data-region="session"` / `data-region="scope-summary"` /
+`data-action="scope-toggle"` **inside `data-region="mine"` only** — the other
+five tabs render none of those three markers, asserted by direct marker count
+(§13.10).
 
 ### 13.8 The plugin version on the page (g-029)
 
@@ -4293,6 +4390,49 @@ Two surfaces, both fed by `GET /prompt-setting/update-check` (§17):
 `test/client.test.mjs` freezes every branch above, including the two negative
 ones that matter most: a failed check paints no error, and a mirrored `'off'`
 makes the mount request nothing.
+
+### 13.10 The scope model (Revision 55, g-073)
+
+Before this revision the page had **one** scope and five tabs read it. The
+owner's rule (2026-10-16) is that the page-level「查看范围」serves「我的 Prompt」
+alone, so the value was narrowed and the two tabs that genuinely need a scope
+were given their own. The whole model, in one place:
+
+| surface | what scopes it | marker |
+| --- | --- | --- |
+| 「我的 Prompt」 | the page's「查看范围」(`m.sessionArg`) | `data-region="session"` inside `data-region="mine"` (§13.7) |
+| 「提示词总览」 | its **own** by-workspace, per-session selector | `data-region="overview-scope"` (§13.2) |
+| 「高级」 | its **own** workspace selector | `data-region="advanced-scope"` (§13.4) |
+| 「版本历史」 | its **own** workspace selector (Revision 19) | `data-region="history-scope"` (§13.3) |
+| 「我的预设」 | **no scope** — the library is read without `?session=` | — (§20.2) |
+| 「备份与恢复」 | **no scope** — a backup is the whole installation | — (§13.3a, §10) |
+
+Invariants, each asserted in `test/client.test.mjs`:
+
+- **the page scope is consumed by two reads** — `GET /snapshot` and
+  `GET /overrides` for「我的 Prompt」 — plus that panel's own display of the write
+  target and the layer a save lands in. Moving it re-reads neither the preset
+  library nor the overview's snapshot, and carries no page scope into
+  `/export`, `/import` or `/assembly-status`;
+- **a tab-owned scope is read only while its tab is open**: one request per tab
+  open / scope change / reload. Every `/snapshot` costs the host two `assemble()`
+  runs (§2.6), so no scope re-reads on render;
+- **a scope selector is a disclosure** in all three tabs that have one
+  (`data-scope-open`, collapsed by default, `data-action="…-scope-toggle"`), and
+  picking a value finishes the interaction and drops the search box (§13.7's
+  convention);
+- **「提示词总览」's dimension is a workspace group, but its value is a session**
+  — never the workspace's first one: `/snapshot`'s `session` locates the
+  workspace layer file *and* probes the assembly in that session's own scope, and
+  the frozen verdict and the variable resolution are per-scope facts (§2.4);
+- **「高级」's dimension is a workspace**, because `?reset=true` / `?legacy=true`
+  clear a whole workspace file that every session in it shares (§12.1); its
+  default value is the current session itself, because the same value names the
+  assembly record the status block reads and records are keyed by session id;
+- **the other tabs render no page-scope node**, asserted by direct marker count:
+  in `presets`, `overview`, `history`, `backup` and `advanced` the tree holds
+  **zero** nodes with `data-region="session"`, `data-region="scope-summary"` or
+  `data-action="scope-toggle"`.
 
 ---
 
@@ -6883,6 +7023,12 @@ every preset route and never on the assembly path:
 Query: `session` (optional). It is **resolution only**, exactly like
 `?workspace=` in §8: a session id that lets the answer name the workspace the
 caller is looking at. It never filters the library (the library is global).
+**Revision 55 (g-073): the page's「我的预设」never sends it.** The route keeps
+accepting the parameter (the answer's `workspaceRoot` is its only reader, and it
+is the host's own resolution, not a filter), but the client stopped supplying it
+— the page-level scope serves「我的 Prompt」alone (§13.10) and the library is not
+one of that scope's reads. Its `apply` / `unapply` actions are untouched: they
+name a workspace from their own dialog rows (§20.5, §20.6).
 
 ```json
 {
@@ -7585,9 +7731,9 @@ re-report it.
 
 ## 22. The locale dictionaries (g-066, Revision 49)
 
-Every user-visible string this plugin renders — **573** keys per language since
-g-074 att-002 (Revision 54; 567 through Revision 51, 566 through Revision 50, 564
-through Revision 49) — used to
+Every user-visible string this plugin renders — **586** keys per language since
+g-073 (Revision 55; 573 through Revision 54, 567 through Revision 51, 566
+through Revision 50, 564 through Revision 49) — used to
 be hardcoded inside `client.js`: a 513-key `zh` object, a 513-key `en` object,
 and an `ERROR_TEXT` table of 51 `code → [zh, en]` rows that a loop expanded into
 `error.<code>` entries. The copy now lives in two JSON files, and the inlined
@@ -7596,10 +7742,10 @@ objects are a generated artifact.
 ### 22.1 Source of truth
 
 - `locale/zh.json` and `locale/en.json` are the **only** human source. Each
-  holds exactly 573 string values: the 522 main keys plus 51 `error.<code>`
+  holds exactly 586 string values: the 535 main keys plus 51 `error.<code>`
   keys. Keys are identical between the two files, **in the same order** (the
   order is what the generated block follows, so a reordered file is a
-  522-line diff rather than a copy change).
+  535-line diff rather than a copy change).
 - Nothing else in the package is hand-edited for copy. `client.js` carries the
   blocks inside the `// #region generated: locale/zh.json + locale/en.json`
   … `// #endregion` span; a hand edit there is overwritten by the next `--write`
@@ -7630,7 +7776,7 @@ there is no network surface. What changed is only who maintains the bytes.
 | `scripts/locale-pack.mjs --write` | Re-renders both blocks from the JSON. Idempotent: a second run changes nothing. |
 | `scripts/locale-pack.mjs --check` | Fails (exit 1) when a block is not byte-for-byte what `--write` would produce. |
 | `scripts/prepare.mjs` → `LOCALE-SYNC` | The same check on the **install/publish** path, plus a `files` allowlist test for both JSONs (a source that does not ship cannot be re-derived from the installed package). |
-| `test/locale.test.mjs` | Key parity, the 522 + 51 split, no new placeholder drift, byte equality with `--write`, a negative control (one drifted character is refused), and that the delivery shape is still a classic script with a synchronous register. |
+| `test/locale.test.mjs` | Key parity, the 535 + 51 split, no new placeholder drift, byte equality with `--write`, a negative control (one drifted character is refused), and that the delivery shape is still a classic script with a synchronous register. |
 
 ### 22.4 Error codes
 

@@ -3177,7 +3177,11 @@ test('client: g-061 — three ghost-button families, and not one drift repaired 
   const history = chunkCode(readFileSync(join(here, '..', 'client.history.js'), 'utf8'));
   assert.equal(occurrencesOf(history, 'miniButtonStyle({'), 3, 'the two side buttons, the pager and the scope option row');
   const overview = chunkCode(readFileSync(join(here, '..', 'client.overview.js'), 'utf8'));
-  assert.equal(occurrencesOf(overview, 'miniButtonStyle({'), 1, 'the section expand toggle');
+  assert.equal(
+    occurrencesOf(overview, 'miniButtonStyle({'),
+    2,
+    'the section expand toggle and the overview scope option row (g-073)',
+  );
   // The pager's 2px/10px is this family's one odd value, and it is kept, stated.
   assert.match(history, /padding: '2px 10px'/, 'the pager keeps the padding its neighbours do not use');
   for (const name of CHUNK_FILES) {
@@ -3459,8 +3463,16 @@ test('client: g-061 — one search comparison, two search semantics kept apart (
   assert.equal(shared.matchesNeedle([], ''), true, 'the empty needle matches everything');
 
   const entry = readFileSync(join(here, '..', 'client.js'), 'utf8');
-  assert.equal(occurrencesOf(entry, '= normalizeNeedle('), 3, 'the flat filter, the tree derivation and the history scope');
-  assert.equal(occurrencesOf(entry, 'matchesNeedle(['), 2, 'the session rows and the history scope options');
+  assert.equal(
+    occurrencesOf(entry, '= normalizeNeedle('),
+    5,
+    'the flat filter, the tree derivation, the history scope and the two tab-owned scopes (g-073)',
+  );
+  assert.equal(
+    occurrencesOf(entry, 'matchesNeedle(['),
+    4,
+    'the session rows, the history scope options and the two tab-owned scopes (g-073)',
+  );
   assert.equal(occurrencesOf(entry, "join(' ').toLowerCase()"), 1, 'the session list builds its cache where it always did');
   assert.match(entry, /if \(needle\.length === 0\) return list\.slice\(\);/, 'and the flat filter still returns a copy');
   assert.match(
@@ -7470,7 +7482,10 @@ test('client: exporting downloads the document and keeps a copyable text', async
   clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'export' });
   tree = await page.flush();
 
-  assert.deepEqual(urlsFor(page, PATHS.export), [`${PATHS.export}?session=s2`]);
+  // g-073 (Revision 55): a backup is not a range. Since Revision 53 the document
+  // is complete on its own, so the request carries no page scope — 「查看范围」
+  // serves「我的 Prompt」alone.
+  assert.deepEqual(urlsFor(page, PATHS.export), [PATHS.export]);
   assert.equal(downloader.clicks.length, 1, 'one download was triggered');
   // Identifiable and time-ordered, and named in the reader's zone (Revision 18):
   // the expectation comes from local getters, not from the implementation.
@@ -13858,10 +13873,10 @@ test('client: the「高级」tab renders the assembly-status block at its top, a
     'the assembly block sits above the override list',
   );
 
-  // The global scope names no session, so the block says what to do instead of
-  // reading a conversation it cannot describe. The scope is changed where it
-  // lives —「我的 Prompt」(g-071) — and the tab is then reopened: this tab only
-  // states it read-only.
+  // g-073 (Revision 55): the block reads **this tab's own** scope. Moving the
+  // page's「查看范围」to the global scope — where that control lives, inside
+  // 「我的 Prompt」(g-071) — must change nothing here: the tab keeps reading the
+  // session its own selector names.
   tree = await openTab(page, 'mine');
   scopeToggle(tree).props.onClick();
   tree = await page.flush();
@@ -13869,9 +13884,21 @@ test('client: the「高级」tab renders the assembly-status block at its top, a
   tree = await page.flush();
   assert.equal(markerOf(tree, 'data-session'), 'global');
   tree = await openTab(page, 'advanced');
-  const global = oneBy(tree, 'data-region', 'assembly-status');
+  const stillScoped = oneBy(tree, 'data-region', 'assembly-status');
+  assert.equal(stillScoped.props['data-assembly-session'], 'yes', 'the page scope does not move this read');
+  const assemblyReads = urlsFor(page, PATHS.assemblyStatus);
+  assert.ok(
+    assemblyReads.length >= 2 && assemblyReads.every((url) => url === `${PATHS.assemblyStatus}?session=s2`),
+    'every read names the advanced tab\'s own scope, never the page scope',
+  );
+
+  // A page with no session service has no session to name at all, so the block
+  // says what to do instead of reading a conversation it cannot describe.
+  const bare = makePage({ responses: defaultResponses() });
+  const bareTree = await openTab(bare, 'advanced');
+  const global = oneBy(bareTree, 'data-region', 'assembly-status');
   assert.equal(global.props['data-assembly-session'], 'none');
-  assert.ok(hasText(oneBy(tree, 'data-assembly-note', 'no-session'), page.zh.assemblyNoSession));
+  assert.ok(hasText(oneBy(bareTree, 'data-assembly-note', 'no-session'), bare.zh.assemblyNoSession));
 });
 
 test('client: the block reports both layers of the last key node, and never the prompt text', async () => {
@@ -15298,3 +15325,235 @@ test('client: the「高级」red dot tracks a newer release and outlives a dismi
   assert.equal(updateBanner(tree).length, 0, 'the banner is gone');
   assert.equal(tabDots(tree).length, 1, 'the dot is not');
 });
+
+// #region g-073 (Revision 55): the page scope serves「我的 Prompt」alone
+
+/**
+ * One snapshot whose assembly names the scope that produced it, so a scope
+ * change is visible in the rendered tree rather than only in the request log.
+ * @param label - the scope's label (`alpha` / `beta`).
+ * @returns the `GET /snapshot` payload.
+ */
+function scopedSnapshotFixture(label) {
+  return snapshotFixture({
+    rendered: `${label} rendered`,
+    effective: {
+      sections: [
+        {
+          name: `scope:${label}`,
+          index: 0,
+          text: `${label} text`,
+          applied: true,
+          overridable: true,
+          reason: null,
+          overrideLayer: null,
+          action: null,
+          origin: 'registered',
+        },
+      ],
+    },
+  });
+}
+
+test('client: g-073 — the preset library is read without the page scope (criterion 1)', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses(),
+    // The whole point of this case is causality: an effect that must **not**
+    // re-run has to be able to not re-run.
+    enforceEffectDeps: true,
+  });
+  const tree = await page.flush();
+  const libraryReads = () => urlsFor(page, PATHS.presets).filter((url) => !url.includes('id='));
+  assert.deepEqual(libraryReads(), [PATHS.presets], 'one read on mount, and it carries no page scope');
+  // Move the page scope where that control lives — 「我的 Prompt」 (g-071).
+  scopeToggle(tree).props.onClick();
+  let next = await page.flush();
+  clickButton(next, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
+  next = await page.flush();
+  assert.equal(markerOf(next, 'data-session'), 'global', 'the page scope really moved');
+  assert.deepEqual(libraryReads(), [PATHS.presets], 'and the library was not read again');
+  assert.ok(urlsFor(page, PATHS.snapshot).includes(PATHS.snapshot), 'while the page snapshot did follow it');
+});
+
+test('client: g-073 — no tab but 「我的 Prompt」renders the page-scope surface (criterion 5)', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  const mine = await page.flush();
+  assert.equal(
+    collect(mine, (node) => node.props && node.props['data-region'] === 'session').length,
+    1,
+    'the page-scope card is drawn, once, inside 「我的 Prompt」',
+  );
+  for (const tab of ['presets', 'overview', 'history', 'backup', 'advanced']) {
+    const tree = await openTab(page, tab);
+    assert.equal(
+      collect(tree, (node) => node.props && node.props['data-region'] === 'session').length,
+      0,
+      `${tab}: no page-scope card`,
+    );
+    assert.equal(
+      collect(tree, (node) => node.props && node.props['data-region'] === 'scope-summary').length,
+      0,
+      `${tab}: no page-scope summary`,
+    );
+    assert.equal(
+      collect(tree, (node) => node.props && node.props['data-action'] === 'scope-toggle').length,
+      0,
+      `${tab}: no page-scope toggle`,
+    );
+  }
+});
+
+test('client: g-073 —「提示词总览」owns a by-workspace, per-session scope (criterion 2)', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses({
+      [PATHS.snapshot]: (url) => ({
+        payload: url.includes('session=b1') ? scopedSnapshotFixture('beta') : scopedSnapshotFixture('alpha'),
+      }),
+    }),
+  });
+  const mine = await page.flush();
+  let tree = await openTab(page, 'overview', mine);
+  const scope = oneBy(tree, 'data-region', 'overview-scope');
+  assert.equal(scope.props['data-overview-scope-mode'], 'workspaces', 'the workspaces are the dimension');
+  assert.equal(scope.props['data-overview-scope-value'], 'a3', 'the default follows the current session');
+  assert.ok(urlsFor(page, PATHS.snapshot).includes(`${PATHS.snapshot}?session=a3`), 'and it is read in that scope');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-section-row'] === 'scope:alpha').length,
+    1,
+    'the assembly on screen is that scope\'s',
+  );
+  // Every session of a workspace is offered — **not** one stand-in per workspace.
+  clickButton(tree, { 'data-action': 'overview-scope-toggle' });
+  tree = await page.flush();
+  const alpha = oneBy(tree, 'data-overview-scope-group', 'w-alpha');
+  assert.deepEqual(
+    collect(alpha, (node) => node.props && node.props['data-overview-scope-option'] !== undefined).map(
+      (node) => node.props['data-overview-scope-option'],
+    ),
+    ['a1', 'a2', 'a3'],
+    'all three of the workspace\'s sessions, not its first one alone',
+  );
+  assert.ok(
+    collect(tree, (node) => node.props && node.props['data-overview-scope-group'] === 'sessions').length === 1,
+    'and a session no workspace claims is offered under its own group',
+  );
+  // Pick another workspace's session: that scope is read, and shown.
+  clickButton(tree, { 'data-overview-scope-option': 'b1' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'overview-scope').props['data-overview-scope-value'], 'b1');
+  assert.ok(urlsFor(page, PATHS.snapshot).includes(`${PATHS.snapshot}?session=b1`), 're-read in the new scope');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-section-row'] === 'scope:beta').length,
+    1,
+    'and the assembly on screen follows it',
+  );
+  // The page scope does not move any of it.
+  tree = await openTab(page, 'mine', tree);
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-session'), 'global', 'the page scope moved to the global one');
+  tree = await openTab(page, 'overview', tree);
+  assert.equal(
+    oneBy(tree, 'data-region', 'overview-scope').props['data-overview-scope-value'],
+    'b1',
+    'the overview scope stayed where the reader put it',
+  );
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-section-row'] === 'scope:beta').length,
+    1,
+    'and so did the assembly it shows',
+  );
+});
+
+test('client: g-073 —「高级」aims its reads at its own workspace selector (criterion 3)', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses({
+      [PATHS.overrides]: (url) => ({
+        payload: url.includes('session=b1')
+          ? layeredOverrides(
+              [{ name: 'project:alpha', action: 'replace', text: 'alpha overridden' }],
+              [{ name: 'project:beta', action: 'replace', text: 'beta overridden' }],
+            )
+          : layeredOverrides(
+              [{ name: 'project:alpha', action: 'replace', text: 'alpha overridden' }],
+              [{ name: 'extra:alpha', action: 'append', text: 'alpha extra' }],
+            ),
+      }),
+    }),
+  });
+  let tree = await openAdvanced(page);
+  const scope = oneBy(tree, 'data-region', 'advanced-scope');
+  assert.equal(scope.props['data-advanced-scope-mode'], 'workspaces', 'the workspace is the dimension');
+  assert.equal(scope.props['data-advanced-scope-value'], 'a3', 'the default follows the current session\'s workspace');
+  assert.equal(
+    oneBy(tree, 'data-region', 'layer-reset').props['data-reset-count'],
+    '1',
+    'the legacy list counts the layer this scope names',
+  );
+  const statusReads = () => urlsFor(page, PATHS.assemblyStatus);
+  assert.equal(statusReads()[statusReads().length - 1], `${PATHS.assemblyStatus}?session=a3`);
+
+  // The page scope moves to the global one; this tab must not follow it.
+  tree = await openTab(page, 'mine', tree);
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
+  tree = await page.flush();
+  tree = await openTab(page, 'advanced', tree);
+  assert.equal(
+    oneBy(tree, 'data-region', 'advanced-scope').props['data-advanced-scope-value'],
+    'a3',
+    'the advanced tab keeps its own scope',
+  );
+  assert.equal(statusReads()[statusReads().length - 1], `${PATHS.assemblyStatus}?session=a3`);
+
+  // Pick the other workspace: the status read and the override list follow it.
+  clickButton(tree, { 'data-action': 'advanced-scope-toggle' });
+  tree = await page.flush();
+  clickButton(tree, { 'data-advanced-scope-option': 'b1' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'advanced-scope').props['data-advanced-scope-value'], 'b1');
+  assert.equal(statusReads()[statusReads().length - 1], `${PATHS.assemblyStatus}?session=b1`);
+  const advancedOvs = urlsFor(page, PATHS.overrides).filter((url) => url.includes('session=b1'));
+  assert.ok(advancedOvs.length >= 1, 'the override list is read in that scope too');
+  assert.equal(
+    oneBy(tree, 'data-region', 'layer-reset').props['data-reset-count'],
+    '1',
+    'and the legacy list now counts the other workspace\'s layer',
+  );
+
+  // The two layer-wide clears are aimed at the selected workspace.
+  clickTab(tree, 'advanced-layer', 'workspace');
+  tree = await page.flush();
+  clickButton(oneBy(tree, 'data-region', 'layer-reset'), { 'data-action': 'reset-layer', 'data-layer': 'workspace' });
+  tree = await page.flush();
+  clickButton(oneBy(tree, 'data-region', 'confirm'), { 'data-action': 'confirm-yes' });
+  tree = await page.flush();
+  clickButton(oneBy(tree, 'data-region', 'layer-reset'), { 'data-action': 'legacy-clear', 'data-layer': 'workspace' });
+  tree = await page.flush();
+  clickButton(oneBy(tree, 'data-region', 'confirm'), { 'data-action': 'confirm-yes' });
+  tree = await page.flush();
+  assert.deepEqual(
+    writeCalls(page)
+      .filter((call) => call.init.method === 'DELETE' && call.url.includes(`${PATHS.overrides}?layer=workspace`))
+      .map((call) => call.url),
+    [
+      `${PATHS.overrides}?layer=workspace&session=b1&reset=true`,
+      `${PATHS.overrides}?layer=workspace&session=b1&legacy=true`,
+    ],
+    'both clears name the workspace this selector picked, never the page scope',
+  );
+});
+
+// #endregion
