@@ -9187,7 +9187,7 @@ phase 1/2 直接用记录里的 root 拼 `workspaceConfigPath(root)` 并 `writeC
 
 **行号自查（评审抽查发现上一版两处行号不存在）**：确认属实——上版写的 `§15.7 :4682` 与 `§20.8 :6975` 在当前文件里分别是 `:4702`（「Because an export now carries at most one entry per layer」，R3 加的 inline 就在其后）与 `:7002`（「No preset travels in an export」）。漂移原因是 R3 自己的编辑使行号后移，而我当时沿用了更早的 grep 结果——**这正是 §15.7 第 3 段被漏标的同一原因**。本轮改为**内容锚点取号**：用一段脚本对每个引用片段做唯一子串定位并打印行号（31 个锚点），表中每个行号都取自该输出。
 
-**R5 实测更正（2026-10-16，评审 rev-att-001-05 抽查；数字经 R6 复核修正）**：上面那句「本轮表内行号全部通过」**不成立，已撤回**。评审实测指出本表行号相对基线 `9e8ed64` 是**累积偏移**，而不是一个常数：前段 **+4**（`626→630`、`1321→1325`），到 §12/§15 已 **+20**（`2074→2094`、`4494→4514`，R5 时点）；**R6 的编辑又使其后整体再下移一次**——现取现算（R6 完成时）：§1 `:630`、§7 `:1325`、§12 `:2113`、§15 `:4533`（基线分别为 `613`/`1287`/`1769`/`4183`）。本段上一版写的「`2074→2078`、`4494→4498`」**是凭前一轮记忆填的，与实测冲突，已改正**。另一处更硬：本表称 §12 有 `:2108`/`:2146`/`:2164` 三处 `write-locked`，而 R5 时点 §12 范围内**唯一命中是 `:2166`**（`:2108` 已是 `effectiveFrom: next-turn`、`:2164` 是 Revision 22 的描述）。根因：R4 首个 hunk 插入 4 行后**没有重跑取号**，我沿用了编辑前的输出并写成「全部通过」。**教训（已第五次同类，且这次错在「记录要诚实」的段落里）**：① 凡写「已通过/已完成」，必须是**刚跑出来的结果**；② 引用数字必须**现取现算**，不能凭上一轮记忆；③ **行号不是稳定标识**——每次编辑都会使其后整体漂移，因此正文引用一律以**内容锚点**定位，行号只作「某次取号的时点快照」并标注时点（§151.5 = R5 时点，§151.6 = R6 时点）。
+**R5 实测更正（2026-10-16，评审 rev-att-001-05 抽查；数字经 R6/R7 复核修正）**：上面那句「本轮表内行号全部通过」**不成立，已撤回**。评审实测指出本表行号会随编辑**累积漂移**，而不是一个常数。现取现算（**基线 `9e8ed64` → R6 时点**）：§1 `613→630`、§7 `1287→1325`、§12 `1769→2113`、§15 `4183→4533`。**本段上一版把「相对基线」这个标签与 R4 章节覆盖表自己的数字（`626/1321/2074/4494`）混写在同一句里**——按字面读与同一句给出的基线 `613/1287/1769/4183` 自相矛盾；那四个数字是 **R4 覆盖表的取值**，不是基线的，已按上句改正（R4 表 → R5 时点：前段 +4，§12/§15 +20；R4 表 → R6 时点：§12/§15 各再 +19）。另一处更硬：本表称 §12 有 `:2108`/`:2146`/`:2164` 三处 `write-locked`，而 R5 时点 §12 范围内**唯一命中是 `:2166`**（`:2108` 已是 `effectiveFrom: next-turn`、`:2164` 是 Revision 22 的描述）。根因：R4 首个 hunk 插入 4 行后**没有重跑取号**，我沿用了编辑前的输出并写成「全部通过」。**教训（已第五次同类，且这次错在「记录要诚实」的段落里）**：① 凡写「已通过/已完成」，必须是**刚跑出来的结果**；② 引用数字必须**现取现算**，不能凭上一轮记忆，也**不能把两张不同时点的表里的数字并排引用**；③ **行号不是稳定标识**——每次编辑都会使其后整体漂移，因此正文引用一律以**内容锚点**定位，行号只作「某次取号的时点快照」并标注时点（§151.5 = R5 时点，§151.6 = R6 时点，§151.7 = R7 时点）。
 
 **验收（R4 实跑，基于 b38eb89 之上的工作树、未提交）**
 
@@ -9234,11 +9234,11 @@ R4 表内**引用行号**的重取结果（当前文件）：§1 `:642-643`（ex
 
 ### 151.6 R6 返工：`skipped` 的**新写说明段本身写错**（评审 rev-att-001-08 BLOCK，只剩 3 处文本级修正）
 
-**问题性质变了**：前几轮是「漏改旧文」，R6 是「**新写的说明段写错**」——我在 §151.5 新写的 `skipped` 说明把 `entries` 定义成「how many overrides that layer would have contributed」，而实现有四条 push 路径、`entries` 有**三种含义**。这条会**传播到 att-002 的面板计数**，所以评审定级为最关键。
+**问题性质变了**：前几轮是「漏改旧文」，R6 是「**新写的说明段写错**」——我在 §151.5 新写的 `skipped` 说明把 `entries` 定义成「how many overrides that layer would have contributed」，而实现有四条 push 路径、`entries` 在**两种读法**下出现**三种取值形态**（`0` / `entry.overrides.length` / 条目数）。这条会**传播到 att-002 的面板计数**，所以评审定级为最关键。（R7-5：本文件此前 `:9237` 写「三种含义」、`:9242` 写「两种含义」、`:9270` 写「三种 `entries`」，现已统一为「**两种读法、三种取值形态**」。）
 
 **R6-1 + R6-2 契约段改写**（`CONTRACT.md` §11.2，锚点「`skipped[]` is `{layer, reason, entries}[]`」在 `:1905`；`entries` 两种读法在 `:1917`）
 - 来源由 3 种补为 **4 种**（补入 R5 漏掉的**去重分支**：同一文件已被另一 unit 认领、内容相同，`reason` 形如 `already covered by "…"`）；
-- `layer` 取值域写全：`user` / `workspace` / `workspace:<root>` / `installation`（原文「layer view or workspace layer」不含 `installation`）；
+- `layer` 取值域写全：`workspace` / `workspace:<root>` / `installation` 三个**可达**值，外加 `user` 一个**形式成员**（R7-4：`targetFor('user')` 在 `index.js:2196` 直接 `return`，全函数唯一的 `OverrideError` 抛出点不覆盖 user，故该行当前不可产生；契约已就地限定，实现未动）；
 - `entries` 按**两种含义**分别写清：前三行＝该层会贡献的 override 条数（`0` 表示文档对它无所求）；`installation` 行＝**未应用的条目数**（`workspaces.length` + `presets.presets.length` + 携带 `preferences` 时 `1`），并显式说明「`entries` is **not one number with one meaning**」，与 §11.7 的「reports it in `skipped` with the count it left alone」统一口径；
 - 注明「today the panel consumes `layer` and `reason` only, with `entries` reserved for the count att-002 will show」。
 
@@ -9259,14 +9259,46 @@ R4 表内**引用行号**的重取结果（当前文件）：§1 `:642-643`（ex
 
 **R6-4 采纳：新增回归网**（`test/stage2.test.mjs:1978`，用例名「an installation-level half left alone is counted by items, not by overrides (R6)」）
 - 文档带 **2 个 `workspaces[]` 条目**（第一个含 **3 条 override**）+ **2 个预设** + `preferences` → `POST /import?layer=user&dryRun=true&session=sa` 的 `skipped` 中 `installation` 项断言 `entries === 5`（2+2+1），并显式断言**不是 3**（那 3 条 override 正是「按 override 计数」这一错读会给出的值）；
-- 同一用例还断言另三种来源的 `layer` 取值：无 session 的空 `workspace` 视图 → `[{layer:'workspace', reason:'layer "workspace" requires a "session" id…', entries:0}]`；同一文件被去重 → `[{layer:'workspace:<root>', reason:'already covered by "workspace" in this document', entries:1}]`；`installation` 项的键集合严格为 `['entries','layer','reason']`；
-- 该分支此前**零测试覆盖**（`grep -n installation test/*.mjs` 零命中），这正是 `entries` 语义能被写错而无人发现的原因。
+- **R7-2② 已采纳（补测）**：同一用例还断言另**两**种可达来源（无 session 的空 `workspace` 视图 → `[{layer:'workspace', reason:'layer "workspace" requires a "session" id…', entries:0}]`；去重 → `[{layer:'workspace:<root>', reason:'already covered by "workspace" in this document', entries:1}]`），并**新增第三种**断言覆盖 `index.js:2831` 的「空 overrides 工作区」分支（本轮之前 `grep -rn "carries no override for this workspace layer" test/` 零命中）→ 该分支现被钉住；加上 `installation` 项键集合严格为 `['entries','layer','reason']`，**三个可达来源全部有断言**（`user` 形式成员除外，见上）；
+- 该分支（`installation`）此前**没有字面断言**：现取现算 `git grep -n "'installation'" 7c323cd -- packages/dsh-prompt-setting/test/` ⇒ **零命中**（`7c323cd`＝R6 之前的提交；R7 现取现算：当前测试里该字面只有 R6 新增的 `test/stage2.test.mjs` 一处）。这正是 `entries` 语义能被写错五轮而无人发现的原因（R7-3：本行此前写的命令 `grep -n installation test/*.mjs` 实测为 15 处命中——custom 2 / stage2 10 / transfer 3——**命令与结论不符，已换成真正零命中的那条**）。
 
 **R6-3 NOTES 数字自相矛盾**：§151.4 的撤回段写「`2074→2078`、`4494→4498`」，而 §151.5 的重取表写 §12 `:2094`、§15 `:4514` —— **同一节内自相矛盾**（评审实测：R5 时点偏移是 +20，而那两个数字是凭前一轮记忆填的）。已改为与实测一致，并进一步改写为「**偏移量随文件位置累积**」：前段 +4（`626→630`、`1321→1325`），§12/§15 在 R5 时点 +20（`2074→2094`、`4494→4514`），**R6 编辑后再次下移**（现取现算：§1 `:630`、§7 `:1325`、§12 `:2113`、§15 `:4533`；基线分别为 `613`/`1287`/`1769`/`4183`）。并写入第 ③ 条教训：**行号不是稳定标识**，正文引用一律以内容锚点定位，行号只作「某次取号的时点快照」（§151.5＝R5 时点，§151.6＝R6 时点）。
 
 **验收（R6 实跑，最终文件、未提交）**
 
 - evidence: suite=node --test(test/*.test.mjs) passed=936 failed=0 exit=0；`node scripts/prepare.mjs` = OK（23 项，`LOCALE-SYNC` 567 键）exit 0（用例 935 → 936，采纳 R6-4 新增一条）；
-- `sed -n '1905,1930p' CONTRACT.md` 与上表逐句对账通过（四条 push 路径、三种 `entries`、四种 `layer`）；
+- `sed -n '1905,1931p' CONTRACT.md` 与上表逐句对账通过（四条 push 路径、**两种读法／三种取值形态**的 `entries`、四个 `layer` 值其中 `user` 为形式成员）；
 - `grep -n "skipped.push" index.js` ⇒ `2790/2831/2839/2869`，与契约段所列来源一一对应。
+
+### 151.7 R7 收尾轮：NOTES/测试注释级事实性错误（评审 rev-att-001-07 BLOCK，定性＝**0 行为影响、0 契约语义矛盾**）
+
+评审定性（原文）：「仅 NOTES/测试注释级事实性错误 —— 0 行为影响、0 契约语义矛盾；契约正文与实现逐条相符、测试 936/0 全绿、prepare 23 项 OK。」**判据 1–7 全部通过。** 本轮只改文档/注释，并补一条断言；**实现代码零改动**。
+
+| # | 位置（R7 时点现取现算） | 问题 | 处置 |
+| --- | --- | --- | --- |
+| **R7-1** | `NOTES.md:9190`（§151.4 撤回段） | 「相对**基线** `9e8ed64`」标签错：同句里的 `626/1321/2074/4494` 是 **R4 覆盖表自己的数字**，基线实为 `613/1287/1769/4183`，按字面读自相矛盾 | 按评审②：删掉那四个数字，只保留「**基线 → R6 时点**：§1 `613→630`、§7 `1287→1325`、§12 `1769→2113`、§15 `4183→4533`」，并注明 R4 表 → R5/R6 时点的真实偏移（前段 +4；§12/§15 +20、再 +19） |
+| **R7-2** | `NOTES.md:9262` + `test/stage2.test.mjs`（R6 用例注释） | 「另三种来源」实为两种；`:2831` 的「空 overrides 工作区」分支**无回归网**（现取现算：`grep -rn "carries no override for this workspace layer" test/` 在 R7 之前零命中——与 R6-4 之前 `installation` 的处境相同） | **选②（推荐）**：补一条断言覆盖 `:2831`——文档只带一个空 `workspaces[]` 条目、不带 `?layer=`/session，断言 `skipped === [{layer:'workspace:<root>', reason:'the document carries no override for this workspace layer', entries:0}]`；测试注释与 NOTES 的措辞同步改为「另**两**种 +（本轮补测的）第三种」，并写明三个可达来源现全部有断言 |
+| **R7-3** | `NOTES.md:9263`（R6 验收段） | 证据命令不实：写「`grep -n installation test/*.mjs` 零命中」，实测 **15 处命中**（custom 2 / stage2 10 / transfer 3）；结论（没有 `'installation'` 字面断言）对，命令错 | 换成真正零命中的命令并现取验证：`git grep -n "'installation'" 7c323cd -- packages/dsh-prompt-setting/test/` ⇒ **零命中**（`7c323cd`＝R6 之前的提交） |
+| **R7-4**（建议，已采纳） | `CONTRACT.md:1907/1912`、`NOTES.md:9241` | `layer` 取值域写了 `user`，但 `targetFor('user')` 在 `index.js:2196` 直接 `return`，该行**当前不可产生**（域过宽，非行为矛盾） | 契约**就地限定**（只改该行、不删历史正文）：表头说明「one of the four `layer` values is a **formal** member rather than a reachable one」，行内写明「`workspace` — and `user` as a **formal** member (`targetFor('user')` resolves without throwing, so this route can produce only the `workspace` row today)」；NOTES 同步；**实现与测试未动** |
+| **R7-5**（建议，已采纳） | `NOTES.md:9237` / `:9242` / `:9270` | `entries` 的切分口径并存（「三种含义」/「两种含义」/「三种 `entries`」） | 全文统一为「**两种读法、三种取值形态**」（override 读法下 `0` 与 `n` 两种形态 + 条目数形态） |
+
+**逐条实跑证据（R7 现取现算，命令与结果一并记录）**
+
+- `node --test test/*.test.mjs` ⇒ `tests 936 / pass 936 / fail 0`，`duration_ms 53368`（补断言不改用例数，仍 936）；
+- `npm run prepare` ⇒ OK 23 项（`LOCALE-SYNC` 567 键）；**实现代码零改动**（`git diff --stat` 只含 `CONTRACT.md` / `NOTES.md` / `test/stage2.test.mjs`）；
+- `git show 9e8ed64:…/CONTRACT.md | grep -n "^## 1\.\|^## 7\.\|^## 12\.\|^## 15\."` ⇒ `613/1287/1769/4183`；`grep -n … CONTRACT.md` ⇒ `630/1325/2113/4533`（R7-1 的四个数字）；
+- `git grep -n "'installation'" 7c323cd -- packages/dsh-prompt-setting/test/` ⇒ 零命中；`grep -rn "carries no override for this workspace layer" test/` 在补测后 ⇒ **1 处**（新断言）；
+- `grep -n "skipped.push" index.js` ⇒ `2790/2831/2839/2869`；`grep -n "function targetFor" index.js` ⇒ `2192`，`:2196` 即 `if (layer === 'user') return …`（R7-4 的依据）；
+- R7 时点契约锚点：`skipped[]` 段 `CONTRACT.md:1905`、`formal` 限定 `:1907`/`:1912`；测试用例起始 `test/stage2.test.mjs:1978`。
+
+**收尾自查**（评审要求的四条关键词 grep；**现取现算，并逐条读命中行而不是只数个数**）。计数以**改写本段之前**的那一版 `NOTES.md` / `test/stage2.test.mjs` 为准（原因见下）：
+
+| 关键词 | 实测命中 | 命中行判定 |
+| --- | --- | --- |
+| `another three` | **0** | 测试注释已改为「The three **reachable** sources」（`test/stage2.test.mjs:2027`） |
+| 第 2 个关键词（「另 3 种」的中文写法） | **2** | 均为**引述被修正的旧措辞**：本节表格的 R7-2 行、以及本收尾段的说明句自身；不是新写的断言 |
+| 第 3 个关键词（「相对基线」） | **6** | `:1049`/`:3003`/`:7068`/`:7118` 是 g-013/g-016 等**无关历史小节**的用法；`:9190` 是 §151.4 里**引述被撤回的旧标签**；`:9294` 是本段自身。§151.4 的现行表述已改为「基线 → 时点」 |
+| 第 4 个关键词（「零命中」） | **16** | 全部是历次「命令 + 实测结果」记录（含本节新增的两条带正确命令的记录）；逐条读过，无一处是新写的不实断言 |
+
+> **观察（R7 教训的延伸，也是本轮唯一的新发现）**：自查用的关键词**会命中写这段自查的文字本身**，所以「零命中」这类量化断言必须①先数一遍、②逐条读命中行、③必要时把关键词写成不含原词的形式（本表第 2–4 行即是），否则**断言自己就会成为反例**。本节初稿就写成了「四条全部零命中」，实测为 `2/6/16`，已按上表改正——**这正是评审反复指出的同一类错误在自查环节的复现**。
 

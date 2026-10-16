@@ -2024,8 +2024,10 @@ test('stage2: an installation-level half left alone is counted by items, not by 
   assert.deepEqual(Object.keys(installation).sort(), ['entries', 'layer', 'reason'],
     'the three field names are the contract');
 
-  // The other three sources keep their own `layer` values, so the domain is the
-  // one §11.2 documents: user | workspace | workspace:<root> | installation.
+  // The three **reachable** sources each keep their own `layer` value, so the
+  // domain exercised here is workspace | workspace:<root> | installation. (§11.2
+  // also names `user`, which is a formal member only: `targetFor('user')`
+  // resolves without throwing, so that row cannot be produced — see R7-4.)
   const noSession = await call(route, {
     method: 'POST',
     url: `${IMPORT_PATH}?dryRun=true`,
@@ -2039,6 +2041,25 @@ test('stage2: an installation-level half left alone is counted by items, not by 
   assert.deepEqual(noSessionSkipped, [{
     layer: 'workspace',
     reason: 'layer "workspace" requires a "session" id to resolve the workspace root',
+    entries: 0,
+  }]);
+
+  // A `workspaces[]` entry that carries no override is skipped on its own — it
+  // is NOT a de-duplication, and it is the source the R6 case had left
+  // unasserted.
+  const emptyWorkspace = await call(route, {
+    method: 'POST',
+    url: `${IMPORT_PATH}?dryRun=true`,
+    body: JSON.stringify({
+      schema: 'dsh-prompt-setting/export',
+      version: 2,
+      layers: { user: { overrides: [] } },
+      workspaces: [{ root: workspaces[1].path, enabled: true, reason: null, overrides: [] }],
+    }),
+  });
+  assert.deepEqual(json(emptyWorkspace).skipped, [{
+    layer: `workspace:${workspaces[1].path}`,
+    reason: 'the document carries no override for this workspace layer',
     entries: 0,
   }]);
 

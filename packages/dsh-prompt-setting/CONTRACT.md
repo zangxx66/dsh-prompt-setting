@@ -1903,11 +1903,13 @@ those fields come back empty. `totals` sums the **layer views**; the workspace
 entries are summed separately in `workspaceTotals`.
 
 `skipped[]` is `{layer, reason, entries}[]`: one object per thing the import did
-**not** apply. There are **four** sources, and `layer` says which:
+**not** apply. There are **four** sources, and `layer` says which. One of the
+four `layer` values is a **formal** member of the domain rather than a reachable
+one, and the table says which:
 
 | `layer` | Source | `entries` |
 | --- | --- | --- |
-| `user` / `workspace` | a layer view the document carries but that cannot be resolved while holding nothing — refusing it would fail an export → import round trip for a reason the user cannot act on (§11.3) | `0` |
+| `workspace` — and `user` as a **formal** member (`targetFor('user')` resolves without throwing, so this route can produce only the `workspace` row today) | a layer view the document carries but that cannot be resolved while holding nothing — refusing it would fail an export → import round trip for a reason the user cannot act on (§11.3) | `0` |
 | `workspace:<root>` | a `workspaces[]` entry whose `overrides` is empty: there is nothing to write for that workspace layer (§11.7) | `0` |
 | `workspace:<root>` | a `workspaces[]` entry naming a file another part of the **same** document already claimed, with identical entries (a session-resolved `workspace` layer view and a `workspaces[]` entry naming that same workspace, §11.7); `reason` is the `already covered by "…"` sentence | the override count that entry carries |
 | `installation` | the installation-level half (`workspaces[]`, `presets`, `preferences`) that a `?layer=` request deliberately left alone (§11.7) | how many **items** were left alone: `workspaces.length` + `presets.presets.length` + `1` when `preferences` is carried |
