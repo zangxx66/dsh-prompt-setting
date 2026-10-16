@@ -58,7 +58,7 @@ function readText(relPath) {
  */
 const ERROR_KEY_COUNT = 51;
 /**
- * The main dictionary's own key count (516) — the two numbers must add to 567.
+ * The main dictionary's own key count (522) — the two numbers must add to 573.
  *
  * g-070 (Revision 51) added one more: `tabUpdateBadge`, the readable description
  * the「高级」tab's red dot carries (`title` / `aria-label`). The count suffix on
@@ -66,8 +66,15 @@ const ERROR_KEY_COUNT = 51;
  * (Revision 52) is a layout revision and adds no key: the read-only scope line it
  * first shipped on the other tabs was withdrawn by the owner's real-machine review
  * (R4), so the dictionaries are back to what Revision 51 left them at.
+ *
+ * g-074 att-002 (Revision 54) added six, all on the import preview: the
+ * 「整份替换」warning and its two per-document lines (`importReplaceWarning`,
+ * `importReplacePresets`, `importReplacePreferences`), the workspace-layer list
+ * (`importWorkspacesHeading`, `importWorkspaceRow`) and the per-entry skipped
+ * row (`importSkippedRow`). `importSkipped` keeps its key and now carries the
+ * count instead of a joined list.
  */
-const MAIN_KEY_COUNT = 516;
+const MAIN_KEY_COUNT = 522;
 /** The full key count both files must hold, in the same order. */
 const TOTAL_KEY_COUNT = MAIN_KEY_COUNT + ERROR_KEY_COUNT;
 
@@ -75,7 +82,7 @@ test('locale: both JSON files are valid, key-aligned dictionaries', () => {
   const { dictionaries, keys } = readDictionaries(packageRoot);
   assert.deepEqual(Object.keys(dictionaries), Object.keys(LOCALES));
   assert.equal(keys.length, TOTAL_KEY_COUNT);
-  assert.equal(keys.length, 567);
+  assert.equal(keys.length, 573);
   for (const name of Object.keys(LOCALES)) {
     const dict = dictionaries[name];
     assert.equal(Object.keys(dict).length, TOTAL_KEY_COUNT, `${name}: ${TOTAL_KEY_COUNT} keys`);
@@ -86,7 +93,7 @@ test('locale: both JSON files are valid, key-aligned dictionaries', () => {
   }
 });
 
-test('locale: the 567 keys split into 516 main entries and 51 error codes', () => {
+test('locale: the 573 keys split into 522 main entries and 51 error codes', () => {
   const { dictionaries, keys } = readDictionaries(packageRoot);
   const errorKeys = keys.filter((key) => key.startsWith('error.'));
   assert.equal(errorKeys.length, ERROR_KEY_COUNT);

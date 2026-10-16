@@ -1701,30 +1701,135 @@ test('stage2: the import write lock is gone — a frozen name is written, and th
   ], 'an imported frozen entry is logged like any other write');
 });
 
-test('stage2: a workspace layer the profile does not register aborts the whole import, library included', async () => {
-  // The registry exists and lists one other workspace, so「this root is not
-  // mine」is the answer the route must give — not「this profile has no
-  // workspaces」.
-  const { route } = mount({ workspaces: [workspaceWith('ws-other', 's-other')] });
+test('stage2: a workspace layer this profile does not register is skipped and declared, and the rest imports (R8)', async () => {
+  // The registry lists one workspace, so「this root is not mine」is the answer
+  // for the stranger — not「this profile has no workspaces」. Revision 54
+  // (g-074 att-002): the owner's rule for a *shape-legal* root this machine has
+  // never opened is「跳过」, so the rest of the document must still land.
+  const registered = workspaceWith('ws-registered', 's1');
+  const { route } = mount({ workspaces: [registered] });
   seedUser([{ name: 'local', action: 'hide' }]);
   seedPresets({ version: 1, presets: [], applied: [] });
-  const paths = [userPath(), userHistoryPath(), presetsPath()];
-  const before = fingerprints(paths);
-  const res = await call(route, {
-    method: 'POST',
-    url: IMPORT_PATH,
-    body: JSON.stringify({
-      schema: 'dsh-prompt-setting/export',
-      version: 2,
-      layers: { user: { overrides: [] } },
-      workspaces: [{ root: '/tmp/not-a-registered-dsh-workspace', enabled: true, reason: null, overrides: [{ name: 'x', action: 'hide' }] }],
-      presets: { version: 1, presets: [{ id: 'p1', name: 'P', action: 'replace', text: 'x', createdAt: null, updatedAt: null }], applied: [] },
-    }),
-  });
-  assert.equal(res.statusCode, 400);
-  assert.equal(json(res).code, 'unknown-workspace-root');
-  assert.deepEqual(fingerprints(paths), before, 'the library was not written either');
+
+  const stranger = join(home, 'stranger-workspace');
+  const strangerPath = join(stranger, '.dsh-prompt-setting', 'overrides.json');
+  const registeredPath = workspacePath('ws-registered');
+  // A real layer file under a root this profile does not register: the skipped
+  // entry must leave it byte-identical, which is the SHA-256 form of「zero
+  // writes」and catches both "created" and "rewritten".
+  mkdirSync(join(stranger, '.dsh-prompt-setting'), { recursive: true });
+  writeFileSync(strangerPath, `${JSON.stringify({ version: 1, overrides: [{ name: 'keep-me', action: 'hide' }] }, null, 2)}\n`, 'utf8');
+  const strangerBefore = fingerprint(strangerPath);
+
+  const document = {
+    schema: 'dsh-prompt-setting/export',
+    version: 2,
+    layers: { user: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'FROM-BACKUP' }] } },
+    workspaces: [
+      { root: stranger, enabled: true, reason: null, overrides: [{ name: 'x', action: 'hide' }] },
+      { root: registered.path, enabled: true, reason: null, overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'WS-FROM-BACKUP' }] },
+    ],
+    presets: {
+      version: 1,
+      presets: [{ id: 'p1', name: 'P', action: 'replace', text: 'T', createdAt: null, updatedAt: null }],
+      applied: [
+        { workspaceRoot: stranger, base: null, stack: [{ presetId: 'p1', appliedAt: null, action: 'replace', text: 'T' }] },
+        { workspaceRoot: registered.path, base: null, stack: [{ presetId: 'p1', appliedAt: null, action: 'replace', text: 'T' }] },
+      ],
+    },
+    preferences: { updateCheck: false },
+  };
+
+  const res = await call(route, { method: 'POST', url: `${IMPORT_PATH}?session=s1`, body: JSON.stringify(document) });
+  assert.equal(res.statusCode, 200, JSON.stringify(json(res)));
+  const body = json(res);
+  assert.deepEqual(
+    body.skipped.map((entry) => [entry.layer, entry.entries]),
+    [[`workspace:${stranger}`, 1], [`presets.applied:${stranger}`, 1]],
+    'both unregistered roots are declared, with the R6 shape',
+  );
+  for (const entry of body.skipped) assert.ok(entry.reason.length > 0, 'every skip carries a sentence');
+
+  // The rest of the document imported normally.
+  assert.deepEqual(JSON.parse(readFileSync(userPath(), 'utf8')).overrides, [
+    { name: 'local', action: 'hide' },
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'FROM-BACKUP' },
+  ]);
+  assert.deepEqual(JSON.parse(readFileSync(registeredPath, 'utf8')).overrides, [
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'WS-FROM-BACKUP' },
+  ]);
+  assert.deepEqual(
+    JSON.parse(readFileSync(presetsPath(), 'utf8')).applied.map((record) => record.workspaceRoot),
+    [registered.path],
+    'the applied record that names a registered workspace survives the drop',
+  );
+  assert.equal(JSON.parse(readFileSync(preferencesPath(), 'utf8')).updateCheck, false);
+
+  // Zero writes for the skipped entries: the stranger's own layer file is
+  // byte-identical, and no temp file was left behind.
+  assert.equal(fingerprint(strangerPath), strangerBefore, 'the skipped workspace layer was not touched');
+  assert.deepEqual(
+    JSON.parse(readFileSync(strangerPath, 'utf8')).overrides,
+    [{ name: 'keep-me', action: 'hide' }],
+    'and its text is the machine-local one, not the document\'s',
+  );
   assert.deepEqual(tempFiles(home), []);
+
+  // A dry run answers the same document the same way, and still writes nothing.
+  const dry = await call(route, { method: 'POST', url: `${IMPORT_PATH}?session=s1&dryRun=true`, body: JSON.stringify(document) });
+  assert.equal(dry.statusCode, 200);
+  assert.deepEqual(
+    json(dry).skipped.map((entry) => [entry.layer, entry.entries]),
+    [[`workspace:${stranger}`, 1], [`presets.applied:${stranger}`, 1]],
+  );
+  assert.equal(fingerprint(strangerPath), strangerBefore);
+});
+
+test('stage2: a profile with no workspaceRegistry service skips the workspace entries instead of failing (R8)', async () => {
+  // The other half of「not a workspace this profile registers」: this profile
+  // cannot register any workspace at all. The document is still importable —
+  // its user layer, library and preferences land — and the workspace-bound
+  // entries are declared in `skipped` for the same reason as the cross-machine
+  // case, with a reason that says which of the two happened.
+  const { route } = mount({ omitWorkspaceRegistry: true });
+  seedUser([{ name: 'local', action: 'hide' }]);
+  seedPresets({ version: 1, presets: [], applied: [] });
+  const stranger = join(home, 'no-registry-workspace');
+  const strangerPath = join(stranger, '.dsh-prompt-setting', 'overrides.json');
+
+  const document = {
+    schema: 'dsh-prompt-setting/export',
+    version: 2,
+    layers: { user: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' }] } },
+    workspaces: [{
+      root: stranger,
+      enabled: true,
+      reason: null,
+      overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'X' }],
+    }],
+    presets: {
+      version: 1,
+      presets: [{ id: 'p1', name: 'P', action: 'replace', text: 'T', createdAt: null, updatedAt: null }],
+      applied: [{ workspaceRoot: stranger, base: null, stack: [{ presetId: 'p1', appliedAt: null, action: 'replace', text: 'T' }] }],
+    },
+  };
+  const res = await call(route, { method: 'POST', url: IMPORT_PATH, body: JSON.stringify(document) });
+  assert.equal(res.statusCode, 200, JSON.stringify(json(res)));
+  const body = json(res);
+  assert.deepEqual(body.skipped.map((entry) => entry.layer), [`workspace:${stranger}`, `presets.applied:${stranger}`]);
+  for (const entry of body.skipped) {
+    assert.match(entry.reason, /no workspaceRegistry service/, 'the reason names the real cause');
+  }
+  assert.deepEqual(JSON.parse(readFileSync(userPath(), 'utf8')).overrides, [
+    { name: 'local', action: 'hide' },
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' },
+  ], 'the user layer still imported');
+  assert.deepEqual(
+    JSON.parse(readFileSync(presetsPath(), 'utf8')).applied,
+    [],
+    'the applied record was dropped, not written',
+  );
+  assert.equal(fingerprint(strangerPath), 'missing', 'and nothing was created under the skipped root');
 });
 
 test('stage2: an unusable library or preference file is refused, never overwritten', async () => {
@@ -1807,11 +1912,10 @@ function registeredRow() {
   return workspaceWith('ws-registered', 's1');
 }
 
-test('stage2: an imported library naming an unregistered workspace is refused whole (R1 PoC)', async () => {
+test('stage2: an imported library naming an unregistered workspace drops that record and writes nothing there (R1 PoC, R8)', async () => {
   const victim = unregisteredVictim();
   const { route } = mount({ workspaces: [registeredRow()] });
   seedPresets({ version: 1, presets: [], applied: [] });
-  const libraryBefore = fingerprint(presetsPath());
   const victimBefore = fingerprint(victim.path);
 
   const document = {
@@ -1826,16 +1930,26 @@ test('stage2: an imported library naming an unregistered workspace is refused wh
     },
   };
   const res = await call(route, { method: 'POST', url: IMPORT_PATH, body: JSON.stringify(document) });
-  assert.equal(res.statusCode, 400, 'the document is refused, not accepted');
-  assert.equal(json(res).code, 'unknown-workspace-root');
-  assert.equal(fingerprint(presetsPath()), libraryBefore, 'the library was not written');
-  assert.equal(fingerprint(victim.path), victimBefore, 'the unregistered layer was not touched');
+  assert.equal(res.statusCode, 200, 'Revision 54 accepts the document; it skips the record');
+  const body = json(res);
+  assert.deepEqual(body.skipped.map((entry) => [entry.layer, entry.entries]), [[`presets.applied:${victim.root}`, 1]]);
 
-  // The dry run answers the same question, and still refuses to write.
+  // The library is replaced as a whole, and the record the profile cannot
+  // restore is not part of what is written — which is what keeps the
+  // delete-preset route from ever being aimed at the victim later.
+  const library = JSON.parse(readFileSync(presetsPath(), 'utf8'));
+  assert.deepEqual(library.applied, [], 'the record is dropped, not carried');
+  assert.deepEqual(library.presets.map((preset) => preset.id), ['p1'], 'the presets themselves are carried');
+  assert.equal(fingerprint(victim.path), victimBefore, 'the unregistered layer was not touched');
+  assert.deepEqual(tempFiles(home), []);
+
+  // The dry run answers the same question, and still writes nothing.
+  seedPresets({ version: 1, presets: [], applied: [] });
+  const libraryBefore = fingerprint(presetsPath());
   const dry = await call(route, { method: 'POST', url: `${IMPORT_PATH}?dryRun=true`, body: JSON.stringify(document) });
-  assert.equal(dry.statusCode, 400);
-  assert.equal(json(dry).code, 'unknown-workspace-root');
-  assert.equal(fingerprint(presetsPath()), libraryBefore);
+  assert.equal(dry.statusCode, 200);
+  assert.deepEqual(json(dry).skipped.map((entry) => [entry.layer, entry.entries]), [[`presets.applied:${victim.root}`, 1]]);
+  assert.equal(fingerprint(presetsPath()), libraryBefore, 'a dry run wrote nothing');
   assert.equal(fingerprint(victim.path), victimBefore);
   assert.deepEqual(tempFiles(home), []);
 });
@@ -2148,11 +2262,12 @@ function rejectedDocuments() {
     ['a workspace root with a .. segment', shell({ workspaces: [{ root: '/tmp/../etc', overrides: [] }] }), 'invalid-workspace-root'],
     ['a relative workspace root', shell({ workspaces: [{ root: 'relative/dir', overrides: [] }] }), 'invalid-workspace-root'],
     ['the filesystem root', shell({ workspaces: [{ root: '/', overrides: [] }] }), 'invalid-workspace-root'],
-    [
-      'a workspace this profile does not register',
-      shell({ workspaces: [{ root: '/tmp/not-a-registered-dsh-workspace', overrides: [{ name: 'x', action: 'hide' }] }] }),
-      'unknown-workspace-root',
-    ],
+    // Revision 54 (g-074 att-002) removed one entry from this list on purpose:
+    // a root this profile does not *register* is no longer a rejection — it is
+    // skipped and declared. What stays here is the **shape** half, which is
+    // still refused whole; the cross-machine skip has its own cases above and
+    // below, and the two must never be conflated.
+    ['a workspace root with a control character', shell({ workspaces: [{ root: '/tmp/ctrl\u0001dir', overrides: [] }] }), 'invalid-workspace-root'],
     ['an unknown key on a workspace entry', shell({ workspaces: [{ root: '/tmp/elsewhere', overrides: [], extra: 1 }] }), 'invalid-export-workspace'],
     [
       'a malformed preset entry',

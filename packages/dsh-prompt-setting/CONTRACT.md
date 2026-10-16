@@ -1128,7 +1128,7 @@ human-readable `message`.
 | `400` | `invalid-export-workspaces` / `invalid-export-workspace` | **Revision 53.** `workspaces` is not an array, or an entry is not `{root, enabled?, reason?, overrides?}`. |
 | `400` | `duplicate-workspace-root` | **Revision 53.** Two entries name the same workspace root. |
 | `400` | `invalid-workspace-root` | **Revision 53.** A root — `workspaces[].root` **or** `presets.applied[].workspaceRoot` (R1) — is not an absolute path, or carries a `..` segment / a control character, or is a volume root (a POSIX `/` or a bare drive such as `C:\`; a UNC share root is treated as an ordinary directory, §11.7). |
-| `400` | `unknown-workspace-root` | **Revision 53.** A legal absolute path that this profile's registry does not list (§11.7). Since R1 this also covers an `applied` record the delete-preset route is about to restore into. |
+| `400` | `unknown-workspace-root` | **Revision 53; narrowed in Revision 54.** A legal absolute path that this profile's registry does not list. *(Revision 53 answered this on the import face; **Revision 54 (g-074 att-002) removed it from the import** — such an entry is now skipped and declared in `skipped`, §11.7 — so the code survives where a writer may not skip: since R1 an `applied` record the delete-preset route is about to restore into.)* |
 | `400` | `conflicting-import-target` | **Revision 53.** Two parts of the document carry different override lists for the same file. |
 | `409` | `presets-not-writable` / `preferences-not-writable` | **Revision 53.** The existing library / preference file is unusable; it is never overwritten. |
 | `400` | `invalid-presets`, `unsupported-presets-version`, `invalid-preset-id`, `duplicate-preset-id`, `invalid-applied` | **Revision 53.** The library document is malformed; the codes are §20's own. |
@@ -1764,7 +1764,7 @@ so the Revision 7 narrowing is withdrawn. The document now carries:
 | --- | --- |
 | `layers.user` / `layers.workspace` | **Every** override of that layer view — frozen entries included, copied as stored (`action` and all, Revision 36). Nothing is filtered; `customOverridesOnly` is gone. |
 | `workspaces[]` | One entry per workspace layer **the Host registers**, as `{root, enabled, reason, overrides}`. This is what makes「所有工作区层」true: the exported set no longer depends on which session asked. Sorted by `root`, so two exports of an unchanged installation agree byte for byte. |
-| `presets` | The whole preset library (§20) — or `null` when this process could not read it. Since R1 an `applied` record whose `workspaceRoot` this profile does not register is **not carried**: it could not be restored here (the import refuses such a document, §11.7), so carrying it would produce a backup this plugin's own reader rejects. |
+| `presets` | The whole preset library (§20) — or `null` when this process could not read it. Since R1 an `applied` record whose `workspaceRoot` this profile does not register is **not carried**: it could not be restored here, so carrying it would produce a backup this plugin's own reader rejects. *(In Revision 53 the reason given was that「the import refuses such a document」; Revision 54 replaced that refusal with drop-and-declare on the import side, and the export still omits the record — the property「the plugin's own backup is always readable by its own import」now holds from both ends.)* |
 | `preferences` | The preference document (§17) — or `null` when this process could not read it **or** when the import would refuse it (R2: a `downloadRegionRegistry` the download-region route would answer `400 registry-invalid` for is not carried either). |
 
 `version` is `2`. A **version 1** document (one reserved entry per layer, no
@@ -1845,16 +1845,33 @@ code:
   message;
 - every **workspace root**: an absolute path with no `..` segment, no control
   character and not a volume root — a POSIX `/` or a bare drive such as `C:\`
-  (`400 invalid-workspace-root`) — naming a
-  workspace this profile's `workspaceRegistry` actually lists
-  (`400 unknown-workspace-root`) — see §11.7;
+  (`400 invalid-workspace-root`). *(Revision 53 also listed `400
+  unknown-workspace-root` here, for a legal path this profile's
+  `workspaceRegistry` does not list. **Revision 54 (g-074 att-002) removed that
+  refusal from the import**: such an entry is now **skipped and declared** in
+  `skipped` — the cross-machine case — and the code survives only on the
+  delete-preset route. The shape half above is untouched, and it is still
+  refused whole. See §11.7 and the Revision 54 note at the end of this list.)*
 - the **library** and the **preference document**, each validated by the module
   that owns its schema (`invalid-presets`, `unsupported-presets-version`,
   `invalid-preset-id`, `duplicate-preset-id`, `invalid-applied`,
   `unknown-preference`, `invalid-preference`, `invalid-preferences`) — and every
-  `presets.applied[].workspaceRoot` it carries is put through **both** halves of
-  the root rule above (shape, then registry), exactly like `workspaces[].root`
-  (g-074 R1).
+  `presets.applied[].workspaceRoot` it carries is put through the **shape** half
+  of the root rule above, exactly like `workspaces[].root` (g-074 R1). Since
+  Revision 54 a record that passes the shape rule but names an unregistered
+  workspace is **dropped from the library being written and declared in
+  `skipped`**, never carried and never written into (§11.7).
+
+**Revision 54 (g-074 att-002): the registry half of the root rule becomes a
+skip on the import face.** The owner's instruction (2026-10-16) is
+「如果不是本机已注册的则跳过」. The two halves of the rule are disjoint and must
+never be conflated:
+
+| The root is | What the import does |
+| --- | --- |
+| malformed — not absolute, a `..` segment, a control character, a volume root | **refused whole**, `400 invalid-workspace-root`, nothing staged, every file byte-identical (unchanged from Revision 53) |
+| a legal absolute path this profile's registry does not list | that **entry is skipped**: it is not written, it is reported in `skipped` (`{layer, reason, entries}`, §11.2), and every other part of the document — the layer views, the registered workspace layers, the library, the preferences — is imported normally |
+| a legal absolute path this profile's registry does list | imported, exactly as in Revision 53 |
 
 Step 4 also resolves the document's `workspaces[]` entries (not only the two
 layer views), and marks a local `presets.json` / `preferences.json` this process
@@ -1903,34 +1920,39 @@ those fields come back empty. `totals` sums the **layer views**; the workspace
 entries are summed separately in `workspaceTotals`.
 
 `skipped[]` is `{layer, reason, entries}[]`: one object per thing the import did
-**not** apply. There are **four** sources, and `layer` says which. One of the
-four `layer` values is a **formal** member of the domain rather than a reachable
-one, and the table says which:
+**not** apply. There are **six** sources since Revision 54, and `layer` says
+which. One of the `layer` values is a **formal** member of the domain rather
+than a reachable one, and the table says which:
 
 | `layer` | Source | `entries` |
 | --- | --- | --- |
 | `workspace` — and `user` as a **formal** member (`targetFor('user')` resolves without throwing, so this route can produce only the `workspace` row today) | a layer view the document carries but that cannot be resolved while holding nothing — refusing it would fail an export → import round trip for a reason the user cannot act on (§11.3) | `0` |
 | `workspace:<root>` | a `workspaces[]` entry whose `overrides` is empty: there is nothing to write for that workspace layer (§11.7) | `0` |
 | `workspace:<root>` | a `workspaces[]` entry naming a file another part of the **same** document already claimed, with identical entries (a session-resolved `workspace` layer view and a `workspaces[]` entry naming that same workspace, §11.7); `reason` is the `already covered by "…"` sentence | the override count that entry carries |
+| `workspace:<root>` (**Revision 54**) | a `workspaces[]` entry whose root is a legal absolute path but **not** a workspace this profile registers — the cross-machine case (§11.7); the entry is skipped, nothing is written for it | the override count that entry carries |
+| `presets.applied:<root>` (**Revision 54**) | a `presets.applied[]` record whose `workspaceRoot` is a legal absolute path but **not** a workspace this profile registers; the record is **dropped** from the library being written (§11.7) | `1` — one dropped record |
 | `installation` | the installation-level half (`workspaces[]`, `presets`, `preferences`) that a `?layer=` request deliberately left alone (§11.7) | how many **items** were left alone: `workspaces.length` + `presets.presets.length` + `1` when `preferences` is carried |
 
 `reason` is one human-readable sentence naming the source, and it is never empty.
 
 `entries` is **not one number with one meaning** — the two readings are:
 
-- for a **layer view** or a **workspace layer** (the first three rows): the number
+- for a **layer view** or a **workspace layer** (the first four rows): the number
   of overrides that layer would have contributed, `0` when the document asked for
   nothing in it;
-- for the **`installation`** row: a count of **items**, not overrides —
-  `workspaces[]` entries + presets + `1` for a carried `preferences`. The fake-Host
-  contract test for it is `test/stage2.test.mjs`'s「an installation-level half left
-  alone is counted by items, not by overrides (R6)」.
+- for the **`installation`** and **`presets.applied:<root>`** rows: a count of
+  **items**, not overrides — `workspaces[]` entries + presets + `1` for a carried
+  `preferences`, and `1` for a dropped applied record. The fake-Host contract test
+  for the `installation` reading is `test/stage2.test.mjs`'s「an installation-level
+  half left alone is counted by items, not by overrides (R6)」.
 
 §11.7's「reports it in `skipped` with the count it left alone」 is the same口径
-read the other way. Those three field names are what this contract fixes; att-002
-(the panel-side「what was skipped」declaration) builds its display on exactly this
-shape — and today the panel consumes `layer` and `reason` only, with `entries`
-reserved for the count that declaration will show.
+read the other way. Those three field names are what this contract fixes;
+**Revision 54 (g-074 att-002) is the panel-side「what was skipped」declaration
+this paragraph promised**: the preview renders one row per entry from exactly
+this shape — `layer`, `reason` and `entries` — instead of joining them into a
+single sentence, and the 「整份替换」 warning beside it is built from the same dry-run
+response (§11.8).
 
 `counts.kept` is the number of local entries the document does not mention and
 that survive the strategy. `unchanged: true` means the plan changes nothing: no
@@ -1990,13 +2012,19 @@ Host and never named by the document:
   `userPreferencesPath()` under `$DSH_HOME`.
 
 No field of the document can name a path *this profile does not own*. A root
-that passes the shape checks but is not registered is `400
-unknown-workspace-root`, and the **whole** import is refused: nothing staged,
-every file byte-identical. That is the security boundary this revision draws in
-place of the old name lock — an import may write into a workspace the user has
-*here*, and nowhere else. A backup taken on another machine therefore restores
-its layers, library and preferences only after the workspaces it names have been
-opened here once, and the refusal says so.
+that passes the shape checks but is not registered was, in Revision 53, `400
+unknown-workspace-root`, and the **whole** import was refused: nothing staged,
+every file byte-identical. *(**Revision 54 (g-074 att-002) replaced that refusal
+with a skip** — the owner's 2026-10-16 rule is「如果不是本机已注册的则跳过」 — so
+read the rest of this paragraph as the *shape* half it still describes for those
+roots, and read the Revision 54 note at the end of this section for what happens
+to a legal-but-unregistered one.)* That is the security boundary this revision
+draws in place of the old name lock — an import may write into a workspace the
+user has *here*, and nowhere else. A backup taken on another machine therefore
+restores the workspaces it names only after they have been opened here once;
+since Revision 54 the backup's layer views, library and preferences are restored
+**immediately** instead of waiting for that, and the workspaces this machine does
+not have are the rows reported in `skipped`.
 
 (g-074 R1 corrected the first sentence of that paragraph, which as written said
 "no field can name a path" while two fields do — `workspaces[].root` and
@@ -2054,26 +2082,65 @@ Three things close it, and all three are asserted:
   root** (`/`) and a **bare drive** (`C:\`, `C:/`): both would place the plugin's
   directory at the top of a volume. A **UNC share root** (`\\server\share`) is
   *not* refused — it is an ordinary directory path as far as this rule is
-  concerned, and what keeps it honest is the registry check below (a share this
-  profile does not register is `unknown-workspace-root`);
+  concerned, and what keeps it honest is the registry rule below (since
+  Revision 54 a share this profile does not register is **skipped and declared**
+  on the import face, §11.2, and `unknown-workspace-root` on the delete-preset
+  route);
 - **one registry rule, applied at every writer.** `assertKnownWorkspaceRoot` is
-  called for `workspaces[].root` on an import, for `presets.applied[].
-  workspaceRoot` on an import, and for **every** applied root the delete-preset
-  route is about to write. An unregistered root is `400 unknown-workspace-root`,
-  decided before phase 1 of the deletion reads a layer, so a refusal leaves the
-  library and every layer byte-identical. This is why the paragraph above holds
-  literally once it is read as「a path this profile does not own」: a path *can*
-  be named, and it is refused unless this profile owns it;
+  the **refusal** face, and every writer that is not an import still goes through
+  it: every applied root the delete-preset route is about to write. An
+  unregistered root there is `400 unknown-workspace-root`, decided before phase 1
+  of the deletion reads a layer, so a refusal leaves the library and every layer
+  byte-identical. *(Revision 53 also routed `workspaces[].root` and
+  `presets.applied[].workspaceRoot` **on an import** through this function;
+  Revision 54 sends those two through `workspaceRootSkipReason` instead — the
+  same registry question asked as a question — and reports a non-`null` answer in
+  `skipped`. Nothing is written for such an entry, so the boundary this item
+  states is unchanged: a path *can* be named, and it is never written unless this
+  profile owns it.)*
 - **an export never publishes what it could not restore.** A stored `applied`
   record whose workspace this profile does not register is not carried, and
   `exportScope.omittedApplied` counts what was left out — so the plugin's own
   backup can always be read back by the plugin's own import, which is the
   property the review's second PoC showed was missing.
 
-A backup that names a workspace this machine does not have is still refused
-whole, and the message says which workspace to open first. The alternative —
-dropping the unrecognized record silently — is the「silent partial import」this
-chapter exists to prevent.
+A backup that names a workspace this machine does not have was, in Revision 53,
+still refused whole, with a message naming which workspace to open first. The
+alternative then rejected was「dropping the unrecognized record silently」 — and
+that is still rejected today: **Revision 54 drops such an entry *loudly***, in
+`skipped`, with its own `layer`, a sentence in `reason` and its count in
+`entries`. What changed is the granularity, not the honesty: one entry this
+machine cannot restore no longer costs the user the whole backup.
+
+**Revision 54 (g-074 att-002) — cross-machine restore skips, and says so.** The
+owner's instruction (2026-10-16) is「如果不是本机已注册的则跳过」. Concretely,
+on `POST /prompt-setting/import`:
+
+- `workspaces[].root` — a legal absolute path this profile's registry does not
+  list is **skipped**: no `workspaceConfigPath(root)` is even computed for it, no
+  file is created, and the entry appears in `skipped` as
+  `{layer: "workspace:<root>", reason: "…", entries: <override count>}`;
+- `presets.applied[].workspaceRoot` — a record naming such a root is **dropped
+  from the library being written** and appears in `skipped` as
+  `{layer: "presets.applied:<root>", reason: "…", entries: 1}`. It is never
+  persisted, which is what keeps R1's hole closed: the delete-preset route
+  restores the workspaces its stored records name, so a record this machine
+  cannot own must not reach the library at all;
+- everything else in the document — the layer views, the **registered** workspace
+  layers, `presets`, `preferences` — is imported normally, and
+  `presets`/`preferences` are still replaced as a whole (see
+  「The two installation documents are replaced, not merged」 above);
+- a **malformed** root is untouched by all of this: it fails
+  `validateWorkspaceRoot` in `parseExport`, whole-document, with
+  `400 invalid-workspace-root` and zero writes (§11.1). 「Skip」 is the answer to
+  a cross-machine difference, never to a malformed input;
+- both branches are asserted against a real file's SHA-256 in
+  `test/stage2.test.mjs`: the skipped entry's target is byte-identical (or still
+  absent), and the registered half of the same document really was written.
+
+The panel half of this revision — the import preview that must warn that the
+installation documents are replaced as a whole and show what was skipped — is
+§11.8.
 
 **Revision 53 / g-074 R2 — one semantic, one rule, on every face.**
 
@@ -2111,6 +2178,31 @@ chapter exists to prevent.
   `publicApplied` merely reports the string. Tightening `normalizeStoredApplied`
   instead would trade this for a worse failure: a library with one unreadable
   record would stop loading altogether.
+
+### 11.8 The panel's import preview (Revision 54 / g-074 att-002)
+
+The「备份与恢复」tab previews an import by POSTing the pasted document to
+`…?dryRun=true` and rendering **that response** — the preview never computes a
+plan of its own, so what it shows is exactly what the real run would do (§11.1
+step 6). Until Revision 54 it rendered the layer views only (`layers`, `totals`,
+`changes`), which said nothing about the two installation documents being
+replaced as a whole and nothing about the entries the import would skip. Since
+Revision 54 the preview (`client.transfer.js`) adds three blocks, each keyed to a
+field the route already returned:
+
+| Block | Field it reads | What it says |
+| --- | --- | --- |
+| `data-import-replaces="true"` | `presets`, `preferences` | 「整份替换，不是合并」 in words (`importReplaceWarning`), then one line per carried document: the preset count and applied count (`importReplacePresets`), and the number of known preference keys (`importReplacePreferences`). It is not conditional on a local file existing — a carried document **is** replaced, and that consequence is what the confirmation is about |
+| `data-import-workspaces="<n>"` | `workspaces[]` | one row per restored workspace layer — `data-import-workspace="<root>"` and `data-import-workspace-changed="true\|false"` — so the user sees which workspace layers this document touches and whether each one really changes anything |
+| `data-import-skipped="<n>"` | `skipped[]` | one row per skipped entry: `data-import-skipped-row="<layer>"`, `data-import-skipped-entries="<n>"`, the sentence from `reason` verbatim, and the count from `entries`. The `layer`/`reason`/`entries` shape is the one §11.2 fixes; the panel adds no field of its own |
+
+The labels use the same `{…}` placeholders as the copy they fill, both
+dictionaries (`locale/zh.json`, `locale/en.json`) carry every added key in the
+same order, and `client.js`'s generated dictionary block is written only by
+`node scripts/locale-pack.mjs --write` (§14.5). The English render sweep walks
+the new branches (`data-import-replaces=true`,
+`data-import-skipped-row=workspace`), so a key that renders as its own identifier
+or as non-English prose still fails `test/client.test.mjs`.
 
 ## 12. `DELETE /prompt-setting/overrides` (Revision 4; `legacy` added in Revision 7)
 
@@ -4759,7 +4851,12 @@ this does **not** change:
   field, every workspace root, the library and the preference document — is
   validated before a byte is staged, and §11.1 lists the codes. The number of
   refusals an import can answer **grew** in this revision; the one thing it
-  stopped answering is「this name is frozen」;
+  stopped answering is「this name is frozen」. *(**Revision 54 (g-074 att-002)**
+  moved one answer off this list: a **legal** root this profile does not register
+  is no longer refused on the import face — it is skipped and declared in
+  `skipped` (§11.7). Every check named here still runs, the shape half of the
+  root rule included; what changed is that a cross-machine difference costs the
+  user one entry instead of the whole backup.)*
 - **the write face is untouched.** `PUT /prompt-setting/overrides` and the
   single-name `DELETE` still refuse a non-reserved name with `403 write-locked`
   (§4.1, §12.3). Editing a frozen override from the panel is still impossible;
@@ -6880,7 +6977,11 @@ Body: `{name, action, text}` to insert, or `{id, name, action, text}` to edit.
   library a write primitive for any directory on the disk (the review's PoC).
   The refusal names the workspace to open, and it is decided here — **before**
   the `missing: true` skip below, which describes a workspace this profile *does*
-  own whose file is gone.
+  own whose file is gone. *(**Revision 54**: unchanged. The import face now
+  **skips** a legal root this profile does not register instead of refusing the
+  document (§11.7) — this route still refuses, because it is the writer that turns
+  a stored record into a path, and an import must never hand it one this machine
+  cannot restore.)*
 - **A layer that is gone is skipped, never recreated (g-069 review A).** When an
   `applied` record names a workspace root whose layer file does not exist
   (`ENOENT`), there is **no text to restore**: that workspace is not written, not
@@ -7484,8 +7585,9 @@ re-report it.
 
 ## 22. The locale dictionaries (g-066, Revision 49)
 
-Every user-visible string this plugin renders — **567** keys per language since
-g-070 (Revision 51; 566 through Revision 50, 564 through Revision 49) — used to
+Every user-visible string this plugin renders — **573** keys per language since
+g-074 att-002 (Revision 54; 567 through Revision 51, 566 through Revision 50, 564
+through Revision 49) — used to
 be hardcoded inside `client.js`: a 513-key `zh` object, a 513-key `en` object,
 and an `ERROR_TEXT` table of 51 `code → [zh, en]` rows that a loop expanded into
 `error.<code>` entries. The copy now lives in two JSON files, and the inlined
@@ -7494,10 +7596,10 @@ objects are a generated artifact.
 ### 22.1 Source of truth
 
 - `locale/zh.json` and `locale/en.json` are the **only** human source. Each
-  holds exactly 567 string values: the 516 main keys plus 51 `error.<code>`
+  holds exactly 573 string values: the 522 main keys plus 51 `error.<code>`
   keys. Keys are identical between the two files, **in the same order** (the
   order is what the generated block follows, so a reordered file is a
-  516-line diff rather than a copy change).
+  522-line diff rather than a copy change).
 - Nothing else in the package is hand-edited for copy. `client.js` carries the
   blocks inside the `// #region generated: locale/zh.json + locale/en.json`
   … `// #endregion` span; a hand edit there is overwritten by the next `--write`
@@ -7528,7 +7630,7 @@ there is no network surface. What changed is only who maintains the bytes.
 | `scripts/locale-pack.mjs --write` | Re-renders both blocks from the JSON. Idempotent: a second run changes nothing. |
 | `scripts/locale-pack.mjs --check` | Fails (exit 1) when a block is not byte-for-byte what `--write` would produce. |
 | `scripts/prepare.mjs` → `LOCALE-SYNC` | The same check on the **install/publish** path, plus a `files` allowlist test for both JSONs (a source that does not ship cannot be re-derived from the installed package). |
-| `test/locale.test.mjs` | Key parity, the 516 + 51 split, no new placeholder drift, byte equality with `--write`, a negative control (one drifted character is refused), and that the delivery shape is still a classic script with a synchronous register. |
+| `test/locale.test.mjs` | Key parity, the 522 + 51 split, no new placeholder drift, byte equality with `--write`, a negative control (one drifted character is refused), and that the delivery shape is still a classic script with a synchronous register. |
 
 ### 22.4 Error codes
 

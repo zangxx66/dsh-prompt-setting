@@ -1999,7 +1999,8 @@ function mount(ctx, config, cleanups) {
       // is filled from that registry at the start of every request, but a write
       // path that ever cached an unregistered root would otherwise make this
       // route publish it as a workspace layer — and the resulting backup would
-      // then be refused by this very plugin's import (`unknown-workspace-root`).
+      // then carry a root this very plugin cannot restore on this machine
+      // (`skipped` since Revision 54, still better not published).
       .filter(([root]) => known !== null && known.has(root))
       .map(([root, layer]) => ({
         root,
@@ -2041,9 +2042,16 @@ function mount(ctx, config, cleanups) {
    * this check a crafted document could make the import create a
    * `.dsh-prompt-setting/` directory under any absolute path on the machine.
    *
-   * So the rule is the narrow one, and it is a refusal rather than a skip: a
-   * root this profile does not register is `400 unknown-workspace-root`, the
-   * whole request writes nothing, and the message says what to do about it.
+   * So the rule is the narrow one, and for every writer that is **not** an
+   * import it is a refusal rather than a skip: a root this profile does not
+   * register is `400 unknown-workspace-root`, the whole request writes nothing,
+   * and the message says what to do about it.
+   *
+   * The import is the one face that asks {@link workspaceRootSkipReason}
+   * instead (Revision 54, g-074 att-002): a backup taken on another machine
+   * names workspaces this one has never opened, and refusing the whole document
+   * for that would make cross-machine restore impossible. Skipped entries are
+   * never written, and the shape rule below is untouched by the difference.
    *
    * g-074 R1: there are **three** roots in play, not one, and all three go
    * through here — `workspaces[].root` on an import, `presets.applied[].
@@ -2071,6 +2079,39 @@ function mount(ctx, config, cleanups) {
       );
     }
     return root;
+  }
+
+  /**
+   * The same registry question, asked as a **question** instead of a refusal
+   * (Revision 54, g-074 att-002; CONTRACT §11.7).
+   *
+   * An import is the one face that may not refuse a legal root merely because
+   * this machine has never opened it: the owner's 2026-10-16 instruction is
+   * 「如果不是本机已注册的则跳过」 — a backup taken elsewhere must still bring
+   * back what *can* be restored. So the import asks this function per entry and
+   * reports a non-`null` answer in `skipped` instead of failing the document.
+   *
+   * What makes this safe rather than a hole: the two cases are disjoint by
+   * construction. A **malformed** root (relative, `..`, control character,
+   * volume root) is refused whole by `validateWorkspaceRoot` inside
+   * `parseExport`, before this function is ever reached; only a root that is a
+   * legal absolute path arrives here, and the caller writes nothing for the
+   * entries this reports. The refusal face stays in
+   * {@link assertKnownWorkspaceRoot} for every writer that is not an import
+   * (the delete-preset route restoring an applied layer).
+   * @param root - the candidate root from the document.
+   * @returns `null` when this profile registers `root`, else one sentence
+   *   naming why the entry was skipped.
+   */
+  function workspaceRootSkipReason(root) {
+    const known = registeredWorkspaceRoots();
+    if (known === null) {
+      return 'this profile exposes no workspaceRegistry service, so this workspace layer cannot be restored here; it was skipped and the rest of the document was imported';
+    }
+    if (!known.has(root)) {
+      return `${JSON.stringify(root)} is not a workspace this profile registers; this entry was skipped and the rest of the document was imported`;
+    }
+    return null;
   }
 
   /**
@@ -2730,10 +2771,16 @@ function mount(ctx, config, cleanups) {
    * non-reserved section name was `403 write-locked`. **Revision 53 (g-074)
    * removes that lock** — a backup has to be restorable — and moves its weight
    * into validation instead: the layer-name whitelist, every override field,
-   * every workspace root (a legal absolute path *and* a workspace this Host
-   * registers) and the preset / preference documents are all checked before
-   * anything is staged (§11.1, §11.7, §15.7). Removing the lock removed no
-   * check.
+   * every workspace root (a legal absolute path) and the preset / preference
+   * documents are all checked before anything is staged (§11.1, §11.7, §15.7).
+   * Removing the lock removed no check.
+   *
+   * **Revision 54 (g-074 att-002)** separates the two halves of the root rule
+   * that Revision 53 still answered with one refusal: a **malformed** root
+   * (relative, `..`, control character, volume root) is a malformed document and
+   * is still refused whole, while a **legal root this profile does not register**
+   * — a backup from another machine — is skipped and declared in `skipped`
+   * (§11.7). Skipped entries are never written.
    *
    * `?layer=` still narrows an import to the named layer view, which is what
    * it always meant: the installation-level documents are then not applied at
@@ -2817,16 +2864,29 @@ function mount(ctx, config, cleanups) {
     }
 
     // Revision 53: the document's `workspaces` array restores every other
-    // workspace layer. Each root must be a workspace this Host registers
-    // (`assertKnownWorkspaceRoot`) — the path-safety boundary that keeps a
-    // crafted document from creating a plugin directory anywhere on the disk —
-    // and each layer is read and validated like a layer view, before anything
-    // is staged.
+    // workspace layer. Each root is a workspace **this** Host registers
+    // (`workspaceRootSkipReason`) — the registry half of the path-safety
+    // boundary that keeps a crafted document from creating a plugin directory
+    // anywhere on the disk — and each layer is read and validated like a layer
+    // view, before anything is staged.
+    // Revision 54 (g-074 att-002): a root that **is** a legal path but is not a
+    // workspace this profile registers is no longer fatal — it is skipped and
+    // reported. That is the cross-machine case (a backup from another machine
+    // names workspaces this one has never opened) and the owner's rule is
+    // 「如果不是本机已注册的则跳过」. The shape boundary is untouched: a
+    // malformed root was already refused whole by `parseExport`, so
+    // `invalid-workspace-root` never reaches this loop, and an entry skipped
+    // here is never written (`workspaceConfigPath` is not even called for it).
     if (!layersOnly) {
       for (const entry of document.workspaces) {
-        const root = assertKnownWorkspaceRoot(entry.root);
+        const key = `workspace:${entry.root}`;
+        const skipReason = workspaceRootSkipReason(entry.root);
+        if (skipReason !== null) {
+          skipped.push({ layer: key, reason: skipReason, entries: entry.overrides.length });
+          continue;
+        }
+        const root = entry.root;
         const path = workspaceConfigPath(root);
-        const key = `workspace:${root}`;
         if (entry.overrides.length === 0) {
           skipped.push({ layer: key, reason: 'the document carries no override for this workspace layer', entries: 0 });
           continue;
@@ -2842,7 +2902,7 @@ function mount(ctx, config, cleanups) {
         // The judgement set is the same one `assertTextInterpolatable` ranges
         // over, and {@link refreshWorkspaces} has already loaded every root the
         // registry lists at the start of this request — so a root that just
-        // passed `assertKnownWorkspaceRoot` is in the cache by construction,
+        // passed `workspaceRootSkipReason` is in the cache by construction,
         // exactly like the Revision 13 (audit D1) rule requires of `targetFor`.
         const current = writableConfig(path);
         const layerWarnings = await assertTextInterpolatable(
@@ -2882,15 +2942,28 @@ function mount(ctx, config, cleanups) {
     if (!layersOnly && document.presets !== null) {
       const path = userPresetsPath();
       // g-074 R1: an `applied` record names a workspace root, and it is held to
-      // the very same whitelist `workspaces[]` is. Without this the library an
+      // the very same whitelist `workspaces[]` is. Without that the library an
       // import stores could point at any directory on the disk, and the
       // delete-preset route — which restores the layer each record names — would
-      // be the write that reaches it. This is a refusal rather than a dropped
-      // record: a document asking to restore into a workspace this machine does
-      // not have is not partially importable.
+      // be the write that reaches it.
+      // Revision 54 (g-074 att-002): R1 refused the whole document for such a
+      // record; the owner's 2026-10-16 rule replaced that with skip-and-say-so,
+      // the same treatment `workspaces[]` gets. The record is **dropped** — it
+      // never reaches the library, so the delete-preset route still cannot be
+      // aimed at a directory this profile does not own — and the drop is
+      // declared in `skipped`.
+      const applied = [];
       for (const record of document.presets.applied) {
-        assertKnownWorkspaceRoot(record.workspaceRoot, 'a preset application target');
+        const skipReason = workspaceRootSkipReason(record.workspaceRoot);
+        if (skipReason !== null) {
+          skipped.push({ layer: `presets.applied:${record.workspaceRoot}`, reason: skipReason, entries: 1 });
+          continue;
+        }
+        applied.push(record);
       }
+      const next = applied.length === document.presets.applied.length
+        ? document.presets
+        : { ...document.presets, applied };
       const current = readPresets(path);
       if (current.error !== null) {
         throw new OverrideError(
@@ -2901,8 +2974,8 @@ function mount(ctx, config, cleanups) {
       }
       presetsPlan = {
         path,
-        next: document.presets,
-        changed: JSON.stringify(current.document) !== JSON.stringify(document.presets),
+        next,
+        changed: JSON.stringify(current.document) !== JSON.stringify(next),
       };
     }
 

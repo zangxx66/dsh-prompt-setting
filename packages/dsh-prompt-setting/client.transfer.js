@@ -176,6 +176,15 @@ window.__ModuleLoader__.load({
           for (const change of list) changes.push({ ...change, layer: layerName });
         }
         const totals = plan.totals || {};
+        // g-074 att-002 (criterion 9): the preview has to say what an import
+        // does to the two installation documents and to every workspace layer,
+        // not only to the layer views `totals` sums. The four reads below are
+        // the response's own fields (`workspaces`, `presets`, `preferences`,
+        // `skipped`), never a second computation of the plan.
+        const workspaceList = Array.isArray(plan.workspaces) ? plan.workspaces : [];
+        const presetsReport = plan.presets !== null && typeof plan.presets === 'object' ? plan.presets : null;
+        const preferencesReport = plan.preferences !== null && typeof plan.preferences === 'object' ? plan.preferences : null;
+        const skippedList = Array.isArray(plan.skipped) ? plan.skipped : [];
         children.push(
           h(
             'div',
@@ -215,13 +224,103 @@ window.__ModuleLoader__.load({
                 fmt(t('importChangeRow'), { name: change.name, status: importStatusLabel(t, change.status) }),
               ),
             ),
-            Array.isArray(plan.skipped) && plan.skipped.length > 0
-              ? h(
+            // Criterion 9, part 1: the two installation documents are replaced
+            // as a whole, and the preview says so in words a user reads before
+            // confirming.
+            presetsReport === null && preferencesReport === null
+              ? null
+              : h(
                   'div',
-                  { 'data-import-skipped': String(plan.skipped.length), style: metaStyle },
-                  fmt(t('importSkipped'), { list: plan.skipped.map((entry) => `${entry.layer} (${entry.reason})`).join('; ') }),
-                )
-              : null,
+                  {
+                    key: 'replaces',
+                    'data-import-replaces': 'true',
+                    style: {
+                      border: `1px solid ${token.stateWarn}`,
+                      borderRadius: 8,
+                      padding: '6px 8px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 2,
+                    },
+                  },
+                  h('strong', { style: { fontSize: 13, color: token.stateWarn } }, t('importReplaceWarning')),
+                  presetsReport === null
+                    ? null
+                    : h(
+                        'div',
+                        { 'data-import-replaces-presets': 'true', style: { fontSize: 12, color: token.labelSecondary } },
+                        fmt(t('importReplacePresets'), {
+                          presets: countOf(presetsReport.presets),
+                          applied: countOf(presetsReport.applied),
+                        }),
+                      ),
+                  preferencesReport === null
+                    ? null
+                    : h(
+                        'div',
+                        { 'data-import-replaces-preferences': 'true', style: { fontSize: 12, color: token.labelSecondary } },
+                        fmt(t('importReplacePreferences'), {
+                          keys: Array.isArray(preferencesReport.keys) ? preferencesReport.keys.length : 0,
+                        }),
+                      ),
+                ),
+            // Criterion 9, part 2: which workspace layers the document touches,
+            // and whether each one really changes anything.
+            workspaceList.length === 0
+              ? null
+              : h(
+                  'div',
+                  {
+                    key: 'workspaces',
+                    'data-import-workspaces': String(workspaceList.length),
+                    style: { display: 'flex', flexDirection: 'column', gap: 2 },
+                  },
+                  h('strong', { style: { fontSize: 13 } }, fmt(t('importWorkspacesHeading'), { n: workspaceList.length })),
+                  workspaceList.map((entry) => {
+                    const counts = changeCountsOf(entry);
+                    const root = entry && entry.root !== undefined && entry.root !== null ? String(entry.root) : '';
+                    return h(
+                      'div',
+                      {
+                        key: `workspace:${root}`,
+                        'data-import-workspace': root,
+                        'data-import-workspace-changed': String(counts.added + counts.replaced + counts.removed > 0),
+                        style: { fontSize: 12, color: token.labelSecondary, wordBreak: 'break-all' },
+                      },
+                      fmt(t('importWorkspaceRow'), { root, ...counts }),
+                    );
+                  }),
+                ),
+            // Criterion 9, part 3: what the import leaves alone. `entries` is
+            // the response's own count for the entry (`1` for a dropped applied
+            // record, the override count for a workspace layer).
+            skippedList.length === 0
+              ? null
+              : h(
+                  'div',
+                  {
+                    key: 'skipped',
+                    'data-import-skipped': String(skippedList.length),
+                    style: { display: 'flex', flexDirection: 'column', gap: 2 },
+                  },
+                  h('strong', { style: { fontSize: 13, color: token.stateWarn } }, fmt(t('importSkipped'), { n: skippedList.length })),
+                  skippedList.map((entry, index) =>
+                    h(
+                      'div',
+                      {
+                        key: `skipped:${index}`,
+                        'data-import-skipped-row': String(entry && entry.layer),
+                        'data-import-skipped-entries': String(countOf(entry && entry.entries)),
+                        style: { fontSize: 12, color: token.labelSecondary, wordBreak: 'break-all' },
+                      },
+                      fmt(t('importSkippedRow'), {
+                        layer: String(entry && entry.layer),
+                        reason: String(entry && entry.reason),
+                        entries: countOf(entry && entry.entries),
+                      }),
+                    ),
+                  ),
+                ),
           ),
         );
       }
@@ -235,6 +334,31 @@ window.__ModuleLoader__.load({
         },
         children,
       );
+    }
+
+    /**
+     * A count the plan would render, or `0`. The preview never prints
+     * `undefined` or `NaN`, and an older host's response (one without
+     * `workspaces` / `presets`) renders nothing rather than a broken number.
+     * @param value - the candidate.
+     * @returns the number, or `0`.
+     */
+    function countOf(value) {
+      return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+    }
+
+    /**
+     * The three changing counts of one `workspaces[]` report entry (criterion 9).
+     * @param entry - one entry of the response's `workspaces` array.
+     * @returns `{added, replaced, removed}`.
+     */
+    function changeCountsOf(entry) {
+      const counts = entry && entry.counts && typeof entry.counts === 'object' ? entry.counts : {};
+      return {
+        added: countOf(counts.added),
+        replaced: countOf(counts.replaced),
+        removed: countOf(counts.removed),
+      };
     }
 
     /**

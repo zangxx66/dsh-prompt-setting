@@ -1516,6 +1516,28 @@ function importPlanFixture(over = {}) {
       },
     },
     imported: ['user'],
+    // g-074 att-002: the installation half the preview has to describe as well
+    // (criterion 9). Shaped exactly like the route's own dry-run answer.
+    workspaces: [
+      {
+        root: '/home/u/projects/alpha',
+        counts: { added: 0, replaced: 1, unchanged: 0, removed: 0, kept: 2 },
+        changes: [],
+        path: '/home/u/projects/alpha/.dsh-prompt-setting/overrides.json',
+        enabled: true,
+      },
+      {
+        root: '/home/u/projects/beta',
+        counts: { added: 0, replaced: 0, unchanged: 0, removed: 0, kept: 1 },
+        changes: [],
+        path: '/home/u/projects/beta/.dsh-prompt-setting/overrides.json',
+        enabled: true,
+      },
+    ],
+    workspaceTotals: { added: 0, replaced: 1, unchanged: 0, removed: 0, kept: 3 },
+    importedWorkspaces: ['/home/u/projects/alpha'],
+    presets: { path: '/home/u/.dsh/prompt-setting/presets.json', changed: true, presets: 3, applied: 1 },
+    preferences: { path: '/home/u/.dsh/prompt-setting/preferences.json', changed: true, keys: ['updateCheck', 'downloadRegionRegistry'] },
     skipped: [{ layer: 'workspace', reason: 'layer "workspace" requires a "session" id', entries: 0 }],
     totals: { added: 1, replaced: 1, unchanged: 0, removed: 0, kept: 1 },
     unchanged: false,
@@ -7552,6 +7574,64 @@ test('client: an import preview dry-runs, renders the plan and writes nothing', 
   assert.equal(oneBy(plan, 'data-import-change', 'panel:added').props['data-import-status'], 'added');
   assert.equal(oneBy(plan, 'data-import-skipped', '1').props['data-import-skipped'], '1');
   assert.equal(writeCalls(page).length, 0, 'a dry run never writes');
+
+  // g-074 att-002 (criterion 9): the preview states the whole-document
+  // replacement, the workspace layers it touches and what it skips.
+  const replaces = oneBy(plan, 'data-import-replaces', 'true');
+  assert.ok(hasText(replaces, page.zh.importReplaceWarning), 'the replacement warning is rendered');
+  assert.ok(
+    hasText(replaces, fillText(page.zh.importReplacePresets, { presets: 3, applied: 1 })),
+    'the preset library is named as replaced as a whole',
+  );
+  assert.ok(
+    hasText(replaces, fillText(page.zh.importReplacePreferences, { keys: 2 })),
+    'the preferences are named as replaced as a whole',
+  );
+  assert.ok(
+    hasText(plan, fillText(page.zh.importSkippedRow, { layer: 'workspace', reason: 'layer "workspace" requires a "session" id', entries: 0 })),
+    'the skipped entry is listed with its count',
+  );
+  const workspaceBlock = oneBy(plan, 'data-import-workspaces', '2');
+  assert.ok(hasText(workspaceBlock, fillText(page.zh.importWorkspacesHeading, { n: 2 })));
+  assert.equal(
+    oneBy(workspaceBlock, 'data-import-workspace', '/home/u/projects/alpha').props['data-import-workspace-changed'],
+    'true',
+    'a workspace layer the document really changes says so',
+  );
+  assert.equal(
+    oneBy(workspaceBlock, 'data-import-workspace', '/home/u/projects/beta').props['data-import-workspace-changed'],
+    'false',
+    'and one it does not change says that too',
+  );
+});
+
+test('client: the import preview lists every skipped entry with its own count (g-074 att-002)', async () => {
+  const skipped = [
+    {
+      layer: 'workspace:/tmp/other-machine',
+      reason: '"/tmp/other-machine" is not a workspace this profile registers; this entry was skipped and the rest of the document was imported',
+      entries: 2,
+    },
+    {
+      layer: 'presets.applied:/tmp/other-machine',
+      reason: '"/tmp/other-machine" is not a workspace this profile registers; this entry was skipped and the rest of the document was imported',
+      entries: 1,
+    },
+  ];
+  const page = makePage({ responses: defaultResponses({ [PATHS.import]: { payload: importPlanFixture({ skipped }) } }) });
+  let tree = await openBackup(page);
+  typeInto(tree, 'import-text', exportDocument());
+  tree = await page.flush();
+  clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'import-preview' });
+  tree = await page.flush();
+
+  const block = oneBy(oneBy(tree, 'data-import-plan', 'true'), 'data-import-skipped', '2');
+  assert.ok(hasText(block, fillText(page.zh.importSkipped, { n: 2 })), 'the heading counts the skipped entries');
+  const rows = collect(block, (node) => Boolean(node.props && node.props['data-import-skipped-row']));
+  assert.equal(rows.length, 2, 'one row per skipped entry, no joining');
+  assert.deepEqual(rows.map((row) => row.props['data-import-skipped-entries']), ['2', '1'], 'entries is the per-entry count');
+  assert.ok(hasText(block, fillText(page.zh.importSkippedRow, { layer: skipped[0].layer, reason: skipped[0].reason, entries: 2 })));
+  assert.ok(hasText(block, fillText(page.zh.importSkippedRow, { layer: skipped[1].layer, reason: skipped[1].reason, entries: 1 })));
 });
 
 test('client: applying an import is confirmed first and then posts without dryRun', async () => {
@@ -9539,9 +9619,25 @@ const EN_SWEEP_CASES = [
       ['data-import-plan', 'true'],
       ['data-import-change', 'project:alpha'],
       ['data-import-skipped', '1'],
+      // g-074 att-002 (criterion 9): the three things the preview gained.
+      ['data-import-replaces', 'true'],
+      ['data-import-workspaces', '2'],
+      ['data-import-skipped-row', 'workspace'],
       ['data-import-mode', 'replace'],
     ],
-    copy: ['importHeading', 'importPlanHeading', 'importModeReplace', ['importChangeRow', { name: 'project:alpha', status: 'replaced' }], ['importCounts', { added: 1, replaced: 1, unchanged: 0, removed: 0, kept: 1 }]],
+    copy: [
+      'importHeading',
+      'importPlanHeading',
+      'importModeReplace',
+      ['importChangeRow', { name: 'project:alpha', status: 'replaced' }],
+      ['importCounts', { added: 1, replaced: 1, unchanged: 0, removed: 0, kept: 1 }],
+      'importReplaceWarning',
+      ['importReplacePresets', { presets: 3, applied: 1 }],
+      ['importReplacePreferences', { keys: 2 }],
+      ['importWorkspacesHeading', { n: 2 }],
+      ['importWorkspaceRow', { root: '/home/u/projects/alpha', added: 0, replaced: 1, removed: 0 }],
+      ['importSkipped', { n: 1 }],
+    ],
     async run() {
       const page = enPage({ responses: defaultResponses() });
       const rec = recorder(page);
@@ -10549,6 +10645,11 @@ const EN_REQUIRED_MARKERS = [
   'data-role=history-compare-hint',
   'data-region=backup-tab',
   'data-region=transfer',
+  // g-074 att-002 (criterion 9): the import preview's whole-document
+  // replacement warning and its per-entry skipped rows, so the en sweep walks
+  // both branches instead of only the layer view.
+  'data-import-replaces=true',
+  'data-import-skipped-row=workspace',
   'data-region=layer-reset',
   'data-region=confirm',
   // A confirmation is a fixed, centered overlay rather than an inline card, so

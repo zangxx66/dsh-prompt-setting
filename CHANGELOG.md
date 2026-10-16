@@ -32,6 +32,27 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed 变更
 
+- **跨机备份恢复改为「跳过」语义 + 导入预览提示「整份替换」（g-074 att-002，Revision 54）**：负责人 2026-10-16
+  追加指示「如果不是本机已注册的则跳过」。`POST /import` 过去对「路径形状合法但本机注册表未包含」的工作区
+  root 整体 `400 unknown-workspace-root` 拒绝，现在改为**跳过并在响应 `skipped[]` 中如实声明**
+  （`{layer, reason, entries}`，沿用 R6 已钉住的形状，不新增字段）：`workspaces[]` 里这类条目
+  `layer` 为 `workspace:<root>`、`entries` 为该条目的覆盖数；`presets.applied[]` 里这类记录
+  `layer` 为 `presets.applied:<root>`、`entries` 为 `1`，且该记录**被丢弃、绝不落库**（R1 关掉的那条
+  任意路径写入原语保持关闭）。文档其余部分——两层视图、**已注册**的工作区层、预设库、偏好设置——
+  照常导入，被跳过项的零写入不变式仍有 SHA-256 断言。**形状非法**（相对路径 / `..` / 控制字符 / 卷根）
+  仍按畸形文档**整体拒绝**、零写入，两刀不混同。前端「备份与恢复」预览补齐三块：预设库与偏好设置将被
+  **整份替换**（不是合并）的明确警示、本文档涉及的 `workspaces` 变更（含是否真有改动）、以及被跳过的
+  条目列表（`layer`/`reason`/`entries` 计数）。契约 §11.1、§11.2（`skipped` 来源表 4 → 6 行）、§11.7、
+  §15.7、§10、§4.4 错误码表与 §22 locale 计数同步为 Revision 54；新增 §11.8 记录预览契约。
+  **Cross-machine restore now skips, and the preview says what is replaced (g-074 att-002, Revision 54)**:
+  a workspace root that is a legal path but is not registered on this machine is no longer refused whole;
+  the entry is skipped, declared in `skipped[]` (`{layer, reason, entries}`, the R6 shape, no new field) and
+  never written, while the rest of the document — both layer views, the **registered** workspace layers,
+  the library and the preferences — imports normally. A malformed root (relative, `..`, control character,
+  volume root) is still refused whole with zero writes. The import preview now warns that the preset
+  library and the preferences are replaced **as a whole** (not merged), lists the workspace layers the
+  document touches, and lists every skipped entry with its count.
+
 - **「查看范围」移入「我的 Prompt」（g-071，Revision 52）**：会话范围选择器
   （含树体/手动输入/展开收起与全部既有 marker）不再渲染在 tab bar 上方，而是作为「我的 Prompt」面板内、
   面板标题之下的第一块（`data-region="prompt-block"` 现在只存在于 `data-region="mine"` 内部）。据此，

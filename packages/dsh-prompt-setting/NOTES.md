@@ -9302,3 +9302,73 @@ R4 表内**引用行号**的重取结果（当前文件）：§1 `:642-643`（ex
 
 > **观察（R7 教训的延伸，也是本轮唯一的新发现）**：自查用的关键词**会命中写这段自查的文字本身**，所以「零命中」这类量化断言必须①先数一遍、②逐条读命中行、③必要时把关键词写成不含原词的形式（本表第 2–4 行即是），否则**断言自己就会成为反例**。本节初稿就写成了「四条全部零命中」，实测为 `2/6/16`，已按上表改正——**这正是评审反复指出的同一类错误在自查环节的复现**。
 
+
+## 152. g-074 att-002：跨机恢复改「跳过」语义 + 导入预览「整份替换」（Revision 54，2026-10-16，基线 `2550a5f` 隔离工作树 `g-074-att-02`）
+
+**需求（负责人 2026-10-16 追加，判据 8、9）**：① 导入时 `workspaces[]` 与 `presets.applied[]` 里**路径形状合法、
+但本机工作区注册表未包含**的条目改为**跳过**（不再整体拒绝），跳过项**如实声明**、**绝不写盘**；路径形状非法
+仍按畸形文档整体拒绝。② 前端导入预览必须提示预设库与偏好设置将被**整份替换**、`workspaces` 的变更、以及被
+跳过的条目。att-001 已完成判据 1–7 并合入 `dev`（`2550a5f`），本轮是收尾。
+
+**设计决定（及被否方案）**
+
+- **只改「注册表」这半刀，形状那半原样不动。** `validateWorkspaceRoot`（`core/workspace-root.js`）仍由
+  `parseExport` 调用，畸形 root（相对路径 / `..` / 控制字符 / 卷根）在任何落盘前**整体 400**；宿主侧新增
+  `workspaceRootSkipReason(root)`（`index.js:2106`）——**同一个注册表问题，问法从「抛错」改成「返回原因」**，
+  答案非 `null` 即进 `skipped`。被否：直接把 `assertKnownWorkspaceRoot` 改成跳过——`DELETE /presets` 也会经它
+  还原工作区层，那里**必须**拒绝（那正是 R1 关掉的任意路径写入原语），所以**拒绝面保留给非导入写入者**，
+  导入单独走问句函数。
+- **`presets.applied[]` 的处置是「丢弃记录」而不是「跳过该文档」。** 记录不进将要写入的库（
+  `{...document.presets, applied}`），否则 `DELETE /presets` 之后会照它写盘，R1 的洞会重新打开；丢弃动作本身
+  在 `skipped` 里以 `presets.applied:<root>` / `entries: 1` 声明。被否：只报告不丢弃（等于把不可还原的记录
+  写进库）；被否：保留记录但让删除路由忽略它（读面已宽松，写面判据要写在**写入点**才可靠）。
+- **不新增字段、不新增 `skipped` 形状。** 复用 R6 已钉住的 `{layer, reason, entries}`：`layer` 新取值
+  `workspace:<root>`（未注册）与 `presets.applied:<root>`；`entries` 前者=该条目覆盖数、后者=`1`。契约 §11.2
+  的来源表因此从 4 行变 6 行，并写明 `entries` 的两种读法（override 数 / 条目数）。
+- **本机完全没有 `workspaceRegistry` 服务时同样跳过**（`registeredWorkspaceRoots()` 返回 `null`），reason 说明
+  真实原因。被否：维持原来的 `400 workspace-unresolved`——跨机（不同 profile）场景下那会把「能否还原一个层」
+  升级成「能否导入整份备份」，与负责人指示相反。
+- **前端三块预览，全部读 dry-run 响应的既有字段**（`presets`/`preferences`/`workspaces`/`skipped`），预览**不
+  自行计算计划**：`data-import-replaces`（整份替换警示 + 每个文档一行）、`data-import-workspaces`（逐
+  `data-import-workspace` 行，带 `data-import-workspace-changed`）、`data-import-skipped`（逐
+  `data-import-skipped-row` 行，带 `data-import-skipped-entries`）。`importSkipped` 保留键、值改为「共 {n} 项」，
+  新增 `importSkippedRow` 逐行渲染（原来是把 layer/reason 拼成一句）。
+- **文案走真源流程**：`locale/zh.json` + `locale/en.json` 各 +6 键（573 键/语言 = 522 主 + 51 错误码），
+  `client.js` 生成段只由 `node scripts/locale-pack.mjs --write` 写，`test/locale.test.mjs` 计数断言同步
+  （516/567 → 522/573）。
+
+**实现锚点（现取现算，最终文件、未提交）**
+
+| 位置 | 内容 |
+| --- | --- |
+| `index.js:2106` | `workspaceRootSkipReason`：注册表问句（`null` = 可写） |
+| `index.js:2883` / `:2885` | `workspaces[]` 逐条判问句，非 `null` 即 `skipped.push({layer:'workspace:<root>', reason, entries: overrides.length})` 并 `continue`（**`workspaceConfigPath` 都不再计算**） |
+| `index.js:2957` / `:2959` | `presets.applied[]` 逐条判问句，非 `null` 即丢弃记录 + `skipped.push({layer:'presets.applied:<root>', entries: 1})`；写入的库用 `{...document.presets, applied}` |
+| `index.js:2837/2885/2891/2899/2929/2959` | 全部 `skipped.push` 路径（与契约 §11.2 表逐行对应） |
+| `client.transfer.js:236/275/303` | 预览三块（`data-import-replaces` / `data-import-workspaces` / `data-import-skipped`）；`:346` `countOf`、`:355` `changeCountsOf` |
+| `CONTRACT.md:2115` | §11.7 内新增「Revision 54 — cross-machine restore skips, and says so」 |
+| `CONTRACT.md:2182` | 新增 §11.8 The panel's import preview（预览读哪些字段、渲染哪些 marker、文案真源） |
+| `CONTRACT.md:1882` | §11.2 `skipped[]` 来源表 4 → 6 行 + `entries` 两种读法 + 撤回「att-002 将实现」的未来时 |
+| `test/stage2.test.mjs:1704/1788/1915/2265` | 跨机跳过主用例 / 无 registry 服务用例 / R1 PoC 改为「丢弃记录」/ `rejectedDocuments()` 移除「未注册 root」条目并补**控制字符**形状条目 |
+| `test/client.test.mjs:7608` | 逐条 skipped 行渲染用例；`:7578` 现有预览用例补三块断言；`:9622`/`:10648` EN sweep 登记新分支与新文案 |
+
+**契约同步清单（只追加 / 就地限定，不删历史正文）**：§11.1（root 两条子弹 + 新增 Revision 54 表）、§11.2（来源
+表、`entries` 读法、撤回未来时）、§11.7（首段「refused whole」就地限定 + 段末 Revision 54 逐条）、§11.8（新增）、
+§10（`presets` 行就地限定 + `omittedApplied` 复核）、§15.7（「checks are not relaxed」项就地限定）、§20.4（该路由的拒绝就地限定为「Revision 54 不变」）、§4.4
+错误码表（`unknown-workspace-root` 就地限定为「仅剩删除路由」）、§22（573/522 键）；§15.8 复核后与 root 语义无关，未改。
+
+**验收（本文件最终版、未提交实跑）**
+
+- evidence: suite=node --test(test/*.test.mjs) passed=938 failed=0 exit=0（att-001 基线 936，本轮 stage2 改写 2 条 +
+  新增 1 条、client 新增 1 条 ⇒ 938）；
+- evidence: suite=node scripts/prepare.mjs passed=23 failed=0 exit=0（`LOCALE-SYNC` 573 键 / `CHUNK-STAMPS` 5 个
+  chunk 一致）；`node scripts/locale-pack.mjs --write` 与 `node scripts/client-chunks.mjs --write` 均已跑（生成段，
+  非手改）；
+- **负向对照 3 条（改坏就红，已还原、零残留）**：① 禁用 `workspaces[]` 跳过分支 ⇒ R8 主用例红（未注册 root 的层文件 SHA-256 被改写）；② `presets.applied` 改回 `assertKnownWorkspaceRoot` 抛错 ⇒「drops that record」用例红；③ 删掉
+  `WORKSPACE-ROOT` 的控制字符检查 ⇒ `rejectedDocuments()` 整体拒绝对照红（`a workspace root with a control
+  character must be a 4xx, got 200`）——第 ③ 条同时证明「形状非法 ≠ 未注册跳过」两刀未混同；
+- 既有回归：`an export never publishes an unregistered applied root, and its own backup imports back (R1 PoC2)`
+  仍绿（已注册路径往返等价不受影响）；删除预设路由的三条 R1 拒绝断言仍绿（拒绝面未被本轮改动）。
+
+**未验证项 / 残余**：跳过语义只在 fake Host + 真实文件系统（真实 SHA-256 / 真实目录创建）上验证，未在真机
+DSH 上手工目视「跨机备份」全流程；预览三块在 GUI 上只经渲染树断言与 EN sweep，未做真机截图核验。
