@@ -27,6 +27,7 @@
 import { OverrideError, fail, interpolateFlagOf, validateConfig, validateOverride, withInterpolate } from './overrides.js';
 import { validatePresetsDocument } from './presets.js';
 import { validatePreferencesDocument } from './update.js';
+import { validateWorkspaceRoot } from './workspace-root.js';
 
 /** The `schema` marker every export carries. */
 export const EXPORT_SCHEMA = 'dsh-prompt-setting/export';
@@ -47,59 +48,16 @@ export const IMPORT_MODES = Object.freeze(['merge', 'replace']);
 export const EXPORT_LAYERS = Object.freeze(['user', 'workspace']);
 /** The keys of one workspace entry. Anything else is a malformed document. */
 const WORKSPACE_ENTRY_KEYS = Object.freeze(['root', 'enabled', 'reason', 'overrides']);
-/** Upper bound on a workspace `root`, in UTF-16 code units. */
-export const MAX_WORKSPACE_ROOT_LENGTH = 4096;
-/**
- * An absolute path as the two platforms this plugin runs on write one: POSIX
- * (`/…`), a drive (`C:\…`), or a UNC share (`\\server\…`).
- */
-const ABSOLUTE_ROOT = /^(?:[A-Za-z]:[\\/]|\\\\|\/)/;
-/** Control characters, refused anywhere in a `root`. */
-const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/;
 
 /**
- * Validate one workspace `root` **as a path**, without any registry knowledge.
- *
- * The pure half of the path-safety rule (§11.7). It answers "could this string
- * possibly be a workspace root this plugin may write into?", and it refuses
- * everything a later step would have to be careful about:
- * - a non-string, an empty string, or one over {@link MAX_WORKSPACE_ROOT_LENGTH};
- * - a control character (a NUL is how a path-looking string becomes a
- *   different path in the filesystem layer);
- * - anything that is not absolute — a relative path would resolve against the
- *   Host process's own `cwd`, which is never what a backup means;
- * - a `..` segment, which is how an absolute-looking path escapes its root;
- * - the filesystem root itself (`/`, `C:\`): the plugin's directory must be a
- *   *child* of a workspace, never the root of a volume.
- *
- * The registry half (「is this one of the workspaces the Host knows?」) lives in
- * `index.js`, because only the Host can answer it.
- * @param value - the candidate `root`.
- * @returns the root, unchanged.
- * @throws {OverrideError} `invalid-workspace-root` (400).
+ * Re-exported so this module stays the one place a reader of the export
+ * document imports from. Since g-074 R1 the rule itself lives in
+ * `core/workspace-root.js`, because `presets.applied[].workspaceRoot` is the
+ * **same** field and must be judged by the very same function (a cycle would
+ * otherwise force `core/presets.js` to type its own, weaker copy — which is
+ * exactly the hole the review found).
  */
-export function validateWorkspaceRoot(value) {
-  if (typeof value !== 'string' || value.length === 0) {
-    throw fail('invalid-workspace-root', 'a workspace entry requires a non-empty string "root"');
-  }
-  if (value.length > MAX_WORKSPACE_ROOT_LENGTH) {
-    throw fail('invalid-workspace-root', `"root" exceeds ${MAX_WORKSPACE_ROOT_LENGTH} characters`);
-  }
-  if (CONTROL_CHARACTERS.test(value)) {
-    throw fail('invalid-workspace-root', '"root" must not contain control characters');
-  }
-  if (!ABSOLUTE_ROOT.test(value)) {
-    throw fail('invalid-workspace-root', `"root" must be an absolute path, not ${JSON.stringify(value)}`);
-  }
-  if (value.split(/[\\/]+/).includes('..')) {
-    throw fail('invalid-workspace-root', `"root" must not contain a ".." segment: ${JSON.stringify(value)}`);
-  }
-  const trimmed = value.replace(/[\\/]+$/, '');
-  if (trimmed.length === 0 || /^[A-Za-z]:$/.test(trimmed)) {
-    throw fail('invalid-workspace-root', `"root" must name a directory, not a filesystem root: ${JSON.stringify(value)}`);
-  }
-  return value;
-}
+export { MAX_WORKSPACE_ROOT_LENGTH, validateWorkspaceRoot } from './workspace-root.js';
 
 /**
  * Build one export document.

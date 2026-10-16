@@ -315,6 +315,57 @@ test('transfer: a preference document is validated strictly, unknown keys includ
   }
 });
 
+test('transfer: an applied record names the very same workspace root the workspaces array does', () => {
+  const presetsWith = (workspaceRoot) => ({
+    version: 1,
+    presets: [],
+    applied: [{ workspaceRoot, base: null, stack: [] }],
+  });
+  for (const good of ['/home/u/project', 'C:\\Users\\u\\project', '\\\\server\\share\\project']) {
+    assert.equal(parseExport(document({ presets: presetsWith(good) })).presets.applied[0].workspaceRoot, good);
+  }
+  // g-074 R1: the review found this field checked for nothing but "a non-empty
+  // string", which let an imported library name any absolute path on the disk —
+  // `/etc` included — and a later `DELETE /presets` wrote into it. It is now
+  // judged by the same rule `workspaces[].root` is.
+  const bad = [
+    ['relative/dir', 'invalid-workspace-root'],
+    ['./project', 'invalid-workspace-root'],
+    ['/tmp/../etc', 'invalid-workspace-root'],
+    ['/', 'invalid-workspace-root'],
+    ['C:\\', 'invalid-workspace-root'],
+    ['/home/u/\u0000evil', 'invalid-workspace-root'],
+    ['', 'invalid-workspace-root'],
+    [null, 'invalid-workspace-root'],
+    [42, 'invalid-workspace-root'],
+    ['x'.repeat(4097), 'invalid-workspace-root'],
+  ];
+  for (const [workspaceRoot, code] of bad) {
+    assert.throws(
+      () => parseExport(document({ presets: presetsWith(workspaceRoot) })),
+      (error) => error.code === code && error.message.includes('applied[0].workspaceRoot'),
+      `applied[0].workspaceRoot = ${JSON.stringify(workspaceRoot)} => ${code}`,
+    );
+  }
+  // The two fields are one rule, so they cannot drift apart again: the same bad
+  // root answers the same code whichever field carries it.
+  for (const badRoot of ['relative', '/tmp/../etc', '/']) {
+    let fromWorkspaces = null;
+    let fromApplied = null;
+    try {
+      parseExport(document({ workspaces: [{ root: badRoot, overrides: [] }] }));
+    } catch (error) {
+      fromWorkspaces = error.code;
+    }
+    try {
+      parseExport(document({ presets: presetsWith(badRoot) }));
+    } catch (error) {
+      fromApplied = error.code;
+    }
+    assert.equal(fromWorkspaces, fromApplied, `${badRoot} must answer the same code on both fields`);
+  }
+});
+
 test('transfer: the location prefix of a nested document error names the key', () => {
   assert.throws(
     () => parseExport(document({ preferences: { nope: 1 } })),

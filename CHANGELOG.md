@@ -146,6 +146,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Fixed 修复
 
+- **备份/恢复的路径安全绕过（g-074 R1，Revision 53）**：`presets.applied[].workspaceRoot` 过去只检查「非空字符串」，
+  而 `DELETE /prompt-setting/presets?id=` 会用记录里的 root 直接写 `<root>/.dsh-prompt-setting/overrides.json`。
+  于是一份导入的备份可以命名任意磁盘路径（`/etc` 也行），删除预设就成了任意路径写入原语——评审 PoC 实测未注册
+  目录下的层文件被真实改写。修复：形状规则抽到 `core/workspace-root.js`，由 `workspaces[].root` 与
+  `presets.applied[].workspaceRoot` **共用同一个函数**；导入与删除两条路径都对 root 过注册表白名单（未注册即
+  整体拒绝、零写入）；导出不再携带无法在本机还原的 `applied` 记录（条数由 `exportScope.omittedApplied` 声明），
+  使插件自己产出的备份一定能被自己的导入读回。
+  **Path-safety bypass fixed (g-074 R1)**: `presets.applied[].workspaceRoot` was checked for nothing but
+  "a non-empty string" while `DELETE /prompt-setting/presets?id=` wrote `<root>/.dsh-prompt-setting/overrides.json`
+  straight from the stored record, so an imported backup could name any directory on the disk and the delete
+  became a write primitive (the review's PoC rewrote an unregistered directory's layer file). The shape rule now
+  lives in `core/workspace-root.js` and is shared by `workspaces[].root` and
+  `presets.applied[].workspaceRoot`; both the import and the delete route put every root through the registry
+  whitelist (unregistered ⇒ refused whole, zero writes); and an export no longer carries an `applied` record it
+  could not restore, with the count declared in `exportScope.omittedApplied` — so the plugin's own backup is
+  always readable by the plugin's own import.
+
 - **英文文案泄露（g-066）**：导出失败时不再把浏览器侧的英文原文（`no document`）拼进界面文案，改为
   走本地化兜底；`errorText` 对**未登记**的错误码不再把 `error.<code>` 裸键显示出来，而是退回本地化的
   `errUnknown`（原始 code 仍由错误横幅的 `errorCode` 行如实呈现）；另修掉两条英文文案里残留的中文

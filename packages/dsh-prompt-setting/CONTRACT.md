@@ -1118,11 +1118,11 @@ human-readable `message`.
 | `500` | `import-staging-failed` | A staged temp file could not be written; nothing was replaced. |
 | `500` | `import-commit-failed` | A rename failed during the commit; the message says how many layers were already replaced. |
 | `400` | `unknown-export-layer` | **Revision 53.** A `layers` key other than `user`/`workspace` (§11.1). |
-| `400` | `unexpected-export-field` | **Revision 53.** A version 1 document carries `workspaces`/`presets`/`preferences`. |
+| `400` | `unexpected-export-field` | **Revision 53.** A version 1 document carries `workspaces`/`presets`/`preferences`. A field that is `null` counts as **not carried**, so `{"version":1,"presets":null}` is a version 1 document like any other. |
 | `400` | `invalid-export-workspaces` / `invalid-export-workspace` | **Revision 53.** `workspaces` is not an array, or an entry is not `{root, enabled?, reason?, overrides?}`. |
 | `400` | `duplicate-workspace-root` | **Revision 53.** Two entries name the same workspace root. |
-| `400` | `invalid-workspace-root` | **Revision 53.** A root is not an absolute path, or carries a `..` segment / a control character, or is a volume root. |
-| `400` | `unknown-workspace-root` | **Revision 53.** A legal absolute path that this profile's registry does not list (§11.7). |
+| `400` | `invalid-workspace-root` | **Revision 53.** A root — `workspaces[].root` **or** `presets.applied[].workspaceRoot` (R1) — is not an absolute path, or carries a `..` segment / a control character, or is a volume root. |
+| `400` | `unknown-workspace-root` | **Revision 53.** A legal absolute path that this profile's registry does not list (§11.7). Since R1 this also covers an `applied` record the delete-preset route is about to restore into. |
 | `400` | `conflicting-import-target` | **Revision 53.** Two parts of the document carry different override lists for the same file. |
 | `409` | `presets-not-writable` / `preferences-not-writable` | **Revision 53.** The existing library / preference file is unusable; it is never overwritten. |
 | `400` | `invalid-presets`, `unsupported-presets-version`, `invalid-preset-id`, `duplicate-preset-id`, `invalid-applied` | **Revision 53.** The library document is malformed; the codes are §20's own. |
@@ -1714,7 +1714,7 @@ so the Revision 7 narrowing is withdrawn. The document now carries:
 | --- | --- |
 | `layers.user` / `layers.workspace` | **Every** override of that layer view — frozen entries included, copied as stored (`action` and all, Revision 36). Nothing is filtered; `customOverridesOnly` is gone. |
 | `workspaces[]` | One entry per workspace layer **the Host registers**, as `{root, enabled, reason, overrides}`. This is what makes「所有工作区层」true: the exported set no longer depends on which session asked. Sorted by `root`, so two exports of an unchanged installation agree byte for byte. |
-| `presets` | The whole preset library (§20) — or `null` when this process could not read it. |
+| `presets` | The whole preset library (§20) — or `null` when this process could not read it. Since R1 an `applied` record whose `workspaceRoot` this profile does not register is **not carried**: it could not be restored here (the import refuses such a document, §11.7), so carrying it would produce a backup this plugin's own reader rejects. |
 | `preferences` | The preference document (§17) — or `null` when this process could not read it. |
 
 `version` is `2`. A **version 1** document (one reserved entry per layer, no
@@ -1742,7 +1742,8 @@ zero.
 | `workspaces` | How many workspace entries the document carries. |
 | `presets` | How many presets the library carried (`0` when it was not carried). |
 | `preferences` | Whether the preference document was carried. |
-| `omitted.<layer>` / `omitted.total` | Always `0` — a full export drops nothing. Kept so a pre-Revision-53 reader reads「complete」instead of finding a field missing. |
+| `omittedApplied` | **R1.** How many stored `applied` records were left out because their workspace is not registered here (`0` in every ordinary installation). Declared rather than dropped silently. |
+| `omitted.<layer>` / `omitted.total` | Always `0` — a full export drops nothing **of a layer**. Kept so a pre-Revision-53 reader reads「complete」instead of finding a field missing. |
 | `unavailable.presets` / `unavailable.preferences` | Why a document was **not** carried (`invalid-json: …`), or `null`. An unreadable library is never exported as an empty one: restoring that would clear the user's real catalogue. |
 
 `?layer=` still limits the **layer views** the document carries. It never
@@ -1797,7 +1798,10 @@ code:
 - the **library** and the **preference document**, each validated by the module
   that owns its schema (`invalid-presets`, `unsupported-presets-version`,
   `invalid-preset-id`, `duplicate-preset-id`, `invalid-applied`,
-  `unknown-preference`, `invalid-preference`, `invalid-preferences`).
+  `unknown-preference`, `invalid-preference`, `invalid-preferences`) — and every
+  `presets.applied[].workspaceRoot` it carries is put through **both** halves of
+  the root rule above (shape, then registry), exactly like `workspaces[].root`
+  (g-074 R1).
 
 Step 4 also resolves the document's `workspaces[]` entries (not only the two
 layer views), and marks a local `presets.json` / `preferences.json` this process
@@ -1882,13 +1886,20 @@ Host and never named by the document:
 - the installation documents at the fixed `userPresetsPath()` and
   `userPreferencesPath()` under `$DSH_HOME`.
 
-No field of the document can name a path. A root that passes the shape checks
-but is not registered is `400 unknown-workspace-root`, and the **whole** import
-is refused: nothing staged, every file byte-identical. That is the security
-boundary this revision draws in place of the old name lock — an import may write
-into a workspace the user has *here*, and nowhere else. A backup taken on another
-machine therefore restores its layers, library and preferences only after the
-workspaces it names have been opened here once, and the refusal says so.
+No field of the document can name a path *this profile does not own*. A root
+that passes the shape checks but is not registered is `400
+unknown-workspace-root`, and the **whole** import is refused: nothing staged,
+every file byte-identical. That is the security boundary this revision draws in
+place of the old name lock — an import may write into a workspace the user has
+*here*, and nowhere else. A backup taken on another machine therefore restores
+its layers, library and preferences only after the workspaces it names have been
+opened here once, and the refusal says so.
+
+(g-074 R1 corrected the first sentence of that paragraph, which as written said
+"no field can name a path" while two fields do — `workspaces[].root` and
+`presets.applied[].workspaceRoot`. What the boundary forbids is naming a path
+**this profile does not own**, and both fields are now held to it; see the R1
+note at the end of this section.)
 
 **One file, one plan.** The `workspace` layer view and a `workspaces[]` entry may
 name the same workspace (a session-resolved export does exactly that). When they
@@ -1920,6 +1931,41 @@ report `{path, changed, …}` for the two installation documents. `written` name
 every file the commit replaced. A version 1 document carries none of the
 installation half, so all of those fields are present and empty — a client that
 ignores them reads exactly what it read before.
+
+**Revision 53 / g-074 R1 — `presets.applied[].workspaceRoot` is the same field,
+and it is held to the same rule.** The first cut of this revision checked the
+shape of `workspaces[].root` and left the applied record's own root judged by
+nothing but "a non-empty string", and the delete-preset route (`DELETE
+/prompt-setting/presets?id=`) restored every workspace its `applied` record named
+without ever asking the registry. The review's PoC turned that into a write
+primitive: an imported library could name `/etc` (or any directory holding a
+`.dsh-prompt-setting/overrides.json`), and deleting the preset wrote into it.
+Three things close it, and all three are asserted:
+
+- **one shape rule, shared.** `workspaces[].root` and
+  `presets.applied[].workspaceRoot` are validated by the very same
+  `validateWorkspaceRoot` (`core/workspace-root.js`, a module of its own so
+  `core/presets.js` can import it without a cycle): a non-empty absolute path, no
+  `..` segment, no control character, not a volume root. Either field answers
+  `400 invalid-workspace-root`;
+- **one registry rule, applied at every writer.** `assertKnownWorkspaceRoot` is
+  called for `workspaces[].root` on an import, for `presets.applied[].
+  workspaceRoot` on an import, and for **every** applied root the delete-preset
+  route is about to write. An unregistered root is `400 unknown-workspace-root`,
+  decided before phase 1 of the deletion reads a layer, so a refusal leaves the
+  library and every layer byte-identical. This is why the paragraph above holds
+  literally once it is read as「a path this profile does not own」: a path *can*
+  be named, and it is refused unless this profile owns it;
+- **an export never publishes what it could not restore.** A stored `applied`
+  record whose workspace this profile does not register is not carried, and
+  `exportScope.omittedApplied` counts what was left out — so the plugin's own
+  backup can always be read back by the plugin's own import, which is the
+  property the review's second PoC showed was missing.
+
+A backup that names a workspace this machine does not have is still refused
+whole, and the message says which workspace to open first. The alternative —
+dropping the unrecognized record silently — is the「silent partial import」this
+chapter exists to prevent.
 
 ## 12. `DELETE /prompt-setting/overrides` (Revision 4; `legacy` added in Revision 7)
 
@@ -6619,7 +6665,7 @@ Body: `{name, action, text}` to insert, or `{id, name, action, text}` to edit.
   ignored (a future client's extra key is not a `400`); unknown **preset** fields
   are dropped, never persisted.
 
-### 20.4 `DELETE /prompt-setting/presets?id=` (Revision 50: the deletion cancels)
+### 20.4 `DELETE /prompt-setting/presets?id=` (Revision 50: the deletion cancels; g-074 R1: an unregistered applied root refuses it)
 
 - `id` is required (`400 missing-id`) and must be well-formed (`400 invalid-id`);
   an id that names nothing is `404 preset-not-found`. Every refusal leaves the
@@ -6646,6 +6692,17 @@ Body: `{name, action, text}` to insert, or `{id, name, action, text}` to edit.
 - **Nothing applied it: nothing else happens.** With no `applied` record naming
   the preset, the deletion is the catalogue write it always was — no workspace
   layer is opened, and every layer file stays byte-identical.
+- **An `applied` root this profile does not register refuses the deletion (g-074
+  R1).** The roots this route writes come from the stored library, not from a
+  document the request validated, so each one is put through
+  `assertKnownWorkspaceRoot` before phase 1 reads a single layer: an unregistered
+  root is `400 unknown-workspace-root`, the library and every layer stay
+  byte-identical, and the preset is **not** deleted. Before R1 the route called
+  `workspaceConfigPath(applied.workspaceRoot)` directly, which made an imported
+  library a write primitive for any directory on the disk (the review's PoC).
+  The refusal names the workspace to open, and it is decided here — **before**
+  the `missing: true` skip below, which describes a workspace this profile *does*
+  own whose file is gone.
 - **A layer that is gone is skipped, never recreated (g-069 review A).** When an
   `applied` record names a workspace root whose layer file does not exist
   (`ENOENT`), there is **no text to restore**: that workspace is not written, not
@@ -6798,6 +6855,7 @@ All are `OverrideError` shapes (`{ok: false, code, message}`, §4.4):
 | `not-applied` | 404 | `unapply` for a workspace with no record, or for a preset that is not on that workspace's stack (Revision 41). |
 | `presets-not-writable` | 409 | The library file exists but is not a valid document (§20.1). |
 | `layer-not-writable` | 409 | The workspace layer's own file is not a valid config (§4.4, unchanged). |
+| `unknown-workspace-root` | 400 | **g-074 R1.** A `DELETE` found an `applied` record naming a workspace this profile does not register. The deletion is refused whole, the preset survives and every file stays byte-identical (§20.4, §11.7). |
 | `preset-unapply-failed` | 409 / 500 | A `DELETE` could not restore one of the workspaces the preset was applied to (§20.4). The status is the failing read's own when the refusal is decided before any write (`409` for a layer that exists but is unusable), `500` when a write failed mid-commit. The message names the workspace whose restore really failed and lists `restored:` / `not restored:` (plus `no layer to restore:` for skipped ones); **the preset is not deleted**, and no workspace is rewritten on the pre-write path. A **missing** layer file (`ENOENT`) is not this error — it is skipped, never recreated (§20.4). |
 
 Every one of them is decided **before** any file is written — `preset-unapply-failed`

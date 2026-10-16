@@ -281,9 +281,15 @@ test('custom: exportScope declares a full backup, and the omitted counts stay tr
     workspaces: 2,
     presets: 2,
     preferences: true,
+    omittedApplied: 0,
     omitted: { user: 0, workspace: 0, total: 0 },
     unavailable: { presets: null, preferences: null },
   });
+  // g-074 R1: an `applied` record whose workspace is not registered here is not
+  // carried, and the count is declared rather than the record vanishing.
+  assert.equal(exportScope({ ...inputs, omittedApplied: 3 }, ['user']).omittedApplied, 3);
+  assert.equal(exportScope(inputs, ['user']).omittedApplied, 0);
+  assert.equal(exportScope({ ...inputs, omittedApplied: 'x' }, ['user']).omittedApplied, 0);
   // A subset export counts only the layer views it covers — and still declares
   // the installation-level half it carries, because `?layer=` never narrowed it.
   assert.deepEqual(exportScope(inputs, ['user']).layers, { user: 3 });

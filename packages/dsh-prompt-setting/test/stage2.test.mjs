@@ -1319,6 +1319,7 @@ test('stage2: export is a FULL backup — both layer views, every workspace laye
     workspaces: 2,
     presets: 1,
     preferences: true,
+    omittedApplied: 0,
     omitted: { user: 0, workspace: 0, total: 0 },
     unavailable: { presets: null, preferences: null },
   });
@@ -1777,6 +1778,147 @@ test('stage2: a library this process cannot read is declared in exportScope inst
   assert.equal(payload.presets, null, 'an unreadable library is not carried as an empty one');
   assert.match(payload.exportScope.unavailable.presets, /invalid-json/);
   assert.equal(payload.exportScope.unavailable.preferences, null);
+});
+
+// #endregion
+
+// #region g-074 R1 — `presets.applied[].workspaceRoot` is a path too
+
+/**
+ * A directory that looks like a workspace but is **not** in the registry, with a
+ * real layer file in it — the victim of the review's PoC.
+ * @param id - the directory name under the temp home.
+ * @returns `{root, config, path}` for the victim.
+ */
+function unregisteredVictim(id = 'victim-not-registered') {
+  const root = join(home, id);
+  const directory = join(root, '.dsh-prompt-setting');
+  mkdirSync(directory, { recursive: true });
+  const path = join(directory, 'overrides.json');
+  writeFileSync(path, `${JSON.stringify({
+    version: 1,
+    overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'VICTIM-ORIGINAL' }],
+  }, null, 2)}\n`, 'utf8');
+  return { root, path };
+}
+
+/** The registered row the PoCs mount, so「not in the registry」is meaningful. */
+function registeredRow() {
+  return workspaceWith('ws-registered', 's1');
+}
+
+test('stage2: an imported library naming an unregistered workspace is refused whole (R1 PoC)', async () => {
+  const victim = unregisteredVictim();
+  const { route } = mount({ workspaces: [registeredRow()] });
+  seedPresets({ version: 1, presets: [], applied: [] });
+  const libraryBefore = fingerprint(presetsPath());
+  const victimBefore = fingerprint(victim.path);
+
+  const document = {
+    schema: 'dsh-prompt-setting/export',
+    version: 2,
+    layers: { user: { overrides: [] } },
+    workspaces: [],
+    presets: {
+      version: 1,
+      presets: [{ id: 'p1', name: 'P', action: 'replace', text: 'T', createdAt: null, updatedAt: null }],
+      applied: [{ workspaceRoot: victim.root, base: null, stack: [{ presetId: 'p1', appliedAt: null, action: 'replace', text: 'T' }] }],
+    },
+  };
+  const res = await call(route, { method: 'POST', url: IMPORT_PATH, body: JSON.stringify(document) });
+  assert.equal(res.statusCode, 400, 'the document is refused, not accepted');
+  assert.equal(json(res).code, 'unknown-workspace-root');
+  assert.equal(fingerprint(presetsPath()), libraryBefore, 'the library was not written');
+  assert.equal(fingerprint(victim.path), victimBefore, 'the unregistered layer was not touched');
+
+  // The dry run answers the same question, and still refuses to write.
+  const dry = await call(route, { method: 'POST', url: `${IMPORT_PATH}?dryRun=true`, body: JSON.stringify(document) });
+  assert.equal(dry.statusCode, 400);
+  assert.equal(json(dry).code, 'unknown-workspace-root');
+  assert.equal(fingerprint(presetsPath()), libraryBefore);
+  assert.equal(fingerprint(victim.path), victimBefore);
+  assert.deepEqual(tempFiles(home), []);
+});
+
+test('stage2: deleting a preset never writes into an applied root the profile does not register (R1 PoC)', async () => {
+  const victim = unregisteredVictim();
+  const { route } = mount({ workspaces: [registeredRow()] });
+  // Hand-written library, the shape the PoC's import produced before the fix:
+  // one preset applied to a workspace this profile has never heard of. The read
+  // face tolerates it (`normalizePresets`), so it reaches the delete route.
+  seedPresets({
+    version: 1,
+    presets: [{ id: 'p1', name: 'P', action: 'replace', text: 'T', createdAt: null, updatedAt: null }],
+    applied: [{ workspaceRoot: victim.root, base: null, stack: [{ presetId: 'p1', appliedAt: null, action: 'replace', text: 'T' }] }],
+  });
+  const libraryBefore = fingerprint(presetsPath());
+  const victimBefore = fingerprint(victim.path);
+
+  const res = await call(route, { method: 'DELETE', url: '/prompt-setting/presets?id=p1' });
+  assert.equal(res.statusCode, 400, 'the delete is refused before phase 1 reads a layer');
+  assert.equal(json(res).code, 'unknown-workspace-root');
+  assert.equal(fingerprint(victim.path), victimBefore, 'the unregistered layer was NOT rewritten');
+  assert.equal(fingerprint(presetsPath()), libraryBefore, 'and the preset is still in the library');
+  assert.deepEqual(JSON.parse(readFileSync(presetsPath(), 'utf8')).presets.map((preset) => preset.id), ['p1']);
+  assert.deepEqual(tempFiles(home), []);
+
+  // A malformed root is refused the same way, without a shape check ever having
+  // been applied to the stored record.
+  seedPresets({
+    version: 1,
+    presets: [{ id: 'p1', name: 'P', action: 'replace', text: 'T', createdAt: null, updatedAt: null }],
+    applied: [{ workspaceRoot: 'relative/dir', base: null, stack: [{ presetId: 'p1', appliedAt: null, action: 'replace', text: 'T' }] }],
+  });
+  const relative = await call(route, { method: 'DELETE', url: '/prompt-setting/presets?id=p1' });
+  assert.equal(relative.statusCode, 400);
+  assert.equal(json(relative).code, 'unknown-workspace-root');
+  assert.equal(fingerprint(victim.path), victimBefore);
+});
+
+test('stage2: an export never publishes an unregistered applied root, and its own backup imports back (R1 PoC2)', async () => {
+  const victim = unregisteredVictim();
+  const registered = registeredRow();
+  const { route } = mount({ workspaces: [registered] });
+  seedUser([{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'MINE' }]);
+  const victimBefore = fingerprint(victim.path);
+  seedPresets({
+    version: 1,
+    presets: [{ id: 'p1', name: 'P', action: 'replace', text: 'T', createdAt: null, updatedAt: null }],
+    applied: [
+      { workspaceRoot: victim.root, base: null, stack: [{ presetId: 'p1', appliedAt: null, action: 'replace', text: 'T' }] },
+      { workspaceRoot: registered.path, base: null, stack: [{ presetId: 'p1', appliedAt: null, action: 'replace', text: 'T' }] },
+    ],
+  });
+
+  const payload = json(await call(route, { url: EXPORT_PATH }));
+  assert.deepEqual(payload.workspaces.map((entry) => entry.root), [registered.path],
+    'only a workspace the registry lists is published as a workspace layer');
+  assert.deepEqual(payload.presets.applied.map((record) => record.workspaceRoot), [registered.path],
+    'an applied record this profile cannot restore is not carried');
+  assert.equal(payload.exportScope.omittedApplied, 1, 'and the omission is declared, not silent');
+  assert.equal(fingerprint(victim.path), victimBefore, 'nothing the export did touched the victim');
+
+  // The self-consistency the review asked for: the plugin's own backup is
+  // accepted by the plugin's own import.
+  const backup = {
+    schema: payload.schema,
+    version: payload.version,
+    layers: payload.layers,
+    workspaces: payload.workspaces,
+    presets: payload.presets,
+    preferences: payload.preferences,
+  };
+  const applied = await call(route, { method: 'POST', url: `${IMPORT_PATH}?session=s1`, body: JSON.stringify(backup) });
+  assert.equal(applied.statusCode, 200, JSON.stringify(json(applied)));
+  // The stored library still held the unrestorable record, so the import does
+  // write — and what it writes is the record-free version the export produced.
+  assert.equal(json(applied).presets.changed, true);
+  assert.deepEqual(
+    JSON.parse(readFileSync(presetsPath(), 'utf8')).applied.map((record) => record.workspaceRoot),
+    [registered.path],
+    'the record the profile cannot restore is gone after a round trip',
+  );
+  assert.equal(fingerprint(victim.path), victimBefore, 'the victim is still untouched');
 });
 
 // #endregion

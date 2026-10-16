@@ -8992,10 +8992,11 @@ tab bar」。纯注释，零实现/断言改动。
 
 - evidence: suite=node --test(test/*.test.mjs) passed=930 failed=0 exit=0 ms=53518 diff=17f/+1879/-290 commit=9e8ed64（基线，未提交）
 - `node scripts/prepare.mjs` = OK（23 项，`LOCALE-SYNC` 567 键）exit 0；
-- 用例总数 **922 → 930**（`custom.test.mjs` 17 → 13、`transfer.test.mjs` 16 → 23、`stage2.test.mjs` 40 → 45，其余
-  文件不变）。被删的 4 例 `custom.test.mjs` 用例断言的正是本轮明确废止的行为（`customOverridesOnly`、
-  `assertImportableDocument`、旧 `exportScope` 口径），其**反面**已在 `stage2.test.mjs`（全量导出、写锁解除后
-  真的写入、往返等价）与 `transfer.test.mjs`（v1 兼容、路径与文档校验）重建；没有删除任何仍成立的行为断言；
+- 用例总数 **922 → 930**（`custom.test.mjs` 17 → 13：**删 5 例、新增 1 例**；`transfer.test.mjs` 16 → 23；
+  `stage2.test.mjs` 40 → 45，其余文件不变）。被删的 5 例 `custom.test.mjs` 用例断言的正是本轮明确废止的行为
+  （`customOverridesOnly`、`assertImportableDocument`、旧 `exportScope` 口径），其**反面**已在 `stage2.test.mjs`
+  （全量导出、写锁解除后真的写入、往返等价）与 `transfer.test.mjs`（v1 兼容、路径与文档校验）重建；没有删除
+  任何仍成立的行为断言；
 - **负向对照（改坏就会红）**：把 `parseExport` 的 `validateWorkspaceRoot` 调用换成直接 `entry.root` ⇒
   `transfer: the workspaces array is validated entry by entry`、`stage2: every rejected import leaves … byte-identical`
   两条红；把 `handleImport` 的 `assertKnownWorkspaceRoot` 换成 `return root` ⇒ `stage2: a workspace layer the
@@ -9013,4 +9014,62 @@ tab bar」。纯注释，零实现/断言改动。
   暂无 `error.<code>` 的 zh/en 文案，UI 走 `errUnknown` 兜底并如实显示原始 code——与既有 presets 路由的错误码
   （`invalid-presets`、`preset-not-found` 等）同样未登记文案，保持一致；若要补，需同步 `locale/*.json`、
   `scripts/locale-pack.mjs --write`、`test/locale.test.mjs` 的 516+51 计数与契约 §22。
+
+### 151.1 R1 返工：`presets.applied[].workspaceRoot` 与 `workspaces[].root` 同规则（评审 rev-att-001-01 BLOCK）
+
+**评审结论（主管亲跑 PoC 确认）**：路径安全可绕过。一份备份文档可以命名任意磁盘路径，随后删除预设会写到那个
+路径——`import 200` → `DELETE /presets 200` → 受害目录（未注册）里的 `overrides.json` 被真实改写。
+
+**根因（三条）**：① `core/presets.js` 的 `validateAppliedEntry` 对 `workspaceRoot` 只查「非空字符串」，与同语义的
+`workspaces[].root`（`validateWorkspaceRoot` + `assertKnownWorkspaceRoot`）口径不一致；② `handleDeletePreset`
+phase 1/2 直接用记录里的 root 拼 `workspaceConfigPath(root)` 并 `writeConfig` + `cacheWritten`，全程未过注册表；
+③ `assertKnownWorkspaceRoot` 当时只有 1 个调用点（import 的 `workspaces[]` 循环）。附带第四点：导入把未注册 root
+写进 `presets.json` 后，缓存/导出侧也可能把它当成工作区层发布出去（PoC2：`GET /export` 报了未注册 root）。
+违反的不变量：判据 2「路径不得越界」、契约「No field of the document can name a path」、以及 §151 里我自己写下
+的「被否：按 root 自由写入（那等于让文档指定任意磁盘路径）」。
+
+**修复（逐条对应主管清单）**
+
+1. **抽出独立纯模块 `core/workspace-root.js`**（`MAX_WORKSPACE_ROOT_LENGTH`、`validateWorkspaceRoot(value, where)`），
+   `core/transfer.js` 与 `core/presets.js` 共用同一个函数，从结构上消除漂移（曾因 `transfer.js → presets.js` 的
+   依赖方向无法直接复用才各写一份）。`transfer.js` 仍再导出该函数，既有 import 路径不变。
+2. **`validateAppliedEntry` 复用同一形状规则**（绝对路径、无 `..`、无控制字符、非卷根），错误码
+   `invalid-workspace-root`，消息带 `applied[i].workspaceRoot` 定位。
+3. **`handleDeletePreset` 对每个 `applied` root 调 `assertKnownWorkspaceRoot`**（与 import 同口径）：未注册即
+   `400 unknown-workspace-root`，在 phase 1 读任何一层之前决定，库与所有层文件逐字节不变、预设不删。
+4. **`handleImport` 对 `presets.applied[].workspaceRoot` 同样过注册表白名单**（整体拒绝、零写入）——这是 PoC 的
+   入口。
+5. **导出侧自洽**：`workspaceLayerExports()` 只发布注册表列出的工作区；并且存储中指向未注册工作区的 `applied`
+   记录**不再随备份携带**，条数在 `exportScope.omittedApplied` 里声明（不静默）。于是「插件自己产出的备份」一定能
+   被插件自己的导入接受；往返一次还会把这类无法还原的脏记录自愈掉。
+6. **契约同步**：§11.7 追加 R1 段（`applied` 同规则、三条防线）、§11.1 校验清单补 `applied`、§4.4 的
+   `invalid-workspace-root` / `unknown-workspace-root` / `unexpected-export-field`（`null` 视为未携带）改写、
+   §10 的 `presets` 行与 `exportScope.omittedApplied` 行、§20.4 与 §20.7 的 presets 路由错误面、§11.7 首句
+   「No field of the document can name a path」**修正为**「…a path *this profile does not own*」。
+
+**测试（PoC 改造进负向用例，修复后必须变红）**
+
+- `stage2: an imported library naming an unregistered workspace is refused whole (R1 PoC)` —— 导入 400 + 库哈希不变 +
+  受害文件哈希不变 + dry-run 同码 + 无 temp；**改造自 `/tmp/g074-poc.test.mjs`**；
+- `stage2: deleting a preset never writes into an applied root the profile does not register (R1 PoC)` —— 手写库记录
+  指向未注册目录（另一台机器同步来的项目目录），`DELETE /presets?id=` 400、受害文件与库哈希不变、预设仍在；
+  相对路径记录同码拒绝；**改造自 PoC 的第 2 段**；
+- `stage2: an export never publishes an unregistered applied root, and its own backup imports back (R1 PoC2)` ——
+  `workspaces[]` 只含注册 root、`presets.applied` 不含不可还原记录、`omittedApplied: 1`，且该备份原样导入 200
+  （自相矛盾消除）；**改造自 `/tmp/g074-poc2.test.mjs`**；
+- `transfer: an applied record names the very same workspace root the workspaces array does` —— 10 个非法 root 的
+  形状负向 + 「同一 bad root 在两个字段上答案相同」的一致性断言。
+
+**验收（R1 实跑，基于 b791545 之上的工作树、未提交）**
+
+- evidence: suite=node --test(test/*.test.mjs) passed=934 failed=0 exit=0 ms=52478 diff=11f/+507/-77（含新增
+  `core/workspace-root.js` 79 行）；`node scripts/prepare.mjs` = OK（23 项，LOCALE-SYNC 567 键）exit 0；
+- **R1 负向对照（改坏就会红，均已还原、`grep NEGATIVE CONTROL` 零命中）**：① 去掉 `validateAppliedEntry` 里的
+  `validateWorkspaceRoot` 调用 ⇒ `transfer: an applied record names the very same workspace root …` 红；
+  ② 同时去掉 `handleImport` 与 `handleDeletePreset` 的 `assertKnownWorkspaceRoot` 调用 ⇒ 两条 R1 stage2 用例
+  （PoC1 导入、删除阶段）**同时红**——后者正是「受害文件被改写」的那条；
+- **PoC 复跑（修复前 pass / 修复后 fail）**：`/tmp/g074-poc.test.mjs` 修复前 `[1] 200`+`[2] 200`+受害文件被改写
+  （PoC pass）；修复后 `[1] import status = 400`、删除阶段不可达，PoC **fail**。`/tmp/g074-poc2.test.mjs` 同样
+  由 pass 转 fail（`[1] import status = 400`，不再有 `[3]` 的未注册 root 导出）；
+- 用例数 930 → 934（transfer +1、stage2 +3）。
 

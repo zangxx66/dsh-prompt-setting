@@ -310,7 +310,14 @@ export function legacyPlan(overrides, flag) {
  * `presets.json` or `preferences.json` this process could not read is reported
  * in `unavailable` and is **not** carried, so a restore never clears a library
  * the export could not see.
- * @param inputs - `{layers, workspaceLayers, presets, preferences, unavailable}`.
+ *
+ * g-074 R1 adds `omittedApplied`: an `applied` record whose `workspaceRoot` is
+ * not a workspace **this profile registers** is not carried either. It could
+ * not be restored here (the import route refuses such a document, §11.7), so
+ * carrying it would produce a backup this plugin's own reader rejects — the
+ * 「导得出去、导不回来」 shape this revision exists to remove. The count is
+ * declared rather than the record being dropped silently.
+ * @param inputs - `{layers, workspaceLayers, presets, preferences, unavailable, omittedApplied}`.
  * @param layerNames - the layers this export covers, in order.
  * @returns the `exportScope` fragment.
  */
@@ -332,6 +339,9 @@ export function exportScope(inputs = {}, layerNames = []) {
     workspaces: workspaceLayers.length,
     presets: Array.isArray(presets?.presets) ? presets.presets.length : 0,
     preferences: inputs.preferences !== null && inputs.preferences !== undefined,
+    // How many `applied` records were left out because their workspace is not
+    // registered here (0 in every ordinary installation).
+    omittedApplied: Number.isInteger(inputs.omittedApplied) && inputs.omittedApplied > 0 ? inputs.omittedApplied : 0,
     omitted,
     unavailable: {
       presets: inputs.unavailable?.presets ?? null,

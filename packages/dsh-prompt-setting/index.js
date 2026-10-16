@@ -1992,7 +1992,14 @@ function mount(ctx, config, cleanups) {
    * @returns `[{root, enabled, reason, overrides}]`.
    */
   function workspaceLayerExports() {
+    const known = registeredWorkspaceRoots();
     return [...state.workspaces.entries()]
+      // g-074 R1: only a workspace the registry lists may be exported. The cache
+      // is filled from that registry at the start of every request, but a write
+      // path that ever cached an unregistered root would otherwise make this
+      // route publish it as a workspace layer — and the resulting backup would
+      // then be refused by this very plugin's import (`unknown-workspace-root`).
+      .filter(([root]) => known !== null && known.has(root))
       .map(([root, layer]) => ({
         root,
         enabled: layer.error === null,
@@ -2035,12 +2042,20 @@ function mount(ctx, config, cleanups) {
    *
    * So the rule is the narrow one, and it is a refusal rather than a skip: a
    * root this profile does not register is `400 unknown-workspace-root`, the
-   * whole import writes nothing, and the message says what to do about it.
-   * @param root - the candidate root from the document.
+   * whole request writes nothing, and the message says what to do about it.
+   *
+   * g-074 R1: there are **three** roots in play, not one, and all three go
+   * through here — `workspaces[].root` on an import, `presets.applied[].
+   * workspaceRoot` on an import, and every `applied` root the delete-preset
+   * route is about to write. The review found the second and third unchecked,
+   * which let an imported library name any directory on the disk and have a
+   * later `DELETE /presets` write into it.
+   * @param root - the candidate root from the document (or from the library).
+   * @param what - how to describe the field in the message.
    * @returns the root, unchanged.
    * @throws {OverrideError} `workspace-unresolved` / `unknown-workspace-root`.
    */
-  function assertKnownWorkspaceRoot(root) {
+  function assertKnownWorkspaceRoot(root, what = 'a workspace layer') {
     const known = registeredWorkspaceRoots();
     if (known === null) {
       throw new OverrideError(
@@ -2051,7 +2066,7 @@ function mount(ctx, config, cleanups) {
     if (!known.has(root)) {
       throw new OverrideError(
         'unknown-workspace-root',
-        `${JSON.stringify(root)} is not a workspace this profile registers; open that workspace here first, then import again`,
+        `${JSON.stringify(root)} is named as ${what}, but it is not a workspace this profile registers; open that workspace here first`,
       );
     }
     return root;
@@ -2418,8 +2433,20 @@ function mount(ctx, config, cleanups) {
 
     const presets = readPresets(userPresetsPath());
     const preferences = readPreferences(userPreferencesPath());
-    const carriedPresets = presets.error === null ? presets.document : null;
     const carriedPreferences = preferences.error === null ? preferences.preferences : null;
+    // g-074 R1: an `applied` record whose workspace this profile does not
+    // register cannot be restored here — the import route refuses such a
+    // document outright (§11.7) — so carrying it would hand the user a backup
+    // this plugin's own reader rejects. It is dropped, and the count is
+    // declared in `exportScope.omittedApplied`: never a silent omission.
+    let carriedPresets = presets.error === null ? presets.document : null;
+    let omittedApplied = 0;
+    if (carriedPresets !== null) {
+      const known = registeredWorkspaceRoots();
+      const kept = carriedPresets.applied.filter((record) => known !== null && known.has(record.workspaceRoot));
+      omittedApplied = carriedPresets.applied.length - kept.length;
+      if (omittedApplied > 0) carriedPresets = { ...carriedPresets, applied: kept };
+    }
 
     const document = buildExport({
       layers: scoped,
@@ -2438,6 +2465,7 @@ function mount(ctx, config, cleanups) {
         workspaceLayers,
         presets: carriedPresets,
         preferences: carriedPreferences,
+        omittedApplied,
         unavailable: {
           presets: presets.error === null ? null : `${presets.error.code}: ${presets.error.message}`,
           preferences: preferences.error === null ? null : `${preferences.error.code}: ${preferences.error.message}`,
@@ -2834,6 +2862,16 @@ function mount(ctx, config, cleanups) {
     let presetsPlan = null;
     if (!layersOnly && document.presets !== null) {
       const path = userPresetsPath();
+      // g-074 R1: an `applied` record names a workspace root, and it is held to
+      // the very same whitelist `workspaces[]` is. Without this the library an
+      // import stores could point at any directory on the disk, and the
+      // delete-preset route — which restores the layer each record names — would
+      // be the write that reaches it. This is a refusal rather than a dropped
+      // record: a document asking to restore into a workspace this machine does
+      // not have is not partially importable.
+      for (const record of document.presets.applied) {
+        assertKnownWorkspaceRoot(record.workspaceRoot, 'a preset application target');
+      }
       const current = readPresets(path);
       if (current.error !== null) {
         throw new OverrideError(
@@ -4221,6 +4259,17 @@ function mount(ctx, config, cleanups) {
       throw fail('preset-not-found', `no preset with id ${JSON.stringify(id)}`, 404);
     }
     const affected = appliedRootsOf(file.document, id);
+    // g-074 R1: the roots to restore come from the **library file**, not from a
+    // document this request validated, so they get the same registry check every
+    // other write path applies (`assertKnownWorkspaceRoot`). Without it a record
+    // naming an unregistered directory made this route the write that reaches
+    // it — `workspaceConfigPath(root)` under a root the profile does not own.
+    // The check is `400 unknown-workspace-root`, decided before phase 1 reads a
+    // single layer, so a refusal leaves both the library and every layer
+    // byte-identical.
+    for (const root of affected) {
+      assertKnownWorkspaceRoot(root, 'a preset application target');
+    }
     const rawSession = url.searchParams.get('session');
     const sessionId = typeof rawSession === 'string' && rawSession.length > 0 ? rawSession : null;
     const sessionRoot = sessionId === null ? null : workspaceRootFor(sessionId).root;

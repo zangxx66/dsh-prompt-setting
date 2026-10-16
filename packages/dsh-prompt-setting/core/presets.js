@@ -37,6 +37,7 @@
 
 import { CUSTOM_SECTION_NAME } from './custom.js';
 import { MAX_TEXT_BYTES, RESERVED_STACK_SEPARATOR, emptyConfig, fail, withInterpolate } from './overrides.js';
+import { validateWorkspaceRoot } from './workspace-root.js';
 
 /**
  * The presets document version. A stored document may omit it (the first
@@ -331,9 +332,13 @@ function validateAppliedEntry(raw, where) {
   }
   assertKnownKeys(raw, APPLIED_ENTRY_KEYS, where);
   const workspaceRoot = raw.workspaceRoot;
-  if (typeof workspaceRoot !== 'string' || workspaceRoot.length === 0) {
-    throw fail('invalid-applied', `${where} requires a non-empty string "workspaceRoot"`);
-  }
+  // g-074 R1: this field **is** the workspace root `workspaces[].root` carries
+  // (`core/transfer.js`), so it is judged by the very same shape rule. Before
+  // R1 it was checked for nothing but "a non-empty string": an imported library
+  // could name `/etc`, and the delete-preset route would later write into it.
+  // The registry half of the rule is a route decision (`index.js`), because only
+  // the Host can answer it — shape here, whitelist there, both before a byte.
+  validateWorkspaceRoot(workspaceRoot, `${where}.workspaceRoot`);
   let base = null;
   if (raw.base !== undefined && raw.base !== null) {
     if (typeof raw.base !== 'object' || Array.isArray(raw.base)) {
