@@ -9444,9 +9444,9 @@ g-074 改了 `index.js` / `CONTRACT.md` 却没有同步 `docs/refactor-plan.md` 
 
 **验收（本文件最终版、未提交实跑）**
 
-- evidence: suite=node --test(test/*.test.mjs) passed=945 failed=0 exit=0（基线 938：`client.test.mjs` 4 个 g-073 用例 + 2 个 R1 回归用例，`stage2.test.mjs` 1 个 R2-5 端到端用例）；
+- evidence: suite=node --test(test/*.test.mjs) passed=946 failed=0 exit=0（基线 938：`client.test.mjs` 4 个 g-073 用例 + 2 个 R1 回归用例 + 1 个 R3 缓存用例，`stage2.test.mjs` 1 个 R2-5 端到端用例）；
 - evidence: suite=node scripts/prepare.mjs passed=23 failed=0 exit=0（`CHUNK-STAMPS` 5 个 chunk / `LOCALE-SYNC` 586 键）；
-- evidence: suite=node docs/check-refs.mjs verified=132 **rangeOnly=0** manual=21 failed=0 exit=0（§1.3 表 24 行合计 12320、§5.1 表 17 行合计 12320、最大段 1200）；
+- evidence: suite=node docs/check-refs.mjs verified=132 **rangeOnly=0** manual=21 failed=0 exit=0（§1.3 表 24 行合计 12382、§5.1 表 17 行合计 12382、最大段 1200）；
 - evidence: suite=node scripts/locale-pack.mjs --check passed=586 failed=0 exit=0。
 
 **负向对照 2 条（改坏就红，已还原、零残留）**：① 让 `GET /presets` 重新带上页面 `?session=` ⇒
@@ -9486,6 +9486,42 @@ GUI 截图核验；"高级"的默认值取"当前会话"而非工作区代表会
   且 `overrides` 为空（工作区层视图缺失是有声明的），而 `workspaces[]` 仍**逐层携带**两个工作区的覆盖，
   `exportScope.workspaces === 2`。这补上了"前端去掉 session 后导出形状如何"此前无覆盖的缺口
   （既有宿主导出用例全部显式带 `?session=`）。
+
+**返工 R3（负责人真机目视发现「切换 tab 页面闪烁」后的修复，2026-10-16）**
+
+- **根因**：`overview` / `advanced` 的两个 effect deps 含 `tab`，且 effect 内**无条件** `setState({phase:'loading', data:null})`
+  ⇒ 每次切到该 tab 都把状态清空，`panelGate` 的 `loading && !data` 立刻为真 → 先出「加载中」再出内容。
+- **R3-1 选型（① stale-while-revalidate + 已读缓存键）**：给每个 tab 自有读加一个 `useRef` 记录 `{scope, reload}`
+  （history 记录 `{key = layer|scope|offset, reload}`），**只在答案真的到达时**写入 —— 被 tab 切换取消的读不记，
+  切回时会重试而不是停在 loading。键命中时 effect 直接 `return`（不发请求、不重置状态）；未命中时按
+  「同域 vs 换域」决定是否保留旧数据：**同域**（reload 刷新）保留 `data` 做 stale-while-revalidate（于是
+  `loading && !data` 为假 ⇒ **无加载帧**），**换域**清掉 `data`（旧作用域的数据绝不能冒充新作用域）。
+  选 ① 而非 ②（effect 内函数式判断 return）：① 把"要不要清数据"与"要不要发请求"分开表达，且 `panelGate`
+  既有判据（`loading && !data`）不必改动。`assembly-status` 读也加了同一键（它原先每次切回都重读——不闪但多余）。
+- **R3-2 逐个 tab 的结论**：`overview` / `advanced` / `history` 三个"自有读"tab 的 effect deps 都含 `tab`，
+  切回时都会重跑；`overview`/`advanced` 原本会**清数据**（闪），`history` 原本保留 `data` 但 `panelGate` 用
+  `(idle || loading)` 判定 ⇒ 同样先画一行「加载中」（闪）。三者统一修：前两者用缓存键，后者把 `panelGate` 改为
+  `(idle || loading) && !data`。`presets` 的 deps 不含 `tab`（`[reload]`），切回不重跑、phase 保持 `ready`
+  ⇒ **本来不闪**（顺手给它的 `panelGate` 也加 `&& !data`，使 reload 刷新不会把已渲染的库换成加载行）；
+  `backup` 无自有读 ⇒ 不闪；`mine` 的 deps 是 `[sessionArg, reload]`（不含 `tab`）且只在作用域/reload 变化时
+  重置 ⇒ 不闪。
+- **R3-3 契约同步（只就地限定）**：§13.10 第二条不变式由"one request per tab **open**"精确为
+  "**first open / scope change / reload**，切回复用缓存（不发请求、不出加载帧）"，并写明"被取消的读不记为已完成"、
+  "同域 reload 保留旧内容、换域必须清掉"；§13.2 的同义句同步就地限定。
+- **R3-4 断言**：新增 `client.test.mjs` 用例
+  `g-073 R3 — switching away and back re-reads nothing and draws no loading frame`（`enforceEffectDeps: true`）：
+  ①三个 tab 逐个"切走→切回"，断言 snapshot / overrides / assembly-status / history 的请求计数**不变**、
+  面板内容仍在、树中不出现 `loading` 文案；②正面对照：换作用域仍 +1 次读；③reload（走一次「我的 Prompt」
+  保存）后日志仍重读一次。既有 R1-5 计数用例继续钉"同 tab 内不重复读"。
+  另同步两处既有用例的节奏：`assembly-status block at its top` 的切回断言由"≥2 次"改为**恰好 1 次**（切回不重读）；
+  `a rollback asks first` 在写回滚后**多 flush 一次**再断言（`reload` 的重读属于"bump 所调度的那次渲染"的 effect，
+  与真实 React 一致）。
+- **负向对照（改坏就红，已还原）**：删掉 overview 的缓存键跳过判断（回到"每次切回都读"）⇒ 新用例在
+  "overview: switching back sends no request" 处红（3 → 4 次）。
+- **行号体系随之重算**：`client.js` 12320 → **12382**（+62 行，R3 的实现与注释），§1.3 / §5.1 两张表与 REFS 表
+  按同一锚定位流程平移（合计 **12382**、`PromptSettingSection` **2986** 行、§5.1 把 13/14 重切为
+  1200 / 1198），§1.1（`client.js` 12382 / 609 KB、14 文件合计 **28260**）与 §1.2
+  （**12382 = 299 + 4426 + 7657**）的实测值同步更新。
 
 **返工 R1（独立评审 rev-att-001-01 判 BLOCK 后的 4 项必修 + 2 项建议，2026-10-16）**
 

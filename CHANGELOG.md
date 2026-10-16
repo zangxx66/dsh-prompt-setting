@@ -42,8 +42,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   清的是整个工作区文件、该工作区所有会话共享，所以选择器的语义是"选工作区"而非"选会话"），旧版覆盖列表、层计数与
   装配状态都按它自己的作用域取数，用户层仍是全局；④页面作用域 `m.sessionArg` 的消费点收敛为只剩「我的 Prompt」
   （快照 + 覆盖读取 + 面板自己的写入目标展示），`/export`、`/import`、`/presets` 不再携带它（备份自 Revision 53
-  起已是全量）。总览与高级的读都是**开 tab 才发**（每次 `/snapshot` 要跑两次 `assemble()`）；面板渲染门控按各 tab
-  自己的数据源，页面作用域的读失败不会再让别的 tab 空白。新增契约 §13.10「作用域模型」总表与 6 条不变式；
+  起已是全量）。总览与高级的读都在**首次打开该 tab / 作用域变化 / reload** 时才发（每次 `/snapshot` 要跑两次
+  `assemble()`），切走再切回**复用已有数据**——不发请求、也不再闪一下「加载中」；面板渲染门控按各 tab 自己的
+  数据源，页面作用域的读失败不会再让别的 tab 空白。新增契约 §13.10「作用域模型」总表与 7 条不变式；
   §13.0 / §13.2 / §13.3a / §13.4 / §13.7 / §20.2 同步；词典新增 13 键（**586 键/语言** = 535 主 +
   51 `error.<code>`），并修正两条随之过时的文案。
   **The scope model converges: the page-level "View scope" serves「My Prompt」alone (g-073, Revision 55)**:
@@ -54,7 +55,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   **workspace** selector (both layer-wide clears act on a whole workspace file shared by every session in
   it), with the legacy list, the layer counts and the assembly status all read in that scope and the user
   layer still global; and `m.sessionArg` is left scoping「My Prompt」alone, so `/export`, `/import` and
-  `/presets` no longer carry it. Both tab-owned reads happen only while their tab is open (every `/snapshot`
+  `/presets` no longer carry it. Both tab-owned reads happen on their tab's first open, on a scope change and
+  on a reload — coming back to a tab reuses what is on screen (no request, no loading frame) — because every `/snapshot`
   costs two `assemble()` runs) and each panel is gated on its own data source, so a failing page-scoped read
   can no longer blank another tab. Contract gains §13.10 (the model, with six invariants); §13.0 / §13.2 /
   §13.3a / §13.4 / §13.7 / §20.2 updated; the dictionaries grow to **586 keys per language** (535 main +

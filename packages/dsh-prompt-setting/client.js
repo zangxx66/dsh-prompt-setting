@@ -8926,11 +8926,23 @@ window.__ModuleLoader__.load({
         }
         if (m.tab === 'presets') {
           // Its own read is the library; `idle` is the one frame before that read
-          // has been issued, and it must not render as「没有预设」.
-          return { loading: m.presets.phase === 'idle' || m.presets.phase === 'loading', ready: true };
+          // has been issued, and it must not render as「没有预设」. Data already on
+          // screen wins over the phase: a refresh must not replace a rendered
+          // library with a loading line (review R3).
+          return {
+            loading: (m.presets.phase === 'idle' || m.presets.phase === 'loading') && !m.presets.data,
+            ready: true,
+          };
         }
         if (m.tab === 'history') {
-          return { loading: m.hist.phase === 'idle' || m.hist.phase === 'loading', ready: true };
+          // Same rule: while the log is being re-read (a reload, or a page whose
+          // answer is in flight) the records already on screen stay — the loading
+          // line is for "nothing to show yet", not for "switching back"
+          // (review R3-2).
+          return {
+            loading: (m.hist.phase === 'idle' || m.hist.phase === 'loading') && !m.hist.data,
+            ready: true,
+          };
         }
         // 「备份与恢复」 issues no read of its own until a button is pressed.
         return { loading: false, ready: true };
@@ -9694,19 +9706,38 @@ window.__ModuleLoader__.load({
       }, [reload]);
 
       // g-073 (Revision 55):「提示词总览」reads the snapshot in **its own** scope.
-      // The read is gated on the tab being open — one request per tab open, scope
-      // change or reload — because every `/snapshot` answer costs the host two
-      // `assemble()` runs (§2.6): re-reading it on every render (or on every move
-      // of the page's「查看范围」) is exactly what this shape avoids. The page
-      // scope can move all it likes; this request never carries it.
+      // The read happens on the tab's **first** open, on a scope change and on a
+      // reload — not on every re-entry — because every `/snapshot` answer costs
+      // the host two `assemble()` runs (§2.6): re-reading it on every render (or
+      // on every move of the page's「查看范围」) is exactly what this shape avoids.
+      // The page scope can move all it likes; this request never carries it.
+      // g-073 (R3): what「提示词总览」has already read, as `{scope, reload}`. It is
+      // written **only when an answer really arrived**, so a read that was
+      // cancelled by a tab switch is not remembered — switching back re-reads
+      // instead of leaving the panel on a loading frame forever. A tab switch
+      // that finds its own scope and generation already recorded reuses what is
+      // on screen: no request, and no `loading` frame (review R3-1).
+      const overviewReadRef = React.useRef(null);
       React.useEffect(() => {
         if (tab !== 'overview') return undefined;
+        const scopeKey = overviewScopeArg === null ? '' : overviewScopeArg;
+        const read = overviewReadRef.current;
+        if (read !== null && read.scope === scopeKey && read.reload === reload) return undefined;
+        // A **different** scope drops the old data (another scope's assembly must
+        // never look like this one's); a reload of the **same** scope keeps it,
+        // so the panel stays readable while the fresh answer is in flight.
+        const sameScope = read !== null && read.scope === scopeKey;
         let cancelled = false;
-        setOverviewSnap({ phase: 'loading', data: null, error: null });
-        const query = overviewScopeArg === null ? '' : `?session=${encodeURIComponent(overviewScopeArg)}`;
+        setOverviewSnap((current) => ({
+          phase: 'loading',
+          data: sameScope ? current.data : null,
+          error: null,
+        }));
+        const query = scopeKey === '' ? '' : `?session=${encodeURIComponent(scopeKey)}`;
         const run = async () => {
           const result = await requestJson(`${SNAPSHOT_PATH}${query}`);
           if (cancelled) return;
+          overviewReadRef.current = { scope: scopeKey, reload };
           setOverviewSnap(
             result.ok
               ? { phase: 'ready', data: result.payload, error: null }
@@ -9726,11 +9757,20 @@ window.__ModuleLoader__.load({
       // response — that one belongs to「我的 Prompt」. Gated on the tab being open,
       // exactly like the assembly-status read below, so a mount that never opens
       // this tab still pays nothing.
+      // g-073 (R3): the same `{scope, reload}` bookkeeping as the overview's above
+      // (and the same rule: recorded only when an answer arrived, so a cancelled
+      // read is retried rather than remembered).
+      const advancedReadRef = React.useRef(null);
       React.useEffect(() => {
         if (tab !== 'advanced') return undefined;
+        const scopeKey = advancedScopeArg === null ? '' : advancedScopeArg;
+        const read = advancedReadRef.current;
+        if (read !== null && read.scope === scopeKey && read.reload === reload) return undefined;
+        const sameScope = read !== null && read.scope === scopeKey;
         let cancelled = false;
-        setAdvancedSnap({ phase: 'loading', data: null, error: null });
-        const query = advancedScopeArg === null ? '' : `?session=${encodeURIComponent(advancedScopeArg)}`;
+        setAdvancedOvs((current) => ({ phase: 'loading', data: sameScope ? current.data : null, error: null }));
+        setAdvancedSnap((current) => ({ phase: 'loading', data: sameScope ? current.data : null, error: null }));
+        const query = scopeKey === '' ? '' : `?session=${encodeURIComponent(scopeKey)}`;
         const run = async () => {
           const overrides = await requestJson(`${OVERRIDES_PATH}${query}`);
           if (cancelled) return;
@@ -9741,6 +9781,7 @@ window.__ModuleLoader__.load({
           );
           const snapshot = await requestJson(`${SNAPSHOT_PATH}${query}`);
           if (cancelled) return;
+          advancedReadRef.current = { scope: scopeKey, reload };
           setAdvancedSnap(
             snapshot.ok
               ? { phase: 'ready', data: snapshot.payload, error: null }
@@ -9762,11 +9803,19 @@ window.__ModuleLoader__.load({
       // host keys one record per session id (`core/assembly-watch.js`), so the
       // selector's value — a member session of the chosen workspace — is what
       // names the record to read; the page's「查看范围」no longer does.
+      // g-073 (R3): the same `{scope, reload}` bookkeeping, so switching back to
+      // this tab reuses the observation instead of asking again — the block never
+      // blanks (its state is never reset to a loading phase), and the follow-up
+      // poll below is unaffected because it re-enters `run` directly.
+      const assemblyReadRef = React.useRef(null);
       React.useEffect(() => {
         if (tab !== 'advanced') return undefined;
+        const scopeKey = advancedScopeArg === null ? '' : advancedScopeArg;
+        const read = assemblyReadRef.current;
+        if (read !== null && read.scope === scopeKey && read.reload === reload) return undefined;
         let cancelled = false;
         let timer = null;
-        const query = advancedScopeArg === null ? '' : `?session=${encodeURIComponent(advancedScopeArg)}`;
+        const query = scopeKey === '' ? '' : `?session=${encodeURIComponent(scopeKey)}`;
         // One read per mount/tab/scope change, plus a short follow-up **only**
         // while the Host reports a notice whose delivery layer is still
         // `waiting`: that verdict is settled by a session event which arrives
@@ -9775,6 +9824,9 @@ window.__ModuleLoader__.load({
         const run = async () => {
           const result = await requestJson(`${ASSEMBLY_STATUS_PATH}${query}`);
           if (cancelled) return;
+          // Recorded only once an answer really arrived: a read cancelled by a tab
+          // switch is retried, never remembered as done.
+          assemblyReadRef.current = { scope: scopeKey, reload };
           if (!result.ok) {
             setAssembly((current) => ({ ...current, phase: 'error', error: result.error }));
             return;
@@ -9818,18 +9870,28 @@ window.__ModuleLoader__.load({
       // by. The user layer is global; the workspace layer needs a locatable
       // workspace, so an unresolved scope shows the note instead of a request
       // the host must refuse.
+      // g-073 (R3): the log is a tab-owned read like the other two, so it gets the
+      // same `{scope, reload}` bookkeeping. Its scope key is the whole read — the
+      // layer, the locating session and the offset — because paging or switching
+      // the history layer really is a different page of the file; a tab switch
+      // that changes **none** of them reuses what is on screen.
+      const historyReadRef = React.useRef(null);
       React.useEffect(() => {
         if (tab !== 'history') return undefined;
         if (historyLayer === 'workspace' && historyScopeValue.length === 0) {
           setHist({ phase: 'idle', data: null, error: null });
           return undefined;
         }
+        const readKey = `${historyLayer}|${historyScopeArg}|${historyOffset}`;
+        const read = historyReadRef.current;
+        if (read !== null && read.key === readKey && read.reload === reload) return undefined;
         let cancelled = false;
         setHist((current) => ({ ...current, phase: 'loading' }));
         const query = `${historyScopeQuery(historyLayer, historyScopeArg)}&offset=${historyOffset}`;
         const run = async () => {
           const result = await requestJson(`${HISTORY_PATH}?${query}`);
           if (cancelled) return;
+          historyReadRef.current = { key: readKey, reload };
           setHist(
             result.ok
               ? { phase: 'ready', data: result.payload, error: null }

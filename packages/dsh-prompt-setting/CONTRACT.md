@@ -3339,8 +3339,9 @@ by accident — the tests assert the values rather than the family's agreement.
   workspace layer file *and* probes the assembly in that session's own scope —
   and the frozen verdict and the variable resolution are per-scope facts (§2.4),
   so 「该工作区首个会话」would show a verdict that is not the reader's session's.
-  The tab therefore reads the snapshot in **its own** scope, gated on the tab
-  being open (one request per tab open / scope change / reload), because every
+  The tab therefore reads the snapshot in **its own** scope, on its first open /
+  scope change / reload (§13.10, precised in review R3: coming back to the tab
+  reuses the read it already has), because every
   `/snapshot` costs two `assemble()` runs (§2.6); the sections, the full text,
   the diff, `editGate` and the ineffective-cause note all come from that read
   (`m.overview*`), never from the page-scoped one. Moving the page's「查看范围」
@@ -4414,9 +4415,18 @@ Invariants, each asserted in `test/client.test.mjs`:
   target and the layer a save lands in. Moving it re-reads neither the preset
   library nor the overview's snapshot, and carries no page scope into
   `/export`, `/import` or `/assembly-status`;
-- **a tab-owned scope is read only while its tab is open**: one request per tab
-  open / scope change / reload. Every `/snapshot` costs the host two `assemble()`
-  runs (§2.6), so no scope re-reads on render;
+- **a tab-owned scope is read on its first open, on a scope change and on a
+  reload — and not when the reader merely comes back** (precised in review R3):
+  each such read is keyed by its own scope, and the tab that finds its scope
+  already recorded reuses what is on screen. Switching away and back therefore
+  sends no request **and** draws no loading frame — the panel keeps its content
+  until a genuinely new answer replaces it. A read that was cancelled by a tab
+  switch is never recorded as done, so coming back retries instead of resting on
+  a stale loading state; a reload of the **same** scope keeps the old content
+  visible while the fresh answer is in flight, while a **different** scope drops
+  it (another scope's assembly must never look like this one's). Every
+  `/snapshot` costs the host two `assemble()` runs (§2.6), so no scope re-reads
+  on render;
 - **a scope selector is a disclosure** in all three tabs that have one
   (`data-scope-open`, collapsed by default, `data-action="…-scope-toggle"`), and
   picking a value finishes the interaction and drops the search box (§13.7's

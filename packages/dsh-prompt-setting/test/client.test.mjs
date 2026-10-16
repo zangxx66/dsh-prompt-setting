@@ -8175,6 +8175,11 @@ test('client: a rollback asks first, states that it cannot be undone, then refre
   // The write invalidated the page's data, so it is re-read from the host rather
   // than patched: the log comes back at page 1 (the file changed under the
   // reader) and the current value is read again, both **after** the POST.
+  //
+  // The write bumps `reload`, and the re-reads belong to the render that bump
+  // schedules — exactly as React runs the effects of the render that changed a
+  // dependency — so one more flush is what a real page does next (review R3).
+  tree = await page.flush();
   assert.deepEqual(urlsFor(page, PATHS.history).slice(-1), [`${PATHS.history}?layer=user&offset=0`]);
   const posted = page.router.calls.findIndex((call) => call.init && call.init.method === 'POST');
   const afterWrite = page.router.calls.slice(posted + 1).map((call) => call.url);
@@ -13888,9 +13893,10 @@ test('client: the「高级」tab renders the assembly-status block at its top, a
   const stillScoped = oneBy(tree, 'data-region', 'assembly-status');
   assert.equal(stillScoped.props['data-assembly-session'], 'yes', 'the page scope does not move this read');
   const assemblyReads = urlsFor(page, PATHS.assemblyStatus);
-  assert.ok(
-    assemblyReads.length >= 2 && assemblyReads.every((url) => url === `${PATHS.assemblyStatus}?session=s2`),
-    'every read names the advanced tab\'s own scope, never the page scope',
+  assert.deepEqual(
+    assemblyReads,
+    [`${PATHS.assemblyStatus}?session=s2`],
+    'and (review R3) switching back to this tab reuses that read — it names its own scope, and only once',
   );
 
   // A page with no session service has no session to name at all, so the block
@@ -15648,6 +15654,87 @@ test('client: g-073 R1 — a tab-owned scope reads once per tab open and scope c
   overviewTree = await overviewPage.flush();
   assert.equal(snapReads().length, 3, 'a new scope reads once');
   assert.equal(snapReads()[2], `${PATHS.snapshot}?session=b1`);
+});
+
+test('client: g-073 R3 — switching away and back re-reads nothing and draws no loading frame', async () => {
+  // Review R3-1/R3-4: every tab-owned read is keyed by {scope, reload}, so a tab
+  // switch that changes neither reuses what is on screen. Both halves are pinned
+  // here: the panel is still rendered **and** no request is sent — the two
+  // together are what rules out the regression (dropping the cache shows up as a
+  // fresh request), while a scope change and a reload still re-read.
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+    // The dependency rule is what makes "the effect ran again" observable at all.
+    enforceEffectDeps: true,
+  });
+  const snapReads = () => urlsFor(page, PATHS.snapshot).length;
+  const advancedReads = () => ({
+    overrides: urlsFor(page, PATHS.overrides).length,
+    status: urlsFor(page, PATHS.assemblyStatus).length,
+  });
+  const historyReads = () => urlsFor(page, PATHS.history).length;
+  const panel = (tree, region) =>
+    collect(tree, (node) => node.props && node.props['data-region'] === region).length;
+
+  // Open each tab once, so every tab-owned scope has really been read.
+  let tree = await openTab(page, 'overview');
+  assert.equal(panel(tree, 'overview'), 1);
+  tree = await openTab(page, 'advanced', tree);
+  assert.equal(panel(tree, 'advanced-scope'), 1);
+  const afterAdvanced = advancedReads();
+  tree = await openTab(page, 'history', tree);
+  assert.equal(panel(tree, 'history'), 1);
+  const afterHistory = historyReads();
+  const snapBefore = snapReads();
+
+  // 「提示词总览」: away and back.
+  tree = await openTab(page, 'mine', tree);
+  clickAnyTab(tree, 'overview');
+  tree = await page.flush();
+  assert.equal(panel(tree, 'overview'), 1, 'overview: the panel is still there after the switch');
+  assert.equal(strings(tree).includes(page.zh.loading), false, 'overview: no loading line is drawn');
+  assert.equal(snapReads(), snapBefore, 'overview: switching back sends no request');
+
+  // 「高级」: away and back — none of its three reads is repeated.
+  tree = await openTab(page, 'mine', tree);
+  clickAnyTab(tree, 'advanced');
+  tree = await page.flush();
+  assert.equal(panel(tree, 'advanced-scope'), 1, 'advanced: the scope selector is still there');
+  assert.equal(panel(tree, 'overrides'), 1, 'advanced: and the override list');
+  assert.equal(strings(tree).includes(page.zh.loading), false, 'advanced: no loading line is drawn');
+  assert.deepEqual(advancedReads(), afterAdvanced, 'advanced: no override / status read is repeated');
+  assert.equal(snapReads(), snapBefore, 'advanced: nor is the snapshot re-read');
+
+  // 「版本历史」: away and back, with its own key (layer / scope / offset).
+  tree = await openTab(page, 'mine', tree);
+  clickAnyTab(tree, 'history');
+  tree = await page.flush();
+  assert.equal(panel(tree, 'history'), 1, 'history: the log is still there after the switch');
+  assert.equal(strings(tree).includes(page.zh.loading), false, 'history: no loading line is drawn');
+  assert.equal(historyReads(), afterHistory, 'history: no log read is repeated');
+
+  // The positive half: a scope change really is a new read.
+  tree = await openTab(page, 'overview', tree);
+  clickButton(tree, { 'data-action': 'overview-scope-toggle' });
+  tree = await page.flush();
+  const beforeScopeChange = snapReads();
+  clickButton(tree, { 'data-overview-scope-option': 'b1' });
+  tree = await page.flush();
+  assert.equal(snapReads(), beforeScopeChange + 1, 'a scope change still re-reads');
+
+  // …and so is a reload: a write bumps it, and the log is read again even though
+  // its own key did not move.
+  tree = await openTab(page, 'history', tree);
+  const historyBeforeReload = historyReads();
+  tree = await openTab(page, 'mine', tree);
+  typeInto(tree, 'mine-text', 'reload me');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+  tree = await openTab(page, 'history', tree);
+  assert.equal(historyReads(), historyBeforeReload + 1, 'a reload still re-reads the tab-owned scope');
 });
 
 // #endregion
