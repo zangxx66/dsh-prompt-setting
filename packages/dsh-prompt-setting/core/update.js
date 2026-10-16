@@ -537,6 +537,20 @@ export function validatePreferencesDocument(raw) {
     if (registry.length > MAX_REGISTRY_LENGTH) {
       throw fail('invalid-preference', `"${DOWNLOAD_REGION_REGISTRY_FLAG}" exceeds ${MAX_REGISTRY_LENGTH} characters`);
     }
+    // g-074 R2: the very rule the download-region route applies. A value this
+    // plugin refuses to *store* must not become storable through a backup
+    // either — otherwise an import could persist `file:///etc`, and the read
+    // face would silently fall back to "no registry" (§17). The rule is reused,
+    // not re-typed: two spellings of one semantic is how the R1 hole appeared.
+    // The value itself is **not** rewritten here (no trailing-slash
+    // normalization): an import writes exactly what the document carried, so a
+    // round trip is byte-stable. The route still normalizes what it stores.
+    if (!validateRegistryAddress(registry).ok) {
+      throw fail(
+        'invalid-preference',
+        `"${DOWNLOAD_REGION_REGISTRY_FLAG}" must be an http(s) base address without credentials, a query string or a fragment`,
+      );
+    }
   }
   return normalizePreferences(raw);
 }

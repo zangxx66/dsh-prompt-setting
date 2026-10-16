@@ -308,11 +308,25 @@ test('transfer: a preference document is validated strictly, unknown keys includ
     [{ downloadRegion: 'mars' }, 'invalid-preference'],
     [{ downloadRegionRegistry: '' }, 'invalid-preference'],
     [{ downloadRegionRegistry: 7 }, 'invalid-preference'],
+    // g-074 R2: the import applies the download-region route's own rule, so a
+    // value that route would refuse cannot be persisted through a backup.
+    [{ downloadRegionRegistry: 'file:///etc' }, 'invalid-preference'],
+    [{ downloadRegionRegistry: 'ftp://mirror.example/' }, 'invalid-preference'],
+    [{ downloadRegionRegistry: 'https://user:pw@mirror.example/' }, 'invalid-preference'],
+    [{ downloadRegionRegistry: 'https://mirror.example/?a=1' }, 'invalid-preference'],
+    [{ downloadRegionRegistry: 'https://mirror.example/#frag' }, 'invalid-preference'],
     ['nope', 'invalid-preferences'],
   ];
   for (const [preferences, code] of cases) {
     assert.throws(() => parseExport(document({ preferences })), (error) => error.code === code, `${JSON.stringify(preferences)} => ${code}`);
   }
+  // A legal address the route itself would accept still travels, verbatim (the
+  // import does not rewrite it): the value the document carried is the value
+  // written, so a round trip is byte-stable.
+  assert.equal(
+    parseExport(document({ preferences: { downloadRegionRegistry: 'https://mirror.example' } })).preferences.downloadRegionRegistry,
+    'https://mirror.example',
+  );
 });
 
 test('transfer: an applied record names the very same workspace root the workspaces array does', () => {

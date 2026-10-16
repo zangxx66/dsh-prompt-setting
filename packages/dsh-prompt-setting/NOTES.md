@@ -9073,3 +9073,38 @@ phase 1/2 直接用记录里的 root 拼 `workspaceConfigPath(root)` 并 `writeC
   由 pass 转 fail（`[1] import status = 400`，不再有 `[3]` 的未注册 root 导出）；
 - 用例数 930 → 934（transfer +1、stage2 +3）。
 
+### 151.2 R2 返工：契约与「同一语义两处口径」收口（评审 rev-att-001-02 BLOCK，唯一阻断项＝判据 6）
+
+**评审结论**：实现面与 R1 安全修复全部通过；阻断理由只有一条——**契约同步未达成**：4 处规范性内容仍以现在时描述 Revision 53 已废止的行为。教训很明确：**「声称改了但没改」比没改更糟**，所以本轮除修复外做了一次全文关键词自查（见下）。
+
+**R2-1 §10 Response 200 示例（原 `CONTRACT.md:1656`）**：示例仍是 Revision 7 形状（`version: 1`、无三字段、`only`/非零 `omitted`），且无历史标注。→ 按评审推荐①**更新为 Revision 53 形状**：`version: 2` + `workspaces[]`/`presets`/`preferences` + 新 `exportScope`（`full/only: null/layers/workspaces/presets/preferences/omittedApplied/omitted 全 0/unavailable`），并在示例正前方写明「这是本路由今天的响应」；紧随其后的说明句同步（层视图不含路径、文档里唯一的绝对路径是工作区 `root`、`?layer=` 只收窄层视图）。
+
+**R2-2 同节 Revision 7 的 `exportScope` 表（原 `:1688-1692`）**：`only` 行仍写「唯一允许携带的 section 名」。→ 段标题下加斜体**Superseded by Revision 53** 标注（说明该形状与表都属 Revision 7、`only` 今天是 `null`），并把三行都标为「**Revision 7 only**」+ 现值说明。
+
+**R2-3 §15.7 标题与首段（原 `:4552-4559`）**：标题「Import: names only, and never silently」与首段「…is refused with `403 write-locked`」正是被废止的行为。→ 标题改为「**Import: the write lock is gone, the checks are not**（Revision 7; lock removed in Revision 53）」，并在首段前加斜体废置标注（照 §11.1 step 3 的处理方式），首段保留为历史。
+
+**R2-4 §15.8 表格两行（原 `:4618-4619`）**：`Exported`/`Imported` 两行仍是旧值，而同节段落声称「changes two rows」——声称改了却没改。→ 按评审推荐①**把两行改成新值**（`Exported | yes — the whole layer travels (§10)`、`Imported | yes — the lock is gone (§15.7)`），段落措辞同步为「changed two rows … (the two `403 write-locked` rows were the Revision 7 values and are gone from the table)」——现在这句与表格一致。
+
+**R2-5 偏好地址的「同一语义两处口径」（`core/update.js`）**：`validatePreferencesDocument` 的 `downloadRegionRegistry` 原本只查非空 + 长度，而 route 侧用 `validateRegistryAddress`（http/https、无凭证、无 query/fragment）。→ **复用同一函数**（`validateRegistryAddress`），并把自洽性补全到导出侧：`handleExport` 用 `validatePreferencesDocument` 复核即将携带的 preferences，**不符合导入口径就不携带**，原因写进 `exportScope.unavailable.preferences`（与 R1 对 `applied` 记录的做法同构）。**值不重写**（不做尾斜杠规范化）——导入写出文档里原样的值，往返字节稳定；route 侧仍按自己的口径规范化它存储的值。
+
+**R2-6 读面宽松（`core/presets.js:135`）**：`normalizeStoredApplied` 对 `workspaceRoot` 仍只查非空字符串。按主管裁定**读面保持宽松不变**，并补两件事：① 该函数 JSDoc 里显式写明这是**有意的**（历史脏记录不得让页面读不出库）；② 追加不变量声明——「**读面宽松 + 每个消费点必须过注册表白名单**」，并逐一列出三个消费点为何满足（`appliedRootsOf` → 删除预设路由已过白名单；同一函数 → `planPresetRemoval` 的 `currentOf` 只被该路由触达；`publicApplied` 只报告字符串、不拼路径）；`GET /export` 另有 `omittedApplied` 兜底。契约 §11.7 同步写入该不变量。
+
+**全文自查（针对本次变更面，证明扫过而不是声称扫过）**
+
+| 关键词 | 命中 | 处置 |
+| --- | --- | --- |
+| `"only": "prompt-setting:custom-prompt"` | **0** | 示例已换成 v2（`only: null`） |
+| `names only` | **0** | §15.7 标题已改语义 |
+| `customOverridesOnly` | 1（§10「`customOverridesOnly` is gone」） | 该命中正是「已移除」的声明，保留 |
+| `403 write-locked` | 16 | 10 处属 **PUT／单名 DELETE 写面**（§Rev7 bullets 的 PUT/DELETE 项、§4.1、§4 verdict、§12.2、§13、§15.5 表、§15.8 表的 `PUT`/`DELETE` 行）——现在时正确；6 处属**导入历史**且全部带废置标注：§Rev7 概览两 bullet（本轮补 inline「withdrawn in Revision 53」）、§4.4 段（紧随其后「this paragraph is now a history note」）、§11.1 step 3（本轮补 inline「this step is gone in Revision 53」）、§15.7 首段（段前斜体废置标注）、§15.7 的 Revision 53 说明段、§15.8 的 Revision 53 说明段 |
+| `"version": 1`（作为导出文档当前版本） | 0（4 处命中分别是 v2 示例里的 `presets.version`、`overrides.json` 示例、两处 `presets.json` 示例） | 无需改 |
+| 非零 `omitted` 示例 | **0** | v2 示例里为全 0 |
+| `No absolute path is exported` | **0** | R1 已改写为「唯一绝对路径是工作区 `root`」 |
+| `reserved section only`（导入/导出语境） | §10 Revision 7 段（已标 Superseded）、§4.1/§12.1/§13 的 PUT/DELETE 语境（正确） | 无需改 |
+
+**验收（R2 实跑，基于 75515eb 之上的工作树、未提交）**
+
+- evidence: suite=node --test(test/*.test.mjs) passed=935 failed=0 exit=0 ms=56297；`node scripts/prepare.mjs` = OK（23 项，`LOCALE-SYNC` 567 键）exit 0；
+- 用例数 934 → 935（新增 stage2 `… registry address the route would refuse … (R2)` 一条；transfer 的 preferences 负向表加 5 个非法地址 + 1 条「合法地址原样往返」断言，都在既有用例内）；
+- `grep -n '"only": "prompt-setting:custom-prompt"\|names only' CONTRACT.md` ⇒ **零命中**；`403 write-locked` 的 16 处按上表分类，导入语境的 6 处全部带废置标注。
+

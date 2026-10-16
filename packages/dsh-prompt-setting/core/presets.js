@@ -125,6 +125,26 @@ function normalizeStoredPreset(raw) {
  * migrated in place rather than dropped: its `before` becomes `base`, its single
  * preset becomes a one-entry stack, and the text snapshot it never carried is
  * taken from the library entry of the same id when the document still has one.
+ *
+ * **`workspaceRoot` is deliberately checked leniently here, and that asymmetry
+ * is a decision, not an oversight (g-074 R2).** This is the *read* face: a
+ * record a hand edit, an older build or another machine wrote must keep the
+ * library readable, so the only question asked is "is this a usable string?".
+ * The *import* face ({@link validateAppliedEntry}) and every *writer* are
+ * strict. The invariant that makes the lenient read safe:
+ *
+ * > **the read face is lenient; every consumer of a stored `workspaceRoot` must
+ * > pass it through the registry whitelist before it can become a path.**
+ *
+ * It holds today because the value has exactly three consumers, and all three
+ * are covered: `appliedRootsOf` feeds the delete-preset route, which calls
+ * `assertKnownWorkspaceRoot` on every root it is about to write; the same
+ * function feeds `planPresetRemoval`, whose `currentOf` callback is only reached
+ * from that route; and `publicApplied` only *reports* the string (no path is
+ * built from it). `GET /export` additionally drops a record whose root this
+ * profile does not register (`exportScope.omittedApplied`). Tightening this
+ * function instead would be a regression of a different kind: a library holding
+ * one bad historical record would stop reading at all.
  * @param raw - one element of a stored `applied` array.
  * @param presetsById - the document's own presets, for that migration lookup.
  * @returns the normalized record, or `null` when the entry is unusable.

@@ -1921,6 +1921,56 @@ test('stage2: an export never publishes an unregistered applied root, and its ow
   assert.equal(fingerprint(victim.path), victimBefore, 'the victim is still untouched');
 });
 
+// #region g-074 R2 — the preference half is held to the route's own rule
+
+test('stage2: a registry address the route would refuse is not carried, and a document carrying one is refused (R2)', async () => {
+  const { route } = mount();
+  // A hand-edited preference file holding an address the download-region route
+  // answers `400 registry-invalid` for. The export must not carry it: a value
+  // the plugin refuses to store cannot become storable through a backup.
+  seedPreferences({ updateCheck: false, downloadRegion: 'custom', downloadRegionRegistry: 'file:///etc' });
+  const payload = json(await call(route, { url: EXPORT_PATH }));
+  assert.equal(payload.preferences, null, 'the unusable preference document is not carried');
+  assert.match(payload.exportScope.unavailable.preferences, /invalid-preference/);
+  assert.equal(payload.exportScope.preferences, false);
+
+  // The other direction: an incoming document carrying such an address is
+  // `400 invalid-preference`, and nothing is written.
+  const paths = [preferencesPath(), presetsPath(), userPath()];
+  const before = fingerprints(paths);
+  const refused = await call(route, {
+    method: 'POST',
+    url: IMPORT_PATH,
+    body: JSON.stringify({
+      schema: 'dsh-prompt-setting/export',
+      version: 2,
+      layers: { user: { overrides: [] } },
+      preferences: { updateCheck: true, downloadRegionRegistry: 'file:///etc' },
+    }),
+  });
+  assert.equal(refused.statusCode, 400);
+  assert.equal(json(refused).code, 'invalid-preference');
+  assert.deepEqual(fingerprints(paths), before);
+
+  // A legal address still round-trips, verbatim: what the export carries is
+  // what the import accepts and writes.
+  seedPreferences({ updateCheck: false, downloadRegion: 'custom', downloadRegionRegistry: 'https://mirror.example/' });
+  const legal = json(await call(route, { url: EXPORT_PATH }));
+  assert.equal(legal.preferences.downloadRegionRegistry, 'https://mirror.example/');
+  assert.equal(legal.exportScope.unavailable.preferences, null);
+  const backup = {
+    schema: legal.schema,
+    version: legal.version,
+    layers: legal.layers,
+    workspaces: legal.workspaces,
+    presets: legal.presets,
+    preferences: legal.preferences,
+  };
+  const applied = await call(route, { method: 'POST', url: IMPORT_PATH, body: JSON.stringify(backup) });
+  assert.equal(applied.statusCode, 200, JSON.stringify(json(applied)));
+  assert.equal(json(applied).preferences.changed, false, 'a document this plugin produced is already what is stored');
+});
+
 // #endregion
 
 // #region import atomicity — every rejection is proven with a hash

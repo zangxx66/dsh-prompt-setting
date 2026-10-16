@@ -196,6 +196,7 @@ import {
   isDownloadRegion,
   normalizePreferences,
   resolveDownloadRegion,
+  validatePreferencesDocument,
 } from './core/update.js';
 import {
   EXPORT_LAYERS,
@@ -2433,7 +2434,25 @@ function mount(ctx, config, cleanups) {
 
     const presets = readPresets(userPresetsPath());
     const preferences = readPreferences(userPreferencesPath());
-    const carriedPreferences = preferences.error === null ? preferences.preferences : null;
+    // g-074 R2, the same self-consistency rule R1 applies to `applied` records:
+    // the export carries a preference document only if the import would accept
+    // it. A hand-edited `downloadRegionRegistry` the download-region route would
+    // refuse (say `file:///etc`) is therefore not carried, and the reason is
+    // declared in `exportScope.unavailable.preferences` rather than turning into
+    // 「the plugin's own backup is rejected by the plugin's own import」— or,
+    // worse, into a persisted value the read face silently degrades.
+    let carriedPreferences = preferences.error === null ? preferences.preferences : null;
+    let unavailablePreferences = preferences.error === null
+      ? null
+      : `${preferences.error.code}: ${preferences.error.message}`;
+    if (carriedPreferences !== null) {
+      try {
+        carriedPreferences = validatePreferencesDocument(carriedPreferences);
+      } catch (error) {
+        carriedPreferences = null;
+        unavailablePreferences = `${error?.code ?? 'invalid-preferences'}: ${error?.message ?? String(error)}`;
+      }
+    }
     // g-074 R1: an `applied` record whose workspace this profile does not
     // register cannot be restored here — the import route refuses such a
     // document outright (§11.7) — so carrying it would hand the user a backup
@@ -2468,7 +2487,7 @@ function mount(ctx, config, cleanups) {
         omittedApplied,
         unavailable: {
           presets: presets.error === null ? null : `${presets.error.code}: ${presets.error.message}`,
-          preferences: preferences.error === null ? null : `${preferences.error.code}: ${preferences.error.message}`,
+          preferences: unavailablePreferences,
         },
       }, names),
     });

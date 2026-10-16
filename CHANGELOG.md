@@ -163,6 +163,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   could not restore, with the count declared in `exportScope.omittedApplied` — so the plugin's own backup is
   always readable by the plugin's own import.
 
+- **契约与「同一语义两处口径」收口（g-074 R2）**：`CONTRACT.md` §10 的 Response 200 示例更新为 Revision 53
+  形状（原来仍是 `version: 1` + 旧 `exportScope`），Revision 7 的 `exportScope` 表与 §15.7 标题/首段、§15.8
+  表格两行补上废置标注并改成新值——消除「文档说 A、实现做 B」；§11.7 写入「读面宽松 + 每个消费点必须过注册表
+  白名单」不变量。口径一致性：`validatePreferencesDocument` 对 `downloadRegionRegistry` 复用下载区域路由的
+  `validateRegistryAddress`（`file:///etc`、凭证、query、fragment 一律 `400 invalid-preference`），导出侧同口径
+  复核、不符合就不携带并在 `exportScope.unavailable.preferences` 声明。
+  **Contract and「one semantic, one rule」clean-up (g-074 R2)**: §10's Response 200 example now shows the
+  Revision 53 shape, the Revision 7 `exportScope` table, §15.7's heading/first paragraph and §15.8's two
+  rows are marked superseded and updated, and §11.7 now carries the「lenient read face + registry whitelist at
+  every consumer」invariant. On the semantics side, `validatePreferencesDocument` reuses the download-region
+  route's own `validateRegistryAddress` for `downloadRegionRegistry`, and an export applies the same rule in
+  reverse rather than carrying a preference document its own import would refuse.
+
 - **英文文案泄露（g-066）**：导出失败时不再把浏览器侧的英文原文（`no document`）拼进界面文案，改为
   走本地化兜底；`errorText` 对**未登记**的错误码不再把 `error.<code>` 裸键显示出来，而是退回本地化的
   `errUnknown`（原始 code 仍由错误横幅的 `errorCode` 行如实呈现）；另修掉两条英文文案里残留的中文

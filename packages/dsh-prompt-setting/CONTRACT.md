@@ -138,9 +138,11 @@ revision that narrows rather than adds:
   layer, reserved entry included — and the two flags together are
   `400 conflicting-query` (§12.2, §15.6);
 - `POST /import` refuses a document that carries any non-reserved section name
-  with `403 write-locked`, in a dry run as well as in a real import (§11.1);
+  with `403 write-locked`, in a dry run as well as in a real import (§11.1).
+  **(Revision 7; withdrawn in Revision 53 — see below.)**
 - `GET /export` carries only the reserved entry of each layer and declares what
-  it dropped, per layer and in total, as `exportScope` (§10);
+  it dropped, per layer and in total, as `exportScope` (§10).
+  **(Revision 7; withdrawn in Revision 53 — see below.)**
 - an existing override of any other name keeps working **exactly** as it did in
   Revision 6 — same assembly result, byte for byte — but no route can create,
   update or import one any more. It is *frozen read-only*, and a hand edit of the
@@ -1650,36 +1652,72 @@ one section differs; pass ?name= to compare one of them`).
 
 ## 10. `GET /prompt-setting/export` (Revision 4; narrowed in Revision 7; **full backup in Revision 53**)
 
-Query: `layer` (optional — limit the document to one layer), `session` (to
-resolve the `workspace` layer).
+Query: `layer` (optional — limit the document to one **layer view**), `session`
+(to resolve the `workspace` layer).
+
+**Revision 53 (g-074) shape — this is what the route answers today.** The
+document is the whole installation and `version` is `2`; the Revision 7 shape it
+replaced is described further down, under its own heading.
 
 ```json
 {
   "ok": true,
   "schema": "dsh-prompt-setting/export",
-  "version": 1,
+  "version": 2,
   "exportedAt": "2024-01-02T10:00:00.000Z",
   "plugin": { "name": "dsh-prompt-setting", "version": "0.2.2" },
   "pluginVersion": "0.2.2",
   "layers": {
     "user":      { "layer": "user", "enabled": true,
                    "reason": null,
-                   "overrides": [ { "name": "prompt-setting:custom-prompt", "action": "replace", "text": "…" } ] },
+                   "overrides": [ { "name": "prompt-setting:custom-prompt", "action": "replace", "text": "…" },
+                                  { "name": "project:alpha", "action": "replace", "text": "…" } ] },
     "workspace": { "layer": "workspace", "enabled": false,
                    "reason": "no ?session= was supplied, so the workspace layer is inactive for this view",
                    "overrides": [] }
   },
-  "exportScope": { "only": "prompt-setting:custom-prompt", "omitted": { "user": 2, "workspace": 0, "total": 2 } }
+  "workspaces": [
+    { "root": "/abs/path/to/workspace", "enabled": true, "reason": null,
+      "overrides": [ { "name": "prompt-setting:custom-prompt", "action": "append", "text": "…" } ] }
+  ],
+  "presets": {
+    "version": 1,
+    "presets": [ { "id": "0f9c1c62-…", "name": "短答", "action": "replace", "text": "Be brief.",
+                   "createdAt": "2024-01-01T00:00:00.000Z", "updatedAt": null } ],
+    "applied": [ { "workspaceRoot": "/abs/path/to/workspace", "base": null,
+                   "stack": [ { "presetId": "0f9c1c62-…", "appliedAt": null, "action": "replace", "text": "Be brief." } ] } ]
+  },
+  "preferences": { "updateCheck": true, "downloadRegion": "cn" },
+  "exportScope": {
+    "full": true,
+    "only": null,
+    "layers": { "user": 2, "workspace": 0 },
+    "workspaces": 1,
+    "presets": 1,
+    "preferences": true,
+    "omittedApplied": 0,
+    "omitted": { "user": 0, "workspace": 0, "total": 0 },
+    "unavailable": { "presets": null, "preferences": null }
+  }
 }
 ```
 
 `ok` is this plugin's liveness flag; the rest of the body **is** the document and
-is what a client should save. No absolute path is exported: the document is
-portable. With `?layer=user` only that layer is present. An export taken without
-a session therefore carries an empty, disabled `workspace` layer, and that same
-document can be re-imported without a session (§11.3).
+is what a client should save. The layer views carry no path; the absolute paths
+the document does carry are the workspace `root`s, which is what makes a full
+backup restorable at all — a version 2 document is a **machine-local backup**
+(see the Revision 53 note at the end of this section, and §11.7). With
+`?layer=user` only that layer **view** is present: `workspaces[]`, `presets` and
+`preferences` are installation-level and are not narrowed by `?layer=`. An export
+taken without a session carries an empty, disabled `workspace` layer, and that
+same document can be re-imported without a session (§11.3).
 
 **Revision 7 — the document is the reserved section only, and it says so.**
+*Superseded by Revision 53 (g-074); kept as the history of where `exportScope`
+came from. Both the shape above and the table below describe the Revision 7
+document, so read them as that and not as current behaviour — in particular
+`exportScope.only` is `null` today, never a section name.*
+
 `layers.<layer>.overrides` holds at most the reserved override, because that is
 the only entry an import would accept again (§15.7). Frozen entries are **not
 silently dropped**: `exportScope` is a new top-level field of the response that
@@ -1687,9 +1725,9 @@ declares the scope of this export.
 
 | Field | Meaning |
 | --- | --- |
-| `exportScope.only` | The one section name the document may carry: `prompt-setting:custom-prompt`. |
-| `exportScope.omitted.<layer>` | How many overrides that layer holds but this export left out, computed from the layer view this process could read. |
-| `exportScope.omitted.total` | The sum over the layers this export covers. |
+| `exportScope.only` | **Revision 7 only.** The one section name the document carried — `prompt-setting:custom-prompt`. Since Revision 53 the field is `null`: no section is singled out, because nothing is filtered. |
+| `exportScope.omitted.<layer>` | **Revision 7 only.** How many overrides that layer held but that export left out. Always `0` since Revision 53. |
+| `exportScope.omitted.total` | **Revision 7 only.** The sum over the layers that export covered. Always `0` since Revision 53. |
 
 `omitted` is keyed by exactly the layers the response carries (so
 `?layer=user` yields `{ "user": n, "total": n }`), and a layer whose config is
@@ -1715,7 +1753,7 @@ so the Revision 7 narrowing is withdrawn. The document now carries:
 | `layers.user` / `layers.workspace` | **Every** override of that layer view — frozen entries included, copied as stored (`action` and all, Revision 36). Nothing is filtered; `customOverridesOnly` is gone. |
 | `workspaces[]` | One entry per workspace layer **the Host registers**, as `{root, enabled, reason, overrides}`. This is what makes「所有工作区层」true: the exported set no longer depends on which session asked. Sorted by `root`, so two exports of an unchanged installation agree byte for byte. |
 | `presets` | The whole preset library (§20) — or `null` when this process could not read it. Since R1 an `applied` record whose `workspaceRoot` this profile does not register is **not carried**: it could not be restored here (the import refuses such a document, §11.7), so carrying it would produce a backup this plugin's own reader rejects. |
-| `preferences` | The preference document (§17) — or `null` when this process could not read it. |
+| `preferences` | The preference document (§17) — or `null` when this process could not read it **or** when the import would refuse it (R2: a `downloadRegionRegistry` the download-region route would answer `400 registry-invalid` for is not carried either). |
 
 `version` is `2`. A **version 1** document (one reserved entry per layer, no
 `workspaces`/`presets`/`preferences`) is still accepted on import, which is what
@@ -1744,7 +1782,7 @@ zero.
 | `preferences` | Whether the preference document was carried. |
 | `omittedApplied` | **R1.** How many stored `applied` records were left out because their workspace is not registered here (`0` in every ordinary installation). Declared rather than dropped silently. |
 | `omitted.<layer>` / `omitted.total` | Always `0` — a full export drops nothing **of a layer**. Kept so a pre-Revision-53 reader reads「complete」instead of finding a field missing. |
-| `unavailable.presets` / `unavailable.preferences` | Why a document was **not** carried (`invalid-json: …`), or `null`. An unreadable library is never exported as an empty one: restoring that would clear the user's real catalogue. |
+| `unavailable.presets` / `unavailable.preferences` | Why a document was **not** carried (`invalid-json: …`, or since R2 a validation reason such as `invalid-preference: …`), or `null`. An unreadable library is never exported as an empty one: restoring that would clear the user's real catalogue — and a document the import would refuse is never carried either, so「the plugin's own backup is always readable by the plugin's own import」holds on both halves (R1 for `applied` records, R2 for the preference document). |
 
 `?layer=` still limits the **layer views** the document carries. It never
 narrowed, and does not narrow, the installation-level half.
@@ -1760,7 +1798,8 @@ document. Body cap: **4 MiB** (`413 body-too-large` beyond it).
 1. **parse** the body as JSON (`400 invalid-json`), and cap its size;
 2. **validate** the document: schema, version, layers, and every override field
    through the same validator `PUT` uses (§4.4);
-3. **apply the write lock** (Revision 7): the document must carry no section name
+3. **apply the write lock** (Revision 7 — **this step is gone in Revision 53**,
+   see the note under this list): the document must carry no section name
    other than the reserved one, **in any layer**, else `403 write-locked`. This
    step sits before the dry-run branch on purpose — a dry run answers the same
    question the real run would answer, and neither may touch a byte (§15.7);
@@ -1966,6 +2005,38 @@ A backup that names a workspace this machine does not have is still refused
 whole, and the message says which workspace to open first. The alternative —
 dropping the unrecognized record silently — is the「silent partial import」this
 chapter exists to prevent.
+
+**Revision 53 / g-074 R2 — one semantic, one rule, on every face.**
+
+- **The preference document is held to the download-region route's own rule.**
+  `validatePreferencesDocument` validates `downloadRegionRegistry` with
+  `validateRegistryAddress` — the very function `PUT
+  /prompt-setting/download-region` uses — so an address that route would answer
+  `400 registry-invalid` for (`file:///etc`, `ftp://…`, credentials, a query
+  string, a fragment) cannot be persisted through an import either. The value is
+  **not rewritten** by the import (no trailing-slash normalization): what the
+  document carried is what is written, so a round trip is byte-stable. An export
+  applies the same rule from the other side: a preference document the import
+  would refuse is **not carried**, and `exportScope.unavailable.preferences`
+  says why (§10). Both halves of §11.7's「the plugin's own backup is always
+  readable by the plugin's own import」are therefore checked, not asserted: R1
+  covers `applied` records, R2 covers the preference document.
+- **The read face stays lenient, and every writer stays strict.** A *stored*
+  `applied[].workspaceRoot` is only checked for being a usable string
+  (`normalizeStoredApplied`), because a library holding one bad historical record
+  must keep reading — the page must not go blank because of a record some earlier
+  build or another machine wrote. What makes that safe is a consumer invariant,
+  and it is a requirement on any future reader of the field:
+
+  > **the read face is lenient; every consumer of a stored `workspaceRoot` must
+  > pass it through the registry whitelist before it can become a path.**
+
+  It holds for all three consumers today — `appliedRootsOf` feeds the
+  delete-preset route (whitelist, above), the same function feeds
+  `planPresetRemoval`, whose `currentOf` is only reached from that route, and
+  `publicApplied` merely reports the string. Tightening `normalizeStoredApplied`
+  instead would trade this for a worse failure: a library with one unreadable
+  record would stop loading altogether.
 
 ## 12. `DELETE /prompt-setting/overrides` (Revision 4; `legacy` added in Revision 7)
 
@@ -4549,7 +4620,13 @@ exists for:
   anything else (§5.5), and an external edit is visible to the very next request
   with no remount. There is deliberately no route that reopens the write face.
 
-### 15.7 Import: names only, and never silently
+### 15.7 Import: the write lock is gone, the checks are not (Revision 7; **lock removed in Revision 53**)
+
+*The two paragraphs below describe the **Revision 7** lock, which **Revision 53
+(g-074) removed**: an import no longer refuses a document for carrying a
+non-reserved name — that is what makes a full backup restorable. They are kept as
+the history of the boundary, and the「Revision 53」note at the end of this section
+states what replaced them. Read the current rule in §11.1 and §11.7.*
 
 The import write lock is on **names**: a document carrying any entry whose `name`
 is not the reserved one is refused with `403 write-locked`, in **any** layer of
@@ -4615,14 +4692,16 @@ is still valid, and is still what the older assertions use.
 | `DELETE` (single name) | `403 write-locked` | `200` / `404` |
 | `DELETE ?legacy=true` | removed | kept |
 | `DELETE ?reset=true` | removed | removed |
-| Exported | no — counted in `exportScope.omitted` | yes |
-| Imported | `403 write-locked` | yes |
+| Exported | yes — the whole layer travels (§10) | yes |
+| Imported | yes — the lock is gone (§15.7) | yes |
 | Editable by hand | yes (the file is the source of truth) | yes |
 
-**Revision 53 (g-074) changes two rows of that table, and only those two.** A
-frozen override is now **Exported** — it is part of the layer, and a backup that
-dropped it could not restore it — and **Imported**, because the lock is gone
-(§15.7). Its `PUT` and single-name `DELETE` rows are unchanged (`403
+**Revision 53 (g-074) changed two rows of that table, and only those two** — the
+`Exported` and `Imported` rows above, which now read `yes` for a frozen override
+(the two `403 write-locked` rows were the Revision 7 values and are gone from the
+table). A frozen override is **Exported** because it is part of the layer, and a
+backup that dropped it could not restore it; it is **Imported** because the lock
+is gone (§15.7). Its `PUT` and single-name `DELETE` rows are unchanged (`403
 write-locked`), and so is「editable by hand」. The `exportScope.omitted` count a
 pre-Revision-53 reader used to see for such an entry is `0`; §10's `exportScope`
 table says why.
