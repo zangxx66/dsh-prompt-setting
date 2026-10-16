@@ -25,12 +25,16 @@
 3. **不要手改 `client.js`**。它是生成物；`client.js` 顶部的头注是生成器产出的，手改产物
    会让 `client:check` 与 `test/client-source.test.mjs` 同时变红。
 4. **一个功能点只改一个段**。需要同时改两个段，通常说明切点放错了位置。
+5. **有一类段不要手改**：承载 `const zh = {` / `const en = {` 的那一段是**生成的** ——
+   人工真源是 `locale/*.json`，改完跑 `node scripts/locale-pack.mjs --write`（它会写进段里
+   并顺手重建 `client.js`，所以一次跑完两边都新）。手改该段会被 `locale-pack --check` 拒。
 
 ## 改完之后
 
 ```sh
 node scripts/client-build.mjs --write   # 按 src/ 重建 client.js（内容相同则不动文件）
 node scripts/client-build.mjs --check   # 只读校验
+node scripts/locale-pack.mjs --check    # 词典生成段：段与产物同时核对
 node docs/check-refs.mjs                # §1.3 / §5.1 两张表复算 + 文档引用体检
 node --test test/*.test.mjs             # 全量用例
 ```

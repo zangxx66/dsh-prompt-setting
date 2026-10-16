@@ -10,8 +10,8 @@
  * "build script hurdle": a TypeScript package has no `lib/` on the other side
  * unless `prepare` builds it, from a context that must be self-contained.
  *
- * This package is zero-build — `index.js`, `client.js` and `core/*.js` are
- * tracked source that *is* the published entry surface. So the hurdle here is
+ * This package is zero-compilation — `index.js` / `core/*.js` are tracked source
+ * and `client.js` is generated from `src/`. So the hurdle here is
  * not compilation, it is **packaging**, and the failure mode is measurable.
  * Measured on this machine against the published repository (pnpm 12.3.4,
  * 2026-09-30):

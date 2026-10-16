@@ -15,6 +15,9 @@
 （`docs/check-refs.mjs` 的 `CLIENT_HEAD_LINES` 就是这条约定的实现）。
 
 段的划分与行数预算是 `docs/refactor-plan.md` §5.1 的**目标段表**（17 段，每段 ≤ 1200 行）。
+表里的「行数」按**剥掉片段声明行之后**算，与 §5.1 的预算口径一致 —— 所以 `wc -l src/*.js`
+每个文件都会多出 1 行（最大段 `13-page-a.js` 读作 1201，预算判的是 1200，见 `CONTRACT.md`
+§23.2 规则 6）。
 重新生成：`node scripts/client-build.mjs --write`；校验：`node scripts/client-build.mjs --check`。
 
 ## 17 段总表
@@ -48,7 +51,7 @@
 
 | 想改的东西 | 打开 | 备注 |
 |---|---|---|
-| 页面文案 / 键位 | `02-locale.js`（或 `locale/*.json` + `node scripts/locale-pack.mjs --write`） | 生成段，**不要手改段内文本**（§22） |
+| 页面文案 / 键位 | 改 `locale/*.json`，再跑 `node scripts/locale-pack.mjs --write` | 它会写进承载 locale 的那个 `src/` 段**并重建** `client.js`（段名不硬编码，重切后自动跟随）；生成段内文本**不要手改**（§22、§23.2 规则 7） |
 | 顶层 tab 的名称、计数、红点 | `03-facilities.js` | `tabs` / `mainTabStrip` / `updateOffered` |
 | 会话 / 工作区列表的筛选与标签 | `04-helpers-a.js` | 纯函数，可直接单测 |
 | 覆盖可行性、冻结状态、编辑门控 | `05-helpers-b.js` | `editGate` / `overrideFeasibility` / `frozenState` |
@@ -66,6 +69,7 @@
 
 ```sh
 node scripts/client-build.mjs --check        # src/ 与 client.js 逐字节一致
+node scripts/locale-pack.mjs --check         # 词典生成段：src/ 的段与 client.js 同时核对
 node docs/check-refs.mjs                     # §1.3 / §5.1 两张表复算 + 文档引用体检
 node --test test/*.test.mjs                  # 全量用例（含段边界与行数预算）
 ```

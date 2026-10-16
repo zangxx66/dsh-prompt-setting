@@ -7824,12 +7824,29 @@ the slices in file-name order. The zero-padded numeric prefix makes file-name
 order == code order, so "the order" is a property of the naming rule rather than
 a hand-maintained manifest (§5.1 of `docs/refactor-plan.md`).
 
+**Coordinate convention.** Every `file:line` reference to `client.js` in this
+repository — the §1.3 / §5.1 tables of `docs/refactor-plan.md`, its evidence
+index, and `docs/architecture-map.md` — is written in **slice-source
+coordinates**: the line number that byte would have with the generated banner
+removed. The banner is a pure prefix emitted by the builder and belongs to no
+segment, so
+
+```
+generated line  ==  slice-source line  +  the banner's line count
+```
+
+`docs/check-refs.mjs` applies exactly this shift (`CLIENT_HEAD_LINES`, derived
+from the banner itself), which is why rewording the banner cannot silently
+invalidate a hundred references — and why a reader must add that offset before
+looking a documented line number up in the generated file.
+
 ### 23.1 The commands that guard it
 
 | Command | What it guarantees |
 | --- | --- |
 | `node scripts/client-build.mjs --write` | Rebuilds `client.js` from `src/`. It writes **only when the bytes differ**, so a routine run does not touch mtime — and mtime is what changes the DSH artifact revision and reloads an open page. |
 | `node scripts/client-build.mjs --check` | The read-only form, with a non-zero exit code when `src/` and `client.js` disagree. |
+| `node scripts/locale-pack.mjs --write` | Re-renders the `zh` / `en` dictionary blocks from `locale/*.json` into the slice that carries them, **then** rebuilds `client.js` — one run, both sides current (§22). |
 | `node scripts/prepare.mjs` → `CLIENT-SRC*` | The publish gate, tri-state like `LOCALE-*`: `src/` must exist with usable slices **and** be covered by the `files` allowlist, or an installed package carries only an artifact that can no longer be regenerated or diffed. |
 
 `CHUNK_STAMPS` keeps its single writer: the builder calls
@@ -7863,10 +7880,17 @@ a hand-maintained manifest (§5.1 of `docs/refactor-plan.md`).
 6. **The per-segment declaration line does not ship.** Each `src/*.js` starts
    with a one-line comment saying it is a slice of `client.js` rather than a
    module; the builder strips it before concatenation, and a set of segments
-   that is only half declared is refused ("all or nothing").
-7. **Exception — the locale region.** The generated locale region inside
-   `client.js` is still produced by `scripts/locale-pack.mjs --write`; the slice
-   that contains it is embedded verbatim (§22).
+   that is only half declared is refused ("all or nothing"). Line budgets count
+   the slice **after** that strip, so `wc -l src/*.js` shows one extra line per
+   file (the largest segment reads 1201) while the 1200-line budget in §5.1
+   applies to the 1200 lines that actually land in `client.js`.
+7. **Exception — the locale region.** The generated locale region is still owned
+   by `scripts/locale-pack.mjs --write`, but since g-075 stage 2 that script
+   writes **the slice that carries it** — located by scanning `src/` for the
+   `zh` / `en` block headers, never hard-coded, with an ambiguous or missing
+   match refused — and then rebuilds `client.js`. A single `--write` therefore
+   leaves the source and the artifact in sync, and `--check` compares **both**
+   (§22).
 
 ### 23.3 What does not change
 

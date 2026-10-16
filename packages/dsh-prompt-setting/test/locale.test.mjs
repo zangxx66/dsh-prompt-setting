@@ -4,13 +4,16 @@
  * Before g-066 the plugin's copy lived inline in `client.js`: a 513-key `zh`
  * table, a 513-key `en` table, and a 51-row `ERROR_TEXT` table that a loop
  * expanded into `error.CODE` entries (564 keys per language). The dictionaries
- * now live in `locale/zh.json` / `locale/en.json`, and the blocks in `client.js`
- * are **generated** from them by `scripts/locale-pack.mjs`.
+ * now live in `locale/zh.json` / `locale/en.json`, and the blocks are **generated**
+ * from them by `scripts/locale-pack.mjs` — since g-075 stage 2 that script writes
+ * the `src/` slice that carries the blocks and then rebuilds `client.js`, so one
+ * `--write` leaves the source and the artifact in sync (CONTRACT.md §23.2).
  *
  * These tests pin the properties that make "generated" safe to say:
  *   - the JSON is valid, key-aligned and complete (no key can go missing);
- *   - the bundle's blocks are byte-for-byte what `--write` would produce, so a
- *     hand edit to the generated region is caught here rather than by a user;
+ *   - the carrying slice, and the bundle built from it, are byte-for-byte what
+ *     `--write` would produce, so a hand edit to either is caught here rather
+ *     than by a user;
  *   - the *negative* control: a single drifted character is reported, i.e. the
  *     check is not a no-op that passes on anything;
  *   - the delivery shape did not move: still a classic script, still a
@@ -20,17 +23,22 @@
  * Run: `node --test`
  */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { CLIENT_SRC_DIR } from '../scripts/client-build.mjs';
 import {
   LOCALES,
   checkLocaleSync,
+  findLocaleSegment,
   readDeclaredBlock,
   readDictionaries,
   renderDictionaryBlock,
+  renderLocaleSegment,
   writeDeclaredBlock,
 } from '../scripts/locale-pack.mjs';
 
@@ -44,6 +52,34 @@ function readText(relPath) {
   } catch {
     return null;
   }
+}
+
+/** `node:fs`-backed directory lister over the package root, never throwing. */
+function readDir(relPath) {
+  try {
+    return readdirSync(join(packageRoot, relPath));
+  } catch {
+    return null;
+  }
+}
+
+/** A throwaway copy of everything `locale-pack.mjs` reads — so `--write` can be run for real. */
+function throwawayPackage() {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-locale-pack-'));
+  for (const dir of ['core', 'scripts', 'locale', CLIENT_SRC_DIR]) {
+    cpSync(join(packageRoot, dir), join(root, dir), { recursive: true });
+  }
+  for (const name of readdirSync(packageRoot)) {
+    if (name === 'client.js' || /^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$/.test(name)) {
+      cpSync(join(packageRoot, name), join(root, name));
+    }
+  }
+  return root;
+}
+
+/** Run a script in a throwaway copy. */
+function run(root, script, ...flags) {
+  return spawnSync(process.execPath, [script, ...flags], { cwd: root, encoding: 'utf8' });
 }
 
 /**
@@ -135,7 +171,7 @@ test('locale: no placeholder drift beyond the one recorded exception', () => {
   assert.deepEqual(drift, [{ key: 'mineInterpolateNote', zh: 'cwd,model,provider', en: 'cwd,model,provider,variables' }]);
 });
 
-test('locale: the client.js blocks are exactly what --write produces', () => {
+test('locale: both the src/ segment and the bundle carry exactly what --write produces', () => {
   const { dictionaries } = readDictionaries(packageRoot);
   const source = readText('client.js');
   assert.notEqual(source, null);
@@ -145,19 +181,100 @@ test('locale: the client.js blocks are exactly what --write produces', () => {
     // The generator is idempotent: re-running it must not touch a byte.
     assert.equal(writeDeclaredBlock(source, name, dictionaries[name]), source, `${name}: --write is a no-op here`);
   }
-  const result = checkLocaleSync({ packageDir: packageRoot, readText });
+  // 阶段 2：真源是承载 locale 生成段的那个 `src/` 段；产物的块必须与它一致。
+  const segment = findLocaleSegment({ packageDir: packageRoot });
+  assert.notEqual(segment, null, 'src/ 里的 locale 段真源必须存在');
+  assert.equal(renderLocaleSegment(segment.text, dictionaries), segment.text, '段上的 --write 同样是恒等操作');
+  const result = checkLocaleSync({ packageDir: packageRoot, readText, readDir });
   assert.equal(result.ok, true, result.message);
   assert.equal(result.code, 'LOCALE-SYNC');
+  assert.match(result.message, /src\//, '一条 ok 里要同时说出段真源与产物');
 });
 
 test('locale: a drifted bundle block is refused, not tolerated', () => {
   const source = readText('client.js');
   const broken = source.replace("      nav: 'Prompt 管理',", "      nav: 'Prompt 管理（改）',");
   assert.notEqual(broken, source, 'the negative control really edits the block');
-  const result = checkLocaleSync({ packageDir: packageRoot, readText: (relPath) => (relPath === 'client.js' ? broken : null) });
+  const result = checkLocaleSync({
+    packageDir: packageRoot,
+    readText: (relPath) => (relPath === 'client.js' ? broken : readText(relPath)),
+    readDir,
+  });
   assert.equal(result.ok, false);
   assert.equal(result.code, 'LOCALE-SYNC');
+  assert.match(result.message, /client\.js/);
   assert.match(result.message, /--write/);
+});
+
+test('locale: a drifted src/ segment is refused even when the bundle is intact', () => {
+  const segment = findLocaleSegment({ packageDir: packageRoot });
+  assert.notEqual(segment, null);
+  const broken = segment.text.replace("      nav: 'Prompt 管理',", "      nav: 'Prompt 管理（段改）',");
+  assert.notEqual(broken, segment.text, 'the negative control really edits the segment');
+  const result = checkLocaleSync({
+    packageDir: packageRoot,
+    readText: (relPath) => (relPath === `${CLIENT_SRC_DIR}/${segment.name}` ? broken : readText(relPath)),
+    readDir,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'LOCALE-SYNC');
+  // 失败要指向**段真源**：旧实现只看 client.js，这半场是它的盲区。
+  assert.match(result.message, new RegExp(`${CLIENT_SRC_DIR}/${segment.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  assert.match(result.message, /--write/);
+  // 而 client.js 一个字节没动 —— 证明这次失败确实来自段真源。
+  assert.equal(readDeclaredBlock(readText('client.js'), 'zh').text.includes('段改'), false);
+});
+
+test('locale: --write lands in the src/ segment and rebuilds client.js in one shot', () => {
+  const root = throwawayPackage();
+  try {
+    const jsonPath = join(root, 'locale', 'zh.json');
+    const json = readFileSync(jsonPath, 'utf8');
+    const edited = json.replace('"nav": "Prompt 管理"', '"nav": "R1 一次到位"');
+    assert.notEqual(edited, json, 'the fixture edit really lands');
+    writeFileSync(jsonPath, edited);
+
+    const write = run(root, 'scripts/locale-pack.mjs', '--write');
+    assert.equal(write.status, 0, `--write 必须成功\n${write.stdout}\n${write.stderr}`);
+
+    const { dictionaries } = readDictionaries(root);
+    assert.equal(dictionaries.zh.nav, 'R1 一次到位');
+    const segment = findLocaleSegment({ packageDir: root });
+    assert.notEqual(segment, null);
+    // ① 段真源带上新文案
+    const segmentText = readFileSync(join(root, CLIENT_SRC_DIR, segment.name), 'utf8');
+    assert.equal(readDeclaredBlock(segmentText, 'zh').text, renderDictionaryBlock('zh', dictionaries.zh));
+    // ② 生成物也带上 —— 一次 --write 之后两边同时最新（这就是旧实现丢掉的那一步）
+    assert.equal(
+      readDeclaredBlock(readFileSync(join(root, 'client.js'), 'utf8'), 'zh').text,
+      renderDictionaryBlock('zh', dictionaries.zh),
+    );
+    // ③ / ④ 两道门都绿
+    assert.equal(run(root, 'scripts/client-build.mjs', '--check').status, 0, 'client-build --check 必须绿');
+    assert.equal(run(root, 'scripts/locale-pack.mjs', '--check').status, 0, 'locale-pack --check 必须绿');
+    // 反向：把刚写进段的文案手改掉（不跑 --write）⇒ 门必须红。
+    writeFileSync(join(root, CLIENT_SRC_DIR, segment.name), segmentText.replace('R1 一次到位', '手动回退'));
+    assert.notEqual(run(root, 'scripts/locale-pack.mjs', '--check').status, 0, '手改段真源必须被拒');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('locale: the dictionary segment is found, never hard-coded, and ambiguity is refused', () => {
+  const found = findLocaleSegment({ packageDir: packageRoot });
+  assert.notEqual(found, null);
+  assert.equal(found.name.endsWith('.js'), true);
+  // 真源不唯一 ⇒ fail-closed（重切之后两个段都含 zh/en 块）。
+  const listTwo = (relPath) => (
+    relPath === CLIENT_SRC_DIR ? [...readdirSync(join(packageRoot, CLIENT_SRC_DIR)), '02-also.js'] : readDir(relPath)
+  );
+  const readTwo = (relPath) => (relPath === `${CLIENT_SRC_DIR}/02-also.js` ? found.text : readText(relPath));
+  assert.throws(() => findLocaleSegment({ packageDir: packageRoot, readDir: listTwo, readText: readTwo }), /真源不唯一/);
+  // 命中 0 个 ⇒ fail-closed
+  const readNone = (relPath) => (relPath.startsWith(`${CLIENT_SRC_DIR}/`) ? '// 没有段\n' : readText(relPath));
+  assert.throws(() => findLocaleSegment({ packageDir: packageRoot, readText: readNone, readDir }), /真源缺失/);
+  // 没有 src/ ⇒ N/A（返回 null，不抛）：阶段 2 之前的包与最小 fixture 走这条。
+  assert.equal(findLocaleSegment({ packageDir: packageRoot, readDir: () => null }), null);
 });
 
 test('locale: client.js carries no second copy of the dictionaries', () => {

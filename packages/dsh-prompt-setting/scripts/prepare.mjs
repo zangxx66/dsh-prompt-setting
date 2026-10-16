@@ -155,7 +155,7 @@ function inspectLocale(filesField) {
       message: `${cut.join('、')} 不在 files 白名单里：安装时会被裁掉，包里只剩生成物`,
     };
   }
-  const result = checkLocaleSync({ packageDir: PACKAGE_DIR, readText });
+  const result = checkLocaleSync({ packageDir: PACKAGE_DIR, readText, readDir: listDir });
   return { level: result.ok ? PREPARE_OK : PREPARE_FAIL, code: result.code, message: result.message };
 }
 

@@ -3676,7 +3676,7 @@ help: Add the package to "allowBuilds" in your project's pnpm-workspace.yaml
 **写入该键后重试——`prepare` 真的执行了**，脚本输出原样出现在 pnpm 的 `npm-install:` 流里
 （19 项 ok + `prepare：OK`），安装成功、版本 `0.1.0`。
 
-> 这一条对用户是**成本**：本包零构建，`prepare` 只做自检，却同样要吃 `allowBuilds` 授权
+> 这一条对用户是**成本**：本包零编译，`prepare` 只做自检，却同样要吃 `allowBuilds` 授权
 > （授权 = 允许该包在安装时于本机执行代码，且不在 agent 沙箱内）。文档给出的替代路径是
 > 「分发构建产物」：装 npm 包或 `pnpm pack` 出来的 tarball 都不需要任何构建权限。
 > 取舍写在包 README 的安装一节。
@@ -9619,3 +9619,37 @@ GUI 截图核验；"高级"的默认值取"当前会话"而非工作区代表会
   6 处清单内，未改（属越界改动）；② 本文档的历史轮次记录（如 §154）保留"24 段""零构建"原样 ——
   那是当时的实况，不改写历史；③ 段重切让 git 无法识别 rename，`git diff` 会显示"删 24 个、加 17 个"，
   评审应依据"去头注后逐字节相同"这条判据，而不是 diff 的形状。
+
+---
+
+## 156. g-075 att-002 返工 R（R1–R4）：locale 工具链随真源迁移 + 两处改口收口 + §23 补口径（2026-10-16，基线 `18b35c7` 隔离工作树 `g-075-att-02`）
+
+独立评审 `rev-att-002-01` 判 PASS（0 BLOCK），但把 R1 列为必须修**高危**项：**真源迁移不完整**。
+阶段 2 起 `client.js` 是 `src/` 的生成物，而 `locale-pack.mjs --write` 仍以 `client.js` 为写入
+目标 ⇒ 同一份内容有两个写入者，`client-build --write` 会把刚写的文案**静默覆盖**。
+
+- **R1（治本，方案 A）**：`scripts/locale-pack.mjs` 的 `--write` 改为写**承载 locale 生成段的那个
+  `src/*.js`**，随后**立即**用 `client-build` 的 `renderClient()` 重建 `client.js` —— 一次
+  `--write`，两边同时最新。段文件由新增的 `findLocaleSegment()` **扫描定位**（要求恰好一个段
+  同时含 `blockOpen('zh')` / `blockOpen('en')`），**不硬编码 `02-locale.js`**；命中 0 个或多个
+  一律 fail-closed。`checkLocaleSync()` 改为**双端核对**：先核 `src/` 的段（真源），再核
+  `client.js` 的段（证明生成物就是真源的产物）—— 旧实现只核后者，漏掉的正是"段漂了而产物还没
+  重建"那半场。`scripts/prepare.mjs` 的 `inspectLocale` 传入 `readDir`，`LOCALE-SYNC` 因此在
+  发布面上也盯住段真源。
+- **R1 验证（一次性副本实测）**：改 `locale/zh.json` 的 `nav` → `locale-pack --write` ⇒
+  ① `src/02-locale.js` 含新文案 ② `client.js` 含新文案 ③ `client-build --check` = 0
+  ④ `locale-pack --check` = 0；反向对照三条：只改 `src/` 段 ⇒ `--check` 非零；段一致但
+  `client.js` 被手改 ⇒ 非零；段真源不唯一 / 缺失 ⇒ `--check` 与 `--write` 都非零。上述断言已
+  固化为 `test/locale.test.mjs` 的 4 条新用例（含一次到位的端到端副本测试）。
+- **R2（负责人已批）**：补改 2 处现行承诺性表述，均为行数中性：`NOTES.md:3679`（"本包零构建" →
+  "本包零编译"）、`core/prepare.js:13-14`（`zero-build` → 零编译，并修正后半句 —— `client.js`
+  不再是 tracked source，而是 `src/` 的生成物）。`docs/refactor-plan.md` 正文与 `NOTES.md` 的
+  历史轮次日志一概未动（那是当时的实况）。
+- **R3 / R4（低）**：`CONTRACT.md` §23 补两句 —— ① **坐标约定**：仓库里所有 `client.js:行` 引用
+  都记**段真源坐标**，`生成物行号 = 段真源行号 + 头注行数`（`docs/check-refs.mjs` 的
+  `CLIENT_HEAD_LINES` 就是这条的实现）；② **行数预算口径**：预算按**剥掉片段声明行之后**算，
+  所以 `wc -l src/*.js` 每文件多 1 行（最大段读作 1201，判的是 1200）。同步更新
+  `docs/architecture-map.md` 与 `src/README.md`（含 locale 段"不要手改"与 `--check` 命令）。
+- **验收**：`client-build --check` / `locale-pack --check` / `prepare` / `check-refs` 全部 exit 0；
+  `node --test test/*.test.mjs` **963 pass / 0 fail**；**判据 8 未回退** —— `tail -n +10 client.js`
+  与 `git show d3db711:…/client.js` 仍逐字节相同（`cmp` 空输出），`client.js` 本轮**零字节改动**。
