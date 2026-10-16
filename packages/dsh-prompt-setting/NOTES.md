@@ -9721,3 +9721,39 @@ g-075（客户端生成期分段，已 delivered）交付时由独立评审标�
 - **验收**：`client-build --check` / `locale-pack --check` / `prepare` / `check-refs` 全部 exit 0；
   `node --test test/*.test.mjs` **965 pass / 0 fail**（基线 963 + 2 条新用例；另有 3 条既有用例被扩展）；
   `git diff --exit-code packages/dsh-prompt-setting/client.js` 退出码 0（产品字节零改动）。
+
+---
+
+## 158. g-076 att-001 返工 S（S1–S3）：安装现场可执行的指引 + 文档↔常量入机器链（2026-10-16，基线 `0006cd6` 隔离工作树 `g-076-att-01`）
+
+独立评审 `rev-att-001-01` 判 **PASS（0 BLOCK）**，3 项非阻断问题里 2 项值得修。
+
+- **S1（应修）`CLIENT-SRC-SEGMENTS` 的消息指向安装现场不存在的文件**：原消息让人去看
+  `docs/refactor-plan.md` §5.1，但 `docs/` **不在 `files` 白名单**（不随包发布）⇒ 用户手里没有
+  那份文档、无从排查；而且实际比对对象是代码常量。现在消息指向随包的
+  `scripts/client-build.mjs` 的 `EXPECTED_SEGMENTS`，并把 §5.1 明确写成「它的来源副本
+  （docs/ 不随包发布，所以指引落在随包的常量上）」。OK 一侧的消息同步改为「段集合与
+  `EXPECTED_SEGMENTS` 一致」，`prepare.mjs` 与 `CONTRACT.md` §23.1 的对应描述一并跟上。
+- **S2（应修）§5.1 文档表与 `EXPECTED_SEGMENTS` 可静默漂移**：评审实测只改文档里的一个段名，
+  `check-refs` / `prepare` / `test/client-source.test.mjs` 会**全绿** —— 「常量 ↔ 测试写死的表 ↔
+  磁盘」有机器校验，「**文档 ↔ 常量**」这一环缺失（正是 g-072 反复吃的亏）。修法：
+  `docs/check-refs.mjs` 新增 `parseSegmentNames()`，在既有的 §5.1 表复算里**顺便断言 §5.1 的
+  段名集合（含顺序）== `EXPECTED_SEGMENTS`**（从 `../scripts/client-build.mjs` import，与它已
+  import `GENERATED_BANNER` 同法）。于是「文档 ↔ 常量 ↔ 测试表 ↔ 磁盘」四方全部入机器链。
+  **负向对照（实测）**：一次性副本里把 §5.1 的 `12-update.js` 改成 `12-updates.js` ⇒
+  `node docs/check-refs.mjs` **exit 1**，输出「§5.1 目标段表的段名集合与 scripts/client-build.mjs
+  的 EXPECTED_SEGMENTS 不符（文档缺 12-update.js；文档多出 12-updates.js）」；同一副本里
+  `prepare` 仍 exit 0（正说明这条链此前没有机器校验）；原工作树还原态 exit 0。
+- **S3（建议）消息区分两种语义**：缺段 ⇒「缺 `<段名>`（真源段丢了：装上去的 `src/` 再也生成不出
+  完整产物）」；多出陌生段 ⇒「多出 `<段名>`（有人重切/合并了段，却没同步这份段集合契约）」。
+  仍保留 FAIL —— 评审已确认不降级 `PREPARE_WARN`（降级会让「段缺失 = 真源数据丢失」重新静默）。
+  测试相应加断言：消息必须含 `scripts/client-build.mjs 的 EXPECTED_SEGMENTS`、必须含「真源段丢了」；
+  纯多出陌生段的场景**不得**出现「真源段丢了」。
+- **明确不做（评审确认）**：① install-time FAIL 不降级为 WARN；② §6.2 那处张力的「让 `--write`
+  自动派生段清单写进生成物并比对」折中受本目标「`client.js` 字节不变」硬约束，**记入后续目标**，
+  本轮不做。
+- **验收**：`client-build --check` / `locale-pack --check` / `prepare`（`ok CLIENT-SRC: src/ 下 17 个
+  段文件（段集合与 EXPECTED_SEGMENTS 一致），files 白名单已覆盖`）/ `check-refs`（新增输出行
+  `table §5.1 段名集合: 与 EXPECTED_SEGMENTS 一致（17 段）`）全部 exit 0；
+  `node --test test/*.test.mjs` **965 pass / 0 fail**；
+  `git diff --exit-code packages/dsh-prompt-setting/client.js` 退出码 0（产品字节仍零改动）。

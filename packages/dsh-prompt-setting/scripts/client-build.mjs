@@ -270,10 +270,13 @@ export function renderClient(options = {}) {
  *     例如 `test/prepare.test.mjs` 的最小 fixture）；
  *   - **FILES**：`src/` 存在或已声明，却没有可用的段文件 ⇒ FAIL；
  *   - **NOT-SHIPPED**：段文件在，却不在 `files` 白名单里 ⇒ FAIL（安装时会被裁掉）。
- *   - **SEGMENTS**（g-076 项 2）：段文件在、也发，但**段集合**与 §5.1 的目标段表不符
- *     （缺段或多出陌生段）⇒ FAIL。原实现只看「有没有、发不发」，于是删掉一个段之后
- *     `prepare` 仍 exit 0：产物（已发布的 `client.js`）完整、产品行为不变，但装到用户
- *     机器上的 `src/` 真源不完整、再也生成不出完整产物 —— 那正是这道门存在要防的事。
+ *   - **SEGMENTS**（g-076 项 2）：段文件在、也发，但**段集合**与 {@link EXPECTED_SEGMENTS}
+ *     不符 ⇒ FAIL（缺段 ⇒ 真源段丢了、再也生成不出完整产物；多出陌生段 ⇒ 有人重切/合并了
+ *     段却没同步这份集合契约）。原实现只看「有没有、发不发」，于是删掉一个段之后 `prepare`
+ *     仍 exit 0：产物（已发布的 `client.js`）完整、产品行为不变，但装到用户机器上的 `src/`
+ *     真源不完整 —— 那正是这道门存在要防的事。集合真源记为 {@link EXPECTED_SEGMENTS}
+ *     （`docs/refactor-plan.md` §5.1 目标段表的代码副本），因为 `docs/` 不随包发布、
+ *     安装现场读不到它，指引必须落在随包的常量上（g-076 返工 S1）。
  * 段文件都在、都声明了、集合也对上 ⇒ `CLIENT-SRC`（ok）。
  *
  * 注意本门禁看**发布面 + 集合**；「生成物与段是否**逐字节**一致」由
@@ -321,28 +324,36 @@ export function inspectClientSource(filesField, io = {}) {
       message: `${CLIENT_SRC_DIR}/ 不在 files 白名单里：安装时会被裁掉，包里只剩生成物 client.js`,
     };
   }
-  // g-076 项 2：集合对账（段名逐名比对 §5.1 目标段表）。缺段 ⇒ 装到用户机器上的
-  // `src/` 真源再也生成不出完整产物，与「真源缺失」是同一类后果；多出陌生段 ⇒ 有人
-  // 重切了段却没同步这份表，同样要停。
+  // g-076 项 2：集合对账（段名逐名比对 §5.1 目标段表的代码副本 {@link EXPECTED_SEGMENTS}）。
+  // 缺段 ⇒ 装到用户机器上的 `src/` 真源再也生成不出完整产物，与「真源缺失」是同一类
+  // 后果；多出陌生段 ⇒ 有人重切了段却没同步这份集合契约。两种语义在下面的消息里分开说，
+  // 因为它们要修的是不同的一边。
   const found = segments.map((segment) => segment.name);
   const missing = EXPECTED_SEGMENTS.filter((name) => !found.includes(name));
   const unexpected = found.filter((name) => !EXPECTED_SEGMENTS.includes(name));
   if (missing.length > 0 || unexpected.length > 0) {
     const parts = [];
-    if (missing.length > 0) parts.push(`缺 ${missing.join('、')}`);
-    if (unexpected.length > 0) parts.push(`多出 ${unexpected.join('、')}`);
+    if (missing.length > 0) {
+      parts.push(`缺 ${missing.join('、')}（真源段丢了：装上去的 ${CLIENT_SRC_DIR}/ 再也生成不出完整产物）`);
+    }
+    if (unexpected.length > 0) {
+      parts.push(`多出 ${unexpected.join('、')}（有人重切/合并了段，却没同步这份段集合契约）`);
+    }
     return {
       level: PREPARE_FAIL,
       code: 'CLIENT-SRC-SEGMENTS',
+      // 指引必须指向**随包发布**的东西：`docs/` 不在 `files` 白名单里，安装现场读不到它。
       message:
-        `${CLIENT_SRC_DIR}/ 的段集合与 docs/refactor-plan.md §5.1 目标段表不符（${parts.join('；')}；`
-        + `实有 ${found.length} 段）：装上去的 src/ 真源无法再生成出完整的 client.js`,
+        `${CLIENT_SRC_DIR}/ 的段集合与 scripts/client-build.mjs 的 EXPECTED_SEGMENTS 不符（${parts.join('；')}；`
+        + `实有 ${found.length} 段）。EXPECTED_SEGMENTS 是 docs/refactor-plan.md §5.1 目标段表的代码副本`
+        + `（docs/ 目录不在 files 白名单、不随包发布，所以这里指向随包的脚本常量）：`
+        + `按它补齐 ${CLIENT_SRC_DIR}/ 的段，或同步 EXPECTED_SEGMENTS 与 §5.1 表`,
     };
   }
   return {
     level: PREPARE_OK,
     code: 'CLIENT-SRC',
-    message: `${CLIENT_SRC_DIR}/ 下 ${segments.length} 个段文件（段集合与 §5.1 目标段表一致），files 白名单已覆盖`,
+    message: `${CLIENT_SRC_DIR}/ 下 ${segments.length} 个段文件（段集合与 EXPECTED_SEGMENTS 一致），files 白名单已覆盖`,
   };
 }
 

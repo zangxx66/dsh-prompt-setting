@@ -20,6 +20,9 @@
  *
  * 另外校验 **§1.3 版图表**与 **§5.1 目标段表**（R4-C1）：行数 == 区间长度、区间首尾相接、
  * 合计 == 12382、每段 ≤ 1200。这两张表是阶段 1/2 的门禁基础，必须可复跑而不是粘贴输出。
+ * **§5.1 的段名集合还与发布门的 `EXPECTED_SEGMENTS` 逐名对账（g-076 返工 S2）**：
+ * 「文档 ↔ 常量 ↔ 测试表 ↔ 磁盘」四方都必须在机器链上，否则文档里改错一个段名无人发现
+ * —— 而 `docs/` 不随包发布，安装现场只能看到随包的常量，两侧一旦漂移就再也对不上。
  *
  * **生成物头注与坐标平移（g-075 阶段 2）**：`client.js` 从阶段 2 起是**生成物**，
  * 顶部有 `scripts/client-build.mjs` 注入的「生成物，勿手改」头注（{@link GENERATED_BANNER}）。
@@ -48,7 +51,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { GENERATED_BANNER } from '../scripts/client-build.mjs';
+import { EXPECTED_SEGMENTS, GENERATED_BANNER } from '../scripts/client-build.mjs';
 
 /** `docs/` 目录（本文件所在）。 */
 const DOCS_DIR = dirname(fileURLToPath(import.meta.url));
@@ -466,6 +469,27 @@ function parseSpanTable(lines, startPrefix, endPrefix, rowPattern) {
 }
 
 /**
+ * 从 §5.1 目标段表里解析**段名集合**（每行第一列的反引号段名，按表内顺序）。
+ *
+ * 为什么体检要管这个（g-076 返工 S2）：段名集合从此有两份真源 —— 文档表与
+ * `scripts/client-build.mjs` 的 {@link EXPECTED_SEGMENTS}（发布门 `CLIENT-SRC-SEGMENTS`
+ * 比的就是后者，因为 `docs/` 不随包发布）。只钉住「常量 ↔ 测试写死的表 ↔ 磁盘」而漏掉
+ * 「文档 ↔ 常量」，文档里改错一个段名就无人发现 —— 这正是 g-072 反复吃的亏。
+ * @param lines - 文档行数组。
+ * @returns 段名数组（解析不到时为空数组）。
+ */
+function parseSegmentNames(lines) {
+  const start = lines.findIndex((line) => line.startsWith('**阶段 2 的目标段划分'));
+  const end = lines.findIndex((line, index) => index > start && line.startsWith('合计 12382 行'));
+  const names = [];
+  for (const line of lines.slice(start, end === -1 ? undefined : end)) {
+    const m = /^\|\s*`([^`]+)`\s*\|/.exec(line);
+    if (m !== null) names.push(m[1]);
+  }
+  return names;
+}
+
+/**
  * 校验 §1.3 版图表与 §5.1 目标段表（R4-C1）的可复算不变式。
  * @param lines - 文档行数组（已剔除围栏代码块）。
  * @returns 失败说明数组（空数组 = 全部成立）。
@@ -508,6 +532,22 @@ function checkTables(lines) {
     const total = rows.reduce((sum, row) => sum + row.count, 0);
     if (total !== 12382) failures.push(`${name}: 行数合计 ${total}，应为 12382`);
     process.stdout.write(`  table ${name}: rows=${rows.length} 合计=${total} 最大段=${Math.max(...rows.map((r) => r.count))}\n`);
+  }
+  // g-076 返工 S2：§5.1 的**段名集合**必须与 `scripts/client-build.mjs` 的
+  // EXPECTED_SEGMENTS 逐名一致 —— 发布门 `CLIENT-SRC-SEGMENTS` 比对的是后者（`docs/`
+  // 不随包发布），所以文档这一侧也得在机器链上，否则改错段名无人发现。
+  const documented = parseSegmentNames(lines);
+  if (documented.length === 0) {
+    failures.push('§5.1 目标段表: 没解析到任何段名（表格第一列的结构变了？）');
+  } else if (documented.join('\n') !== [...EXPECTED_SEGMENTS].join('\n')) {
+    const missing = EXPECTED_SEGMENTS.filter((name) => !documented.includes(name));
+    const extra = documented.filter((name) => !EXPECTED_SEGMENTS.includes(name));
+    const detail = missing.length > 0 || extra.length > 0
+      ? `文档缺 ${missing.join('、') || '(无)'}；文档多出 ${extra.join('、') || '(无)'}`
+      : `段名相同但顺序不同：文档 ${documented.join(',')} ≠ EXPECTED_SEGMENTS ${[...EXPECTED_SEGMENTS].join(',')}`;
+    failures.push(`§5.1 目标段表的段名集合与 scripts/client-build.mjs 的 EXPECTED_SEGMENTS 不符（${detail}）`);
+  } else {
+    process.stdout.write(`  table §5.1 段名集合: 与 EXPECTED_SEGMENTS 一致（${documented.length} 段）\n`);
   }
   return failures;
 }

@@ -570,7 +570,7 @@ test('prepare: the src/ gate reports the shipped source, and fails both ways it 
     const healthy = runPrepare();
     assert.equal(healthy.status, 0, `the copy must start clean\n${healthy.stdout}`);
     assert.match(healthy.stdout, /ok {4}CLIENT-SRC: src\/ 下 17 个段文件/);
-    assert.match(healthy.stdout, /段集合与 §5\.1 目标段表一致/);
+    assert.match(healthy.stdout, /段集合与 EXPECTED_SEGMENTS 一致/);
 
     // ⓪' g-076 项 2：段**少了一个** ⇒ FAIL。旧实现只报「16 个段文件」然后 exit 0 ——
     // 产物完整、产品行为不变，但装到用户机器上的 src/ 再也生成不出完整产物。
@@ -581,6 +581,10 @@ test('prepare: the src/ gate reports the shipped source, and fails both ways it 
     assert.notEqual(shortSet.status, 0, `expected a non-zero exit\n${shortSet.stdout}`);
     assert.match(shortSet.stdout, /FAIL {2}CLIENT-SRC-SEGMENTS/);
     assert.match(shortSet.stdout, /12-update\.js/);
+    // 返工 S1：安装现场读不到 docs/，指引必须指向随包的 scripts/client-build.mjs 常量…
+    assert.match(shortSet.stdout, /scripts\/client-build\.mjs 的 EXPECTED_SEGMENTS/);
+    // …并且说清这是「真源段丢了」，而不是别的什么。
+    assert.match(shortSet.stdout, /真源段丢了/);
     writeFileSync(droppedSegment, droppedText); // 复位：后面的步骤从干净状态继续
 
     // ① 段在，白名单不覆盖 ⇒ 装到用户机器上的包只剩生成物。

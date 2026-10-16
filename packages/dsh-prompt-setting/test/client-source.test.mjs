@@ -298,12 +298,20 @@ test('client source: the publish gate is tri-state (N/A / FILES / NOT-SHIPPED)',
   assert.equal(missing.level, PREPARE_FAIL);
   assert.equal(missing.code, 'CLIENT-SRC-SEGMENTS');
   assert.match(missing.message, /12-update\.js/);
+  // 返工 S1：指引必须指向**随包发布**的常量，而不是安装现场读不到的 docs/…
+  assert.match(missing.message, /scripts\/client-build\.mjs 的 EXPECTED_SEGMENTS/);
+  assert.match(missing.message, /不随包发布/);
+  // …且 §5.1 只作为「这份常量的来源」被提及（它不在 files 白名单里）。
   assert.match(missing.message, /§5\.1/);
-  // 多出一个陌生段（有人重切了段却没同步 §5.1 表与这份常量）⇒ 同样 FAIL。
+  // 返工 S3：缺段说的是「真源段丢了」，不是笼统的集合不符。
+  assert.match(missing.message, /真源段丢了/);
+  // 多出一个陌生段（有人重切了段却没同步这份集合契约）⇒ 同样 FAIL，但语义不同。
   const extra = inspectClientSource(packageJson.files, { listDir: () => [...realDir(), '17-extra.js'] });
   assert.equal(extra.level, PREPARE_FAIL);
   assert.equal(extra.code, 'CLIENT-SRC-SEGMENTS');
   assert.match(extra.message, /17-extra\.js/);
+  assert.match(extra.message, /重切\/合并了段/);
+  assert.doesNotMatch(extra.message, /真源段丢了/);
   // 集合真源只有一份：这份常量必须与测试里写死的 §5.1 表、以及磁盘上的 src/ 三方一致。
   assert.deepEqual([...EXPECTED_SEGMENTS], SEGMENTS.map((segment) => segment[2]));
   assert.deepEqual([...EXPECTED_SEGMENTS], segmentNames(readdirSync(join(packageDir, CLIENT_SRC_DIR))).map((s) => s.name));
