@@ -34,7 +34,7 @@ import { PREPARE_FAIL, PREPARE_OK, PREPARE_WARN, filesCoverPath, inspectPackage 
 import { clientChunkStamps } from '../core/store.js';
 import { readDeclaredStamps, sameStamps } from './client-chunks.mjs';
 import { LOCALE_DIR, LOCALES, checkLocaleSync } from './locale-pack.mjs';
-
+import { inspectClientSource } from './client-build.mjs';
 /** 包根目录（本文件在 `scripts/` 下）。 */
 const PACKAGE_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -178,8 +178,8 @@ const { ok, findings } = inspectPackage({ pkg, readText, listDir });
 // g-045: the chunk manifest is the one file-vs-file agreement the build stamp
 // depends on, so it is checked on the publish path too — not only by tests.
 findings.push(inspectClientChunks());
-// g-066: same reasoning for the dictionaries — the inlined blocks are generated
-// from locale/*.json, and a stale generation ships yesterday's copy.
+// g-066/g-075: the dictionaries and the client segments are the truth client.js is generated from.
+findings.push(inspectClientSource(pkg && pkg.files));
 findings.push(inspectLocale(pkg && pkg.files));
 const label = { [PREPARE_OK]: 'ok  ', [PREPARE_WARN]: 'warn', [PREPARE_FAIL]: 'FAIL' };
 for (const finding of findings) say(`  ${label[finding.level] ?? finding.level}  ${finding.code}: ${finding.message}`);

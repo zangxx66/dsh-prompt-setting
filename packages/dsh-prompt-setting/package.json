@@ -22,7 +22,7 @@
   "files": [
     "index.js",
     "core",
-    "client.js",
+    "client.js", "src",
     "client.*.js",
     "locale",
     "cordis.patch.yml",
@@ -33,7 +33,9 @@
   ],
   "scripts": {
     "prepare": "node scripts/prepare.mjs",
-    "check-compat": "node scripts/check-compat.mjs"
+    "check-compat": "node scripts/check-compat.mjs",
+    "client:build": "node scripts/client-build.mjs --write",
+    "client:check": "node scripts/client-build.mjs --check"
   },
   "keywords": [
     "dsh",

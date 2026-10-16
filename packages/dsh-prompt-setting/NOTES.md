@@ -9552,3 +9552,36 @@ GUI 截图核验；"高级"的默认值取"当前会话"而非工作区代表会
   R1-6 `client.js` 的注释改正为「state 初值 `null`，有效值回落 `seat.currentId`」。
 - **负向对照（R1-2 专用）**：把 `panelGate` 的高级分支改回 `m.snap` ⇒ 新用例
   `g-073 R1 — a failing page-scoped snapshot blanks no other tab` 变红（高级 0 节点），已还原。
+
+---
+
+## 154. g-075 att-001：客户端生成期分段 —— 阶段 1（生成管线就位 + 零语义搬家）（2026-10-16，基线 `3c4bdca` 隔离工作树 `g-075-att-01`）
+
+目标 `g-075` 依方案 `docs/refactor-plan.md`（g-072 delivered）实施客户端分段。本批只做**阶段 1**：
+把 `client.js` 的真源切进 `src/`（**24 段 = §1.3 版图的 24 个连续区间，一行不移动**），由新脚本
+按文件名字典序拼接回**同一个 `client.js`**。阶段 2（重排到 17 段 + 头注 + 契约改口）不在本批。
+
+- **交付**：`scripts/client-build.mjs`（`readSegments` / `renderClient` / `--write` / `--check`，
+  以及三态发布门禁 `inspectClientSource`）、`src/00-header.js` … `src/23-boot.js`（24 段）、
+  `test/client-source.test.mjs`（逐字节等价 / 零移动 / 幂等 / 预算扳机 / 两条负向对照）；
+  `package.json` 加 `"src"` 与 `client:build` / `client:check`；`scripts/prepare.mjs` 接上
+  `CLIENT-SRC` 三态（`N/A` / `FILES` / `NOT-SHIPPED`）。
+- **实测验收**：`node scripts/client-build.mjs --write` 之后
+  `git diff --exit-code packages/dsh-prompt-setting/client.js` 退出码 **0**（逐字节等价，12382 行、
+  磁盘 623537 字节、md5 `49805cb728ced195a2b37932bd18750c`）；`--check` 幂等（`writeDeclaredStamps(clientSource, clientChunkStamps(pkgDir)) === clientSource`）；
+  `node --test test/*.test.mjs` 全绿；`node docs/check-refs.mjs` 退出码 0。
+- **阶段 1 不写任何头注**（R1-1）：加头注即改字节，与"逐字节等价"互斥；头注属阶段 2。段首
+  "片段，不是独立模块"声明同理——生成器已实现逐段剥离（有单测覆盖），但阶段 1 的段里没有它。
+- **行锚点纪律（本阶段唯一非显然的约束）**：`docs/check-refs.mjs` 把 `package.json:22-33`、
+  `package.json:27`、`scripts/prepare.mjs:180-183`、`test/host.test.mjs:171-197`、
+  `test/prepare.test.mjs:487-539` 这些**行号**当断言，而引用来源 `docs/refactor-plan.md` 是只读的。
+  所以阶段 1 对既有文件的改动一律**行数中性**：`package.json` 的 `"src"` 与 `"client.js"` 同排、
+  `prepare.mjs` 的新 import 占用原来的空行、`host.test.mjs` 的 `'src'` 与 `'client.js'` 同排。
+  新增文件（生成器 / `src/` / 新测试）不受此限。
+- **留给阶段 2 的硬冲突（需负责人裁决）**：§9-1 的改口要求把 `scripts/prepare.mjs:9` / `:162` 与
+  `NOTES.md:3635` 的"零构建"改成"零编译"，而 `docs/check-refs.mjs` 的 REFS 表把这三行**逐字**钉住
+  （`零构建包` / `零构建`）；方案文档只读 ⇒ 只改代码必然让 `check-refs` 变红。阶段 2 需要在
+  "同步 REFS 表锚点（并接受方案正文三处引用过期）"与"换一种不触发该断言的措辞"之间明选，建议
+  由负责人在阶段 2 派发前裁决。
+- **残余**：`prepare` 的 `CLIENT-SRC` 只看**发布面**（有没有、发不发），不做"生成物与段是否一致"的
+  字节比对——那一步在阶段 1 仍由 `client-build.mjs --check` 与测试守住（方案 §6.2 原样如此）。
