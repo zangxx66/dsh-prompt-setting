@@ -9108,3 +9108,37 @@ phase 1/2 直接用记录里的 root 拼 `workspaceConfigPath(root)` 并 `writeC
 - 用例数 934 → 935（新增 stage2 `… registry address the route would refuse … (R2)` 一条；transfer 的 preferences 负向表加 5 个非法地址 + 1 条「合法地址原样往返」断言，都在既有用例内）；
 - `grep -n '"only": "prompt-setting:custom-prompt"\|names only' CONTRACT.md` ⇒ **零命中**；`403 write-locked` 的 16 处按上表分类，导入语境的 6 处全部带废置标注。
 
+### 151.3 R3 返工：5 处新不一致 + **行为驱动的契约核对**（评审 rev-att-001-03 BLOCK，仍是判据 6）
+
+**评审结论**：实现面/安全面/测试面全部通过；阻断仍是契约同步——4 处**新**不一致 + 1 处表述过强。评审同时指出方法缺陷：R3-4 那句旧行为表述**不含任何关键词**，因此从 R1/R2 的关键词自查里整句逃掉了。本轮按要求**换方法**：按**行为**逐条在全文定位其**所有**表述。
+
+**5 处修复**
+
+| # | 位置（修改后行号） | 问题 | 处置 |
+| --- | --- | --- | --- |
+| R3-1 | §15.8 说明段 `:4734-4739` | 括号句说「两行 `403 write-locked` 是 Revision 7 值、已从表中移除」，与表格（`PUT`/`DELETE` 仍是 `403`）及同段「Its `PUT` … rows are **unchanged** (`403 write-locked`)」三处互斥；且 `Exported` 的旧值是 `no — counted in exportScope.omitted`，从来不是 403 | 括号句改为「**Their** Revision 7 values (`no — counted in exportScope.omitted` and `403 write-locked`) are gone, replaced by `yes`」，并通读整段确认三处一致 |
+| R3-2 | §11.6 `:1930-1934`、§4.4 `:1121` | 实现是 `… file(s) were already replaced`（`core/store.js`），契约却写 `layers`，同段又声称「it says "file(s)" where it used to say "layer(s)"」 | 两处都改为 **`file(s)`** 表述（§4.4 行同时注明批次覆盖四类文件） |
+| R3-3 | §11.2 示例 `:1853-1893` | 示例缺 `workspaces`/`importedWorkspaces`/`workspaceTotals`/`presets`/`preferences`（与 §11.7 打架），且无历史标注 | 示例补成实际形状（含六个新字段 + `schema`/`exportedAt`），并加一段说明哪些键只在 dry-run / 实际写时出现、`totals` 只算层视图、`workspaceTotals` 单独算工作区 |
+| R3-4 | §19.1 `:6483-6489` | 「`PUT`、单名 `DELETE` **和 `POST /import`** all refuse any other name」——import 已不再拒绝；该句不含关键词，逃过前两轮自查 | 改为「`PUT` 与单名 `DELETE` refuse any other name」+ 括号更正「`POST /import` 自 Revision 53 起不再有名字锁；下面结论不变」 |
+| R3-5 | §11.7 `:2019-2027` | 「what the document carried is what is written」过强：`validatePreferencesDocument` 返回 `normalizePreferences`（address 会 trim、缺 `updateCheck` 补默认 `true`） | 限定为「import applies **no URL normalization of its own**（不重写尾斜杠），地址按文档携带（trim 后）写入」并显式说明存储值仍是 normalizer 的输出 |
+
+**行为驱动的全文核对表**（8 条行为 → 契约位置 → 当前表述 → 处置；行号为 R3 修改后）
+
+| 行为（当前实现） | 契约中它的**所有**表述（§ + 行） | 当前表述 / 处置 |
+| --- | --- | --- |
+| ① 导入对非 reserved 名**不再拒绝**（无写锁） | §7 概览 bullet `:142`；§11.1 step 3 `:1804`；§11.1 R53 段 `:1825-1841`；§15.7 标题+废置注 `:4650-4665`；§15.7 R53 段 `:4686-4714`；§19.1 `:6483-6489` | 旧行为表述全部保留为历史并**逐处带废置/更正标注**：`:142` inline「withdrawn in Revision 53」、`:1804` inline「this step is gone in Revision 53」、`:4650` 斜体废置注、`:6483` R3-4 本轮更正；`:1825`/`:4686` 为 Revision 53 的正向表述 |
+| ② 导出**不再**只带 reserved（`customOverridesOnly` 已删） | §7 概览 bullet `:145`；§4.1 标题 `:994`（PUT 语境）；§10 Rev7 段 `:1715-1740`；§10 Rev36 段 `:1741-1746`；§10 v2 表 `:1756`；§15.7 `:4682-4685`；§20「why a third file」`:2633-2644`；§20.8 `:6975-6983` | `:145` inline withdrawn；`:1715` 段标 Superseded；`:1741` 本轮加 inline「one override per layer 是 R7–52 表述」；`:1756` 明说「Nothing is filtered; `customOverridesOnly` is gone」；`:4682` 本轮加 inline（v2 下多条目再次可达）；`:2633` 本轮加「Revision 37–52 反对把库放进导出文档，R53 推翻了这一半」；`:6975` 本轮加 inline「superseded by Revision 53」（其后有撤回段） |
+| ③ `exportScope` 语义（`full/only:null/omitted 恒 0/omittedApplied/unavailable`） | §7 概览 bullet `:144`；§10 v2 示例 `:1691-1701`；§10 Rev7 段+表 `:1715-1740`；§10 v2 表 `:1771-1789`；§10 说明段 `:1736-1737` | `:144` inline withdrawn；`:1715` 标注**只覆盖「the table below」**（R3 本轮修掉 R2 引入的「the shape above」错句，因为示例已换成 v2）；`:1728-1730` 三行标「Revision 7 only」+ 现值；`:1771` 起为新语义全表（含 `omittedApplied`） |
+| ④ 导出范围＝**全部注册工作区**（不再只含 `?session=` 解析到的那一个） | §5.x 层解析表 `:1055`（单会话语境，正确）；§10 v2 表 `:1757`；§10 说明 `:1711-1713`；§1/§7 概览（无 export 范围表述） | `:1757` 明说「One entry per **workspace layer the Host registers** … 不再取决于哪个会话提问，按 `root` 排序」；`:1711` 说明 `?layer=` 不收窄安装级半区；`:1055` 是「某会话解析到哪一层」的通用说明，与导出全量不冲突（未改） |
+| ⑤ 未注册 workspace root → **整体拒绝零写入**（import 与 delete-preset 同口径） | §4.4 `:1127`；§11.1 `:1836`；§11.7 `:1947-1963`（含 R1 三防线）；§11.7 R1 段 `:2012-2029`；§20.4 `:6773-6810`；§20.7 `:6963` | 全部为 Revision 53/R1 的正向表述；`:1947` 首句已限定为「a path *this profile does not own*」；无旧行为残留 |
+| ⑥ `import-commit-failed` 消息措辞 | §4.4 `:1121`；§11.6 `:1928-1934` | R3-2 本轮把两处 `layers` 改为 **`file(s)`**，与 `core/store.js` 一致 |
+| ⑦ 预设库与偏好**纳入**导出/导入 | §1/§7 概览 `:156`；§10 v2 表 `:1758-1759`；§10 `:1788`（`unavailable`）；§11.2 `:1884`；§11.7 `:1947-2050`；§20.6 `:2659-2666`；§20.8 `:6975-7000` | `:1758-1759` 正向（库/偏好为顶层字段，含 R1/R2 的省略规则）；`:1788` 声明省略原因；`:2659` 本轮加 inline 更正「R53 推翻了『库不进备份』这一半」；`:6975` 本轮加 inline「superseded」（其后撤回段说明库已随备份走）；`:6985` 起为正向段 |
+| ⑧ 文档 `version`（1→2，读侧接受 2/1）与层名白名单 | §10 标题 `:1653`；§10 v2 示例 `:1662`；§10 说明 `:1705-1713`；§10 v2 段 `:1761-1767`；§4.4 `:1111`（version）、`:1122`（层名）；§11.1 `:1829` | `:1653` 标题标「full backup in Revision 53」；`:1761` 明说「writes 2, still accepts 1」；`:1111` 本轮补「writes `2` and reads `2` and `1`」；`:1122`/`:1829` 层名白名单为 Revision 53 正向表述 |
+
+**方法对比（为什么这次能覆盖 R3-4）**：关键词自查只覆盖「我预料到的措辞」；行为驱动核对按「这条行为在契约里可能被怎么描述」逐条穷举（例如行为①除 `403 write-locked` 外还查 `refuse any other name`/`may be imported`/`must carry no section name`，行为⑦除 `presets` 外还查 `travels in an export`/`backup is portable`/`why a third file`），因而找到了 R3-4（§19.1）与另外两处评审未点到的遗漏：§20.6 的「No preset travels in `GET /export`」、§20「why a third file」里的「a backup is portable and a catalogue is not」。
+
+**验收（R3 实跑，基于 3dc08e9 之上的工作树、未提交）**
+
+- evidence: suite=node --test(test/*.test.mjs) passed=935 failed=0 exit=0 ms=52428；`node scripts/prepare.mjs` = OK（23 项，`LOCALE-SYNC` 567 键）exit 0（纯文档改动，用例数不变）；
+- `grep -n "how many layers\|refuse any other name\|are gone from the table" CONTRACT.md` ⇒ **零命中**。
+

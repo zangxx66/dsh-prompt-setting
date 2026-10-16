@@ -1108,7 +1108,7 @@ human-readable `message`.
 | `400` | `invalid-export` | The import body is not a JSON object. |
 | `400` | `unknown-export-schema` | `schema` is not `dsh-prompt-setting/export`. |
 | `400` | `missing-export-version` | The document has no integer `version`. |
-| `400` | `unsupported-export-version` | `version` is not the version this build accepts. |
+| `400` | `unsupported-export-version` | `version` is not a version this build accepts — **Revision 53** writes `2` and reads `2` and `1` (§10, §11.1). |
 | `400` | `missing-export-layers` | `layers` is absent, not an object, or carries no known layer. |
 | `400` | `missing-export-layer` | `?layer=` names a layer the document does not carry. |
 | `400` | `invalid-export-layer` | A layer is not an object, or `overrides` is not an array. |
@@ -1118,7 +1118,7 @@ human-readable `message`.
 | `404` | `history-not-found` | `diff` named a history id that layer's log does not hold. |
 | `500` | `import-verify-failed` | A staged temp file failed its own read-back validation; nothing was replaced. |
 | `500` | `import-staging-failed` | A staged temp file could not be written; nothing was replaced. |
-| `500` | `import-commit-failed` | A rename failed during the commit; the message says how many layers were already replaced. |
+| `500` | `import-commit-failed` | A rename failed during the commit; the message says how many **file(s)** were already replaced (Revision 53: the batch covers layer configs, workspace configs, the library and the preferences). |
 | `400` | `unknown-export-layer` | **Revision 53.** A `layers` key other than `user`/`workspace` (§11.1). |
 | `400` | `unexpected-export-field` | **Revision 53.** A version 1 document carries `workspaces`/`presets`/`preferences`. A field that is `null` counts as **not carried**, so `{"version":1,"presets":null}` is a version 1 document like any other. |
 | `400` | `invalid-export-workspaces` / `invalid-export-workspace` | **Revision 53.** `workspaces` is not an array, or an entry is not `{root, enabled?, reason?, overrides?}`. |
@@ -1714,8 +1714,8 @@ same document can be re-imported without a session (§11.3).
 
 **Revision 7 — the document is the reserved section only, and it says so.**
 *Superseded by Revision 53 (g-074); kept as the history of where `exportScope`
-came from. Both the shape above and the table below describe the Revision 7
-document, so read them as that and not as current behaviour — in particular
+came from. The paragraphs and the table below describe the Revision 7 document,
+so read them as that and not as current behaviour — in particular
 `exportScope.only` is `null` today, never a section name.*
 
 `layers.<layer>.overrides` holds at most the reserved override, because that is
@@ -1737,7 +1737,10 @@ and `layers.*.layer/enabled/reason` fields are byte-identical to Revision 6; a
 consumer that ignores `exportScope` reads exactly what it read before, minus the
 entries it could no longer import.
 
-**Revision 36 — the entry is exported whole, mode included.** The one override
+**Revision 36 — the entry is exported whole, mode included.** *(The「one override
+per layer」in the first sentence is a Revision 7–52 statement: since Revision 53
+the route copies **every** entry of each layer under this same「as stored」rule —
+see the Revision 53 note next.)* The one override
 per layer is copied as stored, so its `action` may be `append` (「叠加」): a backup
 restored on another machine reproduces the same assembly rather than quietly
 downgrading to「覆盖」. Nothing else about the document changes — the mode is not a
@@ -1853,20 +1856,39 @@ neither touches a byte.
 ```json
 {
   "ok": true, "dryRun": false, "mode": "merge", "session": null,
+  "schema": "dsh-prompt-setting/export", "exportedAt": "2024-01-02T10:00:00.000Z",
   "layers": {
     "user": { "counts": { "added": 1, "replaced": 1, "unchanged": 0, "removed": 0, "kept": 1 },
               "changes": [ { "name": "project:alpha", "status": "replaced", "action": "replace" } ],
               "path": "…", "enabled": true }
   },
+  "workspaces": [
+    { "root": "/abs/path/to/workspace",
+      "counts": { "added": 1, "replaced": 0, "unchanged": 0, "removed": 0, "kept": 1 },
+      "changes": [ { "name": "prompt-setting:custom-prompt", "status": "added", "action": "append" } ],
+      "path": "…/.dsh-prompt-setting/overrides.json", "enabled": true }
+  ],
+  "presets": { "path": "…/presets.json", "changed": true, "presets": 3, "applied": 1 },
+  "preferences": { "path": "…/preferences.json", "changed": false, "keys": ["updateCheck", "downloadRegion"] },
   "imported": ["user"],
-  "skipped": [ { "layer": "workspace", "reason": "…", "entries": 0 } ],
+  "importedWorkspaces": ["/abs/path/to/workspace"],
+  "skipped": [],
   "totals": { "added": 1, "replaced": 1, "unchanged": 0, "removed": 0, "kept": 1 },
+  "workspaceTotals": { "added": 1, "replaced": 0, "unchanged": 0, "removed": 0, "kept": 1 },
   "unchanged": false,
   "applied": true,
   "written": ["/home/u/.dsh/prompt-setting/overrides.json"],
   "history": { "user": [ { "name": "project:alpha", "status": "replaced", "ok": true, "id": "4", "seq": 4, "dropped": 0, "rewritten": false } ] }
 }
 ```
+
+The keys above are the Revision 53 (g-074) shape; `schema` / `exportedAt` are
+echoed on the `?dryRun=true` answer only, `written` / `history` only on a real
+one, and the installation-level half (`workspaces`, `presets`, `preferences`,
+`importedWorkspaces`, `workspaceTotals`) is present on both — see §11.7 for what
+each field means. A version 1 document carries none of the installation half, so
+those fields come back empty. `totals` sums the **layer views**; the workspace
+entries are summed separately in `workspaceTotals`.
 
 `counts.kept` is the number of local entries the document does not mention and
 that survive the strategy. `unchanged: true` means the plan changes nothing: no
@@ -1907,11 +1929,11 @@ history failure does not undo the import.
 ### 11.6 Residual risk, stated
 
 The commit is atomic **per file**, not across layers. A filesystem failure
-between two `rename` calls leaves the earlier layer replaced and the later one
-untouched; the thrown `500 import-commit-failed` message says how many layers
-were already committed. No stage before the renames can leave a partial state.
+between two `rename` calls leaves the earlier file replaced and the later one
+untouched; the thrown `500 import-commit-failed` message says how many **files**
+were already replaced. No stage before the renames can leave a partial state.
 Since Revision 53 the same sentence covers four kinds of file (layer configs,
-workspace configs, the library, the preferences) rather than one, and it says
+workspace configs, the library, the preferences) rather than one, so it says
 "file(s)" where it used to say "layer(s)".
 
 ### 11.7 The full backup: workspace layers, the library, the preferences (Revision 53)
@@ -2013,9 +2035,14 @@ chapter exists to prevent.
   `validateRegistryAddress` — the very function `PUT
   /prompt-setting/download-region` uses — so an address that route would answer
   `400 registry-invalid` for (`file:///etc`, `ftp://…`, credentials, a query
-  string, a fragment) cannot be persisted through an import either. The value is
-  **not rewritten** by the import (no trailing-slash normalization): what the
-  document carried is what is written, so a round trip is byte-stable. An export
+  string, a fragment) cannot be persisted through an import either. The import
+  applies **no URL normalization of its own** — it never rewrites a trailing
+  slash, so the address is written as the document carried it (trimmed) and an
+  export/import round trip is stable for that address. What is stored is still
+  `normalizePreferences`' output, so this is「the address is not rewritten by the
+  import」, not byte-for-byte equality with an arbitrary document: an omitted
+  `updateCheck` comes back as the documented default `true`, and the address is
+  trimmed. An export
   applies the same rule from the other side: a preference document the import
   would refuse is **not carried**, and `exportScope.unavailable.preferences`
   says why (§10). Both halves of §11.7's「the plugin's own backup is always
@@ -2604,11 +2631,15 @@ schema of nothing else moves, and the assembly path gains no read.
 - **why a third file.** The library lives in
   `<DSH_HOME>/prompt-setting/presets.json`, its own document read and written by
   its own routes. Folding it into `overrides.json` was rejected because that file
-  is inside the frozen export / import / history / snapshot schemas (§10, §11,
-  §8, §2), and a preset is none of those things — it is the machine owner's
-  catalogue, not one layer's override. Folding it into the export document was
-  rejected for the same reason plus one: a backup is portable and a catalogue is
-  not, and a restore would then silently rewrite the catalogue;
+  is inside the history / snapshot schemas (§8, §2), and a preset is none of those
+  things — it is the machine owner's catalogue, not one layer's override.
+  *(Revision 37–52 also rejected carrying it in the **export document**, on the
+  ground that「a backup is portable and a catalogue is not」; **Revision 53
+  (g-074) reversed that half** — the export carries the library as its own
+  top-level `presets` field and an import replaces `presets.json` from it. The
+  catalogue is still never folded into a layer, and the replacement is explicit
+  rather than silent (`presets.changed`, §10, §11.7). The third file stays for
+  the reason above, not for that one.)*
 - **applying reuses the one write face.** `POST /presets/apply` resolves the
   workspace exactly as `PUT /overrides` does (`targetFor` + `writableConfig`),
   rebuilds the layer with the reserved entry upserted, validates it with
@@ -2634,7 +2665,9 @@ schema of nothing else moves, and the assembly path gains no read.
   workspace the request never named would be a write nothing asked for, and
   silently dropping the record would lose the snapshot the user still needs;
 - **what this revision deliberately does not do.** No preset travels in
-  `GET /export` (the document's fields are unchanged, §20.8), no preset is applied
+  `GET /export` (the document's fields are unchanged, §20.8) *(**superseded by
+  Revision 53 (g-074)**: the library is now a top-level `presets` field of the
+  export document — see §20.8)*, no preset is applied
   to more than one workspace per request, and the library keeps no version
   history — one record per workspace root, one level deep: applying a second
   preset replaces the first record, so「取消应用」goes back to the state before the
@@ -4654,7 +4687,9 @@ Because an export now carries at most one entry per layer, the multi-entry plan
 shapes (`replaced`, `kept`, and `removed` in `merge` mode) are exercised at the
 route level through `mode=replace` plus a seeded frozen entry rather than through
 several imported names; the multi-name kernel behaviour itself is unchanged and
-pinned in `test/transfer.test.mjs`.
+pinned in `test/transfer.test.mjs`. *(Revision 7–52; since Revision 53 an export
+carries every name again, so these shapes are reachable through a plain full
+backup too — see the Revision 53 note below.)*
 
 **Revision 53 (g-074) — the import lock is removed, and says what replaced it.**
 The owner's requirement (2026-10-16) is that「备份与恢复」restore what it exported,
@@ -4697,11 +4732,11 @@ is still valid, and is still what the older assertions use.
 | Editable by hand | yes (the file is the source of truth) | yes |
 
 **Revision 53 (g-074) changed two rows of that table, and only those two** — the
-`Exported` and `Imported` rows above, which now read `yes` for a frozen override
-(the two `403 write-locked` rows were the Revision 7 values and are gone from the
-table). A frozen override is **Exported** because it is part of the layer, and a
-backup that dropped it could not restore it; it is **Imported** because the lock
-is gone (§15.7). Its `PUT` and single-name `DELETE` rows are unchanged (`403
+`Exported` and `Imported` rows above. Their Revision 7 values (`no — counted in
+exportScope.omitted` and `403 write-locked`) are gone, replaced by `yes`. A
+frozen override is **Exported** because it is part of the layer, and a backup
+that dropped it could not restore it; it is **Imported** because the lock is gone
+(§15.7). Its `PUT` and single-name `DELETE` rows are **unchanged** (`403
 write-locked`), and so is「editable by hand」. The `exportScope.omitted` count a
 pre-Revision-53 reader used to see for such an entry is `0`; §10's `exportScope`
 table says why.
@@ -6445,9 +6480,11 @@ describes, and log that move as a new version.
 ### 19.1 Why one section, and not the layer
 
 Since Revision 7 the write face *is* the reserved section (§4.1, §15.7):
-`PUT /prompt-setting/overrides`, the single-name `DELETE` and
-`POST /prompt-setting/import` all refuse any other name, and the write lock is
-pinned by SHA-256 in `test/route.test.mjs` and `test/stage2.test.mjs`. A
+`PUT /prompt-setting/overrides` and the single-name `DELETE` refuse any other
+name, and that write lock is pinned by SHA-256 in `test/route.test.mjs` and
+`test/stage2.test.mjs`. (`POST /prompt-setting/import` was part of that list
+until Revision 53 (g-074) removed its name lock so a full backup is restorable —
+§15.7; the lock on the two write routes, and everything below, is unchanged.) A
 whole-layer rollback would be a **fourth write path** around that policy: it
 would put a non-reserved override back into the assembly — one the user has no
 page control to create or remove — and change the next turn's prompt through a
@@ -6946,9 +6983,11 @@ library is written last) and reports exactly which workspaces were restored.
 
 ### 20.8 What this revision does not do
 
-- **No preset travels in an export.** `GET /export`'s fields and
-  `overrides.json`'s schema are unchanged (§10, §4); an export taken before this
-  revision re-imports byte-for-byte, and the new library is not a backup format.
+- **No preset travels in an export.** *(Revision 37–52; **superseded by
+  Revision 53 (g-074)** — see the note below this list.)* `GET /export`'s fields
+  and `overrides.json`'s schema are unchanged (§10, §4); an export taken before
+  this revision re-imports byte-for-byte, and the new library is not a backup
+  format.
 - **No cross-workspace application.** One request names one session and writes
   one layer.
 - **No preset version history.** The library keeps the current value of each
