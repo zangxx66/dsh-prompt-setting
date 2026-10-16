@@ -1973,6 +1973,101 @@ test('stage2: a registry address the route would refuse is not carried, and a do
 
 // #endregion
 
+// #region g-074 R6 — the `skipped` shape is contract (att-002 reads it)
+
+test('stage2: an installation-level half left alone is counted by items, not by overrides (R6)', async () => {
+  const workspaces = [workspaceWith('ws-a', 'sa'), workspaceWith('ws-b', 'sb')];
+  const { route } = mount({ workspaces });
+  const document = {
+    schema: 'dsh-prompt-setting/export',
+    version: 2,
+    layers: { user: { overrides: [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'X' }] } },
+    workspaces: [
+      {
+        root: workspaces[0].path,
+        enabled: true,
+        reason: null,
+        // Three overrides, so「entries === 3」would be the wrong reading of the
+        // installation row below.
+        overrides: [
+          { name: 'a', action: 'replace', text: '1' },
+          { name: 'b', action: 'hide' },
+          { name: 'c', action: 'replace', text: '3' },
+        ],
+      },
+      { root: workspaces[1].path, enabled: true, reason: null, overrides: [] },
+    ],
+    presets: {
+      version: 1,
+      presets: [
+        { id: 'p1', name: 'P1', action: 'replace', text: 'T1', createdAt: null, updatedAt: null },
+        { id: 'p2', name: 'P2', action: 'replace', text: 'T2', createdAt: null, updatedAt: null },
+      ],
+      applied: [],
+    },
+    preferences: { updateCheck: false },
+  };
+
+  const res = await call(route, {
+    method: 'POST',
+    url: `${IMPORT_PATH}?layer=user&dryRun=true&session=sa`,
+    body: JSON.stringify(document),
+  });
+  assert.equal(res.statusCode, 200, JSON.stringify(json(res)));
+  const payload = json(res);
+  const installation = payload.skipped.find((entry) => entry.layer === 'installation');
+  assert.ok(installation !== undefined, 'the installation half is reported in skipped');
+  // 2 workspaces + 2 presets + 1 carried preferences = 5 items — NOT the 3
+  // overrides the first workspace layer holds.
+  assert.equal(installation.entries, 5, 'items left alone, not overrides');
+  assert.match(installation.reason, /\?layer= limits this import/);
+  assert.deepEqual(Object.keys(installation).sort(), ['entries', 'layer', 'reason'],
+    'the three field names are the contract');
+
+  // The other three sources keep their own `layer` values, so the domain is the
+  // one §11.2 documents: user | workspace | workspace:<root> | installation.
+  const noSession = await call(route, {
+    method: 'POST',
+    url: `${IMPORT_PATH}?dryRun=true`,
+    body: JSON.stringify({
+      schema: 'dsh-prompt-setting/export',
+      version: 2,
+      layers: { user: { overrides: [] }, workspace: { overrides: [] } },
+    }),
+  });
+  const noSessionSkipped = json(noSession).skipped;
+  assert.deepEqual(noSessionSkipped, [{
+    layer: 'workspace',
+    reason: 'layer "workspace" requires a "session" id to resolve the workspace root',
+    entries: 0,
+  }]);
+
+  // A session-resolved `workspace` view and a `workspaces[]` entry naming the
+  // same file de-duplicate: the second is reported under `workspace:<root>`.
+  const dedupe = await call(route, {
+    method: 'POST',
+    url: `${IMPORT_PATH}?dryRun=true&session=sa`,
+    body: JSON.stringify({
+      schema: 'dsh-prompt-setting/export',
+      version: 2,
+      layers: { user: { overrides: [] }, workspace: { overrides: [{ name: 'a', action: 'hide' }] } },
+      workspaces: [{
+        root: workspaces[0].path,
+        enabled: true,
+        reason: null,
+        overrides: [{ name: 'a', action: 'hide' }],
+      }],
+    }),
+  });
+  assert.deepEqual(json(dedupe).skipped, [{
+    layer: `workspace:${workspaces[0].path}`,
+    reason: 'already covered by "workspace" in this document',
+    entries: 1,
+  }], 'the de-duplicated entry carries the override count it would have contributed');
+});
+
+// #endregion
+
 // #region import atomicity — every rejection is proven with a hash
 
 /** Documents that must all be refused, with the code each one must answer. */

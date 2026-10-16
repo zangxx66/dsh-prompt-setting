@@ -1902,14 +1902,33 @@ each field means. A version 1 document carries none of the installation half, so
 those fields come back empty. `totals` sums the **layer views**; the workspace
 entries are summed separately in `workspaceTotals`.
 
-`skipped[]` is `{layer, reason, entries}[]`: one entry per layer view or
-workspace layer the import did **not** apply — a layer it could not resolve with
-nothing in it (§11.3), a workspace that carries no override (§11.7), or an
-installation-level half a `?layer=` request deliberately left alone. `entries` is
-how many overrides that layer would have contributed, `0` when the document asked
-for nothing in it. Those three field names are what this contract fixes; att-002
+`skipped[]` is `{layer, reason, entries}[]`: one object per thing the import did
+**not** apply. There are **four** sources, and `layer` says which:
+
+| `layer` | Source | `entries` |
+| --- | --- | --- |
+| `user` / `workspace` | a layer view the document carries but that cannot be resolved while holding nothing — refusing it would fail an export → import round trip for a reason the user cannot act on (§11.3) | `0` |
+| `workspace:<root>` | a `workspaces[]` entry whose `overrides` is empty: there is nothing to write for that workspace layer (§11.7) | `0` |
+| `workspace:<root>` | a `workspaces[]` entry naming a file another part of the **same** document already claimed, with identical entries (a session-resolved `workspace` layer view and a `workspaces[]` entry naming that same workspace, §11.7); `reason` is the `already covered by "…"` sentence | the override count that entry carries |
+| `installation` | the installation-level half (`workspaces[]`, `presets`, `preferences`) that a `?layer=` request deliberately left alone (§11.7) | how many **items** were left alone: `workspaces.length` + `presets.presets.length` + `1` when `preferences` is carried |
+
+`reason` is one human-readable sentence naming the source, and it is never empty.
+
+`entries` is **not one number with one meaning** — the two readings are:
+
+- for a **layer view** or a **workspace layer** (the first three rows): the number
+  of overrides that layer would have contributed, `0` when the document asked for
+  nothing in it;
+- for the **`installation`** row: a count of **items**, not overrides —
+  `workspaces[]` entries + presets + `1` for a carried `preferences`. The fake-Host
+  contract test for it is `test/stage2.test.mjs`'s「an installation-level half left
+  alone is counted by items, not by overrides (R6)」.
+
+§11.7's「reports it in `skipped` with the count it left alone」 is the same口径
+read the other way. Those three field names are what this contract fixes; att-002
 (the panel-side「what was skipped」declaration) builds its display on exactly this
-shape.
+shape — and today the panel consumes `layer` and `reason` only, with `entries`
+reserved for the count that declaration will show.
 
 `counts.kept` is the number of local entries the document does not mention and
 that survive the strategy. `unchanged: true` means the plan changes nothing: no
