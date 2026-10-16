@@ -9435,13 +9435,16 @@ DSH 上手工目视「跨机备份」全流程；预览三块在 GUI 上只经�
 g-074 改了 `index.js` / `CONTRACT.md` 却没有同步 `docs/refactor-plan.md` 里手写的 `文件:行` 与脚本内的 REFS 期望表。
 本轮按"改完必须 exit 0"把它修到绿：用**锚文本**在当前文件里重新定位 REFS 表 158 条（`expect` / `toExpect` /
 `stripEquals`），把文档里的完整形式与简写引用（`:1234`）按同一批采样换算，并把 §1.3 / §5.1 两张表按新的
-`client.js` 布局重算（合计 11879 → **12284**，`PromptSettingSection` 2640 → 2934 行，`13/14/15` 三段重切到
-1200 / 1146 / 602，脚本里的常量同步）。**未弱化任何断言**：REFS 表条目数不变（158），区间端点断言不变，
-`verified` 从 56 升到 129。
+`client.js` 布局重算（**首轮**：合计 11879 → **12284**、`PromptSettingSection` 2640 → 2934 行、`13/14/15`
+重切到 1200 / 1146 / 602；**R1 之后**再重算为合计 **12320**、`PromptSettingSection` **2936** 行、三段
+1200 / 1148 / 602，脚本里的常量随之同步）。**未弱化任何断言**：REFS 表条目数不变（158）；**R1-4 另修正了
+5 处端点**（`index.js:982-5059`、`client.js:8084-8087`、`8095-8105`、`7329-7875`、
+`test/client.test.mjs:2544-2552`，其中两处保留 `loose: true` 只因跨度 > 90 行是脚本的硬规则）；覆盖率
+**首轮** `verified` 56 → 129，**终值**（R1-3 把正文也对齐之后）**132 且 `rangeOnly=0`**。
 
 **验收（本文件最终版、未提交实跑）**
 
-- evidence: suite=node --test(test/*.test.mjs) passed=944 failed=0 exit=0（基线 938，本轮 +6：`client.test.mjs` 新增 4 个 g-073 用例 + 2 个 R1 回归用例）；
+- evidence: suite=node --test(test/*.test.mjs) passed=945 failed=0 exit=0（基线 938：`client.test.mjs` 4 个 g-073 用例 + 2 个 R1 回归用例，`stage2.test.mjs` 1 个 R2-5 端到端用例）；
 - evidence: suite=node scripts/prepare.mjs passed=23 failed=0 exit=0（`CHUNK-STAMPS` 5 个 chunk / `LOCALE-SYNC` 586 键）；
 - evidence: suite=node docs/check-refs.mjs verified=132 **rangeOnly=0** manual=21 failed=0 exit=0（§1.3 表 24 行合计 12320、§5.1 表 17 行合计 12320、最大段 1200）；
 - evidence: suite=node scripts/locale-pack.mjs --check passed=586 failed=0 exit=0。
@@ -9453,8 +9456,36 @@ scope` 红（三个会话被压成一个）。
 
 **未验证项 / 残余**：作用域选择器的视觉（披露高度、"跟随当前会话"高亮）只在渲染树与 marker 上断言，未做真机
 GUI 截图核验；"高级"的默认值取"当前会话"而非工作区代表会话，这一点在契约里写明了理由（record 按 sessionId 存），
-但真机上多个会话同属一个工作区时的观感仍需负责人目视；`docs/check-refs.mjs` 的 6 条 `rangeOnly`（简写与完整形式
-换算精度差）保持"包内可读 + 行号合法"的最小验证，未强行收编。
+但真机上多个会话同属一个工作区时的观感仍需负责人目视；`docs/check-refs.mjs` 的 `rangeOnly` 已由 R1-3 的正文对齐
+收编为 **0**（首轮那 6 条是"简写与完整形式换算精度差"，已逐条改正文，不再保留）。
+
+**收尾轮 R2（独立评审 rev-att-001-02 判 PASS 后的 4 条建议 + 1 条可选，2026-10-16）**
+
+- **R2-1 契约补「面板门控」不变式**：`CONTRACT.md` §13.10 在既有 6 条之后**追加**第 7 条（不改原有条文）——
+  "each tab's panel gate follows that tab's own data source"：`mine → m.snap`、`overview → m.overviewSnap`、
+  `advanced → m.advancedSnap`，`presets / history / backup` **不被任何 snapshot 门控**（各自渲染自己的 phase），
+  因此页面作用域的 `/snapshot` 失败只让「我的 Prompt」空白。与 `CHANGELOG` 的门控句、本文件 R1 段、
+  `client.js:8895-8910` 的注释三处对齐。追加使 §14 及之后的 CONTRACT 行号 +9，REFS 表与正文引用已用同一
+  锚定位流程同步（`CONTRACT.md:4439 → 4448`、`7654 → 7663`、`4721-4729 → 4730-4738`）。
+- **R2-2 本文件两处自相矛盾的陈述订正**：`docs/check-refs.mjs` 的修复段现在区分**首轮**（合计 12284、
+  `PromptSettingSection` 2934、`13/14/15` = 1200/1146/602、`verified` 56 → 129）与**终值**（合计 12320、
+  2936 行、1200/1148/602、`verified` **132** 且 `rangeOnly=0`）；"区间端点断言不变"改为"REFS 条目数不变（158），
+  R1-4 另修正 5 处端点（两处保留 `loose` 只因跨度 > 90 是脚本硬规则）"；残余段的"6 条 rangeOnly 未收编"改为
+  "已由 R1-3 的正文对齐收编为 0"。
+- **R2-3 文档样例输出对到当前实测**：`docs/refactor-plan.md` 的两处围栏样例里 `最大段=1145` / `2640` 更新为
+  **1200** / **2936**（§1.3 = 2936、§5.1 = 1200），第二处标题从"R4 收敛轮"改为"当前轮，R1 之后"。
+- **R2-4 §1.1 表消除"基线快照 vs 当前值"歧义**：表改为**当前工作树实测**口径（`wc -l` / `wc -c`），
+  逐行给当前行数与体积（`client.js` 12320 / 605 KB、`index.js` 5073 / 224 KB、
+  `client.overview.js` **755**、`client.advanced.js` **665**、`client.transfer.js` **387**、
+  `core/update.js` 1812、`core/presets.js` 1030、`core/store.js` 676 …），并给出可复算的
+  "上列 14 个文件合计 **28198** 行（= `client.js` + `index.js` + 5 个 chunk + `core/*.js`）"、
+  "5 个 chunk 合计 **3624** 行"、"主入口 **12320** 行"；与基线 `c6bbccb` 的差异指向本文件，不再混列。
+- **R2-5 端到端补口（可选，已做）**：宿主侧新增 `stage2: an export taken without ?session= still carries every
+  workspace layer (g-073)`——两个已注册工作区、用户层一条覆盖、各工作区层各一条，请求 `GET /export` **不带
+  `?session=`**（前端现在真正发出的形状）：断言 200、`layers.user` 全量、`layers.workspace.enabled === false`
+  且 `overrides` 为空（工作区层视图缺失是有声明的），而 `workspaces[]` 仍**逐层携带**两个工作区的覆盖，
+  `exportScope.workspaces === 2`。这补上了"前端去掉 session 后导出形状如何"此前无覆盖的缺口
+  （既有宿主导出用例全部显式带 `?session=`）。
 
 **返工 R1（独立评审 rev-att-001-01 判 BLOCK 后的 4 项必修 + 2 项建议，2026-10-16）**
 

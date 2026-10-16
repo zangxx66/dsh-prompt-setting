@@ -23,28 +23,29 @@
 
 ## 1. 现状量化
 
-### 1.1 文件规模（基线 `c6bbccb`）
+### 1.1 文件规模（当前工作树，`wc -l` / `wc -c`）
 
 | 文件 | 行数 | 体积 | 说明 |
 |---|---:|---:|---|
-| `client.js` | 11879 | 593 KB | 主 factory（浏览器侧唯一入口） |
-| `index.js` | 4626 | 207 KB | 宿主侧 ESM 入口 |
-| `core/update.js` | 1729 | — | |
-| `client.history.js` | 1177 | 52 KB | chunk |
+| `client.js` | 12320 | 605 KB | 主 factory（浏览器侧唯一入口） |
+| `index.js` | 5073 | 224 KB | 宿主侧 ESM 入口 |
+| `core/update.js` | 1812 | — | |
+| `client.history.js` | 1177 | 51 KB | chunk |
 | `core/install.js` | 1064 | — | |
 | `core/assembly-watch.js` | 965 | — | |
 | `core/overrides.js` | 953 | — | |
-| `core/presets.js` | 788 | — | |
+| `core/presets.js` | 1030 | — | |
 | `core/history.js` | 681 | — | |
-| `core/store.js` | 644 | — | |
-| `client.presets.js` | 640 | 27 KB | chunk |
-| `client.overview.js` | 572 | 25 KB | chunk |
-| `client.advanced.js` | 506 | 23 KB | chunk |
-| `client.transfer.js` | 263 | 11 KB | chunk |
-| 包内 `.js` 合计（`wc -l`，不含 `scripts/*.mjs`） | **28959** | — | 评审 R1-6 实测订正（原稿写「约 28931」） |
-| 包内含 `scripts/*.mjs` | 30040 | — | `scripts/*.mjs` 共 1081 行 |
+| `core/store.js` | 676 | — | |
+| `client.presets.js` | 640 | 26 KB | chunk |
+| `client.overview.js` | 755 | 33 KB | chunk |
+| `client.advanced.js` | 665 | 30 KB | chunk |
+| `client.transfer.js` | 387 | 17 KB | chunk |
+| 上列 14 个文件合计 | **28198** | — | `client.js` + `index.js` + 5 个 client chunk + `core/*.js`，可 `wc -l` 复算 |
+| `scripts/*.mjs` | 1081 | — | `scripts/` 下 5 个脚本（`files` 白名单只含 `scripts`） |
 
-5 个 chunk 合计 3158 行；主入口 **12320** 行（上表是基线 `c6bbccb` 的快照）。
+5 个 chunk 合计 **3624** 行；主入口 **12320** 行。**本表只写当前工作树的实测值**（体积按 1024 B/KB 取整）；
+与基线 `c6bbccb` 的逐项差异见 `NOTES.md` §153（g-073 与 g-074 的记录），此处不再混列基线列。
 
 ### 1.2 注释与代码的构成（可复算）
 
@@ -588,7 +589,7 @@ fingerprintOf(加 1 行头注后的同一文件)      = 4d998612 / 567230   # �
 | U2 | `apply(ctx)` 阶段异步预加载共享设施是否安全（React 渲染是否一定在其之后） | 只影响候选 C | 真机 + 失败注入 |
 | U3 | ~~生成器对 `CHUNK_STAMPS` 的写入是否与 `client-chunks.mjs --write` 等价~~ → **已升为已验证**（R1-4，见下「本次返工已实测的事实」） | — | 已实测 |
 | U4 | 宿主 `index.js` 拆分的实际耦合度（闭包共享状态的清单） | 只影响阶段 3 的估工 | 立目标后先做一次"闭包变量 → 归属域"的盘点 |
-| U5 | "零编译但有生成期拼接"是否符合项目对"零构建包"的定位（承诺散落在 `README.md:116` / `README.md:339` / `README.md:344` / `NOTES.md:3635` / `NOTES.md:3679` / `scripts/prepare.mjs:9` / `scripts/prepare.mjs:162`；`CONTRACT.md:7654` 仅顺带提及 "no build step"） | 影响 T8 的契约改口 | **需负责人裁决**（见 §9-1） |
+| U5 | "零编译但有生成期拼接"是否符合项目对"零构建包"的定位（承诺散落在 `README.md:116` / `README.md:339` / `README.md:344` / `NOTES.md:3635` / `NOTES.md:3679` / `scripts/prepare.mjs:9` / `scripts/prepare.mjs:162`；`CONTRACT.md:7663` 仅顺带提及 "no build step"） | 影响 T8 的契约改口 | **需负责人裁决**（见 §9-1） |
 | U6 | 阶段 2 起段文件语法不完整却随包发布，是否改用 `.js.part` / `.seg` 后缀 | 影响阶段 2 的读者体验 | **需负责人裁决**（见 §9-5） |
 
 **本次返工已实测的事实（R1-4，可复算）**
@@ -615,7 +616,7 @@ withHead = '// GENERATED...\n' + src
 - R2｜**段序敏感**：`test/client.test.mjs:2538-2542` 依赖 `client.js` 内的出现顺序。缓解：把该断言改为"在指定段内断言"，或把段序写进生成器的固定清单并加断言。
 - R3｜**生成器成为新的单点**：`client-build.mjs` 出错会阻塞整个客户端改动。缓解：`--check` 只读、`--write` 幂等、并被 `prepare` 覆盖（prepare 失败即安装失败，与今天 chunk 清单漂移的失败模式一致）。
 - R4｜**收益不自证**：行数下降不等于 token 下降（注释占比高）。已用 §1.2 的构成数据校准口径（§6.1），并披露"跨段改动不降"。
-- R5｜**生成器重写会改 mtime ⇒ 开发期重载噪音（R1-8a）**：DSH 的 `artifactRevision(baseline) = framedHash("plugin-artifact", [mtimeMs, ctimeMs, size])`，**rev 不变则不重读、不通知**（`CONTRACT.md:4721-4729`）；反过来，mtime 变了即使字节相同，rev 也变，会触发重读 + SSE 通知 + 页面重载。**缓解**：`client-build.mjs --write` **仅在内容不同时落盘**（先算再比，相同则不动文件），这条已作为实现约束写进 §5.2；`--check` 天然只读。**残余**：阶段 2 起任何真实改动都会动 mtime，这与今天手改 `client.js` 的后果完全一样，不是新增风险。
+- R5｜**生成器重写会改 mtime ⇒ 开发期重载噪音（R1-8a）**：DSH 的 `artifactRevision(baseline) = framedHash("plugin-artifact", [mtimeMs, ctimeMs, size])`，**rev 不变则不重读、不通知**（`CONTRACT.md:4730-4738`）；反过来，mtime 变了即使字节相同，rev 也变，会触发重读 + SSE 通知 + 页面重载。**缓解**：`client-build.mjs --write` **仅在内容不同时落盘**（先算再比，相同则不动文件），这条已作为实现约束写进 §5.2；`--check` 天然只读。**残余**：阶段 2 起任何真实改动都会动 mtime，这与今天手改 `client.js` 的后果完全一样，不是新增风险。
 - R6｜**「重切」越界成「移动」会引入语义风险（R2-D2）**：被切的是**同一个函数体**，跨块移动会改变 `const`/`class` 的 TDZ 边界与函数声明的提升可见性，而**现有 922 个用例没有一条能证明这种移动无害**（它们断言的是渲染结果与源码文本，不是声明顺序语义）。**缓解**：①§5.1 段边界规则把「只重切、不移动」写成硬规则；②阶段 2 判据 2 用「去头注后与阶段 1 产物逐字节相同」做强证明；③判据 3 用「段偏移单调递增、无空隙」做机器检查。**残余**：这三条拦的是"无意越界"，拦不住"有意重排 + 通过全部判据"——若将来确有必要移动代码，应另立目标并按新语义审计。
 
 ---
@@ -624,7 +625,7 @@ withHead = '// GENERATED...\n' + src
 
 1. **T8 的契约改口**：是否允许把本包定位从「零构建包」表述为「零**编译**（无 bundler/TS/JSX），但客户端入口为**生成物**（源段在 `src/`）」？
    - 默认建议：**允许**。理由是包里已有同类先例（`locale/*.json` → 内联段，`scripts/prepare.mjs:135-167`），且本方案的阶段 1 可以用"生成物与现状字节等价"来验收，风险封顶。
-   - **改口要同步的位置（R1-8b，实测清点）**：`README.md:116`（"零运行时依赖、零构建步骤"）、`README.md:339` / `README.md:344`（"本包零构建，`prepare` 只做发布自检"）、`NOTES.md:3635`（"本包是**零构建**包：`index.js` / `client.js` / `core/*.js` 本身就是发布入口，没有编译产物"）、`scripts/prepare.mjs:9`（"本包是零构建包（`index.js` / `client.js` / `core/*.js` 本身就是发布入口）"）与 `scripts/prepare.mjs:162`（运行时打印的"本包零构建，不做编译"）。`CONTRACT.md:7654` 只有一句顺带提及 "no build step"，不是承诺条款。改口的准确措辞是「**零编译**（无 bundler / JSX / TypeScript），客户端入口为**生成物**（真源在 `src/`）」，而不是"零构建"。
+   - **改口要同步的位置（R1-8b，实测清点）**：`README.md:116`（"零运行时依赖、零构建步骤"）、`README.md:339` / `README.md:344`（"本包零构建，`prepare` 只做发布自检"）、`NOTES.md:3635`（"本包是**零构建**包：`index.js` / `client.js` / `core/*.js` 本身就是发布入口，没有编译产物"）、`scripts/prepare.mjs:9`（"本包是零构建包（`index.js` / `client.js` / `core/*.js` 本身就是发布入口）"）与 `scripts/prepare.mjs:162`（运行时打印的"本包零构建，不做编译"）。`CONTRACT.md:7663` 只有一句顺带提及 "no build step"，不是承诺条款。改口的准确措辞是「**零编译**（无 bundler / JSX / TypeScript），客户端入口为**生成物**（真源在 `src/`）」，而不是"零构建"。
 2. **实施边界**：本目标是否只交付本文档（→ 另立实施目标），还是允许在本文档之后**由同一目标继续推进阶段 0/1**？
    - 默认建议：**本目标只交付文档**（符合 directive），阶段 0/1 另立目标，按 §5.2 的判据派工。
 3. **`src/` 的命名与段编号风格**（`00-entry.js` 这类数字前缀 vs `entry.js`）：
@@ -688,7 +689,7 @@ node --test test/client.test.mjs # pass 295 / fail 0
 ```
 本次返工实跑结果：
   §1.3 版图表   : rows=24, 行数不符=[], 不连续=[], 首尾 1–12320, 合计=12320
-  §5.1 目标段表 : segs=17, 行数不符=[], 不连续=[], 首尾 1–12320, 合计=12320, 最大段=1145, 超 1200 的段=[]
+  §5.1 目标段表 : segs=17, 行数不符=[], 不连续=[], 首尾 1–12320, 合计=12320, 最大段=1200, 超 1200 的段=[]
 ```
 
 **文档引用体检（R3-R5 治本项 + R4 收敛轮加固）：`docs/check-refs.mjs`**
@@ -711,11 +712,11 @@ node docs/check-refs.mjs              # 体检；有 fail/unresolved ⇒ 非零�
 node docs/check-refs.mjs --verbose    # 另列 rangeOnly 明细
 ```
 
-最终实跑输出（R4 收敛轮）：
+最终实跑输出（当前轮，R1 之后）：
 
 ```text
-  table §1.3 版图表: rows=24 合计=12320 最大段=2640
-  table §5.1 目标段表: rows=17 合计=12320 最大段=1145
+  table §1.3 版图表: rows=24 合计=12320 最大段=2936
+  table §5.1 目标段表: rows=17 合计=12320 最大段=1200
 check-refs: 文档引用 total=153 | verified=132 | rangeOnly=0 | manual=21 | unresolved+failed=0
 check-refs: REFS 表 158 条 → REFS∩declared=132（计入覆盖率，其中 verified=132） / REFS\declared=26（文档里不存在，不计入覆盖率；其中 26 条独立校验通过）
 check-refs: 恒等式 total == verified + rangeOnly + manual + unresolved = 132 + 0 + 21 + 0

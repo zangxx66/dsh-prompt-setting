@@ -164,8 +164,8 @@ const REFS = [
   // ── 仓库内文档（零构建承诺等）─────────────────────────────────────────────
   { ref: 'README.md:116', file: 'README.md', from: 116, expect: '零构建步骤' },
   { ref: 'NOTES.md:3635', file: 'NOTES.md', from: 3635, expect: '零构建' },
-  { ref: 'CONTRACT.md:4439', file: 'CONTRACT.md', from: 4439, expect: '## 14. Client build stamp' },
-  { ref: 'CONTRACT.md:7654', file: 'CONTRACT.md', from: 7654, expect: 'no build step' },
+  { ref: 'CONTRACT.md:4448', file: 'CONTRACT.md', from: 4448, expect: '## 14. Client build stamp' },
+  { ref: 'CONTRACT.md:7663', file: 'CONTRACT.md', from: 7663, expect: 'no build step' },
   // ── 文档里实际引用的区间（补全，减少人工核对项）──────────────────────────
   { ref: 'client.js:55-61', file: 'client.js', from: 55, to: 61, expect: 'Two hard rules', toExpect: "*" },
   { ref: 'client.js:62-66', file: 'client.js', from: 62, to: 66, expect: 'Markers the page carries', toExpect: "*" },
@@ -205,7 +205,7 @@ const REFS = [
   { ref: 'index.js:2398-2759', file: 'index.js', from: 2398, to: 2759, expect: 'function handleHistory', toExpect: "*/", loose: true },
   { ref: 'CONTRACT.md:630', file: 'CONTRACT.md', from: 630, expect: '## 1. Routes and methods' },
   { ref: 'CONTRACT.md:2311', file: 'CONTRACT.md', from: 2311, expect: '## 13. Client-side contract' },
-  { ref: 'CONTRACT.md:4721-4729', file: 'CONTRACT.md', from: 4721, to: 4729, expect: 'what the page is running', toExpect: "moment." },
+  { ref: 'CONTRACT.md:4730-4738', file: 'CONTRACT.md', from: 4730, to: 4738, expect: 'what the page is running', toExpect: "moment." },
   { ref: 'README.md:339', file: 'README.md', from: 339, expect: '零构建' },
   { ref: 'README.md:358', file: 'README.md', from: 358, expect: 'node --test' },
   { ref: 'NOTES.md:3679', file: 'NOTES.md', from: 3679, expect: '这一条对用户是' },

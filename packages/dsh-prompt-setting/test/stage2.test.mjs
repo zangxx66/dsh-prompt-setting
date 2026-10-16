@@ -1387,6 +1387,38 @@ test('stage2: an export of the workspace layer needs a resolvable session', asyn
   assert.deepEqual(payload.layers.workspace.overrides, [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'W' }]);
 });
 
+test('stage2: an export taken without ?session= still carries every workspace layer (g-073)', async () => {
+  // g-073 sends `GET /export` with **no page scope**, so this is the request the
+  // page really makes and the document shape a user's backup really has: the
+  // workspace **layer view** is empty (and declared as such), while
+  // `workspaces[]` still carries every registered workspace layer — the data a
+  // restore needs. Every other export case here passes `?session=` explicitly,
+  // which is why this one exists.
+  const workspaces = [workspaceWith('ws-noscope', 's-noscope'), workspaceWith('ws-noscope-2', 's-noscope-2')];
+  const { route } = mount({ workspaces });
+  seedUser([{ name: 'legacy:one', action: 'replace', text: 'ONE' }]);
+  seedWorkspace('ws-noscope', [{ name: 'legacy:two', action: 'replace', text: 'TWO' }]);
+  seedWorkspace('ws-noscope-2', [{ name: 'legacy:three', action: 'hide' }]);
+
+  const res = await call(route, { url: EXPORT_PATH });
+  assert.equal(res.statusCode, 200, 'an export needs no session');
+  const payload = json(res);
+  assert.deepEqual(
+    payload.layers.user.overrides.map((entry) => entry.name),
+    ['legacy:one'],
+    'the user layer is global, so it is full with or without a session',
+  );
+  assert.equal(payload.layers.workspace.enabled, false, 'no session ⇒ no workspace layer view');
+  assert.deepEqual(payload.layers.workspace.overrides, []);
+  assert.equal(payload.workspaces.length, 2, 'every registered workspace layer is still carried');
+  assert.deepEqual(
+    payload.workspaces.map((entry) => entry.overrides.map((override) => override.name)).sort(),
+    [['legacy:two'], ['legacy:three']].sort(),
+    'with each workspace layer’s own overrides intact',
+  );
+  assert.equal(payload.exportScope.workspaces, 2, 'and the declaration counts them');
+});
+
 // #endregion
 
 // #region import

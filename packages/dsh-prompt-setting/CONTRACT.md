@@ -4432,7 +4432,16 @@ Invariants, each asserted in `test/client.test.mjs`:
 - **the other tabs render no page-scope node**, asserted by direct marker count:
   in `presets`, `overview`, `history`, `backup` and `advanced` the tree holds
   **zero** nodes with `data-region="session"`, `data-region="scope-summary"` or
-  `data-action="scope-toggle"`.
+  `data-action="scope-toggle"`;
+- **each tab's panel gate follows that tab's own data source** (added in review
+  R1-2, and just as binding as the reads above). 「我的 Prompt」 is gated on
+  `m.snap`; 「提示词总览」 on `m.overviewSnap`; 「高级」 on `m.advancedSnap`; and
+  「我的预设」/「版本历史」/「备份与恢复」 on **no snapshot at all** — the library,
+  the log and the transfer document are their own reads, and each renders its own
+  phase (the first two show the loading line while their own read is in flight,
+  the third issues none until a button is pressed). A page-scoped `/snapshot`
+  that fails therefore blanks 「我的 Prompt」 and **nothing else**: gates are
+  per tab, never borrowed from another tab's read.
 
 ---
 
