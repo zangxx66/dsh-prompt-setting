@@ -389,13 +389,21 @@ node packages/dsh-prompt-setting/scripts/verify.mjs
 体检都不随包发布）。安装后的包里没有 `test/` 与 `docs/`，所以在消费者机器上跑 verify 会红 —— 这是
 有意的，它本来就不是给安装现场用的。
 
+**两条 fail-closed 约定（不让防线静默有洞）**：`test/` 里若出现**不符合 `*.test.mjs` 命名**的 `.mjs`
+文件，verify 会红并点名该文件（绝不静默漏跑）；在安装后的包里误跑（没有 `test/`）会打印一句说明并
+**exit 1**（安装现场请用 `node scripts/prepare.mjs`），不是 ENOENT 堆栈。单步最多等 **15 分钟**，
+挂死算一次失败。
+
 > **Run `npm run verify` before every release** (equivalently `node scripts/verify.mjs`, from the package
 > directory or the repository root — the script derives the package root itself, so the caller's cwd does
 > not matter). It runs the full test suite, the four gates and the docs reference check **serially and
 > without fail-fast**, prints one `ok` / `FAIL` line with its duration per step, ends with
 > `verify: N steps / M failed`, and exits 1 if anything failed. `prepare` is the *install-site* gate (runs
 > on the consumer machine, reads only the package); `verify` is the *releaser-side* gate (it needs `test/`
-> and `docs/`, neither of which is shipped).
+> and `docs/`, neither of which is shipped). It is fail-closed about a silent hole in that defense: a test
+> file not named `*.test.mjs` fails verify by name (never skipped silently), and running it in an installed
+> package prints one sentence (use `node scripts/prepare.mjs` there) and exits 1 — no stack trace. A single
+> step is capped at 15 minutes.
 
 - **改文案只改 `locale/*.json` / Copy lives in `locale/*.json`**：`client.js` 里的 `zh`/`en` 两段
   是**生成物**（`// #region generated:` … `// #endregion`），由 `scripts/locale-pack.mjs --write`

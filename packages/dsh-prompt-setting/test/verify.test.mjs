@@ -6,23 +6,29 @@
  * {@link formatFailureDetail}，用注入的 `spawn` 驱动 {@link runStep} 与 {@link main}；
  * 真实端到端由「手动跑一次 `npm run verify`」覆盖（记录在 `NOTES.md` §160）。
  *
- * 被钉住的三件事（对应质量判据 1/2/3）：
- *   1. 干净树 ⇒ 汇总「0 失败」、退出码 0；
- *   2. 任一步失败 ⇒ 退出码 1，且汇总**点名**该步骤；
- *   3. **不 fail-fast**：某一步失败后，后续步骤仍被执行（注入 spawn 记录调用次数）。
+ * 被钉住的不止「聚合」：还有三条**防线不能静默有洞**的约束（返工 T）——
+ *   - 不符合 `*.test.mjs` 命名的测试文件 ⇒ verify 红并点名，而不是静默漏跑（T1）；
+ *   - 在安装后的包里误跑（没有 `test/`）⇒ 一句说明 + exit 1，而不是 ENOENT 堆栈（T2）；
+ *   - 单步有 15 分钟墙钟上限，挂死判 FAIL 且详情写明「超时」（T3）。
  *
  * Run: `node --test`
  */
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
+  NOT_CHECKOUT_HINT,
+  STEP_TIMEOUT_MS,
   TAIL_LINES,
+  checkTestFiles,
   formatFailureDetail,
   formatStepLine,
   listTestFiles,
+  looksLikeRepositoryCheckout,
   main,
   runStep,
   stepOk,
@@ -168,7 +174,9 @@ test('verify: the step list is basic-to-derived and the suite runs last', () => 
 
 test('verify: test files are expanded by readdirSync (no shell glob) and cover this file', () => {
   const files = listTestFiles();
-  assert.ok(files.length >= 22, `expected the whole suite, got ${files.length}`);
+  const declared = readdirSync(join(packageRoot, 'test')).filter((name) => name.endsWith('.test.mjs'));
+  assert.equal(files.length, declared.length, 'the listing matches every *.test.mjs on disk');
+  assert.ok(files.length >= 23, `expected the whole suite, got ${files.length}`);
   assert.deepEqual(files, [...files].sort(), 'the listing is stable');
   for (const file of files) {
     assert.match(file, /^test\/[^/]+\.test\.mjs$/);
@@ -185,8 +193,62 @@ test('verify: a step always runs in the package root, whatever the caller cwd is
   assert.deepEqual(calls[0].args, ['scripts/x.mjs']);
   // cwd 无关的机器证明：子进程的 cwd 由脚本自身位置推导，而不是调用者的 cwd。
   assert.equal(calls[0].options.cwd, packageRoot);
+  // T3：单步有墙钟上限，挂死不会让 verify 永久等待。
+  assert.equal(calls[0].options.timeout, STEP_TIMEOUT_MS);
   assert.equal(typeof result.ms, 'number');
   assert.equal(result.exitCode, 0);
+});
+
+// #endregion
+
+// #region fail-closed：不静默漏跑、不在安装现场抛堆栈、不挂死（返工 T1/T2/T3）
+
+test('verify: a test file that would be skipped is a hard failure, not a silent pass', () => {
+  // 正常输入：只保留 *.test.mjs，排序稳定。
+  assert.deepEqual(checkTestFiles(['b.test.mjs', 'a.test.mjs']), ['test/a.test.mjs', 'test/b.test.mjs']);
+  // 非 .mjs 的条目无关（README 之类的说明文件不是用例）。
+  assert.deepEqual(checkTestFiles(['README.md', 'a.test.mjs']), ['test/a.test.mjs']);
+  // T1：一个会漏跑的 .mjs ⇒ 抛错并点名，消息给出改法 —— 静默跳过会让 verify 假绿。
+  assert.throws(() => checkTestFiles(['a.test.mjs', 'zzz-extra.mjs']), /zzz-extra\.mjs/);
+  assert.throws(() => checkTestFiles(['zzz-extra.mjs']), /xxx\.test\.mjs/);
+});
+
+test('verify: a repository checkout is detected by test/ holding at least one case', () => {
+  assert.equal(looksLikeRepositoryCheckout(packageRoot), true);
+  const empty = mkdtempSync(join(tmpdir(), 'verify-nocheckout-'));
+  try {
+    assert.equal(looksLikeRepositoryCheckout(empty), false, 'no test/ at all');
+    mkdirSync(join(empty, 'test'));
+    writeFileSync(join(empty, 'test', 'README.md'), 'not a test');
+    assert.equal(looksLikeRepositoryCheckout(empty), false, 'test/ without a case');
+    writeFileSync(join(empty, 'test', 'a.test.mjs'), '');
+    assert.equal(looksLikeRepositoryCheckout(empty), true);
+  } finally {
+    rmSync(empty, { recursive: true, force: true });
+  }
+});
+
+test('verify: running in an installed package explains itself instead of throwing ENOENT', () => {
+  const lines = [];
+  const { spawn, calls } = fakeSpawn();
+  // T2：模拟安装后的包（没有 test/）—— 必须一句说明 + exit 1，而不是未捕获的 ENOENT 堆栈。
+  const exitCode = main([], { spawn, log: (line) => lines.push(line), checkout: false });
+  assert.equal(exitCode, 1, 'running outside a checkout is not a pass');
+  assert.equal(calls.length, 0, 'no step may run outside a checkout');
+  assert.ok(lines.some((line) => line.includes('仓库 checkout')));
+  assert.ok(lines.includes(`verify: ${NOT_CHECKOUT_HINT}`), 'the hint names prepare.mjs for the install site');
+  assert.equal(lines.some((line) => /^\s+at\s/.test(line)), false, 'no stack trace');
+});
+
+test('verify: a timeout reads as a timeout, and the step is still a failure', () => {
+  const timeoutError = Object.assign(new Error('spawnSync node ETIMEDOUT'), { code: 'ETIMEDOUT' });
+  const result = fail('test', { exitCode: null, signal: 'SIGTERM', error: timeoutError, stderr: '' });
+  assert.equal(stepOk(result), false);
+  assert.equal(summarize([result]).exitCode, 1);
+  const detail = formatFailureDetail(result);
+  assert.match(detail, /超时/);
+  assert.match(detail, new RegExp(`timeout=${STEP_TIMEOUT_MS}ms`));
+  assert.ok(STEP_TIMEOUT_MS <= 15 * 60 * 1000, 'the timeout stays bounded (15 min)');
 });
 
 // #endregion

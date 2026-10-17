@@ -9890,6 +9890,23 @@ g-075（客户端生成期分段，已 delivered）交付时由独立评审标�
 - `npm pack --dry-run`：**57 个文件**（基线 56 + `scripts/verify.mjs`）；tarball 里没有 `test/` 与
   `docs/`，所以 verify 本来就不该在安装现场跑。
 
+### 返工 T（评审 rev-att-001-01 的 4 条非阻断残余：修 T1/T2/T3；C/D 保留）
+- **T1（修，静默漏跑）**：`listTestFiles` 原先只筛 `*.test.mjs`，副本里加 `test/zzz-extra.mjs` 会被
+  静默跳过（verify 仍全绿 = 防线有洞却不报警）。抽出 `checkTestFiles(entries)`：`test/` 下任何 `.mjs`
+  不以 `*.test.mjs` 结尾 ⇒ 抛错并点名该文件 + 给出改法；`main` 捕获后打印一句并 **exit 1**（不静默、
+  不抛堆栈）。正常树 23 个文件全部合规。
+- **T2（修，安装现场误跑）**：`scripts/` 在 `files` 白名单里，所以用户一定会在装好的包里跑到它；
+  原先这里是未捕获的 ENOENT 堆栈。新增 `looksLikeRepositoryCheckout(dir)`（`test/` 不存在、或其中
+  没有 `*.test.mjs` ⇒ false），`main` 在调用 `listTestFiles()` **之前**判定，打印「verify 只在仓库
+  checkout 里跑 … 安装现场请用 node scripts/prepare.mjs 自检」并 **exit 1**（仍非零，误跑不算通过）。
+- **T3（修，挂死）**：`spawnSync` 加 `timeout: STEP_TIMEOUT_MS`（**15 分钟**）。超时后
+  `error.code === 'ETIMEDOUT'` ⇒ `stepOk` 判 FAIL；`formatFailureDetail` 第一行写
+  「超时 timeout=900000ms」，不再显示误导性的 signal 行。
+- 单测：`test/verify.test.mjs` 14 → **18**（T1/T2/T3 各一组 + checkout 检测），仍**不跑全量套件**。
+- 副本实测：① 加 `test/zzz-extra.mjs` ⇒ verify **exit 1**、消息点名 `test/zzz-extra.mjs`；
+  ② 删 `test/`（模拟安装后的包）⇒ verify **exit 1**、输出为那句说明（含 `prepare.mjs`）、**无堆栈**。
+- 全量：**984 pass / 0 fail**（980 + 新增 4）；四道门禁 exit 0；`client.js` diff **0**。
+
 ### 残余 / 明确不做
 - `verify` 随包发布（`files` 含 `scripts/`），但它在安装现场**不适用**（包里没有 `test/` 与
   `docs/`，会红）—— 有意的，README 写明它只在仓库 checkout 里跑。要让它在安装现场也绿就得把测试
