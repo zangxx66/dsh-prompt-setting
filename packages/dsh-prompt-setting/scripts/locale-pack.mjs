@@ -203,14 +203,30 @@ export function readDictionaries(packageDir) {
 const DICTIONARY_ROW = /^ {6}(?:([A-Za-z_$][A-Za-z0-9_$]*)|'((?:[^'\\]|\\.)*)'): '(?:[^'\\]|\\.)*',$/;
 
 /**
- * 真源块与 `locale/*.json` 的键序列最低重合度（g-079 项 3）。
+ * 真源块与 `locale/*.json` 的键序列最低重合度（g-079 项 3，返工 U1 修正分母）。
  *
  * 为什么**不是**「严格相等」：`--write` 的职责就是让生成段跟上 JSON —— 加键 / 删键 /
- * 改名之后跑 `--write` 是正常流程，严格相等会把这套流程挡在门外（脚本报「真源缺失」，
- * 而它自己就是来修漂移的，形成死循环）。判据取「描述同一批键」：两边键集合的重合度
- * ≥ 90%。注释里的诱饵段只举几个示例键，重合度接近 0，仍然会被拒。
+ * 改名之后跑 `--write` 是正常流程，严格相等会把这套流程挡在门外。
+ *
+ * 为什么分母取 `min` 而不是 `max`（返工 U1，评审实测的行为回归）：`max` 分母下
+ * 「纯加 N 键」的得分是 `S/(S+N)`，N > S/9 就掉到 90% 以下 —— 586 键时**加 66 键**
+ * 就让 `--write` 报「真源缺失」，而基线在同样副本里 exit 0；历史最大批量是 +51
+ * （515→566），离失败只差 6 键。纯加键时候选段键集是 JSON 键集的**子集**，
+ * 用 `min` 作分母恒为 100%，这才是「`--write` 的正常输入」应有的判定。
+ * 删键 / 改名同理（交集覆盖较小的那一侧）。
+ *
+ * 规模下限 {@link LOCALE_KEY_MIN_SHARED} 用来挡「只有几个示例键」的注释诱饵：
+ * 2 个示例键时 `min=2`，即便两个键都是真的也不该被当成 586 键词典。
  */
 const LOCALE_KEY_MIN_OVERLAP = 0.9;
+
+/**
+ * 候选段与 locale JSON 的**较小一侧**至少要有的键数（返工 U1）。
+ *
+ * 真实词典是 586 键；注释示例通常只有 1–5 个键。取 50：远离示例规模，又给
+ * 「最小 fixture / 未来瘦身」留出空间。低于它 ⇒ 不是同一本词典（拒绝）。
+ */
+const LOCALE_KEY_MIN_SHARED = 50;
 
 /**
  * 从一个已解析的生成段里取出键序列（保持出现顺序）。
@@ -259,6 +275,10 @@ function readLocaleKeySequences(readText) {
 
 /**
  * 候选段的键序列是否**描述同一本词典**（允许 ≤10% 漂移，见 {@link LOCALE_KEY_MIN_OVERLAP}）。
+ *
+ * 分母取**较小一侧**（`min`），于是纯加键 / 纯删键恒为 100%，批量加键（`--write` 的
+ * 正常输入）永远不会因为「JSON 一次加太多」被误判成真源缺失。规模下限
+ * {@link LOCALE_KEY_MIN_SHARED} 挡掉只有几个示例键的注释诱饵。
  * @param candidateKeys - 生成段解析出的键。
  * @param expectedKeys - `locale/<name>.json` 的键。
  * @returns 重合度是否达标。
@@ -266,9 +286,9 @@ function readLocaleKeySequences(readText) {
 function describesSameDictionary(candidateKeys, expectedKeys) {
   const expected = new Set(expectedKeys);
   const shared = new Set(candidateKeys.filter((key) => expected.has(key))).size;
-  const scale = Math.max(candidateKeys.length, expectedKeys.length);
-  if (scale === 0) return true;
-  return shared / scale >= LOCALE_KEY_MIN_OVERLAP;
+  const smaller = Math.min(candidateKeys.length, expectedKeys.length);
+  if (smaller < LOCALE_KEY_MIN_SHARED) return false;
+  return shared / smaller >= LOCALE_KEY_MIN_OVERLAP;
 }
 
 /**
@@ -290,8 +310,14 @@ function describesSameDictionary(candidateKeys, expectedKeys) {
  * 闭合**的 `zh` / `en` 块同样可解析。因此候选还要满足两条：
  *   1. 两个块**区间不重叠**（一个块落在另一个块内部 ⇒ 至少一个是注释里的示例）；
  *   2. 块内**每行都是生成器的输出格式**，且键序列与 `locale/*.json` **描述同一本词典**
- *      （重合度 ≥ {@link LOCALE_KEY_MIN_OVERLAP}，保留加键/删键/改名后 `--write` 的正常流程）。
+ *      （重合度 ≥ {@link LOCALE_KEY_MIN_OVERLAP}，分母取较小一侧；保留批量加键 / 删键 /
+ *      改名后 `--write` 的正常流程）。
  * 「命中 0 个或多个 ⇒ fail-closed」的语义不变。
+ *
+ * **失败文案区分两种情形（返工 U2）**：①**没有任何段**能解析出两个块 ⇒ `LOCALE-SOURCE-MISSING`
+ * （真源缺失，通常是 `src/` 被误删或还没迁移）；②**有段能解析、但都不满足真源判据** ⇒
+ * `LOCALE-SOURCE-BROKEN`（段被改坏 / 行格式不对 / 与 JSON 漂移过大）。两种情形下
+ * `--write` 都定位不到目标，所以调用方**不得**再让人「先跑 `--write`」（那正是死循环式困惑）。
  * @param io - `{packageDir, readDir|listDir, readText}` 可注入（测试与 `prepare` 用）。
  * @returns `{name, text}`；**读不到 `src/` 目录时返回 `null`**（阶段 2 之前的包、最小 fixture）。
  */
@@ -314,9 +340,10 @@ export function findLocaleSegment(io = {}) {
   const entries = readDir(CLIENT_SRC_DIR);
   if (entries === null) return null;
   const names = Object.keys(LOCALES);
-  const wanted = names.map((name) => blockOpen(name));
+  const wanted = names.map((name) => `\`${name}\``).join(' / ');
   const expectedKeys = readLocaleKeySequences(readText);
   const hits = [];
+  const parseable = [];
   for (const entry of [...entries].filter((name) => name.endsWith('.js')).sort()) {
     const text = readText(`${CLIENT_SRC_DIR}/${entry}`);
     if (typeof text !== 'string') continue;
@@ -332,6 +359,7 @@ export function findLocaleSegment(io = {}) {
       }
     }
     if (!parsedAll) continue;
+    parseable.push(entry);
     // 区间不重叠：一个块整个落在另一个块里 ⇒ 至少一个是注释里的示例（g-079 项 3）。
     let disjoint = true;
     for (let left = 0; left < blocks.length; left += 1) {
@@ -350,7 +378,22 @@ export function findLocaleSegment(io = {}) {
     if (carries) hits.push({ name: entry, text });
   }
   if (hits.length === 0) {
-    throw new Error(`${CLIENT_SRC_DIR}/ 下没有任何段同时含可解析的 ${wanted.join(' / ')} 块：locale 生成段的真源缺失`);
+    // 两种失败要分开说（返工 U2）：调用方据此给不同的指引，且都**不再**指向 --write。
+    if (parseable.length === 0) {
+      const error = new Error(
+        `${CLIENT_SRC_DIR}/ 下没有任何段同时含可解析的 ${wanted} 块：locale 生成段的真源缺失`
+        + '（检查 src/ 是否被误删、或该包是否还没迁移到分段真源）',
+      );
+      error.code = 'LOCALE-SOURCE-MISSING';
+      throw error;
+    }
+    const error = new Error(
+      `${CLIENT_SRC_DIR}/ 下有 ${parseable.length} 个段含可解析的 ${wanted} 块`
+      + `（${parseable.join('、')}），但没有一个满足真源判据：locale 生成段的真源缺失`
+      + '（块区间重叠 / 行格式不是生成器输出 / 键与 locale/*.json 差得太多，三者之一）',
+    );
+    error.code = 'LOCALE-SOURCE-BROKEN';
+    throw error;
   }
   if (hits.length > 1) {
     throw new Error(
@@ -403,7 +446,13 @@ export function checkLocaleSync({ packageDir, readText, readDir, listDir }) {
     segment = findLocaleSegment({ packageDir, readText, readDir, listDir });
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    return { ok: false, code: 'LOCALE-SYNC', message: `${detail}：先跑 node scripts/locale-pack.mjs --write 定位` };
+    // 返工 U2：**不要**再指引「先跑 --write」—— 这条失败路径下 --write 同样定位不到目标。
+    // 两种情形给的检查方向不同：段被改坏 vs 根本没有候选段。
+    const broken = error instanceof Error && error.code === 'LOCALE-SOURCE-BROKEN';
+    const guide = broken
+      ? '：检查该段是否被改坏（块头 / 闭合行 / 每行格式），或该段与 locale/*.json 的键差得太多（--write 也不会替你猜位置）'
+      : '：先确认这个包是否已迁移到分段真源、或 src/ 是否被误删（此情形 --write 同样无法定位）';
+    return { ok: false, code: 'LOCALE-SYNC', message: `${detail}${guide}` };
   }
   if (segment !== null) {
     for (const name of names) {

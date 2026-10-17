@@ -36,7 +36,7 @@
  * `test/client-source.test.mjs` 独立断言头注是纯前缀、在 fingerprint `begin` 之前、
  * 且不改变 `fingerprintOf` 的 hash/size。
  *
- * **g-079 的三条 fail-closed 加固**（本脚本自己 fail-open 等于治本失败）：
+ * **g-079 的四条 fail-closed 加固**（本脚本自己 fail-open 等于治本失败）：
  *   1. **恒等式变成真正的失败判定**：`total == verified + rangeOnly + manual + unresolved`
  *      不成立 ⇒ 计入 failures、非零退出（此前只 `console.log`，算式被改坏仍然绿）。
  *      `unresolved` 现在只数**引用级**失败；表格复算 / `REFS\declared` 的失败单独报数，
@@ -44,9 +44,13 @@
  *   2. **收集域之外的形态显式计数**：裸行号（`（212）`）、行内代码裸行号（`` `2313` ``）、
  *      裸区间（`185–198`）不被 `REFS` 收集器识别。脚本逐条计数并打印
  *      `未覆盖的引用形态：N 处`（`--verbose` 逐条列出），不再静默吞掉；其中 §1.3/§5.1
- *      表格首列由行数复算覆盖，计数里单独扣除并说明。
+ *      表格首列由行数复算覆盖，计数里单独扣除并说明。**这是披露，不是护栏** —— 别把
+ *      「已计数」当成「裸行号已校验」，它们仍不在自动判定内。
  *   3. **弱断言披露**：`expect` 只能命中通用串的条目带 `weakReason`，脚本在输出里逐条披露
  *      （能收紧的已收紧为更长、更独特的串；端点行只有 `/**` 这类无法再收紧的才保留并说明理由）。
+ *   4. **收集域下限**（返工 U4）：恒等式只保证计数自洽，抓不到「收集器整体失效」（例如
+ *      `file:line` 分支被注释掉 ⇒ total 153→62 但恒等式仍成立）。`total < 100` ⇒ 计入
+ *      failures、非零退出。
  *
  * 本脚本**只读**：不写任何文件、不改产品代码。它放在 `docs/` 下，而 `package.json`
  * 的 `files` 白名单不含 `docs`，所以它不会随包发布。
@@ -729,9 +733,23 @@ function main() {
       + `${verified}+${rangeOnly}+${manual}+${unresolved}=${identitySum}（有引用被静默丢弃或重复计数）`,
     );
   }
+
+  // ⑥ 收集域下限（返工 U4）：恒等式只保证「计数自洽」，抓不到**收集域整体失效** ——
+  // 评审实测：注释掉 `file:line` 分支的 `declared.set` 后，total 从 153 掉到 62，
+  // 四个计数仍然自洽、恒等式仍「成立」、脚本 exit 0，等于收集器坏了而体检全绿。
+  // 文档引用规模是稳定的（基线 153 条），所以加一条下限：total < 100 ⇒ 失败。
+  // 阈值 100 的理由：基线 153、收集域塌掉后 62；取 100 既容得下文档正常的增删
+  // （几十条级别），又不给「整体失效」留活口。
+  const MIN_DOC_REFS = 100;
+  if (total < MIN_DOC_REFS) {
+    failures.push(
+      `收集域可能失效：只收集到 ${total} 条引用（下限 ${MIN_DOC_REFS}）`
+      + '—— 检查 collectRefs 的 `file:line` / `:line` 分支是否被改坏',
+    );
+  }
   const otherFailures = failures.length - unresolved;
 
-  // ⑥ 收集域之外的裸行号形态：显式可数，不静默吞掉（g-079 项 2b）。
+  // ⑦ 收集域之外的裸行号形态：显式可数，不静默吞掉（g-079 项 2b）。
   const uncovered = countUncoveredRefs(doc);
   const uncoveredTotal = uncovered.codeBare.length + uncovered.paren.length + uncovered.range.length;
   const uncoveredManual = uncoveredTotal - uncovered.tableCovered;

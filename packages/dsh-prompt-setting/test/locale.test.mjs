@@ -82,6 +82,21 @@ function run(root, script, ...flags) {
   return spawnSync(process.execPath, [script, ...flags], { cwd: root, encoding: 'utf8' });
 }
 
+/** Append `count` probe keys to both JSON dictionaries (same order ⇒ key parity holds). */
+function appendProbeKeys(root, count) {
+  for (const name of Object.keys(LOCALES)) {
+    const jsonPath = join(root, 'locale', `${name}.json`);
+    const raw = readFileSync(jsonPath, 'utf8');
+    const rows = [];
+    for (let index = 0; index < count; index += 1) {
+      rows.push(`  "g079Probe${index}": "${name === 'zh' ? `探针${index}` : `probe${index}`}"`);
+    }
+    const next = raw.replace(/\n}\s*$/, `,\n${rows.join(',\n')}\n}\n`);
+    assert.notEqual(next, raw, 'the fixture edit really lands');
+    writeFileSync(jsonPath, next);
+  }
+}
+
 /**
  * The number of `error.*` entries the `ERROR_TEXT` table expanded to.
  *
@@ -336,17 +351,20 @@ test('locale: a comment decoy with fully closed blocks is still refused (g-079 �
   );
 
   // 三格矩阵第③格（g-079 修复）：真源缺失 + 注释里写出**一对完整可解析**的 zh/en 块
-  // （含闭合行）。旧实现只要求「两个块都能被 readDeclaredBlock 解析」⇒ 会把它当真源；
-  // 现在候选还要求「块内每行是生成器格式 + 键与 locale JSON 描述同一本词典」⇒ 报缺失，
-  // `--write` 不会往这个注释段里写词典。
+  // （含闭合行）。旧实现只要求「两个块都能被 readDeclaredBlock 解析」⇒ 会把它当真源。
+  // 这里刻意用**两个真实键**（nav / title）而不是瞎编的键名：键重合度会是 100%，单靠
+  // 重合度挡不住它 —— 真正挡住它的是「较小一侧键数 ≥ 50」的规模下限（U1）。这样本用例
+  // 同时钉住「行格式 + 区间不重叠 + 规模下限」三层判据，而不只是「键名对不上」。
   const closedDecoy = [
     '/* 文档示例（注释，不是真源）：',
     '    const zh = {',
-    "      exampleOnly: '示例',",
+    "      nav: '示例',",
+    "      title: '示例',",
     '    };',
     '',
     '    const en = {',
-    "      exampleOnly: 'example',",
+    "      nav: 'example',",
+    "      title: 'example',",
     '    };',
     '*/',
     '',
@@ -366,11 +384,13 @@ test('locale: --check and --write refuse a fully closed decoy and touch no file 
     const decoy = [
       '/* 文档示例（注释，不是真源）：',
       '    const zh = {',
-      "      exampleOnly: '示例',",
+      "      nav: '示例',",
+      "      title: '示例',",
       '    };',
       '',
       '    const en = {',
-      "      exampleOnly: 'example',",
+      "      nav: 'example',",
+      "      title: 'example',",
       '    };',
       '*/',
       '',
@@ -382,6 +402,13 @@ test('locale: --check and --write refuse a fully closed decoy and touch no file 
       const result = run(root, 'scripts/locale-pack.mjs', flag);
       assert.notEqual(result.status, 0, `${flag} 必须非零\n${result.stdout}\n${result.stderr}`);
       assert.match(result.stderr, /真源缺失/, `${flag} 的失败必须说清「真源缺失」`);
+      // 返工 U2：不能指引「先跑 --write」（用户跑的/该跑的正是不可能定位到目标的它）。
+      assert.doesNotMatch(result.stderr, /先跑 node scripts\/locale-pack\.mjs --write/, `${flag} 不得再指引跑 --write`);
+      if (flag === '--check') {
+        assert.match(result.stderr, /检查该段是否被改坏/, '--check 的指引要指向「段被改坏 / 与 JSON 漂移过大」');
+      } else {
+        assert.match(result.stderr, /没有一个满足真源判据/, '--write 的文案要区分「有候选段但不合格」与「没有候选段」');
+      }
     }
     // 不写坏任何文件：段文件保持诱饵原文，client.js 一个字节没动。
     watched.forEach((rel, at) => assert.equal(readFileSync(join(root, rel), 'utf8'), before[at], `${rel} 不得被改写`));
@@ -391,23 +418,42 @@ test('locale: --check and --write refuse a fully closed decoy and touch no file 
 });
 
 test('locale: adding a key to the JSON still lets --write locate the segment', () => {
-  // 键集合判据取「重合度 ≥ 90%」而不是严格相等（g-079 项 3）：加键/删键/改名之后跑
-  // `--write` 是正常流程，严格相等会把这条流程挡在门外。本用例钉住这个行为。
+  // 键集合判据不是严格相等（g-079 项 3）：加键/删键/改名之后跑 `--write` 是正常流程，
+  // 严格相等会把这条流程挡在门外。本用例钉住「+1 键」这个最小形态。
   const root = throwawayPackage();
   try {
-    for (const name of Object.keys(LOCALES)) {
-      const jsonPath = join(root, 'locale', `${name}.json`);
-      const raw = readFileSync(jsonPath, 'utf8');
-      const next = raw.replace(/\n}\s*$/, `,\n  "g079Probe": "${name === 'zh' ? '探针' : 'probe'}"\n}\n`);
-      assert.notEqual(next, raw, 'the fixture edit really lands');
-      writeFileSync(jsonPath, next);
-    }
+    appendProbeKeys(root, 1);
     const write = run(root, 'scripts/locale-pack.mjs', '--write');
     assert.equal(write.status, 0, `加键后的 --write 必须仍能定位真源\n${write.stdout}\n${write.stderr}`);
     const segment = findLocaleSegment({ packageDir: root });
     const text = readFileSync(join(root, CLIENT_SRC_DIR, segment.name), 'utf8');
-    assert.equal(text.includes("      g079Probe: '探针',"), true, 'zh 的新键要写进段真源');
-    assert.equal(text.includes("      g079Probe: 'probe',"), true, 'en 的新键要写进段真源');
+    assert.equal(text.includes("      g079Probe0: '探针0',"), true, 'zh 的新键要写进段真源');
+    assert.equal(text.includes("      g079Probe0: 'probe0',"), true, 'en 的新键要写进段真源');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('locale: a batch of +80 keys still lets --write locate the segment (U1)', () => {
+  // 返工 U1：用 max 作分母时，纯加 N 键的得分是 S/(S+N)，586 键时 +66 就掉到 90% 以下
+  // ⇒ --write 报「真源缺失」，而基线在同样副本里 exit 0（行为回归）。改用 min 分母后，
+  // 纯加键恒为 100%。这里用评审实测的 +80 键（→666）钉住它。
+  const root = throwawayPackage();
+  try {
+    appendProbeKeys(root, 80);
+    const write = run(root, 'scripts/locale-pack.mjs', '--write');
+    assert.equal(write.status, 0, `加 80 键后的 --write 必须仍能定位真源\n${write.stdout}\n${write.stderr}`);
+    assert.match(write.stdout, /666 键\/语言/, '--write 要按 586+80=666 键写');
+    const segment = findLocaleSegment({ packageDir: root });
+    const segmentText = readFileSync(join(root, CLIENT_SRC_DIR, segment.name), 'utf8');
+    const clientText = readFileSync(join(root, 'client.js'), 'utf8');
+    for (const [text, label] of [[segmentText, '段真源'], [clientText, 'client.js']]) {
+      assert.equal(text.includes("      g079Probe0: '探针0',"), true, `${label} 要含第一个新键`);
+      assert.equal(text.includes("      g079Probe79: 'probe79',"), true, `${label} 要含最后一个新键`);
+    }
+    // 加键不该让「段 ↔ 产物」「词典 ↔ 段」两道一致性门变红。
+    assert.equal(run(root, 'scripts/client-build.mjs', '--check').status, 0, '加键后段 ↔ 产物仍一致');
+    assert.equal(run(root, 'scripts/locale-pack.mjs', '--check').status, 0, '加键后词典 ↔ 段仍一致');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
