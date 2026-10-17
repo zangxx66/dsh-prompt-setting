@@ -10,7 +10,25 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
-## [Unreleased]
+## [0.2.4] - 2026-10-18
+
+**功能版本：删除预设时一并还原它已应用的工作区，备份与恢复改为整机全量并解除导入写锁，全部用户文案迁出
+bundle（`locale/*.json` 成为唯一真源），「查看范围」收归「我的 Prompt」专用、四个 tab 各自解耦，主 tab
+换成纯文字 + 选中下划线样式，「高级」显示更新红点；此外按真实变量表探测 DSH 的 `cwd` 变量弃用。底层完成
+客户端生成期分段重构（`src/` 17 段真源）并新增发布前 `verify` 聚合门禁。 / Feature release: deleting a
+preset now also restores every workspace it was applied to, backup/restore became a whole-installation full
+document with the import write lock removed, every user-visible string moved out of the bundle into
+`locale/*.json` as the single source, the view scope now serves "My prompt" alone with the four other tabs
+decoupled, the main tabs became plain text with an accent underline, "Advanced" carries an update dot, and the
+host's `cwd` variable retirement is detected from the live variable table rather than a version guess.
+Underneath, the client half was rebuilt as 17 generated segments and a pre-release `verify` gate was added.**
+
+（本次发布覆盖 g-065…g-080。v0.2.3 **从未发布**，它的全部条目并入本版；范围经 `git merge-base
+--is-ancestor` 逐项核实——每个目标的代表提交都是 `dev`（`d95e879`）的祖先、都不是 `main`（`1d2543a`）
+的祖先，`merge-base(main,dev) = 445ad6d`。 / This release covers g-065…g-080. v0.2.3 was **never
+released**, so all of its entries ship here; the range was verified with `git merge-base --is-ancestor` —
+every target's representative commit is an ancestor of `dev` (`d95e879`) and none is an ancestor of `main`
+(`1d2543a`), with `merge-base(main,dev) = 445ad6d`.）
 
 ### Added 新增
 
@@ -32,6 +50,38 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed 变更
 
+- **版本号 `0.2.2` → `0.2.4`（跳过从未发布的 `0.2.3`）**：同步表示「本包当前版本」的每一处——本包
+  `package.json` 的 `version`、`index.js` 的 `PLUGIN_VERSION`、三份 README 的徽章与「本仓库为 X」
+  （同时校正过时的 npm `latest` 事实：`0.1.5` → `0.2.2`，2026-10-18 实测）、`CONTRACT.md` 的 export /
+  ping / 版本节点示例，以及测试中表示本包版本的硬字面量；配套的「更新
+  目标」夹具按语义整体上移（`0.2.3` → `0.2.5`，必须高于本包版本，否则 `hasUpdate` 翻假）。v0.2.3
+  从未发布，它的全部条目与 v0.2.4 一起记在本段（`0.2.3` 只是升版前的夹具值，不是发布过的版本）。
+  版本号本身**不引入任何行为变更**：本版的行为变化全部是下面的条目，版本号不改变路由、落盘内容
+  或既有响应字段。`npm publish` / `git tag` / `git push` / 合入 `main` 仍是人工 gate，不在本次变更内。
+  **Version `0.2.2` → `0.2.4`, skipping the never-published `0.2.3`**: every place that states "the
+  version this package currently is" was moved together — this package's `package.json`, the host's
+  `PLUGIN_VERSION`, the badges and "this repository is" lines in all three READMEs (also correcting the
+  stale npm `latest` fact, `0.1.5` → `0.2.2`, measured on 2026-10-18), the export / ping / version-node
+  examples in `CONTRACT.md`, and the test literals that assert the package version. The
+  "update target" fixtures moved by semantics (`0.2.3` → `0.2.5`, which must stay above the package's own
+  version or `hasUpdate` flips false). `0.2.3` was never released, so its entries ship here together with
+  v0.2.4's. The bump itself introduces **no behaviour change**: no route, no stored content and no
+  existing response field moves with the version number; `npm publish`, `git tag`, `git push` and the
+  merge into `main` remain manual gates.
+- **内部工程：客户端生成期分段与发布前门禁（g-072、g-075–g-079）**：`client.js` 自本版起由 `src/`
+  的 17 段真源经 `scripts/client-build.mjs` 生成（生成物与旧文件逐字节等价，头注标明「生成物，勿
+  手改」）；`prepare` 增「段 ↔ 产物」字节一致与段集合门禁；新增 `scripts/verify.mjs` —— 一条命令
+  跑全量测试 + 四道门禁 + 文档引用体检，`docs/check-refs.mjs` 对 `docs/refactor-plan.md` 的上百条
+  `文件:行` 引用做 fail-closed 校验；`.gitattributes` 固定跨平台 LF。**用户可见行为零变化**：改动只在
+  开发者工作流与发布前防线；g-072 是方案文档本身，g-068 是调查（结论落在 g-069 的条目里）。
+  **Internal engineering: generated client segments and pre-release gates (g-072, g-075–g-079)**:
+  `client.js` is now generated from the 17 `src/` segments by `scripts/client-build.mjs` (byte-identical
+  to the previous file, with a "generated, do not edit" banner); `prepare` gains a segment ⇄ artifact
+  byte-equality and segment-set gate; `scripts/verify.mjs` runs the full test suite plus the four gates
+  plus the documentation reference check in one command, with `docs/check-refs.mjs` validating the
+  hundreds of `file:line` references fail-closed; `.gitattributes` pins LF across platforms. **Nothing
+  user-visible changes** — only the developer workflow and the pre-release line of defence; g-072 is the
+  design document itself and g-068 is the investigation whose conclusions live in the g-069 entry.
 - **`cwd` 变量弃用的探测：按真实变量表适配，不按版本号猜（g-080，DSH 0.2.1-rc.1 起）**：上游
   `dsh-agent-loop` 不再注册 `cwd`，shipped preset 也不再发 `Your working directory is {{cwd}}.`。插件把
   `GET /prompt-setting/interpolate` 早已返回的 `variables`（一次真实 `assemble()` 的键集，已按 mount

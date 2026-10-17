@@ -1289,8 +1289,8 @@ test('stage2: export is a FULL backup — both layer views, every workspace laye
   assert.equal(payload.ok, true);
   assert.equal(payload.schema, 'dsh-prompt-setting/export');
   assert.equal(payload.version, 2, 'Revision 53 writes the full-backup version');
-  assert.equal(payload.pluginVersion, '0.2.2');
-  assert.deepEqual(payload.plugin, { name: 'dsh-prompt-setting', version: '0.2.2' });
+  assert.equal(payload.pluginVersion, '0.2.4');
+  assert.deepEqual(payload.plugin, { name: 'dsh-prompt-setting', version: '0.2.4' });
   assert.equal(Number.isNaN(Date.parse(payload.exportedAt)), false);
   assert.deepEqual(Object.keys(payload.layers), ['user', 'workspace']);
   assert.deepEqual(payload.layers.user.overrides, [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'A' }]);

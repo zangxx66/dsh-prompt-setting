@@ -60,9 +60,9 @@ const PING_PATH = '/prompt-setting/ping';
 const REGISTRY_URL = 'https://registry.npmjs.org/dsh-prompt-setting';
 const GITHUB_URL = 'https://api.github.com/repos/zangxx66/dsh-prompt-setting/releases/latest';
 /** The registry document's own install spec. */
-const TARBALL_URL = 'https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.3.tgz';
+const TARBALL_URL = 'https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.5.tgz';
 /** The same for the version this test package already is (`currentVersion`). */
-const OLD_TARBALL_URL = 'https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.2.tgz';
+const OLD_TARBALL_URL = 'https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.4.tgz';
 
 let home;
 let previousHome;
@@ -122,8 +122,8 @@ function jsonResponse(body, status = 200) {
 /** The canonical "a newer release exists" answer. */
 function releaseResponse(over = {}) {
   return jsonResponse({
-    tag_name: 'v0.2.3',
-    html_url: 'https://github.com/zangxx66/dsh-prompt-setting/releases/tag/v0.2.3',
+    tag_name: 'v0.2.5',
+    html_url: 'https://github.com/zangxx66/dsh-prompt-setting/releases/tag/v0.2.5',
     published_at: '2026-10-01T00:00:00Z',
     draft: false,
     prerelease: false,
@@ -145,12 +145,12 @@ function releaseResponse(over = {}) {
 function npmResponse(over = {}) {
   return jsonResponse({
     name: 'dsh-prompt-setting',
-    'dist-tags': { latest: '0.2.3' },
+    'dist-tags': { latest: '0.2.5' },
     versions: {
-      '0.2.3': { name: 'dsh-prompt-setting', version: '0.2.3', dist: { tarball: TARBALL_URL } },
-      '0.1.5': { name: 'dsh-prompt-setting', version: '0.1.5', dist: { tarball: OLD_TARBALL_URL } },
+      '0.2.5': { name: 'dsh-prompt-setting', version: '0.2.5', dist: { tarball: TARBALL_URL } },
+      '0.2.4': { name: 'dsh-prompt-setting', version: '0.2.4', dist: { tarball: OLD_TARBALL_URL } },
     },
-    time: { '0.2.3': '2026-09-25T00:00:00.000Z' },
+    time: { '0.2.5': '2026-09-25T00:00:00.000Z' },
     ...over,
   });
 }
@@ -345,11 +345,11 @@ test('update: a real-shaped document answers with its tarball, and one that name
 
   // The version is still the version when the document names no artifact: the
   // check is **not** a failure, and the install route refuses it (§18.2).
-  const bare = makeChecker({ handler: (url) => (url === REGISTRY_URL ? npmResponse({ versions: { '0.2.2': {} } }) : releaseResponse()) });
+  const bare = makeChecker({ handler: (url) => (url === REGISTRY_URL ? npmResponse({ versions: { '0.2.5': {} } }) : releaseResponse()) });
   const answer = await bare.checker.check();
   assert.equal(answer.ok, true);
   assert.equal(answer.source, UPDATE_SOURCE_NPM);
-  assert.equal(answer.latest, '0.2.3');
+  assert.equal(answer.latest, '0.2.5');
   assert.equal(answer.hasUpdate, true);
   assert.equal(answer.tarball, null);
 });
@@ -362,9 +362,9 @@ test('update: npm is the primary path — dist-tags.latest is the newest version
   assert.equal(result.ok, true);
   assert.equal(result.source, UPDATE_SOURCE_NPM);
   assert.equal(result.hasUpdate, true);
-  assert.equal(result.latest, '0.2.3');
+  assert.equal(result.latest, '0.2.5');
   assert.equal(result.current, '0.1.1');
-  assert.equal(result.latestTag, '0.2.3');
+  assert.equal(result.latestTag, '0.2.5');
   assert.equal(result.tarball, TARBALL_URL, 'the registry document names the install spec');
   assert.equal(result.publishedAt, '2026-09-25T00:00:00.000Z');
   assert.equal(result.releaseUrl, null, 'the npm answer has no release page to link');
@@ -419,7 +419,7 @@ test('update: a release without html_url falls back to the tag page', async () =
   });
   const result = await checker.check();
   assert.equal(result.source, UPDATE_SOURCE_GITHUB);
-  assert.equal(result.releaseUrl, 'https://github.com/zangxx66/dsh-prompt-setting/releases/tag/v0.2.3');
+  assert.equal(result.releaseUrl, 'https://github.com/zangxx66/dsh-prompt-setting/releases/tag/v0.2.5');
 });
 
 test('update: an npm failure falls back to GitHub Releases, marked source=github', async () => {
@@ -430,12 +430,12 @@ test('update: an npm failure falls back to GitHub Releases, marked source=github
   assert.equal(result.ok, true);
   assert.equal(result.source, UPDATE_SOURCE_GITHUB);
   assert.equal(result.hasUpdate, true);
-  assert.equal(result.latest, '0.2.3');
-  assert.equal(result.latestTag, 'v0.2.3', 'the release tag travels verbatim for the asset URL');
+  assert.equal(result.latest, '0.2.5');
+  assert.equal(result.latestTag, 'v0.2.5', 'the release tag travels verbatim for the asset URL');
   assert.equal(result.tarball, null, 'a GitHub answer carries no registry tarball');
   assert.equal(
     result.releaseUrl,
-    'https://github.com/zangxx66/dsh-prompt-setting/releases/tag/v0.2.3',
+    'https://github.com/zangxx66/dsh-prompt-setting/releases/tag/v0.2.5',
   );
   assert.deepEqual(transport.calls.map((call) => call.url), [REGISTRY_URL, GITHUB_URL], 'npm first, GitHub second');
 });
@@ -461,7 +461,7 @@ test('update: every way npm can fail to answer sends the check to the fallback',
     assert.equal(result.ok, true, reason);
     assert.equal(result.source, UPDATE_SOURCE_GITHUB, reason);
     assert.equal(result.hasUpdate, true, reason);
-    assert.equal(result.latest, '0.2.3', reason);
+    assert.equal(result.latest, '0.2.5', reason);
     assert.deepEqual(transport.calls.map((call) => call.url), [REGISTRY_URL, GITHUB_URL], reason);
   }
 });
@@ -872,7 +872,7 @@ test('update route: an npm failure falls back to GitHub, and is still a 200', as
   const body = json(res);
   assert.equal(body.source, UPDATE_SOURCE_GITHUB);
   assert.equal(body.hasUpdate, true);
-  assert.equal(body.latest, '0.2.3');
+  assert.equal(body.latest, '0.2.5');
   assert.deepEqual(transport.calls.map((entry) => entry.url), [REGISTRY_URL, GITHUB_URL]);
 });
 
@@ -986,7 +986,7 @@ test('update route: an unknown path is still a 404, and ping is untouched', asyn
   assert.equal(ping.statusCode, 200);
   const body = json(ping);
   assert.equal(body.ok, true);
-  assert.equal(body.version, '0.2.2');
+  assert.equal(body.version, '0.2.4');
   assert.equal('hasUpdate' in body, false, 'the ping response shape is unchanged');
 });
 
@@ -1426,7 +1426,7 @@ test('region: no test in this file can reach a third-party geo service', async (
   const asked = [];
   const fetch = async (url) => {
     asked.push(String(url));
-    return { ok: true, status: 200, json: async () => ({ 'dist-tags': { latest: '0.2.3' } }) };
+    return { ok: true, status: 200, json: async () => ({ 'dist-tags': { latest: '0.2.5' } }) };
   };
   const detection = makeRegion({ fetch });
   await detection.region.ensure();
@@ -1665,7 +1665,7 @@ test('region route: a custom mirror that stops answering is the same structured 
           const target = String(url);
           return target.startsWith('https://mirror.example/npm/')
             ? jsonResponse({ message: 'down' }, 503)
-            : jsonResponse({ tag_name: 'v0.2.3' });
+            : jsonResponse({ tag_name: 'v0.2.5' });
         },
       },
     },
