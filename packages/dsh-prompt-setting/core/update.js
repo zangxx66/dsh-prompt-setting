@@ -41,6 +41,8 @@
  * @module dsh-prompt-setting/core/update
  */
 
+import { fail } from './overrides.js';
+
 /** Cache lifetime: six hours, per the goal's spec. */
 export const UPDATE_CHECK_TTL_MS = 6 * 60 * 60 * 1000;
 /** Hard timeout on the single upstream request: five seconds. */
@@ -470,6 +472,87 @@ export function normalizePreferences(raw) {
  */
 export function isDownloadRegion(value) {
   return DOWNLOAD_REGIONS.includes(value);
+}
+
+/**
+ * Every key a preference document may carry (Revision 53).
+ *
+ * An **unknown key is refused**, not ignored. The alternative — reading past it
+ * and writing the rest — would make an import silently drop a setting the
+ * document asked for, and「我恢复了备份但开关没回来」is precisely the failure
+ * this route may not produce. The read face stays lenient
+ * ({@link normalizePreferences} carries only the keys it states); only the
+ * import face is strict, and it says so with a code.
+ */
+export const PREFERENCE_KEYS = Object.freeze([
+  UPDATE_CHECK_FLAG,
+  ASSEMBLY_NOTICE_FLAG,
+  DOWNLOAD_REGION_FLAG,
+  DOWNLOAD_REGION_REGISTRY_FLAG,
+  DOWNLOAD_REGION_AUTO_FLAG,
+]);
+
+/** Upper bound on the custom registry address a document may carry. */
+export const MAX_REGISTRY_LENGTH = 2048;
+
+/**
+ * Validate a preference document **strictly**, for an import (Revision 53).
+ *
+ * The type and the value domain of every known key are checked, one refusal
+ * code per rule, before any byte is written. `updateCheck` and
+ * `assemblyNotice` are the two booleans whose absence means "not stated"
+ * (they are optional); when present they must be real booleans — a `"false"`
+ * string is refused rather than read as `true` by {@link normalizePreferences},
+ * which is the class of bug that turns a privacy switch into a bomb.
+ * @param raw - the parsed document.
+ * @returns the normalized preferences ({@link normalizePreferences}).
+ * @throws {OverrideError} `invalid-preferences` / `unknown-preference` /
+ *   `invalid-preference`.
+ */
+export function validatePreferencesDocument(raw) {
+  if (!isRecord(raw)) {
+    throw fail('invalid-preferences', 'the preference document must be a JSON object');
+  }
+  for (const key of Object.keys(raw)) {
+    if (!PREFERENCE_KEYS.includes(key)) {
+      throw fail(
+        'unknown-preference',
+        `"${key}" is not a preference this build knows; the accepted keys are ${PREFERENCE_KEYS.join(', ')}`,
+      );
+    }
+  }
+  for (const key of [UPDATE_CHECK_FLAG, ASSEMBLY_NOTICE_FLAG, DOWNLOAD_REGION_AUTO_FLAG]) {
+    if (raw[key] !== undefined && typeof raw[key] !== 'boolean') {
+      throw fail('invalid-preference', `"${key}" must be a boolean when present`);
+    }
+  }
+  if (raw[DOWNLOAD_REGION_FLAG] !== undefined && !isDownloadRegion(raw[DOWNLOAD_REGION_FLAG])) {
+    throw fail('invalid-preference', `"${DOWNLOAD_REGION_FLAG}" must be one of ${DOWNLOAD_REGIONS.join(', ')}`);
+  }
+  const registry = raw[DOWNLOAD_REGION_REGISTRY_FLAG];
+  if (registry !== undefined) {
+    if (typeof registry !== 'string' || registry.trim().length === 0) {
+      throw fail('invalid-preference', `"${DOWNLOAD_REGION_REGISTRY_FLAG}" must be a non-empty string when present`);
+    }
+    if (registry.length > MAX_REGISTRY_LENGTH) {
+      throw fail('invalid-preference', `"${DOWNLOAD_REGION_REGISTRY_FLAG}" exceeds ${MAX_REGISTRY_LENGTH} characters`);
+    }
+    // g-074 R2: the very rule the download-region route applies. A value this
+    // plugin refuses to *store* must not become storable through a backup
+    // either — otherwise an import could persist `file:///etc`, and the read
+    // face would silently fall back to "no registry" (§17). The rule is reused,
+    // not re-typed: two spellings of one semantic is how the R1 hole appeared.
+    // The value itself is **not** rewritten here (no trailing-slash
+    // normalization): an import writes exactly what the document carried, so a
+    // round trip is byte-stable. The route still normalizes what it stores.
+    if (!validateRegistryAddress(registry).ok) {
+      throw fail(
+        'invalid-preference',
+        `"${DOWNLOAD_REGION_REGISTRY_FLAG}" must be an http(s) base address without credentials, a query string or a fragment`,
+      );
+    }
+  }
+  return normalizePreferences(raw);
 }
 
 /**

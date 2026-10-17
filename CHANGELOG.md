@@ -10,6 +10,299 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
+## [0.2.4] - 2026-10-18
+
+**功能版本：删除预设时一并还原它已应用的工作区，备份与恢复改为整机全量并解除导入写锁，全部用户文案迁出
+bundle（`locale/*.json` 成为唯一真源），「查看范围」收归「我的 Prompt」专用、四个 tab 各自解耦，主 tab
+换成纯文字 + 选中下划线样式，「高级」显示更新红点；此外按真实变量表探测 DSH 的 `cwd` 变量弃用。底层完成
+客户端生成期分段重构（`src/` 17 段真源）并新增发布前 `verify` 聚合门禁。 / Feature release: deleting a
+preset now also restores every workspace it was applied to, backup/restore became a whole-installation full
+document with the import write lock removed, every user-visible string moved out of the bundle into
+`locale/*.json` as the single source, the view scope now serves "My prompt" alone with the four other tabs
+decoupled, the main tabs became plain text with an accent underline, "Advanced" carries an update dot, and the
+host's `cwd` variable retirement is detected from the live variable table rather than a version guess.
+Underneath, the client half was rebuilt as 17 generated segments and a pre-release `verify` gate was added.**
+
+（本次发布覆盖 g-065…g-080。v0.2.3 **从未发布**，它的全部条目并入本版；范围经 `git merge-base
+--is-ancestor` 逐项核实——每个目标的代表提交都是 `dev`（`d95e879`）的祖先、都不是 `main`（`1d2543a`）
+的祖先，`merge-base(main,dev) = 445ad6d`。 / This release covers g-065…g-080. v0.2.3 was **never
+released**, so all of its entries ship here; the range was verified with `git merge-base --is-ancestor` —
+every target's representative commit is an ancestor of `dev` (`d95e879`) and none is an ancestor of `main`
+(`1d2543a`), with `merge-base(main,dev) = 445ad6d`.）
+
+### Added 新增
+
+- **文案真源迁出 bundle：`locale/*.json` + `scripts/locale-pack.mjs`（g-066）**：插件全部用户可见文案
+  （564 键/语言 = 513 主词典 + 51 个 `error.<code>`）从 `client.js` 搬到 `locale/zh.json` 与
+  `locale/en.json`，成为**唯一人工真源**；`client.js` 里的 `zh`/`en` 两段改为**生成物**，由
+  `node scripts/locale-pack.mjs --write` 渲染、`--check` 校验（`prepare` 门禁也跑同一条检查）。浏览器
+  运行时**不读**这两份 JSON（bundle 是 classic script、宿主零转译、插件路由不服务子目录），因此
+  `ctx.locale.register(NS, {zh, en})` 仍是**同步**调用：首帧文案不变，也没有新增网络请求。`files` 纳入
+  `locale`，`npm pack --dry-run` 实测 36 个文件（含两份 JSON 与生成脚本）。文案与键名一字未改。
+  **Copy moved out of the bundle (g-066)**: every user-visible string (564 keys per language = 513 main
+  + 51 `error.<code>`) now lives in `locale/zh.json` / `locale/en.json` as the single human source; the
+  `zh`/`en` blocks inside `client.js` became a generated artifact produced and checked by
+  `scripts/locale-pack.mjs` (the same check runs on the `prepare` gate). The JSON is **not** fetched at
+  runtime — the bundle is a classic script, the Host does not transpile it, and the plugin route serves
+  no subdirectories — so `ctx.locale.register(NS, {zh, en})` stays **synchronous**: the first frame is
+  unchanged and no request was added. `files` now includes `locale`, and `npm pack --dry-run` measures
+  36 files including both JSONs and the generator.
+
+### Changed 变更
+
+- **版本号 `0.2.2` → `0.2.4`（跳过从未发布的 `0.2.3`）**：同步表示「本包当前版本」的每一处——本包
+  `package.json` 的 `version`、`index.js` 的 `PLUGIN_VERSION`、三份 README 的徽章与「本仓库为 X」
+  （同时校正过时的 npm `latest` 事实：`0.1.5` → `0.2.2`，2026-10-18 实测）、`CONTRACT.md` 的 export /
+  ping / 版本节点示例，以及测试中表示本包版本的硬字面量；配套的「更新
+  目标」夹具按语义整体上移（`0.2.3` → `0.2.5`，必须高于本包版本，否则 `hasUpdate` 翻假）。v0.2.3
+  从未发布，它的全部条目与 v0.2.4 一起记在本段（`0.2.3` 只是升版前的夹具值，不是发布过的版本）。
+  版本号本身**不引入任何行为变更**：本版的行为变化全部是下面的条目，版本号不改变路由、落盘内容
+  或既有响应字段。`npm publish` / `git tag` / `git push` / 合入 `main` 仍是人工 gate，不在本次变更内。
+  **Version `0.2.2` → `0.2.4`, skipping the never-published `0.2.3`**: every place that states "the
+  version this package currently is" was moved together — this package's `package.json`, the host's
+  `PLUGIN_VERSION`, the badges and "this repository is" lines in all three READMEs (also correcting the
+  stale npm `latest` fact, `0.1.5` → `0.2.2`, measured on 2026-10-18), the export / ping / version-node
+  examples in `CONTRACT.md`, and the test literals that assert the package version. The
+  "update target" fixtures moved by semantics (`0.2.3` → `0.2.5`, which must stay above the package's own
+  version or `hasUpdate` flips false). `0.2.3` was never released, so its entries ship here together with
+  v0.2.4's. The bump itself introduces **no behaviour change**: no route, no stored content and no
+  existing response field moves with the version number; `npm publish`, `git tag`, `git push` and the
+  merge into `main` remain manual gates.
+- **内部工程：客户端生成期分段与发布前门禁（g-072、g-075–g-079）**：`client.js` 自本版起由 `src/`
+  的 17 段真源经 `scripts/client-build.mjs` 生成（生成物与旧文件逐字节等价，头注标明「生成物，勿
+  手改」）；`prepare` 增「段 ↔ 产物」字节一致与段集合门禁；新增 `scripts/verify.mjs` —— 一条命令
+  跑全量测试 + 四道门禁 + 文档引用体检，`docs/check-refs.mjs` 对 `docs/refactor-plan.md` 的上百条
+  `文件:行` 引用做 fail-closed 校验；`.gitattributes` 固定跨平台 LF。**用户可见行为零变化**：改动只在
+  开发者工作流与发布前防线；g-072 是方案文档本身，g-068 是调查（结论落在 g-069 的条目里）。
+  **Internal engineering: generated client segments and pre-release gates (g-072, g-075–g-079)**:
+  `client.js` is now generated from the 17 `src/` segments by `scripts/client-build.mjs` (byte-identical
+  to the previous file, with a "generated, do not edit" banner); `prepare` gains a segment ⇄ artifact
+  byte-equality and segment-set gate; `scripts/verify.mjs` runs the full test suite plus the four gates
+  plus the documentation reference check in one command, with `docs/check-refs.mjs` validating the
+  hundreds of `file:line` references fail-closed; `.gitattributes` pins LF across platforms. **Nothing
+  user-visible changes** — only the developer workflow and the pre-release line of defence; g-072 is the
+  design document itself and g-068 is the investigation whose conclusions live in the g-069 entry.
+- **`cwd` 变量弃用的探测：按真实变量表适配，不按版本号猜（g-080，DSH 0.2.1-rc.1 起）**：上游
+  `dsh-agent-loop` 不再注册 `cwd`，shipped preset 也不再发 `Your working directory is {{cwd}}.`。插件把
+  `GET /prompt-setting/interpolate` 早已返回的 `variables`（一次真实 `assemble()` 的键集，已按 mount
+  缓存）接到「我的 Prompt」面板：注记里的变量列表**按当前实际注册名渲染**——旧版 DSH 仍列出
+  `{{cwd}}`，0.2.1-rc.1 及以后不列并在同一段文案里点名其弃用与「保持字面量 / 保存被拒」两个后果；
+  探测失败（`variables: null`）显示 `?`，不编造可用集合。写入/开启校验在拒绝**未注册**的 `{{cwd}}`
+  时追加一句迁移提示（表里仍有 `cwd` 时一字不加），状态码、错误码与零字节保证均不变。旧版 DSH 的
+  行为、文案与判定方向逐字不变；已有文本照常进入 prompt（保留段永不插值、插件展开宽松，绝不抛错）。
+  零新增路由/字段；每页加载/重载多一次已缓存的 `GET /interpolate`（不触发新的 `assemble()`）。
+  `client.js` 保持 **12382** 行（行数中性改写），`docs/refactor-plan.md` 的段表与引用行号零漂移。
+  **The `cwd` retirement is detected from the live variable table, never from a version string (g-080,
+  DSH 0.2.1-rc.1+)** — the panel's note renders the names this assembly really registers, so an older
+  DSH still lists `{{cwd}}` while the 0.2.1 line omits it and names the retirement (literal stays
+  literal, an armed save is refused); a failed probe prints `?`. The refusal gains one migration
+  sentence only when the unknown name is `cwd` and the table lacks it. Same code, same status, same
+  zero-byte guarantee; old hosts are byte-for-byte unchanged in behaviour and copy. No new route or
+  field; one already-cached `GET /interpolate` per page load and `client.js` stays 12382 lines.
+- **作用域模型收敛：页面「查看范围」只服务「我的 Prompt」（g-073，Revision 55）**：负责人 2026-10-16 目视后
+  要求页面级作用域只管「我的 Prompt」，其余 tab 各自解耦——g-074 先交付全量备份，本次处理行为层。四个落点：
+  ①「我的预设」的库读取不再携带 `?session=`（库是全局文件，与页面作用域无直接关联；apply / unapply 仍按对话框里
+  选中的工作区生效，行为未变）；②「提示词总览」自带作用域切换组件——**按工作区分组、可选到具体会话**，切换后按
+  该作用域重新读取快照，页面「查看范围」不再影响它。取值**不照抄**「版本历史」的「每个工作区取首个会话 id」：
+  `/snapshot` 的 `session` 同时定位工作区层文件并在该会话自身作用域里探测装配，frozen 判定与变量解析是 per-scope
+  事实，用替身会让页面显示用户没选的会话的结论；③「高级」自带**工作区**选择器（`?reset=true` / `?legacy=true`
+  清的是整个工作区文件、该工作区所有会话共享，所以选择器的语义是"选工作区"而非"选会话"），旧版覆盖列表、层计数与
+  装配状态都按它自己的作用域取数，用户层仍是全局；④页面作用域 `m.sessionArg` 的消费点收敛为只剩「我的 Prompt」
+  （快照 + 覆盖读取 + 面板自己的写入目标展示），`/export`、`/import`、`/presets` 不再携带它（备份自 Revision 53
+  起已是全量）。总览与高级的读都在**首次打开该 tab / 作用域变化 / reload** 时才发（每次 `/snapshot` 要跑两次
+  `assemble()`），切走再切回**复用已有数据**——不发请求、也不再闪一下「加载中」；面板渲染门控按各 tab 自己的
+  数据源，页面作用域的读失败不会再让别的 tab 空白。新增契约 §13.10「作用域模型」总表与 7 条不变式；
+  §13.0 / §13.2 / §13.3a / §13.4 / §13.7 / §20.2 同步；词典新增 13 键（**586 键/语言** = 535 主 +
+  51 `error.<code>`），并修正两条随之过时的文案。
+  **The scope model converges: the page-level "View scope" serves「My Prompt」alone (g-073, Revision 55)**:
+  the four decouplings are — the preset library is read without `?session=`; 「Prompt overview」gets its own
+  switcher, **grouped by workspace and resolving down to a concrete session** (never the workspace's first
+  session: `/snapshot`'s `session` locates the workspace layer *and* probes the assembly in that session's
+  own scope, so the frozen verdict and the variable resolution are per-scope facts); 「Advanced」gets its own
+  **workspace** selector (both layer-wide clears act on a whole workspace file shared by every session in
+  it), with the legacy list, the layer counts and the assembly status all read in that scope and the user
+  layer still global; and `m.sessionArg` is left scoping「My Prompt」alone, so `/export`, `/import` and
+  `/presets` no longer carry it. Both tab-owned reads happen on their tab's first open, on a scope change and
+  on a reload — coming back to a tab reuses what is on screen (no request, no loading frame) — because every `/snapshot`
+  costs two `assemble()` runs) and each panel is gated on its own data source, so a failing page-scoped read
+  can no longer blank another tab. Contract gains §13.10 (the model, with six invariants); §13.0 / §13.2 /
+  §13.3a / §13.4 / §13.7 / §20.2 updated; the dictionaries grow to **586 keys per language** (535 main +
+  51 `error.<code>`), with two now-stale strings corrected.
+
+- **跨机备份恢复改为「跳过」语义 + 导入预览提示「整份替换」（g-074 att-002，Revision 54）**：负责人 2026-10-16
+  追加指示「如果不是本机已注册的则跳过」。`POST /import` 过去对「路径形状合法但本机注册表未包含」的工作区
+  root 整体 `400 unknown-workspace-root` 拒绝，现在改为**跳过并在响应 `skipped[]` 中如实声明**
+  （`{layer, reason, entries}`，沿用 R6 已钉住的形状，不新增字段）：`workspaces[]` 里这类条目
+  `layer` 为 `workspace:<root>`、`entries` 为该条目的覆盖数；`presets.applied[]` 里这类记录
+  `layer` 为 `presets.applied:<root>`、`entries` 为 `1`，且该记录**被丢弃、绝不落库**（R1 关掉的那条
+  任意路径写入原语保持关闭）。文档其余部分——两层视图、**已注册**的工作区层、预设库、偏好设置——
+  照常导入，被跳过项的零写入不变式仍有 SHA-256 断言。**形状非法**（相对路径 / `..` / 控制字符 / 卷根）
+  仍按畸形文档**整体拒绝**、零写入，两刀不混同。前端「备份与恢复」预览补齐三块：预设库与偏好设置将被
+  **整份替换**（不是合并）的明确警示、本文档涉及的 `workspaces` 变更（含是否真有改动）、以及被跳过的
+  条目列表（`layer`/`reason`/`entries` 计数）。契约 §11.1、§11.2（`skipped` 来源表 4 → 6 行）、§11.7、
+  §15.7、§10、§4.4 错误码表与 §22 locale 计数同步为 Revision 54；新增 §11.8 记录预览契约。
+  **Cross-machine restore now skips, and the preview says what is replaced (g-074 att-002, Revision 54)**:
+  a workspace root that is a legal path but is not registered on this machine is no longer refused whole;
+  the entry is skipped, declared in `skipped[]` (`{layer, reason, entries}`, the R6 shape, no new field) and
+  never written, while the rest of the document — both layer views, the **registered** workspace layers,
+  the library and the preferences — imports normally. A malformed root (relative, `..`, control character,
+  volume root) is still refused whole with zero writes. The import preview now warns that the preset
+  library and the preferences are replaced **as a whole** (not merged), lists the workspace layers the
+  document touches, and lists every skipped entry with its count.
+
+- **「查看范围」移入「我的 Prompt」（g-071，Revision 52）**：会话范围选择器
+  （含树体/手动输入/展开收起与全部既有 marker）不再渲染在 tab bar 上方，而是作为「我的 Prompt」面板内、
+  面板标题之下的第一块（`data-region="prompt-block"` 现在只存在于 `data-region="mine"` 内部）。据此，
+  tab bar 上方的页面 chrome 只剩两样：标题行（含插件版本）与状态行；首屏预算由 g-055 的实测值（含该区块
+  的 220px + 4px）重新推导为 **128px + 4px**（`chromeAboveTabsPx` 断言），硬上限 310px 不变。**其他 tab
+  不再显示页面作用域**：g-071 初版曾在四个 tab（「我的预设」「提示词总览」「备份与恢复」「高级」）面板顶部
+  各加一行只读范围提示，负责人真机目视后**否决**——每个 tab 有自己的作用域语义（总览将自带切换器、备份
+  应为全量导出、高级不受作用域影响、预设与该范围无直接关联），保留该行等于交付一个已被否决的 UI 元素；
+  四个 tab 与页面作用域的**解耦另立 g-073**，本次为纯撤回（该键在发布前撤回，词典回到 567 键 =
+  516 主 + 51 `error.<code>`）。页面级 scope 语义一字未改：`m.sessionArg` 仍作用于快照、覆盖读取、导入
+  导出、预设请求与 mine 写入层（过渡期四个 tab 仍按页面 scope 取数，与 g-071 之前的既有行为一致）。
+  「版本历史」自 Revision 19（g-038）起有自己的 scope，由 `data-region="history-scope-summary"` 陈述。
+  **The scope picker moved into「My Prompt」(g-071, Revision 52)**: the session-scope selector no longer
+  renders above the tab bar — it is the first block inside the「My Prompt」panel, under that panel's own
+  title (`data-region="prompt-block"` now exists only inside `data-region="mine"`). The chrome above the
+  tabs is down to the title row and the status line, and the first-screen budget was re-derived from the
+  smaller spend (128px + 4px slack, hard ceiling unchanged). **No other tab shows the page scope**: the
+  first cut of g-071 added a read-only scope line to the top of the four other tabs, and the owner's
+  real-machine review **rejected** it — each of those tabs has its own scope semantics (overview will
+  carry its own switcher, backup should export everything, advanced is not scope-dependent, and presets
+  are not tied to this scope), so keeping the line would have shipped a surface the owner refused;
+  decoupling those tabs from the page-level value is **g-073**. The page-level scope value, every frozen
+  marker and the write path are unchanged.
+- **「一级 tab」换成纯文字 + 选中下划线，并加计数与更新红点（g-070，Revision 51）**：设置页**主 tab**
+  （`data-tab-group="main"`）不再是一排 chip，而是参考图那样的一行纯文字：无底色、无边框、无圆角，
+  未选中用次要色、选中项文字变亮并在**下方**压一条 2px 下划线（强调色 token），整条栏底部是一条最弱边框色
+  的淡分隔线。六个中文标签**单行不折行**：`flex-wrap:nowrap` + `overflow-x:auto`，每个按钮按自己标签宽度
+  （`flex:0 0 auto`），**没有**等分列、没有 `max-content`，也不会撑宽祖先（滚动容器只占父级给的宽度）。
+  「我的预设」带库条数后缀 `(N)`；N 取自主入口 mount 时**已有的**一次 `GET /prompt-setting/presets`
+  （同一个 `?session=`，**零新增请求、零轮询**），且只有确实读到库时才显示——「还在加载 / 请求失败 /
+  库文件读不出来」**不显示任何数字**，`(0)` 只表示真的空库。「高级」在确有可用新版本时显示一个红点
+  （危险色 token + 可读的 `title`/`aria-label`）；它**与提示条的 `dismissed` 独立**——关掉提示条不会
+  清掉红点。`role=tablist/tab`、`aria-selected`、`tabIndex`、`data-tab-*` 与「我的 Prompt」内的层选择器
+  （仍是 chip，`data-tab-group="mine-layer"`）全部未动。新增文案 `tabUpdateBadge`（有可用更新 /
+  Update available）走 `locale/*.json` 真源，键数 566 → **567（516 主 + 51 `error.<code>`）**。
+  **Plain-text top-level tabs with an underline, a count and an update dot (g-070, Revision 51)**: the
+  first-level bar is no longer a row of chips — it is plain text (no fill, no border, no radius), the
+  selected label brightens with a 2px accent underline pressed against a faint rule under the whole
+  bar, and the six Chinese labels stay on one line (`flex-wrap:nowrap` + `overflow-x:auto`, every button
+  `flex:0 0 auto`) — no equal fractions, no `max-content`, and nothing that can widen an ancestor.
+  「My presets」carries its library size as `(N)`, read from the request the page already makes on mount
+  (no new request, no polling) and shown **only** when that size is really known — never a placeholder
+  `(0)`. 「Advanced」shows a red dot (danger token, with a readable `title`/`aria-label`) while a newer
+  release is on offer, and it is **independent** of the banner's dismissal. Every tab marker, the ARIA
+  and every chip-family sub-group selector `tabs()` still draws (「My Prompt」's layer selector, and the
+  chunk-level group selectors) are unchanged; the one new locale key brings the dictionaries to 567.
+- **删除预设＝对每个已应用的工作区取消应用（g-069，Revision 50）**：`DELETE /presets?id=` 不再只从预设库
+  剔项——它先查出所有 `applied` 记录中含该预设的工作区，对每个工作区按**既有栈语义**执行取消应用
+  （剩余栈非空 ⇒ 按 `base` + 剩余 link 重算；栈空 ⇒ 写回 `base`，`base` 为 `null` 则移除保留段条目；层的
+  其它条目与 `interpolateCustom` 开关不动），逐个落盘并登记与既有「取消应用」同等的历史记录与 prompt
+  变更提示，全部成功后才删除预设。任一工作区还原失败 ⇒ 整体中止、**预设保留**，错误如实列出已还原/
+  未还原的工作区；未被任何工作区应用时行为与从前逐字节一致（不写任何工作区层）。响应改为
+  `restoredWorkspaces` / `links` / `workspaces[]`，正常删除不再产生 orphan（orphan 仅剩手改文件与
+  Revisions 37–49 历史数据一种来源，仍可读、可取消）。客户端删除确认浮层在已应用时明确提示
+  「会将被应用的工作区还原（即取消预设）」并列出受影响工作区，成功 notice 改为如实说明还原数量；文案
+  仍以 `locale/*.json` 为唯一真源（现为 515 主词典 + 51 `error.<code>` = 566 键/语言）。**层文件已被
+  删除（`ENOENT`）的工作区按「无可还原」跳过**：不写层、不重建目录、不记历史，但其应用记录仍随预设
+  一起清理（不留 orphan），响应以 `missing: true` 标记，且不计入还原数；层存在但不可读/非法仍是拒绝
+  （`preset-unapply-failed`）。拒绝文案只把**真正失败**的那个工作区写成 failed。
+  **Deleting a preset now cancels it (g-069, Revision 50)**: `DELETE /presets?id=` no longer just drops the
+  entry — every workspace whose `applied` record holds the preset is taken off its stack first, with the
+  existing stack semantics (remaining links recomposed over `base`; an empty stack restores `base` itself,
+  `null` removing the reserved entry; other entries and the `interpolateCustom` switch untouched), each
+  restore is written and registered like the existing「cancel application」(history record + prompt-write
+  note), and only then is the preset deleted. A workspace that cannot be restored aborts the whole
+  deletion, **keeps the preset**, and the refusal lists which workspaces were restored and which were not;
+  a preset nothing applied behaves exactly as before (no workspace layer is written). The answer now
+  carries `restoredWorkspaces` / `links` / `workspaces[]`, and an ordinary deletion produces no orphan
+  (orphans now only come from a hand-edited file or Revisions 37–49 data, and stay readable and
+  cancellable). The deletion confirmation states the restore and names the affected workspaces, and the
+  success notice reports how many were restored; copy stays sourced from `locale/*.json` (now 515 main +
+  51 `error.<code>` = 566 keys per language). **A workspace whose layer file is gone (`ENOENT`) is
+  skipped**: nothing is written, no directory is rebuilt and no history is logged, while its record is
+  still cleaned up with the preset (no orphan is left), reported as `missing: true` and never counted as
+  restored; a layer that exists but is unreadable still refuses the deletion
+  (`preset-unapply-failed`), whose message names only the workspace that really failed.
+- **「装配状态提示」移到「高级」面板顶部（g-065）**：这块两层装配观察（开关 + 装配层/送达层结论 +
+  toast 降级说明）原先挂在「我的 Prompt」（写入口）顶部，而它的读者是「改完 Prompt 却没生效、要查为什么」
+  的人，动机正好是打开「高级」。本次只换渲染位置：开关语义、偏好键、读取时机与轮询游标、toast 主动提示
+  与宿主侧装配观察全部不变；「我的 Prompt」不再出现该块任何元素（不留空容器与空标题）。
+  **The assembly-status block moved to the top of the "Advanced" panel (g-065)**: the two-layer
+  observation (switch + assembly/delivery verdicts + toast-degradation note) used to sit at the top of
+  "My Prompt" — the write surface — while its reader is the person whose saved prompt seems not to have
+  taken effect, which is exactly why "Advanced" gets opened. Only the render position changed: the
+  switch, its preference key, the read schedule and poll cursor, the proactive toast and the host-side
+  assembly watch are all untouched, and "My Prompt" keeps no element of the block (no empty container, no
+  leftover heading).
+
+- **「备份与恢复」变成真正的全量备份，并同步解除导入写锁（g-074，Revision 53）**：`GET /export` 过去只带
+  每层的一个保留段条目（`customOverridesOnly` 裁剪），现在带**整机安装**——两层**全部**覆盖（冻结项一并
+  带上，`action` 原样保留）、**全部已注册工作区层**（不再只带 `?session=` 解析到的那一个）、预设库
+  （`presets.json`）与偏好设置（`preferences.json`）；文档 `version` 升为 `2`，同时仍**接受** `version: 1`
+  的旧备份。配套地，`POST /import` **解除** Revision 7 的按名字写锁（原先任何非保留名一律 `403
+  write-locked`，导致「导得出去、导不回来」），并把它换成**更严**的逐项校验，且全部发生在任何落盘之前：
+  层名白名单、每个条目字段（`name`/`action`/`text`/`order` 及唯一性）、每个工作区 root（绝对路径、无
+  `..`、非卷根，且必须是本机注册表中真实存在的工作区，否则 `unknown-workspace-root` 整体拒绝）、预设库与
+  偏好文档各自的结构合法性（未知偏好键**拒绝**而非忽略）。任何一项不合法即整体拒绝、**零写入**；四种文件
+  （层配置、工作区配置、预设库、偏好）在同一个批次里先全部 staged 并回读校验，再逐个 rename。`?layer=`
+  仍然只收窄两层视图，安装级文档此时不应用并在 `skipped` 里说明。契约 §10、§11.1、§4.4、新 §11.7、§15.7、
+  §15.8、§20.8 与 §7 概览同步修订，并记 **Revision 53**。
+  **A full backup, and the import write lock removed (g-074, Revision 53)**: `GET /export` used to carry one
+  reserved entry per layer; it now carries the whole installation — every override of both layers (frozen
+  entries included, `action` preserved), **every registered workspace layer** (no longer only the one a
+  session resolved), the preset library and the preference document. The document is `version: 2`, and
+  `version: 1` backups still import. `POST /import` drops Revision 7's name-based write lock — which made
+  a full backup unrestorable — and replaces it with **stricter** validation that runs before anything is
+  staged: the layer-name whitelist, every override field, every workspace root (an absolute path, no `..`,
+  not a volume root, and a workspace this profile really registers), and the library / preference documents.
+  Any invalid input is refused whole, with zero writes; all four kinds of file are staged and read back in
+  one batch before the first rename. Contract §10, §11.1, §4.4, the new §11.7, §15.7, §15.8 and §20.8 are
+  updated, and Revision 53 is recorded.
+
+### Fixed 修复
+
+- **备份/恢复的路径安全绕过（g-074 R1，Revision 53）**：`presets.applied[].workspaceRoot` 过去只检查「非空字符串」，
+  而 `DELETE /prompt-setting/presets?id=` 会用记录里的 root 直接写 `<root>/.dsh-prompt-setting/overrides.json`。
+  于是一份导入的备份可以命名任意磁盘路径（`/etc` 也行），删除预设就成了任意路径写入原语——评审 PoC 实测未注册
+  目录下的层文件被真实改写。修复：形状规则抽到 `core/workspace-root.js`，由 `workspaces[].root` 与
+  `presets.applied[].workspaceRoot` **共用同一个函数**；导入与删除两条路径都对 root 过注册表白名单（未注册即
+  整体拒绝、零写入）；导出不再携带无法在本机还原的 `applied` 记录（条数由 `exportScope.omittedApplied` 声明），
+  使插件自己产出的备份一定能被自己的导入读回。
+  **Path-safety bypass fixed (g-074 R1)**: `presets.applied[].workspaceRoot` was checked for nothing but
+  "a non-empty string" while `DELETE /prompt-setting/presets?id=` wrote `<root>/.dsh-prompt-setting/overrides.json`
+  straight from the stored record, so an imported backup could name any directory on the disk and the delete
+  became a write primitive (the review's PoC rewrote an unregistered directory's layer file). The shape rule now
+  lives in `core/workspace-root.js` and is shared by `workspaces[].root` and
+  `presets.applied[].workspaceRoot`; both the import and the delete route put every root through the registry
+  whitelist (unregistered ⇒ refused whole, zero writes); and an export no longer carries an `applied` record it
+  could not restore, with the count declared in `exportScope.omittedApplied` — so the plugin's own backup is
+  always readable by the plugin's own import.
+
+- **契约与「同一语义两处口径」收口（g-074 R2）**：`CONTRACT.md` §10 的 Response 200 示例更新为 Revision 53
+  形状（原来仍是 `version: 1` + 旧 `exportScope`），Revision 7 的 `exportScope` 表与 §15.7 标题/首段、§15.8
+  表格两行补上废置标注并改成新值——消除「文档说 A、实现做 B」；§11.7 写入「读面宽松 + 每个消费点必须过注册表
+  白名单」不变量。口径一致性：`validatePreferencesDocument` 对 `downloadRegionRegistry` 复用下载区域路由的
+  `validateRegistryAddress`（`file:///etc`、凭证、query、fragment 一律 `400 invalid-preference`），导出侧同口径
+  复核、不符合就不携带并在 `exportScope.unavailable.preferences` 声明。
+  **Contract and「one semantic, one rule」clean-up (g-074 R2)**: §10's Response 200 example now shows the
+  Revision 53 shape, the Revision 7 `exportScope` table, §15.7's heading/first paragraph and §15.8's two
+  rows are marked superseded and updated, and §11.7 now carries the「lenient read face + registry whitelist at
+  every consumer」invariant. On the semantics side, `validatePreferencesDocument` reuses the download-region
+  route's own `validateRegistryAddress` for `downloadRegionRegistry`, and an export applies the same rule in
+  reverse rather than carrying a preference document its own import would refuse.
+
+- **英文文案泄露（g-066）**：导出失败时不再把浏览器侧的英文原文（`no document`）拼进界面文案，改为
+  走本地化兜底；`errorText` 对**未登记**的错误码不再把 `error.<code>` 裸键显示出来，而是退回本地化的
+  `errUnknown`（原始 code 仍由错误横幅的 `errorCode` 行如实呈现）；另修掉两条英文文案里残留的中文
+  书名号（`「My Prompt」` → `"My Prompt"`）。
+  **English leaks fixed (g-066)**: a failed export no longer splices the browser's own English wording
+  (`no document`) into localized copy, and `errorText` no longer renders a bare `error.<code>` key for a
+  code that has no entry — it falls back to the localized `errUnknown` (the raw code is still shown
+  verbatim on the banner). Two English strings that carried Chinese corner brackets were normalized too.
+
 ## [0.2.2] - 2026-10-13
 
 **功能版本：新增「预设」库（保存 / 编辑 / 删除，可应用到工作区、也可取消应用），装配状态改为会话内

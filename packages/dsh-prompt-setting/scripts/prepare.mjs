@@ -6,7 +6,7 @@
  * 官方发布文档称之为「从 GitHub 安装：构建脚本这道坎」—— 插件作者必须自己保证
  * 装到用户机器上的东西是完整的。
  *
- * 本包是零构建包（`index.js` / `client.js` / `core/*.js` 本身就是发布入口），所以这道坎
+ * 本包是零编译包（无 bundler / JSX / TypeScript；`index.js` / `core/*.js` 是入口，`client.js` 是 `src/` 的生成物），所以这道坎
  * 在这里不是「编译」，而是**打包**：本机实测（pnpm 12.3.4，2026-09-30）
  *   pnpm add 'github:zangxx66/dsh-prompt-setting#path:/packages/dsh-prompt-setting'
  * 装到 `node_modules` 里的**恰好是 `files` 白名单**加上 npm 永远保留的两项
@@ -30,10 +30,11 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { PREPARE_FAIL, PREPARE_OK, PREPARE_WARN, inspectPackage } from '../core/prepare.js';
+import { PREPARE_FAIL, PREPARE_OK, PREPARE_WARN, filesCoverPath, inspectPackage } from '../core/prepare.js';
 import { clientChunkStamps } from '../core/store.js';
 import { readDeclaredStamps, sameStamps } from './client-chunks.mjs';
-
+import { LOCALE_DIR, LOCALES, checkLocaleSync } from './locale-pack.mjs';
+import { inspectClientSource } from './client-build.mjs';
 /** 包根目录（本文件在 `scripts/` 下）。 */
 const PACKAGE_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -82,8 +83,8 @@ const say = (text = '') => { out.push(text); };
  * 测试只有在有人跑测试时才拦得住；`prepare` 是安装/发布路径上的门。
  * @returns 一条 finding（`PREPARE_OK` 或 `PREPARE_FAIL`）。
  */
-function inspectClientChunks() {
-  const source = readText('client.js');
+function inspectClientChunks(source) {
+  // g-077: `client.js` 文本由调用方传入 —— 与「段 ↔ 产物」门共用同一份字节，不重复读盘。
   if (source === null) {
     return { level: PREPARE_FAIL, code: 'CHUNK-STAMPS', message: '读不到 client.js，无法核对 chunk 清单' };
   }
@@ -118,7 +119,47 @@ function inspectClientChunks() {
   };
 }
 
-say('[dsh-prompt-setting] prepare：发布就绪自检（本包零构建，不做编译）');
+/**
+ * 第 5 类检查：词典真源（`locale/*.json`）与 bundle 内联段一致（g-066）。
+ *
+ * 为什么这条要放在**发布门**上：`client.js` 里的 `zh`/`en` 段是生成物，人只改
+ * `locale/*.json`。生成段一旦漂移，用户看到的就是上一版文案 —— 而「改了 JSON 忘了
+ * `--write`」正是这套新机制里最容易发生的一步（与 `CHUNK-STAMPS` 同理）。测试只有
+ * 在有人跑测试时才拦得住；`prepare` 是安装/发布路径上的门。
+ *
+ * 同一条 finding 顺带守住发布面：JSON 不在 `files` 白名单里时，装到用户机器上的包
+ * 里没有真源，脚本的 `--check` 会在下一版开发时才炸。
+ * @param filesField - `package.json` 的 `files` 数组。
+ * @returns 一条 finding（`PREPARE_OK` 或 `PREPARE_FAIL`）。
+ */
+function inspectLocale(filesField) {
+  const relPaths = Object.keys(LOCALES).map((name) => `${LOCALE_DIR}/${name}.json`);
+  const declared = filesCoverPath(filesField, relPaths[0]);
+  const existing = relPaths.filter((relPath) => readText(relPath) !== null);
+  // A package that neither ships nor declares the JSON is simply not using this
+  // mechanism (the gate also runs against minimal fixture packages) — that is
+  // "not applicable", not a failure. A package that declares it, or that has the
+  // files, is held to all of it below.
+  if (!declared && existing.length === 0) {
+    return { level: PREPARE_OK, code: 'LOCALE-SYNC-N/A', message: '未使用 locale/*.json 词典（无文件、files 也未声明），跳过' };
+  }
+  const missing = relPaths.filter((relPath) => !existing.includes(relPath));
+  if (missing.length > 0) {
+    return { level: PREPARE_FAIL, code: 'LOCALE-FILES', message: `读不到 ${missing.join('、')}（词典真源缺失）` };
+  }
+  const cut = relPaths.filter((relPath) => !filesCoverPath(filesField, relPath));
+  if (cut.length > 0) {
+    return {
+      level: PREPARE_FAIL,
+      code: 'LOCALE-NOT-SHIPPED',
+      message: `${cut.join('、')} 不在 files 白名单里：安装时会被裁掉，包里只剩生成物`,
+    };
+  }
+  const result = checkLocaleSync({ packageDir: PACKAGE_DIR, readText, readDir: listDir });
+  return { level: result.ok ? PREPARE_OK : PREPARE_FAIL, code: result.code, message: result.message };
+}
+
+say('[dsh-prompt-setting] prepare：发布就绪自检（本包零编译；`client.js` 是 `src/` 的生成物）');
 say('');
 
 const manifestText = readText('package.json');
@@ -134,9 +175,12 @@ else {
 }
 
 const { ok, findings } = inspectPackage({ pkg, readText, listDir });
-// g-045: the chunk manifest is the one file-vs-file agreement the build stamp
-// depends on, so it is checked on the publish path too — not only by tests.
-findings.push(inspectClientChunks());
+// g-045/g-077: 一次读入 client.js，chunk 清单门与「段 ↔ 产物」门共用这一份字节。
+const clientSource = readText('client.js');
+findings.push(inspectClientChunks(clientSource));
+// g-066/g-075: the dictionaries and the client segments are the truth client.js is generated from.
+findings.push(inspectClientSource(pkg && pkg.files, { clientSource }));
+findings.push(inspectLocale(pkg && pkg.files));
 const label = { [PREPARE_OK]: 'ok  ', [PREPARE_WARN]: 'warn', [PREPARE_FAIL]: 'FAIL' };
 for (const finding of findings) say(`  ${label[finding.level] ?? finding.level}  ${finding.code}: ${finding.message}`);
 if (manifestError !== null) say(`  FAIL  MANIFEST-UNREADABLE: ${manifestError}`);

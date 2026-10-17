@@ -488,8 +488,10 @@ test('prepare: a CHUNK_STAMPS manifest that drifted from the chunks fails the ga
   const root = mkdtempSync(join(tmpdir(), 'dsh-prepare-chunks-'));
   try {
     // A faithful copy of the real package, minus `test/`, so the only thing this
-    // run can object to is the manifest.
-    for (const dir of ['core', 'scripts']) {
+    // run can object to is the manifest. g-066: `locale/` is part of "faithful"
+    // now — the gate compares the JSON truth against the bundle's generated
+    // blocks, so a copy without it would fail for the wrong reason (g-075: same for `src/`).
+    for (const dir of ['core', 'scripts', 'locale', 'src']) {
       cpSync(join(packageRoot, dir), join(root, dir), { recursive: true });
     }
     // The chunk set is discovered, never listed: a hand-written list would keep
@@ -531,6 +533,91 @@ test('prepare: a CHUNK_STAMPS manifest that drifted from the chunks fails the ga
     assert.notEqual(run.status, 0, `expected a non-zero exit\n${run.stdout}`);
     assert.match(run.stdout, /FAIL {2}CHUNK-STAMPS/);
     assert.match(run.stdout, /client-chunks\.mjs --write/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('prepare: the src/ gate reports the shipped source, and fails both ways it can be absent', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-prepare-src-'));
+  try {
+    // g-075: same faithful copy as above — `src/` is the truth `client.js` is generated
+    // from, so a copy without it would exercise a package that does not exist.
+    for (const dir of ['core', 'scripts', 'locale', 'src']) {
+      cpSync(join(packageRoot, dir), join(root, dir), { recursive: true });
+    }
+    const chunkFiles = readdirSync(packageRoot).filter((name) =>
+      /^client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js$/.test(name),
+    );
+    for (const file of [
+      'package.json',
+      'index.js',
+      'client.js',
+      ...chunkFiles,
+      'cordis.patch.yml',
+      'CONTRACT.md',
+      'README.md',
+      'NOTES.md',
+    ]) {
+      cpSync(join(packageRoot, file), join(root, file));
+    }
+    const manifestPath = join(root, 'package.json');
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    const writeManifest = () => writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    const runPrepare = () => spawnSync(process.execPath, ['scripts/prepare.mjs'], { cwd: root, encoding: 'utf8' });
+
+    // ⓪ 段在、也声明了，且重建结果与磁盘产物逐字节一致 ⇒ ok。
+    const healthy = runPrepare();
+    assert.equal(healthy.status, 0, `the copy must start clean\n${healthy.stdout}`);
+    assert.match(healthy.stdout, /ok {4}CLIENT-SRC: src\/ 下 17 个段文件/);
+    assert.match(healthy.stdout, /与 client\.js 逐字节一致/);
+
+    // ⓪' g-077：段集合完整性锚在**产物**上，不再对账任何手工段名清单。三种不完整都必须
+    // 在安装现场 FAIL，消息可操作（指向随包的 `--write`）且给出首个差异位置。
+    const assertDriftFails = (label) => {
+      const failed = runPrepare();
+      assert.notEqual(failed.status, 0, `${label}: expected a non-zero exit\n${failed.stdout}`);
+      assert.match(failed.stdout, /FAIL {2}CLIENT-SRC-DRIFT/, `${label}: 独立 code`);
+      assert.match(failed.stdout, /首处差异在第 \d+ 行/, `${label}: 首个差异位置`);
+      assert.match(failed.stdout, /node scripts\/client-build\.mjs --write/, `${label}: 可操作指引`);
+      assert.match(failed.stdout, /逐字节不一致/, label);
+    };
+    const droppedSegment = join(root, 'src', '12-update.js');
+    const droppedText = readFileSync(droppedSegment, 'utf8');
+    rmSync(droppedSegment); // ① 段被删了一个（旧实现放行 = g-076 项 2 的原始现象）
+    assertDriftFails('缺一个段');
+    writeFileSync(droppedSegment, droppedText);
+
+    const extraSegment = join(root, 'src', '17-extra.js'); // ② 多出一个陌生段（重切没同步）
+    writeFileSync(extraSegment, '// 本文件是 client.js 的片段，不是独立模块，不得单独 parse/lint/执行。\nconst extra = 1;\n');
+    assertDriftFails('多出一个陌生段');
+    rmSync(extraSegment);
+
+    writeFileSync(droppedSegment, droppedText.replace('\n', '\n// one edited line\n')); // ③ 段内改一行
+    assertDriftFails('段内被改了一行');
+    writeFileSync(droppedSegment, droppedText); // 复位：后面的步骤从干净状态继续
+
+    // ① 段在，白名单不覆盖 ⇒ 装到用户机器上的包只剩生成物。
+    manifest.files = manifest.files.filter((entry) => entry !== 'src');
+    writeManifest();
+    const unshipped = runPrepare();
+    assert.notEqual(unshipped.status, 0, `expected a non-zero exit\n${unshipped.stdout}`);
+    assert.match(unshipped.stdout, /FAIL {2}CLIENT-SRC-NOT-SHIPPED/);
+
+    // ② 白名单覆盖了，但段没到（git 不跟踪空目录："忘了提交"的现实形态）。
+    manifest.files = [...manifest.files, 'src'];
+    writeManifest();
+    rmSync(join(root, 'src'), { recursive: true, force: true });
+    const missing = runPrepare();
+    assert.notEqual(missing.status, 0, `expected a non-zero exit\n${missing.stdout}`);
+    assert.match(missing.stdout, /FAIL {2}CLIENT-SRC-FILES/);
+
+    // ③ 既没有段、也没声明 ⇒ N/A，通过（合法的无源包，不是失败）。
+    manifest.files = manifest.files.filter((entry) => entry !== 'src');
+    writeManifest();
+    const notApplicable = runPrepare();
+    assert.equal(notApplicable.status, 0, `expected exit 0\n${notApplicable.stdout}`);
+    assert.match(notApplicable.stdout, /ok {4}CLIENT-SRC-N\/A/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

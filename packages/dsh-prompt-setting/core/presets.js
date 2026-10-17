@@ -19,17 +19,25 @@
  *   layer keeps its text (deleting a preset never rewrites a layer); the record
  *   is only reported as pointing at a preset that no longer exists.
  *
- * Why the library is not folded into `overrides.json` (or into an export): the
- * export / import / history / snapshot schemas are frozen contracts, and a
- * preset is neither an override of one layer nor a portable backup — it is the
- * user's own catalogue of texts, which is why it lives in a third file
+ * Why the library is not folded into `overrides.json`: the layer config, the
+ * history and the snapshot schemas are frozen contracts, and a preset is
+ * neither an override of one layer nor a layer-scoped fact — it is the user's
+ * own catalogue of texts, which is why it lives in a third file
  * (`<DSH_HOME>/prompt-setting/presets.json`) with its own shape.
+ *
+ * Revision 53 (g-074) made that catalogue **part of a full backup**: the export
+ * document carries it as a top-level `presets` field, and an import validates it
+ * with {@link validatePresetsDocument} and replaces the file from it. It is
+ * still never folded into a layer — the document carries the library as a
+ * document, never as loose override entries, so `overrides.json` and the
+ * `/overrides` view keep exactly the shape they had.
  *
  * @module dsh-prompt-setting/core/presets
  */
 
 import { CUSTOM_SECTION_NAME } from './custom.js';
-import { MAX_TEXT_BYTES, RESERVED_STACK_SEPARATOR, fail, withInterpolate } from './overrides.js';
+import { MAX_TEXT_BYTES, RESERVED_STACK_SEPARATOR, emptyConfig, fail, withInterpolate } from './overrides.js';
+import { validateWorkspaceRoot } from './workspace-root.js';
 
 /**
  * The presets document version. A stored document may omit it (the first
@@ -117,6 +125,26 @@ function normalizeStoredPreset(raw) {
  * migrated in place rather than dropped: its `before` becomes `base`, its single
  * preset becomes a one-entry stack, and the text snapshot it never carried is
  * taken from the library entry of the same id when the document still has one.
+ *
+ * **`workspaceRoot` is deliberately checked leniently here, and that asymmetry
+ * is a decision, not an oversight (g-074 R2).** This is the *read* face: a
+ * record a hand edit, an older build or another machine wrote must keep the
+ * library readable, so the only question asked is "is this a usable string?".
+ * The *import* face ({@link validateAppliedEntry}) and every *writer* are
+ * strict. The invariant that makes the lenient read safe:
+ *
+ * > **the read face is lenient; every consumer of a stored `workspaceRoot` must
+ * > pass it through the registry whitelist before it can become a path.**
+ *
+ * It holds today because the value has exactly three consumers, and all three
+ * are covered: `appliedRootsOf` feeds the delete-preset route, which calls
+ * `assertKnownWorkspaceRoot` on every root it is about to write; the same
+ * function feeds `planPresetRemoval`, whose `currentOf` callback is only reached
+ * from that route; and `publicApplied` only *reports* the string (no path is
+ * built from it). `GET /export` additionally drops a record whose root this
+ * profile does not register (`exportScope.omittedApplied`). Tightening this
+ * function instead would be a regression of a different kind: a library holding
+ * one bad historical record would stop reading at all.
  * @param raw - one element of a stored `applied` array.
  * @param presetsById - the document's own presets, for that migration lookup.
  * @returns the normalized record, or `null` when the entry is unusable.
@@ -218,6 +246,220 @@ export function normalizePresets(raw) {
     if (at === -1) applied.push(record);
     else applied[at] = record;
   }
+  return { version: PRESETS_VERSION, presets, applied };
+}
+
+/**
+ * The keys a stored preset document may carry (Revision 53).
+ *
+ * An entry's shape is a contract, not a suggestion: `normalizePresets` is the
+ * *read* face and drops what it cannot use, while {@link validatePresetsDocument}
+ * is the *import* face and refuses the document. Keeping the two apart is what
+ * lets one bad hand-edited line keep the library readable without letting a
+ * crafted backup write it.
+ */
+const PRESET_DOCUMENT_KEYS = Object.freeze(['version', 'presets', 'applied']);
+const PRESET_ENTRY_KEYS = Object.freeze(['id', 'name', 'action', 'text', 'createdAt', 'updatedAt']);
+const APPLIED_ENTRY_KEYS = Object.freeze(['workspaceRoot', 'base', 'stack']);
+const STACK_ENTRY_KEYS = Object.freeze(['presetId', 'appliedAt', 'action', 'text']);
+
+/**
+ * Refuse an object that carries a key this revision does not define.
+ * @param value - the object.
+ * @param allowed - the accepted keys.
+ * @param where - the dotted location for the message.
+ * @throws {OverrideError} `invalid-presets`.
+ */
+function assertKnownKeys(value, allowed, where) {
+  for (const key of Object.keys(value)) {
+    if (!allowed.includes(key)) {
+      throw fail('invalid-presets', `${where} carries an unknown key ${JSON.stringify(key)}`);
+    }
+  }
+}
+
+/**
+ * Validate one preset entry **strictly** (Revision 53).
+ *
+ * Every rule `normalizeStoredPreset` tolerates by dropping the entry is a
+ * refusal here, and each refusal names the rule it broke. Nothing is
+ * normalized away: an import must write exactly what the document asked for,
+ * or write nothing at all.
+ * @param raw - one element of a document's `presets` array.
+ * @param where - the dotted location for the message.
+ * @returns the validated `{id, name, action, text, createdAt, updatedAt}`.
+ * @throws {OverrideError} with a stable code.
+ */
+function validatePresetEntry(raw, where) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw fail('invalid-preset', `${where} must be a JSON object`);
+  }
+  assertKnownKeys(raw, PRESET_ENTRY_KEYS, where);
+  const id = raw.id;
+  if (typeof id !== 'string' || !PRESET_ID_PATTERN.test(id)) {
+    throw fail('invalid-preset-id', `${where}.id must be a preset id (1-64 characters of [A-Za-z0-9._-])`);
+  }
+  const name = raw.name;
+  if (typeof name !== 'string' || name.trim().length === 0) {
+    throw fail('invalid-name', `${where} requires a non-empty string "name"`);
+  }
+  if (name.length > MAX_PRESET_NAME_LENGTH) {
+    throw fail('name-too-long', `${where}.name exceeds ${MAX_PRESET_NAME_LENGTH} characters`);
+  }
+  if (CONTROL_CHARACTERS.test(name)) {
+    throw fail('invalid-name', `${where}.name must not contain control characters`);
+  }
+  const action = raw.action;
+  if (typeof action !== 'string' || !PRESET_ACTIONS.includes(action)) {
+    throw fail('unsupported-action', `${where}.action must be one of ${PRESET_ACTIONS.map((value) => JSON.stringify(value)).join(', ')}`);
+  }
+  if (typeof raw.text !== 'string') {
+    throw fail('missing-text', `${where} requires a string "text"`);
+  }
+  if (encoder.encode(raw.text).length > MAX_TEXT_BYTES) {
+    throw fail('text-too-large', `${where}.text exceeds ${MAX_TEXT_BYTES} UTF-8 bytes`);
+  }
+  for (const key of ['createdAt', 'updatedAt']) {
+    if (raw[key] !== undefined && raw[key] !== null && typeof raw[key] !== 'string') {
+      throw fail('invalid-preset', `${where}.${key} must be a string or null`);
+    }
+  }
+  return {
+    id,
+    name,
+    action,
+    text: raw.text,
+    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : null,
+    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : null,
+  };
+}
+
+/**
+ * Validate one `applied` record strictly (Revision 53).
+ *
+ * The Revision 41 shape (`{workspaceRoot, base, stack}`) is the only one
+ * accepted: a Revision 37 record is a *stored* shape the read face migrates,
+ * never something this build writes, and an import that silently migrated it
+ * would report a write it did not perform.
+ * @param raw - one element of a document's `applied` array.
+ * @param where - the dotted location for the message.
+ * @returns the validated record.
+ * @throws {OverrideError} with a stable code.
+ */
+function validateAppliedEntry(raw, where) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw fail('invalid-applied', `${where} must be a JSON object`);
+  }
+  assertKnownKeys(raw, APPLIED_ENTRY_KEYS, where);
+  const workspaceRoot = raw.workspaceRoot;
+  // g-074 R1: this field **is** the workspace root `workspaces[].root` carries
+  // (`core/transfer.js`), so it is judged by the very same shape rule. Before
+  // R1 it was checked for nothing but "a non-empty string": an imported library
+  // could name `/etc`, and the delete-preset route would later write into it.
+  // The registry half of the rule is a route decision (`index.js`), because only
+  // the Host can answer it — shape here, whitelist there, both before a byte.
+  validateWorkspaceRoot(workspaceRoot, `${where}.workspaceRoot`);
+  let base = null;
+  if (raw.base !== undefined && raw.base !== null) {
+    if (typeof raw.base !== 'object' || Array.isArray(raw.base)) {
+      throw fail('invalid-applied', `${where}.base must be an object or null`);
+    }
+    assertKnownKeys(raw.base, ['action', 'text'], `${where}.base`);
+    if (!PRESET_ACTIONS.includes(raw.base.action)) {
+      throw fail('unsupported-action', `${where}.base.action must be one of ${PRESET_ACTIONS.join(', ')}`);
+    }
+    if (typeof raw.base.text !== 'string') {
+      throw fail('missing-text', `${where}.base requires a string "text"`);
+    }
+    if (encoder.encode(raw.base.text).length > MAX_TEXT_BYTES) {
+      throw fail('text-too-large', `${where}.base.text exceeds ${MAX_TEXT_BYTES} UTF-8 bytes`);
+    }
+    base = { action: raw.base.action, text: raw.base.text };
+  }
+  if (raw.stack !== undefined && !Array.isArray(raw.stack)) {
+    throw fail('invalid-applied', `${where}.stack must be an array`);
+  }
+  const stack = (raw.stack ?? []).map((item, index) => {
+    const at = `${where}.stack[${index}]`;
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) {
+      throw fail('invalid-applied', `${at} must be a JSON object`);
+    }
+    assertKnownKeys(item, STACK_ENTRY_KEYS, at);
+    if (typeof item.presetId !== 'string' || !PRESET_ID_PATTERN.test(item.presetId)) {
+      throw fail('invalid-preset-id', `${at}.presetId must be a preset id`);
+    }
+    if (item.appliedAt !== undefined && item.appliedAt !== null && typeof item.appliedAt !== 'string') {
+      throw fail('invalid-applied', `${at}.appliedAt must be a string or null`);
+    }
+    if (!PRESET_ACTIONS.includes(item.action)) {
+      throw fail('unsupported-action', `${at}.action must be one of ${PRESET_ACTIONS.join(', ')}`);
+    }
+    if (typeof item.text !== 'string') {
+      throw fail('missing-text', `${at} requires a string "text"`);
+    }
+    if (encoder.encode(item.text).length > MAX_TEXT_BYTES) {
+      throw fail('text-too-large', `${at}.text exceeds ${MAX_TEXT_BYTES} UTF-8 bytes`);
+    }
+    return {
+      presetId: item.presetId,
+      appliedAt: typeof item.appliedAt === 'string' ? item.appliedAt : null,
+      action: item.action,
+      text: item.text,
+    };
+  });
+  return { workspaceRoot, base, stack };
+}
+
+/**
+ * Validate a whole preset document **strictly**, for an import (Revision 53).
+ *
+ * This is the document-level twin of {@link normalizePresets} and the two
+ * differ on exactly one axis, on purpose: `normalizePresets` answers「what can
+ * this file still mean?」and drops what it cannot, while this answers「may this
+ * document be written?」and refuses. An import replaces `presets.json` as a
+ * whole, so a document with one unusable entry must write **nothing** rather
+ * than quietly delete the rest of the library.
+ * @param raw - the parsed document.
+ * @returns the normalized `{version, presets, applied}`.
+ * @throws {OverrideError} `invalid-presets` / `unsupported-presets-version` /
+ *   `invalid-preset` / `invalid-preset-id` / `duplicate-preset-id` /
+ *   `invalid-name` / `name-too-long` / `unsupported-action` / `missing-text` /
+ *   `text-too-large` / `invalid-applied`.
+ */
+export function validatePresetsDocument(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw fail('invalid-presets', 'the presets document must be a JSON object');
+  }
+  assertKnownKeys(raw, PRESET_DOCUMENT_KEYS, 'presets');
+  if (raw.version !== undefined && raw.version !== PRESETS_VERSION) {
+    throw fail('unsupported-presets-version', `unsupported presets version ${JSON.stringify(raw.version)}`);
+  }
+  if (raw.presets !== undefined && !Array.isArray(raw.presets)) {
+    throw fail('invalid-presets', '"presets" must be an array');
+  }
+  if (raw.applied !== undefined && !Array.isArray(raw.applied)) {
+    throw fail('invalid-presets', '"applied" must be an array');
+  }
+  const presets = [];
+  const ids = new Set();
+  (raw.presets ?? []).forEach((entry, index) => {
+    const preset = validatePresetEntry(entry, `presets[${index}]`);
+    if (ids.has(preset.id)) {
+      throw fail('duplicate-preset-id', `"presets" names the preset id ${JSON.stringify(preset.id)} twice`);
+    }
+    ids.add(preset.id);
+    presets.push(preset);
+  });
+  const applied = [];
+  const roots = new Set();
+  (raw.applied ?? []).forEach((entry, index) => {
+    const record = validateAppliedEntry(entry, `applied[${index}]`);
+    if (roots.has(record.workspaceRoot)) {
+      throw fail('invalid-applied', `"applied" names the workspace ${JSON.stringify(record.workspaceRoot)} twice`);
+    }
+    roots.add(record.workspaceRoot);
+    applied.push(record);
+  });
   return { version: PRESETS_VERSION, presets, applied };
 }
 
@@ -340,12 +582,16 @@ export function upsertPreset(document, fields, options = {}) {
 }
 
 /**
- * Remove one preset.
+ * Remove one preset — the **catalogue** half of a deletion, and nothing else.
  *
- * Deleting an applied preset is allowed and changes **no layer**: the record
- * stays (and is then reported as an orphan), because rewriting a workspace the
- * user did not name would be a write no request asked for. The caller decides
- * how to report that.
+ * Since Revision 50 the normal deletion path is {@link planPresetRemoval}: every
+ * application of the preset is cancelled (the workspace layer is restored to
+ * `base` plus what is left of its stack) **before** this function drops the
+ * entry, so an ordinary delete produces no orphan at all. This function itself
+ * still touches no layer, which is what keeps it usable for the two cases that
+ * are not an ordinary delete: a hand-edited `applied` record (or one written by
+ * Revisions 37–49) whose link outlives its preset keeps its own snapshot and is
+ * still reported as an orphan and still cancellable (§20.1).
  * @param document - the current normalized document.
  * @param id - the preset id.
  * @returns `{document, removed}` where `removed` is the deleted preset or null.
@@ -593,6 +839,132 @@ export function planUnapply(document, options = {}) {
     text: stack.length === 0 ? (record.base === null ? '' : record.base.text) : composeStackText(record.base, stack),
     restored,
     config,
+  };
+}
+
+/**
+ * The workspaces whose `applied` record holds one preset, in file order.
+ *
+ * The route half needs this list **before** it plans anything: it is the set of
+ * layers the deletion is about to restore, and therefore the set a refusal has
+ * to account for ("which of these were restored, which were not").
+ * @param document - the current normalized document.
+ * @param presetId - the preset id.
+ * @returns a fresh array of workspace roots (deduplicated).
+ */
+export function appliedRootsOf(document, presetId) {
+  const roots = [];
+  for (const record of appliedListOf(document)) {
+    if (!record.stack.some((item) => item.presetId === presetId)) continue;
+    if (!roots.includes(record.workspaceRoot)) roots.push(record.workspaceRoot);
+  }
+  return roots;
+}
+
+/**
+ * Plan「删除预设」: cancel **every** application of one preset, then drop it.
+ *
+ * Revision 50. Deleting an applied preset is no longer a catalogue-only write:
+ * the text the deletion would otherwise leave behind, with a record that can
+ * never name its source again, is exactly what the user asked to be rid of. Each
+ * workspace that holds the preset is taken off its stack with
+ * {@link planUnapply}'s own semantics — the remaining links (if any) are
+ * recomposed over `base`, an empty stack restores `base` itself (`null` removes
+ * the reserved entry), and the layer's `interpolateCustom` switch and its other
+ * entries are never touched — and only then is the entry removed from the
+ * library.
+ *
+ * **Pure.** The workspace layers are read by the caller and handed in through
+ * `currentOf`; this function decides, it never writes. That is what makes the
+ * atomicity the route needs possible: every read, every plan and every
+ * validation happens before the first byte moves, so a workspace that cannot be
+ * restored refuses the whole deletion instead of leaving "the preset is gone and
+ * the layer is not".
+ *
+ * A workspace whose hand-edited record carries the same preset **twice** is
+ * given the same treatment link by link: {@link planUnapply} pops one at a time,
+ * so the loop below runs until the record no longer names the preset at all —
+ * an ordinary document needs exactly one pass.
+ *
+ * **A layer that is not there is skipped, not invented.** When `currentOf`
+ * answers `null`/`undefined` — the caller read the file and found ENOENT — the
+ * workspace has no text to restore, so its plan carries `missing: true` and
+ * `config: null`: the route must not write, cache or log it, and it must **not**
+ * create the directory a write would need. Its links are still cancelled here, so
+ * the deletion leaves no orphan behind even then. An unreadable or invalid layer
+ * is the opposite case: it is a `throw` from `currentOf`, which refuses the whole
+ * plan.
+ * @param document - the current normalized document.
+ * @param options.presetId - the preset to delete and cancel.
+ * @param options.currentOf - `(workspaceRoot) => validated config|null`; the
+ *   caller's read of that layer. `null` means the layer file does not exist
+ *   (ENOENT). Throwing from it refuses the whole plan (and nothing has been
+ *   written).
+ * @returns `{document, removed, plans, links}`. `document` is the library with
+ *   the preset dropped and every one of its links gone; `removed` is `null` when
+ *   the library has no such preset (and then nothing else is reported);
+ *   `plans` is one entry per affected workspace
+ *   (`{workspaceRoot, missing, removed, links, before, after, config, restored, base, stack, text}`);
+ *   `links` is the total number of stack links cancelled.
+ */
+export function planPresetRemoval(document, options = {}) {
+  const presetId = options.presetId;
+  const roots = appliedRootsOf(document, presetId);
+  // Nothing applied it: the deletion is a catalogue write and nothing else, byte
+  // for byte what Revision 49 did — no layer is opened, let alone written.
+  if (roots.length === 0) {
+    const dropped = removePreset(document, presetId);
+    return { document: dropped.document, removed: dropped.removed, plans: [], links: 0 };
+  }
+  let working = document;
+  const plans = [];
+  for (const workspaceRoot of roots) {
+    // `null` means **this workspace has no layer file at all** (the caller's read
+    // reported ENOENT). There is no text to restore, so this entry is planned as
+    // a cleanup only: `missing: true`, `config: null`, and the route must not
+    // write, cache or log it — restoring a layer that does not exist would create
+    // the workspace directory the user deleted (g-069 review A). The links still
+    // come off the record here, so the deletion cannot leave an orphan behind.
+    const read = options.currentOf(workspaceRoot);
+    const missing = read === null || read === undefined;
+    const current = missing ? emptyConfig() : read;
+    let config = null;
+    let step = null;
+    const removed = [];
+    const before = missing ? null : reservedSectionOf(current);
+    for (;;) {
+      const record = appliedListOf(working).find((item) => item.workspaceRoot === workspaceRoot) ?? null;
+      if (record === null || !record.stack.some((item) => item.presetId === presetId)) break;
+      step = planUnapply(working, {
+        workspaceRoot,
+        presetId,
+        current: config === null ? current : config,
+      });
+      working = step.document;
+      config = step.config;
+      removed.push(step.removed);
+    }
+    plans.push({
+      workspaceRoot,
+      missing,
+      removed,
+      links: removed.length,
+      before,
+      after: missing ? null : reservedSectionOf(config),
+      config: missing ? null : config,
+      restored: missing || step === null ? false : step.restored,
+      base: step === null ? null : step.base,
+      stack: step === null ? [] : step.stack,
+      text: step === null ? '' : step.text,
+    });
+  }
+  const dropped = removePreset(working, presetId);
+  if (dropped.removed === null) return { document, removed: null, plans: [], links: 0 };
+  return {
+    document: dropped.document,
+    removed: dropped.removed,
+    plans,
+    links: plans.reduce((total, plan) => total + plan.links, 0),
   };
 }
 

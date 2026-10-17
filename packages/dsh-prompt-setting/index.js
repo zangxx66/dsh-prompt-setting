@@ -70,9 +70,7 @@ import {
   CUSTOM_SECTION_NAME,
   CUSTOM_SECTION_ORDER,
   assertDeletableName,
-  assertImportableDocument,
   assertWritableSection,
-  customOverridesOnly,
   customSection,
   exportScope,
   legacyPlan,
@@ -154,11 +152,13 @@ import {
   withInterpolate,
 } from './core/overrides.js';
 import {
+  appliedRootsOf,
   planApply,
+  planPresetRemoval,
   planUnapply,
+  presetById,
   publicApplied,
   publicPresets,
-  removePreset,
   reservedSectionOf,
   upsertPreset,
   validatePresetId,
@@ -179,7 +179,7 @@ import {
   userPresetsPath,
   workspaceConfigPath,
   writeConfig,
-  writeConfigsAtomically,
+  writeDocumentsAtomically,
   writePreferences,
   writePresets,
 } from './core/store.js';
@@ -196,6 +196,7 @@ import {
   isDownloadRegion,
   normalizePreferences,
   resolveDownloadRegion,
+  validatePreferencesDocument,
 } from './core/update.js';
 import {
   EXPORT_LAYERS,
@@ -210,7 +211,7 @@ import {
 /** Package name; echoed by the probe so the browser can assert identity. */
 const PLUGIN_NAME = 'dsh-prompt-setting';
 /** Package version; `test/host.test.mjs` asserts it matches package.json. */
-const PLUGIN_VERSION = '0.2.2';
+const PLUGIN_VERSION = '0.2.4';
 /** The one prefix this plugin owns. Every route lives under it. */
 const ROUTE_PREFIX = '/prompt-setting';
 /** Stage 1A's route: a read-only liveness probe (behaviour frozen). */
@@ -1977,6 +1978,143 @@ function mount(ctx, config, cleanups) {
   }
 
   /**
+   * Every workspace layer this process knows, as export entries (Revision 53).
+   *
+   * The g-074 requirement is「导出的所有设置」, and「所有」includes the
+   * workspaces the export request never named: a backup taken in one project
+   * must carry every other project's layer too. The set is
+   * `state.workspaces`, which {@link refreshWorkspaces} fills from the Host's
+   * own registry at the start of every request — so this reads the same list
+   * the assembly path would use, never a client-supplied one.
+   *
+   * Sorted by `root` so two exports of an unchanged installation produce the
+   * same byte order (the map's insertion order follows the registry, which is
+   * not a promise anyone made).
+   * @returns `[{root, enabled, reason, overrides}]`.
+   */
+  function workspaceLayerExports() {
+    const known = registeredWorkspaceRoots();
+    return [...state.workspaces.entries()]
+      // g-074 R1: only a workspace the registry lists may be exported. The cache
+      // is filled from that registry at the start of every request, but a write
+      // path that ever cached an unregistered root would otherwise make this
+      // route publish it as a workspace layer — and the resulting backup would
+      // then carry a root this very plugin cannot restore on this machine
+      // (`skipped` since Revision 54, still better not published).
+      .filter(([root]) => known !== null && known.has(root))
+      .map(([root, layer]) => ({
+        root,
+        enabled: layer.error === null,
+        reason: layer.error === null ? null : `${layer.error.code}: ${layer.error.message}`,
+        overrides: layer.config?.overrides ?? [],
+      }))
+      .sort((left, right) => (left.root < right.root ? -1 : left.root > right.root ? 1 : 0));
+  }
+
+  /**
+   * The workspace roots the Host registers right now (Revision 53).
+   * @returns a `Set` of absolute roots, or `null` when this profile has no
+   *   workspace service at all.
+   */
+  function registeredWorkspaceRoots() {
+    const registry = workspaceRegistry();
+    if (registry === undefined || typeof registry.list !== 'function') return null;
+    let list;
+    try {
+      list = registry.list();
+    } catch {
+      return null;
+    }
+    return new Set(
+      (Array.isArray(list) ? list : [])
+        .map((workspace) => workspace?.path)
+        .filter((path) => typeof path === 'string' && path.length > 0),
+    );
+  }
+
+  /**
+   * The path-safety half of an import that restores workspace layers
+   * (Revision 53, CONTRACT §11.7).
+   *
+   * `core/transfer.js` already proved the root is a legal absolute path with no
+   * `..` segment (`validateWorkspaceRoot`). What it cannot know is **which
+   * workspaces this Host has**: only the registry can say that, and without
+   * this check a crafted document could make the import create a
+   * `.dsh-prompt-setting/` directory under any absolute path on the machine.
+   *
+   * So the rule is the narrow one, and for every writer that is **not** an
+   * import it is a refusal rather than a skip: a root this profile does not
+   * register is `400 unknown-workspace-root`, the whole request writes nothing,
+   * and the message says what to do about it.
+   *
+   * The import is the one face that asks {@link workspaceRootSkipReason}
+   * instead (Revision 54, g-074 att-002): a backup taken on another machine
+   * names workspaces this one has never opened, and refusing the whole document
+   * for that would make cross-machine restore impossible. Skipped entries are
+   * never written, and the shape rule below is untouched by the difference.
+   *
+   * g-074 R1: there are **three** roots in play, not one, and all three go
+   * through here — `workspaces[].root` on an import, `presets.applied[].
+   * workspaceRoot` on an import, and every `applied` root the delete-preset
+   * route is about to write. The review found the second and third unchecked,
+   * which let an imported library name any directory on the disk and have a
+   * later `DELETE /presets` write into it.
+   * @param root - the candidate root from the document (or from the library).
+   * @param what - how to describe the field in the message.
+   * @returns the root, unchanged.
+   * @throws {OverrideError} `workspace-unresolved` / `unknown-workspace-root`.
+   */
+  function assertKnownWorkspaceRoot(root, what = 'a workspace layer') {
+    const known = registeredWorkspaceRoots();
+    if (known === null) {
+      throw new OverrideError(
+        'workspace-unresolved',
+        'this profile exposes no workspaceRegistry service, so no workspace layer can be restored',
+      );
+    }
+    if (!known.has(root)) {
+      throw new OverrideError(
+        'unknown-workspace-root',
+        `${JSON.stringify(root)} is named as ${what}, but it is not a workspace this profile registers; open that workspace here first`,
+      );
+    }
+    return root;
+  }
+
+  /**
+   * The same registry question, asked as a **question** instead of a refusal
+   * (Revision 54, g-074 att-002; CONTRACT §11.7).
+   *
+   * An import is the one face that may not refuse a legal root merely because
+   * this machine has never opened it: the owner's 2026-10-16 instruction is
+   * 「如果不是本机已注册的则跳过」 — a backup taken elsewhere must still bring
+   * back what *can* be restored. So the import asks this function per entry and
+   * reports a non-`null` answer in `skipped` instead of failing the document.
+   *
+   * What makes this safe rather than a hole: the two cases are disjoint by
+   * construction. A **malformed** root (relative, `..`, control character,
+   * volume root) is refused whole by `validateWorkspaceRoot` inside
+   * `parseExport`, before this function is ever reached; only a root that is a
+   * legal absolute path arrives here, and the caller writes nothing for the
+   * entries this reports. The refusal face stays in
+   * {@link assertKnownWorkspaceRoot} for every writer that is not an import
+   * (the delete-preset route restoring an applied layer).
+   * @param root - the candidate root from the document.
+   * @returns `null` when this profile registers `root`, else one sentence
+   *   naming why the entry was skipped.
+   */
+  function workspaceRootSkipReason(root) {
+    const known = registeredWorkspaceRoots();
+    if (known === null) {
+      return 'this profile exposes no workspaceRegistry service, so this workspace layer cannot be restored here; it was skipped and the rest of the document was imported';
+    }
+    if (!known.has(root)) {
+      return `${JSON.stringify(root)} is not a workspace this profile registers; this entry was skipped and the rest of the document was imported`;
+    }
+    return null;
+  }
+
+  /**
    * `GET /prompt-setting/snapshot` — the base and effective section views of
    * one assembly, plus the layering and frozen verdict that produced them.
    *
@@ -2294,17 +2432,26 @@ function mount(ctx, config, cleanups) {
   }
 
   /**
-   * `GET /prompt-setting/export` — one or both layers as a portable document.
+   * `GET /prompt-setting/export` — the whole installation as a portable document.
    *
-   * `layer` (optional) limits which layers the document carries; without it the
-   * document carries `user` and `workspace`, the latter possibly disabled with
-   * a `reason` — an export never invents a path it could not resolve.
+   * `layer` (optional) limits which of the two **layer views** the document
+   * carries; without it the document carries `user` and `workspace`, the latter
+   * possibly disabled with a `reason` — an export never invents a path it could
+   * not resolve.
    *
-   * Since Revision 7 the document carries **only** the reserved override of
-   * each layer, and the response declares that scope explicitly as
-   * `exportScope` (`{only, omitted: {<layer>, total}}`) rather than dropping
-   * frozen entries silently: a backup that is not the whole configuration has
-   * to say so (CONTRACT §10).
+   * Revision 7 narrowed this route to the reserved override of each layer and
+   * declared the omission through `exportScope`. **Revision 53 (g-074) removes
+   * the narrowing**: the document now carries every override of both layers
+   * (frozen entries included), every workspace layer the Host registers, the
+   * preset library and the preference document, and `version` is 2. The
+   * declaration stays, with the opposite meaning — it says what the document
+   * holds, and that nothing was left behind (§10).
+   *
+   * The two installation-level documents are read leniently like every other
+   * read face: a `presets.json` or `preferences.json` this process cannot
+   * understand is **not** carried (an empty library would silently clear the
+   * user's real one on restore) and is reported in `exportScope.unavailable`
+   * with its reason.
    * @param url - the parsed request URL.
    * @param res - the Node response.
    */
@@ -2316,17 +2463,75 @@ function mount(ctx, config, cleanups) {
     }
     const workspace = workspaceContext(url.searchParams.get('session'));
     const views = { user: userLayerView(), workspace: workspaceLayerView(workspace) };
+    // Revision 53: no `customOverridesOnly` pass any more — what the layer view
+    // holds is what the document carries. The view's own `path` is *not* copied
+    // out: `buildExport` keeps only `{layer, enabled, reason, overrides}`, so
+    // the layers stay path-free and the only absolute path in the document is a
+    // workspace's own `root` (which is what makes it restorable).
     const scoped = {};
-    for (const name of names) {
-      scoped[name] = { ...views[name], overrides: customOverridesOnly(views[name].overrides) };
+    for (const name of names) scoped[name] = { ...views[name] };
+
+    const workspaceLayers = workspaceLayerExports();
+
+    const presets = readPresets(userPresetsPath());
+    const preferences = readPreferences(userPreferencesPath());
+    // g-074 R2, the same self-consistency rule R1 applies to `applied` records:
+    // the export carries a preference document only if the import would accept
+    // it. A hand-edited `downloadRegionRegistry` the download-region route would
+    // refuse (say `file:///etc`) is therefore not carried, and the reason is
+    // declared in `exportScope.unavailable.preferences` rather than turning into
+    // 「the plugin's own backup is rejected by the plugin's own import」— or,
+    // worse, into a persisted value the read face silently degrades.
+    let carriedPreferences = preferences.error === null ? preferences.preferences : null;
+    let unavailablePreferences = preferences.error === null
+      ? null
+      : `${preferences.error.code}: ${preferences.error.message}`;
+    if (carriedPreferences !== null) {
+      try {
+        carriedPreferences = validatePreferencesDocument(carriedPreferences);
+      } catch (error) {
+        carriedPreferences = null;
+        unavailablePreferences = `${error?.code ?? 'invalid-preferences'}: ${error?.message ?? String(error)}`;
+      }
     }
+    // g-074 R1: an `applied` record whose workspace this profile does not
+    // register cannot be restored here — the import route refuses such a
+    // document outright (§11.7) — so carrying it would hand the user a backup
+    // this plugin's own reader rejects. It is dropped, and the count is
+    // declared in `exportScope.omittedApplied`: never a silent omission.
+    let carriedPresets = presets.error === null ? presets.document : null;
+    let omittedApplied = 0;
+    if (carriedPresets !== null) {
+      const known = registeredWorkspaceRoots();
+      const kept = carriedPresets.applied.filter((record) => known !== null && known.has(record.workspaceRoot));
+      omittedApplied = carriedPresets.applied.length - kept.length;
+      if (omittedApplied > 0) carriedPresets = { ...carriedPresets, applied: kept };
+    }
+
     const document = buildExport({
       layers: scoped,
+      workspaceLayers,
+      presets: carriedPresets,
+      preferences: carriedPreferences,
       pluginVersion: PLUGIN_VERSION,
       exportedAt: new Date().toISOString(),
       layerNames: names,
     });
-    sendJson(res, 200, { ok: true, ...document, exportScope: exportScope(views, names) });
+    sendJson(res, 200, {
+      ok: true,
+      ...document,
+      exportScope: exportScope({
+        layers: scoped,
+        workspaceLayers,
+        presets: carriedPresets,
+        preferences: carriedPreferences,
+        omittedApplied,
+        unavailable: {
+          presets: presets.error === null ? null : `${presets.error.code}: ${presets.error.message}`,
+          preferences: unavailablePreferences,
+        },
+      }, names),
+    });
   }
 
   /**
@@ -2552,15 +2757,47 @@ function mount(ctx, config, cleanups) {
    * @param url - the parsed request URL.
    * @param res - the Node response.
    */
+  /**
+   * `POST /prompt-setting/import` — apply an export document.
+   *
+   * The order is the contract: parse → schema/version/field/path validation →
+   * conflict strategy → resolve and pre-check every target → stage every file
+   * and read it back → atomic rename. Nothing touches a real file before the
+   * last step, so a rejection at any earlier point leaves the existing
+   * configuration byte-identical. `?dryRun=true` stops after the plan and
+   * returns the counts.
+   *
+   * Revision 7 put a **write lock** in that order: a document carrying any
+   * non-reserved section name was `403 write-locked`. **Revision 53 (g-074)
+   * removes that lock** — a backup has to be restorable — and moves its weight
+   * into validation instead: the layer-name whitelist, every override field,
+   * every workspace root (a legal absolute path) and the preset / preference
+   * documents are all checked before anything is staged (§11.1, §11.7, §15.7).
+   * Removing the lock removed no check.
+   *
+   * **Revision 54 (g-074 att-002)** separates the two halves of the root rule
+   * that Revision 53 still answered with one refusal: a **malformed** root
+   * (relative, `..`, control character, volume root) is a malformed document and
+   * is still refused whole, while a **legal root this profile does not register**
+   * — a backup from another machine — is skipped and declared in `skipped`
+   * (§11.7). Skipped entries are never written.
+   *
+   * `?layer=` still narrows an import to the named layer view, which is what
+   * it always meant: the installation-level documents are then not applied at
+   * all (not half-applied), and the answer says so in `skipped`.
+   * @param req - the Node request.
+   * @param url - the parsed request URL.
+   * @param res - the Node response.
+   */
   async function handleImport(req, url, res) {
     const body = await readJsonBody(req, MAX_IMPORT_BYTES);
     const mode = resolveMode(url.searchParams.get('mode') ?? body?.mode);
     const dryRun = url.searchParams.get('dryRun') === 'true';
     const document = parseExport(body);
-    assertImportableDocument(document);
 
     const requested = url.searchParams.get('layer');
-    const names = requested === null || requested.length === 0 ? Object.keys(document.layers) : [requested];
+    const layersOnly = requested !== null && requested.length > 0;
+    const names = layersOnly ? [requested] : Object.keys(document.layers);
     for (const name of names) {
       if (!LAYERS.includes(name)) throw fail('unknown-layer', `"layer" must be one of ${LAYERS.join(', ')}`);
       if (!Object.hasOwn(document.layers, name)) {
@@ -2578,10 +2815,18 @@ function mount(ctx, config, cleanups) {
     // without a session carries an empty, disabled workspace layer, and
     // refusing to re-import that would make export -> import fail for a reason
     // the user cannot act on. Such a layer is reported as `skipped` instead.
-    const targets = {};
-    const plans = {};
     const skipped = [];
     const warnings = [];
+    /**
+     * Every file this import would write, in one list, so the plan, the
+     * pre-checks and the commit all range over the same set. A `layer` unit is
+     * one of the document's two layer views; a `workspace` unit is one entry of
+     * its `workspaces` array.
+     */
+    const units = [];
+    /** The unit that already claimed a path, so one file is never planned twice. */
+    const claimed = new Map();
+
     for (const name of names) {
       const imported = document.layers[name];
       let target;
@@ -2595,30 +2840,207 @@ function mount(ctx, config, cleanups) {
         throw error;
       }
       const current = writableConfig(target.path);
-      targets[name] = target;
       // Revision 9: the document's「我的 Prompt」text is validated against the
       // live variable table before the plan is even built, so a refused import
       // writes no layer at all — and the `?dryRun=true` branch answers exactly
-      // what the real run would answer, which is the rule this route already
-      // follows for the write lock. Revision 12 (audit F1) makes that check the
-      // cross-layer one and puts its advisories on both answers (audit F2).
+      // what the real run would answer. Revision 12 (audit F1) makes that check
+      // the cross-layer one and puts its advisories on both answers (audit F2).
       const layerWarnings = await assertTextInterpolatable(
         (Array.isArray(imported) ? imported : []).find((entry) => entry?.name === CUSTOM_SECTION_NAME),
         current,
         target,
       );
       warnings.push(...layerWarnings.map((entry) => ({ ...entry, layer: name })));
-      plans[name] = planImport({ imported, current, mode });
+      claimed.set(target.path, { key: name, imported });
+      units.push({
+        key: name,
+        kind: 'layer',
+        layer: name,
+        session: name === 'workspace' ? sessionId ?? null : null,
+        target,
+        path: target.path,
+        plan: planImport({ imported, current, mode }),
+      });
     }
+
+    // Revision 53: the document's `workspaces` array restores every other
+    // workspace layer. Each root is a workspace **this** Host registers
+    // (`workspaceRootSkipReason`) — the registry half of the path-safety
+    // boundary that keeps a crafted document from creating a plugin directory
+    // anywhere on the disk — and each layer is read and validated like a layer
+    // view, before anything is staged.
+    // Revision 54 (g-074 att-002): a root that **is** a legal path but is not a
+    // workspace this profile registers is no longer fatal — it is skipped and
+    // reported. That is the cross-machine case (a backup from another machine
+    // names workspaces this one has never opened) and the owner's rule is
+    // 「如果不是本机已注册的则跳过」. The shape boundary is untouched: a
+    // malformed root was already refused whole by `parseExport`, so
+    // `invalid-workspace-root` never reaches this loop, and an entry skipped
+    // here is never written (`workspaceConfigPath` is not even called for it).
+    if (!layersOnly) {
+      for (const entry of document.workspaces) {
+        const key = `workspace:${entry.root}`;
+        const skipReason = workspaceRootSkipReason(entry.root);
+        if (skipReason !== null) {
+          skipped.push({ layer: key, reason: skipReason, entries: entry.overrides.length });
+          continue;
+        }
+        const root = entry.root;
+        const path = workspaceConfigPath(root);
+        if (entry.overrides.length === 0) {
+          skipped.push({ layer: key, reason: 'the document carries no override for this workspace layer', entries: 0 });
+          continue;
+        }
+        const other = claimed.get(path);
+        if (other !== undefined) {
+          if (JSON.stringify(other.imported) !== JSON.stringify(entry.overrides)) {
+            throw fail('conflicting-import-target', `the document carries two different override lists for ${path}`);
+          }
+          skipped.push({ layer: key, reason: `already covered by ${JSON.stringify(other.key)} in this document`, entries: entry.overrides.length });
+          continue;
+        }
+        // The judgement set is the same one `assertTextInterpolatable` ranges
+        // over, and {@link refreshWorkspaces} has already loaded every root the
+        // registry lists at the start of this request — so a root that just
+        // passed `workspaceRootSkipReason` is in the cache by construction,
+        // exactly like the Revision 13 (audit D1) rule requires of `targetFor`.
+        const current = writableConfig(path);
+        const layerWarnings = await assertTextInterpolatable(
+          entry.overrides.find((candidate) => candidate?.name === CUSTOM_SECTION_NAME),
+          current,
+          { path, root },
+        );
+        warnings.push(...layerWarnings.map((warning) => ({ ...warning, layer: key })));
+        claimed.set(path, { key, imported: entry.overrides });
+        units.push({
+          key,
+          kind: 'workspace',
+          layer: 'workspace',
+          session: null,
+          target: { path, root },
+          path,
+          plan: planImport({ imported: entry.overrides, current, mode }),
+        });
+      }
+    } else if (document.workspaces.length > 0 || document.presets !== null || document.preferences !== null) {
+      const entries = document.workspaces.length
+        + (document.presets === null ? 0 : document.presets.presets.length)
+        + (document.preferences === null ? 0 : 1);
+      skipped.push({
+        layer: 'installation',
+        reason: '?layer= limits this import to the named layer view, so the backup\'s workspace layers, preset library and preferences were not applied',
+        entries,
+      });
+    }
+
+    // The two installation-level documents (Revision 53). Both are replaced as
+    // a whole when the document carries them: a library or a preference set has
+    // no per-entry merge semantics, and the document an export produced is the
+    // authoritative snapshot. A local file this process cannot understand is
+    // **refused**, never overwritten — the same rule a layer file gets.
+    let presetsPlan = null;
+    if (!layersOnly && document.presets !== null) {
+      const path = userPresetsPath();
+      // g-074 R1: an `applied` record names a workspace root, and it is held to
+      // the very same whitelist `workspaces[]` is. Without that the library an
+      // import stores could point at any directory on the disk, and the
+      // delete-preset route — which restores the layer each record names — would
+      // be the write that reaches it.
+      // Revision 54 (g-074 att-002): R1 refused the whole document for such a
+      // record; the owner's 2026-10-16 rule replaced that with skip-and-say-so,
+      // the same treatment `workspaces[]` gets. The record is **dropped** — it
+      // never reaches the library, so the delete-preset route still cannot be
+      // aimed at a directory this profile does not own — and the drop is
+      // declared in `skipped`.
+      const applied = [];
+      for (const record of document.presets.applied) {
+        const skipReason = workspaceRootSkipReason(record.workspaceRoot);
+        if (skipReason !== null) {
+          skipped.push({ layer: `presets.applied:${record.workspaceRoot}`, reason: skipReason, entries: 1 });
+          continue;
+        }
+        applied.push(record);
+      }
+      const next = applied.length === document.presets.applied.length
+        ? document.presets
+        : { ...document.presets, applied };
+      const current = readPresets(path);
+      if (current.error !== null) {
+        throw new OverrideError(
+          'presets-not-writable',
+          `${path} is not a usable preset library (${current.error.code}: ${current.error.message}); fix or remove it before importing`,
+          409,
+        );
+      }
+      presetsPlan = {
+        path,
+        next,
+        changed: JSON.stringify(current.document) !== JSON.stringify(next),
+      };
+    }
+
+    let preferencesPlan = null;
+    if (!layersOnly && document.preferences !== null) {
+      const path = userPreferencesPath();
+      const current = readPreferences(path);
+      if (current.error !== null) {
+        throw new OverrideError(
+          'preferences-not-writable',
+          `${path} is not a readable preference document (${current.error.code}: ${current.error.message}); fix or remove it before importing`,
+          409,
+        );
+      }
+      preferencesPlan = {
+        path,
+        next: document.preferences,
+        changed: JSON.stringify(current.preferences) !== JSON.stringify(document.preferences),
+      };
+    }
+
+    const layerUnits = units.filter((unit) => unit.kind === 'layer');
+    const workspaceUnits = units.filter((unit) => unit.kind === 'workspace');
+    const plans = Object.fromEntries(layerUnits.map((unit) => [unit.key, unit.plan]));
     const importedNames = Object.keys(plans);
-    const totals = totalCounts(plans);
+    const totals = totalCounts(Object.fromEntries(units.map((unit) => [unit.key, unit.plan])));
+    const workspaceTotals = totalCounts(Object.fromEntries(workspaceUnits.map((unit) => [unit.key, unit.plan])));
     const layers = {};
-    for (const name of importedNames) {
-      layers[name] = { ...publicPlan(plans[name]), path: targets[name].path, enabled: true };
+    for (const unit of layerUnits) {
+      layers[unit.key] = { ...publicPlan(unit.plan), path: unit.path, enabled: true };
     }
-    const unchanged = importedNames.every((name) => plans[name].counts.added === 0
-      && plans[name].counts.replaced === 0
-      && plans[name].counts.removed === 0);
+    const workspaces = workspaceUnits.map((unit) => ({
+      root: unit.target.root,
+      ...publicPlan(unit.plan),
+      path: unit.path,
+      enabled: true,
+    }));
+    const presetsReport = presetsPlan === null ? null : {
+      path: presetsPlan.path,
+      changed: presetsPlan.changed,
+      presets: presetsPlan.next.presets.length,
+      applied: presetsPlan.next.applied.length,
+    };
+    const preferencesReport = preferencesPlan === null ? null : {
+      path: preferencesPlan.path,
+      changed: preferencesPlan.changed,
+      keys: Object.keys(preferencesPlan.next),
+    };
+    const importedWorkspaces = workspaceUnits.map((unit) => unit.target.root);
+    const unchanged = units.every((unit) => unit.plan.counts.added === 0
+      && unit.plan.counts.replaced === 0
+      && unit.plan.counts.removed === 0)
+      && (presetsPlan === null || presetsPlan.changed === false)
+      && (preferencesPlan === null || preferencesPlan.changed === false);
+
+    /** The exact bytes every config document is written with. */
+    const serialize = (value) => `${JSON.stringify(value, null, 2)}\n`;
+    /** The response keys that describe the installation-level half. */
+    const installation = {
+      workspaces,
+      presets: presetsReport,
+      preferences: preferencesReport,
+      importedWorkspaces,
+      workspaceTotals,
+    };
 
     if (dryRun) {
       sendJson(res, 200, withWarnings({
@@ -2629,6 +3051,7 @@ function mount(ctx, config, cleanups) {
         schema: document.schema ?? null,
         exportedAt: document.exportedAt,
         layers,
+        ...installation,
         imported: importedNames,
         skipped,
         totals,
@@ -2645,6 +3068,7 @@ function mount(ctx, config, cleanups) {
         mode,
         session: sessionId ?? null,
         layers,
+        ...installation,
         imported: importedNames,
         skipped,
         totals,
@@ -2656,36 +3080,49 @@ function mount(ctx, config, cleanups) {
       return;
     }
 
-    const commit = writeConfigsAtomically(importedNames.map((name) => ({
-      path: targets[name].path,
-      config: plans[name].next,
-    })));
+    // One commit for every changed file, of every kind (Revision 53): the
+    // layer configs, the workspace configs, `presets.json` and
+    // `preferences.json` are all staged and read back before the first rename,
+    // so「a rejected import writes nothing」now covers the whole backup rather
+    // than one file family.
+    const commit = writeDocumentsAtomically([
+      ...units
+        .filter((unit) => unit.plan.counts.added + unit.plan.counts.replaced + unit.plan.counts.removed > 0)
+        .map((unit) => ({ path: unit.path, text: serialize(unit.plan.next), verify: readConfig })),
+      ...(presetsPlan !== null && presetsPlan.changed
+        ? [{ path: presetsPlan.path, text: serialize(presetsPlan.next), verify: readPresets }]
+        : []),
+      ...(preferencesPlan !== null && preferencesPlan.changed
+        ? [{ path: preferencesPlan.path, text: serialize(preferencesPlan.next), verify: readPreferences }]
+        : []),
+    ]);
 
     const history = {};
-    for (const name of importedNames) {
-      cacheWritten(targets[name], plans[name].next);
+    for (const unit of units) {
+      if (unit.plan.counts.added + unit.plan.counts.replaced + unit.plan.counts.removed === 0) continue;
+      cacheWritten(unit.target, unit.plan.next);
       // g-062: an import that changes the reserved section is a prompt change like
       // any save, so the affected layer's next run reports it. Read from the plan
       // that was just committed, never re-read from disk.
-      for (const change of plans[name].changes) {
+      for (const change of unit.plan.changes) {
         if (change.name !== CUSTOM_SECTION_NAME || change.status === 'unchanged') continue;
         const after = change.after === undefined ? null : change.after;
         notePromptWrite({
-          layer: name,
-          session: name === 'workspace' ? sessionId ?? null : null,
+          layer: unit.layer,
+          session: unit.session,
           action: after === null ? 'hide' : after.action,
           text: after === null || after.action === 'hide' ? '' : String(after.text ?? ''),
         });
       }
-      const snapshot = snapshotOfConfig(plans[name].next);
+      const snapshot = snapshotOfConfig(unit.plan.next);
       const reported = [];
-      for (const change of plans[name].changes) {
+      for (const change of unit.plan.changes) {
         if (change.status === 'unchanged') continue;
         const result = recordHistory({
-          path: targets[name].path,
+          path: unit.path,
           at: new Date().toISOString(),
-          layer: name,
-          session: sessionId ?? null,
+          layer: unit.layer,
+          session: unit.session,
           action: change.status === 'removed' ? 'remove' : actionOf(change.before, change.after),
           name: change.name,
           origin: 'import',
@@ -2696,7 +3133,7 @@ function mount(ctx, config, cleanups) {
         });
         reported.push({ name: change.name, status: change.status, ...result });
       }
-      history[name] = reported;
+      history[unit.key] = reported;
     }
 
     sendJson(res, 200, withWarnings({
@@ -2705,6 +3142,7 @@ function mount(ctx, config, cleanups) {
       mode,
       session: sessionId ?? null,
       layers,
+      ...installation,
       imported: importedNames,
       skipped,
       totals,
@@ -3860,12 +4298,45 @@ function mount(ctx, config, cleanups) {
   }
 
   /**
-   * `DELETE /prompt-setting/presets?id=` — drop one preset from the catalogue.
+   * `DELETE /prompt-setting/presets?id=` — drop one preset, and with it **every
+   * application of it** (Revision 50).
    *
-   * Deleting a preset that is currently applied is **allowed and changes no
-   * layer**: the workspace keeps the text it was given, and the record becomes
-   * an orphan (`GET /presets` says so, and the page labels it「来源已删除」)
-   * instead of the delete quietly rewriting a workspace the request never named.
+   * Deleting a preset that is currently applied used to be a catalogue-only
+   * write: the workspace kept the text it was given and its record became an
+   * orphan. That state is real but it is not what「删除」means to the person
+   * clicking it — the text they asked to be rid of stayed in the prompt, under a
+   * name no longer in the library. So the deletion now **cancels** the
+   * applications first, through the same kernel「取消应用」uses
+   * ({@link planPresetRemoval} → `planUnapply`): each affected workspace's layer
+   * is recomposed from `base` plus the links that remain, the last link restores
+   * `base` itself (`null` ⇒ the reserved entry is removed), and nothing else in
+   * the layer is touched. Only then is the library written.
+   *
+   * **Atomic, in the only order that can be.** Every affected layer is read and
+   * planned **before** the first write, so a workspace whose layer is unusable
+   * refuses the whole request with nothing changed: never "the preset is gone
+   * and the layer is not". A failure inside the commit loop (an I/O error after
+   * some layers were already restored) stops there too — the preset is **not**
+   * deleted, and the refusal names which workspaces were restored and which were
+   * not (§20.4, §20.7 `preset-unapply-failed`). The residual risk is stated
+   * rather than hidden: that second failure can leave some workspaces restored
+   * with the preset still in the library, which is the recoverable direction of
+   * the trade (the user can delete again, or cancel the remaining applications by
+   * hand).
+   *
+   * **A layer that is gone is skipped, not recreated** (g-069 review A). When the
+   * `applied` record points at a workspace root the user has since deleted, there
+   * is no text to restore and the request must not build one: `writeConfig` would
+   * `mkdirSync` the whole `.dsh-prompt-setting` tree back. That workspace is
+   * planned as `missing`, its links still come off the record (no orphan is left
+   * behind), and it is reported as `missing: true` / `restored: false` without
+   * being counted in `restoredWorkspaces`. The opposite case — a layer file that
+   * exists but cannot be read or parsed — is still a refusal.
+   *
+   * `?session=` is resolution only, exactly as on the read face (§20.2): when the
+   * caller names one, the workspace it resolves to is the one whose history
+   * record carries that session; every other restored workspace is logged without
+   * one, the existing spelling for a workspace write no session asked for.
    * @param url - the parsed request URL.
    * @param res - the Node response.
    */
@@ -3876,27 +4347,174 @@ function mount(ctx, config, cleanups) {
     }
     const id = validatePresetId(raw);
     const file = writablePresets();
-    const { document, removed } = removePreset(file.document, id);
-    if (removed === null) {
+    if (presetById(file.document, id) === null) {
       throw fail('preset-not-found', `no preset with id ${JSON.stringify(id)}`, 404);
     }
-    writePresets(file.path, document);
-    const applied = publicApplied(document);
-    // Revision 41: an application is a link on a workspace's stack, so the count
-    // is over links — a preset may be applied to several workspaces.
-    const orphaned = applied.reduce(
-      (total, record) => total + record.stack.filter((link) => link.presetId === id).length,
-      0,
-    );
+    const affected = appliedRootsOf(file.document, id);
+    // g-074 R1: the roots to restore come from the **library file**, not from a
+    // document this request validated, so they get the same registry check every
+    // other write path applies (`assertKnownWorkspaceRoot`). Without it a record
+    // naming an unregistered directory made this route the write that reaches
+    // it — `workspaceConfigPath(root)` under a root the profile does not own.
+    // The check is `400 unknown-workspace-root`, decided before phase 1 reads a
+    // single layer, so a refusal leaves both the library and every layer
+    // byte-identical.
+    for (const root of affected) {
+      assertKnownWorkspaceRoot(root, 'a preset application target');
+    }
+    const rawSession = url.searchParams.get('session');
+    const sessionId = typeof rawSession === 'string' && rawSession.length > 0 ? rawSession : null;
+    const sessionRoot = sessionId === null ? null : workspaceRootFor(sessionId).root;
+    const at = new Date().toISOString();
+    // Phase 1 — read and plan every affected layer. Nothing is written here, so
+    // any refusal (an unusable layer, an unknown workspace) leaves both files
+    // byte-identical and the preset in the library.
+    //
+    // g-069 review A: a layer file that is **gone** (ENOENT) is not a refusal and
+    // not a restore. It is planned as `missing` — the record's links are cancelled
+    // so the deletion still leaves no orphan, but the route writes, caches and
+    // logs nothing for that workspace: `writeConfig` would `mkdirSync` the
+    // directory tree the user deleted. A layer that **exists but cannot be read**
+    // stays a refusal (the read throws), which is the behaviour the negative
+    // control pins.
+    let plan;
+    let reading = null;
+    const absent = [];
+    try {
+      plan = planPresetRemoval(file.document, {
+        presetId: id,
+        currentOf: (root) => {
+          reading = root;
+          const path = workspaceConfigPath(root);
+          const read = readConfig(path);
+          if (read.error !== null) {
+            throw new OverrideError(
+              'layer-not-writable',
+              `${path} is not a valid config (${read.error.code}: ${read.error.message}); fix or remove it before saving`,
+              409,
+            );
+          }
+          if (read.missing === true) {
+            absent.push(root);
+            return null;
+          }
+          return read.config;
+        },
+      });
+    } catch (error) {
+      const reason = error instanceof OverrideError
+        ? `${error.code}: ${error.message}`
+        : `${error?.message ?? String(error)}`;
+      throw fail(
+        'preset-unapply-failed',
+        `${restoreRefusal('restoring', reading, affected, [], absent)} (${reason}); the preset was NOT deleted`,
+        error instanceof OverrideError ? error.status : 500,
+      );
+    }
+    if (plan.removed === null) {
+      throw fail('preset-not-found', `no preset with id ${JSON.stringify(id)}`, 404);
+    }
+    // Phase 2 — commit. The library is written **last**, after every layer write
+    // has succeeded, so the record always describes a state that really exists.
+    const restored = [];
+    let committing = null;
+    try {
+      for (const entry of plan.plans) {
+        // No layer file, nothing to put back: the links are already off the
+        // record (§20.4), and inventing the layer here is the defect this branch
+        // exists to prevent.
+        if (entry.missing === true) continue;
+        committing = entry.workspaceRoot;
+        const path = workspaceConfigPath(entry.workspaceRoot);
+        const next = validateConfig(entry.config);
+        writeConfig(path, next);
+        cacheWritten({ path, root: entry.workspaceRoot }, next);
+        const session = entry.workspaceRoot === sessionRoot ? sessionId : null;
+        // g-062: a restore is a prompt change like any other save, and it is
+        // reported on that workspace's next run (the same call the `unapply`
+        // route makes, Revision 48 included: restoring **nothing** counts).
+        notePromptWrite({
+          layer: 'workspace',
+          session,
+          action: entry.after === null || entry.after.action === 'hide' ? 'hide' : 'replace',
+          text: entry.after === null || entry.after.action === 'hide' ? '' : String(entry.after.text ?? ''),
+        });
+        recordHistory({
+          path,
+          at,
+          layer: 'workspace',
+          session,
+          action: actionOf(entry.before, entry.after),
+          name: CUSTOM_SECTION_NAME,
+          origin: 'ui',
+          before: textEntry(entry.before === null ? null : entry.before.text),
+          after: textEntry(entry.after === null ? null : entry.after.text),
+          snapshot: snapshotOfConfig(next),
+          note: `delete preset ${id}`,
+        });
+        restored.push(entry.workspaceRoot);
+      }
+    } catch (error) {
+      const reason = error instanceof OverrideError
+        ? `${error.code}: ${error.message}`
+        : `${error?.message ?? String(error)}`;
+      throw fail(
+        'preset-unapply-failed',
+        `${restoreRefusal('restoring', committing, affected, restored, absent)} (${reason}); the preset was NOT deleted`,
+        500,
+      );
+    }
+    writePresets(file.path, plan.document);
     sendJson(res, 200, {
       ok: true,
       removed: true,
       id,
-      preset: removed,
-      orphaned,
-      presets: publicPresets(document),
-      applied,
+      preset: plan.removed,
+      // What really happened, in the two counts the page needs (Revision 50):
+      // how many workspaces were **really written**, and how many stack links
+      // that took across every affected workspace. A workspace whose layer file
+      // is gone is reported in `workspaces[]` as `missing: true` and is not
+      // counted as restored (g-069 review A).
+      restoredWorkspaces: restored.length,
+      links: plan.links,
+      workspaces: plan.plans.map((entry) => ({
+        workspaceRoot: entry.workspaceRoot,
+        links: entry.links,
+        restored: entry.restored,
+        missing: entry.missing === true,
+      })),
+      presets: publicPresets(plan.document),
+      applied: publicApplied(plan.document),
     });
+  }
+
+  /**
+   * The「which workspaces were restored, which were not」half of a refused
+   * deletion (Revision 50): one sentence, both lists, so the answer can never
+   * claim more than it did.
+   *
+   * `failedRoot` names the workspace the refusal really came from — the one whose
+   * read threw in phase 1, or the one the commit loop was writing in phase 2
+   * (g-069 review B: the previous wording listed every not-yet-reached workspace
+   * as if it had failed, which §20.7 already promised not to do). `absent` names
+   * the workspaces whose layer file does not exist: they are neither restored nor
+   * failed, so they are excluded from `not restored` and reported separately.
+   * @param verb - what was being attempted (`restoring`).
+   * @param failedRoot - the workspace whose restore failed, or null.
+   * @param affected - every workspace the deletion had to account for.
+   * @param restored - the workspaces already restored, in commit order.
+   * @param absent - the workspaces with no layer file (skipped, not restored).
+   * @returns a human-readable sentence.
+   */
+  function restoreRefusal(verb, failedRoot, affected, restored, absent = []) {
+    const quote = (roots) => (roots.length === 0 ? 'none' : roots.map((root) => JSON.stringify(root)).join(', '));
+    const pending = affected.filter((root) => !restored.includes(root) && !absent.includes(root));
+    const head = failedRoot === null || failedRoot === undefined
+      ? `${verb} stopped before any layer was written`
+      : `${verb} workspace ${JSON.stringify(failedRoot)} failed`;
+    const parts = [`${head}`, `restored: ${quote(restored)}`, `not restored: ${quote(pending)}`];
+    if (absent.length > 0) parts.push(`no layer to restore: ${quote(absent)}`);
+    return parts.join('; ');
   }
 
   /**

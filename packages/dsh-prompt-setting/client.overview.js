@@ -94,6 +94,9 @@ window.__ModuleLoader__.load({
       return h(
         'div',
         { 'data-region': 'overview', style: { display: 'flex', flexDirection: 'column', gap: 10 } },
+        // g-073 (Revision 55): the tab's **own** scope, above its two views: the
+        // assembly both views describe is the one this selector names.
+        renderOverviewScope(t, m, a),
         h(
           'div',
           { 'data-region': 'view-tabs' },
@@ -111,6 +114,184 @@ window.__ModuleLoader__.load({
           ),
         ),
         m.view === 'sections' ? renderSectionsView(t, m, a) : renderFullView(t, m, a),
+      );
+    }
+
+    /**
+     * The height of this selector's scrolling candidate list, in px — a fixed
+     * box, so the panel's height never depends on how many sessions exist (the
+     * same rule the version-history selector follows).
+     */
+    const OVERVIEW_SCOPE_LIST_HEIGHT = 220;
+
+    /**
+     * g-073 (Revision 55):「提示词总览」's **own** scope selector.
+     *
+     * The shape follows the version history's own disclosure (§13.3) — one
+     * summary row, plus a search box and a scrolling candidate list that exist
+     * only while it is open — with one deliberate difference: the candidates are
+     * **grouped by workspace and offered per session**. The host reads
+     * `?session=` twice (it locates the workspace layer file *and* probes the
+     * assembly in that session's own scope), and the frozen verdict and the
+     * variable resolution are per-session facts (§2.4), so compressing a
+     * workspace into its first session would show a verdict that is not the
+     * reader's. 「跟随当前会话」 is the default and stays one click away.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the scope block element.
+     */
+    function renderOverviewScope(t, m, a) {
+      const empty = m.overviewScopeMode === 'none';
+      const shown = m.overviewScopeGroups.reduce((total, group) => total + group.options.length, 0);
+      const summaryTextStyle = { fontSize: 13, color: token.labelPrimary, wordBreak: 'break-word' };
+      return h(
+        'div',
+        {
+          'data-region': 'overview-scope',
+          'data-overview-scope-mode': m.overviewScopeMode,
+          'data-overview-scope-value': m.overviewScopeValue,
+          'data-overview-scope-options': String(m.overviewScopeOptions.length),
+          'data-scope-open': String(m.overviewScopeOpen),
+          style: {
+            border: `1px solid ${token.borderL1}`,
+            borderRadius: 8,
+            padding: '8px 10px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 6,
+          },
+        },
+        h(
+          'div',
+          { 'data-region': 'overview-scope-summary', style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } },
+          h('span', { style: metaStyle }, t('overviewScopeLabel')),
+          empty
+            ? h('span', { 'data-role': 'overview-scope-empty', style: metaStyle }, t('overviewScopeNone'))
+            : h(
+                'span',
+                { 'data-role': 'overview-scope-summary-label', style: summaryTextStyle },
+                // `''` is the global scope, named here rather than in the model
+                // (no key may be produced on the page's own render path).
+                m.overviewScopeName.length > 0 ? m.overviewScopeName : t('sessionGlobal'),
+              ),
+          empty
+            ? null
+            : h(
+                UI.Button,
+                {
+                  variant: 'outline',
+                  'data-action': 'overview-scope-toggle',
+                  'data-expanded': String(m.overviewScopeOpen),
+                  'aria-expanded': m.overviewScopeOpen,
+                  onClick: a.toggleOverviewScopeOpen,
+                },
+                m.overviewScopeOpen ? t('scopeCollapse') : t('scopeEdit'),
+              ),
+        ),
+        m.overviewScopeOpen && !empty
+          ? h(
+              'div',
+              { 'data-region': 'overview-scope-picker', style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+              h(UI.Input, {
+                'data-role': 'overview-scope-search',
+                placeholder: t('overviewScopeSearch'),
+                value: m.overviewScopeSearch,
+                onChange: a.setOverviewScopeSearch,
+                style: { maxWidth: 320 },
+              }),
+              h(
+                'div',
+                {
+                  'data-overview-scope-list': 'scroll',
+                  'data-overview-scope-shown': String(shown),
+                  style: {
+                    height: OVERVIEW_SCOPE_LIST_HEIGHT,
+                    maxHeight: OVERVIEW_SCOPE_LIST_HEIGHT,
+                    overflowY: 'auto',
+                    border: `1px solid ${token.borderL1}`,
+                    borderRadius: 8,
+                    padding: 6,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 6,
+                  },
+                },
+                shown === 0
+                  ? h('span', { 'data-role': 'overview-scope-no-match', style: metaStyle }, t('overviewScopeNoMatch'))
+                  : m.overviewScopeGroups.map((group) =>
+                      h(
+                        'div',
+                        {
+                          key: group.id,
+                          'data-overview-scope-group': group.id,
+                          style: { display: 'flex', flexDirection: 'column', gap: 4 },
+                        },
+                        group.label.length > 0
+                          ? h(
+                              'span',
+                              { 'data-role': 'overview-scope-group-label', style: { ...metaStyle, fontWeight: 600 } },
+                              group.label,
+                            )
+                          : null,
+                        group.options.map((option) =>
+                          h(
+                            'button',
+                            {
+                              key: option.value,
+                              type: 'button',
+                              'data-role': 'overview-scope-option',
+                              'data-overview-scope-option': option.value,
+                              'data-overview-scope-workspace': option.workspaceId,
+                              'data-selected': option.value === m.overviewScopeValue ? 'true' : 'false',
+                              onClick: () => a.setOverviewScope(option.value),
+                              style: {
+                                ...miniButtonStyle({
+                                  padding: '4px 8px',
+                                  lineHeight: '18px',
+                                  textAlign: 'left',
+                                  color: option.value === m.overviewScopeValue ? token.buttonLabel : token.labelPrimary,
+                                  background: option.value === m.overviewScopeValue ? token.buttonFill : 'transparent',
+                                  border: `1px solid ${option.value === m.overviewScopeValue ? 'transparent' : token.borderL2}`,
+                                }),
+                                display: 'flex',
+                                gap: 6,
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                                wordBreak: 'break-word',
+                              },
+                            },
+                            h('span', { key: 'name' }, option.label),
+                            option.value === m.overviewScopeValue
+                              ? h(UI.Tag, { key: 'current', tone: 'info' }, t('scopeSelected'))
+                              : null,
+                          ),
+                        ),
+                      ),
+                    ),
+              ),
+              h(
+                'div',
+                { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+                h(
+                  UI.Button,
+                  {
+                    'data-action': 'overview-scope-auto',
+                    'data-overview-scope-auto': 'true',
+                    onClick: () => a.setOverviewScope(null),
+                  },
+                  t('overviewScopeAuto'),
+                ),
+              ),
+            )
+          : null,
+        m.overviewScopeMode === 'sessions'
+          ? h(
+              'span',
+              { 'data-warning': 'overview-scope-degraded', style: { ...metaStyle, color: token.stateWarn } },
+              t('overviewScopeDegraded'),
+            )
+          : null,
       );
     }
 
@@ -133,7 +314,9 @@ window.__ModuleLoader__.load({
      * @returns the view element.
      */
     function renderSectionsView(t, m, a) {
-      const all = m.effectiveSections;
+      // g-073 (Revision 55): every read below is the overview's **own** scope's
+      // (`m.overview*`), not the page's「查看范围」— that one serves「我的 Prompt」.
+      const all = m.overviewEffectiveSections;
       const sections = all.filter((section) => section.name !== RESERVED_SECTION_NAME);
       const shown = sections.filter((section) => m.passesFilters(section));
       return h(
@@ -225,10 +408,10 @@ window.__ModuleLoader__.load({
       const origin = originOf(section);
       const layer = sectionLayer(section);
       const overridable = section.overridable === true;
-      const gate = editGate(section, m.fz, t);
+      const gate = editGate(section, m.overviewFz, t);
       const text = typeof section.text === 'string' ? section.text : '';
       const expanded = m.expanded === section.name;
-      const cause = ineffectiveCause(t, section, m.incoming);
+      const cause = ineffectiveCause(t, section, m.overviewIncoming);
       const showHint = origin === 'downstream-added' || origin === 'unmatched-override';
       // What the effective text *is*, in the vocabulary the goal asked for:
       // 已覆盖 / 已隐藏 / 追加, or nothing when the section is untouched. It is
@@ -357,8 +540,8 @@ window.__ModuleLoader__.load({
      * @returns the view element.
      */
     function renderFullView(t, m, a) {
-      const snapshot = m.snap.data;
-      const sections = m.effectiveSections;
+      const snapshot = m.overviewSnap.data;
+      const sections = m.overviewEffectiveSections;
       const baseSections = snapshot && snapshot.base && Array.isArray(snapshot.base.sections) ? snapshot.base.sections : [];
       const resolved = snapshot ? snapshot.renderedResolved !== false : true;
       const unresolved = snapshot && Array.isArray(snapshot.unresolvedVariables) ? snapshot.unresolvedVariables : [];

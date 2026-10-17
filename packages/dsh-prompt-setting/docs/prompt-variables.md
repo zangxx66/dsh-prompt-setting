@@ -2,67 +2,76 @@
 
 这份文档回答一个具体问题：**模型实际收到的 system prompt 里，`{{变量}}` 会被替换成什么，不替换时又会怎样。**
 它是 g-023（变量盘点）与 g-024（预览现状复核）的结论落盘，记录 g-025 的实现（未解析后果分级），
-以及 g-026 的实现（「我的 Prompt」变量替换开关，§8；Revision 15 终态：保留段永不插值，开关 = 插件自行宽松展开）。
+g-026 的实现（「我的 Prompt」变量替换开关，§8；Revision 15 终态：保留段永不插值，开关 = 插件自行宽松展开），
+以及 g-080 的版本断点与探测（DSH `0.2.1-rc.1` 起 `cwd` 变量弃用；插件按真实变量表探测，§8.7）。
 
-- 数据快照：DSH `0.2.0-rc.2`，`dsh-prompt-setting` 工作树基线 `6fa99d2`（g-026 改动随本次提交）。
+- 数据快照：DSH `0.2.1-rc.2`（2026-10-17），`dsh-prompt-setting` 工作树基线 `748845d`。
+- **版本断点（g-080）**：DSH `0.2.1-rc.1` 起 `@deepseek-ai/dsh-agent-loop` **不再注册** `cwd` 变量，
+  shipped preset 也不再引用它；`0.2.0-rc.2` 及更早的旧快照（14 处引用、3 个注册变量）作为对照保留在 §1/§2。
 - 口径：只统计**已发布**（shipped）的 preset / patch 与插件自身的保留段；用户自建的 override 文本按同一规则处理。
 - 行号来自上述快照，会随上游版本漂移；结论依赖的是**结构与语义**，不是行号。
 
 本文件**不在** `package.json` 的 `files` 白名单内（白名单不含 `docs`），因此它随仓库走、不随 npm 包发布，`npm pack` 的文件数与体积不受影响。
 
-## 1. 引用清单：14 处，全部在 persona 配置
+## 1. 引用清单：7 处，全部在 persona 配置（DSH 0.2.1-rc.2）
 
 `{{变量}}` 只出现在各 app 的 agent preset（`*.patch.yml`）里，且只在 `@deepseek-ai/dsh-persona` 的 `prefix` / `suffix` 文本中：
 
 | 文件（相对 DSH 安装的 `node_modules/.pnpm/`） | 位置 | 引用 |
 | --- | --- | --- |
-| `@deepseek-ai+dsh-web-app@*/node_modules/@deepseek-ai/dsh-web-app/presets/standard.patch.yml` | `preset-standard` → `persona.config.suffix` / `.prefix` | `{{cwd}}` / `{{model}}` |
-| `…/dsh-web-app/presets/ptc.patch.yml` | 同上 | `{{cwd}}` / `{{model}}` |
-| `…/dsh-web-app/presets/cordis.patch.yml` | 同上 | `{{cwd}}` / `{{model}}` |
-| `@deepseek-ai+dsh-web-app@*/node_modules/@deepseek-ai/dsh-web-app/cordis.patch.yml` | `system-prompt.config.personaSuffix` / `.personaPrefix` | `{{cwd}}` / `{{model}}` |
-| `@deepseek-ai+dsh-sdk-app@*/node_modules/@deepseek-ai/dsh-sdk-app/cordis.patch.yml` | 同上 | `{{cwd}}` / `{{model}}` |
-| `@deepseek-ai+dsh-headless@*/node_modules/@deepseek-ai/dsh-headless/cordis.patch.yml` | 同上 | `{{cwd}}` / `{{model}}` |
-| `@deepseek-ai+dsh-acp-app@*/node_modules/@deepseek-ai/dsh-acp-app/cordis.patch.yml` | 同上 | `{{cwd}}` / `{{model}}` |
+| `@deepseek-ai+dsh-web-app@*/node_modules/@deepseek-ai/dsh-web-app/presets/standard.patch.yml` | `preset-standard` → `persona.config.prefix` | `{{model}}` |
+| `…/dsh-web-app/presets/ptc.patch.yml` | 同上 | `{{model}}` |
+| `…/dsh-web-app/presets/cordis.patch.yml` | 同上 | `{{model}}` |
+| `@deepseek-ai+dsh-web-app@*/node_modules/@deepseek-ai/dsh-web-app/cordis.patch.yml` | `system-prompt.config.personaPrefix` | `{{model}}` |
+| `@deepseek-ai+dsh-sdk-app@*/node_modules/@deepseek-ai/dsh-sdk-app/cordis.patch.yml` | 同上 | `{{model}}` |
+| `@deepseek-ai+dsh-headless@*/node_modules/@deepseek-ai/dsh-headless/cordis.patch.yml` | 同上 | `{{model}}` |
+| `@deepseek-ai+dsh-acp-app@*/node_modules/@deepseek-ai/dsh-acp-app/cordis.patch.yml` | 同上 | `{{model}}` |
 
-7 个文件 × 2 处 = **14 处**；出现的变量名集合恰为 `{cwd, model}`。原文形如：
+7 个文件 × 1 处 = **7 处**；出现的变量名集合恰为 `{model}`。原文形如：
 
 ```yaml
 # presets/*.patch.yml:插件形态
 - id: persona
   name: '@deepseek-ai/dsh-persona'
   config:
-    suffix: Your working directory is {{cwd}}.
     prefix: You are a coding agent powered by the {{model}} model.
 
 # <app>/cordis.patch.yml:配置形态
 - id: system-prompt
   config:
-    personaSuffix: Your working directory is {{cwd}}.
     personaPrefix: >-
       You are a coding agent powered by the {{model}} model.
 ```
 
+> **历史对照（0.2.0-rc.2 及更早）**：同一组文件那时是 7 × 2 = **14 处**，每个文件多一条
+> `Your working directory is {{cwd}}.`（`persona.config.suffix` / `system-prompt.config.personaSuffix`）。
+> DSH `0.2.1-rc.1` 删除了这条引用，也删除了 `cwd` 变量本身；工作目录改由 working-directory
+> 服务以**运行时上下文**（不是 `{{变量}}`）交给模型。旧快照仍可由本文件的 g-026 历史版本复现。
+
 `presets/minimal.patch.yml` 与其余 shipped 段（`harness:identity`、`deployment:persona-suffix` 等）不含任何 `{{变量}}`。本插件自己注册的保留段（`prompt-setting:custom-prompt`）默认是空串，用户写入的文本**默认不参与替换**（§4），因此它里面的 `{{...}}` 是字面量而不是引用——除非用户显式打开变量替换开关（§8），此时由**本插件**（不是 shipped 插值器）在装配期宽松展开：能解析的引用换成真实值，解析不了的保持字面量，绝不抛错。
 
-## 2. 注册变量：恰好 3 个，全部按 `context.agent` 求值
+## 2. 注册变量：恰好 2 个，全部按 `context.agent` 求值
 
-`@deepseek-ai/dsh-agent-loop/lib/index.js`（快照行号 1564–1566）：
+`@deepseek-ai/dsh-agent-loop/lib/index.js`（快照行号 1591–1592）：
 
 ```js
 ctx.systemPrompt.variable("provider", (context) => context.agent?.options.provider);
 ctx.systemPrompt.variable("model",    (context) => context.agent?.options.model);
-ctx.systemPrompt.variable("cwd",      (context) => context.agent?.session.header.cwd);
 ```
 
-- 三个变量都在 **global 层**注册（`ctx.systemPrompt.variable(...)`），值由 provider 回调在装配时求值。
-- 三者都读 `context.agent`。没有 Agent 的装配（例如无会话的探针）得到 `undefined`——这正是「值缺失」在真机上真实发生的原因。
+- 两个变量都在 **global 层**注册（`ctx.systemPrompt.variable(...)`），值由 provider 回调在装配时求值。
+- 两者都读 `context.agent`。没有 Agent 的装配（例如无会话的探针）得到 `undefined`——这正是「值缺失」在真机上真实发生的原因。
 - 变量名受 shipped 语法约束 `/^[a-z][a-z0-9_]*$/`（`dsh-system-prompt/lib/index.js:59`），所以 `{{Upper}}`、`{{a-b}}` 这类写法不是变量，而是**畸形引用**（§4）。
+- **`cwd` 已不在表里**（g-080）：0.2.0 及更早的 loop 在快照行 1564–1566 注册过
+  `ctx.systemPrompt.variable("cwd", (context) => context.agent?.session.header.cwd)`，0.2.1-rc.1 起删除。
+  因此新版本上 `{{cwd}}` 属于「未注册引用」：本插件展开时保持字面量，写入校验拒绝（§8.2），
+  而面板文案会按**本次装配的真实变量表**列出可用的名字（§8.7）。
 
 ## 3. 双向差集
 
 | 方向 | 结果 |
 | --- | --- |
-| 引用 − 已注册 | **∅**（`{cwd, model}` 全部已注册，没有「引用了但没人提供」的变量） |
+| 引用 − 已注册 | **∅**（`{model}` 已注册，没有「引用了但没人提供」的变量） |
 | 已注册 − 引用 | **{provider}**（注册了但 shipped 从不引用；它仍可被用户文本引用） |
 
 结论：在 shipped 输入下，变量**不缺**，缺的只可能是**值**（无 Agent 的装配）。g-025 的分级因此不是「补变量」，而是「说清缺值时真实装配会怎样」。
@@ -140,10 +149,11 @@ cd <上一步的 node_modules 目录>
 ```
 
 ```bash
-# ① 引用清单：每个 patch 里的 {{变量}}（本机实测 7 个文件 × 2 = 14 处）
+# ① 引用清单：每个 patch 里的 {{变量}}（0.2.1-rc.2 实测 7 个文件 × 1 = 7 处）
 grep -rn '{{[a-z_]*}}' --include='*.patch.yml' .
 
-# ② 注册变量：恰好 3 个，全部 global 层注册、按 context.agent 求值
+# ② 注册变量：恰好 2 个，全部 global 层注册、按 context.agent 求值
+#    （0.2.0 及更早还会多出 `cwd`，0.2.1-rc.1 起删除）
 grep -n 'systemPrompt.variable(' \
   @deepseek-ai+dsh-agent-loop@*/node_modules/@deepseek-ai/dsh-agent-loop/lib/index.js
 
@@ -189,12 +199,13 @@ Revision 15（方案 A）重立了这个功能，本节以它为准：
 
 | 文本里的写法 | 插件展开后的真实结果 | 保存/导入时 |
 | --- | --- | --- |
-| `{{model}}`、`{{cwd}}`、`{{provider}}`（已注册且有值） | 替换为真实值 | **接受** |
+| `{{model}}`、`{{provider}}`（当前 DSH 已注册且有值） | 替换为真实值 | **接受** |
+| `{{cwd}}`（0.2.1-rc.1 起不再注册） | 保持字面量；工作目录改由宿主的运行时上下文提供 | **400 `unresolvable-variable`**，零字节写入；错误消息额外点名 `0.2.1-rc.1` 的弃用（§8.7） |
 | `{{nope}}`（未注册） | 保持字面量 | **400 `unresolvable-variable`**，零字节写入 |
 | `{{Upper}}`、`{{a-b}}`、`{{a b}}`、`{{}}`（名字非法） | 保持字面量 | **400**，零字节写入 |
 | `{{ lone {{c}}`、`{{{{model}}}}`、`{{a{b}}`（畸形组） | 保留那两个 `{`，扫描按 shipped 游标继续 | **400**，零字节写入 |
 | `{{maybe}}`（已注册、但本次装配取不到值） | 保持字面量 | **接受 + 警告**（见 §8.3） |
-| `{{cwd}}` 且值为 `null` | 替换为字符串 `null`（与 shipped 一致） | 接受，不报警 |
+| `{{cwd}}` 且旧版 DSH 注册了它、值为 `null` | 替换为字符串 `null`（与 shipped 一致） | 接受，不报警 |
 | `{{unclosed`（后面再没有 `}}`） | 散文，不视为引用 | 接受，不报警 |
 
 判定口径（Revision 12 修正，审计 F1，Revision 15 保留）：**不是「被写那一层开没开」，而是「这段文本能不能到达一个开关为 ON 的装配」**。
@@ -253,7 +264,31 @@ node --test test/route.test.mjs          # 路由、零字节、装配期展开
 node --test test/integration.test.mjs    # 真 renderPrompt 逐字符对照 + F1/F2（需装 DSH）
 ```
 
+### 8.7 `cwd` 弃用的探测（g-080）
+
+**探测源是运行时变量表，不是版本号。** `GET /prompt-setting/interpolate` 已经返回
+`variables`（一次真实 `assemble()` 的键集，无值），页面在每次加载/`reload` 时读它：
+
+- `["provider", "model"]`（0.2.1-rc.1 及以后）→ 面板把列表渲染成 `{{provider}}, {{model}}`，
+  并在同一段文案里点名 `{{cwd}}` 已在 `0.2.1-rc.1` 弃用、未注册引用会保持字面量且保存被拒；
+- `["provider", "model", "cwd"]`（0.2.0 及更早）→ 列表里就是 `{{cwd}}`，旧行为与旧文案不变；
+- `null`（探针失败 / 旧 Host）→ 列表显示 `?`，不编造一个“可用变量”集合。
+
+这条探测在数据面（`core/interpolate.js`）与 UI 面复用同一份事实：
+
+| 落点 | 事实 | 行为 |
+| --- | --- | --- |
+| 写入/开启校验 | `assembly.variables` 不含 `cwd` | `400 unresolvable-variable`；消息追加一句“DSH 0.2.1-rc.1 起不再注册 `{{cwd}}`，工作目录改由运行时上下文提供”（表里仍有 `cwd` 时不追加） |
+| 面板文案 | `GET /interpolate.variables` | 动态列出当前注册名；`null` 时 `?` |
+| 装配期展开 | 本轮真实变量表 | `{{cwd}}` 未注册 ⇒ 保持字面量（宽松展开，绝不抛错） |
+
+**兼容性**：探测只读、不改变判定方向；旧版 DSH 上变量表含 `cwd`，所有行为与文案逐字不变。
+判定仍是 fail-closed：新版本上带 `{{cwd}}` 的文本保存会被拒，但**已有文本**照常进入 prompt
+（保留段 `interpolate: false`，展开是宽松的），不会让任何一轮装配失败。
+
 ## 9. 维护提示
 
-- 上游新增变量（第 4 个 `systemPrompt.variable(...)`）或新增 `{{引用}}` 时，本台账的 §1/§2/§3 需要同步；§4 的语义随 `dsh-system-prompt` 版本复核。
+- 上游新增变量（新的 `systemPrompt.variable(...)`）或新增 `{{引用}}` 时，本台账的 §1/§2/§3 需要同步；§4 的语义随 `dsh-system-prompt` 版本复核。
+- **变量退役同样要同步**：`0.2.1-rc.1` 移除 `cwd` 是一次先例。上游再移除某个变量时，`§8.7` 的探测**不需要改代码**
+  （它读真实表），但 §1/§2/§3 与 §8.2 的表格要按新快照更新；若移除发生在 shipped 引用上，旧版 DSH 的对照要保留。
 - 新增引用若落在 `interpolate: false` 段，按 §5 归入 `unresolvedLiteral`；落在普通段则归入 `unresolvedThrowing` 且真实装配会抛错——这两条是自动化断言固化的（`test/overrides.test.mjs`、`test/route.test.mjs`、`test/client.test.mjs`、`test/integration.test.mjs`）。

@@ -1516,6 +1516,28 @@ function importPlanFixture(over = {}) {
       },
     },
     imported: ['user'],
+    // g-074 att-002: the installation half the preview has to describe as well
+    // (criterion 9). Shaped exactly like the route's own dry-run answer.
+    workspaces: [
+      {
+        root: '/home/u/projects/alpha',
+        counts: { added: 0, replaced: 1, unchanged: 0, removed: 0, kept: 2 },
+        changes: [],
+        path: '/home/u/projects/alpha/.dsh-prompt-setting/overrides.json',
+        enabled: true,
+      },
+      {
+        root: '/home/u/projects/beta',
+        counts: { added: 0, replaced: 0, unchanged: 0, removed: 0, kept: 1 },
+        changes: [],
+        path: '/home/u/projects/beta/.dsh-prompt-setting/overrides.json',
+        enabled: true,
+      },
+    ],
+    workspaceTotals: { added: 0, replaced: 1, unchanged: 0, removed: 0, kept: 3 },
+    importedWorkspaces: ['/home/u/projects/alpha'],
+    presets: { path: '/home/u/.dsh/prompt-setting/presets.json', changed: true, presets: 3, applied: 1 },
+    preferences: { path: '/home/u/.dsh/prompt-setting/preferences.json', changed: true, keys: ['updateCheck', 'downloadRegionRegistry'] },
     skipped: [{ layer: 'workspace', reason: 'layer "workspace" requires a "session" id', entries: 0 }],
     totals: { added: 1, replaced: 1, unchanged: 0, removed: 0, kept: 1 },
     unchanged: false,
@@ -1587,8 +1609,18 @@ function defaultResponses(over = {}) {
     // g-043: a host that has already stored a region — so the default page makes
     // one read and no probe, exactly like a second visit does.
     [PATHS.downloadRegion]: { payload: regionFixture() },
+    // g-080: one stub serves both faces — `GET` reports the live variable table
+    // (the default is the 0.2.1 line: `cwd` is gone), `PUT` reports the switch.
     [PATHS.interpolate]: {
-      payload: { ok: true, interpolateCustom: true, layer: 'user', saved: { enabled: true }, effectiveFrom: 'next-turn' },
+      payload: {
+        ok: true,
+        variables: ['model', 'provider'],
+        variablesError: null,
+        interpolateCustom: true,
+        layer: 'user',
+        saved: { enabled: true },
+        effectiveFrom: 'next-turn',
+      },
     },
     // g-060: the preset library (CONTRACT.md §20.2).
     [PATHS.presets]: { payload: presetsFixture() },
@@ -1758,14 +1790,19 @@ test('client: requests stay on the plugin prefix and report the renderer', async
   // that (on a first visit) lets the *host* decide the update source. Still one
   // request to this plugin's own prefix, and still none at all when the mirror
   // says the switch is off (asserted in the region section below).
-  // g-062 adds the baseline read of the assembly-status notice for the「我的
-  // Prompt」tab — again one request to this plugin's own prefix, and one that is
-  // only made while that tab is open.
+  // g-065: the assembly-status notice moved to 「高级」, and its read follows the
+  // block — so a mount that leaves the default tab open (「我的 Prompt」) issues
+  // no assembly-status request at all, and the baseline set below does **not**
+  // contain it. The tab's own section asserts the read happens when it opens.
+  assert.equal(urlsFor(page, PATHS.assemblyStatus).length, 0, 'the default tab reads no assembly status (g-065)');
+  // g-080 adds one more: `GET /interpolate`, the variable-name read the
+  //「我的 Prompt」panel renders. It is the same cheap, local read (the host caches
+  // the table per mount), and it is what keeps a retired `{{cwd}}` off the panel.
   assert.deepEqual(
     [...new Set(urls.map((url) => url.split('?')[0]))].sort(),
     [
-      PATHS.assemblyStatus,
       PATHS.downloadRegion,
+      PATHS.interpolate,
       PATHS.overrides,
       PATHS.ping,
       PATHS.presets,
@@ -3149,12 +3186,16 @@ test('client: g-061 — three ghost-button families, and not one drift repaired 
   );
 
   const entry = readFileSync(join(here, '..', 'client.js'), 'utf8');
-  assert.equal(occurrencesOf(entry, 'chipButtonStyle({'), 3, 'the fallback tab, the pinned entries and the search fallback');
+  assert.equal(occurrencesOf(entry, 'chipButtonStyle({'), 3, 'the layer selector, the pinned entries and the search fallback');
   assert.equal(occurrencesOf(entry, 'miniButtonStyle({'), 1, '「显示更多」 — the row family is the session row');
   const history = chunkCode(readFileSync(join(here, '..', 'client.history.js'), 'utf8'));
   assert.equal(occurrencesOf(history, 'miniButtonStyle({'), 3, 'the two side buttons, the pager and the scope option row');
   const overview = chunkCode(readFileSync(join(here, '..', 'client.overview.js'), 'utf8'));
-  assert.equal(occurrencesOf(overview, 'miniButtonStyle({'), 1, 'the section expand toggle');
+  assert.equal(
+    occurrencesOf(overview, 'miniButtonStyle({'),
+    2,
+    'the section expand toggle and the overview scope option row (g-073)',
+  );
   // The pager's 2px/10px is this family's one odd value, and it is kept, stated.
   assert.match(history, /padding: '2px 10px'/, 'the pager keeps the padding its neighbours do not use');
   for (const name of CHUNK_FILES) {
@@ -3162,10 +3203,13 @@ test('client: g-061 — three ghost-button families, and not one drift repaired 
     assert.equal(code.includes('borderRadius: 999'), false, `${name}: the pill radius is not spelled out again`);
   }
 
-  // Rendered, chip by chip. The tabs are this factory's own control under every
+  // Rendered, chip by chip. `tabs()` is this factory's own control under every
   // renderer (g-063 H2: the Host's `SegmentedTabs` divides its width into equal
   // fractions, which six long Chinese labels do not fit), so the pill below is
-  // the one the page really draws.
+  // the one the page really draws. Since g-070 the chip family's rendered call
+  // site is the「我的 Prompt」layer selector (`data-tab-key="mine-layer"`) — the
+  // first-level bar is `mainTabStrip()`'s plain text and is asserted separately —
+  // so this pair reads the pills off that group.
   const page = makeOpenPage({ useSessions: sessionsHook(FILTER_SESSIONS), responses: defaultResponses() });
   const tree = await page.flush();
   const chip = {
@@ -3176,14 +3220,22 @@ test('client: g-061 — three ghost-button families, and not one drift repaired 
     borderRadius: 999,
     cursor: 'pointer',
   };
-  const tabButton = (value) => findOne(tree, (node) => node.type === 'button' && node.props['data-tab-value'] === value);
+  const layerTab = (selected) =>
+    findOne(
+      tree,
+      (node) =>
+        node.type === 'button' &&
+        node.props['data-tab-key'] === 'mine-layer' &&
+        node.props['aria-selected'] === selected,
+      `the ${selected ? 'selected' : 'unselected'} layer chip`,
+    );
   assert.deepEqual(
-    { ...tabButton('mine').props.style },
+    { ...layerTab(true).props.style },
     { ...chip, color: token.buttonLabel, background: token.buttonFill, border: '1px solid transparent' },
-    'the selected fallback tab keeps the button fill under a transparent stroke',
+    'the selected layer chip keeps the button fill under a transparent stroke',
   );
   assert.deepEqual(
-    { ...tabButton('presets').props.style },
+    { ...layerTab(false).props.style },
     { ...chip, color: token.labelSecondary, background: 'transparent', border: `1px solid ${token.borderL2}` },
     'and the unselected one keeps the **secondary** text the other two chips do not use',
   );
@@ -3425,8 +3477,16 @@ test('client: g-061 — one search comparison, two search semantics kept apart (
   assert.equal(shared.matchesNeedle([], ''), true, 'the empty needle matches everything');
 
   const entry = readFileSync(join(here, '..', 'client.js'), 'utf8');
-  assert.equal(occurrencesOf(entry, '= normalizeNeedle('), 3, 'the flat filter, the tree derivation and the history scope');
-  assert.equal(occurrencesOf(entry, 'matchesNeedle(['), 2, 'the session rows and the history scope options');
+  assert.equal(
+    occurrencesOf(entry, '= normalizeNeedle('),
+    5,
+    'the flat filter, the tree derivation, the history scope and the two tab-owned scopes (g-073)',
+  );
+  assert.equal(
+    occurrencesOf(entry, 'matchesNeedle(['),
+    4,
+    'the session rows, the history scope options and the two tab-owned scopes (g-073)',
+  );
   assert.equal(occurrencesOf(entry, "join(' ').toLowerCase()"), 1, 'the session list builds its cache where it always did');
   assert.match(entry, /if \(needle\.length === 0\) return list\.slice\(\);/, 'and the flat filter still returns a copy');
   assert.match(
@@ -4061,23 +4121,25 @@ const CHROME_TEXT_LINE_PX = 22;
 const CHROME_SLACK_PX = 4;
 
 /**
- * The **tight** first-screen budget (g-055; tightened in review round 2) for
- * everything above the tab bar, in px, measured by {@link chromeAboveTabsPx}.
+ * The **tight** first-screen budget (g-055; tightened in review round 2, and
+ * re-derived by g-071) for everything above the tab bar, in px, measured by
+ * {@link chromeAboveTabsPx}.
  *
- * It is the measured spend (220px) plus {@link CHROME_SLACK_PX}, deliberately
- * **not** a generous ceiling: the review round 1 number (310px, the hard
- * first-screen derivation below) was so loose that a whole extra title line —
- * 26px — still fitted under it, so the assertion proved nothing. With that slack,
- * any structural growth above the tabs fails it and has to be paid for by raising
- * {@link CHROME_SLACK_PX} (or the measured spend) on purpose.
+ * g-055's number was the spend **including** the「查看范围」block (220px + slack).
+ * g-071 moved that block into the mine panel, so the chrome is now the title, the
+ * version, the subtitle and the status line — 128px, measured by the same helper
+ * on the same tree. Leaving the old ceiling in place would have been the exact
+ * failure g-055 review round 1 diagnosed: a budget so loose that a whole extra
+ * title line (26px) still fits under it, which proves nothing. A structural growth
+ * above the tabs therefore has to be paid for by editing this number on purpose.
  *
  * The first-screen argument behind the hard limit is unchanged (CONTRACT §13.7):
  * 900px of screen, minus the tab bar's own row (~30px), minus the 560px of tab
- * panel that must stay visible below it ⇒ 310px; 224px is what this revision
+ * panel that must stay visible below it ⇒ 310px; 128px is what this revision
  * actually spends of it. The real geometry is still measured in the settings
  * shell by the supervisor (NOTES §94).
  */
-const CHROME_BUDGET_PX = 220 + CHROME_SLACK_PX;
+const CHROME_BUDGET_PX = 128 + CHROME_SLACK_PX;
 
 /** The hard first-screen ceiling the tight budget above must also respect (CONTRACT §13.7). */
 const CHROME_FIRST_SCREEN_CEILING_PX = 900 - 30 - 560;
@@ -4211,23 +4273,40 @@ function chromeAboveTabsPx(tree) {
  * to be priced by **difference** against the untouched tree, so that a helper
  * that under-bills the line cannot pass. Only the note is dropped; everything
  * else is the rendered node graph.
+ *
+ * g-071: the block now lives inside the mine panel instead of among the page's
+ * own children, so the replacement is a whole-tree walk rather than a map over
+ * `root.children` — otherwise the helper would return the tree unchanged and the
+ * difference would be 0 for the wrong reason (the block not being found at all).
+ * The walk reaches exactly what `collect` reaches (anything carrying
+ * `props.children`, with or without a `type`), so "the helper found the block"
+ * and "the assertion looked at the same nodes" cannot drift apart.
  * @param tree - a rendered page tree.
- * @returns a shallow copy of the tree without the note node.
+ * @returns a copy of the tree with the note node dropped from the block.
  */
 function withoutPromptBlockNote(tree) {
-  const root = oneBy(tree, 'data-plugin', 'dsh-prompt-setting');
   const block = oneBy(tree, 'data-region', 'prompt-block');
   const stripped = {
     ...block,
     props: {
       ...block.props,
-      children: elementChildren(block).filter((node) => node.props['data-role'] !== 'prompt-block-note'),
+      children: elementChildren(block).filter((node) => node.props && node.props['data-role'] !== 'prompt-block-note'),
     },
   };
-  return {
-    ...root,
-    props: { ...root.props, children: elementChildren(root).map((node) => (node === block ? stripped : node)) },
+  const walk = (node) => {
+    if (node === block) return stripped;
+    if (Array.isArray(node)) return node.map(walk);
+    if (node === null || typeof node !== 'object') return node;
+    // The same reach as `collect` (the traversal the assertion reads the tree
+    // with): anything carrying `props.children` is walked, whether or not it
+    // declares a `type`. An early return on `type === undefined` would let a
+    // wrapper without one hide the block from this helper — the replacement would
+    // miss, and the "the chrome does not move" difference below would be 0 for
+    // the wrong reason.
+    if (node.props === undefined || node.props.children === undefined) return node;
+    return { ...node, props: { ...node.props, children: walk(node.props.children) } };
   };
+  return walk(tree);
 }
 
 test('client: the「查看范围」picker ships collapsed, with no body on screen', async () => {
@@ -4439,7 +4518,7 @@ test('client: the collapsed「查看范围」block is one row inside an 80px bud
   );
 });
 
-test('client (g-055): 「查看范围」is the header of the「我的 Prompt」block, and the panel names its write target', async () => {
+test('client (g-055/g-071): 「查看范围」renders inside「我的 Prompt」, and the panel names its write target', async () => {
   const page = makePage({
     useSessions: sessionsHook(WORKSPACE_SESSIONS),
     useWorkspaces: workspacesHook(workspacesFixture()),
@@ -4455,12 +4534,24 @@ test('client (g-055): 「查看范围」is the header of the「我的 Prompt」b
     1,
     'the scope card is rendered inside the block',
   );
-  // The block still sits above the tab bar (g-016's first-screen budget).
-  const flow = collect(
-    tree,
-    (node) => node.props && ['prompt-block', 'tabs'].includes(node.props['data-region']),
-  ).map((node) => node.props['data-region']);
-  assert.deepEqual(flow, ['prompt-block', 'tabs'], 'the block is above the tabs, in that order');
+  // g-071: the block is no longer chrome above the tab bar. It is rendered by
+  // 「我的 Prompt」itself — the one surface it writes — and the tabs that only
+  // read the scope state it read-only instead (asserted on its own below).
+  const minePanel = oneBy(tree, 'data-region', 'mine');
+  assert.equal(
+    oneBy(minePanel, 'data-region', 'prompt-block'),
+    block,
+    'the block is rendered inside the mine panel',
+  );
+  const root = oneBy(tree, 'data-plugin', 'dsh-prompt-setting');
+  const chromeNodes = elementChildren(root);
+  const tabBarIndex = chromeNodes.findIndex((node) => node.props['data-region'] === 'tabs');
+  assert.ok(tabBarIndex > 0, 'the tab bar is rendered below the chrome');
+  assert.equal(
+    chromeNodes.slice(0, tabBarIndex).some((node) => node.props && node.props['data-region'] === 'prompt-block'),
+    false,
+    'the「查看范围」block is not above the tab bar any more',
+  );
 
   // Every frozen marker is still unique across the whole tree (CONTRACT
   // §13.0/§13.7): the wrapper adds structure, it moves nothing.
@@ -4499,10 +4590,11 @@ test('client (g-055): 「查看范围」is the header of the「我的 Prompt」b
   assert.ok(hasText(note, page.zh.promptBlockNote), 'the block says what the scope decides');
 
   // Review rounds 1–2: the block's content sits inside a **tight** budget. The
-  // block may hold exactly two things — the sentence and the card — and the whole
-  // chrome above the tab bar may spend what this revision spends plus 4px of
-  // rounding. Round 1's 310px ceiling let a whole extra 26px title line through,
-  // so it proved nothing; these four numbers do.
+  // block may hold exactly two things — the sentence and the card — and the chrome
+  // above the tab bar stays inside the budget g-055 derived from what it spends.
+  // Since g-071 the block is not part of that chrome at all, so the two claims are
+  // asserted separately: the block's own geometry, and the chrome's independence
+  // from it (with a real counterfactual, below).
   const blockHeight = declaredHeight(block);
   const card = oneBy(tree, 'data-region', 'session');
   const blockGap = declaredPx((block.props.style || {}).gap);
@@ -4524,16 +4616,18 @@ test('client (g-055): 「查看范围」is the header of the「我的 Prompt」b
     blockHeight <= declaredHeight(note) + declaredHeight(card) + blockGap + 2,
     `the block spends ${blockHeight}px: the note line, the card and the gap, nothing more`,
   );
-  // The note is priced by difference against the same tree without it: its 18px
-  // line plus the block's 6px gap. A helper that under-billed the line (round 2)
-  // could not produce this number.
+  // g-071: the note counterfactual is now the **negative** half of the position
+  // claim. Dropping the note line cannot move the chrome above the tab bar by even
+  // one pixel, because the block is not in there — and the block's identity is
+  // pinned inside the mine panel above, so this cannot pass by the helper failing
+  // to find it (a walk that replaced nothing would report the same 0).
   assert.equal(
     chrome - chromeAboveTabsPx(withoutPromptBlockNote(tree)),
-    24,
-    'dropping the note line frees its 18px line and the block’s 6px gap',
+    0,
+    'the「我的 Prompt」block is not part of the chrome above the tab bar',
   );
   console.log(
-    `    g-055 chrome geometry: above the tab bar = ${chrome}px (tight ${CHROME_BUDGET_PX}px, hard ceiling ${CHROME_FIRST_SCREEN_CEILING_PX}px), 「我的 Prompt」block = ${blockHeight}px`,
+    `    g-071 geometry: above the tab bar = ${chrome}px (tight ${CHROME_BUDGET_PX}px, hard ceiling ${CHROME_FIRST_SCREEN_CEILING_PX}px), 「我的 Prompt」block = ${blockHeight}px (not in the chrome)`,
   );
 
   // The panel states its own write target, read-only: no second way to change
@@ -4563,6 +4657,93 @@ test('client (g-055): 「查看范围」is the header of the「我的 Prompt」b
   target = oneBy(tree, 'data-region', 'mine-target');
   assert.equal(target.props['data-mine-target-layer'], 'workspace');
   assert.ok(hasText(target, fillText(page.zh.mineTargetNote, { layer: page.zh.ovWorkspace, scope: 'Alpha one' })));
+});
+
+test('client (g-071): the picker lives in「我的 Prompt」, and no「查看范围」block sits above the tab bar', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+
+  for (const tab of ['mine', 'presets', 'overview', 'history', 'backup', 'advanced']) {
+    const tree = tab === 'mine' ? await page.flush() : await openTab(page, tab);
+
+    // (1) No「查看范围」block above the tab bar — on any tab, in any state.
+    const root = oneBy(tree, 'data-plugin', 'dsh-prompt-setting');
+    const chrome = elementChildren(root);
+    const tabBar = chrome.findIndex((node) => node.props['data-region'] === 'tabs');
+    assert.ok(tabBar > 0, `${tab}: the tab bar sits below the chrome`);
+    assert.equal(
+      chrome.slice(0, tabBar).some((node) => node.props && node.props['data-region'] === 'prompt-block'),
+      false,
+      `${tab}: no prompt-block above the tab bar`,
+    );
+
+    // (2) The block is rendered by「我的 Prompt」, and by nothing else.
+    const blocks = collect(tree, (node) => node.props && node.props['data-region'] === 'prompt-block');
+    assert.equal(blocks.length, tab === 'mine' ? 1 : 0, `${tab}: the picker block lives in「我的 Prompt」alone`);
+    if (tab === 'mine') {
+      const mine = oneBy(tree, 'data-region', 'mine');
+      assert.equal(oneBy(mine, 'data-region', 'prompt-block'), blocks[0], 'the block is inside the mine panel');
+      assert.equal(
+        oneBy(mine, 'data-action', 'scope-toggle'),
+        scopeToggle(tree),
+        'and its「更改」switch is inside the block, in the panel',
+      );
+    }
+
+    // (3) The panel holds that tab's own surface and nothing else. R4 (the
+    // owner's real-machine review) withdrew the read-only page-scope line g-071
+    // first rendered here: each tab has its own scope semantics, and decoupling
+    // them from this page-level value is g-073 rather than a line this page may
+    // claim. A node injected into this container — a scope line or anything else —
+    // makes it two, which is what this asserts.
+    assert.equal(
+      elementChildren(oneBy(tree, 'data-region', 'tab-panel')).length,
+      1,
+      `${tab}: the panel holds this tab's own surface, and nothing else`,
+    );
+  }
+
+  // (4) The picker in「我的 Prompt」is still the only place the page-level value
+  // changes, and the change still reaches the rest of the page — the four tabs
+  // keep taking their numbers in the page scope (their own scopes are g-073).
+  let tree = await openTab(page, 'mine');
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-session'), 'global', 'the page scope moved, from the picker in the panel');
+  tree = await openTab(page, 'advanced');
+  assert.equal(markerOf(tree, 'data-session'), 'global', 'and every tab carries the same page-level value');
+});
+
+test('client (g-055/g-071): the note counterfactual reaches a block under an untyped wrapper', () => {
+  const note = { type: 'p', props: { 'data-role': 'prompt-block-note', children: 'sentence' } };
+  const card = { type: 'section', props: { 'data-region': 'session', children: [] } };
+  const block = { type: 'section', props: { 'data-region': 'prompt-block', children: [note, card] } };
+  // A node that declares no `type` but still carries children: `collect` — the
+  // traversal every assertion reads the tree with — walks straight through it, so
+  // the counterfactual helper must reach the block the same way (g-071 review
+  // R1-2). With the old `type === undefined ⇒ return` early exit this helper
+  // would miss the block, replace nothing, and still report the expected 0.
+  const wrapper = { props: { children: [block] } };
+  const tree = { type: 'div', props: { 'data-plugin': 'dsh-prompt-setting', children: [wrapper] } };
+
+  const stripped = withoutPromptBlockNote(tree);
+  const blocks = collect(stripped, (node) => node.props && node.props['data-region'] === 'prompt-block');
+  assert.equal(blocks.length, 1, 'the block survives the walk');
+  assert.deepEqual(
+    elementChildren(blocks[0]).map((node) => node.props['data-role'] || node.props['data-region']),
+    ['session'],
+    'and comes back with the note dropped: sentence gone, card kept',
+  );
+  assert.equal(
+    collect(stripped, (node) => node.props && node.props['data-role'] === 'prompt-block-note').length,
+    0,
+    'no note node anywhere in the copy',
+  );
 });
 
 test('client (g-055): the declared-height helper reads px, multiples and defaults alike', () => {
@@ -7159,7 +7340,9 @@ test('client: changing 「查看范围」 never moves the version history list (
   assert.deepEqual(before, [`${PATHS.history}?layer=user&offset=0`]);
   const rowsBefore = historyRowIds(tree);
 
-  // Move the **page** scope twice: another session, then 全局.
+  // Move the **page** scope twice — through「我的 Prompt」, which is where the page
+  // picker lives since g-071 — and then come back to the log.
+  tree = await openTab(page, 'mine');
   scopeToggle(tree).props.onClick();
   tree = await page.flush();
   sessionOptions(tree).find((row) => row.props['data-session-id'] === 'a2').props.onClick();
@@ -7177,6 +7360,7 @@ test('client: changing 「查看范围」 never moves the version history list (
     'false',
     'the page picker closed on the pick',
   );
+  tree = await openHistory(page);
 
   // The test double's `useEffect` re-runs unconditionally (it has no dependency
   // diffing), so the invariant asserted here is the request **shape**: whatever
@@ -7312,7 +7496,10 @@ test('client: exporting downloads the document and keeps a copyable text', async
   clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'export' });
   tree = await page.flush();
 
-  assert.deepEqual(urlsFor(page, PATHS.export), [`${PATHS.export}?session=s2`]);
+  // g-073 (Revision 55): a backup is not a range. Since Revision 53 the document
+  // is complete on its own, so the request carries no page scope — 「查看范围」
+  // serves「我的 Prompt」alone.
+  assert.deepEqual(urlsFor(page, PATHS.export), [PATHS.export]);
   assert.equal(downloader.clicks.length, 1, 'one download was triggered');
   // Identifiable and time-ordered, and named in the reader's zone (Revision 18):
   // the expectation comes from local getters, not from the implementation.
@@ -7373,7 +7560,11 @@ test('client: an export with no download surface still yields the JSON and says 
   tree = await page.flush();
   // No `document` in the sandbox at all: the page must not claim a download.
   assert.equal(oneBy(tree, 'data-region', 'transfer').props['data-transfer-phase'], 'error');
-  assert.ok(hasText(tree, page.zh.downloadFailed.replace('{reason}', 'no document')));
+  // g-066: the reason is a *dictionary lookup* now (`errorText` → `errUnknown`),
+  // not the browser's own English phrase — the sandbox has no `document`, and
+  // that machine fact must not reach localized copy as prose.
+  assert.ok(hasText(tree, page.zh.downloadFailed.replace('{reason}', page.zh.errUnknown)));
+  assert.equal(hasText(tree, 'no document'), false, 'the machine reason never reaches the UI');
   assert.equal(JSON.parse(oneBy(tree, 'data-role', 'export-text').props.value).version, 1);
   assert.ok(oneBy(tree, 'data-error-code', 'download-failed'));
 });
@@ -7412,6 +7603,64 @@ test('client: an import preview dry-runs, renders the plan and writes nothing', 
   assert.equal(oneBy(plan, 'data-import-change', 'panel:added').props['data-import-status'], 'added');
   assert.equal(oneBy(plan, 'data-import-skipped', '1').props['data-import-skipped'], '1');
   assert.equal(writeCalls(page).length, 0, 'a dry run never writes');
+
+  // g-074 att-002 (criterion 9): the preview states the whole-document
+  // replacement, the workspace layers it touches and what it skips.
+  const replaces = oneBy(plan, 'data-import-replaces', 'true');
+  assert.ok(hasText(replaces, page.zh.importReplaceWarning), 'the replacement warning is rendered');
+  assert.ok(
+    hasText(replaces, fillText(page.zh.importReplacePresets, { presets: 3, applied: 1 })),
+    'the preset library is named as replaced as a whole',
+  );
+  assert.ok(
+    hasText(replaces, fillText(page.zh.importReplacePreferences, { keys: 2 })),
+    'the preferences are named as replaced as a whole',
+  );
+  assert.ok(
+    hasText(plan, fillText(page.zh.importSkippedRow, { layer: 'workspace', reason: 'layer "workspace" requires a "session" id', entries: 0 })),
+    'the skipped entry is listed with its count',
+  );
+  const workspaceBlock = oneBy(plan, 'data-import-workspaces', '2');
+  assert.ok(hasText(workspaceBlock, fillText(page.zh.importWorkspacesHeading, { n: 2 })));
+  assert.equal(
+    oneBy(workspaceBlock, 'data-import-workspace', '/home/u/projects/alpha').props['data-import-workspace-changed'],
+    'true',
+    'a workspace layer the document really changes says so',
+  );
+  assert.equal(
+    oneBy(workspaceBlock, 'data-import-workspace', '/home/u/projects/beta').props['data-import-workspace-changed'],
+    'false',
+    'and one it does not change says that too',
+  );
+});
+
+test('client: the import preview lists every skipped entry with its own count (g-074 att-002)', async () => {
+  const skipped = [
+    {
+      layer: 'workspace:/tmp/other-machine',
+      reason: '"/tmp/other-machine" is not a workspace this profile registers; this entry was skipped and the rest of the document was imported',
+      entries: 2,
+    },
+    {
+      layer: 'presets.applied:/tmp/other-machine',
+      reason: '"/tmp/other-machine" is not a workspace this profile registers; this entry was skipped and the rest of the document was imported',
+      entries: 1,
+    },
+  ];
+  const page = makePage({ responses: defaultResponses({ [PATHS.import]: { payload: importPlanFixture({ skipped }) } }) });
+  let tree = await openBackup(page);
+  typeInto(tree, 'import-text', exportDocument());
+  tree = await page.flush();
+  clickButton(oneBy(tree, 'data-region', 'transfer'), { 'data-action': 'import-preview' });
+  tree = await page.flush();
+
+  const block = oneBy(oneBy(tree, 'data-import-plan', 'true'), 'data-import-skipped', '2');
+  assert.ok(hasText(block, fillText(page.zh.importSkipped, { n: 2 })), 'the heading counts the skipped entries');
+  const rows = collect(block, (node) => Boolean(node.props && node.props['data-import-skipped-row']));
+  assert.equal(rows.length, 2, 'one row per skipped entry, no joining');
+  assert.deepEqual(rows.map((row) => row.props['data-import-skipped-entries']), ['2', '1'], 'entries is the per-entry count');
+  assert.ok(hasText(block, fillText(page.zh.importSkippedRow, { layer: skipped[0].layer, reason: skipped[0].reason, entries: 2 })));
+  assert.ok(hasText(block, fillText(page.zh.importSkippedRow, { layer: skipped[1].layer, reason: skipped[1].reason, entries: 1 })));
 });
 
 test('client: applying an import is confirmed first and then posts without dryRun', async () => {
@@ -7940,6 +8189,11 @@ test('client: a rollback asks first, states that it cannot be undone, then refre
   // The write invalidated the page's data, so it is re-read from the host rather
   // than patched: the log comes back at page 1 (the file changed under the
   // reader) and the current value is read again, both **after** the POST.
+  //
+  // The write bumps `reload`, and the re-reads belong to the render that bump
+  // schedules — exactly as React runs the effects of the render that changed a
+  // dependency — so one more flush is what a real page does next (review R3).
+  tree = await page.flush();
   assert.deepEqual(urlsFor(page, PATHS.history).slice(-1), [`${PATHS.history}?layer=user&offset=0`]);
   const posted = page.router.calls.findIndex((call) => call.init && call.init.method === 'POST');
   const afterWrite = page.router.calls.slice(posted + 1).map((call) => call.url);
@@ -9399,9 +9653,25 @@ const EN_SWEEP_CASES = [
       ['data-import-plan', 'true'],
       ['data-import-change', 'project:alpha'],
       ['data-import-skipped', '1'],
+      // g-074 att-002 (criterion 9): the three things the preview gained.
+      ['data-import-replaces', 'true'],
+      ['data-import-workspaces', '2'],
+      ['data-import-skipped-row', 'workspace'],
       ['data-import-mode', 'replace'],
     ],
-    copy: ['importHeading', 'importPlanHeading', 'importModeReplace', ['importChangeRow', { name: 'project:alpha', status: 'replaced' }], ['importCounts', { added: 1, replaced: 1, unchanged: 0, removed: 0, kept: 1 }]],
+    copy: [
+      'importHeading',
+      'importPlanHeading',
+      'importModeReplace',
+      ['importChangeRow', { name: 'project:alpha', status: 'replaced' }],
+      ['importCounts', { added: 1, replaced: 1, unchanged: 0, removed: 0, kept: 1 }],
+      'importReplaceWarning',
+      ['importReplacePresets', { presets: 3, applied: 1 }],
+      ['importReplacePreferences', { keys: 2 }],
+      ['importWorkspacesHeading', { n: 2 }],
+      ['importWorkspaceRow', { root: '/home/u/projects/alpha', added: 0, replaced: 1, removed: 0 }],
+      ['importSkipped', { n: 1 }],
+    ],
     async run() {
       const page = enPage({ responses: defaultResponses() });
       const rec = recorder(page);
@@ -9536,7 +9806,7 @@ const EN_SWEEP_CASES = [
       ['data-transfer-phase', 'error'],
       ['data-error-code', 'download-failed'],
     ],
-    copy: [['downloadFailed', { reason: 'no document' }]],
+    copy: [['downloadFailed', { reason: EN_TABLE.errUnknown }]],
     async run() {
       const page = enPage({ responses: defaultResponses() });
       const rec = recorder(page);
@@ -10243,6 +10513,87 @@ const EN_SWEEP_CASES = [
     },
   },
   {
+    // g-066: 「预设」 was the one first-level tab the sweep never walked. Its
+    // two en strings even carried CJK brackets (`「My Prompt」`), which is
+    // precisely the leak this sweep exists to catch — the case below is what
+    // closed the gap, and `EN_REQUIRED_MARKERS` keeps it closed.
+    name: 'presets: the library lists a stored preset and its workspace state',
+    marks: [
+      ['data-active-tab', 'presets'],
+      ['data-region', 'presets'],
+      ['data-region', 'presets-state'],
+      ['data-region', 'presets-list'],
+    ],
+    copy: [
+      'presetsHeading',
+      'presetsNote',
+      'presetsListHeading',
+      'presetNewHeading',
+      'presetSaveAsCurrent',
+      'presetSaveAsCurrentHint',
+      'presetEdit',
+      'presetDelete',
+      'presetApplyTo',
+    ],
+    async run() {
+      const page = enPage({
+        responses: defaultResponses({
+          [PATHS.presets]: {
+            payload: presetsFixture({
+              presets: [
+                {
+                  id: 'preset-1',
+                  name: 'Short answers',
+                  action: 'replace',
+                  text: 'Be brief.',
+                  createdAt: '2024-01-01T00:00:00.000Z',
+                  updatedAt: '2024-01-01T00:00:00.000Z',
+                },
+              ],
+              applied: [
+                {
+                  workspaceRoot: '/work/alpha',
+                  base: null,
+                  stack: [
+                    {
+                      presetId: 'preset-1',
+                      presetName: 'Short answers',
+                      orphan: false,
+                      appliedAt: '2024-01-03T00:00:00.000Z',
+                    },
+                  ],
+                },
+              ],
+            }),
+          },
+        }),
+      });
+      const rec = recorder(page);
+      await rec.take();
+      clickAnyTab(rec.last(), 'presets');
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
+    // g-070: the first-level bar's two new decorations. Both are copy-bearing
+    // (`tabUpdateBadge` is a `title`/`aria-label`), so they belong in the sweep:
+    // a hardcoded Chinese tooltip on the dot is exactly the leak this catches.
+    name: 'the first-level bar carries the preset count and the update dot',
+    marks: [
+      ['data-role', 'tab-count'],
+      ['data-role', 'tab-update-dot'],
+      ['data-tab-group', 'main'],
+    ],
+    copy: ['tabPresets', 'tabUpdateBadge'],
+    async run() {
+      const page = enPage({
+        responses: defaultResponses({ [PATHS.updateCheck]: { payload: updateAvailableFixture() } }),
+      });
+      return [await page.flush()];
+    },
+  },
+  {
     name: 'the render-failure card falls back to readable copy, never a blank',
     marks: [['data-render-state', 'error'], ['data-renderer', 'fallback']],
     raw: ['render failure', 'Error'],
@@ -10271,11 +10622,23 @@ const EN_REQUIRED_MARKERS = [
   // split 「历史与备份」 into 「版本历史」 and 「备份与恢复」.
   'data-region=tabs',
   'data-region=tab-panel',
+  // g-070: the two decorations on the first-level bar — a count on「我的预设」
+  // and a red dot on「高级」. Both are copy-bearing (the dot through
+  // `title`/`aria-label`), so both must be walked by the en sweep.
+  'data-role=tab-count',
+  'data-role=tab-update-dot',
   'data-active-tab=mine',
   'data-active-tab=overview',
   'data-active-tab=history',
   'data-active-tab=backup',
   'data-active-tab=advanced',
+  // g-066: 「预设」 was the sixth first-level tab and the one the sweep had
+  // never rendered; its two en strings carried CJK brackets until this case
+  // walked the surface.
+  'data-active-tab=presets',
+  'data-region=presets',
+  'data-region=presets-list',
+  'data-region=presets-state',
   'data-region=mine',
   'data-region=mine-layer',
   // g-055: the write-target line inside the panel, and the block whose header is
@@ -10316,6 +10679,11 @@ const EN_REQUIRED_MARKERS = [
   'data-role=history-compare-hint',
   'data-region=backup-tab',
   'data-region=transfer',
+  // g-074 att-002 (criterion 9): the import preview's whole-document
+  // replacement warning and its per-entry skipped rows, so the en sweep walks
+  // both branches instead of only the layer view.
+  'data-import-replaces=true',
+  'data-import-skipped-row=workspace',
   'data-region=layer-reset',
   'data-region=confirm',
   // A confirmation is a fixed, centered overlay rather than an inline card, so
@@ -10535,12 +10903,42 @@ test('g-026 client: the panel carries the switch, its state and its consequence'
   assert.equal(toggle.props.children, 'Turn variable substitution on');
 
   // The consequence is stated where the state is: no escape syntax, so no
-  // literal `{{...}}` any more.
+  // literal `{{...}}` any more. g-080: the note lists the variables this DSH
+  // actually registers (`cwd` is absent on the 0.2.1 line) and names the
+  // retirement in the copy beside it.
   const strings = renderedStrings(tree);
   assert.match(strings, /no escape syntax/i);
   assert.match(strings, /literal \{\{\.\.\.\}\}/i);
-  assert.match(strings, /the current model/);
+  assert.match(strings, /variables this DSH registers: \{\{model\}\}, \{\{provider\}\}/);
+  assert.match(strings, /retired in DSH 0\.2\.1-rc\.1/);
   assert.match(strings, /saved per selected layer/, 'and how the value is scoped');
+});
+
+test('g-080 client: the panel lists what the host registers, and an unknown table stays unknown', async () => {
+  // The 0.2.1 line registers model/provider only: `{{cwd}}` is absent from the
+  // list (the copy beside it names the retirement), so the panel never
+  // advertises a variable this DSH cannot expand.
+  const retired = enPage({ responses: defaultResponses() });
+  const retiredTree = await retired.flush();
+  assert.match(renderedStrings(retiredTree), /variables this DSH registers: \{\{model\}\}, \{\{provider\}\}\./);
+
+  // An older DSH still registers cwd — the same panel must show it, unchanged.
+  const legacy = enPage({
+    responses: defaultResponses({
+      [PATHS.interpolate]: { payload: { ok: true, variables: ['cwd', 'model', 'provider'], variablesError: null } },
+    }),
+  });
+  const legacyTree = await legacy.flush();
+  assert.match(renderedStrings(legacyTree), /variables this DSH registers: \{\{cwd\}\}, \{\{model\}\}, \{\{provider\}\}/);
+
+  // No table (probe failed / old Host): `?`, never a guessed list.
+  const unknown = enPage({
+    responses: defaultResponses({
+      [PATHS.interpolate]: { payload: { ok: true, variables: null, variablesError: 'the probe failed' } },
+    }),
+  });
+  const unknownTree = await unknown.flush();
+  assert.match(renderedStrings(unknownTree), /variables this DSH registers: \?\./);
 });
 
 test('g-026 client: when the host says ON the panel says ON and offers the way back', async () => {
@@ -10570,7 +10968,9 @@ test('g-026 client: clicking the switch writes it to the selected layer and re-r
   clickButton(rec.last(), { 'data-action': 'mine-interpolate' });
   await rec.take();
 
-  const calls = page.router.calls.filter((call) => call.url.startsWith(PATHS.interpolate));
+  const calls = page.router.calls.filter(
+    (call) => call.url.startsWith(PATHS.interpolate) && call.init && call.init.method === 'PUT',
+  );
   assert.equal(calls.length, 1);
   assert.equal(calls[0].init.method, 'PUT');
   assert.deepEqual(JSON.parse(calls[0].init.body), { enabled: true, layer: 'user' });
@@ -10617,8 +11017,11 @@ test('g-026 client: the workspace layer needs a session before its switch can be
   assert.equal(toggle.props.disabled, true, 'no session ⇒ the workspace layer cannot be written');
   oneBy(tree, 'data-warning', 'mine-interpolate-locked');
   assert.match(renderedStrings(tree), /workspace layer needs a selected session/i);
-  // And a click does not even reach the transport.
-  const before = page.router.calls.filter((call) => call.url.startsWith(PATHS.interpolate)).length;
+  // And a click does not even reach the transport (the mount's variable read is
+  // a `GET`, so only writes count here).
+  const before = page.router.calls.filter(
+    (call) => call.url.startsWith(PATHS.interpolate) && call.init && call.init.method === 'PUT',
+  ).length;
   assert.equal(before, 0);
 });
 
@@ -10659,7 +11062,11 @@ test('g-026 rev12 client: the layer state control offers inherit/on/off and sele
   // Clicking "off" writes the boolean false — the state the toggle cannot express.
   clickButton(tree, { 'data-action': 'mine-interpolate-state', 'data-mine-interpolate-set': 'off' });
   await rec.take();
-  const calls = page.router.calls.filter((call) => call.url.startsWith(PATHS.interpolate));
+  // g-080: the mount's own `GET /interpolate` (variable names) is not this
+  // assertion's subject — only the switch write is.
+  const calls = page.router.calls.filter(
+    (call) => call.url.startsWith(PATHS.interpolate) && call.init && call.init.method === 'PUT',
+  );
   assert.equal(calls.length, 1);
   assert.equal(calls[0].init.method, 'PUT');
   assert.deepEqual(JSON.parse(calls[0].init.body), { state: 'off', layer: 'user' });
@@ -10688,7 +11095,9 @@ test('g-026 rev12 client: a layer that states OFF is shown as OFF, and the state
 
   clickButton(tree, { 'data-action': 'mine-interpolate-state', 'data-mine-interpolate-set': 'inherit' });
   await rec.take();
-  const calls = page.router.calls.filter((call) => call.url.startsWith(PATHS.interpolate));
+  const calls = page.router.calls.filter(
+    (call) => call.url.startsWith(PATHS.interpolate) && call.init && call.init.method === 'PUT',
+  );
   assert.equal(calls.length, 1);
   assert.deepEqual(JSON.parse(calls[0].init.body), { state: 'inherit', layer: 'workspace', session: 's2' });
 });
@@ -10734,7 +11143,13 @@ test('g-026 rev12 client: an accepted switch write clears the advisories, and a 
   let first = true;
   const page = enPage({
     responses: defaultResponses({
-      [PATHS.interpolate]: () => {
+      // g-080: the mount's read and the two writes share one path; only a PUT
+      // consumes the warned→clean sequence.
+      [PATHS.interpolate]: (url, init) => {
+        // The mount's read carries no `method`; only a PUT consumes the sequence.
+        if (init === undefined || init === null || init.method === undefined || init.method === 'GET') {
+          return { payload: { ok: true, variables: ['model', 'provider'], variablesError: null } };
+        }
         const payload = first ? warned : clean;
         first = false;
         return { payload };
@@ -12009,13 +12424,14 @@ test('client: 「高级」 carries the same install control, so dismissing the b
     }),
   });
   const tree = await page.flush();
-  // The「高级」card is opened by its own tab click rather than through
-  // `openTab`/`flush`: this harness re-runs every effect on a flush (its hooks
-  // runtime compares no dependencies), so a flush would legitimately re-run the
-  // update check — and that is the *check* resetting its own view state, not the
-  // dismissal being lost.
+  // The「高级」card is opened by its own tab click. One flush is what runs that
+  // tab's own reads (since g-073 the panel is gated on **its own** snapshot, not
+  // on the page's); the harness re-runs every effect on a flush, so that flush
+  // legitimately re-runs the update check too — and that is the *check* resetting
+  // its own view state, not the dismissal being lost. Everything after it is a
+  // plain `draw()`, which runs no effect at all.
   clickAnyTab(tree, 'advanced');
-  const advanced = page.draw();
+  const advanced = await page.flush();
   assert.equal(updateBanner(advanced).length, 1, 'the banner is still there to dismiss');
   clickButton(advanced, { 'data-action': 'update-dismiss' });
   const dismissed = page.draw();
@@ -13017,15 +13433,50 @@ test('client: deleting a preset asks first, and only a confirmed answer sends th
     responses: defaultResponses({
       [PATHS.presets]: (url, init) =>
         init && init.method === 'DELETE'
-          ? { payload: { ok: true, removed: true, id: 'preset-1', orphaned: 1, presets: [], applied: [] } }
+          ? {
+              payload: {
+                ok: true,
+                removed: true,
+                id: 'preset-1',
+                restoredWorkspaces: 1,
+                links: 1,
+                workspaces: [{ workspaceRoot: '/work/alpha', links: 1, restored: true }],
+                presets: [],
+                applied: [],
+              },
+            }
           : { payload: presetsFixture() },
     }),
+    // Revision 50: the confirmation names the workspaces the deletion restores,
+    // and it prefers the page's own label for one — which needs the workspace
+    // seat in reach.
+    useWorkspaces: workspacesHook(workspacesFixture()),
   });
   let tree = await openTab(page, 'presets');
+  tree = await page.flush();
   clickButton(tree, { 'data-action': 'preset-delete', 'data-preset-id': 'preset-1' });
   tree = await page.flush();
   assert.equal(oneBy(tree, 'data-region', 'confirm').props['data-confirm-kind'], 'preset-delete');
   assert.ok(strings(tree).some((text) => text.includes('短答')), 'the question names the preset');
+  // Revision 50 (g-069): an applied preset is deleted **and cancelled**, so the
+  // question states that and lists the workspaces it will restore — count plus a
+  // label the reader recognises. The plain「nothing is touched」sentence is not
+  // shown for this case at all.
+  const restorable = oneBy(tree, 'data-role', 'confirm-preset-workspaces');
+  assert.equal(restorable.props['data-preset-workspace-count'], '1');
+  assert.ok(
+    strings(tree).some((text) => text.includes(page.zh.presetDeleteAppliedList.replace('{list}', 'Alpha repo'))),
+    'the affected workspace is named by the page’s own label for it',
+  );
+  assert.ok(
+    strings(tree).some((text) => text.includes(page.zh.presetDeleteConfirmApplied.split('{count}')[0])),
+    'and the body states that the applications are cancelled',
+  );
+  assert.equal(
+    strings(tree).filter((text) => text === page.zh.presetDeleteConfirmBody).length,
+    0,
+    'the unapplied sentence is not used for an applied preset',
+  );
   assert.equal(
     page.router.calls.filter((call) => call.init && call.init.method === 'DELETE').length,
     0,
@@ -13038,6 +13489,20 @@ test('client: deleting a preset asks first, and only a confirmed answer sends th
   assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'confirm').length, 0);
   assert.equal(page.router.calls.filter((call) => call.init && call.init.method === 'DELETE').length, 0);
   assert.deepEqual(presetRowIds(tree), ['preset-1', 'preset-2'], 'and nothing was deleted');
+
+  // A preset no workspace holds keeps the plain question: there is no restore to
+  // warn about, and claiming one would be false.
+  clickButton(tree, { 'data-action': 'preset-delete', 'data-preset-id': 'preset-2' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'confirm').props['data-confirm-kind'], 'preset-delete');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-role'] === 'confirm-preset-workspaces').length,
+    0,
+    'an unapplied preset asks the plain question',
+  );
+  assert.ok(strings(tree).some((text) => text === page.zh.presetDeleteConfirmBody));
+  clickButton(tree, { 'data-action': 'confirm-no' });
+  tree = await page.flush();
 
   // Confirming sends exactly one DELETE by id — and, when an editor was open on
   // that preset, closes the dialog whose subject no longer exists.
@@ -13052,6 +13517,11 @@ test('client: deleting a preset asks first, and only a confirmed answer sends th
   assert.equal(deletes[0].url, `${PATHS.presets}?id=preset-1`);
   assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'preset-editor-dialog').length, 0);
   assert.equal(markerOf(tree, 'data-preset-state'), 'saved');
+  // …and the notice reports the restore the host really performed.
+  assert.ok(
+    strings(tree).some((text) => text.includes(page.zh.presetDeletedRestoredNotice.replace('{count}', '1'))),
+    'the success notice states how many workspaces were restored',
+  );
 });
 
 test('client: the apply dialog’s rows POST apply and a per-preset unapply, never a layer', async () => {
@@ -13434,9 +13904,24 @@ function assemblyRecordFixture(over = {}) {
   };
 }
 
-test('client: the「我的 Prompt」tab renders the assembly-status block, and an unselected session says so', async () => {
+test('client: the「高级」tab renders the assembly-status block at its top, and an unselected session says so', async () => {
   const page = makeOpenPage({ useSessions: sessionsHook(SESSIONS_STATE), responses: defaultResponses() });
-  let tree = await page.flush();
+  // g-065: the block moved out of 「我的 Prompt」. The default tab must render
+  // nothing of it — no container, no heading — and must not read its status.
+  const mineTree = await page.flush();
+  assert.equal(
+    collect(mineTree, (node) => node.props && node.props['data-region'] === 'assembly-status').length,
+    0,
+    'the 「我的 Prompt」 tab renders no assembly-status container',
+  );
+  assert.equal(hasText(mineTree, page.zh.assemblyHeading), false, 'and not its heading either');
+  assert.equal(
+    collect(mineTree, (node) => node.props && String(node.props['data-region'] || '').startsWith('assembly')).length,
+    0,
+    'nor any of its parts (limitation / notice / notes)',
+  );
+  assert.equal(urlsFor(page, PATHS.assemblyStatus).length, 0, 'and it reads no assembly status');
+  let tree = await openTab(page, 'advanced');
   const block = oneBy(tree, 'data-region', 'assembly-status');
   assert.equal(block.props['data-assembly-enabled'], 'true');
   assert.equal(block.props['data-assembly-session'], 'yes');
@@ -13447,14 +13932,41 @@ test('client: the「我的 Prompt」tab renders the assembly-status block, and a
   assert.ok(hasText(oneBy(tree, 'data-assembly-note', 'no-record'), page.zh.assemblyNoRecord));
   assert.ok(hasText(oneBy(tree, 'data-region', 'assembly-limitation'), page.zh.assemblyLimitation));
   assert.deepEqual(urlsFor(page, PATHS.assemblyStatus), [`${PATHS.assemblyStatus}?session=s2`]);
+  // The block is the **first** card of the tab: the「装配状态提示」heading precedes
+  // the first heading of the override list, so "at the top" is not just "inside".
+  const texts = strings(tree);
+  assert.ok(
+    texts.indexOf(page.zh.assemblyHeading) < texts.indexOf(page.zh.ovHeading),
+    'the assembly block sits above the override list',
+  );
 
-  // The global scope names no session, so the block says what to do instead of
-  // reading a conversation it cannot describe.
+  // g-073 (Revision 55): the block reads **this tab's own** scope. Moving the
+  // page's「查看范围」to the global scope — where that control lives, inside
+  // 「我的 Prompt」(g-071) — must change nothing here: the tab keeps reading the
+  // session its own selector names.
+  tree = await openTab(page, 'mine');
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
   clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
   tree = await page.flush();
-  const global = oneBy(tree, 'data-region', 'assembly-status');
+  assert.equal(markerOf(tree, 'data-session'), 'global');
+  tree = await openTab(page, 'advanced');
+  const stillScoped = oneBy(tree, 'data-region', 'assembly-status');
+  assert.equal(stillScoped.props['data-assembly-session'], 'yes', 'the page scope does not move this read');
+  const assemblyReads = urlsFor(page, PATHS.assemblyStatus);
+  assert.deepEqual(
+    assemblyReads,
+    [`${PATHS.assemblyStatus}?session=s2`],
+    'and (review R3) switching back to this tab reuses that read — it names its own scope, and only once',
+  );
+
+  // A page with no session service has no session to name at all, so the block
+  // says what to do instead of reading a conversation it cannot describe.
+  const bare = makePage({ responses: defaultResponses() });
+  const bareTree = await openTab(bare, 'advanced');
+  const global = oneBy(bareTree, 'data-region', 'assembly-status');
   assert.equal(global.props['data-assembly-session'], 'none');
-  assert.ok(hasText(oneBy(tree, 'data-assembly-note', 'no-session'), page.zh.assemblyNoSession));
+  assert.ok(hasText(oneBy(bareTree, 'data-assembly-note', 'no-session'), bare.zh.assemblyNoSession));
 });
 
 test('client: the block reports both layers of the last key node, and never the prompt text', async () => {
@@ -13462,7 +13974,7 @@ test('client: the block reports both layers of the last key node, and never the 
     [PATHS.assemblyStatus]: { payload: assemblyFixture({ session: 's2', record: assemblyRecordFixture() }) },
   });
   const page = makeOpenPage({ useSessions: sessionsHook(SESSIONS_STATE), responses });
-  const tree = await page.flush();
+  const tree = await openTab(page, 'advanced');
   const block = oneBy(tree, 'data-region', 'assembly-status');
   assert.equal(block.props['data-notice-kind'], 'first-assembly');
   assert.equal(block.props['data-assembly-state'], 'assembled');
@@ -13502,7 +14014,7 @@ test('client: the notice distinguishes "not assembled" and "not re-read", with a
       },
     }),
   });
-  const tree = await page.flush();
+  const tree = await openTab(page, 'advanced');
   assert.equal(oneBy(tree, 'data-region', 'assembly-status').props['data-assembly-state'], 'empty');
   assert.ok(
     hasText(oneBy(tree, 'data-assembly-layer', 'empty'), page.zh.assemblyFirstEmpty),
@@ -13533,7 +14045,7 @@ test('client: the notice distinguishes "not assembled" and "not re-read", with a
       },
     }),
   });
-  const changeTree = await changed.flush();
+  const changeTree = await openTab(changed, 'advanced');
   assert.equal(oneBy(changeTree, 'data-region', 'assembly-status').props['data-notice-kind'], 'prompt-change');
   assert.ok(
     hasText(oneBy(changeTree, 'data-assembly-layer', 'not-read'), page.zh.assemblyChangeNotRead),
@@ -13560,7 +14072,7 @@ test('client: the assembly-status switch sends one PUT and follows the host answ
     },
   });
   const page = makeOpenPage({ useSessions: sessionsHook(SESSIONS_STATE), responses });
-  let tree = await page.flush();
+  let tree = await openTab(page, 'advanced');
   assert.notEqual(oneBy(tree, 'data-assembly-switch-state', 'on'), undefined);
   clickButton(tree, { 'data-action': 'assembly-toggle' });
   await settle();
@@ -13570,6 +14082,56 @@ test('client: the assembly-status switch sends one PUT and follows the host answ
   assert.deepEqual(JSON.parse(writes[0].init.body), { enabled: false });
   assert.notEqual(oneBy(tree, 'data-assembly-switch-state', 'off'), undefined);
   assert.ok(hasText(tree, page.zh.assemblyDisabledNow), 'the page repeats the host\'s answer');
+});
+
+test('client: the assembly switch keeps its in-flight and failed states in 「高级」 (g-065)', async () => {
+  // The move must not have cost the switch its other two states: the label it
+  // shows while the PUT is in flight, and the line it shows when the PUT fails.
+  // Both are read off the new location, and both would have gone missing if the
+  // block had been copied into the chunk with a second, drifting state.
+  const responses = defaultResponses();
+  const inFlight = makeOpenPage({ useSessions: sessionsHook(SESSIONS_STATE), responses });
+  let tree = await openTab(inFlight, 'advanced');
+  const realFetch = inFlight.loaded.sandbox.fetch;
+  inFlight.loaded.sandbox.fetch = (url, init) => {
+    if (String(url).split('?')[0] === PATHS.assemblyStatus && init && init.method === 'PUT') {
+      return new Promise(() => {});
+    }
+    return realFetch(url, init);
+  };
+  clickButton(tree, { 'data-action': 'assembly-toggle' });
+  tree = inFlight.draw();
+  assert.equal(
+    oneBy(tree, 'data-region', 'assembly-status').props['data-assembly-switch'],
+    'saving',
+    'the block reports the request as in flight',
+  );
+  const pendingButton = findOne(tree, (node) => node.props && node.props['data-action'] === 'assembly-toggle');
+  assert.equal(pendingButton.props.children, inFlight.zh.assemblySaving, 'and the button says 「正在切换…」');
+  assert.equal(pendingButton.props.disabled, true, 'a second click cannot race the first');
+  inFlight.dispose();
+
+  const failed = makeOpenPage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({
+      [PATHS.assemblyStatus]: (url, init) =>
+        init && init.method === 'PUT'
+          ? { status: 500, payload: { code: 'unreadable', message: 'boom' } }
+          : { payload: assemblyFixture({ session: 's2' }) },
+    }),
+  });
+  let failedTree = await openTab(failed, 'advanced');
+  clickButton(failedTree, { 'data-action': 'assembly-toggle' });
+  await settle();
+  failedTree = await failed.flush();
+  const warning = oneBy(failedTree, 'data-warning', 'assembly-switch-failed');
+  assert.ok(hasText(warning, failed.zh.assemblySaveFailed), 'the failure line is the same sentence, in the new tab');
+  assert.notEqual(
+    oneBy(failedTree, 'data-assembly-switch-state', 'on'),
+    undefined,
+    'a failed write never flips the switch: the host answer still stands',
+  );
+  failed.dispose();
 });
 // #endregion
 
@@ -13971,7 +14533,7 @@ test('client: without the Toast primitive nothing is registered, and the page sa
     0,
     'a Host without Toast gets no overlay entry at all',
   );
-  const oldTree = await old.flush();
+  const oldTree = await openTab(old, 'advanced');
   assert.ok(
     hasText(oneBy(oldTree, 'data-assembly-note', 'no-toast'), old.zh.assemblyToastUnavailable),
     'and the page states the degradation instead of promising a toast',
@@ -13994,8 +14556,9 @@ test('client: without the Toast primitive nothing is registered, and the page sa
   assert.equal(overlay.options.id, 'prompt-setting-toast');
   assert.equal(overlay.options.order, 60, 'it is added beside the shipped entries, never over them');
   assert.equal(typeof overlay.component, 'function');
-  // The settings page keeps its detail block and its switch (判据 7).
-  const modernTree = await modern.flush();
+  // The settings page keeps its detail block and its switch (判据 7), and since
+  // g-065 that block lives in 「高级」.
+  const modernTree = await openTab(modern, 'advanced');
   assert.equal(oneBy(modernTree, 'data-region', 'assembly-status') !== undefined, true);
   assert.equal(
     oneBy(modernTree, 'data-region', 'assembly-status').props['data-assembly-toast-seat'],
@@ -14028,7 +14591,7 @@ test('client: a Host with the primitive but no shell.overlay slot is not silentl
     'pending',
     'the seat is the fact the page reads',
   );
-  const tree = await page.flush();
+  const tree = await openTab(page, 'advanced');
   const block = oneBy(tree, 'data-region', 'assembly-status');
   assert.equal(block.props['data-assembly-toast-seat'], 'pending');
   assert.ok(
@@ -14152,7 +14715,7 @@ test('client: a Host that declares the slot and refuses the registration says ex
     'the registration was refused, so no entry exists',
   );
   assert.equal(page.loaded.module.__internals.assemblyNotice.overlaySeat(), 'failed');
-  const tree = await page.flush();
+  const tree = await openTab(page, 'advanced');
   assert.equal(oneBy(tree, 'data-region', 'assembly-status').props['data-assembly-toast-seat'], 'failed');
   const note = oneBy(tree, 'data-assembly-note', 'no-toast');
   assert.ok(
@@ -14594,12 +15157,15 @@ function styleRecordingDocument() {
 }
 
 test('client: the tab strip stays hand-built on a primitives Host, and injects nothing (g-063 H2)', async () => {
+  const token = loadClient('throw').module.__internals.shared.token;
   // Real-machine rounds 1–3 retired the official `SegmentedTabs` here: its
   // premise is "equal fractions of my own width", which with six long Chinese
   // labels either crushes them (labels wrapped) or inflates the strip until it
-  // pushed the row out of the panel. The hand-built `flex-wrap` strip is the
-  // layout this page used for its whole life and never drew a complaint, so the
-  // tabs stay ours **on purpose** while every other Host atom is still used.
+  // pushed the row out of the panel. The hand-built strip is the layout this page
+  // used for its whole life and never drew a complaint, so the tabs stay ours
+  // **on purpose** while every other Host atom is still used. Since g-070 it is
+  // `mainTabStrip()`: content-sized, single-line and scrollable (see the layout
+  // assertions below).
   const { appended, doc } = styleRecordingDocument();
   const page = makePage({ primitives: 'ok', responses: defaultResponses(), document: doc });
   const tree = await page.flush();
@@ -14620,8 +15186,24 @@ test('client: the tab strip stays hand-built on a primitives Host, and injects n
   // carrying the markers the rest of the suite clicks and asserts on.
   const strip = tabList(tree).props.children;
   assert.equal(strip.props.role, 'tablist', 'the hand-built tab list is what is rendered');
-  assert.equal(strip.props.style.flexWrap, 'wrap', 'content-sized wrapping layout, not equal fractions');
+  // g-070: the first-level bar is single-line, not wrapping (the operator's
+  // reference look). The safety that `flex-wrap` used to provide is bought from
+  // the scroll container instead — and the two properties below are what keep
+  // the widest label from ever reaching an ancestor: a scroll container is as
+  // wide as its parent says, and its automatic minimum size is 0.
+  assert.equal(strip.props.style.flexWrap, 'nowrap', 'one line: no wrapping, no equal fractions');
+  assert.equal(strip.props.style.overflowX, 'auto', 'and the strip scrolls sideways instead of widening');
+  assert.equal(strip.props.style.gap, 24, 'the tab-to-tab gap the reference shows (~20–28px)');
+  assert.equal(strip.props.style.borderBottom, `1px solid ${token.borderL1}`, 'the faint rule under the whole bar');
   assert.deepEqual(mainTabs(tree), ['mine', 'presets', 'overview', 'history', 'backup', 'advanced']);
+  // No button may be an equal fraction of the strip, and none may size itself by
+  // its own `max-content` (the two shapes g-063 caught).
+  for (const node of collect(tree, (candidate) => candidate.type === 'button' && candidate.props['data-tab-key'] === 'main')) {
+    assert.equal(node.props.style.flex, '0 0 auto', `tab ${node.props['data-tab-value']} is sized by its own label`);
+    assert.equal(node.props.style.whiteSpace, 'nowrap', `tab ${node.props['data-tab-value']} never wraps its label`);
+    assert.equal(node.props.style.border, 'none', `tab ${node.props['data-tab-value']} is plain text, not a chip`);
+    assert.equal(node.props.style.background, 'transparent', `tab ${node.props['data-tab-value']} has no fill`);
+  }
 
   // Switching tabs still works, and still injects nothing.
   await openTab(page, 'overview');
@@ -14641,3 +15223,579 @@ test('client: the tab strip is hand-built under the fallback renderer too (g-063
   );
   assert.deepEqual(mainTabs(tree), ['mine', 'presets', 'overview', 'history', 'backup', 'advanced']);
 });
+
+/** The one tab button of one group carrying a value. */
+function groupTab(tree, group, value) {
+  return findOne(
+    tree,
+    (node) =>
+      node.type === 'button' &&
+      node.props['data-tab-key'] === group &&
+      node.props['data-tab-value'] === value,
+    `tab ${group}=${value}`,
+  );
+}
+
+/** Every first-level underline indicator currently drawn. */
+function tabIndicators(tree) {
+  return collect(tree, (node) => node.props && node.props['data-role'] === 'tab-indicator');
+}
+
+/** Every preset-count suffix currently drawn. */
+function tabCounts(tree) {
+  return collect(tree, (node) => node.props && node.props['data-role'] === 'tab-count');
+}
+
+/** Every update red dot currently drawn. */
+function tabDots(tree) {
+  return collect(tree, (node) => node.props && node.props['data-role'] === 'tab-update-dot');
+}
+
+test('client: the first-level bar is plain text with an underline, and the layer chips are untouched (g-070)', async () => {
+  const token = loadClient('throw').module.__internals.shared.token;
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await page.flush();
+
+  // The strip's own markers are unchanged (the tests and the panel binding read
+  // them); only the drawing is new.
+  const strip = tabList(tree).props.children;
+  assert.equal(strip.props.role, 'tablist');
+  assert.equal(strip.props['data-tab-group'], 'main', 'the first-level group marker survives');
+  assert.equal(strip.props['aria-label'], page.text.title);
+
+  // Plain text, not a chip: no fill, no stroke, no pill — and the selection is
+  // carried by colour, weight and the underline below.
+  const selected = groupTab(tree, 'main', 'mine');
+  const unselected = groupTab(tree, 'main', 'presets');
+  assert.equal(selected.props['aria-selected'], true);
+  assert.equal(selected.props.tabIndex, 0);
+  assert.equal(unselected.props['aria-selected'], false);
+  assert.equal(unselected.props.tabIndex, -1);
+  assert.equal(selected.props.style.color, token.labelPrimary, 'the selected label is the bright one');
+  assert.equal(unselected.props.style.color, token.labelSecondary, 'the rest carry the secondary colour');
+  for (const value of ['mine', 'presets', 'overview', 'history', 'backup', 'advanced']) {
+    const tab = groupTab(tree, 'main', value);
+    assert.equal(tab.props.role, 'tab', `${value}: still a tab`);
+    assert.equal(tab.props.style.background, 'transparent', `${value}: no fill`);
+    assert.equal(tab.props.style.border, 'none', `${value}: no stroke`);
+    assert.equal(tab.props.style.borderRadius, undefined, `${value}: no pill`);
+  }
+
+  // Exactly one underline, under the selected label, pressed against the bar's
+  // bottom rule, in an accent token.
+  const indicators = tabIndicators(tree);
+  assert.equal(indicators.length, 1, 'exactly one underline is drawn');
+  assert.equal(indicators[0].props['data-tab-indicator'], 'mine');
+  assert.equal(indicators[0].props.style.height, 2);
+  assert.equal(indicators[0].props.style.bottom, 0, 'it sits on the bar’s bottom rule');
+  assert.equal(indicators[0].props.style.background, token.stateBusiness, 'accent token, no literal colour');
+
+  // The「我的 Prompt」layer selector is a different control and keeps the chip
+  // family it has always had (g-070 changes the first-level bar only).
+  const layerGroup = oneBy(tree, 'data-tab-group', 'mine-layer');
+  assert.equal(layerGroup.props.role, 'tablist');
+  assert.equal(layerGroup.props.style.flexWrap, 'wrap', 'the layer selector still wraps its chips');
+  const layerChips = collect(tree, (node) => node.type === 'button' && node.props['data-tab-key'] === 'mine-layer');
+  assert.equal(layerChips.length, 2, 'two layers, two chips');
+  for (const chip of layerChips) {
+    assert.equal(chip.props.style.borderRadius, 999, 'the layer selector is still the pill family');
+    assert.notEqual(chip.props.style.border, 'none', 'and still draws its stroke');
+  }
+
+  // Switching tabs moves the underline — it is not painted on a fixed slot.
+  tree = await openTab(page, 'advanced');
+  const moved = tabIndicators(tree);
+  assert.equal(moved.length, 1);
+  assert.equal(moved[0].props['data-tab-indicator'], 'advanced');
+  assert.equal(groupTab(tree, 'main', 'advanced').props['aria-selected'], true);
+  assert.equal(groupTab(tree, 'main', 'mine').props['aria-selected'], false);
+});
+
+test('client: the「我的预设」count is the real library size and never a false (0) (g-070)', async () => {
+  // A library with entries: the suffix is drawn, on the presets tab and nowhere
+  // else, and it is that library's real size.
+  const page = makePage({ responses: defaultResponses() });
+  const tree = await page.flush();
+  const counts = tabCounts(tree);
+  assert.equal(counts.length, 1, 'one tab carries a count');
+  assert.equal(strings(counts[0]).join(''), ' (2)', 'the fixture holds two presets');
+  assert.equal(
+    collect(groupTab(tree, 'main', 'presets'), (node) => node.props && node.props['data-role'] === 'tab-count').length,
+    1,
+    'and it hangs off 「我的预设」',
+  );
+
+  // A library that really is empty says (0): that is a fact, not a placeholder.
+  const empty = makePage({
+    responses: defaultResponses({ [PATHS.presets]: { payload: presetsFixture({ presets: [] }) } }),
+  });
+  const emptyTree = await empty.flush();
+  assert.equal(strings(tabCounts(emptyTree)[0]).join(''), ' (0)', 'an empty library answers (0) honestly');
+
+  // Every unknown state — failed read, unreadable library file, a payload that
+  // carries no list at all — draws **no** suffix, and certainly not a false (0).
+  const unknown = [
+    ['a failed read', new Error('network down')],
+    ['an unreadable library', { payload: { ok: true, error: { code: 'presets-library-unreadable', message: 'nope' } } }],
+    ['a payload with no list', { payload: { ok: true } }],
+  ];
+  for (const [label, response] of unknown) {
+    const unknownPage = makePage({ responses: defaultResponses({ [PATHS.presets]: response }) });
+    const unknownTree = await unknownPage.flush();
+    assert.equal(tabCounts(unknownTree).length, 0, `${label}: no count is drawn at all`);
+    assert.equal(
+      strings(tabList(unknownTree)).join('').includes('(0)'),
+      false,
+      `${label}: and certainly not a false (0)`,
+    );
+    assert.equal(
+      collect(unknownTree, (node) => node.type === 'button' && node.props['data-tab-key'] === 'main').length,
+      6,
+      `${label}: the bar itself is still complete`,
+    );
+  }
+});
+
+test('client: the「高级」red dot tracks a newer release and outlives a dismissed banner (g-070)', async () => {
+  const token = loadClient('throw').module.__internals.shared.token;
+  // No release upstream: no dot anywhere, and the tab bar is otherwise intact.
+  const quiet = makePage({ responses: defaultResponses() });
+  const quietTree = await quiet.flush();
+  assert.equal(tabDots(quietTree).length, 0, 'no release ⇒ no dot');
+  assert.equal(updateBanner(quietTree).length, 0, 'and no banner either');
+
+  // A confirmed newer release: the banner is up and the dot rides「高级」.
+  const page = makePage({
+    responses: defaultResponses({ [PATHS.updateCheck]: { payload: updateAvailableFixture() } }),
+  });
+  let tree = await page.flush();
+  assert.equal(updateBanner(tree).length, 1, 'the banner is up too');
+  const dots = tabDots(tree);
+  assert.equal(dots.length, 1, 'exactly one dot');
+  const advancedTab = groupTab(tree, 'main', 'advanced');
+  assert.equal(
+    collect(advancedTab, (node) => node.props && node.props['data-role'] === 'tab-update-dot').length,
+    1,
+    'the dot is inside the「高级」tab button',
+  );
+  assert.equal(dots[0].props.style.background, token.stateError, 'the danger token, not a literal red');
+  assert.equal(dots[0].props.title, page.text.tabUpdateBadge);
+  assert.equal(dots[0].props['aria-label'], page.text.tabUpdateBadge);
+  assert.ok(page.text.tabUpdateBadge.trim().length > 0, 'and that description is real copy');
+  // The tab is still readable: its own name comes first, the dot's description
+  // follows it, and neither is a bare glyph.
+  assert.equal(advancedTab.props.children[0], page.text.tabAdvanced);
+
+  // Dismissing closes the banner. It does not clear the dot: the release did not
+  // un-happen, so the objective state stays visible (CONTRACT §13.4).
+  clickButton(tree, { 'data-action': 'update-dismiss' });
+  tree = page.draw();
+  assert.equal(updateBanner(tree).length, 0, 'the banner is gone');
+  assert.equal(tabDots(tree).length, 1, 'the dot is not');
+});
+
+// #region g-073 (Revision 55): the page scope serves「我的 Prompt」alone
+
+/**
+ * One snapshot whose assembly names the scope that produced it, so a scope
+ * change is visible in the rendered tree rather than only in the request log.
+ * @param label - the scope's label (`alpha` / `beta`).
+ * @returns the `GET /snapshot` payload.
+ */
+function scopedSnapshotFixture(label) {
+  return snapshotFixture({
+    rendered: `${label} rendered`,
+    effective: {
+      sections: [
+        {
+          name: `scope:${label}`,
+          index: 0,
+          text: `${label} text`,
+          applied: true,
+          overridable: true,
+          reason: null,
+          overrideLayer: null,
+          action: null,
+          origin: 'registered',
+        },
+      ],
+    },
+  });
+}
+
+test('client: g-073 — the preset library is read without the page scope (criterion 1)', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses(),
+    // The whole point of this case is causality: an effect that must **not**
+    // re-run has to be able to not re-run.
+    enforceEffectDeps: true,
+  });
+  const tree = await page.flush();
+  const libraryReads = () => urlsFor(page, PATHS.presets).filter((url) => !url.includes('id='));
+  assert.deepEqual(libraryReads(), [PATHS.presets], 'one read on mount, and it carries no page scope');
+  // Move the page scope where that control lives — 「我的 Prompt」 (g-071).
+  scopeToggle(tree).props.onClick();
+  let next = await page.flush();
+  clickButton(next, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
+  next = await page.flush();
+  assert.equal(markerOf(next, 'data-session'), 'global', 'the page scope really moved');
+  assert.deepEqual(libraryReads(), [PATHS.presets], 'and the library was not read again');
+  assert.ok(urlsFor(page, PATHS.snapshot).includes(PATHS.snapshot), 'while the page snapshot did follow it');
+});
+
+test('client: g-073 — no tab but 「我的 Prompt」renders the page-scope surface (criterion 5)', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  const mine = await page.flush();
+  assert.equal(
+    collect(mine, (node) => node.props && node.props['data-region'] === 'session').length,
+    1,
+    'the page-scope card is drawn, once, inside 「我的 Prompt」',
+  );
+  for (const tab of ['presets', 'overview', 'history', 'backup', 'advanced']) {
+    const tree = await openTab(page, tab);
+    assert.equal(
+      collect(tree, (node) => node.props && node.props['data-region'] === 'session').length,
+      0,
+      `${tab}: no page-scope card`,
+    );
+    assert.equal(
+      collect(tree, (node) => node.props && node.props['data-region'] === 'scope-summary').length,
+      0,
+      `${tab}: no page-scope summary`,
+    );
+    assert.equal(
+      collect(tree, (node) => node.props && node.props['data-action'] === 'scope-toggle').length,
+      0,
+      `${tab}: no page-scope toggle`,
+    );
+  }
+});
+
+test('client: g-073 —「提示词总览」owns a by-workspace, per-session scope (criterion 2)', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses({
+      [PATHS.snapshot]: (url) => ({
+        payload: url.includes('session=b1') ? scopedSnapshotFixture('beta') : scopedSnapshotFixture('alpha'),
+      }),
+    }),
+  });
+  const mine = await page.flush();
+  let tree = await openTab(page, 'overview', mine);
+  const scope = oneBy(tree, 'data-region', 'overview-scope');
+  assert.equal(scope.props['data-overview-scope-mode'], 'workspaces', 'the workspaces are the dimension');
+  assert.equal(scope.props['data-overview-scope-value'], 'a3', 'the default follows the current session');
+  assert.ok(urlsFor(page, PATHS.snapshot).includes(`${PATHS.snapshot}?session=a3`), 'and it is read in that scope');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-section-row'] === 'scope:alpha').length,
+    1,
+    'the assembly on screen is that scope\'s',
+  );
+  // Every session of a workspace is offered — **not** one stand-in per workspace.
+  clickButton(tree, { 'data-action': 'overview-scope-toggle' });
+  tree = await page.flush();
+  const alpha = oneBy(tree, 'data-overview-scope-group', 'w-alpha');
+  assert.deepEqual(
+    collect(alpha, (node) => node.props && node.props['data-overview-scope-option'] !== undefined).map(
+      (node) => node.props['data-overview-scope-option'],
+    ),
+    ['a1', 'a2', 'a3'],
+    'all three of the workspace\'s sessions, not its first one alone',
+  );
+  assert.ok(
+    collect(tree, (node) => node.props && node.props['data-overview-scope-group'] === 'sessions').length === 1,
+    'and a session no workspace claims is offered under its own group',
+  );
+  // Pick another workspace's session: that scope is read, and shown.
+  clickButton(tree, { 'data-overview-scope-option': 'b1' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'overview-scope').props['data-overview-scope-value'], 'b1');
+  assert.ok(urlsFor(page, PATHS.snapshot).includes(`${PATHS.snapshot}?session=b1`), 're-read in the new scope');
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-section-row'] === 'scope:beta').length,
+    1,
+    'and the assembly on screen follows it',
+  );
+  // The page scope does not move any of it.
+  tree = await openTab(page, 'mine', tree);
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
+  tree = await page.flush();
+  assert.equal(markerOf(tree, 'data-session'), 'global', 'the page scope moved to the global one');
+  tree = await openTab(page, 'overview', tree);
+  assert.equal(
+    oneBy(tree, 'data-region', 'overview-scope').props['data-overview-scope-value'],
+    'b1',
+    'the overview scope stayed where the reader put it',
+  );
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-section-row'] === 'scope:beta').length,
+    1,
+    'and so did the assembly it shows',
+  );
+});
+
+test('client: g-073 —「高级」aims its reads at its own workspace selector (criterion 3)', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses({
+      [PATHS.overrides]: (url) => ({
+        payload: url.includes('session=b1')
+          ? layeredOverrides(
+              [{ name: 'project:alpha', action: 'replace', text: 'alpha overridden' }],
+              [{ name: 'project:beta', action: 'replace', text: 'beta overridden' }],
+            )
+          : layeredOverrides(
+              [{ name: 'project:alpha', action: 'replace', text: 'alpha overridden' }],
+              [{ name: 'extra:alpha', action: 'append', text: 'alpha extra' }],
+            ),
+      }),
+    }),
+  });
+  let tree = await openAdvanced(page);
+  const scope = oneBy(tree, 'data-region', 'advanced-scope');
+  assert.equal(scope.props['data-advanced-scope-mode'], 'workspaces', 'the workspace is the dimension');
+  assert.equal(scope.props['data-advanced-scope-value'], 'a3', 'the default follows the current session\'s workspace');
+  assert.equal(
+    oneBy(tree, 'data-region', 'layer-reset').props['data-reset-count'],
+    '1',
+    'the legacy list counts the layer this scope names',
+  );
+  const statusReads = () => urlsFor(page, PATHS.assemblyStatus);
+  assert.equal(statusReads()[statusReads().length - 1], `${PATHS.assemblyStatus}?session=a3`);
+
+  // The page scope moves to the global one; this tab must not follow it.
+  tree = await openTab(page, 'mine', tree);
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
+  tree = await page.flush();
+  tree = await openTab(page, 'advanced', tree);
+  assert.equal(
+    oneBy(tree, 'data-region', 'advanced-scope').props['data-advanced-scope-value'],
+    'a3',
+    'the advanced tab keeps its own scope',
+  );
+  assert.equal(statusReads()[statusReads().length - 1], `${PATHS.assemblyStatus}?session=a3`);
+
+  // Pick the other workspace: the status read and the override list follow it.
+  clickButton(tree, { 'data-action': 'advanced-scope-toggle' });
+  tree = await page.flush();
+  clickButton(tree, { 'data-advanced-scope-option': 'b1' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'advanced-scope').props['data-advanced-scope-value'], 'b1');
+  assert.equal(statusReads()[statusReads().length - 1], `${PATHS.assemblyStatus}?session=b1`);
+  const advancedOvs = urlsFor(page, PATHS.overrides).filter((url) => url.includes('session=b1'));
+  assert.ok(advancedOvs.length >= 1, 'the override list is read in that scope too');
+  assert.equal(
+    oneBy(tree, 'data-region', 'layer-reset').props['data-reset-count'],
+    '1',
+    'and the legacy list now counts the other workspace\'s layer',
+  );
+
+  // The two layer-wide clears are aimed at the selected workspace.
+  clickTab(tree, 'advanced-layer', 'workspace');
+  tree = await page.flush();
+  clickButton(oneBy(tree, 'data-region', 'layer-reset'), { 'data-action': 'reset-layer', 'data-layer': 'workspace' });
+  tree = await page.flush();
+  clickButton(oneBy(tree, 'data-region', 'confirm'), { 'data-action': 'confirm-yes' });
+  tree = await page.flush();
+  clickButton(oneBy(tree, 'data-region', 'layer-reset'), { 'data-action': 'legacy-clear', 'data-layer': 'workspace' });
+  tree = await page.flush();
+  clickButton(oneBy(tree, 'data-region', 'confirm'), { 'data-action': 'confirm-yes' });
+  tree = await page.flush();
+  assert.deepEqual(
+    writeCalls(page)
+      .filter((call) => call.init.method === 'DELETE' && call.url.includes(`${PATHS.overrides}?layer=workspace`))
+      .map((call) => call.url),
+    [
+      `${PATHS.overrides}?layer=workspace&session=b1&reset=true`,
+      `${PATHS.overrides}?layer=workspace&session=b1&legacy=true`,
+    ],
+    'both clears name the workspace this selector picked, never the page scope',
+  );
+});
+
+test('client: g-073 R1 — a failing page-scoped snapshot blanks no other tab (criterion 3)', async () => {
+  // Review R1-2: the advanced tab's **reads** were already its own, but its panel
+  // was still gated on the page-scoped snapshot, so a failing page read blanked a
+  // tab whose data had arrived. This walks the gate: the first `/snapshot` of the
+  // mount (the page-scoped one) fails, every later one answers.
+  //
+  // The dependency rule is enforced on purpose: without it this harness re-runs
+  // every effect on every flush, so the page-scoped read would succeed on its
+  // second attempt and the very gate under test would stop being tested.
+  let snapshotCalls = 0;
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses({
+      [PATHS.snapshot]: () => {
+        snapshotCalls += 1;
+        return snapshotCalls === 1 ? new Error('page scope read failed') : { payload: scopedSnapshotFixture('alpha') };
+      },
+    }),
+    enforceEffectDeps: true,
+  });
+  const mine = await page.flush();
+  assert.equal(markerOf(mine, 'data-render-state'), 'ok', 'the page still renders its failure banner');
+  assert.equal(
+    collect(mine, (node) => node.props && node.props['data-region'] === 'tab-panel').length,
+    0,
+    '「我的 Prompt」 is the one tab gated on that read, so it is the one that stays blank',
+  );
+  // 「提示词总览」 reads in its own scope, so it renders.
+  let tree = await openTab(page, 'overview', mine);
+  assert.equal(oneBy(tree, 'data-region', 'overview-scope').props['data-overview-scope-value'], 'a3');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'sections').length, 1);
+  // 「高级」 too: its own snapshot, override list and layer counts all render.
+  tree = await openTab(page, 'advanced', tree);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'advanced-scope').length, 1);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'overrides').length, 1);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'layer-reset').length, 1);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'assembly-status').length, 1);
+  // …and so do the tabs that never read a snapshot at all.
+  tree = await openTab(page, 'backup', tree);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'transfer').length, 1);
+  tree = await openTab(page, 'presets', tree);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'presets').length, 1);
+  tree = await openTab(page, 'history', tree);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'history').length, 1);
+});
+
+test('client: g-073 R1 — a tab-owned scope reads once per tab open and scope change (criterion 2/3)', async () => {
+  // Review R1-5: §13.10 claims "one request per tab open / scope change / reload".
+  // Counted, not eyeballed: with the dependency rule enforced, a plain re-render
+  // and an opened disclosure must both cost nothing.
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+    enforceEffectDeps: true,
+  });
+  let tree = await openAdvanced(page);
+  const statusReads = () => urlsFor(page, PATHS.assemblyStatus);
+  assert.equal(statusReads().length, 1, 'one assembly-status read when the tab opens');
+  tree = await page.flush();
+  assert.equal(statusReads().length, 1, 'a plain re-render reads nothing');
+  clickButton(tree, { 'data-action': 'advanced-scope-toggle' });
+  tree = await page.flush();
+  assert.equal(statusReads().length, 1, 'opening the disclosure reads nothing');
+  clickButton(tree, { 'data-advanced-scope-option': 'b1' });
+  tree = await page.flush();
+  assert.equal(statusReads().length, 2, 'changing the scope reads once more');
+  assert.equal(statusReads()[1], `${PATHS.assemblyStatus}?session=b1`);
+
+  // The overview's own snapshot behaves the same way.
+  const overviewPage = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+    enforceEffectDeps: true,
+  });
+  const mine = await overviewPage.flush();
+  const snapReads = () => urlsFor(overviewPage, PATHS.snapshot);
+  assert.equal(snapReads().length, 1, 'the page-scoped snapshot read on mount');
+  let overviewTree = await openTab(overviewPage, 'overview', mine);
+  assert.equal(snapReads().length, 2, 'the overview reads in its own scope when it opens');
+  overviewTree = await overviewPage.flush();
+  assert.equal(snapReads().length, 2, 'and not again on a plain re-render');
+  clickButton(overviewTree, { 'data-action': 'overview-scope-toggle' });
+  overviewTree = await overviewPage.flush();
+  assert.equal(snapReads().length, 2, 'nor when the picker opens');
+  clickButton(overviewTree, { 'data-overview-scope-option': 'b1' });
+  overviewTree = await overviewPage.flush();
+  assert.equal(snapReads().length, 3, 'a new scope reads once');
+  assert.equal(snapReads()[2], `${PATHS.snapshot}?session=b1`);
+});
+
+test('client: g-073 R3 — switching away and back re-reads nothing and draws no loading frame', async () => {
+  // Review R3-1/R3-4: every tab-owned read is keyed by {scope, reload}, so a tab
+  // switch that changes neither reuses what is on screen. Both halves are pinned
+  // here: the panel is still rendered **and** no request is sent — the two
+  // together are what rules out the regression (dropping the cache shows up as a
+  // fresh request), while a scope change and a reload still re-read.
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+    // The dependency rule is what makes "the effect ran again" observable at all.
+    enforceEffectDeps: true,
+  });
+  const snapReads = () => urlsFor(page, PATHS.snapshot).length;
+  const advancedReads = () => ({
+    overrides: urlsFor(page, PATHS.overrides).length,
+    status: urlsFor(page, PATHS.assemblyStatus).length,
+  });
+  const historyReads = () => urlsFor(page, PATHS.history).length;
+  const panel = (tree, region) =>
+    collect(tree, (node) => node.props && node.props['data-region'] === region).length;
+
+  // Open each tab once, so every tab-owned scope has really been read.
+  let tree = await openTab(page, 'overview');
+  assert.equal(panel(tree, 'overview'), 1);
+  tree = await openTab(page, 'advanced', tree);
+  assert.equal(panel(tree, 'advanced-scope'), 1);
+  const afterAdvanced = advancedReads();
+  tree = await openTab(page, 'history', tree);
+  assert.equal(panel(tree, 'history'), 1);
+  const afterHistory = historyReads();
+  const snapBefore = snapReads();
+
+  // 「提示词总览」: away and back.
+  tree = await openTab(page, 'mine', tree);
+  clickAnyTab(tree, 'overview');
+  tree = await page.flush();
+  assert.equal(panel(tree, 'overview'), 1, 'overview: the panel is still there after the switch');
+  assert.equal(strings(tree).includes(page.zh.loading), false, 'overview: no loading line is drawn');
+  assert.equal(snapReads(), snapBefore, 'overview: switching back sends no request');
+
+  // 「高级」: away and back — none of its three reads is repeated.
+  tree = await openTab(page, 'mine', tree);
+  clickAnyTab(tree, 'advanced');
+  tree = await page.flush();
+  assert.equal(panel(tree, 'advanced-scope'), 1, 'advanced: the scope selector is still there');
+  assert.equal(panel(tree, 'overrides'), 1, 'advanced: and the override list');
+  assert.equal(strings(tree).includes(page.zh.loading), false, 'advanced: no loading line is drawn');
+  assert.deepEqual(advancedReads(), afterAdvanced, 'advanced: no override / status read is repeated');
+  assert.equal(snapReads(), snapBefore, 'advanced: nor is the snapshot re-read');
+
+  // 「版本历史」: away and back, with its own key (layer / scope / offset).
+  tree = await openTab(page, 'mine', tree);
+  clickAnyTab(tree, 'history');
+  tree = await page.flush();
+  assert.equal(panel(tree, 'history'), 1, 'history: the log is still there after the switch');
+  assert.equal(strings(tree).includes(page.zh.loading), false, 'history: no loading line is drawn');
+  assert.equal(historyReads(), afterHistory, 'history: no log read is repeated');
+
+  // The positive half: a scope change really is a new read.
+  tree = await openTab(page, 'overview', tree);
+  clickButton(tree, { 'data-action': 'overview-scope-toggle' });
+  tree = await page.flush();
+  const beforeScopeChange = snapReads();
+  clickButton(tree, { 'data-overview-scope-option': 'b1' });
+  tree = await page.flush();
+  assert.equal(snapReads(), beforeScopeChange + 1, 'a scope change still re-reads');
+
+  // …and so is a reload: a write bumps it, and the log is read again even though
+  // its own key did not move.
+  tree = await openTab(page, 'history', tree);
+  const historyBeforeReload = historyReads();
+  tree = await openTab(page, 'mine', tree);
+  typeInto(tree, 'mine-text', 'reload me');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+  tree = await openTab(page, 'history', tree);
+  assert.equal(historyReads(), historyBeforeReload + 1, 'a reload still re-reads the tab-owned scope');
+});
+
+// #endregion

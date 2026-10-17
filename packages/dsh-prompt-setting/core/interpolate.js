@@ -305,6 +305,12 @@ function describeKnown(variableNames) {
  * the shipped renderer's behaviour on an **interpolating** section, and the
  * reserved section never interpolates. Nothing throws; the reference simply can
  * never expand, so this is a UX refusal, not a safety one (CONTRACT §16.9).
+ *
+ * g-080: when the refusal is about a `{{cwd}}` this assembly does not register,
+ * one extra sentence names the cause — DSH 0.2.1-rc.1 retired that variable —
+ * so an upgrade reads as a migration rather than as a typo. It is data-driven:
+ * a table that still registers `cwd` gets no sentence, and the verdict is the
+ * same in both cases.
  * @param errors - the fatal events from {@link lintPromptText}.
  * @param owner - what the text belongs to, e.g. `the user layer`.
  * @param variableNames - the assembled variable names, for the "use one of
@@ -316,9 +322,23 @@ export function describeInterpolateErrors(errors, owner, variableNames) {
   const shown = list.slice(0, 3).map(describeReference).join(', ');
   const rest = list.length - Math.min(list.length, 3);
   const reasons = [...new Set(list.map((event) => event.kind))].join('/');
+  // g-080: `{{cwd}}` is not a typo on a DSH new enough to have retired it. DSH
+  // 0.2.1-rc.1 stopped registering the loop's `cwd` variable (the working
+  // directory is delivered as runtime context instead), so a user upgrading with
+  // old text otherwise reads the refusal as "did I spell it wrong?". The note is
+  // keyed on **this assembly's table**, not on a version guess: a table that
+  // still registers `cwd` (an older DSH) gets no note at all, and the judgement
+  // of the text is unchanged in both cases (same code, same 400, no bytes).
+  const known = Array.isArray(variableNames) ? variableNames : [];
+  const retiredCwd = list.some((event) => event.kind === 'unknown' && event.name === 'cwd')
+    && !known.includes('cwd');
+  const cwdNote = retiredCwd
+    ? ' Note: DSH 0.2.1-rc.1 and later do not register `{{cwd}}`; the working directory now reaches the model as '
+      + 'runtime context, so that reference can never expand here. '
+    : '';
   return `${owner} contains ${list.length} prompt reference(s) that variable substitution would never expand `
     + `(${shown}${rest > 0 ? ` and ${rest} more` : ''}; ${reasons}). `
-    + 'Fix: delete the reference, or use a registered variable '
+    + `${cwdNote}Fix: delete the reference, or use a registered variable `
     + `(${describeKnown(variableNames)}), or save with variable substitution OFF.`;
 }
 

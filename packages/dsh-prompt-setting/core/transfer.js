@@ -7,6 +7,14 @@
  * atomicity guarantee testable without a Host: the plan is computed first, and
  * a plan that fails produces no write at all.
  *
+ * Revision 53 (g-074) turns the document from「the reserved section of two
+ * layers」into **the whole installation**: every override of every layer
+ * (frozen ones included), every workspace layer the Host registers, the preset
+ * library and the preference document. `version` is therefore 2, and the
+ * reader still accepts 1 — a pre-g-074 backup, which carries reserved entries
+ * only, imports exactly as it did (the write lock is gone, so it never needed
+ * to carry more).
+ *
  * The conflict strategy is explicit and documented (CONTRACT.md §11.4):
  * - `merge` (default) — imported entries win on a name clash, local entries the
  *   document does not mention are kept;
@@ -17,23 +25,65 @@
  */
 
 import { OverrideError, fail, interpolateFlagOf, validateConfig, validateOverride, withInterpolate } from './overrides.js';
+import { validatePresetsDocument } from './presets.js';
+import { validatePreferencesDocument } from './update.js';
+import { validateWorkspaceRoot } from './workspace-root.js';
 
 /** The `schema` marker every export carries. */
 export const EXPORT_SCHEMA = 'dsh-prompt-setting/export';
-/** The export document version this build writes and accepts. */
-export const EXPORT_VERSION = 1;
+/** The export document version this build writes (Revision 53: the full backup). */
+export const EXPORT_VERSION = 2;
+/**
+ * Every version this build can **read** (Revision 53).
+ *
+ * 1 is the pre-g-074 shape: one reserved override per layer and nothing else.
+ * It stays accepted on purpose — a backup a user already saved must keep
+ * importing — and it is imported with exactly the rules this revision applies
+ * to version 2 (schema, names, field validity, path safety).
+ */
+export const EXPORT_ACCEPTED_VERSIONS = Object.freeze([2, 1]);
 /** The accepted conflict strategies. */
 export const IMPORT_MODES = Object.freeze(['merge', 'replace']);
 /** The layers an export may carry. */
 export const EXPORT_LAYERS = Object.freeze(['user', 'workspace']);
+/** The keys of one workspace entry. Anything else is a malformed document. */
+const WORKSPACE_ENTRY_KEYS = Object.freeze(['root', 'enabled', 'reason', 'overrides']);
+
+/**
+ * Re-exported so this module stays the one place a reader of the export
+ * document imports from. Since g-074 R1 the rule itself lives in
+ * `core/workspace-root.js`, because `presets.applied[].workspaceRoot` is the
+ * **same** field and must be judged by the very same function (a cycle would
+ * otherwise force `core/presets.js` to type its own, weaker copy — which is
+ * exactly the hole the review found).
+ */
+export { MAX_WORKSPACE_ROOT_LENGTH, validateWorkspaceRoot } from './workspace-root.js';
 
 /**
  * Build one export document.
- * @param fields - `{layers, pluginVersion, exportedAt, layerNames?}` where
- *   `layers` maps a layer name to its public layer view.
+ *
+ * Revision 53: the document carries everything the plugin persists. `layers` is
+ * still the `user` / `workspace` view pair (the `workspace` entry is the layer
+ * of the session that asked for the export, and it stays the shape a
+ * pre-Revision-53 reader understands), `workspaces` is every workspace layer
+ * the Host registers, and `presets` / `preferences` are the two
+ * installation-level documents.
+ *
+ * `path` is deliberately **not** copied out of a layer view: the layers stay
+ * path-free, and the only absolute path the document carries is a workspace's
+ * own `root`, which is what makes the backup restorable at all (§10).
+ * @param fields - `{layers, workspaceLayers?, presets?, preferences?, pluginVersion, exportedAt, layerNames?}`.
  * @returns the document (JSON-serializable).
  */
-export function buildExport({ layers, pluginVersion, exportedAt, layerNames = EXPORT_LAYERS }) {
+export function buildExport({
+  layers,
+  workspaceLayers = [],
+  presets = null,
+  preferences = null,
+  pluginVersion,
+  exportedAt,
+  layerNames = EXPORT_LAYERS,
+}) {
   const included = {};
   for (const name of layerNames) {
     const view = layers?.[name];
@@ -52,7 +102,96 @@ export function buildExport({ layers, pluginVersion, exportedAt, layerNames = EX
     plugin: { name: 'dsh-prompt-setting', version: pluginVersion },
     pluginVersion,
     layers: included,
+    workspaces: (Array.isArray(workspaceLayers) ? workspaceLayers : []).map((entry) => ({
+      root: entry.root,
+      enabled: entry.enabled === true,
+      reason: entry.reason ?? null,
+      overrides: Array.isArray(entry.overrides) ? entry.overrides : [],
+    })),
+    presets: presets === undefined || presets === null ? null : presets,
+    preferences: preferences === undefined || preferences === null ? null : preferences,
   };
+}
+
+/**
+ * Validate one override list that belongs to a document location.
+ * @param list - the candidate array.
+ * @param where - the dotted location for the error message.
+ * @returns the validated, normalized list.
+ * @throws {OverrideError} with the field validator's own code.
+ */
+function parseOverrideList(list, where) {
+  return (Array.isArray(list) ? list : []).map((entry, index) => {
+    try {
+      return validateOverride(entry);
+    } catch (error) {
+      const code = error instanceof OverrideError ? error.code : 'invalid-override';
+      const message = error?.message ?? String(error);
+      throw new OverrideError(code, `${where}[${index}]: ${message}`, error?.status ?? 400);
+    }
+  });
+}
+
+/**
+ * Refuse a list that names one section twice.
+ * @param overrides - a validated override list.
+ * @param where - the dotted location for the error message.
+ * @throws {OverrideError} `duplicate-name`.
+ */
+function assertUniqueNames(overrides, where) {
+  const seen = new Set();
+  for (const override of overrides) {
+    if (seen.has(override.name)) {
+      throw fail('duplicate-name', `${where} contains more than one override for ${JSON.stringify(override.name)}`);
+    }
+    seen.add(override.name);
+  }
+}
+
+/**
+ * Validate the `workspaces` array of a version 2 document.
+ *
+ * Every rule the import then relies on is checked here, before any layer is
+ * resolved and therefore before any byte could move: each entry is an object
+ * with no unknown key, its `root` is a legal absolute path
+ * ({@link validateWorkspaceRoot}), its `overrides` is a valid override array
+ * with unique names, and no two entries name the same root — two entries for
+ * one layer would make "what this import writes" ambiguous, which is exactly
+ * what the atomicity story may not be.
+ * @param raw - the `workspaces` value, or `undefined`.
+ * @returns `[{root, overrides}]`.
+ * @throws {OverrideError} with a stable code.
+ */
+export function parseExportWorkspaces(raw) {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    throw fail('invalid-export-workspaces', '"workspaces" must be an array');
+  }
+  const parsed = [];
+  const seen = new Set();
+  raw.forEach((entry, index) => {
+    const where = `workspaces[${index}]`;
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw fail('invalid-export-workspace', `${where} must be an object`);
+    }
+    for (const key of Object.keys(entry)) {
+      if (!WORKSPACE_ENTRY_KEYS.includes(key)) {
+        throw fail('invalid-export-workspace', `${where} carries an unknown key ${JSON.stringify(key)}`);
+      }
+    }
+    const root = validateWorkspaceRoot(entry.root);
+    if (seen.has(root)) {
+      throw fail('duplicate-workspace-root', `"workspaces" names ${JSON.stringify(root)} more than once`);
+    }
+    seen.add(root);
+    if (entry.overrides !== undefined && !Array.isArray(entry.overrides)) {
+      throw fail('invalid-export-workspace', `${where}.overrides must be an array`);
+    }
+    const overrides = parseOverrideList(entry.overrides, `${where}.overrides`);
+    assertUniqueNames(overrides, `${where}.overrides`);
+    parsed.push({ root, overrides: validateConfig({ version: 1, overrides }).overrides });
+  });
+  return parsed;
 }
 
 /**
@@ -60,10 +199,19 @@ export function buildExport({ layers, pluginVersion, exportedAt, layerNames = EX
  *
  * Strict on purpose: an import is the one operation that can destroy a user's
  * configuration, so an unrecognized document is refused with a code rather
- * than read as generously as possible.
+ * than read as generously as possible. Revision 53 keeps that strictness and
+ * moves the write lock's job here: every layer name is whitelisted, every
+ * entry is field-validated, every workspace root must be a legal path, and the
+ * preset library and the preference document are validated as documents in
+ * their own right (`validatePresetsDocument`, `validatePreferencesDocument`) —
+ * the lock is gone, the checks are not (§11.7, §15.7).
+ *
+ * Unknown **top-level** keys are ignored rather than refused: the export
+ * response is itself a valid import body (`ok`, `exportScope`, `mode`,
+ * `session` ride along), and refusing them would break a copy-paste round trip
+ * the route has always supported.
  * @param raw - the parsed request body.
- * @returns `{version, exportedAt, plugin, layers: {user?, workspace?}}` where
- *   each layer is a validated override array.
+ * @returns `{version, exportedAt, plugin, layers, workspaces, presets, preferences}`.
  * @throws {OverrideError} with a stable `code` for every rejection.
  */
 export function parseExport(raw) {
@@ -76,12 +224,23 @@ export function parseExport(raw) {
   if (!Number.isInteger(raw.version)) {
     throw fail('missing-export-version', '"version" must be an integer');
   }
-  if (raw.version !== EXPORT_VERSION) {
-    throw fail('unsupported-export-version', `unsupported export version ${JSON.stringify(raw.version)}; this build accepts ${EXPORT_VERSION}`);
+  if (!EXPORT_ACCEPTED_VERSIONS.includes(raw.version)) {
+    throw fail(
+      'unsupported-export-version',
+      `unsupported export version ${JSON.stringify(raw.version)}; this build accepts ${EXPORT_ACCEPTED_VERSIONS.join(' and ')}`,
+    );
   }
   const layers = raw.layers;
   if (layers === null || typeof layers !== 'object' || Array.isArray(layers)) {
     throw fail('missing-export-layers', '"layers" must be an object');
+  }
+  for (const name of Object.keys(layers)) {
+    if (!EXPORT_LAYERS.includes(name)) {
+      throw fail(
+        'unknown-export-layer',
+        `"layers" carries ${JSON.stringify(name)}; the accepted layer names are ${EXPORT_LAYERS.join(' and ')}`,
+      );
+    }
   }
   const parsed = {};
   for (const name of EXPORT_LAYERS) {
@@ -93,34 +252,52 @@ export function parseExport(raw) {
     if (layer.overrides !== undefined && !Array.isArray(layer.overrides)) {
       throw fail('invalid-export-layer', `"layers.${name}.overrides" must be an array`);
     }
-    const overrides = (layer.overrides ?? []).map((entry, index) => {
-      try {
-        return validateOverride(entry);
-      } catch (error) {
-        const code = error instanceof OverrideError ? error.code : 'invalid-override';
-        const message = error?.message ?? String(error);
-        throw new OverrideError(code, `layers.${name}.overrides[${index}]: ${message}`, error?.status ?? 400);
-      }
-    });
-    const seen = new Set();
-    for (const override of overrides) {
-      if (seen.has(override.name)) {
-        throw fail('duplicate-name', `layers.${name} contains more than one override for ${JSON.stringify(override.name)}`);
-      }
-      seen.add(override.name);
-    }
+    const overrides = parseOverrideList(layer.overrides, `layers.${name}.overrides`);
+    assertUniqueNames(overrides, `layers.${name}`);
     parsed[name] = validateConfig({ version: 1, overrides }).overrides;
   }
   if (Object.keys(parsed).length === 0) {
     throw fail('missing-export-layers', 'the document carries no user or workspace layer');
   }
+
+  const wholeInstallation = ['workspaces', 'presets', 'preferences']
+    .filter((key) => raw[key] !== undefined && raw[key] !== null);
+  if (raw.version === 1 && wholeInstallation.length > 0) {
+    throw fail(
+      'unexpected-export-field',
+      `a version 1 document must not carry ${wholeInstallation.map((key) => JSON.stringify(key)).join(', ')}; re-export with this build for a full backup`,
+    );
+  }
+
   return {
     schema: raw.schema,
     version: raw.version,
     exportedAt: typeof raw.exportedAt === 'string' ? raw.exportedAt : null,
     plugin: raw.plugin ?? null,
     layers: parsed,
+    workspaces: parseExportWorkspaces(raw.workspaces),
+    presets: raw.presets === undefined || raw.presets === null ? null : locate('presets', () => validatePresetsDocument(raw.presets)),
+    preferences: raw.preferences === undefined || raw.preferences === null
+      ? null
+      : locate('preferences', () => validatePreferencesDocument(raw.preferences)),
   };
+}
+
+/**
+ * Re-throw a nested validation error with its location in the document.
+ * @param where - the document key being validated.
+ * @param read - the validator to run.
+ * @returns whatever the validator returned.
+ * @throws {OverrideError} with the validator's code and a `where:` prefix.
+ */
+function locate(where, read) {
+  try {
+    return read();
+  } catch (error) {
+    const code = error instanceof OverrideError ? error.code : 'invalid-export';
+    const message = error?.message ?? String(error);
+    throw new OverrideError(code, `${where}: ${message}`, error?.status ?? 400);
+  }
 }
 
 /**

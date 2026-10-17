@@ -1,3 +1,12 @@
+/* 生成物，勿手改 — GENERATED FILE, DO NOT EDIT.
+ * Rebuilt by `node scripts/client-build.mjs --write` from `src/*.js`: every file in
+ * `src/` is one contiguous slice of this file, concatenated in file-name order, and
+ * the slice header line on top of each file is stripped before it lands here.
+ * Edit `src/`, never this file — `client:check` and `test/client-source.test.mjs`
+ * both fail on a hand edit, and the slices are the only source of truth.
+ * This banner sits deliberately *outside* the build-fingerprint region below: it must
+ * never move the digest the host reports for this bundle (CONTRACT.md §23).
+ */
 /**
  * `dsh-prompt-setting` — Client half (stage 1C: the Prompt manager settings page).
  *
@@ -30,10 +39,16 @@
  *      「我的 Prompt」; `reset=true` clears the whole layer), each behind its own
  *      second confirmation, plus the full status block.
  *
- * Above the tabs there are exactly three things: the title line (which carries
- * the plugin version beside the heading, Revision 17), one line of deciding
- * facts (mounted / frozen three-state / build stamp), and the session selector
- * every tab shares — sourced from the **props**
+ * Above the tabs there are exactly two things: the title line (which carries
+ * the plugin version beside the heading, Revision 17) and one line of deciding
+ * facts (mounted / frozen three-state / build stamp). The session selector every
+ * tab used to share is no longer chrome: since g-071 it is the first block
+ * **inside**「我的 Prompt」, the only surface it writes. R4 (the owner's
+ * real-machine review) removed the read-only scope line the other tabs briefly
+ * carried: each of them has its own scope semantics, and decoupling them from
+ * this page-level value is g-073 rather than something this page may assert. The
+ * selector is
+ * still sourced from the **props**
  * `useSessions` root hook, grouped as a workspace tree from the **props**
  * `useWorkspaces` root hook (same grouping/ordering/visibility rules as the
  * left sidebar), with a
@@ -894,186 +909,15 @@ window.__ModuleLoader__.load({
     const SCOPE_TOTAL_MAX = 100;
     const SCOPE_GROUP_LIMIT = 40;
 
-    // #region error-code dictionary (CONTRACT.md §4.4, every code gets copy)
-    /**
-     * `code` → `[zh, en]`. The table is the single source of both the
-     * `error.CODE` dictionary entries and the lookup used when a request
-     * fails, so a code can never be rendered as a bare identifier.
-     */
-    const ERROR_TEXT = {
-      'invalid-json': ['请求体不是合法 JSON。', 'The request body is not valid JSON.'],
-      'invalid-override': ['section 缺失或不是对象。', 'The "section" field is missing or not an object.'],
-      'missing-name': ['缺少段名 name。', 'The section "name" is missing.'],
-      'name-too-long': ['段名超过 200 个字符。', 'The section name exceeds 200 characters.'],
-      'invalid-name': ['段名包含控制字符。', 'The section name contains control characters.'],
-      'unknown-action': [
-        'action 必须是 replace、hide 或 append。',
-        'The action must be replace, hide, or append.',
-      ],
-      'missing-text': [
-        'replace 或 append 必须提供字符串文本。',
-        'replace and append require a text string.',
-      ],
-      'unexpected-text': ['hide 不能携带文本。', 'A hide override must not carry text.'],
-      'invalid-order': [
-        'order 必须是不小于 0 的整数（结果数组下标）。',
-        'The order must be a non-negative integer (a target index).',
-      ],
-      'unexpected-order': [
-        'replace 与 hide 不能携带 order。',
-        'replace and hide must not carry an order.',
-      ],
-      'unknown-layer': ['layer 必须是 user 或 workspace。', 'The layer must be user or workspace.'],
-      'workspace-unresolved': [
-        '工作区层需要一个可解析的 session id。',
-        'The workspace layer needs a resolvable session id.',
-      ],
-      'override-not-found': [
-        '该层没有这条覆盖，无法撤销。',
-        'That layer holds no such override to remove.',
-      ],
-      'layer-not-writable': [
-        '目标配置文件不是合法配置，拒绝覆盖写入。',
-        'The target config file is not a valid config; it is never overwritten.',
-      ],
-      'text-too-large': ['文本超过 200 KiB。', 'The text exceeds 200 KiB.'],
-      'body-too-large': ['请求体超过 256 KiB。', 'The request body exceeds 256 KiB.'],
-      'assemble-failed': [
-        '宿主装配 system prompt 时抛错，快照不可用。',
-        'The host assembly threw while building the snapshot.',
-      ],
-      'trust-fence-unavailable': [
-        '连接服务不可用，请求被信任栅栏拒绝。',
-        'The connection service is unavailable, so the trust fence refused the request.',
-      ],
-      'not-found': ['宿主没有这个路由。', 'The host has no such route.'],
-      'duplicate-name': ['同一层出现重复段名。', 'The layer holds a duplicate section name.'],
-      // Revision 7 write face (§15.5–§15.7): the three codes the narrowed route
-      // answers with. Without copy the panel would render the raw enum as if it
-      // were a sentence, which is exactly what the "no untranslated string"
-      // rule forbids.
-      'write-locked': [
-        '该写入被拒绝：只有本插件自有的段 prompt-setting:custom-prompt 可以被写入或删除。',
-        'This write was refused: only this plugin\u2019s own section, prompt-setting:custom-prompt, may be written or deleted.',
-      ],
-      'unsupported-action': [
-        '该段只接受 action=replace。',
-        'That section accepts only action=replace.',
-      ],
-      'conflicting-query': [
-        'reset 与 legacy 不能同时使用：reset 清空整层，legacy 只清旧覆盖。',
-        'reset and legacy cannot be combined: reset clears the whole layer, legacy clears only the legacy overrides.',
-      ],
-      // Stage 2 (CONTRACT.md Revision 4).
-      'invalid-history-record': [
-        '历史记录格式非法，该行已被跳过。',
-        'That history line is malformed and was skipped.',
-      ],
-      'history-unusable': ['历史文件不可读写。', 'The history file cannot be read or written.'],
-      'history-not-found': ['该层历史中没有这条记录。', 'That layer history holds no such record.'],
-      'missing-diff-selector': [
-        '需要 from 或 to（历史 id 或 current）。',
-        'Supply ?from= and/or ?to= (a history id or "current").',
-      ],
-      'invalid-diff-selector': [
-        'from/to 只能是 current 或历史记录 id。',
-        'A diff selector must be "current" or a history record id.',
-      ],
-      'invalid-export': ['导入内容必须是 JSON 对象。', 'An export document must be a JSON object.'],
-      'unknown-export-schema': [
-        'schema 不是本插件的导出格式。',
-        'The "schema" is not this plugin’s export format.',
-      ],
-      'missing-export-version': ['导入文件缺少 version。', 'The import document has no "version".'],
-      'unsupported-export-version': [
-        '导入文件版本不受支持。',
-        'The import document version is not supported.',
-      ],
-      'missing-export-layers': ['导入文件缺少 layers。', 'The import document has no "layers".'],
-      'missing-export-layer': ['导入文件不含所请求的层。', 'The import document carries no such layer.'],
-      'invalid-export-layer': ['导入文件的层结构非法。', 'A layer in the import document is malformed.'],
-      'unknown-import-mode': [
-        'mode 只能是 merge 或 replace。',
-        'The mode must be merge or replace.',
-      ],
-      'import-verify-failed': [
-        '导入的临时文件校验失败，现有配置未改动。',
-        'The staged import failed its own validation; nothing was changed.',
-      ],
-      'import-staging-failed': [
-        '导入无法写入临时文件，现有配置未改动。',
-        'The import could not be staged; nothing was changed.',
-      ],
-      'import-commit-failed': [
-        '导入提交失败，可能有层已被替换。',
-        'The import could not be committed; some layers may already be replaced.',
-      ],
-      // Revision 9 — the interpolation switch (§16).
-      'invalid-interpolate-flag': [
-        '配置里的 interpolateCustom 必须是布尔值；该层已被停用。',
-        'The config\'s "interpolateCustom" must be a boolean; that layer was disabled.',
-      ],
-      'unresolvable-variable': [
-        '这段文本里的 {{…}} 引用永远不会被替换成值（未注册、名字非法或写歪），因此保存被拒绝。请删掉该引用、改用已注册的变量，或先关闭变量替换。',
-        'A {{…}} reference in this text could never be substituted (unregistered, illegal or malformed), so the save was refused. Delete the reference, use a registered variable, or turn variable substitution off first.',
-      ],
-      'invalid-enabled': [
-        '开关请求缺少布尔值 enabled。',
-        'The switch request needs a boolean "enabled".',
-      ],
-      'invalid-state': [
-        '本层状态只能是 inherit、on 或 off 之一。',
-        'A layer state must be one of inherit, on or off.',
-      ],
-      'variable-lookup-failed': [
-        '无法取到当前的变量表，本次写入被拒绝（无法判断哪些变量会被展开）。',
-        'The current variable table could not be obtained, so this write was refused: there is no way to tell which references would expand.',
-      ],
-      // g-043「下载区域」(CONTRACT.md §17.7–§17.10). One key per way the choice can
-      // be refused, because the dialog's red line has to say *which* one happened:
-      // a shape mistake, a malformed address, an address nobody answered, an
-      // address that answered with an error, and an address that answered but is
-      // not a registry are five different things to do something about.
-      'invalid-region': [
-        '下载区域只能是 default、cn 或 custom 之一。',
-        'The download region must be one of default, cn or custom.',
-      ],
-      'registry-invalid': [
-        '镜像地址不合法：必须是 http(s) 地址、主机非空，且不能带账号密码、查询串或片段。',
-        'That mirror address is invalid: it must be an http(s) URL with a host, and no credentials, query string or fragment.',
-      ],
-      'registry-unreachable': [
-        '该镜像地址在超时时间内没有任何响应（超时或网络错误），地址未被保存。',
-        'Nothing answered at that mirror address within the timeout (a timeout or a network error); nothing was saved.',
-      ],
-      'registry-http-error': [
-        '该地址能访问，但返回了错误状态，不是可用的 npm registry。',
-        'That address answered, but with an error status, so it is not a usable npm registry.',
-      ],
-      'registry-not-npm': [
-        '该地址能访问，但返回的不是 npm 包文档（缺少 dist-tags.latest）。',
-        'That address answered, but not with an npm package document (no dist-tags.latest).',
-      ],
-      'registry-unavailable': [
-        '所选下载源当前不可用。不会自动改用默认源：请稍后重试，或换一个下载区域。',
-        'The chosen download source is unavailable. Nothing falls back to the default source: retry later, or pick another download region.',
-      ],
-      // The one code both preferences routes can answer (§17.4, §17.8): a write
-      // that could not be persisted. Without copy the red line would render the
-      // raw identifier, which is exactly what the「no untranslated string」rule
-      // forbids.
-      'preferences-unwritable': [
-        '偏好文件无法写入，本次选择没有生效。',
-        'The preference file could not be written, so nothing took effect.',
-      ],
-    };
-    // #endregion
-
+    // #region generated: locale/zh.json + locale/en.json (g-066)
+    // 下面两段是**生成物**，不是真源：文案只改 locale/*.json，然后跑
+    // `node scripts/locale-pack.mjs --write`；`--check` 是发布门（prepare 也会跑）。
+    // 浏览器运行时读不到包内的 JSON —— bundle 是 classic script、宿主零转译、插件路由
+    // 也不服务子目录 —— 所以词典必须内联进 bundle，只是不再手工维护它（CONTRACT.md §14.5）。
     const zh = {
       nav: 'Prompt 管理',
       title: 'Prompt 管理',
-      subtitle:
-        '查看并覆盖每轮会话最终装配的 system prompt。写入作用于下一轮装配（next-turn）。',
+      subtitle: '查看并覆盖每轮会话最终装配的 system prompt。写入作用于下一轮装配（next-turn）。',
       refresh: '刷新快照',
       loading: '加载中…',
       loadFailed: '快照加载失败',
@@ -1081,8 +925,7 @@ window.__ModuleLoader__.load({
       sessionGlobal: '全局（不指定会话）',
       sessionManualPlaceholder: '粘贴 session id（Agent.id）',
       sessionApply: '应用',
-      sessionLimit:
-        '当前 profile 未提供 useSessions（会话服务不可用），已降级为手动输入 session id：无法列出会话下拉。',
+      sessionLimit: '当前 profile 未提供 useSessions（会话服务不可用），已降级为手动输入 session id：无法列出会话下拉。',
       sessionEmpty: '会话列表为空，可手动输入 session id 或使用「全局」。',
       sessionGlobalNote: '未指定会话：快照描述全局装配，工作区层不参与。',
       sessionSearch: '搜索会话（标题 / 路径 / session id）',
@@ -1093,7 +936,6 @@ window.__ModuleLoader__.load({
       sessionNoMatch: '没有匹配的会话，可直接按输入的 id 查看。',
       sessionKeyboardHint: '↑↓ 移动，Enter 选中，Esc 清空搜索',
       sessionSelectedNote: '已指定会话：快照在该会话自身作用域下探测。',
-      // g-016: the collapsed「查看范围」summary row.
       scopeEdit: '更改',
       scopeCollapse: '收起',
       scopeSummaryManual: '会话服务不可用：手动输入 id',
@@ -1116,12 +958,6 @@ window.__ModuleLoader__.load({
       stFrozenGlobal: '全局装配已冻结',
       stUnfrozenGlobal: '全局装配未冻结',
       stFrozenUnknown: '所选会话的冻结状态未知',
-      // ---- g-052: say what "unknown" means, without attributing a cause.
-      // `running` in the session list is `agent.status === 'running'`, which is
-      // NOT `agentAvailable`: an idle session that just finished a turn has
-      // running=false and a live agent, so its frozen state *is* confirmable.
-      // Any wording about "not running / not open / ended" would contradict the
-      // ● marker the user sees in the list, so this copy stays cause-free.
       stFrozenUnknownProbe: '无法探测该会话自己的装配。',
       stFrozenUnknownNotFrozen: '这不等于未冻结；仍可编辑保存，只是不保证生效。',
       stBuild: '构建戳',
@@ -1130,38 +966,23 @@ window.__ModuleLoader__.load({
       stBuildUnknown: '构建戳未知',
       stBuildSelf: '本页',
       stBuildServer: '宿主',
-      stBuildStaleHint:
-        '本页运行的 client.js 与宿主正在发布的字节不同：这是旧标签页在跑旧 bundle。开一个新标签（或在新标签里重新打开设置）即可，改客户端不需要重启宿主。',
-      stBuildUnknownHint:
-        '宿主没有报告 client.js 指纹（宿主版本旧、文件不可读、或标记缺失/重复），因此无法判断本页是否过期；这里不会当作过期。',
+      stBuildStaleHint: '本页运行的 client.js 与宿主正在发布的字节不同：这是旧标签页在跑旧 bundle。开一个新标签（或在新标签里重新打开设置）即可，改客户端不需要重启宿主。',
+      stBuildUnknownHint: '宿主没有报告 client.js 指纹（宿主版本旧、文件不可读、或标记缺失/重复），因此无法判断本页是否过期；这里不会当作过期。',
       stBuildPingFailedHint: 'ping 请求失败，拿不到宿主指纹，因此无法判断本页是否过期。',
-      // g-029: the version the host reported in the ping. The tag renders a real
-      // answer as `v` + the version; this label and the one below are the only two
-      // strings the missing case needs, and the version itself is never written
-      // in this file.
       stPluginVersion: '插件版本',
       stPluginVersionUnknown: '版本未知',
-      // ---- g-030: the upstream update check. Three surfaces, one vocabulary:
-      // the dismissible banner, the「高级」switch that owns the preference, and
-      // the silent path (no update / no information / a failure) which renders
-      // nothing at all — so there is deliberately no "up to date" string here to
-      // put on the page by accident.
       updateAvailable: '有新版本 {latest} 可用（当前 {current}）。',
       updateReleaseLink: '查看发布页',
       updateDismiss: '关闭提示',
       updateSettingLabel: '检查更新',
       updateSettingOn: '已开启',
       updateSettingOff: '已关闭',
-      updateSettingNote:
-        '打开设置页时由宿主检查一次最新版本：先问 npm registry，npm 不可用时才回退 GitHub Releases；只发一个 GET，不带任何本机或会话数据，且来源按「下载区域」选择（中国大陆＝npmmirror）。关闭后不再联网检查（含打开本页时）；开启时会读取一次下载区域状态。',
+      updateSettingNote: '打开设置页时由宿主检查一次最新版本：先问 npm registry，npm 不可用时才回退 GitHub Releases；只发一个 GET，不带任何本机或会话数据，且来源按「下载区域」选择（中国大陆＝npmmirror）。关闭后不再联网检查（含打开本页时）；开启时会读取一次下载区域状态。',
       updateToggleSaved: '检查更新{state}。',
       updateRecheck: '立即重查',
       updateSwitching: '保存中…',
       updateUnknown: '上游暂时没有可用的版本信息。',
       updateLatestKnown: '最新版本 {latest}',
-      // g-043:「下载区域」. The dropdown names the three sources, and the line
-      // under it says what each one means — a「默认」that hides "npm 优先、GitHub 兜底"
-      // would make the other two choices impossible to compare against it.
       updateRegionLabel: '下载区域',
       updateRegionDefault: '默认',
       updateRegionDefaultNote: 'npm 优先；npm 不可用时回退 GitHub release 产物。',
@@ -1174,28 +995,15 @@ window.__ModuleLoader__.load({
       updateRegionSaving: '切换中…',
       updateRegionSelectLabel: '更新来源',
       updateRegionCustomTitle: '自定义镜像源',
-      updateRegionCustomBody:
-        '填写 npm registry 的基地址（http(s)://，可带路径）。提交后宿主会先校验格式并试取一次包文档：不可访问或不是 npm registry 都不会保存，当前生效的源保持不变。',
+      updateRegionCustomBody: '填写 npm registry 的基地址（http(s)://，可带路径）。提交后宿主会先校验格式并试取一次包文档：不可访问或不是 npm registry 都不会保存，当前生效的源保持不变。',
       updateRegionCustomPlaceholder: 'https://registry.example.com/',
       updateRegionCustomSubmit: '校验并保存',
       updateRegionCustomChecking: '校验中…',
       updateRegionCustomCancel: '取消',
       updateRegionUnusable: '已保存的自定义镜像地址不可用：{reason}',
-      // g-032:「立即更新」. The whole feature rests on one promise the copy has
-      // to keep: the install is done by the host, and the **user** restarts. So
-      // every string that describes the outcome says so, and no string anywhere
-      // promises an automatic restart.
-      //
-      // g-036: the restart instruction is partitioned by launch shape. The bare
-      // key is the `unknown` copy — what an old Host (no `launchKind`) and an
-      // undecidable profile get — and it names no launch form, so a terminal
-      // user and a desktop user can both follow it. `…Cli` addresses the command
-      // line, `…Desktop` the official desktop application, whose copy must never
-      // contain `dsh web`: that user has no terminal to run it in.
       updateApply: '立即更新',
       updateApplyTitle: '更新到 v{latest}',
-      updateApplyBody:
-        '宿主将通过官方插件管理器安装 v{latest}（按当前下载区域从 npm registry 或 GitHub Release 产物获取，下载到本机 profile，不自动重启）。',
+      updateApplyBody: '宿主将通过官方插件管理器安装 v{latest}（按当前下载区域从 npm registry 或 GitHub Release 产物获取，下载到本机 profile，不自动重启）。',
       updateApplyRestartNote: '安装完成后需要你手动重启 DSH 才会生效。',
       updateApplyRestartNoteCli: '安装完成后需要你手动重新运行 dsh web 才会生效。',
       updateApplyRestartNoteDesktop: '安装完成后需要你手动退出并重新打开 DeepSeek Harness 才会生效。',
@@ -1211,12 +1019,9 @@ window.__ModuleLoader__.load({
       updateApplyFailed: '安装失败：{reason}',
       updateApplyRetry: '重试',
       updateApplyCancelled: '已取消安装；profile 文件已还原。',
-      updateApplyUnknown:
-        '这次安装的状态已不可查（可能已完成，也可能是页面刷新过）。请手动重启 DSH 或用「立即重查」确认版本。',
-      updateApplyUnknownCli:
-        '这次安装的状态已不可查（可能已完成，也可能是页面刷新过）。请手动重新运行 dsh web 或用「立即重查」确认版本。',
-      updateApplyUnknownDesktop:
-        '这次安装的状态已不可查（可能已完成，也可能是页面刷新过）。请退出并重新打开 DeepSeek Harness，或用「立即重查」确认版本。',
+      updateApplyUnknown: '这次安装的状态已不可查（可能已完成，也可能是页面刷新过）。请手动重启 DSH 或用「立即重查」确认版本。',
+      updateApplyUnknownCli: '这次安装的状态已不可查（可能已完成，也可能是页面刷新过）。请手动重新运行 dsh web 或用「立即重查」确认版本。',
+      updateApplyUnknownDesktop: '这次安装的状态已不可查（可能已完成，也可能是页面刷新过）。请退出并重新打开 DeepSeek Harness，或用「立即重查」确认版本。',
       updateApplyManual: '也可以手动更新：{hint}',
       updateApplyManualLink: '打开 {tag} 的发布页或包页',
       updateApplyReused: '已有一个安装在进行中。',
@@ -1225,13 +1030,12 @@ window.__ModuleLoader__.load({
       updateApplyAlreadyDesktop: '该版本已安装（v{version}），请退出并重新打开 DeepSeek Harness 生效。',
       viewSections: '分段',
       viewFull: '全文',
-      // g-015: the four first-level tabs, in their fixed presentation order.
       tabMine: '我的 Prompt',
       tabOverview: '提示词总览',
-      // g-038: 「历史与备份」 became two tabs, in this exact order.
       tabHistory: '版本历史',
       tabBackup: '备份与恢复',
       tabAdvanced: '高级',
+      tabUpdateBadge: '有可用更新',
       overviewReservedNote: '「我的 Prompt」那一段不在这里重复显示：它归「我的 Prompt」tab 所有，请到那里查看和编辑。',
       filterHeading: '筛选',
       filterLayer: '来源层',
@@ -1243,8 +1047,6 @@ window.__ModuleLoader__.load({
       fWorkspace: '工作区级',
       fYes: '可覆盖',
       fNo: '不可覆盖',
-      // The editor's "label: value" row cannot echo its own label; these two
-      // are the values of that row only, never of the sections-list Tag.
       originRegistered: '注册段',
       originAppended: '本插件 append',
       originDownstream: '其它插件加入',
@@ -1268,13 +1070,11 @@ window.__ModuleLoader__.load({
       fullFiltered: '已按来源筛选：此处为重组后的预览文本，不是服务端 rendered。',
       unresolvedTitle: '真实装配会失败',
       unresolvedBody: '会 throw 的引用：{list}',
-      unresolvedNote:
-        '这些引用所在的段参与变量替换，宿主每轮组装该会话的 prompt 时都会直接抛错——该会话的 prompt 组装不出来，因此这段文本不是真实 prompt。',
+      unresolvedNote: '这些引用所在的段参与变量替换，宿主每轮组装该会话的 prompt 时都会直接抛错——该会话的 prompt 组装不出来，因此这段文本不是真实 prompt。',
       unresolvedLiteralInline: '另有 {list} 位于不参与替换的段中：真实 prompt 里它们就是原样的字面量。',
       unresolvedLiteralTitle: '真实 prompt 就是这些字面量',
       unresolvedLiteralBody: '不参与替换的引用：{list}',
-      unresolvedLiteralNote:
-        '这些引用所在的段不由宿主插值（interpolate: false；「我的 Prompt」永远如此），无论本插件的变量替换是否开启、是否解析得出值，它们都会原样交给模型——预览里的字面量就是真实 prompt，预览即真相。',
+      unresolvedLiteralNote: '这些引用所在的段不由宿主插值（interpolate: false；「我的 Prompt」永远如此），无论本插件的变量替换是否开启、是否解析得出值，它们都会原样交给模型——预览里的字面量就是真实 prompt，预览即真相。',
       truncated: '文本过长，仅显示前 {n} 行。',
       diffHeading: 'base ↔ effective 对比',
       diffSame: '一致',
@@ -1283,20 +1083,13 @@ window.__ModuleLoader__.load({
       diffRemoved: '仅 base',
       diffHint: '逐段比较：base 是注册原文，effective 是覆盖后的结果。',
       editLayer: '保存层',
-      // ---- g-015: 「我的 Prompt」, the only write surface (the reserved section)
       mineHeading: '我的 Prompt',
-      // g-055: the scope card is this block's header, not a page-wide setting of
-      // its own — the block says so once, above the scope row.
       promptBlockNote: '这个范围决定「我的 Prompt」写到哪一层；改范围只在这里。',
-      // g-055: the panel states its own write target, so the reader does not have
-      // to look back above the tab bar to know which layer a save lands in.
       mineTargetNote: '写入目标：{layer}；查看范围：{scope}',
-      mineNote:
-        '这里写下的内容会成为单独一段 Prompt，排在所有内置段之后，下一轮生效（next-turn）。该段永远不由 DSH 插值；开启「变量替换」后，由本插件在装配时展开 {{...}}——未注册、拼错或当前无值的引用原样保留，不会导致组装失败。',
+      mineNote: '这里写下的内容会成为单独一段 Prompt，排在所有内置段之后，下一轮生效（next-turn）。该段永远不由 DSH 插值；开启「变量替换」后，由本插件在装配时展开 {{...}}——未注册、拼错或当前无值的引用原样保留，不会导致组装失败。',
       mineTextLabel: '内容',
       minePlaceholder: '在这里写下你的 Prompt…',
       mineSave: '保存',
-      // g-027: not a confirmation-bearing action — it drops an unsaved draft.
       mineCancel: '取消',
       mineReset: '恢复默认',
       mineSaving: '保存中…',
@@ -1305,16 +1098,13 @@ window.__ModuleLoader__.load({
       mineUnconfigured: '尚未配置：该层还没有「我的 Prompt」，文本为空。',
       mineDirty: '有未保存的修改。',
       mineLoaded: '已加载{layer}的「我的 Prompt」。',
-      // ---- Revision 9: the variable-substitution switch
       mineInterpolateLabel: '变量替换',
       mineInterpolateOn: '已开启',
       mineInterpolateOff: '已关闭',
       mineInterpolateTurnOn: '开启变量替换',
       mineInterpolateTurnOff: '关闭变量替换',
-      mineInterpolateNote:
-        '开启后，这段文本里的 {{变量}} 由本插件在装配时展开：{{model}} → 当前模型名、{{cwd}} → 工作目录、{{provider}} → provider。未注册、拼错或当前无值的引用会原样保留（不会导致组装失败）。关闭时所有 {{...}} 都原样交给模型。',
-      mineInterpolateWarn:
-        '注意：DSH 没有转义机制。开启后你无法再在这里写字面量 {{...}}——未注册、拼错或写歪的引用永远拿不到值，所以保存时会被直接拒绝。它不会让会话装配失败，只会一直保持字面量。',
+      mineInterpolateNote: '开启后，这段文本里的 {{...}} 由本插件在装配时展开；当前 DSH 注册的变量：{list}。（{{cwd}} 在 DSH 0.2.1-rc.1 起已弃用：若它不在上面的列表里，文本里的 {{cwd}} 会原样保留，保存时也会因「未注册」被拒绝；工作目录由宿主以运行时上下文提供。）未注册、拼错或当前无值的引用会原样保留（不会导致组装失败）。关闭时所有 {{...}} 都原样交给模型。',
+      mineInterpolateWarn: '注意：DSH 没有转义机制。开启后你无法再在这里写字面量 {{...}}——未注册、拼错或写歪的引用永远拿不到值，所以保存时会被直接拒绝。它不会让会话装配失败，只会一直保持字面量。',
       mineInterpolateInherit: '该层未设置：跟随用户层。',
       mineInterpolateStated: '该层显式设置为{state}。',
       mineInterpolateSaving: '正在切换…',
@@ -1322,8 +1112,6 @@ window.__ModuleLoader__.load({
       mineInterpolateFailed: '切换变量替换失败',
       mineInterpolateWorkspaceNeedsSession: '工作区层需要先选择一个会话；未选择时无法在工作区层切换。',
       mineInterpolateLayerOnly: '开关按所选层保存；工作区层未设置时继承用户层。',
-      // ---- Revision 12 (att-002): the three states, and the advisory the host
-      // used to compute and drop.
       mineInterpolateStatesLabel: '本层状态',
       mineInterpolateSetInherit: '继承',
       mineInterpolateSetOn: '显式开',
@@ -1331,10 +1119,8 @@ window.__ModuleLoader__.load({
       mineInterpolateSetNote: '「继承」= 本层不声明（删掉该字段）；「显式关」= 写入 false，可覆盖上层的「开」。',
       mineInterpolateInheritedOn: '本层未设置，因此跟随上层的「开」。要覆盖它，请选「显式关」。',
       mineInterpolateStateSaved: '本层状态已设为「{state}」，下一轮生效（next-turn）。',
-      // ---- g-062:「装配状态提示」— the two-layer observation, page-only.
       assemblyHeading: '装配状态提示',
-      assemblyIntro:
-        '只在这里显示，不进入模型上下文、不占 token、也不改变模型收到的 prompt。提示只在关键节点出现一次：新会话首次装配、以及保存 Prompt 之后的下一个 run。',
+      assemblyIntro: '只在这里显示，不进入模型上下文、不占 token、也不改变模型收到的 prompt。提示只在关键节点出现一次：新会话首次装配、以及保存 Prompt 之后的下一个 run。',
       assemblySwitchLabel: '提示',
       assemblySwitchOn: '已开启',
       assemblySwitchOff: '已关闭',
@@ -1344,10 +1130,9 @@ window.__ModuleLoader__.load({
       assemblySaveFailed: '切换装配状态提示失败',
       assemblyEnabledNow: '装配状态提示已开启。',
       assemblyDisabledNow: '装配状态提示已关闭：不再产生新的提示（已有观察保留）。',
-      assemblyNoSession: '先在上方「查看范围」选择一个会话，才能看到该会话的装配状态。',
+      assemblyNoSession: '「高级」的工作区选择器还没有可用的会话：请先在左侧打开一个会话，或让宿主列出工作区。',
       assemblyNoRecord: '所选会话还没有观察到装配；下一次请求后结果会出现在这里。',
-      assemblyNoNotice:
-        '所选会话已开启提示，但还没有到提示节点（新会话首次装配，或保存 Prompt 之后的下一个 run）。',
+      assemblyNoNotice: '所选会话已开启提示，但还没有到提示节点（新会话首次装配，或保存 Prompt 之后的下一个 run）。',
       assemblyWaitingDelivery: '等待本步的送达事件…',
       assemblyWatching: '正在等待送达层结论…',
       assemblyKindFirst: '新会话首次装配',
@@ -1362,8 +1147,7 @@ window.__ModuleLoader__.load({
       assemblyChangeNotRead: '本次 assembly 未读到变更后的插件段文本。',
       assemblyDeliveryWaiting: '尚未观测到本步的 system/message 事件。',
       assemblyDeliveryDelivered: '已进入本次请求的 messages（{op}）。',
-      assemblyDeliveryUnconfirmed:
-        '未观测到本步的 system/message 事件，未确认已进入本次请求（可能被去重跳过）。',
+      assemblyDeliveryUnconfirmed: '未观测到本步的 system/message 事件，未确认已进入本次请求（可能被去重跳过）。',
       assemblyOpAppend: '新增 system/message',
       assemblyOpReplace: '改写 head system/message',
       assemblyTextMatchedYes: '送达文本包含该 Prompt 全文',
@@ -1373,36 +1157,22 @@ window.__ModuleLoader__.load({
       assemblyToastFirst: '新会话首次装配',
       assemblyToastChange: 'Prompt 变更后的下一轮',
       assemblyToastJoin: '　｜　',
-      assemblyToastUnavailable:
-        '本机宿主未提供 Toast 组件，主动提示不可用（未注册任何浮层）；结论仍在上方摘要中，功能其余部分不受影响。',
-      assemblyToastSlotMissing:
-        '本机宿主未声明 shell.overlay 浮层插槽，主动提示无法注册（未注册任何浮层）；结论仍在上方摘要中，功能其余部分不受影响。',
-      assemblyToastRefused:
-        '本机宿主已声明 shell.overlay 插槽，但拒绝了本插件的注册（未注册任何浮层）；结论仍在上方摘要中，功能其余部分不受影响。',
-      assemblyLimitation:
-        '口径：装配层以本插件最终返回的段列表为准——更晚注册的 prepend listener 仍可能改写它，宿主在 waterfall 之后还可能把整份段列表折叠到生效的 complete 段；送达层以本次 step 在 surface 上产生的 system/message（append 或 replace head）为准，HTTP 是否实际发出在插件侧不可观测，本提示不作此声称。',
+      assemblyToastUnavailable: '本机宿主未提供 Toast 组件，主动提示不可用（未注册任何浮层）；结论仍在上方摘要中，功能其余部分不受影响。',
+      assemblyToastSlotMissing: '本机宿主未声明 shell.overlay 浮层插槽，主动提示无法注册（未注册任何浮层）；结论仍在上方摘要中，功能其余部分不受影响。',
+      assemblyToastRefused: '本机宿主已声明 shell.overlay 插槽，但拒绝了本插件的注册（未注册任何浮层）；结论仍在上方摘要中，功能其余部分不受影响。',
+      assemblyLimitation: '口径：装配层以本插件最终返回的段列表为准——更晚注册的 prepend listener 仍可能改写它，宿主在 waterfall 之后还可能把整份段列表折叠到生效的 complete 段；送达层以本次 step 在 surface 上产生的 system/message（append 或 replace head）为准，HTTP 是否实际发出在插件侧不可观测，本提示不作此声称。',
       mineWarningsHeading: '已保存，但有以下引用需要留意：',
-      mineWarningUndefined:
-        '这些变量在本次探测中没有值，保存已通过（值属于会话，不属于文本）；缺少该值的那一轮，这些引用会保留字面量、不做替换：{list}',
+      mineWarningUndefined: '这些变量在本次探测中没有值，保存已通过（值属于会话，不属于文本）；缺少该值的那一轮，这些引用会保留字面量、不做替换：{list}',
       mineWarningList: '引用 {name}',
       mineLayerDisabled: '本层已被停用，当前不参与任何装配。',
       mineLayerDisabledReason: '原因：{reason}',
-      mineLayerDisabledFix:
-        '修复路径：删掉该层配置里无法解析的 {{…}} 引用（或把变量替换关掉），然后重新打开本页；插件不会改写你的文件。',
-      mineLayerDisabledFixGeneric:
-        '修复路径：修正或删除该层的配置文件（JSON 非法、字段非法、文件被删都会落到这里），然后重新打开本页；插件不会改写你的文件。',
-      // ---- g-021: a frozen scope is a blocking statement, not a footnote
+      mineLayerDisabledFix: '修复路径：删掉该层配置里无法解析的 {{…}} 引用（或把变量替换关掉），然后重新打开本页；插件不会改写你的文件。',
+      mineLayerDisabledFixGeneric: '修复路径：修正或删除该层的配置文件（JSON 非法、字段非法、文件被删都会落到这里），然后重新打开本页；插件不会改写你的文件。',
       mineFrozenWarn: '该作用域已被冻结：你写下的 Prompt 不会生效',
-      mineFrozenBody:
-        '保存按钮仍然可用，文本会写入{layer}的配置；但这个作用域被 complete 段冻结，本次写入不会进入最终 Prompt，也不会在下一轮生效。',
-      // The `frozenScope: "global"` + session case is *unknown*, not frozen
-      // (CONTRACT.md §2.4/§7.2): the panel may warn, but it may not claim the
-      // session is frozen. Two of its own keys keep that distinction separate.
+      mineFrozenBody: '保存按钮仍然可用，文本会写入{layer}的配置；但这个作用域被 complete 段冻结，本次写入不会进入最终 Prompt，也不会在下一轮生效。',
       mineFrozenUnknownWarn: '无法确认所选会话的装配是否被冻结',
-      mineFrozenUnknownBody:
-        '全局装配被 complete 段冻结，但所选会话没有活动的 Agent，所以无法确认它是否同样冻结。文本仍会写入{layer}的配置；如果它确实被冻结，就不会生效。',
-      mineFrozenHowTo:
-        '要让它生效：换用一个未声明 complete 的 agent preset（例如内置的默认 preset），或去掉当前 preset 里的 complete 声明，然后在所选会话重新加载。',
+      mineFrozenUnknownBody: '全局装配被 complete 段冻结，但所选会话没有活动的 Agent，所以无法确认它是否同样冻结。文本仍会写入{layer}的配置；如果它确实被冻结，就不会生效。',
+      mineFrozenHowTo: '要让它生效：换用一个未声明 complete 的 agent preset（例如内置的默认 preset），或去掉当前 preset 里的 complete 声明，然后在所选会话重新加载。',
       mineSavedFrozen: '已保存到{layer}，但所选会话冻结中，不会生效。',
       mineSavedUnknown: '已保存到{layer}；所选会话的冻结状态未知，若已冻结则不会生效。',
       savedNoticeFrozen: '已保存到{layer}，但所选会话冻结中，本轮不会生效。',
@@ -1410,43 +1180,28 @@ window.__ModuleLoader__.load({
       mineWorkspaceNeedsSession: '工作区层需要先选择一个会话；未选择时无法写入工作区层。',
       mineResetTitle: '恢复默认：删除{layer}的「我的 Prompt」',
       mineResetBody: '这会删除该层保存的文本、回到未配置状态。',
-      // ---- g-058 (Revision 36): the「覆盖 / 叠加」mode of this one entry. The
-      // copy has to name the OTHER layer, because that is what the mode is
-      // about: it says what this layer does with the other layer's text, not
-      // where a new section goes (which is what `append` means everywhere else).
       mineModeLabel: '模式',
       mineModeReplace: '覆盖',
       mineModeAppend: '叠加',
       mineModeHintReplace: '覆盖：只用本层的文本，另一层同名条目不生效。',
       mineModeHintAppend: '叠加：本层文本拼在另一层之后，两层都生效。',
-      mineModeNote:
-        '模式作用于同一个保留段：用户层文本在前、工作区层文本在后；两层都有内容时中间插入一个空行，只有一层有内容时不留空行。',
+      mineModeNote: '模式作用于同一个保留段：用户层文本在前、工作区层文本在后；两层都有内容时中间插入一个空行，只有一层有内容时不留空行。',
       mineModeBottomNote: '用户层是最底层：在这里「叠加」与「覆盖」等价（下面没有可拼的层）。',
       mineModeStoredNone: '本层尚未设置模式（按「覆盖」处理）',
       mineModeStored: '本层已存模式：{mode}',
       mineModeDirty: '模式已改动，尚未保存。',
-      // ---- stage 3: two entries, so an illegal (name, action) pair cannot exist
-      blockAppendExisting:
-        '该段名已在当前装配中：append 不会生效（两段不可同名，宿主会跳过并记为 name-already-present）。请改用「替换 replace」，或把段名改成一个尚未注册的新名。',
-      blockNotPresent:
-        '该段名当前不在装配中：replace / hide 会被跳过（宿主记为 section-not-present）。请改用一个已注册的段名，或改用「追加 append」新建段。',
+      blockAppendExisting: '该段名已在当前装配中：append 不会生效（两段不可同名，宿主会跳过并记为 name-already-present）。请改用「替换 replace」，或把段名改成一个尚未注册的新名。',
+      blockNotPresent: '该段名当前不在装配中：replace / hide 会被跳过（宿主记为 section-not-present）。请改用一个已注册的段名，或改用「追加 append」新建段。',
       blockMissingName: '段名不能为空（宿主会返回 missing-name）。',
       editDisabledOverridable: '该段不可覆盖',
       editDisabledFrozen: '当前作用域已冻结，编辑不会生效',
       savedNotice: '已保存到{layer}，下一轮生效（next-turn）。',
       deletedNotice: '已撤销{layer}的覆盖，下一轮生效（next-turn）。',
-      // g-050: appended to a success notice when an operation changed the stored
-      // text while the editor held **unsaved** work, so the reader knows why the
-      // box still shows something other than the new stored value.
       mineDraftKept: '配置已在别处更新；你编辑器中尚未保存的内容仍保留着。',
-      // g-056: the draft's scope is the file a save would write, not the view it
-      // was typed in. These three keys are the visible half of that rule.
       mineDraftScope: '当前编辑框显示的是一份尚未保存的草稿（归属：{scope}）。',
-      mineDraftElsewhere:
-        '你在「{scope}」还有一份未保存的内容（{chars} 字），它没有跟着当前作用域走：内容仍在原作用域里，切回去即可继续编辑。',
+      mineDraftElsewhere: '你在「{scope}」还有一份未保存的内容（{chars} 字），它没有跟着当前作用域走：内容仍在原作用域里，切回去即可继续编辑。',
       mineDraftElsewhereDrop: '放弃那份草稿',
-      mineSaveBlockedDraftElsewhere:
-        '已阻止保存：你在「{scope}」还有未保存的内容（{chars} 字），而当前编辑框显示的不是它。请先切回该作用域保存或放弃它，再回到这里保存。',
+      mineSaveBlockedDraftElsewhere: '已阻止保存：你在「{scope}」还有未保存的内容（{chars} 字），而当前编辑框显示的不是它。请先切回该作用域保存或放弃它，再回到这里保存。',
       nextTurn: '下一轮生效',
       ovHeading: '已生效覆盖',
       ovEmpty: '当前作用域没有任何覆盖。',
@@ -1471,9 +1226,6 @@ window.__ModuleLoader__.load({
       rendererPrimitives: 'primitives（官方基础件）',
       rendererFallback: 'fallback（自绘 + 主题变量）',
       primitivesFailure: 'primitives 不可用原因',
-      // g-063 wrap-up: `primitivesDetail*` / `primitivesMembers*` lived here —
-      // the copy for the two always-on probe rows. Removed with those rows once
-      // they had located the `forwardRef` defect on a real machine.
       primitivesToastLabel: 'toast 命名空间',
       toastNamespaceNone: '无（未找到可用 Toast）',
       toastNamespaceDefault: 'module.default（已解包）',
@@ -1487,38 +1239,41 @@ window.__ModuleLoader__.load({
       scopeSessions: '{n} 个会话',
       scopeMore: '显示更多（还有 {n} 条）',
       scopeCut: '还有 {n} 条已到渲染上限，请用搜索缩小范围。',
-      scopeTruncated:
-        '已达渲染上限（同一时刻最多渲染 {n} 条会话）：请用搜索缩小范围，或先收起其它工作区。',
+      scopeTruncated: '已达渲染上限（同一时刻最多渲染 {n} 条会话）：请用搜索缩小范围，或先收起其它工作区。',
       scopeGroupsTruncated: '工作区分组过多，仅显示部分分组：请用搜索缩小范围。',
-      scopeDegraded:
-        '当前 profile 未提供 useWorkspaces（工作区服务不可用），已降级为平铺会话列表：无法按工作区分组。',
+      scopeDegraded: '当前 profile 未提供 useWorkspaces（工作区服务不可用），已降级为平铺会话列表：无法按工作区分组。',
       scopeArchivedHidden: '另有 {n} 个已归档会话未显示（与侧边栏默认一致），可用搜索或直接输入 id 查看。',
-      scopeSearchHint:
-        '按工作区分组，与左侧「工作区」一致；搜索会保留匹配项所属的工作区分组，匹配工作区名时其下会话一并显示。',
-      scopeToggleAria: '工作区「{name}」：展开或收起',
+      scopeSearchHint: '按工作区分组，与左侧「工作区」一致；搜索会保留匹配项所属的工作区分组，匹配工作区名时其下会话一并显示。',
       scopeToggleAria: '工作区「{name}」：展开或收起',
       scopeSelected: '当前选中',
-      // ---- stage 2: history / diff / reset / transfer ----
       histHeading: '版本历史',
-      // g-044: the summary line of the folded「说明与提示」block, which carries
-      // the retention sentence and the three scope/picking sentences.
       histNotesToggle: '说明与提示',
-      histNote:
-        '每次成功保存或撤销都会追加一条记录（最近 {limit} 条）。历史文件按行追加，不做整文件重写。',
+      histNote: '每次成功保存或撤销都会追加一条记录（最近 {limit} 条）。历史文件按行追加，不做整文件重写。',
       histLayerLabel: '历史层',
       histEmpty: '该层还没有历史记录。',
       histNoSession: '工作区层需要一个可解析的 session id 才能读取历史。',
       histTotal: '共 {n} 条',
-      // ---- g-038: the version history's own scope, and its paging ----
       histScopeLabel: '历史作用域',
       histScopeGlobal: '用户层历史是全局的：这里展示该层全部记录，不按会话过滤。',
       histScopeWorkspace: '当前展示「{name}」这一工作区的历史文件（由会话 {session} 定位），是该工作区的全部记录。',
       histScopeNone: '还没有可用的工作区作用域：请先在左侧打开一个会话，或让宿主列出工作区。',
       histScopeDegraded: '工作区服务不可用，已降级为按会话定位历史文件。',
-      histScopeHint: '作用域只属于「版本历史」，与上方「查看范围」互不影响。',
-      // g-038 二轮：作用域是「一行摘要 + 更改展开」，不把每个工作区平铺成按钮。
+      histScopeHint: '作用域只属于「版本历史」，与「我的 Prompt」里的「查看范围」互不影响。',
       histScopeSearch: '搜索作用域（工作区 / 会话）',
       histScopeNoMatch: '没有匹配的作用域。',
+      overviewScopeLabel: '总览作用域',
+      overviewScopeNone: '还没有可选的会话：请先在左侧打开一个会话，或让宿主列出工作区与会话。',
+      overviewScopeDegraded: '工作区服务不可用，已降级为按会话选择作用域。',
+      overviewScopeSearch: '搜索作用域（工作区 / 会话）',
+      overviewScopeNoMatch: '没有匹配的会话。',
+      overviewScopeAuto: '跟随当前会话',
+      advancedScopeLabel: '工作区（层操作对象）',
+      advancedScopeNone: '还没有可选的工作区：请先在左侧打开一个会话，或让宿主列出工作区。',
+      advancedScopeDegraded: '工作区服务不可用，已降级为按会话定位工作区层。',
+      advancedScopeSearch: '搜索工作区',
+      advancedScopeNoMatch: '没有匹配的工作区。',
+      advancedScopeAuto: '跟随当前会话',
+      advancedScopeNote: '这里选的是工作区：整层清除作用于该工作区层文件（该工作区所有会话共享）。用户层是全局的，与这里的选择无关。',
       histPager: '第 {page} / {pages} 页 · 共 {total} 条',
       histPagePrev: '上一页',
       histPageNext: '下一页',
@@ -1528,8 +1283,6 @@ window.__ModuleLoader__.load({
       histUnreadable: '历史文件不可读：{reason}',
       histLastError: '最近一次历史写入失败：{reason}',
       histCurrent: '当前生效值',
-      // g-044: `histWholeLayer`（`name === null` 的占位文本）与 `histPreviewName`
-      // 随段名展示一起删除：列表行与预览弹窗都不再显示段名，没有别处引用它们。
       'histAction.replace': '替换 replace',
       'histAction.hide': '隐藏 hide',
       'histAction.append': '追加 append',
@@ -1537,7 +1290,6 @@ window.__ModuleLoader__.load({
       'histAction.reset-layer': '整层重置',
       'histAction.legacy-clear': '清除旧覆盖 legacy-clear',
       'histAction.rollback': '回滚 rollback',
-      // g-039：详情区的第三个视图——单条记录的预览，以及整层回滚。
       histPreview: '预览',
       histPreviewHeading: '记录预览',
       histPreviewClose: '关闭预览',
@@ -1554,16 +1306,11 @@ window.__ModuleLoader__.load({
       histPreviewNoText: '（无文本）',
       histPreviewSnapshot: '该版本的整层快照（{n} 条覆盖）',
       histPreviewSnapshotEmpty: '这条记录没有带整层快照（旧记录）。',
-      // g-044: the section name is gone from the entry line too — the writing
-      // surface is the single reserved section, so the name said nothing a
-      // reader could act on (the name itself is still on `data-preview-snapshot`).
       histPreviewSnapshotEntry: '{action} · {bytes} 字节',
       histPreviewPolicy: '预览与回滚只涉及「我的 Prompt」段：本层其它段不会被改动。',
       histRollback: '回滚到此处',
       histRollbackTitle: '回滚{layer}到 #{id}',
-      histRollbackBody:
-        '会把「我的 Prompt」段恢复成 #{id} 这一版的内容，并追加一条 rollback 记录（因此这次回滚本身也可以再回滚）。',
-      // g-039 返工：回滚与写入面政策一致——只动保留段，非保留段一律不碰。
+      histRollbackBody: '会把「我的 Prompt」段恢复成 #{id} 这一版的内容，并追加一条 rollback 记录（因此这次回滚本身也可以再回滚）。',
       histRollbackScope: '本次回滚只恢复「我的 Prompt」段，本层其它段保持原样。',
       histRollbackForeign: '该版本另有 {n} 条非「我的 Prompt」段覆盖，按写入面政策不会被恢复。',
       histRollbackDone: '已回滚到 #{id}：历史列表与当前生效值已刷新，下一轮装配生效。',
@@ -1598,14 +1345,12 @@ window.__ModuleLoader__.load({
       resetLayerWorkspace: '重置工作区级层',
       resetLegacyButton: '清除全部覆盖',
       resetLegacyTitle: '清除{layer}的全部旧覆盖',
-      resetLegacyBody:
-        '将删除{layer}的 {count} 条冻结覆盖（即「我的 Prompt」以外的全部旧覆盖），并保留「我的 Prompt」本身。',
+      resetLegacyBody: '将删除{layer}的 {count} 条冻结覆盖（即「我的 Prompt」以外的全部旧覆盖），并保留「我的 Prompt」本身。',
       resetLegacyEmpty: '{layer}没有可清除的冻结覆盖；「我的 Prompt」会保留。',
       advReservedTag: '我的 Prompt',
       advReadOnlyNote: '本列表只读：唯一的写入口是「我的 Prompt」，层级清理请用下面两个按钮。',
       resetLayerTitle: '重置{layer}',
-      resetLayerBody:
-        '将清空{layer}的全部 {count} 条覆盖，下一轮装配生效；被删除的内容会记入历史。',
+      resetLayerBody: '将清空{layer}的全部 {count} 条覆盖，下一轮装配生效；被删除的内容会记入历史。',
       resetLayerEmpty: '{layer}当前没有任何覆盖，无需重置。',
       resetIrreversible: '此操作不可撤销。',
       confirmTitle: '请确认',
@@ -1614,8 +1359,7 @@ window.__ModuleLoader__.load({
       resetDoneNotice: '已恢复默认：删除 {count} 条覆盖，下一轮生效（next-turn）。',
       resetNoneNotice: '没有需要删除的覆盖。',
       transferHeading: '导出 / 导入',
-      transferNote:
-        '导出为带 schema 与版本号的 JSON；导入前先干跑预览变更，确认后才会写入（先写临时文件，校验通过再原子替换）。',
+      transferNote: '导出为带 schema 与版本号的 JSON；导入前先干跑预览变更，确认后才会写入（先写临时文件，校验通过再原子替换）。',
       exportButton: '导出 JSON',
       exportPreviewLabel: '导出内容（可复制）',
       exportPreviewCut: '预览仅显示前 {n} 个字符，下载内容为完整文件。',
@@ -1639,7 +1383,13 @@ window.__ModuleLoader__.load({
       importCounts: '新增 {added} / 覆盖 {replaced} / 无变化 {unchanged} / 删除 {removed} / 保留本地 {kept}',
       importChangeRow: '{name}：{status}',
       importNoChanges: '导入文件与当前配置一致，确认导入不会改动任何文件。',
-      importSkipped: '已跳过的层：{list}',
+      importSkipped: '已跳过（未写入），共 {n} 项：',
+      importSkippedRow: '{layer}：{reason}（{entries} 条）',
+      importReplaceWarning: '注意：导入会整份替换下列设置，不是合并——本机现有的同类内容会被备份中的内容覆盖。',
+      importReplacePresets: '预设库：{presets} 个预设、{applied} 条应用记录，整份替换 presets.json。',
+      importReplacePreferences: '偏好设置：{keys} 项已知设置，整份替换 preferences.json。',
+      importWorkspacesHeading: '工作区层变更（{n} 个）：',
+      importWorkspaceRow: '{root}（新增 {added} / 覆盖 {replaced} / 删除 {removed}）',
       importAppliedNotice: '导入完成：写入 {written} 个层的配置文件，共 {count} 条变更，已记入历史（origin=import）。',
       importUnchangedNotice: '导入内容与现有配置一致，未写入任何文件。',
       importUnchangedWarning: '现有配置未被修改（逐字节不变）。',
@@ -1649,13 +1399,9 @@ window.__ModuleLoader__.load({
       importStatusRemoved: '删除',
       importConfirmTitle: '确认导入',
       importConfirmBody: '将按 {mode} 策略写入以下变更，任何一步失败都不会改动现有配置。',
-      // g-060 (Revision 37): the「预设」tab — the catalogue of named texts for the
-      // reserved section, plus the two layer actions that apply one to a
-      // workspace and put that workspace back.
       tabPresets: '我的预设',
       presetsHeading: '预设',
-      presetsNote:
-        '把一段常用文本存成预设，再把它应用到某个工作区的工作区层：应用写入该工作区的保留段，取消应用还原为应用前的内容。',
+      presetsNote: '把一段常用文本存成预设，再把它应用到某个工作区的工作区层：应用写入该工作区的保留段，取消应用还原为应用前的内容。',
       presetsListHeading: '预设库',
       presetsEmpty: '还没有预设。可以在下面新建，或把「我的 Prompt」当前的文本另存为预设。',
       presetsLibraryError: '预设库文件不能读取',
@@ -1671,13 +1417,11 @@ window.__ModuleLoader__.load({
       presetSaveNew: '保存为新预设',
       presetSaveEdit: '保存修改',
       presetSaveAsCurrent: '从当前文本另存为预设',
-      presetSaveAsCurrentHint:
-        '「从当前文本另存为预设」只是把「我的 Prompt」当前显示的文本填进上面的编辑器，不会直接写入预设库。',
+      presetSaveAsCurrentHint: '「从当前文本另存为预设」只是把「我的 Prompt」当前显示的文本填进上面的编辑器，不会直接写入预设库。',
       presetEdit: '编辑',
       presetDelete: '删除',
       presetWorkspaceHeading: '应用到工作区',
-      presetWorkspaceNote:
-        '选定一个工作区（用它的一个 session 定位），把上面编辑的预设应用过去；也可以取消该工作区已有的应用。',
+      presetWorkspaceNote: '选定一个工作区（用它的一个 session 定位），把上面编辑的预设应用过去；也可以取消该工作区已有的应用。',
       presetWorkspaceEmpty: '这个 profile 没有可用的工作区会话，无法应用预设。',
       presetApply: '应用',
       presetApplyTo: '应用到工作区',
@@ -1689,8 +1433,9 @@ window.__ModuleLoader__.load({
       presetDiscardConfirmTitle: '放弃未保存的修改？',
       presetDiscardConfirmBody: '这个预设的修改还没有保存；确认后关闭弹窗，改动不会写进预设库。',
       presetDeleteConfirmTitle: '删除预设「{name}」？',
-      presetDeleteConfirmBody:
-        '确认后预设库里不再有它。已经应用到工作区的内容不会被改动，但那条应用记录会标记为「来源已删除」。',
+      presetDeleteConfirmBody: '确认后预设库里不再有它。',
+      presetDeleteConfirmApplied: '这个预设已应用到 {count} 个工作区；确认后会先取消这些应用、把它们还原为应用前的内容，再删除预设。',
+      presetDeleteAppliedList: '会被还原的工作区：{list}',
       presetAlreadyAppliedNotice: '该预设已在此工作区生效，未重复叠加。',
       presetNotApplied: '未应用',
       presetUnapplyOne: '取消',
@@ -1702,16 +1447,66 @@ window.__ModuleLoader__.load({
       presetLoaded: '预设库已加载',
       presetSavedNotice: '预设已保存。',
       presetDeletedNotice: '预设已删除。',
-      presetDeletedOrphanNotice: '预设已删除；{count} 个工作区仍保留它的文本，可以继续取消应用。',
+      presetDeletedRestoredNotice: '预设已删除；{count} 个工作区已还原（取消应用）。',
       presetAppliedNotice: '预设已应用到该工作区，下一轮装配生效。',
       presetUnappliedNotice: '已取消应用：该工作区恢复为应用前的内容。',
+      'error.invalid-json': '请求体不是合法 JSON。',
+      'error.invalid-override': 'section 缺失或不是对象。',
+      'error.missing-name': '缺少段名 name。',
+      'error.name-too-long': '段名超过 200 个字符。',
+      'error.invalid-name': '段名包含控制字符。',
+      'error.unknown-action': 'action 必须是 replace、hide 或 append。',
+      'error.missing-text': 'replace 或 append 必须提供字符串文本。',
+      'error.unexpected-text': 'hide 不能携带文本。',
+      'error.invalid-order': 'order 必须是不小于 0 的整数（结果数组下标）。',
+      'error.unexpected-order': 'replace 与 hide 不能携带 order。',
+      'error.unknown-layer': 'layer 必须是 user 或 workspace。',
+      'error.workspace-unresolved': '工作区层需要一个可解析的 session id。',
+      'error.override-not-found': '该层没有这条覆盖，无法撤销。',
+      'error.layer-not-writable': '目标配置文件不是合法配置，拒绝覆盖写入。',
+      'error.text-too-large': '文本超过 200 KiB。',
+      'error.body-too-large': '请求体超过 256 KiB。',
+      'error.assemble-failed': '宿主装配 system prompt 时抛错，快照不可用。',
+      'error.trust-fence-unavailable': '连接服务不可用，请求被信任栅栏拒绝。',
+      'error.not-found': '宿主没有这个路由。',
+      'error.duplicate-name': '同一层出现重复段名。',
+      'error.write-locked': '该写入被拒绝：只有本插件自有的段 prompt-setting:custom-prompt 可以被写入或删除。',
+      'error.unsupported-action': '该段只接受 action=replace。',
+      'error.conflicting-query': 'reset 与 legacy 不能同时使用：reset 清空整层，legacy 只清旧覆盖。',
+      'error.invalid-history-record': '历史记录格式非法，该行已被跳过。',
+      'error.history-unusable': '历史文件不可读写。',
+      'error.history-not-found': '该层历史中没有这条记录。',
+      'error.missing-diff-selector': '需要 from 或 to（历史 id 或 current）。',
+      'error.invalid-diff-selector': 'from/to 只能是 current 或历史记录 id。',
+      'error.invalid-export': '导入内容必须是 JSON 对象。',
+      'error.unknown-export-schema': 'schema 不是本插件的导出格式。',
+      'error.missing-export-version': '导入文件缺少 version。',
+      'error.unsupported-export-version': '导入文件版本不受支持。',
+      'error.missing-export-layers': '导入文件缺少 layers。',
+      'error.missing-export-layer': '导入文件不含所请求的层。',
+      'error.invalid-export-layer': '导入文件的层结构非法。',
+      'error.unknown-import-mode': 'mode 只能是 merge 或 replace。',
+      'error.import-verify-failed': '导入的临时文件校验失败，现有配置未改动。',
+      'error.import-staging-failed': '导入无法写入临时文件，现有配置未改动。',
+      'error.import-commit-failed': '导入提交失败，可能有层已被替换。',
+      'error.invalid-interpolate-flag': '配置里的 interpolateCustom 必须是布尔值；该层已被停用。',
+      'error.unresolvable-variable': '这段文本里的 {{…}} 引用永远不会被替换成值（未注册、名字非法或写歪），因此保存被拒绝。请删掉该引用、改用已注册的变量，或先关闭变量替换。',
+      'error.invalid-enabled': '开关请求缺少布尔值 enabled。',
+      'error.invalid-state': '本层状态只能是 inherit、on 或 off 之一。',
+      'error.variable-lookup-failed': '无法取到当前的变量表，本次写入被拒绝（无法判断哪些变量会被展开）。',
+      'error.invalid-region': '下载区域只能是 default、cn 或 custom 之一。',
+      'error.registry-invalid': '镜像地址不合法：必须是 http(s) 地址、主机非空，且不能带账号密码、查询串或片段。',
+      'error.registry-unreachable': '该镜像地址在超时时间内没有任何响应（超时或网络错误），地址未被保存。',
+      'error.registry-http-error': '该地址能访问，但返回了错误状态，不是可用的 npm registry。',
+      'error.registry-not-npm': '该地址能访问，但返回的不是 npm 包文档（缺少 dist-tags.latest）。',
+      'error.registry-unavailable': '所选下载源当前不可用。不会自动改用默认源：请稍后重试，或换一个下载区域。',
+      'error.preferences-unwritable': '偏好文件无法写入，本次选择没有生效。',
     };
 
     const en = {
       nav: 'Prompt settings',
       title: 'Prompt settings',
-      subtitle:
-        'Inspect and override the system prompt assembled into every session. A write applies to the next assembly (next-turn).',
+      subtitle: 'Inspect and override the system prompt assembled into every session. A write applies to the next assembly (next-turn).',
       refresh: 'Refresh snapshot',
       loading: 'Loading…',
       loadFailed: 'Snapshot request failed',
@@ -1719,8 +1514,7 @@ window.__ModuleLoader__.load({
       sessionGlobal: 'Global (no session)',
       sessionManualPlaceholder: 'Paste a session id (Agent.id)',
       sessionApply: 'Apply',
-      sessionLimit:
-        'This profile provides no useSessions (session service unavailable); the picker degraded to a manual session id and cannot list sessions.',
+      sessionLimit: 'This profile provides no useSessions (session service unavailable); the picker degraded to a manual session id and cannot list sessions.',
       sessionEmpty: 'The session list is empty; enter a session id or use Global.',
       sessionGlobalNote: 'No session: the snapshot describes the global assembly and the workspace layer stays inactive.',
       sessionSearch: 'Search sessions (title, path, session id)',
@@ -1731,7 +1525,6 @@ window.__ModuleLoader__.load({
       sessionNoMatch: 'No session matches; you can view the typed id directly.',
       sessionKeyboardHint: 'Up/Down to move, Enter to select, Esc to clear the search',
       sessionSelectedNote: 'Session selected: the snapshot probes that session’s own scope.',
-      // g-016: the collapsed「查看范围」summary row.
       scopeEdit: 'Change',
       scopeCollapse: 'Collapse',
       scopeSummaryManual: 'Session service unavailable: type an id',
@@ -1754,41 +1547,31 @@ window.__ModuleLoader__.load({
       stFrozenGlobal: 'The global assembly is frozen',
       stUnfrozenGlobal: 'The global assembly is not frozen',
       stFrozenUnknown: 'The selected session’s frozen state is unknown',
-      // g-052: see the zh table — no cause is attributed, because `running`
-      // (agent.status === 'running') is not `agentAvailable`.
       stFrozenUnknownProbe: 'This session’s own assembly cannot be probed.',
-      stFrozenUnknownNotFrozen:
-        'That is not the same as "not frozen"; you can still edit and save, it is just not guaranteed to take effect.',
+      stFrozenUnknownNotFrozen: 'That is not the same as "not frozen"; you can still edit and save, it is just not guaranteed to take effect.',
       stBuild: 'Build',
       stBuildSame: 'Matches the host',
       stBuildStale: 'This tab is stale',
       stBuildUnknown: 'Build unknown',
       stBuildSelf: 'This tab',
       stBuildServer: 'Host',
-      stBuildStaleHint:
-        'The client.js this tab is running is not the build the host is serving byte for byte: an older tab kept an older bundle. Open a new tab (or reopen Settings in one); a client change needs no host restart.',
-      stBuildUnknownHint:
-        'The host reported no client.js fingerprint (older host, unreadable file, or missing/duplicated markers), so this tab cannot be judged — it is not treated as stale.',
+      stBuildStaleHint: 'The client.js this tab is running is not the build the host is serving byte for byte: an older tab kept an older bundle. Open a new tab (or reopen Settings in one); a client change needs no host restart.',
+      stBuildUnknownHint: 'The host reported no client.js fingerprint (older host, unreadable file, or missing/duplicated markers), so this tab cannot be judged — it is not treated as stale.',
       stBuildPingFailedHint: 'The ping request failed, so there is no host fingerprint and this tab cannot be judged.',
-      // g-029: the version the host reported in the ping, or「unknown」when the
-      // same ping carried none. Never a version this bundle invented.
       stPluginVersion: 'Plugin version',
       stPluginVersionUnknown: 'Version unknown',
-      // ---- g-030: the upstream update check (mirrors the zh block above).
       updateAvailable: 'Version {latest} is available (you have {current}).',
       updateReleaseLink: 'Open the release page',
       updateDismiss: 'Dismiss',
       updateSettingLabel: 'Check for updates',
       updateSettingOn: 'On',
       updateSettingOff: 'Off',
-      updateSettingNote:
-        'When the settings page opens, the host checks once for the latest version: it asks the npm registry first and falls back to GitHub Releases only when npm cannot answer — one GET, carrying no local or session data, from whichever source the download region selects (Mainland China = npmmirror). With this off, no update request is made at all, including on page load; turning it on also reads the download-region state once.',
+      updateSettingNote: 'When the settings page opens, the host checks once for the latest version: it asks the npm registry first and falls back to GitHub Releases only when npm cannot answer — one GET, carrying no local or session data, from whichever source the download region selects (Mainland China = npmmirror). With this off, no update request is made at all, including on page load; turning it on also reads the download-region state once.',
       updateToggleSaved: 'Update checks are now {state}.',
       updateRecheck: 'Check now',
       updateSwitching: 'Saving…',
       updateUnknown: 'Upstream has no usable version information right now.',
       updateLatestKnown: 'Latest version {latest}',
-      // g-043: the download region (see the zh block for the same nine keys).
       updateRegionLabel: 'Download region',
       updateRegionDefault: 'Default',
       updateRegionDefaultNote: 'npm first; GitHub release artifacts only when npm cannot answer.',
@@ -1801,28 +1584,18 @@ window.__ModuleLoader__.load({
       updateRegionSaving: 'Switching…',
       updateRegionSelectLabel: 'Update source',
       updateRegionCustomTitle: 'Custom mirror',
-      updateRegionCustomBody:
-        'Enter the base address of an npm registry (http(s)://, a path is allowed). The host validates the format and fetches the package document once: an unreachable address, or one that is not an npm registry, is never saved and the source in force stays as it is.',
+      updateRegionCustomBody: 'Enter the base address of an npm registry (http(s)://, a path is allowed). The host validates the format and fetches the package document once: an unreachable address, or one that is not an npm registry, is never saved and the source in force stays as it is.',
       updateRegionCustomPlaceholder: 'https://registry.example.com/',
       updateRegionCustomSubmit: 'Validate and save',
       updateRegionCustomChecking: 'Validating…',
       updateRegionCustomCancel: 'Cancel',
       updateRegionUnusable: 'The saved custom mirror address is unusable: {reason}',
-      // ---- g-032:「Update now」(mirrors the zh block above). Nothing here may
-      // promise an automatic restart: the install is the host's job and the
-      // restart is the user's.
-      //
-      // g-036: mirrored partition — the bare key is the shape-neutral `unknown`
-      // copy, `…Cli` the command line and `…Desktop` the official desktop
-      // application. No `…Desktop` string may contain `dsh web`.
       updateApply: 'Update now',
       updateApplyTitle: 'Update to v{latest}',
-      updateApplyBody:
-        'The host will install v{latest} through the official plugin manager (fetched from the npm registry or a GitHub release artifact, whichever your download region selects; into this profile, with no automatic restart).',
+      updateApplyBody: 'The host will install v{latest} through the official plugin manager (fetched from the npm registry or a GitHub release artifact, whichever your download region selects; into this profile, with no automatic restart).',
       updateApplyRestartNote: 'You will need to restart DSH yourself for the new version to take effect.',
       updateApplyRestartNoteCli: 'You will need to restart dsh web yourself for the new version to take effect.',
-      updateApplyRestartNoteDesktop:
-        'You will need to quit and reopen DeepSeek Harness yourself for the new version to take effect.',
+      updateApplyRestartNoteDesktop: 'You will need to quit and reopen DeepSeek Harness yourself for the new version to take effect.',
       updateApplying: 'Installing…',
       updateApplyStarting: 'Starting the install…',
       updateApplyCancel: 'Cancel install',
@@ -1835,12 +1608,9 @@ window.__ModuleLoader__.load({
       updateApplyFailed: 'The install failed: {reason}',
       updateApplyRetry: 'Retry',
       updateApplyCancelled: 'The install was cancelled; the profile files were restored.',
-      updateApplyUnknown:
-        'This install can no longer be looked up (it may have finished, or this page may have been reloaded). Restart DSH, or use "Check now" to confirm the version.',
-      updateApplyUnknownCli:
-        'This install can no longer be looked up (it may have finished, or this page may have been reloaded). Restart dsh web, or use "Check now" to confirm the version.',
-      updateApplyUnknownDesktop:
-        'This install can no longer be looked up (it may have finished, or this page may have been reloaded). Quit and reopen DeepSeek Harness, or use "Check now" to confirm the version.',
+      updateApplyUnknown: 'This install can no longer be looked up (it may have finished, or this page may have been reloaded). Restart DSH, or use "Check now" to confirm the version.',
+      updateApplyUnknownCli: 'This install can no longer be looked up (it may have finished, or this page may have been reloaded). Restart dsh web, or use "Check now" to confirm the version.',
+      updateApplyUnknownDesktop: 'This install can no longer be looked up (it may have finished, or this page may have been reloaded). Quit and reopen DeepSeek Harness, or use "Check now" to confirm the version.',
       updateApplyManual: 'You can also update by hand: {hint}',
       updateApplyManualLink: 'Open the {tag} release or package page',
       updateApplyReused: 'An install is already running.',
@@ -1854,6 +1624,7 @@ window.__ModuleLoader__.load({
       tabHistory: 'Version history',
       tabBackup: 'Backup & restore',
       tabAdvanced: 'Advanced',
+      tabUpdateBadge: 'Update available',
       overviewReservedNote: 'The My Prompt section is not repeated here: it belongs to the My Prompt tab, where it is read and written.',
       filterHeading: 'Filters',
       filterLayer: 'Layer',
@@ -1869,8 +1640,7 @@ window.__ModuleLoader__.load({
       originAppended: 'Our append',
       originDownstream: 'Added by another plugin',
       originUnmatched: 'Unmatched override',
-      originDownstreamHint:
-        'Another plugin added this section after the waterfall. It is not our override and not an anomaly.',
+      originDownstreamHint: 'Another plugin added this section after the waterfall. It is not our override and not an anomaly.',
       originUnmatchedHint: 'This override had no target section to act on.',
       colChars: 'Chars {n}',
       colReason: 'Reason',
@@ -1889,13 +1659,11 @@ window.__ModuleLoader__.load({
       fullFiltered: 'Filtered by origin: this is a recomposed preview, not the server-side rendered text.',
       unresolvedTitle: 'The real assembly will fail',
       unresolvedBody: 'References that will throw: {list}',
-      unresolvedNote:
-        'These references sit in sections that DO interpolate, so the Host throws on every turn while assembling this session\'s prompt: the prompt cannot be built, and this text is not the real prompt.',
+      unresolvedNote: 'These references sit in sections that DO interpolate, so the Host throws on every turn while assembling this session\'s prompt: the prompt cannot be built, and this text is not the real prompt.',
       unresolvedLiteralInline: 'Also {list}, in sections that are not interpolated: the real prompt carries them as literal braces.',
       unresolvedLiteralTitle: 'The real prompt is exactly these literal braces',
       unresolvedLiteralBody: 'References in non-interpolated sections: {list}',
-      unresolvedLiteralNote:
-        'These references sit in sections the Host never interpolates (interpolate: false; My Prompt always is one), so they reach the model exactly as written whether or not this plugin\'s own expansion resolved them — the braces in this preview are the real prompt.',
+      unresolvedLiteralNote: 'These references sit in sections the Host never interpolates (interpolate: false; My Prompt always is one), so they reach the model exactly as written whether or not this plugin\'s own expansion resolved them — the braces in this preview are the real prompt.',
       truncated: 'Long text: showing the first {n} lines only.',
       diffHeading: 'base ↔ effective',
       diffSame: 'Same',
@@ -1905,16 +1673,12 @@ window.__ModuleLoader__.load({
       diffHint: 'Compared per section: base is what was registered, effective is the result after overrides.',
       editLayer: 'Save to layer',
       mineHeading: 'My Prompt',
-      // g-055: see the zh table — the scope card is this block's header.
       promptBlockNote: 'This scope decides which layer My Prompt is written to — and it is changed here.',
-      // g-055: the panel states its own write target instead of implying it.
       mineTargetNote: 'Writing to {layer}; scope: {scope}',
-      mineNote:
-        'What you write here becomes one extra prompt section, placed after every built-in section, effective from the next turn (next-turn). DSH never interpolates it; with variable substitution on, this plugin expands its {{...}} during assembly, and a reference that is unregistered, misspelled or currently valueless stays literal instead of failing the assembly.',
+      mineNote: 'What you write here becomes one extra prompt section, placed after every built-in section, effective from the next turn (next-turn). DSH never interpolates it; with variable substitution on, this plugin expands its {{...}} during assembly, and a reference that is unregistered, misspelled or currently valueless stays literal instead of failing the assembly.',
       mineTextLabel: 'Content',
       minePlaceholder: 'Write your prompt here…',
       mineSave: 'Save',
-      // g-027: not a confirmation-bearing action — it drops an unsaved draft.
       mineCancel: 'Cancel',
       mineReset: 'Restore default',
       mineSaving: 'Saving…',
@@ -1923,25 +1687,20 @@ window.__ModuleLoader__.load({
       mineUnconfigured: 'Not configured yet: this layer has no My Prompt, so the text is empty.',
       mineDirty: 'You have unsaved changes.',
       mineLoaded: 'Loaded the {layer} My Prompt.',
-      // ---- Revision 9: the variable-substitution switch
       mineInterpolateLabel: 'Variable substitution',
       mineInterpolateOn: 'ON',
       mineInterpolateOff: 'OFF',
       mineInterpolateTurnOn: 'Turn variable substitution on',
       mineInterpolateTurnOff: 'Turn variable substitution off',
-      mineInterpolateNote:
-        'When on, this plugin expands {{variables}} in this text during assembly: {{model}} \u2192 the current model, {{cwd}} \u2192 the working directory, {{provider}} \u2192 the provider. A reference that is unregistered, misspelled or currently valueless stays literal and never fails the assembly. When off, every {{...}} reaches the model exactly as written.',
-      mineInterpolateWarn:
-        'Note: DSH has no escape syntax. With this on you can no longer write a literal {{...}} here \u2014 an unregistered, misspelled or malformed reference can never resolve, so saving one is refused outright. It would not break the session; it would simply stay literal forever.',
+      mineInterpolateNote: 'When on, this plugin expands {{...}} in this text during assembly; variables this DSH registers: {list}. ({{cwd}} was retired in DSH 0.2.1-rc.1: if it is not in that list, a literal {{cwd}} stays unexpanded and a save that would arm it is refused as unregistered; the working directory now reaches the model as runtime context.) A reference that is unregistered, misspelled or currently valueless stays literal and never fails the assembly. When off, every {{...}} reaches the model exactly as written.',
+      mineInterpolateWarn: 'Note: DSH has no escape syntax. With this on you can no longer write a literal {{...}} here — an unregistered, misspelled or malformed reference can never resolve, so saving one is refused outright. It would not break the session; it would simply stay literal forever.',
       mineInterpolateInherit: 'This layer states nothing: it inherits the user layer.',
       mineInterpolateStated: 'This layer states {state} explicitly.',
-      mineInterpolateSaving: 'Switching\u2026',
+      mineInterpolateSaving: 'Switching…',
       mineInterpolateSaved: 'Variable substitution is now {state}; effective from the next turn (next-turn).',
       mineInterpolateFailed: 'Switching variable substitution failed',
       mineInterpolateWorkspaceNeedsSession: 'The workspace layer needs a selected session; without one the switch cannot be written there.',
       mineInterpolateLayerOnly: 'The switch is saved per selected layer; a workspace layer that states nothing inherits the user layer.',
-      // ---- Revision 12 (att-002): the three states, and the advisory the host
-      // used to compute and drop.
       mineInterpolateStatesLabel: 'This layer',
       mineInterpolateSetInherit: 'Inherit',
       mineInterpolateSetOn: 'On',
@@ -1949,11 +1708,8 @@ window.__ModuleLoader__.load({
       mineInterpolateSetNote: '"Inherit" states nothing (the field is removed); "Off" writes false, which is what lets a layer close over an inherited ON.',
       mineInterpolateInheritedOn: 'This layer states nothing, so it inherits ON. Choose "Off" to override that.',
       mineInterpolateStateSaved: 'This layer now states {state}; effective from the next turn (next-turn).',
-      // ---- g-062: the assembly-status notice — the two-layer observation, shown
-      // in this page only.
       assemblyHeading: 'Assembly status notice',
-      assemblyIntro:
-        'Shown here only: it never enters the model context, costs no tokens and does not change the prompt the model receives. A notice appears once per key node — the first assembly of a new conversation, and the next run after a prompt is saved.',
+      assemblyIntro: 'Shown here only: it never enters the model context, costs no tokens and does not change the prompt the model receives. A notice appears once per key node — the first assembly of a new conversation, and the next run after a prompt is saved.',
       assemblySwitchLabel: 'Notice',
       assemblySwitchOn: 'ON',
       assemblySwitchOff: 'OFF',
@@ -1963,10 +1719,9 @@ window.__ModuleLoader__.load({
       assemblySaveFailed: 'Switching the assembly-status notice failed',
       assemblyEnabledNow: 'The assembly-status notice is on.',
       assemblyDisabledNow: 'The assembly-status notice is off: no new notice will be produced (existing observations are kept).',
-      assemblyNoSession: 'Pick a session under "Viewing scope" above to see that conversation\'s assembly status.',
+      assemblyNoSession: 'The Advanced tab\'s workspace selector has no session to name yet: open a session on the left, or have the host list the workspaces.',
       assemblyNoRecord: 'No assembly has been observed for the selected session yet; the result appears here after the next request.',
-      assemblyNoNotice:
-        'The notice is on for the selected session, but no key node has been reached yet (the first assembly of a new conversation, or the next run after a prompt is saved).',
+      assemblyNoNotice: 'The notice is on for the selected session, but no key node has been reached yet (the first assembly of a new conversation, or the next run after a prompt is saved).',
       assemblyWaitingDelivery: 'Waiting for this step\'s delivery event…',
       assemblyWatching: 'Waiting for the delivery-layer verdict…',
       assemblyKindFirst: 'First assembly of a new conversation',
@@ -1981,8 +1736,7 @@ window.__ModuleLoader__.load({
       assemblyChangeNotRead: 'This assembly did NOT read the changed plugin-section text.',
       assemblyDeliveryWaiting: 'No system/message event has been observed for this step yet.',
       assemblyDeliveryDelivered: 'Delivered into this request\'s messages ({op}).',
-      assemblyDeliveryUnconfirmed:
-        'No system/message event was observed for this step, so delivery into this request is unconfirmed (the projection may have deduplicated it).',
+      assemblyDeliveryUnconfirmed: 'No system/message event was observed for this step, so delivery into this request is unconfirmed (the projection may have deduplicated it).',
       assemblyOpAppend: 'an appended system/message',
       assemblyOpReplace: 'a rewritten head system/message',
       assemblyTextMatchedYes: 'the delivered text carries the full prompt',
@@ -1992,76 +1746,51 @@ window.__ModuleLoader__.load({
       assemblyToastFirst: 'First assembly of a new conversation',
       assemblyToastChange: 'Next run after your prompt change',
       assemblyToastJoin: ' · ',
-      assemblyToastUnavailable:
-        'This host does not provide the Toast primitive, so proactive toasts are unavailable (no overlay was registered); the verdicts stay in the summary above and nothing else is affected.',
-      assemblyToastSlotMissing:
-        'This host never declares the shell.overlay slot, so the proactive toast could not be registered (no overlay was registered); the verdicts stay in the summary above and nothing else is affected.',
-      assemblyToastRefused:
-        'This host declares the shell.overlay slot but refused this plugin\'s registration (no overlay was registered); the verdicts stay in the summary above and nothing else is affected.',
-      assemblyLimitation:
-        'Basis: the assembly layer is the section list this plugin finally returned — a `{prepend: true}` listener registered later may still rewrite it, and the Host may collapse the whole list onto the effective `complete` section after the waterfall; the delivery layer is the system/message this step committed on the surface (append or head replace). Whether the HTTP request was actually sent is not observable from a plugin, and this notice does not claim it.',
+      assemblyToastUnavailable: 'This host does not provide the Toast primitive, so proactive toasts are unavailable (no overlay was registered); the verdicts stay in the summary above and nothing else is affected.',
+      assemblyToastSlotMissing: 'This host never declares the shell.overlay slot, so the proactive toast could not be registered (no overlay was registered); the verdicts stay in the summary above and nothing else is affected.',
+      assemblyToastRefused: 'This host declares the shell.overlay slot but refused this plugin\'s registration (no overlay was registered); the verdicts stay in the summary above and nothing else is affected.',
+      assemblyLimitation: 'Basis: the assembly layer is the section list this plugin finally returned — a `{prepend: true}` listener registered later may still rewrite it, and the Host may collapse the whole list onto the effective `complete` section after the waterfall; the delivery layer is the system/message this step committed on the surface (append or head replace). Whether the HTTP request was actually sent is not observable from a plugin, and this notice does not claim it.',
       mineWarningsHeading: 'Saved, with references to note:',
-      mineWarningUndefined:
-        'These variables had no value in the probe that was run, so the save was accepted (a value belongs to the session, not to the text); in a turn that has no value for them, they stay literal instead of being substituted: {list}',
+      mineWarningUndefined: 'These variables had no value in the probe that was run, so the save was accepted (a value belongs to the session, not to the text); in a turn that has no value for them, they stay literal instead of being substituted: {list}',
       mineWarningList: 'reference {name}',
       mineLayerDisabled: 'This layer is disabled and contributes nothing to any assembly right now.',
       mineLayerDisabledReason: 'Reason: {reason}',
-      mineLayerDisabledFix:
-        'Fix: delete the unresolvable {{...}} reference in that layer\'s config (or turn variable substitution off), then reopen this page. The plugin never rewrites your file.',
-      mineLayerDisabledFixGeneric:
-        'Fix: repair or remove that layer\'s config file (invalid JSON, an invalid field and a deleted file all land here), then reopen this page. The plugin never rewrites your file.',
-      // ---- g-021: a frozen scope is a blocking statement, not a footnote
+      mineLayerDisabledFix: 'Fix: delete the unresolvable {{...}} reference in that layer\'s config (or turn variable substitution off), then reopen this page. The plugin never rewrites your file.',
+      mineLayerDisabledFixGeneric: 'Fix: repair or remove that layer\'s config file (invalid JSON, an invalid field and a deleted file all land here), then reopen this page. The plugin never rewrites your file.',
       mineFrozenWarn: 'This scope is frozen: the prompt you write will not take effect',
-      mineFrozenBody:
-        'Saving still works and the text is stored in the {layer} config, but this scope is frozen by a complete section: this write never reaches the final prompt, and it does not take effect from the next turn either.',
-      // The `frozenScope: "global"` + session case is *unknown*, not frozen
-      // (CONTRACT.md §2.4/§7.2): the panel may warn, but it may not claim the
-      // session is frozen. Two of its own keys keep that distinction separate.
+      mineFrozenBody: 'Saving still works and the text is stored in the {layer} config, but this scope is frozen by a complete section: this write never reaches the final prompt, and it does not take effect from the next turn either.',
       mineFrozenUnknownWarn: 'Cannot confirm whether the selected session’s assembly is frozen',
-      mineFrozenUnknownBody:
-        'The unscoped assembly is frozen by a complete section, but the selected session has no active agent, so whether it is frozen too cannot be confirmed. The text is still written to the {layer} config; if it is frozen too, it will not take effect.',
-      mineFrozenHowTo:
-        'To make it take effect: switch to an agent preset that does not declare complete (the built-in default preset, for example), or drop the complete declaration from the current preset, and then reload the selected session.',
+      mineFrozenUnknownBody: 'The unscoped assembly is frozen by a complete section, but the selected session has no active agent, so whether it is frozen too cannot be confirmed. The text is still written to the {layer} config; if it is frozen too, it will not take effect.',
+      mineFrozenHowTo: 'To make it take effect: switch to an agent preset that does not declare complete (the built-in default preset, for example), or drop the complete declaration from the current preset, and then reload the selected session.',
       mineSavedFrozen: 'Saved to {layer}, but the selected session is frozen, so it will not take effect.',
-      mineSavedUnknown:
-        'Saved to {layer}; the selected session’s frozen state is unknown, so it may not take effect.',
+      mineSavedUnknown: 'Saved to {layer}; the selected session’s frozen state is unknown, so it may not take effect.',
       savedNoticeFrozen: 'Saved to {layer}, but the selected session is frozen; it will not take effect here.',
-      savedNoticeUnknown:
-        'Saved to {layer}; the selected session’s frozen state is unknown, so it may not take effect here.',
+      savedNoticeUnknown: 'Saved to {layer}; the selected session’s frozen state is unknown, so it may not take effect here.',
       mineWorkspaceNeedsSession: 'The workspace layer needs a session; without one it cannot be written.',
       mineResetTitle: 'Restore default: delete the {layer} My Prompt',
       mineResetBody: 'This deletes the text stored in that layer and returns it to unconfigured.',
-      // ---- g-058 (Revision 36): the "cover / stack" mode of this one entry.
       mineModeLabel: 'Mode',
       mineModeReplace: 'Cover',
       mineModeAppend: 'Stack',
       mineModeHintReplace: 'Cover: only this layer\'s text applies; a same-named entry in the other layer does not.',
       mineModeHintAppend: 'Stack: this layer\'s text follows the other layer\'s, so both apply.',
-      mineModeNote:
-        'The mode acts on the one reserved section: the user layer\'s text first, the workspace layer\'s after it — one blank line between them when both carry text, none when only one does.',
+      mineModeNote: 'The mode acts on the one reserved section: the user layer\'s text first, the workspace layer\'s after it — one blank line between them when both carry text, none when only one does.',
       mineModeBottomNote: 'The user layer is the lowest one: "Stack" here means the same as "Cover" — there is nothing below it to stack onto.',
       mineModeStoredNone: 'this layer states no mode (read as "Cover")',
       mineModeStored: 'stored mode: {mode}',
       mineModeDirty: 'The mode changed and is not saved yet.',
-      // ---- stage 3: two entries, so an illegal (name, action) pair cannot exist
-      blockAppendExisting:
-        'That name is already in the current assembly, so append would not take effect (two sections may not share a name; the Host skips it as name-already-present). Use Replace instead, or change the name to a new, unregistered one.',
-      blockNotPresent:
-        'That name is not in the current assembly, so replace / hide would be skipped (the Host records section-not-present). Pick a registered name, or use Append to create a new section.',
+      blockAppendExisting: 'That name is already in the current assembly, so append would not take effect (two sections may not share a name; the Host skips it as name-already-present). Use Replace instead, or change the name to a new, unregistered one.',
+      blockNotPresent: 'That name is not in the current assembly, so replace / hide would be skipped (the Host records section-not-present). Pick a registered name, or use Append to create a new section.',
       blockMissingName: 'The section name cannot be empty (the Host answers missing-name).',
       editDisabledOverridable: 'This section is not overridable',
       editDisabledFrozen: 'The current scope is frozen; an edit would not take effect',
       savedNotice: 'Saved to {layer}; effective from the next turn (next-turn).',
       deletedNotice: 'Removed the {layer} override; effective from the next turn (next-turn).',
-      // g-050: see the zh table.
       mineDraftKept: 'The configuration changed elsewhere; the text you have not saved is still in the editor.',
-      // g-056: see the zh table — the draft belongs to the write target.
       mineDraftScope: 'The editor is showing an unsaved draft (belongs to: {scope}).',
-      mineDraftElsewhere:
-        'You still have unsaved text in "{scope}" ({chars} characters). It did not follow this scope change: it is still there, and going back to that scope continues where you left off.',
+      mineDraftElsewhere: 'You still have unsaved text in "{scope}" ({chars} characters). It did not follow this scope change: it is still there, and going back to that scope continues where you left off.',
       mineDraftElsewhereDrop: 'Discard that draft',
-      mineSaveBlockedDraftElsewhere:
-        'Save blocked: you have unsaved text in "{scope}" ({chars} characters) and it is not what the editor is showing. Go back to that scope to save or discard it, then save here.',
+      mineSaveBlockedDraftElsewhere: 'Save blocked: you have unsaved text in "{scope}" ({chars} characters) and it is not what the editor is showing. Go back to that scope to save or discard it, then save here.',
       nextTurn: 'next-turn',
       ovHeading: 'Active overrides',
       ovEmpty: 'This scope has no overrides.',
@@ -2086,8 +1815,6 @@ window.__ModuleLoader__.load({
       rendererPrimitives: 'primitives (official atoms)',
       rendererFallback: 'fallback (hand-built + theme tokens)',
       primitivesFailure: 'Why primitives is unavailable',
-      // g-063 wrap-up: `primitivesDetail*` / `primitivesMembers*` stood here and
-      // went with the two always-on probe rows.
       primitivesToastLabel: 'toast namespace',
       toastNamespaceNone: 'none (no usable Toast found)',
       toastNamespaceDefault: 'module.default (unwrapped)',
@@ -2101,38 +1828,41 @@ window.__ModuleLoader__.load({
       scopeSessions: '{n} sessions',
       scopeMore: 'Show more ({n} remaining)',
       scopeCut: '{n} more rows exceed the render cap; narrow the range with search.',
-      scopeTruncated:
-        'Render cap reached (at most {n} session rows at a time): narrow the range with search, or fold other workspaces first.',
+      scopeTruncated: 'Render cap reached (at most {n} session rows at a time): narrow the range with search, or fold other workspaces first.',
       scopeGroupsTruncated: 'Too many workspace groups; only part of them is shown: narrow the range with search.',
-      scopeDegraded:
-        'This profile provides no useWorkspaces (workspace service unavailable); the picker degraded to a flat session list and cannot group by workspace.',
-      scopeArchivedHidden:
-        '{n} archived sessions are hidden (matching the sidebar default); use search, or type an id to view one.',
-      scopeSearchHint:
-        'Grouped by workspace, exactly like the left sidebar; a search keeps the owning workspace group of every match, and a workspace-name match keeps all of its sessions.',
-      scopeToggleAria: 'Workspace "{name}": expand or collapse',
+      scopeDegraded: 'This profile provides no useWorkspaces (workspace service unavailable); the picker degraded to a flat session list and cannot group by workspace.',
+      scopeArchivedHidden: '{n} archived sessions are hidden (matching the sidebar default); use search, or type an id to view one.',
+      scopeSearchHint: 'Grouped by workspace, exactly like the left sidebar; a search keeps the owning workspace group of every match, and a workspace-name match keeps all of its sessions.',
       scopeToggleAria: 'Workspace "{name}": expand or collapse',
       scopeSelected: 'Currently selected',
-      // ---- stage 2: history / diff / reset / transfer ----
       histHeading: 'Version history',
-      // g-044: the summary line of the folded「Notes & tips」block, which carries
-      // the retention sentence and the three scope/picking sentences.
       histNotesToggle: 'Notes & tips',
-      histNote:
-        'Every successful save or removal appends one record (the newest {limit} are kept). The history file is appended line by line, never rewritten for a single read.',
+      histNote: 'Every successful save or removal appends one record (the newest {limit} are kept). The history file is appended line by line, never rewritten for a single read.',
       histLayerLabel: 'History layer',
       histEmpty: 'This layer has no history yet.',
       histNoSession: 'The workspace layer needs a resolvable session id to read its history.',
       histTotal: '{n} records',
-      // ---- g-038: the version history's own scope, and its paging ----
       histScopeLabel: 'History scope',
       histScopeGlobal: 'The user layer is global: every record of the layer is listed here, filtered by no session.',
       histScopeWorkspace: 'Showing the history file of workspace "{name}" (located by session {session}) — every record of that workspace.',
       histScopeNone: 'No workspace scope is available yet: open a session on the left, or have the host list the workspaces.',
       histScopeDegraded: 'The workspace service is unavailable; the scope degraded to locating the history file by session.',
-      histScopeHint: 'This scope belongs to Version history alone and is independent of the View scope above.',
+      histScopeHint: 'This scope belongs to Version history alone and is independent of the View scope inside My Prompt.',
       histScopeSearch: 'Search scopes (workspaces / sessions)',
       histScopeNoMatch: 'No scope matches.',
+      overviewScopeLabel: 'Overview scope',
+      overviewScopeNone: 'No session is available to scope by yet: open a session on the left, or have the host list workspaces and sessions.',
+      overviewScopeDegraded: 'The workspace service is unavailable; the scope degraded to picking a session.',
+      overviewScopeSearch: 'Search sessions (workspaces / sessions)',
+      overviewScopeNoMatch: 'No session matches.',
+      overviewScopeAuto: 'Follow the current session',
+      advancedScopeLabel: 'Workspace (what layer actions target)',
+      advancedScopeNone: 'No workspace is available yet: open a session on the left, or have the host list the workspaces.',
+      advancedScopeDegraded: 'The workspace service is unavailable; the target degraded to locating a workspace by session.',
+      advancedScopeSearch: 'Search workspaces',
+      advancedScopeNoMatch: 'No workspace matches.',
+      advancedScopeAuto: 'Follow the current session',
+      advancedScopeNote: 'What you pick here is a workspace: a whole-layer clear acts on that workspace’s file (shared by every session in it). The user layer is global and independent of this choice.',
       histPager: 'Page {page} / {pages} · {total} records',
       histPagePrev: 'Previous',
       histPageNext: 'Next',
@@ -2142,9 +1872,6 @@ window.__ModuleLoader__.load({
       histUnreadable: 'The history file is unreadable: {reason}',
       histLastError: 'The last history write failed: {reason}',
       histCurrent: 'Current value',
-      // g-044: `histWholeLayer` (the `name === null` placeholder) and
-      // `histPreviewName` went with the section-name display: neither the row nor
-      // the preview shows a section name, and nothing else referenced them.
       'histAction.replace': 'replace',
       'histAction.hide': 'hide',
       'histAction.append': 'append',
@@ -2152,9 +1879,6 @@ window.__ModuleLoader__.load({
       'histAction.reset-layer': 'reset the layer',
       'histAction.legacy-clear': 'clear legacy overrides',
       'histAction.rollback': 'rollback',
-      // g-039: the detail pane's third view — one record's preview — and the
-      // reserved-section rollback it enables (Revision 22 narrowed the write to
-      // that one section, so the copy says so).
       histPreview: 'Preview',
       histPreviewHeading: 'Record preview',
       histPreviewClose: 'Close the preview',
@@ -2171,15 +1895,11 @@ window.__ModuleLoader__.load({
       histPreviewNoText: '(no text)',
       histPreviewSnapshot: 'The whole-layer snapshot of this version ({n} override(s))',
       histPreviewSnapshotEmpty: 'This record carries no whole-layer snapshot (an older record).',
-      // g-044: no section name on the entry line either (see the zh table); the
-      // name stays on `data-preview-snapshot` for tests and diagnostics.
       histPreviewSnapshotEntry: '{action} · {bytes} bytes',
       histPreviewPolicy: 'Preview and rollback concern the "My Prompt" section only: no other section of this layer is touched.',
       histRollback: 'Roll back to this',
       histRollbackTitle: 'Roll the {layer} back to #{id}',
-      histRollbackBody:
-        'This restores the "My Prompt" section to the content of #{id} and appends a rollback record, which is what makes this rollback itself a version you can roll back again.',
-      // g-039 rework: the rollback follows the write-face policy — one section.
+      histRollbackBody: 'This restores the "My Prompt" section to the content of #{id} and appends a rollback record, which is what makes this rollback itself a version you can roll back again.',
       histRollbackScope: 'This rollback restores the "My Prompt" section only; every other section of this layer is left as it is.',
       histRollbackForeign: 'That version also overrode {n} section(s) other than "My Prompt"; the write face does not accept those names, so they are not restored.',
       histRollbackDone: 'Rolled back to #{id}: the log and the current value are refreshed, effective from the next assembly.',
@@ -2214,14 +1934,12 @@ window.__ModuleLoader__.load({
       resetLayerWorkspace: 'Reset the workspace layer',
       resetLegacyButton: 'Clear all overrides',
       resetLegacyTitle: 'Clear every legacy override of the {layer}',
-      resetLegacyBody:
-        'This deletes the {count} frozen override(s) of the {layer} (everything except My Prompt) and keeps My Prompt itself.',
+      resetLegacyBody: 'This deletes the {count} frozen override(s) of the {layer} (everything except My Prompt) and keeps My Prompt itself.',
       resetLegacyEmpty: 'The {layer} has no frozen overrides to clear; My Prompt is kept.',
       advReservedTag: 'My Prompt',
       advReadOnlyNote: 'This list is read-only: My Prompt is the only write surface, and the two buttons below clear a whole layer.',
       resetLayerTitle: 'Reset the {layer}',
-      resetLayerBody:
-        'This clears all {count} overrides of the {layer}, effective from the next assembly; the removed content goes to history.',
+      resetLayerBody: 'This clears all {count} overrides of the {layer}, effective from the next assembly; the removed content goes to history.',
       resetLayerEmpty: 'The {layer} holds no override, so there is nothing to reset.',
       resetIrreversible: 'This cannot be undone.',
       confirmTitle: 'Please confirm',
@@ -2230,8 +1948,7 @@ window.__ModuleLoader__.load({
       resetDoneNotice: 'Restored the default: {count} override(s) removed, effective next turn (next-turn).',
       resetNoneNotice: 'There was nothing to remove.',
       transferHeading: 'Export / import',
-      transferNote:
-        'Export produces JSON carrying a schema and a version; an import is previewed with a dry run first, and only a confirmed import writes — staged to a temp file, validated, then renamed atomically.',
+      transferNote: 'Export produces JSON carrying a schema and a version; an import is previewed with a dry run first, and only a confirmed import writes — staged to a temp file, validated, then renamed atomically.',
       exportButton: 'Export JSON',
       exportPreviewLabel: 'Exported content (copyable)',
       exportPreviewCut: 'The preview shows the first {n} characters; the download is the complete file.',
@@ -2255,7 +1972,13 @@ window.__ModuleLoader__.load({
       importCounts: 'added {added} / replaced {replaced} / unchanged {unchanged} / removed {removed} / local kept {kept}',
       importChangeRow: '{name}: {status}',
       importNoChanges: 'The document matches the current configuration, so a confirmed import changes no file.',
-      importSkipped: 'Skipped layers: {list}',
+      importSkipped: 'Skipped (nothing written), {n} item(s):',
+      importSkippedRow: '{layer}: {reason} ({entries} entries)',
+      importReplaceWarning: 'Heads up: this import replaces the settings below as a whole — it does not merge, so what this machine holds today is overwritten by the backup.',
+      importReplacePresets: 'Preset library: {presets} preset(s) and {applied} applied record(s) replace presets.json as a whole.',
+      importReplacePreferences: 'Preferences: all {keys} known setting(s) replace preferences.json as a whole.',
+      importWorkspacesHeading: 'Workspace layers in this document ({n}):',
+      importWorkspaceRow: '{root} (added {added} / replaced {replaced} / removed {removed})',
       importAppliedNotice: 'Import complete: {written} layer file(s) written, {count} change(s), all recorded in history (origin=import).',
       importUnchangedNotice: 'The document matches the existing configuration; no file was written.',
       importUnchangedWarning: 'The existing configuration was not modified (byte-identical).',
@@ -2265,15 +1988,11 @@ window.__ModuleLoader__.load({
       importStatusRemoved: 'removed',
       importConfirmTitle: 'Confirm the import',
       importConfirmBody: 'The changes below will be written with the {mode} strategy; a failure at any step leaves the existing configuration untouched.',
-      // g-060 (Revision 37): the「预设」(presets) tab — the catalogue of named texts
-      // for the reserved section, plus the two layer actions that apply one to a
-      // workspace and put that workspace back.
       tabPresets: 'My presets',
       presetsHeading: 'Presets',
-      presetsNote:
-        'Keep a named text as a preset and apply it to one workspace: applying writes that workspace layer\u2019s reserved section, cancelling restores exactly what was there before.',
+      presetsNote: 'Keep a named text as a preset and apply it to one workspace: applying writes that workspace layer’s reserved section, cancelling restores exactly what was there before.',
       presetsListHeading: 'Library',
-      presetsEmpty: 'No presets yet. Create one below, or save the text \u300cMy Prompt\u300d currently shows as a preset.',
+      presetsEmpty: 'No presets yet. Create one below, or save the text "My Prompt" currently shows as a preset.',
       presetsLibraryError: 'The preset library file cannot be read',
       presetNewHeading: 'New preset',
       presetEditHeading: 'Edit preset',
@@ -2287,48 +2006,92 @@ window.__ModuleLoader__.load({
       presetSaveNew: 'Save as new preset',
       presetSaveEdit: 'Save changes',
       presetSaveAsCurrent: 'Save current text as a preset',
-      presetSaveAsCurrentHint:
-        '\u201cSave current text as a preset\u201d only fills the editor above with the text \u300cMy Prompt\u300d is showing; it writes nothing by itself.',
+      presetSaveAsCurrentHint: '“Save current text as a preset” only fills the editor above with the text "My Prompt" is showing; it writes nothing by itself.',
       presetEdit: 'Edit',
       presetDelete: 'Delete',
       presetWorkspaceHeading: 'Apply to a workspace',
-      presetWorkspaceNote:
-        'Pick a workspace (located by one of its sessions) and apply the preset being edited to it; an existing application can be cancelled here too.',
+      presetWorkspaceNote: 'Pick a workspace (located by one of its sessions) and apply the preset being edited to it; an existing application can be cancelled here too.',
       presetWorkspaceEmpty: 'This profile exposes no workspace session, so no preset can be applied.',
       presetApply: 'Apply',
       presetApplyTo: 'Apply to a workspace',
-      presetApplyToTitle: 'Apply \u201c{name}\u201d to a workspace',
+      presetApplyToTitle: 'Apply “{name}” to a workspace',
       presetApplyToNote: 'The version stored in the preset library is what gets applied; unsaved changes in the editor dialog are not.',
       presetDialogClose: 'Close',
       presetDialogDiscard: 'Discard changes',
       presetDialogDirtyHint: 'There are unsaved changes: closing discards them.',
       presetDiscardConfirmTitle: 'Discard the unsaved changes?',
-      presetDiscardConfirmBody: 'This preset\u2019s changes are not saved yet; confirming closes the dialog and writes nothing to the library.',
-      presetDeleteConfirmTitle: 'Delete the preset \u201c{name}\u201d?',
-      presetDeleteConfirmBody:
-        'The library will no longer hold it. What a workspace already carries is not touched, but its applied record is marked \u201csource deleted\u201d.',
+      presetDiscardConfirmBody: 'This preset’s changes are not saved yet; confirming closes the dialog and writes nothing to the library.',
+      presetDeleteConfirmTitle: 'Delete the preset “{name}”?',
+      presetDeleteConfirmBody: 'The library will no longer hold it.',
+      presetDeleteConfirmApplied: 'This preset is applied to {count} workspace(s); confirming cancels those applications — each workspace is restored to what it held before — and deletes the preset.',
+      presetDeleteAppliedList: 'Workspaces that will be restored: {list}',
       presetAlreadyAppliedNotice: 'This preset is already in force in that workspace; nothing was stacked twice.',
       presetNotApplied: 'Not applied',
       presetUnapplyOne: 'Cancel',
       presetAppliedHere: 'Applied',
       presetAppliedOrphan: 'Source deleted',
-      presetSaving: 'Working\u2026',
+      presetSaving: 'Working…',
       presetSaved: 'Done',
       presetFailed: 'The request failed',
       presetLoaded: 'Library loaded',
       presetSavedNotice: 'The preset was saved.',
       presetDeletedNotice: 'The preset was deleted.',
-      presetDeletedOrphanNotice: 'The preset was deleted; {count} workspace(s) still hold its text and can still cancel the application.',
+      presetDeletedRestoredNotice: 'The preset was deleted; {count} workspace(s) were restored (their applications cancelled).',
       presetAppliedNotice: 'The preset was applied to that workspace; it takes effect on the next assembly.',
       presetUnappliedNotice: 'The application was cancelled: that workspace is back to what it held before.',
+      'error.invalid-json': 'The request body is not valid JSON.',
+      'error.invalid-override': 'The "section" field is missing or not an object.',
+      'error.missing-name': 'The section "name" is missing.',
+      'error.name-too-long': 'The section name exceeds 200 characters.',
+      'error.invalid-name': 'The section name contains control characters.',
+      'error.unknown-action': 'The action must be replace, hide, or append.',
+      'error.missing-text': 'replace and append require a text string.',
+      'error.unexpected-text': 'A hide override must not carry text.',
+      'error.invalid-order': 'The order must be a non-negative integer (a target index).',
+      'error.unexpected-order': 'replace and hide must not carry an order.',
+      'error.unknown-layer': 'The layer must be user or workspace.',
+      'error.workspace-unresolved': 'The workspace layer needs a resolvable session id.',
+      'error.override-not-found': 'That layer holds no such override to remove.',
+      'error.layer-not-writable': 'The target config file is not a valid config; it is never overwritten.',
+      'error.text-too-large': 'The text exceeds 200 KiB.',
+      'error.body-too-large': 'The request body exceeds 256 KiB.',
+      'error.assemble-failed': 'The host assembly threw while building the snapshot.',
+      'error.trust-fence-unavailable': 'The connection service is unavailable, so the trust fence refused the request.',
+      'error.not-found': 'The host has no such route.',
+      'error.duplicate-name': 'The layer holds a duplicate section name.',
+      'error.write-locked': 'This write was refused: only this plugin’s own section, prompt-setting:custom-prompt, may be written or deleted.',
+      'error.unsupported-action': 'That section accepts only action=replace.',
+      'error.conflicting-query': 'reset and legacy cannot be combined: reset clears the whole layer, legacy clears only the legacy overrides.',
+      'error.invalid-history-record': 'That history line is malformed and was skipped.',
+      'error.history-unusable': 'The history file cannot be read or written.',
+      'error.history-not-found': 'That layer history holds no such record.',
+      'error.missing-diff-selector': 'Supply ?from= and/or ?to= (a history id or "current").',
+      'error.invalid-diff-selector': 'A diff selector must be "current" or a history record id.',
+      'error.invalid-export': 'An export document must be a JSON object.',
+      'error.unknown-export-schema': 'The "schema" is not this plugin’s export format.',
+      'error.missing-export-version': 'The import document has no "version".',
+      'error.unsupported-export-version': 'The import document version is not supported.',
+      'error.missing-export-layers': 'The import document has no "layers".',
+      'error.missing-export-layer': 'The import document carries no such layer.',
+      'error.invalid-export-layer': 'A layer in the import document is malformed.',
+      'error.unknown-import-mode': 'The mode must be merge or replace.',
+      'error.import-verify-failed': 'The staged import failed its own validation; nothing was changed.',
+      'error.import-staging-failed': 'The import could not be staged; nothing was changed.',
+      'error.import-commit-failed': 'The import could not be committed; some layers may already be replaced.',
+      'error.invalid-interpolate-flag': 'The config\'s "interpolateCustom" must be a boolean; that layer was disabled.',
+      'error.unresolvable-variable': 'A {{…}} reference in this text could never be substituted (unregistered, illegal or malformed), so the save was refused. Delete the reference, use a registered variable, or turn variable substitution off first.',
+      'error.invalid-enabled': 'The switch request needs a boolean "enabled".',
+      'error.invalid-state': 'A layer state must be one of inherit, on or off.',
+      'error.variable-lookup-failed': 'The current variable table could not be obtained, so this write was refused: there is no way to tell which references would expand.',
+      'error.invalid-region': 'The download region must be one of default, cn or custom.',
+      'error.registry-invalid': 'That mirror address is invalid: it must be an http(s) URL with a host, and no credentials, query string or fragment.',
+      'error.registry-unreachable': 'Nothing answered at that mirror address within the timeout (a timeout or a network error); nothing was saved.',
+      'error.registry-http-error': 'That address answered, but with an error status, so it is not a usable npm registry.',
+      'error.registry-not-npm': 'That address answered, but not with an npm package document (no dist-tags.latest).',
+      'error.registry-unavailable': 'The chosen download source is unavailable. Nothing falls back to the default source: retry later, or pick another download region.',
+      'error.preferences-unwritable': 'The preference file could not be written, so nothing took effect.',
     };
-
-    // One loop keeps zh/en key sets identical by construction, including every
-    // `error.CODE` entry.
-    for (const [code, pair] of Object.entries(ERROR_TEXT)) {
-      zh[`error.${code}`] = pair[0];
-      en[`error.${code}`] = pair[1];
-    }
+    // #endregion
 
     /**
      * Last-resort translator, replaced by the bound `t` in `apply`. Only used
@@ -2620,19 +2383,41 @@ window.__ModuleLoader__.load({
      * official equal fractions as they are (labels wrapped). The lesson worth
      * keeping: **an equal-fraction control assumes short labels**; long localized
      * labels need a wrapping, content-sized layout instead.
+     *
+     * g-070 keeps the exemption and narrows what it covers. The **first-level**
+     * strip is now its own renderer ({@link mainTabStrip}): plain text with an
+     * underlined selection, the look the operator asked for. `tabs()` below stays
+     * the **chip** family — every sub-group selector still uses it — so one
+     * function no longer has to speak two visual languages. The first-level strip
+     * is also single-line now (`flex-wrap: nowrap` + `overflow-x: auto`) instead
+     * of wrapping, and it buys that safety from the scroll container rather than
+     * from a wrap: a block-level box with `overflow-x: auto` is only as wide as
+     * its parent says, and the CSS automatic minimum size — the rule that would
+     * let content push it wide — does not apply to a scroll container. Still no
+     * equal fractions and no `max-content` anywhere in it.
      */
 
     /**
      * Render a segmented control — **always hand-built** (see the decision
      * comment above).
      *
+     * Since g-070 `tabs()` is the **chip** family and {@link mainTabStrip} draws
+     * the first-level bar. `tabs()` itself is unchanged and still renders every
+     * **sub-group** selector in the bundle: `mine-layer` (this file),
+     * `advanced-layer`, `history-layer`, `view` and the overview filter groups,
+     * `full-origin`, `import-mode` and `preset-mode` — eight rendered call sites
+     * across the entry and the four chunks, which take this same binding off
+     * `__internals.shared.tabs`. Both renderers emit the same markers, so a test
+     * that clicks a tab by value does not care which one drew it.
+     *
      * Deliberately *not* a component: it is called during tree building so it
      * emits real host button nodes (role="tab") carrying the `data-tab-*` markers
-     * the tests assert on. It is also the one control this page keeps hand-built
-     * on a primitives Host: `flex-wrap` sizes every button to its own label and
-     * moves a row that does not fit to the next line, which is what six long
-     * Chinese labels need; the official `SegmentedTabs` divides its width into n
-     * equal fractions instead (NOTES §4.2 / CONTRACT §13.4 Revision 49).
+     * the tests assert on. It is also part of the one control this page keeps
+     * hand-built on a primitives Host — the tab strips (this chip family and
+     * {@link mainTabStrip}) — and it keeps the content-sized `flex-wrap` row it has
+     * always drawn; the official `SegmentedTabs` divides its width into n equal
+     * fractions instead, which is what fails the first-level bar's six long Chinese
+     * labels (NOTES §4.2 / CONTRACT §13.4 Revisions 49 and 51).
      * @param items - `{value, label, id, panelId}` entries, non-empty.
      * @param value - the selected value.
      * @param onChange - selection callback.
@@ -2676,6 +2461,214 @@ window.__ModuleLoader__.load({
             item.label,
           ),
         ),
+      );
+    }
+
+    /**
+     * How many presets the library really holds — or `null` when that number is
+     * not known (g-070).
+     *
+     * The count is only ever a **fact this page has already read**: 「还在加载」
+     * /「请求失败」/「库文件读不出来」 all answer `null`, and the tab then renders
+     * no suffix at all. `0` is reserved for a library that really came back
+     * empty, because a `(0)` drawn before the read lands is a number the page
+     * cannot stand behind (CONTRACT §13.4 Revision 51).
+     *
+     * The slot is the main entry's own (`m.presets`): g-060 already has the
+     * library ride the same mount load as the snapshot and the overrides, asked
+     * with the same `?session=` — so this count costs **no** extra request, no
+     * second read and no polling. Choosing that over "ask the presets chunk to
+     * report up" is stated in NOTES §149: the data is already here, and a
+     * cross-chunk report would only be needed for a number the main entry never
+     * had.
+     * @param presets - the page model's preset-library slot (`{phase, data}`).
+     * @returns the entry count, or `null` when unknown.
+     */
+    function presetCountOf(presets) {
+      if (presets === null || presets === undefined || presets.phase !== 'ready') return null;
+      const payload = presets.data;
+      if (payload === null || typeof payload !== 'object') return null;
+      // `GET /presets` answers `200` **with** an `error` field when the library
+      // file cannot be read (CONTRACT §20.9): that is a library problem, not an
+      // empty library, so it may not be shown as `(0)` either.
+      if (payload.error) return null;
+      return Array.isArray(payload.presets) ? payload.presets.length : null;
+    }
+
+    /**
+     * Whether a newer release is on offer — the **objective** state the「高级」
+     * red dot expresses (g-070).
+     *
+     * Deliberately the same test {@link renderUpdateNotice} makes — `latest` is a
+     * non-empty string — minus one term: `dismissed` is **not** consulted here.
+     * Dismissing closes the banner; it cannot un-happen a release, and the dot
+     * exists to keep that fact visible after the banner is gone (CONTRACT §13.4
+     * Revision 51).
+     * @param update - the page model's update slot.
+     * @returns `true` when a newer release is on offer.
+     */
+    function updateOffered(update) {
+      if (update === null || update === undefined) return false;
+      const data = update.data;
+      if (data === null || data === undefined) return false;
+      return typeof data.latest === 'string' && data.latest.length > 0;
+    }
+
+    /**
+     * The **first-level** tab bar: plain text, one line, underlined selection
+     * (g-070).
+     *
+     * A second renderer rather than another branch inside {@link tabs} on
+     * purpose. `tabs()` is shared with every sub-group selector in the bundle,
+     * which keeps the chip look, and one function carrying two visual languages is
+     * the drift this split exists to prevent. The two do share every **marker** the
+     * tests and the panel binding read (`role="tablist"` / `role="tab"` /
+     * `aria-selected` / `tabIndex` / `data-tab-group` / `data-tab-key` /
+     * `data-tab-value`), so only the drawing differs.
+     *
+     * The layout, and why each part is what it is:
+     * - **No equal fractions.** Every button is `flex: 0 0 auto` at its own
+     *   label's width — no `flex: 1`, no `grid`, no `repeat(n, …)`, no
+     *   `min-width: max-content`. That is exactly what g-063 caught (labels
+     *   wrapped, then the strip inflated the row; see the decision comment
+     *   above).
+     * - **One line, scrollable.** `flexWrap: 'nowrap'` + `overflowX: 'auto'`
+     *   keeps six Chinese labels on one line and lets the strip scroll sideways
+     *   when the panel is narrower than they are.
+     * - **Nothing widens an ancestor.** The strip is a block-level scroll
+     *   container, so it is only as wide as its parent allocates, and the CSS
+     *   automatic minimum size does not apply to it (it would be `0` for a scroll
+     *   container anyway).
+     * - **The faint rule** under the whole bar is the container's `borderBottom`,
+     *   taken from the weakest border token on the page. The selected tab's 2px
+     *   indicator is drawn `bottom: 0` inside that button, i.e. pressed against
+     *   the rule, with the button's own bottom padding as the gap.
+     * - **Text-only tabs**: no fill, no stroke, no radius. Unselected is the
+     *   secondary label colour, selected is the primary one plus a slightly
+     *   stronger weight.
+     * @param items - `{value, label, count, badge}` entries, in display order.
+     *   `count` is a number or `null` (unknown); `badge` marks the red dot.
+     * @param value - the selected value.
+     * @param onChange - selection callback.
+     * @param label - accessible name for the tab list.
+     * @param badgeText - the readable description the red dot carries.
+     * @returns the tab list element.
+     */
+    function mainTabStrip(items, value, onChange, label, badgeText) {
+      return h(
+        'div',
+        {
+          role: 'tablist',
+          'aria-label': label,
+          'data-tab-group': 'main',
+          style: {
+            display: 'flex',
+            alignItems: 'stretch',
+            flexWrap: 'nowrap',
+            gap: 24,
+            overflowX: 'auto',
+            overflowY: 'hidden',
+            borderBottom: `1px solid ${token.borderL1}`,
+          },
+        },
+        items.map((item) => {
+          const selected = item.value === value;
+          const count = typeof item.count === 'number' ? item.count : null;
+          return h(
+            'button',
+            {
+              key: item.value,
+              type: 'button',
+              role: 'tab',
+              'aria-selected': selected,
+              tabIndex: selected ? 0 : -1,
+              'data-tab-key': 'main',
+              'data-tab-value': item.value,
+              onClick: () => onChange(item.value),
+              style: {
+                // The tab itself is text: the fill/stroke pair `tabs()` draws
+                // belongs to the chip family, not to this bar.
+                position: 'relative',
+                flex: '0 0 auto',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 4,
+                margin: 0,
+                padding: '6px 0 10px',
+                font: 'inherit',
+                fontSize: 13,
+                lineHeight: '20px',
+                fontWeight: selected ? 600 : 400,
+                // One line per label, always: the strip scrolls instead.
+                whiteSpace: 'nowrap',
+                color: selected ? token.labelPrimary : token.labelSecondary,
+                background: 'transparent',
+                border: 'none',
+                cursor: 'pointer',
+                // The shell's own focus ring is drawn inset
+                // (`outline-offset: -2px`), so it stays visible inside the
+                // scrolling box instead of being clipped by `overflow`.
+                outlineOffset: -2,
+              },
+            },
+            item.label,
+            count === null
+              ? null
+              : h(
+                  'span',
+                  {
+                    key: 'count',
+                    'data-role': 'tab-count',
+                    style: {
+                      fontSize: 11,
+                      lineHeight: '16px',
+                      fontWeight: 'inherit',
+                      // One step weaker than the label's own colour — a token,
+                      // never a second palette.
+                      color: selected ? token.labelSecondary : token.labelTertiary,
+                    },
+                  },
+                  ` (${count})`,
+                ),
+            item.badge !== true
+              ? null
+              : h('span', {
+                  key: 'badge',
+                  'data-role': 'tab-update-dot',
+                  role: 'img',
+                  // Readable in both channels: the tooltip for a pointer, and the
+                  // text alternative the dot contributes to the tab's own name
+                  // (「高级 有可用更新」) — a bare decorative dot would say nothing.
+                  title: badgeText,
+                  'aria-label': badgeText,
+                  style: {
+                    flex: '0 0 auto',
+                    width: 7,
+                    height: 7,
+                    borderRadius: '50%',
+                    background: token.stateError,
+                  },
+                }),
+            selected
+              ? h('span', {
+                  key: 'indicator',
+                  'data-role': 'tab-indicator',
+                  'data-tab-indicator': item.value,
+                  'aria-hidden': 'true',
+                  style: {
+                    position: 'absolute',
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    height: 2,
+                    borderRadius: 1,
+                    background: token.stateBusiness,
+                    pointerEvents: 'none',
+                  },
+                })
+              : null,
+          );
+        }),
       );
     }
 
@@ -3796,7 +3789,12 @@ window.__ModuleLoader__.load({
       if (error.code) {
         const key = `error.${error.code}`;
         const text = safeT(t, key, '');
-        if (text.length > 0) return text;
+        // g-066: the locale lookup answers a miss with the key itself, so a
+        // code with no entry would otherwise put `error.foo` on screen. Treat
+        // "the answer is the key" as a miss and fall through to localized prose
+        // (`errUnknown`) — the raw code still reaches the UI through the
+        // banner's own `data-error-code` / `errCode` line.
+        if (text.length > 0 && text !== key) return text;
       }
       if (error.network) return t('errNetwork');
       if (error.status) return fmt(t('errHttp'), { status: error.status });
@@ -4233,16 +4231,20 @@ window.__ModuleLoader__.load({
      * entries and the「使用这串 id」button — share everything but their colour:
      * the inherited 12px/18px type, the `'3px 10px'` padding and the 999px radius
      * are the shape, and the text colour, the fill and the stroke are arguments.
-     * The unselected text colour really differs (**secondary** on the tabs,
-     * **primary** on the other two), so it is the caller's; the selected state —
+     * The unselected text colour really differs (**secondary** on the chip-family
+     * `tabs()` call sites, **primary** on the other two), so it is the caller's;
+     * the selected state —
      * the button fill under a transparent stroke — stays the caller's own
      * expression, as does every attribute on the node.
      *
      * **A caveat worth stating, not a defect:** that second-renderer caveat is
-     * gone as of g-063's third real-machine round — the tabs are hand-built under
-     * **both** renderers (the Host's `SegmentedTabs` divides its width into equal
-     * fractions, which six long Chinese labels do not fit), so this factory is now
-     * the tab strip's only shape and the two renderers' tabs do look alike.
+     * gone as of g-063's third real-machine round — the tab strips are hand-built
+     * under **both** renderers (the Host's `SegmentedTabs` divides its width into
+     * equal fractions, which the first-level bar's six long Chinese labels do not
+     * fit), so both renderers draw the same strips and they do look alike. Since
+     * g-070 the first-level bar is {@link mainTabStrip}'s plain text, so this
+     * factory is the **chip family's** shape — the sub-group selectors — and no
+     * longer the whole strip's.
      * @param options - `{cursor, color, background, border}`; `border` is the
      *   stroke's colour, the 1px width belongs to the shape.
      * @returns the chip style.
@@ -4395,15 +4397,23 @@ window.__ModuleLoader__.load({
     const scopeSummaryHintStyle = { ...metaStyle, lineHeight: '18px' };
 
     /**
-     * g-055: the「我的 Prompt」block's shared leading rule. The scope card above
-     * the tabs and the panel inside the mine tab are the two halves of one
-     * block, so both carry the same 3px rule with the same 12px inset; the
-     * grouping is the visual claim that the scope row belongs to「我的 Prompt」
-     * rather than to the page at large.
+     * The「我的 Prompt」block's leading rule, 3px with a 12px inset — the visual
+     * claim that the scope row and the write surface are one block rather than
+     * two page-level settings.
+     *
+     * g-055 gave it to **both** halves (the block above the tabs and the mine
+     * panel). g-071 moved the block inside the mine panel, which already carries
+     * the rule, so the rule is now stated once, by the panel: two nested copies
+     * would draw two parallel bars a few pixels apart and read as two blocks —
+     * exactly the reading g-055 introduced the rule to prevent.
      */
     const promptBlockBandStyle = { borderLeft: `3px solid ${token.stateBusiness}`, paddingLeft: 12 };
-    /** The block wrapper above the tabs: one sentence, then the scope card. */
-    const promptBlockStyle = { ...promptBlockBandStyle, display: 'flex', flexDirection: 'column', gap: 6 };
+    /**
+     * The block wrapper: one sentence, then the scope card. Since g-071 it is the
+     * first child block **inside** the mine panel (after the panel's own `h3`),
+     * so it states no rule of its own — see {@link promptBlockBandStyle}.
+     */
+    const promptBlockStyle = { display: 'flex', flexDirection: 'column', gap: 6 };
     /**
      * The one sentence that ties the scope to the write surface. Since the block
      * carries no heading of its own (review round 1: a second「我的 Prompt」title
@@ -4843,6 +4853,65 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * g-073 (Revision 55): the options「提示词总览」's own scope selector offers.
+     *
+     * The shape is dictated by what the host does with `?session=`: it resolves
+     * the workspace layer file from it **and** probes the assembly in that
+     * session's own scope, so the frozen verdict and the variable resolution the
+     * overview shows are per-session facts (§2.4). A workspace is therefore a
+     * **group**, never an option, and every option's value is a concrete session
+     * id — never the workspace's first one. `historyScopeOptionsOf` may compress
+     * a workspace into one member session because a log file really is per
+     * workspace; this selector may not, and copying that shortcut here is the
+     * mistake this derivation exists to prevent.
+     *
+     * A session the workspace list does not claim is offered last, under the
+     * session catalogue's own order; an empty seat yields `mode: 'none'`, which
+     * the panel states in words instead of asking the host a question it must
+     * refuse.
+     * @param wsSeat - the workspace seat (`{items}`).
+     * @param seat - the session seat (`{rows}`).
+     * @returns `{mode, groups, options}`; a group is `{id, label, options}`.
+     */
+    function overviewScopeOptionsOf(wsSeat, seat) {
+      const rows = Array.isArray(seat && seat.rows) ? seat.rows : [];
+      const workspaces = Array.isArray(wsSeat && wsSeat.items) ? wsSeat.items : [];
+      const groups = [];
+      const claimed = new Set();
+      for (const workspace of workspaces) {
+        const ids = Array.isArray(workspace && workspace.sessionIds)
+          ? workspace.sessionIds.filter((id) => typeof id === 'string' && id.length > 0)
+          : [];
+        if (ids.length === 0) continue;
+        const title = typeof workspace.title === 'string' ? workspace.title : '';
+        const path = typeof workspace.path === 'string' ? workspace.path : '';
+        const label = title.length > 0 ? title : basenameOf(path) || workspace.workspaceId || ids[0];
+        const options = ids.map((id) => ({
+          value: id,
+          label: sessionLabelOf(rows, id) || id,
+          workspaceId: typeof workspace.workspaceId === 'string' ? workspace.workspaceId : '',
+        }));
+        for (const option of options) claimed.add(option.value);
+        groups.push({
+          id: typeof workspace.workspaceId === 'string' && workspace.workspaceId.length > 0 ? workspace.workspaceId : label,
+          label,
+          options,
+        });
+      }
+      const rest = [];
+      for (const row of rows) {
+        if (row === null || row === undefined || typeof row.id !== 'string' || row.id.length === 0) continue;
+        if (claimed.has(row.id)) continue;
+        rest.push({ value: row.id, label: sessionLabelOf(rows, row.id) || row.id, workspaceId: '' });
+      }
+      if (rest.length > 0) groups.push({ id: 'sessions', label: '', options: rest });
+      const options = [];
+      for (const group of groups) for (const option of group.options) options.push(option);
+      if (options.length === 0) return { mode: 'none', groups: [], options: [] };
+      return { mode: workspaces.length > 0 ? 'workspaces' : 'sessions', groups, options };
+    }
+
+    /**
      * The reserved section's stored text in one layer, read from **that layer's
      * own** override list (`payload.user.overrides` / `payload.workspace.overrides`,
      * CONTRACT.md §3) — the file the layer itself holds, so what 「我的 Prompt」
@@ -5086,7 +5155,7 @@ window.__ModuleLoader__.load({
      * 2. a `data:` URL on the same anchor — the fallback where `Blob` is absent.
      * @param text - the JSON text.
      * @param filename - the suggested file name.
-     * @returns `{ok: true, mode}` or `{ok: false, reason}`.
+     * @returns `{ok: true, mode}` or `{ok: false, code: 'download-failed'}`.
      */
     function downloadText(text, filename) {
       const click = (href) => {
@@ -5100,7 +5169,11 @@ window.__ModuleLoader__.load({
       };
       try {
         if (typeof document === 'undefined' || typeof document.createElement !== 'function') {
-          return { ok: false, reason: 'no document' };
+          // g-066: the answer is a *machine* code, never prose. What the user
+          // reads comes from the dictionary (`errorText` → `errUnknown`), so an
+          // English sentence written for a console log cannot leak into
+          // localized copy (the export notice interpolates this reason).
+          return { ok: false, code: 'download-failed' };
         }
         if (typeof Blob === 'function' && typeof URL !== 'undefined' && typeof URL.createObjectURL === 'function') {
           const url = URL.createObjectURL(new Blob([text], { type: 'application/json;charset=utf-8' }));
@@ -5114,7 +5187,7 @@ window.__ModuleLoader__.load({
         click(`data:application/json;charset=utf-8,${encodeURIComponent(text)}`);
         return { ok: true, mode: 'data-url' };
       } catch (error) {
-        return { ok: false, reason: error && error.message ? String(error.message) : String(error) };
+        return { ok: false, code: 'download-failed' };
       }
     }
 
@@ -6445,29 +6518,35 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * g-055: the「我的 Prompt」block, with the scope card as its header.
+     * g-055: the「我的 Prompt」block. Since g-071 it renders **inside** the mine
+     * panel, right below that panel's own `h3`, and no longer above the tab bar.
      *
-     * The「查看范围」selector is page-level state — it scopes the snapshot and the
-     * override reads and it decides which layer a save lands in — so it stays
-     * above the tab bar and stays the *one* place the scope is changed. What was
-     * wrong was the reading, not the position: rendered bare it looked like a
-     * page-wide setting of its own, while「我的 Prompt」— the only surface it
-     * writes — looked like a separate block further down. This wrapper states
-     * the grouping instead: one sentence saying what the scope decides, and then
-     * the card itself, both inside one container that carries the same leading
-     * rule the mine panel carries.
+     * The「查看范围」selector is「我的 Prompt」's own state — it scopes **this
+     * panel's** snapshot and override reads and it decides which layer a save
+     * lands in — and it stays the *one* place that scope is changed. g-055 fixed
+     * the reading (one sentence saying what the scope decides, then the card, in
+     * one container) but kept the block above the tab bar; g-071 is the owner's
+     * correction of that position: the block belongs to the surface it writes, so
+     * it is rendered by that surface. **g-073 finished the thought**: the other
+     * tabs are decoupled from this value — 「提示词总览」and「高级」have their own
+     * selectors, 「我的预设」and「备份与恢复」carry no scope at all — so the page
+     * states this scope in exactly one place, this block, and the other five tabs
+     * render none of `data-region="session"` / `data-region="scope-summary"` /
+     * `data-action="scope-toggle"`.
      *
      * The block deliberately has **no heading of its own** (review round 1): a
      * second `h3`「我的 Prompt」two lines above the panel's own title repeated the
      * same name at the same level, which both weakened the "one block" reading
      * and listed the title twice in a screen reader's heading list. The panel,
      * which owns the title, is the only place `mineHeading` is rendered; the
-     * sentence below carries the binding instead.
+     * sentence below carries the binding instead. Moving the block in does **not**
+     * change that: the panel's `h3` is still its first child, and the block's
+     * sentence still follows it.
      *
      * The card keeps every frozen marker and its collapse rule exactly as they
      * were (`data-region="session"` / `"scope-summary"`, `data-scope-open`,
-     * `data-action="scope-toggle"`); the wrapper adds one `section` around it
-     * and moves nothing.
+     * `data-action="scope-toggle"`); the wrapper carries `data-region="prompt-block"`
+     * around it and moves nothing else.
      *
      * @param t - the bound translator.
      * @param m - the page model.
@@ -6572,12 +6651,33 @@ window.__ModuleLoader__.load({
         body.push(t(updateApplyCopyKey('restartNote', modelLaunchKind(m))));
       } else if (confirm.kind === 'preset-delete') {
         // g-060 review R4: deleting a preset is a catalogue write with a visible
-        // consequence — an applied record becomes an orphan — so it asks first,
-        // through the same overlay every other destructive act on this page uses
-        // (g-031's rule: one confirmation surface, one layout, one pair of
-        // buttons).
+        // consequence, so it asks first, through the same overlay every other
+        // destructive act on this page uses (g-031's rule: one confirmation
+        // surface, one layout, one pair of buttons).
+        //
+        // Revision 50 (g-069): the consequence is now「every workspace that had it
+        // applied is restored」, so the body says exactly that and names them —
+        // the count and the labels are what the reader is being asked to agree
+        // to. A preset nothing applied keeps the plain sentence: there is no
+        // restore to warn about, and inventing one would be false.
         body.push(fmt(t('presetDeleteConfirmTitle'), { name: confirm.name ?? '' }));
-        body.push(t('presetDeleteConfirmBody'));
+        const restorable = Array.isArray(confirm.workspaces) ? confirm.workspaces : [];
+        if (restorable.length === 0) {
+          body.push(t('presetDeleteConfirmBody'));
+        } else {
+          body.push(fmt(t('presetDeleteConfirmApplied'), { count: restorable.length }));
+          body.push(
+            h(
+              'div',
+              {
+                'data-role': 'confirm-preset-workspaces',
+                'data-preset-workspace-count': String(restorable.length),
+                style: confirmTextStyle,
+              },
+              fmt(t('presetDeleteAppliedList'), { list: restorable.map((entry) => entry.label).join(', ') }),
+            ),
+          );
+        }
       } else if (confirm.kind === 'preset-discard') {
         // …and closing a dirty editor throws typing away, which is the other act
         // this page never performs silently (review R3's promise, now asked for
@@ -6677,7 +6777,8 @@ window.__ModuleLoader__.load({
      * text will not reach the prompt rather than let a write look effective.
      *
      * g-055: the panel is the lower half of the「我的 Prompt」block whose header
-     * is the scope card above the tabs, so it names its own write target
+     * is the scope card — at the top of **this panel** since g-071 moved it in
+     * from above the tab bar — so it names its own write target
      * (`data-region="mine-target"`, read-only) instead of making the reader look
      * back up; the scope itself is still changed in exactly one place.
      *
@@ -7086,7 +7187,13 @@ window.__ModuleLoader__.load({
       const record = ready && payload.record !== null && typeof payload.record === 'object' ? payload.record : null;
       const notice =
         record !== null && record.notice !== null && typeof record.notice === 'object' ? record.notice : null;
-      const hasSession = m.sessionArg !== null;
+      // g-073 (Revision 55): 「高级」's own workspace selector names the session
+      // whose assembly record is read (the host keys one record per session id) —
+      // no longer the page's「查看范围」, which serves「我的 Prompt」alone. The
+      // fallback keeps an older model shape readable; it is never reached by this
+      // page, which always hands `assemblySession` over.
+      const hasSession =
+        m.assemblySession !== undefined ? m.assemblySession !== null : m.sessionArg !== null;
       // The one punctuation the two languages disagree about, so no sentence is
       // assembled by concatenating a hardcoded separator.
       const sep = t('assemblyLayerSep');
@@ -7240,11 +7347,11 @@ window.__ModuleLoader__.load({
       const interpolateStatus = m.mineInterpolateStatus ?? { kind: 'idle', error: null };
       const interpolateLocked = m.mineInterpolateLocked === true;
       const interpolateStated = m.mineInterpolateStated === undefined ? null : m.mineInterpolateStated;
-      // Revision 12 (audit F4/F2/F5): the three-state name, the advisories the
-      // host returned with the last write, and the reason this layer is out of
-      // the assembly when it is.
+      // Revision 12 (audit F4/F2/F5): the three-state name and the advisories.
       const interpolateState = m.mineInterpolateState === undefined ? 'inherit' : m.mineInterpolateState;
       const warnings = Array.isArray(m.mineWarnings) ? m.mineWarnings : [];
+      // g-080: names the Host registers (for `{list}`); null (old Host) prints `?`.
+      const variablesList = Array.isArray(m.mineVariables) && m.mineVariables.length > 0 ? [...m.mineVariables].sort().map((name) => `{{${String(name)}}}`).join(', ') : '?';
       const layerDisabled = m.mineLayerDisabled === undefined ? null : m.mineLayerDisabled;
       // g-056: which side of the box is being shown (`draft` vs this target's
       // stored text), the readable scope the shown draft belongs to, and — when
@@ -7296,10 +7403,11 @@ window.__ModuleLoader__.load({
                   ? t('mineDirty')
                   : fmt(t('mineLoaded'), { layer: layerLabel(t, layer) });
       // g-055: the panel states its own write target, so the reader does not have
-      // to look back above the tab bar to know which layer a save lands in. It is
+      // to look anywhere else to know which layer a save lands in. It is
       // read-only on purpose: the one place the scope is changed is the block
-      // header above the tabs, and a second switch here would be a second
-      // entrance — exactly what this design refuses.
+      // rendered directly above this line (g-071 moved it in from above the tab
+      // bar), and a second switch here would be a second entrance — exactly what
+      // this design refuses.
       const targetLine = h(
         'p',
         {
@@ -7323,15 +7431,14 @@ window.__ModuleLoader__.load({
       const mineMode = m.mineMode === 'append' ? 'append' : RESERVED_SECTION_DEFAULT_MODE;
       const mineStoredMode =
         m.mineStoredMode === 'append' || m.mineStoredMode === 'replace' ? m.mineStoredMode : null;
-      // The same leading rule the block header above the tabs carries: the scope
-      // card and this panel are the two halves of one block (g-055).
+      // g-071: the scope card is no longer a block above the tab bar — this
+      // panel renders it as its first block, right under its own title, and the
+      // panel keeps the 3px rule that claims both as one surface.
       return h(
         'div',
         { 'data-region': 'mine', style: { ...promptBlockBandStyle, display: 'flex', flexDirection: 'column', gap: 10 } },
         h('h3', { style: headingStyle }, t('mineHeading')),
-        // g-062: the observation of the two layers sits at the top of the write
-        // surface — the place a user returns to right after saving a prompt.
-        renderAssemblyStatus(t, m, a),
+        renderPromptBlock(t, m, a),
         targetLine,
         h('p', { style: { margin: 0, ...metaStyle } }, t('mineNote')),
         h(
@@ -7527,7 +7634,7 @@ window.__ModuleLoader__.load({
                 t('mineInterpolateInheritedOn'),
               )
             : null,
-          h('p', { style: { margin: 0, ...metaStyle } }, t('mineInterpolateNote')),
+          h('p', { style: { margin: 0, ...metaStyle } }, fmt(t('mineInterpolateNote'), { list: variablesList })),
           h(
             'p',
             { 'data-warning': 'mine-interpolate', style: { margin: 0, fontSize: 12, color: token.stateWarn } },
@@ -7576,7 +7683,8 @@ window.__ModuleLoader__.load({
         // ---- g-058 (Revision 36): the「覆盖 / 叠加」mode of THIS layer's entry.
         // It is a control over this layer's stored mode and nothing else — it
         // writes no file on its own, it offers no second way to change the
-        // write scope (the block header keeps that single entrance, g-055), and
+        // write scope (the scope block above it keeps that single entrance,
+        // g-055; it moved inside this panel in g-071), and
         // it can never reach the other layer's file: the save it feeds carries
         // one layer and one entry (§4.1).
         h(
@@ -7793,11 +7901,11 @@ window.__ModuleLoader__.load({
      * would be exactly the silently false「一致」the stamp exists to prevent.
      */
     const CHUNK_STAMPS = Object.freeze([
-      { name: 'client.advanced.js', hash: '4cbd3181', size: 21376 },
+      { name: 'client.advanced.js', hash: '22e9b127', size: 29441 },
       { name: 'client.history.js', hash: 'a3ec9d47', size: 50647 },
-      { name: 'client.overview.js', hash: 'ddbcf423', size: 23861 },
+      { name: 'client.overview.js', hash: '525dad60', size: 32356 },
       { name: 'client.presets.js', hash: 'e1a665bb', size: 24079 },
-      { name: 'client.transfer.js', hash: '8b305496', size: 9766 },
+      { name: 'client.transfer.js', hash: '01b94760', size: 15861 },
     ]);
 
     /**
@@ -7893,6 +8001,11 @@ window.__ModuleLoader__.load({
       sessionRowStyle,
       normalizeNeedle,
       matchesNeedle,
+      // g-065: the two-layer observation block moved from 「我的 Prompt」 to the
+      // top of 「高级」. Same rule once more — the chunk takes this one binding
+      // off the surface under its own name, so there is exactly one copy of the
+      // block in the bundle and the two tabs can never drift apart.
+      renderAssemblyStatus,
     });
 
     /** Chunks this page has really loaded, by file name: `{hash, size}`. */
@@ -8660,16 +8773,19 @@ window.__ModuleLoader__.load({
      * component above stays fixed and the entire tree is produced inside one
      * `try`.
      *
-     * The chrome above the tabs is deliberately three things only — the title,
-     * one line of deciding facts ({@link renderStatusLine}) and the session
-     * selector every tab shares. Everything else moved into the tab that owns
-     * it, which is what makes the page short again.
+     * The chrome above the tabs is deliberately two things only — the title and
+     * one line of deciding facts ({@link renderStatusLine}). Everything else
+     * moved into the tab that owns it, which is what makes the page short again.
      *
-     * Since g-055 that selector is not a third card floating above the tabs: it
-     * is rendered as the header of the「我的 Prompt」block
-     * ({@link renderPromptBlock}), which is the only surface it writes. The
-     * position is unchanged — it is still above the tab bar, still one
-     * instance, still the one place the scope is changed.
+     * g-055 took the session selector out of that chrome into the「我的 Prompt」
+     * block ({@link renderPromptBlock}), which is the only surface it writes;
+     * g-071 moved that block itself **into** the mine panel, so the selector is
+     * rendered by the surface it belongs to and the chrome no longer depends on it
+     * at all. The tabs other than「我的 Prompt」render no scope surface of their
+     * own (R4 withdrew the read-only line g-071 first gave them — their scopes are
+     * their own business, see g-073).
+     * The selector is still one instance and still the one place the scope is
+     * changed.
      *
      * @param t - the bound translator for this namespace.
      * @param m - the page model.
@@ -8699,10 +8815,17 @@ window.__ModuleLoader__.load({
       const updateNotice = renderUpdateNotice(t, m, a);
       if (updateNotice !== null) children.push(updateNotice);
       children.push(renderStatusLine(t, m, a));
-      // g-055: the scope card is the header of the「我的 Prompt」block
-      // (see renderPromptBlock), not a page-level card of its own. It stays
-      // above the tabs, and the tab bar still keeps the last-but-one slot.
-      children.push(renderPromptBlock(t, m, a));
+      // g-071: nothing scope-shaped lives above the tabs any more. The picker is
+      // rendered by「我的 Prompt」itself (renderMinePanel → renderPromptBlock);
+      // no other tab carries a scope surface of its own (R4), and the tab bar
+      // keeps the last-but-one slot.
+      // g-070: the two decorations the first-level bar carries, both read as
+      // facts rather than assumed: the preset library's real entry count
+      // (`null` ⇒ no suffix at all, never a false `(0)`) and whether a newer
+      // release is on offer (the banner's own test, minus its dismissal — see
+      // `updateOffered`).
+      const presetCount = presetCountOf(m.presets);
+      const updateDot = updateOffered(m.update);
       children.push(
         h(
           'div',
@@ -8710,14 +8833,13 @@ window.__ModuleLoader__.load({
             key: 'tabs',
             'data-region': 'tabs',
             'data-active-tab': m.tab,
-            // No `overflow` here any more (real-machine round 3): the strip is
-            // hand-built again and lays out with `flex-wrap`, so it never
-            // overflows this box, and the `overflow-x: auto` of round 2 could not
-            // absorb the official control's forced natural width anyway (the
-            // widened box was an ancestor, not just this one — see the tab
-            // decision comment in `tabs()`).
+            // No `overflow` here: since g-070 the scroll container **is** the
+            // tablist rendered below (`mainTabStrip`), and the wrapper stays a
+            // plain block so nothing about the strip's width reaches an ancestor.
+            // The g-063 rounds 1–3 note this line used to carry is kept in the
+            // decision comment above `tabs()`.
           },
-          tabs(
+          mainTabStrip(
             MAIN_TABS.map((value) => ({
               value,
               label: t(
@@ -8733,13 +8855,20 @@ window.__ModuleLoader__.load({
                           ? 'tabBackup'
                           : 'tabAdvanced',
               ),
+              // The two identity fields the items have always carried (`tabs()`
+              // does not read them either); kept so the item contract around
+              // `MAIN_TABS` is unchanged in this batch.
               id: `ps-tab-${value}`,
               panelId: 'ps-tab-panel',
+              // g-070: the count hangs off「我的预设」, the red dot off「高级」 —
+              // the two tabs the operator named, and no others.
+              count: value === 'presets' ? presetCount : null,
+              badge: value === 'advanced' && updateDot,
             })),
             m.tab,
             a.setTab,
             t('title'),
-            'main',
+            t('tabUpdateBadge'),
           ),
         ),
       );
@@ -8773,10 +8902,64 @@ window.__ModuleLoader__.load({
       // cards). Pushed here for the same reason as the confirm card.
       const regionCard = renderRegionDialog(t, m, a);
       if (regionCard !== null) children.push(regionCard);
+      // g-071: the tab panel holds the tab's own surface and nothing else. No
+      // scope-shaped node is injected here (R4 withdrew the read-only line).
+      //
+      // g-073 (Revision 55; extended in review R1): the panel's gate follows
+      // **the tab's own** read, because the page-scoped snapshot is not a
+      // prerequisite of any other surface:
+      //   - 「我的 Prompt」 is the read that page scope belongs to, so it is the one
+      //     tab gated on `m.snap`;
+      //   - 「提示词总览」 and 「高级」 read `/snapshot` in **their own** scopes, so
+      //     their panels follow `m.overviewSnap` / `m.advancedSnap` — a failing
+      //     page-scoped read must not blank a tab that already has its data;
+      //   - 「我的预设」 (the library), 「版本历史」 (the log) and 「备份与恢复」 (the
+      //     transfer document) consume **no** snapshot at all: each carries its own
+      //     state and renders its own phase, so none of them is gated on a read it
+      //     never made.
+      const panelGate = (() => {
+        if (m.tab === 'mine') {
+          return { loading: m.snap.phase === 'loading' && !m.snap.data, ready: Boolean(m.snap.data) };
+        }
+        if (m.tab === 'overview') {
+          return {
+            loading: m.overviewSnap.phase === 'loading' && !m.overviewSnap.data,
+            ready: Boolean(m.overviewSnap.data),
+          };
+        }
+        if (m.tab === 'advanced') {
+          return {
+            loading: m.advancedSnap.phase === 'loading' && !m.advancedSnap.data,
+            ready: Boolean(m.advancedSnap.data),
+          };
+        }
+        if (m.tab === 'presets') {
+          // Its own read is the library; `idle` is the one frame before that read
+          // has been issued, and it must not render as「没有预设」. Data already on
+          // screen wins over the phase: a refresh must not replace a rendered
+          // library with a loading line (review R3).
+          return {
+            loading: (m.presets.phase === 'idle' || m.presets.phase === 'loading') && !m.presets.data,
+            ready: true,
+          };
+        }
+        if (m.tab === 'history') {
+          // Same rule: while the log is being re-read (a reload, or a page whose
+          // answer is in flight) the records already on screen stay — the loading
+          // line is for "nothing to show yet", not for "switching back"
+          // (review R3-2).
+          return {
+            loading: (m.hist.phase === 'idle' || m.hist.phase === 'loading') && !m.hist.data,
+            ready: true,
+          };
+        }
+        // 「备份与恢复」 issues no read of its own until a button is pressed.
+        return { loading: false, ready: true };
+      })();
       children.push(
         h('div', { key: 'panel', 'data-region': 'panel' },
-          m.snap.phase === 'loading' && !m.snap.data ? h('p', { key: 'loading', style: metaStyle }, t('loading')) : null,
-          m.snap.data
+          panelGate.loading ? h('p', { key: 'loading', style: metaStyle }, t('loading')) : null,
+          panelGate.ready
             ? h(
                 'div',
                 { key: 'tab-panel', 'data-region': 'tab-panel', 'data-tab-value': m.tab },
@@ -8944,11 +9127,11 @@ window.__ModuleLoader__.load({
       // failure mode (a refusal names the text the write face will not accept),
       // and folding the two would let a failed toggle look like a failed save.
       const [mineInterpolate, setMineInterpolate] = React.useState({ kind: 'idle', error: null });
-      // Revision 12 (audit F2): the advisories the host returns with a write or
-      // an arming. They are *not* failures — the save happened — so they live in
-      // their own slot and the panel renders them beside the state they qualify,
-      // instead of inside an error banner that would deny the write.
+      // Revision 12 (audit F2): the advisories of a write or an arming — not
+      // failures (the save happened), so the panel renders them beside the state.
       const [mineWarnings, setMineWarnings] = React.useState([]);
+      // g-080: the names `GET /interpolate` reported (null = not probed / old Host).
+      const [mineVariables, setMineVariables] = React.useState(null);
       /**
        * g-062:「装配状态提示」— the observation this page renders, its switch's
        * state, and the last switch attempt.
@@ -9064,6 +9247,37 @@ window.__ModuleLoader__.load({
         return restore;
       }, [historyModal]);
       const [historyPanelPx, setHistoryPanelPx] = React.useState(null);
+      // g-073 (Revision 55):「提示词总览」's **own** scope, deliberately not the
+      // page's「查看范围」. `null` means「跟随当前会话」; a string is the session id
+      // the reader picked in the overview scope selector. The shape is *by
+      // workspace group, down to one session*, not one option per workspace: the
+      // host's `/snapshot` reads `session` twice — it resolves the workspace layer
+      // file *and* probes the assembly in that session's own scope — and the
+      // frozen verdict and variable resolution are per-scope facts (§2.4), so a
+      // "first session of the workspace" stand-in would show a verdict that is
+      // not the reader's session's.
+      const [overviewScope, setOverviewScope] = React.useState(null);
+      const [overviewScopeOpen, setOverviewScopeOpen] = React.useState(false);
+      const [overviewScopeSearch, setOverviewScopeSearch] = React.useState('');
+      // The overview's own read of `/snapshot`. It is taken **only** while that
+      // tab is open (one request per tab open / scope change / reload), because
+      // every `/snapshot` answer costs two `assemble()` runs on the host (§2.6).
+      const [overviewSnap, setOverviewSnap] = React.useState({ phase: 'loading', data: null, error: null });
+      // g-073 (Revision 55):「高级」's **own** workspace selector. Layer-wide
+      // operations (`reset=true` / `legacy=true`) clear a whole workspace file —
+      // every session in it shares that file — so the thing to choose here is a
+      // **workspace**, not a session, and it is no longer inherited from the
+      // page's「查看范围」. `null` means「跟随当前会话」.
+      const [advancedScope, setAdvancedScope] = React.useState(null);
+      const [advancedScopeOpen, setAdvancedScopeOpen] = React.useState(false);
+      const [advancedScopeSearch, setAdvancedScopeSearch] = React.useState('');
+      // The advanced tab's own override read: the legacy list and the two
+      // layer-wide counts describe the layer the selector names, so they may not
+      // be taken from a page-scoped response. Its snapshot read is the other half
+      // of the same question — `applied` is a fact about the assembly in **this**
+      // scope, so a row cannot be judged against another workspace's assembly.
+      const [advancedOvs, setAdvancedOvs] = React.useState({ phase: 'idle', data: null, error: null });
+      const [advancedSnap, setAdvancedSnap] = React.useState({ phase: 'loading', data: null, error: null });
       // 「高级」 picks its own layer: the two layer-wide buttons are destructive,
       // and silently sharing another tab's selector would make selecting a log
       // filter change what a clear button is aimed at.
@@ -9260,6 +9474,97 @@ window.__ModuleLoader__.load({
         );
       })();
 
+      // ---- g-073 (Revision 55): the two tab-owned scopes --------------------
+      // Neither of these is the page's「查看范围」: that one serves「我的 Prompt」
+      // alone now (§13.7). Each **state** starts as `null` (「跟随当前会话」), and
+      // the effective value it then falls back to is a real session id —
+      // `seat.currentId` (or, with nothing current, the first candidate) — so a
+      // fresh page behaves exactly as it did; what changed is **who may move
+      // them**, and that the page scope can no longer move them.
+      //
+      // 「提示词总览」: one group per workspace, one option per **session**
+      // (see `overviewScopeOptionsOf` for why a session id is required here).
+      const overviewScopes = overviewScopeOptionsOf(wsSeat, seat);
+      const overviewScopeAuto =
+        seat.currentId.length > 0
+          ? seat.currentId
+          : overviewScopes.options.length > 0
+            ? overviewScopes.options[0].value
+            : '';
+      const overviewScopeValue =
+        overviewScope !== null && overviewScopes.options.some((option) => option.value === overviewScope)
+          ? overviewScope
+          : overviewScopeAuto;
+      // The readable name of the overview scope, as **data**: `''` means the
+      // global scope, and the chunk that renders it turns that into
+      // `sessionGlobal` — no key may be produced on this component's own path,
+      // where a throwing translator has to reach the failure card instead
+      // (g-063 E1).
+      const overviewScopeName =
+        overviewScopeValue.length === 0 ? '' : sessionLabelOf(seat.rows, overviewScopeValue) || overviewScopeValue;
+      const overviewScopeArg = overviewScopeValue.length > 0 ? overviewScopeValue : null;
+      // The candidate groups the open overview picker renders: the search narrows
+      // each group's options, and a group left with no option is not rendered at
+      // all (an empty heading is not a hit). No cache: the list is bounded by the
+      // scrolling box, not by a render cap, and it is compared field by field so
+      // a match can never span two fields.
+      const overviewScopeGroups = (() => {
+        const needle = normalizeNeedle(overviewScopeSearch);
+        if (needle.length === 0) return overviewScopes.groups;
+        const filtered = [];
+        for (const group of overviewScopes.groups) {
+          const options = group.options.filter((option) =>
+            matchesNeedle([option.label, option.value, group.label], needle),
+          );
+          if (options.length > 0) filtered.push({ ...group, options });
+        }
+        return filtered;
+      })();
+
+      // 「高级」: a **workspace** dimension, exactly like the version history's own
+      // scope (`historyScopeOptionsOf`), because a workspace layer file — and what
+      // `reset=true` / `legacy=true` clear — is per workspace, shared by every
+      // session in it. The option's value is still a session id: the host resolves
+      // a workspace root from a session and a client never supplies a path (§4.2).
+      const advancedScopes = historyScopeOptionsOf(wsSeat, seat);
+      const advancedScopeAuto = (() => {
+        const owner = advancedScopes.options.find((option) => option.sessionIds.includes(seat.currentId));
+        // The owner lookup is the history selector's, but the **value** is the
+        // current session itself, not the workspace's first one: this selector
+        // also decides which session's assembly record the status block reads,
+        // and records are keyed by session id. Standing a different session in
+        // would silently move the default view off the conversation the reader
+        // is looking at.
+        if (owner !== undefined) return seat.currentId;
+        if (seat.currentId.length > 0) return seat.currentId;
+        return advancedScopes.options.length > 0 ? advancedScopes.options[0].value : '';
+      })();
+      const advancedScopeValue =
+        advancedScope !== null && advancedScopes.options.some((option) => option.value === advancedScope)
+          ? advancedScope
+          : advancedScopeAuto;
+      const advancedScopeOwner =
+        advancedScopes.options.find((option) => option.sessionIds.includes(advancedScopeValue)) ?? null;
+      // The name is the **workspace**'s, because that is what the layer actions
+      // act on; while the scope still follows the current session, the session's
+      // own name rides along so "which conversation's record is this" is not a
+      // question the reader has to guess at.
+      const advancedScopeName = (() => {
+        const sessionName = sessionLabelOf(seat.rows, advancedScopeValue) || advancedScopeValue;
+        if (advancedScopeOwner === null) return sessionName;
+        if (advancedScope !== null) return advancedScopeOwner.label;
+        if (sessionName.length === 0 || sessionName === advancedScopeOwner.label) return advancedScopeOwner.label;
+        return `${advancedScopeOwner.label} · ${sessionName}`;
+      })();
+      const advancedScopeArg = advancedScopeValue.length > 0 ? advancedScopeValue : null;
+      const advancedScopeMatches = (() => {
+        const needle = normalizeNeedle(advancedScopeSearch);
+        if (needle.length === 0) return advancedScopes.options;
+        return advancedScopes.options.filter((option) =>
+          matchesNeedle([option.label, option.value, option.workspaceId], needle),
+        );
+      })();
+
       React.useEffect(() => {
         let cancelled = false;
         setSnap({ phase: 'loading', data: null, error: null });
@@ -9314,17 +9619,13 @@ window.__ModuleLoader__.load({
           });
         };
         void sendPing();
-        // g-030: one update check per mount — and **none at all** when this
-        // browser already knows the switch is off. The mirror is checked first
-        // precisely so that a closed switch costs nothing on page load (not even
-        // a local request); when the mirror says nothing, the Host is asked once
-        // and its answer — which reports `enabled` — fills the mirror.
-        //
-        // Nothing here paints the main page: a newer release renders the banner,
-        // a failure renders nothing anywhere, and every undecided upstream
-        // answer (`hasUpdate:null`) is explained only inside 「高级」's card, by
-        // `renderUpdateSetting` — which since g-046 lives in that tab's chunk,
-        // `client.advanced.js`.
+        // g-030: one update check per mount — and **none at all** when the mirror
+        // already says the switch is off (a closed switch costs no request). The
+        // Host's answer, which reports `enabled`, fills the mirror. Nothing here
+        // paints the main page: a newer release renders the banner, a failure
+        // renders nothing anywhere, and every undecided upstream answer
+        // (`hasUpdate:null`) is explained only inside「高级」's card
+        // (`renderUpdateSetting`, which lives in that tab's chunk).
         if (readUpdatePref() === false) {
           // The g-032 install state is carried over, never reset by a check:
           // this effect also re-runs on `reload`, and losing a running install's
@@ -9352,13 +9653,11 @@ window.__ModuleLoader__.load({
             }));
           };
           void checkUpdate();
-          // g-043: the download region rides on the same mount, and on the same
-          // zero-request promise: with the mirror saying「off」nothing is asked at
-          // all, and the region is loaded when the switch is turned back on
-          // (`toggleUpdate`). While the switch is on, this one `GET` is what
-          // decides the first-visit default — the page has already rendered, so
-          // the detection arrives asynchronously and never blocks the first
-          // paint, and the Host caps each probe at 2.5 s (§17.9).
+          // g-043: the download region rides the same mount and the same
+          // zero-request promise (nothing is asked while the mirror says「off」);
+          // with the switch on, this one `GET` decides the first-visit default
+          // without blocking the first paint; it reloads when the switch returns
+          // (`toggleUpdate`). The Host caps each probe at 2.5 s (§17.9).
           void loadRegion();
         }
         const load = async () => {
@@ -9376,19 +9675,12 @@ window.__ModuleLoader__.load({
               ? { phase: 'ready', data: overrides.payload, error: null }
               : { phase: 'error', data: null, error: overrides.error },
           );
-          // g-060: the preset library rides on the same load. It is one global
-          // file plus the resolved root of the selected session (§20.2), so it
-          // is asked with the same `?session=` the two layer views use — and it
-          // is *not* an error of this page when the host answers a library
-          // reason: `GET /presets` answers `200` with an `error` field, which
-          // the tab renders as a library problem rather than as「没有预设」.
-          const presetsResult = await requestJson(`${PRESETS_PATH}${query}`);
-          if (cancelled) return;
-          setPresets(
-            presetsResult.ok
-              ? { phase: 'ready', data: presetsResult.payload, error: null }
-              : { phase: 'error', data: null, error: presetsResult.error },
-          );
+          // g-080: names only — the panel must advertise what THIS DSH registers.
+          const interpolateRead = await requestJson(`${INTERPOLATE_PATH}${query}`);
+          if (!cancelled) {
+            const table = interpolateRead.ok ? interpolateRead.payload?.variables : null;
+            setMineVariables(Array.isArray(table) ? table : null);
+          }
         };
         void load();
         return () => {
@@ -9396,23 +9688,143 @@ window.__ModuleLoader__.load({
         };
       }, [sessionArg, reload]);
 
-      // History is loaded only while 「版本历史」 is open: 「我的 Prompt」 and
-      // 「提示词总览」 must not pay for a log they never show, and a mount that
-      // never opens that tab must issue exactly the baseline requests.
-      //
-      // g-038: the request is `layer` + `offset` (+ `workspace` for the
-      // workspace layer) and **no** `session` — the page's 「查看范围」 is not a
-      // parameter of this read at all, so changing it can never re-slice or
-      // re-fetch the log. `limit` is omitted on purpose: the host owns the page
-      // size and answers it as `pageLimit`, which is what the pager then steps
-      // by. The user layer is global; the workspace layer needs a locatable
-      // workspace, so an unresolved scope shows the note instead of a request
-      // the host must refuse.
+      // g-073 (Revision 55): the preset library is **not** read in the page scope
+      // any more. It is one global file plus the records each workspace states
+      // (§20.2), and the page's「查看范围」serves「我的 Prompt」alone — so this read
+      // carries no `?session=` at all, and moving the page scope neither
+      // re-slices nor re-fetches it. It still rides on `reload`, because the
+      // writes that change that file (a save, a delete, an applied import) are
+      // what bump that counter. A library reason is still *not* an error of this
+      // page: `GET /presets` answers `200` with an `error` field, which the tab
+      // renders as a library problem rather than as「没有预设」.
       React.useEffect(() => {
-        if (tab !== 'mine') return undefined;
+        let cancelled = false;
+        const run = async () => {
+          const presetsResult = await requestJson(PRESETS_PATH);
+          if (cancelled) return;
+          setPresets(
+            presetsResult.ok
+              ? { phase: 'ready', data: presetsResult.payload, error: null }
+              : { phase: 'error', data: null, error: presetsResult.error },
+          );
+        };
+        void run();
+        return () => {
+          cancelled = true;
+        };
+      }, [reload]);
+
+      // g-073 (Revision 55):「提示词总览」reads the snapshot in **its own** scope.
+      // The read happens on the tab's **first** open, on a scope change and on a
+      // reload — not on every re-entry — because every `/snapshot` answer costs
+      // the host two `assemble()` runs (§2.6): re-reading it on every render (or
+      // on every move of the page's「查看范围」) is exactly what this shape avoids.
+      // The page scope can move all it likes; this request never carries it.
+      // g-073 (R3): what「提示词总览」has already read, as `{scope, reload}`. It is
+      // written **only when an answer really arrived**, so a read that was
+      // cancelled by a tab switch is not remembered — switching back re-reads
+      // instead of leaving the panel on a loading frame forever. A tab switch
+      // that finds its own scope and generation already recorded reuses what is
+      // on screen: no request, and no `loading` frame (review R3-1).
+      const overviewReadRef = React.useRef(null);
+      React.useEffect(() => {
+        if (tab !== 'overview') return undefined;
+        const scopeKey = overviewScopeArg === null ? '' : overviewScopeArg;
+        const read = overviewReadRef.current;
+        if (read !== null && read.scope === scopeKey && read.reload === reload) return undefined;
+        // A **different** scope drops the old data (another scope's assembly must
+        // never look like this one's); a reload of the **same** scope keeps it,
+        // so the panel stays readable while the fresh answer is in flight.
+        const sameScope = read !== null && read.scope === scopeKey;
+        let cancelled = false;
+        setOverviewSnap((current) => ({
+          phase: 'loading',
+          data: sameScope ? current.data : null,
+          error: null,
+        }));
+        const query = scopeKey === '' ? '' : `?session=${encodeURIComponent(scopeKey)}`;
+        const run = async () => {
+          const result = await requestJson(`${SNAPSHOT_PATH}${query}`);
+          if (cancelled) return;
+          overviewReadRef.current = { scope: scopeKey, reload };
+          setOverviewSnap(
+            result.ok
+              ? { phase: 'ready', data: result.payload, error: null }
+              : { phase: 'error', data: null, error: result.error },
+          );
+        };
+        void run();
+        return () => {
+          cancelled = true;
+        };
+      }, [tab, overviewScopeArg, reload]);
+
+      // g-073 (Revision 55):「高级」reads **both** halves of its own scope — the
+      // override lists the legacy view renders and the snapshot its `applied`
+      // verdicts come from. The legacy list and the two layer-wide counts
+      // describe one layer file, so they may not come from the page-scoped
+      // response — that one belongs to「我的 Prompt」. Gated on the tab being open,
+      // exactly like the assembly-status read below, so a mount that never opens
+      // this tab still pays nothing.
+      // g-073 (R3): the same `{scope, reload}` bookkeeping as the overview's above
+      // (and the same rule: recorded only when an answer arrived, so a cancelled
+      // read is retried rather than remembered).
+      const advancedReadRef = React.useRef(null);
+      React.useEffect(() => {
+        if (tab !== 'advanced') return undefined;
+        const scopeKey = advancedScopeArg === null ? '' : advancedScopeArg;
+        const read = advancedReadRef.current;
+        if (read !== null && read.scope === scopeKey && read.reload === reload) return undefined;
+        const sameScope = read !== null && read.scope === scopeKey;
+        let cancelled = false;
+        setAdvancedOvs((current) => ({ phase: 'loading', data: sameScope ? current.data : null, error: null }));
+        setAdvancedSnap((current) => ({ phase: 'loading', data: sameScope ? current.data : null, error: null }));
+        const query = scopeKey === '' ? '' : `?session=${encodeURIComponent(scopeKey)}`;
+        const run = async () => {
+          const overrides = await requestJson(`${OVERRIDES_PATH}${query}`);
+          if (cancelled) return;
+          setAdvancedOvs(
+            overrides.ok
+              ? { phase: 'ready', data: overrides.payload, error: null }
+              : { phase: 'error', data: null, error: overrides.error },
+          );
+          const snapshot = await requestJson(`${SNAPSHOT_PATH}${query}`);
+          if (cancelled) return;
+          advancedReadRef.current = { scope: scopeKey, reload };
+          setAdvancedSnap(
+            snapshot.ok
+              ? { phase: 'ready', data: snapshot.payload, error: null }
+              : { phase: 'error', data: null, error: snapshot.error },
+          );
+        };
+        void run();
+        return () => {
+          cancelled = true;
+        };
+      }, [tab, advancedScopeArg, reload]);
+
+      // The assembly-status read belongs to 「高级」: since g-065 that tab owns
+      // the two-layer observation block (its own chunk renders it), so the read
+      // follows the block instead of the write surface. A mount that never opens
+      // that tab still issues no assembly-status request at all.
+      //
+      // g-073 (Revision 55): it is asked in the advanced tab's **own** scope. The
+      // host keys one record per session id (`core/assembly-watch.js`), so the
+      // selector's value — a member session of the chosen workspace — is what
+      // names the record to read; the page's「查看范围」no longer does.
+      // g-073 (R3): the same `{scope, reload}` bookkeeping, so switching back to
+      // this tab reuses the observation instead of asking again — the block never
+      // blanks (its state is never reset to a loading phase), and the follow-up
+      // poll below is unaffected because it re-enters `run` directly.
+      const assemblyReadRef = React.useRef(null);
+      React.useEffect(() => {
+        if (tab !== 'advanced') return undefined;
+        const scopeKey = advancedScopeArg === null ? '' : advancedScopeArg;
+        const read = assemblyReadRef.current;
+        if (read !== null && read.scope === scopeKey && read.reload === reload) return undefined;
         let cancelled = false;
         let timer = null;
-        const query = sessionArg === null ? '' : `?session=${encodeURIComponent(sessionArg)}`;
+        const query = scopeKey === '' ? '' : `?session=${encodeURIComponent(scopeKey)}`;
         // One read per mount/tab/scope change, plus a short follow-up **only**
         // while the Host reports a notice whose delivery layer is still
         // `waiting`: that verdict is settled by a session event which arrives
@@ -9421,6 +9833,9 @@ window.__ModuleLoader__.load({
         const run = async () => {
           const result = await requestJson(`${ASSEMBLY_STATUS_PATH}${query}`);
           if (cancelled) return;
+          // Recorded only once an answer really arrived: a read cancelled by a tab
+          // switch is retried, never remembered as done.
+          assemblyReadRef.current = { scope: scopeKey, reload };
           if (!result.ok) {
             setAssembly((current) => ({ ...current, phase: 'error', error: result.error }));
             return;
@@ -9450,20 +9865,42 @@ window.__ModuleLoader__.load({
           cancelled = true;
           if (timer !== null) clearTimeout(timer);
         };
-      }, [tab, sessionArg, reload]);
+      }, [tab, advancedScopeArg, reload]);
 
+      // History is loaded only while 「版本历史」 is open: 「我的 Prompt」 and
+      // 「提示词总览」 must not pay for a log they never show, and a mount that
+      // never opens that tab must issue exactly the baseline requests.
+      //
+      // g-038: the request is `layer` + `offset` (+ `workspace` for the
+      // workspace layer) and **no** `session` — the page's 「查看范围」 is not a
+      // parameter of this read at all, so changing it can never re-slice or
+      // re-fetch the log. `limit` is omitted on purpose: the host owns the page
+      // size and answers it as `pageLimit`, which is what the pager then steps
+      // by. The user layer is global; the workspace layer needs a locatable
+      // workspace, so an unresolved scope shows the note instead of a request
+      // the host must refuse.
+      // g-073 (R3): the log is a tab-owned read like the other two, so it gets the
+      // same `{scope, reload}` bookkeeping. Its scope key is the whole read — the
+      // layer, the locating session and the offset — because paging or switching
+      // the history layer really is a different page of the file; a tab switch
+      // that changes **none** of them reuses what is on screen.
+      const historyReadRef = React.useRef(null);
       React.useEffect(() => {
         if (tab !== 'history') return undefined;
         if (historyLayer === 'workspace' && historyScopeValue.length === 0) {
           setHist({ phase: 'idle', data: null, error: null });
           return undefined;
         }
+        const readKey = `${historyLayer}|${historyScopeArg}|${historyOffset}`;
+        const read = historyReadRef.current;
+        if (read !== null && read.key === readKey && read.reload === reload) return undefined;
         let cancelled = false;
         setHist((current) => ({ ...current, phase: 'loading' }));
         const query = `${historyScopeQuery(historyLayer, historyScopeArg)}&offset=${historyOffset}`;
         const run = async () => {
           const result = await requestJson(`${HISTORY_PATH}?${query}`);
           if (cancelled) return;
+          historyReadRef.current = { key: readKey, reload };
           setHist(
             result.ok
               ? { phase: 'ready', data: result.payload, error: null }
@@ -9538,6 +9975,27 @@ window.__ModuleLoader__.load({
           : [];
       const phase = snap.phase === 'ready' && effectiveSections.length === 0 ? 'empty' : snap.phase;
       const incoming = incomingNames(snapshot);
+      // g-073 (Revision 55): the four derived facts「提示词总览」renders, taken from
+      // **its own** snapshot. They are separate values rather than a switched
+      // source so the page-scoped ones above keep describing「我的 Prompt」exactly
+      // as before, in every tab, and a tab switch cannot change what another
+      // surface's model says.
+      const overviewSnapshot = overviewSnap.data;
+      const overviewFz = frozenState(overviewSnapshot, overviewScopeArg !== null);
+      const overviewEffectiveSections =
+        overviewSnapshot && overviewSnapshot.effective && Array.isArray(overviewSnapshot.effective.sections)
+          ? overviewSnapshot.effective.sections
+          : [];
+      const overviewIncoming = incomingNames(overviewSnapshot);
+      // g-073 (Revision 55): the same two facts for「高级」, from **its own**
+      // snapshot — the legacy list's `applied` verdict is a statement about the
+      // assembly in this scope, not about the page scope's.
+      const advancedSnapshot = advancedSnap.data;
+      const advancedEffectiveSections =
+        advancedSnapshot && advancedSnapshot.effective && Array.isArray(advancedSnapshot.effective.sections)
+          ? advancedSnapshot.effective.sections
+          : [];
+      const advancedIncoming = incomingNames(advancedSnapshot);
 
       // ---- 「我的 Prompt」: the reserved section's stored value and its state
       // g-056: the draft is keyed by the **write target**, so a draft typed for
@@ -9795,10 +10253,19 @@ window.__ModuleLoader__.load({
         setReload((value) => value + 1);
       };
 
-      /** Clear one whole layer (`DELETE …&reset=true`). */
+      /**
+       * Clear one whole layer (`DELETE …&reset=true`).
+       *
+       * g-073 (Revision 55): the workspace is the one **「高级」's own selector**
+       * names, not the page's「查看范围」. The semantics are worth restating: on the
+       * workspace layer this clears the **whole workspace file** — every session in
+       * that workspace shares it — so the selector aims at a workspace, and which
+       * member session stands for it changes nothing about what is cleared. The
+       * user layer is global and reads no session at all.
+       */
       const resetLayer = async (layer) => {
         setBusy(true);
-        const result = await requestJson(`${OVERRIDES_PATH}?${layerQuery(layer, sessionArg)}&reset=true`, { method: 'DELETE' });
+        const result = await requestJson(`${OVERRIDES_PATH}?${layerQuery(layer, advancedScopeArg)}&reset=true`, { method: 'DELETE' });
         setBusy(false);
         if (!result.ok) {
           setNotice({ tone: 'error', text: errorText(t, result.error) });
@@ -9813,11 +10280,20 @@ window.__ModuleLoader__.load({
         setReload((value) => value + 1);
       };
 
-      /** Fetch the export document, hold its text, and try to download it. */
+      /**
+       * Fetch the export document, hold its text, and try to download it.
+       *
+       * g-073 (Revision 55): the request carries **no** page scope. A backup is
+       * not a view of one range — since Revision 53 it carries every layer's
+       * overrides, every workspace layer, the preset library and the preferences
+       * (§10) — so the page's「查看范围」has no business in it, and a document that
+       * depended on which session happened to be selected could not be called a
+       * backup. The host's `?session=` (still accepted) only ever located the one
+       * workspace layer view it used to narrow the document to.
+       */
       const exportNow = async () => {
         setBusy(true);
-        const query = sessionArg === null ? '' : `?session=${encodeURIComponent(sessionArg)}`;
-        const result = await requestJson(`${EXPORT_PATH}${query}`);
+        const result = await requestJson(EXPORT_PATH);
         setBusy(false);
         if (!result.ok) {
           setTransfer((current) => ({ ...current, phase: 'error', error: result.error, plan: null }));
@@ -9831,16 +10307,21 @@ window.__ModuleLoader__.load({
         const text = JSON.stringify(document, null, 2);
         const fileName = exportFileName(document.exportedAt);
         const download = downloadText(text, fileName);
+        // g-066: the failure reason is a dictionary lookup, not the browser's
+        // own wording — `error.download-failed` is not a host rejection code,
+        // so `errorText` falls back to the localized `errUnknown` and the
+        // English phrase never reaches the notice.
+        const downloadError = download.ok ? null : { code: download.code };
         setTransfer({
           phase: download.ok ? 'exported' : 'error',
           plan: null,
-          error: download.ok ? null : { code: 'download-failed', message: download.reason },
+          error: downloadError,
           exportText: text,
           fileName,
         });
         setNotice({
           tone: download.ok ? 'success' : 'error',
-          text: download.ok ? fmt(t('downloadDone'), { name: fileName }) : fmt(t('downloadFailed'), { reason: download.reason }),
+          text: download.ok ? fmt(t('downloadDone'), { name: fileName }) : fmt(t('downloadFailed'), { reason: errorText(t, downloadError) }),
         });
       };
 
@@ -9893,7 +10374,7 @@ window.__ModuleLoader__.load({
         }
         setTransfer((current) => ({ ...current, phase: 'previewing', error: null }));
         setBusy(true);
-        const query = `dryRun=true&mode=${encodeURIComponent(importMode)}${sessionArg === null ? '' : `&session=${encodeURIComponent(sessionArg)}`}`;
+        const query = `dryRun=true&mode=${encodeURIComponent(importMode)}`;
         const result = await requestJson(`${IMPORT_PATH}?${query}`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -9912,7 +10393,7 @@ window.__ModuleLoader__.load({
         const raw = String(importText).trim();
         setTransfer((current) => ({ ...current, phase: 'applying', error: null }));
         setBusy(true);
-        const query = `mode=${encodeURIComponent(importMode)}${sessionArg === null ? '' : `&session=${encodeURIComponent(sessionArg)}`}`;
+        const query = `mode=${encodeURIComponent(importMode)}`;
         const result = await requestJson(`${IMPORT_PATH}?${query}`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -10226,7 +10707,7 @@ window.__ModuleLoader__.load({
        */
       const clearLegacy = async (layer) => {
         setBusy(true);
-        const result = await requestJson(`${OVERRIDES_PATH}?${layerQuery(layer, sessionArg)}&legacy=true`, { method: 'DELETE' });
+        const result = await requestJson(`${OVERRIDES_PATH}?${layerQuery(layer, advancedScopeArg)}&legacy=true`, { method: 'DELETE' });
         setBusy(false);
         if (!result.ok) {
           setNotice({ tone: 'error', text: errorText(t, result.error) });
@@ -10837,10 +11318,12 @@ window.__ModuleLoader__.load({
         }
         if (presetDraft.id === id) setPresetDraft({ id: null, name: '', action: 'replace', text: '' });
         setPresetStatus({ kind: 'saved', error: null });
-        const orphaned = result.payload && typeof result.payload.orphaned === 'number' ? result.payload.orphaned : 0;
+        const restored = result.payload && typeof result.payload.restoredWorkspaces === 'number'
+          ? result.payload.restoredWorkspaces
+          : 0;
         setNotice({
           tone: 'success',
-          text: fmt(t(orphaned > 0 ? 'presetDeletedOrphanNotice' : 'presetDeletedNotice'), { count: orphaned }),
+          text: fmt(t(restored > 0 ? 'presetDeletedRestoredNotice' : 'presetDeletedNotice'), { count: restored }),
         });
         setReload((value) => value + 1);
       };
@@ -10950,8 +11433,7 @@ window.__ModuleLoader__.load({
 
       const actions = {
         refresh: () => setReload((value) => value + 1),
-        // The「更改」switch: the same button opens and shuts the picker, and
-        // `aria-expanded` on it reports which state it is in.
+        // The「更改」switch: the same button opens and shuts the picker (`aria-expanded` reports it).
         toggleScopeOpen: () => setScopeOpen((open) => !open),
         setTab,
         setView,
@@ -11064,13 +11546,27 @@ window.__ModuleLoader__.load({
         savePreset: () => {
           void savePresetDraft();
         },
-        // Review R4: the row's「删除」only *asks*. The DELETE happens through
-        // `confirmYes`, like every other destructive act on this page.
+        // Review R4: the row's「删除」only *asks*; the DELETE runs through `confirmYes`.
         requestPresetDelete: (id) => {
           const list = presets.data && Array.isArray(presets.data.presets) ? presets.data.presets : [];
           const preset = list.find((entry) => entry.id === id) ?? null;
           if (preset === null) return;
-          setConfirm({ kind: 'preset-delete', id, name: preset.name });
+          // Revision 50 (g-069): the question must state what the deletion really
+          // does. Every workspace whose record holds this preset is about to have
+          // its layer restored, so the confirmation lists them — a count plus an
+          // identifiable label (the page's own workspace label when it has one,
+          // the root otherwise) — instead of promising that nothing is touched.
+          const applied = presets.data && Array.isArray(presets.data.applied) ? presets.data.applied : [];
+          const restorable = applied
+            .filter((record) => Array.isArray(record.stack) && record.stack.some((link) => link.presetId === id))
+            .map((record) => {
+              const row = presetWorkspaces.find((entry) => entry.root === record.workspaceRoot) ?? null;
+              const label = row === null || typeof row.label !== 'string' || row.label.length === 0
+                ? record.workspaceRoot
+                : row.label;
+              return { root: record.workspaceRoot, label };
+            });
+          setConfirm({ kind: 'preset-delete', id, name: preset.name, workspaces: restorable });
         },
         deletePreset: (id) => {
           void deletePreset(id);
@@ -11215,6 +11711,27 @@ window.__ModuleLoader__.load({
         toggleHistoryScopeOpen: () => setHistoryScopeOpen((open) => !open),
         setHistoryScopeSearch: (event) =>
           setHistoryScopeSearch(event && event.target ? String(event.target.value) : ''),
+        // g-073 (Revision 55): the two tab-owned scopes. Like the history scope's
+        // own action, neither of these is `pickSession`: moving one moves no
+        // page-scoped read and never touches `setSelection`. Picking **finishes
+        // the interaction** — the disclosure collapses and the search box is
+        // dropped — exactly as the page-level picker does (§13.7).
+        setOverviewScope: (value) => {
+          setOverviewScope(typeof value === 'string' && value.length > 0 ? value : null);
+          setOverviewScopeOpen(false);
+          setOverviewScopeSearch('');
+        },
+        toggleOverviewScopeOpen: () => setOverviewScopeOpen((open) => !open),
+        setOverviewScopeSearch: (event) =>
+          setOverviewScopeSearch(event && event.target ? String(event.target.value) : ''),
+        setAdvancedScope: (value) => {
+          setAdvancedScope(typeof value === 'string' && value.length > 0 ? value : null);
+          setAdvancedScopeOpen(false);
+          setAdvancedScopeSearch('');
+        },
+        toggleAdvancedScopeOpen: () => setAdvancedScopeOpen((open) => !open),
+        setAdvancedScopeSearch: (event) =>
+          setAdvancedScopeSearch(event && event.target ? String(event.target.value) : ''),
         historyPrev,
         historyNext,
         // g-039 fifth round: the preview lives in a modal, and this is what opens
@@ -11327,8 +11844,12 @@ window.__ModuleLoader__.load({
         previewImport,
         requestImportApply: () => setConfirm({ kind: 'import' }),
         copy: async () => {
+          // g-073 (Revision 55): the copy buttons live in 「提示词总览」, so they
+          // copy **that tab's** assembly — the one its own scope produced.
           const text =
-            fullOrigin === 'all' ? String(snapshot && snapshot.rendered ? snapshot.rendered : '') : composeSections(effectiveSections, fullOrigin);
+            fullOrigin === 'all'
+              ? String(overviewSnapshot && overviewSnapshot.rendered ? overviewSnapshot.rendered : '')
+              : composeSections(overviewEffectiveSections, fullOrigin);
           const copied = await copyText(text);
           setNotice({ tone: copied ? 'success' : 'error', text: copied ? t('copied') : t('copyFail') });
         },
@@ -11375,6 +11896,8 @@ window.__ModuleLoader__.load({
         mineInterpolateLocked,
         mineInterpolateStatus: mineInterpolate,
         mineWarnings,
+        // g-080: the variable names the Host reported (null = not probed yet).
+        mineVariables,
         mineLayerDisabled,
         mineFrozenReason,
         mineFrozenCertain,
@@ -11408,6 +11931,38 @@ window.__ModuleLoader__.load({
         expanded,
         snap,
         ovs,
+        // g-073 (Revision 55):「提示词总览」's own snapshot read and its own scope.
+        // The overview chunk reads these four — never `snap` / `fz` /
+        // `effectiveSections` / `incoming`, which keep describing the page-scoped
+        // assembly「我的 Prompt」writes to.
+        overviewSnap,
+        overviewSnapshot,
+        overviewFz,
+        overviewEffectiveSections,
+        overviewIncoming,
+        overviewScope,
+        overviewScopeValue,
+        overviewScopeName,
+        overviewScopeOptions: overviewScopes.options,
+        overviewScopeGroups,
+        overviewScopeMode: overviewScopes.mode,
+        overviewScopeOpen,
+        overviewScopeSearch,
+        // g-073 (Revision 55):「高级」's own workspace selector, the override read
+        // it scopes, and the session its assembly record is read for.
+        advancedScope,
+        advancedScopeValue,
+        advancedScopeName,
+        advancedScopeOptions: advancedScopes.options,
+        advancedScopeMatches,
+        advancedScopeMode: advancedScopes.mode,
+        advancedScopeOpen,
+        advancedScopeSearch,
+        advancedOvs,
+        advancedSnap,
+        advancedEffectiveSections,
+        advancedIncoming,
+        assemblySession: advancedScopeArg,
         notice,
         busy,
         hist,

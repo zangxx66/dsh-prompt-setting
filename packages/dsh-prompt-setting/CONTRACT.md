@@ -138,13 +138,30 @@ revision that narrows rather than adds:
   layer, reserved entry included — and the two flags together are
   `400 conflicting-query` (§12.2, §15.6);
 - `POST /import` refuses a document that carries any non-reserved section name
-  with `403 write-locked`, in a dry run as well as in a real import (§11.1);
+  with `403 write-locked`, in a dry run as well as in a real import (§11.1).
+  **(Revision 7; withdrawn in Revision 53 — see below.)**
 - `GET /export` carries only the reserved entry of each layer and declares what
-  it dropped, per layer and in total, as `exportScope` (§10);
+  it dropped, per layer and in total, as `exportScope` (§10).
+  **(Revision 7; withdrawn in Revision 53 — see below.)**
 - an existing override of any other name keeps working **exactly** as it did in
-  Revision 6 — same assembly result, byte for byte — but no route can create,
-  update or import one any more. It is *frozen read-only*, and a hand edit of the
-  layer's file remains the escape hatch (§15.8).
+  Revision 6 — same assembly result, byte for byte — but no **write** route can
+  create or update one any more *(Revision 7–52 also said no route **imports**
+  one; Revision 53 (g-074) withdrew that half — §15.7)*. It is *frozen
+  read-only* against the write face, and a hand edit of the layer's file remains
+  the escape hatch (§15.8).
+
+**Revision 53 (g-074) withdraws the migration half of three of those bullets,
+and nothing else.** The import bullet (a document carrying a non-reserved name),
+the export bullet (`GET /export` carries only the reserved entry) and the
+「no route can … import one any more」 clause of the last bullet describe the
+「导得出去、导不回来」
+shape the owner retired on 2026-10-16. §10 and §11.7 now say that an export is
+the whole installation and an import restores it, with `version: 2` written and
+`version: 1` still read for the backups that already exist. The `PUT` bullet, the
+single-name `DELETE` bullet, `?legacy=true` / `?reset=true`, and「an existing
+override keeps working exactly as it did」are **unchanged**: a frozen override is
+still frozen against the write face, it is only no longer frozen against a
+backup.
 
 One consequence is stated rather than left to be discovered: the plugin's own
 section is always registered, so it is always visible in `base`/`effective` and
@@ -622,8 +639,8 @@ meaning exactly.
 | `/prompt-setting/history` | `GET` | One layer's bounded change log, newest first (Revision 4, §8); paged by `offset` and scoped by `session` / `workspace` since Revision 19. |
 | `/prompt-setting/diff` | `GET` | Section + line comparison of two versions of one layer (Revision 4, §9); same scope as §8 since Revision 19. |
 | `/prompt-setting/rollback` | `POST` | Move the **reserved section** back to a recorded version, appending a section-level `rollback` record (Revision 21; narrowed to that one section in Revision 22, §19). |
-| `/prompt-setting/export` | `GET` | One or both layers as a schema-versioned JSON document (Revision 4, §10). |
-| `/prompt-setting/import` | `POST` | Apply such a document atomically, with a `dryRun` preview (Revision 4, §11). |
+| `/prompt-setting/export` | `GET` | The **whole installation** as a schema-versioned JSON document: both layer views, every registered workspace layer, the preset library and the preferences (Revision 4; full backup since Revision 53, §10). |
+| `/prompt-setting/import` | `POST` | Apply such a document atomically, with a `dryRun` preview — and restore that whole installation (Revision 4; the name-based write lock was removed in Revision 53, §11). |
 | `/prompt-setting/interpolate` | `GET` | The「我的 Prompt」variable-substitution switch, per layer and effective (Revision 11, §16.4). |
 | `/prompt-setting/interpolate` | `PUT` | Set that switch for one layer: `{"enabled": bool}` (Revision 11) or `{"state": "inherit"|"on"|"off"}` (Revision 12, §16.8). |
 | `/prompt-setting/update-check` | `GET` | The upstream release check: is a newer release published, and is checking on at all? Always `200`, failures included (g-030, §17). |
@@ -635,7 +652,7 @@ meaning exactly.
 | `/prompt-setting/download-region` | `PUT` | Record the choice: `{"region": "default"\|"cn"\|"custom", "registry"?: string}`, a custom address validated first (g-043, §17.8). |
 | `/prompt-setting/presets` | `GET` | The preset library: the stored presets and the records of where they are applied (g-060, §20.2). Always `200`. |
 | `/prompt-setting/presets` | `PUT` | Insert one preset (no `id`, the Host mints it) or edit one by `id` (§20.3). |
-| `/prompt-setting/presets` | `DELETE` | Remove one preset — `?id=` (§20.4). An applied preset may be deleted: the layer keeps its text and the record is reported as an orphan. |
+| `/prompt-setting/presets` | `DELETE` | Remove one preset **and cancel every application of it** — `?id=` (§20.4). Each affected workspace layer is restored before the library is written; a workspace that cannot be restored refuses the whole deletion. |
 | `/prompt-setting/presets/apply` | `POST` | Write one preset into the workspace layer that owns `session`, snapshotting what that layer held (`{presetId, session}`, §20.5). |
 | `/prompt-setting/presets/unapply` | `POST` | Put that workspace layer back to the snapshot `apply` took, and drop the record (`{session}`, §20.6). |
 | `/prompt-setting/assembly-status` | `GET` | The in-session assembly-status notice for one session (`?session=`): the last key node with its assembly-layer and delivery-layer verdicts, plus the switch's state (g-062, §21). The same answer carries the **incremental feed** (`?since=<seq>`, §21.6) the shell-overlay toaster reads. Always `200`; an unknown session answers `record: null`. |
@@ -1095,7 +1112,7 @@ human-readable `message`.
 | `400` | `invalid-export` | The import body is not a JSON object. |
 | `400` | `unknown-export-schema` | `schema` is not `dsh-prompt-setting/export`. |
 | `400` | `missing-export-version` | The document has no integer `version`. |
-| `400` | `unsupported-export-version` | `version` is not the version this build accepts. |
+| `400` | `unsupported-export-version` | `version` is not a version this build accepts — **Revision 53** writes `2` and reads `2` and `1` (§10, §11.1). |
 | `400` | `missing-export-layers` | `layers` is absent, not an object, or carries no known layer. |
 | `400` | `missing-export-layer` | `?layer=` names a layer the document does not carry. |
 | `400` | `invalid-export-layer` | A layer is not an object, or `overrides` is not an array. |
@@ -1105,7 +1122,22 @@ human-readable `message`.
 | `404` | `history-not-found` | `diff` named a history id that layer's log does not hold. |
 | `500` | `import-verify-failed` | A staged temp file failed its own read-back validation; nothing was replaced. |
 | `500` | `import-staging-failed` | A staged temp file could not be written; nothing was replaced. |
-| `500` | `import-commit-failed` | A rename failed during the commit; the message says how many layers were already replaced. |
+| `500` | `import-commit-failed` | A rename failed during the commit; the message says how many **file(s)** were already replaced (Revision 53: the batch covers layer configs, workspace configs, the library and the preferences). |
+| `400` | `unknown-export-layer` | **Revision 53.** A `layers` key other than `user`/`workspace` (§11.1). |
+| `400` | `unexpected-export-field` | **Revision 53.** A version 1 document carries `workspaces`/`presets`/`preferences`. A field that is `null` counts as **not carried**, so `{"version":1,"presets":null}` is a version 1 document like any other. |
+| `400` | `invalid-export-workspaces` / `invalid-export-workspace` | **Revision 53.** `workspaces` is not an array, or an entry is not `{root, enabled?, reason?, overrides?}`. |
+| `400` | `duplicate-workspace-root` | **Revision 53.** Two entries name the same workspace root. |
+| `400` | `invalid-workspace-root` | **Revision 53.** A root — `workspaces[].root` **or** `presets.applied[].workspaceRoot` (R1) — is not an absolute path, or carries a `..` segment / a control character, or is a volume root (a POSIX `/` or a bare drive such as `C:\`; a UNC share root is treated as an ordinary directory, §11.7). |
+| `400` | `unknown-workspace-root` | **Revision 53; narrowed in Revision 54.** A legal absolute path that this profile's registry does not list. *(Revision 53 answered this on the import face; **Revision 54 (g-074 att-002) removed it from the import** — such an entry is now skipped and declared in `skipped`, §11.7 — so the code survives where a writer may not skip: since R1 an `applied` record the delete-preset route is about to restore into.)* |
+| `400` | `conflicting-import-target` | **Revision 53.** Two parts of the document carry different override lists for the same file. |
+| `409` | `presets-not-writable` / `preferences-not-writable` | **Revision 53.** The existing library / preference file is unusable; it is never overwritten. |
+| `400` | `invalid-presets`, `unsupported-presets-version`, `invalid-preset-id`, `duplicate-preset-id`, `invalid-applied` | **Revision 53.** The library document is malformed; the codes are §20's own. |
+| `400` | `invalid-preferences`, `unknown-preference`, `invalid-preference` | **Revision 53.** The preference document is not an object, carries an unknown key, or breaks a known key's type or value domain. |
+
+**Revision 53 note on `write-locked`.** The row it has above is unchanged for
+`PUT` and the single-name `DELETE`; an **import** no longer answers it.
+`write-locked` was Revision 7's import write lock, and Revision 53 removed that
+lock on the owner's requirement that a backup be restorable (§11.1, §15.7).
 
 An import **reuses** the stage 1B field-validation codes verbatim for a bad
 entry inside the document (`invalid-override`, `missing-name`, `name-too-long`,
@@ -1122,6 +1154,12 @@ malformed entry answers its field code, and only a *well-formed* entry with a
 frozen name reaches `403 write-locked` (§11.1). On `PUT` the order is the
 opposite by design — the name is the subject of that request, so the wall comes
 before every field rule except `layer` and the absence of a name (§4.1).
+
+**Revision 53 (g-074): the paragraph above is now a history note.** The document
+is still schema- and field-validated first — the codes listed above, plus the
+layer-name whitelist, the workspace roots and the two installation documents —
+but there is no longer a name-based wall for a well-formed entry to reach. On
+`PUT` the order is unchanged.
 
 Two writes deliberately refuse rather than guess: an unreadable layer file is
 `409` and is left untouched, and a workspace that cannot be resolved is `400`
@@ -1358,8 +1396,11 @@ Stage 3 (Revision 5) adds one:
 
 Revision 7 adds these:
 
-16. **A frozen override is writable only by hand.** No route creates, updates or
-    imports one; `?legacy=true` removes the whole frozen half and `?reset=true`
+16. **A frozen override is writable only by hand — and, since Revision 53, by
+    importing a backup that carries it.** No **write** route creates or
+    updates one *(Revision 7–52 also said no route **imports** one; Revision 53
+    (g-074) withdrew that half — an import may carry a frozen override, §15.7)*;
+    `?legacy=true` removes the whole frozen half and `?reset=true`
     removes everything. That is a policy choice with a cost, stated here rather
     than discovered: a user who wants to change one frozen entry must edit the
     layer's file (§15.6, §15.8).
@@ -1382,7 +1423,9 @@ Revision 7 adds these:
     「我的 Prompt」, which writes the reserved name with `replace` — so no UI
     path can ask for a write the Host would refuse. What remains a *limitation*
     of the narrowed write face is recorded in §15.8: a frozen override can only
-    be removed by the layer-wide `?legacy=true` clear (§12.2) or by hand.
+    be removed by the layer-wide `?legacy=true` clear (§12.2), by hand, or —
+    since Revision 53 (g-074) — by importing a backup that carries the layer
+    without that entry (`mode=replace`, §11.4).
     The tab order, defaults and markers are specified in §13.0; the client
     cannot enforce the freeze, only state it.
 
@@ -1616,38 +1659,74 @@ one section differs; pass ?name= to compare one of them`).
 - `ops` is capped at 4000 entries with `truncated: true`; `stats` still
   describes the whole change.
 
-## 10. `GET /prompt-setting/export` (Revision 4; narrowed in Revision 7)
+## 10. `GET /prompt-setting/export` (Revision 4; narrowed in Revision 7; **full backup in Revision 53**)
 
-Query: `layer` (optional — limit the document to one layer), `session` (to
-resolve the `workspace` layer).
+Query: `layer` (optional — limit the document to one **layer view**), `session`
+(to resolve the `workspace` layer).
+
+**Revision 53 (g-074) shape — this is what the route answers today.** The
+document is the whole installation and `version` is `2`; the Revision 7 shape it
+replaced is described further down, under its own heading.
 
 ```json
 {
   "ok": true,
   "schema": "dsh-prompt-setting/export",
-  "version": 1,
+  "version": 2,
   "exportedAt": "2024-01-02T10:00:00.000Z",
-  "plugin": { "name": "dsh-prompt-setting", "version": "0.2.2" },
-  "pluginVersion": "0.2.2",
+  "plugin": { "name": "dsh-prompt-setting", "version": "0.2.4" },
+  "pluginVersion": "0.2.4",
   "layers": {
     "user":      { "layer": "user", "enabled": true,
                    "reason": null,
-                   "overrides": [ { "name": "prompt-setting:custom-prompt", "action": "replace", "text": "…" } ] },
+                   "overrides": [ { "name": "prompt-setting:custom-prompt", "action": "replace", "text": "…" },
+                                  { "name": "project:alpha", "action": "replace", "text": "…" } ] },
     "workspace": { "layer": "workspace", "enabled": false,
                    "reason": "no ?session= was supplied, so the workspace layer is inactive for this view",
                    "overrides": [] }
   },
-  "exportScope": { "only": "prompt-setting:custom-prompt", "omitted": { "user": 2, "workspace": 0, "total": 2 } }
+  "workspaces": [
+    { "root": "/abs/path/to/workspace", "enabled": true, "reason": null,
+      "overrides": [ { "name": "prompt-setting:custom-prompt", "action": "append", "text": "…" } ] }
+  ],
+  "presets": {
+    "version": 1,
+    "presets": [ { "id": "0f9c1c62-…", "name": "短答", "action": "replace", "text": "Be brief.",
+                   "createdAt": "2024-01-01T00:00:00.000Z", "updatedAt": null } ],
+    "applied": [ { "workspaceRoot": "/abs/path/to/workspace", "base": null,
+                   "stack": [ { "presetId": "0f9c1c62-…", "appliedAt": null, "action": "replace", "text": "Be brief." } ] } ]
+  },
+  "preferences": { "updateCheck": true, "downloadRegion": "cn" },
+  "exportScope": {
+    "full": true,
+    "only": null,
+    "layers": { "user": 2, "workspace": 0 },
+    "workspaces": 1,
+    "presets": 1,
+    "preferences": true,
+    "omittedApplied": 0,
+    "omitted": { "user": 0, "workspace": 0, "total": 0 },
+    "unavailable": { "presets": null, "preferences": null }
+  }
 }
 ```
 
 `ok` is this plugin's liveness flag; the rest of the body **is** the document and
-is what a client should save. No absolute path is exported: the document is
-portable. With `?layer=user` only that layer is present. An export taken without
-a session therefore carries an empty, disabled `workspace` layer, and that same
-document can be re-imported without a session (§11.3).
+is what a client should save. The layer views carry no path; the absolute paths
+the document does carry are the workspace `root`s, which is what makes a full
+backup restorable at all — a version 2 document is a **machine-local backup**
+(see the Revision 53 note at the end of this section, and §11.7). With
+`?layer=user` only that layer **view** is present: `workspaces[]`, `presets` and
+`preferences` are installation-level and are not narrowed by `?layer=`. An export
+taken without a session carries an empty, disabled `workspace` layer, and that
+same document can be re-imported without a session (§11.3).
 
 **Revision 7 — the document is the reserved section only, and it says so.**
+*Superseded by Revision 53 (g-074); kept as the history of where `exportScope`
+came from. The paragraphs and the table below describe the Revision 7 document,
+so read them as that and not as current behaviour — in particular
+`exportScope.only` is `null` today, never a section name.*
+
 `layers.<layer>.overrides` holds at most the reserved override, because that is
 the only entry an import would accept again (§15.7). Frozen entries are **not
 silently dropped**: `exportScope` is a new top-level field of the response that
@@ -1655,9 +1734,9 @@ declares the scope of this export.
 
 | Field | Meaning |
 | --- | --- |
-| `exportScope.only` | The one section name the document may carry: `prompt-setting:custom-prompt`. |
-| `exportScope.omitted.<layer>` | How many overrides that layer holds but this export left out, computed from the layer view this process could read. |
-| `exportScope.omitted.total` | The sum over the layers this export covers. |
+| `exportScope.only` | **Revision 7 only.** The one section name the document carried — `prompt-setting:custom-prompt`. Since Revision 53 the field is `null`: no section is singled out, because nothing is filtered. |
+| `exportScope.omitted.<layer>` | **Revision 7 only.** How many overrides that layer held but that export left out. Always `0` since Revision 53. |
+| `exportScope.omitted.total` | **Revision 7 only.** The sum over the layers that export covered. Always `0` since Revision 53. |
 
 `omitted` is keyed by exactly the layers the response carries (so
 `?layer=user` yields `{ "user": n, "total": n }`), and a layer whose config is
@@ -1667,13 +1746,61 @@ and `layers.*.layer/enabled/reason` fields are byte-identical to Revision 6; a
 consumer that ignores `exportScope` reads exactly what it read before, minus the
 entries it could no longer import.
 
-**Revision 36 — the entry is exported whole, mode included.** The one override
+**Revision 36 — the entry is exported whole, mode included.** *(The「one override
+per layer」in the first sentence is a Revision 7–52 statement: since Revision 53
+the route copies **every** entry of each layer under this same「as stored」rule —
+see the Revision 53 note next.)* The one override
 per layer is copied as stored, so its `action` may be `append` (「叠加」): a backup
 restored on another machine reproduces the same assembly rather than quietly
 downgrading to「覆盖」. Nothing else about the document changes — the mode is not a
 new field, it is the entry's own `action`, which this route already carried.
 
-## 11. `POST /prompt-setting/import` (Revision 4; narrowed in Revision 7)
+**Revision 53 (g-074) — the document is the whole installation, and `version` is 2.**
+
+The owner's requirement (2026-10-16) was that「备份与恢复」export *every* setting,
+so the Revision 7 narrowing is withdrawn. The document now carries:
+
+| Field | What it holds |
+| --- | --- |
+| `layers.user` / `layers.workspace` | **Every** override of that layer view — frozen entries included, copied as stored (`action` and all, Revision 36). Nothing is filtered; `customOverridesOnly` is gone. |
+| `workspaces[]` | One entry per workspace layer **the Host registers**, as `{root, enabled, reason, overrides}`. This is what makes「所有工作区层」true: the exported set no longer depends on which session asked. Sorted by `root`, so two exports of an unchanged installation agree byte for byte. |
+| `presets` | The whole preset library (§20) — or `null` when this process could not read it. Since R1 an `applied` record whose `workspaceRoot` this profile does not register is **not carried**: it could not be restored here, so carrying it would produce a backup this plugin's own reader rejects. *(In Revision 53 the reason given was that「the import refuses such a document」; Revision 54 replaced that refusal with drop-and-declare on the import side, and the export still omits the record — the property「the plugin's own backup is always readable by its own import」now holds from both ends.)* |
+| `preferences` | The preference document (§17) — or `null` when this process could not read it **or** when the import would refuse it (R2: a `downloadRegionRegistry` the download-region route would answer `400 registry-invalid` for is not carried either). |
+
+`version` is `2`. A **version 1** document (one reserved entry per layer, no
+`workspaces`/`presets`/`preferences`) is still accepted on import, which is what
+keeps a pre-g-074 backup restorable; a version 1 document that *does* carry those
+fields is refused (`400 unexpected-export-field`) rather than half-read.
+
+The layer views stay path-free — `buildExport` copies only
+`{layer, enabled, reason, overrides}`. The **one** absolute path a version 2
+document carries is a workspace's own `root`, and it carries it deliberately: a
+backup that did not name its workspaces could not put them back. A document's
+**layer views** are therefore still portable in the Revision 4 sense (and a
+version 1 document is entirely so); a version 2 document taken as a whole is a
+**machine-local backup**, and §11.7 says what an import does with a root this
+machine does not register.
+
+`exportScope` keeps its name and changes its meaning: it now **declares what the
+document holds**, and every count that used to report an omission is truthfully
+zero.
+
+| Field | Meaning |
+| --- | --- |
+| `full` | `true`. This document is not narrowed. |
+| `only` | `null`. No section is singled out any more. |
+| `layers.<layer>` | How many overrides this export carried for that layer view. |
+| `workspaces` | How many workspace entries the document carries. |
+| `presets` | How many presets the library carried (`0` when it was not carried). |
+| `preferences` | Whether the preference document was carried. |
+| `omittedApplied` | **R1.** How many stored `applied` records were left out because their workspace is not registered here (`0` in every ordinary installation). Declared rather than dropped silently. |
+| `omitted.<layer>` / `omitted.total` | Always `0` — a full export drops nothing **of a layer**. Kept so a pre-Revision-53 reader reads「complete」instead of finding a field missing. |
+| `unavailable.presets` / `unavailable.preferences` | Why a document was **not** carried (`invalid-json: …`, or since R2 a validation reason such as `invalid-preference: …`), or `null`. An unreadable library is never exported as an empty one: restoring that would clear the user's real catalogue — and a document the import would refuse is never carried either, so「the plugin's own backup is always readable by the plugin's own import」holds on both halves (R1 for `applied` records, R2 for the preference document). |
+
+`?layer=` still limits the **layer views** the document carries. It never
+narrowed, and does not narrow, the installation-level half.
+
+## 11. `POST /prompt-setting/import` (Revision 4; narrowed in Revision 7; **write lock removed in Revision 53**)
 
 Query: `dryRun` (exactly `true` to preview), `mode` (`merge` | `replace`),
 `layer` (optional — import only that layer), `session`. Body: one export
@@ -1684,7 +1811,8 @@ document. Body cap: **4 MiB** (`413 body-too-large` beyond it).
 1. **parse** the body as JSON (`400 invalid-json`), and cap its size;
 2. **validate** the document: schema, version, layers, and every override field
    through the same validator `PUT` uses (§4.4);
-3. **apply the write lock** (Revision 7): the document must carry no section name
+3. **apply the write lock** (Revision 7 — **this step is gone in Revision 53**,
+   see the note under this list): the document must carry no section name
    other than the reserved one, **in any layer**, else `403 write-locked`. This
    step sits before the dry-run branch on purpose — a dry run answers the same
    question the real run would answer, and neither may touch a byte (§15.7);
@@ -1703,6 +1831,54 @@ files were never opened for writing before step 8, so they are **byte-identical*
 to what they were — this is asserted in `test/stage2.test.mjs` with a SHA-256 of
 each file, not merely with a 4xx status.
 
+**Revision 53 (g-074): step 3 is gone, and its weight moved into step 2.** The
+owner's requirement is that a backup be restorable, so an import no longer
+refuses a document for naming a frozen section — that is the whole point of a
+full backup. **Removing the lock removed no check.** The refusals that took its
+place all happen before anything is staged, and each still answers one stable
+code:
+
+- the **layer-name whitelist**: `layers` may carry `user` and `workspace` only
+  (`400 unknown-export-layer`) — an unknown key is refused, not ignored;
+- every override field, through the same validator `PUT` uses (`name`, `action`,
+  `text`, `order`, uniqueness) — the stage 1 codes, with the location in the
+  message;
+- every **workspace root**: an absolute path with no `..` segment, no control
+  character and not a volume root — a POSIX `/` or a bare drive such as `C:\`
+  (`400 invalid-workspace-root`). *(Revision 53 also listed `400
+  unknown-workspace-root` here, for a legal path this profile's
+  `workspaceRegistry` does not list. **Revision 54 (g-074 att-002) removed that
+  refusal from the import**: such an entry is now **skipped and declared** in
+  `skipped` — the cross-machine case — and the code survives only on the
+  delete-preset route. The shape half above is untouched, and it is still
+  refused whole. See §11.7 and the Revision 54 note at the end of this list.)*
+- the **library** and the **preference document**, each validated by the module
+  that owns its schema (`invalid-presets`, `unsupported-presets-version`,
+  `invalid-preset-id`, `duplicate-preset-id`, `invalid-applied`,
+  `unknown-preference`, `invalid-preference`, `invalid-preferences`) — and every
+  `presets.applied[].workspaceRoot` it carries is put through the **shape** half
+  of the root rule above, exactly like `workspaces[].root` (g-074 R1). Since
+  Revision 54 a record that passes the shape rule but names an unregistered
+  workspace is **dropped from the library being written and declared in
+  `skipped`**, never carried and never written into (§11.7).
+
+**Revision 54 (g-074 att-002): the registry half of the root rule becomes a
+skip on the import face.** The owner's instruction (2026-10-16) is
+「如果不是本机已注册的则跳过」. The two halves of the rule are disjoint and must
+never be conflated:
+
+| The root is | What the import does |
+| --- | --- |
+| malformed — not absolute, a `..` segment, a control character, a volume root | **refused whole**, `400 invalid-workspace-root`, nothing staged, every file byte-identical (unchanged from Revision 53) |
+| a legal absolute path this profile's registry does not list | that **entry is skipped**: it is not written, it is reported in `skipped` (`{layer, reason, entries}`, §11.2), and every other part of the document — the layer views, the registered workspace layers, the library, the preferences — is imported normally |
+| a legal absolute path this profile's registry does list | imported, exactly as in Revision 53 |
+
+Step 4 also resolves the document's `workspaces[]` entries (not only the two
+layer views), and marks a local `presets.json` / `preferences.json` this process
+cannot understand as `409 presets-not-writable` / `409 preferences-not-writable`.
+`?dryRun=true` answers every one of these exactly as the real run would, and
+neither touches a byte.
+
 ### 11.2 Response
 
 ```json
@@ -1713,15 +1889,70 @@ each file, not merely with a 4xx status.
               "changes": [ { "name": "project:alpha", "status": "replaced", "action": "replace" } ],
               "path": "…", "enabled": true }
   },
+  "workspaces": [
+    { "root": "/abs/path/to/workspace",
+      "counts": { "added": 1, "replaced": 0, "unchanged": 0, "removed": 0, "kept": 1 },
+      "changes": [ { "name": "prompt-setting:custom-prompt", "status": "added", "action": "append" } ],
+      "path": "…/.dsh-prompt-setting/overrides.json", "enabled": true }
+  ],
+  "presets": { "path": "…/presets.json", "changed": true, "presets": 3, "applied": 1 },
+  "preferences": { "path": "…/preferences.json", "changed": false, "keys": ["updateCheck", "downloadRegion"] },
   "imported": ["user"],
-  "skipped": [ { "layer": "workspace", "reason": "…", "entries": 0 } ],
+  "importedWorkspaces": ["/abs/path/to/workspace"],
+  "skipped": [ { "layer": "workspace", "reason": "layer \"workspace\" requires a \"session\" id to resolve the workspace root", "entries": 0 } ],
   "totals": { "added": 1, "replaced": 1, "unchanged": 0, "removed": 0, "kept": 1 },
+  "workspaceTotals": { "added": 1, "replaced": 0, "unchanged": 0, "removed": 0, "kept": 1 },
   "unchanged": false,
   "applied": true,
   "written": ["/home/u/.dsh/prompt-setting/overrides.json"],
   "history": { "user": [ { "name": "project:alpha", "status": "replaced", "ok": true, "id": "4", "seq": 4, "dropped": 0, "rewritten": false } ] }
 }
 ```
+
+The keys above are the Revision 53 (g-074) shape of a **real** import
+(`dryRun: false`). Two sets are conditional: `schema` / `exportedAt` are echoed
+on the `?dryRun=true` answer **only**, and `written` / `history` appear on a real
+import **only** — the example above carries the latter pair and not the former.
+The installation-level half (`workspaces`, `presets`, `preferences`,
+`importedWorkspaces`, `workspaceTotals`) is present on both — see §11.7 for what
+each field means. A version 1 document carries none of the installation half, so
+those fields come back empty. `totals` sums the **layer views**; the workspace
+entries are summed separately in `workspaceTotals`.
+
+`skipped[]` is `{layer, reason, entries}[]`: one object per thing the import did
+**not** apply. There are **six** sources since Revision 54, and `layer` says
+which. One of the `layer` values is a **formal** member of the domain rather
+than a reachable one, and the table says which:
+
+| `layer` | Source | `entries` |
+| --- | --- | --- |
+| `workspace` — and `user` as a **formal** member (`targetFor('user')` resolves without throwing, so this route can produce only the `workspace` row today) | a layer view the document carries but that cannot be resolved while holding nothing — refusing it would fail an export → import round trip for a reason the user cannot act on (§11.3) | `0` |
+| `workspace:<root>` | a `workspaces[]` entry whose `overrides` is empty: there is nothing to write for that workspace layer (§11.7) | `0` |
+| `workspace:<root>` | a `workspaces[]` entry naming a file another part of the **same** document already claimed, with identical entries (a session-resolved `workspace` layer view and a `workspaces[]` entry naming that same workspace, §11.7); `reason` is the `already covered by "…"` sentence | the override count that entry carries |
+| `workspace:<root>` (**Revision 54**) | a `workspaces[]` entry whose root is a legal absolute path but **not** a workspace this profile registers — the cross-machine case (§11.7); the entry is skipped, nothing is written for it | the override count that entry carries |
+| `presets.applied:<root>` (**Revision 54**) | a `presets.applied[]` record whose `workspaceRoot` is a legal absolute path but **not** a workspace this profile registers; the record is **dropped** from the library being written (§11.7) | `1` — one dropped record |
+| `installation` | the installation-level half (`workspaces[]`, `presets`, `preferences`) that a `?layer=` request deliberately left alone (§11.7) | how many **items** were left alone: `workspaces.length` + `presets.presets.length` + `1` when `preferences` is carried |
+
+`reason` is one human-readable sentence naming the source, and it is never empty.
+
+`entries` is **not one number with one meaning** — the two readings are:
+
+- for a **layer view** or a **workspace layer** (the first four rows): the number
+  of overrides that layer would have contributed, `0` when the document asked for
+  nothing in it;
+- for the **`installation`** and **`presets.applied:<root>`** rows: a count of
+  **items**, not overrides — `workspaces[]` entries + presets + `1` for a carried
+  `preferences`, and `1` for a dropped applied record. The fake-Host contract test
+  for the `installation` reading is `test/stage2.test.mjs`'s「an installation-level
+  half left alone is counted by items, not by overrides (R6)」.
+
+§11.7's「reports it in `skipped` with the count it left alone」 is the same口径
+read the other way. Those three field names are what this contract fixes;
+**Revision 54 (g-074 att-002) is the panel-side「what was skipped」declaration
+this paragraph promised**: the preview renders one row per entry from exactly
+this shape — `layer`, `reason` and `entries` — instead of joining them into a
+single sentence, and the 「整份替换」 warning beside it is built from the same dry-run
+response (§11.8).
 
 `counts.kept` is the number of local entries the document does not mention and
 that survive the strategy. `unchanged: true` means the plan changes nothing: no
@@ -1762,9 +1993,216 @@ history failure does not undo the import.
 ### 11.6 Residual risk, stated
 
 The commit is atomic **per file**, not across layers. A filesystem failure
-between two `rename` calls leaves the earlier layer replaced and the later one
-untouched; the thrown `500 import-commit-failed` message says how many layers
-were already committed. No stage before the renames can leave a partial state.
+between two `rename` calls leaves the earlier file replaced and the later one
+untouched; the thrown `500 import-commit-failed` message says how many **files**
+were already replaced. No stage before the renames can leave a partial state.
+Since Revision 53 the same sentence covers four kinds of file (layer configs,
+workspace configs, the library, the preferences) rather than one, so it says
+"file(s)" where it used to say "layer(s)".
+
+### 11.7 The full backup: workspace layers, the library, the preferences (Revision 53)
+
+**Which files an import may write.** Exactly two shapes, both derived by the
+Host and never named by the document:
+
+- a workspace layer at `workspaceConfigPath(root)` —
+  `<root>/.dsh-prompt-setting/overrides.json` — and only for a `root` that
+  `workspaceRegistry.list()` returned for this profile;
+- the installation documents at the fixed `userPresetsPath()` and
+  `userPreferencesPath()` under `$DSH_HOME`.
+
+No field of the document can name a path *this profile does not own*. A root
+that passes the shape checks but is not registered was, in Revision 53, `400
+unknown-workspace-root`, and the **whole** import was refused: nothing staged,
+every file byte-identical. *(**Revision 54 (g-074 att-002) replaced that refusal
+with a skip** — the owner's 2026-10-16 rule is「如果不是本机已注册的则跳过」 — so
+read the rest of this paragraph as the *shape* half it still describes for those
+roots, and read the Revision 54 note at the end of this section for what happens
+to a legal-but-unregistered one.)* That is the security boundary this revision
+draws in place of the old name lock — an import may write into a workspace the
+user has *here*, and nowhere else. A backup taken on another machine therefore
+restores the workspaces it names only after they have been opened here once;
+since Revision 54 the backup's layer views, library and preferences are restored
+**immediately** instead of waiting for that, and the workspaces this machine does
+not have are the rows reported in `skipped`.
+
+(g-074 R1 corrected the first sentence of that paragraph, which as written said
+"no field can name a path" while two fields do — `workspaces[].root` and
+`presets.applied[].workspaceRoot`. What the boundary forbids is naming a path
+**this profile does not own**, and both fields are now held to it; see the R1
+note at the end of this section.)
+
+**One file, one plan.** The `workspace` layer view and a `workspaces[]` entry may
+name the same workspace (a session-resolved export does exactly that). When they
+carry the same entries the second is de-duplicated and reported in `skipped`;
+when they carry different ones the import is `400 conflicting-import-target`
+rather than an order-dependent surprise.
+
+**The two installation documents are replaced, not merged.** A library and a
+preference set have no per-entry merge semantics, and the document an export
+produced is the authoritative snapshot; a local `presets.json` or
+`preferences.json` this process cannot understand is `409 presets-not-writable` /
+`409 preferences-not-writable` and is never overwritten. `?layer=` narrows the
+import to the named layer view: the installation half is then **not applied at
+all**, and the response reports it in `skipped` with the count it left alone.
+
+**Everything is staged before anything is renamed**, in one
+`writeDocumentsAtomically` batch — layer configs, workspace configs,
+`presets.json` and `preferences.json` are each written to a temp file beside
+their target and read back through their own reader, and only then are they
+renamed into place. The per-file atomicity and the residual above are unchanged;
+what changed is that one rejection now covers the whole backup instead of one
+file family.
+
+**The response says what it did.** `layers` and its `totals` are unchanged in
+shape; a `workspaces[]` array reports each restored workspace layer
+(`{root, counts, changes, path, enabled}`), `importedWorkspaces` lists the roots
+that were planned, `workspaceTotals` sums them, and `presets` / `preferences`
+report `{path, changed, …}` for the two installation documents. `written` names
+every file the commit replaced. A version 1 document carries none of the
+installation half, so all of those fields are present and empty — a client that
+ignores them reads exactly what it read before.
+
+**Revision 53 / g-074 R1 — `presets.applied[].workspaceRoot` is the same field,
+and it is held to the same rule.** The first cut of this revision checked the
+shape of `workspaces[].root` and left the applied record's own root judged by
+nothing but "a non-empty string", and the delete-preset route (`DELETE
+/prompt-setting/presets?id=`) restored every workspace its `applied` record named
+without ever asking the registry. The review's PoC turned that into a write
+primitive: an imported library could name `/etc` (or any directory holding a
+`.dsh-prompt-setting/overrides.json`), and deleting the preset wrote into it.
+Three things close it, and all three are asserted:
+
+- **one shape rule, shared.** `workspaces[].root` and
+  `presets.applied[].workspaceRoot` are validated by the very same
+  `validateWorkspaceRoot` (`core/workspace-root.js`, a module of its own so
+  `core/presets.js` can import it without a cycle): a non-empty absolute path, no
+  `..` segment, no control character, not a volume root. Either field answers
+  `400 invalid-workspace-root`. The two roots the rule refuses are the **POSIX
+  root** (`/`) and a **bare drive** (`C:\`, `C:/`): both would place the plugin's
+  directory at the top of a volume. A **UNC share root** (`\\server\share`) is
+  *not* refused — it is an ordinary directory path as far as this rule is
+  concerned, and what keeps it honest is the registry rule below (since
+  Revision 54 a share this profile does not register is **skipped and declared**
+  on the import face, §11.2, and `unknown-workspace-root` on the delete-preset
+  route);
+- **one registry rule, applied at every writer.** `assertKnownWorkspaceRoot` is
+  the **refusal** face, and every writer that is not an import still goes through
+  it: every applied root the delete-preset route is about to write. An
+  unregistered root there is `400 unknown-workspace-root`, decided before phase 1
+  of the deletion reads a layer, so a refusal leaves the library and every layer
+  byte-identical. *(Revision 53 also routed `workspaces[].root` and
+  `presets.applied[].workspaceRoot` **on an import** through this function;
+  Revision 54 sends those two through `workspaceRootSkipReason` instead — the
+  same registry question asked as a question — and reports a non-`null` answer in
+  `skipped`. Nothing is written for such an entry, so the boundary this item
+  states is unchanged: a path *can* be named, and it is never written unless this
+  profile owns it.)*
+- **an export never publishes what it could not restore.** A stored `applied`
+  record whose workspace this profile does not register is not carried, and
+  `exportScope.omittedApplied` counts what was left out — so the plugin's own
+  backup can always be read back by the plugin's own import, which is the
+  property the review's second PoC showed was missing.
+
+A backup that names a workspace this machine does not have was, in Revision 53,
+still refused whole, with a message naming which workspace to open first. The
+alternative then rejected was「dropping the unrecognized record silently」 — and
+that is still rejected today: **Revision 54 drops such an entry *loudly***, in
+`skipped`, with its own `layer`, a sentence in `reason` and its count in
+`entries`. What changed is the granularity, not the honesty: one entry this
+machine cannot restore no longer costs the user the whole backup.
+
+**Revision 54 (g-074 att-002) — cross-machine restore skips, and says so.** The
+owner's instruction (2026-10-16) is「如果不是本机已注册的则跳过」. Concretely,
+on `POST /prompt-setting/import`:
+
+- `workspaces[].root` — a legal absolute path this profile's registry does not
+  list is **skipped**: no `workspaceConfigPath(root)` is even computed for it, no
+  file is created, and the entry appears in `skipped` as
+  `{layer: "workspace:<root>", reason: "…", entries: <override count>}`;
+- `presets.applied[].workspaceRoot` — a record naming such a root is **dropped
+  from the library being written** and appears in `skipped` as
+  `{layer: "presets.applied:<root>", reason: "…", entries: 1}`. It is never
+  persisted, which is what keeps R1's hole closed: the delete-preset route
+  restores the workspaces its stored records name, so a record this machine
+  cannot own must not reach the library at all;
+- everything else in the document — the layer views, the **registered** workspace
+  layers, `presets`, `preferences` — is imported normally, and
+  `presets`/`preferences` are still replaced as a whole (see
+  「The two installation documents are replaced, not merged」 above);
+- a **malformed** root is untouched by all of this: it fails
+  `validateWorkspaceRoot` in `parseExport`, whole-document, with
+  `400 invalid-workspace-root` and zero writes (§11.1). 「Skip」 is the answer to
+  a cross-machine difference, never to a malformed input;
+- both branches are asserted against a real file's SHA-256 in
+  `test/stage2.test.mjs`: the skipped entry's target is byte-identical (or still
+  absent), and the registered half of the same document really was written.
+
+The panel half of this revision — the import preview that must warn that the
+installation documents are replaced as a whole and show what was skipped — is
+§11.8.
+
+**Revision 53 / g-074 R2 — one semantic, one rule, on every face.**
+
+- **The preference document is held to the download-region route's own rule.**
+  `validatePreferencesDocument` validates `downloadRegionRegistry` with
+  `validateRegistryAddress` — the very function `PUT
+  /prompt-setting/download-region` uses — so an address that route would answer
+  `400 registry-invalid` for (`file:///etc`, `ftp://…`, credentials, a query
+  string, a fragment) cannot be persisted through an import either. The import
+  applies **no URL normalization of its own** — it never rewrites a trailing
+  slash, so the address is written as the document carried it (trimmed) and an
+  export/import round trip is stable for that address. What is stored is still
+  `normalizePreferences`' output, so this is「the address is not rewritten by the
+  import」, not byte-for-byte equality with an arbitrary document: an omitted
+  `updateCheck` comes back as the documented default `true`, and the address is
+  trimmed. An export
+  applies the same rule from the other side: a preference document the import
+  would refuse is **not carried**, and `exportScope.unavailable.preferences`
+  says why (§10). Both halves of §11.7's「the plugin's own backup is always
+  readable by the plugin's own import」are therefore checked, not asserted: R1
+  covers `applied` records, R2 covers the preference document.
+- **The read face stays lenient, and every writer stays strict.** A *stored*
+  `applied[].workspaceRoot` is only checked for being a usable string
+  (`normalizeStoredApplied`), because a library holding one bad historical record
+  must keep reading — the page must not go blank because of a record some earlier
+  build or another machine wrote. What makes that safe is a consumer invariant,
+  and it is a requirement on any future reader of the field:
+
+  > **the read face is lenient; every consumer of a stored `workspaceRoot` must
+  > pass it through the registry whitelist before it can become a path.**
+
+  It holds for all three consumers today — `appliedRootsOf` feeds the
+  delete-preset route (whitelist, above), the same function feeds
+  `planPresetRemoval`, whose `currentOf` is only reached from that route, and
+  `publicApplied` merely reports the string. Tightening `normalizeStoredApplied`
+  instead would trade this for a worse failure: a library with one unreadable
+  record would stop loading altogether.
+
+### 11.8 The panel's import preview (Revision 54 / g-074 att-002)
+
+The「备份与恢复」tab previews an import by POSTing the pasted document to
+`…?dryRun=true` and rendering **that response** — the preview never computes a
+plan of its own, so what it shows is exactly what the real run would do (§11.1
+step 6). Until Revision 54 it rendered the layer views only (`layers`, `totals`,
+`changes`), which said nothing about the two installation documents being
+replaced as a whole and nothing about the entries the import would skip. Since
+Revision 54 the preview (`client.transfer.js`) adds three blocks, each keyed to a
+field the route already returned:
+
+| Block | Field it reads | What it says |
+| --- | --- | --- |
+| `data-import-replaces="true"` | `presets`, `preferences` | 「整份替换，不是合并」 in words (`importReplaceWarning`), then one line per carried document: the preset count and applied count (`importReplacePresets`), and the number of known preference keys (`importReplacePreferences`). It is not conditional on a local file existing — a carried document **is** replaced, and that consequence is what the confirmation is about |
+| `data-import-workspaces="<n>"` | `workspaces[]` | one row per restored workspace layer — `data-import-workspace="<root>"` and `data-import-workspace-changed="true\|false"` — so the user sees which workspace layers this document touches and whether each one really changes anything |
+| `data-import-skipped="<n>"` | `skipped[]` | one row per skipped entry: `data-import-skipped-row="<layer>"`, `data-import-skipped-entries="<n>"`, the sentence from `reason` verbatim, and the count from `entries`. The `layer`/`reason`/`entries` shape is the one §11.2 fixes; the panel adds no field of its own |
+
+The labels use the same `{…}` placeholders as the copy they fill, both
+dictionaries (`locale/zh.json`, `locale/en.json`) carry every added key in the
+same order, and `client.js`'s generated dictionary block is written only by
+`node scripts/locale-pack.mjs --write` (§14.5). The English render sweep walks
+the new branches (`data-import-replaces=true`,
+`data-import-skipped-row=workspace`), so a key that renders as its own identifier
+or as non-English prose still fails `test/client.test.mjs`.
 
 ## 12. `DELETE /prompt-setting/overrides` (Revision 4; `legacy` added in Revision 7)
 
@@ -1879,22 +2317,24 @@ the first one open by default; Revision 19 (g-038) split the old
 「历史与备份」 into 「版本历史」 and 「备份与恢复」, so there were five; Revision 38
 (g-060) adds 「我的预设」 — the preset catalogue of §20 — **directly after**
 「我的 Prompt」, so there are six. Above them
-there are exactly three things: the
+there are exactly **two** things: the
 title line — which carries the plugin version beside the heading since Revision
-17 (§13.8) — one line of deciding facts, and the **「我的 Prompt」block whose
-header is the session selector every tab shares** — the selector itself is **one
-line** until「更改」is clicked (§13.7), so the tab bar and the tab panel are on
-the first screen.
+17 (§13.8) — and one line of deciding facts. Since g-071 the session selector is
+**not** one of them: it renders inside「我的 Prompt」, the only surface it writes,
+and no other tab carries a scope surface of its own (Revision 52; the read-only
+line g-071 first gave them was withdrawn in R4 — §13.7). **Revision 55 (g-073)**
+completes that reading: the page value scopes「我的 Prompt」alone, and the two
+tabs that need a scope state their own (§13.2, §13.4, §13.10).
 
-Since g-055 that block is what the third thing *is* (§13.7,
-`data-region="prompt-block"`): the block wraps the selector in one container,
-carries the same leading rule as the mine panel, and states in one sentence what
-the scope decides, so the selector reads as the header of the write surface
-rather than as a page-wide setting of its own. The block deliberately has no
-heading of its own — the mine panel owns `mineHeading`, and a second copy above
-the tabs would list the same title twice. Nothing about the selector's contract
-changed — it is still above the tab bar, still one instance, and still the only
-place the scope is changed.
+**g-055/g-071: the scope card is one block inside「我的 Prompt」** (§13.7,
+`data-region="prompt-block"`). The block wraps the selector in one container and
+states in one sentence what the scope decides. It has **no heading of its own** —
+the mine panel owns `mineHeading`, and a second copy would list the same title
+twice — and it renders as the panel's first block, under that title, so the
+selector reads as part of the write surface rather than as a page-wide setting of
+its own. The selector is still **one instance** and still the only place the scope
+is changed; only its position changed (g-055 put the block above the tab bar,
+g-071 is the owner's correction of that position).
 
 | order | `data-tab-value` | tab | what it is |
 | --- | --- | --- | --- |
@@ -1916,6 +2356,13 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   third real-machine round removed the official `SegmentedTabs` branch and the
   `display: contents` wrapper that used to carry the group marker for it — §13.4
   Revision 49);
+- the first-level bar's two decorations are machine-readable too (Revision 51,
+  g-070): the selected tab carries `data-role="tab-indicator"` with
+  `data-tab-indicator="<value>"` (the 2px underline), 「我的预设」carries
+  `data-role="tab-count"` when — and only when — the library's size is actually
+  known, and 「高级」carries `data-role="tab-update-dot"` when a newer release is
+  on offer (independent of the banner's dismissal). All three live **inside** the
+  tab buttons, so the tablist's own markers are untouched;
 - exactly **one** tab panel is rendered: `data-region="tab-panel"` with
   `data-tab-value="<value>"`. Switching a tab renders that tab's panel and no
   other tab's top-level regions. In particular the export/import actions
@@ -1925,6 +2372,23 @@ Markers, on top of the Revision 3/4 ones this revision keeps:
   (`data-region="history"`, `"history-list"`) exist **only** in the `history`
   panel, and the preset catalogue (`data-region="presets"`, its list, and the two
   dialogs of §20.9) exists **only** in the `presets` panel.
+- the tabs other than「我的 Prompt」render **no scope surface of the page's**
+  (Revision 52 / R4): the one-line read-only statement of the page scope that
+  g-071 first gave them was **withdrawn** after the owner's real-machine review,
+  because each of those tabs has its own scope semantics — 「提示词总览」will get
+  its own switcher, 「备份与恢复」should export the whole configuration, 「高级」is
+  not scope-dependent, and 「我的预设」is not tied to this scope either.
+  **Revision 55 (g-073) is that decoupling**, and it is asserted by direct marker
+  rather than by structure: in `presets` / `overview` / `backup` / `advanced`
+  (and `history`) the tree holds **zero** nodes with `data-region="session"`,
+  `data-region="scope-summary"` or `data-action="scope-toggle"` — the page scope
+  is drawn in「我的 Prompt」and nowhere else. What those tabs have instead is
+  stated where it belongs: 「提示词总览」carries its own by-workspace, per-session
+  switcher (§13.2), 「高级」carries its own workspace selector (§13.4),
+  「备份与恢复」exports the whole configuration (§10, Revision 53) and is read
+  without a page scope (§13.3a), 「我的预设」is read without one too (§20), and
+  「版本历史」has had its own since Revision 19 (§13.3, §13.7). The model is
+  summarised in §13.10.
 
 **Revision 29 (the client half ships as an entry plus chunks — internal
 structure only).** Nothing above changes: the same tabs, the same order, the
@@ -2018,7 +2482,8 @@ interaction.
 - **Revision 45** adds the in-session **assembly-status notice** (g-062, §21): one
   new route pair (`GET`/`PUT /prompt-setting/assembly-status`), one new
   `preferences.json` key (`assemblyNotice`, stated-only), and one new block at the
-  top of the「我的 Prompt」panel. It changes no existing route, no existing
+  top of the「我的 Prompt」panel (since **g-065** that block, and the read that
+  feeds it, live at the top of「高级」instead — §21.5). It changes no existing route, no existing
   response field and no existing stored byte;
 - **Revision 46** makes that notice **proactive** (g-062, §21.6): the same `GET`
   answers an incremental feed (`?since=<seq>`), and a resident `shell.overlay`
@@ -2315,11 +2780,15 @@ schema of nothing else moves, and the assembly path gains no read.
 - **why a third file.** The library lives in
   `<DSH_HOME>/prompt-setting/presets.json`, its own document read and written by
   its own routes. Folding it into `overrides.json` was rejected because that file
-  is inside the frozen export / import / history / snapshot schemas (§10, §11,
-  §8, §2), and a preset is none of those things — it is the machine owner's
-  catalogue, not one layer's override. Folding it into the export document was
-  rejected for the same reason plus one: a backup is portable and a catalogue is
-  not, and a restore would then silently rewrite the catalogue;
+  is inside the history / snapshot schemas (§8, §2), and a preset is none of those
+  things — it is the machine owner's catalogue, not one layer's override.
+  *(Revision 37–52 also rejected carrying it in the **export document**, on the
+  ground that「a backup is portable and a catalogue is not」; **Revision 53
+  (g-074) reversed that half** — the export carries the library as its own
+  top-level `presets` field and an import replaces `presets.json` from it. The
+  catalogue is still never folded into a layer, and the replacement is explicit
+  rather than silent (`presets.changed`, §10, §11.7). The third file stays for
+  the reason above, not for that one.)*
 - **applying reuses the one write face.** `POST /presets/apply` resolves the
   workspace exactly as `PUT /overrides` does (`targetFor` + `writableConfig`),
   rebuilds the layer with the reserved entry upserted, validates it with
@@ -2345,7 +2814,9 @@ schema of nothing else moves, and the assembly path gains no read.
   workspace the request never named would be a write nothing asked for, and
   silently dropping the record would lose the snapshot the user still needs;
 - **what this revision deliberately does not do.** No preset travels in
-  `GET /export` (the document's fields are unchanged, §20.8), no preset is applied
+  `GET /export` (the document's fields are unchanged, §20.8) *(**superseded by
+  Revision 53 (g-074)**: the library is now a top-level `presets` field of the
+  export document — see §20.8)*, no preset is applied
   to more than one workspace per request, and the library keeps no version
   history — one record per workspace root, one level deep: applying a second
   preset replaces the first record, so「取消应用」goes back to the state before the
@@ -2656,10 +3127,12 @@ by accident — the tests assert the values rather than the family's agreement.
   factory;
 - **three ghost-button families, and the row family with them.**
   `chipButtonStyle({cursor, color, background, border})` is the pill (a 999
-  radius, `'3px 10px'`): the fallback tab, the two pinned entries and the
-  「使用这串 id」fallback. The unselected text colour really differs —
-  `labelSecondary` on the tabs, `labelPrimary` on the other two — so it is an
-  argument, and so are the selected fill and the stroke.
+  radius, `'3px 10px'`): the hand-built `tabs()` control, the two pinned entries
+  and the「使用这串 id」fallback. The unselected text colour really differs —
+  `labelSecondary` on `tabs()`, `labelPrimary` on the other two — so it is an
+  argument, and so are the selected fill and the stroke. (Revision 51 moved the
+  first-level tab bar off `tabs()`, which is unchanged and still draws the chip
+  family for its eight sub-group selectors — see §13.4.)
   `miniButtonStyle({padding, color, background, border, lineHeight, textAlign})`
   is the radius-6 tool-strip button:「显示更多」, the history row's side buttons,
   the pager, the overview's expand toggle and one option row of the history scope
@@ -2672,8 +3145,13 @@ by accident — the tests assert the values rather than the family's agreement.
   **That two-renderer caveat is gone as of g-063's third real-machine round**: the
   tab strip is hand-built under **both** renderers (the Host's `SegmentedTabs`
   divides its own width into equal fractions, which six long Chinese labels do not
-  fit — §13.4 Revision 49), so this factory is now the tab strip's only shape and
-  the two renderers' tabs do look alike;
+  fit — §13.4 Revision 49), so both renderers draw the same strip and the tabs do
+  look alike. Revision 51 added a second hand-built renderer for the first-level
+  bar alone — `mainTabStrip()`, plain text with an underlined selection — while
+  `tabs()` keeps drawing the chip family for every sub-group selector in the entry
+  and the chunks (`mine-layer`, `advanced-layer`, `history-layer`, `view` and the
+  overview filter groups, `full-origin`, `import-mode`, `preset-mode`); both are
+  still hand-built, so the exemption is unchanged;
 - **one session row, with its ARIA left exactly where it was.**
   `sessionRowStyle({padding, hovered, focused, selected, active})` is the paint
   the windowed tree row and the flat fallback row share: the 12px/18px type over
@@ -2838,6 +3316,36 @@ by accident — the tests assert the values rather than the family's agreement.
 - The two inner views (`data-region="view-tabs"`, group `view`, values
   `sections` / `full`) keep their Revision 3 meaning; the Revision 6
   `overrides` view no longer exists.
+- **Revision 55 (g-073): the tab has its own scope, and it is not the page's.**
+  `data-region="overview-scope"` carries `data-overview-scope-mode`
+  (`workspaces` | `sessions` | `none`), `data-overview-scope-value` (the session
+  id the snapshot is read in, `''` for the global scope),
+  `data-overview-scope-options` (how many candidates exist) and
+  `data-scope-open` — the same fixed-height disclosure the version history's own
+  selector uses (§13.3): a summary row
+  (`data-region="overview-scope-summary"`, `data-role="overview-scope-summary-label"`,
+  the switch `data-action="overview-scope-toggle"` with `data-expanded` /
+  `aria-expanded`), and, only while open, `data-region="overview-scope-picker"`
+  with `data-role="overview-scope-search"`, a scrolling
+  `data-overview-scope-list="scroll"` carrying `data-overview-scope-shown`, the
+  workspace groups (`data-overview-scope-group="<workspaceId>"`, `sessions` for
+  the sessions no workspace claims) and one button per **session**
+  (`data-role="overview-scope-option"`, `data-overview-scope-option="<sessionId>"`,
+  `data-overview-scope-workspace`, `data-selected`; the pick *is* the click, so
+  the row states no `data-action`), plus `data-action="overview-scope-auto"` for
+  「跟随当前会话」. Picking one collapses the picker and drops the search box.
+  **The dimension is a workspace group, but the value is a session, never the
+  workspace's first one**: `/snapshot` reads `?session=` twice — it locates the
+  workspace layer file *and* probes the assembly in that session's own scope —
+  and the frozen verdict and the variable resolution are per-scope facts (§2.4),
+  so 「该工作区首个会话」would show a verdict that is not the reader's session's.
+  The tab therefore reads the snapshot in **its own** scope, on its first open /
+  scope change / reload (§13.10, precised in review R3: coming back to the tab
+  reuses the read it already has), because every
+  `/snapshot` costs two `assemble()` runs (§2.6); the sections, the full text,
+  the diff, `editGate` and the ineffective-cause note all come from that read
+  (`m.overview*`), never from the page-scoped one. Moving the page's「查看范围」
+  changes none of it.
 
 ### 13.3 「版本历史」(Revision 19: its own scope, paging and a two-column layout; scope disclosure and state resets in Revision 20; record preview and rollback in Revision 21; preview policy and the narrowed rollback in Revision 22; viewport-sized layout, row picking and clearing in Revision 23; the panel height measured at run time in Revision 24; one column and viewport modals in Revision 25; the modal details settled in Revision 26; the row's section name removed and the panel's chrome tightened in Revision 27)
 
@@ -3358,6 +3866,14 @@ code means rather than how it is written:
 - Revision 18's export file name rule is unchanged
   (`dsh-prompt-setting-YYYY-MM-DD-HH-mm-ss.json`, the reader's zone, derived from
   the document's own `exportedAt`).
+- **Revision 55 (g-073): the tab carries no page scope.** `GET /export` and
+  `POST /import` (dry run and apply alike) are sent **without** `?session=`: a
+  backup is the whole installation (§10, Revision 53), so the page's「查看范围」
+  has no business in it and `data-region="mine"` is the only surface that
+  changes what those two requests carry. The host still accepts `?session=`
+  (it locates one workspace layer view); the page simply never supplies it, and
+  an import of a document whose workspace layer view is empty is answered with a
+  `skipped` entry rather than a refusal (§11.1).
 
 ### 13.4 「高级」
 
@@ -3373,6 +3889,31 @@ code means rather than how it is written:
   selector): `data-action="legacy-clear"` sends `DELETE …&legacy=true` (§12.2)
   and **keeps** the reserved override, while `data-action="reset-layer"` sends
   `DELETE …&reset=true` (§12.1) and clears the whole layer.
+- **Revision 55 (g-073): the tab's own workspace selector, and what it aims at.**
+  `data-region="advanced-scope"` carries `data-advanced-scope-mode`
+  (`workspaces` | `sessions` | `none`), `data-advanced-scope-value` (a session
+  id that resolves the workspace, `''` for none), `data-advanced-scope-options`
+  and `data-scope-open`; it is the same disclosure family as §13.2/§13.3
+  (`data-region="advanced-scope-summary"`,
+  `data-role="advanced-scope-summary-label"`,
+  `data-action="advanced-scope-toggle"`, and, while open,
+  `data-region="advanced-scope-picker"`, `data-role="advanced-scope-search"`, a
+  scrolling `data-advanced-scope-list="scroll"` with
+  `data-advanced-scope-shown`, `data-role="advanced-scope-option"` rows carrying
+  `data-advanced-scope-option`, and `data-action="advanced-scope-auto"`). The
+  dimension is a **workspace**, because that is what the two clears act on:
+  `?reset=true` / `?legacy=true` on the workspace layer clear the whole workspace
+  file, which every session of that workspace shares (§12.1) — so the choice never
+  was a session choice. The value is a session id only because the host resolves a
+  workspace root from a session and a client never supplies a path (§4.2); the
+  default is the **current session itself** (not the workspace's first one),
+  because the same value names the assembly record the status block above reads
+  and records are keyed by session id. Both reads of this tab are made in this
+  scope and only while the tab is open: the legacy list, its two counts and its
+  `applied` verdict come from `?session=<scope>` reads of `/overrides` and
+  `/snapshot`, and `GET /assembly-status` is asked for the same session. The two
+  clears send `layer=<layer>&session=<scope>`; the user layer is global and the
+  host ignores the session there. Moving the page's「查看范围」changes none of it.
 - **Revision 28:** the「检查更新」card also carries the「下载区域」row
   (`data-region="download-region"`, `data-action="update-region-select"`) and the
   「自定义镜像源」dialog overlay (`data-region="region-overlay"` /
@@ -3480,7 +4021,7 @@ code means rather than how it is written:
     ancestor. The symptom is real; the cause is **unproven** pending a
     real-machine DOM inspection.
 
-  Therefore **`tabs()` always renders the hand-built strip** and the official
+  Therefore the tab strip is **always hand-built** and the official
   `SegmentedTabs` is deliberately **exempt** here: `flex-wrap` sizes every button
   to its own label and moves a row that does not fit to the next line, which is
   the layout this page used before g-063 and the only one that drew no complaint.
@@ -3491,11 +4032,71 @@ code means rather than how it is written:
   `overflow-x` are **removed**; two rules were no-ops under that inline column
   definition anyway (`grid-auto-flow`, `grid-auto-columns`), and no test may claim
   otherwise. Lesson kept for the future: **an equal-fraction control assumes short
-  labels**; long localized labels need a content-sized wrapping layout. Rejected
+  labels**; long localized labels need a content-sized layout. Rejected
   repairs, on the record: `min-width: max-content` (inflated tabs, plus an
   overflow whose path is unexplained), `white-space: nowrap` alone (labels
   overflow or overlap their cells), and leaving the official equal fractions as
   they are (labels wrapped).
+  **Revision 51 (g-070) — two renderers, and the first-level bar is plain text:**
+  `tabs()` drew the whole page's tab strips until this revision, and it still
+  draws every **sub-group** strip: `mainTabStrip()` is added for the first-level
+  bar alone, while `tabs()` keeps drawing the chip family for its sub-group
+  selectors — `mine-layer`, `advanced-layer`, `history-layer`, `view` and the
+  overview filter groups, `full-origin`, `import-mode` and `preset-mode` (eight
+  rendered call sites across the entry and the chunks, read off the source, not
+  assumed). The split is deliberate: one function carrying two visual languages is
+  the drift it prevents, and no sub-group selector moves.
+  What the first-level bar is, and why:
+  - **Plain text.** No fill, no stroke, no radius — the chip's selected
+    fill/stroke pair belongs to the other family. Unselected labels take
+    `labelSecondary`, the selected one `labelPrimary` plus a stronger weight.
+  - **A 2px underline indicator on the selected tab**, drawn `bottom: 0` inside
+    that button (the button's own bottom padding is the gap) and in
+    `stateBusiness`, the accent token the sidebar already tints active rows with.
+    It is marked `data-role="tab-indicator"` with `data-tab-indicator="<value>"`,
+    so a test asserts both its existence and *which* tab it belongs to.
+  - **A faint rule under the whole bar**: the strip's own `borderBottom`, taken
+    from the weakest border token on the page (`borderL1`). Everything here is a
+    theme token; there is no literal colour in the bar.
+  - **Single line, scrollable — not wrapping, and still not equal fractions.**
+    The bar is `flex-wrap: nowrap` + `overflow-x: auto`, and every button is
+    `flex: 0 0 auto` at its own label's width. There is **no** `flex: 1`, no
+    `grid`, no `repeat(n, …)` and no `min-width: max-content`: those are the two
+    shapes g-063 caught (labels wrapped; the strip then inflated the row). A
+    block-level scroll container is only as wide as its parent allocates and the
+    CSS automatic minimum size does not apply to it, so the widest label cannot
+    reach an ancestor — which is why this buys the same safety `flex-wrap` did,
+    on one line instead of two. `tabs()` keeps its `flex-wrap` for the chip
+    family, where the labels are two short ones.
+  - **A count on「我的预设」, and only there.** The visible text is
+    `我的预设 (N)` / `My presets (N)` — the label, then a slightly smaller,
+    slightly weaker ` (N)` span marked `data-role="tab-count"`. `N` is the
+    library's **real** entry count, read from the main entry's own `m.presets`
+    slot, which g-060 already loads on mount with the same `?session=` as the
+    snapshot (§20.2): the count therefore costs **no** extra request, no second
+    read and no polling. `N` is drawn only when the read really landed
+    (`phase === 'ready'`, a payload that is not a library error, an actual
+    `presets` array). 「还在加载」/「请求失败」/「库文件读不出来」 all draw **no**
+    suffix at all: **a `(0)` this page cannot stand behind must never appear**,
+    and `(0)` is reserved for a library that really came back empty.
+  - **A red dot on「高级」, and only there.** A 7px dot in `stateError` (the
+    danger token; no literal red), marked `data-role="tab-update-dot"`, sitting
+    after the label in the button's flex line. It carries **both** a `title` and
+    an `aria-label` — the localized `tabUpdateBadge`（有可用更新 / Update
+    available）— so the dot has a readable description and the tab's accessible
+    name degrades to 「高级 有可用更新」 rather than to a bare glyph. Its
+    condition is the update banner's own test — `update.latest` is a non-empty
+    string (§17.2) — **minus one term**: `dismissed` is deliberately *not*
+    consulted. Dismissing closes the banner (§17.10); it cannot un-happen the
+    release, so the dot survives the dismissal on purpose (asserted both ways).
+  - **What did not move.** The markers the tests and the panel binding read are
+    unchanged: `role="tablist"` / `role="tab"` / `aria-selected` / `tabIndex` /
+    `data-tab-group` / `data-tab-key` / `data-tab-value`, the six values and
+    their order, `data-active-tab`, the panel binding, and every sub-group
+    selector `tabs()` still draws — each keeps its own `data-tab-group`/`data-tab-key`
+    and its chip look. The focus ring is left to the Host's default
+    with `outline-offset: -2px` (the shell's own inset offset), so it stays
+    visible inside the scrolling box.
 
 ### 13.5 Second confirmation is required
 
@@ -3537,7 +4138,7 @@ from `core/custom.js` and asserts that the name in the save body and in the
 delete URL equals it **character for character**. The two copies cannot drift
 apart silently.
 
-### 13.7 The「查看范围」picker is collapsed by default (g-016; the search box holds the user's own query since Revision 31, g-047)
+### 13.7 The「查看范围」picker is collapsed by default, and lives inside「我的 Prompt」since Revision 52 (g-016; the search box holds the user's own query since Revision 31, g-047)
 
 Measured in the real settings shell at 1440×900 before this revision: the
 expanded selector was ~500px tall (search box + the grouped tree + paging +
@@ -3545,16 +4146,50 @@ pinned rows + four lines of help), which pushed `data-region="tabs"` to
 `y≈789` and `data-region="tab-panel"` past the 900px fold — the page opened
 with **no tab content visible**. The selector is therefore a disclosure.
 
-**The card is the header of one block (g-055).** The card is rendered inside
-`data-region="prompt-block"`, which carries one sentence saying what the scope
-decides (and, like the mine panel, the block's 3px leading rule). The block has
-**no heading of its own**: `mineHeading` is rendered once, by the mine panel, so
-the same title is not listed twice. The mine panel states its own write target
-as a **read-only** line (`data-region="mine-target"`, `data-mine-target-layer` /
-`data-mine-target-scope`) instead of making the reader look back above the tab
-bar. Nothing else changed: the collapse rule, the position (still above the tab
-bar) and every frozen marker below are exactly as they were, the card is still
-one instance, and the panel gained **no** second way to change the scope.
+**The card is one block, rendered inside「我的 Prompt」(g-055; moved there by
+g-071).** The card is rendered inside `data-region="prompt-block"`, which carries
+one sentence saying what the scope decides. The block has **no heading of its
+own**: `mineHeading` is rendered once, by the mine panel, so the same title is not
+listed twice — that panel's `h3` is still its first child, and the block follows
+it. The 3px leading rule is stated **once**, by the panel that contains the block
+(g-071: two nested copies would draw two parallel bars a few pixels apart and read
+as two blocks — the reading the rule was introduced to prevent). The mine panel
+states its own write target as a **read-only** line (`data-region="mine-target"`,
+`data-mine-target-layer` / `data-mine-target-scope`) directly below the block. The
+collapse rule and every frozen marker below are exactly as they were, the card is
+still one instance, and the panel gained **no** second way to change the scope.
+
+**The picker moved into the mine panel, and the other tabs carry no scope surface
+(Revision 52, g-071; the read-only echoes withdrawn in R4).** g-055 kept the block
+above the tab bar and fixed the *reading* instead; the owner then corrected the
+position itself. Where the block renders is where it belongs:「我的 Prompt」is the
+only surface this scope writes to. Consequently:
+
+- the chrome above the tab bar holds **two** things now (the title row and the
+  status line) and no scope-shaped node at all. `data-region="prompt-block"` exists
+  **only** inside `data-region="mine"`, and the first-screen budget was re-derived
+  from the smaller spend (128px above the tab bar, asserted by
+  `chromeAboveTabsPx`; the hard first-screen ceiling is unchanged);
+- **R4 withdrew the read-only scope notice this revision first gave the other
+  tabs.** g-071 had rendered one line, at the top of its own panel, on
+  `presets` / `overview` / `backup` / `advanced`; the owner's real-machine review
+  ruled that the page-level scope is not a shared state of those tabs at all —
+  each has its own scope semantics (「提示词总览」will carry its own switcher;
+  「备份与恢复」should export the whole configuration rather than a range; 「高级」
+  is not scope-dependent; 「我的预设」is not tied to this scope either). A line
+  none of them may legitimately claim would have shipped a surface the owner
+  refused. Decoupling those tabs from this page-level value is **g-073**, and
+  until then they keep taking their numbers in the page scope exactly as they did
+  before g-071. So the page states the scope in **exactly one** place again — the
+  block inside「我的 Prompt」— and no other tab renders any scope node at all;
+- 「版本历史」never carried such a line, and that remains true: since Revision 19
+  (g-038) that tab has its **own** scope, stated a few lines further down by
+  `data-region="history-scope-summary"`. A page-scope line there would claim a
+  range the log below it was not read in;
+- nothing about the **value** changed: `m.sessionArg` still scopes the snapshot,
+  the override reads, the export/import range, the presets request and which layer
+  a save lands in (§13.7's last paragraph below is unchanged). Only the picker's
+  position changed.
 
 **Collapsed (the default).** The card is `data-region="session"` with
 `data-scope-open="false"` and renders **exactly one row**:
@@ -3602,10 +4237,35 @@ pinned entry's selected state — never by overwriting the box. The「全局」e
 `Esc` still clear the query (Revision 31 leaves that alone).
 
 **This picker no longer feeds the version history (Revision 19).** It scopes the
-snapshot and the override reads (`my Prompt`, `提示词总览`, `高级`); the version
-history reads its own scope (§13.3) and is not a consumer of this one. Before
-Revision 19 the same value was appended to the history request as `?session=`,
-which is exactly why the log looked like it lost records when the scope moved.
+snapshot and the override reads of **「我的 Prompt」**; the version history reads
+its own scope (§13.3) and is not a consumer of this one. Before Revision 19 the
+same value was appended to the history request as `?session=`, which is exactly
+why the log looked like it lost records when the scope moved.
+
+**Revision 55 (g-073) narrows that sentence to what it now means.** The two
+reads it scopes are the ones this panel needs — `GET /snapshot` and
+`GET /overrides`, both asked for the write target's own workspace — and nothing
+else follows the value any more:
+
+- `GET /presets` is read **without** `?session=` (§20.2): the library is one
+  global file plus per-workspace records, and this panel's scope never described
+  it. Its apply / unapply actions are unchanged — those name a workspace from
+  their own dialog rows, which was true before this revision too;
+- 「提示词总览」reads the snapshot in its **own** scope (§13.2) and 「高级」reads
+  `/overrides`, `/snapshot` and `/assembly-status` in its own (§13.4);
+- `GET /export` and `POST /import` carry **no** page scope: a backup is the whole
+  installation (§10, Revision 53), so which session happened to be selected has
+  no business in it (and an import document that names no session is handled —
+  an empty workspace layer view is reported as `skipped`, not refused, §11.1);
+- the version history keeps its own scope (§13.3).
+
+So the value is consumed in exactly two places: the snapshot and the override
+reads of this panel, plus the panel's own display of the write target
+(`data-region="mine-target"`) and the layer a save lands in. These trees state
+it as `data-region="session"` / `data-region="scope-summary"` /
+`data-action="scope-toggle"` **inside `data-region="mine"` only** — the other
+five tabs render none of those three markers, asserted by direct marker count
+(§13.10).
 
 ### 13.8 The plugin version on the page (g-029)
 
@@ -3628,7 +4288,7 @@ writes one down either.
   lives on the **root container** instead: `data-plugin-version` is present in
   **every** render state, so a probe reads one attribute and never has to know
   which state it got;
-- **the text** is `v` + the version (`v0.2.2`), or `stPluginVersionUnknown`
+- **the text** is `v` + the version (`v0.2.4`), or `stPluginVersionUnknown`
   (「版本未知」 / `Version unknown`) when the ping carried no usable one. The
   node's `title` is `stPluginVersion` (「插件版本」 / `Plugin version`);
 - **the link:** with a `repositoryUrl` the node is an `a` element whose `href` is
@@ -3732,6 +4392,67 @@ Two surfaces, both fed by `GET /prompt-setting/update-check` (§17):
 ones that matter most: a failed check paints no error, and a mirrored `'off'`
 makes the mount request nothing.
 
+### 13.10 The scope model (Revision 55, g-073)
+
+Before this revision the page had **one** scope and five tabs read it. The
+owner's rule (2026-10-16) is that the page-level「查看范围」serves「我的 Prompt」
+alone, so the value was narrowed and the two tabs that genuinely need a scope
+were given their own. The whole model, in one place:
+
+| surface | what scopes it | marker |
+| --- | --- | --- |
+| 「我的 Prompt」 | the page's「查看范围」(`m.sessionArg`) | `data-region="session"` inside `data-region="mine"` (§13.7) |
+| 「提示词总览」 | its **own** by-workspace, per-session selector | `data-region="overview-scope"` (§13.2) |
+| 「高级」 | its **own** workspace selector | `data-region="advanced-scope"` (§13.4) |
+| 「版本历史」 | its **own** workspace selector (Revision 19) | `data-region="history-scope"` (§13.3) |
+| 「我的预设」 | **no scope** — the library is read without `?session=` | — (§20.2) |
+| 「备份与恢复」 | **no scope** — a backup is the whole installation | — (§13.3a, §10) |
+
+Invariants, each asserted in `test/client.test.mjs`:
+
+- **the page scope is consumed by two reads** — `GET /snapshot` and
+  `GET /overrides` for「我的 Prompt」 — plus that panel's own display of the write
+  target and the layer a save lands in. Moving it re-reads neither the preset
+  library nor the overview's snapshot, and carries no page scope into
+  `/export`, `/import` or `/assembly-status`;
+- **a tab-owned scope is read on its first open, on a scope change and on a
+  reload — and not when the reader merely comes back** (precised in review R3):
+  each such read is keyed by its own scope, and the tab that finds its scope
+  already recorded reuses what is on screen. Switching away and back therefore
+  sends no request **and** draws no loading frame — the panel keeps its content
+  until a genuinely new answer replaces it. A read that was cancelled by a tab
+  switch is never recorded as done, so coming back retries instead of resting on
+  a stale loading state; a reload of the **same** scope keeps the old content
+  visible while the fresh answer is in flight, while a **different** scope drops
+  it (another scope's assembly must never look like this one's). Every
+  `/snapshot` costs the host two `assemble()` runs (§2.6), so no scope re-reads
+  on render;
+- **a scope selector is a disclosure** in all three tabs that have one
+  (`data-scope-open`, collapsed by default, `data-action="…-scope-toggle"`), and
+  picking a value finishes the interaction and drops the search box (§13.7's
+  convention);
+- **「提示词总览」's dimension is a workspace group, but its value is a session**
+  — never the workspace's first one: `/snapshot`'s `session` locates the
+  workspace layer file *and* probes the assembly in that session's own scope, and
+  the frozen verdict and the variable resolution are per-scope facts (§2.4);
+- **「高级」's dimension is a workspace**, because `?reset=true` / `?legacy=true`
+  clear a whole workspace file that every session in it shares (§12.1); its
+  default value is the current session itself, because the same value names the
+  assembly record the status block reads and records are keyed by session id;
+- **the other tabs render no page-scope node**, asserted by direct marker count:
+  in `presets`, `overview`, `history`, `backup` and `advanced` the tree holds
+  **zero** nodes with `data-region="session"`, `data-region="scope-summary"` or
+  `data-action="scope-toggle"`;
+- **each tab's panel gate follows that tab's own data source** (added in review
+  R1-2, and just as binding as the reads above). 「我的 Prompt」 is gated on
+  `m.snap`; 「提示词总览」 on `m.overviewSnap`; 「高级」 on `m.advancedSnap`; and
+  「我的预设」/「版本历史」/「备份与恢复」 on **no snapshot at all** — the library,
+  the log and the transfer document are their own reads, and each renders its own
+  phase (the first two show the loading line while their own read is in flight,
+  the third issues none until a button is pressed). A page-scoped `/snapshot`
+  that fails therefore blanks 「我的 Prompt」 and **nothing else**: gates are
+  per tab, never borrowed from another tab's read.
+
 ---
 
 ## 14. Client build stamp (Revision 6; the bundle ships chunks in Revision 29)
@@ -3770,7 +4491,7 @@ live probe would read a normal rebuild as a defect.
 {
   "ok": true,
   "plugin": "dsh-prompt-setting",
-  "version": "0.2.2",
+  "version": "0.2.4",
   "repositoryUrl": "https://github.com/zangxx66/dsh-prompt-setting",
   "time": "2026-09-28T12:00:00.000Z",
   "clientRenderer": "fallback",
@@ -4222,15 +4943,27 @@ exists for:
   earlier, by hand, or by a config-sync tool. It **keeps working**: the override
   engine, `mergeLayers`, `buildEffective` and `detectFrozen` are unchanged by this
   revision, so the assembly result for such a layer is byte-for-byte what it was.
-- no route can create, update or import one any more. It is therefore *frozen
-  read-only*: visible in `GET /overrides` and in every snapshot view, removable as
-  a whole with `?legacy=true`, removable one name at a time only by…
+- no **write** route can create or update one any more *(Revision 7–52; the
+  import half of this bullet was withdrawn in Revision 53 — an import may carry a
+  frozen override, §15.7)*. It is therefore *frozen read-only* against the write
+  face: visible in `GET /overrides` and in every snapshot view, removable as a
+  whole with `?legacy=true`, removable one name at a time only by…
 - …**hand-editing the layer's file**. That is the documented escape hatch: the
   file stays the source of truth, every route request re-reads it before doing
   anything else (§5.5), and an external edit is visible to the very next request
   with no remount. There is deliberately no route that reopens the write face.
+  *(An **import** can still bring a frozen override in — or drop one in
+  `mode=replace` — because that is a restore of a document the user chose, not a
+  reopened write face; §11.7.)*
 
-### 15.7 Import: names only, and never silently
+### 15.7 Import: the write lock is gone, the checks are not (Revision 7; **lock removed in Revision 53**)
+
+*The **three paragraphs** below describe the **Revision 7** lock (the first two
+state the rule, the third restates it after Revision 36), which **Revision 53
+(g-074) removed**: an import no longer refuses a document for carrying a
+non-reserved name — that is what makes a full backup restorable. They are kept as
+the history of the boundary, and the「Revision 53」note at the end of this section
+states what replaced them. Read the current rule in §11.1 and §11.7.*
 
 The import write lock is on **names**: a document carrying any entry whose `name`
 is not the reserved one is refused with `403 write-locked`, in **any** layer of
@@ -4249,16 +4982,54 @@ applied it (§11.4).
 
 Revision 36 gains from that rule rather than changing it: the「叠加」mode is an
 `action`, so an export taken on one machine re-imports as the same mode on
-another, and a rollback restores it from the recorded snapshot. The lock still
-refuses new **names** only, so nothing here widens what an import may touch —
-one entry, in the one layer the document names, with the other layer's file
-byte-identical (§4.1).
+another, and a rollback restores it from the recorded snapshot.
+
+*（Revision 7–52 continued here:「The lock still refuses new **names** only, so
+nothing here widens what an import may touch — one entry, in the one layer the
+document names, with the other layer's file byte-identical (§4.1).」**Withdrawn
+in Revision 53 (g-074)**: the name lock is gone, so a document may carry any
+number of entries under any names, and the refusals that replaced the lock are
+listed in §11.1 and §11.7.)*
 
 Because an export now carries at most one entry per layer, the multi-entry plan
 shapes (`replaced`, `kept`, and `removed` in `merge` mode) are exercised at the
 route level through `mode=replace` plus a seeded frozen entry rather than through
 several imported names; the multi-name kernel behaviour itself is unchanged and
-pinned in `test/transfer.test.mjs`.
+pinned in `test/transfer.test.mjs`. *(Revision 7–52; since Revision 53 an export
+carries every name again, so these shapes are reachable through a plain full
+backup too — see the Revision 53 note below.)*
+
+**Revision 53 (g-074) — the import lock is removed, and says what replaced it.**
+The owner's requirement (2026-10-16) is that「备份与恢复」restore what it exported,
+and the lock was the half that made a full backup unrestorable. So an import no
+longer refuses a document for carrying a frozen name: it applies it. Two things
+this does **not** change:
+
+- **the checks are not relaxed, they are moved.** Everything the lock used to
+  stand in front of — schema, version, the layer-name whitelist, every override
+  field, every workspace root, the library and the preference document — is
+  validated before a byte is staged, and §11.1 lists the codes. The number of
+  refusals an import can answer **grew** in this revision; the one thing it
+  stopped answering is「this name is frozen」. *(**Revision 54 (g-074 att-002)**
+  moved one answer off this list: a **legal** root this profile does not register
+  is no longer refused on the import face — it is skipped and declared in
+  `skipped` (§11.7). Every check named here still runs, the shape half of the
+  root rule included; what changed is that a cross-machine difference costs the
+  user one entry instead of the whole backup.)*
+- **the write face is untouched.** `PUT /prompt-setting/overrides` and the
+  single-name `DELETE` still refuse a non-reserved name with `403 write-locked`
+  (§4.1, §12.3). Editing a frozen override from the panel is still impossible;
+  importing a backup that contains one is now possible, which is exactly the
+  asymmetry a backup needs.
+
+The「the action of a reserved-name entry is not additionally constrained」
+paragraph above stands, and now applies to every imported entry: an import
+applies the document as it stands (`planImport`, §11.4), having first proved the
+document *is* one.
+
+Because an export carries every name again, the multi-entry plan shapes are
+reachable through a plain full backup once more — the `mode=replace` route above
+is still valid, and is still what the older assertions use.
 
 ### 15.8 What a frozen override is, and is not
 
@@ -4269,9 +5040,19 @@ pinned in `test/transfer.test.mjs`.
 | `DELETE` (single name) | `403 write-locked` | `200` / `404` |
 | `DELETE ?legacy=true` | removed | kept |
 | `DELETE ?reset=true` | removed | removed |
-| Exported | no — counted in `exportScope.omitted` | yes |
-| Imported | `403 write-locked` | yes |
+| Exported | yes — the whole layer travels (§10) | yes |
+| Imported | yes — the lock is gone (§15.7) | yes |
 | Editable by hand | yes (the file is the source of truth) | yes |
+
+**Revision 53 (g-074) changed two rows of that table, and only those two** — the
+`Exported` and `Imported` rows above. Their Revision 7 values (`no — counted in
+exportScope.omitted` and `403 write-locked`) are gone, replaced by `yes`. A
+frozen override is **Exported** because it is part of the layer, and a backup
+that dropped it could not restore it; it is **Imported** because the lock is gone
+(§15.7). Its `PUT` and single-name `DELETE` rows are **unchanged** (`403
+write-locked`), and so is「editable by hand」. The `exportScope.omitted` count a
+pre-Revision-53 reader used to see for such an entry is `0`; §10's `exportScope`
+table says why.
 
 ### 15.9 Failure behaviour of the registration
 
@@ -4570,13 +5351,25 @@ Two guards exist because the probe is a snapshot of a live object:
   "ok": true,
   "interpolateCustom": false,
   "layers": { "user": null, "workspace": null },
-  "variables": ["cwd", "model", "provider"],
+  "variables": ["model", "provider"],
   "variablesError": null
 }
 ```
 
 `variables` is the assembled table's key set, or `null` with a reason in
-`variablesError` when this mount could not obtain one.
+`variablesError` when this mount could not obtain one. Its **order is not part
+of the contract** (it follows registration order; the panel sorts the names it
+renders). (The example is the DSH 0.2.1 line; a host that still registers `cwd`
+answers a three-name list including `["cwd"]` — the field's shape is unchanged,
+§16.12.)
+
+**The panel consumes `variables` (g-080).** Each mount/reload reads this `GET`
+and renders the names in the「我的 Prompt」switch's note; `null` renders `?`
+rather than an inferred list. This is the plugin's compatibility probe for the
+`cwd` retirement: a DSH that still registers `cwd` shows it, a DSH that dropped
+it (0.2.1-rc.1 and later) does not, and no version string is consulted. The
+write face already uses the same table for its refusal (§16.3, §16.12); the
+read is advisory only and changes no route, field or stored byte.
 
 `PUT` takes `{ enabled: boolean, layer?: "user" | "workspace", session?: string }`
 (`layer` defaults to `user`; `session` may also be `?session=`), or the
@@ -4933,6 +5726,40 @@ g-026 are untouched.
   is verified here is verified offline against the real
   `@deepseek-ai/dsh-system-prompt` in a real Cordis context.
 
+### 16.12 The `cwd` retirement is detected, never version-guessed (g-080)
+
+DSH `0.2.1-rc.1` removed the loop's `cwd` prompt variable: its shipped presets
+stopped emitting `Your working directory is {{cwd}}.`, and
+`@deepseek-ai/dsh-agent-loop` stopped registering the variable (the working
+directory now reaches the model as runtime context, not as a `{{…}}`
+substitution). The plugin therefore treats `cwd` as **data**, not as a release
+number:
+
+- **read face** — `GET /interpolate.variables` is the live assembly table, and
+  §16.4's client half renders exactly that list in the switch's note. A host that
+  registers `cwd` lists it; one that dropped it does not; `null` prints `?`.
+  Nothing in the browser or the host infers a table from the DSH version;
+- **write face** — an `{{cwd}}` this assembly does not register is
+  `400 unresolvable-variable`, exactly like any other unknown name, with the
+  same zero-byte guarantee (§16.3, §16.4). The message gains **one sentence**
+  naming the retirement and the replacement (runtime context) *only* when the
+  refused reference is `cwd` **and** the table lacks it; a table that still
+  registers `cwd` gets no sentence. Code, status and the "Fix: …" tail are
+  unchanged. The sentence is bounded, lives in `describeInterpolateErrors`, and
+  is pinned by `test/interpolate.test.mjs`;
+- **expansion** — unchanged and still lenient: on a new DSH, a stored
+  `{{cwd}}` stays literal for that turn (the section never interpolates, §16.9),
+  so an upgrade can never take a session's prompt down. The switch's note says
+  both consequences next to the list;
+- **compatibility direction** — an older DSH keeps the exact pre-g-080 list,
+  note and behaviour; the probe is read-only, adds no route and no field, and
+  the only new network traffic is one `GET /interpolate` per page load/reload
+  (the host has already cached the table, so it costs no `assemble()`);
+- **not claimed** — the plugin cannot stop a user from storing `{{cwd}}` in a
+  layer that explicitly states the switch OFF (§16.4), and does not rewrite
+  stored text on upgrade. It reports the state where the user writes, and
+  refuses only the armed writes the existing rules already refuse.
+
 ---
 
 ## 17. The upstream update check (g-030; npm first in Revision 27, g-042; the download region in Revision 28, g-043)
@@ -5042,14 +5869,14 @@ The body of an **npm** answer:
 {
   "ok": true,
   "enabled": true,
-  "current": "0.2.2",
-  "latest": "0.2.2",
-  "latestTag": "0.2.2",
+  "current": "0.2.4",
+  "latest": "0.2.5",
+  "latestTag": "0.2.5",
   "hasUpdate": true,
   "releaseUrl": null,
   "publishedAt": "2026-09-25T00:00:00.000Z",
   "source": "npm",
-  "tarball": "https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.2.tgz",
+  "tarball": "https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.5.tgz",
   "region": "default",
   "registry": "https://registry.npmjs.org/",
   "checkedAt": "2026-10-08T09:00:00.000Z",
@@ -5070,11 +5897,11 @@ The body of a **GitHub** answer (the pre-Revision-27 shape, plus `source`):
 {
   "ok": true,
   "enabled": true,
-  "current": "0.2.2",
-  "latest": "0.2.2",
-  "latestTag": "v0.2.2",
+  "current": "0.2.4",
+  "latest": "0.2.5",
+  "latestTag": "v0.2.5",
   "hasUpdate": true,
-  "releaseUrl": "https://github.com/zangxx66/dsh-prompt-setting/releases/tag/v0.2.2",
+  "releaseUrl": "https://github.com/zangxx66/dsh-prompt-setting/releases/tag/v0.2.5",
   "publishedAt": "2026-10-01T00:00:00Z",
   "source": "github",
   "tarball": null,
@@ -5208,6 +6035,11 @@ The preference lives in **its own file**, `<DSH_HOME>/prompt-setting/preferences
 ```json
 { "updateCheck": false }
 ```
+
+**This file is also carried by a full backup (Revision 53, §11.7)**: `GET
+/export` copies the whole document into its top-level `preferences` field, and
+`POST /prompt-setting/import` **replaces this file as a whole** from that field —
+so the routes in this chapter are no longer its only writer.
 
 **Revision 28** adds the download region to the **same** document and the same
 atomic write path (§17.6): the keys are `downloadRegion`, `downloadRegionRegistry`
@@ -5686,8 +6518,8 @@ Otherwise, the answer:
     "status": "running",
     "known": true,
     "application": null,
-    "version": "0.2.2",
-    "tag": "v0.2.2",
+    "version": "0.2.5",
+    "tag": "v0.2.5",
     "startedAt": "2026-10-04T09:00:00.000Z",
     "finishedAt": null,
     "cancelRequested": false,
@@ -5708,8 +6540,8 @@ A refusal — nothing was started, so there is no request to track:
   "message": "this profile installs dsh-prompt-setting from a local path (link:../x), which is a development working copy: …",
   "launchKind": "cli",
   "manual": {
-    "releaseUrl": "https://github.com/zangxx66/dsh-prompt-setting/releases/tag/0.2.2",
-    "releaseLink": "open the 0.2.2 release page",
+    "releaseUrl": "https://github.com/zangxx66/dsh-prompt-setting/releases/tag/0.2.5",
+    "releaseLink": "open the 0.2.5 release page",
     "command": "dsh plugin add <tarball-or-path>",
     "current": "link:../x"
   }
@@ -6012,9 +6844,11 @@ describes, and log that move as a new version.
 ### 19.1 Why one section, and not the layer
 
 Since Revision 7 the write face *is* the reserved section (§4.1, §15.7):
-`PUT /prompt-setting/overrides`, the single-name `DELETE` and
-`POST /prompt-setting/import` all refuse any other name, and the write lock is
-pinned by SHA-256 in `test/route.test.mjs` and `test/stage2.test.mjs`. A
+`PUT /prompt-setting/overrides` and the single-name `DELETE` refuse any other
+name, and that write lock is pinned by SHA-256 in `test/route.test.mjs` and
+`test/stage2.test.mjs`. (`POST /prompt-setting/import` was part of that list
+until Revision 53 (g-074) removed its name lock so a full backup is restorable —
+§15.7; the lock on the two write routes, and everything below, is unchanged.) A
 whole-layer rollback would be a **fourth write path** around that policy: it
 would put a non-reserved override back into the assembly — one the user has no
 page control to create or remove — and change the next turn's prompt through a
@@ -6168,7 +7002,7 @@ does not describe.
 
 ---
 
-## 20. The preset library (g-060, Revision 37)
+## 20. The preset library (g-060, Revision 37; g-069/Revision 50: a deletion cancels its applications)
 
 A **preset** is a named `{action, text}` pair for the reserved section
 `prompt-setting:custom-prompt` (§13.1). The library is a per-installation
@@ -6229,7 +7063,12 @@ every preset route and never on the assembly path:
     snapshot is what lets the text be recomposed — and one link cancelled — after
     its preset has been deleted from the library.
   - a link whose `presetId` is no longer in `presets` is an **orphan**: reported,
-    kept, and still cancellable (§20.2).
+    kept, and still cancellable (§20.2). Since Revision 50 an **ordinary**
+    deletion produces none — it cancels every application first (§20.4) — so an
+    orphan is the signature of a **hand-edited file or a document written by
+    Revisions 37–49**, where a link outlived its preset. That shape stays
+    readable, reportable and cancellable; it is simply no longer something this
+    plugin creates.
   - an **empty stack is not a record**: cancelling the last link removes the
     record and leaves the layer at `base`.
 - **Migration.** A document written by Revisions 37–40 (one
@@ -6249,6 +7088,12 @@ every preset route and never on the assembly path:
 Query: `session` (optional). It is **resolution only**, exactly like
 `?workspace=` in §8: a session id that lets the answer name the workspace the
 caller is looking at. It never filters the library (the library is global).
+**Revision 55 (g-073): the page's「我的预设」never sends it.** The route keeps
+accepting the parameter (the answer's `workspaceRoot` is its only reader, and it
+is the host's own resolution, not a filter), but the client stopped supplying it
+— the page-level scope serves「我的 Prompt」alone (§13.10) and the library is not
+one of that scope's reads. Its `apply` / `unapply` actions are untouched: they
+name a workspace from their own dialog rows (§20.5, §20.6).
 
 ```json
 {
@@ -6306,21 +7151,85 @@ Body: `{name, action, text}` to insert, or `{id, name, action, text}` to edit.
   ignored (a future client's extra key is not a `400`); unknown **preset** fields
   are dropped, never persisted.
 
-### 20.4 `DELETE /prompt-setting/presets?id=`
+### 20.4 `DELETE /prompt-setting/presets?id=` (Revision 50: the deletion cancels; g-074 R1: an unregistered applied root refuses it)
 
 - `id` is required (`400 missing-id`) and must be well-formed (`400 invalid-id`);
   an id that names nothing is `404 preset-not-found`. Every refusal leaves the
   file byte-identical.
+- **A deletion cancels every application of that preset.** Each workspace whose
+  `applied` record holds it is taken off its stack first, with §20.6's own
+  semantics — the remaining links are recomposed over `base`, an empty stack
+  restores `base` itself (`null` ⇒ the reserved entry is removed), and the
+  layer's `interpolateCustom` switch and its other entries are untouched — and
+  each restore is written **and registered like `unapply`** (a history record,
+  and a prompt-write note for that workspace). Only then is the entry dropped
+  from the library, so an ordinary deletion leaves **no orphan** (§20.1).
+- **Order, and what a refusal means.** Every affected layer is read and planned
+  **before** the first write. A workspace whose layer is unusable (`409`
+  `layer-not-writable`) refuses the whole request as `preset-unapply-failed`
+  (§20.7): the preset stays in the library and **no** workspace is rewritten. A
+  failure inside the commit loop (an I/O error after some layers were already
+  restored) also leaves the preset in the library; the refusal names the
+  workspaces that were restored and the ones that were not, so「the preset is
+  gone and the layer is not」cannot happen. The residual risk is the other
+  direction, stated rather than hidden: that second failure can leave some
+  workspaces restored with the preset still in the library — the recoverable
+  side of the trade (delete again, or cancel the remaining applications by hand).
+- **Nothing applied it: nothing else happens.** With no `applied` record naming
+  the preset, the deletion is the catalogue write it always was — no workspace
+  layer is opened, and every layer file stays byte-identical.
+- **An `applied` root this profile does not register refuses the deletion (g-074
+  R1).** The roots this route writes come from the stored library, not from a
+  document the request validated, so each one is put through
+  `assertKnownWorkspaceRoot` before phase 1 reads a single layer: an unregistered
+  root is `400 unknown-workspace-root`, the library and every layer stay
+  byte-identical, and the preset is **not** deleted. Before R1 the route called
+  `workspaceConfigPath(applied.workspaceRoot)` directly, which made an imported
+  library a write primitive for any directory on the disk (the review's PoC).
+  The refusal names the workspace to open, and it is decided here — **before**
+  the `missing: true` skip below, which describes a workspace this profile *does*
+  own whose file is gone. *(**Revision 54**: unchanged. The import face now
+  **skips** a legal root this profile does not register instead of refusing the
+  document (§11.7) — this route still refuses, because it is the writer that turns
+  a stored record into a path, and an import must never hand it one this machine
+  cannot restore.)*
+- **A layer that is gone is skipped, never recreated (g-069 review A).** When an
+  `applied` record names a workspace root whose layer file does not exist
+  (`ENOENT`), there is **no text to restore**: that workspace is not written, not
+  cached, and gets neither a history record nor a prompt-write note — the request
+  must not `mkdirSync` back the `.dsh-prompt-setting` tree of a workspace the user
+  deleted. `ENOENT` is therefore **not an error code**: the links of that record
+  are still cancelled with the preset (so the deletion leaves no orphan behind),
+  and the answer reports that workspace as `missing: true` with `restored: false`.
+  A layer file that **exists but cannot be read or parsed** is the opposite case:
+  it refuses the whole deletion (§20.7 `preset-unapply-failed`) with the library
+  and every layer file byte-identical.
 - Response `200`:
 
 ```json
 { "ok": true, "removed": true, "id": "…", "preset": { … },
-  "orphaned": 1, "presets": [ … ], "applied": [ … ] }
+  "restoredWorkspaces": 1, "links": 3,
+  "workspaces": [
+    { "workspaceRoot": "…", "links": 1, "restored": true, "missing": false },
+    { "workspaceRoot": "…", "links": 2, "restored": false, "missing": true }
+  ],
+  "presets": [ … ], "applied": [ … ] }
 ```
 
-- `orphaned` is how many `applied` records now point at the deleted preset. The
-  layers are **not** touched: the workspace keeps the text it was given, and the
-  record keeps its snapshot so「取消应用」still works.
+- `restoredWorkspaces` counts only the workspaces whose layer was **really
+  written** (a `missing` one is not among them), `links` counts every stack link
+  cancelled across all of them, and `workspaces[]` names each affected workspace
+  with its own link count, whether the layer went all the way back to `base`
+  (`restored`, the same boolean §20.6 reports), and whether its layer file was
+  absent (`missing`, §20.4's `ENOENT` rule). `presets`/`applied` are §20.2's
+  shapes, so the page can refresh from the answer alone.
+- A refused deletion's message names the workspace whose restore **really failed**
+  (`restoring workspace "<root>" failed`) and lists `restored:`, `not restored:`,
+  plus `no layer to restore:` when some were skipped. A workspace the loop had not
+  reached yet is never reported as failed.
+- `?session=` is **resolution only**, as on the read face (§20.2): when the
+  caller names one, the workspace it resolves to is the one whose history record
+  carries that session; every other restored workspace is logged without one.
 
 ### 20.5 `POST /prompt-setting/presets/apply`
 
@@ -6436,15 +7345,23 @@ All are `OverrideError` shapes (`{ok: false, code, message}`, §4.4):
 | `not-applied` | 404 | `unapply` for a workspace with no record, or for a preset that is not on that workspace's stack (Revision 41). |
 | `presets-not-writable` | 409 | The library file exists but is not a valid document (§20.1). |
 | `layer-not-writable` | 409 | The workspace layer's own file is not a valid config (§4.4, unchanged). |
+| `unknown-workspace-root` | 400 | **g-074 R1.** A `DELETE` found an `applied` record naming a workspace this profile does not register. The deletion is refused whole, the preset survives and every file stays byte-identical (§20.4, §11.7). |
+| `preset-unapply-failed` | 409 / 500 | A `DELETE` could not restore one of the workspaces the preset was applied to (§20.4). The status is the failing read's own when the refusal is decided before any write (`409` for a layer that exists but is unusable), `500` when a write failed mid-commit. The message names the workspace whose restore really failed and lists `restored:` / `not restored:` (plus `no layer to restore:` for skipped ones); **the preset is not deleted**, and no workspace is rewritten on the pre-write path. A **missing** layer file (`ENOENT`) is not this error — it is skipped, never recreated (§20.4). |
 
-Every one of them is decided **before** any file is written, so a rejected
-request leaves `presets.json` and the layer byte-identical.
+Every one of them is decided **before** any file is written — `preset-unapply-failed`
+included on the pre-write path, which is the only path it is expected to take — so
+a rejected request leaves `presets.json` and the layer byte-identical. The one
+failure that can land after some bytes moved is `preset-unapply-failed` raised
+inside §20.4's commit loop; it still leaves the **preset** in the library (the
+library is written last) and reports exactly which workspaces were restored.
 
 ### 20.8 What this revision does not do
 
-- **No preset travels in an export.** `GET /export`'s fields and
-  `overrides.json`'s schema are unchanged (§10, §4); an export taken before this
-  revision re-imports byte-for-byte, and the new library is not a backup format.
+- **No preset travels in an export.** *(Revision 37–52; **superseded by
+  Revision 53 (g-074)** — see the note below this list.)* `GET /export`'s fields
+  and `overrides.json`'s schema are unchanged (§10, §4); an export taken before
+  this revision re-imports byte-for-byte, and the new library is not a backup
+  format.
 - **No cross-workspace application.** One request names one session and writes
   one layer.
 - **No preset version history.** The library keeps the current value of each
@@ -6453,6 +7370,17 @@ request leaves `presets.json` and the layer byte-identical.
 - **No second write path and no new writable section.** Both layer actions write
   the reserved entry and nothing else; a non-reserved name is still `403`
   `write-locked` (§4.1) and no preset route can reach one.
+
+**Revision 53 (g-074) withdraws the first bullet of「20.8」, and only that one.**
+The library now **is** part of a backup: `GET /export` carries it as the
+top-level `presets` field, and an import replaces `presets.json` from it (§10,
+§11.7). Nothing else about this chapter changed — the five preset routes, the
+stored document's shape and `overrides.json`'s schema are exactly what
+Revision 37–50 left them at, and a version 1 export (which carries no library)
+still re-imports byte-for-byte. The reason for keeping the library in its own
+file also survives the change: it is still not folded into a layer's
+`overrides`, so the import reader validates it as a document of its own
+(`validatePresetsDocument`) rather than as loose entries.
 
 ### 20.9 Client surface (g-060; the tab became dialog-based in Revision 38)
 
@@ -6520,11 +7448,61 @@ request leaves `presets.json` and the layer byte-identical.
 - **Reads and writes.** The tab reads `GET /presets` (with `?session=`, §20.2) and
   writes through §20.3–§20.6 only. It never touches `PUT /overrides`, and it never
   sends a layer name: the layer is implied by the preset routes themselves.
+- **The deletion confirmation states the restore (Revision 50).** The row's
+  `data-action="preset-delete"` still only *asks* — the `DELETE` is sent by
+  `data-action="confirm-yes"`, through the page's one confirmation surface
+  (§13.5, `data-confirm-kind="preset-delete"`). When the preset is applied
+  anywhere in `GET /presets`' `applied`, the question adds
+  `data-role="confirm-preset-workspaces"` carrying
+  `data-preset-workspace-count="<n>"` and renders the affected workspaces by
+  count **and** label (the page's own workspace label when it has one, the root
+  otherwise): the reader is agreeing to a restore, not to a catalogue edit. A
+  preset nothing applied shows the plain sentence and **no** such node. The
+  success notice reports `restoredWorkspaces` from the answer rather than
+  claiming a workspace「still holds the text」. The list is what the `applied`
+  records hold — the read face cannot say whether a layer file still exists, and
+  the Host skips a workspace whose layer is gone (§20.4), so the notice (which
+  comes from the answer) is the exact half.
 - **State.** The tab carries `data-preset-state` (`idle` / `saving` / `saved` /
   `error`) in the shape the other tabs use (§13.1's `mine-state`). A host that
   answers `error` on the read (§20.2) is shown as a library problem, not
   as「没有预设」 — and an empty catalogue is stated separately
   (`data-region="presets-empty"`).
+
+**Revision 50 (g-069: deleting a preset cancels every application of it).** An
+applied preset used to be deletable in a way that left the workspace holding text
+whose source no longer existed — the record survived as an orphan and the page
+could only say「来源已删除」. The deletion now means what the button says: every
+application is cancelled (each affected layer restored through §20.6's own
+semantics), and only then is the entry dropped.
+
+- **the route (§20.4).** `DELETE /presets?id=` reads and plans every affected
+  layer **first**, then writes each layer, then writes the library — so a
+  workspace that cannot be restored refuses the whole request (`409`/`500`
+  `preset-unapply-failed`) and the preset survives. The answer reports
+  `restoredWorkspaces`, `links` and `workspaces[]`; the Revision 49 `orphaned`
+  count is gone, because the links it counted no longer exist.
+- **the registration is the same one.** Each restore appends a history record and
+  takes a prompt-write note for its workspace, exactly as `POST /presets/unapply`
+  does (§20.6, Revision 48 included: restoring *nothing* counts).
+- **a gone layer is skipped, not created (review A).** A record pointing at a
+  workspace whose layer file no longer exists (`ENOENT`) is cleaned up without a
+  write: its links are cancelled with the preset and it is reported `missing:
+  true` / `restored: false`, never counted in `restoredWorkspaces`. Recreating
+  the deleted workspace through `writeConfig`'s `mkdirSync` was the defect this
+  rule closes. A layer that exists but is unusable still refuses the whole
+  deletion, and a refusal names the workspace whose restore really failed — not
+  the ones the loop had not reached (review B).
+- **orphans are now only an inherited shape (§20.1).** A hand-edited file, or one
+  written by Revisions 37–49, still reads, reports and cancels an orphan link;
+  no write route of this revision creates one.
+- **the client (§20.9).** The confirmation names the workspaces it will restore,
+  and the success notice reports how many were restored; the copy promises no
+  workspace「still holds its text」any more.
+- **superseded wording.** Revision 37's bullet「deleting an applied preset changes
+  no layer」and the `orphaned` field of Revision 41's §20.4 answer are the two
+  statements this revision replaces; everything else in §20 keeps its meaning,
+  its markers and its stored bytes.
 
 ## 21. The in-session assembly-status notice (g-062, Revision 45; toasts added in Revision 46)
 
@@ -6603,7 +7581,9 @@ exactly like the update switch. The key is `assemblyNotice` in the **same**
 `preferences.json`, written through the same merge (so this write cannot erase
 `updateCheck` or `downloadRegion`), and it is carried through
 `normalizePreferences` only when the document states a boolean — a pre-g-062
-file stays byte-identical. An absent key means **on**.
+file stays byte-identical. An absent key means **on**. *(Since Revision 53 this
+key also travels in a full backup, and `POST /prompt-setting/import` replaces
+the whole `preferences.json` — see §17.4 and §11.7.)*
 
 ### 21.3 The two verdicts, and where each comes from
 
@@ -6701,7 +7681,10 @@ file stays byte-identical. An absent key means **on**.
 
 ### 21.5 Page surface
 
-The block lives at the top of the「我的 Prompt」panel and carries
+The block lives at the top of the「高级」panel (g-065 moved it there from
+「我的 Prompt」; the block, its markers, its switch and its read schedule are
+otherwise unchanged, and 「我的 Prompt」 keeps nothing of it — no container, no
+heading, no gap) and carries
 `data-region="assembly-status"` with `data-assembly-phase`
 (`idle`/`ready`/`error`), `data-assembly-enabled`
 (`true`/`false`/`unknown` — unknown until the Host answers),
@@ -6810,3 +7793,185 @@ re-report it.
   **Stated limitation:** browser timers are throttled in a background tab, so a
   toast is seen when the user returns to the page — this is not a real-time
   channel and does not claim to be.
+
+## 22. The locale dictionaries (g-066, Revision 49)
+
+Every user-visible string this plugin renders — **586** keys per language since
+g-073 (Revision 55; 573 through Revision 54, 567 through Revision 51, 566
+through Revision 50, 564 through Revision 49) — used to
+be hardcoded inside `client.js`: a 513-key `zh` object, a 513-key `en` object,
+and an `ERROR_TEXT` table of 51 `code → [zh, en]` rows that a loop expanded into
+`error.<code>` entries. The copy now lives in two JSON files, and the inlined
+objects are a generated artifact.
+
+### 22.1 Source of truth
+
+- `locale/zh.json` and `locale/en.json` are the **only** human source. Each
+  holds exactly 586 string values: the 535 main keys plus 51 `error.<code>`
+  keys. Keys are identical between the two files, **in the same order** (the
+  order is what the generated block follows, so a reordered file is a
+  535-line diff rather than a copy change).
+- Nothing else in the package is hand-edited for copy. `client.js` carries the
+  blocks inside the `// #region generated: locale/zh.json + locale/en.json`
+  … `// #endregion` span; a hand edit there is overwritten by the next `--write`
+  and reported by `--check`.
+
+### 22.2 The blocks are generated, not loaded
+
+`locale/*.json` is **not** read at runtime, and cannot be:
+
+- the client bundle is a classic `<script>` self-registering a CJS factory, and
+  the Host applies **no transpilation** to those bytes — ESM syntax inside would
+  be a syntax error in the browser;
+- the plugin route serves the combo entry (`client.js`, `client.js.map`) and
+  **bundle-root** `client.*.js` chunks only; it does not serve subdirectories,
+  so `locale/*.json` is a 404 from the page;
+- the Host has no file-level language-pack convention to inherit (its README's
+  "language pack" is a *runtime* `register` call, which is what this plugin
+  already does).
+
+Therefore `ctx.locale.register(NS, {zh, en})` (§13) stays **synchronous and
+inline**: no `await`, no `fetch`, no import — the first frame is localized and
+there is no network surface. What changed is only who maintains the bytes.
+
+### 22.3 Tools and gates
+
+| Where | What it guarantees |
+| --- | --- |
+| `scripts/locale-pack.mjs --write` | Re-renders both blocks from the JSON. Idempotent: a second run changes nothing. |
+| `scripts/locale-pack.mjs --check` | Fails (exit 1) when a block is not byte-for-byte what `--write` would produce. |
+| `scripts/prepare.mjs` → `LOCALE-SYNC` | The same check on the **install/publish** path, plus a `files` allowlist test for both JSONs (a source that does not ship cannot be re-derived from the installed package). |
+| `test/locale.test.mjs` | Key parity, the 535 + 51 split, no new placeholder drift, byte equality with `--write`, a negative control (one drifted character is refused), and that the delivery shape is still a classic script with a synchronous register. |
+
+### 22.4 Error codes
+
+`error.<code>` is now an ordinary dictionary key; the `ERROR_TEXT` table and its
+injection loop are gone, and consumers resolve copy through
+`errorText(t, error)` → `t('error.' + code)` — the same runtime semantics, one
+source. `errorText` treats "the lookup answered with the key itself" as a miss
+(the locale lookup's last resort is the key) and falls back to the localized
+`errUnknown`, so a code with no entry can never render a bare identifier; the
+raw code still reaches the UI through the banner's own `data-error-code` /
+`errCode` line.
+
+### 22.5 Publishing
+
+`files` includes `locale`; `test/host.test.mjs` pins that allowlist exactly;
+`npm pack` ships both JSONs (36 files, measured with `npm pack --dry-run`).
+
+---
+
+## 23. Client source layout (「客户端源码布局」, g-075; `client.js` is generated)
+
+`client.js` is a **build artifact of this repository**, not a hand-edited entry.
+Its source of truth is the `src/` directory: every `src/NN-name.js` file is one
+**contiguous slice** of `client.js`, and `scripts/client-build.mjs` concatenates
+the slices in file-name order. The zero-padded numeric prefix makes file-name
+order == code order, so "the order" is a property of the naming rule rather than
+a hand-maintained manifest (§5.1 of `docs/refactor-plan.md`).
+
+**Coordinate convention.** Every `file:line` reference to `client.js` in this
+repository — the §1.3 / §5.1 tables of `docs/refactor-plan.md`, its evidence
+index, and `docs/architecture-map.md` — is written in **slice-source
+coordinates**: the line number that byte would have with the generated banner
+removed. The banner is a pure prefix emitted by the builder and belongs to no
+segment, so
+
+```
+generated line  ==  slice-source line  +  the banner's line count
+```
+
+`docs/check-refs.mjs` applies exactly this shift (`CLIENT_HEAD_LINES`, derived
+from the banner itself), which is why rewording the banner cannot silently
+invalidate a hundred references — and why a reader must add that offset before
+looking a documented line number up in the generated file.
+
+### 23.1 The commands that guard it
+
+| Command | What it guarantees |
+| --- | --- |
+| `node scripts/client-build.mjs --write` | Rebuilds `client.js` from `src/`. It writes **only when the bytes differ**, so a routine run does not touch mtime — and mtime is what changes the DSH artifact revision and reloads an open page. |
+| `node scripts/client-build.mjs --check` | The read-only form, with a non-zero exit code when `src/` and `client.js` disagree. |
+| `node scripts/locale-pack.mjs --write` | Re-renders the `zh` / `en` dictionary blocks from `locale/*.json` into the slice that carries them, **then** rebuilds `client.js` — one run, both sides current (§22). |
+| `node scripts/prepare.mjs` → `CLIENT-SRC*` | The publish gate, tri-state like `LOCALE-*`: `src/` must exist with usable slices **and** be covered by the `files` allowlist, or an installed package carries only an artifact that can no longer be regenerated or diffed. Since g-077 the **segment set is no longer checked against a hand-kept list**: the gate re-renders `src/` with `renderClient()` and compares it **byte for byte** with the shipped `client.js` (`CLIENT-SRC-DRIFT`; on failure it names the actionable `node scripts/client-build.mjs --write` command plus the first differing line). The artifact is the only anchor for "which slices should exist" — a list derived from `src/` always agrees with itself (delete a slice, re-run `--write`, and the derived list loses that slice too), so this single comparison catches a **missing slice**, an **extra, unknown slice** and **in-slice drift** (an edited line nobody rebuilt), with no checklist to keep in sync. |
+
+`CHUNK_STAMPS` keeps its single writer: the builder calls
+`scripts/client-chunks.mjs` (`readDeclaredStamps` / `writeDeclaredStamps` →
+`renderStampRows`) instead of re-implementing the block. The copy of that block
+which sits **inside the slice** (`src/11-chunks.js`) is a **derived copy, not a
+second source of truth**: the truth is the `client.*.js` files on disk, and
+every `--write` path recomputes the rows from them. The recomputed rows are what
+lands in `client.js` — the builder overwrites the block as it concatenates the
+slices — so the slice's own rows are never what ships, and a slice whose rows
+lag behind the disk is expected and harmless between a chunk change and the next
+`--write`. `client-build.mjs --check` accordingly compares the **artifact's**
+rows against the disk, which is the comparison the fingerprint depends on
+(g-076 item 3).
+
+### 23.2 Invariants (what a change to `src/` may and may not do)
+
+1. **Contiguous slices only.** Each segment is a contiguous range of
+   `client.js`, and segment numbers increase in code order. A change may move a
+   cut-off point *inside* an existing range, or merge adjacent segments; it may
+   **not** move a code block across segments.
+2. **Why that rule is hard**: the slices are one factory body. Moving a block
+   changes the TDZ boundary of `const`/`class` declarations and the visibility
+   of hoisted function declarations, and no existing test proves such a move
+   harmless. The machine proof that nothing moved is the refactor plan's stage-2
+   criterion 8 — the generated `client.js` with its banner stripped is
+   **byte-for-byte identical** to the pre-rearrangement artifact.
+3. **No separators, no normalization.** The builder strips the per-segment
+   declaration line and concatenates. It inserts no comment and no blank line,
+   and trims/normalizes nothing: either would change `fingerprintOf`'s UTF-16
+   length and hash.
+4. **One functionality per segment.** A change to one feature should touch
+   exactly one `src/` file. Needing two is a signal that the cut is in the wrong
+   place, not that the rule should be relaxed.
+5. **The generated banner stays outside the fingerprint.** The "generated file,
+   do not edit" banner is emitted by the builder and sits **before** the
+   `@build-fingerprint:begin` marker, so it never moves the hash/size the host
+   reports for this bundle (§14) — a hand edit of `client.js`, banner included,
+   is rejected by `client:check`.
+6. **The per-segment declaration line does not ship.** Each `src/*.js` starts
+   with a one-line comment saying it is a slice of `client.js` rather than a
+   module; the builder strips it before concatenation, and a set of segments
+   that is only half declared is refused ("all or nothing"). Line budgets count
+   the slice **after** that strip, so `wc -l src/*.js` shows one extra line per
+   file (the largest segment reads 1201) while the 1200-line budget in §5.1
+   applies to the 1200 lines that actually land in `client.js`.
+7. **Exception — the locale region.** The generated locale region is still owned
+   by `scripts/locale-pack.mjs --write`, but since g-075 stage 2 that script
+   writes **the slice that carries it** — located by scanning `src/` for the
+   `zh` / `en` block headers, never hard-coded, with an ambiguous or missing
+   match refused — and then rebuilds `client.js`. A single `--write` therefore
+   leaves the source and the artifact in sync, and `--check` compares **both**
+   (§22).
+8. **The slice set is anchored on the artifact, not on a checklist.** There is
+   no hand-kept list of segment names anywhere in `scripts/`, and adding,
+   re-cutting or merging a slice therefore requires **no manifest edit**: "which
+   slices should exist" cannot be derived from `src/` itself (delete a slice,
+   re-run `--write`, and any list derived from the directory loses that slice
+   too and still agrees with itself), so the anchor is the shipped `client.js`.
+   `prepare` re-renders `src/` and compares it byte for byte
+   (`CLIENT-SRC-DRIFT`), which catches a missing slice, an extra slice and
+   in-slice drift alike; a re-cut is made green by one
+   `node scripts/client-build.mjs --write`. `docs/check-refs.mjs` separately
+   pins "the §5.1 table == the slice names on disk, order included".
+
+### 23.3 What does not change
+
+The published artifact is still the same single `client.js`, registered through
+`window.__ModuleLoader__.load({...})`: `exports["./client"]`, the fingerprint
+region, `CHUNK_STAMPS`, the chunk protocol and every `data-*` marker are
+untouched. There is no bundler, no JSX and no TypeScript — the package stays
+**zero-compilation**, and only the client entry becomes a **generated** file
+whose source lives in `src/`. `docs/architecture-map.md` maps each domain to its
+`client.js` range, entry functions, contract section and tests.
+
+### 23.4 Rollback
+
+Reverting `src/` (or the builder) restores the previous layout with no product
+behaviour change: the generator only rearranges **where** the bytes live on
+disk, never **which** bytes exist.
+
+

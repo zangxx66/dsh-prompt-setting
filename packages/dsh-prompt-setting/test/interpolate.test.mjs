@@ -208,6 +208,28 @@ test('g-026 describeInterpolateErrors: bounded, and it names the registered vari
   assert.equal(typeof message, 'string');
 });
 
+test('g-080 describeInterpolateErrors: names the {{cwd}} retirement only when this table drops it', () => {
+  const retiredEvent = [{ kind: 'unknown', name: 'cwd', at: 0 }];
+  const retired = describeInterpolateErrors(retiredEvent, 'the user layer', ['model', 'provider']);
+  assert.match(retired, /0\.2\.1-rc\.1/);
+  assert.match(retired, /runtime context/);
+  assert.match(retired, /Fix:/, 'the retirement note does not replace the way out');
+  // Data-driven, not version-guessed: a table that still registers `cwd` gets no
+  // note, and the refusal code/status are the same in both directions.
+  const legacy = describeInterpolateErrors(retiredEvent, 'the user layer', ['cwd', 'model']);
+  assert.doesNotMatch(legacy, /0\.2\.1-rc\.1/);
+  assert.throws(
+    () => assertInterpolatable('dir {{cwd}}', { model: 'x' }, 'the user layer'),
+    (error) => {
+      assert.equal(error.code, UNRESOLVABLE_VARIABLE);
+      assert.equal(error.status, 400);
+      assert.match(error.message, /0\.2\.1-rc\.1/);
+      return true;
+    },
+  );
+  assert.doesNotThrow(() => assertInterpolatable('dir {{cwd}}', { cwd: '/work' }, 'the user layer'));
+});
+
 // ---------------------------------------------------------------------------
 // The switch: config semantics
 // ---------------------------------------------------------------------------

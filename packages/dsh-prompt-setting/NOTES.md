@@ -253,6 +253,14 @@ g-062 用「渲染分支与 toast 能力解耦」绕开了连带问题，本节�
 `min-width:max-content`（撑宽 ⇒ 过大，溢出路径未明）、只用 `white-space:nowrap`（⇒ 溢出列格/重叠）、沿用官方等分列（⇒ 折行）、
 以及两条在当前宿主下为 no-op 的 `grid-auto-flow`/`grid-auto-columns`（inline 显式列已足、无隐式列、inline 优先级更高）。
 
+**Revision 51（g-070）补记**：上面的「自绘」定案不变，但自绘从此**分两个样式族 / 两个渲染函数**：`tabs()` 仍画
+**chip 家族**，其渲染调用点是各二级分组选择器（`mine-layer`、`advanced-layer`、`history-layer`、`view` /
+筛选组、`full-origin`、`import-mode`、`preset-mode`，共 8 处，分布在本文件与 4 个 chunk 里），一级 tab 条改为
+`mainTabStrip()` —— 纯文字 + 选中项下划线 + 底部淡分隔线，且是**单行横向滚动**（`flex-wrap:nowrap` +
+`overflow-x:auto`，每个按钮 `flex:0 0 auto`）而不是换行。安全性没有因此丢掉：块级滚动容器只占父级给它的宽度，
+CSS automatic minimum size 对它不适用，所以最宽的标签也够不到祖先（等分列与 `max-content` 仍然**一个都没有**）。
+详见 §149。
+
 **官方先例调研（谁给 SegmentedTabs 传什么 className）**：官方在宿主包里**只有一个调用方**
 （`@deepseek-ai/dsh-client-ui-agent-preset` 的预设引导对话框），写法是
 `className: PresetGuideDialog_module_css_default.guideTabs` —— 传**调用方自己的 CSS module 类**（该包内联 CSS 字符串
@@ -1005,8 +1013,13 @@ NC-F1 的 5 项变红里，两项在**内核层**、两项在**路由层**、一
 
 ## 33. 4xx → 可读文案：单一来源表
 
-`ERROR_TEXT` 是唯一来源（`code → [zh, en]`），字典在注册时用同一个循环生成
-`error.<code>` 键，因此**不可能出现某个 code 只有 zh 没有 en**，也不可能出现「只显示原始 code」。
+**（g-066 更新）** 文案真源已迁到 `locale/zh.json` / `locale/en.json`：51 条 `code → [zh, en]` 现在
+就是两份 JSON 里的 `error.<code>` 键（与 513 条主词典同处一份文件、同一次生成），`ERROR_TEXT` 表与
+注入循环已删除。全包只有这一份人工词典，因此**不可能出现某个 code 只有 zh 没有 en**，也不可能出现
+「只显示原始 code」：消费端走 `errorText(t, err)` → `t('error.' + code)`，而查找未命中（宿主 locale
+的兜底是**回显 key 本身**）时回退到本地化的 `errUnknown`，原始 code 仍经 banner 的 `data-error-code`
+/ `errCode` 行如实呈现。详见 §147 与 `CONTRACT.md` §22。
+
 覆盖 20 条：契约 §4.4 的 18 条 + `not-found`、`duplicate-name`。
 未知 code 也不会裸奔：退回通用文案 + `errCode` 标签 + 宿主 message。
 
@@ -3619,7 +3632,7 @@ g-014 用 `order: 1000000` 让保留段排在**所有注册段**的最后，真�
 **源码而不是构建产物**，pnpm 会在安装现场运行 `prepare`；用户侧还要为该包在 profile 的
 `pnpm-workspace.yaml` 里授权构建脚本（`allowBuilds`），否则第一次 `add` 会失败。
 
-本包是**零构建**包：`index.js` / `client.js` / `core/*.js` 本身就是发布入口，没有编译产物。
+本包是**零编译**包（无 bundler / JSX / TypeScript）：`index.js` / `core/*.js` 本身就是发布入口，`client.js` 是 `src/` 的**生成物**，没有编译产物。
 所以这一节落到本包上，问题不是「怎么编译」，而是「**装到用户机器上的那一份到底全不全**」。
 本轮把它做成一个可执行、可失败的门禁：`core/prepare.js`（纯函数，零 IO）+
 `scripts/prepare.mjs`（注入 `node:fs`，不通过则 `exit 1`）。
@@ -3663,7 +3676,7 @@ help: Add the package to "allowBuilds" in your project's pnpm-workspace.yaml
 **写入该键后重试——`prepare` 真的执行了**，脚本输出原样出现在 pnpm 的 `npm-install:` 流里
 （19 项 ok + `prepare：OK`），安装成功、版本 `0.1.0`。
 
-> 这一条对用户是**成本**：本包零构建，`prepare` 只做自检，却同样要吃 `allowBuilds` 授权
+> 这一条对用户是**成本**：本包零编译，`prepare` 只做自检，却同样要吃 `allowBuilds` 授权
 > （授权 = 允许该包在安装时于本机执行代码，且不在 agent 沙箱内）。文档给出的替代路径是
 > 「分发构建产物」：装 npm 包或 `pnpm pack` 出来的 tarball 都不需要任何构建权限。
 > 取舍写在包 README 的安装一节。
@@ -8013,6 +8026,7 @@ brief 写「本次 0.2.1 覆盖 g-050…g-058」。核对仓库事实：**g-050�
 `index.js` 只做宿主接线（`assembleHandler` 末尾观察、`agent/pre-step` 打 turn/step 标签、
 `session/event` 折叠送达证据、`session/disposed` 清理、`GET|PUT /prompt-setting/assembly-status`）；
 `client.js` 在「我的 Prompt」面板顶部渲染该块（`data-region="assembly-status"`）并读写开关。
+（**g-065 已把该块移到「高级」面板顶部**，行为不变——见 §146；本节其余内容仍是当时的实现记录。）
 开关复用 `preferences.json`：`core/update.js` 的 `normalizePreferences` 新增 **stated-only** 的
 `assemblyNotice` 键（未声明则文件字节不变，缺省＝开），写入走同一 merge，因此不会抹掉
 `updateCheck` / `downloadRegion`。
@@ -8460,3 +8474,1770 @@ feed → cursor → toast 不丢、文案不含 `undefined`）。全量 `896 pas
 - `npm publish` / `git tag` / `git push` / 合入 `main` / 分支收口：**人工 gate，本轮未做**（合入与删分支
   由主管复核后执行）；因此 npm 上的 `latest` 仍是 `0.1.5`，README 的双写表述正为此；
 - 徽章的 shields.io 在线渲染未目视（离线），只核对了源文本。
+
+## 146. g-065：「装配状态提示」从「我的 Prompt」移到「高级」顶部（2026-10-14，基线 `445ad6d`，dev 工作树直改）
+
+**问题（负责人反馈）**：g-062 把两层装配观察块挂在「我的 Prompt」（写入口）顶部，而它的读者是
+「改完 Prompt 却没生效、要查为什么」的人——那正是打开「高级」的动机。本次只挪位置，**功能行为零变化**：
+开关语义、偏好键、轮询游标、toast、宿主 `core/assembly-watch.js` 都不动。
+
+**落地（唯一实现留主入口，chunk 只绑定一次）**
+
+| 位置 | 改动 |
+| --- | --- |
+| `client.js` `CHUNK_FACILITIES` | 新增一键 `renderAssemblyStatus`（沿用 g-061 批次 1–3 的「一个名字一个绑定、零副本」规则） |
+| `client.advanced.js` | `const renderAssemblyStatus = shared.renderAssemblyStatus;`（按字母序插在 `regionKey` 与 `renderStatusDetail` 之间），`renderAdvancedTab` children 首位调用它 |
+| `client.js` `renderMinePanel` | 删掉 g-062 的调用点与注释；mine 树回到标题→targetLine，**不留空容器/空标题/间距** |
+| `client.js` assembly 读取 effect | 守卫 `tab !== 'mine'` → `tab !== 'advanced'`：读取跟着块走。顺带把错位在 assembly effect 前面的 g-038/history 注释**归位**到 history effect 之前（g-062 插入 effect 时留下的注释错位） |
+| `client.js` `CHUNK_STAMPS` | `client.advanced.js` `4cbd3181/21376` → `20024f50/21859`（`node scripts/client-chunks.mjs --write` 重算） |
+
+**为什么不是另外两条路**：①「chunk 内重组」＝把块搬进 `client.advanced.js` 自持——那是第二份拷贝，
+且会立刻踩 `test/client.test.mjs` 的机械门禁；②「element 挂到 model 上再取」没有先例，且把渲染时机
+藏进数据里。A 案的 `m`/`a` 本来就与 tab 无关（分派给每个 tab 的是同一个 `{t,m,a}`），
+`assembly`/`assemblyEnabled`/`assemblyStatus`/`a.toggleAssemblyNotice` 跨 tab 后仍然可达，**无需搬数据**。
+
+**测试同步（改的是「在哪个 tab 断言」，不是断言本身）**
+
+- 基线请求集合：默认 tab 不再有 `assembly-status`，断言列表去掉该路由，并新增「默认 tab 读 0 次」；
+- 4 组渲染用例（块是否渲染、两层结论、`empty/not-read/waiting`、开关 PUT）改走 `openTab(page,'advanced')`；
+- 3 组 seat 用例（`absent`/`pending`/`failed`）同样改走「高级」；
+- 新增负向断言：「我的 Prompt」树里 **0 个** `data-region="assembly-status"`、无 `assemblyHeading` 文案、
+  0 次 assembly-status 请求；新增位置断言：装配标题在 `ovHeading` 之前（真的在「高级」开头）。
+
+**文档同步**：`CONTRACT.md` §21.5（块位置 + g-065 说明）、Revision 45 条目补注；
+`README.md`：位置段从「我的 Prompt」条目移到「高级」条目（zh/en）；
+仓库根 `CHANGELOG.md` 新增 `[Unreleased]` 段。
+
+**评审返工（README 中英对称，minor）**：搬迁时英文段没跟着走，留下「我的 Prompt」条目一段孤立英文
+（含 `The exact口径` 的中英混排瑕疵），而「高级」英文段又比中文段少「口径与边界」两行。已按评审口径
+收口：删掉「我的 Prompt」内的英文残段，「高级」英文段补齐口径并写成完整英文。`README.md` 的净变化
+现在是「只删『我的 Prompt』段、只增『高级』段」。
+
+### 一、验收（单行证据）
+
+- `node --test test/*.test.mjs` = **905 pass / 0 fail / skipped 0 / todo 0**（基线 904 + 本节新增 1 例）；
+- `node --test test/build.test.mjs test/prepare.test.mjs` = **38 pass / 0 fail**；
+- `node scripts/client-chunks.mjs`（无 `--write`）= 5 file(s) match；`node scripts/prepare.mjs` = OK（21 项）；
+- `git diff --stat` = **7 文件 / +209 −43**；`git diff -- packages/dsh-prompt-setting/core` = 空
+  （`core/assembly-watch.js` 零改动）；
+- **负向对照**：① `renderAssemblyStatus` 未登记进 `CHUNK_FACILITIES` 时
+  `client: every chunk depends on the entry alone — a DAG…` **实测红**
+  （`client.advanced.js: the entry exposes renderAssemblyStatus on __internals.shared`），登记后绿；
+  ② `CHUNK_STAMPS` 未重算时三条指纹用例（入口戳一致、in-flight 编辑被抓、每 chunk 摘要与独立读文件一致）
+  **实测红**（`client.overview.js: and the manifest agrees` 等），重算后转绿。
+
+### 二、未验证项
+
+- **真机截图 / 真机 DOM 断言未做**：本 attempt 无浏览器侧执行条件，`~/.dsh/profiles/web` 的 symlink
+  指向本工作树（改动对真机可见），但截图与真机 `data-region` 读值由主管在集成检查点补做，**不伪造**；
+- 视觉层（「高级」首屏是否因该块变长而需要滚动）未目视。
+
+## 147. g-066：文案真源迁到 `locale/*.json` + 生成脚本与发布门禁（Revision 49，2026-10-14，基线 `629afe8`，dev 工作树直改）
+
+**问题**：全插件的用户可见文案硬编码在 `client.js` 里，共 3 段 —— `zh`（513 键）、`en`（513 键）、
+`ERROR_TEXT`（51 条 `code → [zh, en]`，注册前循环展开成 `error.<code>`），运行时 **564 键/语言**。
+改一句话要在 1.1 万行的 bundle 里按行号找；两份语言表的一致性靠「同一个循环」结构性保证，任何人手工
+插一条 `error.x` 都会破坏它。
+
+**落地**
+
+| 位置 | 改动 |
+| --- | --- |
+| `locale/zh.json` / `locale/en.json`（新） | 唯一人工真源：各 564 键（513 主词典 + 51 个 `error.<code>`），键集与**顺序**两文件一致 |
+| `scripts/locale-pack.mjs`（新） | `--write` 由 JSON 重渲染 `client.js` 的两段（幂等）；`--check`（默认）逐字比对，不一致非零退出；导出 `checkLocaleSync` 供 `prepare` 复用 |
+| `client.js` | 删 `ERROR_TEXT` 表（原 897–1070 行）与注入循环；`zh`/`en` 段降为生成物，包在 `// #region generated: …` … `// #endregion` 里；两段改为**每键一行**（含点的键加引号，如 `'histAction.replace'`） |
+| `client.js` `errorText` | 命中判定改为「查找结果 ≠ key 本身」：宿主 locale 未命中时回显 key，旧写法会把 `error.<code>` 裸键渲染进 UI（既有缺陷，`download-failed` 就踩它） |
+| `client.js` `downloadText` | 失败返回 `{ok:false, code:'download-failed'}`（机器码），不再返回英文 `reason: 'no document'`；调用点用 `errorText` 渲染 `{reason}` → 本地化的 `errUnknown` |
+| `package.json` `files` | 加 `locale`（两份 JSON 随包发布）；`test/host.test.mjs` 的 `deepEqual` 白名单同步 |
+| `scripts/prepare.mjs` | 新增第 5 类检查 `LOCALE-SYNC`（JSON 合法 + 键对齐 + 与生成段逐字一致 + 在 `files` 内）；不适用（既无文件也没声明）的 fixture 包跳过为 `LOCALE-SYNC-N/A` |
+
+**为什么必须内联而不是运行时读 JSON**（收集卡已实测，勿再设计）：`client.js` / `client.*.js` 是
+classic `<script>` 自注册 CJS 工厂，宿主对字节**零转译**；插件路由只服务 combo 入口与**包根**
+`client.*.js`，不服务子目录 ⇒ `locale/*.json` 在浏览器里是 404。若改成 `fetch`，`ctx.locale.register`
+就不再同步，`test/client.test.mjs` 的 `SWEEP_TABLES` / `mountClient` 在模块加载时同步取词典会大面积变红，
+且首帧会露 key。所以：**JSON 只服务于人，进 bundle 的字节由脚本生成**，注册调用一字未改。
+
+**测试同步**
+
+- 新增 `test/locale.test.mjs`（7 例）：564 = 513 + 51 的键结构、键集与顺序、`error.*` 是真实双语、
+  占位符漂移白名单（唯一既有例外 `mineInterpolateNote` 的 `{variables}`）、生成段与 `--write` 逐字相等、
+  **负向对照**（把 `nav` 改一个字 ⇒ `LOCALE-SYNC` 红）、`client.js` 不含第二份词典、仍是 classic script
+  且 `register` 同步；
+- `test/client.test.mjs`：`no document` 断言改为 `page.zh.errUnknown` 并**新增负向断言**
+  `hasText(tree,'no document') === false`；EN sweep 的 `downloadFailed` 期望改用 `EN_TABLE.errUnknown`；
+  **新增 presets EN sweep 用例**并把这 4 个 `data-*` 标记登记进 `EN_REQUIRED_MARKERS`；
+- `test/prepare.test.mjs`：忠实副本测试补拷 `locale/`。
+
+**EN sweep 缺口与两条英文文案修复**：`client.presets.js` 从未被 EN sweep 走过，根因是它的两条 en 文案
+带中文书名号 —— `presetsEmpty` 与 `presetSaveAsCurrentHint` 里的 `「My Prompt」`（`CJK_ON_SCREEN` 含
+`\u3000-\u303f`）。要让新用例真的通过，只能把这 2 条 en 文案的括号改为 ASCII `"…"`（这是**唯一**的文案
+字节变更，见下「文案零变化」口径）；改动后 sweep 全绿，缺口由 `EN_REQUIRED_MARKERS` 永久封住。
+
+**文案零变化（自动比对证据）**：从基线 `629afe8` 的 `client.js` 提取 564×2 键值，与两份 JSON 逐字比对，
+**差异 0**（键序也一致；占位符键 102 条两语言一致）。全量 564 键中只有 2 条 en 值被有意改动（上段的
+中文括号归一），以及 `downloadFailed` 的**实参**来源变化（模板字符串本身未改）。
+
+**为什么不是另外两条路**：①「运行时 `fetch` + host 端点」引入首帧 key 与网络契约，且要新增契约面；
+②「词典放进 chunk」撞 `test/client.test.mjs` 的「chunk 不得有第二份词典/令牌表」机械门禁，且 5 个 chunk
+共用同一 NS 词典，拆分必然产生 5 份拷贝。
+
+### 一、验收（单行证据）
+
+- `node --test`（包目录，全套件）= **912 pass / 0 fail / cancelled 0 / skipped 0 / todo 0**（基线 905 + 本目标新增 `test/locale.test.mjs` 7 例；presets EN sweep 是既有用例内的新 case，不增计数）；
+- `node scripts/locale-pack.mjs --check` = ok（564 键/语言）；`--write` 连跑两次第二次为 `已是最新`（幂等）；
+- `node scripts/prepare.mjs` = **OK（23 项）**（基线 21：`+FILES-DIR locale`、`+LOCALE-SYNC`）；
+- `node --check client.js` = 通过（classic script 语法）；`npm_config_cache=/tmp/g066-npm-cache npm pack --dry-run` = **36 个文件**，含 `locale/zh.json`(40.2kB)、`locale/en.json`(42.5kB)、`scripts/locale-pack.mjs`；
+- **负向对照**：① `test/locale.test.mjs` 内「改一个字符 ⇒ `LOCALE-SYNC` 红」实测通过；② 缺 `locale/` 假包 + `files:['locale']` ⇒ prepare 红（`LOCALE-FILES`），补文件后绿；③ 未声明也未带 JSON 的最小 fixture 包 ⇒ `LOCALE-SYNC-N/A`，不误报。
+
+### 二、未验证项
+
+- **真机验证未做**：本 attempt 无浏览器侧执行条件，未做真机首帧目视与真机 `t()` 读值；`locale/*.json`
+  真源、生成段与注册路径均由 vm 测试与脚本断言覆盖，真机复核留给主管集成检查点，**不伪造**；
+- `mineInterpolateNote` 的既有占位符漂移（en 有 `{variables}`、zh 没有）**未修**（文案冻结），只登记为例外；
+- `errorText` 的「key 回显即未命中」判定只在本地 vm 桩上验证过宿主 fallback 语义（收集卡实测），未在真机复跑。
+
+## 148. g-069：删除预设＝对每个已应用的工作区真的取消应用（Revision 50，2026-10-15，基线 `d4e470b` 隔离工作树 `g-069-att-01`）
+
+**需求（负责人 2026-10-15 裁决，方案 A）**：删除一个**已被应用**的预设时，宿主必须对该预设已应用的
+**每个工作区**真的执行取消应用（还原工作区层文本），并在客户端删除确认浮层明确提示该后果。
+
+**现状缺陷**：`removePreset()` 只从 `presets` 数组剔项、`applied` 经 `appliedListOf()` 原样拷贝，
+`handleDeletePreset` 全程只 `writePresets()` —— 层里那份已应用的文本原样留存，记录变 orphan
+（「来源已删除」），用户从 UI 上无法直观把它恢复。
+
+**实现**
+
+- `core/presets.js`（纯）：新增 `appliedRootsOf(document, presetId)` 与
+  `planPresetRemoval(document, {presetId, currentOf})`。后者对每个受影响 root 反复调用既有
+  `planUnapply()` 直到该记录不再含这个 `presetId`（手改文件里同一 link 出现两次也只走两轮），
+  全部规划完成后才 `removePreset()`；`currentOf` 抛错即整体拒绝，**未写一个字节**。
+- `index.js` `handleDeletePreset`：两阶段。① 预检/规划：`readConfig(workspaceConfigPath(root))`
+  + `planPresetRemoval`；② 提交：逐个 `writeConfig` + `cacheWritten` + `notePromptWrite` +
+  `recordHistory`（与既有 unapply 路由同一组副作用，note 为 `delete preset <id>`），**最后**才
+  `writePresets`。任一阶段失败 ⇒ 抛 `preset-unapply-failed`（预检沿用原错误 status，提交 500），
+  message 里 `restored: … / not restored: …`，**预设不删**、绝不出现「预设已删而工作区未还原」。
+  响应换成 `restoredWorkspaces` / `links` / `workspaces[]`；Revision 41/49 的 `orphaned`（按栈项计）
+  随行为一起退场。
+- 客户端：`requestPresetDelete` 从 `GET /presets` 的 `applied` 里筛出受影响工作区（label 优先取
+  页面自己的工作区标签，没有则用 root），确认浮层在非空时渲染
+  `data-role="confirm-preset-workspaces"` + `data-preset-workspace-count` 并列出清单；未应用时仍是
+  原来那句。成功 notice 改用 `restoredWorkspaces`。文案真源 `locale/zh.json` / `locale/en.json`
+  改 2 键（`presetDeleteConfirmBody` 收敛为中性；`presetDeletedOrphanNotice` 退场）、加 3 键
+  （`presetDeleteConfirmApplied`、`presetDeleteAppliedList`、`presetDeletedRestoredNotice`），
+  生成段用 `node scripts/locale-pack.mjs --write` 重建（**515 + 51 = 566 键/语言**）。
+
+**关键取舍**
+
+- **两阶段而不是「还原一个、删一个」**：判据要求「任一工作区还原失败 ⇒ 预设保留」。逐工作区提交时，
+  第二个工作区失败会让第一个已还原而预设仍在（可恢复方向），但如果顺序反了（先删预设）就会留下
+  不可恢复的坏状态。所以把**所有读与规划**放在第一个字节之前，这覆盖了现实中几乎全部失败
+  （层文件损坏 409、root 不可解析）；提交中途 I/O 失败是残余风险，如实列清单而不是假装原子。
+- **不做回滚**：把已还原的层写回旧文本同样是 I/O，回滚本身也会失败，且会让「已还原」清单失真；
+  提交失败的可恢复出路（再删一次，或手工取消剩余应用）已写进契约 §20.4。
+- **orphan 兼容不动**：`removePreset()` 仍是「只剔项」的纯函数，手改文件/历史数据里的 orphan link
+  依旧可读、可报、可取消（§20.1 明说它现在只可能来自这两种来源）；正常删除路径不再产生 orphan。
+- **`?session=` 只做 resolution**（照 §20.2 读面口径）：能解析时该 root 的历史记录带这个 session，
+  其余工作区按既有拼法记 `session: null`，绝不猜。
+
+**测试**
+
+- `test/presets.test.mjs`：改写原「删已应用预设不改层 + orphan」用例为
+  「删除会取消每个工作区并还原层」（两个不同 base、多工作区、含开关与其它条目不变、无 orphan 残留、
+  history 记录与 prompt-write 计数）；**等价修订**原 sha256 断言为「未被应用时删除不写层」（层文件
+  sha256 不变、`counts.writes` 不变）；新增多栈（删 A 留 B、文本重算为 `base+SEP+B`、B 仍可取消）、
+  负向对照（一个工作区层损坏 ⇒ 409 `preset-unapply-failed`、预设 sha256 不变、另一个工作区
+  层 sha256 不变、message 列出 restored/not restored）、纯函数（手改记录里同一预设两个 link）。
+- `test/client.test.mjs`：删除用例补断言 —— 已应用时确认浮层出现清单节点、`data-preset-workspace-count`
+  正确、label 用页面自己的工作区名、中性句不出现；未应用时不出现该节点、中性句出现；成功 notice
+  如实说还原数。locale 计数常量 513/564 → 515/566。
+
+**返工轮（独立评审判 BLOCK，两项同批修）**
+
+- **BLOCK A（必修）——层文件已删除的工作区被「重建」**：`readConfig()` 对 ENOENT 返回
+  `{config: emptyConfig(), missing: true, error: null}`，而旧代码走 `writableConfig()` 只取 `.error`，
+  丢掉 `missing`，于是仍为该 root 产计划，`writeConfig()` 的 `mkdirSync(…, {recursive:true})` 把用户
+  已删的目录树重建出来（评审实测 `ghost root rebuilt: true`）。修法：`currentOf` 改用 `readConfig()`，
+  `missing === true` 时返回 `null`；`planPresetRemoval` 把这种 root 记为 `missing: true` / `config: null`
+  —— **link 照旧取消**（否则又留 orphan），但路由不 `writeConfig`、不 `cacheWritten`、不 `notePromptWrite`、
+  不 `recordHistory`；响应给 `missing: true` / `restored: false`，`restoredWorkspaces` 只计真正写了层的工作区，
+  `links` 照旧计全部被取消的栈链接。层**存在但不可读/非法**仍是拒绝（409 `preset-unapply-failed`），
+  不变的负向对照没有被放松。
+- **BLOCK B（次要）——拒绝文案把「没轮到的工作区」写成 failed**：旧 `restoreRefusal('restoring', null, …)`
+  在提交阶段把整个 `pending` 列表当失败名单；读阶段则把全部 root 写成 failed，与 §20.7 自称的
+  「names the failing workspace」不符。修法：提交循环里用 `committing` 记录**正在写**的那个 root 并作为
+  `failedRoot` 传入；头部文案固定为 `restoring workspace "<root>" failed`（无 failedRoot 时
+  `restoring stopped before any layer was written`）；预检阶段把已读到的 `missing` root 收集成 `absent`，
+  从 `not restored` 里剔除并单独列 `no layer to restore:`。`restored:` / `not restored:` 两个列表保持准确。
+
+**返工轮的测试同步**
+
+- 新增 `route: a workspace whose layer is gone is skipped, and nothing is rebuilt`：造 applied 记录 →
+  `rmSync(workspaceRoot)` → `DELETE` ⇒ ① `existsSync(root) === false`（无幽灵目录、无幽灵层文件）
+  ② 200 且该 `workspaces` 项 `missing: true` / `restored: false` ③ `presets.json` 与读面的 `applied` 均空
+  ④ 另一个正常存在的工作区仍被还原（真实写入，`counts.writes` 只 +1）；
+- 纯函数用例补 `currentOf: () => null` 分支（`config: null`、记录仍被清、无 orphan）；
+- 拒绝用例的 message 断言按新措辞加强：包含 `restoring workspace "<坏 root>" failed`，且**不**包含
+  `restoring workspace "<未轮到的 root>" failed`。
+
+### 一、验收（单行证据）
+
+- evidence: suite=node --test passed=917 failed=0 exit=0 ms=56372 diff/commit=<见交付说明>
+- `node scripts/locale-pack.mjs` = ok（各 566 键，与生成段逐字一致，exit 0）；
+- `node scripts/prepare.mjs` = **OK（23 项）**（含 `LOCALE-SYNC` 566 键），exit 0；
+- `node --check index.js`、`node --check core/presets.js`、`node --check client.js` 均通过；
+- **负向对照**：① 一个工作区层不可写 ⇒ 删除整体拒绝（`preset-unapply-failed` 409），预设与另一个工作区
+  层 sha256 双不变；② 未应用时删除 ⇒ 层 sha256 与 `counts.writes` 双不变（判据 3 的原断言等价保留）；
+  ③ 客户端未应用预设的确认浮层**没有**清单节点；④ 把 `planPresetRemoval` 的 roots 临时置空（模拟旧
+  「只剔项」行为）⇒ 4 条新用例变红，还原后 29/29 绿。
+
+### 二、未验证项
+
+- **真机未跑**：无浏览器侧执行条件，确认浮层的目视排版与真实宿主（真实 workspaceRegistry 多root）
+  的删除路径未做真机走查；路由与页面行为由 fake Host + vm 渲染断言覆盖，真机复核留给主管集成检查点；
+- 提交阶段中途 I/O 失败（写第二个工作区时磁盘错误）只在代码路径上成立，测试用「预检失败」覆盖了
+  拒绝语义，**没有**制造真实的部分提交故障（不可在单测里稳定复现，故如实列为残余风险）；
+- 手改 `applied` 记录里 `workspaceRoot` 非字符串/空的极端情形未加专门用例（现有实现会按
+  `workspaceConfigPath` 解析并让预检拒绝，方向是「拒绝而不是越权写」）。
+
+## 149. g-070：一级 tab 换成参考图语言（纯文字 + 选中下划线 + 计数 + 更新红点）（Revision 51，2026-10-15，基线 `405927f` 隔离工作树 `g-070-att-01`）
+
+**需求（负责人 2026-10-15 下达 + 两轮问答确认）**：把设置页**主 tab**（`data-tab-group="main"`）的视觉换成
+参考图样式 —— 深色底上一行**纯文字** tab、未选中暗灰、选中变亮且**下方一条短下划线**、整条栏底有**极淡分隔线**；
+「我的预设」带计数后缀 `(N)`（N = 预设库实际条数），「高级」在**存在可用新版本**时带一个红色小圆点。
+无背景块、无边框、**不等分列宽**。功能语义、tab 名称与顺序一律不动。
+
+**只改主 tab，不动二级分组**：`tabs()` 从 g-063 起是自绘的 chip 家族。本次**不往 `tabs()` 里塞分支**，
+而是新增独立渲染函数 `mainTabStrip()`（`client.js`）：一个函数说两种视觉语言正是要防的漂移。`tabs()` 保留原样，
+它**仍然是 chip 家族**，渲染调用点是各二级分组选择器：`mine-layer`（`client.js`）、`advanced-layer`
+（`client.advanced.js`）、`history-layer`（`client.history.js`）、`view` 与筛选组、`full-origin`
+（`client.overview.js`）、`import-mode`（`client.transfer.js`）、`preset-mode`（`client.presets.js`），
+共 **8 处**（chunk 侧经 `__internals.shared.tabs` 取同一个绑定）。因此 `chipButtonStyle({` 的出现次数仍是 3，
+测试里的「选中 chip / 未选中 chip」两条断言改从 `data-tab-key="mine-layer"` 的按钮上读。
+
+**布局（这是本次最容易出事的一处，写清依据）**：一级条 `display:flex` + `flex-wrap:nowrap` + `gap:24` +
+`overflow-x:auto`，每个按钮 `flex:0 0 auto`、`white-space:nowrap`、`padding:'6px 0 10px'`。于是：
+① 六个中文标签**永远单行**，窄容器横向滚动；② 每个按钮按自己标签的宽度，**没有** `flex:1`、`grid`、
+`repeat(n,…)`、`min-width:max-content`（g-063 那两次事故的形状一个都没回来）；③ 撑不宽祖先 —— 滚动容器是块级
+盒子，只占父级分配的宽度，且 CSS automatic minimum size 对滚动容器不适用（即便适用也是 0）。分隔线不是额外节点，
+就是这条 strip 自己的 `borderBottom: 1px solid token.borderL1`；选中下划线是按钮内 `position:absolute; bottom:0;
+height:2px; background: token.stateBusiness` 的 span（`data-role="tab-indicator"` +
+`data-tab-indicator="<value>"`），压在分隔线上、宽度≈文字宽。颜色全部取本文件既有 `token.*`，**零硬编码颜色**。
+焦点环不动（不写 `outline:'none'`），只写 `outlineOffset:-2`（宿主自己的 focus ring 就是 inset 2px），
+这样在滚动盒里不会被裁掉。
+
+**计数数据源（现场核实后的选择，含代价）**：核实结论是**主入口拿得到** —— g-060 已经让预设库搭在 mount 的
+同一次加载上（`client.js` 的 `load()`：snapshot → overrides → `GET /prompt-setting/presets`，同一个
+`?session=` query），状态落在主入口自己的 `presets` slot 并进入页面模型 `m.presets`。因此取数走
+`presetCountOf(m.presets)`，**零新增请求、零轮询、零跨 chunk 上报**。被否方案：①「主入口再拉一次
+`/prompt-setting/presets`」= 同一次 mount 里重复大请求；②「由 presets chunk 向主入口上报计数（复用 g-061 半代码
+复用通道）」= 为一份主入口本来就有的数据多造一条跨 chunk 状态链，还要处理 chunk 未加载/卸载，收益为负。
+诚实口径：只有 `phase==='ready'` 且 `data` 是非 null 对象、**无 `error` 字段**、`presets` 是数组时才给数；
+「还在加载 / 请求失败 / 库文件读不出来 / 响应里没有列表」一律 **不渲染任何后缀**（不是 `(0)`），
+`(0)` 只表示**真的空库**。代价如实记：`GET /presets` 是主入口既有的一次读，若宿主那条读失败，计数就永远不显示
+（方向正确：宁缺勿假）。
+
+**红点边界（负责人已定，进契约）**：「有可用更新」= `m.update.data.latest` 是非空字符串（与顶部提示条
+`renderUpdateNotice` 的判定同一个口径），**唯独不看 `dismissed`**。dismiss 只关提示条，不能把已发布的版本
+「取消发生」，所以红点要留下来 —— 两条方向都进了测试（有更新时出现、无更新时不出现、dismiss 后仍在）。
+颜色取 `token.stateError`（危险 token，无固定红值）。红点同时带 `title` 与 `aria-label`（本地化
+`tabUpdateBadge`），tab 的可访问名退化成「高级 有可用更新」而不是一个裸圆点；`role=tablist` / `role=tab` /
+`aria-selected` / `tabIndex` / `data-tab-*` 全部原样保留。
+
+**文案**：`locale/zh.json` / `locale/en.json` 为唯一真源，新增 1 键 `tabUpdateBadge`
+（`有可用更新` / `Update available`），`node scripts/locale-pack.mjs --write` 重建 `client.js` 生成段，
+键数 566 → **567（516 主 + 51 error）**，`test/locale.test.mjs` 的两个常量与断言、`CONTRACT.md` §22 同步。
+计数后缀 `(N)` 是数字加括号、不是散文，故不占 locale 键。
+
+**测试**（`test/client.test.mjs`，新增 3 条 + 修订 2 条既有断言）
+- 新增「纯文字 + 下划线 + mine-layer 回归」：六个 tab 无填充/无边框/无圆角，选中 `labelPrimary` 其余
+  `labelSecondary`，**恰好一条** `data-role="tab-indicator"` 且 `data-tab-indicator` 指向选中项、`height:2`、
+  `bottom:0`、`background === token.stateBusiness`，切 tab 后下划线跟着走；`data-tab-group="mine-layer"`
+  仍是 `flexWrap:'wrap'`、两个 chip 仍 `borderRadius:999` 且带描边；
+- 新增「计数两向」：默认 fixture（2 条）⇒ ` (2)` 且只挂在「我的预设」；空库 ⇒ ` (0)`（诚实）；
+  失败 / 库不可读 / 响应无列表三种未知态 ⇒ **没有任何计数节点**，且 tab 条文本里不出现 `(0)`；
+- 新增「红点两向 + dismissed 独立」：无更新 ⇒ 全树 0 个红点；有更新 ⇒ 恰好 1 个、在「高级」按钮内部、
+  `background === token.stateError`、`title`/`aria-label` 等于本地化文案、按钮第一个子节点仍是 tab 名；
+  点 dismiss 后提示条消失而红点**仍在**；
+- 修订 g-063 H2 那条：`flexWrap` `'wrap'` → `'nowrap'`，并**加强**为同时断言 `overflowX:'auto'`、`gap:24`、
+  分隔线颜色，以及六个按钮各自 `flex:'0 0 auto'` / `whiteSpace:'nowrap'` / `border:'none'` /
+  `background:'transparent'`（即「不得等分、不得撑宽」被逐按钮钉住）；
+- 修订 g-061 chip 那条：chip 样式改从 `mine-layer` 按钮读（等价修订，断言强度不变）；
+- EN sweep 新增一条 case（`data-role=tab-count` + `data-role=tab-update-dot`，`copy: tabPresets/tabUpdateBadge`）
+  并把两个 marker 加进 `EN_REQUIRED_MARKERS`：红点的 `title`/`aria-label` 也进「en 渲染不得出现 CJK/裸键」的扫描。
+
+### 一、验收（单行证据）
+
+- evidence: suite=node --test passed=920 failed=0 exit=0 ms=（见交付说明）
+- `node scripts/locale-pack.mjs`（校验）与 `--write` 后 `--check` 均为 ok（各 567 键，与生成段逐字一致，exit 0）；
+- `node scripts/prepare.mjs` = OK（含 `LOCALE-SYNC` 567 键），exit 0；`node --check client.js` 通过；
+- **负向对照（改坏就红后还原）**：① `flexWrap:'nowrap'` 改回 `'wrap'` ⇒ g-063 H2 与 g-070 纯文字用例变红；
+  ② `updateOffered` 加回 `dismissed` 判断 ⇒ 红点用例的「dismiss 后仍在」变红；③ 计数未知态改成回退 0 ⇒
+  计数两向用例变红；④ 把红点 `title`/`aria-label` 换成硬编码中文 ⇒ EN sweep 的 CJK 扫描变红。
+- **基线对照**：改动前 `node --test` = 917 通过 / 0 失败；改动后 920 通过 / 0 失败（净增 3 条新用例，2 条等价修订）。
+
+### 二、未验证项
+
+- **真机未跑**：本 attempt 无浏览器侧执行条件，一级条的实际观感（下划线与分隔线是否真的压在一起、窄容器下
+  横向滚动的滚动条样式/触控板手感、浅色主题对比度）未做真机目视，留给主管集成检查点；DOM 结构与颜色 token、
+  单行不折行、不撑宽的依据均为代码级 + CSS 规则级断言，**不伪造真机读数**；
+- **祖先撑宽只有规则级依据**：`overflow-x:auto` 的滚动容器不会被内容撑宽属 CSS 规则，但未在真实宿主
+  `SettingsRoot.module.css` 链上做 DOM 实测（g-063 那条「成因未证实」的溢出仍未复核）；本实现选择的是
+  不需要该机制成立也安全的形状；
+- `presetCountOf` 只覆盖了「phase/error/presets 数组」三类形状，宿主返回 `presets` 为畸形数组元素
+  （非对象项）时按元素个数照数 —— 与 presets tab 列表自身的 lenient 口径一致，未加专门用例。
+
+---
+
+## 150. g-071：把「查看范围」移入「我的 Prompt」，其他 tab 顶部改为只读范围提示（Revision 52，2026-10-16，基线 `6368c9e` 隔离工作树 `g-071-att-01`）
+
+**需求**：设置页的「查看范围」选择器**整体**从 tab bar 上方移入「我的 Prompt」tab 面板内；**读取**页面范围的
+其他 tab（「我的预设」/「提示词总览」/「备份与恢复」/「高级」）各自在**面板顶部**显示**一行只读**范围提示；
+「版本历史」自 g-038 有自己的 scope，不得与之混同；页面级范围语义（快照 / 覆盖读取 / 导入导出 / 预设请求 /
+mine 写入层）**一字不改**。这是负责人对 g-055「与『我的 Prompt』收口为同一功能块但保留在 tab bar 上方」
+这一位置决策的修正。
+
+**实现**（`packages/dsh-prompt-setting/client.js`）
+- `renderSection` 不再 `children.push(renderPromptBlock(...))`：tab bar 上方 chrome 只剩**两样**（标题行 +
+  状态行），页面上不再有 scope 形状的节点；
+- `renderMinePanel` 在自身 `h3` 之后渲染 `renderPromptBlock`，即 `data-region="prompt-block"` 现在是
+  mine 面板的第一个子块、且**只**存在于 `data-region="mine"` 内部；面板仍带 `promptBlockBandStyle`，
+  而 `promptBlockStyle` 去掉了重复的 3px 左边线——嵌套两层会画成两条平行竖线、读成两个块，正是 g-055
+  引入该规则要避免的读法；
+- 新增 `scopeReadOnlyNote(t, m)`：`m.tab === 'mine' || m.tab === 'history'` 返回 `null`；其余 tab 返回一个
+  `p`（`data-region="scope-readonly-note"`、`data-scope-active` = `global` 或会话原始 id、文案
+  `tabScopeReadOnly`、范围名复用既有 `scopeName`），作为 `data-region="tab-panel"` 的**第一个子节点**
+  渲染，**不含任何控件**（无选择器/输入框/开关/按钮、无 `data-action`）；
+- 冻结 marker 与语义未动：`data-region="session"|"scope-summary"|"session-tree"|"prompt-block"`、
+  `data-action="scope-toggle"`、`data-scope-open`、`data-mine-target-scope` 全部保持原语义；
+  `m.sessionArg` 仍是唯一的页面级范围值，仍是全页唯一改范围的入口（在 mine 面板内）。
+
+**文案 / 门禁**：`locale/{zh,en}.json` 同序新增 `tabScopeReadOnly`（「查看范围：{scope}（只读；在
+「我的 Prompt」里更改）」/ `Scope: {scope} (read-only; change it in My Prompt)`），
+`node scripts/locale-pack.mjs --write` 重写 `client.js` 生成段；`test/locale.test.mjs` 的
+`MAIN_KEY_COUNT` 516 → 517、`TOTAL_KEY_COUNT` 567 → 568，`CONTRACT.md` §13.0/§13.7/§22 同步。
+chunk 文件（`client.*.js`）**零改动**，故 `CHUNK_STAMPS` 与 5 个 chunk 摘要不变。
+
+**测试**（`test/client.test.mjs`）
+- 新增 1 条：六个 tab 逐个断言「tab bar 上方无 `prompt-block`」「区块只在 mine 面板内、切换按钮同在」
+  「四个 tab 各有一行只读提示：`data-scope-active` 与根 `data-session` 同值、文案含可读范围名、内部无
+  button/input/select/textarea、无 `data-action`、且是 tab-panel 第一个子节点」「mine/history 无该行」；
+  最后在 mine 内把范围改成「全局」，打开「高级」断言提示跟着变（同值、同文案）；
+- 修订 g-055 那条（`renders inside`）：`flow === ['prompt-block','tabs']`（区块在 tabs 上方）改写为「区块在
+  mine 面板内（按节点同一性钉住）+ tab bar 上方没有它」；`withoutPromptBlockNote` 改为**整树递归**替换
+  （旧实现按 `root.children` 映射，区块移走后会找不到块而返回原树，差值 0 是假绿），差值断言 24 → **0**
+  （负向对照：区块不在 chrome 里）；R1-2 进一步把该 walk 的递归条件与 `collect` **同口径**（只看
+  `props.children`，不再以 `type` 是否存在早退）；
+- 首屏预算按新实测值重推：`CHROME_BUDGET_PX` 由 `220 + 4` 改为 **`128 + 4`**（`chromeAboveTabsPx` 实测
+  128px），硬上限 310px 不变；注释记录「不收紧就等于 g-055 复核轮 1 诊断过的松预算」；
+- 修订 2 条既有用例的**取用位置**（g-038「改页面范围不动历史列表」、advanced 装配状态「全局时怎么说」）：
+  范围改在 mine 里改，再切回目标 tab 验证；
+- EN sweep 新增 1 条 case（`data-region=scope-readonly-note`、`data-scope-active=s2`、
+  `copy: ['tabScopeReadOnly', { scope: 'Second' }]`；「我的预设」用 `chunkFailures` 让它只渲染失败卡片，
+  避免把 fixture 里刻意的中文预设文本误报成文案泄漏）；`EN_REQUIRED_MARKERS` 增补 2 项；
+- 新增 1 条 helper 单测（R1-2）：把 block 放在**没有 `type`、只有 `props.children`** 的包裹节点之下，断言
+  `withoutPromptBlockNote` 仍能去掉 note、保留 card（旧口径的 `type === undefined` 早退会漏掉整棵子树，
+  而断言那边仍读到 0 —— 这正是要关掉的假绿通道）。
+
+### 一、验收（单行证据）
+
+- evidence: suite=node --test passed=922 failed=0 exit=0 ms=55329.4 diff=8f/+485/-113 commit=adf4881（主交付）+ R1 返工 5f/+91/-23 commit=6a8d15d（两处 diff 数字由主管按 `git diff --numstat` 真源校正）
+- `node scripts/prepare.mjs` = OK（23 项，含 `CHUNK-STAMPS` 5 项一致、`LOCALE-SYNC` 568 键），exit 0；
+- `node scripts/locale-pack.mjs --check` 与 `node scripts/client-chunks.mjs`（校验）均 exit 0；
+- **负向对照（改坏就红，已全部还原；代码/测试里 `grep -n "NEGATIVE CONTROL"` 为空）**：① 删掉只读提示那一行 ⇒
+  新用例红（`presets: exactly one read-only page-scope line`）；② 让「版本历史」也渲染提示 ⇒ 红
+  （`history: no read-only page-scope line`）；③ 把 `renderPromptBlock` 临时 push 回 tab 上方（即回到旧布局）⇒
+  两条布局用例红（`exactly one data-region=prompt-block`、`mine: no prompt-block above the tab bar`）；
+  ④ **R1-2 口径对照**：把 `withoutPromptBlockNote` 的 walk 改回旧口径（`type === undefined` 早退）⇒ 新增的
+  helper 单测红（`and comes back with the note dropped: sentence gone, card kept`），证明同口径这条断言有牙齿。
+- **基线对照**：基线 `6368c9e` 上全量为 920 通过 / 0 失败（NOTES §149 的实测值；g-070 返工只改注释、
+  未动用例数）；本次 922 通过 / 0 失败（净增 2 条用例，1 条改写 + 3 条既有用例等价修订）。
+
+### 二、未验证项
+
+- **真机未跑**：本 attempt 无浏览器侧执行条件。区块移入面板后的真实几何（mine 面板在展开态含选择器时的
+  首屏高度、卡与面板标题的实际间距、只读提示行在窄容器下的换行）未做真机目视，留给主管集成检查点；
+  离线侧的结论只声明可恒等复算的部分：tab bar 上方 chrome 由 `chromeAboveTabsPx` 按声明式样式计价为
+  128px，且「去掉区块 note」的反事实差为 0（区块不在其中）。**不伪造真机读数**；
+- **面板内高度未计价**：本次未对 mine 面板自身高度设预算（那属于 tab 内容，不在 g-055 的首屏 chrome 论证
+  范围内）；展开选择器时面板随之变高是既有行为，未新增断言；
+- 「只读提示无控件」是结构级断言（节点类型 + `data-action` 计数），未做真机可点击性验证——没有控件可言，
+  结构判定已足够。
+
+### 三、R1 返工（评审 rev-att-001-01：UNVERIFIED / 无 BLOCK，1 必修 + 1 建议修）
+
+**R1-1（必修）三份 README 的方位描述是事实错误。** picker 已移入 mine 面板、位于该面板 `h3` 之下，但三份
+README（仓库根英文、仓库根中文、包内中英对照）仍写「上方 / above the tabs」。修正 6 处表述，中英两侧同步：
+- `README.md`：My Prompt 行改为「The "View scope" selector is **inside this panel, under its title** (since
+  g-071)…」，并补一句其他 tab 在各自面板顶部只读提示；Version history 行的「independent of the "View scope"
+  selector above」改为「…in **My Prompt**」；
+- `README_zh.md`：同两处对应改写（「就在**这一面板内、标题之下**（g-071 起）」/「与「我的 Prompt」里的「查看
+  范围」互不影响」）；
+- `packages/dsh-prompt-setting/README.md`：上述两处的**中英对照各一**，同样改写。
+「版本历史」的作用域**解耦语义不变**（它仍与自己面板内的 scope 选择器独立），只去掉「上方」这个方位词。
+验证：`grep -rn "above the tabs\|上方.*查看范围\|查看范围.*上方" README.md README_zh.md
+packages/dsh-prompt-setting/README.md` ⇒ **零命中**（exit 1），并逐处读过确认 zh/en 含义一致。
+
+**R1-2（建议修）测试 walk helper 与 `collect` 同口径。** `walk` 原以 `node.type === undefined` 早退，而断言
+读树用的 `collect` 只看 `props.children`：两者口径不一致，将来一个没有 `type` 的中间包裹节点会让 helper
+漏掉其后的子树、替换不到 block，于是「chrome 差值为 0」这条断言**假绿**。已改为「只要有 `props.children`
+就递归」（保留数组与原始值的安全处理），并新增 1 条 helper 单测把该口径钉死（block 挂在无 `type` 包裹节点
+之下，note 必须被去掉、card 必须留下）；负向对照见验收段的 ④。
+
+**未做（按返工说明）**：真机几何/视觉未动；`m.sessionArg` 语义与任何冻结 marker 未动；提交由主管收口
+（R1 = `6a8d15d`）；评审列的既有历史遗留（NOTES §131 追加式历史、test「five tabs」笔误、presets `?session=`
+既有断言缺口、`String()` 化差异）不在本次范围内。
+
+**R2（第二轮评审 rev-att-001-02）修正**：`client.js` mine-panel 的 JSDoc 中「whose header is the scope card
+above the tabs」是自基线遗留的现行时态方位错误（全文件唯一一处；:4356 属历史叙述、:8710/:8746/:8751 描述
+chrome 仍正确），由主管按评审建议改为「at the top of **this panel** since g-071 moved it in from above the
+tab bar」。纯注释，零实现/断言改动。
+
+### 四、R4 撤回（负责人真机目视，2026-10-16）
+
+**决定**：负责人看过真机后**否决**四个 tab 的只读范围提示。原话要点：「我的预设」不需要（预设操作与
+「我的 prompt」没有直接关联）；「提示词总览」不需要（会用「版本历史」那样的**历史作用域**组件切换作用域）；
+「备份与恢复」不需要（按理说应导出插件的所有设置，不该被作用域限制）；「高级」不需要（里面的设置不受作用域
+影响）。结论：页面级「查看范围」本就不该是四个 tab 的共同状态——每个 tab 有自己的作用域语义。四个 tab 与
+页面作用域**解耦**是另一个目标 **g-073**，不在本次范围。本小节之前 §150 各段（实现 / R1–R3）是过程记录，
+其中的四 tab 只读提示 UI 与对应文案**已按本节撤回**。
+
+**纯撤回（不新增行为）**
+- `client.js`：删除 `scopeReadOnlyNote()` 与 `scopeReadOnlyNoteStyle`；删除 `renderSection` 中 tab-panel
+  首子节点的注入（`tabNote` 与数组展开）及那段注释；文件头、`renderPromptBlock`、`renderSection`、
+  mine-panel 的注释同步改写，并注明「四个 tab 不渲染任何 scope 界面，解耦见 g-073」；
+- `locale/{zh,en}.json`：删除 `tabScopeReadOnly`，`node scripts/locale-pack.mjs --write` 同步生成段 ⇒ 词典
+  回到 **567 键 = 516 主 + 51 `error.<code>`**；`test/locale.test.mjs` 计数常量回到 516/567（注释说明
+  Revision 52 是布局修订、不新增键，该键已在 R4 撤回）；
+- `test/client.test.mjs`：g-071 六 tab 用例删除只读提示的全部断言（存在性、`data-scope-active`、无控件循环、
+  panel 首节点），**保留**「tab bar 上方无 `prompt-block`」「区块只在 mine 面板内 + 切换按钮同在」的位置与
+  节点同一性断言，并新增一条**结构断言**（每个 tab 的 `data-region="tab-panel"` 恰有 1 个元素子节点）——
+  这是「面板里不得再注入任何东西」的可测形式，也是本轮负向对照的牙齿；删除 EN sweep 为只读提示新增的那条
+  case 与 `EN_REQUIRED_MARKERS` 的 2 项；
+- 文档：三份 README 删除「其他 tab 只读提示」表述（R1 的方位修正保留）；`CONTRACT.md` §13.0 与 §13.7 撤回
+  该条款、改写为「其余 tab 不渲染任何 scope 界面；解耦见 g-073」并新增 Revision 记录，§22 计数回到
+  567/516；`CHANGELOG.md` 的 g-071 条目改为「移入 + 负责人否决只读提示 + 解耦另立 g-073」；
+- **未动**（本目标要保留的成果）：`renderMinePanel` 里 `renderPromptBlock` 的位置、`CHROME_BUDGET_PX`（132）、
+  `withoutPromptBlockNote` 的 walk 口径，以及任何请求构造 / `m.sessionArg` / `layerQuery` / `?session=`——
+  过渡期四个 tab 仍按页面 scope 取数，与 g-071 之前的既有行为一致。
+
+**验收（本轮实跑）**
+- evidence: suite=node --test passed=922 failed=0 exit=0 ms=59268.4 diff=10f/+102/-214（基于 `fc1898e`，未提交）；
+- 用例数与 922 持平（未减少）：R4 撤掉的是 EN sweep 的一条 case 条目、两个 marker 登记，以及一条用例**内部**
+  的断言块，没有删除任何 `test(...)` 函数，故总数不变；
+- `node scripts/prepare.mjs` = OK（23 项，`LOCALE-SYNC` 567 键）exit 0；`locale-pack --check`、
+  `client-chunks` 校验 exit 0；
+- `grep -rn "scope-readonly-note\|scopeReadOnlyNote\|tabScopeReadOnly" packages/` ⇒ 仅 `NOTES.md` 本小节与
+  §150 的**历史过程记录**命中（有意保留），代码 / 文案 / 测试 / 契约 / CHANGELOG 零命中；
+- **负向对照**：临时把提示行加回四个 tab（在 `renderSection` 注入一个 `data-region="scope-readonly-note"` 的
+  `p`）⇒ g-071 位置用例红（`presets: the panel holds this tab's own surface, and nothing else`）；还原后
+  `grep -rn "NEGATIVE CONTROL"` 在代码/测试中零命中。
+
+## 151. g-074：全量备份与恢复 —— 导出整机安装 + 成对解除导入写锁（Revision 53，2026-10-16，基线 `9e8ed64` 隔离工作树 `g-074-att-01`）
+
+**需求（负责人 2026-10-16）**：「备份与恢复」应当导出插件的**所有**设置，不该被作用域限制；并据此同步解除
+导入侧写锁，让备份**真的能恢复回去**。负责人同时明确：**导入依然需要验证格式与字段合法性**——解除写锁
+**不等于**放松校验。
+
+**现状（开工前核实）**：`handleExport` 取两层视图后用 `customOverridesOnly` 裁到只剩
+`prompt-setting:custom-prompt`，附 `exportScope = {only, omitted}`；完全不含冻结覆盖、预设库、偏好设置，工作区
+层只有 `?session=` 解析到的那一个。`assertImportableDocument` 对任何非保留名返回 `403 write-locked`——于是
+「全量导出」与「导入写锁」必须**成对**改，否则产出「导得出去、导不回来」的文件。
+
+**设计决定（及被否方案）**
+
+- **文档升为 `version: 2`，读侧同时接受 `1`**（`EXPORT_ACCEPTED_VERSIONS`）。旧备份原样可导；`version: 1` 却带
+  `workspaces`/`presets`/`preferences` 的文档判 `400 unexpected-export-field`（半读比拒绝更危险）。被否：直接
+  在 v1 上加字段——那样旧客户端会把「全量文档」当合法 v1 读，且无从区分。
+- **`workspaces[]` 携带 `root` 绝对路径**。这是 v2 唯一带绝对路径的地方，也是恢复的必要信息（旧文案「no
+  absolute path is exported」仍描述 `layers` 与 v1 文档，契约 §10 已就此追加说明）。被否：导出「工作区 id」——
+  注册表 id 不保证稳定，且导入时无法映射到真实路径。
+- **路径安全两层**：纯层（`validateWorkspaceRoot`）校验绝对路径、无 `..`、无控制字符、非卷根；宿主层
+  （`assertKnownWorkspaceRoot`）要求 root 在本机 `workspaceRegistry.list()` 里，否则 `400 unknown-workspace-root`
+  整体拒绝。被否：未注册 root 就跳过（silent partial import 正是要防的失败形态）；被否：按 root 自由写入（那
+  等于让文档指定任意磁盘路径）。代价已知并写进契约：跨机备份需先在本机打开对应工作区。
+- **校验只增不减**：层名白名单（未知层名从「静默忽略」改为拒绝）、每个条目字段（复用 `validateOverride`，带
+  定位信息）、预设库与偏好文档各自**严格**校验（新增 `validatePresetsDocument`、`validatePreferencesDocument`；
+  未知偏好键**拒绝**而非忽略——忽略会让「恢复了备份但开关没回来」）。全部发生在任何落盘之前。
+- **四种文件一次批次提交**：`writeConfigsAtomically` 泛化为 `writeDocumentsAtomically`（每个文档 staged + 用
+  自己的 reader 回读校验，全部通过后才逐个 rename），`writeConfigsAtomically` 变薄包装以保持既有错误码与断言。
+  这样「零写入拒绝」覆盖整份备份，而不只是一个文件族。
+- **`?layer=` 只收窄两层视图**：安装级文档此时不应用、并在 `skipped` 里声明条目数（不半应用）。被否：
+  让 `?layer=user` 顺带替换预设库——用户不会预期。
+- **`exportScope` 语义更新**（契约要求）：`full: true`、`only: null`、`layers.<layer>`（携带条数）、
+  `workspaces`、`presets`、`preferences`、`omitted`（全 `0`，保留给旧读者）、`unavailable`（库/偏好读不出来时
+  给原因，且**不携带**——空库当全量导出会在恢复时清掉用户真库）。
+- 删除 `customOverridesOnly` 与 `assertImportableDocument`（Revision 7 那套的两个半边，均已被废止，且无其它
+  调用者）；`write-locked` 仍保留在 `PUT` / 单名 `DELETE` 上。
+
+**改动清单**
+
+| 文件 | 加了什么 |
+| --- | --- |
+| `core/transfer.js` | `EXPORT_VERSION=2`、`EXPORT_ACCEPTED_VERSIONS`；`buildExport` 带 `workspaces`/`presets`/`preferences`；`parseExport` 增加层名白名单、`workspaces[]` 校验（`parseExportWorkspaces`）、两个安装级文档的严格校验、v1/v2 规则；`validateWorkspaceRoot` |
+| `core/presets.js` | `validatePresetsDocument`（严格：顶层键、版本、preset 条目 id/name/action/text/时间戳、id 唯一、`applied` 记录与 stack 逐项） |
+| `core/update.js` | `PREFERENCE_KEYS`、`validatePreferencesDocument`（已知键类型与取值域，未知键拒绝） |
+| `core/custom.js` | `exportScope` 改为全量语义；删除 `customOverridesOnly` / `assertImportableDocument` / `nameList` |
+| `core/store.js` | `writeDocumentsAtomically`（泛化的多文档 staged+回读+rename）；`writeConfigsAtomically` 变薄包装 |
+| `index.js` | `handleExport` 全量（`workspaceLayerExports` 遍历注册表全部工作区 + 读库/偏好 + `unavailable`）；`handleImport` 重构为统一 `units` 模型（层视图 + 工作区 + 两个安装级文档），`assertKnownWorkspaceRoot`、去重/冲突拒绝、预检先于落盘、单批提交 |
+| `test/transfer.test.mjs` | v2 文档、v1 兼容、层名白名单、workspaces 结构、路径形状、presets/preferences 严格校验（16 → 23 例） |
+| `test/custom.test.mjs` | `exportScope` 新语义；删除两个已废止函数的用例 |
+| `test/stage2.test.mjs` | 全量导出断言、冻结项不再被丢、**往返等价**、**写锁解除后真的写入**、多工作区恢复、未注册 root 整体拒绝、库/偏好不可读 409、库不可读不导出为空、负向表扩到 22 例（含路径越界/相对路径/卷根/未知层名/presets/preferences 非法）且**每条都跑 dry-run 同码 + 6 个文件哈希不变**（40 → 45 例） |
+| `test/presets.test.mjs` | 原「预设不进导出」用例改写为「库作为顶层文档随备份走、层文件形状不变」 |
+| `test/route.test.mjs` | 结构断言接受泛化后的批量写入器名 |
+| `CONTRACT.md` | §10、§11.1、新 §11.7、§4.4 错误码表、§15.7、§15.8、§20.8、§7 概览追加 Revision 53；§11.6 残余风险措辞扩到「四种文件」 |
+| `README.md` / `README_zh.md` / `packages/.../README.md` | 写入面例外（`import`）与「备份与恢复」能力描述同步 |
+| `CHANGELOG.md` | `[Unreleased] / Changed` 追加 g-074 中英条目 |
+
+**验收（本轮实跑）**
+
+- evidence: suite=node --test(test/*.test.mjs) passed=930 failed=0 exit=0 ms=53518 diff=17f/+1879/-290 commit=9e8ed64（基线，未提交）
+- `node scripts/prepare.mjs` = OK（23 项，`LOCALE-SYNC` 567 键）exit 0；
+- 用例总数 **922 → 930**（`custom.test.mjs` 17 → 13：**删 5 例、新增 1 例**；`transfer.test.mjs` 16 → 23；
+  `stage2.test.mjs` 40 → 45，其余文件不变）。被删的 5 例 `custom.test.mjs` 用例断言的正是本轮明确废止的行为
+  （`customOverridesOnly`、`assertImportableDocument`、旧 `exportScope` 口径），其**反面**已在 `stage2.test.mjs`
+  （全量导出、写锁解除后真的写入、往返等价）与 `transfer.test.mjs`（v1 兼容、路径与文档校验）重建；没有删除
+  任何仍成立的行为断言；
+- **负向对照（改坏就会红）**：把 `parseExport` 的 `validateWorkspaceRoot` 调用换成直接 `entry.root` ⇒
+  `transfer: the workspaces array is validated entry by entry`、`stage2: every rejected import leaves … byte-identical`
+  两条红；把 `handleImport` 的 `assertKnownWorkspaceRoot` 换成 `return root` ⇒ `stage2: a workspace layer the
+  profile does not register aborts the whole import, library included` 红（`/tmp/not-a-registered-dsh-workspace`
+  会被真的写盘）；还原后全绿；
+- **基线对照**：未改动的 `test/history.test.mjs`（`writeConfigsAtomically` 的三条原子性用例）在泛化后仍绿，
+  证明 `writeDocumentsAtomically` 没有改变既有错误码与「staged 失败不落盘」语义。
+
+**未验证 / 残余**
+
+- 真机 `dsh web` 里点一次「导出 → 导入」的目视核验未做（本轮全部走离线 fake Host；`handleExport`/`handleImport`
+  未在真实 `workspaceRegistry` 上跑过）。判据要求的是离线全绿 + prepare 门禁，已满足；
+- 跨机恢复的缺口是**有意的**：v2 文档里的工作区 root 必须在本机注册表内，否则整体 `400 unknown-workspace-root`；
+- 新错误码（`unknown-workspace-root`、`invalid-workspace-root`、`presets-not-writable`、`unknown-preference` …）
+  暂无 `error.<code>` 的 zh/en 文案，UI 走 `errUnknown` 兜底并如实显示原始 code——与既有 presets 路由的错误码
+  （`invalid-presets`、`preset-not-found` 等）同样未登记文案，保持一致；若要补，需同步 `locale/*.json`、
+  `scripts/locale-pack.mjs --write`、`test/locale.test.mjs` 的 516+51 计数与契约 §22。
+
+### 151.1 R1 返工：`presets.applied[].workspaceRoot` 与 `workspaces[].root` 同规则（评审 rev-att-001-01 BLOCK）
+
+**评审结论（主管亲跑 PoC 确认）**：路径安全可绕过。一份备份文档可以命名任意磁盘路径，随后删除预设会写到那个
+路径——`import 200` → `DELETE /presets 200` → 受害目录（未注册）里的 `overrides.json` 被真实改写。
+
+**根因（三条）**：① `core/presets.js` 的 `validateAppliedEntry` 对 `workspaceRoot` 只查「非空字符串」，与同语义的
+`workspaces[].root`（`validateWorkspaceRoot` + `assertKnownWorkspaceRoot`）口径不一致；② `handleDeletePreset`
+phase 1/2 直接用记录里的 root 拼 `workspaceConfigPath(root)` 并 `writeConfig` + `cacheWritten`，全程未过注册表；
+③ `assertKnownWorkspaceRoot` 当时只有 1 个调用点（import 的 `workspaces[]` 循环）。附带第四点：导入把未注册 root
+写进 `presets.json` 后，缓存/导出侧也可能把它当成工作区层发布出去（PoC2：`GET /export` 报了未注册 root）。
+违反的不变量：判据 2「路径不得越界」、契约「No field of the document can name a path」、以及 §151 里我自己写下
+的「被否：按 root 自由写入（那等于让文档指定任意磁盘路径）」。
+
+**修复（逐条对应主管清单）**
+
+1. **抽出独立纯模块 `core/workspace-root.js`**（`MAX_WORKSPACE_ROOT_LENGTH`、`validateWorkspaceRoot(value, where)`），
+   `core/transfer.js` 与 `core/presets.js` 共用同一个函数，从结构上消除漂移（曾因 `transfer.js → presets.js` 的
+   依赖方向无法直接复用才各写一份）。`transfer.js` 仍再导出该函数，既有 import 路径不变。
+2. **`validateAppliedEntry` 复用同一形状规则**（绝对路径、无 `..`、无控制字符、非卷根），错误码
+   `invalid-workspace-root`，消息带 `applied[i].workspaceRoot` 定位。
+3. **`handleDeletePreset` 对每个 `applied` root 调 `assertKnownWorkspaceRoot`**（与 import 同口径）：未注册即
+   `400 unknown-workspace-root`，在 phase 1 读任何一层之前决定，库与所有层文件逐字节不变、预设不删。
+4. **`handleImport` 对 `presets.applied[].workspaceRoot` 同样过注册表白名单**（整体拒绝、零写入）——这是 PoC 的
+   入口。
+5. **导出侧自洽**：`workspaceLayerExports()` 只发布注册表列出的工作区；并且存储中指向未注册工作区的 `applied`
+   记录**不再随备份携带**，条数在 `exportScope.omittedApplied` 里声明（不静默）。于是「插件自己产出的备份」一定能
+   被插件自己的导入接受；往返一次还会把这类无法还原的脏记录自愈掉。
+6. **契约同步**：§11.7 追加 R1 段（`applied` 同规则、三条防线）、§11.1 校验清单补 `applied`、§4.4 的
+   `invalid-workspace-root` / `unknown-workspace-root` / `unexpected-export-field`（`null` 视为未携带）改写、
+   §10 的 `presets` 行与 `exportScope.omittedApplied` 行、§20.4 与 §20.7 的 presets 路由错误面、§11.7 首句
+   「No field of the document can name a path」**修正为**「…a path *this profile does not own*」。
+
+**测试（PoC 改造进负向用例，修复后必须变红）**
+
+- `stage2: an imported library naming an unregistered workspace is refused whole (R1 PoC)` —— 导入 400 + 库哈希不变 +
+  受害文件哈希不变 + dry-run 同码 + 无 temp；**改造自 `/tmp/g074-poc.test.mjs`**；
+- `stage2: deleting a preset never writes into an applied root the profile does not register (R1 PoC)` —— 手写库记录
+  指向未注册目录（另一台机器同步来的项目目录），`DELETE /presets?id=` 400、受害文件与库哈希不变、预设仍在；
+  相对路径记录同码拒绝；**改造自 PoC 的第 2 段**；
+- `stage2: an export never publishes an unregistered applied root, and its own backup imports back (R1 PoC2)` ——
+  `workspaces[]` 只含注册 root、`presets.applied` 不含不可还原记录、`omittedApplied: 1`，且该备份原样导入 200
+  （自相矛盾消除）；**改造自 `/tmp/g074-poc2.test.mjs`**；
+- `transfer: an applied record names the very same workspace root the workspaces array does` —— 10 个非法 root 的
+  形状负向 + 「同一 bad root 在两个字段上答案相同」的一致性断言。
+
+**验收（R1 实跑，基于 b791545 之上的工作树、未提交）**
+
+- evidence: suite=node --test(test/*.test.mjs) passed=934 failed=0 exit=0 ms=52478 diff=11f/+507/-77（含新增
+  `core/workspace-root.js` 79 行）；`node scripts/prepare.mjs` = OK（23 项，LOCALE-SYNC 567 键）exit 0；
+- **R1 负向对照（改坏就会红，均已还原、`grep NEGATIVE CONTROL` 零命中）**：① 去掉 `validateAppliedEntry` 里的
+  `validateWorkspaceRoot` 调用 ⇒ `transfer: an applied record names the very same workspace root …` 红；
+  ② 同时去掉 `handleImport` 与 `handleDeletePreset` 的 `assertKnownWorkspaceRoot` 调用 ⇒ 两条 R1 stage2 用例
+  （PoC1 导入、删除阶段）**同时红**——后者正是「受害文件被改写」的那条；
+- **PoC 复跑（修复前 pass / 修复后 fail）**：`/tmp/g074-poc.test.mjs` 修复前 `[1] 200`+`[2] 200`+受害文件被改写
+  （PoC pass）；修复后 `[1] import status = 400`、删除阶段不可达，PoC **fail**。`/tmp/g074-poc2.test.mjs` 同样
+  由 pass 转 fail（`[1] import status = 400`，不再有 `[3]` 的未注册 root 导出）；
+- 用例数 930 → 934（transfer +1、stage2 +3）。
+
+### 151.2 R2 返工：契约与「同一语义两处口径」收口（评审 rev-att-001-02 BLOCK，唯一阻断项＝判据 6）
+
+**评审结论**：实现面与 R1 安全修复全部通过；阻断理由只有一条——**契约同步未达成**：4 处规范性内容仍以现在时描述 Revision 53 已废止的行为。教训很明确：**「声称改了但没改」比没改更糟**，所以本轮除修复外做了一次全文关键词自查（见下）。
+
+**R2-1 §10 Response 200 示例（原 `CONTRACT.md:1656`）**：示例仍是 Revision 7 形状（`version: 1`、无三字段、`only`/非零 `omitted`），且无历史标注。→ 按评审推荐①**更新为 Revision 53 形状**：`version: 2` + `workspaces[]`/`presets`/`preferences` + 新 `exportScope`（`full/only: null/layers/workspaces/presets/preferences/omittedApplied/omitted 全 0/unavailable`），并在示例正前方写明「这是本路由今天的响应」；紧随其后的说明句同步（层视图不含路径、文档里唯一的绝对路径是工作区 `root`、`?layer=` 只收窄层视图）。
+
+**R2-2 同节 Revision 7 的 `exportScope` 表（原 `:1688-1692`）**：`only` 行仍写「唯一允许携带的 section 名」。→ 段标题下加斜体**Superseded by Revision 53** 标注（说明该形状与表都属 Revision 7、`only` 今天是 `null`），并把三行都标为「**Revision 7 only**」+ 现值说明。
+
+**R2-3 §15.7 标题与首段（原 `:4552-4559`）**：标题「Import: names only, and never silently」与首段「…is refused with `403 write-locked`」正是被废止的行为。→ 标题改为「**Import: the write lock is gone, the checks are not**（Revision 7; lock removed in Revision 53）」，并在首段前加斜体废置标注（照 §11.1 step 3 的处理方式），首段保留为历史。
+
+**R2-4 §15.8 表格两行（原 `:4618-4619`）**：`Exported`/`Imported` 两行仍是旧值，而同节段落声称「changes two rows」——声称改了却没改。→ 按评审推荐①**把两行改成新值**（`Exported | yes — the whole layer travels (§10)`、`Imported | yes — the lock is gone (§15.7)`），段落措辞同步为「changed two rows … (the two `403 write-locked` rows were the Revision 7 values and are gone from the table)」——现在这句与表格一致。
+
+**R2-5 偏好地址的「同一语义两处口径」（`core/update.js`）**：`validatePreferencesDocument` 的 `downloadRegionRegistry` 原本只查非空 + 长度，而 route 侧用 `validateRegistryAddress`（http/https、无凭证、无 query/fragment）。→ **复用同一函数**（`validateRegistryAddress`），并把自洽性补全到导出侧：`handleExport` 用 `validatePreferencesDocument` 复核即将携带的 preferences，**不符合导入口径就不携带**，原因写进 `exportScope.unavailable.preferences`（与 R1 对 `applied` 记录的做法同构）。**值不重写**（不做尾斜杠规范化）——导入写出文档里原样的值，往返字节稳定；route 侧仍按自己的口径规范化它存储的值。
+
+**R2-6 读面宽松（`core/presets.js:135`）**：`normalizeStoredApplied` 对 `workspaceRoot` 仍只查非空字符串。按主管裁定**读面保持宽松不变**，并补两件事：① 该函数 JSDoc 里显式写明这是**有意的**（历史脏记录不得让页面读不出库）；② 追加不变量声明——「**读面宽松 + 每个消费点必须过注册表白名单**」，并逐一列出三个消费点为何满足（`appliedRootsOf` → 删除预设路由已过白名单；同一函数 → `planPresetRemoval` 的 `currentOf` 只被该路由触达；`publicApplied` 只报告字符串、不拼路径）；`GET /export` 另有 `omittedApplied` 兜底。契约 §11.7 同步写入该不变量。
+
+**全文自查（针对本次变更面，证明扫过而不是声称扫过）**
+
+| 关键词 | 命中 | 处置 |
+| --- | --- | --- |
+| `"only": "prompt-setting:custom-prompt"` | **0** | 示例已换成 v2（`only: null`） |
+| `names only` | **0** | §15.7 标题已改语义 |
+| `customOverridesOnly` | 1（§10「`customOverridesOnly` is gone」） | 该命中正是「已移除」的声明，保留 |
+| `403 write-locked` | 16 | 10 处属 **PUT／单名 DELETE 写面**（§Rev7 bullets 的 PUT/DELETE 项、§4.1、§4 verdict、§12.2、§13、§15.5 表、§15.8 表的 `PUT`/`DELETE` 行）——现在时正确；6 处属**导入历史**且全部带废置标注：§Rev7 概览两 bullet（本轮补 inline「withdrawn in Revision 53」）、§4.4 段（紧随其后「this paragraph is now a history note」）、§11.1 step 3（本轮补 inline「this step is gone in Revision 53」）、§15.7 首段（段前斜体废置标注）、§15.7 的 Revision 53 说明段、§15.8 的 Revision 53 说明段 |
+| `"version": 1`（作为导出文档当前版本） | 0（4 处命中分别是 v2 示例里的 `presets.version`、`overrides.json` 示例、两处 `presets.json` 示例） | 无需改 |
+| 非零 `omitted` 示例 | **0** | v2 示例里为全 0 |
+| `No absolute path is exported` | **0** | R1 已改写为「唯一绝对路径是工作区 `root`」 |
+| `reserved section only`（导入/导出语境） | §10 Revision 7 段（已标 Superseded）、§4.1/§12.1/§13 的 PUT/DELETE 语境（正确） | 无需改 |
+
+**验收（R2 实跑，基于 75515eb 之上的工作树、未提交）**
+
+- evidence: suite=node --test(test/*.test.mjs) passed=935 failed=0 exit=0 ms=56297；`node scripts/prepare.mjs` = OK（23 项，`LOCALE-SYNC` 567 键）exit 0；
+- 用例数 934 → 935（新增 stage2 `… registry address the route would refuse … (R2)` 一条；transfer 的 preferences 负向表加 5 个非法地址 + 1 条「合法地址原样往返」断言，都在既有用例内）；
+- `grep -n '"only": "prompt-setting:custom-prompt"\|names only' CONTRACT.md` ⇒ **零命中**；`403 write-locked` 的 16 处按上表分类，导入语境的 6 处全部带废置标注。
+
+### 151.3 R3 返工：5 处新不一致 + **行为驱动的契约核对**（评审 rev-att-001-03 BLOCK，仍是判据 6）
+
+**评审结论**：实现面/安全面/测试面全部通过；阻断仍是契约同步——4 处**新**不一致 + 1 处表述过强。评审同时指出方法缺陷：R3-4 那句旧行为表述**不含任何关键词**，因此从 R1/R2 的关键词自查里整句逃掉了。本轮按要求**换方法**：按**行为**逐条在全文定位其**所有**表述。
+
+**5 处修复**
+
+| # | 位置（修改后行号） | 问题 | 处置 |
+| --- | --- | --- | --- |
+| R3-1 | §15.8 说明段 `:4734-4739` | 括号句说「两行 `403 write-locked` 是 Revision 7 值、已从表中移除」，与表格（`PUT`/`DELETE` 仍是 `403`）及同段「Its `PUT` … rows are **unchanged** (`403 write-locked`)」三处互斥；且 `Exported` 的旧值是 `no — counted in exportScope.omitted`，从来不是 403 | 括号句改为「**Their** Revision 7 values (`no — counted in exportScope.omitted` and `403 write-locked`) are gone, replaced by `yes`」，并通读整段确认三处一致 |
+| R3-2 | §11.6 `:1930-1934`、§4.4 `:1121` | 实现是 `… file(s) were already replaced`（`core/store.js`），契约却写 `layers`，同段又声称「it says "file(s)" where it used to say "layer(s)"」 | 两处都改为 **`file(s)`** 表述（§4.4 行同时注明批次覆盖四类文件） |
+| R3-3 | §11.2 示例 `:1853-1893` | 示例缺 `workspaces`/`importedWorkspaces`/`workspaceTotals`/`presets`/`preferences`（与 §11.7 打架），且无历史标注 | 示例补成实际形状（含六个新字段 + `schema`/`exportedAt`），并加一段说明哪些键只在 dry-run / 实际写时出现、`totals` 只算层视图、`workspaceTotals` 单独算工作区 |
+| R3-4 | §19.1 `:6483-6489` | 「`PUT`、单名 `DELETE` **和 `POST /import`** all refuse any other name」——import 已不再拒绝；该句不含关键词，逃过前两轮自查 | 改为「`PUT` 与单名 `DELETE` refuse any other name」+ 括号更正「`POST /import` 自 Revision 53 起不再有名字锁；下面结论不变」 |
+| R3-5 | §11.7 `:2019-2027` | 「what the document carried is what is written」过强：`validatePreferencesDocument` 返回 `normalizePreferences`（address 会 trim、缺 `updateCheck` 补默认 `true`） | 限定为「import applies **no URL normalization of its own**（不重写尾斜杠），地址按文档携带（trim 后）写入」并显式说明存储值仍是 normalizer 的输出 |
+
+**行为驱动的全文核对表**（8 条行为 → 契约位置 → 当前表述 → 处置；行号为 R3 修改后）
+
+| 行为（当前实现） | 契约中它的**所有**表述（§ + 行） | 当前表述 / 处置 |
+| --- | --- | --- |
+| ① 导入对非 reserved 名**不再拒绝**（无写锁） | §7 概览 bullet `:142`；§11.1 step 3 `:1804`；§11.1 R53 段 `:1825-1841`；§15.7 标题+废置注 `:4650-4665`；§15.7 R53 段 `:4686-4714`；§19.1 `:6483-6489` | 旧行为表述全部保留为历史并**逐处带废置/更正标注**：`:142` inline「withdrawn in Revision 53」、`:1804` inline「this step is gone in Revision 53」、`:4650` 斜体废置注、`:6483` R3-4 本轮更正；`:1825`/`:4686` 为 Revision 53 的正向表述 |
+| ② 导出**不再**只带 reserved（`customOverridesOnly` 已删） | §7 概览 bullet `:145`；§4.1 标题 `:994`（PUT 语境）；§10 Rev7 段 `:1715-1740`；§10 Rev36 段 `:1741-1746`；§10 v2 表 `:1756`；§15.7 `:4682-4685`；§20「why a third file」`:2633-2644`；§20.8 `:6975-6983` | `:145` inline withdrawn；`:1715` 段标 Superseded；`:1741` 本轮加 inline「one override per layer 是 R7–52 表述」；`:1756` 明说「Nothing is filtered; `customOverridesOnly` is gone」；`:4682` 本轮加 inline（v2 下多条目再次可达）；`:2633` 本轮加「Revision 37–52 反对把库放进导出文档，R53 推翻了这一半」；`:6975` 本轮加 inline「superseded by Revision 53」（其后有撤回段） |
+| ③ `exportScope` 语义（`full/only:null/omitted 恒 0/omittedApplied/unavailable`） | §7 概览 bullet `:144`；§10 v2 示例 `:1691-1701`；§10 Rev7 段+表 `:1715-1740`；§10 v2 表 `:1771-1789`；§10 说明段 `:1736-1737` | `:144` inline withdrawn；`:1715` 标注**只覆盖「the table below」**（R3 本轮修掉 R2 引入的「the shape above」错句，因为示例已换成 v2）；`:1728-1730` 三行标「Revision 7 only」+ 现值；`:1771` 起为新语义全表（含 `omittedApplied`） |
+| ④ 导出范围＝**全部注册工作区**（不再只含 `?session=` 解析到的那一个） | §5.x 层解析表 `:1055`（单会话语境，正确）；§10 v2 表 `:1757`；§10 说明 `:1711-1713`；§1/§7 概览（无 export 范围表述） | `:1757` 明说「One entry per **workspace layer the Host registers** … 不再取决于哪个会话提问，按 `root` 排序」；`:1711` 说明 `?layer=` 不收窄安装级半区；`:1055` 是「某会话解析到哪一层」的通用说明，与导出全量不冲突（未改） |
+| ⑤ 未注册 workspace root → **整体拒绝零写入**（import 与 delete-preset 同口径） | §4.4 `:1127`；§11.1 `:1836`；§11.7 `:1947-1963`（含 R1 三防线）；§11.7 R1 段 `:2012-2029`；§20.4 `:6773-6810`；§20.7 `:6963` | 全部为 Revision 53/R1 的正向表述；`:1947` 首句已限定为「a path *this profile does not own*」；无旧行为残留 |
+| ⑥ `import-commit-failed` 消息措辞 | §4.4 `:1121`；§11.6 `:1928-1934` | R3-2 本轮把两处 `layers` 改为 **`file(s)`**，与 `core/store.js` 一致 |
+| ⑦ 预设库与偏好**纳入**导出/导入 | §1/§7 概览 `:156`；§10 v2 表 `:1758-1759`；§10 `:1788`（`unavailable`）；§11.2 `:1884`；§11.7 `:1947-2050`；§20.6 `:2659-2666`；§20.8 `:6975-7000` | `:1758-1759` 正向（库/偏好为顶层字段，含 R1/R2 的省略规则）；`:1788` 声明省略原因；`:2659` 本轮加 inline 更正「R53 推翻了『库不进备份』这一半」；`:6975` 本轮加 inline「superseded」（其后撤回段说明库已随备份走）；`:6985` 起为正向段 |
+| ⑧ 文档 `version`（1→2，读侧接受 2/1）与层名白名单 | §10 标题 `:1653`；§10 v2 示例 `:1662`；§10 说明 `:1705-1713`；§10 v2 段 `:1761-1767`；§4.4 `:1111`（version）、`:1122`（层名）；§11.1 `:1829` | `:1653` 标题标「full backup in Revision 53」；`:1761` 明说「writes 2, still accepts 1」；`:1111` 本轮补「writes `2` and reads `2` and `1`」；`:1122`/`:1829` 层名白名单为 Revision 53 正向表述 |
+
+**方法对比（为什么这次能覆盖 R3-4）**：关键词自查只覆盖「我预料到的措辞」；行为驱动核对按「这条行为在契约里可能被怎么描述」逐条穷举（例如行为①除 `403 write-locked` 外还查 `refuse any other name`/`may be imported`/`must carry no section name`，行为⑦除 `presets` 外还查 `travels in an export`/`backup is portable`/`why a third file`），因而找到了 R3-4（§19.1）与另外两处评审未点到的遗漏：§20.6 的「No preset travels in `GET /export`」、§20「why a third file」里的「a backup is portable and a catalogue is not」。
+
+**验收（R3 实跑，基于 3dc08e9 之上的工作树、未提交）**
+
+- evidence: suite=node --test(test/*.test.mjs) passed=935 failed=0 exit=0 ms=52428；`node scripts/prepare.mjs` = OK（23 项，`LOCALE-SYNC` 567 键）exit 0（纯文档改动，用例数不变）；
+- `grep -n "how many layers\|refuse any other name\|are gone from the table" CONTRACT.md` ⇒ **零命中**。
+
+### 151.4 R4 返工：4 处修复 + **章节驱动的穷举覆盖**（评审 rev-att-001-04 BLOCK，仍是判据 6）
+
+**评审诊断（我认可）**：R3 的「行为驱动」解决了**措辞**覆盖，但没解决**章节识别错误**造成的**范围**覆盖——我把文档开头的「Revision 7 概览」(`:142/:144/:145`) 当成了「§7 概览」，而真正的 **§7 Known limitations**（`:1321` 起）整章不在穷举范围内，`git diff` 也确认没有任何 hunk 触及 1321–1440。结论：**只要「找的范围」是猜的，就一定会漏** ⇒ 本轮把范围也变成可核验的机械清单。
+
+**4 处修复（行号＝当前文件，由内容锚点脚本取得）**
+
+| # | 位置 | 问题 | 处置 |
+| --- | --- | --- | --- |
+| R4-1 | §15.6 `:4654-4665` | 「no route can create, update or **import** one any more」在 Revision 53 下是假的（`:4742` 的 `Imported | yes` 与之互斥） | 改为「no **write** route can create or update one any more *(Revision 7–52; the import half … withdrawn in Revision 53)*」，并在「hand-editing」bullet 后补「an **import** can bring one in — or drop one in `mode=replace`」 |
+| R4-2 | §7 Known limitations `:1395-1400`（item 16）、`:1420-1422`（item 21） | 两处现在时、零标注：item 16「No route creates, updates or **imports** one」；item 21「can only be removed by the layer-wide `?legacy=true` clear or by hand」 | item 16 改为「No **write** route … *(Revision 7–52 also said no route **imports** one; Revision 53 withdrew that half)*」；item 21 补「or — since Revision 53 — by importing a backup that carries the layer without that entry (`mode=replace`，§11.4)」 |
+| R4-3 | §11.2 示例 `:1863` + 说明 `:1890-1896` | 示例头 `"dryRun": false` 却带 `schema`/`exportedAt`（实现里这两键**只在 dry-run 分支**） | 按评审②：从示例移除 `schema`/`exportedAt`，说明句改为「`schema`/`exportedAt` are echoed on the `?dryRun=true` answer **only**，`written`/`history` 只在真实导入出现——示例带后者不带前者」 |
+| R4-4 | `:4669-4675`（§15.7 注）、`:638-639`（§1 表）、`:1774`（§10 悬空指代） | ① 废置注只声称盖「two paragraphs」，而第 3 段（`:4702` 之前）同样含旧锁表述；② §1 的 export 行仍写「One or both layers」；③ 「The portability sentence above」是悬空指代（全文 `portab` 只剩 `:2645` 的历史引用） | ① 注改为「The **three paragraphs** below describe the Revision 7 lock（前两段陈述规则、第三段在 Revision 36 后复述）」；② export 行改为「The **whole installation** … full backup since Revision 53」、import 行补「name-based write lock removed in Revision 53」；③ 改写为「A document's **layer views** are therefore still portable in the Revision 4 sense…」 |
+| R4-5 | §Rev7 概览最后一条 bullet `:149-153` + 撤回段 `:154-163` | **主管要求的 `grep "import one any more"` 复核时新发现**：该 bullet（「an existing override … no route can create, update or **import** one any more」）同样含旧行为且无 inline 标注；撤回段还写着「withdraws **two** of those bullets」，与该 bullet 的第三处「or import」不符 | 该 bullet 改为「no **write** route can create or update one any more *(Revision 7–52 also said no route **imports** one; Revision 53 withdrew that half)*」；撤回段改为「withdraws the migration half of **three** of those bullets」并把第三种点明 |
+
+**章节覆盖表（机械提取 `grep -n "^## "` 得到的 22 章，每章一行）**
+
+> ⚠️ **本表的行号已过期，勿引用**：R4 的最后一个 hunk（在 §1 之前插入 4 行）使其后所有行号整体下移，而本表的取号是在那次编辑**之前**跑的。**以 §151.5 的「R5 行号重取表」为准**（那是在当前文件上重跑的结果）；本表只保留「哪一章涉及哪些行为」的判断结论。
+
+| 章（行范围） | 涉及 Rev53 行为？ | 契约位置（当前行号） | 当前表述 → 处置 |
+| --- | --- | --- | --- |
+| §1 Routes and methods (626-670) | 是：export/import 能力描述 | `:638-639` | 旧「One or both layers」→「whole installation…full backup since Revision 53」；import 行补「name-based write lock removed in Revision 53」（**R4-4② 本轮修**） |
+| §2 snapshot (671-955) | 否 | — | 装配/快照视图不写文件；`:931` 的「unregistered」指路由随插件卸载 |
+| §3 overrides GET (956-991) | 否 | — | 纯读面 |
+| §4 PUT/DELETE + 错误码 (992-1163) | 是：写锁仍生效 + 新错误码 | `:1011`,`:1071`,`:1098` 写锁（正确）；`:1111-1127` 错误码表；`:1133-1136` `write-locked` 的 Revision 53 note；`:1150-1156` history note | 写锁行现在时**正确**（PUT/单名 DELETE）；导出相关新码与 note 已加 |
+| §5 Semantics (1164-1278) | 否 | — | 合并/装配语义；`:1199` 的 byte-identical 指渲染 |
+| §6 E1–E5 (1279-1320) | 否 | — | 实机测量结论 |
+| **§7 Known limitations (1321-1444)** | **是（R3 曾整章漏扫）** | `:1395-1400` item 16、`:1420-1422` item 21 | 旧「No route … imports one」「only … or by hand」→ **R4-2 本轮加 Revision 53 更正**；其余条目（:1346/:1385/:1438）与本次变更无关 |
+| §8 history (1445-1568) | 否 | — | 变更日志 |
+| §9 diff (1569-1656) | 否 | — | 版本对比 |
+| §10 export (1657-1797) | 是 | `:1662-1704` v2 示例；`:1719-1741` Rev7 段+表；`:1745-1749` Rev36 inline；`:1753-1797` v2 段 + `exportScope` 表（含 `omittedApplied`）；`:1774` 端口性表述 | R2/R3/R4 逐处处理；`:1774` 悬空指代 **R4-4③ 本轮修** |
+| §11 import (1798-2073) | 是 | `:1809-1811` step 3 inline；`:1826-1856` R53 校验清单；`:1859-1896` 响应示例+说明；`:1945-2072` §11.7（三防线、读面不变量、R2 段） | 全部正确；示例 **R4-3 本轮修** |
+| §12 DELETE overrides (2074-2177) | 是：写锁仍生效 | `:2108`,`:2146`,`:2164` | 单名 DELETE 仍 `403 write-locked` —— 现在时**正确** |
+| §13 Client-side (2178-4165) | 是：库/备份关系、导入预览 UI | `:2524`,`:2603` 写面语境（正确）；`:2638-2646` why-a-third-file（R3 本轮修）；`:3924` 导入预览客户端行为（未变） | 正确/已修 |
+| §14 build stamp (4166-4493) | 否 | — | 构建戳 |
+| §15 owned section + write lock (4494-4886) | 是（主场） | `:4607-4632` §15.5 写锁表（PUT/DELETE，正确）；`:4654-4665` §15.6（**R4-1**）；`:4667-4745` §15.7（**R4-4①** 注覆盖前三段、`:4702` 第 4 段 inline、R53 段）；`:4737-4750` §15.8（R3-1 修） | 全部正确 |
+| §16 interpolate (4887-5421) | 否 | — | 插值开关；`:5111` 提及 import 只是说明同一校验的覆盖面 |
+| §17 update check (5422-6039) | 否（R2-5 的校验函数来自本章路由） | — | 本章不描述导出/导入；`validateRegistryAddress` 由 §11.7 `:2037` 引用 |
+| §18 install (6040-6490) | 否 | — | 官方安装流程 |
+| §19 rollback (6491-6656) | 是：前提句 | `:6502-6505` | 旧「`PUT`、单名 `DELETE` 和 `POST /import` all refuse any other name」→ **R4-4 前身（R3-4）本轮复核**为两条写路由 + import 更正 |
+| §20 preset library (6657-7148) | 是 | `:6800-6848` §20.4（R1 白名单）；`:6990` §20.7 表；`:7002-7022` §20.8（R3 inline + 撤回段）；`:2638`（§13）why-a-third-file | 正确/已修 |
+| §21 assembly notice (7149-7436) | 否 | — | 会话内提示 |
+| §22 locale (7437-7501) | 否 | — | 文案字典 |
+
+**行号自查（评审抽查发现上一版两处行号不存在）**：确认属实——上版写的 `§15.7 :4682` 与 `§20.8 :6975` 在当前文件里分别是 `:4702`（「Because an export now carries at most one entry per layer」，R3 加的 inline 就在其后）与 `:7002`（「No preset travels in an export」）。漂移原因是 R3 自己的编辑使行号后移，而我当时沿用了更早的 grep 结果——**这正是 §15.7 第 3 段被漏标的同一原因**。本轮改为**内容锚点取号**：用一段脚本对每个引用片段做唯一子串定位并打印行号（31 个锚点），表中每个行号都取自该输出。
+
+**R5 实测更正（2026-10-16，评审 rev-att-001-05 抽查；数字经 R6/R7 复核修正）**：上面那句「本轮表内行号全部通过」**不成立，已撤回**。评审实测指出本表行号会随编辑**累积漂移**，而不是一个常数。现取现算（**基线 `9e8ed64` → R6 时点**）：§1 `613→630`、§7 `1287→1325`、§12 `1769→2113`、§15 `4183→4533`。**本段上一版把「相对基线」这个标签与 R4 章节覆盖表自己的数字（`626/1321/2074/4494`）混写在同一句里**——按字面读与同一句给出的基线 `613/1287/1769/4183` 自相矛盾；那四个数字是 **R4 覆盖表的取值**，不是基线的，已按上句改正（R4 表 → R5 时点：前段 +4，§12/§15 +20；R4 表 → R6 时点：§12/§15 各再 +19）。另一处更硬：本表称 §12 有 `:2108`/`:2146`/`:2164` 三处 `write-locked`，而 R5 时点 §12 范围内**唯一命中是 `:2166`**（`:2108` 已是 `effectiveFrom: next-turn`、`:2164` 是 Revision 22 的描述）。根因：R4 首个 hunk 插入 4 行后**没有重跑取号**，我沿用了编辑前的输出并写成「全部通过」。**教训（已第五次同类，且这次错在「记录要诚实」的段落里）**：① 凡写「已通过/已完成」，必须是**刚跑出来的结果**；② 引用数字必须**现取现算**，不能凭上一轮记忆，也**不能把两张不同时点的表里的数字并排引用**；③ **行号不是稳定标识**——每次编辑都会使其后整体漂移，因此正文引用一律以**内容锚点**定位，行号只作「某次取号的时点快照」并标注时点（§151.5 = R5 时点，§151.6 = R6 时点，§151.7 = R7 时点）。
+
+**验收（R4 实跑，基于 b38eb89 之上的工作树、未提交）**
+
+- evidence: suite=node --test(test/*.test.mjs) passed=935 failed=0 exit=0 ms=51784；`node scripts/prepare.mjs` = OK（23 项，`LOCALE-SYNC` 567 键）exit 0（纯文档改动，用例数不变）；
+- `grep -n "import one any more\|writable only by hand\|portability sentence above" CONTRACT.md` ⇒ 逐处确认：`portability sentence above` **零命中**；`import one any more` 只剩 `:156`（撤回段里**引用**该 clause，带更正语境）；`writable only by hand` 只剩 `:1399`（item 16 的**标题句**，紧随其后的句子就是 Revision 53 更正）。加宽扫描 `update or import|create or import|creates, updates or imports|may not be imported` ⇒ **零命中**。
+- **本轮方法收益**：章节清单（`grep -n "^## "` 22 章）让 §7 Known limitations（1321–1444，前三轮从未触及）暴露出来；而主管给的三条验证 grep 又在本轮末尾抓出 R4-5（§Rev7 概览最后一条 bullet）——两种机械范围（章节 / 指定 grep）各抓出一处，说明「范围可核验」比「措辞穷举」更关键。
+
+### 151.5 R5 返工：`skipped` 形状回归 + **行号在最终文件上重取**（评审 rev-att-001-05 BLOCK，只剩 2 条）
+
+**R5-1 §11.2 示例的 `skipped` 元素形状（R3-3 引入的回归）**：R3 把示例补全时写了 `"skipped": []`，而基线是 `"skipped": [ { "layer": "workspace", "reason": "…", "entries": 0 } ]` —— **三字段形状只由这一个示例承载**（实现仍在输出：`index.js` 的 `{layer: name, reason: error.message, entries: 0}` 与 `{…, entries: entry.overrides.length}`），而 Rev53 契约在 skipped 语境下 `layer`/`reason` 零命中。这既在响应契约上留了缺口，也**直接阻塞 att-002 的判据 9**（前端要展示「被跳过的未注册工作区（列表 + 计数）」却没有字段形状可依）。处置：示例恢复元素形状（字段名与实现逐字一致），并在说明段新增一段：
+
+> `skipped[]` is `{layer, reason, entries}[]`: one entry per layer view or workspace layer the import did **not** apply … Those three field names are what this contract fixes; **att-002** (the panel-side「what was skipped」declaration) builds its display on exactly this shape.
+
+**R5-2 行号在最终文件上重取**（评审实测：本表行号系统性 +4；§12 的所谓三处 `write-locked` 实测只有一处）
+
+| 章 | 起始行（重取） | 章 | 起始行（重取） |
+| --- | --- | --- | --- |
+| §1 Routes and methods | `:630` | §12 DELETE overrides | `:2094` |
+| §2 snapshot | `:675` | §13 Client-side | `:2198` |
+| §3 overrides GET | `:960` | §14 build stamp | `:4186` |
+| §4 PUT/DELETE + errors | `:996` | §15 owned section + write lock | `:4514` |
+| §5 Semantics | `:1168` | §16 interpolate switch | `:4907` |
+| §6 E1–E5 | `:1283` | §17 update check | `:5442` |
+| §7 Known limitations | `:1325` | §18 install | `:6065` |
+| §8 history | `:1450` | §19 rollback | `:6516` |
+| §9 diff | `:1574` | §20 preset library | `:6682` |
+| §10 export | `:1662` | §21 assembly notice | `:7174` |
+| §11 import | `:1803` | §22 locale | `:7464` |
+
+R4 表内**引用行号**的重取结果（当前文件）：§1 `:642-643`（export/import 行）；§4 `:1015`/`:1075`/`:1102`（写锁）、`:1115`/`:1125`/`:1126`/`:1127`/`:1130`/`:1131`（错误码表）、`:1137`（`write-locked` 的 Revision 53 note）、`:1158`（history note）、`### 4.4` `:1083`；§7 `:1399`（item 16）、`:1425`（item 21）；§10 `:1667`（v2 示例）、`:1725`（Superseded）、`:1750`（Rev36 inline）、`:1758`（v2 段）、`:1766`（`workspaces[]` 行）、`:1779`（端口性表述）；§11 `### 11.2` `:1865`、`"skipped"` 元素 `:1885`、说明段 `:1905`、`### 11.7` `:1960`、R2 段 `:2057`、step 3 `:1814`、R53 校验段 `:1837`；§12 实测 `write-locked` **唯一命中 `:2166`**（原先写的 `:2108`/`:2146`/`:2164` 全错）；§13 写面语境 `:2541`/`:2623`（正确）、why-a-third-file `:2663`、导入预览 `:3944`、rollback 语境 `:3417`；§15 `### 15.5` `:4627`、§15.6 `:4665`、`:4674`（R4-1 句）、`### 15.7` `:4687`、`:4689`（三段落注）、`:4722`（第 4 段）、`### 15.8` `:4757`、`:4770`（R3-1 说明）；§19 `### 19.1` `:6521`、`:6527`（更正句）；§20 `### 20.4` `:6825`、`### 20.7` `:6995`、`### 20.8` `:7025`、`:7027`（bullet）、`:7041`（撤回段）；§Rev7 概览 `:153`（「withdraws the migration half of **three**」）。
+
+**逐行 `sed` 抽查**：上表全部行号由 31 个内容锚点在**当前文件**上定位取得（脚本输出行号与片段一并打印），并逐条用 `sed -n "<n>p"` 复核落在所描述内容上；`NOTES.md` 中旧表的引用已加「⚠️ 已过期，以 §151.5 为准」，`:9186` 的「全部通过」声明已**撤回并改写**为如实记录（系统性 +4 / §12 三处错误 / 根因＝编辑后未重跑取号）。
+
+**R5-3/4/5（同批，非阻断）**
+- **R5-3 §7 item 16 标题句**：改为「A frozen override is writable only by hand — **and, since Revision 53, by importing a backup that carries it**」。
+- **R5-4 偏好文件的第二写面**：§17.4（`:5716`）新增「**This file is also carried by a full backup (Revision 53, §11.7)**：`GET /export` 整份复制、`POST /import` **整份替换**」；§21.2（`:7251`）补「*(Since Revision 53 this key also travels in a full backup, and `POST /import` replaces the whole `preferences.json` — see §17.4 and §11.7.)*」。
+- **R5-5 UNC 措辞**：按评审倾向**只改契约、不改实现**——§11.7（`:2030-2036`）明确「规则拒绝的两个根是 **POSIX `/`** 与 **裸盘符 `C:\`**；**UNC 共享根 `\\server\share` 不被拒**，它按普通目录处理，由注册表白名单兜底」；§4.4（`:1130`）与 §11.1（`:1847`）同步该限定。
+
+**验收（R5 实跑，最终文件、未提交）**
+
+- evidence: suite=node --test(test/*.test.mjs) passed=935 failed=0 exit=0；`node scripts/prepare.mjs` = OK（23 项，`LOCALE-SYNC` 567 键）exit 0（纯文档改动，用例数不变）；
+- `grep -n '"layer"' CONTRACT.md` 在 §11 范围命中（`:1885` 示例元素、`:1905` 说明段）；`grep -n "entries" CONTRACT.md` 与实现的四处语义一致（`entries: 0` / `entry.overrides.length` 的计数含义）；
+- `grep -n "no route can create, update or import one any more" CONTRACT.md` ⇒ **零命中**。
+
+### 151.6 R6 返工：`skipped` 的**新写说明段本身写错**（评审 rev-att-001-08 BLOCK，只剩 3 处文本级修正）
+
+**问题性质变了**：前几轮是「漏改旧文」，R6 是「**新写的说明段写错**」——我在 §151.5 新写的 `skipped` 说明把 `entries` 定义成「how many overrides that layer would have contributed」，而实现有四条 push 路径、`entries` 在**两种读法**下出现**三种取值形态**（`0` / `entry.overrides.length` / 条目数）。这条会**传播到 att-002 的面板计数**，所以评审定级为最关键。（R7-5：本文件此前 `:9237` 写「三种含义」、`:9242` 写「两种含义」、`:9270` 写「三种 `entries`」，现已统一为「**两种读法、三种取值形态**」。）
+
+**R6-1 + R6-2 契约段改写**（`CONTRACT.md` §11.2，锚点「`skipped[]` is `{layer, reason, entries}[]`」在 `:1905`；`entries` 两种读法在 `:1917`）
+- 来源由 3 种补为 **4 种**（补入 R5 漏掉的**去重分支**：同一文件已被另一 unit 认领、内容相同，`reason` 形如 `already covered by "…"`）；
+- `layer` 取值域写全：`workspace` / `workspace:<root>` / `installation` 三个**可达**值，外加 `user` 一个**形式成员**（R7-4：`targetFor('user')` 在 `index.js:2196` 直接 `return`，全函数唯一的 `OverrideError` 抛出点不覆盖 user，故该行当前不可产生；契约已就地限定，实现未动）；
+- `entries` 按**两种含义**分别写清：前三行＝该层会贡献的 override 条数（`0` 表示文档对它无所求）；`installation` 行＝**未应用的条目数**（`workspaces.length` + `presets.presets.length` + 携带 `preferences` 时 `1`），并显式说明「`entries` is **not one number with one meaning**」，与 §11.7 的「reports it in `skipped` with the count it left alone」统一口径；
+- 注明「today the panel consumes `layer` and `reason` only, with `entries` reserved for the count att-002 will show」。
+
+**逐句对账（每个取值 ← 实现行号，R6 时点现取现算）**
+
+| 字段 / 取值 | 实现位置 | 语义（契约句） |
+| --- | --- | --- |
+| `layer: 'user'` / `'workspace'` | `index.js:2790`（`{ layer: name, reason: error.message, entries: 0 }`，`name` 取自文档的 `layers` 键） | 层视图无法解析且文档对它无所求 |
+| `layer: 'workspace:<root>'`（空） | `index.js:2829`（`const key = \`workspace:${root}\``）+ `:2831` | 该工作区层没有任何 override |
+| `layer: 'workspace:<root>'`（去重） | `index.js:2839` | 同一文件已被另一 unit 认领且内容相同 |
+| `layer: 'installation'` | `index.js:2865`（分支）+ `:2869`（push） | `?layer=` 主动放过的安装级半区 |
+| `entries: 0` | `:2790`、`:2831` | 该层无可贡献条目 |
+| `entries: entry.overrides.length` | `:2839` | 去重项携带的 override 条数 |
+| `entries: document.workspaces.length + (presets===null?0:presets.presets.length) + (preferences===null?0:1)` | `:2866-2868` | **条目**数（不是 override 数） |
+| `reason`（四条各一句） | `:2790`（`error.message`）、`:2831`（字面量）、`:2839`（模板字面量）、`:2871`（字面量） | 人类可读的来源说明，永不为空 |
+
+对账方式：`sed -n '1905,1930p' CONTRACT.md` 与上表逐句比对；四条 push 路径用 `grep -n "skipped.push" index.js` 现取（`:2790`/`:2831`/`:2839`/`:2869`）。
+
+**R6-4 采纳：新增回归网**（`test/stage2.test.mjs:1978`，用例名「an installation-level half left alone is counted by items, not by overrides (R6)」）
+- 文档带 **2 个 `workspaces[]` 条目**（第一个含 **3 条 override**）+ **2 个预设** + `preferences` → `POST /import?layer=user&dryRun=true&session=sa` 的 `skipped` 中 `installation` 项断言 `entries === 5`（2+2+1），并显式断言**不是 3**（那 3 条 override 正是「按 override 计数」这一错读会给出的值）；
+- **R7-2② 已采纳（补测）**：同一用例还断言另**两**种可达来源（无 session 的空 `workspace` 视图 → `[{layer:'workspace', reason:'layer "workspace" requires a "session" id…', entries:0}]`；去重 → `[{layer:'workspace:<root>', reason:'already covered by "workspace" in this document', entries:1}]`），并**新增第三种**断言覆盖 `index.js:2831` 的「空 overrides 工作区」分支（本轮之前 `grep -rn "carries no override for this workspace layer" test/` 零命中）→ 该分支现被钉住；加上 `installation` 项键集合严格为 `['entries','layer','reason']`，**三个可达来源全部有断言**（`user` 形式成员除外，见上）；
+- 该分支（`installation`）此前**没有字面断言**：现取现算 `git grep -n "'installation'" 7c323cd -- packages/dsh-prompt-setting/test/` ⇒ **零命中**（`7c323cd`＝R6 之前的提交；R7 现取现算：当前测试里该字面只有 R6 新增的 `test/stage2.test.mjs` 一处）。这正是 `entries` 语义能被写错五轮而无人发现的原因（R7-3：本行此前写的命令 `grep -n installation test/*.mjs` 实测为 15 处命中——custom 2 / stage2 10 / transfer 3——**命令与结论不符，已换成真正零命中的那条**）。
+
+**R6-3 NOTES 数字自相矛盾**：§151.4 的撤回段写「`2074→2078`、`4494→4498`」，而 §151.5 的重取表写 §12 `:2094`、§15 `:4514` —— **同一节内自相矛盾**（评审实测：R5 时点偏移是 +20，而那两个数字是凭前一轮记忆填的）。已改为与实测一致，并进一步改写为「**偏移量随文件位置累积**」：前段 +4（`626→630`、`1321→1325`），§12/§15 在 R5 时点 +20（`2074→2094`、`4494→4514`），**R6 编辑后再次下移**（现取现算：§1 `:630`、§7 `:1325`、§12 `:2113`、§15 `:4533`；基线分别为 `613`/`1287`/`1769`/`4183`）。并写入第 ③ 条教训：**行号不是稳定标识**，正文引用一律以内容锚点定位，行号只作「某次取号的时点快照」（§151.5＝R5 时点，§151.6＝R6 时点）。
+
+**验收（R6 实跑，最终文件、未提交）**
+
+- evidence: suite=node --test(test/*.test.mjs) passed=936 failed=0 exit=0；`node scripts/prepare.mjs` = OK（23 项，`LOCALE-SYNC` 567 键）exit 0（用例 935 → 936，采纳 R6-4 新增一条）；
+- `sed -n '1905,1931p' CONTRACT.md` 与上表逐句对账通过（四条 push 路径、**两种读法／三种取值形态**的 `entries`、四个 `layer` 值其中 `user` 为形式成员）；
+- `grep -n "skipped.push" index.js` ⇒ `2790/2831/2839/2869`，与契约段所列来源一一对应。
+
+### 151.7 R7 收尾轮：NOTES/测试注释级事实性错误（评审 rev-att-001-07 BLOCK，定性＝**0 行为影响、0 契约语义矛盾**）
+
+评审定性（原文）：「仅 NOTES/测试注释级事实性错误 —— 0 行为影响、0 契约语义矛盾；契约正文与实现逐条相符、测试 936/0 全绿、prepare 23 项 OK。」**判据 1–7 全部通过。** 本轮只改文档/注释，并补一条断言；**实现代码零改动**。
+
+| # | 位置（R7 时点现取现算） | 问题 | 处置 |
+| --- | --- | --- | --- |
+| **R7-1** | `NOTES.md:9190`（§151.4 撤回段） | 「相对**基线** `9e8ed64`」标签错：同句里的 `626/1321/2074/4494` 是 **R4 覆盖表自己的数字**，基线实为 `613/1287/1769/4183`，按字面读自相矛盾 | 按评审②：删掉那四个数字，只保留「**基线 → R6 时点**：§1 `613→630`、§7 `1287→1325`、§12 `1769→2113`、§15 `4183→4533`」，并注明 R4 表 → R5/R6 时点的真实偏移（前段 +4；§12/§15 +20、再 +19） |
+| **R7-2** | `NOTES.md:9262` + `test/stage2.test.mjs`（R6 用例注释） | 「另三种来源」实为两种；`:2831` 的「空 overrides 工作区」分支**无回归网**（现取现算：`grep -rn "carries no override for this workspace layer" test/` 在 R7 之前零命中——与 R6-4 之前 `installation` 的处境相同） | **选②（推荐）**：补一条断言覆盖 `:2831`——文档只带一个空 `workspaces[]` 条目、不带 `?layer=`/session，断言 `skipped === [{layer:'workspace:<root>', reason:'the document carries no override for this workspace layer', entries:0}]`；测试注释与 NOTES 的措辞同步改为「另**两**种 +（本轮补测的）第三种」，并写明三个可达来源现全部有断言 |
+| **R7-3** | `NOTES.md:9263`（R6 验收段） | 证据命令不实：写「`grep -n installation test/*.mjs` 零命中」，实测 **15 处命中**（custom 2 / stage2 10 / transfer 3）；结论（没有 `'installation'` 字面断言）对，命令错 | 换成真正零命中的命令并现取验证：`git grep -n "'installation'" 7c323cd -- packages/dsh-prompt-setting/test/` ⇒ **零命中**（`7c323cd`＝R6 之前的提交） |
+| **R7-4**（建议，已采纳） | `CONTRACT.md:1907/1912`、`NOTES.md:9241` | `layer` 取值域写了 `user`，但 `targetFor('user')` 在 `index.js:2196` 直接 `return`，该行**当前不可产生**（域过宽，非行为矛盾） | 契约**就地限定**（只改该行、不删历史正文）：表头说明「one of the four `layer` values is a **formal** member rather than a reachable one」，行内写明「`workspace` — and `user` as a **formal** member (`targetFor('user')` resolves without throwing, so this route can produce only the `workspace` row today)」；NOTES 同步；**实现与测试未动** |
+| **R7-5**（建议，已采纳） | `NOTES.md:9237` / `:9242` / `:9270` | `entries` 的切分口径并存（「三种含义」/「两种含义」/「三种 `entries`」） | 全文统一为「**两种读法、三种取值形态**」（override 读法下 `0` 与 `n` 两种形态 + 条目数形态） |
+
+**逐条实跑证据（R7 现取现算，命令与结果一并记录）**
+
+- `node --test test/*.test.mjs` ⇒ `tests 936 / pass 936 / fail 0`，`duration_ms 53368`（补断言不改用例数，仍 936）；
+- `npm run prepare` ⇒ OK 23 项（`LOCALE-SYNC` 567 键）；**实现代码零改动**（`git diff --stat` 只含 `CONTRACT.md` / `NOTES.md` / `test/stage2.test.mjs`）；
+- `git show 9e8ed64:…/CONTRACT.md | grep -n "^## 1\.\|^## 7\.\|^## 12\.\|^## 15\."` ⇒ `613/1287/1769/4183`；`grep -n … CONTRACT.md` ⇒ `630/1325/2113/4533`（R7-1 的四个数字）；
+- `git grep -n "'installation'" 7c323cd -- packages/dsh-prompt-setting/test/` ⇒ 零命中；`grep -rn "carries no override for this workspace layer" test/` 在补测后 ⇒ **1 处**（新断言）；
+- `grep -n "skipped.push" index.js` ⇒ `2790/2831/2839/2869`；`grep -n "function targetFor" index.js` ⇒ `2192`，`:2196` 即 `if (layer === 'user') return …`（R7-4 的依据）；
+- R7 时点契约锚点：`skipped[]` 段 `CONTRACT.md:1905`、`formal` 限定 `:1907`/`:1912`；测试用例起始 `test/stage2.test.mjs:1978`。
+
+**收尾自查**（评审要求的四条关键词 grep；**现取现算，并逐条读命中行而不是只数个数**）。计数以**改写本段之前**的那一版 `NOTES.md` / `test/stage2.test.mjs` 为准（原因见下）：
+
+| 关键词 | 实测命中 | 命中行判定 |
+| --- | --- | --- |
+| `another three` | **0** | 测试注释已改为「The three **reachable** sources」（`test/stage2.test.mjs:2027`） |
+| 第 2 个关键词（「另 3 种」的中文写法） | **2** | 均为**引述被修正的旧措辞**：本节表格的 R7-2 行、以及本收尾段的说明句自身；不是新写的断言 |
+| 第 3 个关键词（「相对基线」） | **6** | `:1049`/`:3003`/`:7068`/`:7118` 是 g-013/g-016 等**无关历史小节**的用法；`:9190` 是 §151.4 里**引述被撤回的旧标签**；`:9294` 是本段自身。§151.4 的现行表述已改为「基线 → 时点」 |
+| 第 4 个关键词（「零命中」） | **16** | 全部是历次「命令 + 实测结果」记录（含本节新增的两条带正确命令的记录）；逐条读过，无一处是新写的不实断言 |
+
+> **观察（R7 教训的延伸，也是本轮唯一的新发现）**：自查用的关键词**会命中写这段自查的文字本身**，所以「零命中」这类量化断言必须①先数一遍、②逐条读命中行、③必要时把关键词写成不含原词的形式（本表第 2–4 行即是），否则**断言自己就会成为反例**。本节初稿就写成了「四条全部零命中」，实测为 `2/6/16`，已按上表改正——**这正是评审反复指出的同一类错误在自查环节的复现**。
+
+
+## 152. g-074 att-002：跨机恢复改「跳过」语义 + 导入预览「整份替换」（Revision 54，2026-10-16，基线 `2550a5f` 隔离工作树 `g-074-att-02`）
+
+**需求（负责人 2026-10-16 追加，判据 8、9）**：① 导入时 `workspaces[]` 与 `presets.applied[]` 里**路径形状合法、
+但本机工作区注册表未包含**的条目改为**跳过**（不再整体拒绝），跳过项**如实声明**、**绝不写盘**；路径形状非法
+仍按畸形文档整体拒绝。② 前端导入预览必须提示预设库与偏好设置将被**整份替换**、`workspaces` 的变更、以及被
+跳过的条目。att-001 已完成判据 1–7 并合入 `dev`（`2550a5f`），本轮是收尾。
+
+**设计决定（及被否方案）**
+
+- **只改「注册表」这半刀，形状那半原样不动。** `validateWorkspaceRoot`（`core/workspace-root.js`）仍由
+  `parseExport` 调用，畸形 root（相对路径 / `..` / 控制字符 / 卷根）在任何落盘前**整体 400**；宿主侧新增
+  `workspaceRootSkipReason(root)`（`index.js:2106`）——**同一个注册表问题，问法从「抛错」改成「返回原因」**，
+  答案非 `null` 即进 `skipped`。被否：直接把 `assertKnownWorkspaceRoot` 改成跳过——`DELETE /presets` 也会经它
+  还原工作区层，那里**必须**拒绝（那正是 R1 关掉的任意路径写入原语），所以**拒绝面保留给非导入写入者**，
+  导入单独走问句函数。
+- **`presets.applied[]` 的处置是「丢弃记录」而不是「跳过该文档」。** 记录不进将要写入的库（
+  `{...document.presets, applied}`），否则 `DELETE /presets` 之后会照它写盘，R1 的洞会重新打开；丢弃动作本身
+  在 `skipped` 里以 `presets.applied:<root>` / `entries: 1` 声明。被否：只报告不丢弃（等于把不可还原的记录
+  写进库）；被否：保留记录但让删除路由忽略它（读面已宽松，写面判据要写在**写入点**才可靠）。
+- **不新增字段、不新增 `skipped` 形状。** 复用 R6 已钉住的 `{layer, reason, entries}`：`layer` 新取值
+  `workspace:<root>`（未注册）与 `presets.applied:<root>`；`entries` 前者=该条目覆盖数、后者=`1`。契约 §11.2
+  的来源表因此从 4 行变 6 行，并写明 `entries` 的两种读法（override 数 / 条目数）。
+- **本机完全没有 `workspaceRegistry` 服务时同样跳过**（`registeredWorkspaceRoots()` 返回 `null`），reason 说明
+  真实原因。被否：维持原来的 `400 workspace-unresolved`——跨机（不同 profile）场景下那会把「能否还原一个层」
+  升级成「能否导入整份备份」，与负责人指示相反。
+- **前端三块预览，全部读 dry-run 响应的既有字段**（`presets`/`preferences`/`workspaces`/`skipped`），预览**不
+  自行计算计划**：`data-import-replaces`（整份替换警示 + 每个文档一行）、`data-import-workspaces`（逐
+  `data-import-workspace` 行，带 `data-import-workspace-changed`）、`data-import-skipped`（逐
+  `data-import-skipped-row` 行，带 `data-import-skipped-entries`）。`importSkipped` 保留键、值改为「共 {n} 项」，
+  新增 `importSkippedRow` 逐行渲染（原来是把 layer/reason 拼成一句）。
+- **文案走真源流程**：`locale/zh.json` + `locale/en.json` 各 +6 键（573 键/语言 = 522 主 + 51 错误码），
+  `client.js` 生成段只由 `node scripts/locale-pack.mjs --write` 写，`test/locale.test.mjs` 计数断言同步
+  （516/567 → 522/573）。
+
+**实现锚点（现取现算，最终文件、未提交）**
+
+| 位置 | 内容 |
+| --- | --- |
+| `index.js:2106` | `workspaceRootSkipReason`：注册表问句（`null` = 可写） |
+| `index.js:2883` / `:2885` | `workspaces[]` 逐条判问句，非 `null` 即 `skipped.push({layer:'workspace:<root>', reason, entries: overrides.length})` 并 `continue`（**`workspaceConfigPath` 都不再计算**） |
+| `index.js:2957` / `:2959` | `presets.applied[]` 逐条判问句，非 `null` 即丢弃记录 + `skipped.push({layer:'presets.applied:<root>', entries: 1})`；写入的库用 `{...document.presets, applied}` |
+| `index.js:2837/2885/2891/2899/2929/2959` | 全部 `skipped.push` 路径（与契约 §11.2 表逐行对应） |
+| `client.transfer.js:236/275/303` | 预览三块（`data-import-replaces` / `data-import-workspaces` / `data-import-skipped`）；`:346` `countOf`、`:355` `changeCountsOf` |
+| `CONTRACT.md:2115` | §11.7 内新增「Revision 54 — cross-machine restore skips, and says so」 |
+| `CONTRACT.md:2182` | 新增 §11.8 The panel's import preview（预览读哪些字段、渲染哪些 marker、文案真源） |
+| `CONTRACT.md:1882` | §11.2 `skipped[]` 来源表 4 → 6 行 + `entries` 两种读法 + 撤回「att-002 将实现」的未来时 |
+| `test/stage2.test.mjs:1704/1788/1915/2265` | 跨机跳过主用例 / 无 registry 服务用例 / R1 PoC 改为「丢弃记录」/ `rejectedDocuments()` 移除「未注册 root」条目并补**控制字符**形状条目 |
+| `test/client.test.mjs:7608` | 逐条 skipped 行渲染用例；`:7578` 现有预览用例补三块断言；`:9622`/`:10648` EN sweep 登记新分支与新文案 |
+
+**契约同步清单（只追加 / 就地限定，不删历史正文）**：§11.1（root 两条子弹 + 新增 Revision 54 表）、§11.2（来源
+表、`entries` 读法、撤回未来时）、§11.7（首段「refused whole」就地限定 + 段末 Revision 54 逐条）、§11.8（新增）、
+§10（`presets` 行就地限定 + `omittedApplied` 复核）、§15.7（「checks are not relaxed」项就地限定）、§20.4（该路由的拒绝就地限定为「Revision 54 不变」）、§4.4
+错误码表（`unknown-workspace-root` 就地限定为「仅剩删除路由」）、§22（573/522 键）；§15.8 复核后与 root 语义无关，未改。
+
+**验收（本文件最终版、未提交实跑）**
+
+- evidence: suite=node --test(test/*.test.mjs) passed=938 failed=0 exit=0（att-001 基线 936，本轮 stage2 改写 2 条 +
+  新增 1 条、client 新增 1 条 ⇒ 938）；
+- evidence: suite=node scripts/prepare.mjs passed=23 failed=0 exit=0（`LOCALE-SYNC` 573 键 / `CHUNK-STAMPS` 5 个
+  chunk 一致）；`node scripts/locale-pack.mjs --write` 与 `node scripts/client-chunks.mjs --write` 均已跑（生成段，
+  非手改）；
+- **负向对照 3 条（改坏就红，已还原、零残留）**：① 禁用 `workspaces[]` 跳过分支 ⇒ R8 主用例红（未注册 root 的层文件 SHA-256 被改写）；② `presets.applied` 改回 `assertKnownWorkspaceRoot` 抛错 ⇒「drops that record」用例红；③ 删掉
+  `WORKSPACE-ROOT` 的控制字符检查 ⇒ `rejectedDocuments()` 整体拒绝对照红（`a workspace root with a control
+  character must be a 4xx, got 200`）——第 ③ 条同时证明「形状非法 ≠ 未注册跳过」两刀未混同；
+- 既有回归：`an export never publishes an unregistered applied root, and its own backup imports back (R1 PoC2)`
+  仍绿（已注册路径往返等价不受影响）；删除预设路由的三条 R1 拒绝断言仍绿（拒绝面未被本轮改动）。
+
+**未验证项 / 残余**：跳过语义只在 fake Host + 真实文件系统（真实 SHA-256 / 真实目录创建）上验证，未在真机
+DSH 上手工目视「跨机备份」全流程；预览三块在 GUI 上只经渲染树断言与 EN sweep，未做真机截图核验。
+
+---
+
+## 153. g-073：作用域模型收敛 —— 页面「查看范围」只服务「我的 Prompt」（Revision 55，2026-10-16，基线 `6ebaf5e` 隔离工作树 `g-073-att-01`）
+
+**负责人 2026-10-16 目视后的要求**：页面级「查看范围」应只服务「我的 Prompt」；其余 tab 各自解耦——「我的预设」与它
+无直接关联、「提示词总览」自带作用域切换组件（按工作区分组、可选中具体会话）、「高级」自带工作区选择器、「版本历史」
+自 g-038 起已解耦（本次的参照实现）。g-074（全量备份）先交付，本目标处理**行为层**的解耦。
+
+**四个落点（全部在客户端；宿主端路由未改）**
+
+1. **「我的预设」脱离页面作用域**（`client.js` 的独立 effect，`PRESETS_PATH` 无 `?session=`）。原来的读与
+   snapshot / overrides 共用一个 effect（依赖 `[sessionArg, reload]`），页面作用域一动就重发；现在它只随
+   `reload` 刷新。宿主端 `GET /presets` 的 `session` 仍被接受（只做 workspace 解析），页面不再提供它——
+   `CONTRACT.md` §20.2 就地限定。apply / unapply 行为不变（它们的 workspace 来自对话框自己的行）。
+2. **「提示词总览」自带作用域**（`overviewScope*` state + `overviewScopeOptionsOf()` + 独立 snapshot effect +
+   `client.overview.js` 的 `data-region="overview-scope"` 披露组件）。**形态是"工作区分组、值是会话"**：
+   `/snapshot` 的 `?session=` 是双重语义（定位工作区层文件 + 以该会话的 live Agent 作探测 scope），frozen 判定与
+   变量解析是 per-scope 事实（§2.4），所以**不照抄**历史作用域的「工作区首个会话」取值法——`overviewScopeOptionsOf`
+   每个工作区出一个**分组**、组内每个会话一个选项，未被工作区认领的会话归入末尾的 `sessions` 组。
+   取数是 tab-gated（每个 tab 打开 / 作用域改变 / reload 各一次），因为每次 `/snapshot` 要跑两次 `assemble()`（§2.6）。
+   总览读自己的 `m.overview*`（sections / fz / incoming / snap），页面作用域不再影响它。
+3. **「高级」自带工作区选择器**（`advancedScope*` state + `data-region="advanced-scope"` + 自己的 overrides /
+   snapshot / assembly-status 读）。层操作（`reset=true` / `legacy=true`）与旧版覆盖列表、装配状态都按所选工作区；
+   `resetLayer` / `clearLegacy` 的 `layerQuery(layer, advancedScopeArg)` 取代了页面 `sessionArg`。
+   选择器的**维度是工作区**（整层清除动的是整个工作区文件，所有会话共享，§12.1），但**默认值是当前会话本身**
+   （历史作用域那种「首个会话」会把默认视图从"当前会话的装配状态"换成别人的——record 按 sessionId 存）。
+   为此新增 `m.advancedSnap` / `m.advancedEffectiveSections` / `m.advancedIncoming`：旧版列表的 `applied`
+   是"本作用域装配"的事实，不能拿页面作用域的 assembly 去判。
+4. **页面作用域收敛**：`m.sessionArg` 的消费点只剩「我的 Prompt」（snapshot + overrides 两次读、面板自己的
+   `data-region="mine-target"` 展示、保存落层）；`/export`、`/import`（dryRun 与 apply 都不带）、`/presets`
+   不再携带它（备份是全量的，§10 Revision 53；空工作区层视图的导入由宿主按 `skipped` 答复，§11.1）。
+
+**契约同步清单（只追加 / 就地限定，不删历史正文）**：§13.0（tab 表的"其余 tab 无作用域"就地限定 + Revision 55）、
+§13.2（新增 Revision 55 条：marker 全表 + "值是会话不是首个会话"的理由）、§13.3a（新增 Revision 55 条：备份不带页面
+作用域）、§13.4（新增 Revision 55 条：工作区选择器 + 三次读 + 用户层全局）、§13.7（末段就地限定为"只 scope
+「我的 Prompt」"+ 消费点清单）、**§13.10（新增）：作用域模型总表 + 6 条不变式**、§20.2（`?session=` 就地限定）、
+§22（键数 573/522 → 586/535）。
+
+**测试与断言（`test/client.test.mjs` 新增 4 个用例）**
+
+- `g-073 — the preset library is read without the page scope`：`enforceEffectDeps: true` 下断言
+  `/presets` 只在挂载时读一次、URL 无 `?session=`，把页面作用域改成全局后**不重发**，而 snapshot 确实跟随；
+- `g-073 — no tab but 「我的 Prompt」renders the page-scope surface`：**直接 marker 断言**——`presets` /
+  `overview` / `history` / `backup` / `advanced` 五棵树里 `data-region="session"`、`data-region="scope-summary"`、
+  `data-action="scope-toggle"` 各为 **0**，而 `mine` 为 1；
+- `g-073 —「提示词总览」owns a by-workspace, per-session scope`：默认跟随当前会话（a3）、按路由函数按 `?session=`
+  返回不同快照；`w-alpha` 组内三个会话 a1/a2/a3 **都被渲染**（不是首个会话一个替身）、`loose` 落在 `sessions` 组；
+  选 b1 后请求与渲染都换成 beta；再把页面作用域改成全局，总览的值与内容**不动**；
+- `g-073 —「高级」aims its reads at its own workspace selector`：默认 a3（当前会话）、`data-reset-count` 随所选
+  工作区变；页面作用域改成全局后仍 a3；选 b1 后 assembly-status / overrides 都换 b1；`reset=true` 与 `legacy=true`
+  发的是 `layer=workspace&session=b1&…`（而非页面作用域）。
+- 既有断言同步两处：export 请求不再带 `?session=`（`client.test.mjs` 的导出用例）；assembly-status 用例的第二段改为
+  "页面作用域改全局后本 tab 不变"，并把 no-session 分支改由无会话服务的页面覆盖。
+- g-061 的两条计数守卫（`miniButtonStyle({` / `normalizeNeedle(` / `matchesNeedle([`）按新调用点更新，**未弱化**。
+
+**门禁**：`node scripts/locale-pack.mjs --write`（586 键）与 `node scripts/client-chunks.mjs --write` 均为生成段/清单，
+非手改；`node scripts/prepare.mjs` 通过（含 `CHUNK-STAMPS` 5 个 chunk、`LOCALE-SYNC` 586 键）。
+
+**`docs/check-refs.mjs` 的修复（本轮的额外工作）**：基线（`6ebaf5e`）跑该体检**已经是红灯**（89 条不符）——
+g-074 改了 `index.js` / `CONTRACT.md` 却没有同步 `docs/refactor-plan.md` 里手写的 `文件:行` 与脚本内的 REFS 期望表。
+本轮按"改完必须 exit 0"把它修到绿：用**锚文本**在当前文件里重新定位 REFS 表 158 条（`expect` / `toExpect` /
+`stripEquals`），把文档里的完整形式与简写引用（`:1234`）按同一批采样换算，并把 §1.3 / §5.1 两张表按新的
+`client.js` 布局重算（**首轮**：合计 11879 → **12284**、`PromptSettingSection` 2640 → 2934 行、`13/14/15`
+重切到 1200 / 1146 / 602；**R1 之后**再重算为合计 **12320**、`PromptSettingSection` **2936** 行、三段
+1200 / 1148 / 602，脚本里的常量随之同步）。**未弱化任何断言**：REFS 表条目数不变（158）；**R1-4 另修正了
+5 处端点**（`index.js:982-5059`、`client.js:8084-8087`、`8095-8105`、`7329-7875`、
+`test/client.test.mjs:2544-2552`，其中两处保留 `loose: true` 只因跨度 > 90 行是脚本的硬规则）；覆盖率
+**首轮** `verified` 56 → 129，**终值**（R1-3 把正文也对齐之后）**132 且 `rangeOnly=0`**。
+
+**验收（本文件最终版、未提交实跑）**
+
+- evidence: suite=node --test(test/*.test.mjs) passed=946 failed=0 exit=0（基线 938：`client.test.mjs` 4 个 g-073 用例 + 2 个 R1 回归用例 + 1 个 R3 缓存用例，`stage2.test.mjs` 1 个 R2-5 端到端用例）；
+- evidence: suite=node scripts/prepare.mjs passed=23 failed=0 exit=0（`CHUNK-STAMPS` 5 个 chunk / `LOCALE-SYNC` 586 键）；
+- evidence: suite=node docs/check-refs.mjs verified=132 **rangeOnly=0** manual=21 failed=0 exit=0（§1.3 表 24 行合计 12382、§5.1 表 17 行合计 12382、最大段 1200）；
+- evidence: suite=node scripts/locale-pack.mjs --check passed=586 failed=0 exit=0。
+
+**负向对照 2 条（改坏就红，已还原、零残留）**：① 让 `GET /presets` 重新带上页面 `?session=` ⇒
+`g-073 — the preset library is read without the page scope` 红；② 把 `overviewScopeOptionsOf` 的每工作区选项压成
+`ids.slice(0, 1)`（即历史作用域那种"首个会话"取值法）⇒ `g-073 —「提示词总览」owns a by-workspace, per-session
+scope` 红（三个会话被压成一个）。
+
+**未验证项 / 残余**：作用域选择器的视觉（披露高度、"跟随当前会话"高亮）只在渲染树与 marker 上断言，未做真机
+GUI 截图核验；"高级"的默认值取"当前会话"而非工作区代表会话，这一点在契约里写明了理由（record 按 sessionId 存），
+但真机上多个会话同属一个工作区时的观感仍需负责人目视；`docs/check-refs.mjs` 的 `rangeOnly` 已由 R1-3 的正文对齐
+收编为 **0**（首轮那 6 条是"简写与完整形式换算精度差"，已逐条改正文，不再保留）。
+
+**收尾轮 R2（独立评审 rev-att-001-02 判 PASS 后的 4 条建议 + 1 条可选，2026-10-16）**
+
+- **R2-1 契约补「面板门控」不变式**：`CONTRACT.md` §13.10 在既有 6 条之后**追加**第 7 条（不改原有条文）——
+  "each tab's panel gate follows that tab's own data source"：`mine → m.snap`、`overview → m.overviewSnap`、
+  `advanced → m.advancedSnap`，`presets / history / backup` **不被任何 snapshot 门控**（各自渲染自己的 phase），
+  因此页面作用域的 `/snapshot` 失败只让「我的 Prompt」空白。与 `CHANGELOG` 的门控句、本文件 R1 段、
+  `client.js:8895-8910` 的注释三处对齐。追加使 §14 及之后的 CONTRACT 行号 +9，REFS 表与正文引用已用同一
+  锚定位流程同步（`CONTRACT.md:4439 → 4448`、`7654 → 7663`、`4721-4729 → 4730-4738`）。
+- **R2-2 本文件两处自相矛盾的陈述订正**：`docs/check-refs.mjs` 的修复段现在区分**首轮**（合计 12284、
+  `PromptSettingSection` 2934、`13/14/15` = 1200/1146/602、`verified` 56 → 129）与**终值**（合计 12320、
+  2936 行、1200/1148/602、`verified` **132** 且 `rangeOnly=0`）；"区间端点断言不变"改为"REFS 条目数不变（158），
+  R1-4 另修正 5 处端点（两处保留 `loose` 只因跨度 > 90 是脚本硬规则）"；残余段的"6 条 rangeOnly 未收编"改为
+  "已由 R1-3 的正文对齐收编为 0"。
+- **R2-3 文档样例输出对到当前实测**：`docs/refactor-plan.md` 的两处围栏样例里 `最大段=1145` / `2640` 更新为
+  **1200** / **2936**（§1.3 = 2936、§5.1 = 1200），第二处标题从"R4 收敛轮"改为"当前轮，R1 之后"。
+- **R2-4 §1.1 表消除"基线快照 vs 当前值"歧义**：表改为**当前工作树实测**口径（`wc -l` / `wc -c`），
+  逐行给当前行数与体积（`client.js` 12320 / 605 KB、`index.js` 5073 / 224 KB、
+  `client.overview.js` **755**、`client.advanced.js` **665**、`client.transfer.js` **387**、
+  `core/update.js` 1812、`core/presets.js` 1030、`core/store.js` 676 …），并给出可复算的
+  "上列 14 个文件合计 **28198** 行（= `client.js` + `index.js` + 5 个 chunk + `core/*.js`）"、
+  "5 个 chunk 合计 **3624** 行"、"主入口 **12320** 行"；与基线 `c6bbccb` 的差异指向本文件，不再混列。
+- **R2-5 端到端补口（可选，已做）**：宿主侧新增 `stage2: an export taken without ?session= still carries every
+  workspace layer (g-073)`——两个已注册工作区、用户层一条覆盖、各工作区层各一条，请求 `GET /export` **不带
+  `?session=`**（前端现在真正发出的形状）：断言 200、`layers.user` 全量、`layers.workspace.enabled === false`
+  且 `overrides` 为空（工作区层视图缺失是有声明的），而 `workspaces[]` 仍**逐层携带**两个工作区的覆盖，
+  `exportScope.workspaces === 2`。这补上了"前端去掉 session 后导出形状如何"此前无覆盖的缺口
+  （既有宿主导出用例全部显式带 `?session=`）。
+
+**返工 R3（负责人真机目视发现「切换 tab 页面闪烁」后的修复，2026-10-16）**
+
+- **根因**：`overview` / `advanced` 的两个 effect deps 含 `tab`，且 effect 内**无条件** `setState({phase:'loading', data:null})`
+  ⇒ 每次切到该 tab 都把状态清空，`panelGate` 的 `loading && !data` 立刻为真 → 先出「加载中」再出内容。
+- **R3-1 选型（① stale-while-revalidate + 已读缓存键）**：给每个 tab 自有读加一个 `useRef` 记录 `{scope, reload}`
+  （history 记录 `{key = layer|scope|offset, reload}`），**只在答案真的到达时**写入 —— 被 tab 切换取消的读不记，
+  切回时会重试而不是停在 loading。键命中时 effect 直接 `return`（不发请求、不重置状态）；未命中时按
+  「同域 vs 换域」决定是否保留旧数据：**同域**（reload 刷新）保留 `data` 做 stale-while-revalidate（于是
+  `loading && !data` 为假 ⇒ **无加载帧**），**换域**清掉 `data`（旧作用域的数据绝不能冒充新作用域）。
+  选 ① 而非 ②（effect 内函数式判断 return）：① 把"要不要清数据"与"要不要发请求"分开表达，且 `panelGate`
+  既有判据（`loading && !data`）不必改动。`assembly-status` 读也加了同一键（它原先每次切回都重读——不闪但多余）。
+- **R3-2 逐个 tab 的结论**：`overview` / `advanced` / `history` 三个"自有读"tab 的 effect deps 都含 `tab`，
+  切回时都会重跑；`overview`/`advanced` 原本会**清数据**（闪），`history` 原本保留 `data` 但 `panelGate` 用
+  `(idle || loading)` 判定 ⇒ 同样先画一行「加载中」（闪）。三者统一修：前两者用缓存键，后者把 `panelGate` 改为
+  `(idle || loading) && !data`。`presets` 的 deps 不含 `tab`（`[reload]`），切回不重跑、phase 保持 `ready`
+  ⇒ **本来不闪**（顺手给它的 `panelGate` 也加 `&& !data`，使 reload 刷新不会把已渲染的库换成加载行）；
+  `backup` 无自有读 ⇒ 不闪；`mine` 的 deps 是 `[sessionArg, reload]`（不含 `tab`）且只在作用域/reload 变化时
+  重置 ⇒ 不闪。
+- **R3-3 契约同步（只就地限定）**：§13.10 第二条不变式由"one request per tab **open**"精确为
+  "**first open / scope change / reload**，切回复用缓存（不发请求、不出加载帧）"，并写明"被取消的读不记为已完成"、
+  "同域 reload 保留旧内容、换域必须清掉"；§13.2 的同义句同步就地限定。
+- **R3-4 断言**：新增 `client.test.mjs` 用例
+  `g-073 R3 — switching away and back re-reads nothing and draws no loading frame`（`enforceEffectDeps: true`）：
+  ①三个 tab 逐个"切走→切回"，断言 snapshot / overrides / assembly-status / history 的请求计数**不变**、
+  面板内容仍在、树中不出现 `loading` 文案；②正面对照：换作用域仍 +1 次读；③reload（走一次「我的 Prompt」
+  保存）后日志仍重读一次。既有 R1-5 计数用例继续钉"同 tab 内不重复读"。
+  另同步两处既有用例的节奏：`assembly-status block at its top` 的切回断言由"≥2 次"改为**恰好 1 次**（切回不重读）；
+  `a rollback asks first` 在写回滚后**多 flush 一次**再断言（`reload` 的重读属于"bump 所调度的那次渲染"的 effect，
+  与真实 React 一致）。
+- **负向对照（改坏就红，已还原）**：删掉 overview 的缓存键跳过判断（回到"每次切回都读"）⇒ 新用例在
+  "overview: switching back sends no request" 处红（3 → 4 次）。
+- **行号体系随之重算**：`client.js` 12320 → **12382**（+62 行，R3 的实现与注释），§1.3 / §5.1 两张表与 REFS 表
+  按同一锚定位流程平移（合计 **12382**、`PromptSettingSection` **2986** 行、§5.1 把 13/14 重切为
+  1200 / 1198），§1.1（`client.js` 12382 / 609 KB、14 文件合计 **28260**）与 §1.2
+  （**12382 = 299 + 4426 + 7657**）的实测值同步更新。
+
+**返工 R1（独立评审 rev-att-001-01 判 BLOCK 后的 4 项必修 + 2 项建议，2026-10-16）**
+
+- **R1-1 `CHANGELOG.md` 漏记**：在根 `CHANGELOG.md` 的 `## [Unreleased]` → `### Changed 变更` 首条补 g-073 / Revision 55
+  条目（中英双语，含四个落点、§13.10、586 键），与 Rev 50–54 的惯例一致。
+- **R1-2 高级面板的渲染门控仍跟随页面作用域**：原来 `panelSnap = m.tab === 'overview' ? m.overviewSnap : m.snap`，
+  高级的**取数**虽已按自己的作用域，**门控**却仍要求页面 snapshot 到位——页面 scope 读失败时整块空白。改为
+  `panelGate`：`mine → m.snap`、`overview → m.overviewSnap`、`advanced → m.advancedSnap`，而
+  `presets / history / backup` **不再被任何 snapshot 门控**（它们各自持有库 / 日志 / 传输文档，且各自渲染自己的
+  phase；`presets` 与 `history` 在 `idle`/`loading` 帧显示加载行，`backup` 无自有读、直接渲染）。新增回归用例
+  `g-073 R1 — a failing page-scoped snapshot blanks no other tab`：让本次 mount 的第一个 `/snapshot` 失败，
+  断言高级 / 总览 / 备份 / 预设 / 历史五个 tab 依旧渲染，而只有「我的 Prompt」空白。
+  ⚠️ 一处既有用例随之改写：`「高级」 carries the same install control…` 原用 `page.draw()` 跳过 effect（避免重跑
+  更新检查），现在高级面板依赖自己的读，故改为打开 tab 后 `flush` 一次，其后仍是 `draw()`。
+- **R1-3 正文与 REFS 表脱钩**：本轮把 `docs/refactor-plan.md` 正文里残留的旧行号一并对齐——`index.js:982-4614`
+  → `982-5059`（4 处）、`store.js:295/308/323/337` → `298/311/326/340`、`client.test.mjs:1988` → `2008`、
+  `7806–7895` → `7911–8000`、`8223/8139/8209-8277` → `8223/8229/8314-8382`、`8084-8086` → `8084-8087`、
+  §13.0/§14 的裸数字 `1875`/`3855` → `2313`/`4439`、§5.2 的 `7772–8280` → `7775–8385`、正文里三处
+  `7329-7773`/`8095-8101`/`2544-2550` → 新端点，以及 §1.2 的构成统计（11879 = 293+4235+7351 →
+  **12320 = 299+4397+7624**）。§1.1 的规模表保留为「基线 `c6bbccb` 快照」并注明主入口当前 12320 行。
+  **`rangeOnly` 由 6 → 0**（这才说明正文与 REFS 表真的对齐，而不只是 `failed=0`）。
+- **R1-4 REFS 表端点靠 `loose` + `includes("}")` 过关**：`index.js:982-4614` → `982-5059`（loose 保留：跨度
+  4078 > 90，脚本规则要求）、`client.js:8084-8086` → `8084-8087`、`8095-8101` → `8095-8105`、
+  `7329-7773` → `7329-7875`（loose 保留：547 > 90）、`test/client.test.mjs:2544-2550` → `2544-2552`；
+  有 `loose` 的两处都是跨度硬约束，其余三处跨度 ≤90 且以 `toExpect: "}"` 逐字钉住闭行。
+- **建议项一并处理**：R1-5 新增计数用例 `g-073 R1 — a tab-owned scope reads once per tab open and scope change`
+  （`enforceEffectDeps: true`：开 tab 1 次、纯重渲染 0 次、展开披露 0 次、换作用域 +1 且 URL 为新会话；总览侧同）；
+  R1-6 `client.js` 的注释改正为「state 初值 `null`，有效值回落 `seat.currentId`」。
+- **负向对照（R1-2 专用）**：把 `panelGate` 的高级分支改回 `m.snap` ⇒ 新用例
+  `g-073 R1 — a failing page-scoped snapshot blanks no other tab` 变红（高级 0 节点），已还原。
+
+---
+
+## 154. g-075 att-001：客户端生成期分段 —— 阶段 1（生成管线就位 + 零语义搬家）（2026-10-16，基线 `3c4bdca` 隔离工作树 `g-075-att-01`）
+
+目标 `g-075` 依方案 `docs/refactor-plan.md`（g-072 delivered）实施客户端分段。本批只做**阶段 1**：
+把 `client.js` 的真源切进 `src/`（**24 段 = §1.3 版图的 24 个连续区间，一行不移动**），由新脚本
+按文件名字典序拼接回**同一个 `client.js`**。阶段 2（重排到 17 段 + 头注 + 契约改口）不在本批。
+
+- **交付**：`scripts/client-build.mjs`（`readSegments` / `renderClient` / `--write` / `--check`，
+  以及三态发布门禁 `inspectClientSource`）、`src/00-header.js` … `src/23-boot.js`（24 段）、
+  `test/client-source.test.mjs`（逐字节等价 / 零移动 / 幂等 / 预算扳机 / 两条负向对照）；
+  `package.json` 加 `"src"` 与 `client:build` / `client:check`；`scripts/prepare.mjs` 接上
+  `CLIENT-SRC` 三态（`N/A` / `FILES` / `NOT-SHIPPED`）。
+- **实测验收**：`node scripts/client-build.mjs --write` 之后
+  `git diff --exit-code packages/dsh-prompt-setting/client.js` 退出码 **0**（逐字节等价，12382 行、
+  磁盘 623537 字节、md5 `49805cb728ced195a2b37932bd18750c`）；`--check` 幂等（`writeDeclaredStamps(clientSource, clientChunkStamps(pkgDir)) === clientSource`）；
+  `node --test test/*.test.mjs` 全绿；`node docs/check-refs.mjs` 退出码 0。
+- **阶段 1 不写任何头注**（R1-1）：加头注即改字节，与"逐字节等价"互斥；头注属阶段 2。段首
+  "片段，不是独立模块"声明同理——生成器已实现逐段剥离（有单测覆盖），但阶段 1 的段里没有它。
+- **行锚点纪律（本阶段唯一非显然的约束）**：`docs/check-refs.mjs` 把 `package.json:22-33`、
+  `package.json:27`、`scripts/prepare.mjs:180-183`、`test/host.test.mjs:171-197`、
+  `test/prepare.test.mjs:487-539` 这些**行号**当断言，而引用来源 `docs/refactor-plan.md` 是只读的。
+  所以阶段 1 对既有文件的改动一律**行数中性**：`package.json` 的 `"src"` 与 `"client.js"` 同排、
+  `prepare.mjs` 的新 import 占用原来的空行、`host.test.mjs` 的 `'src'` 与 `'client.js'` 同排。
+  新增文件（生成器 / `src/` / 新测试）不受此限。
+- **留给阶段 2 的硬冲突（需负责人裁决）**：§9-1 的改口要求把 `scripts/prepare.mjs:9` / `:162` 与
+  `NOTES.md:3635` 的"零构建"改成"零编译"，而 `docs/check-refs.mjs` 的 REFS 表把这三行**逐字**钉住
+  （`零构建包` / `零构建`）；方案文档只读 ⇒ 只改代码必然让 `check-refs` 变红。阶段 2 需要在
+  "同步 REFS 表锚点（并接受方案正文三处引用过期）"与"换一种不触发该断言的措辞"之间明选，建议
+  由负责人在阶段 2 派发前裁决。
+- **残余**：`prepare` 的 `CLIENT-SRC` 只看**发布面**（有没有、发不发），不做"生成物与段是否一致"的
+  字节比对——那一步在阶段 1 仍由 `client-build.mjs --check` 与测试守住（方案 §6.2 原样如此）。
+
+---
+
+## 155. g-075 att-002：客户端生成期分段 —— 阶段 2（17 段重切 + 生成物头注 + 契约改口）（2026-10-16，基线 `d3db711` 隔离工作树 `g-075-att-02`）
+
+在阶段 1 的管线上把 `src/` 从 24 段收敛到方案 §5.1 的**目标段表 17 段**（每段 ≤ 1200 行）；
+`PromptSettingSection` 在**函数体内部**切成 `13/14/15-page-*.js` 三段（只重切、不移动）；生成器在
+`client.js` 顶部注入「生成物，勿手改」头注（9 行，落在 fingerprint `begin` 之前）；每个段文件首行加
+片段声明；`CONTRACT.md` 新增 §23「Client source layout」；按 §9-1 裁决把 6 处「零构建」改口为
+「零编译 + 客户端入口为生成物」。
+
+- **交付**：`src/` 17 段（`00-entry.js` … `16-boot.js`）、`src/README.md`、`docs/architecture-map.md`；
+  `scripts/client-build.mjs`（`GENERATED_BANNER` / `stripBanner` / `renderClient` 注入头注，`readSegments().lines`
+  改为**剥掉声明后的区间行数**，否则 `13-page-a` 会被算成 1201 行）；`docs/check-refs.mjs`
+  （`CLIENT_HEAD_LINES` 坐标平移 + REFS 期望文本同步）；改口 6 处（`README.md:116` / `:339` / `:344`、
+  `NOTES.md:3635`、`scripts/prepare.mjs:9` / `:162`）；`docs/refactor-plan.md` §9-1 基线快照注记；
+  测试同步 `test/client-source.test.mjs`（结构断言按 17 段重写）、`test/prepare.test.mjs:572`（24 → 17）。
+- **核心判据（代码零移动）**：`tail -n +10 client.js` 与 `git show d3db711:…/client.js` 逐字节相同（`cmp` 空输出）；
+  `fingerprintOf(client.js)` 与去头注后**完全相同**（`404d9c67 / 596124`）⇒ 头注不污染指纹。
+- **实测验收**：`node scripts/client-build.mjs --check` exit 0（17 段，`CHUNK_STAMPS` 5 项与磁盘一致）；
+  `node --test test/*.test.mjs` **960 pass / 0 fail**；`node docs/check-refs.mjs` exit 0
+  （`§1.3 rows=24 合计=12382` / `§5.1 rows=17 合计=12382 最大段=1200`，`unresolved+failed=0`）；
+  `node scripts/prepare.mjs` exit 0 且报 `CLIENT-SRC: src/ 下 17 个段文件`；`--write` 不再触碰 mtime。
+- **四条负向对照**（一次性包副本，均已还原）：① 只把 README 改回"零构建步骤" ⇒ `check-refs` 非零
+  （证明没有"只改 REFS 不改文档"的假绿灯）；② 改 `src/12-update.js` 一行 ⇒ `--check` 非零；③ 只改
+  `client.js` ⇒ `--check` 非零；④ 删掉头注 ⇒ `test/client-source.test.mjs` 红（13 条断言失败）。
+- **两处刻意的坐标约定**：① 文档里的 `client.js:行` 一律记**段真源坐标**（= 去头注），由
+  `CLIENT_HEAD_LINES` 平移到生成物行号后再断言 —— 头注文案调整不会让上百条引用一起漂移；
+  ② 6 处改口全部**行数中性**（1 行换 1 行），所以 `README.md:358`、`NOTES.md:3679`、
+  `scripts/prepare.mjs` 的其它行锚点无需重算。
+- **已知残余（留给后续）**：① `NOTES.md:3679` 仍写"本包零构建，`prepare` 只做自检"，它不在本次裁决点名的
+  6 处清单内，未改（属越界改动）；② 本文档的历史轮次记录（如 §154）保留"24 段""零构建"原样 ——
+  那是当时的实况，不改写历史；③ 段重切让 git 无法识别 rename，`git diff` 会显示"删 24 个、加 17 个"，
+  评审应依据"去头注后逐字节相同"这条判据，而不是 diff 的形状。
+
+---
+
+## 156. g-075 att-002 返工 R（R1–R4）：locale 工具链随真源迁移 + 两处改口收口 + §23 补口径（2026-10-16，基线 `18b35c7` 隔离工作树 `g-075-att-02`）
+
+独立评审 `rev-att-002-01` 判 PASS（0 BLOCK），但把 R1 列为必须修**高危**项：**真源迁移不完整**。
+阶段 2 起 `client.js` 是 `src/` 的生成物，而 `locale-pack.mjs --write` 仍以 `client.js` 为写入
+目标 ⇒ 同一份内容有两个写入者，`client-build --write` 会把刚写的文案**静默覆盖**。
+
+- **R1（治本，方案 A）**：`scripts/locale-pack.mjs` 的 `--write` 改为写**承载 locale 生成段的那个
+  `src/*.js`**，随后**立即**用 `client-build` 的 `renderClient()` 重建 `client.js` —— 一次
+  `--write`，两边同时最新。段文件由新增的 `findLocaleSegment()` **扫描定位**（要求恰好一个段
+  同时含 `blockOpen('zh')` / `blockOpen('en')`），**不硬编码 `02-locale.js`**；命中 0 个或多个
+  一律 fail-closed。`checkLocaleSync()` 改为**双端核对**：先核 `src/` 的段（真源），再核
+  `client.js` 的段（证明生成物就是真源的产物）—— 旧实现只核后者，漏掉的正是"段漂了而产物还没
+  重建"那半场。`scripts/prepare.mjs` 的 `inspectLocale` 传入 `readDir`，`LOCALE-SYNC` 因此在
+  发布面上也盯住段真源。
+- **R1 验证（一次性副本实测）**：改 `locale/zh.json` 的 `nav` → `locale-pack --write` ⇒
+  ① `src/02-locale.js` 含新文案 ② `client.js` 含新文案 ③ `client-build --check` = 0
+  ④ `locale-pack --check` = 0；反向对照三条：只改 `src/` 段 ⇒ `--check` 非零；段一致但
+  `client.js` 被手改 ⇒ 非零；段真源不唯一 / 缺失 ⇒ `--check` 与 `--write` 都非零。上述断言已
+  固化为 `test/locale.test.mjs` 的 4 条新用例（含一次到位的端到端副本测试）。
+- **R2（负责人已批）**：补改 2 处现行承诺性表述，均为行数中性：`NOTES.md:3679`（"本包零构建" →
+  "本包零编译"）、`core/prepare.js:13-14`（`zero-build` → 零编译，并修正后半句 —— `client.js`
+  不再是 tracked source，而是 `src/` 的生成物）。`docs/refactor-plan.md` 正文与 `NOTES.md` 的
+  历史轮次日志一概未动（那是当时的实况）。
+- **R3 / R4（低）**：`CONTRACT.md` §23 补两句 —— ① **坐标约定**：仓库里所有 `client.js:行` 引用
+  都记**段真源坐标**，`生成物行号 = 段真源行号 + 头注行数`（`docs/check-refs.mjs` 的
+  `CLIENT_HEAD_LINES` 就是这条的实现）；② **行数预算口径**：预算按**剥掉片段声明行之后**算，
+  所以 `wc -l src/*.js` 每文件多 1 行（最大段读作 1201，判的是 1200）。同步更新
+  `docs/architecture-map.md` 与 `src/README.md`（含 locale 段"不要手改"与 `--check` 命令）。
+- **验收**：`client-build --check` / `locale-pack --check` / `prepare` / `check-refs` 全部 exit 0；
+  `node --test test/*.test.mjs` **963 pass / 0 fail**；**判据 8 未回退** —— `tail -n +10 client.js`
+  与 `git show d3db711:…/client.js` 仍逐字节相同（`cmp` 空输出），`client.js` 本轮**零字节改动**。
+
+---
+
+## 157. g-076：g-075 遗留技术债清理 —— symlink 假绿、段集合门禁、派生副本口径与两处评估（2026-10-16，基线 `9a5c057` 隔离工作树 `g-076-att-01`）
+
+g-075（客户端生成期分段，已 delivered）交付时由独立评审标记、但不阻断交付的边界问题逐项收口。
+**产品行为零改动**：`client.js` 字节不变（`git diff --exit-code client.js` = 0），改动只落在
+脚本、文档与测试。
+
+- **项 1（F1，最高优先）三处入口守卫的 symlink 假绿**：守卫原为
+  `fileURLToPath(import.meta.url) === process.argv[1]`。`import.meta.url` 已被 Node 解析成**真实
+  路径**，而 `argv[1]` 是**调用时的字面路径** ⇒ 经软链访问（`npm link`、pnpm workspace、
+  `node_modules/<pkg>`、`.bin`）时永不相等，守卫整段被跳过，进程 **exit 0 且零输出**（`--check`
+  报不出不一致，连 `--bogus` 的参数校验都不跑）。三处**一起**改为
+  `realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)`，包 `try/catch`（`argv[1]`
+  缺失或无法解析就不当成直接运行，fail-closed）：`scripts/client-build.mjs`、
+  `scripts/client-chunks.mjs`、`scripts/locale-pack.mjs`。三处各自内联同款判断、不引入跨脚本
+  helper —— 因为 `client-chunks.mjs` 的行锚点（`docs/check-refs.mjs`）落在 32–100 行，任何 import
+  区新增行都会下推它们；内联 + 把 `realpathSync` 并入既有 import 行，让三处改动**全部行数中性**。
+  用例（`test/client-source.test.mjs` 新增）：三个脚本各 `ln -s` 到临时目录后调用，断言
+  ①软链 `--check` 的 stdout 与正常调用**逐字相同**且 exit 0；②软链 `--bogus` **绝不**出现
+  「exit 0 + 零输出」；③`client-build` / `locale-pack` 的 `--bogus` 仍 exit 2（参数校验没被跳过）。
+  负向对照：临时恢复旧守卫 ⇒ 用例红（`pass 13 / fail 1`），还原后 14/0。
+- **项 2（段集合门禁）选 ①**：`inspectClientSource` 现在把 `src/` 的段名集合与
+  `docs/refactor-plan.md` §5.1 目标段表**逐名对账**（新增导出常量 `EXPECTED_SEGMENTS`），缺段或
+  多出陌生段 ⇒ **FAIL `CLIENT-SRC-SEGMENTS`**。**选 ① 不选 ② 的理由**：②（只在文档里写明「这道门
+  刻意只看有没有/发不发」）把防线全推给 `--check` 与测试，而这两者只在**开发/测试机**上跑；这道门
+  恰恰是**安装现场**唯一还敢说话的检查 —— 删掉一个段后 `prepare` 报 `ok CLIENT-SRC: 16 个段文件`
+  就是发布面上的假绿，与项 1 同一种病。代价是 §5.1 段表多一份代码副本，用测试三方钉住
+  （`EXPECTED_SEGMENTS` == 测试里写死的 §5.1 表 == 磁盘 `src/` 段名），重切段时不会静默漂移。
+  覆盖：纯函数三例（缺段 / 多段 / 三方一致）+ `test/prepare.test.mjs` 端到端一例（删
+  `src/12-update.js` ⇒ `prepare` 非零退出且输出 `FAIL CLIENT-SRC-SEGMENTS`）。
+  `CONTRACT.md` §23.1 与 `src/README.md` 同步该口径（行内改写，行数中性）。
+- **项 3（`CHUNK_STAMPS` 段内声明是派生副本）**：`CONTRACT.md` §23.1 在 "keeps its single writer"
+  之后补一段：段内（`src/11-chunks.js`）那一份是**派生副本、不是第二真源**；真源是磁盘上的
+  `client.*.js`；每次 `--write` 都按磁盘重算行，重算后的行**写进 `client.js`**（生成器拼接时整块
+  覆盖）⇒ 段内那一份从不进发布物，它落后于磁盘是**预期且无害**的；`client-build --check` 比的是
+  **产物**的清单 vs 磁盘（指纹依赖的就是这条比较）。`src/README.md` 加对应的规则 6。
+- **项 4（`findLocaleSegment` 行集合匹配）—— 结论：修（已修）**。旧判据只要求
+  `    const zh = {` / `    const en = {` 两行在**行集合里出现过**，不要求它构成可解析的块；危险组合
+  是「真源段缺失 + 另一段（块注释里）恰好写出这两行」⇒ `--write` 会写错段。**修法选「复用
+  `readDeclaredBlock` 的实际解析结果」而不是「锚定非注释行首」**：后者需要在整份 JS 里跟踪块注释
+  开闭状态机（字符串、正则里同样会出现这些字节），漏判/误判风险比它治的病更大；前者让候选判定与
+  唯一写入者共用**同一个解析器**（要块头 **且** 有 `    };` 闭合），既消重又把判定收紧一个量级。
+  负向用例：一段含两行块头但不闭合的文本，旧实现会把它当真源，新实现报「真源缺失」（fail-closed）；
+  实测负向对照在旧实现下该用例红。**残余**：某段若真写出**完整闭合**的两个块，仍会被当作候选
+  （此时它确实是"可写目标"，两个命中触发"真源不唯一"的 fail-closed）；双端核对（段 + `client.js`）
+  与 `client-build --check` 继续兜底。
+- **项 5（无 `src/` 时的回退可见）**：`locale-pack.mjs --write` 走「读不到 `src/` ⇒ 按旧语义直接写
+  `client.js`」这条兼容分支时，先往 **stderr** 打一行
+  `[locale-pack] 未找到 src/ 段真源（读不到该目录）：按旧语义直接写 client.js`。回退本身保留
+  （阶段 2 之前的包与最小 fixture 要走），只是不再静默。用例：`test/locale.test.mjs` 在一次性副本里
+  删掉 `src/` 跑 `--write`，断言 exit 0 + stderr 含提示 + stdout 指向 `client.js`。
+- **项 6（locale 端到端用例的非自参照断言）**：`test/locale.test.mjs` 的端到端副本用例原来用
+  `renderDictionaryBlock` 造期望，而它正是被测对象（生成器改坏时两边一起坏）。补两条**字面量**
+  断言：段真源与产物里都必须**逐字含** `      nav: 'R1 一次到位',`，且旧文案行不再出现。
+- **项 7（`CLIENT-SRC-DRIFT`）—— 结论：不做（维持原判，未实施）**。理由：① 它要挡的是「`src/` 与
+  产物字节漂移」，而这在**消费者机器上无害** —— 运行物是 `client.js`，`src/` 只服务「可再生成」这一
+  承诺；让它 FAIL 等于把「开发期忘了跑 `--write`」升级成「用户装不上」，惩罚错位。② 代价不只是安装期
+  多读约 600 KB 段文件、拼 1.2 MB 产物做字节比较，还多一条**最常发生**的失败路径挂在安装上。
+  ③ 已有三道防线：`client-build --check`、`test/client-source.test.mjs` 的逐字节断言、`prepare` 的
+  `CLIENT-SRC*` + `LOCALE-SYNC`。**影响面**：不加 ⇒ 安装路径零新增 IO、零新 finding；**残余风险**是
+  「`src/` 漂移的 checkout 仍可被安装」（用户拿到不一致的真源，产物本身正确），开发者本地
+  `--check` 会红。若将来出现「消费者需要在目标机上重新生成 `client.js`」的真实用例，这份门才值得
+  重估，且应以 `PREPARE_WARN`（提示级）而不是 FAIL 落地。
+- **验收**：`client-build --check` / `locale-pack --check` / `prepare` / `check-refs` 全部 exit 0；
+  `node --test test/*.test.mjs` **965 pass / 0 fail**（基线 963 + 2 条新用例；另有 3 条既有用例被扩展）；
+  `git diff --exit-code packages/dsh-prompt-setting/client.js` 退出码 0（产品字节零改动）。
+
+---
+
+## 158. g-076 att-001 返工 S（S1–S3）：安装现场可执行的指引 + 文档↔常量入机器链（2026-10-16，基线 `0006cd6` 隔离工作树 `g-076-att-01`）
+
+独立评审 `rev-att-001-01` 判 **PASS（0 BLOCK）**，3 项非阻断问题里 2 项值得修。
+
+- **S1（应修）`CLIENT-SRC-SEGMENTS` 的消息指向安装现场不存在的文件**：原消息让人去看
+  `docs/refactor-plan.md` §5.1，但 `docs/` **不在 `files` 白名单**（不随包发布）⇒ 用户手里没有
+  那份文档、无从排查；而且实际比对对象是代码常量。现在消息指向随包的
+  `scripts/client-build.mjs` 的 `EXPECTED_SEGMENTS`，并把 §5.1 明确写成「它的来源副本
+  （docs/ 不随包发布，所以指引落在随包的常量上）」。OK 一侧的消息同步改为「段集合与
+  `EXPECTED_SEGMENTS` 一致」，`prepare.mjs` 与 `CONTRACT.md` §23.1 的对应描述一并跟上。
+- **S2（应修）§5.1 文档表与 `EXPECTED_SEGMENTS` 可静默漂移**：评审实测只改文档里的一个段名，
+  `check-refs` / `prepare` / `test/client-source.test.mjs` 会**全绿** —— 「常量 ↔ 测试写死的表 ↔
+  磁盘」有机器校验，「**文档 ↔ 常量**」这一环缺失（正是 g-072 反复吃的亏）。修法：
+  `docs/check-refs.mjs` 新增 `parseSegmentNames()`，在既有的 §5.1 表复算里**顺便断言 §5.1 的
+  段名集合（含顺序）== `EXPECTED_SEGMENTS`**（从 `../scripts/client-build.mjs` import，与它已
+  import `GENERATED_BANNER` 同法）。于是「文档 ↔ 常量 ↔ 测试表 ↔ 磁盘」四方全部入机器链。
+  **负向对照（实测）**：一次性副本里把 §5.1 的 `12-update.js` 改成 `12-updates.js` ⇒
+  `node docs/check-refs.mjs` **exit 1**，输出「§5.1 目标段表的段名集合与 scripts/client-build.mjs
+  的 EXPECTED_SEGMENTS 不符（文档缺 12-update.js；文档多出 12-updates.js）」；同一副本里
+  `prepare` 仍 exit 0（正说明这条链此前没有机器校验）；原工作树还原态 exit 0。
+- **S3（建议）消息区分两种语义**：缺段 ⇒「缺 `<段名>`（真源段丢了：装上去的 `src/` 再也生成不出
+  完整产物）」；多出陌生段 ⇒「多出 `<段名>`（有人重切/合并了段，却没同步这份段集合契约）」。
+  仍保留 FAIL —— 评审已确认不降级 `PREPARE_WARN`（降级会让「段缺失 = 真源数据丢失」重新静默）。
+  测试相应加断言：消息必须含 `scripts/client-build.mjs 的 EXPECTED_SEGMENTS`、必须含「真源段丢了」；
+  纯多出陌生段的场景**不得**出现「真源段丢了」。
+- **明确不做（评审确认）**：① install-time FAIL 不降级为 WARN；② §6.2 那处张力的「让 `--write`
+  自动派生段清单写进生成物并比对」折中受本目标「`client.js` 字节不变」硬约束，**记入后续目标**，
+  本轮不做。
+- **验收**：`client-build --check` / `locale-pack --check` / `prepare`（`ok CLIENT-SRC: src/ 下 17 个
+  段文件（段集合与 EXPECTED_SEGMENTS 一致），files 白名单已覆盖`）/ `check-refs`（新增输出行
+  `table §5.1 段名集合: 与 EXPECTED_SEGMENTS 一致（17 段）`）全部 exit 0；
+  `node --test test/*.test.mjs` **965 pass / 0 fail**；
+  `git diff --exit-code packages/dsh-prompt-setting/client.js` 退出码 0（产品字节仍零改动）。
+
+## 159. g-077 att-001：段集合完整性改锚「段 ↔ 产物逐字节一致」—— 删除手工常量 `EXPECTED_SEGMENTS`（2026-10-16，基线 `5b5c95f` 隔离工作树 `g-077-att-01`）
+
+**目标**：消除 g-076 项 2 引入的手工段名常量（§5.1 文档表的代码副本，重切/合并段要同步 4 处），
+恢复方案 §6.2 闸门 4 的承诺「新增/重切段不需要改任何清单」。
+
+### 立论自证（动手前，一次性副本内；这是换掉手工清单的依据）
+从 `src/` 派生的清单**发现不了缺段**：副本里删 `src/12-update.js` ⇒ `client-build --write` ⇒
+派生清单（`segmentNames(readdirSync('src'))`）**跟着少一段**、与磁盘 `src/` 仍然「一致」（永远
+同意自己）；而 `renderClient()` 与**删段前**的产物比对 ⇒ `false`，首处差异在第 **8396** 行。
+（`--write` 之后的产物与 `src/` 又自洽 ⇒ 锚必须是**发布面上的那一份** `client.js`，不能是「刚
+重建的产物」，所以新门禁读磁盘产物、不写它。）
+
+### 实现（5 项交付）
+1. 新门禁 `CLIENT-SRC-DRIFT`（`scripts/client-build.mjs` 的 `inspectClientDrift`，与
+   `inspectClientSource` 同层、由后者末尾调用）：`renderClient()` 重算与磁盘 `client.js` **逐字节**
+   比对；不一致 ⇒ FAIL，消息给 `node scripts/client-build.mjs --write` + **首个差异位置**（行号 +
+   两侧预览）+ 双向指引（产物才是有意的那份 ⇒ `--write`；段才是 ⇒ 恢复段再 `--check`）。
+   `firstDifference` 改为导出复用。
+2. 删除 `EXPECTED_SEGMENTS` 常量与 `inspectClientSource` 的段集合对账分支；`test/client-source.test.mjs`
+   / `test/prepare.test.mjs` 的相应用例改为断言新行为（并把「`scripts/` 下无手工段名清单」机器化）。
+3. `docs/check-refs.mjs`：段名断言改为「§5.1 文档表段名集合 == 磁盘 `src/` 段名集合（含顺序）」，
+   不再 import 常量（改 import `CLIENT_SRC_DIR` / `segmentNames` + `readdirSync`）。
+4. 口径同步：`CONTRACT.md` §23.1 表格行 + §23.2 新增不变式 8；`src/README.md` 规则 1。
+5. `LOCALE-SYNC` 双端核对**保留**（未动 `locale-pack.mjs`）：它与 DRIFT 正交 —— locale 门管「词典
+   ↔ 生成段」的**定位**，DRIFT 管「段 ↔ 产物」的字节一致。
+- **`prepare` 只读一次 `client.js`**：主流程一次 `readText('client.js')` 传给 `inspectClientChunks(source)`
+  与 `inspectClientSource(..., { clientSource })`；为保 `scripts/prepare.mjs` 的行锚点（86/135/180/183/186
+  与 180-183、170-186 区间），改动走**行数中性**，`docs/refactor-plan.md` 的既有行引用无需重算。
+
+### 实测（判据 1/2/3/4/6/7/8）
+- **负向对照（三种不完整都红）**：一次性副本里 ① 删 `12-update.js`；② 加 `17-extra.js`；③ 在
+  `12-update.js` 里插一行 ⇒ `prepare` 三条全 `FAIL CLIENT-SRC-DRIFT`，消息均含「首处差异在第 N 行」
+  与「node scripts/client-build.mjs --write」（端到端断言在 `test/prepare.test.mjs`，纯函数用例在
+  `test/client-source.test.mjs`）。③ 正是 g-076 的遗留缺口：旧的集合对账只管段名，段内漂移在**安装
+  现场**发现不了（只有 `client:check` 管）。
+- **正向证明（无需清单）**：副本里把 `src/16-boot.js` 在连续区间内切成 `16-boot.js` + `17-boot-tail.js`
+  （合法重切）⇒ `--write` 后产物与基线**逐字节一致**（`cmp` ok，故报「未落盘」）。同一操作在**旧实现**
+  （5b5c95f 的 scripts/）⇒ `prepare` exit 1、`FAIL CLIENT-SRC-SEGMENTS`（「多出 17-boot-tail.js」）；
+  新实现 ⇒ exit 0、`ok CLIENT-SRC: src/ 下 18 个段文件与 client.js 逐字节一致`。再把 §5.1 表拆成两行
+  （**只改 `docs/refactor-plan.md`，`scripts/` 与测试零改动**，`grep EXPECTED_SEGMENTS scripts/` = 0 命中）
+  ⇒ **四道门禁全 exit 0**（`check-refs` 输出 `table §5.1 段名集合: 与磁盘 src/ 一致（18 段）`）。
+- **判据 4 两条负向**：改**文档** §5.1 段名（`12-update.js` → `12-updates.js`）⇒ `check-refs` exit 1
+  「文档缺 12-update.js；文档多出 12-updates.js」；改**磁盘**段名（→ `12-updated.js`）⇒ exit 1
+  「文档缺 12-updated.js；文档多出 12-update.js」。
+- **IO / 耗时**：`inspectClientDrift` 单次 median **8.4 ms**（min 7.4 / max 14.6）；新增读取
+  **769 KiB** = `src/` 段 610 KiB + chunk 文件 158 KiB；**`client.js`（610 KiB）零重复读** —— 主流程注入
+  已读字节，并用例以「不存在的 packageDir + 注入 clientSource」证明它不再读盘（否则会红）。端到端
+  `prepare` 旧 vs 新（各 15 次，中位数）：**98.6 ms → 109.9 ms**（+11.3 ms；其中约 65 ms 是 Node 启动）。
+  残余：chunk 文件被 `inspectClientChunks` 与 `renderClient` 各读一次（158 KiB，~2 ms）。
+- **安装路径**：`npm pack`（会触发 npm 的 `prepare` 生命周期）⇒ prepare **OK 25 项**、打包成功；解开
+  tarball 后在包内跑 `prepare` 与 `client-build --check` 均 exit 0 ⇒ **registry tarball 路径不受影响**
+  （tarball 里 `src/` 与 `client.js` 同一份字节；registry 安装默认不跑 prepare）。
+- **CRLF 检出（新增 FAIL 路径的唯一边界，实测）**：**全 CRLF** 检出（`src/` + `client.js`）下**旧实现
+  也** exit 1（`CHUNK-STAMPS`：client.js 里解析不到 CHUNK_STAMPS；外加 `LOCALE-SYNC` 段定位失败）⇒
+  DRIFT 没把「本来能装的形态」变成装不上；**半 CRLF**（只有 `src/` 一段）才会在 DRIFT 上红（「段首
+  声明行必须独占一行」）。仓库当前**无 `.gitattributes`**，要做 Windows/autocrlf 加固需新增
+  `*.js text eol=lf` —— 超出本目标 5 项边界，记入后续目标。
+- **验收**：`client-build --check` / `locale-pack --check` / `prepare` / `check-refs` 全 exit 0；
+  `node --test test/*.test.mjs` = **966 pass / 0 fail**（基线 965，新增 1 个 g-077 用例块）；
+  `git diff --exit-code packages/dsh-prompt-setting/client.js` 退出码 **0**（产品字节零改动）。
+
+### 残余 / 明确不做
+- **重切后仍需同步的 2 处是开发侧资产，不是发布面清单**：`docs/refactor-plan.md` §5.1 表（不同步则
+  `check-refs` 红，这正是它的职责）与 `test/client-source.test.mjs` 里写死的 §5.1 区间表（「零移动」
+  坐标；实测重切副本里该文件 6 条红）。发布面（`prepare` / `client:check`）**零同步** —— 这正是本目标
+  相对 g-076 消掉的那一处（`scripts/` 常量）。判据 3 字面的「四道门禁全绿」只有在**同步 §5.1 表之后**
+  成立（本文件已实测两种情况）。
+- 「诱饵段」残余（g-076 项 4）**未被本目标覆盖**：那是 `locale-pack` 对 `zh`/`en` 块的段**定位**歧义，
+  DRIFT 只比对产物字节、不参与定位（多候选仍是拒绝）。
+- 不做：不引入 bundler / 第二真源，不动 `CHUNK_STAMPS` 语义与任一 `data-*` marker，不降级任何 FAIL，
+  不自行 commit（按本次 directive，改动留在 worktree 待主管复核）。
+
+## 160. g-078：发布前 `verify` —— 一条命令跑齐全量测试 + 四道门禁 + 文档引用体检（2026-10-17，基线 `edbe034`，隔离工作树 `g-078-att-01`）
+
+### 为什么需要它
+本项目**没有 CI**。`docs/refactor-plan.md` §6.2 的「新增段无需改任何清单」在 g-077 之后由
+`CLIENT-SRC-DRIFT`（`src/` ↔ 磁盘产物逐字节一致）守住，但产物本身也是变更的一部分 ——「删段 +
+`--write`」这种**已固化**的段集合变化，`prepare` 的发布门再也发现不了。段集合的机器校验因此全部
+落在**开发侧**（`test/client-source.test.mjs` 的坐标表、`docs/check-refs.mjs` 的 §5.1 对账、全量
+用例），而发布者发布前不跑测试时它们形同不存在。负责人 2026-10-17 裁决：**不**把手工清单塞回
+`prepare`（会重蹈 g-076 与 §6.2 的冲突），改为补一条 `verify` 命令。
+
+### 实现（交付清单）
+1. 新增 `scripts/verify.mjs`：`spawnSync(process.execPath, …)` 串行跑 6 步，**聚合报告、不
+   fail-fast**；每步一行 `ok`/`FAIL` + 耗时；失败步骤在汇总前打印退出码 + 输出尾部（stderr 优先，
+   stderr 为空时退到 stdout —— `check-refs` 的不符项写在 stdout）；末尾 `verify: N 步 / M 失败` 并
+   点名失败步骤；退出码只有 0/1。包根从 `import.meta.url` 推导、子进程 `cwd` 固定为包根 ⇒ 与调用者
+   cwd 无关。`test/` 的用例文件用 `readdirSync` 展开（`spawnSync` 不经 shell、Node `--test` 也不
+   展开 glob；Node 24 下 `node --test test/` 会 `MODULE_NOT_FOUND`）。聚合逻辑（`summarize` /
+   `formatStepLine` / `formatFailureDetail` / `tailLines` / `stepOk`）是导出纯函数，`runStep` /
+   `main` 可注入 `spawn`（单测不启动子进程）。
+2. `package.json`：`"verify": "node scripts/verify.mjs"`。`scripts` 区在 `package.json` 第 34-40 行、
+   `docs/check-refs.mjs` 的 `package.json` 锚点（15 / 19 / 22-33 / 27）全在其前 ⇒ 无需重算行引用。
+3. `README.md`：维护者代码块加一行 `npm run verify`；新增「发布前 verify / Pre-release verify」小节
+   （怎么跑、何时跑、唯一调用位置 = 包目录且仓库根等价、与 `prepare` 的分工）；`npm pack` 文件数
+   顺手校正为实际值（基线 **56** → 含本脚本 **57**；README 原写的 36 早已过时，本次按实测更正）。
+4. `test/verify.test.mjs`：14 个用例。用假结果数组驱动纯函数、用注入 `spawn` 驱动 `runStep` /
+   `main` —— **不为测 verify 跑整套 ~58s 的用例**（brief 要求）。覆盖：全绿 ⇒ 0 失败/exit 0；任一
+   步失败 ⇒ exit 1 且点名；多个失败全部点名；signal / spawn error 不算通过；每步一行的格式；stderr
+   空时退 stdout；尾部行数上限；步骤清单顺序（test 在最后）；`readdirSync` 展开且包含本文件；子进程
+   cwd 恒为包根；主流程在**中间步骤失败后仍执行剩余步骤**（fake spawn 记录调用数 = 6）。
+
+### `real-layers-check.mjs` 是否纳入：**不纳入**
+三个理由（brief 要求把结论写进脚本注释与本节）：① 它读的是负责人这台机器上的两份**活配置**
+（`~/.dsh/prompt-setting/overrides.json` 与仓库工作区层），别处文件缺失即 exit 1 —— 纳入后「发布前
+检查」会依赖本机私有数据（假红 / 恒红）；② 脚本头部自述「只读、一次性、**不属于 `node --test`
+套件**」，把它接进 verify 等于把一次性证据核对变成发布门；③ 它核对的是 g-057/g-058 的历史装配
+语义，不是「仓库状态合规」。真正的覆盖在套件里的合成夹具（`test/overrides.test.mjs` 等）。
+`check-compat` 则**保留**：只读诊断、退出码恒 0，不构成门禁，但发布前一次性看到 peer 范围 / boot
+失败签名有价值（它若自身崩了也兜底 exit 0，不会误挡发布）。
+
+### 实测（判据 1/2/3/4/5/6/7）
+- `npm run verify`（包目录）⇒ `verify: 6 步 / 0 失败`、**exit 0**；耗时：check-refs 89ms /
+  client-build --check 74ms / locale-pack --check 71ms / prepare 103ms / check-compat 58ms /
+  test 60.6s。
+- **cwd 无关**：仓库根 `node packages/dsh-prompt-setting/scripts/verify.mjs` ⇒ 同步骤同结果
+  **exit 0**（子进程 cwd 恒为包根，见 `test/verify.test.mjs` 的注入断言）。
+- **负向对照②（副本改坏段）**：副本 `src/12-update.js` 末尾加一行注释（不改 `client.js`）⇒
+  `FAIL client-build --check`（首处差异第 9036 行）、`FAIL prepare`（`CLIENT-SRC-DRIFT`）、
+  `FAIL test`（坐标表 / 产物断言），verify **exit 1**、`verify: 6 步 / 3 失败`、失败步骤点名三者；
+  check-refs / locale-pack / check-compat 仍绿。
+- **负向对照③（副本让中间步骤红，证明不 fail-fast）**：副本 `docs/refactor-plan.md` §5.1 把
+  `12-update.js` 改成 `12-updates.js`（磁盘不动）⇒ `FAIL check-refs`（「文档缺 12-update.js；
+  文档多出 12-updates.js」），**后续 5 步仍全部执行**（client-build / locale / prepare / check-compat /
+  test 均 ok），verify **exit 1**、`verify: 6 步 / 1 失败`、`失败步骤：check-refs`。
+- **负向对照①（还原后）**：同一副本把段名改回 ⇒ `verify: 6 步 / 0 失败`、**exit 0**。
+- 全量测试：**980 pass / 0 fail**（基线 966 + 新增 `test/verify.test.mjs` 14）。
+- 四道门禁 exit 0（verify 内）：`check-refs`、`client-build --check`、`locale-pack --check`、
+  `prepare`；`git diff --exit-code packages/dsh-prompt-setting/client.js` = **0**（产品字节零改动）。
+- `npm pack --dry-run`：**57 个文件**（基线 56 + `scripts/verify.mjs`）；tarball 里没有 `test/` 与
+  `docs/`，所以 verify 本来就不该在安装现场跑。
+
+### 返工 T（评审 rev-att-001-01 的 4 条非阻断残余：修 T1/T2/T3；C/D 保留）
+- **T1（修，静默漏跑）**：`listTestFiles` 原先只筛 `*.test.mjs`，副本里加 `test/zzz-extra.mjs` 会被
+  静默跳过（verify 仍全绿 = 防线有洞却不报警）。抽出 `checkTestFiles(entries)`：`test/` 下任何 `.mjs`
+  不以 `*.test.mjs` 结尾 ⇒ 抛错并点名该文件 + 给出改法；`main` 捕获后打印一句并 **exit 1**（不静默、
+  不抛堆栈）。正常树 23 个文件全部合规。
+- **T2（修，安装现场误跑）**：`scripts/` 在 `files` 白名单里，所以用户一定会在装好的包里跑到它；
+  原先这里是未捕获的 ENOENT 堆栈。新增 `looksLikeRepositoryCheckout(dir)`（`test/` 不存在、或其中
+  没有 `*.test.mjs` ⇒ false），`main` 在调用 `listTestFiles()` **之前**判定，打印「verify 只在仓库
+  checkout 里跑 … 安装现场请用 node scripts/prepare.mjs 自检」并 **exit 1**（仍非零，误跑不算通过）。
+- **T3（修，挂死）**：`spawnSync` 加 `timeout: STEP_TIMEOUT_MS`（**15 分钟**）。超时后
+  `error.code === 'ETIMEDOUT'` ⇒ `stepOk` 判 FAIL；`formatFailureDetail` 第一行写
+  「超时 timeout=900000ms」，不再显示误导性的 signal 行。
+- 单测：`test/verify.test.mjs` 14 → **18**（T1/T2/T3 各一组 + checkout 检测），仍**不跑全量套件**。
+- 副本实测：① 加 `test/zzz-extra.mjs` ⇒ verify **exit 1**、消息点名 `test/zzz-extra.mjs`；
+  ② 删 `test/`（模拟安装后的包）⇒ verify **exit 1**、输出为那句说明（含 `prepare.mjs`）、**无堆栈**。
+- 全量：**984 pass / 0 fail**（980 + 新增 4）；四道门禁 exit 0；`client.js` diff **0**。
+
+### 残余 / 明确不做
+- `verify` 随包发布（`files` 含 `scripts/`），但它在安装现场**不适用**（包里没有 `test/` 与
+  `docs/`，会红）—— 有意的，README 写明它只在仓库 checkout 里跑。要让它在安装现场也绿就得把测试
+  与文档也打进包，那与「`files` 白名单 = 运行时所需」冲突。
+- `prepare` 与 `client-build --check` 会重复做同一次「段 ↔ 产物」比对（~70-100ms）；两个入口各自
+  独立、失败措辞面向不同读者（安装现场 vs 开发侧），有意保留重复，不抽公共 CLI。
+- 不引入 CI、不引入新依赖（`dependencies` 仍为空）、不改产品行为、不自行 commit。
+
+---
+
+## 161. g-079：遗留残余清理 —— `.gitattributes` 跨平台检出 / `check-refs` fail-closed / 诱饵段「含闭合」/ `real-layers-check` 去留（2026-10-17，基线 `1117c42`，隔离工作树 `g-079-att-01`）
+
+本目标清 g-075～g-078 评审标记但未阻断交付的 4 项残余。**零产品行为改动**：
+`packages/dsh-prompt-setting/client.js` 的 `git diff --exit-code` 退出码 **0**。
+
+### 项 1（已修）仓库根 `.gitattributes`
+- **先探测后落笔**：加文件前 `git ls-files --eol` 实测 **89 个文本文件全部 `i/lf w/lf`**、
+  唯一非文本是 `assets/hero.jpg`（`i/-text`）；`git ls-files -z | xargs -0 grep -lP '\r$'`
+  无命中，`core.autocrlf` 未设置。⇒ 当前工作树没有需要归一化的 CRLF。
+- **落地内容**：`* text=auto` + `*.js` / `*.mjs` / `*.json` / `*.md` 各自 `text eol=lf`。
+  只钉这四类，是因为**按字节比对**的东西全在它们里（`client.js` 指纹、`src/` 段拼接、
+  locale 生成段、文档引用体检）；`.yml` / 图片等不参与字节门禁，交给 `text=auto`
+  的二进制探测即可，不必扩大约束面。
+- **未触发 renormalize（关键判据）**：加完 `.gitattributes` 后 `git status --porcelain`
+  只有 `?? .gitattributes`（新文件本身），`git status --porcelain -uno` **为空**、
+  `git diff --stat` **为空** ⇒ 没有已跟踪文件被重写，**不需要也不允许** `git add --renormalize`。
+- **有效性实测（一次性临时仓库，非本仓库）**：把一份**CRLF** 的 `x.js` 在带本
+  `.gitattributes` 的仓库里 `git add` ⇒ 索引存 `i/lf`（`git ls-files --eol` =
+  `i/lf w/crlf attr/text eol=lf`）；再以 `core.autocrlf=true` 重新检出 ⇒ 工作树回到
+  `i/lf w/lf`、字节为 LF。⇒ Windows 检出不会再给 `.js` 带 CRLF。
+- **负向对照（预期行为，不是要消除）**：副本里把 `src/02-locale.js` 改成 CRLF ⇒
+  `node scripts/client-build.mjs --check` **exit 1**（`CLIENT-SRC-DRIFT` 类红的正身）。
+- 未验证：真 Windows 机器未实测（本机 macOS，用 `core.autocrlf=true` 临时仓库模拟）；
+  该项的判据是「索引/检出字节与属性」，模拟覆盖了机制本身。
+- **已有 CRLF 工作区的迁移（返工 U3，Windows / 旧 checkout 操作指引）**：若工作区在**加
+  `.gitattributes` 之前**就已按 `core.autocrlf=true` 检出（磁盘全是 CRLF），切到含
+  `.gitattributes` 的提交后：`git status` **0 行**、`git diff` **空**、磁盘**仍是 CRLF**
+  （属性只在下一次写 blob / checkout 时生效）—— 此时门禁会红：`client-build --check`
+  exit 1（「段首声明行必须独占一行」）、`locale-pack --check` exit 1（「真源缺失」）。
+  实测 `git add --renormalize` 是**空操作**、`git checkout -- .` **不重写**（git 认为工作树
+  没变）。有效做法（任选其一）：`git checkout-index -a -f`（强制按索引重写全部文件，
+  **会覆盖未提交改动，先保存/提交**）；或删掉相关文件后重新 `git checkout`；或重新克隆。
+  这是一次性迁移，之后新增/切换分支都会按 `.gitattributes` 产出 LF。
+
+### 项 2a（已修）`check-refs` 恒等式变成真实失败判定
+- **改法**：把 `unresolved` 从「`failures.length` 混装」拆成**引用级失败计数**；表格复算与
+  `REFS\declared` 的失败单独计入 `其它失败`，不参与恒等式。新增
+  `total (declared + unowned) == verified + rangeOnly + manual + unresolved` 的断言；
+  不成立 ⇒ push 进 failures 并 **exit 1**。输出从「只打印算式」改为
+  `... = 153 == 132 + 0 + 21 + 0 → 成立/不成立（已计入失败，非零退出）`。
+- **为什么拆计数**：混装时表格坏掉会让恒等式假红、真有引用被静默丢弃时反而可能凑巧相等；
+  拆开后恒等式只回答一个问题 ——「有没有引用没落进四类计数」。
+- **负向对照（一次性副本，已还原）**：注释掉 `verified += 1;`（模拟某条引用被静默丢弃）⇒
+  `check-refs` **exit 1**，输出 `153 == 0 + 0 + 21 + 0 → 不成立`，不符项点名
+  「恒等式不成立：total=153 ≠ …（有引用被静默丢弃或重复计数）」。正常树仍 **exit 0**。
+
+### 项 2b（已修）未覆盖引用形态显式可数 + 弱断言逐条结论
+- **为什么选 (b) 而不是 (a)**：裸数字（`（212）`、`185–198`、行内代码 `` `2313` ``）**不带文件名**，
+  强行归属只能靠「当前标题/同行文件名」的猜测；猜错会把体检变成假红源。所以只**计数**并
+  `--verbose` 逐条列出（`line: text`），人工核对有清单可循，但脚本不冒充能判定其内容。
+- **实测输出**：`未覆盖的引用形态：113 处（行内代码裸行号 21 / 括号裸行号 25 / 裸区间 67）；
+  其中 41 处是 §1.3/§5.1 的区间列（已由行数复算覆盖），其余 72 处仅计数、不判内容`。
+  计数是**上界**：裸区间里混有「加 30–80 行」这类行数估算与尺寸数字，脚本不区分语义 ——
+  这条边界如实写在脚本注释与输出措辞里。
+- **弱断言逐条结论**（判据：`expect` 只命中通用串/纯符号，换一条同类型行也能命中）：
+
+  | # | 引用 | 原 `expect` | 处理结论 |
+  |---|---|---|---|
+  | 1 | `client.js:12129` | `return {` | **收紧** → `return { failed: true };`（整条语句） |
+  | 2 | `scripts/prepare.mjs:9` | `零编译包` | **收紧** → `本包是零编译包（无 bundler / JSX / TypeScript` |
+  | 3 | `README.md:116` | `零编译` | **收紧** → `**零运行时依赖、零编译 / Zero runtime dependencies, zero compilation**` |
+  | 4 | `NOTES.md:3635` | `零编译` | **收紧** → `本包是**零编译**包（无 bundler / JSX / TypeScript）` |
+  | 5 | `scripts/prepare.mjs:162` | `零编译` | **收紧** → `prepare：发布就绪自检（本包零编译；…)` |
+  | 6 | `README.md:339` | `零编译` | **收紧** → `（本包零编译，客户端入口 client.js 是 src/ 的生成物` |
+  | 7 | `scripts/prepare.mjs:170-186` | `try {` | **收紧** → `stripEquals: "try {"`（trim 后逐字相等，不再是子串） |
+  | 8 | `test/boot.test.mjs:56` | `client.js` | **收紧** → 整条 `const clientSource = readFileSync(join(packageRoot, 'client.js'), 'utf8');` |
+  | 9 | `test/client.test.mjs:10` | `Run:` | **收紧** → `Run: \`node --test test/\`` |
+  | 10 | `core/store.js:280-297` | `/**` / `*/` | **只能弱断言**：端点行只有 JSDoc 起止标记，`stripEquals: '/**'` 已是上限；加 `weakReason` 并在输出里逐条披露（脚本打印「弱断言披露：1 条」+ 理由）。块内语义由 `core/store.js:280-296` 条目的 `at=281` 断言覆盖 |
+
+  选择口径：上表 10 条是「通用词/纯符号」类；`__internals`、`scrimStyle`、`size > 50000`、
+  `BLOCK_OPEN` 等是**该行独有的标识符**，不属于弱断言，未改动（也不为凑数改）。
+- 正常树：`total=153 | verified=132 | rangeOnly=0 | manual=21 | unresolved=0`、恒等式成立、
+  exit 0；`REFS\declared=26` 的独立校验照旧通过。
+- **这是披露，不是护栏**（评审 (H)）：「未覆盖的引用形态：113 处」只说明脚本**知道自己没判**
+  这些，**不得**被引用为「裸行号已校验」或「覆盖率 100%」；它们仍不在自动判定内。
+- **收集域下限（返工 U4）**：恒等式只能发现「某条引用没落进计数」，发现不了「收集器整体
+  失效」——评审实测：注释掉 `file:line` 分支的 `declared.set` ⇒ `total` 153→62，四个计数
+  仍自洽、恒等式仍「成立」、脚本 exit 0。现加下限 `total < 100 ⇒ 计入 failures`（阈值理由：
+  基线 153、塌掉后 62，取 100 容得下正常增删又不给整体失效留活口）。负向对照实测
+  `total=62` ⇒ 恒等式仍成立但 exit 1「收集域可能失效：只收集到 62 条引用（下限 100）」。
+- **既有弱点（不修）**：REFS 里另有约 54 处**端点断言串**偏弱（`}`、`*/` 这类），属评审
+  点名的既有弱点、不在本次「8 条」范围；本次未改，如实记录。
+
+### 项 3（已修）`findLocaleSegment` 拒绝「真源缺失 + 注释含完整可解析块」的诱饵段
+- **改法**（四道判据，命中 0 个或多个仍 fail-closed）：候选段除了「两个块都能被
+  `readDeclaredBlock` 解析」之外，还要求 ① 两个块**区间不重叠**；② 块内**每行都符合
+  生成器输出格式**（6 空格缩进 / `key: 'value',` / 引号规则）；③ 键序列与 `locale/*.json`
+  **描述同一本词典**（`shared / min(|段|,|JSON|) ≥ 90%`）；④ 较小一侧键数 **≥ 50**
+  （`LOCALE_KEY_MIN_SHARED`，挡「只有几个示例键」的注释诱饵）。
+- **键判据的两次修正（返工 U1，必读）**：最初用 `shared / max(|段|,|JSON|)`（严格相等的放宽版），
+  评审实测证明它是**相对基线的行为回归**：纯加 N 键得分 `S/(S+N)`，586 键时 **+66 键**
+  就掉到 90% 以下 ⇒ `--write` 报「真源缺失」，而基线在同样副本里 exit 0（`+80 键` 更明显）；
+  历史最大批量 +51（515→566）距失败只差 6 键。现在改为 **`min` 分母 + 规模下限**：纯加键 /
+  纯删键恒为 100%（候选是 JSON 的子集 / 超集），改名约 99.8%，**批量加键永远不会因为
+  「JSON 一次加太多」被误判成真源缺失**；`min ≥ 50` 挡小诱饵 —— 用例里的诱饵刻意用
+  **两个真实键**（重合度 100%），靠规模下限才被拒，证明第 ④ 道判据真的在起作用。
+- **失败文案区分两种情形（返工 U2）**：`LOCALE-SOURCE-MISSING`（没有任何段能解析出两个块
+  —— 真源缺失 / 未迁移）与 `LOCALE-SOURCE-BROKEN`（有段可解析但都不满足判据 —— 段被改坏 /
+  格式不对 / 漂移过大）。两种都**不再**指引「先跑 `--write`」：这条失败路径下 `--write`
+  同样定位不到目标，旧文案会形成死循环式困惑；`--check` 对 (b) 的指引改为
+  「检查该段是否被改坏 / 与 JSON 差得太多」。
+- **三格矩阵行为**（全部有用例）：① 真源在 + 无闭合诱饵 ⇒ 命中真源（新增断言）；
+  ② 真源缺 + 无闭合诱饵 ⇒ 「真源缺失」（原有断言保留）；③ 真源缺 + **含闭合**诱饵 ⇒
+  「真源缺失」（新增；旧实现会命中、`--write` 会写坏该段）。
+- **端到端负向**：一次性副本把真源段换成注释诱饵后，`--check` 与 `--write` **均非零**
+  （消息含「真源缺失」），stderr **不出现**「先跑 … --write」，且 `client.js` 与段文件
+  **逐字未变**（脚本不写坏任何文件）。
+- **不回归**：`+1 键` 与 **`+80 键`（586→666）** 两个用例；后者实测 `--write` exit 0、
+  新键进 `src/` 段与 `client.js`，且 `client-build --check` / `locale-pack --check` /
+  `prepare` 全绿（`CHUNK_STAMPS` 仍 5 项、`LOCALE-SYNC` 666 键）。`test/locale.test.mjs`
+  11 → **15** 个用例。
+
+### 项 4（只评估，未实施）`scripts/real-layers-check.mjs` 的去留
+- **结论：移出 `scripts/`，落到 `docs/`（推荐）；未在本目标实施。**
+- **理由**：① `npm pack --dry-run` 实测它**随包发布**（57 个文件里含
+  `scripts/real-layers-check.mjs`），而它读的是本机两份**活配置**，对用户无意义、跑起来会红；
+  ② 它是开发期真机证据工具，与 `docs/check-refs.mjs` 同类 —— 后者正是靠「`docs` 不在
+  `files` 白名单」而**不随包发布**，先例现成；③ `scripts/` → `docs/` 同为包根下一级，
+  `../core/*` 的相对 import 不需要改，只需改 `verify.mjs` 注释与脚本内用法行的路径，
+  **不必动 `files`**（也就不触发 `test/host.test.mjs` 对 `files` 数组的精确断言）。
+- **不选「加 `files` 取反」**：虽然也能达到不发布的效果，但它改的是**发布面契约**
+  （`files` 数组被测试逐字钉住），成本更高、收益相同。
+- 本目标要求「只评估」且移动属文件路径变更（虽零产品行为），留给负责人裁决/另立目标；
+  未实施。
+
+### 验收与证据（本 attempt，含返工 U）
+- four gates（包目录）：`client-build --check` / `locale-pack --check` / `prepare`
+  （25 项通过）/ `docs/check-refs.mjs` **全部 exit 0**。
+- 全量测试：**988 pass / 0 fail**（返工前 987；新增「+80 键」1 条），
+  `node --test test/*.test.mjs` exit 0。
+- `git diff --exit-code packages/dsh-prompt-setting/client.js` **exit 0**（产品字节零改动）；
+  `git status --porcelain` 仅本次 4 个文件的预期改动（`.gitattributes` 已随上一轮提交入库）。
+- **返工 U 的验收实测**：① `+80 键` ⇒ `--write` exit 0、`666 键/语言`、新键进段与产物，
+  `client-build --check` / `locale-pack --check` / `prepare` 全绿（`CHUNK_STAMPS` 5 项不变 ⇒
+  加词典键不牵动 chunk 清单；指纹随 `client.js` 重建而变，段↔产物仍逐字节一致）；
+  ② `+1 键` ⇒ exit 0（用例保留）；③ 2 个**真实键**的诱饵 ⇒ `--check`/`--write` 均 exit 1、
+  文件未写坏、stderr 不再出现「先跑 --write」；④ 既有 3 个 locale 用例语义不变；
+  ⑤ U4 负向：注释掉 `file:line` 分支的 `declared.set` ⇒ `total=62`、恒等式仍成立、**exit 1**。
+- 未验证 / 残余：① 真 Windows 未实测（模拟见项 1，已有 CRLF 工作区的迁移步骤已写入）；
+  ② 项 4 未实施；③ 未覆盖引用计数是**上界且只是披露**（含行数估算/尺寸数字，不是护栏）；
+  ④ 键判据是 `min` 分母 + `min ≥ 50` 而非严格相等：注释里若复制 **≥50 个真实键**仍可能
+  被当成候选，而「完整词典逐字复制进注释 + 删真源」的目标已接受的极端情形仍未覆盖；
+  ⑤ 既有约 54 处端点断言串偏弱，不在本次范围，未改。
+
+## 162. g-080：`cwd` 变量弃用的向下兼容探测（2026-10-17，基线 `748845d`）
+
+### 背景与事实
+- 负责人：DSH `0.2.1-rc.1` 起 `cwd` 变量已弃用，插件需做向下兼容的探测。
+- 真机核对（`0.2.1-rc.2`）：`dsh-agent-loop` 只注册 `provider`/`model`（`lib/index.js:1591-1592`），
+  `dsh-system-prompt/README.md` 明确「custom persona 不得依赖 `{{cwd}}`」；shipped presets 只剩
+  `{{model}}`（7 文件 × 1）。旧快照（`0.2.0-rc.2`）为 7 × 2 = 14 处、3 个注册变量。
+- 插件里被这次弃用影响的两处：① 面板 `mineInterpolateNote` 仍宣传 `{{cwd}} → 工作目录`；
+  ② 写入校验在未注册时报 400（本身正确，但错误消息读起来像拼错）。
+
+### 实现（4 个落点，零新增 key / 零新增路由 / 行数中性）
+- **探测源 = 运行时变量表，不是版本号**：`GET /prompt-setting/interpolate` 的 `variables`
+  （`ensureVariables()` 缓存的一次真实 `assemble()` 键集）本就存在，页面在加载/`reload` 时读它，
+  存进新 state `mineVariables`（13 段）；`null`（探针失败 / 旧 Host）不猜。
+- **文案**（locale 现有 key `mineInterpolateNote`，仅改字符串内容）：由固定列举 `{{model}}/{{cwd}}/{{provider}}`
+  改为 `{list}` 占位 + 一句 `{{cwd}}` 弃用说明；`fmt` 填充实际注册名。旧版 DSH 列表里仍有 `{{cwd}}`、
+  旧语义不变，新版不列并点名 `0.2.1-rc.1` 与「字面量 / 保存被拒」两个后果。
+- **写入/开启校验**（`core/interpolate.js` `describeInterpolateErrors`）：仅当被拒的是**未注册**的
+  `cwd` 且表里没有它时，追加一句迁移提示；状态码、错误码、`Fix:` 尾句、零字节保证都不变。
+- **行数中性**：`client.js` 保持 12382 行（13/15/10 段都在原位改动、删等量注释），
+  `docs/refactor-plan.md` §1.3/§5.1 两张表与全部 `client.js:行` 引用零漂移；只有 `client.test.mjs`
+  因新增用例整体 +14 行，`check-refs.mjs` 与 refactor-plan 里指向它的 8 处行号已同步。
+
+### 验收与证据
+- 全量测试：**990 pass / 0 fail**（基线 988；新增 `g-080 describeInterpolateErrors` 1 条、
+  `g-080 client` 探测矩阵 1 条）。`test/client.test.mjs` 304/304。
+- `node scripts/verify.mjs`：**6 步 / 0 失败**（check-refs / client-build / locale-pack / prepare /
+  check-compat / 全量测试）。
+- `client-build --check`：17 段逐字节一致，`CHUNK_STAMPS` 5 项与磁盘一致；`locale-pack --check`：
+  586 键/语言不变（本目标未新增 key）。
+- `docs/check-refs.mjs`：exit 0（`total=156 verified=132 rangeOnly=3 manual=21 unresolved=0`）。
+
+### 残余 / 明确不做
+- 不自动改写用户已存的 `{{cwd}}`：升级后它保持字面量（宽松展开），面板与失败消息说明原因；
+  是否迁移由用户决定。
+- 探测只覆盖当前 profile 的 global 变量表（与写面同一份），不猜 per-agent 注册；
+  `variables: null` 时显示 `?`。
+- 未在真机 `dsh web` 里做视觉复核（离线测试 + 现有门禁；文案位置/结构未变，仅内容与占位符替换）。
+
+
+## 163. 版本号 `0.2.2` → `0.2.4`：跳版事实、同步点清单、盲点核对与 pack 复核（g-081，2026-10-18，基线 `d95e879` 隔离工作树 `g-081-att-01`）
+
+### 一、为什么直接 0.2.2 → 0.2.4（0.2.3 从未发布）
+
+`git show main:...` 与 CHANGELOG 双向核实：`main` 最新发布提交是 `1d2543a`「release: v0.2.2」（其父
+`445ad6d` 是本包 0.2.2 升版提交），CHANGELOG 的版本段只有 `[0.2.2]` 及更早，**没有 `[0.2.3]` 段**。
+v0.2.3 的计划条目（g-065…g-074）与 v0.2.4 的（g-075…g-080）一直并存在 `[Unreleased]` 里，因此本轮
+直接 `0.2.2` → `0.2.4`，并把 **v0.2.3 + v0.2.4 的条目一起**定稿进 `[0.2.4]` 段；`0.2.3` 只作为
+历史夹具值存在，不是发布过的版本。
+
+### 二、发布范围核实（`git merge-base --is-ancestor`）
+
+`main` 是 HEAD 祖先（`git merge-base main HEAD` = `445ad6d`），`main..HEAD` = **42** 个提交。逐目标代表
+提交双向核实：**都是 HEAD 的祖先、都不是 `main` 的祖先**（命令：`git merge-base --is-ancestor <sha> HEAD`
+与 `... <sha> main`）：
+
+| 目标 | 代表提交 | HEAD 祖先 | main 祖先 |
+| --- | --- | --- | --- |
+| g-065 | `629afe8` | YES | NO |
+| g-066 | `d4e470b` | YES | NO |
+| g-068（调查，无独立提交；结论落 g-069） | — | — | — |
+| g-069 | `8209399` | YES | NO |
+| g-070 | `a9fa57a` | YES | NO |
+| g-071 | `adf4881` | YES | NO |
+| g-072 | `ba9542d` | YES | NO |
+| g-073 | `5f3efff` | YES | NO |
+| g-074 | `b791545` | YES | NO |
+| g-075 | `d3db711` | YES | NO |
+| g-076 | `0006cd6` | YES | NO |
+| g-077 | `edbe034` | YES | NO |
+| g-078 | `c7b3b52` | YES | NO |
+| g-079 | `5a41c86` | YES | NO |
+| g-080 | `d95e879` | YES | NO |
+
+### 三、同步的「本包当前版本」（27 处 / 10 文件，全部改为 `0.2.4`；行号为改后行号）
+
+| 文件:行 | 原值 | 说明 |
+| --- | --- | --- |
+| `package.json:3` | `"version": "0.2.2"` | 权威源① |
+| `index.js:214` | `PLUGIN_VERSION = '0.2.2'` | 权威源②（`host.test.mjs` / `client.test.mjs` 双 lockstep 断言） |
+| `README.md:13` / `README_zh.md:12` | 徽章 `version-0.2.2` | 两份根 README |
+| `README.md:118` / `README_zh.md:94` | `this repository is 0.2.2` / 「本仓库为 0.2.2」 | 安装段（与 npm `latest` 双写） |
+| `README.md:351` / `README_zh.md:289` | 文档表内同一表述 | 发布前如实区分 |
+| 包内 `README.md:287` / `:292` | 同上（中 / 英） | |
+| `CONTRACT.md:1677-1678` | §10 export 示例 `plugin.version` / `pluginVersion` | |
+| `CONTRACT.md:4291` | §13.8 版本节点文案 `v0.2.2` | |
+| `CONTRACT.md:4494` | §14 ping 示例 `version` | |
+| `CONTRACT.md:5872` / `:5900` | §17 update-check 两个示例的 `current` | |
+| `test/stage2.test.mjs:1292-1293` | `pluginVersion` / `plugin.version` 断言 | |
+| `test/update.test.mjs:65` / `test/install.test.mjs:70` | `OLD_TARBALL_URL`（本包已是的那版） | |
+| `test/update.test.mjs:151` / `test/install.test.mjs:766` | npm 文档里「本包当前版本」的条目键与 `version` | 上一版遗留的键 `0.1.5` 与 URL `0.2.2` 本已不一致，本轮一并对齐到 `0.2.4` |
+| `test/update.test.mjs:989` | ping 的 `body.version` 断言 | |
+| `test/route.test.mjs:603` | `hasUpdate` 注释「this package is …」 | |
+| `test/install.test.mjs:62` | 夹具规则注释 `0.2.2 → 0.2.3` | 改为 `0.2.4 → 0.2.5` |
+
+### 四、随本包版本移动的「更新目标」夹具（`0.2.3` → `0.2.5`，70 处 / 4 文件）
+
+这些夹具必须**高于**本包版本（`test/install.test.mjs:59-63` 的注释写明理由），否则「有更新」翻成
+「无更新」，route/install/update 的整片用例连锁塌掉。**不是机械 +1**：上一版夹具是 `0.2.3`，本包
+版本升到 `0.2.4` 后 `0.2.3` 已低于它，语义上必须整体上移到 `0.2.5`（本包版本的下一 patch）。
+
+| 文件 | 处数 | 说明 |
+| --- | --- | --- |
+| `test/install.test.mjs` | 30 | `ASSET_URL` / `TARBALL_URL` / `tag_name` 兜底、`npmDocument`、镜像与拒绝用例、`releaseUrl` 断言 |
+| `test/update.test.mjs` | 18 | `TARBALL_URL`、`releaseResponse`、`npmResponse` 的 `dist-tags` / `versions` / `time`，及消费它们的断言与假文档 |
+| `test/route.test.mjs` | 12 | `TARBALL_URL`、`updateTransport` 默认文档、`hasUpdate` 断言、假恶意 tarball 文档 |
+| `CONTRACT.md` | 10 | §17 npm/GitHub 示例的 `latest` / `latestTag` / `tarball` / `releaseUrl`（`:5873-5879`、`:5901-5904`）与 §18 install 示例的 `version` / `tag` / `releaseUrl` / `releaseLink`（`:6521-6522`、`:6543-6544`） |
+
+> 顺带校正上一版遗留的文档自相矛盾：§17 npm 示例原为 `current == latest == 0.2.2` 却写 `hasUpdate: true`。
+> 本轮按语义改为 `current: 0.2.4` / `latest: 0.2.5`，示例终于自洽。这是纯文档修正，无产品逻辑改动。
+
+### 五、README 的 npm `latest` 事实校正（实测，不凭记忆）
+
+`npm view dsh-prompt-setting dist-tags --json --registry=https://registry.npmjs.org/` ⇒
+`{"latest":"0.2.2"}`；`npm view dsh-prompt-setting versions --json` ⇒ `[…0.1.5, 0.2.0, 0.2.1, 0.2.2]`。
+即 **v0.2.2 已真发布**，而三份 README 仍写着「npm 上的 `latest` 为 `0.1.5`」——本轮校正为 `0.2.2`，
+并保留「本仓库为 `0.2.4`，发布后两者一致」的如实表述（不把未发布的 0.2.4 说成已发布）。
+`CONTRACT.md:3798` / `:6308-6330` 的 `dist-tags.latest = 0.1.5` 是 **2026-10-08 的实测记录**（历史
+事实，注明日期），本轮不改；新事实记在本节。
+
+### 六、刻意不改的白名单（逐类理由）
+
+1. **DSH 的版本**（不是本插件版本）：`package.json:54` 的 peer 范围 `<0.2.2-0`、`index.js:471` 的
+   `DSH_PEER_RANGE_FALLBACK` 与 `:460` / `:467` 注释、`core/compat.js:35` 的 `@param` 示例、
+   `test/host.test.mjs:164-168`（含**转义正则**）、`test/boot.test.mjs:329`–`:504` 的边界表、
+   `scripts/check-compat.mjs:214`、三份 README 的前置条件与 DSH 徽章（`<0.2.2-0`）；
+2. **历史段**：`CHANGELOG.md` 的 `[0.2.2]` 及更早、`NOTES.md` 全部历史叙述（含 §145、§162）；
+3. **镜像实测记录**：`CONTRACT.md` 的 `dist-tags.latest` = `0.1.5` 各处（2026-10-08 测得，历史事实）；
+4. **纯函数自洽举例**：`test/update.test.mjs:280` 的 `isNewerVersion('0.2.2', …)` 与 `:300-335` 的
+   `registryTarball` 举例（传什么断言什么，与当前版本无关；`TARBALL_URL` 本身已随夹具上移）；
+   `test/install.test.mjs:711` 的 `MIRROR_TARBALL`（`0.2.0`）；
+5. **客户端渲染夹具**：`test/client.test.mjs:1219`、`:1482-1483` 的 `0.1.5`（`updateFixture` /
+   `exportFixture` 的任意版本值，只驱动渲染，不断言包版本）；
+6. **测试替身注入的 `currentVersion`**：`test/update.test.mjs` 的 `makeChecker` 默认 `'0.1.1'` 及显式
+   `currentVersion: '0.1.5'` 各例（§127 先例，注入值不是本包版本）。
+
+### 七、盲点核对（本项目升版踩过两次，本轮逐类查）
+
+1. **转义正则形态**：按「字面反斜杠」查（`grep -rnF '0\.2\.4'`）除本节文档自身外 **0 处**；
+   `grep -rnF '0\.2\.2'` 只命中 `test/host.test.mjs:168`（**DSH peer 范围**的转义正则，与本包版本
+   无关）⇒ 本轮的「当前版本」断言没有转义正则形态，但仍按 §127/§134 跑全量兜底（990 全绿）。
+2. **夹具语义（本轮真实盲点，方向同 §145）**：`0.2.3` 必须整体上移到 `0.2.5`，而不是机械 +1；
+   逐处按「比本包版本高一档」核过。另发现上一版遗留的 `npmResponse` / `npmDocument` 旧版本条目
+   （键 `0.1.5` 配 `0.2.2` 的 tarball URL）本就不自洽，本轮一并对齐到 `0.2.4`，避免「升版只改一半」。
+3. **README 的发布事实**：升版容易只改徽章、忘了 npm `latest` 已随上一版发布而变化（见第五节）。
+4. **`hasUpdate` 断言是连锁点**：`test/route.test.mjs:603`、`test/install.test.mjs:146`、`test/update.test.mjs:125`
+   等夹具字面量与注释都随之上移；任何一处漏改都会在「有更新」一族用例上变红，不会静默。
+
+### 八、门禁与 pack 复核（逐条实跑）
+
+- `node --test test/*.test.mjs`：**990 pass / 0 fail / skipped 0 / exit 0**（66.3s）；
+- `node scripts/prepare.mjs`：**25 项 OK / exit 0**（`CHUNK-STAMPS` 5 个 chunk 一致；`CLIENT-SRC` 17 段
+  逐字节一致；`LOCALE-SYNC` 586 键/语言一致）；
+- `node scripts/client-chunks.mjs`：**5 file(s) match / exit 0**；
+- `node scripts/verify.mjs`：**6 步 / 0 失败 / exit 0**（check-refs → client-build --check →
+  locale-pack --check → prepare → check-compat → test，test 69507ms）；
+- `npm pack --cache /tmp/ps-pack-cache-024 --pack-destination /tmp/ps-pack-out-024`：**57 文件 /
+  exit 0**（包字节随本文件内容变化，故此处不记 shasum；终值见该目标的结果文件）。
+
+**包内复核**：`package.json.version` = `0.2.4`；`test/` 命中 **0**；`.dsh-graph/` 命中 **0**；
+包清单与 `files` 白名单**双向逐项相等**（磁盘白名单内 57 个文件全部入包，包内 57 项全部落在白名单，
+无 `.npmignore`）。**与上版 33 文件的差异：+24** —— `src/` 18（17 段 + `src/README.md`，g-075/g-077）、
+`locale/` 2（g-066）、`scripts/` 3（`client-build.mjs`、`locale-pack.mjs`、`verify.mjs`）、
+`core/workspace-root.js` 1（g-074）；没有任何旧文件从包里消失。
+
+### 九、负向对照（判据 8）
+
+把 `index.js:214` 的 `PLUGIN_VERSION` 回退成 `'0.2.2'`（其余不动），跑
+`node --test test/host.test.mjs test/stage2.test.mjs test/client.test.mjs` ⇒ **实测 379 中 6 红 / exit 1**：
+`manifest: version constant stays in lockstep with package.json`、`client: the shipped version cannot drift…`、
+`client: the english render sweep…`、`client: the english sweep really walked every required branch marker`、
+`host: GET /prompt-setting/ping answers 200 JSON`、`stage2: export is a FULL backup…`。随后还原为 `'0.2.4'`，
+同一命令 **379 pass / 0 fail / exit 0**。
+
+### 十、未验证项
+
+- `npm publish` / `git tag` / `git push` / 合入 `main` / 分支收口：**人工 gate，本轮未做**（合入由主管
+  复核后执行）；因此 npm 上的 `latest` 仍是 `0.2.2`，README 的双写表述正为此；
+- 徽章的 shields.io 在线渲染未目视（离线），只核对了源文本；
+- `CONTRACT.md` 的镜像测速表未重测（保留 2026-10-08 记录），新测得的 `latest` 事实记在第五节。

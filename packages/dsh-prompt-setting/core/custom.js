@@ -169,21 +169,6 @@ function listOf(overrides) {
 }
 
 /**
- * Name up to `max` section names for one message, and count the rest.
- *
- * A rejection message goes back to a browser, so it is bounded: an import of a
- * hundred legacy entries must produce a sentence, not a hundred-line dump.
- * @param names - the offending names.
- * @param max - how many to spell out.
- * @returns e.g. `"a", "b" and 3 more`.
- */
-function nameList(names, max = 3) {
-  const shown = names.slice(0, max).map((name) => JSON.stringify(name)).join(', ');
-  const rest = names.length - Math.min(names.length, max);
-  return rest > 0 ? `${shown} and ${rest} more` : shown;
-}
-
-/**
  * The actions the reserved name accepts on `PUT /prompt-setting/overrides`,
  * in contract order (Revision 36).
  *
@@ -305,70 +290,81 @@ export function legacyPlan(overrides, flag) {
 }
 
 /**
- * Keep only the reserved override of one export layer.
- * @param overrides - a layer view's `overrides`.
- * @returns a fresh array holding at most the reserved entry.
- */
-export function customOverridesOnly(overrides) {
-  return listOf(overrides).filter((entry) => isCustomSectionName(entry?.name));
-}
-
-/**
- * Declare the scope of an export: what it carried, and what it left behind.
+ * Declare the scope of an export: what it carried.
  *
- * A narrowed export **must not silently drop** legacy entries — a user who
- * exports as a backup and re-imports must be able to tell that the file is not
- * the whole configuration. The counts are computed from the layer views this
- * process could read, so a layer whose config is unusable reports its `reason`
- * and contributes `0` (its overrides are unknown, not zero).
- * @param views - `{layer: view}` where a view carries `overrides`.
+ * Revision 53 replaced the narrowed export with a **full** one, so this
+ * function no longer counts what was left behind — nothing is left behind. It
+ * still exists, and still on the response, because "a backup states what it
+ * holds" is the property that made the field worth having: a reader can tell
+ * that a document carries three user overrides, two workspace layers, four
+ * presets and the preferences, without parsing the whole body.
+ *
+ * The keys a pre-Revision-53 reader looked at are kept and are now trivially
+ * truthful: `only` is `null` (no section is singled out any more) and every
+ * `omitted` count is `0` (nothing is dropped) — including `omitted.total`, so
+ * an old client reads「a complete backup」rather than a changed shape.
+ *
+ * A layer whose config is unusable contributes `0` with its own `reason` on
+ * the layer view — `0` means "none readable", not a claim that the file is
+ * empty. The same honesty covers the two installation-level documents: a
+ * `presets.json` or `preferences.json` this process could not read is reported
+ * in `unavailable` and is **not** carried, so a restore never clears a library
+ * the export could not see.
+ *
+ * g-074 R1 adds `omittedApplied`: an `applied` record whose `workspaceRoot` is
+ * not a workspace **this profile registers** is not carried either. It could
+ * not be restored here (the import route refuses such a document, §11.7), so
+ * carrying it would produce a backup this plugin's own reader rejects — the
+ * 「导得出去、导不回来」 shape this revision exists to remove. The count is
+ * declared rather than the record being dropped silently.
+ * @param inputs - `{layers, workspaceLayers, presets, preferences, unavailable, omittedApplied}`.
  * @param layerNames - the layers this export covers, in order.
- * @returns `{only, omitted}` with `omitted.total` summed over the layers.
+ * @returns the `exportScope` fragment.
  */
-export function exportScope(views, layerNames) {
+export function exportScope(inputs = {}, layerNames = []) {
+  const counts = {};
   const omitted = {};
-  let total = 0;
   for (const name of layerNames) {
-    const list = listOf(views?.[name]?.overrides);
-    const count = list.filter((entry) => !isCustomSectionName(entry?.name)).length;
-    omitted[name] = count;
-    total += count;
+    const list = listOf(inputs.layers?.[name]?.overrides);
+    counts[name] = list.length;
+    omitted[name] = 0;
   }
-  omitted.total = total;
-  return { only: CUSTOM_SECTION_NAME, omitted };
+  omitted.total = 0;
+  const workspaceLayers = Array.isArray(inputs.workspaceLayers) ? inputs.workspaceLayers : [];
+  const presets = inputs.presets ?? null;
+  return {
+    full: true,
+    only: null,
+    layers: counts,
+    workspaces: workspaceLayers.length,
+    presets: Array.isArray(presets?.presets) ? presets.presets.length : 0,
+    preferences: inputs.preferences !== null && inputs.preferences !== undefined,
+    // How many `applied` records were left out because their workspace is not
+    // registered here (0 in every ordinary installation).
+    omittedApplied: Number.isInteger(inputs.omittedApplied) && inputs.omittedApplied > 0 ? inputs.omittedApplied : 0,
+    omitted,
+    unavailable: {
+      presets: inputs.unavailable?.presets ?? null,
+      preferences: inputs.unavailable?.preferences ?? null,
+    },
+  };
 }
 
-/**
- * Enforce the write lock for `POST /prompt-setting/import`.
+/*
+ * Revision 53 (g-074) removed `assertImportableDocument` from this module.
  *
- * The document is checked as a whole, **before** any layer is resolved and
- * before the dry-run branch: a document that carries any legacy entry is
- * refused with `403 write-locked` under both `?dryRun=true` and a real import,
- * so the dry run answers the same question the real run would answer and no
- * file is touched by either.
+ * It was the import write lock: `403 write-locked` for any document carrying a
+ * frozen name. The lock and the narrowed export were two halves of one design
+ * —「导出只带 reserved，所以导入也只收 reserved」— and the owner's requirement
+ * (2026-10-16) retired both: a backup must carry everything and must be
+ * restorable. What replaces it is **not** "no checks": `parseExport`
+ * (`core/transfer.js`) validates the schema, the version, the layer-name
+ * whitelist, every override field, every workspace root (absolute path, no
+ * `..`, not a volume root) and the preset / preference documents, and
+ * `index.js` refuses a workspace root the Host does not register — all of it
+ * before a single byte is staged (§11.1, §11.7, §15.7).
  *
- * The check is on **names only**. That is the security boundary this revision
- * draws: an import may not create, resurrect or modify a frozen override. The
- * *action* of a reserved-name entry is taken from the document as it stands, so
- * a document that (say) hides the reserved section still round-trips — the
- * export of such a hand-edited config re-imports unchanged.
- * @param document - the parsed export document.
- * @throws {OverrideError} 403 `write-locked` naming the offending sections.
+ * The write locks that remain are the ones that were never about backups:
+ * `PUT`/single-name `DELETE` still refuse a non-reserved name
+ * ({@link assertWritableSection}, {@link assertDeletableName}).
  */
-export function assertImportableDocument(document) {
-  const layers = document?.layers;
-  if (layers === null || typeof layers !== 'object') return;
-  const offenders = [];
-  for (const [layer, list] of Object.entries(layers)) {
-    for (const entry of listOf(list)) {
-      if (!isCustomSectionName(entry?.name)) offenders.push(`${layer}:${entry?.name}`);
-    }
-  }
-  if (offenders.length === 0) return;
-  throw fail(
-    'write-locked',
-    `this document carries ${offenders.length} frozen section(s) `
-    + `(${nameList(offenders)}); only ${JSON.stringify(CUSTOM_SECTION_NAME)} may be imported`,
-    403,
-  );
-}

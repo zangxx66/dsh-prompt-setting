@@ -29,65 +29,83 @@
 设置页里会多出一栏 **「Prompt settings」**（`id: prompt-setting`），六个一级 tab：
 
 - **我的 Prompt / My Prompt** —— 唯一写入口：写下你自己的系统级指令（选层 → 编辑 → 保存），
-  一键恢复默认。这段文本**排在所有内置段之后**。上方的「查看范围」是这一块的头部：它决定保存落到
-  哪一层，改范围也只有这一处（面板内那行只读提示会重复告诉你当前写到哪）。
+  一键恢复默认。这段文本**排在所有内置段之后**。「查看范围」选择器就在**这一面板内、标题之下**（g-071 起）：
+  它决定保存落到哪一层，改范围也只有这一处（面板内那行只读提示会重复告诉你当前写到哪）。
+  **它只服务这一面板**（g-073 起）：其余 tab 各自解耦（见下）。
   > The only write surface: your own system-level instructions (pick a layer → edit → save), with a
-  > one-click restore. The text is **placed after every built-in section**. The "View scope" row above
-  > the tabs is this block's header: it decides which layer a save lands in, and it is the only place the
-  > scope is changed (the panel repeats the current target as a read-only line).
-  >
-  > 面板顶部是**「装配状态提示」**（g-062）：新会话的第一次装配，以及保存 Prompt 之后的下一个 run，
-  > 会**主动弹 toast** 给出两层结论——装配层（本次 assembly 是否读到你的 Prompt）与送达层（该文本是否进入
-  > 本次请求的 messages）；同一条结论仍保留在设置页的提示块里，供回查，开关也在那里。
-  > 它不进入模型上下文、不占 token、不改变模型收到的 prompt；宿主未提供 Toast 组件、或未声明浮层插槽时，
-  > 不会注册任何浮层，设置页会说明这一降级（`data-assembly-toast-seat`），功能其余部分不受影响。
-  > 口径与边界见 `CONTRACT.md` §21（例如：HTTP 是否真的发出在插件侧不可观测，本提示不作此声称；
-  > 后台标签页的计时器被浏览器节流，因此提示在回到页面时可见，不是实时通道）。
-  > The **assembly-status notice** (g-062) now **raises a toast** at each key node — the first assembly of a
-  > new conversation, and the next run after a prompt is saved — reporting two verdicts: the assembly layer
-  > (did this step's assembly read your prompt) and the delivery layer (did that text enter this request's
-  > messages). The same verdicts stay in the settings-page block, which is also where the switch lives.
-  > It never enters the model context, costs no tokens and changes nothing the model receives; a host that
-  > provides neither the `Toast` primitive nor the `shell.overlay` slot gets no overlay at all, and the page
-  > states which (its `data-assembly-toast-seat`).
-  > The exact口径 and its limits are in `CONTRACT.md` §21 (for one: whether the HTTP request was actually
-  > sent is not observable from a plugin, and this notice does not claim it; background-tab timers are
-  > throttled by the browser, so a toast is seen when you return to the page — it is not real-time).
+  > one-click restore. The text is **placed after every built-in section**. The "View scope" selector is
+  > **inside this panel, under its title** (since g-071): it decides which layer a save lands in, and it
+  > is the only place the scope is changed (the panel repeats the current target as a read-only line).
+  > **It serves this panel alone** (since g-073): every other tab is decoupled from it.
 
 - **我的预设 / My presets** —— 你的常用文本库：把一段文本存成预设（新建 / 编辑 / 删除），再把它**应用到某个
   工作区**（写入该工作区的保留段），也可以**取消应用**——该工作区会精确还原为应用前的内容。删除一个
-  已被应用的预设不会改动任何工作区，只会把那条记录标成「来源已删除」。
+  已被应用的预设会**先取消它的应用**：每个受影响的工作区都还原为应用前的内容，然后预设才从库里删除
+  （确认浮层会列出这些工作区）。预设库是全局的，**不受「查看范围」影响**（g-073 起）。
   > Your catalogue of reusable texts: save a text as a preset (create / edit / delete), then **apply** it to
   > a workspace (it is written into that workspace layer's reserved section) or **cancel** the application,
-  > which restores exactly what that workspace held before. Deleting an applied preset rewrites no
-  > workspace; the record is simply marked "source deleted".
+  > which restores exactly what that workspace held before. Deleting an applied preset **cancels its
+  > applications first**: every affected workspace is restored to what it held before, and only then is the
+  > preset removed from the library (the confirmation names those workspaces). The library is global and
+  > **not affected by the "View scope"** (since g-073).
 
 - **提示词总览 / Prompt overview** —— 纯只读：分段列表（状态标记 / 搜索 / 筛选 / 复制）、完整全文，
-  以及 `base ↔ effective` 对比，一眼看出你的改动究竟改变了什么。
+  以及 `base ↔ effective` 对比，一眼看出你的改动究竟改变了什么。它有自己的**作用域选择器**（g-073 起）：
+  **按工作区分组、可选到具体会话**，切换后按该作用域重新读取快照；页面「查看范围」不再影响它。
   > Read-only: the assembled section list (status marks / search / filters / copy), the full text, and a
-  > `base ↔ effective` diff, so you can see exactly what your change did.
+  > `base ↔ effective` diff, so you can see exactly what your change did. It has its **own** scope
+  > selector (since g-073), **grouped by workspace and resolving down to a concrete session**; changing it
+  > re-reads the snapshot in that scope, and the page's "View scope" no longer affects it.
 
 - **版本历史 / Version history** —— 历史列表（定高内滚 + 翻页，默认每页 50）与行级版本对比。
-  历史有自己的**作用域选择器**（工作区维度），与上方「查看范围」互不影响：用户层历史是全局的，
+  历史有自己的**作用域选择器**（工作区维度），与「我的 Prompt」里的「查看范围」互不影响：用户层历史是全局的，
   不按会话过滤。
   > The history list (fixed-height, internally scrolling, paged) and line-level diffs. The log has its
-  > **own** scope selector (workspace dimension), independent of the「查看范围」selector above: the user
-  > layer's log is global and is never sliced by session.
+  > **own** scope selector (workspace dimension), independent of the "View scope" selector in **My
+  > Prompt**: the user layer's log is global and is never sliced by session.
 
-- **备份与恢复 / Backup & restore** —— 配置导出下载、导入预览（先看变更计划，确认后才落盘）。
-  > Export the configuration for download, and preview an import — the change plan is shown before
-  > anything is written.
+- **备份与恢复 / Backup & restore** —— 全量备份导出下载（两层全部覆盖含冻结项、全部已注册工作区层、
+  预设库、偏好设置；**不带页面作用域**）、导入预览（先看变更计划，确认后才落盘；导入逐项校验格式 /
+  字段 / 路径，非法即整体拒绝、零写入）。
+  > Export a **full** backup for download (every override of both layers, every registered workspace layer,
+  > the preset library, the preferences; **no page scope involved**) and preview an import — the change plan
+  > is shown before anything is written. An import validates the document field by field and refuses a bad
+  > one whole, writing nothing.
 
 - **高级 / Advanced** —— 旧版覆盖的只读列表、「清除全部覆盖」与「整层恢复默认」两个二次确认按钮、
   **「检查更新」开关**（默认开启；关闭后本插件**完全不再联网**）、**「立即更新」**（把提示条里的版本
   交给宿主安装，装完需要你**手动重启**：命令行启动就重新运行 `dsh web`，官方桌面端就退出并重新
-  打开 DeepSeek Harness），以及完整状态区（挂载情况 / 构建戳 / 渲染器自检）。
+  打开 DeepSeek Harness），以及完整状态区（挂载情况 / 构建戳 / 渲染器自检）。它有自己的**工作区选择器**
+  （g-073 起）：两个清除按钮、旧版覆盖列表与装配状态都按所选工作区取数，**不再跟随页面「查看范围」**；
+  用户层是全局的（选择器上那句说明写着）。
   > A read-only list of legacy overrides, two double-confirm buttons ("clear all overrides", "reset the
   > whole layer"), the **"Check for updates" switch** (on by default; off means this plugin makes **no
   > network request at all**), an **"Update now"** button (the host installs the version the banner named;
   > you restart yourself — re-run `dsh web` after a command-line start, or quit and reopen DeepSeek
   > Harness in the desktop app), and a full status area (mount state / build fingerprint / renderer
-  > self-check).
+  > self-check). It has its **own** workspace selector (since g-073): both clears, the legacy override list
+  > and the assembly status all read the workspace it names, and none of them follows the page's "View
+  > scope" any more; the user layer is global (the sentence under the control says so).
+  >
+  > 面板顶部是**「装配状态提示」**（g-062 引入，g-065 起从「我的 Prompt」移到这里）：新会话的第一次装配，
+  > 以及保存 Prompt 之后的下一个 run，会**主动弹 toast** 给出两层结论——装配层（本次 assembly 是否读到你的
+  > Prompt）与送达层（该文本是否进入本次请求的 messages）；同一条结论也保留在这个面板顶部的提示块里，供回查，
+  > 开关也在那里。
+  > 它不进入模型上下文、不占 token、不改变模型收到的 prompt；宿主未提供 Toast 组件、或未声明浮层插槽时，
+  > 不会注册任何浮层，页面会说明这一降级（`data-assembly-toast-seat`），功能其余部分不受影响。
+  > 口径与边界见 `CONTRACT.md` §21（例如：HTTP 是否真的发出在插件侧不可观测，本提示不作此声称；
+  > 后台标签页的计时器被浏览器节流，因此提示在回到页面时可见，不是实时通道）。
+  > The **assembly-status notice** (g-062) sits at the top of this panel since g-065 (it moved here from
+  > "My Prompt"): at each key node — the first assembly of a new conversation, and the next run after a
+  > prompt is saved — it **raises a toast** reporting the assembly layer (did this step's assembly read
+  > your prompt) and the delivery layer (did that text enter this request's messages). The same verdicts
+  > stay in the block at the top of this panel, which is also where the switch lives. It never enters the
+  > model context, costs no tokens and changes nothing the model receives; a host that provides neither the
+  > `Toast` primitive nor the `shell.overlay` slot gets no overlay at all, and the page states which (its
+  > `data-assembly-toast-seat`).
+  > The exact wording and its limits are in `CONTRACT.md` §21 (for one: whether the HTTP request was
+  > actually sent is not observable from a plugin, and this notice does not claim it; background-tab timers
+  > are throttled by the browser, so a toast is seen when you return to the page — it is not real-time).
 
 其它特性 / More:
 
@@ -95,10 +113,19 @@
   或「叠加」（本层文本拼在另一层之后，中间一个空行，两层都生效）。
   > A user-level default plus a workspace-level override: **Cover** (the default — the workspace wins) or
   > **Stack** (this layer's text follows the other layer's, one blank line apart, so both apply).
-- **零运行时依赖、零构建步骤 / Zero runtime dependencies, zero build step** —— 一包纯 JS，不拉依赖、不编译。
+- **零运行时依赖、零编译 / Zero runtime dependencies, zero compilation** —— 纯 JS，不拉依赖、无 bundler / JSX / TypeScript；客户端入口 `client.js` 是 `src/` 的**生成物**（真源在 `src/`）。
   > One package of plain JS — nothing to fetch, nothing to compile.
 - **界面文案跟随 DSH 语言 / UI copy follows DSH** —— DSH 切到中文，这一页就是中文，不需要刷新或重启。
   > Switch DSH to Chinese and this page turns Chinese, with no refresh or restart.
+- **一级 tab 是纯文字行（含计数与更新红点）/ The top-level bar is a plain-text row (with a count and an update dot)** ——
+  六个一级 tab 无底色、无边框、不等分列宽；选中项下方一条短下划线，压在整条栏底部的淡分隔线上；窄容器下
+  **单行横向滚动**而不是折行，也不会撑宽页面。「我的预设」显示库条数 `(N)`，数据未读到时**不显示数字**
+  （绝无占位 `(0)`）；「高级」在确有可用新版本时显示红点，关掉顶部提示条**不清除**红点。
+  > The six top-level tabs are plain text: no fill, no border, no equal-width columns. The selected one
+  > carries a short underline on the faint rule under the bar, and the bar stays on one line, scrolling
+  > sideways in a narrow panel instead of widening it. 「My presets」shows its library size as `(N)`, and
+  > shows no number at all until that size is known (never a placeholder `(0)`); 「Advanced」shows a red
+  > dot while a newer release is on offer, and dismissing the banner does not clear it.
 - **装了但没写 = 等于没装 / Installed but empty = not installed** —— 未填写时这一段对最终 prompt
   零贡献，渲染结果逐字节相同。
   > With no text the section contributes nothing to the final prompt; the rendering is byte-for-byte identical.
@@ -257,12 +284,12 @@ zstd -dc "$F" | jq -r 'select(.type=="system/message") | .data.message.content[0
 
 ## 安装 / Install
 
-**首选从 npm 装**（本包已发布，npm 上的 `latest` 为 `0.1.5`；本仓库为 `0.2.2`，发布后两者一致）。需要 DSH
+**首选从 npm 装**（本包已发布，npm 上的 `latest` 为 `0.2.2`；本仓库为 `0.2.4`，发布后两者一致）。需要 DSH
 `>= 0.1.7-rc.2 < 0.2.0 || >= 0.2.0-0 < 0.2.1-0 || >= 0.2.1-0 < 0.2.2-0`：`0.1.7-rc.2` 起的 0.1.x、
 `0.2.0` 与 `0.2.1` 的全部预发布（`-0` / `alpha` / `beta` / `rc.N`）与 **这两个 minor 的正式版**都在范围内；
 `0.2.2-0` 及以后出界。
 
-> **Install from npm** — the primary route (this package is published; npm `latest` is `0.1.5`, this repository is `0.2.2`). Requires
+> **Install from npm** — the primary route (this package is published; npm `latest` is `0.2.2`, this repository is `0.2.4`). Requires
 > DSH `>= 0.1.7-rc.2 < 0.2.0 || >= 0.2.0-0 < 0.2.1-0 || >= 0.2.1-0 < 0.2.2-0`: every 0.1.x from `0.1.7-rc.2`
 > on, every `0.2.0` and `0.2.1` prerelease (`alpha`, `beta`, `rc.N`, and the synthetic `-0` floor) and the
 > **`0.2.0` and `0.2.1` releases themselves** are in range; `0.2.2-0` and later are out.
@@ -309,12 +336,12 @@ dsh plugin --profile <profile> add '<absolute path to the .tgz>'
 
 pnpm ≥10 默认不运行 git 依赖的构建脚本，第一次会失败并打印一个**确切的包键**；把它复制进该 profile 的
 `pnpm-workspace.yaml` 的 `allowBuilds` 再重跑即可。**该授权 = 允许该包的代码在安装时于你的机器上执行**
-（本包零构建，`prepare` 只做发布自检）。不想授权就用 `pnpm pack` 打 tarball 再 `add`，功能一致。
+（本包零编译，客户端入口 `client.js` 是 `src/` 的生成物；`prepare` 只做发布自检）。不想授权就用 `pnpm pack` 打 tarball 再 `add`，功能一致。
 
 > pnpm ≥10 does not run a git dependency's build scripts by default: the first attempt fails and prints an
 > **exact package key** — copy it into the profile's `pnpm-workspace.yaml` under `allowBuilds` and re-run.
 > **That grant means this package's code may execute on your machine at install time** (this package is
-> zero-build; `prepare` only runs a release self-check). To avoid the grant, `pnpm pack` a tarball and
+> zero-compilation; `client.js` is generated from `src/`, and `prepare` only runs a release self-check). To avoid the grant, `pnpm pack` a tarball and
 > `add` that instead — identical behaviour.
 
 安装后：打开「设置」应看到这一栏；想确认宿主半挂上了，页面的「原始响应」区会显示
@@ -328,11 +355,67 @@ pnpm ≥10 默认不运行 git 依赖的构建脚本，第一次会失败并打�
 
 ```bash
 cd packages/dsh-prompt-setting
-node --test                    # 十八个套件（含真实 DSH 包的对照实验，须为 pass 而非 skip）
+node --test                    # 全套件（含真实 DSH 包的对照实验，须为 pass 而非 skip）
+node scripts/locale-pack.mjs   # 词典一致性：locale/*.json ↔ client.js 的生成段（不一致即非零退出）
 node scripts/check-compat.mjs  # 只读兼容性自检：不联网、永不抛、退出码恒 0
 node scripts/prepare.mjs       # prepare 门禁：pnpm 从 git 安装时会自动跑它
-npm pack --dry-run             # 确认发布产物干净（29 个文件、含 4 个 client.*.js chunk、无 test/）
+npm run verify                 # 发布前一条命令跑齐：全量测试 + 四道门禁 + 文档引用体检（聚合报告）
+npm pack --dry-run             # 确认发布产物干净（57 个文件、含 5 个 client.*.js chunk 与 2 份 locale JSON、无 test/）
 ```
+
+### 发布前 verify / Pre-release verify
+
+**一条命令跑齐发布前的全部机器检查**（全量测试 + 四道门禁 + 文档引用体检）。它**聚合报告、不 fail-fast**：
+任一步红也把剩余步骤跑完，每步一行 `ok` / `FAIL` + 耗时，失败时先打印该步退出码与输出尾部（不倾倒全量输出），
+末尾汇总 `verify: N 步 / M 失败`；任一失败退出码为 1，全通过为 0。
+
+**调用位置（唯一约定：包目录；仓库根等价）**：
+
+```bash
+cd packages/dsh-prompt-setting
+npm run verify                  # = node scripts/verify.mjs
+
+# 仓库根也能跑，结果完全一致（脚本从自身位置推导包根，与 cwd 无关）：
+node packages/dsh-prompt-setting/scripts/verify.mjs
+```
+
+**什么时候跑**：发布 / 打 tag / `npm pack` 之前；改过 `src/`、`client.js`、`locale/`、`docs/` 或测试之后。
+步骤顺序（基础 → 派生、快 → 慢）：`check-refs`（§5.1 文档表 vs 磁盘 `src/`）→ `client-build --check` →
+`locale-pack --check` → `prepare` → `check-compat`（只读诊断，退出码恒 0）→ `node --test` 全量用例。
+
+**它和 `prepare` 的分工**：`prepare` 是**安装现场**门禁 —— `pnpm` 从 git 安装时自动跑，只读包目录，
+判「装到用户机器上的包自洽」（入口 / `files` 白名单 / chunk 清单 / 词典 / 段↔产物字节一致）；
+`verify` 是**发布者侧**门禁 —— 只在本仓库 checkout 里跑，判「仓库状态合规」（全量测试与 `docs/` 引用
+体检都不随包发布）。安装后的包里没有 `test/` 与 `docs/`，所以在消费者机器上跑 verify 会红 —— 这是
+有意的，它本来就不是给安装现场用的。
+
+**两条 fail-closed 约定（不让防线静默有洞）**：`test/` 里若出现**不符合 `*.test.mjs` 命名**的 `.mjs`
+文件，verify 会红并点名该文件（绝不静默漏跑）；在安装后的包里误跑（没有 `test/`）会打印一句说明并
+**exit 1**（安装现场请用 `node scripts/prepare.mjs`），不是 ENOENT 堆栈。单步最多等 **15 分钟**，
+挂死算一次失败。
+
+> **Run `npm run verify` before every release** (equivalently `node scripts/verify.mjs`, from the package
+> directory or the repository root — the script derives the package root itself, so the caller's cwd does
+> not matter). It runs the full test suite, the four gates and the docs reference check **serially and
+> without fail-fast**, prints one `ok` / `FAIL` line with its duration per step, ends with
+> `verify: N steps / M failed`, and exits 1 if anything failed. `prepare` is the *install-site* gate (runs
+> on the consumer machine, reads only the package); `verify` is the *releaser-side* gate (it needs `test/`
+> and `docs/`, neither of which is shipped). It is fail-closed about a silent hole in that defense: a test
+> file not named `*.test.mjs` fails verify by name (never skipped silently), and running it in an installed
+> package prints one sentence (use `node scripts/prepare.mjs` there) and exits 1 — no stack trace. A single
+> step is capped at 15 minutes.
+
+- **改文案只改 `locale/*.json` / Copy lives in `locale/*.json`**：`client.js` 里的 `zh`/`en` 两段
+  是**生成物**（`// #region generated:` … `// #endregion`），由 `scripts/locale-pack.mjs --write`
+  从两份 JSON 渲染；`--check` 是门禁（`prepare` 也会跑，测试见 `test/locale.test.mjs`）。JSON 共
+  586 键/语言（535 主词典 + 51 个 `error.<code>`），是**唯一人工真源**。浏览器运行时**不读**这两份
+  JSON —— bundle 是 classic script、宿主零转译、插件路由不服务子目录 —— 所以词典必须内联，只是不再
+  手工维护（`CONTRACT.md` §22）。
+  > Edit copy in `locale/zh.json` / `locale/en.json` only. The `zh`/`en` blocks inside `client.js` are
+  > generated by `scripts/locale-pack.mjs --write`; `--check` (also run by `prepare`) fails on any
+  > drift. Both files hold 586 keys each (535 main + 51 `error.<code>`) and are the single human source.
+  > They are never fetched at runtime — the bundle is a classic script and the plugin route does not
+  > serve subdirectories — so the dictionaries stay inlined and synchronous (`CONTRACT.md` §22).
 
 - **改动怎么生效 / How a change takes effect**：改 `client.js` 什么都不用做（DSH 自带客户端 HMR，
   已打开的标签页会被热替换）；**改 `client.*.js` chunk 时请连带 `touch client.js` 或重启宿主** ——
