@@ -1,0 +1,14 @@
+# 跨平台检出统一用 LF（g-079 项 1）。
+#
+# 为什么需要它：本包的指纹与生成物校验全部按**字节**比对 —— `client.js` 的
+# `@build-fingerprint`、`src/*.js` 段拼接（`CLIENT-SRC-DRIFT`）、`locale` 生成段
+# （`LOCALE-SYNC`）都对行尾敏感。Windows 检出（`core.autocrlf=true`）若把 `.js`
+# 转成 CRLF，这三道门禁会一起误红。这里把仓库内的文本文件钉死为 LF，
+# 让「检出后字节 == 提交时字节」跨平台成立。
+
+* text=auto
+
+*.js text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.md text eol=lf

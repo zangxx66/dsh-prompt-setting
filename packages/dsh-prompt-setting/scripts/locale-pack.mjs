@@ -194,6 +194,84 @@ export function readDictionaries(packageDir) {
 }
 
 /**
+ * 生成段正文行的形状：`      key: 'value',`（key 是裸名或单引号字面量）。
+ *
+ * 与 {@link renderDictionaryRows} 的输出**逐字对齐**：真源段只能由本脚本产出，
+ * 所以「每行都是这个形状」是候选段的必要条件；注释里的示例块常常连缩进/引号都
+ * 不对，这一步就能挡掉一大半（g-079 项 3）。
+ */
+const DICTIONARY_ROW = /^ {6}(?:([A-Za-z_$][A-Za-z0-9_$]*)|'((?:[^'\\]|\\.)*)'): '(?:[^'\\]|\\.)*',$/;
+
+/**
+ * 真源块与 `locale/*.json` 的键序列最低重合度（g-079 项 3）。
+ *
+ * 为什么**不是**「严格相等」：`--write` 的职责就是让生成段跟上 JSON —— 加键 / 删键 /
+ * 改名之后跑 `--write` 是正常流程，严格相等会把这套流程挡在门外（脚本报「真源缺失」，
+ * 而它自己就是来修漂移的，形成死循环）。判据取「描述同一批键」：两边键集合的重合度
+ * ≥ 90%。注释里的诱饵段只举几个示例键，重合度接近 0，仍然会被拒。
+ */
+const LOCALE_KEY_MIN_OVERLAP = 0.9;
+
+/**
+ * 从一个已解析的生成段里取出键序列（保持出现顺序）。
+ *
+ * 行格式不是生成器的输出格式（缩进 / 引号 / 尾逗号不对）⇒ 返回 `null`（不是真源）。
+ * @param blockText - {@link readDeclaredBlock} 的 `text`（含首行块头与闭合行）。
+ * @returns 键数组；格式不符时 `null`。
+ */
+export function dictionaryKeysOf(blockText) {
+  const lines = blockText.split('\n');
+  if (lines.length < 2) return null;
+  const keys = [];
+  for (const line of lines.slice(1, -1)) {
+    const match = DICTIONARY_ROW.exec(line);
+    if (match === null) return null;
+    keys.push(match[1] ?? match[2].replace(/\\(['\\])/g, '$1'));
+  }
+  return keys;
+}
+
+/**
+ * 读 `locale/*.json` 的键序列（只用于「候选段是否在描述同一批键」）。
+ * @param readText - 包根相对路径的读取器。
+ * @returns `{zh: string[], en: string[]}`；读不到 / 非法 JSON 一律抛错（fail-closed）。
+ */
+function readLocaleKeySequences(readText) {
+  const sequences = {};
+  for (const name of Object.keys(LOCALES)) {
+    const raw = readText(`${LOCALE_DIR}/${name}.json`);
+    if (typeof raw !== 'string') {
+      throw new Error(`读不到 ${LOCALE_DIR}/${name}.json，无法校验段真源的键集合（fail-closed）`);
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      throw new Error(`${LOCALE_DIR}/${name}.json 不是合法 JSON：${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error(`${LOCALE_DIR}/${name}.json must be a flat object of string values`);
+    }
+    sequences[name] = Object.keys(parsed);
+  }
+  return sequences;
+}
+
+/**
+ * 候选段的键序列是否**描述同一本词典**（允许 ≤10% 漂移，见 {@link LOCALE_KEY_MIN_OVERLAP}）。
+ * @param candidateKeys - 生成段解析出的键。
+ * @param expectedKeys - `locale/<name>.json` 的键。
+ * @returns 重合度是否达标。
+ */
+function describesSameDictionary(candidateKeys, expectedKeys) {
+  const expected = new Set(expectedKeys);
+  const shared = new Set(candidateKeys.filter((key) => expected.has(key))).size;
+  const scale = Math.max(candidateKeys.length, expectedKeys.length);
+  if (scale === 0) return true;
+  return shared / scale >= LOCALE_KEY_MIN_OVERLAP;
+}
+
+/**
  * 定位承载 locale 生成段的那一个 `src/*.js`。
  *
  * **刻意不硬编码 `02-locale.js`**：段名与段边界属于 `docs/refactor-plan.md` §5.1 的目标
@@ -207,6 +285,13 @@ export function readDictionaries(packageDir) {
  * {@link readDeclaredBlock}（也就是 `--write` 真正用的那个解析器）：两个块都能被解析
  * 出来才算候选。仍然**不做**完整的注释剥离 —— 那需要在整份 JS 里跟踪「块注释开闭」
  * 的状态机（字符串与正则里同样会出现这些字节），误判风险比它治的病更大。
+ *
+ * **g-079 项 3 再收紧一格（「含闭合」诱饵）**：可解析还不够 —— 注释里写出一对**完整
+ * 闭合**的 `zh` / `en` 块同样可解析。因此候选还要满足两条：
+ *   1. 两个块**区间不重叠**（一个块落在另一个块内部 ⇒ 至少一个是注释里的示例）；
+ *   2. 块内**每行都是生成器的输出格式**，且键序列与 `locale/*.json` **描述同一本词典**
+ *      （重合度 ≥ {@link LOCALE_KEY_MIN_OVERLAP}，保留加键/删键/改名后 `--write` 的正常流程）。
+ * 「命中 0 个或多个 ⇒ fail-closed」的语义不变。
  * @param io - `{packageDir, readDir|listDir, readText}` 可注入（测试与 `prepare` 用）。
  * @returns `{name, text}`；**读不到 `src/` 目录时返回 `null`**（阶段 2 之前的包、最小 fixture）。
  */
@@ -230,18 +315,37 @@ export function findLocaleSegment(io = {}) {
   if (entries === null) return null;
   const names = Object.keys(LOCALES);
   const wanted = names.map((name) => blockOpen(name));
+  const expectedKeys = readLocaleKeySequences(readText);
   const hits = [];
   for (const entry of [...entries].filter((name) => name.endsWith('.js')).sort()) {
     const text = readText(`${CLIENT_SRC_DIR}/${entry}`);
     if (typeof text !== 'string') continue;
     // 两个块都要能被解析出来（块头 + 闭合行），而不是「行出现过」。
-    const carries = names.every((name) => {
+    const blocks = [];
+    let parsedAll = true;
+    for (const name of names) {
       try {
-        readDeclaredBlock(text, name);
-        return true;
+        blocks.push(readDeclaredBlock(text, name));
       } catch {
-        return false;
+        parsedAll = false;
+        break;
       }
+    }
+    if (!parsedAll) continue;
+    // 区间不重叠：一个块整个落在另一个块里 ⇒ 至少一个是注释里的示例（g-079 项 3）。
+    let disjoint = true;
+    for (let left = 0; left < blocks.length; left += 1) {
+      for (let right = left + 1; right < blocks.length; right += 1) {
+        if (!(blocks[left].end < blocks[right].start || blocks[right].end < blocks[left].start)) disjoint = false;
+      }
+    }
+    if (!disjoint) continue;
+    // 块内行格式 + 键集合必须与 locale JSON 描述同一本词典（g-079 项 3）。
+    const carries = names.every((name, at) => {
+      const keys = dictionaryKeysOf(blocks[at].text);
+      if (keys === null) return false;
+      if (new Set(keys).size !== keys.length) return false;
+      return describesSameDictionary(keys, expectedKeys[name]);
     });
     if (carries) hits.push({ name: entry, text });
   }

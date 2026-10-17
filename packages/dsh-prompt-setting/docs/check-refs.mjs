@@ -36,6 +36,18 @@
  * `test/client-source.test.mjs` 独立断言头注是纯前缀、在 fingerprint `begin` 之前、
  * 且不改变 `fingerprintOf` 的 hash/size。
  *
+ * **g-079 的三条 fail-closed 加固**（本脚本自己 fail-open 等于治本失败）：
+ *   1. **恒等式变成真正的失败判定**：`total == verified + rangeOnly + manual + unresolved`
+ *      不成立 ⇒ 计入 failures、非零退出（此前只 `console.log`，算式被改坏仍然绿）。
+ *      `unresolved` 现在只数**引用级**失败；表格复算 / `REFS\declared` 的失败单独报数，
+ *      不再混进恒等式（混装会让恒等式在表格坏掉时假红、在引用被静默丢弃时假绿）。
+ *   2. **收集域之外的形态显式计数**：裸行号（`（212）`）、行内代码裸行号（`` `2313` ``）、
+ *      裸区间（`185–198`）不被 `REFS` 收集器识别。脚本逐条计数并打印
+ *      `未覆盖的引用形态：N 处`（`--verbose` 逐条列出），不再静默吞掉；其中 §1.3/§5.1
+ *      表格首列由行数复算覆盖，计数里单独扣除并说明。
+ *   3. **弱断言披露**：`expect` 只能命中通用串的条目带 `weakReason`，脚本在输出里逐条披露
+ *      （能收紧的已收紧为更长、更独特的串；端点行只有 `/**` 这类无法再收紧的才保留并说明理由）。
+ *
  * 本脚本**只读**：不写任何文件、不改产品代码。它放在 `docs/` 下，而 `package.json`
  * 的 `files` 白名单不含 `docs`，所以它不会随包发布。
  *
@@ -94,7 +106,9 @@ const isOutOfRepo = (file) => OUT_OF_REPO.some((pattern) => pattern.test(file));
  * 判定；`stripEquals` 用于「该行去掉缩进后恰好等于某串」这类断言（例如闭括号）。
  * `at`（缺省 `from`）用于「区间以 JSDoc/注释开头、被断言的符号在区间中段」的引用。
  * `toExpect` / `fromExpect` 给出区间**末行/首行**的逐字断言；`loose: true` 声明「长区间，只判 `at` 行」。跨度 > 90 行且未声明 `loose` ⇒ FAIL；跨度 ≤ 90 且无 `toExpect` ⇒ FAIL。
- * @type {{ref: string, file: string, from: number, to?: number, at?: number, expect?: string, stripEquals?: string, fromExpect?: string, toExpect?: string, loose?: boolean}[]}
+ * `weakReason`：该条 `expect` 只能命中通用串（纯符号 / 常见词）时，写明**为什么不能再收紧**；
+ * 脚本会把所有带 `weakReason` 的条目逐条打印出来（g-079 项 2b：不留沉默项）。
+ * @type {{ref: string, file: string, from: number, to?: number, at?: number, expect?: string, stripEquals?: string, fromExpect?: string, toExpect?: string, loose?: boolean, weakReason?: string}[]}
  */
 const REFS = [
   // ── client.js ────────────────────────────────────────────────────────────
@@ -128,7 +142,7 @@ const REFS = [
   { ref: 'client.js:9050', file: 'client.js', from: 9050, expect: 'React.useSyncExternalStore(' },
   { ref: 'client.js:12026', file: 'client.js', from: 12026, stripEquals: '}' },
   { ref: 'client.js:12039', file: 'client.js', from: 12039, expect: 'function renderFailureCard' },
-  { ref: 'client.js:12129', file: 'client.js', from: 12129, expect: 'return {' },
+  { ref: 'client.js:12129', file: 'client.js', from: 12129, expect: 'return { failed: true };' },
   { ref: 'client.js:12143', file: 'client.js', from: 12143, expect: "inject: ['slots', 'locale']," },
   { ref: 'client.js:12151', file: 'client.js', from: 12151, expect: '__internals' },
   { ref: 'client.js:12154', file: 'client.js', from: 12154, expect: 'shared: CHUNK_FACILITIES' },
@@ -158,7 +172,7 @@ const REFS = [
   { ref: 'scripts/client-chunks.mjs:75', file: 'scripts/client-chunks.mjs', from: 75, expect: 'function writeDeclaredStamps' },
   { ref: 'scripts/client-chunks.mjs:91', file: 'scripts/client-chunks.mjs', from: 91, expect: 'function sameStamps' },
   { ref: 'scripts/client-chunks.mjs:100', file: 'scripts/client-chunks.mjs', from: 100, expect: 'function main(' },
-  { ref: 'scripts/prepare.mjs:9', file: 'scripts/prepare.mjs', from: 9, expect: '零编译包' },
+  { ref: 'scripts/prepare.mjs:9', file: 'scripts/prepare.mjs', from: 9, expect: '本包是零编译包（无 bundler / JSX / TypeScript' },
   { ref: 'scripts/prepare.mjs:86', file: 'scripts/prepare.mjs', from: 86, expect: 'function inspectClientChunks' },
   { ref: 'scripts/prepare.mjs:135', file: 'scripts/prepare.mjs', from: 135, expect: 'function inspectLocale' },
   { ref: 'scripts/prepare.mjs:144', file: 'scripts/prepare.mjs', from: 144, expect: 'LOCALE-SYNC-N/A' },
@@ -180,7 +194,7 @@ const REFS = [
   { ref: 'test/client.test.mjs:2360-2382', file: 'test/client.test.mjs', from: 2360, to: 2382, expect: 'shared.x', toExpect: "for (const hit of code.matchAll(redefined)) {" },
   { ref: 'test/client.test.mjs:2540', file: 'test/client.test.mjs', from: 2540, expect: 'scrimStyle' },
   { ref: 'test/client.test.mjs:2538-2542', file: 'test/client.test.mjs', from: 2538, to: 2542, expect: 'readFileSync', toExpect: "'renderConfirm states 1200 and renderRegionDialog states 1000'," },
-  { ref: 'test/boot.test.mjs:56', file: 'test/boot.test.mjs', from: 56, expect: "client.js" },
+  { ref: 'test/boot.test.mjs:56', file: 'test/boot.test.mjs', from: 56, expect: "const clientSource = readFileSync(join(packageRoot, 'client.js'), 'utf8');" },
   { ref: 'test/host.test.mjs:171', file: 'test/host.test.mjs', from: 171, expect: 'packageJson.files' },
   { ref: 'test/host.test.mjs:171-197', file: 'test/host.test.mjs', from: 171, to: 197, expect: 'packageJson.files', toExpect: "});" },
   { ref: 'test/prepare.test.mjs:440', file: 'test/prepare.test.mjs', from: 440, expect: 'incomplete checkout' },
@@ -188,8 +202,8 @@ const REFS = [
   { ref: 'test/prepare.test.mjs:487', file: 'test/prepare.test.mjs', from: 487, expect: 'CHUNK_STAMPS manifest that drifted' },
   { ref: 'test/prepare.test.mjs:487-539', file: 'test/prepare.test.mjs', from: 487, to: 539, expect: 'CHUNK_STAMPS manifest that drifted', toExpect: "});" },
   // ── 仓库内文档（零编译承诺 / 客户端入口为生成物；g-075 阶段 2 按 §9-1 裁决改口）──────
-  { ref: 'README.md:116', file: 'README.md', from: 116, expect: '零编译' },
-  { ref: 'NOTES.md:3635', file: 'NOTES.md', from: 3635, expect: '零编译' },
+  { ref: 'README.md:116', file: 'README.md', from: 116, expect: '**零运行时依赖、零编译 / Zero runtime dependencies, zero compilation**' },
+  { ref: 'NOTES.md:3635', file: 'NOTES.md', from: 3635, expect: '本包是**零编译**包（无 bundler / JSX / TypeScript）' },
   { ref: 'CONTRACT.md:4458', file: 'CONTRACT.md', from: 4458, expect: '## 14. Client build stamp' },
   { ref: 'CONTRACT.md:7673', file: 'CONTRACT.md', from: 7673, expect: 'no build step' },
   // ── 文档里实际引用的区间（补全，减少人工核对项）──────────────────────────
@@ -221,7 +235,7 @@ const REFS = [
   { ref: 'scripts/prepare.mjs:135-167', file: 'scripts/prepare.mjs', from: 135, to: 167, expect: 'function inspectLocale', toExpect: "let manifestError = null;" },
   { ref: 'scripts/prepare.mjs:139-145', file: 'scripts/prepare.mjs', from: 139, to: 145, at: 144, expect: 'LOCALE-SYNC-N/A', toExpect: "}" },
   { ref: 'scripts/prepare.mjs:150-157', file: 'scripts/prepare.mjs', from: 150, to: 157, expect: 'const cut =', toExpect: "}" },
-  { ref: 'scripts/prepare.mjs:162', file: 'scripts/prepare.mjs', from: 162, expect: '零编译' },
+  { ref: 'scripts/prepare.mjs:162', file: 'scripts/prepare.mjs', from: 162, expect: "prepare：发布就绪自检（本包零编译；`client.js` 是 `src/` 的生成物）" },
   { ref: 'scripts/prepare.mjs:180-183', file: 'scripts/prepare.mjs', from: 180, to: 183, expect: 'findings.push', toExpect: "findings.push(inspectLocale(pkg && pkg.files));" },
   { ref: 'scripts/client-chunks.mjs:32-34', file: 'scripts/client-chunks.mjs', from: 32, to: 34, expect: 'BLOCK_OPEN', toExpect: "const BLOCK_CLOSE = '    ]);';" },
   { ref: 'scripts/client-chunks.mjs:41-97', file: 'scripts/client-chunks.mjs', from: 41, to: 97, expect: 'function renderStampRows', toExpect: "}" },
@@ -232,16 +246,16 @@ const REFS = [
   { ref: 'CONTRACT.md:630', file: 'CONTRACT.md', from: 630, expect: '## 1. Routes and methods' },
   { ref: 'CONTRACT.md:2311', file: 'CONTRACT.md', from: 2311, expect: '## 13. Client-side contract' },
   { ref: 'CONTRACT.md:4740-4748', file: 'CONTRACT.md', from: 4740, to: 4748, expect: 'what the page is running', toExpect: "moment." },
-  { ref: 'README.md:339', file: 'README.md', from: 339, expect: '零编译' },
+  { ref: 'README.md:339', file: 'README.md', from: 339, expect: '（本包零编译，客户端入口 `client.js` 是 `src/` 的生成物' },
   { ref: 'README.md:358', file: 'README.md', from: 358, expect: 'node --test' },
   { ref: 'NOTES.md:3679', file: 'NOTES.md', from: 3679, expect: '这一条对用户是' },
-  { ref: 'test/client.test.mjs:10', file: 'test/client.test.mjs', from: 10, expect: 'Run:' },
+  { ref: 'test/client.test.mjs:10', file: 'test/client.test.mjs', from: 10, expect: 'Run: `node --test test/`' },
   { ref: 'test/build.test.mjs:138-141', file: 'test/build.test.mjs', from: 138, to: 141, at: 140, expect: 'occurrences(clientSource, BEGIN)', toExpect: "assert.equal(occurrences(clientSource, END), 1, 'exactly one end marker');" },
   // ── rangeOnly 收编（R4-A3：包内可读的引用一律纳入自动判定）──────────────
-  { ref: 'scripts/prepare.mjs:170-186', file: 'scripts/prepare.mjs', from: 170, to: 186, expect: "try {", toExpect: "if (manifestError !== null) say(`  FAIL  MANIFEST-UNREADABLE: ${manife" },
+  { ref: 'scripts/prepare.mjs:170-186', file: 'scripts/prepare.mjs', from: 170, to: 186, stripEquals: "try {", toExpect: "if (manifestError !== null) say(`  FAIL  MANIFEST-UNREADABLE: ${manife" },
   { ref: 'client.js:107-114', file: 'client.js', from: 107, to: 114, expect: "window.__ModuleLoader__.load({", toExpect: "factory: function promptSettingFactory(require) {" },
   { ref: 'core/build.js:52-56', file: 'core/build.js', from: 52, to: 56, expect: "export function normalizeBuildText(text) {", toExpect: "}" },
-  { ref: 'core/store.js:280-297', file: 'core/store.js', from: 280, to: 297, expect: "/**", toExpect: "*/" },
+  { ref: 'core/store.js:280-297', file: 'core/store.js', from: 280, to: 297, stripEquals: '/**', toExpect: ' */', weakReason: '端点行只有 JSDoc 起止标记（`/**` 与 `*/`），精确匹配已是上限；块内语义由 core/store.js:280-296 条目的 at=281 断言覆盖' },
   { ref: 'test/build.test.mjs:136-172', file: 'test/build.test.mjs', from: 136, to: 172, expect: "test('build: the real client.js region covers every byte the entry fac", toExpect: "});" },
   { ref: 'index.js:4292-4364', file: 'index.js', from: 4292, to: 4364, expect: "ok: true,", toExpect: "}" },
   { ref: 'package.json:27', file: 'package.json', from: 27, expect: "\"locale\"," },
@@ -566,6 +580,78 @@ function checkTables(lines) {
   return failures;
 }
 
+/**
+ * 统计**收集域之外**的裸行号形态（g-079 项 2b）。
+ *
+ * 收集域只认 `文件:行` / `文件:行-行` / 简写 `:行`；文档里另有三类裸数字引用逃过
+ * 体检：① 行内代码里的纯行号（`` `2313` ``）；② 括号裸行号（`（212）`、
+ * `（185–198）`）；③ 裸区间（`1–106`、`185–198`）。本函数**只计数、不判内容**：
+ * 裸数字不带文件名，脚本无法凭空断言它指哪个文件的哪一行。
+ *
+ * **"不判"不等于"静默吞掉"**：输出里给出显式条数，`--verbose` 逐条列出，人工核对
+ * 有清单可循。§1.3/§5.1 两张表的行区间已由 {@link checkTables} 按行数/连续性复算，
+ * 因此从"未覆盖"里单列扣除（`tableCovered`），避免把已检查过的数字算成缺口。
+ *
+ * 已知边界（如实）：裸区间里混有行数估算（如「加 30–80 行」）与尺寸数字，脚本不区分
+ * 语义；计数是**上界**，只保证"没有静默吞掉"，不冒充"这些都是文件行号引用"。
+ * @param doc - 文档全文。
+ * @returns `{codeBare, paren, range, tableCovered}`，前三个是 `{line, text}[]`。
+ */
+function countUncoveredRefs(doc) {
+  const lines = doc.split('\n');
+  const codeBare = [];
+  const paren = [];
+  const range = [];
+  let inFence = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    const raw = lines[index];
+    if (/^\s*```/.test(raw)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    // 已覆盖的 `文件:行` / `:行` 先从文本里剔除，避免与裸形态重复计数。
+    let text = raw
+      .replace(/[A-Za-z0-9_./-]+\.(?:js|mjs|json|md):\d+(?:-\d+)?/g, ' ')
+      .replace(/:\d+(?:-\d+)?/g, ' ');
+    // ① 行内代码里的纯行号 / 纯区间（`2313`、`115–11877`）。`0` 是数值不是行号，排除。
+    for (const match of text.matchAll(/`\s*(\d{1,6}(?:\s*[–-]\s*\d{1,6})?)\s*`/g)) {
+      if (Number(match[1].split(/[–-]/)[0]) >= 1) codeBare.push({ line: index + 1, text: match[0].trim() });
+    }
+    text = text.replace(/`\s*\d{1,6}(?:\s*[–-]\s*\d{1,6})?\s*`/g, ' ').replace(/`/g, ' ');
+    // `§9-3` 是章节号，不是行区间。
+    text = text.replace(/§\s*\d+(?:[–-]\d+)?/g, '§');
+    // ② 括号裸行号。全角 `（）` 是中文行文里的引用写法，一律计数；半角 `()` 只在
+    // 左括号前不紧邻标识符时计数，排除 `scrimStyle(1200)` 这种函数实参。
+    for (const match of text.matchAll(/[（]\s*(\d{1,6}(?:\s*[–-]\s*\d{1,6})?)\s*[）]/g)) {
+      paren.push({ line: index + 1, text: match[0].trim() });
+    }
+    for (const match of text.matchAll(/(?<![\w.])\(\s*(\d{1,6}(?:\s*[–-]\s*\d{1,6})?)\s*\)/g)) {
+      paren.push({ line: index + 1, text: match[0].trim() });
+    }
+    // ③ 裸区间（en dash / hyphen）；排除日期（`2026-10-17` 的连字符被两侧规则挡住）。
+    for (const match of text.matchAll(/(?<![\w:./#-])(\d{1,6})\s*[–-]\s*(\d{1,6})(?![\w-])/g)) {
+      range.push({ line: index + 1, text: match[0] });
+    }
+  }
+  // §1.3 的行区间在第 1 列、§5.1 的在第 2 列 —— 这两列正是 checkTables 复算覆盖的列。
+  const countCellRanges = (startPrefix, endPrefix, cellIndex) => {
+    const start = lines.findIndex((line) => line.startsWith(startPrefix));
+    const end = lines.findIndex((line, at) => at > start && line.startsWith(endPrefix));
+    let count = 0;
+    for (const line of lines.slice(start, end === -1 ? undefined : end)) {
+      const cells = line.split('|');
+      const cell = cells[cellIndex + 1];
+      if (cell === undefined) continue;
+      for (const _ of cell.matchAll(/\d{1,6}\s*[–-]\s*\d{1,6}/g)) count += 1;
+    }
+    return count;
+  };
+  const tableCovered = countCellRanges('### 1.3', '**上表互不重叠', 0)
+    + countCellRanges('**阶段 2 的目标段划分', '合计 12382 行', 1);
+  return { codeBare, paren, range, tableCovered };
+}
+
 /** 主流程：文档引用体检 + 两张表复算。 */
 function main() {
   const doc = readFileSync(DOC_PATH, 'utf8');
@@ -578,6 +664,9 @@ function main() {
   let verified = 0;
   let rangeOnly = 0;
   let manual = 0;
+  // **引用级**失败（进恒等式）。表格复算 / `REFS\declared` 的失败是另一类，单独报数：
+  // 混在一起会让恒等式在表格坏掉时假红、在引用被静默丢弃时假绿。
+  let unresolved = 0;
 
   // ① 文档里出现、且期望表也有的引用 —— 这才是"文档引用被验证"的条数
   for (const [key, meta] of declared) {
@@ -591,12 +680,14 @@ function main() {
           manualList.push(key);
         } else {
           failures.push(`${key}: 包内读不到该文件（fail-closed）`);
+          unresolved += 1;
         }
         continue;
       }
       const last = meta.to ?? meta.from;
       if (meta.from < 1 || last > lines.length) {
         failures.push(`${key}: 行号越界（${meta.file} 实有 ${lines.length} 行）（fail-closed）`);
+        unresolved += 1;
         continue;
       }
       rangeOnly += 1;
@@ -608,12 +699,14 @@ function main() {
       verified += 1;
     } else {
       failures.push(result.detail);
+      unresolved += 1;
     }
   }
 
   // ③ 归属失败的简写引用：一律 unresolved ⇒ 失败（fail-closed）
   for (const raw of unowned) {
     failures.push(`${raw}: 无法归属到具体文件（fail-closed）`);
+    unresolved += 1;
   }
 
   // ④ 期望表里文档中并不存在的条目：独立校验，但**不计入覆盖率**
@@ -625,11 +718,27 @@ function main() {
     else failures.push(`[REFS\\declared] ${result.detail}`);
   }
 
+  // ⑤ 恒等式 = **真实失败判定**（g-079 项 2a）。它抓的是"某条引用被静默丢弃"：
+  // 任何一条 `continue` 只要没落进 verified/rangeOnly/manual/unresolved 四类之一，等式就破。
   const total = declared.size + unowned.length;
-  const unresolved = failures.length;
+  const identitySum = verified + rangeOnly + manual + unresolved;
+  const identityHolds = total === identitySum;
+  if (!identityHolds) {
+    failures.push(
+      `恒等式不成立：total=${total} ≠ verified+rangeOnly+manual+unresolved=`
+      + `${verified}+${rangeOnly}+${manual}+${unresolved}=${identitySum}（有引用被静默丢弃或重复计数）`,
+    );
+  }
+  const otherFailures = failures.length - unresolved;
+
+  // ⑥ 收集域之外的裸行号形态：显式可数，不静默吞掉（g-079 项 2b）。
+  const uncovered = countUncoveredRefs(doc);
+  const uncoveredTotal = uncovered.codeBare.length + uncovered.paren.length + uncovered.range.length;
+  const uncoveredManual = uncoveredTotal - uncovered.tableCovered;
+
   process.stdout.write(
     `\ncheck-refs: 文档引用 total=${total} | verified=${verified} | rangeOnly=${rangeOnly} `
-    + `| manual=${manual} | unresolved+failed=${unresolved}\n`,
+    + `| manual=${manual} | unresolved=${unresolved} | 其它失败（表格/孤儿期望）=${otherFailures}\n`,
   );
   process.stdout.write(
     `check-refs: REFS 表 ${REFS.length} 条 → REFS∩declared=${REFS.length - notDeclared.length}`
@@ -638,11 +747,25 @@ function main() {
   );
   process.stdout.write(
     `check-refs: 恒等式 total == verified + rangeOnly + manual + unresolved = `
-    + `${verified} + ${rangeOnly} + ${manual} + ${unresolved}\n`,
+    + `${total} == ${verified} + ${rangeOnly} + ${manual} + ${unresolved} → `
+    + `${identityHolds ? '成立' : '不成立（已计入失败，非零退出）'}\n`,
   );
+  process.stdout.write(
+    `check-refs: 未覆盖的引用形态：${uncoveredTotal} 处（行内代码裸行号 ${uncovered.codeBare.length}`
+    + ` / 括号裸行号 ${uncovered.paren.length} / 裸区间 ${uncovered.range.length}）`
+    + `—— 收集域只认 文件:行 / 文件:行-行 / :行；其中 ${uncovered.tableCovered} 处是 §1.3/§5.1 的区间列`
+    + `（已由行数复算覆盖），其余 ${uncoveredManual} 处仅计数、不判内容（--verbose 逐条列出）\n`,
+  );
+  // 弱断言披露：能收紧的已在 REFS 表里收紧；仍带 `weakReason` 的逐条打印理由。
+  const weak = REFS.filter((entry) => entry.weakReason !== undefined);
+  process.stdout.write(`check-refs: 弱断言披露：${weak.length} 条（能收紧的已收紧，以下为只能弱断言的理由）\n`);
+  for (const entry of weak) process.stdout.write(`  weak ${entry.ref}：${entry.weakReason}\n`);
   for (const key of manualList) process.stdout.write(`  manual ${key}（仓库外路径，需人工核对）\n`);
   if (process.argv.includes('--verbose')) {
     for (const key of rangeOnlyList) process.stdout.write(`  rangeOnly ${key}（包内可读 + 行号合法，但期望表无符号断言）\n`);
+    const details = [...uncovered.codeBare, ...uncovered.paren, ...uncovered.range]
+      .sort((left, right) => left.line - right.line || left.text.localeCompare(right.text));
+    for (const hit of details) process.stdout.write(`  uncovered ${hit.line}: ${hit.text}\n`);
   }
 
   if (failures.length > 0) {

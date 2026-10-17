@@ -9915,4 +9915,112 @@ g-075（客户端生成期分段，已 delivered）交付时由独立评审标�
   独立、失败措辞面向不同读者（安装现场 vs 开发侧），有意保留重复，不抽公共 CLI。
 - 不引入 CI、不引入新依赖（`dependencies` 仍为空）、不改产品行为、不自行 commit。
 
+---
+
+## 161. g-079：遗留残余清理 —— `.gitattributes` 跨平台检出 / `check-refs` fail-closed / 诱饵段「含闭合」/ `real-layers-check` 去留（2026-10-17，基线 `1117c42`，隔离工作树 `g-079-att-01`）
+
+本目标清 g-075～g-078 评审标记但未阻断交付的 4 项残余。**零产品行为改动**：
+`packages/dsh-prompt-setting/client.js` 的 `git diff --exit-code` 退出码 **0**。
+
+### 项 1（已修）仓库根 `.gitattributes`
+- **先探测后落笔**：加文件前 `git ls-files --eol` 实测 **89 个文本文件全部 `i/lf w/lf`**、
+  唯一非文本是 `assets/hero.jpg`（`i/-text`）；`git ls-files -z | xargs -0 grep -lP '\r$'`
+  无命中，`core.autocrlf` 未设置。⇒ 当前工作树没有需要归一化的 CRLF。
+- **落地内容**：`* text=auto` + `*.js` / `*.mjs` / `*.json` / `*.md` 各自 `text eol=lf`。
+  只钉这四类，是因为**按字节比对**的东西全在它们里（`client.js` 指纹、`src/` 段拼接、
+  locale 生成段、文档引用体检）；`.yml` / 图片等不参与字节门禁，交给 `text=auto`
+  的二进制探测即可，不必扩大约束面。
+- **未触发 renormalize（关键判据）**：加完 `.gitattributes` 后 `git status --porcelain`
+  只有 `?? .gitattributes`（新文件本身），`git status --porcelain -uno` **为空**、
+  `git diff --stat` **为空** ⇒ 没有已跟踪文件被重写，**不需要也不允许** `git add --renormalize`。
+- **有效性实测（一次性临时仓库，非本仓库）**：把一份**CRLF** 的 `x.js` 在带本
+  `.gitattributes` 的仓库里 `git add` ⇒ 索引存 `i/lf`（`git ls-files --eol` =
+  `i/lf w/crlf attr/text eol=lf`）；再以 `core.autocrlf=true` 重新检出 ⇒ 工作树回到
+  `i/lf w/lf`、字节为 LF。⇒ Windows 检出不会再给 `.js` 带 CRLF。
+- **负向对照（预期行为，不是要消除）**：副本里把 `src/02-locale.js` 改成 CRLF ⇒
+  `node scripts/client-build.mjs --check` **exit 1**（`CLIENT-SRC-DRIFT` 类红的正身）。
+- 未验证：真 Windows 机器未实测（本机 macOS，用 `core.autocrlf=true` 临时仓库模拟）；
+  该项的判据是「索引/检出字节与属性」，模拟覆盖了机制本身。
+
+### 项 2a（已修）`check-refs` 恒等式变成真实失败判定
+- **改法**：把 `unresolved` 从「`failures.length` 混装」拆成**引用级失败计数**；表格复算与
+  `REFS\declared` 的失败单独计入 `其它失败`，不参与恒等式。新增
+  `total (declared + unowned) == verified + rangeOnly + manual + unresolved` 的断言；
+  不成立 ⇒ push 进 failures 并 **exit 1**。输出从「只打印算式」改为
+  `... = 153 == 132 + 0 + 21 + 0 → 成立/不成立（已计入失败，非零退出）`。
+- **为什么拆计数**：混装时表格坏掉会让恒等式假红、真有引用被静默丢弃时反而可能凑巧相等；
+  拆开后恒等式只回答一个问题 ——「有没有引用没落进四类计数」。
+- **负向对照（一次性副本，已还原）**：注释掉 `verified += 1;`（模拟某条引用被静默丢弃）⇒
+  `check-refs` **exit 1**，输出 `153 == 0 + 0 + 21 + 0 → 不成立`，不符项点名
+  「恒等式不成立：total=153 ≠ …（有引用被静默丢弃或重复计数）」。正常树仍 **exit 0**。
+
+### 项 2b（已修）未覆盖引用形态显式可数 + 弱断言逐条结论
+- **为什么选 (b) 而不是 (a)**：裸数字（`（212）`、`185–198`、行内代码 `` `2313` ``）**不带文件名**，
+  强行归属只能靠「当前标题/同行文件名」的猜测；猜错会把体检变成假红源。所以只**计数**并
+  `--verbose` 逐条列出（`line: text`），人工核对有清单可循，但脚本不冒充能判定其内容。
+- **实测输出**：`未覆盖的引用形态：113 处（行内代码裸行号 21 / 括号裸行号 25 / 裸区间 67）；
+  其中 41 处是 §1.3/§5.1 的区间列（已由行数复算覆盖），其余 72 处仅计数、不判内容`。
+  计数是**上界**：裸区间里混有「加 30–80 行」这类行数估算与尺寸数字，脚本不区分语义 ——
+  这条边界如实写在脚本注释与输出措辞里。
+- **弱断言逐条结论**（判据：`expect` 只命中通用串/纯符号，换一条同类型行也能命中）：
+
+  | # | 引用 | 原 `expect` | 处理结论 |
+  |---|---|---|---|
+  | 1 | `client.js:12129` | `return {` | **收紧** → `return { failed: true };`（整条语句） |
+  | 2 | `scripts/prepare.mjs:9` | `零编译包` | **收紧** → `本包是零编译包（无 bundler / JSX / TypeScript` |
+  | 3 | `README.md:116` | `零编译` | **收紧** → `**零运行时依赖、零编译 / Zero runtime dependencies, zero compilation**` |
+  | 4 | `NOTES.md:3635` | `零编译` | **收紧** → `本包是**零编译**包（无 bundler / JSX / TypeScript）` |
+  | 5 | `scripts/prepare.mjs:162` | `零编译` | **收紧** → `prepare：发布就绪自检（本包零编译；…)` |
+  | 6 | `README.md:339` | `零编译` | **收紧** → `（本包零编译，客户端入口 client.js 是 src/ 的生成物` |
+  | 7 | `scripts/prepare.mjs:170-186` | `try {` | **收紧** → `stripEquals: "try {"`（trim 后逐字相等，不再是子串） |
+  | 8 | `test/boot.test.mjs:56` | `client.js` | **收紧** → 整条 `const clientSource = readFileSync(join(packageRoot, 'client.js'), 'utf8');` |
+  | 9 | `test/client.test.mjs:10` | `Run:` | **收紧** → `Run: \`node --test test/\`` |
+  | 10 | `core/store.js:280-297` | `/**` / `*/` | **只能弱断言**：端点行只有 JSDoc 起止标记，`stripEquals: '/**'` 已是上限；加 `weakReason` 并在输出里逐条披露（脚本打印「弱断言披露：1 条」+ 理由）。块内语义由 `core/store.js:280-296` 条目的 `at=281` 断言覆盖 |
+
+  选择口径：上表 10 条是「通用词/纯符号」类；`__internals`、`scrimStyle`、`size > 50000`、
+  `BLOCK_OPEN` 等是**该行独有的标识符**，不属于弱断言，未改动（也不为凑数改）。
+- 正常树：`total=153 | verified=132 | rangeOnly=0 | manual=21 | unresolved=0`、恒等式成立、
+  exit 0；`REFS\declared=26` 的独立校验照旧通过。
+
+### 项 3（已修）`findLocaleSegment` 拒绝「真源缺失 + 注释含完整可解析块」的诱饵段
+- **改法**（三道判据，命中 0 个或多个仍 fail-closed）：候选段除了「两个块都能被
+  `readDeclaredBlock` 解析」之外，还要求 ① 两个块**区间不重叠**；② 块内**每行都符合
+  生成器输出格式**（6 空格缩进 / `key: 'value',` / 引号规则）；③ 键序列与 `locale/*.json`
+  **描述同一本词典**（重合度 ≥ 90%，`LOCALE_KEY_MIN_OVERLAP`）。
+- **为什么键判据取「重合度 ≥90%」而不是「严格相等」**（对目标建议的一处**主动调整**，理由必读）：
+  `--write` 的职责就是让生成段跟上 JSON；加键 / 删键 / 改名之后跑 `--write` 是**正常流程**，
+  严格相等会把它挡在门外（脚本报「真源缺失」，而它自己就是来修漂移的，形成死循环）。
+  重合度判据下：真源段 = 100%；加键/删键/改名（相对 586 键的少量变化）> 90% ⇒ 仍可定位并修复；
+  注释里的诱饵只举几个示例键、且键名与真实词典无交集 ⇒ 重合度 ≈ 0 ⇒ 拒绝。
+- **三格矩阵行为**（全部有用例）：① 真源在 + 无闭合诱饵 ⇒ 命中真源（新增断言）；
+  ② 真源缺 + 无闭合诱饵 ⇒ 「真源缺失」（原有断言保留）；③ 真源缺 + **含闭合**诱饵 ⇒
+  「真源缺失」（新增，旧实现会命中、`--write` 会写坏该段）。
+- **端到端负向**：一次性副本把真源段换成注释诱饵后，`--check` 与 `--write` **均非零**
+  （消息含「真源缺失」），且 `client.js` 与段文件**逐字未变**（脚本不写坏任何文件）。
+- **不回归**：新增「给两份 JSON 加一个键后 `--write` 仍能定位真源并写进段」用例，
+  钉住上述 90% 判据的放宽边界。`test/locale.test.mjs` 11 → **14** 个用例。
+
+### 项 4（只评估，未实施）`scripts/real-layers-check.mjs` 的去留
+- **结论：移出 `scripts/`，落到 `docs/`（推荐）；未在本目标实施。**
+- **理由**：① `npm pack --dry-run` 实测它**随包发布**（57 个文件里含
+  `scripts/real-layers-check.mjs`），而它读的是本机两份**活配置**，对用户无意义、跑起来会红；
+  ② 它是开发期真机证据工具，与 `docs/check-refs.mjs` 同类 —— 后者正是靠「`docs` 不在
+  `files` 白名单」而**不随包发布**，先例现成；③ `scripts/` → `docs/` 同为包根下一级，
+  `../core/*` 的相对 import 不需要改，只需改 `verify.mjs` 注释与脚本内用法行的路径，
+  **不必动 `files`**（也就不触发 `test/host.test.mjs` 对 `files` 数组的精确断言）。
+- **不选「加 `files` 取反」**：虽然也能达到不发布的效果，但它改的是**发布面契约**
+  （`files` 数组被测试逐字钉住），成本更高、收益相同。
+- 本目标要求「只评估」且移动属文件路径变更（虽零产品行为），留给负责人裁决/另立目标；
+  未实施。
+
+### 验收与证据（本 attempt）
+- four gates（包目录）：`client-build --check` / `locale-pack --check` / `prepare`
+  （25 项通过）/ `docs/check-refs.mjs` **全部 exit 0**。
+- 全量测试：**987 pass / 0 fail**（基线 984；新增 locale 3 条），`node --test test/*.test.mjs` exit 0。
+- `git diff --exit-code packages/dsh-prompt-setting/client.js` **exit 0**（产品字节零改动）；
+  `git status --porcelain` 仅本次 4 个文件的预期改动 + 新 `.gitattributes`。
+- 未验证 / 残余：① 真 Windows 未实测（模拟见项 1）；② 项 4 未实施；③ 未覆盖引用计数是上界；
+  ④ 键重合度判据是「对建议的主动调整」，若负责人要求严格相等，需同时改 `--write` 的
+  加键/改名流程（否则正常流程会失败）。
+
 

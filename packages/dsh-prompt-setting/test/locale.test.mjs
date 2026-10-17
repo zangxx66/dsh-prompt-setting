@@ -320,6 +320,99 @@ test('locale: the dictionary segment is found, never hard-coded, and ambiguity i
   );
 });
 
+test('locale: a comment decoy with fully closed blocks is still refused (g-079 项 3)', () => {
+  const found = findLocaleSegment({ packageDir: packageRoot });
+
+  // 三格矩阵第①格（行为不变）：真源在 + 另一段的注释里只有「块头」、没有闭合行 ⇒ 命中真源。
+  const openOnly = 'const outer = {\n    const zh = {\n};\n    const en = {\n};\n';
+  const listExtra = (relPath) => (
+    relPath === CLIENT_SRC_DIR ? [...readdirSync(join(packageRoot, CLIENT_SRC_DIR)), '02-decoy.js'] : readDir(relPath)
+  );
+  const readExtra = (relPath) => (relPath === `${CLIENT_SRC_DIR}/02-decoy.js` ? openOnly : readText(relPath));
+  assert.equal(
+    findLocaleSegment({ packageDir: packageRoot, readDir: listExtra, readText: readExtra }).name,
+    found.name,
+    '真源在 + 无闭合诱饵 ⇒ 仍命中真源',
+  );
+
+  // 三格矩阵第③格（g-079 修复）：真源缺失 + 注释里写出**一对完整可解析**的 zh/en 块
+  // （含闭合行）。旧实现只要求「两个块都能被 readDeclaredBlock 解析」⇒ 会把它当真源；
+  // 现在候选还要求「块内每行是生成器格式 + 键与 locale JSON 描述同一本词典」⇒ 报缺失，
+  // `--write` 不会往这个注释段里写词典。
+  const closedDecoy = [
+    '/* 文档示例（注释，不是真源）：',
+    '    const zh = {',
+    "      exampleOnly: '示例',",
+    '    };',
+    '',
+    '    const en = {',
+    "      exampleOnly: 'example',",
+    '    };',
+    '*/',
+    '',
+  ].join('\n');
+  const readClosed = (relPath) => (relPath === `${CLIENT_SRC_DIR}/${found.name}` ? closedDecoy : readText(relPath));
+  assert.throws(
+    () => findLocaleSegment({ packageDir: packageRoot, readDir, readText: readClosed }),
+    /真源缺失/,
+  );
+});
+
+test('locale: --check and --write refuse a fully closed decoy and touch no file (g-079 项 3)', () => {
+  const root = throwawayPackage();
+  try {
+    const segment = findLocaleSegment({ packageDir: root });
+    const segmentPath = join(root, CLIENT_SRC_DIR, segment.name);
+    const decoy = [
+      '/* 文档示例（注释，不是真源）：',
+      '    const zh = {',
+      "      exampleOnly: '示例',",
+      '    };',
+      '',
+      '    const en = {',
+      "      exampleOnly: 'example',",
+      '    };',
+      '*/',
+      '',
+    ].join('\n');
+    writeFileSync(segmentPath, decoy);
+    const watched = ['client.js', `${CLIENT_SRC_DIR}/${segment.name}`];
+    const before = watched.map((rel) => readFileSync(join(root, rel), 'utf8'));
+    for (const flag of ['--check', '--write']) {
+      const result = run(root, 'scripts/locale-pack.mjs', flag);
+      assert.notEqual(result.status, 0, `${flag} 必须非零\n${result.stdout}\n${result.stderr}`);
+      assert.match(result.stderr, /真源缺失/, `${flag} 的失败必须说清「真源缺失」`);
+    }
+    // 不写坏任何文件：段文件保持诱饵原文，client.js 一个字节没动。
+    watched.forEach((rel, at) => assert.equal(readFileSync(join(root, rel), 'utf8'), before[at], `${rel} 不得被改写`));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('locale: adding a key to the JSON still lets --write locate the segment', () => {
+  // 键集合判据取「重合度 ≥ 90%」而不是严格相等（g-079 项 3）：加键/删键/改名之后跑
+  // `--write` 是正常流程，严格相等会把这条流程挡在门外。本用例钉住这个行为。
+  const root = throwawayPackage();
+  try {
+    for (const name of Object.keys(LOCALES)) {
+      const jsonPath = join(root, 'locale', `${name}.json`);
+      const raw = readFileSync(jsonPath, 'utf8');
+      const next = raw.replace(/\n}\s*$/, `,\n  "g079Probe": "${name === 'zh' ? '探针' : 'probe'}"\n}\n`);
+      assert.notEqual(next, raw, 'the fixture edit really lands');
+      writeFileSync(jsonPath, next);
+    }
+    const write = run(root, 'scripts/locale-pack.mjs', '--write');
+    assert.equal(write.status, 0, `加键后的 --write 必须仍能定位真源\n${write.stdout}\n${write.stderr}`);
+    const segment = findLocaleSegment({ packageDir: root });
+    const text = readFileSync(join(root, CLIENT_SRC_DIR, segment.name), 'utf8');
+    assert.equal(text.includes("      g079Probe: '探针',"), true, 'zh 的新键要写进段真源');
+    assert.equal(text.includes("      g079Probe: 'probe',"), true, 'en 的新键要写进段真源');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('locale: client.js carries no second copy of the dictionaries', () => {
   const source = readText('client.js');
   // The inline table is gone: `error.CODE` is a plain dictionary key now.
