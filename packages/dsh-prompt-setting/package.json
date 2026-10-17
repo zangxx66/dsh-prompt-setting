@@ -35,7 +35,8 @@
     "prepare": "node scripts/prepare.mjs",
     "check-compat": "node scripts/check-compat.mjs",
     "client:build": "node scripts/client-build.mjs --write",
-    "client:check": "node scripts/client-build.mjs --check"
+    "client:check": "node scripts/client-build.mjs --check",
+    "verify": "node scripts/verify.mjs"
   },
   "keywords": [
     "dsh",

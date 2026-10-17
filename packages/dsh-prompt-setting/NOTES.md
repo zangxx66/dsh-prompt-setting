@@ -9830,3 +9830,72 @@ g-075（客户端生成期分段，已 delivered）交付时由独立评审标�
 - 不做：不引入 bundler / 第二真源，不动 `CHUNK_STAMPS` 语义与任一 `data-*` marker，不降级任何 FAIL，
   不自行 commit（按本次 directive，改动留在 worktree 待主管复核）。
 
+## 160. g-078：发布前 `verify` —— 一条命令跑齐全量测试 + 四道门禁 + 文档引用体检（2026-10-17，基线 `edbe034`，隔离工作树 `g-078-att-01`）
+
+### 为什么需要它
+本项目**没有 CI**。`docs/refactor-plan.md` §6.2 的「新增段无需改任何清单」在 g-077 之后由
+`CLIENT-SRC-DRIFT`（`src/` ↔ 磁盘产物逐字节一致）守住，但产物本身也是变更的一部分 ——「删段 +
+`--write`」这种**已固化**的段集合变化，`prepare` 的发布门再也发现不了。段集合的机器校验因此全部
+落在**开发侧**（`test/client-source.test.mjs` 的坐标表、`docs/check-refs.mjs` 的 §5.1 对账、全量
+用例），而发布者发布前不跑测试时它们形同不存在。负责人 2026-10-17 裁决：**不**把手工清单塞回
+`prepare`（会重蹈 g-076 与 §6.2 的冲突），改为补一条 `verify` 命令。
+
+### 实现（交付清单）
+1. 新增 `scripts/verify.mjs`：`spawnSync(process.execPath, …)` 串行跑 6 步，**聚合报告、不
+   fail-fast**；每步一行 `ok`/`FAIL` + 耗时；失败步骤在汇总前打印退出码 + 输出尾部（stderr 优先，
+   stderr 为空时退到 stdout —— `check-refs` 的不符项写在 stdout）；末尾 `verify: N 步 / M 失败` 并
+   点名失败步骤；退出码只有 0/1。包根从 `import.meta.url` 推导、子进程 `cwd` 固定为包根 ⇒ 与调用者
+   cwd 无关。`test/` 的用例文件用 `readdirSync` 展开（`spawnSync` 不经 shell、Node `--test` 也不
+   展开 glob；Node 24 下 `node --test test/` 会 `MODULE_NOT_FOUND`）。聚合逻辑（`summarize` /
+   `formatStepLine` / `formatFailureDetail` / `tailLines` / `stepOk`）是导出纯函数，`runStep` /
+   `main` 可注入 `spawn`（单测不启动子进程）。
+2. `package.json`：`"verify": "node scripts/verify.mjs"`。`scripts` 区在 `package.json` 第 34-40 行、
+   `docs/check-refs.mjs` 的 `package.json` 锚点（15 / 19 / 22-33 / 27）全在其前 ⇒ 无需重算行引用。
+3. `README.md`：维护者代码块加一行 `npm run verify`；新增「发布前 verify / Pre-release verify」小节
+   （怎么跑、何时跑、唯一调用位置 = 包目录且仓库根等价、与 `prepare` 的分工）；`npm pack` 文件数
+   顺手校正为实际值（基线 **56** → 含本脚本 **57**；README 原写的 36 早已过时，本次按实测更正）。
+4. `test/verify.test.mjs`：14 个用例。用假结果数组驱动纯函数、用注入 `spawn` 驱动 `runStep` /
+   `main` —— **不为测 verify 跑整套 ~58s 的用例**（brief 要求）。覆盖：全绿 ⇒ 0 失败/exit 0；任一
+   步失败 ⇒ exit 1 且点名；多个失败全部点名；signal / spawn error 不算通过；每步一行的格式；stderr
+   空时退 stdout；尾部行数上限；步骤清单顺序（test 在最后）；`readdirSync` 展开且包含本文件；子进程
+   cwd 恒为包根；主流程在**中间步骤失败后仍执行剩余步骤**（fake spawn 记录调用数 = 6）。
+
+### `real-layers-check.mjs` 是否纳入：**不纳入**
+三个理由（brief 要求把结论写进脚本注释与本节）：① 它读的是负责人这台机器上的两份**活配置**
+（`~/.dsh/prompt-setting/overrides.json` 与仓库工作区层），别处文件缺失即 exit 1 —— 纳入后「发布前
+检查」会依赖本机私有数据（假红 / 恒红）；② 脚本头部自述「只读、一次性、**不属于 `node --test`
+套件**」，把它接进 verify 等于把一次性证据核对变成发布门；③ 它核对的是 g-057/g-058 的历史装配
+语义，不是「仓库状态合规」。真正的覆盖在套件里的合成夹具（`test/overrides.test.mjs` 等）。
+`check-compat` 则**保留**：只读诊断、退出码恒 0，不构成门禁，但发布前一次性看到 peer 范围 / boot
+失败签名有价值（它若自身崩了也兜底 exit 0，不会误挡发布）。
+
+### 实测（判据 1/2/3/4/5/6/7）
+- `npm run verify`（包目录）⇒ `verify: 6 步 / 0 失败`、**exit 0**；耗时：check-refs 89ms /
+  client-build --check 74ms / locale-pack --check 71ms / prepare 103ms / check-compat 58ms /
+  test 60.6s。
+- **cwd 无关**：仓库根 `node packages/dsh-prompt-setting/scripts/verify.mjs` ⇒ 同步骤同结果
+  **exit 0**（子进程 cwd 恒为包根，见 `test/verify.test.mjs` 的注入断言）。
+- **负向对照②（副本改坏段）**：副本 `src/12-update.js` 末尾加一行注释（不改 `client.js`）⇒
+  `FAIL client-build --check`（首处差异第 9036 行）、`FAIL prepare`（`CLIENT-SRC-DRIFT`）、
+  `FAIL test`（坐标表 / 产物断言），verify **exit 1**、`verify: 6 步 / 3 失败`、失败步骤点名三者；
+  check-refs / locale-pack / check-compat 仍绿。
+- **负向对照③（副本让中间步骤红，证明不 fail-fast）**：副本 `docs/refactor-plan.md` §5.1 把
+  `12-update.js` 改成 `12-updates.js`（磁盘不动）⇒ `FAIL check-refs`（「文档缺 12-update.js；
+  文档多出 12-updates.js」），**后续 5 步仍全部执行**（client-build / locale / prepare / check-compat /
+  test 均 ok），verify **exit 1**、`verify: 6 步 / 1 失败`、`失败步骤：check-refs`。
+- **负向对照①（还原后）**：同一副本把段名改回 ⇒ `verify: 6 步 / 0 失败`、**exit 0**。
+- 全量测试：**980 pass / 0 fail**（基线 966 + 新增 `test/verify.test.mjs` 14）。
+- 四道门禁 exit 0（verify 内）：`check-refs`、`client-build --check`、`locale-pack --check`、
+  `prepare`；`git diff --exit-code packages/dsh-prompt-setting/client.js` = **0**（产品字节零改动）。
+- `npm pack --dry-run`：**57 个文件**（基线 56 + `scripts/verify.mjs`）；tarball 里没有 `test/` 与
+  `docs/`，所以 verify 本来就不该在安装现场跑。
+
+### 残余 / 明确不做
+- `verify` 随包发布（`files` 含 `scripts/`），但它在安装现场**不适用**（包里没有 `test/` 与
+  `docs/`，会红）—— 有意的，README 写明它只在仓库 checkout 里跑。要让它在安装现场也绿就得把测试
+  与文档也打进包，那与「`files` 白名单 = 运行时所需」冲突。
+- `prepare` 与 `client-build --check` 会重复做同一次「段 ↔ 产物」比对（~70-100ms）；两个入口各自
+  独立、失败措辞面向不同读者（安装现场 vs 开发侧），有意保留重复，不抽公共 CLI。
+- 不引入 CI、不引入新依赖（`dependencies` 仍为空）、不改产品行为、不自行 commit。
+
+

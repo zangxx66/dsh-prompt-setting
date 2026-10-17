@@ -359,8 +359,43 @@ node --test                    # 全套件（含真实 DSH 包的对照实验，
 node scripts/locale-pack.mjs   # 词典一致性：locale/*.json ↔ client.js 的生成段（不一致即非零退出）
 node scripts/check-compat.mjs  # 只读兼容性自检：不联网、永不抛、退出码恒 0
 node scripts/prepare.mjs       # prepare 门禁：pnpm 从 git 安装时会自动跑它
-npm pack --dry-run             # 确认发布产物干净（36 个文件、含 5 个 client.*.js chunk 与 2 份 locale JSON、无 test/）
+npm run verify                 # 发布前一条命令跑齐：全量测试 + 四道门禁 + 文档引用体检（聚合报告）
+npm pack --dry-run             # 确认发布产物干净（57 个文件、含 5 个 client.*.js chunk 与 2 份 locale JSON、无 test/）
 ```
+
+### 发布前 verify / Pre-release verify
+
+**一条命令跑齐发布前的全部机器检查**（全量测试 + 四道门禁 + 文档引用体检）。它**聚合报告、不 fail-fast**：
+任一步红也把剩余步骤跑完，每步一行 `ok` / `FAIL` + 耗时，失败时先打印该步退出码与输出尾部（不倾倒全量输出），
+末尾汇总 `verify: N 步 / M 失败`；任一失败退出码为 1，全通过为 0。
+
+**调用位置（唯一约定：包目录；仓库根等价）**：
+
+```bash
+cd packages/dsh-prompt-setting
+npm run verify                  # = node scripts/verify.mjs
+
+# 仓库根也能跑，结果完全一致（脚本从自身位置推导包根，与 cwd 无关）：
+node packages/dsh-prompt-setting/scripts/verify.mjs
+```
+
+**什么时候跑**：发布 / 打 tag / `npm pack` 之前；改过 `src/`、`client.js`、`locale/`、`docs/` 或测试之后。
+步骤顺序（基础 → 派生、快 → 慢）：`check-refs`（§5.1 文档表 vs 磁盘 `src/`）→ `client-build --check` →
+`locale-pack --check` → `prepare` → `check-compat`（只读诊断，退出码恒 0）→ `node --test` 全量用例。
+
+**它和 `prepare` 的分工**：`prepare` 是**安装现场**门禁 —— `pnpm` 从 git 安装时自动跑，只读包目录，
+判「装到用户机器上的包自洽」（入口 / `files` 白名单 / chunk 清单 / 词典 / 段↔产物字节一致）；
+`verify` 是**发布者侧**门禁 —— 只在本仓库 checkout 里跑，判「仓库状态合规」（全量测试与 `docs/` 引用
+体检都不随包发布）。安装后的包里没有 `test/` 与 `docs/`，所以在消费者机器上跑 verify 会红 —— 这是
+有意的，它本来就不是给安装现场用的。
+
+> **Run `npm run verify` before every release** (equivalently `node scripts/verify.mjs`, from the package
+> directory or the repository root — the script derives the package root itself, so the caller's cwd does
+> not matter). It runs the full test suite, the four gates and the docs reference check **serially and
+> without fail-fast**, prints one `ok` / `FAIL` line with its duration per step, ends with
+> `verify: N steps / M failed`, and exits 1 if anything failed. `prepare` is the *install-site* gate (runs
+> on the consumer machine, reads only the package); `verify` is the *releaser-side* gate (it needs `test/`
+> and `docs/`, neither of which is shipped).
 
 - **改文案只改 `locale/*.json` / Copy lives in `locale/*.json`**：`client.js` 里的 `zh`/`en` 两段
   是**生成物**（`// #region generated:` … `// #endregion`），由 `scripts/locale-pack.mjs --write`
