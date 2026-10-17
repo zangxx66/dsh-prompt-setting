@@ -1,8 +1,7 @@
 // 本文件是 client.js 的片段，不是独立模块，不得单独 parse/lint/执行。
       const actions = {
         refresh: () => setReload((value) => value + 1),
-        // The「更改」switch: the same button opens and shuts the picker, and
-        // `aria-expanded` on it reports which state it is in.
+        // The「更改」switch: the same button opens and shuts the picker (`aria-expanded` reports it).
         toggleScopeOpen: () => setScopeOpen((open) => !open),
         setTab,
         setView,
@@ -115,8 +114,7 @@
         savePreset: () => {
           void savePresetDraft();
         },
-        // Review R4: the row's「删除」only *asks*. The DELETE happens through
-        // `confirmYes`, like every other destructive act on this page.
+        // Review R4: the row's「删除」only *asks*; the DELETE runs through `confirmYes`.
         requestPresetDelete: (id) => {
           const list = presets.data && Array.isArray(presets.data.presets) ? presets.data.presets : [];
           const preset = list.find((entry) => entry.id === id) ?? null;
@@ -466,6 +464,8 @@
         mineInterpolateLocked,
         mineInterpolateStatus: mineInterpolate,
         mineWarnings,
+        // g-080: the variable names the Host reported (null = not probed yet).
+        mineVariables,
         mineLayerDisabled,
         mineFrozenReason,
         mineFrozenCertain,

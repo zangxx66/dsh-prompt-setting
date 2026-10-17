@@ -1103,7 +1103,7 @@ window.__ModuleLoader__.load({
       mineInterpolateOff: '已关闭',
       mineInterpolateTurnOn: '开启变量替换',
       mineInterpolateTurnOff: '关闭变量替换',
-      mineInterpolateNote: '开启后，这段文本里的 {{变量}} 由本插件在装配时展开：{{model}} → 当前模型名、{{cwd}} → 工作目录、{{provider}} → provider。未注册、拼错或当前无值的引用会原样保留（不会导致组装失败）。关闭时所有 {{...}} 都原样交给模型。',
+      mineInterpolateNote: '开启后，这段文本里的 {{...}} 由本插件在装配时展开；当前 DSH 注册的变量：{list}。（{{cwd}} 在 DSH 0.2.1-rc.1 起已弃用：若它不在上面的列表里，文本里的 {{cwd}} 会原样保留，保存时也会因「未注册」被拒绝；工作目录由宿主以运行时上下文提供。）未注册、拼错或当前无值的引用会原样保留（不会导致组装失败）。关闭时所有 {{...}} 都原样交给模型。',
       mineInterpolateWarn: '注意：DSH 没有转义机制。开启后你无法再在这里写字面量 {{...}}——未注册、拼错或写歪的引用永远拿不到值，所以保存时会被直接拒绝。它不会让会话装配失败，只会一直保持字面量。',
       mineInterpolateInherit: '该层未设置：跟随用户层。',
       mineInterpolateStated: '该层显式设置为{state}。',
@@ -1692,7 +1692,7 @@ window.__ModuleLoader__.load({
       mineInterpolateOff: 'OFF',
       mineInterpolateTurnOn: 'Turn variable substitution on',
       mineInterpolateTurnOff: 'Turn variable substitution off',
-      mineInterpolateNote: 'When on, this plugin expands {{variables}} in this text during assembly: {{model}} → the current model, {{cwd}} → the working directory, {{provider}} → the provider. A reference that is unregistered, misspelled or currently valueless stays literal and never fails the assembly. When off, every {{...}} reaches the model exactly as written.',
+      mineInterpolateNote: 'When on, this plugin expands {{...}} in this text during assembly; variables this DSH registers: {list}. ({{cwd}} was retired in DSH 0.2.1-rc.1: if it is not in that list, a literal {{cwd}} stays unexpanded and a save that would arm it is refused as unregistered; the working directory now reaches the model as runtime context.) A reference that is unregistered, misspelled or currently valueless stays literal and never fails the assembly. When off, every {{...}} reaches the model exactly as written.',
       mineInterpolateWarn: 'Note: DSH has no escape syntax. With this on you can no longer write a literal {{...}} here — an unregistered, misspelled or malformed reference can never resolve, so saving one is refused outright. It would not break the session; it would simply stay literal forever.',
       mineInterpolateInherit: 'This layer states nothing: it inherits the user layer.',
       mineInterpolateStated: 'This layer states {state} explicitly.',
@@ -7347,11 +7347,11 @@ window.__ModuleLoader__.load({
       const interpolateStatus = m.mineInterpolateStatus ?? { kind: 'idle', error: null };
       const interpolateLocked = m.mineInterpolateLocked === true;
       const interpolateStated = m.mineInterpolateStated === undefined ? null : m.mineInterpolateStated;
-      // Revision 12 (audit F4/F2/F5): the three-state name, the advisories the
-      // host returned with the last write, and the reason this layer is out of
-      // the assembly when it is.
+      // Revision 12 (audit F4/F2/F5): the three-state name and the advisories.
       const interpolateState = m.mineInterpolateState === undefined ? 'inherit' : m.mineInterpolateState;
       const warnings = Array.isArray(m.mineWarnings) ? m.mineWarnings : [];
+      // g-080: names the Host registers (for `{list}`); null (old Host) prints `?`.
+      const variablesList = Array.isArray(m.mineVariables) && m.mineVariables.length > 0 ? [...m.mineVariables].sort().map((name) => `{{${String(name)}}}`).join(', ') : '?';
       const layerDisabled = m.mineLayerDisabled === undefined ? null : m.mineLayerDisabled;
       // g-056: which side of the box is being shown (`draft` vs this target's
       // stored text), the readable scope the shown draft belongs to, and — when
@@ -7634,7 +7634,7 @@ window.__ModuleLoader__.load({
                 t('mineInterpolateInheritedOn'),
               )
             : null,
-          h('p', { style: { margin: 0, ...metaStyle } }, t('mineInterpolateNote')),
+          h('p', { style: { margin: 0, ...metaStyle } }, fmt(t('mineInterpolateNote'), { list: variablesList })),
           h(
             'p',
             { 'data-warning': 'mine-interpolate', style: { margin: 0, fontSize: 12, color: token.stateWarn } },
@@ -9127,11 +9127,11 @@ window.__ModuleLoader__.load({
       // failure mode (a refusal names the text the write face will not accept),
       // and folding the two would let a failed toggle look like a failed save.
       const [mineInterpolate, setMineInterpolate] = React.useState({ kind: 'idle', error: null });
-      // Revision 12 (audit F2): the advisories the host returns with a write or
-      // an arming. They are *not* failures — the save happened — so they live in
-      // their own slot and the panel renders them beside the state they qualify,
-      // instead of inside an error banner that would deny the write.
+      // Revision 12 (audit F2): the advisories of a write or an arming — not
+      // failures (the save happened), so the panel renders them beside the state.
       const [mineWarnings, setMineWarnings] = React.useState([]);
+      // g-080: the names `GET /interpolate` reported (null = not probed / old Host).
+      const [mineVariables, setMineVariables] = React.useState(null);
       /**
        * g-062:「装配状态提示」— the observation this page renders, its switch's
        * state, and the last switch attempt.
@@ -9619,17 +9619,13 @@ window.__ModuleLoader__.load({
           });
         };
         void sendPing();
-        // g-030: one update check per mount — and **none at all** when this
-        // browser already knows the switch is off. The mirror is checked first
-        // precisely so that a closed switch costs nothing on page load (not even
-        // a local request); when the mirror says nothing, the Host is asked once
-        // and its answer — which reports `enabled` — fills the mirror.
-        //
-        // Nothing here paints the main page: a newer release renders the banner,
-        // a failure renders nothing anywhere, and every undecided upstream
-        // answer (`hasUpdate:null`) is explained only inside 「高级」's card, by
-        // `renderUpdateSetting` — which since g-046 lives in that tab's chunk,
-        // `client.advanced.js`.
+        // g-030: one update check per mount — and **none at all** when the mirror
+        // already says the switch is off (a closed switch costs no request). The
+        // Host's answer, which reports `enabled`, fills the mirror. Nothing here
+        // paints the main page: a newer release renders the banner, a failure
+        // renders nothing anywhere, and every undecided upstream answer
+        // (`hasUpdate:null`) is explained only inside「高级」's card
+        // (`renderUpdateSetting`, which lives in that tab's chunk).
         if (readUpdatePref() === false) {
           // The g-032 install state is carried over, never reset by a check:
           // this effect also re-runs on `reload`, and losing a running install's
@@ -9657,13 +9653,11 @@ window.__ModuleLoader__.load({
             }));
           };
           void checkUpdate();
-          // g-043: the download region rides on the same mount, and on the same
-          // zero-request promise: with the mirror saying「off」nothing is asked at
-          // all, and the region is loaded when the switch is turned back on
-          // (`toggleUpdate`). While the switch is on, this one `GET` is what
-          // decides the first-visit default — the page has already rendered, so
-          // the detection arrives asynchronously and never blocks the first
-          // paint, and the Host caps each probe at 2.5 s (§17.9).
+          // g-043: the download region rides the same mount and the same
+          // zero-request promise (nothing is asked while the mirror says「off」);
+          // with the switch on, this one `GET` decides the first-visit default
+          // without blocking the first paint; it reloads when the switch returns
+          // (`toggleUpdate`). The Host caps each probe at 2.5 s (§17.9).
           void loadRegion();
         }
         const load = async () => {
@@ -9681,6 +9675,12 @@ window.__ModuleLoader__.load({
               ? { phase: 'ready', data: overrides.payload, error: null }
               : { phase: 'error', data: null, error: overrides.error },
           );
+          // g-080: names only — the panel must advertise what THIS DSH registers.
+          const interpolateRead = await requestJson(`${INTERPOLATE_PATH}${query}`);
+          if (!cancelled) {
+            const table = interpolateRead.ok ? interpolateRead.payload?.variables : null;
+            setMineVariables(Array.isArray(table) ? table : null);
+          }
         };
         void load();
         return () => {
@@ -11433,8 +11433,7 @@ window.__ModuleLoader__.load({
 
       const actions = {
         refresh: () => setReload((value) => value + 1),
-        // The「更改」switch: the same button opens and shuts the picker, and
-        // `aria-expanded` on it reports which state it is in.
+        // The「更改」switch: the same button opens and shuts the picker (`aria-expanded` reports it).
         toggleScopeOpen: () => setScopeOpen((open) => !open),
         setTab,
         setView,
@@ -11547,8 +11546,7 @@ window.__ModuleLoader__.load({
         savePreset: () => {
           void savePresetDraft();
         },
-        // Review R4: the row's「删除」only *asks*. The DELETE happens through
-        // `confirmYes`, like every other destructive act on this page.
+        // Review R4: the row's「删除」only *asks*; the DELETE runs through `confirmYes`.
         requestPresetDelete: (id) => {
           const list = presets.data && Array.isArray(presets.data.presets) ? presets.data.presets : [];
           const preset = list.find((entry) => entry.id === id) ?? null;
@@ -11898,6 +11896,8 @@ window.__ModuleLoader__.load({
         mineInterpolateLocked,
         mineInterpolateStatus: mineInterpolate,
         mineWarnings,
+        // g-080: the variable names the Host reported (null = not probed yet).
+        mineVariables,
         mineLayerDisabled,
         mineFrozenReason,
         mineFrozenCertain,

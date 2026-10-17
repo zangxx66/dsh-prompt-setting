@@ -5351,13 +5351,25 @@ Two guards exist because the probe is a snapshot of a live object:
   "ok": true,
   "interpolateCustom": false,
   "layers": { "user": null, "workspace": null },
-  "variables": ["cwd", "model", "provider"],
+  "variables": ["model", "provider"],
   "variablesError": null
 }
 ```
 
 `variables` is the assembled table's key set, or `null` with a reason in
-`variablesError` when this mount could not obtain one.
+`variablesError` when this mount could not obtain one. Its **order is not part
+of the contract** (it follows registration order; the panel sorts the names it
+renders). (The example is the DSH 0.2.1 line; a host that still registers `cwd`
+answers a three-name list including `["cwd"]` — the field's shape is unchanged,
+§16.12.)
+
+**The panel consumes `variables` (g-080).** Each mount/reload reads this `GET`
+and renders the names in the「我的 Prompt」switch's note; `null` renders `?`
+rather than an inferred list. This is the plugin's compatibility probe for the
+`cwd` retirement: a DSH that still registers `cwd` shows it, a DSH that dropped
+it (0.2.1-rc.1 and later) does not, and no version string is consulted. The
+write face already uses the same table for its refusal (§16.3, §16.12); the
+read is advisory only and changes no route, field or stored byte.
 
 `PUT` takes `{ enabled: boolean, layer?: "user" | "workspace", session?: string }`
 (`layer` defaults to `user`; `session` may also be `?session=`), or the
@@ -5713,6 +5725,40 @@ g-026 are untouched.
   before them, the Host half needs the process to pick the new code up, and what
   is verified here is verified offline against the real
   `@deepseek-ai/dsh-system-prompt` in a real Cordis context.
+
+### 16.12 The `cwd` retirement is detected, never version-guessed (g-080)
+
+DSH `0.2.1-rc.1` removed the loop's `cwd` prompt variable: its shipped presets
+stopped emitting `Your working directory is {{cwd}}.`, and
+`@deepseek-ai/dsh-agent-loop` stopped registering the variable (the working
+directory now reaches the model as runtime context, not as a `{{…}}`
+substitution). The plugin therefore treats `cwd` as **data**, not as a release
+number:
+
+- **read face** — `GET /interpolate.variables` is the live assembly table, and
+  §16.4's client half renders exactly that list in the switch's note. A host that
+  registers `cwd` lists it; one that dropped it does not; `null` prints `?`.
+  Nothing in the browser or the host infers a table from the DSH version;
+- **write face** — an `{{cwd}}` this assembly does not register is
+  `400 unresolvable-variable`, exactly like any other unknown name, with the
+  same zero-byte guarantee (§16.3, §16.4). The message gains **one sentence**
+  naming the retirement and the replacement (runtime context) *only* when the
+  refused reference is `cwd` **and** the table lacks it; a table that still
+  registers `cwd` gets no sentence. Code, status and the "Fix: …" tail are
+  unchanged. The sentence is bounded, lives in `describeInterpolateErrors`, and
+  is pinned by `test/interpolate.test.mjs`;
+- **expansion** — unchanged and still lenient: on a new DSH, a stored
+  `{{cwd}}` stays literal for that turn (the section never interpolates, §16.9),
+  so an upgrade can never take a session's prompt down. The switch's note says
+  both consequences next to the list;
+- **compatibility direction** — an older DSH keeps the exact pre-g-080 list,
+  note and behaviour; the probe is read-only, adds no route and no field, and
+  the only new network traffic is one `GET /interpolate` per page load/reload
+  (the host has already cached the table, so it costs no `assemble()`);
+- **not claimed** — the plugin cannot stop a user from storing `{{cwd}}` in a
+  layer that explicitly states the switch OFF (§16.4), and does not rewrite
+  stored text on upgrade. It reports the state where the user writes, and
+  refuses only the armed writes the existing rules already refuse.
 
 ---
 

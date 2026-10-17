@@ -187,7 +187,7 @@
   "mineInterpolateOff": "已关闭",
   "mineInterpolateTurnOn": "开启变量替换",
   "mineInterpolateTurnOff": "关闭变量替换",
-  "mineInterpolateNote": "开启后，这段文本里的 {{变量}} 由本插件在装配时展开：{{model}} → 当前模型名、{{cwd}} → 工作目录、{{provider}} → provider。未注册、拼错或当前无值的引用会原样保留（不会导致组装失败）。关闭时所有 {{...}} 都原样交给模型。",
+  "mineInterpolateNote": "开启后，这段文本里的 {{...}} 由本插件在装配时展开；当前 DSH 注册的变量：{list}。（{{cwd}} 在 DSH 0.2.1-rc.1 起已弃用：若它不在上面的列表里，文本里的 {{cwd}} 会原样保留，保存时也会因「未注册」被拒绝；工作目录由宿主以运行时上下文提供。）未注册、拼错或当前无值的引用会原样保留（不会导致组装失败）。关闭时所有 {{...}} 都原样交给模型。",
   "mineInterpolateWarn": "注意：DSH 没有转义机制。开启后你无法再在这里写字面量 {{...}}——未注册、拼错或写歪的引用永远拿不到值，所以保存时会被直接拒绝。它不会让会话装配失败，只会一直保持字面量。",
   "mineInterpolateInherit": "该层未设置：跟随用户层。",
   "mineInterpolateStated": "该层显式设置为{state}。",

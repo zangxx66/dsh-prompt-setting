@@ -10061,4 +10061,43 @@ g-075（客户端生成期分段，已 delivered）交付时由独立评审标�
   被当成候选，而「完整词典逐字复制进注释 + 删真源」的目标已接受的极端情形仍未覆盖；
   ⑤ 既有约 54 处端点断言串偏弱，不在本次范围，未改。
 
+## 162. g-080：`cwd` 变量弃用的向下兼容探测（2026-10-17，基线 `748845d`）
+
+### 背景与事实
+- 负责人：DSH `0.2.1-rc.1` 起 `cwd` 变量已弃用，插件需做向下兼容的探测。
+- 真机核对（`0.2.1-rc.2`）：`dsh-agent-loop` 只注册 `provider`/`model`（`lib/index.js:1591-1592`），
+  `dsh-system-prompt/README.md` 明确「custom persona 不得依赖 `{{cwd}}`」；shipped presets 只剩
+  `{{model}}`（7 文件 × 1）。旧快照（`0.2.0-rc.2`）为 7 × 2 = 14 处、3 个注册变量。
+- 插件里被这次弃用影响的两处：① 面板 `mineInterpolateNote` 仍宣传 `{{cwd}} → 工作目录`；
+  ② 写入校验在未注册时报 400（本身正确，但错误消息读起来像拼错）。
+
+### 实现（4 个落点，零新增 key / 零新增路由 / 行数中性）
+- **探测源 = 运行时变量表，不是版本号**：`GET /prompt-setting/interpolate` 的 `variables`
+  （`ensureVariables()` 缓存的一次真实 `assemble()` 键集）本就存在，页面在加载/`reload` 时读它，
+  存进新 state `mineVariables`（13 段）；`null`（探针失败 / 旧 Host）不猜。
+- **文案**（locale 现有 key `mineInterpolateNote`，仅改字符串内容）：由固定列举 `{{model}}/{{cwd}}/{{provider}}`
+  改为 `{list}` 占位 + 一句 `{{cwd}}` 弃用说明；`fmt` 填充实际注册名。旧版 DSH 列表里仍有 `{{cwd}}`、
+  旧语义不变，新版不列并点名 `0.2.1-rc.1` 与「字面量 / 保存被拒」两个后果。
+- **写入/开启校验**（`core/interpolate.js` `describeInterpolateErrors`）：仅当被拒的是**未注册**的
+  `cwd` 且表里没有它时，追加一句迁移提示；状态码、错误码、`Fix:` 尾句、零字节保证都不变。
+- **行数中性**：`client.js` 保持 12382 行（13/15/10 段都在原位改动、删等量注释），
+  `docs/refactor-plan.md` §1.3/§5.1 两张表与全部 `client.js:行` 引用零漂移；只有 `client.test.mjs`
+  因新增用例整体 +14 行，`check-refs.mjs` 与 refactor-plan 里指向它的 8 处行号已同步。
+
+### 验收与证据
+- 全量测试：**990 pass / 0 fail**（基线 988；新增 `g-080 describeInterpolateErrors` 1 条、
+  `g-080 client` 探测矩阵 1 条）。`test/client.test.mjs` 304/304。
+- `node scripts/verify.mjs`：**6 步 / 0 失败**（check-refs / client-build / locale-pack / prepare /
+  check-compat / 全量测试）。
+- `client-build --check`：17 段逐字节一致，`CHUNK_STAMPS` 5 项与磁盘一致；`locale-pack --check`：
+  586 键/语言不变（本目标未新增 key）。
+- `docs/check-refs.mjs`：exit 0（`total=156 verified=132 rangeOnly=3 manual=21 unresolved=0`）。
+
+### 残余 / 明确不做
+- 不自动改写用户已存的 `{{cwd}}`：升级后它保持字面量（宽松展开），面板与失败消息说明原因；
+  是否迁移由用户决定。
+- 探测只覆盖当前 profile 的 global 变量表（与写面同一份），不猜 per-agent 注册；
+  `variables: null` 时显示 `?`。
+- 未在真机 `dsh web` 里做视觉复核（离线测试 + 现有门禁；文案位置/结构未变，仅内容与占位符替换）。
+
 

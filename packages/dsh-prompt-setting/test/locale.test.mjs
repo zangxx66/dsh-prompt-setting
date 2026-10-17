@@ -178,12 +178,11 @@ test('locale: no placeholder drift beyond the one recorded exception', () => {
     const en = params(dictionaries.en[key]).join(',');
     if (zh !== en) drift.push({ key, zh, en });
   }
-  // `mineInterpolateNote` already disagreed before g-066: the en copy names
-  // `{variables}` and the zh copy does not, so the English panel can render a
-  // literal `{variables}`. The migration freezes copy, so this is recorded as a
-  // named exception instead of being silently tolerated — any *new* drift fails
-  // here, which is the property that matters once the JSON becomes the source.
-  assert.deepEqual(drift, [{ key: 'mineInterpolateNote', zh: 'cwd,model,provider', en: 'cwd,model,provider,variables' }]);
+  // g-080: `mineInterpolateNote` now carries the same two placeholders in both
+  // languages — `{list}` (the host's registered names) and the `{{cwd}}` the copy
+  // names as retired — so the g-066 exception is gone rather than kept. The
+  // assertion stays exact: any *new* drift fails here.
+  assert.deepEqual(drift, []);
 });
 
 test('locale: both the src/ segment and the bundle carry exactly what --write produces', () => {

@@ -32,6 +32,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ### Changed 变更
 
+- **`cwd` 变量弃用的探测：按真实变量表适配，不按版本号猜（g-080，DSH 0.2.1-rc.1 起）**：上游
+  `dsh-agent-loop` 不再注册 `cwd`，shipped preset 也不再发 `Your working directory is {{cwd}}.`。插件把
+  `GET /prompt-setting/interpolate` 早已返回的 `variables`（一次真实 `assemble()` 的键集，已按 mount
+  缓存）接到「我的 Prompt」面板：注记里的变量列表**按当前实际注册名渲染**——旧版 DSH 仍列出
+  `{{cwd}}`，0.2.1-rc.1 及以后不列并在同一段文案里点名其弃用与「保持字面量 / 保存被拒」两个后果；
+  探测失败（`variables: null`）显示 `?`，不编造可用集合。写入/开启校验在拒绝**未注册**的 `{{cwd}}`
+  时追加一句迁移提示（表里仍有 `cwd` 时一字不加），状态码、错误码与零字节保证均不变。旧版 DSH 的
+  行为、文案与判定方向逐字不变；已有文本照常进入 prompt（保留段永不插值、插件展开宽松，绝不抛错）。
+  零新增路由/字段；每页加载/重载多一次已缓存的 `GET /interpolate`（不触发新的 `assemble()`）。
+  `client.js` 保持 **12382** 行（行数中性改写），`docs/refactor-plan.md` 的段表与引用行号零漂移。
+  **The `cwd` retirement is detected from the live variable table, never from a version string (g-080,
+  DSH 0.2.1-rc.1+)** — the panel's note renders the names this assembly really registers, so an older
+  DSH still lists `{{cwd}}` while the 0.2.1 line omits it and names the retirement (literal stays
+  literal, an armed save is refused); a failed probe prints `?`. The refusal gains one migration
+  sentence only when the unknown name is `cwd` and the table lacks it. Same code, same status, same
+  zero-byte guarantee; old hosts are byte-for-byte unchanged in behaviour and copy. No new route or
+  field; one already-cached `GET /interpolate` per page load and `client.js` stays 12382 lines.
 - **作用域模型收敛：页面「查看范围」只服务「我的 Prompt」（g-073，Revision 55）**：负责人 2026-10-16 目视后
   要求页面级作用域只管「我的 Prompt」，其余 tab 各自解耦——g-074 先交付全量备份，本次处理行为层。四个落点：
   ①「我的预设」的库读取不再携带 `?session=`（库是全局文件，与页面作用域无直接关联；apply / unapply 仍按对话框里

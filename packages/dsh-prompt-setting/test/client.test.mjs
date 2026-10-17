@@ -1609,8 +1609,18 @@ function defaultResponses(over = {}) {
     // g-043: a host that has already stored a region — so the default page makes
     // one read and no probe, exactly like a second visit does.
     [PATHS.downloadRegion]: { payload: regionFixture() },
+    // g-080: one stub serves both faces — `GET` reports the live variable table
+    // (the default is the 0.2.1 line: `cwd` is gone), `PUT` reports the switch.
     [PATHS.interpolate]: {
-      payload: { ok: true, interpolateCustom: true, layer: 'user', saved: { enabled: true }, effectiveFrom: 'next-turn' },
+      payload: {
+        ok: true,
+        variables: ['model', 'provider'],
+        variablesError: null,
+        interpolateCustom: true,
+        layer: 'user',
+        saved: { enabled: true },
+        effectiveFrom: 'next-turn',
+      },
     },
     // g-060: the preset library (CONTRACT.md §20.2).
     [PATHS.presets]: { payload: presetsFixture() },
@@ -1785,10 +1795,14 @@ test('client: requests stay on the plugin prefix and report the renderer', async
   // no assembly-status request at all, and the baseline set below does **not**
   // contain it. The tab's own section asserts the read happens when it opens.
   assert.equal(urlsFor(page, PATHS.assemblyStatus).length, 0, 'the default tab reads no assembly status (g-065)');
+  // g-080 adds one more: `GET /interpolate`, the variable-name read the
+  //「我的 Prompt」panel renders. It is the same cheap, local read (the host caches
+  // the table per mount), and it is what keeps a retired `{{cwd}}` off the panel.
   assert.deepEqual(
     [...new Set(urls.map((url) => url.split('?')[0]))].sort(),
     [
       PATHS.downloadRegion,
+      PATHS.interpolate,
       PATHS.overrides,
       PATHS.ping,
       PATHS.presets,
@@ -10889,12 +10903,42 @@ test('g-026 client: the panel carries the switch, its state and its consequence'
   assert.equal(toggle.props.children, 'Turn variable substitution on');
 
   // The consequence is stated where the state is: no escape syntax, so no
-  // literal `{{...}}` any more.
+  // literal `{{...}}` any more. g-080: the note lists the variables this DSH
+  // actually registers (`cwd` is absent on the 0.2.1 line) and names the
+  // retirement in the copy beside it.
   const strings = renderedStrings(tree);
   assert.match(strings, /no escape syntax/i);
   assert.match(strings, /literal \{\{\.\.\.\}\}/i);
-  assert.match(strings, /the current model/);
+  assert.match(strings, /variables this DSH registers: \{\{model\}\}, \{\{provider\}\}/);
+  assert.match(strings, /retired in DSH 0\.2\.1-rc\.1/);
   assert.match(strings, /saved per selected layer/, 'and how the value is scoped');
+});
+
+test('g-080 client: the panel lists what the host registers, and an unknown table stays unknown', async () => {
+  // The 0.2.1 line registers model/provider only: `{{cwd}}` is absent from the
+  // list (the copy beside it names the retirement), so the panel never
+  // advertises a variable this DSH cannot expand.
+  const retired = enPage({ responses: defaultResponses() });
+  const retiredTree = await retired.flush();
+  assert.match(renderedStrings(retiredTree), /variables this DSH registers: \{\{model\}\}, \{\{provider\}\}\./);
+
+  // An older DSH still registers cwd — the same panel must show it, unchanged.
+  const legacy = enPage({
+    responses: defaultResponses({
+      [PATHS.interpolate]: { payload: { ok: true, variables: ['cwd', 'model', 'provider'], variablesError: null } },
+    }),
+  });
+  const legacyTree = await legacy.flush();
+  assert.match(renderedStrings(legacyTree), /variables this DSH registers: \{\{cwd\}\}, \{\{model\}\}, \{\{provider\}\}/);
+
+  // No table (probe failed / old Host): `?`, never a guessed list.
+  const unknown = enPage({
+    responses: defaultResponses({
+      [PATHS.interpolate]: { payload: { ok: true, variables: null, variablesError: 'the probe failed' } },
+    }),
+  });
+  const unknownTree = await unknown.flush();
+  assert.match(renderedStrings(unknownTree), /variables this DSH registers: \?\./);
 });
 
 test('g-026 client: when the host says ON the panel says ON and offers the way back', async () => {
@@ -10924,7 +10968,9 @@ test('g-026 client: clicking the switch writes it to the selected layer and re-r
   clickButton(rec.last(), { 'data-action': 'mine-interpolate' });
   await rec.take();
 
-  const calls = page.router.calls.filter((call) => call.url.startsWith(PATHS.interpolate));
+  const calls = page.router.calls.filter(
+    (call) => call.url.startsWith(PATHS.interpolate) && call.init && call.init.method === 'PUT',
+  );
   assert.equal(calls.length, 1);
   assert.equal(calls[0].init.method, 'PUT');
   assert.deepEqual(JSON.parse(calls[0].init.body), { enabled: true, layer: 'user' });
@@ -10971,8 +11017,11 @@ test('g-026 client: the workspace layer needs a session before its switch can be
   assert.equal(toggle.props.disabled, true, 'no session ⇒ the workspace layer cannot be written');
   oneBy(tree, 'data-warning', 'mine-interpolate-locked');
   assert.match(renderedStrings(tree), /workspace layer needs a selected session/i);
-  // And a click does not even reach the transport.
-  const before = page.router.calls.filter((call) => call.url.startsWith(PATHS.interpolate)).length;
+  // And a click does not even reach the transport (the mount's variable read is
+  // a `GET`, so only writes count here).
+  const before = page.router.calls.filter(
+    (call) => call.url.startsWith(PATHS.interpolate) && call.init && call.init.method === 'PUT',
+  ).length;
   assert.equal(before, 0);
 });
 
@@ -11013,7 +11062,11 @@ test('g-026 rev12 client: the layer state control offers inherit/on/off and sele
   // Clicking "off" writes the boolean false — the state the toggle cannot express.
   clickButton(tree, { 'data-action': 'mine-interpolate-state', 'data-mine-interpolate-set': 'off' });
   await rec.take();
-  const calls = page.router.calls.filter((call) => call.url.startsWith(PATHS.interpolate));
+  // g-080: the mount's own `GET /interpolate` (variable names) is not this
+  // assertion's subject — only the switch write is.
+  const calls = page.router.calls.filter(
+    (call) => call.url.startsWith(PATHS.interpolate) && call.init && call.init.method === 'PUT',
+  );
   assert.equal(calls.length, 1);
   assert.equal(calls[0].init.method, 'PUT');
   assert.deepEqual(JSON.parse(calls[0].init.body), { state: 'off', layer: 'user' });
@@ -11042,7 +11095,9 @@ test('g-026 rev12 client: a layer that states OFF is shown as OFF, and the state
 
   clickButton(tree, { 'data-action': 'mine-interpolate-state', 'data-mine-interpolate-set': 'inherit' });
   await rec.take();
-  const calls = page.router.calls.filter((call) => call.url.startsWith(PATHS.interpolate));
+  const calls = page.router.calls.filter(
+    (call) => call.url.startsWith(PATHS.interpolate) && call.init && call.init.method === 'PUT',
+  );
   assert.equal(calls.length, 1);
   assert.deepEqual(JSON.parse(calls[0].init.body), { state: 'inherit', layer: 'workspace', session: 's2' });
 });
@@ -11088,7 +11143,13 @@ test('g-026 rev12 client: an accepted switch write clears the advisories, and a 
   let first = true;
   const page = enPage({
     responses: defaultResponses({
-      [PATHS.interpolate]: () => {
+      // g-080: the mount's read and the two writes share one path; only a PUT
+      // consumes the warned→clean sequence.
+      [PATHS.interpolate]: (url, init) => {
+        // The mount's read carries no `method`; only a PUT consumes the sequence.
+        if (init === undefined || init === null || init.method === undefined || init.method === 'GET') {
+          return { payload: { ok: true, variables: ['model', 'provider'], variablesError: null } };
+        }
         const payload = first ? warned : clean;
         first = false;
         return { payload };

@@ -553,11 +553,11 @@
       const interpolateStatus = m.mineInterpolateStatus ?? { kind: 'idle', error: null };
       const interpolateLocked = m.mineInterpolateLocked === true;
       const interpolateStated = m.mineInterpolateStated === undefined ? null : m.mineInterpolateStated;
-      // Revision 12 (audit F4/F2/F5): the three-state name, the advisories the
-      // host returned with the last write, and the reason this layer is out of
-      // the assembly when it is.
+      // Revision 12 (audit F4/F2/F5): the three-state name and the advisories.
       const interpolateState = m.mineInterpolateState === undefined ? 'inherit' : m.mineInterpolateState;
       const warnings = Array.isArray(m.mineWarnings) ? m.mineWarnings : [];
+      // g-080: names the Host registers (for `{list}`); null (old Host) prints `?`.
+      const variablesList = Array.isArray(m.mineVariables) && m.mineVariables.length > 0 ? [...m.mineVariables].sort().map((name) => `{{${String(name)}}}`).join(', ') : '?';
       const layerDisabled = m.mineLayerDisabled === undefined ? null : m.mineLayerDisabled;
       // g-056: which side of the box is being shown (`draft` vs this target's
       // stored text), the readable scope the shown draft belongs to, and — when
@@ -840,7 +840,7 @@
                 t('mineInterpolateInheritedOn'),
               )
             : null,
-          h('p', { style: { margin: 0, ...metaStyle } }, t('mineInterpolateNote')),
+          h('p', { style: { margin: 0, ...metaStyle } }, fmt(t('mineInterpolateNote'), { list: variablesList })),
           h(
             'p',
             { 'data-warning': 'mine-interpolate', style: { margin: 0, fontSize: 12, color: token.stateWarn } },

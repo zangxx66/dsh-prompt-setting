@@ -187,7 +187,7 @@
   "mineInterpolateOff": "OFF",
   "mineInterpolateTurnOn": "Turn variable substitution on",
   "mineInterpolateTurnOff": "Turn variable substitution off",
-  "mineInterpolateNote": "When on, this plugin expands {{variables}} in this text during assembly: {{model}} → the current model, {{cwd}} → the working directory, {{provider}} → the provider. A reference that is unregistered, misspelled or currently valueless stays literal and never fails the assembly. When off, every {{...}} reaches the model exactly as written.",
+  "mineInterpolateNote": "When on, this plugin expands {{...}} in this text during assembly; variables this DSH registers: {list}. ({{cwd}} was retired in DSH 0.2.1-rc.1: if it is not in that list, a literal {{cwd}} stays unexpanded and a save that would arm it is refused as unregistered; the working directory now reaches the model as runtime context.) A reference that is unregistered, misspelled or currently valueless stays literal and never fails the assembly. When off, every {{...}} reaches the model exactly as written.",
   "mineInterpolateWarn": "Note: DSH has no escape syntax. With this on you can no longer write a literal {{...}} here — an unregistered, misspelled or malformed reference can never resolve, so saving one is refused outright. It would not break the session; it would simply stay literal forever.",
   "mineInterpolateInherit": "This layer states nothing: it inherits the user layer.",
   "mineInterpolateStated": "This layer states {state} explicitly.",

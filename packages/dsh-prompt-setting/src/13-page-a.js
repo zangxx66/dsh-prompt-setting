@@ -93,11 +93,11 @@
       // failure mode (a refusal names the text the write face will not accept),
       // and folding the two would let a failed toggle look like a failed save.
       const [mineInterpolate, setMineInterpolate] = React.useState({ kind: 'idle', error: null });
-      // Revision 12 (audit F2): the advisories the host returns with a write or
-      // an arming. They are *not* failures — the save happened — so they live in
-      // their own slot and the panel renders them beside the state they qualify,
-      // instead of inside an error banner that would deny the write.
+      // Revision 12 (audit F2): the advisories of a write or an arming — not
+      // failures (the save happened), so the panel renders them beside the state.
       const [mineWarnings, setMineWarnings] = React.useState([]);
+      // g-080: the names `GET /interpolate` reported (null = not probed / old Host).
+      const [mineVariables, setMineVariables] = React.useState(null);
       /**
        * g-062:「装配状态提示」— the observation this page renders, its switch's
        * state, and the last switch attempt.
@@ -585,17 +585,13 @@
           });
         };
         void sendPing();
-        // g-030: one update check per mount — and **none at all** when this
-        // browser already knows the switch is off. The mirror is checked first
-        // precisely so that a closed switch costs nothing on page load (not even
-        // a local request); when the mirror says nothing, the Host is asked once
-        // and its answer — which reports `enabled` — fills the mirror.
-        //
-        // Nothing here paints the main page: a newer release renders the banner,
-        // a failure renders nothing anywhere, and every undecided upstream
-        // answer (`hasUpdate:null`) is explained only inside 「高级」's card, by
-        // `renderUpdateSetting` — which since g-046 lives in that tab's chunk,
-        // `client.advanced.js`.
+        // g-030: one update check per mount — and **none at all** when the mirror
+        // already says the switch is off (a closed switch costs no request). The
+        // Host's answer, which reports `enabled`, fills the mirror. Nothing here
+        // paints the main page: a newer release renders the banner, a failure
+        // renders nothing anywhere, and every undecided upstream answer
+        // (`hasUpdate:null`) is explained only inside「高级」's card
+        // (`renderUpdateSetting`, which lives in that tab's chunk).
         if (readUpdatePref() === false) {
           // The g-032 install state is carried over, never reset by a check:
           // this effect also re-runs on `reload`, and losing a running install's
@@ -623,13 +619,11 @@
             }));
           };
           void checkUpdate();
-          // g-043: the download region rides on the same mount, and on the same
-          // zero-request promise: with the mirror saying「off」nothing is asked at
-          // all, and the region is loaded when the switch is turned back on
-          // (`toggleUpdate`). While the switch is on, this one `GET` is what
-          // decides the first-visit default — the page has already rendered, so
-          // the detection arrives asynchronously and never blocks the first
-          // paint, and the Host caps each probe at 2.5 s (§17.9).
+          // g-043: the download region rides the same mount and the same
+          // zero-request promise (nothing is asked while the mirror says「off」);
+          // with the switch on, this one `GET` decides the first-visit default
+          // without blocking the first paint; it reloads when the switch returns
+          // (`toggleUpdate`). The Host caps each probe at 2.5 s (§17.9).
           void loadRegion();
         }
         const load = async () => {
@@ -647,6 +641,12 @@
               ? { phase: 'ready', data: overrides.payload, error: null }
               : { phase: 'error', data: null, error: overrides.error },
           );
+          // g-080: names only — the panel must advertise what THIS DSH registers.
+          const interpolateRead = await requestJson(`${INTERPOLATE_PATH}${query}`);
+          if (!cancelled) {
+            const table = interpolateRead.ok ? interpolateRead.payload?.variables : null;
+            setMineVariables(Array.isArray(table) ? table : null);
+          }
         };
         void load();
         return () => {
