@@ -291,14 +291,13 @@ zstd -dc "$F" | jq -r 'select(.type=="system/message") | .data.message.content[0
 ## 安装 / Install
 
 **首选从 npm 装**（本包已发布，npm 上的 `latest` 为 `0.2.2`；本仓库为 `0.2.4`，发布后两者一致）。需要 DSH
-`>= 0.1.7-rc.2 < 0.2.0 || >= 0.2.0-0 < 0.2.1-0 || >= 0.2.1-0 < 0.2.2-0`：`0.1.7-rc.2` 起的 0.1.x、
-`0.2.0` 与 `0.2.1` 的全部预发布（`-0` / `alpha` / `beta` / `rc.N`）与 **这两个 minor 的正式版**都在范围内；
-`0.2.2-0` 及以后出界。
+`>= 0.2.1-0`：`0.2.1` 的全部预发布（`-0` / `alpha` / `beta` / `rc.N`）、`0.2.1` 正式版以及**其后的每个版本**
+（`0.2.2`、`0.3.0`、`1.x` …）都在范围内；`0.2.1` 以下的 0.1.x 与 0.2.0 线不再支持（无上界）。
 
 > **Install from npm** — the primary route (this package is published; npm `latest` is `0.2.2`, this repository is `0.2.4`). Requires
-> DSH `>= 0.1.7-rc.2 < 0.2.0 || >= 0.2.0-0 < 0.2.1-0 || >= 0.2.1-0 < 0.2.2-0`: every 0.1.x from `0.1.7-rc.2`
-> on, every `0.2.0` and `0.2.1` prerelease (`alpha`, `beta`, `rc.N`, and the synthetic `-0` floor) and the
-> **`0.2.0` and `0.2.1` releases themselves** are in range; `0.2.2-0` and later are out.
+> DSH `>= 0.2.1-0`: every `0.2.1` prerelease (`alpha`, `beta`, `rc.N`, and the synthetic `-0` floor), the
+> **`0.2.1` release itself**, and **every later version** (`0.2.2`, `0.3.0`, `1.x`, …) are in range; the
+> 0.1.x and 0.2.0 lines below `0.2.1` are no longer supported, and there is no upper bound.
 
 ```sh
 dsh plugin --profile <profile> add dsh-prompt-setting

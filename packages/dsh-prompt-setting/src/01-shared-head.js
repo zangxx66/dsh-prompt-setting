@@ -308,7 +308,7 @@
      *
      * Probed, never assumed — and probed **independently** of `Button`, which is
      * what `RENDERER` keys on: a Host may ship the atoms this page draws while
-     * predating the `Toast` primitive (the peer range starts at `0.1.7-rc.2` and
+     * predating the `Toast` primitive (the peer range starts at `0.2.1-0` and
      * the version that added `Toast` is not pinned), so one probe cannot answer
      * both questions. When this is false the toaster is never registered and the
      * settings-page block stays the only surface — the documented degradation,

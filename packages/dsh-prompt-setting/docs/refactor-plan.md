@@ -162,7 +162,7 @@
 ### 2.6 宿主读取 client.js 的方式
 
 - 路径只解析一次，从模块自身 URL 出发（绝不用 cwd）：`index.js:231`（`CLIENT_BUNDLE_PATH`）。
-- ping 里报告：`index.js:4909`（`clientBuild: clientBuildInfo(CLIENT_BUNDLE_PATH)`），随 `version`、`repositoryUrl`、`launchKind` 一起返回（`index.js:4898-4918`）。
+- ping 里报告：`index.js:4898`（`clientBuild: clientBuildInfo(CLIENT_BUNDLE_PATH)`），随 `version`、`repositoryUrl`、`launchKind` 一起返回（`index.js:4887-4907`）。
 - **含义**：宿主读的是**文件字节**，不关心文件里有多少个逻辑模块。任何"拆分后 client.js 仍是同一个文件"的方案，宿主侧零改动。
 
 ### 2.7 冻结契约与测试面
@@ -302,17 +302,17 @@ g-066 把文案真源搬到 `locale/*.json`（各 569 行），但**运行时读
 
 ### 4.5 候选 E（附带）：宿主侧 `index.js` 拆分
 
-`index.js` 是 `"type": "module"` 的 ESM（`package.json:15`），**不受 factory 协议约束**，可以自由 `import`。真正的成本只有一项：`mount`（`index.js:991-5167`，**约 4078 行**）内部 60+ 个闭包共享可变状态（`report`、layers 缓存、`variables` 等，例如 `index.js:1134-1201`、`1618-1660`、`1695-1766`）。注意 `export function apply`（`index.js:786-800`）只有 15 行，是 `mount` 的薄守卫（`try { mount(...) } catch { reportMountFailure(...) }`）——**巨型函数是 `mount`，不是 `apply`**（评审 R1-12 订正）。
+`index.js` 是 `"type": "module"` 的 ESM（`package.json:15`），**不受 factory 协议约束**，可以自由 `import`。真正的成本只有一项：`mount`（`index.js:980-5156`，**约 4078 行**）内部 60+ 个闭包共享可变状态（`report`、layers 缓存、`variables` 等，例如 `index.js:1123-1190`、`1607-1649`、`1684-1755`）。注意 `export function apply`（`index.js:775-789`）只有 15 行，是 `mount` 的薄守卫（`try { mount(...) } catch { reportMountFailure(...) }`）——**巨型函数是 `mount`，不是 `apply`**（评审 R1-12 订正）。
 
 | 维度 | 评估 |
 |---|---|
 | 可行性 | 高（需要一次"闭包状态显式化"的小重构） |
 | 硬约束冲突 | 无协议冲突；但 `core/*.js` 已有 18 个模块，新模块要遵守既有的纯函数 + 注入惯例 |
-| 迁移成本 | 中：每搬一个域（如 history/export/diff/rollback/import 五个 handler，`index.js:2407-2768`）需显式传入 state 访问器 |
+| 迁移成本 | 中：每搬一个域（如 history/export/diff/rollback/import 五个 handler，`index.js:2396-2757`）需显式传入 state 访问器 |
 | 风险 | 中（宿主侧改坏 = 插件起不来；但 `test/route.test.mjs` 822 断言 / 109 用例是强网） |
 | 收益 | 4626 → 最大模块约 800 行（把 `mount` 的 3630 行按域搬出后）；宿主侧注释占比 45%，拆分收益明显（若另立目标并实施） |
 | 对 922 用例的影响 | **中**：`test/route.test.mjs`（822 断言 / 109 用例）、`test/host.test.mjs`、`test/integration.test.mjs` 覆盖宿主路由；拆分为纯搬运时断言不动，但 `mount` 状态显式化会触及多处闭包引用 |
-| **结论** | **另立目标**（不在本方案实施范围内）。宿主侧可拆是真事实，但 `mount`（`index.js:991-5167`）的闭包状态显式化是独立类型的重构；本方案只做客户端生成期分段，把它列为 §7.2 的另立目标 |
+| **结论** | **另立目标**（不在本方案实施范围内）。宿主侧可拆是真事实，但 `mount`（`index.js:980-5156`）的闭包状态显式化是独立类型的重构；本方案只做客户端生成期分段，把它列为 §7.2 的另立目标 |
 
 ---
 
@@ -464,7 +464,7 @@ fingerprintOf(加 1 行头注后的同一文件)      = 4d998612 / 567230   # �
 
 #### 阶段 3（另立目标）：宿主侧 `index.js` 拆分
 
-见 §4.5。建议单独立目标，理由是：宿主侧是 ESM 自由拆分，但 `mount`（`index.js:991-5167`，约 4078 行）的闭包状态显式化是一次真正的重构，风险面与客户端阶段 1/2 完全不同，混在一起会互相拖累。`apply`（`:777-791`）只是 15 行的守卫，不构成拆分对象。
+见 §4.5。建议单独立目标，理由是：宿主侧是 ESM 自由拆分，但 `mount`（`index.js:980-5156`，约 4078 行）的闭包状态显式化是一次真正的重构，风险面与客户端阶段 1/2 完全不同，混在一起会互相拖累。`apply`（`:775-789`）只是 15 行的守卫，不构成拆分对象。
 
 #### 阶段 4（另立目标，可选）：运行期 chunk 协议扩展
 
@@ -562,7 +562,7 @@ fingerprintOf(加 1 行头注后的同一文件)      = 4d998612 / 567230   # �
 
 | 工作 | 为什么另立 |
 |---|---|
-| 宿主 `index.js` 拆分（候选 E） | `mount`（`index.js:991-5167`，约 4078 行）的闭包状态显式化是独立类型的工作，风险面与客户端无关（`apply` 只是 15 行守卫） |
+| 宿主 `index.js` 拆分（候选 E） | `mount`（`index.js:980-5156`，约 4078 行）的闭包状态显式化是独立类型的工作，风险面与客户端无关（`apply` 只是 15 行守卫） |
 | 运行期 chunk 协议扩展（候选 C） | 需要新的降级设计（设施未就绪 → 空白页），属新能力而非重构 |
 | 把「我的 Prompt」做成 chunk | 与 `client.js:8294-8299` 的既有设计决定冲突，属产品决策 |
 | `core/*.js` 内部拆分（`update.js` 1729 / `install.js` 1064） | 与客户端痛点无关，收益独立 |

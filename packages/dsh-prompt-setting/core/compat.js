@@ -28,13 +28,14 @@
  * and is reported as an undetected version rather than guessed, because a
  * wrong verdict here is worse than no verdict.
  *
- * One asymmetry is deliberate (NOTES.md §98, §99, §100, §124): the declared range
- * carries `||` alternatives whose extras admit each `0.2.x` line's prereleases
- * under **strict** `node-semver` (§11 prerelease exclusion, no
- * `includePrerelease`), and which are what carry the range past each release up
- * to `<0.2.2-0`. This parser implements no such exclusion, so it reads those
- * alternatives as numeric extensions of the first one — same verdicts, one
- * fewer place to be wrong.
+ * One asymmetry is deliberate (NOTES.md §98, §124, §165): this parser implements
+ * no **strict** `node-semver` §11 prerelease exclusion, so a prerelease is
+ * judged numerically against the comparators instead of being held back from a
+ * range whose comparators all name releases. The declared range (`>=0.2.1-0`)
+ * is a single comparator with no `||` alternative and no upper bound, so the
+ * old "each 0.2.x minor needs its own branch" asymmetry is gone; what remains
+ * is that this parser and `node-semver` agree on `0.2.1-alpha.2`, because the
+ * range's own `-0` floor names the 0.2.1 tuple with a prerelease.
  *
  * @module dsh-prompt-setting/core/compat
  */
@@ -93,7 +94,7 @@ function compareIdentifiers(left, right) {
  * Compare two versions per semver §11.
  *
  * The two rules that matter in practice for a `-rc.N` release train: a
- * prerelease ranks **below** its release (`0.1.7-rc.2 < 0.1.7`), and `.10`
+ * prerelease ranks **below** its release (`0.2.1-rc.2 < 0.2.1`), and `.10`
  * ranks above `.2` (numeric, not lexicographic).
  * @param left - a version string or {@link parseSemver} result.
  * @param right - a version string or {@link parseSemver} result.
@@ -125,7 +126,7 @@ export function compareSemver(left, right) {
 /**
  * Test one comparator against a parsed version.
  * @param version - a {@link parseSemver} result.
- * @param comparator - e.g. `>=0.1.7-rc.2`.
+ * @param comparator - e.g. `>=0.2.1-0`.
  * @returns true/false, or `null` when the comparator is not understood.
  */
 function testComparator(version, comparator) {
@@ -159,11 +160,11 @@ function testComparator(version, comparator) {
  * shorthands (`^`, `~`, `x`, hyphen ranges) are **not**, and meeting one
  * returns `null` — "cannot tell" — so no caller can mistake a guess for a
  * verdict. Unlike `node-semver`, a prerelease is **not** held back from a range
- * whose comparators are all releases (NOTES.md §98): here `0.2.0-rc.2` already
- * satisfies the first branch `>=0.1.7-rc.2 <0.2.0`, while the second branch is
- * what carries the range past the `0.2.0` release itself (NOTES.md §100).
+ * whose comparators all name releases (NOTES.md §98): here `0.2.2-alpha.1`
+ * already satisfies `>=0.2.1 <0.2.2`, whereas `node-semver` would reject it
+ * because no comparator names the 0.2.2 tuple with a prerelease.
  * @param version - the version under test.
- * @param range - the range, e.g. `>=0.1.7-rc.2 <0.2.0 || >=0.2.0-0 <0.2.1-0`.
+ * @param range - the range, e.g. `>=0.2.1-0`.
  * @returns true, false, or null when the answer is not knowable.
  */
 export function satisfiesRange(version, range) {

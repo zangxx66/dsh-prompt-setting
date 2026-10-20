@@ -10372,3 +10372,69 @@ v0.2.3 的计划条目（g-065…g-074）与 v0.2.4 的（g-075…g-080）一直
   下一个标签/文案批次必须先复用或另立「生成段拆分」目标（本轮已证明 1200 行预算仍被守住）。
 - 真机目视未做：本轮的 UI 证据是离线渲染树（308 条 client 用例）与 marker/文案断言；没有
   `dsh web` 的截图核验。合并与发布是人工 gate，本轮未做。
+
+## 165. g-083：DSH peer 范围缩小到 `>=0.2.1-0` —— 单一 comparator、无上界（2026-10-21，基线 `a152781`，隔离工作树 `g-083-att-01`）
+
+### 一、做了什么
+
+- **`package.json`**：`peerDependencies['@deepseek-ai/dsh']` 由
+  `>=0.1.7-rc.2 <0.2.0 || >=0.2.0-0 <0.2.1-0 || >=0.2.1-0 <0.2.2-0` 改为单一 `>=0.2.1-0`；
+  旧的三条分支与 `<0.2.2-0` 上界一并删除。`peerDependenciesMeta.optional = true` 不变。
+- **`index.js`**：`DSH_PEER_RANGE_FALLBACK` 同步为 `>=0.2.1-0`，其上注释重写为「单 comparator、
+  无上界、`-0` 是 0.2.1 元组最小预发布」；「fallback 必须等于 manifest」仍由
+  `test/boot.test.mjs` 断言，二者不可漂移。**运行逻辑零改动**（除常量值与注释）。
+- **`core/compat.js`**：模块注释与 `satisfiesRange` 的 `@param range` 示例同步到新形状；
+  「每个 0.2.x minor 一条 `||` 分支、上界 `<0.2.2-0`」的旧叙述删除。**解析器实现零改动**。
+- **`test/boot.test.mjs`**：范围行为表按新语义重写——in：`0.2.1-0` / `0.2.1-alpha.2` /
+  `0.2.1-1` / `0.2.1` / `0.2.2-0` / `0.2.2` / `0.3.0` / `1.0.0`；out：`0.1.7-rc.2` / `0.1.7` /
+  `0.1.8` / `0.2.0-0` / `0.2.0-alpha` / `0.2.0-rc.2` / `0.2.0`。形状断言从「两个 bridge +
+  三个 `<` 上界」改为「恰好一个 comparator `>=0.2.1-0`、无 `<`、无 `||`」。其余把旧样例当
+  in/out 的用例（boot 提示样例、探测夹具、`mountFailureMessage` 版本、自检脚本输出断言）
+  改用 `0.2.1-0`（in）/ `0.2.0-0`（out）。
+- **`test/host.test.mjs`**：manifest 契约的正则改为 `/^>=0\.2\.1-0$/`，注释同步。
+- **`scripts/check-compat.mjs`**：超范围示例版本从 `0.2.2-0` 改 `0.2.0-0`，文案从
+  「0.1.7-rc.2 / 0.2.0 / 0.2.1 上轮不到它」改为「0.2.0 及更早（含整条 0.1.x 线）」。
+- **文档**：包 `README.md`、根 `README.md` / `README_zh.md` 的前置条件段落改为
+  「`>= 0.2.1-0`：0.2.1 的全部预发布 + 正式版 + 其后每个版本；0.1.x / 0.2.0 线不再支持，无上界」，
+  根两份的 DSH 徽章从 `%3E%3D0.1.7--rc.2%20%3C0.2.2--0` 改为 `%3E%3D0.2.1--0`；
+  `src/01-shared-head.js` 中「peer range starts at 0.1.7-rc.2」的注释改为 `0.2.1-0`，并用
+  `client-build --write` 重建 `client.js`（17 段逐字节一致）。`CONTRACT.md` 通篇没有支持范围
+  声明（唯一命中是无关的错误码表），不改。
+- **引用坐标**：`index.js` 的注释净减 11 行、`test/host.test.mjs` 与包内 `README.md` 各净减 1 行，
+  `docs/check-refs.mjs` 与 `docs/refactor-plan.md` 中的行号引用按 diff 映射同步（不是手抄）。
+
+### 二、为什么这样做（被否方案与理由）
+
+- **保留 `<0.2.2-0` 上界、只删 0.1.x / 0.2.0 分支**：被否。需求是「0.2.1 及以上」，留着上界
+  意味着 `0.2.2` 落地时要再改一次；§124 已证明上界漏改的代价是平台整包跳过。
+- **写成 `>=0.2.1`（不带 `-0`）**：被否。strict `node-semver` 下它排除 0.2.1 的全部预发布
+  （`0.2.1-alpha.x < 0.2.1`），而平台 boot gate 用的正是 strict 语义；`-0` 是 0.2.1 元组的
+  最小预发布，既覆盖整条 0.2.1 线，又不放进 0.2.0 线。
+- **再加 `||` 兼容桥**：被否。新范围没有上界，也没有需要 per-minor 白名单的更高元组；加分支
+  只会重新制造「每个 minor 一次决定」的维护面。`0.2.2-0` / `0.2.2` / `0.3.0` / `1.0.0` 已由
+  行为断言固定为 in。
+- **改 `CHANGELOG.md` 历史条目**：不做。历史是既成事实；本轮的发布条目由 v0.2.5 发布目标统一写。
+
+### 三、证据
+
+- `node --test`：**1011 pass / 0 fail / skipped 0 / exit 0**（基线 1011，chore 改动，数量不变）。
+- `npm run prepare`：**25 项 OK**（`CLIENT-SRC` 17 段逐字节一致、`LOCALE-SYNC` 594 键、
+  `CHUNK-STAMPS` 5 chunk 一致）。
+- `node docs/check-refs.mjs`：**total=170 | verified=103 | rangeOnly=46 | manual=21 |
+  unresolved=0 | 其它失败=0**（`index.js` 引用按 -11 偏移同步后全部命中）。
+- `npm run verify`：**6 步 / 0 失败**（check-refs → client-build --check → locale-pack --check →
+  prepare → check-compat → test）。
+- **负向对照（改坏就会红，在一次性包副本里实跑，副本已删除）**：①把 `DSH_PEER_RANGE_FALLBACK`
+  改回旧的 `<0.2.2-0` 范围（manifest 不动）⇒ `test/boot.test.mjs` **1 红**（fallback/manifest
+  相等断言）；②把 manifest 与 fallback 一起改成 `>0.2.1-0`（少一个 `=`）⇒ **3 红**
+  （`0.2.1-0` / `0.2.1-alpha.2` 两条入界断言 + 形状断言）——范围行为与形状是独立断言，
+  不靠同一条兜底。
+
+### 四、未做 / 已知限制
+
+- 本次是**缩小支持范围**，对仍装 0.1.7 / 0.2.0 的用户是破坏性变更；包内没有「升级 DSH」的
+  运行时引导（平台 boot gate 会先跳过整个 bundle，本插件根本不会被 import）。是否在 README
+  增加迁移提示由发布目标决定。
+- `CHANGELOG.md` 未改（见第二节）；`CONTRACT.md` 无范围表述可改。
+- 真机未验证：没有在 0.2.1-0 / 0.2.2 真机上安装；证据是单元断言与只读自检脚本的输出。
+  合并与发布是人工 gate。

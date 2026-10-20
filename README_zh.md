@@ -10,7 +10,7 @@ Prompt 管理器：**看得见**每一轮会话最终装配出来的系统提示
 
 ![license](https://img.shields.io/badge/license-MIT-blue)
 ![version](https://img.shields.io/badge/version-0.2.4-blue)
-![dsh](https://img.shields.io/badge/DSH-%3E%3D0.1.7--rc.2%20%3C0.2.2--0-blueviolet)
+![dsh](https://img.shields.io/badge/DSH-%3E%3D0.2.1--0-blueviolet)
 ![deps](https://img.shields.io/badge/dependencies-0-brightgreen)
 
 - **零运行时依赖、零构建步骤**：装进去就是一整包 JS，不拉依赖、不编译。
@@ -87,9 +87,9 @@ DSH 每轮会话都会注入一段由 `@deepseek-ai/dsh-system-prompt` 装配出
 
 ## 三、安装
 
-**前置条件**：已安装 DSH（`>= 0.1.7-rc.2 < 0.2.0 || >= 0.2.0-0 < 0.2.1-0 || >= 0.2.1-0 < 0.2.2-0`：`0.1.7-rc.2` 起的全部
-0.1.x、`0.2.0` 与 `0.2.1` 的全部预发布（`-0` / `alpha` / `beta` / `rc.N`）以及 **这两个 minor 的正式版本身**都在
-范围内；`0.2.2-0` 及以后一律出界——新的 minor 未经评估不放行）。跑测试和开发才需要 Node `>= 22`。
+**前置条件**：已安装 DSH（`>= 0.2.1-0`：`0.2.1` 的全部预发布（`-0` / `alpha` / `beta` / `rc.N`）、`0.2.1` 正式版
+以及**其后的每个版本**（`0.2.2`、`0.3.0`、`1.x` …）都在范围内；`0.2.1` 以下的 0.1.x 与 0.2.0 线不再支持，且
+没有上界）。跑测试和开发才需要 Node `>= 22`。
 
 **首选从 npm 装**（本包已发布，npm 上的 `latest` 为 `0.2.2`；本仓库为 `0.2.4`，发布后两者一致）：
 

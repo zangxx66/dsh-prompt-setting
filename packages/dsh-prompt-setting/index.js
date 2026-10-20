@@ -446,38 +446,27 @@ const OWN_MANIFEST_URL = new URL('./package.json', import.meta.url);
  * `peerDependencies['@deepseek-ai/dsh']` in `package.json`, so the two cannot
  * drift apart silently.
  *
- * Every `||` alternative after the first exists for **strict** `node-semver`
- * (npm/pnpm peer resolution, *without* `includePrerelease`), which refuses a
- * prerelease unless some comparator **in the same alternative** names that very
- * `[major, minor, patch]` tuple with a prerelease of its own. The first branch's
- * only prerelease comparator is `0.1.7-rc.2` (tuple `0.1.7`), so it cannot admit
- * any `0.2.x` prerelease on its own; **each 0.2.x minor therefore needs its own
- * branch**, with a lower bound at that tuple's smallest prerelease. Under every
- * parser those branches also carry the range past the matching release
- * (`<0.2.0` on its own stops one version short of `0.2.0`). This plugin's own
- * parser implements no prerelease exclusion, so for it each added branch is
- * numerically a superset extension. The platform's own gate passes
- * `includePrerelease: true`, so there a prerelease merely has to fall inside
- * some branch numerically — which is why a new minor needs a new branch rather
- * than a widened bound on an earlier one.
+ * The range is a **single** comparator, `>=0.2.1-0` (g-083, NOTES.md §165): DSH
+ * `0.2.1` and every later version are accepted, and nothing below `0.2.1` is —
+ * the whole `0.1.x` and `0.2.0` lines are out. There is deliberately **no**
+ * upper bound and no `||` bridge: the old `<0.2.2-0` boundary and its per-minor
+ * branches existed only to pin a moving upper edge, which every new minor then
+ * had to renegotiate. Accepting later minors by decision removes both the edge
+ * and the branches that guarded it.
  *
- * A branch's lower bound must be the **smallest** prerelease of its tuple
- * (`0.2.0-0`, `0.2.1-0`, …): strict semver whitelists the tuple, it does not
- * rank it, so a higher bound such as `>=0.2.1-alpha` would put `0.2.1-0` — and
- * with it every other `0.2.1` prerelease below `alpha` — out of range.
- *
- * The **final** upper bound is `<0.2.2-0`, not `<0.2.1-0` (NOTES.md §124). The
- * platform's boot gate judges each profile bundle against this range and
- * **skips the whole bundle** when it fails (`dsh-app-boot`: `skipping profile
- * bundle … is incompatible with dsh …`), before a single line of this package
- * is imported — so its own self-check cannot help. That is exactly what happened
- * on DSH `0.2.1-alpha.2`: the plugin vanished from the profile and the platform
- * refused to install it at all. `0.2.1` and every `0.2.1` prerelease are in;
- * `0.2.2-0` and everything after it are out, because a new minor is unverified
- * until a new decision says otherwise.
- * See NOTES.md §98, §99, §100 and §124.
+ * The `-0` floor is the **smallest** prerelease of the `0.2.1` tuple, and it is
+ * load-bearing: under strict `node-semver` (npm/pnpm peer resolution, *without*
+ * `includePrerelease`) a bare `>=0.2.1` would put every `0.2.1` prerelease —
+ * `0.2.1-0`, `0.2.1-alpha.x`, `0.2.1-rc.N`, all of which rank below `0.2.1` —
+ * out of range. The platform's boot gate judges each profile bundle against
+ * this range and **skips the whole bundle** when it fails (`dsh-app-boot`:
+ * `skipping profile bundle … is incompatible with dsh …`), before a single line
+ * of this package is imported — so its own self-check cannot help. That is
+ * exactly what happened on DSH `0.2.1-alpha.2` before NOTES.md §124. `-0` admits
+ * the whole `0.2.1` training while still excluding `0.2.0` and everything below.
+ * See NOTES.md §98, §124 and §165.
  */
-export const DSH_PEER_RANGE_FALLBACK = '>=0.1.7-rc.2 <0.2.0 || >=0.2.0-0 <0.2.1-0 || >=0.2.1-0 <0.2.2-0';
+export const DSH_PEER_RANGE_FALLBACK = '>=0.2.1-0';
 
 /**
  * The DSH range this plugin was tested against, read from its own manifest at
