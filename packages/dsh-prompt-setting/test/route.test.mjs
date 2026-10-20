@@ -37,6 +37,7 @@ const UPDATE_APPLY_CANCEL_PATH = '/prompt-setting/update-apply/cancel';
 const DOWNLOAD_REGION_PATH = '/prompt-setting/download-region';
 /** g-060 (Revision 37): the preset library and its two workspace actions. */
 const PRESETS_PATH = '/prompt-setting/presets';
+const PRESETS_TAGS_PATH = '/prompt-setting/presets/tags';
 const PRESETS_APPLY_PATH = '/prompt-setting/presets/apply';
 const PRESETS_UNAPPLY_PATH = '/prompt-setting/presets/unapply';
 /** g-062: the assembly-status notice and its switch. */
@@ -564,6 +565,10 @@ test('host: wrong methods on the new routes answer 405 with the full allow list'
   const presetsUnapply = await call(route, { method: 'GET', url: PRESETS_UNAPPLY_PATH });
   assert.equal(presetsUnapply.statusCode, 405);
   assert.equal(presetsUnapply.headers.allow, 'POST');
+  // g-082: the library's tag set is a fourth path on the same rule.
+  const presetsTags = await call(route, { method: 'GET', url: PRESETS_TAGS_PATH });
+  assert.equal(presetsTags.statusCode, 405);
+  assert.equal(presetsTags.headers.allow, 'PUT, DELETE');
 });
 
 // #region the update routes take the npm path first (g-042)

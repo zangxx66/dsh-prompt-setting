@@ -10241,3 +10241,134 @@ v0.2.3 的计划条目（g-065…g-074）与 v0.2.4 的（g-075…g-080）一直
   复核后执行）；因此 npm 上的 `latest` 仍是 `0.2.2`，README 的双写表述正为此；
 - 徽章的 shields.io 在线渲染未目视（离线），只核对了源文本；
 - `CONTRACT.md` 的镜像测速表未重测（保留 2026-10-08 记录），新测得的 `latest` 事实记在第五节。
+
+## 164. g-082：「我的预设」标签功能 —— 标签集合、筛选、级联删除与 594 键预算（2026-10-21，基线 `7d4f4e2`，隔离工作树 `g-082-att-01`）
+
+### 一、做了什么
+
+「我的预设」从「名称 / 动作 / 文本」扩成「+ 0..N 个标签」，标签是**预设库自己的独立集合**，
+不是预设上的自由文本。数据模型、三条写路由、设置页 UI、导入导出与两份词典一起改：
+
+- **`core/presets.js`**：`PRESETS_VERSION` 1 → 2。文档顶层新增 `tags: [{id, name, createdAt,
+  updatedAt}]`，每个 preset 新增 `tagIds: string[]`（去重、保序、只允许现存标签）。
+  `normalizePresets` 接受 version 1/2 并统一输出 v2（旧文件读出 `tags: []`、每个 preset
+  `tagIds: []`）；`validatePresetsDocument` 对 tags/tagIds 严格（未知键、重复 id/名、悬空
+  tagId、超限一律拒绝，无 `tags` 的旧文档仍然接受）。新增纯函数
+  `validateTagInput` / `upsertTag` / `removeTag` / `tagById` / `publicTags` /
+  `presetsWithTag` / `validateTagId`，以及 `validatePresetInput(body, tags)` 的
+  tagIds 校验。`removeTag` 在同一次返回里把 id 从**所有** preset 的 `tagIds` 剥掉，
+  「删除后不存在悬空 tagId」由这一次纯函数保证。
+- **`index.js`**：`GET /presets` 增加 `tags[]` 与每个 preset 的 `tagIds[]`；`PUT /presets`
+  接受可选 `tagIds`（未知 id `400 unknown-tag`、去重、上限 20）；新增
+  `PUT /prompt-setting/presets/tags`（无 id 新建并铸造，id 不存在 `404 tag-not-found`）与
+  `DELETE /prompt-setting/presets/tags?id=`（原子删除并级联）。三条路由的失败路径都在
+  第一次写盘之前，`presets.json` 字节不变；删除标签不碰任何工作区层、不写历史。
+- **客户端**：`client.presets.js` 新增标签筛选条（「全部」+ 各标签 chip，单选，点已选取消）、
+  行内标签 chip、预设编辑器的多选标签 picker，以及标签管理对话框（新增 / 改名 / 删除；
+  删除走页面统一的二次确认，正文说明「{count} 个预设会去掉这个标签」）。状态与动作按
+  既有分层放在 `src/13-page-a.js`（4 个 state）、`src/14-page-b.js`（两个写 handler）、
+  `src/15-page-c.js`（actions / model / 确认分支）与 `src/09-chrome-b.js`（`tag-delete`
+  确认分支）。标签管理器的报错留在它自己的 `data-role="tag-dialog-error"` 行上，不关框。
+- **locale / 导出导入**：`locale/zh.json` / `en.json` 新增 8 个 main 键（见第三节），
+  `--write` 重生成 594 键/语言的生成段；`GET /export` 的 `presets` 文档与 `POST /import`
+  自然携带 `tags`/`tagIds`，旧备份（无 tags）导入得到空标签集（有专门用例）。
+- **文档**：CONTRACT §1 路由表 + §20（20.1 数据模型、20.3 写面、新增 20.3.1/20.3.2、
+  20.7 错误码、20.8 不做、20.9 客户端 marker、Revision 56 注），NOTES 本节，
+  package `README.md` 与根 `README.md` / `README_zh.md` 的中英说明。
+
+### 二、为什么这样做（被否方案）
+
+- **标签是文档字段，不是第二份文件**：它和 preset 同生命周期（删除标签必须级联到 preset，
+  跨文件无法原子），放进 `presets.json` 才让「一次写 = 一个 atomic rename」成立；也因此
+  不需要给 `overrides.json` 或历史记录加任何字段。
+- **读面宽容 / 导入面严格**：沿用 g-074 已立的规矩。手改文件里一条坏 tag 不能拖垮整个库；
+  但导入是整份替换，必须拒绝而不是静默删除用户不认识的条目——两条路径由
+  `normalizePresets` / `validatePresetsDocument` 分开承担。
+- **删除标签只级联 tagIds，不级联工作区层**：标签是分类元数据；`apply` 写进层的文本是
+  用户要的内容，删除分类不该改写 prompt。这条写进了 CONTRACT §20.3.2 与 20.8。
+- **被否：给标签加颜色/分组/排序**。需求明确不做；实现里也刻意没有为它们留字段，避免
+  「先占位后补实现」的半成品状态。
+- **被否：把 UI 状态塞进 chunk 本地 `useState`**。chunk 只拿 `t/m/a`，写后需要主 bundle 的
+  `reload` 才能重读；本地状态会让「写后重读」分叉成两份数据。实现沿用现有
+  「state 在 13/14/15、渲染在 chunk」的分层。
+
+### 三、locale 的 594 键预算（本轮最硬的约束）
+
+`src/02-locale.js` 是**一段**生成物，两个语言块共 2×键数 + 11 行；§5.1 的「每段 ≤ 1200 行」
+是机器门禁（测试 + check-refs 双重）。基线 586 键 = 1183 行，只剩 **8 个键**的余量；
+本轮完整标签 UI 原本需要 24 个 main 键 + 10 个 error 键 = 34 个，直接加会到 1251 行并
+撞红预算。
+
+处理方式（不降门禁、不拆生成段）：
+
+1. **复用既有词**：`fAll`（全部）、`presetEdit` / `presetDelete` / `presetDialogClose` /
+   `presetNameLabel` / `presetFailed` / `confirmNo` 直接用于标签 UI；
+2. **只加 8 个必需的 main 键**：`presetTagManager`、`presetTagNone`、`presetTagSave`、
+   `presetTagPickerHint`、`presetFilteredEmpty`、`presetTagDeleteConfirmTitle`、
+   `presetTagDeleteConfirmBody`、`presetTagDeletedNotice`；
+3. **不新增 error 键**：新标签错误码走 `errorText` 的既有兜底（页面的 preset 错误码本来
+   也没有 `error.*` 条目），横幅仍显示原始 code；
+4. 结果：**594 键/语言 = 1199 行**，恰好落在预算内；locale 测试的 586/535/51 计数同步为
+   594/543/51，placeholder 对称与 `--check` 全绿。
+
+### 四、客户端坐标迁移（12382 → 12593）与一个工具缺口
+
+本轮新增 state/handlers/actions 与 locale 键后，`client.js` 的真源行数从 **12382 → 12593**
+（chunk 之外的主入口；chunk 自身 5 个文件的摘要随 `client.presets.js` 更新）。为守住
+「每段 ≤ 1200」，`13/14/15` 三段在**连续区间内部**重切（只换切点、不搬代码）：
+
+| 段 | 旧 | 新 |
+|---|---|---|
+| `02-locale.js` | 903–2085 / 1183 | 906–2104 / 1199 |
+| `09-chrome-b.js` | 5998–6786 / 789 | 6017–6811 / 795 |
+| `13-page-a.js` | 9027–10226 / 1200 | 9052–10228 / 1177 |
+| `14-page-b.js` | 10227–11424 / 1198 | 10229–11411 / 1183 |
+| `15-page-c.js` | 11425–12026 / 602 | 11412–12237 / 826 |
+| `16-boot.js` | 12027–12382 / 356 | 12238–12593 / 356 |
+
+随之更新了 §1.3/§5.1 两张表、`docs/refactor-plan.md` 的 58 处 `client.js:行` 引用、
+`docs/check-refs.mjs` 的 65 条 `client.js` 期望与 12593 常量、`test/client-source.test.mjs`
+的 `SEGMENTS`/总数/最大段断言，以及 `docs/architecture-map.md` 的段表与入口行号。行号迁移
+全部由基线 `HEAD` 与当前文件的 diff 映射生成（区分 `client.js` 的**段真源坐标**与含 9 行
+生成物头注的 artifact 坐标），再用 `check-refs` 复算校验——不是手抄。
+
+**工具缺口（顺手修掉）**：`scripts/client-chunks.mjs --write` 在 g-075 阶段 2 之后仍只写
+`client.js`，而 `CHUNK_STAMPS` 的真源其实在 `src/11-chunks.js` 段里。改了 chunk 后只跑它，
+`client.js` 与段真源会分裂，`client-source` 的「src 渲染 == 产物」字节等式随即变红。
+现在 `--write` 同时更新承载该块的段与 `client.js`；`--check` 也把两处一起判（缺一处即红）。
+这是本轮唯一改到的既有脚本，改动在 `main()` 及其新增的 `stampSegmentPath()` 里。
+
+### 五、证据
+
+- `node --test`：**1011 pass / 0 fail / skipped 0 / exit 0**（基线 990，本轮 +21；其中
+  `presets` 42、`transfer` 27、`locale` 15、`client` 308、`client-source` 15）。
+- 负向用例（「失败 = 字节不变」不是一句口号）：`PUT /presets/tags` 的空名/超长/控制字符/
+  重名/未知 id/坏 id/坏 JSON 七类拒绝全部比对 `sha256(presets.json)`；`PUT /presets` 的
+  `unknown-tag`/`invalid-tag-ids`/`too-many-preset-tags` 同样零写入；`DELETE
+  /presets/tags` 的未知 id 404 前后文件字节一致；删除后磁盘上 `tags` 与每个 preset 的
+  `tagIds` 都同步（`readPresets` 复核），不存在悬空引用。导入面用 7 组非法文档断言
+  `validatePresetsDocument` 抛稳定 code（dangling tag、重复 id、重复名、未知键……）。
+- `node docs/check-refs.mjs`：**total=170 | verified=108 | rangeOnly=41 | manual=21 |
+  unresolved=0 | 其它失败=0**；§1.3 24 行 / §5.1 17 行合计 **12593**、最大段 **1199**。
+- `node scripts/client-build.mjs --check`：**0 退出**（17 段逐字节一致）。
+- `node scripts/locale-pack.mjs --check`：**0 退出**（594 键/语言）。
+- `node scripts/client-chunks.mjs --check`：**5 file(s) match**。
+- `npm run prepare`：**25 项 OK**（`CLIENT-SRC` 17 段一致、`LOCALE-SYNC` 594 键、`CHUNK-STAMPS`
+  5 chunk 一致）。
+- `npm run verify`：**6 步 / 0 失败**（check-refs、client-build、locale-pack、prepare、
+  check-compat、test；test 64793ms）。
+- **负向对照（改坏就会红）**：把 `core/presets.js` 的 `removeTag` 改成「只删 tags、
+  不清 preset.tagIds」后，在一次性包副本里跑 `node --test test/presets.test.mjs` ⇒
+  **43 中 2 红**（`removeTag cascades…` 与 `DELETE /presets/tags?id= cascades…`），
+  其余 41 条仍绿；副本已删除，工作树未受影响。这条对照证明级联用例不是「怎么改都过」。
+
+### 六、未做 / 已知限制
+
+- 标签无颜色、无分组、无拖拽排序、无层级；无「标签级默认文本」；标签是安装全局，不按工作区
+  作用域（CONTRACT §20.8 已声明）。
+- 标签 UI 每改一次都重读整份 `GET /presets`（与预设写一致），没有增量接口；50 个标签 /
+  每条 20 个的上限是常量，未做成可配置。
+- `client.js` 与段坐标随本轮 +211 行；后续功能若继续增长 locale 键，594 键又只剩 8 键余量，
+  下一个标签/文案批次必须先复用或另立「生成段拆分」目标（本轮已证明 1200 行预算仍被守住）。
+- 真机目视未做：本轮的 UI 证据是离线渲染树（308 条 client 用例）与 marker/文案断言；没有
+  `dsh web` 的截图核验。合并与发布是人工 gate，本轮未做。

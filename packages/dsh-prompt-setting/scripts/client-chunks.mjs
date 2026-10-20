@@ -15,10 +15,10 @@
  *
  * 用法：
  *   node scripts/client-chunks.mjs          # 校验（适合 CI / 发布前）
- *   node scripts/client-chunks.mjs --write  # 重算清单并写回 client.js
+ *   node scripts/client-chunks.mjs --write  # 重算清单并写回承载块的那一段 src/ 与 client.js
  */
 
-import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -28,6 +28,8 @@ import { clientChunkStamps, CLIENT_CHUNK_PATTERN } from '../core/store.js';
 const PACKAGE_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 /** 主 bundle 路径 —— 清单就写在它里面。 */
 const CLIENT_PATH = join(PACKAGE_DIR, 'client.js');
+/** 段目录（g-075 阶段 2 起清单块的真源在 src/ 的某一段里）。 */
+const CLIENT_SRC_DIR = 'src';
 /** 清单块的开头行（缩进/措辞改动会让本脚本拒绝动手，而不是猜）。 */
 const BLOCK_OPEN = '    const CHUNK_STAMPS = Object.freeze([';
 /** 清单块的结束行。 */
@@ -96,24 +98,73 @@ export function sameStamps(left, right) {
   });
 }
 
+/**
+ * 清单块所在的 `src/` 段（阶段 2：`client.js` 是生成物，真源在段里）。
+ *
+ * 只有一个段能带这个块；找不到或不唯一时返回 `null` —— 本脚本只改它**读到**的
+ * 那一处，绝不猜一个「应该在哪」的位置。
+ * @param packageDir - 包根目录。
+ * @returns 段的相对路径，或 `null`。
+ */
+function stampSegmentPath(packageDir) {
+  let entries;
+  try {
+    entries = readdirSync(join(packageDir, CLIENT_SRC_DIR));
+  } catch {
+    return null;
+  }
+  const hits = [];
+  for (const entry of entries.filter((name) => name.endsWith('.js')).sort()) {
+    const relPath = `${CLIENT_SRC_DIR}/${entry}`;
+    try {
+      if (readFileSync(join(packageDir, relPath), 'utf8').includes(BLOCK_OPEN)) hits.push(relPath);
+    } catch {
+      // An unreadable segment is simply not the one; the build's own check owns that failure.
+    }
+  }
+  return hits.length === 1 ? hits[0] : null;
+}
+
 /** CLI 主流程：校验，或按 `--write` 写回。 */
 function main(argv) {
   const write = argv.includes('--write');
   const source = readFileSync(CLIENT_PATH, 'utf8');
   const declared = readDeclaredStamps(source);
   const actual = clientChunkStamps(PACKAGE_DIR);
-  if (sameStamps(declared, actual)) {
+  // Stage 2 adds a second copy of the block: the `src/` segment it is generated
+  // from. Both must be in sync — checking only `client.js` would call a split
+  // state "ok", and the next `client-build --write` would then rebuild the
+  // artifact from the stale segment and move it again.
+  const segmentPath = stampSegmentPath(PACKAGE_DIR);
+  const segment = segmentPath === null ? null : readFileSync(join(PACKAGE_DIR, segmentPath), 'utf8');
+  const segmentDeclared = segment === null ? null : readDeclaredStamps(segment);
+  const clientInSync = sameStamps(declared, actual);
+  const segmentInSync = segmentDeclared === null || sameStamps(segmentDeclared, actual);
+  if (clientInSync && segmentInSync) {
     process.stdout.write(`client chunks: ${actual.length} file(s) match the CHUNK_STAMPS manifest\n`);
     return 0;
   }
   if (!write) {
     process.stderr.write(
-      `client chunks: the CHUNK_STAMPS manifest in client.js is out of date.\n` +
-        `  declared: ${declared.map((s) => `${s.name}@${s.hash}`).join(', ') || '(none)'}\n` +
-        `  on disk : ${actual.map((s) => `${s.name}@${s.hash}`).join(', ') || '(none)'}\n` +
-        `  run: node scripts/client-chunks.mjs --write\n`,
+      'client chunks: the CHUNK_STAMPS manifest is out of date.\n' +
+        `  client.js: ${declared.map((s) => `${s.name}@${s.hash}`).join(', ') || '(none)'}\n` +
+        (segmentDeclared === null
+          ? ''
+          : `  src/${segmentPath}: ${segmentDeclared.map((s) => `${s.name}@${s.hash}`).join(', ') || '(none)'}\n`) +
+        `  on disk  : ${actual.map((s) => `${s.name}@${s.hash}`).join(', ') || '(none)'}\n` +
+        '  run: node scripts/client-chunks.mjs --write\n',
     );
     return 1;
+  }
+  // Two copies of the same block exist on disk and both must move together:
+  // the **segment** is the truth (stage 2 made `client.js` its concatenation),
+  // and `client.js` is the shipped artifact a page may already be loading. A
+  // script that updated only one of them would leave `client-source`'s
+  // byte-equality assertion to discover the split, which is exactly what the
+  // `--write` remedy exists to prevent.
+  if (segment !== null) {
+    const nextSegment = writeDeclaredStamps(segment, actual);
+    if (nextSegment !== segment) writeFileSync(join(PACKAGE_DIR, segmentPath), nextSegment);
   }
   writeFileSync(CLIENT_PATH, writeDeclaredStamps(source, actual));
   process.stdout.write(`client chunks: CHUNK_STAMPS updated (${actual.length} file(s))\n`);

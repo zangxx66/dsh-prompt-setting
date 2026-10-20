@@ -134,8 +134,20 @@ const ERROR_KEY_COUNT = 51;
  * `advancedScopeNote`). The disclosure and「当前选中」words (`scopeEdit`,
  * `scopeCollapse`, `scopeSelected`) are shared with the version history's own
  * selector and needed no new key.
+ *
+ * g-082 (Revision 56) added eight main keys, all on the preset library's tag
+ * set: the manager entrance/title (`presetTagManager`), its empty state
+ * (`presetTagNone`), the one save button (`presetTagSave`), the editor's
+ * picker label (`presetTagPickerHint`), the filtered-empty sentence
+ * (`presetFilteredEmpty`), the deletion question (`presetTagDeleteConfirmTitle`
+ * / `presetTagDeleteConfirmBody`) and its notice (`presetTagDeletedNotice`).
+ * The rest of the tag surface reuses the words the page already has (`fAll`,
+ * `presetEdit`, `presetDelete`, `presetNameLabel`, `presetDialogClose`,
+ * `confirmNo`, `presetFailed`) — the segment budget (§5.1, 1200 lines) holds at
+ * 594 keys per language, and the new tag codes reuse the existing fallback the
+ * older preset codes already rely on: the banner states the code itself.
  */
-const MAIN_KEY_COUNT = 535;
+const MAIN_KEY_COUNT = 543;
 /** The full key count both files must hold, in the same order. */
 const TOTAL_KEY_COUNT = MAIN_KEY_COUNT + ERROR_KEY_COUNT;
 
@@ -143,7 +155,7 @@ test('locale: both JSON files are valid, key-aligned dictionaries', () => {
   const { dictionaries, keys } = readDictionaries(packageRoot);
   assert.deepEqual(Object.keys(dictionaries), Object.keys(LOCALES));
   assert.equal(keys.length, TOTAL_KEY_COUNT);
-  assert.equal(keys.length, 586);
+  assert.equal(keys.length, 594);
   for (const name of Object.keys(LOCALES)) {
     const dict = dictionaries[name];
     assert.equal(Object.keys(dict).length, TOTAL_KEY_COUNT, `${name}: ${TOTAL_KEY_COUNT} keys`);
@@ -154,7 +166,7 @@ test('locale: both JSON files are valid, key-aligned dictionaries', () => {
   }
 });
 
-test('locale: the 586 keys split into 535 main entries and 51 error codes', () => {
+test('locale: the 594 keys split into 543 main entries and 51 error codes', () => {
   const { dictionaries, keys } = readDictionaries(packageRoot);
   const errorKeys = keys.filter((key) => key.startsWith('error.'));
   assert.equal(errorKeys.length, ERROR_KEY_COUNT);
@@ -434,15 +446,15 @@ test('locale: adding a key to the JSON still lets --write locate the segment', (
 });
 
 test('locale: a batch of +80 keys still lets --write locate the segment (U1)', () => {
-  // 返工 U1：用 max 作分母时，纯加 N 键的得分是 S/(S+N)，586 键时 +66 就掉到 90% 以下
+  // 返工 U1：用 max 作分母时，纯加 N 键的得分是 S/(S+N)，594 键时 +66 就掉到 90% 以下
   // ⇒ --write 报「真源缺失」，而基线在同样副本里 exit 0（行为回归）。改用 min 分母后，
-  // 纯加键恒为 100%。这里用评审实测的 +80 键（→666）钉住它。
+  // 纯加键恒为 100%。这里用评审实测的 +80 键（→674）钉住它。
   const root = throwawayPackage();
   try {
     appendProbeKeys(root, 80);
     const write = run(root, 'scripts/locale-pack.mjs', '--write');
     assert.equal(write.status, 0, `加 80 键后的 --write 必须仍能定位真源\n${write.stdout}\n${write.stderr}`);
-    assert.match(write.stdout, /666 键\/语言/, '--write 要按 586+80=666 键写');
+    assert.match(write.stdout, /674 键\/语言/, '--write 要按 594+80=674 键写');
     const segment = findLocaleSegment({ packageDir: root });
     const segmentText = readFileSync(join(root, CLIENT_SRC_DIR, segment.name), 'utf8');
     const clientText = readFileSync(join(root, 'client.js'), 'utf8');

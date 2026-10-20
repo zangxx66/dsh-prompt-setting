@@ -129,8 +129,17 @@
       // write must never look like a failed read, so the last three are not
       // folded into the first.
       const [presets, setPresets] = React.useState({ phase: 'idle', data: null, error: null });
-      const [presetDraft, setPresetDraft] = React.useState({ id: null, name: '', action: 'replace', text: '' });
+      const [presetDraft, setPresetDraft] = React.useState({ id: null, name: '', action: 'replace', text: '', tagIds: [] });
       const [presetStatus, setPresetStatus] = React.useState({ kind: 'idle', error: null });
+      // g-082: the tag surface's own view state, kept apart from the preset
+      // draft/status for the same reason the preset slots are apart from the
+      // library read — a failed tag write must not read as a failed preset save.
+      // `presetTagFilter` is a tag id or `null` (「全部」); the manager dialog's
+      // draft is the one name field, and its status is the last tag write.
+      const [presetTagFilter, setPresetTagFilter] = React.useState(null);
+      const [presetTagDialog, setPresetTagDialog] = React.useState(false);
+      const [presetTagDraft, setPresetTagDraft] = React.useState({ id: null, name: '' });
+      const [presetTagStatus, setPresetTagStatus] = React.useState({ kind: 'idle', error: null });
       // `null` | `{kind: 'edit'}` | `{kind: 'apply', presetId}`. The editor is a
       // dialog rather than an in-tab form (review R3): the tab is the catalogue,
       // and both writes it can start happen in an overlay that a reader has to
@@ -1167,35 +1176,3 @@
         });
       };
 
-      /**
-       * Reconcile the「我的 Prompt」draft after an operation changed a layer's
-       * stored text **behind the editor's back** (g-050: rollback, a whole-layer
-       * reset, or an applied import).
-       *
-       * The box renders the draft while one exists (see `mineText`), so without
-       * this the editor keeps showing text that is no longer the stored value and
-       * the operation reads as «nothing happened». The two cases are deliberately
-       * different:
-       *   - a draft that still equals the stored text has nothing the user typed,
-       *     so it is dropped and the editor follows the new value;
-       *   - a draft that differs **is** unsaved work — it is kept, and the caller
-       *     appends `mineDraftKept` to the notice instead of silently destroying
-       *     the reader's text. §15.4's「no path clears what the user typed」is
-       *     about exactly this second case.
-       * @returns `true` when the editor follows the stored text, `false` when a
-       *   differing draft was kept.
-       */
-      const settleMineDraft = () => {
-        if (mineEntry === null) return true;
-        const previous = mineStored === null ? '' : mineStored;
-        if (mineEntry.text !== previous) return false;
-        // g-058: the mode is part of the comparison. A draft that still matches
-        // the stored text but states the *other* mode is unsaved work — dropping
-        // it would take the user's mode choice off the screen.
-        if (draftModeOf(mineEntry) !== (mineStoredMode ?? RESERVED_SECTION_DEFAULT_MODE)) return false;
-        dropMineDraft(mineKey);
-        return true;
-      };
-
-      const rollbackTo = async (pending) => {
-        setBusy(true);

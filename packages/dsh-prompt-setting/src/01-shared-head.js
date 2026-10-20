@@ -466,6 +466,9 @@
      * host can resolve a root from (`CONTRACT.md` §4.2, §20).
      */
     const PRESETS_PATH = '/prompt-setting/presets';
+    // g-082: the library's own tag set — one upsert (`PUT`) and one deletion
+    // (`DELETE ?id=`) that cascades through every preset's `tagIds`.
+    const PRESETS_TAGS_PATH = '/prompt-setting/presets/tags';
     const PRESETS_APPLY_PATH = '/prompt-setting/presets/apply';
     const PRESETS_UNAPPLY_PATH = '/prompt-setting/presets/unapply';
     /**

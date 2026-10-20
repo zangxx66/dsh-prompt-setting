@@ -33,6 +33,9 @@ import { CUSTOM_SECTION_NAME } from '../core/custom.js';
 import { MAX_TEXT_BYTES, RESERVED_STACK_SEPARATOR } from '../core/overrides.js';
 import {
   MAX_PRESET_NAME_LENGTH,
+  MAX_PRESET_TAGS,
+  MAX_TAGS,
+  MAX_TAG_NAME_LENGTH,
   appliedRootsOf,
   emptyPresets,
   normalizePresets,
@@ -40,15 +43,24 @@ import {
   planPresetRemoval,
   planUnapply,
   presetById,
+  presetsWithTag,
   publicApplied,
+  publicPresets,
+  publicTags,
   removePreset,
+  removeTag,
+  tagById,
   upsertPreset,
+  upsertTag,
   validatePresetId,
   validatePresetInput,
+  validatePresetsDocument,
+  validateTagInput,
 } from '../core/presets.js';
 import { historyPath, readHistoryFile, readPresets, userPresetsPath, writePresets } from '../core/store.js';
 
 const PRESETS_PATH = '/prompt-setting/presets';
+const PRESETS_TAGS_PATH = '/prompt-setting/presets/tags';
 const PRESETS_APPLY_PATH = '/prompt-setting/presets/apply';
 const PRESETS_UNAPPLY_PATH = '/prompt-setting/presets/unapply';
 const SNAPSHOT_PATH = '/prompt-setting/snapshot';
@@ -245,14 +257,29 @@ function workspaceRow(root, session) {
 }
 
 /** A library file written straight to disk, so a route test can start from it. */
-function seedLibrary(presets = [], applied = []) {
-  writeRaw(presetsPath(), `${JSON.stringify({ version: 1, presets, applied }, null, 2)}\n`);
+function seedLibrary(presets = [], applied = [], extras = {}) {
+  const document = {
+    version: extras.version ?? 2,
+    tags: extras.tags ?? [],
+    presets,
+    applied,
+  };
+  writeRaw(presetsPath(), `${JSON.stringify(document, null, 2)}\n`);
 }
 
 /** A stored preset as the library file spells it. */
-function storedPreset(id, name, action, text) {
-  return { id, name, action, text, createdAt: 't', updatedAt: 't' };
+function storedPreset(id, name, action, text, tagIds = []) {
+  return { id, name, action, text, tagIds, createdAt: 't', updatedAt: 't' };
 }
+
+/** A stored tag as the library file spells it (g-082). */
+function storedTag(id, name) {
+  return { id, name, createdAt: 't', updatedAt: 't' };
+}
+
+/** The two tag ids these route cases use. */
+const TAG_A = 'tag-aaaaaaaa';
+const TAG_B = 'tag-bbbbbbbb';
 
 // ---------------------------------------------------------------------------
 // The pure half
@@ -260,7 +287,8 @@ function storedPreset(id, name, action, text) {
 
 test('presets: the library lives in its own file under the user directory', () => {
   assert.equal(presetsPath(), join(home, 'prompt-setting', 'presets.json'));
-  assert.equal(emptyPresets().version, 1);
+  assert.equal(emptyPresets().version, 2);
+  assert.deepEqual(emptyPresets().tags, []);
   assert.deepEqual(emptyPresets().presets, []);
   assert.deepEqual(emptyPresets().applied, []);
 });
@@ -317,6 +345,7 @@ test('presets logic: validatePresetInput refuses every field-level mistake with 
     name: 'n',
     action: 'append',
     text: '',
+    tagIds: [],
   });
   assert.equal(validatePresetId(PRESET_A), PRESET_A);
   assert.throws(() => validatePresetId('../etc/passwd'), (error) => error.code === 'invalid-id');
@@ -1233,4 +1262,366 @@ test('route: the library travels inside the export document, and never inside a 
   for (const entry of listed.workspace.overrides) {
     assert.deepEqual(Object.keys(entry).sort(), ['action', 'name', 'text']);
   }
+});
+
+// ---------------------------------------------------------------------------
+// g-082: the tag set (pure half)
+// ---------------------------------------------------------------------------
+
+test('presets tags: a version 1 file reads as version 2 with an empty tag set, losslessly', () => {
+  const v1 = normalizePresets({
+    version: 1,
+    presets: [{ id: PRESET_A, name: 'one', action: 'replace', text: 'ONE' }],
+    applied: [],
+  });
+  assert.equal(v1.version, 2);
+  assert.deepEqual(v1.tags, []);
+  assert.deepEqual(v1.presets[0].tagIds, []);
+  // No migration write is needed to read it: the write face re-serializes the
+  // same document as version 2, and the round trip is lossless.
+  writePresets(presetsPath(), v1);
+  const back = readPresets(presetsPath());
+  assert.equal(back.error, null);
+  assert.deepEqual(back.document, v1);
+  assert.equal(JSON.parse(readFileSync(presetsPath(), 'utf8')).version, 2);
+});
+
+test('presets tags: normalizePresets keeps known ids in order, and drops the rest leniently', () => {
+  const normalized = normalizePresets({
+    version: 2,
+    tags: [
+      storedTag(TAG_A, 'one'),
+      storedTag(TAG_B, 'two'),
+      { id: 'bad id!', name: 'nope' },
+      { id: TAG_A, name: 'duplicate id' },
+      { id: 'tag-cccccccc', name: '' },
+      'not an object',
+    ],
+    presets: [
+      storedPreset(PRESET_A, 'p', 'replace', 'P', [TAG_B, 'tag-unknown', TAG_A, TAG_B, 'bad id!']),
+    ],
+    applied: [],
+  });
+  assert.deepEqual(normalized.tags.map((tag) => [tag.id, tag.name]), [[TAG_A, 'one'], [TAG_B, 'two']]);
+  assert.deepEqual(normalized.presets[0].tagIds, [TAG_B, TAG_A]);
+  // The public view always states the array, whatever the stored shape was.
+  assert.deepEqual(publicTags(normalized).map((tag) => tag.id), [TAG_A, TAG_B]);
+  assert.deepEqual(publicPresets(normalized)[0].tagIds, [TAG_B, TAG_A]);
+});
+
+test('presets tags: validateTagInput refuses empty/long/control/duplicate names and stores the trim', () => {
+  const tags = [storedTag(TAG_A, '短答')];
+  assert.deepEqual(validateTagInput({ name: '  代码审查  ' }), { name: '代码审查' });
+  const cases = [
+    [null, 'invalid-tag'],
+    [{}, 'invalid-tag-name'],
+    [{ name: '   ' }, 'invalid-tag-name'],
+    [{ name: 'a'.repeat(MAX_TAG_NAME_LENGTH + 1) }, 'tag-name-too-long'],
+    [{ name: 'a\u0007b' }, 'invalid-tag-name'],
+    [{ name: '短答' }, 'duplicate-tag-name'],
+    [{ name: '短答 ' }, 'duplicate-tag-name'],
+  ];
+  for (const [input, code] of cases) {
+    assert.throws(() => validateTagInput(input, { tags }), (error) => error.code === code, `expected ${code}`);
+  }
+  // Editing the tag itself is not a duplicate of itself, and a different tag may
+  // take a name only when that tag is the one being excluded.
+  assert.deepEqual(validateTagInput({ name: '短答' }, { tags, excludeId: TAG_A }), { name: '短答' });
+  assert.throws(
+    () => validateTagInput({ name: '短答' }, { tags, excludeId: TAG_B }),
+    (error) => error.code === 'duplicate-tag-name',
+  );
+});
+
+test('presets tags: upsertTag mints, edits in place, keeps createdAt and refuses an unknown id', () => {
+  const created = upsertTag(emptyPresets(), { name: '短答' }, { id: TAG_A, at: '2024-01-01T00:00:00.000Z' });
+  assert.equal(created.created, true);
+  assert.equal(created.tag.createdAt, '2024-01-01T00:00:00.000Z');
+  const edited = upsertTag(created.document, { id: TAG_A, name: '更短' }, { at: '2024-02-02T00:00:00.000Z' });
+  assert.equal(edited.created, false);
+  assert.equal(edited.tag.name, '更短');
+  assert.equal(edited.tag.createdAt, '2024-01-01T00:00:00.000Z');
+  assert.equal(edited.tag.updatedAt, '2024-02-02T00:00:00.000Z');
+  assert.equal(tagById(edited.document, TAG_A).name, '更短');
+  assert.throws(
+    () => upsertTag(edited.document, { id: TAG_B, name: 'x' }, { at: 't' }),
+    (error) => error.code === 'tag-not-found' && error.status === 404,
+  );
+  // The library's ceiling is creation-only: editing never grows the set.
+  let document = emptyPresets();
+  for (let index = 0; index < MAX_TAGS; index += 1) {
+    document = upsertTag(document, { name: `t${index}` }, { id: `tag-${String(index).padStart(8, '0')}`, at: 't' }).document;
+  }
+  assert.equal(document.tags.length, MAX_TAGS);
+  assert.throws(
+    () => upsertTag(document, { name: 'one-more' }, { id: 'tag-deadbeef', at: 't' }),
+    (error) => error.code === 'tag-limit-reached' && error.status === 400,
+  );
+  const renamed = upsertTag(document, { id: document.tags[0].id, name: 'renamed' }, { at: 't' });
+  assert.equal(renamed.tag.name, 'renamed');
+});
+
+test('presets tags: removeTag cascades through every preset and keeps the other tags', () => {
+  const document = {
+    version: 2,
+    tags: [storedTag(TAG_A, 'one'), storedTag(TAG_B, 'two')],
+    presets: [
+      storedPreset(PRESET_A, 'a', 'replace', 'A', [TAG_A, TAG_B]),
+      storedPreset(PRESET_B, 'b', 'replace', 'B', [TAG_B]),
+      storedPreset('preset-cccccccc', 'c', 'replace', 'C'),
+    ],
+    applied: [],
+  };
+  const removed = removeTag(document, TAG_A);
+  assert.equal(removed.removed.id, TAG_A);
+  assert.deepEqual(removed.document.tags.map((tag) => tag.id), [TAG_B]);
+  assert.deepEqual(removed.document.presets.map((preset) => preset.tagIds), [[TAG_B], [TAG_B], []]);
+  assert.deepEqual(presetsWithTag(removed.document, TAG_A), [], 'no dangling reference survives');
+  assert.equal(removeTag(removed.document, TAG_A).removed, null, 'an unknown id changes nothing');
+  const untouched = removeTag(removed.document, 'tag-unknown');
+  assert.equal(untouched.document, removed.document, 'nothing named, nothing rewritten');
+});
+
+test('presets tags: validatePresetsDocument is strict about tags and tagIds', () => {
+  const ok = validatePresetsDocument({
+    version: 2,
+    tags: [storedTag(TAG_A, 'one')],
+    presets: [storedPreset(PRESET_A, 'p', 'replace', 'P', [TAG_A])],
+    applied: [],
+  });
+  assert.deepEqual(ok.tags.map((tag) => tag.id), [TAG_A]);
+  assert.deepEqual(ok.presets[0].tagIds, [TAG_A]);
+  // The old backup (no `tags`, no `tagIds`) imports as an empty tag set.
+  const old = validatePresetsDocument({ version: 1, presets: [storedPreset(PRESET_A, 'p', 'replace', 'P')] });
+  assert.equal(old.version, 2);
+  assert.deepEqual(old.tags, []);
+  assert.deepEqual(old.presets[0].tagIds, []);
+  const tooManyTags = Array.from({ length: MAX_TAGS + 1 }, (_, index) => storedTag(`tag-${String(index).padStart(8, '0')}`, `t${index}`));
+  const tooManyPresetTags = Array.from({ length: MAX_PRESET_TAGS + 1 }, (_, index) => `tag-${String(index).padStart(8, '0')}`);
+  const cases = [
+    [{ version: 9, presets: [] }, 'unsupported-presets-version'],
+    [{ version: 2, tags: 'nope', presets: [] }, 'invalid-presets'],
+    [{ version: 2, tags: [{ id: TAG_A, name: 'n', extra: 1 }], presets: [] }, 'invalid-presets'],
+    [{ version: 2, tags: [{ id: 'bad id!', name: 'n' }], presets: [] }, 'invalid-tag-id'],
+    [{ version: 2, tags: [{ id: TAG_A, name: '  ' }], presets: [] }, 'invalid-tag-name'],
+    [{ version: 2, tags: [{ id: TAG_A, name: 'a'.repeat(MAX_TAG_NAME_LENGTH + 1) }], presets: [] }, 'tag-name-too-long'],
+    [{ version: 2, tags: [storedTag(TAG_A, 'one'), storedTag(TAG_A, 'two')], presets: [] }, 'duplicate-tag-id'],
+    [{ version: 2, tags: [storedTag(TAG_A, 'same'), storedTag(TAG_B, ' same ')], presets: [] }, 'duplicate-tag-name'],
+    [{ version: 2, tags: tooManyTags, presets: [] }, 'tag-limit-reached'],
+    [{ version: 2, tags: [storedTag(TAG_A, 'one')], presets: [storedPreset(PRESET_A, 'p', 'replace', 'P', [TAG_B])] }, 'unknown-tag'],
+    [{ version: 2, tags: [storedTag(TAG_A, 'one')], presets: [storedPreset(PRESET_A, 'p', 'replace', 'P', [TAG_A, TAG_A])] }, 'duplicate-tag-id'],
+    [{ version: 2, tags: [storedTag(TAG_A, 'one')], presets: [storedPreset(PRESET_A, 'p', 'replace', 'P', 'nope')] }, 'invalid-tag-ids'],
+    [
+      {
+        version: 2,
+        tags: Array.from({ length: MAX_PRESET_TAGS + 1 }, (_, index) => storedTag(`tag-${String(index).padStart(8, '0')}`, `t${index}`)),
+        presets: [storedPreset(PRESET_A, 'p', 'replace', 'P', tooManyPresetTags)],
+      },
+      'too-many-preset-tags',
+    ],
+  ];
+  for (const [document, code] of cases) {
+    assert.throws(() => validatePresetsDocument(document), (error) => error.code === code, `expected ${code}`);
+  }
+});
+
+test('presets tags: validatePresetInput dedupes tagIds, preserves order and refuses unknown ids', () => {
+  const tags = [storedTag(TAG_A, 'one'), storedTag(TAG_B, 'two')];
+  assert.deepEqual(
+    validatePresetInput({ name: 'n', action: 'replace', text: 'x', tagIds: [TAG_B, TAG_B, TAG_A] }, tags),
+    { name: 'n', action: 'replace', text: 'x', tagIds: [TAG_B, TAG_A] },
+  );
+  assert.deepEqual(validatePresetInput({ name: 'n', action: 'replace', text: 'x', tagIds: null }, tags).tagIds, []);
+  const cases = [
+    [{ name: 'n', action: 'replace', text: 'x', tagIds: 'nope' }, 'invalid-tag-ids'],
+    [{ name: 'n', action: 'replace', text: 'x', tagIds: ['bad id!'] }, 'invalid-tag-id'],
+    [{ name: 'n', action: 'replace', text: 'x', tagIds: ['tag-unknown'] }, 'unknown-tag'],
+    [
+      {
+        name: 'n',
+        action: 'replace',
+        text: 'x',
+        tagIds: Array.from({ length: MAX_PRESET_TAGS + 1 }, (_, index) => `tag-${String(index).padStart(8, '0')}`),
+      },
+      'too-many-preset-tags',
+    ],
+  ];
+  const wide = Array.from({ length: MAX_PRESET_TAGS + 1 }, (_, index) => storedTag(`tag-${String(index).padStart(8, '0')}`, `t${index}`));
+  for (const [input, code] of cases) {
+    assert.throws(() => validatePresetInput(input, wide), (error) => error.code === code, `expected ${code}`);
+  }
+});
+
+test('presets tags: upsertPreset persists tagIds and an unstated set keeps the stored one', () => {
+  const created = upsertPreset(emptyPresets(), { name: 'p', action: 'replace', text: 'P', tagIds: [TAG_A] }, {
+    id: PRESET_A,
+    at: 't1',
+  });
+  assert.deepEqual(created.preset.tagIds, [TAG_A]);
+  const edited = upsertPreset(created.document, { id: PRESET_A, name: 'p2', action: 'replace', text: 'P2' }, { at: 't2' });
+  assert.deepEqual(edited.preset.tagIds, [TAG_A], 'a caller that does not state tags keeps them');
+  const cleared = upsertPreset(created.document, { id: PRESET_A, name: 'p3', action: 'replace', text: 'P3', tagIds: [] }, { at: 't3' });
+  assert.deepEqual(cleared.preset.tagIds, [], 'stating an empty set really clears it');
+  assert.deepEqual(created.document.tags, [], 'and the preset write keeps the document-level tag list');
+});
+
+// ---------------------------------------------------------------------------
+// g-082: the tag set (route half)
+// ---------------------------------------------------------------------------
+
+test('route: GET /presets answers the tag set and every preset’s tagIds', async () => {
+  const { route } = mount();
+  seedLibrary(
+    [storedPreset(PRESET_A, 'a', 'replace', 'A', [TAG_B, TAG_A])],
+    [],
+    { tags: [storedTag(TAG_A, 'one'), storedTag(TAG_B, 'two')] },
+  );
+  const listed = json(await call(route, { url: PRESETS_PATH }));
+  assert.equal(listed.ok, true);
+  assert.equal(listed.version, 2);
+  assert.deepEqual(listed.tags.map((tag) => [tag.id, tag.name]), [[TAG_A, 'one'], [TAG_B, 'two']]);
+  assert.deepEqual(listed.presets[0].tagIds, [TAG_B, TAG_A], 'the stored order survives');
+});
+
+test('route: PUT /presets/tags creates and edits, and every refusal is byte-identical', async () => {
+  const { route } = mount();
+  seedLibrary([], [], { tags: [storedTag(TAG_A, '短答')] });
+  const before = sha256(presetsPath());
+  const bodies = [
+    [JSON.stringify({ name: '短答' }), 400, 'duplicate-tag-name'],
+    [JSON.stringify({ name: '   ' }), 400, 'invalid-tag-name'],
+    [JSON.stringify({ name: 'x'.repeat(MAX_TAG_NAME_LENGTH + 1) }), 400, 'tag-name-too-long'],
+    [JSON.stringify({ name: 'a\u0007b' }), 400, 'invalid-tag-name'],
+    [JSON.stringify({ id: 'tag-unknown', name: 'x' }), 404, 'tag-not-found'],
+    [JSON.stringify({ id: 'bad id!', name: 'x' }), 400, 'invalid-tag-id'],
+    ['not json', 400, 'invalid-json'],
+  ];
+  for (const [body, status, code] of bodies) {
+    const res = await call(route, { method: 'PUT', url: PRESETS_TAGS_PATH, body });
+    assert.equal(res.statusCode, status, `${code}: status`);
+    assert.equal(json(res).code, code);
+    assert.equal(sha256(presetsPath()), before, `${code}: the library is byte-identical`);
+  }
+  const created = json(await call(route, {
+    method: 'PUT',
+    url: PRESETS_TAGS_PATH,
+    body: JSON.stringify({ name: '  代码审查  ' }),
+  }));
+  assert.equal(created.ok, true);
+  assert.equal(created.created, true);
+  assert.equal(created.tag.name, '代码审查', 'the route stores the trimmed name');
+  assert.match(created.tag.id, /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
+  assert.deepEqual(created.tags.map((tag) => tag.name), ['短答', '代码审查']);
+
+  const edited = json(await call(route, {
+    method: 'PUT',
+    url: PRESETS_TAGS_PATH,
+    body: JSON.stringify({ id: TAG_A, name: '更短' }),
+  }));
+  assert.equal(edited.created, false);
+  assert.equal(edited.tag.id, TAG_A);
+  assert.equal(edited.tag.createdAt, 't');
+  const onDisk = readPresets(presetsPath());
+  assert.equal(onDisk.error, null);
+  assert.deepEqual(onDisk.document.tags.map((tag) => tag.name), ['更短', '代码审查']);
+});
+
+test('route: PUT /presets accepts tagIds, dedupes them, and rejects an unknown tag untouched', async () => {
+  const { route } = mount();
+  seedLibrary([], [], { tags: [storedTag(TAG_A, 'one'), storedTag(TAG_B, 'two')] });
+  const created = json(await call(route, {
+    method: 'PUT',
+    url: PRESETS_PATH,
+    body: JSON.stringify({ name: 'p', action: 'replace', text: 'P', tagIds: [TAG_B, TAG_B, TAG_A] }),
+  }));
+  assert.equal(created.ok, true);
+  assert.deepEqual(created.preset.tagIds, [TAG_B, TAG_A]);
+
+  const before = sha256(presetsPath());
+  const refused = await call(route, {
+    method: 'PUT',
+    url: PRESETS_PATH,
+    body: JSON.stringify({ id: created.preset.id, name: 'p', action: 'replace', text: 'P', tagIds: ['tag-unknown'] }),
+  });
+  assert.equal(refused.statusCode, 400);
+  assert.equal(json(refused).code, 'unknown-tag');
+  assert.equal(sha256(presetsPath()), before);
+
+  const cleared = json(await call(route, {
+    method: 'PUT',
+    url: PRESETS_PATH,
+    body: JSON.stringify({ id: created.preset.id, name: 'p', action: 'replace', text: 'P' }),
+  }));
+  assert.deepEqual(cleared.preset.tagIds, [], 'an omitted set is an empty set (the body is the whole entry)');
+});
+
+test('route: DELETE /presets/tags?id= cascades in one write and refuses an unknown id untouched', async () => {
+  const { route } = mount();
+  seedLibrary(
+    [
+      storedPreset(PRESET_A, 'a', 'replace', 'A', [TAG_A, TAG_B]),
+      storedPreset(PRESET_B, 'b', 'replace', 'B', [TAG_B]),
+    ],
+    [],
+    { tags: [storedTag(TAG_A, 'one'), storedTag(TAG_B, 'two')] },
+  );
+  const missing = await call(route, { method: 'DELETE', url: PRESETS_TAGS_PATH });
+  assert.equal(missing.statusCode, 400);
+  assert.equal(json(missing).code, 'missing-id');
+
+  const before = sha256(presetsPath());
+  const unknown = await call(route, { method: 'DELETE', url: `${PRESETS_TAGS_PATH}?id=tag-unknown` });
+  assert.equal(unknown.statusCode, 404);
+  assert.equal(json(unknown).code, 'tag-not-found');
+  assert.equal(sha256(presetsPath()), before);
+
+  const removed = json(await call(route, { method: 'DELETE', url: `${PRESETS_TAGS_PATH}?id=${TAG_A}` }));
+  assert.equal(removed.ok, true);
+  assert.equal(removed.removed, true);
+  assert.equal(removed.affectedPresets, 1);
+  assert.deepEqual(removed.tags.map((tag) => tag.id), [TAG_B]);
+  assert.deepEqual(removed.presets.map((preset) => preset.tagIds), [[TAG_B], [TAG_B]]);
+  // The bytes on disk agree with the answer: the cascade is the same write.
+  const onDisk = readPresets(presetsPath());
+  assert.equal(onDisk.error, null);
+  assert.deepEqual(onDisk.document.tags.map((tag) => tag.id), [TAG_B]);
+  assert.deepEqual(onDisk.document.presets.map((preset) => preset.tagIds), [[TAG_B], [TAG_B]]);
+});
+
+test('route: the tag route answers 405 with the documented allow list', async () => {
+  const { route } = mount();
+  for (const method of ['GET', 'POST']) {
+    const res = await call(route, { method, url: PRESETS_TAGS_PATH });
+    assert.equal(res.statusCode, 405, `${method}: status`);
+    assert.equal(res.headers.allow, 'PUT, DELETE');
+    assert.equal(res.body, '');
+  }
+});
+
+test('route: the full backup carries tags, and an old backup imports an empty tag set', async () => {
+  const { route } = mount({ workspaces: [workspaceRow(workspaceRoot, 's-1')] });
+  seedLibrary([storedPreset(PRESET_A, 'a', 'replace', 'A', [TAG_A])], [], { tags: [storedTag(TAG_A, 'one')] });
+  const exported = json(await call(route, { url: '/prompt-setting/export?session=s-1' }));
+  assert.deepEqual(exported.presets.tags.map((tag) => tag.id), [TAG_A]);
+  assert.deepEqual(exported.presets.presets[0].tagIds, [TAG_A]);
+
+  // An old backup (a version 1 preset document with no `tags`) is accepted and
+  // written as version 2 with an empty tag set — the import face never invents
+  // a tag, and never leaves the old shape on disk.
+  const imported = await call(route, {
+    method: 'POST',
+    url: '/prompt-setting/import',
+    body: JSON.stringify({
+      schema: 'dsh-prompt-setting/export',
+      version: 2,
+      layers: { user: { overrides: [] } },
+      presets: { version: 1, presets: [storedPreset(PRESET_B, 'b', 'replace', 'B')], applied: [] },
+    }),
+  });
+  assert.equal(imported.statusCode, 200, imported.body);
+  const onDisk = readPresets(presetsPath());
+  assert.equal(onDisk.error, null);
+  assert.equal(onDisk.document.version, 2);
+  assert.deepEqual(onDisk.document.tags, []);
+  assert.deepEqual(onDisk.document.presets.map((preset) => [preset.id, preset.tagIds]), [[PRESET_B, []]]);
 });

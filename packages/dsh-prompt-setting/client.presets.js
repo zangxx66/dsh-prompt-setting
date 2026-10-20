@@ -26,6 +26,12 @@
  *     list row and names that row's preset; it lists every workspace the page
  *     knows with its applied state and the two layer actions.
  *
+ * g-082 adds the tag surface beside those: a single-select filter bar above the
+ * list, one chip per stored tag on a row, a multi-select tag picker inside the
+ * editor dialog, and a tag manager dialog (`data-region="preset-tag-dialog"`)
+ * whose deletion only asks — the host's cascade is sent by the page's shared
+ * confirmation, through `DELETE /presets/tags?id=`.
+ *
  * What the tab deliberately is not: it never edits the reserved section through
  * `PUT /overrides`, never sends a layer name, and never writes a file from the
  * catalogue routes — the two layer writes go through `POST /presets/apply` and
@@ -175,14 +181,251 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The tag manager dialog's own error line (g-082).
+     *
+     * Same rule as {@link dialogError}: a refused tag write is rendered inside
+     * the dialog that started it, never through the page-level notice behind
+     * the scrim.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @returns the line element, or null.
+     */
+    function tagDialogError(t, m) {
+      const error = m.presetTagStatus && m.presetTagStatus.kind === 'error' ? m.presetTagStatus.error : null;
+      if (error === null || error === undefined) return null;
+      return errorLine({
+        role: 'tag-dialog-error',
+        probe: 'data-tag-dialog-error',
+        code: error.code,
+        fontSize: 13,
+        wrap: true,
+        text: `${t('presetFailed')}: ${errorText(t, error)}`,
+      });
+    }
+
+    /** The library's tags, as the read payload spells them. */
+    function tagsOf(m) {
+      return m.presets.data && Array.isArray(m.presets.data.tags) ? m.presets.data.tags : [];
+    }
+
+    /** A tag id → its tag, for the rows and the editor's picker. */
+    function tagIndex(tags) {
+      const index = new Map();
+      for (const tag of tags) index.set(tag.id, tag);
+      return index;
+    }
+
+    /**
+     * One preset's tags, as chips (g-082). A tag the library no longer holds is
+     * skipped: the read face already dropped dangling ids, and a chip that named
+     * a missing tag would be the one place a dangling reference could still show.
+     */
+    function presetTagChips(t, tagsById, preset) {
+      const ids = Array.isArray(preset.tagIds) ? preset.tagIds : [];
+      const known = ids.map((id) => tagsById.get(id)).filter((tag) => tag !== undefined);
+      if (known.length === 0) return null;
+      return h(
+        'div',
+        { 'data-role': 'preset-tag-chips', 'data-preset-id': preset.id, style: { display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' } },
+        known.map((tag) => h(
+          'span',
+          { key: tag.id, 'data-preset-tag-chip': tag.id, style: { display: 'inline-flex' } },
+          h(UI.Tag, { tone: 'neutral' }, tag.name),
+        )),
+      );
+    }
+
+    /**
+     * The tag filter bar (g-082):「全部」 plus one chip per tag, single-select,
+     * and the entrance to the tag manager. Clicking the selected tag again
+     * clears the filter, which is the same act as clicking「全部」— both are the
+     * page action's boolean decision, so the two entries cannot disagree.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @param tags - the library's tags.
+     * @param activeId - the filter really in force (null = all).
+     * @returns the bar element.
+     */
+    function presetTagFilterBar(t, m, a, tags, activeId) {
+      return h(
+        'div',
+        { 'data-region': 'preset-tags-bar', style: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' } },
+        h(
+          UI.Button,
+          {
+            variant: activeId === null ? 'primary' : 'outline',
+            'data-action': 'preset-tag-filter',
+            'data-preset-tag-filter': '*',
+            'aria-pressed': String(activeId === null),
+            disabled: m.busy,
+            onClick: () => a.selectPresetTag('*'),
+          },
+          t('fAll'),
+        ),
+        tags.map((tag) => h(
+          UI.Button,
+          {
+            key: tag.id,
+            variant: activeId === tag.id ? 'primary' : 'outline',
+            'data-action': 'preset-tag-filter',
+            'data-preset-tag-filter': tag.id,
+            'aria-pressed': String(activeId === tag.id),
+            disabled: m.busy,
+            onClick: () => a.selectPresetTag(tag.id),
+          },
+          tag.name,
+        )),
+        h(
+          UI.Button,
+          {
+            'data-action': 'preset-tags-manage',
+            disabled: m.busy,
+            onClick: a.openTagManager,
+          },
+          t('presetTagManager'),
+        ),
+      );
+    }
+
+    /**
+     * The tag manager dialog (g-082): list, add, edit and delete the library's
+     * tags.
+     *
+     * A delete only **asks**: the row's「删除」raises the page's shared
+     * confirmation overlay (`data-confirm-kind="tag-delete"`), which names the
+     * tag and how many presets will lose it; the DELETE is sent by
+     * `confirm-yes`. A tag write's refusal stays on this dialog's own line and
+     * never closes it, exactly like the preset editor's.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the overlay element, or `null` when the dialog is closed.
+     */
+    function presetTagDialog(t, m, a) {
+      if (m.presetTagDialog !== true) return null;
+      const tags = tagsOf(m);
+      const draft = m.presetTagDraft;
+      const editing = draft !== null && draft !== undefined && draft.id !== null;
+      const saving = m.presetTagStatus && m.presetTagStatus.kind === 'saving';
+      return h(
+        'div',
+        { key: 'preset-tag-overlay', 'data-region': 'preset-tag-overlay', style: OVERLAY_STYLE },
+        h(
+          'div',
+          {
+            'data-region': 'preset-tag-dialog',
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-label': t('presetTagManager'),
+            'data-preset-tag-dialog': editing ? 'edit' : 'new',
+            'data-preset-tag-editing': editing ? draft.id : '',
+            style: DIALOG_STYLE,
+          },
+          h('strong', { style: DIALOG_TITLE_STYLE }, t('presetTagManager')),
+          tags.length === 0
+            ? h('p', { 'data-region': 'preset-tags-empty', style: { margin: 0, ...metaStyle } }, t('presetTagNone'))
+            : h(
+                'div',
+                { 'data-region': 'preset-tags-list', style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+                tags.map((tag) => h(
+                  'div',
+                  {
+                    key: tag.id,
+                    'data-preset-tag-row': tag.id,
+                    style: {
+                      display: 'flex',
+                      gap: 8,
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      borderTop: `1px solid ${token.borderL2}`,
+                      paddingTop: 6,
+                    },
+                  },
+                  h(
+                    'span',
+                    { style: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', minWidth: 0 } },
+                    h('span', { style: { fontSize: 12, color: token.labelPrimary, wordBreak: 'break-word' } }, tag.name),
+                  ),
+                  h(
+                    'span',
+                    { style: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' } },
+                    h(
+                      UI.Button,
+                      {
+                        variant: 'outline',
+                        'data-action': 'tag-edit',
+                        'data-preset-tag': tag.id,
+                        disabled: m.busy || saving,
+                        onClick: () => a.editTagDraft(tag.id),
+                      },
+                      t('presetEdit'),
+                    ),
+                    h(
+                      UI.Button,
+                      {
+                        variant: 'outline',
+                        'data-action': 'tag-delete',
+                        'data-preset-tag': tag.id,
+                        disabled: m.busy || saving,
+                        onClick: () => a.requestTagDelete(tag.id),
+                      },
+                      t('presetDelete'),
+                    ),
+                  ),
+                )),
+              ),
+          h('label', { style: metaStyle, htmlFor: 'ps-preset-tag-name' }, t('presetNameLabel')),
+          h(UI.Input, {
+            id: 'ps-preset-tag-name',
+            'data-role': 'preset-tag-name',
+            value: draft === null || draft === undefined ? '' : draft.name,
+            disabled: saving,
+            onChange: a.setTagDraftName,
+          }),
+          tagDialogError(t, m),
+          h(
+            'div',
+            { 'data-role': 'preset-tag-actions', style: DIALOG_ACTIONS_STYLE },
+            h(
+              UI.Button,
+              {
+                variant: 'primary',
+                'data-action': 'tag-save',
+                disabled: m.busy || saving,
+                onClick: a.saveTag,
+              },
+              t('presetTagSave'),
+            ),
+            h(
+              UI.Button,
+              {
+                'data-action': 'tag-new',
+                disabled: m.busy || saving,
+                onClick: a.newTagDraft,
+              },
+              t('confirmNo'),
+            ),
+            h(
+              UI.Button,
+              { 'data-action': 'tag-dialog-close', disabled: m.busy || saving, onClick: a.closeTagManager },
+              t('presetDialogClose'),
+            ),
+          ),
+        ),
+      );
+    }
+
+    /**
      * One stored preset as a catalogue row.
      * @param t - the bound translator.
      * @param m - the page model.
      * @param a - the page actions.
      * @param preset - the stored preset.
+     * @param tagsById - the library's tags by id.
      * @returns the row element.
      */
-    function presetRow(t, m, a, preset) {
+    function presetRow(t, m, a, preset, tagsById) {
       const selected = m.presetDraft.id === preset.id;
       return h(
         'div',
@@ -205,6 +448,7 @@ window.__ModuleLoader__.load({
           h(UI.Tag, { tone: preset.action === 'append' ? 'info' : 'neutral' },
             preset.action === 'append' ? t('presetModeAppend') : t('presetModeReplace')),
         ),
+        presetTagChips(t, tagsById, preset),
         h(
           'pre',
           {
@@ -277,7 +521,16 @@ window.__ModuleLoader__.load({
      */
     function presetsList(t, m, a) {
       const payload = m.presets.data;
-      const presets = payload && Array.isArray(payload.presets) ? payload.presets : [];
+      const all = payload && Array.isArray(payload.presets) ? payload.presets : [];
+      const tags = tagsOf(m);
+      const tagsById = tagIndex(tags);
+      // The filter is only in force while the tag it names still exists: a tag
+      // deleted in this or another tab must not leave the list filtered by a
+      // chip that is no longer rendered.
+      const activeId = m.presetTagFilter !== null && tagsById.has(m.presetTagFilter) ? m.presetTagFilter : null;
+      const presets = activeId === null
+        ? all
+        : all.filter((preset) => Array.isArray(preset.tagIds) && preset.tagIds.includes(activeId));
       const libraryError = payload && payload.error ? payload.error : null;
       return h(
         'div',
@@ -319,9 +572,14 @@ window.__ModuleLoader__.load({
               `${t('presetsLibraryError')} — ${libraryError.code}: ${libraryError.message}`,
             )
           : null,
-        presets.length === 0 && libraryError === null
+        // g-082: the tag filter bar sits above the list and is rendered even for
+        // an empty library, because「管理标签」is where the first tag is made.
+        libraryError === null ? presetTagFilterBar(t, m, a, tags, activeId) : null,
+        all.length === 0 && libraryError === null
           ? h('p', { 'data-region': 'presets-empty', style: { margin: 0, ...metaStyle } }, t('presetsEmpty'))
-          : presets.map((preset) => presetRow(t, m, a, preset)),
+          : presets.length === 0 && libraryError === null
+            ? h('p', { 'data-region': 'presets-filtered-empty', style: { margin: 0, ...metaStyle } }, t('presetFilteredEmpty'))
+            : presets.map((preset) => presetRow(t, m, a, preset, tagsById)),
       );
     }
 
@@ -345,6 +603,8 @@ window.__ModuleLoader__.load({
       const editing = m.presetDraft.id;
       const dirty = m.presetDraftDirty === true;
       const saving = m.presetStatus.kind === 'saving';
+      const tags = tagsOf(m);
+      const draftTagIds = Array.isArray(m.presetDraft.tagIds) ? m.presetDraft.tagIds : [];
       const title = editing === null ? t('presetNewHeading') : t('presetEditHeading');
       return h(
         'div',
@@ -383,6 +643,33 @@ window.__ModuleLoader__.load({
             disabled: saving,
             onChange: a.setPresetText,
           }),
+          // g-082: the preset's tag set, multi-select. Buttons with
+          // `aria-pressed` rather than a native checkbox: the page's atoms are
+          // the one control vocabulary this tab may use, and the pressed state
+          // is what a test (and a screen reader) can assert.
+          h('span', { style: metaStyle }, t('presetTagPickerHint')),
+          tags.length === 0
+            ? h('p', { 'data-region': 'preset-tag-picker-empty', style: { margin: 0, ...metaStyle } }, t('presetTagNone'))
+            : h(
+                'div',
+                { 'data-region': 'preset-tag-picker', style: { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' } },
+                tags.map((tag) => {
+                  const selected = draftTagIds.includes(tag.id);
+                  return h(
+                    UI.Button,
+                    {
+                      key: tag.id,
+                      variant: selected ? 'primary' : 'outline',
+                      'data-action': 'preset-tag-toggle',
+                      'data-preset-tag': tag.id,
+                      'aria-pressed': String(selected),
+                      disabled: saving,
+                      onClick: () => a.togglePresetDraftTag(tag.id),
+                    },
+                    tag.name,
+                  );
+                }),
+              ),
           dirty
             ? h(
                 'p',
@@ -580,8 +867,8 @@ window.__ModuleLoader__.load({
     /**
      * The 「预设」 tab.
      *
-     * Reads `GET /presets` through the page model and writes through the four
-     * catalogue/apply routes only (§20.3–§20.6). The body is the catalogue; the
+     * Reads `GET /presets` through the page model and writes through the
+     * catalogue/apply/tag routes only (§20.3, §20.3.1, §20.3.2, §20.5, §20.6). The body is the catalogue; the
      * two overlays are rendered beside it (they are `position: fixed`, so their
      * place in the tree does not matter), exactly as the page's other dialogs
      * are.
@@ -624,6 +911,7 @@ window.__ModuleLoader__.load({
         presetsList(t, m, a),
         presetEditorDialog(t, m, a),
         presetApplyDialog(t, m, a),
+        presetTagDialog(t, m, a),
       );
     }
 

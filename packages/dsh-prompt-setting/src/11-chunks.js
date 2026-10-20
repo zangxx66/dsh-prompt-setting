@@ -122,7 +122,7 @@
       { name: 'client.advanced.js', hash: '22e9b127', size: 29441 },
       { name: 'client.history.js', hash: 'a3ec9d47', size: 50647 },
       { name: 'client.overview.js', hash: '525dad60', size: 32356 },
-      { name: 'client.presets.js', hash: 'e1a665bb', size: 24079 },
+      { name: 'client.presets.js', hash: '61e510f5', size: 35670 },
       { name: 'client.transfer.js', hash: '01b94760', size: 15861 },
     ]);
 

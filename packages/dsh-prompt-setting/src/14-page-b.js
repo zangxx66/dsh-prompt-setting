@@ -1,4 +1,36 @@
 // 本文件是 client.js 的片段，不是独立模块，不得单独 parse/lint/执行。
+      /**
+       * Reconcile the「我的 Prompt」draft after an operation changed a layer's
+       * stored text **behind the editor's back** (g-050: rollback, a whole-layer
+       * reset, or an applied import).
+       *
+       * The box renders the draft while one exists (see `mineText`), so without
+       * this the editor keeps showing text that is no longer the stored value and
+       * the operation reads as «nothing happened». The two cases are deliberately
+       * different:
+       *   - a draft that still equals the stored text has nothing the user typed,
+       *     so it is dropped and the editor follows the new value;
+       *   - a draft that differs **is** unsaved work — it is kept, and the caller
+       *     appends `mineDraftKept` to the notice instead of silently destroying
+       *     the reader's text. §15.4's「no path clears what the user typed」is
+       *     about exactly this second case.
+       * @returns `true` when the editor follows the stored text, `false` when a
+       *   differing draft was kept.
+       */
+      const settleMineDraft = () => {
+        if (mineEntry === null) return true;
+        const previous = mineStored === null ? '' : mineStored;
+        if (mineEntry.text !== previous) return false;
+        // g-058: the mode is part of the comparison. A draft that still matches
+        // the stored text but states the *other* mode is unsaved work — dropping
+        // it would take the user's mode choice off the screen.
+        if (draftModeOf(mineEntry) !== (mineStoredMode ?? RESERVED_SECTION_DEFAULT_MODE)) return false;
+        dropMineDraft(mineKey);
+        return true;
+      };
+
+      const rollbackTo = async (pending) => {
+        setBusy(true);
         const query = historyScopeQuery(historyLayer, historyScopeArg);
         const result = await requestJson(`${ROLLBACK_PATH}?${query}`, {
           method: 'POST',
@@ -1018,6 +1050,11 @@
        * bumps `reload`, which re-reads the library and both layer views — the
        * same "write, then re-read" shape every other write on this page has.
        */
+      // g-082: the library's tag set, read off the same `GET /presets` payload
+      // the catalogue uses. The handlers below and the model both take it from
+      // this one binding, so a tag list rendered from it and a duplicate check
+      // made against it can never disagree.
+      const presetTags = presets.data && Array.isArray(presets.data.tags) ? presets.data.tags : [];
       const savePresetDraft = async () => {
         const name = presetDraft.name.trim();
         if (name.length === 0) {
@@ -1030,7 +1067,15 @@
         }
         setPresetStatus({ kind: 'saving', error: null });
         setBusy(true);
-        const body = { name: presetDraft.name, action: presetDraft.action, text: presetDraft.text };
+        const body = {
+          name: presetDraft.name,
+          action: presetDraft.action,
+          text: presetDraft.text,
+          // g-082: the whole entry is what a PUT states, so an empty set is
+          // sent explicitly (a preset being edited down to "no tags" must not
+          // keep the old ones).
+          tagIds: Array.isArray(presetDraft.tagIds) ? presetDraft.tagIds.slice() : [],
+        };
         // An `id` is what makes this an edit rather than an insert; without one
         // the host mints the id (§20.3).
         if (presetDraft.id !== null) body.id = presetDraft.id;
@@ -1056,6 +1101,7 @@
             name: typeof preset.name === 'string' ? preset.name : '',
             action: preset.action === 'append' ? 'append' : 'replace',
             text: typeof preset.text === 'string' ? preset.text : '',
+            tagIds: Array.isArray(preset.tagIds) ? preset.tagIds.slice() : [],
           });
         }
         setPresetStatus({ kind: 'saved', error: null });
@@ -1082,7 +1128,7 @@
         if (presetDialog !== null && (presetDialog.kind === 'apply' ? presetDialog.presetId === id : presetDraft.id === id)) {
           setPresetDialog(null);
         }
-        if (presetDraft.id === id) setPresetDraft({ id: null, name: '', action: 'replace', text: '' });
+        if (presetDraft.id === id) setPresetDraft({ id: null, name: '', action: 'replace', text: '', tagIds: [] });
         setPresetStatus({ kind: 'saved', error: null });
         const restored = result.payload && typeof result.payload.restoredWorkspaces === 'number'
           ? result.payload.restoredWorkspaces
@@ -1094,106 +1140,45 @@
         setReload((value) => value + 1);
       };
 
-      const applyPreset = async (presetId, session) => {
-        if (typeof presetId !== 'string' || presetId.length === 0) return;
-        if (typeof session !== 'string' || session.length === 0) {
-          // Review R3: the refusal is rendered **inside the apply dialog**, which
-          // is where the reader is looking — a page notice would sit behind the
-          // scrim and read as "nothing happened".
-          setPresetStatus({ kind: 'error', error: { code: 'workspace-unresolved' } });
+      /**
+       * g-082: the library's tag writes.
+       *
+       * Two actions on the manager dialog — one upsert (`PUT /presets/tags`) and
+       * one delete (`DELETE ?id=`, which the host cascades through every preset).
+       * Both follow this page's one write shape: send, on failure keep the
+       * dialog open with the answer on its own line, on success reset the
+       * editor half and re-read the library. The delete is reached only through
+       * `confirmYes` (the row's button *asks* first), exactly like preset
+       * deletion.
+       *
+       * The affected-preset count the confirmation shows is computed from the
+       * payload the page already holds (`presets.data.presets[].tagIds`); the
+       * deletion answer carries the same number, so the notice reports what
+       * really happened rather than what the page predicted.
+       */
+      const saveTagDraft = async () => {
+        const name = presetTagDraft.name.trim();
+        if (name.length === 0) {
+          setPresetTagStatus({ kind: 'error', error: { code: 'invalid-tag-name' } });
           return;
         }
-        setPresetStatus({ kind: 'saving', error: null });
+        setPresetTagStatus({ kind: 'saving', error: null });
         setBusy(true);
-        const result = await requestJson(PRESETS_APPLY_PATH, {
-          method: 'POST',
+        const body = { name: presetTagDraft.name };
+        if (presetTagDraft.id !== null) body.id = presetTagDraft.id;
+        const result = await requestJson(PRESETS_TAGS_PATH, {
+          method: 'PUT',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ presetId, session }),
+          body: JSON.stringify(body),
         });
         setBusy(false);
         if (!result.ok) {
-          setPresetStatus({ kind: 'error', error: result.error });
+          // The refusal stays in the tag dialog, on its own marked line.
+          setPresetTagStatus({ kind: 'error', error: result.error });
           return;
         }
-        setPresetStatus({ kind: 'saved', error: null });
-        // Revision 39: an application the layer already carried wrote nothing, so
-        // it must not read as an ordinary「已应用」— the page says what really
-        // happened.
-        setNotice({
-          tone: 'success',
-          text: t(result.payload.alreadyApplied === true ? 'presetAlreadyAppliedNotice' : 'presetAppliedNotice'),
-        });
+        setPresetTagStatus({ kind: 'saved', error: null });
+        setPresetTagDraft({ id: null, name: '' });
         setReload((value) => value + 1);
       };
-
-      const unapplyPreset = async (session, presetId) => {
-        if (typeof session !== 'string' || session.length === 0) {
-          setPresetStatus({ kind: 'error', error: { code: 'workspace-unresolved' } });
-          return;
-        }
-        // Revision 41: cancelling names the preset to take off the stack — a
-        // workspace may hold several, and「取消应用」is per application now.
-        if (typeof presetId !== 'string' || presetId.length === 0) {
-          setPresetStatus({ kind: 'error', error: { code: 'missing-preset-id' } });
-          return;
-        }
-        setPresetStatus({ kind: 'saving', error: null });
-        setBusy(true);
-        const result = await requestJson(PRESETS_UNAPPLY_PATH, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ session, presetId }),
-        });
-        setBusy(false);
-        if (!result.ok) {
-          setPresetStatus({ kind: 'error', error: result.error });
-          return;
-        }
-        setPresetStatus({ kind: 'saved', error: null });
-        setNotice({ tone: 'success', text: t('presetUnappliedNotice') });
-        setReload((value) => value + 1);
-      };
-
-      /**
-       * g-060: the workspaces the two layer actions can name.
-       *
-       * The host has no workspace-list route, so the picker offers what this page
-       * already holds: one row per workspace from the workspace seat, each
-       * carrying its first session id — the identity `apply`/`unapply` need to
-       * resolve a root (`CONTRACT.md` §4.2). A profile without that seat degrades
-       * to the session list, exactly as the version history's scope picker does
-       * (g-038), and a row whose root is unknown simply states no applied state
-       * rather than guessing one.
-       */
-      const presetWorkspaces = workspaceRows(wsSeat, seat, { withRoot: true });
-      /**
-       * g-060 (review R1, re-pointed by R3): does the editor hold an **unsaved**
-       * change?
-       *
-       * `POST /presets/apply` names a preset by **id** and the host reads that
-       * preset out of the library, so an unsaved edit can never be what a layer
-       * write stores — the apply dialog says so in words, and the editor dialog
-       * never lets the draft disappear silently.
-       *
-       * `presetDirty` covers the *stored* case (the draft names an entry and
-       * differs from it, or names one the library no longer has — a `404` this
-       * page must not dress up as a save); `presetDraftDirty` is the wider
-       * question the **close** control asks, and it also covers a brand-new
-       * draft with anything typed into it, which has no stored counterpart to
-       * compare against.
-       * @returns whether the editor differs from the stored preset it names.
-       */
-      const presetSavedEntry = presetDraft.id === null
-        ? null
-        : (presets.data && Array.isArray(presets.data.presets) ? presets.data.presets : [])
-          .find((entry) => entry.id === presetDraft.id) ?? null;
-      const presetDirty = presetDraft.id !== null
-        && (presetSavedEntry === null
-          || presetSavedEntry.name !== presetDraft.name
-          || (presetSavedEntry.action === 'append' ? 'append' : RESERVED_SECTION_DEFAULT_MODE) !== presetDraft.action
-          || (typeof presetSavedEntry.text === 'string' ? presetSavedEntry.text : '') !== presetDraft.text);
-      /** Whether closing the editor dialog would throw work away. */
-      const presetDraftDirty = presetDraft.id === null
-        ? presetDraft.name.trim().length > 0 || presetDraft.text.length > 0
-        : presetDirty;
 

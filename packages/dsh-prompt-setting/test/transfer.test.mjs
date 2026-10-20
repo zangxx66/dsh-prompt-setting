@@ -103,7 +103,7 @@ test('transfer: a well-formed document parses to validated override lists, works
   assert.deepEqual(parsed.layers.user, [{ name: 'a', action: 'replace', text: 'A' }]);
   assert.deepEqual(parsed.layers.workspace, []);
   assert.deepEqual(parsed.workspaces, [{ root: '/home/u/project', overrides: [{ name: 'b', action: 'hide' }] }]);
-  assert.deepEqual(parsed.presets, { version: 1, presets: [], applied: [] });
+  assert.deepEqual(parsed.presets, { version: 2, tags: [], presets: [], applied: [] });
   assert.deepEqual(parsed.preferences, { updateCheck: false, downloadRegion: 'cn' });
 });
 
@@ -258,7 +258,8 @@ test('transfer: the workspaces array is validated entry by entry', () => {
 test('transfer: a preset document is validated strictly, never silently repaired', () => {
   const preset = { id: 'p1', name: 'P', action: 'replace', text: 'T', createdAt: null, updatedAt: null };
   const parsed = parseExport(document({ presets: { version: 1, presets: [preset], applied: [] } }));
-  assert.deepEqual(parsed.presets.presets, [preset]);
+  assert.deepEqual(parsed.presets.presets, [{ ...preset, tagIds: [] }], 'an old preset imports with an empty tag set');
+  assert.deepEqual(parsed.presets.tags, []);
 
   const cases = [
     [{ version: 1, presets: 'nope' }, 'invalid-presets'],
@@ -525,3 +526,51 @@ test('transfer: totals sum every layer plan, and an absent layer contributes not
   assert.deepEqual(totals, { added: 1, replaced: 0, unchanged: 0, removed: 1, kept: 0 });
   assert.deepEqual(totalCounts(null), { added: 0, replaced: 0, unchanged: 0, removed: 0, kept: 0 });
 });
+
+// #region g-082 — tags travel with the preset library
+
+test('transfer: a full export carries the tag set and every preset’s tagIds', () => {
+  const built = buildExport({
+    layers: { user: layerView([]) },
+    presets: {
+      version: 2,
+      tags: [{ id: 'tag-1', name: '短答', createdAt: 't', updatedAt: 't' }],
+      presets: [{ id: 'p1', name: 'P', action: 'replace', text: 'T', tagIds: ['tag-1'], createdAt: null, updatedAt: null }],
+      applied: [],
+    },
+    pluginVersion: '0.1.0',
+    exportedAt: '2024-01-01T00:00:00.000Z',
+  });
+  assert.deepEqual(built.presets.tags.map((tag) => tag.id), ['tag-1']);
+  assert.deepEqual(built.presets.presets[0].tagIds, ['tag-1']);
+});
+
+test('transfer: an old backup (a preset document with no tags) imports as an empty tag set', () => {
+  const preset = { id: 'p1', name: 'P', action: 'replace', text: 'T', createdAt: null, updatedAt: null };
+  const parsed = parseExport(document({ presets: { version: 1, presets: [preset], applied: [] } }));
+  assert.equal(parsed.presets.version, 2, 'the import writes the version 2 shape');
+  assert.deepEqual(parsed.presets.tags, []);
+  assert.deepEqual(parsed.presets.presets[0].tagIds, []);
+});
+
+test('transfer: a tag document is validated strictly — a dangling tagId is refused, never repaired', () => {
+  const tag = { id: 'tag-1', name: 'one', createdAt: null, updatedAt: null };
+  const preset = (tagIds) => ({ id: 'p1', name: 'P', action: 'replace', text: 'T', tagIds, createdAt: null, updatedAt: null });
+  const cases = [
+    [{ version: 2, tags: [tag], presets: [preset(['tag-missing'])], applied: [] }, 'unknown-tag'],
+    [{ version: 2, tags: [tag, { ...tag, name: 'two' }], presets: [], applied: [] }, 'duplicate-tag-id'],
+    [{ version: 2, tags: [tag, { id: 'tag-2', name: 'one' }], presets: [], applied: [] }, 'duplicate-tag-name'],
+    [{ version: 2, tags: [{ id: 'tag-1', name: 'one', extra: 1 }], presets: [], applied: [] }, 'invalid-presets'],
+    [{ version: 2, tags: [{ id: 'bad id!', name: 'one' }], presets: [], applied: [] }, 'invalid-tag-id'],
+    [{ version: 2, tags: [tag], presets: [preset(['tag-1', 'tag-1'])], applied: [] }, 'duplicate-tag-id'],
+    [{ version: 2, tags: [tag], presets: [preset('nope')], applied: [] }, 'invalid-tag-ids'],
+  ];
+  for (const [presets, code] of cases) {
+    assert.throws(() => parseExport(document({ presets })), (error) => error.code === code, `expected ${code}`);
+  }
+  // The accepted shape really keeps the reference, so the round trip is lossless.
+  const ok = parseExport(document({ presets: { version: 2, tags: [tag], presets: [preset(['tag-1'])], applied: [] } }));
+  assert.deepEqual(ok.presets.tags, [tag]);
+  assert.deepEqual(ok.presets.presets[0].tagIds, ['tag-1']);
+});
+// #endregion

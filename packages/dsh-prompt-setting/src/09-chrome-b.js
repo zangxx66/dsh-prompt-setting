@@ -673,6 +673,12 @@
             ),
           );
         }
+      } else if (confirm.kind === 'tag-delete') {
+        // g-082: deleting a tag rewrites every preset that carries it, so the
+        // question says how many — the count the reader is agreeing to change
+        // (the tags themselves are the manager dialog's list, behind the scrim).
+        body.push(fmt(t('presetTagDeleteConfirmTitle'), { name: confirm.name ?? '' }));
+        body.push(fmt(t('presetTagDeleteConfirmBody'), { count: confirm.affected }));
       } else if (confirm.kind === 'preset-discard') {
         // …and closing a dirty editor throws typing away, which is the other act
         // this page never performs silently (review R3's promise, now asked for

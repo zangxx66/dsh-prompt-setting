@@ -1,4 +1,146 @@
 // 本文件是 client.js 的片段，不是独立模块，不得单独 parse/lint/执行。
+      const deleteTag = async (id) => {
+        if (typeof id !== 'string' || id.length === 0) return;
+        setPresetTagStatus({ kind: 'saving', error: null });
+        setBusy(true);
+        const result = await requestJson(`${PRESETS_TAGS_PATH}?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+        setBusy(false);
+        if (!result.ok) {
+          setPresetTagStatus({ kind: 'error', error: result.error });
+          setNotice({ tone: 'error', text: errorText(t, result.error) });
+          return;
+        }
+        // The filter and the editor must not keep naming a tag that is gone:
+        // the host also removed it from every preset, so both would be stale.
+        if (presetTagFilter === id) setPresetTagFilter(null);
+        if (presetTagDraft.id === id) setPresetTagDraft({ id: null, name: '' });
+        // An open preset editor may hold that tag in its unsaved set; strip it
+        // there too, or the next save would be refused as `unknown-tag`.
+        setPresetDraft((current) => ({
+          ...current,
+          tagIds: (Array.isArray(current.tagIds) ? current.tagIds : []).filter((value) => value !== id),
+        }));
+        setPresetTagStatus({ kind: 'saved', error: null });
+        const affected = result.payload && typeof result.payload.affectedPresets === 'number'
+          ? result.payload.affectedPresets
+          : 0;
+        setNotice({
+          tone: 'success',
+          text: fmt(t('presetTagDeletedNotice'), { count: affected }),
+        });
+        setReload((value) => value + 1);
+      };
+
+      const applyPreset = async (presetId, session) => {
+        if (typeof presetId !== 'string' || presetId.length === 0) return;
+        if (typeof session !== 'string' || session.length === 0) {
+          // Review R3: the refusal is rendered **inside the apply dialog**, which
+          // is where the reader is looking — a page notice would sit behind the
+          // scrim and read as "nothing happened".
+          setPresetStatus({ kind: 'error', error: { code: 'workspace-unresolved' } });
+          return;
+        }
+        setPresetStatus({ kind: 'saving', error: null });
+        setBusy(true);
+        const result = await requestJson(PRESETS_APPLY_PATH, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ presetId, session }),
+        });
+        setBusy(false);
+        if (!result.ok) {
+          setPresetStatus({ kind: 'error', error: result.error });
+          return;
+        }
+        setPresetStatus({ kind: 'saved', error: null });
+        // Revision 39: an application the layer already carried wrote nothing, so
+        // it must not read as an ordinary「已应用」— the page says what really
+        // happened.
+        setNotice({
+          tone: 'success',
+          text: t(result.payload.alreadyApplied === true ? 'presetAlreadyAppliedNotice' : 'presetAppliedNotice'),
+        });
+        setReload((value) => value + 1);
+      };
+
+      const unapplyPreset = async (session, presetId) => {
+        if (typeof session !== 'string' || session.length === 0) {
+          setPresetStatus({ kind: 'error', error: { code: 'workspace-unresolved' } });
+          return;
+        }
+        // Revision 41: cancelling names the preset to take off the stack — a
+        // workspace may hold several, and「取消应用」is per application now.
+        if (typeof presetId !== 'string' || presetId.length === 0) {
+          setPresetStatus({ kind: 'error', error: { code: 'missing-preset-id' } });
+          return;
+        }
+        setPresetStatus({ kind: 'saving', error: null });
+        setBusy(true);
+        const result = await requestJson(PRESETS_UNAPPLY_PATH, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ session, presetId }),
+        });
+        setBusy(false);
+        if (!result.ok) {
+          setPresetStatus({ kind: 'error', error: result.error });
+          return;
+        }
+        setPresetStatus({ kind: 'saved', error: null });
+        setNotice({ tone: 'success', text: t('presetUnappliedNotice') });
+        setReload((value) => value + 1);
+      };
+
+      /**
+       * g-060: the workspaces the two layer actions can name.
+       *
+       * The host has no workspace-list route, so the picker offers what this page
+       * already holds: one row per workspace from the workspace seat, each
+       * carrying its first session id — the identity `apply`/`unapply` need to
+       * resolve a root (`CONTRACT.md` §4.2). A profile without that seat degrades
+       * to the session list, exactly as the version history's scope picker does
+       * (g-038), and a row whose root is unknown simply states no applied state
+       * rather than guessing one.
+       */
+      const presetWorkspaces = workspaceRows(wsSeat, seat, { withRoot: true });
+      /**
+       * g-060 (review R1, re-pointed by R3): does the editor hold an **unsaved**
+       * change?
+       *
+       * `POST /presets/apply` names a preset by **id** and the host reads that
+       * preset out of the library, so an unsaved edit can never be what a layer
+       * write stores — the apply dialog says so in words, and the editor dialog
+       * never lets the draft disappear silently.
+       *
+       * `presetDirty` covers the *stored* case (the draft names an entry and
+       * differs from it, or names one the library no longer has — a `404` this
+       * page must not dress up as a save); `presetDraftDirty` is the wider
+       * question the **close** control asks, and it also covers a brand-new
+       * draft with anything typed into it, which has no stored counterpart to
+       * compare against.
+       * @returns whether the editor differs from the stored preset it names.
+       */
+      const presetSavedEntry = presetDraft.id === null
+        ? null
+        : (presets.data && Array.isArray(presets.data.presets) ? presets.data.presets : [])
+          .find((entry) => entry.id === presetDraft.id) ?? null;
+      // g-082: the draft's tag set is part of "unsaved", so selecting a tag on a
+      // stored preset must mark the editor dirty exactly as typing does.
+      const presetDraftTagIds = Array.isArray(presetDraft.tagIds) ? presetDraft.tagIds : [];
+      const presetSavedTagIds = presetSavedEntry !== null && Array.isArray(presetSavedEntry.tagIds)
+        ? presetSavedEntry.tagIds
+        : [];
+      const presetDirty = presetDraft.id !== null
+        && (presetSavedEntry === null
+          || presetSavedEntry.name !== presetDraft.name
+          || (presetSavedEntry.action === 'append' ? 'append' : RESERVED_SECTION_DEFAULT_MODE) !== presetDraft.action
+          || (typeof presetSavedEntry.text === 'string' ? presetSavedEntry.text : '') !== presetDraft.text
+          || presetSavedTagIds.join('\u0000') !== presetDraftTagIds.join('\u0000'));
+      /** Whether closing the editor dialog would throw work away. */
+      const presetDraftDirty = presetDraft.id === null
+        ? presetDraft.name.trim().length > 0 || presetDraft.text.length > 0 || presetDraftTagIds.length > 0
+        : presetDirty;
+
       const actions = {
         refresh: () => setReload((value) => value + 1),
         // The「更改」switch: the same button opens and shuts the picker (`aria-expanded` reports it).
@@ -60,7 +202,7 @@
         // draft behind it. Nothing is written until a click on 「保存」, and the
         // dialog is the only surface those fields exist on.
         newPreset: () => {
-          setPresetDraft({ id: null, name: '', action: RESERVED_SECTION_DEFAULT_MODE, text: '' });
+          setPresetDraft({ id: null, name: '', action: RESERVED_SECTION_DEFAULT_MODE, text: '', tagIds: [] });
           setPresetStatus({ kind: 'idle', error: null });
           setPresetDialog({ kind: 'edit' });
         },
@@ -73,6 +215,7 @@
             name: typeof preset.name === 'string' ? preset.name : '',
             action: preset.action === 'append' ? 'append' : RESERVED_SECTION_DEFAULT_MODE,
             text: typeof preset.text === 'string' ? preset.text : '',
+            tagIds: Array.isArray(preset.tagIds) ? preset.tagIds.slice() : [],
           });
           setPresetStatus({ kind: 'idle', error: null });
           setPresetDialog({ kind: 'edit' });
@@ -81,7 +224,7 @@
         // 「我的 Prompt」 panel is showing and writes nothing — the name and the
         // save are still the user's to give (§20.9).
         saveAsCurrentPreset: () => {
-          setPresetDraft({ id: null, name: '', action: RESERVED_SECTION_DEFAULT_MODE, text: mineText });
+          setPresetDraft({ id: null, name: '', action: RESERVED_SECTION_DEFAULT_MODE, text: mineText, tagIds: [] });
           setPresetStatus({ kind: 'idle', error: null });
           setPresetDialog({ kind: 'edit' });
         },
@@ -138,6 +281,75 @@
         },
         deletePreset: (id) => {
           void deletePreset(id);
+        },
+        // g-082: the tag surface. `'*'` (the「全部」chip) and clicking the
+        // already-selected tag both clear the filter; a tag the library no
+        // longer holds is ignored, so a stale chip cannot filter by nothing.
+        selectPresetTag: (value) => {
+          if (value === '*') {
+            setPresetTagFilter(null);
+            return;
+          }
+          if (!presetTags.some((tag) => tag.id === value)) return;
+          setPresetTagFilter((current) => (current === value ? null : value));
+        },
+        openTagManager: () => {
+          setPresetTagDraft({ id: null, name: '' });
+          setPresetTagStatus({ kind: 'idle', error: null });
+          setPresetTagDialog(true);
+        },
+        closeTagManager: () => {
+          setPresetTagDialog(false);
+          setPresetTagDraft({ id: null, name: '' });
+          setPresetTagStatus({ kind: 'idle', error: null });
+        },
+        setTagDraftName: (event) => {
+          const value = event && event.target ? String(event.target.value) : '';
+          setPresetTagDraft((current) => ({ ...current, name: value }));
+          setPresetTagStatus({ kind: 'idle', error: null });
+        },
+        newTagDraft: () => {
+          setPresetTagDraft({ id: null, name: '' });
+          setPresetTagStatus({ kind: 'idle', error: null });
+        },
+        editTagDraft: (id) => {
+          const tag = presetTags.find((entry) => entry.id === id) ?? null;
+          if (tag === null) return;
+          setPresetTagDraft({ id: tag.id, name: tag.name });
+          setPresetTagStatus({ kind: 'idle', error: null });
+        },
+        saveTag: () => {
+          void saveTagDraft();
+        },
+        // The row's「删除」only *asks*; the DELETE runs through `confirmYes`,
+        // and the question states how many presets will lose the tag.
+        requestTagDelete: (id) => {
+          const tag = presetTags.find((entry) => entry.id === id) ?? null;
+          if (tag === null) return;
+          const list = presets.data && Array.isArray(presets.data.presets) ? presets.data.presets : [];
+          const affected = list.filter(
+            (preset) => Array.isArray(preset.tagIds) && preset.tagIds.includes(id),
+          ).length;
+          setConfirm({ kind: 'tag-delete', id, name: tag.name, affected });
+        },
+        deleteTag: (id) => {
+          void deleteTag(id);
+        },
+        // The preset editor's tag chip: toggles one id in the **draft** and
+        // writes nothing (the save is the only write, as for every other
+        // field). A tag the library does not hold is ignored.
+        togglePresetDraftTag: (id) => {
+          if (!presetTags.some((tag) => tag.id === id)) return;
+          setPresetDraft((current) => {
+            const currentIds = Array.isArray(current.tagIds) ? current.tagIds : [];
+            return {
+              ...current,
+              tagIds: currentIds.includes(id)
+                ? currentIds.filter((value) => value !== id)
+                : currentIds.concat([id]),
+            };
+          });
+          setPresetStatus({ kind: 'idle', error: null });
         },
         applyPreset: (presetId, session) => {
           void applyPreset(presetId, session);
@@ -397,6 +609,12 @@
             setPresetStatus({ kind: 'idle', error: null });
             return;
           }
+          // g-082: the tag deletion the manager dialog asked about. One DELETE;
+          // the host cascades the id out of every preset in the same write.
+          if (pending.kind === 'tag-delete') {
+            await deleteTag(pending.id);
+            return;
+          }
           await applyImport();
         },
         exportNow,
@@ -482,6 +700,12 @@
         presets,
         presetDraft,
         presetStatus,
+        // g-082: the library's tag set and the tag surface's own view state.
+        presetTags,
+        presetTagFilter,
+        presetTagDialog,
+        presetTagDraft,
+        presetTagStatus,
         // `null` | `{kind:'edit'}` | `{kind:'apply', presetId}` (review R3).
         presetDialog,
         presetWorkspaces,

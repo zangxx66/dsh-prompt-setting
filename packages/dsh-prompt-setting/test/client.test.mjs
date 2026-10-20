@@ -1575,6 +1575,8 @@ const PATHS = {
   presets: '/prompt-setting/presets',
   presetsApply: '/prompt-setting/presets/apply',
   presetsUnapply: '/prompt-setting/presets/unapply',
+  // g-082: the library's own tag set — one upsert and one cascading delete.
+  presetsTags: '/prompt-setting/presets/tags',
   // g-062:「装配状态提示」— the observation read and its switch.
   assemblyStatus: '/prompt-setting/assembly-status',
 };
@@ -2648,7 +2650,11 @@ test('client: g-061 — one error line, with each call site’s own markers and 
   assert.equal(occurrencesOf(presets, "'data-preset-dialog-error': typeof"), 0, 'the preset line is not built locally');
   assert.equal(occurrencesOf(presets, "role: 'preset-dialog-error'"), 1);
   assert.equal(occurrencesOf(presets, "probe: 'data-preset-dialog-error'"), 1);
-  assert.equal(occurrencesOf(presets, 'errorLine({'), 1);
+  // g-082: the tag manager's own line is the fourth consumer of the factory —
+  // same shape, its own role/probe, still built by `errorLine`.
+  assert.equal(occurrencesOf(presets, "role: 'tag-dialog-error'"), 1);
+  assert.equal(occurrencesOf(presets, "probe: 'data-tag-dialog-error'"), 1);
+  assert.equal(occurrencesOf(presets, 'errorLine({'), 2, 'the preset and tag dialogs, and nothing else in this chunk');
 
   // At run time: a refused custom address still renders that exact line — the
   // marker, the code and a red, non-wrapping 13px div and nothing else.
@@ -4827,13 +4833,19 @@ function presetsFixture(over = {}) {
   return {
     ok: true,
     path: '/home/user/.dsh/prompt-setting/presets.json',
-    version: 1,
+    version: 2,
+    // g-082: the library's tag set, and the first preset carries one.
+    tags: [
+      { id: 'tag-1', name: '短答', createdAt: '2024-01-01T00:00:00.000Z', updatedAt: '2024-01-01T00:00:00.000Z' },
+      { id: 'tag-2', name: '代码', createdAt: '2024-01-02T00:00:00.000Z', updatedAt: '2024-01-02T00:00:00.000Z' },
+    ],
     presets: [
       {
         id: 'preset-1',
         name: '短答',
         action: 'replace',
         text: 'Be brief.',
+        tagIds: ['tag-1'],
         createdAt: '2024-01-01T00:00:00.000Z',
         updatedAt: '2024-01-01T00:00:00.000Z',
       },
@@ -4842,6 +4854,7 @@ function presetsFixture(over = {}) {
         name: '叠加规则',
         action: 'append',
         text: 'Extra rules.',
+        tagIds: [],
         createdAt: '2024-01-02T00:00:00.000Z',
         updatedAt: '2024-01-02T00:00:00.000Z',
       },
@@ -10523,6 +10536,13 @@ const EN_SWEEP_CASES = [
       ['data-region', 'presets'],
       ['data-region', 'presets-state'],
       ['data-region', 'presets-list'],
+      // g-082: the tag surface — the filter bar, the manager and the editor's
+      // picker are all copy-bearing, and the deletion question is too.
+      ['data-region', 'preset-tags-bar'],
+      ['data-preset-tag-filter', 'tag-1'],
+      ['data-region', 'preset-tag-dialog'],
+      ['data-region', 'preset-tag-picker'],
+      ['data-confirm-kind', 'tag-delete'],
     ],
     copy: [
       'presetsHeading',
@@ -10534,18 +10554,30 @@ const EN_SWEEP_CASES = [
       'presetEdit',
       'presetDelete',
       'presetApplyTo',
+      'presetTagManager',
+      'presetTagSave',
+      'presetTagPickerHint',
+      ['presetTagDeleteConfirmTitle', { name: 'Terse' }],
+      ['presetTagDeleteConfirmBody', { count: 1 }],
     ],
     async run() {
       const page = enPage({
         responses: defaultResponses({
           [PATHS.presets]: {
             payload: presetsFixture({
+              // g-082: the tag names are copy too — an English sweep that only
+              // renders the bar's「All」 chip would never have seen these.
+              tags: [
+                { id: 'tag-1', name: 'Terse', createdAt: '2024-01-01T00:00:00.000Z', updatedAt: '2024-01-01T00:00:00.000Z' },
+                { id: 'tag-2', name: 'Code', createdAt: '2024-01-02T00:00:00.000Z', updatedAt: '2024-01-02T00:00:00.000Z' },
+              ],
               presets: [
                 {
                   id: 'preset-1',
                   name: 'Short answers',
                   action: 'replace',
                   text: 'Be brief.',
+                  tagIds: ['tag-1'],
                   createdAt: '2024-01-01T00:00:00.000Z',
                   updatedAt: '2024-01-01T00:00:00.000Z',
                 },
@@ -10571,6 +10603,20 @@ const EN_SWEEP_CASES = [
       const rec = recorder(page);
       await rec.take();
       clickAnyTab(rec.last(), 'presets');
+      await rec.take();
+      // g-082: walk the tag surface too — the manager, its edit form, the
+      // deletion question and the editor's picker. Each carries real copy.
+      clickButton(rec.last(), { 'data-action': 'preset-tags-manage' });
+      await rec.take();
+      clickButton(rec.last(), { 'data-action': 'tag-edit', 'data-preset-tag': 'tag-1' });
+      await rec.take();
+      clickButton(rec.last(), { 'data-action': 'tag-delete', 'data-preset-tag': 'tag-1' });
+      await rec.take();
+      clickButton(rec.last(), { 'data-action': 'confirm-no' });
+      await rec.take();
+      clickButton(rec.last(), { 'data-action': 'tag-dialog-close' });
+      await rec.take();
+      clickButton(rec.last(), { 'data-action': 'preset-edit', 'data-preset-id': 'preset-1' });
       await rec.take();
       return rec.trees;
     },
@@ -10639,6 +10685,12 @@ const EN_REQUIRED_MARKERS = [
   'data-region=presets',
   'data-region=presets-list',
   'data-region=presets-state',
+  // g-082: the tag surface the preset tab owns.
+  'data-region=preset-tags-bar',
+  'data-region=preset-tag-dialog',
+  'data-region=preset-tag-picker',
+  'data-confirm-kind=tag-delete',
+  'data-preset-tag-filter=tag-1',
   'data-region=mine',
   'data-region=mine-layer',
   // g-055: the write-target line inside the panel, and the block whose header is
@@ -13387,7 +13439,7 @@ test('client: 「新建预设」 opens the editor dialog, and saving PUTs the do
   const puts = page.router.calls.filter((call) => call.init && call.init.method === 'PUT');
   assert.equal(puts.length, 1, 'exactly one write');
   assert.equal(puts[0].url, PATHS.presets);
-  assert.deepEqual(JSON.parse(puts[0].init.body), { name: '新预设', action: 'replace', text: 'TEXT' });
+  assert.deepEqual(JSON.parse(puts[0].init.body), { name: '新预设', action: 'replace', text: 'TEXT', tagIds: [] });
   assert.equal(markerOf(tree, 'data-preset-state'), 'saved');
   // A successful save closes the dialog: the refreshed catalogue is the answer.
   assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'preset-editor-dialog').length, 0);
@@ -13423,6 +13475,7 @@ test('client: a row’s 「编辑」 opens the dialog on that preset, and the id
     name: '叠加规则',
     action: 'replace',
     text: 'Extra rules.',
+    tagIds: [],
   });
 });
 
@@ -13887,6 +13940,246 @@ test('client: a workspace’s stack lists every applied preset, each cancellable
   assert.equal(posts.length, 1);
   assert.deepEqual(JSON.parse(posts[0].init.body), { session: 'a1', presetId: 'preset-1' });
 });
+
+
+// #region g-082 — the library's tag set (filter, manager, per-preset picker)
+
+test('client: the tag filter bar narrows the list to one tag, and cancels back to all', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  let tree = await openTab(page, 'presets');
+  assert.deepEqual(presetRowIds(tree), ['preset-1', 'preset-2']);
+  assert.notEqual(oneBy(tree, 'data-region', 'preset-tags-bar'), undefined, 'the bar is always rendered');
+  assert.equal(oneBy(tree, 'data-preset-tag-filter', '*').props['aria-pressed'], 'true');
+  // Every tag the library holds has a chip, and the first preset shows its own.
+  assert.equal(oneBy(tree, 'data-preset-tag-filter', 'tag-1').props.children, '短答');
+  assert.equal(oneBy(tree, 'data-preset-tag-filter', 'tag-2').props.children, '代码');
+  assert.equal(oneBy(tree, 'data-preset-tag-chip', 'tag-1').props['data-preset-tag-chip'], 'tag-1');
+
+  // Selecting a tag filters the catalogue to the presets that carry it.
+  clickButton(tree, { 'data-action': 'preset-tag-filter', 'data-preset-tag-filter': 'tag-1' });
+  tree = await page.flush();
+  assert.deepEqual(presetRowIds(tree), ['preset-1'], 'only the tagged preset is listed');
+  assert.equal(oneBy(tree, 'data-preset-tag-filter', 'tag-1').props['aria-pressed'], 'true');
+
+  // Clicking the selected tag again clears the filter — the same act as「全部」.
+  clickButton(tree, { 'data-action': 'preset-tag-filter', 'data-preset-tag-filter': 'tag-1' });
+  tree = await page.flush();
+  assert.deepEqual(presetRowIds(tree), ['preset-1', 'preset-2']);
+  assert.equal(oneBy(tree, 'data-preset-tag-filter', '*').props['aria-pressed'], 'true');
+
+  // A tag nothing carries is a stated empty state, never a blank catalogue.
+  clickButton(tree, { 'data-action': 'preset-tag-filter', 'data-preset-tag-filter': 'tag-2' });
+  tree = await page.flush();
+  assert.deepEqual(presetRowIds(tree), []);
+  assert.notEqual(oneBy(tree, 'data-region', 'presets-filtered-empty'), undefined);
+  assert.ok(strings(tree).includes(page.zh.presetFilteredEmpty));
+  // 「全部」 brings everything back.
+  clickButton(tree, { 'data-action': 'preset-tag-filter', 'data-preset-tag-filter': '*' });
+  tree = await page.flush();
+  assert.deepEqual(presetRowIds(tree), ['preset-1', 'preset-2']);
+});
+
+test('client: the preset editor picks tags from the library, and the save sends the set', async () => {
+  let live = presetsFixture();
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.presets]: (url, init) => {
+        if (init && init.method === 'PUT') {
+          const body = JSON.parse(init.body);
+          live = presetsFixture({
+            presets: live.presets.map((preset) => (preset.id === body.id ? { ...preset, ...body } : preset)),
+          });
+          return {
+            payload: {
+              ok: true,
+              created: false,
+              preset: live.presets.find((preset) => preset.id === body.id),
+              tags: live.tags,
+              presets: live.presets,
+              applied: live.applied,
+            },
+          };
+        }
+        return { payload: live };
+      },
+    }),
+  });
+  let tree = await openTab(page, 'presets');
+  clickButton(tree, { 'data-action': 'preset-edit', 'data-preset-id': 'preset-2' });
+  tree = await page.flush();
+  assert.notEqual(oneBy(tree, 'data-region', 'preset-tag-picker'), undefined);
+
+  // The picker is the draft's set: tag-1 is unselected on preset-2, and
+  // selecting it marks the editor dirty (a tag choice is unsaved work).
+  const chip = findOne(
+    tree,
+    (node) => node.type === 'button' && node.props['data-action'] === 'preset-tag-toggle' && node.props['data-preset-tag'] === 'tag-2',
+    'tag-2 toggle',
+  );
+  assert.equal(chip.props['aria-pressed'], 'false');
+  chip.props.onClick();
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'preset-editor-dialog').props['data-preset-dirty'], 'true');
+
+  clickButton(tree, { 'data-action': 'preset-save' });
+  tree = await page.flush();
+  const puts = page.router.calls.filter((call) => call.init && call.init.method === 'PUT');
+  assert.equal(puts.length, 1);
+  assert.equal(puts[0].url, PATHS.presets);
+  assert.deepEqual(JSON.parse(puts[0].init.body), {
+    id: 'preset-2',
+    name: '叠加规则',
+    action: 'append',
+    text: 'Extra rules.',
+    tagIds: ['tag-2'],
+  });
+  // The refreshed row shows the saved tag, and the library's own row shows none
+  // for the preset that still has an empty set.
+  assert.equal(oneBy(tree, 'data-preset-tag-chip', 'tag-2').props['data-preset-tag-chip'], 'tag-2');
+});
+
+test('client: the tag manager creates and edits tags, and a refusal stays inside it', async () => {
+  let live = presetsFixture();
+  let refuse = false;
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.presetsTags]: (url, init) => {
+        if (init && init.method === 'PUT') {
+          if (refuse) return { status: 400, payload: { ok: false, code: 'duplicate-tag-name', message: 'no' } };
+          const body = JSON.parse(init.body);
+          if (body.id) {
+            live = presetsFixture({
+              tags: live.tags.map((tag) => (tag.id === body.id ? { ...tag, name: body.name } : tag)),
+            });
+          } else {
+            live = presetsFixture({
+              tags: live.tags.concat([{ id: 'tag-3', name: body.name, createdAt: 't', updatedAt: 't' }]),
+            });
+          }
+          return { payload: { ok: true, created: !body.id, tag: live.tags.find((tag) => tag.name === body.name), tags: live.tags, presets: live.presets, applied: live.applied } };
+        }
+        return { payload: live };
+      },
+      [PATHS.presets]: () => ({ payload: live }),
+    }),
+  });
+  let tree = await openTab(page, 'presets');
+  clickButton(tree, { 'data-action': 'preset-tags-manage' });
+  tree = await page.flush();
+  const dialog = oneBy(tree, 'data-region', 'preset-tag-dialog');
+  assert.equal(dialog.props['data-preset-tag-dialog'], 'new');
+  assert.deepEqual(
+    collect(tree, (node) => node.props && node.props['data-preset-tag-row'] !== undefined).map((node) => node.props['data-preset-tag-row']),
+    ['tag-1', 'tag-2'],
+  );
+
+  // Create: the name is trimmed by the host, and the answer closes only the
+  // draft — the manager stays open, because that is where the reader is.
+  typeInto(tree, 'preset-tag-name', '  新标签  ');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'tag-save' });
+  tree = await page.flush();
+  let puts = page.router.calls.filter((call) => call.init && call.init.method === 'PUT');
+  assert.equal(puts.length, 1);
+  assert.deepEqual(JSON.parse(puts[0].init.body), { name: '  新标签  ' });
+  assert.equal(oneBy(tree, 'data-region', 'preset-tag-dialog').props['data-preset-tag-editing'], '');
+  // The create answer re-reads the library: the new tag is in the manager's list.
+  assert.equal(collect(tree, (node) => node.props && node.props['data-preset-tag-row'] !== undefined).length, 3);
+
+  // Edit: the row's 「编辑」 seeds the one name field with that tag's name.
+  clickButton(tree, { 'data-action': 'tag-edit', 'data-preset-tag': 'tag-1' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-role', 'preset-tag-name').props.value, '短答');
+  assert.equal(oneBy(tree, 'data-region', 'preset-tag-dialog').props['data-preset-tag-editing'], 'tag-1');
+  typeInto(tree, 'preset-tag-name', '短答（改名）');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'tag-save' });
+  tree = await page.flush();
+  puts = page.router.calls.filter((call) => call.init && call.init.method === 'PUT');
+  assert.deepEqual(JSON.parse(puts[1].init.body), { id: 'tag-1', name: '短答（改名）' });
+
+  // A refusal keeps the dialog open with the reason on its own line.
+  refuse = true;
+  typeInto(tree, 'preset-tag-name', '重复名');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'tag-save' });
+  tree = await page.flush();
+  const error = oneBy(tree, 'data-role', 'tag-dialog-error');
+  assert.equal(error.props['data-tag-dialog-error'], 'duplicate-tag-name');
+  assert.notEqual(oneBy(tree, 'data-region', 'preset-tag-dialog'), undefined);
+  clickButton(tree, { 'data-action': 'tag-dialog-close' });
+  tree = await page.flush();
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'preset-tag-dialog').length, 0);
+});
+
+test('client: deleting a tag asks first, reports the affected presets, and the cascade shows', async () => {
+  let live = presetsFixture();
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.presetsTags]: (url, init) => {
+        if (init && init.method === 'DELETE') {
+          live = presetsFixture({
+            tags: live.tags.filter((tag) => tag.id !== 'tag-1'),
+            presets: live.presets.map((preset) => ({
+              ...preset,
+              tagIds: (preset.tagIds ?? []).filter((id) => id !== 'tag-1'),
+            })),
+          });
+          return {
+            payload: {
+              ok: true,
+              removed: true,
+              id: 'tag-1',
+              affectedPresets: 1,
+              tags: live.tags,
+              presets: live.presets,
+              applied: live.applied,
+            },
+          };
+        }
+        return { payload: live };
+      },
+      [PATHS.presets]: () => ({ payload: live }),
+    }),
+  });
+  let tree = await openTab(page, 'presets');
+  clickButton(tree, { 'data-action': 'preset-tags-manage' });
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'tag-delete', 'data-preset-tag': 'tag-1' });
+  tree = await page.flush();
+  const confirm = oneBy(tree, 'data-region', 'confirm');
+  assert.equal(confirm.props['data-confirm-kind'], 'tag-delete');
+  assert.ok(strings(tree).includes(page.zh.presetTagDeleteConfirmBody.replace('{count}', '1')), 'the question states the affected count');
+  assert.equal(
+    page.router.calls.filter((call) => call.init && call.init.method === 'DELETE').length,
+    0,
+    'the row only asked — nothing is sent before the answer',
+  );
+  clickButton(tree, { 'data-action': 'confirm-no' });
+  tree = await page.flush();
+  assert.equal(
+    page.router.calls.filter((call) => call.init && call.init.method === 'DELETE').length,
+    0,
+    'cancelling sends nothing',
+  );
+  assert.equal(oneBy(tree, 'data-preset-tag-chip', 'tag-1').props['data-preset-tag-chip'], 'tag-1', 'and the tag is still applied');
+
+  clickButton(tree, { 'data-action': 'tag-delete', 'data-preset-tag': 'tag-1' });
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'confirm-yes' });
+  tree = await page.flush();
+  tree = await page.flush();
+  const deletes = page.router.calls.filter((call) => call.init && call.init.method === 'DELETE');
+  assert.equal(deletes.length, 1);
+  assert.equal(deletes[0].url, `${PATHS.presetsTags}?id=tag-1`);
+  // The read the page reloads from no longer carries the tag or the reference:
+  // the cascade is visible, never a stale chip on a deleted tag.
+  assert.equal(collect(tree, (node) => node.props && node.props['data-preset-tag-chip'] === 'tag-1').length, 0);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-preset-tag-filter'] === 'tag-1').length, 0);
+  assert.ok(strings(tree).some((text) => text.includes(page.zh.presetTagDeletedNotice.replace('{count}', '1'))));
+});
+// #endregion
+
 
 // #region g-062 — the assembly-status notice (page-only observation)
 

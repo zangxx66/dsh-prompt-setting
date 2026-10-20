@@ -42,12 +42,18 @@
   工作区**（写入该工作区的保留段），也可以**取消应用**——该工作区会精确还原为应用前的内容。删除一个
   已被应用的预设会**先取消它的应用**：每个受影响的工作区都还原为应用前的内容，然后预设才从库里删除
   （确认浮层会列出这些工作区）。预设库是全局的，**不受「查看范围」影响**（g-073 起）。
+  **标签**（g-082）：预设库有自己的标签集合，可以给一个预设套用 0–N 个标签，并按标签单选筛选；
+  标签在「管理标签」里新增 / 改名 / 删除，删除前会二次确认并说明将影响多少个预设——删除后这些预设
+  只是去掉该标签，其余标签与预设本身都保留。
   > Your catalogue of reusable texts: save a text as a preset (create / edit / delete), then **apply** it to
   > a workspace (it is written into that workspace layer's reserved section) or **cancel** the application,
   > which restores exactly what that workspace held before. Deleting an applied preset **cancels its
   > applications first**: every affected workspace is restored to what it held before, and only then is the
   > preset removed from the library (the confirmation names those workspaces). The library is global and
-  > **not affected by the "View scope"** (since g-073).
+  > **not affected by the "View scope"** (since g-073). **Tags** (g-082): the library has its own tag
+  > set; a preset may carry 0–N tags and the list filters by one tag at a time. Tags are created,
+  > renamed and deleted under "Manage tags"; a deletion asks first and states how many presets lose
+  > the tag — the presets keep their other tags (and themselves) and only that tag goes.
 
 - **提示词总览 / Prompt overview** —— 纯只读：分段列表（状态标记 / 搜索 / 筛选 / 复制）、完整全文，
   以及 `base ↔ effective` 对比，一眼看出你的改动究竟改变了什么。它有自己的**作用域选择器**（g-073 起）：

@@ -653,6 +653,8 @@ meaning exactly.
 | `/prompt-setting/presets` | `GET` | The preset library: the stored presets and the records of where they are applied (g-060, §20.2). Always `200`. |
 | `/prompt-setting/presets` | `PUT` | Insert one preset (no `id`, the Host mints it) or edit one by `id` (§20.3). |
 | `/prompt-setting/presets` | `DELETE` | Remove one preset **and cancel every application of it** — `?id=` (§20.4). Each affected workspace layer is restored before the library is written; a workspace that cannot be restored refuses the whole deletion. |
+| `/prompt-setting/presets/tags` | `PUT` | Insert one tag (no `id`, the Host mints it) or edit one by `id` (§20.3.1, g-082). |
+| `/prompt-setting/presets/tags` | `DELETE` | Remove one tag **and strip it from every preset that carries it** — `?id=` (§20.3.2). One atomic write; no dangling `tagId` survives. |
 | `/prompt-setting/presets/apply` | `POST` | Write one preset into the workspace layer that owns `session`, snapshotting what that layer held (`{presetId, session}`, §20.5). |
 | `/prompt-setting/presets/unapply` | `POST` | Put that workspace layer back to the snapshot `apply` took, and drop the record (`{session}`, §20.6). |
 | `/prompt-setting/assembly-status` | `GET` | The in-session assembly-status notice for one session (`?session=`): the last key node with its assembly-layer and delivery-layer verdicts, plus the switch's state (g-062, §21). The same answer carries the **incremental feed** (`?since=<seq>`, §21.6) the shell-overlay toaster reads. Always `200`; an unknown session answers `record: null`. |
@@ -668,8 +670,8 @@ meaning exactly.
   `import` and `rollback` answer `allow: POST`; `interpolate`, `update-check`,
   `download-region` and `assembly-status` answer `allow: GET, PUT`; `update-apply` answers
   `allow: GET, POST` and `update-apply/cancel` answers `allow: POST`; `presets`
-  answers `allow: GET, PUT, DELETE`, and `presets/apply` and `presets/unapply`
-  answer `allow: POST`.
+  answers `allow: GET, PUT, DELETE`, `presets/tags` answers `allow: PUT, DELETE`,
+  and `presets/apply` and `presets/unapply` answer `allow: POST`.
 - The fence runs **before** the method check and before any route logic.
 
 ## 2. `GET /prompt-setting/snapshot`
@@ -7002,7 +7004,7 @@ does not describe.
 
 ---
 
-## 20. The preset library (g-060, Revision 37; g-069/Revision 50: a deletion cancels its applications)
+## 20. The preset library (g-060, Revision 37; g-069/Revision 50: a deletion cancels its applications; g-082/Revision 56: tags)
 
 A **preset** is a named `{action, text}` pair for the reserved section
 `prompt-setting:custom-prompt` (§13.1). The library is a per-installation
@@ -7017,13 +7019,17 @@ every preset route and never on the assembly path:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
+  "tags": [
+    { "id": "6d1f0a2c-…", "name": "短答", "createdAt": "2024-01-01T00:00:00.000Z", "updatedAt": "2024-01-01T00:00:00.000Z" }
+  ],
   "presets": [
     {
       "id": "0f9c1c62-...",
       "name": "短答",
       "action": "replace",
       "text": "Be brief.",
+      "tagIds": ["6d1f0a2c-…"],
       "createdAt": "2024-01-01T00:00:00.000Z",
       "updatedAt": "2024-01-01T00:00:00.000Z"
     }
@@ -7041,9 +7047,24 @@ every preset route and never on the assembly path:
 }
 ```
 
-- `version` is `1`; a document stating another version is refused (`400
+- `version` is `2` since Revision 56 (g-082). A version **1** file is read
+  losslessly as `tags: []` with every preset's `tagIds: []`, and is only ever
+  written back as version 2; a file stating any other version is refused (`400
   unsupported-presets-version` on the write face, reported by §20.2's `error` on
-  the read face). A missing `presets`/`applied` is an empty list.
+  the read face). A missing `tags` / `presets` / `applied` is an empty list.
+- **`tags` is the library's own tag set (g-082)**: `{id, name, createdAt,
+  updatedAt}` objects. `id` is minted by the **Host** and matches the preset id
+  shape below. `name` is 1–40 characters, trimmed before it is stored, with no
+  control characters, and unique in the library (compared by trimmed value;
+  editing a tag excludes itself). The library holds at most **50** tags. A
+  hand-edited entry this revision cannot use is dropped on read; an imported one
+  is refused (§20.1's tolerance bullet, §11.7).
+- **`tagIds` is a preset's tag set (g-082)**: zero to **20** ids, in the user's
+  order, without repeats, and every id must be one of `tags`. No dangling
+  `tagId` is ever written: `PUT /presets` refuses an unknown id, `DELETE
+  /presets/tags` cascades, and a read drops what a hand edit left dangling.
+  Order is meaningful (the page renders it as stored), so it is preserved rather
+  than sorted.
 - `id` is minted by the **Host** (one UUID per new preset) and matches
   `[A-Za-z0-9][A-Za-z0-9._-]{0,63}`. The client sends an id only to address an
   existing preset; a malformed id is `400 invalid-id` and never reaches the file.
@@ -7082,6 +7103,16 @@ every preset route and never on the assembly path:
   not a JSON object at all, or that states another version, is **not** rewritten
   by any write route — those answer `409 presets-not-writable` (§20.7) and leave
   it byte-identical.
+- **Read face vs import face (g-082).** The two answers to「what is a usable
+  tag?」are deliberately different. On **read**, an unusable tag entry, a
+  repeated tag id or name, and a `tagId` that names no held tag are dropped or
+  filtered out, so a hand-edited file keeps every other preset reachable. On
+  **import**, the same document is **refused** (`400 invalid-tag`,
+  `invalid-tag-id`, `invalid-tag-name`, `tag-name-too-long`,
+  `duplicate-tag-id`, `duplicate-tag-name`, `unknown-tag`,
+  `too-many-preset-tags`), because an import replaces the whole file and must
+  never quietly delete what it could not understand. An old document with no
+  `tags` field is accepted by both faces and means「no tags」.
 
 ### 20.2 `GET /prompt-setting/presets`
 
@@ -7099,8 +7130,9 @@ name a workspace from their own dialog rows (§20.5, §20.6).
 {
   "ok": true,
   "path": "/home/user/.dsh/prompt-setting/presets.json",
-  "version": 1,
-  "presets": [{ "id": "…", "name": "…", "action": "replace", "text": "…", "createdAt": "…", "updatedAt": "…" }],
+  "version": 2,
+  "tags": [{ "id": "…", "name": "…", "createdAt": "…", "updatedAt": "…" }],
+  "presets": [{ "id": "…", "name": "…", "action": "replace", "text": "…", "tagIds": ["…"], "createdAt": "…", "updatedAt": "…" }],
   "applied": [
     {
       "workspaceRoot": "/abs/path",
@@ -7116,6 +7148,11 @@ name a workspace from their own dialog rows (§20.5, §20.6).
 }
 ```
 
+- `version` is the shape actually answered: always `2` (§20.1).
+- `tags` is the library's tag set (g-082) and every preset's `tagIds` is its
+  stored, filtered set — always present as an array, so a page never has to ask
+  which document version it is reading. `tagIds` may name only ids in `tags`.
+
 - Always `200`, failures included: an unreadable or unusable library answers an
   empty `presets`/`applied` beside `error: {code, message}` — the page then says
   so, and the write routes refuse. A read never rewrites the file.
@@ -7130,26 +7167,81 @@ name a workspace from their own dialog rows (§20.5, §20.6).
 
 ### 20.3 `PUT /prompt-setting/presets`
 
-Body: `{name, action, text}` to insert, or `{id, name, action, text}` to edit.
+Body: `{name, action, text}` to insert, or `{id, name, action, text}` to edit;
+both accept an optional `tagIds` (g-082).
 
 - Without `id`, the Host mints one and the answer is `created: true`. With an
   `id`, that preset must exist: `404 preset-not-found` otherwise —「编辑」 never
   becomes「新建」, so a stale page reports its missing target instead of
   duplicating it.
-- Order is the contract, as on every other write route (§4.1): the body is
-  validated first (every field-level mistake is a `400` and writes nothing), then
-  the current library is read (`409` when it is unusable), and only then is the
-  whole document written atomically.
+- `tagIds` is the preset's **whole** tag set: an array (order preserved), with
+  repeats collapsed, every id required to exist in `tags` (`400 unknown-tag`),
+  and at most 20 ids (`400 too-many-preset-tags`). An omitted field is an empty
+  set — this body states the whole entry, so a save that leaves tags out clears
+  them. A `tagIds` that is not an array is `400 invalid-tag-ids`.
+- Order is the contract, as on every other write route (§4.1): the body is read,
+  the current library is read (`409` when it is unusable), the body is validated
+  **against that library's tags** (every field-level mistake is a `400` and
+  writes nothing), and only then is the whole document written atomically.
 - Response `200`:
 
 ```json
-{ "ok": true, "created": true, "preset": { "id": "…", "name": "…", "action": "replace", "text": "…", "createdAt": "…", "updatedAt": "…" },
-  "presets": [ … ], "applied": [ … ] }
+{ "ok": true, "created": true, "preset": { "id": "…", "name": "…", "action": "replace", "text": "…", "tagIds": [], "createdAt": "…", "updatedAt": "…" },
+  "tags": [ … ], "presets": [ … ], "applied": [ … ] }
 ```
 
-- An edit keeps `createdAt` and moves `updatedAt`. Unknown body fields are
+- An edit keeps `createdAt` and moves `updatedAt`, and it keeps the tag set it
+  states (or clears it when the body states none). Unknown body fields are
   ignored (a future client's extra key is not a `400`); unknown **preset** fields
   are dropped, never persisted.
+
+### 20.3.1 `PUT /prompt-setting/presets/tags` (g-082)
+
+Body: `{name}` to insert, `{id, name}` to edit.
+
+- Without `id`, the Host mints the tag id and the answer is `created: true`. With
+  an `id`, that tag must exist: `404 tag-not-found` otherwise. A malformed id is
+  `400 invalid-tag-id`.
+- `name` is trimmed, then must be 1–40 characters with no control characters
+  (`400 invalid-tag-name` / `tag-name-too-long`), and must not equal another
+  tag's trimmed name (`400 duplicate-tag-name`; editing a tag excludes itself).
+  Creating past the library's 50-tag ceiling is `400 tag-limit-reached`; editing
+  never grows the set.
+- Same order as §20.3: read the body, read the library (`409
+  presets-not-writable`), validate against that library's tags, then write the
+  whole document atomically. Every refusal leaves the file byte-identical.
+- Response `200` carries the written tag plus the whole public surface, so the
+  page can refresh from the answer alone:
+
+```json
+{ "ok": true, "created": true, "tag": { "id": "…", "name": "…", "createdAt": "…", "updatedAt": "…" },
+  "tags": [ … ], "presets": [ … ], "applied": [ … ] }
+```
+
+- An edit keeps the tag's `createdAt` and moves `updatedAt`.
+
+### 20.3.2 `DELETE /prompt-setting/presets/tags?id=` (g-082)
+
+- `id` is required (`400 missing-id`) and must be well-formed (`400
+  invalid-tag-id`); an id that names nothing is `404 tag-not-found`. Every refusal
+  leaves the file byte-identical.
+- **The deletion cascades in one atomic write**: the tag leaves `tags`, and the
+  same id is stripped from **every** preset's `tagIds` in the same document, its
+  other tags keeping their order. After the request the library holds no
+  `tagIds` entry for the deleted id — that is the §20.1 invariant, decided by the
+  same write rather than by a follow-up cleanup.
+- Tags are catalogue metadata: this route touches **no workspace layer**, writes
+  no history record, and never changes the text an application left there.
+- Response `200`:
+
+```json
+{ "ok": true, "removed": true, "id": "…", "tag": { … }, "affectedPresets": 2,
+  "tags": [ … ], "presets": [ … ], "applied": [ … ] }
+```
+
+- `affectedPresets` is the number of presets that carried the tag (the read
+  payload lets the page show the same count **before** asking; the answer states
+  what really happened).
 
 ### 20.4 `DELETE /prompt-setting/presets?id=` (Revision 50: the deletion cancels; g-074 R1: an unregistered applied root refuses it)
 
@@ -7347,6 +7439,18 @@ All are `OverrideError` shapes (`{ok: false, code, message}`, §4.4):
 | `layer-not-writable` | 409 | The workspace layer's own file is not a valid config (§4.4, unchanged). |
 | `unknown-workspace-root` | 400 | **g-074 R1.** A `DELETE` found an `applied` record naming a workspace this profile does not register. The deletion is refused whole, the preset survives and every file stays byte-identical (§20.4, §11.7). |
 | `preset-unapply-failed` | 409 / 500 | A `DELETE` could not restore one of the workspaces the preset was applied to (§20.4). The status is the failing read's own when the refusal is decided before any write (`409` for a layer that exists but is unusable), `500` when a write failed mid-commit. The message names the workspace whose restore really failed and lists `restored:` / `not restored:` (plus `no layer to restore:` for skipped ones); **the preset is not deleted**, and no workspace is rewritten on the pre-write path. A **missing** layer file (`ENOENT`) is not this error — it is skipped, never recreated (§20.4). |
+| `invalid-tag` | 400 | **g-082.** The tag body/entry is not a JSON object (or a stored tag entry carries an unknown key on import). |
+| `invalid-tag-id` | 400 | A tag id is malformed, or a `tagIds` entry is not a tag id. |
+| `invalid-tag-name` | 400 | A tag name is empty/whitespace-only or carries a control character. |
+| `tag-name-too-long` | 400 | A tag name exceeds 40 characters. |
+| `duplicate-tag-name` | 400 | Another tag already holds that (trimmed) name; editing a tag excludes itself. On an import, two tags share a name. |
+| `duplicate-tag-id` | 400 | A document names the same tag id twice, or one preset's `tagIds` repeats an id. |
+| `tag-limit-reached` | 400 | Creating a tag past the library's 50-tag ceiling. |
+| `too-many-preset-tags` | 400 | One preset would carry more than 20 tags. |
+| `unknown-tag` | 400 | A preset body or an import states a `tagId` the library does not hold. |
+| `invalid-tag-ids` | 400 | `tagIds` is present but is not an array. |
+| `tag-not-found` | 404 | A tag edit or deletion names an id that exists nowhere in `tags`. |
+| `missing-id` | 400 | **g-082 extends it**: `DELETE /presets/tags` carries no `id` (the preset routes' `missing-id` is unchanged; `missing-preset-id` remains the `apply`/`unapply` one). |
 
 Every one of them is decided **before** any file is written — `preset-unapply-failed`
 included on the pre-write path, which is the only path it is expected to take — so
@@ -7370,6 +7474,10 @@ library is written last) and reports exactly which workspaces were restored.
 - **No second write path and no new writable section.** Both layer actions write
   the reserved entry and nothing else; a non-reserved name is still `403`
   `write-locked` (§4.1) and no preset route can reach one.
+- **Tags stay a flat catalogue (g-082).** No colors, no groups, no drag
+  ordering, no nesting; no per-tag default text and no inheritance into a
+  preset's text; the tag set is installation-global (one `presets.json`), never
+  scoped to a workspace. Tags classify presets; they never reach a layer.
 
 **Revision 53 (g-074) withdraws the first bullet of「20.8」, and only that one.**
 The library now **is** part of a backup: `GET /export` carries it as the
@@ -7468,6 +7576,44 @@ file also survives the change: it is still not folded into a layer's
   answers `error` on the read (§20.2) is shown as a library problem, not
   as「没有预设」 — and an empty catalogue is stated separately
   (`data-region="presets-empty"`).
+- **The tag surface (g-082).** Three additions, all inside the tab's existing
+  cards and dialogs:
+  - **The filter bar** is `data-region="preset-tags-bar"`, above the list and
+    below the library error: one chip `data-action="preset-tag-filter"` with
+    `data-preset-tag-filter="*"` (「全部」) plus one per stored tag carrying that
+    tag's id, each with `aria-pressed`; the selected chip is primary. Clicking a
+    chip selects it, clicking the selected one (or「全部」) clears the filter —
+    a single-select filter, never a multi-select. It also carries
+    `data-action="preset-tags-manage"`. Selecting a tag filters the rendered
+    rows to presets whose `tagIds` contain it; a tag under which there are none
+    renders `data-region="presets-filtered-empty"` (`presetFilteredEmpty`),
+    never an empty catalogue. A filter naming a tag the answer no longer holds
+    is ignored (the list shows everything, as if「全部」).
+  - **The rows** carry their preset's tags as chips inside
+    `data-role="preset-tag-chips"` (`data-preset-tag-chip="<id>"`); a tag the
+    library does not hold renders no chip, so a stale id is never shown.
+  - **The editor dialog** gains `data-region="preset-tag-picker"`: one button
+    per stored tag, `data-action="preset-tag-toggle"` with
+    `data-preset-tag="<id>"` and `aria-pressed`, toggling the draft's tag set.
+    A library with no tags renders `data-region="preset-tag-picker-empty"`
+    (`presetTagNone`) instead. The chosen set is saved with the rest of the
+    entry (§20.3), and selecting a tag marks the draft dirty like typing does.
+  - **The tag manager** is a dialog (`data-region="preset-tag-dialog"` inside
+    `data-region="preset-tag-overlay"`, `role="dialog"` + `aria-modal="true"`)
+    opened by `data-action="preset-tags-manage"`; it carries
+    `data-preset-tag-dialog="new"|"edit"` and `data-preset-tag-editing="<id>"`.
+    It lists `data-preset-tag-row="<id>"` rows with `data-action="tag-edit"` /
+    `data-action="tag-delete"` (each carrying `data-preset-tag`), one name field
+    (`data-role="preset-tag-name"`) and `data-action="tag-save"` /
+    `data-action="tag-new"` (clear the draft) / `data-action="tag-dialog-close"`.
+    A refusal stays on its own line: `data-role="tag-dialog-error"` with
+    `data-tag-dialog-error="<code>"`, and the dialog stays open.
+    `data-action="tag-delete"` only **asks**: the DELETE is sent by
+    `data-action="confirm-yes"` through the page's one confirmation surface
+    (`data-confirm-kind="tag-delete"`), whose body states
+    `presetTagDeleteConfirmBody` with the number of presets that will lose the
+    tag; `confirm-no` sends nothing. The cascade is visible afterwards — the
+    refreshed `GET /presets` no longer carries the tag or the reference.
 
 **Revision 50 (g-069: deleting a preset cancels every application of it).** An
 applied preset used to be deletable in a way that left the workspace holding text
@@ -7503,6 +7649,33 @@ semantics), and only then is the entry dropped.
   no layer」and the `orphaned` field of Revision 41's §20.4 answer are the two
   statements this revision replaces; everything else in §20 keeps its meaning,
   its markers and its stored bytes.
+
+**Revision 56 (g-082: the preset library gains its own tag set).** The library
+now classifies presets. One stored document, no new file: `version` becomes 2,
+`tags` is a top-level array, and every preset carries `tagIds`.
+
+- **the document (§20.1).** A version 1 file reads losslessly (`tags: []`, every
+  `tagIds: []`) and is written back as version 2; no migration write is needed
+  and no old field moved. The read face drops what it cannot use; the import face
+  refuses it (`unknown-tag` for a dangling reference), and an old backup with no
+  `tags` imports as an empty tag set (§10, §11.7).
+- **the routes (§20.3, §20.3.1, §20.3.2).** `PUT /presets` takes `tagIds`;
+  `PUT /presets/tags` is the tag upsert and `DELETE /presets/tags?id=` deletes a
+  tag **and** strips the id from every preset in the same atomic write. No tag
+  write touches a layer or writes history: tags are catalogue metadata, and the
+  text an application wrote stays exactly where §20.5 put it.
+- **the caps and refusals.** Name rules (trimmed, 1–40, no control characters,
+  unique) are a `400`; so are the 50-tag and 20-tags-per-preset ceilings; an
+  unknown tag id is `400 unknown-tag` on a preset write, an unknown tag target is
+  `404 tag-not-found`. Every refusal leaves `presets.json` byte-identical.
+- **the client (§20.9).** A single-select filter bar, tag chips on every row, a
+  multi-select tag picker in the preset editor, and a tag manager dialog whose
+  deletion asks first and states how many presets lose the tag.
+- **what does not change.** §20.2's `applied[]`, §20.4's restore semantics,
+  §20.5/§20.6's layer writes, the orphan rules and every history shape are
+  untouched. Revision 37's「No preset travels in an export」was already
+  superseded by Revision 53, and the library (tags included) still travels as
+  the export's own top-level `presets` document.
 
 ## 21. The in-session assembly-status notice (g-062, Revision 45; toasts added in Revision 46)
 

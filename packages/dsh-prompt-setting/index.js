@@ -157,12 +157,18 @@ import {
   planPresetRemoval,
   planUnapply,
   presetById,
+  presetsWithTag,
   publicApplied,
   publicPresets,
+  publicTags,
+  removeTag,
   reservedSectionOf,
   upsertPreset,
+  upsertTag,
   validatePresetId,
   validatePresetInput,
+  validateTagId,
+  validateTagInput,
 } from './core/presets.js';
 import {
   appendHistoryRecord,
@@ -324,6 +330,8 @@ const DOWNLOAD_REGION_PATH = `${ROUTE_PREFIX}/download-region`;
  * catalogue routes carry no layer or session at all.
  */
 const PRESETS_PATH = `${ROUTE_PREFIX}/presets`;
+/** g-082: the library's own tag set — its own upsert and delete. */
+const PRESETS_TAGS_PATH = `${ROUTE_PREFIX}/presets/tags`;
 /** g-060: apply one preset to the workspace that owns a session. */
 const PRESETS_APPLY_PATH = `${ROUTE_PREFIX}/presets/apply`;
 /** g-060: restore the workspace layer to the snapshot `apply` took. */
@@ -373,6 +381,7 @@ const ROUTES = new Map([
   [UPDATE_APPLY_CANCEL_PATH, ['POST']],
   [DOWNLOAD_REGION_PATH, ['GET', 'PUT']],
   [PRESETS_PATH, ['GET', 'PUT', 'DELETE']],
+  [PRESETS_TAGS_PATH, ['PUT', 'DELETE']],
   [PRESETS_APPLY_PATH, ['POST']],
   [PRESETS_UNAPPLY_PATH, ['POST']],
   [ASSEMBLY_STATUS_PATH, ['GET', 'PUT']],
@@ -4260,6 +4269,7 @@ function mount(ctx, config, cleanups) {
       ok: true,
       path: file.path,
       version: file.document.version,
+      tags: publicTags(file.document),
       presets: publicPresets(file.document),
       applied: publicApplied(file.document),
       workspaceRoot: root,
@@ -4281,10 +4291,14 @@ function mount(ctx, config, cleanups) {
    */
   async function handleWritePreset(req, res) {
     const body = await readJsonBody(req);
-    const fields = validatePresetInput(body);
+    // g-082: `tagIds` is checked against the library's own tags, so the current
+    // document is read before the body is validated. The read is side-effect
+    // free (a malformed library is a `409` and writes nothing), and every
+    // refusal still lands before the first byte.
+    const file = writablePresets();
+    const fields = validatePresetInput(body, file.document.tags);
     const editing = body?.id !== undefined && body?.id !== null;
     const id = editing ? validatePresetId(body.id, 'invalid-id') : randomUUID();
-    const file = writablePresets();
     const at = new Date().toISOString();
     const result = upsertPreset(file.document, editing ? { ...fields, id } : fields, { id, at });
     writePresets(file.path, result.document);
@@ -4292,6 +4306,90 @@ function mount(ctx, config, cleanups) {
       ok: true,
       created: result.created,
       preset: result.preset,
+      tags: publicTags(result.document),
+      presets: publicPresets(result.document),
+      applied: publicApplied(result.document),
+    });
+  }
+
+  /**
+   * `PUT /prompt-setting/presets/tags` — insert one tag, or edit one by id
+   * (g-082).
+   *
+   * Same order as the preset upsert: the body is read, the library's verdict is
+   * asked (`409 presets-not-writable` when it is unusable), the body is
+   * validated **against that document's tags** (the duplicate-name rule needs
+   * them), and only then is the whole document written atomically. Without an
+   * `id` the Host mints one and the answer is `created: true`; with an id the
+   * tag must exist (`404 tag-not-found`), because an edit that silently created
+   * would duplicate instead of report a stale page.
+   *
+   * The answer carries the whole public surface (`tags` / `presets` / `applied`)
+   * so the page can refresh from it alone, exactly as the preset routes do.
+   * @param req - the Node request.
+   * @param res - the Node response.
+   */
+  async function handleWriteTag(req, res) {
+    const body = await readJsonBody(req);
+    const file = writablePresets();
+    const editing = body?.id !== undefined && body?.id !== null;
+    const id = editing ? validateTagId(body.id) : randomUUID();
+    const fields = validateTagInput(body, {
+      tags: file.document.tags,
+      excludeId: editing ? id : null,
+    });
+    const at = new Date().toISOString();
+    const result = upsertTag(file.document, editing ? { ...fields, id } : fields, { id, at });
+    writePresets(file.path, result.document);
+    sendJson(res, 200, {
+      ok: true,
+      created: result.created,
+      tag: result.tag,
+      tags: publicTags(result.document),
+      presets: publicPresets(result.document),
+      applied: publicApplied(result.document),
+    });
+  }
+
+  /**
+   * `DELETE /prompt-setting/presets/tags?id=` — delete one tag **and** strip it
+   * from every preset that carried it (g-082).
+   *
+   * The cascade is decided by {@link removeTag} in one pure step and the whole
+   * document is written once, so「标签没了但预设还指着它」cannot be observed on
+   * disk: after this request the library holds no `tagIds` entry for the
+   * deleted id. A tag that names nothing is `404 tag-not-found`, and every
+   * refusal leaves the file byte-identical (nothing is written before the last
+   * line).
+   *
+   * Tags are catalogue metadata: this route touches **no** workspace layer and
+   * no history — an applied preset's text keeps living where §20.5 put it.
+   * @param url - the parsed request URL.
+   * @param res - the Node response.
+   */
+  function handleDeleteTag(url, res) {
+    const raw = url.searchParams.get('id');
+    if (raw === null || raw.length === 0) {
+      throw fail('missing-id', 'query parameter "id" is required');
+    }
+    const id = validateTagId(raw);
+    const file = writablePresets();
+    const affected = presetsWithTag(file.document, id);
+    const result = removeTag(file.document, id);
+    if (result.removed === null) {
+      throw fail('tag-not-found', `no tag with id ${JSON.stringify(id)}`, 404);
+    }
+    writePresets(file.path, result.document);
+    sendJson(res, 200, {
+      ok: true,
+      removed: true,
+      id,
+      tag: result.removed,
+      // What the deletion really changed: the presets whose tag set lost this
+      // id. The page uses it for the notice; the UI's confirmation computes the
+      // same count from the read payload before asking.
+      affectedPresets: affected.length,
+      tags: publicTags(result.document),
       presets: publicPresets(result.document),
       applied: publicApplied(result.document),
     });
@@ -4484,6 +4582,7 @@ function mount(ctx, config, cleanups) {
         missing: entry.missing === true,
       })),
       presets: publicPresets(plan.document),
+      tags: publicTags(plan.document),
       applied: publicApplied(plan.document),
     });
   }
@@ -4881,6 +4980,15 @@ function mount(ctx, config, cleanups) {
               if (req.method === 'PUT') await handleWritePreset(req, res);
               else if (req.method === 'DELETE') handleDeletePreset(url, res);
               else handleReadPresets(url, res);
+              return;
+            }
+            if (url.pathname === PRESETS_TAGS_PATH) {
+              // g-082: the library's tag set. `PUT` is one upsert (insert
+              // without an id, edit with one), `DELETE ?id=` deletes the tag
+              // and strips it from every preset in the same atomic write; like
+              // the catalogue routes it takes no session and touches no layer.
+              if (req.method === 'PUT') await handleWriteTag(req, res);
+              else handleDeleteTag(url, res);
               return;
             }
             if (url.pathname === PRESETS_APPLY_PATH) {

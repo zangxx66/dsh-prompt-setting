@@ -2,7 +2,7 @@
 
 **这份文档要回答的问题**：改一个功能点，该打开哪个文件？
 
-`client.js` 是发布物（12382 行的单个 CommonJS factory），但**人不再直接编辑它** ——
+`client.js` 是发布物（12593 行的单个 CommonJS factory），但**人不再直接编辑它** ——
 它是 `src/` 的生成物（见 `CONTRACT.md` §23）。本表把「域」映射到：
 
 **域 → `client.js` 行区间 → 段文件 → 入口函数 → CONTRACT 章节 → 测试文件**
@@ -25,25 +25,25 @@
 | 段文件 | `client.js` 行区间 | 行数 | 域 | 主要入口函数 | CONTRACT | 测试 |
 |---|---|---:|---|---|---|---|
 | `00-entry.js` | 1–215 | 215 | 文件头 + load 注册 + 指纹区间 + factory guard + `buildPlugin` 头 | `buildPlugin` (212)、`fingerprintOf` (167)、`fingerprintRegion` (150) | §13, §14 | `test/build.test.mjs`、`test/boot.test.mjs` |
-| `01-shared-head.js` | 216–902 | 687 | launch shape 探测 + primitives probe + 常量 | `normalizeLaunchKind` (271)、`primitivesActive` (462)、`activeRenderer` (466) | §13 | `test/launch-kind.test.mjs`、`test/client.test.mjs` |
-| `02-locale.js` | 903–2085 | 1183 | locale 内联段（`locale-pack.mjs --write` 产出，生成器原样嵌入） | —（数据段） | §22 | `test/locale.test.mjs` |
-| `03-facilities.js` | 2086–2687 | 602 | `token` / `fallbackT` / fallback atoms / `PRIMITIVES_UI` / `tabs` | `tabs` (2419)、`FxButton` (2161)、`FxInput` (2197)、`safeT` (2679) | §13, §16 | `test/client.test.mjs`、`test/interpolate.test.mjs` |
-| `04-helpers-a.js` | 2688–3338 | 651 | pure helpers 前半：会话/工作区探测、解码、过滤、标签 | `decodeSessions` (2798)、`filterSessions` (2853)、`decodeWorkspaces` (2971) | §13 | `test/client.test.mjs`、`test/route.test.mjs` |
-| `05-helpers-b.js` | 3339–3943 | 605 | pure helpers 后半：冻结状态、编辑门控、覆盖可行性、`chunkStampMap` / `buildVerdict` | `chunkStampMap` (3378)、`buildVerdict` (3416)、`editGate` (3498)、`overrideFeasibility` (3563) | §13, §14 | `test/build.test.mjs`、`test/client.test.mjs`、`test/overrides.test.mjs` |
-| `06-tree.js` | 3944–4608 | 665 | 样式表 + tree builders（scrim / dialog / card / row） | `scrimStyle` (3991)、`dialogCardStyle` (4147)、`matchesNeedle` (4371) | §13 | `test/client.test.mjs`（含 `scrimStyle(1200)` 先于 `scrimStyle(1000)` 的段序断言 2538–2542） |
-| `07-stage2.js` | 4609–5255 | 647 | stage 2 helpers 后半：history/overview 作用域查询、分页、预留段模型 | `historyScopeQuery` (4629)、`historyPagerInfo` (4649)、`workspaceRows` (4780)、`modeOfEntry` (4959) | §8, §13, §21 | `test/history.test.mjs`、`test/stage2.test.mjs` |
-| `08-chrome-a.js` | 5256–5997 | 742 | 状态行 / 版本行 / 范围树前半 | `renderStatusLine` (5330)、`renderStatusDetail` (5428)、`scopeRowStyle` (5728) | §13, §17 | `test/client.test.mjs`、`test/update.test.mjs` |
-| `09-chrome-b.js` | 5998–6786 | 789 | `scopeTreeElement` / 会话与提示块渲染 / `renderConfirm` | `scopeTreeElement` (6120)、`renderSession` (6274)、`renderPromptBlock` (6547)、`renderConfirm` (6613) | §13, §15 | `test/client.test.mjs` |
-| `10-toaster-mine.js` | 6787–7774 | 988 | g-062 装配状态 toast + `renderMinePanel` | `planAssemblyToasts` (6926)、`AssemblyToaster` (6981)、`renderMinePanel` (7329) | §15, §21 | `test/assembly-watch.test.mjs`、`test/custom.test.mjs`、`test/overrides.test.mjs` |
-| `11-chunks.js` | 7775–8385 | 611 | chunk boundary（协议）：清单、加载、失败降级、tab 注册 | `loadChunk` (8084)、`chunkModule` (8189)、`chunkTab` (8314)、`renderChunkTab` (8343) | §14 | `test/build.test.mjs`、`test/client.test.mjs`、`test/assembly-watch.test.mjs` |
-| `12-update.js` | 8386–9026 | 641 | 更新条 + 区域弹窗 + `renderSection` | `renderUpdateNotice` (8413)、`renderRegionDialog` (8690)、`renderSection` (8786) | §17, §18 | `test/update.test.mjs`、`test/route.test.mjs` |
-| `13-page-a.js` | 9027–10226 | 1200 | `PromptSettingSection` 第 1 切：JSDoc + hooks/state | `PromptSettingSection` (9041) | §13, §15 | `test/client.test.mjs` |
-| `14-page-b.js` | 10227–11424 | 1198 | `PromptSettingSection` 第 2 切：fetch / handlers | —（同一函数体内） | §10, §11, §13 | `test/client.test.mjs`、`test/transfer.test.mjs`、`test/presets.test.mjs` |
-| `15-page-c.js` | 11425–12026 | 602 | `PromptSettingSection` 第 3 切：actions / model / root 树 | —（同一函数体内） | §13, §16 | `test/client.test.mjs`、`test/diff.test.mjs`、`test/history.test.mjs` |
-| `16-boot.js` | 12027–12382 | 356 | `renderFailureCard` / `degradedPlugin` / boot 返回 | `renderFailureCard` (12039)、`degradedPlugin` (12311) | §7, §14 | `test/boot.test.mjs`、`test/client.test.mjs` |
+| `01-shared-head.js` | 216–905 | 690 | launch shape 探测 + primitives probe + 常量 | `normalizeLaunchKind` (271)、`primitivesActive` (462)、`activeRenderer` (466) | §13 | `test/launch-kind.test.mjs`、`test/client.test.mjs` |
+| `02-locale.js` | 906–2104 | 1199 | locale 内联段（`locale-pack.mjs --write` 产出，生成器原样嵌入） | —（数据段） | §22 | `test/locale.test.mjs` |
+| `03-facilities.js` | 2105–2706 | 602 | `token` / `fallbackT` / fallback atoms / `PRIMITIVES_UI` / `tabs` | `tabs` (2438)、`FxButton` (2180)、`FxInput` (2216)、`safeT` (2698) | §13, §16 | `test/client.test.mjs`、`test/interpolate.test.mjs` |
+| `04-helpers-a.js` | 2707–3357 | 651 | pure helpers 前半：会话/工作区探测、解码、过滤、标签 | `decodeSessions` (2817)、`filterSessions` (2872)、`decodeWorkspaces` (2990) | §13 | `test/client.test.mjs`、`test/route.test.mjs` |
+| `05-helpers-b.js` | 3358–3962 | 605 | pure helpers 后半：冻结状态、编辑门控、覆盖可行性、`chunkStampMap` / `buildVerdict` | `chunkStampMap` (3397)、`buildVerdict` (3435)、`editGate` (3517)、`overrideFeasibility` (3582) | §13, §14 | `test/build.test.mjs`、`test/client.test.mjs`、`test/overrides.test.mjs` |
+| `06-tree.js` | 3963–4627 | 665 | 样式表 + tree builders（scrim / dialog / card / row） | `scrimStyle` (4010)、`dialogCardStyle` (4166)、`matchesNeedle` (4390) | §13 | `test/client.test.mjs`（含 `scrimStyle(1200)` 先于 `scrimStyle(1000)` 的段序断言 2538–2542） |
+| `07-stage2.js` | 4628–5274 | 647 | stage 2 helpers 后半：history/overview 作用域查询、分页、预留段模型 | `historyScopeQuery` (4648)、`historyPagerInfo` (4668)、`workspaceRows` (4799)、`modeOfEntry` (4978) | §8, §13, §21 | `test/history.test.mjs`、`test/stage2.test.mjs` |
+| `08-chrome-a.js` | 5275–6016 | 742 | 状态行 / 版本行 / 范围树前半 | `renderStatusLine` (5349)、`renderStatusDetail` (5447)、`scopeRowStyle` (5747) | §13, §17 | `test/client.test.mjs`、`test/update.test.mjs` |
+| `09-chrome-b.js` | 6017–6811 | 795 | `scopeTreeElement` / 会话与提示块渲染 / `renderConfirm` | `scopeTreeElement` (6139)、`renderSession` (6293)、`renderPromptBlock` (6566)、`renderConfirm` (6632) | §13, §15 | `test/client.test.mjs` |
+| `10-toaster-mine.js` | 6812–7799 | 988 | g-062 装配状态 toast + `renderMinePanel` | `planAssemblyToasts` (6951)、`AssemblyToaster` (7006)、`renderMinePanel` (7354) | §15, §21 | `test/assembly-watch.test.mjs`、`test/custom.test.mjs`、`test/overrides.test.mjs` |
+| `11-chunks.js` | 7800–8410 | 611 | chunk boundary（协议）：清单、加载、失败降级、tab 注册 | `loadChunk` (8109)、`chunkModule` (8214)、`chunkTab` (8339)、`renderChunkTab` (8368) | §14 | `test/build.test.mjs`、`test/client.test.mjs`、`test/assembly-watch.test.mjs` |
+| `12-update.js` | 8411–9051 | 641 | 更新条 + 区域弹窗 + `renderSection` | `renderUpdateNotice` (8438)、`renderRegionDialog` (8715)、`renderSection` (8811) | §17, §18 | `test/update.test.mjs`、`test/route.test.mjs` |
+| `13-page-a.js` | 9052–10228 | 1177 | `PromptSettingSection` 第 1 切：JSDoc + hooks/state | `PromptSettingSection` (9066) | §13, §15 | `test/client.test.mjs` |
+| `14-page-b.js` | 10229–11411 | 1183 | `PromptSettingSection` 第 2 切：fetch / handlers | —（同一函数体内） | §10, §11, §13 | `test/client.test.mjs`、`test/transfer.test.mjs`、`test/presets.test.mjs` |
+| `15-page-c.js` | 11412–12237 | 826 | `PromptSettingSection` 第 3 切：actions / model / root 树 | —（同一函数体内） | §13, §16 | `test/client.test.mjs`、`test/diff.test.mjs`、`test/history.test.mjs` |
+| `16-boot.js` | 12238–12593 | 356 | `renderFailureCard` / `degradedPlugin` / boot 返回 | `renderFailureCard` (12250)、`degradedPlugin` (12522) | §7, §14 | `test/boot.test.mjs`、`test/client.test.mjs` |
 
 **`13/14/15` 是同一个函数的三个切**：它们拼起来仍是**一个** `PromptSettingSection`
-（`client.js:9041-12026`）。这是「只重切、不移动」能做到的最大粒度 —— 把一个 2986 行的
+（`client.js:9066-12237`）。这是「只重切、不移动」能做到的最大粒度 —— 把一个 3172 行的
 函数体拆开会让 `const` 的 TDZ 边界与函数声明的提升可见性发生变化，而没有测试能证明
 那种移动无害（`CONTRACT.md` §23.2、方案 §5.1 R2-D2）。
 

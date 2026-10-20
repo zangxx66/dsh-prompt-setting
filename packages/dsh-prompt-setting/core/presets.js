@@ -32,6 +32,13 @@
  * document, never as loose override entries, so `overrides.json` and the
  * `/overrides` view keep exactly the shape they had.
  *
+ * Revision 56 (g-082) adds a **tag set** to that catalogue: a top-level `tags`
+ * array, and a `tagIds` set on every preset. It is still one document — a tag
+ * deletion must strip the id from every preset in the same atomic write, which
+ * a second file could not guarantee — and the tags never reach a layer: they
+ * classify presets, they do not write prompts. The read face drops an unusable
+ * tag or a dangling reference; the import face refuses the document.
+ *
  * @module dsh-prompt-setting/core/presets
  */
 
@@ -43,11 +50,29 @@ import { validateWorkspaceRoot } from './workspace-root.js';
  * The presets document version. A stored document may omit it (the first
  * revision's files did not have to carry one); a document that states a
  * **different** version is refused rather than guessed at.
+ *
+ * Revision 56 (g-082) raises it to `2`: the document gained a top-level `tags`
+ * array and each preset gained `tagIds`. Version 1 files are read losslessly
+ * (`tags: []`, every preset's `tagIds: []`) and are only ever written back as
+ * version 2; {@link PRESETS_READABLE_VERSIONS} is the read/import face's whole
+ * acceptance list, so "written by the first revision" is a value, never a guess.
  */
-export const PRESETS_VERSION = 1;
+export const PRESETS_VERSION = 2;
+
+/** The versions a stored document or an imported one may state. */
+export const PRESETS_READABLE_VERSIONS = Object.freeze([1, 2]);
 
 /** The longest preset name this library stores (characters, like `MAX_NAME_LENGTH`). */
 export const MAX_PRESET_NAME_LENGTH = 120;
+
+/** The longest tag name this library stores (characters, g-082). */
+export const MAX_TAG_NAME_LENGTH = 40;
+
+/** How many tags the library may hold (g-082; a `400 tag-limit-reached` past it). */
+export const MAX_TAGS = 50;
+
+/** How many tags one preset may carry (g-082; a `400 too-many-preset-tags` past it). */
+export const MAX_PRESET_TAGS = 20;
 
 /**
  * The actions a preset may carry, in contract order.
@@ -79,7 +104,90 @@ const encoder = new TextEncoder();
 
 /** A fresh, empty library. */
 export function emptyPresets() {
-  return { version: PRESETS_VERSION, presets: [], applied: [] };
+  return { version: PRESETS_VERSION, tags: [], presets: [], applied: [] };
+}
+
+/**
+ * The `tags` list of a document, tolerating a shape without one.
+ *
+ * A version 1 document (or a hand-built one in a test) has no `tags` field; it
+ * means "the library holds no tags", never "this is not a library".
+ * @param document - a normalized document.
+ * @returns a fresh array.
+ */
+function tagsListOf(document) {
+  return Array.isArray(document?.tags) ? document.tags.slice() : [];
+}
+
+/**
+ * Normalize one stored tag, tolerating a hand-edited file.
+ *
+ * The read face's half of g-082's asymmetry: a tag this revision cannot use is
+ * dropped (`null`), because one bad line must not make every preset unreachable.
+ * {@link validateTagEntry} refuses the same inputs on the import face.
+ * @param raw - one element of a stored `tags` array.
+ * @returns the normalized tag, or `null`.
+ */
+function normalizeStoredTag(raw) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const id = raw.id;
+  if (typeof id !== 'string' || !PRESET_ID_PATTERN.test(id)) return null;
+  const name = raw.name;
+  if (typeof name !== 'string' || name.trim().length === 0 || name.length > MAX_TAG_NAME_LENGTH) return null;
+  if (CONTROL_CHARACTERS.test(name)) return null;
+  return {
+    id,
+    name,
+    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : null,
+    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : null,
+  };
+}
+
+/**
+ * The tag ids one stored (or request) preset carries, filtered through what the
+ * document really holds.
+ *
+ * Read face: malformed, unknown and repeated ids are **dropped**, and the list
+ * is cut at {@link MAX_PRESET_TAGS}; the user's order survives. Import face:
+ * {@link validatePresetEntry} refuses each of those instead.
+ * @param raw - the raw `tagIds` value.
+ * @param knownTagIds - the ids the document's `tags` array holds.
+ * @returns a fresh, filtered array.
+ */
+function storedTagIdsOf(raw, knownTagIds) {
+  if (!Array.isArray(raw)) return [];
+  const tagIds = [];
+  for (const value of raw) {
+    if (typeof value !== 'string' || !PRESET_ID_PATTERN.test(value)) continue;
+    if (!knownTagIds.has(value) || tagIds.includes(value)) continue;
+    if (tagIds.length >= MAX_PRESET_TAGS) break;
+    tagIds.push(value);
+  }
+  return tagIds;
+}
+
+/**
+ * The public view of the tag set: ids, names and the two timestamps.
+ * @param document - the normalized document.
+ * @returns a fresh array.
+ */
+export function publicTags(document) {
+  return tagsListOf(document).map((tag) => ({
+    id: tag.id,
+    name: tag.name,
+    createdAt: tag.createdAt ?? null,
+    updatedAt: tag.updatedAt ?? null,
+  }));
+}
+
+/**
+ * The tag with one id, or `null`.
+ * @param document - a normalized document.
+ * @param id - the tag id.
+ * @returns the tag, or `null`.
+ */
+export function tagById(document, id) {
+  return tagsListOf(document).find((entry) => entry.id === id) ?? null;
 }
 
 /**
@@ -90,9 +198,10 @@ export function emptyPresets() {
  * not make every other preset unreachable. The write face never produces such
  * an entry — {@link validatePresetInput} refuses the same inputs with a code.
  * @param raw - one element of a stored `presets` array.
+ * @param knownTagIds - the ids the document's own `tags` array holds (g-082).
  * @returns the normalized preset, or `null` when the entry is unusable.
  */
-function normalizeStoredPreset(raw) {
+function normalizeStoredPreset(raw, knownTagIds = new Set()) {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
   const id = raw.id;
   if (typeof id !== 'string' || !PRESET_ID_PATTERN.test(id)) return null;
@@ -106,6 +215,7 @@ function normalizeStoredPreset(raw) {
     name,
     action: raw.action,
     text: raw.text,
+    tagIds: storedTagIdsOf(raw.tagIds, knownTagIds),
     createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : null,
     updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : null,
   };
@@ -208,20 +318,28 @@ function normalizeStoredApplied(raw, presetsById = new Map()) {
  * Normalize a whole stored document.
  *
  * Unlike a layer's config (which *disables the layer* when it is unusable), a
- * library file that is not an object at all, or that states another version, is
- * refused with a code: the write face must not overwrite a file it does not
- * understand, and the read face reports the same reason. Entries *inside* a
- * usable document are dropped individually (see above).
+ * library file that is not an object at all, or that states a version this
+ * build does not read, is refused with a code: the write face must not overwrite
+ * a file it does not understand, and the read face reports the same reason.
+ * Entries *inside* a usable document are dropped individually (see above).
+ *
+ * Revision 56 (g-082): versions 1 and 2 are both read; the answer is always the
+ * version 2 shape (`tags` present, every preset carrying `tagIds`), so a version
+ * 1 file needs no migration write to become usable — it simply reads as a
+ * library with no tags.
  * @param raw - the parsed JSON value.
- * @returns the normalized `{version, presets, applied}`.
+ * @returns the normalized `{version, tags, presets, applied}`.
  * @throws {OverrideError} `invalid-presets` / `unsupported-presets-version`.
  */
 export function normalizePresets(raw) {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
     throw fail('invalid-presets', 'the presets file must contain a JSON object');
   }
-  if (raw.version !== undefined && raw.version !== PRESETS_VERSION) {
+  if (raw.version !== undefined && !PRESETS_READABLE_VERSIONS.includes(raw.version)) {
     throw fail('unsupported-presets-version', `unsupported presets version ${JSON.stringify(raw.version)}`);
+  }
+  if (raw.tags !== undefined && !Array.isArray(raw.tags)) {
+    throw fail('invalid-presets', '"tags" must be an array');
   }
   if (raw.presets !== undefined && !Array.isArray(raw.presets)) {
     throw fail('invalid-presets', '"presets" must be an array');
@@ -229,10 +347,20 @@ export function normalizePresets(raw) {
   if (raw.applied !== undefined && !Array.isArray(raw.applied)) {
     throw fail('invalid-presets', '"applied" must be an array');
   }
+  const tags = [];
+  const tagIds = new Set();
+  const tagNames = new Set();
+  for (const entry of raw.tags ?? []) {
+    const tag = normalizeStoredTag(entry);
+    if (tag === null || tagIds.has(tag.id) || tagNames.has(tag.name.trim())) continue;
+    tagIds.add(tag.id);
+    tagNames.add(tag.name.trim());
+    tags.push(tag);
+  }
   const presets = [];
   const seen = new Set();
   for (const entry of raw.presets ?? []) {
-    const preset = normalizeStoredPreset(entry);
+    const preset = normalizeStoredPreset(entry, tagIds);
     if (preset === null || seen.has(preset.id)) continue;
     seen.add(preset.id);
     presets.push(preset);
@@ -246,7 +374,7 @@ export function normalizePresets(raw) {
     if (at === -1) applied.push(record);
     else applied[at] = record;
   }
-  return { version: PRESETS_VERSION, presets, applied };
+  return { version: PRESETS_VERSION, tags, presets, applied };
 }
 
 /**
@@ -258,8 +386,9 @@ export function normalizePresets(raw) {
  * lets one bad hand-edited line keep the library readable without letting a
  * crafted backup write it.
  */
-const PRESET_DOCUMENT_KEYS = Object.freeze(['version', 'presets', 'applied']);
-const PRESET_ENTRY_KEYS = Object.freeze(['id', 'name', 'action', 'text', 'createdAt', 'updatedAt']);
+const PRESET_DOCUMENT_KEYS = Object.freeze(['version', 'tags', 'presets', 'applied']);
+const PRESET_ENTRY_KEYS = Object.freeze(['id', 'name', 'action', 'text', 'tagIds', 'createdAt', 'updatedAt']);
+const TAG_ENTRY_KEYS = Object.freeze(['id', 'name', 'createdAt', 'updatedAt']);
 const APPLIED_ENTRY_KEYS = Object.freeze(['workspaceRoot', 'base', 'stack']);
 const STACK_ENTRY_KEYS = Object.freeze(['presetId', 'appliedAt', 'action', 'text']);
 
@@ -279,7 +408,50 @@ function assertKnownKeys(value, allowed, where) {
 }
 
 /**
- * Validate one preset entry **strictly** (Revision 53).
+ * Validate one tag entry **strictly**, for an import (g-082).
+ *
+ * The import face's half of the asymmetry: every rule
+ * {@link normalizeStoredTag} tolerates by dropping the tag refuses here, and a
+ * refusal names the rule it broke. The stored name is kept exactly as written
+ * (leading/trailing spaces included) — only its trimmed form decides "empty"
+ * and "duplicate", which keeps an import byte-for-byte predictable.
+ * @param raw - one element of a document's `tags` array.
+ * @param where - the dotted location for the message.
+ * @returns the validated `{id, name, createdAt, updatedAt}`.
+ * @throws {OverrideError} with a stable code.
+ */
+function validateTagEntry(raw, where) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw fail('invalid-tag', `${where} must be a JSON object`);
+  }
+  assertKnownKeys(raw, TAG_ENTRY_KEYS, where);
+  if (typeof raw.id !== 'string' || !PRESET_ID_PATTERN.test(raw.id)) {
+    throw fail('invalid-tag-id', `${where}.id must be a tag id (1-64 characters of [A-Za-z0-9._-])`);
+  }
+  if (typeof raw.name !== 'string' || raw.name.trim().length === 0) {
+    throw fail('invalid-tag-name', `${where} requires a non-empty string "name"`);
+  }
+  if (raw.name.length > MAX_TAG_NAME_LENGTH) {
+    throw fail('tag-name-too-long', `${where}.name exceeds ${MAX_TAG_NAME_LENGTH} characters`);
+  }
+  if (CONTROL_CHARACTERS.test(raw.name)) {
+    throw fail('invalid-tag-name', `${where}.name must not contain control characters`);
+  }
+  for (const key of ['createdAt', 'updatedAt']) {
+    if (raw[key] !== undefined && raw[key] !== null && typeof raw[key] !== 'string') {
+      throw fail('invalid-tag', `${where}.${key} must be a string or null`);
+    }
+  }
+  return {
+    id: raw.id,
+    name: raw.name,
+    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : null,
+    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : null,
+  };
+}
+
+/**
+ * Validate one preset entry **strictly** (Revision 53; `tagIds` in g-082).
  *
  * Every rule `normalizeStoredPreset` tolerates by dropping the entry is a
  * refusal here, and each refusal names the rule it broke. Nothing is
@@ -287,10 +459,12 @@ function assertKnownKeys(value, allowed, where) {
  * or write nothing at all.
  * @param raw - one element of a document's `presets` array.
  * @param where - the dotted location for the message.
- * @returns the validated `{id, name, action, text, createdAt, updatedAt}`.
+ * @param knownTagIds - the ids the document's own `tags` array holds; a
+ *   `tagIds` entry outside it is a dangling reference and is refused.
+ * @returns the validated `{id, name, action, text, tagIds, createdAt, updatedAt}`.
  * @throws {OverrideError} with a stable code.
  */
-function validatePresetEntry(raw, where) {
+function validatePresetEntry(raw, where, knownTagIds = new Set()) {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
     throw fail('invalid-preset', `${where} must be a JSON object`);
   }
@@ -319,6 +493,30 @@ function validatePresetEntry(raw, where) {
   if (encoder.encode(raw.text).length > MAX_TEXT_BYTES) {
     throw fail('text-too-large', `${where}.text exceeds ${MAX_TEXT_BYTES} UTF-8 bytes`);
   }
+  // g-082: an imported preset's tags. An old (version 1) document states no
+  // `tagIds` at all — that is an empty tag set, not an error — while anything
+  // the document *does* state is held to the same standard as the rest of an
+  // import: shape, existence (no dangling id), no repeats, bounded length.
+  const rawTagIds = raw.tagIds;
+  if (rawTagIds !== undefined && rawTagIds !== null && !Array.isArray(rawTagIds)) {
+    throw fail('invalid-tag-ids', `${where}.tagIds must be an array`);
+  }
+  const tagIds = [];
+  for (const value of rawTagIds ?? []) {
+    if (typeof value !== 'string' || !PRESET_ID_PATTERN.test(value)) {
+      throw fail('invalid-tag-id', `${where}.tagIds carries an entry that is not a tag id`);
+    }
+    if (!knownTagIds.has(value)) {
+      throw fail('unknown-tag', `${where}.tagIds names the unknown tag ${JSON.stringify(value)}`);
+    }
+    if (tagIds.includes(value)) {
+      throw fail('duplicate-tag-id', `${where}.tagIds names the tag ${JSON.stringify(value)} twice`);
+    }
+    tagIds.push(value);
+  }
+  if (tagIds.length > MAX_PRESET_TAGS) {
+    throw fail('too-many-preset-tags', `${where}.tagIds exceeds ${MAX_PRESET_TAGS} tags`);
+  }
   for (const key of ['createdAt', 'updatedAt']) {
     if (raw[key] !== undefined && raw[key] !== null && typeof raw[key] !== 'string') {
       throw fail('invalid-preset', `${where}.${key} must be a string or null`);
@@ -329,6 +527,7 @@ function validatePresetEntry(raw, where) {
     name,
     action,
     text: raw.text,
+    tagIds,
     createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : null,
     updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : null,
   };
@@ -411,7 +610,8 @@ function validateAppliedEntry(raw, where) {
 }
 
 /**
- * Validate a whole preset document **strictly**, for an import (Revision 53).
+ * Validate a whole preset document **strictly**, for an import (Revision 53;
+ * tags in g-082).
  *
  * This is the document-level twin of {@link normalizePresets} and the two
  * differ on exactly one axis, on purpose: `normalizePresets` answers「what can
@@ -419,20 +619,31 @@ function validateAppliedEntry(raw, where) {
  * document be written?」and refuses. An import replaces `presets.json` as a
  * whole, so a document with one unusable entry must write **nothing** rather
  * than quietly delete the rest of the library.
+ *
+ * A document without `tags` (every version 1 backup) is accepted and imports as
+ * an empty tag set; the answer is the version 2 shape either way. A document
+ * whose `tagIds` names a tag the document does not declare is refused rather
+ * than repaired — that is the "dangling tagId" the file must never contain.
  * @param raw - the parsed document.
- * @returns the normalized `{version, presets, applied}`.
+ * @returns the normalized `{version, tags, presets, applied}`.
  * @throws {OverrideError} `invalid-presets` / `unsupported-presets-version` /
+ *   `invalid-tag` / `invalid-tag-id` / `invalid-tag-name` / `tag-name-too-long` /
+ *   `tag-limit-reached` / `duplicate-tag-id` / `duplicate-tag-name` /
  *   `invalid-preset` / `invalid-preset-id` / `duplicate-preset-id` /
  *   `invalid-name` / `name-too-long` / `unsupported-action` / `missing-text` /
- *   `text-too-large` / `invalid-applied`.
+ *   `text-too-large` / `invalid-tag-ids` / `unknown-tag` /
+ *   `too-many-preset-tags` / `invalid-applied`.
  */
 export function validatePresetsDocument(raw) {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
     throw fail('invalid-presets', 'the presets document must be a JSON object');
   }
   assertKnownKeys(raw, PRESET_DOCUMENT_KEYS, 'presets');
-  if (raw.version !== undefined && raw.version !== PRESETS_VERSION) {
+  if (raw.version !== undefined && !PRESETS_READABLE_VERSIONS.includes(raw.version)) {
     throw fail('unsupported-presets-version', `unsupported presets version ${JSON.stringify(raw.version)}`);
+  }
+  if (raw.tags !== undefined && !Array.isArray(raw.tags)) {
+    throw fail('invalid-presets', '"tags" must be an array');
   }
   if (raw.presets !== undefined && !Array.isArray(raw.presets)) {
     throw fail('invalid-presets', '"presets" must be an array');
@@ -440,10 +651,28 @@ export function validatePresetsDocument(raw) {
   if (raw.applied !== undefined && !Array.isArray(raw.applied)) {
     throw fail('invalid-presets', '"applied" must be an array');
   }
+  const tags = [];
+  const tagIds = new Set();
+  const tagNames = new Set();
+  (raw.tags ?? []).forEach((entry, index) => {
+    const tag = validateTagEntry(entry, `tags[${index}]`);
+    if (tagIds.has(tag.id)) {
+      throw fail('duplicate-tag-id', `"tags" names the tag id ${JSON.stringify(tag.id)} twice`);
+    }
+    if (tagNames.has(tag.name.trim())) {
+      throw fail('duplicate-tag-name', `"tags" names the tag ${JSON.stringify(tag.name)} twice`);
+    }
+    tagIds.add(tag.id);
+    tagNames.add(tag.name.trim());
+    tags.push(tag);
+  });
+  if (tags.length > MAX_TAGS) {
+    throw fail('tag-limit-reached', `"tags" exceeds the ${MAX_TAGS}-tag limit`);
+  }
   const presets = [];
   const ids = new Set();
   (raw.presets ?? []).forEach((entry, index) => {
-    const preset = validatePresetEntry(entry, `presets[${index}]`);
+    const preset = validatePresetEntry(entry, `presets[${index}]`, tagIds);
     if (ids.has(preset.id)) {
       throw fail('duplicate-preset-id', `"presets" names the preset id ${JSON.stringify(preset.id)} twice`);
     }
@@ -460,7 +689,7 @@ export function validatePresetsDocument(raw) {
     roots.add(record.workspaceRoot);
     applied.push(record);
   });
-  return { version: PRESETS_VERSION, presets, applied };
+  return { version: PRESETS_VERSION, tags, presets, applied };
 }
 
 /**
@@ -475,11 +704,17 @@ export function validatePresetsDocument(raw) {
  * body cap is separate, so a text that is over the library's own limit is an
  * ordinary invalid input rather than a transport-level refusal.
  * @param raw - the parsed request body.
- * @returns the normalized `{name, action, text}`.
+ * @param tags - the library's own tags (`tags[]` of the current document,
+ *   g-082). A `tagIds` entry outside it is `400 unknown-tag`; when the caller
+ *   passes the document's list the check is exact. A body that states no
+ *   `tagIds` at all is an empty tag set — this route's body is the whole entry.
+ * @returns the normalized `{name, action, text, tagIds}`.
  * @throws {OverrideError} `invalid-preset` / `invalid-name` / `name-too-long` /
- *   `unsupported-action` / `missing-text` / `text-too-large`.
+ *   `unsupported-action` / `missing-text` / `text-too-large` /
+ *   `invalid-tag-ids` / `invalid-tag-id` / `unknown-tag` /
+ *   `too-many-preset-tags`.
  */
-export function validatePresetInput(raw) {
+export function validatePresetInput(raw, tags = []) {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
     throw fail('invalid-preset', 'a preset must be a JSON object');
   }
@@ -507,7 +742,82 @@ export function validatePresetInput(raw) {
   if (encoder.encode(raw.text).length > MAX_TEXT_BYTES) {
     throw fail('text-too-large', `"text" exceeds ${MAX_TEXT_BYTES} UTF-8 bytes`);
   }
-  return { name, action, text: raw.text };
+  // g-082: the tag set. Order is preserved and repeats are dropped (the request
+  // is a set, so "the same tag twice" is one application, not a `400`); a tag
+  // the library does not hold is refused, because storing it would put a
+  // dangling id in the file — the one shape §20.1 forbids.
+  if (raw.tagIds !== undefined && raw.tagIds !== null && !Array.isArray(raw.tagIds)) {
+    throw fail('invalid-tag-ids', '"tagIds" must be an array');
+  }
+  const known = new Set((Array.isArray(tags) ? tags : []).map((tag) => tag.id));
+  const tagIds = [];
+  for (const value of raw.tagIds ?? []) {
+    if (typeof value !== 'string' || !PRESET_ID_PATTERN.test(value)) {
+      throw fail('invalid-tag-id', '"tagIds" must carry tag ids');
+    }
+    if (!known.has(value)) {
+      throw fail('unknown-tag', `"tagIds" names the unknown tag ${JSON.stringify(value)}`);
+    }
+    if (!tagIds.includes(value)) tagIds.push(value);
+  }
+  if (tagIds.length > MAX_PRESET_TAGS) {
+    throw fail('too-many-preset-tags', `"tagIds" exceeds ${MAX_PRESET_TAGS} tags`);
+  }
+  return { name, action, text: raw.text, tagIds };
+}
+
+/**
+ * Validate one tag body (`PUT /prompt-setting/presets/tags`, g-082).
+ *
+ * The name is stored **trimmed**: the library's uniqueness rule is "the same
+ * name", and letting a trailing space make two tags distinguishable would make
+ * the UI's own list ambiguous. Duplicate names are compared by trimmed value,
+ * so a no-op rename of `短答` to `短答 ` is not a duplicate of itself.
+ * @param raw - the parsed request body.
+ * @param options.tags - the library's tags, for the duplicate check.
+ * @param options.excludeId - the tag being edited (excluded from the duplicate
+ *   check), or `null` for a new tag.
+ * @returns the normalized `{name}`.
+ * @throws {OverrideError} `invalid-tag` / `invalid-tag-name` /
+ *   `tag-name-too-long` / `duplicate-tag-name`.
+ */
+export function validateTagInput(raw, options = {}) {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw fail('invalid-tag', 'a tag must be a JSON object');
+  }
+  const name = raw.name;
+  if (typeof name !== 'string' || name.trim().length === 0) {
+    throw fail('invalid-tag-name', 'a tag requires a non-empty string "name"');
+  }
+  if (name.length > MAX_TAG_NAME_LENGTH) {
+    throw fail('tag-name-too-long', `"name" exceeds ${MAX_TAG_NAME_LENGTH} characters`);
+  }
+  if (CONTROL_CHARACTERS.test(name)) {
+    throw fail('invalid-tag-name', '"name" must not contain control characters');
+  }
+  const trimmed = name.trim();
+  const excludeId = typeof options.excludeId === 'string' ? options.excludeId : null;
+  for (const tag of Array.isArray(options.tags) ? options.tags : []) {
+    if (excludeId !== null && tag.id === excludeId) continue;
+    if (tag.name.trim() === trimmed) {
+      throw fail('duplicate-tag-name', `a tag named ${JSON.stringify(trimmed)} already exists`);
+    }
+  }
+  return { name: trimmed };
+}
+
+/**
+ * Validate a tag id that addresses an existing tag.
+ * @param value - the `id` field of a body, or a `?id=` value.
+ * @param code - the error code to answer with.
+ * @returns the id.
+ * @throws {OverrideError} 400 with the given code.
+ */
+export function validateTagId(value, code = 'invalid-tag-id') {
+  if (typeof value !== 'string' || !PRESET_ID_PATTERN.test(value)) {
+    throw fail(code, '"id" must be a tag id (1-64 characters of [A-Za-z0-9._-])');
+  }
+  return value;
 }
 
 /**
@@ -569,13 +879,19 @@ export function upsertPreset(document, fields, options = {}) {
     name: fields.name,
     action: fields.action,
     text: fields.text,
+    // g-082: an edit that states `tagIds` replaces the set; a call that does not
+    // state it keeps what the stored entry had, so a caller that does not know
+    // about tags (a hand-written script, an older test) cannot silently strip
+    // them. `validatePresetInput` always states it, so the route writes what the
+    // request says.
+    tagIds: Array.isArray(fields?.tagIds) ? fields.tagIds.slice() : (previous?.tagIds ?? []),
     createdAt: previous?.createdAt ?? at,
     updatedAt: at,
   };
   if (index === -1) list.push(preset);
   else list[index] = preset;
   return {
-    document: { version: PRESETS_VERSION, presets: list, applied: appliedListOf(document) },
+    document: { version: PRESETS_VERSION, tags: tagsListOf(document), presets: list, applied: appliedListOf(document) },
     preset,
     created: index === -1,
   };
@@ -604,9 +920,115 @@ export function removePreset(document, id) {
   const presets = list.slice();
   presets.splice(at, 1);
   return {
-    document: { version: PRESETS_VERSION, presets, applied: appliedListOf(document) },
+    document: { version: PRESETS_VERSION, tags: tagsListOf(document), presets, applied: appliedListOf(document) },
     removed,
   };
+}
+
+/**
+ * Insert or update one tag (g-082).
+ *
+ * The twin of {@link upsertPreset}, and it keeps the same two rules: without an
+ * id the caller must have minted one (`options.id`, one per new tag), and with
+ * an id the tag must exist (`404 tag-not-found`) —「编辑标签」 silently becoming
+ * 「新建标签」would make a stale page duplicate instead of report. The library's
+ * `MAX_TAGS` ceiling is a `400 tag-limit-reached` on **creation only**; editing
+ * an existing tag never grows the set.
+ *
+ * Pure like every other function here, and the request was validated before it
+ * is called, so a refusal happens before any file is opened for writing.
+ * @param document - the current normalized document.
+ * @param fields - the validated `{name}`.
+ * @param options.id - the id to insert (ignored when `fields.id` is given).
+ * @param options.at - the ISO timestamp to stamp.
+ * @returns `{document, tag, created}`.
+ * @throws {OverrideError} 404 `tag-not-found`, 400 `tag-limit-reached`.
+ */
+export function upsertTag(document, fields, options = {}) {
+  const at = typeof options.at === 'string' ? options.at : null;
+  const list = tagsListOf(document);
+  const id = fields?.id === undefined || fields?.id === null ? options.id : fields.id;
+  if (id === undefined || id === null) {
+    throw fail('missing-id', 'a new tag needs an id minted by the Host');
+  }
+  const editing = fields?.id !== undefined && fields?.id !== null;
+  const index = list.findIndex((entry) => entry.id === id);
+  if (editing && index === -1) {
+    throw fail('tag-not-found', `no tag with id ${JSON.stringify(id)}`, 404);
+  }
+  if (!editing && list.length >= MAX_TAGS) {
+    throw fail('tag-limit-reached', `the library already holds ${MAX_TAGS} tags`);
+  }
+  const previous = index === -1 ? null : list[index];
+  const tag = {
+    id,
+    name: fields.name,
+    createdAt: previous?.createdAt ?? at,
+    updatedAt: at,
+  };
+  if (index === -1) list.push(tag);
+  else list[index] = tag;
+  return {
+    document: {
+      version: PRESETS_VERSION,
+      tags: list,
+      presets: Array.isArray(document?.presets) ? document.presets.slice() : [],
+      applied: appliedListOf(document),
+    },
+    tag,
+    created: index === -1,
+  };
+}
+
+/**
+ * Remove one tag, and with it **every application of it to a preset** (g-082).
+ *
+ * This is the "no dangling tagId" invariant as one atomic decision: the tag
+ * leaves `tags`, and the same id is stripped from every preset's `tagIds` in
+ * the same returned document, so a caller that writes that document cannot
+ * produce a preset pointing at a tag that is gone. The remaining tags of that
+ * preset keep their order; a preset that did not carry the tag is returned
+ * unchanged (same object).
+ *
+ * Deleting a tag never touches a workspace layer — tags are catalogue metadata,
+ * and the preset text an application wrote keeps living in that layer exactly as
+ * it did (§20.5). Here the cascade is the **presets' tag sets** only.
+ * @param document - the current normalized document.
+ * @param id - the tag id.
+ * @returns `{document, removed}` where `removed` is the deleted tag or `null`,
+ *   and `document` (with the cascade applied) or the caller's own document when
+ *   the id names nothing.
+ */
+export function removeTag(document, id) {
+  const tags = tagsListOf(document);
+  const at = tags.findIndex((entry) => entry.id === id);
+  if (at === -1) return { document, removed: null };
+  const removed = tags[at];
+  tags.splice(at, 1);
+  const presets = (Array.isArray(document?.presets) ? document.presets : []).map((preset) => {
+    const tagIds = Array.isArray(preset.tagIds) ? preset.tagIds : [];
+    if (!tagIds.includes(id)) return preset;
+    return { ...preset, tagIds: tagIds.filter((value) => value !== id) };
+  });
+  return {
+    document: { version: PRESETS_VERSION, tags, presets, applied: appliedListOf(document) },
+    removed,
+  };
+}
+
+/**
+ * The presets that carry one tag, in library order (g-082).
+ *
+ * The route's answer states how many presets a deletion will change, and the
+ * page asks the same question from the read payload; both read it through this
+ * function so the two can never disagree.
+ * @param document - the current normalized document.
+ * @param tagId - the tag id.
+ * @returns a fresh array of presets.
+ */
+export function presetsWithTag(document, tagId) {
+  return (Array.isArray(document?.presets) ? document.presets : [])
+    .filter((preset) => Array.isArray(preset.tagIds) && preset.tagIds.includes(tagId));
 }
 
 /** The `applied` list of a document, tolerating a shape without one. */
@@ -746,7 +1168,7 @@ export function planApply(document, options = {}) {
   const applied = appliedListOf(document).filter((item) => item.workspaceRoot !== options.workspaceRoot);
   applied.push(record);
   return {
-    document: { version: PRESETS_VERSION, presets: document.presets.slice(), applied },
+    document: { version: PRESETS_VERSION, tags: tagsListOf(document), presets: document.presets.slice(), applied },
     preset,
     record,
     base,
@@ -829,6 +1251,7 @@ export function planUnapply(document, options = {}) {
   return {
     document: {
       version: PRESETS_VERSION,
+      tags: tagsListOf(document),
       presets: document.presets.slice(),
       applied: kept,
     },
@@ -984,6 +1407,9 @@ export function publicPresets(document) {
     name: preset.name,
     action: preset.action,
     text: preset.text,
+    // g-082: always an array, even for a version 1 entry — the page renders the
+    // stored tag set without having to ask which document version it came from.
+    tagIds: Array.isArray(preset.tagIds) ? preset.tagIds.slice() : [],
     createdAt: preset.createdAt ?? null,
     updatedAt: preset.updatedAt ?? null,
   }));

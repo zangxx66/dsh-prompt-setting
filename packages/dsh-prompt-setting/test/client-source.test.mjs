@@ -9,7 +9,7 @@
  *   1. **逐字节**：`stripBanner(renderClient())` == 段真源坐标下的 `client.js`，
  *      且每段等于 §5.1 表里那个区间的行切片（零移动的机器证明）；
  *   2. **结构**：17 段一一对应 §5.1 的 17 个连续区间、每段 ≤ 1200 行、字典序 ==
- *      代码顺序、段间不插分隔符、无 CR、末尾换行一致、行数合计 12382；
+ *      代码顺序、段间不插分隔符、无 CR、末尾换行一致、行数合计 12593；
  *   3. **头注**：它是纯前缀、在 fingerprint `begin` 之前、**不进指纹**（hash/size
  *      与去头注后完全相同），而且磁盘上的 `client.js` 真的带着它；
  *   4. **负向对照**：在一次性包目录里改一行 `src/`（或只改 `client.js`）之后
@@ -61,22 +61,22 @@ const packageJson = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'u
  */
 const SEGMENTS = [
   [1, 215, '00-entry.js'],
-  [216, 902, '01-shared-head.js'],
-  [903, 2085, '02-locale.js'],
-  [2086, 2687, '03-facilities.js'],
-  [2688, 3338, '04-helpers-a.js'],
-  [3339, 3943, '05-helpers-b.js'],
-  [3944, 4608, '06-tree.js'],
-  [4609, 5255, '07-stage2.js'],
-  [5256, 5997, '08-chrome-a.js'],
-  [5998, 6786, '09-chrome-b.js'],
-  [6787, 7774, '10-toaster-mine.js'],
-  [7775, 8385, '11-chunks.js'],
-  [8386, 9026, '12-update.js'],
-  [9027, 10226, '13-page-a.js'],
-  [10227, 11424, '14-page-b.js'],
-  [11425, 12026, '15-page-c.js'],
-  [12027, 12382, '16-boot.js'],
+  [216, 905, '01-shared-head.js'],
+  [906, 2104, '02-locale.js'],
+  [2105, 2706, '03-facilities.js'],
+  [2707, 3357, '04-helpers-a.js'],
+  [3358, 3962, '05-helpers-b.js'],
+  [3963, 4627, '06-tree.js'],
+  [4628, 5274, '07-stage2.js'],
+  [5275, 6016, '08-chrome-a.js'],
+  [6017, 6811, '09-chrome-b.js'],
+  [6812, 7799, '10-toaster-mine.js'],
+  [7800, 8410, '11-chunks.js'],
+  [8411, 9051, '12-update.js'],
+  [9052, 10228, '13-page-a.js'],
+  [10229, 11411, '14-page-b.js'],
+  [11412, 12237, '15-page-c.js'],
+  [12238, 12593, '16-boot.js'],
 ];
 
 /**
@@ -148,8 +148,8 @@ test('client source: every segment is its §5.1 region, in code order and with n
     assert.equal(consumed, from - 1, `${name} 与上一段之间有空隙或重叠`);
     consumed += read.lines;
   }
-  assert.equal(consumed, clientLines.length - 1, '段必须恰好铺满 12382 行');
-  assert.equal(consumed, 12382);
+  assert.equal(consumed, clientLines.length - 1, '段必须恰好铺满 12593 行');
+  assert.equal(consumed, 12593);
 });
 
 test('client source: the generated banner is a pure prefix outside the fingerprint region', () => {
@@ -207,8 +207,8 @@ test('client source: line budget — stage 2 converges to §5.1, so no segment e
   // 阶段 1 超预算的三个（12-helpers/15-chrome/21-page）必须在这里消失。
   assert.deepEqual(over, [], `仍有超预算段：${over.join('、')}`);
   assert.equal(segments.length, 17, '阶段 2 的段数（§5.1 目标段表）');
-  assert.equal(segments.reduce((sum, segment) => sum + segment.lines, 0), 12382);
-  assert.equal(Math.max(...segments.map((segment) => segment.lines)), 1200, '最大段应恰为 §5.1 的 13-page-a');
+  assert.equal(segments.reduce((sum, segment) => sum + segment.lines, 0), 12593);
+  assert.equal(Math.max(...segments.map((segment) => segment.lines)), 1199, '最大段是 §5.1 的 02-locale（生成段，594 键 × 2 语言）');
 });
 
 test('client source: the manifest ships src/ and wires the two build scripts', () => {
