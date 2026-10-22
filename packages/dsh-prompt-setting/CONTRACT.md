@@ -4255,10 +4255,10 @@ its own scope (§13.3) and is not a consumer of this one. Before Revision 19 the
 same value was appended to the history request as `?session=`, which is exactly
 why the log looked like it lost records when the scope moved.
 
-**Revision 55 (g-073) narrows that sentence to what it now means.** The two
-reads it scopes are the ones this panel needs — `GET /snapshot` and
-`GET /overrides`, both asked for the write target's own workspace — and nothing
-else follows the value any more:
+**Revision 55 (g-073) narrows that sentence to what it now means.** At
+Revision 55 the value scoped two reads — `GET /snapshot` and `GET /overrides`,
+both asked for the write target's own workspace; Revision 57 adds the summary's
+`GET /assembly-status`, and nothing else follows the value any more:
 
 - `GET /presets` is read **without** `?session=` (§20.2): the library is one
   global file plus per-workspace records, and this panel's scope never described

@@ -122,7 +122,7 @@
 
 ### 2.3 共享设施与注入协议
 
-- 主 factory 把跨 chunk 设施收在一个冻结面上：`const CHUNK_FACILITIES = Object.freeze({...})`（`client.js:8097`，区间 `7911–8000` = **90 行**），含 `h`/`token`/`UI`/`fmt`/`tabs`/`cardStyle`/`errorBanner`/`stampOf`/`layerLabel`/`diff*`/`scrimStyle` 等。
+- 主 factory 把跨 chunk 设施收在一个冻结面上：`const CHUNK_FACILITIES = Object.freeze({...})`（`client.js:8097`，区间 `8097–8186` = **90 行**），含 `h`/`token`/`UI`/`fmt`/`tabs`/`cardStyle`/`errorBanner`/`stampOf`/`layerLabel`/`diff*`/`scrimStyle` 等。
 - chunk 侧取用方式：`const shared = require('dsh-prompt-setting').__internals.shared;`（`client.history.js:36`，同一段解构 20+ 个设施名）。
 - 导出面：`client.js:12608-12611`（`__internals: { historyPanelHeight, workspaceRows, shared: CHUNK_FACILITIES, assemblyNotice: {...} }`）。
 - 设计原则（代码注释明写）：**一份实例，不复制**——"a copy would be a second value that can drift away from the page it renders in"（`client.js:8089-8096`、`client.js:3980-3984`）。测试把这条原则固化成源码断言：chunk 里不得出现 `shared.` 之外的重复定义（`test/client.test.mjs:2376-2398`）。
@@ -222,7 +222,7 @@ git show <sha>:packages/dsh-prompt-setting/client.js | wc -l
 **7 个里只有 1 个新建了 chunk。** 这不是"大家忘了拆"，而是**准入条件把 6 个都排除了**。
 
 **M2｜共享设施的唯一合法住处是主入口。**
-由 §2.2 的 B1（同步可达唯一性）：`require('dsh-prompt-setting').__internals.shared` 是 chunk 拿设施的唯一路径（`client.history.js:36`），而它必须由主 factory 定义并导出（`client.js:8097`、`11651`）。**新增一个 chunk 的真实成本不是"搬走 500 行"，而是"先在主线造门面 + JSDoc + `shared` 导出 + 测试里的防复制断言"**。g-061「收敛复用」三批净增 601 行，正是这笔成本的实证。
+由 §2.2 的 B1（同步可达唯一性）：`require('dsh-prompt-setting').__internals.shared` 是 chunk 拿设施的唯一路径（`client.history.js:36`），而它必须由主 factory 定义并导出（`client.js:8097`、`12608`）。**新增一个 chunk 的真实成本不是"搬走 500 行"，而是"先在主线造门面 + JSDoc + `shared` 导出 + 测试里的防复制断言"**。g-061「收敛复用」三批净增 601 行，正是这笔成本的实证。
 
 **M3｜默认 tab 被设计排除在 chunk 之外。**
 `client.js:8455-8460` 明确写出理由（首屏二次往返、失败即空白）。于是「我的 Prompt」这条**最活跃、改动最频繁**的线（g-058 / g-055 / g-056 / g-071 都在改它）永久住在主入口：`renderMinePanel` **547 行**（`client.js:7512-8061`）+ 页面模型里对应的大段 state/handler。

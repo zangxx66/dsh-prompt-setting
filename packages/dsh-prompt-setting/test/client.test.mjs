@@ -16537,9 +16537,136 @@ test('client: g-084 — coverage follows the write target, the reserved entry’
   assert.equal(status.props['data-mine-status-total'], '3');
   assert.equal(
     status.props['data-mine-status-ineffective'],
-    '1',
-    'only the user entry shadowed by the workspace name remains ineffective',
+    '2',
+    'the user alpha and the user reserved entry are both shadowed by the workspace layer',
   );
+});
+
+test('client: g-084 — the user reserved entry is shadowed by workspace replace but stacked by append', async () => {
+  const makeCoveragePage = (workspaceAction) => {
+    const workspaceEntry =
+      workspaceAction === 'hide'
+        ? { name: CUSTOM_SECTION_NAME, action: 'hide' }
+        : { name: CUSTOM_SECTION_NAME, action: workspaceAction, text: 'ws prompt' };
+    return makePage({
+      useSessions: sessionsHook(WORKSPACE_SESSIONS),
+      useWorkspaces: workspacesHook(workspacesFixture()),
+      responses: defaultResponses({
+        [PATHS.overrides]: () => ({
+          payload: layeredOverrides(
+            [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'user prompt' }],
+            [workspaceEntry],
+          ),
+        }),
+        [PATHS.snapshot]: () => ({
+          payload: snapshotFixture({
+            effective: {
+              sections: [
+                { name: CUSTOM_SECTION_NAME, index: null, text: 'combined', applied: true, overridable: true, reason: null, overrideLayer: 'workspace', action: workspaceAction === 'append' ? 'replace' : workspaceAction, origin: 'registered' },
+              ],
+            },
+          }),
+        }),
+      }),
+    });
+  };
+  for (const [workspaceAction, expected] of [['replace', '1'], ['hide', '1'], ['append', '0']]) {
+    const page = makeCoveragePage(workspaceAction);
+    const tree = await page.flush();
+    const status = oneBy(tree, 'data-region', 'mine-status');
+    assert.equal(status.props['data-mine-status-layer'], 'user');
+    assert.equal(status.props['data-mine-status-total'], '1');
+    assert.equal(
+      status.props['data-mine-status-ineffective'],
+      expected,
+      workspaceAction === 'append'
+        ? 'workspace append stacks the user text, so the user entry took effect'
+        : 'workspace replace/hide shadows the user text, so the user entry did not take effect',
+    );
+  }
+});
+
+test('client: g-084 — returning to the same session after a global scope reads again', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses({
+      [PATHS.assemblyStatus]: () => ({
+        payload: assemblyFixture({ session: 'a3', record: assemblyRecordFixture({ session: 'a3' }) }),
+      }),
+    }),
+  });
+  let tree = await page.flush();
+  const a3Reads = () => assemblyReadsOf(page).filter((url) => url.includes('session=a3'));
+  assert.equal(a3Reads().length, 1, 'the page scope read a3 on mount');
+  assert.equal(oneBy(tree, 'data-region', 'mine-status').props['data-mine-status-read'], 'ready');
+
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'mine-status').props['data-mine-status-scope'], 'global');
+
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  sessionOptions(tree).find((row) => row.props['data-session-id'] === 'a3').props.onClick();
+  tree = await page.flush();
+  const status = oneBy(tree, 'data-region', 'mine-status');
+  assert.equal(a3Reads().length, 2, 'coming back to a3 must not reuse the invalidated read');
+  assert.equal(status.props['data-mine-status-read'], 'ready', 'and must not rest on the idle frame');
+  assert.equal(hasText(status, page.zh.loading), false, 'the summary is not stuck on loading');
+});
+
+test('client: g-084 —「详情」keeps a non-representative member session and a loose session', async () => {
+  const notices = {
+    a2: assemblyNoticeFixture({ id: 'n-a2' }),
+    loose: assemblyNoticeFixture({ id: 'n-loose' }),
+  };
+  const makeDetailPage = () =>
+    makePage({
+      useSessions: sessionsHook(WORKSPACE_SESSIONS),
+      useWorkspaces: workspacesHook(workspacesFixture()),
+      responses: defaultResponses({
+        [PATHS.assemblyStatus]: (url) => perSessionAssembly(url, notices),
+      }),
+      enforceEffectDeps: true,
+    });
+  const enterScope = async (page, id, groupKey) => {
+    let tree = await page.flush();
+    scopeToggle(tree).props.onClick();
+    tree = await page.flush();
+    if (groupKey !== null) {
+      const header = scopeHeader(tree, groupKey);
+      if (header.props['data-expanded'] === 'false') {
+        clickNode(header, { stopPropagation() {} });
+        tree = await page.flush();
+      }
+    }
+    sessionOptions(tree).find((row) => row.props['data-session-id'] === id).props.onClick();
+    return page.flush();
+  };
+
+  // a2 belongs to the current workspace but is not the workspace's representative id.
+  const member = makeDetailPage();
+  let tree = await enterScope(member, 'a2', null);
+  clickButton(tree, { 'data-action': 'mine-status-detail' });
+  tree = await member.flush();
+  assert.equal(oneBy(tree, 'data-region', 'advanced-scope').props['data-advanced-scope-value'], 'a2');
+  assert.equal(
+    oneBy(tree, 'data-role', 'advanced-scope-summary-label').props.children,
+    'Alpha repo · Alpha two',
+    'the name names the pinned session, not just the workspace',
+  );
+  assert.equal(assemblyReadsOf(member).slice(-1)[0], `${PATHS.assemblyStatus}?session=a2`);
+
+  // loose belongs to no workspace, so no option's sessionIds can claim it.
+  const loose = makeDetailPage();
+  tree = await enterScope(loose, 'loose', '');
+  clickButton(tree, { 'data-action': 'mine-status-detail' });
+  tree = await loose.flush();
+  assert.equal(oneBy(tree, 'data-region', 'advanced-scope').props['data-advanced-scope-value'], 'loose');
+  assert.equal(oneBy(tree, 'data-role', 'advanced-scope-summary-label').props.children, 'Loose session');
+  assert.equal(assemblyReadsOf(loose).slice(-1)[0], `${PATHS.assemblyStatus}?session=loose`);
 });
 
 // #endregion

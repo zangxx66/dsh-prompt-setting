@@ -580,16 +580,16 @@
           ineffective += 1;
         } else if (entry.name === RESERVED_SECTION_NAME) {
           // The reserved text is stacked across layers before the assembly, so
-          // "this layer's entry" and "the winning entry" are not the same object;
-          // its applied flag is the one honest answer.
-          if (target.applied !== true) ineffective += 1;
+          // "this layer's entry" and the winning one differ; applied decides
+          // existence, and a workspace replace/hide shadows the user text.
+          const wsStacked = (overrides.workspace && Array.isArray(overrides.workspace.overrides) ? overrides.workspace.overrides : []).some((item) => item !== null && typeof item === 'object' && item.name === RESERVED_SECTION_NAME && item.action === 'append');
+          if (target.applied !== true || (layer === 'user' && target.overrideLayer !== 'user' && !wsStacked)) ineffective += 1;
         } else if (target.overrideLayer !== layer || target.applied !== true) {
           ineffective += 1;
         }
       }
       return { total: list.length, ineffective };
     }
-
     /**
      * g-084:「我的 Prompt」's read-only status summary — the two facts a reader
      * previously had to switch to「高级」for, in this panel's own scope.

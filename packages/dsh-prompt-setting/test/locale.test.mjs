@@ -154,7 +154,7 @@ const ERROR_KEY_COUNT = 51;
  * assembly block already ships (`assemblyLayerAssembly` / `assemblyLayerDelivery`
  * plus the verdict sentences), so the count is 546 main keys / 597 total. To make
  * room inside the 1200-line segment budget, the generator's stale five-line
- * header comment was reduced to zero lines (the facts live in CONTRACT §14.5).
+ * header comment was compressed to one line (the facts live in CONTRACT §14.5).
  */
 const MAIN_KEY_COUNT = 546;
 /** The full key count both files must hold, in the same order. */

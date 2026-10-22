@@ -7400,16 +7400,16 @@ window.__ModuleLoader__.load({
           ineffective += 1;
         } else if (entry.name === RESERVED_SECTION_NAME) {
           // The reserved text is stacked across layers before the assembly, so
-          // "this layer's entry" and "the winning entry" are not the same object;
-          // its applied flag is the one honest answer.
-          if (target.applied !== true) ineffective += 1;
+          // "this layer's entry" and the winning one differ; applied decides
+          // existence, and a workspace replace/hide shadows the user text.
+          const wsStacked = (overrides.workspace && Array.isArray(overrides.workspace.overrides) ? overrides.workspace.overrides : []).some((item) => item !== null && typeof item === 'object' && item.name === RESERVED_SECTION_NAME && item.action === 'append');
+          if (target.applied !== true || (layer === 'user' && target.overrideLayer !== 'user' && !wsStacked)) ineffective += 1;
         } else if (target.overrideLayer !== layer || target.applied !== true) {
           ineffective += 1;
         }
       }
       return { total: list.length, ineffective };
     }
-
     /**
      * g-084:「我的 Prompt」's read-only status summary — the two facts a reader
      * previously had to switch to「高级」for, in this panel's own scope.
@@ -9740,10 +9740,10 @@ window.__ModuleLoader__.load({
         if (seat.currentId.length > 0) return seat.currentId;
         return advancedScopes.options.length > 0 ? advancedScopes.options[0].value : '';
       })();
-      const advancedScopeValue =
-        advancedScope !== null && advancedScopes.options.some((option) => option.value === advancedScope)
-          ? advancedScope
-          : advancedScopeAuto;
+      const advancedScopeKnown =
+        advancedScope !== null &&
+        (advancedScopes.options.some((option) => option.value === advancedScope || option.sessionIds.includes(advancedScope)) || seat.rows.some((row) => row.id === advancedScope));
+      const advancedScopeValue = advancedScopeKnown ? advancedScope : advancedScopeAuto;
       const advancedScopeOwner =
         advancedScopes.options.find((option) => option.sessionIds.includes(advancedScopeValue)) ?? null;
       // The name is the **workspace**'s, because that is what the layer actions
@@ -9753,7 +9753,7 @@ window.__ModuleLoader__.load({
       const advancedScopeName = (() => {
         const sessionName = sessionLabelOf(seat.rows, advancedScopeValue) || advancedScopeValue;
         if (advancedScopeOwner === null) return sessionName;
-        if (advancedScope !== null) return advancedScopeOwner.label;
+        if (advancedScope !== null) return advancedScope === advancedScopeOwner.value ? advancedScopeOwner.label : `${advancedScopeOwner.label} · ${sessionName}`;
         if (sessionName.length === 0 || sessionName === advancedScopeOwner.label) return advancedScopeOwner.label;
         return `${advancedScopeOwner.label} · ${sessionName}`;
       })();
@@ -10080,6 +10080,7 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         if (tab !== 'mine') return undefined;
         if (sessionArg === null) {
+          mineAssemblyReadRef.current = null;
           setMineAssembly((current) =>
             current.phase === 'idle' && current.data === null && current.error === null
               ? current
@@ -10131,7 +10132,6 @@ window.__ModuleLoader__.load({
           if (timer !== null) clearTimeout(timer);
         };
       }, [tab, sessionArg, reload]);
-
       // History is loaded only while 「版本历史」 is open: 「我的 Prompt」 and
       // 「提示词总览」 must not pay for a log they never show, and a mount that
       // never opens that tab must issue exactly the baseline requests.

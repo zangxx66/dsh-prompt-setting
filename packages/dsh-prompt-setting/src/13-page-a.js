@@ -520,10 +520,10 @@
         if (seat.currentId.length > 0) return seat.currentId;
         return advancedScopes.options.length > 0 ? advancedScopes.options[0].value : '';
       })();
-      const advancedScopeValue =
-        advancedScope !== null && advancedScopes.options.some((option) => option.value === advancedScope)
-          ? advancedScope
-          : advancedScopeAuto;
+      const advancedScopeKnown =
+        advancedScope !== null &&
+        (advancedScopes.options.some((option) => option.value === advancedScope || option.sessionIds.includes(advancedScope)) || seat.rows.some((row) => row.id === advancedScope));
+      const advancedScopeValue = advancedScopeKnown ? advancedScope : advancedScopeAuto;
       const advancedScopeOwner =
         advancedScopes.options.find((option) => option.sessionIds.includes(advancedScopeValue)) ?? null;
       // The name is the **workspace**'s, because that is what the layer actions
@@ -533,7 +533,7 @@
       const advancedScopeName = (() => {
         const sessionName = sessionLabelOf(seat.rows, advancedScopeValue) || advancedScopeValue;
         if (advancedScopeOwner === null) return sessionName;
-        if (advancedScope !== null) return advancedScopeOwner.label;
+        if (advancedScope !== null) return advancedScope === advancedScopeOwner.value ? advancedScopeOwner.label : `${advancedScopeOwner.label} · ${sessionName}`;
         if (sessionName.length === 0 || sessionName === advancedScopeOwner.label) return advancedScopeOwner.label;
         return `${advancedScopeOwner.label} · ${sessionName}`;
       })();
@@ -860,6 +860,7 @@
       React.useEffect(() => {
         if (tab !== 'mine') return undefined;
         if (sessionArg === null) {
+          mineAssemblyReadRef.current = null;
           setMineAssembly((current) =>
             current.phase === 'idle' && current.data === null && current.error === null
               ? current
@@ -911,7 +912,6 @@
           if (timer !== null) clearTimeout(timer);
         };
       }, [tab, sessionArg, reload]);
-
       // History is loaded only while 「版本历史」 is open: 「我的 Prompt」 and
       // 「提示词总览」 must not pay for a log they never show, and a mount that
       // never opens that tab must issue exactly the baseline requests.
