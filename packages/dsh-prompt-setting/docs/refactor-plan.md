@@ -81,11 +81,13 @@
 | 7961–8571 | 611 | **chunk boundary（g-045 协议）** | 不可拆（协议） |
 | 8572–9212 | 641 | 更新条 + 区域弹窗 + `renderSection`（8972）+ `#endregion`（9212） | 跨 tab chrome |
 | 9213–9227 | 15 | `PromptSettingSection` 的 JSDoc | 随页面模型 |
-| **9228–12492** | **3265** | **`PromptSettingSection`（页面模型：hooks/state/handlers/root 树）** | **不可拆（页面 root）** |
-| 12493–12505 | 13 | 分隔行 + `renderFailureCard` 的 JSDoc（12494–12504）+ 定义行（12505） | 协议 |
-| 12506–12839 | 334 | `renderFailureCard` body / `degradedPlugin`（12768）/ boot 返回 | 协议 |
+| **9228–12483** | **3256** | **`PromptSettingSection`（页面模型：hooks/state/handlers/root 树）** | **不可拆（页面 root）** |
+| 12484–12496 | 13 | 分隔行 + `renderFailureCard` 的 JSDoc（12485–12495）+ 定义行（12496） | 协议 |
+| 12497–12839 | 343 | `renderFailureCard` body / `degradedPlugin`（12768）/ boot 返回 | 协议 |
 
-**上表互不重叠、首尾连续，行数合计 = 12839**（评审 R2-D1 订正：原稿把 `PromptSettingSection` 写成 `8884–11536` / 2652 行，实际函数体结束于 **12492**、**3265 行**；`12505` 是下一个函数 `renderFailureCard` 的定义行，其 JSDoc 在 12494–12504）。**每个区间都是一个连续的代码切片**——这正是 §5.1 段划分的依据（只重切、不移动）。
+**上表互不重叠、首尾连续，行数合计 = 12839**（评审 R2-D1 订正：原稿把 `PromptSettingSection` 写成 `8884–11536` / 2652 行，实际函数体结束于 **12483**、**3256 行**；`12496` 是下一个函数 `renderFailureCard` 的定义行，其 JSDoc 在 12485–12495）。**每个区间都是一个连续的代码切片**——这正是 §5.1 段划分的依据（只重切、不移动）。
+
+**坐标口径**：本表使用**段真源坐标**（`client.js` 去掉 9 行生成头注；生成物行号 = 本表 + 9，文件实际 12848 行）。§5.1 段表、`docs/architecture-map.md` 与 `test/client-source.test.mjs` 的 `SEGMENTS` 同此口径。
 
 ---
 
