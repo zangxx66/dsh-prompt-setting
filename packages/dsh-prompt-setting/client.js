@@ -7399,11 +7399,11 @@ window.__ModuleLoader__.load({
         if (target === undefined) {
           ineffective += 1;
         } else if (entry.name === RESERVED_SECTION_NAME) {
-          // The reserved text is stacked across layers before the assembly, so
-          // "this layer's entry" and the winning one differ; applied decides
-          // existence, and a workspace replace/hide shadows the user text.
-          const wsStacked = (overrides.workspace && Array.isArray(overrides.workspace.overrides) ? overrides.workspace.overrides : []).some((item) => item !== null && typeof item === 'object' && item.name === RESERVED_SECTION_NAME && item.action === 'append');
-          if (target.applied !== true || (layer === 'user' && target.overrideLayer !== 'user' && !wsStacked)) ineffective += 1;
+          // The reserved text is stacked by `resolveReservedSection`; an entry
+          // contributes only when its own non-empty text reaches the assembly.
+          const other = (overrides[layer === 'user' ? 'workspace' : 'user']?.overrides ?? []).find((item) => item?.name === RESERVED_SECTION_NAME);
+          const contributes = entry.action !== 'hide' && typeof entry.text === 'string' && entry.text.trim() !== '' && (layer === 'workspace' || !(other && (other.action === 'hide' || (typeof other.text === 'string' && other.text.trim() !== '' && other.action !== 'append'))));
+          if (target.applied !== true || !contributes) ineffective += 1;
         } else if (target.overrideLayer !== layer || target.applied !== true) {
           ineffective += 1;
         }

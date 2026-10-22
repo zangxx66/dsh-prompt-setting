@@ -27,7 +27,7 @@ import { CUSTOM_SECTION_NAME, RESERVED_WRITABLE_ACTIONS } from '../core/custom.j
 // state the route could really produce (g-054): `mergeLayers` deduplicates by
 // name across layers, so a hand-written `merged` list holding a same-name pair
 // is a fixture no real `GET /overrides` can answer with.
-import { mergeLayers, validateConfig } from '../core/overrides.js';
+import { RESERVED_STACK_SEPARATOR, mergeLayers, validateConfig } from '../core/overrides.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageJson = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8'));
@@ -16485,7 +16485,7 @@ test('client: g-084 — coverage follows the write target, the reserved entry’
     { name: 'project:alpha', index: 0, text: 'ws alpha', applied: true, overridable: true, reason: null, overrideLayer: 'workspace', action: 'replace', origin: 'registered' },
     { name: 'user:only', index: 1, text: 'user only', applied: true, overridable: true, reason: null, overrideLayer: 'user', action: 'replace', origin: 'registered' },
     { name: 'extra:workspace', index: 2, text: 'ws extra', applied: true, overridable: true, reason: null, overrideLayer: 'workspace', action: 'append', origin: 'appended' },
-    { name: CUSTOM_SECTION_NAME, index: 3, text: 'combined', applied: reservedApplied, overridable: true, reason: null, overrideLayer: 'workspace', action: 'replace', origin: 'registered' },
+    { name: CUSTOM_SECTION_NAME, index: 3, text: 'ws prompt', applied: reservedApplied, overridable: true, reason: null, overrideLayer: 'workspace', action: 'replace', origin: 'registered' },
   ];
   const page = makePage({
     useSessions: sessionsHook(WORKSPACE_SESSIONS),
@@ -16562,7 +16562,7 @@ test('client: g-084 — the user reserved entry is shadowed by workspace replace
           payload: snapshotFixture({
             effective: {
               sections: [
-                { name: CUSTOM_SECTION_NAME, index: null, text: 'combined', applied: true, overridable: true, reason: null, overrideLayer: 'workspace', action: workspaceAction === 'append' ? 'replace' : workspaceAction, origin: 'registered' },
+                { name: CUSTOM_SECTION_NAME, index: null, text: workspaceAction === 'append' ? `user prompt${RESERVED_STACK_SEPARATOR}ws prompt` : workspaceAction === 'hide' ? '' : 'ws prompt', applied: true, overridable: true, reason: null, overrideLayer: 'workspace', action: workspaceAction === 'append' ? 'replace' : workspaceAction, origin: 'registered' },
               ],
             },
           }),
@@ -16667,6 +16667,80 @@ test('client: g-084 —「详情」keeps a non-representative member session and
   assert.equal(oneBy(tree, 'data-region', 'advanced-scope').props['data-advanced-scope-value'], 'loose');
   assert.equal(oneBy(tree, 'data-role', 'advanced-scope-summary-label').props.children, 'Loose session');
   assert.equal(assemblyReadsOf(loose).slice(-1)[0], `${PATHS.assemblyStatus}?session=loose`);
+});
+
+test('client: g-084 — the reserved entry counts only when its own text reaches the assembly', async () => {
+  const effectiveFor = (text, action, layer = 'workspace') => ({
+    name: CUSTOM_SECTION_NAME,
+    index: null,
+    text,
+    applied: true,
+    overridable: true,
+    reason: null,
+    overrideLayer: layer,
+    action,
+    origin: 'registered',
+  });
+  const makeStatusPage = (userReserved, workspaceReserved, effective) =>
+    makePage({
+      useSessions: sessionsHook(WORKSPACE_SESSIONS),
+      useWorkspaces: workspacesHook(workspacesFixture()),
+      responses: defaultResponses({
+        [PATHS.overrides]: () => ({ payload: layeredOverrides([userReserved], [workspaceReserved]) }),
+        [PATHS.snapshot]: () => {
+          const payload = snapshotFixture({ effective: { sections: [effective] } });
+          payload.layers.workspace = { enabled: true, path: '/work/alpha/.dsh-prompt-setting/overrides.json', reason: null };
+          return { payload };
+        },
+      }),
+    });
+  const numbers = (tree) => {
+    const status = oneBy(tree, 'data-region', 'mine-status');
+    return [status.props['data-mine-status-total'], status.props['data-mine-status-ineffective']];
+  };
+  const toWorkspace = async (page, tree) => {
+    clickTab(tree, 'mine-layer', 'workspace');
+    return page.flush();
+  };
+
+  // 1. user layer stores a reserved entry with no text; workspace appends text.
+  let page = makeStatusPage(
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: '' },
+    { name: CUSTOM_SECTION_NAME, action: 'append', text: 'ws prompt' },
+    effectiveFor('ws prompt', 'replace'),
+  );
+  let tree = await page.flush();
+  assert.deepEqual(numbers(tree), ['1', '1'], 'an empty user entry contributes no text');
+
+  // 2. user layer hides the reserved section; workspace appends text.
+  page = makeStatusPage(
+    { name: CUSTOM_SECTION_NAME, action: 'hide' },
+    { name: CUSTOM_SECTION_NAME, action: 'append', text: 'ws prompt' },
+    effectiveFor('ws prompt', 'replace'),
+  );
+  tree = await page.flush();
+  assert.deepEqual(numbers(tree), ['1', '1'], 'a user hide has no text to stack');
+
+  // 3. workspace layer stores an empty reserved entry; user has text.
+  page = makeStatusPage(
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'user prompt' },
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: '' },
+    effectiveFor('user prompt', 'replace', 'user'),
+  );
+  tree = await page.flush();
+  tree = await toWorkspace(page, tree);
+  assert.deepEqual(numbers(tree), ['1', '1'], 'the empty workspace entry did not take effect');
+
+  // 4. both layers carry text and the workspace appends: both contribute.
+  page = makeStatusPage(
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'user prompt' },
+    { name: CUSTOM_SECTION_NAME, action: 'append', text: 'ws prompt' },
+    effectiveFor(`user prompt${RESERVED_STACK_SEPARATOR}ws prompt`, 'replace'),
+  );
+  tree = await page.flush();
+  assert.deepEqual(numbers(tree), ['1', '0'], 'the user text is stacked, not shadowed');
+  tree = await toWorkspace(page, tree);
+  assert.deepEqual(numbers(tree), ['1', '0'], 'the workspace append contributes its own text');
 });
 
 // #endregion

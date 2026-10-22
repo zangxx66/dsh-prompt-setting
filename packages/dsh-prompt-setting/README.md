@@ -428,7 +428,7 @@ node packages/dsh-prompt-setting/scripts/verify.mjs
 > step is capped at 15 minutes.
 
 - **改文案只改 `locale/*.json` / Copy lives in `locale/*.json`**：`client.js` 里的 `zh`/`en` 两段
-  是**生成物**（`// #region generated:` … `// #endregion`），由 `scripts/locale-pack.mjs --write`
+  是**生成物**（生成段头注只有一行说明，不再有 region/endregion 包裹），由 `scripts/locale-pack.mjs --write`
   从两份 JSON 渲染；`--check` 是门禁（`prepare` 也会跑，测试见 `test/locale.test.mjs`）。JSON 共
   597 键/语言（546 主词典 + 51 个 `error.<code>`），是**唯一人工真源**。浏览器运行时**不读**这两份
   JSON —— bundle 是 classic script、宿主零转译、插件路由不服务子目录 —— 所以词典必须内联，只是不再

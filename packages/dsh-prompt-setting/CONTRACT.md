@@ -8020,7 +8020,7 @@ re-report it.
 ## 22. The locale dictionaries (g-066, Revision 49)
 
 Every user-visible string this plugin renders — **597** keys per language since
-g-084 (Revision 57; 586 through Revision 56, 573 through Revision 54, 567
+g-084 (Revision 57; 594 through Revision 56, 573 through Revision 54, 567
 through Revision 51, 566 through Revision 50, 564 through Revision 49) — used to
 be hardcoded inside `client.js`: a 513-key `zh` object, a 513-key `en` object,
 and an `ERROR_TEXT` table of 51 `code → [zh, en]` rows that a loop expanded into
