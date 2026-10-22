@@ -90,7 +90,7 @@
   > is shown before anything is written. An import validates the document field by field and refuses a bad
   > one whole, writing nothing.
 
-- **高级 / Advanced** —— 旧版覆盖的只读列表、「清除全部覆盖」与「整层恢复默认」两个二次确认按钮、
+- **高级 / Advanced** —— 旧版覆盖的只读列表、「清除全部覆盖」与「整层重置」两个二次确认按钮、
   **「检查更新」开关**（默认开启；关闭后本插件**完全不再联网**）、**「立即更新」**（把提示条里的版本
   交给宿主安装，装完需要你**手动重启**：命令行启动就重新运行 `dsh web`，官方桌面端就退出并重新
   打开 DeepSeek Harness），以及完整状态区（挂载情况 / 构建戳 / 渲染器自检）。它有自己的**工作区选择器**

@@ -10475,8 +10475,8 @@ v0.2.3 的计划条目（g-065…g-074）与 v0.2.4 的（g-075…g-080）一直
 
 ### 二、验证
 
-- `node --test test/*.test.mjs`：**1022 pass / 0 fail**（新增 11 条 g-084 用例，含
-  R1–R3 返工；另 1 条 EN sweep 用例。既有两条 g-065/g-073 读取计数断言按新行为收紧：
+- `node --test test/*.test.mjs`：**1022 pass / 0 fail**（g-084 共 11 条测试函数（R1–R3）
+  + 1 条 EN sweep case；既有两条 g-065/g-073 读取计数断言按新行为收紧：
   mine 的摘要读取被显式计入，而「高级」仍然 one-read-per-open）。
 - `node scripts/prepare.mjs` / `locale-pack.mjs --check` / `client-chunks.mjs`：全绿；
   locale 597 键；`CHUNK_STAMPS` 不变（未改 chunk）。
