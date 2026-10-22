@@ -10438,3 +10438,52 @@ v0.2.3 的计划条目（g-065…g-074）与 v0.2.4 的（g-075…g-080）一直
 - `CHANGELOG.md` 未改（见第二节）；`CONTRACT.md` 无范围表述可改。
 - 真机未验证：没有在 0.2.1-0 / 0.2.2 真机上安装；证据是单元断言与只读自检脚本的输出。
   合并与发布是人工 gate。
+
+## 166. g-084：「我的 Prompt」就地状态摘要（装配结论 + 覆盖计数）与清理入口文案澄清（Revision 57，2026-10-23，基线 `96a236b`，隔离工作树 `g-084-att-01`）
+
+### 一、做了什么
+
+- **只读摘要**：`renderMinePanel` 在 `data-region="mine-target"` 之后插入
+  `data-region="mine-status"`，两行：①最近关键节点的 `assemblyVerdictOf` +
+  `deliveryVerdictOf`（沿用既有函数与既有文案键，不复制第二套结论）；②
+  `mineStatusCoverage`「本层覆盖 {total} 条 · {ineffective} 条未生效」。摘要内
+  **没有** `data-action="assembly-toggle"`，也不渲染 `data-region="overrides"`，
+  不展开任何逐条原因。
+- **独立作用域与缓存**：`13-page-a.js` 新增 `mineAssembly` 槽与
+  `mineAssemblyReadRef`，tab-gated on `mine`，scope 是页面 `sessionArg`；与
+  「高级」的 `assembly` / `assemblyReadRef`（`advancedScopeArg`）**完全分开**。
+  全局范围（`sessionArg === null`）**不发请求**：宿主按 session id 记记录，没有
+  「无会话」记录可借，摘要显示 `sessionGlobal`。
+- **「详情」联动**：新增 `a.openMineStatusDetail`。有页面范围时把
+  `advancedScope` 钉到该 session 再切 tab；全局范围不动「高级」的现有默认
+  （跟随当前会话）。请求因此与「我的 Prompt」同 session。
+- **覆盖计数**：`mineCoverageOf(layer, ovs, effective.sections)` 读页面作用域
+  的两份数据；`applied !== true` 或合并时被另一层顶掉（`overrideLayer` 不同）计为
+  「未生效」；保留段按 `applied` 单判（跨层 stack 时它才是诚实事实）。
+- **清理入口只改文案**：`mineResetTitle/Body` 写明只删本层「我的 Prompt」段并保留
+  本层其他覆盖；`resetLayerBody` 写明整层清空**包括**「我的 Prompt」、并与
+  「清除全部覆盖」对照；`resetLegacyBody` 补上「与整层重置不同」。`reset=true` /
+  `legacy=true` 路由、按钮结构、确认流程一律未动。
+- **预算与结构**：locale 新增 3 键（597/语言），生成段已到 1200 行硬上限，因此把
+  ¶`src/02-locale.js` 原有的 5 行 `#region` 头注压缩为 1 行说明（事实保留在
+  CONTRACT §22.1）。`10-toaster-mine` 增至 1148 行；`13/14/15` 三段按**只重切、
+  不移动**原则重新分配（1190 / 1198 / 883），产物 `client.js` 逐字节不变；
+  `SEGMENTS` 与 §5.1/§1.3 表同步到 12839 行。
+- **文档**：CONTRACT §12.1 / §12.2 / §13.1 / §13.4 / §13.7（新增 Revision 57 段）/
+  §13.10（表格行 + 不变式）/ §21.5 / §22 同步；README 中文版与英文版（根目录与包内
+  双语 README）更新；本小节新增。
+
+### 二、验证
+
+- `node --test test/*.test.mjs`：**1016 pass / 0 fail**（新增 5 条 g-084 用例 +
+  1 条 EN sweep 用例；既有两条 g-065/g-073 读取计数断言按新行为收紧：mine 的摘要
+  读取被显式计入，而「高级」仍然 one-read-per-open）。
+- `node scripts/prepare.mjs` / `locale-pack.mjs --check` / `client-chunks.mjs`：全绿；
+  locale 597 键；`CHUNK_STAMPS` 不变（未改 chunk）。
+- `node docs/check-refs.mjs`：见交付报文（重切后按锚文本重定位并如实更新）。
+- **负向对照（改坏就会红）**：①把 `mine-status` 里的 `data-action` 改成
+  `assembly-toggle` ⇒ criterion-1 用例红；②把 `openMineStatusDetail` 的
+  `setAdvancedScope(sessionArg)` 删掉 ⇒ 详情联动用例红（advanced scope 停在 a3）；
+  ③全局分支加回请求 ⇒「global reads no other session」用例红。三处均在副本中实跑并还原。
+- 未验证：真实设置面板中的几何 / 观感（摘要两行高度是否稳定在约 44px、窄容器换行）
+  留负责人目视；本次没有跑真机。

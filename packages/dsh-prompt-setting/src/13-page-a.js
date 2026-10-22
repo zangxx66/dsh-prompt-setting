@@ -115,6 +115,12 @@
         enabled: null,
         status: { kind: 'idle', error: null },
       });
+      // g-084: 「我的 Prompt」's own read of the same observation. It is a
+      // **separate** slot from `assembly` on purpose: that one belongs to
+      // 「高级」 and is keyed by its workspace selector, while this one follows
+      // the page's「查看范围」 (g-073's tab-owned scope rule). Two slots, two
+      // caches — neither read may overwrite or re-point the other.
+      const [mineAssembly, setMineAssembly] = React.useState({ phase: 'idle', data: null, error: null });
       const [notice, setNotice] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
       // g-060 (Revision 37; dialog-based since Revision 38 / review R3): the
@@ -842,6 +848,70 @@
         };
       }, [tab, advancedScopeArg, reload]);
 
+      // g-084: the read behind「我的 Prompt」's read-only status summary. Scope is
+      // the page's「查看范围」 (`sessionArg`) — never `advancedScopeArg`, and its
+      // cache is its own, so the two tabs cannot overwrite each other's answer.
+      // It is tab-gated like every g-073 read: a session that never opens the
+      // default tab pays nothing; switching away and back reuses `{scope, reload}`
+      // instead of asking again. A global scope issues **no** request at all: the
+      // host keys records by session id, so there is no record that belongs to
+      // "no session", and guessing at one would borrow another scope's fact.
+      const mineAssemblyReadRef = React.useRef(null);
+      React.useEffect(() => {
+        if (tab !== 'mine') return undefined;
+        if (sessionArg === null) {
+          setMineAssembly((current) =>
+            current.phase === 'idle' && current.data === null && current.error === null
+              ? current
+              : { phase: 'idle', data: null, error: null },
+          );
+          return undefined;
+        }
+        const scopeKey = sessionArg;
+        const read = mineAssemblyReadRef.current;
+        if (read !== null && read.scope === scopeKey && read.reload === reload) return undefined;
+        // A different scope drops the old data (another session's verdict must
+        // never look like this one's); a reload of the same scope keeps it.
+        const sameScope = read !== null && read.scope === scopeKey;
+        let cancelled = false;
+        let timer = null;
+        const query = `?session=${encodeURIComponent(scopeKey)}`;
+        const run = async () => {
+          const result = await requestJson(`${ASSEMBLY_STATUS_PATH}${query}`);
+          if (cancelled) return;
+          mineAssemblyReadRef.current = { scope: scopeKey, reload };
+          if (!result.ok) {
+            setMineAssembly({ phase: 'error', data: null, error: result.error });
+            return;
+          }
+          setMineAssembly({ phase: 'ready', data: result.payload, error: null });
+          // The delivery verdict settles only after the step's `system/message`
+          // event; the same short follow-up the advanced block uses applies here.
+          const payload = result.payload;
+          const waiting =
+            payload !== null &&
+            typeof payload === 'object' &&
+            payload.record !== null &&
+            typeof payload.record === 'object' &&
+            payload.record.notice !== null &&
+            typeof payload.record.notice === 'object' &&
+            payload.record.notice.delivery !== null &&
+            typeof payload.record.notice.delivery === 'object' &&
+            payload.record.notice.delivery.state === 'waiting';
+          if (waiting) timer = setTimeout(run, ASSEMBLY_POLL_MS);
+        };
+        setMineAssembly((current) => ({
+          phase: 'loading',
+          data: sameScope ? current.data : null,
+          error: null,
+        }));
+        void run();
+        return () => {
+          cancelled = true;
+          if (timer !== null) clearTimeout(timer);
+        };
+      }, [tab, sessionArg, reload]);
+
       // History is loaded only while 「版本历史」 is open: 「我的 Prompt」 and
       // 「提示词总览」 must not pay for a log they never show, and a mount that
       // never opens that tab must issue exactly the baseline requests.
@@ -1119,60 +1189,3 @@
         && (mineLayer === 'user' || sessionArg !== null)
           ? String(mineLayerInfo.reason ? mineLayerInfo.reason : '')
           : null;
-      /**
-       * Ask the host for a comparison and store the result. `from`/`to` are a
-       * history id or {@link DIFF_CURRENT}; a half-made selection clears the
-       * panel rather than sending a request that cannot answer anything.
-       *
-       * g-038: the comparison is scoped exactly like the log beside it — the
-       * version history's own scope, never the page's 「查看范围」 — so the two
-       * can never describe different files.
-       */
-      const runDiff = async (from, to) => {
-        if (from === null || to === null) {
-          setDiff({ phase: 'idle', data: null, error: null });
-          return;
-        }
-        setDiff({ phase: 'loading', data: null, error: null });
-        const query = `${historyScopeQuery(historyLayer, historyScopeArg)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
-        const result = await requestJson(`${DIFF_PATH}?${query}`);
-        setDiff(
-          result.ok
-            ? { phase: 'ready', data: result.payload, error: null }
-            : { phase: 'error', data: null, error: result.error },
-        );
-      };
-
-      /**
-       * g-039: roll the history's own layer back to one recorded version.
-       *
-       * The request carries the version-history scope (`workspace` for the
-       * workspace layer) exactly as the list and the comparison do, so the file
-       * that is written is the file that was read. It is the **only** write this
-       * tab starts, and it never fires without the second confirmation.
-       *
-       * On success the log has one more record and the layer has new content, so
-       * the view is reset and the data reloaded: the list, the comparison and
-       * the current value all come back from the host rather than being patched
-       * in place, which is what keeps the pager from describing a page that no
-       * longer exists.
-       */
-      /**
-       * g-056 (review R2/R3): remove **one** write target's draft.
-       *
-       * Every local reset goes through this — 「取消」, 「恢复默认」, the g-050
-       * reconciliation and「放弃那份草稿」— so none of them can clear a draft that
-       * belongs to another target (R3), and typing in a second target leaves the
-       * first target's text where it is (R2). No request, no disk byte: this is
-       * view state only.
-       * @param key - the write-target key whose draft to drop.
-       */
-      const dropMineDraft = (key) => {
-        setMineDrafts((current) => {
-          if (current[key] === undefined) return current;
-          const next = { ...current };
-          delete next[key];
-          return next;
-        });
-      };
-

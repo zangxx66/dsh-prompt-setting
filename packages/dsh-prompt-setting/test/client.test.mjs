@@ -9851,6 +9851,24 @@ const EN_SWEEP_CASES = [
     },
   },
   {
+    // g-084: the new two-line summary has its own copy on the mine tab — walk it
+    // so the English sweep sees the no-record line, the counter and「详情」.
+    name: 'mine: the read-only status summary carries its own copy',
+    marks: [
+      ['data-region', 'mine-status'],
+      ['data-mine-status-assembly', 'none'],
+      ['data-mine-status-coverage', 'ready'],
+      ['data-action', 'mine-status-detail'],
+    ],
+    copy: ['mineStatusNoRecord', 'mineStatusDetail', ['mineStatusCoverage', { total: 1, ineffective: 0 }]],
+    async run() {
+      const page = enPage({ useSessions: sessionsHook(SESSIONS_STATE), responses: defaultResponses() });
+      const rec = recorder(page);
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
     name: 'mine: the unconfigured panel, then a dirty edit, then the saved state',
     marks: [
       ['data-region', 'mine'],
@@ -10693,6 +10711,12 @@ const EN_REQUIRED_MARKERS = [
   'data-preset-tag-filter=tag-1',
   'data-region=mine',
   'data-region=mine-layer',
+  // g-084: the read-only status summary and its「详情」entry, with the no-record
+  // and coverage variants the sweep's case renders.
+  'data-region=mine-status',
+  'data-action=mine-status-detail',
+  'data-mine-status-assembly=none',
+  'data-mine-status-coverage=ready',
   // g-055: the write-target line inside the panel, and the block whose header is
   // the scope card above the tabs (the block carries the sentence, not a second
   // title — review round 1).
@@ -14213,7 +14237,15 @@ test('client: the「高级」tab renders the assembly-status block at its top, a
     0,
     'nor any of its parts (limitation / notice / notes)',
   );
-  assert.equal(urlsFor(page, PATHS.assemblyStatus).length, 0, 'and it reads no assembly status');
+  // g-084: the default tab now reads the same route for its **read-only summary**
+  // — in the page's「查看范围」, which is a different cache from「高级」's — while
+  // rendering none of the advanced block's parts (the assertions above stay the
+  // load-bearing ones: no container, no heading, no part).
+  assert.deepEqual(
+    urlsFor(page, PATHS.assemblyStatus),
+    [`${PATHS.assemblyStatus}?session=s2`],
+    'the summary reads in the page scope; the block itself is still advanced-only',
+  );
   let tree = await openTab(page, 'advanced');
   const block = oneBy(tree, 'data-region', 'assembly-status');
   assert.equal(block.props['data-assembly-enabled'], 'true');
@@ -14224,7 +14256,11 @@ test('client: the「高级」tab renders the assembly-status block at its top, a
   assert.ok(hasText(block, page.zh.assemblyHeading));
   assert.ok(hasText(oneBy(tree, 'data-assembly-note', 'no-record'), page.zh.assemblyNoRecord));
   assert.ok(hasText(oneBy(tree, 'data-region', 'assembly-limitation'), page.zh.assemblyLimitation));
-  assert.deepEqual(urlsFor(page, PATHS.assemblyStatus), [`${PATHS.assemblyStatus}?session=s2`]);
+  assert.deepEqual(
+    urlsFor(page, PATHS.assemblyStatus),
+    [`${PATHS.assemblyStatus}?session=s2`, `${PATHS.assemblyStatus}?session=s2`],
+    'the summary and the block each read once, in their own caches (both s2 here)',
+  );
   // The block is the **first** card of the tab: the「装配状态提示」heading precedes
   // the first heading of the override list, so "at the top" is not just "inside".
   const texts = strings(tree);
@@ -14249,8 +14285,8 @@ test('client: the「高级」tab renders the assembly-status block at its top, a
   const assemblyReads = urlsFor(page, PATHS.assemblyStatus);
   assert.deepEqual(
     assemblyReads,
-    [`${PATHS.assemblyStatus}?session=s2`],
-    'and (review R3) switching back to this tab reuses that read — it names its own scope, and only once',
+    [`${PATHS.assemblyStatus}?session=s2`, `${PATHS.assemblyStatus}?session=s2`],
+    'neither read follows the page scope, and (review R3) switching back to 「高级」 reuses its own read (g-084 adds the summary read, a separate cache)',
   );
 
   // A page with no session service has no session to name at all, so the block
@@ -15974,18 +16010,24 @@ test('client: g-073 R1 — a tab-owned scope reads once per tab open and scope c
     responses: defaultResponses(),
     enforceEffectDeps: true,
   });
-  let tree = await openAdvanced(page);
   const statusReads = () => urlsFor(page, PATHS.assemblyStatus);
-  assert.equal(statusReads().length, 1, 'one assembly-status read when the tab opens');
+  // g-084: the default tab's summary is the first read (page scope). Account for
+  // it explicitly, then keep the original invariant — **「高级」 adds exactly one**
+  // read when it opens, and nothing on a re-render / disclosure.
+  let tree = await page.flush();
+  const mineSummaryReads = statusReads().length;
+  assert.equal(mineSummaryReads, 1, 'the default tab reads its summary once (g-084)');
+  tree = await openTab(page, 'advanced', tree);
+  assert.equal(statusReads().length, mineSummaryReads + 1, 'one assembly-status read when the tab opens');
   tree = await page.flush();
-  assert.equal(statusReads().length, 1, 'a plain re-render reads nothing');
+  assert.equal(statusReads().length, mineSummaryReads + 1, 'a plain re-render reads nothing');
   clickButton(tree, { 'data-action': 'advanced-scope-toggle' });
   tree = await page.flush();
-  assert.equal(statusReads().length, 1, 'opening the disclosure reads nothing');
+  assert.equal(statusReads().length, mineSummaryReads + 1, 'opening the disclosure reads nothing');
   clickButton(tree, { 'data-advanced-scope-option': 'b1' });
   tree = await page.flush();
-  assert.equal(statusReads().length, 2, 'changing the scope reads once more');
-  assert.equal(statusReads()[1], `${PATHS.assemblyStatus}?session=b1`);
+  assert.equal(statusReads().length, mineSummaryReads + 2, 'changing the scope reads once more');
+  assert.equal(statusReads()[mineSummaryReads + 1], `${PATHS.assemblyStatus}?session=b1`);
 
   // The overview's own snapshot behaves the same way.
   const overviewPage = makePage({
@@ -16089,6 +16131,328 @@ test('client: g-073 R3 — switching away and back re-reads nothing and draws no
   tree = await page.flush();
   tree = await openTab(page, 'history', tree);
   assert.equal(historyReads(), historyBeforeReload + 1, 'a reload still re-reads the tab-owned scope');
+});
+
+// #endregion
+
+// #region g-084 (Revision 57):「我的 Prompt」read-only status summary + cleaner copy
+
+/**
+ * A page-scoped snapshot whose `effective.sections` describe the same three
+ * user-layer entries the override fixture stores: two applied, one not.
+ * @returns the `GET /snapshot` payload.
+ */
+function coverageSnapshotFixture() {
+  const payload = snapshotFixture();
+  payload.effective.sections = [
+    {
+      name: 'project:alpha',
+      index: 0,
+      text: 'alpha overridden',
+      applied: true,
+      overridable: true,
+      reason: null,
+      overrideLayer: 'user',
+      action: 'replace',
+      origin: 'registered',
+    },
+    {
+      name: 'project:beta',
+      index: 1,
+      text: 'beta base',
+      applied: false,
+      overridable: true,
+      reason: 'the section text was restored to its pre-waterfall value',
+      overrideLayer: 'user',
+      action: 'replace',
+      origin: 'registered',
+    },
+    {
+      name: 'extra:appended',
+      index: 2,
+      text: 'appended text',
+      applied: true,
+      overridable: true,
+      reason: null,
+      overrideLayer: 'user',
+      action: 'append',
+      origin: 'appended',
+    },
+  ];
+  return payload;
+}
+
+/** The three user-layer overrides the coverage fixture counts. */
+function coverageOverridesFixture() {
+  return layeredOverrides([
+    { name: 'project:alpha', action: 'replace', text: 'alpha overridden' },
+    { name: 'project:beta', action: 'replace', text: 'beta base' },
+    { name: 'extra:appended', action: 'append', text: 'appended text' },
+  ]);
+}
+
+/** One session's assembly-status answer, keyed by the `?session=` the read carries. */
+function perSessionAssembly(url, notices) {
+  const match = /[?&]session=([^&]+)/.exec(String(url));
+  const session = match === null ? null : decodeURIComponent(match[1]);
+  return {
+    payload: assemblyFixture({
+      session,
+      record: session !== null && notices[session] !== undefined
+        ? assemblyRecordFixture({ session, notice: notices[session] })
+        : null,
+    }),
+  };
+}
+
+/** The `GET /assembly-status` urls the page asked, in call order. */
+function assemblyReadsOf(page) {
+  return urlsFor(page, PATHS.assemblyStatus);
+}
+
+test('client: g-084 —「我的 Prompt」carries a read-only two-line summary after the target line', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses({
+      [PATHS.assemblyStatus]: (url) => perSessionAssembly(url, { a3: assemblyNoticeFixture() }),
+      [PATHS.overrides]: { payload: coverageOverridesFixture() },
+      [PATHS.snapshot]: { payload: coverageSnapshotFixture() },
+    }),
+  });
+  const tree = await page.flush();
+  const status = oneBy(tree, 'data-region', 'mine-status');
+
+  // Position: after the read-only write-target line, before the note.
+  const regions = collect(tree, (node) => node.props && typeof node.props['data-region'] === 'string').map(
+    (node) => node.props['data-region'],
+  );
+  const targetAt = regions.indexOf('mine-target');
+  const statusAt = regions.indexOf('mine-status');
+  assert.ok(targetAt >= 0 && statusAt > targetAt, 'mine-status sits after mine-target');
+
+  // Exactly two semantic lines, no assembly switch, no override list / reasons.
+  assert.equal(
+    collect(status, (node) => node.props && node.props['data-mine-status-line'] !== undefined).length,
+    2,
+    'two fixed lines',
+  );
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-action'] === 'assembly-toggle').length,
+    0,
+    'the assembly switch stays in 「高级」',
+  );
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'overrides').length, 0);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-override-reason'] !== undefined).length, 0);
+
+  // The assembly line reads the page scope and states both verdicts.
+  assert.equal(status.props['data-mine-status-scope'], 'a3');
+  assert.equal(status.props['data-mine-status-assembly'], 'notice');
+  assert.equal(status.props['data-mine-status-read'], 'ready');
+  const sep = page.zh.assemblyLayerSep;
+  const expectedAssembly =
+    `${page.zh.assemblyLayerAssembly}${sep}${page.zh.assemblyFirstAssembled} · `
+    + `${page.zh.assemblyLayerDelivery}${sep}${fillText(page.zh.assemblyDeliveryDelivered, { op: page.zh.assemblyOpAppend })}`;
+  assert.ok(hasText(status, expectedAssembly), 'the two-layer verdicts are both on screen');
+  assert.deepEqual(assemblyReadsOf(page), [`${PATHS.assemblyStatus}?session=a3`], 'read in the page scope once');
+
+  // The coverage line shows the two counts only.
+  assert.equal(status.props['data-mine-status-layer'], 'user');
+  assert.equal(status.props['data-mine-status-total'], '3');
+  assert.equal(status.props['data-mine-status-ineffective'], '1');
+  assert.ok(
+    hasText(status, fillText(page.zh.mineStatusCoverage, { total: 3, ineffective: 1 })),
+    'the coverage sentence carries both numbers',
+  );
+});
+
+test('client: g-084 — the summary follows「查看范围」while「高级」keeps its own scope', async () => {
+  const notices = {
+    a3: assemblyNoticeFixture(),
+    a1: assemblyNoticeFixture({
+      kind: 'change',
+      assembly: { state: 'not-read', assembled: false, digest: 'ffff', length: 0, expectedDigest: null },
+      delivery: { state: 'unconfirmed', at: null, seq: null, surfaceOp: null, textMatched: null },
+    }),
+  };
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses({
+      [PATHS.assemblyStatus]: (url) => perSessionAssembly(url, notices),
+    }),
+    enforceEffectDeps: true,
+  });
+  let tree = await page.flush();
+  assert.ok(hasText(oneBy(tree, 'data-region', 'mine-status'), page.zh.assemblyFirstAssembled));
+
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  sessionOptions(tree).find((row) => row.props['data-session-id'] === 'a1').props.onClick();
+  tree = await page.flush();
+  const summary = oneBy(tree, 'data-region', 'mine-status');
+  assert.equal(summary.props['data-mine-status-scope'], 'a1', 'the summary followed the page scope');
+  assert.ok(hasText(summary, page.zh.assemblyChangeNotRead), 'and its verdict moved with it');
+  assert.ok(hasText(summary, page.zh.assemblyDeliveryUnconfirmed));
+  assert.equal(assemblyReadsOf(page).slice(-1)[0], `${PATHS.assemblyStatus}?session=a1`);
+
+  // 「高级」opens on its own workspace selector (the current session), not the page scope.
+  tree = await openTab(page, 'advanced', tree);
+  assert.equal(oneBy(tree, 'data-region', 'advanced-scope').props['data-advanced-scope-value'], 'a3');
+  assert.equal(assemblyReadsOf(page).slice(-1)[0], `${PATHS.assemblyStatus}?session=a3`);
+  assert.equal(oneBy(tree, 'data-region', 'assembly-status').props['data-delivery-state'], 'delivered');
+
+  // Both caches are separate: going back to 「我的 Prompt」 re-reads nothing.
+  const before = assemblyReadsOf(page).length;
+  tree = await openTab(page, 'mine', tree);
+  assert.equal(oneBy(tree, 'data-region', 'mine-status').props['data-mine-status-scope'], 'a1');
+  assert.equal(assemblyReadsOf(page).length, before, 'the mine cache kept its own scope');
+});
+
+test('client: g-084 —「详情」opens 「高级」on the summary’s session; global leaves it following', async () => {
+  const notices = {
+    a3: assemblyNoticeFixture(),
+    a1: assemblyNoticeFixture({
+      kind: 'change',
+      assembly: { state: 'read', assembled: false, digest: 'ffff', length: 0, expectedDigest: null },
+      delivery: { state: 'delivered', at: 1700000000200, seq: 13, surfaceOp: 'replace', textMatched: true },
+    }),
+  };
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses({
+      [PATHS.assemblyStatus]: (url) => perSessionAssembly(url, notices),
+    }),
+    enforceEffectDeps: true,
+  });
+  let tree = await page.flush();
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  sessionOptions(tree).find((row) => row.props['data-session-id'] === 'a1').props.onClick();
+  tree = await page.flush();
+
+  clickButton(tree, { 'data-action': 'mine-status-detail' });
+  tree = await page.flush();
+  assert.equal(tabList(tree).props['data-active-tab'], 'advanced');
+  assert.equal(
+    oneBy(tree, 'data-region', 'advanced-scope').props['data-advanced-scope-value'],
+    'a1',
+    'the advanced selector was pinned to the summary’s session',
+  );
+  assert.equal(assemblyReadsOf(page).slice(-1)[0], `${PATHS.assemblyStatus}?session=a1`);
+  assert.equal(oneBy(tree, 'data-region', 'assembly-status').props['data-delivery-state'], 'delivered');
+
+  // A global page scope carries no session: 「高级」 keeps its own follow-current default.
+  const globalPage = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses({
+      [PATHS.assemblyStatus]: (url) => perSessionAssembly(url, notices),
+    }),
+  });
+  let globalTree = await globalPage.flush();
+  scopeToggle(globalTree).props.onClick();
+  globalTree = await globalPage.flush();
+  clickButton(globalTree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
+  globalTree = await globalPage.flush();
+  assert.equal(oneBy(globalTree, 'data-region', 'mine-status').props['data-mine-status-scope'], 'global');
+  clickButton(globalTree, { 'data-action': 'mine-status-detail' });
+  globalTree = await globalPage.flush();
+  assert.equal(tabList(globalTree).props['data-active-tab'], 'advanced');
+  assert.equal(
+    oneBy(globalTree, 'data-region', 'advanced-scope').props['data-advanced-scope-value'],
+    'a3',
+    'without a page scope, 「高级」 still follows the current session',
+  );
+  assert.equal(assemblyReadsOf(globalPage).slice(-1)[0], `${PATHS.assemblyStatus}?session=a3`);
+});
+
+test('client: g-084 — a global scope says so, reads no other session, and still counts the layer', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  let tree = await page.flush();
+  // First, the no-record case in a real session: no error, an explicit sentence.
+  let status = oneBy(tree, 'data-region', 'mine-status');
+  assert.equal(status.props['data-mine-status-assembly'], 'none');
+  assert.ok(hasText(status, page.zh.mineStatusNoRecord));
+
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
+  const readsBefore = assemblyReadsOf(page).length;
+  tree = await page.flush();
+  status = oneBy(tree, 'data-region', 'mine-status');
+  assert.equal(status.props['data-mine-status-scope'], 'global');
+  assert.equal(status.props['data-mine-status-assembly'], 'global');
+  assert.ok(hasText(status, page.zh.sessionGlobal), 'the global scope is stated');
+  assert.equal(assemblyReadsOf(page).length, readsBefore, 'no session-less read, and no other session is borrowed');
+  // Coverage still works, from the page-scoped user layer.
+  assert.equal(status.props['data-mine-status-total'], '1');
+  assert.equal(status.props['data-mine-status-ineffective'], '0');
+  assert.ok(hasText(status, fillText(page.zh.mineStatusCoverage, { total: 1, ineffective: 0 })));
+  assert.equal(markerOf(tree, 'data-render-state'), 'ok');
+
+  // …and switching the **write target** to the workspace layer cannot make the
+  // summary claim a workspace record it has no session for: the count stays the
+  // user layer's (the workspace layer is unavailable in a global scope).
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  status = oneBy(tree, 'data-region', 'mine-status');
+  assert.equal(oneBy(tree, 'data-region', 'mine-target').props['data-mine-target-layer'], 'workspace');
+  assert.equal(status.props['data-mine-status-layer'], 'user', 'global coverage is the user layer’s');
+  assert.equal(status.props['data-mine-status-total'], '1');
+  assert.equal(assemblyReadsOf(page).length, readsBefore, 'and still no session-less / borrowed read');
+});
+
+test('client: g-084 — the two cleaners state what each one deletes', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.overrides]: {
+        payload: layeredOverrides([
+          { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text' },
+          { name: 'project:alpha', action: 'replace', text: 'alpha overridden' },
+        ]),
+      },
+    }),
+  });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'mine-reset' });
+  tree = await page.flush();
+  let body = oneBy(tree, 'data-region', 'confirm');
+  assert.equal(body.props['data-confirm-kind'], 'mine-reset');
+  assert.ok(hasText(body, fillText(page.zh.mineResetTitle, { layer: page.zh.ovUser })));
+  assert.ok(hasText(body, page.zh.mineResetBody));
+  assert.ok(hasText(body, '保留'), 'the mine cleaner says the other overrides survive');
+  clickButton(body, { 'data-action': 'confirm-yes' });
+  tree = await page.flush();
+  assert.deepEqual(
+    writeCalls(page).filter((call) => call.init.method === 'DELETE').map((call) => call.url),
+    [`${PATHS.overrides}?layer=user&name=${encodeURIComponent(CUSTOM_SECTION_NAME)}`],
+    'the route behaviour is unchanged: one named delete of the reserved section',
+  );
+
+  let advanced = await openAdvanced(page);
+  clickButton(oneBy(advanced, 'data-region', 'layer-reset'), { 'data-action': 'reset-layer', 'data-layer': 'user' });
+  advanced = await page.flush();
+  body = oneBy(advanced, 'data-region', 'confirm');
+  assert.equal(body.props['data-confirm-kind'], 'reset-layer');
+  assert.ok(hasText(body, fillText(page.zh.resetLayerBody, { layer: page.zh.ovUser, count: 2 })));
+  assert.ok(hasText(body, '包括「我的 Prompt」'), 'the whole-layer reset names My Prompt');
+  assert.ok(hasText(body, page.zh.resetLegacyButton), 'and contrasts itself with the keeping cleaner');
+  clickButton(body, { 'data-action': 'confirm-no' });
+  advanced = await page.flush();
+
+  clickButton(oneBy(advanced, 'data-region', 'layer-reset'), { 'data-action': 'legacy-clear', 'data-layer': 'user' });
+  advanced = await page.flush();
+  body = oneBy(advanced, 'data-region', 'confirm');
+  assert.equal(body.props['data-confirm-kind'], 'legacy-clear');
+  assert.ok(hasText(body, fillText(page.zh.resetLegacyBody, { layer: page.zh.ovUser, count: 1 })));
+  assert.ok(hasText(body, '保留「我的 Prompt」'), 'the legacy cleaner says My Prompt is kept');
+  assert.ok(hasText(body, page.zh.resetLayersLabel), 'and names the reset it is not');
 });
 
 // #endregion

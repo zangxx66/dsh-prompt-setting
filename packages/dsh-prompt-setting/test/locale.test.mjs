@@ -146,8 +146,17 @@ const ERROR_KEY_COUNT = 51;
  * `confirmNo`, `presetFailed`) — the segment budget (§5.1, 1200 lines) holds at
  * 594 keys per language, and the new tag codes reuse the existing fallback the
  * older preset codes already rely on: the banner states the code itself.
+ *
+ * g-084 (Revision 57) added three, all on「我的 Prompt」's new read-only summary:
+ * the no-record line (`mineStatusNoRecord`), the coverage counter
+ * (`mineStatusCoverage`) and the「详情」entry (`mineStatusDetail`). The global
+ * scope reuses `sessionGlobal`, and the two verdicts reuse the words the
+ * assembly block already ships (`assemblyLayerAssembly` / `assemblyLayerDelivery`
+ * plus the verdict sentences), so the count is 546 main keys / 597 total. To make
+ * room inside the 1200-line segment budget, the generator's stale five-line
+ * header comment was reduced to zero lines (the facts live in CONTRACT §14.5).
  */
-const MAIN_KEY_COUNT = 543;
+const MAIN_KEY_COUNT = 546;
 /** The full key count both files must hold, in the same order. */
 const TOTAL_KEY_COUNT = MAIN_KEY_COUNT + ERROR_KEY_COUNT;
 
@@ -155,7 +164,7 @@ test('locale: both JSON files are valid, key-aligned dictionaries', () => {
   const { dictionaries, keys } = readDictionaries(packageRoot);
   assert.deepEqual(Object.keys(dictionaries), Object.keys(LOCALES));
   assert.equal(keys.length, TOTAL_KEY_COUNT);
-  assert.equal(keys.length, 594);
+  assert.equal(keys.length, 597);
   for (const name of Object.keys(LOCALES)) {
     const dict = dictionaries[name];
     assert.equal(Object.keys(dict).length, TOTAL_KEY_COUNT, `${name}: ${TOTAL_KEY_COUNT} keys`);
@@ -446,15 +455,15 @@ test('locale: adding a key to the JSON still lets --write locate the segment', (
 });
 
 test('locale: a batch of +80 keys still lets --write locate the segment (U1)', () => {
-  // 返工 U1：用 max 作分母时，纯加 N 键的得分是 S/(S+N)，594 键时 +66 就掉到 90% 以下
+  // 返工 U1：用 max 作分母时，纯加 N 键的得分是 S/(S+N)，带基线键数时 +66 就掉到 90% 以下
   // ⇒ --write 报「真源缺失」，而基线在同样副本里 exit 0（行为回归）。改用 min 分母后，
-  // 纯加键恒为 100%。这里用评审实测的 +80 键（→674）钉住它。
+  // 纯加键恒为 100%。这里用评审实测的 +80 键钉住它（g-084 起基线是 597 键）。
   const root = throwawayPackage();
   try {
     appendProbeKeys(root, 80);
     const write = run(root, 'scripts/locale-pack.mjs', '--write');
     assert.equal(write.status, 0, `加 80 键后的 --write 必须仍能定位真源\n${write.stdout}\n${write.stderr}`);
-    assert.match(write.stdout, /674 键\/语言/, '--write 要按 594+80=674 键写');
+    assert.match(write.stdout, /677 键\/语言/, '--write 要按 597+80=677 键写');
     const segment = findLocaleSegment({ packageDir: root });
     const segmentText = readFileSync(join(root, CLIENT_SRC_DIR, segment.name), 'utf8');
     const clientText = readFileSync(join(root, 'client.js'), 'utf8');

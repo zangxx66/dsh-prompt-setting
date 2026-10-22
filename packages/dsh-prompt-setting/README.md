@@ -32,11 +32,23 @@
   一键恢复默认。这段文本**排在所有内置段之后**。「查看范围」选择器就在**这一面板内、标题之下**（g-071 起）：
   它决定保存落到哪一层，改范围也只有这一处（面板内那行只读提示会重复告诉你当前写到哪）。
   **它只服务这一面板**（g-073 起）：其余 tab 各自解耦（见下）。
+  写入目标行下方是**只读状态摘要**（g-084）：两行——最近一个关键节点的装配 / 送达结论，以及
+  「本层覆盖 N 条 · M 条未生效」；它跟随「查看范围」，全局范围显示「全局（不指定会话）」且不借用任何
+  会话的记录；「详情」会切到「高级」并把它的作用域同步成当前查看范围会话。摘要里**没有**装配开关
+  （开关只在「高级」），也不展开逐条原因。「恢复默认」只删除**本层**的「我的 Prompt」段，本层其他覆盖
+  保留；「高级」的「整层重置」才会连「我的 Prompt」一起清空，「清除全部覆盖」则保留它。
   > The only write surface: your own system-level instructions (pick a layer → edit → save), with a
   > one-click restore. The text is **placed after every built-in section**. The "View scope" selector is
   > **inside this panel, under its title** (since g-071): it decides which layer a save lands in, and it
   > is the only place the scope is changed (the panel repeats the current target as a read-only line).
   > **It serves this panel alone** (since g-073): every other tab is decoupled from it.
+  > Below the write-target line sits a **read-only status summary** (g-084): two lines — the latest key
+  > node's assembly / delivery verdicts, and "this layer: N override(s) · M not in effect". It follows
+  > "View scope"; a global scope says "Global (no session)" and borrows no other session's record.
+  > "Details" opens **Advanced** with its scope pinned to the summary's session. The summary has **no**
+  > assembly switch (that stays in Advanced) and expands no per-entry reason. "Restore default" deletes
+  > **only this layer's** My Prompt entry and keeps the layer's other overrides; Advanced's "Reset a whole
+  > layer" clears My Prompt too, while "Clear all overrides" keeps it.
 
 - **我的预设 / My presets** —— 你的常用文本库：把一段文本存成预设（新建 / 编辑 / 删除），再把它**应用到某个
   工作区**（写入该工作区的保留段），也可以**取消应用**——该工作区会精确还原为应用前的内容。删除一个
@@ -83,7 +95,9 @@
   交给宿主安装，装完需要你**手动重启**：命令行启动就重新运行 `dsh web`，官方桌面端就退出并重新
   打开 DeepSeek Harness），以及完整状态区（挂载情况 / 构建戳 / 渲染器自检）。它有自己的**工作区选择器**
   （g-073 起）：两个清除按钮、旧版覆盖列表与装配状态都按所选工作区取数，**不再跟随页面「查看范围」**；
-  用户层是全局的（选择器上那句说明写着）。
+  用户层是全局的（选择器上那句说明写着）。「装配状态提示」的完整块与开关仍只在这里；两个清除按钮的
+  文案（g-084）写明了删除范围：「整层重置」清空整层**包括**「我的 Prompt」，「清除全部覆盖」**保留**
+  「我的 Prompt」——按钮与请求都没有变化。
   > A read-only list of legacy overrides, two double-confirm buttons ("clear all overrides", "reset the
   > whole layer"), the **"Check for updates" switch** (on by default; off means this plugin makes **no
   > network request at all**), an **"Update now"** button (the host installs the version the banner named;
@@ -91,7 +105,10 @@
   > Harness in the desktop app), and a full status area (mount state / build fingerprint / renderer
   > self-check). It has its **own** workspace selector (since g-073): both clears, the legacy override list
   > and the assembly status all read the workspace it names, and none of them follows the page's "View
-  > scope" any more; the user layer is global (the sentence under the control says so).
+  > scope" any more; the user layer is global (the sentence under the control says so). The complete
+  > assembly-status block and its switch live here and only here; since g-084 each clear states its scope
+  > in words — "Reset a whole layer" clears the layer **including** My Prompt, while "Clear all overrides"
+  > **keeps** it. Neither button nor request changed.
   >
   > 面板顶部是**「装配状态提示」**（g-062 引入，g-065 起从「我的 Prompt」移到这里）：新会话的第一次装配，
   > 以及保存 Prompt 之后的下一个 run，会**主动弹 toast** 给出两层结论——装配层（本次 assembly 是否读到你的
