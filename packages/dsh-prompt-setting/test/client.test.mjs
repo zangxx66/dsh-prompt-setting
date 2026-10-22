@@ -16455,4 +16455,91 @@ test('client: g-084 — the two cleaners state what each one deletes', async () 
   assert.ok(hasText(body, page.zh.resetLayersLabel), 'and names the reset it is not');
 });
 
+test('client: g-084 — a failed summary read is stated, not disguised as “no observation”', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({
+      [PATHS.assemblyStatus]: () => new Error('assembly read failed'),
+    }),
+  });
+  const tree = await page.flush();
+  const status = oneBy(tree, 'data-region', 'mine-status');
+  assert.equal(status.props['data-mine-status-read'], 'error');
+  assert.equal(status.props['data-mine-status-assembly'], 'error');
+  assert.ok(hasText(status, page.zh.loadFailed), 'the failed read is named');
+  assert.equal(hasText(status, page.zh.mineStatusNoRecord), false, 'and never reported as “nothing observed”');
+});
+
+test('client: g-084 — coverage follows the write target, the reserved entry’s applied flag, and shadowed names', async () => {
+  const userEntries = [
+    { name: 'project:alpha', action: 'replace', text: 'user alpha' },
+    { name: 'user:only', action: 'replace', text: 'user only' },
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'user prompt' },
+  ];
+  const workspaceEntries = [
+    { name: 'project:alpha', action: 'replace', text: 'ws alpha' },
+    { name: 'extra:workspace', action: 'append', text: 'ws extra' },
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'ws prompt' },
+  ];
+  const sectionsFor = (reservedApplied) => [
+    { name: 'project:alpha', index: 0, text: 'ws alpha', applied: true, overridable: true, reason: null, overrideLayer: 'workspace', action: 'replace', origin: 'registered' },
+    { name: 'user:only', index: 1, text: 'user only', applied: true, overridable: true, reason: null, overrideLayer: 'user', action: 'replace', origin: 'registered' },
+    { name: 'extra:workspace', index: 2, text: 'ws extra', applied: true, overridable: true, reason: null, overrideLayer: 'workspace', action: 'append', origin: 'appended' },
+    { name: CUSTOM_SECTION_NAME, index: 3, text: 'combined', applied: reservedApplied, overridable: true, reason: null, overrideLayer: 'workspace', action: 'replace', origin: 'registered' },
+  ];
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses({
+      [PATHS.overrides]: () => ({ payload: layeredOverrides(userEntries, workspaceEntries) }),
+      [PATHS.snapshot]: (url) => {
+        const payload = snapshotFixture({ effective: { sections: sectionsFor(url.includes('session=a1')) } });
+        payload.layers.workspace = { enabled: true, path: '/work/alpha/.dsh-prompt-setting/overrides.json', reason: null };
+        return { payload };
+      },
+    }),
+  });
+  let tree = await page.flush(); // page scope a3; write target user
+  let status = oneBy(tree, 'data-region', 'mine-status');
+  assert.equal(status.props['data-mine-status-layer'], 'user');
+  assert.equal(status.props['data-mine-status-total'], '3');
+  assert.equal(
+    status.props['data-mine-status-ineffective'],
+    '2',
+    'user layer: alpha is shadowed by workspace + the reserved entry is not applied',
+  );
+
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  status = oneBy(tree, 'data-region', 'mine-status');
+  assert.equal(status.props['data-mine-status-layer'], 'workspace');
+  assert.equal(status.props['data-mine-status-total'], '3', 'the workspace layer’s own three entries');
+  assert.equal(
+    status.props['data-mine-status-ineffective'],
+    '1',
+    'reserved applied=false counts; the two workspace entries applied=true do not',
+  );
+
+  // Switch the page scope to a1, whose snapshot says the reserved entry applied.
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  sessionOptions(tree).find((row) => row.props['data-session-id'] === 'a1').props.onClick();
+  tree = await page.flush();
+  status = oneBy(tree, 'data-region', 'mine-status');
+  assert.equal(status.props['data-mine-status-layer'], 'workspace', 'the write target did not move');
+  assert.equal(status.props['data-mine-status-total'], '3');
+  assert.equal(status.props['data-mine-status-ineffective'], '0', 'reserved applied=true is not counted');
+
+  clickTab(tree, 'mine-layer', 'user');
+  tree = await page.flush();
+  status = oneBy(tree, 'data-region', 'mine-status');
+  assert.equal(status.props['data-mine-status-layer'], 'user');
+  assert.equal(status.props['data-mine-status-total'], '3');
+  assert.equal(
+    status.props['data-mine-status-ineffective'],
+    '1',
+    'only the user entry shadowed by the workspace name remains ineffective',
+  );
+});
+
 // #endregion

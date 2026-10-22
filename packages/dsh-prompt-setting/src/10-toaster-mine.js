@@ -627,7 +627,7 @@
           `${t('assemblyLayerDelivery')}${sep}${deliveryVerdictOf(t, notice)}`;
       } else {
         assemblyKind = state.phase === 'error' ? 'error' : state.phase === 'ready' ? 'none' : 'loading';
-        assemblyText = t(assemblyKind === 'loading' ? 'loading' : 'mineStatusNoRecord');
+        assemblyText = t(assemblyKind === 'loading' ? 'loading' : assemblyKind === 'error' ? 'loadFailed' : 'mineStatusNoRecord');
       }
       const layer = m.sessionArg === null || m.mineLayer !== 'workspace' ? 'user' : 'workspace';
       const snapReady = m.snap !== null && m.snap !== undefined && m.snap.phase === 'ready' && m.snap.data !== null;
