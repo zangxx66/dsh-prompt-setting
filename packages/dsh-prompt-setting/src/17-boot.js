@@ -182,6 +182,12 @@
           // g-086 R1: the two seats behind the settings entry — the Host command
           // invoke (pure given the service) and the bounded panel/section aim.
           invokeSettingsShortcut: composerBarInvokeSettingsShortcut,
+          // g-086 R2: the real opener chain — public catalog + synthetic keydown
+          // first, the private registry method as the last resort.
+          dispatchSettingsShortcut: composerBarDispatchSettingsShortcut,
+          bindingById: composerBarBindingById,
+          keyboardInit: composerBarKeyboardInit,
+          globalWindow: composerBarGlobalWindow,
           documentOf: composerBarDocumentOf,
           settingsPane: composerBarSettingsPane,
           navButtonIn: composerBarNavButton,
@@ -226,6 +232,28 @@
             return composerBarInvokeSettingsShortcut(shortcuts);
           } catch {
             return false;
+          }
+        };
+
+        /**
+         * g-086 R2: the working opener chain.
+         *
+         * The public `Shortcuts` interface has no `invoke` (that method belongs to
+         * the private `ShortcutRegistry`), so R1's probe could never succeed on a
+         * real Host. This reads the public **catalog**, turns `settings.open`'s
+         * binding into a real `KeyboardEvent` and dispatches it on the window —
+         * the Host's own keyboard adapter then resolves the command exactly as if
+         * the user pressed the shortcut. `registry.invoke` stays as the last
+         * resort (callable at runtime, private in the type surface), and `none`
+         * means the bar must show its explicit fallback sentence.
+         * @returns `key` / `invoke` / `none`.
+         */
+        const openSettingsByShortcut = () => {
+          try {
+            const shortcuts = typeof ctx.get === 'function' ? ctx.get('shortcuts') : undefined;
+            return composerBarDispatchSettingsShortcut({ shortcuts, window: composerBarGlobalWindow() });
+          } catch {
+            return 'none';
           }
         };
 
@@ -342,7 +370,7 @@
                   // The settings opener rides the same face so the component has
                   // one capability surface, not a prop it has to be handed by a
                   // future Host slot that does not exist yet.
-                  invokeSettingsShortcut,
+                  openSettingsByShortcut,
                 }),
               },
               ComposerAssemblyBar,

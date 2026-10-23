@@ -245,6 +245,121 @@
       }
     }
 
+    /**
+     * The normalized binding the Host currently has for `settings.open`, or null.
+     *
+     * Read from the **public** catalog (`shortcuts.catalog`, a documented
+     * an `ObservableSnapshot` of `ShortcutCatalogEntry[]`), so this works on the real
+     * `ShortcutsService` — `invoke` is a method of the private registry, not of
+     * the public `Shortcuts` interface, which is exactly why the R1 attempt
+     * degraded on a real Host (NOTES §168).
+     * @param rows - `catalog.getSnapshot()`.
+     * @param id - the command id.
+     * @returns the binding, or null.
+     */
+    function composerBarBindingById(rows, id) {
+      if (rows === null || typeof rows !== 'object' || typeof rows.length !== 'number') return null;
+      for (let index = 0; index < rows.length; index += 1) {
+        const row = rows[index];
+        if (row === null || typeof row !== 'object' || row.id !== id) continue;
+        const binding = row.binding;
+        if (binding === null || typeof binding !== 'object' || typeof binding.code !== 'string') return null;
+        return binding;
+      }
+      return null;
+    }
+
+    /**
+     * The `KeyboardEvent` init for one binding.
+     *
+     * The Host's adapter matches on `event.code` plus the four modifier booleans
+     * and never looks at `event.key`, so `key` is a plain value — the physical
+     * code is what identifies the keystroke. `bubbles/cancelable/composed` are
+     * set so the event behaves like a real one for the listeners it passes.
+     * @param binding - a normalized binding.
+     * @returns a `KeyboardEventInit`.
+     */
+    function composerBarKeyboardInit(binding) {
+      const modifiers = Array.isArray(binding.modifiers) ? binding.modifiers : [];
+      return {
+        code: binding.code,
+        key: binding.code,
+        ctrlKey: modifiers.indexOf('control') >= 0,
+        altKey: modifiers.indexOf('alt') >= 0,
+        shiftKey: modifiers.indexOf('shift') >= 0,
+        metaKey: modifiers.indexOf('meta') >= 0,
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      };
+    }
+
+    /** The browser window, or null in a non-DOM realm. */
+    function composerBarGlobalWindow() {
+      try {
+        return typeof window === 'undefined' || window === null || typeof window !== 'object' ? null : window;
+      } catch {
+        return null;
+      }
+    }
+
+    /**
+     * Open the Host's settings panel through its own keyboard channel, in the
+     * order of "most public first".
+     *
+     * 1. **`catalog` → synthetic `KeyboardEvent`** — the documented surface. The
+     *    Host's `keydown` listener (window bubbling phase) reads `event.code` and
+     *    the modifier booleans, resolves the command, and with no modal open runs
+     *    `shellInstance.actions.open()`. It does not check `isTrusted`, so a
+     *    dispatched event is indistinguishable to it from a user's keypress —
+     *    this is "press the shortcut for the user", not a shortcut bypass.
+     * 2. **`registry.invoke`** — the R1 path. The registry method is public in JS
+     *    at runtime but `private` in the service's TypeScript surface, so it is a
+     *    **last resort**: if a future Host drops `catalog` or the binding, this is
+     *    still better than a dead button, and its privacy risk is a build-time
+     *    type fact, not a runtime one.
+     * 3. **none** — the caller shows the explicit fallback sentence.
+     *
+     * Every step is guarded; a throwing read never escapes a click handler.
+     * @param options - `shortcuts` (the service), `window` (the DOM window).
+     * @returns `key` / `invoke` / `none`.
+     */
+    function composerBarDispatchSettingsShortcut(options) {
+      const shortcuts = options === null || typeof options !== 'object' ? undefined : options.shortcuts;
+      const view = options === null || typeof options !== 'object' ? null : options.window;
+      // 1. the public channel
+      try {
+        const catalog =
+          shortcuts !== null && typeof shortcuts === 'object' && shortcuts.catalog !== null && typeof shortcuts.catalog === 'object' && typeof shortcuts.catalog.getSnapshot === 'function'
+            ? shortcuts.catalog.getSnapshot()
+            : null;
+        const binding = composerBarBindingById(catalog, 'settings.open');
+        const Ctor =
+          view !== null && typeof view === 'object' && typeof view.KeyboardEvent === 'function'
+            ? view.KeyboardEvent
+            : typeof KeyboardEvent === 'function'
+              ? KeyboardEvent
+              : null;
+        if (binding !== null && Ctor !== null && view !== null && typeof view.dispatchEvent === 'function') {
+          view.dispatchEvent(new Ctor('keydown', composerBarKeyboardInit(binding)));
+          return 'key';
+        }
+      } catch {
+        // Fall through to the last resort.
+      }
+      // 2. the private-but-callable registry method
+      try {
+        const registry = shortcuts !== null && typeof shortcuts === 'object' ? shortcuts.registry : undefined;
+        if (registry !== null && typeof registry === 'object' && typeof registry.invoke === 'function') {
+          registry.invoke('settings.open', { region: 'page', modal: null, target: null });
+          return 'invoke';
+        }
+      } catch {
+        // Fall through to the fallback sentence.
+      }
+      return 'none';
+    }
+
     /** How long the bar keeps looking for the settings panel after the opener ran. */
     const COMPOSER_BAR_AIM_TIMEOUT_MS = 800;
 
@@ -442,7 +557,24 @@
           observer = null;
         }
       }
-      if (setTimer !== null) timer = setTimer(stop, timeoutMs);
+      if (setTimer !== null) {
+        timer = setTimer(() => {
+          timer = null;
+          if (stopped) return;
+          const pane = composerBarSettingsPane(doc);
+          stop();
+          // The deadline passed. "The panel opened but its nav row was not found"
+          // is not a failure the user must be told about (the panel is open);
+          // "no panel at all" is — otherwise the click looks dead.
+          if (pane === null && typeof io.onTimeout === 'function') {
+            try {
+              io.onTimeout();
+            } catch {
+              // A throwing callback must not turn the deadline into an exception.
+            }
+          }
+        }, timeoutMs);
+      }
       return stop;
     }
 
@@ -494,7 +626,7 @@
                 // The full sentence is often wider than the cell's budget; the
                 // tooltip keeps the tail readable without letting one long
                 // verdict push the other regions off the row.
-                title: options.value,
+                title: options.title === undefined ? options.value : options.title,
                 style: {
                   fontSize: 12,
                   lineHeight: '16px',
@@ -632,13 +764,22 @@
             : read.assembly === null
               ? { text: t('loadFailed'), tone: 'error' }
               : notice === null
-                ? { text: t('mineStatusNoRecord'), tone: 'unknown' }
+                ? { text: t('barSummaryNone'), tone: 'unknown' }
                 : {
-                    text: [
+                    // g-086 R2: the cell is one line wide, so it says the two
+                    // verdicts in two words; the full sentences move to the
+                    // tooltip. The tone rule is unchanged (delivered ⇒ normal).
+                    text:
+                      notice.assembly === null || notice.assembly.assembled !== true
+                        ? t('barSummaryNotAssembled')
+                        : notice.delivery.state === 'delivered'
+                          ? t('barSummaryDelivered')
+                          : t('barSummaryUnconfirmed'),
+                    tone: notice.delivery.state === 'delivered' ? 'normal' : 'warn',
+                    title: [
                       `${t('assemblyLayerAssembly')}${t('assemblyLayerSep')}${assemblyVerdictOf(t, notice)}`,
                       `${t('assemblyLayerDelivery')}${t('assemblyLayerSep')}${deliveryVerdictOf(t, notice)}`,
                     ].join(' · '),
-                    tone: notice.delivery.state === 'delivered' ? 'normal' : 'warn',
                   };
 
       const userLine = layerLine('user');
@@ -688,6 +829,17 @@
                 opened = false;
               }
             }
+            // g-086 R2: the R1 probe (`shortcuts.invoke`) never existed on the
+            // real service, so the entry now asks for the identity of the opener
+            // path itself — `key` (public catalog + synthetic KeyboardEvent),
+            // `invoke` (private-but-callable registry method) or `none`.
+            if (!opened && typeof props.openSettingsByShortcut === 'function') {
+              try {
+                opened = props.openSettingsByShortcut() !== 'none';
+              } catch {
+                opened = false;
+              }
+            }
             if (!opened && typeof props.invokeSettingsShortcut === 'function') {
               try {
                 opened = props.invokeSettingsShortcut() === true;
@@ -702,9 +854,15 @@
               return;
             }
             setHint(false);
-            // The panel is open; selecting *this* plugin's page is best effort
-            // (bounded, disposable, anchored on semantic attributes only).
-            aimRef.current = composerBarAimAtSection({ document: composerBarDocumentOf(props), label: t('nav') });
+            // The panel is expected to open; selecting *this* plugin's page is
+            // best effort (bounded, disposable, anchored on semantic attributes
+            // only). If no panel shows up within the deadline, the click would
+            // otherwise look dead — so the explicit fallback sentence appears.
+            aimRef.current = composerBarAimAtSection({
+              document: composerBarDocumentOf(props),
+              label: t('nav'),
+              onTimeout: () => setHint(true),
+            });
           },
           style: {
             font: 'inherit',
@@ -722,6 +880,13 @@
         t('nav'),
       );
 
+      // g-086 R2: two boxes, exactly like the Host's own dock entries
+      // (`QueueDock` / `TodoPanel`). The outer box owns the composer's width
+      // rule — `100%` minus the side clearance and the dock inset, capped by the
+      // card's max width — so the bar lines up with the input card and follows a
+      // docked sidebar (the variables live on the conversation body and inherit).
+      // The inner box owns the visible surface and its own padding, so the
+      // alignment is never affected by how much padding the bar wants.
       return h(
         'div',
         {
@@ -732,22 +897,38 @@
           role: 'status',
           'aria-live': 'polite',
           style: {
-            display: 'flex',
-            flexWrap: 'wrap',
-            alignItems: 'center',
-            gap: '4px 14px',
-            margin: '0 0 6px',
-            padding: '5px 10px',
-            border: `1px solid ${token.surfaceStroke}`,
-            borderRadius: 8,
-            background: token.surface,
-            color: token.labelPrimary,
-            font: 'inherit',
-            fontSize: 12,
-            lineHeight: '16px',
+            boxSizing: 'border-box',
+            width:
+              'calc(100% - var(--dsh-composer-side-clearance, 16px) - var(--dsh-composer-side-clearance, 16px)'
+              + ' - var(--dsh-composer-dock-inset, 8px) - var(--dsh-composer-dock-inset, 8px))',
+            maxWidth:
+              'calc(var(--dsh-composer-card-max-width, 920px) - var(--dsh-composer-dock-inset, 8px)'
+              + ' - var(--dsh-composer-dock-inset, 8px))',
+            margin: '0 auto 6px',
+            padding: '0 var(--dsh-composer-dock-inset, 8px)',
+            flex: 'none',
           },
         },
-        composerBarRegionOf({
+        h(
+          'div',
+          {
+            'data-composer-bar-surface': '',
+            style: {
+              display: 'flex',
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              gap: '4px 14px',
+              padding: '5px 10px',
+              border: `1px solid ${token.surfaceStroke}`,
+              borderRadius: 8,
+              background: token.surface,
+              color: token.labelPrimary,
+              font: 'inherit',
+              fontSize: 12,
+              lineHeight: '16px',
+            },
+          },
+          composerBarRegionOf({
           region: 'bar-sections',
           label: t('viewSections'),
           value: sectionsValue.text,
@@ -767,9 +948,10 @@
         }),
         composerBarRegionOf({
           region: 'bar-assembly',
-          label: t('assemblyHeading'),
+          label: t('barAssemblyLabel'),
           value: assemblyValue.text,
           tone: assemblyValue.tone,
+          title: assemblyValue.title,
           extra: refreshButton,
         }),
         composerBarRegionOf({
@@ -798,6 +980,7 @@
               t('barSettingsFallback'),
             )
           : null,
+        ),
       );
     }
 

@@ -362,8 +362,6 @@
   "histPager": "第 {page} / {pages} 页 · 共 {total} 条",
   "histPagePrev": "上一页",
   "histPageNext": "下一页",
-  "histPageEmpty": "暂无分页",
-  "histDetailPending": "在上方列表里选一条记录：可以直接预览它的要点与内容，也可以把它作为 from/to 参与对比。",
   "histCorrupt": "有 {n} 行历史记录无法解析，已跳过。",
   "histUnreadable": "历史文件不可读：{reason}",
   "histLastError": "最近一次历史写入失败：{reason}",
@@ -377,7 +375,6 @@
   "histAction.rollback": "回滚 rollback",
   "histPreview": "预览",
   "histPreviewHeading": "记录预览",
-  "histPreviewClose": "关闭预览",
   "histPreviewMissing": "这条记录不在当前这一页里：翻回它所在的页，或刷新列表。",
   "histPreviewMissingHint": "也可能是这条记录已经被历史保留上限清理掉了。",
   "histModalClose": "关闭",
@@ -505,8 +502,6 @@
   "presetSaveAsCurrentHint": "「从当前文本另存为预设」只是把「我的 Prompt」当前显示的文本填进上面的编辑器，不会直接写入预设库。",
   "presetEdit": "编辑",
   "presetDelete": "删除",
-  "presetWorkspaceHeading": "应用到工作区",
-  "presetWorkspaceNote": "选定一个工作区（用它的一个 session 定位），把上面编辑的预设应用过去；也可以取消该工作区已有的应用。",
   "presetWorkspaceEmpty": "这个 profile 没有可用的工作区会话，无法应用预设。",
   "presetApply": "应用",
   "presetApplyTo": "应用到工作区",
@@ -595,5 +590,10 @@
   "error.registry-unavailable": "所选下载源当前不可用。不会自动改用默认源：请稍后重试，或换一个下载区域。",
   "error.preferences-unwritable": "偏好文件无法写入，本次选择没有生效。",
   "barNoSession": "无会话",
-  "barSettingsFallback": "宿主未提供从会话打开设置的接口：请从侧边栏打开设置，再选择「Prompt 管理」。"
+  "barSettingsFallback": "宿主未提供从会话打开设置的接口：请从侧边栏打开设置，再选择「Prompt 管理」。",
+  "barAssemblyLabel": "装配",
+  "barSummaryDelivered": "已装配 · 已送达",
+  "barSummaryUnconfirmed": "已装配 · 未确认",
+  "barSummaryNotAssembled": "未装配",
+  "barSummaryNone": "暂无"
 }

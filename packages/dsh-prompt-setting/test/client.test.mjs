@@ -16798,11 +16798,23 @@ function barRegionOf(tree, region) {
   return found[0];
 }
 
-/** One region's value text (`data-bar-value`). */
-function barValueOf(tree, region) {
+/** One region's value node (`data-bar-value`). */
+function barValueNodeOf(tree, region) {
   const value = collect(barRegionOf(tree, region), (node) => node.props && node.props['data-bar-value'] !== undefined);
   assert.equal(value.length, 1, `${region} carries one value cell`);
-  return value[0].props.children;
+  return value[0];
+}
+
+/** One region's value text. */
+function barValueOf(tree, region) {
+  return barValueNodeOf(tree, region).props.children;
+}
+
+/** One region's label text (`data-bar-label`). */
+function barLabelOf(tree, region) {
+  const label = collect(barRegionOf(tree, region), (node) => node.props && node.props['data-bar-label'] !== undefined);
+  assert.equal(label.length, 1, `${region} carries one label cell`);
+  return label[0].props.children;
 }
 
 /** One button by its `data-action`. */
@@ -16855,13 +16867,16 @@ test('client: the bar states the page’s own numbers — sections, both layers,
   // overrides", so the cell says so and colours it as a warning.
   assert.equal(barValueOf(tree, 'bar-workspace-layer'), zh.stDisabled);
   assert.equal(barRegionOf(tree, 'bar-workspace-layer').props['data-tone'], 'warn');
-  // Region 4: both verdicts of the last key node, in the settings page's words.
+  // Region 4: a two-word summary whose tooltip keeps both full verdicts.
   const verdicts = [
     `${zh.assemblyLayerAssembly}${zh.assemblyLayerSep}${zh.assemblyFirstAssembled}`,
     `${zh.assemblyLayerDelivery}${zh.assemblyLayerSep}${zh.assemblyDeliveryDelivered.replace('{op}', zh.assemblyOpAppend)}`,
   ].join(' · ');
-  assert.equal(barValueOf(tree, 'bar-assembly'), verdicts);
+  assert.equal(barValueOf(tree, 'bar-assembly'), zh.barSummaryDelivered);
+  assert.equal(barValueNodeOf(tree, 'bar-assembly').props.title, verdicts, '完整两句在 tooltip 里（g-086 R2）');
   assert.equal(barRegionOf(tree, 'bar-assembly').props['data-tone'], 'normal');
+  // The short label, not the settings page's heading — that key is still used there.
+  assert.equal(barLabelOf(tree, 'bar-assembly'), zh.barAssemblyLabel);
 });
 
 test('client: a ready layer reports its own coverage, including what did not take effect', async () => {
@@ -16905,7 +16920,7 @@ test('client: a ready layer reports its own coverage, including what did not tak
   );
   assert.equal(barRegionOf(tree, 'bar-workspace-layer').props['data-tone'], 'warn', '有未生效条目就是警告色');
   // No key node observed: the settings page's own「no record」sentence.
-  assert.equal(barValueOf(tree, 'bar-assembly'), zh.mineStatusNoRecord);
+  assert.equal(barValueOf(tree, 'bar-assembly'), zh.barSummaryNone);
   assert.equal(barRegionOf(tree, 'bar-assembly').props['data-tone'], 'unknown');
 });
 
@@ -17216,5 +17231,183 @@ function pagePolicy() {
   const { module } = loadClient('throw');
   return module.__internals.composerBar;
 }
+
+/** A shortcuts-service double: the public catalog plus an optional private registry. */
+function fakeShortcutService(over = {}) {
+  const dispatched = [];
+  const invoked = [];
+  const binding = over.binding === undefined ? { code: 'Comma', modifiers: ['meta', 'alt'] } : over.binding;
+  const view = {
+    dispatchEvent: (event) => {
+      dispatched.push(event);
+      return true;
+    },
+  };
+  if (over.KeyboardEvent !== false) {
+    view.KeyboardEvent = class {
+      constructor(type, init) {
+        this.type = type;
+        this.init = init;
+      }
+    };
+  }
+  const service = {
+    catalog: {
+      getSnapshot: () => (over.catalog === undefined ? [{ id: 'settings.open', binding }] : over.catalog),
+    },
+  };
+  if (over.registry !== false) {
+    service.registry = {
+      invoke: (...args) => {
+        invoked.push(args);
+      },
+    };
+  }
+  return { service, view, dispatched, invoked };
+}
+
+test('client: the entry presses the Host shortcut built from the public catalog (g-086 R2)', () => {
+  const policy = pagePolicy();
+  const fake = fakeShortcutService();
+  assert.equal(policy.dispatchSettingsShortcut({ shortcuts: fake.service, window: fake.view }), 'key');
+  assert.equal(fake.dispatched.length, 1, '一个真实 KeyboardEvent 被派发');
+  const event = fake.dispatched[0];
+  assert.equal(event.type, 'keydown');
+  assert.equal(event.init.code, 'Comma');
+  assert.equal(event.init.ctrlKey, false, 'control 不在 binding 里');
+  assert.equal(event.init.altKey, true);
+  assert.equal(event.init.shiftKey, false);
+  assert.equal(event.init.metaKey, true);
+  assert.equal(event.init.bubbles, true);
+  assert.equal(event.init.cancelable, true);
+  assert.equal(fake.invoked.length, 0, '公开通道成功时不动私有 registry');
+  // A different binding really changes the event — not a hard-coded combination.
+  const other = fakeShortcutService({ binding: { code: 'Comma', modifiers: ['control', 'shift'] } });
+  policy.dispatchSettingsShortcut({ shortcuts: other.service, window: other.view });
+  assert.equal(other.dispatched[0].init.ctrlKey, true);
+  assert.equal(other.dispatched[0].init.shiftKey, true);
+  assert.equal(other.dispatched[0].init.metaKey, false);
+  assert.equal(other.dispatched[0].init.altKey, false);
+});
+
+test('client: catalog gaps fall back to the private registry, then to an explicit none (g-086 R2)', () => {
+  const policy = pagePolicy();
+  const noBinding = fakeShortcutService({ binding: null });
+  assert.equal(policy.dispatchSettingsShortcut({ shortcuts: noBinding.service, window: noBinding.view }), 'invoke');
+  assert.equal(noBinding.invoked.length, 1);
+  assert.equal(noBinding.invoked[0][0], 'settings.open');
+  assert.equal(noBinding.invoked[0][1].modal, null, 'modal=null 才会执行打开动作');
+  const noCatalog = fakeShortcutService({ catalog: null });
+  assert.equal(policy.dispatchSettingsShortcut({ shortcuts: noCatalog.service, window: noCatalog.view }), 'invoke');
+  const noCtor = fakeShortcutService({ KeyboardEvent: false });
+  assert.equal(policy.dispatchSettingsShortcut({ shortcuts: noCtor.service, window: noCtor.view }), 'invoke');
+  const bare = fakeShortcutService({ catalog: null, registry: false });
+  assert.equal(policy.dispatchSettingsShortcut({ shortcuts: bare.service, window: bare.view }), 'none');
+  assert.equal(policy.dispatchSettingsShortcut({ shortcuts: null, window: null }), 'none', '服务缺失不抛错');
+});
+
+test('client: the aim deadline reports a missing panel, and stays quiet when only the row is missing', () => {
+  const policy = pagePolicy();
+  let deadline = null;
+  let timedOut = 0;
+  policy.aimAtSection({
+    document: { querySelector: () => null, body: {} },
+    label: 'x',
+    MutationObserver: null,
+    raf: null,
+    setTimeout: (fn) => {
+      deadline = fn;
+      return 1;
+    },
+    clearTimeout: () => {},
+    onTimeout: () => {
+      timedOut += 1;
+    },
+  });
+  deadline();
+  assert.equal(timedOut, 1, '面板没出现 ⇒ 明确提示');
+  let second = null;
+  let timedOutSecond = 0;
+  policy.aimAtSection({
+    document: { querySelector: () => ({ querySelectorAll: () => [] }), body: {} },
+    label: 'x',
+    MutationObserver: null,
+    raf: null,
+    setTimeout: (fn) => {
+      second = fn;
+      return 1;
+    },
+    clearTimeout: () => {},
+    onTimeout: () => {
+      timedOutSecond += 1;
+    },
+  });
+  second();
+  assert.equal(timedOutSecond, 0, '面板已打开：行没匹配到不算失败');
+});
+
+test('client: the settings entry opens through the slot face, then aims at its own row', async () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  const fake = fakeSettingsDocument({ label: page.zh.nav });
+  let opened = 0;
+  const bar = makeAssemblyBar(page, {
+    session: { sessionId: 's1' },
+    document: fake.doc,
+    openSettingsByShortcut: () => {
+      opened += 1;
+      return 'key';
+    },
+  });
+  let tree = await bar.flush();
+  barButtonOf(tree, 'composer-bar-settings')[0].props.onClick();
+  tree = bar.draw();
+  assert.equal(opened, 1, 'face 提供的打开链被调用一次');
+  assert.equal(fake.state.clicks, 1, '打开后面板出现，本插件那一行被点击');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'bar-settings-hint').length, 0);
+});
+
+test('client: a click that opens nothing shows the fallback after the deadline (g-086 R2)', async () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  const bar = makeAssemblyBar(page, {
+    session: { sessionId: 's1' },
+    document: { querySelector: () => null, body: {} },
+    openSettingsByShortcut: () => 'key',
+  });
+  let tree = await bar.flush();
+  barButtonOf(tree, 'composer-bar-settings')[0].props.onClick();
+  tree = bar.draw();
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-region'] === 'bar-settings-hint').length,
+    0,
+    '点击当下不提示（先给面板时间）',
+  );
+  await new Promise((resolve) => {
+    setTimeout(resolve, 30);
+  });
+  tree = bar.draw();
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-region'] === 'bar-settings-hint').length,
+    1,
+    '超时仍无面板 ⇒ 提示可见，点击不显得没反应',
+  );
+});
+
+test('client: the bar borrows the Host dock’s width rule, with the surface on an inner box', async () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  const bar = makeAssemblyBar(page, { session: { sessionId: 's1' } });
+  const tree = await bar.flush();
+  const style = tree.props.style;
+  assert.equal(style.boxSizing, 'border-box');
+  assert.match(style.width, /--dsh-composer-side-clearance/, '宽度与会话输入框同一条规则');
+  assert.match(style.width, /--dsh-composer-dock-inset/);
+  assert.match(style.maxWidth, /--dsh-composer-card-max-width/, 'max-width 由卡片变量约束 ⇒ 侧栏自适应');
+  assert.equal(style.margin, '0 auto 6px');
+  assert.match(style.padding, /--dsh-composer-dock-inset/);
+  assert.equal(style.flex, 'none');
+  const surface = collect(tree, (node) => node.props && node.props['data-composer-bar-surface'] !== undefined);
+  assert.equal(surface.length, 1);
+  assert.equal(surface[0].props.style.padding, '5px 10px', '内边距在内层，不破坏对齐');
+  assert.equal(surface[0].props.style.borderRadius, 8);
+});
 
 // #endregion

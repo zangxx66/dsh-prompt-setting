@@ -10561,8 +10561,32 @@ v0.2.3 的计划条目（g-065…g-074）与 v0.2.4 的（g-075…g-080）一直
   `context.modal !== null && !command.modals.includes(context.modal)`，所以 **传 `modal: null` 会直接执行打开动作**。
   读取方式是 `ctx.get('shortcuts')`（可选读取，**不**写进 descriptor 的 `inject`——shortcuts 服务缺失时插件仍须 apply；
   与 `locale` 同一纪律），失败返回 `false`。
-  点击顺序：① entry props 自带的 `openSettings`/`openSettingsPanel`（未来宿主直给）→ ② `invokeSettingsShortcut()`
+  点击顺序：① entry props 自带的 `openSettings`/`openSettingsPanel`（未来宿主直给）→ ② 打开链
   → ③ 两者都不可用才显示 `data-region="bar-settings-hint"` 的降级提示。
+
+- **R2 修正（真机发现：入口恒降级）**：R1 的 `invoke` 结论**只对了一半** —— `invoke` 属于私有的
+  `ShortcutRegistry`，而**公开的** `Shortcuts` 接口（`ShortcutsService`）没有它（只有 register/registerFixed/
+  observeFixedInput/describeBinding/edit/recording/closeWindow）。所以 `typeof shortcuts.invoke === 'function'`
+  在真实宿主上恒为 false。现在改走**公开的 `catalog`**：`catalog.getSnapshot()` 找 `settings.open` 的
+  `NormalizedBinding {code, modifiers}` → 构造真实 `KeyboardEvent('keydown', {code, ctrl/alt/shift/meta, bubbles,
+  cancelable, composed})` → `window.dispatchEvent(...)`。宿主 `installKeyboard` 只读 `event.code` 与四个修饰键布尔，
+  **不校验 `isTrusted`**，无模态时 `resolve({modal:null})` 走 `actions.open()` —— 这就是「替用户按快捷键」。
+  兜底链：catalog 无条目 / `binding === null` / `KeyboardEvent` 不可用 → `shortcuts.registry?.invoke?.('settings.open',
+  {region:'page', modal:null, target:null})`（运行时可用、类型面 private，注释写明依据与风险）→ 再不行才显示降级句。
+  另：**点击后 800ms 内仍无面板也要显示降级提示**（否则点击看起来毫无反应）；面板出现则收起提示并尽力点 nav。
+- **测试盲区（R1 教训，记入）**：R1 用「形状相同的自造对象」验证了 invoke 的参数，却没有验证**真实服务对象上该方法存在**。
+  对宿主能力的探测必须以宿主**公开类型声明**为准（`lib/types/client/types.d.ts` 的 `Shortcuts`），
+  「我能构造出同形状对象」不构成证据。R2 的用例改成对着 catalog/KeyboardEvent 这条真实链路断言，
+  并保留一条 `registry` 兜底断言。
+- **宽度与视觉（R2）**：外层 div 照抄宿主 dock 条目（`QueueDock` / `TodoPanel`）的宽度规则
+  —— `width: calc(100% - 2×--dsh-composer-side-clearance - 2×--dsh-composer-dock-inset)`、
+  `max-width: calc(--dsh-composer-card-max-width - 2×--dsh-composer-dock-inset)`、`margin: 0 auto 6px`、
+  `padding: 0 var(--dsh-composer-dock-inset)`、`flex: none`（变量在会话 body 作用域、可继承；百分比宽度使右侧栏
+  打开/关闭时自适应）。可见表面（边框/圆角/背景）与内边距 `5px 10px` 移到内层 div（`data-composer-bar-surface`），
+  对齐不受内边距影响。
+- **文案（R2）**：分区 label 从 `assemblyHeading`（设置页仍在用）改为新键 `barAssemblyLabel`（装配 / Assembly）；
+  摘要值从完整两句改为短句（`barSummaryDelivered` / `barSummaryUnconfirmed` / `barSummaryNotAssembled` /
+  `barSummaryNone`），完整两句放进该 value span 的 `title`。tone 规则不变。
 - **定位到本插件的 section（尽力而为）**：打开面板后 `composerBarAimAtSection` 先同步查一次（React portal 提交早于
   handler 返回），再挂**一个** `MutationObserver`（`childList+subtree`，观察 `document.body`）等
   `[data-shortcut-modal="settings"]` 出现，面板内按**精确文本**匹配 `nav button`（文本即本插件注册的 `label: t('nav')`）
@@ -10572,30 +10596,35 @@ v0.2.3 的计划条目（g-065…g-074）与 v0.2.4 的（g-075…g-080）一直
 
 ### 二、工程代价与处理
 
-- **新增一个段**：`src/16-composer-bar.js`（R1 后 802 行），原 `16-boot.js` 原样改名为 `17-boot.js`（只重切、不移动）。
-  合计 12839 → **13731** 行，18 段；§1.3 / §5.1 两张表、`test/client-source.test.mjs` 的 `SEGMENTS`、
+- **新增一个段**：`src/16-composer-bar.js`（R2 后 985 行），原 `16-boot.js` 原样改名为 `17-boot.js`（只重切、不移动）。
+  合计 12839 → **13942** 行，18 段；§1.3 / §5.1 两张表、`test/client-source.test.mjs` 的 `SEGMENTS`、
   `docs/architecture-map.md`、`docs/check-refs.mjs` 的 `client.js` 行号引用与 `12839` 常量全部按实际行号重定位。
 - **locale 段 1200 行顶格**：`02-locale.js` 正是预算上限（597 键 × 2 语言 + 1 行头注释），**加任何键都会超预算**。
   本轮加 2 个键（`barNoSession` / `barSettingsFallback`），等量删除 2 个**全仓库零引用**的历史死键
   （`updateApplyStarting` / `assemblyWatching`，`grep` 覆盖 `src/` + `client.*.js` + `test/` 均为 0），键数守恒 597。
   这也是为什么没有按「新增 3–5 个键」的常规做法铺文案：分区标签与状态句全部复用页面已有的键。
-- **单测**：13 条新用例并入 `test/client.test.mjs`（沿用该文件的 vm 沙盒 + hooks 桩 + fetch 路由），
+- **单测**：19 条新用例并入 `test/client.test.mjs`（沿用该文件的 vm 沙盒 + hooks 桩 + fetch 路由），
   覆盖五分区/五色相、两层与摘要口径、层未启用 / 有无生效条目、无会话零请求、未声明插槽、入口降级与
   「宿主给 opener 就调用」、**`invokeSettingsShortcut` 的命令与 context（含 modal:null）**、
   **面板已在时立即点击本插件 nav 行 / 面板迟到时由唯一 observer 触发点击**、
   **800ms 超时后 observer 断开且后续 DOM 变动不再点击、stopper 幂等**、
+  **catalog binding → 派发事件的 code 与四个 modifier 完全一致（另一组 binding 会改变事件）**、
+  **catalog 缺失 / binding=null / KeyboardEvent 缺失 → registry 兜底 → none**、**超时无面板 ⇒ 提示可见**、
+  **外层宽度规则与内层 surface**、
   按 Session 重读（`enforceEffectDeps: true`）+ 刷新只读、两个新键的中英对称。
 - **负向对照（改坏就会红，均已实跑并还原）**：①去掉「无 Session ⇒ 不发请求」的短路 ⇒ 无会话用例红；
   ②把工作区层色相改成与用户层同色 ⇒ 五色相用例红；③删掉 effect 依赖数组 ⇒「按 Session 重读」用例红；
   ④把 `invoke` 的 `modal` 从 `null` 改成 `'settings'` ⇒ 命令 context 用例红；
-  ⑤删掉「先同步查一次面板」⇒ 面板已在的定位用例红。
+  ⑤删掉「先同步查一次面板」⇒ 面板已在的定位用例红；
+  ⑥把 binding 的 modifier 推导写错（alt 用 shift 判）⇒ catalog 派发用例红；
+  ⑦删掉超时提示（`onTimeout`）⇒「点击后无面板要提示」用例红。
 
 ### 三、验证
 
 - `node scripts/verify.mjs`：**6 步 / 0 失败**（check-refs / client-build --check / locale-pack --check / prepare / check-compat / 全量测试）。
 - `node scripts/client-build.mjs --check`：**18 个段与 client.js 逐字节一致**。
-- `node docs/check-refs.mjs`：`unresolved=0`、其它失败 0，§1.3 `rows=25 合计=13731`、§5.1 `rows=18 合计=13731 最大段=1200`。
-- 全量测试：**1035 pass / 0 fail**（`node --test test/*.test.mjs`）。
+- `node docs/check-refs.mjs`：`unresolved=0`、其它失败 0，§1.3 `rows=25 合计=13942`、§5.1 `rows=18 合计=13942 最大段=1200`。
+- 全量测试：**1041 pass / 0 fail**（`node --test test/*.test.mjs`）。
 - **未验证（UNVERIFIED）**：真机目视。插件以 `link:` 指向**主工作树**（`~/.dsh/profiles/web/package.json`），
   worktree 的改动未合入主工作树，刷新 `http://127.0.0.1:3080` 加载的仍是旧 bundle —— 本轮环境无法在不污染主工作树 /
   profile 的前提下做真机核对。合并后刷新一次即可按「输入框上方五项 vs 设置页同源」逐项核对。

@@ -362,8 +362,6 @@
   "histPager": "Page {page} / {pages} · {total} records",
   "histPagePrev": "Previous",
   "histPageNext": "Next",
-  "histPageEmpty": "No pages",
-  "histDetailPending": "Pick a record in the list above: preview what it holds, or use it as the from/to side of a comparison.",
   "histCorrupt": "{n} history lines could not be parsed and were skipped.",
   "histUnreadable": "The history file is unreadable: {reason}",
   "histLastError": "The last history write failed: {reason}",
@@ -377,7 +375,6 @@
   "histAction.rollback": "rollback",
   "histPreview": "Preview",
   "histPreviewHeading": "Record preview",
-  "histPreviewClose": "Close the preview",
   "histPreviewMissing": "That record is not on this page: go back to the page that holds it, or reload the list.",
   "histPreviewMissingHint": "It may also have been dropped by the retention limit.",
   "histModalClose": "Close",
@@ -505,8 +502,6 @@
   "presetSaveAsCurrentHint": "“Save current text as a preset” only fills the editor above with the text \"My Prompt\" is showing; it writes nothing by itself.",
   "presetEdit": "Edit",
   "presetDelete": "Delete",
-  "presetWorkspaceHeading": "Apply to a workspace",
-  "presetWorkspaceNote": "Pick a workspace (located by one of its sessions) and apply the preset being edited to it; an existing application can be cancelled here too.",
   "presetWorkspaceEmpty": "This profile exposes no workspace session, so no preset can be applied.",
   "presetApply": "Apply",
   "presetApplyTo": "Apply to a workspace",
@@ -595,5 +590,10 @@
   "error.registry-unavailable": "The chosen download source is unavailable. Nothing falls back to the default source: retry later, or pick another download region.",
   "error.preferences-unwritable": "The preference file could not be written, so nothing took effect.",
   "barNoSession": "No session",
-  "barSettingsFallback": "This Host exposes no API that opens Settings from a session. Open Settings from the sidebar, then choose \"Prompt settings\"."
+  "barSettingsFallback": "This Host exposes no API that opens Settings from a session. Open Settings from the sidebar, then choose \"Prompt settings\".",
+  "barAssemblyLabel": "Assembly",
+  "barSummaryDelivered": "Assembled · delivered",
+  "barSummaryUnconfirmed": "Assembled · unconfirmed",
+  "barSummaryNotAssembled": "Not assembled",
+  "barSummaryNone": "None yet"
 }
