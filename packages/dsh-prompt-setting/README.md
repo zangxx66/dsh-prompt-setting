@@ -307,12 +307,12 @@ zstd -dc "$F" | jq -r 'select(.type=="system/message") | .data.message.content[0
 
 ## 安装 / Install
 
-**首选从 npm 装**（本包已发布，npm 上的 `latest` 为 `0.2.2`；本仓库为 `0.2.4`，发布后两者一致）。需要 DSH
+**首选从 npm 装**（本包已发布，npm 上的 `latest` 为 `0.2.2`；本仓库为 `0.2.5`，发布后两者一致）。需要 DSH
 `>= 0.2.1-0 < 0.3.0-0`：`0.2.1` 的全部预发布（`-0` / `alpha` / `beta` / `rc.N`）、`0.2.1` 正式版以及**其后整条
 0.2.x 的每个 patch**（`0.2.2`、`0.2.9` …）都在范围内；`0.2.1` 以下的 0.1.x 与 0.2.0 线不在范围内，**0.3.0
 及以后同样不在**——下一个 minor 需要重新声明（验证）之后才放行。
 
-> **Install from npm** — the primary route (this package is published; npm `latest` is `0.2.2`, this repository is `0.2.4`). Requires
+> **Install from npm** — the primary route (this package is published; npm `latest` is `0.2.2`, this repository is `0.2.5`). Requires
 > DSH `>= 0.2.1-0 < 0.3.0-0`: every `0.2.1` prerelease (`alpha`, `beta`, `rc.N`, and the synthetic `-0` floor), the
 > **`0.2.1` release itself**, and **every later `0.2.x` patch** (`0.2.2`, `0.2.9`, …) are in range; the
 > 0.1.x and 0.2.0 lines below `0.2.1` are out, and so is the whole **0.3.0 line and everything after it** — the

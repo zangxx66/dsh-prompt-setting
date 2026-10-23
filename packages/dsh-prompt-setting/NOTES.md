@@ -10669,3 +10669,93 @@ v0.2.3 的计划条目（g-065…g-074）与 v0.2.4 的（g-075…g-080）一直
 - **未验证（UNVERIFIED）**：真机目视。插件以 `link:` 指向**主工作树**（`~/.dsh/profiles/web/package.json`），
   worktree 的改动未合入主工作树，刷新 `http://127.0.0.1:3080` 加载的仍是旧 bundle —— 本轮环境无法在不污染主工作树 /
   profile 的前提下做真机核对。合并后刷新一次即可按「输入框上方五项 vs 设置页同源」逐项核对。
+
+## 169. 版本号 `0.2.4` → `0.2.5`：同步点清单、夹具整体上移与 pack 复核（g-087，2026-10-24，基线 `dc0ea26` 隔离工作树 `g-087-att-01`）
+
+### 一、发布范围与跳版事实
+
+- `main` 停在 `381581f`（`release: v0.2.4`，即本包 0.2.4 的已发布提交），`dev` 为 `dc0ea26`；
+  `merge-base(main,dev) = 381581f`、`main..dev` 共 **17** 个提交，**没有**未发布的中间版本号，
+  因此这次是正常的单 patch 升级（不是 §163 那种连跳）。
+- 逐目标核实（`git merge-base --is-ancestor <sha> HEAD|main`）：g-082 `a152781`、g-083 `96a236b`、
+  g-084 `62a92ce`、g-085 `4599891`、g-086 `dc0ea26` —— 全部是 HEAD 的祖先、都不是 `main` 的祖先。
+- npm 上的 `latest` 仍为 `0.2.2`（上一轮 2026-10-18 实测值，本轮**未复测**，离线环境不查 registry），
+  因此三份 README 只改「本仓库为 `0.2.5`」，`latest` 保持 `0.2.2`。
+
+### 二、同步的「本包当前版本」（25 行 / 10 文件，全部改为 `0.2.5`；行号为改后行号）
+
+| 文件:行 | 说明 |
+| --- | --- |
+| `package.json:3` | 权威源① |
+| `index.js:220` | 权威源② `PLUGIN_VERSION`（`host` / `client` 双 lockstep 断言） |
+| `README.md:13` / `README_zh.md:12` | 徽章 `version-0.2.5` |
+| `README.md:118` / `README_zh.md:95` | 安装段「本仓库为 `0.2.5`」（npm `latest` 仍 `0.2.2`） |
+| `README.md:351` / `README_zh.md:290` | 文档表内同一表述 |
+| 包内 `README.md:310` / `:315` | 同上（中 / 英） |
+| `CONTRACT.md:1679-1680` | §10 export 示例 `plugin.version` / `pluginVersion` |
+| `CONTRACT.md:4320` | §13.8 版本节点文案 `v0.2.5` |
+| `CONTRACT.md:4535` | §14 ping 示例 `version` |
+| `CONTRACT.md:5913` / `:5941` | §17 update-check 两个示例的 `current` |
+| `test/stage2.test.mjs:1292-1293` | `pluginVersion` / `plugin.version` 断言 |
+| `test/update.test.mjs:65` / `test/install.test.mjs:70` | `OLD_TARBALL_URL`（本包已是的那版） |
+| `test/update.test.mjs:151` / `test/install.test.mjs:766` | npm 文档里「本包当前版本」的条目键与 `version` |
+| `test/update.test.mjs:989` | ping 的 `body.version` 断言 |
+| `test/route.test.mjs:608` | `hasUpdate` 注释「this package is 0.2.5 …」 |
+| `test/install.test.mjs:62` | 夹具规则注释改为 `0.2.5 → 0.2.6` |
+
+### 三、随本包版本移动的「更新目标」夹具（`0.2.5` → `0.2.6`，71 处 / 4 文件）
+
+理由同 §163 §四（`test/install.test.mjs:60-63` 的注释写死）：这些夹具必须**高于**本包版本，否则
+`hasUpdate` 从真翻假，route / install / update 的「有更新」族用例整片塌掉。本包升到 `0.2.5` 后，
+原来的 `0.2.5` 夹具与本包版本**相等**，语义上必须整体上移到本包版本的下一 patch `0.2.6`。
+按出现次数计：`test/install.test.mjs` 30、`test/update.test.mjs` 19、`test/route.test.mjs` 12、
+`CONTRACT.md` 10（§17 npm/GitHub 示例的 `latest` / `latestTag` / `tarball` / `releaseUrl` 与 §18
+install 示例的 `version` / `tag` / `releaseUrl` / `releaseLink`）。§17 的 npm 示例现在自洽为
+`current: 0.2.5` / `latest: 0.2.6` / `hasUpdate: true`。
+
+### 四、刻意保留 `0.2.4` 的白名单（`grep -rn "0\.2\.4"` 逐条判定后仅剩历史叙述）
+
+1. `CHANGELOG.md` 的 `## [0.2.4] - 2026-10-18` 段与其中的升版叙述（`0.2.2 → 0.2.4`）：历史是既成事实；
+2. `NOTES.md` 的 §163（上一轮升版记录）及其它历史节里的 `0.2.4` / `0.2.5` 夹具值：当时的记录；
+3. `test/update.test.mjs:280`、`:300-335` 的纯函数举例（`isNewerVersion` / `registryTarball` 传什么断什么，
+   与当前版本无关）与 `MIRROR_TARBALL`（`0.2.0`）、客户端渲染夹具（`0.1.5`）等 §163 已列的白名单；
+4. DSH 的版本（不是本包版本）：peer 范围 `>=0.2.1-0 <0.3.0-0`、`core/compat.js` 注释、
+   `test/boot.test.mjs` 边界表与转义正则。
+
+`grep` 复核：`0.2.4` 现存 **13** 处（全部在 `NOTES.md`）与 **5** 处（全部在 `CHANGELOG.md`），
+其它文件 0 处。
+
+### 五、`client.js` 不需要重建
+
+`client.js` 里没有任何字面版本号（只有 DSH 的 `0.2.1-rc.3` 等宿主版本注释），`src/` 也零 `0.2.4`
+命中；`node scripts/client-build.mjs --check` 通过（18 个段逐字节一致），因此本轮**未重建**、字节不变。
+
+### 六、门禁与 pack 复核（逐条实跑）
+
+- `node scripts/verify.mjs`：**6 步 / 0 失败**（check-refs 156ms / client-build --check 90ms /
+  locale-pack --check 88ms / prepare 119ms / check-compat 74ms / test 73326ms），exit 0；
+- `node --test test/*.test.mjs`：**1048 pass / 0 fail / skipped 0 / exit 0**（70.97s）；
+- `npm pack <worktree>/packages/dsh-prompt-setting --cache <tmp>/cache`（在 `mktemp -d` 目录内跑）：
+  tarball `dsh-prompt-setting-0.2.5.tgz`、**58 文件**、包内 `package.json.version = 0.2.5`、
+  **无** `.worktrees/` / `.dsh-graph/` / `test/` 命中；清单与 `files` 白名单**双向相等**
+  —— 白名单内磁盘文件 56 个全部入包，包内 58 项 = 这 56 + npm 总会带的 `LICENSE` / `package.json`。
+  58 比上版 57 多 1，来自 g-086 新增的 `src/16-composer-bar.js`（`16-boot.js` → `17-boot.js`，
+  段数 17 → 18）。仓库内没有留下 tarball。
+
+### 七、负向对照（改坏就会红，均已实跑并还原）
+
+1. 把 `index.js:220` 的 `PLUGIN_VERSION` 回退成 `'0.2.4'`（package.json 仍 0.2.5）⇒
+   `node --test test/host.test.mjs` **21 pass / 2 fail / exit 1**（`manifest: version constant stays in
+   lockstep with package.json`、`host: GET /prompt-setting/ping answers 200 JSON`）；
+2. 把 `test/route.test.mjs` 的默认 npm 文档 `latest` 改回 `'0.2.5'`（与本包版本相等）⇒
+   `node --test test/route.test.mjs` **107 pass / 2 fail / exit 1**（「the check answers from npm…」与
+   「an untrustworthy registry tarball…」两条 `hasUpdate` 用例）。
+   两次改动都用 `/tmp` 备份还原，`shasum` 与还原前逐字节相同。
+
+### 八、未验证项
+
+- `npm publish` / `git tag` / `git push` / 合入 `main` / 分支收口：**人工 gate，未做**；
+- npm 上的 `latest` 未复测（离线；沿用 2026-10-18 的 `0.2.2` 实测值，README 的「未发布」表述正为此）；
+- 徽章的 shields.io 在线渲染未目视，只核对了源文本；
+- 真机目视仍未做（worktree 未合入主工作树，刷新 `http://127.0.0.1:3080` 加载的仍是旧 bundle）。
+

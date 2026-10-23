@@ -1676,8 +1676,8 @@ replaced is described further down, under its own heading.
   "schema": "dsh-prompt-setting/export",
   "version": 2,
   "exportedAt": "2024-01-02T10:00:00.000Z",
-  "plugin": { "name": "dsh-prompt-setting", "version": "0.2.4" },
-  "pluginVersion": "0.2.4",
+  "plugin": { "name": "dsh-prompt-setting", "version": "0.2.5" },
+  "pluginVersion": "0.2.5",
   "layers": {
     "user":      { "layer": "user", "enabled": true,
                    "reason": null,
@@ -4317,7 +4317,7 @@ writes one down either.
   lives on the **root container** instead: `data-plugin-version` is present in
   **every** render state, so a probe reads one attribute and never has to know
   which state it got;
-- **the text** is `v` + the version (`v0.2.4`), or `stPluginVersionUnknown`
+- **the text** is `v` + the version (`v0.2.5`), or `stPluginVersionUnknown`
   (「版本未知」 / `Version unknown`) when the ping carried no usable one. The
   node's `title` is `stPluginVersion` (「插件版本」 / `Plugin version`);
 - **the link:** with a `repositoryUrl` the node is an `a` element whose `href` is
@@ -4532,7 +4532,7 @@ live probe would read a normal rebuild as a defect.
 {
   "ok": true,
   "plugin": "dsh-prompt-setting",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "repositoryUrl": "https://github.com/zangxx66/dsh-prompt-setting",
   "time": "2026-09-28T12:00:00.000Z",
   "clientRenderer": "fallback",
@@ -5910,14 +5910,14 @@ The body of an **npm** answer:
 {
   "ok": true,
   "enabled": true,
-  "current": "0.2.4",
-  "latest": "0.2.5",
-  "latestTag": "0.2.5",
+  "current": "0.2.5",
+  "latest": "0.2.6",
+  "latestTag": "0.2.6",
   "hasUpdate": true,
   "releaseUrl": null,
   "publishedAt": "2026-09-25T00:00:00.000Z",
   "source": "npm",
-  "tarball": "https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.5.tgz",
+  "tarball": "https://registry.npmjs.org/dsh-prompt-setting/-/dsh-prompt-setting-0.2.6.tgz",
   "region": "default",
   "registry": "https://registry.npmjs.org/",
   "checkedAt": "2026-10-08T09:00:00.000Z",
@@ -5938,11 +5938,11 @@ The body of a **GitHub** answer (the pre-Revision-27 shape, plus `source`):
 {
   "ok": true,
   "enabled": true,
-  "current": "0.2.4",
-  "latest": "0.2.5",
-  "latestTag": "v0.2.5",
+  "current": "0.2.5",
+  "latest": "0.2.6",
+  "latestTag": "v0.2.6",
   "hasUpdate": true,
-  "releaseUrl": "https://github.com/zangxx66/dsh-prompt-setting/releases/tag/v0.2.5",
+  "releaseUrl": "https://github.com/zangxx66/dsh-prompt-setting/releases/tag/v0.2.6",
   "publishedAt": "2026-10-01T00:00:00Z",
   "source": "github",
   "tarball": null,
@@ -6559,8 +6559,8 @@ Otherwise, the answer:
     "status": "running",
     "known": true,
     "application": null,
-    "version": "0.2.5",
-    "tag": "v0.2.5",
+    "version": "0.2.6",
+    "tag": "v0.2.6",
     "startedAt": "2026-10-04T09:00:00.000Z",
     "finishedAt": null,
     "cancelRequested": false,
@@ -6581,8 +6581,8 @@ A refusal — nothing was started, so there is no request to track:
   "message": "this profile installs dsh-prompt-setting from a local path (link:../x), which is a development working copy: …",
   "launchKind": "cli",
   "manual": {
-    "releaseUrl": "https://github.com/zangxx66/dsh-prompt-setting/releases/tag/0.2.5",
-    "releaseLink": "open the 0.2.5 release page",
+    "releaseUrl": "https://github.com/zangxx66/dsh-prompt-setting/releases/tag/0.2.6",
+    "releaseLink": "open the 0.2.6 release page",
     "command": "dsh plugin add <tarball-or-path>",
     "current": "link:../x"
   }

@@ -9,7 +9,7 @@ Prompt 管理器：**看得见**每一轮会话最终装配出来的系统提示
 全程**不碰 DSH 全局安装包**。
 
 ![license](https://img.shields.io/badge/license-MIT-blue)
-![version](https://img.shields.io/badge/version-0.2.4-blue)
+![version](https://img.shields.io/badge/version-0.2.5-blue)
 ![dsh](https://img.shields.io/badge/DSH-%3E%3D0.2.1--0%20%3C0.3.0--0-blueviolet)
 ![deps](https://img.shields.io/badge/dependencies-0-brightgreen)
 
@@ -92,7 +92,7 @@ DSH 每轮会话都会注入一段由 `@deepseek-ai/dsh-system-prompt` 装配出
 0.1.x 与 0.2.0 线不在范围内，**0.3.0 及以后同样不在**——下一个 minor 需要重新声明（验证）之后才放行。
 跑测试和开发才需要 Node `>= 22`。
 
-**首选从 npm 装**（本包已发布，npm 上的 `latest` 为 `0.2.2`；本仓库为 `0.2.4`，发布后两者一致）：
+**首选从 npm 装**（本包已发布，npm 上的 `latest` 为 `0.2.2`；本仓库为 `0.2.5`，发布后两者一致）：
 
 ```sh
 dsh plugin --profile <profile 名> add dsh-prompt-setting
@@ -287,7 +287,7 @@ DSH 升级后插件没出现、终端也没报错时，先跑 `node scripts/chec
 | [`packages/dsh-prompt-setting/README.md`](./packages/dsh-prompt-setting/README.md) | 使用者 / 开发者 | 包简介与功能（中英对照）、安装、维护者要点、出问题时怎么办 |
 | [`CONTRACT.md`](./packages/dsh-prompt-setting/CONTRACT.md) | 开发者 | 冻结的 REST 契约：字段、动作枚举、字段上限、每一个 4xx |
 | [`NOTES.md`](./packages/dsh-prompt-setting/NOTES.md) | 开发者 | 设计取舍与实测记录（含未验证项与已推翻的旧结论） |
-| [`CHANGELOG.md`](./CHANGELOG.md) | 使用者 / 开发者 | 每个版本的用户可感知变更（中英对照；已发布——npm 上的 `latest` 为 `0.2.2`，本仓库为 `0.2.4`） |
+| [`CHANGELOG.md`](./CHANGELOG.md) | 使用者 / 开发者 | 每个版本的用户可感知变更（中英对照；已发布——npm 上的 `latest` 为 `0.2.2`，本仓库为 `0.2.5`） |
 
 ## 九、状态与路线图
 

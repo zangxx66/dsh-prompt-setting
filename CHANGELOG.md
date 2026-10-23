@@ -10,6 +10,119 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
+## [0.2.5] - 2026-10-24
+
+**功能版本：「我的预设」支持标签（打标、筛选、标签管理、删除级联），「我的 Prompt」新增就地装配状态
+摘要与覆盖计数，会话输入框上方新增一条只读的提示词装配状态栏（五分区、彩色图标、可在「高级」关闭），
+DSH peer 范围收敛为 `>=0.2.1-0 <0.3.0-0`。 / Feature release: "My presets" gained tags (tagging,
+filtering, tag management, cascading delete), "My prompt" gained an in-place assembly summary with an
+override count, a read-only prompt-assembly status bar was added above the composer (five partitions,
+colored icons, switchable under "Advanced"), and the DSH peer range settled at `>=0.2.1-0 <0.3.0-0`.**
+
+（本次发布覆盖 g-082…g-086。范围经 `git merge-base --is-ancestor` 逐项核实——每个目标的代表提交都是
+`dev`（`dc0ea26`）的祖先、都不是 `main`（`381581f`）的祖先，`merge-base(main,dev) = 381581f`，
+`dev` 领先 `main` 17 个提交。 / This release covers g-082…g-086, verified with `git merge-base
+--is-ancestor`: every target's representative commit is an ancestor of `dev` (`dc0ea26`) and none is an
+ancestor of `main` (`381581f`); `merge-base(main,dev) = 381581f`, and `dev` is 17 commits ahead.）
+
+### Added 新增
+
+- **「我的预设」标签（g-082）**：预设库文档升到 `version: 2`，顶层新增独立的标签集合
+  `tags: [{id, name, createdAt, updatedAt}]`，每个预设新增 `tagIds: []`（去重、保序、只允许现存标签）；
+  旧文档（无 `tags`）读出空标签集，不需要迁移。设置页新增标签筛选条（「全部」+ 各标签 chip、单选、
+  点已选取消）、行内标签 chip、编辑器里的多选标签 picker，以及标签管理对话框（新增 / 改名 / 删除）；
+  删除走页面统一的二次确认，正文说明「{count} 个预设会去掉这个标签」。`GET /presets` 与 `PUT /presets`
+  携带 `tags[]` / `tagIds[]`，新增 `PUT /prompt-setting/presets/tags` 与
+  `DELETE /prompt-setting/presets/tags?id=`；删除是原子的，并在同一次返回里把该 `tagId` 从所有预设剥掉
+  （删除后不存在悬空 `tagId`），**不碰任何工作区层、不写历史**。导入导出自然携带标签，导入按整份替换
+  严格校验（悬空 `tagId`、重复 id/名、超限一律拒绝）。 /
+  **Tags in "My presets" (g-082)**: the presets document is now `version: 2` with a top-level
+  `tags: [{id, name, createdAt, updatedAt}]` set and a `tagIds: []` list per preset (deduplicated,
+  order-preserving, only existing tags); an old document (no `tags`) reads back as an empty tag set and
+  needs no migration. Settings gained a tag filter bar ("All" + one chip per tag, single-select,
+  clicking the selected chip clears it), per-row tag chips, a multi-select tag picker in the preset
+  editor, and a tag manager dialog (create / rename / delete); deletion uses the page's existing
+  confirmation and states "the tag is removed from {count} presets". `GET`/`PUT /presets` now carry
+  `tags[]` / `tagIds[]`, and two routes are new: `PUT /prompt-setting/presets/tags` and
+  `DELETE /prompt-setting/presets/tags?id=`. A tag delete is atomic and strips that `tagId` from every
+  preset in the same write (no dangling `tagId`), and it **never touches a workspace layer or the
+  history**. Export/import carry the tags naturally; import is strict (dangling `tagId`, duplicate
+  id/name and over-limit values are refused).
+
+- **「我的 Prompt」就地状态摘要（g-084）**：在「我的 Prompt」标题区下方插入两行**只读**摘要——①最近
+  关键节点的装配结论 + 送达结论（沿用页面既有的 `assemblyVerdictOf` / `deliveryVerdictOf` 与既有文案
+  键，不复制第二套口径），②本层覆盖计数「本层覆盖 {total} 条 · {ineffective} 条未生效」。摘要不展开
+  逐条原因、不含装配开关、不渲染覆盖列表；「详情」会把「高级」钉到同一个 session 再切换，全局范围
+  不发请求。同时澄清清理入口文案：只删本层「我的 Prompt」段 / 整层清空（含它）/ 「清除全部覆盖」三者
+  的区别。路由、按钮结构与确认流程一律未动。 /
+  **In-place summary in "My prompt" (g-084)**: two **read-only** lines below the "My prompt" heading —
+  (1) the latest key node's assembly verdict plus delivery verdict (reusing the page's existing
+  `assemblyVerdictOf` / `deliveryVerdictOf` and copy keys, not a second source of truth), and (2) the
+  override count "this layer covers {total}, {ineffective} not in effect". The summary expands no
+  per-entry reasons, carries no assembly toggle and renders no override list; "Details" pins "Advanced"
+  to the same session before switching, and the global scope issues no request. The cleanup entry copy
+  now spells out the difference between deleting this layer's "My prompt" section, emptying the whole
+  layer (which includes it) and "clear all overrides". Routes, button structure and the confirmation flow
+  are unchanged.
+
+- **会话输入框上方的装配状态栏（g-086）**：在宿主 `conversation.input.dock` 追加一条常驻**只读**栏，
+  五个分区：装配段数、用户级层、工作区级层、装配状态摘要、插件设置入口。口径全部复用页面已有函数
+  （`effective.sections.length` / `mineCoverageOf` / `assemblyVerdictOf` / `deliveryVerdictOf`），只发
+  `GET`（带 `?session=`），刷新按钮只重读；**无 session 时零请求**（effect 直接短路，`return null`
+  在全部 hook 之后）。视觉是胶囊仪表条：品牌区 + 五个内联 SVG 图标 + 语义色值，永不折行（窄宽收缩并
+  省略号），`< 640px` 进紧凑态隐藏标签、只留图标与值。设置入口依次尝试 entry props 的 opener →
+  公开的 `catalog` 快捷键（构造真实 `KeyboardEvent` 派发）→ 私有 `registry.invoke` 兜底 → 都不可用时
+  才显示降级提示；点击后 800ms 内面板未出现同样提示。「高级」装配卡新增开关
+  （`data-action="composer-bar-toggle"`，偏好只写 `localStorage['dsh-prompt-setting:composer-bar']`
+  一个键，**关闭态零请求**），设置页与状态栏通过模块级总线同帧联动。 /
+  **Composer status bar (g-086)**: a permanent **read-only** bar appended to the host's
+  `conversation.input.dock` with five partitions — assembled section count, user layer, workspace layer,
+  assembly summary, and a settings entry. Every value reuses an existing page function
+  (`effective.sections.length` / `mineCoverageOf` / `assemblyVerdictOf` / `deliveryVerdictOf`), it only
+  issues `GET`s (with `?session=`), and the refresh button merely re-reads; with **no session it requests
+  nothing** (the effect short-circuits, and `return null` sits after every hook). The look is a capsule
+  gauge bar — brand area plus five inline SVG icons and semantic-colored values, never wrapping (it
+  shrinks with ellipses instead), and below `640px` it switches to a compact state that hides the labels
+  and keeps only icons and values. The settings entry tries the entry props' opener first, then the
+  public `catalog` shortcut (dispatching a real `KeyboardEvent`), then the private `registry.invoke`
+  fallback, and only shows a degradation hint when none is available — including when the panel has not
+  appeared 800ms after a click. The "Advanced" assembly card gained a switch
+  (`data-action="composer-bar-toggle"`) whose preference writes a single key,
+  `localStorage['dsh-prompt-setting:composer-bar']`, and whose **off state issues zero requests**; the
+  settings page and the bar stay in sync within the same frame through a module-level bus.
+
+### Changed 变更
+
+- **DSH peer 范围收敛为 `>=0.2.1-0 <0.3.0-0`（g-083 / g-085）**：原先三条 `||` 分支
+  （`<0.2.0` / `<0.2.1-0` / `<0.2.2-0`）合并为**一个区间**——下界 `>=0.2.1-0` 覆盖 `0.2.1` 的全部预发布与
+  正式版，上界 `<0.3.0-0` 放行整条 `0.2.x` 的每个 patch（`0.2.2`、`0.2.9` …），排除 `0.3.0` 及以后。
+  中间曾收敛为无上界的 `>=0.2.1-0`，因 0.3.0 是下一个 minor、可能含破坏性变更，按「只有重新验证声明过
+  的范围才放行」加回上界（`<0.3.0-0` = `0.3.0` 元组的最小预发布）。`DSH_PEER_RANGE_FALLBACK` 与
+  manifest 同步、`core/compat.js` 的注释同步更新，**解析器实现零改动**。 /
+  **DSH peer range settled at `>=0.2.1-0 <0.3.0-0` (g-083 / g-085)**: the former three `||` branches
+  (`<0.2.0` / `<0.2.1-0` / `<0.2.2-0`) collapsed into **one interval** — the `>=0.2.1-0` floor admits
+  every `0.2.1` prerelease and the release itself, and the `<0.3.0-0` ceiling admits every `0.2.x` patch
+  (`0.2.2`, `0.2.9`, …) while excluding `0.3.0` and later. It had briefly become the unbounded
+  `>=0.2.1-0`; because 0.3.0 is the next minor and may carry breaking changes, the ceiling came back
+  (`<0.3.0-0` is the `0.3.0` tuple's lowest prerelease) on the rule that only a re-verified, declared
+  range is admitted. `DSH_PEER_RANGE_FALLBACK` and the manifest agree and the `core/compat.js` comments
+  follow; **the parser implementation is unchanged**.
+
+- **版本号 `0.2.4` → `0.2.5`**：同步表示「本包当前版本」的每一处——`package.json` 的 `version`、
+  `index.js` 的 `PLUGIN_VERSION`、三份 README 的徽章与「本仓库为 X」（npm `latest` 仍是 `0.2.2`，
+  0.2.5 尚未发布，两者发布后才一致）、`CONTRACT.md` 的 export / 版本节点 / ping / update-check 示例，
+  以及断言当前版本的测试；配套的「更新目标」夹具按语义上移到 `0.2.6`（必须高于本包版本，否则
+  `hasUpdate` 翻假）。版本号本身**不引入任何行为变更**；`npm publish` / `git tag` / `git push` /
+  合入 `main` 仍是人工 gate，不在本次变更内。 /
+  **Version `0.2.4` → `0.2.5`**: every place that states "the version this package currently is" was
+  moved together — `package.json`, the host's `PLUGIN_VERSION`, the badges and "this repository is"
+  lines in all three READMEs (npm `latest` is still `0.2.2`; 0.2.5 is not published yet, so the two
+  agree only after publishing), the export / version-node / ping / update-check examples in
+  `CONTRACT.md`, and the tests that assert the package version. The "update target" fixtures moved by
+  semantics to `0.2.6`, which must stay above the package's own version or `hasUpdate` flips false. The
+  bump itself introduces **no behaviour change**; `npm publish`, `git tag`, `git push` and the merge
+  into `main` remain manual gates.
+
 ## [0.2.4] - 2026-10-18
 
 **功能版本：删除预设时一并还原它已应用的工作区，备份与恢复改为整机全量并解除导入写锁，全部用户文案迁出
