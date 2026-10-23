@@ -541,6 +541,163 @@
       );
     }
 
+    /**
+     * g-084: one layer's override coverage, as the two numbers「我的 Prompt」's
+     * summary shows: how many entries this layer stores, and how many of them
+     * did **not** take effect in the page-scoped assembly.
+     *
+     * `overrides` is the page-scoped `GET /overrides` payload and `sections` is
+     * the page-scoped snapshot's `effective.sections`; both describe the page's
+     * 「查看范围」, never「高级」's workspace selector (g-073). The Host's
+     * `applied` flag is what "took effect" means (CONTRACT §4.1) — this summary
+     * does not re-derive a per-entry cause; that belongs to「高级」's list. A name
+     * the other layer won during the merge is ineffective **for this layer**, so
+     * the winning `overrideLayer` is compared as well. The reserved section is
+     * stacked across layers by `resolveReservedSection`, so its `applied` flag is
+     * the one fact that answers the question there.
+     * @param layer - 'user' | 'workspace'.
+     * @param overrides - one `GET /overrides` payload.
+     * @param sections - `snapshot.effective.sections`.
+     * @returns `{total, ineffective}`.
+     */
+    function mineCoverageOf(layer, overrides, sections) {
+      const view = overrides !== null && typeof overrides === 'object' ? overrides[layer] : null;
+      const list = view !== null && typeof view === 'object' && Array.isArray(view.overrides) ? view.overrides : [];
+      const achieved = new Map();
+      for (const section of Array.isArray(sections) ? sections : []) {
+        if (section !== null && typeof section === 'object' && typeof section.name === 'string') {
+          achieved.set(section.name, section);
+        }
+      }
+      let ineffective = 0;
+      for (const entry of list) {
+        if (entry === null || typeof entry !== 'object' || typeof entry.name !== 'string') {
+          ineffective += 1;
+          continue;
+        }
+        const target = achieved.get(entry.name);
+        if (target === undefined) {
+          ineffective += 1;
+        } else if (entry.name === RESERVED_SECTION_NAME) {
+          // The reserved text is stacked by `resolveReservedSection`; an entry
+          // contributes only when its own non-empty text reaches the assembly.
+          const other = (overrides[layer === 'user' ? 'workspace' : 'user']?.overrides ?? []).find((item) => item?.name === RESERVED_SECTION_NAME);
+          const contributes = entry.action !== 'hide' && typeof entry.text === 'string' && entry.text.trim() !== '' && (layer === 'workspace' || !(other && (other.action === 'hide' || (typeof other.text === 'string' && other.text.trim() !== '' && other.action !== 'append'))));
+          if (target.applied !== true || !contributes) ineffective += 1;
+        } else if (target.overrideLayer !== layer || target.applied !== true) {
+          ineffective += 1;
+        }
+      }
+      return { total: list.length, ineffective };
+    }
+    /**
+     * g-084:「我的 Prompt」's read-only status summary — the two facts a reader
+     * previously had to switch to「高级」for, in this panel's own scope.
+     *
+     * Two fixed lines, and neither expands anything: the assembly line names the
+     * latest key node's two verdicts (or says there is none / that this is a
+     * global scope), and the coverage line states two counts. The assembly switch
+     * is deliberately absent — it stays in「高级」, the one tab that owns it. The
+     * 「详情」entry is a hand-built text button rather than `UI.Button` so the two
+     * lines stay inside the panel's first-screen budget.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the summary element.
+     */
+    function renderMineStatus(t, m, a) {
+      const state = m.mineAssembly ?? { phase: 'idle', data: null, error: null };
+      const payload =
+        state.phase === 'ready' && state.data !== null && typeof state.data === 'object' ? state.data : null;
+      const record =
+        payload !== null && payload.record !== null && typeof payload.record === 'object' ? payload.record : null;
+      const notice =
+        record !== null && record.notice !== null && typeof record.notice === 'object' ? record.notice : null;
+      const globalScope = m.sessionArg === null;
+      const sep = t('assemblyLayerSep');
+      let assemblyKind;
+      let assemblyText;
+      if (globalScope) {
+        assemblyKind = 'global';
+        assemblyText = t('sessionGlobal');
+      } else if (notice !== null) {
+        assemblyKind = 'notice';
+        assemblyText =
+          `${t('assemblyLayerAssembly')}${sep}${assemblyVerdictOf(t, notice)} · ` +
+          `${t('assemblyLayerDelivery')}${sep}${deliveryVerdictOf(t, notice)}`;
+      } else {
+        assemblyKind = state.phase === 'error' ? 'error' : state.phase === 'ready' ? 'none' : 'loading';
+        assemblyText = t(assemblyKind === 'loading' ? 'loading' : assemblyKind === 'error' ? 'loadFailed' : 'mineStatusNoRecord');
+      }
+      const layer = m.sessionArg === null || m.mineLayer !== 'workspace' ? 'user' : 'workspace';
+      const snapReady = m.snap !== null && m.snap !== undefined && m.snap.phase === 'ready' && m.snap.data !== null;
+      const ovsReady = m.ovs !== null && m.ovs !== undefined && m.ovs.phase === 'ready' && m.ovs.data !== null;
+      const sections =
+        snapReady && m.snap.data.effective && Array.isArray(m.snap.data.effective.sections)
+          ? m.snap.data.effective.sections
+          : [];
+      const coverage = ovsReady && snapReady ? mineCoverageOf(layer, m.ovs.data, sections) : null;
+      const coverageError =
+        (m.ovs !== null && m.ovs !== undefined && m.ovs.phase === 'error') ||
+        (m.snap !== null && m.snap !== undefined && m.snap.phase === 'error');
+      const coverageKind = coverage !== null ? 'ready' : coverageError ? 'error' : 'loading';
+      const coverageText =
+        coverage === null
+          ? t(coverageKind === 'error' ? 'loadFailed' : 'loading')
+          : fmt(t('mineStatusCoverage'), {
+              total: String(coverage.total),
+              ineffective: String(coverage.ineffective),
+            });
+      const lineStyle = {
+        margin: 0,
+        fontSize: 12,
+        lineHeight: '16px',
+        color: token.labelSecondary,
+        wordBreak: 'break-word',
+      };
+      return h(
+        'div',
+        {
+          'data-region': 'mine-status',
+          'data-mine-status-scope': globalScope ? 'global' : String(m.sessionArg),
+          'data-mine-status-layer': layer,
+          'data-mine-status-read': state.phase,
+          'data-mine-status-assembly': assemblyKind,
+          'data-mine-status-coverage': coverageKind,
+          'data-mine-status-total': coverage === null ? '' : String(coverage.total),
+          'data-mine-status-ineffective': coverage === null ? '' : String(coverage.ineffective),
+          style: { display: 'flex', flexDirection: 'column', gap: 2 },
+        },
+        h(
+          'div',
+          { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+          h('p', { 'data-mine-status-line': 'assembly', style: lineStyle }, assemblyText),
+          h(
+            'button',
+            {
+              type: 'button',
+              'data-action': 'mine-status-detail',
+              disabled: m.busy,
+              onClick: a.openMineStatusDetail,
+              style: {
+                font: 'inherit',
+                fontSize: 12,
+                lineHeight: '16px',
+                padding: 0,
+                border: 0,
+                background: 'transparent',
+                color: token.stateBusiness,
+                cursor: m.busy ? 'default' : 'pointer',
+                textDecoration: 'underline',
+              },
+            },
+            t('mineStatusDetail'),
+          ),
+        ),
+        h('p', { 'data-mine-status-line': 'coverage', style: lineStyle }, coverageText),
+      );
+    }
+
     function renderMinePanel(t, m, a) {
       const workspace = m.snap.data && m.snap.data.layers ? m.snap.data.layers.workspace : null;
       const workspaceUsable = workspace && workspace.enabled === true;
@@ -646,6 +803,9 @@
         h('h3', { style: headingStyle }, t('mineHeading')),
         renderPromptBlock(t, m, a),
         targetLine,
+        // g-084: the read-only summary sits between the write-target line and the
+        // explanatory note — the two facts a reader used to leave this panel for.
+        renderMineStatus(t, m, a),
         h('p', { style: { margin: 0, ...metaStyle } }, t('mineNote')),
         h(
           'div',

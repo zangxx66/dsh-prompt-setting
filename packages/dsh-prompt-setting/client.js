@@ -912,11 +912,7 @@ window.__ModuleLoader__.load({
     const SCOPE_TOTAL_MAX = 100;
     const SCOPE_GROUP_LIMIT = 40;
 
-    // #region generated: locale/zh.json + locale/en.json (g-066)
-    // 下面两段是**生成物**，不是真源：文案只改 locale/*.json，然后跑
-    // `node scripts/locale-pack.mjs --write`；`--check` 是发布门（prepare 也会跑）。
-    // 浏览器运行时读不到包内的 JSON —— bundle 是 classic script、宿主零转译、插件路由
-    // 也不服务子目录 —— 所以词典必须内联进 bundle，只是不再手工维护它（CONTRACT.md §14.5）。
+    // 生成段：真源 locale/zh.json + locale/en.json；改文案跑 node scripts/locale-pack.mjs --write（勿手改本段）。
     const zh = {
       nav: 'Prompt 管理',
       title: 'Prompt 管理',
@@ -1089,6 +1085,9 @@ window.__ModuleLoader__.load({
       mineHeading: '我的 Prompt',
       promptBlockNote: '这个范围决定「我的 Prompt」写到哪一层；改范围只在这里。',
       mineTargetNote: '写入目标：{layer}；查看范围：{scope}',
+      mineStatusNoRecord: '尚无关键节点观察',
+      mineStatusCoverage: '本层覆盖 {total} 条 · {ineffective} 条未生效',
+      mineStatusDetail: '详情',
       mineNote: '这里写下的内容会成为单独一段 Prompt，排在所有内置段之后，下一轮生效（next-turn）。该段永远不由 DSH 插值；开启「变量替换」后，由本插件在装配时展开 {{...}}——未注册、拼错或当前无值的引用原样保留，不会导致组装失败。',
       mineTextLabel: '内容',
       minePlaceholder: '在这里写下你的 Prompt…',
@@ -1181,8 +1180,8 @@ window.__ModuleLoader__.load({
       savedNoticeFrozen: '已保存到{layer}，但所选会话冻结中，本轮不会生效。',
       savedNoticeUnknown: '已保存到{layer}；所选会话的冻结状态未知，若已冻结则本轮不会生效。',
       mineWorkspaceNeedsSession: '工作区层需要先选择一个会话；未选择时无法写入工作区层。',
-      mineResetTitle: '恢复默认：删除{layer}的「我的 Prompt」',
-      mineResetBody: '这会删除该层保存的文本、回到未配置状态。',
+      mineResetTitle: '恢复默认：只删除{layer}的「我的 Prompt」段',
+      mineResetBody: '只会删除本层保存的「我的 Prompt」段并回到未配置状态；本层其他覆盖会保留，不受影响。',
       mineModeLabel: '模式',
       mineModeReplace: '覆盖',
       mineModeAppend: '叠加',
@@ -1348,12 +1347,12 @@ window.__ModuleLoader__.load({
       resetLayerWorkspace: '重置工作区级层',
       resetLegacyButton: '清除全部覆盖',
       resetLegacyTitle: '清除{layer}的全部旧覆盖',
-      resetLegacyBody: '将删除{layer}的 {count} 条冻结覆盖（即「我的 Prompt」以外的全部旧覆盖），并保留「我的 Prompt」本身。',
+      resetLegacyBody: '将删除{layer}的 {count} 条冻结覆盖（「我的 Prompt」以外的全部旧覆盖），并保留「我的 Prompt」本身；这与「整层重置」（连「我的 Prompt」一起清空）不同。',
       resetLegacyEmpty: '{layer}没有可清除的冻结覆盖；「我的 Prompt」会保留。',
       advReservedTag: '我的 Prompt',
       advReadOnlyNote: '本列表只读：唯一的写入口是「我的 Prompt」，层级清理请用下面两个按钮。',
       resetLayerTitle: '重置{layer}',
-      resetLayerBody: '将清空{layer}的全部 {count} 条覆盖，下一轮装配生效；被删除的内容会记入历史。',
+      resetLayerBody: '将清空{layer}的全部 {count} 条覆盖（包括「我的 Prompt」），下一轮装配生效；这与「清除全部覆盖」（保留「我的 Prompt」）不同。被删除的内容会记入历史。',
       resetLayerEmpty: '{layer}当前没有任何覆盖，无需重置。',
       resetIrreversible: '此操作不可撤销。',
       confirmTitle: '请确认',
@@ -1686,6 +1685,9 @@ window.__ModuleLoader__.load({
       mineHeading: 'My Prompt',
       promptBlockNote: 'This scope decides which layer My Prompt is written to — and it is changed here.',
       mineTargetNote: 'Writing to {layer}; scope: {scope}',
+      mineStatusNoRecord: 'No key node observed yet',
+      mineStatusCoverage: 'This layer: {total} override(s) · {ineffective} not in effect',
+      mineStatusDetail: 'Details',
       mineNote: 'What you write here becomes one extra prompt section, placed after every built-in section, effective from the next turn (next-turn). DSH never interpolates it; with variable substitution on, this plugin expands its {{...}} during assembly, and a reference that is unregistered, misspelled or currently valueless stays literal instead of failing the assembly.',
       mineTextLabel: 'Content',
       minePlaceholder: 'Write your prompt here…',
@@ -1778,8 +1780,8 @@ window.__ModuleLoader__.load({
       savedNoticeFrozen: 'Saved to {layer}, but the selected session is frozen; it will not take effect here.',
       savedNoticeUnknown: 'Saved to {layer}; the selected session’s frozen state is unknown, so it may not take effect here.',
       mineWorkspaceNeedsSession: 'The workspace layer needs a session; without one it cannot be written.',
-      mineResetTitle: 'Restore default: delete the {layer} My Prompt',
-      mineResetBody: 'This deletes the text stored in that layer and returns it to unconfigured.',
+      mineResetTitle: 'Restore default: delete only the {layer} My Prompt entry',
+      mineResetBody: 'Only this layer\'s saved My Prompt entry is deleted and returns to unconfigured; every other override in this layer is kept.',
       mineModeLabel: 'Mode',
       mineModeReplace: 'Cover',
       mineModeAppend: 'Stack',
@@ -1945,12 +1947,12 @@ window.__ModuleLoader__.load({
       resetLayerWorkspace: 'Reset the workspace layer',
       resetLegacyButton: 'Clear all overrides',
       resetLegacyTitle: 'Clear every legacy override of the {layer}',
-      resetLegacyBody: 'This deletes the {count} frozen override(s) of the {layer} (everything except My Prompt) and keeps My Prompt itself.',
+      resetLegacyBody: 'This deletes the {count} frozen override(s) of the {layer} (everything except My Prompt) and keeps My Prompt itself; it differs from "Reset a whole layer", which clears My Prompt too.',
       resetLegacyEmpty: 'The {layer} has no frozen overrides to clear; My Prompt is kept.',
       advReservedTag: 'My Prompt',
       advReadOnlyNote: 'This list is read-only: My Prompt is the only write surface, and the two buttons below clear a whole layer.',
       resetLayerTitle: 'Reset the {layer}',
-      resetLayerBody: 'This clears all {count} overrides of the {layer}, effective from the next assembly; the removed content goes to history.',
+      resetLayerBody: 'This clears all {count} overrides of the {layer}, including My Prompt, effective from the next assembly; it differs from "Clear all overrides", which keeps My Prompt. The removed content goes to history.',
       resetLayerEmpty: 'The {layer} holds no override, so there is nothing to reset.',
       resetIrreversible: 'This cannot be undone.',
       confirmTitle: 'Please confirm',
@@ -2110,7 +2112,6 @@ window.__ModuleLoader__.load({
       'error.registry-unavailable': 'The chosen download source is unavailable. Nothing falls back to the default source: retry later, or pick another download region.',
       'error.preferences-unwritable': 'The preference file could not be written, so nothing took effect.',
     };
-    // #endregion
 
     /**
      * Last-resort translator, replaced by the bound `t` in `apply`. Only used
@@ -7360,6 +7361,163 @@ window.__ModuleLoader__.load({
       );
     }
 
+    /**
+     * g-084: one layer's override coverage, as the two numbers「我的 Prompt」's
+     * summary shows: how many entries this layer stores, and how many of them
+     * did **not** take effect in the page-scoped assembly.
+     *
+     * `overrides` is the page-scoped `GET /overrides` payload and `sections` is
+     * the page-scoped snapshot's `effective.sections`; both describe the page's
+     * 「查看范围」, never「高级」's workspace selector (g-073). The Host's
+     * `applied` flag is what "took effect" means (CONTRACT §4.1) — this summary
+     * does not re-derive a per-entry cause; that belongs to「高级」's list. A name
+     * the other layer won during the merge is ineffective **for this layer**, so
+     * the winning `overrideLayer` is compared as well. The reserved section is
+     * stacked across layers by `resolveReservedSection`, so its `applied` flag is
+     * the one fact that answers the question there.
+     * @param layer - 'user' | 'workspace'.
+     * @param overrides - one `GET /overrides` payload.
+     * @param sections - `snapshot.effective.sections`.
+     * @returns `{total, ineffective}`.
+     */
+    function mineCoverageOf(layer, overrides, sections) {
+      const view = overrides !== null && typeof overrides === 'object' ? overrides[layer] : null;
+      const list = view !== null && typeof view === 'object' && Array.isArray(view.overrides) ? view.overrides : [];
+      const achieved = new Map();
+      for (const section of Array.isArray(sections) ? sections : []) {
+        if (section !== null && typeof section === 'object' && typeof section.name === 'string') {
+          achieved.set(section.name, section);
+        }
+      }
+      let ineffective = 0;
+      for (const entry of list) {
+        if (entry === null || typeof entry !== 'object' || typeof entry.name !== 'string') {
+          ineffective += 1;
+          continue;
+        }
+        const target = achieved.get(entry.name);
+        if (target === undefined) {
+          ineffective += 1;
+        } else if (entry.name === RESERVED_SECTION_NAME) {
+          // The reserved text is stacked by `resolveReservedSection`; an entry
+          // contributes only when its own non-empty text reaches the assembly.
+          const other = (overrides[layer === 'user' ? 'workspace' : 'user']?.overrides ?? []).find((item) => item?.name === RESERVED_SECTION_NAME);
+          const contributes = entry.action !== 'hide' && typeof entry.text === 'string' && entry.text.trim() !== '' && (layer === 'workspace' || !(other && (other.action === 'hide' || (typeof other.text === 'string' && other.text.trim() !== '' && other.action !== 'append'))));
+          if (target.applied !== true || !contributes) ineffective += 1;
+        } else if (target.overrideLayer !== layer || target.applied !== true) {
+          ineffective += 1;
+        }
+      }
+      return { total: list.length, ineffective };
+    }
+    /**
+     * g-084:「我的 Prompt」's read-only status summary — the two facts a reader
+     * previously had to switch to「高级」for, in this panel's own scope.
+     *
+     * Two fixed lines, and neither expands anything: the assembly line names the
+     * latest key node's two verdicts (or says there is none / that this is a
+     * global scope), and the coverage line states two counts. The assembly switch
+     * is deliberately absent — it stays in「高级」, the one tab that owns it. The
+     * 「详情」entry is a hand-built text button rather than `UI.Button` so the two
+     * lines stay inside the panel's first-screen budget.
+     * @param t - the bound translator.
+     * @param m - the page model.
+     * @param a - the page actions.
+     * @returns the summary element.
+     */
+    function renderMineStatus(t, m, a) {
+      const state = m.mineAssembly ?? { phase: 'idle', data: null, error: null };
+      const payload =
+        state.phase === 'ready' && state.data !== null && typeof state.data === 'object' ? state.data : null;
+      const record =
+        payload !== null && payload.record !== null && typeof payload.record === 'object' ? payload.record : null;
+      const notice =
+        record !== null && record.notice !== null && typeof record.notice === 'object' ? record.notice : null;
+      const globalScope = m.sessionArg === null;
+      const sep = t('assemblyLayerSep');
+      let assemblyKind;
+      let assemblyText;
+      if (globalScope) {
+        assemblyKind = 'global';
+        assemblyText = t('sessionGlobal');
+      } else if (notice !== null) {
+        assemblyKind = 'notice';
+        assemblyText =
+          `${t('assemblyLayerAssembly')}${sep}${assemblyVerdictOf(t, notice)} · ` +
+          `${t('assemblyLayerDelivery')}${sep}${deliveryVerdictOf(t, notice)}`;
+      } else {
+        assemblyKind = state.phase === 'error' ? 'error' : state.phase === 'ready' ? 'none' : 'loading';
+        assemblyText = t(assemblyKind === 'loading' ? 'loading' : assemblyKind === 'error' ? 'loadFailed' : 'mineStatusNoRecord');
+      }
+      const layer = m.sessionArg === null || m.mineLayer !== 'workspace' ? 'user' : 'workspace';
+      const snapReady = m.snap !== null && m.snap !== undefined && m.snap.phase === 'ready' && m.snap.data !== null;
+      const ovsReady = m.ovs !== null && m.ovs !== undefined && m.ovs.phase === 'ready' && m.ovs.data !== null;
+      const sections =
+        snapReady && m.snap.data.effective && Array.isArray(m.snap.data.effective.sections)
+          ? m.snap.data.effective.sections
+          : [];
+      const coverage = ovsReady && snapReady ? mineCoverageOf(layer, m.ovs.data, sections) : null;
+      const coverageError =
+        (m.ovs !== null && m.ovs !== undefined && m.ovs.phase === 'error') ||
+        (m.snap !== null && m.snap !== undefined && m.snap.phase === 'error');
+      const coverageKind = coverage !== null ? 'ready' : coverageError ? 'error' : 'loading';
+      const coverageText =
+        coverage === null
+          ? t(coverageKind === 'error' ? 'loadFailed' : 'loading')
+          : fmt(t('mineStatusCoverage'), {
+              total: String(coverage.total),
+              ineffective: String(coverage.ineffective),
+            });
+      const lineStyle = {
+        margin: 0,
+        fontSize: 12,
+        lineHeight: '16px',
+        color: token.labelSecondary,
+        wordBreak: 'break-word',
+      };
+      return h(
+        'div',
+        {
+          'data-region': 'mine-status',
+          'data-mine-status-scope': globalScope ? 'global' : String(m.sessionArg),
+          'data-mine-status-layer': layer,
+          'data-mine-status-read': state.phase,
+          'data-mine-status-assembly': assemblyKind,
+          'data-mine-status-coverage': coverageKind,
+          'data-mine-status-total': coverage === null ? '' : String(coverage.total),
+          'data-mine-status-ineffective': coverage === null ? '' : String(coverage.ineffective),
+          style: { display: 'flex', flexDirection: 'column', gap: 2 },
+        },
+        h(
+          'div',
+          { style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' } },
+          h('p', { 'data-mine-status-line': 'assembly', style: lineStyle }, assemblyText),
+          h(
+            'button',
+            {
+              type: 'button',
+              'data-action': 'mine-status-detail',
+              disabled: m.busy,
+              onClick: a.openMineStatusDetail,
+              style: {
+                font: 'inherit',
+                fontSize: 12,
+                lineHeight: '16px',
+                padding: 0,
+                border: 0,
+                background: 'transparent',
+                color: token.stateBusiness,
+                cursor: m.busy ? 'default' : 'pointer',
+                textDecoration: 'underline',
+              },
+            },
+            t('mineStatusDetail'),
+          ),
+        ),
+        h('p', { 'data-mine-status-line': 'coverage', style: lineStyle }, coverageText),
+      );
+    }
+
     function renderMinePanel(t, m, a) {
       const workspace = m.snap.data && m.snap.data.layers ? m.snap.data.layers.workspace : null;
       const workspaceUsable = workspace && workspace.enabled === true;
@@ -7465,6 +7623,9 @@ window.__ModuleLoader__.load({
         h('h3', { style: headingStyle }, t('mineHeading')),
         renderPromptBlock(t, m, a),
         targetLine,
+        // g-084: the read-only summary sits between the write-target line and the
+        // explanatory note — the two facts a reader used to leave this panel for.
+        renderMineStatus(t, m, a),
         h('p', { style: { margin: 0, ...metaStyle } }, t('mineNote')),
         h(
           'div',
@@ -9174,6 +9335,12 @@ window.__ModuleLoader__.load({
         enabled: null,
         status: { kind: 'idle', error: null },
       });
+      // g-084: 「我的 Prompt」's own read of the same observation. It is a
+      // **separate** slot from `assembly` on purpose: that one belongs to
+      // 「高级」 and is keyed by its workspace selector, while this one follows
+      // the page's「查看范围」 (g-073's tab-owned scope rule). Two slots, two
+      // caches — neither read may overwrite or re-point the other.
+      const [mineAssembly, setMineAssembly] = React.useState({ phase: 'idle', data: null, error: null });
       const [notice, setNotice] = React.useState(null);
       const [busy, setBusy] = React.useState(false);
       // g-060 (Revision 37; dialog-based since Revision 38 / review R3): the
@@ -9573,10 +9740,10 @@ window.__ModuleLoader__.load({
         if (seat.currentId.length > 0) return seat.currentId;
         return advancedScopes.options.length > 0 ? advancedScopes.options[0].value : '';
       })();
-      const advancedScopeValue =
-        advancedScope !== null && advancedScopes.options.some((option) => option.value === advancedScope)
-          ? advancedScope
-          : advancedScopeAuto;
+      const advancedScopeKnown =
+        advancedScope !== null &&
+        (advancedScopes.options.some((option) => option.value === advancedScope || option.sessionIds.includes(advancedScope)) || seat.rows.some((row) => row.id === advancedScope));
+      const advancedScopeValue = advancedScopeKnown ? advancedScope : advancedScopeAuto;
       const advancedScopeOwner =
         advancedScopes.options.find((option) => option.sessionIds.includes(advancedScopeValue)) ?? null;
       // The name is the **workspace**'s, because that is what the layer actions
@@ -9586,7 +9753,7 @@ window.__ModuleLoader__.load({
       const advancedScopeName = (() => {
         const sessionName = sessionLabelOf(seat.rows, advancedScopeValue) || advancedScopeValue;
         if (advancedScopeOwner === null) return sessionName;
-        if (advancedScope !== null) return advancedScopeOwner.label;
+        if (advancedScope !== null) return advancedScope === advancedScopeOwner.value ? advancedScopeOwner.label : `${advancedScopeOwner.label} · ${sessionName}`;
         if (sessionName.length === 0 || sessionName === advancedScopeOwner.label) return advancedScopeOwner.label;
         return `${advancedScopeOwner.label} · ${sessionName}`;
       })();
@@ -9901,6 +10068,70 @@ window.__ModuleLoader__.load({
         };
       }, [tab, advancedScopeArg, reload]);
 
+      // g-084: the read behind「我的 Prompt」's read-only status summary. Scope is
+      // the page's「查看范围」 (`sessionArg`) — never `advancedScopeArg`, and its
+      // cache is its own, so the two tabs cannot overwrite each other's answer.
+      // It is tab-gated like every g-073 read: a session that never opens the
+      // default tab pays nothing; switching away and back reuses `{scope, reload}`
+      // instead of asking again. A global scope issues **no** request at all: the
+      // host keys records by session id, so there is no record that belongs to
+      // "no session", and guessing at one would borrow another scope's fact.
+      const mineAssemblyReadRef = React.useRef(null);
+      React.useEffect(() => {
+        if (tab !== 'mine') return undefined;
+        if (sessionArg === null) {
+          mineAssemblyReadRef.current = null;
+          setMineAssembly((current) =>
+            current.phase === 'idle' && current.data === null && current.error === null
+              ? current
+              : { phase: 'idle', data: null, error: null },
+          );
+          return undefined;
+        }
+        const scopeKey = sessionArg;
+        const read = mineAssemblyReadRef.current;
+        if (read !== null && read.scope === scopeKey && read.reload === reload) return undefined;
+        // A different scope drops the old data (another session's verdict must
+        // never look like this one's); a reload of the same scope keeps it.
+        const sameScope = read !== null && read.scope === scopeKey;
+        let cancelled = false;
+        let timer = null;
+        const query = `?session=${encodeURIComponent(scopeKey)}`;
+        const run = async () => {
+          const result = await requestJson(`${ASSEMBLY_STATUS_PATH}${query}`);
+          if (cancelled) return;
+          mineAssemblyReadRef.current = { scope: scopeKey, reload };
+          if (!result.ok) {
+            setMineAssembly({ phase: 'error', data: null, error: result.error });
+            return;
+          }
+          setMineAssembly({ phase: 'ready', data: result.payload, error: null });
+          // The delivery verdict settles only after the step's `system/message`
+          // event; the same short follow-up the advanced block uses applies here.
+          const payload = result.payload;
+          const waiting =
+            payload !== null &&
+            typeof payload === 'object' &&
+            payload.record !== null &&
+            typeof payload.record === 'object' &&
+            payload.record.notice !== null &&
+            typeof payload.record.notice === 'object' &&
+            payload.record.notice.delivery !== null &&
+            typeof payload.record.notice.delivery === 'object' &&
+            payload.record.notice.delivery.state === 'waiting';
+          if (waiting) timer = setTimeout(run, ASSEMBLY_POLL_MS);
+        };
+        setMineAssembly((current) => ({
+          phase: 'loading',
+          data: sameScope ? current.data : null,
+          error: null,
+        }));
+        void run();
+        return () => {
+          cancelled = true;
+          if (timer !== null) clearTimeout(timer);
+        };
+      }, [tab, sessionArg, reload]);
       // History is loaded only while 「版本历史」 is open: 「我的 Prompt」 and
       // 「提示词总览」 must not pay for a log they never show, and a mount that
       // never opens that tab must issue exactly the baseline requests.
@@ -11931,6 +12162,19 @@ window.__ModuleLoader__.load({
         toggleAdvancedScopeOpen: () => setAdvancedScopeOpen((open) => !open),
         setAdvancedScopeSearch: (event) =>
           setAdvancedScopeSearch(event && event.target ? String(event.target.value) : ''),
+        // g-084: 「详情」 on the「我的 Prompt」summary. It opens 「高级」 with that
+        // tab's selector **pinned to the page scope** the reader was just looking
+        // at, so the destination shows the same session's record. A global page
+        // scope carries no session, so the tab is left on its own
+        // follow-the-current-session default (there is nothing to carry).
+        openMineStatusDetail: () => {
+          if (sessionArg !== null) {
+            setAdvancedScope(sessionArg);
+            setAdvancedScopeOpen(false);
+            setAdvancedScopeSearch('');
+          }
+          setTab('advanced');
+        },
         historyPrev,
         historyNext,
         // g-039 fifth round: the preview lives in a modal, and this is what opens
@@ -12106,14 +12350,16 @@ window.__ModuleLoader__.load({
         mineLayerDisabled,
         mineFrozenReason,
         mineFrozenCertain,
-        // g-062: the assembly-status observation the「我的 Prompt」block renders —
-        // the Host's answer verbatim, the switch as the Host reported it, and the
-        // switch's own request state.
+        // g-062: the assembly-status observation the「高级」block renders — the
+        // Host's answer verbatim, the switch as the Host reported it, and the
+        // switch's own request state. g-084: `mineAssembly` is「我的 Prompt」's
+        // own read of the same route, keyed by the page scope.
         assembly,
         assemblyEnabled: assembly.enabled,
         assemblyPhase: assembly.phase,
         assemblyError: assembly.error,
         assemblyStatus: assembly.status,
+        mineAssembly,
         // g-060: the preset tab's state slots, the open dialog, the workspace
         // list the apply dialog renders, and the text「从当前文本另存为预设」reads.
         presets,

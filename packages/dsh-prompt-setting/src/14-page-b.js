@@ -1,5 +1,62 @@
 // 本文件是 client.js 的片段，不是独立模块，不得单独 parse/lint/执行。
       /**
+       * Ask the host for a comparison and store the result. `from`/`to` are a
+       * history id or {@link DIFF_CURRENT}; a half-made selection clears the
+       * panel rather than sending a request that cannot answer anything.
+       *
+       * g-038: the comparison is scoped exactly like the log beside it — the
+       * version history's own scope, never the page's 「查看范围」 — so the two
+       * can never describe different files.
+       */
+      const runDiff = async (from, to) => {
+        if (from === null || to === null) {
+          setDiff({ phase: 'idle', data: null, error: null });
+          return;
+        }
+        setDiff({ phase: 'loading', data: null, error: null });
+        const query = `${historyScopeQuery(historyLayer, historyScopeArg)}&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`;
+        const result = await requestJson(`${DIFF_PATH}?${query}`);
+        setDiff(
+          result.ok
+            ? { phase: 'ready', data: result.payload, error: null }
+            : { phase: 'error', data: null, error: result.error },
+        );
+      };
+
+      /**
+       * g-039: roll the history's own layer back to one recorded version.
+       *
+       * The request carries the version-history scope (`workspace` for the
+       * workspace layer) exactly as the list and the comparison do, so the file
+       * that is written is the file that was read. It is the **only** write this
+       * tab starts, and it never fires without the second confirmation.
+       *
+       * On success the log has one more record and the layer has new content, so
+       * the view is reset and the data reloaded: the list, the comparison and
+       * the current value all come back from the host rather than being patched
+       * in place, which is what keeps the pager from describing a page that no
+       * longer exists.
+       */
+      /**
+       * g-056 (review R2/R3): remove **one** write target's draft.
+       *
+       * Every local reset goes through this — 「取消」, 「恢复默认」, the g-050
+       * reconciliation and「放弃那份草稿」— so none of them can clear a draft that
+       * belongs to another target (R3), and typing in a second target leaves the
+       * first target's text where it is (R2). No request, no disk byte: this is
+       * view state only.
+       * @param key - the write-target key whose draft to drop.
+       */
+      const dropMineDraft = (key) => {
+        setMineDrafts((current) => {
+          if (current[key] === undefined) return current;
+          const next = { ...current };
+          delete next[key];
+          return next;
+        });
+      };
+
+      /**
        * Reconcile the「我的 Prompt」draft after an operation changed a layer's
        * stored text **behind the editor's back** (g-050: rollback, a whole-layer
        * reset, or an applied import).
@@ -1137,48 +1194,6 @@
           tone: 'success',
           text: fmt(t(restored > 0 ? 'presetDeletedRestoredNotice' : 'presetDeletedNotice'), { count: restored }),
         });
-        setReload((value) => value + 1);
-      };
-
-      /**
-       * g-082: the library's tag writes.
-       *
-       * Two actions on the manager dialog — one upsert (`PUT /presets/tags`) and
-       * one delete (`DELETE ?id=`, which the host cascades through every preset).
-       * Both follow this page's one write shape: send, on failure keep the
-       * dialog open with the answer on its own line, on success reset the
-       * editor half and re-read the library. The delete is reached only through
-       * `confirmYes` (the row's button *asks* first), exactly like preset
-       * deletion.
-       *
-       * The affected-preset count the confirmation shows is computed from the
-       * payload the page already holds (`presets.data.presets[].tagIds`); the
-       * deletion answer carries the same number, so the notice reports what
-       * really happened rather than what the page predicted.
-       */
-      const saveTagDraft = async () => {
-        const name = presetTagDraft.name.trim();
-        if (name.length === 0) {
-          setPresetTagStatus({ kind: 'error', error: { code: 'invalid-tag-name' } });
-          return;
-        }
-        setPresetTagStatus({ kind: 'saving', error: null });
-        setBusy(true);
-        const body = { name: presetTagDraft.name };
-        if (presetTagDraft.id !== null) body.id = presetTagDraft.id;
-        const result = await requestJson(PRESETS_TAGS_PATH, {
-          method: 'PUT',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        setBusy(false);
-        if (!result.ok) {
-          // The refusal stays in the tag dialog, on its own marked line.
-          setPresetTagStatus({ kind: 'error', error: result.error });
-          return;
-        }
-        setPresetTagStatus({ kind: 'saved', error: null });
-        setPresetTagDraft({ id: null, name: '' });
         setReload((value) => value + 1);
       };
 

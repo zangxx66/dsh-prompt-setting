@@ -1,4 +1,46 @@
 // 本文件是 client.js 的片段，不是独立模块，不得单独 parse/lint/执行。
+      /**
+       * g-082: the library's tag writes.
+       *
+       * Two actions on the manager dialog — one upsert (`PUT /presets/tags`) and
+       * one delete (`DELETE ?id=`, which the host cascades through every preset).
+       * Both follow this page's one write shape: send, on failure keep the
+       * dialog open with the answer on its own line, on success reset the
+       * editor half and re-read the library. The delete is reached only through
+       * `confirmYes` (the row's button *asks* first), exactly like preset
+       * deletion.
+       *
+       * The affected-preset count the confirmation shows is computed from the
+       * payload the page already holds (`presets.data.presets[].tagIds`); the
+       * deletion answer carries the same number, so the notice reports what
+       * really happened rather than what the page predicted.
+       */
+      const saveTagDraft = async () => {
+        const name = presetTagDraft.name.trim();
+        if (name.length === 0) {
+          setPresetTagStatus({ kind: 'error', error: { code: 'invalid-tag-name' } });
+          return;
+        }
+        setPresetTagStatus({ kind: 'saving', error: null });
+        setBusy(true);
+        const body = { name: presetTagDraft.name };
+        if (presetTagDraft.id !== null) body.id = presetTagDraft.id;
+        const result = await requestJson(PRESETS_TAGS_PATH, {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        setBusy(false);
+        if (!result.ok) {
+          // The refusal stays in the tag dialog, on its own marked line.
+          setPresetTagStatus({ kind: 'error', error: result.error });
+          return;
+        }
+        setPresetTagStatus({ kind: 'saved', error: null });
+        setPresetTagDraft({ id: null, name: '' });
+        setReload((value) => value + 1);
+      };
+
       const deleteTag = async (id) => {
         if (typeof id !== 'string' || id.length === 0) return;
         setPresetTagStatus({ kind: 'saving', error: null });
@@ -512,6 +554,19 @@
         toggleAdvancedScopeOpen: () => setAdvancedScopeOpen((open) => !open),
         setAdvancedScopeSearch: (event) =>
           setAdvancedScopeSearch(event && event.target ? String(event.target.value) : ''),
+        // g-084: 「详情」 on the「我的 Prompt」summary. It opens 「高级」 with that
+        // tab's selector **pinned to the page scope** the reader was just looking
+        // at, so the destination shows the same session's record. A global page
+        // scope carries no session, so the tab is left on its own
+        // follow-the-current-session default (there is nothing to carry).
+        openMineStatusDetail: () => {
+          if (sessionArg !== null) {
+            setAdvancedScope(sessionArg);
+            setAdvancedScopeOpen(false);
+            setAdvancedScopeSearch('');
+          }
+          setTab('advanced');
+        },
         historyPrev,
         historyNext,
         // g-039 fifth round: the preview lives in a modal, and this is what opens
@@ -687,14 +742,16 @@
         mineLayerDisabled,
         mineFrozenReason,
         mineFrozenCertain,
-        // g-062: the assembly-status observation the「我的 Prompt」block renders —
-        // the Host's answer verbatim, the switch as the Host reported it, and the
-        // switch's own request state.
+        // g-062: the assembly-status observation the「高级」block renders — the
+        // Host's answer verbatim, the switch as the Host reported it, and the
+        // switch's own request state. g-084: `mineAssembly` is「我的 Prompt」's
+        // own read of the same route, keyed by the page scope.
         assembly,
         assemblyEnabled: assembly.enabled,
         assemblyPhase: assembly.phase,
         assemblyError: assembly.error,
         assemblyStatus: assembly.status,
+        mineAssembly,
         // g-060: the preset tab's state slots, the open dialog, the workspace
         // list the apply dialog renders, and the text「从当前文本另存为预设」reads.
         presets,

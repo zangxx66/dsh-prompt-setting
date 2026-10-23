@@ -2231,6 +2231,10 @@ reset switch and falls through to the single-name semantics, which then requires
   "overrides":[]}`), so a reset is observable on disk rather than implied.
 - **Revision 7 does not change this**: a reset clears everything, the reserved
   override included. It is the one write that still removes the reserved entry.
+- **Revision 57 (g-084) clarifies only the copy**: the「整层重置」confirmation
+  and the panel's description now state that the whole layer is cleared
+  *including*「我的 Prompt」, and contrast it with「清除全部覆盖」, which keeps
+  「我的 Prompt」. `reset=true` semantics and every route below are unchanged.
 - The removed content is written to history **first-class**: one record with
   `action: "reset-layer"`, `name: null` and `entries` holding every removed
   override with its full text. A reset is therefore reconstructible.
@@ -3234,7 +3238,11 @@ by accident — the tests assert the values rather than the family's agreement.
   user layer is the lowest one, and the panel says in words that「叠加」there is
   equivalent to「覆盖」.
 - 「恢复默认」 is the single-name `DELETE` (§12.1) for the reserved name and the
-  selected layer, behind a second confirmation of kind `mine-reset`.
+  selected layer, behind a second confirmation of kind `mine-reset`. Since
+  Revision 57 (g-084) its title and body say explicitly that **only** this
+  layer's「我的 Prompt」entry is deleted and that the layer's other overrides are
+  kept — the copy clarification the owner asked for; the write itself is the
+  same single-name delete as before.
 - 「取消」 (g-027) is the non-destructive counterpart of 「恢复默认」: it drops the
   panel's **unsaved draft** and falls back to the selected layer's stored text
   — one client-side state reset, no request of any kind, no disk byte, and
@@ -3890,7 +3898,10 @@ code means rather than how it is written:
   `data-reset-reserved-count` and its own `data-region="advanced-layer"`
   selector): `data-action="legacy-clear"` sends `DELETE …&legacy=true` (§12.2)
   and **keeps** the reserved override, while `data-action="reset-layer"` sends
-  `DELETE …&reset=true` (§12.1) and clears the whole layer.
+  `DELETE …&reset=true` (§12.1) and clears the whole layer. Since Revision 57
+  (g-084) the description above them and both confirmations say which one keeps
+  「我的 Prompt」and which one clears it — a copy clarification only; neither
+  button moved, merged or changed its request.
 - **Revision 55 (g-073): the tab's own workspace selector, and what it aims at.**
   `data-region="advanced-scope"` carries `data-advanced-scope-mode`
   (`workspaces` | `sessions` | `none`), `data-advanced-scope-value` (a session
@@ -4244,10 +4255,10 @@ its own scope (§13.3) and is not a consumer of this one. Before Revision 19 the
 same value was appended to the history request as `?session=`, which is exactly
 why the log looked like it lost records when the scope moved.
 
-**Revision 55 (g-073) narrows that sentence to what it now means.** The two
-reads it scopes are the ones this panel needs — `GET /snapshot` and
-`GET /overrides`, both asked for the write target's own workspace — and nothing
-else follows the value any more:
+**Revision 55 (g-073) narrows that sentence to what it now means.** At
+Revision 55 the value scoped two reads — `GET /snapshot` and `GET /overrides`,
+both asked for the write target's own workspace; Revision 57 adds the summary's
+`GET /assembly-status`, and nothing else follows the value any more:
 
 - `GET /presets` is read **without** `?session=` (§20.2): the library is one
   global file plus per-workspace records, and this panel's scope never described
@@ -4261,10 +4272,26 @@ else follows the value any more:
   an empty workspace layer view is reported as `skipped`, not refused, §11.1);
 - the version history keeps its own scope (§13.3).
 
-So the value is consumed in exactly two places: the snapshot and the override
-reads of this panel, plus the panel's own display of the write target
-(`data-region="mine-target"`) and the layer a save lands in. These trees state
-it as `data-region="session"` / `data-region="scope-summary"` /
+**Revision 57 (g-084) adds the panel's read-only status summary.** Directly
+below the write-target line (`data-region="mine-target"`) and above the note, the
+panel renders `data-region="mine-status"` with **two fixed lines**: the latest key
+node's two assembly verdicts, and the selected layer's coverage count
+(`mineStatusCoverage`; a global scope cannot locate the workspace layer, so its counts are the user layer's). The summary reads `GET /assembly-status` in **this
+panel's** scope (`?session=<page scope>`), its own read with its own `{scope,
+reload}` cache — never「高级」's selector and never its cache (§13.10). There is
+**no** switch in it: `data-action="assembly-toggle"` stays inside「高级」alone.
+Its「详情」entry (`data-action="mine-status-detail"`) switches to「高级」and
+**pins that tab's selector to this panel's session**, so the destination opens on
+the same record; a global page scope carries no session and therefore leaves
+「高级」on its own follow-the-current-session default. A global scope issues **no**
+`/assembly-status` request at all (the Host keys records by session id) and says
+`sessionGlobal` instead. The summary expands nothing: no per-entry reason and no
+`data-region="overrides"` list.
+
+So the value is consumed in exactly three places: the snapshot, the override and
+the assembly-status reads of this panel, plus the panel's own display of the write
+target (`data-region="mine-target"`) and the layer a save lands in. These trees
+state it as `data-region="session"` / `data-region="scope-summary"` /
 `data-action="scope-toggle"` **inside `data-region="mine"` only** — the other
 five tabs render none of those three markers, asserted by direct marker count
 (§13.10).
@@ -4404,6 +4431,7 @@ were given their own. The whole model, in one place:
 | surface | what scopes it | marker |
 | --- | --- | --- |
 | 「我的 Prompt」 | the page's「查看范围」(`m.sessionArg`) | `data-region="session"` inside `data-region="mine"` (§13.7) |
+| 「我的 Prompt」 status summary (Revision 57) | the same page scope | `data-region="mine-status"` after `data-region="mine-target"` |
 | 「提示词总览」 | its **own** by-workspace, per-session selector | `data-region="overview-scope"` (§13.2) |
 | 「高级」 | its **own** workspace selector | `data-region="advanced-scope"` (§13.4) |
 | 「版本历史」 | its **own** workspace selector (Revision 19) | `data-region="history-scope"` (§13.3) |
@@ -4412,11 +4440,15 @@ were given their own. The whole model, in one place:
 
 Invariants, each asserted in `test/client.test.mjs`:
 
-- **the page scope is consumed by two reads** — `GET /snapshot` and
-  `GET /overrides` for「我的 Prompt」 — plus that panel's own display of the write
-  target and the layer a save lands in. Moving it re-reads neither the preset
-  library nor the overview's snapshot, and carries no page scope into
-  `/export`, `/import` or `/assembly-status`;
+- **the page scope is consumed by three reads** — `GET /snapshot`,
+  `GET /overrides` and (since Revision 57) `GET /assembly-status`, all for
+  「我的 Prompt」 — plus that panel's own display of the write target and the layer
+  a save lands in. Moving it re-reads neither the preset library nor the
+  overview's snapshot, and carries no page scope into `/export` or `/import`;
+  `/assembly-status` is now read **twice, each in its own scope**: the summary in
+  the page scope (and **not at all** for a global scope), the 「高级」block in its
+  workspace selector's scope. The two slots and their `{scope, reload}` caches are
+  separate, so neither read can overwrite or re-point the other (Revision 57);
 - **a tab-owned scope is read on its first open, on a scope change and on a
   reload — and not when the reader merely comes back** (precised in review R3):
   each such read is keyed by its own scope, and the tab that finds its scope
@@ -4453,7 +4485,14 @@ Invariants, each asserted in `test/client.test.mjs`:
   phase (the first two show the loading line while their own read is in flight,
   the third issues none until a button is pressed). A page-scoped `/snapshot`
   that fails therefore blanks 「我的 Prompt」 and **nothing else**: gates are
-  per tab, never borrowed from another tab's read.
+  per tab, never borrowed from another tab's read;
+- **the summary's「详情」carries the page scope into「高级」** (Revision 57): the
+  entry switches tabs and pins `advancedScope` to `m.sessionArg` when there is
+  one, so the destination's `?session=` equals the one the summary was reading.
+  With the global page scope there is no session to carry and 「高级」keeps its
+  own default (`follow the current session`). The summary itself never renders an
+  assembly switch, never lists per-entry override reasons, and never draws
+  `data-region="overrides"`.
 
 ---
 
@@ -7856,8 +7895,10 @@ the whole `preferences.json` — see §17.4 and §11.7.)*
 
 The block lives at the top of the「高级」panel (g-065 moved it there from
 「我的 Prompt」; the block, its markers, its switch and its read schedule are
-otherwise unchanged, and 「我的 Prompt」 keeps nothing of it — no container, no
-heading, no gap) and carries
+otherwise unchanged). 「我的 Prompt」 keeps **none of the block** — no container,
+no heading, no switch — and since Revision 57 renders only its own read-only
+summary at `data-region="mine-status"` (§13.7), which shares the same route but
+not this block's scope or cache. The block carries
 `data-region="assembly-status"` with `data-assembly-phase`
 (`idle`/`ready`/`error`), `data-assembly-enabled`
 (`true`/`false`/`unknown` — unknown until the Host answers),
@@ -7882,6 +7923,15 @@ missing primitive, the undeclared slot and the refused registration respectively
 so the page never tells a user that a slot their own Host declared is missing. The
 block, its switch and its read schedule are otherwise unchanged — the toast is
 **additional**, never a replacement.
+
+**Revision 57 (g-084): the same route also feeds「我的 Prompt」's summary.** The
+summary's read is tab-gated on `mine`, uses the page scope
+(`?session=<m.sessionArg>`) and its own `{scope, reload}` cache, and is skipped
+entirely for a global scope (the Host keys one record per session; there is no
+"no session" record to borrow). The block's own read is untouched: it still
+follows「高级」's workspace selector and its own cache, and the two never share a
+slot. Neither read may write to a session, change an assembly or reach the model
+— the whole feature remains observer-only and fail-open.
 
 ### 21.6 The incremental feed and the shell-overlay toast (Revision 46)
 
@@ -7969,9 +8019,10 @@ re-report it.
 
 ## 22. The locale dictionaries (g-066, Revision 49)
 
-Every user-visible string this plugin renders — **586** keys per language since
-g-073 (Revision 55; 573 through Revision 54, 567 through Revision 51, 566
-through Revision 50, 564 through Revision 49) — used to
+Every user-visible string this plugin renders — **597** keys per language since
+g-084 (Revision 57; 594 through Revision 56 (g-082), 586 through Revision 55
+(g-073), 573 through Revision 54, 567 through Revision 51, 566 through Revision 50,
+564 through Revision 49) — used to
 be hardcoded inside `client.js`: a 513-key `zh` object, a 513-key `en` object,
 and an `ERROR_TEXT` table of 51 `code → [zh, en]` rows that a loop expanded into
 `error.<code>` entries. The copy now lives in two JSON files, and the inlined
@@ -7980,14 +8031,17 @@ objects are a generated artifact.
 ### 22.1 Source of truth
 
 - `locale/zh.json` and `locale/en.json` are the **only** human source. Each
-  holds exactly 586 string values: the 535 main keys plus 51 `error.<code>`
+  holds exactly 597 string values: the 546 main keys plus 51 `error.<code>`
   keys. Keys are identical between the two files, **in the same order** (the
   order is what the generated block follows, so a reordered file is a
-  535-line diff rather than a copy change).
+  546-line diff rather than a copy change).
 - Nothing else in the package is hand-edited for copy. `client.js` carries the
-  blocks inside the `// #region generated: locale/zh.json + locale/en.json`
-  … `// #endregion` span; a hand edit there is overwritten by the next `--write`
-  and reported by `--check`.
+  two generated blocks (`const zh = {`, `const en = {`) inside the carrying
+  `src/` segment; the segment's header line states that the JSON is the source
+  and that `locale-pack.mjs --write` is the only writer. A hand edit there is
+  overwritten by the next `--write` and reported by `--check`. (Revision 57
+  reduced the old `// #region generated … // #endregion` comment markers to that
+  one line so the generated segment stays inside its 1200-line budget.)
 
 ### 22.2 The blocks are generated, not loaded
 
@@ -8014,7 +8068,7 @@ there is no network surface. What changed is only who maintains the bytes.
 | `scripts/locale-pack.mjs --write` | Re-renders both blocks from the JSON. Idempotent: a second run changes nothing. |
 | `scripts/locale-pack.mjs --check` | Fails (exit 1) when a block is not byte-for-byte what `--write` would produce. |
 | `scripts/prepare.mjs` → `LOCALE-SYNC` | The same check on the **install/publish** path, plus a `files` allowlist test for both JSONs (a source that does not ship cannot be re-derived from the installed package). |
-| `test/locale.test.mjs` | Key parity, the 535 + 51 split, no new placeholder drift, byte equality with `--write`, a negative control (one drifted character is refused), and that the delivery shape is still a classic script with a synchronous register. |
+| `test/locale.test.mjs` | Key parity, the 546 + 51 split, no new placeholder drift, byte equality with `--write`, a negative control (one drifted character is refused), and that the delivery shape is still a classic script with a synchronous register. |
 
 ### 22.4 Error codes
 

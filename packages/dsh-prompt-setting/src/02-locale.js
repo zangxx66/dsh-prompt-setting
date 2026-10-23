@@ -1,9 +1,5 @@
 // 本文件是 client.js 的片段，不是独立模块，不得单独 parse/lint/执行。
-    // #region generated: locale/zh.json + locale/en.json (g-066)
-    // 下面两段是**生成物**，不是真源：文案只改 locale/*.json，然后跑
-    // `node scripts/locale-pack.mjs --write`；`--check` 是发布门（prepare 也会跑）。
-    // 浏览器运行时读不到包内的 JSON —— bundle 是 classic script、宿主零转译、插件路由
-    // 也不服务子目录 —— 所以词典必须内联进 bundle，只是不再手工维护它（CONTRACT.md §14.5）。
+    // 生成段：真源 locale/zh.json + locale/en.json；改文案跑 node scripts/locale-pack.mjs --write（勿手改本段）。
     const zh = {
       nav: 'Prompt 管理',
       title: 'Prompt 管理',
@@ -176,6 +172,9 @@
       mineHeading: '我的 Prompt',
       promptBlockNote: '这个范围决定「我的 Prompt」写到哪一层；改范围只在这里。',
       mineTargetNote: '写入目标：{layer}；查看范围：{scope}',
+      mineStatusNoRecord: '尚无关键节点观察',
+      mineStatusCoverage: '本层覆盖 {total} 条 · {ineffective} 条未生效',
+      mineStatusDetail: '详情',
       mineNote: '这里写下的内容会成为单独一段 Prompt，排在所有内置段之后，下一轮生效（next-turn）。该段永远不由 DSH 插值；开启「变量替换」后，由本插件在装配时展开 {{...}}——未注册、拼错或当前无值的引用原样保留，不会导致组装失败。',
       mineTextLabel: '内容',
       minePlaceholder: '在这里写下你的 Prompt…',
@@ -268,8 +267,8 @@
       savedNoticeFrozen: '已保存到{layer}，但所选会话冻结中，本轮不会生效。',
       savedNoticeUnknown: '已保存到{layer}；所选会话的冻结状态未知，若已冻结则本轮不会生效。',
       mineWorkspaceNeedsSession: '工作区层需要先选择一个会话；未选择时无法写入工作区层。',
-      mineResetTitle: '恢复默认：删除{layer}的「我的 Prompt」',
-      mineResetBody: '这会删除该层保存的文本、回到未配置状态。',
+      mineResetTitle: '恢复默认：只删除{layer}的「我的 Prompt」段',
+      mineResetBody: '只会删除本层保存的「我的 Prompt」段并回到未配置状态；本层其他覆盖会保留，不受影响。',
       mineModeLabel: '模式',
       mineModeReplace: '覆盖',
       mineModeAppend: '叠加',
@@ -435,12 +434,12 @@
       resetLayerWorkspace: '重置工作区级层',
       resetLegacyButton: '清除全部覆盖',
       resetLegacyTitle: '清除{layer}的全部旧覆盖',
-      resetLegacyBody: '将删除{layer}的 {count} 条冻结覆盖（即「我的 Prompt」以外的全部旧覆盖），并保留「我的 Prompt」本身。',
+      resetLegacyBody: '将删除{layer}的 {count} 条冻结覆盖（「我的 Prompt」以外的全部旧覆盖），并保留「我的 Prompt」本身；这与「整层重置」（连「我的 Prompt」一起清空）不同。',
       resetLegacyEmpty: '{layer}没有可清除的冻结覆盖；「我的 Prompt」会保留。',
       advReservedTag: '我的 Prompt',
       advReadOnlyNote: '本列表只读：唯一的写入口是「我的 Prompt」，层级清理请用下面两个按钮。',
       resetLayerTitle: '重置{layer}',
-      resetLayerBody: '将清空{layer}的全部 {count} 条覆盖，下一轮装配生效；被删除的内容会记入历史。',
+      resetLayerBody: '将清空{layer}的全部 {count} 条覆盖（包括「我的 Prompt」），下一轮装配生效；这与「清除全部覆盖」（保留「我的 Prompt」）不同。被删除的内容会记入历史。',
       resetLayerEmpty: '{layer}当前没有任何覆盖，无需重置。',
       resetIrreversible: '此操作不可撤销。',
       confirmTitle: '请确认',
@@ -773,6 +772,9 @@
       mineHeading: 'My Prompt',
       promptBlockNote: 'This scope decides which layer My Prompt is written to — and it is changed here.',
       mineTargetNote: 'Writing to {layer}; scope: {scope}',
+      mineStatusNoRecord: 'No key node observed yet',
+      mineStatusCoverage: 'This layer: {total} override(s) · {ineffective} not in effect',
+      mineStatusDetail: 'Details',
       mineNote: 'What you write here becomes one extra prompt section, placed after every built-in section, effective from the next turn (next-turn). DSH never interpolates it; with variable substitution on, this plugin expands its {{...}} during assembly, and a reference that is unregistered, misspelled or currently valueless stays literal instead of failing the assembly.',
       mineTextLabel: 'Content',
       minePlaceholder: 'Write your prompt here…',
@@ -865,8 +867,8 @@
       savedNoticeFrozen: 'Saved to {layer}, but the selected session is frozen; it will not take effect here.',
       savedNoticeUnknown: 'Saved to {layer}; the selected session’s frozen state is unknown, so it may not take effect here.',
       mineWorkspaceNeedsSession: 'The workspace layer needs a session; without one it cannot be written.',
-      mineResetTitle: 'Restore default: delete the {layer} My Prompt',
-      mineResetBody: 'This deletes the text stored in that layer and returns it to unconfigured.',
+      mineResetTitle: 'Restore default: delete only the {layer} My Prompt entry',
+      mineResetBody: 'Only this layer\'s saved My Prompt entry is deleted and returns to unconfigured; every other override in this layer is kept.',
       mineModeLabel: 'Mode',
       mineModeReplace: 'Cover',
       mineModeAppend: 'Stack',
@@ -1032,12 +1034,12 @@
       resetLayerWorkspace: 'Reset the workspace layer',
       resetLegacyButton: 'Clear all overrides',
       resetLegacyTitle: 'Clear every legacy override of the {layer}',
-      resetLegacyBody: 'This deletes the {count} frozen override(s) of the {layer} (everything except My Prompt) and keeps My Prompt itself.',
+      resetLegacyBody: 'This deletes the {count} frozen override(s) of the {layer} (everything except My Prompt) and keeps My Prompt itself; it differs from "Reset a whole layer", which clears My Prompt too.',
       resetLegacyEmpty: 'The {layer} has no frozen overrides to clear; My Prompt is kept.',
       advReservedTag: 'My Prompt',
       advReadOnlyNote: 'This list is read-only: My Prompt is the only write surface, and the two buttons below clear a whole layer.',
       resetLayerTitle: 'Reset the {layer}',
-      resetLayerBody: 'This clears all {count} overrides of the {layer}, effective from the next assembly; the removed content goes to history.',
+      resetLayerBody: 'This clears all {count} overrides of the {layer}, including My Prompt, effective from the next assembly; it differs from "Clear all overrides", which keeps My Prompt. The removed content goes to history.',
       resetLayerEmpty: 'The {layer} holds no override, so there is nothing to reset.',
       resetIrreversible: 'This cannot be undone.',
       confirmTitle: 'Please confirm',
@@ -1197,4 +1199,3 @@
       'error.registry-unavailable': 'The chosen download source is unavailable. Nothing falls back to the default source: retry later, or pick another download region.',
       'error.preferences-unwritable': 'The preference file could not be written, so nothing took effect.',
     };
-    // #endregion

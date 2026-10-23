@@ -27,7 +27,7 @@ import { CUSTOM_SECTION_NAME, RESERVED_WRITABLE_ACTIONS } from '../core/custom.j
 // state the route could really produce (g-054): `mergeLayers` deduplicates by
 // name across layers, so a hand-written `merged` list holding a same-name pair
 // is a fixture no real `GET /overrides` can answer with.
-import { mergeLayers, validateConfig } from '../core/overrides.js';
+import { RESERVED_STACK_SEPARATOR, mergeLayers, validateConfig } from '../core/overrides.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const packageJson = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8'));
@@ -9851,6 +9851,24 @@ const EN_SWEEP_CASES = [
     },
   },
   {
+    // g-084: the new two-line summary has its own copy on the mine tab — walk it
+    // so the English sweep sees the no-record line, the counter and「详情」.
+    name: 'mine: the read-only status summary carries its own copy',
+    marks: [
+      ['data-region', 'mine-status'],
+      ['data-mine-status-assembly', 'none'],
+      ['data-mine-status-coverage', 'ready'],
+      ['data-action', 'mine-status-detail'],
+    ],
+    copy: ['mineStatusNoRecord', 'mineStatusDetail', ['mineStatusCoverage', { total: 1, ineffective: 0 }]],
+    async run() {
+      const page = enPage({ useSessions: sessionsHook(SESSIONS_STATE), responses: defaultResponses() });
+      const rec = recorder(page);
+      await rec.take();
+      return rec.trees;
+    },
+  },
+  {
     name: 'mine: the unconfigured panel, then a dirty edit, then the saved state',
     marks: [
       ['data-region', 'mine'],
@@ -10693,6 +10711,12 @@ const EN_REQUIRED_MARKERS = [
   'data-preset-tag-filter=tag-1',
   'data-region=mine',
   'data-region=mine-layer',
+  // g-084: the read-only status summary and its「详情」entry, with the no-record
+  // and coverage variants the sweep's case renders.
+  'data-region=mine-status',
+  'data-action=mine-status-detail',
+  'data-mine-status-assembly=none',
+  'data-mine-status-coverage=ready',
   // g-055: the write-target line inside the panel, and the block whose header is
   // the scope card above the tabs (the block carries the sentence, not a second
   // title — review round 1).
@@ -14213,7 +14237,15 @@ test('client: the「高级」tab renders the assembly-status block at its top, a
     0,
     'nor any of its parts (limitation / notice / notes)',
   );
-  assert.equal(urlsFor(page, PATHS.assemblyStatus).length, 0, 'and it reads no assembly status');
+  // g-084: the default tab now reads the same route for its **read-only summary**
+  // — in the page's「查看范围」, which is a different cache from「高级」's — while
+  // rendering none of the advanced block's parts (the assertions above stay the
+  // load-bearing ones: no container, no heading, no part).
+  assert.deepEqual(
+    urlsFor(page, PATHS.assemblyStatus),
+    [`${PATHS.assemblyStatus}?session=s2`],
+    'the summary reads in the page scope; the block itself is still advanced-only',
+  );
   let tree = await openTab(page, 'advanced');
   const block = oneBy(tree, 'data-region', 'assembly-status');
   assert.equal(block.props['data-assembly-enabled'], 'true');
@@ -14224,7 +14256,11 @@ test('client: the「高级」tab renders the assembly-status block at its top, a
   assert.ok(hasText(block, page.zh.assemblyHeading));
   assert.ok(hasText(oneBy(tree, 'data-assembly-note', 'no-record'), page.zh.assemblyNoRecord));
   assert.ok(hasText(oneBy(tree, 'data-region', 'assembly-limitation'), page.zh.assemblyLimitation));
-  assert.deepEqual(urlsFor(page, PATHS.assemblyStatus), [`${PATHS.assemblyStatus}?session=s2`]);
+  assert.deepEqual(
+    urlsFor(page, PATHS.assemblyStatus),
+    [`${PATHS.assemblyStatus}?session=s2`, `${PATHS.assemblyStatus}?session=s2`],
+    'the summary and the block each read once, in their own caches (both s2 here)',
+  );
   // The block is the **first** card of the tab: the「装配状态提示」heading precedes
   // the first heading of the override list, so "at the top" is not just "inside".
   const texts = strings(tree);
@@ -14249,8 +14285,8 @@ test('client: the「高级」tab renders the assembly-status block at its top, a
   const assemblyReads = urlsFor(page, PATHS.assemblyStatus);
   assert.deepEqual(
     assemblyReads,
-    [`${PATHS.assemblyStatus}?session=s2`],
-    'and (review R3) switching back to this tab reuses that read — it names its own scope, and only once',
+    [`${PATHS.assemblyStatus}?session=s2`, `${PATHS.assemblyStatus}?session=s2`],
+    'neither read follows the page scope, and (review R3) switching back to 「高级」 reuses its own read (g-084 adds the summary read, a separate cache)',
   );
 
   // A page with no session service has no session to name at all, so the block
@@ -15974,18 +16010,24 @@ test('client: g-073 R1 — a tab-owned scope reads once per tab open and scope c
     responses: defaultResponses(),
     enforceEffectDeps: true,
   });
-  let tree = await openAdvanced(page);
   const statusReads = () => urlsFor(page, PATHS.assemblyStatus);
-  assert.equal(statusReads().length, 1, 'one assembly-status read when the tab opens');
+  // g-084: the default tab's summary is the first read (page scope). Account for
+  // it explicitly, then keep the original invariant — **「高级」 adds exactly one**
+  // read when it opens, and nothing on a re-render / disclosure.
+  let tree = await page.flush();
+  const mineSummaryReads = statusReads().length;
+  assert.equal(mineSummaryReads, 1, 'the default tab reads its summary once (g-084)');
+  tree = await openTab(page, 'advanced', tree);
+  assert.equal(statusReads().length, mineSummaryReads + 1, 'one assembly-status read when the tab opens');
   tree = await page.flush();
-  assert.equal(statusReads().length, 1, 'a plain re-render reads nothing');
+  assert.equal(statusReads().length, mineSummaryReads + 1, 'a plain re-render reads nothing');
   clickButton(tree, { 'data-action': 'advanced-scope-toggle' });
   tree = await page.flush();
-  assert.equal(statusReads().length, 1, 'opening the disclosure reads nothing');
+  assert.equal(statusReads().length, mineSummaryReads + 1, 'opening the disclosure reads nothing');
   clickButton(tree, { 'data-advanced-scope-option': 'b1' });
   tree = await page.flush();
-  assert.equal(statusReads().length, 2, 'changing the scope reads once more');
-  assert.equal(statusReads()[1], `${PATHS.assemblyStatus}?session=b1`);
+  assert.equal(statusReads().length, mineSummaryReads + 2, 'changing the scope reads once more');
+  assert.equal(statusReads()[mineSummaryReads + 1], `${PATHS.assemblyStatus}?session=b1`);
 
   // The overview's own snapshot behaves the same way.
   const overviewPage = makePage({
@@ -16089,6 +16131,616 @@ test('client: g-073 R3 — switching away and back re-reads nothing and draws no
   tree = await page.flush();
   tree = await openTab(page, 'history', tree);
   assert.equal(historyReads(), historyBeforeReload + 1, 'a reload still re-reads the tab-owned scope');
+});
+
+// #endregion
+
+// #region g-084 (Revision 57):「我的 Prompt」read-only status summary + cleaner copy
+
+/**
+ * A page-scoped snapshot whose `effective.sections` describe the same three
+ * user-layer entries the override fixture stores: two applied, one not.
+ * @returns the `GET /snapshot` payload.
+ */
+function coverageSnapshotFixture() {
+  const payload = snapshotFixture();
+  payload.effective.sections = [
+    {
+      name: 'project:alpha',
+      index: 0,
+      text: 'alpha overridden',
+      applied: true,
+      overridable: true,
+      reason: null,
+      overrideLayer: 'user',
+      action: 'replace',
+      origin: 'registered',
+    },
+    {
+      name: 'project:beta',
+      index: 1,
+      text: 'beta base',
+      applied: false,
+      overridable: true,
+      reason: 'the section text was restored to its pre-waterfall value',
+      overrideLayer: 'user',
+      action: 'replace',
+      origin: 'registered',
+    },
+    {
+      name: 'extra:appended',
+      index: 2,
+      text: 'appended text',
+      applied: true,
+      overridable: true,
+      reason: null,
+      overrideLayer: 'user',
+      action: 'append',
+      origin: 'appended',
+    },
+  ];
+  return payload;
+}
+
+/** The three user-layer overrides the coverage fixture counts. */
+function coverageOverridesFixture() {
+  return layeredOverrides([
+    { name: 'project:alpha', action: 'replace', text: 'alpha overridden' },
+    { name: 'project:beta', action: 'replace', text: 'beta base' },
+    { name: 'extra:appended', action: 'append', text: 'appended text' },
+  ]);
+}
+
+/** One session's assembly-status answer, keyed by the `?session=` the read carries. */
+function perSessionAssembly(url, notices) {
+  const match = /[?&]session=([^&]+)/.exec(String(url));
+  const session = match === null ? null : decodeURIComponent(match[1]);
+  return {
+    payload: assemblyFixture({
+      session,
+      record: session !== null && notices[session] !== undefined
+        ? assemblyRecordFixture({ session, notice: notices[session] })
+        : null,
+    }),
+  };
+}
+
+/** The `GET /assembly-status` urls the page asked, in call order. */
+function assemblyReadsOf(page) {
+  return urlsFor(page, PATHS.assemblyStatus);
+}
+
+test('client: g-084 —「我的 Prompt」carries a read-only two-line summary after the target line', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses({
+      [PATHS.assemblyStatus]: (url) => perSessionAssembly(url, { a3: assemblyNoticeFixture() }),
+      [PATHS.overrides]: { payload: coverageOverridesFixture() },
+      [PATHS.snapshot]: { payload: coverageSnapshotFixture() },
+    }),
+  });
+  const tree = await page.flush();
+  const status = oneBy(tree, 'data-region', 'mine-status');
+
+  // Position: after the read-only write-target line, before the note.
+  const regions = collect(tree, (node) => node.props && typeof node.props['data-region'] === 'string').map(
+    (node) => node.props['data-region'],
+  );
+  const targetAt = regions.indexOf('mine-target');
+  const statusAt = regions.indexOf('mine-status');
+  assert.ok(targetAt >= 0 && statusAt > targetAt, 'mine-status sits after mine-target');
+
+  // Exactly two semantic lines, no assembly switch, no override list / reasons.
+  assert.equal(
+    collect(status, (node) => node.props && node.props['data-mine-status-line'] !== undefined).length,
+    2,
+    'two fixed lines',
+  );
+  assert.equal(
+    collect(tree, (node) => node.props && node.props['data-action'] === 'assembly-toggle').length,
+    0,
+    'the assembly switch stays in 「高级」',
+  );
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'overrides').length, 0);
+  assert.equal(collect(tree, (node) => node.props && node.props['data-override-reason'] !== undefined).length, 0);
+
+  // The assembly line reads the page scope and states both verdicts.
+  assert.equal(status.props['data-mine-status-scope'], 'a3');
+  assert.equal(status.props['data-mine-status-assembly'], 'notice');
+  assert.equal(status.props['data-mine-status-read'], 'ready');
+  const sep = page.zh.assemblyLayerSep;
+  const expectedAssembly =
+    `${page.zh.assemblyLayerAssembly}${sep}${page.zh.assemblyFirstAssembled} · `
+    + `${page.zh.assemblyLayerDelivery}${sep}${fillText(page.zh.assemblyDeliveryDelivered, { op: page.zh.assemblyOpAppend })}`;
+  assert.ok(hasText(status, expectedAssembly), 'the two-layer verdicts are both on screen');
+  assert.deepEqual(assemblyReadsOf(page), [`${PATHS.assemblyStatus}?session=a3`], 'read in the page scope once');
+
+  // The coverage line shows the two counts only.
+  assert.equal(status.props['data-mine-status-layer'], 'user');
+  assert.equal(status.props['data-mine-status-total'], '3');
+  assert.equal(status.props['data-mine-status-ineffective'], '1');
+  assert.ok(
+    hasText(status, fillText(page.zh.mineStatusCoverage, { total: 3, ineffective: 1 })),
+    'the coverage sentence carries both numbers',
+  );
+});
+
+test('client: g-084 — the summary follows「查看范围」while「高级」keeps its own scope', async () => {
+  const notices = {
+    a3: assemblyNoticeFixture(),
+    a1: assemblyNoticeFixture({
+      kind: 'change',
+      assembly: { state: 'not-read', assembled: false, digest: 'ffff', length: 0, expectedDigest: null },
+      delivery: { state: 'unconfirmed', at: null, seq: null, surfaceOp: null, textMatched: null },
+    }),
+  };
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses({
+      [PATHS.assemblyStatus]: (url) => perSessionAssembly(url, notices),
+    }),
+    enforceEffectDeps: true,
+  });
+  let tree = await page.flush();
+  assert.ok(hasText(oneBy(tree, 'data-region', 'mine-status'), page.zh.assemblyFirstAssembled));
+
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  sessionOptions(tree).find((row) => row.props['data-session-id'] === 'a1').props.onClick();
+  tree = await page.flush();
+  const summary = oneBy(tree, 'data-region', 'mine-status');
+  assert.equal(summary.props['data-mine-status-scope'], 'a1', 'the summary followed the page scope');
+  assert.ok(hasText(summary, page.zh.assemblyChangeNotRead), 'and its verdict moved with it');
+  assert.ok(hasText(summary, page.zh.assemblyDeliveryUnconfirmed));
+  assert.equal(assemblyReadsOf(page).slice(-1)[0], `${PATHS.assemblyStatus}?session=a1`);
+
+  // 「高级」opens on its own workspace selector (the current session), not the page scope.
+  tree = await openTab(page, 'advanced', tree);
+  assert.equal(oneBy(tree, 'data-region', 'advanced-scope').props['data-advanced-scope-value'], 'a3');
+  assert.equal(assemblyReadsOf(page).slice(-1)[0], `${PATHS.assemblyStatus}?session=a3`);
+  assert.equal(oneBy(tree, 'data-region', 'assembly-status').props['data-delivery-state'], 'delivered');
+
+  // Both caches are separate: going back to 「我的 Prompt」 re-reads nothing.
+  const before = assemblyReadsOf(page).length;
+  tree = await openTab(page, 'mine', tree);
+  assert.equal(oneBy(tree, 'data-region', 'mine-status').props['data-mine-status-scope'], 'a1');
+  assert.equal(assemblyReadsOf(page).length, before, 'the mine cache kept its own scope');
+});
+
+test('client: g-084 —「详情」opens 「高级」on the summary’s session; global leaves it following', async () => {
+  const notices = {
+    a3: assemblyNoticeFixture(),
+    a1: assemblyNoticeFixture({
+      kind: 'change',
+      assembly: { state: 'read', assembled: false, digest: 'ffff', length: 0, expectedDigest: null },
+      delivery: { state: 'delivered', at: 1700000000200, seq: 13, surfaceOp: 'replace', textMatched: true },
+    }),
+  };
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses({
+      [PATHS.assemblyStatus]: (url) => perSessionAssembly(url, notices),
+    }),
+    enforceEffectDeps: true,
+  });
+  let tree = await page.flush();
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  sessionOptions(tree).find((row) => row.props['data-session-id'] === 'a1').props.onClick();
+  tree = await page.flush();
+
+  clickButton(tree, { 'data-action': 'mine-status-detail' });
+  tree = await page.flush();
+  assert.equal(tabList(tree).props['data-active-tab'], 'advanced');
+  assert.equal(
+    oneBy(tree, 'data-region', 'advanced-scope').props['data-advanced-scope-value'],
+    'a1',
+    'the advanced selector was pinned to the summary’s session',
+  );
+  assert.equal(assemblyReadsOf(page).slice(-1)[0], `${PATHS.assemblyStatus}?session=a1`);
+  assert.equal(oneBy(tree, 'data-region', 'assembly-status').props['data-delivery-state'], 'delivered');
+
+  // A global page scope carries no session: 「高级」 keeps its own follow-current default.
+  const globalPage = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses({
+      [PATHS.assemblyStatus]: (url) => perSessionAssembly(url, notices),
+    }),
+  });
+  let globalTree = await globalPage.flush();
+  scopeToggle(globalTree).props.onClick();
+  globalTree = await globalPage.flush();
+  clickButton(globalTree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
+  globalTree = await globalPage.flush();
+  assert.equal(oneBy(globalTree, 'data-region', 'mine-status').props['data-mine-status-scope'], 'global');
+  clickButton(globalTree, { 'data-action': 'mine-status-detail' });
+  globalTree = await globalPage.flush();
+  assert.equal(tabList(globalTree).props['data-active-tab'], 'advanced');
+  assert.equal(
+    oneBy(globalTree, 'data-region', 'advanced-scope').props['data-advanced-scope-value'],
+    'a3',
+    'without a page scope, 「高级」 still follows the current session',
+  );
+  assert.equal(assemblyReadsOf(globalPage).slice(-1)[0], `${PATHS.assemblyStatus}?session=a3`);
+});
+
+test('client: g-084 — a global scope says so, reads no other session, and still counts the layer', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses(),
+  });
+  let tree = await page.flush();
+  // First, the no-record case in a real session: no error, an explicit sentence.
+  let status = oneBy(tree, 'data-region', 'mine-status');
+  assert.equal(status.props['data-mine-status-assembly'], 'none');
+  assert.ok(hasText(status, page.zh.mineStatusNoRecord));
+
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
+  const readsBefore = assemblyReadsOf(page).length;
+  tree = await page.flush();
+  status = oneBy(tree, 'data-region', 'mine-status');
+  assert.equal(status.props['data-mine-status-scope'], 'global');
+  assert.equal(status.props['data-mine-status-assembly'], 'global');
+  assert.ok(hasText(status, page.zh.sessionGlobal), 'the global scope is stated');
+  assert.equal(assemblyReadsOf(page).length, readsBefore, 'no session-less read, and no other session is borrowed');
+  // Coverage still works, from the page-scoped user layer.
+  assert.equal(status.props['data-mine-status-total'], '1');
+  assert.equal(status.props['data-mine-status-ineffective'], '0');
+  assert.ok(hasText(status, fillText(page.zh.mineStatusCoverage, { total: 1, ineffective: 0 })));
+  assert.equal(markerOf(tree, 'data-render-state'), 'ok');
+
+  // …and switching the **write target** to the workspace layer cannot make the
+  // summary claim a workspace record it has no session for: the count stays the
+  // user layer's (the workspace layer is unavailable in a global scope).
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  status = oneBy(tree, 'data-region', 'mine-status');
+  assert.equal(oneBy(tree, 'data-region', 'mine-target').props['data-mine-target-layer'], 'workspace');
+  assert.equal(status.props['data-mine-status-layer'], 'user', 'global coverage is the user layer’s');
+  assert.equal(status.props['data-mine-status-total'], '1');
+  assert.equal(assemblyReadsOf(page).length, readsBefore, 'and still no session-less / borrowed read');
+});
+
+test('client: g-084 — the two cleaners state what each one deletes', async () => {
+  const page = makePage({
+    responses: defaultResponses({
+      [PATHS.overrides]: {
+        payload: layeredOverrides([
+          { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'stored text' },
+          { name: 'project:alpha', action: 'replace', text: 'alpha overridden' },
+        ]),
+      },
+    }),
+  });
+  let tree = await page.flush();
+  clickButton(tree, { 'data-action': 'mine-reset' });
+  tree = await page.flush();
+  let body = oneBy(tree, 'data-region', 'confirm');
+  assert.equal(body.props['data-confirm-kind'], 'mine-reset');
+  assert.ok(hasText(body, fillText(page.zh.mineResetTitle, { layer: page.zh.ovUser })));
+  assert.ok(hasText(body, page.zh.mineResetBody));
+  assert.ok(hasText(body, '保留'), 'the mine cleaner says the other overrides survive');
+  clickButton(body, { 'data-action': 'confirm-yes' });
+  tree = await page.flush();
+  assert.deepEqual(
+    writeCalls(page).filter((call) => call.init.method === 'DELETE').map((call) => call.url),
+    [`${PATHS.overrides}?layer=user&name=${encodeURIComponent(CUSTOM_SECTION_NAME)}`],
+    'the route behaviour is unchanged: one named delete of the reserved section',
+  );
+
+  let advanced = await openAdvanced(page);
+  clickButton(oneBy(advanced, 'data-region', 'layer-reset'), { 'data-action': 'reset-layer', 'data-layer': 'user' });
+  advanced = await page.flush();
+  body = oneBy(advanced, 'data-region', 'confirm');
+  assert.equal(body.props['data-confirm-kind'], 'reset-layer');
+  assert.ok(hasText(body, fillText(page.zh.resetLayerBody, { layer: page.zh.ovUser, count: 2 })));
+  assert.ok(hasText(body, '包括「我的 Prompt」'), 'the whole-layer reset names My Prompt');
+  assert.ok(hasText(body, page.zh.resetLegacyButton), 'and contrasts itself with the keeping cleaner');
+  clickButton(body, { 'data-action': 'confirm-no' });
+  advanced = await page.flush();
+
+  clickButton(oneBy(advanced, 'data-region', 'layer-reset'), { 'data-action': 'legacy-clear', 'data-layer': 'user' });
+  advanced = await page.flush();
+  body = oneBy(advanced, 'data-region', 'confirm');
+  assert.equal(body.props['data-confirm-kind'], 'legacy-clear');
+  assert.ok(hasText(body, fillText(page.zh.resetLegacyBody, { layer: page.zh.ovUser, count: 1 })));
+  assert.ok(hasText(body, '保留「我的 Prompt」'), 'the legacy cleaner says My Prompt is kept');
+  assert.ok(hasText(body, page.zh.resetLayersLabel), 'and names the reset it is not');
+});
+
+test('client: g-084 — a failed summary read is stated, not disguised as “no observation”', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({
+      [PATHS.assemblyStatus]: () => new Error('assembly read failed'),
+    }),
+  });
+  const tree = await page.flush();
+  const status = oneBy(tree, 'data-region', 'mine-status');
+  assert.equal(status.props['data-mine-status-read'], 'error');
+  assert.equal(status.props['data-mine-status-assembly'], 'error');
+  assert.ok(hasText(status, page.zh.loadFailed), 'the failed read is named');
+  assert.equal(hasText(status, page.zh.mineStatusNoRecord), false, 'and never reported as “nothing observed”');
+});
+
+test('client: g-084 — coverage follows the write target, the reserved entry’s applied flag, and shadowed names', async () => {
+  const userEntries = [
+    { name: 'project:alpha', action: 'replace', text: 'user alpha' },
+    { name: 'user:only', action: 'replace', text: 'user only' },
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'user prompt' },
+  ];
+  const workspaceEntries = [
+    { name: 'project:alpha', action: 'replace', text: 'ws alpha' },
+    { name: 'extra:workspace', action: 'append', text: 'ws extra' },
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'ws prompt' },
+  ];
+  const sectionsFor = (reservedApplied) => [
+    { name: 'project:alpha', index: 0, text: 'ws alpha', applied: true, overridable: true, reason: null, overrideLayer: 'workspace', action: 'replace', origin: 'registered' },
+    { name: 'user:only', index: 1, text: 'user only', applied: true, overridable: true, reason: null, overrideLayer: 'user', action: 'replace', origin: 'registered' },
+    { name: 'extra:workspace', index: 2, text: 'ws extra', applied: true, overridable: true, reason: null, overrideLayer: 'workspace', action: 'append', origin: 'appended' },
+    { name: CUSTOM_SECTION_NAME, index: 3, text: 'ws prompt', applied: reservedApplied, overridable: true, reason: null, overrideLayer: 'workspace', action: 'replace', origin: 'registered' },
+  ];
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses({
+      [PATHS.overrides]: () => ({ payload: layeredOverrides(userEntries, workspaceEntries) }),
+      [PATHS.snapshot]: (url) => {
+        const payload = snapshotFixture({ effective: { sections: sectionsFor(url.includes('session=a1')) } });
+        payload.layers.workspace = { enabled: true, path: '/work/alpha/.dsh-prompt-setting/overrides.json', reason: null };
+        return { payload };
+      },
+    }),
+  });
+  let tree = await page.flush(); // page scope a3; write target user
+  let status = oneBy(tree, 'data-region', 'mine-status');
+  assert.equal(status.props['data-mine-status-layer'], 'user');
+  assert.equal(status.props['data-mine-status-total'], '3');
+  assert.equal(
+    status.props['data-mine-status-ineffective'],
+    '2',
+    'user layer: alpha is shadowed by workspace + the reserved entry is not applied',
+  );
+
+  clickTab(tree, 'mine-layer', 'workspace');
+  tree = await page.flush();
+  status = oneBy(tree, 'data-region', 'mine-status');
+  assert.equal(status.props['data-mine-status-layer'], 'workspace');
+  assert.equal(status.props['data-mine-status-total'], '3', 'the workspace layer’s own three entries');
+  assert.equal(
+    status.props['data-mine-status-ineffective'],
+    '1',
+    'reserved applied=false counts; the two workspace entries applied=true do not',
+  );
+
+  // Switch the page scope to a1, whose snapshot says the reserved entry applied.
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  sessionOptions(tree).find((row) => row.props['data-session-id'] === 'a1').props.onClick();
+  tree = await page.flush();
+  status = oneBy(tree, 'data-region', 'mine-status');
+  assert.equal(status.props['data-mine-status-layer'], 'workspace', 'the write target did not move');
+  assert.equal(status.props['data-mine-status-total'], '3');
+  assert.equal(status.props['data-mine-status-ineffective'], '0', 'reserved applied=true is not counted');
+
+  clickTab(tree, 'mine-layer', 'user');
+  tree = await page.flush();
+  status = oneBy(tree, 'data-region', 'mine-status');
+  assert.equal(status.props['data-mine-status-layer'], 'user');
+  assert.equal(status.props['data-mine-status-total'], '3');
+  assert.equal(
+    status.props['data-mine-status-ineffective'],
+    '2',
+    'the user alpha and the user reserved entry are both shadowed by the workspace layer',
+  );
+});
+
+test('client: g-084 — the user reserved entry is shadowed by workspace replace but stacked by append', async () => {
+  const makeCoveragePage = (workspaceAction) => {
+    const workspaceEntry =
+      workspaceAction === 'hide'
+        ? { name: CUSTOM_SECTION_NAME, action: 'hide' }
+        : { name: CUSTOM_SECTION_NAME, action: workspaceAction, text: 'ws prompt' };
+    return makePage({
+      useSessions: sessionsHook(WORKSPACE_SESSIONS),
+      useWorkspaces: workspacesHook(workspacesFixture()),
+      responses: defaultResponses({
+        [PATHS.overrides]: () => ({
+          payload: layeredOverrides(
+            [{ name: CUSTOM_SECTION_NAME, action: 'replace', text: 'user prompt' }],
+            [workspaceEntry],
+          ),
+        }),
+        [PATHS.snapshot]: () => ({
+          payload: snapshotFixture({
+            effective: {
+              sections: [
+                { name: CUSTOM_SECTION_NAME, index: null, text: workspaceAction === 'append' ? `user prompt${RESERVED_STACK_SEPARATOR}ws prompt` : workspaceAction === 'hide' ? '' : 'ws prompt', applied: true, overridable: true, reason: null, overrideLayer: 'workspace', action: workspaceAction === 'append' ? 'replace' : workspaceAction, origin: 'registered' },
+              ],
+            },
+          }),
+        }),
+      }),
+    });
+  };
+  for (const [workspaceAction, expected] of [['replace', '1'], ['hide', '1'], ['append', '0']]) {
+    const page = makeCoveragePage(workspaceAction);
+    const tree = await page.flush();
+    const status = oneBy(tree, 'data-region', 'mine-status');
+    assert.equal(status.props['data-mine-status-layer'], 'user');
+    assert.equal(status.props['data-mine-status-total'], '1');
+    assert.equal(
+      status.props['data-mine-status-ineffective'],
+      expected,
+      workspaceAction === 'append'
+        ? 'workspace append stacks the user text, so the user entry took effect'
+        : 'workspace replace/hide shadows the user text, so the user entry did not take effect',
+    );
+  }
+});
+
+test('client: g-084 — returning to the same session after a global scope reads again', async () => {
+  const page = makePage({
+    useSessions: sessionsHook(WORKSPACE_SESSIONS),
+    useWorkspaces: workspacesHook(workspacesFixture()),
+    responses: defaultResponses({
+      [PATHS.assemblyStatus]: () => ({
+        payload: assemblyFixture({ session: 'a3', record: assemblyRecordFixture({ session: 'a3' }) }),
+      }),
+    }),
+  });
+  let tree = await page.flush();
+  const a3Reads = () => assemblyReadsOf(page).filter((url) => url.includes('session=a3'));
+  assert.equal(a3Reads().length, 1, 'the page scope read a3 on mount');
+  assert.equal(oneBy(tree, 'data-region', 'mine-status').props['data-mine-status-read'], 'ready');
+
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'session-pinned', 'data-pinned': 'global' });
+  tree = await page.flush();
+  assert.equal(oneBy(tree, 'data-region', 'mine-status').props['data-mine-status-scope'], 'global');
+
+  scopeToggle(tree).props.onClick();
+  tree = await page.flush();
+  sessionOptions(tree).find((row) => row.props['data-session-id'] === 'a3').props.onClick();
+  tree = await page.flush();
+  const status = oneBy(tree, 'data-region', 'mine-status');
+  assert.equal(a3Reads().length, 2, 'coming back to a3 must not reuse the invalidated read');
+  assert.equal(status.props['data-mine-status-read'], 'ready', 'and must not rest on the idle frame');
+  assert.equal(hasText(status, page.zh.loading), false, 'the summary is not stuck on loading');
+});
+
+test('client: g-084 —「详情」keeps a non-representative member session and a loose session', async () => {
+  const notices = {
+    a2: assemblyNoticeFixture({ id: 'n-a2' }),
+    loose: assemblyNoticeFixture({ id: 'n-loose' }),
+  };
+  const makeDetailPage = () =>
+    makePage({
+      useSessions: sessionsHook(WORKSPACE_SESSIONS),
+      useWorkspaces: workspacesHook(workspacesFixture()),
+      responses: defaultResponses({
+        [PATHS.assemblyStatus]: (url) => perSessionAssembly(url, notices),
+      }),
+      enforceEffectDeps: true,
+    });
+  const enterScope = async (page, id, groupKey) => {
+    let tree = await page.flush();
+    scopeToggle(tree).props.onClick();
+    tree = await page.flush();
+    if (groupKey !== null) {
+      const header = scopeHeader(tree, groupKey);
+      if (header.props['data-expanded'] === 'false') {
+        clickNode(header, { stopPropagation() {} });
+        tree = await page.flush();
+      }
+    }
+    sessionOptions(tree).find((row) => row.props['data-session-id'] === id).props.onClick();
+    return page.flush();
+  };
+
+  // a2 belongs to the current workspace but is not the workspace's representative id.
+  const member = makeDetailPage();
+  let tree = await enterScope(member, 'a2', null);
+  clickButton(tree, { 'data-action': 'mine-status-detail' });
+  tree = await member.flush();
+  assert.equal(oneBy(tree, 'data-region', 'advanced-scope').props['data-advanced-scope-value'], 'a2');
+  assert.equal(
+    oneBy(tree, 'data-role', 'advanced-scope-summary-label').props.children,
+    'Alpha repo · Alpha two',
+    'the name names the pinned session, not just the workspace',
+  );
+  assert.equal(assemblyReadsOf(member).slice(-1)[0], `${PATHS.assemblyStatus}?session=a2`);
+
+  // loose belongs to no workspace, so no option's sessionIds can claim it.
+  const loose = makeDetailPage();
+  tree = await enterScope(loose, 'loose', '');
+  clickButton(tree, { 'data-action': 'mine-status-detail' });
+  tree = await loose.flush();
+  assert.equal(oneBy(tree, 'data-region', 'advanced-scope').props['data-advanced-scope-value'], 'loose');
+  assert.equal(oneBy(tree, 'data-role', 'advanced-scope-summary-label').props.children, 'Loose session');
+  assert.equal(assemblyReadsOf(loose).slice(-1)[0], `${PATHS.assemblyStatus}?session=loose`);
+});
+
+test('client: g-084 — the reserved entry counts only when its own text reaches the assembly', async () => {
+  const effectiveFor = (text, action, layer = 'workspace') => ({
+    name: CUSTOM_SECTION_NAME,
+    index: null,
+    text,
+    applied: true,
+    overridable: true,
+    reason: null,
+    overrideLayer: layer,
+    action,
+    origin: 'registered',
+  });
+  const makeStatusPage = (userReserved, workspaceReserved, effective) =>
+    makePage({
+      useSessions: sessionsHook(WORKSPACE_SESSIONS),
+      useWorkspaces: workspacesHook(workspacesFixture()),
+      responses: defaultResponses({
+        [PATHS.overrides]: () => ({ payload: layeredOverrides([userReserved], [workspaceReserved]) }),
+        [PATHS.snapshot]: () => {
+          const payload = snapshotFixture({ effective: { sections: [effective] } });
+          payload.layers.workspace = { enabled: true, path: '/work/alpha/.dsh-prompt-setting/overrides.json', reason: null };
+          return { payload };
+        },
+      }),
+    });
+  const numbers = (tree) => {
+    const status = oneBy(tree, 'data-region', 'mine-status');
+    return [status.props['data-mine-status-total'], status.props['data-mine-status-ineffective']];
+  };
+  const toWorkspace = async (page, tree) => {
+    clickTab(tree, 'mine-layer', 'workspace');
+    return page.flush();
+  };
+
+  // 1. user layer stores a reserved entry with no text; workspace appends text.
+  let page = makeStatusPage(
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: '' },
+    { name: CUSTOM_SECTION_NAME, action: 'append', text: 'ws prompt' },
+    effectiveFor('ws prompt', 'replace'),
+  );
+  let tree = await page.flush();
+  assert.deepEqual(numbers(tree), ['1', '1'], 'an empty user entry contributes no text');
+
+  // 2. user layer hides the reserved section; workspace appends text.
+  page = makeStatusPage(
+    { name: CUSTOM_SECTION_NAME, action: 'hide' },
+    { name: CUSTOM_SECTION_NAME, action: 'append', text: 'ws prompt' },
+    effectiveFor('ws prompt', 'replace'),
+  );
+  tree = await page.flush();
+  assert.deepEqual(numbers(tree), ['1', '1'], 'a user hide has no text to stack');
+
+  // 3. workspace layer stores an empty reserved entry; user has text.
+  page = makeStatusPage(
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'user prompt' },
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: '' },
+    effectiveFor('user prompt', 'replace', 'user'),
+  );
+  tree = await page.flush();
+  tree = await toWorkspace(page, tree);
+  assert.deepEqual(numbers(tree), ['1', '1'], 'the empty workspace entry did not take effect');
+
+  // 4. both layers carry text and the workspace appends: both contribute.
+  page = makeStatusPage(
+    { name: CUSTOM_SECTION_NAME, action: 'replace', text: 'user prompt' },
+    { name: CUSTOM_SECTION_NAME, action: 'append', text: 'ws prompt' },
+    effectiveFor(`user prompt${RESERVED_STACK_SEPARATOR}ws prompt`, 'replace'),
+  );
+  tree = await page.flush();
+  assert.deepEqual(numbers(tree), ['1', '0'], 'the user text is stacked, not shadowed');
+  tree = await toWorkspace(page, tree);
+  assert.deepEqual(numbers(tree), ['1', '0'], 'the workspace append contributes its own text');
 });
 
 // #endregion
