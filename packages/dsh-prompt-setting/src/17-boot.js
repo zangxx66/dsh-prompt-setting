@@ -159,6 +159,27 @@
             renderFailure: primitivesRenderFailure,
           }),
         },
+        /**
+         * g-086: the composer assembly bar's IO-free half, exported for the same
+         * reason as the blocks above — "which regions exist", "what does one
+         * layer's fact say", "which URLs would be read" and "does this Host
+         * expose a settings opener" are policies a rendered tree cannot express
+         * without a transport. Nothing in the bar reads this.
+         */
+        composerBar: {
+          REGION: COMPOSER_BAR_REGION,
+          REGIONS: COMPOSER_BAR_REGIONS,
+          HUES: COMPOSER_BAR_HUES,
+          ORDER: COMPOSER_BAR_ORDER,
+          hueOf: composerBarHueOf,
+          toneColor: composerBarToneColor,
+          sessionIdOf: composerBarSessionIdOf,
+          requestUrls: composerBarRequestUrls,
+          sectionCount: composerBarSectionCount,
+          layerFact: composerBarLayerFact,
+          noticeOf: composerBarNoticeOf,
+          settingsOpener: composerBarSettingsOpener,
+        },
       },
       apply(ctx) {
         // Every locale call is guarded. `ctx.locale.subscribe` and
@@ -261,6 +282,42 @@
             }
           });
         }
+
+        // g-086: the resident assembly bar above the composer.
+        //
+        // `conversation.input.dock` is a **list** slot ("full-width entries above
+        // the composer card"), so this registration is one entry appended beside
+        // the shipped `todo` (0) and `queue` (20) entries — it cannot shadow the
+        // composer and the composer cannot shadow it. `slots.inject` runs the
+        // callback only once the Host has declared the slot, so a Host older than
+        // 0.2.1-rc.3 loses the bar and nothing else: no registration, no throw,
+        // no request (the component is what issues reads, and it never mounts).
+        //
+        // The registration is guarded for the same reason the toaster's is: a Host
+        // that declares the slot and then refuses the entry is a degradation, not
+        // a crash.
+        ctx.slots.inject('conversation.input.dock', () => {
+          try {
+            return ctx.slots.register(
+              {
+                name: 'conversation.input.dock',
+                id: 'prompt-setting-assembly-bar',
+                order: COMPOSER_BAR_ORDER,
+                locale: NS,
+                // Session-scoped `inject` receives the scope id. The bar reads the
+                // Session from the owner's `session` snapshot first and takes this
+                // as the second seat — a Host shape change can lose one of them,
+                // never both, and "no id at all" still means "no request".
+                inject: (sessionId) => ({
+                  barSessionId: typeof sessionId === 'string' ? sessionId : '',
+                }),
+              },
+              ComposerAssemblyBar,
+            );
+          } catch {
+            return undefined;
+          }
+        });
       },
     };
     }

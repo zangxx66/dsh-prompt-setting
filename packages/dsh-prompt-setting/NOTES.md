@@ -10537,3 +10537,50 @@ v0.2.3 的计划条目（g-065…g-074）与 v0.2.4 的（g-075…g-080）一直
 - **未验证（UNVERIFIED）**：真机安装（`0.2.1-0` / `0.2.2` / `0.3.0`）未跑；证据是单元断言、只读自检脚本
   输出与门禁，不是宿主实装。
 
+
+## 168. g-086：会话输入框上方的装配状态栏（`conversation.input.dock`，五分区只读 + 设置入口降级）（2026-10-24，基线 `756a659`，隔离工作树 `g-086-att-01`）
+
+### 一、做了什么
+
+在宿主 `conversation.input.dock`（`kind: 'list'`, `scope: 'session'`, owner `InputZone`）追加一条常驻只读状态栏，
+五个 `data-region` 分区：装配段数（`/snapshot`）、用户级层、工作区级层（两者口径 = 页面 `mineCoverageOf`）、
+装配状态摘要（`/assembly-status` 的装配层 + 送达层两句，无记录显示「尚无关键节点观察」）、插件设置快捷入口。
+
+- **只读**：只有三个 `GET`（`?session=`），刷新按钮只重读；不写配置、不触发装配。
+- **无会话零请求**：`composerBarRequestUrls('')` 返回 `null`，effect 直接短路——组件在宿主侧本来就不会被渲染
+  （`zone` 仅在 `session` 存在时传给 `renderSlot`），但兜底路径本身是可断言的事实（用例钉住 `router.calls.length === 0`）。
+- **口径同源**：段数 = `effective.sections.length`（与「提示词总览」的 `sectionsShown` 同一个数）；两层 = `mineCoverageOf`；
+  摘要 = `assemblyVerdictOf` / `deliveryVerdictOf`。三处都是页面已有的函数，状态栏不重新推导任何口径。
+- **色相**：五分区五色（business / success / warning / brand / info），色相只承载左侧色条与小标签，值文本走语义色
+  （`normal` / `warn` / `error` / `unknown` ⇒ `labelPrimary` / `stateWarn` / `stateError` / `labelTertiary`），
+  所以亮暗主题下不会出现「浅色字压浅色底」；`data-tone` 供机器断言。
+- **设置入口**：0.2.1-rc.3 **没有**公开 API 能从插件打开设置面板并选中 section —— 面板状态在 `sidebar.settings` 私有的
+  store 里（`ui-settings-general` 的 `shell-store`），`openSettings` owner prop 只发给该槽的 occupant，
+  `settings.open` 命令只注册到 shortcuts 服务（该服务只有 `register`/catalog，无 dispatch）。于是入口做成
+  **能力探测 + 显式降级**：宿主若通过 entry props 传 `openSettings`，按钮直接调用（未来能力自动升级）；
+  否则点击后出现一条 `data-region="bar-settings-hint"` 的可见说明，按钮保持可见，绝不静默失效。
+
+### 二、工程代价与处理
+
+- **新增一个段**：`src/16-composer-bar.js`（533 行），原 `16-boot.js` 原样改名为 `17-boot.js`（只重切、不移动）。
+  合计 12839 → **13429** 行，18 段；§1.3 / §5.1 两张表、`test/client-source.test.mjs` 的 `SEGMENTS`、
+  `docs/architecture-map.md`、`docs/check-refs.mjs` 的 `client.js` 行号引用与 `12839` 常量全部按实际行号重定位。
+- **locale 段 1200 行顶格**：`02-locale.js` 正是预算上限（597 键 × 2 语言 + 1 行头注释），**加任何键都会超预算**。
+  本轮加 2 个键（`barNoSession` / `barSettingsFallback`），等量删除 2 个**全仓库零引用**的历史死键
+  （`updateApplyStarting` / `assemblyWatching`，`grep` 覆盖 `src/` + `client.*.js` + `test/` 均为 0），键数守恒 597。
+  这也是为什么没有按「新增 3–5 个键」的常规做法铺文案：分区标签与状态句全部复用页面已有的键。
+- **单测**：8 条新用例并入 `test/client.test.mjs`（沿用该文件的 vm 沙盒 + hooks 桩 + fetch 路由），
+  覆盖五分区/五色相、两层与摘要口径、层未启用 / 有无生效条目、无会话零请求、入口降级与「宿主给 opener 就调用」、
+  按 Session 重读（`enforceEffectDeps: true`）+ 刷新只读、两个新键的中英对称。
+- **负向对照（改坏就会红，均已实跑并还原）**：①去掉「无 Session ⇒ 不发请求」的短路 ⇒ 无会话用例红；
+  ②把工作区层色相改成与用户层同色 ⇒ 五色相用例红；③删掉 effect 依赖数组 ⇒「按 Session 重读」用例红。
+
+### 三、验证
+
+- `node scripts/verify.mjs`：**6 步 / 0 失败**（check-refs / client-build --check / locale-pack --check / prepare / check-compat / 全量测试）。
+- `node scripts/client-build.mjs --check`：**18 个段与 client.js 逐字节一致**。
+- `node docs/check-refs.mjs`：`unresolved=0`、其它失败 0，§1.3 `rows=25 合计=13429`、§5.1 `rows=18 合计=13429 最大段=1200`。
+- 全量测试：**1022 pass / 0 fail**（`node --test test/*.test.mjs`）。
+- **未验证（UNVERIFIED）**：真机目视。插件以 `link:` 指向**主工作树**（`~/.dsh/profiles/web/package.json`），
+  worktree 的改动未合入主工作树，刷新 `http://127.0.0.1:3080` 加载的仍是旧 bundle —— 本轮环境无法在不污染主工作树 /
+  profile 的前提下做真机核对。合并后刷新一次即可按「输入框上方五项 vs 设置页同源」逐项核对。

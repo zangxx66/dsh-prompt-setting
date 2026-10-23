@@ -2,7 +2,7 @@
 
 **这份文档要回答的问题**：改一个功能点，该打开哪个文件？
 
-`client.js` 是发布物（12839 行的单个 CommonJS factory），但**人不再直接编辑它** ——
+`client.js` 是发布物（13429 行的单个 CommonJS factory），但**人不再直接编辑它** ——
 它是 `src/` 的生成物（见 `CONTRACT.md` §23）。本表把「域」映射到：
 
 **域 → `client.js` 行区间 → 段文件 → 入口函数 → CONTRACT 章节 → 测试文件**
@@ -14,13 +14,13 @@
 `scripts/client-build.mjs` 注入、不属于任何段，所以它不参与本表的编号
 （`docs/check-refs.mjs` 的 `CLIENT_HEAD_LINES` 就是这条约定的实现）。
 
-段的划分与行数预算是 `docs/refactor-plan.md` §5.1 的**目标段表**（17 段，每段 ≤ 1200 行）。
+段的划分与行数预算是 `docs/refactor-plan.md` §5.1 的**目标段表**（18 段，每段 ≤ 1200 行）。
 表里的「行数」按**剥掉片段声明行之后**算，与 §5.1 的预算口径一致 —— 所以 `wc -l src/*.js`
 每个文件都会多出 1 行（最大段 `13-page-a.js` 读作 1201，预算判的是 1200，见 `CONTRACT.md`
 §23.2 规则 6）。
 重新生成：`node scripts/client-build.mjs --write`；校验：`node scripts/client-build.mjs --check`。
 
-## 17 段总表
+## 18 段总表
 
 | 段文件 | `client.js` 行区间 | 行数 | 域 | 主要入口函数 | CONTRACT | 测试 |
 |---|---|---:|---|---|---|---|
@@ -40,7 +40,8 @@
 | `13-page-a.js` | 9213–10402 | 1190 | `PromptSettingSection` 第 1 切：JSDoc + hooks/state | `PromptSettingSection` (9227) | §13, §15 | `test/client.test.mjs` |
 | `14-page-b.js` | 10403–11600 | 1198 | `PromptSettingSection` 第 2 切：fetch / handlers | —（同一函数体内） | §10, §11, §13 | `test/client.test.mjs`、`test/transfer.test.mjs`、`test/presets.test.mjs` |
 | `15-page-c.js` | 11601–12483 | 883 | `PromptSettingSection` 第 3 切：actions / model / root 树 | —（同一函数体内） | §13, §16 | `test/client.test.mjs`、`test/diff.test.mjs`、`test/history.test.mjs` |
-| `16-boot.js` | 12484–12839 | 356 | `renderFailureCard` / `degradedPlugin` / boot 返回 | `renderFailureCard` (12496)、`degradedPlugin` (12768) | §7, §14 | `test/boot.test.mjs`、`test/client.test.mjs` |
+| `16-composer-bar.js` | 12484–13016 | 533 | g-086 会话输入框上方装配状态栏（`conversation.input.dock`）：五分区只读 + 设置快捷入口降级 | `ComposerAssemblyBar` (12794) | §13, §15 | `test/client.test.mjs` |
+| `17-boot.js` | 13017–13429 | 413 | `renderFailureCard` / `degradedPlugin` / boot 返回 | `renderFailureCard` (13029)、`degradedPlugin` (13358) | §7, §14 | `test/boot.test.mjs`、`test/client.test.mjs` |
 
 **`13/14/15` 是同一个函数的三个切**：它们拼起来仍是**一个** `PromptSettingSection`
 （`client.js:9228-12483`）。这是「只重切、不移动」能做到的最大粒度 —— 把一个 3257 行的

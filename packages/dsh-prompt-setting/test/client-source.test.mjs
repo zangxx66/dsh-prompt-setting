@@ -8,8 +8,8 @@
  * 落在不同的相对位置上，等号立刻破裂。所以这里按证据强度分四层：
  *   1. **逐字节**：`stripBanner(renderClient())` == 段真源坐标下的 `client.js`，
  *      且每段等于 §5.1 表里那个区间的行切片（零移动的机器证明）；
- *   2. **结构**：17 段一一对应 §5.1 的 17 个连续区间、每段 ≤ 1200 行、字典序 ==
- *      代码顺序、段间不插分隔符、无 CR、末尾换行一致、行数合计 12839；
+ *   2. **结构**：18 段一一对应 §5.1 的 18 个连续区间、每段 ≤ 1200 行、字典序 ==
+ *      代码顺序、段间不插分隔符、无 CR、末尾换行一致、行数合计 13429；
  *   3. **头注**：它是纯前缀、在 fingerprint `begin` 之前、**不进指纹**（hash/size
  *      与去头注后完全相同），而且磁盘上的 `client.js` 真的带着它；
  *   4. **负向对照**：在一次性包目录里改一行 `src/`（或只改 `client.js`）之后
@@ -54,10 +54,13 @@ const clientSource = readFileSync(CLIENT_PATH, 'utf8');
 const packageJson = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8'));
 
 /**
- * §5.1 目标段表的 17 个连续区间，**写死在这里**（与文档表格逐个数字对应）。
+ * §5.1 目标段表的 18 个连续区间，**写死在这里**（与文档表格逐个数字对应）。
  *
  * 这份表刻意不从 `src/` 派生：它要能发现「段边界被改动」，而派生出来的表永远同意
  * 自己。列出的顺序就是代码顺序，也就是文件名字典序。
+ *
+ * g-086 加了一段：`conversation.input.dock` 的装配状态栏住在 `16-composer-bar.js`
+ * （插在页面模型之后、boot 之前 —— 只重切、不移动，boot 段原样下移）。
  */
 const SEGMENTS = [
   [1, 215, '00-entry.js'],
@@ -76,7 +79,8 @@ const SEGMENTS = [
   [9213, 10402, '13-page-a.js'],
   [10403, 11600, '14-page-b.js'],
   [11601, 12483, '15-page-c.js'],
-  [12484, 12839, '16-boot.js'],
+  [12484, 13016, '16-composer-bar.js'],
+  [13017, 13429, '17-boot.js'],
 ];
 
 /**
@@ -148,8 +152,8 @@ test('client source: every segment is its §5.1 region, in code order and with n
     assert.equal(consumed, from - 1, `${name} 与上一段之间有空隙或重叠`);
     consumed += read.lines;
   }
-  assert.equal(consumed, clientLines.length - 1, '段必须恰好铺满 12839 行');
-  assert.equal(consumed, 12839);
+  assert.equal(consumed, clientLines.length - 1, '段必须恰好铺满 13429 行');
+  assert.equal(consumed, 13429);
 });
 
 test('client source: the generated banner is a pure prefix outside the fingerprint region', () => {
@@ -206,8 +210,8 @@ test('client source: line budget — stage 2 converges to §5.1, so no segment e
   const over = segments.filter((segment) => segment.lines > 1200).map((segment) => `${segment.name}:${segment.lines}`);
   // 阶段 1 超预算的三个（12-helpers/15-chrome/21-page）必须在这里消失。
   assert.deepEqual(over, [], `仍有超预算段：${over.join('、')}`);
-  assert.equal(segments.length, 17, '阶段 2 的段数（§5.1 目标段表）');
-  assert.equal(segments.reduce((sum, segment) => sum + segment.lines, 0), 12839);
+  assert.equal(segments.length, 18, '阶段 2 的段数（§5.1 目标段表，g-086 起 18 段）');
+  assert.equal(segments.reduce((sum, segment) => sum + segment.lines, 0), 13429);
   assert.equal(Math.max(...segments.map((segment) => segment.lines)), 1200, '最大段是 §5.1 的 02-locale（生成段，597 键 × 2 语言）');
 });
 
@@ -288,7 +292,7 @@ test('client source: the publish gate is tri-state (N/A / FILES / NOT-SHIPPED)',
   const ok = inspectClientSource(packageJson.files, { listDir: realDir });
   assert.equal(ok.level, PREPARE_OK);
   assert.equal(ok.code, 'CLIENT-SRC');
-  assert.match(ok.message, /17 个段文件/);
+  assert.match(ok.message, /18 个段文件/);
   assert.match(ok.message, /与 client\.js 逐字节一致/);
 
   // §5.1 那份区间表在测试里仍然**写死**（它是「零移动」断言的坐标），但 g-077 起它不再是
@@ -312,7 +316,7 @@ test('client source: completeness is anchored on the artifact, not on a hand-kep
       label: '多出一个陌生段',
       make: () => {
         const root = throwawayPackage();
-        writeFileSync(join(root, CLIENT_SRC_DIR, '17-extra.js'), `${SEGMENT_DECLARATION}\nconst extra = 1;\n`);
+        writeFileSync(join(root, CLIENT_SRC_DIR, '18-extra.js'), `${SEGMENT_DECLARATION}\nconst extra = 1;\n`);
         return root;
       },
     },

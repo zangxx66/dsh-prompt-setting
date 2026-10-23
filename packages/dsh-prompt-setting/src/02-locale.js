@@ -94,7 +94,6 @@
       updateApplyRestartNoteCli: '安装完成后需要你手动重新运行 dsh web 才会生效。',
       updateApplyRestartNoteDesktop: '安装完成后需要你手动退出并重新打开 DeepSeek Harness 才会生效。',
       updateApplying: '正在安装…',
-      updateApplyStarting: '正在启动安装…',
       updateApplyCancel: '取消安装',
       updateApplyCancelling: '正在取消…',
       updateApplyElapsed: '已用时 {elapsed}',
@@ -223,7 +222,6 @@
       assemblyNoRecord: '所选会话还没有观察到装配；下一次请求后结果会出现在这里。',
       assemblyNoNotice: '所选会话已开启提示，但还没有到提示节点（新会话首次装配，或保存 Prompt 之后的下一个 run）。',
       assemblyWaitingDelivery: '等待本步的送达事件…',
-      assemblyWatching: '正在等待送达层结论…',
       assemblyKindFirst: '新会话首次装配',
       assemblyKindChange: '保存 Prompt 之后的下一个 run',
       assemblyLayerAssembly: '装配层',
@@ -598,6 +596,8 @@
       'error.registry-not-npm': '该地址能访问，但返回的不是 npm 包文档（缺少 dist-tags.latest）。',
       'error.registry-unavailable': '所选下载源当前不可用。不会自动改用默认源：请稍后重试，或换一个下载区域。',
       'error.preferences-unwritable': '偏好文件无法写入，本次选择没有生效。',
+      barNoSession: '无会话',
+      barSettingsFallback: '宿主未提供从会话打开设置的接口：请从侧边栏打开设置，再选择「Prompt 管理」。',
     };
 
     const en = {
@@ -694,7 +694,6 @@
       updateApplyRestartNoteCli: 'You will need to restart dsh web yourself for the new version to take effect.',
       updateApplyRestartNoteDesktop: 'You will need to quit and reopen DeepSeek Harness yourself for the new version to take effect.',
       updateApplying: 'Installing…',
-      updateApplyStarting: 'Starting the install…',
       updateApplyCancel: 'Cancel install',
       updateApplyCancelling: 'Cancelling…',
       updateApplyElapsed: 'Elapsed {elapsed}',
@@ -823,7 +822,6 @@
       assemblyNoRecord: 'No assembly has been observed for the selected session yet; the result appears here after the next request.',
       assemblyNoNotice: 'The notice is on for the selected session, but no key node has been reached yet (the first assembly of a new conversation, or the next run after a prompt is saved).',
       assemblyWaitingDelivery: 'Waiting for this step\'s delivery event…',
-      assemblyWatching: 'Waiting for the delivery-layer verdict…',
       assemblyKindFirst: 'First assembly of a new conversation',
       assemblyKindChange: 'Next run after a prompt was saved',
       assemblyLayerAssembly: 'Assembly layer',
@@ -1198,4 +1196,6 @@
       'error.registry-not-npm': 'That address answered, but not with an npm package document (no dist-tags.latest).',
       'error.registry-unavailable': 'The chosen download source is unavailable. Nothing falls back to the default source: retry later, or pick another download region.',
       'error.preferences-unwritable': 'The preference file could not be written, so nothing took effect.',
+      barNoSession: 'No session',
+      barSettingsFallback: 'This Host exposes no API that opens Settings from a session. Open Settings from the sidebar, then choose "Prompt settings".',
     };

@@ -569,7 +569,7 @@ test('prepare: the src/ gate reports the shipped source, and fails both ways it 
     // ⓪ 段在、也声明了，且重建结果与磁盘产物逐字节一致 ⇒ ok。
     const healthy = runPrepare();
     assert.equal(healthy.status, 0, `the copy must start clean\n${healthy.stdout}`);
-    assert.match(healthy.stdout, /ok {4}CLIENT-SRC: src\/ 下 17 个段文件/);
+    assert.match(healthy.stdout, /ok {4}CLIENT-SRC: src\/ 下 18 个段文件/);
     assert.match(healthy.stdout, /与 client\.js 逐字节一致/);
 
     // ⓪' g-077：段集合完整性锚在**产物**上，不再对账任何手工段名清单。三种不完整都必须
@@ -588,7 +588,7 @@ test('prepare: the src/ gate reports the shipped source, and fails both ways it 
     assertDriftFails('缺一个段');
     writeFileSync(droppedSegment, droppedText);
 
-    const extraSegment = join(root, 'src', '17-extra.js'); // ② 多出一个陌生段（重切没同步）
+    const extraSegment = join(root, 'src', '18-extra.js'); // ② 多出一个陌生段（重切没同步）
     writeFileSync(extraSegment, '// 本文件是 client.js 的片段，不是独立模块，不得单独 parse/lint/执行。\nconst extra = 1;\n');
     assertDriftFails('多出一个陌生段');
     rmSync(extraSegment);

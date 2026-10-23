@@ -663,6 +663,8 @@ const LOCALE_SHAPES = ['full', 'bare', 'throwing', 'noRevision'];
  */
 function mountClient(module, localeShape = 'full', options = {}) {
   let registeredSlot = null;
+  /** Every slot name `slots.inject` was asked for, in order (g-086: the bar adds a second one). */
+  const registeredSlots = [];
   const registrations = [];
   const dictionaries = [];
   const declaredSlots = Array.isArray(options.declaredSlots) ? options.declaredSlots : null;
@@ -704,6 +706,7 @@ function mountClient(module, localeShape = 'full', options = {}) {
     slots: {
       inject(slot, thunk) {
         registeredSlot = slot;
+        registeredSlots.push(slot);
         // The real service calls back only once the slot has been declared.
         if (declaredSlots !== null && !declaredSlots.includes(slot)) return () => {};
         thunk();
@@ -723,7 +726,7 @@ function mountClient(module, localeShape = 'full', options = {}) {
     },
   };
   module.apply(ctx);
-  return { ctx, registeredSlot, registrations, dictionaries };
+  return { ctx, registeredSlot, registeredSlots, registrations, dictionaries };
 }
 
 /**
@@ -1703,9 +1706,12 @@ function sessionOptions(tree) {
 
 test('client: registers one settings.section entry with the plugin id', () => {
   const { module } = loadClient('throw');
-  const { registeredSlot, registrations } = mountClient(module);
-  assert.equal(registeredSlot, 'settings.section');
-  assert.equal(registrations.length, 1);
+  const { registeredSlots, registrations } = mountClient(module);
+  // g-086 added a second, unrelated inject (`conversation.input.dock`). The
+  // settings section is still registered exactly once, and it is still the
+  // first thing the plugin asks for.
+  assert.deepEqual([...registeredSlots], ['settings.section', 'conversation.input.dock']);
+  assert.equal(registrations.filter((entry) => entry.options.name === 'settings.section').length, 1);
   const { options, component } = registrations[0];
   assert.equal(options.name, 'settings.section');
   assert.equal(options.id, 'prompt-setting');
@@ -16741,6 +16747,278 @@ test('client: g-084 — the reserved entry counts only when its own text reaches
   assert.deepEqual(numbers(tree), ['1', '0'], 'the user text is stacked, not shadowed');
   tree = await toWorkspace(page, tree);
   assert.deepEqual(numbers(tree), ['1', '0'], 'the workspace append contributes its own text');
+});
+
+// #endregion
+
+// #region g-086: the resident assembly bar (`conversation.input.dock`)
+
+/**
+ * Render the `conversation.input.dock` entry the way the conversation shell
+ * would: its own component, its own props, its own effects. The settings page is
+ * not involved.
+ * @param page - the page harness from {@link makePage}.
+ * @param props - owner props (`session`, `barSessionId`, `openSettings`, …).
+ * @returns `{registration, props, draw, flush}` for the registered bar.
+ */
+function makeAssemblyBar(page, props = {}) {
+  const registration = page.mounted.registrations.find((entry) => entry.options.name === 'conversation.input.dock');
+  assert.notEqual(registration, undefined, 'the assembly bar entry is registered');
+  const bound = {
+    t: (key) => dict(page.mounted.dictionaries, NS, key, page.language),
+    ...props,
+  };
+  const component = registration.component;
+  const render = () => page.loaded.runtime.render(component, bound);
+  return {
+    registration,
+    props: bound,
+    draw: () => expandTree(render().tree),
+    flush: async () => {
+      const rendered = render();
+      for (const effect of rendered.pending) effect();
+      await settle();
+      return expandTree(render().tree);
+    },
+  };
+}
+
+/** Every five-region cell the bar drew, in tree order. */
+function barRegions(tree) {
+  return collect(
+    tree,
+    (node) => node.props && typeof node.props['data-region'] === 'string' && node.props['data-region'].startsWith('bar-'),
+  );
+}
+
+/** One region cell by its `data-region`. */
+function barRegionOf(tree, region) {
+  const found = barRegions(tree).filter((node) => node.props['data-region'] === region);
+  assert.equal(found.length, 1, `${region} is rendered exactly once`);
+  return found[0];
+}
+
+/** One region's value text (`data-bar-value`). */
+function barValueOf(tree, region) {
+  const value = collect(barRegionOf(tree, region), (node) => node.props && node.props['data-bar-value'] !== undefined);
+  assert.equal(value.length, 1, `${region} carries one value cell`);
+  return value[0].props.children;
+}
+
+/** One button by its `data-action`. */
+function barButtonOf(tree, action) {
+  return collect(tree, (node) => node.type === 'button' && node.props && node.props['data-action'] === action);
+}
+
+test('client: the composer bar is a list entry, not a shadow, and it renders five data-region cells', async () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  const bar = makeAssemblyBar(page, { session: { sessionId: 's1' } });
+  const tree = await bar.flush();
+  // Registration contract: the bar appends to a list slot at an order that sits
+  // after the shipped `todo` (0) / `queue` (20) entries and before nothing.
+  assert.equal(bar.registration.options.name, 'conversation.input.dock');
+  assert.equal(bar.registration.options.id, 'prompt-setting-assembly-bar');
+  assert.equal(bar.registration.options.order, 30);
+  assert.equal(bar.registration.options.locale, NS);
+  // The root, and the five cells in display order.
+  assert.equal(tree.props['data-region'], 'composer-assembly-bar');
+  assert.equal(tree.props['data-composer-bar-state'], 'ready');
+  assert.deepEqual(
+    barRegions(tree).map((node) => node.props['data-region']),
+    ['bar-sections', 'bar-user-layer', 'bar-workspace-layer', 'bar-assembly', 'bar-settings'],
+  );
+  // Five distinguishable hues, each preferring a Host theme token.
+  const hues = barRegions(tree).map((node) => node.props['data-bar-hue']);
+  assert.equal(new Set(hues).size, 5, '每个分区一种可区分色相');
+  for (const hue of hues) assert.match(String(hue), /^var\(--dsw-alias-[a-z-]+/, '色相优先用宿主主题变量');
+});
+
+test('client: the bar states the page’s own numbers — sections, both layers, the key node', async () => {
+  const responses = defaultResponses({
+    [PATHS.assemblyStatus]: {
+      payload: assemblyFixture({ record: { session: 's1', notice: assemblyNoticeFixture() } }),
+    },
+  });
+  const page = makePage({ primitives: 'throw', responses });
+  const zh = page.zh;
+  const bar = makeAssemblyBar(page, { session: { sessionId: 's1' } });
+  const tree = await bar.flush();
+  // Region 1: `effective.sections.length` — the number「提示词总览」counts.
+  assert.equal(barValueOf(tree, 'bar-sections'), String(snapshotFixture().effective.sections.length));
+  // Region 2: the user layer's coverage, formatted by the page's own sentence.
+  assert.equal(
+    barValueOf(tree, 'bar-user-layer'),
+    zh.mineStatusCoverage.replace('{total}', '1').replace('{ineffective}', '0'),
+  );
+  assert.equal(barRegionOf(tree, 'bar-user-layer').props['data-tone'], 'normal');
+  // Region 3: the fixture's workspace layer is disabled — that is not "zero
+  // overrides", so the cell says so and colours it as a warning.
+  assert.equal(barValueOf(tree, 'bar-workspace-layer'), zh.stDisabled);
+  assert.equal(barRegionOf(tree, 'bar-workspace-layer').props['data-tone'], 'warn');
+  // Region 4: both verdicts of the last key node, in the settings page's words.
+  const verdicts = [
+    `${zh.assemblyLayerAssembly}${zh.assemblyLayerSep}${zh.assemblyFirstAssembled}`,
+    `${zh.assemblyLayerDelivery}${zh.assemblyLayerSep}${zh.assemblyDeliveryDelivered.replace('{op}', zh.assemblyOpAppend)}`,
+  ].join(' · ');
+  assert.equal(barValueOf(tree, 'bar-assembly'), verdicts);
+  assert.equal(barRegionOf(tree, 'bar-assembly').props['data-tone'], 'normal');
+});
+
+test('client: a ready layer reports its own coverage, including what did not take effect', async () => {
+  const snapshot = snapshotFixture();
+  snapshot.effective.sections.push({
+    name: 'project:beta',
+    index: 4,
+    text: 'beta workspace',
+    applied: true,
+    overridable: true,
+    reason: null,
+    overrideLayer: 'workspace',
+    action: 'replace',
+    origin: 'registered',
+  });
+  snapshot.layers.workspace = { enabled: true, path: '/ws/.dsh/prompt-setting/overrides.json', reason: null };
+  const overrides = overridesFixture({
+    workspace: {
+      layer: 'workspace',
+      enabled: true,
+      path: '/ws/.dsh/prompt-setting/overrides.json',
+      reason: null,
+      overrides: [
+        { name: 'project:beta', action: 'replace', text: 'beta workspace' },
+        { name: 'never:there', action: 'replace', text: 'x' },
+      ],
+    },
+  });
+  const responses = defaultResponses({
+    [PATHS.snapshot]: { payload: snapshot },
+    [PATHS.overrides]: { payload: overrides },
+  });
+  const page = makePage({ primitives: 'throw', responses });
+  const zh = page.zh;
+  const bar = makeAssemblyBar(page, { session: { sessionId: 's1' } });
+  const tree = await bar.flush();
+  // Two stored entries, one of which has no target in the assembly.
+  assert.equal(
+    barValueOf(tree, 'bar-workspace-layer'),
+    zh.mineStatusCoverage.replace('{total}', '2').replace('{ineffective}', '1'),
+  );
+  assert.equal(barRegionOf(tree, 'bar-workspace-layer').props['data-tone'], 'warn', '有未生效条目就是警告色');
+  // No key node observed: the settings page's own「no record」sentence.
+  assert.equal(barValueOf(tree, 'bar-assembly'), zh.mineStatusNoRecord);
+  assert.equal(barRegionOf(tree, 'bar-assembly').props['data-tone'], 'unknown');
+});
+
+test('client: the bar reads nothing without a Session, and still shows every entry', async () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  const bar = makeAssemblyBar(page, {});
+  const tree = await bar.flush();
+  assert.equal(tree.props['data-composer-bar-state'], 'no-session');
+  assert.equal(page.router.calls.length, 0, '无会话：一次请求都不发');
+  assert.equal(barValueOf(tree, 'bar-sections'), page.zh.barNoSession);
+  assert.equal(barValueOf(tree, 'bar-assembly'), page.zh.barNoSession);
+  assert.equal(barButtonOf(tree, 'composer-bar-settings').length, 1, '没有会话，入口也不消失');
+  // A Session id handed over by the slot's own inject face is a second seat.
+  bar.props.barSessionId = 's9';
+  const second = await bar.flush();
+  assert.equal(second.props['data-composer-bar-state'], 'ready');
+  assert.equal(page.router.calls.length, 3, '两个座位任意一个给出 id，就按该会话读三条数据');
+  assert.deepEqual(
+    page.router.calls.map((call) => call.url.split('?')[1]),
+    ['session=s9', 'session=s9', 'session=s9'],
+  );
+});
+
+test('client: a Host that never declares conversation.input.dock loses the bar, not the plugin', () => {
+  const { module } = loadClient('throw');
+  const { registeredSlots, registrations } = mountClient(module, 'full', {
+    declaredSlots: ['settings.section'],
+  });
+  // `slots.inject` was asked for both names; only the declared one called back.
+  assert.deepEqual([...registeredSlots], ['settings.section', 'conversation.input.dock']);
+  assert.deepEqual(
+    registrations.map((entry) => entry.options.name),
+    ['settings.section'],
+    '未声明该插槽：不注册、不抛错、没有任何副作用',
+  );
+});
+
+test('client: the settings entry stays visible and explains the Host gap instead of failing silently', async () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  const bar = makeAssemblyBar(page, { session: { sessionId: 's1' } });
+  let tree = await bar.flush();
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'bar-settings-hint').length, 0);
+  const [button] = barButtonOf(tree, 'composer-bar-settings');
+  assert.notEqual(button, undefined, 'the entry is a real button');
+  button.props.onClick();
+  tree = bar.draw();
+  const hint = collect(tree, (node) => node.props && node.props['data-region'] === 'bar-settings-hint');
+  assert.equal(hint.length, 1, '点击后给出可见的降级提示');
+  assert.equal(hint[0].props.children, page.zh.barSettingsFallback);
+  assert.equal(barButtonOf(tree, 'composer-bar-settings').length, 1, '入口仍然可见，不静默失效');
+  assert.equal(page.router.calls.length, 3, '入口不写任何配置（仍只有三条读）');
+});
+
+test('client: a Host that does expose an opener gets it called, with no fallback sentence', async () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  let opened = 0;
+  const bar = makeAssemblyBar(page, {
+    session: { sessionId: 's1' },
+    openSettings: () => {
+      opened += 1;
+    },
+  });
+  let tree = await bar.flush();
+  const [button] = barButtonOf(tree, 'composer-bar-settings');
+  button.props.onClick();
+  tree = bar.draw();
+  assert.equal(opened, 1, '宿主给了 openSettings 就调用它（未来能力自动升级）');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'bar-settings-hint').length, 0);
+});
+
+test('client: the bar reads per Session, not per render, and its refresh re-reads', async () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses(), enforceEffectDeps: true });
+  const bar = makeAssemblyBar(page, { session: { sessionId: 's1' } });
+  await bar.flush();
+  assert.equal(page.router.calls.length, 3, 'snapshot + overrides + assembly-status');
+  assert.deepEqual(
+    page.router.calls.map((call) => call.url.split('?')[0]),
+    [PATHS.snapshot, PATHS.overrides, PATHS.assemblyStatus],
+  );
+  // The same Session re-rendered: no second read.
+  await bar.flush();
+  assert.equal(page.router.calls.length, 3, '同一会话的重复渲染不重读');
+  // A different Session: the old verdicts must not survive.
+  bar.props.session = { sessionId: 's2' };
+  await bar.flush();
+  assert.equal(page.router.calls.length, 6);
+  assert.deepEqual(
+    page.router.calls.slice(3).map((call) => call.url.split('?')[1]),
+    ['session=s2', 'session=s2', 'session=s2'],
+  );
+  // The explicit refresh button is the only other trigger.
+  const [refresh] = barButtonOf(bar.draw(), 'composer-bar-refresh');
+  assert.notEqual(refresh, undefined, 'refresh is a visible control');
+  refresh.props.onClick();
+  await bar.flush();
+  assert.equal(page.router.calls.length, 9, '刷新只重读，不写任何东西');
+  assert.deepEqual(
+    page.router.calls.filter((call) => call.init && call.init.method !== undefined),
+    [],
+    '状态栏只读：没有任何写请求',
+  );
+});
+
+test('client: the two new locale keys are symmetric and translated', () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  const zh = page.mounted.dictionaries[0].dict.zh;
+  const en = page.mounted.dictionaries[0].dict.en;
+  for (const key of ['barNoSession', 'barSettingsFallback']) {
+    assert.equal(typeof zh[key], 'string', `${key} has zh copy`);
+    assert.equal(typeof en[key], 'string', `${key} has en copy`);
+    assert.notEqual(zh[key], en[key], `${key} is actually translated`);
+    assert.ok(en[key].length > 0 && !/[\u4e00-\u9fff]/.test(en[key]), `${key} en copy carries no CJK`);
+  }
 });
 
 // #endregion

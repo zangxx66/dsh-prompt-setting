@@ -92,7 +92,6 @@
   "updateApplyRestartNoteCli": "You will need to restart dsh web yourself for the new version to take effect.",
   "updateApplyRestartNoteDesktop": "You will need to quit and reopen DeepSeek Harness yourself for the new version to take effect.",
   "updateApplying": "Installing…",
-  "updateApplyStarting": "Starting the install…",
   "updateApplyCancel": "Cancel install",
   "updateApplyCancelling": "Cancelling…",
   "updateApplyElapsed": "Elapsed {elapsed}",
@@ -221,7 +220,6 @@
   "assemblyNoRecord": "No assembly has been observed for the selected session yet; the result appears here after the next request.",
   "assemblyNoNotice": "The notice is on for the selected session, but no key node has been reached yet (the first assembly of a new conversation, or the next run after a prompt is saved).",
   "assemblyWaitingDelivery": "Waiting for this step's delivery event…",
-  "assemblyWatching": "Waiting for the delivery-layer verdict…",
   "assemblyKindFirst": "First assembly of a new conversation",
   "assemblyKindChange": "Next run after a prompt was saved",
   "assemblyLayerAssembly": "Assembly layer",
@@ -595,5 +593,7 @@
   "error.registry-http-error": "That address answered, but with an error status, so it is not a usable npm registry.",
   "error.registry-not-npm": "That address answered, but not with an npm package document (no dist-tags.latest).",
   "error.registry-unavailable": "The chosen download source is unavailable. Nothing falls back to the default source: retry later, or pick another download region.",
-  "error.preferences-unwritable": "The preference file could not be written, so nothing took effect."
+  "error.preferences-unwritable": "The preference file could not be written, so nothing took effect.",
+  "barNoSession": "No session",
+  "barSettingsFallback": "This Host exposes no API that opens Settings from a session. Open Settings from the sidebar, then choose \"Prompt settings\"."
 }
