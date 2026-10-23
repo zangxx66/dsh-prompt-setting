@@ -10587,6 +10587,16 @@ v0.2.3 的计划条目（g-065…g-074）与 v0.2.4 的（g-075…g-080）一直
 - **02-locale 仍守 1200 行**：R3 新增 3 键，等量删除 3 个零引用死键（`assemblyWaitingDelivery` / `nextTurn` /
   `importBadJson`）。其中后两个是 §164 记录里「基线死键、未动」的两个 —— 本轮为腾行数删除，记录在此，
   键数仍守恒 597。
+- **R4（纯视觉重做）**：整条改成**胶囊仪表条** —— 内层 `borderRadius: 999`、`minHeight: 30`、`gap: 12`、
+  卡片底色 `token.surface` + 1px `token.surfaceStroke`，**去掉五个分区的 3px 左侧色条**。
+  最左是品牌区（`data-bar-brand`）：彩色四角星图标（`token.stateBusiness`）+ `fontWeight: 600` 的 `nav` 名称
+  （复用现有键，**未新增任何 locale 键**）；分区标签改灰色 `labelSecondary`（原来是色相色）。
+  每个分区 = 内联 SVG 图标（`data-bar-icon`，16px、`viewBox="0 0 24 24"`、`fill="none"`、`stroke="currentColor"`、
+  `stroke-width=1.8`、round cap/join，颜色 = 该分区 `data-bar-hue`）+ 灰标签 + 语义色值；
+  路径表在 `COMPOSER_BAR_ICONS`（brand/sections/user/workspace/assembly/settings/refresh，全部短路径，零依赖、
+  无图标字体、无外部资源）。右侧操作区（仍在 `bar-settings` 单元内，`flex: 0 0 auto` + `marginLeft: auto`）=
+  刷新图标 + **裸齿轮按钮**（无边框/无背景/无圆角胶囊，`aria-label`/`title` 仍是 `nav`）。
+  紧凑态逻辑不变：`< 640px` 隐藏标签**与品牌名**，图标 + 值保留。
 - **测试盲区（R1 教训，记入）**：R1 用「形状相同的自造对象」验证了 invoke 的参数，却没有验证**真实服务对象上该方法存在**。
   对宿主能力的探测必须以宿主**公开类型声明**为准（`lib/types/client/types.d.ts` 的 `Shortcuts`），
   「我能构造出同形状对象」不构成证据。R2 的用例改成对着 catalog/KeyboardEvent 这条真实链路断言，
@@ -10609,14 +10619,14 @@ v0.2.3 的计划条目（g-065…g-074）与 v0.2.4 的（g-075…g-080）一直
 
 ### 二、工程代价与处理
 
-- **新增一个段**：`src/16-composer-bar.js`（R3 后 1081 行），原 `16-boot.js` 原样改名为 `17-boot.js`（只重切、不移动）。
-  合计 12839 → **14041** 行，18 段；§1.3 / §5.1 两张表、`test/client-source.test.mjs` 的 `SEGMENTS`、
+- **新增一个段**：`src/16-composer-bar.js`（R4 后 1169 行），原 `16-boot.js` 原样改名为 `17-boot.js`（只重切、不移动）。
+  合计 12839 → **14129** 行，18 段；§1.3 / §5.1 两张表、`test/client-source.test.mjs` 的 `SEGMENTS`、
   `docs/architecture-map.md`、`docs/check-refs.mjs` 的 `client.js` 行号引用与 `12839` 常量全部按实际行号重定位。
 - **locale 段 1200 行顶格**：`02-locale.js` 正是预算上限（597 键 × 2 语言 + 1 行头注释），**加任何键都会超预算**。
   本轮加 2 个键（`barNoSession` / `barSettingsFallback`），等量删除 2 个**全仓库零引用**的历史死键
   （`updateApplyStarting` / `assemblyWatching`，`grep` 覆盖 `src/` + `client.*.js` + `test/` 均为 0），键数守恒 597。
   这也是为什么没有按「新增 3–5 个键」的常规做法铺文案：分区标签与状态句全部复用页面已有的键。
-- **单测**：21 条新用例并入 `test/client.test.mjs`（沿用该文件的 vm 沙盒 + hooks 桩 + fetch 路由），
+- **单测**：22 条新用例并入 `test/client.test.mjs`（沿用该文件的 vm 沙盒 + hooks 桩 + fetch 路由），
   覆盖五分区/五色相、两层与摘要口径、层未启用 / 有无生效条目、无会话零请求、未声明插槽、入口降级与
   「宿主给 opener 就调用」、**`invokeSettingsShortcut` 的命令与 context（含 modal:null）**、
   **面板已在时立即点击本插件 nav 行 / 面板迟到时由唯一 observer 触发点击**、
@@ -10631,14 +10641,15 @@ v0.2.3 的计划条目（g-065…g-074）与 v0.2.4 的（g-075…g-080）一直
   ⑤删掉「先同步查一次面板」⇒ 面板已在的定位用例红；
   ⑥把 binding 的 modifier 推导写错（alt 用 shift 判）⇒ catalog 派发用例红；
   ⑦删掉超时提示（`onTimeout`）⇒「点击后无面板要提示」用例红；
-  ⑧把内层 `flexWrap` 改回 `wrap` ⇒「永不折行」用例红。
+  ⑧把内层 `flexWrap` 改回 `wrap` ⇒「永不折行」用例红；
+  ⑨给设置按钮加回 1px 边框 ⇒「裸齿轮」用例红。
 
 ### 三、验证
 
 - `node scripts/verify.mjs`：**6 步 / 0 失败**（check-refs / client-build --check / locale-pack --check / prepare / check-compat / 全量测试）。
 - `node scripts/client-build.mjs --check`：**18 个段与 client.js 逐字节一致**。
-- `node docs/check-refs.mjs`：`unresolved=0`、其它失败 0，§1.3 `rows=25 合计=14041`、§5.1 `rows=18 合计=14041 最大段=1200`。
-- 全量测试：**1043 pass / 0 fail**（`node --test test/*.test.mjs`）。
+- `node docs/check-refs.mjs`：`unresolved=0`、其它失败 0，§1.3 `rows=25 合计=14129`、§5.1 `rows=18 合计=14129 最大段=1200`。
+- 全量测试：**1044 pass / 0 fail**（`node --test test/*.test.mjs`）。
 - **未验证（UNVERIFIED）**：真机目视。插件以 `link:` 指向**主工作树**（`~/.dsh/profiles/web/package.json`），
   worktree 的改动未合入主工作树，刷新 `http://127.0.0.1:3080` 加载的仍是旧 bundle —— 本轮环境无法在不污染主工作树 /
   profile 的前提下做真机核对。合并后刷新一次即可按「输入框上方五项 vs 设置页同源」逐项核对。

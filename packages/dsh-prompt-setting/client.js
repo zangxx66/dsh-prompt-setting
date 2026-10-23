@@ -12553,6 +12553,52 @@ window.__ModuleLoader__.load({
     });
 
     /**
+     * One short inline-SVG glyph per region (g-086 R4).
+     *
+     * Each entry is a list of `path` data strings drawn on a 24×24 grid with
+     * `stroke="currentColor"`. No dependency, no icon font, no external asset:
+     * the glyph inherits the region's hue from the `color` the caller sets.
+     */
+    const COMPOSER_BAR_ICONS = Object.freeze({
+      brand: ['M12 3l2.2 5.8L20 11l-5.8 2.2L12 19l-2.2-5.8L4 11l5.8-2.2z'],
+      sections: ['M4 6h16', 'M4 12h16', 'M4 18h10'],
+      user: ['M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z', 'M4 20a8 8 0 0 1 16 0'],
+      workspace: ['M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z'],
+      assembly: ['M12 3l9 5-9 5-9-5z', 'M3 13l9 5 9-5'],
+      settings: ['M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z', 'M12 2v3', 'M12 19v3', 'M2 12h3', 'M19 12h3'],
+      refresh: ['M20 12a8 8 0 1 1-2.3-5.7', 'M20 4v4h-4'],
+    });
+
+    /**
+     * One glyph, drawn with `currentColor` so the caller's `color` is the hue.
+     * @param name - the icon key.
+     * @param color - the CSS colour that `currentColor` resolves to.
+     * @returns the svg element, or null for an unknown key.
+     */
+    function composerBarIconOf(name, color) {
+      const paths = COMPOSER_BAR_ICONS[name];
+      if (paths === undefined) return null;
+      return h(
+        'svg',
+        {
+          'data-bar-icon': name,
+          width: 16,
+          height: 16,
+          viewBox: '0 0 24 24',
+          fill: 'none',
+          stroke: 'currentColor',
+          strokeWidth: 1.8,
+          strokeLinecap: 'round',
+          strokeLinejoin: 'round',
+          'aria-hidden': 'true',
+          focusable: 'false',
+          style: { flex: 'none', display: 'block', color: color },
+        },
+        paths.map((d, index) => h('path', { key: String(index), d: d })),
+      );
+    }
+
+    /**
      * The semantic colour of one verdict, as a theme token.
      * @param tone - `normal` | `warn` | `error` | `unknown`.
      * @returns the CSS colour for the value text.
@@ -13117,23 +13163,23 @@ window.__ModuleLoader__.load({
           'data-bar-hue': hue,
           style: {
             display: 'flex',
-            alignItems: 'baseline',
+            alignItems: 'center',
             gap: 5,
             // R3: every cell may shrink (and its value ellipsize); the settings
             // seat is the one exception — it keeps its size and sits at the end.
             flex: options.flex === undefined ? '0 1 auto' : options.flex,
             minWidth: 0,
-            paddingLeft: 6,
-            borderLeft: `3px solid ${hue}`,
-            ...(options.region === 'bar-settings' ? { marginLeft: 'auto' } : {}),
+            // R4: the hue lives on the glyph and the small label — no 3px strip.
+            ...(options.region === 'bar-settings' ? { marginLeft: 'auto', gap: 8 } : {}),
           },
         },
+        options.icon === undefined ? null : composerBarIconOf(options.icon, hue),
         hasLabel
           ? h(
               'span',
               {
                 'data-bar-label': '',
-                style: { fontSize: 11, lineHeight: '14px', color: composerBarLabelColorOf(hue), whiteSpace: 'nowrap' },
+                style: { fontSize: 11, lineHeight: '14px', color: token.labelSecondary, whiteSpace: 'nowrap' },
               },
               options.label,
             )
@@ -13369,19 +13415,19 @@ window.__ModuleLoader__.load({
           onClick: () => setNonce((value) => value + 1),
           style: {
             font: 'inherit',
-            fontSize: 13,
-            lineHeight: '16px',
-            padding: '0 2px',
+            padding: 0,
             border: 'none',
-            borderRadius: 4,
+            borderRadius: 0,
             background: 'transparent',
             color: token.labelSecondary,
             cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
           },
         },
         // An icon, not a translation: the accessible name stays the localized
         // verb (`refresh`), while the cell spends no horizontal room on words.
-        '↻',
+        composerBarIconOf('refresh', token.labelSecondary),
       );
       const settingsButton = h(
         'button',
@@ -13443,18 +13489,19 @@ window.__ModuleLoader__.load({
           },
           style: {
             font: 'inherit',
-            fontSize: 12,
-            lineHeight: '16px',
-            fontWeight: 500,
-            padding: '1px 8px',
-            border: `1px solid ${token.surfaceStroke}`,
-            borderRadius: 999,
+            padding: 0,
+            border: 'none',
+            borderRadius: 0,
             background: 'transparent',
-            color: token.stateBusiness,
+            color: token.labelSecondary,
             cursor: 'pointer',
+            display: 'inline-flex',
+            alignItems: 'center',
           },
         },
-        t('nav'),
+        // R4: a bare gear. The accessible name (`t('nav')`) is the only place the
+        // entry's name lives now — the brand area carries the visible name.
+        composerBarIconOf('settings', token.labelSecondary),
       );
 
       // g-086 R2: two boxes, exactly like the Host's own dock entries
@@ -13498,11 +13545,14 @@ window.__ModuleLoader__.load({
               // onto a second line.
               flexWrap: 'nowrap',
               alignItems: 'center',
-              gap: '4px 10px',
+              // R4: a 30px pill with the card fill and one hairline — the bar
+              // reads as an instrument strip, not as a form row.
+              gap: 12,
               minWidth: 0,
-              padding: '5px 10px',
+              minHeight: 30,
+              padding: '5px 12px',
               border: `1px solid ${token.surfaceStroke}`,
-              borderRadius: 8,
+              borderRadius: 999,
               background: token.surface,
               color: token.labelPrimary,
               font: 'inherit',
@@ -13510,14 +13560,43 @@ window.__ModuleLoader__.load({
               lineHeight: '16px',
             },
           },
+          // R4: the brand seat. A coloured glyph plus the plugin's name in the
+          // primary label weight — the settings entry itself is a bare gear, so
+          // this is the only visible place the bar names itself.
+          h(
+            'span',
+            {
+              'data-bar-brand': '',
+              style: { display: 'flex', alignItems: 'center', gap: 6, flex: '0 1 auto', minWidth: 0 },
+            },
+            composerBarIconOf('brand', token.stateBusiness),
+            compact
+              ? null
+              : h(
+                  'span',
+                  {
+                    'data-bar-brand-name': '',
+                    style: {
+                      fontWeight: 600,
+                      color: token.labelPrimary,
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    },
+                  },
+                  t('nav'),
+                ),
+          ),
           composerBarRegionOf({
-            region: 'bar-sections',
-            label: compact ? '' : t('viewSections'),
-            value: sectionsValue.text,
-            tone: sectionsValue.tone,
-          }),
+          region: 'bar-sections',
+          icon: 'sections',
+          label: compact ? '' : t('viewSections'),
+          value: sectionsValue.text,
+          tone: sectionsValue.tone,
+        }),
         composerBarRegionOf({
           region: 'bar-user-layer',
+          icon: 'user',
           label: compact ? '' : t('barUserLabel'),
           value: userLine.text,
           tone: userLine.tone,
@@ -13525,6 +13604,7 @@ window.__ModuleLoader__.load({
         }),
         composerBarRegionOf({
           region: 'bar-workspace-layer',
+          icon: 'workspace',
           label: compact ? '' : t('barWorkspaceLabel'),
           value: workspaceLine.text,
           tone: workspaceLine.tone,
@@ -13532,11 +13612,11 @@ window.__ModuleLoader__.load({
         }),
         composerBarRegionOf({
           region: 'bar-assembly',
+          icon: 'assembly',
           label: compact ? '' : t('barAssemblyLabel'),
           value: assemblyValue.text,
           tone: assemblyValue.tone,
           title: assemblyValue.title,
-          extra: refreshButton,
         }),
         composerBarRegionOf({
           region: 'bar-settings',
@@ -13546,7 +13626,15 @@ window.__ModuleLoader__.load({
           // Never compressed: this is the one cell whose whole point is to stay
           // visible and clickable when the row is tight.
           flex: '0 0 auto',
-          extra: settingsButton,
+          extra: h(
+            'span',
+            {
+              'data-bar-actions': '',
+              style: { display: 'flex', alignItems: 'center', gap: 8 },
+            },
+            refreshButton,
+            settingsButton,
+          ),
         }),
         hint === true
           ? h(

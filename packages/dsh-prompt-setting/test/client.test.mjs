@@ -17418,8 +17418,8 @@ test('client: the bar borrows the Host dock’s width rule, with the surface on 
   assert.equal(style.flex, 'none');
   const surface = collect(tree, (node) => node.props && node.props['data-composer-bar-surface'] !== undefined);
   assert.equal(surface.length, 1);
-  assert.equal(surface[0].props.style.padding, '5px 10px', '内边距在内层，不破坏对齐');
-  assert.equal(surface[0].props.style.borderRadius, 8);
+  assert.equal(surface[0].props.style.padding, '5px 12px', '内边距在内层，不破坏对齐');
+  assert.equal(surface[0].props.style.borderRadius, 999, 'R4：整条是胶囊');
 });
 
 test('client: the bar never wraps — narrow widths shrink and ellipsize instead (g-086 R3)', async () => {
@@ -17428,7 +17428,7 @@ test('client: the bar never wraps — narrow widths shrink and ellipsize instead
   const tree = await bar.flush();
   const surface = collect(tree, (node) => node.props && node.props['data-composer-bar-surface'] !== undefined)[0];
   assert.equal(surface.props.style.flexWrap, 'nowrap', '绝不折行');
-  assert.equal(surface.props.style.gap, '4px 10px', '固定占宽缩短');
+  assert.equal(surface.props.style.gap, 12, 'R4：分区间距；仍不折行');
   for (const node of barRegions(tree)) {
     assert.equal(node.props.style.minWidth, 0, `${node.props['data-region']} 可收缩`);
     if (node.props['data-region'] === 'bar-settings') {
@@ -17478,5 +17478,65 @@ test('client: below 640px the bar switches to its compact form (labels off, valu
   assert.equal(collect(wideTree, (node) => node.props && node.props['data-bar-label'] !== undefined).length, 4);
 });
 
+
+test('client: the bar is an icon strip — brand, four cells, gear — with no colour strip (g-086 R4)', async () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  const bar = makeAssemblyBar(page, { session: { sessionId: 's1' } });
+  const tree = await bar.flush();
+  const iconsIn = (node) => collect(node, (item) => item.props && typeof item.props['data-bar-icon'] === 'string');
+
+  // The brand seat: a coloured glyph plus the plugin's name (reuses `nav`).
+  const brand = collect(tree, (node) => node.props && node.props['data-bar-brand'] !== undefined);
+  assert.equal(brand.length, 1, '最左侧品牌区');
+  const brandName = collect(brand[0], (node) => node.props && node.props['data-bar-brand-name'] !== undefined);
+  assert.equal(brandName.length, 1);
+  assert.equal(brandName[0].props.children, page.zh.nav, '品牌文案复用 nav 键（无新 locale 键）');
+
+  // Four region glyphs, each `currentColor`-stroked at the region's hue.
+  const expected = {
+    'bar-sections': 'sections',
+    'bar-user-layer': 'user',
+    'bar-workspace-layer': 'workspace',
+    'bar-assembly': 'assembly',
+  };
+  for (const [region, name] of Object.entries(expected)) {
+    const regionNode = barRegionOf(tree, region);
+    const glyphs = iconsIn(regionNode);
+    assert.equal(glyphs.length, 1, `${region} 恰好一个图标`);
+    const svg = glyphs[0];
+    assert.equal(svg.props['data-bar-icon'], name);
+    assert.equal(svg.props.stroke, 'currentColor', 'stroke 继承颜色');
+    assert.equal(svg.props.fill, 'none');
+    assert.equal(svg.props.width, 16);
+    assert.equal(svg.props.height, 16);
+    assert.equal(svg.props.viewBox, '0 0 24 24');
+    assert.equal(svg.props.style.color, regionNode.props['data-bar-hue'], '图标色 = 分区色相');
+    assert.equal(regionNode.props.style.borderLeft, undefined, 'R4：去掉 3px 色条');
+  }
+  // The trailing action cell holds the refresh glyph then the gear.
+  assert.deepEqual(
+    iconsIn(barRegionOf(tree, 'bar-settings')).map((node) => node.props['data-bar-icon']),
+    ['refresh', 'settings'],
+  );
+
+  // The settings entry is a bare gear with an accessible name — no bordered pill.
+  const [gear] = barButtonOf(tree, 'composer-bar-settings');
+  assert.notEqual(gear, undefined);
+  assert.equal(gear.type, 'button');
+  assert.equal(gear.props['aria-label'], page.zh.nav, 'aria-label 非空');
+  assert.equal(gear.props.style.border, 'none');
+  assert.equal(gear.props.style.background, 'transparent');
+  assert.equal(gear.props.style.borderRadius, 0);
+
+  // Compact mode keeps every glyph and drops the words (labels + brand name).
+  const compactPage = makePage({ primitives: 'throw', responses: defaultResponses() });
+  const compactBar = makeAssemblyBar(compactPage, { session: { sessionId: 's1' }, barWidth: 560 });
+  const compactTree = await compactBar.flush();
+  assert.equal(collect(compactTree, (node) => node.props && node.props['data-bar-brand-name'] !== undefined).length, 0);
+  assert.equal(collect(compactTree, (node) => node.props && node.props['data-bar-label'] !== undefined).length, 0);
+  for (const region of Object.keys(expected)) {
+    assert.equal(iconsIn(barRegionOf(compactTree, region)).length, 1, `${region} 紧凑态仍有图标`);
+  }
+});
 
 // #endregion
