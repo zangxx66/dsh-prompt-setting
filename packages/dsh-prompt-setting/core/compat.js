@@ -28,14 +28,17 @@
  * and is reported as an undetected version rather than guessed, because a
  * wrong verdict here is worse than no verdict.
  *
- * One asymmetry is deliberate (NOTES.md §98, §124, §165): this parser implements
- * no **strict** `node-semver` §11 prerelease exclusion, so a prerelease is
- * judged numerically against the comparators instead of being held back from a
- * range whose comparators all name releases. The declared range (`>=0.2.1-0`)
- * is a single comparator with no `||` alternative and no upper bound, so the
- * old "each 0.2.x minor needs its own branch" asymmetry is gone; what remains
- * is that this parser and `node-semver` agree on `0.2.1-alpha.2`, because the
- * range's own `-0` floor names the 0.2.1 tuple with a prerelease.
+ * One asymmetry is deliberate (NOTES.md §98, §124, §165, §167): this parser
+ * implements no **strict** `node-semver` §11 prerelease exclusion, so a
+ * prerelease is judged numerically against the comparators instead of being
+ * held back from a range whose comparators all name releases. The declared range
+ * (`>=0.2.1-0 <0.3.0-0`) is a two-comparator AND with no `||` alternative, so
+ * the old "each 0.2.x minor needs its own branch" asymmetry is gone; what
+ * remains is that this parser and `node-semver` agree on `0.2.1-alpha.2`,
+ * because the range's own `-0` floor names the 0.2.1 tuple with a prerelease.
+ * The upper comparator is likewise a `-0` floor (`<0.3.0-0`), which is what
+ * keeps the whole `0.3.0` line — prereleases included — out under both this
+ * parser and `node-semver`; the parser itself is unchanged.
  *
  * @module dsh-prompt-setting/core/compat
  */
@@ -126,7 +129,7 @@ export function compareSemver(left, right) {
 /**
  * Test one comparator against a parsed version.
  * @param version - a {@link parseSemver} result.
- * @param comparator - e.g. `>=0.2.1-0`.
+ * @param comparator - e.g. `>=0.2.1-0` or `<0.3.0-0`.
  * @returns true/false, or `null` when the comparator is not understood.
  */
 function testComparator(version, comparator) {
@@ -164,7 +167,7 @@ function testComparator(version, comparator) {
  * already satisfies `>=0.2.1 <0.2.2`, whereas `node-semver` would reject it
  * because no comparator names the 0.2.2 tuple with a prerelease.
  * @param version - the version under test.
- * @param range - the range, e.g. `>=0.2.1-0`.
+ * @param range - the range, e.g. `>=0.2.1-0 <0.3.0-0`.
  * @returns true, false, or null when the answer is not knowable.
  */
 export function satisfiesRange(version, range) {

@@ -322,11 +322,11 @@ test('boot: the tested range is the manifest range, and every verdict is silent 
   );
   assert.equal(packageJson.peerDependenciesMeta?.['@deepseek-ai/dsh']?.optional, true, 'the peer is optional');
 
-  // The range itself (g-083): `0.2.1-0` is the lower bound and there is no
-  // upper bound — the whole 0.2.1 line and every later version are in, the
-  // 0.1.x and 0.2.0 lines are out. This reverses the old "a new minor is
-  // unverified until a new decision says otherwise" posture: a decision now
-  // says later minors are accepted.
+  // The range itself (g-085): `0.2.1-0` is the lower bound, `<0.3.0-0` is the
+  // upper bound — the whole 0.2.1 tuple and every later 0.2.x patch are in, the
+  // 0.1.x / 0.2.0 lines and the whole 0.3.0 line are out. This restores an
+  // upper bound (g-083 had dropped it): a new minor may be breaking in 0.x, so
+  // the 0.3 line has to be re-declared before it is admitted.
   assert.equal(satisfiesRange('0.1.7-rc.2', RANGE), false, 'the old lower bound is out');
   assert.equal(satisfiesRange('0.1.7', RANGE), false, 'and its release with it');
   assert.equal(satisfiesRange('0.1.8', RANGE), false, 'no 0.1.x release is supported any more');
@@ -342,24 +342,29 @@ test('boot: the tested range is the manifest range, and every verdict is silent 
   );
   assert.equal(satisfiesRange('0.2.1-1', RANGE), true, 'later 0.2.1 prereleases are in too');
   assert.equal(satisfiesRange('0.2.1', RANGE), true, 'the 0.2.1 release is in range');
-  assert.equal(satisfiesRange('0.2.2-0', RANGE), true, 'g-083: no upper bound excludes the next minor');
-  assert.equal(satisfiesRange('0.2.2', RANGE), true);
-  assert.equal(satisfiesRange('0.3.0', RANGE), true);
-  assert.equal(satisfiesRange('1.0.0', RANGE), true, 'and a future major is accepted by decision');
+  assert.equal(satisfiesRange('0.2.2-0', RANGE), true, 'the next 0.2.x tuple is in, floor included');
+  assert.equal(satisfiesRange('0.2.2', RANGE), true, 'a 0.2.x patch release is in range');
+  assert.equal(satisfiesRange('0.2.9', RANGE), true, 'every later 0.2.x patch is in range');
+  assert.equal(satisfiesRange('0.3.0-0', RANGE), false, 'the upper bound excludes the 0.3.0 floor itself');
+  assert.equal(satisfiesRange('0.3.0-alpha.1', RANGE), false, 'and every 0.3.0 prerelease');
+  assert.equal(satisfiesRange('0.3.0-rc.1', RANGE), false);
+  assert.equal(satisfiesRange('0.3.0', RANGE), false, 'the 0.3.0 release needs a new decision');
+  assert.equal(satisfiesRange('1.0.0', RANGE), false, 'a future major is not silently admitted either');
 
-  // Shape assertion (g-083): exactly one comparator, no upper bound and no
-  // `||` bridge left. The behaviour above would also be green for a range that
-  // merely *looks* like this, so pin the shape the manifest must have: the `-0`
-  // floor is what admits the 0.2.1 prereleases under strict `node-semver`, and
-  // an added `<` bound or a legacy branch would silently re-narrow support.
+  // Shape assertion (g-085): exactly two comparators, lower then upper, and no
+  // `||` bridge. The behaviour above would also be green for a reordered or
+  // extra branch, so pin the shape: the `-0` floor admits the 0.2.1
+  // prereleases, `<0.3.0-0` excludes the whole 0.3.0 line under both this
+  // parser and strict `node-semver`.
   const comparators = RANGE.split('||').flatMap((alternative) => alternative.trim().split(/\s+/));
   assert.deepEqual(
     comparators,
-    ['>=0.2.1-0'],
-    `"${RANGE}" must be exactly one lower-bound comparator (the -0 floor of the 0.2.1 tuple)`,
+    ['>=0.2.1-0', '<0.3.0-0'],
+    `"${RANGE}" must be exactly the two comparators of the declared interval`,
   );
-  assert.equal(RANGE.includes('<'), false, 'no upper bound: every later minor is accepted');
   assert.equal(RANGE.includes('||'), false, 'no legacy branches remain');
+  assert.equal((RANGE.match(/>=/g) ?? []).length, 1, 'exactly one lower bound');
+  assert.equal((RANGE.match(/</g) ?? []).length, 1, 'exactly one upper bound');
 
   // The semver §11 corners this range depends on.
   assert.equal(compareSemver('0.1.7-rc.2', '0.1.7'), -1, 'a prerelease ranks below its release');
@@ -461,7 +466,7 @@ test('boot: the version probe reads a real install and says why when it cannot',
     );
 
     // A different installed version is a verdict, not an error. `0.2.0-0` is
-    // below the g-083 lower bound (`0.2.1` and everything after it is in).
+    // below the g-085 lower bound; `0.3.0-0` is at/above its upper bound.
     writeFakeInstall(root, JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.2.0-0' }));
     const outOfRange = detectDshVersion({ anchors: anchor });
     assert.equal(outOfRange.version, '0.2.0-0');
@@ -473,6 +478,16 @@ test('boot: the version probe reads a real install and says why when it cannot',
     });
     assert.equal(verdict.level, 'out-of-range');
     assert.ok(verdict.message.includes('0.2.0-0'));
+
+    writeFakeInstall(root, JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.3.0-0' }));
+    const aboveRange = compatibilityVerdict({
+      pluginName: PLUGIN_NAME,
+      pluginVersion: PLUGIN_VERSION,
+      expectedRange: RANGE,
+      detection: detectDshVersion({ anchors: anchor }),
+    });
+    assert.equal(aboveRange.level, 'out-of-range', 'the 0.3.0 floor is above the upper bound');
+    assert.ok(aboveRange.message.includes('0.3.0-0'));
 
     // Found but unreadable is "undetected", and the reason names the file.
     writeFakeInstall(root, '{ this is not json');

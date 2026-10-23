@@ -213,6 +213,11 @@ function reportOwnMessages(compat, plugin) {
   say('  看到下面这条，才说明平台的闸门没生效（更老的/改过的宿主）。保留它是兜底/防御纵深：');
   say(`  ${compat.compatibilityMessage({ ...base, version: '0.2.0-0', reason: null })}`);
   say('');
+  say('导入期 · 超范围（上界外，一条）—— 0.3.0 及以后**同样**轮不到它（上界 `<0.3.0-0`）：');
+  say('  0.3 线是下一个 minor，可能含破坏性变更；本插件未在该线验证过，所以上界卡在它的预发布起点，');
+  say('  要等 0.3 线重新声明并验证后才放行。文案示例：');
+  say(`  ${compat.compatibilityMessage({ ...base, version: '0.3.0-0', reason: null })}`);
+  say('');
   say('导入期 · 探测失败（一条）：');
   say(`  ${compat.compatibilityMessage({ ...base, version: null, reason: '<探测失败原因>' })}`);
   say('');

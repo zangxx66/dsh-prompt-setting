@@ -11,7 +11,7 @@ install**.
 
 ![license](https://img.shields.io/badge/license-MIT-blue)
 ![version](https://img.shields.io/badge/version-0.2.4-blue)
-![dsh](https://img.shields.io/badge/DSH-%3E%3D0.2.1--0-blueviolet)
+![dsh](https://img.shields.io/badge/DSH-%3E%3D0.2.1--0%20%3C0.3.0--0-blueviolet)
 ![deps](https://img.shields.io/badge/dependencies-0-brightgreen)
 
 - **Zero runtime dependencies, zero build step**: one package of plain JS — nothing to fetch, nothing to compile.
@@ -109,9 +109,10 @@ can follow. **Nothing here restarts anything.**
 
 ## 3. Installation
 
-**Prerequisites**: DSH installed (`>= 0.2.1-0`: every `0.2.1` prerelease — `alpha`, `beta`, `rc.N`, and the
-synthetic `-0` floor — the **`0.2.1` release itself**, and **every later version** (`0.2.2`, `0.3.0`, `1.x`, …)
-are in range; the 0.1.x and 0.2.0 lines below `0.2.1` are no longer supported, and there is no upper bound).
+**Prerequisites**: DSH installed at `>= 0.2.1-0 < 0.3.0-0` — every `0.2.1` prerelease (`alpha`, `beta`,
+`rc.N`, and the synthetic `-0` floor), the **`0.2.1` release itself**, and **every later `0.2.x` patch**
+(`0.2.2`, `0.2.9`, …) are in range; the 0.1.x / 0.2.0 lines below `0.2.1` are out, and so is the whole
+**0.3.0 line and everything after it** — the next minor has to be re-declared (tested) before it is admitted.
 Node `>= 22` is needed only to run the tests or to develop.
 
 **The registry is the primary way in** (this package is published; npm `latest` is `0.2.2` — this repository is `0.2.4`, and the two meet when it is published):
