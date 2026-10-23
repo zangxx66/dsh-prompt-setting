@@ -446,13 +446,21 @@ const OWN_MANIFEST_URL = new URL('./package.json', import.meta.url);
  * `peerDependencies['@deepseek-ai/dsh']` in `package.json`, so the two cannot
  * drift apart silently.
  *
- * The range is a **single** comparator, `>=0.2.1-0` (g-083, NOTES.md §165): DSH
- * `0.2.1` and every later version are accepted, and nothing below `0.2.1` is —
- * the whole `0.1.x` and `0.2.0` lines are out. There is deliberately **no**
- * upper bound and no `||` bridge: the old `<0.2.2-0` boundary and its per-minor
- * branches existed only to pin a moving upper edge, which every new minor then
- * had to renegotiate. Accepting later minors by decision removes both the edge
- * and the branches that guarded it.
+ * The range is two comparators, `>=0.2.1-0 <0.3.0-0` (g-085, NOTES.md §167):
+ * the lower bound admits the whole `0.2.1` tuple (its prereleases and the
+ * release) and every later `0.2.x` patch; the upper bound shuts out the whole
+ * `0.3.0` line, prereleases included, and everything after it. The `0.1.x` and
+ * `0.2.0` lines stay out on the low side, and there is no `||` bridge.
+ *
+ * Why an upper bound after all (g-083 had dropped it, NOTES.md §165): semver 0.x
+ * says a **minor** bump may be breaking while a patch should not, and the
+ * platform's boot gate judges this range *before* importing a single line of
+ * this package — with no upper bound, an incompatible `0.3` host passes the gate
+ * and the plugin is loaded with no chance to self-check.
+ * Pinning `<0.3.0-0` (the **smallest** `0.3.0` prerelease) keeps every `0.2.x`
+ * patch in range and excludes the next minor until the 0.3 line is re-declared
+ * here. Re-declaring at each new minor is the honest cost of shipping a
+ * "declared, tested range" instead of an open-ended guess.
  *
  * The `-0` floor is the **smallest** prerelease of the `0.2.1` tuple, and it is
  * load-bearing: under strict `node-semver` (npm/pnpm peer resolution, *without*
@@ -464,9 +472,9 @@ const OWN_MANIFEST_URL = new URL('./package.json', import.meta.url);
  * of this package is imported — so its own self-check cannot help. That is
  * exactly what happened on DSH `0.2.1-alpha.2` before NOTES.md §124. `-0` admits
  * the whole `0.2.1` training while still excluding `0.2.0` and everything below.
- * See NOTES.md §98, §124 and §165.
+ * See NOTES.md §98, §124, §165 and §167.
  */
-export const DSH_PEER_RANGE_FALLBACK = '>=0.2.1-0';
+export const DSH_PEER_RANGE_FALLBACK = '>=0.2.1-0 <0.3.0-0';
 
 /**
  * The DSH range this plugin was tested against, read from its own manifest at

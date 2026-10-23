@@ -158,13 +158,13 @@ test('manifest: bundle, client and publish contract', () => {
   assert.equal(packageJson.exports['./client'], './client.js');
   assert.equal(packageJson.exports['./package.json'], './package.json');
   assert.equal(packageJson.engines?.node, '>=22');
-  // g-083: the declared range is one comparator — `0.2.1` and every later DSH
-  // is in, the whole 0.1.x and 0.2.0 lines are out. No `||` bridge and no `<`
-  // upper bound remain; the `-0` floor is what admits the 0.2.1 prereleases
-  // under strict semver without dropping the 0.2.1 tuple itself.
+  // g-085: the declared range is exactly two comparators — `0.2.1-0` (the -0
+  // floor that admits the 0.2.1 prereleases under strict semver) up to, but not
+  // including, `0.3.0-0` (the whole 0.3.0 line is out until re-declared). The
+  // whole 0.1.x and 0.2.0 lines stay out, and there is no `||` bridge.
   assert.match(
     packageJson.peerDependencies['@deepseek-ai/dsh'],
-    /^>=0\.2\.1-0$/,
+    /^>=0\.2\.1-0 <0\.3\.0-0$/,
   );
   assert.deepEqual(packageJson.dependencies, {}, 'zero runtime dependencies');
   assert.deepEqual(packageJson.files, [
