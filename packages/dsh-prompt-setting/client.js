@@ -642,6 +642,97 @@ window.__ModuleLoader__.load({
 
     /** Locale namespace owned by this plugin (zh/en dictionaries are inlined). */
     const NS = 'settings.promptSetting';
+
+    /**
+     * g-086 R5: the composer bar's on/off preference — a page-local bus, not a
+     * Host write.
+     *
+     * The settings page owns the switch while the bar is a separate component in
+     * the conversation slot, so the two share this module-level seat: `get` for
+     * both renders, `set` from the switch, `subscribe` so the bar and the page
+     * re-render together. Storage is `localStorage` under one key (only `'off'`
+     * means off, so a missing, unreadable or older value is on); a privacy mode
+     * that throws on `localStorage` falls back to the in-memory value instead of
+     * throwing — the preference is a convenience, never a reason for a broken
+     * page.
+     */
+    const COMPOSER_BAR_PREF_KEY = 'dsh-prompt-setting:composer-bar';
+    /** `null` = not read yet (the storage read is deferred to the first `get`). */
+    let composerBarPref = null;
+    /** Listeners of the on/off preference; `set` notifies every one. */
+    const composerBarPrefListeners = new Set();
+
+    /**
+     * The storage object, or null when the realm has none.
+     * @returns `localStorage`, or null.
+     */
+    function composerBarStorage() {
+      try {
+        return typeof localStorage === 'undefined' || localStorage === null ? null : localStorage;
+      } catch {
+        // A privacy mode can throw on the mere property access.
+        return null;
+      }
+    }
+
+    /** Read the stored preference; any failure means "on". */
+    function readComposerBarPref() {
+      const storage = composerBarStorage();
+      if (storage === null || typeof storage.getItem !== 'function') return true;
+      try {
+        return storage.getItem(COMPOSER_BAR_PREF_KEY) !== 'off';
+      } catch {
+        return true;
+      }
+    }
+
+    /**
+     * Whether the composer bar is enabled (default: yes).
+     * @returns the current preference.
+     */
+    function composerBarEnabled() {
+      if (composerBarPref === null) composerBarPref = readComposerBarPref();
+      return composerBarPref;
+    }
+
+    /**
+     * Set the preference, persist it best-effort and notify every listener.
+     * @param on - the new value; anything but `false` means on.
+     * @returns the value that took effect.
+     */
+    function setComposerBarEnabled(on) {
+      const next = on !== false;
+      composerBarPref = next;
+      const storage = composerBarStorage();
+      if (storage !== null && typeof storage.setItem === 'function') {
+        try {
+          storage.setItem(COMPOSER_BAR_PREF_KEY, next ? 'on' : 'off');
+        } catch {
+          // Memory-only from here on; the switch still works for this page.
+        }
+      }
+      for (const listener of composerBarPrefListeners) {
+        try {
+          listener();
+        } catch {
+          // One bad listener must not keep the others from updating.
+        }
+      }
+      return next;
+    }
+
+    /**
+     * Subscribe to preference changes (`useSyncExternalStore` seat).
+     * @param listener - called after every `set`.
+     * @returns an idempotent unsubscribe.
+     */
+    function subscribeComposerBarEnabled(listener) {
+      if (typeof listener !== 'function') return () => {};
+      composerBarPrefListeners.add(listener);
+      return () => {
+        composerBarPrefListeners.delete(listener);
+      };
+    }
     /** Stage 1A probe route; kept as a renderer-reporting side channel. */
     const PING_PATH = '/prompt-setting/ping';
     const SNAPSHOT_PATH = '/prompt-setting/snapshot';
@@ -1123,8 +1214,6 @@ window.__ModuleLoader__.load({
       assemblyHeading: '装配状态提示',
       assemblyIntro: '只在这里显示，不进入模型上下文、不占 token、也不改变模型收到的 prompt。提示只在关键节点出现一次：新会话首次装配、以及保存 Prompt 之后的下一个 run。',
       assemblySwitchLabel: '提示',
-      assemblySwitchOn: '已开启',
-      assemblySwitchOff: '已关闭',
       assemblyTurnOn: '开启提示',
       assemblyTurnOff: '关闭提示',
       assemblySaving: '正在切换…',
@@ -1511,6 +1600,8 @@ window.__ModuleLoader__.load({
       barUserLabel: '用户',
       barWorkspaceLabel: '工作区',
       barCoverageShort: '覆盖 {total} · 未生效 {ineffective}',
+      composerBarSettingTitle: '状态栏',
+      composerBarSettingNote: '显示在会话输入框上方的只读信息条。关闭后不再显示，也不会读取任何装配数据（只改本地偏好，不写宿主配置）。',
     };
 
     const en = {
@@ -1723,8 +1814,6 @@ window.__ModuleLoader__.load({
       assemblyHeading: 'Assembly status notice',
       assemblyIntro: 'Shown here only: it never enters the model context, costs no tokens and does not change the prompt the model receives. A notice appears once per key node — the first assembly of a new conversation, and the next run after a prompt is saved.',
       assemblySwitchLabel: 'Notice',
-      assemblySwitchOn: 'ON',
-      assemblySwitchOff: 'OFF',
       assemblyTurnOn: 'Turn the notice on',
       assemblyTurnOff: 'Turn the notice off',
       assemblySaving: 'Switching…',
@@ -2111,6 +2200,8 @@ window.__ModuleLoader__.load({
       barUserLabel: 'User',
       barWorkspaceLabel: 'Workspace',
       barCoverageShort: 'Overrides {total} · missed {ineffective}',
+      composerBarSettingTitle: 'Status bar',
+      composerBarSettingNote: 'The read-only strip above the composer. When off it is hidden and reads no assembly data at all (a local preference only — no Host config is written).',
     };
 
     /**
@@ -7284,7 +7375,7 @@ window.__ModuleLoader__.load({
           h(
             'span',
             { 'data-assembly-switch-state': ready ? (enabled ? 'on' : 'off') : 'unknown', style: metaStyle },
-            ready ? t(enabled ? 'assemblySwitchOn' : 'assemblySwitchOff') : '',
+            ready ? t(enabled ? 'updateSettingOn' : 'updateSettingOff') : '',
           ),
         ),
         h('p', { style: noteStyle }, t('assemblyIntro')),
@@ -7358,6 +7449,28 @@ window.__ModuleLoader__.load({
               ),
             ),
         h('p', { 'data-region': 'assembly-limitation', style: noteStyle }, t('assemblyLimitation')),
+        // g-086 R5: the composer bar's own switch. A page-local preference (never
+        // a Host write), so the block is one row plus one sentence — and the bar
+        // re-renders the moment it changes.
+        h(
+          'div',
+          {
+            'data-region': 'composer-bar-setting',
+            'data-composer-bar-switch-state': m.composerBarOn === false ? 'off' : 'on',
+            style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 },
+          },
+          h('h3', { style: headingStyle }, t('composerBarSettingTitle')),
+          h(
+            UI.Button,
+            {
+              'data-action': 'composer-bar-toggle',
+              'aria-pressed': m.composerBarOn === false ? 'false' : 'true',
+              onClick: a.toggleComposerBar,
+            },
+            t(m.composerBarOn === false ? 'updateSettingOff' : 'updateSettingOn'),
+          ),
+        ),
+        h('p', { 'data-region': 'composer-bar-note', style: noteStyle }, t('composerBarSettingNote')),
       );
     }
 
@@ -9258,6 +9371,15 @@ window.__ModuleLoader__.load({
       // otherwise leave the degradation note on screen until some unrelated
       // state change happened to re-render the block.
       React.useSyncExternalStore(subscribeOverlaySeat, overlaySeatRevision, overlaySeatRevision);
+      // g-086 R5: the composer bar's on/off preference. The switch lives on this
+      // page, the bar lives in the conversation slot — this subscription is what
+      // makes the page's block and the bar react to the same `set` without a
+      // reload.
+      const composerBarOn = React.useSyncExternalStore(
+        subscribeComposerBarEnabled,
+        composerBarEnabled,
+        composerBarEnabled,
+      );
 
       // The session seat: a root-level hook on props, no inject required. The
       // `typeof` branch is stable for the life of a mount, and a hook that
@@ -11795,6 +11917,11 @@ window.__ModuleLoader__.load({
         refresh: () => setReload((value) => value + 1),
         // The「更改」switch: the same button opens and shuts the picker (`aria-expanded` reports it).
         toggleScopeOpen: () => setScopeOpen((open) => !open),
+        // g-086 R5: the composer bar switch — one page-local write, never a Host
+        // request; the bar subscribes to the same bus.
+        toggleComposerBar: () => {
+          setComposerBarEnabled(!composerBarEnabled());
+        },
         setTab,
         setView,
         setMineLayer: (value) => {
@@ -12359,6 +12486,8 @@ window.__ModuleLoader__.load({
         assemblyPhase: assembly.phase,
         assemblyError: assembly.error,
         assemblyStatus: assembly.status,
+        // g-086 R5: the composer bar's switch state (a page-local preference).
+        composerBarOn,
         mineAssembly,
         // g-060: the preset tab's state slots, the open dialog, the workspace
         // list the apply dialog renders, and the text「从当前文本另存为预设」reads.
@@ -12565,7 +12694,12 @@ window.__ModuleLoader__.load({
       user: ['M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z', 'M4 20a8 8 0 0 1 16 0'],
       workspace: ['M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z'],
       assembly: ['M12 3l9 5-9 5-9-5z', 'M3 13l9 5 9-5'],
-      settings: ['M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z', 'M12 2v3', 'M12 19v3', 'M2 12h3', 'M19 12h3'],
+      // R5: the real gear (lucide `settings`): toothed outline plus a centre
+      // circle. The old cross-hair read as a target at 16px.
+      settings: [
+        'M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z',
+        { tag: 'circle', attrs: { cx: 12, cy: 12, r: 3 } },
+      ],
       refresh: ['M20 12a8 8 0 1 1-2.3-5.7', 'M20 4v4h-4'],
     });
 
@@ -12578,6 +12712,8 @@ window.__ModuleLoader__.load({
     function composerBarIconOf(name, color) {
       const paths = COMPOSER_BAR_ICONS[name];
       if (paths === undefined) return null;
+      // Each entry is a `path` data string, or a `{tag, attrs}` shape for the few
+      // glyphs that need a second primitive (the gear's centre circle).
       return h(
         'svg',
         {
@@ -12594,7 +12730,11 @@ window.__ModuleLoader__.load({
           focusable: 'false',
           style: { flex: 'none', display: 'block', color: color },
         },
-        paths.map((d, index) => h('path', { key: String(index), d: d })),
+        paths.map((glyph, index) =>
+          typeof glyph === 'string'
+            ? h('path', { key: String(index), d: glyph })
+            : h(glyph.tag, { key: String(index), ...(glyph.attrs === undefined ? {} : glyph.attrs) }),
+        ),
       );
     }
 
@@ -13295,6 +13435,13 @@ window.__ModuleLoader__.load({
         };
       }
       const compact = composerBarDensityOf(barWidth) === 'compact';
+      // g-086 R5: the switch. Same seat the settings page uses, so flipping it
+      // there hides this bar (and its reads) on the same frame.
+      const enabled = React.useSyncExternalStore(
+        subscribeComposerBarEnabled,
+        composerBarEnabled,
+        composerBarEnabled,
+      );
       // One pending "find the settings panel" attempt at a time: kept in a ref so
       // the component can stop it before starting another and on unmount.
       const aimRef = React.useRef(null);
@@ -13316,6 +13463,12 @@ window.__ModuleLoader__.load({
       React.useEffect(() => stopAim, []);
 
       React.useEffect(() => {
+        if (!enabled) {
+          // Off means off: no snapshot, no overrides, no assembly-status — the
+          // whole point of the switch is that a hidden bar costs nothing.
+          setRead({ phase: 'off', snapshot: null, overrides: null, assembly: null });
+          return undefined;
+        }
         const urls = composerBarRequestUrls(sessionId);
         if (urls === null) {
           // No Session ⇒ no request at all. This is the promise `verify` cannot
@@ -13349,7 +13502,7 @@ window.__ModuleLoader__.load({
         return () => {
           cancelled = true;
         };
-      }, [sessionId, nonce]);
+      }, [enabled, sessionId, nonce]);
 
       const phase = read.phase;
       const notice = composerBarNoticeOf(read.assembly);
@@ -13405,6 +13558,9 @@ window.__ModuleLoader__.load({
 
       const userLine = layerLine('user');
       const workspaceLine = layerLine('workspace');
+      // Off ⇒ the entry renders nothing. Every hook above has already run, so the
+      // hook order is identical in both states.
+      if (!enabled) return null;
       const refreshButton = h(
         'button',
         {
@@ -13857,6 +14013,11 @@ window.__ModuleLoader__.load({
           // g-086 R3: the width→density policy (labels off below 640px).
           densityOf: composerBarDensityOf,
           COMPACT_WIDTH: COMPOSER_BAR_COMPACT_WIDTH,
+          // g-086 R5: the on/off preference bus (settings page ⇄ bar).
+          enabled: () => composerBarEnabled(),
+          setEnabled: setComposerBarEnabled,
+          subscribeEnabled: subscribeComposerBarEnabled,
+          PREF_KEY: COMPOSER_BAR_PREF_KEY,
         },
       },
       apply(ctx) {

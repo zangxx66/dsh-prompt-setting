@@ -208,8 +208,6 @@
   "assemblyHeading": "Assembly status notice",
   "assemblyIntro": "Shown here only: it never enters the model context, costs no tokens and does not change the prompt the model receives. A notice appears once per key node — the first assembly of a new conversation, and the next run after a prompt is saved.",
   "assemblySwitchLabel": "Notice",
-  "assemblySwitchOn": "ON",
-  "assemblySwitchOff": "OFF",
   "assemblyTurnOn": "Turn the notice on",
   "assemblyTurnOff": "Turn the notice off",
   "assemblySaving": "Switching…",
@@ -595,5 +593,7 @@
   "barSummaryNone": "None yet",
   "barUserLabel": "User",
   "barWorkspaceLabel": "Workspace",
-  "barCoverageShort": "Overrides {total} · missed {ineffective}"
+  "barCoverageShort": "Overrides {total} · missed {ineffective}",
+  "composerBarSettingTitle": "Status bar",
+  "composerBarSettingNote": "The read-only strip above the composer. When off it is hidden and reads no assembly data at all (a local preference only — no Host config is written)."
 }

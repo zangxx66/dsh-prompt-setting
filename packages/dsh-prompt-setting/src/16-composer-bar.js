@@ -74,7 +74,12 @@
       user: ['M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z', 'M4 20a8 8 0 0 1 16 0'],
       workspace: ['M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z'],
       assembly: ['M12 3l9 5-9 5-9-5z', 'M3 13l9 5 9-5'],
-      settings: ['M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z', 'M12 2v3', 'M12 19v3', 'M2 12h3', 'M19 12h3'],
+      // R5: the real gear (lucide `settings`): toothed outline plus a centre
+      // circle. The old cross-hair read as a target at 16px.
+      settings: [
+        'M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z',
+        { tag: 'circle', attrs: { cx: 12, cy: 12, r: 3 } },
+      ],
       refresh: ['M20 12a8 8 0 1 1-2.3-5.7', 'M20 4v4h-4'],
     });
 
@@ -87,6 +92,8 @@
     function composerBarIconOf(name, color) {
       const paths = COMPOSER_BAR_ICONS[name];
       if (paths === undefined) return null;
+      // Each entry is a `path` data string, or a `{tag, attrs}` shape for the few
+      // glyphs that need a second primitive (the gear's centre circle).
       return h(
         'svg',
         {
@@ -103,7 +110,11 @@
           focusable: 'false',
           style: { flex: 'none', display: 'block', color: color },
         },
-        paths.map((d, index) => h('path', { key: String(index), d: d })),
+        paths.map((glyph, index) =>
+          typeof glyph === 'string'
+            ? h('path', { key: String(index), d: glyph })
+            : h(glyph.tag, { key: String(index), ...(glyph.attrs === undefined ? {} : glyph.attrs) }),
+        ),
       );
     }
 
@@ -804,6 +815,13 @@
         };
       }
       const compact = composerBarDensityOf(barWidth) === 'compact';
+      // g-086 R5: the switch. Same seat the settings page uses, so flipping it
+      // there hides this bar (and its reads) on the same frame.
+      const enabled = React.useSyncExternalStore(
+        subscribeComposerBarEnabled,
+        composerBarEnabled,
+        composerBarEnabled,
+      );
       // One pending "find the settings panel" attempt at a time: kept in a ref so
       // the component can stop it before starting another and on unmount.
       const aimRef = React.useRef(null);
@@ -825,6 +843,12 @@
       React.useEffect(() => stopAim, []);
 
       React.useEffect(() => {
+        if (!enabled) {
+          // Off means off: no snapshot, no overrides, no assembly-status — the
+          // whole point of the switch is that a hidden bar costs nothing.
+          setRead({ phase: 'off', snapshot: null, overrides: null, assembly: null });
+          return undefined;
+        }
         const urls = composerBarRequestUrls(sessionId);
         if (urls === null) {
           // No Session ⇒ no request at all. This is the promise `verify` cannot
@@ -858,7 +882,7 @@
         return () => {
           cancelled = true;
         };
-      }, [sessionId, nonce]);
+      }, [enabled, sessionId, nonce]);
 
       const phase = read.phase;
       const notice = composerBarNoticeOf(read.assembly);
@@ -914,6 +938,9 @@
 
       const userLine = layerLine('user');
       const workspaceLine = layerLine('workspace');
+      // Off ⇒ the entry renders nothing. Every hook above has already run, so the
+      // hook order is identical in both states.
+      if (!enabled) return null;
       const refreshButton = h(
         'button',
         {

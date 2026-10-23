@@ -17539,4 +17539,106 @@ test('client: the bar is an icon strip — brand, four cells, gear — with no c
   }
 });
 
+test('client: the settings glyph is a real gear — an outline path plus a centre circle (g-086 R5)', async () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  const bar = makeAssemblyBar(page, { session: { sessionId: 's1' } });
+  const tree = await bar.flush();
+  const gear = collect(barRegionOf(tree, 'bar-settings'), (node) => node.props && node.props['data-bar-icon'] === 'settings')[0];
+  assert.notEqual(gear, undefined);
+  const shapes = collect(gear, (node) => node.type === 'path' || node.type === 'circle');
+  assert.equal(shapes.length, 2, 'lucide 齿轮：外圈齿廓 + 中心圆');
+  assert.equal(shapes[0].type, 'path');
+  assert.equal(shapes[1].type, 'circle');
+  assert.deepEqual(
+    [shapes[1].props.cx, shapes[1].props.cy, shapes[1].props.r],
+    [12, 12, 3],
+    '中心圆在 24×24 网格中心',
+  );
+  assert.equal(gear.props.stroke, 'currentColor');
+  assert.equal(gear.props.strokeWidth, 1.8);
+});
+
+test('client: the status-bar preference bus defaults on, notifies and persists best-effort (g-086 R5)', () => {
+  const { module, sandbox } = loadClient('throw');
+  const bus = module.__internals.composerBar;
+  assert.equal(bus.PREF_KEY, 'dsh-prompt-setting:composer-bar');
+  let notified = 0;
+  const off = bus.subscribeEnabled(() => {
+    notified += 1;
+  });
+  assert.equal(bus.enabled(), true, '默认开启');
+  assert.equal(bus.setEnabled(false), false);
+  assert.equal(bus.enabled(), false);
+  assert.equal(notified, 1, '订阅者被通知');
+  off();
+  bus.setEnabled(true);
+  assert.equal(notified, 1, '退订后不再通知');
+  assert.equal(bus.enabled(), true);
+
+  // A stored `'off'` really means off.
+  const stored = loadClient('throw');
+  stored.sandbox.localStorage = { getItem: () => 'off', setItem: () => {} };
+  assert.equal(stored.module.__internals.composerBar.enabled(), false, "localStorage 'off' ⇒ 关闭");
+  // A throwing storage degrades to memory without throwing.
+  const hostile = loadClient('throw');
+  hostile.sandbox.localStorage = {
+    getItem: () => {
+      throw new Error('privacy mode');
+    },
+    setItem: () => {
+      throw new Error('privacy mode');
+    },
+  };
+  const memoryBus = hostile.module.__internals.composerBar;
+  assert.equal(memoryBus.enabled(), true, '读不到就当开启');
+  assert.equal(memoryBus.setEnabled(false), false, '写失败也不抛');
+  assert.equal(memoryBus.enabled(), false, '内存兜底仍生效');
+});
+
+test('client: switching the bar off hides it and issues no /prompt-setting request at all (g-086 R5)', async () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  const bus = page.loaded.module.__internals.composerBar;
+  bus.setEnabled(false);
+  const bar = makeAssemblyBar(page, { session: { sessionId: 's1' } });
+  const hidden = await bar.flush();
+  assert.equal(hidden, null, '关闭态不渲染');
+  assert.equal(page.router.calls.length, 0, '关闭态：一次请求都不发');
+  // Re-enable: the next render is the normal bar, with its three reads.
+  bus.setEnabled(true);
+  const tree = await bar.flush();
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'composer-assembly-bar').length, 1);
+  assert.equal(page.router.calls.length, 3, '重新开启后恢复三条 GET');
+  assert.deepEqual(
+    page.router.calls.map((call) => call.url.split('?')[0]),
+    [PATHS.snapshot, PATHS.overrides, PATHS.assemblyStatus],
+  );
+});
+
+test('client: the 高级 tab carries the bar switch, and flipping it is instant (g-086 R5)', async () => {
+  const page = makeOpenPage({
+    useSessions: sessionsHook(SESSIONS_STATE),
+    responses: defaultResponses({
+      [PATHS.assemblyStatus]: { payload: assemblyFixture({ session: 's2' }) },
+    }),
+  });
+  const bus = page.loaded.module.__internals.composerBar;
+  let tree = await openTab(page, 'advanced');
+  const blockOf = (drawn) => oneBy(drawn, 'data-region', 'composer-bar-setting');
+  const buttonOf = (drawn) =>
+    collect(blockOf(drawn), (node) => node.type === 'button' && node.props && node.props['data-action'] === 'composer-bar-toggle');
+  assert.equal(blockOf(tree).props['data-composer-bar-switch-state'], 'on');
+  assert.equal(buttonOf(tree)[0].props.children, page.zh.updateSettingOn);
+  assert.ok(hasText(blockOf(tree), page.zh.composerBarSettingTitle), '标题');
+  assert.ok(hasText(tree, page.zh.composerBarSettingNote), '说明');
+  buttonOf(tree)[0].props.onClick();
+  assert.equal(bus.enabled(), false, '点击写入偏好总线');
+  tree = await page.flush();
+  assert.equal(blockOf(tree).props['data-composer-bar-switch-state'], 'off');
+  assert.equal(buttonOf(tree)[0].props.children, page.zh.updateSettingOff);
+  buttonOf(tree)[0].props.onClick();
+  tree = await page.flush();
+  assert.equal(bus.enabled(), true, '再点恢复');
+  assert.equal(blockOf(tree).props['data-composer-bar-switch-state'], 'on');
+});
+
 // #endregion

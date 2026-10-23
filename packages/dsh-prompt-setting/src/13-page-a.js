@@ -38,6 +38,15 @@
       // otherwise leave the degradation note on screen until some unrelated
       // state change happened to re-render the block.
       React.useSyncExternalStore(subscribeOverlaySeat, overlaySeatRevision, overlaySeatRevision);
+      // g-086 R5: the composer bar's on/off preference. The switch lives on this
+      // page, the bar lives in the conversation slot — this subscription is what
+      // makes the page's block and the bar react to the same `set` without a
+      // reload.
+      const composerBarOn = React.useSyncExternalStore(
+        subscribeComposerBarEnabled,
+        composerBarEnabled,
+        composerBarEnabled,
+      );
 
       // The session seat: a root-level hook on props, no inject required. The
       // `typeof` branch is stable for the life of a mount, and a hook that

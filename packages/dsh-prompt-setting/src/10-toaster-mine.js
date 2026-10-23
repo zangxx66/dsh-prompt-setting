@@ -464,7 +464,7 @@
           h(
             'span',
             { 'data-assembly-switch-state': ready ? (enabled ? 'on' : 'off') : 'unknown', style: metaStyle },
-            ready ? t(enabled ? 'assemblySwitchOn' : 'assemblySwitchOff') : '',
+            ready ? t(enabled ? 'updateSettingOn' : 'updateSettingOff') : '',
           ),
         ),
         h('p', { style: noteStyle }, t('assemblyIntro')),
@@ -538,6 +538,28 @@
               ),
             ),
         h('p', { 'data-region': 'assembly-limitation', style: noteStyle }, t('assemblyLimitation')),
+        // g-086 R5: the composer bar's own switch. A page-local preference (never
+        // a Host write), so the block is one row plus one sentence — and the bar
+        // re-renders the moment it changes.
+        h(
+          'div',
+          {
+            'data-region': 'composer-bar-setting',
+            'data-composer-bar-switch-state': m.composerBarOn === false ? 'off' : 'on',
+            style: { display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginTop: 4 },
+          },
+          h('h3', { style: headingStyle }, t('composerBarSettingTitle')),
+          h(
+            UI.Button,
+            {
+              'data-action': 'composer-bar-toggle',
+              'aria-pressed': m.composerBarOn === false ? 'false' : 'true',
+              onClick: a.toggleComposerBar,
+            },
+            t(m.composerBarOn === false ? 'updateSettingOff' : 'updateSettingOn'),
+          ),
+        ),
+        h('p', { 'data-region': 'composer-bar-note', style: noteStyle }, t('composerBarSettingNote')),
       );
     }
 

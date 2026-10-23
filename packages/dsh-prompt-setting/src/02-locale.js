@@ -210,8 +210,6 @@
       assemblyHeading: '装配状态提示',
       assemblyIntro: '只在这里显示，不进入模型上下文、不占 token、也不改变模型收到的 prompt。提示只在关键节点出现一次：新会话首次装配、以及保存 Prompt 之后的下一个 run。',
       assemblySwitchLabel: '提示',
-      assemblySwitchOn: '已开启',
-      assemblySwitchOff: '已关闭',
       assemblyTurnOn: '开启提示',
       assemblyTurnOff: '关闭提示',
       assemblySaving: '正在切换…',
@@ -598,6 +596,8 @@
       barUserLabel: '用户',
       barWorkspaceLabel: '工作区',
       barCoverageShort: '覆盖 {total} · 未生效 {ineffective}',
+      composerBarSettingTitle: '状态栏',
+      composerBarSettingNote: '显示在会话输入框上方的只读信息条。关闭后不再显示，也不会读取任何装配数据（只改本地偏好，不写宿主配置）。',
     };
 
     const en = {
@@ -810,8 +810,6 @@
       assemblyHeading: 'Assembly status notice',
       assemblyIntro: 'Shown here only: it never enters the model context, costs no tokens and does not change the prompt the model receives. A notice appears once per key node — the first assembly of a new conversation, and the next run after a prompt is saved.',
       assemblySwitchLabel: 'Notice',
-      assemblySwitchOn: 'ON',
-      assemblySwitchOff: 'OFF',
       assemblyTurnOn: 'Turn the notice on',
       assemblyTurnOff: 'Turn the notice off',
       assemblySaving: 'Switching…',
@@ -1198,4 +1196,6 @@
       barUserLabel: 'User',
       barWorkspaceLabel: 'Workspace',
       barCoverageShort: 'Overrides {total} · missed {ineffective}',
+      composerBarSettingTitle: 'Status bar',
+      composerBarSettingNote: 'The read-only strip above the composer. When off it is hidden and reads no assembly data at all (a local preference only — no Host config is written).',
     };

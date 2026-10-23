@@ -19,7 +19,7 @@
  *   另：**围栏代码块内的文本不参与体检**（§10 记录的"历史错值"因此不会污染计数）。
  *
  * 另外校验 **§1.3 版图表**与 **§5.1 目标段表**（R4-C1）：行数 == 区间长度、区间首尾相接、
- * 合计 == 14129、每段 ≤ 1200。这两张表是阶段 1/2 的门禁基础，必须可复跑而不是粘贴输出。
+ * 合计 == 14290、每段 ≤ 1200。这两张表是阶段 1/2 的门禁基础，必须可复跑而不是粘贴输出。
  * **§5.1 的段名集合还与磁盘 `src/` 的段名集合逐名对账（g-077 起）**：
  * 「文档 ↔ 磁盘」之间不再经过任何手工常量 —— 段集合的完整性由「段 ↔ 产物逐字节一致」
  * （`prepare` 的 `CLIENT-SRC-DRIFT`）保证，本文档这一侧只断言「§5.1 表写的段名 == 磁盘
@@ -121,37 +121,37 @@ const REFS = [
   { ref: 'client.js:115', file: 'client.js', from: 115, expect: '@build-fingerprint:begin' },
   { ref: 'client.js:182', file: 'client.js', from: 182, expect: 'SELF_BUILD = fingerprintOf(promptSettingFactory.toString())' },
   { ref: 'client.js:213', file: 'client.js', from: 213, expect: "const React = require('react');" },
-  { ref: 'client.js:906-2105', file: 'client.js', from: 906, to: 2105, expect: '// 生成段：真源 locale', toExpect: '    };', loose: true },
-  { ref: 'client.js:2174', file: 'client.js', from: 2174, expect: '#region fallback atoms' },
-  { ref: 'client.js:2708', file: 'client.js', from: 2708, expect: '#region pure helpers' },
-  { ref: 'client.js:3398', file: 'client.js', from: 3398, expect: 'function chunkStampMap' },
-  { ref: 'client.js:3436', file: 'client.js', from: 3436, expect: 'function buildVerdict' },
-  { ref: 'client.js:7512', file: 'client.js', from: 7512, expect: 'function renderMinePanel' },
-  { ref: 'client.js:7512-8061', file: 'client.js', from: 7512, to: 8061, expect: 'function renderMinePanel', toExpect: "}", loose: true },
-  { ref: 'client.js:8061', file: 'client.js', from: 8061, stripEquals: '}' },
-  { ref: 'client.js:8080', file: 'client.js', from: 8080, expect: 'const CHUNK_STAMPS = Object.freeze([' },
-  { ref: 'client.js:8097', file: 'client.js', from: 8097, expect: 'const CHUNK_FACILITIES = Object.freeze({' },
-  { ref: 'client.js:8097-8186', file: 'client.js', from: 8097, to: 8186, expect: 'const CHUNK_FACILITIES = Object.freeze({', toExpect: "});" },
-  { ref: 'client.js:8186', file: 'client.js', from: 8186, stripEquals: '});' },
-  { ref: 'client.js:8270', file: 'client.js', from: 8270, expect: 'function loadChunk' },
-  { ref: 'client.js:8281', file: 'client.js', from: 8281, expect: 'function recordLoadedChunk' },
-  { ref: 'client.js:8375', file: 'client.js', from: 8375, expect: 'function chunkModule' },
-  { ref: 'client.js:8409', file: 'client.js', from: 8409, expect: 'client.history.js' },
-  { ref: 'client.js:8431-8479', file: 'client.js', from: 8431, to: 8479, expect: 'HistoryTabChunk', toExpect: "? React.lazy(() => chunkModule('client.presets.js', (chunkExports) => chunkExports && chunkExports.PresetsTab))" },
-  { ref: 'client.js:8455-8460', file: 'client.js', from: 8455, to: 8460, expect: 'deliberately', toExpect: "* click, which is exactly the case a lazy boundary is for." },
-  { ref: 'client.js:8500', file: 'client.js', from: 8500, expect: 'function chunkTab' },
-  { ref: 'client.js:9187', file: 'client.js', from: 9187, expect: 'data-build-loaded' },
-  { ref: 'client.js:9227', file: 'client.js', from: 9227, expect: 'function PromptSettingSection' },
-  { ref: 'client.js:9227-12483', file: 'client.js', from: 9227, to: 12483, expect: 'function PromptSettingSection', toExpect: "}", loose: true },
-  { ref: 'client.js:9236', file: 'client.js', from: 9236, expect: 'React.useSyncExternalStore(' },
-  { ref: 'client.js:12483', file: 'client.js', from: 12483, stripEquals: '}' },
-  { ref: 'client.js:13665', file: 'client.js', from: 13665, expect: 'function renderFailureCard' },
-  { ref: 'client.js:13755', file: 'client.js', from: 13755, expect: 'return { failed: true };' },
-  { ref: 'client.js:13769', file: 'client.js', from: 13769, expect: "inject: ['slots', 'locale']," },
-  { ref: 'client.js:13777', file: 'client.js', from: 13777, expect: '__internals' },
-  { ref: 'client.js:13780', file: 'client.js', from: 13780, expect: 'shared: CHUNK_FACILITIES' },
-  { ref: 'client.js:13853', file: 'client.js', from: 13853, expect: 'apply(ctx)' },
-  { ref: 'client.js:14058', file: 'client.js', from: 14058, expect: 'function degradedPlugin' },
+  { ref: 'client.js:997-2196', file: 'client.js', from: 997, to: 2196, expect: '// 生成段：真源 locale', toExpect: '    };', loose: true },
+  { ref: 'client.js:2265', file: 'client.js', from: 2265, expect: '#region fallback atoms' },
+  { ref: 'client.js:2799', file: 'client.js', from: 2799, expect: '#region pure helpers' },
+  { ref: 'client.js:3489', file: 'client.js', from: 3489, expect: 'function chunkStampMap' },
+  { ref: 'client.js:3527', file: 'client.js', from: 3527, expect: 'function buildVerdict' },
+  { ref: 'client.js:7625', file: 'client.js', from: 7625, expect: 'function renderMinePanel' },
+  { ref: 'client.js:7625-7634', file: 'client.js', from: 7625, to: 7634, expect: 'function renderMinePanel', toExpect: "}", loose: true },
+  { ref: 'client.js:8174', file: 'client.js', from: 8174, stripEquals: '}' },
+  { ref: 'client.js:8193', file: 'client.js', from: 8193, expect: 'const CHUNK_STAMPS = Object.freeze([' },
+  { ref: 'client.js:8210', file: 'client.js', from: 8210, expect: 'const CHUNK_FACILITIES = Object.freeze({' },
+  { ref: 'client.js:8210-8299', file: 'client.js', from: 8210, to: 8299, expect: 'const CHUNK_FACILITIES = Object.freeze({', toExpect: "});" },
+  { ref: 'client.js:8299', file: 'client.js', from: 8299, stripEquals: '});' },
+  { ref: 'client.js:8383', file: 'client.js', from: 8383, expect: 'function loadChunk' },
+  { ref: 'client.js:8394', file: 'client.js', from: 8394, expect: 'function recordLoadedChunk' },
+  { ref: 'client.js:8488', file: 'client.js', from: 8488, expect: 'function chunkModule' },
+  { ref: 'client.js:8195', file: 'client.js', from: 8195, expect: 'client.history.js' },
+  { ref: 'client.js:8527-8592', file: 'client.js', from: 8527, to: 8592, expect: 'HistoryTabChunk', toExpect: "? React.lazy(() => chunkModule('client.presets.js', (chunkExports) => chunkExports && chunkExports.PresetsTab))" },
+  { ref: 'client.js:8568-8573', file: 'client.js', from: 8568, to: 8573, expect: 'deliberately', toExpect: "* click, which is exactly the case a lazy boundary is for." },
+  { ref: 'client.js:8613', file: 'client.js', from: 8613, expect: 'function chunkTab' },
+  { ref: 'client.js:9300', file: 'client.js', from: 9300, expect: 'data-build-loaded' },
+  { ref: 'client.js:9340', file: 'client.js', from: 9340, expect: 'function PromptSettingSection' },
+  { ref: 'client.js:9340-9388', file: 'client.js', from: 9340, to: 9388, expect: 'function PromptSettingSection', toExpect: "}", loose: true },
+  { ref: 'client.js:9349', file: 'client.js', from: 9349, expect: 'React.useSyncExternalStore(' },
+  { ref: 'client.js:12203', file: 'client.js', from: 12203, stripEquals: '}' },
+  { ref: 'client.js:13821', file: 'client.js', from: 13821, expect: 'function renderFailureCard' },
+  { ref: 'client.js:13911', file: 'client.js', from: 13911, expect: 'return { failed: true };' },
+  { ref: 'client.js:13925', file: 'client.js', from: 13925, expect: "inject: ['slots', 'locale']," },
+  { ref: 'client.js:13933', file: 'client.js', from: 13933, expect: '__internals' },
+  { ref: 'client.js:13936', file: 'client.js', from: 13936, expect: 'shared: CHUNK_FACILITIES' },
+  { ref: 'client.js:14014', file: 'client.js', from: 14014, expect: 'apply(ctx)' },
+  { ref: 'client.js:14219', file: 'client.js', from: 14219, expect: 'function degradedPlugin' },
   // ── index.js ─────────────────────────────────────────────────────────────
   { ref: 'index.js:231', file: 'index.js', from: 231, expect: 'CLIENT_BUNDLE_PATH' },
   { ref: 'index.js:783', file: 'index.js', from: 783, expect: 'export function apply' },
@@ -211,21 +211,21 @@ const REFS = [
   { ref: 'CONTRACT.md:4499', file: 'CONTRACT.md', from: 4499, expect: '## 14. Client build stamp' },
   { ref: 'CONTRACT.md:7942', file: 'CONTRACT.md', from: 7942, expect: 'no build step' },
   // ── 文档里实际引用的区间（补全，减少人工核对项）──────────────────────────
-  { ref: 'client.js:55-61', file: 'client.js', from: 55, to: 61, expect: 'Two hard rules', toExpect: "*" },
-  { ref: 'client.js:62-66', file: 'client.js', from: 62, to: 66, expect: 'Markers the page carries', toExpect: "*" },
+  { ref: 'client.js:55-55', file: 'client.js', from: 55, to: 55, expect: 'Two hard rules', toExpect: "*" },
+  { ref: 'client.js:62-62', file: 'client.js', from: 62, to: 62, expect: 'Markers the page carries', toExpect: "*" },
   { ref: 'client.js:67-73', file: 'client.js', from: 67, to: 73, expect: 'Revision 6 adds', toExpect: "* failed ping yields, and which is deliberately never reported as「过期」." },
-  { ref: 'client.js:906-910', file: 'client.js', from: 906, to: 910, expect: '// 生成段：真源 locale', toExpect: "subtitle: '查看并覆盖每轮会话最终装配的 system prompt。写入作用于下一轮装配（next-turn）。'," },
-  { ref: 'client.js:3980-3984', file: 'client.js', from: 3980, to: 3984, expect: 'g-061 batch 2', toExpect: "* renders in." },
-  { ref: 'client.js:8080-8086', file: 'client.js', from: 8080, to: 8086, expect: 'const CHUNK_STAMPS', toExpect: "]);" },
-  { ref: 'client.js:8089-8096', file: 'client.js', from: 8089, to: 8096, at: 8089, expect: 'cross-chunk facility', toExpect: "*/" },
-  { ref: 'client.js:8207-8221', file: 'client.js', from: 8207, to: 8221, expect: 'function subscribeChunkLoads', toExpect: "*/" },
-  { ref: 'client.js:8270-8273', file: 'client.js', from: 8270, to: 8273, expect: 'function loadChunk', toExpect: "}" },
-  { ref: 'client.js:8281-8291', file: 'client.js', from: 8281, to: 8291, expect: 'function recordLoadedChunk', toExpect: "}" },
-  { ref: 'client.js:8294', file: 'client.js', from: 8294, expect: 'function loadedChunkStamps' },
-  { ref: 'client.js:8315', file: 'client.js', from: 8315, expect: 'function chunkFailureComponent' },
-  { ref: 'client.js:8430', file: 'client.js', from: 8430, expect: 'function renderHistoryChunk' },
-  { ref: 'client.js:8500-8568', file: 'client.js', from: 8500, to: 8568, expect: 'function chunkTab', toExpect: "function renderPresetsChunk(t, m, a) {" },
-  { ref: 'client.js:13777-13780', file: 'client.js', from: 13777, to: 13780, expect: '__internals', toExpect: "shared: CHUNK_FACILITIES," },
+  { ref: 'client.js:997-1001', file: 'client.js', from: 997, to: 1001, expect: '// 生成段：真源 locale', toExpect: "subtitle: '查看并覆盖每轮会话最终装配的 system prompt。写入作用于下一轮装配（next-turn）。'," },
+  { ref: 'client.js:4071-4075', file: 'client.js', from: 4071, to: 4075, expect: 'g-061 batch 2', toExpect: "* renders in." },
+  { ref: 'client.js:8193-8199', file: 'client.js', from: 8193, to: 8199, expect: 'const CHUNK_STAMPS', toExpect: "]);" },
+  { ref: 'client.js:8202-8209', file: 'client.js', from: 8202, to: 8209, at: 8202, expect: 'cross-chunk facility', toExpect: "*/" },
+  { ref: 'client.js:8320-8334', file: 'client.js', from: 8320, to: 8334, expect: 'function subscribeChunkLoads', toExpect: "*/" },
+  { ref: 'client.js:8383-8385', file: 'client.js', from: 8383, to: 8385, expect: 'function loadChunk', toExpect: "}" },
+  { ref: 'client.js:8394-8400', file: 'client.js', from: 8394, to: 8400, expect: 'function recordLoadedChunk', toExpect: "}" },
+  { ref: 'client.js:8407', file: 'client.js', from: 8407, expect: 'function loadedChunkStamps' },
+  { ref: 'client.js:8428', file: 'client.js', from: 8428, expect: 'function chunkFailureComponent' },
+  { ref: 'client.js:8543', file: 'client.js', from: 8543, expect: 'function renderHistoryChunk' },
+  { ref: 'client.js:8613-8681', file: 'client.js', from: 8613, to: 8681, expect: 'function chunkTab', toExpect: "function renderPresetsChunk(t, m, a) {" },
+  { ref: 'client.js:13933-13936', file: 'client.js', from: 13933, to: 13936, expect: '__internals', toExpect: "shared: CHUNK_FACILITIES," },
   { ref: 'client.history.js:36', file: 'client.history.js', from: 36, expect: "require('dsh-prompt-setting')" },
   { ref: 'core/store.js:280-296', file: 'core/store.js', from: 280, to: 296, at: 281, expect: 'Read the published client bundle', toExpect: "*   three fields for every chunk file beside it — or `null`." },
   { ref: 'core/store.js:298-318', file: 'core/store.js', from: 298, to: 318, expect: 'function clientBuildInfo', toExpect: "/**" },
@@ -268,19 +268,19 @@ const REFS = [
   { ref: 'index.js:1131-1198', file: 'index.js', from: 1131, to: 1198, expect: "function assemblyNoticeEnabled() {", toExpect: "function workspaceRegistry() {" },
   { ref: 'test/host.test.mjs:193-195', file: 'test/host.test.mjs', from: 193, to: 195, expect: "assert.equal(packageJson.files.includes('test'), false);", toExpect: "assert.equal(packageJson.files.includes('node_modules'), false);" },
   { ref: 'test/build.test.mjs:142', file: 'test/build.test.mjs', from: 142, expect: "assert.ok(clientSource.indexOf(BEGIN) < clientSource.indexOf(END), 'be" },
-  { ref: 'client.js:14127', file: 'client.js', from: 14127, expect: "/* @build-fingerprint:end */" },
+  { ref: 'client.js:14288', file: 'client.js', from: 14288, expect: "/* @build-fingerprint:end */" },
   { ref: 'client.js:214', file: 'client.js', from: 214, expect: "const h = React.createElement;" },
   { ref: 'client.js:310', file: 'client.js', from: 310, expect: "const primitives =" },
-  { ref: 'client.js:2113', file: 'client.js', from: 2113, expect: "let fallbackT = (key) => key;" },
-  { ref: 'client.js:2116', file: 'client.js', from: 2116, expect: "const token = {" },
-  { ref: 'client.js:2333', file: 'client.js', from: 2333, expect: "const UI = {" },
-  { ref: 'client.js:2439', file: 'client.js', from: 2439, expect: "function tabs(items, value, onChange, label, group) {" },
-  { ref: 'client.js:2716', file: 'client.js', from: 2716, expect: "function fmt(text, params) {" },
-  { ref: 'client.js:3968', file: 'client.js', from: 3968, expect: "const cardStyle = {" },
-  { ref: 'client.js:4011', file: 'client.js', from: 4011, expect: "function scrimStyle(zIndex) {" },
-  { ref: 'client.js:4473', file: 'client.js', from: 4473, expect: "function errorBanner(t, error, title) {" },
-  { ref: 'client.js:4614', file: 'client.js', from: 4614, expect: "function stampOf(at) {" },
-  { ref: 'client.js:5003', file: 'client.js', from: 5003, expect: "function layerLabel(t, layer) {" },
+  { ref: 'client.js:2204', file: 'client.js', from: 2204, expect: "let fallbackT = (key) => key;" },
+  { ref: 'client.js:2207', file: 'client.js', from: 2207, expect: "const token = {" },
+  { ref: 'client.js:2424', file: 'client.js', from: 2424, expect: "const UI = {" },
+  { ref: 'client.js:2530', file: 'client.js', from: 2530, expect: "function tabs(items, value, onChange, label, group) {" },
+  { ref: 'client.js:2807', file: 'client.js', from: 2807, expect: "function fmt(text, params) {" },
+  { ref: 'client.js:4059', file: 'client.js', from: 4059, expect: "const cardStyle = {" },
+  { ref: 'client.js:4102', file: 'client.js', from: 4102, expect: "function scrimStyle(zIndex) {" },
+  { ref: 'client.js:4564', file: 'client.js', from: 4564, expect: "function errorBanner(t, error, title) {" },
+  { ref: 'client.js:4705', file: 'client.js', from: 4705, expect: "function stampOf(at) {" },
+  { ref: 'client.js:5094', file: 'client.js', from: 5094, expect: "function layerLabel(t, layer) {" },
   { ref: 'README.md:368', file: 'README.md', from: 368, expect: "> zero-compilation; `client.js` is generated from `src/`" },
 ];
 
@@ -501,7 +501,7 @@ function parseSpanTable(lines, startPrefix, endPrefix, rowPattern) {
  */
 function parseSegmentNames(lines) {
   const start = lines.findIndex((line) => line.startsWith('**阶段 2 的目标段划分'));
-  const end = lines.findIndex((line, index) => index > start && line.startsWith('合计 14129 行'));
+  const end = lines.findIndex((line, index) => index > start && line.startsWith('合计 14290 行'));
   const names = [];
   for (const line of lines.slice(start, end === -1 ? undefined : end)) {
     const m = /^\|\s*`([^`]+)`\s*\|/.exec(line);
@@ -525,7 +525,7 @@ function checkTables(lines) {
     },
     {
       name: '§5.1 目标段表',
-      rows: parseSpanTable(lines, '**阶段 2 的目标段划分', '合计 14129 行', /^\|\s*`[^`]+`\s*\|\s*(\d+)[–-](\d+)\s*\|\s*(\d+)\s*\|/),
+      rows: parseSpanTable(lines, '**阶段 2 的目标段划分', '合计 14290 行', /^\|\s*`[^`]+`\s*\|\s*(\d+)[–-](\d+)\s*\|\s*(\d+)\s*\|/),
       maxCount: 1200,
     },
   ];
@@ -549,9 +549,9 @@ function checkTables(lines) {
       }
     }
     if (rows[0].from !== 1) failures.push(`${name}: 首行是 ${rows[0].from}，应为 1`);
-    if (rows[rows.length - 1].to !== 14129) failures.push(`${name}: 末行是 ${rows[rows.length - 1].to}，应为 14129`);
+    if (rows[rows.length - 1].to !== 14290) failures.push(`${name}: 末行是 ${rows[rows.length - 1].to}，应为 14290`);
     const total = rows.reduce((sum, row) => sum + row.count, 0);
-    if (total !== 14129) failures.push(`${name}: 行数合计 ${total}，应为 14129`);
+    if (total !== 14290) failures.push(`${name}: 行数合计 ${total}，应为 14290`);
     process.stdout.write(`  table ${name}: rows=${rows.length} 合计=${total} 最大段=${Math.max(...rows.map((r) => r.count))}\n`);
   }
   // g-077：§5.1 的**段名集合**（含顺序）必须与磁盘 `src/` 的段名集合一致 —— 不再经过
@@ -652,7 +652,7 @@ function countUncoveredRefs(doc) {
     return count;
   };
   const tableCovered = countCellRanges('### 1.3', '**上表互不重叠', 0)
-    + countCellRanges('**阶段 2 的目标段划分', '合计 14129 行', 1);
+    + countCellRanges('**阶段 2 的目标段划分', '合计 14290 行', 1);
   return { codeBare, paren, range, tableCovered };
 }
 

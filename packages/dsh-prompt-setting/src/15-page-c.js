@@ -187,6 +187,11 @@
         refresh: () => setReload((value) => value + 1),
         // The「更改」switch: the same button opens and shuts the picker (`aria-expanded` reports it).
         toggleScopeOpen: () => setScopeOpen((open) => !open),
+        // g-086 R5: the composer bar switch — one page-local write, never a Host
+        // request; the bar subscribes to the same bus.
+        toggleComposerBar: () => {
+          setComposerBarEnabled(!composerBarEnabled());
+        },
         setTab,
         setView,
         setMineLayer: (value) => {
@@ -751,6 +756,8 @@
         assemblyPhase: assembly.phase,
         assemblyError: assembly.error,
         assemblyStatus: assembly.status,
+        // g-086 R5: the composer bar's switch state (a page-local preference).
+        composerBarOn,
         mineAssembly,
         // g-060: the preset tab's state slots, the open dialog, the workspace
         // list the apply dialog renders, and the text「从当前文本另存为预设」reads.

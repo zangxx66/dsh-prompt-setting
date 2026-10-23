@@ -10597,6 +10597,21 @@ v0.2.3 的计划条目（g-065…g-074）与 v0.2.4 的（g-075…g-080）一直
   无图标字体、无外部资源）。右侧操作区（仍在 `bar-settings` 单元内，`flex: 0 0 auto` + `marginLeft: auto`）=
   刷新图标 + **裸齿轮按钮**（无边框/无背景/无圆角胶囊，`aria-label`/`title` 仍是 `nav`）。
   紧凑态逻辑不变：`< 640px` 隐藏标签**与品牌名**，图标 + 值保留。
+- **R5（真机两项）**：
+  - **真齿轮**：`COMPOSER_BAR_ICONS.settings` 换成 lucide `settings` 的齿廓 path + 中心圆；渲染函数从「只收 path 字符串」
+    扩展为「字符串 = path，或 `{tag, attrs}` = 任意 SVG 原语」，因此齿轮是 `path + circle(cx12,cy12,r3)`。
+    `stroke=currentColor`、`strokeWidth=1.8`、`fill=none` 不变。
+  - **状态栏开关**：「高级」tab 的装配卡内新增一行（`data-region="composer-bar-setting"`，标题 + 状态按钮 +
+    说明句），按钮 `data-action="composer-bar-toggle"`、`data-composer-bar-switch-state="on|off"`，文案复用
+    `updateSettingOn/Off`（已开启/已关闭）。偏好是**页面本地**的：`localStorage['dsh-prompt-setting:composer-bar']`，
+    只有 `'off'` 表示关闭（缺省/其它 = 开），写失败或隐私模式抛错时降级为内存值、不抛。
+    状态栏与设置页共享 `01-shared-head.js` 里的模块级总线（`get` / `set` / `subscribe`，`Set` 监听 + try/catch），
+    两边都用 `useSyncExternalStore` 订阅 —— 设置页一改，条形栏同一帧消失/出现。
+    **关闭态**：effect 里短路（`return undefined`，零请求），渲染在**所有 hook 之后** `return null`（hooks 顺序不变）。
+    开关不写宿主配置、不发任何请求，只写一个 localStorage 键。
+  - **locale 守恒**：`02-locale` 仍顶格 1200 行，因此新增 2 键（`composerBarSettingTitle`/`composerBarSettingNote`）
+    同时删除 2 个**值完全重复**的键 `assemblySwitchOn`/`assemblySwitchOff`（值 = `updateSettingOn/Off` 的「已开启/已关闭」），
+    装配卡改用后者 —— 用户可见文案一字未变，键数 597 守恒。
 - **测试盲区（R1 教训，记入）**：R1 用「形状相同的自造对象」验证了 invoke 的参数，却没有验证**真实服务对象上该方法存在**。
   对宿主能力的探测必须以宿主**公开类型声明**为准（`lib/types/client/types.d.ts` 的 `Shortcuts`），
   「我能构造出同形状对象」不构成证据。R2 的用例改成对着 catalog/KeyboardEvent 这条真实链路断言，
@@ -10619,14 +10634,14 @@ v0.2.3 的计划条目（g-065…g-074）与 v0.2.4 的（g-075…g-080）一直
 
 ### 二、工程代价与处理
 
-- **新增一个段**：`src/16-composer-bar.js`（R4 后 1169 行），原 `16-boot.js` 原样改名为 `17-boot.js`（只重切、不移动）。
-  合计 12839 → **14129** 行，18 段；§1.3 / §5.1 两张表、`test/client-source.test.mjs` 的 `SEGMENTS`、
+- **新增一个段**：`src/16-composer-bar.js`（R5 后 1196 行），原 `16-boot.js` 原样改名为 `17-boot.js`（只重切、不移动）。
+  合计 12839 → **14290** 行，18 段；§1.3 / §5.1 两张表、`test/client-source.test.mjs` 的 `SEGMENTS`、
   `docs/architecture-map.md`、`docs/check-refs.mjs` 的 `client.js` 行号引用与 `12839` 常量全部按实际行号重定位。
 - **locale 段 1200 行顶格**：`02-locale.js` 正是预算上限（597 键 × 2 语言 + 1 行头注释），**加任何键都会超预算**。
   本轮加 2 个键（`barNoSession` / `barSettingsFallback`），等量删除 2 个**全仓库零引用**的历史死键
   （`updateApplyStarting` / `assemblyWatching`，`grep` 覆盖 `src/` + `client.*.js` + `test/` 均为 0），键数守恒 597。
   这也是为什么没有按「新增 3–5 个键」的常规做法铺文案：分区标签与状态句全部复用页面已有的键。
-- **单测**：22 条新用例并入 `test/client.test.mjs`（沿用该文件的 vm 沙盒 + hooks 桩 + fetch 路由），
+- **单测**：26 条新用例并入 `test/client.test.mjs`（沿用该文件的 vm 沙盒 + hooks 桩 + fetch 路由），
   覆盖五分区/五色相、两层与摘要口径、层未启用 / 有无生效条目、无会话零请求、未声明插槽、入口降级与
   「宿主给 opener 就调用」、**`invokeSettingsShortcut` 的命令与 context（含 modal:null）**、
   **面板已在时立即点击本插件 nav 行 / 面板迟到时由唯一 observer 触发点击**、
@@ -10642,14 +10657,15 @@ v0.2.3 的计划条目（g-065…g-074）与 v0.2.4 的（g-075…g-080）一直
   ⑥把 binding 的 modifier 推导写错（alt 用 shift 判）⇒ catalog 派发用例红；
   ⑦删掉超时提示（`onTimeout`）⇒「点击后无面板要提示」用例红；
   ⑧把内层 `flexWrap` 改回 `wrap` ⇒「永不折行」用例红；
-  ⑨给设置按钮加回 1px 边框 ⇒「裸齿轮」用例红。
+  ⑨给设置按钮加回 1px 边框 ⇒「裸齿轮」用例红；
+  ⑩删掉关闭态的 effect 短路 ⇒「关闭零请求」用例红。
 
 ### 三、验证
 
 - `node scripts/verify.mjs`：**6 步 / 0 失败**（check-refs / client-build --check / locale-pack --check / prepare / check-compat / 全量测试）。
 - `node scripts/client-build.mjs --check`：**18 个段与 client.js 逐字节一致**。
-- `node docs/check-refs.mjs`：`unresolved=0`、其它失败 0，§1.3 `rows=25 合计=14129`、§5.1 `rows=18 合计=14129 最大段=1200`。
-- 全量测试：**1044 pass / 0 fail**（`node --test test/*.test.mjs`）。
+- `node docs/check-refs.mjs`：`unresolved=0`、其它失败 0，§1.3 `rows=25 合计=14290`、§5.1 `rows=18 合计=14290 最大段=1200`。
+- 全量测试：**1048 pass / 0 fail**（`node --test test/*.test.mjs`）。
 - **未验证（UNVERIFIED）**：真机目视。插件以 `link:` 指向**主工作树**（`~/.dsh/profiles/web/package.json`），
   worktree 的改动未合入主工作树，刷新 `http://127.0.0.1:3080` 加载的仍是旧 bundle —— 本轮环境无法在不污染主工作树 /
   profile 的前提下做真机核对。合并后刷新一次即可按「输入框上方五项 vs 设置页同源」逐项核对。

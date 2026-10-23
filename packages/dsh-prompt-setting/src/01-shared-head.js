@@ -419,6 +419,97 @@
 
     /** Locale namespace owned by this plugin (zh/en dictionaries are inlined). */
     const NS = 'settings.promptSetting';
+
+    /**
+     * g-086 R5: the composer bar's on/off preference — a page-local bus, not a
+     * Host write.
+     *
+     * The settings page owns the switch while the bar is a separate component in
+     * the conversation slot, so the two share this module-level seat: `get` for
+     * both renders, `set` from the switch, `subscribe` so the bar and the page
+     * re-render together. Storage is `localStorage` under one key (only `'off'`
+     * means off, so a missing, unreadable or older value is on); a privacy mode
+     * that throws on `localStorage` falls back to the in-memory value instead of
+     * throwing — the preference is a convenience, never a reason for a broken
+     * page.
+     */
+    const COMPOSER_BAR_PREF_KEY = 'dsh-prompt-setting:composer-bar';
+    /** `null` = not read yet (the storage read is deferred to the first `get`). */
+    let composerBarPref = null;
+    /** Listeners of the on/off preference; `set` notifies every one. */
+    const composerBarPrefListeners = new Set();
+
+    /**
+     * The storage object, or null when the realm has none.
+     * @returns `localStorage`, or null.
+     */
+    function composerBarStorage() {
+      try {
+        return typeof localStorage === 'undefined' || localStorage === null ? null : localStorage;
+      } catch {
+        // A privacy mode can throw on the mere property access.
+        return null;
+      }
+    }
+
+    /** Read the stored preference; any failure means "on". */
+    function readComposerBarPref() {
+      const storage = composerBarStorage();
+      if (storage === null || typeof storage.getItem !== 'function') return true;
+      try {
+        return storage.getItem(COMPOSER_BAR_PREF_KEY) !== 'off';
+      } catch {
+        return true;
+      }
+    }
+
+    /**
+     * Whether the composer bar is enabled (default: yes).
+     * @returns the current preference.
+     */
+    function composerBarEnabled() {
+      if (composerBarPref === null) composerBarPref = readComposerBarPref();
+      return composerBarPref;
+    }
+
+    /**
+     * Set the preference, persist it best-effort and notify every listener.
+     * @param on - the new value; anything but `false` means on.
+     * @returns the value that took effect.
+     */
+    function setComposerBarEnabled(on) {
+      const next = on !== false;
+      composerBarPref = next;
+      const storage = composerBarStorage();
+      if (storage !== null && typeof storage.setItem === 'function') {
+        try {
+          storage.setItem(COMPOSER_BAR_PREF_KEY, next ? 'on' : 'off');
+        } catch {
+          // Memory-only from here on; the switch still works for this page.
+        }
+      }
+      for (const listener of composerBarPrefListeners) {
+        try {
+          listener();
+        } catch {
+          // One bad listener must not keep the others from updating.
+        }
+      }
+      return next;
+    }
+
+    /**
+     * Subscribe to preference changes (`useSyncExternalStore` seat).
+     * @param listener - called after every `set`.
+     * @returns an idempotent unsubscribe.
+     */
+    function subscribeComposerBarEnabled(listener) {
+      if (typeof listener !== 'function') return () => {};
+      composerBarPrefListeners.add(listener);
+      return () => {
+        composerBarPrefListeners.delete(listener);
+      };
+    }
     /** Stage 1A probe route; kept as a renderer-reporting side channel. */
     const PING_PATH = '/prompt-setting/ping';
     const SNAPSHOT_PATH = '/prompt-setting/snapshot';

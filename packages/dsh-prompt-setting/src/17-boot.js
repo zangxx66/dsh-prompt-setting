@@ -197,6 +197,11 @@
           // g-086 R3: the width→density policy (labels off below 640px).
           densityOf: composerBarDensityOf,
           COMPACT_WIDTH: COMPOSER_BAR_COMPACT_WIDTH,
+          // g-086 R5: the on/off preference bus (settings page ⇄ bar).
+          enabled: () => composerBarEnabled(),
+          setEnabled: setComposerBarEnabled,
+          subscribeEnabled: subscribeComposerBarEnabled,
+          PREF_KEY: COMPOSER_BAR_PREF_KEY,
         },
       },
       apply(ctx) {

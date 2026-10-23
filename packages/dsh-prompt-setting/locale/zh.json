@@ -208,8 +208,6 @@
   "assemblyHeading": "装配状态提示",
   "assemblyIntro": "只在这里显示，不进入模型上下文、不占 token、也不改变模型收到的 prompt。提示只在关键节点出现一次：新会话首次装配、以及保存 Prompt 之后的下一个 run。",
   "assemblySwitchLabel": "提示",
-  "assemblySwitchOn": "已开启",
-  "assemblySwitchOff": "已关闭",
   "assemblyTurnOn": "开启提示",
   "assemblyTurnOff": "关闭提示",
   "assemblySaving": "正在切换…",
@@ -595,5 +593,7 @@
   "barSummaryNone": "暂无",
   "barUserLabel": "用户",
   "barWorkspaceLabel": "工作区",
-  "barCoverageShort": "覆盖 {total} · 未生效 {ineffective}"
+  "barCoverageShort": "覆盖 {total} · 未生效 {ineffective}",
+  "composerBarSettingTitle": "状态栏",
+  "composerBarSettingNote": "显示在会话输入框上方的只读信息条。关闭后不再显示，也不会读取任何装配数据（只改本地偏好，不写宿主配置）。"
 }
