@@ -195,19 +195,13 @@
     }
 
     /**
-     * The settings opener this Host exposes, if any — the capability probe behind
-     * region 5.
+     * An opener the entry props themselves carry, if any — the first seat the
+     * button tries.
      *
-     * The 0.2.1-rc.3 Host ships no public API that opens the settings panel and
-     * selects a section from an unrelated plugin: the panel's open/section state
-     * lives in a store created privately by `sidebar.settings` (`ui-settings-general`),
-     * `settings.launcher`'s `openSettings` owner prop exists only for occupants of
-     * that slot, and the `settings.open` command is registered with the shortcuts
-     * service, which exposes `register`/catalog only — no dispatch. So the official
-     * path is "not available", and this probe is what makes that a **fact** rather
-     * than an assumption: a Host that ever passes `openSettings` (or
-     * `openSettingsPanel`) through the entry props upgrades the button with no
-     * change here, and every other Host gets the explicit fallback sentence.
+     * No 0.2.1-rc.3 slot hands `openSettings` to an unrelated entry (that owner
+     * prop belongs to `settings.launcher`), so in practice this returns `null`;
+     * it stays because a Host that ever does pass one must not need a code change
+     * here to get the direct path.
      * @param props - the entry's props.
      * @returns a zero-argument opener, or `null`.
      */
@@ -218,6 +212,238 @@
         if (typeof candidate === 'function') return () => candidate.call(props);
       }
       return null;
+    }
+
+    /**
+     * Invoke the Host's own `settings.open` command, through the shortcuts
+     * registry's **public** `invoke(id, context)` (g-086 R1).
+     *
+     * This is the honest answer to "how does a bar open the settings panel":
+     * `ui-settings-general` registers `settings.open` with `modals:
+     * ["settings"]`, and `ShortcutRegistry.invoke` checks only
+     * `context.modal !== null && !command.modals.includes(context.modal)` before
+     * running `resolve(...)`. Passing `modal: null` therefore elects the command
+     * and runs its `shellInstance.actions.open()` branch — the panel opens from a
+     * plugin that never occupied `settings.launcher`. (Dispatching a synthetic
+     * keyboard event would also "work" and is exactly the kind of fragile
+     * mechanism this avoids: the registry's own entry point is a documented one.)
+     *
+     * `shortcuts` is read through `ctx.get('shortcuts')` rather than declared in
+     * `inject`: a Host without the service must still apply this plugin (the
+     * same optional-read discipline `locale` follows), and a refused or throwing
+     * read must degrade to `false`, never to a throw inside a click handler.
+     * @param shortcuts - the shortcuts service, or anything else.
+     * @returns `true` only when the command was really invoked.
+     */
+    function composerBarInvokeSettingsShortcut(shortcuts) {
+      if (shortcuts === null || typeof shortcuts !== 'object' || typeof shortcuts.invoke !== 'function') return false;
+      try {
+        shortcuts.invoke('settings.open', { region: 'page', modal: null, target: null });
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    /** How long the bar keeps looking for the settings panel after the opener ran. */
+    const COMPOSER_BAR_AIM_TIMEOUT_MS = 800;
+
+    /** The document the bar may touch: an explicit prop first, the global one second. */
+    function composerBarDocumentOf(props) {
+      const explicit = props === null || props === undefined ? undefined : props.document;
+      if (explicit !== null && typeof explicit === 'object' && typeof explicit.querySelector === 'function') return explicit;
+      const globalDocument = typeof document === 'undefined' ? undefined : document;
+      return globalDocument !== null && typeof globalDocument === 'object' && typeof globalDocument.querySelector === 'function'
+        ? globalDocument
+        : null;
+    }
+
+    /**
+     * The settings panel in one document, or `null`.
+     *
+     * The anchor is the Host's own semantic marker (`data-shortcut-modal="settings"`,
+     * carried by the portaled dialog), never a build-time class name.
+     * @param root - a document (or any query-capable root).
+     * @returns the panel element, or `null`.
+     */
+    function composerBarSettingsPane(root) {
+      if (root === null || root === undefined || typeof root !== 'object' || typeof root.querySelector !== 'function') return null;
+      try {
+        const pane = root.querySelector('[data-shortcut-modal="settings"]');
+        return pane !== null && typeof pane === 'object' ? pane : null;
+      } catch {
+        return null;
+      }
+    }
+
+    /**
+     * The nav row whose visible text is exactly `label`, inside one settings pane.
+     *
+     * The panel's nav rows are button elements whose text is the section's registered
+     * label — so the plugin's own `t('nav')` is the precise needle, and an exact
+     * trimmed match is what keeps a sibling section from being clicked by accident.
+     * @param pane - the settings panel.
+     * @param label - the section label to match.
+     * @returns the clickable row, or `null`.
+     */
+    function composerBarNavButton(pane, label) {
+      if (pane === null || typeof pane !== 'object' || typeof pane.querySelectorAll !== 'function') return null;
+      const wanted = typeof label === 'string' ? label.trim() : '';
+      if (wanted.length === 0) return null;
+      let buttons;
+      try {
+        buttons = pane.querySelectorAll('nav button');
+      } catch {
+        return null;
+      }
+      if (buttons === null || typeof buttons !== 'object' || typeof buttons.length !== 'number') return null;
+      for (let index = 0; index < buttons.length; index += 1) {
+        const button = buttons[index];
+        if (button === null || typeof button !== 'object') continue;
+        const text = typeof button.textContent === 'string' ? button.textContent.trim() : '';
+        if (text === wanted && typeof button.click === 'function') return button;
+      }
+      return null;
+    }
+
+    /**
+     * Click one settings section by its label, when the panel is already there.
+     * @param root - the document.
+     * @param label - the section label.
+     * @returns `clicked` (the row was clicked), `panel` (open, no such row) or
+     *   `missing` (no panel yet).
+     */
+    function composerBarClickSection(root, label) {
+      const pane = composerBarSettingsPane(root);
+      if (pane === null) return 'missing';
+      const button = composerBarNavButton(pane, label);
+      if (button === null) return 'panel';
+      try {
+        button.click();
+      } catch {
+        return 'panel';
+      }
+      return 'clicked';
+    }
+
+    /**
+     * Wait — for at most {@link COMPOSER_BAR_AIM_TIMEOUT_MS} — for the panel the
+     * opener just opened, then click this plugin's own nav row.
+     *
+     * Two properties matter:
+     *   - **bounded and disposable** — one observer plus one timeout, both
+     *     released by the returned stopper (which the component calls on unmount
+     *     and before every new attempt). No `setTimeout` chain, no polling, and
+     *     no second observer per render;
+     *   - **best effort** — a panel that never appears, a row that never matches
+     *     and a Host that changes its nav markup all end the same way: the panel
+     *     is open (the user asked for settings and got settings), the bar keeps
+     *     working, and nothing is thrown. Section selection is a bonus, not a
+     *     requirement for the entry to be honest.
+     *
+     * The DOM hooks are injectable (`document` / `MutationObserver` / `raf` /
+     * timer functions) so the whole wait is testable without a browser.
+     * @param options - `document`, `label`, `timeoutMs` plus optional IO overrides.
+     * @returns an idempotent stopper.
+     */
+    function composerBarAimAtSection(options) {
+      const io = options === null || typeof options !== 'object' ? {} : options;
+      const doc = io.document === undefined ? null : io.document;
+      const label = io.label;
+      const timeoutMs =
+        typeof io.timeoutMs === 'number' && io.timeoutMs > 0 ? io.timeoutMs : COMPOSER_BAR_AIM_TIMEOUT_MS;
+      const view = doc !== null && typeof doc === 'object' && doc.defaultView !== null && doc.defaultView !== undefined ? doc.defaultView : null;
+      const setTimer = typeof io.setTimeout === 'function' ? io.setTimeout : typeof setTimeout === 'function' ? setTimeout : null;
+      const clearTimer =
+        typeof io.clearTimeout === 'function' ? io.clearTimeout : typeof clearTimeout === 'function' ? clearTimeout : null;
+      const raf =
+        typeof io.raf === 'function'
+          ? io.raf
+          : view !== null && typeof view.requestAnimationFrame === 'function'
+            ? view.requestAnimationFrame.bind(view)
+            : null;
+      const cancelRaf =
+        typeof io.cancelAnimationFrame === 'function'
+          ? io.cancelAnimationFrame
+          : view !== null && typeof view.cancelAnimationFrame === 'function'
+            ? view.cancelAnimationFrame.bind(view)
+            : null;
+      const ObserverCtor =
+        typeof io.MutationObserver === 'function'
+          ? io.MutationObserver
+          : view !== null && typeof view.MutationObserver === 'function'
+            ? view.MutationObserver
+            : typeof MutationObserver === 'function'
+              ? MutationObserver
+              : null;
+      let observer = null;
+      let timer = null;
+      let frame = null;
+      let stopped = false;
+      const stop = () => {
+        if (stopped) return;
+        stopped = true;
+        if (observer !== null) {
+          try {
+            observer.disconnect();
+          } catch {
+            // A disconnected observer is the goal; a throwing one is already dead.
+          }
+          observer = null;
+        }
+        if (timer !== null && clearTimer !== null) {
+          try {
+            clearTimer(timer);
+          } catch {
+            // Same as above: nothing to keep alive.
+          }
+          timer = null;
+        }
+        if (frame !== null && cancelRaf !== null) {
+          try {
+            cancelRaf(frame);
+          } catch {
+            // Same.
+          }
+          frame = null;
+        }
+      };
+      const attempt = () => {
+        if (stopped) return;
+        if (composerBarClickSection(doc, label) === 'clicked') stop();
+      };
+      const schedule = () => {
+        if (stopped || frame !== null) return;
+        const run = () => {
+          frame = null;
+          attempt();
+        };
+        if (raf !== null) {
+          try {
+            frame = raf(run);
+            return;
+          } catch {
+            frame = null;
+          }
+        }
+        run();
+      };
+      if (doc === null) return stop;
+      // The opener may have painted the panel synchronously (React commits before
+      // the handler returns in a portal): ask once before waiting for mutations.
+      attempt();
+      if (stopped) return stop;
+      if (ObserverCtor !== null) {
+        try {
+          observer = new ObserverCtor(schedule);
+          const target = doc.body !== null && typeof doc.body === 'object' ? doc.body : doc;
+          observer.observe(target, { childList: true, subtree: true });
+        } catch {
+          observer = null;
+        }
+      }
+      if (setTimer !== null) timer = setTimer(stop, timeoutMs);
+      return stop;
     }
 
     /**
@@ -320,6 +546,25 @@
       });
       const [nonce, setNonce] = React.useState(0);
       const [hint, setHint] = React.useState(false);
+      // One pending "find the settings panel" attempt at a time: kept in a ref so
+      // the component can stop it before starting another and on unmount.
+      const aimRef = React.useRef(null);
+      const stopAim = () => {
+        const stop = aimRef.current;
+        aimRef.current = null;
+        if (typeof stop === 'function') {
+          try {
+            stop();
+          } catch {
+            // The stopper is best effort; a throwing one must not break unmount.
+          }
+        }
+      };
+      // Unmount cleanup. An empty dependency array means the cleanup runs once,
+      // when the entry is torn down (session switch / plugin unload), which is
+      // exactly when a lingering observer would otherwise scan a document the bar
+      // no longer belongs to.
+      React.useEffect(() => stopAim, []);
 
       React.useEffect(() => {
         const urls = composerBarRequestUrls(sessionId);
@@ -428,14 +673,38 @@
           'aria-label': t('nav'),
           title: t('nav'),
           onClick: () => {
+            stopAim();
+            // g-086 R1: two seats, in order. The entry-props opener (a Host that
+            // hands one over), then the Host's own `settings.open` command via the
+            // shortcuts registry. Both are guarded: a throwing opener is "not
+            // available", not a broken click.
+            let opened = false;
             const open = composerBarSettingsOpener(props);
             if (open !== null) {
-              open();
+              try {
+                open();
+                opened = true;
+              } catch {
+                opened = false;
+              }
+            }
+            if (!opened && typeof props.invokeSettingsShortcut === 'function') {
+              try {
+                opened = props.invokeSettingsShortcut() === true;
+              } catch {
+                opened = false;
+              }
+            }
+            if (!opened) {
+              // The honest degradation: the button stays visible and says why it
+              // cannot do what it looks like it does — never a silent no-op.
+              setHint(true);
               return;
             }
-            // The honest degradation: the button stays visible and says why it
-            // cannot do what it looks like it does — never a silent no-op.
-            setHint(true);
+            setHint(false);
+            // The panel is open; selecting *this* plugin's page is best effort
+            // (bounded, disposable, anchored on semantic attributes only).
+            aimRef.current = composerBarAimAtSection({ document: composerBarDocumentOf(props), label: t('nav') });
           },
           style: {
             font: 'inherit',

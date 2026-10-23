@@ -179,6 +179,15 @@
           layerFact: composerBarLayerFact,
           noticeOf: composerBarNoticeOf,
           settingsOpener: composerBarSettingsOpener,
+          // g-086 R1: the two seats behind the settings entry — the Host command
+          // invoke (pure given the service) and the bounded panel/section aim.
+          invokeSettingsShortcut: composerBarInvokeSettingsShortcut,
+          documentOf: composerBarDocumentOf,
+          settingsPane: composerBarSettingsPane,
+          navButtonIn: composerBarNavButton,
+          clickSection: composerBarClickSection,
+          aimAtSection: composerBarAimAtSection,
+          AIM_TIMEOUT_MS: COMPOSER_BAR_AIM_TIMEOUT_MS,
         },
       },
       apply(ctx) {
@@ -199,6 +208,26 @@
 
         const canSubscribe = typeof locale?.subscribe === 'function';
         const canReadRevision = typeof locale?.getSnapshot === 'function';
+
+        /**
+         * g-086 R1: open the Host's settings panel from this plugin.
+         *
+         * `shortcuts` is read optionally through `ctx.get` — deliberately **not**
+         * listed in the descriptor's `inject`, because a Host without the shortcuts
+         * service must still apply this plugin (the same discipline `locale`
+         * follows above). Every read is guarded: a missing service, a service that
+         * throws on read, and a command that refuses all answer `false`, and the
+         * bar then shows its explicit fallback sentence instead of a dead button.
+         * @returns `true` only when the Host's `settings.open` was really invoked.
+         */
+        const invokeSettingsShortcut = () => {
+          try {
+            const shortcuts = typeof ctx.get === 'function' ? ctx.get('shortcuts') : undefined;
+            return composerBarInvokeSettingsShortcut(shortcuts);
+          } catch {
+            return false;
+          }
+        };
 
         // Built once so `React.useSyncExternalStore` sees stable identities.
         const face = {
@@ -310,6 +339,10 @@
                 // never both, and "no id at all" still means "no request".
                 inject: (sessionId) => ({
                   barSessionId: typeof sessionId === 'string' ? sessionId : '',
+                  // The settings opener rides the same face so the component has
+                  // one capability surface, not a prop it has to be handed by a
+                  // future Host slot that does not exist yet.
+                  invokeSettingsShortcut,
                 }),
               },
               ComposerAssemblyBar,

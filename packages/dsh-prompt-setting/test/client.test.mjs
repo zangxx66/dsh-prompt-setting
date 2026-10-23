@@ -17021,4 +17021,200 @@ test('client: the two new locale keys are symmetric and translated', () => {
   }
 });
 
+/** One settings-panel DOM double: a nav row whose text is `label`, and a click counter. */
+function fakeSettingsDocument(options = {}) {
+  const state = { clicks: 0, pane: null };
+  const label = options.label === undefined ? 'Prompt settings' : options.label;
+  const button = {
+    textContent: label,
+    click: () => {
+      state.clicks += 1;
+    },
+  };
+  const pane = {
+    querySelectorAll: (selector) => (selector === 'nav button' ? [button] : []),
+  };
+  state.pane = options.ready === false ? null : pane;
+  const doc = {
+    querySelector: (selector) => (selector === '[data-shortcut-modal="settings"]' ? state.pane : null),
+  };
+  return { doc, state, button, pane };
+}
+
+test('client: the bar invokes the Host command `settings.open` through the shortcuts registry (g-086 R1)', () => {
+  const { module } = loadClient('throw');
+  const calls = [];
+  const ctx = {
+    locale: { register() {}, bind: () => (key) => key },
+    slots: {
+      inject() {},
+      register() {
+        return () => {};
+      },
+    },
+    get(name) {
+      if (name !== 'shortcuts') return undefined;
+      return {
+        invoke: (...args) => {
+          calls.push(args);
+        },
+      };
+    },
+    effect(fn) {
+      fn();
+    },
+  };
+  module.apply(ctx);
+  // The apply-level opener is a closure over `ctx.get('shortcuts')`; it is not
+  // exported, so it is reached the way the entry reaches it — through the
+  // registration's inject face.
+  const { registrations } = mountClient(module, 'full', {});
+  assert.equal(registrations.length > 0, true);
+  const policy = module.__internals.composerBar;
+  // Pure half: the exact command and context the registry documents.
+  assert.equal(policy.invokeSettingsShortcut({ invoke: (...args) => calls.push(args) }), true);
+  assert.equal(calls.length, 1, 'invoke 被调用一次');
+  assert.equal(calls[0][0], 'settings.open', '命令 id');
+  assert.equal(calls[0][1].region, 'page');
+  assert.equal(calls[0][1].modal, null, 'modal=null 才会执行打开动作（而非 blocked）');
+  assert.equal(calls[0][1].target, null);
+  // Missing / throwing services degrade to false, never to a throw.
+  assert.equal(policy.invokeSettingsShortcut(null), false);
+  assert.equal(policy.invokeSettingsShortcut({}), false);
+  assert.equal(
+    policy.invokeSettingsShortcut({
+      invoke: () => {
+        throw new Error('registry refused');
+      },
+    }),
+    false,
+  );
+});
+
+test('client: the settings entry aims at its own nav row when the panel is already open', async () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  const fake = fakeSettingsDocument({ label: page.zh.nav });
+  const bar = makeAssemblyBar(page, {
+    session: { sessionId: 's1' },
+    document: fake.doc,
+    invokeSettingsShortcut: () => true,
+  });
+  let tree = await bar.flush();
+  const [button] = barButtonOf(tree, 'composer-bar-settings');
+  button.props.onClick();
+  tree = bar.draw();
+  assert.equal(fake.state.clicks, 1, '面板已在：立即点击本插件那一行 nav');
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'bar-settings-hint').length, 0);
+  assert.equal(page.router.calls.length, 3, '打开设置不改状态栏自己的读');
+});
+
+test('client: no opener path degrades visibly, and a throwing opener is not a broken click', async () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  // 1. nothing available
+  const bar = makeAssemblyBar(page, { session: { sessionId: 's1' } });
+  let tree = await bar.flush();
+  barButtonOf(tree, 'composer-bar-settings')[0].props.onClick();
+  tree = bar.draw();
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'bar-settings-hint').length, 1);
+  // 2. the shortcut service is there but throws: still a visible hint, no throw
+  const throwing = makeAssemblyBar(page, {
+    session: { sessionId: 's1' },
+    invokeSettingsShortcut: () => {
+      throw new Error('shortcuts broke');
+    },
+  });
+  tree = await throwing.flush();
+  throwing.props.document = { querySelector: () => null };
+  barButtonOf(tree, 'composer-bar-settings')[0].props.onClick();
+  tree = throwing.draw();
+  assert.equal(collect(tree, (node) => node.props && node.props['data-region'] === 'bar-settings-hint').length, 1);
+});
+
+test('client: the bounded aim clicks a late panel once, and stops at its 800 ms deadline', () => {
+  const policy = pagePolicy();
+  // A. panel appears after the first look: the observer's flush finds it.
+  const late = fakeSettingsDocument({ ready: false, label: 'Prompt 管理' });
+  const listeners = [];
+  class FakeObserver {
+    constructor(callback) {
+      this.callback = callback;
+      this.disconnects = 0;
+      listeners.push(this);
+    }
+    observe() {}
+    disconnect() {
+      this.disconnects += 1;
+    }
+  }
+  const timers = [];
+  let stopped = null;
+  const stop = policy.aimAtSection({
+    document: late.doc,
+    label: 'Prompt 管理',
+    MutationObserver: FakeObserver,
+    raf: (run) => {
+      run();
+      return 1;
+    },
+    setTimeout: (fn) => {
+      timers.push(fn);
+      return timers.length;
+    },
+    clearTimeout: () => {},
+  });
+  stopped = stop;
+  assert.equal(late.state.clicks, 0, '第一次看时面板还没出现');
+  assert.equal(listeners.length, 1, '只挂一个 observer');
+  late.state.pane = late.pane;
+  listeners[0].callback();
+  assert.equal(late.state.clicks, 1, '面板出现后点击一次');
+  assert.equal(listeners[0].disconnects, 1, '命中后断开 observer');
+  stopped();
+  stopped();
+  assert.equal(listeners[0].disconnects, 1, 'stopper 幂等');
+
+  // B. nothing ever appears: the deadline stops the wait, and a later mutation
+  //    is not looked at again (the observer is disconnected, the flag is set).
+  const never = fakeSettingsDocument({ ready: false, label: 'Prompt 管理' });
+  const secondListeners = [];
+  class SecondObserver {
+    constructor(callback) {
+      this.callback = callback;
+      this.disconnects = 0;
+      secondListeners.push(this);
+    }
+    observe() {}
+    disconnect() {
+      this.disconnects += 1;
+    }
+  }
+  const deadlines = [];
+  policy.aimAtSection({
+    document: never.doc,
+    label: 'Prompt 管理',
+    MutationObserver: SecondObserver,
+    raf: (run) => {
+      run();
+      return 1;
+    },
+    setTimeout: (fn, ms) => {
+      deadlines.push({ fn, ms });
+      return 1;
+    },
+    clearTimeout: () => {},
+  });
+  assert.equal(deadlines.length, 1);
+  assert.equal(deadlines[0].ms, policy.AIM_TIMEOUT_MS);
+  assert.equal(deadlines[0].ms, 800, '总超时 800ms');
+  deadlines[0].fn();
+  assert.equal(secondListeners[0].disconnects, 1, '超时后断开 observer');
+  secondListeners[0].callback();
+  assert.equal(never.state.clicks, 0, '超时后的 DOM 变动不再触发点击');
+});
+
+function pagePolicy() {
+  const { module } = loadClient('throw');
+  return module.__internals.composerBar;
+}
+
 // #endregion

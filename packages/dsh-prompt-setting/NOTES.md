@@ -10554,33 +10554,48 @@ v0.2.3 的计划条目（g-065…g-074）与 v0.2.4 的（g-075…g-080）一直
 - **色相**：五分区五色（business / success / warning / brand / info），色相只承载左侧色条与小标签，值文本走语义色
   （`normal` / `warn` / `error` / `unknown` ⇒ `labelPrimary` / `stateWarn` / `stateError` / `labelTertiary`），
   所以亮暗主题下不会出现「浅色字压浅色底」；`data-tone` 供机器断言。
-- **设置入口**：0.2.1-rc.3 **没有**公开 API 能从插件打开设置面板并选中 section —— 面板状态在 `sidebar.settings` 私有的
-  store 里（`ui-settings-general` 的 `shell-store`），`openSettings` owner prop 只发给该槽的 occupant，
-  `settings.open` 命令只注册到 shortcuts 服务（该服务只有 `register`/catalog，无 dispatch）。于是入口做成
-  **能力探测 + 显式降级**：宿主若通过 entry props 传 `openSettings`，按钮直接调用（未来能力自动升级）；
-  否则点击后出现一条 `data-region="bar-settings-hint"` 的可见说明，按钮保持可见，绝不静默失效。
+- **设置入口（R1 修正）**：宿主确实没有「按命令 id 直接派发」的入口，但 **`ShortcutRegistry.invoke(id, context)`
+  是公开 API**（`registry.d.ts`：「Invoke a native menu selection independently of its optional key binding」）。
+  `ui-settings-general` 用 `modals: ["settings"]` 注册命令 `settings.open`，其 `resolve({modal})` 在
+  `modal !== "settings"` 时走 `shellInstance.actions.open()`；`invoke` 的前置校验是
+  `context.modal !== null && !command.modals.includes(context.modal)`，所以 **传 `modal: null` 会直接执行打开动作**。
+  读取方式是 `ctx.get('shortcuts')`（可选读取，**不**写进 descriptor 的 `inject`——shortcuts 服务缺失时插件仍须 apply；
+  与 `locale` 同一纪律），失败返回 `false`。
+  点击顺序：① entry props 自带的 `openSettings`/`openSettingsPanel`（未来宿主直给）→ ② `invokeSettingsShortcut()`
+  → ③ 两者都不可用才显示 `data-region="bar-settings-hint"` 的降级提示。
+- **定位到本插件的 section（尽力而为）**：打开面板后 `composerBarAimAtSection` 先同步查一次（React portal 提交早于
+  handler 返回），再挂**一个** `MutationObserver`（`childList+subtree`，观察 `document.body`）等
+  `[data-shortcut-modal="settings"]` 出现，面板内按**精确文本**匹配 `nav button`（文本即本插件注册的 `label: t('nav')`）
+  点击一次；总超时 **800ms**，`stopper` 幂等并断开 observer / 清 timer / 取消 rAF，组件卸载与新一次点击都会调用它。
+  锚点只用语义属性（`data-shortcut-modal`、`nav`、button 文本），无 hash 类名、无轮询链、每次渲染不重复挂 observer。
+  等不到面板或匹配不到行时什么也不发生（面板已打开，用户拿到了他要的设置）。
 
 ### 二、工程代价与处理
 
-- **新增一个段**：`src/16-composer-bar.js`（533 行），原 `16-boot.js` 原样改名为 `17-boot.js`（只重切、不移动）。
-  合计 12839 → **13429** 行，18 段；§1.3 / §5.1 两张表、`test/client-source.test.mjs` 的 `SEGMENTS`、
+- **新增一个段**：`src/16-composer-bar.js`（R1 后 802 行），原 `16-boot.js` 原样改名为 `17-boot.js`（只重切、不移动）。
+  合计 12839 → **13731** 行，18 段；§1.3 / §5.1 两张表、`test/client-source.test.mjs` 的 `SEGMENTS`、
   `docs/architecture-map.md`、`docs/check-refs.mjs` 的 `client.js` 行号引用与 `12839` 常量全部按实际行号重定位。
 - **locale 段 1200 行顶格**：`02-locale.js` 正是预算上限（597 键 × 2 语言 + 1 行头注释），**加任何键都会超预算**。
   本轮加 2 个键（`barNoSession` / `barSettingsFallback`），等量删除 2 个**全仓库零引用**的历史死键
   （`updateApplyStarting` / `assemblyWatching`，`grep` 覆盖 `src/` + `client.*.js` + `test/` 均为 0），键数守恒 597。
   这也是为什么没有按「新增 3–5 个键」的常规做法铺文案：分区标签与状态句全部复用页面已有的键。
-- **单测**：8 条新用例并入 `test/client.test.mjs`（沿用该文件的 vm 沙盒 + hooks 桩 + fetch 路由），
-  覆盖五分区/五色相、两层与摘要口径、层未启用 / 有无生效条目、无会话零请求、入口降级与「宿主给 opener 就调用」、
+- **单测**：13 条新用例并入 `test/client.test.mjs`（沿用该文件的 vm 沙盒 + hooks 桩 + fetch 路由），
+  覆盖五分区/五色相、两层与摘要口径、层未启用 / 有无生效条目、无会话零请求、未声明插槽、入口降级与
+  「宿主给 opener 就调用」、**`invokeSettingsShortcut` 的命令与 context（含 modal:null）**、
+  **面板已在时立即点击本插件 nav 行 / 面板迟到时由唯一 observer 触发点击**、
+  **800ms 超时后 observer 断开且后续 DOM 变动不再点击、stopper 幂等**、
   按 Session 重读（`enforceEffectDeps: true`）+ 刷新只读、两个新键的中英对称。
 - **负向对照（改坏就会红，均已实跑并还原）**：①去掉「无 Session ⇒ 不发请求」的短路 ⇒ 无会话用例红；
-  ②把工作区层色相改成与用户层同色 ⇒ 五色相用例红；③删掉 effect 依赖数组 ⇒「按 Session 重读」用例红。
+  ②把工作区层色相改成与用户层同色 ⇒ 五色相用例红；③删掉 effect 依赖数组 ⇒「按 Session 重读」用例红；
+  ④把 `invoke` 的 `modal` 从 `null` 改成 `'settings'` ⇒ 命令 context 用例红；
+  ⑤删掉「先同步查一次面板」⇒ 面板已在的定位用例红。
 
 ### 三、验证
 
 - `node scripts/verify.mjs`：**6 步 / 0 失败**（check-refs / client-build --check / locale-pack --check / prepare / check-compat / 全量测试）。
 - `node scripts/client-build.mjs --check`：**18 个段与 client.js 逐字节一致**。
-- `node docs/check-refs.mjs`：`unresolved=0`、其它失败 0，§1.3 `rows=25 合计=13429`、§5.1 `rows=18 合计=13429 最大段=1200`。
-- 全量测试：**1022 pass / 0 fail**（`node --test test/*.test.mjs`）。
+- `node docs/check-refs.mjs`：`unresolved=0`、其它失败 0，§1.3 `rows=25 合计=13731`、§5.1 `rows=18 合计=13731 最大段=1200`。
+- 全量测试：**1035 pass / 0 fail**（`node --test test/*.test.mjs`）。
 - **未验证（UNVERIFIED）**：真机目视。插件以 `link:` 指向**主工作树**（`~/.dsh/profiles/web/package.json`），
   worktree 的改动未合入主工作树，刷新 `http://127.0.0.1:3080` 加载的仍是旧 bundle —— 本轮环境无法在不污染主工作树 /
   profile 的前提下做真机核对。合并后刷新一次即可按「输入框上方五项 vs 设置页同源」逐项核对。
