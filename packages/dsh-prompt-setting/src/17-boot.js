@@ -194,6 +194,9 @@
           clickSection: composerBarClickSection,
           aimAtSection: composerBarAimAtSection,
           AIM_TIMEOUT_MS: COMPOSER_BAR_AIM_TIMEOUT_MS,
+          // g-086 R3: the width→density policy (labels off below 640px).
+          densityOf: composerBarDensityOf,
+          COMPACT_WIDTH: COMPOSER_BAR_COMPACT_WIDTH,
         },
       },
       apply(ctx) {

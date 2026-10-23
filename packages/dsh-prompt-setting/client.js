@@ -1134,7 +1134,6 @@ window.__ModuleLoader__.load({
       assemblyNoSession: '「高级」的工作区选择器还没有可用的会话：请先在左侧打开一个会话，或让宿主列出工作区。',
       assemblyNoRecord: '所选会话还没有观察到装配；下一次请求后结果会出现在这里。',
       assemblyNoNotice: '所选会话已开启提示，但还没有到提示节点（新会话首次装配，或保存 Prompt 之后的下一个 run）。',
-      assemblyWaitingDelivery: '等待本步的送达事件…',
       assemblyKindFirst: '新会话首次装配',
       assemblyKindChange: '保存 Prompt 之后的下一个 run',
       assemblyLayerAssembly: '装配层',
@@ -1202,7 +1201,6 @@ window.__ModuleLoader__.load({
       mineDraftElsewhere: '你在「{scope}」还有一份未保存的内容（{chars} 字），它没有跟着当前作用域走：内容仍在原作用域里，切回去即可继续编辑。',
       mineDraftElsewhereDrop: '放弃那份草稿',
       mineSaveBlockedDraftElsewhere: '已阻止保存：你在「{scope}」还有未保存的内容（{chars} 字），而当前编辑框显示的不是它。请先切回该作用域保存或放弃它，再回到这里保存。',
-      nextTurn: '下一轮生效',
       ovHeading: '已生效覆盖',
       ovEmpty: '当前作用域没有任何覆盖。',
       ovMergedNote: '合并顺序：工作区级覆盖同名用户级条目，并保留其位置。',
@@ -1375,7 +1373,6 @@ window.__ModuleLoader__.load({
       importApplyButton: '确认导入',
       importApplying: '导入中…',
       importNeedText: '请先粘贴或选择导出 JSON。',
-      importBadJson: '不是合法 JSON：{reason}',
       importPlanHeading: '变更预览（未写入）',
       importCounts: '新增 {added} / 覆盖 {replaced} / 无变化 {unchanged} / 删除 {removed} / 保留本地 {kept}',
       importChangeRow: '{name}：{status}',
@@ -1511,6 +1508,9 @@ window.__ModuleLoader__.load({
       barSummaryUnconfirmed: '已装配 · 未确认',
       barSummaryNotAssembled: '未装配',
       barSummaryNone: '暂无',
+      barUserLabel: '用户',
+      barWorkspaceLabel: '工作区',
+      barCoverageShort: '覆盖 {total} · 未生效 {ineffective}',
     };
 
     const en = {
@@ -1734,7 +1734,6 @@ window.__ModuleLoader__.load({
       assemblyNoSession: 'The Advanced tab\'s workspace selector has no session to name yet: open a session on the left, or have the host list the workspaces.',
       assemblyNoRecord: 'No assembly has been observed for the selected session yet; the result appears here after the next request.',
       assemblyNoNotice: 'The notice is on for the selected session, but no key node has been reached yet (the first assembly of a new conversation, or the next run after a prompt is saved).',
-      assemblyWaitingDelivery: 'Waiting for this step\'s delivery event…',
       assemblyKindFirst: 'First assembly of a new conversation',
       assemblyKindChange: 'Next run after a prompt was saved',
       assemblyLayerAssembly: 'Assembly layer',
@@ -1802,7 +1801,6 @@ window.__ModuleLoader__.load({
       mineDraftElsewhere: 'You still have unsaved text in "{scope}" ({chars} characters). It did not follow this scope change: it is still there, and going back to that scope continues where you left off.',
       mineDraftElsewhereDrop: 'Discard that draft',
       mineSaveBlockedDraftElsewhere: 'Save blocked: you have unsaved text in "{scope}" ({chars} characters) and it is not what the editor is showing. Go back to that scope to save or discard it, then save here.',
-      nextTurn: 'next-turn',
       ovHeading: 'Active overrides',
       ovEmpty: 'This scope has no overrides.',
       ovMergedNote: 'Merge order: a workspace override wins over the same-name user entry and keeps its position.',
@@ -1975,7 +1973,6 @@ window.__ModuleLoader__.load({
       importApplyButton: 'Apply the import',
       importApplying: 'Importing…',
       importNeedText: 'Paste or choose an export document first.',
-      importBadJson: 'Not valid JSON: {reason}',
       importPlanHeading: 'Preview of the change (nothing written yet)',
       importCounts: 'added {added} / replaced {replaced} / unchanged {unchanged} / removed {removed} / local kept {kept}',
       importChangeRow: '{name}: {status}',
@@ -2111,6 +2108,9 @@ window.__ModuleLoader__.load({
       barSummaryUnconfirmed: 'Assembled · unconfirmed',
       barSummaryNotAssembled: 'Not assembled',
       barSummaryNone: 'None yet',
+      barUserLabel: 'User',
+      barWorkspaceLabel: 'Workspace',
+      barCoverageShort: 'Overrides {total} · missed {ineffective}',
     };
 
     /**
@@ -12854,6 +12854,32 @@ window.__ModuleLoader__.load({
     /** How long the bar keeps looking for the settings panel after the opener ran. */
     const COMPOSER_BAR_AIM_TIMEOUT_MS = 800;
 
+    /**
+     * Below this content width the bar switches to its compact form (g-086 R3).
+     *
+     * 640px is the width at which the five cells stop fitting on one line with
+     * their labels (measured against the dock's own inset budget): the settings
+     * button is the last fixed piece, so the threshold sits above it.
+     */
+    const COMPOSER_BAR_COMPACT_WIDTH = 640;
+
+    /**
+     * One container width → the bar's density.
+     *
+     * `full` keeps the labels; `compact` drops them and shortens the layer
+     * values, which is what keeps a docked sidebar from wrapping the row. An
+     * unknown width (no `ResizeObserver`, a first paint before measurement) is
+     * `full`: the row still cannot wrap (it is `nowrap`), it just ellipsizes
+     * until the measurement arrives.
+     * @param width - the surface's content width in CSS pixels, or null.
+     * @returns `full` | `compact`.
+     */
+    function composerBarDensityOf(width) {
+      return typeof width === 'number' && Number.isFinite(width) && width > 0 && width < COMPOSER_BAR_COMPACT_WIDTH
+        ? 'compact'
+        : 'full';
+    }
+
     /** The document the bar may touch: an explicit prop first, the global one second. */
     function composerBarDocumentOf(props) {
       const explicit = props === null || props === undefined ? undefined : props.document;
@@ -13093,6 +13119,9 @@ window.__ModuleLoader__.load({
             display: 'flex',
             alignItems: 'baseline',
             gap: 5,
+            // R3: every cell may shrink (and its value ellipsize); the settings
+            // seat is the one exception — it keeps its size and sits at the end.
+            flex: options.flex === undefined ? '0 1 auto' : options.flex,
             minWidth: 0,
             paddingLeft: 6,
             borderLeft: `3px solid ${hue}`,
@@ -13126,7 +13155,12 @@ window.__ModuleLoader__.load({
                   whiteSpace: 'nowrap',
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
-                  maxWidth: options.region === 'bar-assembly' ? 460 : 280,
+                  // R3: the value gives way before the row does — it shrinks and
+                  // ellipsizes (full text stays in the tooltip), and the cell's
+                  // own width is the only ceiling.
+                  flex: '0 1 auto',
+                  minWidth: 0,
+                  maxWidth: 'none',
                 },
               },
               options.value,
@@ -13169,6 +13203,52 @@ window.__ModuleLoader__.load({
       });
       const [nonce, setNonce] = React.useState(0);
       const [hint, setHint] = React.useState(false);
+      // g-086 R3: the surface never wraps, so it needs to know how much room it
+      // has: the root's own width is measured (ResizeObserver) and the compact
+      // form takes over below COMPOSER_BAR_COMPACT_WIDTH. A case may hand the
+      // width in through `props.barWidth` instead of a DOM measurement.
+      const [barWidth, setBarWidth] = React.useState(typeof props.barWidth === 'number' ? props.barWidth : null);
+      const observerRef = React.useRef(null);
+      const attachRef = React.useRef(null);
+      if (attachRef.current === null) {
+        attachRef.current = (node) => {
+          if (observerRef.current !== null) {
+            try {
+              observerRef.current.disconnect();
+            } catch {
+              // Already dead; nothing to release.
+            }
+            observerRef.current = null;
+          }
+          if (node === null || node === undefined) return;
+          const Ctor =
+            typeof props.ResizeObserver === 'function'
+              ? props.ResizeObserver
+              : typeof ResizeObserver === 'function'
+                ? ResizeObserver
+                : null;
+          if (Ctor !== null) {
+            try {
+              const observer = new Ctor((entries) => {
+                const entry = Array.isArray(entries) ? entries[0] : null;
+                const measured =
+                  entry !== null && entry !== undefined && entry.contentRect !== null && entry.contentRect !== undefined && typeof entry.contentRect.width === 'number'
+                    ? entry.contentRect.width
+                    : node.clientWidth;
+                setBarWidth(typeof measured === 'number' && Number.isFinite(measured) ? measured : null);
+              });
+              observer.observe(node);
+              observerRef.current = observer;
+            } catch {
+              observerRef.current = null;
+            }
+          }
+          // First paint: measure synchronously so the very first frame already
+          // knows whether labels fit (the observer only reports on changes).
+          if (typeof node.clientWidth === 'number' && node.clientWidth > 0) setBarWidth(node.clientWidth);
+        };
+      }
+      const compact = composerBarDensityOf(barWidth) === 'compact';
       // One pending "find the settings panel" attempt at a time: kept in a ref so
       // the component can stop it before starting another and on unmount.
       const aimRef = React.useRef(null);
@@ -13234,8 +13314,12 @@ window.__ModuleLoader__.load({
         if (fact.kind === 'error') return { text: t('loadFailed'), tone: 'error' };
         if (fact.kind === 'disabled') return { text: t('stDisabled'), tone: 'warn' };
         if (fact.kind === 'none') return { text: t('stNone'), tone: 'unknown' };
+        const params = { total: String(fact.total), ineffective: String(fact.ineffective) };
         return {
-          text: fmt(t('mineStatusCoverage'), { total: String(fact.total), ineffective: String(fact.ineffective) }),
+          // g-086 R3: short in the cell, the settings page's full sentence in
+          // the tooltip — the meaning is unchanged, only the width is.
+          text: fmt(t('barCoverageShort'), params),
+          title: fmt(t('mineStatusCoverage'), params),
           tone: fact.ineffective > 0 ? 'warn' : 'normal',
         };
       };
@@ -13285,9 +13369,9 @@ window.__ModuleLoader__.load({
           onClick: () => setNonce((value) => value + 1),
           style: {
             font: 'inherit',
-            fontSize: 11,
-            lineHeight: '14px',
-            padding: '0 4px',
+            fontSize: 13,
+            lineHeight: '16px',
+            padding: '0 2px',
             border: 'none',
             borderRadius: 4,
             background: 'transparent',
@@ -13295,7 +13379,9 @@ window.__ModuleLoader__.load({
             cursor: 'pointer',
           },
         },
-        t('refresh'),
+        // An icon, not a translation: the accessible name stays the localized
+        // verb (`refresh`), while the cell spends no horizontal room on words.
+        '↻',
       );
       const settingsButton = h(
         'button',
@@ -13387,6 +13473,7 @@ window.__ModuleLoader__.load({
           'data-composer-bar-session': sessionId === '' ? '' : sessionId,
           role: 'status',
           'aria-live': 'polite',
+          ref: attachRef.current,
           style: {
             boxSizing: 'border-box',
             width:
@@ -13406,9 +13493,13 @@ window.__ModuleLoader__.load({
             'data-composer-bar-surface': '',
             style: {
               display: 'flex',
-              flexWrap: 'wrap',
+              // R3: never wrap. A narrower dock shrinks the cells (each one may
+              // shrink, values ellipsize) instead of pushing the settings button
+              // onto a second line.
+              flexWrap: 'nowrap',
               alignItems: 'center',
-              gap: '4px 14px',
+              gap: '4px 10px',
+              minWidth: 0,
               padding: '5px 10px',
               border: `1px solid ${token.surfaceStroke}`,
               borderRadius: 8,
@@ -13420,26 +13511,28 @@ window.__ModuleLoader__.load({
             },
           },
           composerBarRegionOf({
-          region: 'bar-sections',
-          label: t('viewSections'),
-          value: sectionsValue.text,
-          tone: sectionsValue.tone,
-        }),
+            region: 'bar-sections',
+            label: compact ? '' : t('viewSections'),
+            value: sectionsValue.text,
+            tone: sectionsValue.tone,
+          }),
         composerBarRegionOf({
           region: 'bar-user-layer',
-          label: t('ovUser'),
+          label: compact ? '' : t('barUserLabel'),
           value: userLine.text,
           tone: userLine.tone,
+          title: userLine.title,
         }),
         composerBarRegionOf({
           region: 'bar-workspace-layer',
-          label: t('ovWorkspace'),
+          label: compact ? '' : t('barWorkspaceLabel'),
           value: workspaceLine.text,
           tone: workspaceLine.tone,
+          title: workspaceLine.title,
         }),
         composerBarRegionOf({
           region: 'bar-assembly',
-          label: t('barAssemblyLabel'),
+          label: compact ? '' : t('barAssemblyLabel'),
           value: assemblyValue.text,
           tone: assemblyValue.tone,
           title: assemblyValue.title,
@@ -13450,6 +13543,9 @@ window.__ModuleLoader__.load({
           label: '',
           value: '',
           tone: 'unknown',
+          // Never compressed: this is the one cell whose whole point is to stay
+          // visible and clickable when the row is tight.
+          flex: '0 0 auto',
           extra: settingsButton,
         }),
         hint === true
@@ -13670,6 +13766,9 @@ window.__ModuleLoader__.load({
           clickSection: composerBarClickSection,
           aimAtSection: composerBarAimAtSection,
           AIM_TIMEOUT_MS: COMPOSER_BAR_AIM_TIMEOUT_MS,
+          // g-086 R3: the width→density policy (labels off below 640px).
+          densityOf: composerBarDensityOf,
+          COMPACT_WIDTH: COMPOSER_BAR_COMPACT_WIDTH,
         },
       },
       apply(ctx) {

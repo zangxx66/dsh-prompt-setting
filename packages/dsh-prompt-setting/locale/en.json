@@ -219,7 +219,6 @@
   "assemblyNoSession": "The Advanced tab's workspace selector has no session to name yet: open a session on the left, or have the host list the workspaces.",
   "assemblyNoRecord": "No assembly has been observed for the selected session yet; the result appears here after the next request.",
   "assemblyNoNotice": "The notice is on for the selected session, but no key node has been reached yet (the first assembly of a new conversation, or the next run after a prompt is saved).",
-  "assemblyWaitingDelivery": "Waiting for this step's delivery event…",
   "assemblyKindFirst": "First assembly of a new conversation",
   "assemblyKindChange": "Next run after a prompt was saved",
   "assemblyLayerAssembly": "Assembly layer",
@@ -287,7 +286,6 @@
   "mineDraftElsewhere": "You still have unsaved text in \"{scope}\" ({chars} characters). It did not follow this scope change: it is still there, and going back to that scope continues where you left off.",
   "mineDraftElsewhereDrop": "Discard that draft",
   "mineSaveBlockedDraftElsewhere": "Save blocked: you have unsaved text in \"{scope}\" ({chars} characters) and it is not what the editor is showing. Go back to that scope to save or discard it, then save here.",
-  "nextTurn": "next-turn",
   "ovHeading": "Active overrides",
   "ovEmpty": "This scope has no overrides.",
   "ovMergedNote": "Merge order: a workspace override wins over the same-name user entry and keeps its position.",
@@ -460,7 +458,6 @@
   "importApplyButton": "Apply the import",
   "importApplying": "Importing…",
   "importNeedText": "Paste or choose an export document first.",
-  "importBadJson": "Not valid JSON: {reason}",
   "importPlanHeading": "Preview of the change (nothing written yet)",
   "importCounts": "added {added} / replaced {replaced} / unchanged {unchanged} / removed {removed} / local kept {kept}",
   "importChangeRow": "{name}: {status}",
@@ -595,5 +592,8 @@
   "barSummaryDelivered": "Assembled · delivered",
   "barSummaryUnconfirmed": "Assembled · unconfirmed",
   "barSummaryNotAssembled": "Not assembled",
-  "barSummaryNone": "None yet"
+  "barSummaryNone": "None yet",
+  "barUserLabel": "User",
+  "barWorkspaceLabel": "Workspace",
+  "barCoverageShort": "Overrides {total} · missed {ineffective}"
 }

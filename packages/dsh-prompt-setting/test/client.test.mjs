@@ -16857,11 +16857,18 @@ test('client: the bar states the page’s own numbers — sections, both layers,
   const tree = await bar.flush();
   // Region 1: `effective.sections.length` — the number「提示词总览」counts.
   assert.equal(barValueOf(tree, 'bar-sections'), String(snapshotFixture().effective.sections.length));
-  // Region 2: the user layer's coverage, formatted by the page's own sentence.
+  // Region 2: the user layer's coverage — R3's short form in the cell, the
+  // settings page's full sentence in the tooltip.
   assert.equal(
     barValueOf(tree, 'bar-user-layer'),
-    zh.mineStatusCoverage.replace('{total}', '1').replace('{ineffective}', '0'),
+    zh.barCoverageShort.replace('{total}', '1').replace('{ineffective}', '0'),
   );
+  assert.equal(
+    barValueNodeOf(tree, 'bar-user-layer').props.title,
+    zh.mineStatusCoverage.replace('{total}', '1').replace('{ineffective}', '0'),
+    '完整句进 title（R3）',
+  );
+  assert.equal(barLabelOf(tree, 'bar-user-layer'), zh.barUserLabel, 'bar 专用短 label');
   assert.equal(barRegionOf(tree, 'bar-user-layer').props['data-tone'], 'normal');
   // Region 3: the fixture's workspace layer is disabled — that is not "zero
   // overrides", so the cell says so and colours it as a warning.
@@ -16916,8 +16923,13 @@ test('client: a ready layer reports its own coverage, including what did not tak
   // Two stored entries, one of which has no target in the assembly.
   assert.equal(
     barValueOf(tree, 'bar-workspace-layer'),
+    zh.barCoverageShort.replace('{total}', '2').replace('{ineffective}', '1'),
+  );
+  assert.equal(
+    barValueNodeOf(tree, 'bar-workspace-layer').props.title,
     zh.mineStatusCoverage.replace('{total}', '2').replace('{ineffective}', '1'),
   );
+  assert.equal(barLabelOf(tree, 'bar-workspace-layer'), zh.barWorkspaceLabel);
   assert.equal(barRegionOf(tree, 'bar-workspace-layer').props['data-tone'], 'warn', '有未生效条目就是警告色');
   // No key node observed: the settings page's own「no record」sentence.
   assert.equal(barValueOf(tree, 'bar-assembly'), zh.barSummaryNone);
@@ -17409,5 +17421,62 @@ test('client: the bar borrows the Host dock’s width rule, with the surface on 
   assert.equal(surface[0].props.style.padding, '5px 10px', '内边距在内层，不破坏对齐');
   assert.equal(surface[0].props.style.borderRadius, 8);
 });
+
+test('client: the bar never wraps — narrow widths shrink and ellipsize instead (g-086 R3)', async () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  const bar = makeAssemblyBar(page, { session: { sessionId: 's1' } });
+  const tree = await bar.flush();
+  const surface = collect(tree, (node) => node.props && node.props['data-composer-bar-surface'] !== undefined)[0];
+  assert.equal(surface.props.style.flexWrap, 'nowrap', '绝不折行');
+  assert.equal(surface.props.style.gap, '4px 10px', '固定占宽缩短');
+  for (const node of barRegions(tree)) {
+    assert.equal(node.props.style.minWidth, 0, `${node.props['data-region']} 可收缩`);
+    if (node.props['data-region'] === 'bar-settings') {
+      assert.equal(node.props.style.flex, '0 0 auto', '设置入口不被压缩');
+      assert.equal(node.props.style.marginLeft, 'auto', '入口永远在行尾');
+    } else {
+      assert.equal(node.props.style.flex, '0 1 auto', `${node.props['data-region']} 可收缩不可扩张`);
+    }
+  }
+  for (const region of ['bar-sections', 'bar-user-layer', 'bar-workspace-layer', 'bar-assembly']) {
+    const value = barValueNodeOf(tree, region);
+    assert.equal(value.props.style.flex, '0 1 auto');
+    assert.equal(value.props.style.minWidth, 0);
+    assert.equal(value.props.style.maxWidth, 'none', '宽度由容器决定，不再是固定上限');
+    assert.equal(value.props.style.textOverflow, 'ellipsis');
+  }
+});
+
+test('client: below 640px the bar switches to its compact form (labels off, values short)', async () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  const policy = page.loaded.module.__internals.composerBar;
+  assert.equal(policy.COMPACT_WIDTH, 640);
+  assert.equal(policy.densityOf(639), 'compact');
+  assert.equal(policy.densityOf(640), 'full');
+  assert.equal(policy.densityOf(null), 'full', '未知宽度先按 full，行本来就 nowrap');
+  // A case can hand the measured width in; the real component gets it from
+  // ResizeObserver on the root.
+  const bar = makeAssemblyBar(page, { session: { sessionId: 's1' }, barWidth: 560 });
+  const tree = await bar.flush();
+  assert.deepEqual(
+    barRegions(tree).map((node) => node.props['data-region']),
+    ['bar-sections', 'bar-user-layer', 'bar-workspace-layer', 'bar-assembly', 'bar-settings'],
+  );
+  const labels = collect(tree, (node) => node.props && node.props['data-bar-label'] !== undefined);
+  assert.equal(labels.length, 0, '紧凑态隐藏所有 label（只留色条+值）');
+  // Every region still draws a value cell, and the entry is still there.
+  for (const region of ['bar-sections', 'bar-user-layer', 'bar-workspace-layer', 'bar-assembly']) {
+    assert.equal(typeof barValueOf(tree, region), 'string');
+  }
+  assert.equal(barButtonOf(tree, 'composer-bar-settings').length, 1);
+  // The full-width render keeps the labels, so the switch is really conditional.
+  // A fresh page: the hooks double keeps one state cell per component instance,
+  // so the same runtime cannot host a second "first render" with another width.
+  const widePage = makePage({ primitives: 'throw', responses: defaultResponses() });
+  const wide = makeAssemblyBar(widePage, { session: { sessionId: 's1' }, barWidth: 900 });
+  const wideTree = await wide.flush();
+  assert.equal(collect(wideTree, (node) => node.props && node.props['data-bar-label'] !== undefined).length, 4);
+});
+
 
 // #endregion

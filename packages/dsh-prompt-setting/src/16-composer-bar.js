@@ -363,6 +363,32 @@
     /** How long the bar keeps looking for the settings panel after the opener ran. */
     const COMPOSER_BAR_AIM_TIMEOUT_MS = 800;
 
+    /**
+     * Below this content width the bar switches to its compact form (g-086 R3).
+     *
+     * 640px is the width at which the five cells stop fitting on one line with
+     * their labels (measured against the dock's own inset budget): the settings
+     * button is the last fixed piece, so the threshold sits above it.
+     */
+    const COMPOSER_BAR_COMPACT_WIDTH = 640;
+
+    /**
+     * One container width → the bar's density.
+     *
+     * `full` keeps the labels; `compact` drops them and shortens the layer
+     * values, which is what keeps a docked sidebar from wrapping the row. An
+     * unknown width (no `ResizeObserver`, a first paint before measurement) is
+     * `full`: the row still cannot wrap (it is `nowrap`), it just ellipsizes
+     * until the measurement arrives.
+     * @param width - the surface's content width in CSS pixels, or null.
+     * @returns `full` | `compact`.
+     */
+    function composerBarDensityOf(width) {
+      return typeof width === 'number' && Number.isFinite(width) && width > 0 && width < COMPOSER_BAR_COMPACT_WIDTH
+        ? 'compact'
+        : 'full';
+    }
+
     /** The document the bar may touch: an explicit prop first, the global one second. */
     function composerBarDocumentOf(props) {
       const explicit = props === null || props === undefined ? undefined : props.document;
@@ -602,6 +628,9 @@
             display: 'flex',
             alignItems: 'baseline',
             gap: 5,
+            // R3: every cell may shrink (and its value ellipsize); the settings
+            // seat is the one exception — it keeps its size and sits at the end.
+            flex: options.flex === undefined ? '0 1 auto' : options.flex,
             minWidth: 0,
             paddingLeft: 6,
             borderLeft: `3px solid ${hue}`,
@@ -635,7 +664,12 @@
                   whiteSpace: 'nowrap',
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
-                  maxWidth: options.region === 'bar-assembly' ? 460 : 280,
+                  // R3: the value gives way before the row does — it shrinks and
+                  // ellipsizes (full text stays in the tooltip), and the cell's
+                  // own width is the only ceiling.
+                  flex: '0 1 auto',
+                  minWidth: 0,
+                  maxWidth: 'none',
                 },
               },
               options.value,
@@ -678,6 +712,52 @@
       });
       const [nonce, setNonce] = React.useState(0);
       const [hint, setHint] = React.useState(false);
+      // g-086 R3: the surface never wraps, so it needs to know how much room it
+      // has: the root's own width is measured (ResizeObserver) and the compact
+      // form takes over below COMPOSER_BAR_COMPACT_WIDTH. A case may hand the
+      // width in through `props.barWidth` instead of a DOM measurement.
+      const [barWidth, setBarWidth] = React.useState(typeof props.barWidth === 'number' ? props.barWidth : null);
+      const observerRef = React.useRef(null);
+      const attachRef = React.useRef(null);
+      if (attachRef.current === null) {
+        attachRef.current = (node) => {
+          if (observerRef.current !== null) {
+            try {
+              observerRef.current.disconnect();
+            } catch {
+              // Already dead; nothing to release.
+            }
+            observerRef.current = null;
+          }
+          if (node === null || node === undefined) return;
+          const Ctor =
+            typeof props.ResizeObserver === 'function'
+              ? props.ResizeObserver
+              : typeof ResizeObserver === 'function'
+                ? ResizeObserver
+                : null;
+          if (Ctor !== null) {
+            try {
+              const observer = new Ctor((entries) => {
+                const entry = Array.isArray(entries) ? entries[0] : null;
+                const measured =
+                  entry !== null && entry !== undefined && entry.contentRect !== null && entry.contentRect !== undefined && typeof entry.contentRect.width === 'number'
+                    ? entry.contentRect.width
+                    : node.clientWidth;
+                setBarWidth(typeof measured === 'number' && Number.isFinite(measured) ? measured : null);
+              });
+              observer.observe(node);
+              observerRef.current = observer;
+            } catch {
+              observerRef.current = null;
+            }
+          }
+          // First paint: measure synchronously so the very first frame already
+          // knows whether labels fit (the observer only reports on changes).
+          if (typeof node.clientWidth === 'number' && node.clientWidth > 0) setBarWidth(node.clientWidth);
+        };
+      }
+      const compact = composerBarDensityOf(barWidth) === 'compact';
       // One pending "find the settings panel" attempt at a time: kept in a ref so
       // the component can stop it before starting another and on unmount.
       const aimRef = React.useRef(null);
@@ -743,8 +823,12 @@
         if (fact.kind === 'error') return { text: t('loadFailed'), tone: 'error' };
         if (fact.kind === 'disabled') return { text: t('stDisabled'), tone: 'warn' };
         if (fact.kind === 'none') return { text: t('stNone'), tone: 'unknown' };
+        const params = { total: String(fact.total), ineffective: String(fact.ineffective) };
         return {
-          text: fmt(t('mineStatusCoverage'), { total: String(fact.total), ineffective: String(fact.ineffective) }),
+          // g-086 R3: short in the cell, the settings page's full sentence in
+          // the tooltip — the meaning is unchanged, only the width is.
+          text: fmt(t('barCoverageShort'), params),
+          title: fmt(t('mineStatusCoverage'), params),
           tone: fact.ineffective > 0 ? 'warn' : 'normal',
         };
       };
@@ -794,9 +878,9 @@
           onClick: () => setNonce((value) => value + 1),
           style: {
             font: 'inherit',
-            fontSize: 11,
-            lineHeight: '14px',
-            padding: '0 4px',
+            fontSize: 13,
+            lineHeight: '16px',
+            padding: '0 2px',
             border: 'none',
             borderRadius: 4,
             background: 'transparent',
@@ -804,7 +888,9 @@
             cursor: 'pointer',
           },
         },
-        t('refresh'),
+        // An icon, not a translation: the accessible name stays the localized
+        // verb (`refresh`), while the cell spends no horizontal room on words.
+        '↻',
       );
       const settingsButton = h(
         'button',
@@ -896,6 +982,7 @@
           'data-composer-bar-session': sessionId === '' ? '' : sessionId,
           role: 'status',
           'aria-live': 'polite',
+          ref: attachRef.current,
           style: {
             boxSizing: 'border-box',
             width:
@@ -915,9 +1002,13 @@
             'data-composer-bar-surface': '',
             style: {
               display: 'flex',
-              flexWrap: 'wrap',
+              // R3: never wrap. A narrower dock shrinks the cells (each one may
+              // shrink, values ellipsize) instead of pushing the settings button
+              // onto a second line.
+              flexWrap: 'nowrap',
               alignItems: 'center',
-              gap: '4px 14px',
+              gap: '4px 10px',
+              minWidth: 0,
               padding: '5px 10px',
               border: `1px solid ${token.surfaceStroke}`,
               borderRadius: 8,
@@ -929,26 +1020,28 @@
             },
           },
           composerBarRegionOf({
-          region: 'bar-sections',
-          label: t('viewSections'),
-          value: sectionsValue.text,
-          tone: sectionsValue.tone,
-        }),
+            region: 'bar-sections',
+            label: compact ? '' : t('viewSections'),
+            value: sectionsValue.text,
+            tone: sectionsValue.tone,
+          }),
         composerBarRegionOf({
           region: 'bar-user-layer',
-          label: t('ovUser'),
+          label: compact ? '' : t('barUserLabel'),
           value: userLine.text,
           tone: userLine.tone,
+          title: userLine.title,
         }),
         composerBarRegionOf({
           region: 'bar-workspace-layer',
-          label: t('ovWorkspace'),
+          label: compact ? '' : t('barWorkspaceLabel'),
           value: workspaceLine.text,
           tone: workspaceLine.tone,
+          title: workspaceLine.title,
         }),
         composerBarRegionOf({
           region: 'bar-assembly',
-          label: t('barAssemblyLabel'),
+          label: compact ? '' : t('barAssemblyLabel'),
           value: assemblyValue.text,
           tone: assemblyValue.tone,
           title: assemblyValue.title,
@@ -959,6 +1052,9 @@
           label: '',
           value: '',
           tone: 'unknown',
+          // Never compressed: this is the one cell whose whole point is to stay
+          // visible and clickable when the row is tight.
+          flex: '0 0 auto',
           extra: settingsButton,
         }),
         hint === true
