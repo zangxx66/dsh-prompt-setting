@@ -10795,17 +10795,17 @@ g-086 的状态栏只在**挂载 / `sessionId` 变化 / 手点刷新**时读一�
 
 ### 三、段拆分（行数预算硬约束）
 
-`16-composer-bar.js` 已到 1196/1200，所以数据层整体搬到新段 `src/17-composer-bar-live.js`（822 行），
-原 `17-boot.js` 改名 `18-boot.js`（509 行），`16` 段降到 1157 行：**19 段 / 15107 行**（原 18 段 / 14290）。
+`16-composer-bar.js` 已到 1196/1200，所以数据层整体搬到新段 `src/17-composer-bar-live.js`（返工后 966 行），
+原 `17-boot.js` 改名 `18-boot.js`（509 行），`16` 段降到 1157 行：**19 段 / 15251 行**（原 18 段 / 14290）。
 `refresh`/`read` 由 `useComposerBarLiveRead({ enabled, sessionId, props })` 返回，组件只负责画。
 
 同步的坐标表：`test/client-source.test.mjs` 的 `SEGMENTS`（19 行）+ 段数/总行数断言、`docs/check-refs.mjs`
-的 `14290 → 15107` 与 65 条 `client.js` 行号、`docs/refactor-plan.md` §1.3（拆出 live 段一行 → 26 行）/§5.1
+的 `14290 → 15251` 与 65 条 `client.js` 行号、`docs/refactor-plan.md` §1.3（拆出 live 段一行 → 26 行）/§5.1
 （19 段）、`docs/architecture-map.md`（19 段表 + 50 处入口行号按实测重锚）。**全部机械重锚，没有改任何断言语义。**
 
 ### 四、测试（三档里属第三档：并发 + 状态机）
 
-`test/client.test.mjs` 新增 **11** 个用例（全部进 `#region g-086` 的 g-089 段）：
+`test/client.test.mjs` 新增 **15** 个用例（11 个首轮 + 4 个 BLOCK 返工，全部进 `#region g-086` 的 g-089 段）：
 
 1. 策略矩阵：`read`/`defer`/`skip`/`dirty`/`merged` 五分支 + 隐藏/关闭/无会话 + defer 的延迟值；
 2. 广播过滤：11 条写路由 vs 6 条忽略路由、方法过滤、`revision`/`topic`、探针值/存储、`visibleNow` 的三态；
@@ -10827,13 +10827,13 @@ g-086 的状态栏只在**挂载 / `sessionId` 变化 / 手点刷新**时读一�
 
 - `node scripts/verify.mjs`：6 步 / **1 步失败**（`test`）—— 失败的是 **3 个基线已红**的
   `integration R8` 用例（host `assemble` 的输出多了 `tools: []`，夹具漂移），与本次改动无关：
-  **主工作树 `2e621ae` 同一条命令同样 3 fail / 28 pass**（全量同样 3 fail：基线 1048 tests / 1045 pass，本树 1059 / 1056 —— 增量 11 全是本轮新增且全过）。其余 5 步（check-refs / client-build --check /
+  **主工作树 `2e621ae` 同一条命令同样 3 fail / 28 pass**（全量同样 3 fail：基线 1048 tests / 1045 pass，本树 1063 / 1060 —— 增量 15 全是本轮新增且全过）。其余 5 步（check-refs / client-build --check /
   locale-pack --check / prepare / check-compat）全绿。
-- `node --test test/*.test.mjs`：**tests 1059 / pass 1056 / fail 3**（3 个即上述基线失败；本 worktree 与主工作树失败集合
-  逐条相同）。`node --test test/client.test.mjs`：**pass 356 / fail 0**。
+- `node --test test/*.test.mjs`：**tests 1063 / pass 1060 / fail 3**（3 个即上述基线失败；本 worktree 与主工作树失败集合
+  逐条相同）。`node --test test/client.test.mjs`：**pass 360 / fail 0**。
 - `node scripts/client-build.mjs --check`：`19 个段与 client.js 逐字节一致`，exit 0。
 - `node docs/check-refs.mjs`：`total=165 | verified=102 | rangeOnly=42 | manual=21 | unresolved=0`，两张表
-  `§1.3 rows=26 合计=15107` / `§5.1 rows=19 合计=15107 最大段=1200`，段名集合与磁盘一致，exit 0。
+  `§1.3 rows=26 合计=15251` / `§5.1 rows=19 合计=15251 最大段=1200`，段名集合与磁盘一致，exit 0。
 - `node scripts/prepare.mjs`：**25 项通过**，`CLIENT-SRC: src/ 下 19 个段文件与 client.js 逐字节一致`。
 
 ### 六、已知降级路径（都写进代码注释与用例）
@@ -10844,7 +10844,36 @@ g-086 的状态栏只在**挂载 / `sessionId` 变化 / 手点刷新**时读一�
 - 没有可追踪的 `setTimeout` ⇒ 延迟触发立即落地（`defer` 退化成 `read`），不会丢读；
 - 状态栏关闭 / 无会话 ⇒ 订阅、timer、请求全为零。
 
-### 七、未验证项
+### 七、评审 BLOCK 返工（rev-att-001-01，`17-composer-bar-live.js` 822 → 966 行）
+
+评审指出的两条阻塞与三条「一并修」，逐条落地并各配一条「改坏就红」的用例：
+
+1. **BLOCK 1｜刷新期五区文本抖动**：原读取 effect 每次 nonce 变化都 `setRead({phase:'loading', 保留旧数据})`，
+   而五区按 `phase !== 'ready'` 渲染 `loading`；`composerBarNextRead` 又只在 `phase === 'ready'` 时比签名，
+   于是「复用旧 state」在真实刷新路径上不可达。现在：**有 `ready` 答案时不 setState**（phase 不降级、文本不动、
+   `aria-live` 不播报）；签名门槛改由 `composerBarHasAnswer` 提供，并给 `nextRead` 第三个参数 `force`
+   ——**只有 Session 变了才强制替换**（否则会把旧会话的对象留下）。
+2. **BLOCK 2｜隐藏后仍写状态 / 仍发请求**：①`stale()` 加入 `hiddenNow()`，隐藏后不再发剩余两个请求；
+   ②读完若已隐藏则**丢弃结果**（`inflight` 照常复位，不写 state），回可见由 `visible` 触发一次重读；
+   ③`refresh` 的 `fire()` **在触发那一刻**复查可见性（`manual`/`enable` 除外），defer 到点也拦得住；
+   ④隐藏时除停轮询外还 `cancelLiveDefer`（清合并窗口的 timer 与 dirty），effect 每次重跑开头也清一次。
+3. **一并修 1｜条件 hook**：`useSessionStatus` 的 identity 在挂载时**一次固化**到 ref，之后每次 render 都调用
+   ——不是「有 prop 才调用」，props 变化不会改变 hook 数。`composerBarSessionTickOf(seat)` 是唯一入口，
+   `composerBarSessionTick(props)` 保留为薄包装（`__internals` 用）。
+4. **一并修 2｜注入的 storage 没被写 probe 用**：新增模块级 `composerBarLiveProbeSeat`，live hook 挂载时把
+   `io.storage` 注册进去，`notifyComposerBarWriteOf` 写入该 seat（没有再回落到真实 `localStorage`）。
+5. **一并修 3｜stale closure**：`refreshRef.current = refresh`（render 期发布最新闭包），总线订阅、DOM 监听、
+   轮询链一律走 `triggerRead(...)` → 永远用最新 `enabled`/`sessionId`/`io`，而不是注册那一刻的闭包。
+
+新增 4 个用例（`g-089 rev2`）：①**渲染级**不抖（写触发的读在途时，五区文本与刷新前逐字相同、不出现 `loading`，
+读完四事实未变仍逐字相同）；②隐藏期的三段（在途读不落地且不再发剩余请求 / 写合并窗口的 defer 被取消且 120s 零请求 /
+切回可见只重读一次）；③注入 storage 真的收到探针；④宿主 hook 每次 render 都被调用一次 + tick 变化 ⇒ 一次重读。
+
+**负向对照（已实跑并还原）**：把 setState 改回 `phase:'loading'`、把 `hiddenNow()` 从 `stale`/完成检查里去掉之后，
+`a refresh never swaps…` 与 `a hidden tab neither installs…` 两条**当场变红**（分别命中「刷新期 phase 不降级」与
+「隐藏后不再发剩余请求」），还原后重新全绿。
+
+### 八、未验证项
 
 - **真机（`http://127.0.0.1:3080`）未验**：GUI 服务在运行，重启有风险，按 directive 由负责人在 review 后验收
   （保存「我的 Prompt」后状态栏自动变化、切走再切回立即重读）；

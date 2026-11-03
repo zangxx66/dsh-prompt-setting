@@ -18163,4 +18163,195 @@ test('client: without a Session the live triggers are silent as well (g-089)', a
   assert.equal(page.router.calls.length, 0, '写广播也不能让无会话的 bar 发请求');
 });
 
+test('client: a refresh never swaps the five cells to the loading text (g-089 rev2)', async () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses(), enforceEffectDeps: true });
+  const policy = page.loaded.module.__internals.composerBar;
+  const pending = [];
+  const answerFor = (url) =>
+    url.includes('/snapshot') ? snapshotFixture() : url.includes('/overrides') ? overridesFixture() : assemblyFixture();
+  const respond = (url) => ({
+    ok: true,
+    status: 200,
+    text: () => Promise.resolve(JSON.stringify(answerFor(String(url)))),
+  });
+  let hold = false;
+  page.loaded.sandbox.fetch = (url) => {
+    if (!hold) return Promise.resolve(respond(url));
+    return new Promise((resolve) => pending.push({ url: String(url), resolve }));
+  };
+  let now = 100000;
+  const bar = makeAssemblyBar(page, { session: { sessionId: 's1' }, liveNow: () => now });
+  let tree = await bar.flush();
+  const regions = ['bar-sections', 'bar-user-layer', 'bar-workspace-layer', 'bar-assembly'];
+  const valuesOf = (drawn) => regions.map((region) => barValueOf(drawn, region));
+  const before = valuesOf(tree);
+  assert.equal(tree.props['data-composer-bar-state'], 'ready');
+  for (const region of regions) assert.notEqual(barValueOf(tree, region), page.zh.loading, '首读完成后没有 loading');
+
+  // A write starts a re-read that we hold open: at that instant the row must be
+  // byte-for-byte what it was — no phase downgrade, no「加载中…」.
+  hold = true;
+  now += 1000;
+  policy.notifyWriteOf(PATHS.overrides, { method: 'PUT' });
+  tree = await bar.flush();
+  assert.equal(tree.props['data-composer-bar-state'], 'ready', '刷新期 phase 不降级');
+  assert.deepEqual(valuesOf(tree), before, '刷新期五区文本逐字不变');
+  for (const region of regions) assert.notEqual(barValueOf(tree, region), page.zh.loading, `${region} 不出现 loading`);
+
+  // The answer is the same four facts: the text still does not move.
+  for (let step = 0; step < 3; step += 1) {
+    const queue = pending.splice(0);
+    if (queue.length === 0) break;
+    for (const entry of queue) entry.resolve(respond(entry.url));
+    await settle();
+  }
+  tree = bar.draw();
+  assert.deepEqual(valuesOf(tree), before, '四事实未变 ⇒ 文本不变');
+  assert.equal(tree.props['data-composer-bar-state'], 'ready');
+});
+
+test('client: a hidden tab neither installs an in-flight read nor fires a queued trigger (g-089 rev2)', async () => {
+  const clock = makeFakeClock(1000);
+  const doc = makeLiveDocument('visible');
+  const page = makePage({ primitives: 'throw', responses: defaultResponses(), enforceEffectDeps: true });
+  const policy = page.loaded.module.__internals.composerBar;
+  const calls = [];
+  const pending = [];
+  const answerFor = (url) =>
+    url.includes('/snapshot') ? snapshotFixture() : url.includes('/overrides') ? overridesFixture() : assemblyFixture();
+  const respond = (url) => ({
+    ok: true,
+    status: 200,
+    text: () => Promise.resolve(JSON.stringify(answerFor(String(url)))),
+  });
+  page.loaded.sandbox.fetch = (url) => {
+    calls.push(String(url));
+    return new Promise((resolve) => pending.push({ url: String(url), resolve }));
+  };
+  const drain = async () => {
+    for (let step = 0; step < 3; step += 1) {
+      const queue = pending.splice(0);
+      if (queue.length === 0) return;
+      for (const entry of queue) entry.resolve(respond(entry.url));
+      await settle();
+    }
+  };
+  const bar = makeAssemblyBar(page, {
+    session: { sessionId: 's1' },
+    liveDocument: doc,
+    liveSetTimeout: clock.setTimeout,
+    liveClearTimeout: clock.clearTimeout,
+    liveNow: clock.now,
+  });
+  await bar.flush();
+  assert.equal(calls.length, 1, '首读第一条在途');
+
+  // Hidden while the read is in flight: the answer must be dropped, and the
+  // remaining two requests must not be issued at all.
+  doc.visibilityState = 'hidden';
+  doc.fire('visibilitychange');
+  for (const entry of pending.splice(0)) entry.resolve(respond(entry.url));
+  await settle();
+  assert.equal(calls.length, 1, '隐藏后不再发剩余请求');
+  let tree = bar.draw();
+  assert.equal(tree.props['data-composer-bar-state'], 'loading', '隐藏期间完成的读不得写状态');
+
+  // Back to visible: exactly one re-read, and it completes.
+  doc.visibilityState = 'visible';
+  doc.fire('visibilitychange');
+  await bar.flush();
+  assert.equal(calls.length, 2, '切回可见只重读一次（第一条已发出）');
+  await drain();
+  assert.equal(calls.length, 4, '这一轮只读三条');
+  tree = bar.draw();
+  assert.equal(tree.props['data-composer-bar-state'], 'ready');
+
+  // A write inside the coalescing window arms a deferral; hiding before it fires
+  // must cancel it — not just skip the poll.
+  clock.advance(100);
+  policy.notifyWriteOf(PATHS.overrides, { method: 'PUT' });
+  assert.equal(clock.pending(), 1, '写合并窗口内排了一个延迟读');
+  const readsBeforeHide = calls.length;
+  doc.visibilityState = 'hidden';
+  doc.fire('visibilitychange');
+  assert.equal(clock.pending(), 0, '隐藏 ⇒ 延迟读被取消');
+  clock.advance(120000);
+  await bar.flush();
+  assert.equal(calls.length, readsBeforeHide, '隐藏期零请求');
+
+  // Coming back reads once more.
+  doc.visibilityState = 'visible';
+  doc.fire('visibilitychange');
+  await bar.flush();
+  assert.equal(calls.length, readsBeforeHide + 1, '切回可见只重读一次（第一条）');
+  await drain();
+  page.dispose();
+});
+
+test('client: the cross-tab probe really goes to the injected storage (g-089 rev2)', async () => {
+  const storage = makeStorage();
+  const page = makePage({ primitives: 'throw', responses: defaultResponses(), enforceEffectDeps: true });
+  const policy = page.loaded.module.__internals.composerBar;
+  const bar = makeAssemblyBar(page, { session: { sessionId: 's1' }, liveStorage: storage });
+  await bar.flush();
+  assert.deepEqual(storage.entries(), [], '挂载只读，不写探针');
+  policy.notifyWriteOf(PATHS.overrides, { method: 'PUT' });
+  assert.deepEqual(
+    storage.entries().map(([key]) => key),
+    ['dsh-prompt-setting:composer-bar-live'],
+    '写成功 ⇒ 探针写进注入的 storage（不是真实 localStorage）',
+  );
+});
+
+test('client: the session-status hook is called on every render, never conditionally (g-089 rev2)', async () => {
+  let map = { s1: { state: 'running' } };
+  let calls = 0;
+  let now = 100000;
+  const page = makePage({ primitives: 'throw', responses: defaultResponses(), enforceEffectDeps: true });
+  const registration = page.mounted.registrations.find((entry) => entry.options.name === 'conversation.input.dock');
+  const bound = {
+    t: (key) => dict(page.mounted.dictionaries, NS, key, page.language),
+    session: { sessionId: 's1' },
+    livePollMs: 0,
+    liveNow: () => now,
+    useSessionStatus: (selector) => {
+      calls += 1;
+      return selector(map);
+    },
+  };
+  const component = registration.component;
+  // Exactly one render per step, unlike `makeAssemblyBar().flush()` (which renders
+  // twice): the point here is the per-render hook count, so a second render would
+  // double-count and would also consume a pending dependency change.
+  const step = async () => {
+    const rendered = page.loaded.runtime.render(component, bound);
+    for (const effect of rendered.pending) effect();
+    await settle();
+  };
+  await step();
+  assert.equal(page.router.calls.length, 3, '挂载读三条');
+  assert.equal(calls, 1, '首次 render 调用一次宿主 hook');
+  await step();
+  assert.equal(calls, 2, '每次 render 都调用一次（不是「有 prop 才调用」的条件 hook）');
+  assert.equal(page.router.calls.length, 3, '同一 tick 不重读');
+  // A tick change is one read, throttled by the status window.
+  now += 3000;
+  map = { s1: { state: 'done' } };
+  await step();
+  assert.equal(calls, 3);
+  await step();
+  assert.equal(page.router.calls.length, 6, '会话状态推进 ⇒ 重读一次');
+  const policy = page.loaded.module.__internals.composerBar;
+  assert.equal(
+    policy.sessionStatusTick({ s1: { state: 'running' } }),
+    policy.sessionStatusTick({ s1: { state: 'running' } }),
+    '同一 map 得到同一标量（selector 幂等）',
+  );
+  assert.notEqual(
+    policy.sessionStatusTick({ s1: { state: 'running' } }),
+    policy.sessionStatusTick({ s1: { state: 'done' } }),
+    '状态拼写变化会移动 tick',
+  );
+});
+
 // #endregion

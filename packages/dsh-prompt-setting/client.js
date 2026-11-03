@@ -13983,6 +13983,33 @@ window.__ModuleLoader__.load({
       return `${stamp}:${name}`;
     }
 
+    /**
+     * The storage this page's writes drop their cross-tab probe into.
+     *
+     * `requestJson` — the write funnel — has no props, so the live hook registers
+     * the seat it was given here. Two consequences that matter to a test: an
+     * injected `liveStorage` really receives the probe (assertable), and a realm
+     * with no `localStorage` writes nothing instead of reaching for a real one.
+     */
+    const composerBarLiveProbeSeat = { storage: null };
+
+    /**
+     * Register the storage the probe writes to (called by the live hook).
+     * @param storage - the resolved storage, or null to clear the seat.
+     */
+    function setComposerBarLiveProbeStorage(storage) {
+      composerBarLiveProbeSeat.storage = storage === null || typeof storage !== 'object' ? null : storage;
+    }
+
+    /**
+     * The storage a probe should use: the registered seat first, the realm's own
+     * `localStorage` only when nothing was registered.
+     * @returns the storage, or null.
+     */
+    function composerBarLiveProbeStorageOf() {
+      return composerBarLiveProbeSeat.storage === null ? composerBarLiveStorageOf() : composerBarLiveProbeSeat.storage;
+    }
+
     /** The `localStorage` this realm may write a probe to, or null. */
     function composerBarLiveStorageOf() {
       const storage = composerBarStorage();
@@ -14025,7 +14052,10 @@ window.__ModuleLoader__.load({
       if (method !== 'PUT' && method !== 'POST' && method !== 'DELETE' && method !== 'PATCH') return false;
       const topic = composerBarWriteTopicOf(path);
       if (topic.length === 0) return false;
-      writeComposerBarLiveProbe(composerBarLiveProbeValue(topic, composerBarLiveNow()));
+      writeComposerBarLiveProbe(
+        composerBarLiveProbeValue(topic, composerBarLiveNow()),
+        composerBarLiveProbeStorageOf(),
+      );
       return notifyComposerBarWrite(topic);
     }
 
@@ -14173,6 +14203,22 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Does this view state already hold an answer the bar can print?
+     *
+     * `ready` is the answer state — including one whose payloads came back `null`
+     * (a failed read still prints the page's own「加载失败」line, which is an
+     * answer, not a placeholder). This is the gate the signature comparison uses,
+     * **not** "the phase is ready right now": a refresh deliberately keeps the
+     * phase at `ready`, so the comparison stays reachable on the live path
+     * (review BLOCK 1: it was previously only reachable on a first read).
+     * @param state - a view state, or anything else.
+     * @returns `true` when the state is an answer.
+     */
+    function composerBarHasAnswer(state) {
+      return state !== null && typeof state === 'object' && state.phase === 'ready';
+    }
+
+    /**
      * The next view state, **keeping the previous object when nothing changed**.
      *
      * React bails out of a re-render when `setState` receives the very value it
@@ -14183,11 +14229,14 @@ window.__ModuleLoader__.load({
      * region must not do for free.
      * @param previous - the state currently on screen.
      * @param results - the fresh read answers.
+     * @param force - `true` for a different Session: its answer must replace the
+     *   old one even when the four facts happen to look the same.
      * @returns the state to install (possibly `previous` itself).
      */
-    function composerBarNextRead(previous, results) {
+    function composerBarNextRead(previous, results, force) {
       const next = composerBarReadOf(results);
-      if (previous === null || typeof previous !== 'object' || previous.phase !== 'ready') return next;
+      if (force === true) return next;
+      if (!composerBarHasAnswer(previous)) return next;
       return composerBarFactsSignature(previous) === composerBarFactsSignature(next) ? previous : next;
     }
 
@@ -14231,24 +14280,38 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Ask the Host's own session-status hook for the tick, or answer 0.
+     * Ask one resolved session-status seat for the tick, or answer 0.
      *
-     * The hook is called **through the owner props** and only when it exists; a
-     * Host that predates it, a hook that throws and a hook that answers a
-     * non-number all degrade to "no event", which leaves the fallback timer as
-     * the only trigger — the documented degradation, not an error.
+     * The seat is `{hook, selector}`, produced **once** by the live hook (see
+     * there): the Host's `useSessionStatus` is a real hook and must be called on
+     * every render, so its identity has to be stable for the life of the mount —
+     * resolving it per render would make the call conditional and change the hook
+     * count the moment props change (review BLOCK "一并修 1").
+     * @param seat - `{hook, selector}`, or anything else.
+     * @returns the tick (0 when the seat has no hook, or it throws).
+     */
+    function composerBarSessionTickOf(seat) {
+      if (seat === null || typeof seat !== 'object' || typeof seat.hook !== 'function') return 0;
+      try {
+        const value = seat.hook(seat.selector);
+        return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+      } catch {
+        return 0;
+      }
+    }
+
+    /**
+     * The same question asked of an owner-props object (the `__internals` entry).
+     *
+     * Kept as a thin wrapper over {@link composerBarSessionTickOf} so the export a
+     * unit case drives and the call the component really makes are one code path.
      * @param props - the entry's owner props.
      * @returns the tick (0 when the hook is unavailable).
      */
     function composerBarSessionTick(props) {
       const hook = props !== null && typeof props === 'object' ? props.useSessionStatus : undefined;
       if (typeof hook !== 'function') return 0;
-      try {
-        const value = hook((map) => composerBarSessionStatusTick(map));
-        return typeof value === 'number' && Number.isFinite(value) ? value : 0;
-      } catch {
-        return 0;
-      }
+      return composerBarSessionTickOf({ hook, selector: (map) => composerBarSessionStatusTick(map) });
     }
 
     /**
@@ -14323,6 +14386,30 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Cancel a deferred read (the coalescing window's timer).
+     *
+     * Two callers, for the same reason {@link stopLivePoll} has two: the effect's
+     * next run and its teardown. A deferral armed while the tab was visible must
+     * not fire into a hidden tab — that would be a request the goal forbids.
+     * @param book - the hook's persistent booking record.
+     * @param io - the resolved IO.
+     */
+    function cancelLiveDefer(book, io) {
+      if (book === null || typeof book !== 'object') return;
+      if (book.pendingTimer !== null) {
+        if (io !== null && typeof io === 'object' && io.clearTimer !== null) {
+          try {
+            io.clearTimer(book.pendingTimer);
+          } catch {
+            // Already fired.
+          }
+        }
+        book.pendingTimer = null;
+      }
+      book.dirty = false;
+    }
+
+    /**
      * The bar's data layer: read, and the four triggers that make it live.
      *
      * There is still exactly **one** read path — the effect below, keyed by
@@ -14366,12 +14453,22 @@ window.__ModuleLoader__.load({
           pollTimer: null,
           disposers: [],
           lastTriggerAt: Number.NEGATIVE_INFINITY,
+          /** The Session the last installed answer belongs to (forces a replace on switch). */
+          lastSession: null,
         };
       }
       const book = bookRef.current;
 
       /**
        * The single entry point every trigger uses.
+       *
+       * `refresh` is re-created on every render (it closes over the current
+       * `enabled` / `sessionId` / `io`), and {@link refreshRef} publishes it so the
+       * long-lived effects — the bus subscription, the DOM listeners, the poll
+       * chain — always call the **latest** one instead of the closure that was
+       * current when they were registered. A stale closure here would judge a
+       * trigger against an old Session or an old visibility state (review
+       * "一并修 3").
        * @param trigger - `write` | `visible` | `manual` | `status` | `poll` | `storage`.
        * @returns the decision that was taken (`read` / `defer` / `dirty` / …).
        */
@@ -14394,29 +14491,41 @@ window.__ModuleLoader__.load({
           return 'dirty';
         }
         if (decision.action === 'merged') return 'merged';
+        // `manual` (the user's click) and `enable` (the switch) are the user
+        // speaking and are honoured even on a hidden tab; every other trigger
+        // re-checks visibility **at fire time**, because a deferral can outlive
+        // the visibility it was armed under.
+        const mayRead = () =>
+          trigger === 'manual' || trigger === 'enable' || composerBarVisibleNow(io.document);
         const fire = () => {
           book.pendingTimer = null;
+          if (!mayRead()) return false;
           book.lastTriggerAt = io.now();
           setNonce((value) => value + 1);
+          return true;
         };
         if (decision.action === 'defer') {
           // A realm without a timer must still read: the wait is an optimisation,
           // not a requirement (the goal's ≤1 s applies to the write branch).
-          if (io.setTimer === null) {
-            fire();
-            return 'read';
-          }
+          if (io.setTimer === null) return fire() ? 'read' : 'skip';
           const timer = io.setTimer(fire, decision.delayMs);
           book.pendingTimer = timer === undefined ? null : timer;
-          if (book.pendingTimer === null) {
-            fire();
-            return 'read';
-          }
+          if (book.pendingTimer === null) return fire() ? 'read' : 'skip';
           return 'defer';
         }
-        fire();
-        return 'read';
+        return fire() ? 'read' : 'skip';
       };
+      const refreshRef = React.useRef(null);
+      // A render-phase ref write on purpose: `refresh` is a pure function of this
+      // render's props, publishing the latest one is the documented escape hatch,
+      // and nothing reads the ref during a render.
+      refreshRef.current = refresh;
+      const triggerRead = (trigger) => {
+        const current = refreshRef.current;
+        return typeof current === 'function' ? current(trigger) : 'skip';
+      };
+      /** Is the tab hidden right now? (The read path's "may I install this?" gate.) */
+      const hiddenNow = () => !composerBarVisibleNow(io.document);
 
       // ── the one read path (g-086's effect, unchanged in shape) ──────────────
       React.useEffect(() => {
@@ -14438,18 +14547,22 @@ window.__ModuleLoader__.load({
         const round = book.round;
         book.inflight = true;
         book.lastTriggerAt = io.now();
-        setRead((current) => ({
-          phase: 'loading',
-          // A refresh keeps the last answer on screen instead of blanking the
-          // bar; only the phase changes, so the row does not jump.
-          snapshot: current === null || typeof current !== 'object' ? null : current.snapshot,
-          overrides: current === null || typeof current !== 'object' ? null : current.overrides,
-          assembly: current === null || typeof current !== 'object' ? null : current.assembly,
-        }));
-        // A round that has been replaced stops issuing its remaining requests:
-        // the three reads are serial, so a superseded round that kept going would
-        // put two reads in flight at once — the one thing the goal forbids.
-        const stale = () => cancelled === true || book.round !== round;
+        // **A refresh never rewrites the answer.** With a previous answer on screen
+        // the phase stays `ready` and nothing is set, so the five cells keep their
+        // exact text (and `aria-live` stays silent) until the new answer really
+        // differs. Only the first read — or a read after off / no-Session — shows
+        // `loading` (review BLOCK 1).
+        setRead((current) =>
+          composerBarHasAnswer(current)
+            ? current
+            : { phase: 'loading', snapshot: null, overrides: null, assembly: null },
+        );
+        // A round that has been replaced — or whose tab went hidden — stops
+        // issuing its remaining requests: the three reads are serial, so a round
+        // that kept going would either put two reads in flight at once (the one
+        // thing the goal forbids) or keep the Host busy for a tab nobody is
+        // looking at (review BLOCK 2).
+        const stale = () => cancelled === true || book.round !== round || hiddenNow();
         const retire = () => {
           if (book.round === round) book.inflight = false;
         };
@@ -14475,11 +14588,18 @@ window.__ModuleLoader__.load({
           // clear the newer one's in-flight state nor write its stale answers.
           if (book.round !== round) return;
           book.inflight = false;
-          if (cancelled) return;
-          if (results !== null) setRead((current) => composerBarNextRead(current, results));
-          // A trigger that landed mid-flight gets exactly one follow-up read.
           const again = book.dirty === true;
           book.dirty = false;
+          if (cancelled) return;
+          // A hidden tab writes **nothing**: the answer is dropped and the next
+          // `visible` trigger re-reads. That is both "hidden must not write state"
+          // and "returning reads once" (review BLOCK 2).
+          if (hiddenNow()) return;
+          const changedSession = book.lastSession !== sessionId;
+          book.lastSession = sessionId;
+          if (results !== null) setRead((current) => composerBarNextRead(current, results, changedSession));
+          // A trigger that landed mid-flight gets exactly one follow-up read — and
+          // only where the tab is still visible (checked just above).
           if (again) setNonce((value) => value + 1);
         };
         void load();
@@ -14489,7 +14609,19 @@ window.__ModuleLoader__.load({
       }, [enabled, sessionId, nonce]);
 
       // ── the Session status trigger (the one client event that exists) ───────
-      const activity = composerBarSessionTick(props);
+      // The Host hook is resolved **once** (on mount) and then called on every
+      // render, unconditionally: `useSessionStatus` is a real hook, so calling it
+      // only when the prop happens to be a function would change the hook count
+      // the moment props change (review "一并修 1"). The resolved identity is
+      // stable for the life of the mount, which is what React requires.
+      const sessionSeatRef = React.useRef(null);
+      if (sessionSeatRef.current === null) {
+        sessionSeatRef.current = {
+          hook: typeof props.useSessionStatus === 'function' ? props.useSessionStatus : null,
+          selector: (map) => composerBarSessionStatusTick(map),
+        };
+      }
+      const activity = composerBarSessionTickOf(sessionSeatRef.current);
       const activityRef = React.useRef(null);
       React.useEffect(() => {
         // The first observation is the mount's own read, not a change.
@@ -14499,17 +14631,25 @@ window.__ModuleLoader__.load({
         }
         if (activityRef.current === activity) return;
         activityRef.current = activity;
-        refresh('status');
+        triggerRead('status');
       }, [activity]);
 
       // ── writes, visibility, focus, storage, and the fallback timer ──────────
       const pollMs = io.pollMs;
+      const storage = io.storage;
+      React.useEffect(() => {
+        // The write funnel has no props, so this is where an injected storage
+        // becomes the probe's destination (review "一并修 2").
+        setComposerBarLiveProbeStorage(storage);
+        return () => setComposerBarLiveProbeStorage(null);
+      }, [storage]);
       React.useEffect(() => {
         // Teardown is also done at the **start** of every run, not only in the
         // cleanup: a renderer that never calls a cleanup (this bundle's unit-test
         // double is one) must not accumulate timers and listeners across renders,
         // and doing it here makes the effect idempotent either way.
         stopLivePoll(book, io);
+        cancelLiveDefer(book, io);
         for (const dispose of book.disposers) {
           try {
             dispose();
@@ -14524,7 +14664,7 @@ window.__ModuleLoader__.load({
         const addDisposer = (dispose) => {
           book.disposers.push(dispose);
         };
-        addDisposer(subscribeComposerBarLive(() => refresh('write')));
+        addDisposer(subscribeComposerBarLive(() => triggerRead('write')));
         const armPoll = () => {
           stopLivePoll(book, io);
           if (pollMs <= 0 || io.setTimer === null) return;
@@ -14533,7 +14673,7 @@ window.__ModuleLoader__.load({
           const timer = io.setTimer(() => {
             book.pollTimer = null;
             if (!composerBarVisibleNow(doc)) return;
-            refresh('poll');
+            triggerRead('poll');
             armPoll();
           }, pollMs);
           book.pollTimer = timer === undefined ? null : timer;
@@ -14541,10 +14681,13 @@ window.__ModuleLoader__.load({
         if (doc !== null && typeof doc.addEventListener === 'function') {
           const onVisibility = () => {
             if (composerBarVisibleNow(doc)) {
-              refresh('visible');
+              triggerRead('visible');
               armPoll();
             } else {
+              // Hidden means: no poll, **and** no queued deferral that would fire
+              // into a hidden tab (review BLOCK 2).
               stopLivePoll(book, io);
+              cancelLiveDefer(book, io);
             }
           };
           try {
@@ -14562,7 +14705,7 @@ window.__ModuleLoader__.load({
         }
         if (view !== null && typeof view.addEventListener === 'function') {
           const onFocus = () => {
-            if (composerBarVisibleNow(doc)) refresh('visible');
+            if (composerBarVisibleNow(doc)) triggerRead('visible');
           };
           const onStorage = (event) => {
             // The key is the message; the value is never trusted (it names a route
@@ -14572,7 +14715,7 @@ window.__ModuleLoader__.load({
                 ? event.key
                 : COMPOSER_BAR_LIVE_KEY;
             if (key !== COMPOSER_BAR_LIVE_KEY) return;
-            refresh('storage');
+            triggerRead('storage');
           };
           try {
             view.addEventListener('focus', onFocus);
@@ -14592,6 +14735,7 @@ window.__ModuleLoader__.load({
         armPoll();
         return () => {
           stopLivePoll(book, io);
+          cancelLiveDefer(book, io);
           for (const dispose of book.disposers) {
             try {
               dispose();
