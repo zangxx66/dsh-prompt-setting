@@ -19,7 +19,7 @@
  *   另：**围栏代码块内的文本不参与体检**（§10 记录的"历史错值"因此不会污染计数）。
  *
  * 另外校验 **§1.3 版图表**与 **§5.1 目标段表**（R4-C1）：行数 == 区间长度、区间首尾相接、
- * 合计 == 15251、每段 ≤ 1200。这两张表是阶段 1/2 的门禁基础，必须可复跑而不是粘贴输出。
+ * 合计 == 15299、每段 ≤ 1200。这两张表是阶段 1/2 的门禁基础，必须可复跑而不是粘贴输出。
  * **§5.1 的段名集合还与磁盘 `src/` 的段名集合逐名对账（g-077 起）**：
  * 「文档 ↔ 磁盘」之间不再经过任何手工常量 —— 段集合的完整性由「段 ↔ 产物逐字节一致」
  * （`prepare` 的 `CLIENT-SRC-DRIFT`）保证，本文档这一侧只断言「§5.1 表写的段名 == 磁盘
@@ -145,13 +145,13 @@ const REFS = [
   { ref: 'client.js:9347-9395', file: 'client.js', from: 9347, to: 9395, expect: 'function PromptSettingSection', toExpect: "}", loose: true },
   { ref: 'client.js:9356', file: 'client.js', from: 9356, expect: 'React.useSyncExternalStore(' },
   { ref: 'client.js:12210', file: 'client.js', from: 12210, stripEquals: '}' },
-  { ref: 'client.js:14755', file: 'client.js', from: 14755, expect: 'function renderFailureCard' },
-  { ref: 'client.js:14845', file: 'client.js', from: 14845, expect: 'return { failed: true };' },
-  { ref: 'client.js:14859', file: 'client.js', from: 14859, expect: "inject: ['slots', 'locale']," },
-  { ref: 'client.js:14867', file: 'client.js', from: 14867, expect: '__internals' },
-  { ref: 'client.js:14870', file: 'client.js', from: 14870, expect: 'shared: CHUNK_FACILITIES' },
-  { ref: 'client.js:14975', file: 'client.js', from: 14975, expect: 'apply(ctx)' },
-  { ref: 'client.js:15180', file: 'client.js', from: 15180, expect: 'function degradedPlugin' },
+  { ref: 'client.js:14798', file: 'client.js', from: 14798, expect: 'function renderFailureCard' },
+  { ref: 'client.js:14888', file: 'client.js', from: 14888, expect: 'return { failed: true };' },
+  { ref: 'client.js:14902', file: 'client.js', from: 14902, expect: "inject: ['slots', 'locale']," },
+  { ref: 'client.js:14910', file: 'client.js', from: 14910, expect: '__internals' },
+  { ref: 'client.js:14913', file: 'client.js', from: 14913, expect: 'shared: CHUNK_FACILITIES' },
+  { ref: 'client.js:15280', file: 'client.js', from: 15280, expect: 'apply(ctx)' },
+  { ref: 'client.js:15228', file: 'client.js', from: 15228, expect: 'function degradedPlugin' },
   // ── index.js ─────────────────────────────────────────────────────────────
   { ref: 'index.js:231', file: 'index.js', from: 231, expect: 'CLIENT_BUNDLE_PATH' },
   { ref: 'index.js:783', file: 'index.js', from: 783, expect: 'export function apply' },
@@ -225,7 +225,7 @@ const REFS = [
   { ref: 'client.js:8435', file: 'client.js', from: 8435, expect: 'function chunkFailureComponent' },
   { ref: 'client.js:8550', file: 'client.js', from: 8550, expect: 'function renderHistoryChunk' },
   { ref: 'client.js:8620-8688', file: 'client.js', from: 8620, to: 8688, expect: 'function chunkTab', toExpect: "function renderPresetsChunk(t, m, a) {" },
-  { ref: 'client.js:14867-14870', file: 'client.js', from: 14867, to: 14870, expect: '__internals', toExpect: "shared: CHUNK_FACILITIES," },
+  { ref: 'client.js:14910-14913', file: 'client.js', from: 14910, to: 14913, expect: '__internals', toExpect: "shared: CHUNK_FACILITIES," },
   { ref: 'client.history.js:36', file: 'client.history.js', from: 36, expect: "require('dsh-prompt-setting')" },
   { ref: 'core/store.js:280-296', file: 'core/store.js', from: 280, to: 296, at: 281, expect: 'Read the published client bundle', toExpect: "*   three fields for every chunk file beside it — or `null`." },
   { ref: 'core/store.js:298-318', file: 'core/store.js', from: 298, to: 318, expect: 'function clientBuildInfo', toExpect: "/**" },
@@ -268,7 +268,7 @@ const REFS = [
   { ref: 'index.js:1131-1198', file: 'index.js', from: 1131, to: 1198, expect: "function assemblyNoticeEnabled() {", toExpect: "function workspaceRegistry() {" },
   { ref: 'test/host.test.mjs:193-195', file: 'test/host.test.mjs', from: 193, to: 195, expect: "assert.equal(packageJson.files.includes('test'), false);", toExpect: "assert.equal(packageJson.files.includes('node_modules'), false);" },
   { ref: 'test/build.test.mjs:142', file: 'test/build.test.mjs', from: 142, expect: "assert.ok(clientSource.indexOf(BEGIN) < clientSource.indexOf(END), 'be" },
-  { ref: 'client.js:15249', file: 'client.js', from: 15249, expect: "/* @build-fingerprint:end */" },
+  { ref: 'client.js:15297', file: 'client.js', from: 15297, expect: "/* @build-fingerprint:end */" },
   { ref: 'client.js:214', file: 'client.js', from: 214, expect: "const h = React.createElement;" },
   { ref: 'client.js:310', file: 'client.js', from: 310, expect: "const primitives =" },
   { ref: 'client.js:2204', file: 'client.js', from: 2204, expect: "let fallbackT = (key) => key;" },
@@ -501,7 +501,7 @@ function parseSpanTable(lines, startPrefix, endPrefix, rowPattern) {
  */
 function parseSegmentNames(lines) {
   const start = lines.findIndex((line) => line.startsWith('**阶段 2 的目标段划分'));
-  const end = lines.findIndex((line, index) => index > start && line.startsWith('合计 15251 行'));
+  const end = lines.findIndex((line, index) => index > start && line.startsWith('合计 15299 行'));
   const names = [];
   for (const line of lines.slice(start, end === -1 ? undefined : end)) {
     const m = /^\|\s*`([^`]+)`\s*\|/.exec(line);
@@ -525,7 +525,7 @@ function checkTables(lines) {
     },
     {
       name: '§5.1 目标段表',
-      rows: parseSpanTable(lines, '**阶段 2 的目标段划分', '合计 15251 行', /^\|\s*`[^`]+`\s*\|\s*(\d+)[–-](\d+)\s*\|\s*(\d+)\s*\|/),
+      rows: parseSpanTable(lines, '**阶段 2 的目标段划分', '合计 15299 行', /^\|\s*`[^`]+`\s*\|\s*(\d+)[–-](\d+)\s*\|\s*(\d+)\s*\|/),
       maxCount: 1200,
     },
   ];
@@ -549,9 +549,9 @@ function checkTables(lines) {
       }
     }
     if (rows[0].from !== 1) failures.push(`${name}: 首行是 ${rows[0].from}，应为 1`);
-    if (rows[rows.length - 1].to !== 15251) failures.push(`${name}: 末行是 ${rows[rows.length - 1].to}，应为 15251`);
+    if (rows[rows.length - 1].to !== 15299) failures.push(`${name}: 末行是 ${rows[rows.length - 1].to}，应为 15299`);
     const total = rows.reduce((sum, row) => sum + row.count, 0);
-    if (total !== 15251) failures.push(`${name}: 行数合计 ${total}，应为 15251`);
+    if (total !== 15299) failures.push(`${name}: 行数合计 ${total}，应为 15299`);
     process.stdout.write(`  table ${name}: rows=${rows.length} 合计=${total} 最大段=${Math.max(...rows.map((r) => r.count))}\n`);
   }
   // g-077：§5.1 的**段名集合**（含顺序）必须与磁盘 `src/` 的段名集合一致 —— 不再经过
@@ -652,7 +652,7 @@ function countUncoveredRefs(doc) {
     return count;
   };
   const tableCovered = countCellRanges('### 1.3', '**上表互不重叠', 0)
-    + countCellRanges('**阶段 2 的目标段划分', '合计 15251 行', 1);
+    + countCellRanges('**阶段 2 的目标段划分', '合计 15299 行', 1);
   return { codeBare, paren, range, tableCovered };
 }
 

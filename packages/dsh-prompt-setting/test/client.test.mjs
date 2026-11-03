@@ -16786,6 +16786,19 @@ function makeAssemblyBar(page, props = {}) {
       await settle();
       return expandTree(render().tree);
     },
+    /**
+     * One render plus its effects, **without** the second render `flush` adds.
+     *
+     * A case that drives a trigger through an effect (a status tick, a write
+     * broadcast armed inside an effect) needs that: the second render would
+     * consume the dependency change that the next step is supposed to act on.
+     * It returns nothing — such cases assert on the transport, not on the tree.
+     */
+    step: async () => {
+      const rendered = render();
+      for (const effect of rendered.pending) effect();
+      await settle();
+    },
   };
 }
 
@@ -17650,6 +17663,28 @@ test('client: the 高级 tab carries the bar switch, and flipping it is instant 
 // ── g-089: the bar updates itself ────────────────────────────────────────────
 
 /**
+ * The Host's `SessionStatusSnapshot`: a `ReadonlyMap<SessionId, SessionStatus>`,
+ * with `SessionStatus = { running, pendingInteraction, completionUnread }`.
+ *
+ * Review BLOCK-A: the first version of the tick was fed a **plain object** with
+ * invented `state`/`status`/`phase` fields, so it looked right while the real
+ * `Map` would have folded to a constant 0. Cases now build the contract's shape.
+ */
+function sessionStatusSnapshot(entries) {
+  return new Map(
+    entries.map(([id, over]) => [
+      id,
+      { running: undefined, pendingInteraction: undefined, completionUnread: false, ...over },
+    ]),
+  );
+}
+
+/** One `SessionPendingInteraction`, as the contract spells it. */
+function pendingInteractionOf(key, kind = 'question') {
+  return { key, kind, sessionId: 's1' };
+}
+
+/**
  * A deterministic clock for the g-089 cases.
  *
  * The sandbox floors **every** timer to ≤5 ms, so a 20 s poll would otherwise
@@ -18105,11 +18140,70 @@ test('client: an unchanged read keeps the very state object, so the text cannot 
   assert.notEqual(changed, first, '段数量变了就必须换 state');
   assert.equal(policy.sectionCount(changed.snapshot), 1);
 
-  // The session-status fold is a stable number (a fresh object would re-render
-  // the hook forever); a state spelling change really moves it.
-  const map = { s1: { state: 'running' }, s2: { state: 'idle' } };
-  assert.equal(policy.sessionStatusTick(map), policy.sessionStatusTick({ s1: { state: 'running' }, s2: { state: 'idle' } }));
-  assert.notEqual(policy.sessionStatusTick(map), policy.sessionStatusTick({ s1: { state: 'done' }, s2: { state: 'idle' } }));
+  // The Host's snapshot is a **Map**, and the fold reads the contract's own
+  // fields — a plain object with invented `state` fields is exactly what made the
+  // old tick a constant 0 on the real contract (review BLOCK-A).
+  const quiet = sessionStatusSnapshot([
+    ['s1', { running: true }],
+    ['s2', { running: false }],
+  ]);
+  assert.equal(
+    policy.sessionStatusTick(quiet),
+    policy.sessionStatusTick(
+      sessionStatusSnapshot([
+        ['s1', { running: true }],
+        ['s2', { running: false }],
+      ]),
+    ),
+    '同一快照 ⇒ 同一 tick（selector 必须幂等）',
+  );
+  assert.notEqual(
+    policy.sessionStatusTick(quiet),
+    policy.sessionStatusTick(sessionStatusSnapshot([['s1', { running: false }], ['s2', { running: false }]])),
+    'running 翻转会移动 tick',
+  );
+  assert.notEqual(
+    policy.sessionStatusTick(quiet),
+    policy.sessionStatusTick(
+      sessionStatusSnapshot([['s1', { running: true, completionUnread: true }], ['s2', { running: false }]]),
+    ),
+    'completionUnread 翻转会移动 tick',
+  );
+  assert.notEqual(
+    policy.sessionStatusTick(quiet),
+    policy.sessionStatusTick(
+      sessionStatusSnapshot([
+        ['s1', { running: true, pendingInteraction: pendingInteractionOf('ask-1') }],
+        ['s2', { running: false }],
+      ]),
+    ),
+    'pendingInteraction 出现会移动 tick',
+  );
+  assert.notEqual(
+    policy.sessionStatusTick(sessionStatusSnapshot([['s1', { running: true, pendingInteraction: pendingInteractionOf('ask-1') }]])),
+    policy.sessionStatusTick(sessionStatusSnapshot([['s1', { running: true, pendingInteraction: pendingInteractionOf('ask-2') }]])),
+    'interaction 的 key 变化会移动 tick',
+  );
+  assert.equal(
+    policy.sessionStatusTick(sessionStatusSnapshot([['s1', { running: true, pendingInteraction: pendingInteractionOf('ask-1') }]])),
+    policy.sessionStatusTick(sessionStatusSnapshot([['s1', { running: true, pendingInteraction: pendingInteractionOf('ask-1') }]])),
+    '同一 interaction 的新对象不移动 tick（按身份而非引用）',
+  );
+  assert.equal(
+    policy.sessionStatusTick(quiet),
+    policy.sessionStatusTick(
+      sessionStatusSnapshot([
+        ['s2', { running: false }],
+        ['s1', { running: true }],
+      ]),
+    ),
+    'Map 迭代顺序不影响 tick（同一快照不同插入顺序）',
+  );
+  // The plain-object arm still works (an older Host / a double); its fields are
+  // the same three, not the retired `state`/`status`/`phase` spelling.
+  assert.equal(policy.sessionStatusTick({ s1: { running: true } }), policy.sessionStatusTick({ s1: { running: true } }));
+  assert.notEqual(policy.sessionStatusTick({ s1: { running: true } }), policy.sessionStatusTick({ s1: { running: false } }));
+  assert.equal(policy.sessionStatusTick(new Map()), policy.sessionStatusTick(new Map()), '空快照也是稳定值');
   assert.equal(policy.sessionStatusTick(null), 0);
 });
 
@@ -18304,7 +18398,7 @@ test('client: the cross-tab probe really goes to the injected storage (g-089 rev
 });
 
 test('client: the session-status hook is called on every render, never conditionally (g-089 rev2)', async () => {
-  let map = { s1: { state: 'running' } };
+  let map = sessionStatusSnapshot([['s1', { running: true }]]);
   let calls = 0;
   let now = 100000;
   const page = makePage({ primitives: 'throw', responses: defaultResponses(), enforceEffectDeps: true });
@@ -18334,24 +18428,143 @@ test('client: the session-status hook is called on every render, never condition
   await step();
   assert.equal(calls, 2, '每次 render 都调用一次（不是「有 prop 才调用」的条件 hook）');
   assert.equal(page.router.calls.length, 3, '同一 tick 不重读');
-  // A tick change is one read, throttled by the status window.
+  // A tick change is one read, throttled by the status window. The snapshot is
+  // the Host's real `Map`; `running` flipping is a real advance.
   now += 3000;
-  map = { s1: { state: 'done' } };
+  map = sessionStatusSnapshot([['s1', { running: false }]]);
   await step();
   assert.equal(calls, 3);
   await step();
   assert.equal(page.router.calls.length, 6, '会话状态推进 ⇒ 重读一次');
   const policy = page.loaded.module.__internals.composerBar;
   assert.equal(
-    policy.sessionStatusTick({ s1: { state: 'running' } }),
-    policy.sessionStatusTick({ s1: { state: 'running' } }),
-    '同一 map 得到同一标量（selector 幂等）',
+    policy.sessionStatusTick(sessionStatusSnapshot([['s1', { running: true }]])),
+    policy.sessionStatusTick(sessionStatusSnapshot([['s1', { running: true }]])),
+    '同一快照得到同一标量（selector 幂等）',
   );
   assert.notEqual(
-    policy.sessionStatusTick({ s1: { state: 'running' } }),
-    policy.sessionStatusTick({ s1: { state: 'done' } }),
-    '状态拼写变化会移动 tick',
+    policy.sessionStatusTick(sessionStatusSnapshot([['s1', { running: true }]])),
+    policy.sessionStatusTick(sessionStatusSnapshot([['s1', { running: false }]])),
+    'running 翻转会移动 tick',
   );
+  // The real Map must **not** fold to a constant: this is the assertion the old
+  // plain-object case could never make (review BLOCK-A).
+  assert.notEqual(
+    policy.sessionStatusTick(new Map([['s1', { running: false, completionUnread: false }]])),
+    0,
+    '真实 Map 的 tick 不是常量 0',
+  );
+});
+
+test('client: a real SessionStatus Map advancing re-reads the bar exactly once (g-089 rev3)', async () => {
+  const snapshots = [
+    sessionStatusSnapshot([['s1', { running: true }]]),
+    sessionStatusSnapshot([['s1', { running: false }]]),
+    sessionStatusSnapshot([['s1', { running: false, pendingInteraction: pendingInteractionOf('ask-1') }]]),
+    sessionStatusSnapshot([['s1', { running: false, completionUnread: true }]]),
+  ];
+  let index = 0;
+  let now = 100000;
+  const page = makePage({ primitives: 'throw', responses: defaultResponses(), enforceEffectDeps: true });
+  const bar = makeAssemblyBar(page, {
+    session: { sessionId: 's1' },
+    livePollMs: 0,
+    liveNow: () => now,
+    useSessionStatus: (selector) => selector(snapshots[index]),
+  });
+  await bar.flush();
+  assert.equal(page.router.calls.length, 3, '挂载读三条');
+  const policy = page.loaded.module.__internals.composerBar;
+  assert.notEqual(policy.sessionStatusTick(snapshots[0]), 0, '真实 Map 的 tick 不是常量 0（BLOCK-A）');
+
+  // Same snapshot re-rendered: no read at all.
+  await bar.flush();
+  assert.equal(page.router.calls.length, 3, '同一快照不重读');
+
+  // `running: true → false` is a real advance: exactly one three-request read.
+  now += 3000;
+  index = 1;
+  await bar.step();
+  assert.equal(page.router.calls.length, 3, '状态 effect 只排一次读（还未执行）');
+  await bar.step();
+  assert.equal(page.router.calls.length, 6, '状态推进 ⇒ 恰好一次重读');
+  assert.deepEqual(
+    page.router.calls.slice(3).map((call) => call.url.split('?')[0]),
+    [PATHS.snapshot, PATHS.overrides, PATHS.assemblyStatus],
+    'URL 序列仍是同一条读取路径',
+  );
+
+  // A pendingInteraction appearing is another advance.
+  now += 3000;
+  index = 2;
+  await bar.step();
+  await bar.step();
+  assert.equal(page.router.calls.length, 9, 'pendingInteraction 出现也触发一次');
+
+  // `completionUnread` flipping is a third one.
+  now += 3000;
+  index = 3;
+  await bar.step();
+  await bar.step();
+  assert.equal(page.router.calls.length, 12, 'completionUnread 翻转也触发一次');
+});
+
+test('client: a deferral that fires while hidden reads nothing at all (g-089 rev3)', async () => {
+  const clock = makeFakeClock(1000);
+  const doc = makeLiveDocument('visible');
+  const page = makePage({ primitives: 'throw', responses: defaultResponses(), enforceEffectDeps: true });
+  const policy = page.loaded.module.__internals.composerBar;
+  const bar = makeAssemblyBar(page, {
+    session: { sessionId: 's1' },
+    livePollMs: 0,
+    liveDocument: doc,
+    liveSetTimeout: clock.setTimeout,
+    liveClearTimeout: clock.clearTimeout,
+    liveNow: clock.now,
+  });
+  await bar.flush();
+  assert.equal(page.router.calls.length, 3, '挂载读三条');
+
+  // A write inside the coalescing window arms a deferral.
+  clock.advance(100);
+  policy.notifyWriteOf(PATHS.overrides, { method: 'PUT' });
+  assert.equal(clock.pending(), 1, '写合并窗口内排了一个延迟读');
+
+  // The tab goes hidden **without** a `visibilitychange` being delivered (a
+  // browser may coalesce or skip it): the deferral must still refuse to read at
+  // fire time — that is `fire()`'s own visibility re-check, not the listener's.
+  doc.visibilityState = 'hidden';
+  clock.advance(1000);
+  assert.equal(clock.pending(), 0, '延迟读已到点');
+  await bar.flush();
+  assert.equal(page.router.calls.length, 3, '隐藏时到点的延迟读不发请求');
+
+  // Back to visible with an event: the listener reads once.
+  doc.visibilityState = 'visible';
+  doc.fire('visibilitychange');
+  await bar.flush();
+  assert.equal(page.router.calls.length, 6, '切回可见读一次');
+});
+
+test('client: a Session change replaces the state even when the four facts look identical (g-089 rev3)', () => {
+  const { module } = loadClient('throw');
+  const policy = module.__internals.composerBar;
+  const answer = (payload) => ({ ok: true, status: 200, payload });
+  const results = {
+    snapshot: answer(snapshotFixture()),
+    overrides: answer(overridesFixture()),
+    assembly: answer(assemblyFixture()),
+  };
+  const first = policy.readOf(results);
+  assert.equal(policy.nextRead(first, results, false), first, '同一会话 + 同一事实 ⇒ 复用旧 state');
+  const forced = policy.nextRead(first, results, true);
+  assert.notEqual(forced, first, '会话变了 ⇒ 即使四事实相同也换新对象（不把旧会话的对象留下）');
+  assert.equal(
+    policy.factsSignature(forced),
+    policy.factsSignature(first),
+    '但显示内容一致（只有对象身份变了）',
+  );
+  assert.equal(forced.snapshot, results.snapshot.payload, '新对象携带的是这次读的载荷');
 });
 
 // #endregion

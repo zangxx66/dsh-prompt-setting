@@ -13,8 +13,11 @@
      *     (all five chunks go through it), so one broadcast from there covers
      *     "save「我的 Prompt」", "apply/unapply a preset", "delete a preset",
      *     "import", "rollback", "reset a layer" and "delete an override" at once;
-     *   - **the Session status map** — the only client-side event the Host really
-     *     has for "a step ended", which is when an assembly verdict settles;
+     *   - **the Session status snapshot** (`ReadonlyMap` of SessionId → `SessionStatus`,
+     *     the Host's `useSessionStatus`) — the only client-side event the Host
+     *     really has for "a step ended", which is when an assembly verdict
+     *     settles; it is folded to one number over the contract's own fields
+     *     (`running` / `completionUnread` / `pendingInteraction`);
      *   - **visibility / focus** — a tab that comes back re-reads immediately, and
      *     a hidden tab stops polling entirely;
      *   - **`storage`** — a second tab's write lands on this tab's listener; the
@@ -48,8 +51,8 @@
     /**
      * Shortest gap between two reads triggered by a **non-write** event.
      *
-     * The Session status map can change several times per step (waiting ⇒
-     * assembled ⇒ delivered); collapsing those into one read 2.5 s later is what
+     * The status snapshot can change several times per step (pending ⇒ running
+     * false ⇒ delivered); collapsing those into one read 2.5 s later is what
      * keeps one turn from costing a read per transition. `ASSEMBLY_TOAST_MIN_GAP_MS`
      * (3000) is the same idea in the toaster and the two are deliberately close.
      */
@@ -457,42 +460,82 @@
     }
 
     /**
-     * Fold the Host's session-status map into one **number**.
+     * Fold the Host's session-status snapshot into one **number**.
      *
-     * `useSessionStatus` is an external-store hook: a selector that returns a
-     * fresh object on every call re-renders its subscriber forever (React
-     * compares snapshots with `Object.is`). A number is the only shape that is
-     * both a legal snapshot and a signal — it changes when the map's size or any
-     * entry's `state`/`status`/`phase` spelling changes, which is all this bar
-     * needs to know that "a step probably ended".
-     * @param map - the Host's status map, or anything else.
+     * The Host's contract is `SessionStatusSnapshot = ReadonlyMap` of SessionId →
+     * `SessionStatus` (`dsh-client-ui-session` types, `GlobalStandardProps.
+     * useSessionStatus`), and `SessionStatus` is `{running, pendingInteraction,
+     * completionUnread}`. **A `Map` is not a plain object**: `Object.keys(map)`
+     * is `[]`, so a tick built from it is a constant `0` and the status trigger
+     * would be dead code on the real contract (review BLOCK-A — the previous
+     * version also read `state`/`status`/`phase`, three fields the contract does
+     * not have, so its unit case was a false positive). This folds the **real**
+     * fields and accepts both shapes:
+     *   - a `Map` (the Host's shape) is walked with `forEach`;
+     *   - a plain object is walked with `Object.keys` — the arm an older or double
+     *     Host answers with, and the one a unit case can write by hand.
+     *
+     * `useSessionStatus` is an external-store hook, so the answer must be a
+     * **number** (a fresh object re-renders the subscriber forever) and must be
+     * **deterministic**: the same snapshot always folds to the same value. The
+     * fold is a polynomial over one canonical string per entry (sorted, so a
+     * Map's iteration order cannot matter), never over object identity and never
+     * through `JSON.stringify` (which has nothing to say about a `Map`).
+     * @param map - the Host's status snapshot, or anything else.
      * @returns a stable non-negative number.
      */
     function composerBarSessionStatusTick(map) {
       if (map === null || typeof map !== 'object') return 0;
-      let tick = 0;
+      const parts = [];
       try {
-        const keys = Object.keys(map);
-        tick = keys.length;
-        for (const key of keys) {
-          const entry = map[key];
-          const text =
-            typeof entry === 'string'
-              ? entry
-              : entry !== null && typeof entry === 'object'
-                ? [entry.state, entry.status, entry.phase]
-                    .map((value) => (value === undefined || value === null ? '' : String(value)))
-                    .join('|')
-                : '';
-          const sample = `${key}:${text}`;
-          for (let index = 0; index < sample.length; index += 1) {
-            tick = (tick * 31 + sample.charCodeAt(index)) % 100000007;
+        if (typeof map.forEach === 'function') {
+          map.forEach((entry, key) => {
+            parts.push(`${String(key)}=${composerBarSessionStatusEntryOf(entry)}`);
+          });
+        } else {
+          for (const key of Object.keys(map)) {
+            parts.push(`${key}=${composerBarSessionStatusEntryOf(map[key])}`);
           }
         }
       } catch {
         return 0;
       }
+      parts.sort();
+      let tick = parts.length;
+      for (const part of parts) {
+        for (let index = 0; index < part.length; index += 1) {
+          tick = (tick * 31 + part.charCodeAt(index)) % 100000007;
+        }
+        // A separator after every entry, so ("ab", "c") and ("a", "bc") differ.
+        tick = (tick * 31 + 1) % 100000007;
+      }
       return tick;
+    }
+
+    /**
+     * One `SessionStatus` entry's contribution to the tick.
+     *
+     * Exactly the three fields the contract carries: `running`,
+     * `completionUnread` and `pendingInteraction`. The interaction contributes by
+     * its **stable identity** (`kind` + `key` + `sessionId`), not by object
+     * identity — the Host is free to hand a fresh object for the same pending
+     * interaction, and a tick that changed on that alone would read for nothing.
+     * @param entry - one `SessionStatus`, or anything else.
+     * @returns a canonical string (empty for an unusable entry).
+     */
+    function composerBarSessionStatusEntryOf(entry) {
+      if (entry === null || typeof entry !== 'object') return '';
+      const running = entry.running === true ? '1' : '0';
+      const unread = entry.completionUnread === true ? '1' : '0';
+      const interaction = entry.pendingInteraction;
+      let pending = '';
+      if (interaction !== null && typeof interaction === 'object') {
+        const kind = typeof interaction.kind === 'string' ? interaction.kind : '';
+        const key = typeof interaction.key === 'string' ? interaction.key : '';
+        const sessionId = typeof interaction.sessionId === 'string' ? interaction.sessionId : '';
+        pending = `${kind}/${key}/${sessionId}`;
+      }
+      return `${running}${unread}|${pending}`;
     }
 
     /**

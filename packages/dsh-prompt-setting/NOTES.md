@@ -10795,17 +10795,17 @@ g-086 的状态栏只在**挂载 / `sessionId` 变化 / 手点刷新**时读一�
 
 ### 三、段拆分（行数预算硬约束）
 
-`16-composer-bar.js` 已到 1196/1200，所以数据层整体搬到新段 `src/17-composer-bar-live.js`（返工后 966 行），
-原 `17-boot.js` 改名 `18-boot.js`（509 行），`16` 段降到 1157 行：**19 段 / 15251 行**（原 18 段 / 14290）。
+`16-composer-bar.js` 已到 1196/1200，所以数据层整体搬到新段 `src/17-composer-bar-live.js`（两轮返工后 1009 行），
+原 `17-boot.js` 改名 `18-boot.js`（返工后 514 行），`16` 段降到 1157 行：**19 段 / 15299 行**（原 18 段 / 14290）。
 `refresh`/`read` 由 `useComposerBarLiveRead({ enabled, sessionId, props })` 返回，组件只负责画。
 
 同步的坐标表：`test/client-source.test.mjs` 的 `SEGMENTS`（19 行）+ 段数/总行数断言、`docs/check-refs.mjs`
-的 `14290 → 15251` 与 65 条 `client.js` 行号、`docs/refactor-plan.md` §1.3（拆出 live 段一行 → 26 行）/§5.1
+的 `14290 → 15299` 与 65 条 `client.js` 行号、`docs/refactor-plan.md` §1.3（拆出 live 段一行 → 26 行）/§5.1
 （19 段）、`docs/architecture-map.md`（19 段表 + 50 处入口行号按实测重锚）。**全部机械重锚，没有改任何断言语义。**
 
 ### 四、测试（三档里属第三档：并发 + 状态机）
 
-`test/client.test.mjs` 新增 **15** 个用例（11 个首轮 + 4 个 BLOCK 返工，全部进 `#region g-086` 的 g-089 段）：
+`test/client.test.mjs` 新增 **18** 个用例（11 首轮 + 4 BLOCK 返工 + 3 BLOCK-A/N1/N2，全部进 `#region g-086` 的 g-089 段）：
 
 1. 策略矩阵：`read`/`defer`/`skip`/`dirty`/`merged` 五分支 + 隐藏/关闭/无会话 + defer 的延迟值；
 2. 广播过滤：11 条写路由 vs 6 条忽略路由、方法过滤、`revision`/`topic`、探针值/存储、`visibleNow` 的三态；
@@ -10827,13 +10827,13 @@ g-086 的状态栏只在**挂载 / `sessionId` 变化 / 手点刷新**时读一�
 
 - `node scripts/verify.mjs`：6 步 / **1 步失败**（`test`）—— 失败的是 **3 个基线已红**的
   `integration R8` 用例（host `assemble` 的输出多了 `tools: []`，夹具漂移），与本次改动无关：
-  **主工作树 `2e621ae` 同一条命令同样 3 fail / 28 pass**（全量同样 3 fail：基线 1048 tests / 1045 pass，本树 1063 / 1060 —— 增量 15 全是本轮新增且全过）。其余 5 步（check-refs / client-build --check /
+  **主工作树 `2e621ae` 同一条命令同样 3 fail / 28 pass**（全量同样 3 fail：基线 1048 tests / 1045 pass，本树 1066 / 1063 —— 增量 18 全是本轮新增且全过）。其余 5 步（check-refs / client-build --check /
   locale-pack --check / prepare / check-compat）全绿。
-- `node --test test/*.test.mjs`：**tests 1063 / pass 1060 / fail 3**（3 个即上述基线失败；本 worktree 与主工作树失败集合
-  逐条相同）。`node --test test/client.test.mjs`：**pass 360 / fail 0**。
+- `node --test test/*.test.mjs`：**tests 1066 / pass 1063 / fail 3**（3 个即上述基线失败；本 worktree 与主工作树失败集合
+  逐条相同）。`node --test test/client.test.mjs`：**pass 363 / fail 0**。
 - `node scripts/client-build.mjs --check`：`19 个段与 client.js 逐字节一致`，exit 0。
 - `node docs/check-refs.mjs`：`total=165 | verified=102 | rangeOnly=42 | manual=21 | unresolved=0`，两张表
-  `§1.3 rows=26 合计=15251` / `§5.1 rows=19 合计=15251 最大段=1200`，段名集合与磁盘一致，exit 0。
+  `§1.3 rows=26 合计=15299` / `§5.1 rows=19 合计=15299 最大段=1200`，段名集合与磁盘一致，exit 0。
 - `node scripts/prepare.mjs`：**25 项通过**，`CLIENT-SRC: src/ 下 19 个段文件与 client.js 逐字节一致`。
 
 ### 六、已知降级路径（都写进代码注释与用例）
@@ -10873,7 +10873,51 @@ g-086 的状态栏只在**挂载 / `sessionId` 变化 / 手点刷新**时读一�
 `a refresh never swaps…` 与 `a hidden tab neither installs…` 两条**当场变红**（分别命中「刷新期 phase 不降级」与
 「隐藏后不再发剩余请求」），还原后重新全绿。
 
-### 八、未验证项
+### 八、第二轮评审 BLOCK-A 返工（rev-att-001-03，`17-composer-bar-live.js` 966 → 1009 行）
+
+**BLOCK-A（真契约死路径 + 单测假阳性）**：宿主 `useSessionStatus` 的快照是
+`ReadonlyMap<SessionId, SessionStatus>`（`dsh-client-ui-session` 类型：`GlobalStandardProps`），
+`SessionStatus = { running, pendingInteraction, completionUnread }`。旧 `composerBarSessionStatusTick`
+用 `Object.keys(map)` + `entry.state/status/phase` —— 对 `Map` 而言 `Object.keys` 是 `[]`，tick 恒 0，
+「会话状态推进 ⇒ 重读」在真契约上是死代码；而单测喂的是普通对象 + 虚构字段，属假阳性。现在：
+
+- 兼容两种形状：`typeof map.forEach === 'function'` 走 `forEach`（宿主真实形状），否则 `Object.keys`
+  （旧宿主/替身与单测）；
+- 只读**真实字段**：`running` / `completionUnread` / `pendingInteraction`（后者用 `kind` + `key` +
+  `sessionId` 组成稳定标识，**不按对象引用** —— 同一个交互换一个新对象不该触发重读）；
+- 哈希是**确定性**多项式：每条目一个规范串、`parts.sort()` 后折叠（Map 迭代顺序不影响结果），
+  无随机、无对象自引用，同一快照多次调用必同值；
+- 用例改用真实形状：`new Map([['s1', { running: true, pendingInteraction: undefined,
+  completionUnread: false }]])`，断言 `running` 翻转 / `completionUnread` 翻转 / `pendingInteraction`
+  出现与 `key` 变化都移动 tick、同一交互的新对象不移动、插入顺序不影响、普通对象形状仍可用；
+- 新增**渲染级**用例：真实 `Map` 依次推进（running → pendingInteraction → completionUnread）⇒
+  每次都**恰好一次**三条重读，URL 序列 `snapshot/overrides/assemblyStatus` 不变；
+- 同步注释：`17` 段头部、`tick` 的 JSDoc、`__internals`（`18-boot.js`）与 `16` 段的「会话状态快照」表述，
+  不再出现 `state/status/phase`。
+
+**顺带补的非阻塞用例**：N1 `fire()` 的可见性复查 —— 写合并窗口里排了 defer、**不派发**
+`visibilitychange` 直接隐藏，到点后不得发请求（这是 listener 之外的第二道闸）；N2 `nextRead` 的
+`force` 分支 —— Session 变了且四事实相同，仍必须换成新会话的对象（签名相同但身份必须更新）。
+
+**负向对照（实跑并还原）**：把 `forEach` 分支改成 `if (false)`（回到 `Object.keys`）、把 `fire()` 的
+`mayRead` 复查短路、把 `force` 判断改成恒假之后，`a real SessionStatus Map advancing…`、
+`a deferral that fires while hidden…`、`a Session change replaces the state…`、
+`the session-status hook is called on every render…` 与 `an unchanged read keeps…` 共 **5 条当场变红**；
+还原后重新全绿。
+
+**已知限制（如实记录，本轮不修）**：
+
+- **N3**：`refresh` 的 `'enable'` 分支没有调用者（开关翻转走的是读取 effect 的 deps），保留作未来兼容；
+  它让「隐藏时手动开启也能读」这条语义在代码上成立，但没有用例驱动。
+- **N4**：`composerBarLiveProbeSeat` 是模块级的，**多个 bar 实例**会互相覆盖（后挂载者胜）。多实例场景下
+  跨标签页探针退化到 20s 轮询窗口，可接受（真实宿主只有一条 `conversation.input.dock` 注册）。
+- **N7**：Session 切换后若新读**失败**（三条任意一条失败 ⇒ `ok:false` ⇒ payload `null`），`nextRead` 的签名
+  会与旧会话不同因而替换，但替换后的内容仍是「旧数据 + 部分 null」的混合，直到下一次成功读；这是签名语义
+  决定的（判据 8 只承诺「未变不重渲染」），不是缺陷。
+- **真机 status 事件**：`useSessionStatus` 的 Map 推进在真实浏览器里无法在本测试环境复现（宿主 hook 是真
+  React hook），只用契约形状的替身断言；真机由负责人验收。
+
+### 九、未验证项
 
 - **真机（`http://127.0.0.1:3080`）未验**：GUI 服务在运行，重启有风险，按 directive 由负责人在 review 后验收
   （保存「我的 Prompt」后状态栏自动变化、切走再切回立即重读）；

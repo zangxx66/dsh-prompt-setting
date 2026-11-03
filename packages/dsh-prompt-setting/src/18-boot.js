@@ -226,7 +226,12 @@
           readOf: composerBarReadOf,
           factsSignature: composerBarFactsSignature,
           nextRead: composerBarNextRead,
+          // The Host's snapshot is `ReadonlyMap` of SessionId → `SessionStatus`); the
+          // tick folds the contract's own fields (`running` / `completionUnread`
+          // / `pendingInteraction`), and also accepts a plain-object map (an
+          // older/double Host, and what a unit case can write by hand).
           sessionStatusTick: composerBarSessionStatusTick,
+          sessionStatusEntryOf: composerBarSessionStatusEntryOf,
           sessionTick: composerBarSessionTick,
           liveIoOf: composerBarLiveIoOf,
         },

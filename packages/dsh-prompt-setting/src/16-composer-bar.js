@@ -754,7 +754,7 @@
      * **data layer** lives in `17-composer-bar-live.js` (`useComposerBarLiveRead`),
      * not here: the reads still happen on mount, on Session change and on the
      * user's refresh, and now also when this tab writes through the settings
-     * page, when the Session status map moves, when the tab comes back into view,
+     * page, when the Host's session-status snapshot moves, when the tab comes back into view,
      * when another tab drops its probe — with a visibility-aware 20 s
      * `setTimeout` chain as the fallback. The bar itself only *draws* what that
      * hook returns, which is what keeps this segment inside its 1200-line budget
