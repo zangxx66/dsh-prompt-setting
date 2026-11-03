@@ -24,7 +24,7 @@
 
 | 段文件 | `client.js` 行区间 | 行数 | 域 | 主要入口函数 | CONTRACT | 测试 |
 |---|---|---:|---|---|---|---|
-| `00-entry.js` | 1–215 | 215 | 文件头 + load 注册 + 指纹区间 + factory guard + `buildPlugin` 头 | `buildPlugin` (203)、`fingerprintOf` (158)、`fingerprintRegion` (141) | §13, §14 | `test/build.test.mjs`、`test/boot.test.mjs` |
+| `00-entry.js` | 1–215 | 215 | 文件头 + load 注册 + 指纹区间 + factory guard + `buildPlugin` 头 | `buildPlugin` (212)、`fingerprintOf` (167)、`fingerprintRegion` (150) | §13, §14 | `test/build.test.mjs`、`test/boot.test.mjs` |
 | `01-shared-head.js` | 216–996 | 781 | launch shape 探测 + primitives probe + 常量 | `normalizeLaunchKind` (271)、`primitivesActive` (462)、`activeRenderer` (466) | §13 | `test/launch-kind.test.mjs`、`test/client.test.mjs` |
 | `02-locale.js` | 997–2196 | 1200 | locale 内联段（`locale-pack.mjs --write` 产出，生成器原样嵌入） | —（数据段） | §22 | `test/locale.test.mjs` |
 | `03-facilities.js` | 2197–2798 | 602 | `token` / `fallbackT` / fallback atoms / `PRIMITIVES_UI` / `tabs` | `tabs` (2530)、`FxButton` (2272)、`FxInput` (2308)、`safeT` (2790) | §13, §16 | `test/client.test.mjs`、`test/interpolate.test.mjs` |

@@ -10949,7 +10949,10 @@ g-086 的状态栏只在**挂载 / `sessionId` 变化 / 手点刷新**时读一�
 N-f tick 是 100000007 取模的多项式哈希，理论上可能碰撞（碰撞只是少读一次，20 s 兜底）；
 N-g `UPDATE_APPLY_CANCEL_PATH` 未被忽略（多一次无害读）；N-h 栏关闭时写成功仍可能写跨标签页探针到真实
 `localStorage`（只是键值，不产生请求）；N-j `__internals` 有冗余导出（`sessionTick` 与
-`sessionStatusTick` 并存，前者仅为测试入口）。
+`sessionStatusTick` 并存，前者仅为测试入口）；**N-k** `composerBarFactsSignature` 只折叠装配分区的
+**主文本**字段（`assembled` / `delivery.state`），而该分区的 tooltip 还依赖 `notice.kind` /
+`assembly.state` / `delivery.surfaceOp` —— 只有这几个字段变化时 tooltip 会滞后到下一次真实变化
+（主文本不受影响，判据 8 的「不改已渲染文本」仍成立，因为文本确实没变）。
 
 ### 十、未验证项
 

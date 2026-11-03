@@ -127,7 +127,7 @@
 
 - 主 factory 把跨 chunk 设施收在一个冻结面上：`const CHUNK_FACILITIES = Object.freeze({...})`（`client.js:8217`，区间 `8097–8186` = **90 行**），含 `h`/`token`/`UI`/`fmt`/`tabs`/`cardStyle`/`errorBanner`/`stampOf`/`layerLabel`/`diff*`/`scrimStyle` 等。
 - chunk 侧取用方式：`const shared = require('dsh-prompt-setting').__internals.shared;`（`client.history.js:36`，同一段解构 20+ 个设施名）。
-- 导出面：`client.js:14712-14715`（`__internals: { historyPanelHeight, workspaceRows, shared: CHUNK_FACILITIES, assemblyNotice: {...} }`）。
+- 导出面：`client.js:14955-14958`（`__internals: { historyPanelHeight, workspaceRows, shared: CHUNK_FACILITIES, assemblyNotice: {...} }`）。
 - 设计原则（代码注释明写）：**一份实例，不复制**——"a copy would be a second value that can drift away from the page it renders in"（`client.js:8209-8216`、`client.js:4078-4082`）。测试把这条原则固化成源码断言：chunk 里不得出现 `shared.` 之外的重复定义（`test/client.test.mjs:2376-2398`）。
 
 > 这条原则是**为什么共享设施不能复制到 chunk**，也是 g-061「收敛复用」那批改动净增 601 行的原因之一：收敛的每一步都要先在主入口造门面 + JSDoc。
