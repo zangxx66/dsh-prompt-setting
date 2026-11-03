@@ -481,6 +481,13 @@
           payload = null;
         }
         if (response.ok && payload !== null && payload.ok === true) {
+          // g-089: this function is the page's **only** write funnel — every
+          // chunk's save/apply/import/rollback goes through it — so one broadcast
+          // here is what makes the composer bar live for *every* write, rather
+          // than for the seventeen handlers a whitelist would have to name. Reads
+          // (`GET`) and the routes that cannot change the bar's four facts are
+          // filtered inside the callee; it never throws.
+          notifyComposerBarWriteOf(path, init);
           return { ok: true, status: response.status, payload };
         }
         return {

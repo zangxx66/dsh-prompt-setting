@@ -750,24 +750,34 @@
     /**
      * The whole bar.
      *
-     * Renders five `data-region` cells in one wrapped row. The reads happen on
-     * mount, on Session change and on the user's explicit refresh — never on a
-     * timer: a resident poll would be a request the user did not ask for on every
-     * open tab, and the facts it would pick up (a save in the settings panel)
-     * arrive with a fresh mount or one click.
+     * Renders five `data-region` cells in one wrapped row. Since g-089 the
+     * **data layer** lives in `17-composer-bar-live.js` (`useComposerBarLiveRead`),
+     * not here: the reads still happen on mount, on Session change and on the
+     * user's refresh, and now also when this tab writes through the settings
+     * page, when the Session status map moves, when the tab comes back into view,
+     * when another tab drops its probe — with a visibility-aware 20 s
+     * `setTimeout` chain as the fallback. The bar itself only *draws* what that
+     * hook returns, which is what keeps this segment inside its 1200-line budget
+     * and keeps the trigger policy in one place.
      * @param props - the entry's props (`session`, `barSessionId`, `t`, …).
      * @returns the bar element.
      */
     function ComposerAssemblyBar(props) {
       const t = typeof props.t === 'function' ? props.t : fallbackT;
       const sessionId = composerBarSessionIdOf(props);
-      const [read, setRead] = React.useState({
-        phase: sessionId === '' ? 'no-session' : 'loading',
-        snapshot: null,
-        overrides: null,
-        assembly: null,
-      });
-      const [nonce, setNonce] = React.useState(0);
+      // g-086 R5: the switch. Same seat the settings page uses, so flipping it
+      // there hides this bar (and its reads) on the same frame. Read **before**
+      // the live hook: the hook short-circuits on it, and "off means zero
+      // requests" must be true of the triggers too, not only of the read path.
+      const enabled = React.useSyncExternalStore(
+        subscribeComposerBarEnabled,
+        composerBarEnabled,
+        composerBarEnabled,
+      );
+      // g-089: the one read path plus the triggers that re-run it.
+      const live = useComposerBarLiveRead({ enabled, sessionId, props });
+      const read = live.read;
+      const refresh = live.refresh;
       const [hint, setHint] = React.useState(false);
       // g-086 R3: the surface never wraps, so it needs to know how much room it
       // has: the root's own width is measured (ResizeObserver) and the compact
@@ -815,13 +825,6 @@
         };
       }
       const compact = composerBarDensityOf(barWidth) === 'compact';
-      // g-086 R5: the switch. Same seat the settings page uses, so flipping it
-      // there hides this bar (and its reads) on the same frame.
-      const enabled = React.useSyncExternalStore(
-        subscribeComposerBarEnabled,
-        composerBarEnabled,
-        composerBarEnabled,
-      );
       // One pending "find the settings panel" attempt at a time: kept in a ref so
       // the component can stop it before starting another and on unmount.
       const aimRef = React.useRef(null);
@@ -841,48 +844,6 @@
       // exactly when a lingering observer would otherwise scan a document the bar
       // no longer belongs to.
       React.useEffect(() => stopAim, []);
-
-      React.useEffect(() => {
-        if (!enabled) {
-          // Off means off: no snapshot, no overrides, no assembly-status — the
-          // whole point of the switch is that a hidden bar costs nothing.
-          setRead({ phase: 'off', snapshot: null, overrides: null, assembly: null });
-          return undefined;
-        }
-        const urls = composerBarRequestUrls(sessionId);
-        if (urls === null) {
-          // No Session ⇒ no request at all. This is the promise `verify` cannot
-          // make for us: a component that asked "just in case" would leak a
-          // request per mounted blank composer.
-          setRead({ phase: 'no-session', snapshot: null, overrides: null, assembly: null });
-          return undefined;
-        }
-        let cancelled = false;
-        setRead((current) => ({
-          phase: 'loading',
-          // A refresh keeps the last answer on screen instead of blanking the
-          // bar; only the phase changes, so the row does not jump.
-          snapshot: current.snapshot,
-          overrides: current.overrides,
-          assembly: current.assembly,
-        }));
-        const load = async () => {
-          const snapshot = await requestJson(urls.snapshot);
-          const overrides = await requestJson(urls.overrides);
-          const assembly = await requestJson(urls.assembly);
-          if (cancelled) return;
-          setRead({
-            phase: 'ready',
-            snapshot: snapshot.ok === true ? snapshot.payload : null,
-            overrides: overrides.ok === true ? overrides.payload : null,
-            assembly: assembly.ok === true ? assembly.payload : null,
-          });
-        };
-        void load();
-        return () => {
-          cancelled = true;
-        };
-      }, [enabled, sessionId, nonce]);
 
       const phase = read.phase;
       const notice = composerBarNoticeOf(read.assembly);
@@ -948,7 +909,7 @@
           'data-action': 'composer-bar-refresh',
           'aria-label': t('refresh'),
           title: t('refresh'),
-          onClick: () => setNonce((value) => value + 1),
+          onClick: () => refresh('manual'),
           style: {
             font: 'inherit',
             padding: 0,

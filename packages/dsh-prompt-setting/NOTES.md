@@ -10759,3 +10759,94 @@ install 示例的 `version` / `tag` / `releaseUrl` / `releaseLink`）。§17 的
 - 徽章的 shields.io 在线渲染未目视，只核对了源文本；
 - 真机目视仍未做（worktree 未合入主工作树，刷新 `http://127.0.0.1:3080` 加载的仍是旧 bundle）。
 
+
+## 170. g-089：状态栏动态更新（四类触发 + 单飞/节流 + 可注入计时器）（2026-11-04，基线 `2e621ae`，隔离工作树 `g-089-att-01`）
+
+### 一、做了什么
+
+g-086 的状态栏只在**挂载 / `sessionId` 变化 / 手点刷新**时读一次，设置页保存后的过期快照是负责人真机反馈的缺陷。
+本轮给它加**四类触发**，并把「什么时候该读」抽成可注入的纯策略：
+
+1. **同页写广播**：`requestJson`（`src/05-helpers-b.js:465`）是页面**唯一**的写漏斗（5 个 chunk 零 `fetch`，全部走主包
+   actions），所以只在这一处广播，就覆盖了目标列出的全部写操作：保存「我的 Prompt」、应用/取消预设、删除预设、
+   导入、回滚、整层重置、删除覆盖项。广播前按**方法 + 路由**过滤：`GET` 不算，`/presets`、`/presets/tags`、
+   `/assembly-status`、`/update-check`、`/download-region`、`/update-apply` 与四事实无关（**忽略表是封闭且带理由的**，
+   未知写路由默认算相关 —— 多读一次的代价远小于漏读）。
+2. **会话状态**：`props.useSessionStatus` select 成**一个 number**（`composerBarSessionStatusTick`）。外部 store 的
+   selector 返回新对象会让订阅者无限重渲染，数字是唯一既合法又能变化的快照。hook 缺失 / 抛错 / 返回非数字一律降级为
+   0（不触发），兜底轮询仍覆盖。
+3. **可见性 / 焦点**：`visibilitychange`、`focus`。切回可见**立即**读并重新排队；隐藏时**清掉定时器**（不是轮询后跳过）。
+4. **跨标签页**：写成功后写一个 `localStorage` 探针（`dsh-prompt-setting:composer-bar-live`，值是「时间戳:路由」），
+   另一标签页的 `storage` 事件按**键**判断（值不可信 —— 收方自己重读宿主）。`window`/`localStorage` 缺失时静默降级。
+
+兜底是**链式 `setTimeout`**（`COMPOSER_BAR_POLL_MS = 20000`，非 `setInterval`），只在
+`enabled && sessionId !== '' && 可见` 时排队；关闭 / 无会话 / 隐藏时零 timer、零请求（g-086 R5 不回归）。
+
+### 二、并发与节流
+
+- **单飞**：读取 effect 仍是**唯一**读取路径（`[enabled, sessionId, nonce]`），`refresh(trigger)` 只做 `setNonce(v => v+1)`。
+  在途时只置 `dirty`，一轮结束后**补一次**读；`round` token 让被取代的轮次既不写状态、也不复位新轮次的 in-flight，
+  且**不再发剩余的两个请求**（三条读是串行的，否则两轮叠在一起）。
+- **节流**：写事件 300ms 合并窗口（≤1s 判据仍成立）、状态/存储事件 2500ms、`visible`/`manual`/`poll` 不节流
+  （poll 本身已 20s 间隔，再节流只会把一次轮询拆成两次读）。
+- **不抖**：`composerBarNextRead` 用「四事实签名」（段数 + 两层 `{kind,total,ineffective}` + 装配的 `assembled`/`delivery.state`）
+  比较，不变就**返回旧 state 对象**（React bail out ⇒ 文本与焦点都不动）。`snapshot.generatedAt` 每次请求都变，
+  故意**不进签名**。
+
+### 三、段拆分（行数预算硬约束）
+
+`16-composer-bar.js` 已到 1196/1200，所以数据层整体搬到新段 `src/17-composer-bar-live.js`（822 行），
+原 `17-boot.js` 改名 `18-boot.js`（509 行），`16` 段降到 1157 行：**19 段 / 15107 行**（原 18 段 / 14290）。
+`refresh`/`read` 由 `useComposerBarLiveRead({ enabled, sessionId, props })` 返回，组件只负责画。
+
+同步的坐标表：`test/client-source.test.mjs` 的 `SEGMENTS`（19 行）+ 段数/总行数断言、`docs/check-refs.mjs`
+的 `14290 → 15107` 与 65 条 `client.js` 行号、`docs/refactor-plan.md` §1.3（拆出 live 段一行 → 26 行）/§5.1
+（19 段）、`docs/architecture-map.md`（19 段表 + 50 处入口行号按实测重锚）。**全部机械重锚，没有改任何断言语义。**
+
+### 四、测试（三档里属第三档：并发 + 状态机）
+
+`test/client.test.mjs` 新增 **11** 个用例（全部进 `#region g-086` 的 g-089 段）：
+
+1. 策略矩阵：`read`/`defer`/`skip`/`dirty`/`merged` 五分支 + 隐藏/关闭/无会话 + defer 的延迟值；
+2. 广播过滤：11 条写路由 vs 6 条忽略路由、方法过滤、`revision`/`topic`、探针值/存储、`visibleNow` 的三态；
+3. 本页写 ⇒ 自动重读三条（读与目录类写不触发；`PUT /overrides`、`POST /presets/apply` 触发）；
+4. 真实设置页保存 ⇒ `revision + 1`；**被拒绝的写（403）不广播**；
+5. 跨标签页 `storage` 探针（别键不算）+ 窗口 `focus`；
+6. 可见性：可见时 1 个 timer、20s 到点读、隐藏清 timer 且 120s 零请求、切回可见立即读并重新排队；
+7. 陈旧响应：新旧两轮交错回答，后发先至的旧答案被丢弃，且被取代的轮次**不再发剩余请求**；
+8. 卸载：effect cleanup 后完成的读**不写状态**（`data-composer-bar-state` 停在 `loading`）；
+9. 四事实不变 ⇒ `nextRead` 返回**同一个对象**；`generatedAt` 变化不算；段数变化必须换新；
+10. 关闭 ⇒ timer 归零、120s 零请求、重开立即三条并恢复轮询；
+11. 无会话 ⇒ 零请求、零 timer，写广播也不能让它发请求。
+
+**既有精确请求数断言一条没删、没弱化**（`16944` / `17007-17040` / `17135` / `17605-17612`）。让它们继续成立的
+是**装配方式**：`makeAssemblyBar` 默认 `livePollMs: 0`（本 harness 把所有 timer 压到 ≤5ms，armed 的 20s 轮询会变成
+连续读）。断言轮询的用例自己给 `livePollMs` + 假时钟（`makeFakeClock` / `makeLiveDocument`）。
+
+### 五、门禁实跑（本 worktree）
+
+- `node scripts/verify.mjs`：6 步 / **1 步失败**（`test`）—— 失败的是 **3 个基线已红**的
+  `integration R8` 用例（host `assemble` 的输出多了 `tools: []`，夹具漂移），与本次改动无关：
+  **主工作树 `2e621ae` 同一条命令同样 3 fail / 28 pass**（全量同样 3 fail：基线 1048 tests / 1045 pass，本树 1059 / 1056 —— 增量 11 全是本轮新增且全过）。其余 5 步（check-refs / client-build --check /
+  locale-pack --check / prepare / check-compat）全绿。
+- `node --test test/*.test.mjs`：**tests 1059 / pass 1056 / fail 3**（3 个即上述基线失败；本 worktree 与主工作树失败集合
+  逐条相同）。`node --test test/client.test.mjs`：**pass 356 / fail 0**。
+- `node scripts/client-build.mjs --check`：`19 个段与 client.js 逐字节一致`，exit 0。
+- `node docs/check-refs.mjs`：`total=165 | verified=102 | rangeOnly=42 | manual=21 | unresolved=0`，两张表
+  `§1.3 rows=26 合计=15107` / `§5.1 rows=19 合计=15107 最大段=1200`，段名集合与磁盘一致，exit 0。
+- `node scripts/prepare.mjs`：**25 项通过**，`CLIENT-SRC: src/ 下 19 个段文件与 client.js 逐字节一致`。
+
+### 六、已知降级路径（都写进代码注释与用例）
+
+- 宿主没有 `useSessionStatus` ⇒ 少一个触发，兜底 20s 仍在；
+- `localStorage` 不可写 ⇒ 另一标签页只能等 20s 窗口；
+- `window`/`document` 缺失 ⇒ 无事件触发，只剩兜底 timer；
+- 没有可追踪的 `setTimeout` ⇒ 延迟触发立即落地（`defer` 退化成 `read`），不会丢读；
+- 状态栏关闭 / 无会话 ⇒ 订阅、timer、请求全为零。
+
+### 七、未验证项
+
+- **真机（`http://127.0.0.1:3080`）未验**：GUI 服务在运行，重启有风险，按 directive 由负责人在 review 后验收
+  （保存「我的 Prompt」后状态栏自动变化、切走再切回立即重读）；
+- 多标签页真机未验（`storage` 事件在真实浏览器里的时序只用桩断言过）；
+- `integration R8` 的 3 个基线失败未修（不属本目标；夹具需要按宿主 `assemble` 的新 `tools` 字段更新）。

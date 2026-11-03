@@ -16766,6 +16766,12 @@ function makeAssemblyBar(page, props = {}) {
   assert.notEqual(registration, undefined, 'the assembly bar entry is registered');
   const bound = {
     t: (key) => dict(page.mounted.dictionaries, NS, key, page.language),
+    // g-089: the bar's fallback poll is a real 20 s timer in production. This
+    // harness floors **every** timer to ≤5 ms (the install poll needs that), so
+    // an armed poll would read continuously and pollute the exact request-count
+    // assertions below. Default off; the cases that really assert the poll run
+    // their own `livePollMs` with an injected clock.
+    livePollMs: 0,
     ...props,
   };
   const component = registration.component;
@@ -17639,6 +17645,522 @@ test('client: the 高级 tab carries the bar switch, and flipping it is instant 
   tree = await page.flush();
   assert.equal(bus.enabled(), true, '再点恢复');
   assert.equal(blockOf(tree).props['data-composer-bar-switch-state'], 'on');
+});
+
+// ── g-089: the bar updates itself ────────────────────────────────────────────
+
+/**
+ * A deterministic clock for the g-089 cases.
+ *
+ * The sandbox floors **every** timer to ≤5 ms, so a 20 s poll would otherwise
+ * fire continuously; the live half takes its clock, its timers and its document
+ * through props, and this is the clock those cases hand it. Time only moves when
+ * a case says so, which is what makes "the tab was hidden for two minutes" a
+ * one-line assertion instead of a wait.
+ * @param start - the first millisecond.
+ * @returns `{now, setTimeout, clearTimeout, advance, pending}`.
+ */
+function makeFakeClock(start = 1000) {
+  let current = start;
+  let nextId = 1;
+  const timers = new Map();
+  return {
+    now: () => current,
+    setTimeout: (fn, ms) => {
+      const id = nextId;
+      nextId += 1;
+      const delay = typeof ms === 'number' && Number.isFinite(ms) && ms > 0 ? ms : 0;
+      timers.set(id, { fn, at: current + delay });
+      return id;
+    },
+    clearTimeout: (id) => {
+      timers.delete(id);
+    },
+    /** Move time forward and run every timer that came due, in arming order. */
+    advance: (ms) => {
+      current += typeof ms === 'number' && Number.isFinite(ms) ? ms : 0;
+      for (const [id, timer] of [...timers.entries()]) {
+        if (timer.at > current) continue;
+        timers.delete(id);
+        timer.fn();
+      }
+    },
+    /** How many timers are armed right now. */
+    pending: () => timers.size,
+  };
+}
+
+/** A document double with a visibility state and live event listeners. */
+function makeLiveDocument(initial = 'visible') {
+  const listeners = new Map();
+  return {
+    visibilityState: initial,
+    addEventListener: (name, handler) => {
+      listeners.set(name, handler);
+    },
+    removeEventListener: (name) => {
+      listeners.delete(name);
+    },
+    fire: (name) => {
+      const handler = listeners.get(name);
+      if (typeof handler === 'function') handler();
+    },
+    listener: (name) => listeners.get(name),
+  };
+}
+
+test('client: the live policy reads on a write, and never on a hidden or switched-off tab (g-089)', () => {
+  const { module } = loadClient('throw');
+  const policy = module.__internals.composerBar;
+  // The constants the goal quotes: a 20 s visible window (≤25 s) and a 300 ms
+  // write coalescing seat (well inside the ≤1 s the write branch promises).
+  assert.equal(policy.POLL_MS, 20000, '可见标签页的低频窗口 ≤25s');
+  assert.equal(policy.MIN_GAP_MS, 2500);
+  assert.equal(policy.WRITE_GAP_MS, 300);
+  assert.equal(policy.LIVE_KEY, 'dsh-prompt-setting:composer-bar-live');
+  const decide = (over) =>
+    policy.liveDecision({
+      enabled: true,
+      sessionId: 's1',
+      visible: true,
+      trigger: 'write',
+      inflight: false,
+      pending: false,
+      now: 10000,
+      lastAt: 0,
+      ...over,
+    }).action;
+
+  // 1. The four triggers that must read now.
+  assert.equal(decide({ trigger: 'write' }), 'read', '本页写成功后立即重读');
+  assert.equal(decide({ trigger: 'visible' }), 'read', '切回可见立即重读');
+  assert.equal(decide({ trigger: 'manual' }), 'read', '手点刷新不受节流');
+  assert.equal(decide({ trigger: 'poll' }), 'read', '兜底轮询到点即读');
+  // 2. Throttling: a burst of writes/statuses collapses into one read.
+  assert.equal(decide({ trigger: 'write', now: 100, lastAt: 0 }), 'defer', '300ms 写窗口内的连写合并');
+  assert.equal(decide({ trigger: 'status', now: 1000, lastAt: 0 }), 'defer', '状态推进 2.5s 内合并');
+  assert.equal(
+    policy.liveDecision({
+      enabled: true,
+      sessionId: 's1',
+      visible: true,
+      trigger: 'status',
+      inflight: false,
+      pending: false,
+      now: 1000,
+      lastAt: 0,
+    }).delayMs,
+    1500,
+    '延迟正好是剩余窗口',
+  );
+  // 3. A hidden tab reads nothing on its own initiative — including the poll.
+  assert.equal(decide({ trigger: 'poll', visible: false }), 'skip');
+  assert.equal(decide({ trigger: 'status', visible: false }), 'skip');
+  assert.equal(decide({ trigger: 'storage', visible: false }), 'skip');
+  assert.equal(decide({ trigger: 'write', visible: false }), 'skip');
+  assert.equal(decide({ trigger: 'manual', visible: false }), 'read', '用户点了就照做');
+  // 4. Off and no-Session stay zero-request for the triggers as well.
+  assert.equal(decide({ enabled: false }), 'skip');
+  assert.equal(decide({ sessionId: '' }), 'skip');
+  // 5. Single-flight: an in-flight read takes a dirty mark, not a second read.
+  assert.equal(decide({ inflight: true }), 'dirty');
+  assert.equal(decide({ pending: true }), 'merged');
+});
+
+test('client: only a successful write that can move the four facts is broadcast (g-089)', () => {
+  const { module } = loadClient('throw');
+  const policy = module.__internals.composerBar;
+  const topic = (path) => policy.writeTopicOf(path);
+
+  // The eleven writes the goal enumerates all reach the same funnel, so they all
+  // broadcast — the list is asserted as routes, not as handlers.
+  assert.equal(topic(`${PATHS.overrides}?session=s1`), PATHS.overrides, '保存「我的 Prompt」/ 删除覆盖项 / 整层重置');
+  assert.equal(topic(PATHS.interpolate), PATHS.interpolate, '变量替换开关改变了段文本');
+  assert.equal(topic(PATHS.import), PATHS.import);
+  assert.equal(topic(PATHS.rollback), PATHS.rollback);
+  assert.equal(topic(PATHS.presetsApply), PATHS.presetsApply, '应用预设');
+  assert.equal(topic(PATHS.presetsUnapply), PATHS.presetsUnapply, '取消应用预设');
+  // The closed ignore list: catalogue-only and release-plumbing writes.
+  for (const path of [
+    PATHS.presets,
+    PATHS.presetsTags,
+    PATHS.assemblyStatus,
+    PATHS.updateCheck,
+    PATHS.downloadRegion,
+    PATHS.updateApply,
+  ]) {
+    assert.equal(topic(path), '', `${path} 与四事实无关`);
+  }
+  assert.equal(topic('/prompt-setting/future-write'), '/prompt-setting/future-write', '未知写默认算相关（宁可多读一次）');
+
+  // Method filtering: a read never broadcasts, whatever its path.
+  assert.equal(policy.writeMethodOf(undefined), 'GET');
+  assert.equal(policy.writeMethodOf({ method: 'put' }), 'PUT');
+  assert.equal(policy.writeMethodOf({ method: 'POST' }), 'POST');
+  assert.equal(policy.writeMethodOf({ method: 'DELETE' }), 'DELETE');
+  assert.equal(policy.writeMethodOf({ method: 'HEAD' }), '');
+
+  const before = policy.liveRevision();
+  assert.equal(policy.notifyWriteOf(PATHS.overrides, { method: 'PUT' }), true, '成功的写 ⇒ 广播');
+  assert.equal(policy.liveRevision(), before + 1, 'revision 递增（订阅者据此重读）');
+  assert.equal(policy.liveTopic(), PATHS.overrides, 'broadcast 带路由 topic');
+  assert.equal(policy.notifyWriteOf(PATHS.overrides, {}), false, '读不广播');
+  assert.equal(policy.notifyWriteOf(PATHS.presets, { method: 'PUT' }), false, '无关的写不广播');
+  assert.equal(policy.liveRevision(), before + 1, '两次未广播都没有动 revision');
+
+  // The cross-tab probe: a key, a stamp and a route — never a payload trusted by
+  // the receiving tab (it re-reads the Host).
+  assert.equal(policy.probeValue(PATHS.import, 42), `42:${PATHS.import}`);
+  const storage = makeStorage();
+  assert.equal(policy.writeProbe('42:x', storage), true);
+  assert.deepEqual(storage.entries(), [['dsh-prompt-setting:composer-bar-live', '42:x']]);
+  assert.equal(
+    policy.writeProbe('v', {
+      setItem: () => {
+        throw new Error('quota');
+      },
+    }),
+    false,
+    '存储拒绝只是少了跨 tab 的即时性，不是错误',
+  );
+  assert.equal(policy.writeProbe('v', null), false);
+  // Visibility is a fact of the document, and "no document" is not "hidden".
+  assert.equal(policy.visibleNow(null), true, '没有 document 不代表隐藏');
+  assert.equal(policy.visibleNow({ visibilityState: 'visible' }), true);
+  assert.equal(policy.visibleNow({ visibilityState: 'hidden' }), false);
+  assert.equal(
+    policy.visibleNow({
+      get visibilityState() {
+        throw new Error('privacy mode');
+      },
+    }),
+    true,
+    '读不到可见性时宁可读',
+  );
+});
+
+test('client: a same-tab write makes the bar re-read with no click at all (g-089)', async () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses(), enforceEffectDeps: true });
+  const policy = page.loaded.module.__internals.composerBar;
+  let now = 100000;
+  const bar = makeAssemblyBar(page, { session: { sessionId: 's1' }, liveNow: () => now });
+  await bar.flush();
+  assert.equal(page.router.calls.length, 3, '挂载读三条');
+
+  // A read and a catalogue-only write are not changes to the four facts.
+  now += 1000;
+  policy.notifyWriteOf(PATHS.overrides, {});
+  policy.notifyWriteOf(PATHS.presets, { method: 'PUT' });
+  await bar.flush();
+  assert.equal(page.router.calls.length, 3, '读与预设目录写都不重读');
+
+  // The real thing: 「我的 Prompt」 saved (PUT /overrides) — the goal's ≤1 s branch.
+  now += 1000;
+  policy.notifyWriteOf(PATHS.overrides, { method: 'PUT' });
+  await bar.flush();
+  assert.equal(page.router.calls.length, 6, '写成功 ⇒ 自动重读三条，无需点击');
+  assert.deepEqual(
+    page.router.calls.slice(3).map((call) => call.url.split('?')[0]),
+    [PATHS.snapshot, PATHS.overrides, PATHS.assemblyStatus],
+    '仍是同一条读取路径（顺序不变）',
+  );
+
+  // Applying a preset (POST /presets/apply) rides the same funnel.
+  now += 1000;
+  policy.notifyWriteOf(PATHS.presetsApply, { method: 'POST' });
+  await bar.flush();
+  assert.equal(page.router.calls.length, 9, '应用/取消预设同样触发');
+});
+
+test('client: a real settings-page save reaches the bar’s broadcast (g-089)', async () => {
+  const page = makePage({ responses: defaultResponses() });
+  const policy = page.loaded.module.__internals.composerBar;
+  let tree = await page.flush();
+  const before = policy.liveRevision();
+  typeInto(tree, 'mine-text', 'written while the bar is watching');
+  tree = await page.flush();
+  clickButton(tree, { 'data-action': 'mine-save' });
+  tree = await page.flush();
+  assert.equal(writeCalls(page).length, 1, '这次保存只有一条写');
+  assert.equal(policy.liveRevision(), before + 1, 'requestJson 的写漏斗广播一次');
+  assert.equal(policy.liveTopic(), PATHS.overrides, 'topic 就是这次写的路由');
+  // A refused write is not a change: the bar must not read for a 403.
+  const refused = makePage({
+    responses: defaultResponses({
+      [PATHS.overrides]: (url, init) =>
+        init && init.method === 'PUT' ? { status: 403, payload: { ok: false, code: 'write-locked' } } : { payload: overridesFixture() },
+    }),
+  });
+  const refusedPolicy = refused.loaded.module.__internals.composerBar;
+  const refusedBefore = refusedPolicy.liveRevision();
+  let refusedTree = await refused.flush();
+  typeInto(refusedTree, 'mine-text', 'nope');
+  refusedTree = await refused.flush();
+  clickButton(refusedTree, { 'data-action': 'mine-save' });
+  await refused.flush();
+  assert.equal(refusedPolicy.liveRevision(), refusedBefore, '被拒绝的写不广播');
+});
+
+test('client: another tab’s probe reaches this bar, and focus re-reads too (g-089)', async () => {
+  const listeners = new Map();
+  const view = {
+    addEventListener: (name, handler) => {
+      listeners.set(name, handler);
+    },
+    removeEventListener: (name) => {
+      listeners.delete(name);
+    },
+  };
+  const page = makePage({ primitives: 'throw', responses: defaultResponses(), enforceEffectDeps: true });
+  let now = 100000;
+  const bar = makeAssemblyBar(page, { session: { sessionId: 's1' }, liveWindow: view, liveNow: () => now });
+  await bar.flush();
+  assert.equal(page.router.calls.length, 3);
+  assert.equal(typeof listeners.get('storage'), 'function', '跨标签页的探针被监听');
+  assert.equal(typeof listeners.get('focus'), 'function', '窗口重新聚焦也算「回来看」');
+
+  now += 3000;
+  listeners.get('storage')({ key: 'someone-else' });
+  await bar.flush();
+  assert.equal(page.router.calls.length, 3, '别的键不算本插件的变化');
+  now += 3000;
+  listeners.get('storage')({ key: 'dsh-prompt-setting:composer-bar-live' });
+  await bar.flush();
+  assert.equal(page.router.calls.length, 6, '本插件的探针 ⇒ 重读三条');
+  now += 3000;
+  listeners.get('focus')();
+  await bar.flush();
+  assert.equal(page.router.calls.length, 9, '窗口重新聚焦也重读（第二道保险）');
+});
+
+test('client: the bar polls only while visible, and reads the instant the tab returns (g-089)', async () => {
+  const clock = makeFakeClock(1000);
+  const doc = makeLiveDocument('visible');
+  const page = makePage({ primitives: 'throw', responses: defaultResponses(), enforceEffectDeps: true });
+  const bar = makeAssemblyBar(page, {
+    session: { sessionId: 's1' },
+    livePollMs: 20000,
+    liveDocument: doc,
+    liveSetTimeout: clock.setTimeout,
+    liveClearTimeout: clock.clearTimeout,
+    liveNow: clock.now,
+  });
+  await bar.flush();
+  assert.equal(page.router.calls.length, 3, '挂载读一次');
+  assert.equal(clock.pending(), 1, '可见时排一个兜底 timer');
+
+  clock.advance(20000);
+  await bar.flush();
+  assert.equal(page.router.calls.length, 6, '20s 到点重读（跨标签页/外部改动的窗口）');
+  assert.equal(clock.pending(), 1, '并继续链式排队');
+
+  // Hidden: the timer is cleared and nothing is read, however long it lasts.
+  doc.visibilityState = 'hidden';
+  doc.fire('visibilitychange');
+  assert.equal(clock.pending(), 0, '隐藏 ⇒ 清掉定时器（不是轮询后跳过）');
+  clock.advance(120000);
+  await bar.flush();
+  assert.equal(page.router.calls.length, 6, '隐藏期间零轮询请求');
+
+  // Coming back: read at once, then re-arm the fallback.
+  doc.visibilityState = 'visible';
+  doc.fire('visibilitychange');
+  await bar.flush();
+  assert.equal(page.router.calls.length, 9, '切回可见立即重读一次');
+  assert.equal(clock.pending(), 1, '并重新排队');
+});
+
+test('client: a superseded read cannot overwrite the newer answer (g-089)', async () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses(), enforceEffectDeps: true });
+  const pending = [];
+  page.loaded.sandbox.fetch = (url) => new Promise((resolve) => pending.push({ url: String(url), resolve }));
+  const bar = makeAssemblyBar(page, { session: { sessionId: 's1' } });
+  await bar.flush();
+  assert.equal(pending.length, 1, 's1 的第一条读已发出但未回答（三条是串行的）');
+
+  bar.props.session = { sessionId: 's2' };
+  await bar.flush();
+  assert.equal(pending.length, 2, '会话切换 ⇒ s2 的第一条也发出，且不再叠第二条');
+
+  const ofSession = (id) => pending.filter((entry) => entry.url.includes(`session=${id}`));
+  const answer = (payload) => ({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(payload)) });
+  const sectionsWith = (count) => {
+    const snapshot = snapshotFixture();
+    const base = snapshot.effective.sections[0];
+    snapshot.effective.sections = Array.from({ length: count }, (_, index) => ({
+      ...base,
+      name: `synthetic:${index}`,
+      index,
+    }));
+    return snapshot;
+  };
+  /**
+   * Answer one round's three reads in order. The reads are serial, so each
+   * answer materialises the next request; a superseded round stops after its
+   * first, which is exactly what this loop has to tolerate.
+   */
+  const drain = async (id, snapshot) => {
+    for (let step = 0; step < 3; step += 1) {
+      const queue = ofSession(id).filter((entry) => entry.done !== true);
+      if (queue.length === 0) return;
+      for (const entry of queue) {
+        const payload = entry.url.includes('/snapshot')
+          ? snapshot
+          : entry.url.includes('/overrides')
+            ? overridesFixture()
+            : assemblyFixture();
+        entry.done = true;
+        entry.resolve(answer(payload));
+      }
+      await settle();
+    }
+  };
+
+  // The newer round answers first: its numbers go on screen.
+  await drain('s2', sectionsWith(5));
+  let tree = bar.draw();
+  assert.equal(barValueOf(tree, 'bar-sections'), '5', '新会话的数字已上屏');
+
+  // The superseded round answers late: it must not write anything.
+  await drain('s1', sectionsWith(9));
+  tree = bar.draw();
+  assert.equal(barValueOf(tree, 'bar-sections'), '5', '后发先至的陈旧响应被丢弃');
+  assert.equal(ofSession('s1').length, 1, '被取代的轮次不再继续发剩余请求（同一时刻至多一组在途）');
+});
+
+test('client: a read torn down before it answers writes no state at all (g-089)', async () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  const pending = [];
+  page.loaded.sandbox.fetch = (url) => new Promise((resolve) => pending.push({ url: String(url), resolve }));
+  const registration = page.mounted.registrations.find((entry) => entry.options.name === 'conversation.input.dock');
+  const bound = {
+    t: (key) => dict(page.mounted.dictionaries, NS, key, page.language),
+    session: { sessionId: 's1' },
+    livePollMs: 0,
+  };
+  const component = registration.component;
+  const rendered = page.loaded.runtime.render(component, bound);
+  const cleanups = rendered.pending.map((effect) => effect());
+  assert.equal(pending.length, 1, '第一条读已发出（三条是串行的）');
+  // Unmount: the read effect's own cleanup is what marks the round cancelled.
+  for (const cleanup of cleanups) {
+    if (typeof cleanup === 'function') cleanup();
+  }
+  const answer = (payload) => ({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(payload)) });
+  for (const entry of pending) {
+    const payload = entry.url.includes('/snapshot')
+      ? snapshotFixture()
+      : entry.url.includes('/overrides')
+        ? overridesFixture()
+        : assemblyFixture();
+    entry.resolve(answer(payload));
+  }
+  await settle();
+  const tree = expandTree(page.loaded.runtime.render(component, bound).tree);
+  assert.equal(tree.props['data-composer-bar-state'], 'loading', '卸载后完成的读不得写状态');
+});
+
+test('client: an unchanged read keeps the very state object, so the text cannot flicker (g-089)', () => {
+  const { module } = loadClient('throw');
+  const policy = module.__internals.composerBar;
+  const answer = (payload) => ({ ok: true, status: 200, payload });
+  const read = () =>
+    policy.readOf({
+      snapshot: answer(snapshotFixture()),
+      overrides: answer(overridesFixture()),
+      assembly: answer(assemblyFixture()),
+    });
+  const first = read();
+  const second = read();
+  assert.notEqual(first, second, '每次读都是新对象');
+  assert.equal(policy.factsSignature(first), policy.factsSignature(second), '四事实相同 ⇒ 签名相同');
+  const same = policy.nextRead(first, {
+    snapshot: answer(snapshotFixture()),
+    overrides: answer(overridesFixture()),
+    assembly: answer(assemblyFixture()),
+  });
+  assert.equal(same, first, '四事实不变 ⇒ 复用旧 state（React bail out，文本与焦点都不动）');
+
+  // `generatedAt` is a fresh `new Date()` per response and must not count.
+  const restamped = snapshotFixture();
+  restamped.generatedAt = '2026-11-04T00:00:00.000Z';
+  assert.equal(
+    policy.nextRead(first, {
+      snapshot: answer(restamped),
+      overrides: answer(overridesFixture()),
+      assembly: answer(assemblyFixture()),
+    }),
+    first,
+    '时间戳变化不算事实变化',
+  );
+
+  // A real change (the section count) must replace the state.
+  const fewer = snapshotFixture();
+  fewer.effective.sections = fewer.effective.sections.slice(0, 1);
+  const changed = policy.nextRead(first, {
+    snapshot: answer(fewer),
+    overrides: answer(overridesFixture()),
+    assembly: answer(assemblyFixture()),
+  });
+  assert.notEqual(changed, first, '段数量变了就必须换 state');
+  assert.equal(policy.sectionCount(changed.snapshot), 1);
+
+  // The session-status fold is a stable number (a fresh object would re-render
+  // the hook forever); a state spelling change really moves it.
+  const map = { s1: { state: 'running' }, s2: { state: 'idle' } };
+  assert.equal(policy.sessionStatusTick(map), policy.sessionStatusTick({ s1: { state: 'running' }, s2: { state: 'idle' } }));
+  assert.notEqual(policy.sessionStatusTick(map), policy.sessionStatusTick({ s1: { state: 'done' }, s2: { state: 'idle' } }));
+  assert.equal(policy.sessionStatusTick(null), 0);
+});
+
+test('client: switching the bar off stops the fallback timer too, and back on reads at once (g-089)', async () => {
+  const clock = makeFakeClock(1000);
+  const doc = makeLiveDocument('visible');
+  const page = makePage({ primitives: 'throw', responses: defaultResponses(), enforceEffectDeps: true });
+  const bus = page.loaded.module.__internals.composerBar;
+  const bar = makeAssemblyBar(page, {
+    session: { sessionId: 's1' },
+    livePollMs: 20000,
+    liveDocument: doc,
+    liveSetTimeout: clock.setTimeout,
+    liveClearTimeout: clock.clearTimeout,
+    liveNow: clock.now,
+  });
+  await bar.flush();
+  assert.equal(page.router.calls.length, 3);
+  assert.equal(clock.pending(), 1);
+  bus.setEnabled(false);
+  await bar.flush();
+  assert.equal(clock.pending(), 0, '关闭 ⇒ 没有定时器、没有订阅读取');
+  clock.advance(120000);
+  await bar.flush();
+  assert.equal(page.router.calls.length, 3, '关闭状态零请求（g-086 R5 不回归）');
+  bus.setEnabled(true);
+  await bar.flush();
+  assert.equal(page.router.calls.length, 6, '重新开启立即按最新事实读三条');
+  assert.equal(clock.pending(), 1, '并恢复兜底轮询');
+});
+
+test('client: without a Session the live triggers are silent as well (g-089)', async () => {
+  const clock = makeFakeClock(1000);
+  const doc = makeLiveDocument('visible');
+  const page = makePage({ primitives: 'throw', responses: defaultResponses(), enforceEffectDeps: true });
+  const policy = page.loaded.module.__internals.composerBar;
+  const bar = makeAssemblyBar(page, {
+    livePollMs: 20000,
+    liveDocument: doc,
+    liveSetTimeout: clock.setTimeout,
+    liveClearTimeout: clock.clearTimeout,
+    liveNow: clock.now,
+  });
+  const tree = await bar.flush();
+  assert.equal(tree.props['data-composer-bar-state'], 'no-session');
+  assert.equal(page.router.calls.length, 0, '无会话：零请求');
+  assert.equal(clock.pending(), 0, '无会话：也不排队');
+  policy.notifyWriteOf(PATHS.overrides, { method: 'PUT' });
+  clock.advance(120000);
+  await bar.flush();
+  assert.equal(page.router.calls.length, 0, '写广播也不能让无会话的 bar 发请求');
 });
 
 // #endregion

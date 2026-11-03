@@ -202,6 +202,33 @@
           setEnabled: setComposerBarEnabled,
           subscribeEnabled: subscribeComposerBarEnabled,
           PREF_KEY: COMPOSER_BAR_PREF_KEY,
+          // g-089: the live half's IO-free policy. "Should this trigger read,
+          // wait, join a queued read or defer?" and "did the four facts really
+          // change?" are decisions a rendered tree cannot express without a
+          // clock and a transport — so they are asserted directly here, with
+          // injected time, visibility and in-flight state.
+          POLL_MS: COMPOSER_BAR_POLL_MS,
+          MIN_GAP_MS: COMPOSER_BAR_MIN_GAP_MS,
+          WRITE_GAP_MS: COMPOSER_BAR_WRITE_GAP_MS,
+          LIVE_KEY: COMPOSER_BAR_LIVE_KEY,
+          liveRevision: () => composerBarLiveRevision(),
+          liveTopic: () => composerBarLiveBus.lastTopic,
+          subscribeLive: subscribeComposerBarLive,
+          notifyWrite: notifyComposerBarWrite,
+          writeTopicOf: composerBarWriteTopicOf,
+          writeMethodOf: composerBarWriteMethodOf,
+          notifyWriteOf: notifyComposerBarWriteOf,
+          probeValue: composerBarLiveProbeValue,
+          writeProbe: writeComposerBarLiveProbe,
+          visibleNow: composerBarVisibleNow,
+          triggerGapOf: composerBarLiveTriggerGapOf,
+          liveDecision: composerBarLiveDecision,
+          readOf: composerBarReadOf,
+          factsSignature: composerBarFactsSignature,
+          nextRead: composerBarNextRead,
+          sessionStatusTick: composerBarSessionStatusTick,
+          sessionTick: composerBarSessionTick,
+          liveIoOf: composerBarLiveIoOf,
         },
       },
       apply(ctx) {
