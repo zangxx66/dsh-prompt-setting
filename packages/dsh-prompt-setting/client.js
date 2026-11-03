@@ -13866,18 +13866,26 @@ window.__ModuleLoader__.load({
      * as relevant: a wasted read is a recoverable cost, while a missed one is
      * exactly the stale bar this goal exists to remove. The ignored list is
      * therefore **closed and justified**, not a whitelist to keep extending:
-     *   - `/presets` and `/presets/tags` are the catalogue itself (a named text
-     *     library); applying one is `/presets/apply`, which is *not* ignored;
+     *   - `/presets/tags` is the library's own tag set (a catalogue); it never
+     *     touches a layer;
      *   - `/assembly-status` writes the toaster switch, which changes no notice;
      *   - `/update-check`, `/download-region`, `/update-apply` are release
      *     plumbing and never touch a layer or an assembly.
+     *
+     * `/presets` is **method-dependent** and is therefore not in this list:
+     * creating/renaming a preset (`PUT`/`POST`) is catalogue-only, but **deleting**
+     * one (`DELETE ?id=`) is not — when the deleted preset is applied, the Host
+     * restores the workspace layer before answering (`handleDeletePreset` →
+     * `appliedRootsOf` → `planPresetRemoval` → `writeConfig` → `notePromptWrite`
+     * → `recordHistory`, then `{ok: true}`), so the four facts really change and
+     * the bar must re-read (review B1: the goal's「删除预设」was ignored). See
+     * {@link composerBarWriteTopicOf}.
      */
     const COMPOSER_BAR_LIVE_IGNORED_PATHS = Object.freeze([
       ASSEMBLY_STATUS_PATH,
       UPDATE_CHECK_PATH,
       DOWNLOAD_REGION_PATH,
       UPDATE_APPLY_PATH,
-      PRESETS_PATH,
       PRESETS_TAGS_PATH,
     ]);
 
@@ -13962,12 +13970,21 @@ window.__ModuleLoader__.load({
      * The answer is the path itself, which doubles as the topic a listener sees:
      * the bar only needs "something relevant changed", and a topic is what a
      * human debugging a stuck bar wants in the console.
+     *
+     * The query string is dropped (a topic is a route, not a payload), and one
+     * route is judged **by method**: `DELETE /presets?id=` removes one of the
+     * user's named texts, and deleting an *applied* one makes the Host restore
+     * the workspace layer before it answers — the four facts change (review B1).
+     * The catalogue's own `PUT`/`POST` writes still do not.
      * @param path - the request path (may carry a query string).
+     * @param method - the upper-cased HTTP method (`DELETE` matters for `/presets`).
      * @returns the topic, or `''` when the write cannot matter.
      */
-    function composerBarWriteTopicOf(path) {
+    function composerBarWriteTopicOf(path, method) {
       const value = typeof path === 'string' ? path.split('?')[0] : '';
       if (value.length === 0) return '';
+      const verb = typeof method === 'string' ? method.toUpperCase() : '';
+      if (value === PRESETS_PATH) return verb === 'DELETE' ? value : '';
       return COMPOSER_BAR_LIVE_IGNORED_PATHS.includes(value) ? '' : value;
     }
 
@@ -14053,7 +14070,7 @@ window.__ModuleLoader__.load({
     function notifyComposerBarWriteOf(path, init) {
       const method = composerBarWriteMethodOf(init);
       if (method !== 'PUT' && method !== 'POST' && method !== 'DELETE' && method !== 'PATCH') return false;
-      const topic = composerBarWriteTopicOf(path);
+      const topic = composerBarWriteTopicOf(path, method);
       if (topic.length === 0) return false;
       writeComposerBarLiveProbe(
         composerBarLiveProbeValue(topic, composerBarLiveNow()),
@@ -14106,6 +14123,21 @@ window.__ModuleLoader__.load({
       if (name === 'visible' || name === 'manual' || name === 'enable' || name === 'poll') return 0;
       if (name === 'write') return writeGapMs;
       return minGapMs;
+    }
+
+    /**
+     * Does this trigger outrank an already-queued deferral?
+     *
+     * `write` (the user just saved something), `manual` (they clicked refresh) and
+     * `visible` (the tab just came back) are the three triggers the goal promises
+     * within ~1 s; a pending 2.5 s window must not delay them. `status`, `poll`
+     * and `storage` are background signals and may merge into the window.
+     * @param trigger - one trigger name.
+     * @returns `true` for the three user-facing triggers.
+     */
+    function composerBarLiveIsUrgentTrigger(trigger) {
+      const name = typeof trigger === 'string' ? trigger : '';
+      return name === 'write' || name === 'manual' || name === 'visible';
     }
 
     /**
@@ -14246,10 +14278,10 @@ window.__ModuleLoader__.load({
     /**
      * Fold the Host's session-status snapshot into one **number**.
      *
-     * The Host's contract is `SessionStatusSnapshot = ReadonlyMap` of SessionId →
-     * `SessionStatus` (`dsh-client-ui-session` types, `GlobalStandardProps.
-     * useSessionStatus`), and `SessionStatus` is `{running, pendingInteraction,
-     * completionUnread}`. **A `Map` is not a plain object**: `Object.keys(map)`
+     * The Host's `SessionStatusSnapshot` type is a read-only `Map` from `SessionId`
+     * to `SessionStatus` (`dsh-client-ui-session` types, the
+     * `GlobalStandardProps.useSessionStatus` hook); `SessionStatus` is
+     * `{running, pendingInteraction, completionUnread}`. **A `Map` is not a plain object**: `Object.keys(map)`
      * is `[]`, so a tick built from it is a constant `0` and the status trigger
      * would be dead code on the real contract (review BLOCK-A — the previous
      * version also read `state`/`status`/`phase`, three fields the contract does
@@ -14458,8 +14490,13 @@ window.__ModuleLoader__.load({
      * There is still exactly **one** read path — the effect below, keyed by
      * `[enabled, sessionId, nonce]` — and every trigger is `refresh(trigger)`,
      * i.e. one `setNonce`. That is what keeps g-086's guarantees intact: off and
-     * no-Session still short-circuit *before* any `fetch`, a Session change still
-     * drops the old verdicts, and a manual refresh still costs exactly one read.
+     * no-Session still short-circuit *before* any `fetch`, a manual refresh still
+     * costs exactly one read, and a Session change replaces the answer (the
+     * `force` argument of {@link composerBarNextRead}) — with one honest caveat:
+     * the previous Session's answer stays **on screen** until the new read lands,
+     * because a refresh is not allowed to blank the row (review BLOCK 1). A Host
+     * that unmounts and remounts the entry on a Session switch never shows that
+     * window at all.
      *
      * Concurrency: `round` is bumped by every effect run, so a response that
      * arrives after its effect was replaced can neither write state nor clear the
@@ -14516,6 +14553,14 @@ window.__ModuleLoader__.load({
        * @returns the decision that was taken (`read` / `defer` / `dirty` / …).
        */
       const refresh = (trigger) => {
+        // A queued deferral must not swallow a **user action**. `write`, `manual`
+        // and `visible` are the goal's ≤1 s branches; merging into a window that
+        // is already 1.5 s out would make the bar lag past that promise (review
+        // B2). The queued read is cancelled and this trigger re-decides from the
+        // shorter window it is entitled to.
+        if (book.pendingTimer !== null && composerBarLiveIsUrgentTrigger(trigger)) {
+          cancelLiveDefer(book, io);
+        }
         const decision = composerBarLiveDecision({
           enabled,
           sessionId,
@@ -15019,10 +15064,11 @@ window.__ModuleLoader__.load({
           readOf: composerBarReadOf,
           factsSignature: composerBarFactsSignature,
           nextRead: composerBarNextRead,
-          // The Host's snapshot is `ReadonlyMap` of SessionId → `SessionStatus`); the
-          // tick folds the contract's own fields (`running` / `completionUnread`
-          // / `pendingInteraction`), and also accepts a plain-object map (an
-          // older/double Host, and what a unit case can write by hand).
+          // The Host's snapshot is a read-only Map from SessionId to SessionStatus.
+          // The tick folds the contract's own fields (`running` /
+          // `completionUnread` / `pendingInteraction`), and also accepts a
+          // plain-object map (an older or double Host, and what a unit case can
+          // write by hand).
           sessionStatusTick: composerBarSessionStatusTick,
           sessionStatusEntryOf: composerBarSessionStatusEntryOf,
           sessionTick: composerBarSessionTick,

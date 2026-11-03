@@ -10795,17 +10795,17 @@ g-086 的状态栏只在**挂载 / `sessionId` 变化 / 手点刷新**时读一�
 
 ### 三、段拆分（行数预算硬约束）
 
-`16-composer-bar.js` 已到 1196/1200，所以数据层整体搬到新段 `src/17-composer-bar-live.js`（两轮返工后 1009 行），
-原 `17-boot.js` 改名 `18-boot.js`（返工后 514 行），`16` 段降到 1157 行：**19 段 / 15299 行**（原 18 段 / 14290）。
+`16-composer-bar.js` 已到 1196/1200，所以数据层整体搬到新段 `src/17-composer-bar-live.js`（三轮返工后 1054 行），
+原 `17-boot.js` 改名 `18-boot.js`（515 行），`16` 段降到 1157 行：**19 段 / 15345 行**（原 18 段 / 14290）。
 `refresh`/`read` 由 `useComposerBarLiveRead({ enabled, sessionId, props })` 返回，组件只负责画。
 
 同步的坐标表：`test/client-source.test.mjs` 的 `SEGMENTS`（19 行）+ 段数/总行数断言、`docs/check-refs.mjs`
-的 `14290 → 15299` 与 65 条 `client.js` 行号、`docs/refactor-plan.md` §1.3（拆出 live 段一行 → 26 行）/§5.1
+的 `14290 → 15345` 与 65 条 `client.js` 行号、`docs/refactor-plan.md` §1.3（拆出 live 段一行 → 26 行）/§5.1
 （19 段）、`docs/architecture-map.md`（19 段表 + 50 处入口行号按实测重锚）。**全部机械重锚，没有改任何断言语义。**
 
 ### 四、测试（三档里属第三档：并发 + 状态机）
 
-`test/client.test.mjs` 新增 **18** 个用例（11 首轮 + 4 BLOCK 返工 + 3 BLOCK-A/N1/N2，全部进 `#region g-086` 的 g-089 段）：
+`test/client.test.mjs` 新增 **20** 个用例（11 首轮 + 4 BLOCK + 3 BLOCK-A/N1/N2 + 2 B1/B2，全部进 `#region g-086` 的 g-089 段）：
 
 1. 策略矩阵：`read`/`defer`/`skip`/`dirty`/`merged` 五分支 + 隐藏/关闭/无会话 + defer 的延迟值；
 2. 广播过滤：11 条写路由 vs 6 条忽略路由、方法过滤、`revision`/`topic`、探针值/存储、`visibleNow` 的三态；
@@ -10827,13 +10827,13 @@ g-086 的状态栏只在**挂载 / `sessionId` 变化 / 手点刷新**时读一�
 
 - `node scripts/verify.mjs`：6 步 / **1 步失败**（`test`）—— 失败的是 **3 个基线已红**的
   `integration R8` 用例（host `assemble` 的输出多了 `tools: []`，夹具漂移），与本次改动无关：
-  **主工作树 `2e621ae` 同一条命令同样 3 fail / 28 pass**（全量同样 3 fail：基线 1048 tests / 1045 pass，本树 1066 / 1063 —— 增量 18 全是本轮新增且全过）。其余 5 步（check-refs / client-build --check /
+  **主工作树 `2e621ae` 同一条命令同样 3 fail / 28 pass**（全量同样 3 fail：基线 1048 tests / 1045 pass，本树 1068 / 1065 —— 增量 20 全是本轮新增且全过）。其余 5 步（check-refs / client-build --check /
   locale-pack --check / prepare / check-compat）全绿。
-- `node --test test/*.test.mjs`：**tests 1066 / pass 1063 / fail 3**（3 个即上述基线失败；本 worktree 与主工作树失败集合
-  逐条相同）。`node --test test/client.test.mjs`：**pass 363 / fail 0**。
+- `node --test test/*.test.mjs`：**tests 1068 / pass 1065 / fail 3**（3 个即上述基线失败；本 worktree 与主工作树失败集合
+  逐条相同）。`node --test test/client.test.mjs`：**pass 365 / fail 0**。
 - `node scripts/client-build.mjs --check`：`19 个段与 client.js 逐字节一致`，exit 0。
 - `node docs/check-refs.mjs`：`total=165 | verified=102 | rangeOnly=42 | manual=21 | unresolved=0`，两张表
-  `§1.3 rows=26 合计=15299` / `§5.1 rows=19 合计=15299 最大段=1200`，段名集合与磁盘一致，exit 0。
+  `§1.3 rows=26 合计=15345` / `§5.1 rows=19 合计=15345 最大段=1200`，段名集合与磁盘一致，exit 0。
 - `node scripts/prepare.mjs`：**25 项通过**，`CLIENT-SRC: src/ 下 19 个段文件与 client.js 逐字节一致`。
 
 ### 六、已知降级路径（都写进代码注释与用例）
@@ -10917,7 +10917,41 @@ g-086 的状态栏只在**挂载 / `sessionId` 变化 / 手点刷新**时读一�
 - **真机 status 事件**：`useSessionStatus` 的 Map 推进在真实浏览器里无法在本测试环境复现（宿主 hook 是真
   React hook），只用契约形状的替身断言；真机由负责人验收。
 
-### 九、未验证项
+### 九、第三轮评审返工（rev-att-001-04，`17-composer-bar-live.js` 1009 → 1054 行）
+
+**B1｜删除预设不广播（判据 2）**：`COMPOSER_BAR_LIVE_IGNORED_PATHS` 整段忽略 `/presets`，而 `DELETE
+/presets?id=` 删除一个**已应用**的预设时，宿主会 `appliedRootsOf` → `planPresetRemoval` → `writeConfig`
+恢复工作区层、再 `notePromptWrite` + `recordHistory` 才回 `{ok:true}` —— 四事实真的变了。现在 `/presets`
+**按方法判定**：`composerBarWriteTopicOf(path, method)` 对 `DELETE` 返回该路由（广播），对 `PUT`/`POST`
+（目录写入）仍返回 `''`；`/presets/tags` 继续忽略（不在判据名单）。同步改了 `17:78-98` 的注释、
+`__internals.writeTopicOf` 的测试（`topic(presets?id=x, 'DELETE') === PRESETS_PATH`、
+`topic(presets, 'PUT') === ''`），并新增渲染级用例：`notifyWriteOf(`${PRESETS_PATH}?id=p1`, {method:'DELETE'})`
+后 calls 3→6 且 URL 序列为 `snapshot/overrides/assemblyStatus`。
+
+**B2｜写触发被已排队的延迟窗口吞掉（判据 1）**：status/storage 触发的读可能已排到 1.5 s 之后，旧的
+`merged` 分支会让用户刚做的保存也等那个窗口（>1 s）。现在 `refresh` 在决策**之前**检查：若已有 pending
+且 trigger ∈ {`write`, `manual`, `visible`}（新纯函数 `composerBarLiveIsUrgentTrigger`），先
+`cancelLiveDefer` 再按该 trigger 自己的窗口重排 —— 写走 300 ms 合并窗口，手点/回可见立即读。
+假时钟用例：storage 先排 1500 ms → 200 ms 后写 → 500 ms 内 calls 3→6。
+
+**两处硬伤**：`docs/architecture-map.md` 的 `16-composer-bar.js` 行补回被丢的两列（`§13, §15` 与
+`test/client.test.mjs`，恢复 8 列）；`src/18-boot.js` 的括号/分号 与 `17` 段 tick JSDoc 的拗口表述改为
+通顺的单句（「a read-only `Map` from `SessionId` to `SessionStatus`」）；`17` 段头部的
+「a Session change still drops the old verdicts」改成准确表述（切换时**保留旧答案到新读落地**，
+宿主若重挂载则不出现该窗口）。
+
+**负向对照（实跑并还原）**：把 `PRESETS_PATH` 放回忽略表、去掉写优先取消分支 ⇒
+`deleting a preset re-reads the bar…`、`a write is not swallowed by an already-queued slow window…` 与
+`only a successful write that can move the four facts is broadcast` 三条**当场变红**；还原后全绿。
+
+**已知限制（本轮不修，如实记录）**：N-d 会话切换时旧轮次的第二个 GET 可能与新轮次的首个 GET 短暂并行
+（按读轮次口径可接受，不做 AbortController）；N-e tick 折叠**全部**会话（低频合并，不区分当前会话）；
+N-f tick 是 100000007 取模的多项式哈希，理论上可能碰撞（碰撞只是少读一次，20 s 兜底）；
+N-g `UPDATE_APPLY_CANCEL_PATH` 未被忽略（多一次无害读）；N-h 栏关闭时写成功仍可能写跨标签页探针到真实
+`localStorage`（只是键值，不产生请求）；N-j `__internals` 有冗余导出（`sessionTick` 与
+`sessionStatusTick` 并存，前者仅为测试入口）。
+
+### 十、未验证项
 
 - **真机（`http://127.0.0.1:3080`）未验**：GUI 服务在运行，重启有风险，按 directive 由负责人在 review 后验收
   （保存「我的 Prompt」后状态栏自动变化、切走再切回立即重读）；

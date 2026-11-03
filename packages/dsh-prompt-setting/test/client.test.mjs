@@ -17805,28 +17805,33 @@ test('client: the live policy reads on a write, and never on a hidden or switche
 test('client: only a successful write that can move the four facts is broadcast (g-089)', () => {
   const { module } = loadClient('throw');
   const policy = module.__internals.composerBar;
-  const topic = (path) => policy.writeTopicOf(path);
+  const topic = (path, method) => policy.writeTopicOf(path, method);
 
-  // The eleven writes the goal enumerates all reach the same funnel, so they all
+  // The writes the goal enumerates all reach the same funnel, so they all
   // broadcast — the list is asserted as routes, not as handlers.
-  assert.equal(topic(`${PATHS.overrides}?session=s1`), PATHS.overrides, '保存「我的 Prompt」/ 删除覆盖项 / 整层重置');
-  assert.equal(topic(PATHS.interpolate), PATHS.interpolate, '变量替换开关改变了段文本');
-  assert.equal(topic(PATHS.import), PATHS.import);
-  assert.equal(topic(PATHS.rollback), PATHS.rollback);
-  assert.equal(topic(PATHS.presetsApply), PATHS.presetsApply, '应用预设');
-  assert.equal(topic(PATHS.presetsUnapply), PATHS.presetsUnapply, '取消应用预设');
+  assert.equal(topic(`${PATHS.overrides}?session=s1`, 'PUT'), PATHS.overrides, '保存「我的 Prompt」/ 删除覆盖项 / 整层重置');
+  assert.equal(topic(PATHS.interpolate, 'PUT'), PATHS.interpolate, '变量替换开关改变了段文本');
+  assert.equal(topic(PATHS.import, 'POST'), PATHS.import);
+  assert.equal(topic(PATHS.rollback, 'POST'), PATHS.rollback);
+  assert.equal(topic(PATHS.presetsApply, 'POST'), PATHS.presetsApply, '应用预设');
+  assert.equal(topic(PATHS.presetsUnapply, 'POST'), PATHS.presetsUnapply, '取消应用预设');
+  // `/presets` is judged **by method**: creating/renaming is catalogue-only, but
+  // deleting a preset is not — an applied one makes the Host restore the
+  // workspace layer before it answers (review B1; the goal lists「删除预设」).
+  assert.equal(topic(`${PATHS.presets}?id=x`, 'DELETE'), PATHS.presets, '删除预设 ⇒ 相关（可能恢复工作区层）');
+  assert.equal(topic(PATHS.presets, 'PUT'), '', '目录写入（新建/改名）不碰层');
+  assert.equal(topic(PATHS.presets, 'POST'), '', '目录写入（新建/改名）不碰层');
   // The closed ignore list: catalogue-only and release-plumbing writes.
   for (const path of [
-    PATHS.presets,
     PATHS.presetsTags,
     PATHS.assemblyStatus,
     PATHS.updateCheck,
     PATHS.downloadRegion,
     PATHS.updateApply,
   ]) {
-    assert.equal(topic(path), '', `${path} 与四事实无关`);
+    assert.equal(topic(path, 'PUT'), '', `${path} 与四事实无关`);
   }
-  assert.equal(topic('/prompt-setting/future-write'), '/prompt-setting/future-write', '未知写默认算相关（宁可多读一次）');
+  assert.equal(topic('/prompt-setting/future-write', 'PUT'), '/prompt-setting/future-write', '未知写默认算相关（宁可多读一次）');
 
   // Method filtering: a read never broadcasts, whatever its path.
   assert.equal(policy.writeMethodOf(undefined), 'GET');
@@ -18565,6 +18570,71 @@ test('client: a Session change replaces the state even when the four facts look 
     '但显示内容一致（只有对象身份变了）',
   );
   assert.equal(forced.snapshot, results.snapshot.payload, '新对象携带的是这次读的载荷');
+});
+
+test('client: deleting a preset re-reads the bar — an applied one restores a layer (g-089 rev4)', async () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses(), enforceEffectDeps: true });
+  const policy = page.loaded.module.__internals.composerBar;
+  let now = 100000;
+  const bar = makeAssemblyBar(page, { session: { sessionId: 's1' }, liveNow: () => now });
+  await bar.flush();
+  assert.equal(page.router.calls.length, 3, '挂载读三条');
+
+  // Catalogue writes (create / rename) cannot touch a layer.
+  now += 1000;
+  policy.notifyWriteOf(PATHS.presets, { method: 'PUT' });
+  await bar.flush();
+  assert.equal(page.router.calls.length, 3, '目录写入不重读');
+
+  // Deleting a preset **can**: an applied one makes the Host restore the
+  // workspace layer before it answers, so the four facts change (review B1).
+  now += 1000;
+  policy.notifyWriteOf(`${PATHS.presets}?id=p1`, { method: 'DELETE' });
+  await bar.flush();
+  assert.equal(page.router.calls.length, 6, '删除预设 ⇒ 自动重读三条');
+  assert.deepEqual(
+    page.router.calls.slice(3).map((call) => call.url.split('?')[0]),
+    [PATHS.snapshot, PATHS.overrides, PATHS.assemblyStatus],
+    '仍是同一条读取路径',
+  );
+});
+
+test('client: a write is not swallowed by an already-queued slow window (g-089 rev4)', async () => {
+  const clock = makeFakeClock(1000);
+  const doc = makeLiveDocument('visible');
+  const listeners = new Map();
+  const view = {
+    addEventListener: (name, handler) => listeners.set(name, handler),
+    removeEventListener: (name) => listeners.delete(name),
+  };
+  const page = makePage({ primitives: 'throw', responses: defaultResponses(), enforceEffectDeps: true });
+  const policy = page.loaded.module.__internals.composerBar;
+  const bar = makeAssemblyBar(page, {
+    session: { sessionId: 's1' },
+    liveDocument: doc,
+    liveWindow: view,
+    liveSetTimeout: clock.setTimeout,
+    liveClearTimeout: clock.clearTimeout,
+    liveNow: clock.now,
+  });
+  await bar.flush();
+  assert.equal(page.router.calls.length, 3, '挂载读三条');
+
+  // A background trigger inside the 2.5 s window queues a read 1.5 s out.
+  clock.advance(1000);
+  listeners.get('storage')({ key: 'dsh-prompt-setting:composer-bar-live' });
+  assert.equal(clock.pending(), 1, 'storage 触发排了一个延迟读');
+  clock.advance(200);
+
+  // 200 ms later the user saves: the ≤1 s branch must not merge into that window.
+  policy.notifyWriteOf(PATHS.overrides, { method: 'PUT' });
+  clock.advance(500);
+  await bar.flush();
+  assert.equal(
+    page.router.calls.length,
+    6,
+    '写触发在 500ms 内重读，而不是等原来那个 1500ms 窗口',
+  );
 });
 
 // #endregion
