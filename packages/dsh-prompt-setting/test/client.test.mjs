@@ -18637,4 +18637,56 @@ test('client: a write is not swallowed by an already-queued slow window (g-089 r
   );
 });
 
+test('client: the host facade never calls a global as an object method (g-089 rev6 — the real-browser crash)', async () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses(), enforceEffectDeps: true });
+  const sandbox = page.loaded.sandbox;
+  const policy = page.loaded.module.__internals.composerBar;
+  // Browser semantics: `window.setTimeout` / `window.clearTimeout` are WebIDL
+  // methods — calling one with a `this` that is not the window throws
+  // `TypeError: Illegal invocation`. Node's timers never check `this`, which is
+  // exactly why the old facade passed every unit case and crashed the dock entry
+  // on its **first** render (the fallback poll is armed inside a mount effect).
+  // These doubles enforce the browser rule: a `this` that carries our own facade
+  // (`setTimer` / `clearTimer`) is the failure mode being pinned.
+  const calls = [];
+  sandbox.setTimeout = function browserSetTimeout(callback, delay) {
+    if (this !== undefined && this !== null && typeof this.setTimer === 'function') {
+      throw new TypeError('Illegal invocation');
+    }
+    calls.push(['set', typeof delay === 'number' ? delay : 0]);
+    return calls.length;
+  };
+  sandbox.clearTimeout = function browserClearTimeout(handle) {
+    if (this !== undefined && this !== null && typeof this.clearTimer === 'function') {
+      throw new TypeError('Illegal invocation');
+    }
+    calls.push(['clear', handle]);
+  };
+  // The facade must expose wrappers, not the bare globals.
+  const io = policy.liveIoOf({});
+  assert.notEqual(io.setTimer, sandbox.setTimeout, 'setTimer 是薄包装，不是裸全局函数（this 不会被改成 io）');
+  assert.notEqual(io.clearTimer, sandbox.clearTimeout, 'clearTimer 同理');
+
+  const doc = makeLiveDocument('visible');
+  let now = 100000;
+  const bar = makeAssemblyBar(page, {
+    session: { sessionId: 's1' },
+    livePollMs: 20000,
+    liveDocument: doc,
+    liveNow: () => now,
+  });
+  // 1. Mount arms the fallback poll synchronously inside the effect — the exact
+  //    first-frame path that crashed in the browser.
+  await bar.flush();
+  assert.equal(calls.filter(([kind]) => kind === 'set').length, 1, '挂载时兜底轮询真的排上，且没有 Illegal invocation');
+  // 2. A write inside the coalescing window takes the defer path (second set).
+  now += 100;
+  policy.notifyWriteOf(PATHS.overrides, { method: 'PUT' });
+  assert.equal(calls.filter(([kind]) => kind === 'set').length, 2, '写合并窗口的延迟读也排上');
+  // 3. Hiding clears both handles (the clearTimer path).
+  doc.visibilityState = 'hidden';
+  doc.fire('visibilitychange');
+  assert.equal(calls.filter(([kind]) => kind === 'clear').length, 2, '隐藏时轮询与延迟读的 handle 都被清掉');
+});
+
 // #endregion

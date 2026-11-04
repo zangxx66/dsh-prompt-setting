@@ -14368,7 +14368,10 @@ window.__ModuleLoader__.load({
     function composerBarSessionTickOf(seat) {
       if (seat === null || typeof seat !== 'object' || typeof seat.hook !== 'function') return 0;
       try {
-        const value = seat.hook(seat.selector);
+        // Called as a **bare function**, not `seat.hook(...)`: the Host's hook is
+        // a React hook, not a method of this booking record.
+        const hook = seat.hook;
+        const value = hook(seat.selector);
         return typeof value === 'number' && Number.isFinite(value) ? value : 0;
       } catch {
         return 0;
@@ -14402,17 +14405,27 @@ window.__ModuleLoader__.load({
       const source = props !== null && typeof props === 'object' ? props : {};
       const numberOr = (value, fallback) =>
         typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+      // Every timer is a **thin wrapper**, never the bare global. In a browser
+      // `setTimeout` / `clearTimeout` are `Window` methods, and storing one in a
+      // variable and later calling it as `io.setTimer(...)` sets `this` to `io` —
+      // WebIDL then throws `TypeError: Illegal invocation` on the very first
+      // render (the fallback poll is armed inside a mount effect). Node's timers
+      // do not check `this`, which is exactly why 365 unit cases stayed green
+      // while the real dock entry crashed. A wrapper makes the call a **bare
+      // function call** again (`setTimeout(callback, delay)`), which browsers
+      // accept, and keeps an injected source a **method call on that source**
+      // (`source.liveSetTimeout(...)`, so a fake clock still sees its own `this`).
       const setTimer =
         typeof source.liveSetTimeout === 'function'
-          ? source.liveSetTimeout
+          ? (callback, delay) => source.liveSetTimeout(callback, delay)
           : typeof setTimeout === 'function'
-            ? setTimeout
+            ? (callback, delay) => setTimeout(callback, delay)
             : null;
       const clearTimer =
         typeof source.liveClearTimeout === 'function'
-          ? source.liveClearTimeout
+          ? (handle) => source.liveClearTimeout(handle)
           : typeof clearTimeout === 'function'
-            ? clearTimeout
+            ? (handle) => clearTimeout(handle)
             : null;
       const doc =
         source.liveDocument !== undefined && source.liveDocument !== null
@@ -14424,7 +14437,8 @@ window.__ModuleLoader__.load({
         source.liveStorage !== undefined && source.liveStorage !== null
           ? source.liveStorage
           : composerBarLiveStorageOf();
-      const now = typeof source.liveNow === 'function' ? source.liveNow : () => composerBarLiveNow();
+      const now =
+        typeof source.liveNow === 'function' ? () => source.liveNow() : () => composerBarLiveNow();
       return {
         setTimer,
         clearTimer,

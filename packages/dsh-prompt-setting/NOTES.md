@@ -10795,17 +10795,17 @@ g-086 的状态栏只在**挂载 / `sessionId` 变化 / 手点刷新**时读一�
 
 ### 三、段拆分（行数预算硬约束）
 
-`16-composer-bar.js` 已到 1196/1200，所以数据层整体搬到新段 `src/17-composer-bar-live.js`（三轮返工后 1054 行），
-原 `17-boot.js` 改名 `18-boot.js`（515 行），`16` 段降到 1157 行：**19 段 / 15345 行**（原 18 段 / 14290）。
+`16-composer-bar.js` 已到 1196/1200，所以数据层整体搬到新段 `src/17-composer-bar-live.js`（四轮返工后 1068 行），
+原 `17-boot.js` 改名 `18-boot.js`（515 行），`16` 段降到 1157 行：**19 段 / 15359 行**（原 18 段 / 14290）。
 `refresh`/`read` 由 `useComposerBarLiveRead({ enabled, sessionId, props })` 返回，组件只负责画。
 
 同步的坐标表：`test/client-source.test.mjs` 的 `SEGMENTS`（19 行）+ 段数/总行数断言、`docs/check-refs.mjs`
-的 `14290 → 15345` 与 65 条 `client.js` 行号、`docs/refactor-plan.md` §1.3（拆出 live 段一行 → 26 行）/§5.1
+的 `14290 → 15359` 与 65 条 `client.js` 行号、`docs/refactor-plan.md` §1.3（拆出 live 段一行 → 26 行）/§5.1
 （19 段）、`docs/architecture-map.md`（19 段表 + 50 处入口行号按实测重锚）。**全部机械重锚，没有改任何断言语义。**
 
 ### 四、测试（三档里属第三档：并发 + 状态机）
 
-`test/client.test.mjs` 新增 **20** 个用例（11 首轮 + 4 BLOCK + 3 BLOCK-A/N1/N2 + 2 B1/B2，全部进 `#region g-086` 的 g-089 段）：
+`test/client.test.mjs` 新增 **21** 个用例（11 首轮 + 4 BLOCK + 3 BLOCK-A/N1/N2 + 2 B1/B2 + 1 真机回归，全部进 `#region g-086` 的 g-089 段）：
 
 1. 策略矩阵：`read`/`defer`/`skip`/`dirty`/`merged` 五分支 + 隐藏/关闭/无会话 + defer 的延迟值；
 2. 广播过滤：11 条写路由 vs 6 条忽略路由、方法过滤、`revision`/`topic`、探针值/存储、`visibleNow` 的三态；
@@ -10827,13 +10827,13 @@ g-086 的状态栏只在**挂载 / `sessionId` 变化 / 手点刷新**时读一�
 
 - `node scripts/verify.mjs`：6 步 / **1 步失败**（`test`）—— 失败的是 **3 个基线已红**的
   `integration R8` 用例（host `assemble` 的输出多了 `tools: []`，夹具漂移），与本次改动无关：
-  **主工作树 `2e621ae` 同一条命令同样 3 fail / 28 pass**（全量同样 3 fail：基线 1048 tests / 1045 pass，本树 1068 / 1065 —— 增量 20 全是本轮新增且全过）。其余 5 步（check-refs / client-build --check /
+  **主工作树 `2e621ae` 同一条命令同样 3 fail / 28 pass**（全量同样 3 fail：基线 1048 tests / 1045 pass，本树 1069 / 1066 —— 增量 21 全是本轮新增且全过）。其余 5 步（check-refs / client-build --check /
   locale-pack --check / prepare / check-compat）全绿。
-- `node --test test/*.test.mjs`：**tests 1068 / pass 1065 / fail 3**（3 个即上述基线失败；本 worktree 与主工作树失败集合
-  逐条相同）。`node --test test/client.test.mjs`：**pass 365 / fail 0**。
+- `node --test test/*.test.mjs`：**tests 1069 / pass 1066 / fail 3**（3 个即上述基线失败；本 worktree 与主工作树失败集合
+  逐条相同）。`node --test test/client.test.mjs`：**pass 366 / fail 0**。
 - `node scripts/client-build.mjs --check`：`19 个段与 client.js 逐字节一致`，exit 0。
 - `node docs/check-refs.mjs`：`total=165 | verified=102 | rangeOnly=42 | manual=21 | unresolved=0`，两张表
-  `§1.3 rows=26 合计=15345` / `§5.1 rows=19 合计=15345 最大段=1200`，段名集合与磁盘一致，exit 0。
+  `§1.3 rows=26 合计=15359` / `§5.1 rows=19 合计=15359 最大段=1200`，段名集合与磁盘一致，exit 0。
 - `node scripts/prepare.mjs`：**25 项通过**，`CLIENT-SRC: src/ 下 19 个段文件与 client.js 逐字节一致`。
 
 ### 六、已知降级路径（都写进代码注释与用例）
@@ -10954,7 +10954,56 @@ N-g `UPDATE_APPLY_CANCEL_PATH` 未被忽略（多一次无害读）；N-h 栏关
 `assembly.state` / `delivery.surfaceOp` —— 只有这几个字段变化时 tooltip 会滞后到下一次真实变化
 （主文本不受影响，判据 8 的「不改已渲染文本」仍成立，因为文本确实没变）。
 
-### 十、未验证项
+### 十、真机崩溃回归（rev-att-001-06，`Illegal invocation`，`17` 段 1054 → 1068 行）
+
+**现象**：负责人重启后，真实浏览器控制台 —— 状态栏**第一次渲染就抛**
+`TypeError: Illegal invocation`，整个 dock entry 崩（`slot entry crashed in 'conversation.input.dock'`）。
+负责人已把 `fbcccff` 合到 `dev`。
+
+**根因（已定位）**：`composerBarLiveIoOf` 把全局方法**原样存成变量**再以属性形式调用：
+
+```js
+const setTimer = typeof setTimeout === 'function' ? setTimeout : null;   // 旧实现
+...
+io.setTimer(fire, decision.delayMs);                                    // this = io
+```
+
+浏览器里 `setTimeout` / `clearTimeout` 是 `Window` 的 WebIDL 方法，以 `io.setTimer(...)` 调用时 `this`
+是 `io`，WebIDL 要求 `this` 为 `Window` ⇒ 抛 `TypeError: Illegal invocation`。而 `armPoll` 在**挂载
+effect 里同步调用** `io.setTimer(...)` —— 所以是首帧即崩。Node 的 `setTimeout` 不校验 `this`，因此
+365 个用例全绿也测不出来：**测试环境与浏览器语义的差异**导致的漏网，不是断言强度问题。
+
+**修复**：`composerBarLiveIoOf` 里 `setTimer` / `clearTimer` 一律改为**薄包装**，让调用回到「裸函数
+调用」语义（浏览器接受）：
+
+```js
+const setTimer = typeof source.liveSetTimeout === 'function'
+  ? (callback, delay) => source.liveSetTimeout(callback, delay)   // 注入源仍是它自己的方法调用（this = source）
+  : typeof setTimeout === 'function'
+    ? (callback, delay) => setTimeout(callback, delay)            // 裸调用：this 为 undefined/global
+    : null;
+const clearTimer = /* 同形 */;
+const now = typeof source.liveNow === 'function' ? () => source.liveNow() : () => composerBarLiveNow();
+```
+
+**同段自查（逐个确认调用形式）**：`doc.addEventListener` / `view.addEventListener`（属性调用，`this`
+是宿主对象，正确）；`target.setItem`（`this` = storage，正确）；`map.forEach`（`this` = Map，正确）；
+`Date.now()`（裸调用，正确）；`seat.hook` 改为先取局部变量再**裸调用**（不再以 `seat.hook(...)` 形式，
+React hook 不是 booking record 的方法）。没有发现第二处会在首帧触发的同类写法。
+
+**新增用例（rev6，`test/client.test.mjs`）**：把 sandbox 的 `setTimeout` / `clearTimeout` 换成**按浏览器
+规则拒绝属性调用**的替身（`this` 携带 `setTimer` / `clearTimer` 即抛 `TypeError('Illegal invocation')`），
+然后：①断言 `liveIoOf({})` 暴露的是 wrapper 而不是裸全局；②挂载即 armPoll ⇒ 真的排上一个 timer 且不抛
+（首帧路径）；③写合并窗口内的 defer 路径也排上；④隐藏时两个 handle 都被 `clearTimer` 清掉且不抛。
+
+**负向对照（实跑并还原）**：把 `setTimer` / `clearTimer` 改回裸全局后，该用例**当场变红**（首条断言
+`setTimer 是薄包装…` 失败，随后挂载路径在替身下抛 `Illegal invocation`）；还原后全绿。
+
+**为什么会漏**：Node 的 `setTimeout` 是普通函数、不检查 `this`；浏览器的 `Window.setTimeout` 是 WebIDL
+方法、检查 `this`。任何「取全局方法 → 存变量 → 以对象属性调用」的写法在 Node 全绿、在浏览器首帧崩。
+这条现在由替身用例钉住（替身只在 `this` 携带我方 facade 时抛，正好是那种写法）。
+
+### 十一、未验证项
 
 - **真机（`http://127.0.0.1:3080`）未验**：GUI 服务在运行，重启有风险，按 directive 由负责人在 review 后验收
   （保存「我的 Prompt」后状态栏自动变化、切走再切回立即重读）；
