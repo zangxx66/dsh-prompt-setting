@@ -11122,3 +11122,42 @@ append→replace，而 `assembled`/`delivered` 不变）时 tooltip 两句结论
 - 同一 workspace root 下两个真实会话的并发装配未真机验（单测与 route 级已覆盖）；
 - `integration R8` 的 3 个基线失败未修（不属本目标，见 g-090）。
 
+## 172. g-090：integration R8 三个基线失败 —— 宿主 `assemble()` 的 `tools` 边界（2026-11-04，基线 `1e943e7`，隔离工作树 `g-090-att-01`）
+
+### 一、现象与归属判定
+
+`node --test test/integration.test.mjs` 基线 3 红（R8 的 997 / 1034 / 1147 三条），形态是
+`actual {sections, contexts, variables, tools: []}` vs `expected {sections, contexts, variables}`，
+`operator: 'strictEqual'`。**不是夹具漏加一个字段**：三条都是 `assert.equal` 的**引用同一性**断言
+（`assembly === sink.appended` / `seen[0] === assembly`），加 `tools: []` 也修不好。
+
+宿主 `@deepseek-ai/dsh-system-prompt@0.2.2-alpha.2` 的正式契约（`lib/types/index.d.ts`）：
+`system-prompt/assemble` 的 payload 是 `PromptPresentation`（sections / contexts / variables），
+`assemble()` 返回 `PromptAssembly = PromptPresentation & { tools: ToolSchema[] }`；`lib/index.js`
+在瀑布**之后**以 `{ ...transformed, tools }` **重建对象**返回。故「`assemble()` 返回值 === 瀑布返回值」
+在该版本下**按构造不成立** —— 这是宿主真实契约变化，不是测试夹具漂移。README 亦明写
+presentation listeners 收不到 tools、tools 保持 provider-owned。
+
+### 二、修法（只改测试，host 侧零改动）
+
+- 身份承诺下沉一层：`observeOutermost` 的 observer 在 keeper **外层**，它持有的引用就是 keeper 返回值 ——
+  用它做 `assert.equal(seen[0], sink.appended)`，比原来更准确地钉住「没有移动就不复制」；用例 4 补挂 observer。
+- 最终值用 `assert.deepEqual(assembly, { ...sink.appended, tools: [] })` 做**完整对象**比较：宿主只多 `tools`，
+  其余字段一个字节都不许差；断言强度未降（仍比完整对象，且显式钉住宿主的唯一增量）。
+- 插件 host 侧无需改：两个监听器只读写 sections/contexts/variables，`reservedSectionLast` 的
+  `{ ...result, sections }` 天然透传其余字段（含宿主将来追加的字段）。
+
+### 三、验证（实跑）
+
+- `node --test test/integration.test.mjs`：**31 例全绿**（改前 28/31）；
+- `node --test test/*.test.mjs`：**1080 例全绿**（改前 1077/1080，失败集合逐条同名）；
+- `node scripts/verify.mjs`：**6 步 / 0 失败**（改前恒红的 test 步已绿）；
+- 负向对照 ①：临时让 `reservedSectionLast` 总返回浅副本 → 恰好这 2 条身份用例红、其余绿；复原归零；
+- 负向对照 ②：临时把期望对象多加一个字段（`extra: 1`）→ 1 红，证明 `deepEqual` 未退化为「只比 sections」。
+
+### 四、未验证项
+
+- 只在本机 DSH `0.2.2-alpha.2` 上实测；更低宿主版本（`assemble()` 无 `tools` 时）未回归 ——
+  peer 范围 `>=0.2.1-0 <0.3.0-0`，若有受害者需要在旧版本上跑一次；
+- 真机未验（本目标纯测试夹具，无运行时面）。
+

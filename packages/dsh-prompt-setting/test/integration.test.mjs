@@ -1013,9 +1013,18 @@ test('integration R8: with nothing configured an outer appender still ends the p
   const assembly = await mounted.service.assemble();
 
   // An empty section renders nothing, so its position is unobservable: the
-  // keeper must not have touched a single part of the assembly (§15.10).
-  assert.equal(assembly, sink.appended, 'the keeper returned the downstream value by identity');
-  assert.equal(seen[0], sink.appended, 'and that is the reference the outermost observer received');
+  // keeper must not have touched a single part of the assembly (§15.10). The
+  // identity claim is observed one layer out: this observer sits OUTSIDE the
+  // keeper, so the reference it holds is exactly what the keeper returned.
+  //
+  // What `assemble()` hands the caller is a different object on DSH 0.2.2 and
+  // later — the waterfall's payload is a `PromptPresentation` (sections,
+  // contexts, variables) and the Host merges its provider-owned `tools` into a
+  // fresh `{...transformed, tools}` AFTER the waterfall, so identity across
+  // `assemble()` cannot hold by construction. The exact equality below pins
+  // that `tools` is the only thing the Host adds on top.
+  assert.equal(seen[0], sink.appended, 'the keeper returned the downstream value by identity');
+  assert.deepEqual(assembly, { ...sink.appended, tools: [] }, 'and the Host adds only the provider-owned tools');
   assert.deepEqual(names(assembly), [
     'harness:identity',
     'deployment:persona-prefix',
@@ -1063,7 +1072,12 @@ test('integration R8: with text configured the reserved section is moved past an
   // keeper saw that copy.
   assert.notEqual(assembly, sink.appended, 'a real move returns a copy');
   assert.notEqual(assembly.sections, sink.appended.sections, 'and a fresh sections array');
-  assert.equal(seen[0], assembly, 'the outermost observer received exactly what the keeper returned');
+  assert.notEqual(seen[0], sink.appended, 'the observer outside the keeper saw that copy, not the appender value');
+  assert.notEqual(seen[0].sections, sink.appended.sections, 'with a fresh sections array of its own');
+  // `assemble()` returns a new object on DSH 0.2.2+ (the Host merges
+  // provider-owned `tools` after the waterfall), so "exactly what the keeper
+  // returned" is asserted on the contents, with `tools` the only addition.
+  assert.deepEqual(assembly, { ...seen[0], tools: [] }, 'the Host adds only `tools` on top of what the keeper returned');
   assert.deepEqual(names(assembly), [
     'harness:identity',
     'deployment:persona-prefix',
@@ -1157,12 +1171,19 @@ test('integration R8: a hand-edited hide removes the section, and the keeper doe
   const mounted = await mountRealPlugin(CUSTOM, {
     beforePlugin: async (ctx) => appendCompanion(ctx, sink),
   });
+  const seen = [];
+  observeOutermost(mounted.ctx, seen);
 
   // `await` is the assertion that it did not throw: an exception on the assembly
   // path would reject here.
   const assembly = await mounted.service.assemble();
   assert.equal(names(assembly).includes(CUSTOM_SECTION_NAME), false, 'the hide took effect');
-  assert.equal(assembly, sink.appended, 'nothing to move: the downstream value comes back by identity');
+  // The observer is OUTSIDE the keeper, so it holds the reference the keeper
+  // returned: "nothing to move" means the downstream value, untouched. On DSH
+  // 0.2.2+ `assemble()` returns a new object (the Host merges provider-owned
+  // `tools` after the waterfall); the exact equality pins that as the only add.
+  assert.equal(seen[0], sink.appended, 'nothing to move: the downstream value comes back by identity');
+  assert.deepEqual(assembly, { ...sink.appended, tools: [] }, 'and the Host adds only the provider-owned tools');
   assert.equal(assembly.sections.at(-1).name, 'dsh-expression:companion');
   assert.equal(renderPrompt(assembly), baselinePrompt, 'and the bytes are the no-plugin bytes');
 
