@@ -49,7 +49,10 @@ Settings gains a **"Prompt settings"** pane (`id: prompt-setting`) with six top-
 | **Advanced** | A read-only list of legacy overrides, two double-confirm buttons ("clear all overrides", "reset the whole layer"), the **"Check for updates" switch** (on by default; off means this plugin makes no network request at all), the **"Update now"** action (the host installs the version the banner named; you restart yourself — re-run `dsh web` after a command-line start, or quit and reopen DeepSeek Harness in the desktop app), and a full status area (mount state / build fingerprint / renderer self-check). The complete assembly-status block and its switch live here; since g-084 each clear states its scope in words — "reset the whole layer" clears the layer **including** My Prompt, while "clear all overrides" **keeps** it. |
 
 > All UI copy follows DSH's language setting: switch DSH to Chinese and this page turns Chinese, with no
-> refresh or restart.
+> refresh or restart. The plugin covers all **eight interface languages** the Host ships (Chinese, English,
+> Japanese, Spanish, French, German, Russian, Portuguese); ja/es/fr/de/ru/pt currently carry English
+> placeholders whose key set matches Chinese key-for-key (translations replace values only), and an older
+> Host silently degrades to zh/en instead of failing.
 
 > **The tab bar itself.** The six top-level tabs are plain text — no fill, no border, no equal-width
 > columns. The selected one carries a short underline pressed against the faint rule under the bar, and

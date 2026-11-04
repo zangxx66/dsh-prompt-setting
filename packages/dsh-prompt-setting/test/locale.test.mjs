@@ -23,7 +23,7 @@
  * Run: `node --test`
  */
 import assert from 'node:assert/strict';
-import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -32,6 +32,10 @@ import { fileURLToPath } from 'node:url';
 
 import { CLIENT_SRC_DIR } from '../scripts/client-build.mjs';
 import {
+  BOOT_SEGMENT_NAME,
+  LOCALE_GROUPS,
+  LOCALE_MANIFEST_NAME,
+  LOCALE_SEGMENTS,
   LOCALES,
   checkLocaleSync,
   findLocaleSegment,
@@ -190,19 +194,23 @@ test('locale: the 594 keys split into 543 main entries and 51 error codes', () =
   }
 });
 
-test('locale: no placeholder drift beyond the one recorded exception', () => {
+test('locale: no placeholder drift, in any of the eight languages (baseline: en)', () => {
   const { dictionaries, keys } = readDictionaries(packageRoot);
   const params = (text) => [...new Set([...text.matchAll(/\{([A-Za-z0-9_]+)\}/g)].map((match) => match[1]))].sort();
+  const languages = Object.keys(dictionaries).filter((name) => name !== 'en');
   const drift = [];
   for (const key of keys) {
-    const zh = params(dictionaries.zh[key]).join(',');
     const en = params(dictionaries.en[key]).join(',');
-    if (zh !== en) drift.push({ key, zh, en });
+    for (const name of languages) {
+      const other = params(dictionaries[name][key]).join(',');
+      if (other !== en) drift.push({ key, language: name, other, en });
+    }
   }
   // g-080: `mineInterpolateNote` now carries the same two placeholders in both
   // languages — `{list}` (the host's registered names) and the `{{cwd}}` the copy
   // names as retired — so the g-066 exception is gone rather than kept. The
-  // assertion stays exact: any *new* drift fails here.
+  // assertion stays exact: any *new* drift fails here, in every language (g-092
+  // compares all eight against en, not just zh).
   assert.deepEqual(drift, []);
 });
 
@@ -505,4 +513,101 @@ test('locale: the delivery shape stays a classic script with a synchronous regis
   const register = source.indexOf('locale.register(NS, { zh, en })');
   assert.ok(source.indexOf('    const zh = {') > 0 && source.indexOf('    const zh = {') < register);
   assert.ok(source.indexOf('    const en = {') > 0 && source.indexOf('    const en = {') < register);
+});
+
+// ── g-092: the Host’s 8 languages, the derived segment table, and the ja hook ──
+
+test('locale: the locale segment table is derived from LOCALES (every language exactly once)', () => {
+  // `LOCALES` is the single truth source: the groups, the segment names and the boot
+  // index are all functions of it — no hand-kept "ja/es belong to 18" list anywhere.
+  assert.deepEqual(LOCALE_SEGMENTS.flatMap((segment) => segment.locales), Object.keys(LOCALES));
+  assert.deepEqual(LOCALE_GROUPS.flat(), Object.keys(LOCALES));
+  assert.equal(new Set(Object.keys(LOCALES)).size, Object.keys(LOCALES).length, 'no duplicate language id');
+  // Two languages per segment is the budget’s consequence (2×599 block lines ≤ 1200).
+  for (const segment of LOCALE_SEGMENTS) assert.ok(segment.locales.length <= 2, `${segment.name}: at most 2 languages`);
+  // Segment names sort in code order (the two-digit prefix == position).
+  assert.deepEqual(
+    LOCALE_SEGMENTS.map((segment) => segment.name),
+    [...LOCALE_SEGMENTS].map((segment) => segment.name).sort(),
+  );
+  // Boot follows the last locale segment.
+  assert.equal(BOOT_SEGMENT_NAME, `${18 + LOCALE_SEGMENTS.length - 1}-boot.js`);
+  // On disk: every derived segment exists, and the boot slot is the derived one.
+  for (const segment of LOCALE_SEGMENTS) {
+    assert.equal(existsSync(join(packageRoot, CLIENT_SRC_DIR, segment.name)), true, `${segment.name} exists`);
+  }
+  assert.equal(existsSync(join(packageRoot, CLIENT_SRC_DIR, BOOT_SEGMENT_NAME)), true, `${BOOT_SEGMENT_NAME} exists`);
+});
+
+test('locale: each generated segment ends with the derived LOCALE_DICTS manifest line', () => {
+  // The manifest is how `21-boot.js` learns the language list without a second,
+  // hand-written list. Its content is derived (segment order == LOCALES order).
+  for (const [index, segment] of LOCALE_SEGMENTS.entries()) {
+    const text = readFileSync(join(packageRoot, CLIENT_SRC_DIR, segment.name), 'utf8');
+    const names = segment.locales.join(', ');
+    const expected = index === 0
+      ? `    const ${LOCALE_MANIFEST_NAME} = { ${names} };`
+      : `    Object.assign(${LOCALE_MANIFEST_NAME}, { ${names} });`;
+    assert.equal(text.split('\n').includes(expected), true, `${segment.name}: manifest line`);
+  }
+});
+
+test('locale: non-zh copy carries no CJK, and ja is either English placeholder or Japanese', () => {
+  const { dictionaries } = readDictionaries(packageRoot);
+  const cjk = /[\u4e00-\u9fff]/;
+  // Same character class the English render sweep uses: ideographs + CJK punctuation
+  // and full-width forms.
+  const cjkOnScreen = /[\u4e00-\u9fff\u3000-\u303f\uff01-\uff60\uffe0-\uffe6]/;
+  for (const name of ['en', 'es', 'fr', 'de', 'ru', 'pt']) {
+    for (const [key, value] of Object.entries(dictionaries[name])) {
+      assert.equal(cjkOnScreen.test(value), false, `${name}.${key} carries CJK: ${JSON.stringify(value).slice(0, 60)}`);
+    }
+  }
+  assert.ok(Object.values(dictionaries.zh).some((value) => cjkOnScreen.test(value)), 'zh really carries CJK');
+  // Stage hook (g-092): stage 1 ships English placeholders (value-identical to en);
+  // stage 2 replaces them with translations, and every *replaced* value must carry
+  // Japanese script (kana or kanji). Together the two branches make it impossible for
+  // `ja` to ship English prose while claiming to be Japanese.
+  const kana = /[\u3040-\u309f\u30a0-\u30ff]/;
+  for (const key of Object.keys(dictionaries.en)) {
+    const value = dictionaries.ja[key];
+    if (value === dictionaries.en[key]) {
+      assert.equal(cjkOnScreen.test(value), false, `ja.${key}: an English placeholder carries no CJK`);
+    } else {
+      assert.ok(kana.test(value) || cjk.test(value), `ja.${key}: a translated value carries Japanese script`);
+      // Kanji alone cannot tell Japanese from Chinese, so a CJK value that is
+      // *character-for-character* the zh copy is a paste of the Chinese copy, not a
+      // translation. (ASCII-only values — `OK`, `Prompt`, API names — stay allowed.)
+      if (cjkOnScreen.test(value)) {
+        assert.notEqual(value, dictionaries.zh[key], `ja.${key}: must not reuse the Chinese copy verbatim`);
+      }
+    }
+  }
+});
+
+test('locale: adding a 9th language to LOCALES needs no other edit (--write derives the new segment)', () => {
+  // The point of the derived table: one entry in `LOCALES` + one JSON must be enough.
+  // The new group takes the next name (`21-locale-e.js`) and the boot segment moves
+  // one slot down (`22-boot.js`) — no hand-kept list is touched.
+  const root = throwawayPackage();
+  try {
+    const packPath = join(root, 'scripts', 'locale-pack.mjs');
+    const pack = readFileSync(packPath, 'utf8');
+    const edited = pack.replace("  pt: 'pt',\n});", "  pt: 'pt',\n  yue: 'yue',\n});");
+    assert.notEqual(edited, pack, 'the fixture edit lands');
+    writeFileSync(packPath, edited);
+    writeFileSync(join(root, 'locale', 'yue.json'), readFileSync(join(root, 'locale', 'en.json'), 'utf8'));
+
+    const write = run(root, 'scripts/locale-pack.mjs', '--write');
+    assert.equal(write.status, 0, `--write must accept a 9th language\n${write.stdout}\n${write.stderr}`);
+    assert.equal(existsSync(join(root, CLIENT_SRC_DIR, '21-locale-e.js')), true, 'a new segment is created for the new group');
+    assert.equal(existsSync(join(root, CLIENT_SRC_DIR, '22-boot.js')), true, 'the boot segment is renumbered automatically');
+    assert.equal(existsSync(join(root, CLIENT_SRC_DIR, '21-boot.js')), false, 'the stale boot name is gone');
+    assert.match(readFileSync(join(root, CLIENT_SRC_DIR, '21-locale-e.js'), 'utf8'), /const yue = \{/);
+    // Both gates stay green: dictionaries ↔ segments ↔ artifact.
+    assert.equal(run(root, 'scripts/locale-pack.mjs', '--check').status, 0, 'locale-pack --check');
+    assert.equal(run(root, 'scripts/client-build.mjs', '--check').status, 0, 'client-build --check');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

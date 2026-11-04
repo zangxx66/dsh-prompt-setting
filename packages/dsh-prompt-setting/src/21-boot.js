@@ -247,11 +247,33 @@
         const locale = ctx.locale;
         const t = typeof locale?.bind === 'function' ? locale.bind(NS) : (key) => key;
         fallbackT = t;
-        ctx.effect(
-          () =>
-            typeof locale?.register === 'function' ? locale.register(NS, { zh, en }) : undefined,
-          'prompt-setting: section dictionaries',
-        );
+        // g-092: the dictionaries follow the Host's own language catalog (8 languages
+        // in DSH 0.2.2). `LOCALE_DICTS` is emitted by `locale-pack.mjs` into the
+        // `src/*-locale-*.js` segments — one entry per language, in `LOCALES` order —
+        // so this block carries **no second language list**.
+        //
+        // Compatibility ladder (peer floor is still a zh/en-only Host):
+        //   1. the baseline `{ zh, en }` object form first — that is the only shape
+        //      every Host since 0.2.1 understands, and without a baseline
+        //      registration there is nothing to degrade to (its throw fails apply,
+        //      exactly as before g-092);
+        //   2. then every other language through the single-language form
+        //      `register(ns, locale, dict)`, each in its own `try` — a Host that
+        //      rejects the extra languages loses those languages and nothing else.
+        //      A white screen is still the one outcome this may never cause.
+        ctx.effect(() => {
+          if (typeof locale?.register !== 'function') return undefined;
+          locale.register(NS, { zh, en });
+          for (const [name, dict] of Object.entries(LOCALE_DICTS)) {
+            if (name === 'zh' || name === 'en') continue;
+            try {
+              locale.register(NS, name, dict);
+            } catch {
+              // An older Host, or one that refuses this locale id: keep zh/en only.
+            }
+          }
+          return undefined;
+        }, 'prompt-setting: section dictionaries');
 
         const canSubscribe = typeof locale?.subscribe === 'function';
         const canReadRevision = typeof locale?.getSnapshot === 'function';

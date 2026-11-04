@@ -2,7 +2,7 @@
 
 **这份文档要回答的问题**：改一个功能点，该打开哪个文件？
 
-`client.js` 是发布物（15399 行的单个 CommonJS factory），但**人不再直接编辑它** ——
+`client.js` 是发布物（19021 行的单个 CommonJS factory），但**人不再直接编辑它** ——
 它是 `src/` 的生成物（见 `CONTRACT.md` §23）。本表把「域」映射到：
 
 **域 → `client.js` 行区间 → 段文件 → 入口函数 → CONTRACT 章节 → 测试文件**
@@ -14,13 +14,13 @@
 `scripts/client-build.mjs` 注入、不属于任何段，所以它不参与本表的编号
 （`docs/check-refs.mjs` 的 `CLIENT_HEAD_LINES` 就是这条约定的实现）。
 
-段的划分与行数预算是 `docs/refactor-plan.md` §5.1 的**目标段表**（19 段，每段 ≤ 1200 行）。
+段的划分与行数预算是 `docs/refactor-plan.md` §5.1 的**目标段表**（22 段，每段 ≤ 1200 行；g-092 起 locale 生成段由 1 段扩为 4 段）。
 表里的「行数」按**剥掉片段声明行之后**算，与 §5.1 的预算口径一致 —— 所以 `wc -l src/*.js`
 每个文件都会多出 1 行（最大段 `13-page-a.js` 读作 1200，预算判的是 1199，见 `CONTRACT.md`
 §23.2 规则 6）。
 重新生成：`node scripts/client-build.mjs --write`；校验：`node scripts/client-build.mjs --check`。
 
-## 19 段总表
+## 22 段总表
 
 | 段文件 | `client.js` 行区间 | 行数 | 域 | 主要入口函数 | CONTRACT | 测试 |
 |---|---|---:|---|---|---|---|
@@ -42,7 +42,10 @@
 | `15-page-c.js` | 11730–12619 | 890 | `PromptSettingSection` 第 3 切：actions / model / root 树 | —（同一函数体内） | §13, §16 | `test/client.test.mjs`、`test/diff.test.mjs`、`test/history.test.mjs` |
 | `16-composer-bar.js` | 12620–13776 | 1157 | g-086 会话输入框上方装配状态栏（`conversation.input.dock`）：五分区只读 + 设置快捷入口（catalog 键位派发 + 有界定位）；数据层委托给 `17` 段 | `ComposerAssemblyBar` (13383)、`composerBarIconOf` (12710)、`composerBarDispatchSettingsShortcut` (13002) | §13, §15 | `test/client.test.mjs` |
 | `17-composer-bar-live.js` | 13777–14884 | 1108 | g-089 状态栏动态刷新：写广播 / 会话状态 / 可见性 / storage 四类触发，单飞 + 节流 + 可注入计时器 | `useComposerBarLiveRead` (14554)、`composerBarLiveDecision` (14158)、`composerBarNextRead` (14299) | §13, §15 | `test/client.test.mjs` |
-| `18-boot.js` | 14885–15399 | 515 | `renderFailureCard` / `degradedPlugin` / boot 返回 | `renderFailureCard` (14897)、`degradedPlugin` (15328) | §7, §14 | `test/boot.test.mjs`、`test/client.test.mjs` |
+| `18-locale-b.js` | 14885–16084 | 1200 | locale 生成段（`ja` / `es`）：由 `locale-pack.mjs --write` 产出，段序/文件名/语言分组全部从 `LOCALES` 派生 | —（数据段） | §22 | `test/locale.test.mjs` |
+| `19-locale-c.js` | 16085–17284 | 1200 | locale 生成段（`fr` / `de`）：同上 | —（数据段） | §22 | `test/locale.test.mjs` |
+| `20-locale-d.js` | 17285–18484 | 1200 | locale 生成段（`ru` / `pt`）：末行把本段语言并进 `LOCALE_DICTS` | —（数据段） | §22 | `test/locale.test.mjs` |
+| `21-boot.js` | 18485–19021 | 537 | `renderFailureCard` / `degradedPlugin` / boot 返回（8 语言注册：基线对象形式 + 其余逐个降级） | `renderFailureCard` (18497)、`degradedPlugin` (18950) | §7, §14, §22 | `test/boot.test.mjs`、`test/client.test.mjs` |
 
 **`13/14/15` 是同一个函数的三个切**：它们拼起来仍是**一个** `PromptSettingSection`
 （`client.js:9348-12619`）。这是「只重切、不移动」能做到的最大粒度 —— 把一个 3257 行的

@@ -30,20 +30,100 @@
  *   node scripts/locale-pack.mjs --write  # 由两份 JSON 重写 src/ 里的生成段，并重建 client.js
  */
 
-import { readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { CLIENT_SRC_DIR, renderClient } from './client-build.mjs';
+import { CLIENT_SRC_DIR, SEGMENT_DECLARATION, renderClient } from './client-build.mjs';
 
 /** 包根目录（本文件在 `scripts/` 下）。 */
 const PACKAGE_DIR = dirname(dirname(fileURLToPath(import.meta.url)));
 /** 主 bundle 路径 —— **生成物**：生成段写进 `src/` 之后由这里重建。 */
 const CLIENT_PATH = join(PACKAGE_DIR, 'client.js');
-/** 两份 JSON 真源所在目录（相对包根）。 */
+/** 词典 JSON 真源所在目录（相对包根）。 */
 export const LOCALE_DIR = 'locale';
-/** 语言 id → 生成段的变量名。顺序即 `ctx.locale.register` 的入参顺序。 */
-export const LOCALES = Object.freeze({ zh: 'zh', en: 'en' });
+/**
+ * 语言 id → 生成段的变量名。顺序即 `ctx.locale.register` 的入参顺序。
+ *
+ * g-092：跟随 DSH 0.2.2-alpha.2 宿主内置的 8 种界面语言
+ * （`@deepseek-ai/dsh-client-locale/lib/client.js` 的 `addLanguage` 列表）。
+ * **这是插件语言清单的唯一真源**：脚本（读/写/门禁）、`src/21-boot.js` 的注册与
+ * 测试都从它派生，任何一处再写一份 8 语言清单都是重复真源。
+ *
+ * zh/en 必须在前：宿主 `register(ns, {zh, en})` 的对象形式要求基线两种语言齐全，
+ * boot 段据此先注册基线、再逐个补其余语言（旧宿主不认额外语言时只吞那一种）。
+ */
+export const LOCALES = Object.freeze({
+  zh: 'zh',
+  en: 'en',
+  ja: 'ja',
+  es: 'es',
+  fr: 'fr',
+  de: 'de',
+  ru: 'ru',
+  pt: 'pt',
+});
+
+/**
+ * 每段最多承载的语言数（g-092）。
+ *
+ * 一段放 597 键 × 2 语言 = 2×599 = 1198 行（不含段首声明与注释行），仍在
+ * `test/client-source.test.mjs` 与 §5.1 表压的 **≤1200 行**预算内。放 3 语言就是
+ * 1797 行 —— 所以「每段 2 语言」不是偏好，是预算的函数。
+ */
+export const LOCALES_PER_SEGMENT = 2;
+
+/** 主段文件名（历史名，§5.1 表沿用；其余段由 {@link localeSegmentName} 自动派生）。 */
+export const PRIMARY_SEGMENT_NAME = '02-locale.js';
+
+/** 按 `size` 把数组切成连续的组。 */
+function chunk(list, size) {
+  const groups = [];
+  for (let index = 0; index < list.length; index += size) groups.push(Object.freeze(list.slice(index, index + size)));
+  return Object.freeze(groups);
+}
+
+/**
+ * 第 `groupIndex` 个 locale 段的文件名 —— **由组序派生，不是一张手工清单**（g-092）。
+ *
+ * 第 0 组沿用历史主段名 `02-locale.js`（既有测试/门禁以它为锚）；第 n ≥ 1 组从
+ * 序号 18 起顺延，字母后缀 b/c/d…，于是**新增语言不需要改任何一段手写映射**：
+ * `LOCALES` 多一项 ⇒ 组数变多 ⇒ 段名、段数、boot 序号全部跟着变。
+ * @param groupIndex - 组序（0 起）。
+ * @returns 段文件名。
+ */
+export function localeSegmentName(groupIndex) {
+  if (groupIndex === 0) return PRIMARY_SEGMENT_NAME;
+  if (groupIndex > 25) throw new Error(`locale 段数 ${groupIndex} 超出字母后缀 a–z 能表达的段数`);
+  return `${18 + groupIndex - 1}-locale-${String.fromCharCode(97 + groupIndex)}.js`;
+}
+
+/** 语言分组：`Object.keys(LOCALES)` 按 {@link LOCALES_PER_SEGMENT} 顺序切块。 */
+export const LOCALE_GROUPS = chunk(Object.keys(LOCALES), LOCALES_PER_SEGMENT);
+
+/**
+ * 语言 → 生成段的分组表（g-092）—— 完全由 {@link LOCALES} 与
+ * {@link LOCALES_PER_SEGMENT} 派生，**脚本里不得再出现「ja/es 属于 18 段」这类手工映射**。
+ *
+ * **为什么不是一段**：`test/client-source.test.mjs` 与 `docs/refactor-plan.md` §5.1
+ * 给每个 `src/*.js` 段压了 **≤1200 行**的硬预算（复核见 `docs/check-refs.mjs`）。
+ *
+ * **为什么新段排在末尾（boot 之前）**：段 = `client.js` 的连续区间，段序号 = 代码
+ * 顺序。把新段插在 `02-locale.js` 之后会让其后的 16 段整体下移；排在 boot 之前只
+ * 影响 boot 一段，位移代价最小（§5.1 表只多三行）。
+ */
+export const LOCALE_SEGMENTS = Object.freeze(LOCALE_GROUPS.map((locales, index) => (
+  Object.freeze({ name: localeSegmentName(index), locales })
+)));
+
+/** 主段的语言集合（zh/en 基线）。 */
+export const PRIMARY_LOCALES = LOCALE_SEGMENTS[0].locales;
+
+/** boot 段的序号：紧随最后一个 locale 段（新增语言时自动顺延）。 */
+export const BOOT_SEGMENT_INDEX = 18 + (LOCALE_SEGMENTS.length - 1);
+
+/** boot 段的目标文件名（`21-boot.js`：8 语言 / 4 段时）。 */
+export const BOOT_SEGMENT_NAME = `${BOOT_SEGMENT_INDEX}-boot.js`;
 
 /**
  * 生成段的开头行（缩进/措辞改动会让本脚本拒绝动手，而不是猜）。
@@ -339,7 +419,9 @@ export function findLocaleSegment(io = {}) {
   });
   const entries = readDir(CLIENT_SRC_DIR);
   if (entries === null) return null;
-  const names = Object.keys(LOCALES);
+  // g-092：主段只承载 zh/en 基线块，其余语言在 `LOCALE_SEGMENTS` 的后续段里。
+  // 这里仍按「一个段同时含这两块的唯一候选」定位主段 —— 与 g-079 的诱饵判据一致。
+  const names = PRIMARY_LOCALES;
   const wanted = names.map((name) => `\`${name}\``).join(' / ');
   const expectedKeys = readLocaleKeySequences(readText);
   const hits = [];
@@ -403,16 +485,155 @@ export function findLocaleSegment(io = {}) {
   return hits[0];
 }
 
+/** 新建段时写在块前面的那行说明（与主段既有措辞同款，只改语言清单）。 */
+function localeSegmentComment(locales) {
+  const files = locales.map((name) => `${LOCALE_DIR}/${name}.json`).join('、');
+  return `    // 生成段：真源 ${files}；改文案跑 node scripts/locale-pack.mjs --write（勿手改本段）。`;
+}
+
 /**
- * 把两份词典写进一个段文件的文本（纯函数，便于单测；IO 在调用方）。
- * @param segmentText - 段文件全文（含首行片段声明）。
- * @param dictionaries - `{zh, en}`。
+ * boot 段读到的「全部词典」汇总对象名（生成行，见 {@link renderLocaleSegmentFile}）。
+ *
+ * 为什么需要它：boot 段要注册 8 种语言，但**不能手写一份 8 语言清单**（那是第二份
+ * 真源）。于是每个 locale 段在末尾把本段的语言并进这个对象（首段声明、后续段
+ * `Object.assign`），boot 段只遍历 `Object.entries(LOCALE_DICTS)` —— 语言集合与顺序
+ * 全部来自 `LOCALES`。
+ */
+export const LOCALE_MANIFEST_NAME = 'LOCALE_DICTS';
+
+/**
+ * 规范化渲染一个 locale 段文件（g-092）—— `--write` 的写出形态，也是 `--check` 的
+ * 逐字节比较对象。
+ *
+ * 形状固定（每段都恰好 1200 行内容，用完 ≤1200 的段预算）：
+ *   1. 首行段首声明（client-build 拼接时剥离，不进产物）；
+ *   2. 一行说明（真源 JSON 清单 + 「勿手改」）；
+ *   3. 各语言的生成块 —— **块间不留空行**：2×599 块行 + 说明 1 行 + 清单 1 行 = 1200；
+ *   4. 末行清单行：主段 `const LOCALE_DICTS = { zh, en };`，后续段
+ *      `Object.assign(LOCALE_DICTS, { ja, es });`。
+ * @param dictionaries - 全部词典。
+ * @param segment - {@link LOCALE_SEGMENTS} 的条目。
+ * @param index - 条目下标（0 = 主段，负责声明 {@link LOCALE_MANIFEST_NAME}）。
+ * @returns 规范化的段文件全文（含末尾换行）。
+ */
+export function renderLocaleSegmentFile(dictionaries, segment, index = 0) {
+  const lines = [SEGMENT_DECLARATION, localeSegmentComment(segment.locales)];
+  for (const name of segment.locales) lines.push(renderDictionaryBlock(name, dictionaries[name]));
+  const names = segment.locales.join(', ');
+  lines.push(index === 0
+    ? `    const ${LOCALE_MANIFEST_NAME} = { ${names} };`
+    : `    Object.assign(${LOCALE_MANIFEST_NAME}, { ${names} });`);
+  return `${lines.join('\n')}\n`;
+}
+
+/**
+ * 把多个 locale 段的**整段文本**与规范渲染比较（g-092）。
+ *
+ * 比块级比较更严：清单行、说明行、块间排版漂移都会被发现 —— 生成段里没有「人写
+ * 的合法内容」，任何不匹配都该由 `--write` 统一收口。
+ * @param where - 段文件相对路径（错误文案用）。
+ * @param actual - 磁盘上的段文本。
+ * @param expected - {@link renderLocaleSegmentFile} 的结果。
+ * @returns 一致时为 `null`，否则一行可执行提示。
+ */
+function segmentDriftMessage(where, actual, expected) {
+  const actualLines = actual.split('\n');
+  const expectedLines = expected.split('\n');
+  const drift = expectedLines.filter((line, index) => line !== actualLines[index]).length;
+  return `${where} 与规范渲染不一致（约 ${drift} 行）：先跑 node scripts/locale-pack.mjs --write 再发布`;
+}
+
+/**
+ * 把一组语言写进**一个段文件**的文本（纯函数，便于单测；IO 在调用方）。
+ *
+ * `segmentText === null` 表示这个段还没创建：返回「段首声明行 + 说明行 + 各语言
+ * 生成块」的新段模板（g-092 新增语言段时走这条）。
+ * @param segmentText - 段文件全文（含首行片段声明）；`null` = 待创建。
+ * @param dictionaries - 全部词典。
+ * @param locales - 这个段承载的语言（默认主段的 zh/en，保持既有调用点语义）。
  * @returns 新的段文件全文。
  */
-export function renderLocaleSegment(segmentText, dictionaries) {
+export function renderLocaleSegment(segmentText, dictionaries, locales = PRIMARY_LOCALES) {
+  if (segmentText === null) {
+    const blocks = locales.map((name) => renderDictionaryBlock(name, dictionaries[name])).join('\n\n');
+    return `${SEGMENT_DECLARATION}\n${localeSegmentComment(locales)}\n${blocks}\n`;
+  }
   let next = segmentText;
-  for (const name of Object.keys(LOCALES)) next = writeDeclaredBlock(next, name, dictionaries[name]);
+  for (const name of locales) next = writeDeclaredBlock(next, name, dictionaries[name]);
   return next;
+}
+
+/**
+ * 同一语言的生成块只能出现在一个段里（g-092：把「真源不唯一」延伸到多段布局）。
+ *
+ * 多段之后，一份词典被手抄进两个段同样是静默双真源；`findLocaleSegment` 只锚主段，
+ * 所以这里扫全部段文件兜底。
+ * @param io - `{packageDir, readText, readDir}`（可注入，测试用）。
+ * @returns `Map<语言, \`src/文件名\`>`；读不到 `src/` 目录时返回 `null`。
+ * @throws 同一语言块出现在两个段（`code = 'LOCALE-SOURCE-DUPLICATE'`）。
+ */
+export function localeBlockOwners(io = {}) {
+  const packageDir = io.packageDir ?? PACKAGE_DIR;
+  const readDir = io.readDir ?? ((relPath) => {
+    try {
+      return readdirSync(join(packageDir, relPath));
+    } catch {
+      return null;
+    }
+  });
+  const readText = io.readText ?? ((relPath) => {
+    try {
+      return readFileSync(join(packageDir, relPath), 'utf8');
+    } catch {
+      return null;
+    }
+  });
+  const entries = readDir(CLIENT_SRC_DIR);
+  if (entries === null) return null;
+  const owners = new Map();
+  for (const file of [...entries].filter((name) => name.endsWith('.js')).sort()) {
+    const text = readText(`${CLIENT_SRC_DIR}/${file}`);
+    if (typeof text !== 'string') continue;
+    for (const name of Object.keys(LOCALES)) {
+      try {
+        readDeclaredBlock(text, name);
+      } catch {
+        continue;
+      }
+      const previous = owners.get(name);
+      if (previous !== undefined && previous !== file) {
+        const error = new Error(`${previous} 与 ${file} 都含 \`${name}\` 词典块：locale 真源不唯一`);
+        error.code = 'LOCALE-SOURCE-DUPLICATE';
+        throw error;
+      }
+      owners.set(name, file);
+    }
+  }
+  return owners;
+}
+
+/**
+ * 让 boot 段的序号落在所有 locale 段之后（g-092）。
+ *
+ * 段序 = 文件名字典序，locale 段按 {@link LOCALE_SEGMENTS} 自动占序号 18..18+n-1，
+ * boot 必须在它们之后。**新增语言 ⇒ locale 段变多 ⇒ boot 顺延**，所以这一步也是本
+ * 脚本的职责，不靠人手改文件名。段内容一个字节不动（只换文件名）。
+ * @param entries - `src/` 的目录条目。
+ * @param notes - 追加一条人话说明（`--write` 的 stdout）。
+ * @returns 重命名后的条目（没有旧名时原样返回）。
+ * @throws `src/` 下有多个 boot 段（段表不唯一）。
+ */
+export function relocateBootSegment(entries, notes = []) {
+  const boots = entries.filter((name) => /^\d{2}-boot\.js$/.test(name));
+  if (boots.length === 0) return entries;
+  if (boots.length > 1) throw new Error(`${CLIENT_SRC_DIR}/ 下有 ${boots.length} 个 boot 段（${boots.join('、')}）：段表不唯一`);
+  const current = boots[0];
+  if (current === BOOT_SEGMENT_NAME) return entries;
+  const text = readFileSync(join(PACKAGE_DIR, CLIENT_SRC_DIR, current), 'utf8');
+  writeFileSync(join(PACKAGE_DIR, CLIENT_SRC_DIR, BOOT_SEGMENT_NAME), text);
+  rmSync(join(PACKAGE_DIR, CLIENT_SRC_DIR, current));
+  notes.push(`已把 ${current} 顺延为 ${BOOT_SEGMENT_NAME}（locale 段新增后段序需要）`);
+  return [...entries.filter((name) => name !== current), BOOT_SEGMENT_NAME];
 }
 
 /** 把一次「生成段落在哪里」的漂移渲染成可执行的一行提示。 */
@@ -454,21 +675,29 @@ export function checkLocaleSync({ packageDir, readText, readDir, listDir }) {
       : '：先确认这个包是否已迁移到分段真源、或 src/ 是否被误删（此情形 --write 同样无法定位）';
     return { ok: false, code: 'LOCALE-SYNC', message: `${detail}${guide}` };
   }
+  // 有 `src/` 段真源时才核对段（阶段 2 之前的包只有 client.js 的块，走下面的兼容路径：
+  // `findLocaleSegment` 返回 null 就代表「这个包还没有分段真源」）。
   if (segment !== null) {
-    for (const name of names) {
-      let declared;
-      try {
-        declared = readDeclaredBlock(segment.text, name);
-      } catch (error) {
+    // 多段布局（g-092）：同一语言的块不得在两个段里各抄一份。
+    try {
+      localeBlockOwners({ packageDir, readText, readDir });
+    } catch (error) {
+      return { ok: false, code: 'LOCALE-SYNC', message: error instanceof Error ? error.message : String(error) };
+    }
+    // 逐段核对：整段文本必须等于规范渲染（含语言清单行 —— 它是 boot 段的唯一语言来源）。
+    for (const [index, entry] of LOCALE_SEGMENTS.entries()) {
+      const relPath = `${CLIENT_SRC_DIR}/${entry.name}`;
+      const text = segment.name === entry.name ? segment.text : readText(relPath);
+      if (typeof text !== 'string') {
         return {
           ok: false,
           code: 'LOCALE-SYNC',
-          message: `${error instanceof Error ? error.message : String(error)}：先跑 node scripts/locale-pack.mjs --write`,
+          message: `读不到 ${relPath}（locale 生成段缺失）：先跑 node scripts/locale-pack.mjs --write`,
         };
       }
-      const expected = renderDictionaryBlock(name, dictionaries[name]);
-      if (declared.text !== expected) {
-        return { ok: false, code: 'LOCALE-SYNC', message: driftMessage(`${CLIENT_SRC_DIR}/${segment.name}`, name, declared.text, expected) };
+      const expected = renderLocaleSegmentFile(dictionaries, entry, index);
+      if (text !== expected) {
+        return { ok: false, code: 'LOCALE-SYNC', message: segmentDriftMessage(relPath, text, expected) };
       }
     }
   }
@@ -486,11 +715,11 @@ export function checkLocaleSync({ packageDir, readText, readDir, listDir }) {
       return { ok: false, code: 'LOCALE-SYNC', message: driftMessage('client.js', name, declared.text, expected) };
     }
   }
-  const where = segment === null ? 'client.js' : `${CLIENT_SRC_DIR}/${segment.name} 与 client.js`;
+  const where = segment === null ? 'client.js' : `${CLIENT_SRC_DIR}/${segment.name} 等 ${LOCALE_SEGMENTS.length} 个段与 client.js`;
   return {
     ok: true,
     code: 'LOCALE-SYNC',
-    message: `locale/zh.json、locale/en.json 各 ${keys.length} 键，与 ${where} 的生成段逐字一致`,
+    message: `locale/ 下 ${names.length} 份词典各 ${keys.length} 键，与 ${where} 的生成段逐字一致`,
   };
 }
 
@@ -541,6 +770,14 @@ function main(argv) {
       return;
     }
     const notes = [];
+    // 多段布局：先拒绝「同一语言块被抄进两个段」（否则 --write 会挑一个、静默留另一个）。
+    try {
+      localeBlockOwners({ packageDir: PACKAGE_DIR, readDir: readPackageDir, readText: readPackageText });
+    } catch (error) {
+      console.error(`[locale-pack] ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+      return;
+    }
     if (segment === null) {
       // 没有 src/ ⇒ 这个包还没迁移到分段真源，按老语义直接写 client.js（不存在两个写入者）。
       // g-076 项 5：这条兼容分支必须**可见**。否则「src/ 被误删」会被它静默吞掉 —— 脚本
@@ -553,7 +790,8 @@ function main(argv) {
         return;
       }
       let next = source;
-      for (const name of Object.keys(LOCALES)) next = writeDeclaredBlock(next, name, dictionaries[name]);
+      // 老兼容路径只认基线两种语言：这个包里根本没有承载其余语言的段可写。
+      for (const name of PRIMARY_LOCALES) next = writeDeclaredBlock(next, name, dictionaries[name]);
       if (next !== source) {
         writeFileSync(CLIENT_PATH, next);
         notes.push('已重写 client.js 的生成段');
@@ -561,12 +799,29 @@ function main(argv) {
         notes.push('client.js 已是最新');
       }
     } else {
-      const next = renderLocaleSegment(segment.text, dictionaries);
-      if (next !== segment.text) {
-        writeFileSync(join(PACKAGE_DIR, CLIENT_SRC_DIR, segment.name), next);
-        notes.push(`已重写 ${CLIENT_SRC_DIR}/${segment.name} 的生成段`);
-      } else {
-        notes.push(`${CLIENT_SRC_DIR}/${segment.name} 已是最新`);
+      // 主段必须就是段表第 0 条：名字对不上说明段被改名/重切过，先同步段表再写（绝不猜）。
+      if (segment.name !== LOCALE_SEGMENTS[0].name) {
+        console.error(`[locale-pack] 主段定位到 ${segment.name}，但段表期望 ${LOCALE_SEGMENTS[0].name}：先同步 locale-pack 的段表`);
+        process.exitCode = 1;
+        return;
+      }
+      // 多段布局（g-092）：boot 段先顺延（让出末尾序号给 locale 段），再逐段写。
+      const entries = readPackageDir(CLIENT_SRC_DIR);
+      if (entries !== null) relocateBootSegment(entries, notes);
+      mkdirSync(join(PACKAGE_DIR, CLIENT_SRC_DIR), { recursive: true });
+      let segmentChanged = false;
+      for (const [index, entry] of LOCALE_SEGMENTS.entries()) {
+        const relPath = `${CLIENT_SRC_DIR}/${entry.name}`;
+        const current = readPackageText(relPath);
+        const next = renderLocaleSegmentFile(dictionaries, entry, index);
+        if (next !== current) {
+          writeFileSync(join(PACKAGE_DIR, relPath), next);
+          if (current === null) notes.push(`已新建 ${relPath} 的生成段`);
+          else notes.push(`已重写 ${relPath} 的生成段`);
+          segmentChanged = true;
+        } else {
+          notes.push(`${relPath} 已是最新`);
+        }
       }
       // 段是新的 ⇒ 产物必须是段的推导结果。这一步是「一次 --write 之后两边同时最新」
       // 的保证：没有它，刚写进段里的文案会被下一次 client-build --write 悄悄抹掉。
@@ -576,7 +831,7 @@ function main(argv) {
         writeFileSync(CLIENT_PATH, want);
         notes.push('已按 src/ 重建 client.js');
       } else {
-        notes.push('client.js 与 src/ 逐字节一致');
+        notes.push(`client.js 与 src/ 逐字节一致${segmentChanged ? '（段有改动但产物已同步）' : ''}`);
       }
     }
     console.log(`[locale-pack] ${notes.join('；')}（${keys.length} 键/语言 × ${languages}）`);

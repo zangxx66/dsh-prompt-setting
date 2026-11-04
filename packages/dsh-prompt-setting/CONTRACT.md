@@ -8011,7 +8011,8 @@ re-report it.
   otherwise unaffected.
 - The toast draws through the primitive's own body portal (click-through, the
   host stylesheet's z-index); the plugin ships no CSS. Its text is composed from
-  the same dictionary keys the block uses, in the Host's language (zh/en).
+  the same dictionary keys the block uses, in the Host's current language (one of
+  its eight, §22).
 - One toast at a time; the queue drains on the primitive's `onDone`, up to 4
   notices. Each toast is keyed by its notice `id`, so a **new** fact with the same
   words re-mounts and replays, while the same fact never does.
@@ -8040,23 +8041,41 @@ g-084 (Revision 57; 594 through Revision 56 (g-082), 586 through Revision 55
 564 through Revision 49) — used to
 be hardcoded inside `client.js`: a 513-key `zh` object, a 513-key `en` object,
 and an `ERROR_TEXT` table of 51 `code → [zh, en]` rows that a loop expanded into
-`error.<code>` entries. The copy now lives in two JSON files, and the inlined
+`error.<code>` entries. The copy now lives in JSON files, and the inlined
 objects are a generated artifact.
+
+Since **g-092** the same copy ships in the **eight interface languages the Host
+itself carries** (`@deepseek-ai/dsh-client-locale` 0.2.2: `zh`, `en`, `ja`, `es`,
+`fr`, `de`, `ru`, `pt`; the last six fall back to `en` in the Host). Stage 1 of
+g-092 ships English placeholders for the six new languages — value-identical to
+`en`, key-for-key — and the translation work replaces values only (never keys,
+never line counts).
 
 ### 22.1 Source of truth
 
-- `locale/zh.json` and `locale/en.json` are the **only** human source. Each
-  holds exactly 597 string values: the 546 main keys plus 51 `error.<code>`
-  keys. Keys are identical between the two files, **in the same order** (the
-  order is what the generated block follows, so a reordered file is a
-  546-line diff rather than a copy change).
+- `locale/<language>.json` — eight files, one per Host language — are the
+  **only** human source. Each holds exactly 597 string values: the 546 main keys
+  plus 51 `error.<code>` keys. Keys are identical across all eight files, **in
+  the same order** (the order is what the generated block follows, so a
+  reordered file is a 546-line diff rather than a copy change).
+- `scripts/locale-pack.mjs`'s `LOCALES` is the **single truth source for the
+  language list**: `zh, en, ja, es, fr, de, ru, pt` (zh/en first — the Host's
+  object form requires that baseline). Nothing else carries a language list.
+  From it the script derives (a) the JSON files it reads, (b) the generated
+  segment groups — **two languages per segment**, because 597 keys × 2 = 599
+  block lines × 2 + 1 comment + 1 manifest line = exactly the 1200-line segment
+  budget — and (c) the boot segment's index (`18 + groups - 1`). Adding a ninth
+  language therefore means one entry in `LOCALES` + one JSON; a test pins that
+  (`--write` derives the new segment and renumbers boot).
 - Nothing else in the package is hand-edited for copy. `client.js` carries the
-  two generated blocks (`const zh = {`, `const en = {`) inside the carrying
-  `src/` segment; the segment's header line states that the JSON is the source
-  and that `locale-pack.mjs --write` is the only writer. A hand edit there is
-  overwritten by the next `--write` and reported by `--check`. (Revision 57
-  reduced the old `// #region generated … // #endregion` comment markers to that
-  one line so the generated segment stays inside its 1200-line budget.)
+  generated blocks (`const zh = {` … `const pt = {`) inside the four carrying
+  `src/` segments — `02-locale.js` (zh/en) plus `18/19/20-locale-*.js`; each
+  segment's header line states its JSON sources and that
+  `locale-pack.mjs --write` is the only writer. A hand edit there is overwritten
+  by the next `--write` and reported by `--check`. (Revision 57 reduced the old
+  `// #region generated … // #endregion` markers to that one line; g-092 kept
+  that shape and made the block layout deterministic — no blank line between
+  blocks, so 2×599 + 2 lines fit the budget exactly.)
 
 ### 22.2 The blocks are generated, not loaded
 
@@ -8072,18 +8091,20 @@ objects are a generated artifact.
   "language pack" is a *runtime* `register` call, which is what this plugin
   already does).
 
-Therefore `ctx.locale.register(NS, {zh, en})` (§13) stays **synchronous and
-inline**: no `await`, no `fetch`, no import — the first frame is localized and
-there is no network surface. What changed is only who maintains the bytes.
+Therefore registration stays **synchronous and inline**: no `await`, no
+`fetch`, no import — the first frame is localized and there is no network
+surface. What changed is only who maintains the bytes (`ctx.locale.register`
+forms and the g-092 compatibility ladder are §22.6).
 
 ### 22.3 Tools and gates
 
 | Where | What it guarantees |
 | --- | --- |
-| `scripts/locale-pack.mjs --write` | Re-renders both blocks from the JSON. Idempotent: a second run changes nothing. |
-| `scripts/locale-pack.mjs --check` | Fails (exit 1) when a block is not byte-for-byte what `--write` would produce. |
-| `scripts/prepare.mjs` → `LOCALE-SYNC` | The same check on the **install/publish** path, plus a `files` allowlist test for both JSONs (a source that does not ship cannot be re-derived from the installed package). |
-| `test/locale.test.mjs` | Key parity, the 546 + 51 split, no new placeholder drift, byte equality with `--write`, a negative control (one drifted character is refused), and that the delivery shape is still a classic script with a synchronous register. |
+| `scripts/locale-pack.mjs --write` | Re-renders every segment from the JSON (creates a missing language segment, renumbers boot if the group count grew). Idempotent: a second run changes nothing. |
+| `scripts/locale-pack.mjs --check` | Fails (exit 1) when a segment is not byte-for-byte what `--write` would produce, or when one language's block appears in two segments. |
+| `scripts/prepare.mjs` → `LOCALE-SYNC` | The same check on the **install/publish** path, plus a `files` allowlist test for all eight JSONs (a source that does not ship cannot be re-derived from the installed package). |
+| `test/locale.test.mjs` | Key parity across all eight files, the 546 + 51 split, no placeholder drift, byte equality with `--write`, a negative control (one drifted character is refused), non-zh copy carrying no CJK, the `ja` stage hook (placeholder == en, translation must carry Japanese script), the derived segment table (every language once, ≤2 per segment, boot index), and that adding a ninth language needs no other edit. |
+| `test/client.test.mjs` | The registration shape: baseline object form first, then one single-language call per extra locale; two compatibility seats (an old Host refusing the single-language form keeps zh/en; a Host rejecting one locale id drops only that language) still apply without a white screen. |
 
 ### 22.4 Error codes
 
@@ -8099,7 +8120,31 @@ raw code still reaches the UI through the banner's own `data-error-code` /
 ### 22.5 Publishing
 
 `files` includes `locale`; `test/host.test.mjs` pins that allowlist exactly;
-`npm pack` ships both JSONs (36 files, measured with `npm pack --dry-run`).
+`npm pack` ships all eight JSONs (36 files before g-092 was measured with
+`npm pack --dry-run`; g-092 adds six `locale/*.json`, and `src/` still ships as
+one allowlisted directory).
+
+### 22.6 Registration and the compatibility ladder (g-092)
+
+`21-boot.js` registers the dictionaries inside one guarded `ctx.effect` (the
+guarded-locale discipline of §13 still applies to every locale call):
+
+1. **Baseline first, object form**: `ctx.locale.register(NS, { zh, en })`. That is
+   the only shape every Host since 0.2.1 understands, and its failure fails
+   `apply` exactly as before g-092 — without a baseline there is nothing to
+   degrade *to*.
+2. **Every other language, one call each**:
+   `ctx.locale.register(NS, name, dict)` for each entry of `LOCALE_DICTS`, each
+   wrapped in its own `try`. A Host that rejects the single-language form, or one
+   that refuses a particular locale id, loses those languages only: the plugin
+   still applies, the panel still renders, and zh/en stay intact. A white screen
+   is the one outcome this may never cause.
+
+`LOCALE_DICTS` is emitted by `locale-pack.mjs`, never hand-written:
+`const LOCALE_DICTS = { zh, en };` ends the first segment and
+`Object.assign(LOCALE_DICTS, { … });` ends each later one. `21-boot.js` therefore
+iterates a generated object — registration order is `LOCALES` order, and there is
+no second language list to drift.
 
 ---
 
@@ -8134,7 +8179,7 @@ looking a documented line number up in the generated file.
 | --- | --- |
 | `node scripts/client-build.mjs --write` | Rebuilds `client.js` from `src/`. It writes **only when the bytes differ**, so a routine run does not touch mtime — and mtime is what changes the DSH artifact revision and reloads an open page. |
 | `node scripts/client-build.mjs --check` | The read-only form, with a non-zero exit code when `src/` and `client.js` disagree. |
-| `node scripts/locale-pack.mjs --write` | Re-renders the `zh` / `en` dictionary blocks from `locale/*.json` into the slice that carries them, **then** rebuilds `client.js` — one run, both sides current (§22). |
+| `node scripts/locale-pack.mjs --write` | Re-renders the eight dictionary blocks from `locale/*.json` into the four slices that carry them (creating a missing language slice, renumbering the boot slice when the group count grew), **then** rebuilds `client.js` — one run, both sides current (§22). |
 | `node scripts/prepare.mjs` → `CLIENT-SRC*` | The publish gate, tri-state like `LOCALE-*`: `src/` must exist with usable slices **and** be covered by the `files` allowlist, or an installed package carries only an artifact that can no longer be regenerated or diffed. Since g-077 the **segment set is no longer checked against a hand-kept list**: the gate re-renders `src/` with `renderClient()` and compares it **byte for byte** with the shipped `client.js` (`CLIENT-SRC-DRIFT`; on failure it names the actionable `node scripts/client-build.mjs --write` command plus the first differing line). The artifact is the only anchor for "which slices should exist" — a list derived from `src/` always agrees with itself (delete a slice, re-run `--write`, and the derived list loses that slice too), so this single comparison catches a **missing slice**, an **extra, unknown slice** and **in-slice drift** (an edited line nobody rebuilt), with no checklist to keep in sync. |
 
 `CHUNK_STAMPS` keeps its single writer: the builder calls

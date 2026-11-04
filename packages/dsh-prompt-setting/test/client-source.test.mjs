@@ -8,8 +8,9 @@
  * 落在不同的相对位置上，等号立刻破裂。所以这里按证据强度分四层：
  *   1. **逐字节**：`stripBanner(renderClient())` == 段真源坐标下的 `client.js`，
  *      且每段等于 §5.1 表里那个区间的行切片（零移动的机器证明）；
- *   2. **结构**：19 段一一对应 §5.1 的 19 个连续区间、每段 ≤ 1200 行、字典序 ==
- *      代码顺序、段间不插分隔符、无 CR、末尾换行一致、行数合计 15399；
+ *   2. **结构**：段数与总行数都从下面的 `SEGMENTS` 表/磁盘产物派生 —— 段一一对应
+ *      §5.1 的连续区间、每段 ≤ 1200 行、字典序 == 代码顺序、段间不插分隔符、无 CR、
+ *      末尾换行一致（g-092 起不再写死「19 段 / 15399 行」这两个魔数）；
  *   3. **头注**：它是纯前缀、在 fingerprint `begin` 之前、**不进指纹**（hash/size
  *      与去头注后完全相同），而且磁盘上的 `client.js` 真的带着它；
  *   4. **负向对照**：在一次性包目录里改一行 `src/`（或只改 `client.js`）之后
@@ -54,15 +55,19 @@ const clientSource = readFileSync(CLIENT_PATH, 'utf8');
 const packageJson = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'utf8'));
 
 /**
- * §5.1 目标段表的 18 个连续区间，**写死在这里**（与文档表格逐个数字对应）。
+ * §5.1 目标段表的连续区间，**写死在这里**（与文档表格逐个数字对应）。
  *
  * 这份表刻意不从 `src/` 派生：它要能发现「段边界被改动」，而派生出来的表永远同意
- * 自己。列出的顺序就是代码顺序，也就是文件名字典序。
+ * 自己。列出的顺序就是代码顺序，也就是文件名字典序。段数/总行数一律从这张表或磁盘
+ * 产物派生，**不再出现第二个魔数**（g-092）。
  *
  * g-086 加了一段：`conversation.input.dock` 的装配状态栏住在 `16-composer-bar.js`
  * （插在页面模型之后、boot 之前 —— 只重切、不移动，boot 段原样下移）。
  * g-089 再加一段：状态栏的**动态刷新**（写广播/可见性/单飞节流）住在
  * `17-composer-bar-live.js`（同样插在 boot 之前，boot 段改名为 `18-boot.js`）。
+ * g-092 加了三段：宿主的 8 种界面语言让 locale 生成段从 1 段变 4 段（每段 2 语言，
+ * 恰好 1200 行），新段排在 boot 之前 —— `00–17` 段坐标一个字节没动，只有 boot
+ * 段顺延为 `21-boot.js`（内容不变，537 行）。
  */
 const SEGMENTS = [
   [1, 215, '00-entry.js'],
@@ -83,7 +88,10 @@ const SEGMENTS = [
   [11730, 12619, '15-page-c.js'],
   [12620, 13776, '16-composer-bar.js'],
   [13777, 14884, '17-composer-bar-live.js'],
-  [14885, 15399, '18-boot.js'],
+  [14885, 16084, '18-locale-b.js'],
+  [16085, 17284, '19-locale-c.js'],
+  [17285, 18484, '20-locale-d.js'],
+  [18485, 19021, '21-boot.js'],
 ];
 
 /**
@@ -155,8 +163,8 @@ test('client source: every segment is its §5.1 region, in code order and with n
     assert.equal(consumed, from - 1, `${name} 与上一段之间有空隙或重叠`);
     consumed += read.lines;
   }
-  assert.equal(consumed, clientLines.length - 1, '段必须恰好铺满 15399 行');
-  assert.equal(consumed, 15399);
+  assert.equal(consumed, clientLines.length - 1, '段必须恰好铺满段真源坐标的 client.js');
+  assert.equal(consumed, SEGMENTS[SEGMENTS.length - 1][1], '段表末行 == 铺满的行数（表自身自洽）');
 });
 
 test('client source: the generated banner is a pure prefix outside the fingerprint region', () => {
@@ -213,9 +221,9 @@ test('client source: line budget — stage 2 converges to §5.1, so no segment e
   const over = segments.filter((segment) => segment.lines > 1200).map((segment) => `${segment.name}:${segment.lines}`);
   // 阶段 1 超预算的三个（12-helpers/15-chrome/21-page）必须在这里消失。
   assert.deepEqual(over, [], `仍有超预算段：${over.join('、')}`);
-  assert.equal(segments.length, 19, '阶段 2 的段数（§5.1 目标段表，g-089 起 19 段）');
-  assert.equal(segments.reduce((sum, segment) => sum + segment.lines, 0), 15399);
-  assert.equal(Math.max(...segments.map((segment) => segment.lines)), 1200, '最大段是 §5.1 的 02-locale（生成段，597 键 × 2 语言）');
+  assert.equal(segments.length, SEGMENTS.length, '段数 == §5.1 表（g-092 起 22 段：locale 生成段 1 → 4）');
+  assert.equal(segments.reduce((sum, segment) => sum + segment.lines, 0), clientLines.length - 1, '总行数从产物派生');
+  assert.equal(Math.max(...segments.map((segment) => segment.lines)), 1200, '最大段是 locale 生成段（597 键 × 2 语言，恰好 1200）');
 });
 
 test('client source: the manifest ships src/ and wires the two build scripts', () => {
@@ -295,7 +303,7 @@ test('client source: the publish gate is tri-state (N/A / FILES / NOT-SHIPPED)',
   const ok = inspectClientSource(packageJson.files, { listDir: realDir });
   assert.equal(ok.level, PREPARE_OK);
   assert.equal(ok.code, 'CLIENT-SRC');
-  assert.match(ok.message, /19 个段文件/);
+  assert.match(ok.message, new RegExp(`${SEGMENTS.length} 个段文件`), '段数从 §5.1 表派生，不再写死');
   assert.match(ok.message, /与 client\.js 逐字节一致/);
 
   // §5.1 那份区间表在测试里仍然**写死**（它是「零移动」断言的坐标），但 g-077 起它不再是
@@ -319,7 +327,7 @@ test('client source: completeness is anchored on the artifact, not on a hand-kep
       label: '多出一个陌生段',
       make: () => {
         const root = throwawayPackage();
-        writeFileSync(join(root, CLIENT_SRC_DIR, '19-extra.js'), `${SEGMENT_DECLARATION}\nconst extra = 1;\n`);
+        writeFileSync(join(root, CLIENT_SRC_DIR, '22-extra.js'), `${SEGMENT_DECLARATION}\nconst extra = 1;\n`);
         return root;
       },
     },

@@ -1,5 +1,5 @@
 // 本文件是 client.js 的片段，不是独立模块，不得单独 parse/lint/执行。
-    // 生成段：真源 locale/zh.json + locale/en.json；改文案跑 node scripts/locale-pack.mjs --write（勿手改本段）。
+    // 生成段：真源 locale/zh.json、locale/en.json；改文案跑 node scripts/locale-pack.mjs --write（勿手改本段）。
     const zh = {
       nav: 'Prompt 管理',
       title: 'Prompt 管理',
@@ -599,7 +599,6 @@
       composerBarSettingTitle: '状态栏',
       composerBarSettingNote: '显示在会话输入框上方的只读信息条。关闭后不再显示，也不会读取任何装配数据（只改本地偏好，不写宿主配置）。',
     };
-
     const en = {
       nav: 'Prompt settings',
       title: 'Prompt settings',
@@ -1199,3 +1198,4 @@
       composerBarSettingTitle: 'Status bar',
       composerBarSettingNote: 'The read-only strip above the composer. When off it is hidden and reads no assembly data at all (a local preference only — no Host config is written).',
     };
+    const LOCALE_DICTS = { zh, en };

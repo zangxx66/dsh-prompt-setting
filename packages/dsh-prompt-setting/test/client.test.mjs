@@ -669,7 +669,22 @@ function mountClient(module, localeShape = 'full', options = {}) {
   const dictionaries = [];
   const declaredSlots = Array.isArray(options.declaredSlots) ? options.declaredSlots : null;
   const refusedSlots = Array.isArray(options.refusedSlots) ? options.refusedSlots : null;
-  const record = (ns, dict0) => {
+  const record = (ns, dict0, maybeDict) => {
+    // g-092: the Host offers two registration shapes — `register(ns, { zh, en })` and
+    // the single-language `register(ns, 'ja', dict)`. Both land in the same per-namespace
+    // table, which is what the recorder mirrors: an object entry creates the table, a
+    // single-language call merges into it (and a repeat of the same language throws,
+    // exactly as the real service does).
+    if (typeof dict0 === 'string') {
+      let entry = dictionaries.find((item) => item.ns === ns);
+      if (entry === undefined) {
+        entry = { ns, dict: {} };
+        dictionaries.push(entry);
+      }
+      if (entry.dict[dict0] !== undefined) throw new Error(`the locale namespace ${ns} already carries ${dict0}`);
+      entry.dict = { ...entry.dict, [dict0]: maybeDict };
+      return () => {};
+    }
     dictionaries.push({ ns, dict: dict0 });
     return () => {};
   };
@@ -699,6 +714,29 @@ function mountClient(module, localeShape = 'full', options = {}) {
       bind: (ns) => (key) => dict(dictionaries, ns, key),
       subscribe: () => () => {},
       getSnapshot: () => ({}),
+    },
+    // g-092 compatibility seat #1: an older Host that only knows the object form.
+    // Every single-language call throws, so the extra languages must be dropped one
+    // by one without failing apply.
+    legacy: {
+      register: (ns, dict0) => {
+        if (typeof dict0 === 'string') throw new Error('the host refuses register(ns, locale, dict)');
+        return record(ns, dict0);
+      },
+      bind: (ns) => (key) => dict(dictionaries, ns, key),
+      subscribe: () => () => {},
+      getSnapshot: () => ({ revision: 0 }),
+    },
+    // g-092 compatibility seat #2: the single-language form works for most locales but
+    // the Host rejects one id — only that language may disappear.
+    partial: {
+      register: (ns, dict0, maybeDict) => {
+        if (dict0 === 'ja') throw new Error('this host does not know ja');
+        return record(ns, dict0, maybeDict);
+      },
+      bind: (ns) => (key) => dict(dictionaries, ns, key),
+      subscribe: () => () => {},
+      getSnapshot: () => ({ revision: 0 }),
     },
   }[localeShape];
   const ctx = {
@@ -1720,7 +1758,7 @@ test('client: registers one settings.section entry with the plugin id', () => {
   assert.equal(options.order, 30);
 });
 
-test('client: injects the locale namespace thunk and declares zh/en dictionaries', () => {
+test('client: injects the locale namespace thunk and declares the Host’s 8 dictionaries', () => {
   const { module } = loadClient('throw');
   const { registrations, dictionaries } = mountClient(module);
   // Spread first: the descriptor's array comes from the vm realm, so it is not
@@ -1728,13 +1766,40 @@ test('client: injects the locale namespace thunk and declares zh/en dictionaries
   assert.deepEqual([...module.inject], ['slots', 'locale']);
   assert.equal(dictionaries.length, 1);
   assert.equal(dictionaries[0].ns, NS);
-  const zh = dictionaries[0].dict.zh;
-  const en = dictionaries[0].dict.en;
-  assert.ok(zh && en, 'both dictionaries registered');
-  assert.deepEqual(Object.keys(zh).sort(), Object.keys(en).sort());
+  const tables = dictionaries[0].dict;
+  const zh = tables.zh;
+  const en = tables.en;
+  assert.ok(zh && en, 'both baseline dictionaries registered');
+  // g-092: the Host's 8 interface languages are all registered — the baseline two via
+  // the object form, the other six one by one. The order is `LOCALES` order, and every
+  // table carries the same key set (the generated `LOCALE_DICTS` drives the loop, so a
+  // hand-written list here would be a second truth source).
+  assert.deepEqual(Object.keys(tables), ['zh', 'en', 'ja', 'es', 'fr', 'de', 'ru', 'pt']);
+  for (const name of Object.keys(tables)) {
+    assert.deepEqual(Object.keys(tables[name]).sort(), Object.keys(zh).sort(), `${name}: same keys as zh`);
+  }
   assert.notEqual(zh.nav, en.nav);
   // The nav label is registrant-localized, not hard-coded.
   assert.equal(registrations[0].options.label(), zh.nav);
+});
+
+test('client: an old Host that refuses the single-language form still applies with zh/en only (g-092)', () => {
+  const { module } = loadClient('throw');
+  const { dictionaries, registrations } = mountClient(module, 'legacy');
+  // The extra-language registrations throw one by one; apply must survive (no white
+  // screen) and the baseline must be intact.
+  assert.ok(registrations.length >= 1, 'the plugin still registers its slots');
+  assert.equal(registrations[0].options.name, 'settings.section');
+  assert.equal(dictionaries.length, 1);
+  assert.deepEqual(Object.keys(dictionaries[0].dict), ['zh', 'en'], 'only the baseline survives');
+  assert.equal(registrations[0].options.label(), dictionaries[0].dict.zh.nav);
+});
+
+test('client: a Host that rejects one locale id drops only that language (g-092)', () => {
+  const { module } = loadClient('throw');
+  const { dictionaries } = mountClient(module, 'partial');
+  // `ja` is refused by name; the other seven languages (and the baseline) are kept.
+  assert.deepEqual(Object.keys(dictionaries[0].dict), ['zh', 'en', 'es', 'fr', 'de', 'ru', 'pt']);
 });
 
 test('client: every documented rejection code has distinct zh/en copy', () => {

@@ -11161,3 +11161,34 @@ presentation listeners 收不到 tools、tools 保持 provider-owned。
   peer 范围 `>=0.2.1-0 <0.3.0-0`，若有受害者需要在旧版本上跑一次；
 - 真机未验（本目标纯测试夹具，无运行时面）。
 
+
+## 173. g-092 阶段 1：8 语言管线就绪（LOCALES 单一真源 + 4 个 locale 生成段 + 英文占位 + 旧宿主降级）（2026-11-04，基线 `dc578ee`，隔离工作树 `g-092-att-01`）
+
+### 一、事实与目标
+
+宿主 `@deepseek-ai/dsh-client-locale` 0.2.2-alpha.2 内置 **8 种界面语言**（`zh`、`en`、`ja`、`es`、`fr`、`de`、`ru`、`pt`，后六种 `fallback: 'en'`），而本插件原先只有 `zh`/`en` 两份词典，其余语言一律回退英文。阶段 1 只做「管线就绪」：8 语言键对齐 + 英文占位 + 生成链/门禁全绿；六语言**精译**留给阶段 2（只替换 JSON 的值，键与行数都不动）。
+
+### 二、改法（关键设计）
+
+- **`LOCALES` 是语言清单的唯一真源**：`scripts/locale-pack.mjs` 扩为 8 项，顺序固定 `zh, en, ja, es, fr, de, ru, pt`（zh/en 必须在前 —— 宿主对象形式要求基线齐全）。**段分组、段文件名、段数、boot 段序号全部由它派生**（`localeSegmentName(groupIndex)` / `LOCALE_GROUPS` / `BOOT_SEGMENT_INDEX`），脚本里没有一处「ja/es 属于 18 段」这类手工映射。
+- **一段最多两种语言**：597 键 × 2 = 599 行块 × 2 + 说明 1 行 + 清单 1 行 = **恰好 1200**，正压 §5.1 的每段 ≤1200 预算（不豁免门禁）。于是 locale 生成段由 1 段变 4 段。
+- **新段排在 boot 之前**（`18-locale-b.js` / `19-locale-c.js` / `20-locale-d.js`），`00–17` 段坐标一个字节没动；boot 段顺延为 `21-boot.js`（内容只多了 g-092 的注册代码，515 → 537 行）。`client.js` 段真源 15399 → **19021** 行（生成物 19030 行含 9 行头注，约 1004 KB）。
+- **boot 段不手写语言清单**：每个生成段末尾由脚本写清单行 —— 首段 `const LOCALE_DICTS = { zh, en };`，后续段 `Object.assign(LOCALE_DICTS, { … });` —— `21-boot.js` 遍历 `Object.entries(LOCALE_DICTS)`。加第 9 种语言 ⇒ 自动多一段、boot 自动顺延（有单测钉住）。
+- **注册的兼容阶梯**（`21-boot.js`）：先 `locale.register(NS, { zh, en })` 基线（唯一旧宿主也认的形态，它失败仍算 apply 失败 —— 没有基线就无可降级），再对 `LOCALE_DICTS` 其余语言逐个 `locale.register(NS, name, dict)`、**各自 try/catch**：旧宿主不认单语言形式、或拒绝某个语言 id，只丢那一种语言，插件照常 apply、不白屏。`locale` 服务缺失的既有守卫不变。
+- **6 份占位 JSON 逐字节复制 `en.json`**（键序一致、值英文、无 CJK），阶段 2 只替换值。
+
+### 三、落地面（按能力分组）
+
+- 生成链：`scripts/locale-pack.mjs`（多段模型、boot 顺延、`localeBlockOwners` 唯一性、整段规范化渲染与 `--check`）；`src/02-locale.js`（加清单行）+ 新增 `src/18/19/20-locale-*.js`；`src/18-boot.js` → `src/21-boot.js`（注册改造）；`client.js` 重建。
+- 词典：`locale/{ja,es,fr,de,ru,pt}.json`。
+- 门禁/文档：`test/locale.test.mjs`（+4 用例：段表派生、清单行、非 zh 无 CJK、9 语言自适应）、`test/client.test.mjs`（注册 8 语言 + 2 个兼容座）、`test/client-source.test.mjs`（SEGMENTS 22 段、魔数改派生）、`docs/refactor-plan.md`（§1.3/§5.1 两表、合计/末行从 `client.js` 实测派生）、`docs/architecture-map.md`（22 段表）、`docs/check-refs.mjs`（`CLIENT_TOTAL_LINES` 派生、9 条 boot 段 refs 重锚）、`CONTRACT.md` §22（8 语言契约 + §22.6 注册/降级）、三份 README。
+
+### 四、验证（实跑，详见交付报文）
+
+- `node --test`（包内全量）0 fail；`locale-pack --check` / `client-build --check` / `prepare` / `verify.mjs` / `docs/check-refs.mjs` 全 exit 0。
+- 负向对照：手改生成段一行 → `--check` 红；把某个语言块抄进第二个段 → `localeBlockOwners` 红；删除 `src/21-boot.js` → `client-build --check` 红。
+
+### 五、未做 / 留给阶段 2
+
+- 六语言**人工精译**（占位值仍是英文；`ja` 断言写成「占位 == en，一旦替换则必须含日文字符」的阶段钩子，精译后自动收紧）。
+- 未新增 6 种语言的 README（仓库仍中英两份）。
