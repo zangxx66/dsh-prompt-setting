@@ -11218,7 +11218,7 @@ presentation listeners 收不到 tools、tools 保持 provider-owned。
 | `ru` | 592 | 5 |
 | `pt` | 589 | 8 |
 
-`client.js` 803 KB → **1119 KB**（+316 KB，8 语言同步内联；宿主无文件级 language pack 协议，CONTRACT §14.5/§22.2 已定案，不做懒加载）。
+`client.js` 767 KB → **1119 KB**（+352 KB，8 语言同步内联；宿主无文件级 language pack 协议，CONTRACT §14.5/§22.2 已定案，不做懒加载）。
 
 ### 四、验证
 
