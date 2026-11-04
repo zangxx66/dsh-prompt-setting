@@ -13988,19 +13988,30 @@ window.__ModuleLoader__.load({
       return COMPOSER_BAR_LIVE_IGNORED_PATHS.includes(value) ? '' : value;
     }
 
+    /** A monotonic counter behind {@link composerBarLiveProbeValue}'s sequence. */
+    let composerBarLiveProbeSeq = 0;
+
     /**
      * The probe value this tab leaves for the others.
      *
      * Pure, and injectable, so a case can assert the value without a clock. The
      * value is **not** trusted by anyone: the receiving tab re-reads the Host.
+     *
+     * `seq` exists because a millisecond stamp alone repeats when two writes land
+     * in the same tick — and a `storage` event only fires when the **value**
+     * differs, so the second write would be invisible to the other tab (it would
+     * still catch up on its 20 s window). The sequence makes the value distinct;
+     * it is omitted from the string when the caller does not pass one.
      * @param topic - the changed route.
      * @param now - the write's timestamp (ms).
+     * @param seq - a positive monotonic number, or omitted.
      * @returns the string to store under {@link COMPOSER_BAR_LIVE_KEY}.
      */
-    function composerBarLiveProbeValue(topic, now) {
+    function composerBarLiveProbeValue(topic, now, seq) {
       const name = typeof topic === 'string' ? topic : '';
       const stamp = typeof now === 'number' && Number.isFinite(now) ? String(now) : '0';
-      return `${stamp}:${name}`;
+      const order = typeof seq === 'number' && Number.isFinite(seq) && seq > 0 ? `${seq}:` : '';
+      return `${stamp}:${order}${name}`;
     }
 
     /**
@@ -14072,8 +14083,9 @@ window.__ModuleLoader__.load({
       if (method !== 'PUT' && method !== 'POST' && method !== 'DELETE' && method !== 'PATCH') return false;
       const topic = composerBarWriteTopicOf(path, method);
       if (topic.length === 0) return false;
+      composerBarLiveProbeSeq += 1;
       writeComposerBarLiveProbe(
-        composerBarLiveProbeValue(topic, composerBarLiveNow()),
+        composerBarLiveProbeValue(topic, composerBarLiveNow(), composerBarLiveProbeSeq),
         composerBarLiveProbeStorageOf(),
       );
       return notifyComposerBarWrite(topic);
@@ -14202,13 +14214,49 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * The **assembly** region's fact, with the three states it really prints.
+     *
+     * The cell says three different things and they must never be conflated
+     * (review BLOCK-1: folding `notice === null` to the same `null` as a failed
+     * read made「加载失败」sticky — `nextRead` saw "unchanged" and kept the old
+     * state, so the cell could never recover, not even on a manual refresh):
+     *   - **`absent`** — the `/assembly-status` read itself failed (`read.assembly
+     *     === null`); the cell prints「加载失败」({@link composerBarNoticeOf} sees
+     *     an unusable payload);
+     *   - **`none`** — the read succeeded but there is no key node (`record:
+     *     null`); the cell prints the page's own「无观察」;
+     *   - **a notice** — folded by everything the cell and its tooltip print:
+     *     `assembled` / `kind` / `assembly.state` / `delivery.state` /
+     *     `delivery.surfaceOp` (the tooltip is `assemblyVerdictOf` +
+     *     `deliveryVerdictOf`, and `kind`/`state`/`surfaceOp` change those two
+     *     sentences while `assembled`/`delivered` stay put).
+     * @param payload - `read.assembly` (a payload, or `null` for a failed read).
+     * @returns `'absent'` | `'none'` | the notice's folded fields.
+     */
+    function composerBarAssemblyFactOf(payload) {
+      if (payload === null || typeof payload !== 'object') return 'absent';
+      const notice = composerBarNoticeOf(payload);
+      if (notice === null) return 'none';
+      const assembly = notice.assembly !== null && typeof notice.assembly === 'object' ? notice.assembly : null;
+      const delivery = notice.delivery !== null && typeof notice.delivery === 'object' ? notice.delivery : null;
+      return {
+        assembled: assembly !== null && assembly.assembled === true,
+        kind: typeof notice.kind === 'string' ? notice.kind : null,
+        assemblyState: assembly !== null && typeof assembly.state === 'string' ? assembly.state : null,
+        deliveryState: delivery !== null && typeof delivery.state === 'string' ? delivery.state : null,
+        surfaceOp: delivery !== null && typeof delivery.surfaceOp === 'string' ? delivery.surfaceOp : null,
+      };
+    }
+
+    /**
      * The four facts the bar prints, as one comparable string.
      *
      * Only what the five regions **show** is folded in: the section count, the
-     * two layers' `{kind,total,ineffective}` and the notice's two verdicts. A
-     * timestamp the Host puts in the snapshot (`generatedAt` is a fresh `new
-     * Date()` per request) must not count as a change, or every read would
-     * re-render a bar that says exactly the same thing.
+     * two layers' `{kind,total,ineffective}`, and the assembly region's three-way
+     * fact (see {@link composerBarAssemblyFactOf}). A timestamp the Host puts in
+     * the snapshot (`generatedAt` is a fresh `new Date()` per request) must not
+     * count as a change, or every read would re-render a bar that says exactly
+     * the same thing.
      * @param state - `{snapshot, overrides, assembly}`.
      * @returns a stable signature (empty string for an unusable state).
      */
@@ -14216,24 +14264,13 @@ window.__ModuleLoader__.load({
       if (state === null || typeof state !== 'object') return '';
       const snapshot = state.snapshot === undefined ? null : state.snapshot;
       const overrides = state.overrides === undefined ? null : state.overrides;
-      const notice = composerBarNoticeOf(state.assembly === undefined ? null : state.assembly);
       const user = composerBarLayerFact('user', snapshot, overrides);
       const workspace = composerBarLayerFact('workspace', snapshot, overrides);
-      const assembly =
-        notice === null
-          ? null
-          : {
-              assembled: notice.assembly !== null && typeof notice.assembly === 'object' && notice.assembly.assembled === true,
-              delivery:
-                notice.delivery !== null && typeof notice.delivery === 'object' && typeof notice.delivery.state === 'string'
-                  ? notice.delivery.state
-                  : null,
-            };
       return JSON.stringify({
         sections: composerBarSectionCount(snapshot),
         user: [user.kind, user.total, user.ineffective],
         workspace: [workspace.kind, workspace.total, workspace.ineffective],
-        assembly,
+        assembly: composerBarAssemblyFactOf(state.assembly === undefined ? null : state.assembly),
       });
     }
 
@@ -14413,8 +14450,11 @@ window.__ModuleLoader__.load({
       // do not check `this`, which is exactly why 365 unit cases stayed green
       // while the real dock entry crashed. A wrapper makes the call a **bare
       // function call** again (`setTimeout(callback, delay)`), which browsers
-      // accept, and keeps an injected source a **method call on that source**
-      // (`source.liveSetTimeout(...)`, so a fake clock still sees its own `this`).
+      // accept. An injected source is invoked as a **method of the props object**
+      // (`source.liveSetTimeout(...)`, i.e. `this === source`), which is all this
+      // facade can promise: a fake whose functions close over their own state (the
+      // unit cases) is unaffected, while one that expected to be called as a
+      // method of some third object would not be.
       const setTimer =
         typeof source.liveSetTimeout === 'function'
           ? (callback, delay) => source.liveSetTimeout(callback, delay)

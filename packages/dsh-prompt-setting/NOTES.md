@@ -10795,17 +10795,17 @@ g-086 的状态栏只在**挂载 / `sessionId` 变化 / 手点刷新**时读一�
 
 ### 三、段拆分（行数预算硬约束）
 
-`16-composer-bar.js` 已到 1196/1200，所以数据层整体搬到新段 `src/17-composer-bar-live.js`（四轮返工后 1068 行），
-原 `17-boot.js` 改名 `18-boot.js`（515 行），`16` 段降到 1157 行：**19 段 / 15359 行**（原 18 段 / 14290）。
+`16-composer-bar.js` 已到 1196/1200，所以数据层整体搬到新段 `src/17-composer-bar-live.js`（五轮返工后 1108 行），
+原 `17-boot.js` 改名 `18-boot.js`（515 行），`16` 段降到 1157 行：**19 段 / 15399 行**（原 18 段 / 14290）。
 `refresh`/`read` 由 `useComposerBarLiveRead({ enabled, sessionId, props })` 返回，组件只负责画。
 
 同步的坐标表：`test/client-source.test.mjs` 的 `SEGMENTS`（19 行）+ 段数/总行数断言、`docs/check-refs.mjs`
-的 `14290 → 15359` 与 65 条 `client.js` 行号、`docs/refactor-plan.md` §1.3（拆出 live 段一行 → 26 行）/§5.1
+的 `14290 → 15399` 与 65 条 `client.js` 行号、`docs/refactor-plan.md` §1.3（拆出 live 段一行 → 26 行）/§5.1
 （19 段）、`docs/architecture-map.md`（19 段表 + 50 处入口行号按实测重锚）。**全部机械重锚，没有改任何断言语义。**
 
 ### 四、测试（三档里属第三档：并发 + 状态机）
 
-`test/client.test.mjs` 新增 **21** 个用例（11 首轮 + 4 BLOCK + 3 BLOCK-A/N1/N2 + 2 B1/B2 + 1 真机回归，全部进 `#region g-086` 的 g-089 段）：
+`test/client.test.mjs` 新增 **24** 个用例（11 首轮 + 4 BLOCK + 3 BLOCK-A/N1/N2 + 2 B1/B2 + 1 真机回归 + 3 BLOCK-1，全部进 `#region g-086` 的 g-089 段）：
 
 1. 策略矩阵：`read`/`defer`/`skip`/`dirty`/`merged` 五分支 + 隐藏/关闭/无会话 + defer 的延迟值；
 2. 广播过滤：11 条写路由 vs 6 条忽略路由、方法过滤、`revision`/`topic`、探针值/存储、`visibleNow` 的三态；
@@ -10827,13 +10827,13 @@ g-086 的状态栏只在**挂载 / `sessionId` 变化 / 手点刷新**时读一�
 
 - `node scripts/verify.mjs`：6 步 / **1 步失败**（`test`）—— 失败的是 **3 个基线已红**的
   `integration R8` 用例（host `assemble` 的输出多了 `tools: []`，夹具漂移），与本次改动无关：
-  **主工作树 `2e621ae` 同一条命令同样 3 fail / 28 pass**（全量同样 3 fail：基线 1048 tests / 1045 pass，本树 1069 / 1066 —— 增量 21 全是本轮新增且全过）。其余 5 步（check-refs / client-build --check /
+  **主工作树 `2e621ae` 同一条命令同样 3 fail / 28 pass**（全量同样 3 fail：基线 1048 tests / 1045 pass，本树 1072 / 1069 —— 增量 24 全是本轮新增且全过）。其余 5 步（check-refs / client-build --check /
   locale-pack --check / prepare / check-compat）全绿。
-- `node --test test/*.test.mjs`：**tests 1069 / pass 1066 / fail 3**（3 个即上述基线失败；本 worktree 与主工作树失败集合
-  逐条相同）。`node --test test/client.test.mjs`：**pass 366 / fail 0**。
+- `node --test test/*.test.mjs`：**tests 1072 / pass 1069 / fail 3**（3 个即上述基线失败；本 worktree 与主工作树失败集合
+  逐条相同）。`node --test test/client.test.mjs`：**pass 369 / fail 0**。
 - `node scripts/client-build.mjs --check`：`19 个段与 client.js 逐字节一致`，exit 0。
 - `node docs/check-refs.mjs`：`total=165 | verified=102 | rangeOnly=42 | manual=21 | unresolved=0`，两张表
-  `§1.3 rows=26 合计=15359` / `§5.1 rows=19 合计=15359 最大段=1200`，段名集合与磁盘一致，exit 0。
+  `§1.3 rows=26 合计=15399` / `§5.1 rows=19 合计=15399 最大段=1200`，段名集合与磁盘一致，exit 0。
 - `node scripts/prepare.mjs`：**25 项通过**，`CLIENT-SRC: src/ 下 19 个段文件与 client.js 逐字节一致`。
 
 ### 六、已知降级路径（都写进代码注释与用例）
@@ -11003,7 +11003,44 @@ React hook 不是 booking record 的方法）。没有发现第二处会在首�
 方法、检查 `this`。任何「取全局方法 → 存变量 → 以对象属性调用」的写法在 Node 全绿、在浏览器首帧崩。
 这条现在由替身用例钉住（替身只在 `this` 携带我方 facade 时抛，正好是那种写法）。
 
-### 十一、未验证项
+### 十一、第五轮评审 BLOCK-1 返工（rev-att-001-07，`17` 段 1068 → 1108 行）
+
+**BLOCK-1（判据 8）**：`composerBarFactsSignature` 的「未变化」判定不完备，装配分区会留用户可见陈旧
+文本。原理：它把 `notice === null` 一律折叠成 `assembly: null`，与「`/assembly-status` 请求失败
+（`payload=null`）」同值；但渲染区分两者（`read.assembly === null` →「加载失败」，
+`notice === null` →「无观察」）。后果两条：①失败后下一次读成功但 `record:null` 时签名相同 ⇒
+`nextRead` 保留旧 state ⇒ 单元格**永久停在「加载失败」**，连手点刷新都走同一 `nextRead`，无法纠正；
+②`notice.kind` / `assembly.state` / `delivery.surfaceOp` 变化（如 first-assembly→prompt-change、
+append→replace，而 `assembled`/`delivered` 不变）时 tooltip 两句结论滞后。
+
+**修复**：新增 `composerBarAssemblyFactOf(payload)`，把装配分区折成**三态 + 展示字段**：
+- `payload === null`（读失败/无 payload）→ `'absent'`；
+- payload 存在但 `notice === null`（无关键节点）→ `'none'`；
+- 否则 `{ assembled, kind, assemblyState, deliveryState, surfaceOp }` —— 正是单元格主文本与 tooltip
+  两句结论所依赖的字段（`assemblyVerdictOf` / `deliveryVerdictOf`）。
+签名改用它；三态互不相同，未被改变的分支仍返回旧 state（不抖语义不变）。JSDoc 同步改成与实现一致的
+表述。
+
+**新增 3 条用例（rev7）**：①纯函数 —— `factsSignature(失败态) !== factsSignature(无观察态)`、
+`nextRead(失败态, 无观察结果, false) !== 失败态`，且同事实仍复用旧对象；②渲染级 —— 首读 `/assembly-status`
+失败 ⇒「加载失败」，下一读 `record:null` ⇒ 刷新后单元格变「无观察」且 `data-composer-bar-state` 仍是
+`ready`（不闪 loading）；③tooltip 级 —— 两份 notice 只差 `kind` / `assembly.state` /
+`delivery.surfaceOp`（`assembled` / `delivered` 相同），主文本仍「已送达」但 title 必须更新。
+
+**负向对照（实跑并还原）**：把 `composerBarAssemblyFactOf` 还原成「`notice === null` ⇒ `null`，否则只含
+`assembled`/`delivery.state`」后，三条用例**全部当场变红**（分别命中「请求失败（absent）与无观察（none）
+是两个事实」「失败 → 无观察 必须真的换文本」与 tooltip 断言）；还原后全绿。
+
+**顺带修的非阻塞项**：①`setTimer`/`clearTimer` 的注释改准确 —— 注入源以 `source.xxx(...)` 调用，
+`this === source`（props），不是「假时钟看到自己的 this」（那只在箭头函数注入时成立）；②跨标签页探针值
+加**单调序号**（`${now}:${seq}:${topic}`，`composerBarLiveProbeSeq` 自增）—— 同毫秒两次写的值不再相同，
+另一个标签页的 `storage` 事件不会被吞（不传 seq 时格式保持原样，既有断言不受影响）。
+
+**文档注明（写进已知限制）**：隐藏态**挂载**仍会发首轮三条 GET —— 可见性门控只作用于「轮次内后续请求 /
+轮询 / 延迟读」，判据 3 只禁「隐藏期轮询」，不禁首读；`focus`/`visible` 不节流；StrictMode 双挂载会多一轮；
+`'enable'` 分支无调用者；probe seat 多实例互相覆盖；tick 折叠全部会话 —— 均记入已知限制，不修。
+
+### 十二、未验证项
 
 - **真机（`http://127.0.0.1:3080`）未验**：GUI 服务在运行，重启有风险，按 directive 由负责人在 review 后验收
   （保存「我的 Prompt」后状态栏自动变化、切走再切回立即重读）；

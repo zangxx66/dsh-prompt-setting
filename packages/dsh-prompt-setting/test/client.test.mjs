@@ -18689,4 +18689,103 @@ test('client: the host facade never calls a global as an object method (g-089 re
   assert.equal(calls.filter(([kind]) => kind === 'clear').length, 2, '隐藏时轮询与延迟读的 handle 都被清掉');
 });
 
+test('client: a failed assembly read and「无观察」are different facts (g-089 rev7)', () => {
+  const { module } = loadClient('throw');
+  const policy = module.__internals.composerBar;
+  const answer = (payload) => ({ ok: true, status: 200, payload });
+  const failedAnswer = { ok: false, status: 500, error: { code: 'assemble-failed', message: 'boom' } };
+  const withNotice = assemblyFixture({ record: { session: 's1', notice: assemblyNoticeFixture() } });
+  const readOf = (assembly) =>
+    policy.readOf({ snapshot: answer(snapshotFixture()), overrides: answer(overridesFixture()), assembly });
+  const resultsOf = (assembly) => ({
+    snapshot: answer(snapshotFixture()),
+    overrides: answer(overridesFixture()),
+    assembly,
+  });
+
+  const failed = readOf(failedAnswer);
+  const noNotice = readOf(answer(assemblyFixture()));
+  const notice = readOf(answer(withNotice));
+  // Review BLOCK-1: folding `notice === null` into the same `null` as a failed
+  // read made these two indistinguishable, so「加载失败」could never recover.
+  assert.notEqual(
+    policy.factsSignature(failed),
+    policy.factsSignature(noNotice),
+    '请求失败（absent）与无观察（none）是两个事实',
+  );
+  assert.notEqual(
+    policy.factsSignature(noNotice),
+    policy.factsSignature(notice),
+    '无观察（none）与有 notice 也是两个事实',
+  );
+  assert.notEqual(policy.factsSignature(failed), policy.factsSignature(notice));
+  // The failed state must be correctable by the next read, even a manual one.
+  assert.notEqual(
+    policy.nextRead(failed, resultsOf(answer(assemblyFixture())), false),
+    failed,
+    '失败态 ⇒「无观察」必须换 state（否则单元格永久停在加载失败）',
+  );
+  // …and the unchanged branch still reuses the object (the no-flicker promise).
+  assert.equal(
+    policy.nextRead(noNotice, resultsOf(answer(assemblyFixture())), false),
+    noNotice,
+    '同一事实仍复用旧 state（判据 8 不变）',
+  );
+});
+
+test('client: a failed assembly read recovers to「无观察」on the next read (g-089 rev7)', async () => {
+  const responses = defaultResponses();
+  responses[PATHS.assemblyStatus] = { status: 500, payload: { ok: false, code: 'assemble-failed', message: 'boom' } };
+  const page = makePage({ primitives: 'throw', responses, enforceEffectDeps: true });
+  const bar = makeAssemblyBar(page, { session: { sessionId: 's1' } });
+  let tree = await bar.flush();
+  assert.equal(barValueOf(tree, 'bar-assembly'), page.zh.loadFailed, '首读失败 ⇒「加载失败」');
+  assert.equal(barRegionOf(tree, 'bar-assembly').props['data-tone'], 'error');
+
+  // The Host answers now, but there is no key node yet.
+  page.router.set(PATHS.assemblyStatus, { payload: assemblyFixture() });
+  const [refresh] = barButtonOf(bar.draw(), 'composer-bar-refresh');
+  refresh.props.onClick();
+  tree = await bar.flush();
+  assert.equal(tree.props['data-composer-bar-state'], 'ready', '刷新期不降级（不闪 loading）');
+  assert.equal(barValueOf(tree, 'bar-assembly'), page.zh.barSummaryNone, '失败 → 无观察 必须真的换文本');
+  assert.equal(barRegionOf(tree, 'bar-assembly').props['data-tone'], 'unknown');
+});
+
+test('client: the assembly tooltip follows kind/state/surfaceOp while the verdict words stand still (g-089 rev7)', async () => {
+  const noticeA = assemblyNoticeFixture();
+  const noticeB = assemblyNoticeFixture({
+    kind: 'prompt-change',
+    assembly: { ...noticeA.assembly, state: 'read' },
+    delivery: { ...noticeA.delivery, surfaceOp: 'replace' },
+  });
+  const page = makePage({
+    primitives: 'throw',
+    responses: defaultResponses({
+      [PATHS.assemblyStatus]: { payload: assemblyFixture({ record: { session: 's1', notice: noticeA } }) },
+    }),
+    enforceEffectDeps: true,
+  });
+  const bar = makeAssemblyBar(page, { session: { sessionId: 's1' } });
+  let tree = await bar.flush();
+  assert.equal(barValueOf(tree, 'bar-assembly'), page.zh.barSummaryDelivered);
+  const titleA = barValueNodeOf(tree, 'bar-assembly').props.title;
+
+  // Only `kind` / `assembly.state` / `delivery.surfaceOp` change: the main text
+  // stays「已送达」, but both tooltip sentences do change.
+  page.router.set(
+    PATHS.assemblyStatus,
+    { payload: assemblyFixture({ record: { session: 's1', notice: noticeB } }) },
+  );
+  const [refresh] = barButtonOf(bar.draw(), 'composer-bar-refresh');
+  refresh.props.onClick();
+  tree = await bar.flush();
+  assert.equal(barValueOf(tree, 'bar-assembly'), page.zh.barSummaryDelivered, '主文本仍是「已送达」');
+  assert.notEqual(
+    barValueNodeOf(tree, 'bar-assembly').props.title,
+    titleA,
+    'tooltip 的两句结论随 kind/state/surfaceOp 更新',
+  );
+});
+
 // #endregion
