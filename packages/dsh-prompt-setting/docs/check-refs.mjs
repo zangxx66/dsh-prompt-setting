@@ -243,7 +243,7 @@ const REFS = [
   { ref: 'client.js:8435', file: 'client.js', from: 8435, expect: 'function chunkFailureComponent' },
   { ref: 'client.js:8550', file: 'client.js', from: 8550, expect: 'function renderHistoryChunk' },
   { ref: 'client.js:8620-8688', file: 'client.js', from: 8620, to: 8688, expect: 'function chunkTab', toExpect: "function renderPresetsChunk(t, m, a) {" },
-  { ref: 'client.js:18609-15012', file: 'client.js', from: 18609, to: 18612, expect: '__internals', toExpect: "shared: CHUNK_FACILITIES," },
+  { ref: 'client.js:18609-18612', file: 'client.js', from: 18609, to: 18612, expect: '__internals', toExpect: "shared: CHUNK_FACILITIES," },
   { ref: 'client.history.js:36', file: 'client.history.js', from: 36, expect: "require('dsh-prompt-setting')" },
   { ref: 'core/store.js:280-296', file: 'core/store.js', from: 280, to: 296, at: 281, expect: 'Read the published client bundle', toExpect: "*   three fields for every chunk file beside it — or `null`." },
   { ref: 'core/store.js:298-318', file: 'core/store.js', from: 298, to: 318, expect: 'function clientBuildInfo', toExpect: "/**" },

@@ -140,12 +140,12 @@
   > One package of plain JS — nothing to fetch, nothing to compile.
 - **界面文案跟随 DSH 的 8 种语言 / UI copy follows all 8 DSH languages** —— DSH 切到中文，这一页就是中文，
   不需要刷新或重启；插件文案覆盖宿主内置的 8 种界面语言（中文、English、日本語、Español、Français、
-  Deutsch、Русский、Português）。日/西/法/德/俄/葡目前是**英文占位**（键集与中文完全对齐，译文按宿主
-  语言逐步替换），旧宿主上则自动降级为中文/英文，不会白屏。
+  Deutsch、Русский、Português），六种新增语言均为完整译文（键集与中文逐键对齐，只替换值）。旧宿主上
+  自动降级为中文/英文，不会白屏。
   > Switch DSH to Chinese and this page turns Chinese, with no refresh or restart. The plugin covers all
-  > eight interface languages the Host ships; ja/es/fr/de/ru/pt currently carry English placeholders whose
-  > key set matches Chinese exactly (translations replace values only), and an older Host silently degrades
-  > to zh/en instead of failing.
+  > eight interface languages the Host ships — ja/es/fr/de/ru/pt are full translations, key-for-key with
+  > Chinese, where only the values differ. An older Host silently degrades to zh/en instead of failing,
+  > so a peer Host that predates the multi-language catalog never shows a blank panel.
 - **一级 tab 是纯文字行（含计数与更新红点）/ The top-level bar is a plain-text row (with a count and an update dot)** ——
   六个一级 tab 无底色、无边框、不等分列宽；选中项下方一条短下划线，压在整条栏底部的淡分隔线上；窄容器下
   **单行横向滚动**而不是折行，也不会撑宽页面。「我的预设」显示库条数 `(N)`，数据未读到时**不显示数字**

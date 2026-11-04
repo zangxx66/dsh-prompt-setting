@@ -179,7 +179,7 @@ test('locale: both JSON files are valid, key-aligned dictionaries', () => {
   }
 });
 
-test('locale: the 594 keys split into 543 main entries and 51 error codes', () => {
+test('locale: the 597 keys split into 546 main entries and 51 error codes', () => {
   const { dictionaries, keys } = readDictionaries(packageRoot);
   const errorKeys = keys.filter((key) => key.startsWith('error.'));
   assert.equal(errorKeys.length, ERROR_KEY_COUNT);

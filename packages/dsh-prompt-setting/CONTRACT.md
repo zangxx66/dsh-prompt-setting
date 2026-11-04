@@ -8046,10 +8046,12 @@ objects are a generated artifact.
 
 Since **g-092** the same copy ships in the **eight interface languages the Host
 itself carries** (`@deepseek-ai/dsh-client-locale` 0.2.2: `zh`, `en`, `ja`, `es`,
-`fr`, `de`, `ru`, `pt`; the last six fall back to `en` in the Host). Stage 1 of
-g-092 ships English placeholders for the six new languages — value-identical to
-`en`, key-for-key — and the translation work replaces values only (never keys,
-never line counts).
+`fr`, `de`, `ru`, `pt`; the last six fall back to `en` in the Host). The six new
+dictionaries are real translations, key-for-key and line-count-for-line-count
+with `en`: only values differ, never keys, never the 597-line block shape. The
+translation gate keeps `en` as the baseline: every `{placeholder}` set must match
+`en` verbatim, no non-`zh` file may carry CJK, and `ja` values must carry
+Japanese script (or be an untranslated technical skeleton).
 
 ### 22.1 Source of truth
 

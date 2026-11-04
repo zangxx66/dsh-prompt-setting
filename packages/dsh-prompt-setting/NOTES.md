@@ -11192,3 +11192,40 @@ presentation listeners 收不到 tools、tools 保持 provider-owned。
 
 - 六语言**人工精译**（占位值仍是英文；`ja` 断言写成「占位 == en，一旦替换则必须含日文字符」的阶段钩子，精译后自动收紧）。
 - 未新增 6 种语言的 README（仓库仍中英两份）。
+
+## 174. g-092 阶段 2：六语言精译（ja/es/fr/de/ru/pt 各 597 键，只换值不动键）（2026-11-05，基线 `461a6b0`，隔离工作树 `g-092-att-01`）
+
+### 一、做法
+
+- 六个并行子代理各负责一种语言，共用一份术语表（31 个核心术语 + 动作词 + 占位符/标点铁律），以 `locale/en.json` 为基线逐键翻译；**只改值**，键名/键序/键数（597）与块行数一律不动，因此 1200 行段预算的算式不变。
+- 收口由主管统一执行：`node scripts/locale-pack.mjs --write` 重建 4 个 locale 生成段与 `client.js`，再跑全量门禁。
+
+### 二、质量门（每条都是自动断言）
+
+- 八份 JSON 键集与键序完全一致（`assertKeyParity`）；每条 `{占位符}` 与 `en` 逐键相同（含 `{prepend: true}`、`{{cwd}}`、`{{…}}`、`#{id}`）。
+- 非 `zh` 语言不得含 CJK（含中文标点/全角形式）；`ja` 已翻译的值必须含日文假名或汉字，且不得与 `zh` 逐字相同（防「把中文抄进日语」）。
+- `error.*` 消息里的 **API 字面值必须保留英文**（`replace`/`hide`/`append`/`merge` 及 `"section"`/`"text"`/`"order"` 等字段名）——用户是照着消息改调用的；`importModeMerge/Replace` 这类 UI 选项标签则可以本地化。西语首轮把这几条译掉，已返工修正。
+- 界面标签引用自洽：`mineModeReplace/Append`、`mineInterpolateSetInherit/SetOff` 本地化后，`mineModeBottomNote` / `mineModeStoredNone` / `mineInterpolateSetNote` / `mineInterpolateInheritedOn` 里引用的必须是**同一译名**（逐语言脚本校验，避免「选项叫 Couvrir、说明说 Cover」）。
+
+### 三、结果
+
+| 语言 | 翻译条数 | 与 en 逐字相同（技术骨架） |
+| --- | --- | --- |
+| `ja` | 592 | 5 |
+| `es` | 589 | 8 |
+| `fr` | 588 | 9 |
+| `de` | 585 | 12 |
+| `ru` | 592 | 5 |
+| `pt` | 589 | 8 |
+
+`client.js` 803 KB → **1119 KB**（+316 KB，8 语言同步内联；宿主无文件级 language pack 协议，CONTRACT §14.5/§22.2 已定案，不做懒加载）。
+
+### 四、验证
+
+- `node --test` 1086 例 0 fail；`locale-pack --check` / `client-build --check`（22 段逐字节）/ `prepare` / `verify.mjs` 6 步 0 失败 / `docs/check-refs.mjs` 全绿。
+- 附带修掉阶段 1 遗留：`docs/check-refs.mjs` 一条 ref 标签 `18609-15012` → `18609-18612`；`docs/refactor-plan.md` 两处 prose 坐标（`client.js:15009-15012` → `18609-18612`、`test/client.test.mjs:2376-2398` → `2441-2463`）；`test/locale.test.mjs` 过时标题 594/543 → 597/546。
+
+### 五、未做
+
+- 真机语言切换（需重启 `dsh web` 加载新 bundle），按负责人选择留作人工验收。
+- 未加 12 术语人工抽检（负责人抽检即可，自动化已覆盖键/占位符/CJK/字面值/引用自洽）。

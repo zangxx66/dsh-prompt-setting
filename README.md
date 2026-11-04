@@ -50,9 +50,9 @@ Settings gains a **"Prompt settings"** pane (`id: prompt-setting`) with six top-
 
 > All UI copy follows DSH's language setting: switch DSH to Chinese and this page turns Chinese, with no
 > refresh or restart. The plugin covers all **eight interface languages** the Host ships (Chinese, English,
-> Japanese, Spanish, French, German, Russian, Portuguese); ja/es/fr/de/ru/pt currently carry English
-> placeholders whose key set matches Chinese key-for-key (translations replace values only), and an older
-> Host silently degrades to zh/en instead of failing.
+> Japanese, Spanish, French, German, Russian, Portuguese) — ja/es/fr/de/ru/pt are full translations whose
+> key sets match Chinese key-for-key (only the values differ), and an older Host silently degrades to zh/en
+> instead of failing.
 
 > **The tab bar itself.** The six top-level tabs are plain text — no fill, no border, no equal-width
 > columns. The selected one carries a short underline pressed against the faint rule under the bar, and
