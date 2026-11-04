@@ -11046,3 +11046,79 @@ append→replace，而 `assembled`/`delivered` 不变）时 tooltip 两句结论
   （保存「我的 Prompt」后状态栏自动变化、切走再切回立即重读）；
 - 多标签页真机未验（`storage` 事件在真实浏览器里的时序只用桩断言过）；
 - `integration R8` 的 3 个基线失败未修（不属本目标；夹具需要按宿主 `assemble` 的新 `tools` 字段更新）。
+
+## 171. g-091：装配提示按工作区广播（工作区层写通知该 root 下所有会话）（2026-11-04，基线 `c1a99c4`，隔离工作树 `g-091-att-01`）
+
+### 一、现象与根因
+
+负责人真机：删除一个「已应用」的预设后，**当前会话没有 toast**。`history.jsonl` `seq31` 的写入记在
+`session-e2981cd8`（删除时「查看范围」选中的会话）名下，而真正在对话的是 `session-f6938291`；
+两者读的是**同一份** `.dsh-prompt-setting/overrides.json`（`workspaceRootFor` 解析到同一 root）。
+
+根因是 g-062 的通知**归属**缺口，不是观察缺口：`markPromptWrite` 一条写入只记一个 `session`，
+`writeFor(sessionId)` 只按 `session === GLOBAL_WRITE || session === sessionId` 匹配 —— 写入的
+「单会话归属」与工作区层的「跨会话生效」不一致。`layer='user'` 的全局广播（`GLOBAL_WRITE=null`）
+逻辑本身正确，问题只在工作区层。
+
+### 二、设计（`core/assembly-watch.js` + `index.js`）
+
+1. **写入带 root**：`markPromptWrite` 新增 `workspaceRoot`（工作区层必填、用户层 `null`），`session`
+   保留（「谁写的」精确信息 + 兼容）。写入点**全部**传自己已经解析过的 root（见下表），不再在
+   watch 里二次解析 —— 写路由的 `targetFor()` 已经做过 registry 解析，复用同一事实才不会漂。
+2. **装配带 root**：`observeAssembly({sessionId, workspaceRoot, ...})`；`observeUserAssembly` 用
+   `workspaceRootFor(sessionId).root` 解析后传入。探针 / 无会话装配**不解析、不传**（提前 return），
+   解析失败（无 registry / 该 session 尚未被登记）传 `null`，不抛。
+3. **匹配分层**：`writeFor(sessionId, workspaceRoot, afterSeq)` 依次找「同 session → 用户层全局 →
+   同 root 的工作区层」，每层内部按数组倒序取最新。关键在于 `afterSeq = consumedWriteSeq` 的
+   **候选过滤**：不过滤时一条已消费的全局写入会永远挡住它后面那条 root 写入（曾在实现中复现）——
+   这正是本目标要修的那种「静默丢失」，所以分层与「只看未消费」必须同时成立。
+4. **消费语义不变**：`consumedWriteSeq` 是 per-record 的 ⇒ 同一写入可被多个会话**各**消费一次，
+   同一会话对同一写入只提示一次。`pendingFirst` / `firstNoticeDone` / `firstDecided` 一字未动。
+5. **兼容路径（明确口径）**：旧式工作区写入（无 `workspaceRoot`）保持它一直以来的可达范围 ——
+   有 `session` 字符串就只命中该会话（精确匹配，不会静默丢失），`session: null` 则维持旧的
+   「所有会话」；新式 root 写入则只命中该 root，`session: null` **不再**变成全局广播
+   （`DELETE /presets` 恢复多个 root 时每个 root 各记一条，正是靠这条区分）。
+
+**被否方案**：①只改 `writeFor` 按 session 前缀/路径猜 root —— 没有可靠来源，且与写路由解析口径不一致；
+②在 watch 里自己解析 root —— 需要引入 Host 依赖，破坏「纯策略、零 IO」；
+③把工作区写入全部当全局广播 —— 治好了漏报却造成跨工作区误报（判据 2 直接红）。
+
+### 三、工作区层写入点核对清单（`grep -n notePromptWrite index.js`，8 处逐点核对）
+
+| 写入点 | 路由 / 位置 | 传入的 root |
+| --- | --- | --- |
+| 保存「我的 Prompt」工作区层 | `PUT /overrides`（`handleWriteOverride`） | `target.root` |
+| 删除覆盖项 | `DELETE /overrides?name=`（`handleDeleteOverride`） | `target.root` |
+| 整层重置 | `DELETE /overrides?reset=true`（`handleResetLayer`） | `target.root` |
+| 回滚 | `POST /rollback`（`handleRollback`） | `target.root`（用户层为 null） |
+| 导入 | `POST /import`（`units` 循环） | `unit.target.root`（`layers.workspace` 与 `workspaces[]` 同一条路径） |
+| 删除预设 | `DELETE /presets?id=`（`plan.plans` 循环） | `entry.workspaceRoot`（**每个被恢复的 root 各一条**，不是页面选中的那个） |
+| 应用预设 | `POST /presets/apply` | `target.root` |
+| 取消应用 | `POST /presets/unapply` | `target.root` |
+
+`legacy=true` 清空不触碰保留区段，因此**不**记写入（与 Revision 48 的口径一致，未改）。
+`PUT /interpolate` 仍是既有的明示盲点（不记录，未改）。
+
+### 四、验证（实跑）
+
+- `node --test test/*.test.mjs`：**1080 例，pass 1077 / fail 3**（基线 1072 → +8）—— 3 个失败全是
+  g-090 的基线 integration R8 夹具（`integration.test.mjs` 的 997 / 1034 / 1147，`tools: []` 差异，
+  与基线逐一同名），与本轮改动无关；
+- `node scripts/verify.mjs`：**5/6 步绿**（同上 test 步 3 个基线失败）；
+- `node scripts/client-build.mjs --check`、`node docs/check-refs.mjs`：全绿（本轮只改 core/index 与
+  文档；因 `index.js` 行号位移，同步更新了 `docs/refactor-plan.md` 的 6 条引用与
+  `docs/check-refs.mjs` 期望表，体检 `verified=103 / unresolved=0`）；
+- 新增测试：`test/assembly-watch.test.mjs` **+7 例**（同 root 双会话各得一次、异 root 不受影响、
+  root 写入 naming 无 session 不是全局、用户层仍全局、已消费的用户层通知不饿死后来的 root 写入、
+  旧式无 root 写入回退到 session 精确匹配、scenario A 在新 root 口径下不回归）；
+  `test/route.test.mjs` **+1 例**（真实走 `DELETE /presets?id=&session=a`：同一 root 的 `b` 下一轮
+  装配报告 `prompt-change`、同会话只一次、另一 root 的 `c` 无通知）—— 这条钉住的是
+  `observeUserAssembly` 真的把 root 传下去了（单测钉不住这层接线）。
+
+### 五、未验证项
+
+- **真机（`http://127.0.0.1:3080`）未验**：按 directive 由负责人在 review 后验收 —— 删除一个已应用
+  预设后，在**未选中过该预设**的当前会话发一条消息，应出现装配提示 toast；
+- 同一 workspace root 下两个真实会话的并发装配未真机验（单测与 route 级已覆盖）；
+- `integration R8` 的 3 个基线失败未修（不属本目标，见 g-090）。
+

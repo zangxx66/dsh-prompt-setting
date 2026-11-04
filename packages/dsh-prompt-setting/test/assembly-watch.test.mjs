@@ -55,6 +55,24 @@ function establish(watch, sessionId, text = 'A') {
   return watch.status(sessionId);
 }
 
+/**
+ * Bring one session of one workspace root past its first assembly (g-091).
+ *
+ * Identical to {@link establish} except that the assembly carries the root it
+ * resolves the workspace layer under — the fact a workspace-layer write is
+ * matched against.
+ * @param watch - the watcher.
+ * @param sessionId - the session id.
+ * @param workspaceRoot - the root the session's workspace layer lives under.
+ * @param text - the prompt text this first assembly carries.
+ * @returns the session's public record.
+ */
+function establishIn(watch, sessionId, workspaceRoot, text = 'A') {
+  watch.observeAssembly({ sessionId, workspaceRoot, configuredText: text, segmentText: text, at: 0 });
+  watch.observeSessionEvent({ sessionId, event: headerEvent('initial'), at: 0 });
+  return watch.status(sessionId);
+}
+
 test('assembly-watch: textDigest is stable, distinguishes the empty text and is not a truncation', () => {
   assert.equal(textDigest(''), 'empty');
   assert.equal(textDigest(undefined), 'empty');
@@ -358,6 +376,157 @@ test('assembly-watch: a user-layer write addresses every session; a workspace wr
     watch.observeAssembly({ sessionId: 's2', configuredText: 'U', segmentText: 'U', at: 4 }).kind,
     CHANGE_NOTICE,
   );
+});
+
+test('assembly-watch: g-091 a workspace-layer write reaches every session of that root, once each', () => {
+  const watch = createAssemblyWatch({ now: () => 0 });
+  const root = '/tmp/ws-a';
+  establishIn(watch, 's1', root, 'A');
+  establishIn(watch, 's2', root, 'A');
+  // The live-machine case: the page's picker names s1, the shared workspace layer
+  // changes, and s2 is the conversation the user is actually talking in.
+  watch.markPromptWrite({ session: 's1', workspaceRoot: root, layer: 'workspace', action: 'hide', text: '', at: 1 });
+
+  const sibling = watch.observeAssembly({ sessionId: 's2', workspaceRoot: root, configuredText: null, segmentText: '', at: 2 });
+  assert.equal(sibling.kind, CHANGE_NOTICE, 'the sibling session of the same root is told');
+  assert.equal(sibling.expected.layer, 'workspace');
+  assert.equal(sibling.expected.action, 'hide');
+  const writer = watch.observeAssembly({ sessionId: 's1', workspaceRoot: root, configuredText: null, segmentText: '', at: 3 });
+  assert.equal(writer.kind, CHANGE_NOTICE, 'and so is the session the page had selected');
+
+  // Each session consumed the one write once; repeating the assembly adds nothing.
+  assert.equal(watch.observeAssembly({ sessionId: 's2', workspaceRoot: root, configuredText: null, segmentText: '', at: 4 }), null);
+  assert.equal(watch.observeAssembly({ sessionId: 's1', workspaceRoot: root, configuredText: null, segmentText: '', at: 5 }), null);
+  const changeNotices = (id) => watch.status(id).notices.filter((notice) => notice.kind === CHANGE_NOTICE).length;
+  assert.equal(changeNotices('s1'), 1);
+  assert.equal(changeNotices('s2'), 1);
+});
+
+test('assembly-watch: g-091 a workspace-layer write never reaches another workspace root', () => {
+  const watch = createAssemblyWatch({ now: () => 0 });
+  establishIn(watch, 's1', '/tmp/ws-a', 'A');
+  establishIn(watch, 's3', '/tmp/ws-b', 'B');
+  watch.markPromptWrite({ session: 's1', workspaceRoot: '/tmp/ws-a', layer: 'workspace', action: 'replace', text: 'W', at: 1 });
+
+  assert.equal(
+    watch.observeAssembly({ sessionId: 's3', workspaceRoot: '/tmp/ws-b', configuredText: 'W', segmentText: 'W', at: 2 }),
+    null,
+    'another workspace is not affected',
+  );
+  assert.equal(watch.status('s3').notices.filter((notice) => notice.kind === CHANGE_NOTICE).length, 0);
+  // A session whose root the Host could not resolve is not told either: the write
+  // is root-scoped, and "no root" is not a wildcard.
+  assert.equal(watch.observeAssembly({ sessionId: 's4', configuredText: 'W', segmentText: 'W', at: 3 }), null);
+  assert.equal(watch.status('s4').notices.filter((notice) => notice.kind === CHANGE_NOTICE).length, 0);
+  // The writer's own session still sees it.
+  assert.equal(
+    watch.observeAssembly({ sessionId: 's1', workspaceRoot: '/tmp/ws-a', configuredText: 'W', segmentText: 'W', at: 4 }).kind,
+    CHANGE_NOTICE,
+  );
+});
+
+test('assembly-watch: g-091 a root-scoped write that names no session is not a global broadcast', () => {
+  // Deleting a preset restores several roots at once and names no session for
+  // the ones the page had not selected; an import's `workspaces[]` entries name
+  // none at all. Both must stay inside their root.
+  const watch = createAssemblyWatch({ now: () => 0 });
+  establishIn(watch, 's1', '/tmp/ws-a', 'A');
+  establishIn(watch, 's3', '/tmp/ws-b', 'B');
+  watch.markPromptWrite({ session: null, workspaceRoot: '/tmp/ws-a', layer: 'workspace', action: 'hide', text: '', at: 1 });
+  assert.equal(
+    watch.observeAssembly({ sessionId: 's1', workspaceRoot: '/tmp/ws-a', configuredText: null, segmentText: '', at: 2 }).kind,
+    CHANGE_NOTICE,
+  );
+  assert.equal(
+    watch.observeAssembly({ sessionId: 's3', workspaceRoot: '/tmp/ws-b', configuredText: null, segmentText: '', at: 3 }),
+    null,
+  );
+});
+
+test('assembly-watch: g-091 a user-layer write still broadcasts to every root, once per session', () => {
+  const watch = createAssemblyWatch({ now: () => 0 });
+  establishIn(watch, 's1', '/tmp/ws-a', 'A');
+  establishIn(watch, 's3', '/tmp/ws-b', 'B');
+  // §21.4: the session the page carried must not narrow a user-layer save — the
+  // index normalizes that to `session: null` before it reaches this module.
+  watch.markPromptWrite({ session: null, workspaceRoot: null, layer: 'user', action: 'replace', text: 'U', at: 1 });
+  assert.equal(
+    watch.observeAssembly({ sessionId: 's3', workspaceRoot: '/tmp/ws-b', configuredText: 'U', segmentText: 'U', at: 2 }).kind,
+    CHANGE_NOTICE,
+    'another workspace still hears a user-layer save',
+  );
+  assert.equal(
+    watch.observeAssembly({ sessionId: 's1', workspaceRoot: '/tmp/ws-a', configuredText: 'U', segmentText: 'U', at: 3 }).kind,
+    CHANGE_NOTICE,
+  );
+  const changeNotices = (id) => watch.status(id).notices.filter((notice) => notice.kind === CHANGE_NOTICE).length;
+  assert.equal(changeNotices('s1'), 1);
+  assert.equal(changeNotices('s3'), 1);
+  // A second assembly consumes nothing more.
+  assert.equal(watch.observeAssembly({ sessionId: 's3', workspaceRoot: '/tmp/ws-b', configuredText: 'U', segmentText: 'U', at: 4 }), null);
+});
+
+test('assembly-watch: g-091 an already-consumed user notice never starves a later workspace write', () => {
+  // The tier order is session → user broadcast → shared root, and only *pending*
+  // writes are candidates: without that filter the consumed broadcast would shadow
+  // the newer workspace write forever (the exact silent gap this round removes).
+  const watch = createAssemblyWatch({ now: () => 0 });
+  establishIn(watch, 's1', '/tmp/ws-a', 'A');
+  watch.markPromptWrite({ session: null, layer: 'user', action: 'replace', text: 'U', at: 1 });
+  assert.equal(
+    watch.observeAssembly({ sessionId: 's1', workspaceRoot: '/tmp/ws-a', configuredText: 'U', segmentText: 'U', at: 2 }).kind,
+    CHANGE_NOTICE,
+  );
+  watch.markPromptWrite({ session: 's2', workspaceRoot: '/tmp/ws-a', layer: 'workspace', action: 'replace', text: 'W', at: 3 });
+  const notice = watch.observeAssembly({ sessionId: 's1', workspaceRoot: '/tmp/ws-a', configuredText: 'W', segmentText: 'W', at: 4 });
+  assert.equal(notice.kind, CHANGE_NOTICE);
+  assert.equal(notice.expected.layer, 'workspace');
+  assert.equal(notice.expected.action, 'replace');
+});
+
+test('assembly-watch: g-091 a legacy workspace write with no root falls back to the session, not to silence', () => {
+  // Pre-g-091 entries carry no root. They keep the only reach they ever had: the
+  // named session exactly — never a silent loss, never a new broadcast.
+  const watch = createAssemblyWatch({ now: () => 0 });
+  establishIn(watch, 's1', '/tmp/ws-a', 'A');
+  establishIn(watch, 's2', '/tmp/ws-a', 'A');
+  watch.markPromptWrite({ session: 's1', layer: 'workspace', action: 'replace', text: 'W', at: 1 });
+  assert.equal(watch.observeAssembly({ sessionId: 's2', workspaceRoot: '/tmp/ws-a', configuredText: 'W', segmentText: 'W', at: 2 }), null);
+  assert.equal(
+    watch.observeAssembly({ sessionId: 's1', workspaceRoot: '/tmp/ws-a', configuredText: 'W', segmentText: 'W', at: 3 }).kind,
+    CHANGE_NOTICE,
+  );
+  // The other legacy spelling (`session: null`, e.g. a pre-g-091 import unit)
+  // keeps its old broad reading rather than being dropped.
+  watch.markPromptWrite({ session: null, layer: 'workspace', action: 'replace', text: 'L', at: 4 });
+  assert.equal(
+    watch.observeAssembly({ sessionId: 's2', workspaceRoot: '/tmp/ws-a', configuredText: 'L', segmentText: 'L', at: 5 }).kind,
+    CHANGE_NOTICE,
+  );
+});
+
+test('assembly-watch: g-091 scenario A survives the new root scoping', () => {
+  // A workspace-layer write pending on a conversation this mount sees for the
+  // first time stays **untouched** until the header answers: `initial` makes it a
+  // first-assembly fact (consumed, not reported twice), any other header makes it
+  // the change it is.
+  const watch = createAssemblyWatch({ now: () => 0 });
+  watch.markPromptWrite({ session: 's1', workspaceRoot: '/tmp/ws-a', layer: 'workspace', action: 'replace', text: 'N', at: 1 });
+  assert.equal(watch.observeAssembly({ sessionId: 's1', workspaceRoot: '/tmp/ws-a', configuredText: 'N', segmentText: 'N', at: 2 }), null);
+  const first = watch.observeSessionEvent({ sessionId: 's1', event: headerEvent('initial'), at: 3 });
+  assert.equal(first.kind, FIRST_NOTICE);
+  assert.equal(first.assembly.state, 'assembled');
+  // The write was consumed as an already-done fact: no second toast.
+  assert.equal(watch.observeAssembly({ sessionId: 's1', workspaceRoot: '/tmp/ws-a', configuredText: 'N', segmentText: 'N', at: 4 }), null);
+  assert.equal(watch.status('s1').notices.filter((notice) => notice.kind === CHANGE_NOTICE).length, 0);
+
+  // And the other answer: a session the mount merely sees again reports the write
+  // as a change against the assembly evidence the candidate recorded.
+  watch.markPromptWrite({ session: 's1', workspaceRoot: '/tmp/ws-a', layer: 'workspace', action: 'replace', text: 'M', at: 5 });
+  watch.observeAssembly({ sessionId: 's2', workspaceRoot: '/tmp/ws-a', configuredText: 'M', segmentText: 'M', at: 6 });
+  const change = watch.observeSessionEvent({ sessionId: 's2', event: headerEvent('resume'), at: 7 });
+  assert.equal(change.kind, CHANGE_NOTICE);
+  assert.equal(change.assembly.state, 'read');
 });
 
 test('assembly-watch: the session table is bounded and a disposed session drops its record', () => {

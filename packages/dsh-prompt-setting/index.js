@@ -1779,8 +1779,19 @@ function mount(ctx, config, cleanups) {
         assemblyWatch.rejectProbe();
         return;
       }
+      // g-091: the workspace root this assembly reads the workspace layer under,
+      // resolved from the Host's own session index (never from the client). A
+      // workspace-layer write is shared by **every** session of that root, so the
+      // root — not the write's own session id — is what the notice is matched on.
+      // A profile without the registry, or a session it does not list yet, yields
+      // `null` here: the assembly still observes its own writes and the user
+      // layer, and the watch never throws on the missing fact.
+      const workspaceRoot = workspaceRootFor(sessionId).root;
       assemblyWatch.observeAssembly({
         sessionId,
+        // `null` when it cannot be resolved; the watch matches root-scoped writes
+        // only against a real root (g-091).
+        workspaceRoot,
         // The config this assembly resolved — "what the user set in this plugin",
         // independent of whether it reached the rendered section.
         configuredText: configuredTextOf(input.resolved?.overrides, CUSTOM_SECTION_NAME),
@@ -1801,15 +1812,27 @@ function mount(ctx, config, cleanups) {
    *
    * Called after a successful write and strictly side-effect-free with respect to
    * it: a note that cannot be taken never fails a save.
-   * @param input - `{layer, session, action, text}`.
+   *
+   * g-091: a `workspace`-layer write must also carry the root it just wrote, so
+   * the notice reaches **every** session of that workspace — the page's session
+   * picker is a view scope, not the set of affected conversations. Every write
+   * point below passes the root it already resolved for its own write
+   * (`targetFor(...).root`, a preset entry's `workspaceRoot`); a `user`-layer
+   * write passes `null` because it is global by construction.
+   * @param input - `{layer, session, workspaceRoot, action, text}`.
    */
   function notePromptWrite(input) {
     try {
       assemblyWatch.markPromptWrite({
         layer: input.layer,
         // `null` (a user-layer save with no session) addresses every session; a
-        // workspace save addresses the one whose workspace layer was written.
+        // workspace save keeps the session the page had selected as the precise
+        // "who wrote it" fact (g-091).
         session: typeof input.session === 'string' && input.session.length > 0 ? input.session : null,
+        // The root the write really modified: what a sibling session of the same
+        // workspace matches on. `null` for the user layer (a global broadcast).
+        workspaceRoot:
+          typeof input.workspaceRoot === 'string' && input.workspaceRoot.length > 0 ? input.workspaceRoot : null,
         action: input.action,
         text: typeof input.text === 'string' ? input.text : '',
         at: Date.now(),
@@ -2707,6 +2730,8 @@ function mount(ctx, config, cleanups) {
     notePromptWrite({
       layer,
       session: layer === 'workspace' ? scopeSession ?? null : null,
+      // g-091: the root this rollback really rewrote (`targetFor` resolved it).
+      workspaceRoot: layer === 'workspace' ? target.root : null,
       action: isSection === null ? 'hide' : isSection.action,
       text: isSection === null || isSection.action === 'hide' ? '' : String(isSection.text ?? ''),
     });
@@ -3116,6 +3141,10 @@ function mount(ctx, config, cleanups) {
         notePromptWrite({
           layer: unit.layer,
           session: unit.session,
+          // g-091: a `workspace` unit is scoped to the root it writes — the
+          // `workspaces[]` entries name no session at all, and before g-091 that
+          // made them broadcast to every conversation.
+          workspaceRoot: unit.layer === 'workspace' ? unit.target.root : null,
           action: after === null ? 'hide' : after.action,
           text: after === null || after.action === 'hide' ? '' : String(after.text ?? ''),
         });
@@ -3975,6 +4004,10 @@ function mount(ctx, config, cleanups) {
         // `?session=` the page happens to carry must not scope it to one
         // (review W3). Only a workspace write names a session.
         session: layer === 'workspace' ? sessionId ?? null : null,
+        // g-091: and that workspace write names the root it wrote, so every
+        // session of that workspace is told — the picker is a view scope, not the
+        // set of affected conversations.
+        workspaceRoot: layer === 'workspace' ? target.root : null,
         action: override.action,
         text: override.action === 'hide' ? '' : override.text,
       });
@@ -4060,7 +4093,14 @@ function mount(ctx, config, cleanups) {
     // contributes, so the layer's next run reports it like any other save.
     if (name === CUSTOM_SECTION_NAME) {
       // §21.4: only a workspace write is scoped to one session (review W3).
-      notePromptWrite({ layer, session: layer === 'workspace' ? sessionId ?? null : null, action: 'hide', text: '' });
+      notePromptWrite({
+        layer,
+        session: layer === 'workspace' ? sessionId ?? null : null,
+        // g-091: the root the deletion rewrote, so its sibling sessions see it.
+        workspaceRoot: layer === 'workspace' ? target.root : null,
+        action: 'hide',
+        text: '',
+      });
     }
     recordHistory({
       path: target.path,
@@ -4110,7 +4150,15 @@ function mount(ctx, config, cleanups) {
     // reset of a layer that never held one is not.
     if (removed.some((entry) => entry.name === CUSTOM_SECTION_NAME)) {
       // §21.4: only a workspace write is scoped to one session (review W3).
-      notePromptWrite({ layer, session: layer === 'workspace' ? sessionId ?? null : null, action: 'hide', text: '' });
+      notePromptWrite({
+        layer,
+        session: layer === 'workspace' ? sessionId ?? null : null,
+        // g-091: a whole-layer reset is shared state, so the whole workspace is
+        // told — the session named by the page only locates the root.
+        workspaceRoot: layer === 'workspace' ? target.root : null,
+        action: 'hide',
+        text: '',
+      });
     }
     const history = recordHistory({
       path: target.path,
@@ -4531,6 +4579,10 @@ function mount(ctx, config, cleanups) {
         notePromptWrite({
           layer: 'workspace',
           session,
+          // g-091: every restored root is its own scope — a deletion restores
+          // several workspaces at once, and each one's sessions must hear about
+          // it (the loop's root, never the page's single selected session).
+          workspaceRoot: entry.workspaceRoot,
           action: entry.after === null || entry.after.action === 'hide' ? 'hide' : 'replace',
           text: entry.after === null || entry.after.action === 'hide' ? '' : String(entry.after.text ?? ''),
         });
@@ -4693,6 +4745,8 @@ function mount(ctx, config, cleanups) {
       notePromptWrite({
         layer: 'workspace',
         session: sessionId ?? null,
+        // g-091: the root this application wrote, so the whole workspace is told.
+        workspaceRoot: target.root,
         action: after === null || after.action === 'hide' ? 'hide' : 'replace',
         text: after === null || after.action === 'hide' ? '' : String(after.text ?? ''),
       });
@@ -4785,6 +4839,10 @@ function mount(ctx, config, cleanups) {
     notePromptWrite({
       layer: 'workspace',
       session: sessionId ?? null,
+      // g-091: cancelling an application restores shared text, so the whole
+      // workspace is told — this is the live-machine case (delete/unapply made in
+      // a session that was not the one talking).
+      workspaceRoot: target.root,
       action: after === null || after.action === 'hide' ? 'hide' : 'replace',
       text: after === null || after.action === 'hide' ? '' : String(after.text ?? ''),
     });

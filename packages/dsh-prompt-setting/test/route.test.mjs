@@ -381,6 +381,28 @@ function workspaceWith(id, sessionId, config) {
   return { id, path: root, title: id, createdAt: '2024-01-01T00:00:00.000Z', updatedAt: '2024-01-01T00:00:00.000Z', sessionIds: [sessionId] };
 }
 
+/**
+ * One workspace row whose root lists **several** sessions (g-091).
+ *
+ * The everyday shape: one workspace directory hosts many conversations, all of
+ * them reading the same `.dsh-prompt-setting/overrides.json`.
+ * @param id - the workspace id and directory name.
+ * @param sessionIds - every session the root lists.
+ * @returns the registry row.
+ */
+function workspaceWithSessions(id, sessionIds) {
+  const root = join(home, id);
+  mkdirSync(root, { recursive: true });
+  return {
+    id,
+    path: root,
+    title: id,
+    createdAt: '2024-01-01T00:00:00.000Z',
+    updatedAt: '2024-01-01T00:00:00.000Z',
+    sessionIds: [...sessionIds],
+  };
+}
+
 test('host: injects webServer, connection and the hard systemPrompt dependency', () => {
   assert.deepEqual(inject, ['webServer', 'connection', 'systemPrompt']);
 });
@@ -3444,7 +3466,8 @@ test('g-062: a user-layer save addresses every session, while a workspace save s
     'a user-layer save is global, whatever ?session= the page sent',
   );
 
-  // The workspace layer stays scoped to the session whose workspace it is.
+  // The workspace layer stays scoped to the workspace root it was written under
+  // (g-091: the root, not the session the page happened to name).
   const scoped = mount({
     agents: [{ id: 'a' }, { id: 'b' }],
     workspaces: [workspaceWith('w1', 'a'), workspaceWith('w2', 'b')],
@@ -3467,8 +3490,48 @@ test('g-062: a user-layer save addresses every session, while a workspace save s
   assert.equal(
     (await readStatus(scoped.route, 'b')).record.notice,
     null,
-    'a workspace-layer save does not leak into another session',
+    'a workspace-layer save does not leak into another workspace root',
   );
+});
+
+test('g-091: deleting a preset tells every session of the workspace it restored', async () => {
+  // The live-machine case, end to end: one workspace root hosts two
+  // conversations, the deletion is made while `a` is selected in the page, and
+  // the user keeps talking in `b` — which must still get the notice, because it
+  // reads the very same restored workspace layer. A third session in another
+  // root must hear nothing.
+  const harness = mount({
+    agents: [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+    workspaces: [workspaceWithSessions('shared', ['a', 'b']), workspaceWithSessions('other', ['c'])],
+  });
+  const { ctx, route } = harness;
+  for (const id of ['a', 'b', 'c']) await establishConversation(harness, id);
+
+  const presetId = await createPreset(route, { name: '短答', text: 'BE BRIEF' });
+  await presetsAction(route, PRESETS_APPLY_PATH, presetId, 'a');
+  const removed = await call(route, {
+    method: 'DELETE',
+    url: `${PRESETS_PATH}?id=${encodeURIComponent(presetId)}&session=a`,
+  });
+  assert.equal(removed.statusCode, 200);
+  assert.equal(json(removed).removed, true);
+
+  // `b` never sent a request in this flow, yet its next assembly reports the
+  // restore — the gap this round closes.
+  await ctx.systemPrompt.assemble({ agent: { id: 'b' }, scope: { marker: 'g091' } });
+  const sibling = (await readStatus(route, 'b')).record.notice;
+  assert.equal(sibling.kind, 'prompt-change');
+  assert.equal(sibling.expected.layer, 'workspace');
+  // A second assembly consumes nothing more (one notice per write per session).
+  await ctx.systemPrompt.assemble({ agent: { id: 'b' }, scope: { marker: 'g091' } });
+  assert.equal(
+    (await readStatus(route, 'b')).record.notices.filter((notice) => notice.kind === 'prompt-change').length,
+    1,
+  );
+
+  // The other root is untouched by a write it never read.
+  await ctx.systemPrompt.assemble({ agent: { id: 'c' }, scope: { marker: 'g091' } });
+  assert.equal((await readStatus(route, 'c')).record.notice, null);
 });
 
 // ---------------------------------------------------------------------------

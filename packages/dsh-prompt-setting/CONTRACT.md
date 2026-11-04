@@ -7716,7 +7716,7 @@ now classifies presets. One stored document, no new file: `version` becomes 2,
   superseded by Revision 53, and the library (tags included) still travels as
   the export's own top-level `presets` document.
 
-## 21. The in-session assembly-status notice (g-062, Revision 45; toasts added in Revision 46)
+## 21. The in-session assembly-status notice (g-062, Revision 45; toasts added in Revision 46; workspace-root broadcast in g-091)
 
 DSH re-assembles the system prompt on **every** model step (`AgentLoop.preStep()`
 → `systemPrompt.assemble()`), but "assembled" is not "delivered":
@@ -7834,10 +7834,13 @@ the whole `preferences.json` — see §17.4 and §11.7.)*
 
 ### 21.4 Key nodes, probes, bounds and fail-open
 
-- **One notice per key node.** A conversation gets at most one
-  `first-assembly` notice; a save produces at most one `prompt-change` notice,
-  consumed by the next assembly that sees it. Repeated assemblies with no change
-  add nothing.
+- **One notice per key node, per session.** A conversation gets at most one
+  `first-assembly` notice; a save produces at most one `prompt-change` notice
+  **per session**, consumed by that session's next assembly that sees it. The
+  consumption record is per session, so one write can be reported once in several
+  conversations (exactly what a shared workspace layer needs) while a single
+  conversation never reports it twice. Repeated assemblies with no change add
+  nothing.
 - **The new-conversation question is answered once, by a header.** A save
   observed before that answer is **held**, not consumed: an `initial` header makes
   it the prompt the new conversation starts with (scenario A, the write consumed
@@ -7845,12 +7848,24 @@ the whole `preferences.json` — see §17.4 and §11.7.)*
   header ever arrives — resolves it as an **existing** conversation and the save
   is reported as the `prompt-change` it is. A conversation this mount merely sees
   for the first time is not automatically a new one.
-- **Which sessions a save addresses — the layer decides, never the query string.**
-  A `user`-layer save addresses **every** session, even when the page sent a
-  `?session=` (it does whenever the scope picker has one, review W3); a
-  `workspace`-layer save addresses only the session whose workspace layer was
-  written. `PUT /overrides`, `DELETE /overrides` and `reset=true` all normalize by
-  layer, exactly like `rollback`, `import` and the preset actions.
+- **Which sessions a save addresses — the layer decides, never the query string
+  (g-091).** A `user`-layer save addresses **every** session, even when the page
+  sent a `?session=` (it does whenever the scope picker has one, review W3). A
+  `workspace`-layer save addresses **every session of the workspace root it
+  wrote** — the shared `.dsh-prompt-setting/overrides.json`, not the one session
+  the page happened to have selected. Each such write records the root it
+  modified, each assembly records the root it resolved (from the Host's
+  `workspaceRegistry`, never from the client), and the notice is matched on that
+  root: a sibling session that never sent a request still reports the change on
+  its next run, while a session of **another** root hears nothing. Every write
+  point passes the root it wrote — `PUT /overrides`, `DELETE /overrides`
+  (including `reset=true`), `POST /rollback`, `POST /import` (the
+  `layers.workspace` unit and every `workspaces[]` entry), preset apply/unapply
+  and `DELETE /presets` (once per restored root) — while `PUT`/`DELETE`/`reset`
+  normalize the `user` layer exactly like `rollback`, `import` and the preset
+  actions. A workspace entry whose root is absent (a pre-g-091 shape, or a caller
+  that could not resolve one) keeps the reach it always had — the named session
+  exactly, or every session when it names none — so it is never silently lost.
 - **Every write path that changes the reserved section's stored text is
   recorded**, not just the editor's save: `PUT /overrides`, preset
   apply/unapply (§20.5–§20.6), `POST /import`, `POST /rollback` and

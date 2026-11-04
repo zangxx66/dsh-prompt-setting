@@ -265,18 +265,80 @@ export function createAssemblyWatch(options = {}) {
   }
 
   /**
-   * The newest retained write that addresses this session: a `user`-layer save
-   * (unscoped, so it addresses every session) or a `workspace`-layer save naming
-   * exactly this session.
+   * Whether a retained write carries the workspace root it was made against.
+   *
+   * Since g-091 every `workspace`-layer write point knows the root it just
+   * wrote (`targetFor(...).root`, a preset application's `workspaceRoot`), so a
+   * root-scoped write can address **every** session of that root — which is what
+   * the shared layer really affects. A write with no root keeps the pre-g-091
+   * spelling and is matched by session only (see {@link writeFor}).
+   * @param write - one retained write entry.
+   * @returns true when the entry is scoped to a workspace root.
+   */
+  function rootScoped(write) {
+    return (
+      write.layer === 'workspace'
+      && typeof write.workspaceRoot === 'string'
+      && write.workspaceRoot.length > 0
+    );
+  }
+
+  /**
+   * Whether a retained write addresses **every** session.
+   *
+   * A `user`-layer save is unscoped on purpose (`session === GLOBAL_WRITE`): the
+   * user layer is global, so a `?session=` the page happened to carry must not
+   * narrow it (contract §21.4).
+   *
+   * A `workspace`-layer save is **not** global even when it names no session —
+   * deleting a preset restores several roots at once, an import targets a root,
+   * and 「取消应用」restores nothing at all. Since g-091 such a write is matched
+   * by its `workspaceRoot` instead (this review's fix). Only a legacy-shaped
+   * workspace entry that carries **no** root keeps the old broad reading, so an
+   * entry written before the field existed is never silently dropped.
+   * @param write - one retained write entry.
+   * @returns true when the write addresses every session.
+   */
+  function addressesEverySession(write) {
+    if (write.session !== GLOBAL_WRITE) return false;
+    return rootScoped(write) !== true;
+  }
+
+  /**
+   * The newest **pending** write that addresses this session, in addressing
+   * order: this session's own write first, then the `user` layer's broadcast,
+   * then the `workspace` layer this session shares (g-091).
+   *
+   * Why the tiers: a write that names this very session is the change the user
+   * made *here*, so it is the one a notice should report. The broadcast and the
+   * shared root are the two aggregates behind it. Newest-first inside each tier
+   * keeps the pre-existing "the latest change wins" reading.
+   *
+   * Why `afterSeq`: only writes this session has **not** consumed yet are
+   * candidates. Without that filter an older, already-consumed broadcast would
+   * match tier two and starve the newer root-scoped write behind it — a session
+   * that once received a `user`-layer notice would then never see a workspace
+   * change again, which is exactly the silent gap this round removes.
    * @param sessionId - the session id.
+   * @param workspaceRoot - the workspace root this session assembles under, or
+   *   null when it cannot be resolved.
+   * @param afterSeq - the record's `consumedWriteSeq`; older writes are ignored.
    * @returns the write entry, or null.
    */
-  function writeFor(sessionId) {
+  function writeFor(sessionId, workspaceRoot, afterSeq = 0) {
+    const pending = [];
     for (let index = writes.length - 1; index >= 0; index -= 1) {
       const write = writes[index];
-      if (write.session === GLOBAL_WRITE || write.session === sessionId) return write;
+      if (write.seq <= afterSeq) continue;
+      pending.push(write);
     }
-    return null;
+    const own = pending.find((write) => write.session === sessionId);
+    if (own !== undefined) return own;
+    const broadcast = pending.find(addressesEverySession);
+    if (broadcast !== undefined) return broadcast;
+    if (typeof workspaceRoot !== 'string' || workspaceRoot.length === 0) return null;
+    const shared = pending.find((write) => rootScoped(write) === true && write.workspaceRoot === workspaceRoot);
+    return shared ?? null;
   }
 
   /**
@@ -480,7 +542,14 @@ export function createAssemblyWatch(options = {}) {
    *
    * Called from the `system-prompt/assemble` listener with the text that
    * listener is about to return. Nothing here changes that text.
-   * @param input - `{sessionId, configuredText, segmentText, at}`.
+   *
+   * `workspaceRoot` is the root this assembly resolves the workspace layer under
+   * (g-091). The caller resolves it from the Host's registry — never from
+   * anything the client supplied — and passes `null` when it cannot (a probe, an
+   * unscoped assembly, or a profile without the registry). A session whose root
+   * cannot be resolved still sees its own writes and the user layer; it just
+   * cannot see another session's workspace-layer write.
+   * @param input - `{sessionId, workspaceRoot, configuredText, segmentText, at}`.
    * @returns the notice this assembly produced, or null.
    */
   function observeAssembly(input) {
@@ -490,6 +559,9 @@ export function createAssemblyWatch(options = {}) {
       const at = Number.isFinite(input?.at) ? input.at : now();
       const segmentText = typeof input?.segmentText === 'string' ? input.segmentText : '';
       const configuredText = typeof input?.configuredText === 'string' ? input.configuredText : null;
+      const workspaceRoot = typeof input?.workspaceRoot === 'string' && input.workspaceRoot.length > 0
+        ? input.workspaceRoot
+        : null;
       const record = recordFor(sessionId);
       // A candidate that survived into the *next* assembly was never settled by a
       // header: resolve it before this assembly's own evidence replaces
@@ -502,7 +574,7 @@ export function createAssemblyWatch(options = {}) {
         configured: configuredText !== null,
       };
 
-      const write = writeFor(sessionId);
+      const write = writeFor(sessionId, workspaceRoot, record.consumedWriteSeq);
       const hasPendingWrite = write !== null && write.seq > record.consumedWriteSeq;
 
       if (hasPendingWrite === true) {
@@ -549,7 +621,14 @@ export function createAssemblyWatch(options = {}) {
   /**
    * Note one prompt save, so the session's next run can report whether the
    * change was re-assembled and delivered.
-   * @param input - `{session, layer, action, text, at}`.
+   *
+   * `workspaceRoot` is the root a `workspace`-layer write just modified: it is
+   * what turns "one session was selected in the page" into "every session of
+   * that workspace is affected" (g-091). The caller passes the root it already
+   * resolved for the write; a `user`-layer save passes `null` (it is global by
+   * construction), and a legacy-shaped workspace save without a root falls back
+   * to the pre-g-091 session-only match in {@link writeFor}.
+   * @param input - `{session, workspaceRoot, layer, action, text, at}`.
    * @returns nothing; a malformed save is ignored.
    */
   function markPromptWrite(input) {
@@ -568,8 +647,14 @@ export function createAssemblyWatch(options = {}) {
         layer: typeof input?.layer === 'string' ? input.layer : null,
         action: typeof input?.action === 'string' ? input.action : null,
         // `null` = every session (a `user`-layer save names none); a string = the
-        // one session whose workspace layer was written.
+        // one session the page had selected when the write happened. Kept for the
+        // precise "who wrote it" fact and for pre-g-091 compatibility.
         session: typeof input?.session === 'string' && input.session.length > 0 ? input.session : GLOBAL_WRITE,
+        // The workspace root the write really modified, for a `workspace`-layer
+        // save (g-091); `null` for the user layer. This — not `session` — is what
+        // a sibling session of the same workspace matches on.
+        workspaceRoot:
+          typeof input?.workspaceRoot === 'string' && input.workspaceRoot.length > 0 ? input.workspaceRoot : null,
       });
       if (writes.length > writeLimit) writes.splice(0, writes.length - writeLimit);
     } catch {
