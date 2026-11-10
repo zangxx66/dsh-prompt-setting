@@ -300,3 +300,5 @@ DSH 升级后插件没出现、终端也没报错时，先跑 `node scripts/chec
 ## 十、许可证
 
 MIT —— 见 [`LICENSE`](./LICENSE)（`packages/dsh-prompt-setting/LICENSE` 是同一份，随 npm 包发布）。
+
+[![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)

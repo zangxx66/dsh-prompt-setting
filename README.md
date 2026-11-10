@@ -368,3 +368,5 @@ README's "For maintainers" section; the detailed measurements are in
 ## 10. License
 
 MIT — see [`LICENSE`](./LICENSE) (`packages/dsh-prompt-setting/LICENSE` is the same file, shipped with the npm package).
+
+[![](https://img.shields.io/badge/powered_by-dsh-4D6BFE?style=flat-square&logo=deepseek&logoColor=white)](https://github.com/deepseek-ai/deepseek-harness)
