@@ -167,6 +167,10 @@ test('manifest: bundle, client and publish contract', () => {
     /^>=0\.2\.1-0 <0\.3\.0-0$/,
   );
   assert.deepEqual(packageJson.dependencies, {}, 'zero runtime dependencies');
+  // 0.2.2: the settings → Plugins page renders this package's artwork from the
+  // manifest `icon` (a relative file, read by dsh-app-boot's `readPluginMeta`);
+  // the file must ship in `files` or the installed copy has no picture.
+  assert.equal(packageJson.icon, './icon.svg');
   assert.deepEqual(packageJson.files, [
     'index.js',
     'core',
@@ -177,8 +181,11 @@ test('manifest: bundle, client and publish contract', () => {
     'client.*.js',
     // g-066: the two JSON dictionaries are the human source of the `zh`/`en`
     // blocks inlined into client.js; they ship so the installed package carries
-    // the source a reader can regenerate (and diff) the bundle copy from.
+    // the source a reader can regenerate (and diff) the bundle copy from. Since
+    // 0.2.2 each file also carries the optional plugin-page `meta` block, read
+    // from the JSON directly by the Host.
     'locale',
+    'icon.svg',
     'cordis.patch.yml',
     'CONTRACT.md',
     'README.md',

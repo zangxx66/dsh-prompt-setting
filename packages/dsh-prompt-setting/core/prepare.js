@@ -229,6 +229,32 @@ export function inspectPackage({ pkg, readText, listDir, patchTexts = {} } = {})
     add(PREPARE_FAIL, 'NO-ENTRYPOINT', 'main / exports 都没有声明入口：装上之后没有任何代码可加载');
   }
   for (const { field, relPath } of entrypoints) {
+    // An `exports` target may be a glob (`./locale/*.json`): Node expands it at
+    // resolution time, so the gate must expand it too instead of looking for a
+    // literal file named `*.json`.
+    if (/[*?]/.test(relPath)) {
+      const slash = relPath.lastIndexOf('/');
+      const dir = slash === -1 ? '.' : relPath.slice(0, slash);
+      const globDir = /[*?]/.test(dir);
+      const listing = list(globDir ? '.' : dir);
+      const pattern = globDir ? relPath : slash === -1 ? relPath : relPath.slice(slash + 1);
+      const matched = Array.isArray(listing) ? listing.filter((name) => globMatches(pattern, name)) : [];
+      const paths = matched.map((name) => (dir === '.' ? name : `${dir}/${name}`));
+      if (paths.length === 0) {
+        add(PREPARE_FAIL, 'ENTRY-MISSING', `${field} → ${relPath} 在包目录里没有匹配项`);
+        continue;
+      }
+      const empty = paths.filter((path) => {
+        const text = read(path);
+        return text === null || text.trim().length === 0;
+      });
+      if (empty.length > 0) {
+        add(PREPARE_FAIL, 'ENTRY-EMPTY', `${field} → ${relPath} 匹配到缺失或空文件：${empty.join(', ')}`);
+        continue;
+      }
+      add(PREPARE_OK, 'ENTRY', `${field} → ${relPath}（${paths.length} 个文件）`);
+      continue;
+    }
     const text = read(relPath);
     if (text === null) add(PREPARE_FAIL, 'ENTRY-MISSING', `${field} → ${relPath} 在包目录里不存在`);
     else if (text.trim().length === 0) add(PREPARE_FAIL, 'ENTRY-EMPTY', `${field} → ${relPath} 是空文件`);

@@ -41,6 +41,7 @@ import {
   findLocaleSegment,
   readDeclaredBlock,
   readDictionaries,
+  readLocaleMeta,
   renderDictionaryBlock,
   renderLocaleSegment,
   writeDeclaredBlock,
@@ -176,6 +177,38 @@ test('locale: both JSON files are valid, key-aligned dictionaries', () => {
     // reordered file is a silent 516-line diff of the bundle.
     assert.deepEqual(Object.keys(dict), keys, `${name}: same keys in the same order as zh`);
     for (const key of keys) assert.equal(typeof dict[key], 'string');
+  }
+});
+
+test('locale: every dictionary carries the plugin-page meta block (0.2.2)', () => {
+  // The settings → Plugins page reads `meta.title` / `meta.description` from
+  // each locale file directly (dsh-app-boot's `readPluginMeta`); these fields are
+  // display metadata, not dictionary entries, so they must not disturb the 597.
+  for (const name of Object.keys(LOCALES)) {
+    const meta = readLocaleMeta(packageRoot, name);
+    assert.ok(meta, `${name}.json: a meta block`);
+    assert.equal(typeof meta.title, 'string', `${name}: meta.title`);
+    assert.equal(typeof meta.description, 'string', `${name}: meta.description`);
+    assert.notEqual(meta.title.trim(), '', `${name}: non-empty title`);
+    assert.notEqual(meta.description.trim(), '', `${name}: non-empty description`);
+  }
+});
+
+test('locale: a malformed meta block is rejected, not silently dropped (negative control)', () => {
+  const root = throwawayPackage();
+  try {
+    const path = join(root, 'locale', 'zh.json');
+    const json = JSON.parse(readFileSync(path, 'utf8'));
+    json.meta.unknown = 'x';
+    writeFileSync(path, JSON.stringify(json, null, 2));
+    assert.throws(() => readLocaleMeta(root, 'zh'), /not a supported field/);
+
+    delete json.meta.unknown;
+    json.meta.title = '';
+    writeFileSync(path, JSON.stringify(json, null, 2));
+    assert.throws(() => readLocaleMeta(root, 'zh'), /non-empty string/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

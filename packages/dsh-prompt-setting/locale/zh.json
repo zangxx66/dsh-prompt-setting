@@ -1,4 +1,8 @@
 {
+  "meta": {
+    "title": "Prompt 管理",
+    "description": "在设置页查看并覆盖每轮会话最终装配的系统提示词。"
+  },
   "nav": "Prompt 管理",
   "title": "Prompt 管理",
   "subtitle": "查看并覆盖每轮会话最终装配的 system prompt。写入作用于下一轮装配（next-turn）。",

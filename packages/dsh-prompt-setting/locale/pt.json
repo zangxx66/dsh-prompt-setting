@@ -1,4 +1,8 @@
 {
+  "meta": {
+    "title": "Configurações do prompt",
+    "description": "Inspecione e substitua o prompt de sistema montado em cada sessão diretamente nas Configurações."
+  },
   "nav": "Configurações de prompt",
   "title": "Configurações de prompt",
   "subtitle": "Inspecione e substitua o prompt do sistema montado em cada sessão. Uma gravação se aplica à próxima montagem (next-turn).",

@@ -1,4 +1,8 @@
 {
+  "meta": {
+    "title": "Ajustes de prompt",
+    "description": "Consulta y sobrescribe el prompt del sistema que se ensambla en cada sesión desde Ajustes."
+  },
   "nav": "Ajustes de prompt",
   "title": "Ajustes de prompt",
   "subtitle": "Consulta y sobrescribe el prompt del sistema que se ensambla en cada sesión. Una escritura se aplica al siguiente ensamblado (siguiente turno).",

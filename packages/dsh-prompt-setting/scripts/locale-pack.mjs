@@ -203,12 +203,23 @@ export function writeDeclaredBlock(source, name, dict) {
 }
 
 /**
- * 读一份 locale JSON，绝不猜编码：非法 JSON 直接抛。
- * @param packageDir - 包根目录。
- * @param name - `zh` / `en`。
- * @returns 词典对象（保持文件里的键序）。
+ * The reserved top-level key of one locale file: the plugin-page display metadata
+ * (0.2.2 `meta.title` / `meta.description` / `meta.detail`). It never becomes a
+ * runtime dictionary entry — the Host reads it straight from `locale/*.json`
+ * (`readPluginMeta` in `dsh-app-boot`), and the generated `const zh = {…}` blocks
+ * must stay flat string tables.
  */
-export function readLocaleJson(packageDir, name) {
+const PLUGIN_META_KEY = 'meta';
+/** Fields the plugin-page reader understands inside `meta`. */
+const PLUGIN_META_FIELDS = Object.freeze(['title', 'description', 'detail']);
+
+/**
+ * Parse one locale file, keeping its JSON key order.
+ * @param packageDir - 包根目录。
+ * @param name - 语言 id（`zh` / `en` / …）。
+ * @returns the parsed top-level object.
+ */
+function parseLocaleFile(packageDir, name) {
   const path = join(packageDir, LOCALE_DIR, `${name}.json`);
   let raw;
   try {
@@ -223,12 +234,69 @@ export function readLocaleJson(packageDir, name) {
     throw new Error(`${LOCALE_DIR}/${name}.json is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error(`${LOCALE_DIR}/${name}.json must be a flat object of string values`);
-  }
-  for (const [key, value] of Object.entries(parsed)) {
-    if (typeof value !== 'string') throw new Error(`${LOCALE_DIR}/${name}.json: \`${key}\` is not a string`);
+    throw new Error(`${LOCALE_DIR}/${name}.json must be an object of string values (plus an optional \`meta\` block)`);
   }
   return parsed;
+}
+
+/**
+ * Validate one file's plugin-page `meta` block and return it.
+ *
+ * The block is optional (a dictionary that only serves the plugin's own settings
+ * page needs none); when present it may carry only the fields the Host reads, each
+ * as a non-empty string. Empty/unknown values are rejected instead of being passed
+ * to a reader that would silently drop them.
+ * @param parsed - the whole locale file.
+ * @param label - a diagnostic label (`locale/zh.json`).
+ * @returns the meta block, or `undefined` when the file has none.
+ */
+function metaOf(parsed, label) {
+  const meta = parsed[PLUGIN_META_KEY];
+  if (meta === undefined) return undefined;
+  if (meta === null || typeof meta !== 'object' || Array.isArray(meta)) {
+    throw new Error(`${label}: \`meta\` must be an object`);
+  }
+  for (const [key, value] of Object.entries(meta)) {
+    if (!PLUGIN_META_FIELDS.includes(key)) {
+      throw new Error(`${label}: meta.\`${key}\` is not a supported field (${PLUGIN_META_FIELDS.join(' / ')})`);
+    }
+    if (typeof value !== 'string' || value.trim() === '') {
+      throw new Error(`${label}: meta.\`${key}\` must be a non-empty string`);
+    }
+  }
+  return meta;
+}
+
+/**
+ * 读一份 locale JSON，绝不猜编码：非法 JSON 直接抛。
+ *
+ * `meta` 是插件页展示元信息（`title` / `description` / `detail`），由 Host 直接读
+ * JSON，不进运行时词典 —— 这里把它剔除，其余键必须是字符串。
+ * @param packageDir - 包根目录。
+ * @param name - `zh` / `en`。
+ * @returns 词典对象（保持文件里的键序）。
+ */
+export function readLocaleJson(packageDir, name) {
+  const parsed = parseLocaleFile(packageDir, name);
+  metaOf(parsed, `${LOCALE_DIR}/${name}.json`);
+  const dictionary = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (key === PLUGIN_META_KEY) continue;
+    if (typeof value !== 'string') throw new Error(`${LOCALE_DIR}/${name}.json: \`${key}\` is not a string`);
+    dictionary[key] = value;
+  }
+  return dictionary;
+}
+
+/**
+ * Read one file's plugin-page `meta` block.
+ * @param packageDir - 包根目录。
+ * @param name - 语言 id。
+ * @returns the validated meta block, or `undefined` when absent.
+ * @throws when the block is present but malformed.
+ */
+export function readLocaleMeta(packageDir, name) {
+  return metaOf(parseLocaleFile(packageDir, name), `${LOCALE_DIR}/${name}.json`);
 }
 
 /**
@@ -348,7 +416,8 @@ function readLocaleKeySequences(readText) {
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
       throw new Error(`${LOCALE_DIR}/${name}.json must be a flat object of string values`);
     }
-    sequences[name] = Object.keys(parsed);
+    // `meta` is plugin-page display metadata, not a dictionary key.
+    sequences[name] = Object.keys(parsed).filter((key) => key !== PLUGIN_META_KEY);
   }
   return sequences;
 }

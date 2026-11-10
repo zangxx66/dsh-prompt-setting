@@ -1,4 +1,8 @@
 {
+  "meta": {
+    "title": "Prompt-Einstellungen",
+    "description": "Zeigt den in jeder Sitzung zusammengesetzten System-Prompt in den Einstellungen an und überschreibt ihn."
+  },
   "nav": "Prompt-Einstellungen",
   "title": "Prompt-Einstellungen",
   "subtitle": "System-Prompt prüfen und überschreiben, der in jede Sitzung eingebaut wird. Ein Schreibvorgang gilt ab der nächsten Zusammenstellung (nächste Runde).",

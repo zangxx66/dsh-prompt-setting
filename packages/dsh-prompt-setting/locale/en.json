@@ -1,4 +1,8 @@
 {
+  "meta": {
+    "title": "Prompt settings",
+    "description": "Inspect and override the system prompt assembled into every session, right from Settings."
+  },
   "nav": "Prompt settings",
   "title": "Prompt settings",
   "subtitle": "Inspect and override the system prompt assembled into every session. A write applies to the next assembly (next-turn).",

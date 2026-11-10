@@ -1,4 +1,8 @@
 {
+  "meta": {
+    "title": "Réglages du prompt",
+    "description": "Consultez et remplacez le prompt système assemblé dans chaque session depuis les Réglages."
+  },
   "nav": "Réglages du prompt",
   "title": "Réglages du prompt",
   "subtitle": "Inspectez et remplacez le prompt système assemblé dans chaque session. Toute écriture s'applique à l'assemblage suivant (next-turn).",
