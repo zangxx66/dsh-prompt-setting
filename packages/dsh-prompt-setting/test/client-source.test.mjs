@@ -67,7 +67,7 @@ const packageJson = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'u
  * `17-composer-bar-live.js`（同样插在 boot 之前，boot 段改名为 `18-boot.js`）。
  * g-092 加了三段：宿主的 8 种界面语言让 locale 生成段从 1 段变 4 段（每段 2 语言，
  * 恰好 1200 行），新段排在 boot 之前 —— `00–17` 段坐标一个字节没动，只有 boot
- * 段顺延为 `21-boot.js`（内容不变，537 行）。
+ * 段顺延为 `21-boot.js`（内容不变，537 行；0.2.2 的设置导航图标 +68 行 ⇒ 605 行）。
  */
 const SEGMENTS = [
   [1, 215, '00-entry.js'],
@@ -91,7 +91,7 @@ const SEGMENTS = [
   [14885, 16084, '18-locale-b.js'],
   [16085, 17284, '19-locale-c.js'],
   [17285, 18484, '20-locale-d.js'],
-  [18485, 19021, '21-boot.js'],
+  [18485, 19089, '21-boot.js'],
 ];
 
 /**

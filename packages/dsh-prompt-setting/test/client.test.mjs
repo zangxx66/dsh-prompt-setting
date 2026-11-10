@@ -1745,17 +1745,53 @@ function sessionOptions(tree) {
 test('client: registers one settings.section entry with the plugin id', () => {
   const { module } = loadClient('throw');
   const { registeredSlots, registrations } = mountClient(module);
-  // g-086 added a second, unrelated inject (`conversation.input.dock`). The
-  // settings section is still registered exactly once, and it is still the
-  // first thing the plugin asks for.
-  assert.deepEqual([...registeredSlots], ['settings.section', 'conversation.input.dock']);
+  // g-086 added a second, unrelated inject (`conversation.input.dock`); 0.2.2
+  // added the optional nav glyph. The settings section is still registered
+  // exactly once, and it is still the first thing the plugin asks for.
+  assert.deepEqual([...registeredSlots], ['settings.section', 'settings.section.icon', 'conversation.input.dock']);
   assert.equal(registrations.filter((entry) => entry.options.name === 'settings.section').length, 1);
+  assert.equal(registrations.filter((entry) => entry.options.name === 'settings.section.icon').length, 1);
   const { options, component } = registrations[0];
   assert.equal(options.name, 'settings.section');
   assert.equal(options.id, 'prompt-setting');
   assert.equal(options.locale, NS);
   assert.equal(typeof component, 'function');
   assert.equal(options.order, 30);
+});
+
+test('client: the settings nav glyph carries the section id, a hand-drawn svg and the row size (0.2.2)', () => {
+  const { module } = loadClient('throw');
+  const { registrations } = mountClient(module);
+  const icon = registrations.find((entry) => entry.options.name === 'settings.section.icon');
+  assert.ok(icon, 'the icon entry is registered once the Host declares the slot');
+  // The shell only renders a contribution whose id equals the settings.section
+  // id; a different id would never appear.
+  assert.equal(icon.options.id, 'prompt-setting');
+  assert.equal(typeof icon.component, 'function');
+
+  const element = icon.component({ size: 16, active: false });
+  assert.equal(element.type, 'svg');
+  assert.equal(element.props.viewBox, '0 0 24 24');
+  // The shell owns the row colour (selected state included); the glyph must
+  // inherit it, never hard-code a hue or a `color` style.
+  assert.equal(element.props.stroke, 'currentColor');
+  assert.equal(element.props.style.color, undefined);
+  assert.equal(element.props['aria-hidden'], 'true');
+  assert.equal(element.props.focusable, 'false');
+  assert.equal(element.props.width, 16);
+  assert.equal(element.props.height, 16);
+  assert.equal(element.props.strokeWidth, 1.8, 'inactive rows use the shell glyph weight');
+  assert.equal(icon.component({ size: 16, active: true }).props.strokeWidth, 2, 'selected rows get the same mild emphasis');
+  // The shell may ask for any square edge; the drawing follows it rather than
+  // pinning 16, and an absent/absurd size falls back to the shell default.
+  assert.equal(icon.component({ size: 20, active: false }).props.width, 20);
+  assert.equal(icon.component(undefined).props.width, 16);
+
+  // Hand-drawn: the document outline, its fold, two text rows and the caret
+  // editing the third row. All stroke-only, so nothing fills at 16 px.
+  const paths = collect(element, (node) => node.type === 'path');
+  assert.equal(paths.length, 5);
+  for (const path of paths) assert.equal(typeof path.props.d, 'string');
 });
 
 test('client: injects the locale namespace thunk and declares the Host’s 8 dictionaries', () => {
@@ -17045,8 +17081,8 @@ test('client: a Host that never declares conversation.input.dock loses the bar, 
   const { registeredSlots, registrations } = mountClient(module, 'full', {
     declaredSlots: ['settings.section'],
   });
-  // `slots.inject` was asked for both names; only the declared one called back.
-  assert.deepEqual([...registeredSlots], ['settings.section', 'conversation.input.dock']);
+  // `slots.inject` was asked for all three names; only the declared one called back.
+  assert.deepEqual([...registeredSlots], ['settings.section', 'settings.section.icon', 'conversation.input.dock']);
   assert.deepEqual(
     registrations.map((entry) => entry.options.name),
     ['settings.section'],

@@ -51,6 +51,53 @@
     }
 
     /**
+     * The settings-nav glyph for this plugin's own section (0.2.2
+     * `settings.section.icon`).
+     *
+     * Drawn by hand in the Shell's icon idiom rather than borrowed from the
+     * primitives probe: a nav glyph must still draw when that probe fails, and
+     * 16 px is the one size that matters. The glyph says what the section is —
+     * a system-prompt document carrying two text rows and a caret editing the
+     * third: this page reads the assembled prompt and writes the one custom
+     * section.
+     *
+     * `currentColor` only: the shell owns the row's colour, selected state
+     * included, and passes `active` for the same mild emphasis its own glyphs
+     * use. `size` is the shell's requested square edge in pixels.
+     * @param props - `{ size, active }` from the settings navigation row.
+     * @returns the svg element.
+     */
+    function PromptSettingNavIcon(props) {
+      const size =
+        props !== null && typeof props === 'object' && Number.isFinite(props.size) && props.size > 0
+          ? props.size
+          : 16;
+      const active = props !== null && typeof props === 'object' && props.active === true;
+      return h(
+        'svg',
+        {
+          'data-nav-icon': 'prompt-setting',
+          width: size,
+          height: size,
+          viewBox: '0 0 24 24',
+          fill: 'none',
+          stroke: 'currentColor',
+          strokeWidth: active ? 2 : 1.8,
+          strokeLinecap: 'round',
+          strokeLinejoin: 'round',
+          'aria-hidden': 'true',
+          focusable: 'false',
+          style: { flex: 'none', display: 'block' },
+        },
+        h('path', { d: 'M6 3.5h8l4 4v13H6z' }),
+        h('path', { d: 'M14 3.5v4h4' }),
+        h('path', { d: 'M9 11h6' }),
+        h('path', { d: 'M9 14.5h6' }),
+        h('path', { d: 'M9 19v-3' }),
+      );
+    }
+
+    /**
      * The base class the boundary extends.
      *
      * `React.Component` on every React this page has ever seen; the fallback
@@ -356,6 +403,27 @@
             PromptSettingSection,
           ),
         );
+
+        // 0.2.2 (changelog:「插件可为自己的设置页面提供导航图标，卸载后恢复
+        // 默认图标」): the optional nav glyph for this section. The shell
+        // declares `settings.section.icon` as a list slot and renders a
+        // contribution only for the row whose id matches its `settings.section`
+        // id; with no contribution it keeps its default gear. `slots.inject`
+        // runs its callback only once the slot is declared, so a Host older
+        // than 0.2.2 never calls back — no registration, no throw, and its
+        // gear stays exactly as before. The `try` covers the third state (a
+        // Host that declares the slot and then refuses the entry): the same
+        // honest degradation, never a failed apply.
+        ctx.slots.inject('settings.section.icon', () => {
+          try {
+            return ctx.slots.register(
+              { name: 'settings.section.icon', id: 'prompt-setting' },
+              PromptSettingNavIcon,
+            );
+          } catch {
+            return undefined;
+          }
+        });
 
         // g-062 (Revision 46): the proactive half. `shell.overlay` is the frame's
         // own floating layer (a **list** slot: an id is added beside the shipped
