@@ -4496,6 +4496,26 @@ Invariants, each asserted in `test/client.test.mjs`:
 
 ---
 
+### 13.11 The prompt-injection inspector (g-097)
+
+Two client entries surface the plugin's own read-only injection summary at the
+conversation composer. Both are **list** registrations beside the shipped
+entries — never a DOM enhancement and never a shadow of the composer:
+
+| Slot | Entry | What it is |
+| --- | --- | --- |
+| `conversation.input.left` | `order: 10`, id `prompt-setting-prompt-inspector` | One compact icon button in the composer tool row, right of the shipped permission/plan controls. Read-only; it opens the panel. |
+| `shell.overlay` | `order: 10`, id `prompt-setting-prompt-inspector-panel` | The frame-level dialog (`role="dialog"`, `data-region="composer-prompt-inspector"`). It lives in the shell overlay, **not** `conversation.input.overlay`: the composer card carries `will-change: transform`, so a `fixed` panel inside it would resolve against the composer and be clipped. The shell overlay layer is click-through (`pointer-events: none`), so the scrim and the panel both opt back in explicitly. |
+
+Both entries read the same three existing `GET`s (`snapshot` / `overrides` /
+`assembly-status`); without a Session no request is issued, and nothing here
+writes. The panel lists one row per `effective.sections` (payload order,
+`index: null` included, characters = `text.length`), expands a row's effective
+text in place, reports each layer's coverage and the injection instant, and
+closes through the close button, the scrim click or Escape — focus returns to the
+composer editor. Per-row `data-section-*` / `data-inspector-*` attributes are the
+probe surface; no class name is part of the contract.
+
 ## 14. Client build stamp (Revision 6; the bundle ships chunks in Revision 29)
 
 ### 14.1 The problem this answers
@@ -8066,12 +8086,12 @@ Japanese script (or be an untranslated technical skeleton).
   From it the script derives (a) the JSON files it reads, (b) the generated
   segment groups — **two languages per segment**, because 597 keys × 2 = 599
   block lines × 2 + 1 comment + 1 manifest line = exactly the 1200-line segment
-  budget — and (c) the boot segment's index (`18 + groups - 1`). Adding a ninth
+  budget — and (c) the boot segment's index (`19 + groups - 1`; slot 18 is the plugin's prompt-inspector slice). Adding a ninth
   language therefore means one entry in `LOCALES` + one JSON; a test pins that
   (`--write` derives the new segment and renumbers boot).
 - Nothing else in the package is hand-edited for copy. `client.js` carries the
   generated blocks (`const zh = {` … `const pt = {`) inside the four carrying
-  `src/` segments — `02-locale.js` (zh/en) plus `18/19/20-locale-*.js`; each
+  `src/` segments — `02-locale.js` (zh/en) plus `19/20/21-locale-*.js`; each
   segment's header line states its JSON sources and that
   `locale-pack.mjs --write` is the only writer. A hand edit there is overwritten
   by the next `--write` and reported by `--check`. (Revision 57 reduced the old
@@ -8128,7 +8148,7 @@ one allowlisted directory).
 
 ### 22.6 Registration and the compatibility ladder (g-092)
 
-`21-boot.js` registers the dictionaries inside one guarded `ctx.effect` (the
+`22-boot.js` registers the dictionaries inside one guarded `ctx.effect` (the
 guarded-locale discipline of §13 still applies to every locale call):
 
 1. **Baseline first, object form**: `ctx.locale.register(NS, { zh, en })`. That is
@@ -8144,7 +8164,7 @@ guarded-locale discipline of §13 still applies to every locale call):
 
 `LOCALE_DICTS` is emitted by `locale-pack.mjs`, never hand-written:
 `const LOCALE_DICTS = { zh, en };` ends the first segment and
-`Object.assign(LOCALE_DICTS, { … });` ends each later one. `21-boot.js` therefore
+`Object.assign(LOCALE_DICTS, { … });` ends each later one. `22-boot.js` therefore
 iterates a generated object — registration order is `LOCALES` order, and there is
 no second language list to drift.
 

@@ -18969,6 +18969,36 @@ function makeInspectorWindow(width, height) {
   };
 }
 
+/** Independent reader-zone stamp (the documented format, not the page's code). */
+function expectedReaderStamp(ms) {
+  const skeleton = {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: 'h23',
+  };
+  for (const zoneName of ['shortOffset', 'short', null]) {
+    try {
+      const formatter = new Intl.DateTimeFormat(undefined, zoneName === null ? skeleton : { ...skeleton, timeZoneName: zoneName });
+      const parts = formatter.formatToParts(new Date(ms));
+      const part = (type) => {
+        const found = parts.find((entry) => entry.type === type);
+        return found === undefined ? '' : found.value;
+      };
+      const date = `${part('year')}-${part('month')}-${part('day')}`;
+      const time = `${part('hour')}:${part('minute')}:${part('second')}`;
+      const zone = part('timeZoneName');
+      return zone.length > 0 ? `${date} ${time} ${zone}` : `${date} ${time}`;
+    } catch {
+      // Try the next zone label.
+    }
+  }
+  return '';
+}
+
 /** The row nodes the panel drew. */
 function inspectorRows(tree) {
   return collect(tree, (node) => node.props && node.props['data-section-row'] !== undefined);
@@ -19296,8 +19326,18 @@ test('client: the title bar drags the panel, honors the threshold and restores s
   const movedPanel = inspectorPanelNode(page.loaded.runtime.render(panel.registration.component, panel.props).tree);
   assert.equal(movedPanel.props.style.left, '620px');
   assert.equal(movedPanel.props.style.top, '490px');
+  assert.equal(movedPanel.props.style.transform, 'translate(-50%, -50%)', '位置是 center 坐标 + 平移半盒');
   handle.props.onPointerUp({ currentTarget: capture });
   assert.notEqual(doc.documentElement.style.userSelect, 'none', '拖动结束恢复 user-select');
+  // R2：拖动途中关闭（Esc/关闭按钮走同一条 dismiss）不得遗留拖动状态与样式。
+  handle.props.onPointerDown({ button: 0, clientX: 100, clientY: 100, pointerId: 9, target: { closest: () => null }, currentTarget: capture });
+  handle.props.onPointerMove({ clientX: 140, clientY: 160 });
+  assert.equal(doc.documentElement.style.userSelect, 'none');
+  inspector.dismiss({ document: doc });
+  assert.equal(inspector.seat.dragState, null, '拖动中 dismiss 清空 dragState');
+  assert.notEqual(doc.documentElement.style.userSelect, 'none', '拖动中 dismiss 恢复 user-select');
+  assert.equal(inspector.seat.open, false);
+  inspector.open({ sessionId: 's1' });
   // 标题栏里的按钮（关闭按钮）不启动拖动，点击不被吞掉。
   const beforeButtonDown = { ...inspector.seat.dragCenter };
   handle.props.onPointerDown({ button: 0, clientX: 10, clientY: 10, pointerId: 8, target: { closest: () => ({}) }, currentTarget: capture });
@@ -19332,6 +19372,11 @@ test('client: every section row expands its effective text, independently (g-097
   assert.equal(rowOf('ghost:section').props['aria-expanded'], 'false');
   rowOf('ghost:section').props.onClick({ stopPropagation() {} });
   tree = panel.draw();
+  // R1：点击文本区（框选复制）不得冒泡成整行收起。
+  assert.equal(typeof alphaText.props.onMouseDown, 'function');
+  alphaText.props.onClick({ stopPropagation() {} });
+  tree = panel.draw();
+  assert.equal(rowOf('project:alpha').props['aria-expanded'], 'true', '点击文本区后该行仍展开');
   const ghostText = collect(rowOf('ghost:section'), (node) => node.props && node.props['data-section-text'] !== undefined)[0];
   assert.equal(ghostText.props.children, page.zh.stNone, '空文本展开显示既有空态');
   assert.equal(rowOf('project:alpha').props['aria-expanded'], 'true', '展开状态逐行独立');
@@ -19362,7 +19407,8 @@ test('client: the assembly block splits the two verdicts and prints the injectio
   assert.equal(noticeTime.props['data-inspector-time-source'], 'notice', '优先 notice.at');
   assert.equal(
     String(noticeTime.props.children),
-    `${withNotice.page.zh.histPreviewAt}${withNotice.page.zh.assemblyLayerSep}${withNotice.inspector.stampOf(1700000000000)}`,
+    `${withNotice.page.zh.histPreviewAt}${withNotice.page.zh.assemblyLayerSep}${expectedReaderStamp(1700000000000)}`,
+    '时间按读者时区格式化（独立 Intl 期望，不用被测实现自证）',
   );
   assert.equal(/NaN|Invalid Date/.test(String(noticeTime.props.children)), false);
 
@@ -19377,7 +19423,24 @@ test('client: the assembly block splits the two verdicts and prints the injectio
   assert.equal(
     String(noneTime.props.children),
     `${none.page.zh.histPreviewAt}${none.page.zh.assemblyLayerSep}${none.page.zh.stNone}`,
-    '无时间显示明确空态',
+    '请求成功但无记录 ⇒ 明确空态',
+  );
+
+  // R7：assembly-status 请求失败 ≠ 没有观察记录。
+  const failedPage = makePage({
+    primitives: 'throw',
+    responses: defaultResponses({
+      [PATHS.assemblyStatus]: { status: 500, payload: { ok: false, code: 'assemble-failed', message: 'boom' } },
+    }),
+  });
+  failedPage.loaded.module.__internals.promptInspector.open({ sessionId: 's1' });
+  const failedNode = inspectorPanelNode(await makeInspectorPanel(failedPage).flush());
+  const failedTime = collect(failedNode, (node) => node.props && node.props['data-inspector-time'] !== undefined)[0];
+  assert.equal(failedTime.props['data-inspector-time-source'], 'none');
+  assert.equal(
+    String(failedTime.props.children),
+    `${failedPage.zh.histPreviewAt}${failedPage.zh.assemblyLayerSep}${failedPage.zh.loadFailed}`,
+    '读取失败 ⇒ 时间行显示加载失败，不是「（无）」',
   );
 });
 

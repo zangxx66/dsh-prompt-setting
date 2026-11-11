@@ -29,7 +29,7 @@
    会让 `client:check` 与 `test/client-source.test.mjs` 同时变红。
 4. **一个功能点只改一个段**。需要同时改两个段，通常说明切点放错了位置。
 5. **有一类段不要手改**：承载 `const zh = {` … `const pt = {` 的四个 locale 段
-   （`02-locale.js` / `18-locale-b.js` / `19-locale-c.js` / `20-locale-d.js`）是**生成的** ——
+   （`02-locale.js` / `19-locale-b.js` / `20-locale-c.js` / `21-locale-d.js`）是**生成的** ——
    人工真源是 `locale/*.json`（8 份），改完跑 `node scripts/locale-pack.mjs --write`（它会写进
    段里并顺手重建 `client.js`，所以一次跑完两边都新）。段名/段数/语言分组、以及 boot 段的序号
    全部由 `scripts/locale-pack.mjs` 的 `LOCALES` 派生 —— 加一种语言时**不要**手改段名或 boot 段，

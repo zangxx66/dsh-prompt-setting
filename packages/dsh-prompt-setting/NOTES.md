@@ -11313,3 +11313,24 @@ scrim 与面板都显式 `pointerEvents: 'auto'`。**不**做 DOM 增强、**不
   （第 9 语言 → locale 段铺到 22、boot 顺延 23），`test/locale.test.mjs` 的 9 语言用例全绿。
 - **验证**：全量 1103 例 0 fail（1099 + 新增 4 条 g-097 用例）；verify 6 步 0 失败；check-refs 绿；
   负向对照（过滤 `index:null`）仍 7 pass / 3 fail，还原后 10/10 绿。
+
+### 七、复审注记收口（rev-att-001-03 的 7 项）
+
+1. **R1**：`<pre>` 内容区 `onMouseDown` / `onClick` 阻止冒泡——展开后框选复制文本不会触发整行收起；
+   补「点击 `[data-section-text]` 后该行仍展开」断言。
+2. **R2**：拖动状态从组件 `useRef` 提升到 `promptInspectorSeat.dragState`；`promptInspectorDismiss` 清
+   `dragState` 并恢复 document 样式，`promptInspectorOpen` 也清（重开不会被无按键的 pointermove 移动）；
+   补「拖动中 dismiss ⇒ 样式恢复、dragState=null」断言。
+3. **R3**：CONTRACT §22.1 段序号基座更新为 `19 + groups - 1`，locale 段名 `19/20/21-locale-*`、
+   boot `22-boot.js`；并在 §13 末尾新增 §13.11 记录两个客户端 UI 面（`conversation.input.left` 按钮 +
+   `shell.overlay` 面板）。**按 CONTRACT 自身结构补记，未虚构 g-086 先例**（该文件确实没有 g-086 条目）。
+4. **R4**：`locale-pack.mjs` 注释、`src/README.md`、`docs/refactor-plan.md`（段名/段数/行号）、
+   `test/client-source.test.mjs` 文案、`test/prepare.test.mjs` 注释、§1.3/§5.1 表、`docs/check-refs.mjs`
+   REFS 行号全部同步；grep 确认无残留 `18 + groups` 公式与 `18/19/20-locale` 引用。
+5. **R5**：拖动后断言补 `transform: translate(-50%, -50%)`，锁死「center 坐标 + 平移半盒」语义。
+6. **R6**：时间期望改为测试内独立 `Intl.DateTimeFormat` 实现（与页面 `stampOf` 同格式但不同代码），
+   不再用被测 `inspector.stampOf` 自证。
+7. **R7**：assembly-status 读取失败时时间行显示 `loadFailed`；仅「请求成功但无记录」显示 `stNone`；
+   补两态断言。
+- **验证**：全量 1103 例 0 fail；`verify` 6 步 0 失败；check-refs 绿；段真源 19994 行（23 段，
+  `client-build --check` 逐字节一致）。

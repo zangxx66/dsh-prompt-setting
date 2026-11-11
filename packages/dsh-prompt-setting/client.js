@@ -14930,7 +14930,7 @@ window.__ModuleLoader__.load({
     });
 
     /** The one seat the two entries share. `revision` is the store snapshot. */
-    const promptInspectorSeat = { open: false, sessionId: '', returnFocus: null, dragCenter: null, revision: 0, listeners: new Set() };
+    const promptInspectorSeat = { open: false, sessionId: '', returnFocus: null, dragCenter: null, dragState: null, revision: 0, listeners: new Set() };
 
     /** Subscribe to the seat; the returned unsubscribe is what unmount calls. */
     function promptInspectorSubscribe(listener) {
@@ -14959,8 +14959,10 @@ window.__ModuleLoader__.load({
       promptInspectorSeat.sessionId = typeof source.sessionId === 'string' ? source.sessionId : '';
       promptInspectorSeat.returnFocus = source.returnFocus === undefined ? null : source.returnFocus;
       // Reopening always starts centered again — a predictable position beats a
-      // remembered one that may no longer be on screen.
+      // remembered one that may no longer be on screen. A drag left over from a
+      // panel closed mid-drag must not keep moving the new one.
       promptInspectorSeat.dragCenter = null;
+      promptInspectorSeat.dragState = null;
       promptInspectorNotify();
     }
 
@@ -15016,6 +15018,11 @@ window.__ModuleLoader__.load({
     function promptInspectorDismiss(props) {
       const fallback = promptInspectorSeat.returnFocus;
       promptInspectorSeat.returnFocus = null;
+      // A dismiss can land in the middle of a drag (Escape). Drop the drag state
+      // and restore the document styles here, or the document root keeps `user-select:none`
+      // until the next completed drag.
+      promptInspectorSeat.dragState = null;
+      promptInspectorSetDragStyles(props, false);
       promptInspectorClose();
       return promptInspectorFocusInput(composerBarDocumentOf(props), fallback);
     }
@@ -15313,7 +15320,6 @@ window.__ModuleLoader__.load({
       // Per-row expansion, independent per row; a fresh Set per toggle so the
       // snapshot identity changes (React's state contract).
       const [expanded, setExpanded] = React.useState(() => new Set());
-      const dragRef = React.useRef(null);
       const panelRef = React.useRef(null);
       const live = usePromptInspectorRead({ open, sessionId });
       const read = live.read;
@@ -15362,7 +15368,10 @@ window.__ModuleLoader__.load({
         };
       }, [open]);
       // A drag that outlives the panel must not leave the document root unselectable.
-      React.useEffect(() => () => promptInspectorSetDragStyles(props, false), []);
+      React.useEffect(() => () => {
+        promptInspectorSeat.dragState = null;
+        promptInspectorSetDragStyles(props, false);
+      }, []);
       if (!open) return null;
       const dismiss = (event) => {
         if (event !== null && typeof event.preventDefault === 'function') event.preventDefault();
@@ -15404,7 +15413,7 @@ window.__ModuleLoader__.load({
         // The close button (and any other `data-action` control) keeps its click.
         if (target !== null && target !== undefined && typeof target.closest === 'function' && target.closest('[data-action]') !== null) return;
         const origin = clampCenter(promptInspectorSeat.dragCenter);
-        dragRef.current = {
+        promptInspectorSeat.dragState = {
           start: { x: Number.isFinite(event.clientX) ? event.clientX : 0, y: Number.isFinite(event.clientY) ? event.clientY : 0 },
           origin,
           pointerId: event.pointerId,
@@ -15420,7 +15429,7 @@ window.__ModuleLoader__.load({
         }
       };
       const moveDrag = (event) => {
-        const drag = dragRef.current;
+        const drag = promptInspectorSeat.dragState;
         if (drag === null || drag === undefined || event === null || event === undefined) return;
         const next = promptInspectorDragCenter(drag.origin, drag.start, event, PROMPT_INSPECTOR_DRAG_THRESHOLD);
         if (next.moved === false) return;
@@ -15433,8 +15442,8 @@ window.__ModuleLoader__.load({
         promptInspectorNotify();
       };
       const endDrag = (event) => {
-        const drag = dragRef.current;
-        dragRef.current = null;
+        const drag = promptInspectorSeat.dragState;
+        promptInspectorSeat.dragState = null;
         if (drag === null || drag === undefined) return;
         promptInspectorSetDragStyles(props, false);
         const handle = event !== null && event !== undefined ? event.currentTarget : null;
@@ -15462,7 +15471,14 @@ window.__ModuleLoader__.load({
       const assembly = phase === 'ready' ? promptInspectorAssemblyFactOf(read.assembly) : { kind: 'loading' };
       const frozen = phase === 'ready' ? promptInspectorFrozenFactOf(read.snapshot) : null;
       const stampFact = phase === 'ready' ? promptInspectorTimestampOf(read.assembly) : { source: 'none', at: null };
-      const stampText = stampFact.source === 'none' ? t('stNone') : promptInspectorStampOf(stampFact.at) || t('stNone');
+      // "No observation record" and "the assembly-status read failed" are not the
+      // same fact: only a *successful* payload with no record prints「（无）」.
+      const stampText =
+        stampFact.source === 'none'
+          ? read.assembly === null
+            ? t('loadFailed')
+            : t('stNone')
+          : promptInspectorStampOf(stampFact.at) || t('stNone');
       const summaryText =
         phase === 'ready'
           ? `${t('viewSections')}${t('assemblyLayerSep')}${totals.sections} · ${fmt(t('colChars'), { n: String(totals.chars) })}`
@@ -15564,7 +15580,22 @@ window.__ModuleLoader__.load({
                   `${t('colReason')}${t('assemblyLayerSep')}${row.reason}`),
           ),
           rowOpen
-            ? h('pre', { 'data-section-text': '', style: PROMPT_INSPECTOR_STYLE.pre }, row.text === '' ? t('stNone') : row.text)
+            ? h(
+                'pre',
+                {
+                  'data-section-text': '',
+                  style: PROMPT_INSPECTOR_STYLE.pre,
+                  // Selecting/copying inside the text must not reach the row's
+                  // toggle (a click on the selection would collapse it at once).
+                  onMouseDown: (event) => {
+                    if (event !== null && typeof event.stopPropagation === 'function') event.stopPropagation();
+                  },
+                  onClick: (event) => {
+                    if (event !== null && typeof event.stopPropagation === 'function') event.stopPropagation();
+                  },
+                },
+                row.text === '' ? t('stNone') : row.text,
+              )
             : null,
         );
       };

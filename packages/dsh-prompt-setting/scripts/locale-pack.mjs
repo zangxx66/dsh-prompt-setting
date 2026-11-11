@@ -87,7 +87,7 @@ function chunk(list, size) {
  * 第 `groupIndex` 个 locale 段的文件名 —— **由组序派生，不是一张手工清单**（g-092）。
  *
  * 第 0 组沿用历史主段名 `02-locale.js`（既有测试/门禁以它为锚）；第 n ≥ 1 组从
- * 序号 18 起顺延，字母后缀 b/c/d…，于是**新增语言不需要改任何一段手写映射**：
+ * 序号 19 起顺延（18 留给插件的 prompt-inspector 段），字母后缀 b/c/d…，于是**新增语言不需要改任何一段手写映射**：
  * `LOCALES` 多一项 ⇒ 组数变多 ⇒ 段名、段数、boot 序号全部跟着变。
  * @param groupIndex - 组序（0 起）。
  * @returns 段文件名。

@@ -91,11 +91,11 @@ const SEGMENTS = [
   [11730, 12619, '15-page-c.js'],
   [12620, 13776, '16-composer-bar.js'],
   [13777, 14884, '17-composer-bar-live.js'],
-  [14885, 15679, '18-prompt-inspector.js'],
-  [15680, 16879, '19-locale-b.js'],
-  [16880, 18079, '20-locale-c.js'],
-  [18080, 19279, '21-locale-d.js'],
-  [19280, 19963, '22-boot.js'],
+  [14885, 15710, '18-prompt-inspector.js'],
+  [15711, 16910, '19-locale-b.js'],
+  [16911, 18110, '20-locale-c.js'],
+  [18111, 19310, '21-locale-d.js'],
+  [19311, 19994, '22-boot.js'],
 ];
 
 /**
@@ -225,7 +225,7 @@ test('client source: line budget — stage 2 converges to §5.1, so no segment e
   const over = segments.filter((segment) => segment.lines > 1200).map((segment) => `${segment.name}:${segment.lines}`);
   // 阶段 1 超预算的三个（12-helpers/15-chrome/21-page）必须在这里消失。
   assert.deepEqual(over, [], `仍有超预算段：${over.join('、')}`);
-  assert.equal(segments.length, SEGMENTS.length, '段数 == §5.1 表（g-092 起 locale 生成段 1 → 4，g-097 起 boot 拆三段 ⇒ 24 段）');
+  assert.equal(segments.length, SEGMENTS.length, '段数 == §5.1 表（g-092 起 locale 生成段 1 → 4；g-097 起 inspector 段 + boot 回最后 ⇒ 23 段）');
   assert.equal(segments.reduce((sum, segment) => sum + segment.lines, 0), clientLines.length - 1, '总行数从产物派生');
   assert.equal(Math.max(...segments.map((segment) => segment.lines)), 1200, '最大段是 locale 生成段（597 键 × 2 语言，恰好 1200）');
 });
