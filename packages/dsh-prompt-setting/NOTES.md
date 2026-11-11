@@ -11236,16 +11236,22 @@ presentation listeners 收不到 tools、tools 保持 provider-owned。
 
 在会话输入框底部工具条的表情按钮右侧加一个按钮，点击显示当前 session 的系统提示词注入情况。落点：
 `conversation.input.left`（`kind: list`、`scope: session`，宿主 `registerComposerBar` 的 children），
-`order: 10` 紧跟 `dsh-meme` 的 `order: 5`；面板走宿主自己的 `conversation.input.overlay`（composer 内的浮层
-list），**不**做 DOM 增强、**不**遮蔽宿主工具条。
+`order: 10` 紧跟 `dsh-meme` 的 `order: 5`。面板走 **`shell.overlay`**（frame 级 list，scope=root），**不**是
+`conversation.input.overlay`：后者在 composer card 内，会话 active 时 `.composerSeat` 的
+`will-change: transform` 会让 `position: fixed` 相对 composer 定位、`.scrollBody` 还会裁剪（评审 BLOCK-1）；
+`shell.overlay` 在 composer 外，fixed 重新相对视口。宿主 `.overlayLayer` 是 `pointer-events:none`，所以
+scrim 与面板都显式 `pointerEvents: 'auto'`。**不**做 DOM 增强、**不**遮蔽宿主工具条。
 
 ### 二、实现
 
 - 数据源复用既有只读 GET：`/prompt-setting/snapshot`、`/overrides`、`/assembly-status`（与状态栏同一
   `composerBarRequestUrls` 构造器），全部 GET，面板不写任何配置。
 - 面板四块：①分段清单——`effective.sections` 顺序逐条，含 `index: null` 的未注入项，字符数 = `text.length`
-  （不估 token）；②层状态——`composerBarLayerFact` / `mineCoverageOf` 与设置页同口径；③装配结论——
-  `assemblyVerdictOf` / `deliveryVerdictOf`，`frozen` 单独一行标段名与原因；④汇总——总段数、总字符数。
+  （不估 token）；段内 meta 与「提示词总览」同口径：覆盖层名走 `layerKey`（用户级/工作区级），状态标签只在
+  `action !== null` 时出现（`replace` → 已生效 / `hide` → 已隐藏 / `append` → 追加），原因行只在 `reason !== ''`
+  时出现（`colReason` + 原因）——**没有覆盖的 `applied:false` 段不是「未启用」**（评审 BLOCK-2）；
+  ②层状态——`composerBarLayerFact` / `mineCoverageOf` 与设置页同口径；③装配结论——`assemblyVerdictOf` /
+  `deliveryVerdictOf`，`frozen` 单独一行标段名与原因；④汇总——总段数、总字符数。
 - 无 session ⇒ `?session=` 解析为 `null`，零请求并显示「无会话」；快照失败显示可读错误（`loadFailed` +
   `errorText`），输入框不受影响。
 - 关闭路径：关闭按钮 / 遮罩点击 / Esc 三路都关闭并把焦点还给输入框
@@ -11261,7 +11267,8 @@ list），**不**做 DOM 增强、**不**遮蔽宿主工具条。
 
 ### 三、验证
 
-- `node --test test/*.test.mjs`：1109 例 0 fail（新增 10 条 g-097 用例）。
+- `node --test test/*.test.mjs`：**1099** 例 0 fail（基线 1089 + 新增 10 条 g-097 用例；上一版本节误写 1109，
+  已按评审 BLOCK-3 订正）。
 - `node scripts/verify.mjs`：6 步 0 失败（check-refs / client-build --check / locale-pack --check / prepare /
   check-compat / 全量测试）。
 - 负向对照：把 `promptInspectorSectionRows` 改成过滤 `index: null` 后 3 条 g-097 用例转红（7 pass / 3 fail），
@@ -11274,3 +11281,13 @@ list），**不**做 DOM 增强、**不**遮蔽宿主工具条。
 - 真机截图（按钮位置与红框一致）：需把新 bundle 装进运行中的 `dsh web` 重启加载，留给负责人/supervisor
   人工验收。
 - 未新增 locale key（决策见上）；面板文案复用既有键，因此没有新增翻译。
+
+### 五、评审返工（rev-att-001-01 BLOCK → 本 commit）
+
+1. **面板定位**：从 `conversation.input.overlay` 改到 `shell.overlay`（frame 级、composer 外），scrim 与面板
+   显式 `pointerEvents:'auto'`（宿主 overlay layer 是 `pointer-events:none`）；按钮仍在 `conversation.input.left`
+   order 10。单测同步：面板 slot 名 / pointerEvents / 关闭态零节点 / 卸载清理。
+2. **`applied:false` 误标**：不再显示「未启用」；状态标签只在有 `action` 时出现（replace/hide/append →
+   已生效/已隐藏/追加），原因行只在有 `reason` 时出现，覆盖层名走 `layerKey`；补「正常段无状态/原因标签」
+   与「无覆盖段不得出现未启用」断言。
+3. **报告订正**：1099（含新增 10 条），并保留负向对照（过滤 `index:null` → 3 红，还原后 10/10 绿）。

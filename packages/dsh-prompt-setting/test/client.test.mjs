@@ -1748,7 +1748,7 @@ test('client: registers one settings.section entry with the plugin id', () => {
   // g-086 added a second, unrelated inject (`conversation.input.dock`); 0.2.2
   // added the optional nav glyph. The settings section is still registered
   // exactly once, and it is still the first thing the plugin asks for.
-  assert.deepEqual([...registeredSlots], ['settings.section', 'settings.section.icon', 'conversation.input.dock', 'conversation.input.left', 'conversation.input.overlay']);
+  assert.deepEqual([...registeredSlots], ['settings.section', 'settings.section.icon', 'conversation.input.dock', 'conversation.input.left', 'shell.overlay']);
   assert.equal(registrations.filter((entry) => entry.options.name === 'settings.section').length, 1);
   assert.equal(registrations.filter((entry) => entry.options.name === 'settings.section.icon').length, 1);
   const { options, component } = registrations[0];
@@ -14634,7 +14634,7 @@ function toastNodes(tree) {
  * @returns `{props, draw, flush}` for the registered toaster.
  */
 function makeToaster(page, props = {}) {
-  const registration = page.mounted.registrations.find((entry) => entry.options.name === 'shell.overlay');
+  const registration = page.mounted.registrations.find((entry) => entry.options.name === 'shell.overlay' && entry.options.id === 'prompt-setting-toast');
   assert.notEqual(registration, undefined, 'the toaster entry is registered');
   const bound = {
     t: (key) => dict(page.mounted.dictionaries, NS, key, page.language),
@@ -14965,7 +14965,7 @@ test('client: the toaster reads on mount, throttles a status burst, and re-reads
 test('client: without the Toast primitive nothing is registered, and the page says so', async () => {
   const old = makePage({ primitives: 'ok', responses: defaultResponses(), useSessions: sessionsHook(SESSIONS_STATE) });
   assert.equal(
-    old.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay').length,
+    old.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay' && entry.options.id === 'prompt-setting-toast').length,
     0,
     'a Host without Toast gets no overlay entry at all',
   );
@@ -14987,7 +14987,7 @@ test('client: without the Toast primitive nothing is registered, and the page sa
     responses: defaultResponses(),
     useSessions: sessionsHook(SESSIONS_STATE),
   });
-  const overlay = modern.mounted.registrations.find((entry) => entry.options.name === 'shell.overlay');
+  const overlay = modern.mounted.registrations.find((entry) => entry.options.name === 'shell.overlay' && entry.options.id === 'prompt-setting-toast');
   assert.notEqual(overlay, undefined);
   assert.equal(overlay.options.id, 'prompt-setting-toast');
   assert.equal(overlay.options.order, 60, 'it is added beside the shipped entries, never over them');
@@ -15018,7 +15018,7 @@ test('client: a Host with the primitive but no shell.overlay slot is not silentl
   });
   assert.equal(page.loaded.module.__internals.assemblyNotice.HAS_TOAST, true, 'the capability probe says yes');
   assert.equal(
-    page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay').length,
+    page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay' && entry.options.id === 'prompt-setting-toast').length,
     0,
     'the slot was never declared, so no entry exists',
   );
@@ -15146,7 +15146,7 @@ test('client: a Host that declares the slot and refuses the registration says ex
     useSessions: sessionsHook(SESSIONS_STATE),
   });
   assert.equal(
-    page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay').length,
+    page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay' && entry.options.id === 'prompt-setting-toast').length,
     0,
     'the registration was refused, so no entry exists',
   );
@@ -15196,7 +15196,7 @@ test('client: a flat primitives namespace is used as-is, and the diagnosis says 
   });
   const notice = page.loaded.module.__internals.assemblyNotice;
   assert.equal(notice.toastNamespace(), 'module', 'the namespace itself is the one the decision used');
-  assert.equal(page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay').length, 1);
+  assert.equal(page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay' && entry.options.id === 'prompt-setting-toast').length, 1);
   const probe = notice.primitivesProbe();
   assert.equal(probe.toastSource, 'module');
   assert.equal(probe.renderer, 'primitives', 'a flat namespace with Button keeps the primitives renderer');
@@ -15240,7 +15240,7 @@ test('client: an ESM/CJS wrapper is unwrapped for the toast, and only for the to
   assert.equal(page.loaded.module.__internals.assemblyNotice.HAS_TOAST, true);
   assert.equal(page.loaded.module.__internals.assemblyNotice.toastNamespace(), 'default');
   assert.equal(
-    page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay').length,
+    page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay' && entry.options.id === 'prompt-setting-toast').length,
     1,
     'the toaster is registered on the strength of the unwrapped namespace',
   );
@@ -15261,7 +15261,7 @@ test('client: a resolved-but-empty primitives answer says so instead of looking 
   for (const shape of ['empty-object', 'undefined']) {
     const page = makePage({ primitives: 'ok', primitivesShape: shape, responses: defaultResponses() });
     assert.equal(
-      page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay').length,
+      page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay' && entry.options.id === 'prompt-setting-toast').length,
       0,
       `${shape}: nothing drawable, so nothing is registered`,
     );
@@ -15413,7 +15413,7 @@ test('client: a forwardRef Toast is still a toast, and it really draws (g-063)',
   assert.equal(notice.HAS_TOAST, true, 'the toast probe asks the same forwardRef-aware question');
   assert.equal(notice.toastNamespace(), 'module');
   assert.equal(
-    page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay').length,
+    page.mounted.registrations.filter((entry) => entry.options.name === 'shell.overlay' && entry.options.id === 'prompt-setting-toast').length,
     1,
     'so the overlay is registered',
   );
@@ -17082,7 +17082,7 @@ test('client: a Host that never declares conversation.input.dock loses the bar, 
     declaredSlots: ['settings.section'],
   });
   // `slots.inject` was asked for all five names (g-097 added the inspector's two); only the declared one called back.
-  assert.deepEqual([...registeredSlots], ['settings.section', 'settings.section.icon', 'conversation.input.dock', 'conversation.input.left', 'conversation.input.overlay']);
+  assert.deepEqual([...registeredSlots], ['settings.section', 'settings.section.icon', 'conversation.input.dock', 'conversation.input.left', 'shell.overlay']);
   assert.deepEqual(
     registrations.map((entry) => entry.options.name),
     ['settings.section'],
@@ -18907,7 +18907,7 @@ function makeInspectorButton(page, props = {}) {
 
 /** The inspector panel entry the way the Host renders it. */
 function makeInspectorPanel(page, props = {}) {
-  const registration = page.mounted.registrations.find((entry) => entry.options.name === 'conversation.input.overlay');
+  const registration = page.mounted.registrations.find((entry) => entry.options.name === 'shell.overlay' && entry.options.id === 'prompt-setting-prompt-inspector-panel');
   assert.notEqual(registration, undefined, 'the inspector panel is registered');
   const bound = {
     t: (key) => dict(page.mounted.dictionaries, NS, key, page.language),
@@ -18983,9 +18983,9 @@ test('client: the inspector is registered in conversation.input.left at order 10
   assert.equal(tree.props['aria-expanded'], 'false');
   assert.equal(tree.props['aria-haspopup'], 'dialog');
   assert.equal(tree.props['aria-label'], page.zh.barAssemblyLabel);
-  const panel = page.mounted.registrations.find((entry) => entry.options.name === 'conversation.input.overlay');
-  assert.notEqual(panel, undefined, 'panel registered in conversation.input.overlay');
-  assert.equal(panel.options.id, 'prompt-setting-prompt-inspector-panel');
+  const panel = page.mounted.registrations.find((entry) => entry.options.id === 'prompt-setting-prompt-inspector-panel');
+  assert.notEqual(panel, undefined, 'panel registered in shell.overlay');
+  assert.equal(panel.options.name, 'shell.overlay', '面板在 frame 级浮层，不在 composer 内（fixed 才相对视口）');
   assert.equal(panel.options.order, 10);
   assert.equal(panel.options.locale, NS);
 });
@@ -19044,10 +19044,15 @@ test('client: opening the inspector issues the three reads and lists the assembl
   const page = makePage({ primitives: 'throw', responses: defaultResponses() });
   const inspector = page.loaded.module.__internals.promptInspector;
   inspector.open({ sessionId: 's1' });
-  const panel = inspectorPanelNode(await makeInspectorPanel(page).flush());
+  const rendered = await makeInspectorPanel(page).flush();
+  const panel = inspectorPanelNode(rendered);
   assert.equal(panel.props['data-inspector-phase'], 'ready');
   assert.equal(panel.props['data-inspector-total-sections'], '5');
   assert.equal(panel.props['data-inspector-total-chars'], '58');
+  // 宿主 shell.overlay 的 layer 是 pointer-events:none，两者都必须显式 opt-in。
+  assert.equal(panel.props.style.pointerEvents, 'auto', 'panel 显式接管指针事件');
+  const scrim = collect(rendered, (node) => node.props && node.props['data-inspector-scrim'] !== undefined)[0];
+  assert.equal(scrim.props.style.pointerEvents, 'auto', 'scrim 显式接管指针事件');
   assert.deepEqual(
     inspectorRows(panel).map((row) => row.props['data-section-name']),
     snapshotFixture().effective.sections.map((section) => section.name),
@@ -19112,15 +19117,31 @@ test('client: overrides, ineffective reasons, layers and the frozen fact are on 
   });
   page.loaded.module.__internals.promptInspector.open({ sessionId: 's1' });
   const tree = await makeInspectorPanel(page).flush();
-  const alpha = inspectorRows(tree).find((row) => row.props['data-section-name'] === 'project:alpha');
+  const rows = inspectorRows(tree);
+  const alpha = rows.find((row) => row.props['data-section-name'] === 'project:alpha');
   assert.equal(alpha.props['data-section-override-layer'], 'user');
   assert.equal(alpha.props['data-section-action'], 'replace');
   assert.equal(alpha.props['data-section-applied'], 'true');
-  const ghost = inspectorRows(tree).find((row) => row.props['data-section-name'] === 'ghost:section');
+  // 覆盖层名走 layerKey 的本地化键，状态标签只在有 action 时出现。
+  const alphaOverride = collect(alpha, (node) => node.props && node.props['data-section-meta'] === 'override');
+  assert.equal(alphaOverride.length, 1);
+  assert.equal(alphaOverride[0].props.children, page.zh.fUser, '覆盖层名本地化（用户级）');
+  const alphaStatus = collect(alpha, (node) => node.props && node.props['data-section-meta'] === 'status');
+  assert.equal(alphaStatus.length, 1);
+  assert.equal(alphaStatus[0].props.children, page.zh.ovEffective, 'replace 覆盖显示「已生效」');
+  // 无覆盖、无 action、无 reason 的正常段：不得出现「未启用」，也不得出现任何状态/原因标签。
+  const plain = rows.find((row) => row.props['data-section-name'] === 'harness:identity');
+  assert.equal(collect(plain, (node) => node.props && node.props['data-section-meta'] === 'status').length, 0);
+  assert.equal(collect(plain, (node) => node.props && node.props['data-section-meta'] === 'reason').length, 0);
+  assert.equal(JSON.stringify(plain).includes(page.zh.stDisabled), false, 'applied:false 但没有覆盖 ≠「未启用」');
+  const ghost = rows.find((row) => row.props['data-section-name'] === 'ghost:section');
   assert.equal(ghost.props['data-section-index'], '');
+  const ghostStatus = collect(ghost, (node) => node.props && node.props['data-section-meta'] === 'status');
+  assert.equal(ghostStatus.length, 1, '有 action 的段带状态标签');
+  assert.equal(ghostStatus[0].props.children, page.zh.ovEffective);
   const reason = collect(ghost, (node) => node.props && node.props['data-section-meta'] === 'reason');
-  assert.equal(reason.length, 1, 'applied=false 的段带 reason 摘要');
-  assert.match(String(reason[0].props.children), /no section or override/);
+  assert.equal(reason.length, 1, '有 reason 的段带原因行');
+  assert.equal(String(reason[0].props.children), `${page.zh.colReason}${page.zh.assemblyLayerSep}no section or override with this name`);
   const user = collect(tree, (node) => node.props && node.props['data-inspector-layer'] === 'user')[0];
   assert.equal(user.props['data-layer-kind'], 'ready');
   assert.equal(user.props['data-layer-enabled'], 'true');

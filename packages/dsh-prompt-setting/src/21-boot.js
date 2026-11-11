@@ -164,14 +164,15 @@
     /**
      * g-097: the read-only prompt-injection inspector — one button in
      * `conversation.input.left` (order 10, right of the meme picker's 5) and the
-     * panel it opens in `conversation.input.overlay`. Read-only (the bar's same
+     * panel it opens in `shell.overlay` (the frame's own layer, outside the composer).
+     * Read-only (the bar's same
      * three GETs); no Session ⇒ zero requests; one row per `effective.sections`
      * (index:null included, characters = text.length); three close paths that
      * return focus to the composer; no listener/style survives unmount.
      */
     const PROMPT_INSPECTOR_BUTTON_ORDER = 10;
     const PROMPT_INSPECTOR_BUTTON_SLOT = 'conversation.input.left';
-    const PROMPT_INSPECTOR_PANEL_SLOT = 'conversation.input.overlay';
+    const PROMPT_INSPECTOR_PANEL_SLOT = 'shell.overlay';
     const PROMPT_INSPECTOR_BUTTON_ID = 'prompt-setting-prompt-inspector';
     const PROMPT_INSPECTOR_PANEL_ID = 'prompt-setting-prompt-inspector-panel';
     const PROMPT_INSPECTOR_REGION = 'composer-prompt-inspector';
@@ -185,8 +186,8 @@
       row: { display: 'flex', flexDirection: 'column', gap: 2, padding: '6px 8px', borderBottom: `1px solid ${token.borderL2}` },
       rowTop: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 },
       rowMeta: { display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: 11, lineHeight: '16px', color: token.labelSecondary },
-      panel: { position: 'fixed', left: 0, right: 0, bottom: 96, margin: '0 auto', zIndex: 2147483001, width: 'min(640px, calc(100vw - 32px))', maxHeight: 'min(70vh, 640px)', display: 'flex', flexDirection: 'column', boxSizing: 'border-box', background: token.surface, color: token.labelPrimary, border: `1px solid ${token.surfaceStroke}`, borderRadius: 12, boxShadow: '0 12px 40px rgba(0, 0, 0, 0.18)', font: 'inherit', fontSize: 12, lineHeight: '18px', overflow: 'hidden' },
-      scrim: { position: 'fixed', top: 0, right: 0, bottom: 0, left: 0, zIndex: 2147483000, background: 'rgba(0, 0, 0, 0.12)' },
+      panel: { position: 'fixed', left: 0, right: 0, bottom: 96, margin: '0 auto', zIndex: 2147483001, pointerEvents: 'auto', width: 'min(640px, calc(100vw - 32px))', maxHeight: 'min(70vh, 640px)', display: 'flex', flexDirection: 'column', boxSizing: 'border-box', background: token.surface, color: token.labelPrimary, border: `1px solid ${token.surfaceStroke}`, borderRadius: 12, boxShadow: '0 12px 40px rgba(0, 0, 0, 0.18)', font: 'inherit', fontSize: 12, lineHeight: '18px', overflow: 'hidden' },
+      scrim: { position: 'fixed', top: 0, right: 0, bottom: 0, left: 0, zIndex: 2147483000, pointerEvents: 'auto', background: 'rgba(0, 0, 0, 0.12)' },
       header: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, padding: '10px 12px', borderBottom: `1px solid ${token.borderL2}` },
       close: { flex: 'none', width: 24, height: 24, padding: 0, border: 'none', borderRadius: 6, background: 'transparent', color: token.labelSecondary, cursor: 'pointer', font: 'inherit', fontSize: 16, lineHeight: '24px' },
       body: { display: 'flex', flexDirection: 'column', gap: 10, padding: '10px 12px 12px', overflowY: 'auto', minHeight: 0 },
@@ -552,6 +553,8 @@
           h('span', null, value),
         );
       };
+      const actionLabelOf = (action) =>
+        action === 'replace' ? t('ovEffective') : action === 'hide' ? t('stHidden') : action === 'append' ? t('stAppended') : String(action);
       const sectionRow = (row) =>
         h(
           'li',
@@ -581,11 +584,14 @@
             h('span', { 'data-section-meta': 'origin' }, t(originKey(row.origin))),
             row.overrideLayer === null
               ? null
-              : h('span', { 'data-section-meta': 'override' }, `${row.overrideLayer} · ${row.action === null ? '—' : row.action}`),
-            row.applied
+              : h('span', { 'data-section-meta': 'override' }, t(layerKey(row.overrideLayer))),
+            row.action === null
+              ? null
+              : h('span', { 'data-section-meta': 'status' }, actionLabelOf(row.action)),
+            row.reason === ''
               ? null
               : h('span', { 'data-section-meta': 'reason', style: { color: token.stateWarn } },
-                  `${t('stDisabled')}${row.reason === '' ? '' : ` · ${fmt(t('mineLayerDisabledReason'), { reason: row.reason })}`}`),
+                  `${t('colReason')}${t('assemblyLayerSep')}${row.reason}`),
           ),
         );
       return [
@@ -1053,8 +1059,13 @@
         // g-097: the inspector's two entries. Both guarded like the bar: the
         // callback runs only once the Host declares the slot, and a refused entry
         // loses that entry, never the plugin. The button sits at order 10 in the
-        // tool row (right of dsh-meme's order 5); the panel uses the Host's own
-        // `conversation.input.overlay` list, so no slot is shared or shadowed.
+        // tool row (right of dsh-meme's order 5). The panel MUST live in
+        // `shell.overlay`, not `conversation.input.overlay`: the latter is inside
+        // the composer card, whose `.composerSeat` carries `will-change:transform`
+        // (fixed then resolves against that box, and `.scrollBody` clips it). The
+        // frame layer is outside the composer, so `position:fixed` is the viewport
+        // again — and its `.overlayLayer` is `pointer-events:none`, which is why
+        // both scrim and panel opt back in explicitly.
         ctx.slots.inject(PROMPT_INSPECTOR_BUTTON_SLOT, () => {
           try {
             return ctx.slots.register(
@@ -1079,13 +1090,13 @@
               {
                 name: PROMPT_INSPECTOR_PANEL_SLOT,
                 id: PROMPT_INSPECTOR_PANEL_ID,
-                // Same order as the button: the overlay is its own list and
-                // coexists with dsh-meme's `order: 5` board.
+                // Order 10 keeps this entry ahead of the shipped toaster (60); the
+                // frame layer is a list, so neither shadows the other. A root-scope
+                // entry gets no scope id — the panel reads the Session from the
+                // seat the button writes (`promptInspectorSeat.sessionId`).
                 order: PROMPT_INSPECTOR_BUTTON_ORDER,
                 locale: NS,
-                inject: (sessionId) => ({
-                  inspectorSessionId: typeof sessionId === 'string' ? sessionId : '',
-                }),
+                inject: () => ({}),
               },
               ComposerPromptInspectorPanel,
             );

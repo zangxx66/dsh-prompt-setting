@@ -2,7 +2,7 @@
 
 **这份文档要回答的问题**：改一个功能点，该打开哪个文件？
 
-`client.js` 是发布物（19672 行的单个 CommonJS factory），但**人不再直接编辑它** ——
+`client.js` 是发布物（19683 行的单个 CommonJS factory），但**人不再直接编辑它** ——
 它是 `src/` 的生成物（见 `CONTRACT.md` §23）。本表把「域」映射到：
 
 **域 → `client.js` 行区间 → 段文件 → 入口函数 → CONTRACT 章节 → 测试文件**
@@ -45,7 +45,7 @@
 | `18-locale-b.js` | 14885–16084 | 1200 | locale 生成段（`ja` / `es`）：由 `locale-pack.mjs --write` 产出，段序/文件名/语言分组全部从 `LOCALES` 派生 | —（数据段） | §22 | `test/locale.test.mjs` |
 | `19-locale-c.js` | 16085–17284 | 1200 | locale 生成段（`fr` / `de`）：同上 | —（数据段） | §22 | `test/locale.test.mjs` |
 | `20-locale-d.js` | 17285–18484 | 1200 | locale 生成段（`ru` / `pt`）：末行把本段语言并进 `LOCALE_DICTS` | —（数据段） | §22 | `test/locale.test.mjs` |
-| `21-boot.js` | 18485–19672 | 1188 | `renderFailureCard` / `degradedPlugin` / boot 返回（8 语言注册：基线对象形式 + 其余逐个降级） | `renderFailureCard` (18497)、`degradedPlugin` (19600) | §7, §14, §22 | `test/boot.test.mjs`、`test/client.test.mjs` |
+| `21-boot.js` | 18485–19683 | 1199 | `renderFailureCard` / `degradedPlugin` / boot 返回（8 语言注册：基线对象形式 + 其余逐个降级） | `renderFailureCard` (18497)、`degradedPlugin` (19612) | §7, §14, §22 | `test/boot.test.mjs`、`test/client.test.mjs` |
 
 **`13/14/15` 是同一个函数的三个切**：它们拼起来仍是**一个** `PromptSettingSection`
 （`client.js:9348-12619`）。这是「只重切、不移动」能做到的最大粒度 —— 把一个 3257 行的
