@@ -19371,6 +19371,8 @@ test('client: every section row expands its effective text, independently (g-097
   assert.equal(rowOf('project:alpha').props['aria-expanded'], 'true');
   const alphaText = collect(rowOf('project:alpha'), (node) => node.props && node.props['data-section-text'] !== undefined)[0];
   assert.equal(alphaText.type, 'pre');
+  assert.equal(alphaText.props.style.cursor, 'text', '展开文本用 text 指针（不再是整行的手型）');
+  assert.equal(alphaText.props.style.userSelect, 'text', '展开文本显式允许选中');
   assert.equal(alphaText.props.children, 'alpha overridden');
   // 逐行独立：ghost 仍收起。
   assert.equal(rowOf('ghost:section').props['aria-expanded'], 'false');

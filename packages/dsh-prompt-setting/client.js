@@ -14926,7 +14926,7 @@ window.__ModuleLoader__.load({
       close: { flex: 'none', width: 24, height: 24, padding: 0, border: 'none', borderRadius: 6, background: 'transparent', color: token.labelSecondary, cursor: 'pointer', font: 'inherit', fontSize: 16, lineHeight: '24px' },
       body: { display: 'flex', flexDirection: 'column', gap: 10, padding: '10px 12px 12px', overflowY: 'auto', minHeight: 0 },
       button: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, flex: 'none', padding: 0, border: 'none', borderRadius: 8, background: 'transparent', cursor: 'pointer', font: 'inherit' },
-      pre: { margin: 0, padding: '6px 8px', fontSize: 11, lineHeight: '16px', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 160, overflowY: 'auto', color: token.labelSecondary, borderTop: `1px solid ${token.borderL2}` },
+      pre: { margin: 0, padding: '6px 8px', fontSize: 11, lineHeight: '16px', whiteSpace: 'pre-wrap', wordBreak: 'break-word', maxHeight: 160, overflowY: 'auto', color: token.labelSecondary, borderTop: `1px solid ${token.borderL2}`, cursor: 'text', userSelect: 'text' },
     });
 
     /** The one seat the two entries share. `revision` is the store snapshot. */
