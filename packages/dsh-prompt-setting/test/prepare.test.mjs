@@ -592,7 +592,7 @@ test('prepare: the src/ gate reports the shipped source, and fails both ways it 
     assertDriftFails('缺一个段');
     writeFileSync(droppedSegment, droppedText);
 
-    const extraSegment = join(root, 'src', '22-extra.js'); // ② 多出一个陌生段（重切没同步；g-092 起 18–20 已给 locale 段，21 是 boot）
+    const extraSegment = join(root, 'src', '24-extra.js'); // ② 多出一个陌生段（重切没同步；locale 段 18–20、21–23 是 boot 拆分三段，24 之后才是陌生段）
     writeFileSync(extraSegment, '// 本文件是 client.js 的片段，不是独立模块，不得单独 parse/lint/执行。\nconst extra = 1;\n');
     assertDriftFails('多出一个陌生段');
     rmSync(extraSegment);

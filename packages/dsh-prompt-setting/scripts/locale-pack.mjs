@@ -95,7 +95,7 @@ function chunk(list, size) {
 export function localeSegmentName(groupIndex) {
   if (groupIndex === 0) return PRIMARY_SEGMENT_NAME;
   if (groupIndex > 25) throw new Error(`locale 段数 ${groupIndex} 超出字母后缀 a–z 能表达的段数`);
-  return `${18 + groupIndex - 1}-locale-${String.fromCharCode(97 + groupIndex)}.js`;
+  return `${19 + groupIndex - 1}-locale-${String.fromCharCode(97 + groupIndex)}.js`;
 }
 
 /** 语言分组：`Object.keys(LOCALES)` 按 {@link LOCALES_PER_SEGMENT} 顺序切块。 */
@@ -120,9 +120,9 @@ export const LOCALE_SEGMENTS = Object.freeze(LOCALE_GROUPS.map((locales, index) 
 export const PRIMARY_LOCALES = LOCALE_SEGMENTS[0].locales;
 
 /** boot 段的序号：紧随最后一个 locale 段（新增语言时自动顺延）。 */
-export const BOOT_SEGMENT_INDEX = 18 + (LOCALE_SEGMENTS.length - 1);
+export const BOOT_SEGMENT_INDEX = 19 + (LOCALE_SEGMENTS.length - 1);
 
-/** boot 段的目标文件名（`21-boot.js`：8 语言 / 4 段时）。 */
+/** boot 段的目标文件名（`22-boot.js`：8 语言 / 4 段时；序号 18 留给插件的 prompt-inspector 段）。 */
 export const BOOT_SEGMENT_NAME = `${BOOT_SEGMENT_INDEX}-boot.js`;
 
 /**
@@ -684,7 +684,7 @@ export function localeBlockOwners(io = {}) {
 /**
  * 让 boot 段的序号落在所有 locale 段之后（g-092）。
  *
- * 段序 = 文件名字典序，locale 段按 {@link LOCALE_SEGMENTS} 自动占序号 18..18+n-1，
+ * 段序 = 文件名字典序，locale 段按 {@link LOCALE_SEGMENTS} 自动占序号 19..19+n-1，
  * boot 必须在它们之后。**新增语言 ⇒ locale 段变多 ⇒ boot 顺延**，所以这一步也是本
  * 脚本的职责，不靠人手改文件名。段内容一个字节不动（只换文件名）。
  * @param entries - `src/` 的目录条目。

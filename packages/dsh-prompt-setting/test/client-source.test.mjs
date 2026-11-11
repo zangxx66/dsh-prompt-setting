@@ -65,6 +65,9 @@ const packageJson = JSON.parse(readFileSync(join(packageDir, 'package.json'), 'u
  * （插在页面模型之后、boot 之前 —— 只重切、不移动，boot 段原样下移）。
  * g-089 再加一段：状态栏的**动态刷新**（写广播/可见性/单飞节流）住在
  * `17-composer-bar-live.js`（同样插在 boot 之前，boot 段改名为 `18-boot.js`）。
+ * g-097 把提示词注入面板放在 `18-prompt-inspector.js`（locale 生成段之前，序号 18），
+ * locale 生成段随之后移为 19–21，boot 段回到最后并合并为 `22-boot.js`。（第 9 语言时
+ * locale 段会铺到 22，boot 再顺延为 23——生成器按 LOCALES 派生，无需手工清单。）
  * g-092 加了三段：宿主的 8 种界面语言让 locale 生成段从 1 段变 4 段（每段 2 语言，
  * 恰好 1200 行），新段排在 boot 之前 —— `00–17` 段坐标一个字节没动，只有 boot
  * 段顺延为 `21-boot.js`（内容不变，537 行；0.2.2 的设置导航图标 +68 行 ⇒ 605 行）。
@@ -88,10 +91,11 @@ const SEGMENTS = [
   [11730, 12619, '15-page-c.js'],
   [12620, 13776, '16-composer-bar.js'],
   [13777, 14884, '17-composer-bar-live.js'],
-  [14885, 16084, '18-locale-b.js'],
-  [16085, 17284, '19-locale-c.js'],
-  [17285, 18484, '20-locale-d.js'],
-  [18485, 19683, '21-boot.js'],
+  [14885, 15679, '18-prompt-inspector.js'],
+  [15680, 16879, '19-locale-b.js'],
+  [16880, 18079, '20-locale-c.js'],
+  [18080, 19279, '21-locale-d.js'],
+  [19280, 19963, '22-boot.js'],
 ];
 
 /**
@@ -221,7 +225,7 @@ test('client source: line budget — stage 2 converges to §5.1, so no segment e
   const over = segments.filter((segment) => segment.lines > 1200).map((segment) => `${segment.name}:${segment.lines}`);
   // 阶段 1 超预算的三个（12-helpers/15-chrome/21-page）必须在这里消失。
   assert.deepEqual(over, [], `仍有超预算段：${over.join('、')}`);
-  assert.equal(segments.length, SEGMENTS.length, '段数 == §5.1 表（g-092 起 22 段：locale 生成段 1 → 4）');
+  assert.equal(segments.length, SEGMENTS.length, '段数 == §5.1 表（g-092 起 locale 生成段 1 → 4，g-097 起 boot 拆三段 ⇒ 24 段）');
   assert.equal(segments.reduce((sum, segment) => sum + segment.lines, 0), clientLines.length - 1, '总行数从产物派生');
   assert.equal(Math.max(...segments.map((segment) => segment.lines)), 1200, '最大段是 locale 生成段（597 键 × 2 语言，恰好 1200）');
 });
@@ -327,7 +331,7 @@ test('client source: completeness is anchored on the artifact, not on a hand-kep
       label: '多出一个陌生段',
       make: () => {
         const root = throwawayPackage();
-        writeFileSync(join(root, CLIENT_SRC_DIR, '22-extra.js'), `${SEGMENT_DECLARATION}\nconst extra = 1;\n`);
+        writeFileSync(join(root, CLIENT_SRC_DIR, '24-extra.js'), `${SEGMENT_DECLARATION}\nconst extra = 1;\n`);
         return root;
       },
     },

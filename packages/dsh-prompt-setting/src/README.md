@@ -12,7 +12,7 @@
 
 那行声明是**元信息**：`scripts/client-build.mjs` 在拼接前逐段剥离它，它不会进入
 `client.js`。所以「段文件的行数」比「该段在 `client.js` 中占的行数」多 1 行，行数预算
-按后者算（见 `docs/refactor-plan.md` §5.1 的目标段表：22 段，每段 ≤ 1200 行）。
+按后者算（见 `docs/refactor-plan.md` §5.1 的目标段表：23 段，每段 ≤ 1200 行）。
 
 ## 规则
 

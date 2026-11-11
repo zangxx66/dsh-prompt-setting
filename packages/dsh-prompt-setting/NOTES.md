@@ -11291,3 +11291,25 @@ scrim 与面板都显式 `pointerEvents: 'auto'`。**不**做 DOM 增强、**不
    已生效/已隐藏/追加），原因行只在有 `reason` 时出现，覆盖层名走 `layerKey`；补「正常段无状态/原因标签」
    与「无覆盖段不得出现未启用」断言。
 3. **报告订正**：1099（含新增 10 条），并保留负向对照（过滤 `index:null` → 3 红，还原后 10/10 绿）。
+
+### 六、负责人真机新需求（本轮追加工单）
+
+1. **弹窗居中 + 可拖动**：默认 `left:50%; top:50%; translate(-50%,-50%)` 水平垂直居中；标题栏
+   Pointer Events + `setPointerCapture` 拖动，3px 阈值区分点击，拖动期间 `<html>` 加
+   `user-select:none` + `cursor:move`（结束/卸载恢复），标题栏里的 `[data-action]`（关闭按钮）不启动
+   拖动、点击不被吞；几何抽成纯函数 `promptInspectorClampCenter` / `promptInspectorDragCenter`，窗口
+   resize 时把位置钳回可视区；关闭再打开重置居中。
+2. **分段展开/收起**：`promptInspectorSectionRows` 保留 `text`；点击行就地展开实际注入文本
+   （`pre` + `white-space: pre-wrap` + 限高 160 + 内部滚动），空文本显示 `stNone`；`aria-expanded` +
+   `data-section-expanded` / `data-section-text` 可断言；逐行独立、默认全部收起。
+3. **注入时间**：优先 `record.notice.at`（毫秒），无 notice 用 `record.lastAssembly.at`，都没有显示
+   `stNone`；复用页面既有 `stampOf`（读者时区 `Intl.DateTimeFormat`）把毫秒时间戳格式化；标签复用
+   `histPreviewAt`（时间），**零新增 locale 键**（locale 生成段 1200 行预算仍是硬的）。
+4. **两层分行**：`装配层` 与 `送达层` 各自独立 `<p>`（`data-inspector-verdict="assembly" | "delivery"`），
+   不再用 ` · ` 拼成一行。
+- **段结构**：提示词注入面板放在 `18-prompt-inspector.js`（795 行；locale 生成段之前），locale 生成段随之后移为
+  `19/20/21-locale-*.js`，boot 段回到最后并合并为 `22-boot.js`（684 行），共 23 段；`client.js` 段真源 19963 行
+  （`client-build --check` 逐字节一致）。这样 locale-pack 的「新增语言 ⇒ locale 段增长 ⇒ boot 顺延」仍成立
+  （第 9 语言 → locale 段铺到 22、boot 顺延 23），`test/locale.test.mjs` 的 9 语言用例全绿。
+- **验证**：全量 1103 例 0 fail（1099 + 新增 4 条 g-097 用例）；verify 6 步 0 失败；check-refs 绿；
+  负向对照（过滤 `index:null`）仍 7 pass / 3 fail，还原后 10/10 绿。

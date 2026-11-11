@@ -564,7 +564,7 @@ test('locale: the locale segment table is derived from LOCALES (every language e
     [...LOCALE_SEGMENTS].map((segment) => segment.name).sort(),
   );
   // Boot follows the last locale segment.
-  assert.equal(BOOT_SEGMENT_NAME, `${18 + LOCALE_SEGMENTS.length - 1}-boot.js`);
+  assert.equal(BOOT_SEGMENT_NAME, `${19 + LOCALE_SEGMENTS.length - 1}-boot.js`);
   // On disk: every derived segment exists, and the boot slot is the derived one.
   for (const segment of LOCALE_SEGMENTS) {
     assert.equal(existsSync(join(packageRoot, CLIENT_SRC_DIR, segment.name)), true, `${segment.name} exists`);
@@ -573,7 +573,7 @@ test('locale: the locale segment table is derived from LOCALES (every language e
 });
 
 test('locale: each generated segment ends with the derived LOCALE_DICTS manifest line', () => {
-  // The manifest is how `21-boot.js` learns the language list without a second,
+  // The manifest is how `22-boot.js` learns the language list without a second,
   // hand-written list. Its content is derived (segment order == LOCALES order).
   for (const [index, segment] of LOCALE_SEGMENTS.entries()) {
     const text = readFileSync(join(packageRoot, CLIENT_SRC_DIR, segment.name), 'utf8');
@@ -620,8 +620,8 @@ test('locale: non-zh copy carries no CJK, and ja is either English placeholder o
 
 test('locale: adding a 9th language to LOCALES needs no other edit (--write derives the new segment)', () => {
   // The point of the derived table: one entry in `LOCALES` + one JSON must be enough.
-  // The new group takes the next name (`21-locale-e.js`) and the boot segment moves
-  // one slot down (`22-boot.js`) — no hand-kept list is touched.
+  // The new group takes the next name (`22-locale-e.js`) and the boot segment moves
+  // one slot down (`23-boot.js`) — no hand-kept list is touched.
   const root = throwawayPackage();
   try {
     const packPath = join(root, 'scripts', 'locale-pack.mjs');
@@ -633,10 +633,10 @@ test('locale: adding a 9th language to LOCALES needs no other edit (--write deri
 
     const write = run(root, 'scripts/locale-pack.mjs', '--write');
     assert.equal(write.status, 0, `--write must accept a 9th language\n${write.stdout}\n${write.stderr}`);
-    assert.equal(existsSync(join(root, CLIENT_SRC_DIR, '21-locale-e.js')), true, 'a new segment is created for the new group');
-    assert.equal(existsSync(join(root, CLIENT_SRC_DIR, '22-boot.js')), true, 'the boot segment is renumbered automatically');
-    assert.equal(existsSync(join(root, CLIENT_SRC_DIR, '21-boot.js')), false, 'the stale boot name is gone');
-    assert.match(readFileSync(join(root, CLIENT_SRC_DIR, '21-locale-e.js'), 'utf8'), /const yue = \{/);
+    assert.equal(existsSync(join(root, CLIENT_SRC_DIR, '22-locale-e.js')), true, 'a new segment is created for the new group');
+    assert.equal(existsSync(join(root, CLIENT_SRC_DIR, '23-boot.js')), true, 'the boot segment is renumbered automatically');
+    assert.equal(existsSync(join(root, CLIENT_SRC_DIR, '22-boot.js')), false, 'the stale boot name is gone');
+    assert.match(readFileSync(join(root, CLIENT_SRC_DIR, '22-locale-e.js'), 'utf8'), /const yue = \{/);
     // Both gates stay green: dictionaries ↔ segments ↔ artifact.
     assert.equal(run(root, 'scripts/locale-pack.mjs', '--check').status, 0, 'locale-pack --check');
     assert.equal(run(root, 'scripts/client-build.mjs', '--check').status, 0, 'client-build --check');

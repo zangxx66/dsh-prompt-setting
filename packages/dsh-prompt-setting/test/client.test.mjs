@@ -18937,6 +18937,7 @@ function makeInspectorDocument() {
     activeElement: editor,
     focusCalls,
     listeners,
+    documentElement: { style: {} },
     addEventListener(type, fn) {
       listeners.set(type, [...(listeners.get(type) || []), fn]);
     },
@@ -18945,6 +18946,25 @@ function makeInspectorDocument() {
     },
     querySelector(selector) {
       return selector === '[data-composer-card] [contenteditable="true"]' ? editor : null;
+    },
+  };
+}
+
+/** A window double: viewport size plus real resize listener bookkeeping. */
+function makeInspectorWindow(width, height) {
+  const listeners = new Map();
+  return {
+    innerWidth: width,
+    innerHeight: height,
+    listeners,
+    addEventListener(type, fn) {
+      listeners.set(type, [...(listeners.get(type) || []), fn]);
+    },
+    removeEventListener(type, fn) {
+      listeners.set(type, (listeners.get(type) || []).filter((candidate) => candidate !== fn));
+    },
+    emit(type) {
+      for (const fn of [...(listeners.get(type) || [])]) fn({});
     },
   };
 }
@@ -19049,6 +19069,10 @@ test('client: opening the inspector issues the three reads and lists the assembl
   assert.equal(panel.props['data-inspector-phase'], 'ready');
   assert.equal(panel.props['data-inspector-total-sections'], '5');
   assert.equal(panel.props['data-inspector-total-chars'], '58');
+  // 默认水平垂直居中（拖动后才改用像素坐标）。
+  assert.equal(panel.props.style.left, '50%', '默认水平居中');
+  assert.equal(panel.props.style.top, '50%', '默认垂直居中');
+  assert.equal(panel.props.style.transform, 'translate(-50%, -50%)');
   // 宿主 shell.overlay 的 layer 是 pointer-events:none，两者都必须显式 opt-in。
   assert.equal(panel.props.style.pointerEvents, 'auto', 'panel 显式接管指针事件');
   const scrim = collect(rendered, (node) => node.props && node.props['data-inspector-scrim'] !== undefined)[0];
@@ -19233,6 +19257,128 @@ test('client: unmount removes the Escape listener and the seat subscription (g-0
   assert.equal(inspector.seat.listeners.has(listener), true);
   unsubscribe();
   assert.equal(inspector.seat.listeners.has(listener), false, '订阅可解除');
+});
+
+
+test('client: the drag geometry is pure — centered, clamped, and oversized-safe (g-097 rev)', () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  const geometry = page.loaded.module.__internals.promptInspector;
+  const centered = geometry.clampCenter(null, { width: 1000, height: 800 }, { width: 200, height: 100 }, 8);
+  assert.deepEqual({ ...centered }, { x: 500, y: 400 });
+  const clamped = geometry.clampCenter({ x: -100, y: 5000 }, { width: 1000, height: 800 }, { width: 200, height: 100 }, 8);
+  assert.deepEqual({ ...clamped }, { x: 108, y: 742 }, '越界中心被钳回可视区');
+  const oversized = geometry.clampCenter({ x: 10, y: 10 }, { width: 1000, height: 800 }, { width: 2000, height: 2000 }, 8);
+  assert.deepEqual({ ...oversized }, { x: 500, y: 400 }, '比视口大的面板居中');
+  const small = geometry.dragCenter({ x: 0, y: 0 }, { x: 10, y: 10 }, { clientX: 12, clientY: 12 }, 3);
+  assert.equal(small.moved, false, '3px 阈值内不算拖动');
+  const moved = geometry.dragCenter({ x: 0, y: 0 }, { x: 10, y: 10 }, { clientX: 13, clientY: 10 }, 3);
+  assert.deepEqual({ moved: moved.moved, x: moved.x, y: moved.y }, { moved: true, x: 3, y: 0 });
+});
+
+test('client: the title bar drags the panel, honors the threshold and restores styles (g-097 rev)', async () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  const inspector = page.loaded.module.__internals.promptInspector;
+  const doc = makeInspectorDocument();
+  const win = makeInspectorWindow(1200, 900);
+  inspector.open({ sessionId: 's1' });
+  const panel = makeInspectorPanel(page, { document: doc, window: win });
+  const rendered = await panel.flush();
+  const handle = collect(rendered, (node) => node.props && node.props['data-inspector-drag-handle'] !== undefined)[0];
+  assert.notEqual(handle, undefined, '标题栏是拖动把手');
+  const capture = { setPointerCapture() {}, releasePointerCapture() {} };
+  handle.props.onPointerDown({ button: 0, clientX: 100, clientY: 100, pointerId: 7, target: { closest: () => null }, currentTarget: capture });
+  handle.props.onPointerMove({ clientX: 102, clientY: 101 });
+  assert.equal(inspector.seat.dragCenter, null, '阈值内不移动');
+  handle.props.onPointerMove({ clientX: 120, clientY: 140 });
+  assert.deepEqual({ ...inspector.seat.dragCenter }, { x: 620, y: 490 });
+  assert.equal(doc.documentElement.style.userSelect, 'none');
+  assert.equal(doc.documentElement.style.cursor, 'move');
+  const movedPanel = inspectorPanelNode(page.loaded.runtime.render(panel.registration.component, panel.props).tree);
+  assert.equal(movedPanel.props.style.left, '620px');
+  assert.equal(movedPanel.props.style.top, '490px');
+  handle.props.onPointerUp({ currentTarget: capture });
+  assert.notEqual(doc.documentElement.style.userSelect, 'none', '拖动结束恢复 user-select');
+  // 标题栏里的按钮（关闭按钮）不启动拖动，点击不被吞掉。
+  const beforeButtonDown = { ...inspector.seat.dragCenter };
+  handle.props.onPointerDown({ button: 0, clientX: 10, clientY: 10, pointerId: 8, target: { closest: () => ({}) }, currentTarget: capture });
+  handle.props.onPointerMove({ clientX: 90, clientY: 90 });
+  assert.deepEqual({ ...inspector.seat.dragCenter }, beforeButtonDown, '按钮上的 pointerdown 不移动面板（关闭按钮点击不被吞）');
+  // resize：越界位置被钳回可视区。
+  inspector.seat.dragCenter = { x: 5000, y: 5000 };
+  win.emit('resize');
+  assert.deepEqual({ ...inspector.seat.dragCenter }, { x: 1192, y: 892 });
+  // 关闭再打开重置居中。
+  inspector.close();
+  inspector.open({ sessionId: 's1' });
+  assert.equal(inspector.seat.dragCenter, null, '重新打开回到居中');
+});
+
+test('client: every section row expands its effective text, independently (g-097 rev)', async () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  page.loaded.module.__internals.promptInspector.open({ sessionId: 's1' });
+  const panel = makeInspectorPanel(page);
+  let tree = await panel.flush();
+  const rowOf = (name) => inspectorRows(tree).find((row) => row.props['data-section-name'] === name);
+  assert.equal(rowOf('project:alpha').props['aria-expanded'], 'false', '默认全部收起');
+  assert.equal(rowOf('project:alpha').props['data-section-expanded'], 'false');
+  assert.equal(collect(rowOf('project:alpha'), (node) => node.props && node.props['data-section-text'] !== undefined).length, 0);
+  rowOf('project:alpha').props.onClick({ stopPropagation() {} });
+  tree = panel.draw();
+  assert.equal(rowOf('project:alpha').props['aria-expanded'], 'true');
+  const alphaText = collect(rowOf('project:alpha'), (node) => node.props && node.props['data-section-text'] !== undefined)[0];
+  assert.equal(alphaText.type, 'pre');
+  assert.equal(alphaText.props.children, 'alpha overridden');
+  // 逐行独立：ghost 仍收起。
+  assert.equal(rowOf('ghost:section').props['aria-expanded'], 'false');
+  rowOf('ghost:section').props.onClick({ stopPropagation() {} });
+  tree = panel.draw();
+  const ghostText = collect(rowOf('ghost:section'), (node) => node.props && node.props['data-section-text'] !== undefined)[0];
+  assert.equal(ghostText.props.children, page.zh.stNone, '空文本展开显示既有空态');
+  assert.equal(rowOf('project:alpha').props['aria-expanded'], 'true', '展开状态逐行独立');
+  rowOf('project:alpha').props.onClick({ stopPropagation() {} });
+  tree = panel.draw();
+  assert.equal(rowOf('project:alpha').props['aria-expanded'], 'false', '再次点击收起');
+});
+
+test('client: the assembly block splits the two verdicts and prints the injection time three ways (g-097 rev)', async () => {
+  const openWith = async (assemblyPayload) => {
+    const page = makePage({
+      primitives: 'throw',
+      responses: defaultResponses({ [PATHS.assemblyStatus]: { payload: assemblyPayload } }),
+    });
+    const inspector = page.loaded.module.__internals.promptInspector;
+    inspector.open({ sessionId: 's1' });
+    const node = inspectorPanelNode(await makeInspectorPanel(page).flush());
+    return { page, inspector, node };
+  };
+  const notice = assemblyNoticeFixture({ at: 1700000000000 });
+  const withNotice = await openWith(assemblyFixture({ record: { session: 's1', notice, lastAssembly: { at: 1600000000000 } } }));
+  const verdicts = collect(withNotice.node, (node) => node.props && typeof node.props['data-inspector-verdict'] === 'string');
+  assert.deepEqual(verdicts.map((node) => node.props['data-inspector-verdict']), ['assembly', 'delivery'], '装配层与送达层各占一行');
+  assert.match(String(verdicts[0].props.children), new RegExp(withNotice.page.zh.assemblyLayerAssembly));
+  assert.match(String(verdicts[1].props.children), new RegExp(withNotice.page.zh.assemblyLayerDelivery));
+  assert.equal(String(verdicts[0].props.children).includes(withNotice.page.zh.assemblyLayerDelivery), false, '不再是一行拼接');
+  const noticeTime = collect(withNotice.node, (node) => node.props && node.props['data-inspector-time'] !== undefined)[0];
+  assert.equal(noticeTime.props['data-inspector-time-source'], 'notice', '优先 notice.at');
+  assert.equal(
+    String(noticeTime.props.children),
+    `${withNotice.page.zh.histPreviewAt}${withNotice.page.zh.assemblyLayerSep}${withNotice.inspector.stampOf(1700000000000)}`,
+  );
+  assert.equal(/NaN|Invalid Date/.test(String(noticeTime.props.children)), false);
+
+  const lastOnly = await openWith(assemblyFixture({ record: { session: 's1', lastAssembly: { at: 1600000000000 } } }));
+  const lastTime = collect(lastOnly.node, (node) => node.props && node.props['data-inspector-time'] !== undefined)[0];
+  assert.equal(lastTime.props['data-inspector-time-source'], 'lastAssembly', '无 notice 时用 lastAssembly.at');
+  assert.equal(/NaN|Invalid Date/.test(String(lastTime.props.children)), false);
+
+  const none = await openWith(assemblyFixture());
+  const noneTime = collect(none.node, (node) => node.props && node.props['data-inspector-time'] !== undefined)[0];
+  assert.equal(noneTime.props['data-inspector-time-source'], 'none');
+  assert.equal(
+    String(noneTime.props.children),
+    `${none.page.zh.histPreviewAt}${none.page.zh.assemblyLayerSep}${none.page.zh.stNone}`,
+    '无时间显示明确空态',
+  );
 });
 
 // #endregion
