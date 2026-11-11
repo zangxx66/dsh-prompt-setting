@@ -11229,3 +11229,48 @@ presentation listeners 收不到 tools、tools 保持 provider-owned。
 
 - 真机语言切换（需重启 `dsh web` 加载新 bundle），按负责人选择留作人工验收。
 - 未加 12 术语人工抽检（负责人抽检即可，自动化已覆盖键/占位符/CJK/字面值/引用自洽）。
+
+## 175. g-097：会话输入框工具条的「提示词注入」只读面板（2026-11-11，基线 `4ffba94`，隔离工作树 `g-097-att-01`）
+
+### 一、需求与落点
+
+在会话输入框底部工具条的表情按钮右侧加一个按钮，点击显示当前 session 的系统提示词注入情况。落点：
+`conversation.input.left`（`kind: list`、`scope: session`，宿主 `registerComposerBar` 的 children），
+`order: 10` 紧跟 `dsh-meme` 的 `order: 5`；面板走宿主自己的 `conversation.input.overlay`（composer 内的浮层
+list），**不**做 DOM 增强、**不**遮蔽宿主工具条。
+
+### 二、实现
+
+- 数据源复用既有只读 GET：`/prompt-setting/snapshot`、`/overrides`、`/assembly-status`（与状态栏同一
+  `composerBarRequestUrls` 构造器），全部 GET，面板不写任何配置。
+- 面板四块：①分段清单——`effective.sections` 顺序逐条，含 `index: null` 的未注入项，字符数 = `text.length`
+  （不估 token）；②层状态——`composerBarLayerFact` / `mineCoverageOf` 与设置页同口径；③装配结论——
+  `assemblyVerdictOf` / `deliveryVerdictOf`，`frozen` 单独一行标段名与原因；④汇总——总段数、总字符数。
+- 无 session ⇒ `?session=` 解析为 `null`，零请求并显示「无会话」；快照失败显示可读错误（`loadFailed` +
+  `errorText`），输入框不受影响。
+- 关闭路径：关闭按钮 / 遮罩点击 / Esc 三路都关闭并把焦点还给输入框
+  （`[data-composer-card] [contenteditable="true"]`）；不在输入框上安装任何键盘处理器。
+- 卸载可逆：唯一的 document `keydown` 监听在 effect cleanup 里移除，样式全内联，无定时器；`__internals`
+  暴露的 seat 订阅也可解除。
+- **零新增 locale key**：locale 生成段已恰好用满 1200 行预算（597 键 × 2 语言），新增任何键都会迫使重切
+  8 语言段、让全仓 `client.js` 行号漂移；面板文案全部复用既有 8 语言键（`barAssemblyLabel` / `barNoSession`
+  / `viewSections` / `colChars` / `mineStatusCoverage` / `presetDialogClose` / `stFrozenSession` /
+  `mineLayerDisabledReason` 等），locale 键位对齐门禁保持绿。
+- 实现只改 `21-boot.js`（boot 段 605 → 1188 行，≤1200），用 `client-build.mjs --write` 重建产物；
+  `__internals.promptInspector` 暴露分段投影 / 总计 / URL / read 降级 / 焦点 / seat 供单测直接断言。
+
+### 三、验证
+
+- `node --test test/*.test.mjs`：1109 例 0 fail（新增 10 条 g-097 用例）。
+- `node scripts/verify.mjs`：6 步 0 失败（check-refs / client-build --check / locale-pack --check / prepare /
+  check-compat / 全量测试）。
+- 负向对照：把 `promptInspectorSectionRows` 改成过滤 `index: null` 后 3 条 g-097 用例转红（7 pass / 3 fail），
+  还原后 10/10 绿。
+- 文档同步：段真源行数 19089 → 19672；`docs/refactor-plan.md` §1.3/§5.1 表、`docs/architecture-map.md` 段表、
+  `docs/check-refs.mjs` REFS 行号、`test/client-source.test.mjs` SEGMENTS 末行同步。
+
+### 四、未做
+
+- 真机截图（按钮位置与红框一致）：需把新 bundle 装进运行中的 `dsh web` 重启加载，留给负责人/supervisor
+  人工验收。
+- 未新增 locale key（决策见上）；面板文案复用既有键，因此没有新增翻译。

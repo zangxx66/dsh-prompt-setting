@@ -1748,7 +1748,7 @@ test('client: registers one settings.section entry with the plugin id', () => {
   // g-086 added a second, unrelated inject (`conversation.input.dock`); 0.2.2
   // added the optional nav glyph. The settings section is still registered
   // exactly once, and it is still the first thing the plugin asks for.
-  assert.deepEqual([...registeredSlots], ['settings.section', 'settings.section.icon', 'conversation.input.dock']);
+  assert.deepEqual([...registeredSlots], ['settings.section', 'settings.section.icon', 'conversation.input.dock', 'conversation.input.left', 'conversation.input.overlay']);
   assert.equal(registrations.filter((entry) => entry.options.name === 'settings.section').length, 1);
   assert.equal(registrations.filter((entry) => entry.options.name === 'settings.section.icon').length, 1);
   const { options, component } = registrations[0];
@@ -17081,8 +17081,8 @@ test('client: a Host that never declares conversation.input.dock loses the bar, 
   const { registeredSlots, registrations } = mountClient(module, 'full', {
     declaredSlots: ['settings.section'],
   });
-  // `slots.inject` was asked for all three names; only the declared one called back.
-  assert.deepEqual([...registeredSlots], ['settings.section', 'settings.section.icon', 'conversation.input.dock']);
+  // `slots.inject` was asked for all five names (g-097 added the inspector's two); only the declared one called back.
+  assert.deepEqual([...registeredSlots], ['settings.section', 'settings.section.icon', 'conversation.input.dock', 'conversation.input.left', 'conversation.input.overlay']);
   assert.deepEqual(
     registrations.map((entry) => entry.options.name),
     ['settings.section'],
@@ -18887,6 +18887,331 @@ test('client: the assembly tooltip follows kind/state/surfaceOp while the verdic
     titleA,
     'tooltip 的两句结论随 kind/state/surfaceOp 更新',
   );
+});
+
+// #endregion
+
+// #region g-097: the prompt-injection inspector (`conversation.input.left` + `.overlay`)
+
+/** The inspector button entry the way the Host renders it. */
+function makeInspectorButton(page, props = {}) {
+  const registration = page.mounted.registrations.find((entry) => entry.options.name === 'conversation.input.left');
+  assert.notEqual(registration, undefined, 'the inspector button is registered');
+  const bound = { t: (key) => dict(page.mounted.dictionaries, NS, key, page.language), ...props };
+  return {
+    registration,
+    props: bound,
+    draw: () => expandTree(page.loaded.runtime.render(registration.component, bound).tree),
+  };
+}
+
+/** The inspector panel entry the way the Host renders it. */
+function makeInspectorPanel(page, props = {}) {
+  const registration = page.mounted.registrations.find((entry) => entry.options.name === 'conversation.input.overlay');
+  assert.notEqual(registration, undefined, 'the inspector panel is registered');
+  const bound = {
+    t: (key) => dict(page.mounted.dictionaries, NS, key, page.language),
+    ...registration.options.inject('s1'),
+    ...props,
+  };
+  const render = () => page.loaded.runtime.render(registration.component, bound);
+  return {
+    registration,
+    props: bound,
+    draw: () => expandTree(render().tree),
+    flush: async () => {
+      const rendered = render();
+      for (const effect of rendered.pending) effect();
+      await settle();
+      return expandTree(render().tree);
+    },
+  };
+}
+
+/** A document double: one composer editor, real listener bookkeeping. */
+function makeInspectorDocument() {
+  const listeners = new Map();
+  const focusCalls = [];
+  const editor = { focus: () => focusCalls.push('editor') };
+  return {
+    activeElement: editor,
+    focusCalls,
+    listeners,
+    addEventListener(type, fn) {
+      listeners.set(type, [...(listeners.get(type) || []), fn]);
+    },
+    removeEventListener(type, fn) {
+      listeners.set(type, (listeners.get(type) || []).filter((candidate) => candidate !== fn));
+    },
+    querySelector(selector) {
+      return selector === '[data-composer-card] [contenteditable="true"]' ? editor : null;
+    },
+  };
+}
+
+/** The row nodes the panel drew. */
+function inspectorRows(tree) {
+  return collect(tree, (node) => node.props && node.props['data-section-row'] !== undefined);
+}
+
+/** The one dialog node the panel entry drew (the entry returns `[scrim, panel]`). */
+function inspectorPanelNode(tree) {
+  const found = collect(tree, (node) => node.props && node.props['data-inspector-panel'] !== undefined);
+  assert.equal(found.length, 1, 'one panel node');
+  return found[0];
+}
+
+/** The summary paragraph the panel drew. */
+function inspectorSummary(tree) {
+  const found = collect(tree, (node) => node.props && node.props['data-inspector-summary'] !== undefined);
+  assert.equal(found.length, 1, 'one summary line');
+  return found[0];
+}
+
+test('client: the inspector is registered in conversation.input.left at order 10, and its panel in the overlay list (g-097)', () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  const button = makeInspectorButton(page);
+  assert.equal(button.registration.options.name, 'conversation.input.left');
+  assert.equal(button.registration.options.id, 'prompt-setting-prompt-inspector');
+  assert.equal(button.registration.options.order, 10, '紧跟表情按钮(order 5)右侧');
+  assert.equal(button.registration.options.locale, NS);
+  const tree = button.draw();
+  assert.equal(tree.type, 'button');
+  assert.equal(tree.props['data-region'], 'composer-prompt-inspector-button');
+  assert.equal(tree.props['data-action'], 'prompt-inspector-toggle');
+  assert.equal(tree.props['data-inspector-open'], 'false');
+  assert.equal(tree.props['aria-expanded'], 'false');
+  assert.equal(tree.props['aria-haspopup'], 'dialog');
+  assert.equal(tree.props['aria-label'], page.zh.barAssemblyLabel);
+  const panel = page.mounted.registrations.find((entry) => entry.options.name === 'conversation.input.overlay');
+  assert.notEqual(panel, undefined, 'panel registered in conversation.input.overlay');
+  assert.equal(panel.options.id, 'prompt-setting-prompt-inspector-panel');
+  assert.equal(panel.options.order, 10);
+  assert.equal(panel.options.locale, NS);
+});
+
+test('client: one row per effective section — payload order, index:null included, characters = text.length (g-097)', () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  const inspector = page.loaded.module.__internals.promptInspector;
+  const payload = snapshotFixture();
+  const rows = inspector.sectionRows(payload);
+  assert.deepEqual(rows.map((row) => row.name), payload.effective.sections.map((section) => section.name));
+  assert.deepEqual(rows.map((row) => row.index), [0, 1, 2, 3, null], 'index:null 的段也必须在清单里');
+  assert.deepEqual(
+    rows.map((row) => row.chars),
+    payload.effective.sections.map((section) => (typeof section.text === 'string' ? section.text.length : 0)),
+  );
+  assert.equal(rows[4].chars, 0, '空文本计 0 字符');
+  assert.equal(inspector.totals(rows).sections, 5);
+  assert.equal(inspector.totals(rows).chars, 58);
+  // 负向对照：按 index 过滤会把那一条吞掉 —— 这正是「不过滤」的理由。
+  assert.notEqual(rows.filter((row) => row.index !== null).length, inspector.totals(rows).sections);
+  // 缺 text / 坏 section 也要存活，字符数记 0。
+  const degraded = inspector.sectionRows({ effective: { sections: [{ name: 'x', index: 0 }, null] } });
+  assert.deepEqual(degraded.map((row) => row.chars), [0, 0]);
+  assert.equal(inspector.totals(null).sections, 0);
+});
+
+test('client: the inspector reads exactly three GET routes, and no Session means no URL at all (g-097)', () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  const inspector = page.loaded.module.__internals.promptInspector;
+  const urls = inspector.requestUrls('a b&c');
+  // 逐字段比较：返回值来自 vm realm，跨 realm 的 deepEqual 会因原型不同而假红。
+  assert.equal(urls.snapshot, '/prompt-setting/snapshot?session=a%20b%26c');
+  assert.equal(urls.overrides, '/prompt-setting/overrides?session=a%20b%26c');
+  assert.equal(urls.assembly, '/prompt-setting/assembly-status?session=a%20b%26c');
+  assert.equal(inspector.requestUrls(''), null, '无会话 ⇒ 没有 URL');
+  assert.equal(inspector.requestUrls(undefined), null);
+  const read = inspector.readOf({
+    snapshot: { ok: true, payload: snapshotFixture() },
+    overrides: { ok: false, error: { status: 500, code: null, message: 'x', network: false } },
+    assembly: { ok: true, payload: assemblyFixture() },
+  });
+  assert.equal(read.phase, 'ready', 'overrides 失败不清空分段清单');
+  assert.equal(read.overrides, null);
+  assert.ok(read.error, '错误对象留给层块显示');
+  const failed = inspector.readOf({
+    snapshot: { ok: false, error: { status: 0, code: null, message: 'offline', network: true } },
+    overrides: { ok: true, payload: overridesFixture() },
+    assembly: { ok: true, payload: assemblyFixture() },
+  });
+  assert.equal(failed.phase, 'error');
+  assert.equal(failed.snapshot, null);
+  assert.equal(failed.error.network, true);
+});
+
+test('client: opening the inspector issues the three reads and lists the assembly in order (g-097)', async () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  const inspector = page.loaded.module.__internals.promptInspector;
+  inspector.open({ sessionId: 's1' });
+  const panel = inspectorPanelNode(await makeInspectorPanel(page).flush());
+  assert.equal(panel.props['data-inspector-phase'], 'ready');
+  assert.equal(panel.props['data-inspector-total-sections'], '5');
+  assert.equal(panel.props['data-inspector-total-chars'], '58');
+  assert.deepEqual(
+    inspectorRows(panel).map((row) => row.props['data-section-name']),
+    snapshotFixture().effective.sections.map((section) => section.name),
+  );
+  assert.deepEqual(inspectorRows(panel).map((row) => row.props['data-section-index']), ['0', '1', '2', '3', '']);
+  assert.deepEqual(
+    page.router.calls.map((call) => call.url),
+    [
+      '/prompt-setting/snapshot?session=s1',
+      '/prompt-setting/overrides?session=s1',
+      '/prompt-setting/assembly-status?session=s1',
+    ],
+  );
+  for (const call of page.router.calls) {
+    assert.equal(call.init === null ? undefined : call.init.method, undefined, '每个请求都是 GET');
+  }
+});
+
+test('client: no Session means zero requests and an explicit empty state (g-097)', async () => {
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  page.loaded.module.__internals.promptInspector.open({ sessionId: '' });
+  const tree = await makeInspectorPanel(page, { inspectorSessionId: '' }).flush();
+  assert.equal(inspectorPanelNode(tree).props['data-inspector-phase'], 'no-session');
+  assert.equal(page.router.calls.length, 0, '无会话 ⇒ 零请求');
+  const summary = inspectorSummary(tree);
+  assert.equal(summary.props['data-inspector-empty'], 'no-session');
+  assert.equal(summary.props.children, page.zh.barNoSession);
+});
+
+test('client: a failed snapshot shows readable copy, and the panel contains no input control (g-097)', async () => {
+  const page = makePage({
+    primitives: 'throw',
+    responses: defaultResponses({
+      [PATHS.snapshot]: { status: 500, payload: { ok: false, code: 'assemble-failed', message: 'boom' } },
+    }),
+  });
+  page.loaded.module.__internals.promptInspector.open({ sessionId: 's1' });
+  const tree = await makeInspectorPanel(page).flush();
+  assert.equal(inspectorPanelNode(tree).props['data-inspector-phase'], 'error');
+  const summary = inspectorSummary(tree);
+  assert.equal(summary.props['data-inspector-error'], 'true');
+  assert.match(String(summary.props.children), /加载失败/);
+  assert.equal(
+    collect(
+      tree,
+      (node) => node.type === 'input' || node.type === 'textarea' || (node.props && node.props.contentEditable !== undefined),
+    ).length,
+    0,
+    '面板不渲染输入控件，输入框逻辑不被接管',
+  );
+});
+
+test('client: overrides, ineffective reasons, layers and the frozen fact are on the panel (g-097)', async () => {
+  const frozen = snapshotFixture({ frozen: true, frozenSection: 'harness:identity', frozenReason: 'complete section' });
+  const notice = assemblyNoticeFixture();
+  const page = makePage({
+    primitives: 'throw',
+    responses: defaultResponses({
+      [PATHS.snapshot]: { payload: frozen },
+      [PATHS.assemblyStatus]: { payload: assemblyFixture({ record: { session: 's1', notice } }) },
+    }),
+  });
+  page.loaded.module.__internals.promptInspector.open({ sessionId: 's1' });
+  const tree = await makeInspectorPanel(page).flush();
+  const alpha = inspectorRows(tree).find((row) => row.props['data-section-name'] === 'project:alpha');
+  assert.equal(alpha.props['data-section-override-layer'], 'user');
+  assert.equal(alpha.props['data-section-action'], 'replace');
+  assert.equal(alpha.props['data-section-applied'], 'true');
+  const ghost = inspectorRows(tree).find((row) => row.props['data-section-name'] === 'ghost:section');
+  assert.equal(ghost.props['data-section-index'], '');
+  const reason = collect(ghost, (node) => node.props && node.props['data-section-meta'] === 'reason');
+  assert.equal(reason.length, 1, 'applied=false 的段带 reason 摘要');
+  assert.match(String(reason[0].props.children), /no section or override/);
+  const user = collect(tree, (node) => node.props && node.props['data-inspector-layer'] === 'user')[0];
+  assert.equal(user.props['data-layer-kind'], 'ready');
+  assert.equal(user.props['data-layer-enabled'], 'true');
+  assert.equal(user.props['data-layer-total'], '1');
+  const workspace = collect(tree, (node) => node.props && node.props['data-inspector-layer'] === 'workspace')[0];
+  assert.equal(workspace.props['data-layer-kind'], 'disabled');
+  assert.equal(workspace.props['data-layer-enabled'], 'false');
+  const assembly = collect(tree, (node) => node.props && node.props['data-inspector-block'] === 'assembly')[0];
+  assert.equal(assembly.props['data-inspector-assembly'], 'notice');
+  assert.match(String(collect(assembly, (node) => node.type === 'p')[0].props.children), new RegExp(page.zh.assemblyLayerAssembly));
+  const frozenLine = collect(tree, (node) => node.props && node.props['data-inspector-frozen'] !== undefined);
+  assert.equal(frozenLine.length, 1);
+  assert.match(String(frozenLine[0].props.children), /harness:identity/);
+  assert.match(String(frozenLine[0].props.children), /complete section/);
+});
+
+test('client: the close button, the scrim and Escape all dismiss and return focus to the composer (g-097)', async () => {
+  const doc = makeInspectorDocument();
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  const inspector = page.loaded.module.__internals.promptInspector;
+  const panel = makeInspectorPanel(page, { document: doc });
+  const dismissEvent = () => ({ preventDefault() {}, stopPropagation() {} });
+
+  inspector.open({ sessionId: 's1' });
+  let tree = await panel.flush();
+  const close = collect(tree, (node) => node.type === 'button' && node.props && node.props['data-action'] === 'prompt-inspector-close')[0];
+  close.props.onClick(dismissEvent());
+  assert.equal(inspector.seat.open, false, '关闭按钮');
+  assert.deepEqual(doc.focusCalls, ['editor'], '关闭后焦点回输入框');
+
+  inspector.open({ sessionId: 's1' });
+  tree = await panel.flush();
+  const scrim = collect(tree, (node) => node.props && node.props['data-inspector-scrim'] !== undefined)[0];
+  doc.focusCalls.length = 0;
+  scrim.props.onClick(dismissEvent());
+  assert.equal(inspector.seat.open, false, '遮罩点击');
+  assert.deepEqual(doc.focusCalls, ['editor']);
+
+  inspector.open({ sessionId: 's1' });
+  await panel.flush();
+  doc.focusCalls.length = 0;
+  const listeners = [...(doc.listeners.get('keydown') || [])];
+  assert.ok(listeners.length >= 1, 'Escape 监听已挂载');
+  for (const listener of listeners) listener({ key: 'Escape' });
+  assert.equal(inspector.seat.open, false, 'Esc');
+  assert.ok(doc.focusCalls.length >= 1, 'Esc 关闭后焦点回输入框');
+
+  // 关闭后再次渲染：面板为 null（无节点），按钮报告 aria-expanded=false。
+  assert.equal(panel.draw(), null, '关闭态零面板节点');
+  const button = makeInspectorButton(page);
+  assert.equal(button.draw().props['aria-expanded'], 'false');
+});
+
+test('client: the button toggles the shared seat; a second press closes it (g-097)', () => {
+  const doc = makeInspectorDocument();
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  const inspector = page.loaded.module.__internals.promptInspector;
+  const button = makeInspectorButton(page, { session: { sessionId: 's9' }, document: doc });
+  const dismissEvent = () => ({ preventDefault() {}, stopPropagation() {} });
+  button.draw().props.onClick(dismissEvent());
+  assert.equal(inspector.seat.open, true);
+  assert.equal(inspector.seat.sessionId, 's9');
+  assert.equal(button.draw().props['data-inspector-open'], 'true');
+  button.draw().props.onClick(dismissEvent());
+  assert.equal(inspector.seat.open, false);
+  assert.ok(doc.focusCalls.includes('editor'), '再按一次关闭并回焦');
+});
+
+test('client: unmount removes the Escape listener and the seat subscription (g-097)', async () => {
+  const doc = makeInspectorDocument();
+  const page = makePage({ primitives: 'throw', responses: defaultResponses() });
+  const inspector = page.loaded.module.__internals.promptInspector;
+  const panel = makeInspectorPanel(page, { document: doc });
+  inspector.open({ sessionId: 's1' });
+  const before = (doc.listeners.get('keydown') || []).length;
+  const rendered = page.loaded.runtime.render(panel.registration.component, panel.props);
+  const cleanups = [];
+  for (const effect of rendered.pending) {
+    const cleanup = effect();
+    if (typeof cleanup === 'function') cleanups.push(cleanup);
+  }
+  await settle();
+  assert.equal((doc.listeners.get('keydown') || []).length, before + 1, 'open 时挂一个监听');
+  for (const cleanup of cleanups) cleanup();
+  assert.equal((doc.listeners.get('keydown') || []).length, before, 'cleanup 移除监听（卸载可逆）');
+  assert.ok(cleanups.length >= 2, 'read effect 与 keydown effect 都有 cleanup');
+  const listener = () => {};
+  const unsubscribe = inspector.subscribe(listener);
+  assert.equal(inspector.seat.listeners.has(listener), true);
+  unsubscribe();
+  assert.equal(inspector.seat.listeners.has(listener), false, '订阅可解除');
 });
 
 // #endregion

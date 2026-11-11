@@ -18653,6 +18653,522 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /**
+     * g-097: the read-only prompt-injection inspector — one button in
+     * `conversation.input.left` (order 10, right of the meme picker's 5) and the
+     * panel it opens in `conversation.input.overlay`. Read-only (the bar's same
+     * three GETs); no Session ⇒ zero requests; one row per `effective.sections`
+     * (index:null included, characters = text.length); three close paths that
+     * return focus to the composer; no listener/style survives unmount.
+     */
+    const PROMPT_INSPECTOR_BUTTON_ORDER = 10;
+    const PROMPT_INSPECTOR_BUTTON_SLOT = 'conversation.input.left';
+    const PROMPT_INSPECTOR_PANEL_SLOT = 'conversation.input.overlay';
+    const PROMPT_INSPECTOR_BUTTON_ID = 'prompt-setting-prompt-inspector';
+    const PROMPT_INSPECTOR_PANEL_ID = 'prompt-setting-prompt-inspector-panel';
+    const PROMPT_INSPECTOR_REGION = 'composer-prompt-inspector';
+    const PROMPT_INSPECTOR_LAYERS = Object.freeze(['user', 'workspace']);
+    /** Inline styles only: nothing is injected into the document, so unmount is total. */
+    const PROMPT_INSPECTOR_STYLE = Object.freeze({
+      line: { margin: 0, fontSize: 12, lineHeight: '18px', color: token.labelSecondary, wordBreak: 'break-word' },
+      heading: { margin: 0, fontSize: 12, fontWeight: 600, color: token.labelPrimary },
+      block: { display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 },
+      list: { display: 'flex', flexDirection: 'column', gap: 0, margin: 0, padding: 0, listStyle: 'none', border: `1px solid ${token.borderL2}`, borderRadius: 8, overflow: 'hidden' },
+      row: { display: 'flex', flexDirection: 'column', gap: 2, padding: '6px 8px', borderBottom: `1px solid ${token.borderL2}` },
+      rowTop: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 },
+      rowMeta: { display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: 11, lineHeight: '16px', color: token.labelSecondary },
+      panel: { position: 'fixed', left: 0, right: 0, bottom: 96, margin: '0 auto', zIndex: 2147483001, width: 'min(640px, calc(100vw - 32px))', maxHeight: 'min(70vh, 640px)', display: 'flex', flexDirection: 'column', boxSizing: 'border-box', background: token.surface, color: token.labelPrimary, border: `1px solid ${token.surfaceStroke}`, borderRadius: 12, boxShadow: '0 12px 40px rgba(0, 0, 0, 0.18)', font: 'inherit', fontSize: 12, lineHeight: '18px', overflow: 'hidden' },
+      scrim: { position: 'fixed', top: 0, right: 0, bottom: 0, left: 0, zIndex: 2147483000, background: 'rgba(0, 0, 0, 0.12)' },
+      header: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, padding: '10px 12px', borderBottom: `1px solid ${token.borderL2}` },
+      close: { flex: 'none', width: 24, height: 24, padding: 0, border: 'none', borderRadius: 6, background: 'transparent', color: token.labelSecondary, cursor: 'pointer', font: 'inherit', fontSize: 16, lineHeight: '24px' },
+      body: { display: 'flex', flexDirection: 'column', gap: 10, padding: '10px 12px 12px', overflowY: 'auto', minHeight: 0 },
+      button: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, flex: 'none', padding: 0, border: 'none', borderRadius: 8, background: 'transparent', cursor: 'pointer', font: 'inherit' },
+    });
+
+    /** The one seat the two entries share. `revision` is the store snapshot. */
+    const promptInspectorSeat = { open: false, sessionId: '', returnFocus: null, revision: 0, listeners: new Set() };
+
+    /** Subscribe to the seat; the returned unsubscribe is what unmount calls. */
+    function promptInspectorSubscribe(listener) {
+      promptInspectorSeat.listeners.add(listener);
+      return () => {
+        promptInspectorSeat.listeners.delete(listener);
+      };
+    }
+
+    /** Bump the revision and notify every listener; one broken subscriber must not stop the rest. */
+    function promptInspectorNotify() {
+      promptInspectorSeat.revision += 1;
+      for (const listener of [...promptInspectorSeat.listeners]) {
+        try {
+          listener();
+        } catch {
+          // One broken subscriber must not break the others.
+        }
+      }
+    }
+
+    /** Open the panel for one Session, remembering where focus came from. */
+    function promptInspectorOpen(options) {
+      const source = options !== null && typeof options === 'object' ? options : {};
+      promptInspectorSeat.open = true;
+      promptInspectorSeat.sessionId = typeof source.sessionId === 'string' ? source.sessionId : '';
+      promptInspectorSeat.returnFocus = source.returnFocus === undefined ? null : source.returnFocus;
+      promptInspectorNotify();
+    }
+
+    /** Close the panel without touching focus (the dismiss path adds it). */
+    function promptInspectorClose() {
+      if (promptInspectorSeat.open === false) return;
+      promptInspectorSeat.open = false;
+      promptInspectorSeat.sessionId = '';
+      promptInspectorNotify();
+    }
+
+    /** Return focus to the composer editor; the recorded element is the last resort. */
+    function promptInspectorFocusInput(documentLike, fallback) {
+      const root =
+        documentLike !== null && documentLike !== undefined && typeof documentLike.querySelector === 'function'
+          ? documentLike
+          : null;
+      if (root !== null) {
+        for (const selector of [
+          '[data-composer-card] [contenteditable="true"]',
+          '[data-composer-card] textarea',
+          '[contenteditable="true"]',
+          'textarea',
+        ]) {
+          let element = null;
+          try {
+            element = root.querySelector(selector);
+          } catch {
+            element = null;
+          }
+          if (element !== null && element !== undefined && typeof element.focus === 'function') {
+            try {
+              element.focus();
+              return true;
+            } catch {
+              // Next selector.
+            }
+          }
+        }
+      }
+      if (fallback !== null && fallback !== undefined && typeof fallback.focus === 'function') {
+        try {
+          fallback.focus();
+          return true;
+        } catch {
+          return false;
+        }
+      }
+      return false;
+    }
+
+    /** The one dismiss path: close, then return focus to the composer. */
+    function promptInspectorDismiss(props) {
+      const fallback = promptInspectorSeat.returnFocus;
+      promptInspectorSeat.returnFocus = null;
+      promptInspectorClose();
+      return promptInspectorFocusInput(composerBarDocumentOf(props), fallback);
+    }
+
+    /** The Session seat (`InputZone.session` / the inject face); anything else is "no Session". */
+    function promptInspectorSessionIdOf(props) {
+      if (props === null || props === undefined) return '';
+      const snapshot = props.session;
+      const fromSnapshot = snapshot !== null && typeof snapshot === 'object' ? snapshot.sessionId : undefined;
+      if (typeof fromSnapshot === 'string' && fromSnapshot.length > 0) return fromSnapshot;
+      for (const candidate of [props.inspectorSessionId, props.sessionId]) {
+        if (typeof candidate === 'string' && candidate.length > 0) return candidate;
+      }
+      return '';
+    }
+
+    /** Project `effective.sections` into rows: payload order, nothing filtered, `text.length`. */
+    function promptInspectorSectionRows(payload) {
+      const effective = payload !== null && typeof payload === 'object' ? payload.effective : null;
+      const sections =
+        effective !== null && typeof effective === 'object' && Array.isArray(effective.sections)
+          ? effective.sections
+          : [];
+      return sections.map((section, position) => {
+        const row = section !== null && typeof section === 'object' ? section : {};
+        const text = typeof row.text === 'string' ? row.text : '';
+        return {
+          key: `${position}:${typeof row.name === 'string' ? row.name : ''}`,
+          name: typeof row.name === 'string' ? row.name : '',
+          index: Number.isInteger(row.index) ? row.index : null,
+          chars: text.length,
+          origin: typeof row.origin === 'string' ? row.origin : '',
+          overrideLayer: typeof row.overrideLayer === 'string' ? row.overrideLayer : null,
+          action: typeof row.action === 'string' ? row.action : null,
+          applied: row.applied === true,
+          reason: typeof row.reason === 'string' ? row.reason : '',
+        };
+      });
+    }
+
+    /** The two totals: section count and the sum of `text.length`. */
+    function promptInspectorTotals(rows) {
+      const list = Array.isArray(rows) ? rows : [];
+      let chars = 0;
+      for (const row of list) {
+        if (row !== null && typeof row === 'object' && typeof row.chars === 'number' && Number.isFinite(row.chars)) {
+          chars += row.chars;
+        }
+      }
+      return { sections: list.length, chars };
+    }
+
+    /** The key node's two verdicts, or the state the panel must print instead. */
+    function promptInspectorAssemblyFactOf(payload) {
+      if (payload === null || typeof payload !== 'object') return { kind: 'error' };
+      const notice = composerBarNoticeOf(payload);
+      return notice === null ? { kind: 'none' } : { kind: 'notice', notice };
+    }
+
+    /** The frozen fact, straight from the snapshot's own flags. */
+    function promptInspectorFrozenFactOf(snapshot) {
+      if (snapshot === null || typeof snapshot !== 'object' || snapshot.frozen !== true) return null;
+      return {
+        section: typeof snapshot.frozenSection === 'string' ? snapshot.frozenSection : '',
+        reason: typeof snapshot.frozenReason === 'string' ? snapshot.frozenReason : '',
+      };
+    }
+
+    /** Failed snapshot ⇒ `error`; failed overrides/assembly keeps the list, degrades one block. */
+    function promptInspectorReadOf(results) {
+      const source = results !== null && typeof results === 'object' ? results : {};
+      const payloadOf = (result) =>
+        result !== null && typeof result === 'object' && result.ok === true ? result.payload : null;
+      const failureOf = (result) =>
+        result !== null && typeof result === 'object' && result.ok !== true && result.error ? result.error : null;
+      const snapshot = payloadOf(source.snapshot);
+      const overrides = payloadOf(source.overrides);
+      const assembly = payloadOf(source.assembly);
+      const error = failureOf(source.snapshot) || failureOf(source.overrides) || failureOf(source.assembly);
+      if (snapshot === null) return { phase: 'error', snapshot: null, overrides, assembly, error };
+      return { phase: 'ready', snapshot, overrides, assembly, error };
+    }
+
+    /**
+     * The panel's one read path: opened ⇒ three serial GETs, no Session ⇒ zero
+     * transport calls, closed ⇒ `idle`. The latest round wins (stale answers are
+     * dropped before they can issue the remaining requests).
+     */
+    function usePromptInspectorRead(options) {
+      const source = options !== null && typeof options === 'object' ? options : {};
+      const open = source.open === true;
+      const sessionId = typeof source.sessionId === 'string' ? source.sessionId : '';
+      const [read, setRead] = React.useState({
+        phase: 'idle',
+        snapshot: null,
+        overrides: null,
+        assembly: null,
+        error: null,
+      });
+      const [nonce, setNonce] = React.useState(0);
+      const bookRef = React.useRef(null);
+      if (bookRef.current === null) bookRef.current = { round: 0 };
+      const book = bookRef.current;
+      const refresh = () => setNonce((value) => value + 1);
+      React.useEffect(() => {
+        const reset = (phase) => {
+          book.round += 1;
+          setRead({ phase, snapshot: null, overrides: null, assembly: null, error: null });
+        };
+        if (!open) {
+          reset('idle');
+          return undefined;
+        }
+        const urls = composerBarRequestUrls(sessionId);
+        if (urls === null) {
+          reset('no-session');
+          return undefined;
+        }
+        let cancelled = false;
+        book.round += 1;
+        const round = book.round;
+        setRead({ phase: 'loading', snapshot: null, overrides: null, assembly: null, error: null });
+        const load = async () => {
+          const snapshot = await requestJson(urls.snapshot);
+          if (cancelled || book.round !== round) return;
+          const overrides = await requestJson(urls.overrides);
+          if (cancelled || book.round !== round) return;
+          const assembly = await requestJson(urls.assembly);
+          if (cancelled || book.round !== round) return;
+          setRead(promptInspectorReadOf({ snapshot, overrides, assembly }));
+        };
+        load();
+        return () => {
+          cancelled = true;
+        };
+      }, [open, sessionId, nonce]);
+      return { read, refresh };
+    }
+
+    /**
+     * The toolbar button: one square icon in the Host's tool row. `onMouseDown`
+     * is prevented so the click never steals focus from the composer; the
+     * dismiss path returns focus explicitly.
+     */
+    function ComposerPromptInspectorButton(props) {
+      const t = typeof props.t === 'function' ? props.t : fallbackT;
+      React.useSyncExternalStore(promptInspectorSubscribe, () => promptInspectorSeat.revision, () => promptInspectorSeat.revision);
+      const open = promptInspectorSeat.open === true;
+      const sessionId = promptInspectorSessionIdOf(props);
+      const toggle = (event) => {
+        if (event !== null && typeof event.preventDefault === 'function') event.preventDefault();
+        if (event !== null && typeof event.stopPropagation === 'function') event.stopPropagation();
+        if (open) {
+          promptInspectorDismiss(props);
+          return;
+        }
+        const doc = composerBarDocumentOf(props);
+        const returnFocus = doc !== null && doc !== undefined && doc.activeElement !== undefined ? doc.activeElement : null;
+        promptInspectorOpen({ sessionId, returnFocus });
+      };
+      return h(
+        'button',
+        {
+          type: 'button',
+          'data-plugin': 'dsh-prompt-setting',
+          'data-region': 'composer-prompt-inspector-button',
+          'data-action': 'prompt-inspector-toggle',
+          'data-inspector-open': open ? 'true' : 'false',
+          'data-inspector-session': sessionId,
+          'aria-label': t('barAssemblyLabel'),
+          'aria-expanded': open ? 'true' : 'false',
+          'aria-haspopup': 'dialog',
+          title: t('barAssemblyLabel'),
+          onClick: toggle,
+          onMouseDown: (event) => {
+            if (event !== null && typeof event.preventDefault === 'function') event.preventDefault();
+          },
+          style: { ...PROMPT_INSPECTOR_STYLE.button, color: open ? token.stateBusiness : token.labelSecondary },
+        },
+        composerBarIconOf('sections', 'currentColor'),
+      );
+    }
+
+    /**
+     * The panel: scrim + dialog, four read-only blocks, three close paths. Hooks
+     * run before the `open` early return; every visible fact carries a `data-*`
+     * marker, so a probe reads attributes instead of text.
+     */
+    function ComposerPromptInspectorPanel(props) {
+      const t = typeof props.t === 'function' ? props.t : fallbackT;
+      React.useSyncExternalStore(promptInspectorSubscribe, () => promptInspectorSeat.revision, () => promptInspectorSeat.revision);
+      const open = promptInspectorSeat.open === true;
+      const sessionId = promptInspectorSessionIdOf(props) || promptInspectorSeat.sessionId;
+      const live = usePromptInspectorRead({ open, sessionId });
+      const read = live.read;
+      React.useEffect(() => {
+        if (!open) return undefined;
+        const doc = composerBarDocumentOf(props);
+        if (doc === null || doc === undefined || typeof doc.addEventListener !== 'function') return undefined;
+        const onKeyDown = (event) => {
+          if (event !== null && event !== undefined && (event.key === 'Escape' || event.key === 'Esc')) {
+            promptInspectorDismiss(props);
+          }
+        };
+        doc.addEventListener('keydown', onKeyDown);
+        return () => {
+          try {
+            doc.removeEventListener('keydown', onKeyDown);
+          } catch {
+            // A dead document is already gone; the listener dies with it.
+          }
+        };
+      }, [open]);
+      if (!open) return null;
+      const dismiss = (event) => {
+        if (event !== null && typeof event.preventDefault === 'function') event.preventDefault();
+        if (event !== null && typeof event.stopPropagation === 'function') event.stopPropagation();
+        promptInspectorDismiss(props);
+      };
+      const phase = read.phase;
+      const rows = phase === 'ready' ? promptInspectorSectionRows(read.snapshot) : [];
+      const totals = promptInspectorTotals(rows);
+      const layers = phase === 'ready'
+        ? {
+            user: composerBarLayerFact('user', read.snapshot, read.overrides),
+            workspace: composerBarLayerFact('workspace', read.snapshot, read.overrides),
+          }
+        : null;
+      const assembly = phase === 'ready' ? promptInspectorAssemblyFactOf(read.assembly) : { kind: 'loading' };
+      const frozen = phase === 'ready' ? promptInspectorFrozenFactOf(read.snapshot) : null;
+      const summaryText =
+        phase === 'ready'
+          ? `${t('viewSections')}${t('assemblyLayerSep')}${totals.sections} · ${fmt(t('colChars'), { n: String(totals.chars) })}`
+          : phase === 'no-session'
+            ? t('barNoSession')
+            : phase === 'error'
+              ? `${t('loadFailed')}${read.error === null ? '' : ` — ${errorText(t, read.error)}`}`
+              : t('loading');
+      const assemblyText =
+        assembly.kind === 'loading'
+          ? t('loading')
+          : assembly.kind === 'error'
+            ? t('loadFailed')
+            : assembly.kind === 'none'
+              ? t('mineStatusNoRecord')
+              : `${t('assemblyLayerAssembly')}${t('assemblyLayerSep')}${assemblyVerdictOf(t, assembly.notice)} · `
+                + `${t('assemblyLayerDelivery')}${t('assemblyLayerSep')}${deliveryVerdictOf(t, assembly.notice)}`;
+      const layerRow = (layer) => {
+        const fact = layers === null ? { kind: 'loading', total: 0, ineffective: 0 } : layers[layer];
+        const value =
+          fact.kind === 'error'
+            ? t('loadFailed')
+            : fact.kind === 'disabled'
+              ? t('stDisabled')
+              : fact.kind === 'none'
+                ? t('stNone')
+                : fmt(t('mineStatusCoverage'), {
+                    total: String(fact.total),
+                    ineffective: String(fact.ineffective),
+                  });
+        return h(
+          'div',
+          {
+            key: layer,
+            'data-inspector-layer': layer,
+            'data-layer-kind': fact.kind,
+            'data-layer-enabled': fact.kind === 'disabled' ? 'false' : fact.kind === 'error' ? '' : 'true',
+            'data-layer-total': String(fact.total),
+            'data-layer-ineffective': String(fact.ineffective),
+            style: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8, fontSize: 12, color: token.labelSecondary },
+          },
+          h('span', { style: { color: token.labelPrimary } }, t(layer === 'user' ? 'stUserLayer' : 'stWorkspaceLayer')),
+          h('span', null, value),
+        );
+      };
+      const sectionRow = (row) =>
+        h(
+          'li',
+          {
+            key: row.key,
+            'data-section-row': '',
+            'data-section-name': row.name,
+            'data-section-index': row.index === null ? '' : String(row.index),
+            'data-section-chars': String(row.chars),
+            'data-section-origin': row.origin,
+            'data-section-applied': row.applied ? 'true' : 'false',
+            'data-section-override-layer': row.overrideLayer === null ? '' : row.overrideLayer,
+            'data-section-action': row.action === null ? '' : row.action,
+            style: PROMPT_INSPECTOR_STYLE.row,
+          },
+          h(
+            'div',
+            { style: PROMPT_INSPECTOR_STYLE.rowTop },
+            h('span', { style: { fontWeight: 600, color: token.labelPrimary, wordBreak: 'break-word' } },
+              `${row.index === null ? '—' : `#${row.index}`} ${row.name}`),
+            h('span', { style: { flex: 'none', color: token.labelTertiary } },
+              fmt(t('colChars'), { n: String(row.chars) })),
+          ),
+          h(
+            'div',
+            { style: PROMPT_INSPECTOR_STYLE.rowMeta },
+            h('span', { 'data-section-meta': 'origin' }, t(originKey(row.origin))),
+            row.overrideLayer === null
+              ? null
+              : h('span', { 'data-section-meta': 'override' }, `${row.overrideLayer} · ${row.action === null ? '—' : row.action}`),
+            row.applied
+              ? null
+              : h('span', { 'data-section-meta': 'reason', style: { color: token.stateWarn } },
+                  `${t('stDisabled')}${row.reason === '' ? '' : ` · ${fmt(t('mineLayerDisabledReason'), { reason: row.reason })}`}`),
+          ),
+        );
+      return [
+        h('div', { key: 'scrim', 'data-inspector-scrim': '', onClick: dismiss, style: PROMPT_INSPECTOR_STYLE.scrim }),
+        h(
+          'div',
+          {
+            key: 'panel',
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-label': t('barAssemblyLabel'),
+            'data-plugin': 'dsh-prompt-setting',
+            'data-region': PROMPT_INSPECTOR_REGION,
+            'data-inspector-panel': '',
+            'data-inspector-phase': phase,
+            'data-inspector-session': sessionId,
+            'data-inspector-total-sections': phase === 'ready' ? String(totals.sections) : '',
+            'data-inspector-total-chars': phase === 'ready' ? String(totals.chars) : '',
+            onClick: (event) => {
+              if (event !== null && typeof event.stopPropagation === 'function') event.stopPropagation();
+            },
+            style: PROMPT_INSPECTOR_STYLE.panel,
+          },
+          h(
+            'div',
+            { style: PROMPT_INSPECTOR_STYLE.header },
+            h('h2', { style: { margin: 0, fontSize: 14, fontWeight: 600, lineHeight: '20px' } }, t('barAssemblyLabel')),
+            h(
+              'button',
+              {
+                type: 'button',
+                'data-action': 'prompt-inspector-close',
+                'aria-label': t('presetDialogClose'),
+                title: t('presetDialogClose'),
+                onClick: dismiss,
+                style: PROMPT_INSPECTOR_STYLE.close,
+              },
+              '×',
+            ),
+          ),
+          h(
+            'div',
+            { 'data-inspector-body': '', style: PROMPT_INSPECTOR_STYLE.body },
+            h(
+              'p',
+              {
+                'data-inspector-summary': '',
+                'data-inspector-empty': phase === 'no-session' ? 'no-session' : undefined,
+                'data-inspector-error': phase === 'error' ? 'true' : undefined,
+                role: 'status',
+                style: { ...PROMPT_INSPECTOR_STYLE.line, color: phase === 'error' ? token.stateError : token.labelSecondary },
+              },
+              summaryText,
+            ),
+            phase === 'ready'
+              ? h(
+                  'section',
+                  { 'data-inspector-block': 'sections', style: PROMPT_INSPECTOR_STYLE.block },
+                  h('h3', { style: PROMPT_INSPECTOR_STYLE.heading }, t('viewSections')),
+                  h('ol', { style: PROMPT_INSPECTOR_STYLE.list }, rows.map(sectionRow)),
+                )
+              : null,
+            phase === 'ready'
+              ? h(
+                  'section',
+                  { 'data-inspector-block': 'layers', style: PROMPT_INSPECTOR_STYLE.block },
+                  h('h3', { style: PROMPT_INSPECTOR_STYLE.heading }, t('stateHeading')),
+                  h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } }, PROMPT_INSPECTOR_LAYERS.map(layerRow)),
+                )
+              : null,
+            phase === 'ready'
+              ? h(
+                  'section',
+                  { 'data-inspector-block': 'assembly', 'data-inspector-assembly': assembly.kind, style: PROMPT_INSPECTOR_STYLE.block },
+                  h('h3', { style: PROMPT_INSPECTOR_STYLE.heading }, t('barAssemblyLabel')),
+                  h('p', { style: PROMPT_INSPECTOR_STYLE.line }, assemblyText),
+                  frozen === null
+                    ? null
+                    : h(
+                        'p',
+                        { 'data-inspector-frozen': 'true', style: { ...PROMPT_INSPECTOR_STYLE.line, color: token.stateWarn } },
+                        `${t('stFrozenSession')}${frozen.section === '' ? '' : ` · ${frozen.section}`}`
+                          + `${frozen.reason === '' ? '' : ` · ${fmt(t('mineLayerDisabledReason'), { reason: frozen.reason })}`}`,
+                      ),
+                )
+              : null,
+          ),
+        ),
+      ];
+    }
+
     return {
       inject: ['slots', 'locale'],
       /**
@@ -18774,6 +19290,29 @@ window.__ModuleLoader__.load({
           sessionStatusEntryOf: composerBarSessionStatusEntryOf,
           sessionTick: composerBarSessionTick,
           liveIoOf: composerBarLiveIoOf,
+        },
+        /** g-097: the inspector's IO-free half (rows / totals / seat / focus), asserted directly. */
+        promptInspector: {
+          REGION: PROMPT_INSPECTOR_REGION,
+          BUTTON_ORDER: PROMPT_INSPECTOR_BUTTON_ORDER,
+          BUTTON_SLOT: PROMPT_INSPECTOR_BUTTON_SLOT,
+          PANEL_SLOT: PROMPT_INSPECTOR_PANEL_SLOT,
+          BUTTON_ID: PROMPT_INSPECTOR_BUTTON_ID,
+          PANEL_ID: PROMPT_INSPECTOR_PANEL_ID,
+          LAYERS: PROMPT_INSPECTOR_LAYERS,
+          seat: promptInspectorSeat,
+          subscribe: promptInspectorSubscribe,
+          open: promptInspectorOpen,
+          close: promptInspectorClose,
+          dismiss: promptInspectorDismiss,
+          sessionIdOf: promptInspectorSessionIdOf,
+          requestUrls: composerBarRequestUrls,
+          sectionRows: promptInspectorSectionRows,
+          totals: promptInspectorTotals,
+          assemblyFactOf: promptInspectorAssemblyFactOf,
+          frozenFactOf: promptInspectorFrozenFactOf,
+          readOf: promptInspectorReadOf,
+          focusInput: promptInspectorFocusInput,
         },
       },
       apply(ctx) {
@@ -18997,6 +19536,50 @@ window.__ModuleLoader__.load({
                 }),
               },
               ComposerAssemblyBar,
+            );
+          } catch {
+            return undefined;
+          }
+        });
+
+        // g-097: the inspector's two entries. Both guarded like the bar: the
+        // callback runs only once the Host declares the slot, and a refused entry
+        // loses that entry, never the plugin. The button sits at order 10 in the
+        // tool row (right of dsh-meme's order 5); the panel uses the Host's own
+        // `conversation.input.overlay` list, so no slot is shared or shadowed.
+        ctx.slots.inject(PROMPT_INSPECTOR_BUTTON_SLOT, () => {
+          try {
+            return ctx.slots.register(
+              {
+                name: PROMPT_INSPECTOR_BUTTON_SLOT,
+                id: PROMPT_INSPECTOR_BUTTON_ID,
+                order: PROMPT_INSPECTOR_BUTTON_ORDER,
+                locale: NS,
+                inject: (sessionId) => ({
+                  inspectorSessionId: typeof sessionId === 'string' ? sessionId : '',
+                }),
+              },
+              ComposerPromptInspectorButton,
+            );
+          } catch {
+            return undefined;
+          }
+        });
+        ctx.slots.inject(PROMPT_INSPECTOR_PANEL_SLOT, () => {
+          try {
+            return ctx.slots.register(
+              {
+                name: PROMPT_INSPECTOR_PANEL_SLOT,
+                id: PROMPT_INSPECTOR_PANEL_ID,
+                // Same order as the button: the overlay is its own list and
+                // coexists with dsh-meme's `order: 5` board.
+                order: PROMPT_INSPECTOR_BUTTON_ORDER,
+                locale: NS,
+                inject: (sessionId) => ({
+                  inspectorSessionId: typeof sessionId === 'string' ? sessionId : '',
+                }),
+              },
+              ComposerPromptInspectorPanel,
             );
           } catch {
             return undefined;
