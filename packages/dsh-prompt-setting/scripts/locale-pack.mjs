@@ -47,7 +47,7 @@ export const LOCALE_DIR = 'locale';
  *
  * g-092：跟随 DSH 0.2.2-alpha.2 宿主内置的 8 种界面语言
  * （`@deepseek-ai/dsh-client-locale/lib/client.js` 的 `addLanguage` 列表）。
- * **这是插件语言清单的唯一真源**：脚本（读/写/门禁）、`src/21-boot.js` 的注册与
+ * **这是插件语言清单的唯一真源**：脚本（读/写/门禁）、`src/22-boot.js` 的注册与
  * 测试都从它派生，任何一处再写一份 8 语言清单都是重复真源。
  *
  * zh/en 必须在前：宿主 `register(ns, {zh, en})` 的对象形式要求基线两种语言齐全，

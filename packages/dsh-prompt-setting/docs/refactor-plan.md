@@ -461,7 +461,7 @@ fingerprintOf(加 1 行头注后的同一文件)      = 4d998612 / 567230   # �
 其它重点：
 - 把 **2640 行**的 `PromptSettingSection`（`client.js:9347-12612`）在**函数体内部**沿连续区间切成 3 段（`13-page-a/b/c`：JSDoc+hooks/state、fetch/handlers、root 树）——拼接后仍是同一个函数体，不移动任何行；
 - locale 生成段（`02-locale.js` + 3 个 `19/20/21-locale-*.js`，共 4800 行）与其它段解耦：内容由 `scripts/locale-pack.mjs --write` 产出，生成器原样嵌入；
-- 合并相邻小段（如 §1.3 的 216–902 三段合成 `01-shared-head.js`），把段数从阶段 1 的 24 段收敛到 17 段（g-086 与 g-089 各再加 1 段，g-092 因 8 语言再拆出 3 个 locale 段 —— 现状 24 段）。
+- 合并相邻小段（如 §1.3 的 216–902 三段合成 `01-shared-head.js`），把段数从阶段 1 的 24 段收敛到 17 段（g-086 与 g-089 各再加 1 段，g-092 因 8 语言再拆出 3 个 locale 段；g-097 起 inspector 段 + boot 回最后 —— 现状 23 段）。
 
 **可验证判据**
 1. `node scripts/client-build.mjs --check` 退出码 `0`；`node --test test/*.test.mjs` 全绿；
@@ -534,8 +534,8 @@ fingerprintOf(加 1 行头注后的同一文件)      = 4d998612 / 567230   # �
    | 新增/修改的东西 | 归属（段名见 §5.1 目标段表） |
    |---|---|
    | **指纹标记的书写位置**：`begin`（`client.js:115`） | `00-entry.js`（1–215） |
-   | **指纹标记的书写位置**：`end`（`client.js:19669`） | `21-boot.js`（18485–19994） |
-   | **被两端标记覆盖的区间**（`115–12619`） | **横跨全部 24 段**——它跟随内容走，**不受段划分影响**，不得为它单独建段 |
+   | **指纹标记的书写位置**：`end`（`client.js:19992`） | `22-boot.js`（19311–19994） |
+   | **被两端标记覆盖的区间**（`115–12619`） | **横跨全部 23 段**——它跟随内容走，**不受段划分影响**，不得为它单独建段 |
    | 注册形态（`client.js:107`）/ factory guard（185–198）/ `buildPlugin` 头（212） | `00-entry.js`（**协议，改动等于改契约**） |
    | 某个 tab 的渲染逻辑 | 对应 tab chunk（`client.*.js`） |
    | 默认 tab「我的 Prompt」（`renderMinePanel`） | `10-toaster-mine.js`（含 toaster 与装配状态） |
@@ -703,9 +703,10 @@ node --test test/client.test.mjs # pass 295 / fail 0
 校验规则：①`行数 == 区间长度`；②区间**首尾相接**（无空隙、无重叠）；③合计 `== client.js 的段真源行数（19994）`；④段表每段 `≤ 1200`。做法是从本文档里按表格行正则解析出 `(起始行, 结束行, 行数)`，逐条比对。
 
 ```
-本次返工实跑结果：
-  §1.3 版图表   : rows=29, 行数不符=[], 不连续=[], 首尾 1–19994, 合计=19994
-  §5.1 目标段表 : segs=22, 行数不符=[], 不连续=[], 首尾 1–19994, 合计=19994, 最大段=1200, 超 1200 的段=[]
+g-097 收口轮实跑结果（2026-11-11，当前值）：
+  §1.3 版图表   : rows=30, 行数不符=[], 不连续=[], 首尾 1–19994, 合计=19994
+  §5.1 目标段表 : segs=23, 行数不符=[], 不连续=[], 首尾 1–19994, 合计=19994, 最大段=1200, 超 1200 的段=[]
+  check-refs    : total=170, verified=104, rangeOnly=45, manual=21, unresolved=0, 其它失败=0
 ```
 
 **文档引用体检（R3-R5 治本项 + R4 收敛轮加固）：`docs/check-refs.mjs`**
@@ -728,11 +729,11 @@ node docs/check-refs.mjs              # 体检；有 fail/unresolved ⇒ 非零�
 node docs/check-refs.mjs --verbose    # 另列 rangeOnly 明细
 ```
 
-最终实跑输出（当前轮，R1 之后）：
+历史实跑输出（g-091 轮次，2026-11 早期；**以下数字为当时值，非当前**）：
 
 ```text
-  table §1.3 版图表: rows=29 合计=19994 最大段=3272
-  table §5.1 目标段表: rows=22 合计=19994 最大段=1200
+  table §1.3 版图表: rows=29 合计=19994 最大段=3272  （历史值）
+  table §5.1 目标段表: rows=22 合计=19994 最大段=1200  （历史值）
 check-refs: 文档引用 total=165 | verified=102 | rangeOnly=42 | manual=21 | unresolved+failed=0
 check-refs: REFS 表 158 条 → REFS∩declared=102（计入覆盖率，其中 verified=102） / REFS\declared=56（文档里不存在，不计入覆盖率；其中 56 条独立校验通过）
 check-refs: 恒等式 total == verified + rangeOnly + manual + unresolved = 102 + 42 + 21 + 0

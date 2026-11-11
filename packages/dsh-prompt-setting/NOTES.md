@@ -11307,9 +11307,9 @@ scrim 与面板都显式 `pointerEvents: 'auto'`。**不**做 DOM 增强、**不
    `histPreviewAt`（时间），**零新增 locale 键**（locale 生成段 1200 行预算仍是硬的）。
 4. **两层分行**：`装配层` 与 `送达层` 各自独立 `<p>`（`data-inspector-verdict="assembly" | "delivery"`），
    不再用 ` · ` 拼成一行。
-- **段结构**：提示词注入面板放在 `18-prompt-inspector.js`（795 行；locale 生成段之前），locale 生成段随之后移为
-  `19/20/21-locale-*.js`，boot 段回到最后并合并为 `22-boot.js`（684 行），共 23 段；`client.js` 段真源 19963 行
-  （`client-build --check` 逐字节一致）。这样 locale-pack 的「新增语言 ⇒ locale 段增长 ⇒ boot 顺延」仍成立
+- **段结构**：提示词注入面板放在 `18-prompt-inspector.js`（段真源 826 行 / 源文件 827 行；locale 生成段之前），
+  locale 生成段随之后移为 `19/20/21-locale-*.js`，boot 段回到最后并合并为 `22-boot.js`（684 行），共 23 段；
+  `client.js` 段真源 **19994 行**（`client-build --check` 逐字节一致）。这样 locale-pack 的「新增语言 ⇒ locale 段增长 ⇒ boot 顺延」仍成立
   （第 9 语言 → locale 段铺到 22、boot 顺延 23），`test/locale.test.mjs` 的 9 语言用例全绿。
 - **验证**：全量 1103 例 0 fail（1099 + 新增 4 条 g-097 用例）；verify 6 步 0 失败；check-refs 绿；
   负向对照（过滤 `index:null`）仍 7 pass / 3 fail，还原后 10/10 绿。
@@ -11334,3 +11334,6 @@ scrim 与面板都显式 `pointerEvents: 'auto'`。**不**做 DOM 增强、**不
    补两态断言。
 - **验证**：全量 1103 例 0 fail；`verify` 6 步 0 失败；check-refs 绿；段真源 19994 行（23 段，
   `client-build --check` 逐字节一致）。
+
+- **已知口径借用**：assembly-status 读取失败时，时间行复用 `loadFailed`（该键文案是「快照加载失败」）；在「零新增
+  locale 键」约束下没有更贴切的既有键，故保留，验收时按「读取失败」语义理解（NOTES 记录，非未识别缺陷）。

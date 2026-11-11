@@ -19266,11 +19266,13 @@ test('client: the button toggles the shared seat; a second press closes it (g-09
 
 test('client: unmount removes the Escape listener and the seat subscription (g-097)', async () => {
   const doc = makeInspectorDocument();
+  const win = makeInspectorWindow(1200, 900);
   const page = makePage({ primitives: 'throw', responses: defaultResponses() });
   const inspector = page.loaded.module.__internals.promptInspector;
-  const panel = makeInspectorPanel(page, { document: doc });
+  const panel = makeInspectorPanel(page, { document: doc, window: win });
   inspector.open({ sessionId: 's1' });
   const before = (doc.listeners.get('keydown') || []).length;
+  const beforeResize = (win.listeners.get('resize') || []).length;
   const rendered = page.loaded.runtime.render(panel.registration.component, panel.props);
   const cleanups = [];
   for (const effect of rendered.pending) {
@@ -19279,8 +19281,10 @@ test('client: unmount removes the Escape listener and the seat subscription (g-0
   }
   await settle();
   assert.equal((doc.listeners.get('keydown') || []).length, before + 1, 'open 时挂一个监听');
+  assert.equal((win.listeners.get('resize') || []).length, beforeResize + 1, 'open 时挂一个 resize 监听');
   for (const cleanup of cleanups) cleanup();
   assert.equal((doc.listeners.get('keydown') || []).length, before, 'cleanup 移除监听（卸载可逆）');
+  assert.equal((win.listeners.get('resize') || []).length, beforeResize, 'cleanup 移除 resize 监听（卸载可逆）');
   assert.ok(cleanups.length >= 2, 'read effect 与 keydown effect 都有 cleanup');
   const listener = () => {};
   const unsubscribe = inspector.subscribe(listener);
