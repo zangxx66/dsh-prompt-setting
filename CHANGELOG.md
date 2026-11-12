@@ -10,6 +10,51 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ---
 
+## [0.2.7] - 2026-11-13
+
+**功能版本：会话输入框底部工具条新增「提示词注入」只读面板——点开即可看到当前会话最终装配的系统提示词
+分段清单（含未进入最终 prompt 的项）、字符数、覆盖来源与未生效原因，条目可就地展开查看真实注入文本；
+面板水平垂直居中、可拖动、三路关闭并回焦输入框。同时补齐插件页的多语言标题/描述与图标、设置面板导航图标，
+并在 README 中加入 powered by dsh 徽章。 / Feature release: a read-only prompt-injection inspector in the
+composer tool row shows the current session's finally-assembled system-prompt sections (including ones that
+did not enter the final prompt), their character counts, override sources and reasons; each row expands in
+place to reveal the real injected text. The panel is centred, draggable, and closes three ways while
+returning focus to the composer. The plugin page also gains localized title/description and an icon, the
+settings panel gains a navigation icon, and the README now carries the powered-by-dsh badge.**
+
+（本次发布覆盖 g-094…g-098。`main` 停在 `ca9c1b1`（`release(0.2.6)`），`dev` 为 `b25f579`，
+`merge-base(main,dev) = ca9c1b1`、`main..dev` 共 10 个提交，无未发布的中间版本号。 / This release covers
+g-094…g-098; `merge-base(main,dev) = ca9c1b1` with `dev` 10 commits ahead and no skipped intermediate
+version.）
+
+### Added 新增
+
+- **输入框工具条「提示词注入」只读面板（g-097）**：`conversation.input.left`（order 10，表情按钮右侧）新增
+  按钮，点开在 `shell.overlay`（frame 级，非 composer 内）弹出面板，展示分段清单 / 层状态 / 装配层与送达层
+  结论 / 注入时间 / 总段数与总字符数。数据全部复用既有只读 GET（`snapshot` / `overrides` /
+  `assembly-status`），无 session 零请求；面板居中、可拖标题栏、关闭按钮 + 遮罩 + Esc 三路关闭并回焦
+  输入框；分段条目就地展开真实注入文本（可框选复制）。 / A read-only inspector in the composer tool row:
+  section list, layer state, assembly/delivery verdicts, injection time and totals, all from the existing
+  read-only GETs, with a centred draggable panel, three close paths, and in-place row expansion.
+- **插件页元信息与图标（g-095）**：8 语言标题/描述与 manifest 图标。
+- **设置面板导航图标（g-094）**：`settings.section.icon`。
+
+### Changed 变更
+
+- **README 增加 powered by dsh 徽章（g-096）**。
+- **`docs/refactor-plan.md` 体积与构成表按当前工作树实测订正（g-098）**：§1.1 文件规模表与 §1.2 三分法
+  数字刷新（`client.js` 20003 行 / 1139 KB、`index.js` 5236 行 / 232 KB、14 文件合计 36843），并修正原先
+  「三分法加总不等于总行数」的自相矛盾值。
+
+### 说明
+
+- 本轮**无运行时破坏性变更**：不新增宿主协议、不改 REST 契约、不改装配结果；`client.js` 无字面版本号，
+  未重建（`client-build --check` 逐字节一致）。
+- 面板代码独立为 `src/18-prompt-inspector.js`，locale 生成段顺延为 19–21、boot 归位 `22-boot.js`（共 23 段），
+  **locale 词条零新增**（复用既有 8 语言键）。
+
+---
+
 ## [0.2.6] - 2026-11-05
 
 **功能版本：会话输入框上方的装配状态栏改为动态更新——分区数量、用户区、工作区区与装配状态会随页面内

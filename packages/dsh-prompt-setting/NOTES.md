@@ -11337,3 +11337,66 @@ scrim 与面板都显式 `pointerEvents: 'auto'`。**不**做 DOM 增强、**不
 
 - **已知口径借用**：assembly-status 读取失败时，时间行复用 `loadFailed`（该键文案是「快照加载失败」）；在「零新增
   locale 键」约束下没有更贴切的既有键，故保留，验收时按「读取失败」语义理解（NOTES 记录，非未识别缺陷）。
+
+## 176. 版本号 `0.2.6` → `0.2.7`：同步点清单、夹具上移与 pack 复核（g-099，2026-11-13，基线 `b25f579`）
+
+### 一、发布范围与跳版事实
+
+- `main` 停在 `ca9c1b1`（`release(0.2.6)`），`dev` 为 `b25f579`；`merge-base(main,dev) = ca9c1b1`、
+  `main..dev` 共 **10** 个提交，**没有**未发布的中间版本号 ⇒ 正常的单 patch 升级。
+- 本轮覆盖目标（全部 `delivered`）：g-094（设置面板导航图标）、g-095（插件页元信息/图标）、
+  g-096（README powered-by-dsh 徽章）、g-097（输入框工具条「提示词注入」只读面板）、g-098（refactor-plan
+  体积表实测订正）。
+- npm 上的 `latest` 仍按 `0.2.2`（沿用 2026-10-18 实测值，本轮离线未复测），因此三份 README 只改
+  「本仓库为 `0.2.7`」，`latest` 保持 `0.2.2`。
+
+### 二、同步的「本包当前版本」（27 处 / 10 文件，全部改为 `0.2.7`）
+
+| 文件 | 处数 | 说明 |
+| --- | ---: | --- |
+| `package.json:3` | 1 | 权威源① |
+| `index.js:220` | 1 | 权威源② `PLUGIN_VERSION`（与 package.json lockstep） |
+| `README.md` | 3 | 徽章 + 安装段 + 文档表 |
+| `README_zh.md` | 3 | 同上（中） |
+| 包内 `README.md` | 2 | 安装段（中 / 英） |
+| `CONTRACT.md` | 6 | §10 export 示例、§13.8 版本节点文案、§14 ping 示例、§17 两个 update-check 示例 |
+| `test/stage2.test.mjs` | 2 | `pluginVersion` / `plugin.version` 断言 |
+| `test/update.test.mjs` | 4 | `OLD_TARBALL_URL`、npm 文档条目键与 `version`、ping `body.version` |
+| `test/install.test.mjs` | 4 | `OLD_TARBALL_URL`、npm 文档条目、夹具规则注释 |
+| `test/route.test.mjs` | 1 | `hasUpdate` 注释 |
+
+### 三、随本包版本移动的「更新目标」夹具（`0.2.7` → `0.2.8`，71 处 / 4 文件）
+
+理由同 §169 §三：夹具必须**高于**本包版本，否则 `hasUpdate` 从真翻假，「有更新」族用例整片塌掉。
+按出现次数计：`test/install.test.mjs` 30、`test/update.test.mjs` 19、`test/route.test.mjs` 12、
+`CONTRACT.md` 10（§17 npm/GitHub 示例的 `latest` / `latestTag` / `tarball` / `releaseUrl` 与 §18 install
+示例的 `version` / `tag` / `releaseUrl` / `releaseLink`）。§17 的 npm 示例现在自洽为
+`current: 0.2.7` / `latest: 0.2.8` / `hasUpdate: true`。
+
+**替换顺序**（重要）：先做 `0.2.7 → 0.2.8`（夹具），再做 `0.2.6 → 0.2.7`（本包版本）。反序会把刚写上去的
+`0.2.7` 再升一次。`test/install.test.mjs:62` 的注释「`0.2.6 → 0.2.7`」经此两步自然变成「`0.2.7 → 0.2.8`」。
+
+### 四、刻意保留 `0.2.6` 的白名单
+
+`grep -rn "0\.2\.6"` 逐条判定后仅剩 **4 处，全部在 `NOTES.md`** 的历史叙述（§169 及其它旧节）；
+`CHANGELOG.md` 的 `## [0.2.6]` 段属既成事实，本轮零改动。其余文件 0 处。
+
+### 五、`client.js` 不需要重建
+
+`client.js` / `src/` 无任何本包字面版本号；版本同步不触碰生成物，`node scripts/client-build.mjs --check`
+仍逐字节一致（23 段）。
+
+### 六、门禁与 pack 复核
+
+- `node --test test/*.test.mjs`：**1103 pass / 0 fail**；
+- `node scripts/verify.mjs`：**6 步 / 0 失败**（check-refs / client-build --check / locale-pack --check /
+  prepare / check-compat / 全量测试）；
+- `npm pack packages/dsh-prompt-setting` 在临时目录执行：产出 `dsh-prompt-setting-0.2.7.tgz`，包内
+  `package.json.version = 0.2.7`，且包内不含 `test/`、`.worktrees/`、`.dsh-graph/`。
+
+### 七、未验证项
+
+- `npm publish` / `git tag` / `git push`：**人工 gate，未做**；
+- npm `latest` 未复测（离线，沿用 2026-10-18 的 `0.2.2`）；
+- 徽章的 shields.io 在线渲染未目视，只核对源文本。
+- `dev` → `main` 的合并在本提交之后由 supervisor 执行，结果见仓库提交历史。
